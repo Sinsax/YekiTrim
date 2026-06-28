@@ -1,14 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::config::AsrConfig;
 use crate::types::TranscriptSegment;
-
-static GPU_FAILED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Deserialize)]
 struct SherpaOutput {
@@ -70,34 +67,14 @@ pub fn transcribe(audio: &Path, cfg: &AsrConfig, offset: f64) -> Result<Vec<Tran
 }
 
 fn resolve_binaries() -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if !GPU_FAILED.load(Ordering::Relaxed) {
-        let gpu = crate::download::gpu_binary_path();
-        if gpu.exists() {
-            candidates.push(gpu);
-        }
-    }
-
     let cpu = crate::download::cpu_binary_path();
     if cpu.exists() {
-        candidates.push(cpu);
+        return vec![cpu];
     }
-
     if let Ok(which) = which::which("sherpa-onnx-offline") {
-        if !candidates.iter().any(|p| p == &which) {
-            candidates.push(which);
-        }
+        return vec![which];
     }
-
-    candidates
-}
-
-fn cuda_available() -> bool {
-    crate::download::vtrim_home()
-        .join("bin")
-        .join("onnxruntime_providers_cuda.dll")
-        .exists()
+    Vec::new()
 }
 
 fn run_sherpa(
@@ -107,16 +84,8 @@ fn run_sherpa(
     tokens: &Path,
     offset: f64,
 ) -> Result<Option<Vec<TranscriptSegment>>> {
-    let use_cuda = cuda_available() && !GPU_FAILED.load(Ordering::Relaxed);
-    tracing::debug!("run_sherpa {} provider={}", binary.display(), if use_cuda { "cuda" } else { "cpu" });
-
     let mut cmd = Command::new(binary);
     cmd.arg(format!("--tokens={}", tokens.display()));
-
-    if use_cuda {
-        cmd.arg("--provider=cuda");
-    }
-
     cmd.arg("--num-threads=4");
     cmd.arg(format!("--sense-voice-model={}", model.display()));
     cmd.arg("--sense-voice-use-itn=true");
@@ -126,13 +95,7 @@ fn run_sherpa(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let msg = format!("返回错误 ({}): {}", output.status, stderr.trim());
-
-        if use_cuda {
-            GPU_FAILED.store(true, Ordering::Relaxed);
-        }
-
-        return Err(anyhow::anyhow!(msg));
+        return Err(anyhow::anyhow!("返回错误 ({}): {}", output.status, stderr.trim()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -335,16 +298,9 @@ pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {
     }
 
     tracing::info!(
-        "本地 ASR 就绪: binary ✓ ({}), 模型目录: {}",
-        bins[0].display(),
+        "本地 ASR 就绪: binary ✓, 模型目录: {}",
         mdir.display()
     );
-
-    if crate::download::gpu_binary_path().exists() && !GPU_FAILED.load(Ordering::Relaxed) {
-        tracing::info!("ASR accelerator: GPU ({})", bins[0].display());
-    } else {
-        tracing::info!("ASR accelerator: CPU ({})", bins[0].display());
-    }
 
     Ok(())
 }

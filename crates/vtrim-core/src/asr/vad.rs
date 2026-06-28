@@ -81,98 +81,34 @@ pub fn transcribe_with_vad(audio: &Path, cfg: &AsrConfig) -> Result<Vec<Transcri
     let tokens = mdir.join("tokens.txt");
     let vad_model = crate::download::vad_model_path();
 
-    let providers = if crate::download::gpu_binary_path().exists() {
-        vec!["cuda", "cpu"]
+    let mut cmd = Command::new(&binary);
+
+    if cfg.local_model == "sensevoice" {
+        cmd.arg(format!("--sense-voice-model={}", model.display()));
+        cmd.arg("--sense-voice-use-itn=true");
     } else {
-        vec!["cpu"]
-    };
-
-    for (i, provider) in providers.iter().enumerate() {
-        let mut cmd = Command::new(&binary);
-
-        cmd.arg(format!("--silero-vad-model={}", vad_model.display()))
-            .arg(format!(
-                "--silero-vad-threshold={}",
-                cfg.vad.threshold
-            ))
-            .arg(format!(
-                "--silero-vad-min-silence-duration={}",
-                cfg.vad.min_silence_duration
-            ))
-            .arg(format!(
-                "--silero-vad-min-speech-duration={}",
-                cfg.vad.min_speech_duration
-            ))
-            .arg(format!(
-                "--silero-vad-max-speech-duration={}",
-                cfg.vad.max_speech_duration
-            ))
-            .arg(format!("--tokens={}", tokens.display()))
-            .arg(format!("--provider={}", provider))
-            .arg("--num-threads=2");
-
-        if cfg.local_model == "sensevoice" {
-            cmd.arg(format!("--sense-voice-model={}", model.display()));
-            cmd.arg("--sense-voice-use-itn=true");
-        } else {
-            cmd.arg(format!("--paraformer={}", model.display()));
-        }
-
-        cmd.arg(audio);
-
-        tracing::debug!("VAD+ASR 命令 (provider={}): {:?}", provider, cmd);
-
-        let output = match cmd.output() {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!("VAD+ASR 启动失败 (provider={}): {}", provider, e);
-                continue;
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if i < providers.len() - 1 {
-                tracing::warn!(
-                    "VAD+ASR provider={} 失败 ({}), 降级到 {}",
-                    provider,
-                    output.status,
-                    providers[i + 1]
-                );
-                if i == 0 {
-                    tracing::debug!("stderr: {}", stderr.trim());
-                }
-            } else {
-                bail!(
-                    "VAD+ASR provider={} 失败 ({}): {}",
-                    provider,
-                    output.status,
-                    stderr.trim()
-                );
-            }
-            continue;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        let segments = parse_vad_output(&stdout);
-        if !segments.is_empty() {
-            tracing::info!(
-                "VAD+ASR: {} 个片段 (provider={}, model={})",
-                segments.len(),
-                provider,
-                cfg.local_model
-            );
-            return Ok(segments);
-        }
-
-        tracing::warn!(
-            "VAD+ASR provider={} 输出为空或格式不符, 降级",
-            provider
-        );
+        cmd.arg(format!("--paraformer={}", model.display()));
     }
 
-    bail!("所有 provider 均失败，无法完成转写");
+    cmd.arg(audio);
+
+    let output = cmd.output()
+        .map_err(|e| anyhow::anyhow!("VAD+ASR 启动失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("VAD+ASR 失败 ({}): {}", output.status, stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let segments = parse_vad_output(&stdout);
+    if segments.is_empty() {
+        anyhow::bail!("VAD+ASR 输出为空");
+    }
+
+    tracing::info!("VAD+ASR: {} 个片段", segments.len());
+    Ok(segments)
 }
 
 fn parse_vad_output(stdout: &str) -> Vec<TranscriptSegment> {

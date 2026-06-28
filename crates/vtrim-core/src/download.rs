@@ -38,23 +38,8 @@ fn binary_url() -> String {
     }
 }
 
-fn gpu_binary_url() -> String {
-    let base = format!("https://github.com/k2-fsa/sherpa-onnx/releases/download/v{VERSION}");
-    if cfg!(target_os = "windows") {
-        format!("{base}/sherpa-onnx-v{VERSION}-win-x64-cuda.tar.bz2")
-    } else if cfg!(target_os = "linux") {
-        format!("{base}/sherpa-onnx-v{VERSION}-linux-x64-gpu.tar.bz2")
-    } else {
-        panic!("GPU binary not available for this platform");
-    }
-}
-
 fn model_download_url() -> &'static str {
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
-}
-
-pub fn sherpa_version() -> &'static str {
-    VERSION
 }
 
 pub fn cpu_binary_name() -> &'static str {
@@ -62,14 +47,6 @@ pub fn cpu_binary_name() -> &'static str {
         "sherpa-onnx-offline.exe"
     } else {
         "sherpa-onnx-offline"
-    }
-}
-
-fn gpu_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "sherpa-onnx-offline-gpu.exe"
-    } else {
-        "sherpa-onnx-offline-gpu"
     }
 }
 
@@ -83,10 +60,6 @@ fn vad_binary_name() -> &'static str {
 
 pub fn cpu_binary_path() -> PathBuf {
     vtrim_home().join("bin").join(cpu_binary_name())
-}
-
-pub fn gpu_binary_path() -> PathBuf {
-    vtrim_home().join("bin").join(gpu_binary_name())
 }
 
 pub fn vad_binary_path() -> PathBuf {
@@ -118,7 +91,6 @@ pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
 
 async fn download_binaries(target: &Path) -> Result<()> {
     download_cpu_binary(target).await?;
-    download_gpu_binary(target).await.ok();
     download_vad_model_inner().await?;
     Ok(())
 }
@@ -147,55 +119,6 @@ async fn download_cpu_binary(target: &Path) -> Result<()> {
     tokio::fs::remove_file(&archive_path).await.ok();
 
     set_executable(&target_path);
-    Ok(())
-}
-
-async fn download_gpu_binary(target: &Path) -> Result<()> {
-    let target_path = target.join(gpu_binary_name());
-    if target_path.exists() {
-        tracing::info!("sherpa-onnx GPU binary 已存在");
-        return Ok(());
-    }
-
-    if !cfg!(target_os = "windows") && !cfg!(target_os = "linux") {
-        tracing::warn!("此平台无 GPU binary 支持，跳过 GPU 下载");
-        return Ok(());
-    }
-
-    let url = gpu_binary_url();
-    tracing::info!("下载 sherpa-onnx GPU (v{VERSION})...");
-
-    let result = download_file(&url).await;
-    let bytes = match result {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("GPU binary 下载失败 ({}), 将仅使用 CPU", e);
-            return Ok(());
-        }
-    };
-
-    let archive_path = target.join("_gpu_sherpa-onnx.tar.bz2");
-    let mut file = tokio::fs::File::create(&archive_path)
-        .await
-        .context("创建临时 GPU 归档文件失败")?;
-    file.write_all(&bytes).await.context("写入临时 GPU 归档失败")?;
-    file.flush().await?;
-    drop(file);
-
-    tracing::info!("  解压 GPU binary + CUDA DLL...");
-    extract_all(&archive_path, target)?;
-    tokio::fs::remove_file(&archive_path).await.ok();
-
-    let cpu_bin = target.join(cpu_binary_name());
-    let gpu_bin = target.join(gpu_binary_name());
-    if cpu_bin.exists() {
-        if gpu_bin.exists() {
-            std::fs::remove_file(&gpu_bin)?;
-        }
-        std::fs::rename(&cpu_bin, &gpu_bin)?;
-        tracing::info!("  重命名为 {}", gpu_binary_name());
-    }
-    set_executable(&gpu_bin);
     Ok(())
 }
 
@@ -246,33 +169,6 @@ fn extract_binaries(archive: &Path, target: &Path) -> Result<()> {
 }
 
 /// Extract ALL files from a tar.bz2 archive (binaries + DLLs).
-fn extract_all(archive: &Path, target: &Path) -> Result<()> {
-    let file = std::fs::File::open(archive)?;
-    let decoder = bzip2::read::BzDecoder::new(file);
-    let mut archive_tar = tar::Archive::new(decoder);
-
-    for entry in archive_tar.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        if name.is_empty() || entry.header().entry_type().is_dir() {
-            continue;
-        }
-
-        let target_path = target.join(&name);
-        let mut outfile = std::fs::File::create(&target_path)?;
-        std::io::copy(&mut entry, &mut outfile)?;
-        tracing::info!("  解压: {}", name);
-    }
-
-    Ok(())
-}
-
 fn matches_name(name: &str, base: &str) -> bool {
     name == base || name == &format!("{}.exe", base)
 }
@@ -411,13 +307,12 @@ pub async fn ensure_models() -> Result<()> {
     let bin_dir = vtrim_home().join("bin");
     let model_path = vtrim_home().join("models").join("sensevoice");
 
-    let need_bin = !cpu_binary_path().exists() && !gpu_binary_path().exists();
+    let need_bin = !cpu_binary_path().exists();
     let need_model = !model_path.join("tokens.txt").exists();
 
     if need_bin {
         tracing::info!("下载 sherpa-onnx binary...");
         download_cpu_binary(&bin_dir).await?;
-        download_gpu_binary(&bin_dir).await.ok();
         download_vad_model_inner().await?;
     }
     if need_model {
