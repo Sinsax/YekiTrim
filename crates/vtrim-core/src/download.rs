@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
+use which::which;
 
 const VERSION: &str = "1.13.3";
 
@@ -196,7 +198,7 @@ async fn download_vad_model_inner() -> Result<()> {
 }
 
 async fn download_file(url: &str, part_path: &Path) -> Result<()> {
-    let existing = std::fs::metadata(part_path)
+    let mut existing = std::fs::metadata(part_path)
         .map(|m| m.len())
         .unwrap_or(0);
 
@@ -216,6 +218,7 @@ async fn download_file(url: &str, part_path: &Path) -> Result<()> {
     } else if status == StatusCode::OK {
         if existing > 0 {
             std::fs::remove_file(part_path).ok();
+            existing = 0;
         }
         resp.content_length().unwrap_or(0)
     } else if status == StatusCode::RANGE_NOT_SATISFIABLE {
@@ -360,5 +363,75 @@ pub async fn ensure_vad_ready() -> Result<()> {
     }
 
     tracing::info!("VAD 就绪: binary ✓,  VAD 模型 ✓");
+    Ok(())
+}
+
+/// 用系统 uv 创建虚拟环境并安装 spleeter
+pub async fn setup_spleeter(home: &Path) -> Result<()> {
+    let venv_dir = home.join("venv");
+    let uv = which("uv").context("请先安装 uv: https://docs.astral.sh/uv/#installation")?;
+
+    if venv_dir.join("pyvenv.cfg").exists() {
+        // 检查版本是否匹配
+        let version_ok = std::fs::read_to_string(venv_dir.join("pyvenv.cfg"))
+            .map(|c| c.contains("version = 3.10"))
+            .unwrap_or(false);
+        if version_ok {
+            tracing::info!("Spleeter 虚拟环境已存在，跳过创建");
+        } else {
+            tracing::warn!("虚拟环境 Python 版本不匹配，删除重建");
+            std::fs::remove_dir_all(&venv_dir).ok();
+        }
+    }
+
+    if !venv_dir.join("pyvenv.cfg").exists() {
+        tracing::info!("创建 Python 虚拟环境...");
+        let status = Command::new(&uv)
+            .args(["venv", "--python", "3.10"])
+            .arg(&venv_dir)
+            .status()
+            .context("uv venv 创建失败")?;
+        if !status.success() {
+            anyhow::bail!("创建虚拟环境失败");
+        }
+        tracing::info!("虚拟环境已创建");
+    }
+
+    // 检查 spleeter 是否已安装
+    let spleeter_check = if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts").join("spleeter.exe")
+    } else {
+        venv_dir.join("bin").join("spleeter")
+    };
+
+    if spleeter_check.exists() {
+        tracing::info!("Spleeter 已安装");
+        return Ok(());
+    }
+
+    let bar = indicatif::ProgressBar::new_spinner();
+    bar.set_style(
+        indicatif::ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+    );
+    bar.set_message("安装 spleeter (依赖较多，首次约 2-5 分钟)...");
+    bar.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let python_bin = if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts").join("python.exe")
+    } else {
+        venv_dir.join("bin").join("python3")
+    };
+    let status = Command::new(&uv)
+        .args(["pip", "install", "--python", python_bin.to_string_lossy().as_ref(), "spleeter", "numpy<2"])
+        .status()
+        .context("spleeter 安装失败")?;
+
+    bar.finish_and_clear();
+
+    if !status.success() {
+        anyhow::bail!("spleeter 安装失败");
+    }
     Ok(())
 }

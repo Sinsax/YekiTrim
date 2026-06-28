@@ -76,6 +76,8 @@ num_threads = 0
 chunk_duration = 60.0
 # 块间重叠(秒)
 chunk_overlap = 10.0
+# 人声分离: none / spleeter (需先 vtrim setup-spleeter)
+separation = "none"
 
 [detection.llm]
 # LLM 服务提供商
@@ -455,7 +457,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Config(action) => match action {
             ConfigAction::Init { path } => {
                 let out = path.clone().unwrap_or_else(|| {
-                    PathBuf::from(".vtrim").join("config.toml")
+                    vtrim_core::download::vtrim_home().join("config.toml")
                 });
                 if let Some(parent) = out.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -522,6 +524,51 @@ async fn main() -> anyhow::Result<()> {
         Command::DownloadModels { model: _ } => {
             tracing::info!("下载 SenseVoice 模型...");
             download::download_all(None).await?;
+        }
+
+        Command::SetupSpleeter => {
+            tracing::info!("安装 Spleeter 人声分离...");
+            let home = vtrim_core::download::vtrim_home();
+            vtrim_core::download::setup_spleeter(&home).await?;
+            tracing::info!("Spleeter 安装完成");
+        }
+
+        Command::Separate { input, output } => {
+            let cfg = load_cfg(global_config)?;
+            let input_path = match input {
+                Some(p) => p.clone(),
+                None => {
+                    let audio = cfg.audio_file
+                        .as_ref()
+                        .filter(|p| !p.is_empty())
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            let fallback = std::env::current_dir().unwrap_or_default()
+                                .join("output").join("audio_16khz.wav");
+                            if fallback.exists() { Some(fallback) } else { None }
+                        })
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "未指定输入文件，且未找到音频文件 (config.audio_file 或 output/audio_16khz.wav)"
+                        ))?;
+                    audio
+                }
+            };
+
+            let home = vtrim_core::download::vtrim_home();
+            let stem = input_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "audio".into());
+            let out_dir = output.clone().unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_default().join("output").join("separated")
+            });
+            match vtrim_core::asr::separate::separate(&input_path, &home, &out_dir, &stem) {
+                Ok(vocals) => {
+                    let _ = config::save_vocal_path(&vocals.to_string_lossy());
+                    tracing::info!("人声分离完成: {}", vocals.display());
+                }
+                Err(e) => anyhow::bail!("人声分离失败: {}", e),
+            }
         }
 
         Command::Version => {

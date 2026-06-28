@@ -154,7 +154,11 @@ pub async fn call(segments: &[TranscriptSegment], config: &LlmConfig) -> Result<
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("LLM 响应解析失败: {}", e);
-            let log_path = std::path::PathBuf::from("vtrim_llm_debug.log");
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{}.log", ts));
             if let Err(we) = std::fs::write(&log_path, content) {
                 tracing::warn!("无法写入调试日志: {}", we);
             } else {

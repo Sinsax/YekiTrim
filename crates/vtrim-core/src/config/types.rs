@@ -77,6 +77,8 @@ pub struct Config {
     #[serde(default)]
     pub events_file: Option<String>,
     #[serde(default)]
+    pub vocal_file: Option<String>,
+    #[serde(default)]
     pub current_stage: u32,
     #[serde(default)]
     pub audio: AudioConfig,
@@ -131,11 +133,14 @@ pub struct AsrConfig {
     pub chunk_duration: f64,
     #[serde(default = "default_chunk_overlap")]
     pub chunk_overlap: f64,
+    #[serde(default = "default_separation")]
+    pub separation: String,
 }
 
 fn default_num_threads() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
+fn default_separation() -> String { "none".into() }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -149,6 +154,7 @@ impl Default for AsrConfig {
             num_threads: default_num_threads(),
             chunk_duration: default_chunk_duration(),
             chunk_overlap: default_chunk_overlap(),
+            separation: default_separation(),
         }
     }
 }

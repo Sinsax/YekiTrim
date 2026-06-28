@@ -54,6 +54,9 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.chunk_overlap != 10.0 {
         base.asr.chunk_overlap = overlay.asr.chunk_overlap;
     }
+    if !overlay.asr.separation.is_empty() {
+        base.asr.separation = overlay.asr.separation;
+    }
     if overlay.asr.vad.threshold != 0.5 {
         base.asr.vad.threshold = overlay.asr.vad.threshold;
     }
@@ -120,6 +123,9 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.events_file.is_some() {
         base.events_file.clone_from(&overlay.events_file);
     }
+    if overlay.vocal_file.is_some() {
+        base.vocal_file.clone_from(&overlay.vocal_file);
+    }
 
     if !overlay.cutting.preserve_source {
         base.cutting.preserve_source = false;
@@ -171,6 +177,13 @@ pub fn load_current_stage() -> Result<u32> {
 pub fn save_current_stage(stage: u32) -> Result<()> {
     edit_toml(|doc| {
         doc["current_stage"] = toml_edit::value(stage as i64);
+    })
+}
+
+/// 用 toml_edit 将 vocal_file 写入 vtrim.toml
+pub fn save_vocal_path(path: &str) -> Result<()> {
+    edit_toml(|doc| {
+        doc["vocal_file"] = toml_edit::value(path);
     })
 }
 

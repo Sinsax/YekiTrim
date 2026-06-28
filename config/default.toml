@@ -16,6 +16,9 @@ audio_file = ""
 # 事件文件路径 (由 `vtrim detect-events` 自动写入)
 events_file = ""
 
+# 人声文件路径 (由 `vtrim separate` 自动写入)
+vocal_file = ""
+
 # 当前处理进度 (0=未开始, 1~5=各阶段编号, 由程序自动管理)
 current_stage = 0
 

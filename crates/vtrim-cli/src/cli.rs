@@ -111,11 +111,25 @@ pub enum Command {
         output: Option<PathBuf>,
     },
 
-    /// 下载 sherpa-onnx binary + 模型到 ~/.vtrim/
+    /// 下载 sherpa-onnx binary + 模型到 .vtrim/
     DownloadModels {
-        /// 模型类型 (仅 sensevoice)
+        /// 模型类型 (已忽略，仅下载 sensevoice)
         #[arg(long, default_value = "sensevoice")]
         model: String,
+    },
+
+    /// 安装 spleeter 人声分离到 .vtrim/venv/ (需 uv)
+    SetupSpleeter,
+
+    /// 人声分离 (需先 vtrim setup-spleeter)
+    Separate {
+        /// 输入音频文件 (默认使用 vtrim.toml 的 audio_file)
+        #[arg(required = false)]
+        input: Option<PathBuf>,
+
+        /// 输出目录 (默认 output/separated/)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 
     /// 显示版本信息

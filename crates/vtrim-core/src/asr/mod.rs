@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,6 +12,7 @@ use crate::types::{PipelineContext, Timestamp, Transcript, TranscriptSegment};
 mod chunk;
 mod cloud_asr;
 mod local;
+pub mod separate;
 
 pub struct Transcriber;
 
@@ -30,7 +31,7 @@ impl Stage for Transcriber {
     }
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
-        let audio_path = match &ctx.audio_path {
+        let mut audio_path = match &ctx.audio_path {
             Some(p) => p.clone(),
             None => {
                 let fallback = ctx.output_dir.join("audio_16khz.wav");
@@ -75,6 +76,34 @@ impl Stage for Transcriber {
             save_transcript_json(&transcript, &json_path)?;
             ctx.transcript = Some(transcript);
             return Ok(());
+        }
+
+        // BGM 人声分离
+        if ctx.config.asr.separation == "spleeter" {
+            // 优先使用已分离的人声文件
+            let existing = ctx.config.vocal_file.as_ref()
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+                .filter(|p| p.exists());
+
+            match existing {
+                Some(v) => {
+                    ctx.vocal_path = Some(v.clone());
+                    audio_path = v;
+                    tracing::info!("使用已有的人声文件: {}", audio_path.display());
+                }
+                None => {
+                    let sep_dir = ctx.output_dir.join("separated");
+                    match separate::separate(&audio_path, &crate::download::vtrim_home(), &sep_dir, &ctx.input_stem) {
+                        Ok(vocals) => {
+                            ctx.vocal_path = Some(vocals.clone());
+                            audio_path = vocals;
+                            tracing::info!("ASR 输入切换为人声文件: {}", audio_path.display());
+                        }
+                        Err(e) => tracing::warn!("人声分离失败，使用原音频: {}", e),
+                    }
+                }
+            }
         }
 
         local::ensure_ready(&ctx.config.asr)?;
@@ -362,6 +391,7 @@ pub fn write_srt(transcript: &Transcript, path: &Path) -> Result<()> {
     use std::io::Write;
 
     let mut f = std::fs::File::create(path)?;
+    f.write_all(b"\xEF\xBB\xBF")?;
     for (i, seg) in transcript.segments.iter().enumerate() {
         let start = Timestamp::from_seconds(seg.start);
         let end = Timestamp::from_seconds(seg.end);
