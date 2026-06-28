@@ -7,3 +7,5 @@ target
 /models
 /.vtrim
 /.venv
+/title_llm
+vtrim.toml

@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/vtrim-core", "crates/vtrim-cli"]
+resolver = "2"

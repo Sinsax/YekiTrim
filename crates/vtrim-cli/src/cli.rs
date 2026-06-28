@@ -1,0 +1,145 @@
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "vtrim", version, about = "直播录像自动切片工具")]
+pub struct Cli {
+    /// 配置文件路径 (默认 ./vtrim.toml)
+    #[arg(short, long, global = true)]
+    pub config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// 初始化视频工程 (创建 vtrim.toml 并记录视频路径)
+    Init {
+        /// 输入视频文件
+        input: PathBuf,
+
+        /// 弹幕文件 (可选)
+        #[arg(long)]
+        danmaku: Option<PathBuf>,
+
+        /// 输出目录 (默认 ./output)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// 配置文件路径 (默认 ./vtrim.toml)
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+
+    /// 全自动管线处理（无视 state，从头跑到尾）
+    Process {
+        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+
+        /// 输出目录
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// 指定运行阶段 (逗号分隔)
+        #[arg(long, value_delimiter = ',', default_value = "audio,transcribe,detect,cut")]
+        stages: Vec<String>,
+
+        /// 仅分析不剪切（运行到 detect 为止）
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// 仅语音转文字 (Stage 3, 本地 sherpa-onnx)
+    Transcribe {
+        /// 输入音频/视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+
+        /// 输出目录
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// ASR 后端 (local / bcut / kuaishou), 会同步写入 vtrim.toml
+        #[arg(long)]
+        backend: Option<String>,
+    },
+
+    /// 仅事件检测 (Stage 4)
+    DetectEvents {
+        /// 转录结果 JSON 文件 (默认自动从输出目录发现)
+        #[arg(short, long)]
+        transcript: Option<PathBuf>,
+    },
+
+    /// 仅剪切 (Stage 5)
+    Cut {
+        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+
+        /// 事件 JSON 文件 (默认自动从输出目录发现)
+        #[arg(short, long)]
+        events: Option<PathBuf>,
+
+        /// 输出目录
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// 显示当前处理进度
+    Status,
+
+    /// 配置管理
+    #[command(subcommand)]
+    Config(ConfigAction),
+
+    /// 移除已输出视频中的长静音段（重编码）
+    SilenceRemove {
+        /// 要处理的视频文件（默认扫描 output/clips/）
+        #[arg(required = false)]
+        files: Vec<PathBuf>,
+
+        /// 静音阈值(秒)，超过此时长的连续静音将被移除
+        #[arg(long, default_value_t = 2.0)]
+        duration: f64,
+
+        /// 输出目录 (默认 output/clips_cleaned/)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// 下载 sherpa-onnx binary + 模型到 ~/.vtrim/
+    DownloadModels {
+        /// 模型类型 (仅 sensevoice)
+        #[arg(long, default_value = "sensevoice")]
+        model: String,
+    },
+
+    /// 显示版本信息
+    Version,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigAction {
+    /// 生成默认配置文件 (不带视频路径)
+    Init {
+        /// 输出路径 (默认 ./vtrim.toml)
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// 显示当前配置
+    Show,
+}
+
+pub fn stage_name(num: u32) -> &'static str {
+    match num {
+        1 => "AudioExtractor",
+        3 => "Transcriber",
+        4 => "EventDetector",
+        5 => "Cutter",
+        _ => "Unknown",
+    }
+}
