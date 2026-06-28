@@ -10,9 +10,9 @@ const VERSION: &str = "1.13.3";
 
 pub fn vtrim_home() -> PathBuf {
     std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .expect("无法获取可执行文件路径")
+        .parent()
+        .expect("可执行文件路径异常")
         .join(".vtrim")
 }
 
@@ -366,8 +366,17 @@ pub async fn ensure_vad_ready() -> Result<()> {
     Ok(())
 }
 
-/// 用系统 uv 创建虚拟环境并安装 spleeter
+fn extract_targz(archive: &Path, target: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive)?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive_tar = tar::Archive::new(decoder);
+    archive_tar.unpack(target)
+        .with_context(|| format!("解压 {} 到 {} 失败", archive.display(), target.display()))
+}
+
+/// 用系统 uv 创建虚拟环境并安装 spleeter，然后预下载模型
 pub async fn setup_spleeter(home: &Path) -> Result<()> {
+    tracing::info!("Spleeter 安装目录: {}", home.display());
     let venv_dir = home.join("venv");
     let uv = which("uv").context("请先安装 uv: https://docs.astral.sh/uv/#installation")?;
 
@@ -397,41 +406,70 @@ pub async fn setup_spleeter(home: &Path) -> Result<()> {
         tracing::info!("虚拟环境已创建");
     }
 
-    // 检查 spleeter 是否已安装
-    let spleeter_check = if cfg!(target_os = "windows") {
+    let spleeter_bin = if cfg!(target_os = "windows") {
         venv_dir.join("Scripts").join("spleeter.exe")
     } else {
         venv_dir.join("bin").join("spleeter")
     };
 
-    if spleeter_check.exists() {
+    // 检查 spleeter 是否已安装
+    if !spleeter_bin.exists() {
+        let bar = indicatif::ProgressBar::new_spinner();
+        bar.set_style(
+            indicatif::ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap()
+        );
+        bar.set_message("安装 spleeter (依赖较多，首次约 2-5 分钟)...");
+        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+
+        let python_bin = if cfg!(target_os = "windows") {
+            venv_dir.join("Scripts").join("python.exe")
+        } else {
+            venv_dir.join("bin").join("python3")
+        };
+        let status = Command::new(&uv)
+            .args(["pip", "install", "--python", python_bin.to_string_lossy().as_ref(), "spleeter", "numpy<2"])
+            .status()
+            .context("spleeter 安装失败")?;
+
+        bar.finish_and_clear();
+
+        if !status.success() {
+            anyhow::bail!("spleeter 安装失败");
+        }
+    } else {
         tracing::info!("Spleeter 已安装");
+    }
+
+    // 预下载 pretrained_models: 直接下载 2stems 模型归档
+    let cache_dir = home.join("pretrained_models");
+    let model_dir = cache_dir.join("2stems");
+    tracing::info!("Spleeter 模型目录: {}", model_dir.display());
+
+    if model_dir.join("checkpoint").exists() {
+        tracing::info!("Spleeter 2stems 模型已存在");
         return Ok(());
     }
 
-    let bar = indicatif::ProgressBar::new_spinner();
-    bar.set_style(
-        indicatif::ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap()
-    );
-    bar.set_message("安装 spleeter (依赖较多，首次约 2-5 分钟)...");
-    bar.enable_steady_tick(std::time::Duration::from_millis(100));
+    let url = "https://github.com/deezer/spleeter/releases/download/v1.4.0/2stems.tar.gz";
+    let archive_path = cache_dir.join("2stems.tar.gz");
+    let part_path = cache_dir.join("2stems.tar.gz.part");
 
-    let python_bin = if cfg!(target_os = "windows") {
-        venv_dir.join("Scripts").join("python.exe")
-    } else {
-        venv_dir.join("bin").join("python3")
-    };
-    let status = Command::new(&uv)
-        .args(["pip", "install", "--python", python_bin.to_string_lossy().as_ref(), "spleeter", "numpy<2"])
-        .status()
-        .context("spleeter 安装失败")?;
+    tracing::info!("下载 Spleeter 2stems 模型...");
+    tokio::fs::create_dir_all(&cache_dir).await?;
+    download_file(url, &part_path).await?;
+    tokio::fs::rename(&part_path, &archive_path).await
+        .context("重命名模型归档失败")?;
 
-    bar.finish_and_clear();
+    tracing::info!("解压模型...");
+    std::fs::create_dir_all(&model_dir)?;
+    extract_targz(&archive_path, &cache_dir)?;
+    // spleeter 通过 .probe 文件判断模型已就绪，避免重复下载
+    let probe_path = model_dir.join(".probe");
+    std::fs::write(&probe_path, "OK")?;
+    tokio::fs::remove_file(&archive_path).await.ok();
 
-    if !status.success() {
-        anyhow::bail!("spleeter 安装失败");
-    }
+    tracing::info!("Spleeter 预训练模型已下载到 {}", model_dir.display());
     Ok(())
 }
