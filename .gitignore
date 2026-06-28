@@ -1,0 +1,9 @@
+target
+*.mp4
+*.ass
+*.wav
+*.srt
+/output
+/models
+/.vtrim
+/.venv
