@@ -69,6 +69,14 @@ overwrite = false
 const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局配置
 # 设置后所有工程共享此配置
 
+[asr]
+# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
+num_threads = 0
+# 每块长度(秒)
+chunk_duration = 60.0
+# 块间重叠(秒)
+chunk_overlap = 10.0
+
 [detection.llm]
 # LLM 服务提供商
 provider = "openai"

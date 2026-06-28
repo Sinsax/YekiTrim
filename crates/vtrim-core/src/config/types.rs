@@ -125,7 +125,17 @@ pub struct AsrConfig {
     pub min_chunk_secs: f64,
     #[serde(default)]
     pub vad: VadConfig,
+    #[serde(default = "default_num_threads")]
+    pub num_threads: u32,
+    #[serde(default = "default_chunk_duration")]
+    pub chunk_duration: f64,
+    #[serde(default = "default_chunk_overlap")]
+    pub chunk_overlap: f64,
 }
+
+fn default_num_threads() -> u32 { 0 }
+fn default_chunk_duration() -> f64 { 60.0 }
+fn default_chunk_overlap() -> f64 { 10.0 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -136,6 +146,9 @@ impl Default for AsrConfig {
             local_model_dir: String::new(),
             min_chunk_secs: default_min_chunk_secs(),
             vad: VadConfig::default(),
+            num_threads: default_num_threads(),
+            chunk_duration: default_chunk_duration(),
+            chunk_overlap: default_chunk_overlap(),
         }
     }
 }

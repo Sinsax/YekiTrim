@@ -153,11 +153,13 @@ pub async fn call(segments: &[TranscriptSegment], config: &LlmConfig) -> Result<
     let json_value = match parse_json(content) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(
-                "LLM 响应解析失败: {}. 原始内容(前500字): {}",
-                e,
-                content.chars().take(500).collect::<String>()
-            );
+            tracing::warn!("LLM 响应解析失败: {}", e);
+            let log_path = std::path::PathBuf::from("vtrim_llm_debug.log");
+            if let Err(we) = std::fs::write(&log_path, content) {
+                tracing::warn!("无法写入调试日志: {}", we);
+            } else {
+                tracing::warn!("完整响应已保存到: {}", log_path.display());
+            }
             return Err(e);
         }
     };

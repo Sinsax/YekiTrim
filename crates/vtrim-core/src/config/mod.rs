@@ -45,6 +45,15 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.min_chunk_secs != 15.0 {
         base.asr.min_chunk_secs = overlay.asr.min_chunk_secs;
     }
+    if overlay.asr.num_threads != 0 {
+        base.asr.num_threads = overlay.asr.num_threads;
+    }
+    if overlay.asr.chunk_duration != 60.0 {
+        base.asr.chunk_duration = overlay.asr.chunk_duration;
+    }
+    if overlay.asr.chunk_overlap != 10.0 {
+        base.asr.chunk_overlap = overlay.asr.chunk_overlap;
+    }
     if overlay.asr.vad.threshold != 0.5 {
         base.asr.vad.threshold = overlay.asr.vad.threshold;
     }

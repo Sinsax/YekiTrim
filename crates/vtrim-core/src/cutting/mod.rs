@@ -96,10 +96,12 @@ impl Stage for Cutter {
         std::fs::write(&publish_path, &json).context("写入 publish_config.json 失败")?;
         tracing::info!("发布配置已保存: {}", publish_path.display());
 
-        // 写入播放顺序文件
+        // 按弹幕热度排序写入
         let order_path = clips_dir.join("clips_order.txt");
-        let order_lines: Vec<String> = ctx.events.iter().map(|ev| {
-            format!("{}", sanitize_label(&ev.label))
+        let mut order_events: Vec<_> = ctx.events.iter().collect();
+        order_events.sort_by(|a, b| b.popularity.partial_cmp(&a.popularity).unwrap());
+        let order_lines: Vec<String> = order_events.iter().map(|ev| {
+            sanitize_label(&ev.label)
         }).collect();
         std::fs::write(&order_path, order_lines.join("\n"))
             .context("写入 clips_order.txt 失败")?;

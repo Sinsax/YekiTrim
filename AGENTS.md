@@ -28,7 +28,7 @@ vtrim detect-events [-t <transcript>]    # Stage 4 (自动发现: 参数 > confi
 vtrim cut [-i] [-e <events>] [-o]        # Stage 5 (自动发现: 参数 > output_dir/{stem}_events.json)
 vtrim silence-remove [files...]          # 对已输出 clips 移除长静音段 (重编码)
        [--duration 2.0] [-o <dir>]      # 默认扫描 output/clips/, 输出到 output/clips_cleaned/
-vtrim download-models [--model]          # sherpa-onnx binary + 模型 → .vtrim/
+vtrim download-models                    # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
 vtrim status
 vtrim config init [--path]
 vtrim config show
@@ -56,34 +56,52 @@ vtrim version
 两层合并: `vtrim.toml` (项目) → `.vtrim/config.toml` (程序, 后加载覆盖前者)。无环境变量。
 
 `vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/backend/VAD/检测参数/剪切参数）。
-`vtrim config init` 生成 `.vtrim/config.toml`（`[detection.llm]` 跨工程共享）。
+`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection.llm]` 跨工程共享）。
 
-关键字段:
-
+**`vtrim.toml`** — 项目配置:
 ```toml
-# vtrim.toml
 input_file = ""
 danmaku_file = ""
-transcript_file = ""      # vtrim transcribe 自动写入
-audio_file = ""            # vtrim init 自动写入
-events_file = ""           # vtrim detect-events 自动写入
+transcript_file = ""
+audio_file = ""
+events_file = ""
 current_stage = 0
+
+[asr]
+backend = "local"
+
+[asr.vad]
+threshold = 0.5
+min_silence_duration = 0.5
+min_speech_duration = 0.25
+max_speech_duration = 20.0
 
 [detection]
 danmaku_window_secs = 10
+silence_threshold_secs = 3.0
+min_segment_secs = 30
+max_segment_secs = 900
 
 [cutting]
+preserve_source = true
+max_parallel = 4
 output_dir = "./output"
+overwrite = false
 ```
 
+**`.vtrim/config.toml`** — 全局程序配置:
 ```toml
-# .vtrim/config.toml  (仅 detection.llm)
+[asr]
+num_threads = 0              # 0=CPU/4取整上限4, N=指定并行数
+chunk_duration = 60.0        # 每块秒数
+chunk_overlap = 10.0         # 块间重叠秒数
+
 [detection.llm]
 api_key = ""
-api_base = ""             # 留空=OpenAI, DeepSeek="https://api.deepseek.com/v1"
+api_base = ""                # 留空=OpenAI
 model = "gpt-4o-mini"
 temperature = 0.1
-max_tokens = 4096
+max_tokens = 16384
 batch_size = 25
 batch_overlap = 3
 ```
@@ -99,9 +117,10 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/audio_16khz.wav`
 
 ### Transcriber
-- 本地 sherpa-onnx-offline (Paraformer/SenseVoice/FunASR-nano, CPU/GPU 自动降级)
+- 本地 sherpa-onnx-offline (SenseVoice, CPU only, GPU 已移除)
 - 云端 Bcut(B站) / 快手 ASR API (无 key 要求)
-- 60s 定长分块 + 10s 重叠
+- 可配置定长分块 (默认 60s + 10s 重叠)
+- 并行转写: 默认 CPU/4 路并行 (上限 4)，每 chunk intra-op threads=2
 - 输出: `{stem}.srt` + `{stem}_transcript.json`，自动写 `transcript_file` 到 vtrim.toml
 
 ### EventDetector
@@ -113,16 +132,11 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - 输出: `{stem}_events.json`
 
 ### Cutter
-- 单线程 ffmpeg `-c copy -map 0 -avoid_negative_ts make_zero`
-- `ffmpeg -ss {start} -i {input} -t {duration} -c copy -map 0 -avoid_negative_ts make_zero {output}`
-- 命名: `{rank:03}_{label}.mp4` → `output/clips/`
-- 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `{rank:03}_{label}.srt`
-- 输出: `output/publish_config.json`
-
-## Cutter 未使用的配置字段
-
-- `cutting.preserve_source` — 始终 `-c copy`，设 false 也没用
-- `cutting.max_parallel` — 单线程，忽略此值
+- GPU 加速编码 (NVENC/QSV/AMF 自动检测, 降级 libx264)
+- `ffmpeg -ss {start} -i {input} -t {duration} -c:v {auto_encoder} -preset {auto_preset} {qparam} 23 -pix_fmt yuv420p -c:a aac -movflags +faststart {output}`
+- 命名: `{label}.mp4` → `output/clips/` (无编号前缀)
+- 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `{label}.srt`
+- 输出: `output/publish_config.json` + `output/clips/clips_order.txt`
 
 ## PipelineContext 中的未使用字段
 
@@ -131,12 +145,17 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 ## 开发
 
 ```bash
-cargo build                    # 4 dead_code + 1 unused_mut (均为预存在)
+cargo build                    # 0 warnings
 cargo test --lib danmaku       # ASS 解析 + 密度计算测试
 cargo run -- status            # 查看当前进度
 ```
 
 前置条件: `ffmpeg` + `ffprobe` 在 PATH 中。
+
+## 未使用的配置字段
+
+- `cutting.preserve_source` — Cutter 用硬件编码重编码，此字段无效
+- `cutting.max_parallel` — Cutter 单线程，忽略此值
 
 ### 新增配置字段步骤
 
@@ -157,8 +176,8 @@ cargo run -- status            # 查看当前进度
 | `vtrim-core/src/config/mod.rs` | 两源合并 + toml_edit |
 | `vtrim-core/src/config/types.rs` | Config 类型定义 + Default impl |
 | `vtrim-core/src/types/mod.rs` | Event, PipelineContext, Transcript |
-| `vtrim-core/src/download.rs` | 模型/binary 下载到 .vtrim/ |
-| `vtrim-core/src/asr/local.rs` | sherpa-onnx CLI (CPU/GPU 降级) |
+| `vtrim-core/src/download.rs` | 模型/binary 下载 + 断点续传 |
+| `vtrim-core/src/asr/local.rs` | sherpa-onnx CLI (CPU only) |
 | `vtrim-core/src/asr/cloud_asr.rs` | Bcut/快手 ASR |
 | `vtrim-core/src/detection/llm.rs` | LLM prompt + API |
 | `vtrim-core/src/detection/mod.rs` | EventDetector + 弹幕热度 |

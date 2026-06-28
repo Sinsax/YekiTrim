@@ -1,7 +1,9 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use anyhow::Result;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_TRANSCRIBE};
@@ -10,10 +12,6 @@ use crate::types::{PipelineContext, Timestamp, Transcript, TranscriptSegment};
 mod chunk;
 mod cloud_asr;
 mod local;
-
-/// Effective duration per chunk
-const EFFECTIVE_DUR: f64 = 60.0;
-const OVERLAP: f64 = 10.0;
 
 pub struct Transcriber;
 
@@ -81,47 +79,92 @@ impl Stage for Transcriber {
 
         local::ensure_ready(&ctx.config.asr)?;
 
+        let chunk_duration = ctx.config.asr.chunk_duration;
+        let chunk_overlap = ctx.config.asr.chunk_overlap;
         let temp_dir = std::env::temp_dir().join("vtrim_asr");
-        let chunk_dur = EFFECTIVE_DUR + OVERLAP;
 
         let chunks = chunk::split_fixed_with_overlap(
             &audio_path,
             total_duration,
-            chunk_dur,
-            OVERLAP,
+            chunk_duration + chunk_overlap,
+            chunk_overlap,
             &temp_dir,
         )?;
         tracing::info!(
             "音频分割为 {} 个 {:.0}s 分块 (+{:.0}s 重叠)",
             chunks.len(),
-            EFFECTIVE_DUR,
-            OVERLAP
+            chunk_duration,
+            chunk_overlap
         );
 
         let total = chunks.len();
-        ctx.progress.stage_progress(0, total as u64);
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get()).unwrap_or(4);
+        let max_parallel = {
+            let cfg = ctx.config.asr.num_threads;
+            if cfg == 0 { ((cpu_count + 3) / 4).min(4) } else { (cfg as usize).min(cpu_count).max(1) }
+        };
+        tracing::info!("并行转写: {} 线程", max_parallel);
 
+        ctx.progress.stage_progress(0, total as u64);
+        let sem = Arc::new(Semaphore::new(max_parallel));
+        let config = Arc::new(ctx.config.clone());
+
+        let mut set: tokio::task::JoinSet<(usize, f64, Result<Vec<TranscriptSegment>>)> = tokio::task::JoinSet::new();
         let mut all_segments: Vec<TranscriptSegment> = Vec::new();
-        for (i, chunk) in chunks.iter().enumerate() {
-            let result = local::transcribe(&chunk.path, &ctx.config.asr, chunk.offset);
-            match result {
-                Ok(segs) => {
-                    for seg in segs {
-                        if i < total - 1 {
-                            let effective_end = chunk.offset + EFFECTIVE_DUR;
-                            let mid = (seg.start + seg.end) / 2.0;
-                            if mid >= effective_end {
-                                continue;
+        let mut submitted = 0usize;
+        let mut completed = 0usize;
+
+        // 先提交 max_parallel 个
+        while submitted < max_parallel.min(total) {
+            let permit = sem.clone().acquire_owned().await?;
+            let cfg = config.clone();
+            let path = chunks[submitted].path.clone();
+            let offset = chunks[submitted].offset;
+            let idx = submitted;
+            set.spawn_blocking(move || {
+                let _permit = permit;
+                (idx, offset, local::transcribe(&path, &cfg.asr, offset))
+            });
+            submitted += 1;
+        }
+
+        // 循环：完成一个 → 处理结果 → 提下一个
+        while completed < total {
+            if let Some(res) = set.join_next().await {
+                match res {
+                    Ok((i, offset, Ok(segs))) => {
+                        for seg in segs {
+                            if i < total - 1 {
+                                let effective_end = offset + chunk_duration;
+                                let mid = (seg.start + seg.end) / 2.0;
+                                if mid >= effective_end { continue; }
                             }
+                            all_segments.push(seg);
                         }
-                        all_segments.push(seg);
+                    }
+                    Ok((i, _, Err(e))) => {
+                        tracing::warn!("分块 {}/{} 转写失败: {}", i + 1, total, e);
+                    }
+                    Err(e) => {
+                        tracing::warn!("并行任务失败: {}", e);
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("分块 {}/{} 转写失败: {}", i + 1, total, e);
-                }
+                completed += 1;
+                ctx.progress.stage_progress(completed as u64, total as u64);
             }
-            ctx.progress.stage_progress((i + 1) as u64, total as u64);
+            if submitted < total {
+                let permit = sem.clone().acquire_owned().await?;
+                let cfg = config.clone();
+                let path = chunks[submitted].path.clone();
+                let offset = chunks[submitted].offset;
+                let idx = submitted;
+                set.spawn_blocking(move || {
+                    let _permit = permit;
+                    (idx, offset, local::transcribe(&path, &cfg.asr, offset))
+                });
+                submitted += 1;
+            }
         }
 
         all_segments.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());

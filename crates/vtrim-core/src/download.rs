@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
 
-const VERSION: &str = "1.14.0";
+const VERSION: &str = "1.13.3";
 
 pub fn vtrim_home() -> PathBuf {
     std::env::current_exe()
@@ -105,14 +106,11 @@ async fn download_cpu_binary(target: &Path) -> Result<()> {
     }
 
     tracing::info!("下载 sherpa-onnx CPU (v{VERSION})...");
-    let bytes = download_file(&url).await?;
     let archive_path = target.join("_sherpa-onnx.tar.bz2");
-    let mut file = tokio::fs::File::create(&archive_path)
-        .await
-        .context("创建临时归档文件失败")?;
-    file.write_all(&bytes).await.context("写入临时归档失败")?;
-    file.flush().await?;
-    drop(file);
+    let part_path = target.join("_sherpa-onnx.tar.bz2.part");
+    download_file(&url, &part_path).await?;
+    tokio::fs::rename(&part_path, &archive_path).await
+        .context("重命名临时文件失败")?;
 
     tracing::info!("  解压 binary...");
     extract_binaries(&archive_path, target)?;
@@ -188,31 +186,46 @@ async fn download_vad_model_inner() -> Result<()> {
 
     let url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad_v5.onnx";
     tracing::info!("下载 Silero VAD 模型 ({})...", vad_path.display());
-    let bytes = download_file(url).await?;
-    let mut file = tokio::fs::File::create(&vad_path)
-        .await
-        .context("创建 VAD 模型文件失败")?;
-    file.write_all(&bytes).await.context("写入 VAD 模型失败")?;
-    file.flush().await?;
+    let part_path = vad_path.with_extension("onnx.part");
+    download_file(url, &part_path).await?;
+    tokio::fs::rename(&part_path, &vad_path).await
+        .context("重命名 VAD 模型文件失败")?;
 
     tracing::info!("  VAD 模型: {}", vad_path.display());
     Ok(())
 }
 
-async fn download_file(url: &str) -> Result<Vec<u8>> {
+async fn download_file(url: &str, part_path: &Path) -> Result<()> {
+    let existing = std::fs::metadata(part_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     let client = reqwest::Client::new();
-    let resp = client
-        .get(url)
+    let mut req = client.get(url);
+    if existing > 0 {
+        req = req.header("Range", format!("bytes={}-", existing));
+    }
+    let resp = req
         .send()
         .await
         .with_context(|| format!("下载失败: {url}"))?;
 
-    if !resp.status().is_success() {
-        bail!("下载返回 {} ({url})", resp.status());
-    }
+    let status = resp.status();
+    let total = if status == StatusCode::PARTIAL_CONTENT {
+        existing + resp.content_length().unwrap_or(0)
+    } else if status == StatusCode::OK {
+        if existing > 0 {
+            std::fs::remove_file(part_path).ok();
+        }
+        resp.content_length().unwrap_or(0)
+    } else if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        return Ok(());
+    } else {
+        bail!("下载返回 {} ({url})", status);
+    };
 
-    let total = resp.content_length().unwrap_or(0);
-    let bar = indicatif::ProgressBar::new(total);
+    let bar = indicatif::ProgressBar::new(total.max(existing));
+    bar.set_position(existing);
     bar.set_style(
         indicatif::ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
@@ -220,15 +233,22 @@ async fn download_file(url: &str) -> Result<Vec<u8>> {
             .progress_chars("##-"),
     );
 
-    let mut bytes = Vec::with_capacity(total as usize);
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(existing > 0)
+        .open(part_path)
+        .await
+        .with_context(|| format!("创建临时文件失败: {}", part_path.display()))?;
+
     let mut stream = resp;
     while let Some(chunk) = stream.chunk().await? {
+        file.write_all(&chunk).await?;
         bar.inc(chunk.len() as u64);
-        bytes.extend_from_slice(&chunk);
     }
 
     bar.finish_and_clear();
-    Ok(bytes)
+    Ok(())
 }
 
 async fn download_model(target: &Path) -> Result<()> {
@@ -240,15 +260,11 @@ async fn download_model(target: &Path) -> Result<()> {
     let url = model_download_url();
     tracing::info!("下载 SenseVoice 模型...");
 
-    let bytes = download_file(url).await?;
-
     let archive_path = target.join("_model.tar.bz2");
-    let mut file = tokio::fs::File::create(&archive_path)
-        .await
-        .context("创建临时模型文件失败")?;
-    file.write_all(&bytes).await.context("写入临时模型文件失败")?;
-    file.flush().await?;
-    drop(file);
+    let part_path = target.join("_model.tar.bz2.part");
+    download_file(url, &part_path).await?;
+    tokio::fs::rename(&part_path, &archive_path).await
+        .context("重命名临时模型文件失败")?;
 
     tracing::info!("  解压模型...");
     extract_model_tarbz2(&archive_path, target)?;

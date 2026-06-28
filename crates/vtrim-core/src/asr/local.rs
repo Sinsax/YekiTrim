@@ -86,7 +86,7 @@ fn run_sherpa(
 ) -> Result<Option<Vec<TranscriptSegment>>> {
     let mut cmd = Command::new(binary);
     cmd.arg(format!("--tokens={}", tokens.display()));
-    cmd.arg("--num-threads=4");
+    cmd.arg("--num-threads=2");
     cmd.arg(format!("--sense-voice-model={}", model.display()));
     cmd.arg("--sense-voice-use-itn=true");
     cmd.arg(audio);
