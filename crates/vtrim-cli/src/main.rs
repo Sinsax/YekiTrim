@@ -30,8 +30,8 @@ max_tokens = 16384
 [asr]
 # CPU 并行转写线程数 (0=CPU/4取整, 上限4)
 num_threads = 0
-# 音频分块长度(秒) — 0=Silero VAD 自动分割
-chunk_duration = 0
+# 音频分块长度(秒)
+chunk_duration = 60
 # 块间重叠(秒，仅固定分块模式有效)
 chunk_overlap = 10.0
 # LLM 订正转录文本（需配置 [llm]）
@@ -149,6 +149,15 @@ fn resolve_input(cfg: &Config, cli_input: &Option<PathBuf>) -> anyhow::Result<Pa
     anyhow::bail!(
         "未指定输入文件。请提供 -i <视频路径>，或先运行 `vtrim init <video>` 初始化工程"
     );
+}
+
+fn resolve_output(cfg: &Config, cli_output: &Option<PathBuf>) -> PathBuf {
+    cli_output.clone().unwrap_or_else(|| {
+        let dir = cfg.cutting.output_dir.trim_start_matches("./").trim_start_matches(".\\");
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(dir)
+    })
 }
 
 fn load_cfg(
@@ -290,11 +299,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Extract { input, output } => {
             let cfg = load_cfg(global_config)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output_dir = output.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(&cfg.cutting.output_dir)
-            });
+            let output_dir = resolve_output(&cfg, output);
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output_dir);
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
@@ -316,11 +321,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let cfg = load_cfg(global_config)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output = output_dir.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(&cfg.cutting.output_dir)
-            });
+            let output = resolve_output(&cfg, output_dir);
 
             let current = config::load_current_stage()?;
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output.clone());
@@ -473,11 +474,7 @@ async fn main() -> anyhow::Result<()> {
             let current = config::load_current_stage()?;
             check_stage(2, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output = output.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(&cfg.cutting.output_dir)
-            });
+            let output = resolve_output(&cfg, output);
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output);
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
@@ -500,9 +497,7 @@ async fn main() -> anyhow::Result<()> {
             check_stage(3, current, &cfg)?;
 
             let input_path = resolve_input(&cfg, &None)?;
-            let output_dir = std::env::current_dir()
-                .unwrap_or_default()
-                .join(&cfg.cutting.output_dir);
+            let output_dir = resolve_output(&cfg, &None);
 
             // 优先级: --transcript 参数 > config.project.transcript_file > 自动发现
             let transcript_path = transcript
@@ -571,11 +566,7 @@ async fn main() -> anyhow::Result<()> {
             let current = config::load_current_stage()?;
             check_stage(4, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output_dir = output.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join(&cfg.cutting.output_dir)
-            });
+            let output_dir = resolve_output(&cfg, output);
 
             let events_path = events
                 .clone()
@@ -718,9 +709,7 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Correct { transcript } => {
             let cfg = load_cfg(global_config)?;
-            let output_dir = std::env::current_dir()
-                .unwrap_or_default()
-                .join(&cfg.cutting.output_dir);
+            let output_dir = resolve_output(&cfg, &None);
 
             let transcript_path = transcript
                 .clone()

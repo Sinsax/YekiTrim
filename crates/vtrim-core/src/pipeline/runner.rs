@@ -88,8 +88,8 @@ impl PipelineRunner {
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
-            ctx.progress.stage_completed(name);
             tracing::info!("[{}] completed", name);
+            ctx.progress.stage_completed(name);
 
             if num > current {
                 config::save_current_stage(num)?;
@@ -113,8 +113,8 @@ impl PipelineRunner {
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
-            ctx.progress.stage_completed(name);
             tracing::info!("[{}] completed", name);
+            ctx.progress.stage_completed(name);
         }
 
         config::save_current_stage(STAGE_CUT)?;
@@ -155,8 +155,8 @@ impl PipelineRunner {
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
-            ctx.progress.stage_completed(name);
             tracing::info!("[{}] completed", name);
+            ctx.progress.stage_completed(name);
 
             if num > current {
                 config::save_current_stage(num)?;
