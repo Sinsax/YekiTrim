@@ -45,7 +45,7 @@ impl Stage for Cutter {
         let full_transcript = if srt_path.exists() {
             let content = std::fs::read_to_string(&srt_path)
                 .context("读取字幕文件失败")?;
-            Some(crate::asr::parse_srt(&content)?)
+            Some(crate::srt::parse_srt(&content)?)
         } else {
             None
         };
@@ -186,7 +186,7 @@ fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> 
 /// `duration` 为连续静音秒数阈值，超过此长度的静音段将被移除。
 pub fn detect_silence_from_srt(srt_path: &Path, threshold: f64) -> Result<Vec<(f64, f64)>> {
     let content = std::fs::read_to_string(srt_path)?;
-    let transcript = crate::asr::parse_srt(&content)?;
+    let transcript = crate::srt::parse_srt(&content)?;
     let segs = &transcript.segments;
 
     if segs.len() < 2 {
@@ -345,7 +345,7 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Opti
 
 pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) -> Result<()> {
     let content = std::fs::read_to_string(input)?;
-    let mut transcript = crate::asr::parse_srt(&content)?;
+    let mut transcript = crate::srt::parse_srt(&content)?;
 
     for seg in &mut transcript.segments {
         for (s, e) in silence_segments {
@@ -378,7 +378,7 @@ pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) 
         seg.start < seg.end
     });
 
-    crate::asr::write_srt(&transcript, output).context("写入调整后字幕失败")
+    crate::srt::write_srt(&transcript, output).context("写入调整后字幕失败")
 }
 
 fn generate_clip_subtitle(
@@ -408,7 +408,7 @@ fn generate_clip_subtitle(
         language: transcript.language.clone(),
     };
 
-    crate::asr::write_srt(&clip_transcript, output)
+    crate::srt::write_srt(&clip_transcript, output)
         .context("写入 clip 字幕失败")?;
     Ok(())
 }

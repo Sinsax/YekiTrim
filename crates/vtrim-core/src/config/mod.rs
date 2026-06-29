@@ -5,12 +5,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-/// 阶段编号常量
-pub const STAGE_AUDIO: u32 = 1;
-pub const STAGE_TRANSCRIBE: u32 = 2;
-pub const STAGE_DETECT: u32 = 3;
-pub const STAGE_CUT: u32 = 4;
-
 fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
     if !path.exists() {
         return Ok(None);
@@ -68,7 +62,6 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.llm_correct {
         base.asr.llm_correct = true;
     }
-
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
     }
@@ -77,6 +70,16 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if !overlay.detection.prompt_template.is_empty() {
         base.detection.prompt_template = overlay.detection.prompt_template;
+    }
+    if !overlay.detection.vtuber_name.is_empty() {
+        base.detection.vtuber_name = overlay.detection.vtuber_name;
+    }
+
+    if !overlay.correct.system_prompt.is_empty() {
+        base.correct.system_prompt = overlay.correct.system_prompt;
+    }
+    if !overlay.correct.prompt.is_empty() {
+        base.correct.prompt = overlay.correct.prompt;
     }
 
     if !overlay.llm.api_key.is_empty() {
@@ -107,7 +110,7 @@ pub fn load_config() -> Result<Config> {
     let mut config = Config::default();
 
     // 优先级: 先加载全局配置，再用 vtrim.toml 覆盖（vtrim.toml 优先级更高）
-    let global = crate::download::vtrim_home().join("config.toml");
+    let global = crate::path::vtrim_home().join("config.toml");
     if let Some(overlay) = load_from_file(&global)? {
         merge(&mut config, overlay);
     }

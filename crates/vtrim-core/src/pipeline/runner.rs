@@ -117,7 +117,7 @@ impl PipelineRunner {
             tracing::info!("[{}] completed", name);
         }
 
-        config::save_current_stage(config::STAGE_CUT)?;
+        config::save_current_stage(STAGE_CUT)?;
         Ok(())
     }
 

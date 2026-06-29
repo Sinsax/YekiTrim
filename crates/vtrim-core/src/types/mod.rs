@@ -92,10 +92,30 @@ pub enum EventType {
     Interaction,
     #[serde(rename = "qna")]
     QnA,
+    #[serde(rename = "reaction")]
+    Reaction,
+    #[serde(rename = "storytelling")]
+    Storytelling,
+    #[serde(rename = "music")]
+    Music,
+    #[serde(rename = "food")]
+    Food,
+    #[serde(rename = "rant")]
+    Rant,
     #[serde(rename = "break")]
     Break,
     #[serde(rename = "outro")]
     Outro,
+    #[serde(rename = "chat")]
+    Chat,
+    #[serde(rename = "eating")]
+    Eating,
+    #[serde(rename = "irl")]
+    IRL,
+    #[serde(rename = "ranking")]
+    Ranking,
+    #[serde(rename = "discussion")]
+    Discussion,
     #[serde(rename = "other")]
     Other,
 }
@@ -120,6 +140,16 @@ pub struct Event {
     pub popularity: f64,
     #[serde(default)]
     pub rank: u32,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventStore {
+    pub titles: std::collections::BTreeMap<String, bool>,
+    pub events: Vec<Event>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

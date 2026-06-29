@@ -6,38 +6,14 @@ use clap::Parser;
 use cli::{stage_name, Cli, Command, ConfigAction};
 use tracing_subscriber::EnvFilter;
 use vtrim_core::download;
-use vtrim_core::config::{self, Config, STAGE_AUDIO, STAGE_CUT, STAGE_DETECT, STAGE_TRANSCRIBE};
+use vtrim_core::config::{self, Config};
+use vtrim_core::pipeline::{STAGE_AUDIO, STAGE_CUT, STAGE_DETECT, STAGE_TRANSCRIBE};
+
 
 use crate::progress::IndicatifProgress;
 
-const PROJECT_CONFIG_TOML: &str = r##"# V-Trim 项目配置 — 优先级高于 .vtrim/config.toml
-# 相同的参数以本文件为准
-
-[project]
-# 输入视频文件路径 (由 `vtrim init` 写入)
-input_file = ""
-# 弹幕文件路径 (可选，不影响流程)
-danmaku_file = ""
-# 转写文件路径 (由 `vtrim transcribe` 自动写入)
-transcript_file = ""
-# 音频文件路径 (由 `vtrim extract-audio` 自动写入)
-audio_file = ""
-# 事件文件路径 (由 `vtrim detect-events` 自动写入)
-events_file = ""
-# 当前处理进度 (0=未开始, 1~4=各阶段编号, 由程序自动管理)
-current_stage = 0
-
-[asr]
-# ASR 后端 (local / kuaishou / bcut)
-backend = "local"
-# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
-num_threads = 0
-# 每块长度(秒)
-chunk_duration = 60.0
-# 块间重叠(秒)
-chunk_overlap = 10.0
-# LLM 订正转录文本 (需配置 [llm] api_key)
-llm_correct = false
+const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
+# 相同参数会被 vtrim.toml 覆盖
 
 [llm]
 # LLM API Key
@@ -51,24 +27,67 @@ temperature = 0.1
 # 最大 Token 数
 max_tokens = 16384
 
+[asr]
+# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
+num_threads = 0
+
+[correct]
+# 订正 system_prompt（空则使用内建默认）
+system_prompt = ""
+# 订正 user_prompt（{segments} 会被替换为实际转录内容）
+prompt = ""
+
 [detection]
+# 主播名称 (非空时自动追加到切片标题末尾)
+vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
-system_prompt = "你是一个直播录像分析助手。分析转录文本，将内容划分为多个有看点的视频片段。标题要吸引B站观众，摘要要详尽描述内容。"
+system_prompt = "你是一个虚拟主播/VTuber 直播切片分析助手。分析直播转录文本，将内容划分为多个有看点的视频片段。标题要使用 B 站风格夸张口语化表达：善用反问句(?)、感叹句(!)、问号叠加(??)、省略号(...)；嵌入主播原话或动作注释；善用网络用语：爆了、难绷、神人、破防、上头、下头、串、好女孩、魔法期。摘要要详尽描述内容看点。质量优先于数量，每个事件必须有明显的看点、转折、爆点或清晰的话题边界，无话题切换的过渡内容应合并。"
 
-prompt_template = """请分析以下直播转录文本，将其划分为多个事件片段。要求：
+prompt_template = """请分析以下直播转录文本（虚拟主播/VTuber），将其划分为多个事件片段。要求：
 
-1. 每个事件片段时长控制在1-3分钟，短于60秒的片段需与相邻片段合并
-2. 标题(label)口语化、有槽点/反转/意想不到的瞬间，包含1-2个emoji🤣😱🥵😡😅🤭🤑👻，适当使用反问句或感叹号，总长度不超过40字
-3. 摘要(summary)要详尽，完整概括该片段的核心内容和看点，50-100字
-4. 事件类型(event_type)从以下选择: intro(开场), gameplay(游戏/操作), interaction(互动), qna(问答), break(休息), outro(结尾), other(其他)
+1. 每个事件片段时长控制在30秒-30分钟，短于30秒的需与相邻片段合并
+2. 标题(label)创作要求：
+   - 口语化、夸张、悬念化，使用 B 站观众熟悉的口头禅/反问/感叹
+   - 长度 8~50 字都可以（爆点短标题、细节并列长标题皆可），不超过 50 字
+   - 包含 1-3 个 emoji，常用：🤣😱🥵😡😅🤭🤑👻😊🐶🐮🎵🔥💥😭😫😋💩😈🥺😎
+   - 优先使用以下句式：
+     a) 反问式：句末用 ? 或 ??，如"这也能信？"
+     b) 感叹式：句末用 ! 或 !!，如"爆了！"
+     c) 问号叠加：?? ??? ?!! 表示震惊/无语
+     d) 悬念式：句中用 ... 或（动作）收尾，如"难绷..."
+     e) 对话引用：直接嵌入主播原话，用 "" 或冒号
+      f) 列点式：用 、 ， 并列多个细节
+    - 特殊场景可用后缀标注：(弹幕版) 【新衣回】 【自用】 等
+   - 善用网络用语：爆了、难绷、神人、破防、上头、下头、串、好女孩、魔法期、名场面
+   - 质量门槛：每个事件必须有明显的看点、转折、爆点或清晰的话题边界。仅用于填充沉默的过渡语句、无话题切换的重复附和内容不要单独切出，合并到相邻事件
+3. 摘要(summary)详尽描述片段核心内容和看点，50-100字
+4. 事件类型(event_type)从以下选择：
+   - gameplay(游戏/操作)
+   - interaction(互动/连麦/双播)
+   - qna(问答/读 SC)
+   - reaction(看视频/听歌/观影/鉴赏)
+   - storytelling(讲故事/分享经历/回忆)
+   - music(唱歌/演奏/歌切)
+   - food(吃播/美食/试吃)
+   - chat(聊天/杂谈/日常)
+   - discussion(讨论/争论/锐评)
+   - ranking(盘点/排行/排行榜)
+   - irl(线下/旅行/Vlog/外出)
+   - rant(吐槽/破防/红温)
+   - other(其他)
 
-参考标题风格：
-  这个反应也太真实了吧？？直接笑死🤣
-  粉丝打SC问谁攻谁受，结果全员沉默？？
-  你管这叫唱歌？这分明是作法现场????
-  被自己翻唱尬到脚趾抠地?? 这也太真实了吧😅
+参考标题风格（覆盖多句式、多题材）：
+  爆了！牢豆直播看塔菲中之人视频😱
+  被初王葛孚雷打破防，妈的一天天使不完个牛劲我超！【七海Nana7mi】
+  海子姐难绷90岁治疗ED【七海Nana7mi】
   这什么雷霆坐姿雷霆视角🥵羞死人了🥵
+  灰泽满妈妈：他们连你成绩很差都知道了吗？？【灰泽满Hazel】
+  难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤
+  岁己亲推脚臭味薯片：不是我脚臭，这是世俗意义上的脚臭【岁己SUI】
+  谁家小土豆地雷？【灰泽满Hazel】
+  我站着上厕所！【七海Nana7mi】
+  弹幕问豆今色，豆特意低头看了下脱口而出：梅川😊
 
 输出格式：只输出一个 JSON 数组，不要 markdown 或解释：
 
@@ -83,57 +102,6 @@ prompt_template = """请分析以下直播转录文本，将其划分为多个�
 output_dir = "./output"
 # 是否覆盖已有文件
 overwrite = false
-"##;
-
-const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
-# 相同参数会被 vtrim.toml 覆盖
-
-[asr]
-# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
-num_threads = 0
-# 每块长度(秒)
-chunk_duration = 60.0
-# 块间重叠(秒)
-chunk_overlap = 10.0
-# LLM 订正转录文本
-llm_correct = false
-
-[llm]
-# LLM API Key
-api_key = ""
-# API 基础地址
-api_base = ""
-# 模型名称（推荐使用非推理模型）
-model = ""
-# 温度参数
-temperature = 0.1
-# 最大 Token 数
-max_tokens = 16384
-
-[detection]
-system_prompt = "你是一个直播录像分析助手。分析转录文本，将内容划分为多个有看点的视频片段。标题要吸引B站观众，摘要要详尽描述内容。"
-
-prompt_template = """请分析以下直播转录文本，将其划分为多个事件片段。要求：
-
-1. 每个事件片段时长控制在1-3分钟，短于60秒的片段需与相邻片段合并
-2. 标题(label)口语化、有槽点/反转/意想不到的瞬间，包含1-2个emoji🤣😱🥵😡😅🤭🤑👻，适当使用反问句或感叹号，总长度不超过40字
-3. 摘要(summary)要详尽，完整概括该片段的核心内容和看点，50-100字
-4. 事件类型(event_type)从以下选择: intro(开场), gameplay(游戏/操作), interaction(互动), qna(问答), break(休息), outro(结尾), other(其他)
-
-参考标题风格：
-  这个反应也太真实了吧？？直接笑死🤣
-  粉丝打SC问谁攻谁受，结果全员沉默？？
-  你管这叫唱歌？这分明是作法现场????
-  被自己翻唱尬到脚趾抠地?? 这也太真实了吧😅
-  这什么雷霆坐姿雷霆视角🥵羞死人了🥵
-
-输出格式：只输出一个 JSON 数组，不要 markdown 或解释：
-
-转录片段：
-{segments}
-
-只输出JSON数组：
-[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "详尽描述这段内容的核心看点...", "event_type": "interaction"}]"""
 "#;
 
 mod cli;
@@ -218,21 +186,81 @@ async fn main() -> anyhow::Result<()> {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("vtrim.toml"));
 
-            let mut doc: toml_edit::DocumentMut = PROJECT_CONFIG_TOML.parse()?;
-            doc["project"]["input_file"] = toml_edit::value(input.to_string_lossy().as_ref());
-            if let Some(df) = &danmaku {
-                doc["project"]["danmaku_file"] = toml_edit::value(df.to_string_lossy().as_ref());
+            // 优先从全局配置复制，不存在则使用内建默认
+            let global_path = vtrim_core::path::vtrim_home().join("config.toml");
+            let mut body = if global_path.exists() {
+                tracing::info!("从全局配置复制: {}", global_path.display());
+                let content = std::fs::read_to_string(&global_path)?
+                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "");
+                content
+            } else {
+                GLOBAL_CONFIG_TOML.to_string()
+                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
+            };
+
+            let mut doc: toml_edit::DocumentMut = body.parse()?;
+            doc.remove("llm");
+            doc.remove("correct");
+
+            // 移除 [detection] 中的 prompt 字段，仅保留在 config.toml
+            if let Some(detection) = doc.get_mut("detection") {
+                if let Some(table) = detection.as_table_mut() {
+                    table.remove("system_prompt");
+                    table.remove("prompt_template");
+                }
+            }
+
+            if let Some(dir) = &output {
+                doc["cutting"]["output_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
+            }
+
+            body = doc.to_string();
+
+            // 构建 [project] 块（带注释），放在最前面
+            let danmaku_val = if let Some(df) = &danmaku {
+                df.to_string_lossy().to_string()
             } else {
                 let auto_ass = input.with_extension("ass");
                 if auto_ass.exists() {
-                    doc["project"]["danmaku_file"] = toml_edit::value(auto_ass.to_string_lossy().as_ref());
                     tracing::info!("自动发现弹幕文件: {}", auto_ass.display());
+                    auto_ass.to_string_lossy().to_string()
+                } else {
+                    String::new()
+                }
+            };
+
+            let mut project = toml_edit::Table::new();
+            project.set_implicit(true);
+            project.insert("input_file", toml_edit::value(input.to_string_lossy().as_ref()));
+            project.insert("danmaku_file", toml_edit::value(&danmaku_val));
+            project.insert("transcript_file", toml_edit::value(""));
+            project.insert("audio_file", toml_edit::value(""));
+            project.insert("events_file", toml_edit::value(""));
+            project.insert("current_stage", toml_edit::value(0));
+
+            let mut header = toml_edit::DocumentMut::new();
+            header.insert("project", toml_edit::Item::Table(project));
+            let mut project_str = header.to_string();
+
+            // 给 project 字段添加注释
+            let comments = [
+                ("input_file", "输入视频文件路径"),
+                ("danmaku_file", "弹幕文件路径"),
+                ("transcript_file", "转写文件路径 (由 transcribe 写入)"),
+                ("audio_file", "音频文件路径 (由 extract-audio 写入)"),
+                ("events_file", "事件文件路径 (由 detect-events 写入)"),
+                ("current_stage", "当前处理进度 (0=未开始, 1~4=各阶段)"),
+            ];
+            for (key, comment) in &comments {
+                let line = format!("{} = ", key);
+                if project_str.contains(&line) {
+                    let commented = format!("# {}\n{}", comment, line);
+                    project_str = project_str.replace(&line, &commented);
                 }
             }
-            if let Some(dir) = output {
-                doc["cutting"]["output_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
-            }
-            std::fs::write(&out, doc.to_string())?;
+
+            let full = format!("# V-Trim 项目配置 — 优先级高于 .vtrim/config.toml\n# 相同的参数以本文件为准\n\n{}", project_str.trim()) + "\n\n" + body.trim();
+            std::fs::write(&out, full)?;
 
             tracing::info!("视频工程已初始化: {}", input.display());
             tracing::info!("配置文件: {}", out.display());
@@ -320,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
                         ctx.transcript = Some(if ext == "json" {
                             serde_json::from_str(&content)?
                         } else {
-                            vtrim_core::asr::parse_srt(&content)?
+                            vtrim_core::srt::parse_srt(&content)?
                         });
                         tracing::info!("转写已存在: {}", path.display());
                     }
@@ -336,18 +364,18 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Step 3: LLM 订正（可选，不受 stage 限制）
-            if cfg.asr.llm_correct && !cfg.llm.api_key.is_empty() {
+            // LLM 订正：仅当事件尚未检测时执行，避免重复订正已完成的检测结果
+            if current < STAGE_DETECT && cfg.asr.llm_correct && !cfg.llm.api_key.is_empty() {
                 if let Some(ref transcript) = ctx.transcript {
                     tracing::info!("LLM 订正转录文本...");
-                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &cfg.llm).await {
+                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &cfg.llm, &cfg.correct).await {
                         Ok(corrected) => {
                             let new = vtrim_core::types::Transcript {
                                 segments: corrected,
                                 language: "zh".into(),
                             };
                             let llm_srt = ctx.output_dir.join("video_llm.srt");
-                            vtrim_core::asr::write_srt(&new, &llm_srt)?;
+                            vtrim_core::srt::write_srt(&new, &llm_srt)?;
                             config::save_transcript_path(&llm_srt.to_string_lossy())?;
                             ctx.transcript = Some(new);
                             tracing::info!("LLM 订正完成");
@@ -382,8 +410,7 @@ async fn main() -> anyhow::Result<()> {
                 // 从文件恢复 events
                 let events_path = ctx.output_dir.join("events.json");
                 if events_path.exists() {
-                    let content = std::fs::read_to_string(&events_path)?;
-                    ctx.events = serde_json::from_str(&content)?;
+                    ctx.events = vtrim_core::detection::load_events(&events_path)?;
                 }
                 let mut cut_runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
                 cut_runner.set_progress(progress.clone());
@@ -495,7 +522,7 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::from_str(&content)
                     .with_context(|| format!("解析转写 JSON 失败: {}", transcript_path.display()))?
             } else if ext == "srt" {
-                vtrim_core::asr::parse_srt(&content)
+                vtrim_core::srt::parse_srt(&content)
                     .with_context(|| format!("解析 SRT 失败: {}", transcript_path.display()))?
             } else {
                 anyhow::bail!("不支持的转写文件格式: .{} (仅支持 .json / .srt)", ext);
@@ -552,10 +579,8 @@ async fn main() -> anyhow::Result<()> {
                     )
                 })?;
 
-            let content = std::fs::read_to_string(&events_path)
-                .with_context(|| format!("无法读取事件文件: {}", events_path.display()))?;
-            let events: Vec<vtrim_core::types::Event> = serde_json::from_str(&content)
-                .with_context(|| format!("解析事件 JSON 失败: {}", events_path.display()))?;
+            let events = vtrim_core::detection::load_events(&events_path)
+                .with_context(|| format!("无法读取或解析事件文件: {}", events_path.display()))?;
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output_dir);
             ctx.events = events;
@@ -594,7 +619,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Config(action) => match action {
             ConfigAction::Init { path } => {
                 let out = path.clone().unwrap_or_else(|| {
-                    vtrim_core::download::vtrim_home().join("config.toml")
+                    vtrim_core::path::vtrim_home().join("config.toml")
                 });
                 if let Some(parent) = out.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -701,18 +726,18 @@ async fn main() -> anyhow::Result<()> {
                 serde_json::from_str(&content)
                     .with_context(|| "解析转录 JSON 失败")?
             } else {
-                vtrim_core::asr::parse_srt(&content)
+                vtrim_core::srt::parse_srt(&content)
                     .with_context(|| "解析 SRT 失败")?
             };
 
             tracing::info!("LLM 订正 {} 个片段...", transcript_data.segments.len());
-            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &cfg.llm).await {
+            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &cfg.llm, &cfg.correct).await {
                 Ok(corrected) => {
                     transcript_data.segments = corrected;
 
                     let llm_srt = output_dir.join("video_llm.srt");
                     std::fs::create_dir_all(&output_dir)?;
-                    vtrim_core::asr::write_srt(&transcript_data, &llm_srt)?;
+                    vtrim_core::srt::write_srt(&transcript_data, &llm_srt)?;
                     config::save_transcript_path(&llm_srt.to_string_lossy())?;
 
                     tracing::info!("LLM 订正完成");

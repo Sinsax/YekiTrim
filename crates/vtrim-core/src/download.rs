@@ -4,15 +4,9 @@ use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
 
-const VERSION: &str = "1.13.3";
+use crate::path::vtrim_home;
 
-pub fn vtrim_home() -> PathBuf {
-    std::env::current_exe()
-        .expect("无法获取可执行文件路径")
-        .parent()
-        .expect("可执行文件路径异常")
-        .join(".vtrim")
-}
+const VERSION: &str = "1.13.3";
 
 fn binary_url() -> String {
     let base = format!("https://github.com/k2-fsa/sherpa-onnx/releases/download/v{VERSION}");

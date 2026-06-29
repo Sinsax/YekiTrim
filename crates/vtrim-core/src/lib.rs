@@ -1,5 +1,7 @@
 pub mod types;
 pub mod config;
+pub mod path;
+pub mod srt;
 pub mod pipeline;
 pub mod audio;
 pub mod asr;

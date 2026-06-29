@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use anyhow::{Context, Result};
 
 use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_DETECT};
-use crate::types::{Event, PipelineContext};
+use crate::types::{Event, EventStore, PipelineContext};
 
 mod llm;
 
@@ -43,6 +45,17 @@ impl Stage for EventDetector {
         } else {
             process_with_llm(segments, llm_config, detect_config).await?
         };
+
+        // 追加主播标签（无 API key 的默认事件也适用）
+        if !detect_config.vtuber_name.is_empty() {
+            let tag = format!("【{}】", detect_config.vtuber_name);
+            for event in &mut events {
+                if !event.label.ends_with(&tag) {
+                    event.label.push_str(&tag);
+                }
+            }
+            tracing::info!("已追加主播标签: {}", tag);
+        }
 
         // 弹幕热度评分
         if let Some(ref danmaku_path) = ctx.danmaku_path {
@@ -129,11 +142,12 @@ async fn process_with_llm(
 ) -> Result<Vec<Event>> {
     tracing::info!("LLM 一次性分析 {} 个 segments", segments.len());
 
-    let events = llm::call(segments, llm, detect).await
+    let mut events = llm::call(segments, llm, detect).await
         .map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
 
-    let mut events = dedup_and_merge(events);
-    events = enforce_min_duration(events, 60.0);
+    events = dedup_and_merge(events);
+    events = enforce_min_duration(events, 30.0);
+
     Ok(events)
 }
 
@@ -209,8 +223,29 @@ fn enforce_min_duration(mut events: Vec<Event>, min_secs: f64) -> Vec<Event> {
 fn save_events(events: &[Event], output_dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
     let path = output_dir.join("events.json");
-    let json = serde_json::to_string_pretty(events)?;
+    let mut titles = BTreeMap::new();
+    for e in events {
+        titles.entry(e.label.clone()).or_insert(true);
+    }
+    let store = EventStore {
+        titles,
+        events: events.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&store)?;
     std::fs::write(&path, json).context("写入事件文件失败")?;
     tracing::info!("事件已保存: {}", path.display());
     Ok(())
+}
+
+pub fn load_events(path: &std::path::Path) -> Result<Vec<Event>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("无法读取事件文件: {}", path.display()))?;
+    // 支持旧格式 (Vec<Event>) 和新格式 (EventStore)
+    if let Ok(store) = serde_json::from_str::<EventStore>(&content) {
+        Ok(store.events.into_iter().filter(|e| e.enabled).collect())
+    } else if let Ok(events) = serde_json::from_str::<Vec<Event>>(&content) {
+        Ok(events)
+    } else {
+        anyhow::bail!("解析事件 JSON 失败: {}", path.display());
+    }
 }

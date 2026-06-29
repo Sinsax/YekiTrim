@@ -51,6 +51,8 @@ pub struct Config {
     #[serde(default)]
     pub asr: AsrConfig,
     #[serde(default)]
+    pub correct: CorrectConfig,
+    #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
     pub detection: DetectionConfig,
@@ -130,6 +132,8 @@ pub struct DetectionConfig {
     pub system_prompt: String,
     #[serde(default)]
     pub prompt_template: String,
+    #[serde(default)]
+    pub vtuber_name: String,
 }
 
 fn default_danmaku_window_secs() -> f64 { 10.0 }
@@ -140,6 +144,7 @@ impl Default for DetectionConfig {
             danmaku_window_secs: default_danmaku_window_secs(),
             system_prompt: String::new(),
             prompt_template: String::new(),
+            vtuber_name: String::new(),
         }
     }
 }
@@ -183,6 +188,23 @@ impl Default for CuttingConfig {
         Self {
             output_dir: default_output_dir(),
             overwrite: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorrectConfig {
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+impl Default for CorrectConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            prompt: String::new(),
         }
     }
 }

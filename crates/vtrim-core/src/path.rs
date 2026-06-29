@@ -1,0 +1,9 @@
+use std::path::PathBuf;
+
+pub fn vtrim_home() -> PathBuf {
+    std::env::current_exe()
+        .expect("无法获取可执行文件路径")
+        .parent()
+        .expect("可执行文件路径异常")
+        .join(".vtrim")
+}

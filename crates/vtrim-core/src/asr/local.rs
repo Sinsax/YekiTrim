@@ -20,7 +20,7 @@ fn model_dir(cfg: &AsrConfig) -> PathBuf {
     if !cfg.local_model_dir.is_empty() {
         PathBuf::from(&cfg.local_model_dir)
     } else {
-        crate::download::vtrim_home().join("models").join(&cfg.local_model)
+        crate::path::vtrim_home().join("models").join(&cfg.local_model)
     }
 }
 
@@ -287,7 +287,7 @@ pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {
     if bins.is_empty() {
         bail!(
             "sherpa-onnx-offline 未安装。请运行 `vtrim download-models` 自动下载到 {}",
-            crate::download::vtrim_home().join("bin").display()
+            crate::path::vtrim_home().join("bin").display()
         );
     }
 

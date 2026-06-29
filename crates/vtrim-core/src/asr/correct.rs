@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::config::LlmConfig;
+use crate::config::{CorrectConfig, LlmConfig};
 use crate::types::TranscriptSegment;
 
 const BATCH_SIZE: usize = 500;
@@ -14,11 +15,13 @@ const MAX_CONCURRENT: usize = 3;
 pub async fn correct_transcript(
     segments: &[TranscriptSegment],
     llm: &LlmConfig,
+    correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
     let total = segments.len();
     let total_batches = (total + BATCH_SIZE - 1) / BATCH_SIZE;
     let mut corrected = segments.to_vec();
     let llm = Arc::new(llm.clone());
+    let correct = Arc::new(correct.clone());
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut set: JoinSet<(usize, usize, Result<Vec<String>>)> = JoinSet::new();
 
@@ -33,6 +36,7 @@ pub async fn correct_transcript(
     for (batch_idx, chunk) in segments.chunks(BATCH_SIZE).enumerate() {
         let chunk = chunk.to_vec();
         let llm = llm.clone();
+        let correct = correct.clone();
         let sem = sem.clone();
         let offset = batch_idx * BATCH_SIZE;
         let batch_num = batch_idx + 1;
@@ -41,7 +45,7 @@ pub async fn correct_transcript(
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             tracing::info!("  批次 {} 订正中 ({} 段)", batch_num, chunk_len);
-            (offset, batch_num, send_batch(&chunk, &llm, offset).await)
+            (offset, batch_num, send_batch(&chunk, &llm, &correct, offset).await)
         });
     }
 
@@ -73,16 +77,39 @@ pub async fn correct_transcript(
 async fn send_batch(
     segments: &[TranscriptSegment],
     llm: &LlmConfig,
+    correct: &CorrectConfig,
     offset: usize,
 ) -> Result<Vec<String>> {
-    let mut prompt = String::from(
-        "请修正以下语音转文字转录中的错别字、人名、专业术语。\n\
-         按原样返回每一行，只修改文字内容，不要修改序号。\n\
-         格式：序号|修正后文字\n\n\
-         转录内容：\n",
-    );
+    let user_prompt = if !correct.prompt.is_empty() {
+        correct.prompt.clone()
+    } else {
+        String::from(
+            "请修正以下语音转文字转录，注意修正：\n\
+             - 错别字和语音识别常见错误（同音字、谐音字）\n\
+             - 主播名、VTuber 名、嘉宾名（如\"永雏塔菲\"、\"小非\"、\"塔菲\"）\n\
+             - 游戏名、动画名、歌曲名（如\"法环\"不会写成\"发还\"）\n\
+             - 日韩文娱名称（歌手/乐队/偶像/动画曲/V家）：如椎名林檎、YOASOBI、Ado、NewJeans\n\
+             - V 圈 / B 站常用术语（SC、舰长、提督、舰礼、切片、串、纯良、米线等）\n\
+             - 网络流行语和常见缩写（xp、yyds、kpi、sc、dlc、op、ww等）\n\
+             - 其他语音识别易出错的缩写，请结合上下文自行修正\n\
+             - 语速快、口糊、吞音导致的识别错误，根据上下文还原正确文字\n\
+             - 保留口语风格：不要去掉啊、哦、嗯、嘛、呗、啦等语气词\n\
+             - 保留重复和停顿的修辞效果（如\"我我我真的\"、\"然后然后\"）\n\
+             - 保留情绪化表达（大笑、尖叫、哭腔、破音等通过文字体现）\n\n\
+             按原样返回每一行，只修改文字内容，不要修改序号。\n\
+             格式：序号|修正后文字\n",
+        )
+    };
+    let mut prompt = user_prompt;
+    let mut seg_text = String::new();
     for (i, seg) in segments.iter().enumerate() {
-        prompt.push_str(&format!("{}|{}\n", offset + i + 1, seg.text));
+        seg_text.push_str(&format!("{}|{}\n", offset + i + 1, seg.text));
+    }
+    if prompt.contains("{segments}") {
+        prompt = prompt.replace("{segments}", &seg_text);
+    } else {
+        prompt.push_str("\n转录内容：\n");
+        prompt.push_str(&seg_text);
     }
 
     if llm.api_base.is_empty() {
@@ -97,18 +124,27 @@ async fn send_batch(
         }
     };
 
+    let system_msg = if !correct.system_prompt.is_empty() {
+        correct.system_prompt.clone()
+    } else {
+        String::from("你是虚拟主播直播转录文本的订正助手。修正 ASR 常见的错别字、主播名/VTuber名、游戏名、歌曲名、网络用语。保留口语风格和语气词（啊、哦、嗯、嘛、呗），不要书面化润色。保持序号不变，只输出行。")
+    };
+
     let mut body = serde_json::json!({
         "temperature": llm.temperature,
         "max_tokens": llm.max_tokens,
         "messages": [
-            {"role": "system", "content": "你是语音转文字订正助手。修正错别字、人名、术语，保持序号不变，只输出行。"},
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt}
         ]
     });
     if !llm.model.is_empty() {
         body["model"] = serde_json::json!(llm.model);
     }
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .context("创建 HTTP 客户端失败")?;
     let resp = client
         .post(&api_url)
         .header("Authorization", format!("Bearer {}", llm.api_key))
