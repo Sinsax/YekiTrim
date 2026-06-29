@@ -27,7 +27,7 @@ pub async fn correct_transcript(
 
     let pb = ProgressBar::new(total_batches as u64);
     if let Ok(style) = ProgressStyle::with_template(
-        "{spinner} 订正: [{bar:24}] {pos}/{len} 批 ({percent}%) [{elapsed_precise}]",
+        "{spinner:.green} [{elapsed_precise}] 订正 {bar:40} {percent}%",
     ) {
         pb.set_style(style.progress_chars("##-"));
     }

@@ -10,7 +10,7 @@ impl IndicatifProgress {
         let bar = ProgressBar::new(0);
         bar.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] {msg} {wide_bar} {pos}/{len}")
+                .template("{spinner:.green} [{elapsed_precise}] {msg} {bar:40} {percent}%")
                 .unwrap()
                 .progress_chars("#>-"),
         );
