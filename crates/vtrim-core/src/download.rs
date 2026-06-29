@@ -1,10 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
-use which::which;
 
 const VERSION: &str = "1.13.3";
 
@@ -14,14 +12,6 @@ pub fn vtrim_home() -> PathBuf {
         .parent()
         .expect("可执行文件路径异常")
         .join(".vtrim")
-}
-
-pub fn vad_model_dir() -> PathBuf {
-    vtrim_home().join("models").join("vad")
-}
-
-pub fn vad_model_path() -> PathBuf {
-    vad_model_dir().join("silero_vad_v5.onnx")
 }
 
 fn binary_url() -> String {
@@ -53,20 +43,8 @@ pub fn cpu_binary_name() -> &'static str {
     }
 }
 
-fn vad_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "sherpa-onnx-vad-with-offline-asr.exe"
-    } else {
-        "sherpa-onnx-vad-with-offline-asr"
-    }
-}
-
 pub fn cpu_binary_path() -> PathBuf {
     vtrim_home().join("bin").join(cpu_binary_name())
-}
-
-pub fn vad_binary_path() -> PathBuf {
-    vtrim_home().join("bin").join(vad_binary_name())
 }
 
 pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
@@ -81,7 +59,7 @@ pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
         .await
         .context("创建模型目录失败")?;
 
-    download_binaries(&bin_dir).await?;
+    download_cpu_binary(&bin_dir).await?;
     download_model(&models_dir).await?;
 
     tracing::info!("下载完成！");
@@ -89,12 +67,6 @@ pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
     tracing::info!("  模型:   {}", models_dir.display());
     tracing::info!("运行 `vtrim transcribe` 开始语音识别");
 
-    Ok(())
-}
-
-async fn download_binaries(target: &Path) -> Result<()> {
-    download_cpu_binary(target).await?;
-    download_vad_model_inner().await?;
     Ok(())
 }
 
@@ -128,7 +100,6 @@ fn extract_binaries(archive: &Path, target: &Path) -> Result<()> {
     let mut archive_tar = tar::Archive::new(decoder);
 
     let cpu_name = cpu_binary_name();
-    let vad_name = vad_binary_name();
 
     for entry in archive_tar.entries()? {
         let mut entry = entry?;
@@ -138,29 +109,14 @@ fn extract_binaries(archive: &Path, target: &Path) -> Result<()> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let target_name = if matches_name(&name, "sherpa-onnx-offline") {
-            Some(cpu_name)
-        } else if matches_name(&name, "sherpa-onnx-vad-with-offline-asr") {
-            Some(vad_name)
-        } else {
-            None
-        };
-
-        if let Some(out_name) = target_name {
-            let target_path = target.join(out_name);
+        if matches_name(&name, "sherpa-onnx-offline") {
+            let target_path = target.join(cpu_name);
             let mut outfile = std::fs::File::create(&target_path)?;
             std::io::copy(&mut entry, &mut outfile)?;
-            if out_name == cpu_name {
-                tracing::info!("  解压: {} -> {}", name, cpu_name);
-            } else if out_name == vad_name {
-                tracing::info!("  解压: {} -> {}", name, vad_name);
-            } else {
-                tracing::info!("  解压: {}", name);
-            }
+            tracing::info!("  解压: {} -> {}", name, cpu_name);
         }
     }
 
-    // verify at least the main binary was extracted
     if !target.join(cpu_name).exists() {
         bail!("在归档中未找到 sherpa-onnx-offline binary");
     }
@@ -168,32 +124,62 @@ fn extract_binaries(archive: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Extract ALL files from a tar.bz2 archive (binaries + DLLs).
 fn matches_name(name: &str, base: &str) -> bool {
     name == base || name == &format!("{}.exe", base)
 }
 
-async fn download_vad_model_inner() -> Result<()> {
-    let vad_dir = vad_model_dir();
-    let vad_path = vad_model_path();
-
-    if vad_path.exists() {
-        tracing::info!("Silero VAD 模型已存在");
+async fn download_model(target: &Path) -> Result<()> {
+    if target.join("tokens.txt").exists() {
+        tracing::info!("SenseVoice 模型已存在，跳过下载");
         return Ok(());
     }
 
-    tokio::fs::create_dir_all(&vad_dir)
-        .await
-        .context("创建 VAD 模型目录失败")?;
+    let url = model_download_url();
+    tracing::info!("下载 SenseVoice 模型...");
 
-    let url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad_v5.onnx";
-    tracing::info!("下载 Silero VAD 模型 ({})...", vad_path.display());
-    let part_path = vad_path.with_extension("onnx.part");
+    let archive_path = target.join("_model.tar.bz2");
+    let part_path = target.join("_model.tar.bz2.part");
     download_file(url, &part_path).await?;
-    tokio::fs::rename(&part_path, &vad_path).await
-        .context("重命名 VAD 模型文件失败")?;
+    tokio::fs::rename(&part_path, &archive_path).await
+        .context("重命名临时模型文件失败")?;
 
-    tracing::info!("  VAD 模型: {}", vad_path.display());
+    tracing::info!("  解压模型...");
+    extract_model_tarbz2(&archive_path, target)?;
+    tokio::fs::remove_file(&archive_path).await.ok();
+    Ok(())
+}
+
+fn extract_model_tarbz2(archive: &Path, target: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive)?;
+    let decoder = bzip2::read::BzDecoder::new(file);
+    let mut archive_tar = tar::Archive::new(decoder);
+
+    for entry in archive_tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+
+        let components: Vec<_> = path.components().skip(1).collect();
+        if components.is_empty() {
+            continue;
+        }
+
+        let rel_path: PathBuf = components.iter().collect();
+        let target_path = target.join(&rel_path);
+
+        if entry.header().entry_type().is_dir() {
+            std::fs::create_dir_all(&target_path)?;
+            continue;
+        }
+
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut outfile = std::fs::File::create(&target_path)?;
+        std::io::copy(&mut entry, &mut outfile)?;
+        tracing::info!("  解压: {}", rel_path.display());
+    }
+
     Ok(())
 }
 
@@ -254,61 +240,6 @@ async fn download_file(url: &str, part_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn download_model(target: &Path) -> Result<()> {
-    if target.join("tokens.txt").exists() {
-        tracing::info!("SenseVoice 模型已存在，跳过下载");
-        return Ok(());
-    }
-
-    let url = model_download_url();
-    tracing::info!("下载 SenseVoice 模型...");
-
-    let archive_path = target.join("_model.tar.bz2");
-    let part_path = target.join("_model.tar.bz2.part");
-    download_file(url, &part_path).await?;
-    tokio::fs::rename(&part_path, &archive_path).await
-        .context("重命名临时模型文件失败")?;
-
-    tracing::info!("  解压模型...");
-    extract_model_tarbz2(&archive_path, target)?;
-    tokio::fs::remove_file(&archive_path).await.ok();
-    Ok(())
-}
-
-fn extract_model_tarbz2(archive: &Path, target: &Path) -> Result<()> {
-    let file = std::fs::File::open(archive)?;
-    let decoder = bzip2::read::BzDecoder::new(file);
-    let mut archive_tar = tar::Archive::new(decoder);
-
-    for entry in archive_tar.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-
-        let components: Vec<_> = path.components().skip(1).collect();
-        if components.is_empty() {
-            continue;
-        }
-
-        let rel_path: PathBuf = components.iter().collect();
-        let target_path = target.join(&rel_path);
-
-        if entry.header().entry_type().is_dir() {
-            std::fs::create_dir_all(&target_path)?;
-            continue;
-        }
-
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let mut outfile = std::fs::File::create(&target_path)?;
-        std::io::copy(&mut entry, &mut outfile)?;
-        tracing::info!("  解压: {}", rel_path.display());
-    }
-
-    Ok(())
-}
-
 #[cfg(unix)]
 fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -330,11 +261,12 @@ pub async fn ensure_models() -> Result<()> {
     let need_model = !model_path.join("tokens.txt").exists();
 
     if need_bin {
+        tokio::fs::create_dir_all(&bin_dir).await?;
         tracing::info!("下载 sherpa-onnx binary...");
         download_cpu_binary(&bin_dir).await?;
-        download_vad_model_inner().await?;
     }
     if need_model {
+        tokio::fs::create_dir_all(&model_path).await?;
         tracing::info!("下载 SenseVoice 模型到 {}", model_path.display());
         download_model(&model_path).await?;
     }
@@ -345,131 +277,4 @@ pub async fn ensure_models() -> Result<()> {
     Ok(())
 }
 
-pub async fn ensure_vad_ready() -> Result<()> {
-    let bin_path = vad_binary_path();
-    let vad_path = vad_model_path();
 
-    if !bin_path.exists() {
-        anyhow::bail!(
-            "sherpa-onnx-vad-with-offline-asr 未找到 ({}), \
-             请运行 `vtrim download-models` 重新下载",
-            bin_path.display()
-        );
-    }
-
-    if !vad_path.exists() {
-        tracing::info!("Silero VAD 模型未下载，准备下载");
-        download_vad_model_inner().await?;
-    }
-
-    tracing::info!("VAD 就绪: binary ✓,  VAD 模型 ✓");
-    Ok(())
-}
-
-fn extract_targz(archive: &Path, target: &Path) -> Result<()> {
-    let file = std::fs::File::open(archive)?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive_tar = tar::Archive::new(decoder);
-    archive_tar.unpack(target)
-        .with_context(|| format!("解压 {} 到 {} 失败", archive.display(), target.display()))
-}
-
-/// 用系统 uv 创建虚拟环境并安装 spleeter，然后预下载模型
-pub async fn setup_spleeter(home: &Path) -> Result<()> {
-    tracing::info!("Spleeter 安装目录: {}", home.display());
-    let venv_dir = home.join("venv");
-    let uv = which("uv").context("请先安装 uv: https://docs.astral.sh/uv/#installation")?;
-
-    if venv_dir.join("pyvenv.cfg").exists() {
-        // 检查版本是否匹配
-        let version_ok = std::fs::read_to_string(venv_dir.join("pyvenv.cfg"))
-            .map(|c| c.contains("version = 3.10"))
-            .unwrap_or(false);
-        if version_ok {
-            tracing::info!("Spleeter 虚拟环境已存在，跳过创建");
-        } else {
-            tracing::warn!("虚拟环境 Python 版本不匹配，删除重建");
-            std::fs::remove_dir_all(&venv_dir).ok();
-        }
-    }
-
-    if !venv_dir.join("pyvenv.cfg").exists() {
-        tracing::info!("创建 Python 虚拟环境...");
-        let status = Command::new(&uv)
-            .args(["venv", "--python", "3.10"])
-            .arg(&venv_dir)
-            .status()
-            .context("uv venv 创建失败")?;
-        if !status.success() {
-            anyhow::bail!("创建虚拟环境失败");
-        }
-        tracing::info!("虚拟环境已创建");
-    }
-
-    let spleeter_bin = if cfg!(target_os = "windows") {
-        venv_dir.join("Scripts").join("spleeter.exe")
-    } else {
-        venv_dir.join("bin").join("spleeter")
-    };
-
-    // 检查 spleeter 是否已安装
-    if !spleeter_bin.exists() {
-        let bar = indicatif::ProgressBar::new_spinner();
-        bar.set_style(
-            indicatif::ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .unwrap()
-        );
-        bar.set_message("安装 spleeter (依赖较多，首次约 2-5 分钟)...");
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
-
-        let python_bin = if cfg!(target_os = "windows") {
-            venv_dir.join("Scripts").join("python.exe")
-        } else {
-            venv_dir.join("bin").join("python3")
-        };
-        let status = Command::new(&uv)
-            .args(["pip", "install", "--python", python_bin.to_string_lossy().as_ref(), "spleeter", "numpy<2"])
-            .status()
-            .context("spleeter 安装失败")?;
-
-        bar.finish_and_clear();
-
-        if !status.success() {
-            anyhow::bail!("spleeter 安装失败");
-        }
-    } else {
-        tracing::info!("Spleeter 已安装");
-    }
-
-    // 预下载 pretrained_models: 直接下载 2stems 模型归档
-    let cache_dir = home.join("pretrained_models");
-    let model_dir = cache_dir.join("2stems");
-    tracing::info!("Spleeter 模型目录: {}", model_dir.display());
-
-    if model_dir.join("checkpoint").exists() {
-        tracing::info!("Spleeter 2stems 模型已存在");
-        return Ok(());
-    }
-
-    let url = "https://github.com/deezer/spleeter/releases/download/v1.4.0/2stems.tar.gz";
-    let archive_path = cache_dir.join("2stems.tar.gz");
-    let part_path = cache_dir.join("2stems.tar.gz.part");
-
-    tracing::info!("下载 Spleeter 2stems 模型...");
-    tokio::fs::create_dir_all(&cache_dir).await?;
-    download_file(url, &part_path).await?;
-    tokio::fs::rename(&part_path, &archive_path).await
-        .context("重命名模型归档失败")?;
-
-    tracing::info!("解压模型...");
-    std::fs::create_dir_all(&model_dir)?;
-    extract_targz(&archive_path, &cache_dir)?;
-    // spleeter 通过 .probe 文件判断模型已就绪，避免重复下载
-    let probe_path = model_dir.join(".probe");
-    std::fs::write(&probe_path, "OK")?;
-    tokio::fs::remove_file(&archive_path).await.ok();
-
-    tracing::info!("Spleeter 预训练模型已下载到 {}", model_dir.display());
-    Ok(())
-}

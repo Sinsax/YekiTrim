@@ -34,13 +34,14 @@ impl Stage for EventDetector {
             anyhow::bail!("转写结果为空，无法检测事件");
         }
 
-        let llm_config = &ctx.config.detection.llm;
+        let llm_config = &ctx.config.llm;
+        let detect_config = &ctx.config.detection;
 
         let mut events = if llm_config.api_key.is_empty() {
-            tracing::warn!("未配置 LLM API key (detection.llm.api_key)，使用默认事件");
+            tracing::warn!("未配置 LLM API key (llm.api_key)，使用默认事件");
             vec![llm::create_default_event(segments)]
         } else {
-            process_with_llm(segments, llm_config).await?
+            process_with_llm(segments, llm_config, detect_config).await?
         };
 
         // 弹幕热度评分
@@ -123,17 +124,13 @@ fn enrich_with_danmaku(
 
 async fn process_with_llm(
     segments: &[crate::types::TranscriptSegment],
-    config: &crate::config::LlmConfig,
+    llm: &crate::config::LlmConfig,
+    detect: &crate::config::DetectionConfig,
 ) -> Result<Vec<Event>> {
     tracing::info!("LLM 一次性分析 {} 个 segments", segments.len());
 
-    let events = match llm::call(segments, config).await {
-        Ok(events) => events,
-        Err(e) => {
-            tracing::warn!("LLM 调用失败: {}", e);
-            return Ok(vec![llm::create_default_event(segments)]);
-        }
-    };
+    let events = llm::call(segments, llm, detect).await
+        .map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
 
     let mut events = dedup_and_merge(events);
     events = enforce_min_duration(events, 60.0);

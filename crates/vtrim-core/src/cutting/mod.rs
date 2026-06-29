@@ -184,6 +184,31 @@ fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> 
 
 /// 对已输出的视频文件执行静音移除（重编码）。
 /// `duration` 为连续静音秒数阈值，超过此长度的静音段将被移除。
+pub fn detect_silence_from_srt(srt_path: &Path, threshold: f64) -> Result<Vec<(f64, f64)>> {
+    let content = std::fs::read_to_string(srt_path)?;
+    let transcript = crate::asr::parse_srt(&content)?;
+    let segs = &transcript.segments;
+
+    if segs.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut segments = Vec::new();
+    for pair in segs.windows(2) {
+        let gap = pair[1].start - pair[0].end;
+        if gap >= threshold {
+            segments.push((pair[0].end, pair[1].start));
+        }
+    }
+
+    tracing::debug!(
+        "SRT gap 检测: {} 段静音 (阈值={}s)",
+        segments.len(),
+        threshold,
+    );
+    Ok(segments)
+}
+
 pub fn detect_silence(input: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
     let result = Command::new("ffmpeg")
         .arg("-y")
@@ -227,29 +252,78 @@ pub fn detect_silence(input: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
     Ok(segments)
 }
 
-pub fn remove_silence(input: &Path, output: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
-    let segments = detect_silence(input, duration)?;
+pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Option<&Path>) -> Result<Vec<(f64, f64)>> {
+    let segments = match srt_path {
+        Some(srt) if srt.exists() => {
+            tracing::info!("使用 SRT 间隔检测静音: {}", srt.display());
+            detect_silence_from_srt(srt, duration)?
+        }
+        _ => {
+            tracing::info!("使用音频分析检测静音");
+            detect_silence(input, duration)?
+        }
+    };
 
     if segments.is_empty() {
         std::fs::copy(input, output)?;
         return Ok(segments);
     }
 
-    let result = Command::new("ffmpeg")
-        .arg("-y")
+    // Build keep ranges (inverse of silence segments)
+    let mut keep_ranges: Vec<(f64, Option<f64>)> = Vec::new();
+    let mut prev_end = 0.0;
+    for (s, e) in &segments {
+        if *s > prev_end {
+            keep_ranges.push((prev_end, Some(*s)));
+        }
+        prev_end = *e;
+    }
+    keep_ranges.push((prev_end, None));
+    keep_ranges.retain(|&(start, end)| end.map_or(true, |e| e > start));
+
+    let mut filter_parts: Vec<String> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+
+    for (i, &(start, end)) in keep_ranges.iter().enumerate() {
+        let v_label = format!("v{}", i);
+        let a_label = format!("a{}", i);
+        let vf = match end {
+            Some(e) => format!("[0:v]trim=start={:.3}:end={:.3},setpts=PTS-STARTPTS[{}]", start, e, v_label),
+            None => format!("[0:v]trim=start={:.3},setpts=PTS-STARTPTS[{}]", start, v_label),
+        };
+        let af = match end {
+            Some(e) => format!("[0:a]atrim=start={:.3}:end={:.3},asetpts=PTS-STARTPTS[{}]", start, e, a_label),
+            None => format!("[0:a]atrim=start={:.3},asetpts=PTS-STARTPTS[{}]", start, a_label),
+        };
+        filter_parts.push(vf);
+        filter_parts.push(af);
+        labels.push(format!("[{}][{}]", v_label, a_label));
+    }
+
+    let n = keep_ranges.len();
+
+    if n > 1 {
+        filter_parts.push(format!("{}concat=n={}:v=1:a=1[outv][outa]", labels.join(""), n));
+    }
+
+    let filter_complex = filter_parts.join(";");
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
         .arg("-loglevel")
         .arg("error")
         .arg("-i")
         .arg(input)
-        .arg("-af")
-        .arg(format!(
-            "silenceremove=stop_periods=-1:stop_duration={}:stop_threshold=-30dB",
-            duration
-        ))
-        .arg("-vf")
-        .arg("setpts=N/FRAME_RATE/TB")
-        .arg("-async")
-        .arg("1")
+        .arg("-filter_complex")
+        .arg(&filter_complex);
+
+    if n > 1 {
+        cmd.arg("-map").arg("[outv]").arg("-map").arg("[outa]");
+    } else {
+        cmd.arg("-map").arg("[v0]").arg("-map").arg("[a0]");
+    }
+
+    let result = cmd
         .arg("-c:v")
         .arg("libx264")
         .arg("-preset")
@@ -274,6 +348,20 @@ pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) 
     let mut transcript = crate::asr::parse_srt(&content)?;
 
     for seg in &mut transcript.segments {
+        for (s, e) in silence_segments {
+            if seg.start > *s && seg.start < *e {
+                seg.start = *e;
+            }
+            if seg.end > *s && seg.end < *e {
+                seg.end = *s;
+            }
+        }
+    }
+
+    transcript.segments.retain_mut(|seg| {
+        if seg.start >= seg.end {
+            return false;
+        }
         let shift_before_start: f64 = silence_segments
             .iter()
             .filter(|(_, e)| *e <= seg.start)
@@ -287,7 +375,8 @@ pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) 
 
         seg.start = (seg.start - shift_before_start).max(0.0);
         seg.end = (seg.end - shift_before_end).max(0.0);
-    }
+        seg.start < seg.end
+    });
 
     crate::asr::write_srt(&transcript, output).context("写入调整后字幕失败")
 }

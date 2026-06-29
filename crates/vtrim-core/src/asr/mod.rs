@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -12,8 +12,8 @@ use crate::types::{PipelineContext, Timestamp, Transcript, TranscriptSegment};
 
 mod chunk;
 mod cloud_asr;
+pub mod correct;
 mod local;
-pub mod separate;
 
 pub struct Transcriber;
 
@@ -32,11 +32,11 @@ impl Stage for Transcriber {
     }
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
-        let mut audio_path = match &ctx.audio_path {
+        let audio_path = match &ctx.audio_path {
             Some(p) => p.clone(),
             None => {
                 let fallback = ctx.output_dir.join("video.wav");
-                let from_cfg = ctx.config.audio_file.as_ref()
+                let from_cfg = ctx.config.project.audio_file.as_ref()
                     .filter(|p| !p.is_empty())
                     .map(std::path::PathBuf::from);
                 let path = from_cfg
@@ -45,10 +45,7 @@ impl Stage for Transcriber {
                         if fallback.exists() { Some(fallback.clone()) } else { None }
                     });
                 match path {
-                    Some(p) => {
-                        tracing::info!("使用已有的音频文件: {}", p.display());
-                        p
-                    }
+                    Some(p) => p,
                     None => anyhow::bail!(
                         "AudioExtractor 阶段未执行，缺少音频文件 (查找路径: {} 或 config.audio_file)",
                         fallback.display()
@@ -77,34 +74,6 @@ impl Stage for Transcriber {
             save_transcript_json(&transcript, &json_path)?;
             ctx.transcript = Some(transcript);
             return Ok(());
-        }
-
-        // BGM 人声分离
-        if ctx.config.asr.separation == "spleeter" {
-            // 优先使用已分离的人声文件
-            let existing = ctx.config.vocal_file.as_ref()
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from)
-                .filter(|p| p.exists());
-
-            match existing {
-                Some(v) => {
-                    ctx.vocal_path = Some(v.clone());
-                    audio_path = v;
-                    tracing::info!("使用已有的人声文件: {}", audio_path.display());
-                }
-                None => {
-                    let sep_dir = ctx.output_dir.clone();
-                    match separate::separate(&audio_path, &crate::download::vtrim_home(), &sep_dir) {
-                        Ok(vocals) => {
-                            ctx.vocal_path = Some(vocals.clone());
-                            audio_path = vocals;
-                            tracing::info!("ASR 输入切换为人声文件: {}", audio_path.display());
-                        }
-                        Err(e) => tracing::warn!("人声分离失败，使用原音频: {}", e),
-                    }
-                }
-            }
         }
 
         local::ensure_ready(&ctx.config.asr)?;
@@ -317,7 +286,7 @@ fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {
     }
 }
 
-fn wav_duration_secs(path: &Path) -> Result<f64> {
+pub(super) fn wav_duration_secs(path: &Path) -> Result<f64> {
     let output = Command::new("ffprobe")
         .args([
             "-v", "error",

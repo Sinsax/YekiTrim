@@ -23,6 +23,23 @@ fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
 }
 
 fn merge(base: &mut Config, overlay: Config) {
+    // Project fields
+    if overlay.project.input_file.is_some() {
+        base.project.input_file.clone_from(&overlay.project.input_file);
+    }
+    if overlay.project.danmaku_file.is_some() {
+        base.project.danmaku_file.clone_from(&overlay.project.danmaku_file);
+    }
+    if overlay.project.transcript_file.is_some() {
+        base.project.transcript_file.clone_from(&overlay.project.transcript_file);
+    }
+    if overlay.project.audio_file.is_some() {
+        base.project.audio_file.clone_from(&overlay.project.audio_file);
+    }
+    if overlay.project.events_file.is_some() {
+        base.project.events_file.clone_from(&overlay.project.events_file);
+    }
+
     if overlay.audio.sample_rate != 16000 {
         base.audio.sample_rate = overlay.audio.sample_rate;
     }
@@ -30,9 +47,6 @@ fn merge(base: &mut Config, overlay: Config) {
         base.audio.channels = overlay.audio.channels;
     }
 
-    if overlay.asr.split_silence_secs != 10.0 {
-        base.asr.split_silence_secs = overlay.asr.split_silence_secs;
-    }
     if overlay.asr.backend != "local" {
         base.asr.backend = overlay.asr.backend.clone();
     }
@@ -41,9 +55,6 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if !overlay.asr.local_model_dir.is_empty() {
         base.asr.local_model_dir = overlay.asr.local_model_dir;
-    }
-    if overlay.asr.min_chunk_secs != 15.0 {
-        base.asr.min_chunk_secs = overlay.asr.min_chunk_secs;
     }
     if overlay.asr.num_threads != 0 {
         base.asr.num_threads = overlay.asr.num_threads;
@@ -54,85 +65,36 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.chunk_overlap != 10.0 {
         base.asr.chunk_overlap = overlay.asr.chunk_overlap;
     }
-    if !overlay.asr.separation.is_empty() {
-        base.asr.separation = overlay.asr.separation;
-    }
-    if overlay.asr.vad.threshold != 0.5 {
-        base.asr.vad.threshold = overlay.asr.vad.threshold;
-    }
-    if overlay.asr.vad.min_silence_duration != 0.5 {
-        base.asr.vad.min_silence_duration = overlay.asr.vad.min_silence_duration;
-    }
-    if overlay.asr.vad.min_speech_duration != 0.25 {
-        base.asr.vad.min_speech_duration = overlay.asr.vad.min_speech_duration;
-    }
-    if overlay.asr.vad.max_speech_duration != 20.0 {
-        base.asr.vad.max_speech_duration = overlay.asr.vad.max_speech_duration;
+    if overlay.asr.llm_correct {
+        base.asr.llm_correct = true;
     }
 
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
     }
-    if overlay.detection.silence_threshold_secs != 3.0 {
-        base.detection.silence_threshold_secs = overlay.detection.silence_threshold_secs;
+    if !overlay.detection.system_prompt.is_empty() {
+        base.detection.system_prompt = overlay.detection.system_prompt;
     }
-    if overlay.detection.min_segment_secs != 30.0 {
-        base.detection.min_segment_secs = overlay.detection.min_segment_secs;
-    }
-    if overlay.detection.max_segment_secs != 900.0 {
-        base.detection.max_segment_secs = overlay.detection.max_segment_secs;
+    if !overlay.detection.prompt_template.is_empty() {
+        base.detection.prompt_template = overlay.detection.prompt_template;
     }
 
-    if !overlay.detection.llm.provider.is_empty() {
-        base.detection.llm.provider = overlay.detection.llm.provider;
+    if !overlay.llm.api_key.is_empty() {
+        base.llm.api_key = overlay.llm.api_key;
     }
-    if !overlay.detection.llm.api_key.is_empty() {
-        base.detection.llm.api_key = overlay.detection.llm.api_key;
+    if !overlay.llm.api_base.is_empty() {
+        base.llm.api_base = overlay.llm.api_base;
     }
-    if !overlay.detection.llm.model.is_empty() {
-        base.detection.llm.model = overlay.detection.llm.model;
+    if !overlay.llm.model.is_empty() {
+        base.llm.model = overlay.llm.model;
     }
-    if !overlay.detection.llm.api_base.is_empty() {
-        base.detection.llm.api_base = overlay.detection.llm.api_base.clone();
+    if overlay.llm.temperature != 0.1 {
+        base.llm.temperature = overlay.llm.temperature;
     }
-    if overlay.detection.llm.temperature != 0.1 {
-        base.detection.llm.temperature = overlay.detection.llm.temperature;
-    }
-    if overlay.detection.llm.max_tokens != 4096 {
-        base.detection.llm.max_tokens = overlay.detection.llm.max_tokens;
-    }
-    if overlay.detection.llm.batch_size != 25 {
-        base.detection.llm.batch_size = overlay.detection.llm.batch_size;
-    }
-    if overlay.detection.llm.batch_overlap != 3 {
-        base.detection.llm.batch_overlap = overlay.detection.llm.batch_overlap;
+    if overlay.llm.max_tokens != 16384 {
+        base.llm.max_tokens = overlay.llm.max_tokens;
     }
 
-    if overlay.input_file.is_some() {
-        base.input_file.clone_from(&overlay.input_file);
-    }
-    if overlay.danmaku_file.is_some() {
-        base.danmaku_file.clone_from(&overlay.danmaku_file);
-    }
-    if overlay.transcript_file.is_some() {
-        base.transcript_file.clone_from(&overlay.transcript_file);
-    }
-    if overlay.audio_file.is_some() {
-        base.audio_file.clone_from(&overlay.audio_file);
-    }
-    if overlay.events_file.is_some() {
-        base.events_file.clone_from(&overlay.events_file);
-    }
-    if overlay.vocal_file.is_some() {
-        base.vocal_file.clone_from(&overlay.vocal_file);
-    }
-
-    if !overlay.cutting.preserve_source {
-        base.cutting.preserve_source = false;
-    }
-    if overlay.cutting.max_parallel != 4 {
-        base.cutting.max_parallel = overlay.cutting.max_parallel;
-    }
     if !overlay.cutting.output_dir.is_empty() {
         base.cutting.output_dir = overlay.cutting.output_dir;
     }
@@ -144,15 +106,16 @@ fn merge(base: &mut Config, overlay: Config) {
 pub fn load_config() -> Result<Config> {
     let mut config = Config::default();
 
-    let local = PathBuf::from("vtrim.toml");
-    if let Some(overlay) = load_from_file(&local)? {
-        config.current_stage = overlay.current_stage;
-        config.input_file.clone_from(&overlay.input_file);
+    // 优先级: 先加载全局配置，再用 vtrim.toml 覆盖（vtrim.toml 优先级更高）
+    let global = crate::download::vtrim_home().join("config.toml");
+    if let Some(overlay) = load_from_file(&global)? {
         merge(&mut config, overlay);
     }
 
-    let global = crate::download::vtrim_home().join("config.toml");
-    if let Some(overlay) = load_from_file(&global)? {
+    let local = PathBuf::from("vtrim.toml");
+    if let Some(overlay) = load_from_file(&local)? {
+        config.project.current_stage = overlay.project.current_stage;
+        config.project.input_file.clone_from(&overlay.project.input_file);
         merge(&mut config, overlay);
     }
 
@@ -168,43 +131,37 @@ pub fn load_current_stage() -> Result<u32> {
     let content = std::fs::read_to_string(&path)?;
     let value: toml::Value = toml::from_str(&content)?;
     Ok(value
-        .get("current_stage")
+        .get("project")
+        .and_then(|v| v.get("current_stage"))
         .and_then(|v| v.as_integer())
         .unwrap_or(0) as u32)
 }
 
-/// 用 toml_edit 将 current_stage 写入 vtrim.toml，保留注释和格式
+/// 用 toml_edit 将 current_stage 写入 vtrim.toml
 pub fn save_current_stage(stage: u32) -> Result<()> {
     edit_toml(|doc| {
-        doc["current_stage"] = toml_edit::value(stage as i64);
-    })
-}
-
-/// 用 toml_edit 将 vocal_file 写入 vtrim.toml
-pub fn save_vocal_path(path: &str) -> Result<()> {
-    edit_toml(|doc| {
-        doc["vocal_file"] = toml_edit::value(path);
+        doc["project"]["current_stage"] = toml_edit::value(stage as i64);
     })
 }
 
 /// 用 toml_edit 将 events_file 写入 vtrim.toml
 pub fn save_events_path(path: &str) -> Result<()> {
     edit_toml(|doc| {
-        doc["events_file"] = toml_edit::value(path);
+        doc["project"]["events_file"] = toml_edit::value(path);
     })
 }
 
 /// 用 toml_edit 将 audio_file 写入 vtrim.toml
 pub fn save_audio_path(path: &str) -> Result<()> {
     edit_toml(|doc| {
-        doc["audio_file"] = toml_edit::value(path);
+        doc["project"]["audio_file"] = toml_edit::value(path);
     })
 }
 
 /// 用 toml_edit 将 transcript_file 写入 vtrim.toml
 pub fn save_transcript_path(path: &str) -> Result<()> {
     edit_toml(|doc| {
-        doc["transcript_file"] = toml_edit::value(path);
+        doc["project"]["transcript_file"] = toml_edit::value(path);
     })
 }
 

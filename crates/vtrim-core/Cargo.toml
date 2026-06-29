@@ -6,18 +6,15 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 async-trait = "0.1"
 which = "7"
 tar = "0.4"
 bzip2 = "0.5"
-flate2 = "1"
 indicatif = "0.18"

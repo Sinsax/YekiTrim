@@ -6,68 +6,87 @@ use clap::Parser;
 use cli::{stage_name, Cli, Command, ConfigAction};
 use tracing_subscriber::EnvFilter;
 use vtrim_core::download;
-use vtrim_core::config::{self, Config, STAGE_CUT};
+use vtrim_core::config::{self, Config, STAGE_AUDIO, STAGE_CUT, STAGE_DETECT, STAGE_TRANSCRIBE};
 
 use crate::progress::IndicatifProgress;
 
-const PROJECT_CONFIG_TOML: &str = r##"# V-Trim 项目配置文件
+const PROJECT_CONFIG_TOML: &str = r##"# V-Trim 项目配置 — 优先级高于 .vtrim/config.toml
+# 相同的参数以本文件为准
 
+[project]
 # 输入视频文件路径 (由 `vtrim init` 写入)
 input_file = ""
-
 # 弹幕文件路径 (可选，不影响流程)
 danmaku_file = ""
-
 # 转写文件路径 (由 `vtrim transcribe` 自动写入)
 transcript_file = ""
-
 # 音频文件路径 (由 `vtrim extract-audio` 自动写入)
 audio_file = ""
-
 # 事件文件路径 (由 `vtrim detect-events` 自动写入)
 events_file = ""
-
 # 当前处理进度 (0=未开始, 1~4=各阶段编号, 由程序自动管理)
 current_stage = 0
 
 [asr]
 # ASR 后端 (local / kuaishou / bcut)
 backend = "local"
-# 静音分割阈值(秒): 超过此时长的静音将作为音频分段的切割边界
-split_silence_secs = 10.0
-# 最小片段长度(秒): 短于此长度的片段将与下一段合并
-min_chunk_secs = 15.0
+# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
+num_threads = 0
+# 每块长度(秒)
+chunk_duration = 60.0
+# 块间重叠(秒)
+chunk_overlap = 10.0
+# LLM 订正转录文本 (需配置 [llm] api_key)
+llm_correct = false
 
-[asr.vad]
-# Silero VAD 参数 (仅 VAD+ASR 管线使用)
-threshold = 0.5              # 语音概率阈值 (越高越严格)
-min_silence_duration = 0.5   # 句间最小静音(秒), 增大可减少分句
-min_speech_duration = 0.25   # 最小语音段(秒)
-max_speech_duration = 20.0   # 最大语音段(秒), 超过后强制分割
+[llm]
+# LLM API Key
+api_key = ""
+# API 基础地址
+api_base = ""
+# 模型名称（推荐使用非推理模型）
+model = ""
+# 温度参数
+temperature = 0.1
+# 最大 Token 数
+max_tokens = 16384
 
 [detection]
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
-# 静音超过此时长(秒)即为事件边界
-silence_threshold_secs = 3.0
-# 最短片段(秒)
-min_segment_secs = 30
-# 最长片段(秒)
-max_segment_secs = 900
+system_prompt = "你是一个直播录像分析助手。分析转录文本，将内容划分为多个有看点的视频片段。标题要吸引B站观众，摘要要详尽描述内容。"
+
+prompt_template = """请分析以下直播转录文本，将其划分为多个事件片段。要求：
+
+1. 每个事件片段时长控制在1-3分钟，短于60秒的片段需与相邻片段合并
+2. 标题(label)口语化、有槽点/反转/意想不到的瞬间，包含1-2个emoji🤣😱🥵😡😅🤭🤑👻，适当使用反问句或感叹号，总长度不超过40字
+3. 摘要(summary)要详尽，完整概括该片段的核心内容和看点，50-100字
+4. 事件类型(event_type)从以下选择: intro(开场), gameplay(游戏/操作), interaction(互动), qna(问答), break(休息), outro(结尾), other(其他)
+
+参考标题风格：
+  这个反应也太真实了吧？？直接笑死🤣
+  粉丝打SC问谁攻谁受，结果全员沉默？？
+  你管这叫唱歌？这分明是作法现场????
+  被自己翻唱尬到脚趾抠地?? 这也太真实了吧😅
+  这什么雷霆坐姿雷霆视角🥵羞死人了🥵
+
+输出格式：只输出一个 JSON 数组，不要 markdown 或解释：
+
+转录片段：
+{segments}
+
+只输出JSON数组：
+[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "详尽描述这段内容的核心看点...", "event_type": "interaction"}]"""
 
 [cutting]
-# 是否保留源编码格式 (true=流复制, false=重新编码)
-preserve_source = true
-# 并行剪切进程数
-max_parallel = 4
 # 输出目录
 output_dir = "./output"
 # 是否覆盖已有文件
 overwrite = false
 "##;
 
-const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局配置
-# 设置后所有工程共享此配置
+const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
+# 相同参数会被 vtrim.toml 覆盖
 
 [asr]
 # CPU 并行转写线程数 (0=CPU/4取整, 上限4)
@@ -76,26 +95,45 @@ num_threads = 0
 chunk_duration = 60.0
 # 块间重叠(秒)
 chunk_overlap = 10.0
-# 人声分离: none / spleeter (需先 vtrim setup-spleeter)
-separation = "none"
+# LLM 订正转录文本
+llm_correct = false
 
-[detection.llm]
-# LLM 服务提供商
-provider = "openai"
-# LLM API Key (也可用 VTRIM_LLM_KEY 环境变量)
+[llm]
+# LLM API Key
 api_key = ""
-# API 基础地址 (留空=OpenAI, DeepSeek="https://api.deepseek.com/v1")
+# API 基础地址
 api_base = ""
-# 模型名称
-model = "gpt-4o-mini"
-# 温度参数 (越低越确定)
+# 模型名称（推荐使用非推理模型）
+model = ""
+# 温度参数
 temperature = 0.1
-# 最大 Token 数 (响应较长时建议改到 16384)
+# 最大 Token 数
 max_tokens = 16384
-# 每批处理的片段数
-batch_size = 25
-# 批次间重叠片段数 (用于合并连续性)
-batch_overlap = 3
+
+[detection]
+system_prompt = "你是一个直播录像分析助手。分析转录文本，将内容划分为多个有看点的视频片段。标题要吸引B站观众，摘要要详尽描述内容。"
+
+prompt_template = """请分析以下直播转录文本，将其划分为多个事件片段。要求：
+
+1. 每个事件片段时长控制在1-3分钟，短于60秒的片段需与相邻片段合并
+2. 标题(label)口语化、有槽点/反转/意想不到的瞬间，包含1-2个emoji🤣😱🥵😡😅🤭🤑👻，适当使用反问句或感叹号，总长度不超过40字
+3. 摘要(summary)要详尽，完整概括该片段的核心内容和看点，50-100字
+4. 事件类型(event_type)从以下选择: intro(开场), gameplay(游戏/操作), interaction(互动), qna(问答), break(休息), outro(结尾), other(其他)
+
+参考标题风格：
+  这个反应也太真实了吧？？直接笑死🤣
+  粉丝打SC问谁攻谁受，结果全员沉默？？
+  你管这叫唱歌？这分明是作法现场????
+  被自己翻唱尬到脚趾抠地?? 这也太真实了吧😅
+  这什么雷霆坐姿雷霆视角🥵羞死人了🥵
+
+输出格式：只输出一个 JSON 数组，不要 markdown 或解释：
+
+转录片段：
+{segments}
+
+只输出JSON数组：
+[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "详尽描述这段内容的核心看点...", "event_type": "interaction"}]"""
 "#;
 
 mod cli;
@@ -114,7 +152,7 @@ fn resolve_input(cfg: &Config, cli_input: &Option<PathBuf>) -> anyhow::Result<Pa
     if let Some(input) = cli_input {
         return Ok(input.clone());
     }
-    if let Some(ref path) = cfg.input_file {
+    if let Some(ref path) = cfg.project.input_file {
         if !path.is_empty() {
             return Ok(PathBuf::from(path));
         }
@@ -122,16 +160,6 @@ fn resolve_input(cfg: &Config, cli_input: &Option<PathBuf>) -> anyhow::Result<Pa
     anyhow::bail!(
         "未指定输入文件。请提供 -i <视频路径>，或先运行 `vtrim init <video>` 初始化工程"
     );
-}
-
-fn build_pipeline_runner(cfg: Config, progress: Arc<dyn vtrim_core::progress::ProgressReporter>) -> vtrim_core::pipeline::PipelineRunner {
-    let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
-    runner.set_progress(progress);
-    runner.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
-    runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
-    runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
-    runner.add_stage(Box::new(vtrim_core::cutting::Cutter));
-    runner
 }
 
 fn load_cfg(
@@ -191,9 +219,15 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| PathBuf::from("vtrim.toml"));
 
             let mut doc: toml_edit::DocumentMut = PROJECT_CONFIG_TOML.parse()?;
-            doc["input_file"] = toml_edit::value(input.to_string_lossy().as_ref());
-            if let Some(df) = danmaku {
-                doc["danmaku_file"] = toml_edit::value(df.to_string_lossy().as_ref());
+            doc["project"]["input_file"] = toml_edit::value(input.to_string_lossy().as_ref());
+            if let Some(df) = &danmaku {
+                doc["project"]["danmaku_file"] = toml_edit::value(df.to_string_lossy().as_ref());
+            } else {
+                let auto_ass = input.with_extension("ass");
+                if auto_ass.exists() {
+                    doc["project"]["danmaku_file"] = toml_edit::value(auto_ass.to_string_lossy().as_ref());
+                    tracing::info!("自动发现弹幕文件: {}", auto_ass.display());
+                }
             }
             if let Some(dir) = output {
                 doc["cutting"]["output_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
@@ -239,16 +273,128 @@ async fn main() -> anyhow::Result<()> {
                     .join(&cfg.cutting.output_dir)
             });
 
+            let current = config::load_current_stage()?;
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output.clone());
-            let runner = build_pipeline_runner(cfg, progress.clone());
 
-            if *dry_run {
-                runner.run_until(&mut ctx, STAGE_CUT - 1).await?;
-                tracing::info!("(--dry-run) 分析完成，未执行剪切。输出目录: {}", output.display());
+            // Step 1: 音频提取（未完成才跑）
+            if current < STAGE_AUDIO {
+                let mut extract_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
+                extract_runner.set_progress(progress.clone());
+                extract_runner.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
+                extract_runner.run_until(&mut ctx, STAGE_AUDIO).await?;
+                config::save_current_stage(STAGE_AUDIO)?;
             } else {
-                runner.run_all(&mut ctx).await?;
-                tracing::info!("处理完成! 输出目录: {}", output.display());
+                tracing::info!("音频已提取，跳过");
             }
+
+            // Step 2: 转写（未完成才跑）
+            if current < STAGE_TRANSCRIBE {
+                vtrim_core::download::ensure_models().await?;
+                let mut transcribe_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
+                transcribe_runner.set_progress(progress.clone());
+                transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
+                transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
+                config::save_current_stage(STAGE_TRANSCRIBE)?;
+            } else {
+                // 从已保存的文件恢复 transcript
+                let recovery_path = cfg.project.transcript_file
+                    .as_ref()
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from)
+                    .filter(|p| p.exists())
+                    .or_else(|| {
+                        let json = ctx.output_dir.join("transcript.json");
+                        if json.exists() { Some(json) } else { None }
+                    })
+                    .or_else(|| {
+                        let srt = ctx.output_dir.join("video.srt");
+                        if srt.exists() { Some(srt) } else { None }
+                    });
+
+                match recovery_path {
+                    Some(path) => {
+                        let content = std::fs::read_to_string(&path)?;
+                        let ext = path.extension()
+                            .map(|e| e.to_string_lossy().to_lowercase())
+                            .unwrap_or_default();
+                        ctx.transcript = Some(if ext == "json" {
+                            serde_json::from_str(&content)?
+                        } else {
+                            vtrim_core::asr::parse_srt(&content)?
+                        });
+                        tracing::info!("转写已存在: {}", path.display());
+                    }
+                    None => {
+                        tracing::warn!("current_stage >= 2 但未找到转写文件，重新转写");
+                        vtrim_core::download::ensure_models().await?;
+                        let mut transcribe_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
+                        transcribe_runner.set_progress(progress.clone());
+                        transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
+                        transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
+                        config::save_current_stage(STAGE_TRANSCRIBE)?;
+                    }
+                }
+            }
+
+            // Step 3: LLM 订正（可选，不受 stage 限制）
+            if cfg.asr.llm_correct && !cfg.llm.api_key.is_empty() {
+                if let Some(ref transcript) = ctx.transcript {
+                    tracing::info!("LLM 订正转录文本...");
+                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &cfg.llm).await {
+                        Ok(corrected) => {
+                            let new = vtrim_core::types::Transcript {
+                                segments: corrected,
+                                language: "zh".into(),
+                            };
+                            let llm_srt = ctx.output_dir.join("video_llm.srt");
+                            vtrim_core::asr::write_srt(&new, &llm_srt)?;
+                            config::save_transcript_path(&llm_srt.to_string_lossy())?;
+                            ctx.transcript = Some(new);
+                            tracing::info!("LLM 订正完成");
+                        }
+                        Err(e) => tracing::warn!("LLM 订正失败，使用原始转录: {}", e),
+                    }
+                }
+            }
+
+            // Step 4: 检测 + 剪切（未完成才跑）
+            if current < STAGE_DETECT {
+                let mut detect_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
+                detect_runner.set_progress(progress.clone());
+                detect_runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
+                if *dry_run {
+                    detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
+                    tracing::info!("(--dry-run) 分析完成，未执行剪切。输出目录: {}", output.display());
+                    return Ok(());
+                }
+                detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
+                config::save_current_stage(STAGE_DETECT)?;
+            } else {
+                tracing::info!("事件检测已存在，跳过");
+            }
+
+            // Step 5: 剪切（未完成才跑）
+            if current < STAGE_CUT {
+                if *dry_run {
+                    tracing::info!("(--dry-run) 未执行剪切。输出目录: {}", output.display());
+                    return Ok(());
+                }
+                // 从文件恢复 events
+                let events_path = ctx.output_dir.join("events.json");
+                if events_path.exists() {
+                    let content = std::fs::read_to_string(&events_path)?;
+                    ctx.events = serde_json::from_str(&content)?;
+                }
+                let mut cut_runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
+                cut_runner.set_progress(progress.clone());
+                cut_runner.add_stage(Box::new(vtrim_core::cutting::Cutter));
+                cut_runner.run_until(&mut ctx, STAGE_CUT).await?;
+                config::save_current_stage(STAGE_CUT)?;
+            } else {
+                tracing::info!("剪切已完成，跳过");
+            }
+
+            tracing::info!("处理完成! 输出目录: {}", output.display());
         }
 
         Command::Transcribe {
@@ -310,11 +456,11 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_default()
                 .join(&cfg.cutting.output_dir);
 
-            // 优先级: --transcript 参数 > config.transcript_file > 自动发现
+            // 优先级: --transcript 参数 > config.project.transcript_file > 自动发现
             let transcript_path = transcript
                 .clone()
                 .or_else(|| {
-                    cfg.transcript_file
+                    cfg.project.transcript_file
                         .as_ref()
                         .filter(|p| !p.is_empty())
                         .map(PathBuf::from)
@@ -386,7 +532,7 @@ async fn main() -> anyhow::Result<()> {
             let events_path = events
                 .clone()
                 .or_else(|| {
-                    cfg.events_file
+                    cfg.project.events_file
                         .as_ref()
                         .filter(|p| !p.is_empty())
                         .map(PathBuf::from)
@@ -425,7 +571,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Status => {
             let current = config::load_current_stage()?;
             let cfg = load_cfg(global_config)?;
-            if let Some(ref input_file) = cfg.input_file {
+            if let Some(ref input_file) = cfg.project.input_file {
                 if !input_file.is_empty() {
                     println!("视频工程: {}", input_file);
                 }
@@ -505,9 +651,10 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|| format!("clip_{}", i));
                 let output_path = out_dir.join(format!("{}_cleaned.mp4", stem));
                 tracing::info!("[{}/{}] {} → {}", i + 1, targets.len(), input.display(), output_path.display());
-                let segments = vtrim_core::cutting::remove_silence(input, &output_path, *duration)?;
-
                 let srt_path = input.with_extension("srt");
+                let srt_opt = if srt_path.exists() { Some(srt_path.as_path()) } else { None };
+                let segments = vtrim_core::cutting::remove_silence(input, &output_path, *duration, srt_opt)?;
+
                 if srt_path.exists() {
                     let out_srt = output_path.with_extension("srt");
                     vtrim_core::cutting::adjust_srt(&srt_path, &out_srt, &segments)?;
@@ -523,44 +670,55 @@ async fn main() -> anyhow::Result<()> {
             download::download_all(None).await?;
         }
 
-        Command::SetupSpleeter => {
-            tracing::info!("安装 Spleeter 人声分离...");
-            let home = vtrim_core::download::vtrim_home();
-            vtrim_core::download::setup_spleeter(&home).await?;
-            tracing::info!("Spleeter 安装完成");
-        }
-
-        Command::Separate { input, output } => {
+        Command::Correct { transcript } => {
             let cfg = load_cfg(global_config)?;
-            let input_path = match input {
-                Some(p) => p.clone(),
-                None => {
-                    let audio = cfg.audio_file
+            let output_dir = std::env::current_dir()
+                .unwrap_or_default()
+                .join(&cfg.cutting.output_dir);
+
+            let transcript_path = transcript
+                .clone()
+                .or_else(|| {
+                    cfg.project.transcript_file
                         .as_ref()
                         .filter(|p| !p.is_empty())
                         .map(PathBuf::from)
-                        .or_else(|| {
-                            let fallback = std::env::current_dir().unwrap_or_default()
-                                .join("output").join("video.wav");
-                            if fallback.exists() { Some(fallback) } else { None }
-                        })
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "未指定输入文件，且未找到音频文件 (config.audio_file 或 output/video.wav)"
-                        ))?;
-                    audio
-                }
+                })
+                .or_else(|| {
+                    let json = output_dir.join("transcript.json");
+                    if json.exists() { Some(json) } else { None }
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("未找到转录文件，请通过 --transcript 指定或先运行 vtrim transcribe")
+                })?;
+
+            let content = std::fs::read_to_string(&transcript_path)
+                .with_context(|| format!("无法读取转录文件: {}", transcript_path.display()))?;
+            let ext = transcript_path.extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let mut transcript_data: vtrim_core::types::Transcript = if ext == "json" {
+                serde_json::from_str(&content)
+                    .with_context(|| "解析转录 JSON 失败")?
+            } else {
+                vtrim_core::asr::parse_srt(&content)
+                    .with_context(|| "解析 SRT 失败")?
             };
 
-            let home = vtrim_core::download::vtrim_home();
-            let out_dir = output.clone().unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_default().join("output")
-            });
-            match vtrim_core::asr::separate::separate(&input_path, &home, &out_dir) {
-                Ok(vocals) => {
-                    let _ = config::save_vocal_path(&vocals.to_string_lossy());
-                    tracing::info!("人声分离完成: {}", vocals.display());
+            tracing::info!("LLM 订正 {} 个片段...", transcript_data.segments.len());
+            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &cfg.llm).await {
+                Ok(corrected) => {
+                    transcript_data.segments = corrected;
+
+                    let llm_srt = output_dir.join("video_llm.srt");
+                    std::fs::create_dir_all(&output_dir)?;
+                    vtrim_core::asr::write_srt(&transcript_data, &llm_srt)?;
+                    config::save_transcript_path(&llm_srt.to_string_lossy())?;
+
+                    tracing::info!("LLM 订正完成");
+                    tracing::info!("  字幕: {}", llm_srt.display());
                 }
-                Err(e) => anyhow::bail!("人声分离失败: {}", e),
+                Err(e) => anyhow::bail!("LLM 订正失败: {}", e),
             }
         }
 

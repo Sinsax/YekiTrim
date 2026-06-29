@@ -10,6 +10,7 @@ use crate::types::PipelineContext;
 fn inject_config(ctx: &mut PipelineContext, config: &Arc<Config>) {
     ctx.config = config.clone();
     ctx.danmaku_path = config
+        .project
         .danmaku_file
         .as_ref()
         .filter(|p| !p.is_empty())

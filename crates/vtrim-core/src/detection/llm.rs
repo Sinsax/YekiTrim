@@ -1,8 +1,22 @@
-use crate::config::LlmConfig;
+use crate::config::{DetectionConfig, LlmConfig};
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
 use anyhow::{Context, Result};
 
-fn build_prompt(segments: &[TranscriptSegment]) -> String {
+fn format_segments(segments: &[TranscriptSegment]) -> String {
+    let mut out = String::new();
+    for seg in segments {
+        out.push_str(&format!("[{:.1}-{:.1}] {}\n", seg.start, seg.end, seg.text));
+    }
+    out
+}
+
+fn build_prompt(segments: &[TranscriptSegment], config: &DetectionConfig) -> String {
+    if !config.prompt_template.is_empty() {
+        return config
+            .prompt_template
+            .replace("{segments}", &format_segments(segments).trim());
+    }
+
     let mut lines = vec![
         "请分析以下直播转录文本，将其划分为多个事件片段。要求：".into(),
         "".into(),
@@ -102,18 +116,22 @@ fn parse_events(value: serde_json::Value) -> Vec<Event> {
         .collect()
 }
 
-fn system_prompt() -> &'static str {
+fn system_prompt(config: &DetectionConfig) -> &str {
+    if !config.system_prompt.is_empty() {
+        return &config.system_prompt;
+    }
     "你是一个直播录像分析助手。分析转录文本，将内容划分为多个有看点的视频片段。\
      标题要吸引B站观众，摘要要详尽描述内容。"
 }
 
-pub async fn call(segments: &[TranscriptSegment], config: &LlmConfig) -> Result<Vec<Event>> {
-    let prompt = build_prompt(segments);
+pub async fn call(segments: &[TranscriptSegment], llm: &LlmConfig, detect: &DetectionConfig) -> Result<Vec<Event>> {
+    let prompt = build_prompt(segments, detect);
 
-    let api_url = if config.api_base.is_empty() {
-        "https://api.openai.com/v1/chat/completions".to_string()
-    } else {
-        let base = config.api_base.trim_end_matches('/');
+    if llm.api_base.is_empty() {
+        anyhow::bail!("未配置 LLM API 基础地址 (llm.api_base)，请设置后重试");
+    }
+    let api_url = {
+        let base = llm.api_base.trim_end_matches('/');
         if base.ends_with("/chat/completions") {
             base.to_string()
         } else {
@@ -121,19 +139,22 @@ pub async fn call(segments: &[TranscriptSegment], config: &LlmConfig) -> Result<
         }
     };
 
+    let mut body = serde_json::json!({
+        "temperature": llm.temperature,
+        "max_tokens": llm.max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt(detect)},
+            {"role": "user", "content": prompt}
+        ]
+    });
+    if !llm.model.is_empty() {
+        body["model"] = serde_json::json!(llm.model);
+    }
     let client = reqwest::Client::new();
     let resp = client
         .post(&api_url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .json(&serde_json::json!({
-            "model": config.model,
-            "temperature": config.temperature,
-            "max_tokens": config.max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt()},
-                {"role": "user", "content": prompt}
-            ]
-        }))
+        .header("Authorization", format!("Bearer {}", llm.api_key))
+        .json(&body)
         .send()
         .await
         .context("LLM API 请求失败")?;
@@ -153,17 +174,18 @@ pub async fn call(segments: &[TranscriptSegment], config: &LlmConfig) -> Result<
     let json_value = match parse_json(content) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("LLM 响应解析失败: {}", e);
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
             let log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{}.log", ts));
-            if let Err(we) = std::fs::write(&log_path, content) {
-                tracing::warn!("无法写入调试日志: {}", we);
-            } else {
-                tracing::warn!("完整响应已保存到: {}", log_path.display());
-            }
+            let full = format!(
+                "--- content ---\n{}\n\n--- full response ---\n{}",
+                content,
+                serde_json::to_string_pretty(&body).unwrap_or_default()
+            );
+            let _ = std::fs::write(&log_path, &full);
+            tracing::warn!("LLM 响应解析失败: {}，已保存到 {}", e, log_path.display());
             return Err(e);
         }
     };

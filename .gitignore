@@ -9,3 +9,6 @@ target
 /.venv
 /title_llm
 vtrim.toml
+*.json
+*.txt
+*.log
