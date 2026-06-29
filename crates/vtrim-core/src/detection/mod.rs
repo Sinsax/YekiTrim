@@ -56,7 +56,7 @@ impl Stage for EventDetector {
         }
 
         ctx.events = events;
-        save_events(&ctx.events, &ctx.output_dir, &ctx.input_stem)?;
+        save_events(&ctx.events, &ctx.output_dir)?;
 
         tracing::info!("事件检测完成: {} 个事件", ctx.events.len());
         Ok(())
@@ -209,9 +209,9 @@ fn enforce_min_duration(mut events: Vec<Event>, min_secs: f64) -> Vec<Event> {
     events
 }
 
-fn save_events(events: &[Event], output_dir: &std::path::Path, stem: &str) -> Result<()> {
+fn save_events(events: &[Event], output_dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
-    let path = output_dir.join(format!("{}_events.json", stem));
+    let path = output_dir.join("events.json");
     let json = serde_json::to_string_pretty(events)?;
     std::fs::write(&path, json).context("写入事件文件失败")?;
     tracing::info!("事件已保存: {}", path.display());

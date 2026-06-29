@@ -15,7 +15,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// 初始化视频工程 (创建 vtrim.toml 并记录视频路径)
+    /// 初始化视频工程 (创建 vtrim.toml)
     Init {
         /// 输入视频文件
         input: PathBuf,
@@ -31,6 +31,17 @@ pub enum Command {
         /// 配置文件路径 (默认 ./vtrim.toml)
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+
+    /// 提取音频 (Stage 1)
+    Extract {
+        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+
+        /// 输出目录
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 
     /// 全自动管线处理（无视 state，从头跑到尾）
@@ -52,7 +63,7 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// 仅语音转文字 (Stage 3, 本地 sherpa-onnx)
+    /// 语音转文字 (Stage 2)
     Transcribe {
         /// 输入音频/视频文件 (默认使用 vtrim.toml 中记录的 input_file)
         #[arg(short, long)]
@@ -67,14 +78,14 @@ pub enum Command {
         backend: Option<String>,
     },
 
-    /// 仅事件检测 (Stage 4)
+    /// 事件检测 (Stage 3)
     DetectEvents {
         /// 转录结果 JSON 文件 (默认自动从输出目录发现)
         #[arg(short, long)]
         transcript: Option<PathBuf>,
     },
 
-    /// 仅剪切 (Stage 5)
+    /// 剪切片段 (Stage 4)
     Cut {
         /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
         #[arg(short, long)]
@@ -96,7 +107,7 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigAction),
 
-    /// 移除已输出视频中的长静音段（重编码）
+    /// 移除已输出视频中的长静音段（重编码，输出到输入文件同目录）
     SilenceRemove {
         /// 要处理的视频文件（默认扫描 output/clips/）
         #[arg(required = false)]
@@ -106,7 +117,7 @@ pub enum Command {
         #[arg(long, default_value_t = 2.0)]
         duration: f64,
 
-        /// 输出目录 (默认 output/clips_cleaned/)
+        /// 输出目录 (默认输出到输入文件同目录)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -127,7 +138,7 @@ pub enum Command {
         #[arg(required = false)]
         input: Option<PathBuf>,
 
-        /// 输出目录 (默认 output/separated/)
+        /// 输出目录 (默认 output/)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -151,9 +162,9 @@ pub enum ConfigAction {
 pub fn stage_name(num: u32) -> &'static str {
     match num {
         1 => "AudioExtractor",
-        3 => "Transcriber",
-        4 => "EventDetector",
-        5 => "Cutter",
+        2 => "Transcriber",
+        3 => "EventDetector",
+        4 => "Cutter",
         _ => "Unknown",
     }
 }

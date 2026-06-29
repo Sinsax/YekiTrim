@@ -4,12 +4,12 @@ use crate::config::Config;
 use crate::types::PipelineContext;
 
 pub const STAGE_AUDIO: u32 = 1;
-pub const STAGE_TRANSCRIBE: u32 = 3;
-pub const STAGE_DETECT: u32 = 4;
-pub const STAGE_CUT: u32 = 5;
+pub const STAGE_TRANSCRIBE: u32 = 2;
+pub const STAGE_DETECT: u32 = 3;
+pub const STAGE_CUT: u32 = 4;
 
-pub fn stage_enabled(num: u32, _config: &Config) -> bool {
-    num != 2
+pub fn stage_enabled(_num: u32, _config: &Config) -> bool {
+    true
 }
 
 #[async_trait]

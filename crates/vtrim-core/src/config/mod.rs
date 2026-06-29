@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 
 /// 阶段编号常量
 pub const STAGE_AUDIO: u32 = 1;
-pub const STAGE_TRANSCRIBE: u32 = 3;
-pub const STAGE_DETECT: u32 = 4;
-pub const STAGE_CUT: u32 = 5;
+pub const STAGE_TRANSCRIBE: u32 = 2;
+pub const STAGE_DETECT: u32 = 3;
+pub const STAGE_CUT: u32 = 4;
 
 fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
     if !path.exists() {

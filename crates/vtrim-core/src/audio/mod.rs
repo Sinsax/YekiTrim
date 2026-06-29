@@ -24,7 +24,7 @@ impl Stage for AudioExtractor {
     }
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
-        let audio_path = ctx.output_dir.join("audio_16khz.wav");
+        let audio_path = ctx.output_dir.join("video.wav");
 
         std::fs::create_dir_all(&ctx.output_dir)?;
 

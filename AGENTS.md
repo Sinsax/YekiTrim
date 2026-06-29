@@ -8,26 +8,27 @@ Cargo workspace, 两个 crate:
 - `crates/vtrim-core` — 管线编排 + 全部业务逻辑
 - `crates/vtrim-cli` — CLI 入口 (clap)
 
-**Stage numbering跳过了 2**: AudioExtractor(1) → Transcriber(3) → EventDetector(4) → Cutter(5)。stage 2 无实现，`status` 显示为 "Unknown (可选)"。
+**Stage 编号**: AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)，连续无跳过。
 
 所有 stage 用 `#[async_trait]` 实现 `Stage` trait (`crates/vtrim-core/src/pipeline/stage.rs`)。
 
 `PipelineRunner` 提供三种运行模式 (`runner.rs`):
 - `run()` — 受 `current_stage` 状态机约束，单 stage 命令用
-- `run_all()` — 无视状态机从头跑到底，`process` 命令用，完成后设 `current_stage=5`
+- `run_all()` — 无视状态机从头跑到底，`process` 命令用，完成后设 `current_stage=4`
 - `run_until(max)` — 跑到指定 stage 为止，`process --dry-run` 用
 
 ## CLI
 
 ```
-vtrim init <video> [--danmaku <file>]    # 创建 vtrim.toml + 立即提取音频 + 设 current_stage=1
+vtrim init <video> [--danmaku <file>]    # 创建 vtrim.toml
+vtrim extract-audio [-i] [-o]            # 提取音频 (Stage 1)
 vtrim process [-i] [-o] [--dry-run]      # 全自动管线 (无视 state)
                                          # --dry-run: 只到 EventDetector, 不剪切
-vtrim transcribe [-i] [--backend]        # Stage 3 (local/bcut/kuaishou)
-vtrim detect-events [-t <transcript>]    # Stage 4 (自动发现: 参数 > config > output_dir/*.json > *.srt)
-vtrim cut [-i] [-e <events>] [-o]        # Stage 5 (自动发现: 参数 > output_dir/{stem}_events.json)
+vtrim transcribe [-i] [--backend]        # Stage 2 (local/bcut/kuaishou)
+vtrim detect-events [-t <transcript>]    # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
+vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
 vtrim silence-remove [files...]          # 对已输出 clips 移除长静音段 (重编码)
-       [--duration 2.0] [-o <dir>]      # 默认扫描 output/clips/, 输出到 output/clips_cleaned/
+       [--duration 2.0] [-o <dir>]      # 默认扫描 output/clips/, 输出到输入文件同目录
 vtrim download-models                    # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
 vtrim setup-spleeter                     # 安装 Spleeter 人声分离到 .vtrim/venv/ (需 uv)
 vtrim separate [input] [-o <dir>]       # 人声分离 (默认使用 config.audio_file)
@@ -45,11 +46,11 @@ vtrim version
 
 | 规则 | 示例 (current=2) |
 |------|-----------------|
-| `stage > current + 1` → 拒绝 | `transcribe`(3=2+1) ✅ / `detect`(4>3) ❌ |
-| `stage <= current` → 可重跑 | `transcribe`(3≤2?) — ❌ `extract-audio` 已移除 |
-| 完成后 stage 自动推进 | `transcribe`(3) → `current_stage=3` |
-| `process` 无视 state, 跑完设 `current_stage=5` | |
-| stage 2 自动跳过 | `stage_enabled(2)=false` → `current_stage+=1` |
+| `stage > current + 1` → 拒绝 | `detect`(3=2+1) ✅ / `cut`(4>3) ❌ |
+| `stage <= current` → 可重跑 | `transcribe`(2≤2) ✅ |
+| 完成后 stage 自动推进 | `transcribe`(2) → `current_stage=2` |
+| `process` 无视 state, 跑完设 `current_stage=4` | |
+| stage 无跳过 | 所有 stage 均为连续编号 |
 
 实现: `config/mod.rs` 的 `save_current_stage()` 用 `toml_edit` 原地修改 `vtrim.toml` 保留注释和格式。
 
@@ -116,9 +117,9 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 
 ## 各阶段 I/O
 
-### AudioExtractor (init 时自动执行)
+### AudioExtractor (Stage 1, `vtrim extract-audio`)
 - 输入: 视频 → ffmpeg 16kHz mono WAV + ffprobe VideoInfo
-- `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/audio_16khz.wav`
+- `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/video.wav`
 
 ### Transcriber
 - 本地 sherpa-onnx-offline (SenseVoice, CPU only)
@@ -127,7 +128,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - 可配置定长分块 (默认 60s + 10s 重叠)
 - 并行转写: 默认 CPU/4 路并行 (上限 4)，每 chunk intra-op threads=2
 - SRT 使用 UTF-8 BOM 写入 (Windows 字幕兼容)
-- 输出: `{stem}.srt` + `{stem}_transcript.json`，自动写 `transcript_file` 到 vtrim.toml
+- 输出: `video.srt` + `transcript.json`，自动写 `transcript_file` 到 vtrim.toml
 
 ### EventDetector
 - 一次 LLM API 调用分析全部 segments (利用 64k+ 上下文窗口), 非分批
@@ -135,7 +136,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - 弹幕: ASS 解析 → 10s 窗口归一化密度 → 每个 event 的 `popularity` 0~1
 - 按 popularity 降序赋 `rank`，最终按时间排序输出
 - 降级: API key 为空或调用失败时使用单个默认事件
-- 输出: `{stem}_events.json`
+- 输出: `events.json`
 
 ### Cutter
 - GPU 加速编码 (NVENC/QSV/AMF 自动检测, 降级 libx264)

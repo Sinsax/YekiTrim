@@ -21,13 +21,13 @@ danmaku_file = ""
 # 转写文件路径 (由 `vtrim transcribe` 自动写入)
 transcript_file = ""
 
-# 音频文件路径 (由 `vtrim init` 自动写入)
+# 音频文件路径 (由 `vtrim extract-audio` 自动写入)
 audio_file = ""
 
 # 事件文件路径 (由 `vtrim detect-events` 自动写入)
 events_file = ""
 
-# 当前处理进度 (0=未开始, 1~5=各阶段编号, 由程序自动管理)
+# 当前处理进度 (0=未开始, 1~4=各阶段编号, 由程序自动管理)
 current_stage = 0
 
 [asr]
@@ -148,10 +148,10 @@ fn load_cfg(
 fn check_stage(stage_num: u32, current: u32, _cfg: &Config) -> anyhow::Result<()> {
     let mut needed: Vec<u32> = Vec::new();
     for n in current + 1..stage_num {
-        let skipped = n == 2 || !vtrim_core::pipeline::stage_enabled(n, _cfg);
-        if !skipped {
-            needed.push(n);
+        if !vtrim_core::pipeline::stage_enabled(n, _cfg) {
+            continue;
         }
+        needed.push(n);
     }
 
     if !needed.is_empty() {
@@ -202,20 +202,23 @@ async fn main() -> anyhow::Result<()> {
 
             tracing::info!("视频工程已初始化: {}", input.display());
             tracing::info!("配置文件: {}", out.display());
+        }
 
-            // 立即执行音频提取
+        Command::Extract { input, output } => {
+            let cfg = load_cfg(global_config)?;
+            let input_path = resolve_input(&cfg, input)?;
             let output_dir = output.clone().unwrap_or_else(|| {
                 std::env::current_dir()
                     .unwrap_or_default()
-                    .join("./output")
+                    .join(&cfg.cutting.output_dir)
             });
-            let mut ctx =
-                vtrim_core::types::PipelineContext::new(input.clone(), output_dir);
-            let mut runner = vtrim_core::pipeline::PipelineRunner::new(config::load_config()?);
+
+            let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output_dir);
+            let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
             runner.set_progress(progress.clone());
             runner.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
+
             runner.run(&mut ctx).await?;
-            // 记录音频文件路径
             if let Some(ref ap) = ctx.audio_path {
                 let _ = config::save_audio_path(&ap.to_string_lossy());
             }
@@ -274,7 +277,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let current = config::load_current_stage()?;
-            check_stage(3, current, &cfg)?;
+            check_stage(2, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
             let output = output.clone().unwrap_or_else(|| {
                 std::env::current_dir()
@@ -291,7 +294,7 @@ async fn main() -> anyhow::Result<()> {
             // 保存转写文件路径到配置，供 detect-events 自动发现
             config::save_transcript_path(
                 &ctx.output_dir
-                    .join(format!("{}.srt", ctx.input_stem))
+                    .join("video.srt")
                     .to_string_lossy(),
             )?;
             tracing::info!("语音转文字完成");
@@ -300,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
         Command::DetectEvents { transcript } => {
             let cfg = load_cfg(global_config)?;
             let current = config::load_current_stage()?;
-            check_stage(4, current, &cfg)?;
+            check_stage(3, current, &cfg)?;
 
             let input_path = resolve_input(&cfg, &None)?;
             let output_dir = std::env::current_dir()
@@ -317,12 +320,8 @@ async fn main() -> anyhow::Result<()> {
                         .map(PathBuf::from)
                 })
                 .or_else(|| {
-                    let stem = input_path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let json = output_dir.join(format!("{}_transcript.json", stem));
-                    let srt = output_dir.join(format!("{}.srt", stem));
+                    let json = output_dir.join("transcript.json");
+                    let srt = output_dir.join("video.srt");
                     if json.exists() {
                         tracing::info!("自动发现转写 JSON: {}", json.display());
                         Some(json)
@@ -364,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
             runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
 
             runner.run(&mut ctx).await?;
-            let ev_path = output_dir.join(format!("{}_events.json", ctx.input_stem));
+            let ev_path = output_dir.join("events.json");
             let _ = config::save_events_path(&ev_path.to_string_lossy());
             tracing::info!("事件检测完成, 共 {} 个事件", ctx.events.len());
         }
@@ -376,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let cfg = load_cfg(global_config)?;
             let current = config::load_current_stage()?;
-            check_stage(5, current, &cfg)?;
+            check_stage(4, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
             let output_dir = output.clone().unwrap_or_else(|| {
                 std::env::current_dir()
@@ -394,11 +393,7 @@ async fn main() -> anyhow::Result<()> {
                         .filter(|p| p.exists())
                 })
                 .or_else(|| {
-                    let stem = input_path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let auto = output_dir.join(format!("{}_events.json", stem));
+                    let auto = output_dir.join("events.json");
                     if auto.exists() {
                         Some(auto)
                     } else {
@@ -446,11 +441,7 @@ async fn main() -> anyhow::Result<()> {
                     "·"
                 };
                 let name = stage_name(num);
-                if num == 2 {
-                    println!("  [{}] {:<20} {} (可选)", status, name, status);
-                } else {
-                    println!("  [{}] {:<20} {}", status, name, status);
-                }
+                println!("  [{}] {:<20} {}", status, name, status);
             }
         }
 
@@ -476,13 +467,6 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_default()
                 .join("output")
                 .join("clips");
-            let out_dir = output.clone().unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join("output")
-                    .join("clips_cleaned")
-            });
-            std::fs::create_dir_all(&out_dir)?;
 
             let targets: Vec<PathBuf> = if files.is_empty() {
                 if clips_dir.exists() {
@@ -509,16 +493,29 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("静音移除: duration={}s, 共 {} 个文件", duration, targets.len());
 
             for (i, input) in targets.iter().enumerate() {
+                let out_dir = output.clone().unwrap_or_else(|| {
+                    input.parent()
+                        .expect("无法获取输入文件所在目录")
+                        .to_path_buf()
+                });
+                std::fs::create_dir_all(&out_dir)?;
                 let stem = input
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| format!("clip_{}", i));
                 let output_path = out_dir.join(format!("{}_cleaned.mp4", stem));
                 tracing::info!("[{}/{}] {} → {}", i + 1, targets.len(), input.display(), output_path.display());
-                vtrim_core::cutting::remove_silence(input, &output_path, *duration)?;
+                let segments = vtrim_core::cutting::remove_silence(input, &output_path, *duration)?;
+
+                let srt_path = input.with_extension("srt");
+                if srt_path.exists() {
+                    let out_srt = output_path.with_extension("srt");
+                    vtrim_core::cutting::adjust_srt(&srt_path, &out_srt, &segments)?;
+                    tracing::info!("  字幕已调整: {}", out_srt.display());
+                }
             }
 
-            tracing::info!("静音移除完成! 输出目录: {}", out_dir.display());
+            tracing::info!("静音移除完成!");
         }
 
         Command::DownloadModels { model: _ } => {
@@ -544,25 +541,21 @@ async fn main() -> anyhow::Result<()> {
                         .map(PathBuf::from)
                         .or_else(|| {
                             let fallback = std::env::current_dir().unwrap_or_default()
-                                .join("output").join("audio_16khz.wav");
+                                .join("output").join("video.wav");
                             if fallback.exists() { Some(fallback) } else { None }
                         })
                         .ok_or_else(|| anyhow::anyhow!(
-                            "未指定输入文件，且未找到音频文件 (config.audio_file 或 output/audio_16khz.wav)"
+                            "未指定输入文件，且未找到音频文件 (config.audio_file 或 output/video.wav)"
                         ))?;
                     audio
                 }
             };
 
             let home = vtrim_core::download::vtrim_home();
-            let stem = input_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "audio".into());
             let out_dir = output.clone().unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_default().join("output").join("separated")
+                std::env::current_dir().unwrap_or_default().join("output")
             });
-            match vtrim_core::asr::separate::separate(&input_path, &home, &out_dir, &stem) {
+            match vtrim_core::asr::separate::separate(&input_path, &home, &out_dir) {
                 Ok(vocals) => {
                     let _ = config::save_vocal_path(&vocals.to_string_lossy());
                     tracing::info!("人声分离完成: {}", vocals.display());

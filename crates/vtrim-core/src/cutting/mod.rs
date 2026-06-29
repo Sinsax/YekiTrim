@@ -36,13 +36,12 @@ impl Stage for Cutter {
         }
 
         let clips_dir = ctx.output_dir.join("clips");
-        let stem = &ctx.input_stem;
 
         std::fs::create_dir_all(&clips_dir)?;
         let (enc_name, enc_preset, _) = encoder_config();
         tracing::info!("视频编码: {} (preset={})", enc_name, enc_preset);
 
-        let srt_path = ctx.output_dir.join(format!("{}.srt", stem));
+        let srt_path = ctx.output_dir.join("video.srt");
         let full_transcript = if srt_path.exists() {
             let content = std::fs::read_to_string(&srt_path)
                 .context("读取字幕文件失败")?;
@@ -185,7 +184,57 @@ fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> 
 
 /// 对已输出的视频文件执行静音移除（重编码）。
 /// `duration` 为连续静音秒数阈值，超过此长度的静音段将被移除。
-pub fn remove_silence(input: &Path, output: &Path, duration: f64) -> Result<()> {
+pub fn detect_silence(input: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
+    let result = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
+        .arg(input)
+        .arg("-af")
+        .arg(format!("silencedetect=n=-30dB:d={}", duration))
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .output()
+        .with_context(|| "ffmpeg silencedetect 失败")?;
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    if !result.status.success() {
+        anyhow::bail!("ffmpeg silencedetect 失败:\n{}", stderr.trim());
+    }
+
+    let mut segments: Vec<(f64, f64)> = Vec::new();
+    let mut current_start: Option<f64> = None;
+
+    for line in stderr.lines() {
+        let line = line.trim();
+        if let Some(pos) = line.find("silence_start: ") {
+            let val = line[pos + 14..].trim();
+            if let Ok(t) = val.parse::<f64>() {
+                current_start = Some(t);
+            }
+        } else if let Some(pos) = line.find("silence_end: ") {
+            let after = &line[pos + 12..];
+            if let Some(pipe) = after.find('|') {
+                let t_str = after[..pipe].trim();
+                if let (Ok(end), Some(start)) = (t_str.parse::<f64>(), current_start) {
+                    segments.push((start, end));
+                    current_start = None;
+                }
+            }
+        }
+    }
+
+    Ok(segments)
+}
+
+pub fn remove_silence(input: &Path, output: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
+    let segments = detect_silence(input, duration)?;
+
+    if segments.is_empty() {
+        std::fs::copy(input, output)?;
+        return Ok(segments);
+    }
+
     let result = Command::new("ffmpeg")
         .arg("-y")
         .arg("-loglevel")
@@ -217,7 +266,30 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64) -> Result<()> 
         let stderr = String::from_utf8_lossy(&result.stderr);
         anyhow::bail!("ffmpeg 静音移除失败: {}", stderr.trim());
     }
-    Ok(())
+    Ok(segments)
+}
+
+pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) -> Result<()> {
+    let content = std::fs::read_to_string(input)?;
+    let mut transcript = crate::asr::parse_srt(&content)?;
+
+    for seg in &mut transcript.segments {
+        let shift_before_start: f64 = silence_segments
+            .iter()
+            .filter(|(_, e)| *e <= seg.start)
+            .map(|(s, e)| e - s)
+            .sum();
+        let shift_before_end: f64 = silence_segments
+            .iter()
+            .filter(|(_, e)| *e <= seg.end)
+            .map(|(s, e)| e - s)
+            .sum();
+
+        seg.start = (seg.start - shift_before_start).max(0.0);
+        seg.end = (seg.end - shift_before_end).max(0.0);
+    }
+
+    crate::asr::write_srt(&transcript, output).context("写入调整后字幕失败")
 }
 
 fn generate_clip_subtitle(

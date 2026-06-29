@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
 
 use crate::config::Config;
@@ -34,7 +35,7 @@ impl Stage for Transcriber {
         let mut audio_path = match &ctx.audio_path {
             Some(p) => p.clone(),
             None => {
-                let fallback = ctx.output_dir.join("audio_16khz.wav");
+                let fallback = ctx.output_dir.join("video.wav");
                 let from_cfg = ctx.config.audio_file.as_ref()
                     .filter(|p| !p.is_empty())
                     .map(std::path::PathBuf::from);
@@ -70,9 +71,9 @@ impl Stage for Transcriber {
             }
             tracing::info!("转写完成: {} 个片段", segs.len());
             let transcript = Transcript { segments: segs, language: "zh".into() };
-            let srt_path = ctx.output_dir.join(format!("{}.srt", ctx.input_stem));
+            let srt_path = ctx.output_dir.join("video.srt");
             write_srt(&transcript, &srt_path)?;
-            let json_path = ctx.output_dir.join(format!("{}_transcript.json", ctx.input_stem));
+            let json_path = ctx.output_dir.join("transcript.json");
             save_transcript_json(&transcript, &json_path)?;
             ctx.transcript = Some(transcript);
             return Ok(());
@@ -93,8 +94,8 @@ impl Stage for Transcriber {
                     tracing::info!("使用已有的人声文件: {}", audio_path.display());
                 }
                 None => {
-                    let sep_dir = ctx.output_dir.join("separated");
-                    match separate::separate(&audio_path, &crate::download::vtrim_home(), &sep_dir, &ctx.input_stem) {
+                    let sep_dir = ctx.output_dir.clone();
+                    match separate::separate(&audio_path, &crate::download::vtrim_home(), &sep_dir) {
                         Ok(vocals) => {
                             ctx.vocal_path = Some(vocals.clone());
                             audio_path = vocals;
@@ -214,9 +215,9 @@ impl Stage for Transcriber {
             language: "zh".into(),
         };
 
-        let srt_path = ctx.output_dir.join(format!("{}.srt", ctx.input_stem));
+        let srt_path = ctx.output_dir.join("video.srt");
         write_srt(&transcript, &srt_path)?;
-        let json_path = ctx.output_dir.join(format!("{}_transcript.json", ctx.input_stem));
+        let json_path = ctx.output_dir.join("transcript.json");
         save_transcript_json(&transcript, &json_path)?;
         tracing::info!("字幕已生成: {}", srt_path.display());
         tracing::info!("转录 JSON 已保存: {}", json_path.display());
@@ -317,9 +318,19 @@ fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {
 }
 
 fn wav_duration_secs(path: &Path) -> Result<f64> {
-    let meta = std::fs::metadata(path)?;
-    let data_size = meta.len().saturating_sub(44);
-    Ok(data_size as f64 / 32000.0)
+    let output = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .with_context(|| "ffprobe 获取音频时长失败")?;
+    let s = String::from_utf8_lossy(&output.stdout);
+    s.trim()
+        .parse::<f64>()
+        .map_err(|e| anyhow::anyhow!("无法解析音频时长 '{}': {}", s.trim(), e))
 }
 
 fn save_transcript_json(transcript: &Transcript, path: &Path) -> Result<()> {

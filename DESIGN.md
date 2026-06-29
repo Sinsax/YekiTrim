@@ -12,33 +12,26 @@
         ▼
 ┌───────────────────────────────────────┐
 │ Stage 1: AudioExtractor               │  ffmpeg CLI (本地)
-│ output: audio_16khz.wav               │
+│ output: video.wav                     │
 └─────────────┬─────────────────────────┘
-              │
-              ▼
+               │
+               ▼
 ┌───────────────────────────────────────┐
-│ Stage 2: SourceSeparator (可选)        │  云端 API (默认跳过)
-│ enabled=false → 直通 ASR               │
-│ output: vocal.wav (+ bgm.wav)         │
+│ Stage 2: Transcriber                  │  ASR (本地/云端) + 可选 Spleeter
+│ output: transcript.json + video.srt   │
 └─────────────┬─────────────────────────┘
-              │
-              ▼
+               │
+               ▼
 ┌───────────────────────────────────────┐
-│ Stage 3: Transcriber                  │  OpenAI Whisper API (云端)
-│ output: transcript.json + .srt        │
-└─────────────┬─────────────────────────┘
-              │
-              ▼
-┌───────────────────────────────────────┐
-│ Stage 4: EventDetector                │
-│   规则引擎(本地) → LLM 精调(云端)      │
+│ Stage 3: EventDetector                │
+│   LLM (云端)                           │
 │ output: events.json                   │
 └─────────────┬─────────────────────────┘
-              │
-              ▼
+               │
+               ▼
 ┌───────────────────────────────────────┐
-│ Stage 5: Cutter + Publisher           │  ffmpeg CLI (本地)
-│ output: 原视频名_001.mp4 + .srt       │
+│ Stage 4: Cutter + Publisher           │  ffmpeg CLI (本地)
+│ output: clips/*.mp4 + .srt            │
 │         publish_config.json           │
 └───────────────────────────────────────┘
 ```
@@ -213,12 +206,12 @@ trait Stage: Send + Sync {
 **方式**：`ffmpeg` CLI 子进程。
 
 ```
-ffmpeg -i "输入.mp4" -vn -acodec pcm_s16le -ar 16000 -ac 1 "audio_16khz.wav"
+ffmpeg -i "输入.mp4" -vn -acodec pcm_s16le -ar 16000 -ac 1 "video.wav"
 ```
 
 同时用 `ffprobe` 获取视频编码信息存到 `VideoInfo`。
 
-**产出**：`audio_16khz.wav` + `PipelineContext.video_info`
+**产出**：`video.wav` + `PipelineContext.video_info`
 
 ---
 
@@ -247,7 +240,7 @@ struct SeparateOutput {
 }
 ```
 
-- `enabled=false` → Stage 跳过，ASR 直接处理 `audio_16khz.wav`
+- `enabled=false` → Stage 跳过，ASR 直接处理 `video.wav`
 - `enabled=true` → 调用云端分离 API，ASR 处理 `vocal.wav`（人声更纯净）
 
 ---
