@@ -83,7 +83,7 @@ max_speech_duration = 20.0
 [detection]
 danmaku_window_secs = 10
 silence_threshold_secs = 3.0
-min_segment_secs = 30
+min_segment_secs = 120
 max_segment_secs = 900
 
 [cutting]

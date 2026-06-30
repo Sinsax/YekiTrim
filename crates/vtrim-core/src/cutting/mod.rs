@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -41,14 +41,7 @@ impl Stage for Cutter {
         let (enc_name, enc_preset, _) = encoder_config();
         tracing::info!("视频编码: {} (preset={})", enc_name, enc_preset);
 
-        let srt_path = ctx.output_dir.join("video.srt");
-        let full_transcript = if srt_path.exists() {
-            let content = std::fs::read_to_string(&srt_path)
-                .context("读取字幕文件失败")?;
-            Some(crate::srt::parse_srt(&content)?)
-        } else {
-            None
-        };
+        let full_transcript = load_transcript(ctx);
 
         let mut clip_infos: Vec<ClipInfo> = Vec::new();
 
@@ -413,6 +406,47 @@ fn generate_clip_subtitle(
     Ok(())
 }
 
+fn load_transcript(ctx: &PipelineContext) -> Option<crate::types::Transcript> {
+    // 1. 优先用 pipeline context 中的 transcript（已被 Transcriber 或 LLM 订正填充）
+    if let Some(ref t) = ctx.transcript {
+        return Some(t.clone());
+    }
+
+    // 2. 按 config 中 transcript_file 路径加载
+    let cfg_path = ctx.config.project.transcript_file
+        .as_ref()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.exists());
+    if let Some(path) = cfg_path {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let ext = path.extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let transcript = if ext == "json" {
+                serde_json::from_str(&content).ok()
+            } else {
+                crate::srt::parse_srt(&content).ok()
+            };
+            if transcript.is_some() {
+                return transcript;
+            }
+        }
+    }
+
+    // 3. 兜底 output/video.srt
+    let fallback = ctx.output_dir.join("video.srt");
+    if fallback.exists() {
+        if let Ok(content) = std::fs::read_to_string(&fallback) {
+            if let Ok(t) = crate::srt::parse_srt(&content) {
+                return Some(t);
+            }
+        }
+    }
+
+    None
+}
+
 fn sanitize_label(s: &str) -> String {
     let invalid = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
     s.chars()
@@ -426,7 +460,7 @@ fn sanitize_label(s: &str) -> String {
         .collect::<String>()
         .trim()
         .chars()
-        .take(20)
+        .take(80)
         .collect()
 }
 

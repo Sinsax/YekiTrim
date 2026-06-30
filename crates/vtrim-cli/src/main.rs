@@ -16,11 +16,12 @@ const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程
 # 相同参数会被 vtrim.toml 覆盖
 
 [llm]
+# 基于 OpenAI 兼容接口
 # LLM API Key
 api_key = ""
 # API 基础地址
 api_base = ""
-# 模型名称（推荐使用非推理模型）
+# 模型名称
 model = ""
 # 温度参数
 temperature = 0.1

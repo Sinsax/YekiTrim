@@ -146,7 +146,8 @@ async fn process_with_llm(
         .map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
 
     events = dedup_and_merge(events);
-    events = enforce_min_duration(events, 30.0);
+    events = enforce_min_duration(events, 120.0);
+    events = merge_close_events(events, 60.0);
 
     Ok(events)
 }
@@ -215,6 +216,32 @@ fn enforce_min_duration(mut events: Vec<Event>, min_secs: f64) -> Vec<Event> {
         }
 
         i += 1;
+    }
+
+    events
+}
+
+/// Merge adjacent events that are close in time (< gap_secs) and share the same event_type.
+fn merge_close_events(mut events: Vec<Event>, gap_secs: f64) -> Vec<Event> {
+    if events.len() <= 1 {
+        return events;
+    }
+
+    let mut i = 0;
+    while i + 1 < events.len() {
+        let cur_end = events[i].end.to_seconds();
+        let next_start = events[i + 1].start.to_seconds();
+        let gap = next_start - cur_end;
+        let same_type = std::mem::discriminant(&events[i].event_type)
+            == std::mem::discriminant(&events[i + 1].event_type);
+
+        if gap >= 0.0 && gap <= gap_secs && same_type {
+            let next = events.remove(i + 1);
+            events[i].end = next.end;
+            events[i].confidence = events[i].confidence.max(next.confidence);
+        } else {
+            i += 1;
+        }
     }
 
     events

@@ -371,7 +371,7 @@ for each segment:
 | 时间戳匹配 | 必须在 SRT 中存在 | 自动对齐到最近 SRT 时间点 |
 | 连续性 | end_n ≈ start_{n+1}（±1s） | 自动填补微小间隙 |
 | 无重叠 | start_{n+1} >= end_n | 裁剪重叠部分 |
-| 时长 | 30s ~ 15min | 超限自动截断/合并 |
+| 时长 | 2min ~ 15min | 超限自动截断/合并 |
 | 严重问题 | 整批乱码/空数组 | 丢弃 LLM 结果，降级到规则结果 |
 
 ---
@@ -460,7 +460,7 @@ prompt = "直播,游戏,解说"
 
 [detection]
 silence_threshold_secs = 3.0
-min_segment_secs = 30
+min_segment_secs = 120
 max_segment_secs = 900
 
 [detection.llm]
