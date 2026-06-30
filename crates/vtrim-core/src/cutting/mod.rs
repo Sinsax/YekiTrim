@@ -304,6 +304,32 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Opti
     keep_ranges.push((prev_end, None));
     keep_ranges.retain(|&(start, end)| end.map_or(true, |e| e > start));
 
+    // 前后留 0.3s 缓冲，让切除更自然
+    const PAD: f64 = 0.3;
+    for range in &mut keep_ranges {
+        range.0 = (range.0 - PAD).max(0.0);
+        if let Some(ref mut end) = range.1 {
+            *end += PAD;
+        }
+    }
+
+    // 合并因 padding 而重叠的相邻段
+    let mut merged: Vec<(f64, Option<f64>)> = Vec::new();
+    for range in keep_ranges {
+        if let Some(last) = merged.last_mut() {
+            let gap = range.0 - last.1.unwrap_or(f64::MAX);
+            if gap < 0.0 {
+                last.1 = range.1;
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+    keep_ranges = merged;
+
+    // 丢弃过短的保留段 (< 1s)
+    keep_ranges.retain(|&(s, e)| e.map_or(true, |e| e - s > 1.0));
+
     let mut filter_parts: Vec<String> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
 
