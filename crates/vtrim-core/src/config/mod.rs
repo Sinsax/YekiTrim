@@ -62,6 +62,12 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.llm_correct {
         base.asr.llm_correct = true;
     }
+    if !overlay.asr.provider.is_empty() {
+        base.asr.provider = overlay.asr.provider.clone();
+    }
+    if !overlay.asr.language.is_empty() {
+        base.asr.language = overlay.asr.language.clone();
+    }
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
     }

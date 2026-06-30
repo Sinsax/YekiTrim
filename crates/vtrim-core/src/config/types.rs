@@ -102,8 +102,13 @@ pub struct AsrConfig {
     pub chunk_overlap: f64,
     #[serde(default)]
     pub llm_correct: bool,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default = "default_asr_language")]
+    pub language: String,
 }
 
+fn default_asr_language() -> String { "auto".into() }
 fn default_num_threads() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
@@ -118,6 +123,8 @@ impl Default for AsrConfig {
             chunk_duration: default_chunk_duration(),
             chunk_overlap: default_chunk_overlap(),
             llm_correct: false,
+            provider: String::new(),
+            language: default_asr_language(),
         }
     }
 }

@@ -1,20 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use sherpa_onnx::{
+    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig, Wave,
+};
 
 use crate::config::AsrConfig;
+use crate::progress::ProgressReporter;
 use crate::types::TranscriptSegment;
-
-#[derive(Deserialize)]
-struct SherpaOutput {
-    text: String,
-    #[serde(default)]
-    timestamps: Vec<f64>,
-    #[serde(default)]
-    tokens: Vec<String>,
-}
 
 fn model_dir(cfg: &AsrConfig) -> PathBuf {
     if !cfg.local_model_dir.is_empty() {
@@ -38,92 +31,185 @@ fn find_model(model_dir: &Path) -> Result<PathBuf> {
     );
 }
 
-pub fn transcribe(audio: &Path, cfg: &AsrConfig, offset: f64) -> Result<Vec<TranscriptSegment>> {
-    let binaries = resolve_binaries();
-    if binaries.is_empty() {
-        bail!("sherpa-onnx-offline 未找到，请运行 `vtrim download-models` 或手动安装");
+fn resolve_num_threads(cfg: &AsrConfig) -> i32 {
+    if cfg.num_threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(4)
+    } else {
+        cfg.num_threads as i32
     }
+}
 
+fn resolve_provider(cfg: &AsrConfig) -> Option<String> {
+    let p = cfg.provider.trim();
+    if p.is_empty() || p == "cpu" {
+        None
+    } else {
+        Some(p.to_string())
+    }
+}
+
+pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
     let mdir = model_dir(cfg);
-    let model = find_model(&mdir)?;
-    let tokens = mdir.join("tokens.txt");
-    if !tokens.exists() {
+    let model_path = find_model(&mdir)?;
+    let tokens_path = mdir.join("tokens.txt");
+    if !tokens_path.exists() {
         bail!("模型目录缺少 tokens.txt: {}", mdir.display());
     }
 
-    let mut last_err = None;
-    for binary in &binaries {
-        match run_sherpa(binary, audio, &model, &tokens, offset) {
-            Ok(Some(segs)) => return Ok(segs),
-            Ok(None) => return Ok(vec![]),
-            Err(e) => {
-                tracing::warn!("{} 失败: {}", binary.display(), e);
-                last_err = Some(e);
-            }
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.num_threads = resolve_num_threads(cfg);
+    config.model_config.provider = resolve_provider(cfg);
+    let language = if cfg.language.is_empty() { "auto".to_string() } else { cfg.language.clone() };
+    config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
+        model: Some(model_path.to_str().unwrap().into()),
+        language: Some(language),
+        use_itn: true,
+    };
+    config.model_config.tokens = Some(tokens_path.to_str().unwrap().into());
+
+    OfflineRecognizer::create(&config)
+        .context("创建 OfflineRecognizer 失败，请检查模型文件是否正确")
+}
+
+pub struct ChunkConfig {
+    pub chunk_duration: f64,
+    pub chunk_overlap: f64,
+}
+
+impl Default for ChunkConfig {
+    fn default() -> Self {
+        Self {
+            chunk_duration: 60.0,
+            chunk_overlap: 10.0,
         }
     }
-
-    bail!("所有 binary 均失败: {}", last_err.unwrap())
 }
 
-fn resolve_binaries() -> Vec<PathBuf> {
-    let cpu = crate::download::cpu_binary_path();
-    if cpu.exists() {
-        return vec![cpu];
+impl From<&AsrConfig> for ChunkConfig {
+    fn from(cfg: &AsrConfig) -> Self {
+        Self {
+            chunk_duration: cfg.chunk_duration,
+            chunk_overlap: cfg.chunk_overlap,
+        }
     }
-    if let Ok(which) = which::which("sherpa-onnx-offline") {
-        return vec![which];
-    }
-    Vec::new()
 }
 
-fn run_sherpa(
-    binary: &Path,
-    audio: &Path,
-    model: &Path,
-    tokens: &Path,
-    offset: f64,
-) -> Result<Option<Vec<TranscriptSegment>>> {
-    let mut cmd = Command::new(binary);
-    cmd.arg(format!("--tokens={}", tokens.display()));
-    cmd.arg("--num-threads=2");
-    cmd.arg(format!("--sense-voice-model={}", model.display()));
-    cmd.arg("--sense-voice-use-itn=true");
-    cmd.arg(audio);
+pub fn transcribe_chunked(
+    recognizer: &OfflineRecognizer,
+    audio_path: &Path,
+    chunk_cfg: &ChunkConfig,
+    progress: &dyn ProgressReporter,
+) -> Result<Vec<TranscriptSegment>> {
+    let audio_str = audio_path.to_str().context("音频路径包含非 UTF-8 字符")?;
+    let wave = Wave::read(audio_str).context("读取音频文件失败")?;
 
-    let output = cmd.output()?;
+    let sample_rate = wave.sample_rate() as usize;
+    let total_samples = wave.num_samples() as usize;
+    let all_samples = wave.samples();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("返回错误 ({}): {}", output.status, stderr.trim()));
+    let chunk_samples = (chunk_cfg.chunk_duration * sample_rate as f64) as usize;
+    let overlap_samples = (chunk_cfg.chunk_overlap * sample_rate as f64) as usize;
+    let step_samples = chunk_samples.saturating_sub(overlap_samples);
+
+    if step_samples == 0 {
+        bail!("chunk_duration ({}) 必须大于 chunk_overlap ({})", chunk_cfg.chunk_duration, chunk_cfg.chunk_overlap);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let sherpa: SherpaOutput = serde_json::from_str(&stdout)
-        .with_context(|| format!("解析 JSON 输出失败: {}", stdout.chars().take(200).collect::<String>()))?;
+    let total_chunks = total_samples.div_ceil(step_samples);
+    tracing::info!(
+        "音频分 {total_chunks} 块 (每块 {:.0}s, 重叠 {:.0}s, 步进 {:.1}s)",
+        chunk_cfg.chunk_duration, chunk_cfg.chunk_overlap,
+        step_samples as f64 / sample_rate as f64
+    );
 
-    let text = sherpa.text.trim().to_string();
+    let mut all_segments: Vec<TranscriptSegment> = Vec::new();
 
-    if text.is_empty() {
-        return Ok(None);
+    for chunk_idx in 0..total_chunks {
+        let sample_start = chunk_idx * step_samples;
+        let sample_end = (sample_start + chunk_samples).min(total_samples);
+        let chunk_offset = sample_start as f64 / sample_rate as f64;
+        let effective_end = chunk_offset + chunk_cfg.chunk_duration;
+
+        let chunk = &all_samples[sample_start..sample_end];
+
+        let stream = recognizer.create_stream();
+        stream.accept_waveform(sample_rate as i32, chunk);
+        recognizer.decode(&stream);
+
+        if let Some(result) = stream.get_result() {
+            let text = result.text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+
+            if let Some(timestamps) = &result.timestamps {
+                if timestamps.len() >= 2 && !result.tokens.is_empty() {
+                    let ts: Vec<f64> = timestamps.iter().map(|&t| t as f64).collect();
+                    let segs = build_segments_from_timestamps(&result.tokens, &ts, chunk_offset);
+
+                    for seg in &segs {
+                        let mid = (seg.start + seg.end) / 2.0;
+                        if mid < effective_end || chunk_idx == total_chunks - 1 {
+                            all_segments.push(seg.clone());
+                        }
+                    }
+
+                    merge_short_segments(&mut all_segments);
+                } else {
+                    all_segments.push(TranscriptSegment {
+                        start: chunk_offset,
+                        end: chunk_offset + (sample_end - sample_start) as f64 / sample_rate as f64,
+                        text,
+                        confidence: 1.0,
+                    });
+                }
+            } else {
+                all_segments.push(TranscriptSegment {
+                    start: chunk_offset,
+                    end: chunk_offset + (sample_end - sample_start) as f64 / sample_rate as f64,
+                    text,
+                    confidence: 1.0,
+                });
+            }
+        }
+
+        progress.stage_progress(chunk_idx as u64 + 1, total_chunks as u64);
     }
 
-    if !sherpa.timestamps.is_empty() && sherpa.timestamps.len() >= 2 {
-        let mut segs = build_segments_from_timestamps(
-            &sherpa.tokens,
-            &sherpa.timestamps,
-            offset,
-        );
-        merge_short_segments(&mut segs);
-        Ok(Some(segs))
-    } else {
-        let duration_secs = audio_duration(audio);
-        Ok(Some(vec![TranscriptSegment {
-            start: offset,
-            end: offset + duration_secs,
-            text,
-            confidence: 1.0,
-        }]))
+    all_segments.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+    dedup_overlaps(&mut all_segments);
+
+    Ok(all_segments)
+}
+
+fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {
+    let mut i = 0;
+    while i + 1 < segments.len() {
+        let a = &segments[i];
+        let b = &segments[i + 1];
+
+        if b.start < a.end {
+            let a_text = a.text.trim();
+            let b_text = b.text.trim();
+            let overlap = a.end.min(b.end) - b.start.max(a.start);
+            let dur_a = a.end - a.start;
+            let dur_b = b.end - b.start;
+
+            let same_prefix = a_text.chars().take(3).collect::<String>()
+                == b_text.chars().take(3).collect::<String>();
+
+            if (overlap > dur_a * 0.6 || overlap > dur_b * 0.6) && same_prefix {
+                if a.start > b.start {
+                    segments.remove(i);
+                } else {
+                    segments.remove(i + 1);
+                }
+                continue;
+            }
+        }
+        i += 1;
     }
 }
 
@@ -132,7 +218,6 @@ fn build_segments_from_timestamps(
     timestamps: &[f64],
     offset: f64,
 ) -> Vec<TranscriptSegment> {
-    // Group tokens into sentences on punctuation or time gaps >0.6s
     let sentence_enders = ['。', '！', '？', '.', '!', '?'];
     let mut segments: Vec<TranscriptSegment> = Vec::new();
     let mut buf_text = String::new();
@@ -142,11 +227,8 @@ fn build_segments_from_timestamps(
         let tok = &tokens[i];
         let ts = timestamps[i];
 
-        // If there's a big time gap, start a new segment
         if i > 0 {
             let prev_ts = timestamps[i - 1];
-            // Estimate end of previous token as current timestamp
-            // (since durations is empty)
             if ts - prev_ts > 0.4 && !buf_text.is_empty() {
                 let end = (ts + prev_ts) / 2.0;
                 segments.push(TranscriptSegment {
@@ -162,7 +244,6 @@ fn build_segments_from_timestamps(
 
         buf_text.push_str(tok);
 
-        // Check if this character is a sentence ender
         if let Some(ch) = tok.chars().next() {
             if sentence_enders.contains(&ch) {
                 let end = if i + 1 < timestamps.len() {
@@ -184,7 +265,6 @@ fn build_segments_from_timestamps(
             }
         }
 
-        // Force split if segment is getting too long
         if !buf_text.is_empty() && ts - seg_start > 15.0 {
             let end = if i + 1 < timestamps.len() {
                 (timestamps[i + 1] + ts) / 2.0
@@ -204,7 +284,6 @@ fn build_segments_from_timestamps(
         }
     }
 
-    // Flush remaining
     if !buf_text.is_empty() {
         let last_ts = timestamps[timestamps.len() - 1];
         let dur = audio_duration_estimate(timestamps);
@@ -220,14 +299,12 @@ fn build_segments_from_timestamps(
     segments
 }
 
-/// Remove garbled segments and merge consecutive short ones into the next.
 fn merge_short_segments(segments: &mut Vec<TranscriptSegment>) {
     segments.retain(|s| {
         let text = s.text.trim();
         if text.is_empty() || text == "\u{FFFD}" {
             return false;
         }
-        // Reject segments with rare/extended CJK (likely hallucination)
         text.chars().all(|ch| {
             ch.is_ascii()
                 || ('\u{4E00}'..='\u{9FFF}').contains(&ch)
@@ -269,28 +346,7 @@ fn audio_duration_estimate(timestamps: &[f64]) -> f64 {
     median
 }
 
-fn audio_duration(path: &Path) -> f64 {
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => return 0.0,
-    };
-    let len = meta.len();
-    if len < 44 {
-        return 0.0;
-    }
-    let bytes_per_sec = 16000_u64 * 2;
-    len.saturating_sub(44) as f64 / bytes_per_sec as f64
-}
-
 pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {
-    let bins = resolve_binaries();
-    if bins.is_empty() {
-        bail!(
-            "sherpa-onnx-offline 未安装。请运行 `vtrim download-models` 自动下载到 {}",
-            crate::path::vtrim_home().join("bin").display()
-        );
-    }
-
     let mdir = model_dir(cfg);
     let _model = find_model(&mdir)?;
     if !mdir.join("tokens.txt").exists() {
@@ -298,9 +354,8 @@ pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {
     }
 
     tracing::info!(
-        "本地 ASR 就绪: binary ✓, 模型目录: {}",
+        "本地 ASR 就绪: 模型目录: {}",
         mdir.display()
     );
-
     Ok(())
 }

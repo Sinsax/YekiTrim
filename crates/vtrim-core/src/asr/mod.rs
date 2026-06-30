@@ -1,20 +1,17 @@
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use anyhow::{Context, Result};
-use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_TRANSCRIBE};
 use crate::srt::write_srt;
 use crate::types::{PipelineContext, Transcript, TranscriptSegment};
 
-mod chunk;
 mod cloud_asr;
 pub mod correct;
-mod local;
+pub mod local;
 
 pub struct Transcriber;
 
@@ -77,106 +74,26 @@ impl Stage for Transcriber {
             return Ok(());
         }
 
+        // Local ASR: use sherpa-onnx as a library (model loaded once)
         local::ensure_ready(&ctx.config.asr)?;
-
-        let chunk_duration = ctx.config.asr.chunk_duration;
-        let chunk_overlap = ctx.config.asr.chunk_overlap;
-        let temp_dir = std::env::temp_dir().join("vtrim_asr");
-
-        let chunks = chunk::split_fixed_with_overlap(
-            &audio_path,
-            total_duration,
-            chunk_duration + chunk_overlap,
-            chunk_overlap,
-            &temp_dir,
-        )?;
         tracing::info!(
-            "音频分割为 {} 个 {:.0}s 分块 (+{:.0}s 重叠)",
-            chunks.len(),
-            chunk_duration,
-            chunk_overlap
+            "使用本地 ASR (sherpa-onnx), 线程数: {}",
+            resolve_num_threads_display(&ctx.config.asr)
         );
 
-        let total = chunks.len();
-        let cpu_count = std::thread::available_parallelism()
-            .map(|n| n.get()).unwrap_or(4);
-        let max_parallel = {
-            let cfg = ctx.config.asr.num_threads;
-            if cfg == 0 { ((cpu_count + 3) / 4).min(4) } else { (cfg as usize).min(cpu_count).max(1) }
-        };
-        tracing::info!("并行转写: {} 线程", max_parallel);
+        let recognizer = local::create_recognizer(&ctx.config.asr)?;
+        let mut all_segments = local::transcribe_chunked(
+            &recognizer,
+            &audio_path,
+            &local::ChunkConfig::from(&ctx.config.asr),
+            &*ctx.progress,
+        )?;
 
-        ctx.progress.stage_progress(0, total as u64);
-        let sem = Arc::new(Semaphore::new(max_parallel));
-        let config = Arc::new(ctx.config.clone());
-
-        let mut set: tokio::task::JoinSet<(usize, f64, Result<Vec<TranscriptSegment>>)> = tokio::task::JoinSet::new();
-        let mut all_segments: Vec<TranscriptSegment> = Vec::new();
-        let mut submitted = 0usize;
-        let mut completed = 0usize;
-
-        // 先提交 max_parallel 个
-        while submitted < max_parallel.min(total) {
-            let permit = sem.clone().acquire_owned().await?;
-            let cfg = config.clone();
-            let path = chunks[submitted].path.clone();
-            let offset = chunks[submitted].offset;
-            let idx = submitted;
-            set.spawn_blocking(move || {
-                let _permit = permit;
-                (idx, offset, local::transcribe(&path, &cfg.asr, offset))
-            });
-            submitted += 1;
-        }
-
-        // 循环：完成一个 → 处理结果 → 提下一个
-        while completed < total {
-            if let Some(res) = set.join_next().await {
-                match res {
-                    Ok((i, offset, Ok(segs))) => {
-                        for seg in segs {
-                            if i < total - 1 {
-                                let effective_end = offset + chunk_duration;
-                                let mid = (seg.start + seg.end) / 2.0;
-                                if mid >= effective_end { continue; }
-                            }
-                            all_segments.push(seg);
-                        }
-                    }
-                    Ok((i, _, Err(e))) => {
-                        tracing::warn!("分块 {}/{} 转写失败: {}", i + 1, total, e);
-                    }
-                    Err(e) => {
-                        tracing::warn!("并行任务失败: {}", e);
-                    }
-                }
-                completed += 1;
-                ctx.progress.stage_progress(completed as u64, total as u64);
-            }
-            if submitted < total {
-                let permit = sem.clone().acquire_owned().await?;
-                let cfg = config.clone();
-                let path = chunks[submitted].path.clone();
-                let offset = chunks[submitted].offset;
-                let idx = submitted;
-                set.spawn_blocking(move || {
-                    let _permit = permit;
-                    (idx, offset, local::transcribe(&path, &cfg.asr, offset))
-                });
-                submitted += 1;
-            }
-        }
-
-        all_segments.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
-
-        dedup_overlaps(&mut all_segments);
         post_process_segments(&mut all_segments);
 
         if all_segments.is_empty() {
             anyhow::bail!("转写结果为空，音频可能无有效语音");
         }
-
-        chunk::cleanup(&temp_dir);
 
         tracing::info!("转写完成: {} 个片段", all_segments.len());
 
@@ -199,13 +116,21 @@ impl Stage for Transcriber {
     }
 }
 
-/// Post-process: remove garbage segments and merge short/noisy ones.
+fn resolve_num_threads_display(cfg: &crate::config::AsrConfig) -> String {
+    if cfg.num_threads == 0 {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get()).unwrap_or(4);
+        format!("auto ({})", cpus)
+    } else {
+        cfg.num_threads.to_string()
+    }
+}
+
 fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
     if segments.is_empty() {
         return;
     }
 
-    // 1. Remove segments with < 2 meaningful characters
     segments.retain(|s| {
         let text = s.text.trim();
         if text.is_empty() || text == "\u{FFFD}" {
@@ -220,7 +145,6 @@ fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
         meaningful >= 2
     });
 
-    // 2. Merge single-char segments into adjacent ones, or tiny segments close together
     let mut i = 0;
     while i + 1 < segments.len() {
         let cur = &segments[i];
@@ -228,7 +152,6 @@ fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
         let gap = nxt.start - cur.end;
         let cur_len = cur.text.trim().chars().count();
 
-        // Single-char or very short segment: merge into next
         if cur_len <= 2 && gap < 2.0 {
             let removed = segments.remove(i);
             segments[i].start = removed.start;
@@ -236,7 +159,6 @@ fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
             continue;
         }
 
-        // Next segment is very short and close: merge into current
         let nxt_len = nxt.text.trim().chars().count();
         if nxt_len <= 2 && gap < 1.0 {
             let removed = segments.remove(i + 1);
@@ -245,7 +167,6 @@ fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
             continue;
         }
 
-        // Both segments are short and very close: merge
         if cur_len <= 4 && nxt_len <= 4 && gap < 0.5 {
             let removed = segments.remove(i + 1);
             segments[i].end = removed.end;
@@ -253,36 +174,6 @@ fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
             continue;
         }
 
-        i += 1;
-    }
-}
-
-/// Remove duplicate segments that overlap in time with similar text content.
-fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {
-    let mut i = 0;
-    while i + 1 < segments.len() {
-        let a = &segments[i];
-        let b = &segments[i + 1];
-
-        if b.start < a.end {
-            let a_text = a.text.trim();
-            let b_text = b.text.trim();
-            let overlap = a.end.min(b.end) - b.start.max(a.start);
-            let dur_a = a.end - a.start;
-            let dur_b = b.end - b.start;
-
-            let same_prefix = a_text.chars().take(3).collect::<String>()
-                == b_text.chars().take(3).collect::<String>();
-
-            if (overlap > dur_a * 0.6 || overlap > dur_b * 0.6) && same_prefix {
-                if a.start > b.start {
-                    segments.remove(i);
-                } else {
-                    segments.remove(i + 1);
-                }
-                continue;
-            }
-        }
         i += 1;
     }
 }
