@@ -88,20 +88,20 @@ fn default_channels() -> u32 { 1 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
-    #[serde(default = "default_asr_backend")]
-    pub backend: String,
     #[serde(default = "default_local_model")]
     pub local_model: String,
     #[serde(default)]
     pub local_model_dir: String,
-    #[serde(default = "default_num_threads")]
-    pub num_threads: u32,
+    #[serde(default = "default_num_workers")]
+    pub num_workers: u32,
     #[serde(default = "default_chunk_duration")]
     pub chunk_duration: f64,
     #[serde(default = "default_chunk_overlap")]
     pub chunk_overlap: f64,
+    #[serde(default = "default_segment_gap")]
+    pub segment_gap: f64,
     #[serde(default)]
-    pub llm_correct: bool,
+    pub llm_correct: Option<bool>,
     #[serde(default)]
     pub provider: String,
     #[serde(default = "default_asr_language")]
@@ -109,27 +109,26 @@ pub struct AsrConfig {
 }
 
 fn default_asr_language() -> String { "auto".into() }
-fn default_num_threads() -> u32 { 0 }
+fn default_num_workers() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
+fn default_segment_gap() -> f64 { 0.6 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
         Self {
-            backend: default_asr_backend(),
             local_model: default_local_model(),
             local_model_dir: String::new(),
-            num_threads: default_num_threads(),
+            num_workers: default_num_workers(),
             chunk_duration: default_chunk_duration(),
             chunk_overlap: default_chunk_overlap(),
-            llm_correct: false,
+            segment_gap: default_segment_gap(),
+            llm_correct: None,
             provider: String::new(),
             language: default_asr_language(),
         }
     }
 }
-
-fn default_asr_backend() -> String { "local".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionConfig {
@@ -168,6 +167,8 @@ pub struct LlmConfig {
     pub temperature: f64,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default)]
+    pub extra_params: Option<toml::Table>,
 }
 
 impl Default for LlmConfig {
@@ -178,6 +179,7 @@ impl Default for LlmConfig {
             model: String::new(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
+            extra_params: None,
         }
     }
 }
@@ -187,14 +189,14 @@ pub struct CuttingConfig {
     #[serde(default = "default_output_dir")]
     pub output_dir: String,
     #[serde(default)]
-    pub overwrite: bool,
+    pub overwrite: Option<bool>,
 }
 
 impl Default for CuttingConfig {
     fn default() -> Self {
         Self {
             output_dir: default_output_dir(),
-            overwrite: false,
+            overwrite: None,
         }
     }
 }

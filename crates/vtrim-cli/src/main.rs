@@ -27,14 +27,18 @@ model = ""
 temperature = 0.1
 # 最大 Token 数
 max_tokens = 16384
+# 额外请求参数 (默认关闭推理)
+extra_params = { thinking = { type = "disabled" } }
 
 [asr]
-# CPU 并行转写线程数 (0=CPU/4取整, 上限4)
-num_threads = 0
+# 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
+num_workers = 0
 # 音频分块长度(秒)
 chunk_duration = 60
 # 块间重叠(秒，仅固定分块模式有效)
 chunk_overlap = 10.0
+# 段间静音阈值(秒)，超过此间隔才切为两条字幕
+segment_gap = 0.6
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 
@@ -388,7 +392,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // LLM 订正：仅当事件尚未检测时执行，避免重复订正已完成的检测结果
-            if current < STAGE_DETECT && cfg.asr.llm_correct && !cfg.llm.api_key.is_empty() {
+            if current < STAGE_DETECT && cfg.asr.llm_correct.unwrap_or(false) && !cfg.llm.api_key.is_empty() {
                 if let Some(ref transcript) = ctx.transcript {
                     tracing::info!("LLM 订正转录文本...");
                     match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &cfg.llm, &cfg.correct).await {
@@ -430,11 +434,6 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("(--dry-run) 未执行剪切。输出目录: {}", output.display());
                     return Ok(());
                 }
-                // 从文件恢复 events
-                let events_path = ctx.output_dir.join("events.json");
-                if events_path.exists() {
-                    ctx.events = vtrim_core::detection::load_events(&events_path)?;
-                }
                 let mut cut_runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
                 cut_runner.set_progress(progress.clone());
                 cut_runner.add_stage(Box::new(vtrim_core::cutting::Cutter));
@@ -450,28 +449,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Transcribe {
             input,
             output,
-            backend,
+            ..
         } => {
-            let mut cfg = load_cfg(global_config)?;
-
-            if let Some(backend) = backend {
-                cfg.asr.backend = backend.clone();
-
-                // 同步写入 vtrim.toml
-                let config_path = global_config
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("vtrim.toml"));
-                if config_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&config_path) {
-                        if let Ok(mut doc) = content.parse::<toml_edit::DocumentMut>() {
-                            doc["asr"]["backend"] = toml_edit::value(backend.clone());
-                            let _ = std::fs::write(&config_path, doc.to_string());
-                            tracing::info!("vtrim.toml: asr.backend = {}", backend);
-                        }
-                    }
-                }
-            }
-
+            let cfg = load_cfg(global_config)?;
             let current = config::load_current_stage()?;
             check_stage(2, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
@@ -678,9 +658,11 @@ async fn main() -> anyhow::Result<()> {
 
             for (i, input) in targets.iter().enumerate() {
                 let out_dir = output.clone().unwrap_or_else(|| {
-                    input.parent()
-                        .expect("无法获取输入文件所在目录")
-                        .to_path_buf()
+                    let parent = match input.parent() {
+                        Some(p) => p.to_path_buf(),
+                        None => std::env::current_dir().unwrap_or_default(),
+                    };
+                    parent
                 });
                 std::fs::create_dir_all(&out_dir)?;
                 let stem = input
@@ -706,6 +688,22 @@ async fn main() -> anyhow::Result<()> {
         Command::DownloadModels { model: _ } => {
             tracing::info!("下载 SenseVoice 模型...");
             download::download_all(None).await?;
+        }
+
+        Command::LlmTest { prompt, output } => {
+            let cfg = load_cfg(global_config)?;
+            let prompt = prompt.clone().unwrap_or_else(|| "你好，请用一句话介绍你自己。".into());
+            let out_path = output.clone().unwrap_or_else(|| PathBuf::from("llm_test_response.json"));
+
+            if cfg.llm.api_key.is_empty() {
+                let config_path = global_config.clone().unwrap_or_else(|| PathBuf::from(".vtrim/config.toml"));
+                anyhow::bail!("LLM API key 未配置，请先在 {} 中设置 [llm] 部分", config_path.display());
+            }
+
+            tracing::info!("调用 LLM (model={})...", if cfg.llm.model.is_empty() { "默认" } else { &cfg.llm.model });
+            let response = vtrim_core::detection::test_llm(&cfg.llm, &prompt).await?;
+            std::fs::write(&out_path, &response)?;
+            tracing::info!("完整响应已保存: {}", out_path.display());
         }
 
         Command::Correct { transcript } => {

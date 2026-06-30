@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -112,54 +111,18 @@ async fn send_batch(
         prompt.push_str(&seg_text);
     }
 
-    if llm.api_base.is_empty() {
-        anyhow::bail!("未配置 LLM API 基础地址 (llm.api_base)，请设置后重试");
-    }
-    let api_url = {
-        let base = llm.api_base.trim_end_matches('/');
-        if base.ends_with("/chat/completions") {
-            base.to_string()
-        } else {
-            format!("{}/chat/completions", base)
-        }
-    };
-
     let system_msg = if !correct.system_prompt.is_empty() {
         correct.system_prompt.clone()
     } else {
         String::from("你是虚拟主播直播转录文本的订正助手。修正 ASR 常见的错别字、主播名/VTuber名、游戏名、歌曲名、网络用语。保留口语风格和语气词（啊、哦、嗯、嘛、呗），不要书面化润色。保持序号不变，只输出行。")
     };
 
-    let mut body = serde_json::json!({
-        "temperature": llm.temperature,
-        "max_tokens": llm.max_tokens,
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt}
-        ]
-    });
-    if !llm.model.is_empty() {
-        body["model"] = serde_json::json!(llm.model);
-    }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .context("创建 HTTP 客户端失败")?;
-    let resp = client
-        .post(&api_url)
-        .header("Authorization", format!("Bearer {}", llm.api_key))
-        .json(&body)
-        .send()
-        .await
-        .context("LLM 订正 API 请求失败")?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("LLM 订正 API 返回 {}: {}", status, body);
-    }
-
-    let resp_body: serde_json::Value = resp.json().await.context("解析 LLM 响应失败")?;
+    let messages = serde_json::json!([
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": prompt}
+    ]);
+    let body = crate::detection::build_request_body(llm, messages);
+    let resp_body = crate::detection::send_request(llm, &body, 120).await?;
     let content = resp_body["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 choices[0].message.content"))?;

@@ -8,6 +8,7 @@ use crate::pipeline::{Stage, STAGE_DETECT};
 use crate::types::{Event, EventStore, PipelineContext};
 
 mod llm;
+pub use llm::{build_api_url, build_request_body, send_request, test_llm};
 
 pub struct EventDetector;
 

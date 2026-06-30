@@ -7,9 +7,8 @@ use anyhow::{Context, Result};
 use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_TRANSCRIBE};
 use crate::srt::write_srt;
-use crate::types::{PipelineContext, Transcript, TranscriptSegment};
+use crate::types::{PipelineContext, Transcript};
 
-mod cloud_asr;
 pub mod correct;
 pub mod local;
 
@@ -55,41 +54,25 @@ impl Stage for Transcriber {
         let total_duration = wav_duration_secs(&audio_path)?;
         tracing::info!("音频时长: {:.1}s", total_duration);
 
-        // Cloud ASR backends
-        let backend = &ctx.config.asr.backend;
-        if backend == "bcut" || backend == "kuaishou" {
-            tracing::info!("使用云端 ASR 后端: {}", backend);
-            let segs = cloud_asr::transcribe(&audio_path, backend).await
-                .map_err(|e| anyhow::anyhow!("云端 ASR 失败: {}", e))?;
-            if segs.is_empty() {
-                anyhow::bail!("云端 ASR 结果为空");
-            }
-            tracing::info!("转写完成: {} 个片段", segs.len());
-            let transcript = Transcript { segments: segs, language: "zh".into() };
-            let srt_path = ctx.output_dir.join("video.srt");
-            write_srt(&transcript, &srt_path)?;
-            let json_path = ctx.output_dir.join("transcript.json");
-            save_transcript_json(&transcript, &json_path)?;
-            ctx.transcript = Some(transcript);
-            return Ok(());
-        }
-
         // Local ASR: use sherpa-onnx as a library (model loaded once)
         local::ensure_ready(&ctx.config.asr)?;
-        tracing::info!(
-            "使用本地 ASR (sherpa-onnx), 线程数: {}",
-            resolve_num_threads_display(&ctx.config.asr)
-        );
+        let chunk_cfg = local::ChunkConfig::from(&ctx.config.asr);
+        let worker_info = if ctx.config.asr.num_workers == 0 {
+            format!("auto ({})", chunk_cfg.num_workers)
+        } else {
+            format!("manual ({})", chunk_cfg.num_workers)
+        };
+        tracing::info!("使用本地 ASR (sherpa-onnx), 并行块数: {}, 每块线程: 1", worker_info);
 
         let recognizer = local::create_recognizer(&ctx.config.asr)?;
         let mut all_segments = local::transcribe_chunked(
             &recognizer,
             &audio_path,
-            &local::ChunkConfig::from(&ctx.config.asr),
+            &chunk_cfg,
             &*ctx.progress,
         )?;
 
-        post_process_segments(&mut all_segments);
+        all_segments.retain(|s| s.text.trim() != "\u{FFFD}");
 
         if all_segments.is_empty() {
             anyhow::bail!("转写结果为空，音频可能无有效语音");
@@ -113,68 +96,6 @@ impl Stage for Transcriber {
 
         tracing::info!("语音转文字完成");
         Ok(())
-    }
-}
-
-fn resolve_num_threads_display(cfg: &crate::config::AsrConfig) -> String {
-    if cfg.num_threads == 0 {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get()).unwrap_or(4);
-        format!("auto ({})", cpus)
-    } else {
-        cfg.num_threads.to_string()
-    }
-}
-
-fn post_process_segments(segments: &mut Vec<TranscriptSegment>) {
-    if segments.is_empty() {
-        return;
-    }
-
-    segments.retain(|s| {
-        let text = s.text.trim();
-        if text.is_empty() || text == "\u{FFFD}" {
-            return false;
-        }
-        let meaningful = text.chars().filter(|c| {
-            c.is_ascii_alphanumeric()
-                || ('\u{4E00}'..='\u{9FFF}').contains(c)
-                || ('\u{3000}'..='\u{303F}').contains(c)
-                || ('\u{FF00}'..='\u{FFEF}').contains(c)
-        }).count();
-        meaningful >= 2
-    });
-
-    let mut i = 0;
-    while i + 1 < segments.len() {
-        let cur = &segments[i];
-        let nxt = &segments[i + 1];
-        let gap = nxt.start - cur.end;
-        let cur_len = cur.text.trim().chars().count();
-
-        if cur_len <= 2 && gap < 2.0 {
-            let removed = segments.remove(i);
-            segments[i].start = removed.start;
-            segments[i].text = format!("{}{}", removed.text.trim(), segments[i].text.trim());
-            continue;
-        }
-
-        let nxt_len = nxt.text.trim().chars().count();
-        if nxt_len <= 2 && gap < 1.0 {
-            let removed = segments.remove(i + 1);
-            segments[i].end = removed.end;
-            segments[i].text = format!("{}{}", segments[i].text.trim(), removed.text.trim());
-            continue;
-        }
-
-        if cur_len <= 4 && nxt_len <= 4 && gap < 0.5 {
-            let removed = segments.remove(i + 1);
-            segments[i].end = removed.end;
-            segments[i].text = format!("{}{}", segments[i].text.trim(), removed.text.trim());
-            continue;
-        }
-
-        i += 1;
     }
 }
 

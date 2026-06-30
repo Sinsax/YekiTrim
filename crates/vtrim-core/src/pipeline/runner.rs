@@ -100,27 +100,6 @@ impl PipelineRunner {
         Ok(())
     }
 
-    /// 全量运行，无视 state 检查，process 命令使用
-    pub async fn run_all(&self, ctx: &mut PipelineContext) -> Result<()> {
-        inject_config(ctx, &self.config);
-        self.inject_progress(ctx);
-        for stage in &self.stages {
-            let name = stage.name();
-            if !stage.is_enabled(&self.config) {
-                tracing::info!("[{}] skipped (disabled)", name);
-                continue;
-            }
-            ctx.progress.stage_started(name);
-            tracing::info!("[{}] started", name);
-            stage.run(ctx).await?;
-            tracing::info!("[{}] completed", name);
-            ctx.progress.stage_completed(name);
-        }
-
-        config::save_current_stage(STAGE_CUT)?;
-        Ok(())
-    }
-
     /// 运行到指定阶段为止（用于 --dry-run）
     pub async fn run_until(&self, ctx: &mut PipelineContext, max_stage: u32) -> Result<()> {
         inject_config(ctx, &self.config);

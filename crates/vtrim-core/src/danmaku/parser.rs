@@ -53,7 +53,7 @@ fn parse_dialogue_line(line: &str) -> Option<DanmakuEntry> {
     // fields[0] = layer, fields[1] = start, fields[2] = end, fields[9] = text
     let start = parse_ass_time(fields[1].trim())?;
     let end = parse_ass_time(fields[2].trim())?;
-    let text = fields[9].replace("\\N", "\n").replace("\\n", "\n");
+    let text = replace_ass_newlines(fields[9]);
 
     // skip empty or pure-newline text
     if text.trim().is_empty() {
@@ -61,6 +61,26 @@ fn parse_dialogue_line(line: &str) -> Option<DanmakuEntry> {
     }
 
     Some(DanmakuEntry { start, end, text })
+}
+
+/// Replace ASS line break markers `\N` and `\n` with real newlines (single pass).
+fn replace_ass_newlines(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some(&'N') | Some(&'n') => {
+                    chars.next();
+                    result.push('\n');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        result.push(c);
+    }
+    result
 }
 
 /// Parse ASS time format: 0:00:01.00 or 0:00:01,00

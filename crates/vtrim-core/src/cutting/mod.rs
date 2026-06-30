@@ -43,39 +43,69 @@ impl Stage for Cutter {
 
         let full_transcript = load_transcript(ctx);
 
+        let max_concurrent = 3;
         let mut clip_infos: Vec<ClipInfo> = Vec::new();
 
-        for event in &ctx.events {
-            let start = event.start.to_seconds();
-            let end = event.end.to_seconds();
-            let label = sanitize_label(&event.label);
-            let rank = event.rank;
+        for batch_start in (0..ctx.events.len()).step_by(max_concurrent) {
+            let batch_end = (batch_start + max_concurrent).min(ctx.events.len());
 
-            let filename = format!("{}.mp4", label);
-            let output_path = clips_dir.join(&filename);
+            let batch_results: Vec<Result<ClipInfo>> = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(batch_end - batch_start);
 
-            tracing::info!("剪切: {} ({:.1}s-{:.1}s)", filename, start, end);
-            cut_segment(video, start, end, &output_path)?;
+                for event in &ctx.events[batch_start..batch_end] {
+                    let start = event.start.to_seconds();
+                    let end = event.end.to_seconds();
+                    let label = sanitize_label(&event.label);
+                    let rank = event.rank;
 
-            let sub_filename = format!("{}.srt", label);
-            let sub_path = clips_dir.join(&sub_filename);
-            if let Some(ref t) = full_transcript {
-                if let Err(e) = generate_clip_subtitle(t, start, end, &sub_path) {
-                    tracing::warn!("字幕生成失败 ({}): {}", filename, e);
+                    let v = video.to_path_buf();
+                    let cd = clips_dir.clone();
+                    let t = event.label.clone();
+                    let s = event.summary.clone();
+                    let et = event.event_type.clone();
+                    let pop = event.popularity;
+                    let ts_start = event.start;
+                    let ts_end = event.end;
+                    let transcript = full_transcript.clone();
+
+                    handles.push(scope.spawn(move || {
+                        let filename = format!("{}.mp4", label);
+                        let output_path = cd.join(&filename);
+
+                        tracing::info!("剪切: {} ({:.1}s-{:.1}s)", filename, start, end);
+                        cut_segment(&v, start, end, &output_path)?;
+
+                        let sub_filename = format!("{}.srt", label);
+                        let sub_path = cd.join(&sub_filename);
+                        if let Some(ref t2) = transcript {
+                            if let Err(e) = generate_clip_subtitle(t2, start, end, &sub_path) {
+                                tracing::warn!("字幕生成失败 ({}): {}", filename, e);
+                            }
+                        }
+
+                        Ok(ClipInfo {
+                            filename,
+                            sub_filename,
+                            title: t,
+                            summary: s,
+                            event_type: et,
+                            popularity: pop,
+                            rank,
+                            start: ts_start,
+                            end: ts_end,
+                        })
+                    }));
+                }
+
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            for result in batch_results {
+                match result {
+                    Ok(info) => clip_infos.push(info),
+                    Err(e) => tracing::error!("剪切失败: {}", e),
                 }
             }
-
-            clip_infos.push(ClipInfo {
-                filename,
-                sub_filename,
-                title: event.label.clone(),
-                summary: event.summary.clone(),
-                event_type: event.event_type.clone(),
-                popularity: event.popularity,
-                rank,
-                start: event.start,
-                end: event.end,
-            });
         }
 
         if clip_infos.is_empty() {

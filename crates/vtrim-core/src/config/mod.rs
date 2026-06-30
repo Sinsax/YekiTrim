@@ -41,17 +41,14 @@ fn merge(base: &mut Config, overlay: Config) {
         base.audio.channels = overlay.audio.channels;
     }
 
-    if overlay.asr.backend != "local" {
-        base.asr.backend = overlay.asr.backend.clone();
-    }
     if !overlay.asr.local_model.is_empty() {
         base.asr.local_model = overlay.asr.local_model;
     }
     if !overlay.asr.local_model_dir.is_empty() {
         base.asr.local_model_dir = overlay.asr.local_model_dir;
     }
-    if overlay.asr.num_threads != 0 {
-        base.asr.num_threads = overlay.asr.num_threads;
+    if overlay.asr.num_workers != 0 {
+        base.asr.num_workers = overlay.asr.num_workers;
     }
     if overlay.asr.chunk_duration != 60.0 {
         base.asr.chunk_duration = overlay.asr.chunk_duration;
@@ -59,8 +56,11 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.chunk_overlap != 10.0 {
         base.asr.chunk_overlap = overlay.asr.chunk_overlap;
     }
-    if overlay.asr.llm_correct {
-        base.asr.llm_correct = true;
+    if overlay.asr.segment_gap != 0.6 {
+        base.asr.segment_gap = overlay.asr.segment_gap;
+    }
+    if let Some(v) = overlay.asr.llm_correct {
+        base.asr.llm_correct = Some(v);
     }
     if !overlay.asr.provider.is_empty() {
         base.asr.provider = overlay.asr.provider.clone();
@@ -103,12 +103,15 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.llm.max_tokens != 16384 {
         base.llm.max_tokens = overlay.llm.max_tokens;
     }
+    if overlay.llm.extra_params.as_ref().map_or(false, |t| !t.is_empty()) {
+        base.llm.extra_params = overlay.llm.extra_params.clone();
+    }
 
     if !overlay.cutting.output_dir.is_empty() {
         base.cutting.output_dir = overlay.cutting.output_dir;
     }
-    if overlay.cutting.overwrite {
-        base.cutting.overwrite = true;
+    if let Some(v) = overlay.cutting.overwrite {
+        base.cutting.overwrite = Some(v);
     }
 }
 
@@ -124,7 +127,6 @@ pub fn load_config() -> Result<Config> {
     let local = PathBuf::from("vtrim.toml");
     if let Some(overlay) = load_from_file(&local)? {
         config.project.current_stage = overlay.project.current_stage;
-        config.project.input_file.clone_from(&overlay.project.input_file);
         merge(&mut config, overlay);
     }
 

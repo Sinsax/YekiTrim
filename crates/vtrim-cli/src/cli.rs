@@ -65,9 +65,6 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// ASR 后端 (local / bcut / kuaishou), 会同步写入 vtrim.toml
-        #[arg(long)]
-        backend: Option<String>,
     },
 
     /// LLM 订正转录文本（需先运行 vtrim transcribe）
@@ -130,6 +127,17 @@ pub enum Command {
         duration: f64,
 
         /// 输出目录 (默认输出到输入文件同目录)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// 测试 LLM 连接（返回完整 API response body）
+    LlmTest {
+        /// 测试提示词（默认: 你好，请用一句话介绍你自己。）
+        #[arg(short, long)]
+        prompt: Option<String>,
+
+        /// 输出文件路径（默认: llm_test_response.json）
         #[arg(short, long)]
         output: Option<PathBuf>,
     },

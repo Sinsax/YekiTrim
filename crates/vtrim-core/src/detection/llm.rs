@@ -173,52 +173,97 @@ fn system_prompt(config: &DetectionConfig) -> &str {
      摘要要详尽描述内容看点。质量优先于数量，每个事件必须有明显的看点、转折、爆点或清晰的话题边界，无话题切换的过渡内容应合并。"
 }
 
-pub async fn call(segments: &[TranscriptSegment], llm: &LlmConfig, detect: &DetectionConfig) -> Result<Vec<Event>> {
-    let prompt = build_prompt(segments, detect);
-
-    if llm.api_base.is_empty() {
-        anyhow::bail!("未配置 LLM API 基础地址 (llm.api_base)，请设置后重试");
-    }
-    let api_url = {
-        let base = llm.api_base.trim_end_matches('/');
-        if base.ends_with("/chat/completions") {
-            base.to_string()
-        } else {
-            format!("{}/chat/completions", base)
-        }
-    };
-
+pub fn build_request_body(llm: &LlmConfig, messages: serde_json::Value) -> serde_json::Value {
     let mut body = serde_json::json!({
         "temperature": llm.temperature,
         "max_tokens": llm.max_tokens,
-        "messages": [
-            {"role": "system", "content": system_prompt(detect)},
-            {"role": "user", "content": prompt}
-        ],
-        "thinking": {"type": "disabled"}
+        "messages": messages,
     });
     if !llm.model.is_empty() {
         body["model"] = serde_json::json!(llm.model);
     }
+    if let Some(ref extra) = llm.extra_params {
+        if let Ok(extra_val) = serde_json::to_value(extra) {
+            if let serde_json::Value::Object(extra_map) = extra_val {
+                for (k, v) in extra_map {
+                    body[k] = v;
+                }
+            }
+        }
+    }
+    body
+}
+
+pub fn build_api_url(llm: &LlmConfig) -> Result<String> {
+    if llm.api_base.is_empty() {
+        anyhow::bail!("未配置 LLM API 基础地址 (llm.api_base)，请设置后重试");
+    }
+    let base = llm.api_base.trim_end_matches('/');
+    if base.ends_with("/chat/completions") {
+        Ok(base.to_string())
+    } else {
+        Ok(format!("{}/chat/completions", base))
+    }
+}
+
+pub async fn send_request(llm: &LlmConfig, body: &serde_json::Value, timeout_secs: u64) -> Result<serde_json::Value> {
+    let api_url = build_api_url(llm)?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
         .context("创建 HTTP 客户端失败")?;
-    let resp = client
-        .post(&api_url)
-        .header("Authorization", format!("Bearer {}", llm.api_key))
-        .json(&body)
-        .send()
-        .await
-        .context("LLM API 请求失败")?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("LLM API 返回 {}: {}", status, body);
+    let mut last_err = None;
+    for attempt in 0..3 {
+        let resp = client
+            .post(&api_url)
+            .header("Authorization", format!("Bearer {}", llm.api_key))
+            .json(body)
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                return r.json().await.context("解析 LLM API 响应失败");
+            }
+            Ok(r) => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                let retryable = status.as_u16() == 429 || status.as_u16() >= 500;
+                if retryable && attempt < 2 {
+                    let delay = Duration::from_secs(2u64.pow(attempt as u32 + 1));
+                    tracing::warn!("LLM API 返回 {}，{}s 后重试 ({}/3)", status, delay.as_secs(), attempt + 2);
+                    tokio::time::sleep(delay).await;
+                    last_err = Some(anyhow::anyhow!("LLM API 返回 {}: {}", status, text));
+                    continue;
+                }
+                anyhow::bail!("LLM API 返回 {}: {}", status, text);
+            }
+            Err(e) => {
+                let retryable = e.is_timeout() || e.is_connect();
+                if retryable && attempt < 2 {
+                    let delay = Duration::from_secs(2u64.pow(attempt as u32 + 1));
+                    tracing::warn!("LLM API 请求失败: {}，{}s 后重试 ({}/3)", e, delay.as_secs(), attempt + 2);
+                    tokio::time::sleep(delay).await;
+                    last_err = Some(anyhow::anyhow!("LLM API 请求失败: {}", e));
+                    continue;
+                }
+                anyhow::bail!("LLM API 请求失败: {}", e);
+            }
+        }
     }
 
-    let body: serde_json::Value = resp.json().await.context("解析 LLM API 响应失败")?;
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM API 请求失败")))
+}
+
+pub async fn call(segments: &[TranscriptSegment], llm: &LlmConfig, detect: &DetectionConfig) -> Result<Vec<Event>> {
+    let prompt = build_prompt(segments, detect);
+    let messages = serde_json::json!([
+        {"role": "system", "content": system_prompt(detect)},
+        {"role": "user", "content": prompt}
+    ]);
+    let body = build_request_body(llm, messages);
+    let body = send_request(llm, &body, 180).await?;
 
     let content = body["choices"][0]["message"]["content"]
         .as_str()
@@ -249,6 +294,18 @@ pub async fn call(segments: &[TranscriptSegment], llm: &LlmConfig, detect: &Dete
     }
 
     Ok(events)
+}
+
+pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
+    if llm.api_key.is_empty() {
+        anyhow::bail!("LLM API key 未配置");
+    }
+    let messages = serde_json::json!([
+        {"role": "system", "content": "你是一个 AI 助手。"},
+        {"role": "user", "content": prompt}
+    ]);
+    let body = build_request_body(llm, messages);
+    send_request(llm, &body, 180).await.map(|v| v.to_string())
 }
 
 pub fn create_default_event(segments: &[TranscriptSegment]) -> Event {

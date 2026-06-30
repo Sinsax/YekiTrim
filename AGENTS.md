@@ -24,14 +24,12 @@ vtrim init <video> [--danmaku <file>]    # 创建 vtrim.toml
 vtrim extract-audio [-i] [-o]            # 提取音频 (Stage 1)
 vtrim process [-i] [-o] [--dry-run]      # 全自动管线 (无视 state)
                                          # --dry-run: 只到 EventDetector, 不剪切
-vtrim transcribe [-i] [--backend]        # Stage 2 (local/bcut/kuaishou)
+vtrim transcribe [-i]                    # Stage 2 (local)
 vtrim detect-events [-t <transcript>]    # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
 vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
-vtrim silence-remove [files...]          # 对已输出 clips 移除长静音段 (重编码)
+vtrim silence-remove [files...]       # 对已输出 clips 移除长静音段 (重编码)
        [--duration 2.0] [-o <dir>]      # 默认扫描 output/clips/, 输出到输入文件同目录
 vtrim download-models                    # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
-vtrim setup-spleeter                     # 安装 Spleeter 人声分离到 .vtrim/venv/ (需 uv)
-vtrim separate [input] [-o <dir>]       # 人声分离 (默认使用 config.audio_file)
 vtrim status
 vtrim config init [--path]
 vtrim config show
@@ -68,7 +66,7 @@ danmaku_file = ""
 transcript_file = ""
 audio_file = ""
 events_file = ""
-vocal_file = ""            # vtrim separate 自动写入
+vocal_file = ""            # （预留）人声分离输出路径
 current_stage = 0
 
 [asr]
@@ -96,10 +94,11 @@ overwrite = false
 **`.vtrim/config.toml`** — 全局程序配置:
 ```toml
 [asr]
-num_threads = 0              # 0=CPU/4取整上限4, N=指定并行数
+num_workers = 0              # 0=auto(CPU/4,上限4), N=指定并行数(不超过CPU核数)
 chunk_duration = 60.0        # 每块秒数
 chunk_overlap = 10.0         # 块间重叠秒数
-separation = "none"          # 人声分离: none / spleeter (需先 vtrim setup-spleeter)
+segment_gap = 0.6            # 段间静音阈值(秒)，超过此间隔才切为两条字幕
+separation = "none"          # 人声分离: none / spleeter
 
 [detection.llm]
 api_key = ""
@@ -122,9 +121,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/video.wav`
 
 ### Transcriber
-- 本地 sherpa-onnx-offline (SenseVoice, CPU only)
-- 云端 Bcut(B站) / 快手 ASR API (无 key 要求)
-- 可选 BGM 分离: `separation = "spleeter"` 时调用 Spleeter 提取人声 → ASR
+- sherpa-onnx-offline (SenseVoice, CPU only)
 - 可配置定长分块 (默认 60s + 10s 重叠)
 - 并行转写: 默认 CPU/4 路并行 (上限 4)，每 chunk intra-op threads=2
 - SRT 使用 UTF-8 BOM 写入 (Windows 字幕兼容)
@@ -183,10 +180,8 @@ cargo run -- status            # 查看当前进度
 | `vtrim-core/src/config/mod.rs` | 两源合并 + toml_edit |
 | `vtrim-core/src/config/types.rs` | Config 类型定义 + Default impl |
 | `vtrim-core/src/types/mod.rs` | Event, PipelineContext, Transcript |
-| `vtrim-core/src/download.rs` | 模型/binary 下载 + 断点续传 + setup_spleeter |
-| `vtrim-core/src/asr/local.rs` | sherpa-onnx CLI (CPU only) |
-| `vtrim-core/src/asr/cloud_asr.rs` | Bcut/快手 ASR |
-| `vtrim-core/src/asr/separate.rs` | Spleeter 人声分离 |
+| `vtrim-core/src/download.rs` | 模型/binary 下载 + 断点续传 |
+| `vtrim-core/src/asr/local.rs` | sherpa-onnx (CPU only) |
 | `vtrim-core/src/detection/llm.rs` | LLM prompt + API |
 | `vtrim-core/src/detection/mod.rs` | EventDetector + 弹幕热度 |
 | `vtrim-core/src/danmaku/mod.rs` | ASS 解析 + 密度 |

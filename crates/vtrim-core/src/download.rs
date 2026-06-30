@@ -43,7 +43,11 @@ async fn download_model(target: &Path) -> Result<()> {
         .context("重命名临时模型文件失败")?;
 
     tracing::info!("  解压模型...");
-    extract_model_tarbz2(&archive_path, target)?;
+    let archive_clone = archive_path.clone();
+    let target_clone = target.to_path_buf();
+    tokio::task::spawn_blocking(move || extract_model_tarbz2(&archive_clone, &target_clone))
+        .await
+        .context("模型解压线程异常")??;
     tokio::fs::remove_file(&archive_path).await.ok();
     Ok(())
 }
