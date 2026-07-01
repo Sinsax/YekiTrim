@@ -101,12 +101,13 @@ impl Stage for Transcriber {
 
 pub(super) fn wav_duration_secs(path: &Path) -> Result<f64> {
     let output = Command::new("ffprobe")
-        .args([
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path.to_str().unwrap(),
-        ])
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
         .output()
         .with_context(|| "ffprobe 获取音频时长失败")?;
     let s = String::from_utf8_lossy(&output.stdout);

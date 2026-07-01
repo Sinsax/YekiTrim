@@ -72,12 +72,11 @@ system_prompt = "你是一个虚拟主播/VTuber 直播切片分析助手。分�
 
 prompt_template = """请分析以下直播转录文本（虚拟主播/VTuber），将其划分为多个事件片段。要求：
 
-1. 每个事件片段时长控制在30秒-30分钟，短于30秒的需与相邻片段合并
+1. 每个事件片段时长控制在2分钟-15分钟，短于2分钟的需与相邻片段合并，不要过度细分
 2. 标题(label)创作要求：
    - 口语化、夸张、悬念化，使用 B 站观众熟悉的口头禅/反问/感叹
    - 长度 8~50 字都可以（爆点短标题、细节并列长标题皆可），不超过 50 字
-   - 包含 1-3 个 emoji，常用：🤣😱🥵😡😅🤭🤑👻😊🐶🐮🎵🔥💥😭😫😋💩😈🥺😎
-   - 优先使用以下句式：
+    - 优先使用以下句式：
      a) 反问式：句末用 ? 或 ??，如"这也能信？"
      b) 感叹式：句末用 ! 或 !!，如"爆了！"
      c) 问号叠加：?? ??? ?!! 表示震惊/无语
@@ -634,15 +633,16 @@ async fn main() -> anyhow::Result<()> {
 
             let targets: Vec<PathBuf> = if files.is_empty() {
                 if clips_dir.exists() {
-                    std::fs::read_dir(&clips_dir)?
+                    // Scan subdirectories for clip.mp4
+                    let mut result: Vec<PathBuf> = std::fs::read_dir(&clips_dir)?
                         .filter_map(|e| e.ok())
                         .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension()
-                                .map(|ext| ext == "mp4")
-                                .unwrap_or(false)
-                        })
-                        .collect()
+                        .filter(|p| p.is_dir())
+                        .map(|d| d.join("clip.mp4"))
+                        .filter(|p| p.exists())
+                        .collect();
+                    result.sort();
+                    result
                 } else {
                     anyhow::bail!("未指定文件且 {} 不存在", clips_dir.display());
                 }
