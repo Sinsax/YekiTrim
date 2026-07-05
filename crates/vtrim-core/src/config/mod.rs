@@ -56,7 +56,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.chunk_overlap != 10.0 {
         base.asr.chunk_overlap = overlay.asr.chunk_overlap;
     }
-    if overlay.asr.segment_gap != 0.6 {
+    if overlay.asr.segment_gap != 1.0 {
         base.asr.segment_gap = overlay.asr.segment_gap;
     }
     if let Some(v) = overlay.asr.llm_correct {
@@ -88,31 +88,31 @@ fn merge(base: &mut Config, overlay: Config) {
         base.correct.prompt = overlay.correct.prompt;
     }
 
-    if !overlay.llm.api_key.is_empty() {
-        base.llm.api_key = overlay.llm.api_key;
-    }
-    if !overlay.llm.api_base.is_empty() {
-        base.llm.api_base = overlay.llm.api_base;
-    }
-    if !overlay.llm.model.is_empty() {
-        base.llm.model = overlay.llm.model;
-    }
-    if overlay.llm.temperature != 0.1 {
-        base.llm.temperature = overlay.llm.temperature;
-    }
-    if overlay.llm.max_tokens != 16384 {
-        base.llm.max_tokens = overlay.llm.max_tokens;
-    }
-    if overlay.llm.extra_params.as_ref().map_or(false, |t| !t.is_empty()) {
-        base.llm.extra_params = overlay.llm.extra_params.clone();
-    }
-
     if !overlay.cutting.output_dir.is_empty() {
         base.cutting.output_dir = overlay.cutting.output_dir;
     }
     if let Some(v) = overlay.cutting.overwrite {
         base.cutting.overwrite = Some(v);
     }
+}
+
+/// 从 .vtrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
+pub fn load_llm_config() -> LlmConfig {
+    let path = crate::path::vtrim_home().join("llm.toml");
+    if !path.exists() {
+        return LlmConfig::default();
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("读取 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            return LlmConfig::default();
+        }
+    };
+    toml::from_str(&content).unwrap_or_else(|e| {
+        tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+        LlmConfig::default()
+    })
 }
 
 pub fn load_config() -> Result<Config> {
@@ -129,6 +129,9 @@ pub fn load_config() -> Result<Config> {
         config.project.current_stage = overlay.project.current_stage;
         merge(&mut config, overlay);
     }
+
+    // 独立加载 LLM 配置（llm.toml 已从 config.toml 分离）
+    config.llm = load_llm_config();
 
     Ok(config)
 }

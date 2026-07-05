@@ -10,7 +10,7 @@ fn default_temperature() -> f64 {
     0.1
 }
 fn default_max_tokens() -> u32 {
-    16384
+    65536
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ pub struct Config {
     pub asr: AsrConfig,
     #[serde(default)]
     pub correct: CorrectConfig,
-    #[serde(default)]
+    #[serde(default, skip)]
     pub llm: LlmConfig,
     #[serde(default)]
     pub detection: DetectionConfig,
@@ -108,11 +108,11 @@ pub struct AsrConfig {
     pub language: String,
 }
 
-fn default_asr_language() -> String { "auto".into() }
+fn default_asr_language() -> String { "zh".into() }
 fn default_num_workers() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
-fn default_segment_gap() -> f64 { 0.6 }
+fn default_segment_gap() -> f64 { 1.0 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -160,7 +160,7 @@ pub struct LlmConfig {
     #[serde(default)]
     pub api_key: String,
     #[serde(default)]
-    pub api_base: String,
+    pub base_url: String,
     #[serde(default)]
     pub model: String,
     #[serde(default = "default_temperature")]
@@ -175,7 +175,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            api_base: String::new(),
+            base_url: String::new(),
             model: String::new(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
