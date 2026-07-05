@@ -15,21 +15,6 @@ use crate::progress::IndicatifProgress;
 const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
 # 相同参数会被 vtrim.toml 覆盖
 
-[llm]
-# 基于 OpenAI 兼容接口
-# LLM API Key
-api_key = ""
-# API 基础地址
-api_base = ""
-# 模型名称
-model = ""
-# 温度参数
-temperature = 0.1
-# 最大 Token 数
-max_tokens = 16384
-# 额外请求参数 (默认关闭推理)
-extra_params = { thinking = { type = "disabled" } }
-
 [asr]
 # 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
 num_workers = 0
@@ -38,95 +23,48 @@ chunk_duration = 60
 # 块间重叠(秒，仅固定分块模式有效)
 chunk_overlap = 10.0
 # 段间静音阈值(秒)，超过此间隔才切为两条字幕
-segment_gap = 0.6
+segment_gap = 1.0
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 
 [correct]
 # 订正 system_prompt（修改此处覆盖内建默认）
-system_prompt = "你是虚拟主播直播转录文本的订正助手。修正 ASR 常见的错别字、主播名/VTuber名、游戏名、歌曲名、网络用语。保留口语风格和语气词（啊、哦、嗯、嘛、呗），不要书面化润色。保持序号不变，只输出行。"
-
-# 订正 user_prompt（{segments} 会被替换为实际转录内容）
-prompt = """请修正以下语音转文字转录，注意修正：
- - 错别字和语音识别常见错误（同音字、谐音字）
- - 主播名、VTuber 名、嘉宾名（如"永雏塔菲"、"小菲"、"塔菲"）
- - 游戏名、动画名、歌曲名（如"法环"不会写成"发还"）
- - 日韩文娱名称（歌手/乐队/偶像/动画曲/V家）：如椎名林檎、YOASOBI、Ado、NewJeans
- - V 圈 / B 站常用术语（SC、舰长、提督、舰礼、切片、串、纯良、米线等）
- - 网络流行语和常见缩写（xp、yyds、kpi、sc、dlc、op、ww等）
- - 其他语音识别易出错的缩写，请结合上下文自行修正
- - 语速快、口糊、吞音导致的识别错误，根据上下文还原正确文字
- - 保留口语风格：不要去掉啊、哦、嗯、嘛、呗、啦等语气词
- - 保留重复和停顿的修辞效果（如"我我我真的"、"然后然后"）
- - 保留情绪化表达（大笑、尖叫、哭腔、破音等通过文字体现）
-
-按原样返回每一行，只修改文字内容，不要修改序号。
-格式：序号|修正后文字"""
+system_prompt = "{{CORRECT_SYSTEM_PROMPT}}"
+# 订正 user_prompt（{context} 和 {segments} 会被自动替换）
+prompt = "{{CORRECT_USER_PROMPT}}"
 
 [detection]
 # 主播名称 (非空时自动追加到切片标题末尾)
 vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
-system_prompt = "你是一个虚拟主播/VTuber 直播切片分析助手。分析直播转录文本，将内容划分为多个有看点的视频片段。标题要使用 B 站风格夸张口语化表达：善用反问句(?)、感叹句(!)、问号叠加(??)、省略号(...)；嵌入主播原话或动作注释；善用网络用语：爆了、难绷、神人、破防、上头、下头、串、好女孩、魔法期。摘要要详尽描述内容看点。质量优先于数量，每个事件必须有明显的看点、转折、爆点或清晰的话题边界，无话题切换的过渡内容应合并。"
-
-prompt_template = """请分析以下直播转录文本（虚拟主播/VTuber），将其划分为多个事件片段。要求：
-
-1. 每个事件片段时长控制在2分钟-15分钟，短于2分钟的需与相邻片段合并，不要过度细分
-2. 标题(label)创作要求：
-   - 口语化、夸张、悬念化，使用 B 站观众熟悉的口头禅/反问/感叹
-   - 长度 8~50 字都可以（爆点短标题、细节并列长标题皆可），不超过 50 字
-    - 优先使用以下句式：
-     a) 反问式：句末用 ? 或 ??，如"这也能信？"
-     b) 感叹式：句末用 ! 或 !!，如"爆了！"
-     c) 问号叠加：?? ??? ?!! 表示震惊/无语
-     d) 悬念式：句中用 ... 或（动作）收尾，如"难绷..."
-     e) 对话引用：直接嵌入主播原话，用 "" 或冒号
-      f) 列点式：用 、 ， 并列多个细节
-    - 特殊场景可用后缀标注：(弹幕版) 【新衣回】 【自用】 等
-   - 善用网络用语：爆了、难绷、神人、破防、上头、下头、串、好女孩、魔法期、名场面
-   - 质量门槛：每个事件必须有明显的看点、转折、爆点或清晰的话题边界。仅用于填充沉默的过渡语句、无话题切换的重复附和内容不要单独切出，合并到相邻事件
-3. 摘要(summary)详尽描述片段核心内容和看点，50-100字
-4. 事件类型(event_type)从以下选择：
-   - gameplay(游戏/操作)
-   - interaction(互动/连麦/双播)
-   - qna(问答/读 SC)
-   - reaction(看视频/听歌/观影/鉴赏)
-   - storytelling(讲故事/分享经历/回忆)
-   - music(唱歌/演奏/歌切)
-   - food(吃播/美食/试吃)
-   - chat(聊天/杂谈/日常)
-   - discussion(讨论/争论/锐评)
-   - ranking(盘点/排行/排行榜)
-   - irl(线下/旅行/Vlog/外出)
-   - rant(吐槽/破防/红温)
-   - other(其他)
-
-参考标题风格（覆盖多句式、多题材）：
-  爆了！牢豆直播看塔菲中之人视频😱
-  被初王葛孚雷打破防，妈的一天天使不完个牛劲我超！【七海Nana7mi】
-  海子姐难绷90岁治疗ED【七海Nana7mi】
-  这什么雷霆坐姿雷霆视角🥵羞死人了🥵
-  灰泽满妈妈：他们连你成绩很差都知道了吗？？【灰泽满Hazel】
-  难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤
-  岁己亲推脚臭味薯片：不是我脚臭，这是世俗意义上的脚臭【岁己SUI】
-  谁家小土豆地雷？【灰泽满Hazel】
-  我站着上厕所！【七海Nana7mi】
-  弹幕问豆今色，豆特意低头看了下脱口而出：梅川😊
-
-输出格式：只输出一个 JSON 数组，不要 markdown 或解释：
-
-转录片段：
-{segments}
-
-只输出JSON数组：
-[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "详尽描述这段内容的核心看点...", "event_type": "interaction"}]"""
+# 检测 system_prompt（修改此处覆盖内建默认）
+system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
+# 检测 user prompt_template（{segments} 会被替换；留空 = 恢复内建默认值）
+prompt_template = "{{DETECT_USER_PROMPT}}"
 
 [cutting]
 # 输出目录
 output_dir = "./output"
 # 是否覆盖已有文件
 overwrite = false
+"#;
+
+const LLM_CONFIG_TOML: &str = r#"# V-Trim LLM 配置 — 独立于工程配置
+# 基于 OpenAI 兼容接口
+
+# API 基础地址
+base_url = ""
+# LLM API Key
+api_key = ""
+# 模型名称
+model = ""
+# 温度参数 (0=确定性输出，建议保持0)
+temperature = 0
+# 最大 Token 数 (检测事件需要较大的输出空间)
+max_tokens = 65536
+# 额外请求参数 (seed 确保稳定输出；关闭 thinking 避免浪费 token 在推理上)
+extra_params = { seed = 42, thinking = { type = "disabled" } }
 "#;
 
 mod cli;
@@ -616,12 +554,42 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(parent) = out.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&out, GLOBAL_CONFIG_TOML)?;
+                use vtrim_core::{asr, detection};
+
+                /// 将 Rust 字符串转为 TOML 值（多行用 """，单行用 "，转义内部引号）
+                fn toml_val(s: &str) -> String {
+                    // TOML 基本字符串中需要转义 \ 和 "
+                    let escaped = s.replace('\\', "\\\\").replace('\"', "\\\"");
+                    if s.contains('\n') {
+                        format!("\"\"\"\n{}\n\"\"\"", escaped)
+                    } else {
+                        format!("\"{}\"", escaped)
+                    }
+                }
+
+                let body = GLOBAL_CONFIG_TOML
+                    // 注意：替换包含外围引号 "{{...}}"，避免模板的引号 + toml_val 的引号叠加
+                    .replace(r#""{{CORRECT_SYSTEM_PROMPT}}""#, &toml_val(asr::correct::DEFAULT_SYSTEM_PROMPT))
+                    .replace(r#""{{CORRECT_USER_PROMPT}}""#, &toml_val(asr::correct::DEFAULT_USER_PROMPT))
+                    .replace(r#""{{DETECT_SYSTEM_PROMPT}}""#, &toml_val(detection::DEFAULT_SYSTEM_PROMPT))
+                    .replace(r#""{{DETECT_USER_PROMPT}}""#, &toml_val(detection::DEFAULT_PROMPT));
+                std::fs::write(&out, body)?;
                 tracing::info!("全局配置文件已生成: {}", out.display());
+
+                // 同时生成独立的 llm.toml
+                let llm_out = out.parent().map(|p| p.join("llm.toml")).unwrap_or_else(|| {
+                    PathBuf::from(".vtrim/llm.toml")
+                });
+                std::fs::write(&llm_out, LLM_CONFIG_TOML)?;
+                tracing::info!("LLM 配置文件已生成: {}", llm_out.display());
             }
             ConfigAction::Show => {
                 let cfg = load_cfg(global_config)?;
                 println!("{}", toml::to_string_pretty(&cfg)?);
+                println!();
+                println!("# LLM 配置 (.vtrim/llm.toml)");
+                let llm = config::load_llm_config();
+                println!("{}", toml::to_string_pretty(&llm)?);
             }
         },
 
@@ -680,6 +648,14 @@ async fn main() -> anyhow::Result<()> {
                     vtrim_core::cutting::adjust_srt(&srt_path, &out_srt, &segments)?;
                     tracing::info!("  字幕已调整: {}", out_srt.display());
                 }
+
+                // 同步处理弹幕字幕 clip.dm.srt（如果存在）
+                let dm_srt_path = input.with_extension("dm.srt");
+                if dm_srt_path.exists() {
+                    let out_dm = output_path.with_extension("dm.srt");
+                    vtrim_core::cutting::adjust_srt(&dm_srt_path, &out_dm, &segments)?;
+                    tracing::info!("  弹幕字幕已调整: {}", out_dm.display());
+                }
             }
 
             tracing::info!("静音移除完成!");
@@ -696,8 +672,9 @@ async fn main() -> anyhow::Result<()> {
             let out_path = output.clone().unwrap_or_else(|| PathBuf::from("llm_test_response.json"));
 
             if cfg.llm.api_key.is_empty() {
-                let config_path = global_config.clone().unwrap_or_else(|| PathBuf::from(".vtrim/config.toml"));
-                anyhow::bail!("LLM API key 未配置，请先在 {} 中设置 [llm] 部分", config_path.display());
+                let llm_path = vtrim_core::path::vtrim_home().join("llm.toml");
+                let config_path = global_config.clone().unwrap_or(llm_path);
+                anyhow::bail!("LLM API key 未配置，请先在 {} 中设置 base_url 和 api_key", config_path.display());
             }
 
             tracing::info!("调用 LLM (model={})...", if cfg.llm.model.is_empty() { "默认" } else { &cfg.llm.model });
