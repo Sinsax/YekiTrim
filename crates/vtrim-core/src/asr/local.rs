@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
+    HomophoneReplacerConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    OfflineSenseVoiceModelConfig,
 };
 
 use crate::config::AsrConfig;
@@ -60,6 +61,19 @@ pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
     };
     config.model_config.num_threads = 1;
     config.model_config.tokens = Some(tokens_path.to_str().unwrap().into());
+
+    // 启用同音纠错（lexicon.txt + replace.fst 由 download-models 下载）
+    let lexicon = mdir.join("lexicon.txt");
+    let rule_fst = mdir.join("replace.fst");
+    if lexicon.exists() && rule_fst.exists() {
+        config.hr = HomophoneReplacerConfig {
+            lexicon: Some(lexicon.to_str().unwrap().into()),
+            rule_fsts: Some(rule_fst.to_str().unwrap().into()),
+        };
+        tracing::info!("同音纠错已启用 (lexicon.txt + replace.fst)");
+    } else {
+        tracing::info!("同音纠错未启用（未找到 lexicon.txt / replace.fst）");
+    }
 
     OfflineRecognizer::create(&config)
         .context("创建 OfflineRecognizer 失败，请检查模型文件是否正确")
@@ -284,20 +298,24 @@ pub fn transcribe_chunked(
     dedup_overlaps(&mut all_segments);
     all_segments.retain(|s| s.text.trim() != "\u{FFFD}");
 
-    // 合并过短且紧贴相邻段的 segment
-    let mut short_merged: Vec<TranscriptSegment> = Vec::with_capacity(all_segments.len());
+    // 第一步：合并过短且紧贴相邻段的 segment
+    // 条件：时长 <1s 或 (时长 <3s 且字数 ≤5)，且与邻段间距 <1.0s
+    let mut merged: Vec<TranscriptSegment> = Vec::with_capacity(all_segments.len());
     let mut i = 0;
     while i < all_segments.len() {
         let dur = all_segments[i].end - all_segments[i].start;
-        if dur < 1.0 && i + 1 < all_segments.len() {
+        let text_len = all_segments[i].text.trim().chars().count();
+        let should_merge = dur < 1.0 || (dur < 3.0 && text_len <= 5);
+
+        if should_merge && i + 1 < all_segments.len() {
             let gap_to_next = all_segments[i + 1].start - all_segments[i].end;
-            let gap_to_prev = short_merged.last()
+            let gap_to_prev = merged.last()
                 .map(|last| all_segments[i].start - last.end)
                 .unwrap_or(f64::MAX);
 
-            if gap_to_next < 0.5 || gap_to_prev < 0.5 {
+            if gap_to_next < 1.0 || gap_to_prev < 1.0 {
                 if gap_to_prev <= gap_to_next {
-                    let last = short_merged.last_mut().unwrap();
+                    let last = merged.last_mut().unwrap();
                     last.text = format!("{}{}", last.text.trim(), all_segments[i].text.trim());
                     last.end = all_segments[i].end;
                 } else {
@@ -309,12 +327,57 @@ pub fn transcribe_chunked(
                 continue;
             }
         }
-        short_merged.push(all_segments[i].clone());
+        merged.push(all_segments[i].clone());
         i += 1;
     }
-    all_segments = short_merged;
 
-    Ok(all_segments)
+    // 第二步：噪声清理
+    // 2a: 丢弃开场连续噪声（前 5 分钟内连续 ≤2 字的段 → BGM 伪影）
+    let start_noise = merged
+        .iter()
+        .take_while(|s| {
+            s.start < 300.0 && s.text.trim().chars().count() <= 2
+        })
+        .count();
+
+    // 2b: 逐段清理剩余内容
+    let mut cleaned: Vec<TranscriptSegment> = Vec::with_capacity(merged.len());
+    for (idx, seg) in merged.iter().enumerate().skip(start_noise) {
+        let text = seg.text.trim();
+        // 单字符且时长 >5s → 噪声（无人说一个字持续 5+ 秒）
+        if text.chars().count() <= 1 && (seg.end - seg.start) > 5.0 {
+            continue;
+        }
+        // ≤2 字短段，两侧孤立无邻 → 噪声
+        // 注意：gap_to_prev 必须用 merged 列表（而非 cleaned），
+        // 否则 start_noise 跳过之后第一个真实段的 gap_to_prev 会变成 INFINITY
+        if text.chars().count() <= 2 && (seg.end - seg.start) < 5.0 {
+            let gap_to_prev = if idx > 0 {
+                seg.start - merged[idx - 1].end
+            } else {
+                f64::MAX
+            };
+            let gap_to_next = merged.get(idx + 1)
+                .map(|n| n.start - seg.end)
+                .unwrap_or(f64::MAX);
+            if gap_to_prev > 3.0 && gap_to_next > 3.0 {
+                continue;
+            }
+        }
+        cleaned.push(seg.clone());
+    }
+
+    tracing::info!(
+        "片段后处理: {} → {}{}",
+        all_segments.len(),
+        merged.len(),
+        if cleaned.len() < merged.len() {
+            format!(" (丢弃 {} 个噪声段)", merged.len() - cleaned.len())
+        } else {
+            String::new()
+        },
+    );
+    Ok(cleaned)
 }
 
 fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {

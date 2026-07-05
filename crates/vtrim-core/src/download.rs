@@ -10,6 +10,10 @@ fn model_download_url() -> &'static str {
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
 }
 
+fn hr_base_url() -> &'static str {
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/hr-files"
+}
+
 pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
     let home = target_dir.map_or_else(vtrim_home, |p| p.to_path_buf());
     let models_dir = home.join("models").join("sensevoice");
@@ -19,6 +23,7 @@ pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
         .context("创建模型目录失败")?;
 
     download_model(&models_dir).await?;
+    download_hr_files(&models_dir).await?;
 
     tracing::info!("下载完成！");
     tracing::info!("  模型: {}", models_dir.display());
@@ -143,6 +148,31 @@ async fn download_file(url: &str, part_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 下载同音纠错文件 (lexicon.txt + replace.fst)
+async fn download_hr_files(target: &Path) -> Result<()> {
+    if target.join("replace.fst").exists() {
+        tracing::info!("同音纠错文件已存在，跳过下载");
+        return Ok(());
+    }
+
+    let base = hr_base_url();
+    let files = ["lexicon.txt", "replace.fst"];
+
+    for name in &files {
+        let url = format!("{base}/{name}");
+        let dest = target.join(name);
+        let part = target.join(format!("{name}.part"));
+
+        tracing::info!("下载同音纠错文件 {name}...");
+        download_file(&url, &part).await?;
+        tokio::fs::rename(&part, &dest).await
+            .with_context(|| format!("重命名 {name} 失败"))?;
+        tracing::info!("  保存: {}", dest.display());
+    }
+
+    Ok(())
+}
+
 pub async fn ensure_models() -> Result<()> {
     let model_path = vtrim_home().join("models").join("sensevoice");
 
@@ -153,6 +183,9 @@ pub async fn ensure_models() -> Result<()> {
     } else {
         tracing::info!("本地 ASR 模型已就绪");
     }
+
+    // 静默下载同音纠错文件（不影响主流程）
+    download_hr_files(&model_path).await?;
 
     Ok(())
 }
