@@ -8,7 +8,7 @@ use crate::pipeline::{Stage, STAGE_DETECT};
 use crate::types::{Event, EventStore, PipelineContext};
 
 mod llm;
-pub use llm::{build_api_url, build_request_body, send_request, test_llm};
+pub use llm::{build_api_url, build_request_body, send_request, test_llm, DEFAULT_PROMPT, DEFAULT_SYSTEM_PROMPT};
 
 pub struct EventDetector;
 
@@ -141,16 +141,53 @@ async fn process_with_llm(
     llm: &crate::config::LlmConfig,
     detect: &crate::config::DetectionConfig,
 ) -> Result<Vec<Event>> {
-    tracing::info!("LLM 一次性分析 {} 个 segments", segments.len());
+    // 预合并：相邻短段（间距 <2s）合并，减少 LLM 输入量
+    let merged = merge_segments_for_detection(segments);
+    tracing::info!(
+        "LLM 分析: {} 段 → 预合并为 {} 段",
+        segments.len(),
+        merged.len(),
+    );
 
-    let mut events = llm::call(segments, llm, detect).await
+    // 估算 token 数（中文约 1.5-2 chars/token）
+    let seg_text: String = merged.iter().map(|s| s.text.as_str()).collect();
+    let estimated_tokens = (seg_text.len() as f64 / 1.8) as usize;
+    tracing::info!(
+        "LLM 分析: 音频内容约 {} 字符 (~{}k tokens), 超时 300s",
+        seg_text.len(),
+        estimated_tokens / 1000,
+    );
+
+    let mut events = llm::call(&merged, llm, detect).await
         .map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
 
     events = dedup_and_merge(events);
-    events = enforce_min_duration(events, 120.0);
-    events = merge_close_events(events, 60.0);
+    events = enforce_min_duration(events, 30.0);
+    events = merge_close_events(events, 15.0);
 
     Ok(events)
+}
+
+/// 为事件检测预合并短段，减少 LLM 输入量
+/// 合并条件：间距 <2.0s 的相邻段（比订正更激进，因为 detection 只需要看结构）
+fn merge_segments_for_detection(segments: &[crate::types::TranscriptSegment]) -> Vec<crate::types::TranscriptSegment> {
+    let mut merged: Vec<crate::types::TranscriptSegment> = Vec::new();
+    let mut iter = segments.iter();
+    if let Some(first) = iter.next() {
+        let mut cur = first.clone();
+        for seg in iter {
+            let gap = seg.start - cur.end;
+            if gap < 2.0 {
+                cur.text = format!("{}{}", cur.text.trim(), seg.text.trim());
+                cur.end = seg.end;
+            } else {
+                merged.push(cur);
+                cur = seg.clone();
+            }
+        }
+        merged.push(cur);
+    }
+    merged
 }
 
 fn dedup_and_merge(events: Vec<Event>) -> Vec<Event> {
