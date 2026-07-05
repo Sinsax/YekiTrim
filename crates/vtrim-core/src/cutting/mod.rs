@@ -98,9 +98,7 @@ impl Stage for Cutter {
 
                         if !danmaku.is_empty() {
                             let dm_path = clip_dir.join("clip.dm.srt");
-                            if let Err(e) =
-                                generate_clip_danmaku(&danmaku, start, end, &dm_path)
-                            {
+                            if let Err(e) = generate_clip_danmaku(&danmaku, start, end, &dm_path) {
                                 tracing::warn!("弹幕生成失败 ({}): {}", dir_name, e);
                             }
                         }
@@ -111,7 +109,7 @@ impl Stage for Cutter {
                         }
 
                         Ok(ClipInfo {
-                            title: t,
+                            title: t.clone(),
                             summary: s,
                             event_type: et,
                             popularity: pop,
@@ -416,7 +414,14 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Opti
         let stderr = String::from_utf8_lossy(&result.stderr);
         anyhow::bail!("ffmpeg 静音移除失败: {}", stderr.trim());
     }
-    Ok(segments)
+
+    // 返回实际切除的静音段（扣除 PAD 缓冲后），用于字幕偏移计算
+    let actual_silence: Vec<(f64, f64)> = segments
+        .iter()
+        .map(|(s, e)| (s + PAD, e - PAD))
+        .filter(|(s, e)| e > s)
+        .collect();
+    Ok(actual_silence)
 }
 
 pub fn adjust_srt(input: &Path, output: &Path, silence_segments: &[(f64, f64)]) -> Result<()> {
@@ -531,6 +536,7 @@ fn generate_clip_danmaku(
     Ok(())
 }
 
+/// 拼接多个 .ts 文件为单个 mp4（使用 ffmpeg concat demuxer，不重编码）
 fn write_clip_meta(
     path: &Path,
     title: &str,
@@ -595,23 +601,6 @@ fn load_transcript(ctx: &PipelineContext) -> Option<crate::types::Transcript> {
     }
 
     None
-}
-
-pub(crate) fn sanitize_label(s: &str) -> String {
-    let invalid = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
-    s.chars()
-        .map(|c| {
-            if invalid.contains(&c) || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect::<String>()
-        .trim()
-        .chars()
-        .take(80)
-        .collect()
 }
 
 #[derive(serde::Serialize)]
