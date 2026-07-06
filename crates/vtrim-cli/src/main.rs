@@ -254,7 +254,6 @@ async fn main() -> anyhow::Result<()> {
             project.insert("transcript_file", toml_edit::value(""));
             project.insert("audio_file", toml_edit::value(""));
             project.insert("events_file", toml_edit::value(""));
-            project.insert("current_stage", toml_edit::value(0));
 
             let mut header = toml_edit::DocumentMut::new();
             header.insert("project", toml_edit::Item::Table(project));
@@ -267,7 +266,6 @@ async fn main() -> anyhow::Result<()> {
                 ("transcript_file", "转写文件路径 (由 transcribe 写入)"),
                 ("audio_file", "音频文件路径 (由 extract-audio 写入)"),
                 ("events_file", "事件文件路径 (由 detect-events 写入)"),
-                ("current_stage", "当前处理进度 (0=未开始, 1~4=各阶段)"),
             ];
             for (key, comment) in &comments {
                 let line = format!("{} = ", key);
@@ -311,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
             let input_path = resolve_input(&cfg, input)?;
             let output = resolve_output(&cfg, output_dir);
 
-            let current = config::load_current_stage()?;
+            let current = cfg.project.current_stage(&output);
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output.clone());
 
             // Step 1: 音频提取（未完成才跑）
@@ -320,7 +318,6 @@ async fn main() -> anyhow::Result<()> {
                 extract_runner.set_progress(progress.clone());
                 extract_runner.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
                 extract_runner.run_until(&mut ctx, STAGE_AUDIO).await?;
-                config::save_current_stage(STAGE_AUDIO)?;
             } else {
                 tracing::info!("音频已提取，跳过");
             }
@@ -332,7 +329,6 @@ async fn main() -> anyhow::Result<()> {
                 transcribe_runner.set_progress(progress.clone());
                 transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
                 transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
-                config::save_current_stage(STAGE_TRANSCRIBE)?;
             } else {
                 // 从已保存的文件恢复 transcript
                 let recovery_path = cfg.project.transcript_file
@@ -363,14 +359,13 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!("转写已存在: {}", path.display());
                     }
                     None => {
-                        tracing::warn!("current_stage >= 2 但未找到转写文件，重新转写");
+                        tracing::warn!("未找到转写文件，重新转写");
                         vtrim_core::download::ensure_models().await?;
                         let mut transcribe_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
                         transcribe_runner.set_progress(progress.clone());
                         transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
                         transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
-                        config::save_current_stage(STAGE_TRANSCRIBE)?;
-                    }
+                            }
                 }
             }
 
@@ -407,7 +402,6 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
                 detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
-                config::save_current_stage(STAGE_DETECT)?;
             } else {
                 tracing::info!("事件检测已存在，跳过");
             }
@@ -422,7 +416,6 @@ async fn main() -> anyhow::Result<()> {
                 cut_runner.set_progress(progress.clone());
                 cut_runner.add_stage(Box::new(vtrim_core::cutting::Cutter));
                 cut_runner.run_until(&mut ctx, STAGE_CUT).await?;
-                config::save_current_stage(STAGE_CUT)?;
             } else {
                 tracing::info!("剪切已完成，跳过");
             }
@@ -436,10 +429,11 @@ async fn main() -> anyhow::Result<()> {
             ..
         } => {
             let cfg = load_cfg(global_config)?;
-            let current = config::load_current_stage()?;
+            let out = resolve_output(&cfg, output);
+            let current = cfg.project.current_stage(&out);
             check_stage(2, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output = resolve_output(&cfg, output);
+            let output = out;
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output);
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
@@ -458,12 +452,11 @@ async fn main() -> anyhow::Result<()> {
 
         Command::DetectEvents { transcript } => {
             let cfg = load_cfg(global_config)?;
-            let current = config::load_current_stage()?;
+            let output_dir = resolve_output(&cfg, &None);
+            let current = cfg.project.current_stage(&output_dir);
             check_stage(3, current, &cfg)?;
 
             let input_path = resolve_input(&cfg, &None)?;
-            let output_dir = resolve_output(&cfg, &None);
-
             // 优先级: --transcript 参数 > config.project.transcript_file > 自动发现
             let transcript_path = transcript
                 .clone()
@@ -528,10 +521,10 @@ async fn main() -> anyhow::Result<()> {
             output,
         } => {
             let cfg = load_cfg(global_config)?;
-            let current = config::load_current_stage()?;
+            let output_dir = resolve_output(&cfg, output);
+            let current = cfg.project.current_stage(&output_dir);
             check_stage(4, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
-            let output_dir = resolve_output(&cfg, output);
 
             let events_path = events
                 .clone()
@@ -571,8 +564,9 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::Status => {
-            let current = config::load_current_stage()?;
             let cfg = load_cfg(global_config)?;
+            let output = resolve_output(&cfg, &None);
+            let current = cfg.project.current_stage(&output);
             if let Some(ref input_file) = cfg.project.input_file {
                 if !input_file.is_empty() {
                     println!("视频工程: {}", input_file);

@@ -14,9 +14,18 @@ Cargo workspace, 三个 crate:
 所有 stage 用 `#[async_trait]` 实现 `Stage` trait (`crates/vtrim-core/src/pipeline/stage.rs`)。
 
 `PipelineRunner` 提供三种运行模式 (`runner.rs`):
-- `run()` — 受 `current_stage` 状态机约束，单 stage 命令用
-- `run_all()` — 无视状态机从头跑到底，`process` 命令用，完成后设 `current_stage=4`
+- `run()` — 受文件存在性约束（而非 `current_stage`），单 stage 命令用
+- `run_all()` — 无视文件检查从头跑到底，`process` 命令用
 - `run_until(max)` — 跑到指定 stage 为止，`process --dry-run` 用
+
+`current_stage` 不再持久化到 `vtrim.toml`，改为从输出文件存在性自动推导：
+
+| 文件存在 | 推导阶段 |
+|---------|---------|
+| `output/video.wav` 或 `audio_file` 非空 | Stage 1 |
+| `output/transcript.json` 或 `video.srt` 或 `transcript_file` 非空 | Stage 2 |
+| `output/events.json` 或 `events_file` 非空 | Stage 3 |
+| `output/clips/clips_order.txt` 存在 | Stage 4 |
 
 ## CLI
 
@@ -49,17 +58,17 @@ vtrim polish test [<dir>]                # 精修: 测试模式
 
 ## 状态机
 
-`vtrim.toml` 中的 `current_stage` 控制单 stage 命令:
+`current_stage` 不再持久化到 `vtrim.toml`，改为从输出文件存在性自动推导。
 
-| 规则 | 示例 (current=2) |
-|------|-----------------|
-| `stage > current + 1` → 拒绝 | `detect`(3=2+1) ✅ / `cut`(4>3) ❌ |
-| `stage <= current` → 可重跑 | `transcribe`(2≤2) ✅ |
-| 完成后 stage 自动推进 | `transcribe`(2) → `current_stage=2` |
-| `process` 无视 state, 跑完设 `current_stage=4` | |
-| stage 无跳过 | 所有 stage 均为连续编号 |
+| 规则 | 示例 |
+|------|------|
+| `stage > current + 1` → 拒绝 | `detect`(3) 无转写文件 → ❌ |
+| `stage <= current` → 可重跑 | `transcribe`(2) 存在转写文件 → ✅ |
+| 完成后 stage 自动推进 | `transcribe`(2) 成功后文件已存在 |
+| `process` 无视文件检查, 全部重跑 | |
+| stage 无跳过 | 缺失前置文件则拒绝 |
 
-实现: `config/mod.rs` 的 `save_current_stage()` 用 `toml_edit` 原地修改 `vtrim.toml` 保留注释和格式。
+实现: `config/types.rs` 的 `current_stage()` 方法通过文件存在性推导。
 
 ## 配置文件
 
@@ -76,7 +85,6 @@ transcript_file = ""
 audio_file = ""
 events_file = ""
 vocal_file = ""            # （预留）人声分离输出路径
-current_stage = 0
 
 [asr]
 backend = "local"

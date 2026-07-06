@@ -132,7 +132,6 @@ pub fn load_config() -> Result<Config> {
 
     let local = PathBuf::from("vtrim.toml");
     if let Some(overlay) = load_from_file(&local)? {
-        config.project.current_stage = overlay.project.current_stage;
         merge(&mut config, overlay);
     }
 
@@ -140,28 +139,6 @@ pub fn load_config() -> Result<Config> {
     config.llm = load_llm_config();
 
     Ok(config)
-}
-
-/// 从 vtrim.toml 读取 current_stage
-pub fn load_current_stage() -> Result<u32> {
-    let path = PathBuf::from("vtrim.toml");
-    if !path.exists() {
-        return Ok(0);
-    }
-    let content = std::fs::read_to_string(&path)?;
-    let value: toml::Value = toml::from_str(&content)?;
-    Ok(value
-        .get("project")
-        .and_then(|v| v.get("current_stage"))
-        .and_then(|v| v.as_integer())
-        .unwrap_or(0) as u32)
-}
-
-/// 用 toml_edit 将 current_stage 写入 vtrim.toml
-pub fn save_current_stage(stage: u32) -> Result<()> {
-    edit_toml(|doc| {
-        doc["project"]["current_stage"] = toml_edit::value(stage as i64);
-    })
 }
 
 /// 用 toml_edit 将 events_file 写入 vtrim.toml

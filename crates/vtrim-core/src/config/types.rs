@@ -42,6 +42,44 @@ impl Default for ProjectConfig {
     }
 }
 
+impl ProjectConfig {
+    /// 根据实际输出文件存在性推导当前进度
+    pub fn current_stage(&self, output_dir: &std::path::Path) -> u32 {
+        // 检查剪切输出（Stage 4）
+        if output_dir.join("clips").join("clips_order.txt").exists() {
+            return 4;
+        }
+        // 检查事件文件（Stage 3）
+        let has_events = self.events_file.as_ref()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists())
+            .is_some();
+        if has_events || output_dir.join("events.json").exists() {
+            return 3;
+        }
+        // 检查转录文件（Stage 2）
+        let has_transcript = self.transcript_file.as_ref()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists())
+            .is_some();
+        if has_transcript || output_dir.join("transcript.json").exists() || output_dir.join("video.srt").exists() {
+            return 2;
+        }
+        // 检查音频文件（Stage 1）
+        let has_audio = self.audio_file.as_ref()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.exists())
+            .is_some();
+        if has_audio || output_dir.join("video.wav").exists() {
+            return 1;
+        }
+        0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]

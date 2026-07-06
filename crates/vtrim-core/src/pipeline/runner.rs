@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 
 use super::stage::{stage_enabled, Stage, STAGE_CUT};
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::progress::ProgressReporter;
 use crate::types::PipelineContext;
 
@@ -17,12 +17,11 @@ fn inject_config(ctx: &mut PipelineContext, config: &Arc<Config>) {
         .map(std::path::PathBuf::from);
 }
 
-fn advance_past_disabled(mut current: u32, config: &Config) -> Result<u32> {
+fn advance_past_disabled(mut current: u32, config: &Config) -> u32 {
     while current < STAGE_CUT && !stage_enabled(current + 1, config) {
         current += 1;
-        config::save_current_stage(current)?;
     }
-    Ok(current)
+    current
 }
 
 pub struct PipelineRunner {
@@ -62,16 +61,15 @@ impl PipelineRunner {
     pub async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let mut current = advance_past_disabled(config::load_current_stage()?, &self.config)?;
+        let current = advance_past_disabled(
+            self.config.project.current_stage(&ctx.output_dir),
+            &self.config,
+        );
 
         for stage in &self.stages {
             let num = stage.stage_number();
             if !stage.is_enabled(&self.config) {
                 tracing::info!("[{}] skipped (disabled)", stage.name());
-                if num > current {
-                    config::save_current_stage(num)?;
-                    current = num;
-                }
                 continue;
             }
 
@@ -90,11 +88,6 @@ impl PipelineRunner {
             stage.run(ctx).await?;
             tracing::info!("[{}] completed", name);
             ctx.progress.stage_completed(name);
-
-            if num > current {
-                config::save_current_stage(num)?;
-                current = num;
-            }
         }
 
         Ok(())
@@ -104,7 +97,10 @@ impl PipelineRunner {
     pub async fn run_until(&self, ctx: &mut PipelineContext, max_stage: u32) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let mut current = advance_past_disabled(config::load_current_stage()?, &self.config)?;
+        let current = advance_past_disabled(
+            self.config.project.current_stage(&ctx.output_dir),
+            &self.config,
+        );
 
         for stage in &self.stages {
             let num = stage.stage_number();
@@ -115,10 +111,6 @@ impl PipelineRunner {
             }
             if !stage.is_enabled(&self.config) {
                 tracing::info!("[{}] skipped (disabled)", name);
-                if num > current {
-                    config::save_current_stage(num)?;
-                    current = num;
-                }
                 continue;
             }
 
@@ -136,11 +128,6 @@ impl PipelineRunner {
             stage.run(ctx).await?;
             tracing::info!("[{}] completed", name);
             ctx.progress.stage_completed(name);
-
-            if num > current {
-                config::save_current_stage(num)?;
-                current = num;
-            }
         }
 
         Ok(())
