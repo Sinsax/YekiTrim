@@ -226,7 +226,12 @@ async fn main() -> anyhow::Result<()> {
 
             let mut project = toml_edit::Table::new();
             project.set_implicit(true);
-            project.insert("input_file", toml_edit::value(input.to_string_lossy().as_ref()));
+            let input_for_config = if let Ok(rel) = input.strip_prefix(out.parent().unwrap()) {
+                rel.to_string_lossy().to_string()
+            } else {
+                input.to_string_lossy().to_string()
+            };
+            project.insert("input_file", toml_edit::value(&input_for_config));
             project.insert("danmaku_file", toml_edit::value(&danmaku_val));
             project.insert("transcript_file", toml_edit::value(""));
             project.insert("audio_file", toml_edit::value(""));
