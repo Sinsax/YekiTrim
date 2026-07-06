@@ -736,6 +736,42 @@ async fn main() -> anyhow::Result<()> {
         Command::Version => {
             println!("vtrim {}", env!("CARGO_PKG_VERSION"));
         }
+
+        Command::Polish(action) => {
+            use vtrim_polish::commands;
+
+            match action {
+                cli::PolishAction::Init { input } => {
+                    commands::cmd_init(input).await?;
+                }
+                cli::PolishAction::Llm { input } => {
+                    commands::cmd_llm(input).await?;
+                }
+                cli::PolishAction::Process { input } => {
+                    commands::cmd_process(input).await?;
+                }
+                cli::PolishAction::Render { input } => {
+                    commands::cmd_render(input).await?;
+                }
+                cli::PolishAction::Cover { input, template } => {
+                    if let Some(t) = template {
+                        if !t.is_empty() {
+                            commands::cmd_cover_template(input, t).await?;
+                        }
+                    }
+                    commands::cmd_cover(input, None).await?;
+                }
+                cli::PolishAction::Preview { input, mode } => {
+                    commands::cmd_preview(input, mode.as_deref().unwrap_or("")).await?;
+                }
+                cli::PolishAction::Doctor { input } => {
+                    commands::cmd_doctor(input)?;
+                }
+                cli::PolishAction::Test { input } => {
+                    commands::cmd_test(input).await?;
+                }
+            }
+        }
     }
 
     Ok(())

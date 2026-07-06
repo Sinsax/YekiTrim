@@ -142,6 +142,10 @@ pub enum Command {
         output: Option<PathBuf>,
     },
 
+    /// 视频精修（GSAP 特效 + 字幕 + 弹幕 + 封面，需先 vtrim cut）
+    #[command(subcommand)]
+    Polish(PolishAction),
+
     /// 显示当前处理进度
     Status,
 
@@ -159,6 +163,64 @@ pub enum ConfigAction {
     },
     /// 显示当前配置
     Show,
+}
+
+/// 视频精修子命令
+#[derive(Subcommand)]
+pub enum PolishAction {
+    /// 初始化项目（创建 config.toml + 解析字幕弹幕）
+    Init {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
+    /// LLM 分析生成 segments 和关键词（使用 .vtrim/llm.toml）
+    Llm {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
+    /// 后处理（解析 emoji/irasu keyword、下载资源、计算位置）
+    Process {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
+    /// 渲染视频（自动先跑 process）
+    Render {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
+    /// 生成封面图
+    Cover {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+        /// 封面模板预设 (left-text/center-text/right-text/minimal)
+        #[arg(long)]
+        template: Option<String>,
+    },
+    /// 浏览器预览（自动先跑 process）
+    Preview {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+        /// 预览模式 (video / cover)，默认同时预览
+        mode: Option<String>,
+    },
+    /// 系统检查（ffmpeg, Chrome, LLM 配置）
+    Doctor {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
+    /// 测试（生成测试素材 + 预览）
+    Test {
+        /// clip 目录（默认当前目录）
+        #[arg(default_value = ".")]
+        input: PathBuf,
+    },
 }
 
 pub fn stage_name(num: u32) -> &'static str {

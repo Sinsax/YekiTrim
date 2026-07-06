@@ -1,0 +1,53 @@
+[package]
+name = "vtrim-polish"
+version = "0.1.0"
+edition = "2024"
+description = "VTuber clip polish engine (GSAP rendering + effects + assets)"
+
+[lib]
+name = "vtrim_polish"
+path = "src/lib.rs"
+
+[dependencies]
+# vtrim-core (用于 .vtrim/llm.toml 路径)
+vtrim-core = { path = "../vtrim-core" }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# 异步 + LLM HTTP
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 日志
+tracing = "0.1"
+
+# Chrome CDP 控制 (渲染层)
+headless_chrome = "1"
+
+# HTTP 服务 (为 Chrome 提供静态文件)
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs"] }
+
+# 正则
+regex-lite = "0.1"
+
+urlencoding = "2"
+
+# 随机数
+rand = "0.8"
+
+# 日期
+chrono = "0.4"
+
+# 图片 base64 解码 (用于 Chrome 截图)
+base64 = "0.22"
+
+# GIF → PNG 帧解码 (用于 emoji 动画)
+image = { version = "0.25", default-features = false, features = ["gif", "png"] }

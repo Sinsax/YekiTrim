@@ -4,9 +4,10 @@
 
 ## 架构
 
-Cargo workspace, 两个 crate:
+Cargo workspace, 三个 crate:
 - `crates/vtrim-core` — 管线编排 + 全部业务逻辑
 - `crates/vtrim-cli` — CLI 入口 (clap)
+- `crates/vtrim-polish` — GSAP 精修引擎（从 vtedit 合并）
 
 **Stage 编号**: AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)，连续无跳过。
 
@@ -34,6 +35,14 @@ vtrim status
 vtrim config init [--path]
 vtrim config show
 vtrim version
+vtrim polish init [<dir>]                # 精修: 初始化项目 + 解析字幕弹幕
+vtrim polish llm [<dir>]                 # 精修: LLM 生成 segments（使用 .vtrim/llm.toml）
+vtrim polish process [<dir>]             # 精修: 后处理 + 下载资源 + 计算位置
+vtrim polish render [<dir>]              # 精修: 渲染视频（自动先跑 process）
+vtrim polish cover [<dir>] [--template]  # 精修: 生成封面
+vtrim polish preview [<dir>] [mode]      # 精修: 浏览器预览（video/cover/双端口）
+vtrim polish doctor [<dir>]              # 精修: 系统检查
+vtrim polish test [<dir>]                # 精修: 测试模式
 ```
 
 所有 stage 命令的 `-i` 可选，默认从 `vtrim.toml` 的 `input_file` 读取。
@@ -186,3 +195,13 @@ cargo run -- status            # 查看当前进度
 | `vtrim-core/src/detection/mod.rs` | EventDetector + 弹幕热度 |
 | `vtrim-core/src/danmaku/mod.rs` | ASS 解析 + 密度 |
 | `vtrim-core/src/cutting/mod.rs` | Cutter + remove_silence |
+| `vtrim-polish/src/commands.rs` | 所有 cmd_* 精修命令入口 |
+| `vtrim-polish/src/project/config.rs` | vtedit 风格项目配置 + Event/Segment 类型 |
+| `vtrim-polish/src/render/chrome.rs` | Chrome headless 渲染 |
+| `vtrim-polish/src/render/ffmpeg.rs` | FFmpeg 合成/编码/SFX 混音 |
+| `vtrim-polish/src/render/server.rs` | 预览 HTTP server |
+| `vtrim-polish/src/llm/mod.rs` | LLM 段分割 + 关键词 |
+| `vtrim-polish/src/assets/downloader.rs` | emoji/irasu/SFX 下载 |
+| `vtrim-polish/src/commands.rs:260` | cmd_render（自动 process → render → cover） |
+| `vtrim-polish/src/commands.rs:1200` | cmd_preview（自动 process → 双端口预览） |
+| `vtrim-polish/src/commands.rs:174` | cmd_llm（使用 .vtrim/llm.toml） |

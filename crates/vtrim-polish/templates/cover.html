@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cover</title>
+<style>
+* { margin:0; padding:0; }
+html,body { width:1920px; height:1080px; overflow:hidden; background:#000; }
+#page { position:relative; width:1920px; height:1080px; overflow:hidden; background:#000; }
+#bg { position:absolute; inset:0; background:#000; }
+#bg img { width:100%; height:100%; object-fit:cover; display:block;
+  transform-origin: var(--liver-x) var(--liver-y);
+  transform:scale(var(--zoom)); }
+#overlay { position:absolute; top:0; left:0; bottom:0; right:0; pointer-events:none;
+  background:var(--grad-bg); }
+#vignette { position:absolute; inset:0; pointer-events:none; opacity:var(--vignette-op);
+  background:radial-gradient(ellipse at 55% 45%, transparent 50%, rgba(0,0,0,1) 100%); }
+#title-wrap { position:absolute; z-index:2;
+  left:var(--text-x); top:var(--text-y);
+  transform:translate(-50%,-50%);
+  width:var(--tw);
+  display:flex; flex-direction:column; align-items:flex-start; }
+#title { font-size:var(--fs); font-weight:900; color:#f0e6d3; line-height:var(--lh); letter-spacing:var(--ls);
+  -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:0 2px 32px rgba(0,0,0,0.6);
+  opacity:0; transform:translateY(24px); animation:fadeUp 0.6s 0.3s ease both; }
+.hl { color:var(--hlc); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
+@keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
+</style>
+</head>
+<body>
+<div id="page">
+<div id="bg"><img src="_cover_frame.jpg"></div>
+<div id="vignette"></div>
+<div id="overlay"></div>
+<div id="title-wrap"><div id="title">__TITLE__</div></div>
+</div>
+<div style="position:fixed;bottom:16px;right:16px;z-index:99;">
+  <button onclick="location.reload()" style="background:rgba(0,0,0,0.5);border:none;color:#fff;font-size:28px;width:48px;height:48px;border-radius:50%;cursor:pointer;line-height:48px;text-align:center;">↻</button>
+</div>
+<script>
+document.documentElement.style.setProperty('--liver-x', '__LIVER_X__');
+document.documentElement.style.setProperty('--liver-y', '__LIVER_Y__');
+document.documentElement.style.setProperty('--zoom', '__ZOOM__');
+document.documentElement.style.setProperty('--grad-bg', '__GRAD_BG__');
+document.documentElement.style.setProperty('--vignette-op', '__VIGNETTE_OP__');
+document.documentElement.style.setProperty('--fs', '__FONT_SIZE__');
+document.documentElement.style.setProperty('--sk', '__STROKE__');
+document.documentElement.style.setProperty('--hlc', '__HL_COLOR__');
+document.documentElement.style.setProperty('--tw', '__TEXT_WIDTH__');
+document.documentElement.style.setProperty('--text-x', '__TEXT_X__');
+document.documentElement.style.setProperty('--text-y', '__TEXT_Y__');
+document.documentElement.style.setProperty('--ls', '__LS__');
+document.documentElement.style.setProperty('--lh', '__LH__');
+setTimeout(function(){ window.__COVER_READY = true; }, 1500);
+</script>
+</body>
+</html>

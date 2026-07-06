@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VTuber Clip</title>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif; background:#2a2a2a; }
+#page { width:100vw; min-height:100vh; display:flex; align-items:center; justify-content:center; background:#2a2a2a; padding:20px 0; }
+#player-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; width:min(96vw,calc(100vh*16/9)); }
+#player { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:4px; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,0.6); }
+
+#video-wrap { position:absolute; inset:0; overflow:hidden; z-index:0; }
+#video-wrap .source-video { width:100%; height:100%; object-fit:cover; display:block; }
+
+
+#video-canvas { position:absolute; top:0; left:0; width:100%; height:100%; z-index:2; pointer-events:none; object-fit:cover; }
+#flash-overlay { position:absolute; inset:0; z-index:5; pointer-events:none; opacity:0; }
+#color-overlay { position:absolute; inset:0; z-index:6; pointer-events:none; opacity:0; }
+#intro-black { position:absolute; inset:0; z-index:50; background:#000; pointer-events:none; }
+#corner-glow { position:absolute; inset:0; z-index:1; pointer-events:none; }
+#corner-glow .gb { position:absolute; bottom:-60px; right:-60px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(0,212,255,0.12),transparent 70%); filter:blur(50px); }
+
+#overlay { position:absolute; top:0; left:0; width:1920px; height:1080px; transform-origin:0 0; pointer-events:none; z-index:10; }
+#captions { position:absolute; bottom:80px; left:120px; width:1680px; z-index:10; pointer-events:none; }
+.cap { position:absolute; bottom:0; left:0; width:100%; text-align:center; padding:14px 44px; font-weight:700; line-height:1.5; opacity:0; will-change:transform,opacity; }
+.cap .hl { paint-order:stroke fill; }
+
+#danmaku { position:absolute; top:0; left:0; width:1920px; height:540px; z-index:20; pointer-events:none; overflow:hidden; }
+.dm { position:absolute; white-space:nowrap; font-weight:600; paint-order:stroke fill; opacity:0; will-change:transform; }
+
+#emoji-layer { position:absolute; top:0; left:0; width:1920px; height:1080px; z-index:15; pointer-events:none; }
+.emoji-img { position:absolute; width:280px; height:280px; opacity:0; will-change:transform,opacity; pointer-events:none; }
+
+#playtest { width:100%; min-height:28px; display:flex; align-items:center; gap:8px; padding:2px 12px; border-radius:4px 4px 0 0; background:#1a1a1a; font-family:monospace; font-size:12px; color:rgba(255,255,255,0.9); overflow-x:auto; white-space:nowrap; }
+#playtest .pt-time { color:#ff6bcb; font-weight:700; margin-right:4px; }
+#playtest .pt-tag { display:inline-block; padding:1px 6px; border-radius:3px; margin:0 2px; font-size:11px; font-weight:600; }
+#playtest .pt-tag.emoji { background:#7c3aed33; color:#a78bfa; }
+#playtest .pt-tag.irasu { background:#065f4633; color:#34d399; }
+#playtest .pt-tag.shake { background:#dc262633; color:#f87171; }
+#playtest .pt-tag.flash { background:#fbbf2433; color:#fbbf24; }
+#playtest .pt-tag.camera { background:#2563eb33; color:#60a5fa; }
+#playtest .pt-tag.other { background:#52525233; color:#a3a3a3; }
+#playtest .pt-seg { color:rgba(255,255,255,0.4); font-size:11px; margin-left:auto; }
+#player-wrap.fullscreen #playtest { display:none; }
+#controls { width:100%; height:56px; z-index:30; display:flex; align-items:center; gap:12px; padding:0 20px; border-radius:0 0 4px 4px; background:#1e1e1e; }
+#player-wrap.fullscreen #controls { position:absolute; bottom:0; left:0; border-radius:0; background:linear-gradient(0deg,rgba(30,30,30,0.85) 0%,rgba(30,30,30,0.3) 100%); opacity:0; transition:opacity 0.3s; pointer-events:auto; }
+#player-wrap.fullscreen:hover #controls { opacity:1; }
+#controls button { background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:4px 8px; opacity:0.8; transition:opacity 0.2s; line-height:1; }
+#controls button:hover { opacity:1; }
+.seek { flex:1; -webkit-appearance:none; appearance:none; height:4px; border-radius:2px; background:rgba(255,255,255,0.2); outline:none; cursor:pointer; }
+.seek::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#ff6bcb; border:none; cursor:pointer; }
+#controls .time { color:rgba(255,255,255,0.5); font-size:13px; font-family:monospace; letter-spacing:1px; min-width:90px; text-align:center; }
+#controls .vol { color:rgba(255,255,255,0.5); font-size:18px; padding:4px; }
+#player-wrap.fullscreen #player { cursor:none; border-radius:0; }
+#player-wrap.fullscreen #controls { opacity:0; pointer-events:none; }
+#player-wrap.fullscreen.controls-active { cursor:auto; }
+#player-wrap.fullscreen.controls-active #controls { opacity:1; pointer-events:auto; }
+
+#error-toast { position:fixed; top:20px; left:50%; transform:translateX(-50%); z-index:9999; background:#c0392b; color:#fff; padding:14px 28px; border-radius:8px; font-size:18px; text-align:center; box-shadow:0 4px 20px rgba(0,0,0,0.5); display:none; max-width:80vw; line-height:1.6; }
+#error-toast.show { display:block; }
+#loading-spinner { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); color:rgba(255,255,255,0.3); font-size:20px; z-index:9998; }
+</style>
+</head>
+<body>
+<div id="loading-spinner">⏳ 加载中...</div>
+<div id="error-toast"></div>
+<!-- __CONFIG__ -->
+
+<div id="page"><div id="player-wrap">
+  <div id="player">
+    <div id="video-wrap">
+      <video id="source-video" class="source-video" playsinline preload="auto">
+        <source src="clip.mp4" type="video/mp4"></video>
+      <canvas id="video-canvas" class="video-canvas"></canvas>
+    </div>
+    <div id="corner-glow"><div class="gb"></div></div>
+    <div id="flash-overlay"></div>
+    <div id="color-overlay"></div>
+    <div id="intro-black"></div>
+    <div id="overlay">
+      <div id="emoji-layer"></div>
+      <div id="danmaku"></div>
+      <div id="captions"></div>
+    </div>
+  </div>
+  <div id="playtest"><span class="pt-time">00:00.0</span><span class="pt-tag other">等待播放</span></div>
+  <div id="controls">
+    <button id="btn-play">▶</button>
+    <input type="range" id="seek-bar" class="seek" min="0" max="1000" value="0">
+    <span class="time" id="time-display">00:00 / 00:00</span>
+    <span class="vol">🔊</span>
+    <button id="btn-refresh" title="刷新配置">↻</button>
+    <button id="btn-fullscreen" title="全屏">⛶</button>
+  </div>
+</div></div>
+
+<script>
+// ============================================================
+// 诊断: 显示页面状态 (方便调试)
+// ============================================================
+function status(msg){
+  var sp=document.getElementById('loading-spinner');
+  if(sp)sp.textContent='⏳ '+msg;
+  console.log('[polish]', msg);
+}
+
+// ============================================================
+// 从 <script id="polish-config" type="application/json"> 加载配置
+// ============================================================
+var CFG = {};
+(function(){
+  status('读取配置...');
+  var el=document.getElementById('polish-config');
+  status('config元素: '+(el?'找到':'未找到'));
+  if(el){try{CFG=JSON.parse(el.textContent);status('配置已加载');}catch(e){status('配置解析失败: '+e.message);console.warn('Config parse error',e);}}
+  if(!CFG||!CFG.source)CFG={};
+})();
+
+// ============================================================
+// 错误显示
+// ============================================================
+function showError(msg){
+  var el=document.getElementById('error-toast');
+  if(el){el.innerHTML=msg;el.classList.add('show');}
+  var sp=document.getElementById('loading-spinner');
+  if(sp)sp.textContent='✗ '+msg.replace(/<br>/g,' ');
+}
+function hideLoading(){
+  var sp=document.getElementById('loading-spinner');
+  if(sp)sp.style.display='none';
+}
+
+// GSAP 加载检查
+status('等待 GSAP 加载...');
+var gsapCheck = setInterval(function(){
+  if(typeof gsap !== 'undefined'){
+    status('GSAP 已加载');
+    clearInterval(gsapCheck);
+  }
+}, 500);
+setTimeout(function(){
+  if(typeof gsap === 'undefined'){
+    showError('GSAP 加载超时<br>检查网络或更换 CDN 地址');
+  }
+}, 10000);
+
+// ============================================================
+// 虚拟画布缩放
+// ============================================================
+(function(){
+  var o=document.getElementById('overlay'), p=document.getElementById('player'), pw=document.getElementById('player-wrap');
+  var params=new URLSearchParams(location.search);
+  var isCapture=params.has('capture');
+  var isRecord=params.has('record');
+  if(isCapture){
+    document.body.classList.add('capture');
+    pw.style.width='100vw'; pw.style.height='100vh'; pw.style.borderRadius='0';
+  }
+  if(isRecord){
+    pw.style.width='100vw'; pw.style.height='100vh'; pw.style.borderRadius='0';
+    var rs=parseFloat(params.get('start')||'0'), re=parseFloat(params.get('end')||'99999');
+    window.__RECORD_DONE=0; window.__RECORD_READY=0;
+    function rInit(){
+      var v=document.getElementById('source-video');
+      var p=document.getElementById('player-wrap');
+      v.currentTime=rs;
+      v.play().catch(function(){});
+      // timeupdate: GSAP seek + 信号递增
+      v.addEventListener('timeupdate', function(){
+        var t=v.currentTime;
+        if(t>=re||t>=v.duration-0.03){v.pause();window.__RECORD_DONE=1;return;}
+        if(window.__TIMELINE) window.__TIMELINE.seek(t);
+        if(window.fireSounds) window.fireSounds(t);
+        window.__RECORD_READY++;
+      });
+    }
+    var ri=setInterval(function(){if(window.__TIMELINE){clearInterval(ri);rInit();}},100);
+  }
+  function r(){o.style.transform='scale('+(p.clientWidth/1920)+')';}
+  r(); window.addEventListener('resize',r);
+})();
+
+// 百分比字符串 → 像素 (基于 1920×1080 虚拟画布)
+function pctPx(v,total){return parseFloat(v)/100*total;}
+function pctX(v){return pctPx(v,1920);}
+function pctY(v){return pctPx(v,1080);}
+// AABB 碰撞检测
+function rectOverlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+
+// ============================================================
+// 种子随机
+// ============================================================
+window.__RNG_SEED=Date.now();
+function seededRandom(){var x=Math.sin(window.__RNG_SEED++)*10000;return x-Math.floor(x);}
+function rng(){return(typeof window.__RNG_SEED==='number')?seededRandom():Math.random();}
+
+// ============================================================
+// Emoji 映射
+// ============================================================
+var assets=CFG._assets||{};
+// emoji 路径: 本地文件用 {base}{codepoint}.gif, CDN 用 {base}/{codepoint}/512.gif
+var EMOJI_BASE=assets.emoji_base||'https://fonts.gstatic.com/s/e/notoemoji/latest';
+var EMOJI_LOCAL=assets.emoji_local===true;
+var IRASUTOYA=assets.irasu_map||{};
+
+// 反应规则: 从 config 的 reactions 或默认
+// ============================================================
+// 音频事件调度
+// ============================================================
+var SOUND_EVENTS=[];
+function scheduleSound(time,fn,type,vol,dur){SOUND_EVENTS.push({time:time,fired:false,fn:fn,type:type||'pop-notice',volume:vol||0.1,duration:dur});}
+function fireSounds(t){
+  for(var i=0;i<SOUND_EVENTS.length;i++){
+    var e=SOUND_EVENTS[i];
+    if(!e.fired&&e.time<=t&&e.time>t-0.12){e.fired=true;e.fn();}
+  }
+}
+
+// ============================================================
+// 音效 — 动态加载, 按事件指定的 SFX 名称播放
+// ============================================================
+var audioCtx=null,sfxCache={};
+function sfxPlay(name,vol){
+  if(!name)return;
+  vol=vol||0.04;
+  var a;
+  // 如果缓存中已有该音效且正在播放，clone 一份新实例（避免打断前一次）
+  var cached=sfxCache[name];
+  if(cached&&!cached.ended&&cached.currentTime>0){
+    a=cached.cloneNode();  // clone 会复制 src，浏览器复用已下载的缓存
+  } else if(cached){
+    a=cached;
+  } else {
+    a=new Audio('sfx/'+name+'.mp3');
+    sfxCache[name]=a;
+  }
+  a.volume=0;a.currentTime=0;
+  a.play().catch(function(){});
+  // ~30ms 缓入, 消除爆音
+  var target=vol,steps=0;
+  var fade=setInterval(function(){
+    steps++;a.volume=Math.min(target,target*steps/5);
+    if(steps>=5||a.ended)clearInterval(fade);
+  },6);
+}
+
+// ============================================================
+// 辅助: 震动 + 闪白
+// ============================================================
+function shake(tl,time,off){
+  off=off||8;var s='#video-wrap';
+  tl.to(s,{x:off,y:-off,duration:0.04,ease:'none'},time);
+  tl.to(s,{x:-off,y:off,duration:0.04,ease:'none'},time+0.04);
+  tl.to(s,{x:off/2,y:-off/2,duration:0.04,ease:'none'},time+0.08);
+  tl.to(s,{x:-off/2,y:off/2,duration:0.04,ease:'none'},time+0.12);
+  tl.to(s,{x:0,y:0,duration:0.04,ease:'none'},time+0.16);
+}
+function flash(tl,time,color,dur){
+  color=color||'#ffffff';dur=dur||0.35;
+  tl.set('#flash-overlay',{backgroundColor:color},time);
+  tl.to('#flash-overlay',{autoAlpha:0.20,duration:0.04},time);
+  tl.to('#flash-overlay',{autoAlpha:0,duration:dur},time+0.04);
+}
+
+// ============================================================
+// 数据加载
+// ============================================================
+var SUB=[],DM=[],META={duration:239.8};
+(function load(){
+  var c=0;
+  function ok(){c++;if(c>=3){try{init();}catch(e){showError('初始化失败: '+e.message);}}}
+  fetch('data/subtitles.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){SUB=d;ok();}).catch(function(e){console.warn('subtitles fetch failed',e);ok();});
+  fetch('data/danmaku.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){DM=d;ok();}).catch(function(e){console.warn('danmaku fetch failed',e);ok();});
+  fetch('data/clip-meta.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){META=d;ok();}).catch(function(e){console.warn('meta fetch failed',e);ok();});
+})();
+
+// ============================================================
+// 初始化
+// ============================================================
+function init(){
+  var dur=META.duration||CFG.duration||239.8;
+
+  // 截断 segments/events 到视频时长，防止 LLM 生成的超出
+  if((CFG.segments||[]).length>0&&dur>0){
+    CFG.segments=CFG.segments.filter(function(s){return s.start<dur;});
+    CFG.segments.forEach(function(s){
+      s.end=Math.min(s.end,dur);
+      s.events=(s.events||[]).filter(function(e){return (e.time||0)<dur;});
+    });
+  }
+
+  var tl=gsap.timeline({paused:true});
+  var SEL_SRC='#source-video';
+  var video=document.getElementById('source-video');
+  var layout=CFG.layout||{};
+  var subStyle=(CFG.style&&CFG.style.subtitle)||{};
+  var dmStyle=(CFG.style&&CFG.style.danmaku)||{};
+  var segs=(CFG.segments&&CFG.segments.length)?CFG.segments:[];
+
+  var hlWords=CFG.filter&&CFG.filter.highlight||[];
+
+  // ---- 构建 playtest 事件索引 (拍平所有事件含时间范围) ----
+  var ptEvents=[];
+  segs.forEach(function(sg){
+    var segLabel=sg.note||'';
+    sg.events.forEach(function(ev){
+      ptEvents.push({
+        time:ev.time, end:(ev.time+(ev.duration||1.5)),
+        type:ev.type, label:ev.keyword||ev.name||ev.mode||'',
+        seg:segLabel
+      });
+    });
+  });
+
+  // ---- 应用样式 ----
+  var styleTag=document.createElement('style');
+  styleTag.textContent=
+    '.cap{font-family:"'+(subStyle.font||'LXGW WenKai')+'","Microsoft YaHei","Noto Sans SC",sans-serif;'+
+    'font-size:'+(subStyle.size||72)+'px;'+
+    'font-weight:700;line-height:1.5;'+
+    'color:'+(subStyle.color||'#dcbda0')+';'+
+    'padding:14px 44px;text-align:center;'+
+    '-webkit-text-stroke:'+(subStyle.stroke||'12px #403c3b')+';'+
+    'paint-order:stroke fill;'+
+    'text-shadow:0 2px 12px rgba(0,0,0,0.4);}'+
+    '.cap .hl{color:'+(subStyle.highlight_color||'#f56b41')+';'+
+    'font-weight:900;'+
+    '-webkit-text-stroke:8px #403c3b;'+
+    'paint-order:stroke fill;}'+
+    '.dm{font-size:'+(dmStyle.font_size||42)+'px;'+
+    'font-weight:600;'+
+    'color:'+(dmStyle.color||'#ffffff')+';'+
+    '-webkit-text-stroke:'+(dmStyle.stroke||'2px #000')+';'+
+    'paint-order:stroke fill;'+
+    'text-shadow:0 1px 4px rgba(0,0,0,0.5);}';
+  document.head.appendChild(styleTag);
+
+  // 弹幕容器使用 CSS 默认值: 上半屏 (1920×540)
+  // layout.danmaku_area 仅用于运镜参考 (直播间弹幕区域位置), 不影响弹幕显示范围
+
+  // --- 字幕 ---
+  var capEl=document.getElementById('captions');
+  SUB.forEach(function(s,i){
+    var el=document.createElement('div');
+    el.className='cap'; el.id='c'+i;
+    el.innerHTML=s.html||s.text;
+    capEl.appendChild(el);
+  });
+
+  // ---- 弹幕 (不过滤, 关键词高亮同字幕) ---
+  var dmEl=document.getElementById('danmaku');
+  var fDM=DM;
+  fDM.forEach(function(d,i){
+    var el=document.createElement('div');
+    el.className='dm'; el.id='d'+i;
+    el.textContent=d.text;
+    el.style.top=Math.min(Math.max((d.y/1920)*540,10),520)+'px';
+    dmEl.appendChild(el);
+  });
+  var dmWidths=[];
+  fDM.forEach(function(d,i){
+    var el=document.getElementById('d'+i);
+    dmWidths.push(el?el.scrollWidth+20:d.text.length*55);
+  });
+
+  // ============================================================
+  // GSAP Timeline
+  // ============================================================
+  tl.set('#overlay',{autoAlpha:1},0);
+  tl.set('#intro-black',{autoAlpha:1},0);
+  tl.to('#intro-black',{autoAlpha:0,duration:0.5,ease:'sine.out'},0);
+
+  // 背景辉光 — 仅在有 segments 配置时启用
+  if(segs.length>0){
+    tl.to('#corner-glow',{opacity:0.6,duration:2.5,ease:'sine.inOut',yoyo:true,repeat:Math.ceil(dur/2.5)},0);
+    tl.to('.gb',{scale:1.15,opacity:0.6,duration:3.5,ease:'sine.inOut',yoyo:true,repeat:Math.ceil(dur/3.5)},0);
+  }
+
+  // ---- 运镜: 由 Camera 事件驱动 ----
+  // zoom = "中"(1.25) / "近"(1.65)
+  var liverOrigin=layout.liver?(''+(layout.liver.origin||'65% 50%')):'65% 50%';
+  var curZoom=1.0;
+
+  // 收集所有 camera 事件并排序
+  var camEvents=[];
+  segs.forEach(function(s){s.events.forEach(function(e){if(e.type==='camera')camEvents.push(e);});});
+  camEvents.sort(function(a,b){return a.time-b.time;});
+
+  camEvents.forEach(function(ce){
+    var is=ce.time, ie=ce.time+ce.duration, sd=ce.duration;
+    if(sd<0.5)return;
+    var zoom=ce.zoom||'中';
+    curZoom=zoom==='近'?1.8:1.5;
+    var origin=ce.origin||liverOrigin;
+    // 直接缩放到目标，过渡 0.6s
+    tl.to(SEL_SRC,{transformOrigin:origin,scale:curZoom,x:0,y:0,
+      duration:Math.min(sd*0.5,0.6),ease:'power2.out'},is);
+    if(ie-is>0.3) tl.to(SEL_SRC,{x:0,y:0,duration:0.25,ease:'power2.inOut'},ie-0.25);
+  });
+
+  // ---- 事件处理器注册表 ----
+  // 新增事件: 加一行 handlers.xxx = function(ev, et) { ... }
+  var handlers = {};
+
+  handlers.emoji = function(ev, et) {
+    var dur=ev.duration||2.5;
+    var eid='emoji_'+(window.__EMOJI_COUNTER||0); window.__EMOJI_COUNTER=(window.__EMOJI_COUNTER||0)+1;
+    var el=document.createElement('img');
+    el.className='emoji-img'; el.id=eid;
+    var en=ev.name||ev.keyword||'';
+    el.onerror=function(){
+      var code=parseInt(en,16);
+      if(!isNaN(code))this.outerHTML='<span style="font-size:200px;text-align:center;line-height:280px;font-family:\'Noto Color Emoji\',\'Apple Color Emoji\',\'Segoe UI Emoji\',sans-serif;opacity:0;position:absolute;width:280px;height:280px" id="'+eid+'">'+String.fromCodePoint(code)+'</span>';
+    }.bind(el);
+    el.src=EMOJI_BASE+en+(EMOJI_LOCAL?'.gif':'/512.gif');
+    el.alt=''; el.style.left=pctX(ev.x)+'px'; el.style.top=pctY(ev.y)+'px';
+    document.getElementById('emoji-layer').appendChild(el);
+    var sfxName=ev.sfx||'pop-notice';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+    tl.fromTo('#'+el.id,{scale:0.3,rotation:-15,autoAlpha:0},{scale:1,rotation:0,autoAlpha:1,duration:0.35,ease:'back.out(3)'},et);
+    tl.to('#'+el.id,{y:-18,duration:0.4,ease:'power2.out'},et+0.25);
+    var fadeStart=et+0.35+dur;
+    tl.to('#'+el.id,{scale:0.4,autoAlpha:0,duration:0.3,ease:'power2.in'},fadeStart);
+    tl.set('#'+el.id,{visibility:'hidden'},fadeStart+0.3);
+  };
+
+  handlers.irasu = function(ev, et) {
+    var dur=ev.duration||2.5;
+    var eid='emoji_'+(window.__EMOJI_COUNTER||0); window.__EMOJI_COUNTER=(window.__EMOJI_COUNTER||0)+1;
+    var el=document.createElement('img');
+    el.className='emoji-img'; el.id=eid;
+    el.src=IRASUTOYA[ev.name||ev.keyword]||'';
+    el.alt=''; el.style.left=pctX(ev.x)+'px'; el.style.top=pctY(ev.y)+'px';
+    document.getElementById('emoji-layer').appendChild(el);
+    var sfxName=ev.sfx||'pop-notice';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+    tl.fromTo('#'+el.id,{scale:0.3,rotation:-15,autoAlpha:0},{scale:1,rotation:0,autoAlpha:1,duration:0.35,ease:'back.out(3)'},et);
+    tl.to('#'+el.id,{y:-18,duration:0.4,ease:'power2.out'},et+0.25);
+    var fadeStart=et+0.35+dur;
+    tl.to('#'+el.id,{scale:0.4,autoAlpha:0,duration:0.3,ease:'power2.in'},fadeStart);
+    tl.set('#'+el.id,{visibility:'hidden'},fadeStart+0.3);
+  };
+
+  handlers.shake = function(ev, et) {
+    shake(tl,et,ev.intensity||14);
+    var sfxName=ev.sfx||'impact-light';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.flash = function(ev, et) {
+    flash(tl,et,ev.color||'#ffffff',ev.duration||0.5);
+  };
+
+  handlers.blur = function(ev, et) {
+    tl.to('#video-wrap',{filter:'blur(8px)',duration:0.12,ease:'none'},et);
+    tl.to('#video-wrap',{filter:'blur(8px)',duration:0.36,ease:'none'},et+0.12);
+    tl.to('#video-wrap',{filter:'blur(0px)',duration:0.32,ease:'power2.out'},et+0.48);
+    var sfxName=ev.sfx||'pop-notice';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.zoom_bounce = function(ev, et) {
+    tl.to(SEL_SRC,{scale:curZoom*1.10,duration:0.08,ease:'none'},et);
+    tl.to(SEL_SRC,{scale:curZoom,duration:0.22,ease:'power2.out'},et+0.08);
+  };
+
+  handlers.vignette = function(ev, et) {
+    tl.set('#flash-overlay',{background:'radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.5) 100%)',opacity:1},et);
+    tl.to('#flash-overlay',{opacity:0,duration:0.6,ease:'sine.out'},et+0.3);
+  };
+
+  handlers.hue_shift = function(ev, et) {
+    tl.set('#flash-overlay',{backgroundColor:ev.color||'#ff0040',opacity:0.25},et);
+    tl.to('#flash-overlay',{opacity:0,duration:0.8,ease:'sine.out'},et+0.15);
+  };
+
+  handlers.stutter = function(ev, et) {
+    var off=ev.intensity||12;
+    tl.set(SEL_SRC,{x:-off,y:off},et);
+    tl.set(SEL_SRC,{x:off,y:-off},et+0.06);
+    tl.set(SEL_SRC,{x:0,y:0},et+0.12);
+    var sfxName=ev.sfx||'pop-poke';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.split = function(ev, et) {
+    var sp=ev.intensity||30;
+    tl.to(SEL_SRC,{scale:curZoom*0.95,skewX:sp*(-1),x:-sp*0.3,duration:0.06,ease:'none'},et);
+    tl.to(SEL_SRC,{skewX:sp,x:sp*0.3,duration:0.06,ease:'none'},et+0.06);
+    tl.to(SEL_SRC,{scale:curZoom,skewX:0,x:0,duration:0.12,ease:'power2.out'},et+0.12);
+    var sfxName=ev.sfx||'flash-of-light-1';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.color_shift = function(ev, et) {
+    tl.set('#video-wrap',{filter:'sepia(0.6)saturate(1.4)',duration:0.1},et);
+    tl.to('#video-wrap',{filter:'sepia(0)saturate(1)',duration:0.6,ease:'sine.out'},et+0.4);
+  };
+
+  handlers.noise = function(ev, et) {
+    var nid='noise_'+(window.__NOISE_COUNTER||0); window.__NOISE_COUNTER=(window.__NOISE_COUNTER||0)+1;
+    var ne=document.createElement('div');
+    ne.id=nid;ne.style.cssText='position:absolute;inset:0;z-index:3;pointer-events:none;mix-blend-mode:overlay;opacity:0.15;background-image:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCI+PGZpbHRlciBpZD0iZiI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9Ii43IiBudW1PY3RhdmVzPSIzIiAvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNmKSIgb3BhY2l0eT0iMCIgLz48L3N2Zz4=)';
+    document.getElementById('overlay').before(ne);
+    tl.to('#'+nid,{opacity:0.08,duration:0.08},et);
+    tl.to('#'+nid,{opacity:0,duration:0.5,ease:'sine.out'},et+0.3);
+    tl.set('#'+nid,{visibility:'hidden'},et+0.9);
+    var sfxName=ev.sfx||'pop-notice';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.pulse = function(ev, et) {
+    tl.to(SEL_SRC,{scale:curZoom*1.06,duration:0.12,ease:'sine.out'},et);
+    tl.to(SEL_SRC,{scale:curZoom*0.97,duration:0.16,ease:'sine.inOut'},et+0.12);
+    tl.to(SEL_SRC,{scale:curZoom,duration:0.2,ease:'sine.out'},et+0.28);
+    var sfxName=ev.sfx||'pop-jump';
+    var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
+    scheduleSound(et,function(){sfxPlay(sfxName,vol);},sfxName,vol);
+  };
+
+  handlers.overlay = function(ev, et) {
+    var ot=ev.overlay_type||'';
+    if(ot==='color'&&ev.color){
+      tl.set('#color-overlay',{backgroundColor:ev.color,opacity:0},et);
+      tl.to('#color-overlay',{opacity:ev.opacity||1,duration:0.4,ease:'sine.out'},et);
+      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+ev.duration-0.4);
+    }else if(ot==='gradient'&&ev.colors&&ev.colors.length>=2){
+      var grad=ev.shape==='radial'?'radial-gradient(ellipse at center,transparent 0%,'+ev.colors.slice(1).join(','):'linear-gradient('+ev.colors.join(',');
+      tl.set('#color-overlay',{background:grad,opacity:0},et);
+      tl.to('#color-overlay',{opacity:ev.opacity||1,duration:0.4,ease:'sine.out'},et);
+      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+ev.duration-0.4);
+    }else if(ot==='love'){
+      for(var hi=0;hi<10;hi++){
+        var hId='lov_'+et+'_'+hi;
+        var he=document.createElement('div');
+        he.id=hId;he.textContent='♥';
+        he.style.cssText='position:absolute;font-size:'+(24+Math.random()*28)+'px;color:rgba(255,80,120,0.5);pointer-events:none;z-index:25;opacity:0';
+        he.style.left=(100+Math.random()*1500)+'px';he.style.bottom='0px';
+        document.getElementById('emoji-layer').appendChild(he);
+        tl.fromTo('#'+hId,{scale:0.3,autoAlpha:0.6,y:0},{scale:1.2,autoAlpha:0,y:-500-Math.random()*200,duration:3+Math.random()*2,ease:'power1.out'},et+Math.random()*2);
+        tl.set('#'+hId,{visibility:'hidden'},et+ev.duration+0.5);
+      }
+    }
+  };
+
+  handlers.sfx = function(ev, et) {
+    var sfxName = ev.name || 'pop-notice';
+    var vol = ev.volume || CFG.sfx.volume || 0.1;
+    var dur = ev.duration;
+    scheduleSound(et, function(){ sfxPlay(sfxName, vol); }, sfxName, vol, dur);
+  };
+
+  // ---- 段内事件调度 ----
+  segs.forEach(function(seg){
+    seg.events.forEach(function(ev){
+      var et=ev.time;
+      var fn=handlers[ev.type];
+      if(fn) fn(ev,et);
+
+      // === 字幕联动: 当前字幕缩放 + 上移强调 ===
+      if(SUB.length>0){
+        var activeSub=-1;
+        for(var si=0;si<SUB.length;si++){if(et>=SUB[si].start&&et<SUB[si].end){activeSub=si;break;}}
+        if(activeSub>=0){
+          var ss='#c'+activeSub;
+          tl.to(ss,{scale:1.25,y:-20,duration:0.1,ease:'power2.out'},et);
+          tl.to(ss,{scale:1,y:0,duration:0.35,ease:'power2.inOut'},et+0.12);
+        }
+      }
+    });
+  });
+
+  // ---- 字幕入场动画 (统一风格: 淡入上移) ----
+  SUB.forEach(function(s,i){
+    var sel='#c'+i;
+    tl.fromTo(sel,{y:20,autoAlpha:0},{y:0,autoAlpha:1,duration:0.35,ease:'power2.out'},s.start);
+    tl.to(sel,{y:-8,autoAlpha:0,duration:0.18,ease:'power2.in'},s.end-0.18);
+    tl.set(sel,{autoAlpha:0,visibility:'hidden'},s.end);
+  });
+
+  // ---- 弹幕滚动 (右侧入左侧出 + 颜色 + 淡入) ----
+  fDM.forEach(function(d,i){
+    var sel='#d'+i;
+    var td=d.travel_duration||8;
+    var textW=dmWidths[i]||Math.max(d.text.length*55,100);
+    // 淡入 + 滚动
+    tl.set(sel,{x:1920,autoAlpha:0},d.start);
+    tl.to(sel,{autoAlpha:0.9,duration:0.3},d.start);
+    tl.to(sel,{x:-textW,autoAlpha:0.9,duration:td,ease:'none'},d.start+0.3);
+    tl.to(sel,{autoAlpha:0,duration:0.2},d.end-0.2);
+    tl.set(sel,{autoAlpha:0},d.end);
+  });
+
+  // ---- 导出 ----
+  window.__TIMELINE=tl;
+  window.__DURATION=dur;
+  window.__SOUND_DATA=SOUND_EVENTS.map(function(e){
+    var name=e.type||'pop-notice';
+    return{time:e.time, file:'sfx/'+name+'.mp3', type:name, volume:e.volume||0.1, duration:e.duration};
+  });
+  window.__drawVideoFrame=function(){
+    var v=document.getElementById('source-video'),c=document.getElementById('video-canvas');
+    if(v&&c&&v.videoWidth>0){c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);}
+  };
+
+  // ---- 播放控制 ----
+  var playing=false,seeking=false,td=document.getElementById('time-display'),sb=document.getElementById('seek-bar'),pb=document.getElementById('btn-play'),raf=null;
+  function fmt(s){var m=Math.floor(s/60),s2=Math.floor(s%60);return(m<10?'0':'')+m+':'+(s2<10?'0':'')+s2;}
+  function ui(t){fireSounds(t);tl.seek(t);td.textContent=fmt(t)+' / '+fmt(dur);sb.value=(t/dur*1000);}
+  function updatePlayTest(t){
+    var el=document.getElementById('playtest');
+    if(!el)return;
+    var ts=Math.floor(t)+'.'+Math.floor((t%1)*10);
+    var html='<span class="pt-time">'+('0'+Math.floor(t/60)).slice(-2)+':'+('0'+Math.floor(t%60)).slice(-2)+'.'+Math.floor((t%1)*10)+'</span>';
+    for(var i=0;i<ptEvents.length;i++){
+      var e=ptEvents[i];
+      if(t>=e.time&&t<e.end){
+        var cls=e.type;
+        var lbl=e.label?' :'+e.label:'';
+        html+='<span class="pt-tag '+cls+'">'+e.type+lbl+'</span>';
+      }
+    }
+    // 找当前 segment 名称
+    var curSeg='';
+    for(var i=0;i<segs.length;i++){
+      if(t>=segs[i].start&&t<segs[i].end){curSeg=segs[i].note||'';break;}
+    }
+    if(curSeg) html+='<span class="pt-seg">'+curSeg+'</span>';
+    el.innerHTML=html;
+  }
+  function loop(){
+    if(!playing)return;
+    if(seeking){raf=requestAnimationFrame(loop);return;}
+    var t=video.currentTime;
+    if(t>=dur){playing=false;video.pause();pb.textContent='\u25B6';ui(dur);updatePlayTest(dur);return;}
+    ui(t);
+    updatePlayTest(t);
+    raf=requestAnimationFrame(loop);
+  }
+  // 视频加载错误处理
+  video.onerror=function(){showError('视频加载失败: '+video.src);};
+  function play(){
+    if(playing){playing=false;pb.textContent='\u25B6';video.pause();if(raf)cancelAnimationFrame(raf);return;}
+    if(!audioCtx){try{audioCtx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){}}
+    if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
+    playing=true;pb.textContent='\u23F8';
+    var p=video.play();
+    if(p&&p.catch)p.catch(function(e){showError('视频播放失败: '+e.message);playing=false;pb.textContent='\u25B6';});
+    requestAnimationFrame(function(){raf=requestAnimationFrame(loop);});
+  }
+  sb.addEventListener('input',function(){
+    seeking=true;var t=this.value/1000*dur;
+    video.currentTime=t;tl.seek(t);
+    td.textContent=fmt(t)+' / '+fmt(dur);
+    updatePlayTest(t);
+  });
+  sb.addEventListener('change',function(){seeking=false;if(playing)video.play();});
+  pb.addEventListener('click',play);
+  document.addEventListener('keydown',function(e){if(e.code==='Space'){e.preventDefault();play();}});
+  document.getElementById('btn-refresh').addEventListener('click',function(){window.location.reload();});
+
+  // ---- 全屏 ----
+  var fb=document.getElementById('btn-fullscreen'),pw=document.getElementById('player-wrap'),player=document.getElementById('player'),fsIdleTimer=null;
+  function showControls(){
+    pw.classList.add('controls-active');
+    clearTimeout(fsIdleTimer);
+    fsIdleTimer=setTimeout(function(){pw.classList.remove('controls-active');},2000);
+  }
+  function toggleFullscreen(){
+    if(!document.fullscreenElement&&!document.webkitFullscreenElement){
+      if(pw.requestFullscreen)pw.requestFullscreen();
+      else if(pw.webkitRequestFullscreen)pw.webkitRequestFullscreen();
+    } else {
+      if(document.exitFullscreen)document.exitFullscreen();
+      else if(document.webkitExitFullscreen)document.webkitExitFullscreen();
+    }
+  }
+  fb.addEventListener('click',toggleFullscreen);
+  function onFsChange(){
+    var fs=!!(document.fullscreenElement||document.webkitFullscreenElement);
+    pw.classList.toggle('fullscreen',fs);
+    if(fs){pw.addEventListener('mousemove',showControls);showControls();}
+    else{pw.removeEventListener('mousemove',showControls);pw.classList.remove('controls-active');clearTimeout(fsIdleTimer);}
+  }
+  document.addEventListener('fullscreenchange',onFsChange);
+  document.addEventListener('webkitfullscreenchange',onFsChange);
+  ui(0);
+  updatePlayTest(0);
+  hideLoading();
+}
+
+// ============================================================
+// Canvas 批量渲染器 — 纯数学预计算状态 (不读 DOM)
+// ============================================================
+(function(){
+  var CANVAS, CTX, VIDEO;
+  var EVENT_IDX = null;
+
+  // ---- easing (GSAP 兼容) ----
+  var E = {
+    pow2_out: function(t) { return 1 - (1-t)*(1-t); },
+    pow2_in: function(t) { return t*t; },
+    pow2_inOut: function(t) {
+      return t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
+    },
+    sine_out: function(t) { return Math.sin(t * Math.PI / 2); },
+    sine_in: function(t) { return 1 - Math.cos(t * Math.PI / 2); },
+    sine_inOut: function(t) { return -(Math.cos(Math.PI * t) - 1) / 2; },
+    back_out: function(t, s) {
+      s = s || 1.70158;
+      return --t * t * ((s + 1) * t + s) + 1;
+    },
+    power1_out: function(t) { return t; },
+    none: function(t) { return t; },
+  };
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  // ---- 弹幕文字宽度预测量 ----
+  var DM_WIDTHS = [];
+  function measureDanmakuWidths() {
+    var c = document.createElement('canvas');
+    var cx = c.getContext('2d');
+    var fs = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font_size) || 42;
+    cx.font = '600 ' + fs + 'px sans-serif';
+    for (var i = 0; i < DM.length; i++) {
+      DM_WIDTHS[i] = cx.measureText(DM[i].text || '').width + 20;
+    }
+  }
+
+  // ---- 构建事件索引 (预处理, 只跑一次) ----
+  function buildIndex() {
+    if (EVENT_IDX) return EVENT_IDX;
+    var idx = {
+      camera: [], emoji: [], irasu: [], shake: [],
+      flash: [], blur: [], overlay: [], sfx: [],
+      stutter: [], split: [], zoom_bounce: [], vignette: [],
+      hue_shift: [], noise: [], pulse: [], color_shift: [],
+    };
+    var eLayer = document.getElementById('emoji-layer');
+    var ei = 0; // 全局 emoji/irasu 序号, 匹配 DOM ID (emoji_N)
+    (CFG.segments || []).forEach(function(seg) {
+      (seg.events || []).forEach(function(ev) {
+        var type = ev.type || '';
+        var entry = { time: ev.time || 0, duration: ev.duration || 0, ev: ev };
+        if (type === 'emoji' || type === 'irasu') {
+          entry._img = document.getElementById('emoji_' + ei) || null;
+          ei++;
+        }
+        if (idx[type]) { idx[type].push(entry); return; }
+        if (!idx[type]) idx[type] = [];
+        idx[type].push(entry);
+      });
+    });
+    // sort by time (emoji/irasu keep DOM creation order)
+    ['camera','shake','flash','blur','overlay','stutter','split','zoom_bounce','vignette','hue_shift','noise','pulse','color_shift','sfx'].forEach(function(k) {
+      idx[k].sort(function(a,b) { return a.time - b.time; });
+    });
+    idx.subs = SUB || [];
+    idx.dms = DM || [];
+    idx.dur = META.duration || CFG.duration || 239.8;
+    idx.layout = CFG.layout || {};
+    idx.subStyle = (CFG.style && CFG.style.subtitle) || {};
+    idx.dmStyle = (CFG.style && CFG.style.danmaku) || {};
+    measureDanmakuWidths();
+    EVENT_IDX = idx;
+    return idx;
+  }
+
+  // ---- 状态计算函数 (纯数学) ----
+
+  function getActiveCamera(t, cam) {
+    var zoom = 1.0, ox = 65, oy = 50;
+    var layout = (EVENT_IDX && EVENT_IDX.layout) || {};
+    var liver = layout.liver || {};
+    var defOrigin = liver.origin || '65% 50%';
+    var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
+
+    for (var i = 0; i < cam.length; i++) {
+      var c = cam[i];
+      var tgt = c.ev.zoom === '近' ? 1.8 : 1.5;
+      var td = Math.min(c.duration * 0.5, 0.6);
+      var ce = c.time + td;
+      if (t < c.time) break;
+      if (t >= ce) { zoom = tgt; }
+      else {
+        var p = (t - c.time) / td;
+        zoom = lerp(zoom, tgt, E.pow2_out(p));
+      }
+      // update origin from event
+      var o = (c.ev.origin || defOrigin).split(' ');
+      ox = parseFloat(o[0]) || ox;
+      oy = parseFloat(o[1]) || oy;
+    }
+    return { zoom: zoom, ox: ox * 1920 / 100, oy: oy * 1080 / 100 };
+  }
+
+  function getActiveSubs(t, subs) {
+    var out = [];
+    for (var i = 0; i < subs.length; i++) {
+      var s = subs[i];
+      if (t < s.start || t >= s.end) continue;
+      var opacity = 1, yOff = 0;
+      var fadeIn = 0.35, fadeOut = 0.18;
+      if (t - s.start < fadeIn) {
+        var p = (t - s.start) / fadeIn;
+        opacity = E.pow2_out(p);
+        yOff = 20 * (1 - opacity);
+      } else if (s.end - t < fadeOut) {
+        var p = (s.end - t) / fadeOut;
+        opacity = E.pow2_in(p);
+        yOff = -8 * (1 - p);
+      }
+      var hlParts = [];
+
+      // parse html for highlight spans
+      var html = s.html || s.text || '';
+      var re = /<span class="hl">([^<]+)<\/span>|[^<]+/g;
+      var m;
+      while ((m = re.exec(html)) !== null) {
+        if (m[1]) hlParts.push({ text: m[1], hl: true });
+        else if (m[0].trim()) hlParts.push({ text: m[0], hl: false });
+      }
+      if (hlParts.length === 0) hlParts.push({ text: s.text || '', hl: false });
+
+      out.push({ parts: hlParts, opacity: opacity, yOffset: yOff });
+    }
+    return out;
+  }
+
+  function getActiveDms(t, dms) {
+    var out = [];
+    for (var i = 0; i < dms.length; i++) {
+      var d = dms[i];
+      if (t < d.start || t >= d.end) continue;
+      var travel = d.travel_duration || 8;
+      var textW = DM_WIDTHS[i] || (d.text || '').length * 55;
+      var el = t - d.start;
+      var fadeIn = 0.3, fadeOut = 0.2;
+      var y = (d.y / 1920) * 540;
+
+      // x 始终由滚动进度决定 (与 opacity 独立)
+      var progress = Math.max(0, (el - fadeIn) / travel);
+      var x = 1920 - Math.min(progress, 1) * (1920 + textW);
+
+      // opacity = fadeIn × fadeOut
+      var opacity = 0.9;
+      if (el < fadeIn) {
+        opacity = 0.9 * (el / fadeIn);
+        x = 1920;
+      } else if (t > d.end - fadeOut) {
+        opacity = 0.9 * Math.max(0, (d.end - t) / fadeOut);
+      }
+
+      if (opacity < 0.005 || x < -textW - 50) continue;
+      out.push({ text: d.text || '', opacity: opacity, x: x, y: y });
+    }
+    return out;
+  }
+
+  function getActiveEmoji(t, items) {
+    var out = [];
+    for (var i = 0; i < items.length; i++) {
+      var e = items[i];
+      var imgEl = e._img;
+      if (!imgEl || imgEl.tagName !== 'IMG') continue;
+      var et = e.time, dur = e.duration || 2.5;
+      if (t < et || t > et + dur + 0.65) continue;
+      var popIn = 0.35, floatUp = 0.4, fadeOut = 0.3;
+      var opacity = 0, scale = 1, rot = 0, yOff = 0;
+
+      if (t - et < popIn) {
+        var p = (t - et) / popIn;
+        var bp = E.back_out(p, 3);
+        scale = 0.3 + 0.7 * bp;
+        rot = -15 + 15 * bp;
+        opacity = E.pow2_out(p);
+      } else if (t < et + popIn + floatUp) {
+        var p = (t - et - popIn) / floatUp;
+        opacity = 1; scale = 1; rot = 0;
+        yOff = -18 * p;
+      } else if (t < et + popIn + floatUp + dur) {
+        opacity = 1; yOff = -18;
+      } else {
+        var p = (t - et - popIn - floatUp - dur) / fadeOut;
+        opacity = 1 - p;
+        scale = 1 - 0.6 * p;
+        yOff = -18;
+      }
+      if (opacity < 0.005) continue;
+
+      var left = parseFloat(imgEl.style.left) || 0;
+      var top = parseFloat(imgEl.style.top) || 0;
+
+      // 使用预解码 GIF 帧 (如有) 或 fallback 到 DOM img
+      var frameIndex = 0;
+      if (e._bitmaps && e._bitmaps.length > 1 && e._delays) {
+        var elapsedMs = (t - et) * 1000;
+        var total = 0;
+        for (var di = 0; di < e._delays.length; di++) total += e._delays[di];
+        if (total > 0) {
+          var loopPos = elapsedMs % total;
+          var acc = 0;
+          for (di = 0; di < e._delays.length; di++) {
+            acc += e._delays[di];
+            if (loopPos < acc) { frameIndex = di; break; }
+          }
+        }
+      }
+
+      var src = (e._bitmaps && e._bitmaps[frameIndex]) || imgEl;
+      var w = 280, h = 280;
+      out.push({ img: src, opacity: opacity, scale: scale, rot: rot,
+                 x: left + 140, y: top + 140 + yOff, w: w, h: h });
+    }
+    return out;
+  }
+
+  function getShake(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var sh = items[i];
+      if (t >= sh.time && t < sh.time + 0.2) {
+        var off = sh.ev.intensity || 14;
+        var dt = t - sh.time;
+        if (dt < 0.04) return { x: off, y: -off };
+        if (dt < 0.08) return { x: -off, y: off };
+        if (dt < 0.12) return { x: off/2, y: -off/2 };
+        if (dt < 0.16) return { x: -off/2, y: off/2 };
+        return { x: 0, y: 0 };
+      }
+    }
+    return { x: 0, y: 0 };
+  }
+
+  function getFlash(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var f = items[i];
+      var et = f.time, color = f.ev.color || '#ffffff', dur = f.ev.duration || 0.35;
+      if (t >= et && t < et + 0.04 + dur) {
+        var dt = t - et;
+        if (dt < 0.04) return { opacity: 0.20 * (dt / 0.04), color: color };
+        var fade = (dt - 0.04) / dur;
+        return { opacity: 0.20 * (1 - fade), color: color };
+      }
+    }
+    return { opacity: 0, color: '#ffffff' };
+  }
+
+  function getBlur(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var b = items[i];
+      var et = b.time;
+      if (t >= et && t < et + 0.80) {
+        var dt = t - et;
+        if (dt < 0.12) return 8;
+        if (dt < 0.48) return 8;
+        return 8 * (1 - (dt - 0.48) / 0.32);
+      }
+    }
+    return 0;
+  }
+
+  function getOverlayState(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var o = items[i];
+      var et = o.time, dur = o.duration || 1.5;
+      var ev = o.ev;
+      if (t >= et && t < et + dur) {
+        var dt = t - et;
+        var fadeIn = 0.4, fadeOut = 0.4;
+        var opacity = ev.opacity || 1;
+        if (dt < fadeIn) opacity *= dt / fadeIn;
+        else if (dur - dt < fadeOut) opacity *= (dur - dt) / fadeOut;
+        if (opacity < 0.005) continue;
+        var ot = ev.overlay_type || '';
+        if (ot === 'color' && ev.color) {
+          return { type: 'color', color: ev.color, opacity: opacity };
+        }
+        if (ot === 'gradient' && ev.colors) {
+          return { type: 'gradient', colors: ev.colors, shape: ev.shape || 'linear', opacity: opacity };
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function getIntroBlack(t) {
+    if (t < 0.5) { return 1 - E.sine_out(t / 0.5); }
+    return 0;
+  }
+
+  function getStutterVideo(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var st = items[i], et = st.time, off = st.ev.intensity || 12;
+      if (t >= et && t < et + 0.12) {
+        var dt = t - et;
+        if (dt < 0.06) return { x: -off, y: off };
+        return { x: off, y: -off };
+      }
+    }
+    return null;
+  }
+
+  function getSplitVideo(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var sp = items[i], et = sp.time, inten = sp.ev.intensity || 30;
+      if (t >= et && t < et + 0.12) {
+        var dt = t - et;
+        if (dt < 0.06) return { scale: 0.95, skewX: -inten, x: -inten * 0.3 };
+        return { scale: 1, skewX: 0, x: 0 };
+      }
+    }
+    return null;
+  }
+
+  function getZoomBounce(t, items, curZoom) {
+    for (var i = 0; i < items.length; i++) {
+      var zb = items[i], et = zb.time;
+      if (t >= et && t < et + 0.30) {
+        var dt = t - et;
+        if (dt < 0.08) return curZoom * 1.10;
+        return curZoom;
+      }
+    }
+    return curZoom;
+  }
+
+  function getPulse(t, items, curZoom) {
+    for (var i = 0; i < items.length; i++) {
+      var p = items[i], et = p.time;
+      if (t >= et && t < et + 0.48) {
+        var dt = t - et;
+        if (dt < 0.12) return curZoom * 1.06;
+        if (dt < 0.28) return curZoom * 0.97;
+        return curZoom;
+      }
+    }
+    return curZoom;
+  }
+
+  function getHueShiftFlash(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var h = items[i], et = h.time, color = h.ev.color || '#ff0040';
+      if (t >= et && t < et + 0.95) {
+        var dt = t - et;
+        if (dt < 0.15) return { opacity: 0.25 * (dt / 0.15), color: color };
+        return { opacity: 0.25 * (1 - (dt - 0.15) / 0.80), color: color };
+      }
+    }
+    return null;
+  }
+
+  function getNoiseOpacity(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var n = items[i], et = n.time;
+      if (t >= et && t < et + 0.80) {
+        var dt = t - et;
+        if (dt < 0.08) return 0.08 * (dt / 0.08);
+        return 0.08 * (1 - (dt - 0.08) / 0.72);
+      }
+    }
+    return 0;
+  }
+
+  function getColorShift(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i], et = c.time;
+      if (t >= et && t < et + 1.0) {
+        var dt = t - et;
+        if (dt < 0.1) return 'sepia(0.6) saturate(1.4)';
+        var p = (dt - 0.1) / 0.6;
+        return 'sepia(' + (0.6 * (1 - p)) + ') saturate(' + (1.4 - 0.4 * p) + ')';
+      }
+    }
+    return '';
+  }
+
+  // ---- 绘图函数 ----
+
+  function ensureCanvas() {
+    if (!CANVAS) {
+      CANVAS = document.getElementById('_vtedit_cc');
+      if (!CANVAS) {
+        CANVAS = document.createElement('canvas');
+        CANVAS.id = '_vtedit_cc';
+        CANVAS.width = 1920;
+        CANVAS.height = 1080;
+        CANVAS.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:1px';
+        document.body.appendChild(CANVAS);
+      }
+    }
+    if (!CTX) CTX = CANVAS.getContext('2d');
+  }
+
+  function blobToB64(blob) {
+    return new Promise(function(resolve) {
+      var r = new FileReader();
+      r.onload = function() { resolve(r.result.split(',')[1]); };
+      r.readAsDataURL(blob);
+    });
+  }
+
+  function renderFrame(t, ctx, idx, videoBitmap) {
+    ctx.clearRect(0, 0, 1920, 1080);
+
+    var cam = getActiveCamera(t, idx.camera);
+    var shake = getShake(t, idx.shake);
+    var blurAmt = getBlur(t, idx.blur);
+    var stutter = getStutterVideo(t, idx.stutter);
+    var split = getSplitVideo(t, idx.split);
+    var curZoom = cam.zoom;
+    var zbZoom = getZoomBounce(t, idx.zoom_bounce, curZoom);
+    var plZoom = getPulse(t, idx.pulse, curZoom);
+    var finalZoom = Math.max(zbZoom, plZoom);
+    var colorShift = getColorShift(t, idx.color_shift);
+
+    // ---- video layer ----
+    ctx.save();
+    if (shake.x || shake.y) ctx.translate(shake.x, shake.y);
+    if (blurAmt > 0) ctx.filter = 'blur(' + blurAmt + 'px)';
+    if (colorShift) ctx.filter = (ctx.filter ? ctx.filter + ' ' : '') + colorShift;
+    // stutter / split / zoom on video
+    if (stutter) ctx.translate(stutter.x, stutter.y);
+    else if (split) { ctx.translate(split.x, 0); ctx.transform(1, split.skewX/100, 0, 1, 0, 0); ctx.scale(split.scale, split.scale); }
+    // camera zoom
+    if (finalZoom > 1.001) {
+      ctx.translate(cam.ox, cam.oy);
+      ctx.scale(finalZoom, finalZoom);
+      ctx.translate(-cam.ox, -cam.oy);
+    }
+    ctx.drawImage(videoBitmap, 0, 0, 1920, 1080);
+    ctx.restore();
+
+    // ---- noise overlay ----
+    var noiseOp = getNoiseOpacity(t, idx.noise);
+    if (noiseOp > 0.005) {
+      ctx.save();
+      ctx.globalAlpha = noiseOp;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.restore();
+    }
+
+    // ---- flash ----
+    var flash = getFlash(t, idx.flash);
+    if (flash.opacity > 0.005) {
+      ctx.save();
+      ctx.globalAlpha = flash.opacity;
+      ctx.fillStyle = flash.color;
+      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.restore();
+    }
+
+    // ---- hue_shift flash ----
+    var hueFl = getHueShiftFlash(t, idx.hue_shift);
+    if (hueFl) {
+      ctx.save();
+      ctx.globalAlpha = hueFl.opacity;
+      ctx.fillStyle = hueFl.color;
+      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.restore();
+    }
+
+    // ---- overlay ----
+    var ov = getOverlayState(t, idx.overlay);
+    if (ov) {
+      ctx.save();
+      ctx.globalAlpha = ov.opacity;
+      if (ov.type === 'color') {
+        ctx.fillStyle = ov.color;
+        ctx.fillRect(0, 0, 1920, 1080);
+      } else if (ov.type === 'gradient') {
+        var grad = ov.shape === 'radial'
+          ? ctx.createRadialGradient(960, 540, 0, 960, 540, 960)
+          : ctx.createLinearGradient(0, 0, 1920, 1080);
+        for (var gi = 0; gi < ov.colors.length; gi++) {
+          grad.addColorStop(gi / (ov.colors.length - 1), ov.colors[gi]);
+        }
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 1920, 1080);
+      }
+      ctx.restore();
+    }
+
+    // ---- intro black ----
+    var ib = getIntroBlack(t);
+    if (ib > 0.005) {
+      ctx.save();
+      ctx.globalAlpha = ib;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.restore();
+    }
+
+    // ---- captions ----
+    var subS = idx.subStyle;
+    var caps = getActiveSubs(t, idx.subs);
+    if (caps.length > 0) {
+      var fs = (subS.size || 72) + 'px';
+      var ff = (subS.font || 'LXGW WenKai') + ',"Microsoft YaHei","Noto Sans SC",sans-serif';
+      var color = subS.color || '#dcbda0';
+      var hlColor = subS.highlight_color || '#f56b41';
+      var strokeStr = subS.stroke || '12px #403c3b';
+      var sw = parseFloat(strokeStr) || 12;
+      var sc = strokeStr.replace(/^[\d.]+px\s*/, '') || '#403c3b';
+
+      ctx.font = '700 ' + fs + ' ' + ff;
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      var cx = 960, cy = 960;
+
+      caps.forEach(function(cap) {
+        ctx.save();
+        ctx.globalAlpha = cap.opacity;
+        // measure total width
+        ctx.textAlign = 'left';
+        var totalW = 0;
+        cap.parts.forEach(function(p) { totalW += ctx.measureText(p.text).width; });
+        var sx = cx - totalW / 2;
+        cap.parts.forEach(function(p) {
+          var pw = ctx.measureText(p.text).width;
+          if (p.hl) {
+            ctx.strokeStyle = sc; ctx.lineWidth = sw;
+            ctx.strokeText(p.text, sx, cy + cap.yOffset);
+            ctx.fillStyle = hlColor;
+          } else {
+            ctx.strokeStyle = sc; ctx.lineWidth = sw;
+            ctx.strokeText(p.text, sx, cy + cap.yOffset);
+            ctx.fillStyle = color;
+          }
+          ctx.fillText(p.text, sx, cy + cap.yOffset);
+          sx += pw;
+        });
+        ctx.restore();
+      });
+    }
+
+    // ---- danmaku ----
+    var dmS = idx.dmStyle;
+    var dms_a = getActiveDms(t, idx.dms);
+    if (dms_a.length > 0) {
+      var fs_dm = (dmS.font_size || 42) + 'px';
+      var color_dm = dmS.color || '#ffffff';
+      var strokeStr_dm = dmS.stroke || '2px #000';
+      var sw_dm = parseFloat(strokeStr_dm) || 2;
+      var sc_dm = strokeStr_dm.replace(/^[\d.]+px\s*/, '') || '#000000';
+
+      ctx.font = '600 ' + fs_dm + ' "Microsoft YaHei","Noto Sans SC",sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+
+      dms_a.forEach(function(dm) {
+        ctx.save();
+        ctx.globalAlpha = dm.opacity;
+        ctx.textAlign = 'left';
+        ctx.strokeStyle = sc_dm;
+        ctx.lineWidth = sw_dm;
+        ctx.strokeText(dm.text, dm.x, dm.y);
+        ctx.fillStyle = color_dm;
+        ctx.fillText(dm.text, dm.x, dm.y);
+        ctx.restore();
+      });
+    }
+
+    // ---- emoji / irasu ----
+    var emojis = getActiveEmoji(t, idx.emoji);
+    var irasus = getActiveEmoji(t, idx.irasu);
+    var allEI = emojis.concat(irasus);
+    allEI.forEach(function(ei) {
+      ctx.save();
+      ctx.globalAlpha = ei.opacity;
+      ctx.translate(ei.x, ei.y);
+      ctx.rotate(ei.rot * Math.PI / 180);
+      ctx.scale(ei.scale, ei.scale);
+      ctx.drawImage(ei.img, -ei.w/2, -ei.h/2, ei.w, ei.h);
+      ctx.restore();
+    });
+  }
+
+  // ---- 帧预加载 (从 Rust 接收 base64 JPEG 帧) ----
+  window.__LOAD_FRAMES = function(batch) {
+    if (!window.__FRAME_BYTES) window.__FRAME_BYTES = [];
+    for (var i = 0; i < batch.length; i++) {
+      window.__FRAME_BYTES.push(batch[i]);
+    }
+  };
+
+  // ---- 主入口 ----
+  window.__CAPTURE_CHUNK = async function(startFrame, endFrame, fps) {
+    ensureCanvas();
+    var frameCount = endFrame - startFrame;
+    if (!window.__FRAME_BYTES || window.__FRAME_BYTES.length < frameCount) {
+      window.__CAPTURE_ERROR = 'Need ' + frameCount + ' frames, have ' +
+        (window.__FRAME_BYTES ? window.__FRAME_BYTES.length : 0);
+      window.__CAPTURE_DONE = true;
+      return 0;
+    }
+    window.__CAPTURE_ERROR = '';
+
+    buildIndex();
+    var ctx = CTX, idx = EVENT_IDX;
+
+    // 预加载 emoji/irasu 图片 + 预解码 emoji GIF 帧
+    var emojiData = window.__EMOJI_DATA || {};
+    var eLayer = document.getElementById('emoji-layer');
+    if (eLayer) {
+      eLayer.style.setProperty('display', 'block', 'important');
+      eLayer.style.setProperty('visibility', 'visible', 'important');
+      eLayer.style.setProperty('opacity', '1', 'important');
+    }
+    // 预解码所有 emoji GIF 帧为 ImageBitmap
+    for (var _ei = 0; _ei < idx.emoji.length; _ei++) {
+      var _e = idx.emoji[_ei];
+      var _name = (_e.ev && _e.ev.name) || '';
+      var _ed = emojiData[_name];
+      if (_ed && _ed.frames && _ed.frames.length > 0) {
+        try {
+          _e._bitmaps = await Promise.all(_ed.frames.map(async function(b64) {
+            var r = await fetch('data:image/png;base64,' + b64);
+            var b = await r.blob();
+            return createImageBitmap(b);
+          }));
+          _e._delays = _ed.delays;
+          _e._fw = _e._bitmaps[0].width;
+          _e._fh = _e._bitmaps[0].height;
+        } catch(_err) {}
+      }
+    }
+
+    for (var fi = startFrame; fi < endFrame; fi++) {
+      var t = fi / fps;
+      var relIdx = fi - startFrame;
+      var frameB64 = window.__FRAME_BYTES[relIdx];
+      if (!frameB64) continue;
+
+      // decode JPEG frame → ImageBitmap
+      var resp = await fetch('data:image/jpeg;base64,' + frameB64);
+      var blob = await resp.blob();
+      var bitmap = await createImageBitmap(blob);
+
+      // render frame (数学状态, 无 DOM 读取)
+      renderFrame(t, ctx, idx, bitmap);
+      bitmap.close();
+
+      // capture JPEG
+      var capBlob = await new Promise(function(r) { CANVAS.toBlob(r, 'image/jpeg', 0.6); });
+      var b64 = await blobToB64(capBlob);
+      window.__FRAME_BUF.push(b64);
+
+      if (fi % 30 === 0 || fi === endFrame - 1) {
+        window.__CAPTURE_PROGRESS = ((fi - startFrame + 1) / frameCount * 100).toFixed(0);
+      }
+    }
+
+    window.__CAPTURE_DONE = true;
+    window.__CAPTURE_COUNT = window.__FRAME_BUF.length;
+    return window.__FRAME_BUF.length;
+  };
+
+  window.__CAPTURE_RESET = function() {
+    EVENT_IDX = null;
+    window.__FRAME_BYTES = [];
+    window.__FRAME_BUF = [];
+    window.__CAPTURE_DONE = false;
+    window.__CAPTURE_PROGRESS = '0';
+    window.__CAPTURE_COUNT = 0;
+    window.__CAPTURE_ERROR = '';
+  };
+
+  window.__GET_FRAMES = function(start, end) {
+    return JSON.stringify((window.__FRAME_BUF || []).slice(start, end));
+  };
+})();
+</script>
+</body>
+</html>

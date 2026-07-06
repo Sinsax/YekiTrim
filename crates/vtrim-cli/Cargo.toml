@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 vtrim-core = { path = "../vtrim-core" }
+vtrim-polish = { path = "../vtrim-polish" }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
