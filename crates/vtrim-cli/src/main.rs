@@ -174,6 +174,20 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
 
+            let valid_ext = ["mp4", "mkv", "mov", "avi", "flv", "webm", "mts", "m2ts"];
+            let ext = input
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
+            if !valid_ext.contains(&ext.as_str()) {
+                anyhow::bail!(
+                    "'{}' 不是支持的视频格式。\n支持的扩展名: {}",
+                    input.display(),
+                    valid_ext.join(", "),
+                );
+            }
+
             let out = cfg_path
                 .clone()
                 .or_else(|| {
