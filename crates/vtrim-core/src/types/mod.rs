@@ -160,6 +160,14 @@ pub struct Segment {
     pub subtitle_path: PathBuf,
 }
 
+/// 弹幕条目（用于辅助字幕订正等场景）
+#[derive(Debug, Clone)]
+pub struct DanmakuRef {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
 #[derive(Clone)]
 pub struct PipelineContext {
     pub config: Arc<Config>,

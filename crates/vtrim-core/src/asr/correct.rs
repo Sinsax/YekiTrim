@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::config::{CorrectConfig, LlmConfig};
-use crate::types::TranscriptSegment;
+use crate::types::{DanmakuRef, TranscriptSegment};
 
 const BATCH_SIZE: usize = 100;
 const CONTEXT_OVERLAP: usize = 15;
@@ -58,6 +58,7 @@ pub const DEFAULT_USER_PROMPT: &str = "\
 
 pub async fn correct_transcript(
     segments: &[TranscriptSegment],
+    danmaku: &[DanmakuRef],
     llm: &LlmConfig,
     correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
@@ -67,6 +68,7 @@ pub async fn correct_transcript(
     let total_batches = (total + BATCH_SIZE - 1) / BATCH_SIZE;
     let llm = Arc::new(llm.clone());
     let correct = Arc::new(correct.clone());
+    let danmaku = Arc::new(danmaku.to_vec());
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut set: JoinSet<(usize, usize, Result<Vec<String>>)> = JoinSet::new();
 
@@ -99,6 +101,7 @@ pub async fn correct_transcript(
         let llm = llm.clone();
         let correct = correct.clone();
         let sem = sem.clone();
+        let danmaku = danmaku.clone();
 
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -106,7 +109,7 @@ pub async fn correct_transcript(
             (
                 offset,
                 batch_num,
-                send_batch(&chunk, &context, &llm, &correct, offset).await,
+                send_batch(&chunk, &context, &danmaku, &llm, &correct, offset).await,
             )
         });
     }
@@ -216,6 +219,7 @@ fn expand_merged(
 async fn send_batch(
     segments: &[TranscriptSegment],
     context: &[TranscriptSegment],
+    danmaku: &[DanmakuRef],
     llm: &LlmConfig,
     correct: &CorrectConfig,
     offset: usize,
@@ -227,6 +231,27 @@ async fn send_batch(
             ctx.push_str(&format!("[{:.1}-{:.1}] {}\n", seg.start, seg.end, seg.text));
         }
         ctx
+    } else {
+        String::new()
+    };
+
+    // 构建弹幕上下文（时间重叠的弹幕，最多 15 条）
+    let dm_text = if !danmaku.is_empty() {
+        let mut dm = String::from("\n--- 当前时段弹幕（供参考，弹幕文字不会出错） ---\n");
+        let start_time = segments.first().map(|s| s.start).unwrap_or(0.0);
+        let end_time = segments.last().map(|s| s.end).unwrap_or(0.0);
+        let mut count = 0;
+        for d in danmaku {
+            if count >= 15 {
+                break;
+            }
+            // 弹幕与当前批次时间范围有重叠
+            if d.start < end_time && d.end > start_time {
+                dm.push_str(&format!("[{:.1}-{:.1}] {}\n", d.start, d.end, d.text));
+                count += 1;
+            }
+        }
+        dm
     } else {
         String::new()
     };
@@ -248,8 +273,8 @@ async fn send_batch(
     } else {
         DEFAULT_USER_PROMPT.to_string()
     };
-    let prompt = user_prompt
-        .replace("{context}", &context_text)
+    let replaced = user_prompt
+        .replace("{context}", &format!("{}{}", context_text, dm_text))
         .replace("{segments}", &seg_text);
 
     // 系统消息
@@ -261,7 +286,7 @@ async fn send_batch(
 
     let messages = serde_json::json!([
         {"role": "system", "content": system_msg},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": replaced}
     ]);
     let body = crate::detection::build_request_body(llm, messages);
     let resp_body = crate::detection::send_request(llm, &body, 120).await?;

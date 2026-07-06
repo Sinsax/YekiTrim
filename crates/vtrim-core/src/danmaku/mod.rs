@@ -5,6 +5,21 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::types::DanmakuRef;
+
+/// Load danmaku as a flat list (for correction context, etc.)
+pub fn load_danmaku_refs(path: &Path) -> Result<Vec<DanmakuRef>> {
+    let entries = parser::parse_ass(path)?;
+    Ok(entries
+        .into_iter()
+        .map(|e| DanmakuRef {
+            start: e.start,
+            end: e.end,
+            text: e.text,
+        })
+        .collect())
+}
+
 /// Per-window danmaku density.
 #[derive(Debug, Clone)]
 pub struct DensityWindow {

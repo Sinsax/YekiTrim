@@ -113,6 +113,17 @@ fn load_cfg(
     }
 }
 
+/// 加载弹幕文件供字幕订正使用（文件不存在则返回空 vec）
+fn load_danmaku_for_correct(cfg: &Config) -> Vec<vtrim_core::types::DanmakuRef> {
+    let path = cfg.project.danmaku_file.as_ref().map(PathBuf::from);
+    match path {
+        Some(p) if !p.as_os_str().is_empty() && p.exists() => {
+            vtrim_core::danmaku::load_danmaku_refs(&p).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn check_stage(stage_num: u32, current: u32, _cfg: &Config) -> anyhow::Result<()> {
     let mut needed: Vec<u32> = Vec::new();
     for n in current + 1..stage_num {
@@ -331,8 +342,9 @@ async fn main() -> anyhow::Result<()> {
             // LLM 订正：仅当事件尚未检测时执行，避免重复订正已完成的检测结果
             if current < STAGE_DETECT && cfg.asr.llm_correct.unwrap_or(false) && !cfg.llm.api_key.is_empty() {
                 if let Some(ref transcript) = ctx.transcript {
+                    let danmaku = load_danmaku_for_correct(&cfg);
                     tracing::info!("LLM 订正转录文本...");
-                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &cfg.llm, &cfg.correct).await {
+                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &danmaku, &cfg.llm, &cfg.correct).await {
                         Ok(corrected) => {
                             let new = vtrim_core::types::Transcript {
                                 segments: corrected,
@@ -717,7 +729,8 @@ async fn main() -> anyhow::Result<()> {
             };
 
             tracing::info!("LLM 订正 {} 个片段...", transcript_data.segments.len());
-            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &cfg.llm, &cfg.correct).await {
+            let danmaku = load_danmaku_for_correct(&cfg);
+            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &danmaku, &cfg.llm, &cfg.correct).await {
                 Ok(corrected) => {
                     transcript_data.segments = corrected;
 
