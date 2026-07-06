@@ -4,58 +4,79 @@ use anyhow::Result;
 
 use crate::types::{Timestamp, Transcript, TranscriptSegment};
 
+/// A raw SRT entry (start, end, text)
+#[derive(Debug, Clone)]
+pub struct SrtEntry {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
 /// 从 SRT 字符串解析 Transcript
 pub fn parse_srt(content: &str) -> Result<Transcript> {
-    let mut segments = Vec::new();
-    let mut lines = content.lines().peekable();
-
-    while lines.peek().is_some() {
-        let _ = lines.next();
-        let time_line = match lines.next() {
-            Some(l) => l,
-            None => break,
-        };
-        let (start_str, end_str) = time_line
-            .split_once(" --> ")
-            .ok_or_else(|| anyhow::anyhow!("SRT 时间格式无效: {}", time_line))?;
-        let start = parse_srt_time(start_str.trim())?;
-        let end = parse_srt_time(end_str.trim())?;
-        let mut text = String::new();
-        while let Some(l) = lines.next() {
-            if l.trim().is_empty() {
-                break;
-            }
-            if !text.is_empty() {
-                text.push(' ');
-            }
-            text.push_str(l.trim());
-        }
-        if !text.is_empty() {
-            segments.push(TranscriptSegment {
-                start,
-                end,
-                text,
-                confidence: 1.0,
-            });
-        }
-    }
-
+    let entries = parse_entries(content);
     Ok(Transcript {
-        segments,
+        segments: entries
+            .into_iter()
+            .map(|e| TranscriptSegment {
+                start: e.start,
+                end: e.end,
+                text: e.text,
+                confidence: 1.0,
+            })
+            .collect(),
         language: "zh".into(),
     })
 }
 
-fn parse_srt_time(s: &str) -> Result<f64> {
+/// 从 SRT 字符串解析为原始条目列表（非严格，跳过格式错误的块）
+pub fn parse_entries(content: &str) -> Vec<SrtEntry> {
+    let mut entries = Vec::new();
+    let normalized = content.replace("\r\n", "\n");
+    let blocks: Vec<&str> = normalized.trim().split("\n\n").collect();
+
+    for block in blocks {
+        let lines: Vec<&str> = block.trim().lines().collect();
+        if lines.len() < 3 {
+            continue;
+        }
+        let time_line = match lines.get(1) {
+            Some(l) => l,
+            None => continue,
+        };
+        let time_line = time_line.trim();
+        let Some(delim) = time_line.find(" --> ") else { continue };
+        let start_str = time_line[..delim].trim();
+        let end_str = time_line[delim + 5..].trim();
+        let start = parse_srt_time_loose(start_str);
+        let end = parse_srt_time_loose(end_str);
+        if start.is_none() || end.is_none() {
+            continue;
+        }
+        let text = lines[2..].join(" ").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        entries.push(SrtEntry {
+            start: start.unwrap(),
+            end: end.unwrap(),
+            text,
+        });
+    }
+    entries
+}
+
+/// 宽松的 SRT 时间解析（不返回错误，无法解析时返回 None）
+pub fn parse_srt_time_loose(s: &str) -> Option<f64> {
     let s = s.replace(',', ".");
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() == 3 {
-        let h: f64 = parts[0].parse().map_err(|e| anyhow::anyhow!("SRT 时间解析失败: {}", e))?;
-        let m: f64 = parts[1].parse()?;
-        let sec: f64 = parts[2].parse()?;
-        Ok(h * 3600.0 + m * 60.0 + sec)
+        let h: f64 = parts[0].parse().ok()?;
+        let m: f64 = parts[1].parse().ok()?;
+        let sec: f64 = parts[2].parse().ok()?;
+        Some(h * 3600.0 + m * 60.0 + sec)
     } else {
-        anyhow::bail!("SRT 时间格式异常: {}", s)
+        None
     }
 }
 
