@@ -165,6 +165,14 @@ async fn main() -> anyhow::Result<()> {
             output,
             config: cfg_path,
         } => {
+            if input.is_dir() {
+                anyhow::bail!(
+                    "'{}' 是目录路径。\nvtrim init 需要视频文件路径，例如:\n  vtrim init {}\\clip.mp4",
+                    input.display(),
+                    input.display(),
+                );
+            }
+
             let out = cfg_path
                 .clone()
                 .or_else(|| {
