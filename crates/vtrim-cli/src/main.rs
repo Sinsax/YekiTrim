@@ -167,6 +167,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let out = cfg_path
                 .clone()
+                .or_else(|| {
+                    input.parent().map(|p| p.join("vtrim.toml"))
+                })
                 .unwrap_or_else(|| PathBuf::from("vtrim.toml"));
 
             // 优先从全局配置复制，不存在则使用内建默认
