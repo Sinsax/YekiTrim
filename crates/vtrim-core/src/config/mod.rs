@@ -4,6 +4,7 @@ pub use types::*;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 
 fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
     if !path.exists() {
@@ -109,10 +110,15 @@ pub fn load_llm_config() -> LlmConfig {
             return LlmConfig::default();
         }
     };
-    toml::from_str(&content).unwrap_or_else(|e| {
+    toml::from_str::<LlmFile>(&content).map(|f| f.llm).unwrap_or_else(|e| {
         tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
         LlmConfig::default()
     })
+}
+
+#[derive(Deserialize)]
+struct LlmFile {
+    llm: LlmConfig,
 }
 
 pub fn load_config() -> Result<Config> {

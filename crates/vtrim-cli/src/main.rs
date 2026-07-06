@@ -53,6 +53,7 @@ overwrite = false
 const LLM_CONFIG_TOML: &str = r#"# V-Trim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
 
+[llm]
 # API 基础地址
 base_url = ""
 # LLM API Key
@@ -63,8 +64,8 @@ model = ""
 temperature = 0
 # 最大 Token 数 (检测事件需要较大的输出空间)
 max_tokens = 65536
-# 额外请求参数 (seed 确保稳定输出)
-extra_params = { seed = 42 }
+# 额外请求参数 (seed 确保稳定输出；关闭 thinking 避免浪费 token 在推理上)
+extra_params = { seed = 42, thinking = { type = "disabled" } }
 "#;
 
 mod cli;
