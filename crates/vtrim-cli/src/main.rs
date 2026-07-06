@@ -188,6 +188,10 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
 
+            if !input.exists() {
+                anyhow::bail!("视频文件不存在: {}", input.display());
+            }
+
             let out = cfg_path
                 .clone()
                 .or_else(|| {
