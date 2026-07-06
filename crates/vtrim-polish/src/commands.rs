@@ -2,13 +2,11 @@
 use std::process::Command;
 use std::collections::HashMap;
 
-use crate::project::{Event, ProjectFile};
+use crate::project::ProjectFile;
 use crate::render::chrome::ChromeRenderer;
 use crate::render::ffmpeg::Ffmpeg;
 use crate::{assets, llm, parse, project, render};
 
-/// 内嵌的 index.html 模板
-const INDEX_HTML: &str = include_str!("../templates/index.html");
 /// 内嵌的 cover.html 模板
 const COVER_HTML: &str = include_str!("../templates/cover.html");
 
@@ -433,7 +431,7 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
     loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
 }
 
-pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, resolved: &ResolvedPaths) -> String {
+pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _resolved: &ResolvedPaths) -> String {
     // 从 cmd_cover 中提取相同逻辑 (略缩版)
     let cc = &config.cover;
 
@@ -656,6 +654,7 @@ pub fn render_chunk_sync(
     Ok(output.to_path_buf())
 }
 #[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct SoundEvent {
     time: f64,
     file: String,
@@ -772,7 +771,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             .build()
             .unwrap_or_default();
         let catalog = crate::assets::emoji_search::EmojiCatalog::fetch(&client).await.ok();
-        let irasu_dir = project_path.join("assets").join("irasu");
+        let _irasu_dir = project_path.join("assets").join("irasu");
 
         for seg in &mut config.segments {
             for event in &mut seg.events {
@@ -943,7 +942,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
 
     // 渐变颜色: 基于字幕高亮色
     let hl_color = &config.style.subtitle.highlight_color;
-    let sub_color = &config.style.subtitle.color;
+    let _sub_color = &config.style.subtitle.color;
     let (grad_r, grad_g, grad_b) = if !hl_color.is_empty() && hl_color.starts_with('#') {
         let h = hl_color.trim_start_matches('#');
         let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(220) as f32 / 255.0;
@@ -1278,7 +1277,7 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
     };
 
     // 找视频源：项目配置已有 → 父目录 video_cut → 同目录 clip.mp4 → ffmpeg 生成
-    let has_video = if project_path.join("config.toml").exists() {
+    let _has_video = if project_path.join("config.toml").exists() {
         let cfg = project::load_project(project_path)?;
         let v = cfg.source.video.clone();
         let vp = if Path::new(&v).is_relative() {
@@ -1468,7 +1467,7 @@ time = 14.0
 // ============================================================
 // doctor
 // ============================================================
-pub fn cmd_doctor(project_path: &Path) -> anyhow::Result<()> {
+pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     println!("🔍  System check...\n");
 
     // Check ffmpeg
@@ -1619,7 +1618,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn cleanup(project_path: &Path, temp_video: &Path, temp_audio: &Path) {
+pub fn cleanup(_project_path: &Path, temp_video: &Path, temp_audio: &Path) {
     for p in [temp_video, temp_audio] {
         std::fs::remove_file(p).ok();
     }

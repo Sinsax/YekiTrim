@@ -92,7 +92,7 @@ impl RenderRunner {
     }
 }
 
-struct ResolvedPaths {
+#[allow(dead_code)] struct ResolvedPaths {
     video: String,
     srt: String,
     danmaku: String,

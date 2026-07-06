@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 
 /// 完整项目文件 (config.toml)
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -466,8 +465,8 @@ pub struct Segment {
 }
 
 fn default_fx() -> String { "low".into() }
-fn default_zoom() -> String { "中".into() }
-fn default_origin() -> String { "50% 50%".into() }
+#[allow(dead_code)] fn default_zoom() -> String { "中".into() }
+#[allow(dead_code)] fn default_origin() -> String { "50% 50%".into() }
 
 // 贴图: emoji GIF 或 irasu 静态图, 支持百分比和旧版像素值
 #[derive(Debug, Clone)]
@@ -614,7 +613,7 @@ impl Event {
     }
 }
 
-fn is_zero(v: &f64) -> bool { *v == 0.0 }
+#[allow(dead_code)] fn is_zero(v: &f64) -> bool { *v == 0.0 }
 
 /// sfx 字段的灵活反序列化: 接受字符串/null/布尔值
 /// "impact-light" → Some("impact-light"), null → None
@@ -850,7 +849,7 @@ impl ProjectFile {
                 .and_then(|s| s.strip_suffix(']'))
                 .and_then(|s| s.split_once(".top_left").or_else(|| s.split_once(".bottom_right")))
                 .map(|(prefix, _suffix)| prefix);
-            if let Some(section) = inline_sub {
+            if let Some(_section) = inline_sub {
                 result.push_str(&format!("# {}\n", trimmed));
                 // 读取接下来两行 x= / y= → 合成内联
                 // 但我们不能预读，所以用接后续行的方式处理
@@ -912,21 +911,6 @@ impl ProjectFile {
             extra: HashMap::new(),
         }
     }
-}
-
-/// 从项目目录加载独立的 llm.toml
-pub fn load_llm_config(project_path: &Path) -> anyhow::Result<LlmConfig> {
-    let path = project_path.join("llm.toml");
-    if !path.exists() {
-        anyhow::bail!("llm.toml not found at {}. Run 'vtrim polish init' or create one.", path.display());
-    }
-    let raw = std::fs::read_to_string(&path)?;
-    #[derive(Deserialize)]
-    struct LlmFile {
-        llm: LlmConfig,
-    }
-    let file: LlmFile = toml::from_str(&raw)?;
-    Ok(file.llm)
 }
 
 /// 生成示例 llm.toml 内容
