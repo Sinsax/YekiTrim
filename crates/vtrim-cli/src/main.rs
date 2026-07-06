@@ -63,8 +63,8 @@ model = ""
 temperature = 0
 # 最大 Token 数 (检测事件需要较大的输出空间)
 max_tokens = 65536
-# 额外请求参数 (seed 确保稳定输出；关闭 thinking 避免浪费 token 在推理上)
-extra_params = { seed = 42, thinking = { type = "disabled" } }
+# 额外请求参数 (seed 确保稳定输出)
+extra_params = { seed = 42 }
 "#;
 
 mod cli;
