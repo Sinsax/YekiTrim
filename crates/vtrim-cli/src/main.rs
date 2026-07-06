@@ -738,7 +738,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::Polish(action) => {
-            use vtrim_polish::commands;
+            use vtrim_polish::{commands, cover, process, rendering};
 
             match action {
                 cli::PolishAction::Init { input } => {
@@ -748,18 +748,18 @@ async fn main() -> anyhow::Result<()> {
                     commands::cmd_llm(input).await?;
                 }
                 cli::PolishAction::Process { input } => {
-                    commands::cmd_process(input).await?;
+                    process::cmd_process(input).await?;
                 }
                 cli::PolishAction::Render { input } => {
-                    commands::cmd_render(input).await?;
+                    rendering::cmd_render(input).await?;
                 }
                 cli::PolishAction::Cover { input, template } => {
                     if let Some(t) = template {
                         if !t.is_empty() {
-                            commands::cmd_cover_template(input, t).await?;
+                            cover::cmd_cover_template(input, t).await?;
                         }
                     }
-                    commands::cmd_cover(input, None).await?;
+                    cover::cmd_cover(input, None).await?;
                 }
                 cli::PolishAction::Preview { input, mode } => {
                     commands::cmd_preview(input, mode.as_deref().unwrap_or("")).await?;
