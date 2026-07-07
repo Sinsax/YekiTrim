@@ -58,16 +58,19 @@ impl Stage for EventDetector {
             tracing::info!("已追加主播标签: {}", tag);
         }
 
-        // 弹幕热度评分
+        // 综合评分：弹幕密度 + 字幕密度（无弹幕时仅字幕密度）
+        let transcript_densities = compute_transcript_density(&events, transcript);
         if let Some(ref danmaku_path) = ctx.danmaku_path {
             if danmaku_path.exists() {
-                tracing::info!("弹幕热度评分: {}", danmaku_path.display());
-                enrich_with_danmaku(&mut events, danmaku_path, &ctx.config.detection)?;
+                tracing::info!("弹幕+字幕双密度评分: {}", danmaku_path.display());
+                rank_events(&mut events, danmaku_path, &ctx.config.detection, &transcript_densities)?;
             } else {
                 tracing::warn!("弹幕文件不存在: {}", danmaku_path.display());
+                rank_events_by_transcript(&mut events, &transcript_densities);
             }
         } else {
-            tracing::info!("无弹幕文件，跳过弹幕热度评分");
+            tracing::info!("无弹幕文件，使用字幕密度评分");
+            rank_events_by_transcript(&mut events, &transcript_densities);
         }
 
         ctx.events = events;
@@ -78,62 +81,86 @@ impl Stage for EventDetector {
     }
 }
 
-fn enrich_with_danmaku(
+/// 计算每个事件的字幕密度 (overlap segment count / duration)，归一化 [0,1]
+fn compute_transcript_density(
+    events: &[Event],
+    transcript: &crate::types::Transcript,
+) -> Vec<f64> {
+    let raw: Vec<f64> = events.iter().map(|event| {
+        let start = event.start.to_seconds();
+        let end = event.end.to_seconds();
+        let duration = (end - start).max(1.0);
+        let count = transcript.segments
+            .iter()
+            .filter(|s| s.start >= start && s.end <= end)
+            .count() as f64;
+        count / duration
+    }).collect();
+    let max_val = raw.iter().copied().fold(0.0, f64::max).max(0.001);
+    raw.into_iter().map(|v| v / max_val).collect()
+}
+
+/// 按弹幕密度 + 字幕密度综合排序
+fn rank_events(
     events: &mut Vec<Event>,
     danmaku_path: &std::path::Path,
     config: &crate::config::DetectionConfig,
+    transcript_densities: &[f64],
 ) -> Result<()> {
     let window_secs = config.danmaku_window_secs;
-
-    // Determine total duration from events
-    let total_duration = events
-        .iter()
+    let total_duration = events.iter()
         .map(|e| e.end.to_seconds())
-        .fold(0.0, f64::max)
-        .max(1.0);
-
+        .fold(0.0, f64::max).max(1.0);
     let heatmap = crate::danmaku::analyze(danmaku_path, window_secs, total_duration)?;
 
     if heatmap.is_empty() {
-        tracing::warn!("弹幕文件无数据，跳过热度评分");
+        tracing::warn!("弹幕文件无数据，仅使用字幕密度");
+        rank_events_by_transcript(events, transcript_densities);
         return Ok(());
     }
 
     let total_entries: u64 = heatmap.iter().map(|w| w.count).sum();
-    tracing::info!(
-        "弹幕热力图: {} 个窗口, 共 {} 条弹幕",
-        heatmap.len(),
-        total_entries
-    );
+    tracing::info!("弹幕热力图: {} 个窗口, 共 {} 条弹幕", heatmap.len(), total_entries);
 
-    // Compute average density for each event
-    for event in events.iter_mut() {
+    for (i, event) in events.iter_mut().enumerate() {
         let start = event.start.to_seconds();
         let end = event.end.to_seconds();
-        let density = crate::danmaku::average_density(&heatmap, start, end, window_secs);
-        event.popularity = density;
+        let dm_density = crate::danmaku::average_density(&heatmap, start, end, window_secs);
+        let ts_density = transcript_densities.get(i).copied().unwrap_or(0.0);
+        event.popularity = (dm_density + ts_density) / 2.0;
     }
 
-    // Sort by popularity descending, assign rank
+    assign_rank_and_sort(events);
+    Ok(())
+}
+
+/// 仅按字幕密度排序
+fn rank_events_by_transcript(
+    events: &mut Vec<Event>,
+    transcript_densities: &[f64],
+) {
+    for (i, event) in events.iter_mut().enumerate() {
+        event.popularity = transcript_densities.get(i).copied().unwrap_or(0.0);
+    }
+    assign_rank_and_sort(events);
+}
+
+/// 按 popularity 降序分配 rank，恢复时间序
+fn assign_rank_and_sort(events: &mut Vec<Event>) {
     events.sort_by(|a, b| {
         b.popularity
             .partial_cmp(&a.popularity)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-
     for (i, event) in events.iter_mut().enumerate() {
         event.rank = (i + 1) as u32;
     }
-
-    // Restore chronological order for output
     events.sort_by(|a, b| {
         a.start
             .to_seconds()
             .partial_cmp(&b.start.to_seconds())
             .unwrap()
     });
-
-    Ok(())
 }
 
 async fn process_with_llm(

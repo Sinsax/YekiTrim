@@ -104,9 +104,20 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
     if !sfx_data.is_empty() {
         tracing::info!("  -- SFX mix ({}) --", sfx_data.len());
+        // 检测视频音频响度，动态调整 SFX 音量
+        let loudness = measure_audio_loudness(&ta.to_string_lossy());
+        let sfx_adjust = loudness.map(|db| {
+            let factor = 10.0_f64.powf((-23.0 - db) / 20.0);
+            factor.clamp(0.2, 5.0)
+        }).unwrap_or(1.0);
+        if let Some(db) = loudness {
+            tracing::info!("  v audio loudness: {:.1} dB, SFX adjust: {:.2}x", db, sfx_adjust);
+        } else {
+            tracing::warn!("  v could not measure audio loudness, SFX adjustment disabled");
+        }
         let ma = project_path.join("_temp_audio_m.aac");
         let se: Vec<_> = sfx_data.iter().map(|sd| {
-            let vol = sd.volume.unwrap_or(config.sfx.volume);
+            let vol = (sd.volume.unwrap_or(config.sfx.volume) * sfx_adjust).clamp(0.0, 1.0);
             let f = project_path.join("sfx").join(&sd.file.replace("sfx/", ""));
             render::ffmpeg::SfxEvent { time: sd.time, file: f.to_string_lossy().to_string(), volume: vol, duration: sd.duration }
         }).filter(|e| Path::new(&e.file).exists()).collect();
@@ -428,6 +439,26 @@ pub fn cleanup(_project_path: &Path, temp_video: &Path, temp_audio: &Path) {
     for p in [temp_video, temp_audio] {
         std::fs::remove_file(p).ok();
     }
+}
+
+/// 用 ffmpeg volumedetect 检测音频响度，返回 mean_volume (dB)
+pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
+    let output = Command::new("ffmpeg")
+        .args(["-i", audio_path, "-af", "volumedetect", "-f", "null", "-"])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .output().ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        if let Some(val_str) = line.split("mean_volume: ").nth(1) {
+            if let Some(db_str) = val_str.trim().strip_suffix(" dB") {
+                if let Ok(db) = db_str.parse::<f64>() {
+                    return Some(db);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn print_final_stats(output: &str, start: std::time::Instant) {

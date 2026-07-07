@@ -1,3 +1,9 @@
 [workspace]
 members = ["crates/vtrim-core", "crates/vtrim-cli", "crates/vtrim-polish"]
 resolver = "2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
