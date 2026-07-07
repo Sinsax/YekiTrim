@@ -62,7 +62,7 @@ impl RenderServer {
     }
 
     pub fn build_html(project_path: &Path) -> String {
-        let config_path = project_path.join("config.toml");
+        let config_path = project_path.join("polish.toml");
         let mut cfg: serde_json::Value = std::fs::read_to_string(&config_path).ok()
             .and_then(|raw| toml::from_str(&raw).ok())
             .unwrap_or(serde_json::Value::Object(Default::default()));

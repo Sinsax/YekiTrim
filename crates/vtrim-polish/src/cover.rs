@@ -37,7 +37,7 @@ pub async fn cmd_cover_template(project_path: &Path, template: &str) -> anyhow::
         }
     }
     let toml_str = config.to_toml_commented()?;
-    std::fs::write(project_path.join("config.toml"), toml_str)?;
+    std::fs::write(project_path.join("polish.toml"), toml_str)?;
     tracing::info!("  ✓ [cover] preset: {}", template);
     Ok(())
 }
@@ -144,11 +144,11 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     let cc = &config.cover;
 
     // 首次运行时自动写入 [cover] 节
-    let raw_config = std::fs::read_to_string(project_path.join("config.toml")).unwrap_or_default();
+    let raw_config = std::fs::read_to_string(project_path.join("polish.toml")).unwrap_or_default();
     if !raw_config.contains("[cover]") {
         let toml_str = config.to_toml_commented()?;
-        std::fs::write(project_path.join("config.toml"), toml_str)?;
-        tracing::info!("  ✓ config.toml: [cover] section added");
+        std::fs::write(project_path.join("polish.toml"), toml_str)?;
+        tracing::info!("  ✓ polish.toml: [cover] section added");
     }
 
     // 背景图: 自定义 image 或 ffmpeg 截帧
@@ -223,11 +223,11 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
             .map(|s| s.to_string())
             .collect();
         if lines.len() > 1 {
-            // 写入 config.toml (仅首次)
+            // 写入 polish.toml (仅首次)
             let mut cfg = config.clone();
             cfg.cover.title_lines = lines.clone();
             let toml_str = cfg.to_toml_commented()?;
-            std::fs::write(project_path.join("config.toml"), toml_str)?;
+            std::fs::write(project_path.join("polish.toml"), toml_str)?;
         }
         lines
     };

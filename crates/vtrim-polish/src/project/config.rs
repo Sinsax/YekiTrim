@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// 完整项目文件 (config.toml)
+/// 完整项目文件 (polish.toml)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectFile {
@@ -16,8 +16,8 @@ pub struct ProjectFile {
     #[serde(default)]
     pub cover: CoverConfig,
 
-    /// 4. 关键词过滤 (从 config.toml 读取)
-    ///    LLM API 配置已分离到独立的 llm.toml
+    /// 4. 关键词过滤 (从 polish.toml 读取)
+    ///    LLM API 配置使用 .vtrim/llm.toml（与 vtrim 自身一致）
     #[serde(default)]
     pub filter: FilterConfig,
 
@@ -422,23 +422,6 @@ impl Default for CoverConfig {
             title_lines: Vec::new(),
         }
     }
-}
-
-// ===== LLM API 配置 =====
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LlmConfig {
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default = "default_llm_base_url")]
-    pub base_url: String,
-    #[serde(default = "default_llm_model")]
-    pub model: String,
-}
-fn default_llm_base_url() -> String { "https://api.openai.com/v1".into() }
-fn default_llm_model() -> String { "gpt-4o-mini".into() }
-impl Default for LlmConfig {
-    fn default() -> Self { Self { api_key: String::new(), base_url: default_llm_base_url(), model: default_llm_model() } }
 }
 
 // ===== 时间轴 =====
@@ -913,29 +896,7 @@ impl ProjectFile {
     }
 }
 
-/// 生成示例 llm.toml 内容
-pub fn example_llm_toml() -> String {
-    #[derive(Serialize)]
-    struct LlmFileSer {
-        llm: LlmConfig,
-    }
-    let raw = toml::to_string_pretty(&LlmFileSer { llm: LlmConfig::default() }).unwrap();
-    format!(
-        "# ============================================================\n\
-         # LLM API 配置 (独立配置文件)\n\
-         # ============================================================\n\
-         # api_key: 你的 API 密钥\n\
-         # base_url: API 地址 (默认 OpenAI)\n\
-         # model: 模型名称\n\
-         {raw}\n"
-    )
-}
 
-impl std::fmt::Display for LlmConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({})", self.model, self.base_url)
-    }
-}
 
 /// 将 segments/events 截断到指定时长 (防止 LLM 生成的 segment 超出视频长度)
 pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {

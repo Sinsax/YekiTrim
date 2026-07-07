@@ -1,9 +1,9 @@
 use std::path::Path;
 use super::ProjectFile;
 
-/// 从项目目录加载 config.toml
+/// 从项目目录加载 polish.toml
 pub fn load_project(project_path: &Path) -> anyhow::Result<ProjectFile> {
-    load_config_from(project_path, "config.toml")
+    load_config_from(project_path, "polish.toml")
 }
 
 /// 从项目目录加载指定名称的配置文件

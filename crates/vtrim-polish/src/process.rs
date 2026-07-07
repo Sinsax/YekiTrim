@@ -200,8 +200,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     }
 
     let toml_str = config.to_toml_commented()?;
-    std::fs::write(project_path.join("config.toml"), toml_str)?;
-    tracing::info!("  ✓ config.toml updated");
+    std::fs::write(project_path.join("polish.toml"), toml_str)?;
+    tracing::info!("  ✓ polish.toml updated");
     Ok(())
 }
 

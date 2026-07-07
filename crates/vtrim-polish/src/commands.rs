@@ -11,9 +11,9 @@ use crate::{llm, parse, project, render};
 // ============================================================
 pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
     tracing::info!("📁  Initializing project at: {}", path.display());
-    let config_path = path.join("config.toml");
+    let config_path = path.join("polish.toml");
     if config_path.exists() {
-        anyhow::bail!("config.toml already exists at {}", config_path.display());
+        anyhow::bail!("polish.toml already exists at {}", config_path.display());
     }
     std::fs::create_dir_all(path)?;
     std::fs::create_dir_all(path.join("data"))?;
@@ -46,13 +46,7 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     let toml_str = example.to_toml_commented()?;
     std::fs::write(&config_path, toml_str)?;
-    tracing::info!("  ✓ Created config.toml");
-
-    let llm_path = path.join("llm.toml");
-    if !llm_path.exists() {
-        std::fs::write(&llm_path, project::example_llm_toml())?;
-        tracing::info!("  ✓ Created llm.toml");
-    }
+    tracing::info!("  ✓ Created polish.toml");
 
     tracing::info!("  ✓ Created data/  (for parsed output)");
     tracing::info!("  ✓ Created sfx/   (for sound effects)");
@@ -65,7 +59,7 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     tracing::info!("");
     tracing::info!("Next steps:");
-    tracing::info!("  1. Edit llm.toml — add your LLM API key");
+    tracing::info!("  1. Edit .vtrim/llm.toml — add your LLM API key");
     tracing::info!("  2. Run: vtrim polish (full pipeline)");
     tracing::info!("  3. Run: vtrim polish --preview  (or vtrim polish -i <dir>)");
     Ok(())
@@ -170,13 +164,13 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
     });
     std::fs::write(data_dir.join("clip-meta.json"), serde_json::to_string_pretty(&meta)?)?;
 
-    // 更新 config.toml 的 project.name（从 clip.json title 同步）
+    // 更新 polish.toml 的 project.name（从 clip.json title 同步）
     if !title.is_empty() {
         let mut cfg = project::load_project(project_path)?;
         cfg.project.name = title.clone();
         let toml_str = cfg.to_toml_commented()?;
-        std::fs::write(project_path.join("config.toml"), toml_str)?;
-        tracing::info!("  ✓ config.toml: project.name ← {}", title);
+        std::fs::write(project_path.join("polish.toml"), toml_str)?;
+        tracing::info!("  ✓ polish.toml: project.name ← {}", title);
     }
 
     tracing::info!("\n✓ Parse complete. data/subtitles.json, data/danmaku.json, data/clip-meta.json");
@@ -259,9 +253,9 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     new_config.filter.highlight = hl_words;
 
     let toml_str = new_config.to_toml_commented()?;
-    std::fs::write(project_path.join("config.toml"), toml_str)?;
+    std::fs::write(project_path.join("polish.toml"), toml_str)?;
 
-    tracing::info!("\n✓ config.toml updated with LLM-generated segments and keywords");
+    tracing::info!("\n✓ polish.toml updated with LLM-generated segments and keywords");
     Ok(())
 }
 
@@ -339,8 +333,8 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
 pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("🧪  Play Test mode");
 
-    // 确定工作目录：有 config.toml 就用项目目录，否则创建 test_workspace/
-    let work = if project_path.join("config.toml").exists() {
+    // 确定工作目录：有 polish.toml 就用项目目录，否则创建 test_workspace/
+    let work = if project_path.join("polish.toml").exists() {
         tracing::info!("  📁 使用项目目录: {}", project_path.display());
         project_path.to_path_buf()
     } else {
@@ -357,7 +351,7 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
     };
 
     // 找视频源：项目配置已有 → 父目录 video_cut → 同目录 clip.mp4 → ffmpeg 生成
-    let _has_video = if project_path.join("config.toml").exists() {
+    let _has_video = if project_path.join("polish.toml").exists() {
         let cfg = project::load_project(project_path)?;
         let v = cfg.source.video.clone();
         let vp = if Path::new(&v).is_relative() {
@@ -428,7 +422,7 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
         serde_json::to_string_pretty(&meta)?)?;
     tracing::info!("  ✓ 测试字幕/弹幕/元数据已生成");
 
-    // —— 2. 生成 config.toml ——
+    // —— 2. 生成 polish.toml ——
     let cfg = r##"[project]
 name = "Play Test"
 output = "play-test.mp4"
@@ -530,9 +524,9 @@ name = "tag:highlight"
 type = "pulse"
 time = 14.0
 "##;
-    let cfg_path = work.join("config.toml");
+    let cfg_path = work.join("polish.toml");
     std::fs::write(&cfg_path, &cfg)?;
-    tracing::info!("  ✓ config.toml 已生成");
+    tracing::info!("  ✓ polish.toml 已生成");
 
     // —— 3. run process ——
     if let Err(e) = process::cmd_process(&work).await {
