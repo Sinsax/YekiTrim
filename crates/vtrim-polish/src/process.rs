@@ -106,11 +106,17 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                             None => true,
                         };
                         if needs_name {
-                            // irasu 下载后文件名为 {sanitized}_{n}.png
-                            let kw = kws.first().map(|s| s.as_str()).unwrap_or("");
-                            let stem = sanitize_irasu_name(kw);
-                            *name = Some(format!("{}_1", stem));
-                            tracing::info!("  ✓ irasu keyword「{}」→ name {}", kw, name.as_deref().unwrap_or_default());
+                            let irasu_dir = project_path.join("assets").join("irasu");
+                            let found_stem = kws.iter()
+                                .map(|k| sanitize_irasu_name(k))
+                                .find(|stem| {
+                                    let pattern = format!("{}_", stem);
+                                    std::fs::read_dir(&irasu_dir).ok()
+                                        .is_some_and(|e| e.flatten().any(|f| f.file_name().to_string_lossy().starts_with(&pattern)))
+                                })
+                                .unwrap_or_else(|| sanitize_irasu_name(kws.first().map(|s| s.as_str()).unwrap_or("")));
+                            *name = Some(format!("{}_1", found_stem));
+                            tracing::info!("  ✓ irasu → name {} (keywords={})", found_stem, kws.join(", "));
                         }
                     }
                     _ => {}

@@ -205,6 +205,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         "top" => format!("linear-gradient(180deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
         "bottom" => format!("linear-gradient(0deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
         "radial" => format!("radial-gradient(ellipse at 30% 50%,{} 0%,{} 60%,transparent 100%)", grad_from, grad_to),
+        "none" => "none".into(),
         _ => format!("linear-gradient(90deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
     };
 

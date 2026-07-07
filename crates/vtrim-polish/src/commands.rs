@@ -295,6 +295,20 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
     // 启动 cover server
     let cover_url = if show_cover {
         let resolved = rendering::resolve_paths(project_path, &config);
+        let cover_image = project_path.join("_cover_frame.jpg");
+        if !cover_image.exists() {
+            let video_path = &resolved.video;
+            let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+            let frame_time = (duration * config.cover.frame_pos).max(0.1);
+            if let Ok(frame_data) = std::process::Command::new("ffmpeg")
+                .args(["-ss", &frame_time.to_string(), "-i", video_path,
+                       "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+                .output().map(|o| o.stdout)
+            {
+                if !frame_data.is_empty() { std::fs::write(&cover_image, &frame_data).ok(); }
+            }
+        }
         let html = cover::build_cover_html(project_path, &config, &resolved);
         let port = render::server::start_file_server(project_path.to_path_buf(), Some(html)).await?;
         let url = format!("http://127.0.0.1:{}/", port);
