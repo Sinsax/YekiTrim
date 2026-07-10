@@ -168,11 +168,10 @@ async fn resolve_image_urls(
     client: &reqwest::Client,
 ) -> Vec<String> {
     let index = load_index(dest_dir);
-    if let Some(cached) = index.get(keyword) {
-        if !cached.is_empty() {
+    if let Some(cached) = index.get(keyword)
+        && !cached.is_empty() {
             return cached.clone();
         }
-    }
 
     let urls = fetch_entries(keyword, client).await;
     if urls.is_empty() {

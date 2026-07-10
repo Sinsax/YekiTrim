@@ -26,7 +26,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     let duration = std::fs::read_to_string(project_path.join("data").join("clip-meta.json")).ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .and_then(|v| v.get("duration").and_then(|d| d.as_f64()))
-        .or_else(|| config.duration)
+        .or(config.duration)
         .unwrap_or(0.0);
     if duration <= 0.0 { anyhow::bail!("Video duration unknown"); }
     tracing::info!("  Duration: {:.1}s", duration);
@@ -118,7 +118,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         let ma = project_path.join("_temp_audio_m.aac");
         let se: Vec<_> = sfx_data.iter().map(|sd| {
             let vol = (sd.volume.unwrap_or(config.sfx.volume) * sfx_adjust).clamp(0.0, 1.0);
-            let f = project_path.join("sfx").join(&sd.file.replace("sfx/", ""));
+            let f = project_path.join("sfx").join(sd.file.replace("sfx/", ""));
             render::ffmpeg::SfxEvent { time: sd.time, file: f.to_string_lossy().to_string(), volume: vol, duration: sd.duration }
         }).filter(|e| Path::new(&e.file).exists()).collect();
         if !se.is_empty() {
@@ -145,6 +145,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 }
 
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_chunk_sync(
     url: &str,
     start_sec: f64,
@@ -254,9 +255,8 @@ pub fn render_chunk_sync(
 
         let err_val = tab.evaluate("window.__CAPTURE_ERROR", false)?;
         let err = err_val.value.and_then(|v| v.as_str().map(|s| s.to_string()));
-        if let Some(e) = err {
-            if !e.is_empty() { anyhow::bail!("Render error: {}", e); }
-        }
+        if let Some(e) = err
+            && !e.is_empty() { anyhow::bail!("Render error: {}", e); }
 
         let pct_val = tab.evaluate("window.__CAPTURE_PROGRESS || '0'", false)?;
         let pct = pct_val.value.and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
@@ -318,8 +318,8 @@ pub async fn export_sound_data(url: &str) -> anyhow::Result<Vec<SoundEvent>> {
     // 等待 __TIMELINE 和 __SOUND_DATA
     for _ in 0..50 {
         let has_data = tab.evaluate("typeof window.__SOUND_DATA !== 'undefined'", false);
-        if let Ok(val) = has_data {
-            if val.value.map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false) {
+        if let Ok(val) = has_data
+            && val.value.map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false) {
                 let result = tab.evaluate("JSON.stringify(window.__SOUND_DATA||[])", false)?;
                 let json = result.value
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
@@ -328,7 +328,6 @@ pub async fn export_sound_data(url: &str) -> anyhow::Result<Vec<SoundEvent>> {
                 std::mem::drop(browser);
                 return Ok(data);
             }
-        }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     std::mem::drop(browser);
@@ -450,13 +449,11 @@ pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
         .output().ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     for line in stderr.lines() {
-        if let Some(val_str) = line.split("mean_volume: ").nth(1) {
-            if let Some(db_str) = val_str.trim().strip_suffix(" dB") {
-                if let Ok(db) = db_str.parse::<f64>() {
+        if let Some(val_str) = line.split("mean_volume: ").nth(1)
+            && let Some(db_str) = val_str.trim().strip_suffix(" dB")
+                && let Ok(db) = db_str.parse::<f64>() {
                     return Some(db);
                 }
-            }
-        }
     }
     None
 }

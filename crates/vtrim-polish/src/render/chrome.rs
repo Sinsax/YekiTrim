@@ -41,11 +41,10 @@ impl ChromeRenderer {
                 "typeof window.__TIMELINE !== 'undefined' && window.__TIMELINE !== null",
                 false,
             );
-            if let Ok(val) = result {
-                if val.value.map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false) {
+            if let Ok(val) = result
+                && val.value.map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false) {
                     return Ok(());
                 }
-            }
 
             if i == 15 || i == 40 {
                 let state = tab.evaluate(

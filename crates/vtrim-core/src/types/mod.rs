@@ -63,25 +63,6 @@ pub struct TranscriptSegment {
     pub confidence: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawSegment {
-    pub index: usize,
-    pub start: Timestamp,
-    pub end: Timestamp,
-    pub text: String,
-    pub silence_before: f64,
-    pub speech_density: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LLMEvent {
-    pub start: String,
-    pub end: String,
-    pub label: String,
-    pub summary: String,
-    pub event_type: EventType,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EventType {
     #[serde(rename = "intro")]

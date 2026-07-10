@@ -90,10 +90,9 @@ pub fn build_prompt(subtitles: &[Subtitle], event_type: &str) -> String {
 
 fn extract_json_array(response: &str) -> anyhow::Result<String> {
     let trimmed = response.trim();
-    if let Some(start) = trimmed.find('[') {
-        if let Some(end) = trimmed.rfind(']') {
+    if let Some(start) = trimmed.find('[')
+        && let Some(end) = trimmed.rfind(']') {
             return Ok(trimmed[start..=end].to_string());
         }
-    }
     anyhow::bail!("No JSON array found:\n{}", &trimmed[..200.min(trimmed.len())])
 }

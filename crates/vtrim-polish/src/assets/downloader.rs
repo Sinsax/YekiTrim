@@ -154,8 +154,8 @@ impl AssetDownloader {
 
         // 动态扫描 irasu 目录
         let mut irasu_map = serde_json::Map::new();
-        if irasu_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&irasu_dir) {
+        if irasu_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&irasu_dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
                         let stem = Path::new(name).file_stem()
@@ -167,7 +167,6 @@ impl AssetDownloader {
                     }
                 }
             }
-        }
 
         let has_local = emoji_dir.exists() && std::fs::read_dir(&emoji_dir).map(|mut e| e.any(|f| f.is_ok())).unwrap_or(false);
         serde_json::json!({
@@ -202,11 +201,10 @@ pub fn collect_sfx_ids(segments: &[Segment]) -> Vec<String> {
                 }
                 // 其他事件: sfx 字段
                 _ => {
-                    if let Some(sfx) = extract_sfx_field(event) {
-                        if !sfx.is_empty() && !ids.contains(sfx) {
+                    if let Some(sfx) = extract_sfx_field(event)
+                        && !sfx.is_empty() && !ids.contains(sfx) {
                             ids.push(sfx.clone());
                         }
-                    }
                 }
             }
         }

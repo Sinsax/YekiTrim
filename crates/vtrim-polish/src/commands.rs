@@ -23,9 +23,9 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     // 自动检测 clip.json (来自 vtrim cut)
     let clip_json = path.join("clip.json");
-    if clip_json.exists() {
-        if let Ok(raw) = std::fs::read_to_string(&clip_json) {
-            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) {
+    if clip_json.exists()
+        && let Ok(raw) = std::fs::read_to_string(&clip_json)
+            && let Ok(meta) = serde_json::from_str::<serde_json::Value>(&raw) {
                 if let Some(title) = meta.get("title").and_then(|v| v.as_str()) {
                     example.project.name = title.to_string();
                     tracing::info!("  ✓ Detected title: {}", title);
@@ -41,8 +41,6 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
                 example.source.metadata = "clip.json".into();
                 tracing::info!("  ✓ Auto-set source paths (clip.mp4, clip.srt, clip.dm.srt)");
             }
-        }
-    }
 
     let toml_str = example.to_toml_commented()?;
     std::fs::write(&config_path, toml_str)?;
@@ -305,9 +303,7 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
                        "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
                 .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
                 .output().map(|o| o.stdout)
-            {
-                if !frame_data.is_empty() { std::fs::write(&cover_image, &frame_data).ok(); }
-            }
+                && !frame_data.is_empty() { std::fs::write(&cover_image, &frame_data).ok(); }
         }
         let html = cover::build_cover_html(project_path, &config, &resolved);
         let port = render::server::start_file_server(project_path.to_path_buf(), Some(html)).await?;
@@ -539,7 +535,7 @@ type = "pulse"
 time = 14.0
 "##;
     let cfg_path = work.join("polish.toml");
-    std::fs::write(&cfg_path, &cfg)?;
+    std::fs::write(&cfg_path, cfg)?;
     tracing::info!("  ✓ polish.toml 已生成");
 
     // —— 3. run process ——

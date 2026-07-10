@@ -65,7 +65,7 @@ pub async fn correct_transcript(
     // 第一步：预合并短段，让 LLM 能看⻅更多上下文
     let (merged, merge_groups) = merge_short_segments(segments);
     let total = merged.len();
-    let total_batches = (total + BATCH_SIZE - 1) / BATCH_SIZE;
+    let total_batches = total.div_ceil(BATCH_SIZE);
     let llm = Arc::new(llm.clone());
     let correct = Arc::new(correct.clone());
     let danmaku = Arc::new(danmaku.to_vec());
@@ -298,11 +298,10 @@ async fn send_batch(
 
     // 对未返回的条目保留原文
     for (i, text) in corrected.iter_mut().enumerate() {
-        if text.is_empty() || text == "..." {
-            if i < segments.len() {
+        if (text.is_empty() || text == "...")
+            && i < segments.len() {
                 text.clone_from(&segments[i].text);
             }
-        }
     }
 
     Ok(corrected)
@@ -345,7 +344,7 @@ fn parse_json_result(content: &str, offset: usize, expected: usize) -> Result<Ve
         let text = item.get("text").and_then(|v| v.as_str());
 
         if let (Some(idx), Some(text)) = (idx, text) {
-            if idx >= offset + 1 && idx <= offset + expected {
+            if idx > offset && idx <= offset + expected {
                 result[idx - offset - 1] = text.to_string();
             }
         }

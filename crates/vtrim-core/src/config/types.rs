@@ -13,7 +13,7 @@ fn default_max_tokens() -> u32 {
     65536
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectConfig {
     #[serde(default)]
     pub input_file: Option<String>,
@@ -25,21 +25,6 @@ pub struct ProjectConfig {
     pub audio_file: Option<String>,
     #[serde(default)]
     pub events_file: Option<String>,
-    #[serde(default)]
-    pub current_stage: u32,
-}
-
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            input_file: None,
-            danmaku_file: None,
-            transcript_file: None,
-            audio_file: None,
-            events_file: None,
-            current_stage: 0,
-        }
-    }
 }
 
 impl ProjectConfig {
@@ -240,6 +225,7 @@ impl Default for CuttingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CorrectConfig {
     #[serde(default)]
     pub system_prompt: String,
@@ -247,11 +233,3 @@ pub struct CorrectConfig {
     pub prompt: String,
 }
 
-impl Default for CorrectConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: String::new(),
-            prompt: String::new(),
-        }
-    }
-}

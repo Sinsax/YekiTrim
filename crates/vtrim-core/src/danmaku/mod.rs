@@ -85,8 +85,8 @@ pub fn average_density(heatmap: &[DensityWindow], start: f64, end: f64, window_s
 
     let mut total = 0.0;
     let mut count = 0u32;
-    for i in start_idx..=end_idx {
-        total += heatmap[i].density;
+    for w in heatmap.iter().take(end_idx + 1).skip(start_idx) {
+        total += w.density;
         count += 1;
     }
 

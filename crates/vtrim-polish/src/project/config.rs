@@ -66,6 +66,7 @@ pub struct ProjectMeta {
 // ===== 样式根 =====
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Default)]
 pub struct StyleRoot {
     #[serde(default)]
     pub subtitle: SubtitleStyle,
@@ -73,15 +74,11 @@ pub struct StyleRoot {
     pub danmaku: DanmakuStyle,
 }
 
-impl Default for StyleRoot {
-    fn default() -> Self {
-        Self { subtitle: Default::default(), danmaku: Default::default() }
-    }
-}
 
 // ===== 关键词过滤 =====
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Default)]
 pub struct FilterConfig {
     #[serde(default)]
     pub danmaku: Vec<String>,
@@ -89,11 +86,6 @@ pub struct FilterConfig {
     pub highlight: Vec<String>,
 }
 
-impl Default for FilterConfig {
-    fn default() -> Self {
-        Self { danmaku: vec![], highlight: vec![] }
-    }
-}
 
 fn default_created() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
@@ -485,12 +477,12 @@ impl<'de> Deserialize<'de> for Sticker {
 }
 
 fn pct_or_px_1920(v: &serde_json::Value) -> String {
-    if let Some(s) = v.as_str() { if s.contains('%') { return s.into(); } }
+    if let Some(s) = v.as_str() && s.contains('%') { return s.into(); }
     if let Some(f) = v.as_f64() { return format!("{:.0}%", f / 1920.0 * 100.0); }
     "30%".into()
 }
 fn pct_or_px_1080(v: &serde_json::Value) -> String {
-    if let Some(s) = v.as_str() { if s.contains('%') { return s.into(); } }
+    if let Some(s) = v.as_str() && s.contains('%') { return s.into(); }
     if let Some(f) = v.as_f64() { return format!("{:.0}%", f / 1080.0 * 100.0); }
     "30%".into()
 }
@@ -653,8 +645,7 @@ impl ProjectFile {
                 .and_then(|s| s.rsplit_once('.'))
                 .filter(|(_, key)| *key == "top_left" || *key == "bottom_right")
                 .map(|(parent, _)| parent)
-            {
-                if i + 2 < lines.len() {
+                && i + 2 < lines.len() {
                     let x_line = lines[i+1].trim().to_string();
                     let y_line = lines[i+2].trim().to_string();
                     if x_line.starts_with("x = ") && y_line.starts_with("y = ") {
@@ -671,7 +662,6 @@ impl ProjectFile {
                         }
                     }
                 }
-            }
             i += 1;
         }
 

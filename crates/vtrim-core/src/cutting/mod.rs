@@ -327,7 +327,7 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Opti
         prev_end = *e;
     }
     keep_ranges.push((prev_end, None));
-    keep_ranges.retain(|&(start, end)| end.map_or(true, |e| e > start));
+    keep_ranges.retain(|&(start, end)| end.is_none_or(|e| e > start));
 
     // 前后留 0.3s 缓冲，让切除更自然
     const PAD: f64 = 0.3;
@@ -353,7 +353,7 @@ pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Opti
     keep_ranges = merged;
 
     // 丢弃过短的保留段 (< 1s)
-    keep_ranges.retain(|&(s, e)| e.map_or(true, |e| e - s > 1.0));
+    keep_ranges.retain(|&(s, e)| e.is_none_or(|e| e - s > 1.0));
 
     let mut filter_parts: Vec<String> = Vec::new();
     let mut labels: Vec<String> = Vec::new();

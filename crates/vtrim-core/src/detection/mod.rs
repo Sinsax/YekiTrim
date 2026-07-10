@@ -102,7 +102,7 @@ fn compute_transcript_density(
 
 /// 按弹幕密度 + 字幕密度综合排序
 fn rank_events(
-    events: &mut Vec<Event>,
+    events: &mut [Event],
     danmaku_path: &std::path::Path,
     config: &crate::config::DetectionConfig,
     transcript_densities: &[f64],
@@ -136,7 +136,7 @@ fn rank_events(
 
 /// 仅按字幕密度排序
 fn rank_events_by_transcript(
-    events: &mut Vec<Event>,
+    events: &mut [Event],
     transcript_densities: &[f64],
 ) {
     for (i, event) in events.iter_mut().enumerate() {
@@ -146,7 +146,7 @@ fn rank_events_by_transcript(
 }
 
 /// 按 popularity 降序分配 rank，恢复时间序
-fn assign_rank_and_sort(events: &mut Vec<Event>) {
+fn assign_rank_and_sort(events: &mut [Event]) {
     events.sort_by(|a, b| {
         b.popularity
             .partial_cmp(&a.popularity)

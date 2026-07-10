@@ -203,9 +203,9 @@ async fn main() -> anyhow::Result<()> {
             let global_path = vtrim_core::path::vtrim_home().join("config.toml");
             let mut body = if global_path.exists() {
                 tracing::info!("从全局配置复制: {}", global_path.display());
-                let content = std::fs::read_to_string(&global_path)?
-                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "");
-                content
+                
+                std::fs::read_to_string(&global_path)?
+                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
             } else {
                 GLOBAL_CONFIG_TOML.to_string()
                     .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")

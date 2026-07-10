@@ -109,7 +109,7 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
     let title_lines: Vec<String> = if !cc.title_lines.is_empty() {
         cc.title_lines.clone()
     } else {
-        clean.split(|c: char| matches!(c, '，' | '。' | '！' | '？' | '、' | ',' | '.' | '!'))
+        clean.split(['，', '。', '！', '？', '、', ',', '.', '!'])
             .map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
     };
     let title_html = title_lines.iter().map(|line| {
@@ -218,7 +218,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         cc.title_lines.clone()
     } else {
         let lines: Vec<String> = clean
-            .split(|c: char| matches!(c, '，' | '。' | '！' | '？' | '、' | ',' | '.' | '!'))
+            .split(['，', '。', '！', '？', '、', ',', '.', '!'])
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())

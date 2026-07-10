@@ -96,13 +96,11 @@ fn extract_color(raw: &str) -> String {
 
 fn extract_y(raw: &str) -> f64 {
     let re = regex_lite::Regex::new(r"\\move\((\d+),(\d+),(-?\d+),(-?\d+)\)").ok();
-    if let Some(caps) = re.and_then(|r| r.captures(raw)) {
-        if let Some(y) = caps.get(2) {
-            if let Ok(val) = y.as_str().parse::<f64>() {
+    if let Some(caps) = re.and_then(|r| r.captures(raw))
+        && let Some(y) = caps.get(2)
+            && let Ok(val) = y.as_str().parse::<f64>() {
                 return val.clamp(50.0, 1500.0);
             }
-        }
-    }
     400.0
 }
 
@@ -112,7 +110,7 @@ fn remove_tags(raw: &str) -> String {
 }
 
 fn parse_time(caps: &regex_lite::Captures, offset: usize) -> f64 {
-    let h: f64 = caps[offset + 0].parse().unwrap_or(0.0);
+    let h: f64 = caps[offset].parse().unwrap_or(0.0);
     let m: f64 = caps[offset + 1].parse().unwrap_or(0.0);
     let s: f64 = caps[offset + 2].parse().unwrap_or(0.0);
     let ms: f64 = caps[offset + 3].parse().unwrap_or(0.0);

@@ -79,7 +79,7 @@ fn build_prompt(segments: &[TranscriptSegment], config: &DetectionConfig) -> Str
     } else {
         &config.prompt_template
     };
-    template.replace("{segments}", &format_segments(segments).trim())
+    template.replace("{segments}", format_segments(segments).trim())
 }
 
 fn parse_json(text: &str) -> Result<serde_json::Value> {
@@ -191,11 +191,9 @@ pub fn build_request_body(llm: &LlmConfig, messages: serde_json::Value) -> serde
         body["model"] = serde_json::json!(llm.model);
     }
     if let Some(ref extra) = llm.extra_params {
-        if let Ok(extra_val) = serde_json::to_value(extra) {
-            if let serde_json::Value::Object(extra_map) = extra_val {
-                for (k, v) in extra_map {
-                    body[k] = v;
-                }
+        if let Ok(serde_json::Value::Object(extra_map)) = serde_json::to_value(extra) {
+            for (k, v) in extra_map {
+                body[k] = v;
             }
         }
     }

@@ -90,15 +90,14 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                             Some(n) => n.is_empty() || n == "auto",
                             None => true,
                         };
-                        if needs_name {
-                            if let Some(ref cat) = catalog {
+                        if needs_name
+                            && let Some(ref cat) = catalog {
                                 let results = cat.search(kw, 1);
                                 if let Some(cp) = results.first() {
                                     *name = Some(cp.clone());
                                     tracing::info!("  ✓ emoji keyword「{}」→ codepoint {}", kw, cp);
                             }
                         }
-                    }
                 }
                     crate::project::Event::Irasu { keywords: Some(kws), name, .. } if !kws.is_empty() => {
                         let needs_name = match name {
@@ -281,11 +280,10 @@ pub async fn cmd_download(project_path: &Path) -> anyhow::Result<()> {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
 
     let mut total_errors = 0;
-    if let Some(cfg) = project::load_project(project_path).ok() {
-        if !cfg.segments.is_empty() {
+    if let Ok(cfg) = project::load_project(project_path)
+        && !cfg.segments.is_empty() {
             total_errors += download_keyword_assets(&downloader, &cfg).await;
         }
-    }
 
     if total_errors > 0 {
         tracing::info!("  ⚠ {} download errors", total_errors);
@@ -335,14 +333,13 @@ pub async fn download_keyword_assets(downloader: &assets::downloader::AssetDownl
 pub async fn ensure_assets(project_path: &Path) {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
 
-    if let Ok(config) = project::load_project(project_path) {
-        if !config.segments.is_empty() {
+    if let Ok(config) = project::load_project(project_path)
+        && !config.segments.is_empty() {
             let total_errors = download_keyword_assets(&downloader, &config).await;
             if total_errors > 0 {
                 tracing::info!("  ⚠ {} download errors (will use CDN fallback where available)", total_errors);
             }
         }
-    }
 }
 
 // ============================================================

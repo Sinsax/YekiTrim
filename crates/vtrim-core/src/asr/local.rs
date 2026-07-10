@@ -167,7 +167,7 @@ impl MappedWave {
             }
             data_start += 8 + chunk_size;
             // RIFF 要求 sub-chunk 按 WORD 对齐
-            if chunk_size % 2 != 0 {
+            if !chunk_size.is_multiple_of(2) {
                 data_start += 1;
             }
         }
@@ -494,12 +494,12 @@ fn audio_duration_estimate(timestamps: &[f64]) -> f64 {
         return 0.5;
     }
     let gaps: Vec<f64> = timestamps.windows(2).map(|w| w[1] - w[0]).collect();
-    let median = {
+    
+    {
         let mut sorted = gaps.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted[sorted.len() / 2]
-    };
-    median
+    }
 }
 
 pub fn ensure_ready(cfg: &AsrConfig) -> Result<()> {

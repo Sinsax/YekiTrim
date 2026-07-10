@@ -97,13 +97,8 @@ max_speech_duration = 20.0
 
 [detection]
 danmaku_window_secs = 10
-silence_threshold_secs = 3.0
-min_segment_secs = 120
-max_segment_secs = 900
 
 [cutting]
-preserve_source = true
-max_parallel = 4
 output_dir = "./output"
 overwrite = false
 ```
@@ -117,19 +112,18 @@ chunk_overlap = 10.0         # 块间重叠秒数
 segment_gap = 0.6            # 段间静音阈值(秒)，超过此间隔才切为两条字幕
 separation = "none"          # 人声分离: none / spleeter
 
-[detection.llm]
-api_key = ""
-api_base = ""                # 留空=OpenAI
-model = "gpt-4o-mini"
-temperature = 0.1
-max_tokens = 16384
-batch_size = 25
-batch_overlap = 3
+[detection]
+# 弹幕密度统计窗口(秒)
+danmaku_window_secs = 10
+
+[cutting]
+output_dir = "./output"
+overwrite = false
 ```
 
 merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 
-**配置默认值 bug**: `Config::default()` 用 `toml::from_str("")` 初始化，嵌套 struct 的 `Default` derive 给零值而非 serde 字段级默认值。所有配置类型已手动实现 `Default`，但新增字段时必须手动加否则 merge 逻辑出错。
+**配置默认值注意事项**: 所有配置类型必须手动实现 `Default`（而非 `#[derive(Default)]`）以确保 serde 默认值与 Rust 默认值一致。`Config::default()` 用 `toml::from_str("")` 初始化，依赖各字段的 `#[serde(default)]` 来调用正确的 `Default` impl。新增字段时必须同时加 `Default` impl + `merge()` 条件。
 
 ## 各阶段 I/O
 
@@ -172,11 +166,6 @@ cargo run -- status            # 查看当前进度
 ```
 
 前置条件: `ffmpeg` + `ffprobe` 在 PATH 中。
-
-## 未使用的配置字段
-
-- `cutting.preserve_source` — Cutter 用硬件编码重编码，此字段无效
-- `cutting.max_parallel` — Cutter 单线程，忽略此值
 
 ### 新增配置字段步骤
 

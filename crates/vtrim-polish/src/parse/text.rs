@@ -11,7 +11,7 @@ pub fn correct_text(text: &str, corrections: &[(String, String)]) -> String {
 pub fn apply_highlights(text: &str, highlight_words: &[String]) -> String {
     // 长词优先
     let mut sorted: Vec<&String> = highlight_words.iter().collect();
-    sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
     let mut result = text.to_string();
     let mut count = 0;

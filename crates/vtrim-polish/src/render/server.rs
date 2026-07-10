@@ -8,17 +8,15 @@ const INDEX_HTML: &str = include_str!("../../templates/index.html");
 pub fn build_irasu_map(project_path: &Path) -> serde_json::Map<String, serde_json::Value> {
     let irasu_dir = project_path.join("assets").join("irasu");
     let mut map = serde_json::Map::new();
-    if irasu_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&irasu_dir) {
+    if irasu_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&irasu_dir) {
             for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) {
+                if let Some(name) = entry.file_name().to_str()
+                    && let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) {
                         map.insert(stem.to_string(), serde_json::Value::String(format!("/assets/irasu/{}", name)));
                     }
-                }
             }
         }
-    }
     map
 }
 
