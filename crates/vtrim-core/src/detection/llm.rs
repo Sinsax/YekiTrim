@@ -82,7 +82,7 @@ fn build_prompt(segments: &[TranscriptSegment], config: &DetectionConfig) -> Str
     template.replace("{segments}", format_segments(segments).trim())
 }
 
-fn parse_json(text: &str) -> Result<serde_json::Value> {
+pub fn parse_json(text: &str) -> Result<serde_json::Value> {
     let text = text.trim();
 
     let json_str = if let Some(pos) = text.find("```json") {

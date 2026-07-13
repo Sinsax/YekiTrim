@@ -34,11 +34,7 @@ pub enum Command {
     },
 
     /// 下载 sherpa-onnx binary + 模型到 .vtrim/
-    DownloadModels {
-        /// 模型类型 (已忽略，仅下载 sensevoice)
-        #[arg(long, default_value = "sensevoice")]
-        model: String,
-    },
+    Download,
 
     /// 配置管理
     #[command(subcommand)]
@@ -76,7 +72,7 @@ pub enum Command {
     },
 
     /// 事件检测 (Stage 3)
-    DetectEvents {
+    Detect {
         /// 转录结果 JSON 文件 (默认自动从输出目录发现)
         #[arg(short, long)]
         transcript: Option<PathBuf>,
@@ -107,17 +103,13 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// 指定运行阶段 (逗号分隔)
-        #[arg(long, value_delimiter = ',', default_value = "audio,transcribe,detect,cut")]
-        stages: Vec<String>,
-
         /// 仅分析不剪切（运行到 detect 为止）
         #[arg(long)]
         dry_run: bool,
     },
 
     /// 移除已输出视频中的长静音段（重编码，输出到输入文件同目录）
-    SilenceRemove {
+    Silence {
         /// 要处理的视频文件（默认扫描 output/clips/）
         #[arg(required = false)]
         files: Vec<PathBuf>,
@@ -126,18 +118,11 @@ pub enum Command {
         #[arg(long, default_value_t = 2.0)]
         duration: f64,
 
+        /// 噪声门限 dB (越低越敏感，默认 -30)
+        #[arg(long)]
+        threshold: Option<f64>,
+
         /// 输出目录 (默认输出到输入文件同目录)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-
-    /// 测试 LLM 连接（返回完整 API response body）
-    LlmTest {
-        /// 测试提示词（默认: 你好，请用一句话介绍你自己。）
-        #[arg(short, long)]
-        prompt: Option<String>,
-
-        /// 输出文件路径（默认: llm_test_response.json）
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -148,9 +133,6 @@ pub enum Command {
 
     /// 显示当前处理进度
     Status,
-
-    /// 显示版本信息
-    Version,
 }
 
 #[derive(Subcommand)]

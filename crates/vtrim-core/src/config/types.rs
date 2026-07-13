@@ -129,6 +129,8 @@ pub struct AsrConfig {
     pub provider: String,
     #[serde(default = "default_asr_language")]
     pub language: String,
+    #[serde(default)]
+    pub vad: VadConfig,
 }
 
 fn default_asr_language() -> String { "zh".into() }
@@ -149,6 +151,7 @@ impl Default for AsrConfig {
             llm_correct: None,
             provider: String::new(),
             language: default_asr_language(),
+            vad: VadConfig::default(),
         }
     }
 }
@@ -213,13 +216,46 @@ pub struct CuttingConfig {
     pub output_dir: String,
     #[serde(default)]
     pub overwrite: Option<bool>,
+    #[serde(default = "default_silence_noise_db")]
+    pub silence_noise_db: f64,
 }
+
+fn default_silence_noise_db() -> f64 { -30.0 }
 
 impl Default for CuttingConfig {
     fn default() -> Self {
         Self {
             output_dir: default_output_dir(),
             overwrite: None,
+            silence_noise_db: default_silence_noise_db(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VadConfig {
+    #[serde(default = "default_vad_threshold")]
+    pub threshold: f64,
+    #[serde(default = "default_vad_min_silence")]
+    pub min_silence_duration: f64,
+    #[serde(default = "default_vad_min_speech")]
+    pub min_speech_duration: f64,
+    #[serde(default = "default_vad_max_speech")]
+    pub max_speech_duration: f64,
+}
+
+fn default_vad_threshold() -> f64 { 0.5 }
+fn default_vad_min_silence() -> f64 { 0.5 }
+fn default_vad_min_speech() -> f64 { 0.25 }
+fn default_vad_max_speech() -> f64 { 20.0 }
+
+impl Default for VadConfig {
+    fn default() -> Self {
+        Self {
+            threshold: default_vad_threshold(),
+            min_silence_duration: default_vad_min_silence(),
+            min_speech_duration: default_vad_min_speech(),
+            max_speech_duration: default_vad_max_speech(),
         }
     }
 }

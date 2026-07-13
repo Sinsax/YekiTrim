@@ -27,6 +27,16 @@ segment_gap = 1.0
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 
+[asr.vad]
+# VAD 检测门限 (0-1, 越高越严格)
+threshold = 0.5
+# 最小静音时长(秒)，超过此长度才切分
+min_silence_duration = 0.5
+# 最小语音段时长(秒)
+min_speech_duration = 0.25
+# 最大语音段时长(秒)，超过则强制切分
+max_speech_duration = 20.0
+
 [correct]
 # 订正 system_prompt（修改此处覆盖内建默认）
 system_prompt = "{{CORRECT_SYSTEM_PROMPT}}"
@@ -48,6 +58,8 @@ prompt_template = "{{DETECT_USER_PROMPT}}"
 output_dir = "./output"
 # 是否覆盖已有文件
 overwrite = false
+# 静音检测噪声门限 (dB)，越低越敏感
+silence_noise_db = -30
 "#;
 
 const LLM_CONFIG_TOML: &str = r#"# V-Trim LLM 配置 — 独立于工程配置
@@ -264,8 +276,8 @@ async fn main() -> anyhow::Result<()> {
                 ("input_file", "输入视频文件路径"),
                 ("danmaku_file", "弹幕文件路径"),
                 ("transcript_file", "转写文件路径 (由 transcribe 写入)"),
-                ("audio_file", "音频文件路径 (由 extract-audio 写入)"),
-                ("events_file", "事件文件路径 (由 detect-events 写入)"),
+                ("audio_file", "音频文件路径 (由 extract 写入)"),
+                ("events_file", "事件文件路径 (由 detect 写入)"),
             ];
             for (key, comment) in &comments {
                 let line = format!("{} = ", key);
@@ -302,7 +314,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Process {
             input,
             output: output_dir,
-            stages: _stages,
             dry_run,
         } => {
             let cfg = load_cfg(global_config)?;
@@ -441,7 +452,7 @@ async fn main() -> anyhow::Result<()> {
             runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
 
             runner.run(&mut ctx).await?;
-            // 保存转写文件路径到配置，供 detect-events 自动发现
+            // 保存转写文件路径到配置，供 detect 自动发现
             config::save_transcript_path(
                 &ctx.output_dir
                     .join("video.srt")
@@ -450,7 +461,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("语音转文字完成");
         }
 
-        Command::DetectEvents { transcript } => {
+        Command::Detect { transcript } => {
             let cfg = load_cfg(global_config)?;
             let output_dir = resolve_output(&cfg, &None);
             let current = cfg.project.current_stage(&output_dir);
@@ -545,7 +556,7 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "未找到事件 JSON 文件, 请通过 --events 指定或先运行 detect-events"
+                        "未找到事件 JSON 文件, 请通过 --events 指定或先运行 detect"
                     )
                 })?;
 
@@ -634,7 +645,9 @@ async fn main() -> anyhow::Result<()> {
             }
         },
 
-        Command::SilenceRemove { files, duration, output } => {
+        Command::Silence { files, duration, threshold, output } => {
+            let cfg = load_cfg(global_config)?;
+            let noise_db = threshold.unwrap_or(cfg.cutting.silence_noise_db);
             let clips_dir = std::env::current_dir()
                 .unwrap_or_default()
                 .join("output")
@@ -682,7 +695,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("[{}/{}] {} → {}", i + 1, targets.len(), input.display(), output_path.display());
                 let srt_path = input.with_extension("srt");
                 let srt_opt = if srt_path.exists() { Some(srt_path.as_path()) } else { None };
-                let segments = vtrim_core::cutting::remove_silence(input, &output_path, *duration, srt_opt)?;
+                let segments = vtrim_core::cutting::remove_silence(input, &output_path, *duration, srt_opt, noise_db)?;
 
                 if srt_path.exists() {
                     let out_srt = output_path.with_extension("srt");
@@ -702,26 +715,9 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("静音移除完成!");
         }
 
-        Command::DownloadModels { model: _ } => {
+        Command::Download => {
             tracing::info!("下载 SenseVoice 模型...");
             download::download_all(None).await?;
-        }
-
-        Command::LlmTest { prompt, output } => {
-            let cfg = load_cfg(global_config)?;
-            let prompt = prompt.clone().unwrap_or_else(|| "你好，请用一句话介绍你自己。".into());
-            let out_path = output.clone().unwrap_or_else(|| PathBuf::from("llm_test_response.json"));
-
-            if cfg.llm.api_key.is_empty() {
-                let llm_path = vtrim_core::path::vtrim_home().join("llm.toml");
-                let config_path = global_config.clone().unwrap_or(llm_path);
-                anyhow::bail!("LLM API key 未配置，请先在 {} 中设置 base_url 和 api_key", config_path.display());
-            }
-
-            tracing::info!("调用 LLM (model={})...", if cfg.llm.model.is_empty() { "默认" } else { &cfg.llm.model });
-            let response = vtrim_core::detection::test_llm(&cfg.llm, &prompt).await?;
-            std::fs::write(&out_path, &response)?;
-            tracing::info!("完整响应已保存: {}", out_path.display());
         }
 
         Command::Correct { transcript } => {
@@ -773,10 +769,6 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => anyhow::bail!("LLM 订正失败: {}", e),
             }
-        }
-
-        Command::Version => {
-            println!("vtrim {}", env!("CARGO_PKG_VERSION"));
         }
 
         Command::Polish(action) => {

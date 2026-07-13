@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use anyhow::{Context, Result};
@@ -28,7 +28,7 @@ impl Stage for Cutter {
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
         if ctx.events.is_empty() {
-            anyhow::bail!("没有事件可切割，请先运行 detect-events 阶段");
+            anyhow::bail!("没有事件可切割，请先运行 detect 阶段");
         }
 
         let video = &ctx.input_path;
@@ -44,13 +44,13 @@ impl Stage for Cutter {
 
         let full_transcript = load_transcript(ctx);
 
-        // Load danmaku entries if available
-        let all_danmaku: Vec<DanmakuEntry> = ctx
+        // Load danmaku entries if available (shared via Arc to avoid clone per event)
+        let all_danmaku: Arc<Vec<DanmakuEntry>> = Arc::new(ctx
             .danmaku_path
             .as_ref()
             .filter(|p| p.exists())
             .and_then(|p| crate::danmaku::parse_ass(p).ok())
-            .unwrap_or_default();
+            .unwrap_or_default());
 
         let max_concurrent = 3;
         let total_events = ctx.events.len();
@@ -77,7 +77,7 @@ impl Stage for Cutter {
                     let ts_start = event.start;
                     let ts_end = event.end;
                     let transcript = full_transcript.clone();
-                    let danmaku = all_danmaku.clone();
+                    let danmaku = Arc::clone(&all_danmaku);
 
                     handles.push(scope.spawn(move || {
                         let clip_dir = cd.join(&dir_name);
@@ -257,13 +257,13 @@ pub fn detect_silence_from_srt(srt_path: &Path, threshold: f64) -> Result<Vec<(f
     Ok(segments)
 }
 
-pub fn detect_silence(input: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
+pub fn detect_silence(input: &Path, duration: f64, noise_db: f64) -> Result<Vec<(f64, f64)>> {
     let result = Command::new("ffmpeg")
         .arg("-y")
         .arg("-i")
         .arg(input)
         .arg("-af")
-        .arg(format!("silencedetect=n=-30dB:d={}", duration))
+        .arg(format!("silencedetect=n={}dB:d={}", noise_db, duration))
         .arg("-f")
         .arg("null")
         .arg("-")
@@ -300,15 +300,15 @@ pub fn detect_silence(input: &Path, duration: f64) -> Result<Vec<(f64, f64)>> {
     Ok(segments)
 }
 
-pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Option<&Path>) -> Result<Vec<(f64, f64)>> {
+pub fn remove_silence(input: &Path, output: &Path, duration: f64, srt_path: Option<&Path>, noise_db: f64) -> Result<Vec<(f64, f64)>> {
     let segments = match srt_path {
         Some(srt) if srt.exists() => {
             tracing::info!("使用 SRT 间隔检测静音: {}", srt.display());
             detect_silence_from_srt(srt, duration)?
         }
         _ => {
-            tracing::info!("使用音频分析检测静音");
-            detect_silence(input, duration)?
+            tracing::info!("使用音频分析检测静音 (noise={}dB)", noise_db);
+            detect_silence(input, duration, noise_db)?
         }
     };
 

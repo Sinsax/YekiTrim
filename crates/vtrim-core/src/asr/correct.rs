@@ -104,7 +104,7 @@ pub async fn correct_transcript(
         let danmaku = danmaku.clone();
 
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("Semaphore 仅在本函数内使用，不会被关闭");
             tracing::info!("  批次 {} 订正中 ({} 段)", batch_num, chunk_len);
             (
                 offset,
@@ -311,20 +311,12 @@ async fn send_batch(
 fn parse_json_result(content: &str, offset: usize, expected: usize) -> Result<Vec<String>> {
     let mut result = vec![String::new(); expected];
 
-    // 提取 JSON 数组（处理可能的首尾空白或包裹的 markdown）
-    let content = content.trim();
-    let json_str = if let Some(pos) = content.find("```json") {
-        let after = &content[pos + 7..];
-        after.split("```").next().unwrap_or(content).trim()
-    } else if let Some(pos) = content.find('[') {
-        let end = content.rfind(']').map(|i| i + 1).unwrap_or(content.len());
-        content[pos..end].trim()
-    } else {
-        content
-    };
-
-    let parsed: Vec<serde_json::Value> = match serde_json::from_str(json_str) {
-        Ok(v) => v,
+    let parsed: Vec<serde_json::Value> = match crate::detection::parse_json(content) {
+        Ok(serde_json::Value::Array(arr)) => arr,
+        Ok(_) => {
+            tracing::warn!("LLM 返回的不是 JSON 数组 (offset={})", offset);
+            return Ok(result);
+        }
         Err(e) => {
             tracing::warn!(
                 "JSON 解析失败 (offset={}, expected={}): {}",

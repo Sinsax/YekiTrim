@@ -31,7 +31,7 @@ cargo build
 vtrim init input.mp4
 
 # 下载 ASR 模型 (本地转写需要)
-vtrim download-models
+vtrim download
 
 # 全自动管线
 vtrim process
@@ -76,7 +76,7 @@ vtrim process
 4. 事件检测 (如未完成)
 5. 视频剪切 (如未完成，`--dry-run` 跳过)
 
-### `vtrim extract-audio`
+### `vtrim extract`
 
 Stage 1 — 从视频提取 16kHz mono WAV。
 
@@ -116,7 +116,7 @@ Stage 2 — 语音转文字 (local sherpa-onnx SenseVoice)。
 | `segment_gap` | `1.0` | 段间静音阈值(秒)，超过才切为两条字幕 |
 | `language` | `"zh"` | ASR 语言 |
 
-**状态机约束**：需先完成 `extract-audio` (current >= 1)。
+**状态机约束**：需先完成 `extract` (current >= 1)。
 
 ### `vtrim correct`
 
@@ -132,7 +132,7 @@ LLM 订正转录文本。
 
 需要 `.vtrim/llm.toml` 已配置 API key。无状态机约束 (可独立运行)。
 
-### `vtrim detect-events`
+### `vtrim detect`
 
 Stage 3 — LLM 分析转写结果，检测高价值事件。
 
@@ -185,9 +185,9 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 编码器自动检测顺序：`h264_nvenc` → `h264_qsv` → `h264_amf` → `libx264`。
 字幕从原始 SRT 裁剪时间范围并偏移到 clip 起始时间。
 
-**状态机约束**：需先完成 `detect-events` (current >= 3)。
+**状态机约束**：需先完成 `detect` (current >= 3)。
 
-### `vtrim silence-remove`
+### `vtrim silence`
 
 对已输出的 clip 视频移除长静音段 (重编码)。
 
@@ -201,18 +201,9 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 静音检测策略：如有同名 `.srt` 文件，优先分析 SRT 字幕间隔；否则用 ffmpeg silencedetect filter。
 
-### `vtrim download-models`
+### `vtrim download`
 
 下载 sherpa-onnx binary + SenseVoice 模型到 `.vtrim/models/sensevoice/`。
-
-### `vtrim llm-test`
-
-测试 LLM 连接。
-
-| 参数 | 作用 |
-|------|------|
-| `-p, --prompt <text>` | 测试提示词 (默认 "你好，请用一句话介绍你自己。") |
-| `-o, --output <file>` | 输出文件 (默认 `llm_test_response.json`) |
 
 返回 LLM 完整 API response body。需要 `.vtrim/llm.toml` 已配置。
 
@@ -310,9 +301,8 @@ Stage 编号连续无跳过。所有 stage 通过 `#[async_trait]` 实现 `Stage
 input_file = ""              # 输入视频
 danmaku_file = ""            # 弹幕文件
 transcript_file = ""         # 转写文件 (由 transcribe 写入)
-audio_file = ""              # 音频文件 (由 extract-audio 写入)
-events_file = ""             # 事件文件 (由 detect-events 写入)
-current_stage = 0            # 当前进度 (0=未开始, 1~4=各阶段)
+audio_file = ""              # 音频文件 (由 extract 写入)
+events_file = ""             # 事件文件 (由 detect 写入)
 
 [asr]
 backend = "local"            # ASR 后端

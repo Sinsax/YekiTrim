@@ -31,19 +31,18 @@ Cargo workspace, 三个 crate:
 
 ```
 vtrim init <video> [--danmaku <file>]    # 创建 vtrim.toml
-vtrim extract-audio [-i] [-o]            # 提取音频 (Stage 1)
-vtrim process [-i] [-o] [--dry-run]      # 全自动管线 (无视 state)
-                                         # --dry-run: 只到 EventDetector, 不剪切
+vtrim extract [-i] [-o]                  # 提取音频 (Stage 1)
+vtrim process [-i] [-o] [--dry-run]      # 全自动管线
 vtrim transcribe [-i]                    # Stage 2 (local)
-vtrim detect-events [-t <transcript>]    # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
+vtrim detect [-t <transcript>]           # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
 vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
-vtrim silence-remove [files...]       # 对已输出 clips 移除长静音段 (重编码)
-       [--duration 2.0] [-o <dir>]      # 默认扫描 output/clips/, 输出到输入文件同目录
-vtrim download-models                    # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
-vtrim status
-vtrim config init [--path]
-vtrim config show
-vtrim version
+vtrim silence [files...]                 # 对已输出 clips 移除长静音段 (重编码)
+       [--duration 2.0] [--threshold]    # 默认扫描 output/clips/, 输出到输入文件同目录
+vtrim download                           # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
+vtrim status                             # 查看当前进度
+vtrim config init [--path]               # 生成全局配置文件
+vtrim config show                        # 显示当前配置 (含 LLM)
+vtrim correct [-t <transcript>]          # LLM 订正转录文本
 vtrim polish init [<dir>]                # 精修: 初始化项目 + 解析字幕弹幕
 vtrim polish llm [<dir>]                 # 精修: LLM 生成 segments（使用 .vtrim/llm.toml）
 vtrim polish process [<dir>]             # 精修: 后处理 + 下载资源 + 计算位置
@@ -101,6 +100,7 @@ danmaku_window_secs = 10
 [cutting]
 output_dir = "./output"
 overwrite = false
+silence_noise_db = -30
 ```
 
 **`.vtrim/config.toml`** — 全局程序配置:
@@ -127,7 +127,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 
 ## 各阶段 I/O
 
-### AudioExtractor (Stage 1, `vtrim extract-audio`)
+### AudioExtractor (Stage 1, `vtrim extract`)
 - 输入: 视频 → ffmpeg 16kHz mono WAV + ffprobe VideoInfo
 - `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/video.wav`
 

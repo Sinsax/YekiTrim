@@ -55,20 +55,20 @@ pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
     config.model_config.provider = resolve_provider(cfg);
     let language = if cfg.language.is_empty() { "auto".to_string() } else { cfg.language.clone() };
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
-        model: Some(model_path.to_str().unwrap().into()),
+        model: Some(model_path.to_string_lossy().into()),
         language: Some(language),
         use_itn: true,
     };
     config.model_config.num_threads = 1;
-    config.model_config.tokens = Some(tokens_path.to_str().unwrap().into());
+    config.model_config.tokens = Some(tokens_path.to_string_lossy().into());
 
-    // 启用同音纠错（lexicon.txt + replace.fst 由 download-models 下载）
+    // 启用同音纠错（lexicon.txt + replace.fst 由 download 下载）
     let lexicon = mdir.join("lexicon.txt");
     let rule_fst = mdir.join("replace.fst");
     if lexicon.exists() && rule_fst.exists() {
         config.hr = HomophoneReplacerConfig {
-            lexicon: Some(lexicon.to_str().unwrap().into()),
-            rule_fsts: Some(rule_fst.to_str().unwrap().into()),
+            lexicon: Some(lexicon.to_string_lossy().into()),
+            rule_fsts: Some(rule_fst.to_string_lossy().into()),
         };
         tracing::info!("同音纠错已启用 (lexicon.txt + replace.fst)");
     } else {
@@ -91,7 +91,7 @@ impl Default for ChunkConfig {
         Self {
             chunk_duration: 60.0,
             chunk_overlap: 10.0,
-            segment_gap: 0.6,
+            segment_gap: 1.0,
             num_workers: 1,
         }
     }

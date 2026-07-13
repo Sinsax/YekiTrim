@@ -95,6 +95,22 @@ fn merge(base: &mut Config, overlay: Config) {
     if let Some(v) = overlay.cutting.overwrite {
         base.cutting.overwrite = Some(v);
     }
+    if overlay.cutting.silence_noise_db != -30.0 {
+        base.cutting.silence_noise_db = overlay.cutting.silence_noise_db;
+    }
+
+    if overlay.asr.vad.threshold != 0.5 {
+        base.asr.vad.threshold = overlay.asr.vad.threshold;
+    }
+    if overlay.asr.vad.min_silence_duration != 0.5 {
+        base.asr.vad.min_silence_duration = overlay.asr.vad.min_silence_duration;
+    }
+    if overlay.asr.vad.min_speech_duration != 0.25 {
+        base.asr.vad.min_speech_duration = overlay.asr.vad.min_speech_duration;
+    }
+    if overlay.asr.vad.max_speech_duration != 20.0 {
+        base.asr.vad.max_speech_duration = overlay.asr.vad.max_speech_duration;
+    }
 }
 
 /// 从 .vtrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）

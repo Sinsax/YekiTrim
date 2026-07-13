@@ -48,18 +48,15 @@ pub fn parse_entries(content: &str) -> Vec<SrtEntry> {
         let Some(delim) = time_line.find(" --> ") else { continue };
         let start_str = time_line[..delim].trim();
         let end_str = time_line[delim + 5..].trim();
-        let start = parse_srt_time_loose(start_str);
-        let end = parse_srt_time_loose(end_str);
-        if start.is_none() || end.is_none() {
-            continue;
-        }
+        let Some(start) = parse_srt_time_loose(start_str) else { continue };
+        let Some(end) = parse_srt_time_loose(end_str) else { continue };
         let text = lines[2..].join(" ").trim().to_string();
         if text.is_empty() {
             continue;
         }
         entries.push(SrtEntry {
-            start: start.unwrap(),
-            end: end.unwrap(),
+            start,
+            end,
             text,
         });
     }
