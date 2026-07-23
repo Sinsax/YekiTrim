@@ -1,0 +1,125 @@
+{
+  "nextId": 11,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "修改 Event 枚举：去掉 Emoji/Irasu，新增 Sticker",
+      "description": "在 vtrim-polish/src/project/config.rs 中：\n1. 删除 Event::Emoji 和 Event::Irasu 变体\n2. 新增 Event::Sticker { time, duration, keyword: String, name: Option<String>, x: String, y: String, sfx, sfx_volume }\n3. 更新 get_time(), duration(), extract_sfx_field() 等方法\n4. 更新 to_toml_commented() 中的注释\n5. 更新 example() 方法",
+      "status": "completed",
+      "activeForm": "修改 Event 枚举",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796150680,
+      "updatedAt": 1784796248765
+    },
+    {
+      "id": "2",
+      "subject": "给 ProjectFile 添加 sticker_source 字段 + 默认值",
+      "description": "在 ProjectFile 结构体添加：\npub sticker_source: Vec<String>,\n默认值为 vec![\"emoji\".into()]",
+      "status": "completed",
+      "activeForm": "添加 sticker_source 配置字段",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163661,
+      "updatedAt": 1784796248768
+    },
+    {
+      "id": "3",
+      "subject": "在 vtrim-core/src/path.rs 添加 sticker_dir() 函数",
+      "description": "返回 {exe_dir}/stickers/ 路径，用于 local 模式读取本地贴纸",
+      "status": "completed",
+      "activeForm": "添加 sticker_dir 函数",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163665,
+      "updatedAt": 1784796313286
+    },
+    {
+      "id": "4",
+      "subject": "更新代码库中所有 Event::Emoji/Event::Irasu 的匹配引用",
+      "description": "搜索整个代码库中 Event::Emoji 和 Event::Irasu 的引用，改为 Event::Sticker。涉及文件：downloader.rs, emoji_search.rs, process.rs, rendering.rs, server.rs, commands.rs, cover.rs 等",
+      "status": "in_progress",
+      "activeForm": "更新所有 Event::Emoji/Irasu 引用",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163667,
+      "updatedAt": 1784796248770
+    },
+    {
+      "id": "5",
+      "subject": "重构 AssetDownloader：输出统一到 assets/stickers/，新增 sticker_map",
+      "description": "1. emoji_search/irasu_search 下载输出目录全部改为 assets/stickers/\n2. downloader.rs 中 asset_map() 返回 sticker_map 而非 emoji_base/irasu_map\n3. 新增 copy_stickers_from_local() 方法\n4. download_sticker_keywords() 统一入口根据 sources 数组轮询分配",
+      "status": "in_progress",
+      "activeForm": "重构下载器和输出目录",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163669,
+      "updatedAt": 1784796405519
+    },
+    {
+      "id": "6",
+      "subject": "更新 process.rs：适配 Sticker 事件 + sticker_source 分配逻辑",
+      "description": "1. Step 1b 中的 Emoji/Irasu 匹配改为 Sticker\n2. Step 2 keyword 解析改为遍历 sticker_source 数组做轮询分配\n3. 对应来源解析：emoji→codepoint, irasu→搜索, local→本地匹配\n4. sticker 数量限制逻辑适配\n5. download_keyword_assets 调用改为 sticker 统一入口",
+      "status": "pending",
+      "activeForm": "更新 process 步骤",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163671,
+      "updatedAt": 1784796163671
+    },
+    {
+      "id": "7",
+      "subject": "更新 index.html：用 STICKER_MAP 统一替换 EMOJI_BASE + IRASUTOYA",
+      "description": "1. 取消 EMOJI_BASE/EMOJI_LOCAL/IRASUTOYA 变量\n2. 改为 STICKER_MAP\n3. handlers.emoji 和 handlers.irasu 合并为 handlers.sticker\n4. DOM 层面保留 #emoji-layer 或改名 #sticker-layer\n5. CSS .emoji-img 改为 .sticker-img\n6. 索引和渲染循环适配",
+      "status": "pending",
+      "activeForm": "更新 HTML 模板",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163673,
+      "updatedAt": 1784796163673
+    },
+    {
+      "id": "8",
+      "subject": "更新 LLM 提示词：统一为 sticker 事件，告知总数上限",
+      "description": "1. 提示词中 emoji/irasu 事件描述合并为 sticker\n2. 告知 LLM 总上限约 N 个（process 计算后传参或留空）\n3. sticker_source = [] 时不在提示词中提及 sticker",
+      "status": "in_progress",
+      "activeForm": "更新 LLM 提示词",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163675,
+      "updatedAt": 1784796313289
+    },
+    {
+      "id": "9",
+      "subject": "更新 server.rs 和 rendering.rs：build_sticker_map 替换 build_irasu_map",
+      "description": "1. server.rs：build_sticker_map() 替换 build_irasu_map()\n2. build_html() 中 _assets 返回 sticker_map\n3. rendering.rs：inject_assets() 不动（已调用 asset_map）\n4. prepare_emoji_data() 改为 prepare_sticker_data() 匹配 Sticker 事件",
+      "status": "in_progress",
+      "activeForm": "更新 server/rendering",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163676,
+      "updatedAt": 1784796436890
+    },
+    {
+      "id": "10",
+      "subject": "构建并测试所有修改",
+      "description": "cargo build 确保 0 warnings。如有编译错误逐步修复。",
+      "status": "in_progress",
+      "activeForm": "构建测试",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1784796163678,
+      "updatedAt": 1784796689928
+    }
+  ]
+}

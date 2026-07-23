@@ -11,11 +11,9 @@ pub struct AssetDownloader {
 /// 下载报告
 #[derive(Debug, Default)]
 pub struct DownloadReport {
-    pub emoji_downloaded: usize,
-    pub irasu_downloaded: usize,
+    pub sticker_downloaded: usize,
+    pub sticker_existing: usize,
     pub sfx_downloaded: usize,
-    pub emoji_existing: usize,
-    pub irasu_existing: usize,
     pub sfx_existing: usize,
     pub errors: Vec<String>,
 }
@@ -36,29 +34,42 @@ impl AssetDownloader {
         }
     }
 
-    /// 按需搜索下载 irasutoya 插图
-    pub async fn download_irasu_keywords(&self, segments: &[Segment]) -> DownloadReport {
+    /// 统一 sticker 下载入口: 根据 source 类型分发
+    pub async fn download_stickers(
+        &self,
+        segments: &[Segment],
+        assignments: &[(usize, String)], // (segment_idx, source) — 预分配的来源
+    ) -> DownloadReport {
+        let sticker_dir = self.project_path.join("assets").join("stickers");
+        std::fs::create_dir_all(&sticker_dir).ok();
         let mut report = DownloadReport::default();
-        let irasu_dir = self.project_path.join("assets").join("irasu");
-        std::fs::create_dir_all(&irasu_dir).ok();
 
-        use crate::project::Event;
-        let mut tried: Vec<String> = vec![];
-
-        for seg in segments {
-            for event in &seg.events {
-                if let Event::Irasu { keywords: Some(kws), .. } = event {
-                    for kw in kws.iter() {
-                        let kw = kw.trim();
-                        if kw.is_empty() || tried.contains(&kw.to_string()) { continue; }
-                        tried.push(kw.to_string());
-
-                        let (new_files, existing) = super::irasu_search::download_images(kw, &irasu_dir, &self.client, 1).await;
-                        report.irasu_downloaded += new_files.len();
-                        report.irasu_existing += existing;
-
-                        if !new_files.is_empty() {
-                            break; // 当前事件已命中，跳过剩余 keywords
+        // 收集每位 sticker 事件的 keyword
+        for (seg_idx, source) in assignments {
+            if let Some(seg) = segments.get(*seg_idx) {
+                for event in &seg.events {
+                    if let Event::Sticker { keyword, .. } = event {
+                        match source.as_str() {
+                            "emoji" => {
+                                let keywords = vec![keyword.clone()];
+                                let (new_files, existing) = super::emoji_search::download_images(
+                                    &keywords, &sticker_dir, &self.client, 1,
+                                ).await;
+                                report.sticker_downloaded += new_files.len();
+                                report.sticker_existing += existing;
+                            }
+                            "irasu" => {
+                                let (new_files, existing) = super::irasu_search::download_images(
+                                    keyword, &sticker_dir, &self.client, 1,
+                                ).await;
+                                report.sticker_downloaded += new_files.len();
+                                report.sticker_existing += existing;
+                            }
+                            "local" => {
+                                let copied = self.copy_sticker_from_local(keyword, &sticker_dir);
+                                report.sticker_downloaded += copied;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -67,20 +78,35 @@ impl AssetDownloader {
         report
     }
 
-    /// 按需搜索下载 Noto emoji
-    pub async fn download_emoji_keywords(&self, segments: &[Segment]) -> DownloadReport {
-        let mut report = DownloadReport::default();
-        let emoji_dir = self.project_path.join("assets").join("emoji");
-        std::fs::create_dir_all(&emoji_dir).ok();
+    /// 从程序目录的 stickers/ 复制匹配的贴纸文件
+    fn copy_sticker_from_local(&self, keyword: &str, dest_dir: &Path) -> usize {
+        let sticker_dir = vtrim_core::path::sticker_dir();
+        if !sticker_dir.exists() {
+            return 0;
+        }
+        let kw_lower = keyword.to_lowercase();
+        let entries = match std::fs::read_dir(&sticker_dir) {
+            Ok(e) => e.flatten().collect::<Vec<_>>(),
+            Err(_) => return 0,
+        };
 
-        let keywords = super::emoji_search::collect_keywords(segments);
-        if keywords.is_empty() { return report; }
-
-        println!("  ── emoji 搜索下载 ({} 个关键词) ──", keywords.len());
-        let (new_files, existing) = super::emoji_search::download_images(&keywords, &emoji_dir, &self.client, 1).await;
-        report.emoji_downloaded += new_files.len();
-        report.emoji_existing += existing;
-        report
+        // 找 keyword 包含在文件名中的第一个文件
+        for entry in &entries {
+            if let Some(name) = entry.file_name().to_str() {
+                let stem = Path::new(name).file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if stem.to_lowercase().contains(&kw_lower) || kw_lower.contains(stem) {
+                    let dest = dest_dir.join(name);
+                    if !dest.exists() {
+                        if std::fs::copy(entry.path(), &dest).is_ok() {
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+        0
     }
 
     /// 按需下载 segments 中引用的 SFX
@@ -147,32 +173,25 @@ impl AssetDownloader {
     }
 
     /// 生成资产路径映射 (注入到 config JSON)
+    /// 扫描 assets/stickers/ 目录, 返回 stem → URL 映射
     pub fn asset_map(&self) -> serde_json::Value {
-        let assets_dir = self.project_path.join("assets");
-        let emoji_dir = assets_dir.join("emoji");
-        let irasu_dir = assets_dir.join("irasu");
-
-        // 动态扫描 irasu 目录
-        let mut irasu_map = serde_json::Map::new();
-        if irasu_dir.exists()
-            && let Ok(entries) = std::fs::read_dir(&irasu_dir) {
+        let sticker_dir = self.project_path.join("assets").join("stickers");
+        let mut sticker_map = serde_json::Map::new();
+        if sticker_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&sticker_dir) {
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
                         let stem = Path::new(name).file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or(name);
-                        irasu_map.insert(stem.to_string(), serde_json::Value::String(
-                            format!("/assets/irasu/{}", name)
+                        sticker_map.insert(stem.to_string(), serde_json::Value::String(
+                            format!("/assets/stickers/{}", name)
                         ));
                     }
                 }
             }
-
-        let has_local = emoji_dir.exists() && std::fs::read_dir(&emoji_dir).map(|mut e| e.any(|f| f.is_ok())).unwrap_or(false);
         serde_json::json!({
-            "emoji_base": if has_local { "/assets/emoji/" } else { "https://fonts.gstatic.com/s/e/notoemoji/latest" },
-            "emoji_local": has_local,
-            "irasu_map": irasu_map,
+            "sticker_map": sticker_map,
         })
     }
 
@@ -215,8 +234,7 @@ pub fn collect_sfx_ids(segments: &[Segment]) -> Vec<String> {
 /// 从事件中提取 sfx 字段值 (所有可带 sfx 的事件变体)
 fn extract_sfx_field(event: &Event) -> Option<&String> {
     match event {
-        Event::Emoji { sfx: Some(s), .. } => Some(s),
-        Event::Irasu { sfx: Some(s), .. } => Some(s),
+        Event::Sticker { sfx: Some(s), .. } => Some(s),
         Event::Shake { sfx: Some(s), .. } => Some(s),
         Event::Flash { sfx: Some(s), .. } => Some(s),
         Event::Blur { sfx: Some(s), .. } => Some(s),

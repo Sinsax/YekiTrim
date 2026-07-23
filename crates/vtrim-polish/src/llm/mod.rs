@@ -8,6 +8,7 @@ use crate::project::{Segment, Event};
 
 /// 运行 LLM 全流程: 话题区间 + 关键词提取
 /// LLM 直接在 segment.events 中生成事件, 不再经 reaction_rules 中转
+/// sticker_source 控制提示词中是否提及 sticker 及其语言风格
 pub async fn run_llm_pipeline(
     api_key: &str,
     base_url: &str,
@@ -15,12 +16,13 @@ pub async fn run_llm_pipeline(
     subtitles: &[Subtitle],
     danmaku: &[DanmakuEntry],
     event_type: &str,
+    sticker_source: &[String],
 ) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>)> {
     let client = client::LlmClient::new(api_key.to_string(), Some(base_url.to_string()), Some(model.to_string()));
 
-    // Step 1: 话题区间 (LLM 直接在 events 中生成 camera/emoji 等)
+    // Step 1: 话题区间 (LLM 直接在 events 中生成 camera/sticker 等)
     println!("  ── LLM: Topic segmentation (type: {}) ──", event_type);
-    let mut segments = match segment::generate_segments(&client, subtitles, event_type).await {
+    let mut segments = match segment::generate_segments(&client, subtitles, event_type, sticker_source).await {
         Ok(s) => { println!("  ✓ {} segments", s.len()); s }
         Err(e) => { println!("  ⚠ Segmentation failed: {}. Using default.", e); vec![default_segment()] }
     };
