@@ -47,13 +47,13 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     let sfx_data = export_sound_data(&server_url).await?;
     tracing::info!("  v {} sound events", sfx_data.len());
 
-    // 预解码 emoji GIF 帧
-    tracing::info!("\n  -- Emoji GIF --");
-    let emoji_data_json = prepare_emoji_data(project_path, &config);
-    let emoji_count: usize = serde_json::from_str::<serde_json::Value>(&emoji_data_json)
+    // 预解码 sticker GIF 帧
+    tracing::info!("\n  -- Sticker GIF --");
+    let sticker_data_json = prepare_sticker_data(project_path, &config);
+    let sticker_count: usize = serde_json::from_str::<serde_json::Value>(&sticker_data_json)
         .map(|v| v.as_object().map(|o| o.len()).unwrap_or(0))
         .unwrap_or(0);
-    tracing::info!("  v {} emojis with animated frames", emoji_count);
+    tracing::info!("  v {} stickers with animated frames", sticker_count);
 
     tracing::info!("\n  -- Render chunks ({}) --", parallelism);
     let enc = Ffmpeg::detect_encoder();
@@ -70,9 +70,9 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         let ca = enc.args.clone();
         let url = server_url.clone();
         let vp = resolved.video.clone();
-        let edj = emoji_data_json.clone();
+        let sdj = sticker_data_json.clone();
         handles.push(std::thread::spawn(move || {
-            render_chunk_sync(&url, start_sec, end_sec, &out, &vp, &edj, &cc, &ca, fps, ci)
+            render_chunk_sync(&url, start_sec, end_sec, &out, &vp, &sdj, &cc, &ca, fps, ci)
         }));
     }
 
@@ -152,7 +152,7 @@ pub fn render_chunk_sync(
     end_sec: f64,
     output: &Path,
     video_path: &str,
-    emoji_data_json: &str,
+    sticker_data_json: &str,
     codec: &str,
     codec_args: &[String],
     fps: usize,
@@ -213,8 +213,8 @@ pub fn render_chunk_sync(
 
     // Reset + 发送帧 + 发送 emoji GIF 数据到浏览器
     tab.evaluate("window.__CAPTURE_RESET()", false)?;
-    if !emoji_data_json.is_empty() && emoji_data_json != "{}" {
-        tab.evaluate(&format!("window.__EMOJI_DATA = {}", emoji_data_json), false)?;
+    if !sticker_data_json.is_empty() && sticker_data_json != "{}" {
+        tab.evaluate(&format!("window.__EMOJI_DATA = {}", sticker_data_json), false)?;
     }
         let b64_engine = base64::engine::general_purpose::STANDARD;
     let batch_size = 50;
@@ -383,15 +383,16 @@ pub fn inject_assets(project_path: &Path, config_json: &str) -> String {
     }
 }
 
-/// 预解码所有 emoji GIF 为 PNG 帧，返回 JSON（按 name→{frames, delays}）
-pub fn prepare_emoji_data(project_path: &Path, config: &project::ProjectFile) -> String {
-        let b64_engine = base64::engine::general_purpose::STANDARD;
+/// 预解码所有 sticker 的 GIF 帧为 PNG，返回 JSON（按 name→{frames, delays}）
+/// 仅 "emoji" 来源的 GIF 有动画帧，"irasu" 和 "local" 来源是静态图
+pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) -> String {
+    let b64_engine = base64::engine::general_purpose::STANDARD;
     let mut data: HashMap<String, serde_json::Value> = HashMap::new();
     for seg in &config.segments {
         for ev in &seg.events {
-            if let project::Event::Emoji { name: Some(name), .. } = ev {
+            if let project::Event::Sticker { name: Some(name), .. } = ev {
                 if name.is_empty() || data.contains_key(name.as_str()) { continue; }
-                let gif_path = project_path.join("assets").join("emoji").join(format!("{}.gif", name));
+                let gif_path = project_path.join("assets").join("stickers").join(format!("{}.gif", name));
                 if !gif_path.exists() { continue; }
                 if let Ok(frames) = render::gif::decode_gif_frames(&gif_path) {
                     let frame_b64: Vec<String> = frames.iter().map(|f| b64_engine.encode(&f.png)).collect();

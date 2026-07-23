@@ -35,7 +35,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let mut visuals: Vec<(usize, usize)> = vec![];
         for (si, seg) in config.segments.iter().enumerate() {
             for (ei, ev) in seg.events.iter().enumerate() {
-                if matches!(ev, crate::project::Event::Emoji { .. } | crate::project::Event::Irasu { .. }) {
+                if matches!(ev, crate::project::Event::Sticker { .. }) {
                     visuals.push((si, ei));
                 }
             }
@@ -57,7 +57,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             for (si, seg) in config.segments.iter_mut().enumerate() {
                 let old_events = std::mem::take(&mut seg.events);
                 for (ei, ev) in old_events.into_iter().enumerate() {
-                    if matches!(ev, crate::project::Event::Emoji { .. } | crate::project::Event::Irasu { .. }) {
+                    if matches!(ev, crate::project::Event::Sticker { .. }) {
                         if keep.contains(&(si, ei)) {
                             seg.events.push(ev);
                         }
@@ -84,7 +84,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         for seg in &mut config.segments {
             for event in &mut seg.events {
                 match event {
-                    crate::project::Event::Emoji { keyword: Some(kw), name, .. } if !kw.is_empty() => {
+                    crate::project::Event::Sticker { keyword: kw, name, .. } if !kw.is_empty() => {
                         // 如果 name 还没有被设置，从 keyword 解析
                         let needs_name = match name {
                             Some(n) => n.is_empty() || n == "auto",
@@ -99,25 +99,6 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                             }
                         }
                 }
-                    crate::project::Event::Irasu { keywords: Some(kws), name, .. } if !kws.is_empty() => {
-                        let needs_name = match name {
-                            Some(n) => n.is_empty() || n == "auto",
-                            None => true,
-                        };
-                        if needs_name {
-                            let irasu_dir = project_path.join("assets").join("irasu");
-                            let found_stem = kws.iter()
-                                .map(|k| sanitize_irasu_name(k))
-                                .find(|stem| {
-                                    let pattern = format!("{}_", stem);
-                                    std::fs::read_dir(&irasu_dir).ok()
-                                        .is_some_and(|e| e.flatten().any(|f| f.file_name().to_string_lossy().starts_with(&pattern)))
-                                })
-                                .unwrap_or_else(|| sanitize_irasu_name(kws.first().map(|s| s.as_str()).unwrap_or("")));
-                            *name = Some(format!("{}_1", found_stem));
-                            tracing::info!("  ✓ irasu → name {} (keywords={})", found_stem, kws.join(", "));
-                        }
-                    }
                     _ => {}
                 }
             }
@@ -148,8 +129,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         for seg in &mut config.segments {
             for (idx, event) in seg.events.iter_mut().enumerate() {
                 let (x, y) = match event {
-                    crate::project::Event::Emoji { x, y, .. }
-                    | crate::project::Event::Irasu { x, y, .. } => (x, y),
+                    crate::project::Event::Sticker { x, y, .. } => (x, y),
                     _ => continue,
                 };
                 let needs_x = x.trim() == "auto";
@@ -171,8 +151,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             for event in &mut seg.events {
                 let et = event.get_time();
                 let duration = match event {
-                    crate::project::Event::Emoji { duration, .. }
-                    | crate::project::Event::Irasu { duration, .. } => Some(duration),
+                    crate::project::Event::Sticker { duration, .. } => Some(duration),
                     _ => None,
                 };
                 if let Some(dur) = duration {
@@ -188,7 +167,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 }
             }
         }
-        if config.segments.iter().any(|seg| seg.events.iter().any(|e| matches!(e, crate::project::Event::Emoji { .. } | crate::project::Event::Irasu { .. }))) {
+        if config.segments.iter().any(|seg| seg.events.iter().any(|e| matches!(e, crate::project::Event::Sticker { .. }))) {
             tracing::info!("  ✓ emoji/irasu 位置已计算 (sticker_area, liver对侧 y对齐origin)");
         }
     }
@@ -211,7 +190,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
 }
 
 
-pub fn sanitize_irasu_name(keyword: &str) -> String {
+pub fn sanitize_sticker_name(keyword: &str) -> String {
     keyword
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
@@ -224,8 +203,7 @@ pub fn sanitize_irasu_name(keyword: &str) -> String {
 pub fn resolve_event_sfx(event: &mut crate::project::Event) {
     use crate::project::Event;
     match event {
-        Event::Emoji { sfx: Some(s), .. }
-        | Event::Irasu { sfx: Some(s), .. }
+        Event::Sticker { sfx: Some(s), .. }
         | Event::Shake { sfx: Some(s), .. }
         | Event::Flash { sfx: Some(s), .. }
         | Event::Blur { sfx: Some(s), .. }
@@ -291,28 +269,29 @@ pub async fn cmd_download(project_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 下载 keyword 类型的资产（emoji/irasu/sfx）
+/// 下载 sticker + sfx 资产
 pub async fn download_keyword_assets(downloader: &assets::downloader::AssetDownloader, config: &project::ProjectFile) -> usize {
     let mut total_errors = 0;
 
-    let has_emoji = config.segments.iter().any(|seg| {
-        seg.events.iter().any(|ev| matches!(ev, project::Event::Emoji { keyword: Some(kw), .. } if !kw.is_empty()))
+    // 检查是否有 sticker 事件
+    let has_stickers = config.segments.iter().any(|seg| {
+        seg.events.iter().any(|ev| matches!(ev, project::Event::Sticker { keyword: kw, .. } if !kw.is_empty()))
     });
-    if has_emoji {
-        let r = downloader.download_emoji_keywords(&config.segments).await;
-        if r.emoji_downloaded > 0 || r.emoji_existing > 0 {
-            tracing::info!("  ✓ emoji: {} new, {} cached", r.emoji_downloaded, r.emoji_existing);
+    if has_stickers && !config.sticker_source.is_empty() {
+        // 构建 assignment: 收集所有 sticker 事件按 sticker_source 轮询分配
+        let mut assignments: Vec<(usize, String)> = vec![];
+        let sources = &config.sticker_source;
+        for (si, seg) in config.segments.iter().enumerate() {
+            for event in &seg.events {
+                if matches!(event, project::Event::Sticker { .. }) {
+                    let source = sources[assignments.len() % sources.len()].clone();
+                    assignments.push((si, source));
+                }
+            }
         }
-        total_errors += r.errors.len();
-    }
-
-    let has_irasu = config.segments.iter().any(|seg| {
-        seg.events.iter().any(|ev| matches!(ev, project::Event::Irasu { keywords: Some(kws), .. } if !kws.is_empty()))
-    });
-    if has_irasu {
-        let r = downloader.download_irasu_keywords(&config.segments).await;
-        if r.irasu_downloaded > 0 || r.irasu_existing > 0 {
-            tracing::info!("  ✓ irasu: {} new, {} cached", r.irasu_downloaded, r.irasu_existing);
+        let r = downloader.download_stickers(&config.segments, &assignments).await;
+        if r.sticker_downloaded > 0 || r.sticker_existing > 0 {
+            tracing::info!("  ✓ stickers: {} new, {} existing", r.sticker_downloaded, r.sticker_existing);
         }
         total_errors += r.errors.len();
     }

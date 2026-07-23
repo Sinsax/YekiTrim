@@ -33,11 +33,15 @@ pub struct ProjectFile {
     #[serde(default)]
     pub style: StyleRoot,
 
-    /// 8. 音效
+    /// 8. 贴图来源配置
+    #[serde(default = "default_sticker_source")]
+    pub sticker_source: Vec<String>,
+
+    /// 9. 音效
     #[serde(default)]
     pub sfx: SfxConfig,
 
-    /// 9. 时间轴
+    /// 10. 时间轴
     #[serde(default)]
     pub segments: Vec<Segment>,
 
@@ -93,6 +97,10 @@ fn default_created() -> String {
 
 fn default_version() -> u32 {
     1
+}
+
+fn default_sticker_source() -> Vec<String> {
+    vec!["emoji".into()]
 }
 
 impl Default for ProjectMeta {
@@ -443,74 +451,21 @@ fn default_fx() -> String { "low".into() }
 #[allow(dead_code)] fn default_zoom() -> String { "中".into() }
 #[allow(dead_code)] fn default_origin() -> String { "50% 50%".into() }
 
-// 贴图: emoji GIF 或 irasu 静态图, 支持百分比和旧版像素值
-#[derive(Debug, Clone)]
-pub struct Sticker {
-    pub r#type: String,  // "emoji" or "irasu"
-    pub name: String,     // emoji=codepoint, irasu=图片id
-    pub x: String,         // x 百分比 "35%"
-    pub y: String,         // y 百分比 "50%"
-}
 
-impl Serialize for Sticker {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("Sticker", 4)?;
-        st.serialize_field("type", &self.r#type)?;
-        st.serialize_field("name", &self.name)?;
-        st.serialize_field("x", &self.x)?;
-        st.serialize_field("y", &self.y)?;
-        st.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for Sticker {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let v = serde_json::Value::deserialize(d)?;
-        Ok(Sticker {
-            r#type: v.get("type").and_then(|v| v.as_str()).unwrap_or("emoji").to_string(),
-            name: v.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            x: v.get("x").map(pct_or_px_1920).unwrap_or_else(|| "30%".into()),
-            y: v.get("y").map(pct_or_px_1080).unwrap_or_else(|| "30%".into()),
-        })
-    }
-}
-
-fn pct_or_px_1920(v: &serde_json::Value) -> String {
-    if let Some(s) = v.as_str() && s.contains('%') { return s.into(); }
-    if let Some(f) = v.as_f64() { return format!("{:.0}%", f / 1920.0 * 100.0); }
-    "30%".into()
-}
-fn pct_or_px_1080(v: &serde_json::Value) -> String {
-    if let Some(s) = v.as_str() && s.contains('%') { return s.into(); }
-    if let Some(f) = v.as_f64() { return format!("{:.0}%", f / 1080.0 * 100.0); }
-    "30%".into()
-}
 
 // Tagged Event Enum — 每个变体只有自己的字段
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    // === 视觉 + 可选音效 ===
-    Emoji {
+    // === 贴图 (统一视觉元素, 来源由 sticker_source 配置决定) ===
+    Sticker {
         time: f64, duration: f64,
+        /// LLM 生成的描述关键词
+        keyword: String,
+        /// process 步骤解析后的文件名 (不含扩展名)
         #[serde(default)]
         name: Option<String>,
         x: String, y: String,
-        /// noto-emoji 搜索关键词 (英文，LLM 生成)
-        #[serde(default)]
-        keyword: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
-    Irasu {
-        time: f64, duration: f64,
-        #[serde(default)]
-        name: Option<String>,
-        x: String, y: String,
-        /// irasutoya 搜索关键词列表 (日文数组，LLM 生成)
-        #[serde(default, deserialize_with = "deserialize_keywords")]
-        keywords: Option<Vec<String>>,
         #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
         sfx_volume: Option<f64>,
     },
@@ -558,8 +513,7 @@ pub enum Event {
 impl Event {
     pub fn get_time(&self) -> f64 {
         match self {
-            Event::Emoji { time, .. } => *time,
-            Event::Irasu { time, .. } => *time,
+            Event::Sticker { time, .. } => *time,
             Event::Camera { time, .. } => *time,
             Event::Shake { time, .. } => *time,
             Event::Flash { time, .. } => *time,
@@ -579,8 +533,7 @@ impl Event {
 
     pub fn duration(&self) -> f64 {
         match self {
-            Event::Emoji { duration, .. } => *duration,
-            Event::Irasu { duration, .. } => *duration,
+            Event::Sticker { duration, .. } => *duration,
             Event::Camera { duration, .. } => *duration,
             Event::Overlay { duration, .. } => *duration,
             _ => 0.5,
@@ -600,27 +553,6 @@ fn flex_sfx<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D:
         serde_json::Value::String(s) => Ok(if s.is_empty() { None } else { Some(s) }),
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Bool(b) => Ok(if b { Some("pop-notice".into()) } else { None }),
-        _ => Ok(None),
-    }
-}
-
-/// 兼容旧格式 `keyword = "game"` 和新格式 `keywords = ["ゲーム","コントローラ"]`
-fn deserialize_keywords<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
-    use serde::Deserialize;
-    let v = serde_json::Value::deserialize(d)?;
-    match v {
-        serde_json::Value::Array(arr) => {
-            let strs: Vec<String> = arr.into_iter()
-                .filter_map(|s| s.as_str().map(String::from))
-                .filter(|s| !s.is_empty())
-                .collect();
-            Ok(if strs.is_empty() { None } else { Some(strs) })
-        }
-        serde_json::Value::String(s) => {
-            if s.is_empty() { Ok(None) }
-            else { Ok(Some(vec![s])) }
-        }
-        serde_json::Value::Null => Ok(None),
         _ => Ok(None),
     }
 }
@@ -785,8 +717,7 @@ impl ProjectFile {
             if trimmed.starts_with("type = ") && in_events {
                 let ev_type = trimmed.trim_matches('"').trim_start_matches("type = ").trim();
                 match ev_type {
-                    "emoji" => result.push_str("# emoji: Noto 动画 GIF (name=codepoint)\n"),
-                    "irasu" => result.push_str("# irasu: 静态图 (name=图片id, 如 game_woman)\n"),
+                    "sticker" => result.push_str("# sticker: 贴图 (来源由 sticker_source 配置决定)\n"),
                     "camera" => result.push_str("# camera: 运镜事件 (zoom=\"中\"/\"近\")\n"),
                     "sfx" => result.push_str("# sfx: 纯音效, 无视觉\n"),
                     _ => {}
@@ -869,6 +800,7 @@ impl ProjectFile {
             duration: None,
             layout: Layout::default(),
             style: StyleRoot::default(),
+            sticker_source: vec!["emoji".into()],
             filter: FilterConfig {
                 danmaku: vec!["OBS".into(), "游戏".into(), "直播".into()],
                 highlight: vec!["OBS".into(), "游戏".into()],

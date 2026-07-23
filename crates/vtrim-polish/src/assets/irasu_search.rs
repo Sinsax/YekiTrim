@@ -252,12 +252,10 @@ pub fn collect_keywords(segments: &[crate::project::Segment]) -> Vec<String> {
     let mut keywords: Vec<String> = vec![];
     for seg in segments {
         for event in &seg.events {
-            if let Event::Irasu { keywords: Some(kws), .. } = event {
-                for kw in kws {
-                    let kw = kw.trim().to_string();
-                    if !kw.is_empty() && !keywords.contains(&kw) {
-                        keywords.push(kw);
-                    }
+            if let Event::Sticker { keyword, .. } = event {
+                let kw = keyword.trim().to_string();
+                if !kw.is_empty() && !keywords.contains(&kw) {
+                    keywords.push(kw);
                 }
             }
         }

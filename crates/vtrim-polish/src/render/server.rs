@@ -4,16 +4,16 @@ use std::path::{Path, PathBuf};
 
 const INDEX_HTML: &str = include_str!("../../templates/index.html");
 
-/// 构建 irasu 映射: stem → URL 路径
-pub fn build_irasu_map(project_path: &Path) -> serde_json::Map<String, serde_json::Value> {
-    let irasu_dir = project_path.join("assets").join("irasu");
+/// 构建 sticker 映射: stem → URL 路径
+pub fn build_sticker_map(project_path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let sticker_dir = project_path.join("assets").join("stickers");
     let mut map = serde_json::Map::new();
-    if irasu_dir.exists()
-        && let Ok(entries) = std::fs::read_dir(&irasu_dir) {
+    if sticker_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&sticker_dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str()
                     && let Some(stem) = Path::new(name).file_stem().and_then(|s| s.to_str()) {
-                        map.insert(stem.to_string(), serde_json::Value::String(format!("/assets/irasu/{}", name)));
+                        map.insert(stem.to_string(), serde_json::Value::String(format!("/assets/stickers/{}", name)));
                     }
             }
         }
@@ -64,13 +64,8 @@ impl RenderServer {
         let mut cfg: serde_json::Value = std::fs::read_to_string(&config_path).ok()
             .and_then(|raw| toml::from_str(&raw).ok())
             .unwrap_or(serde_json::Value::Object(Default::default()));
-        let assets_dir = project_path.join("assets");
-        let emoji_dir = assets_dir.join("emoji");
-        let has_local = emoji_dir.exists() && std::fs::read_dir(&emoji_dir).map(|mut e| e.any(|f| f.is_ok())).unwrap_or(false);
         cfg["_assets"] = serde_json::json!({
-            "emoji_base": if has_local { "/assets/emoji/" } else { "https://fonts.gstatic.com/s/e/notoemoji/latest" },
-            "emoji_local": has_local,
-            "irasu_map": build_irasu_map(project_path),
+            "sticker_map": build_sticker_map(project_path),
         });
         Self::inject_config_tag(&cfg, INDEX_HTML)
     }

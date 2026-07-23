@@ -223,7 +223,7 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     // 运行 LLM pipeline
     let (segments, dm_filter, hl_words) = llm::run_llm_pipeline(
         &llm_cfg.api_key, &llm_cfg.base_url, &llm_cfg.model,
-        &subtitles, &danmaku, &event_type,
+        &subtitles, &danmaku, &event_type, &config.sticker_source,
     ).await?;
 
     // 截断 segments 到视频实际时长
