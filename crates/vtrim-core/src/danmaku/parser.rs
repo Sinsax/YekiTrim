@@ -1,13 +1,24 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 /// A single danmaku entry with timing and text.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DanmakuEntry {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    #[serde(default = "default_color")]
+    pub color: String,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub travel_duration: f64,
+}
+
+fn default_color() -> String {
+    "#ffffff".into()
 }
 
 /// Parse an ASS subtitle file and extract danmaku entries.
@@ -60,7 +71,14 @@ fn parse_dialogue_line(line: &str) -> Option<DanmakuEntry> {
         return None;
     }
 
-    Some(DanmakuEntry { start, end, text })
+    Some(DanmakuEntry {
+        start,
+        end,
+        text,
+        color: "#ffffff".into(),
+        y: 400.0,
+        travel_duration: 8.0,
+    })
 }
 
 /// Replace ASS line break markers `\N` and `\n` with real newlines (single pass).

@@ -203,7 +203,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ### `vtrim download`
 
-下载 sherpa-onnx binary + SenseVoice 模型到 `.vtrim/models/sensevoice/`。
+下载全部 ASR 模型到 `.vtrim/models/<model>/`：`sensevoice`（默认）、`firered-zh`、`qwen3-asr`（各 ~165MB / ~520MB / ~879MB）。转写时按 `[asr] model` 自动懒加载，缺失才提示下载。
 
 返回 LLM 完整 API response body。需要 `.vtrim/llm.toml` 已配置。
 
@@ -307,12 +307,6 @@ events_file = ""             # 事件文件 (由 detect 写入)
 [asr]
 backend = "local"            # ASR 后端
 
-[asr.vad]
-threshold = 0.5
-min_silence_duration = 0.5
-min_speech_duration = 0.25
-max_speech_duration = 20.0
-
 [detection]
 danmaku_window_secs = 10
 silence_threshold_secs = 3.0
@@ -328,6 +322,7 @@ overwrite = false
 
 ```toml
 [asr]
+model = "sensevoice"         # sensevoice(快) | firered-zh(较准) | qwen3-asr(最准,慢)
 num_workers = 0              # 0=auto(CPU/4,上限4)
 chunk_duration = 60.0        # 每块秒数
 chunk_overlap = 10.0         # 块间重叠

@@ -1,4 +1,11 @@
-use axum::{Router, routing::get, response::Response, body::Body};
+use axum::{
+    Router,
+    routing::{get, post},
+    response::Response,
+    body::Body,
+    extract::Json,
+    http::StatusCode,
+};
 use tower_http::services::ServeDir;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +25,48 @@ pub fn build_sticker_map(project_path: &Path) -> serde_json::Map<String, serde_j
             }
         }
     map
+}
+
+/// 在线编辑器保存接口：接收完整 segments 数组并写回 polish.toml
+async fn save_config_handler(
+    project_path: PathBuf,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let segments: Vec<crate::project::Segment> = match payload.get("segments").cloned() {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "ok": false, "error": format!("segments 解析失败: {e}") })),
+                );
+            }
+        },
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "ok": false, "error": "缺少 segments 字段" })),
+            );
+        }
+    };
+
+    let result = (|| -> anyhow::Result<()> {
+        let mut cfg = crate::project::load_project(&project_path)?;
+        cfg.segments = segments;
+        std::fs::write(project_path.join("polish.toml"), cfg.to_toml_commented()?)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "message": "已保存" })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        ),
+    }
 }
 
 pub struct RenderServer {
@@ -67,6 +116,29 @@ impl RenderServer {
         cfg["_assets"] = serde_json::json!({
             "sticker_map": build_sticker_map(project_path),
         });
+        // 竖屏检测: 视频高 > 宽 时启用竖屏布局 (主视频左/中放置 + 模糊背景)
+        if let Some(video_rel) = cfg["source"]["video"].as_str()
+            && let Some(size) = crate::render::get_video_size(
+                &project_path.join(video_rel).to_string_lossy())
+            && size.1 > size.0
+        {
+            let pos = cfg["layout"]["vertical_position"]
+                .as_str().unwrap_or("left").to_string();
+            cfg["vertical"] = serde_json::json!(true);
+            cfg["vertical_position"] = serde_json::json!(pos);
+            tracing::info!("  v 竖屏视频 {}x{} → {} 布局 + 模糊背景", size.0, size.1, pos);
+        }
+        // 响度曲线: 注入浏览器供 preview 音效音量跟随视频 (与 render 混音同一数据)
+        if let Some(video_rel) = cfg["source"]["video"].as_str() {
+            let video_path = project_path.join(video_rel).to_string_lossy().to_string();
+            let curve = crate::render::measure_loudness_curve(&video_path);
+            if !curve.is_empty() {
+                let points: Vec<serde_json::Value> = curve.iter()
+                    .map(|(t, db)| serde_json::json!({"t": t, "db": db}))
+                    .collect();
+                cfg["loudness_curve"] = serde_json::json!(points);
+            }
+        }
         Self::inject_config_tag(&cfg, INDEX_HTML)
     }
 
@@ -82,6 +154,7 @@ impl RenderServer {
     pub async fn start(&mut self) -> anyhow::Result<u16> {
         let project_path = self.project_path.clone();
         let project_path_sd = project_path.clone();
+        let editor_path = project_path.clone();
         let app = Router::new()
             .route("/", get(move || {
                 let html = Self::build_html(&project_path);
@@ -91,6 +164,9 @@ impl RenderServer {
                         .body(Body::from(html))
                         .unwrap()
                 }
+            }))
+            .route("/api/config", post(move |body| {
+                save_config_handler(editor_path.clone(), body)
             }))
             .fallback_service(ServeDir::new(&project_path_sd));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

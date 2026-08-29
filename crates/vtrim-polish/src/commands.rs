@@ -1,10 +1,10 @@
-﻿use crate::{cover, process, rendering};
+﻿use crate::{cover, process, render};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::project::ProjectFile;
-use crate::{llm, parse, project, render};
+use crate::{llm, parse, project};
 
 
 // init
@@ -34,12 +34,20 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
                     example.duration = Some(dur);
                     tracing::info!("  ✓ Detected duration: {:.0}s", dur);
                 }
-                // 自动设置素材路径
+                // 自动设置素材路径 (danmaku 不硬编码, 见下方探测)
                 example.source.video = "clip.mp4".into();
                 example.source.subtitles = "clip.srt".into();
-                example.source.danmaku = "clip.dm.srt".into();
+                example.source.danmaku = String::new();
                 example.source.metadata = "clip.json".into();
-                tracing::info!("  ✓ Auto-set source paths (clip.mp4, clip.srt, clip.dm.srt)");
+                // 弹幕可选: 探测常见文件名, 找不到则留空, 避免配置指向不存在的文件
+                const DANMAKU_CANDIDATES: [&str; 4] = ["clip.dm.srt", "clip.ass", "danmaku.ass", "danmaku.xml"];
+                if let Some(dm) = DANMAKU_CANDIDATES.iter().find(|c| path.join(c).exists()) {
+                    example.source.danmaku = (*dm).into();
+                    tracing::info!("  ✓ Auto-detected danmaku: {}", dm);
+                } else {
+                    tracing::info!("  ⚠ No danmaku file found (弹幕可选, 可手动设置 source.danmaku)");
+                }
+                tracing::info!("  ✓ Auto-set source paths (clip.mp4, clip.srt, clip.json)");
             }
 
     let toml_str = example.to_toml_commented()?;
@@ -76,7 +84,7 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
     }
 
     tracing::info!("📄  Parsing assets...");
-    let resolved = rendering::resolve_paths(project_path, &config);
+    let resolved = render::resolve_paths(project_path, &config);
     tracing::info!("  SRT:      {}", &config.source.subtitles);
     tracing::info!("  Danmaku:  {}", &config.source.danmaku);
 
@@ -84,9 +92,17 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
     let danmaku = if resolved.danmaku.is_empty() {
         vec![]
     } else {
-        let mut raw = parse::danmaku::parse_file(&resolved.danmaku)?;
-        parse::text::assign_danmaku_tracks(&mut raw);
-        raw
+        // 弹幕是可选的: 文件缺失/解析失败不中断 SRT 解析, 降级为无弹幕
+        match vtrim_core::danmaku::parse_srt_file(std::path::Path::new(&resolved.danmaku)) {
+            Ok(mut raw) => {
+                parse::text::assign_danmaku_tracks(&mut raw);
+                raw
+            }
+            Err(e) => {
+                tracing::info!("  ⚠ Danmaku parse failed ({}), continuing without danmaku", e);
+                vec![]
+            }
+        }
     };
 
     tracing::info!("  ✓ {} subtitles", subtitles.len());
@@ -135,7 +151,7 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
         .and_then(|m| m.get("duration").and_then(|v| v.as_f64()))
         .unwrap_or(0.0);
     // 用 ffprobe 获取实际视频时长 (clip.json 的 duration 是 B站原始元数据含padding，不可信)
-    let actual_duration = rendering::get_video_duration(&resolved.video).unwrap_or(0.0);
+    let actual_duration = render::get_video_duration(&resolved.video).unwrap_or(0.0);
     let duration = if actual_duration > 0.0 {
         if clip_duration > 0.0 && (clip_duration - actual_duration).abs() > 1.0 {
             tracing::info!("  ⚠ clip.json duration ({:.0}s) != actual video ({:.0}s), using actual", clip_duration, actual_duration);
@@ -194,7 +210,7 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
 
-    let danmaku: Vec<parse::danmaku::DanmakuEntry> = {
+    let danmaku: Vec<vtrim_core::danmaku::DanmakuEntry> = {
         let p = data_dir.join("danmaku.json");
         if !p.exists() {
             vec![]
@@ -220,15 +236,9 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
         Err(_) => String::new(),
     };
 
-    // 运行 LLM pipeline
-    let (segments, dm_filter, hl_words) = llm::run_llm_pipeline(
-        &llm_cfg.api_key, &llm_cfg.base_url, &llm_cfg.model,
-        &subtitles, &danmaku, &event_type, &config.sticker_source,
-    ).await?;
-
-    // 截断 segments 到视频实际时长
-    let video_path = rendering::resolve_paths(project_path, &config).video;
-    let video_duration = rendering::get_video_duration(&video_path)
+    // 视频时长 (用于数量预算 + 截断)
+    let video_path = render::resolve_paths(project_path, &config).video;
+    let video_duration = render::get_video_duration(&video_path)
         .or_else(|| {
             // 降级: 从 clip-meta.json 读 (可能不准，B站元数据含padding)
             std::fs::read_to_string(data_dir.join("clip-meta.json")).ok()
@@ -237,6 +247,28 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
         })
         .unwrap_or(0.0);
 
+    // 数量预算: 字幕数 + 视频时长 → sticker/sfx 上限 (无 segment 数约束, 由 process 兜底)
+    let (sticker_budget, sfx_budget) = crate::process::content_budget(
+        subtitles.len(),
+        video_duration.max(subtitles.last().map(|s| s.end).unwrap_or(0.0)),
+        None,
+    );
+    tracing::info!("  预算: sticker ≤ {}, sfx ≤ {} (字幕 {}, 时长 {:.0}s)", sticker_budget, sfx_budget, subtitles.len(), video_duration);
+
+    // 音效黑名单: 注入 prompt 让 LLM 主动避开
+    let sfx_blacklist = crate::process::load_sfx_blacklist(&config);
+    if !sfx_blacklist.is_empty() {
+        tracing::info!("  音效黑名单: {}", sfx_blacklist.join(", "));
+    }
+
+    // 运行 LLM pipeline
+    let (segments, dm_filter, hl_words) = llm::run_llm_pipeline(
+        &llm_cfg.api_key, &llm_cfg.base_url, &llm_cfg.model,
+        &subtitles, &danmaku, &event_type, &config.sticker_source,
+        sticker_budget, sfx_budget, &sfx_blacklist,
+    ).await?;
+
+    // 截断 segments 到视频实际时长
     let mut new_config = config;
     new_config.segments = segments;
     if video_duration > 0.0 {
@@ -292,7 +324,7 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
 
     // 启动 cover server
     let cover_url = if show_cover {
-        let resolved = rendering::resolve_paths(project_path, &config);
+        let resolved = render::resolve_paths(project_path, &config);
         let cover_image = project_path.join("_cover_frame.jpg");
         if !cover_image.exists() {
             let video_path = &resolved.video;
@@ -353,8 +385,7 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
             std::fs::create_dir_all(&ws)?;
             std::fs::create_dir_all(ws.join("data"))?;
             std::fs::create_dir_all(ws.join("sfx"))?;
-            std::fs::create_dir_all(ws.join("assets").join("emoji"))?;
-            std::fs::create_dir_all(ws.join("assets").join("irasu"))?;
+            std::fs::create_dir_all(ws.join("assets").join("stickers"))?;
             tracing::info!("  📁 创建测试目录: {}", ws.display());
         }
         ws
@@ -417,8 +448,8 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
     std::fs::write(work.join("data").join("subtitles.json"),
         serde_json::to_string_pretty(&sub_entries)?)?;
 
-    let dm_entries = crate::parse::danmaku::parse_file(
-        &work.join("test_danmaku.dm.srt").to_string_lossy())?;
+    let dm_entries = vtrim_core::danmaku::parse_srt_file(
+        &work.join("test_danmaku.dm.srt"))?;
     std::fs::write(work.join("data").join("danmaku.json"),
         serde_json::to_string_pretty(&dm_entries)?)?;
 
@@ -486,7 +517,7 @@ zoom = "中"
 origin = "50% 50%"
 
 [[segments.events]]
-type = "emoji"
+type = "sticker"
 time = 1.0
 duration = 2.0
 keyword = "laugh"
@@ -494,7 +525,7 @@ x = "auto"
 y = "auto"
 
 [[segments.events]]
-type = "irasu"
+type = "sticker"
 time = 3.0
 duration = 2.5
 keyword = "game"
@@ -600,6 +631,145 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     }
 
     tracing::info!("\n  vtrim-polish v{}", env!("CARGO_PKG_VERSION"));
+    Ok(())
+}
+
+// ============================================================
+// stickers — 本地贴纸索引工具 (list / test / scan)
+// ============================================================
+
+/// 列出本地贴纸索引: 组名 | 成员数 | tags
+pub fn cmd_stickers_list() -> anyhow::Result<()> {
+    use crate::assets::sticker_index::StickerIndex;
+    let dir = vtrim_core::path::sticker_dir();
+    tracing::info!("📋  本地贴纸索引: {}", dir.display());
+    let idx = StickerIndex::scan(&dir);
+    let groups = idx.groups();
+    if groups.is_empty() {
+        tracing::info!("  (空 — 请先把贴纸文件放入该目录)");
+        return Ok(());
+    }
+    let total: usize = groups.iter().map(|g| g.all_files().len()).sum();
+    tracing::info!("  共 {} 组 / {} 个文件", groups.len(), total);
+    for g in groups {
+        let tags = if g.tags.is_empty() {
+            String::new()
+        } else {
+            format!("  tags:[{}]", g.tags.join(", "))
+        };
+        let vs: Vec<&str> = g.variant_names().iter().filter(|v| !v.is_empty()).copied().collect();
+        let vs = if vs.is_empty() { String::new() } else { format!("  ({})", vs.join("/")) };
+        tracing::info!("  {} ×{}{}{}", g.name, g.all_files().len(), vs, tags);
+    }
+    Ok(())
+}
+
+/// 测试 keyword → 贴纸匹配 (可多个 keyword)
+pub fn cmd_stickers_test(keywords: &[String]) -> anyhow::Result<()> {
+    use crate::assets::sticker_index::StickerIndex;
+    let dir = vtrim_core::path::sticker_dir();
+    tracing::info!("🎯  本地贴纸匹配测试: {}", dir.display());
+    let idx = StickerIndex::scan(&dir);
+    for kw in keywords {
+        match idx.match_keyword(kw) {
+            Some(m) => {
+                let g = &idx.groups()[m.group_index];
+                tracing::info!(
+                    "  ✓ 「{}」→ {} (score {} via {}, {} 帧)",
+                    kw, g.name, m.score, m.via, g.all_files().len()
+                );
+            }
+            None => {
+                tracing::info!("  ✗ 「{}」无命中。候选:", kw);
+                for (score, gi, via) in idx.candidates(kw, 3) {
+                    tracing::info!("      {} (score {} via {})", idx.groups()[gi].name, score, via);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 扫描本地贴纸目录生成/更新 stickers.json 清单
+pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
+    use crate::assets::sticker_index::{StickerIndex, StickerMeta};
+    let dir = vtrim_core::path::sticker_dir();
+    tracing::info!("🔍  扫描本地贴纸目录: {}", dir.display());
+    let idx = StickerIndex::scan(&dir);
+    let mut metas: Vec<StickerMeta> = idx
+        .groups()
+        .iter()
+        .filter(|g| !g.all_files().is_empty())
+        .map(|g| StickerMeta {
+            name: g.name.clone(),
+            files: g
+                .all_files()
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect(),
+            tags: vec![],
+            aliases: vec![],
+        })
+        .collect();
+
+    if llm {
+        let llm_cfg = vtrim_core::config::load_llm_config();
+        if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
+            tracing::info!("  ⚠ 未配置 LLM API key (编辑 .vtrim/llm.toml), tags 留空");
+        } else {
+            tracing::info!("  🤖 用 LLM 生成 tags ({})...", llm_cfg.model);
+            if let Err(e) = llm_generate_tags(&llm_cfg, &mut metas).await {
+                tracing::info!("  ⚠ LLM tags 生成失败: {} (tags 留空)", e);
+            }
+        }
+    }
+
+    let json = serde_json::to_string_pretty(&metas)?;
+    std::fs::write(dir.join("stickers.json"), json)?;
+    tracing::info!("  ✓ 已写入 {}/stickers.json ({} 组)", dir.display(), metas.len());
+    Ok(())
+}
+
+/// LLM 批量生成 tags: 分批调用 (每批 BATCH 组, 避免一次输出截断), 输出 {组名: [tags]}
+const TAG_BATCH_SIZE: usize = 40;
+
+async fn llm_generate_tags(
+    cfg: &vtrim_core::config::LlmConfig,
+    metas: &mut [crate::assets::sticker_index::StickerMeta],
+) -> anyhow::Result<()> {
+    use vtrim_core::llm::LlmClient;
+    let client = LlmClient::new(&cfg.api_key, &cfg.base_url, &cfg.model)
+        .with_thinking(Some("disabled"));
+    let system = "你是贴纸标签生成助手。为每个贴纸生成 3-6 个英文 tags（情绪/动作/场景词，供英文 keyword 匹配，如 love happy laugh shock game）。";
+
+    let mut tagged = 0;
+    for batch in metas.chunks_mut(TAG_BATCH_SIZE) {
+        let names: Vec<String> = batch.iter().map(|m| m.name.clone()).collect();
+        let user = format!(
+            "贴纸列表 (JSON 数组):\n{}\n\n输出 JSON 对象: {{\"贴纸名\": [\"tag1\",\"tag2\",...]}}\n只输出 JSON，不要多余文字。",
+            serde_json::to_string(&names)?
+        );
+        let resp = client.chat(system, &user).await?;
+        // 提取最外层 JSON 对象 (LLM 可能带 markdown 包裹)
+        let resp_trim = resp.trim();
+        let body = match (resp_trim.find('{'), resp_trim.rfind('}')) {
+            (Some(s), Some(e)) if e > s => &resp_trim[s..=e],
+            _ => resp_trim,
+        };
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(body)?;
+        for m in batch.iter_mut() {
+            if let Some(v) = map.get(&m.name)
+                && let Some(arr) = v.as_array()
+            {
+                m.tags = arr
+                    .iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_lowercase()))
+                    .collect();
+                tagged += 1;
+            }
+        }
+    }
+    tracing::info!("  ✓ {} 组已生成 tags", tagged);
     Ok(())
 }
 

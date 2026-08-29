@@ -59,6 +59,81 @@ const FALLBACK_MAP: &[(&str, &str)] = &[
     ("handshake", "1f91d"),
     ("thinking", "1f914"),
     ("pout", "1f621"),
+    ("anxiety", "1f630"),
+    ("panic", "1f631"),
+    ("scared", "1f631"),
+    ("frightened", "1f631"),
+    ("fall", "1f635"),
+    ("dizzy", "1f635"),
+    ("faint", "1f635"),
+    ("game", "1f3ae"),
+    ("dream", "1f634"),
+    ("nightmare", "1f631"),
+    ("sleep", "1f634"),
+    ("yawn", "1f971"),
+    ("relief", "1f60c"),
+    ("surprise", "1f62e"),
+    ("wow", "1f632"),
+    ("amazing", "1f31f"),
+    ("star", "2b50"),
+    ("excited", "1f929"),
+    ("yay", "1f973"),
+    ("applause", "1f44f"),
+    ("clap", "1f44f"),
+    ("rock", "1f918"),
+    ("dance", "1f483"),
+    ("music", "1f3b5"),
+    ("bomb", "1f4a3"),
+    ("explosion", "1f4a5"),
+    ("lightning", "26a1"),
+    ("rain", "1f327"),
+    ("snow", "2744"),
+    ("cold", "1f976"),
+    ("hot", "1f975"),
+    ("sick", "1f912"),
+    ("fever", "1f912"),
+    ("vomit", "1f92e"),
+    ("worry", "1f62c"),
+    ("awkward", "1f613"),
+    ("annoyed", "1f612"),
+    ("tired", "1f62b"),
+    ("heartbreak", "1f494"),
+    ("broken", "1f494"),
+    ("pray", "1f64f"),
+    ("despair", "1f635"),
+    ("tears", "1f62d"),
+    ("crying", "1f62d"),
+    ("victory", "270c"),
+    ("peace", "270c"),
+    ("ok", "1f44c"),
+    ("yes", "1f44d"),
+    ("no", "1f645"),
+    ("stop", "270b"),
+    ("hello", "1f44b"),
+    ("bye", "1f44b"),
+    ("wink", "1f609"),
+    ("blush", "1f60a"),
+    ("kiss", "1f618"),
+    ("hungry", "1f35b"),
+    ("eat", "1f35b"),
+    ("drink", "1f37b"),
+    ("cook", "1f373"),
+    ("birthday", "1f382"),
+    ("gift", "1f381"),
+    ("money", "1f4b0"),
+    ("rich", "1f4b8"),
+    ("crown", "1f451"),
+    ("king", "1f451"),
+    ("ghost", "1f47b"),
+    ("devil", "1f608"),
+    ("angel", "1f607"),
+    ("cat", "1f431"),
+    ("dog", "1f436"),
+    ("fox", "1f98a"),
+    ("rabbit", "1f430"),
+    ("panda", "1f43c"),
+    ("frog", "1f438"),
+    ("heart", "1f493"),
 ];
 
 /// Emoji 搜索索引：keyword → [codepoint, ...]
@@ -227,6 +302,38 @@ pub async fn download_images(
         }
     }
 
+    (downloaded, existing)
+}
+
+/// 下载指定 codepoint 的 emoji GIF (process 已解析出具体 codepoint 时用, 保证与 name 一致)
+/// 返回 (新下载文件列表, 已存在文件数)
+pub async fn download_images_by_codepoints(
+    codepoints: &[String],
+    dest_dir: &Path,
+    client: &reqwest::Client,
+) -> (Vec<PathBuf>, usize) {
+    let mut downloaded = vec![];
+    let mut existing = 0;
+    for cp in codepoints {
+        if cp.is_empty() || !cp.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let path = dest_dir.join(format!("{}.gif", cp));
+        if path.exists() {
+            existing += 1;
+            continue;
+        }
+        let url = format!("{}/{}/512.gif", CDN_BASE, cp);
+        match download_file(client, &url, &path).await {
+            Ok(()) => {
+                println!("  ✓ emoji {} → {}", cp, path.display());
+                downloaded.push(path);
+            }
+            Err(e) => {
+                println!("  ⚠ emoji {} 下载失败: {}", cp, e);
+            }
+        }
+    }
     (downloaded, existing)
 }
 

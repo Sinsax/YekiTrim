@@ -38,23 +38,36 @@ impl AssetDownloader {
     pub async fn download_stickers(
         &self,
         segments: &[Segment],
-        assignments: &[(usize, String)], // (segment_idx, source) — 预分配的来源
+        assignments: &[(usize, usize, String)], // (segment_idx, event_idx, source) — 事件级预分配
     ) -> DownloadReport {
         let sticker_dir = self.project_path.join("assets").join("stickers");
         std::fs::create_dir_all(&sticker_dir).ok();
         let mut report = DownloadReport::default();
 
-        // 收集每位 sticker 事件的 keyword
-        for (seg_idx, source) in assignments {
-            if let Some(seg) = segments.get(*seg_idx) {
-                for event in &seg.events {
-                    if let Event::Sticker { keyword, .. } = event {
-                        match source.as_str() {
+        // 按事件精确下载，与 process Step 2 的 name 解析保持同一来源分配
+        for (seg_idx, event_idx, source) in assignments {
+            if let Some(seg) = segments.get(*seg_idx)
+                && let Some(event) = seg.events.get(*event_idx)
+                && let Event::Sticker { keyword, name, .. } = event
+                && !keyword.trim().is_empty()
+            {
+                match source.as_str() {
                             "emoji" => {
-                                let keywords = vec![keyword.clone()];
-                                let (new_files, existing) = super::emoji_search::download_images(
-                                    &keywords, &sticker_dir, &self.client, 1,
-                                ).await;
+                                // 优先下载 process 已解析的具体 codepoint (去重可能选了非首个),
+                                // 无则按 keyword 搜索首个
+                                let codepoints = match name.as_deref() {
+                                    Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_hexdigit()) => vec![n.to_string()],
+                                    _ => vec![],
+                                };
+                                let (new_files, existing) = if codepoints.is_empty() {
+                                    super::emoji_search::download_images(
+                                        &[keyword.clone()], &sticker_dir, &self.client, 1,
+                                    ).await
+                                } else {
+                                    super::emoji_search::download_images_by_codepoints(
+                                        &codepoints, &sticker_dir, &self.client,
+                                    ).await
+                                };
                                 report.sticker_downloaded += new_files.len();
                                 report.sticker_existing += existing;
                             }
@@ -71,8 +84,6 @@ impl AssetDownloader {
                             }
                             _ => {}
                         }
-                    }
-                }
             }
         }
         report
@@ -84,33 +95,28 @@ impl AssetDownloader {
         if !sticker_dir.exists() {
             return 0;
         }
-        let kw_lower = keyword.to_lowercase();
-        let entries = match std::fs::read_dir(&sticker_dir) {
-            Ok(e) => e.flatten().collect::<Vec<_>>(),
-            Err(_) => return 0,
-        };
 
-        // 找 keyword 包含在文件名中的第一个文件
-        for entry in &entries {
-            if let Some(name) = entry.file_name().to_str() {
-                let stem = Path::new(name).file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                if stem.to_lowercase().contains(&kw_lower) || kw_lower.contains(stem) {
-                    let dest = dest_dir.join(name);
-                    if !dest.exists() {
-                        if std::fs::copy(entry.path(), &dest).is_ok() {
-                            return 1;
-                        }
-                    }
-                }
+        // 用贴纸索引匹配 (评分制), 命中后复制整组所有变体所有帧 (保证 STICKER_MAP 覆盖)
+        let idx = super::sticker_index::StickerIndex::scan(&sticker_dir);
+        let Some(m) = idx.match_keyword(keyword) else {
+            return 0;
+        };
+        let mut copied = 0;
+        for path in idx.groups()[m.group_index].all_files() {
+            let Some(fname) = path.file_name() else { continue };
+            let dest = dest_dir.join(fname);
+            if dest.exists() {
+                continue;
+            }
+            if std::fs::copy(path, &dest).is_ok() {
+                copied += 1;
             }
         }
-        0
+        copied
     }
 
-    /// 按需下载 segments 中引用的 SFX
-    pub async fn download_sfx_for_segments(&self, segments: &[Segment]) -> DownloadReport {
+    /// 按需下载 segments 中引用的 SFX (blacklist 中的跳过)
+    pub async fn download_sfx_for_segments(&self, segments: &[Segment], blacklist: &[String]) -> DownloadReport {
         let mut report = DownloadReport::default();
         let sfx_dir = self.project_path.join("sfx");
         std::fs::create_dir_all(&sfx_dir).ok();
@@ -119,12 +125,13 @@ impl AssetDownloader {
         if ids.is_empty() { return report; }
 
         println!("  ── SFX 按需下载 ──");
-        let base_url = "https://sounddictionary.info";
         for id in &ids {
-            // tag: 前缀 → 取第1个匹配下载（不再展开全部）
+            // tag: 前缀 → 取第1个未被屏蔽的匹配下载（不再展开全部）
             if let Some(tag_name) = id.strip_prefix("tag:") {
                 let matches = super::sfx_catalog::search_by_tags(&[tag_name.to_string()]);
-                let entry = match matches.first() {
+                let entry = matches.into_iter()
+                    .find(|e| !super::sfx_catalog::is_blacklisted(&e.id, blacklist));
+                let entry = match entry {
                     Some(e) => e,
                     None => {
                         report.errors.push(format!("sfx tag「{}」: 未匹配到音效", tag_name));
@@ -132,44 +139,68 @@ impl AssetDownloader {
                         continue;
                     }
                 };
-                let n = self.download_one_sfx(&sfx_dir, base_url, &entry.id, &mut report).await;
+                let n = self.download_one_sfx(&sfx_dir, &entry.id, &mut report, blacklist).await;
                 report.sfx_downloaded += n;
                 println!("  ✓ sfx tag「{}」→ {}", tag_name, entry.id);
             } else {
-                let n = self.download_one_sfx(&sfx_dir, base_url, id, &mut report).await;
+                let n = self.download_one_sfx(&sfx_dir, id, &mut report, blacklist).await;
                 report.sfx_downloaded += n;
             }
         }
         report
     }
 
-    /// 下载单个 SFX 文件，返回是否新下载（1=新下载, 0=已存在）
-    async fn download_one_sfx(&self, sfx_dir: &Path, base_url: &str, id: &str, report: &mut DownloadReport) -> usize {
-        let path = sfx_dir.join(format!("{}.mp3", id));
+    /// 下载单个 SFX 文件（id 可能是组 id 或变体文件名），返回是否新下载（1=新下载, 0=已存在/跳过）
+    async fn download_one_sfx(&self, sfx_dir: &Path, id: &str, report: &mut DownloadReport, blacklist: &[String]) -> usize {
+        if super::sfx_catalog::is_blacklisted(id, blacklist) {
+            println!("  ⚠ sfx {}: 已在屏蔽列表中，跳过下载", id);
+            return 0;
+        }
+        // 确定 (entry, 变体文件名): 组 id 或变体名均可
+        let (entry, variant) = if let Some(e) = super::sfx_catalog::lookup(id) {
+            let v = e.variants.first().cloned().unwrap_or_default();
+            (e, v)
+        } else if let Some(e) = super::sfx_catalog::lookup_variant(id) {
+            let v = format!("{}.mp3", id);
+            (e, v)
+        } else {
+            report.errors.push(format!("sfx {}: 未在 catalog 中找到，请检查 sfx_catalog.json", id));
+            println!("  ⚠ sfx {}: 未在 catalog 中找到", id);
+            return 0;
+        };
+        let stem = variant.strip_suffix(".mp3").unwrap_or(&variant);
+        let path = sfx_dir.join(format!("{}.mp3", stem));
         if path.exists() {
             report.sfx_existing += 1;
             return 0;
         }
-        let entry = super::sfx_catalog::lookup(id);
-        let url = match entry {
-            Some(e) => format!("{}{}", base_url, e.url),
-            None => {
-                report.errors.push(format!("sfx {}: 未在 catalog 中找到，请检查 sfx_catalog.json", id));
-                println!("  ⚠ sfx {}: 未在 catalog 中找到", id);
+        let url = super::sfx_catalog::variant_url(entry, &variant);
+        // 404 容错: 小森平站部分文件在备用目录 sound_os2/ 下 (页面引用 sound/ 但文件缺失)
+        match self.download_file(&url, &path).await {
+            Err(_) => {
+                let alt = url.replace("/sound/", "/sound_os2/");
+                if alt != url {
+                    match self.download_file(&alt, &path).await {
+                        Ok(_) => {
+                            report.sfx_downloaded += 1;
+                            return 1;
+                        }
+                        Err(_) => {
+                            // 双目录都失败 → 尝试同组其他变体
+                            report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
+                            println!("  ⚠ sfx {}: 下载失败, 尝试其他变体", id);
+                            return 0;
+                        }
+                    }
+                }
+                report.errors.push(format!("sfx {}: 下载失败 ({})", id, url));
                 return 0;
             }
-        };
-        match self.download_file(&url, &path).await {
-            Ok(_) => {
-                println!("  ✓ sfx {} → {}", id, path.display());
-                1
-            }
-            Err(e) => {
-                report.errors.push(format!("sfx {}: {}", id, e));
-                println!("  ⚠ sfx {} download failed: {}", id, e);
-                0
-            }
+            Ok(_) => {}
         }
+        // 下载成功路径
+        println!("  ✓ sfx {} → {}", id, path.display());
+        1
     }
 
     /// 生成资产路径映射 (注入到 config JSON)

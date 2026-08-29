@@ -53,6 +53,23 @@ pub struct VideoInfo {
 pub struct Transcript {
     pub segments: Vec<TranscriptSegment>,
     pub language: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_metadata: Option<AsrMetadata>,
+}
+
+/// ASR 转写质量元数据，写入 `transcript.json` 供 `vtrim status` / 回归分析使用。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AsrMetadata {
+    #[serde(default)]
+    pub anchors: usize,
+    #[serde(default)]
+    pub anchor_coverage: f64,
+    #[serde(default)]
+    pub max_interp_span: usize,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
+    #[serde(default)]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,22 +150,6 @@ pub struct EventStore {
     pub events: Vec<Event>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Segment {
-    pub index: usize,
-    pub event: Event,
-    pub output_path: PathBuf,
-    pub subtitle_path: PathBuf,
-}
-
-/// 弹幕条目（用于辅助字幕订正等场景）
-#[derive(Debug, Clone)]
-pub struct DanmakuRef {
-    pub start: f64,
-    pub end: f64,
-    pub text: String,
-}
-
 #[derive(Clone)]
 pub struct PipelineContext {
     pub config: Arc<Config>,
@@ -157,11 +158,9 @@ pub struct PipelineContext {
     pub output_dir: PathBuf,
     pub danmaku_path: Option<PathBuf>,
     pub audio_path: Option<PathBuf>,
-    pub vocal_path: Option<PathBuf>,
     pub transcript: Option<Transcript>,
     pub video_info: Option<VideoInfo>,
     pub events: Vec<Event>,
-    pub segments: Vec<Segment>,
     pub started_at: DateTime<Utc>,
     pub progress: Arc<dyn ProgressReporter>,
 }
@@ -185,11 +184,9 @@ impl PipelineContext {
             output_dir,
             danmaku_path: None,
             audio_path: None,
-            vocal_path: None,
             transcript: None,
             video_info: None,
             events: Vec::new(),
-            segments: Vec::new(),
             started_at: Utc::now(),
             progress: Arc::new(NoopProgress) as Arc<dyn ProgressReporter>,
         }

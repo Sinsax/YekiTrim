@@ -203,6 +203,30 @@ pub enum PolishAction {
         #[arg(default_value = ".")]
         input: PathBuf,
     },
+    /// 本地贴纸工具（索引/匹配测试/清单扫描）
+    Stickers {
+        #[command(subcommand)]
+        action: StickerAction,
+    },
+}
+
+/// 本地贴纸子命令
+#[derive(Subcommand)]
+pub enum StickerAction {
+    /// 列出本地贴纸索引（组名 + 成员数 + tags）
+    List,
+    /// 测试 keyword → 贴纸匹配（可多个 keyword）
+    Test {
+        /// 要测试的 keyword
+        #[arg(required = true)]
+        keywords: Vec<String>,
+    },
+    /// 扫描本地贴纸目录生成/更新 stickers.json 清单
+    Scan {
+        /// 用 LLM 批量生成英文 tags
+        #[arg(long)]
+        llm: bool,
+    },
 }
 
 pub fn stage_name(num: u32) -> &'static str {

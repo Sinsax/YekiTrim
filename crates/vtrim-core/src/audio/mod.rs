@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use anyhow::Result;
 
-use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_AUDIO};
 use crate::types::PipelineContext;
 
@@ -17,10 +16,6 @@ impl Stage for AudioExtractor {
 
     fn stage_number(&self) -> u32 {
         STAGE_AUDIO
-    }
-
-    fn is_enabled(&self, _config: &Config) -> bool {
-        true
     }
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {

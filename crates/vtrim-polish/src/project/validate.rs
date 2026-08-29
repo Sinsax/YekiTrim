@@ -17,8 +17,24 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
         );
     }
     let raw = std::fs::read_to_string(&config_path)?;
-    let config: ProjectFile = toml::from_str(&raw)?;
+    let mut config: ProjectFile = toml::from_str(&raw)?;
+    strip_blocked_sticker_sources(&mut config.sticker_source);
     Ok(config)
+}
+
+/// irasu 搜索/匹配能力有问题，读取配置时统一屏蔽（默认配置已不含，旧工程显式配置也在此剔除）
+fn strip_blocked_sticker_sources(sources: &mut Vec<String>) {
+    if sources.iter().any(|s| s == "irasu") {
+        sources.retain(|s| s != "irasu");
+        tracing::warn!(
+            "⚠ irasu 贴纸来源已屏蔽（搜索/匹配能力有问题），有效来源: {}",
+            if sources.is_empty() {
+                "无（不生成贴纸）".to_string()
+            } else {
+                sources.join(" / ")
+            }
+        );
+    }
 }
 
 /// 校验项目文件中的路径和字段合法性
@@ -69,4 +85,30 @@ pub fn validate_project(config: &ProjectFile, project_path: &Path) -> Vec<String
     }
 
     warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_blocked_sticker_sources;
+
+    #[test]
+    fn strips_irasu_keeps_others() {
+        let mut src = vec!["emoji".to_string(), "irasu".to_string(), "local".to_string()];
+        strip_blocked_sticker_sources(&mut src);
+        assert_eq!(src, vec!["emoji".to_string(), "local".to_string()]);
+    }
+
+    #[test]
+    fn no_irasu_unchanged() {
+        let mut src = vec!["local".to_string()];
+        strip_blocked_sticker_sources(&mut src);
+        assert_eq!(src, vec!["local".to_string()]);
+    }
+
+    #[test]
+    fn only_irasu_becomes_empty() {
+        let mut src = vec!["irasu".to_string()];
+        strip_blocked_sticker_sources(&mut src);
+        assert!(src.is_empty());
+    }
 }

@@ -51,3 +51,6 @@ base64 = "0.22"
 
 # GIF → PNG 帧解码 (用于 emoji 动画)
 image = { version = "0.25", default-features = false, features = ["gif", "png"] }
+
+[dev-dependencies]
+tempfile = "3"

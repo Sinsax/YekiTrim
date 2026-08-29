@@ -38,7 +38,7 @@ vtrim detect [-t <transcript>]           # Stage 3 (自动发现: 参数 > confi
 vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
 vtrim silence [files...]                 # 对已输出 clips 移除长静音段 (重编码)
        [--duration 2.0] [--threshold]    # 默认扫描 output/clips/, 输出到输入文件同目录
-vtrim download                           # sherpa-onnx binary + SenseVoice 模型 → .vtrim/
+vtrim download                           # 下载全部 ASR 模型 (sensevoice/firered-zh/qwen3-asr) → .vtrim/models/
 vtrim status                             # 查看当前进度
 vtrim config init [--path]               # 生成全局配置文件
 vtrim config show                        # 显示当前配置 (含 LLM)
@@ -51,6 +51,9 @@ vtrim polish cover [<dir>] [--template]  # 精修: 生成封面
 vtrim polish preview [<dir>] [mode]      # 精修: 浏览器预览（video/cover/双端口）
 vtrim polish doctor [<dir>]              # 精修: 系统检查
 vtrim polish test [<dir>]                # 精修: 测试模式
+vtrim polish stickers list               # 本地贴纸: 列出索引（组名+成员数+tags）
+vtrim polish stickers test <kw...>       # 本地贴纸: 测试 keyword→贴纸匹配（诊断用）
+vtrim polish stickers scan [--llm]       # 本地贴纸: 生成/更新 stickers.json 清单（--llm 批量生成英文 tags）
 ```
 
 所有 stage 命令的 `-i` 可选，默认从 `vtrim.toml` 的 `input_file` 读取。
@@ -73,8 +76,8 @@ vtrim polish test [<dir>]                # 精修: 测试模式
 
 两层合并: `vtrim.toml` (项目) → `.vtrim/config.toml` (程序, 后加载覆盖前者)。无环境变量。
 
-`vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/backend/VAD/检测参数/剪切参数）。
-`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection.llm]` 跨工程共享）。
+`vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
+`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.vtrim/llm.toml`（`[llm]`）。
 
 **`vtrim.toml`** — 项目配置:
 ```toml
@@ -83,16 +86,6 @@ danmaku_file = ""
 transcript_file = ""
 audio_file = ""
 events_file = ""
-vocal_file = ""            # （预留）人声分离输出路径
-
-[asr]
-backend = "local"
-
-[asr.vad]
-threshold = 0.5
-min_silence_duration = 0.5
-min_speech_duration = 0.25
-max_speech_duration = 20.0
 
 [detection]
 danmaku_window_secs = 10
@@ -106,22 +99,48 @@ silence_noise_db = -30
 **`.vtrim/config.toml`** — 全局程序配置:
 ```toml
 [asr]
+model = "sensevoice"         # ASR 模型: sensevoice(快) | firered-zh(CTC,较准) | qwen3-asr(最准,慢)
 num_workers = 0              # 0=auto(CPU/4,上限4), N=指定并行数(不超过CPU核数)
 chunk_duration = 60.0        # 每块秒数
 chunk_overlap = 10.0         # 块间重叠秒数
-segment_gap = 0.6            # 段间静音阈值(秒)，超过此间隔才切为两条字幕
-separation = "none"          # 人声分离: none / spleeter
+segment_gap = 1.0            # 段间静音阈值(秒)，超过此间隔才切为两条字幕
+llm_correct = false          # LLM 订正转录文本（需配置 [llm]）
+
+[correct]
+system_prompt = "..."       # 订正 prompt（覆盖内建默认）
 
 [detection]
+# 主播名称 (非空时自动追加到切片标题末尾)
+vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
+# 检测 system_prompt（修改此处覆盖内建默认）
+system_prompt = "..."
+# 检测 user prompt_template（{segments} 会被替换；留空 = 内建默认）
+prompt_template = "..."
 
 [cutting]
 output_dir = "./output"
 overwrite = false
+silence_noise_db = -30
+
+[sfx]
+# 音效屏蔽列表 (vtrim polish 使用): 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
+blacklist = []
 ```
 
-merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
+**`.vtrim/llm.toml`** — LLM 配置（独立文件）:
+```toml
+[llm]
+base_url = ""              # OpenAI 兼容 API 地址
+api_key = ""
+model = ""
+temperature = 0
+max_tokens = 65536
+extra_params = { seed = 42, thinking = { type = "disabled" } }
+```
+
+merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字段非空时追加合并。
 
 **配置默认值注意事项**: 所有配置类型必须手动实现 `Default`（而非 `#[derive(Default)]`）以确保 serde 默认值与 Rust 默认值一致。`Config::default()` 用 `toml::from_str("")` 初始化，依赖各字段的 `#[serde(default)]` 来调用正确的 `Default` impl。新增字段时必须同时加 `Default` impl + `merge()` 条件。
 
@@ -132,7 +151,8 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - `ffmpeg -y -vn -acodec pcm_s16le -ar 16000 -ac 1` → `output/video.wav`
 
 ### Transcriber
-- sherpa-onnx-offline (SenseVoice, CPU only)
+- sherpa-onnx 库 (CPU only)，模型按 `[asr] model` 选择: `sensevoice` (默认) | `firered-zh` (FireRedASR v2 CTC int8) | `qwen3-asr` (Qwen3-ASR 0.6B int8, 最准最慢)
+- firered-zh / qwen3-asr 无 token 级时间戳: 兜底按标点+字数占比分配块内时间 (split_text_by_ratio)
 - 可配置定长分块 (默认 60s + 10s 重叠)
 - 并行转写: 默认 CPU/4 路并行 (上限 4)，每 chunk intra-op threads=2
 - SRT 使用 UTF-8 BOM 写入 (Windows 字幕兼容)
@@ -143,7 +163,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - 全中文 prompt: ≥1分钟片段、B 站风格标题(含 emoji)、详尽摘要
 - 弹幕: ASS 解析 → 10s 窗口归一化密度 → 每个 event 的 `popularity` 0~1
 - 按 popularity 降序赋 `rank`，最终按时间排序输出
-- 降级: API key 为空或调用失败时使用单个默认事件
+- 降级: API key 为空时使用单个默认事件（调用失败则报错）
 - 输出: `events.json`
 
 ### Cutter
@@ -152,10 +172,6 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值。
 - 命名: `{label}.mp4` → `output/clips/` (无编号前缀)
 - 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `{label}.srt`
 - 输出: `output/publish_config.json` + `output/clips/clips_order.txt` (按弹幕热度降序)
-
-## PipelinContext 中的未使用字段
-
-- `segments: Vec<Segment>` — Cutter 在完成时填充，event 驱动阶段不读写
 
 ## 开发
 
@@ -190,15 +206,21 @@ cargo run -- status            # 查看当前进度
 | `vtrim-core/src/asr/local.rs` | sherpa-onnx (CPU only) |
 | `vtrim-core/src/detection/llm.rs` | LLM prompt + API |
 | `vtrim-core/src/detection/mod.rs` | EventDetector + 弹幕热度 |
-| `vtrim-core/src/danmaku/mod.rs` | ASS 解析 + 密度 |
-| `vtrim-core/src/cutting/mod.rs` | Cutter + remove_silence |
+| `vtrim-core/src/danmaku/mod.rs` | ASS/SRT 弹幕解析 + 密度 |
+| `vtrim-core/src/danmaku/parser.rs` | ASS Dialogue 解析 |
+| `vtrim-core/src/llm/mod.rs` | 统一 LLM 客户端（core + polish 共用） |
+| `vtrim-core/src/cutting/mod.rs` | Cutter |
+| `vtrim-core/src/cutting/silence.rs` | 静音检测 + remove_silence |
 | `vtrim-polish/src/commands.rs` | 所有 cmd_* 精修命令入口 |
+| `vtrim-polish/src/process/mod.rs` | cmd_process 主流程（字幕/段处理/预算） |
+| `vtrim-polish/src/process/sfx.rs` | SFX 规则引擎 + 音效解析 |
+| `vtrim-polish/src/process/download.rs` | 贴纸解析 + 资产下载命令 |
 | `vtrim-polish/src/project/config.rs` | vtedit 风格项目配置 + Event/Segment 类型 |
 | `vtrim-polish/src/render/chrome.rs` | Chrome headless 渲染 |
 | `vtrim-polish/src/render/ffmpeg.rs` | FFmpeg 合成/编码/SFX 混音 |
 | `vtrim-polish/src/render/server.rs` | 预览 HTTP server |
 | `vtrim-polish/src/llm/mod.rs` | LLM 段分割 + 关键词 |
 | `vtrim-polish/src/assets/downloader.rs` | emoji/irasu/SFX 下载 |
-| `vtrim-polish/src/commands.rs:260` | cmd_render（自动 process → render → cover） |
-| `vtrim-polish/src/commands.rs:1200` | cmd_preview（自动 process → 双端口预览） |
-| `vtrim-polish/src/commands.rs:174` | cmd_llm（使用 .vtrim/llm.toml） |
+| `vtrim-polish/src/render/pipeline.rs:11` | cmd_render（自动 process → render → cover） |
+| `vtrim-polish/src/commands.rs:296` | cmd_preview（自动 process → 双端口预览） |
+| `vtrim-polish/src/commands.rs:200` | cmd_llm（使用 .vtrim/llm.toml） |

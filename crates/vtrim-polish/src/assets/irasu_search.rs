@@ -28,7 +28,12 @@ pub async fn download_images(
     let stem = sanitize_filename(keyword);
     let local_files: Vec<PathBuf> = match std::fs::read_dir(dest_dir) {
         Ok(entries) => entries.flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("{}_", stem)))
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                // 兼容旧格式 {stem}_N.ext 与新格式 {stem}.ext
+                name.starts_with(&format!("{}_", stem))
+                    || Path::new(&name).file_stem().map(|s| s == stem.as_str()).unwrap_or(false)
+            })
             .map(|e| e.path())
             .collect(),
         Err(_) => vec![],
@@ -51,7 +56,12 @@ pub async fn download_images(
 
     for (i, url) in image_urls.iter().enumerate().take(max) {
         let ext = guess_extension(url);
-        let fname = format!("{}_{}{}", sanitize_filename(keyword), i + 1, ext);
+        // max==1 时省略序号后缀，使文件名与 process Step 2 解析出的 name 一致（STICKER_MAP 按 stem 匹配）
+        let fname = if max == 1 {
+            format!("{}{}", sanitize_filename(keyword), ext)
+        } else {
+            format!("{}_{}{}", sanitize_filename(keyword), i + 1, ext)
+        };
         let path = dest_dir.join(&fname);
 
         if path.exists() {
@@ -162,7 +172,8 @@ fn save_index(dest_dir: &Path, index: &HashMap<String, Vec<String>>) {
 
 /// 获取 keyword 对应的图片 URL：
 /// 优先缓存，无缓存则调 API，写入缓存
-async fn resolve_image_urls(
+/// (process 用它预验证 keyword 是否有图, 支持来源兜底)
+pub async fn resolve_image_urls(
     keyword: &str,
     dest_dir: &Path,
     client: &reqwest::Client,

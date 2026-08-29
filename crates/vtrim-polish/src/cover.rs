@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::project;
 use crate::render::{chrome::ChromeRenderer, server};
-use crate::rendering::{ResolvedPaths, resolve_paths};
+use crate::render::{ResolvedPaths, resolve_paths};
 
 
 const COVER_HTML: &str = include_str!("../templates/cover.html");
