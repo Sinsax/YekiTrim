@@ -26,6 +26,7 @@ pub fn parse_srt(content: &str) -> Result<Transcript> {
             })
             .collect(),
         language: "zh".into(),
+        asr_metadata: None,
     })
 }
 

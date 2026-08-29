@@ -62,7 +62,7 @@ pub fn detect_hook(subtitles: &[crate::parse::srt::Subtitle], intensity_words: &
 
 /// 弹幕轨道分配 (碰撞避免)
 pub fn assign_danmaku_tracks(
-    entries: &mut [crate::parse::danmaku::DanmakuEntry],
+    entries: &mut [vtrim_core::danmaku::DanmakuEntry],
 ) {
     const TRACK_YS: [f64; 7] = [300.0, 500.0, 700.0, 900.0, 1100.0, 1300.0, 1500.0];
     let mut track_release: [f64; 7] = [0.0; 7];

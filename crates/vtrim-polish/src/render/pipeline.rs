@@ -104,25 +104,46 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
     if !sfx_data.is_empty() {
         tracing::info!("  -- SFX mix ({}) --", sfx_data.len());
-        // 检测视频音频响度，动态调整 SFX 音量
-        let loudness = measure_audio_loudness(&ta.to_string_lossy());
-        let sfx_adjust = loudness.map(|db| {
-            let factor = 10.0_f64.powf((-23.0 - db) / 20.0);
-            factor.clamp(0.2, 5.0)
-        }).unwrap_or(1.0);
-        if let Some(db) = loudness {
-            tracing::info!("  v audio loudness: {:.1} dB, SFX adjust: {:.2}x", db, sfx_adjust);
-        } else {
-            tracing::warn!("  v could not measure audio loudness, SFX adjustment disabled");
+        // 实时响度曲线 (ebur128 每 0.1s): 音效按所在时刻的视频响度动态调整
+        let loudness_curve = measure_loudness_curve(&ta.to_string_lossy());
+        // 段级响度作为曲线测量失败的兜底
+        let seg_loudness: Vec<(f64, f64, Option<f64>)> = config.segments.iter().map(|s| {
+            let db = measure_segment_loudness(&ta.to_string_lossy(), s.start, s.end - s.start);
+            (s.start, s.end, db)
+        }).collect();
+        if !loudness_curve.is_empty() {
+            tracing::info!("  v 响度曲线 {} 个采样点 (实时跟随)", loudness_curve.len());
         }
+        // LLM volume → 相对强度系数: 0.5=正常, 0.3=轻, 0.9=响 (影响 ±20%)
+        let llm_factor = |v: Option<f64>| -> f64 {
+            v.map(|x| (0.5 + x).clamp(0.4, 1.2)).unwrap_or(1.0)
+        };
         let ma = project_path.join("_temp_audio_m.aac");
+        // 通用响度对齐: 每个音效文件测量自身响度 → gain = 视频时刻响度 - 8dB - 文件响度
+        // 无论音效文件本身多响多轻, 最终都落在「视频响度 - 8dB」, 且实时跟随视频
         let se: Vec<_> = sfx_data.iter().map(|sd| {
-            let vol = (sd.volume.unwrap_or(config.sfx.volume) * sfx_adjust).clamp(0.0, 1.0);
             let f = project_path.join("sfx").join(sd.file.replace("sfx/", ""));
+            let file_db = measure_audio_loudness(&f.to_string_lossy()).unwrap_or(-14.0);
+            // 事件时刻的视频实时响度 (曲线优先, 段级兜底)
+            let video_db = loudness_curve.iter().rev()
+                .find(|(t, _)| sd.time >= *t)
+                .map(|(_, d)| *d)
+                .or_else(|| seg_loudness.iter()
+                    .find(|(s, e, _)| sd.time >= *s && sd.time < *e)
+                    .and_then(|(_, _, d)| *d))
+                .unwrap_or(-26.0);
+            // 目标: 音效最终响度 = 视频响度 - 8dB (点缀不盖人声); 再乘 LLM 相对系数
+            let target = video_db - 8.0;
+            let vol = 10.0_f64.powf((target - file_db) / 20.0) * llm_factor(sd.volume);
+            let vol = vol.clamp(0.005, 1.0);
             render::ffmpeg::SfxEvent { time: sd.time, file: f.to_string_lossy().to_string(), volume: vol, duration: sd.duration }
         }).filter(|e| Path::new(&e.file).exists()).collect();
         if !se.is_empty() {
+            // 混音 + 限幅保护 (防止音效峰值爆音)
             Ffmpeg::mix_sfx(&ta.to_string_lossy(), &se, &ma.to_string_lossy())?;
+            let lim = project_path.join("_temp_audio_l.aac");
+            Ffmpeg::apply_limiter(&ma.to_string_lossy(), &lim.to_string_lossy())?;
+            std::fs::rename(&lim, &ma)?;
             std::fs::rename(&ma, &ta)?;
         }
     }
@@ -410,6 +431,22 @@ pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) 
 
 /// 用 ffprobe 获取视频文件实际时长 (秒)
 /// clip.json 的 duration 是 B站原始元数据含 padding，不可信
+/// 获取视频宽高 (ffprobe stream 信息), 竖屏检测用
+pub fn get_video_size(video_path: &str) -> Option<(u32, u32)> {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=width,height", "-of", "csv=p=0", video_path])
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let s = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
+    let mut parts = s.split(',');
+    let w = parts.next()?.trim().parse::<u32>().ok()?;
+    let h = parts.next()?.trim().parse::<u32>().ok()?;
+    if w == 0 || h == 0 { return None; }
+    Some((w, h))
+}
+
 pub fn get_video_duration(video_path: &str) -> Option<f64> {
     let out = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video_path])
@@ -442,6 +479,55 @@ pub fn cleanup(_project_path: &Path, temp_video: &Path, temp_audio: &Path) {
 }
 
 /// 用 ffmpeg volumedetect 检测音频响度，返回 mean_volume (dB)
+/// 检测音频某时间段的响度 (mean_volume dB) — 段级响度对齐用
+pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Option<f64> {
+    if dur <= 0.0 {
+        return None;
+    }
+    let output = Command::new("ffmpeg")
+        .args(["-ss", &format!("{:.2}", start), "-t", &format!("{:.2}", dur),
+               "-i", audio_path, "-af", "volumedetect", "-f", "null", "-"])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .output().ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        if let Some(val_str) = line.split("mean_volume: ").nth(1)
+            && let Some(db_str) = val_str.trim().strip_suffix(" dB")
+                && let Ok(db) = db_str.parse::<f64>() {
+                    return Some(db);
+                }
+    }
+    None
+}
+
+/// 用 ebur128 测量音频瞬时响度曲线 (每 ~0.1s 一个点, LUFS)
+/// 返回 [(时间, 响度)] — 音效按所在时刻的响度实时调整音量
+pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
+    let output = Command::new("ffmpeg")
+        .args(["-i", audio_path, "-af", "ebur128=peak=true", "-f", "null", "-"])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .output().ok();
+    let Some(output) = output else { return Vec::new() };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut curve: Vec<(f64, f64)> = Vec::new();
+    for line in stderr.lines() {
+        // [Parsed_ebur128_0 @ ...] t: 0.399312  TARGET:-23 LUFS    M: -27.6
+        let Some(t_pos) = line.find(" t: ") else { continue };
+        let Some(m_pos) = line.find(" M:") else { continue };
+        let t_str: String = line[t_pos + 4..].split_whitespace().next().unwrap_or("").to_string();
+        let m_str: String = line[m_pos + 3..].split_whitespace().next().unwrap_or("").to_string();
+        let (Ok(t), Ok(m)) = (t_str.parse::<f64>(), m_str.parse::<f64>()) else { continue };
+        // 跳过静音窗口 (-120 表示无信号)
+        if m > -100.0 {
+            curve.push((t, m));
+        }
+    }
+    curve
+}
+
+/// 检测音频整体响度 (mean_volume dB)
 pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
     let output = Command::new("ffmpeg")
         .args(["-i", audio_path, "-af", "volumedetect", "-f", "null", "-"])

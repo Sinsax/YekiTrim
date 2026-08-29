@@ -7,3 +7,9 @@ target
 /experiments
 *.txt
 *.log
+.pi/
+.worktrees/
+__pycache__/
+*.pyc
+/assets/sfx_catalog.json
+/scripts/asrtest/wavs/

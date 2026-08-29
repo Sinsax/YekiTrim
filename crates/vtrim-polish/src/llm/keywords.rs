@@ -1,4 +1,4 @@
-use super::client::LlmClient;
+use vtrim_core::llm::LlmClient;
 
 /// 调用 LLM 提取关键词
 pub async fn extract_keywords(

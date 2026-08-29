@@ -12,73 +12,7 @@ use vtrim_core::pipeline::{STAGE_AUDIO, STAGE_CUT, STAGE_DETECT, STAGE_TRANSCRIB
 
 use crate::progress::IndicatifProgress;
 
-const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
-# 相同参数会被 vtrim.toml 覆盖
-
-[asr]
-# 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
-num_workers = 0
-# 音频分块长度(秒)
-chunk_duration = 60
-# 块间重叠(秒，仅固定分块模式有效)
-chunk_overlap = 10.0
-# 段间静音阈值(秒)，超过此间隔才切为两条字幕
-segment_gap = 1.0
-# LLM 订正转录文本（需配置 [llm]）
-llm_correct = false
-
-[asr.vad]
-# VAD 检测门限 (0-1, 越高越严格)
-threshold = 0.5
-# 最小静音时长(秒)，超过此长度才切分
-min_silence_duration = 0.5
-# 最小语音段时长(秒)
-min_speech_duration = 0.25
-# 最大语音段时长(秒)，超过则强制切分
-max_speech_duration = 20.0
-
-[correct]
-# 订正 system_prompt（修改此处覆盖内建默认）
-system_prompt = "{{CORRECT_SYSTEM_PROMPT}}"
-# 订正 user_prompt（{context} 和 {segments} 会被自动替换）
-prompt = "{{CORRECT_USER_PROMPT}}"
-
-[detection]
-# 主播名称 (非空时自动追加到切片标题末尾)
-vtuber_name = ""
-# 弹幕密度统计窗口(秒)
-danmaku_window_secs = 10
-# 检测 system_prompt（修改此处覆盖内建默认）
-system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
-# 检测 user prompt_template（{segments} 会被替换；留空 = 恢复内建默认值）
-prompt_template = "{{DETECT_USER_PROMPT}}"
-
-[cutting]
-# 输出目录
-output_dir = "./output"
-# 是否覆盖已有文件
-overwrite = false
-# 静音检测噪声门限 (dB)，越低越敏感
-silence_noise_db = -30
-"#;
-
-const LLM_CONFIG_TOML: &str = r#"# V-Trim LLM 配置 — 独立于工程配置
-# 基于 OpenAI 兼容接口
-
-[llm]
-# API 基础地址
-base_url = ""
-# LLM API Key
-api_key = ""
-# 模型名称
-model = ""
-# 温度参数 (0=确定性输出，建议保持0)
-temperature = 0
-# 最大 Token 数 (检测事件需要较大的输出空间)
-max_tokens = 65536
-# 额外请求参数 (seed 确保稳定输出；关闭 thinking 避免浪费 token 在推理上)
-extra_params = { seed = 42, thinking = { type = "disabled" } }
-"#;
+// (GLOBAL_CONFIG_TOML / LLM_CONFIG_TOML 模板已移入 vtrim_core::config)
 
 mod cli;
 mod progress;
@@ -127,24 +61,45 @@ fn load_cfg(
 }
 
 /// 加载弹幕文件供字幕订正使用（文件不存在则返回空 vec）
-fn load_danmaku_for_correct(cfg: &Config) -> Vec<vtrim_core::types::DanmakuRef> {
+/// LLM 订正转录文本：成功时写入 video_llm.srt 并更新 transcript_file / ctx.transcript。
+/// 失败仅告警不中断管线，保留原始转录。
+async fn llm_correct(
+    cfg: &Config,
+    ctx: &mut vtrim_core::types::PipelineContext,
+    segments: &[vtrim_core::types::TranscriptSegment],
+) -> anyhow::Result<()> {
+    let danmaku = load_danmaku_for_correct(cfg);
+    tracing::info!("LLM 订正转录文本...");
+    match vtrim_core::asr::correct::correct_transcript(segments, &danmaku, &cfg.llm, &cfg.correct).await {
+        Ok(corrected) => {
+            let new = vtrim_core::types::Transcript {
+                segments: corrected,
+                language: "zh".into(),
+                asr_metadata: None,
+            };
+            let llm_srt = ctx.output_dir.join("video_llm.srt");
+            vtrim_core::srt::write_srt(&new, &llm_srt)?;
+            config::save_transcript_path(&llm_srt.to_string_lossy())?;
+            ctx.transcript = Some(new);
+            tracing::info!("LLM 订正完成");
+        }
+        Err(e) => tracing::warn!("LLM 订正失败，使用原始转录: {}", e),
+    }
+    Ok(())
+}
+
+fn load_danmaku_for_correct(cfg: &Config) -> Vec<vtrim_core::danmaku::DanmakuEntry> {
     let path = cfg.project.danmaku_file.as_ref().map(PathBuf::from);
     match path {
         Some(p) if !p.as_os_str().is_empty() && p.exists() => {
-            vtrim_core::danmaku::load_danmaku_refs(&p).unwrap_or_default()
+            vtrim_core::danmaku::load_danmaku(&p).unwrap_or_default()
         }
         _ => Vec::new(),
     }
 }
 
 fn check_stage(stage_num: u32, current: u32, _cfg: &Config) -> anyhow::Result<()> {
-    let mut needed: Vec<u32> = Vec::new();
-    for n in current + 1..stage_num {
-        if !vtrim_core::pipeline::stage_enabled(n, _cfg) {
-            continue;
-        }
-        needed.push(n);
-    }
+    let needed: Vec<u32> = (current + 1..stage_num).collect();
 
     if !needed.is_empty() {
         anyhow::bail!(
@@ -211,84 +166,12 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .unwrap_or_else(|| PathBuf::from("vtrim.toml"));
 
-            // 优先从全局配置复制，不存在则使用内建默认
-            let global_path = vtrim_core::path::vtrim_home().join("config.toml");
-            let mut body = if global_path.exists() {
-                tracing::info!("从全局配置复制: {}", global_path.display());
-                
-                std::fs::read_to_string(&global_path)?
-                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
-            } else {
-                GLOBAL_CONFIG_TOML.to_string()
-                    .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
-            };
-
-            let mut doc: toml_edit::DocumentMut = body.parse()?;
-            doc.remove("llm");
-            doc.remove("correct");
-
-            // 移除 [detection] 中的 prompt 字段，仅保留在 config.toml
-            if let Some(detection) = doc.get_mut("detection") {
-                if let Some(table) = detection.as_table_mut() {
-                    table.remove("system_prompt");
-                    table.remove("prompt_template");
-                }
-            }
-
-            if let Some(dir) = &output {
-                doc["cutting"]["output_dir"] = toml_edit::value(dir.to_string_lossy().as_ref());
-            }
-
-            body = doc.to_string();
-
-            // 构建 [project] 块（带注释），放在最前面
-            let danmaku_val = if let Some(df) = &danmaku {
-                df.to_string_lossy().to_string()
-            } else {
-                let auto_ass = input.with_extension("ass");
-                if auto_ass.exists() {
-                    tracing::info!("自动发现弹幕文件: {}", auto_ass.display());
-                    auto_ass.to_string_lossy().to_string()
-                } else {
-                    String::new()
-                }
-            };
-
-            let mut project = toml_edit::Table::new();
-            project.set_implicit(true);
-            let input_for_config = if let Ok(rel) = input.strip_prefix(out.parent().unwrap()) {
-                rel.to_string_lossy().to_string()
-            } else {
-                input.to_string_lossy().to_string()
-            };
-            project.insert("input_file", toml_edit::value(&input_for_config));
-            project.insert("danmaku_file", toml_edit::value(&danmaku_val));
-            project.insert("transcript_file", toml_edit::value(""));
-            project.insert("audio_file", toml_edit::value(""));
-            project.insert("events_file", toml_edit::value(""));
-
-            let mut header = toml_edit::DocumentMut::new();
-            header.insert("project", toml_edit::Item::Table(project));
-            let mut project_str = header.to_string();
-
-            // 给 project 字段添加注释
-            let comments = [
-                ("input_file", "输入视频文件路径"),
-                ("danmaku_file", "弹幕文件路径"),
-                ("transcript_file", "转写文件路径 (由 transcribe 写入)"),
-                ("audio_file", "音频文件路径 (由 extract 写入)"),
-                ("events_file", "事件文件路径 (由 detect 写入)"),
-            ];
-            for (key, comment) in &comments {
-                let line = format!("{} = ", key);
-                if project_str.contains(&line) {
-                    let commented = format!("# {}\n{}", comment, line);
-                    project_str = project_str.replace(&line, &commented);
-                }
-            }
-
-            let full = format!("# V-Trim 项目配置 — 优先级高于 .vtrim/config.toml\n# 相同的参数以本文件为准\n\n{}", project_str.trim()) + "\n\n" + body.trim();
-            std::fs::write(&out, full)?;
+            vtrim_core::config::write_project_config(
+                &out,
+                &input,
+                danmaku.as_deref(),
+                output.as_deref().map(|d| d.to_string_lossy().to_string()).as_deref(),
+            )?;
 
             tracing::info!("视频工程已初始化: {}", input.display());
             tracing::info!("配置文件: {}", out.display());
@@ -329,19 +212,27 @@ async fn main() -> anyhow::Result<()> {
                 extract_runner.set_progress(progress.clone());
                 extract_runner.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
                 extract_runner.run_until(&mut ctx, STAGE_AUDIO).await?;
+                // 将音频路径写入 vtrim.toml，供后续阶段自动发现
+                if let Some(ref ap) = ctx.audio_path {
+                    let _ = config::save_audio_path(&ap.to_string_lossy());
+                }
             } else {
                 tracing::info!("音频已提取，跳过");
             }
 
             // Step 2: 转写（未完成才跑）
             if current < STAGE_TRANSCRIBE {
-                vtrim_core::download::ensure_models().await?;
+                vtrim_core::download::ensure_models(&cfg.asr).await?;
                 let mut transcribe_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
                 transcribe_runner.set_progress(progress.clone());
                 transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
                 transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
+                // 将转写路径写入 vtrim.toml，供 detect/cut 自动发现
+                config::save_transcript_path(
+                    &ctx.output_dir.join("video.srt").to_string_lossy(),
+                )?;
             } else {
-                // 从已保存的文件恢复 transcript
+                // 从已保存的文件恢复 transcript（若尚未订正过，下方统一补跑 LLM 订正）
                 let recovery_path = cfg.project.transcript_file
                     .as_ref()
                     .filter(|p| !p.is_empty())
@@ -367,38 +258,49 @@ async fn main() -> anyhow::Result<()> {
                         } else {
                             vtrim_core::srt::parse_srt(&content)?
                         });
+                        // 配置尚未记录转写路径时补写（已指向 video_llm.srt 等订正文件时保留）
+                        if cfg
+                            .project
+                            .transcript_file
+                            .as_deref()
+                            .map(|p| p.is_empty())
+                            .unwrap_or(true)
+                        {
+                            let _ = config::save_transcript_path(&path.to_string_lossy());
+                        }
                         tracing::info!("转写已存在: {}", path.display());
                     }
                     None => {
                         tracing::warn!("未找到转写文件，重新转写");
-                        vtrim_core::download::ensure_models().await?;
+                        vtrim_core::download::ensure_models(&cfg.asr).await?;
                         let mut transcribe_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
                         transcribe_runner.set_progress(progress.clone());
                         transcribe_runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
                         transcribe_runner.run_until(&mut ctx, STAGE_TRANSCRIBE).await?;
-                            }
+                        config::save_transcript_path(
+                            &ctx.output_dir.join("video.srt").to_string_lossy(),
+                        )?;
+                    }
                 }
             }
 
-            // LLM 订正：仅当事件尚未检测时执行，避免重复订正已完成的检测结果
-            if current < STAGE_DETECT && cfg.asr.llm_correct.unwrap_or(false) && !cfg.llm.api_key.is_empty() {
-                if let Some(ref transcript) = ctx.transcript {
-                    let danmaku = load_danmaku_for_correct(&cfg);
-                    tracing::info!("LLM 订正转录文本...");
-                    match vtrim_core::asr::correct::correct_transcript(&transcript.segments, &danmaku, &cfg.llm, &cfg.correct).await {
-                        Ok(corrected) => {
-                            let new = vtrim_core::types::Transcript {
-                                segments: corrected,
-                                language: "zh".into(),
-                            };
-                            let llm_srt = ctx.output_dir.join("video_llm.srt");
-                            vtrim_core::srt::write_srt(&new, &llm_srt)?;
-                            config::save_transcript_path(&llm_srt.to_string_lossy())?;
-                            ctx.transcript = Some(new);
-                            tracing::info!("LLM 订正完成");
-                        }
-                        Err(e) => tracing::warn!("LLM 订正失败，使用原始转录: {}", e),
-                    }
+            // LLM 订正：刚转写完成或恢复已有转写时统一执行。
+            // 仅当 transcript_file 已指向存在的 video_llm.srt（此前已订正成功）才跳过，
+            // 避免首次订正失败（transcript_file 仍指向原始文件）后永久丢失订正机会。
+            let already_corrected = cfg.project.transcript_file
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .map(|p| p.file_name().map(|f| f == "video_llm.srt").unwrap_or(false))
+                .unwrap_or(false);
+            if current < STAGE_DETECT
+                && cfg.asr.llm_correct.unwrap_or(false)
+                && !cfg.llm.api_key.is_empty()
+                && !already_corrected
+            {
+                if let Some(segments) = ctx.transcript.as_ref().map(|t| t.segments.clone()) {
+                    llm_correct(&cfg, &mut ctx, &segments).await?;
                 }
             }
 
@@ -407,12 +309,15 @@ async fn main() -> anyhow::Result<()> {
                 let mut detect_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
                 detect_runner.set_progress(progress.clone());
                 detect_runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
+                detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
+                // 将事件文件路径写入 vtrim.toml，供 cut 自动发现
+                let _ = config::save_events_path(
+                    &ctx.output_dir.join("events.json").to_string_lossy(),
+                );
                 if *dry_run {
-                    detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
                     tracing::info!("(--dry-run) 分析完成，未执行剪切。输出目录: {}", output.display());
                     return Ok(());
                 }
-                detect_runner.run_until(&mut ctx, STAGE_DETECT).await?;
             } else {
                 tracing::info!("事件检测已存在，跳过");
             }
@@ -445,6 +350,7 @@ async fn main() -> anyhow::Result<()> {
             check_stage(2, current, &cfg)?;
             let input_path = resolve_input(&cfg, input)?;
             let output = out;
+            std::fs::create_dir_all(&output)?;
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output);
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
@@ -571,7 +477,7 @@ async fn main() -> anyhow::Result<()> {
             runner.add_stage(Box::new(vtrim_core::cutting::Cutter));
 
             runner.run(&mut ctx).await?;
-            tracing::info!("剪切完成, 共 {} 个片段", ctx.segments.len());
+            tracing::info!("剪切完成, 共 {} 个片段", ctx.events.len());
         }
 
         Command::Status => {
@@ -596,6 +502,42 @@ async fn main() -> anyhow::Result<()> {
                 let name = stage_name(num);
                 println!("  [{}] {:<20} {}", status, name, status);
             }
+
+            let transcript_json = output.join("transcript.json");
+            if transcript_json.exists() {
+                if let Ok(content) = std::fs::read_to_string(&transcript_json) {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(meta) = value.get("asr_metadata") {
+                            println!();
+                            println!("ASR 元数据:");
+                            if let Some(model) = meta.get("model").and_then(|m| m.as_str()) {
+                                println!("  模型: {}", model);
+                            }
+                            if let Some(anchors) = meta.get("anchors").and_then(|a| a.as_u64()) {
+                                println!("  锚点数: {}", anchors);
+                            }
+                            if let Some(cov) = meta
+                                .get("anchor_coverage")
+                                .and_then(|c| c.as_f64())
+                            {
+                                println!("  锚点覆盖率: {:.1}%", cov * 100.0);
+                            }
+                            if let Some(span) = meta
+                                .get("max_interp_span")
+                                .and_then(|s| s.as_u64())
+                            {
+                                println!("  最大插值跨度: {}", span);
+                            }
+                            if let Some(reason) = meta
+                                .get("fallback_reason")
+                                .and_then(|r| r.as_str())
+                            {
+                                println!("  降级原因: {}", reason);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Command::Config(action) => match action {
@@ -619,7 +561,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                let body = GLOBAL_CONFIG_TOML
+                let body = config::GLOBAL_CONFIG_TOML
                     // 注意：替换包含外围引号 "{{...}}"，避免模板的引号 + toml_val 的引号叠加
                     .replace(r#""{{CORRECT_SYSTEM_PROMPT}}""#, &toml_val(asr::correct::DEFAULT_SYSTEM_PROMPT))
                     .replace(r#""{{CORRECT_USER_PROMPT}}""#, &toml_val(asr::correct::DEFAULT_USER_PROMPT))
@@ -632,7 +574,7 @@ async fn main() -> anyhow::Result<()> {
                 let llm_out = out.parent().map(|p| p.join("llm.toml")).unwrap_or_else(|| {
                     PathBuf::from(".vtrim/llm.toml")
                 });
-                std::fs::write(&llm_out, LLM_CONFIG_TOML)?;
+                std::fs::write(&llm_out, config::LLM_CONFIG_TOML)?;
                 tracing::info!("LLM 配置文件已生成: {}", llm_out.display());
             }
             ConfigAction::Show => {
@@ -716,7 +658,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::Download => {
-            tracing::info!("下载 SenseVoice 模型...");
+            tracing::info!("下载 ASR 模型 (sensevoice / firered-zh / qwen3-asr)...");
             download::download_all(None).await?;
         }
 
@@ -772,7 +714,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::Polish(action) => {
-            use vtrim_polish::{commands, cover, process, rendering};
+            use vtrim_polish::{commands, cover, process, render};
 
             match action {
                 cli::PolishAction::Init { input } => {
@@ -785,7 +727,7 @@ async fn main() -> anyhow::Result<()> {
                     process::cmd_process(input).await?;
                 }
                 cli::PolishAction::Render { input } => {
-                    rendering::cmd_render(input).await?;
+                    render::cmd_render(input).await?;
                 }
                 cli::PolishAction::Cover { input, template } => {
                     if let Some(t) = template {
@@ -803,6 +745,17 @@ async fn main() -> anyhow::Result<()> {
                 }
                 cli::PolishAction::Test { input } => {
                     commands::cmd_test(input).await?;
+                }
+                cli::PolishAction::Stickers { action } => {
+                    match action {
+                        cli::StickerAction::List => commands::cmd_stickers_list()?,
+                        cli::StickerAction::Test { keywords } => {
+                            commands::cmd_stickers_test(&keywords)?
+                        }
+                        cli::StickerAction::Scan { llm } => {
+                            commands::cmd_stickers_scan(*llm).await?
+                        }
+                    }
                 }
             }
         }

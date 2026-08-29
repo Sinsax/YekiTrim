@@ -4,10 +4,45 @@ use anyhow::{bail, Context, Result};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
 
+use crate::config::AsrConfig;
 use crate::path::vtrim_home;
 
-fn model_download_url() -> &'static str {
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"
+const ASR_MODELS_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
+
+/// 支持的 ASR 模型: (配置名, 模型目录名, 下载文件名, 已安装标记文件)
+const MODEL_REGISTRY: &[(&str, &str, &str, &str)] = &[
+    (
+        "sensevoice",
+        "sensevoice",
+        "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+        "tokens.txt",
+    ),
+    (
+        "firered-zh",
+        "firered-zh",
+        "sherpa-onnx-fire-red-asr2-ctc-zh_en-int8-2026-02-25.tar.bz2",
+        "model.int8.onnx",
+    ),
+    (
+        "qwen3-asr",
+        "qwen3-asr",
+        "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+        "tokenizer/tokenizer_config.json",
+    ),
+];
+
+fn model_archive(name: &str) -> Option<&'static str> {
+    MODEL_REGISTRY
+        .iter()
+        .find(|(cfg, _, _, _)| *cfg == name)
+        .map(|(_, _, archive, _)| *archive)
+}
+
+fn model_marker(name: &str) -> Option<&'static str> {
+    MODEL_REGISTRY
+        .iter()
+        .find(|(cfg, _, _, _)| *cfg == name)
+        .map(|(_, _, _, marker)| *marker)
 }
 
 fn hr_base_url() -> &'static str {
@@ -16,34 +51,40 @@ fn hr_base_url() -> &'static str {
 
 pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
     let home = target_dir.map_or_else(vtrim_home, |p| p.to_path_buf());
-    let models_dir = home.join("models").join("sensevoice");
 
-    tokio::fs::create_dir_all(&models_dir)
-        .await
-        .context("创建模型目录失败")?;
-
-    download_model(&models_dir).await?;
-    download_hr_files(&models_dir).await?;
+    for (cfg, dir, _, _) in MODEL_REGISTRY {
+        let models_dir = home.join("models").join(dir);
+        tokio::fs::create_dir_all(&models_dir)
+            .await
+            .context("创建模型目录失败")?;
+        download_model(&models_dir, cfg).await?;
+        if *cfg == "sensevoice" {
+            download_hr_files(&models_dir).await?;
+        }
+    }
 
     tracing::info!("下载完成！");
-    tracing::info!("  模型: {}", models_dir.display());
+    tracing::info!("模型目录: {}", home.join("models").display());
     tracing::info!("运行 `vtrim transcribe` 开始语音识别");
 
     Ok(())
 }
 
-async fn download_model(target: &Path) -> Result<()> {
-    if target.join("tokens.txt").exists() {
-        tracing::info!("SenseVoice 模型已存在，跳过下载");
+async fn download_model(target: &Path, model: &str) -> Result<()> {
+    let marker = model_marker(model)
+        .ok_or_else(|| anyhow::anyhow!("未知模型: {}", model))?;
+    if target.join(marker).exists() {
+        tracing::info!("模型 {model} 已存在，跳过下载");
         return Ok(());
     }
 
-    let url = model_download_url();
-    tracing::info!("下载 SenseVoice 模型...");
+    let archive = model_archive(model).unwrap();
+    let url = format!("{ASR_MODELS_BASE}/{archive}");
+    tracing::info!("下载模型 {model} ...");
 
     let archive_path = target.join("_model.tar.bz2");
     let part_path = target.join("_model.tar.bz2.part");
-    download_file(url, &part_path).await?;
+    download_file(&url, &part_path).await?;
     tokio::fs::rename(&part_path, &archive_path).await
         .context("重命名临时模型文件失败")?;
 
@@ -173,19 +214,40 @@ async fn download_hr_files(target: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn ensure_models() -> Result<()> {
-    let model_path = vtrim_home().join("models").join("sensevoice");
+pub async fn ensure_models(asr: &AsrConfig) -> Result<()> {
+    let text_model = if asr.model.is_empty() { "sensevoice" } else { &asr.model };
+    ensure_one_model(text_model).await?;
 
-    if !model_path.join("tokens.txt").exists() {
-        tokio::fs::create_dir_all(&model_path).await?;
-        tracing::info!("下载 SenseVoice 模型到 {}", model_path.display());
-        download_model(&model_path).await?;
+    let seg_model = if asr.segmentation_model.is_empty() {
+        "sensevoice"
     } else {
-        tracing::info!("本地 ASR 模型已就绪");
+        &asr.segmentation_model
+    };
+    if seg_model != text_model {
+        ensure_one_model(seg_model).await?;
     }
 
-    // 静默下载同音纠错文件（不影响主流程）
-    download_hr_files(&model_path).await?;
+    Ok(())
+}
+
+async fn ensure_one_model(model: &str) -> Result<()> {
+    let home = vtrim_home();
+    let marker = model_marker(model)
+        .ok_or_else(|| anyhow::anyhow!("未知 ASR 模型: {} (可选: sensevoice / firered-zh / qwen3-asr)", model))?;
+    let model_path = home.join("models").join(model);
+
+    if !model_path.join(marker).exists() {
+        tokio::fs::create_dir_all(&model_path).await?;
+        tracing::info!("下载模型 {model} 到 {}", model_path.display());
+        download_model(&model_path, model).await?;
+    } else {
+        tracing::info!("本地 ASR 模型已就绪 ({model})");
+    }
+
+    if model == "sensevoice" {
+        // 静默下载同音纠错文件（不影响主流程）
+        download_hr_files(&model_path).await?;
+    }
 
     Ok(())
 }

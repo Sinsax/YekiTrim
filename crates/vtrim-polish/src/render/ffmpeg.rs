@@ -77,6 +77,20 @@ impl Ffmpeg {
     }
 
     /// 混入音效
+    /// 混音后限幅: 防止音效峰值爆音 (alimiter)
+    pub fn apply_limiter(input: &str, output: &str) -> anyhow::Result<()> {
+        let out = Command::new("ffmpeg")
+            .args(["-y", "-i", input,
+                   "-af", "alimiter=limit=0.95:level=false",
+                   "-c:a", "aac", output])
+            .output()
+            .map_err(|e| anyhow::anyhow!("limiter 启动失败: {}", e))?;
+        if !out.status.success() {
+            anyhow::bail!("limiter 失败: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+
     pub fn mix_sfx(
         audio_input: &str,
         sfx_events: &[SfxEvent],

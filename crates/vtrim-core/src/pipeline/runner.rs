@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 
-use super::stage::{stage_enabled, Stage, STAGE_CUT};
+use super::stage::Stage;
 use crate::config::Config;
 use crate::progress::ProgressReporter;
 use crate::types::PipelineContext;
@@ -15,13 +15,6 @@ fn inject_config(ctx: &mut PipelineContext, config: &Arc<Config>) {
         .as_ref()
         .filter(|p| !p.is_empty())
         .map(std::path::PathBuf::from);
-}
-
-fn advance_past_disabled(mut current: u32, config: &Config) -> u32 {
-    while current < STAGE_CUT && !stage_enabled(current + 1, config) {
-        current += 1;
-    }
-    current
 }
 
 pub struct PipelineRunner {
@@ -61,18 +54,10 @@ impl PipelineRunner {
     pub async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let current = advance_past_disabled(
-            self.config.project.current_stage(&ctx.output_dir),
-            &self.config,
-        );
+        let current = self.config.project.current_stage(&ctx.output_dir);
 
         for stage in &self.stages {
             let num = stage.stage_number();
-            if !stage.is_enabled(&self.config) {
-                tracing::info!("[{}] skipped (disabled)", stage.name());
-                continue;
-            }
-
             if current + 1 < num {
                 bail!(
                     "阶段 '{}' (#{}) 需要先完成前面的阶段 (当前: #{})",
@@ -99,11 +84,6 @@ impl PipelineRunner {
         self.inject_progress(ctx);
 
         for stage in &self.stages {
-            if !stage.is_enabled(&self.config) {
-                tracing::info!("[{}] skipped (disabled)", stage.name());
-                continue;
-            }
-
             let name = stage.name();
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
@@ -119,10 +99,7 @@ impl PipelineRunner {
     pub async fn run_until(&self, ctx: &mut PipelineContext, max_stage: u32) -> Result<()> {
         inject_config(ctx, &self.config);
         self.inject_progress(ctx);
-        let current = advance_past_disabled(
-            self.config.project.current_stage(&ctx.output_dir),
-            &self.config,
-        );
+        let current = self.config.project.current_stage(&ctx.output_dir);
 
         for stage in &self.stages {
             let num = stage.stage_number();
@@ -131,11 +108,6 @@ impl PipelineRunner {
                 tracing::info!("[{}] stopped by --dry-run", name);
                 break;
             }
-            if !stage.is_enabled(&self.config) {
-                tracing::info!("[{}] skipped (disabled)", name);
-                continue;
-            }
-
             if current + 1 < num {
                 bail!(
                     "阶段 '{}' (#{}) 需要先完成前面的阶段 (当前: #{})",

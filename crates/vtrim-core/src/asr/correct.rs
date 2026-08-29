@@ -6,9 +6,10 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::config::{CorrectConfig, LlmConfig};
-use crate::types::{DanmakuRef, TranscriptSegment};
+use crate::danmaku::DanmakuEntry;
+use crate::types::TranscriptSegment;
 
-const BATCH_SIZE: usize = 100;
+const BATCH_SIZE: usize = 25;
 const CONTEXT_OVERLAP: usize = 15;
 const MAX_CONCURRENT: usize = 3;
 
@@ -16,7 +17,7 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "\
 你是虚拟主播直播转录文本的订正助手。\
 修正 ASR 常见的错别字、主播名/VTuber名、游戏名、歌曲名、网络用语。\
 保留口语风格和语气词（啊、哦、嗯、嘛、呗），不要书面化润色。\
-只以 JSON 格式输出修正结果。";
+只以 JSON 对象格式输出有修正的条目。";
 
 pub const DEFAULT_USER_PROMPT: &str = "\
 请修正以下语音转文字转录，注意修正：
@@ -41,40 +42,53 @@ pub const DEFAULT_USER_PROMPT: &str = "\
 输入：这个sc说的是什么，破房了家人们，年度最佳预订
 输出：这个SC说的是什么，破防了家人们，年度最佳预订
 
-输入：我我我真的要被气笑了，然后然后他就跑了，寄！
-输出：我我我真的要被气笑了，然后然后他就跑了，寄！
-
-输入：这波操作太难绷了，血压高了，主播老吃家了
-输出：这波操作太难绷了，血压高了，主播老吃家了
-
 {context}
 
-需要修正的转录（JSON 格式，每个元素包含 index 和 text）：
+需要订正的转录（JSON 数组，每个元素包含 index 和 text）：
 {segments}
 
-请以 JSON 数组格式返回修正结果：
-[{\"index\": 序号, \"text\": \"修正后文字\"}, ...]
-不要在 JSON 外附加任何其他文字，不要使用 markdown 代码块。";
+只输出【有修正】的条目，没有修正的条目不要输出。
+输出格式为 JSON 对象，键是原 index，值是该条修正后的完整文本：
+{\"3\": \"修正后的文本\", \"7\": \"另一条修正后的文本\"}
+
+如果全部都不需要修正，只输出：
+{}
+
+不要输出 markdown 代码块，不要在 JSON 外附加任何其他文字。";
+
+fn effective_user_prompt(correct: &CorrectConfig) -> String {
+    if correct.prompt.is_empty() || correct.prompt.contains("JSON 数组格式返回修正结果") {
+        DEFAULT_USER_PROMPT.to_string()
+    } else {
+        correct.prompt.clone()
+    }
+}
+
+fn effective_system_prompt(correct: &CorrectConfig) -> String {
+    if correct.system_prompt.is_empty() || correct.system_prompt.contains("只以 JSON 格式输出修正结果") {
+        DEFAULT_SYSTEM_PROMPT.to_string()
+    } else {
+        correct.system_prompt.clone()
+    }
+}
 
 pub async fn correct_transcript(
     segments: &[TranscriptSegment],
-    danmaku: &[DanmakuRef],
+    danmaku: &[DanmakuEntry],
     llm: &LlmConfig,
     correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
-    // 第一步：预合并短段，让 LLM 能看⻅更多上下文
-    let (merged, merge_groups) = merge_short_segments(segments);
-    let total = merged.len();
+    if segments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total = segments.len();
     let total_batches = total.div_ceil(BATCH_SIZE);
     let llm = Arc::new(llm.clone());
     let correct = Arc::new(correct.clone());
     let danmaku = Arc::new(danmaku.to_vec());
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut set: JoinSet<(usize, usize, Result<Vec<String>>)> = JoinSet::new();
-
-    if total != segments.len() {
-        tracing::info!("LLM 订正前预合并: {} 段 → {} 组", segments.len(), total);
-    }
 
     let pb = ProgressBar::new(total_batches as u64);
     if let Ok(style) = ProgressStyle::with_template(
@@ -84,7 +98,7 @@ pub async fn correct_transcript(
     }
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    for (batch_idx, chunk) in merged.chunks(BATCH_SIZE).enumerate() {
+    for (batch_idx, chunk) in segments.chunks(BATCH_SIZE).enumerate() {
         let offset = batch_idx * BATCH_SIZE;
         let batch_num = batch_idx + 1;
         let chunk_len = chunk.len();
@@ -92,7 +106,7 @@ pub async fn correct_transcript(
         // 从上一批末尾取 CONTEXT_OVERLAP 段作为前文上下文
         let context: Vec<TranscriptSegment> = if batch_idx > 0 {
             let ctx_start = offset.saturating_sub(CONTEXT_OVERLAP);
-            merged[ctx_start..offset].to_vec()
+            segments[ctx_start..offset].to_vec()
         } else {
             Vec::new()
         };
@@ -114,13 +128,13 @@ pub async fn correct_transcript(
         });
     }
 
-    // 收集订正结果（按合并后的索引）
-    let mut corrected_texts = merged.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+    // 收集订正结果，未返回/失败的条目保持原文
+    let mut corrected_texts = segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
     while let Some(result) = set.join_next().await {
         match result {
             Ok((offset, batch_num, Ok(texts))) => {
                 for (i, text) in texts.iter().enumerate() {
-                    if i < BATCH_SIZE.min(total.saturating_sub(offset)) {
+                    if i < texts.len() && offset + i < corrected_texts.len() {
                         corrected_texts[offset + i].clone_from(text);
                     }
                 }
@@ -139,87 +153,17 @@ pub async fn correct_transcript(
 
     pb.finish_with_message("订正完成");
 
-    // 第二步：将合并组的订正结果按比例拆分回原始分段
-    Ok(expand_merged(&corrected_texts, segments, &merge_groups))
-}
-
-/// 合并短段（≤5 字、时长 <3s、间距 <1.0s）到前一段，让 LLM 看⻅完整上下文
-fn merge_short_segments(segments: &[TranscriptSegment]) -> (Vec<TranscriptSegment>, Vec<(usize, usize)>) {
-    let mut merged: Vec<TranscriptSegment> = Vec::new();
-    let mut groups: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0;
-    while i < segments.len() {
-        let group_start = i;
-        let mut text = segments[i].text.clone();
-        let start = segments[i].start;
-        let mut end = segments[i].end;
-
-        // 尝试向前合并短段
-        while i + 1 < segments.len() {
-            let dur = segments[i + 1].end - segments[i + 1].start;
-            let text_len = segments[i + 1].text.trim().chars().count();
-            let gap = segments[i + 1].start - segments[i].end;
-
-            let is_short = dur < 1.0 || (dur < 3.0 && text_len <= 5);
-            if !is_short || gap >= 1.0 {
-                break;
-            }
-            text = format!("{}{}", text.trim(), segments[i + 1].text.trim());
-            end = segments[i + 1].end;
-            i += 1;
-        }
-
-        merged.push(TranscriptSegment {
-            start,
-            end,
-            text,
-            confidence: segments[group_start].confidence,
-        });
-        groups.push((group_start, i));
-        i += 1;
-    }
-    (merged, groups)
-}
-
-/// 将合并组的订正结果按比例拆回原始分段数
-fn expand_merged(
-    corrected: &[String],
-    segments: &[TranscriptSegment],
-    groups: &[(usize, usize)],
-) -> Vec<TranscriptSegment> {
     let mut result = segments.to_vec();
-    for (group_idx, &(start, end)) in groups.iter().enumerate() {
-        let corr = &corrected[group_idx];
-        if start == end {
-            result[start].text = corr.clone();
-        } else {
-            // 按原始文本⻓度比例拆分
-            let orig_lens: Vec<usize> = (start..=end)
-                .map(|k| segments[k].text.trim().chars().count())
-                .collect();
-            let total_orig: usize = orig_lens.iter().sum();
-            let corr_len = corr.chars().count();
-            let mut char_offset = 0;
-            for (k, &orig_len) in (start..=end).zip(&orig_lens) {
-                let part = if total_orig > 0 {
-                    (corr_len as f64 * orig_len as f64 / total_orig as f64).round() as usize
-                } else {
-                    1
-                };
-                let o = char_offset.min(corr_len);
-                let e = (char_offset + part).min(corr_len);
-                result[k].text = corr[o..e].to_string();
-                char_offset = e;
-            }
-        }
+    for (i, seg) in result.iter_mut().enumerate() {
+        seg.text = corrected_texts[i].clone();
     }
-    result
+    Ok(result)
 }
 
 async fn send_batch(
     segments: &[TranscriptSegment],
     context: &[TranscriptSegment],
-    danmaku: &[DanmakuRef],
+    danmaku: &[DanmakuEntry],
     llm: &LlmConfig,
     correct: &CorrectConfig,
     offset: usize,
@@ -256,7 +200,7 @@ async fn send_batch(
         String::new()
     };
 
-    // 构建待修正批次的 JSON
+    // 构建待订正批次的 JSON
     let seg_json: Vec<serde_json::Value> = segments
         .iter()
         .enumerate()
@@ -268,79 +212,163 @@ async fn send_batch(
         .context("序列化转录段为 JSON 失败")?;
 
     // 组装用户 prompt
-    let user_prompt = if !correct.prompt.is_empty() {
-        correct.prompt.clone()
-    } else {
-        DEFAULT_USER_PROMPT.to_string()
-    };
+    let user_prompt = effective_user_prompt(correct);
     let replaced = user_prompt
         .replace("{context}", &format!("{}{}", context_text, dm_text))
         .replace("{segments}", &seg_text);
 
     // 系统消息
-    let system_msg = if !correct.system_prompt.is_empty() {
-        correct.system_prompt.clone()
-    } else {
-        DEFAULT_SYSTEM_PROMPT.to_string()
-    };
+    let system_msg = effective_system_prompt(correct);
 
+    // 初始结果全部为原文；只有 LLM 明确返回的条目才会被替换
+    let mut result = segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+    let corrected = send_and_parse(&replaced, &system_msg, llm, offset, segments.len()).await?;
+    for (i, text) in corrected.iter().enumerate() {
+        if !text.is_empty() && i < result.len() {
+            result[i].clone_from(text);
+        }
+    }
+    Ok(result)
+}
+
+async fn send_and_parse(
+    user_prompt: &str,
+    system_prompt: &str,
+    llm: &LlmConfig,
+    offset: usize,
+    expected: usize,
+) -> Result<Vec<String>> {
+    let client = crate::llm::LlmClient::from_config(llm)?.with_timeout(120);
     let messages = serde_json::json!([
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": replaced}
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
     ]);
-    let body = crate::detection::build_request_body(llm, messages);
-    let resp_body = crate::detection::send_request(llm, &body, 120).await?;
+    let resp_body = client.send(messages).await?;
     let content = resp_body["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 choices[0].message.content"))?;
 
-    let mut corrected = parse_json_result(content, offset, segments.len())?;
-
-    // 对未返回的条目保留原文
-    for (i, text) in corrected.iter_mut().enumerate() {
-        if (text.is_empty() || text == "...")
-            && i < segments.len() {
-                text.clone_from(&segments[i].text);
-            }
+    match parse_correction_result(content, offset, expected) {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            tracing::warn!("订正 JSON 解析失败，重试一次: {e:#}");
+            let retry_prompt = format!(
+                "{}\n\n注意：上次输出无法解析，请只输出 JSON 对象，不要包含任何其他文字或代码块。",
+                user_prompt
+            );
+            let messages = serde_json::json!([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": retry_prompt}
+            ]);
+            let resp_body = client.send(messages).await?;
+            let content = resp_body["choices"][0]["message"]["content"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("LLM 重试响应缺少 choices[0].message.content"))?;
+            parse_correction_result(content, offset, expected)
+        }
     }
-
-    Ok(corrected)
 }
 
-/// 从 LLM 返回内容中解析 JSON 格式的订正结果
-fn parse_json_result(content: &str, offset: usize, expected: usize) -> Result<Vec<String>> {
+/// 解析订正结果。
+///
+/// 优先支持 JSON 对象：`{"3": "修正文本", ...}`。
+/// 兼容旧的 JSON 数组：`[{"index":3,"text":"修正文本"}, ...]`。
+fn parse_correction_result(content: &str, offset: usize, expected: usize) -> Result<Vec<String>> {
     let mut result = vec![String::new(); expected];
+    let json_str = extract_json(content);
+    let value: serde_json::Value =
+        serde_json::from_str(json_str).context("订正 JSON 格式无效")?;
 
-    let parsed: Vec<serde_json::Value> = match crate::detection::parse_json(content) {
-        Ok(serde_json::Value::Array(arr)) => arr,
-        Ok(_) => {
-            tracing::warn!("LLM 返回的不是 JSON 数组 (offset={})", offset);
-            return Ok(result);
-        }
-        Err(e) => {
-            tracing::warn!(
-                "JSON 解析失败 (offset={}, expected={}): {}",
-                offset,
-                expected,
-                e
-            );
-            return Ok(result);
-        }
-    };
-
-    for item in parsed {
-        let idx = item
-            .get("index")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize);
-        let text = item.get("text").and_then(|v| v.as_str());
-
-        if let (Some(idx), Some(text)) = (idx, text) {
-            if idx > offset && idx <= offset + expected {
-                result[idx - offset - 1] = text.to_string();
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map {
+                let Ok(idx) = key.parse::<usize>() else {
+                    continue;
+                };
+                if let Some(text) = val.as_str() {
+                    if idx > offset && idx <= offset + expected {
+                        result[idx - offset - 1] = text.to_string();
+                    }
+                }
             }
         }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                let idx = item
+                    .get("index")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize);
+                let text = item.get("text").and_then(|v| v.as_str());
+                if let (Some(idx), Some(text)) = (idx, text) {
+                    if idx > offset && idx <= offset + expected {
+                        result[idx - offset - 1] = text.to_string();
+                    }
+                }
+            }
+        }
+        _ => anyhow::bail!("订正结果不是 JSON 对象或数组"),
     }
 
     Ok(result)
+}
+
+fn extract_json(text: &str) -> &str {
+    let text = text.trim();
+    let text = if let Some(pos) = text.find("```json") {
+        let after = &text[pos + 7..];
+        after.split("```").next().unwrap_or(text)
+    } else if let Some(pos) = text.find("```") {
+        let after = &text[pos + 3..];
+        after.split("```").next().unwrap_or(text)
+    } else {
+        text
+    };
+    let text = text.trim();
+
+    // 兼容对象或数组：取第一个 { 或 [ 到最后一个 } 或 ]
+    let start = text
+        .find(['{', '['])
+        .unwrap_or(0);
+    let end = text
+        .rfind(['}', ']'])
+        .map(|i| i + 1)
+        .unwrap_or(text.len());
+    &text[start..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_object_corrections() {
+        let out = parse_correction_result(r#"{"2":"法环","5":"B站舰长"}"#, 0, 10).unwrap();
+        assert_eq!(out[1], "法环");
+        assert_eq!(out[4], "B站舰长");
+        assert!(out[0].is_empty());
+    }
+
+    #[test]
+    fn parse_array_corrections() {
+        let out = parse_correction_result(
+            r#"[{"index":3,"text":"破防了"},{"index":7,"text":"寄！"}]"#,
+            0,
+            10,
+        )
+        .unwrap();
+        assert_eq!(out[2], "破防了");
+        assert_eq!(out[6], "寄！");
+    }
+
+    #[test]
+    fn parse_empty_object() {
+        let out = parse_correction_result("{}", 0, 5).unwrap();
+        assert!(out.iter().all(|s| s.is_empty()));
+    }
+
+    #[test]
+    fn extract_json_strips_code_fence() {
+        let s = "```json\n{\"1\":\"你好\"}\n```";
+        assert_eq!(extract_json(s), "{\"1\":\"你好\"}");
+    }
 }

@@ -4,7 +4,6 @@ use std::process::Command;
 use async_trait::async_trait;
 use anyhow::{Context, Result};
 
-use crate::config::Config;
 use crate::pipeline::{Stage, STAGE_TRANSCRIBE};
 use crate::srt::write_srt;
 use crate::types::{PipelineContext, Transcript};
@@ -22,10 +21,6 @@ impl Stage for Transcriber {
 
     fn stage_number(&self) -> u32 {
         STAGE_TRANSCRIBE
-    }
-
-    fn is_enabled(&self, _config: &Config) -> bool {
-        true
     }
 
     async fn run(&self, ctx: &mut PipelineContext) -> Result<()> {
@@ -54,23 +49,16 @@ impl Stage for Transcriber {
         let total_duration = wav_duration_secs(&audio_path)?;
         tracing::info!("音频时长: {:.1}s", total_duration);
 
-        // Local ASR: use sherpa-onnx as a library (model loaded once)
+        // Local ASR: 单模型 sensevoice。
         local::ensure_ready(&ctx.config.asr)?;
-        let chunk_cfg = local::ChunkConfig::from(&ctx.config.asr);
-        let worker_info = if ctx.config.asr.num_workers == 0 {
-            format!("auto ({})", chunk_cfg.num_workers)
-        } else {
-            format!("manual ({})", chunk_cfg.num_workers)
-        };
-        tracing::info!("使用本地 ASR (sherpa-onnx), 并行块数: {}, 每块线程: 1", worker_info);
+        tracing::info!("使用单模型 SenseVoice 转写");
 
-        let recognizer = local::create_recognizer(&ctx.config.asr)?;
-        let mut all_segments = local::transcribe_chunked(
-            &recognizer,
+        let output = local::transcribe_sensevoice(
+            &ctx.config.asr,
             &audio_path,
-            &chunk_cfg,
             &*ctx.progress,
         )?;
+        let mut all_segments = output.segments;
 
         all_segments.retain(|s| s.text.trim() != "\u{FFFD}");
 
@@ -80,9 +68,12 @@ impl Stage for Transcriber {
 
         tracing::info!("转写完成: {} 个片段", all_segments.len());
 
+        let mut metadata = output.metadata;
+        metadata.model = ctx.config.asr.model.clone();
         let transcript = Transcript {
             segments: all_segments,
             language: "zh".into(),
+            asr_metadata: Some(metadata),
         };
 
         let srt_path = ctx.output_dir.join("video.srt");

@@ -76,7 +76,38 @@ pub struct StyleRoot {
     pub subtitle: SubtitleStyle,
     #[serde(default)]
     pub danmaku: DanmakuStyle,
+    #[serde(default)]
+    pub camera: CameraStyle,
 }
+
+// ===== 运镜样式 =====
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CameraStyle {
+    /// 中景缩放 (camera zoom="中")
+    #[serde(default = "default_zoom_mid")]
+    pub zoom_mid: f64,
+    /// 近景特写缩放 (camera zoom="近")
+    #[serde(default = "default_zoom_close")]
+    pub zoom_close: f64,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl Default for CameraStyle {
+    fn default() -> Self {
+        Self {
+            zoom_mid: default_zoom_mid(),
+            zoom_close: default_zoom_close(),
+            extra: HashMap::new(),
+        }
+    }
+}
+
+fn default_zoom_mid() -> f64 { 1.15 }
+fn default_zoom_close() -> f64 { 1.3 }
 
 
 // ===== 关键词过滤 =====
@@ -100,7 +131,7 @@ fn default_version() -> u32 {
 }
 
 fn default_sticker_source() -> Vec<String> {
-    vec!["emoji".into()]
+    vec!["emoji".into(), "local".into()]
 }
 
 impl Default for ProjectMeta {
@@ -341,6 +372,11 @@ pub struct SfxConfig {
     #[serde(default = "default_true")]
     pub shake_enabled: bool,
 
+    /// 音效屏蔽列表: 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
+    /// (与全局 .vtrim/config.toml [sfx] blacklist 合并, 此处追加)
+    #[serde(default)]
+    pub blacklist: Vec<String>,
+
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -351,6 +387,7 @@ impl Default for SfxConfig {
             volume: default_sfx_volume(),
             reactions_enabled: true,
             shake_enabled: true,
+            blacklist: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -443,6 +480,14 @@ pub struct Segment {
     #[serde(default)]
     pub events: Vec<Event>,
 
+    /// Step1 LLM 输出的段效果方向（大分类/音效tag/贴纸词/特效/情绪等级）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<SegmentDirection>,
+
+    /// 每段 sfx/贴纸数量上下限（Step1 输出, Step2 消费）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<SegmentBudget>,
+
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -465,6 +510,9 @@ pub enum Event {
         /// process 步骤解析后的文件名 (不含扩展名)
         #[serde(default)]
         name: Option<String>,
+        /// process 步骤解析成功后实际使用的来源 (emoji/irasu/local)
+        #[serde(default)]
+        source: Option<String>,
         x: String, y: String,
         #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
         sfx_volume: Option<f64>,
@@ -478,17 +526,18 @@ pub enum Event {
     },
 
     // === 瞬时特效 (所有 sfx 接受布尔值) ===
-    Shake      { time: f64, intensity: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Flash      { time: f64, color: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Blur       { time: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    ZoomBounce { time: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Vignette   { time: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    HueShift   { time: f64, color: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Stutter    { time: f64, intensity: Option<f64>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Split      { time: f64, intensity: Option<f64>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Noise      { time: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Pulse      { time: f64, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    ColorShift { time: f64, color: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    // duration 可选: LLM 可写特效持续秒数, 缺省用前端默认
+    Shake      { time: f64, intensity: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Flash      { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Blur       { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    ZoomBounce { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Vignette   { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    HueShift   { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Stutter    { time: f64, intensity: Option<f64>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Split      { time: f64, intensity: Option<f64>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Noise      { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    Pulse      { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
+    ColorShift { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
 
     // === 覆盖层 (持续) ===
     Overlay {
@@ -497,11 +546,15 @@ pub enum Event {
         colors: Option<Vec<String>>, shape: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
         sfx_volume: Option<f64>,
+        #[serde(default)] anchor: Option<String>,
     },
 
     // === 纯音效 (无视觉) ===
+    // name 由规则引擎按字幕上下文填充, LLM 可以不写
     Sfx {
-        time: f64, name: String,
+        time: f64,
+        #[serde(default)]
+        name: String,
         #[serde(default)]
         volume: Option<f64>,
         /// 播放时长(秒)，不指定则文件原始长度
@@ -561,6 +614,33 @@ fn flex_sfx<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D:
 
 fn default_output() -> String { "vtuber-clip.mp4".into() }
 fn default_metadata() -> String { "clip.json".into() }
+
+
+/// 段效果方向（Step1 LLM 输出，Step2 消费）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SegmentDirection {
+    /// 大分类（如 "① 主播情绪反应"）
+    pub cat: String,
+    /// 音效细分 tag（如 ["爆炸", "打击格斗"]）
+    pub sfx_tags: Vec<String>,
+    /// 贴纸情绪词（如 ["laugh", "shock"]）
+    pub sticker: Vec<String>,
+    /// 视觉特效类型（如 ["shake", "flash"]）
+    pub effects: Vec<String>,
+    /// 高光等级 0-3（0=叙述, 3=名场面）
+    pub mood: u8,
+}
+
+/// 每段特效数量上下限
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SegmentBudget {
+    pub sfx_min: usize,
+    pub sfx_max: usize,
+    pub sticker_min: usize,
+    pub sticker_max: usize,
+}
 
 impl ProjectFile {
     /// 序列化为 TOML 并注入注释
@@ -685,9 +765,18 @@ impl ProjectFile {
                 continue;
             }
 
+            // [style.camera] 后加注释
+            if trimmed == "[style.camera]" {
+                result.push_str("\n# ===== 运镜缩放 =====\n");
+                result.push_str("# zoom_mid: 中景缩放 (camera zoom=中), zoom_close: 近景特写缩放\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+
             // [sfx] 后加注释
             if trimmed == "[sfx]" {
                 result.push_str("\n# ===== 音效 =====\n");
+                result.push_str("# blacklist: 屏蔽列表, 精确 id 或 tag:xxx 整族 (与全局配置合并)\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
@@ -800,7 +889,7 @@ impl ProjectFile {
             duration: None,
             layout: Layout::default(),
             style: StyleRoot::default(),
-            sticker_source: vec!["emoji".into()],
+            sticker_source: vec!["emoji".into(), "irasu".into(), "local".into()],
             filter: FilterConfig {
                 danmaku: vec!["OBS".into(), "游戏".into(), "直播".into()],
                 highlight: vec!["OBS".into(), "游戏".into()],
@@ -810,7 +899,7 @@ impl ProjectFile {
             segments: vec![
                 Segment {
                     start: 0.0, end: 10.0, fx: "low".into(), note: "开场".into(),
-                    events: vec![], extra: HashMap::new(),
+                    events: vec![], direction: None, budget: None, extra: HashMap::new(),
                 },
             ],
             extra: HashMap::new(),

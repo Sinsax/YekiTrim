@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 fn default_local_model() -> String {
     "sensevoice".into()
 }
+fn default_asr_model() -> String {
+    "sensevoice".into()
+}
 fn default_output_dir() -> String {
     "./output".into()
 }
@@ -81,6 +84,8 @@ pub struct Config {
     pub detection: DetectionConfig,
     #[serde(default)]
     pub cutting: CuttingConfig,
+    #[serde(default)]
+    pub sfx: SfxConfig,
 }
 
 impl Default for Config {
@@ -129,15 +134,33 @@ pub struct AsrConfig {
     pub provider: String,
     #[serde(default = "default_asr_language")]
     pub language: String,
-    #[serde(default)]
-    pub vad: VadConfig,
+    #[serde(default = "default_asr_model")]
+    pub model: String,
+    #[serde(default = "default_timestamp_alignment")]
+    pub timestamp_alignment: bool,
+    #[serde(default = "default_segmentation_model")]
+    pub segmentation_model: String,
+    #[serde(default = "default_max_segment_duration")]
+    pub max_segment_duration: f64,
+    #[serde(default = "default_segment_merge_gap")]
+    pub segment_merge_gap: f64,
+    #[serde(default = "default_segment_padding")]
+    pub segment_padding: f64,
+    #[serde(default = "default_max_new_tokens")]
+    pub max_new_tokens: u32,
 }
 
 fn default_asr_language() -> String { "zh".into() }
+fn default_timestamp_alignment() -> bool { false }
 fn default_num_workers() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
 fn default_segment_gap() -> f64 { 1.0 }
+fn default_segmentation_model() -> String { "sensevoice".into() }
+fn default_max_segment_duration() -> f64 { 15.0 }
+fn default_segment_merge_gap() -> f64 { 0.6 }
+fn default_segment_padding() -> f64 { 0.3 }
+fn default_max_new_tokens() -> u32 { 1024 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -151,7 +174,13 @@ impl Default for AsrConfig {
             llm_correct: None,
             provider: String::new(),
             language: default_asr_language(),
-            vad: VadConfig::default(),
+            model: default_asr_model(),
+            timestamp_alignment: default_timestamp_alignment(),
+            segmentation_model: default_segmentation_model(),
+            max_segment_duration: default_max_segment_duration(),
+            segment_merge_gap: default_segment_merge_gap(),
+            segment_padding: default_segment_padding(),
+            max_new_tokens: default_max_new_tokens(),
         }
     }
 }
@@ -233,30 +262,16 @@ impl Default for CuttingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VadConfig {
-    #[serde(default = "default_vad_threshold")]
-    pub threshold: f64,
-    #[serde(default = "default_vad_min_silence")]
-    pub min_silence_duration: f64,
-    #[serde(default = "default_vad_min_speech")]
-    pub min_speech_duration: f64,
-    #[serde(default = "default_vad_max_speech")]
-    pub max_speech_duration: f64,
+pub struct SfxConfig {
+    /// 音效屏蔽列表: 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
+    /// (vtrim-polish 使用, 全局层定义于此供跨工程共享)
+    #[serde(default)]
+    pub blacklist: Vec<String>,
 }
 
-fn default_vad_threshold() -> f64 { 0.5 }
-fn default_vad_min_silence() -> f64 { 0.5 }
-fn default_vad_min_speech() -> f64 { 0.25 }
-fn default_vad_max_speech() -> f64 { 20.0 }
-
-impl Default for VadConfig {
+impl Default for SfxConfig {
     fn default() -> Self {
-        Self {
-            threshold: default_vad_threshold(),
-            min_silence_duration: default_vad_min_silence(),
-            min_speech_duration: default_vad_min_speech(),
-            max_speech_duration: default_vad_max_speech(),
-        }
+        Self { blacklist: Vec::new() }
     }
 }
 
