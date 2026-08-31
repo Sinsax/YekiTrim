@@ -130,16 +130,12 @@ pub struct AsrConfig {
     pub segment_gap: f64,
     #[serde(default)]
     pub llm_correct: Option<bool>,
-    #[serde(default)]
-    pub provider: String,
     #[serde(default = "default_asr_language")]
     pub language: String,
     #[serde(default = "default_asr_model")]
     pub model: String,
-    #[serde(default = "default_timestamp_alignment")]
-    pub timestamp_alignment: bool,
-    #[serde(default = "default_segmentation_model")]
-    pub segmentation_model: String,
+    #[serde(default)]
+    pub align_model: String,
     #[serde(default = "default_max_segment_duration")]
     pub max_segment_duration: f64,
     #[serde(default = "default_segment_merge_gap")]
@@ -148,19 +144,21 @@ pub struct AsrConfig {
     pub segment_padding: f64,
     #[serde(default = "default_max_new_tokens")]
     pub max_new_tokens: u32,
+    /// ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
+    #[serde(default = "default_asr_mode")]
+    pub mode: String,
 }
 
 fn default_asr_language() -> String { "zh".into() }
-fn default_timestamp_alignment() -> bool { false }
 fn default_num_workers() -> u32 { 0 }
 fn default_chunk_duration() -> f64 { 60.0 }
 fn default_chunk_overlap() -> f64 { 10.0 }
 fn default_segment_gap() -> f64 { 1.0 }
-fn default_segmentation_model() -> String { "sensevoice".into() }
 fn default_max_segment_duration() -> f64 { 15.0 }
 fn default_segment_merge_gap() -> f64 { 0.6 }
 fn default_segment_padding() -> f64 { 0.3 }
-fn default_max_new_tokens() -> u32 { 1024 }
+fn default_max_new_tokens() -> u32 { 2048 }
+fn default_asr_mode() -> String { "single".into() }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -172,15 +170,14 @@ impl Default for AsrConfig {
             chunk_overlap: default_chunk_overlap(),
             segment_gap: default_segment_gap(),
             llm_correct: None,
-            provider: String::new(),
             language: default_asr_language(),
             model: default_asr_model(),
-            timestamp_alignment: default_timestamp_alignment(),
-            segmentation_model: default_segmentation_model(),
+            align_model: String::new(),
             max_segment_duration: default_max_segment_duration(),
             segment_merge_gap: default_segment_merge_gap(),
             segment_padding: default_segment_padding(),
             max_new_tokens: default_max_new_tokens(),
+            mode: default_asr_mode(),
         }
     }
 }

@@ -3,17 +3,45 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
-use sherpa_onnx::{HomophoneReplacerConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
+use sherpa_onnx::{HomophoneReplacerConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
 
 use crate::config::AsrConfig;
 use crate::progress::ProgressReporter;
 use crate::types::{AsrMetadata, TranscriptSegment};
 
 fn model_dir(cfg: &AsrConfig) -> PathBuf {
+    model_dir_for(cfg, &cfg.local_model)
+}
+
+/// 指定模型名对应的模型目录。
+///
+/// 查找优先级：
+/// 1. 配置的 `local_model_dir`（直接目录或 models 根目录）
+/// 2. 用户目录 `~/.vtrim/models/<model>`
+/// 3. 程序目录 `.vtrim/models/<model>`
+fn model_dir_for(cfg: &AsrConfig, model: &str) -> PathBuf {
     if !cfg.local_model_dir.is_empty() {
-        return PathBuf::from(&cfg.local_model_dir);
+        let base = PathBuf::from(&cfg.local_model_dir);
+        // 兼容两种写法：直接指向模型目录，或指向 models 根目录（自动拼接模型名）
+        let direct = base.join(model);
+        if base.join("model.int8.onnx").exists() || base.join("model.onnx").exists() {
+            return base;
+        }
+        if direct.exists() {
+            return direct;
+        }
+        return base;
     }
-    crate::path::vtrim_home().join("models").join(&cfg.local_model)
+
+    // 用户目录优先（开发时模型常放这里）
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let user_dir = PathBuf::from(home).join(".vtrim").join("models").join(model);
+        if user_dir.exists() {
+            return user_dir;
+        }
+    }
+
+    crate::path::vtrim_home().join("models").join(model)
 }
 
 fn find_model(model_dir: &Path, model: &str) -> Result<PathBuf> {
@@ -44,20 +72,10 @@ fn require_file(dir: &Path, name: &str) -> Result<PathBuf> {
     }
 }
 
-fn resolve_provider(cfg: &AsrConfig) -> Option<String> {
-    let p = cfg.provider.trim();
-    if p.is_empty() || p == "cpu" {
-        None
-    } else {
-        Some(p.to_string())
-    }
-}
-
 pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
     let mdir = model_dir(cfg);
 
     let mut config = OfflineRecognizerConfig::default();
-    config.model_config.provider = resolve_provider(cfg);
     config.model_config.num_threads = 1;
 
     let model_path = find_model(&mdir, "sensevoice")?;
@@ -85,6 +103,47 @@ pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
 
     OfflineRecognizer::create(&config)
         .context("创建 OfflineRecognizer 失败，请检查模型文件是否正确")
+}
+
+/// 创建 qwen3-asr recognizer（用于双模型识别填词）。
+pub fn create_qwen3_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
+    let mdir = model_dir_for(cfg, "qwen3-asr");
+
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.num_threads = 1;
+    config.model_config.qwen3_asr = OfflineQwen3ASRModelConfig {
+        conv_frontend: Some(mdir.join("conv_frontend.onnx").to_string_lossy().into()),
+        encoder: Some(mdir.join("encoder.int8.onnx").to_string_lossy().into()),
+        decoder: Some(mdir.join("decoder.int8.onnx").to_string_lossy().into()),
+        tokenizer: Some(mdir.join("tokenizer").to_string_lossy().into()),
+        max_total_len: 2048,
+        max_new_tokens: cfg.max_new_tokens as i32,
+        temperature: 1e-6,
+        top_p: 0.8,
+        seed: 42,
+        hotwords: None,
+    };
+    config.model_config.model_type = Some("qwen3_asr".into());
+
+    tracing::info!("ASR 模型: Qwen3-ASR (sherpa-onnx)");
+    OfflineRecognizer::create(&config)
+        .context("创建 Qwen3-ASR recognizer 失败，请检查模型文件")
+}
+
+/// 对单个 WAV 文件用 qwen3-asr 识别文本。
+pub fn transcribe_qwen3_file(
+    recognizer: &OfflineRecognizer,
+    wav_path: &Path,
+) -> Result<String> {
+    let mapped = MappedWave::open(wav_path)?;
+    let stream = recognizer.create_stream();
+    let samples = mapped.samples_f32(0, mapped.total_samples);
+    stream.accept_waveform(mapped.sample_rate as i32, &samples);
+    recognizer.decode(&stream);
+
+    // 某些段（纯音乐/静音）可能没有 result，返回空字符串让上层跳过。
+    let result = stream.get_result();
+    Ok(result.map(|r| r.text.trim().to_string()).unwrap_or_default())
 }
 
 /// 转写结果 + 聚合后的 ASR 质量元数据。
@@ -167,6 +226,28 @@ impl MappedWave {
             .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
             .collect()
     }
+}
+
+/// 从 WAV 中读取 `[start_sec, end_sec]` 的 f32 samples（内存操作，不写盘）。
+pub fn read_wav_range(path: &Path, start_sec: f64, end_sec: f64) -> Result<(Vec<f32>, usize)> {
+    let mapped = MappedWave::open(path)?;
+    let start_sample = (start_sec * mapped.sample_rate as f64).max(0.0) as usize;
+    let end_sample = ((end_sec - start_sec) * mapped.sample_rate as f64).max(0.0) as usize;
+    let count = end_sample.min(mapped.total_samples.saturating_sub(start_sample));
+    Ok((mapped.samples_f32(start_sample, count), mapped.sample_rate))
+}
+
+/// 用内存 samples 直接喂给 qwen3 recognizer，返回识别文本。
+pub fn transcribe_qwen3_samples(
+    recognizer: &OfflineRecognizer,
+    samples: &[f32],
+    sample_rate: usize,
+) -> Result<String> {
+    let stream = recognizer.create_stream();
+    stream.accept_waveform(sample_rate as i32, samples);
+    recognizer.decode(&stream);
+    let result = stream.get_result();
+    Ok(result.map(|r| r.text.trim().to_string()).unwrap_or_default())
 }
 
 /// 主流程：sensevoice 单模型并行转写。
@@ -405,16 +486,29 @@ fn dedup_overlaps(segments: &mut Vec<TranscriptSegment>) {
 }
 
 /// 从 sensevoice token 时间戳构建字幕段。
+///
+/// 切分规则（按优先级）：
+/// 1. 句末标点（。！？）强制切
+/// 2. 停顿 gap > segment_gap 切
+/// 3. 当前段字符数超过 MAX_SEGMENT_CHARS 时，优先在最近的逗号/停顿后切，
+///    没有逗号/停顿则按时间中点硬切。
 fn build_segments_from_timestamps(
     tokens: &[String],
     timestamps: &[f64],
     offset: f64,
     segment_gap: f64,
 ) -> Vec<TranscriptSegment> {
+    const MAX_SEGMENT_CHARS: usize = 30;
+    const SOFT_GAP: f64 = 0.4; // 比 segment_gap 更灵敏的自然停顿
     let sentence_enders = ['。', '！', '？', '.', '!', '?'];
+    let soft_enders = ['，', '、', '；', '：', ',', ';', ':', '，', '、'];
+
     let mut segments: Vec<TranscriptSegment> = Vec::new();
     let mut buf_text = String::new();
     let mut seg_start = timestamps[0];
+
+    // 最近一次自然停顿（用于字符数超限时优先在停顿处切）
+    let mut last_gap_end: Option<(usize, f64)> = None; // (token_idx, end_time)
 
     for i in 0..tokens.len() {
         let tok = &tokens[i];
@@ -422,7 +516,15 @@ fn build_segments_from_timestamps(
 
         if i > 0 {
             let prev_ts = timestamps[i - 1];
-            if ts - prev_ts > segment_gap && !buf_text.is_empty() {
+            let gap = ts - prev_ts;
+
+            // 自然停顿（比 segment_gap 更灵敏）
+            if gap > SOFT_GAP && !buf_text.is_empty() {
+                last_gap_end = Some((i, (ts + prev_ts) / 2.0));
+            }
+
+            // 显式长停顿（segment_gap）
+            if gap > segment_gap && !buf_text.is_empty() {
                 let end = (ts + prev_ts) / 2.0;
                 segments.push(TranscriptSegment {
                     start: offset + seg_start,
@@ -432,11 +534,13 @@ fn build_segments_from_timestamps(
                 });
                 buf_text.clear();
                 seg_start = ts;
+                last_gap_end = None;
             }
         }
 
         buf_text.push_str(tok);
 
+        // 句末标点：强制切
         if let Some(ch) = tok.chars().next() {
             if sentence_enders.contains(&ch) {
                 let end = if i + 1 < timestamps.len() {
@@ -454,11 +558,51 @@ fn build_segments_from_timestamps(
                 if i + 1 < timestamps.len() {
                     seg_start = timestamps[i + 1];
                 }
+                last_gap_end = None;
                 continue;
+            }
+
+            // 逗号/顿号：当前段已较长时立即切
+            let current_chars = buf_text.trim().chars().count();
+            if soft_enders.contains(&ch) && current_chars >= 12 {
+                let end = if i + 1 < timestamps.len() {
+                    (timestamps[i + 1] + ts) / 2.0
+                } else {
+                    ts + 0.3
+                };
+                segments.push(TranscriptSegment {
+                    start: offset + seg_start,
+                    end: offset + end,
+                    text: buf_text.trim().to_string(),
+                    confidence: 1.0,
+                });
+                buf_text.clear();
+                if i + 1 < timestamps.len() {
+                    seg_start = timestamps[i + 1];
+                }
+                last_gap_end = None;
             }
         }
 
-        if !buf_text.is_empty() && ts - seg_start > 15.0 {
+        // 字符数超限：优先在最近停顿处切，否则硬切
+        let char_count = buf_text.trim().chars().count();
+        if char_count >= MAX_SEGMENT_CHARS {
+            // 优先：最近停顿后
+            if let Some((idx, end)) = last_gap_end {
+                if idx < i {
+                    segments.push(TranscriptSegment {
+                        start: offset + seg_start,
+                        end: offset + end,
+                        text: buf_text.trim().to_string(),
+                        confidence: 1.0,
+                    });
+                    buf_text.clear();
+                    seg_start = ts;
+                    last_gap_end = None;
+                    continue;
+                }
+            }
+            // 最后：硬切
             let end = if i + 1 < timestamps.len() {
                 (timestamps[i + 1] + ts) / 2.0
             } else {
@@ -474,6 +618,7 @@ fn build_segments_from_timestamps(
             if i + 1 < timestamps.len() {
                 seg_start = timestamps[i + 1];
             }
+            last_gap_end = None;
         }
     }
 
@@ -536,5 +681,26 @@ mod tests {
         ];
         let cleaned = cleanup_segments(segs);
         assert!(cleaned.is_empty(), "孤立短噪声应被清理");
+    }
+
+    #[test]
+    fn build_segments_splits_long_sentence_on_comma() {
+        // 模拟 SenseVoice 输出：长句在逗号处应切分
+        let text = "你们平时过的都是什么日子啊，你们不是在这个直播间刷抖音车，就是在那个直播间刷抖音车";
+        let tokens: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        // 每字 0.1s，逗号后停顿 0.5s
+        let times: Vec<f64> = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let base = i as f64 * 0.1;
+                if c == "，" { base + 0.2 } else { base }
+            })
+            .collect();
+        let segs = build_segments_from_timestamps(&tokens, &times, 0.0, 1.0);
+        assert!(segs.len() >= 2, "长句应在逗号处切分: {:?}", segs);
+        for s in &segs {
+            assert!(s.text.chars().count() <= 30, "单条字幕不应超过 30 字: {}", s.text);
+        }
     }
 }
