@@ -192,9 +192,13 @@ pub struct DetectionConfig {
     pub prompt_template: String,
     #[serde(default)]
     pub vtuber_name: String,
+    /// 事件检测 LLM 最大并发窗口数（默认 3）
+    #[serde(default = "default_detect_max_concurrent")]
+    pub max_concurrent: usize,
 }
 
 fn default_danmaku_window_secs() -> f64 { 10.0 }
+fn default_detect_max_concurrent() -> usize { 3 }
 
 impl Default for DetectionConfig {
     fn default() -> Self {
@@ -203,6 +207,7 @@ impl Default for DetectionConfig {
             system_prompt: String::new(),
             prompt_template: String::new(),
             vtuber_name: String::new(),
+            max_concurrent: default_detect_max_concurrent(),
         }
     }
 }
@@ -273,11 +278,38 @@ impl Default for SfxConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
 pub struct CorrectConfig {
     #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub prompt: String,
+    /// 是否启用思考模式（LLM 先推理再输出），默认 false
+    #[serde(default)]
+    pub thinking: bool,
+    /// Agent 窗口大小（每次处理条数），默认 25
+    #[serde(default = "default_correct_window_size")]
+    pub window_size: usize,
+    /// Agent 最大并发数，默认 3
+    #[serde(default = "default_correct_max_concurrent")]
+    pub max_concurrent: usize,
+    /// 自定义热词（主播名/游戏/歌曲/梗等），优先修正为这些词
+    #[serde(default)]
+    pub hotwords: Vec<String>,
 }
+
+impl Default for CorrectConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: String::new(),
+            prompt: String::new(),
+            thinking: false,
+            window_size: default_correct_window_size(),
+            max_concurrent: default_correct_max_concurrent(),
+            hotwords: Vec::new(),
+        }
+    }
+}
+
+fn default_correct_window_size() -> usize { 25 }
+fn default_correct_max_concurrent() -> usize { 3 }
 

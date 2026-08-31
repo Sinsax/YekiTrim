@@ -1,69 +1,42 @@
+use std::path::Path;
+
+use anyhow::Result;
+use async_trait::async_trait;
+
 use crate::config::{DetectionConfig, LlmConfig};
+use crate::llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow};
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
-use anyhow::{Context, Result};
 
-pub const DEFAULT_PROMPT: &str = "请分析以下直播转录文本（虚拟主播/VTuber），将其划分为多个事件片段。要求：
+pub const DEFAULT_PROMPT: &str = "将直播转录切分为短视频切片。硬性要求：
+- 每个切片 0.5~3 分钟，宁可碎不要长；名场面前后的大段铺垫/闲聊不要包进来
+- 直接切入看点：事件 start 从名场面/话题真正开始处算，不要包含前戏
+- 明显话题转换才切分；ASR 乱码/哼唱不要单独成段
 
-1. 每个事件片段时长控制在2分钟-30分钟，连续的同个话题不应被拆分。短于2分钟的需与相邻片段合并，不要过度细分
-   - **同一个大话题下的子话题切换不是事件边界**：例如连着一整段聊卫生习惯，中间从擦屁股换到洗屁股只是子话题切换，应合并为同一个事件
-   - 只有明显的话题转换（如从聊天切换到打游戏、从讲故事切换到唱歌）才应切分事件
-   - 事件边界必须精确：start 要设在话题实际开始的位置，不要包含前一事件的残余内容
-   - 如果转录中前一个话题结束后还有几句过渡/闲聊，它们属于前一个事件，不要把过渡段落算给新事件
-   - 转录中唱歌/外语/背景音常被 ASR 识别成无意义短句或乱码（如单个字、不成词片段）：不要因为出现几段乱码就新建事件，也不要把乱码逐字写进标题/摘要；整段以乱码/哼唱为主时概括为“哼唱/唱歌/歌声”即可
-2. 标题(label)创作要求（**最重要**：标题是整个输出的灵魂，必须精心设计，严禁流水线模板）：
-   - 标题必须信息密度极高，每个字都要有价值，宁可短不可水
-   - 禁止用\"主播聊\"\"主播提到\"\"主播分享\"\"主播说\"等第三人称描述开头
-   - **标题结构多样化要求**：确保相邻标题采用不同的开头句式，连续 3 个标题不能都用同样的结构
-   - 禁止连续使用相同开头句式（如连续多个\"唱《XX》\"或连续多个\"爆了！\"）
-   - 优先采用以下结构，且在同一次输出中**混合使用**：
-     a) **直接引语嵌入**：把主播原话/名场面直接嵌入标题中，不要只转述大意。如\"弹幕问豆今色，豆脱口而出：梅川\"
-     b) **事件→反应**：先交代一段具体情景（包含具体细节、数字、人名），再跟反应/吐槽。如\"深夜鉴赏泫雅MV，怎么一言不合就🥵又是小时候被吓哭的一集😱\"
-     c) **爆点感叹开头**：\"爆了！\"\"难绷\"\"不是...\"\"笑死\"等引爆情绪，但不要连续使用
-     d) **悬念/反问**：用 ? ?? ... 制造悬念
-   - 长度 8~50 字，严禁超过 50 字
-   - emoji **可选，可不加**。如果使用，放在句中爆点/吐槽处或句尾点缀即可，不要放在标题开头
-   - 善用网络用语和 V 圈黑话制造信息密度：爆了、难绷、破防、神人、意难平、血压高了、笑死、寄、魔法期、老吃家了、小土豆、红温、串、纯良
-   - **差异检查**：假设你自己就是观众，扫一眼 10 个标题，如果感觉它们\"长得很像\"\"都是一个套路\"，就要主动重写
-3. 摘要(summary)详尽描述片段核心内容和看点，50-100字
-4. 事件类型(event_type)从以下选择：
-   - gameplay(游戏/操作)
-   - interaction(互动/连麦/双播)
-   - qna(问答/读 SC)
-   - reaction(看视频/听歌/观影/鉴赏)
-   - storytelling(讲故事/分享经历/回忆)
-   - music(唱歌/演奏/歌切)
-   - food(吃播/美食/试吃)
-   - chat(聊天/杂谈/日常)
-   - discussion(讨论/争论/锐评)
-   - ranking(盘点/排行/排行榜)
-   - **event_type 以整段主体内容为准**：如果唱歌/哼唱只是短暂穿插，而主体是聊天/锐评/讲故事/吃播，应归入主体类型，不要标成 music；只有整段主要内容是唱歌/演奏/歌切时才用 music
-   - irl(线下/旅行/Vlog/外出)
-   - rant(吐槽/破防/红温)
-   - other(其他)
+标题(label)要求（最重要）：
+- 用主播原话/名场面/具体情景 + 反应/吐槽，制造反差和梗
+- 高信息密度，8~40 字，禁止\"主播聊/主播说\"式第三人称开头
+- 相邻标题句式不得重复；同一输出内混合：直接引语、事件→反应、爆点感叹、悬念反问
+- emoji 可选，放句中/句尾，不放开头
 
-高质量标题示例（注意多样性和叙事层次，对比例子中不同的开头方式）：
-  ▶ 直接引语+反应：弹幕问豆今色，豆特意低头看了下脱口而出：梅川😊我去原来豆神喜欢挂空档啊🥵
-  ▶ 感叹+叙事：牢豆这什么雷霆坐姿雷霆视角🥵羞死人了🥵
-  ▶ 难绷+细节：难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤
-  ▶ 叙事→反应：这戴佳伟也是纯串子！暗示谁点5个手枪腿呢🤭给肥梨气的怒吼：滚！下播了🤬
-  ▶ 具体数据+感叹：属于牛哥的偶蹄目神了！沐霂豪取四千多分全场最佳！太强了！
-  ▶ 事件铺垫+反问：深夜鉴赏泫雅经典《没有明天》MV，怎么一言不合就🥵又是小时候被吓哭的一集😱
-  ▶ 叙事+吐槽：肥梨讲述如何在恬豆家拉屎把马桶堵住的故事💩我拉屎没关门是因为还没出来！出来了我就关门了🤢
-  ▶ 主播原话+反差：保持虚拟感是我做虚拟偶像的准则😤我今天多有虚拟感啊😤娜娜娜~娜娜娜~😅
-  ▶ 食材清单+吐槽：又神也搞起吃播观影回了😋今日食材\"一碗焖饭+一锅肥肠+一碗大果村泡菜+一瓶橙汁\"食量不赖👍
-  ▶ 爆点+具体经过：爆了！肥梨顺嘴一句\"过来条条\"把禧运楼最有虚拟感的狗宝也开盒了😨原来私底下叫条条啊😄
-  ▶ 回忆+反差：刚出道时3D回不敢开暖空调，怕机器热坏了，顶着0℃直播跟冰窖似的🥶当时居然能撑下来😲
-  ▶ 动作+吐槽：这下主播猿形毕露了🐵又神太会暂停了笑死🤣
-  ▶ 直接引语反问：谁家小土豆地雷？【灰泽满Hazel】
+摘要(summary)：40~80 字，写清核心内容和看点。
 
-输出格式：只输出一个 JSON 数组，不要 markdown 或解释。
-每个事件包含 start/end/label/summary/event_type。
+event_type 取整段主体：gameplay、interaction、qna、reaction、storytelling、music、food、chat、discussion、ranking、irl、rant、other。唱歌/哼唱短暂穿插不算 music，整段以歌为主才算。
+
+参考标题：
+▶ 弹幕问豆今色，豆脱口而出：梅川😊我去原来豆神喜欢挂空档啊🥵
+▶ 牢豆这什么雷霆坐姿雷霆视角🥵羞死人了🥵
+▶ 难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤
+▶ 深夜鉴赏泫雅《没有明天》MV，怎么一言不合就🥵又是小时候被吓哭的一集😱
+▶ 刚出道时3D回不敢开暖空调，顶着0℃直播跟冰窖似的🥶当时居然能撑下来😲
+▶ 谁家小土豆地雷？【灰泽满Hazel】
+
+输出：只输出 JSON 数组，每个事件含 start/end/label/summary/event_type，不要 markdown。
 
 转录片段：
 {segments}
 
 只输出JSON数组：
-[{\"start\": 0.0, \"end\": 120.0, \"label\": \"这操作给我看傻了??🤣\", \"summary\": \"详尽描述这段内容的核心看点...\", \"event_type\": \"interaction\"}]";
+[{\"start\": 0.0, \"end\": 120.0, \"label\": \"这操作给我看傻了??🤣\", \"summary\": \"核心看点...\", \"event_type\": \"interaction\"}]";
 
 fn format_segments(segments: &[TranscriptSegment]) -> String {
     let mut out = String::new();
@@ -116,20 +89,69 @@ pub fn parse_json(text: &str) -> Result<serde_json::Value> {
     };
 
     let json_str = json_str.trim();
-    let start = json_str.find('[').unwrap_or(0);
-    let end = json_str.rfind(']').map(|i| i + 1).unwrap_or(json_str.len());
 
-    let value: serde_json::Value =
-        serde_json::from_str(&json_str[start..end]).context("LLM 返回的 JSON 格式无效")?;
-
-    // 支持 {"events": [...]} 对象包装（部分模型会包裹输出）
-    if value.is_object() {
-        if let Some(arr) = value.get("events").filter(|v| v.is_array()) {
-            return Ok(arr.clone());
+    // 支持 {"events": [...]} 对象包装：先尝试解析整个文本为对象
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if value.is_object() {
+            if let Some(arr) = value.get("events").filter(|v| v.is_array()) {
+                return Ok(arr.clone());
+            }
         }
-        anyhow::bail!("LLM 返回的 JSON 是对象但缺少 events 数组");
+        if value.is_array() {
+            return Ok(value);
+        }
     }
-    Ok(value)
+
+    // 从文本中扫描所有可能的 JSON 数组/对象区间，尝试解析第一个合法事件数据
+    let mut candidates: Vec<&str> = Vec::new();
+
+    // 收集所有 '[' 到匹配 ']' 的区间（粗略：用括号深度匹配）
+    let bytes = json_str.as_bytes();
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' => stack.push(i),
+            b']' => {
+                if let Some(open) = stack.pop() {
+                    candidates.push(&json_str[open..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 如果没有数组，尝试收集对象区间
+    if candidates.is_empty() {
+        let mut stack: Vec<usize> = Vec::new();
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'{' => stack.push(i),
+                b'}' => {
+                    if let Some(open) = stack.pop() {
+                        candidates.push(&json_str[open..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 按从长到短尝试（事件数组通常较长），解析第一个合法值
+    candidates.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for candidate in candidates {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) {
+            if value.is_array() {
+                return Ok(value);
+            }
+            if value.is_object() {
+                if let Some(arr) = value.get("events").filter(|v| v.is_array()) {
+                    return Ok(arr.clone());
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("LLM 返回的 JSON 格式无效")
 }
 
 #[derive(serde::Deserialize)]
@@ -237,17 +259,11 @@ fn parse_event_type(raw: &str) -> EventType {
 }
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "\
-你是一个虚拟主播/VTuber 直播切片分析助手。分析直播转录文本，\
-将内容划分为多个有看点的视频片段。\
-同一个大话题下的子话题切换不是事件边界，只有明显的话题转换才应切分。\
-事件边界必须精确：每个事件的 start 要设在话题实际开始的位置，不要包含前一话题的残余内容。\
-过渡闲聊如果属于上一个话题，就不要分给新事件。\
-标题必须高信息密度，以主播原话/独白/名场面直接输出为主体，\
-禁止\"主播聊\"\"主播提到\"等第三人称描述开头。\
-标题结构必须多样化，连续标题不得使用相同的开头句式。\
-善用具体细节（人名、数字、场景）、主播原话嵌入、反应吐槽来制造层次感。\
-emoji 可选，如果使用则放在句中或句尾，不要放在标题开头。\
-摘要要详尽描述内容看点。质量优先于数量，每个事件必须有明显的看点、转折、爆点或清晰的话题边界，无话题切换的过渡内容应合并。ASR 对唱歌/外语常产生乱码短句，不要照抄乱码，也不要为乱码单独建事件；主体内容优先，event_type 以整段主体为准。";
+你是直播切片分析助手。把转录切成 0.5~3 分钟的短视频切片，宁可碎不要长。\
+直接切在名场面/看点上，不要包含大段前戏。\
+标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，\
+禁止\"主播聊/主播说\"式第三人称开头，相邻标题句式不得重复。\
+摘要 30~60 字。event_type 以整段主体为准，ASR 乱码不单独成段。";
 
 fn system_prompt(config: &DetectionConfig) -> &str {
     if !config.system_prompt.is_empty() {
@@ -256,37 +272,329 @@ fn system_prompt(config: &DetectionConfig) -> &str {
     DEFAULT_SYSTEM_PROMPT
 }
 
-pub async fn call(
+/// 窗口大小：每窗口最多处理多少条字幕段（避免一次塞太多导致 token 超限）
+const DETECT_WINDOW_SIZE: usize = 20;
+/// 窗口重叠条数：保证跨窗口的事件边界不会被切断（不宜过大，否则同一内容被多次分析）
+const DETECT_WINDOW_OVERLAP: usize = 5;
+
+/// 带 checkpoint / 进度回调的事件检测。
+///
+/// - `checkpoint_path`：非空时启用断点续传，每完成一个窗口立即原子写回；
+///   已存在的 checkpoint 会跳过其中已完成窗口。
+/// - `progress_tx`：非空时，每个窗口完成后立即发送该窗口事件（可用于边分析边保存，
+///   中断后至少保留已完成窗口的结果）。
+pub async fn call_with_progress(
     segments: &[TranscriptSegment],
     llm: &LlmConfig,
     detect: &DetectionConfig,
     hot_windows: &[(f64, f64)],
+    checkpoint_path: Option<&Path>,
+    progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
 ) -> Result<Vec<Event>> {
-    let prompt = build_prompt(segments, detect, hot_windows);
+    if segments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 把 TranscriptSegment 转成 AgentItem（事件检测只需要时间+文本）
+    let items: Vec<AgentItem> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| AgentItem {
+            index: i + 1,
+            start: seg.start,
+            end: seg.end,
+            text: seg.text.clone(),
+        })
+        .collect();
+
+    // 按窗口切分，避免单次请求 token 过大（思考模式更耗 token）
+    let total = items.len();
+    let window_size = DETECT_WINDOW_SIZE.max(1);
+    let overlap = DETECT_WINDOW_OVERLAP.min(window_size / 2);
+
+    // 收集所有窗口（owned 副本，便于 move 到并行任务）
+    let mut agent_windows: Vec<AgentWindow<Vec<Event>>> = Vec::new();
+    let mut start = 0usize;
+    while start < total {
+        let end = (start + window_size).min(total);
+        agent_windows.push(AgentWindow {
+            id: format!("win_{start}"),
+            offset: start,
+            items: items[start..end].to_vec(),
+            meta: None,
+            output: None,
+        });
+        if end >= total {
+            break;
+        }
+        start = end.saturating_sub(overlap);
+    }
+
+    let max_concurrent = detect.max_concurrent.max(1);
+    let total_windows = agent_windows.len();
+    tracing::info!("事件检测: {} 个窗口，并发 {}", total_windows, max_concurrent);
+
+    let task = DetectionTask {
+        detect: detect.clone(),
+        hot_windows: hot_windows.to_vec(),
+    };
+    let agent = Agent::new(llm.clone()).with_max_concurrent(max_concurrent);
+
+    // 桥接通用 Agent 进度 → 调用方的事件流（spawn 转发，避免 send 阻塞 Agent）
+    let (agent_progress_tx, mut agent_progress_rx) =
+        if let Some(tx) = progress_tx {
+            let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(64);
+            let forwarder = tokio::spawn(async move {
+                let mut rx = agent_rx;
+                while let Some(progress) = rx.recv().await {
+                    if let Some(events) = progress.output {
+                        if tx.send(events).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            (Some(agent_tx), Some(forwarder))
+        } else {
+            (None, None)
+        };
+
+    let windows = agent
+        .run_windows(task, agent_windows, checkpoint_path, agent_progress_tx)
+        .await?;
+
+    // 等待转发任务结束（此时 Agent 已关闭 channel）
+    if let Some(forwarder) = agent_progress_rx.take() {
+        let _ = forwarder.await;
+    }
+
+    let mut all_events: Vec<Event> = Vec::new();
+    for w in windows {
+        if let Some(mut events) = w.output {
+            tracing::info!("窗口 {} 完成: {} 个事件", w.id, events.len());
+            all_events.append(&mut events);
+        }
+    }
+
+    if all_events.is_empty() {
+        anyhow::bail!("LLM 事件检测失败");
+    }
+
+    // 合并相邻/重叠事件
+    let merged = merge_window_events(all_events);
+    Ok(merged)
+}
+
+/// 事件检测任务：实现通用 AgentTask<Vec<Event>>。
+struct DetectionTask {
+    detect: DetectionConfig,
+    hot_windows: Vec<(f64, f64)>,
+}
+
+#[async_trait]
+impl AgentTask<Vec<Event>> for DetectionTask {
+    fn name(&self) -> &str {
+        "事件检测"
+    }
+
+    fn thinking(&self) -> bool {
+        // 思考模式由 [llm].extra_params.thinking 控制，这里不再强制开启
+        false
+    }
+
+    fn build_global_context(&self, items: &[AgentItem]) -> String {
+        // 事件检测目前不需要全局上下文（窗口内已含足够上下文）
+        let _ = items;
+        String::new()
+    }
+
+    fn build_window_context(&self, items: &[AgentItem], window: &[AgentItem], global: &str) -> String {
+        // 事件检测的 prompt 直接基于窗口 segments 构建，不额外拼接上下文
+        let _ = (items, window, global);
+        String::new()
+    }
+
+    fn system_prompt(&self) -> String {
+        system_prompt(&self.detect).to_string()
+    }
+
+    fn user_prompt(&self, global: &str, window_context: &str, window: &[AgentItem]) -> String {
+        let _ = (global, window_context);
+        let segments: Vec<TranscriptSegment> = window
+            .iter()
+            .map(|it| TranscriptSegment {
+                start: it.start,
+                end: it.end,
+                text: it.text.clone(),
+                confidence: 1.0,
+            })
+            .collect();
+        build_prompt(&segments, &self.detect, &self.hot_windows)
+    }
+
+    fn parse_output(&self, _content: &str, _window: &[AgentItem]) -> Result<Vec<Event>> {
+        // 事件检测不走默认的 content-only 解析，process_window 覆写为 attempt_call
+        anyhow::bail!("DetectionTask 应使用覆写的 process_window")
+    }
+
+    async fn process_window(
+        &self,
+        _all_items: &[AgentItem],
+        window: &AgentWindow<Vec<Event>>,
+        _global: &str,
+        llm_cfg: &LlmConfig,
+    ) -> Result<Vec<Event>> {
+        let segments: Vec<TranscriptSegment> = window
+            .items
+            .iter()
+            .map(|it| TranscriptSegment {
+                start: it.start,
+                end: it.end,
+                text: it.text.clone(),
+                confidence: 1.0,
+            })
+            .collect();
+
+        // 思考模式透传 [llm].extra_params 配置（enabled/disabled），不在此强制
+        let client = crate::llm::LlmClient::from_config(llm_cfg)?.with_timeout(180);
+        process_window_inner(&client, &segments, &self.detect, &self.hot_windows).await
+    }
+
+    fn save_windows(&self, windows: &[AgentWindow<Vec<Event>>]) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(windows)?)
+    }
+
+    fn load_windows(&self, value: serde_json::Value) -> Result<Vec<AgentWindow<Vec<Event>>>> {
+        let windows: Vec<AgentWindow<Vec<Event>>> = serde_json::from_value(value)?;
+        Ok(windows)
+    }
+}
+
+/// 合并来自不同窗口的事件：按时间排序，重叠或边界过近的合并（保留更长/更有信息量的标题）。
+fn merge_window_events(events: Vec<Event>) -> Vec<Event> {
+    if events.is_empty() {
+        return events;
+    }
+
+    let mut events = events;
+    events.sort_by(|a, b| {
+        a.start
+            .to_seconds()
+            .partial_cmp(&b.start.to_seconds())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut merged: Vec<Event> = Vec::new();
+    for mut ev in events {
+        if let Some(last) = merged.last_mut() {
+            let last_start = last.start.to_seconds();
+            let last_end = last.end.to_seconds();
+            let ev_start = ev.start.to_seconds();
+            let ev_end = ev.end.to_seconds();
+
+            if ev_start < last_end {
+                // 重叠时长 / 较短事件时长 = 重叠比例
+                let overlap = last_end - ev_start;
+                let last_dur = last_end - last_start;
+                let ev_dur = ev_end - ev_start;
+                let shorter = last_dur.min(ev_dur);
+                let overlap_ratio = if shorter > 0.0 {
+                    overlap / shorter
+                } else {
+                    1.0
+                };
+
+                if overlap_ratio >= 0.5 {
+                    // 重叠 ≥50%：视为同一事件的重复，保留更长、更完整的一个
+                    if ev_dur > last_dur {
+                        *last = ev;
+                    }
+                    continue;
+                }
+
+                // 重叠 <50%：保留两个细分，后一个 start 截断到前一个 end
+                // 截断后太短（<30s）则丢弃（大概率是重复噪声）
+                if ev_end - last_end < 30.0 {
+                    continue;
+                }
+                ev.start = Timestamp::from_seconds(last_end);
+            }
+        }
+        merged.push(ev);
+    }
+
+    merged
+}
+
+/// 处理一个窗口：先完整尝试，失败且窗口较大时拆半递归。
+fn process_window_inner<'a>(
+    client: &'a crate::llm::LlmClient,
+    segments: &'a [TranscriptSegment],
+    detect: &'a DetectionConfig,
+    hot_windows: &'a [(f64, f64)],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Event>>> + Send + 'a>> {
+    Box::pin(async move {
+    let win_start = segments.first().map(|s| s.start).unwrap_or(0.0);
+    let win_end = segments.last().map(|s| s.end).unwrap_or(0.0);
+
+    let window_hot: Vec<(f64, f64)> = hot_windows
+        .iter()
+        .copied()
+        .filter(|(s, e)| s < &win_end && e > &win_start)
+        .collect();
+
+    let prompt = build_prompt(segments, detect, &window_hot);
     let messages = serde_json::json!([
         {"role": "system", "content": system_prompt(detect)},
         {"role": "user", "content": prompt}
     ]);
-    let client = crate::llm::LlmClient::from_config(llm)?.with_timeout(300);
 
-    // 网络层已有重试（LlmClient::send：429/5xx/超时，最多 3 次）；
-    // 这里对"发送成功但内容解析失败/事件为空"再整次重试 1 次（LLM 输出截断是常见失败）。
+    // 完整窗口尝试 2 次
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 1..=2 {
-        match attempt_call(&client, messages.clone()).await {
-            Ok(events) if !events.is_empty() => return Ok(events),
+        match attempt_call(client, messages.clone()).await {
+            Ok(events) if !events.is_empty() => {
+                tracing::info!(
+                    "窗口 [{:.1}-{:.1}] 成功: {} 个事件",
+                    win_start,
+                    win_end,
+                    events.len()
+                );
+                return Ok(events);
+            }
             Ok(_) => {
-                tracing::warn!("LLM 返回的事件列表为空 (第 {} 次尝试)", attempt);
+                tracing::warn!("窗口 [{:.1}-{:.1}] 返回事件为空 (第 {} 次尝试)", win_start, win_end, attempt);
                 last_err = Some(anyhow::anyhow!("LLM 返回的事件列表为空"));
             }
             Err(e) => {
-                tracing::warn!("LLM 事件检测失败 (第 {} 次尝试): {}", attempt, e);
+                tracing::warn!("窗口 [{:.1}-{:.1}] 失败 (第 {} 次尝试): {}", win_start, win_end, attempt, e);
                 last_err = Some(e);
             }
         }
     }
 
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM 事件检测失败")))
+    // 如果窗口还大，拆半递归，避免超时后整窗丢失
+    if segments.len() > 30 {
+        let mid = segments.len() / 2;
+        tracing::warn!(
+            "窗口 [{:.1}-{:.1}] 失败，拆半为 [{:.1}-{:.1}] 和 [{:.1}-{:.1}] 重试",
+            win_start,
+            win_end,
+            segments[0].start,
+            segments[mid].end,
+            segments[mid].start,
+            win_end
+        );
+
+        let left = process_window_inner(client, &segments[..mid], detect, hot_windows).await?;
+        let right = process_window_inner(client, &segments[mid..], detect, hot_windows).await?;
+        let mut combined = left;
+        combined.extend(right);
+        return Ok(combined);
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("窗口处理失败")))
+    })
 }
 
 async fn attempt_call(
@@ -297,28 +605,57 @@ async fn attempt_call(
 
     let content = body["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 choices[0].message.content"))?;
+        .unwrap_or_default();
 
-    let json_value = match parse_json(content) {
-        Ok(v) => v,
-        Err(e) => {
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{}.log", ts));
-            let full = format!(
-                "--- content ---\n{}\n\n--- full response ---\n{}",
-                content,
-                serde_json::to_string_pretty(&body).unwrap_or_default()
-            );
-            let _ = std::fs::write(&log_path, &full);
-            tracing::warn!("LLM 响应解析失败: {}，已保存到 {}", e, log_path.display());
-            return Err(e);
+    // 思考模式下 content 可能为空，最终 JSON 可能写在 reasoning 末尾
+    let reasoning = body["choices"][0]["message"]["reasoning"]
+        .as_str()
+        .unwrap_or_default();
+
+    let parse_sources = [content.trim(), reasoning.trim()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>();
+
+    if parse_sources.is_empty() {
+        anyhow::bail!(
+            "LLM 返回 content 和 reasoning 均为空（可能是 max_tokens 过小或模型异常）"
+        );
+    }
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for source in &parse_sources {
+        match parse_json(source) {
+            Ok(v) => {
+                return parse_events(v).map_err(|e| {
+                    anyhow::anyhow!("解析事件失败: {e:#}")
+                });
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
         }
-    };
+    }
 
-    parse_events(json_value)
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{}.log", ts));
+    let full = format!(
+        "--- content ---\n{}\n\n--- reasoning ---\n{}\n\n--- full response ---\n{}",
+        content,
+        reasoning,
+        serde_json::to_string_pretty(&body).unwrap_or_default()
+    );
+    let _ = std::fs::write(&log_path, &full);
+    tracing::warn!(
+        "LLM 响应解析失败: {}，已保存到 {}",
+        last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+        log_path.display()
+    );
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM 响应 JSON 解析失败")))
 }
 
 pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
@@ -406,6 +743,94 @@ mod tests {
         assert!(hot.contains("[12.0-22.0] 弹幕爆发"));
         assert!(hot.contains("[45.5-55.5] 弹幕爆发"));
         assert!(hot.contains("不得切在这些爆发区间内部"));
+    }
+
+    #[test]
+    fn test_merge_window_events_does_not_merge_far_apart_duplicates() {
+        fn ev(s: f64, e: f64, label: &str) -> Event {
+            Event {
+                start: Timestamp::from_seconds(s),
+                end: Timestamp::from_seconds(e),
+                label: label.into(),
+                summary: String::new(),
+                event_type: EventType::Chat,
+                source: EventSource::LLM,
+                confidence: 1.0,
+                popularity: 0.0,
+                rank: 0,
+                enabled: true,
+            }
+        }
+
+        // 两个重叠窗口各自输出同一大话题的长事件，边界差 60s。
+        // 只是相邻不重叠，不应合并。
+        let events = vec![
+            ev(100.0, 700.0, "A"),
+            ev(760.0, 1300.0, "B"),
+        ];
+        let merged = merge_window_events(events);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_window_events_merges_high_overlap_keeps_longer() {
+        fn ev(s: f64, e: f64, label: &str, etype: EventType) -> Event {
+            Event {
+                start: Timestamp::from_seconds(s),
+                end: Timestamp::from_seconds(e),
+                label: label.into(),
+                summary: String::new(),
+                event_type: etype,
+                source: EventSource::LLM,
+                confidence: 1.0,
+                popularity: 0.0,
+                rank: 0,
+                enabled: true,
+            }
+        }
+
+        // 重叠 500/600 ≈ 83% ≥50%：视为重复，保留更长者
+        let events = vec![
+            ev(100.0, 700.0, "短", EventType::Chat),
+            ev(200.0, 900.0, "长", EventType::Gameplay),
+        ];
+        let merged = merge_window_events(events);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].label, "长");
+        assert_eq!(merged[0].start.to_seconds(), 200.0);
+        assert_eq!(merged[0].end.to_seconds(), 900.0);
+    }
+
+    #[test]
+    fn test_merge_window_events_keeps_low_overlap_fine_grained() {
+        fn ev(s: f64, e: f64, label: &str, etype: EventType) -> Event {
+            Event {
+                start: Timestamp::from_seconds(s),
+                end: Timestamp::from_seconds(e),
+                label: label.into(),
+                summary: String::new(),
+                event_type: etype,
+                source: EventSource::LLM,
+                confidence: 1.0,
+                popularity: 0.0,
+                rank: 0,
+                enabled: true,
+            }
+        }
+
+        // 重叠 100/400 = 25% <50%：保留两个细分，后一个 start 截断
+        let events = vec![
+            ev(0.0, 400.0, "前", EventType::Chat),
+            ev(300.0, 700.0, "后", EventType::Gameplay),
+        ];
+        let merged = merge_window_events(events);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].label, "前");
+        assert_eq!(merged[0].start.to_seconds(), 0.0);
+        assert_eq!(merged[0].end.to_seconds(), 400.0);
+        assert_eq!(merged[1].label, "后");
+        assert_eq!(merged[1].start.to_seconds(), 400.0);
+        assert_eq!(merged[1].end.to_seconds(), 700.0);
     }
 }
 

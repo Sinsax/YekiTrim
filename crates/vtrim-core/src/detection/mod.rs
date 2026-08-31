@@ -11,10 +11,9 @@ mod llm;
 pub use llm::{parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_SYSTEM_PROMPT};
 
 /// LLM 事件后处理参数
-const MIN_EVENT_SECS: f64 = 120.0; // 最短事件时长（prompt 要求 2-30 分钟，兜底 120s）
-const MERGE_GAP_CLOSE_SECS: f64 = 5.0; // 无条件合并间隙：过渡句不单独成段
-const MERGE_GAP_SAME_TYPE_SECS: f64 = 15.0; // 同 event_type 合并间隙
-const MAX_LABEL_LEN: usize = 50; // 标题长度上限（与 prompt 一致）
+const MIN_EVENT_SECS: f64 = 30.0; // 最短事件时长（保留细分，兜底 30s）
+const MAX_EVENT_SECS: f64 = 240.0; // 最长事件时长（prompt 要求 3 分钟，兜底 240s）
+const MAX_LABEL_LEN: usize = 40; // 标题长度上限（与 prompt 一致）
 
 pub struct EventDetector;
 
@@ -99,7 +98,15 @@ impl Stage for EventDetector {
             tracing::warn!("未配置 LLM API key (llm.api_key)，使用默认事件");
             vec![llm::create_default_event(segments)]
         } else {
-            process_with_llm(segments, llm_config, detect_config, &hot_windows).await?
+            process_with_llm(
+                segments,
+                llm_config,
+                detect_config,
+                &hot_windows,
+                &ctx.output_dir,
+                ctx.detect_resume,
+            )
+            .await?
         };
 
         // 追加主播标签（无 API key 的默认事件也适用），并控制标题长度上限
@@ -171,6 +178,17 @@ impl Stage for EventDetector {
 
         ctx.events = events;
         save_events(&ctx.events, &ctx.output_dir)?;
+
+        // 检测成功，清理断点
+        let checkpoint_path = ctx.output_dir.join("events.checkpoint.json");
+        if checkpoint_path.exists() {
+            let _ = std::fs::remove_file(&checkpoint_path);
+            tracing::info!("已清理事件检测断点: {}", checkpoint_path.display());
+        }
+        let partial_path = ctx.output_dir.join("events.partial.json");
+        if partial_path.exists() {
+            let _ = std::fs::remove_file(&partial_path);
+        }
 
         tracing::info!("事件检测完成: {} 个事件", ctx.events.len());
         Ok(())
@@ -319,6 +337,8 @@ async fn process_with_llm(
     llm: &crate::config::LlmConfig,
     detect: &crate::config::DetectionConfig,
     hot_windows: &[(f64, f64)],
+    output_dir: &std::path::Path,
+    resume: Option<bool>,
 ) -> Result<Vec<Event>> {
     // 预合并：相邻短段（间距 <2s）合并，减少 LLM 输入量
     let merged = merge_segments_for_detection(segments);
@@ -337,9 +357,46 @@ async fn process_with_llm(
         estimated_tokens / 1000,
     );
 
-    let events = llm::call(&merged, llm, detect, hot_windows)
-        .await
-        .map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
+    let checkpoint_path = output_dir.join("events.checkpoint.json");
+    let partial_path = output_dir.join("events.partial.json");
+
+    // 用户选择重新开始时删除旧 checkpoint / partial
+    if resume == Some(false) {
+        if checkpoint_path.exists() {
+            tracing::info!("用户选择重新开始，删除旧事件断点: {}", checkpoint_path.display());
+            let _ = std::fs::remove_file(&checkpoint_path);
+        }
+        if partial_path.exists() {
+            let _ = std::fs::remove_file(&partial_path);
+        }
+    }
+
+    let (partial_tx, mut partial_rx) = tokio::sync::mpsc::channel::<Vec<Event>>(64);
+
+    let events_fut = llm::call_with_progress(
+        &merged,
+        llm,
+        detect,
+        hot_windows,
+        Some(&checkpoint_path),
+        Some(partial_tx),
+    );
+
+    let partial_task = tokio::spawn(async move {
+        let mut partial: Vec<Event> = Vec::new();
+        while let Some(mut events) = partial_rx.recv().await {
+            partial.append(&mut events);
+            let _ = std::fs::write(
+                &partial_path,
+                serde_json::to_string_pretty(&partial).unwrap_or_default(),
+            );
+        }
+        partial
+    });
+
+    let events_result = events_fut.await;
+    let _partial = partial_task.await.unwrap_or_default();
+    let events = events_result.map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
 
     let events = postprocess_events(events, segments);
 
@@ -408,7 +465,8 @@ fn postprocess_events(mut events: Vec<Event>, segments: &[TranscriptSegment]) ->
     // 吸附可能使相邻事件撞到同一边界，再合并一次兜底
     events = merge_overlapping(events);
     events = enforce_min_duration(events, MIN_EVENT_SECS);
-    events = merge_close_events(events, MERGE_GAP_CLOSE_SECS, MERGE_GAP_SAME_TYPE_SECS);
+    events = enforce_max_duration(events, segments, MAX_EVENT_SECS);
+    events = disambiguate_duplicate_titles(events);
 
     events
 }
@@ -561,33 +619,72 @@ fn enforce_min_duration(mut events: Vec<Event>, min_secs: f64) -> Vec<Event> {
 /// 合并相邻近事件：间隙 ≤ close_gap_secs 无条件合并（过渡句不单独成段）；
 /// 间隙 ≤ gap_secs 且 event_type 相同才合并（同话题内的自然停顿）。
 /// 合并后保留时长更长者的 label/summary，confidence 取最大值。
-fn merge_close_events(mut events: Vec<Event>, close_gap_secs: f64, gap_secs: f64) -> Vec<Event> {
+
+/// 最长时长强制：超过 max_secs 的事件沿内部最大停顿/间隔拆分为多个片段。
+/// 优先在 ASR 段间 gap 最大的位置切，使切割点尽量落在自然停顿处；
+/// 找不到足够 gap 时按时间中点拆。拆出的片段继承原 label，并加（上/中/下）或（续）后缀。
+fn enforce_max_duration(
+    mut events: Vec<Event>,
+    segments: &[TranscriptSegment],
+    max_secs: f64,
+) -> Vec<Event> {
+    let _ = segments; // 等分切分，不依赖 ASR 边界（保证每段严格不超长）
+    if events.is_empty() || max_secs <= 0.0 {
+        return events;
+    }
+
+    let mut result: Vec<Event> = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        let start = ev.start.to_seconds();
+        let end = ev.end.to_seconds();
+        let dur = end - start;
+        if dur <= max_secs {
+            result.push(ev);
+            continue;
+        }
+
+        // 等分成 n 段，每段严格 <= max_secs
+        let n = (dur / max_secs).ceil() as usize;
+        let step = dur / n as f64;
+
+        let mut prev = start;
+        for i in 1..n {
+            let cut = start + step * i as f64;
+            let mut piece = ev.clone();
+            piece.start = Timestamp::from_seconds(prev);
+            piece.end = Timestamp::from_seconds(cut);
+            piece.label = format!("{}（{}/{}）", ev.label, i, n);
+            result.push(piece);
+            prev = cut;
+        }
+        let mut last_piece = ev.clone();
+        last_piece.start = Timestamp::from_seconds(prev);
+        last_piece.end = Timestamp::from_seconds(end);
+        last_piece.label = format!("{}（{}/{}）", ev.label, n, n);
+        result.push(last_piece);
+    }
+    result
+}
+
+fn disambiguate_duplicate_titles(mut events: Vec<Event>) -> Vec<Event> {
     if events.len() <= 1 {
         return events;
     }
 
     let mut i = 0;
-    while i + 1 < events.len() {
-        let cur_start = events[i].start.to_seconds();
-        let cur_end = events[i].end.to_seconds();
-        let next_start = events[i + 1].start.to_seconds();
-        let next_end = events[i + 1].end.to_seconds();
-        let gap = next_start - cur_end;
-        let same_type = events[i].event_type == events[i + 1].event_type;
-
-        if gap >= 0.0 && (gap <= close_gap_secs || (gap <= gap_secs && same_type)) {
-            let next = events.remove(i + 1);
-            if next_end - next_start > cur_end - cur_start {
-                events[i].label = next.label;
-                events[i].summary = next.summary;
-                events[i].event_type = next.event_type;
-            }
-            events[i].end = next.end;
-            events[i].confidence = events[i].confidence.max(next.confidence);
-            // 不递增：合并后继续与新的下一个比较
-        } else {
-            i += 1;
+    while i < events.len() {
+        // 找连续相同标题的区间
+        let mut j = i + 1;
+        while j < events.len() && events[j].label == events[i].label {
+            j += 1;
         }
+        let group_len = j - i;
+        if group_len > 1 {
+            for (k, ev) in events[i..j].iter_mut().enumerate() {
+                ev.label = format!("{}（{}/{}）", ev.label, k + 1, group_len);
+            }
+        }
+        i = j;
     }
 
     events
@@ -754,36 +851,6 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_close_events_unconditional_small_gap() {
-        // gap=3s ≤ 5s：不同 event_type 也应合并（过渡句）
-        let events = vec![
-            ev(0.0, 100.0, "a", crate::types::EventType::Chat),
-            ev(103.0, 250.0, "b", crate::types::EventType::Music),
-        ];
-        let out = merge_close_events(events, 5.0, 15.0);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].label, "b");
-        assert_eq!(out[0].event_type, crate::types::EventType::Music);
-        assert_eq!(out[0].end.to_seconds(), 250.0);
-    }
-
-    #[test]
-    fn test_merge_close_events_same_type_medium_gap() {
-        // gap=10s 同 type：合并；gap=10s 不同 type：不合并
-        let same_type = vec![
-            ev(0.0, 100.0, "a", crate::types::EventType::Chat),
-            ev(110.0, 200.0, "b", crate::types::EventType::Chat),
-        ];
-        assert_eq!(merge_close_events(same_type, 5.0, 15.0).len(), 1);
-
-        let diff_type = vec![
-            ev(0.0, 100.0, "a", crate::types::EventType::Chat),
-            ev(110.0, 200.0, "b", crate::types::EventType::Music),
-        ];
-        assert_eq!(merge_close_events(diff_type, 5.0, 15.0).len(), 2);
-    }
-
-    #[test]
     fn test_compute_transcript_density_overlap_ratio() {
         // 事件 [5, 35] 与 segments [(0,10),(10,30),(30,40)]:
         // overlap 比例 = 5/10 + 20/20 + 5/10 = 2.0, 归一化(单事件) → 1.0
@@ -863,5 +930,52 @@ mod tests {
         // 空事件
         assert_eq!(coverage_ratio(&[], 100.0), 0.0);
         assert_eq!(coverage_ratio(&events, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_enforce_max_duration_splits_long_event() {
+        // 事件 0~1300s，最大 240s：应至少拆成 6 段，且每段 <= 240s
+        let events = vec![ev(0.0, 1300.0, "超长事件", crate::types::EventType::Chat)];
+        let segments: Vec<TranscriptSegment> = (0..=13)
+            .map(|i| {
+                let s = i as f64 * 100.0;
+                TranscriptSegment {
+                    start: s,
+                    end: s + 80.0,
+                    text: "x".into(),
+                    confidence: 1.0,
+                }
+            })
+            .collect();
+        let result = enforce_max_duration(events, &segments, 240.0);
+        assert!(result.len() >= 3, "应拆成至少 3 段，实际 {}", result.len());
+        for e in &result {
+            let dur = e.end.to_seconds() - e.start.to_seconds();
+            assert!(dur <= 240.0 + 1e-6, "片段 {} 超过 240s: {}", e.label, dur);
+        }
+    }
+
+    #[test]
+    fn test_enforce_max_duration_keeps_short_events() {
+        let events = vec![ev(100.0, 300.0, "正常事件", crate::types::EventType::Chat)];
+        let result = enforce_max_duration(events, &[], 240.0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].label, "正常事件");
+    }
+
+    #[test]
+    fn test_disambiguate_duplicate_titles_adds_seq_suffix() {
+        let events = vec![
+            ev(0.0, 100.0, "同一个话题", crate::types::EventType::Chat),
+            ev(100.0, 200.0, "同一个话题", crate::types::EventType::Chat),
+            ev(200.0, 300.0, "同一个话题", crate::types::EventType::Chat),
+            ev(300.0, 400.0, "另一个话题", crate::types::EventType::Gameplay),
+        ];
+        let result = disambiguate_duplicate_titles(events);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].label, "同一个话题（1/3）");
+        assert_eq!(result[1].label, "同一个话题（2/3）");
+        assert_eq!(result[2].label, "同一个话题（3/3）");
+        assert_eq!(result[3].label, "另一个话题");
     }
 }

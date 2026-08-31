@@ -70,7 +70,58 @@ async fn llm_correct(
 ) -> anyhow::Result<()> {
     let danmaku = load_danmaku_for_correct(cfg);
     tracing::info!("LLM 订正转录文本...");
-    match vtrim_core::asr::correct::correct_transcript(segments, &danmaku, &cfg.llm, &cfg.correct).await {
+
+    // 断点续传：存在 correct.checkpoint.json 时询问是否继续
+    let checkpoint = ctx.output_dir.join("correct.checkpoint.json");
+    let partial_path = ctx.output_dir.join("correct.partial.json");
+    let use_checkpoint = if checkpoint.exists() {
+        confirm_resume("订正", &checkpoint)
+    } else {
+        true
+    };
+    if !use_checkpoint {
+        remove_checkpoint(&checkpoint);
+        let _ = std::fs::remove_file(&partial_path);
+    }
+    let checkpoint_path = if use_checkpoint && checkpoint.exists() {
+        Some(checkpoint.as_path())
+    } else {
+        None
+    };
+
+    // 边分析边写扁平 partial：每个窗口完成后更新 correct.partial.json
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<
+        vtrim_core::llm::agent::AgentProgress<Vec<vtrim_core::llm::agent::AgentOutput>>,
+    >(64);
+    let partial_path_writer = partial_path.clone();
+    let partial_task = tokio::spawn(async move {
+        use std::collections::BTreeMap;
+        let mut partial: BTreeMap<usize, String> = BTreeMap::new();
+        while let Some(progress) = progress_rx.recv().await {
+            if let Some(outputs) = progress.output {
+                for out in outputs {
+                    partial.insert(out.index, out.text);
+                }
+                let _ = std::fs::write(
+                    &partial_path_writer,
+                    serde_json::to_string_pretty(&partial).unwrap_or_default(),
+                );
+            }
+        }
+    });
+
+    let correct_result = vtrim_core::asr::correct::correct_transcript_with_checkpoint(
+        segments,
+        &danmaku,
+        &cfg.llm,
+        &cfg.correct,
+        checkpoint_path,
+        Some(progress_tx),
+    )
+    .await;
+    let _ = partial_task.await;
+
+    match correct_result {
         Ok(corrected) => {
             let new = vtrim_core::types::Transcript {
                 segments: corrected,
@@ -81,6 +132,9 @@ async fn llm_correct(
             vtrim_core::srt::write_srt(&new, &llm_srt)?;
             config::save_transcript_path(&llm_srt.to_string_lossy())?;
             ctx.transcript = Some(new);
+            // 订正成功，清理断点
+            let _ = std::fs::remove_file(&checkpoint);
+            let _ = std::fs::remove_file(&partial_path);
             tracing::info!("LLM 订正完成");
         }
         Err(e) => tracing::warn!("LLM 订正失败，使用原始转录: {}", e),
@@ -88,14 +142,52 @@ async fn llm_correct(
     Ok(())
 }
 
-fn load_danmaku_for_correct(cfg: &Config) -> Vec<vtrim_core::danmaku::DanmakuEntry> {
-    let path = cfg.project.danmaku_file.as_ref().map(PathBuf::from);
-    match path {
-        Some(p) if !p.as_os_str().is_empty() && p.exists() => {
-            vtrim_core::danmaku::load_danmaku(&p).unwrap_or_default()
-        }
-        _ => Vec::new(),
+/// 询问用户是否从 checkpoint 续传。
+/// 返回 true=续传，false=重新开始。
+fn confirm_resume(kind: &str, checkpoint: &std::path::Path) -> bool {
+    use std::io::Write;
+
+    println!("发现 {} 断点文件: {}", kind, checkpoint.display());
+    print!("是否继续（跳过已完成窗口）？[y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    let ans = line.trim().to_lowercase();
+    ans == "y" || ans == "yes"
+}
+
+/// 删除 checkpoint（用户选择重新开始时调用）。
+fn remove_checkpoint(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(_) => tracing::info!("已删除旧断点: {}", path.display()),
+        Err(e) => tracing::warn!("删除断点失败: {}", e),
     }
+}
+
+fn load_danmaku_for_correct(cfg: &Config) -> Vec<vtrim_core::danmaku::DanmakuEntry> {
+    // 1. 配置指定路径
+    if let Some(p) = cfg.project.danmaku_file.as_ref() {
+        let p = PathBuf::from(p);
+        if !p.as_os_str().is_empty() && p.exists() {
+            return vtrim_core::danmaku::load_danmaku(&p).unwrap_or_default();
+        }
+    }
+
+    // 2. 自动发现：项目目录下的 danmu.ass / danmaku.ass
+    let input = cfg.project.input_file.as_ref().map(PathBuf::from);
+    if let Some(input_path) = input {
+        if let Some(dir) = input_path.parent() {
+            for name in ["danmu.ass", "danmaku.ass"] {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    tracing::info!("自动发现弹幕文件: {}", candidate.display());
+                    return vtrim_core::danmaku::load_danmaku(&candidate).unwrap_or_default();
+                }
+            }
+        }
+    }
+
+    Vec::new()
 }
 
 fn check_stage(stage_num: u32, current: u32, _cfg: &Config) -> anyhow::Result<()> {
@@ -306,6 +398,15 @@ async fn main() -> anyhow::Result<()> {
 
             // Step 4: 检测 + 剪切（未完成才跑）
             if current < STAGE_DETECT {
+                // 事件检测断点询问
+                let events_checkpoint = output.join("events.checkpoint.json");
+                if events_checkpoint.exists() {
+                    ctx.detect_resume = Some(confirm_resume("事件检测", &events_checkpoint));
+                    if ctx.detect_resume == Some(false) {
+                        remove_checkpoint(&events_checkpoint);
+                    }
+                }
+
                 let mut detect_runner = vtrim_core::pipeline::PipelineRunner::new(cfg.clone());
                 detect_runner.set_progress(progress.clone());
                 detect_runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
@@ -319,7 +420,20 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
             } else {
+                // 事件检测已存在：从 events.json 恢复事件，供后续剪切使用
                 tracing::info!("事件检测已存在，跳过");
+                let events_path = output.join("events.json");
+                if events_path.exists() {
+                    let events = vtrim_core::detection::load_events(&events_path)
+                        .with_context(|| format!("无法读取事件文件: {}", events_path.display()))?;
+                    ctx.events = events;
+                    tracing::info!("已加载 {} 个事件", ctx.events.len());
+                } else {
+                    anyhow::bail!(
+                        "事件检测已标记完成，但未找到 {}，请重新运行 vtrim detect",
+                        events_path.display()
+                    );
+                }
             }
 
             // Step 5: 剪切（未完成才跑）
@@ -424,6 +538,15 @@ async fn main() -> anyhow::Result<()> {
 
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output_dir.clone());
             ctx.transcript = Some(transcript);
+
+            // 事件检测断点询问
+            let events_checkpoint = output_dir.join("events.checkpoint.json");
+            if events_checkpoint.exists() {
+                ctx.detect_resume = Some(confirm_resume("事件检测", &events_checkpoint));
+                if ctx.detect_resume == Some(false) {
+                    remove_checkpoint(&events_checkpoint);
+                }
+            }
 
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
             runner.set_progress(progress.clone());
@@ -700,7 +823,57 @@ async fn main() -> anyhow::Result<()> {
 
             tracing::info!("LLM 订正 {} 个片段...", transcript_data.segments.len());
             let danmaku = load_danmaku_for_correct(&cfg);
-            match vtrim_core::asr::correct::correct_transcript(&transcript_data.segments, &danmaku, &cfg.llm, &cfg.correct).await {
+
+            let checkpoint = output_dir.join("correct.checkpoint.json");
+            let partial_path = output_dir.join("correct.partial.json");
+            let use_checkpoint = if checkpoint.exists() {
+                confirm_resume("订正", &checkpoint)
+            } else {
+                true
+            };
+            if !use_checkpoint {
+                remove_checkpoint(&checkpoint);
+                let _ = std::fs::remove_file(&partial_path);
+            }
+            let checkpoint_path = if use_checkpoint && checkpoint.exists() {
+                Some(checkpoint.as_path())
+            } else {
+                None
+            };
+
+            // 边分析边写扁平 partial
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<
+                vtrim_core::llm::agent::AgentProgress<Vec<vtrim_core::llm::agent::AgentOutput>>,
+            >(64);
+            let partial_path_writer = partial_path.clone();
+            let partial_task = tokio::spawn(async move {
+                use std::collections::BTreeMap;
+                let mut partial: BTreeMap<usize, String> = BTreeMap::new();
+                while let Some(progress) = progress_rx.recv().await {
+                    if let Some(outputs) = progress.output {
+                        for out in outputs {
+                            partial.insert(out.index, out.text);
+                        }
+                        let _ = std::fs::write(
+                            &partial_path_writer,
+                            serde_json::to_string_pretty(&partial).unwrap_or_default(),
+                        );
+                    }
+                }
+            });
+
+            let correct_result = vtrim_core::asr::correct::correct_transcript_with_checkpoint(
+                &transcript_data.segments,
+                &danmaku,
+                &cfg.llm,
+                &cfg.correct,
+                checkpoint_path,
+                Some(progress_tx),
+            )
+            .await;
+            let _ = partial_task.await;
+
+            match correct_result {
                 Ok(corrected) => {
                     transcript_data.segments = corrected;
 
@@ -708,6 +881,8 @@ async fn main() -> anyhow::Result<()> {
                     std::fs::create_dir_all(&output_dir)?;
                     vtrim_core::srt::write_srt(&transcript_data, &llm_srt)?;
                     config::save_transcript_path(&llm_srt.to_string_lossy())?;
+                    let _ = std::fs::remove_file(&checkpoint);
+                    let _ = std::fs::remove_file(&partial_path);
 
                     tracing::info!("LLM 订正完成");
                     tracing::info!("  字幕: {}", llm_srt.display());

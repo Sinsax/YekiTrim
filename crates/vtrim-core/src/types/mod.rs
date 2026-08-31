@@ -160,6 +160,8 @@ pub struct PipelineContext {
     pub audio_path: Option<PathBuf>,
     pub transcript: Option<Transcript>,
     pub video_info: Option<VideoInfo>,
+    /// 事件检测断点续传决策：Some(true)=继续，Some(false)=重来，None=自动（有 checkpoint 则继续）
+    pub detect_resume: Option<bool>,
     pub events: Vec<Event>,
     pub started_at: DateTime<Utc>,
     pub progress: Arc<dyn ProgressReporter>,
@@ -186,6 +188,7 @@ impl PipelineContext {
             audio_path: None,
             transcript: None,
             video_info: None,
+            detect_resume: None,
             events: Vec::new(),
             started_at: Utc::now(),
             progress: Arc::new(NoopProgress) as Arc<dyn ProgressReporter>,
