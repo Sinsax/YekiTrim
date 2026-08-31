@@ -73,19 +73,6 @@ async fn transcribe_segment_with_qwen3(
     }
 }
 
-/// 基于 qwen3 识别文本判断是否像音乐/歌词。
-///
-/// 启发式：
-/// - 含日文假名（日语歌词常见）
-/// - 无标点且较短（≤6 字）的碎片
-fn looks_like_music(text: &str) -> bool {
-    let has_kana = text.chars().any(|c| matches!(c, 'あ'..='ん' | 'ア'..='ン' | 'ァ'..='ヶ' | 'ー'));
-    let trimmed = text.trim();
-    let no_punct = !trimmed.chars().any(|c| matches!(c, '。' | '！' | '？' | '，' | '、' | '；' | '：'));
-    let short_fragment = no_punct && trimmed.chars().count() <= 6;
-    has_kana || short_fragment
-}
-
 #[async_trait]
 impl Stage for Transcriber {
     fn name(&self) -> &'static str {
@@ -198,7 +185,6 @@ impl Stage for Transcriber {
                     };
                     let text = text.trim().trim_end_matches(['。', '！', '？', '.', '!', '?']).trim().to_string();
                     if !text.is_empty() {
-                        let text = if looks_like_music(&text) { format!("🎵{}", text) } else { text };
                         segs.push(TranscriptSegment {
                             start: sub_start,
                             end: sub_end,

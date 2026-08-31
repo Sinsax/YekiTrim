@@ -28,8 +28,16 @@ llm_correct = false
 [correct]
 # 订正 system_prompt（修改此处覆盖内建默认）
 system_prompt = "{{CORRECT_SYSTEM_PROMPT}}"
-# 订正 user_prompt（{context} 和 {segments} 会被自动替换）
+# 订正 user_prompt（{global_context}/{window_context}/{segments} 会被自动替换）
 prompt = "{{CORRECT_USER_PROMPT}}"
+# 是否启用思考模式（LLM 先推理再输出）
+thinking = false
+# Agent 窗口大小（每次处理条数）
+window_size = 25
+# Agent 最大并发数
+max_concurrent = 3
+# 自定义热词（主播名/游戏/歌曲/梗，订正时优先使用）
+hotwords = []
 
 [detection]
 # 主播名称 (非空时自动追加到切片标题末尾)
@@ -40,6 +48,8 @@ danmaku_window_secs = 10
 system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
 # 检测 user prompt_template（{segments} 会被替换；留空 = 恢复内建默认值）
 prompt_template = "{{DETECT_USER_PROMPT}}"
+# LLM 最大并发窗口数（默认 3；可根据 API 限流调大/调小）
+max_concurrent = 3
 
 [cutting]
 # 输出目录
@@ -69,10 +79,10 @@ api_key = ""
 model = ""
 # 温度参数 (0=确定性输出，建议保持0)
 temperature = 0
-# 最大 Token 数 (检测事件需要较大的输出空间)
-max_tokens = 65536
-# 额外请求参数 (seed 确保稳定输出；关闭 thinking 避免浪费 token 在推理上)
-extra_params = { seed = 42, thinking = { type = "disabled" } }
+# 最大 Token 数 (检测事件需要较大的输出空间；思考模式建议 16384+)
+max_tokens = 16384
+# 额外请求参数 (seed 确保稳定输出；thinking enabled 启用思考模式，disabled 关闭)
+extra_params = { seed = 42, thinking = { type = "enabled" } }
 "#;
 
 /// 生成 vtrim.toml 项目配置文件（`vtrim init`）。
@@ -265,12 +275,32 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.detection.vtuber_name.is_empty() {
         base.detection.vtuber_name = overlay.detection.vtuber_name;
     }
+    if overlay.detection.max_concurrent != 3 {
+        base.detection.max_concurrent = overlay.detection.max_concurrent;
+    }
 
     if !overlay.correct.system_prompt.is_empty() {
         base.correct.system_prompt = overlay.correct.system_prompt;
     }
     if !overlay.correct.prompt.is_empty() {
         base.correct.prompt = overlay.correct.prompt;
+    }
+    if overlay.correct.thinking {
+        base.correct.thinking = true;
+    }
+    if overlay.correct.window_size != 25 {
+        base.correct.window_size = overlay.correct.window_size;
+    }
+    if overlay.correct.max_concurrent != 3 {
+        base.correct.max_concurrent = overlay.correct.max_concurrent;
+    }
+    if !overlay.correct.hotwords.is_empty() {
+        // 热词追加合并（全局 + 项目）
+        for w in &overlay.correct.hotwords {
+            if !base.correct.hotwords.contains(w) {
+                base.correct.hotwords.push(w.clone());
+            }
+        }
     }
 
     if !overlay.cutting.output_dir.is_empty() {

@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::config::LlmConfig;
 
+pub mod agent;
+
 /// OpenAI 兼容 LLM 客户端
 ///
 /// core（事件检测 / 转录订正）与 polish（精修段分割 / 关键词 / tags）共用。
