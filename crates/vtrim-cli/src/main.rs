@@ -352,6 +352,9 @@ async fn main() -> anyhow::Result<()> {
             let output = out;
             std::fs::create_dir_all(&output)?;
 
+            // 确保 ASR 模型存在（双模型时打轴+识别模型都要）
+            vtrim_core::download::ensure_models(&cfg.asr).await?;
+
             let mut ctx = vtrim_core::types::PipelineContext::new(input_path, output);
             let mut runner = vtrim_core::pipeline::PipelineRunner::new(cfg);
             runner.set_progress(progress.clone());

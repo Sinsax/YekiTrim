@@ -215,18 +215,8 @@ async fn download_hr_files(target: &Path) -> Result<()> {
 }
 
 pub async fn ensure_models(asr: &AsrConfig) -> Result<()> {
-    let text_model = if asr.model.is_empty() { "sensevoice" } else { &asr.model };
-    ensure_one_model(text_model).await?;
-
-    let seg_model = if asr.segmentation_model.is_empty() {
-        "sensevoice"
-    } else {
-        &asr.segmentation_model
-    };
-    if seg_model != text_model {
-        ensure_one_model(seg_model).await?;
-    }
-
+    let model = if asr.model.is_empty() { "sensevoice" } else { &asr.model };
+    ensure_one_model(model).await?;
     Ok(())
 }
 

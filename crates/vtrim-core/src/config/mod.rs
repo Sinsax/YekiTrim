@@ -12,10 +12,8 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有�
 # 相同参数会被 vtrim.toml 覆盖
 
 [asr]
-# 当前方案：单模型 sensevoice
-model = "sensevoice"
-segmentation_model = "sensevoice"
-timestamp_alignment = false
+# ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
+mode = "single"
 # 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
 num_workers = 0
 # 音频分块长度(秒)
@@ -231,20 +229,14 @@ fn merge(base: &mut Config, overlay: Config) {
     if let Some(v) = overlay.asr.llm_correct {
         base.asr.llm_correct = Some(v);
     }
-    if !overlay.asr.provider.is_empty() {
-        base.asr.provider = overlay.asr.provider.clone();
-    }
     if !overlay.asr.language.is_empty() {
         base.asr.language = overlay.asr.language.clone();
     }
     if !overlay.asr.model.is_empty() {
         base.asr.model = overlay.asr.model.clone();
     }
-    if overlay.asr.timestamp_alignment != true {
-        base.asr.timestamp_alignment = overlay.asr.timestamp_alignment;
-    }
-    if !overlay.asr.segmentation_model.is_empty() {
-        base.asr.segmentation_model = overlay.asr.segmentation_model.clone();
+    if !overlay.asr.align_model.is_empty() {
+        base.asr.align_model = overlay.asr.align_model.clone();
     }
     if overlay.asr.max_segment_duration != 15.0 {
         base.asr.max_segment_duration = overlay.asr.max_segment_duration;
@@ -255,8 +247,11 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.segment_padding != 0.3 {
         base.asr.segment_padding = overlay.asr.segment_padding;
     }
-    if overlay.asr.max_new_tokens != 1024 {
+    if overlay.asr.max_new_tokens != 2048 {
         base.asr.max_new_tokens = overlay.asr.max_new_tokens;
+    }
+    if !overlay.asr.mode.is_empty() {
+        base.asr.mode = overlay.asr.mode.clone();
     }
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
