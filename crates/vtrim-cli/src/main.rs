@@ -702,6 +702,11 @@ async fn main() -> anyhow::Result<()> {
                 });
                 std::fs::write(&llm_out, config::LLM_CONFIG_TOML)?;
                 tracing::info!("LLM 配置文件已生成: {}", llm_out.display());
+
+                // 生成本地贴纸库目录（可执行文件旁 stickers/）
+                let sticker_dir = vtrim_core::path::sticker_dir();
+                std::fs::create_dir_all(&sticker_dir)?;
+                tracing::info!("本地贴纸目录已准备: {}", sticker_dir.display());
             }
             ConfigAction::Show => {
                 let cfg = load_cfg(global_config)?;
@@ -932,6 +937,9 @@ async fn main() -> anyhow::Result<()> {
                         }
                         cli::StickerAction::Scan { llm } => {
                             commands::cmd_stickers_scan(*llm).await?
+                        }
+                        cli::StickerAction::Build { package } => {
+                            commands::cmd_stickers_build(&package).await?
                         }
                     }
                 }

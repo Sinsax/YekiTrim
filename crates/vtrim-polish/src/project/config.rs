@@ -45,9 +45,17 @@ pub struct ProjectFile {
     #[serde(default)]
     pub segments: Vec<Segment>,
 
+    /// 是否已执行过 process（preview 用它判断是否需要先 process）
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub processed: bool,
+
     /// 扩展兜底
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 // ===== 项目元信息 =====
@@ -131,7 +139,7 @@ fn default_version() -> u32 {
 }
 
 fn default_sticker_source() -> Vec<String> {
-    vec!["emoji".into(), "local".into()]
+    vec!["emoji".into()]
 }
 
 impl Default for ProjectMeta {
@@ -209,45 +217,143 @@ pub struct Point {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutRegion {
-    /// 左上角坐标
-    pub top_left: Point,
-    /// 右下角坐标
-    pub bottom_right: Point,
-    /// 运镜聚焦中心 (可选)
-    #[serde(default)]
+    /// 九宫格格子列表（可多个合并成更大区域）
+    pub grid: Vec<String>,
+    /// 运镜聚焦中心（新）：九宫格格子名，如 "mid-right" / "center"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_grid: Option<String>,
+    /// 运镜聚焦中心 (旧，格式 "x% y%")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+impl LayoutRegion {
+    /// 是否为空（无有效格子）
+    pub fn is_empty(&self) -> bool {
+        self.grid.is_empty()
+    }
+}
+
 fn default_liver() -> LayoutRegion {
     LayoutRegion {
-        top_left: Point { x: "65%".into(), y: "25%".into() },
-        bottom_right: Point { x: "95%".into(), y: "75%".into() },
-        origin: Some("65% 50%".into()),
+        grid: vec!["mid-right".into()],
+        origin_grid: Some("mid-right".into()),
+        origin: None,
         extra: HashMap::new(),
     }
 }
 
 fn default_danmaku_area() -> LayoutRegion {
     LayoutRegion {
-        top_left: Point { x: "0%".into(), y: "0%".into() },
-        bottom_right: Point { x: "50%".into(), y: "50%".into() },
+        grid: vec!["top-left".into()],
+        origin_grid: None,
         origin: None,
         extra: HashMap::new(),
     }
 }
 
-/// 默认表情/插画区域: 根据 liver 位置计算，优先放在 liver 左侧空间
+/// 默认表情/插画区域: 优先放在 liver 左侧，覆盖中左 + 下左
 fn default_sticker_area() -> LayoutRegion {
     LayoutRegion {
-        top_left: Point { x: "5%".into(), y: "5%".into() },
-        bottom_right: Point { x: "60%".into(), y: "50%".into() },
+        grid: vec!["mid-left".into(), "bot-left".into()],
+        origin_grid: None,
         origin: None,
         extra: HashMap::new(),
     }
 }
+
+// ===== 九宫格 =====
+
+/// 返回九宫格格子的标准矩形（百分比字符串）。
+pub fn grid_rect(name: &str) -> Option<(Point, Point)> {
+    let p = |x: f64, y: f64| Point {
+        x: format!("{x:.2}%"),
+        y: format!("{y:.2}%"),
+    };
+    let rect = match name {
+        "top-left"   => (p(0.0, 0.0),    p(33.33, 33.33)),
+        "top"        => (p(33.33, 0.0),  p(66.67, 33.33)),
+        "top-right"  => (p(66.67, 0.0),  p(100.0, 33.33)),
+        "mid-left"   => (p(0.0, 33.33),  p(33.33, 66.67)),
+        "center"     => (p(33.33, 33.33),p(66.67, 66.67)),
+        "mid-right"  => (p(66.67, 33.33),p(100.0, 66.67)),
+        "bot-left"   => (p(0.0, 66.67),  p(33.33, 100.0)),
+        "bottom"     => (p(33.33, 66.67),p(66.67, 100.0)),
+        "bot-right"  => (p(66.67, 66.67),p(100.0, 100.0)),
+        _ => return None,
+    };
+    Some(rect)
+}
+
+/// 解析百分比字符串为数值。
+fn parse_pct(s: &str) -> f64 {
+    s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// 将 LayoutRegion 的多个格子解析为独立矩形列表（不合并包围盒）。
+/// 每个格子一个矩形，调用方按需选择（如贴纸随机选一个格子）。
+/// 返回空 Vec 表示没有有效格子。
+pub fn region_rects(region: &LayoutRegion) -> Vec<(Point, Point)> {
+    let mut out = Vec::new();
+    for name in &region.grid {
+        if let Some((tl, br)) = grid_rect(name) {
+            out.push((tl, br));
+        }
+    }
+    out
+}
+
+/// 解析运镜聚焦中心（百分比字符串 "x% y%"）。
+/// 优先级：origin_grid（格子中心） > origin（旧百分比） > grid 第一个格子中心。
+pub fn region_origin(region: &LayoutRegion) -> Option<String> {
+    if let Some(g) = &region.origin_grid {
+        if let Some((tl, br)) = grid_rect(g) {
+            let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;
+            let cy = (parse_pct(&tl.y) + parse_pct(&br.y)) / 2.0;
+            return Some(format!("{cx:.2}% {cy:.2}%"));
+        }
+    }
+    if let Some(o) = &region.origin {
+        return Some(o.clone());
+    }
+    // 自动取第一个格子的中心
+    if let Some(first) = region.grid.first() {
+        if let Some((tl, br)) = grid_rect(first) {
+            let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;
+            let cy = (parse_pct(&tl.y) + parse_pct(&br.y)) / 2.0;
+            return Some(format!("{cx:.2}% {cy:.2}%"));
+        }
+    }
+    None
+}
+
+/// 兼容旧名：多个格子合并为包围盒（已废弃，保留别名避免破坏外部引用）。
+#[deprecated(note = "请改用 region_rects，多个格子不再合并")]
+pub fn region_rect(region: &LayoutRegion) -> Option<(Point, Point)> {
+    let rects = region_rects(region);
+    if rects.is_empty() {
+        return None;
+    }
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+    for (tl, br) in &rects {
+        min_x = min_x.min(parse_pct(&tl.x));
+        min_y = min_y.min(parse_pct(&tl.y));
+        max_x = max_x.max(parse_pct(&br.x));
+        max_y = max_y.max(parse_pct(&br.y));
+    }
+    let pt = |x: f64, y: f64| Point {
+        x: format!("{x:.2}%"),
+        y: format!("{y:.2}%"),
+    };
+    Some((pt(min_x, min_y), pt(max_x, max_y)))
+}
+
 
 // ===== 字幕样式 =====
 
@@ -480,14 +586,6 @@ pub struct Segment {
     #[serde(default)]
     pub events: Vec<Event>,
 
-    /// Step1 LLM 输出的段效果方向（大分类/音效tag/贴纸词/特效/情绪等级）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub direction: Option<SegmentDirection>,
-
-    /// 每段 sfx/贴纸数量上下限（Step1 输出, Step2 消费）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<SegmentBudget>,
-
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -505,12 +603,15 @@ pub enum Event {
     // === 贴图 (统一视觉元素, 来源由 sticker_source 配置决定) ===
     Sticker {
         time: f64, duration: f64,
-        /// LLM 生成的描述关键词
+        /// LLM 生成的描述关键词（贴纸包名，如 "ysyk"）
         keyword: String,
-        /// process 步骤解析后的文件名 (不含扩展名)
+        /// Step2a LLM 选出的语义 tag（如 "害怕"）
+        #[serde(default)]
+        sticker_tag: Option<String>,
+        /// process/Step2b 解析后的文件名 (不含扩展名)
         #[serde(default)]
         name: Option<String>,
-        /// process 步骤解析成功后实际使用的来源 (emoji/irasu/local)
+        /// process/Step2b 解析成功后实际使用的来源 (emoji/irasu/local/包名)
         #[serde(default)]
         source: Option<String>,
         x: String, y: String,
@@ -616,66 +717,11 @@ fn default_output() -> String { "vtuber-clip.mp4".into() }
 fn default_metadata() -> String { "clip.json".into() }
 
 
-/// 段效果方向（Step1 LLM 输出，Step2 消费）
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct SegmentDirection {
-    /// 大分类（如 "① 主播情绪反应"）
-    pub cat: String,
-    /// 音效细分 tag（如 ["爆炸", "打击格斗"]）
-    pub sfx_tags: Vec<String>,
-    /// 贴纸情绪词（如 ["laugh", "shock"]）
-    pub sticker: Vec<String>,
-    /// 视觉特效类型（如 ["shake", "flash"]）
-    pub effects: Vec<String>,
-    /// 高光等级 0-3（0=叙述, 3=名场面）
-    pub mood: u8,
-}
-
-/// 每段特效数量上下限
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct SegmentBudget {
-    pub sfx_min: usize,
-    pub sfx_max: usize,
-    pub sticker_min: usize,
-    pub sticker_max: usize,
-}
-
 impl ProjectFile {
     /// 序列化为 TOML 并注入注释
     pub fn to_toml_commented(&self) -> anyhow::Result<String> {
         let raw = toml::to_string_pretty(self)?;
-
-        // 预处理: 将 [layout.*.top_left] + x/y 和 [layout.*.bottom_right] + x/y 合并为内联
-        let mut lines: Vec<String> = raw.lines().map(|s| s.to_string()).collect();
-        let mut i = 0;
-        while i < lines.len() {
-            let t = lines[i].trim().to_string();
-            // 匹配 [layout.xxx.top_left] 或 [layout.xxx.bottom_right]
-            if let Some(parent) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
-                .and_then(|s| s.rsplit_once('.'))
-                .filter(|(_, key)| *key == "top_left" || *key == "bottom_right")
-                .map(|(parent, _)| parent)
-                && i + 2 < lines.len() {
-                    let x_line = lines[i+1].trim().to_string();
-                    let y_line = lines[i+2].trim().to_string();
-                    if x_line.starts_with("x = ") && y_line.starts_with("y = ") {
-                        let key = if t.contains(".top_left") { "top_left" } else { "bottom_right" };
-                        lines[i] = format!("{} = {{ {}, {} }}", key, x_line, y_line);
-                        lines.remove(i+1);
-                        lines.remove(i+1);
-                        // 确保父 section 头存在
-                        let header = format!("[{}]", parent);
-                        let has_parent = lines[..i].iter().any(|l| l.trim() == header);
-                        if !has_parent {
-                            lines.insert(i, header);
-                            i += 1;
-                        }
-                    }
-                }
-            i += 1;
-        }
+        let lines: Vec<String> = raw.lines().map(|s| s.to_string()).collect();
 
         let mut result = String::new();
         let mut in_events = false;
@@ -773,6 +819,30 @@ impl ProjectFile {
                 continue;
             }
 
+            // [layout.*] 前输出九宫格总说明（TOML 无 [layout] 头，挂在第一个子表前）
+            if trimmed == "[layout.liver]" {
+                result.push_str("\n# ===== 布局（九宫格） =====\n");
+                result.push_str("# 可用格子: top-left / top / top-right / mid-left / center / mid-right / bot-left / bottom / bot-right\n");
+                result.push_str("# 每个区域可填一个或多个格子，多个格子会合并成包围盒区域\n");
+                result.push_str("# 例如: grid = [\"mid-left\", \"center\"] 表示左中+正中合并\n");
+                result.push_str("# liver: 主播区域，origin 为运镜聚焦中心\n");
+                result.push_str("# grid 示例: [\"mid-right\"] 或 [\"mid-left\", \"center\", \"mid-right\"]\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+            if trimmed == "[layout.danmaku_area]" {
+                result.push_str("# danmaku_area: 弹幕区域\n");
+                result.push_str("# grid 示例: [\"top-left\"]\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+            if trimmed == "[layout.sticker_area]" {
+                result.push_str("# sticker_area: 贴纸区域\n");
+                result.push_str("# grid 示例: [\"mid-left\", \"bot-left\"]\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+
             // [sfx] 后加注释
             if trimmed == "[sfx]" {
                 result.push_str("\n# ===== 音效 =====\n");
@@ -826,31 +896,15 @@ impl ProjectFile {
             }
 
 
-            // 空表补注释: 可选布局
+            // 空表补注释: 可选布局（九宫格）
             if trimmed == "[layout.reaction_zone]" || trimmed == "[layout.game_area]" {
                 result.push_str("# 可选: 不配置则使用默认值\n");
                 result.push_str(line); result.push('\n');
                 if trimmed == "[layout.reaction_zone]" {
-                    result.push_str("# top_left = { x = \"15%\", y = \"15%\" }\n");
-                    result.push_str("# bottom_right = { x = \"85%\", y = \"85%\" }\n");
+                    result.push_str("# grid = [\"center\"]\n");
                 }
                 continue;
             }
-
-            // [layout.*.top_left] 和 [layout.*.bottom_right] → 内联
-            let inline_sub = trimmed.strip_prefix('[')
-                .and_then(|s| s.strip_suffix(']'))
-                .and_then(|s| s.split_once(".top_left").or_else(|| s.split_once(".bottom_right")))
-                .map(|(prefix, _suffix)| prefix);
-            if let Some(_section) = inline_sub {
-                result.push_str(&format!("# {}\n", trimmed));
-                // 读取接下来两行 x= / y= → 合成内联
-                // 但我们不能预读，所以用接后续行的方式处理
-                continue;
-            }
-
-            // 如果上一行是 .top_left 或 .bottom_right 的表头，把当前 x/y 收集起来
-            // (通过 slice 处理，见下方)
 
             result.push_str(line); result.push('\n');
         }
@@ -889,7 +943,7 @@ impl ProjectFile {
             duration: None,
             layout: Layout::default(),
             style: StyleRoot::default(),
-            sticker_source: vec!["emoji".into(), "irasu".into(), "local".into()],
+            sticker_source: vec!["emoji".into(), "ysyk".into()],
             filter: FilterConfig {
                 danmaku: vec!["OBS".into(), "游戏".into(), "直播".into()],
                 highlight: vec!["OBS".into(), "游戏".into()],
@@ -899,9 +953,10 @@ impl ProjectFile {
             segments: vec![
                 Segment {
                     start: 0.0, end: 10.0, fx: "low".into(), note: "开场".into(),
-                    events: vec![], direction: None, budget: None, extra: HashMap::new(),
+                    events: vec![], extra: HashMap::new(),
                 },
             ],
+            processed: false,
             extra: HashMap::new(),
         }
     }
@@ -918,5 +973,120 @@ pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
         seg.end = seg.end.min(duration);
         // 移除 segment 内起始时间 >= duration 的事件
         seg.events.retain(|e| e.get_time() < duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_rect_all_nine() {
+        let names = [
+            "top-left", "top", "top-right",
+            "mid-left", "center", "mid-right",
+            "bot-left", "bottom", "bot-right",
+        ];
+        for n in names {
+            assert!(grid_rect(n).is_some(), "missing {n}");
+        }
+        assert!(grid_rect("invalid").is_none());
+    }
+
+    #[test]
+    fn region_rects_single_grid() {
+        let region = LayoutRegion {
+            grid: vec!["center".into()],
+            origin_grid: None,
+            origin: None,
+            extra: HashMap::new(),
+        };
+        let rects = region_rects(&region);
+        assert_eq!(rects.len(), 1);
+        let (tl, br) = &rects[0];
+        assert_eq!(tl.x, "33.33%");
+        assert_eq!(tl.y, "33.33%");
+        assert_eq!(br.x, "66.67%");
+        assert_eq!(br.y, "66.67%");
+    }
+
+    #[test]
+    fn region_rects_keeps_separate_rects() {
+        let region = LayoutRegion {
+            grid: vec!["mid-left".into(), "mid-right".into()],
+            origin_grid: None,
+            origin: None,
+            extra: HashMap::new(),
+        };
+        let rects = region_rects(&region);
+        assert_eq!(rects.len(), 2);
+        // mid-left
+        assert_eq!(rects[0].0.x, "0.00%");
+        assert_eq!(rects[0].1.x, "33.33%");
+        // mid-right
+        assert_eq!(rects[1].0.x, "66.67%");
+        assert_eq!(rects[1].1.x, "100.00%");
+        // 不包含 center：两个矩形之间有空隙
+        assert_ne!(rects[0].1.x, rects[1].0.x);
+    }
+
+    #[test]
+    fn region_rects_empty_returns_empty() {
+        let region = LayoutRegion {
+            grid: vec![],
+            origin_grid: None,
+            origin: None,
+            extra: HashMap::new(),
+        };
+        assert!(region_rects(&region).is_empty());
+    }
+
+    #[test]
+    fn region_rect_legacy_merges_bounding_box() {
+        let region = LayoutRegion {
+            grid: vec!["top-left".into(), "center".into()],
+            origin_grid: None,
+            origin: None,
+            extra: HashMap::new(),
+        };
+        #[allow(deprecated)]
+        let (tl, br) = region_rect(&region).unwrap();
+        assert_eq!(tl.x, "0.00%");
+        assert_eq!(tl.y, "0.00%");
+        assert_eq!(br.x, "66.67%");
+        assert_eq!(br.y, "66.67%");
+    }
+
+    #[test]
+    fn region_origin_prefers_grid() {
+        let region = LayoutRegion {
+            grid: vec!["mid-right".into()],
+            origin_grid: Some("mid-right".into()),
+            origin: Some("10% 20%".into()),
+            extra: HashMap::new(),
+        };
+        assert_eq!(region_origin(&region).unwrap(), "83.34% 50.00%");
+    }
+
+    #[test]
+    fn region_origin_falls_back_to_legacy() {
+        let region = LayoutRegion {
+            grid: vec!["mid-right".into()],
+            origin_grid: None,
+            origin: Some("10% 20%".into()),
+            extra: HashMap::new(),
+        };
+        assert_eq!(region_origin(&region).unwrap(), "10% 20%");
+    }
+
+    #[test]
+    fn region_origin_auto_from_first_grid() {
+        let region = LayoutRegion {
+            grid: vec!["center".into()],
+            origin_grid: None,
+            origin: None,
+            extra: HashMap::new(),
+        };
+        assert_eq!(region_origin(&region).unwrap(), "50.00% 50.00%");
     }
 }

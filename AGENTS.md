@@ -214,12 +214,14 @@ cargo run -- status            # 查看当前进度
 | `vtrim-polish/src/commands.rs` | 所有 cmd_* 精修命令入口 |
 | `vtrim-polish/src/process/mod.rs` | cmd_process 主流程（字幕/段处理/预算） |
 | `vtrim-polish/src/process/sfx.rs` | SFX 规则引擎 + 音效解析 |
+| `vtrim-polish/src/process/fx.rs` | 瞬时特效 duration 分类与 clamp |
 | `vtrim-polish/src/process/download.rs` | 贴纸解析 + 资产下载命令 |
 | `vtrim-polish/src/project/config.rs` | vtedit 风格项目配置 + Event/Segment 类型 |
 | `vtrim-polish/src/render/chrome.rs` | Chrome headless 渲染 |
 | `vtrim-polish/src/render/ffmpeg.rs` | FFmpeg 合成/编码/SFX 混音 |
 | `vtrim-polish/src/render/server.rs` | 预览 HTTP server |
 | `vtrim-polish/src/llm/mod.rs` | LLM 段分割 + 关键词 |
+| `vtrim-polish/src/llm/events.rs` | Step2 逐段事件生成（core Agent + checkpoint） |
 | `vtrim-polish/src/assets/downloader.rs` | emoji/irasu/SFX 下载 |
 | `vtrim-polish/src/render/pipeline.rs:11` | cmd_render（自动 process → render → cover） |
 | `vtrim-polish/src/commands.rs:296` | cmd_preview（自动 process → 双端口预览） |

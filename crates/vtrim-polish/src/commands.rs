@@ -1,4 +1,4 @@
-﻿use crate::{cover, process, render};
+use crate::{cover, process, render};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -263,9 +263,10 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
 
     // 运行 LLM pipeline
     let (segments, dm_filter, hl_words) = llm::run_llm_pipeline(
-        &llm_cfg.api_key, &llm_cfg.base_url, &llm_cfg.model,
+        &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
+        Some(&project_path.join(".vtrim")),
     ).await?;
 
     // 截断 segments 到视频实际时长
@@ -296,10 +297,18 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
 pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> {
     tracing::info!("👁️  Preview mode");
 
-    // 先自动跑 process（幂等）
-    if let Err(e) = process::cmd_process(project_path).await {
-        tracing::info!("  ⚠ Process: {}", e);
+    // 如果还没 process 过，先执行一次 process（保证位置/素材是最新）
+    {
+        let config = project::load_project(project_path)?;
+        if !config.processed {
+            tracing::info!("  ⚠ 尚未 process，先自动执行 process...");
+            if let Err(e) = process::cmd_process(project_path).await {
+                tracing::info!("  ⚠ Process: {}", e);
+            }
+        }
     }
+
+    // 只预览：不重算位置/不跑 process，仅确保资源存在
     process::ensure_assets(project_path).await;
 
     let config = project::load_project(project_path)?;
@@ -688,6 +697,87 @@ pub fn cmd_stickers_test(keywords: &[String]) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 预处理贴纸包：用 LLM 分析包内文件并生成 `stickers/<包名>.toml` tags 候选清单。
+pub async fn cmd_stickers_build(package: &str) -> anyhow::Result<()> {
+    use crate::assets::sticker_index::{
+        list_package_files, package_meta_to_toml, build_package_meta_from_tags,
+    };
+    let dir = vtrim_core::path::sticker_dir();
+    let package_dir = dir.join(package);
+    if !package_dir.is_dir() {
+        anyhow::bail!("贴纸包不存在: {}", package_dir.display());
+    }
+
+    let files = list_package_files(&package_dir);
+    if files.is_empty() {
+        anyhow::bail!("贴纸包内没有图片文件: {}", package_dir.display());
+    }
+    tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
+
+    let llm_cfg = vtrim_core::config::load_llm_config();
+    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
+        anyhow::bail!("未配置 LLM API key，无法 build 贴纸包 tags (编辑 .vtrim/llm.toml)");
+    }
+
+    let file_tags = llm_generate_package_tags(&llm_cfg, &files).await?;
+    let meta = build_package_meta_from_tags(package, &file_tags)
+        .ok_or_else(|| anyhow::anyhow!("LLM 未生成有效 tags"))?;
+
+    let toml_str = package_meta_to_toml(&meta)?;
+    let out = dir.join(format!("{package}.toml"));
+    std::fs::write(&out, toml_str)?;
+    crate::assets::sticker_index::register_package(&dir, package)?;
+    tracing::info!("  ✓ 已生成贴纸包清单: {} ({} 个 tag)", out.display(), meta.tags.len());
+    Ok(())
+}
+
+/// 调用 LLM 为贴纸包内每个文件生成语义 tags，返回 `(文件名, tags)` 列表。
+async fn llm_generate_package_tags(
+    cfg: &vtrim_core::config::LlmConfig,
+    files: &[String],
+) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+    use vtrim_core::llm::agent::extract_json_object;
+    use vtrim_core::llm::LlmClient;
+
+    let client = LlmClient::from_config(cfg)?.with_thinking(Some("disabled"));
+    let system = "你是贴纸语义标签助手。分析贴纸文件名，输出一个精简的语义 tag 索引。要求：\
+        \n- 输出 JSON 对象，key 为语义 tag（情绪/动作/场景词），value 为该 tag 下的文件列表\
+        \n- tag 数量控制在 10~20 个，必须是常见情绪/动作词（如 笑、哭、生气、害怕、开心、害羞、呆、紧张、惊讶、得意 等）\
+        \n- 同一个文件可以出现在多个 tag 下\
+        \n- 合并近义词：害羞/不好意思 只保留一个；生气/愤怒 只保留一个；害怕/恐惧 只保留一个；哭/悲伤 只保留一个\
+        \n- 只输出 JSON，不要其他文字";
+
+    // 一次调用输出反向索引；文件过多时仍分批，但每批独立输出 tag 索引，最终由聚合层合并同名 tag
+    const BATCH: usize = 120;
+    let mut result = Vec::with_capacity(files.len());
+    for chunk in files.chunks(BATCH) {
+        let file_list = serde_json::to_string(chunk)?;
+        let user = format!(
+            "贴纸文件列表:\n{}\n\n输出 JSON 对象，例如:\n{{\"害怕\": [\"害怕_1.gif\", \"紧张_1.gif\"], \"笑\": [\"笑.gif\"], \"生气\": [\"生气.gif\"]}}",
+            file_list
+        );
+        let resp = client.chat(system, &user).await?;
+        let json = extract_json_object(&resp)?;
+        let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&json)?;
+        for (tag, arr) in map {
+            if let Some(files_arr) = arr.as_array() {
+                let tag_files: Vec<String> = files_arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if !tag_files.is_empty() {
+                    for f in tag_files {
+                        if chunk.iter().any(|c| c == &f) {
+                            result.push((f, vec![tag.clone()]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// 扫描本地贴纸目录生成/更新 stickers.json 清单

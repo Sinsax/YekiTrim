@@ -15,13 +15,13 @@ pub fn sanitize_sticker_name(keyword: &str) -> String {
 
 /// 尝试用指定来源解析 sticker keyword → 文件名。失败返回 None。
 /// 供 Step 2 轮询 (phase 1) 与再平衡 (phase 2) 共用。
+/// 来源：emoji / 具体贴纸包名（如 ysyk）。
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn try_resolve_sticker(
     src: &str,
     kw: &str,
     time: f64,
     catalog: &Option<crate::assets::emoji_search::EmojiCatalog>,
-    local_index: &Option<crate::assets::sticker_index::StickerIndex>,
     sticker_dir: &std::path::Path,
     client: &reqwest::Client,
     used_emojis: &mut std::collections::HashSet<String>,
@@ -42,38 +42,15 @@ pub(super) async fn try_resolve_sticker(
             let urls = crate::assets::irasu_search::resolve_image_urls(kw, sticker_dir, client).await;
             if urls.is_empty() { None } else { Some(sanitize_sticker_name(kw)) }
         }
-        "local" => {
-            if let Some(idx) = local_index {
-                // 组去重: 已用过的贴纸组跳过 (避免同一贴纸频繁出现), 尝试次优候选组
-                let mut picked: Option<String> = None;
-                if let Some(m) = idx.match_keyword(kw) {
-                    let gname = idx.groups()[m.group_index].name.clone();
-                    if !used_emojis.contains(&gname) && idx.has_files(m.group_index) {
-                        picked = idx.pick_variant(m.group_index, time, m.preferred_variant.as_deref()).or_else(|| {
-                            idx.groups()[m.group_index].all_files()[0]
-                                .file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
-                        });
-                        if picked.is_some() { used_emojis.insert(gname); }
-                    }
-                }
-                if picked.is_none() {
-                    for (_, gi, _) in idx.candidates(kw, 5) {
-                        let gname = idx.groups()[gi].name.clone();
-                        if used_emojis.contains(&gname) { continue; }
-                        if !idx.has_files(gi) { continue; }
-                        picked = idx.pick_variant(gi, time, None).or_else(|| {
-                            idx.groups()[gi].all_files()[0]
-                                .file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
-                        });
-                        if picked.is_some() { used_emojis.insert(gname); break; }
-                    }
-                }
-                picked
+        // 贴纸包名（如 "ysyk"）：keyword 通常是包名，直接从包内选文件
+        src => {
+            let packages = crate::assets::sticker_index::scan_packages(&vtrim_core::path::sticker_dir());
+            if packages.iter().any(|p| p.name == src) {
+                crate::assets::sticker_index::pick_package_file(&packages, src, time)
             } else {
                 None
             }
         }
-        _ => None,
     }
 }
 

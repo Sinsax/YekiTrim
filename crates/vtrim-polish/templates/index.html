@@ -8,9 +8,11 @@
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif; background:#2a2a2a; }
-#page { width:100vw; min-height:100vh; display:flex; align-items:center; justify-content:center; background:#2a2a2a; padding:20px 0; }
-#player-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; width:min(96vw,calc(100vh*16/9)); }
-#player { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:4px; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,0.6); }
+#page { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; background:#2a2a2a; padding:10px 0; transition:height 0.2s ease; }
+body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
+#player-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; width:min(96vw,calc((100vh - var(--editor-h, 0px) - 20px)*16/9)); max-height:calc(100vh - var(--editor-h, 0px) - 12px); transition:width 0.2s ease, max-height 0.2s ease; }
+#player { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:4px; overflow:hidden; box-shadow:0 8px 40px rgba(0,0,0,0.6); flex:0 1 auto; min-height:0; }
+#player-wrap > #controls, #player-wrap > #playtest { flex:0 0 auto; }
 
 #bg-video-wrap { position:absolute; inset:0; z-index:0; overflow:hidden; display:none; }
 #bg-video-wrap.on { display:block; }
@@ -31,7 +33,7 @@ html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai',
 #corner-glow { position:absolute; inset:0; z-index:1; pointer-events:none; }
 #corner-glow .gb { position:absolute; bottom:-60px; right:-60px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(0,212,255,0.12),transparent 70%); filter:blur(50px); }
 
-#overlay { position:absolute; top:0; left:0; width:1920px; height:1080px; transform-origin:0 0; pointer-events:none; z-index:10; }
+#overlay { position:absolute; top:50%; left:50%; width:1920px; height:1080px; transform-origin:center center; pointer-events:none; z-index:10; }
 #captions { position:absolute; bottom:80px; left:120px; width:1680px; z-index:10; pointer-events:none; }
 .cap { position:absolute; bottom:0; left:0; width:100%; text-align:center; padding:14px 44px; font-weight:700; line-height:1.5; opacity:0; will-change:transform,opacity; }
 .cap .hl { paint-order:stroke fill; }
@@ -82,8 +84,15 @@ html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai',
 .editor-toolbar button:hover { background:#3a3a3a; }
 .editor-toolbar button.primary { background:#2563eb; border-color:#3b82f6; }
 #editor-body { flex:1; display:flex; min-height:0; }
-#editor-sidebar { width:280px; flex:0 0 280px; border-right:1px solid #333; padding:10px; overflow-y:auto; background:#1a1a1a; color:#ddd; font-size:13px; }
-#editor-sidebar h4 { margin:0 0 8px; font-size:14px; color:#fff; }
+#editor-sidebar { width:280px; flex:0 0 280px; border-right:1px solid #333; padding:10px; overflow-y:auto; background:#1a1a1a; color:#ddd; font-size:13px; transition:width 0.2s ease, flex-basis 0.2s ease, padding 0.2s ease; }
+#editor-sidebar.collapsed { width:32px; flex-basis:32px; padding:10px 4px; overflow:hidden; }
+#editor-sidebar.collapsed .editor-sidebar-head h4,
+#editor-sidebar.collapsed #editor-props,
+#editor-sidebar.collapsed #editor-props-empty { display:none; }
+.editor-sidebar-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.editor-sidebar-head h4 { margin:0; font-size:14px; color:#fff; }
+.editor-sidebar-head button { background:#2a2a2a; border:1px solid #444; color:#eee; font-size:12px; padding:2px 8px; border-radius:4px; cursor:pointer; }
+.editor-sidebar-head button:hover { background:#3a3a3a; }
 #editor-sidebar label { display:block; margin-bottom:8px; font-size:12px; color:#aaa; }
 #editor-sidebar input[type=number], #editor-sidebar textarea, #editor-sidebar input[type=text] { width:100%; margin-top:3px; background:#111; border:1px solid #333; color:#eee; border-radius:4px; padding:5px 6px; font-family:monospace; font-size:12px; box-sizing:border-box; }
 #editor-sidebar textarea { resize:vertical; min-height:120px; }
@@ -91,17 +100,20 @@ html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai',
 #editor-sidebar .ed-buttons button { flex:1; min-width:70px; background:#2a2a2a; border:1px solid #444; color:#eee; font-size:12px; padding:5px 6px; border-radius:4px; cursor:pointer; }
 #editor-sidebar .ed-buttons button.danger { background:#7f1d1d; border-color:#b91c1c; }
 #editor-sidebar .ed-empty { color:#777; font-size:12px; padding:10px 0; }
-#editor-timeline { flex:1; display:flex; flex-direction:column; min-width:0; }
-#editor-ruler-scroll { overflow-x:hidden; overflow-y:hidden; border-bottom:1px solid #333; }
-#editor-ruler { position:relative; height:22px; background:#111; min-width:100%; }
-#editor-ruler span { position:absolute; top:4px; font-size:10px; color:#999; transform:translateX(-50%); }
-#editor-lanes-scroll { flex:1; overflow:auto; position:relative; background:#181818; }
+#editor-timeline { flex:1; display:flex; flex-direction:row; min-width:0; }
+#editor-left-col { width:120px; flex:0 0 120px; border-right:1px solid #333; background:#1e1e1e; overflow:hidden; display:flex; flex-direction:column; z-index:3; }
+#editor-left-col .left-ruler-space { height:22px; flex:0 0 22px; background:#111; border-bottom:1px solid #333; }
+#editor-left-col .left-lane { height:34px; flex:0 0 34px; display:flex; align-items:center; justify-content:space-between; padding:0 6px 0 10px; border-bottom:1px solid #222; font-size:12px; color:#ccc; }
+#editor-left-col .left-lane .ed-add { background:none; border:none; color:#888; cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; }
+#editor-left-col .left-lane .ed-add:hover { color:#fff; }
+#editor-right { flex:1; display:flex; flex-direction:column; min-width:0; }
+#editor-ruler-scroll { overflow-x:hidden; overflow-y:hidden; border-bottom:1px solid #333; scrollbar-gutter:stable; }
+#editor-ruler { position:relative; height:22px; background:#111; cursor:pointer; min-width:100%; }
+#editor-ruler span { position:absolute; top:4px; font-size:10px; color:#999; transform:translateX(-50%); pointer-events:none; }
+#editor-lanes-scroll { flex:1; overflow:auto; position:relative; background:#181818; scrollbar-gutter:stable; }
 #editor-lanes { position:relative; width:max-content; min-width:100%; }
 .editor-lane { display:flex; height:34px; border-bottom:1px solid #222; position:relative; }
-.editor-lane-label { width:120px; flex:0 0 120px; display:flex; align-items:center; justify-content:space-between; padding:0 6px 0 10px; background:#1e1e1e; border-right:1px solid #333; position:sticky; left:0; z-index:2; font-size:12px; color:#ccc; }
-.editor-lane-label .ed-add { background:none; border:none; color:#888; cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; }
-.editor-lane-label .ed-add:hover { color:#fff; }
-.editor-lane-track { flex:0 0 auto; position:relative; min-width:0; }
+.editor-lane-track { flex:0 0 auto; position:relative; min-width:0; width:100%; }
 .ed-block { position:absolute; top:5px; height:24px; background:#3b82f6; border-radius:4px; color:#fff; font-size:11px; line-height:24px; padding:0 6px; white-space:nowrap; overflow:hidden; cursor:grab; user-select:none; z-index:1; box-sizing:border-box; touch-action:none; }
 .ed-block:active { cursor:grabbing; }
 .ed-block.type-segments { background:#525252; }
@@ -171,7 +183,10 @@ html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai',
   </div>
   <div id="editor-body">
     <div id="editor-sidebar">
-      <h4>事件属性</h4>
+      <div class="editor-sidebar-head">
+        <h4>事件属性</h4>
+        <button id="editor-sidebar-toggle" title="折叠/展开">◀</button>
+      </div>
       <div id="editor-props-empty" class="ed-empty">点击时间轴上的色块编辑事件</div>
       <div id="editor-props" style="display:none">
         <label>类型 <input type="text" id="ed-type" readonly></label>
@@ -186,8 +201,11 @@ html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai',
       </div>
     </div>
     <div id="editor-timeline">
-      <div id="editor-ruler-scroll"><div id="editor-ruler"></div></div>
-      <div id="editor-lanes-scroll"><div id="editor-lanes"></div></div>
+      <div id="editor-left-col"></div>
+      <div id="editor-right">
+        <div id="editor-ruler-scroll"><div id="editor-ruler"></div></div>
+        <div id="editor-lanes-scroll"><div id="editor-lanes"></div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -274,8 +292,15 @@ setTimeout(function(){
     }
     var ri=setInterval(function(){if(window.__TIMELINE){clearInterval(ri);rInit();}},100);
   }
-  function r(){o.style.transform='scale('+(p.clientWidth/1920)+')';}
+  function r(){
+    if(!p) return;
+    // 同时考虑宽高，避免窗口/编辑器改变宽高比时字幕贴纸偏移
+    var s=Math.min(p.clientWidth/1920, p.clientHeight/1080);
+    o.style.transform='translate(-50%,-50%) scale('+s+')';
+    window.__overlayScale=s;
+  }
   r(); window.addEventListener('resize',r);
+  window.__updateOverlayScale=r;
 })();
 
 // 百分比字符串 → 像素 (基于 1920×1080 虚拟画布)
@@ -521,7 +546,22 @@ function init(){
 
   // ---- 运镜: 由 Camera 事件驱动 ----
   // zoom = "中"(zoom_mid) / "近"(zoom_close), 数值见 polish.toml [style.camera]
-  var liverOrigin=layout.liver?(''+(layout.liver.origin||'65% 50%')):'65% 50%';
+  function gridOrigin(name){
+    var G={
+      'top-left':[16.67,16.67],'top':[50,16.67],'top-right':[83.33,16.67],
+      'mid-left':[16.67,50],'center':[50,50],'mid-right':[83.33,50],
+      'bot-left':[16.67,83.33],'bottom':[50,83.33],'bot-right':[83.33,83.33]
+    };
+    var p=G[name]||[50,50];
+    return p[0]+'% '+p[1]+'%';
+  }
+  var liverOrigin=(function(){
+    if(!layout.liver) return '65% 50%';
+    if(layout.liver.origin_grid) return gridOrigin(layout.liver.origin_grid);
+    if(layout.liver.origin) return ''+layout.liver.origin;
+    if(layout.liver.grid && layout.liver.grid.length) return gridOrigin(layout.liver.grid[0]);
+    return '65% 50%';
+  })();
   var curZoom=1.0;
 
   // 收集所有 camera 事件并排序
@@ -547,13 +587,22 @@ function init(){
   // 新增事件: 加一行 handlers.xxx = function(ev, et) { ... }
   var handlers = {};
 
-  // 特效时长归一: LLM 可写 duration, 缺省用默认; 音效只播放规则引擎指定的 sfx (无引用则静音)
-  function fxDur(ev, def){ return Math.max(ev.duration||def, 0.1); }
+  // 特效时长归一: 瞬时特效由系统 clamp，模板再兜底 cap；音效只播放规则引擎指定的 sfx (无引用则静音)
+  var TRANSIENT_CAP = {
+    shake:0.5, flash:0.3, blur:0.4, zoom_bounce:0.6, stutter:0.35,
+    split:0.35, noise:0.4, pulse:0.5, hue_shift:0.5, color_shift:0.5,
+    vignette:0.6
+  };
+  function transientDur(ev, def){
+    var cap = TRANSIENT_CAP[ev.type] || 0.6;
+    var d = ev.duration != null ? ev.duration : def;
+    return Math.max(0.1, Math.min(d, cap));
+  }
   function fxSfx(ev){
     if(!ev.sfx) return;
     var name=ev.sfx;
     var vol=ev.sfx_volume||CFG.sfx.volume||0.1;
-    var sd=Math.max(fxDur(ev, 1.0), 1.0);
+    var sd=Math.max(transientDur(ev, 1.0), 1.0);
     scheduleSound(ev.time, function(){ sfxPlay(name,vol,sd); }, name, vol, sd);
   }
 
@@ -582,46 +631,47 @@ function init(){
   };
 
   handlers.shake = function(ev, et) {
-    shake(tl,et,ev.intensity||14,fxDur(ev,0.3));
+    shake(tl,et,ev.intensity||14,transientDur(ev,0.3));
     fxSfx(ev);
   };
 
   handlers.flash = function(ev, et) {
-    flash(tl,et,ev.color||'#ffffff',fxDur(ev,0.5));
+    flash(tl,et,ev.color||'#ffffff',transientDur(ev,0.25));
     fxSfx(ev);
   };
 
   handlers.blur = function(ev, et) {
-    var dur=fxDur(ev,0.8);
-    tl.to('#video-wrap',{filter:'blur(8px)',duration:0.12,ease:'none'},et);
-    tl.to('#video-wrap',{filter:'blur(8px)',duration:Math.max(dur-0.12,0.1),ease:'none'},et+0.12);
-    tl.to('#video-wrap',{filter:'blur(0px)',duration:0.32,ease:'power2.out'},et+dur);
+    // 瞬时失焦脉冲：快速模糊 → 快速恢复，无 hold 段
+    var dur=transientDur(ev,0.3);
+    var attack=Math.min(0.08, dur*0.4);
+    tl.to('#video-wrap',{filter:'blur(8px)',duration:attack,ease:'none'},et);
+    tl.to('#video-wrap',{filter:'blur(0px)',duration:Math.max(dur-attack,0.12),ease:'power2.out'},et+attack);
     fxSfx(ev);
   };
 
   handlers.zoom_bounce = function(ev, et) {
-    var dur=fxDur(ev,0.3);
+    var dur=transientDur(ev,0.4);
     tl.to(SEL_SRC,{scale:curZoom*1.10,duration:dur*0.3,ease:'none'},et);
     tl.to(SEL_SRC,{scale:curZoom,duration:dur*0.7,ease:'power2.out'},et+dur*0.3);
     fxSfx(ev);
   };
 
   handlers.vignette = function(ev, et) {
-    var dur=fxDur(ev,0.9);
+    var dur=transientDur(ev,0.4);
     tl.set('#flash-overlay',{background:'radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.5) 100%)',opacity:1},et);
-    tl.to('#flash-overlay',{opacity:0,duration:0.6,ease:'sine.out'},et+dur);
+    tl.to('#flash-overlay',{opacity:0,duration:Math.min(0.3,dur*0.6),ease:'sine.out'},et+dur*0.4);
     fxSfx(ev);
   };
 
   handlers.hue_shift = function(ev, et) {
-    var dur=fxDur(ev,1.0);
+    var dur=transientDur(ev,0.35);
     tl.set('#flash-overlay',{backgroundColor:ev.color||'#ff0040',opacity:0.25},et);
-    tl.to('#flash-overlay',{opacity:0,duration:0.8,ease:'sine.out'},et+Math.min(dur*0.5,0.5));
+    tl.to('#flash-overlay',{opacity:0,duration:Math.min(0.35,dur*0.6),ease:'sine.out'},et+dur*0.4);
     fxSfx(ev);
   };
 
   handlers.stutter = function(ev, et) {
-    var dur=fxDur(ev,0.3);
+    var dur=transientDur(ev,0.25);
     var off=ev.intensity||12;
     var n=Math.max(1,Math.round(dur/0.08));
     for(var i=0;i<n;i++){
@@ -634,7 +684,7 @@ function init(){
   };
 
   handlers.split = function(ev, et) {
-    var dur=fxDur(ev,0.4);
+    var dur=transientDur(ev,0.25);
     var sp=ev.intensity||30;
     var n=Math.max(1,Math.round(dur/0.12));
     for(var i=0;i<n;i++){
@@ -647,26 +697,26 @@ function init(){
   };
 
   handlers.color_shift = function(ev, et) {
-    var dur=fxDur(ev,0.8);
+    var dur=transientDur(ev,0.35);
     tl.set('#video-wrap',{filter:'sepia(0.6)saturate(1.4)',duration:0.1},et);
-    tl.to('#video-wrap',{filter:'sepia(0)saturate(1)',duration:0.6,ease:'sine.out'},et+Math.max(dur-0.4,0.2));
+    tl.to('#video-wrap',{filter:'sepia(0)saturate(1)',duration:Math.min(0.4,dur*0.6),ease:'sine.out'},et+dur*0.4);
     fxSfx(ev);
   };
 
   handlers.noise = function(ev, et) {
-    var dur=fxDur(ev,1.0);
+    var dur=transientDur(ev,0.3);
     var nid='noise_'+(window.__NOISE_COUNTER||0); window.__NOISE_COUNTER=(window.__NOISE_COUNTER||0)+1;
     var ne=document.createElement('div');
     ne.id=nid;ne.style.cssText='position:absolute;inset:0;z-index:3;pointer-events:none;mix-blend-mode:overlay;opacity:0.15;background-image:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCI+PGZpbHRlciBpZD0iZiI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9Ii43IiBudW1PY3RhdmVzPSIzIiAvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNmKSIgb3BhY2l0eT0iMCIgLz48L3N2Zz4=)';
     document.getElementById('overlay').before(ne);
     tl.to('#'+nid,{opacity:0.08,duration:0.08},et);
-    tl.to('#'+nid,{opacity:0,duration:0.5,ease:'sine.out'},et+Math.max(dur-0.5,0.2));
+    tl.to('#'+nid,{opacity:0,duration:Math.min(0.3,dur*0.6),ease:'sine.out'},et+dur*0.4);
     tl.set('#'+nid,{visibility:'hidden'},et+dur+0.1);
     fxSfx(ev);
   };
 
   handlers.pulse = function(ev, et) {
-    var dur=fxDur(ev,0.6);
+    var dur=transientDur(ev,0.4);
     var beats=Math.max(1,Math.round(dur/0.48));
     for(var i=0;i<beats;i++){
       var t=et+i*0.48;
@@ -827,6 +877,16 @@ function init(){
     if(p&&p.catch)p.catch(function(e){showError('视频播放失败: '+e.message);playing=false;pb.textContent='\u25B6';});
     requestAnimationFrame(function(){raf=requestAnimationFrame(loop);});
   }
+  // 暴露给在线编辑器：seek 到指定时间（处理播放中墙钟锚点）
+  window.__seekTo=function(t){
+    t=Math.max(0, Math.min(t, dur));
+    if(video && typeof video.currentTime==='number'){ try{ video.currentTime=t; }catch(e){} }
+    if(playing){ playStartAt=performance.now(); playStartT=t; }
+    sb.value=Math.round(t/dur*1000);
+    td.textContent=fmt(t)+' / '+fmt(dur);
+    try{ tl.seek(t); }catch(e){}
+    updatePlayTest(t);
+  };
   sb.addEventListener('input',function(){
     seeking=true;
     try{video.pause();}catch(e){} // 拖动时暂停元素, 消除 seek 拉扯
@@ -982,7 +1042,7 @@ function init(){
     var zoom = 1.0, ox = 65, oy = 50;
     var layout = (EVENT_IDX && EVENT_IDX.layout) || {};
     var liver = layout.liver || {};
-    var defOrigin = liver.origin || '65% 50%';
+    var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
     var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
 
     for (var i = 0; i < cam.length; i++) {
@@ -1599,21 +1659,12 @@ function init(){
     { type:'segments', label:'分段', duration:true },
     { type:'camera', label:'运镜', duration:true },
     { type:'sticker', label:'贴纸', duration:true },
-    { type:'shake', label:'震动' },
-    { type:'flash', label:'闪白' },
-    { type:'blur', label:'模糊' },
-    { type:'zoom_bounce', label:'缩放弹跳' },
-    { type:'vignette', label:'暗角' },
-    { type:'hue_shift', label:'色相' },
-    { type:'stutter', label:'卡顿' },
-    { type:'split', label:'分裂' },
-    { type:'noise', label:'噪点' },
-    { type:'pulse', label:'脉冲' },
-    { type:'color_shift', label:'变色' },
+    { type:'fx', label:'视觉特效', types:['shake','flash','blur','zoom_bounce','vignette','hue_shift','stutter','split','noise','pulse','color_shift'] },
     { type:'overlay', label:'覆盖层', duration:true },
     { type:'sfx', label:'音效' }
   ];
   var DEFAULT_DUR = { camera:1.0, sticker:2.0, overlay:1.5, sfx:0.5 };
+  var LABEL_W = 120; // lane 左侧说明标签宽度
 
   function round1(v){ return Math.round(v*10)/10; }
   function round2(v){ return Math.round(v*100)/100; }
@@ -1631,13 +1682,14 @@ function init(){
     if(ev.type==='overlay') return ev.overlay_type || '覆盖';
     return ev.type;
   }
-  function laneEvents(type){
+  function laneEvents(def){
     var out=[];
+    var types=def.types || [def.type];
     var segs=getSegments();
     for(var si=0; si<segs.length; si++){
       var seg=segs[si];
       (seg.events||[]).forEach(function(ev,ei){
-        if(ev.type===type) out.push({ si:si, ei:ei, ev:ev, seg:seg });
+        if(types.indexOf(ev.type)>=0) out.push({ si:si, ei:ei, ev:ev, seg:seg });
       });
     }
     out.sort(function(a,b){ return a.ev.time - b.ev.time; });
@@ -1653,8 +1705,11 @@ function init(){
     if(!lanes || !ruler) return;
     lanes.innerHTML='';
     ruler.innerHTML='';
-    ruler.style.width=totalW+'px';
+    var leftCol=document.getElementById('editor-left-col');
+    if(leftCol) leftCol.innerHTML='';
 
+    // 刻度尺：从 0 开始，不包含左侧标签
+    ruler.style.width=totalW+'px';
     for(var t=0; t<=dur+0.001; t+=5){
       var sp=document.createElement('span');
       sp.style.left=(t*EDITOR.scale)+'px';
@@ -1667,23 +1722,37 @@ function init(){
     ph.style.left='0px';
     lanes.appendChild(ph);
 
+    // 左侧标签列顶部占位（对应刻度尺高度）
+    if(leftCol){
+      var rulerSpace=document.createElement('div');
+      rulerSpace.className='left-ruler-space';
+      leftCol.appendChild(rulerSpace);
+    }
+
     LANE_DEFS.forEach(function(def){
+      // 左侧标签列
+      if(leftCol){
+        var leftLane=document.createElement('div');
+        leftLane.className='left-lane';
+        var span=document.createElement('span');
+        span.textContent=def.label;
+        leftLane.appendChild(span);
+        var addBtn=document.createElement('button');
+        addBtn.className='ed-add';
+        addBtn.textContent='+';
+        addBtn.title='添加 '+def.label;
+        addBtn.addEventListener('click', function(e){ e.stopPropagation(); addEvent(def.type); });
+        leftLane.appendChild(addBtn);
+        leftCol.appendChild(leftLane);
+      }
+
+      // 右侧事件轨道（不含 label）
       var lane=document.createElement('div');
       lane.className='editor-lane';
-      var label=document.createElement('div');
-      label.className='editor-lane-label';
-      label.innerHTML='<span>'+def.label+'</span>';
-      var addBtn=document.createElement('button');
-      addBtn.className='ed-add';
-      addBtn.textContent='+';
-      addBtn.title='添加 '+def.label;
-      addBtn.addEventListener('click', function(e){ e.stopPropagation(); addEvent(def.type); });
-      label.appendChild(addBtn);
       var track=document.createElement('div');
       track.className='editor-lane-track';
       track.style.width=totalW+'px';
       track.dataset.lane=def.type;
-      lane.appendChild(label);
       lane.appendChild(track);
       lanes.appendChild(lane);
 
@@ -1692,12 +1761,16 @@ function init(){
           addSegmentBlock(track, { si:si, ei:-1, seg:seg });
         });
       } else {
-        laneEvents(def.type).forEach(function(item){
+        laneEvents(def).forEach(function(item){
           addBlock(track, item, def);
         });
       }
     });
     updatePlayhead();
+    // 同步刻度尺与事件轨道的滚动位置
+    var lsc=document.getElementById('editor-lanes-scroll');
+    var rsc=document.getElementById('editor-ruler-scroll');
+    if(lsc && rsc) rsc.scrollLeft=lsc.scrollLeft;
   }
 
   function addBlock(track, item, def){
@@ -1906,6 +1979,13 @@ function init(){
     var old=document.querySelector('.ed-block.selected');
     if(old) old.classList.remove('selected');
     if(el) el.classList.add('selected');
+    // 点击事件时自动展开属性面板
+    var sb=document.getElementById('editor-sidebar');
+    if(sb && sb.classList.contains('collapsed')){
+      sb.classList.remove('collapsed');
+      var st=document.getElementById('editor-sidebar-toggle');
+      if(st) st.textContent='◀';
+    }
     fillProps();
   }
 
@@ -2001,7 +2081,18 @@ function init(){
     return 0;
   }
 
+  function seekTo(t){
+    if(window.__seekTo){
+      window.__seekTo(t);
+    } else {
+      var v=document.getElementById('source-video');
+      if(v && typeof v.currentTime==='number'){ try{ v.currentTime=t; }catch(e){} }
+    }
+    updatePlayhead();
+  }
+
   function addEvent(type){
+    if(type==='fx') type='shake'; // 视觉特效 lane 默认添加震动
     if(!CFG.segments) CFG.segments=[];
     var segs=CFG.segments;
     var t=round2(currentTime());
@@ -2111,11 +2202,20 @@ function init(){
     });
   }
 
+  function updateEditorLayout(){
+    var panel=document.getElementById('editor-panel');
+    var h=panel && panel.classList.contains('open') ? panel.offsetHeight : 0;
+    document.documentElement.style.setProperty('--editor-h', h+'px');
+    document.body.classList.toggle('editor-open', !!(h>0));
+    if(window.__updateOverlayScale) window.__updateOverlayScale();
+  }
+
   function toggle(open){
     var panel=document.getElementById('editor-panel');
     if(!panel) return;
     if(open===undefined) open=!panel.classList.contains('open');
     panel.classList.toggle('open', open);
+    updateEditorLayout();
     var btn=document.getElementById('btn-editor');
     if(btn) btn.style.color=open ? '#ff6bcb' : '';
     if(EDITOR.waitTimer){
@@ -2161,22 +2261,69 @@ function init(){
     btn.addEventListener('click', function(){ toggle(); });
     document.getElementById('editor-close').addEventListener('click', function(){ toggle(false); });
     document.getElementById('editor-save').addEventListener('click', save);
+    var sideToggle=document.getElementById('editor-sidebar-toggle');
+    if(sideToggle){
+      sideToggle.addEventListener('click', function(){
+        var sb=document.getElementById('editor-sidebar');
+        var collapsed=sb.classList.toggle('collapsed');
+        sideToggle.textContent=collapsed ? '▶' : '◀';
+      });
+    }
     document.getElementById('ed-time').addEventListener('input', applyTime);
     document.getElementById('ed-duration').addEventListener('input', applyDuration);
     document.getElementById('ed-apply-json').addEventListener('click', applyJson);
     document.getElementById('ed-delete').addEventListener('click', deleteSelected);
     document.getElementById('ed-duplicate').addEventListener('click', duplicateSelected);
-    document.getElementById('editor-lanes-scroll').addEventListener('click', function(e){
+    var lanesScroll=document.getElementById('editor-lanes-scroll');
+    function trackTimeFromEvent(e, target){
+      // 基于具体 track 的视口 rect：滚动后 rect.left 自动反映滚动，无需手动加 scrollLeft
+      var rect=target.getBoundingClientRect();
+      var x=e.clientX-rect.left;
+      return Math.max(0, x/EDITOR.scale);
+    }
+    var dragSeek=false, dragTarget=null;
+    lanesScroll.addEventListener('pointerdown', function(e){
       if(e.target.classList.contains('editor-lane-track')){
+        dragSeek=true;
+        dragTarget=e.target;
         EDITOR.selected=null;
         var old=document.querySelector('.ed-block.selected');
         if(old) old.classList.remove('selected');
         fillProps();
+        seekTo(trackTimeFromEvent(e, dragTarget));
+      }
+    });
+    lanesScroll.addEventListener('pointermove', function(e){
+      if(dragSeek && dragTarget){
+        seekTo(trackTimeFromEvent(e, dragTarget));
+      }
+    });
+    window.addEventListener('pointerup', function(){ dragSeek=false; dragTarget=null; });
+    lanesScroll.addEventListener('click', function(e){
+      // 点击空白轨道：清空选中 + 跳转（pointerdown 已处理，这里兜底）
+      if(e.target.classList.contains('editor-lane-track')){
+        seekTo(trackTimeFromEvent(e, e.target));
       }
     });
     document.getElementById('editor-lanes-scroll').addEventListener('scroll', function(){
       document.getElementById('editor-ruler-scroll').scrollLeft = this.scrollLeft;
     });
+    // 点击刻度尺跳转到对应时间（刻度从 0 开始；rect 已反映滚动）
+    var rulerEl=document.getElementById('editor-ruler');
+    if(rulerEl){
+      rulerEl.addEventListener('click', function(e){
+        var rect=e.currentTarget.getBoundingClientRect();
+        var x=e.clientX-rect.left;
+        var t=Math.max(0, x/EDITOR.scale);
+        seekTo(t);
+      });
+    }
+    // 滚轮：水平滚动时间轴视图，不移动播放时间
+    document.getElementById('editor-lanes-scroll').addEventListener('wheel', function(e){
+      e.preventDefault();
+      var delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      this.scrollLeft += delta;
+    }, { passive:false });
   }
 
   function init(){
@@ -2185,6 +2332,8 @@ function init(){
       return;
     }
     bind();
+    window.addEventListener('resize', updateEditorLayout);
+    updateEditorLayout();
     if(new URLSearchParams(location.search).get('editor')==='1'){
       toggle(true);
     }
