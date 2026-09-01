@@ -92,22 +92,24 @@ LLM 订正流程已重新设计：小批次（25 段）、只返回修正项（J
   3. keyword → 日文同义词表（laugh→笑い、shock→ショック）增强 Blogger 搜索命中
 - 涉及：`project/validate.rs`、`project/config.rs`、`assets/irasu_search.rs`、`assets/downloader.rs`
 
-### P3. 特效 duration 与情绪释放不匹配
+### P3. ✅ 已重构 — 特效 duration 按情景分类 clamp
 
-- 根因：LLM 写 0.3~1s duration，渲染侧 `fxDur = max(ev.duration, 0.1)` 直接用；
-  一句话没结束特效就消失，突兀、情绪无释放
-- 方向：
-  1. process 统一归一 duration = 特效时刻到**下一句字幕开始**的时长（clamp 0.8~2.5s，
-     强情绪点下限 1.5s）
-  2. 渲染侧补齐退场缓动（shake/flash 等 fade-out）
-- 涉及：`process/mod.rs`、`templates/index.html`
+- 根因：LLM 写 0.3~1s duration，渲染侧直接使用，导致 blur 等瞬时特效长时间驻留
+- 重构后：
+  1. `process/fx.rs` 新增 `normalize_fx_durations`：瞬时特效（shake/flash/blur/zoom_bounce/
+     vignette/hue_shift/stutter/split/noise/pulse/color_shift）统一 clamp 0.1~0.6s，
+     blur 上限 0.4s，缺省自动填默认值
+  2. Step2 prompt 改为“瞬时特效 duration 由系统接管；blur 只用于瞬间失焦/眩晕/闪回”
+  3. 模板 `templates/index.html` 用 `transientDur(ev, def)` 兜底，blur 改为快速脉冲无 hold
+- 涉及：`process/fx.rs`、`process/mod.rs`、`llm/segment.rs`、`templates/index.html`
 
-### P4. LLM 流程辅助项
+### P4. ✅ 已重构 — LLM 流程辅助项
 
-- 字幕 `take(100)` 截断：长视频后半段 LLM 不可见 → 按 token 预算分批
-- 解析失败无反馈：直接 fallback 默认段 → 错误信息回传 LLM 重试 1 次
-- 无匹配率报告：sticker/sfx 命中率不可见 → 输出匹配率报告
-- 涉及：`llm/segment.rs`、`llm/mod.rs`、`process/mod.rs`
+- 字幕 `take(100)` 截断 → Step1 改为预算感知采样（首尾 + 中部均匀采样到 200 条）
+- 解析失败无反馈 → Step1/Step2 解析失败错误回传 LLM 重试 1 次
+- Step2 已迁移到 core `Agent`：每段一个窗口，并发 ≤3 + checkpoint 续传 + 错误容忍
+- 无匹配率报告：仍待补（后续）
+- 涉及：`llm/segment.rs`、`llm/events.rs`、`llm/mod.rs`、`process/mod.rs`
 
 ## 低优先级
 

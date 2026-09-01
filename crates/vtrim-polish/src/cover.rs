@@ -72,7 +72,7 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
     let cc = &config.cover;
 
     // liver 位置
-    let def_origin = config.layout.liver.origin.as_deref().unwrap_or("65% 50%");
+    let def_origin = crate::project::region_origin(&config.layout.liver).unwrap_or_else(|| "65% 50%".into());
     let lp: Vec<f64> = def_origin.split_whitespace()
         .filter_map(|s| s.trim_end_matches('%').parse().ok()).collect();
     let lx = lp.first().copied().unwrap_or(65.0);
@@ -172,7 +172,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     }
 
     // liver 位置 → 帧缩放中心
-    let def_origin = config.layout.liver.origin.as_deref().unwrap_or("65% 50%");
+    let def_origin = crate::project::region_origin(&config.layout.liver).unwrap_or_else(|| "65% 50%".into());
     let lp: Vec<f64> = def_origin.split_whitespace()
         .filter_map(|s| s.trim_end_matches('%').parse().ok()).collect();
     let lx = lp.first().copied().unwrap_or(65.0);

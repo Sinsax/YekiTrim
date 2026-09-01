@@ -21,6 +21,168 @@ pub struct StickerVariant {
     pub files: Vec<PathBuf>,
 }
 
+/// 一个本地贴纸包：`stickers/<包名>/` 子文件夹。
+/// 这是新的推荐结构：一个文件夹 = 一个主播/主题包，文件夹名即 LLM 候选名。
+#[derive(Debug, Clone)]
+pub struct StickerPackage {
+    /// 包名（文件夹名，如 "ysyk"）
+    pub name: String,
+    /// 包内所有图片文件（绝对路径，保序）
+    pub files: Vec<PathBuf>,
+}
+
+impl StickerPackage {
+    /// 包内文件数
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+}
+
+/// 贴纸包 TOML 元数据（`stickers/<包名>.toml`，由 `stickers build --llm` 生成）。
+/// 采用 tag → 文件列表的双向索引，供 LLM 两步选择使用。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StickerPackageMeta {
+    /// 包名（与文件夹同名，如 "ysyk"）
+    pub name: String,
+    /// 简短描述（可人工补充）
+    #[serde(default)]
+    pub description: String,
+    /// tag → 文件列表
+    #[serde(default)]
+    pub tags: Vec<StickerTagMeta>,
+}
+
+/// 一个 tag 及其关联文件。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StickerTagMeta {
+    /// 语义 tag（如 "害怕" / "laugh"）
+    pub tag: String,
+    /// 该 tag 下的文件列表（如 ["害怕_1.gif", "害怕_2.gif"]）
+    pub files: Vec<String>,
+}
+
+/// 扫描贴纸包目录，返回包内所有图片文件名（不含路径，保序）。
+pub fn list_package_files(package_dir: &Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(package_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    if p.is_file()
+                        && p.extension()
+                            .and_then(|x| x.to_str())
+                            .map(|x| matches!(x.to_ascii_lowercase().as_str(), "gif" | "png" | "jpg" | "jpeg" | "webp"))
+                            .unwrap_or(false)
+                    {
+                        p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+/// 从 LLM 生成的 `文件 -> tags` 映射聚合出 `StickerPackageMeta`。
+/// 一个文件可出现在多个 tag 下。
+pub fn build_package_meta_from_tags(
+    package_name: &str,
+    file_tags: &[(String, Vec<String>)],
+) -> Option<StickerPackageMeta> {
+    if file_tags.is_empty() {
+        return None;
+    }
+    let mut tag_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for (file, tags) in file_tags {
+        for tag in tags {
+            let t = tag.trim().to_string();
+            if t.is_empty() {
+                continue;
+            }
+            tag_map.entry(t).or_default().push(file.clone());
+        }
+    }
+    if tag_map.is_empty() {
+        return None;
+    }
+    let tags: Vec<StickerTagMeta> = tag_map
+        .into_iter()
+        .map(|(tag, files)| StickerTagMeta { tag, files })
+        .collect();
+    Some(StickerPackageMeta {
+        name: package_name.to_string(),
+        description: String::new(),
+        tags,
+    })
+}
+
+/// 读取 `stickers/<包名>.toml` 元数据。
+pub fn load_package_meta(root: &Path, package_name: &str) -> Option<StickerPackageMeta> {
+    let path = root.join(format!("{package_name}.toml"));
+    let raw = std::fs::read_to_string(&path).ok()?;
+    toml::from_str(&raw).ok()
+}
+
+/// 将 `StickerPackageMeta` 序列化为 TOML 字符串。
+pub fn package_meta_to_toml(meta: &StickerPackageMeta) -> anyhow::Result<String> {
+    Ok(toml::to_string_pretty(meta)?)
+}
+
+/// 获取某 tag 下的候选文件列表。
+pub fn tag_files(meta: &StickerPackageMeta, tag: &str) -> Vec<String> {
+    meta.tags
+        .iter()
+        .find(|t| t.tag == tag)
+        .map(|t| t.files.clone())
+        .unwrap_or_default()
+}
+
+/// 全局已 build 贴纸包索引（`stickers/sticker.toml`）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct StickerIndexFile {
+    /// 已 build 的贴纸包名列表
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+/// 读取 `stickers/sticker.toml` 全局索引。
+pub fn load_sticker_index(root: &Path) -> StickerIndexFile {
+    let path = root.join("sticker.toml");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| toml::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// 写入 `stickers/sticker.toml` 全局索引。
+pub fn save_sticker_index(root: &Path, index: &StickerIndexFile) -> anyhow::Result<()> {
+    let path = root.join("sticker.toml");
+    let toml_str = toml::to_string_pretty(index)?;
+    std::fs::write(&path, toml_str)?;
+    Ok(())
+}
+
+/// 注册一个已 build 的贴纸包到全局索引（幂等）。
+pub fn register_package(root: &Path, package_name: &str) -> anyhow::Result<()> {
+    let mut index = load_sticker_index(root);
+    if !index.packages.iter().any(|p| p == package_name) {
+        index.packages.push(package_name.to_string());
+        index.packages.sort();
+        save_sticker_index(root, &index)?;
+    }
+    Ok(())
+}
+
+/// 判断 `sticker_source` 中的某项是否表示本地贴纸包（具体包名）。
+pub fn is_package_source(root: &Path, source: &str) -> bool {
+    let dir = root.join(source);
+    dir.is_dir()
+}
+
 /// 一个贴纸组: 括号前主名相同的所有变体
 #[derive(Debug, Clone)]
 pub struct StickerGroup {
@@ -289,6 +451,93 @@ fn strip_frame_suffix(s: &str) -> String {
 /// query 归一化: 小写 + 去空格
 fn normalize_keyword(kw: &str) -> String {
     kw.trim().to_lowercase().replace(' ', "_")
+}
+
+// ============================================================
+// 贴纸包扫描（推荐结构: stickers/<包名>/*.gif）
+// ============================================================
+
+/// 扫描 `sticker_dir()` 根目录下的贴纸包子文件夹。
+/// 每个子文件夹 = 一个 `StickerPackage`，文件夹名即 LLM 候选名。
+pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
+    let mut packages = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return packages;
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let name = match dir.file_name().and_then(|s| s.to_str()) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        if name.starts_with('.') || name == "backup" {
+            continue;
+        }
+        let mut files: Vec<PathBuf> = Vec::new();
+        if let Ok(file_entries) = std::fs::read_dir(&dir) {
+            let mut file_paths: Vec<PathBuf> = file_entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "gif" | "png" | "jpg" | "jpeg" | "webp"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            file_paths.sort();
+            files.append(&mut file_paths);
+        }
+        if !files.is_empty() {
+            packages.push(StickerPackage { name, files });
+        }
+    }
+    packages
+}
+
+/// 从贴纸包中确定性选一个文件 stem。
+/// 同 (package, seed) 结果恒定，不同 seed 尽量选不同文件。
+pub fn pick_package_file(packages: &[StickerPackage], package_name: &str, seed: f64) -> Option<String> {
+    let pkg = packages.iter().find(|p| p.name == package_name)?;
+    pick_from(&pkg.files, seed)
+}
+
+/// 生成本地贴纸候选文本（注入 LLM prompt）。
+/// 优先读取 `<包名>.toml` 元数据（由 `stickers build` 生成），
+/// 只暴露真实存在的贴纸包，避免 LLM 引用不存在的文件。
+pub fn local_sticker_candidates_text(root: &Path) -> String {
+    let packages = scan_packages(root);
+    if packages.is_empty() {
+        return String::new();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for pkg in &packages {
+        if let Some(meta) = load_package_meta(root, &pkg.name) {
+            let desc = if meta.description.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", meta.description)
+            };
+            let tags: Vec<String> = meta
+                .tags
+                .iter()
+                .map(|t| format!("{}({})", t.tag, t.files.len()))
+                .collect();
+            lines.push(format!("{}{}  可用 tags: {}", pkg.name, desc, tags.join(" ")));
+        } else {
+            // 没有 TOML 时降级为仅包名（仍真实存在）
+            lines.push(format!("{}({}个)", pkg.name, pkg.file_count()));
+        }
+    }
+
+    format!("## 可用本地贴纸包（只能从以下包名选择）\n{}\n", lines.join("\n"))
 }
 
 // ============================================================
@@ -883,5 +1132,84 @@ mod tests {
         assert_eq!(parse_filename("打字(恼怒).gif"), Some(("打字".into(), "恼怒".into())));
         assert_eq!(parse_filename("通知_提示_爱心_喜欢.gif"), Some(("通知_提示_爱心_喜欢".into(), "".into())));
         assert_eq!(parse_filename("睡觉_(UU).gif"), Some(("睡觉".into(), "UU".into())));
+    }
+
+    #[test]
+    fn scan_packages_finds_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ysyk")).unwrap();
+        std::fs::write(dir.path().join("ysyk").join("害怕_1.gif"), b"x").unwrap();
+        std::fs::write(dir.path().join("ysyk").join("笑.gif"), b"x").unwrap();
+        // 根目录直接放的文件不应进入 packages
+        std::fs::write(dir.path().join("直接.gif"), b"x").unwrap();
+        // 空目录忽略
+        std::fs::create_dir_all(dir.path().join("empty")).unwrap();
+
+        let packages = scan_packages(dir.path());
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "ysyk");
+        assert_eq!(packages[0].file_count(), 2);
+        assert!(packages[0].files.iter().all(|p| p.parent().unwrap().file_name().unwrap() == "ysyk"));
+    }
+
+    #[test]
+    fn pick_package_file_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ysyk")).unwrap();
+        for n in ["a.gif", "b.gif", "c.gif"] {
+            std::fs::write(dir.path().join("ysyk").join(n), b"x").unwrap();
+        }
+        let packages = scan_packages(dir.path());
+        let stem1 = pick_package_file(&packages, "ysyk", 0.123).unwrap();
+        let stem2 = pick_package_file(&packages, "ysyk", 0.123).unwrap();
+        assert_eq!(stem1, stem2);
+        assert!(["a", "b", "c"].contains(&stem1.as_str()));
+        assert!(pick_package_file(&packages, "nonexistent", 0.5).is_none());
+    }
+
+    #[test]
+    fn local_sticker_candidates_text_lists_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ysyk")).unwrap();
+        std::fs::write(dir.path().join("ysyk").join("a.gif"), b"x").unwrap();
+        let text = local_sticker_candidates_text(dir.path());
+        assert!(text.contains("ysyk(1个)"));
+        assert!(text.contains("只能从以下包名选择"));
+    }
+
+    #[test]
+    fn build_package_meta_from_tags_aggregates() {
+        let file_tags = vec![
+            ("害怕_1.gif".to_string(), vec!["害怕".to_string(), "恐惧".to_string()]),
+            ("害怕_2.gif".to_string(), vec!["害怕".to_string()]),
+            ("笑.gif".to_string(), vec!["笑".to_string(), "开心".to_string()]),
+        ];
+        let meta = build_package_meta_from_tags("ysyk", &file_tags).unwrap();
+        assert_eq!(meta.name, "ysyk");
+        assert_eq!(meta.tags.len(), 4);
+        assert_eq!(tag_files(&meta, "害怕"), vec!["害怕_1.gif", "害怕_2.gif"]);
+        assert_eq!(tag_files(&meta, "笑"), vec!["笑.gif"]);
+        assert_eq!(tag_files(&meta, "开心"), vec!["笑.gif"]);
+    }
+
+    #[test]
+    fn package_meta_toml_roundtrip() {
+        let file_tags = vec![("a.gif".to_string(), vec!["笑".to_string()])];
+        let meta = build_package_meta_from_tags("ysyk", &file_tags).unwrap();
+        let toml = package_meta_to_toml(&meta).unwrap();
+        let parsed: StickerPackageMeta = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed.name, "ysyk");
+        assert_eq!(parsed.tags[0].tag, "笑");
+        assert_eq!(parsed.tags[0].files, vec!["a.gif"]);
+    }
+
+    #[test]
+    fn sticker_index_register_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        register_package(dir.path(), "ysyk").unwrap();
+        register_package(dir.path(), "komori").unwrap();
+        register_package(dir.path(), "ysyk").unwrap(); // 幂等
+        let idx = load_sticker_index(dir.path());
+        assert_eq!(idx.packages, vec!["komori", "ysyk"]);
     }
 }

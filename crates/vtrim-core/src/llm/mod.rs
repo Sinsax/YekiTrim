@@ -51,6 +51,7 @@ impl LlmClient {
             thinking: None,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
                 .build()
                 .expect("创建 HTTP 客户端失败"),
         }

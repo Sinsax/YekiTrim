@@ -1,3 +1,4 @@
+use vtrim_core::llm::agent::extract_json_object;
 use vtrim_core::llm::LlmClient;
 
 /// 调用 LLM 提取关键词
@@ -41,11 +42,4 @@ pub fn build_prompt(subtitle_texts: &[String], danmaku_texts: &[String]) -> Stri
     prompt
 }
 
-fn extract_json_object(response: &str) -> anyhow::Result<String> {
-    let trimmed = response.trim();
-    if let Some(start) = trimmed.find('{')
-        && let Some(end) = trimmed.rfind('}') {
-            return Ok(trimmed[start..=end].to_string());
-        }
-    anyhow::bail!("No JSON object found in LLM response:\n{}", &trimmed[..200.min(trimmed.len())])
-}
+

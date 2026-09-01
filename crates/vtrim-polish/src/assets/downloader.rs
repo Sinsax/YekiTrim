@@ -78,11 +78,11 @@ impl AssetDownloader {
                                 report.sticker_downloaded += new_files.len();
                                 report.sticker_existing += existing;
                             }
-                            "local" => {
-                                let copied = self.copy_sticker_from_local(keyword, &sticker_dir);
+                            // 非 emoji/irasu 的来源 = 贴纸包名（如 ysyk），复制包内文件
+                            _ => {
+                                let copied = self.copy_sticker_from_local(source, &sticker_dir);
                                 report.sticker_downloaded += copied;
                             }
-                            _ => {}
                         }
             }
         }
@@ -90,18 +90,39 @@ impl AssetDownloader {
     }
 
     /// 从程序目录的 stickers/ 复制匹配的贴纸文件
+    /// 新结构：keyword = 贴纸包名（如 ysyk），复制包内全部文件。
+    /// 旧结构兜底：按文件名/tags 匹配后复制整组。
     fn copy_sticker_from_local(&self, keyword: &str, dest_dir: &Path) -> usize {
         let sticker_dir = vtrim_core::path::sticker_dir();
         if !sticker_dir.exists() {
             return 0;
         }
 
-        // 用贴纸索引匹配 (评分制), 命中后复制整组所有变体所有帧 (保证 STICKER_MAP 覆盖)
+        let mut copied = 0;
+
+        // 新结构：贴纸包目录直接复制
+        let packages = super::sticker_index::scan_packages(&sticker_dir);
+        if let Some(pkg) = packages.iter().find(|p| p.name == keyword) {
+            for path in &pkg.files {
+                let Some(fname) = path.file_name() else { continue };
+                let dest = dest_dir.join(fname);
+                if dest.exists() {
+                    continue;
+                }
+                if std::fs::copy(path, &dest).is_ok() {
+                    copied += 1;
+                }
+            }
+            if copied > 0 {
+                return copied;
+            }
+        }
+
+        // 旧结构兜底：根目录直接放文件，评分匹配后复制整组
         let idx = super::sticker_index::StickerIndex::scan(&sticker_dir);
         let Some(m) = idx.match_keyword(keyword) else {
             return 0;
         };
-        let mut copied = 0;
         for path in idx.groups()[m.group_index].all_files() {
             let Some(fname) = path.file_name() else { continue };
             let dest = dest_dir.join(fname);

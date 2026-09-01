@@ -4,8 +4,10 @@ use crate::{assets, parse, project};
 
 mod sfx;
 mod download;
+mod fx;
 pub use sfx::*;
 pub use download::*;
+pub use fx::*;
 use self::download::try_resolve_sticker;
 
 pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
@@ -23,6 +25,9 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         if !p.exists() { anyhow::bail!("Run 'vtrim polish init' first — missing {}", p.display()); }
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
+
+    // Step 0: 归一化瞬时特效 duration（blur 等只允许短暂脉冲）
+    normalize_fx_durations(&mut config.segments);
 
     // Step 1: 为每段生成 Camera event (如果还没有)
     for seg in &mut config.segments {
@@ -70,13 +75,6 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 .build()
                 .unwrap_or_default();
             let catalog = crate::assets::emoji_search::EmojiCatalog::fetch(&client).await.ok();
-
-            // 本地贴纸索引只构建一次 (sticker_source 含 local 时)
-            let local_index = if sources.iter().any(|s| s == "local") {
-                Some(crate::assets::sticker_index::StickerIndex::scan(&vtrim_core::path::sticker_dir()))
-            } else {
-                None
-            };
             let sticker_dir = project_path.join("assets").join("stickers");
             std::fs::create_dir_all(&sticker_dir).ok();
 
@@ -109,7 +107,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                     for k in 0..sources.len() {
                         let src = sources[(rotation + k) % sources.len()].clone();
                         if let Some(name) = try_resolve_sticker(
-                            &src, kw, *time, &catalog, &local_index, &sticker_dir, &client, &mut used_emojis,
+                            &src, kw, *time, &catalog, &sticker_dir, &client, &mut used_emojis,
                         ).await {
                             chosen = Some((src, name));
                             break;
@@ -158,7 +156,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                             let crate::project::Event::Sticker { keyword: kw, name, source, time, .. } = event else { continue };
                             if source.as_deref() != Some(from.as_str()) || kw.is_empty() { continue; }
                             if let Some(new_name) = try_resolve_sticker(
-                                &to, kw, *time, &catalog, &local_index, &sticker_dir, &client, &mut used_emojis,
+                                &to, kw, *time, &catalog, &sticker_dir, &client, &mut used_emojis,
                             ).await {
                                 *source = Some(to.clone());
                                 *name = Some(new_name.clone());
@@ -195,22 +193,17 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     }
 
     // Step 2b: 计算 sticker 的 auto 位置
+    // 使用 sticker_area 的九宫格独立矩形列表，随机选一个格子并在其内落点；
+    // 不再用 liver 反推，避免多格子合并把 center 也包含进去。
     {
-        let liver = &config.layout.liver;
         let parse_pct = |s: &str| -> f64 {
             s.trim_end_matches('%').parse::<f64>().unwrap_or(50.0)
         };
-        let origin_xy: Vec<f64> = liver.origin.as_deref().unwrap_or("50% 50%")
-            .split_whitespace().filter_map(|s| parse_pct(s).into()).collect();
-        let ox = *origin_xy.first().unwrap_or(&50.0);
-        let oy = *origin_xy.get(1).unwrap_or(&50.0);
-        let (sx0, sx1) = if ox < 50.0 {
-            ((ox + 8.0).min(90.0), 95.0)
-        } else {
-            (5.0, (ox - 8.0).max(5.0))
-        };
-        let sy0 = (oy - 22.0).clamp(5.0, 75.0);
-        let sy1 = (oy + 22.0).clamp(25.0, 95.0);
+        let sticker_rects = crate::project::region_rects(&config.layout.sticker_area);
+        let fallback_rect = (
+            crate::project::Point { x: "5%".into(), y: "5%".into() },
+            crate::project::Point { x: "95%".into(), y: "95%".into() },
+        );
 
         for seg in &mut config.segments {
             for (idx, event) in seg.events.iter_mut().enumerate() {
@@ -218,16 +211,20 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                     crate::project::Event::Sticker { x, y, .. } => (x, y),
                     _ => continue,
                 };
-                let needs_x = x.trim() == "auto";
-                let needs_y = y.trim() == "auto";
-                if !needs_x && !needs_y { continue; }
-
+                // process 每次都强制重新计算位置，不保留旧百分比
                 let seed = (idx as f64 * 3.7 + seg.start * 1.3).fract();
-                let px = sx0 + seed * (sx1 - sx0 - 16.0) + 5.0;
-                let py = sy0 + ((seed * 7.3).fract()) * (sy1 - sy0 - 16.0) + 5.0;
+                let rects = if sticker_rects.is_empty() { vec![fallback_rect.clone()] } else { sticker_rects.clone() };
+                let (tl, br) = &rects[((seed * 1000.0) as usize) % rects.len()];
+                let x0 = parse_pct(&tl.x);
+                let y0 = parse_pct(&tl.y);
+                let x1 = parse_pct(&br.x);
+                let y1 = parse_pct(&br.y);
 
-                if needs_x { *x = format!("{:.0}%", px.clamp(5.0, 95.0)); }
-                if needs_y { *y = format!("{:.0}%", py.clamp(5.0, 95.0)); }
+                let px = x0 + seed * (x1 - x0 - 8.0) + 4.0;
+                let py = y0 + ((seed * 7.3).fract()) * (y1 - y0 - 8.0) + 4.0;
+
+                *x = format!("{:.0}%", px.clamp(x0 + 2.0, (x1 - 2.0).max(x0 + 2.0)));
+                *y = format!("{:.0}%", py.clamp(y0 + 2.0, (y1 - 2.0).max(y0 + 2.0)));
             }
         }
 
@@ -398,6 +395,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
     download_keyword_assets(&downloader, &config, &sfx_blacklist).await;
 
+    // 标记 process 已完成（preview 依赖此标记决定是否先跑 process）
+    config.processed = true;
     let toml_str = config.to_toml_commented()?;
     std::fs::write(project_path.join("polish.toml"), toml_str)?;
     tracing::info!("  ✓ polish.toml updated");
@@ -464,13 +463,13 @@ mod tests {
     use crate::project::{Event, Segment};
 
     fn seg_with(events: Vec<Event>) -> Segment {
-        Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, direction: None, budget: None, extra: Default::default() }
+        Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, extra: Default::default() }
     }
 
     fn sticker() -> Event {
         Event::Sticker {
             time: 1.0, duration: 2.0, keyword: "laugh".into(),
-            name: None, source: None, x: "auto".into(), y: "auto".into(),
+            sticker_tag: None, name: None, source: None, x: "auto".into(), y: "auto".into(),
             sfx: None, sfx_volume: None,
         }
     }
@@ -678,13 +677,13 @@ mod tests {
 
     #[test]
     fn llm_prompt_contains_sound_judgment_rules() {
-        let sources = vec!["local".to_string()];
+        let sources = vec!["ysyk".to_string()];
         let blacklist = vec!["fear-1".to_string(), "tag:surprise".to_string()];
-        // Step1 分段 prompt: 方向规则 + 黑名单
+        // Step1 分段 prompt: 简化规则 + 黑名单
         let prompt = crate::llm::segment::build_segmentation_system_prompt(&sources);
-        assert!(prompt.contains("sfx_tags"));
-        assert!(prompt.contains("mood"));
-        assert!(prompt.contains("budget"));
+        assert!(prompt.contains("分段规则"));
+        assert!(prompt.contains("fx"));
+        assert!(!prompt.contains("\"direction\":"));
         // Step1 user prompt: 大分类导航 + 黑名单
         let user_prompt = crate::llm::segment::build_segmentation_user_prompt(&[], "测试", 5, 4, &blacklist);
         assert!(user_prompt.contains("大分类与细分 tag"));

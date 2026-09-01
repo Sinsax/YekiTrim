@@ -227,6 +227,12 @@ pub enum StickerAction {
         #[arg(long)]
         llm: bool,
     },
+    /// 预处理贴纸包，生成 <包名>.toml 候选清单
+    Build {
+        /// 贴纸包名（如 ysyk）
+        #[arg(required = true)]
+        package: String,
+    },
 }
 
 pub fn stage_name(num: u32) -> &'static str {

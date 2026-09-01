@@ -1,5 +1,6 @@
 use crate::parse::srt::Subtitle;
 use crate::project::Segment;
+use vtrim_core::llm::agent::extract_json_array;
 use vtrim_core::llm::LlmClient;
 
 /// 调用 LLM 生成话题区间 + 段内事件 + 音效判断
@@ -17,55 +18,41 @@ pub async fn generate_segments(
 ) -> anyhow::Result<Vec<Segment>> {
     let system_prompt = build_segmentation_system_prompt(sticker_source);
     let user_prompt = build_segmentation_user_prompt(subtitles, event_type, sticker_budget, sfx_budget, sfx_blacklist);
-    let response = client.chat(&system_prompt, &user_prompt).await?;
-    let json = extract_json_array(&response)?;
-    // LLM 可能漏掉事件的 type 字段 (tagged enum 必需), 按字段特征补全后重试
-    let json = normalize_segments_json(&json);
-    let segments: Result<Vec<Segment>, _> = serde_json::from_str(&json);
-    match segments {
-        Ok(s) => Ok(s),
-        Err(e) => {
-            // 保存完整 JSON 到文件供调试
-            if let Ok(mut f) = std::fs::File::create("_llm_debug.json") {
-                use std::io::Write;
-                let _ = f.write_all(json.as_bytes());
-            }
-            eprintln!("  ⚠ Full LLM response saved to _llm_debug.json");
-            eprintln!("  ⚠ Error: {}", e);
-            anyhow::bail!("Segments parse failed")
-        }
-    }
-}
 
-/// Step2: 为该段生成事件（注入音效候选清单 + 方向 + 预算约束）
-pub async fn generate_segment_events(
-    client: &LlmClient,
-    segment: &Segment,
-    subtitles: &[Subtitle],
-    candidate_text: &str,
-    sticker_source: &[String],
-    sfx_blacklist: &[String],
-) -> anyhow::Result<Vec<crate::project::Event>> {
-    let system_prompt = build_events_system_prompt(sticker_source, sfx_blacklist);
-    let user_prompt = build_events_user_prompt(segment, subtitles, candidate_text);
-    let response = client.chat(&system_prompt, &user_prompt).await?;
-    let json = extract_json_array(&response)?;
-    let json = normalize_segments_json(&json);
-    let events: Result<Vec<crate::project::Event>, _> = serde_json::from_str(&json);
-    match events {
-        Ok(evs) => Ok(evs),
-        Err(e) => {
-            if let Ok(mut f) = std::fs::File::create("_llm_debug.json") {
-                use std::io::Write;
-                let _ = f.write_all(json.as_bytes());
+    // 解析失败时把错误回传 LLM 重试 1 次（P4 第二部分）
+    let mut last_err = None;
+    let mut current_prompt = user_prompt;
+    for attempt in 0..2 {
+        let response = client.chat(&system_prompt, &current_prompt).await?;
+        let json = extract_json_array(&response)?;
+        let segments: Result<Vec<Segment>, _> = serde_json::from_str(&json);
+        match segments {
+            Ok(s) if !s.is_empty() => return Ok(s),
+            Ok(_) => {
+                last_err = Some(anyhow::anyhow!("Segments empty"));
+                current_prompt = format!(
+                    "{current_prompt}\n\n上一次输出是空数组。请按实际字幕话题切分并输出至少一个 Segment。"
+                );
             }
-            anyhow::bail!("Events parse failed: {}", e)
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!("Segments parse failed: {e}"));
+                if attempt == 0 {
+                    current_prompt = format!(
+                        "{current_prompt}\n\n上一次输出无法解析：{e}\n请只输出 JSON 数组，不要 markdown。"
+                    );
+                }
+            }
         }
     }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Segments failed")))
 }
 
 /// Step2 system prompt: 事件生成（音效只能从候选选择, 数量受预算约束）
-fn build_events_system_prompt(sticker_source: &[String], sfx_blacklist: &[String]) -> String {
+pub(crate) fn build_events_system_prompt(
+    sticker_source: &[String],
+    sfx_blacklist: &[String],
+    local_sticker_text: &str,
+) -> String {
     let sticker_desc = sticker_lang_desc(sticker_source);
     let blacklist_line = if sfx_blacklist.is_empty() {
         String::new()
@@ -73,12 +60,17 @@ fn build_events_system_prompt(sticker_source: &[String], sfx_blacklist: &[String
         format!("- 以下音效被屏蔽, 禁止使用: {}
 ", sfx_blacklist.join(", "))
     };
+    let local_line = if local_sticker_text.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", local_sticker_text)
+    };
     format!(r##"你是一个直播切片事件助手。为指定时间段生成视觉特效/贴纸/音效事件。
 
 事件类型 (每个事件对象以 "type" 字段开头):
 - camera: 运镜. {{"type":"camera","time":0.5,"duration":3.0,"zoom":"中","origin":"50% 50%"}}
   zoom = "中"/"近", origin 用 "50% 50%" 格式
-- sticker: 贴图表情. {{"type":"sticker","time":10.0,"duration":2.0,"keyword":"laugh","x":"auto","y":"auto"}}
+- sticker: 贴图表情. {{"type":"sticker","time":10.0,"duration":2.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
 - 视觉特效: shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift
   {{"type":"shake","time":8.0,"intensity":0.5,"duration":1.2,"sfx":"tag:爆発"}}
@@ -88,31 +80,26 @@ fn build_events_system_prompt(sticker_source: &[String], sfx_blacklist: &[String
 选择规则:
 - 音效 name/sfx 只能从"可用音效候选"中选择具体 id, 或写 tag:xxx 由系统匹配; 候选外的 id 无效
 - 音效只放在情绪爆发/转折/名场面时刻, 普通叙述不要加
-- 贴纸在情绪点使用, keyword 与情绪匹配
-- 特效 duration 覆盖情绪表达时长 (0.8~2.5s), 不要 0.3s 一闪而过
+- 贴纸在情绪点使用; **如果提供了"可用本地贴纸包", keyword 必须从这些包名中选择**, 且必须从该包列的 tags 里选一个写进 sticker_tag; 候选外的 keyword/tag 无效
+- 特效分两类:
+  * 瞬时特效 shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift:
+    duration 由系统接管, 你写不写都会被 clamp 到 0.1~0.6s; 只表现"爆发瞬间", 不要长时间驻留
+  * 持续效果 camera/overlay/sticker: duration 才有意义, overlay 0.5~5s, sticker 1.5~2.5s
+- blur 只用于瞬间失焦/眩晕/被击中/闪回, 严禁长时间氛围模糊
 - x/y 始终写 "auto"
-- **优先为每个特效/贴纸从候选清单配一个音效** (候选已按本段方向筛选, 配错风险低);
+- **优先为每个特效/贴纸从候选清单配一个音效** (候选已按当前 clip 方向筛选, 配错风险低);
   仅当候选清单确实没有合适音效时才留空
 {}
-"##, sticker_desc, blacklist_line)
+{}
+"##, sticker_desc, local_line, blacklist_line)
 }
 
 /// Step2 user prompt: 段信息 + 候选清单 + 段内字幕
-fn build_events_user_prompt(segment: &Segment, subtitles: &[Subtitle], candidate_text: &str) -> String {
-    let dir = segment.direction.as_ref();
-    let budget = segment.budget.as_ref();
+pub(crate) fn build_events_user_prompt(segment: &Segment, subtitles: &[Subtitle], candidate_text: &str) -> String {
     let mut prompt = format!("段时间: [{:.1}s - {:.1}s]
 ", segment.start, segment.end);
-    if let Some(d) = dir {
-        prompt.push_str(&format!("方向: 大分类={}, 音效tag=[{}], 贴纸=[{}], 特效=[{}], mood={}
-",
-            d.cat, d.sfx_tags.join("+"), d.sticker.join("+"), d.effects.join("+"), d.mood));
-    }
-    if let Some(b) = budget {
-        prompt.push_str(&format!("数量约束: sfx 事件 {}-{} 个, sticker 事件 {}-{} 个
-",
-            b.sfx_min, b.sfx_max, b.sticker_min, b.sticker_max));
-    }
+    prompt.push_str(&format!("段情绪密度: {}
+", segment.fx));
     if !candidate_text.is_empty() {
         prompt.push_str(&format!("
 {}
@@ -148,7 +135,7 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
 /// 推断规则: zoom/origin→camera, overlay_type→overlay, keyword→sticker,
 /// name→sfx, intensity/color→shake。无法推断的保持原样（由 serde 报错）。
-fn normalize_segments_json(json: &str) -> String {
+pub(crate) fn normalize_segments_json(json: &str) -> String {
     let infer_type = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<&'static str> {
         if obj.contains_key("zoom") || obj.contains_key("origin") {
             return Some("camera");
@@ -188,39 +175,32 @@ fn normalize_segments_json(json: &str) -> String {
     }
 }
 
-/// Step1 system prompt: 分段 + 每段方向（大分类/细分tag/贴纸/特效/mood/预算）
+/// Step1 system prompt: 分段 + 每段情绪密度
 pub fn build_segmentation_system_prompt(sticker_source: &[String]) -> String {
     let sticker_desc = sticker_lang_desc(sticker_source);
-    format!(r#"你是一个直播切片助手。将字幕按话题切分成段，并为每段确定"效果方向"。
+    format!(r#"你是一个直播切片助手。将单个切片内字幕按话题切分成段。
 
 每段输出 (JSON 对象):
 {{
-  "start": 0.0, "end": 85.0,
+  "start": 0.0,
+  "end": 85.0,
   "fx": "high",
-  "note": "话题备注",
-  "direction": {{
-    "cat": "① 主播情绪反应",
-    "sfx_tags": ["爆炸", "打击格斗"],
-    "sticker": ["laugh"],
-    "effects": ["shake"],
-    "mood": 3
-  }},
-  "budget": {{"sfx_min": 1, "sfx_max": 3, "sticker_min": 0, "sticker_max": 2}}
+  "note": "子话题备注"
 }}
 
-方向选择规则:
-- cat: 从 user prompt 的 7 个大分类中选择最匹配的一个
-- sfx_tags: 从该大分类对应的细分 tag 中选择 1~3 个 (该段预期出现的音效场景);
-  纯叙述段可以选空数组 []
-- mood: 高光等级 0-3 (0=平淡叙述, 1=日常, 2=情绪起伏, 3=名场面/爆点)
-- sticker: 该段的贴纸情绪词, 给出 2~3 个不同词 (如 ["laugh","shock","proud"]) 供各时刻选择 {}; 不需要贴纸时为空数组
-- effects: 该段预期视觉特效类型 (shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift), 不需要时为空数组
-- budget: 按段长与情绪强度给数量上下限 (名场面段可多, 叙述段全 0; sfx_min<=sfx_max, sticker_min<=sticker_max)
-- fx: 该段情绪密度 low/med/high
+分段规则:
+- 目标段长 8~30 秒，整片目标段数 = ceil(视频时长/20)，允许上下浮动 1 段
+- 优先在字幕间隙 >2s 或话题明显变化处切段
+- 同一话题连续叙述合并，不硬切；<4s 的碎片并入前一段
+- 爆点/名场面单独成段
+- fx: low=安静叙述/少特效, med=日常, high=爆点/密集特效
+- note: 只写该段在讲什么子话题，例如"发现视角不对"、"尝试换场景"，不要概括整个视频
+- 不要输出 direction/budget/effects 等字段
+- {} 仅在贴纸可用时说明 keyword 语言；分段本身不选贴纸
 "#, sticker_desc)
 }
 
-/// Step1 user prompt: 视频类型 + 大分类导航 + 全量字幕
+/// Step1 user prompt: 视频类型 + 预算感知采样字幕
 pub fn build_segmentation_user_prompt(
     subtitles: &[Subtitle],
     event_type: &str,
@@ -229,8 +209,10 @@ pub fn build_segmentation_user_prompt(
     sfx_blacklist: &[String],
 ) -> String {
     let mut prompt = format!("视频类型: {}
+视频时长(秒): {}
+目标段数: {}
+", event_type, video_duration(subtitles), target_segment_count(subtitles));
 
-", event_type);
     prompt.push_str(&crate::assets::sfx_catalog::categories_text());
     if !sfx_blacklist.is_empty() {
         prompt.push_str(&format!("
@@ -243,7 +225,7 @@ pub fn build_segmentation_user_prompt(
     prompt.push_str("
 字幕内容 (每行: [开始秒-结束秒] 文本):
 ");
-    for sub in subtitles.iter().take(200) {
+    for sub in sample_subtitles(subtitles, 200) {
         prompt.push_str(&format!("[{:.1}s-{:.1}s] {}
 ", sub.start, sub.end, sub.text));
     }
@@ -252,13 +234,37 @@ pub fn build_segmentation_user_prompt(
     prompt
 }
 
-fn extract_json_array(response: &str) -> anyhow::Result<String> {
-    let trimmed = response.trim();
-    if let Some(start) = trimmed.find('[')
-        && let Some(end) = trimmed.rfind(']') {
-            return Ok(trimmed[start..=end].to_string());
+/// 预算感知采样：首尾保留，中部均匀采样到 max 条。
+fn sample_subtitles<'a>(subtitles: &'a [Subtitle], max: usize) -> Vec<&'a Subtitle> {
+    let n = subtitles.len();
+    if n <= max {
+        return subtitles.iter().collect();
+    }
+    let head = (max / 4).max(20);
+    let tail = (max / 4).max(20);
+    let head = head.min(n);
+    let tail = tail.min(n.saturating_sub(head));
+    let middle_max = max.saturating_sub(head + tail);
+    let mut out: Vec<&Subtitle> = Vec::with_capacity(max);
+    out.extend(subtitles[..head].iter());
+    if middle_max > 0 {
+        let middle_total = n - head - tail;
+        for i in 0..middle_max {
+            let idx = head + i * (middle_total - 1).max(0) / (middle_max - 1).max(1);
+            out.push(&subtitles[idx]);
         }
-    anyhow::bail!("No JSON array found:\n{}", &trimmed[..200.min(trimmed.len())])
+    }
+    out.extend(subtitles[n - tail..].iter());
+    out
+}
+
+fn video_duration(subtitles: &[Subtitle]) -> f64 {
+    subtitles.last().map(|s| s.end).unwrap_or(0.0)
+}
+
+fn target_segment_count(subtitles: &[Subtitle]) -> usize {
+    let dur = video_duration(subtitles);
+    ((dur / 20.0).ceil() as usize).clamp(2, 8)
 }
 
 #[cfg(test)]
