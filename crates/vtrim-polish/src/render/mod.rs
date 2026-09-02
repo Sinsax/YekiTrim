@@ -1,8 +1,17 @@
+pub mod backend;
+pub mod chrome;
+pub mod context;
+pub mod ffmpeg;
+pub mod frame;
+pub mod gif;
+#[cfg(feature = "wgpu-render")]
+pub mod native;
 mod pipeline;
 pub mod runner;
-pub mod ffmpeg;
-pub mod chrome;
 pub mod server;
-pub mod gif;
+pub mod sound;
 
+pub use backend::*;
+pub use context::*;
+pub use frame::*;
 pub use pipeline::*;

@@ -173,6 +173,9 @@ pub enum PolishAction {
         /// clip 目录（默认当前目录）
         #[arg(default_value = ".")]
         input: PathBuf,
+        /// 渲染后端: chrome | wgpu (默认 chrome)
+        #[arg(long, default_value = "chrome")]
+        renderer: String,
     },
     /// 生成封面图
     Cover {

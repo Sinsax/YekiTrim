@@ -909,7 +909,8 @@ async fn main() -> anyhow::Result<()> {
                 cli::PolishAction::Process { input } => {
                     process::cmd_process(input).await?;
                 }
-                cli::PolishAction::Render { input } => {
+                cli::PolishAction::Render { input, renderer } => {
+                    std::env::set_var("VTEDIT_RENDERER", renderer);
                     render::cmd_render(input).await?;
                 }
                 cli::PolishAction::Cover { input, template } => {

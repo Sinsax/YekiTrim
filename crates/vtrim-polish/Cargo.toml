@@ -8,6 +8,12 @@ description = "VTuber clip polish engine (GSAP rendering + effects + assets)"
 name = "vtrim_polish"
 path = "src/lib.rs"
 
+[features]
+default = ["chrome-render"]
+# 默认 wgpu 原生渲染；Chrome 作为可选后端
+chrome-render = ["dep:headless_chrome"]
+wgpu-render = ["dep:wgpu", "dep:cosmic-text", "dep:headless_chrome", "dep:bytemuck", "dep:swash"]
+
 [dependencies]
 # vtrim-core (用于 .vtrim/llm.toml 路径)
 vtrim-core = { path = "../vtrim-core" }
@@ -31,12 +37,18 @@ async-trait = "0.1"
 # 日志
 tracing = "0.1"
 
-# Chrome CDP 控制 (渲染层)
-headless_chrome = "1"
+# Chrome CDP 控制 (渲染层, feature=chrome-render)
+headless_chrome = { version = "1", optional = true }
 
 # HTTP 服务 (为 Chrome 提供静态文件)
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
+
+# wgpu 原生渲染 (feature=wgpu-render)
+wgpu = { version = "27", optional = true }
+cosmic-text = { version = "0.12", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+swash = { version = "0.1", optional = true }
 
 # 正则
 regex-lite = "0.1"
@@ -53,7 +65,7 @@ chrono = "0.4"
 base64 = "0.22"
 
 # GIF → PNG 帧解码 (用于 emoji 动画)
-image = { version = "0.25", default-features = false, features = ["gif", "png"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
 
 [dev-dependencies]
 tempfile = "3"
