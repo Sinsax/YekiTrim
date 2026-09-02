@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// ffmpeg 操作包装
 pub struct Ffmpeg;
@@ -50,7 +50,7 @@ impl Ffmpeg {
                 "-c", "copy",
                 &abs_output.to_string_lossy(),
             ])
-            .status()?;
+            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
 
         std::fs::remove_file(&concat_file).ok();
 
@@ -68,7 +68,7 @@ impl Ffmpeg {
                 "-vn", "-acodec", "aac", "-b:a", "128k",
                 audio_output,
             ])
-            .status()?;
+            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
 
         if !status.success() {
             anyhow::bail!("ffmpeg audio extraction failed");
@@ -144,7 +144,7 @@ impl Ffmpeg {
             output.into(),
         ]);
 
-        let status = Command::new("ffmpeg").args(&args).status()?;
+        let status = Command::new("ffmpeg").args(&args).stderr(Stdio::null()).stdout(Stdio::null()).status()?;
         if !status.success() {
             anyhow::bail!("ffmpeg SFX mix failed");
         }
@@ -163,7 +163,7 @@ impl Ffmpeg {
                 "-shortest",
                 output,
             ])
-            .status()?;
+            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
 
         if !status.success() {
             anyhow::bail!("ffmpeg mux failed");
