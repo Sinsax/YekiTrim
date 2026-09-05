@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V-Trim Web UI · 样稿 ① Sakura Cream 樱花奶油 · 项目列表</title>
+<style>
+/* ============================================================
+   V-Trim Web UI 设计样稿 · ① Sakura Cream 樱花奶油
+   风格定位: 手账贴纸感 · 顶部导航 · 大圆角卡片网格 (P2 项目列表)
+   布局特征: 顶部 pill 导航 + 卡片网格 + 贴纸/丝带点缀 + 手绘感
+   ============================================================ */
+:root{
+  --bg:#FFF7F3;  --bg-soft:#FFEFE7;  --card:#FFFFFF;
+  --line:#F2E1D9;  --line-soft:#FAEEE7;
+  --ink:#4A3F45;  --ink-dim:#9C8B92;  --ink-faint:#C9B8BE;
+  --main:#F682B8;  --main-deep:#EE6FA6;  --main-soft:#FDE3EC;
+  --main-glow:#FFD3E1;  --blue:#7FA8F0;  --blue-soft:#E8EEFC;
+  --mint:#59C0AC;  --mint-soft:#E2F6F1;  --amber:#F2B23E;  --amber-soft:#FCF0D9;
+  --green:#4FBF9C;  --green-soft:#DEF2EA;  --red:#E8727E;  --red-soft:#FBE3E5;
+  --r:16px; --r-s:10px;
+  --shadow:0 8px 26px rgba(238,111,166,.10), 0 2px 6px rgba(90,60,70,.04);
+  --shadow-hover:0 12px 34px rgba(238,111,166,.18), 0 3px 8px rgba(90,60,70,.05);
+  --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Courier New',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:var(--font);}
+body{background:var(--bg);color:var(--ink);min-height:100vh;}
+/* 背景手绘圆点纹理 */
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:radial-gradient(rgba(246,130,184,.10) 1.5px, transparent 1.6px);
+  background-size:26px 26px;}
+
+/* ---------- 顶部导航 ---------- */
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:20px;
+  padding:14px 28px;background:rgba(255,247,243,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+.brand{display:flex;align-items:center;gap:10px;}
+.brand-logo{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--main),#FBB9D4);
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;box-shadow:0 6px 16px rgba(238,111,166,.40);}
+.brand-name{font-size:17px;font-weight:700;letter-spacing:.4px;color:#E86FA5;}
+.brand-sub{font-size:10px;color:var(--ink-faint);letter-spacing:.14em;}
+.nav-pills{display:flex;gap:6px;margin:0 auto;background:var(--card);border:1px solid var(--line);
+  border-radius:999px;padding:5px;box-shadow:0 3px 12px rgba(90,60,70,.05);}
+.nav-pill{padding:8px 20px;border-radius:999px;font-size:13px;color:var(--ink-dim);cursor:pointer;}
+.nav-pill:hover{background:var(--bg-soft);}
+.nav-pill.active{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;font-weight:600;
+  box-shadow:0 4px 12px rgba(238,111,166,.35);}
+.top-actions{display:flex;gap:10px;align-items:center;}
+.bell{position:relative;width:38px;height:38px;border-radius:50%;background:var(--card);border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;}
+.bell i{position:absolute;top:3px;right:3px;width:9px;height:9px;border-radius:50%;background:var(--red);border:2px solid var(--bg);}
+.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--blue),#A9C2F6);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;box-shadow:0 4px 12px rgba(127,168,240,.35);}
+
+/* ---------- 主区 ---------- */
+.wrap{max-width:1180px;margin:0 auto;padding:30px 28px 90px;position:relative;z-index:1;}
+.page-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:8px;}
+.page-head h1{font-size:26px;font-weight:700;}
+.page-head .sub{font-size:13px;color:var(--ink-dim);margin-bottom:6px;}
+.page-head-actions{margin-left:auto;display:flex;gap:10px;}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:10px 18px;border-radius:999px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);font-size:13px;cursor:pointer;transition:all .15s;box-shadow:0 2px 8px rgba(90,60,70,.05);}
+.btn:hover{box-shadow:var(--shadow-hover);transform:translateY(-1px);}
+.btn-primary{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;border:none;
+  box-shadow:0 6px 18px rgba(238,111,166,.40);}
+.btn-primary:hover{box-shadow:0 8px 22px rgba(238,111,166,.5);}
+.warn-line{font-size:12px;color:var(--ink-faint);margin-bottom:20px;}
+
+/* 项目卡片网格 */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+.pcard{position:relative;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:22px 22px 18px;box-shadow:var(--shadow);transition:all .18s;overflow:hidden;}
+.pcard:hover{box-shadow:var(--shadow-hover);transform:translateY(-3px);}
+.pcard::before{content:'✦';position:absolute;top:14px;right:18px;font-size:14px;color:var(--main-glow);}
+/* 丝带角标 */
+.pcard .ribbon{position:absolute;top:16px;right:-34px;transform:rotate(38deg);background:var(--main-soft);
+  color:var(--main-deep);font-size:11px;font-weight:700;padding:4px 44px;letter-spacing:.05em;}
+/* 贴纸图标 (轻微旋转) */
+.sticker{width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:24px;
+  transform:rotate(-5deg);margin-bottom:14px;box-shadow:0 4px 10px rgba(90,60,70,.08);}
+.sticker.pink{background:var(--main-soft);border:2px dashed var(--main);}
+.sticker.blue{background:var(--blue-soft);border:2px dashed var(--blue);}
+.sticker.mint{background:var(--mint-soft);border:2px dashed var(--mint);}
+.sticker.amber{background:var(--amber-soft);border:2px dashed var(--amber);}
+.pcard h3{font-size:16px;font-weight:700;}
+.pcard .path{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* 阶段小步进 */
+.steps{display:flex;align-items:center;gap:6px;margin:14px 0 6px;}
+.steps .sl{flex:1;height:6px;border-radius:3px;background:var(--line-soft);}
+.steps .sl.on{background:var(--main-glow);}
+.steps .dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex:0 0 22px;}
+.steps .dot.done{background:var(--green-soft);color:var(--green);}
+.steps .dot.now{background:var(--main);color:#fff;box-shadow:0 0 0 4px var(--main-soft);}
+.steps .dot.wait{background:var(--card);border:2px dashed var(--ink-faint);color:var(--ink-faint);}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px;}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;font-size:11px;}
+.chip.g{background:var(--green-soft);color:#2FA07E;} .chip.p{background:var(--main-soft);color:#D8669B;}
+.chip.b{background:var(--blue-soft);color:#5E7FD8;} .chip.n{background:var(--bg-soft);color:var(--ink-dim);}
+.pcard-foot{display:flex;align-items:center;gap:8px;border-top:1px dashed var(--line-soft);padding-top:13px;}
+.pcard-foot .name{font-size:11px;color:var(--ink-faint);margin-right:auto;}
+.mini-btn{padding:6px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card);font-size:12px;
+  color:var(--ink-dim);cursor:pointer;transition:all .15s;}
+.mini-btn:hover{border-color:var(--main);color:var(--main-deep);background:var(--main-soft);}
+/* 新建卡片 */
+.pcard.new{border:2px dashed var(--main-glow);background:var(--card);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:10px;cursor:pointer;min-height:230px;text-align:center;}
+.pcard.new:hover{border-style:solid;border-color:var(--main);background:var(--bg);}
+.pcard.new .plus{width:52px;height:52px;border-radius:50%;background:var(--main-soft);color:var(--main-deep);
+  display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;}
+.pcard.new b{font-size:14px;} .pcard.new small{font-size:11px;color:var(--ink-faint);}
+
+.mock-tip{margin-top:34px;font-size:11px;line-height:1.9;color:var(--ink-faint);
+  border-top:1px dashed var(--line);padding-top:14px;}
+.mock-tip .sw{display:inline-block;width:13px;height:13px;border-radius:4px;vertical-align:-2px;margin:0 4px;border:1px solid rgba(0,0,0,.06);}
+</style>
+</head>
+<body>
+
+<!-- 顶部导航 -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-logo">V</div>
+    <div><div class="brand-name">V-TRIM</div><div class="brand-sub">切片管理台</div></div>
+  </div>
+  <nav class="nav-pills">
+    <span class="nav-pill">总览</span>
+    <span class="nav-pill active">项目</span>
+    <span class="nav-pill">模型</span>
+    <span class="nav-pill">精修</span>
+    <span class="nav-pill">设置</span>
+  </nav>
+  <div class="top-actions">
+    <span class="bell">🔔<i></i></span>
+    <span class="avatar">P</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="page-head">
+    <div>
+      <h1>项目</h1>
+      <div class="sub">工作区: <span style="font-family:var(--mono)">F:\para\Code\V-Trim\media</span> · 扫描到 12 个项目</div>
+    </div>
+    <div class="page-head-actions">
+      <button class="btn">🔄 扫描工作区</button>
+      <button class="btn btn-primary">＋ 新建项目</button>
+    </div>
+  </div>
+  <div class="warn-line">💡 删除项目只移除 vtrim.toml，不会触碰媒体文件 · 阶段状态由产物文件自动推导</div>
+
+  <div class="grid">
+    <!-- 项目卡 1 -->
+    <article class="pcard">
+      <span class="ribbon">已完成</span>
+      <div class="sticker pink">📺</div>
+      <h3>3d 录播</h3>
+      <div class="path">media/3d/直播回放.mp4</div>
+      <div class="steps">
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot now">4</span>
+      </div>
+      <div class="chips">
+        <span class="chip g">Stage 4 已剪切</span><span class="chip p">9 片段</span>
+        <span class="chip b">热度 0.72</span><span class="chip n">qwen3-asr</span>
+      </div>
+      <div class="pcard-foot">
+        <span class="name">2h14m33s · 1080p</span>
+        <button class="mini-btn">👁 打开</button><button class="mini-btn">▶ 运行 ▾</button>
+      </div>
+    </article>
+
+    <!-- 项目卡 2 -->
+    <article class="pcard">
+      <div class="sticker blue">🎮</div>
+      <h3>new_game_0921</h3>
+      <div class="path">media/newgame/直播回放_0921.flv</div>
+      <div class="steps">
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot now">2</span><span class="sl"></span>
+        <span class="dot wait">3</span><span class="sl"></span>
+        <span class="dot wait">4</span>
+      </div>
+      <div class="chips">
+        <span class="chip n">Stage 2 转写中</span><span class="chip b">弹幕 ✅</span>
+      </div>
+      <div class="pcard-foot">
+        <span class="name">1h22m08s · 4.4GB</span>
+        <button class="mini-btn">👁 打开</button><button class="mini-btn">▶ 继续</button>
+      </div>
+    </article>
+
+    <!-- 项目卡 3 -->
+    <article class="pcard">
+      <div class="sticker mint">🍜</div>
+      <h3>mukbang_0715</h3>
+      <div class="path">media/mukbang/吃播合集.mp4</div>
+      <div class="steps">
+        <span class="dot done">✓</span><span class="sl"></span>
+        <span class="dot wait">2</span><span class="sl"></span>
+        <span class="dot wait">3</span><span class="sl"></span>
+        <span class="dot wait">4</span>
+      </div>
+      <div class="chips">
+        <span class="chip n">Stage 1 待转写</span><span class="chip p">6.2GB</span>
+      </div>
+      <div class="pcard-foot">
+        <span class="name">3h05m44s · 7.1GB</span>
+        <button class="mini-btn">👁 打开</button><button class="mini-btn">▶ 运行</button>
+      </div>
+    </article>
+
+    <!-- 项目卡 4 -->
+    <article class="pcard">
+      <div class="sticker amber">🎤</div>
+      <h3>voicecover_0830</h3>
+      <div class="path">media/voice/电台回放.mkv</div>
+      <div class="steps">
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot done">✓</span><span class="sl on"></span>
+        <span class="dot done">✓</span><span class="sl"></span>
+        <span class="dot wait">4</span>
+      </div>
+      <div class="chips">
+        <span class="chip p">Stage 3 待剪切</span><span class="chip b">弹幕 ❌</span>
+      </div>
+      <div class="pcard-foot">
+        <span class="name">1h09m12s · 1080p</span>
+        <button class="mini-btn">👁 打开</button><button class="mini-btn">▶ 继续</button>
+      </div>
+    </article>
+
+    <!-- 项目卡 5 -->
+    <article class="pcard">
+      <div class="sticker pink">🌸</div>
+      <h3>birthday_live_0902</h3>
+      <div class="path">media/bday/生日直播(完整).mp4</div>
+      <div class="steps">
+        <span class="dot wait">1</span><span class="sl"></span>
+        <span class="dot wait">2</span><span class="sl"></span>
+        <span class="dot wait">3</span><span class="sl"></span>
+        <span class="dot wait">4</span>
+      </div>
+      <div class="chips">
+        <span class="chip n">Stage 0 未开始</span><span class="chip p">2h58m · 8.8GB</span>
+      </div>
+      <div class="pcard-foot">
+        <span class="name">2h58m00s · 8.8GB</span>
+        <button class="mini-btn">👁 打开</button><button class="mini-btn">▶ 启动</button>
+      </div>
+    </article>
+
+    <!-- 新建卡片 -->
+    <article class="pcard new">
+      <div class="plus">＋</div>
+      <b>新建项目</b>
+      <small>选择视频 · 自动发现弹幕</small>
+    </article>
+  </div>
+
+  <div class="mock-tip">
+    <b>→ 暗色 Web UI 映射（节选）</b><br>
+    <span class="sw" style="background:#FFF7F3"></span>#FFF7F3 → <span class="sw" style="background:#2a2a2a"></span>#2a2a2a 页面底 ·
+    <span class="sw" style="background:#F682B8"></span>#F682B8 → <span class="sw" style="background:#ff6bcb"></span>#ff6bcb 主强调 ·
+    <span class="sw" style="background:#7FA8F0"></span>#7FA8F0 → <span class="sw" style="background:#2563eb"></span>#2563eb 辅强调<br>
+    本样稿: 手账贴纸风 · 顶部 pill 导航 · 大圆角卡片网格 · 对应设计文档 P2 项目列表。
+  </div>
+</main>
+</body>
+</html>

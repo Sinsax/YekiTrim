@@ -10,11 +10,21 @@ path = "src/main.rs"
 [dependencies]
 vtrim-core = { path = "../vtrim-core" }
 vtrim-polish = { path = "../vtrim-polish" }
+axum = "0.7"
+chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-anyhow = "1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.8"
+mime_guess = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-toml = "0.8"
 indicatif = "0.18"
-serde_json = "1"
+anyhow = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
