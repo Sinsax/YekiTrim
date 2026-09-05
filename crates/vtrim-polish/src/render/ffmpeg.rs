@@ -62,16 +62,20 @@ impl Ffmpeg {
 
     /// 提取音频
     pub fn extract_audio(video_path: &str, audio_output: &str) -> anyhow::Result<()> {
-        let status = Command::new("ffmpeg")
+        let out = Command::new("ffmpeg")
             .args([
                 "-y", "-i", video_path,
                 "-vn", "-acodec", "aac", "-b:a", "128k",
                 audio_output,
             ])
-            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
+            .output()
+            .map_err(|e| anyhow::anyhow!("ffmpeg audio extraction 启动失败: {}", e))?;
 
-        if !status.success() {
-            anyhow::bail!("ffmpeg audio extraction failed");
+        if !out.status.success() {
+            anyhow::bail!(
+                "ffmpeg audio extraction failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         Ok(())
     }
@@ -153,7 +157,7 @@ impl Ffmpeg {
 
     /// 视频 + 音频合流
     pub fn mux(video: &str, audio: &str, output: &str) -> anyhow::Result<()> {
-        let status = Command::new("ffmpeg")
+        let out = Command::new("ffmpeg")
             .args([
                 "-y", "-i", video,
                 "-i", audio,
@@ -163,10 +167,14 @@ impl Ffmpeg {
                 "-shortest",
                 output,
             ])
-            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
+            .output()
+            .map_err(|e| anyhow::anyhow!("ffmpeg mux 启动失败: {}", e))?;
 
-        if !status.success() {
-            anyhow::bail!("ffmpeg mux failed");
+        if !out.status.success() {
+            anyhow::bail!(
+                "ffmpeg mux failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         Ok(())
     }

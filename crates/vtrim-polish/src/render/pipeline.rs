@@ -12,6 +12,19 @@ use crate::render::frame::extract_chunk_frames;
 use crate::render::sound::collect_sound_events;
 use crate::{assets, cover, process, project, render};
 
+/// 跨磁盘移动文件：rename 失败且为跨盘错误时回退为 copy + remove。
+fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(17) => {
+            std::fs::copy(src, dst)?;
+            std::fs::remove_file(src)?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // 自动先跑 process（幂等）
     if let Err(e) = process::cmd_process(project_path).await {
@@ -150,16 +163,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("\n  -- Audio --");
     let ta = project_path.join("_temp_audio.aac");
     if let Err(e) = Ffmpeg::extract_audio(&resolved.video, &ta.to_string_lossy()) {
-        let no_audio = format!("{}.noaudio.mp4", resolved.output.trim_end_matches(".mp4"));
-        tracing::info!(
-            "  ⚠ Audio extraction failed: {}\n  → saving video without audio: {}",
-            e,
-            no_audio
-        );
-        std::fs::rename(&tv, &no_audio)?;
-        print_final_stats(&no_audio, start_time);
         cleanup(project_path, &tv, &ta);
-        return Ok(());
+        anyhow::bail!("音频提取失败: {e:#}");
     }
 
     if !sfx_data.is_empty() {
@@ -220,8 +225,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             Ffmpeg::mix_sfx(&ta.to_string_lossy(), &se, &ma.to_string_lossy())?;
             let lim = project_path.join("_temp_audio_l.aac");
             Ffmpeg::apply_limiter(&ma.to_string_lossy(), &lim.to_string_lossy())?;
-            std::fs::rename(&lim, &ma)?;
-            std::fs::rename(&ma, &ta)?;
+            move_file(&lim, &ma)?;
+            move_file(&ma, &ta)?;
         }
     }
 
@@ -235,13 +240,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             .to_string()
     };
     if let Err(e) = Ffmpeg::mux(&tv.to_string_lossy(), &ta.to_string_lossy(), &op) {
-        let no_audio = format!("{}.noaudio.mp4", op.trim_end_matches(".mp4"));
-        tracing::info!(
-            "  ⚠ Mux failed: {}\n  → saving video without audio: {}",
-            e,
-            no_audio
-        );
-        std::fs::rename(&tv, &no_audio)?;
+        cleanup(project_path, &tv, &ta);
+        anyhow::bail!("音视频合流失败: {e:#}");
     }
     cleanup(project_path, &tv, &ta);
     // 自动生成封面
@@ -453,10 +453,10 @@ pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) 
                 if !gif_path.exists() {
                     continue;
                 }
-                if let Ok(frames) = render::gif::decode_gif_frames(&gif_path) {
+                if let Ok(frames) = render::gif::decode_gif_frames_png(&gif_path) {
                     let frame_b64: Vec<String> =
-                        frames.iter().map(|f| b64_engine.encode(&f.png)).collect();
-                    let delays: Vec<u16> = frames.iter().map(|f| f.delay_ms).collect();
+                        frames.iter().map(|f| b64_engine.encode(&f.0)).collect();
+                    let delays: Vec<u16> = frames.iter().map(|f| f.1).collect();
                     data.insert(
                         name.clone(),
                         serde_json::json!({
