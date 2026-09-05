@@ -1,0 +1,285 @@
+duration = 12.0
+sticker_source = [
+    "emoji",
+    "ysyk",
+]
+processed = true
+
+# ============================================================
+# Vtedit 项目配置
+# ============================================================
+[project]
+# output: 输出文件名
+name = "wgpu 效果参考"
+output = "export.mp4"
+created = "2026-09-06"
+version = 1
+
+
+# ----- 素材路径 -----
+[source]
+# danmaku: 可选, 没有就留空
+# metadata: clip.json, 提供 duration/title/event_type
+video = "clip.mp4"
+subtitles = "clip.srt"
+danmaku = ""
+metadata = "clip.json"
+
+
+# ===== 封面 =====
+[cover]
+# 背景图(相对项目目录),空=自动截帧
+image = ""
+# 截图时间位置 0~1
+frame_pos = 0.4
+font_size = 120
+stroke = 20
+# 高亮词颜色
+hl_color = "#ffcc00"
+# 文字区域宽度
+text_width = 0.62
+# 文字水平中心点
+text_x = "35%"
+# 文字垂直中心点
+text_y = "50%"
+# 渐变方向: left/right/top/bottom/radial/none
+gradient_dir = "left"
+# 四角暗度 0~1
+vignette = 0.08
+# 字间距
+letter_spacing = "8px"
+# 行高
+line_height = 1.7
+# 手动断行,修改后不会被覆盖
+title_lines = []
+
+
+# ===== 关键词过滤 =====
+[filter]
+danmaku = []
+highlight = []
+
+
+# ===== 布局（九宫格） =====
+# 可用格子: top-left / top / top-right / mid-left / center / mid-right / bot-left / bottom / bot-right
+# 每个区域可填一个或多个格子，多个格子会合并成包围盒区域
+# 例如: grid = ["mid-left", "center"] 表示左中+正中合并
+# liver: 主播区域，origin 为运镜聚焦中心
+# grid 示例: ["mid-right"] 或 ["mid-left", "center", "mid-right"]
+[layout.liver]
+grid = ["center"]
+origin = "center"
+
+# danmaku_area: 弹幕区域
+# grid 示例: ["top-left"]
+[layout.danmaku_area]
+grid = ["top"]
+
+# sticker_area: 贴纸区域
+# grid 示例: ["mid-left", "bot-left"]
+[layout.sticker_area]
+grid = [
+    "mid-left",
+    "mid-right",
+]
+
+[style.subtitle]
+font = "LXGW WenKai"
+size = 72
+color = "#dcbda0"
+stroke = "12px #403c3b"
+highlight_color = "#f56b41"
+entrance = "cycle-5"
+position = "bottom"
+
+[style.danmaku]
+font_size = 42
+color = "#ffffff"
+stroke = "2px #000000"
+highlight_color = "#ff6bcb"
+speed = 8.0
+area = "danmaku_area"
+scroll_direction = "rtl"
+
+
+# ===== 运镜缩放 =====
+# zoom_mid: 中景缩放 (camera zoom=中), zoom_close: 近景特写缩放
+[style.camera]
+zoom_mid = 1.5
+zoom_close = 1.8
+
+
+# ===== 音效 =====
+# blacklist: 屏蔽列表, 精确 id 或 tag:xxx 整族 (与全局配置合并)
+[sfx]
+volume = 0.1
+reactions_enabled = true
+shake_enabled = true
+blacklist = []
+
+# ============================================================
+# Segment 1
+# ============================================================
+[[segments]]
+# fx: low=安静 / med=常规 / high=爆点
+# note: 话题备注 (仅供阅读, LLM 生成)
+start = 0.0
+end = 4.0
+fx = "low"
+note = "开场：贴纸/渐变/运镜"
+
+
+[[segments.events]]
+type = "camera"
+time = 0.3
+duration = 1.5
+zoom = "近"
+origin = "center"
+
+
+[[segments.events]]
+type = "overlay"
+time = 0.5
+duration = 1.6
+overlay_type = "gradient"
+colors = [
+    "#140A28CC",
+    "#28143CCC",
+    "#140A2888",
+]
+shape = "linear"
+
+
+[[segments.events]]
+type = "shake"
+time = 2.5
+intensity = 14.0
+duration = 0.3
+
+
+[[segments.events]]
+type = "flash"
+time = 3.0
+color = "#ffffff"
+duration = 0.3
+
+
+# ============================================================
+# Segment 2
+# ============================================================
+[[segments]]
+# fx: low=安静 / med=常规 / high=爆点
+# note: 话题备注 (仅供阅读, LLM 生成)
+start = 4.0
+end = 8.5
+fx = "low"
+note = "中段：滤镜/脉冲类"
+
+
+[[segments.events]]
+type = "blur"
+time = 4.2
+duration = 0.4
+
+
+[[segments.events]]
+type = "color_shift"
+time = 4.8
+duration = 0.5
+
+
+[[segments.events]]
+type = "noise"
+time = 5.4
+duration = 0.4
+
+
+[[segments.events]]
+type = "zoom_bounce"
+time = 5.8
+duration = 0.4
+
+
+[[segments.events]]
+type = "pulse"
+time = 6.4
+duration = 0.5
+
+
+[[segments.events]]
+type = "vignette"
+time = 7.0
+duration = 0.6
+
+
+[[segments.events]]
+type = "hue_shift"
+time = 7.6
+duration = 0.5
+
+
+[[segments.events]]
+type = "camera"
+time = 7.0
+duration = 1.2
+zoom = "中"
+origin = "center"
+
+
+# ============================================================
+# Segment 3
+# ============================================================
+[[segments]]
+# fx: low=安静 / med=常规 / high=爆点
+# note: 话题备注 (仅供阅读, LLM 生成)
+start = 8.5
+end = 12.0
+fx = "low"
+note = "尾段：stutter/split/纯色overlay/PNG贴纸"
+
+
+[[segments.events]]
+type = "stutter"
+time = 8.6
+duration = 0.3
+
+
+[[segments.events]]
+type = "split"
+time = 9.0
+intensity = 30.0
+duration = 0.35
+
+
+[[segments.events]]
+type = "overlay"
+time = 9.5
+duration = 1.2
+overlay_type = "color"
+color = "#E8727E"
+opacity = 0.3
+
+
+[[segments.events]]
+type = "sticker"
+time = 9.8
+duration = 1.5
+keyword = "demo"
+name = "demo_v"
+source = "local"
+x = "8%"
+y = "40%"
+
+
+[[segments.events]]
+type = "zoom_bounce"
+time = 10.5
+duration = 0.4
+
+
+[[segments.events]]
+type = "camera"
+time = 8.5
+duration = 3.5
+zoom = "中"
+origin = "50% 50%"

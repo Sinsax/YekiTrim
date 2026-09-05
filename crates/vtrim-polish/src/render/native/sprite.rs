@@ -2,17 +2,18 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 
+use super::composite::{self, FontSpec};
 use super::context::WgpuContext;
 use super::timeline::{CaptionState, DanmakuState, StickerState};
+use crate::project::{DanmakuStyle, SubtitleStyle};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct SpriteUniform {
     pub dst_rect: [f32; 4],
     pub src_rect: [f32; 4],
-    pub opacity: f32,
-    pub rotation: f32,
-    pub _pad: [f32; 6],
+    // x=opacity, y=rotation(rad), z=输出宽, w=输出高（打包成 vec4 保证 WGSL 对齐一致）
+    pub meta: [f32; 4],
 }
 
 pub struct SpriteRenderer {
@@ -20,6 +21,20 @@ pub struct SpriteRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_cache: std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView)>,
+}
+
+/// 纹理缓存上限：超出后整体清空（文字/贴纸纹理随时间增长，防止驻留 GPU 内存）。
+const TEXTURE_CACHE_CAP: usize = 512;
+
+/// 计算稳定的纹理缓存 key（内容哈希开销大，改为调用方提供语义 key）。
+fn tex_key(kind: &str, id: &str, variant: u32) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    kind.hash(&mut h);
+    id.hash(&mut h);
+    variant.hash(&mut h);
+    h.finish()
 }
 
 impl SpriteRenderer {
@@ -118,20 +133,18 @@ impl SpriteRenderer {
     fn get_or_create_texture(
         &mut self,
         ctx: &WgpuContext,
+        key: u64,
         rgba: &[u8],
         w: u32,
         h: u32,
     ) -> &wgpu::TextureView {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hsh = DefaultHasher::new();
-        rgba.hash(&mut hsh);
-        let key = hsh.finish();
+        if self.texture_cache.len() >= TEXTURE_CACHE_CAP {
+            self.texture_cache.clear();
+        }
         if !self.texture_cache.contains_key(&key) {
             let tex = ctx.create_rgba_texture(w, h, rgba);
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             self.texture_cache.insert(key, (tex, view));
-        } else {
         }
         &self.texture_cache.get(&key).unwrap().1
     }
@@ -139,6 +152,7 @@ impl SpriteRenderer {
     pub fn draw_sprite(
         &mut self,
         ctx: &WgpuContext,
+        key: u64,
         rgba: &[u8],
         src_w: u32,
         src_h: u32,
@@ -150,14 +164,17 @@ impl SpriteRenderer {
         opacity: f32,
         output_view: &wgpu::TextureView,
     ) -> Result<()> {
-        let view = self.get_or_create_texture(ctx, rgba, src_w, src_h).clone();
+        let view = self.get_or_create_texture(ctx, key, rgba, src_w, src_h).clone();
 
         let uniform = SpriteUniform {
             dst_rect: [dst_x, dst_y, dst_w, dst_h],
             src_rect: [0.0, 0.0, 1.0, 1.0],
-            opacity,
-            rotation: rotation_deg.to_radians(),
-            _pad: [0.0; 6],
+            meta: [
+                opacity,
+                rotation_deg.to_radians(),
+                ctx.width as f32,
+                ctx.height as f32,
+            ],
         };
         let buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sprite uniform"),
@@ -213,57 +230,41 @@ impl SpriteRenderer {
         Ok(())
     }
 
+    /// 绘制贴纸：按 `state.name` 从资源表取帧，GIF 帧相位按事件相对时间（与 JS 一致）。
     pub fn draw_stickers(
         &mut self,
         ctx: &WgpuContext,
         stickers: &[StickerState],
-        frames: &[Vec<Vec<u8>>],
-        delays: &[Vec<u16>],
+        assets: &std::collections::HashMap<String, super::StickerAsset>,
         t: f64,
         output_view: &wgpu::TextureView,
     ) -> Result<()> {
         for st in stickers {
-            if frames.is_empty() || st.index >= frames.len() {
+            let Some(asset) = assets.get(&st.name) else {
                 continue;
-            }
-            let frame_set = &frames[st.index];
+            };
+            let frame_set = &asset.frames;
             if frame_set.is_empty() {
                 continue;
             }
-            // GIF 动画帧选择：按 delays 循环取帧
-            let frame_idx = if st.index < delays.len() {
-                let d = &delays[st.index];
-                let total: u32 = d.iter().map(|x| *x as u32).sum();
-                if total > 0 {
-                    let elapsed = ((t * 1000.0) as u32) % total;
-                    let mut acc = 0u32;
-                    let mut idx = 0usize;
-                    for (i, delay) in d.iter().enumerate() {
-                        acc += *delay as u32;
-                        if elapsed < acc {
-                            idx = i;
-                            break;
-                        }
-                    }
-                    idx
-                } else {
-                    0
-                }
+            // GIF 动画帧选择：按事件相对时间循环（对齐 JS (t-et)*1000 % total）
+            let frame_idx = if asset.delays.len() > 1 {
+                super::sticker_frame_index(st.et, t, &asset.delays)
             } else {
                 0
             };
             let frame = &frame_set[frame_idx.min(frame_set.len() - 1)];
-            let src_w = 280u32;
-            let src_h = 280u32;
             let w = st.w as f32;
             let h = st.h as f32;
             let x = st.x as f32 - w / 2.0;
             let y = st.y as f32 - h / 2.0;
+            let key = tex_key("sticker", &format!("{}|{}", st.name, frame_idx), 0);
             self.draw_sprite(
                 ctx,
+                key,
                 frame,
-                src_w,
-                src_h,
+                280,
+                280,
                 x,
                 y,
                 w * st.scale as f32,
@@ -280,38 +281,55 @@ impl SpriteRenderer {
         &mut self,
         ctx: &WgpuContext,
         caps: &[CaptionState],
-        sub_color: [u8; 4],
-        hl_color: [u8; 4],
-        stroke_color: [u8; 4],
-        stroke_width: f32,
-        font_size: f32,
+        sub: &SubtitleStyle,
+        font: &FontSpec,
         out: &wgpu::TextureView,
     ) -> Result<()> {
+        let sub_color = composite::parse_color(&sub.color);
+        let hl_color = composite::parse_color(&sub.highlight_color);
+        let stroke_color = composite::parse_color(sub.stroke.split_whitespace().last().unwrap_or("#403c3b"));
+        let stroke_width = sub
+            .stroke
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(12.0);
+        let font_size = sub.size as f32;
+        // Canvas 字幕纵向中心在 cy=960（1920×1080 空间）
+        let cy = ctx.height as f32 * (960.0 / 1080.0);
         for cap in caps {
-            // 逐段光栅化，保留高亮颜色差异。
+            // 逐段光栅化，保留高亮颜色差异；两遍：先量总宽，再逐段带缓存 key 绘制。
             let mut total_w = 0.0f32;
-            let mut rendered: Vec<(Vec<u8>, u32, u32, f32)> = Vec::new();
+            let mut rendered: Vec<(Vec<u8>, u32, u32, u64)> = Vec::new();
             for part in &cap.parts {
                 let color = if part.hl { hl_color } else { sub_color };
-                if let Some((rgba, w, h, adv)) = super::composite::render_text_rgba(
+                if let Some((rgba, w, h, _adv)) = composite::render_text_rgba(
                     &part.text,
                     font_size,
                     color,
                     stroke_color,
                     stroke_width,
+                    font,
                 ) {
+                    let key = tex_key(
+                        "cap",
+                        &format!("{}|{}|{}|{}", part.text, w, h, part.hl),
+                        0,
+                    );
                     total_w += w as f32;
-                    rendered.push((rgba, w, h, adv));
+                    rendered.push((rgba, w, h, key));
                 }
             }
             if rendered.is_empty() {
                 continue;
             }
             let mut sx = ctx.width as f32 / 2.0 - total_w / 2.0;
-            let y = ctx.height as f32 * 0.88 + cap.y_offset as f32;
-            for (rgba, w, h, _adv) in rendered {
+            for (rgba, w, h, key) in rendered {
+                // 文本基线居中于 cy：贴图左上角 = cy - h/2 + 淡入淡出位移
+                let y = cy - h as f32 / 2.0 + cap.y_offset as f32;
                 self.draw_sprite(
                     ctx,
+                    key,
                     &rgba,
                     w,
                     h,
@@ -333,27 +351,43 @@ impl SpriteRenderer {
         &mut self,
         ctx: &WgpuContext,
         dms: &[DanmakuState],
+        dm: &DanmakuStyle,
+        font: &FontSpec,
         out: &wgpu::TextureView,
     ) -> Result<()> {
-        for dm in dms {
-            if let Some((rgba, w, h, _adv)) = super::composite::render_text_rgba(
-                &dm.text,
-                42.0,
-                [255, 255, 255, 255],
-                [0, 0, 0, 255],
-                2.0,
+        let font_size = dm.font_size as f32;
+        let color = composite::parse_color(&dm.color);
+        let stroke_color = composite::parse_color(dm.stroke.split_whitespace().last().unwrap_or("#000000"));
+        let stroke_width = dm
+            .stroke
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(2.0);
+        for d in dms {
+            if let Some((rgba, w, h, _adv)) = composite::render_text_rgba(
+                &d.text,
+                font_size,
+                color,
+                stroke_color,
+                stroke_width,
+                font,
             ) {
+                // Canvas textBaseline=middle：dm.y 为文字中心
+                let y = d.y as f32 - h as f32 / 2.0;
+                let key = tex_key("dm", &format!("{}|{}", d.x, d.text), 0);
                 self.draw_sprite(
                     ctx,
+                    key,
                     &rgba,
                     w,
                     h,
-                    dm.x as f32,
-                    dm.y as f32,
+                    d.x as f32,
+                    y,
                     w as f32,
                     h as f32,
                     0.0,
-                    dm.opacity as f32,
+                    d.opacity as f32,
                     out,
                 )?;
             }
