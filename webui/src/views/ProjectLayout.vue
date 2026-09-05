@@ -1,40 +1,48 @@
 <template>
   <div>
     <div class="page-head">
-      <div><h1>{{ name }}</h1><div class="sub">{{ cfg }}</div></div>
-      <div class="actions">
-        <router-link class="tab-btn" :to="`/project/${cfgEnc}/overview`">概览</router-link>
+      <div>
+        <h1>{{ name }}</h1>
+        <div class="sub">{{ cfg }}</div>
+      </div>
+      <div class="actions subnav">
         <router-link class="tab-btn" :to="`/project/${cfgEnc}/preview`">预览</router-link>
-        <router-link class="tab-btn" :to="`/project/${cfgEnc}/transcript`">字幕</router-link>
-        <router-link class="tab-btn" :to="`/project/${cfgEnc}/clips`">片段</router-link>
+        <router-link class="tab-btn" :to="`/project/${cfgEnc}/slices`">切片</router-link>
+        <router-link class="tab-btn" :to="`/project/${cfgEnc}/settings`">设置</router-link>
       </div>
     </div>
-    <router-view />
+    <div v-if="!ready" class="muted small" style="padding:20px">切换项目中…</div>
+    <router-view v-else />
   </div>
 </template>
 
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/client'
 
 const route = useRoute()
 const cfg = computed(() => decodeURIComponent(route.params.cfg || ''))
 const cfgEnc = computed(() => encodeURIComponent(cfg.value))
+const isPolishRoute = computed(() => route.path.includes('/polish') || /\/slices\/[^/]+$/.test(route.path))
 const name = ref('工程')
+const ready = ref(false)
 
-onMounted(async () => {
+async function load() {
+  if (!cfg.value) return
+  ready.value = false
+  name.value = '工程'
   try {
-    await api('/api/project/switch', { method: 'POST', body: JSON.stringify({ config_path: cfg.value }) })
-    const st = await api('/api/project/status')
+    const st = await api(`/api/project-data/status?config=${encodeURIComponent(cfg.value)}`)
     name.value = st.name || st.input_file || '工程'
   } catch (e) {
     name.value = '工程'
+  } finally {
+    ready.value = true
   }
-})
+}
+
+onMounted(load)
+watch(() => cfg.value, load)
 </script>
 
-<style scoped>
-.tab-btn { padding:7px 16px; border-radius:999px; border:1px solid var(--line); background:var(--card); color:var(--ink-dim); font-size:13px; cursor:pointer; text-decoration:none; }
-.tab-btn.router-link-active { background:linear-gradient(135deg,var(--main),var(--main-deep)); color:#fff; border:none; font-weight:600; }
-</style>

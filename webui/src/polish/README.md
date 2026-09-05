@@ -1,0 +1,7 @@
+# webui/src/polish — 精修共享模块
+
+- `api.js` — polish 端点调用 + `watchJob` 任务订阅（SSE 优先、轮询兜底）。页面唯一数据出口。
+- `engine.js` — 从 `crates/vtrim-polish/templates/index.html` Canvas 渲染器（真实出片路径）移植的纯函数特效状态机。
+- `audio.js` — SFX 播放器（音量跟随响度曲线，与渲染混音同思路）。
+
+修改特效表现时先改 `templates/index.html`，再同步移植到这里，保持预览与出片一致。

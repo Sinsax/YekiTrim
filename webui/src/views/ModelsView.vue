@@ -2,14 +2,19 @@
   <div>
     <div class="page-head">
       <div><h1>模型</h1><div class="sub">ASR 模型管理</div></div>
-      <div class="actions"><button class="btn" @click="downloadAll">下载全部</button></div>
     </div>
-    <div class="grid cols-3">
-      <div v-for="m in models" :key="m.name" class="pcard">
-        <div class="head"><div class="sticker mint">🎙</div><div><h3>{{ m.name }}</h3><div class="path">{{ m.size_label }}</div></div></div>
-        <div class="chips"><span class="chip" :class="m.installed ? 'g' : 'n'">{{ m.installed ? '已安装' : '未安装' }}</span></div>
-        <div class="foot"><span class="name"></span><button class="mini-btn" @click="downloadAll">下载</button></div>
+    <div class="card">
+      <div class="model-row" v-for="m in models" :key="m.name">
+        <div>
+          <div class="model-name">{{ m.name }}</div>
+          <div class="muted small">{{ m.size_label }} · {{ m.note }}</div>
+        </div>
+        <div class="model-action">
+          <button v-if="!m.installed" class="btn btn-primary" @click="downloadOne(m)">下载</button>
+          <span v-else class="chip g">已安装</span>
+        </div>
       </div>
+      <div v-if="!models.length" class="muted">暂无模型</div>
     </div>
   </div>
 </template>
@@ -18,15 +23,29 @@
 import { ref, onMounted } from 'vue'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
+
 const models = ref([])
+
 async function load() {
-  try { models.value = await api('/api/models') } catch (e) {}
+  try {
+    const list = await api('/api/models')
+    models.value = (list || []).filter(m => m.name !== 'firered-zh')
+  } catch (e) {}
 }
-async function downloadAll() {
+
+async function downloadOne(m) {
   try {
     await api('/api/models/download', { method: 'POST' })
-    toast('下载已启动')
-  } catch (e) { toast(e.message) }
+    toast(m.name + ' 下载已启动')
+  } catch (e) { toast(e.message, 'err') }
 }
+
 onMounted(load)
 </script>
+
+<style scoped>
+.model-row { display:flex; align-items:center; justify-content:space-between; padding:12px 4px; border-bottom:1px dashed var(--line-soft); }
+.model-row:last-child { border-bottom:none; }
+.model-name { font-weight:700; font-size:15px; }
+.model-action { flex:none; }
+</style>

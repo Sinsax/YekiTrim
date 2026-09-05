@@ -1,0 +1,120 @@
+// audio.js — SFX 播放器，从 templates/index.html 的 sfxPlay/curveAdjust/scheduleSound 移植。
+// 音量跟随视频响度曲线（与渲染混音同思路）：视频吵 → 压低音效，安静 → 正常。
+// 主音量 localStorage 记忆（渲染不受影响，仅预览）。
+
+const MASTER_VOL_KEY = 'vtrim_master_vol'
+const MUTED_KEY = 'vtrim_muted'
+
+export function createSfxPlayer({ resolveUrl } = {}) {
+  let masterVol = 1
+  let muted = false
+  try {
+    masterVol = parseFloat(localStorage.getItem(MASTER_VOL_KEY)) || 1
+    muted = localStorage.getItem(MUTED_KEY) === '1'
+  } catch {}
+
+  const sfxCache = new Map() // name → Audio
+  let currentT = 0 // 当前播放时间（音量跟随曲线用）
+  let curve = []
+
+  function setLoudnessCurve(points) {
+    curve = Array.isArray(points) ? points : []
+  }
+
+  // 查响度曲线 → 目标: 音效比视频低 8dB（文件响度按默认 -14）
+  function curveAdjust(t) {
+    if (!curve.length) return 1.0
+    let db = -26.0
+    for (let i = curve.length - 1; i >= 0; i--) {
+      if (curve[i].t <= t) { db = curve[i].db; break }
+    }
+    if (db < -100) return 1.0
+    const f = Math.pow(10, (db - 8.0 + 14.0) / 20)
+    return Math.max(0.1, Math.min(f, 4.0))
+  }
+
+  function obtain(name) {
+    let a = sfxCache.get(name)
+    if (a && !a.ended && a.currentTime > 0) {
+      // 已在播放：clone 新实例（复制 src，浏览器复用缓存），不打断前一次
+      a = a.cloneNode()
+    } else if (a) {
+      a.currentTime = 0
+    } else {
+      a = new Audio(resolveUrl ? resolveUrl(name) : 'sfx/' + name + '.mp3')
+      sfxCache.set(name, a)
+    }
+    return a
+  }
+
+  function play(name, vol, dur) {
+    if (!name) return
+    vol = vol || 0.04
+    const target = vol * curveAdjust(currentT) * (muted ? 0 : masterVol)
+    const a = obtain(name)
+    a.volume = 0
+    a.play().catch(() => {})
+    // ~30ms 缓入，消除爆音
+    let steps = 0
+    const fade = setInterval(() => {
+      steps++
+      a.volume = Math.min(target, target * steps / 5)
+      if (steps >= 5 || a.ended) clearInterval(fade)
+    }, 6)
+    // 限时停止：事件时长 + 尾音余量（渲染路径 atrim 等价行为）
+    const stopAt = Math.min(dur || 1.5, 30)
+    if (stopAt > 0) {
+      setTimeout(() => {
+        const out = setInterval(() => {
+          a.volume = Math.max(0, a.volume - 0.03)
+          if (a.volume <= 0.005 || a.ended) {
+            clearInterval(out)
+            try { a.pause(); a.currentTime = 0 } catch {}
+          }
+        }, 20)
+      }, (stopAt + 0.2) * 1000)
+    }
+  }
+
+  // 逐帧驱动：soundEvents 为 buildIndex 产出的音效事件表
+  // 触发窗口 0.12s；seek 后对未到达事件重新武装，支持回退重触发
+  function sync(soundEvents, t) {
+    currentT = t
+    if (!soundEvents || !soundEvents.length) return
+    for (const e of soundEvents) {
+      if (!e.fired && e.time <= t && e.time > t - 0.12) {
+        e.fired = true
+        play(e.name, e.volume, e.duration)
+      }
+    }
+  }
+
+  function seek(t) {
+    currentT = t
+    if (soundEventsCache) for (const e of soundEventsCache) {
+      if (e.time >= t) e.fired = false
+    }
+  }
+
+  let soundEventsCache = null
+
+  function setEvents(events) {
+    if (events !== soundEventsCache) {
+      soundEventsCache = events
+      if (events) for (const e of events) e.fired = false
+    }
+  }
+
+  function getMasterVolume() { return masterVol }
+  function isMuted() { return muted }
+  function setMasterVolume(v) {
+    masterVol = v
+    try { localStorage.setItem(MASTER_VOL_KEY, String(v)); localStorage.setItem(MUTED_KEY, muted ? '1' : '0') } catch {}
+  }
+  function setMuted(m) {
+    muted = m
+    try { localStorage.setItem(MASTER_VOL_KEY, String(masterVol)); localStorage.setItem(MUTED_KEY, muted ? '1' : '0') } catch {}
+  }
+
+  return { play, sync, seek, setEvents, setLoudnessCurve, getMasterVolume, isMuted, setMasterVolume, setMuted }
+}

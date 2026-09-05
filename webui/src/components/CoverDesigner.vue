@@ -1,6 +1,6 @@
 <template>
   <div class="card" id="cover-design">
-    <h2>🖼 封面设计器</h2>
+    <h2 class="card-h2"><Icon name="image" :size="16" /> 封面设计器</h2>
     <div class="designer-grid">
       <div class="stage-wrap">
         <div class="stage">
@@ -12,45 +12,45 @@
             <div class="title-text">{{ title }}</div>
           </div>
         </div>
-        <div class="row" style="margin-top:8px;flex-wrap:wrap">
+        <div class="row mt-8">
           <span class="muted small">时间</span>
-          <input v-model.number="time" type="number" step="0.1" style="width:90px">
+          <input v-model.number="time" type="number" step="0.1" class="w-time">
           <button class="mini-btn" @click="takeCurrent">取当前帧</button>
           <button class="mini-btn" @click="exportFrame">导出关键帧</button>
           <button class="mini-btn" @click="fileInput.click()">导入背景图片</button>
-          <input ref="fileInput" type="file" accept="image/*" style="display:none" @change="importBg">
+          <input ref="fileInput" type="file" accept="image/*" class="hidden-file" @change="importBg">
         </div>
       </div>
       <div class="controls">
         <details open>
-          <summary style="cursor:pointer;font-weight:700">文字位置</summary>
+          <summary>文字位置</summary>
           <label>标题</label>
           <input v-model="title" placeholder="默认片段标题">
-          <div class="row">
-            <div style="flex:1"><label>文字 X</label><input v-model="textX"></div>
-            <div style="flex:1"><label>文字 Y</label><input v-model="textY"></div>
+          <div class="row mt-6">
+            <div class="flex-1"><label>文字 X</label><input v-model="textX"></div>
+            <div class="flex-1"><label>文字 Y</label><input v-model="textY"></div>
           </div>
-          <div class="row" style="margin-top:6px">
-            <div style="flex:1"><label>字号</label><input v-model.number="fontSize" type="number" step="1"></div>
-            <div style="flex:1"><label>描边</label><input v-model.number="stroke" type="number" step="1"></div>
+          <div class="row mt-6">
+            <div class="flex-1"><label>字号</label><input v-model.number="fontSize" type="number" step="1"></div>
+            <div class="flex-1"><label>描边</label><input v-model.number="stroke" type="number" step="1"></div>
           </div>
-          <div class="row" style="margin-top:6px">
-            <div style="flex:1"><label>高亮色</label><input v-model="hlColor" type="color"></div>
-            <div style="flex:1"><label>字间距</label><input v-model="letterSpacing"></div>
+          <div class="row mt-6">
+            <div class="flex-1"><label>高亮色</label><input v-model="hlColor" type="color"></div>
+            <div class="flex-1"><label>字间距</label><input v-model="letterSpacing"></div>
           </div>
-          <div class="row" style="margin-top:6px">
+          <div class="row mt-6">
             <button v-for="p in presets" :key="p.key" class="mini-btn" :class="{ selected: preset === p.key }" @click="applyPreset(p.key)">{{ p.label }}</button>
           </div>
         </details>
-        <details open style="margin-top:10px">
-          <summary style="cursor:pointer;font-weight:700">封面特效（可叠加）</summary>
+        <details open class="mt-10">
+          <summary>封面特效（可叠加）</summary>
           <div v-for="(fx, i) in fxList" :key="i" class="fx-row">
             <span class="chip p">{{ fxTypeName(fx.type) }}</span>
-            <input v-model="fx.amount" type="number" step="0.1" placeholder="强度" style="flex:1;min-width:60px">
-            <button class="mini-btn" @click="removeFx(i)">删除</button>
+            <input v-model="fx.amount" type="number" step="0.1" placeholder="强度" class="flex-1 minw-60">
+            <button class="mini-btn danger" @click="removeFx(i)">删除</button>
           </div>
-          <div class="row" style="margin-top:8px">
-            <div style="flex:1"><label>渐变方向</label>
+          <div class="row mt-8">
+            <div class="flex-1"><label>渐变方向</label>
               <select v-model="gradientDir">
                 <option value="left">左</option>
                 <option value="right">右</option>
@@ -58,20 +58,20 @@
                 <option value="none">无</option>
               </select>
             </div>
-            <div style="flex:1"><label>暗角</label><input v-model.number="vignette" type="number" step="0.05" min="0" max="1"></div>
+            <div class="flex-1"><label>暗角</label><input v-model.number="vignette" type="number" step="0.05" min="0" max="1"></div>
           </div>
-          <div class="row" style="margin-top:8px">
-            <select v-model="addType" style="flex:1">
+          <div class="row mt-8">
+            <select v-model="addType" class="flex-1">
               <option value="gradient">渐变</option>
               <option value="vignette">暗角</option>
               <option value="zoom">缩放</option>
               <option value="glow">光晕</option>
               <option value="blur">模糊</option>
             </select>
-            <button class="mini-btn" @click="addFx">＋ 添加特效</button>
+            <button class="mini-btn" @click="addFx"><Icon name="plus" :size="11" /> 添加特效</button>
           </div>
         </details>
-        <div class="row" style="margin-top:10px">
+        <div class="row mt-10">
           <button class="btn btn-primary" @click="generateCover">生成封面</button>
         </div>
       </div>
@@ -83,6 +83,8 @@
 import { ref, onMounted } from 'vue'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
+import Icon from './Icon.vue'
+import { mediaUrl } from '../utils'
 
 const props = defineProps({ dir: { type: String, required: true } })
 const videoSrc = ref('')
@@ -182,11 +184,10 @@ async function generateCover() {
 }
 
 onMounted(async () => {
-  const sep = String.fromCharCode(92)
-  const norm = String(props.dir).split(sep).join('/')
-  videoSrc.value = '/api/media/' + encodeURIComponent(norm + '/clip.mp4').replace(/%2F/g, '/')
+  videoSrc.value = mediaUrl(props.dir, 'clip.mp4')
   try {
     const cfg = await api('/api/polish/project?dir=' + encodeURIComponent(props.dir))
+    videoSrc.value = mediaUrl(props.dir, cfg?.source?.video || 'clip.mp4')
     title.value = cfg?.cover?.title_lines?.[0] || cfg?.project?.name || ''
     textX.value = cfg?.cover?.text_x || '35%'
     textY.value = cfg?.cover?.text_y || '50%'
@@ -196,12 +197,13 @@ onMounted(async () => {
     letterSpacing.value = cfg?.cover?.letter_spacing || '8px'
     gradientDir.value = cfg?.cover?.gradient_dir || 'left'
     vignette.value = cfg?.cover?.vignette ?? 0.08
-  } catch (e) {}
+  } catch {}
 })
 </script>
 
 <style scoped>
 .designer-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start; }
+.card-h2 { display:flex; align-items:center; gap:7px; }
 .stage { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:14px; overflow:hidden; }
 .stage-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
 .fx-layer { position:absolute; inset:0; pointer-events:none; z-index:1; }
@@ -209,4 +211,6 @@ onMounted(async () => {
 .title-wrap { position:absolute; z-index:2; transform:translate(-50%,-50%); text-align:center; }
 .title-text { color:#f0e6d3; font-weight:900; font-size:34px; text-shadow:0 2px 24px rgba(0,0,0,.8); -webkit-text-stroke:1px rgba(0,0,0,.4); }
 .fx-row { display:flex; gap:6px; align-items:center; padding:4px 0; border-bottom:1px dashed var(--line-soft); }
+.w-time { width:90px; flex:none; }
+.hidden-file { display:none; }
 </style>
