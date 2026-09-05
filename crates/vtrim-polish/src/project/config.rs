@@ -217,7 +217,8 @@ pub struct Point {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutRegion {
-    /// 九宫格格子列表（可多个合并成更大区域）
+    /// 九宫格格子列表（可多个合并成更大区域）；旧版配置可能没有该字段，默认空数组
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grid: Vec<String>,
     /// 运镜聚焦中心（新）：九宫格格子名，如 "mid-right" / "center"
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,6 +226,11 @@ pub struct LayoutRegion {
     /// 运镜聚焦中心 (旧，格式 "x% y%")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// 旧版布局区域左上角/右下角（新字段为 grid，旧字段保留兼容）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_left: Option<Point>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bottom_right: Option<Point>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -242,6 +248,8 @@ fn default_liver() -> LayoutRegion {
         grid: vec!["mid-right".into()],
         origin_grid: Some("mid-right".into()),
         origin: None,
+        top_left: None,
+        bottom_right: None,
         extra: HashMap::new(),
     }
 }
@@ -251,6 +259,8 @@ fn default_danmaku_area() -> LayoutRegion {
         grid: vec!["top-left".into()],
         origin_grid: None,
         origin: None,
+        top_left: None,
+        bottom_right: None,
         extra: HashMap::new(),
     }
 }
@@ -261,6 +271,8 @@ fn default_sticker_area() -> LayoutRegion {
         grid: vec!["mid-left".into(), "bot-left".into()],
         origin_grid: None,
         origin: None,
+        top_left: None,
+        bottom_right: None,
         extra: HashMap::new(),
     }
 }
@@ -999,6 +1011,8 @@ mod tests {
             grid: vec!["center".into()],
             origin_grid: None,
             origin: None,
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         let rects = region_rects(&region);
@@ -1016,6 +1030,8 @@ mod tests {
             grid: vec!["mid-left".into(), "mid-right".into()],
             origin_grid: None,
             origin: None,
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         let rects = region_rects(&region);
@@ -1036,6 +1052,8 @@ mod tests {
             grid: vec![],
             origin_grid: None,
             origin: None,
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         assert!(region_rects(&region).is_empty());
@@ -1047,6 +1065,8 @@ mod tests {
             grid: vec!["top-left".into(), "center".into()],
             origin_grid: None,
             origin: None,
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         #[allow(deprecated)]
@@ -1063,6 +1083,8 @@ mod tests {
             grid: vec!["mid-right".into()],
             origin_grid: Some("mid-right".into()),
             origin: Some("10% 20%".into()),
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         assert_eq!(region_origin(&region).unwrap(), "83.34% 50.00%");
@@ -1074,6 +1096,8 @@ mod tests {
             grid: vec!["mid-right".into()],
             origin_grid: None,
             origin: Some("10% 20%".into()),
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         assert_eq!(region_origin(&region).unwrap(), "10% 20%");
@@ -1085,6 +1109,8 @@ mod tests {
             grid: vec!["center".into()],
             origin_grid: None,
             origin: None,
+            top_left: None,
+            bottom_right: None,
             extra: HashMap::new(),
         };
         assert_eq!(region_origin(&region).unwrap(), "50.00% 50.00%");
