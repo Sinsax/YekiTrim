@@ -19,27 +19,36 @@ impl ChromeRenderer {
     /// 启动 Chrome (headless)
     pub fn launch() -> anyhow::Result<Browser> {
         use std::ffi::OsStr;
-        let builder = LaunchOptions::default_builder()
+        let args = [
+            OsStr::new("--headless=new"),
+            OsStr::new("--window-size=1920,1080"),
+            OsStr::new("--disable-dev-shm-usage"),
+            OsStr::new("--autoplay-policy=no-user-gesture-required"),
+            OsStr::new("--enable-gpu-rasterization"),
+            OsStr::new("--enable-zero-copy"),
+        ];
+        let args_vec = args.to_vec();
+        let mut base = LaunchOptions::default_builder();
+        let mut builder = base
             .headless(true)
             .sandbox(false)
             .window_size(Some((1920, 1080)))
-            .args(vec![
-                OsStr::new("--headless=new"),
-                OsStr::new("--window-size=1920,1080"),
-                OsStr::new("--disable-dev-shm-usage"),
-                OsStr::new("--autoplay-policy=no-user-gesture-required"),
-                OsStr::new("--enable-gpu-rasterization"),
-                OsStr::new("--enable-zero-copy"),
-            ])
-            .build()?;
-        let browser = Browser::new(builder)?;
+            .args(args_vec);
+        // 全局配置 [chrome] path 优先（留空走 headless_chrome 自动检测）
+        let global_cfg = vtrim_core::config::load_global_config();
+        let custom_path = global_cfg.chrome.path.trim().to_string();
+        if !custom_path.is_empty() {
+            tracing::info!("使用自定义 Chrome 路径: {}", custom_path);
+            builder = builder.path(Some(std::path::PathBuf::from(&custom_path)));
+        }
+        let browser = Browser::new(builder.build()?)?;
         Ok(browser)
     }
 
     /// 创建新标签页并导航到 URL
     pub fn create_tab(browser: &Browser, url: &str) -> anyhow::Result<Arc<Tab>> {
         let tab = browser.new_tab()?;
-        tab.set_default_timeout(Duration::from_secs(15));
+        tab.set_default_timeout(Duration::from_secs(60));
         tab.navigate_to(url)?;
         tab.wait_until_navigated()?;
         Ok(tab)
@@ -47,7 +56,7 @@ impl ChromeRenderer {
 
     /// 等待页面初始化完成 — 检查 __TIMELINE
     pub fn wait_for_ready(tab: &Tab) -> anyhow::Result<()> {
-        for i in 0..100 {
+        for i in 0..300 {
             let result = tab.evaluate(
                 "typeof window.__TIMELINE !== 'undefined' && window.__TIMELINE !== null",
                 false,
@@ -83,7 +92,7 @@ impl ChromeRenderer {
         }
 
         anyhow::bail!(
-            "Page failed to initialize after 20s — check GSAP CDN reachability and data/ files exist"
+            "Page failed to initialize after 60s — check GSAP CDN reachability and data/ files exist"
         )
     }
 }
@@ -125,12 +134,12 @@ impl ChromeBackend {
     fn capture_and_read(
         &self,
         tab: &Tab,
+        start_frame: usize,
         frame_count: usize,
         chunk_idx: usize,
     ) -> anyhow::Result<Vec<Vec<u8>>> {
         let b64_engine = base64::engine::general_purpose::STANDARD;
-        let start_frame = 0;
-        let end_frame = frame_count;
+        let end_frame = start_frame + frame_count;
         tab.evaluate(&format!(
             "window.__CAPTURE_CHUNK({}, {}, {}).catch(function(e){{ window.__CAPTURE_ERROR = e.message; }})",
             start_frame, end_frame, self.fps,
@@ -228,7 +237,8 @@ impl FrameRenderer for ChromeBackend {
         }
 
         self.send_frames(&tab, &jpegs)?;
-        let out = self.capture_and_read(&tab, frame_count, 0)?;
+        let start_frame = frames.first().map(|f| f.index).unwrap_or(0);
+        let out = self.capture_and_read(&tab, start_frame, frame_count, 0)?;
         if out.len() != frame_count {
             anyhow::bail!(
                 "Chrome returned {} frames, expected {}",
