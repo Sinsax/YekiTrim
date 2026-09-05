@@ -1,0 +1,462 @@
+// engine.js — 从 crates/vtrim-polish/templates/index.html 的 Canvas 渲染器
+// （真实出片路径 renderFrame）忠实移植的纯函数特效状态机。
+// buildIndex() 一次性预处理 → 各 *At(idx, t) 逐帧查询覆盖层状态。不读 DOM、不持有组件状态。
+// 修改特效表现时先改 templates/index.html，再同步移植到这里，保持预览与出片一致。
+
+// ---- GSAP 兼容 easing ----
+export const E = {
+  pow2Out: (t) => 1 - (1 - t) * (1 - t),
+  pow2In: (t) => t * t,
+  pow2InOut: (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2),
+  sineOut: (t) => Math.sin((t * Math.PI) / 2),
+  sineIn: (t) => 1 - Math.cos((t * Math.PI) / 2),
+  sineInOut: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
+  backOut: (t, s = 1.70158) => {
+    t -= 1
+    return t * t * ((s + 1) * t + s) + 1
+  },
+  linear: (t) => t,
+}
+
+export function lerp(a, b, t) { return a + (b - a) * t }
+
+// ---- 瞬时特效时长钳制（与 process/fx.rs transient_duration_cap 一致）----
+export const TRANSIENT_CAP = {
+  shake: 0.5, flash: 0.3, blur: 0.4, zoom_bounce: 0.6, stutter: 0.35,
+  split: 0.35, noise: 0.4, pulse: 0.5, hue_shift: 0.5, color_shift: 0.5,
+  vignette: 0.6,
+}
+
+export function transientDur(ev, def) {
+  const cap = TRANSIENT_CAP[ev.type] || 0.6
+  const d = ev.duration != null ? ev.duration : def
+  return Math.max(0.1, Math.min(d, cap))
+}
+
+// ---- 九宫格中心点（命名与 project/config.rs grid_rect 一致：bot-left / bot-right）----
+const GRID_CENTERS = {
+  'top-left': [16.67, 16.67], 'top': [50, 16.67], 'top-right': [83.33, 16.67],
+  'mid-left': [16.67, 50], 'center': [50, 50], 'mid-right': [83.33, 50],
+  'bot-left': [16.67, 83.33], 'bottom': [50, 83.33], 'bot-right': [83.33, 83.33],
+}
+
+export function gridOrigin(name) {
+  const p = GRID_CENTERS[name] || [50, 50]
+  return p[0] + '% ' + p[1] + '%'
+}
+
+// ---- 弹幕文字宽度预测量（canvas measureText，仅用离屏画布量宽）----
+let dmMeasureCtx = null
+export function measureDanmakuWidths(dms, fontSize) {
+  if (!dmMeasureCtx) {
+    const c = document.createElement('canvas')
+    dmMeasureCtx = c.getContext('2d')
+  }
+  dmMeasureCtx.font = '600 ' + (fontSize || 42) + 'px sans-serif'
+  return dms.map((d) => dmMeasureCtx.measureText(d.text || '').width + 20)
+}
+
+function pctPx(v, total) {
+  const n = parseFloat(v)
+  return Number.isFinite(n) ? (n / 100) * total : NaN
+}
+
+// ---- 构建事件索引（预处理，只跑一次）----
+// opts: { config, subtitles, danmaku, duration, stickerSrc }
+//   stickerSrc(name) → 贴纸资源 URL（来自 config._assets.sticker_map，由调用方解析为媒体 URL）
+export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc }) {
+  const cfg = config || {}
+  let dur = duration || cfg.duration || 0
+
+  // segments 截断到视频时长（与模板一致，防 LLM 生成的超出）
+  const segs = (cfg.segments || []).map((s) => ({ ...s, events: [...(s.events || [])] }))
+  if (segs.length > 0 && dur > 0) {
+    const kept = segs.filter((s) => s.start < dur)
+    kept.forEach((s) => {
+      s.end = Math.min(s.end, dur)
+      s.events = s.events.filter((e) => (e.time || 0) < dur)
+    })
+    segs.length = 0
+    segs.push(...kept)
+  }
+
+  const idx = {
+    camera: [], sticker: [], shake: [], flash: [], blur: [], overlay: [],
+    sfx: [], stutter: [], split: [], zoom_bounce: [], vignette: [],
+    hue_shift: [], noise: [], pulse: [], color_shift: [],
+  }
+  const soundEvents = [] // 音效事件表：sfx 类型事件 + 任意带 ev.sfx 的事件
+  const ptEvents = [] // playtest 标签表（拍平全部事件）
+  let sideToggle = false
+
+  segs.forEach((seg) => {
+    const segLabel = seg.note || ''
+    ;(seg.events || []).forEach((ev) => {
+      const type = ev.type || ''
+      const entry = { time: ev.time || 0, duration: ev.duration || 0, ev }
+      if (idx[type]) idx[type].push(entry)
+      else idx[type] = [entry]
+      // 音效：规则引擎指定的 sfx（无引用则静音）
+      if (type === 'sfx') {
+        soundEvents.push({ time: entry.time, name: ev.name || 'pop-notice', volume: ev.volume || sfxVolume(cfg), duration: ev.duration })
+      } else if (ev.sfx) {
+        const sd = Math.max(transientDur(ev, 1.0), 1.0)
+        soundEvents.push({ time: entry.time, name: ev.sfx, volume: ev.sfx_volume || sfxVolume(cfg), duration: sd })
+      }
+      ptEvents.push({
+        time: entry.time, end: entry.time + (ev.duration || 1.5),
+        type, label: ev.keyword || ev.name || ev.mode || '', seg: segLabel,
+      })
+      if (type === 'sticker') {
+        const name = ev.name || ev.keyword || ''
+        entry.src = stickerSrc ? stickerSrc(name) : ''
+        entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
+        entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
+        // 竖屏贴纸：视频在左 → 贴纸居中；视频居中 → 左右交替
+        if (cfg.vertical) {
+          const vpos = cfg.vertical_position || (cfg.layout && cfg.layout.vertical_position) || 'left'
+          entry.xOverride = vpos === 'left' ? 50 : ((sideToggle = !sideToggle) ? 15 : 85)
+        }
+      }
+    })
+  })
+  ;['camera', 'shake', 'flash', 'blur', 'overlay', 'stutter', 'split', 'zoom_bounce',
+    'vignette', 'hue_shift', 'noise', 'pulse', 'color_shift', 'sfx']
+    .forEach((k) => idx[k] && idx[k].sort((a, b) => a.time - b.time))
+
+  idx.subs = subtitles || []
+  idx.dms = danmaku || []
+  idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg))
+  idx.dur = dur
+  idx.layout = cfg.layout || {}
+  idx.subStyle = (cfg.style && cfg.style.subtitle) || {}
+  idx.dmStyle = (cfg.style && cfg.style.danmaku) || {}
+  idx.camStyle = (cfg.style && cfg.style.camera) || {}
+  idx.vertical = !!cfg.vertical
+  idx.verticalPosition = cfg.vertical_position || (cfg.layout && cfg.layout.vertical_position) || 'left'
+  idx.soundEvents = soundEvents
+  idx.ptEvents = ptEvents
+  idx.segs = segs
+  return idx
+}
+
+function sfxVolume(cfg) { return (cfg.sfx && cfg.sfx.volume) || 0.1 }
+function dmFontSize(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font_size) || 42 }
+
+function safeEmoji(name) {
+  const code = parseInt(name, 16)
+  return Number.isNaN(code) ? '✨' : String.fromCodePoint(code)
+}
+
+// ---- 运镜：zoom 近/中 = style.camera.zoom_close/zoom_mid 覆盖，默认 1.8/1.5 ----
+export function cameraAt(idx, t) {
+  let zoom = 1.0
+  let ox = 65
+  let oy = 50
+  const liver = idx.layout.liver || {}
+  const defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%')
+  const dp = defOrigin.split(' ')
+  ox = parseFloat(dp[0]) || 65
+  oy = parseFloat(dp[1]) || 50
+
+  if (idx.vertical) return { zoom: 1.0, ox: ox * 19.2, oy: oy * 10.8 } // 竖屏不做运镜
+
+  for (const c of idx.camera) {
+    if (t < c.time) break
+    const tgt = c.ev.zoom === '近' ? (idx.camStyle.zoom_close || 1.8) : (idx.camStyle.zoom_mid || 1.5)
+    const td = Math.min(c.duration * 0.5, 0.6)
+    const ce = c.time + td
+    if (t >= ce) zoom = tgt
+    else zoom = lerp(zoom, tgt, E.pow2Out((t - c.time) / td))
+    const o = String(c.ev.origin || defOrigin).split(' ')
+    ox = parseFloat(o[0]) || ox
+    oy = parseFloat(o[1]) || oy
+  }
+  return { zoom, ox: ox * 19.2, oy: oy * 10.8 }
+}
+
+// ---- 视频层复合状态：shake/blur/colorShift/stutter/split/最终 zoom ----
+export function videoFxAt(idx, t) {
+  const shake = getShake(idx, t)
+  const blurAmt = getBlur(idx, t)
+  const colorShift = getColorShift(idx, t)
+  const stutter = idx.vertical ? null : getStutterVideo(idx, t)
+  const split = idx.vertical ? null : getSplitVideo(idx, t)
+  const cam = cameraAt(idx, t)
+  const zb = idx.vertical ? cam.zoom : getZoomBounce(idx, t, cam.zoom)
+  const pl = idx.vertical ? cam.zoom : getPulse(idx, t, cam.zoom)
+  return {
+    shake, blur: idx.vertical ? 0 : blurAmt, colorShift: idx.vertical ? '' : colorShift,
+    stutter, split, zoom: Math.max(zb, pl), camera: cam,
+  }
+}
+
+// ---- 瞬时 FX 状态（Canvas 出片行为的窗口函数）----
+function getShake(idx, t) {
+  for (const sh of idx.shake) {
+    if (t >= sh.time && t < sh.time + 0.2) {
+      const off = sh.ev.intensity || 14
+      const dt = t - sh.time
+      if (dt < 0.04) return { x: off, y: -off }
+      if (dt < 0.08) return { x: -off, y: off }
+      if (dt < 0.12) return { x: off / 2, y: -off / 2 }
+      if (dt < 0.16) return { x: -off / 2, y: off / 2 }
+      return { x: 0, y: 0 }
+    }
+  }
+  return { x: 0, y: 0 }
+}
+
+export function getFlash(idx, t) {
+  for (const f of idx.flash) {
+    const et = f.time, color = f.ev.color || '#ffffff', dur = f.ev.duration || 0.35
+    if (t >= et && t < et + 0.04 + dur) {
+      const dt = t - et
+      if (dt < 0.04) return { opacity: 0.2 * (dt / 0.04), color }
+      return { opacity: 0.2 * (1 - (dt - 0.04) / dur), color }
+    }
+  }
+  return { opacity: 0, color: '#ffffff' }
+}
+
+function getBlur(idx, t) {
+  for (const b of idx.blur) {
+    const et = b.time
+    if (t >= et && t < et + 0.8) {
+      const dt = t - et
+      if (dt < 0.48) return 8
+      return 8 * (1 - (dt - 0.48) / 0.32)
+    }
+  }
+  return 0
+}
+
+export function getOverlayState(idx, t) {
+  for (const o of idx.overlay) {
+    const et = o.time, dur = o.duration || 1.5
+    const ev = o.ev
+    if (t >= et && t < et + dur) {
+      const dt = t - et
+      const fadeIn = 0.4, fadeOut = 0.4
+      let opacity = ev.opacity || 1
+      if (dt < fadeIn) opacity *= dt / fadeIn
+      else if (dur - dt < fadeOut) opacity *= (dur - dt) / fadeOut
+      if (opacity < 0.005) continue
+      const ot = ev.overlay_type || ''
+      if (ot === 'color' && ev.color) return { type: 'color', color: ev.color, opacity }
+      if (ot === 'gradient' && ev.colors) return { type: 'gradient', colors: ev.colors, shape: ev.shape || 'linear', opacity }
+    }
+  }
+  return null
+}
+
+export function introBlackAt(t) {
+  return t < 0.5 ? 1 - E.sineOut(t / 0.5) : 0
+}
+
+function getStutterVideo(idx, t) {
+  for (const st of idx.stutter) {
+    const et = st.time, off = st.ev.intensity || 12
+    if (t >= et && t < et + 0.12) return (t - et) < 0.06 ? { x: -off, y: off } : { x: off, y: -off }
+  }
+  return null
+}
+
+function getSplitVideo(idx, t) {
+  for (const sp of idx.split) {
+    const et = sp.time, inten = sp.ev.intensity || 30
+    if (t >= et && t < et + 0.12) {
+      return (t - et) < 0.06 ? { scale: 0.95, skewX: -inten, x: -inten * 0.3 } : { scale: 1, skewX: 0, x: 0 }
+    }
+  }
+  return null
+}
+
+function getZoomBounce(idx, t, curZoom) {
+  for (const zb of idx.zoom_bounce) {
+    if (t >= zb.time && t < zb.time + 0.3) return (t - zb.time) < 0.08 ? curZoom * 1.1 : curZoom
+  }
+  return curZoom
+}
+
+function getPulse(idx, t, curZoom) {
+  for (const p of idx.pulse) {
+    if (t >= p.time && t < p.time + 0.48) {
+      const dt = t - p.time
+      if (dt < 0.12) return curZoom * 1.06
+      if (dt < 0.28) return curZoom * 0.97
+      return curZoom
+    }
+  }
+  return curZoom
+}
+
+export function getHueShiftFlash(idx, t) {
+  for (const h of idx.hue_shift) {
+    const et = h.time, color = h.ev.color || '#ff0040'
+    if (t >= et && t < et + 0.95) {
+      const dt = t - et
+      if (dt < 0.15) return { opacity: 0.25 * (dt / 0.15), color }
+      return { opacity: 0.25 * (1 - (dt - 0.15) / 0.8), color }
+    }
+  }
+  return null
+}
+
+export function getNoiseOpacity(idx, t) {
+  for (const n of idx.noise) {
+    const et = n.time
+    if (t >= et && t < et + 0.8) {
+      const dt = t - et
+      if (dt < 0.08) return 0.08 * (dt / 0.08)
+      return 0.08 * (1 - (dt - 0.08) / 0.72)
+    }
+  }
+  return 0
+}
+
+export function getVignette(idx, t) {
+  for (const v of idx.vignette) {
+    const dur = transientDur(v.ev, 0.4)
+    if (t >= v.time && t < v.time + dur) {
+      const dt = t - v.time
+      if (dt < dur * 0.4) return 1
+      return Math.max(0, 1 - (dt - dur * 0.4) / Math.min(0.3, dur * 0.6))
+    }
+  }
+  return 0
+}
+
+function getColorShift(idx, t) {
+  for (const c of idx.color_shift) {
+    const et = c.time
+    if (t >= et && t < et + 1.0) {
+      const dt = t - et
+      if (dt < 0.1) return 'sepia(0.6) saturate(1.4)'
+      const p = (dt - 0.1) / 0.6
+      return 'sepia(' + 0.6 * (1 - p) + ') saturate(' + (1.4 - 0.4 * p) + ')'
+    }
+  }
+  return ''
+}
+
+// ---- 字幕：fade in/out + 高亮分段 ----
+export function subsAt(idx, t) {
+  const out = []
+  for (const s of idx.subs) {
+    if (t < s.start || t >= s.end) continue
+    let opacity = 1, yOff = 0
+    const fadeIn = 0.35, fadeOut = 0.18
+    if (t - s.start < fadeIn) {
+      opacity = E.pow2Out((t - s.start) / fadeIn)
+      yOff = 20 * (1 - opacity)
+    } else if (s.end - t < fadeOut) {
+      const p = (s.end - t) / fadeOut
+      opacity = E.pow2In(p)
+      yOff = -8 * (1 - p)
+    }
+    // 事件联动脉冲（scale 1.25 / y −20）
+    const pulse = subPulse(idx, t, s)
+    const html = s.html || s.text || ''
+    const parts = []
+    const re = /<span class="hl">([^<]+)<\/span>|[^<]+/g
+    let m
+    while ((m = re.exec(html)) !== null) {
+      if (m[1]) parts.push({ text: m[1], hl: true })
+      else if (m[0].trim()) parts.push({ text: m[0], hl: false })
+    }
+    if (!parts.length) parts.push({ text: s.text || '', hl: false })
+    out.push({ parts, opacity, yOff: yOff + pulse.yOff, scale: pulse.scale })
+  }
+  return out
+}
+
+function subPulse(idx, t, sub) {
+  // 与模板一致：事件落在字幕区间内时，该字幕 scale 1.25 / y −20 强调后 0.35s 回落
+  for (const seg of idx.segs || []) {
+    for (const ev of seg.events || []) {
+      const et = ev.time || 0
+      if (et < sub.start || et >= sub.end) continue
+      if (t < et || t >= et + 0.47) continue
+      if (t < et + 0.12) {
+        const p = (t - et) / 0.12
+        return { scale: 1 + 0.25 * p, yOff: -20 * p }
+      }
+      const p = (t - et - 0.12) / 0.35
+      const k = E.sineInOut(1 - p)
+      return { scale: 1 + 0.25 * k, yOff: -20 * k }
+    }
+  }
+  return { scale: 1, yOff: 0 }
+}
+
+// ---- 弹幕滚动 ----
+export function danmakuAt(idx, t) {
+  const out = []
+  for (let i = 0; i < idx.dms.length; i++) {
+    const d = idx.dms[i]
+    if (t < d.start || t >= d.end) continue
+    const travel = d.travel_duration || 8
+    const textW = idx.dmWidths[i] || (d.text || '').length * 55
+    const el = t - d.start
+    const fadeIn = 0.3, fadeOut = 0.2
+    const y = (d.y / 1920) * 540
+    const progress = Math.max(0, (el - fadeIn) / travel)
+    let x = 1920 - Math.min(progress, 1) * (1920 + textW)
+    let opacity = 0.9
+    if (el < fadeIn) {
+      opacity = 0.9 * (el / fadeIn)
+      x = 1920
+    } else if (t > d.end - fadeOut) {
+      opacity = 0.9 * Math.max(0, (d.end - t) / fadeOut)
+    }
+    if (opacity < 0.005 || x < -textW - 50) continue
+    out.push({ text: d.text || '', opacity, x, y })
+  }
+  return out
+}
+
+// ---- 贴纸四阶段：popIn back.out(3) / floatUp / hold / fadeOut ----
+export function stickersAt(idx, t) {
+  const out = []
+  for (const e of idx.sticker) {
+    const et = e.time, dur = e.duration || 2.5
+    if (t < et || t > et + dur + 0.65) continue
+    const popIn = 0.35, floatUp = 0.4, fadeOut = 0.3
+    let opacity = 0, scale = 1, rot = 0, yOff = 0
+    if (t - et < popIn) {
+      const p = (t - et) / popIn
+      const bp = E.backOut(p, 3)
+      scale = 0.3 + 0.7 * bp
+      rot = -15 + 15 * bp
+      opacity = E.pow2Out(p)
+    } else if (t < et + popIn + floatUp) {
+      const p = (t - et - popIn) / floatUp
+      opacity = 1; scale = 1; rot = 0
+      yOff = -18 * p
+    } else if (t < et + popIn + floatUp + dur) {
+      opacity = 1; yOff = -18
+    } else {
+      const p = (t - et - popIn - floatUp - dur) / fadeOut
+      opacity = 1 - p
+      scale = 1 - 0.6 * p
+      yOff = -18
+    }
+    if (opacity < 0.005) continue
+
+    // 位置：事件 x/y 百分比 → 1920×1080 像素（280 盒子的左上角，与模板 DOM/canvas 出片一致）；
+    // 竖屏按 vertical_position 覆盖/左右交替
+    let xPct = e.xOverride != null ? e.xOverride : parseFloat(e.ev.x)
+    let yPct = parseFloat(e.ev.y)
+    if (!Number.isFinite(xPct)) xPct = 50
+    if (!Number.isFinite(yPct)) yPct = 50
+    out.push({
+      key: e.ev.name || e.ev.keyword || '',
+      name: e.ev.name || e.ev.keyword || '',
+      src: e.src, isEmoji: e.isEmoji, emoji: e.emoji,
+      opacity, scale, rot,
+      x: pctPx(xPct, 1920), y: pctPx(yPct, 1080) + yOff, w: 280, h: 280,
+    })
+  }
+  return out
+}

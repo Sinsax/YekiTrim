@@ -1,4 +1,5 @@
 :root {
+  /* 底色 / 文字 */
   --bg: #FFF7F3;
   --bg-soft: #FFEFE7;
   --card: #fff;
@@ -7,23 +8,39 @@
   --ink: #4A3F45;
   --ink-dim: #9C8B92;
   --ink-faint: #C9B8BE;
+
+  /* 品牌粉 */
   --main: #F682B8;
   --main-deep: #EE6FA6;
   --main-soft: #FDE3EC;
   --main-glow: #FFD3E1;
+  --pink-light: #FBB9D4;
+  --pink-text: #D8669B;
+
+  /* 语义色（soft 作底 / 本色作块 / deep 作文字） */
   --blue: #7FA8F0;
+  --blue-deep: #5E7FD8;
   --blue-soft: #E8EEFC;
   --mint: #59C0AC;
   --mint-soft: #E2F6F1;
   --amber: #F2B23E;
+  --amber-deep: #B97A14;
   --amber-soft: #FCF0D9;
   --green: #4FBF9C;
+  --green-deep: #2FA07E;
   --green-soft: #DEF2EA;
   --red: #E8727E;
+  --red-deep: #D9566A;
   --red-soft: #FBE3E5;
+
+  /* 圆角阶梯：小(输入框/行内) / 中(卡片) / 全圆(按钮/chip) */
+  --r-sm: 10px;
   --r: 16px;
+  --r-full: 999px;
+
   --shadow: 0 8px 26px rgba(238,111,166,.10), 0 2px 6px rgba(90,60,70,.04);
   --shadow-hover: 0 12px 34px rgba(238,111,166,.18), 0 3px 8px rgba(90,60,70,.05);
+  --shadow-pink: 0 4px 14px rgba(238,111,166,.4);
   --font: 'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
   --mono: 'Consolas','Courier New',monospace;
 }

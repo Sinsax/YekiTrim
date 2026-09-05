@@ -1,35 +1,29 @@
 <template>
   <div>
     <div class="card">
-      <h2>项目信息</h2>
-      <div class="row small muted">当前 Stage {{ status.current_stage }}</div>
-      <div class="steps">
-        <template v-for="i in 4" :key="i">
-          <span class="dot" :class="i < status.current_stage ? 'done' : i === status.current_stage ? 'now' : 'wait'">{{ i < status.current_stage ? '✓' : i }}</span>
-          <span v-if="i < 4" class="sl" :class="i < status.current_stage ? 'on' : ''"></span>
-        </template>
+      <div class="row spread">
+        <h2 class="m-0">项目信息</h2>
+        <span class="chip" :class="status.current_stage >= 4 ? 'g' : status.current_stage > 0 ? 'p' : 'n'">Stage {{ status.current_stage }}</span>
       </div>
-      <div class="row" style="margin-top:10px">
+      <Steps :stage="status.current_stage || 0" size="large" />
+      <div class="row mt-10">
         <button class="mini-btn" @click="run('extract')">提取</button>
         <button class="mini-btn" @click="run('transcribe')">转写</button>
         <button class="mini-btn" @click="run('detect')">检测</button>
         <button class="mini-btn" @click="run('cut')">剪切</button>
+        <button class="btn btn-primary" @click="run('process')">全流程</button>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card mt-16">
       <h2>产物</h2>
-      <div v-if="!status.files?.length" class="muted">暂无产物</div>
-      <div v-for="f in status.files" :key="f" class="mono small">{{ f }}</div>
+      <div v-if="!status.files?.length" class="empty small">暂无产物</div>
+      <div v-for="f in status.files" :key="f" class="mono small file-line">{{ f }}</div>
     </div>
 
-    <div class="card">
+    <div class="card mt-16">
       <h2>运行任务</h2>
-      <div v-if="!jobs.length" class="muted">暂无任务</div>
-      <div v-for="j in jobs" :key="j.id" style="padding:7px 0;border-bottom:1px dashed var(--line-soft)">
-        <div class="row spread"><b>{{ j.kind }}</b><span class="chip" :class="j.status === 'failed' ? 'r' : j.status === 'running' ? 'b' : 'g'">{{ j.status }}</span></div>
-        <div class="small muted">{{ j.message }}</div>
-      </div>
+      <JobList />
     </div>
   </div>
 </template>
@@ -38,13 +32,13 @@
 import { ref, onMounted } from 'vue'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
+import Steps from '../components/Steps.vue'
+import JobList from '../components/JobList.vue'
 
 const status = ref({})
-const jobs = ref([])
 
 async function load() {
-  try { status.value = await api('/api/project/status') } catch (e) {}
-  try { jobs.value = await api('/api/jobs') } catch (e) { jobs.value = [] }
+  try { status.value = await api('/api/project/status') } catch {}
 }
 
 async function run(stage) {
@@ -52,18 +46,12 @@ async function run(stage) {
     await api('/api/pipeline/stage', { method: 'POST', body: JSON.stringify({ stage, resume: 'auto' }) })
     toast('已启动 ' + stage)
     load()
-  } catch (e) { toast(e.message) }
+  } catch (e) { toast(e.message, 'err') }
 }
 
 onMounted(load)
 </script>
 
 <style scoped>
-.steps { display:flex; align-items:center; gap:4px; margin:10px 0 4px; }
-.dot { width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; }
-.dot.done { background:var(--green-soft); color:var(--green); }
-.dot.now { background:var(--main); color:#fff; box-shadow:0 0 0 3px var(--main-soft); }
-.dot.wait { background:var(--card); border:2px dashed var(--ink-faint); color:var(--ink-faint); }
-.sl { flex:1; height:5px; border-radius:3px; background:var(--line-soft); }
-.sl.on { background:var(--main-glow); }
+.file-line { padding:3px 0; border-bottom:1px dashed var(--line-soft); }
 </style>

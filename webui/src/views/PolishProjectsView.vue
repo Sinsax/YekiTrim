@@ -1,78 +1,115 @@
 <template>
   <div>
     <div class="page-head">
-      <div><h1>精修</h1><div class="sub">polish 项目列表</div></div>
+      <div><h1>切片</h1></div>
     </div>
-    <div class="grid cols-3">
-      <div v-for="p in projects" :key="p.dir" class="pcard">
-        <div class="head">
-          <div class="sticker pink">✨</div>
-          <div>
-            <h3>{{ p.title || p.dir }}</h3>
-            <div class="path">{{ p.dir }}</div>
-          </div>
-        </div>
-        <div class="chips">
-          <span class="chip" :class="p.processed ? 'g' : 'n'">{{ p.processed ? '已 process' : '未 process' }}</span>
-          <span class="chip" :class="p.rendered ? 'g' : 'n'">{{ p.rendered ? '已渲染' : '未渲染' }}</span>
-          <span class="chip" :class="p.cover ? 'g' : 'n'">{{ p.cover ? '有封面' : '无封面' }}</span>
-        </div>
-        <div class="foot">
-          <button class="mini-btn" @click="run('init', p)">init</button>
-          <button class="mini-btn" @click="preview(p)">精修预览</button>
-          <button class="mini-btn" @click="run('llm', p)">LLM</button>
-          <button class="mini-btn" @click="run('render', p)">渲染</button>
-          <button class="mini-btn" @click="run('cover', p)">封面</button>
-          <button class="mini-btn" @click="openEditor(p)">编辑器</button>
-        </div>
+
+    <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
+
+    <div v-if="loading" class="grid cols-3">
+      <div v-for="i in 6" :key="'sk' + i" class="skeleton"></div>
+    </div>
+
+    <div v-else-if="!projects.length" class="empty">
+      <div class="empty-icon"><Icon name="sparkles" :size="24" /></div>
+      暂无项目
+    </div>
+
+    <div v-for="(proj, gi) in projects" :key="proj.config_file" class="project-group">
+      <div class="group-header" @click="toggleGroup(gi)">
+        <span class="group-name">{{ proj.name || proj.dir }}</span>
+        <span class="muted small mono">{{ proj.dir }}</span>
+        <span class="muted small">{{ projectDataFor(proj).clips.length }} 个片段</span>
+        <span class="row">
+          <button class="mini-btn">{{ isExpanded(gi) ? '收起' : '展开' }}</button>
+        </span>
       </div>
-      <div v-if="!projects.length" class="card muted">暂无精修项目</div>
+
+      <div v-show="isExpanded(gi)" class="project-clips-scroll">
+        <ProjectClipsSection :ref="el => setSectionRef(gi, el)" :project="proj" :project-data="projectDataFor(proj)" />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { api } from '../api/client'
-import { toast } from '../stores/toast'
+import Icon from '../components/Icon.vue'
+import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
 const projects = ref([])
-const router = useRouter()
+const projectData = ref({})
+const emptyData = { events: [], clips: [], polishMap: {} }
+const loading = ref(false)
+const loadError = ref('')
+const expanded = ref({})
+const sectionRefs = ref({})
+
+function setSectionRef(gi, el) {
+  if (el) sectionRefs.value[gi] = el
+}
+
+function projectDataFor(proj) {
+  return projectData.value[proj.config_file] || emptyData
+}
+
+function triggerRedetect(gi) {
+  sectionRefs.value[gi]?.redetect()
+}
+
+function triggerAdd(gi) {
+  sectionRefs.value[gi]?.openAdd()
+}
+
+function isExpanded(gi) {
+  return expanded.value[gi] !== false
+}
+
+function toggleGroup(gi) {
+  expanded.value[gi] = !isExpanded(gi)
+}
 
 async function load() {
+  loading.value = true
+  loadError.value = ''
+  projects.value = []
+  projectData.value = {}
+  expanded.value = {}
   try {
-    projects.value = await api('/api/polish/projects')
+    const d = await api('/api/project/list')
+    const list = (d.projects || []).slice().sort((a, b) => (b.mtime_ms || 0) - (a.mtime_ms || 0))
+    projects.value = list
+    for (const proj of list) {
+      try {
+        const cfgQ = encodeURIComponent(proj.config_file)
+        const ev = await api(`/api/project-data/events?config=${cfgQ}`).catch(() => ({ events: [] }))
+        const cl = await api(`/api/project-data/clips?config=${cfgQ}`).catch(() => [])
+        const pl = await api(`/api/project-data/polish?config=${cfgQ}`).catch(() => [])
+        const m = {}
+        ;(pl || []).forEach(p => { m[p.dir] = p })
+        projectData.value[proj.config_file] = {
+          events: (ev && ev.events) || [],
+          clips: cl || [],
+          polishMap: m
+        }
+      } catch (e) {
+        loadError.value = `项目 ${proj.name || proj.id} 数据加载失败: ${e.message}`
+      }
+    }
   } catch (e) {
-    projects.value = []
+    loadError.value = '项目加载失败：' + e.message
+  } finally {
+    loading.value = false
   }
-}
-
-async function run(kind, p) {
-  try {
-    await api('/api/polish/' + kind, { method: 'POST', body: JSON.stringify({ dir: p.dir }) })
-    toast('已启动 ' + kind)
-    load()
-  } catch (e) { toast(e.message) }
-}
-
-async function preview(p) {
-  try {
-    const r = await api('/api/polish/preview', { method: 'POST', body: JSON.stringify({ dir: p.dir }) })
-    const url = r.video_url || r.cover_url
-    if (url) window.open(url, '_blank')
-    else toast('预览返回空')
-  } catch (e) { toast(e.message) }
-}
-
-async function openEditor(p) {
-  let cfg = ''
-  try {
-    const st = await api('/api/project/status')
-    cfg = st.config_file || ''
-  } catch (e) {}
-  router.push(`/project/${encodeURIComponent(cfg)}/polish?dir=${encodeURIComponent(p.dir)}`)
 }
 
 onMounted(load)
 </script>
+
+<style scoped>
+.project-group { border:1px solid var(--line); border-radius:var(--r); margin-bottom:20px; background:var(--card); overflow:hidden; }
+.group-header { display:flex; align-items:center; gap:12px; padding:12px 16px; cursor:pointer; background:var(--bg-soft); border-bottom:1px solid var(--line); }
+.group-name { font-weight:700; font-size:15px; }
+.project-clips-scroll { max-height:70vh; overflow-y:auto; padding:14px; }
+</style>

@@ -1,0 +1,80 @@
+<template>
+  <div class="sub-list" :style="{ maxHeight: height }">
+    <div v-if="!segments.length" class="muted small sub-empty">暂无字幕</div>
+    <div v-for="(seg, i) in segments" :key="i" class="sub-row" @click="emit('play', seg)">
+      <textarea v-model="seg.text" rows="1" class="sub-input" @click.stop></textarea>
+      <div class="sub-meta" :class="{ 'has-end': showEnd }">
+        <span class="time-cell" :title="editableTime ? '点击编辑开始时间' : ''" @click.stop="startEdit(i, 'start')">
+          <input v-if="editing && editing.i === i && editing.k === 'start'" ref="editInput" v-model="draft"
+                 class="time-input" type="number" step="0.1" @click.stop
+                 @keyup.enter="commit(i, 'start')" @blur="commit(i, 'start')">
+          <span v-else class="time">{{ fmtClock(seg.start) }}</span>
+        </span>
+        <span v-if="showEnd" class="time-cell end" title="点击编辑结束时间" @click.stop="startEdit(i, 'end')">
+          <input v-if="editing && editing.i === i && editing.k === 'end'" ref="editInput" v-model="draft"
+                 class="time-input" type="number" step="0.1" @click.stop
+                 @keyup.enter="commit(i, 'end')" @blur="commit(i, 'end')">
+          <span v-else class="time">{{ fmtClock(seg.end) }}</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, nextTick } from 'vue'
+import { fmtClock } from '../utils'
+
+const props = defineProps({
+  segments: { type: Array, default: () => [] },
+  height: { type: String, default: '55vh' },
+  // 扩展能力（精修编辑器用；项目字幕页不传则保持原行为）
+  showEnd: { type: Boolean, default: false },      // 时间行右下角显示结束时间
+  editableTime: { type: Boolean, default: false }  // 点击开始/结束时间可编辑（秒）
+})
+const emit = defineEmits(['play'])
+
+const editing = ref(null) // { i, k }
+const draft = ref('')
+const editInput = ref(null)
+
+function startEdit(i, k) {
+  if (!props.editableTime) return
+  const seg = props.segments[i]
+  if (!seg) return
+  editing.value = { i, k }
+  draft.value = String(Math.round((Number(seg[k]) || 0) * 100) / 100)
+  nextTick(() => {
+    const el = Array.isArray(editInput.value) ? editInput.value[0] : editInput.value
+    el && el.focus && el.focus()
+  })
+}
+
+function commit(i, k) {
+  if (!editing.value) return
+  const seg = props.segments[i]
+  if (seg) {
+    let n = Number(draft.value)
+    if (!Number.isFinite(n) || n < 0) n = 0
+    seg[k] = Math.round(n * 100) / 100
+  }
+  editing.value = null
+}
+</script>
+
+<style scoped>
+.sub-list { overflow-y:auto; border:1px solid var(--line); border-radius:var(--r-sm); padding:8px; }
+.sub-row { display:flex; flex-direction:column; gap:2px; padding:5px 6px; border-bottom:1px dashed var(--line-soft); cursor:pointer; transition:background .12s; }
+.sub-row:hover { background:var(--bg-soft); }
+.sub-row:last-child { border-bottom:none; }
+.sub-meta { display:flex; align-items:center; }
+.sub-meta.has-end { justify-content:space-between; }
+.time { font-size:10px; line-height:1.4; color:var(--ink-faint); }
+.time-cell { flex:none; cursor:default; }
+.time-cell.end { text-align:right; }
+.sub-meta.has-end .time-cell { cursor:pointer; }
+.sub-meta.has-end .time-cell:hover .time { color:var(--main-deep); }
+.time-input { width:76px; padding:1px 6px; font-size:11px; }
+.sub-input { width:100%; font-size:12px; resize:none; }
+.sub-empty { padding:8px 6px; }
+</style>
