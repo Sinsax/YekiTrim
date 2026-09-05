@@ -31,37 +31,33 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
-        .route("/config/vtrim", put(config_vtrim_put))
         .route("/config/global", put(config_global_put))
         .route("/config/llm", put(config_llm_put))
         .route("/llm/test", post(llm_test))
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
-        .route("/project/switch", post(project_switch))
         .route("/project/list", get(project_list))
-        .route("/project/workspace", post(project_workspace))
         .route("/project/delete", post(project_delete))
-        .route("/project/status", get(project_status))
-        .route("/project/detail", get(project_detail))
         .route("/project/init", post(project_init))
-        .route("/data/transcript", get(data_transcript).put(data_transcript_put))
-        .route("/data/heatmap", get(data_heatmap))
-        .route("/data/events", get(data_events).post(data_events_create).put(data_events_put))
-        .route("/data/clips", get(data_clips))
-        .route("/data/clips/:rank/silence", post(clip_silence))
-        .route("/data/events/:rank/cut", post(event_cut))
-        .route("/data/clips/:rank/thumb", get(clip_thumb))
+        .route("/project/open", post(project_open))
+        .route("/project-data/status", get(project_data_status))
+        .route("/project-data/events", get(project_data_events).post(project_data_events_create).put(project_data_events_put))
+        .route("/project-data/clips", get(project_data_clips))
+        .route("/project-data/clips/:rank/thumb", get(project_data_clip_thumb))
+        .route("/project-data/events/:rank/cut", post(project_data_event_cut))
+        .route("/project-data/clips/:rank/silence", post(project_data_clip_silence))
+        .route("/project-data/transcript", get(project_data_transcript).put(project_data_transcript_put))
+        .route("/project-data/correct", post(project_data_correct))
+        .route("/project-data/pipeline", post(project_data_pipeline))
+        .route("/project-data/config", get(project_data_config).put(project_data_config_put))
+        .route("/project-data/polish", get(project_data_polish))
         .route("/fs/list", post(fs_list))
-        .route("/pipeline/run", post(pipeline_run))
-        .route("/correct", post(correct_run))
-        .route("/pipeline/stage", post(pipeline_stage))
         .route("/stream", get(global_stream))
         .route("/jobs", get(jobs_list))
         .route("/jobs/:id", get(job_get))
         .route("/jobs/:id/events", get(job_events))
         .route("/jobs/:id/decision", post(job_decision))
         .route("/jobs/:id/cancel", post(job_cancel))
-        .route("/polish/projects", get(polish_projects))
         .route("/polish/init", post(polish_init))
         .route("/polish/llm", post(polish_llm))
         .route("/polish/process", post(polish_process))
@@ -73,6 +69,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/cover-frame", post(polish_cover_frame))
         .route("/polish/project", get(polish_project_get).put(polish_project_put))
         .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
+        .route("/polish/sticker-sources", get(polish_sticker_sources))
+        .route("/polish/render-frame", post(polish_render_frame))
         .route("/polish/select-version", post(polish_select_version))
         .route("/polish/cover-config", post(polish_cover_config))
         .route("/media/*path", get(media_get))
@@ -104,6 +102,39 @@ fn command_available(cmd: &str) -> Option<String> {
     Some(first)
 }
 
+fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
+    // 全局配置 [chrome] path 优先
+    let custom = cfg
+        .map(|c| c.chrome.path.trim())
+        .unwrap_or("")
+        .to_string();
+    if !custom.is_empty() {
+        return Path::new(&custom).exists()
+            || std::process::Command::new(&custom)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+    }
+    let candidates = [
+        "chrome",
+        "google-chrome",
+        "chromium",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ];
+    candidates.iter().any(|c| {
+        if Path::new(c).exists() {
+            return true;
+        }
+        std::process::Command::new(c)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
+}
+
 async fn health(State(state): State<Arc<AppState>>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
     let cfg = ws.load_config().ok();
@@ -113,6 +144,7 @@ async fn health(State(state): State<Arc<AppState>>) -> ApiResult {
         "version": env!("CARGO_PKG_VERSION"),
         "ffmpeg": command_available("ffmpeg"),
         "ffprobe": command_available("ffprobe"),
+        "chrome": chrome_available(cfg.as_ref()),
         "llm": llm,
         "workspace": ws.config_file.to_string_lossy(),
     }))
@@ -151,8 +183,7 @@ async fn models_get() -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+fn config_get_impl(ws: &Workspace) -> ApiResult {
     let vtrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
     let home = vtrim_core::path::vtrim_home();
     let global_path = home.join("config.toml");
@@ -160,6 +191,7 @@ async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
     let llm_path = home.join("llm.toml");
     let llm_raw = std::fs::read_to_string(&llm_path).unwrap_or_default();
     let cfg = ws.load_config().ok();
+    let llm_cfg = vtrim_core::config::load_llm_config();
     ok(serde_json::json!({
         "config_file": ws.config_file.to_string_lossy(),
         "root_dir": ws.root_dir.to_string_lossy(),
@@ -167,11 +199,21 @@ async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
         "global_raw": global_raw,
         "llm_raw": llm_raw,
         "config": cfg.map(|c| serde_json::to_value(c).unwrap_or_default()).unwrap_or(serde_json::Value::Null),
+        "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
     }))
+}
+
+async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    config_get_impl(&ws)
 }
 
 async fn config_vtrim_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
+    config_vtrim_put_impl(&ws, &body)
+}
+
+fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
     if let Some(parent) = ws.config_file.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
@@ -245,6 +287,40 @@ fn project_summary(ws: &Workspace) -> serde_json::Value {
     crate::service::project_summary(ws)
 }
 
+async fn find_workspace_by_id(state: &AppState, id: &str) -> Option<Workspace> {
+    let root = state.workspace_root().await;
+    let mut stack = vec![root];
+    for depth in 0..4 {
+        if stack.is_empty() { break; }
+        let mut next = vec![];
+        for dir in stack.drain(..) {
+            let cfg_file = dir.join("vtrim.toml");
+            if cfg_file.exists() {
+                if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
+                    let pid = project_summary(&ws)["id"].as_str().unwrap_or("").to_string();
+                    if pid == id || ws.root_dir.file_name().and_then(|s| s.to_str()).map(|s| s == id).unwrap_or(false) {
+                        return Some(ws);
+                    }
+                }
+            }
+            if depth < 3 {
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            let name = entry.file_name().to_string_lossy().to_lowercase();
+                            if name == "target" || name == ".git" || name == "node_modules" { continue; }
+                            next.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        stack = next;
+    }
+    None
+}
+
 async fn project_workspace(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let root = body.get("root").and_then(|v| v.as_str()).unwrap_or_default();
     if root.is_empty() {
@@ -264,39 +340,57 @@ async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<se
     let path = PathBuf::from(p);
     if path.exists() { std::fs::remove_file(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?; }
     else { return Err(err(StatusCode::NOT_FOUND, "配置文件不存在")); }
+    persist::forget_project(&path);
     ok(serde_json::json!({ "ok": true, "deleted": path.to_string_lossy() }))
 }
 
 async fn project_list(State(state): State<Arc<AppState>>) -> ApiResult {
     let root = state.workspace_root().await;
+    let saved = persist::load_state();
+    let paths = saved.as_ref().map(|s| s.projects.clone()).unwrap_or_default();
     let mut out = vec![];
-    let mut stack = vec![root.clone()];
-    // 限深 4 层扫描工作区内的 vtrim.toml，兼顾多项目工作区与当前仓库的 media/<project> 结构。
-    for depth in 0..4 {
-        if stack.is_empty() { break; }
-        let mut next = vec![];
-        for dir in stack.drain(..) {
-            let cfg_file = dir.join("vtrim.toml");
-            if cfg_file.exists() {
-                if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
-                    out.push(project_summary(&ws));
+
+    if paths.is_empty() {
+        // 首次启动兼容：扫描一次工作区根目录并写入 server.toml，后续不再依赖扫描
+        let mut stack = vec![root.clone()];
+        for depth in 0..4 {
+            if stack.is_empty() { break; }
+            let mut next = vec![];
+            for dir in stack.drain(..) {
+                let cfg_file = dir.join("vtrim.toml");
+                if cfg_file.exists() {
+                    if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
+                        out.push(project_summary(&ws));
+                        persist::remember_project(&ws.config_file);
+                    }
                 }
-            }
-            if depth < 3 {
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            let name = entry.file_name().to_string_lossy().to_lowercase();
-                            if name == "target" || name == ".git" || name == "node_modules" { continue; }
-                            next.push(p);
+                if depth < 3 {
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                let name = entry.file_name().to_string_lossy().to_lowercase();
+                                if name == "target" || name == ".git" || name == "node_modules" { continue; }
+                                next.push(p);
+                            }
                         }
                     }
                 }
             }
+            stack = next;
         }
-        stack = next;
+    } else {
+        // 直接从 server.toml 读取项目 vtrim.toml 路径，支持任意目录
+        for cfg in paths {
+            let p = PathBuf::from(&cfg);
+            if p.exists() {
+                if let Ok(ws) = Workspace::load(Some(&p)) {
+                    out.push(project_summary(&ws));
+                }
+            }
+        }
     }
+
     out.sort_by(|a,b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
     ok(serde_json::json!({ "workspace_root": root.to_string_lossy(), "projects": out }))
 }
@@ -309,9 +403,13 @@ fn project_snapshot(ws: &Workspace) -> serde_json::Value {
     crate::service::project_snapshot(ws)
 }
 
+fn project_status_impl(ws: &Workspace) -> ApiResult {
+    ok(project_snapshot(ws))
+}
+
 async fn project_status(State(state): State<Arc<AppState>>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
-    ok(project_snapshot(&ws))
+    project_status_impl(&ws)
 }
 
 async fn project_detail(State(state): State<Arc<AppState>>) -> ApiResult {
@@ -342,12 +440,181 @@ async fn project_init(State(state): State<Arc<AppState>>, Json(body): Json<serde
         &config_path, &input_path, danmaku.as_deref(), output,
     ).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
     let ws = Workspace::load(Some(&config_path)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
-    state.set_workspace(ws.clone()).await;
+    persist::remember_project(&ws.config_file);
     ok(project_snapshot(&ws))
 }
 
-async fn data_transcript(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+async fn project_open(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let input = body.get("input").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let config_path = body.get("config_path").and_then(|v| v.as_str()).map(PathBuf::from).or_else(|| {
+        let p = Path::new(&input);
+        if p.is_absolute() {
+            p.parent().map(|d| d.join("vtrim.toml"))
+        } else {
+            None
+        }
+    });
+    let Some(cfg) = config_path.filter(|p| p.exists()) else {
+        return Err(err(StatusCode::NOT_FOUND, "未找到项目文件"));
+    };
+    let ws = Workspace::load(Some(&cfg)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
+    persist::remember_project(&ws.config_file);
+    ok(project_snapshot(&ws))
+}
+
+async fn project_by_id_status(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
+    let ws = find_workspace_by_id(&state, &id).await
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
+    project_status_impl(&ws)
+}
+
+async fn project_by_id_events(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
+    let ws = find_workspace_by_id(&state, &id).await
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
+    data_events_impl(&ws)
+}
+
+async fn project_by_id_clips(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
+    let ws = find_workspace_by_id(&state, &id).await
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
+    data_clips_impl(&ws)
+}
+
+async fn project_by_id_polish(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
+    let ws = find_workspace_by_id(&state, &id).await
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
+    polish_projects_impl(&ws)
+}
+
+fn workspace_from_config(config: &str) -> Result<Workspace, AppError> {
+    if config.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 config 参数"));
+    }
+    Workspace::load(Some(Path::new(config))).map_err(|e| err(StatusCode::BAD_REQUEST, format!("加载项目失败: {e:#}")))
+}
+
+async fn project_data_status(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    project_status_impl(&ws)
+}
+
+async fn project_data_events(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_events_impl(&ws)
+}
+
+async fn project_data_clips(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_clips_impl(&ws)
+}
+
+async fn project_data_clip_thumb(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> Response {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let Ok(ws) = workspace_from_config(&config) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
+    let video = clip_dir.join("clip.mp4");
+    let thumb = clip_dir.join("_thumb.jpg");
+    if !thumb.exists() && video.exists() {
+        let _ = std::process::Command::new("ffmpeg")
+            .args(["-ss","1","-i", &video.to_string_lossy(), "-vframes","1","-q:v","4","-y", &thumb.to_string_lossy()])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    }
+    match tokio::fs::read(&thumb).await {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn project_data_polish(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    polish_projects_impl(&ws)
+}
+
+async fn project_data_transcript(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_transcript_impl(&ws)
+}
+
+async fn project_data_transcript_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_transcript_put_impl(&ws, &body)
+}
+
+async fn project_data_events_create(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_events_create_impl(&ws, &body)
+}
+
+async fn project_data_events_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    data_events_put_impl(&ws, &body)
+}
+
+async fn project_data_event_cut(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    event_cut_impl(&ws, &rank, &state.jobs).await
+}
+
+async fn project_data_clip_silence(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    clip_silence_impl(&ws, &rank, &state.jobs).await
+}
+
+async fn project_data_correct(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    correct_run_impl(&ws, &state.jobs).await
+}
+
+async fn project_data_pipeline(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let config = body.get("config").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let ws = workspace_from_config(&config)?;
+    if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
+        let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
+        let stages = match stage {
+            "extract" => vec!["extract"],
+            "transcribe" => vec!["transcribe"],
+            "detect" => vec!["detect"],
+            "cut" => vec!["cut"],
+            "process" => vec!["extract","transcribe","detect","cut"],
+            _ => return Err(err(StatusCode::BAD_REQUEST, "未知 stage")),
+        }.into_iter().map(|s| s.to_string()).collect();
+        run_pipeline_job(&state.jobs, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
+    } else {
+        let stages = body.get("stages").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
+        }).unwrap_or_else(|| vec!["extract".into(),"transcribe".into(),"detect".into(),"cut".into()]);
+        let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
+        run_pipeline_job(&state.jobs, ws.config_file.clone(), "pipeline", stages, dry, resume).await
+    }
+}
+
+async fn project_data_config(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    config_get_impl(&ws)
+}
+
+async fn project_data_config_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    config_vtrim_put_impl(&ws, &body)
+}
+
+fn data_transcript_impl(ws: &Workspace) -> ApiResult {
     let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     let output = ws.output_dir();
     let path = cfg.project.transcript_file.as_ref().filter(|s| !s.is_empty()).map(PathBuf::from).filter(|p| p.exists())
@@ -371,8 +638,12 @@ async fn data_transcript(State(state): State<Arc<AppState>>) -> ApiResult {
     }
 }
 
-async fn data_transcript_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn data_transcript(State(state): State<Arc<AppState>>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
+    data_transcript_impl(&ws)
+}
+
+fn data_transcript_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let output = ws.output_dir();
     let json_path = output.join("transcript.json");
     let srt_path = output.join("video.srt");
@@ -383,6 +654,11 @@ async fn data_transcript_put(State(state): State<Arc<AppState>>, Json(body): Jso
     std::fs::write(&json_path, serde_json::to_string_pretty(&transcript).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
     vtrim_core::srt::write_srt(&transcript, &srt_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写 SRT 失败: {e}")))?;
     ok(serde_json::json!({ "ok": true, "saved": transcript.segments.len() }))
+}
+
+async fn data_transcript_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    data_transcript_put_impl(&ws, &body)
 }
 
 async fn data_heatmap(State(state): State<Arc<AppState>>) -> ApiResult {
@@ -403,8 +679,7 @@ async fn data_heatmap(State(state): State<Arc<AppState>>) -> ApiResult {
     Err(err(StatusCode::NOT_FOUND, "无弹幕文件或数据"))
 }
 
-async fn data_events(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+fn data_events_impl(ws: &Workspace) -> ApiResult {
     let path = ws.output_dir().join("events.json");
     if !path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -423,6 +698,11 @@ async fn data_events(State(state): State<Arc<AppState>>) -> ApiResult {
         }
     }
     ok(v)
+}
+
+async fn data_events(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    data_events_impl(&ws)
 }
 
 fn ev_time_secs(v: &serde_json::Value, key: &str) -> f64 {
@@ -444,8 +724,7 @@ fn sec_to_ts_value(sec: f64) -> serde_json::Value {
     serde_json::json!({ "h": h, "m": m, "s": s, "ms": ms })
 }
 
-async fn data_events_create(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let path = ws.output_dir().join("events.json");
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -502,11 +781,15 @@ async fn data_events_create(State(state): State<Arc<AppState>>, Json(body): Json
     ok(serde_json::json!({ "ok": true, "event": event }))
 }
 
-async fn data_events_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn data_events_create(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
+    data_events_create_impl(&ws, &body)
+}
+
+fn data_events_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let path = ws.output_dir().join("events.json");
     if !path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
-    let events = body.get("events").cloned().unwrap_or(body);
+    let events = body.get("events").cloned().unwrap_or_else(|| body.clone());
     let raw = std::fs::read_to_string(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let mut store: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({ "events": [] }));
     let mut titles = serde_json::Map::new();
@@ -532,8 +815,12 @@ async fn data_events_put(State(state): State<Arc<AppState>>, Json(body): Json<se
     ok(serde_json::json!({ "ok": true }))
 }
 
-async fn data_clips(State(state): State<Arc<AppState>>) -> ApiResult {
+async fn data_events_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
+    data_events_put_impl(&ws, &body)
+}
+
+fn data_clips_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     if !clips.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 clips")); }
     let mut out = vec![];
@@ -568,6 +855,11 @@ async fn data_clips(State(state): State<Arc<AppState>>) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
+async fn data_clips(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    data_clips_impl(&ws)
+}
+
 async fn clip_thumb(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> Response {
     let ws = state.workspace().await;
     let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
@@ -584,28 +876,31 @@ async fn clip_thumb(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath
     }
 }
 
-async fn clip_silence(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+async fn clip_silence_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
     let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
     let video = clip_dir.join("clip.mp4");
     if !video.exists() { return Err(err(StatusCode::NOT_FOUND, "clip.mp4 不存在")); }
-    let id = state.jobs.create("silence").await;
-    state.jobs.mark_running(&id, format!("静音压缩 clip-{}", rank)).await;
-    let jobs = state.jobs.clone();
+    let id = jobs.create("silence").await;
+    jobs.mark_running(&id, format!("静音压缩 clip-{}", rank)).await;
+    let jobs_handle = jobs.clone();
     let job_id = id.clone();
     let out = clip_dir.join(format!("clip_{}_cleaned.mp4", rank));
     tokio::spawn(async move {
         let result = vtrim_core::cutting::remove_silence(&video, &out, 2.0, None, -30.0);
         match result {
-            Ok(_) => jobs.complete(&job_id).await,
-            Err(e) => jobs.fail(&job_id, format!("{e:#}")).await,
+            Ok(_) => jobs_handle.complete(&job_id).await,
+            Err(e) => jobs_handle.fail(&job_id, format!("{e:#}")).await,
         }
     });
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn event_cut(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let ws = state.workspace().await;
+async fn clip_silence(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    clip_silence_impl(&ws, &rank, &state.jobs).await
+}
+
+async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -614,9 +909,9 @@ async fn event_cut(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<
     let event: serde_json::Value = store.get("events").and_then(|a| a.as_array()).and_then(|arr| arr.iter().find(|e| e.get("rank").and_then(|r| r.as_u64()).unwrap_or(0) as u32 == rank_u).cloned())
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "事件不存在"))?;
     let ev: vtrim_core::types::Event = serde_json::from_value(event).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("事件解析失败: {e}")))?;
-    let id = state.jobs.create("cut_one").await;
-    state.jobs.mark_running(&id, format!("剪切事件 #{}", rank)).await;
-    let jobs = state.jobs.clone(); let cfg_file = ws.config_file.clone(); let job_id=id.clone();
+    let id = jobs.create("cut_one").await;
+    jobs.mark_running(&id, format!("剪切事件 #{}", rank)).await;
+    let jobs_handle = jobs.clone(); let cfg_file = ws.config_file.clone(); let job_id=id.clone();
     tokio::spawn(async move {
         let result = (async || -> anyhow::Result<()> {
             let cfg = vtrim_core::config::load_config_at(&cfg_file)?;
@@ -629,9 +924,14 @@ async fn event_cut(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<
             r.add_stage(Box::new(vtrim_core::cutting::Cutter));
             r.run(&mut ctx).await
         })().await;
-        match result { Ok(_)=>jobs.complete(&job_id).await, Err(e)=>jobs.fail(&job_id, format!("{e:#}")).await }
+        match result { Ok(_)=>jobs_handle.complete(&job_id).await, Err(e)=>jobs_handle.fail(&job_id, format!("{e:#}")).await }
     });
     ok(serde_json::json!({ "ok": true, "id": id }))
+}
+
+async fn event_cut(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    let ws = state.workspace().await;
+    event_cut_impl(&ws, &rank, &state.jobs).await
 }
 
 async fn fs_list(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -745,17 +1045,16 @@ async fn media_get(
 // ===================== Pipeline =====================
 
 async fn run_pipeline_job(
-    state: &AppState,
+    jobs: &Arc<super::jobs::JobManager>,
+    config_file: std::path::PathBuf,
     kind: &str,
     stages: Vec<String>,
     dry_run: bool,
     resume: bool,
 ) -> ApiResult {
-    let id = state.jobs.create(kind).await;
-    state.jobs.mark_running(&id, "准备中").await;
-    let ws = state.workspace().await;
-    let jobs = state.jobs.clone();
-    let config_file = ws.config_file.clone();
+    let id = jobs.create(kind).await;
+    jobs.mark_running(&id, "准备中").await;
+    let jobs = jobs.clone();
     let run_stages = stages.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -775,7 +1074,8 @@ async fn pipeline_run(State(state): State<Arc<AppState>>, Json(body): Json<serde
     }).unwrap_or_else(|| vec!["extract".into(),"transcribe".into(),"detect".into(),"cut".into()]);
     let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
     let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-    run_pipeline_job(&state, "pipeline", stages, dry, resume).await
+    let ws = state.workspace().await;
+    run_pipeline_job(&state.jobs, ws.config_file.clone(), "pipeline", stages, dry, resume).await
 }
 
 async fn pipeline_stage(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -789,25 +1089,30 @@ async fn pipeline_stage(State(state): State<Arc<AppState>>, Json(body): Json<ser
         "process" => vec!["extract","transcribe","detect","cut"],
         _ => return Err(err(StatusCode::BAD_REQUEST, "未知 stage")),
     }.into_iter().map(|s| s.to_string()).collect();
-    run_pipeline_job(&state, &format!("stage_{}", stage), stages, false, resume).await
+    let ws = state.workspace().await;
+    run_pipeline_job(&state.jobs, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
 }
 
-async fn correct_run(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = state.workspace().await;
-    let id = state.jobs.create("correct").await;
-    state.jobs.mark_running(&id, "LLM 订正运行中").await;
-    let jobs = state.jobs.clone();
+async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
+    let id = jobs.create("correct").await;
+    jobs.mark_running(&id, "LLM 订正运行中").await;
+    let jobs_handle = jobs.clone();
     let cfg_file = ws.config_file.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
         let result = crate::service::run_correct(&cfg_file, None, true).await;
         if let Err(e) = result {
-            jobs.fail(&job_id, format!("{e:#}")).await;
+            jobs_handle.fail(&job_id, format!("{e:#}")).await;
         } else {
-            jobs.complete(&job_id).await;
+            jobs_handle.complete(&job_id).await;
         }
     });
     ok(serde_json::json!({ "ok": true, "id": id }))
+}
+
+async fn correct_run(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = state.workspace().await;
+    correct_run_impl(&ws, &state.jobs).await
 }
 
 async fn jobs_list(State(state): State<Arc<AppState>>) -> ApiResult {
@@ -866,8 +1171,7 @@ async fn job_cancel(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<S
 
 // ===================== Polish =====================
 
-async fn polish_projects(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     let mut out = vec![];
     if clips.exists() {
@@ -905,9 +1209,18 @@ async fn polish_projects(State(state): State<Arc<AppState>>) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
+async fn polish_projects(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    polish_projects_impl(&ws)
+}
+
 async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
     let id = state.jobs.create(format!("polish_{}", kind)).await;
-    state.jobs.mark_running(&id, format!("polish {} 运行中", kind)).await;
+    let dir_name = Path::new(&dir)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.clone());
+    state.jobs.mark_running(&id, format!("polish {kind} · {dir_name}")).await;
     let jobs = state.jobs.clone();
     let path = PathBuf::from(dir);
     let job_id = id.clone();
@@ -916,9 +1229,35 @@ async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
         let result = async {
             match kind.as_str() {
                 "init" => vtrim_polish::commands::cmd_init(&path).await,
-                "llm" => vtrim_polish::commands::cmd_llm(&path).await,
+                // LLM 是显式步骤，process 隐式：完成后同一 job 内自动执行后处理
+                "llm" => {
+                    jobs.log(&job_id, "info", "LLM 生成中…").await;
+                    vtrim_polish::commands::cmd_llm(&path).await?;
+                    jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
+                    vtrim_polish::process::cmd_process(&path).await
+                }
                 "process" => vtrim_polish::process::cmd_process(&path).await,
-                "render" => vtrim_polish::render::cmd_render(&path).await,
+                "render" => {
+                    // 使用外部 CLI 子进程渲染，避免在 WebUI 服务进程内启动 headless Chrome 时超时
+                    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("vtrim"));
+                    let dir_str = path.to_string_lossy().into_owned();
+                    let output = tokio::process::Command::new(&exe)
+                        .args(["polish", "render", &dir_str])
+                        .output()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("渲染进程启动失败: {e}"))?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let tail = if !stderr.trim().is_empty() {
+                            stderr.lines().rev().take(20).collect::<Vec<_>>().join("\n")
+                        } else {
+                            stdout.lines().rev().take(20).collect::<Vec<_>>().join("\n")
+                        };
+                        anyhow::bail!("渲染进程退出码: {:?}\n{}", output.status.code(), tail);
+                    }
+                    Ok(())
+                }
                 "cover" => vtrim_polish::cover::cmd_cover(&path, None).await,
                 _ => anyhow::bail!("未知 kind"),
             }
@@ -1216,11 +1555,181 @@ async fn polish_subtitles_put(State(_state): State<Arc<AppState>>, Json(body): J
     ok(serde_json::json!({ "ok": true, "saved": out.len() }))
 }
 
+/// 响度曲线（带缓存）：同一源视频只测一次，结果存 data/loudness.json
+fn loudness_curve_cached(project_dir: &Path, video_path: &Path) -> serde_json::Value {
+    let cache_file = project_dir.join("data").join("loudness.json");
+    let video_name = video_path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if let Ok(raw) = std::fs::read_to_string(&cache_file) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let same_video = v.get("video").and_then(|x| x.as_str()) == Some(video_name.as_str());
+            if same_video {
+                if let Some(points) = v.get("points") {
+                    return points.clone();
+                }
+            }
+        }
+    }
+    let curve = vtrim_polish::render::measure_loudness_curve(&video_path.to_string_lossy());
+    if curve.is_empty() {
+        return serde_json::json!([]);
+    }
+    let points: Vec<serde_json::Value> = curve
+        .iter()
+        .map(|(t, db)| serde_json::json!({ "t": t, "db": db }))
+        .collect();
+    let _ = std::fs::create_dir_all(project_dir.join("data"));
+    let _ = std::fs::write(
+        &cache_file,
+        serde_json::json!({ "video": video_name, "points": points }).to_string(),
+    );
+    serde_json::json!(points)
+}
+
 async fn polish_project_get(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String,String>>) -> ApiResult {
     let dir = q.get("dir").ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = PathBuf::from(dir);
     let cfg = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
-    ok(serde_json::to_value(cfg).unwrap_or_default())
+    let mut value = serde_json::to_value(&cfg).unwrap_or_default();
+    // preview=1: 附加预览渲染所需的计算字段（sticker_map / 竖屏检测 / 响度曲线）
+    if q.get("preview").map(|v| v == "1").unwrap_or(false) {
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("_assets".into(), serde_json::json!({
+                "sticker_map": vtrim_polish::render::server::build_sticker_map(&path),
+            }));
+            let video_path = path.join(&cfg.source.video);
+            if video_path.exists() {
+                if let Some((w, h)) = vtrim_polish::render::get_video_size(&video_path.to_string_lossy()) {
+                    if h > w {
+                        let pos = obj.get("layout")
+                            .and_then(|l| l.get("vertical_position"))
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("left")
+                            .to_string();
+                        obj.insert("vertical".into(), serde_json::json!(true));
+                        obj.insert("vertical_position".into(), serde_json::json!(pos));
+                    }
+                }
+                obj.insert("loudness_curve".into(), loudness_curve_cached(&path, &video_path));
+            }
+        }
+    }
+    ok(value)
+}
+
+/// 单帧真渲染预览：用常驻 wgpu 后端渲染 dir 项目在 t 时刻的合成画面，返回 JPEG。
+#[cfg(feature = "wgpu-render")]
+async fn polish_render_frame(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    use vtrim_polish::render::backend::FrameRenderer as _;
+    use vtrim_polish::render::frame::TimedFrame;
+
+    let Some(dir) = body.get("dir").and_then(|v| v.as_str()).map(PathBuf::from) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "缺少 dir"}))).into_response();
+    };
+    let t = body.get("t").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+    let fps = 30usize;
+
+    let cfg = {
+        let t0 = std::time::Instant::now();
+        let c = vtrim_polish::project::load_project(&dir);
+        tracing::info!("render-frame: config load {}ms", t0.elapsed().as_millis());
+        match c {
+            Ok(c) => c,
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": format!("加载失败: {e:#}")}))).into_response();
+            }
+        }
+    };
+    let video_path = dir.join(&cfg.source.video);
+
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let mut slot = state.preview.0.lock().expect("preview slot poisoned");
+        // 目录切换 / 首次请求：重建后端（wgpu 设备常驻复用）
+        let rebuild = match slot.as_ref() {
+            Some(b) => b.dir != dir,
+            None => true,
+        };
+        if rebuild {
+            let backend = vtrim_polish::render::native::WgpuBackend::new(&dir, &cfg)?;
+            *slot = Some(super::model::PreviewBackend {
+                dir: dir.clone(),
+                backend,
+                last_t: -1.0,
+                last_jpeg: None,
+                video_size: None,
+            });
+        }
+        let pb = slot.as_mut().unwrap();
+        // 时间取整到帧网格，同帧命中缓存
+        let round_t = (t * fps as f64).round() / fps as f64;
+        if (pb.last_t - round_t).abs() < 1e-9 && pb.last_jpeg.is_some() {
+            return Ok(pb.last_jpeg.clone().unwrap());
+        }
+        let mut ctx = vtrim_polish::render::RenderContext::new(dir.clone(), cfg.clone());
+        ctx.fps = fps;
+        // ffprobe 结果缓存（省 ~50ms/请求）
+        if pb.video_size.is_none() {
+            pb.video_size = vtrim_polish::render::get_video_size(&video_path.to_string_lossy());
+        }
+        let t_vs = std::time::Instant::now();
+        if let Some((vw, vh)) = pb.video_size {
+            if vh > vw {
+                ctx.vertical = true;
+            }
+        }
+        tracing::info!("render-frame: video size {}ms", t_vs.elapsed().as_millis());
+        pb.backend.prepare(&ctx)?;
+        let t_ex = std::time::Instant::now();
+        let mut frames = vtrim_polish::render::frame::extract_chunk_frames(
+            &video_path.to_string_lossy(),
+            round_t,
+            round_t + 1.0 / fps as f64,
+            fps,
+            true,
+        )?;
+        frames.truncate(1);
+        if frames.is_empty() {
+            anyhow::bail!("抽帧为空");
+        }
+        tracing::info!("render-frame: extract {}ms ({} frames)", t_ex.elapsed().as_millis(), frames.len());
+        let t_rd = std::time::Instant::now();
+        let jpeg = pb.backend.render_chunk(&frames)?.remove(0);
+        tracing::info!("render-frame: render {}ms", t_rd.elapsed().as_millis());
+        pb.last_t = round_t;
+        pb.last_jpeg = Some(jpeg.clone());
+        Ok(jpeg)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(jpeg)) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": format!("{e:#}")})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": format!("任务失败: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// feature 未启用时的占位响应。
+#[cfg(not(feature = "wgpu-render"))]
+async fn polish_render_frame(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let _ = (state, body);
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({"ok": false, "error": "wgpu-render feature 未启用（cargo build --features wgpu-render）"})),
+    )
+        .into_response()
 }
 
 async fn polish_project_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -1234,9 +1743,41 @@ async fn polish_project_put(State(_state): State<Arc<AppState>>, Json(body): Jso
         let lay: vtrim_polish::project::Layout = serde_json::from_value(layout.clone()).map_err(|e| err(StatusCode::BAD_REQUEST, format!("layout 解析失败: {e}")))?;
         cfg.layout = lay;
     }
+    if let Some(ss) = body.get("sticker_source") {
+        let list: Vec<String> = serde_json::from_value(ss.clone()).map_err(|e| err(StatusCode::BAD_REQUEST, format!("sticker_source 解析失败: {e}")))?;
+        cfg.sticker_source = list;
+    }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(Path::new(dir).join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
+}
+
+/// 可用的贴图来源：内置 emoji 码点池 + 全局贴纸库（exe 同级 stickers/）的包名与 tags。
+/// LLM 生成时按 sticker_source 过滤可用的贴纸池。
+async fn polish_sticker_sources() -> ApiResult {
+    use vtrim_polish::assets::sticker_index::{load_package_meta, load_sticker_index};
+    let root = vtrim_core::path::sticker_dir();
+    let index = load_sticker_index(&root);
+    let mut out = vec![serde_json::json!({
+        "name": "emoji",
+        "builtin": true,
+        "description": "内置 emoji 码点池（按情绪匹配）",
+        "tags": [],
+    })];
+    for name in &index.packages {
+        let meta = load_package_meta(&root, name);
+        let (desc, tags) = match meta {
+            Some(m) => (m.description, m.tags.iter().map(|t| t.tag.clone()).collect::<Vec<_>>()),
+            None => (String::new(), Vec::new()),
+        };
+        out.push(serde_json::json!({
+            "name": name,
+            "builtin": false,
+            "description": desc,
+            "tags": tags,
+        }));
+    }
+    ok(serde_json::json!({ "sources": out }))
 }
 
 // core runner submodule

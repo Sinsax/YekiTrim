@@ -64,6 +64,10 @@ silence_noise_db = -30
 # 精确 id 屏蔽单个音效; "tag:xxx" 屏蔽整个标签族 (如 "tag:surprise" 屏蔽所有恐怖系)
 # 项目 polish.toml 的 [sfx] blacklist 可再追加
 blacklist = []
+
+[chrome]
+# 自定义 Chrome/Chromium 可执行文件路径（留空自动检测）
+path = ""
 "#;
 
 /// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
@@ -326,6 +330,10 @@ fn merge(base: &mut Config, overlay: Config) {
         if !base.sfx.blacklist.contains(id) {
             base.sfx.blacklist.push(id.clone());
         }
+    }
+
+    if !overlay.chrome.path.is_empty() {
+        base.chrome.path = overlay.chrome.path;
     }
 }
 
