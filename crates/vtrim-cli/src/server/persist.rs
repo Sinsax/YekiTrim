@@ -9,9 +9,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerState {
     /// 上次 WebUI / server 使用的 vtrim.toml 绝对路径
+    #[serde(default)]
     pub last_config_file: Option<String>,
-    /// 工作区扫描根目录
+    /// 工作区扫描根目录（保留兼容，项目列表不再依赖它）
+    #[serde(default)]
     pub workspace_root: Option<String>,
+    /// 已知项目 vtrim.toml 路径列表（多项目直接加载）
+    #[serde(default)]
+    pub projects: Vec<String>,
 }
 
 pub fn state_path() -> PathBuf {
@@ -53,5 +58,23 @@ pub fn remember_last(config_file: &Path, workspace_root: Option<&Path>) {
 pub fn remember_workspace_root(root: &Path) {
     let mut state = load_state().unwrap_or_default();
     state.workspace_root = Some(root.to_string_lossy().into_owned());
+    save_state(&state);
+}
+
+/// 将项目 vtrim.toml 加入已知项目列表（不重复）。
+pub fn remember_project(config_file: &Path) {
+    let mut state = load_state().unwrap_or_default();
+    let cfg = config_file.to_string_lossy().into_owned();
+    if !state.projects.contains(&cfg) {
+        state.projects.push(cfg);
+    }
+    save_state(&state);
+}
+
+/// 从已知项目列表移除一个 vtrim.toml。
+pub fn forget_project(config_file: &Path) {
+    let mut state = load_state().unwrap_or_default();
+    let cfg = config_file.to_string_lossy().into_owned();
+    state.projects.retain(|p| p != &cfg);
     save_state(&state);
 }

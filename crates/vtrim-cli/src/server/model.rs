@@ -14,6 +14,31 @@ pub struct AppState {
     pub workspace: Arc<RwLock<Workspace>>,
     pub workspace_root: Arc<RwLock<PathBuf>>,
     pub jobs: Arc<JobManager>,
+
+    /// wgpu 单帧真渲染预览的常驻后端槽（feature 门控）。
+    #[cfg(feature = "wgpu-render")]
+    pub preview: PreviewSlot,
+}
+
+#[cfg(feature = "wgpu-render")]
+#[derive(Clone, Default)]
+pub struct PreviewSlot(pub Arc<std::sync::Mutex<Option<PreviewBackend>>>);
+
+#[cfg(feature = "wgpu-render")]
+impl std::fmt::Debug for PreviewSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreviewSlot")
+    }
+}
+
+#[cfg(feature = "wgpu-render")]
+pub struct PreviewBackend {
+    pub dir: PathBuf,
+    pub backend: vtrim_polish::render::native::WgpuBackend,
+    pub last_t: f64,
+    pub last_jpeg: Option<Vec<u8>>,
+    /// ffprobe 结果缓存（同 dir 的视频尺寸不变）
+    pub video_size: Option<(u32, u32)>,
 }
 
 impl AppState {
@@ -33,6 +58,8 @@ impl AppState {
             workspace: Arc::new(RwLock::new(workspace)),
             workspace_root: Arc::new(RwLock::new(workspace_root)),
             jobs: Arc::new(JobManager::new()),
+            #[cfg(feature = "wgpu-render")]
+            preview: PreviewSlot::default(),
         })
     }
 

@@ -78,10 +78,14 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| workspace.root_dir.clone()),
     };
-    persist::save_state(&persist::ServerState {
-        last_config_file: Some(workspace.config_file.to_string_lossy().into_owned()),
-        workspace_root: Some(workspace_root.to_string_lossy().into_owned()),
-    });
+    let mut server_state = persist::load_state().unwrap_or_default();
+    server_state.last_config_file = Some(workspace.config_file.to_string_lossy().into_owned());
+    server_state.workspace_root = Some(workspace_root.to_string_lossy().into_owned());
+    let cfg_str = workspace.config_file.to_string_lossy().into_owned();
+    if !server_state.projects.contains(&cfg_str) {
+        server_state.projects.push(cfg_str);
+    }
+    persist::save_state(&server_state);
     info!("Workspace root: {}", workspace_root.display());
 
     let state = Arc::new(model::AppState::with_root(workspace, workspace_root)?);

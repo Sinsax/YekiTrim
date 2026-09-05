@@ -79,5 +79,10 @@ pub fn project_summary(ws: &Workspace) -> serde_json::Value {
         "clip_videos": clip_videos,
         "has_danmaku": cfg.as_ref().and_then(|c| c.project.danmaku_file.as_ref()).map(|p| !p.is_empty()).unwrap_or(false),
         "files": project_snapshot(ws).get("files").cloned().unwrap_or(serde_json::json!([])),
+        "mtime_ms": std::fs::metadata(&ws.config_file).ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
     })
 }
