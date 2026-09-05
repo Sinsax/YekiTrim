@@ -7,6 +7,8 @@ use image::{ImageFormat, RgbaImage};
 
 use super::context::WgpuContext;
 use super::shaders;
+#[cfg(test)]
+use super::timeline::SplitState;
 use super::timeline::CameraState;
 
 pub struct SourceRenderer {
@@ -24,37 +26,47 @@ impl SourceRenderer {
             ),
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("source bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("source bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-            ],
-        });
+                count: None,
+            },
+        ],
+    });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("source pipeline layout"),
@@ -110,6 +122,7 @@ impl SourceRenderer {
     }
 
     /// 渲染一帧视频底图。`rgba` 为解码后的 RGBA 原始像素。
+    /// `fx` 携带作用在视频底图上的 blur / color_shift 参数（对齐 Canvas ctx.filter 时机）。
     pub fn render(
         &self,
         ctx: &WgpuContext,
@@ -118,13 +131,15 @@ impl SourceRenderer {
         src_height: u32,
         camera: &CameraState,
         shake: (f64, f64),
+        split: Option<&super::timeline::SplitState>,
+        fx: SourceFx,
         output_view: &wgpu::TextureView,
     ) -> Result<()> {
         let source_texture = ctx.create_rgba_texture(src_width, src_height, rgba);
         let source_view = source_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // uniform: mat4 以列主序存储（wgpu/math 约定）
-        let transform = camera_transform(camera, shake, ctx.width as f32, ctx.height as f32);
+        let transform = camera_transform(camera, shake, split, ctx.width as f32, ctx.height as f32);
         let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("source transform uniform"),
             size: std::mem::size_of::<[[f32; 4]; 4]>() as u64,
@@ -133,6 +148,29 @@ impl SourceRenderer {
         });
         ctx.queue
             .write_buffer(&uniform, 0, bytemuck::cast_slice(&transform));
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct FragUniforms {
+            blur: f32,
+            sepia: f32,
+            saturate: f32,
+            _pad: f32,
+        }
+        let frag = FragUniforms {
+            blur: fx.blur as f32,
+            sepia: fx.sepia as f32,
+            saturate: fx.saturate as f32,
+            _pad: 0.0,
+        };
+        let frag_uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("source frag uniform"),
+            size: std::mem::size_of::<FragUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        ctx.queue
+            .write_buffer(&frag_uniform, 0, bytemuck::bytes_of(&frag));
 
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("source bind group"),
@@ -149,6 +187,10 @@ impl SourceRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: frag_uniform.as_entire_binding(),
                 },
             ],
         });
@@ -181,28 +223,46 @@ impl SourceRenderer {
     }
 }
 
+/// 作用在视频底图上的滤镜参数（对齐 Canvas ctx.filter 时机：先于 flash/overlay）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SourceFx {
+    pub blur: f64,
+    pub sepia: f64,
+    pub saturate: f64,
+}
+
 /// 计算与 Canvas 渲染语义一致的相机变换矩阵（列主序）。
+///
+/// 完整合成 Canvas 的变换链：T(shake) · T(split.x) · Shear(b) · S(split.scale) ·
+/// T(cam) · S(zoom) · T(-cam)，其中 Shear 的 b = split.skew_x / 100。
 pub fn camera_transform(
     camera: &CameraState,
     shake: (f64, f64),
+    split: Option<&super::timeline::SplitState>,
     out_w: f32,
     out_h: f32,
 ) -> [[f32; 4]; 4] {
-    let zoom = camera.zoom as f32;
-    // 像素坐标 → NDC
-    let ox = (camera.ox as f32 / out_w) * 2.0 - 1.0;
-    let oy = 1.0 - (camera.oy as f32 / out_h) * 2.0;
-    let s = zoom;
-    // shake 位移（像素）→ NDC
-    let shx = (shake.0 as f32 / out_w) * 2.0;
-    let shy = -(shake.1 as f32 / out_h) * 2.0;
+    let z = camera.zoom as f32;
+    let (s, b, split_x) = match split {
+        Some(sp) => (sp.scale as f32, sp.skew_x as f32 / 100.0, sp.x as f32),
+        None => (1.0, 0.0, 0.0),
+    };
+    // 线性部分：K(shear) · S(s) · S(z)
+    let l00 = s * z;
+    let l10 = b * s * z;
+    let l11 = s * z;
+    // 平移部分：cam 偏移 = (1-z)*cam，经 S(s) 缩放、K 剪切，再叠加 shake / split.x
+    let cam_off_x = s * (1.0 - z) * camera.ox as f32;
+    let cam_off_y = s * (1.0 - z) * camera.oy as f32;
+    let offx = shake.0 as f32 + split_x + cam_off_x;
+    let offy = shake.1 as f32 + b * cam_off_x + cam_off_y;
 
-    // 围绕 NDC 原点缩放 + shake 平移
+    // 像素空间 → NDC（y 翻转）
     [
-        [s, 0.0, 0.0, 0.0],
-        [0.0, s, 0.0, 0.0],
+        [l00, -l10 * out_w / out_h, 0.0, 0.0],
+        [0.0, l11, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
-        [ox * (1.0 - s) + shx, oy * (1.0 - s) + shy, 0.0, 1.0],
+        [l00 + 2.0 * offx / out_w - 1.0, 1.0 - l10 * out_w / out_h - l11 - 2.0 * offy / out_h, 0.0, 1.0],
     ]
 }
 
@@ -228,7 +288,7 @@ mod tests {
             ox: 960.0,
             oy: 540.0,
         };
-        let m = camera_transform(&cam, (0.0, 0.0), 1920.0, 1080.0);
+        let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
         assert!((m[0][0] - 1.0).abs() < 1e-6);
         assert!((m[1][1] - 1.0).abs() < 1e-6);
         assert!(m[3][0].abs() < 1e-6);
@@ -242,10 +302,34 @@ mod tests {
             ox: 960.0,
             oy: 540.0,
         };
-        let m = camera_transform(&cam, (0.0, 0.0), 1920.0, 1080.0);
+        let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
         assert!((m[0][0] - 1.5).abs() < 1e-6);
         assert!((m[1][1] - 1.5).abs() < 1e-6);
         assert!(m[3][0].abs() < 1e-6);
         assert!(m[3][1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_applies_shear_and_scale() {
+        let cam = CameraState {
+            zoom: 1.0,
+            ox: 960.0,
+            oy: 540.0,
+        };
+        let sp = SplitState {
+            scale: 0.95,
+            skew_x: -30.0,
+            x: 0.0,
+        };
+        let m = camera_transform(&cam, (0.0, 0.0), Some(&sp), 1920.0, 1080.0);
+        // 线性部分：l00 = s*z, l10 = b*s*z（像素空间 x→y 剪切），NDC y 翻转后系数取反
+        assert!((m[0][0] - 0.95).abs() < 1e-6);
+        let b = -30.0 / 100.0;
+        assert!((m[0][1] - (-b * 0.95 * 1920.0 / 1080.0)).abs() < 1e-4);
+        // Canvas scale 绕画布原点（左上角）缩放：中心 (960,540) 会向原点偏移
+        assert!((m[1][1] - 0.95).abs() < 1e-6);
+        assert!((m[3][0] - (0.95 - 1.0)).abs() < 1e-6);
+        let expect_ty: f32 = 1.0 - (0.95 * 540.0 + b * 0.95 * 960.0) * 2.0 / 1080.0;
+        assert!((m[3][1] - expect_ty).abs() < 1e-4);
     }
 }

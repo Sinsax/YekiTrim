@@ -20,6 +20,10 @@ pub struct RenderContext {
 
     /// 预解码贴纸 GIF 数据 JSON（Chrome 路径保持现状）。
     pub sticker_data_json: String,
+
+    /// 竖屏布局（源视频高>宽时启用：模糊背景 + 主画面按 vertical_position 摆放）。
+    pub vertical: bool,
+    pub vertical_position: String,
 }
 
 impl RenderContext {
@@ -32,6 +36,8 @@ impl RenderContext {
             fps: 30,
             server_url: None,
             sticker_data_json: "{}".into(),
+            vertical: false,
+            vertical_position: "left".into(),
         }
     }
 }

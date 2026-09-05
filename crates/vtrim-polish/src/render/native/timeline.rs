@@ -54,6 +54,10 @@ pub struct DanmakuState {
 /// 与 JS `getActiveSticker` 对齐的贴纸状态（图片资源由外层持有）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct StickerState {
+    /// 贴纸资源名（assets/stickers/ 下的文件 stem / emoji 码点）。
+    pub name: String,
+    /// 事件开始时间（GIF 帧相位按事件相对时间计算，与 JS `(t-et)*1000` 一致）。
+    pub et: f64,
     pub index: usize,
     pub opacity: f64,
     pub scale: f64,
@@ -244,10 +248,13 @@ pub fn evaluate_frame(
     idx: &EventIndex,
     layout: &crate::project::Layout,
     _sub_style: &crate::project::SubtitleStyle,
-    dm_style: &crate::project::DanmakuStyle,
+    _dm_style: &crate::project::DanmakuStyle,
     camera_style: &crate::project::CameraStyle,
     subs: &[crate::parse::srt::Subtitle],
     dms: &[vtrim_core::danmaku::DanmakuEntry],
+    dm_widths: &[f64],
+    vertical: bool,
+    vertical_position: &str,
 ) -> FrameState {
     let camera = get_active_camera(t, &idx.camera, layout, camera_style);
     let shake = get_shake(t, &idx.shake);
@@ -265,8 +272,8 @@ pub fn evaluate_frame(
     let vignette = get_vignette(t, &idx.vignette);
     let intro_black = get_intro_black(t);
     let captions = get_active_subs(t, subs);
-    let danmaku = get_active_dms(t, dms, dm_style);
-    let stickers = get_active_sticker(t, &idx.sticker, &[], &[]);
+    let danmaku = get_active_dms(t, dms, dm_widths);
+    let stickers = get_active_sticker(t, &idx.sticker, vertical, vertical_position);
 
     FrameState {
         camera,
@@ -417,20 +424,19 @@ pub fn parse_highlight_parts(html: &str, fallback: &str) -> Vec<CaptionPart> {
     parts
 }
 
-/// 与 JS `getActiveDms` 一致。
+/// 与 JS `getActiveDms` 一致；弹幕宽度用实测宽度（swash 量宽），影响滚动距离与剔除。
 pub fn get_active_dms(
     t: f64,
     dms: &[vtrim_core::danmaku::DanmakuEntry],
-    _style: &crate::project::DanmakuStyle,
+    widths: &[f64],
 ) -> Vec<DanmakuState> {
     let mut out = Vec::new();
     for (i, d) in dms.iter().enumerate() {
-        let _ = i;
         if t < d.start || t >= d.end {
             continue;
         }
         let travel = d.travel_duration;
-        let text_w = (d.text.len() as f64 * 55.0) + 20.0;
+        let text_w = widths.get(i).copied().unwrap_or_else(|| (d.text.chars().count() as f64 * 55.0) + 20.0);
         let el = t - d.start;
         let fade_in = 0.3;
         let fade_out = 0.2;
@@ -466,14 +472,15 @@ pub fn get_active_dms(
     out
 }
 
-/// 与 JS `getActiveSticker` 一致。
+/// 与 JS `getActiveSticker` 一致；竖屏时按 vertical_position 覆盖/左右交替 x（对齐模板 GSAP 段）。
 pub fn get_active_sticker(
     t: f64,
     items: &[IndexedSticker],
-    _bitmap_frames: &[Vec<Vec<u8>>],
-    _delays: &[Vec<u16>],
+    vertical: bool,
+    vertical_position: &str,
 ) -> Vec<StickerState> {
     let mut out = Vec::new();
+    let mut side_toggle = false;
     for (i, e) in items.iter().enumerate() {
         let et = e.time;
         let dur = e.duration;
@@ -515,20 +522,39 @@ pub fn get_active_sticker(
 
         let (x, y) = match &e.ev {
             Event::Sticker { x, y, .. } => {
-                let lx = parse_percent(x).unwrap_or(50.0) / 100.0 * 1920.0;
-                let ly = parse_percent(y).unwrap_or(50.0) / 100.0 * 1080.0;
-                (lx + 140.0, ly + 140.0 + y_off)
+                let mut lx = parse_percent(x).unwrap_or(50.0);
+                let ly = parse_percent(y).unwrap_or(50.0);
+                // 竖屏：视频在左 → 贴纸居中；视频居中 → 左右交替（对齐模板 GSAP 段）
+                if vertical {
+                    if vertical_position == "left" {
+                        lx = 50.0;
+                    } else {
+                        side_toggle = !side_toggle;
+                        lx = if side_toggle { 15.0 } else { 85.0 };
+                    }
+                }
+                (lx / 100.0 * 1920.0, ly / 100.0 * 1080.0)
             }
-            _ => (140.0, 140.0 + y_off),
+            _ => (0.0, 0.0),
+        };
+
+        let name = match &e.ev {
+            Event::Sticker { name, keyword, .. } => {
+                name.clone().unwrap_or_else(|| keyword.clone())
+            }
+            _ => String::new(),
         };
 
         out.push(StickerState {
+            name,
+            et,
             index: i,
             opacity,
             scale,
             rot,
+            // (x, y) 为 280 盒子左上角（与模板 DOM 一致），由绘制层换算中心
             x,
-            y,
+            y: y + y_off,
             w: 280.0,
             h: 280.0,
         });

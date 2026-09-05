@@ -14,12 +14,16 @@ use super::timeline::FrameState;
 pub struct EffectUniform {
     pub flash_color: [f32; 4],
     pub flash_alpha_pad: [f32; 4],
-    pub overlay_color: [f32; 4],
-    pub overlay_alpha_pad: [f32; 4],
     pub hue_color: [f32; 4],
     pub hue_alpha_pad: [f32; 4],
-    pub misc_pad: [f32; 4],
-    pub blur_color_shift: [f32; 4],
+    // x=intro black, y=vignette, z=noise(白色叠加 alpha), w=overlay 渐变 stop 数
+    pub misc: [f32; 4],
+    // x=overlay 透明度, y=shape(0 linear / 1 radial)
+    pub overlay_meta: [f32; 4],
+    pub grad0: [f32; 4],
+    pub grad1: [f32; 4],
+    pub grad2: [f32; 4],
+    pub grad3: [f32; 4],
 }
 
 pub struct EffectRenderer {
@@ -133,22 +137,27 @@ impl EffectRenderer {
 
         // 构造 uniform
         let flash_color = crate::render::native::composite::parse_color(&state.flash.color);
-        let overlay_color = match &state.overlay {
-            Some(super::timeline::OverlayState::Color { color, .. }) => {
-                crate::render::native::composite::parse_color(color)
-            }
-            Some(super::timeline::OverlayState::Gradient { colors, .. }) => {
+        // overlay：纯色 = 单 stop；渐变 = 最多 4 个 stop（对齐 Canvas 多 stop 渐变）
+        let (grad_stops, overlay_opacity, overlay_shape): (Vec<[u8; 4]>, f32, f32) = match &state.overlay {
+            Some(super::timeline::OverlayState::Color { color, opacity }) => (
+                vec![crate::render::native::composite::parse_color(color)],
+                *opacity as f32,
+                0.0,
+            ),
+            Some(super::timeline::OverlayState::Gradient { colors, shape, opacity }) => (
                 colors
-                    .first()
+                    .iter()
+                    .take(4)
                     .map(|c| crate::render::native::composite::parse_color(c))
-                    .unwrap_or([0, 0, 0, 255])
-            }
-            None => [255, 255, 255, 255],
+                    .collect(),
+                *opacity as f32,
+                if shape == "radial" { 1.0 } else { 0.0 },
+            ),
+            None => (Vec::new(), 0.0, 0.0),
         };
-        let overlay_alpha = match &state.overlay {
-            Some(super::timeline::OverlayState::Color { opacity, .. }) => *opacity as f32,
-            Some(super::timeline::OverlayState::Gradient { opacity, .. }) => *opacity as f32,
-            None => 0.0,
+        let stop = |i: usize| -> [f32; 4] {
+            let c = grad_stops.get(i).copied().unwrap_or([0, 0, 0, 255]);
+            [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]
         };
 
         let uniform_data = EffectUniform {
@@ -159,13 +168,6 @@ impl EffectRenderer {
                 1.0,
             ],
             flash_alpha_pad: [state.flash.opacity as f32, 0.0, 0.0, 0.0],
-            overlay_color: [
-                overlay_color[0] as f32 / 255.0,
-                overlay_color[1] as f32 / 255.0,
-                overlay_color[2] as f32 / 255.0,
-                1.0,
-            ],
-            overlay_alpha_pad: [overlay_alpha, 0.0, 0.0, 0.0],
             hue_color: {
                 let c = state.hue_shift.as_ref().map(|h| crate::render::native::composite::parse_color(&h.color)).unwrap_or([255,0,64,255]);
                 [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]
@@ -174,18 +176,17 @@ impl EffectRenderer {
                 state.hue_shift.as_ref().map(|h| h.opacity as f32).unwrap_or(0.0),
                 0.0, 0.0, 0.0,
             ],
-            misc_pad: [
+            misc: [
                 state.intro_black as f32,
                 state.vignette.opacity as f32,
                 state.noise as f32,
-                0.0,
+                grad_stops.len() as f32,
             ],
-            blur_color_shift: [
-                state.blur as f32,
-                if state.color_shift.is_empty() { 0.0 } else { 1.0 },
-                0.0,
-                0.0,
-            ],
+            overlay_meta: [overlay_opacity, overlay_shape, 0.0, 0.0],
+            grad0: stop(0),
+            grad1: stop(1),
+            grad2: stop(2),
+            grad3: stop(3),
         };
 
         let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {

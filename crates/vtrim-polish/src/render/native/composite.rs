@@ -3,7 +3,7 @@
 //! This is a temporary pixel compositor so the wgpu path can render a complete
 //! video before all effects/text are moved into wgpu passes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::project::SubtitleStyle;
 use crate::render::native::timeline::{
@@ -89,42 +89,111 @@ fn blend_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4], opac
     rgba[i + 2] = ((color[2] as u32 * a + rgba[i + 2] as u32 * inv) / 255) as u8;
 }
 
-/// 简单字体加载：优先项目/内置资源，回退系统字体。
-static FONT_BYTES: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
-
-static TEXT_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, u32, u32, f32)>>> =
-    std::sync::OnceLock::new();
-
-fn text_cache_key(text: &str, size: f32, color: [u8; 4], stroke: [u8; 4], stroke_width: f32) -> String {
-    format!(
-        "{}#{}#{:02x}{:02x}{:02x}{:02x}#{:02x}{:02x}{:02x}{:02x}#{}",
-        text,
-        (size * 10.0) as u32,
-        color[0], color[1], color[2], color[3],
-        stroke[0], stroke[1], stroke[2], stroke[3],
-        (stroke_width * 10.0) as u32,
-    )
+/// 字体解析描述：项目路径 + `style.subtitle.font` / `style.danmaku` 字体名。
+#[derive(Debug, Clone)]
+pub struct FontSpec {
+    pub project_path: std::path::PathBuf,
+    pub name: String,
 }
 
-pub fn load_font_bytes() -> Option<Vec<u8>> {
-    FONT_BYTES
-        .get_or_init(|| {
-            let candidates = [
-                Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf(),
-                Path::new("C:/Windows/Fonts/simhei.ttf").to_path_buf(),
-                Path::new("assets/fonts/lemi-bobo.ttf").to_path_buf(),
-                Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf(),
-            ];
-            for c in &candidates {
-                if c.exists() {
-                    if let Ok(data) = std::fs::read(c) {
-                        return Some(data);
-                    }
-                }
-            }
-            None
+impl FontSpec {
+    pub fn new(project_path: &Path, name: &str) -> Self {
+        Self {
+            project_path: project_path.to_path_buf(),
+            name: name.to_string(),
+        }
+    }
+}
+
+/// 字体字节缓存：按 (项目路径, 字体名) 解析，进程内复用。
+static FONTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>>> =
+    std::sync::OnceLock::new();
+
+fn fonts() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>> {
+    FONTS.get_or_init(Default::default)
+}
+
+/// 解析字体文件字节：优先项目字体目录（assets/fonts、fonts），回退系统字体，
+/// 最后回退内置资源 lemi-bobo.ttf。结果按 (项目, 字体名) 缓存。
+pub fn load_font_bytes(font: &FontSpec) -> Option<Vec<u8>> {
+    let key = format!("{}#{}", font.project_path.display(), font.name);
+    if let Some(cached) = fonts().lock().ok().and_then(|m| m.get(&key).cloned()) {
+        return cached;
+    }
+    let name = font.name.trim();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if !name.is_empty() {
+        let base = Path::new(&font.name);
+        for dir in [
+            font.project_path.join("assets").join("fonts"),
+            font.project_path.join("fonts"),
+            font.project_path.clone(),
+        ] {
+            candidates.push(dir.join(base).with_extension("ttf"));
+            candidates.push(dir.join(base).with_extension("otf"));
+        }
+        // Windows 系统字体按文件名直查（如 "微软雅黑" → msyh.ttc 由下方兜底覆盖）
+        candidates.push(Path::new("C:/Windows/Fonts").join(base).with_extension("ttf"));
+        candidates.push(Path::new("C:/Windows/Fonts").join(base).with_extension("otf"));
+    }
+    // 系统常见中文字体兜底（style 字体名通常匹配不到文件名）
+    candidates.push(Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
+    candidates.push(Path::new("C:/Windows/Fonts/simhei.ttf").to_path_buf());
+    // 内置资源最后回退
+    candidates.push(Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
+    candidates.push(font.project_path.join("assets").join("fonts").join("lemi-bobo.ttf"));
+
+    let found = candidates
+        .iter()
+        .find(|c| c.exists())
+        .and_then(|c| std::fs::read(c).ok());
+    fonts().lock().ok().map(|mut m| m.insert(key, found.clone()));
+    if found.is_none() {
+        tracing::warn!("wgpu: 未找到可用字体文件，字幕/弹幕将无法渲染");
+    }
+    found
+}
+
+/// 量取一行文本在给定字号下的渲染宽度（swash shaping，结果缓存）。
+static MEASURE_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f64>>> =
+    std::sync::OnceLock::new();
+
+pub fn measure_text_width(text: &str, size: f32, font: &FontSpec) -> f64 {
+    let key = format!(
+        "{}#{}#{}",
+        text,
+        (size * 10.0) as u32,
+        font.project_path.display()
+    );
+    if let Some(cached) = MEASURE_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+    {
+        return cached;
+    }
+    let width = load_font_bytes(font)
+        .and_then(|data| {
+            let f = swash::FontRef::from_index(&data, 0)?;
+            let mut shape_ctx = swash::shape::ShapeContext::new();
+            let mut shaper = shape_ctx
+                .builder(f)
+                .size(size)
+                .script(swash::text::Script::Han)
+                .build();
+            shaper.add_str(text);
+            let mut total = 0.0f32;
+            shaper.shape_with(|cluster| total += cluster.advance());
+            Some(total as f64)
         })
-        .clone()
+        .unwrap_or_else(|| (text.chars().count() as f64) * (size as f64));
+    MEASURE_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .ok()
+        .map(|mut m| m.insert(key, width));
+    width
 }
 
 /// 用 swash 把一行文本光栅化为 RGBA 图。
@@ -133,24 +202,41 @@ static RENDER_SOURCES: [swash::scale::Source; 1] = [
     swash::scale::Source::Outline,
 ];
 
+static TEXT_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, u32, u32, f32)>>> =
+    std::sync::OnceLock::new();
+
+fn text_cache_key(font: &FontSpec, text: &str, size: f32, color: [u8; 4], stroke: [u8; 4], stroke_width: f32) -> String {
+    format!(
+        "{}|{}|{}|{}|{:02x}{:02x}{:02x}{:02x}|{:02x}{:02x}{:02x}{:02x}|{}",
+        font.project_path.display(),
+        font.name,
+        text,
+        (size * 10.0) as u32,
+        color[0], color[1], color[2], color[3],
+        stroke[0], stroke[1], stroke[2], stroke[3],
+        (stroke_width * 10.0) as u32,
+    )
+}
+
 pub fn render_text_rgba(
     text: &str,
     size: f32,
     color: [u8; 4],
     stroke: [u8; 4],
     stroke_width: f32,
+    font: &FontSpec,
 ) -> Option<(Vec<u8>, u32, u32, f32)> {
-    let key = text_cache_key(text, size, color, stroke, stroke_width);
+    let key = text_cache_key(font, text, size, color, stroke, stroke_width);
     if let Some(cached) = TEXT_CACHE.get_or_init(Default::default).lock().ok().and_then(|m| m.get(&key).cloned()) {
         return Some(cached);
     }
-    let font_data = load_font_bytes()?;
-    let font = swash::FontRef::from_index(&font_data, 0)?;
+    let font_data = load_font_bytes(font)?;
+    let font_ref = swash::FontRef::from_index(&font_data, 0)?;
     let mut scale_ctx = swash::scale::ScaleContext::new();
-    let mut scaler = scale_ctx.builder(font).size(size).hint(false).build();
+    let mut scaler = scale_ctx.builder(font_ref).size(size).hint(false).build();
     let mut shape_ctx = swash::shape::ShapeContext::new();
     let mut shaper = shape_ctx
-        .builder(font)
+        .builder(font_ref)
         .size(size)
         .script(swash::text::Script::Han)
         .build();
@@ -212,30 +298,45 @@ pub fn render_text_rgba(
     }
     let alpha = flipped_alpha;
 
-    // 先画描边：按配置的 stroke_width 膨胀，但保持半透明避免厚重黑底
+    // 先画描边：可分离膨胀（水平+垂直两趟），等价方形邻域但 O(n·sw) 而非 O(n·sw²)
     let sw = stroke_width.max(1.0).round() as i32;
-    let stroke_alpha = alpha.clone();
+    let mut tmp = vec![0u8; (width * height) as usize];
+    // 水平趟：alpha -> tmp
     for y in 0..height {
+        let row = (y * width) as usize;
         for x in 0..width {
-            let base_a = stroke_alpha[(y * width + x) as usize] as u32;
+            let base_a = alpha[row + x as usize] as u32;
             if base_a == 0 {
                 continue;
             }
-            for dy in -sw..=sw {
-                for dx in -sw..=sw {
-                    let sx = x as i32 + dx;
-                    let sy = y as i32 + dy;
-                    if sx < 0 || sy < 0 || sx as u32 >= width || sy as u32 >= height {
-                        continue;
-                    }
-                    let si = (sy as u32 * width + sx as u32) as usize;
-                    if alpha[si] == 0 {
-                        let idx = si * 4;
-                        out[idx] = stroke[0];
-                        out[idx+1] = stroke[1];
-                        out[idx+2] = stroke[2];
-                        out[idx+3] = 255;
-                    }
+            let x0 = (x as i32 - sw).max(0) as u32;
+            let x1 = (x as i32 + sw).min(width as i32 - 1) as u32;
+            for xx in x0..=x1 {
+                let di = row + xx as usize;
+                if tmp[di] == 0 {
+                    tmp[di] = 255;
+                }
+            }
+        }
+    }
+    // 垂直趟：tmp -> alpha（膨胀结果回填 alpha），描边色写入 out
+    for x in 0..width {
+        let col = x as usize;
+        for y in 0..height {
+            let base_a = tmp[(y * width) as usize + col] as u32;
+            if base_a == 0 {
+                continue;
+            }
+            let y0 = (y as i32 - sw).max(0) as u32;
+            let y1 = (y as i32 + sw).min(height as i32 - 1) as u32;
+            for yy in y0..=y1 {
+                let si = ((yy * width) as usize + col) as usize;
+                if alpha[si] == 0 {
+                    let idx = si * 4;
+                    out[idx] = stroke[0];
+                    out[idx + 1] = stroke[1];
+                    out[idx + 2] = stroke[2];
+                    out[idx + 3] = 255;
                 }
             }
         }
@@ -287,84 +388,13 @@ pub fn render_text_rgba(
 
     let result = (out, width, height, total_w);
     if let Ok(mut m) = TEXT_CACHE.get_or_init(Default::default).lock() {
+        // 上限防长视频撑爆内存：超出后整体清空（重新光栅化即可）
+        if m.len() >= 512 {
+            m.clear();
+        }
         m.insert(key, result.clone());
     }
     Some(result)
-}
-
-struct SimpleGlyph {
-    width: usize,
-    height: usize,
-    advance: usize,
-    bits: &'static [u8],
-}
-
-impl SimpleGlyph {
-    fn pixel(&self, x: usize, y: usize) -> bool {
-        if x >= self.width || y >= self.height {
-            return false;
-        }
-        (self.bits[y] >> (self.width - 1 - x)) & 1 != 0
-    }
-}
-
-const BOX: SimpleGlyph = SimpleGlyph {
-    width: 5,
-    height: 7,
-    advance: 6,
-    bits: &[
-        0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111,
-    ],
-};
-
-const FONT: [SimpleGlyph; 62] = [BOX; 62];
-
-fn simple_glyph(_ch: char) -> SimpleGlyph {
-    BOX
-}
-
-fn draw_text(
-    rgba: &mut [u8],
-    width: u32,
-    height: u32,
-    text: &str,
-    x: f32,
-    y: f32,
-    size: f32,
-    color: [u8; 4],
-    stroke: [u8; 4],
-    stroke_width: f32,
-    opacity: f64,
-) {
-    if text.is_empty() || opacity <= 0.0 {
-        return;
-    }
-    if let Some((tex, tw, th, _adv)) = render_text_rgba(text, size, color, stroke, stroke_width) {
-        let ox = (x as i32) - (tw as i32 / 2);
-        let oy = (y as i32) - (th as i32 / 2);
-        for yy in 0..th {
-            for xx in 0..tw {
-                let src_idx = ((yy * tw + xx) * 4) as usize;
-                let a = tex[src_idx + 3] as u32;
-                if a == 0 {
-                    continue;
-                }
-                let dx = ox + xx as i32;
-                let dy = oy + yy as i32;
-                if dx < 0 || dy < 0 || (dx as u32) >= width || (dy as u32) >= height {
-                    continue;
-                }
-                let dst_idx = ((dy as u32 * width + dx as u32) * 4) as usize;
-                let alpha = (a as f64 / 255.0 * opacity).clamp(0.0, 1.0);
-                let aa = (alpha * 255.0) as u32;
-                let inv = 255 - aa;
-                rgba[dst_idx] = ((tex[src_idx] as u32 * aa + rgba[dst_idx] as u32 * inv) / 255) as u8;
-                rgba[dst_idx + 1] = ((tex[src_idx + 1] as u32 * aa + rgba[dst_idx + 1] as u32 * inv) / 255) as u8;
-                rgba[dst_idx + 2] = ((tex[src_idx + 2] as u32 * aa + rgba[dst_idx + 2] as u32 * inv) / 255) as u8;
-                rgba[dst_idx + 3] = 255;
-            }
-        }
-    }
 }
 
 pub fn composite_frame(
