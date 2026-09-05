@@ -464,6 +464,16 @@ var SUB=[],DM=[],META={duration:239.8};
 // ============================================================
 // 初始化
 // ============================================================
+// 九宫格中心点计算（全局暴露，供 init 与 getActiveCamera 共用）
+function gridOrigin(name){
+  var G={
+    'top-left':[16.67,16.67],'top':[50,16.67],'top-right':[83.33,16.67],
+    'mid-left':[16.67,50],'center':[50,50],'mid-right':[83.33,50],
+    'bot-left':[16.67,83.33],'bottom':[50,83.33],'bot-right':[83.33,83.33]
+  };
+  var p=G[name]||[50,50];
+  return p[0]+'% '+p[1]+'%';
+}
 function init(){
   var dur=META.duration||CFG.duration||239.8;
 
@@ -1027,6 +1037,17 @@ function init(){
     for (var i = 0; i < DM.length; i++) {
       DM_WIDTHS[i] = cx.measureText(DM[i].text || '').width + 20;
     }
+  }
+
+  // 九宫格中心点计算（Canvas 渲染器内部独立副本，避免作用域依赖）
+  function gridOrigin(name){
+    var G={
+      'top-left':[16.67,16.67],'top':[50,16.67],'top-right':[83.33,16.67],
+      'mid-left':[16.67,50],'center':[50,50],'mid-right':[83.33,50],
+      'bot-left':[16.67,83.33],'bottom':[50,83.33],'bot-right':[83.33,83.33]
+    };
+    var p=G[name]||[50,50];
+    return p[0]+'% '+p[1]+'%';
   }
 
   // ---- 构建事件索引 (预处理, 只跑一次) ----
