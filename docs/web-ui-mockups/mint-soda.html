@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V-Trim Web UI · 样稿 ② Mint Soda 薄荷汽水 · 事件管理</title>
+<style>
+/* ============================================================
+   V-Trim Web UI 设计样稿 · ② Mint Soda 薄荷汽水
+   风格定位: 清爽数据风 · 左导航 + 顶部工具栏 + 紧凑事件表格 (P3 Tab2)
+   布局特征: 左侧固定导航 · 全宽工具条 · 高密度表格 · 方中带圆
+   ============================================================ */
+:root{
+  --bg:#F4FBF9;  --bg-soft:#EAF7F4;  --card:#FFFFFF;
+  --line:#DCEFE9;  --line-soft:#ECF7F3;
+  --ink:#2E4A45;  --ink-dim:#6E8B85;  --ink-faint:#A8C0BA;
+  --main:#45BEAA;  --main-deep:#2FA896;  --main-soft:#DFF4EF;
+  --main-glow:#A7E5DA;  --blue:#6FA8E0;  --blue-soft:#E7F1FC;
+  --mint:#9BD9C8;  --amber:#EBB64F;  --amber-soft:#FBF1DA;
+  --green:#3FAE92;  --green-soft:#DEF2EC;  --red:#E86E6E;  --red-soft:#FBE8E8;
+  --r:10px; --r-s:6px;
+  --shadow:0 4px 18px rgba(69,190,170,.10), 0 1px 4px rgba(46,74,69,.04);
+  --shadow-hover:0 8px 24px rgba(69,190,170,.16), 0 2px 6px rgba(46,74,69,.05);
+  --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Courier New',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:var(--font);}
+body{background:var(--bg);color:var(--ink);height:100vh;overflow:hidden;display:flex;}
+
+/* 左侧导航 */
+.nav{width:216px;flex:0 0 216px;background:var(--card);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:22px 14px 16px;}
+.brand{display:flex;align-items:center;gap:10px;padding:0 8px 20px;}
+.brand-logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--main),var(--main-glow));
+  display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;box-shadow:0 4px 12px rgba(69,190,170,.35);}
+.brand-name{font-size:16px;font-weight:700;letter-spacing:.4px;color:#2FA896;}
+.brand-sub{font-size:10px;color:var(--ink-faint);letter-spacing:.12em;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:2px 0;border-radius:9px;
+  font-size:14px;color:var(--ink-dim);cursor:pointer;}
+.nav-item:hover{background:var(--bg-soft);}
+.nav-item.active{background:var(--main-soft);color:var(--main-deep);font-weight:600;}
+.nav-item.active::before{content:'';width:4px;height:18px;border-radius:2px;background:var(--main);margin-right:-6px;}
+.nav-item .ico{font-size:16px;width:20px;text-align:center;}
+.nav-gap{flex:1;}
+.nav-task{margin:0 2px 10px;padding:12px;border-radius:9px;background:var(--main-soft);font-size:12px;color:#439182;}
+.nav-task b{display:block;font-size:15px;color:var(--main-deep);margin:2px 0;}
+.nav-map{padding:10px 12px;border-radius:8px;background:var(--bg);border:1px solid var(--line-soft);font-size:10px;color:var(--ink-faint);line-height:1.9;}
+.nav-map .sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:4px;border:1px solid rgba(0,0,0,.06);}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0;}
+.hd{height:56px;display:flex;align-items:center;gap:16px;padding:0 24px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.62);}
+.crumb{font-size:13px;color:var(--ink-faint);}
+.crumb b{color:var(--ink);font-size:14px;margin:0 5px;}
+.hd-tabs{display:flex;gap:4px;margin-left:6px;}
+.hd-tab{padding:8px 14px;font-size:13px;color:var(--ink-dim);cursor:pointer;border-radius:8px 8px 0 0;border-bottom:2px solid transparent;}
+.hd-tab.active{color:var(--main-deep);font-weight:600;border-bottom-color:var(--main);background:var(--main-soft);}
+.hd-actions{margin-left:auto;display:flex;gap:10px;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 15px;border-radius:8px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);font-size:13px;cursor:pointer;transition:all .15s;}
+.btn:hover{box-shadow:var(--shadow-hover);transform:translateY(-1px);}
+.btn-primary{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;border:none;box-shadow:0 4px 12px rgba(69,190,170,.35);}
+.btn-primary:hover{box-shadow:0 6px 16px rgba(69,190,170,.45);}
+.btn-ghost{background:transparent;border:none;color:var(--main-deep);box-shadow:none;} .btn-ghost:hover{background:var(--main-soft);}
+
+.content{flex:1;overflow:auto;padding:20px 24px 24px;}
+
+/* 数据概览条 */
+.kv-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
+.kv{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:var(--r-s);
+  padding:10px 16px;box-shadow:var(--shadow);font-size:12px;color:var(--ink-dim);}
+.kv .ico{font-size:16px;}
+.kv b{font-size:17px;color:var(--ink);margin-left:2px;font-family:var(--mono);font-weight:700;}
+.kv em{display:block;font-style:normal;font-size:10px;color:var(--ink-faint);margin-top:1px;}
+
+/* 工具条 */
+.toolbar{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--r) var(--r) 0 0;border-bottom:none;box-shadow:var(--shadow);}
+.search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;min-width:220px;}
+.search input{border:none;outline:none;background:transparent;font-size:13px;color:var(--ink);width:100%;}
+.search input::placeholder{font-family:var(--font);}
+.search .ico{color:var(--ink-faint);font-size:13px;}
+.select{padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);font-size:12px;
+  color:var(--ink-dim);cursor:pointer;display:flex;align-items:center;gap:6px;}
+.toolbar .sp{margin-left:auto;}
+
+/* 表格 */
+.table-card{background:var(--card);border:1px solid var(--line);border-radius:0 0 var(--r) var(--r);box-shadow:var(--shadow);overflow:hidden;}
+table{width:100%;border-collapse:collapse;}
+thead th{font-size:11px;color:var(--ink-faint);font-weight:600;text-align:left;padding:10px 14px;border-bottom:1px solid var(--line-soft);letter-spacing:.05em;}
+tbody td{padding:12px 14px;font-size:13px;border-bottom:1px solid var(--line-soft);}
+tr:hover td{background:var(--bg);}
+tr.sel td{background:var(--main-soft);}
+.rank{font-family:var(--mono);font-size:12px;color:var(--ink-dim);width:44px;}
+.t-title{font-weight:600;color:var(--ink);cursor:pointer;}
+.t-title:hover{color:var(--main-deep);}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:7px;font-size:12px;font-weight:600;}
+.badge .ico{font-size:13px;}
+.badge.gameplay{background:var(--blue-soft);color:#4C7FE0;} .badge.interaction{background:var(--main-soft);color:#2FA896;}
+.badge.eating{background:#FFF0E2;color:#E28547;} .badge.music{background:var(--amber-soft);color:#C98F2B;}
+.badge.discussion{background:#FFF4DE;color:#D99B2B;} .badge.other{background:#EFF3F4;color:#86989C;}
+.time{font-family:var(--mono);font-size:12px;color:var(--ink-dim);}
+.hbar{display:inline-block;width:80px;height:7px;border-radius:4px;background:var(--bg-soft);position:relative;overflow:hidden;vertical-align:middle;margin-right:8px;}
+.hbar i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:linear-gradient(90deg,var(--main-glow),var(--main));}
+.hval{font-family:var(--mono);font-size:12px;color:var(--ink-dim);}
+.switch{position:relative;display:inline-block;width:34px;height:19px;vertical-align:middle;}
+.switch input{display:none;}
+.switch i{position:absolute;inset:0;border-radius:9px;background:var(--line);transition:all .2s;}
+.switch i::after{content:'';position:absolute;left:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:all .2s;box-shadow:0 1px 3px rgba(0,0,0,.15);}
+.switch input:checked+i{background:var(--main);}
+.switch input:checked+i::after{left:17px;}
+.row-actions{display:flex;gap:6px;opacity:0;transition:opacity .15s;}
+tr:hover .row-actions{opacity:1;}
+.ia{width:26px;height:26px;border-radius:7px;border:1px solid var(--line);background:var(--card);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;color:var(--ink-dim);}
+.ia:hover{background:var(--main-soft);color:var(--main-deep);border-color:var(--main);}
+
+/* 底部翻页 */
+.pager{display:flex;align-items:center;gap:8px;padding:12px 14px;border-top:1px solid var(--line-soft);font-size:12px;color:var(--ink-dim);}
+.pager b{color:var(--ink);}
+.pager .pg{margin-left:auto;display:flex;gap:4px;}
+.pg-btn{min-width:28px;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--card);font-size:12px;cursor:pointer;color:var(--ink-dim);}
+.pg-btn.on{background:var(--main);color:#fff;border-color:var(--main);}
+
+.mock-tip{margin-top:18px;font-size:11px;line-height:1.9;color:var(--ink-faint);border-top:1px dashed var(--line);padding-top:12px;}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="brand">
+    <div class="brand-logo">V</div>
+    <div><div class="brand-name">V-TRIM</div><div class="brand-sub">切片管理台</div></div>
+  </div>
+  <div class="nav-item"><span class="ico">🌐</span>总览</div>
+  <div class="nav-item active"><span class="ico">🗂️</span>项目</div>
+  <div class="nav-item"><span class="ico">🤖</span>模型</div>
+  <div class="nav-item"><span class="ico">🎬</span>精修</div>
+  <div class="nav-item"><span class="ico">⚙️</span>设置</div>
+  <div class="nav-gap"></div>
+  <div class="nav-task"><span>🟡 运行监控</span><b>2 个任务进行中</b>Transcriber 75/120 · Detector</div>
+  <div class="nav-map">
+    <b>→ 暗色 UI 映射</b>
+    <div><span class="sw" style="background:#F4FBF9"></span>#F4FBF9&nbsp;→ <span class="sw" style="background:#2a2a2a"></span>#2a2a2a</div>
+    <div><span class="sw" style="background:#45BEAA"></span>#45BEAA&nbsp;→ <span class="sw" style="background:#2dd4bf"></span>#2dd4bf</div>
+    <div><span class="sw" style="background:#6FA8E0"></span>#6FA8E0&nbsp;→ <span class="sw" style="background:#2563eb"></span>#2563eb</div>
+  </div>
+</nav>
+
+<div class="main">
+  <header class="hd">
+    <div class="crumb">项目 <b>/</b> 3d 录播</div>
+    <div class="hd-tabs">
+      <span class="hd-tab">概览</span>
+      <span class="hd-tab active">事件</span>
+      <span class="hd-tab">片段库</span>
+      <span class="hd-tab">字幕转录</span>
+      <span class="hd-tab">项目设置</span>
+    </div>
+    <div class="hd-actions">
+      <button class="btn">📤 导出</button>
+      <button class="btn btn-primary">✨ 全流程运行</button>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="kv-row">
+      <div class="kv"><span class="ico">📽️</span><span>总时长<b>2:14:33</b><em>h264 · 1080p</em></span></div>
+      <div class="kv"><span class="ico">📌</span><span>事件<b>12</b><em>启用 9 · 禁用 3</em></span></div>
+      <div class="kv"><span class="ico">🔥</span><span>平均热度<b>0.58</b><em>/ 1.0</em></span></div>
+      <div class="kv"><span class="ico">🧠</span><span>ASR<b>qwen3</b><em>锚点覆盖 100%</em></span></div>
+      <div class="kv"><span class="ico">🎞️</span><span>片段<b>9</b><em>共 32m41s</em></span></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search"><span class="ico">🔍</span><input placeholder="搜索事件标题 / 摘要…"></div>
+      <span class="select">类型 ▾</span>
+      <span class="select">排序: 热度 ▾</span>
+      <span class="select" style="color:var(--main-deep);font-weight:600">☑ 仅启用</span>
+      <span class="sp"></span>
+      <button class="btn" style="color:var(--main-deep);border-color:var(--main);background:var(--main-soft)">🔁 重新检测</button>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead><tr><th style="width:44px">#</th><th>标题</th><th>类型</th><th style="width:118px">时段</th><th style="width:150px">热度</th><th style="width:56px">启用</th><th style="width:86px"></th></tr></thead>
+        <tbody>
+          <tr class="sel"><td class="rank">01</td><td class="t-title">🎮 开局 20 杀</td><td><span class="badge gameplay"><span class="ico">🎮</span>gameplay</span></td><td class="time">00:01:33</td><td><span class="hbar"><i style="width:72%"></i></span><span class="hval">0.72</span></td><td><label class="switch"><input type="checkbox" checked><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+          <tr><td class="rank">02</td><td class="t-title">💬 弹幕问答</td><td><span class="badge interaction"><span class="ico">💬</span>interaction</span></td><td class="time">00:12:10</td><td><span class="hbar"><i style="width:61%"></i></span><span class="hval">0.61</span></td><td><label class="switch"><input type="checkbox" checked><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+          <tr><td class="rank">03</td><td class="t-title">🗣 夏季新番讨论</td><td><span class="badge discussion"><span class="ico">🗣</span>discussion</span></td><td class="time">00:24:47</td><td><span class="hbar"><i style="width:44%"></i></span><span class="hval">0.44</span></td><td><label class="switch"><input type="checkbox" checked><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+          <tr><td class="rank">04</td><td class="t-title">😋 吃播回放</td><td><span class="badge eating"><span class="ico">😋</span>eating</span></td><td class="time">00:47:51</td><td><span class="hbar"><i style="width:35%"></i></span><span class="hval">0.35</span></td><td><label class="switch"><input type="checkbox" checked><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+          <tr><td class="rank">05</td><td class="t-title">🎵 片尾曲</td><td><span class="badge music"><span class="ico">🎵</span>music</span></td><td class="time">01:28:44</td><td><span class="hbar"><i style="width:28%"></i></span><span class="hval">0.28</span></td><td><label class="switch"><input type="checkbox"><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+          <tr><td class="rank">06</td><td class="t-title">🎭 其他片段</td><td><span class="badge other"><span class="ico">🎭</span>other</span></td><td class="time">02:05:19</td><td><span class="hbar"><i style="width:18%"></i></span><span class="hval">0.18</span></td><td><label class="switch"><input type="checkbox"><i></i></label></td><td><div class="row-actions"><button class="ia">✏️</button><button class="ia">▶</button></div></td></tr>
+        </tbody>
+      </table>
+      <div class="pager">
+        共 <b>12</b> 条 · 已启用 <b>9</b> / 12
+        <div class="pg"><button class="pg-btn">‹</button><button class="pg-btn on">1</button><button class="pg-btn">2</button><button class="pg-btn">›</button></div>
+      </div>
+    </div>
+
+    <div class="mock-tip">
+      <b>→ 暗色 Web UI 映射（节选）</b><br>
+      <span class="sw" style="background:#F4FBF9"></span>#F4FBF9 → <span class="sw" style="background:#2a2a2a"></span>#2a2a2a 页面底 ·
+      <span class="sw" style="background:#45BEAA"></span>#45BEAA → <span class="sw" style="background:#2dd4bf"></span>#2dd4bf 主强调 ·
+      <span class="sw" style="background:#6FA8E0"></span>#6FA8E0 → <span class="sw" style="background:#2563eb"></span>#2563eb 辅强调<br>
+      本样稿: 清爽数据风 · 左导航 + 紧凑表格 · 高密度信息 · 对应设计文档 P3-Tab2 事件管理。
+    </div>
+  </div>
+</div>
+</body>
+</html>

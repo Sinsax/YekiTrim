@@ -133,6 +133,9 @@ pub enum Command {
 
     /// 显示当前处理进度
     Status,
+
+    /// 启动本地 WebUI 服务（浏览器可视化操作全流程）
+    Server(crate::server::ServerArgs),
 }
 
 #[derive(Subcommand)]

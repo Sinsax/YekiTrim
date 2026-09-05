@@ -136,6 +136,38 @@ body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
 .ed-resize { position:absolute; right:0; top:0; width:8px; height:100%; cursor:ew-resize; background:rgba(255,255,255,0.35); border-radius:0 4px 4px 0; }
 #editor-playhead { position:absolute; top:0; bottom:0; width:2px; background:#ff6bcb; z-index:5; pointer-events:none; }
 #editor-status { color:#9ca3af; font-size:12px; }
+/* 纯编辑器嵌入模式：隐藏播放器，编辑器占满可视区 */
+body.editor-embed #page{ display:none !important; }
+body.editor-embed #editor-panel{ position:static; height:100vh; height:100%; width:100%; display:flex; }
+body.editor-embed #editor-body{ min-height:0; }
+body.editor-embed #loading-spinner{ display:none !important; }
+
+/* player-only: iframe 内只保留纯视频画面，控制条/进度条/编辑器由 WebUI 外部接管 */
+body.player-only #controls,
+body.player-only #playtest,
+body.player-only #btn-fullscreen,
+body.player-only #btn-editor,
+body.player-only #intro-black {
+  display: none !important;
+}
+body.player-only #player-wrap {
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  padding: 0;
+}
+body.player-only #player {
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+body.player-only #page {
+  padding: 0;
+  background: #000;
+}
+
 </style>
 </head>
 <body>
@@ -2329,6 +2361,55 @@ function init(){
   function init(){
     if(document.readyState==='loading'){
       document.addEventListener('DOMContentLoaded', init);
+      return;
+    }
+    var params = new URLSearchParams(location.search);
+    var isPlayerOnly = params.get('player')==='1';
+    var isEmbedEditor = params.get('editor')==='1' && params.get('embed')==='1';
+    if(isPlayerOnly){
+      var edBtn=document.getElementById('btn-editor');
+      if(edBtn) edBtn.style.display='none';
+      var panel=document.getElementById('editor-panel');
+      if(panel) panel.style.display='none';
+      document.body.classList.add('player-only');
+      window.__playerOnly=true;
+      // 暴露给父页面：播放/暂停/seek/获取时间
+      window.__polishPlayerControl = {
+        play: function(){ if(!playing) play(); },
+        pause: function(){ if(playing){ playing=false; video.pause(); if(raf) cancelAnimationFrame(raf); pb.textContent='▶'; } },
+        seek: function(t){ if(isFinite(t)) window.__seekTo(t); },
+        getTime: function(){ return video ? video.currentTime : 0; }
+      };
+      // 父页面控制播放器（postMessage）
+      window.addEventListener('message', function(ev){
+        var d = ev.data || {};
+        if(d && d.type === 'polish-player'){
+          var c = window.__polishPlayerControl;
+          if(!c) return;
+          if(d.cmd === 'play') c.play();
+          else if(d.cmd === 'pause') c.pause();
+          else if(d.cmd === 'seek') c.seek(Number(d.time) || 0);
+        }
+      });
+      // 向父页面上报时间，供 WebUI 原生进度条
+      var v = document.getElementById('source-video');
+      if(v){
+        v.addEventListener('timeupdate', function(){
+          try{ window.parent.postMessage({ type:'polish-player-time', time:v.currentTime, duration:v.duration || 0 }, '*'); }catch(e){}
+        });
+        v.addEventListener('loadedmetadata', function(){
+          try{ window.parent.postMessage({ type:'polish-player-time', time:v.currentTime, duration:v.duration || 0 }, '*'); }catch(e){}
+        });
+      }
+      return;
+    }
+    if(isEmbedEditor){
+      document.body.classList.add('editor-embed');
+      window.__editorEmbed=true;
+      bind();
+      window.addEventListener('resize', updateEditorLayout);
+      updateEditorLayout();
+      toggle(true);
       return;
     }
     bind();

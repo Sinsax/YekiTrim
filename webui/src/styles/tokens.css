@@ -1,0 +1,32 @@
+:root {
+  --bg: #FFF7F3;
+  --bg-soft: #FFEFE7;
+  --card: #fff;
+  --line: #F2E1D9;
+  --line-soft: #FAEEE7;
+  --ink: #4A3F45;
+  --ink-dim: #9C8B92;
+  --ink-faint: #C9B8BE;
+  --main: #F682B8;
+  --main-deep: #EE6FA6;
+  --main-soft: #FDE3EC;
+  --main-glow: #FFD3E1;
+  --blue: #7FA8F0;
+  --blue-soft: #E8EEFC;
+  --mint: #59C0AC;
+  --mint-soft: #E2F6F1;
+  --amber: #F2B23E;
+  --amber-soft: #FCF0D9;
+  --green: #4FBF9C;
+  --green-soft: #DEF2EA;
+  --red: #E8727E;
+  --red-soft: #FBE3E5;
+  --r: 16px;
+  --shadow: 0 8px 26px rgba(238,111,166,.10), 0 2px 6px rgba(90,60,70,.04);
+  --shadow-hover: 0 12px 34px rgba(238,111,166,.18), 0 3px 8px rgba(90,60,70,.05);
+  --font: 'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --mono: 'Consolas','Courier New',monospace;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:var(--font); }
+body { background:var(--bg); color:var(--ink); min-height:100vh; font-size:13px; line-height:1.6; }
+#app { min-height:100vh; }

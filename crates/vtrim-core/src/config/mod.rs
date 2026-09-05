@@ -127,13 +127,21 @@ pub fn write_project_config(
     body = doc.to_string();
 
     // 构建 [project] 块（带注释），放在最前面
+    let config_dir = cfg_path.parent().unwrap_or(Path::new("."));
+    let path_to_rel = |p: &Path| -> String {
+        if let Ok(rel) = p.strip_prefix(config_dir) {
+            rel.to_string_lossy().to_string()
+        } else {
+            p.to_string_lossy().to_string()
+        }
+    };
     let danmaku_val = match danmaku {
-        Some(df) => df.to_string_lossy().to_string(),
+        Some(df) => path_to_rel(df),
         None => {
             let auto_ass = input.with_extension("ass");
             if auto_ass.exists() {
                 tracing::info!("自动发现弹幕文件: {}", auto_ass.display());
-                auto_ass.to_string_lossy().to_string()
+                path_to_rel(&auto_ass)
             } else {
                 String::new()
             }
@@ -346,16 +354,25 @@ struct LlmFile {
 }
 
 pub fn load_config() -> Result<Config> {
+    load_config_at(Path::new("vtrim.toml"))
+}
+
+/// 从指定项目配置文件加载合并配置。
+///
+/// 与 `load_config()` 语义一致：
+/// - 先加载全局 `.vtrim/config.toml`
+/// - 再用指定项目文件覆盖（项目文件不存在时按空项目处理，不报错）
+/// - 最后独立加载 `.vtrim/llm.toml`
+pub fn load_config_at(project_file: &Path) -> Result<Config> {
     let mut config = Config::default();
 
-    // 优先级: 先加载全局配置，再用 vtrim.toml 覆盖（vtrim.toml 优先级更高）
     let global = crate::path::vtrim_home().join("config.toml");
     if let Some(overlay) = load_from_file(&global)? {
         merge(&mut config, overlay);
     }
 
-    let local = PathBuf::from("vtrim.toml");
-    if let Some(overlay) = load_from_file(&local)? {
+    let project = project_file.to_path_buf();
+    if let Some(overlay) = load_from_file(&project)? {
         merge(&mut config, overlay);
     }
 
@@ -376,31 +393,45 @@ pub fn load_global_config() -> Config {
     config
 }
 
-/// 用 toml_edit 将 events_file 写入 vtrim.toml
+/// 用 toml_edit 将 events_file 写入当前目录的 vtrim.toml
 pub fn save_events_path(path: &str) -> Result<()> {
-    edit_toml(|doc| {
+    save_events_path_in(&PathBuf::from("vtrim.toml"), path)
+}
+
+/// 用 toml_edit 将 audio_file 写入当前目录的 vtrim.toml
+pub fn save_audio_path(path: &str) -> Result<()> {
+    save_audio_path_in(&PathBuf::from("vtrim.toml"), path)
+}
+
+/// 用 toml_edit 将 transcript_file 写入当前目录的 vtrim.toml
+pub fn save_transcript_path(path: &str) -> Result<()> {
+    save_transcript_path_in(&PathBuf::from("vtrim.toml"), path)
+}
+
+/// 用 toml_edit 将 events_file 写入指定项目配置文件
+pub fn save_events_path_in(project_file: &Path, path: &str) -> Result<()> {
+    edit_toml_at(project_file, |doc| {
         doc["project"]["events_file"] = toml_edit::value(path);
     })
 }
 
-/// 用 toml_edit 将 audio_file 写入 vtrim.toml
-pub fn save_audio_path(path: &str) -> Result<()> {
-    edit_toml(|doc| {
+/// 用 toml_edit 将 audio_file 写入指定项目配置文件
+pub fn save_audio_path_in(project_file: &Path, path: &str) -> Result<()> {
+    edit_toml_at(project_file, |doc| {
         doc["project"]["audio_file"] = toml_edit::value(path);
     })
 }
 
-/// 用 toml_edit 将 transcript_file 写入 vtrim.toml
-pub fn save_transcript_path(path: &str) -> Result<()> {
-    edit_toml(|doc| {
+/// 用 toml_edit 将 transcript_file 写入指定项目配置文件
+pub fn save_transcript_path_in(project_file: &Path, path: &str) -> Result<()> {
+    edit_toml_at(project_file, |doc| {
         doc["project"]["transcript_file"] = toml_edit::value(path);
     })
 }
 
-fn edit_toml(f: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<()> {
-    let path = PathBuf::from("vtrim.toml");
-    let content = if path.exists() {
-        std::fs::read_to_string(&path)?
+fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<()> {
+    let content = if project_file.exists() {
+        std::fs::read_to_string(project_file)?
     } else {
         String::new()
     };
@@ -408,6 +439,39 @@ fn edit_toml(f: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<()> {
         .parse()
         .unwrap_or_else(|_| toml_edit::DocumentMut::new());
     f(&mut doc);
-    std::fs::write(&path, doc.to_string())?;
+    if let Some(parent) = project_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(project_file, doc.to_string())?;
     Ok(())
+}
+
+fn rel_path_for(project_file: &Path, value: &str) -> String {
+    let p = Path::new(value);
+    if p.is_absolute() {
+        if let Some(dir) = project_file.parent() {
+            if let Ok(rel) = p.strip_prefix(dir) {
+                return rel.to_string_lossy().into_owned();
+            }
+        }
+    }
+    value.to_string()
+}
+
+/// 将项目配置文件里已记录的绝对产物路径统一改写为相对路径。
+///
+/// 项目目录整体移动后仍可继续使用；`vtrim init` / server 切换 / 保存阶段产物时调用。
+pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
+    edit_toml_at(project_file, |doc| {
+        let project = doc.get_mut("project").and_then(|p| p.as_table_mut());
+        if let Some(project) = project {
+            for key in ["input_file", "danmaku_file", "audio_file", "transcript_file", "events_file"] {
+                if let Some(val) = project.get_mut(key).and_then(|v| v.as_str().map(|s| s.to_string())) {
+                    if !val.is_empty() {
+                        project[key] = toml_edit::value(rel_path_for(project_file, &val));
+                    }
+                }
+            }
+        }
+    })
 }

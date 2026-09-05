@@ -13,3 +13,5 @@ __pycache__/
 *.pyc
 /assets/sfx_catalog.json
 /scripts/asrtest/wavs/
+
+/.zcode/

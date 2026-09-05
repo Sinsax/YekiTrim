@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V-Trim Web UI · 样稿 ③ Sky Glow 星辉天空 · 总览仪表盘</title>
+<style>
+/* ============================================================
+   V-Trim Web UI 设计样稿 · ③ Sky Glow 星辉天空
+   风格定位: 玻璃拟态仪表盘 · 大卡片 · 渐变光晕 · P1 总览页
+   布局特征: 左侧导航 + 中央仪表盘 + 光晕/星尘背景 + 毛玻璃
+   ============================================================ */
+:root{
+  --bg:#F7FAFF;  --bg-soft:#EEF3FC;  --card:rgba(255,255,255,.78);
+  --line:#DFE8F6;  --line-soft:#EDF2FB;
+  --ink:#35405C;  --ink-dim:#7787A8;  --ink-faint:#A8B6D3;
+  --main:#7FA8F0;  --main-deep:#5F8DEB;  --main-soft:#E9F0FD;
+  --main-glow:#BBD1F9;  --pink:#F2A0C0;  --pink-soft:#FBE9F1;
+  --mint:#69CFB8;  --amber:#F0BA50;  --amber-soft:#FCF1DD;
+  --green:#55B99F;  --green-soft:#DFF2EC;  --red:#E87474;  --red-soft:#FBE7E7;
+  --r:18px; --r-s:12px;
+  --shadow:0 8px 30px rgba(127,168,240,.12), 0 2px 8px rgba(53,64,92,.05);
+  --shadow-hover:0 12px 36px rgba(127,168,240,.20), 0 3px 10px rgba(53,64,92,.06);
+  --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Courier New',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:var(--font);}
+body{background:var(--bg);color:var(--ink);height:100vh;overflow:hidden;display:flex;}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background:
+  radial-gradient(560px 300px at 86% -70px, rgba(127,168,240,.20), transparent 70%),
+  radial-gradient(440px 280px at -60px 28%, rgba(242,160,192,.14), transparent 70%),
+  radial-gradient(300px 200px at 40% 110%, rgba(105,207,184,.10), transparent 70%);}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;background-image:
+  radial-gradient(rgba(127,168,240,.35) 1px, transparent 1.4px);background-size:54px 54px;}
+
+/* 左导航 */
+.nav{width:212px;flex:0 0 212px;background:var(--card);backdrop-filter:blur(14px);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:24px 14px 16px;position:relative;z-index:1;}
+.brand{display:flex;align-items:center;gap:10px;padding:0 8px 20px;}
+.brand-logo{width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--main),#9BB8F6);
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;box-shadow:0 6px 18px rgba(127,168,240,.45);}
+.brand-name{font-size:16px;font-weight:700;letter-spacing:.4px;color:#5F7FD8;}
+.brand-sub{font-size:10px;color:var(--ink-faint);letter-spacing:.13em;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:2px 0;border-radius:12px;
+  font-size:14px;color:var(--ink-dim);cursor:pointer;}
+.nav-item:hover{background:var(--bg-soft);}
+.nav-item.active{background:var(--main-soft);color:var(--main-deep);font-weight:600;}
+.nav-item.active::before{content:'';width:4px;height:18px;border-radius:2px;background:linear-gradient(180deg,var(--main-glow),var(--main));margin-right:-6px;}
+.nav-item .ico{font-size:16px;width:20px;text-align:center;}
+.nav-gap{flex:1;}
+.nav-task{margin:0 2px 10px;padding:12px;border-radius:12px;background:var(--main-soft);border:1px solid transparent;
+  font-size:12px;color:#5F7FD8;background-image:linear-gradient(var(--main-soft),var(--main-soft)),linear-gradient(135deg,var(--main-glow),transparent);}
+.nav-task b{display:block;font-size:15px;color:var(--main-deep);margin:2px 0;}
+.nav-map{padding:10px 12px;border-radius:12px;background:var(--bg-soft);border:1px solid var(--line-soft);font-size:10px;color:var(--ink-faint);line-height:1.9;}
+.nav-map .sw{display:inline-block;width:14px;height:14px;border-radius:5px;vertical-align:-2px;margin-right:4px;border:1px solid rgba(0,0,0,.06);}
+
+/* 中央 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative;z-index:1;overflow:auto;}
+.header{padding:26px 30px 0;}
+.header h1{font-size:24px;font-weight:700;}
+.header .sub{font-size:13px;color:var(--ink-dim);margin-top:4px;}
+
+.dash{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;padding:22px 30px 30px;max-width:1100px;}
+
+/* 玻璃卡 */
+.gcard{background:var(--card);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:var(--r);
+  padding:22px;box-shadow:var(--shadow);transition:all .18s;position:relative;overflow:hidden;}
+.gcard:hover{box-shadow:var(--shadow-hover);transform:translateY(-2px);}
+.gcard::before{content:'';position:absolute;right:-30px;top:-30px;width:110px;height:110px;border-radius:50%;
+  background:radial-gradient(circle,rgba(127,168,240,.14),transparent 70%);}
+.gcard h2{font-size:14px;color:var(--ink-dim);font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px;}
+.gcard h2 .ic{font-size:17px;}
+.gcard .more{margin-left:auto;font-size:11px;color:var(--main-deep);cursor:pointer;font-weight:500;}
+
+/* 环境健康 chips */
+.health{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.hchip{background:var(--bg-soft);border:1px solid var(--line-soft);border-radius:var(--r-s);padding:12px;text-align:center;cursor:pointer;transition:all .15s;}
+.hchip:hover{transform:translateY(-2px);box-shadow:var(--shadow);}
+.hchip .st{font-size:20px;line-height:1.2;}
+.hchip .nm{font-size:12px;font-weight:600;margin-top:6px;}
+.hchip .dt{font-size:10px;color:var(--ink-faint);margin-top:2px;}
+.hchip.ok .st{color:var(--green);} .hchip.warn .st{color:var(--amber);} .hchip.fail .st{color:var(--red);}
+.hchip.ok{background:linear-gradient(160deg,var(--green-soft),var(--bg-soft));}
+.hchip.warn{background:linear-gradient(160deg,var(--amber-soft),var(--bg-soft));}
+.hchip.fail{background:linear-gradient(160deg,var(--red-soft),var(--bg-soft));}
+.hchip.running .st{color:var(--main);}
+.hchip.running{background:linear-gradient(160deg,var(--main-soft),var(--bg-soft));}
+
+/* 最近项目 mini 卡 */
+.pmini{display:flex;align-items:center;gap:14px;padding:12px;border-radius:var(--r-s);border:1px solid transparent;cursor:pointer;transition:all .15s;}
+.pmini:hover{background:var(--bg-soft);border-color:var(--line-soft);}
+.pmini .th{width:64px;height:44px;border-radius:9px;background:linear-gradient(135deg,var(--main-soft),var(--pink-soft));
+  display:flex;align-items:center;justify-content:center;font-size:20px;flex:0 0 64px;border:1px solid var(--line-soft);}
+.pmini .tt{min-width:0;}
+.pmini .tt b{font-size:14px;display:block;}
+.pmini .tt .meta{font-size:11px;color:var(--ink-dim);margin-top:2px;font-family:var(--mono);}
+.pmini .stage{font-size:10px;color:var(--ink-faint);margin-top:3px;}
+.stage .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px;}
+.stage .dot.d{background:var(--green);} .stage .dot.c{background:var(--main);} .stage .dot.w{background:var(--line);}
+.pmini .right{margin-left:auto;text-align:right;}
+.pmini .right .pct{font-size:13px;font-weight:700;color:var(--main-deep);font-family:var(--mono);}
+.pmini .right .lbl{font-size:10px;color:var(--ink-faint);}
+
+/* 快速操作 */
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.qbtn{display:flex;align-items:center;gap:12px;background:var(--bg-soft);border:1px solid var(--line-soft);
+  border-radius:var(--r-s);padding:14px;cursor:pointer;transition:all .15s;}
+.qbtn:hover{transform:translateY(-2px);box-shadow:var(--shadow);background:var(--card);}
+.qbtn .ic{font-size:20px;} .qbtn b{font-size:13px;display:block;} .qbtn small{font-size:10px;color:var(--ink-faint);}
+
+/* 任务面板 */
+.job{margin-bottom:14px;}
+.job:last-child{margin-bottom:0;}
+.job-title{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:8px;}
+.job-title b{font-weight:600;} .job-title .t{color:var(--ink-faint);font-size:11px;margin-left:auto;font-family:var(--mono);}
+.job-prog{height:9px;border-radius:5px;background:var(--bg-soft);overflow:hidden;position:relative;}
+.job-prog i{position:absolute;inset:0;border-radius:5px;background:linear-gradient(90deg,var(--main-glow),var(--main),var(--main-deep));
+  background-size:220% 100%;animation:flow 2.4s linear infinite;}
+@keyframes flow{from{background-position:0 0}to{background-position:220% 0}}
+.job-lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-dim);margin-top:7px;font-family:var(--mono);}
+.job-lbl .st{color:var(--main-deep);font-weight:600;}
+
+.mock-tip{margin:0 30px 30px;font-size:11px;line-height:1.9;color:var(--ink-faint);border-top:1px dashed var(--line);padding-top:14px;}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="brand">
+    <div class="brand-logo">V</div>
+    <div><div class="brand-name">V-TRIM</div><div class="brand-sub">切片管理台</div></div>
+  </div>
+  <div class="nav-item active"><span class="ico">🌐</span>总览</div>
+  <div class="nav-item"><span class="ico">🗂️</span>项目</div>
+  <div class="nav-item"><span class="ico">🤖</span>模型</div>
+  <div class="nav-item"><span class="ico">🎬</span>精修</div>
+  <div class="nav-item"><span class="ico">⚙️</span>设置</div>
+  <div class="nav-gap"></div>
+  <div class="nav-task"><span>🟡 运行监控</span><b>2 个任务进行中</b>Transcriber 75/120 · Detector</div>
+  <div class="nav-map">
+    <b>→ 暗色 UI 映射</b>
+    <div><span class="sw" style="background:#F7FAFF"></span>#F7FAFF&nbsp;→ <span class="sw" style="background:#2a2a2a"></span>#2a2a2a</div>
+    <div><span class="sw" style="background:#7FA8F0"></span>#7FA8F0&nbsp;→ <span class="sw" style="background:#2563eb"></span>#2563eb</div>
+    <div><span class="sw" style="background:#F2A0C0"></span>#F2A0C0&nbsp;→ <span class="sw" style="background:#ff6bcb"></span>#ff6bcb</div>
+  </div>
+</nav>
+
+<div class="main">
+  <div class="header">
+    <h1>总览</h1>
+    <div class="sub">工作区 F:\para\Code\V-Trim\media · 12 个项目 · 所有服务本地运行</div>
+  </div>
+
+  <div class="dash">
+    <!-- 环境健康 -->
+    <section class="gcard" style="grid-column:1 / -1">
+      <h2><span class="ic">💚</span>环境健康<span class="more">查看全部 ›</span></h2>
+      <div class="health">
+        <div class="hchip ok"><div class="st">✔</div><div class="nm">ffmpeg</div><div class="dt">6.1</div></div>
+        <div class="hchip ok"><div class="st">✔</div><div class="nm">ffprobe</div><div class="dt">6.1</div></div>
+        <div class="hchip ok"><div class="st">✔</div><div class="nm">sensevoice</div><div class="dt">165 MB</div></div>
+        <div class="hchip warn"><div class="st">⏳</div><div class="nm">firered-zh</div><div class="dt">218/520 MB</div></div>
+        <div class="hchip fail"><div class="st">✖</div><div class="nm">qwen3-asr</div><div class="dt">879 MB</div></div>
+        <div class="hchip ok"><div class="st">✔</div><div class="nm">Chrome</div><div class="dt">headless 可用</div></div>
+        <div class="hchip ok"><div class="st">✔</div><div class="nm">Polish</div><div class="dt">已就绪</div></div>
+        <div class="hchip warn"><div class="st">⚠</div><div class="nm">LLM</div><div class="dt">未配置 key</div></div>
+      </div>
+    </section>
+
+    <!-- 运行中任务 -->
+    <section class="gcard">
+      <h2><span class="ic">🟡</span>运行中任务<span class="more">监控台 ›</span></h2>
+      <div class="job">
+        <div class="job-title"><b>3d 录播</b> · 全流程<span class="t">已用 4m12s</span></div>
+        <div class="job-prog"><i style="width:62%"></i></div>
+        <div class="job-lbl"><span>Transcriber 75/120 块</span><span class="st">62%</span></div>
+      </div>
+      <div class="job">
+        <div class="job-title"><b>voicecover_0830</b> · 检测<span class="t">已用 1m03s</span></div>
+        <div class="job-prog"><i style="width:28%"></i></div>
+        <div class="job-lbl"><span>EventDetector · 3/12 事件</span><span class="st">28%</span></div>
+      </div>
+    </section>
+
+    <!-- 最近项目 -->
+    <section class="gcard">
+      <h2><span class="ic">📁</span>最近项目<span class="more">全部项目 ›</span></h2>
+      <div class="pmini"><div class="th">📺</div><div class="tt"><b>3d 录播</b><div class="meta">02:14:33 · 9 片段</div><div class="stage"><span class="dot d"></span><span class="dot d"></span><span class="dot d"></span><span class="dot c"></span> Stage 4</div></div><div class="right"><div class="pct">0.72</div><div class="lbl">热度</div></div></div>
+      <div class="pmini"><div class="th">🎮</div><div class="tt"><b>new_game_0921</b><div class="meta">01:22:08 · 转写中</div><div class="stage"><span class="dot d"></span><span class="dot c"></span><span class="dot w"></span><span class="dot w"></span> Stage 2</div></div><div class="right"><div class="pct">42%</div><div class="lbl">进度</div></div></div>
+      <div class="pmini"><div class="th">🍜</div><div class="tt"><b>mukbang_0715</b><div class="meta">03:05:44</div><div class="stage"><span class="dot d"></span><span class="dot w"></span><span class="dot w"></span><span class="dot w"></span> Stage 1</div></div><div class="right"><div class="pct">—</div><div class="lbl">进度</div></div></div>
+    </section>
+
+    <!-- 快速操作 -->
+    <section class="gcard" style="grid-column:1 / -1">
+      <h2><span class="ic">⚡</span>快速操作</h2>
+      <div class="quick">
+        <div class="qbtn"><span class="ic">＋</span><span><b>新建项目</b><small>选视频 · 自动发现弹幕</small></span></div>
+        <div class="qbtn"><span class="ic">⬇</span><span><b>下载缺失模型</b><small>qwen3-asr · 879 MB</small></span></div>
+        <div class="qbtn"><span class="ic">🤖</span><span><b>修正全部转写</b><small>3 个项目待订正</small></span></div>
+        <div class="qbtn"><span class="ic">🎬</span><span><b>打开精修工作台</b><small>6 个 polish 项目</small></span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="mock-tip">
+    <b>→ 暗色 Web UI 映射（节选）</b><br>
+    <span class="sw" style="background:#F7FAFF"></span>#F7FAFF → <span class="sw" style="background:#2a2a2a"></span>#2a2a2a 页面底 ·
+    <span class="sw" style="background:#7FA8F0"></span>#7FA8F0 → <span class="sw" style="background:#2563eb"></span>#2563eb 主强调 ·
+    <span class="sw" style="background:#F2A0C0"></span>#F2A0C0 → <span class="sw" style="background:#ff6bcb"></span>#ff6bcb 辅强调<br>
+    本样稿: 玻璃拟态仪表盘 · 大卡片 + 光晕背景 · 实时任务流 · 对应设计文档 P1 总览。
+  </div>
+</div>
+</body>
+</html>
