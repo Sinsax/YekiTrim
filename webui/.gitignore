@@ -1,2 +1,4 @@
 node_modules/
-dist/
+
+# dist/ 是 `vtrim server` 唯一提供的 WebUI 产物（服务端不再内嵌单文件页面），
+# 因此随仓库提交：改了 webui/src 之后必须 `npm run build` 并一起提交 dist。
