@@ -1,0 +1,1 @@
+import{c as a,a as s,e as o,o as t,B as c}from"./index-CgmMlAZw.js";const l={class:"card"},i={__name:"JobsView",setup(n){return(r,e)=>(t(),a("div",null,[e[0]||(e[0]=s("div",{class:"page-head"},[s("div",null,[s("h1",null,"运行监控"),s("div",{class:"sub"},"任务队列 / 进度 / 实时状态")])],-1)),s("div",l,[o(c,{actions:""})])]))}};export{i as default};

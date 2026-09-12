@@ -68,6 +68,9 @@ impl PipelineRunner {
             }
 
             let name = stage.name();
+            if ctx.progress.cancelled() {
+                bail!("任务已取消");
+            }
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
@@ -85,6 +88,9 @@ impl PipelineRunner {
 
         for stage in &self.stages {
             let name = stage.name();
+            if ctx.progress.cancelled() {
+                bail!("任务已取消");
+            }
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;
@@ -117,6 +123,9 @@ impl PipelineRunner {
                 );
             }
 
+            if ctx.progress.cancelled() {
+                bail!("任务已取消");
+            }
             ctx.progress.stage_started(name);
             tracing::info!("[{}] started", name);
             stage.run(ctx).await?;

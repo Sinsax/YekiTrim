@@ -69,6 +69,7 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
+import { projectEntryPath } from '../utils'
 import Icon from '../components/Icon.vue'
 import ProjectCard from '../components/ProjectCard.vue'
 import JobList from '../components/JobList.vue'
@@ -112,7 +113,8 @@ async function checkEnv() {
 }
 
 function openProject(p) {
-  router.push(`/project/${encodeURIComponent(p.config_file)}/preview`)
+  // 预处理（事件检测）已完成的项目直接进切片页，否则先进预览页
+  router.push(projectEntryPath(p.config_file, p.stage))
 }
 
 async function removeProject(p) {

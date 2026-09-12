@@ -11,27 +11,16 @@ use crate::project::{Event, ProjectFile};
 use super::backend::FrameRenderer;
 use super::context::RenderContext;
 use super::frame::TimedFrame;
+use vtrim_render_core as rcore;
 
-pub mod composite;
-pub mod context;
-pub mod draw;
-pub mod easing;
-pub mod effects;
-pub mod shaders;
 
-pub mod sprite;
-pub mod timeline;
 
 /// wgpu 渲染后端。
 ///
 /// 尚未实现 `render_chunk` 时，会通过默认 trait 方法落到 `render_frame` 并返回明确错误。
 
 
-/// 贴纸资源：多帧 GIF（每帧 RGBA + delay）或单帧 PNG。
-pub struct StickerAsset {
-    pub frames: Vec<Vec<u8>>,
-    pub delays: Vec<u16>,
-}
+pub use vtrim_render_core::StickerAsset;
 
 /// 贴纸解码结果全局缓存：key = (文件路径, mtime)。预览重复请求与多 chunk 并发共享。
 static STICKER_DECODE_CACHE: std::sync::OnceLock<
@@ -127,22 +116,6 @@ fn load_sticker_assets(ctx: &RenderContext) -> std::collections::HashMap<String,
     out
 }
 
-/// 获取贴纸事件对应的 RGBA 帧数组索引。
-fn sticker_frame_index(event_start: f64, t: f64, delays: &[u16]) -> usize {
-    if delays.is_empty() { return 0; }
-    let total: u32 = delays.iter().map(|d| *d as u32).sum();
-    if total == 0 { return 0; }
-    let elapsed_ms = ((t - event_start).max(0.0) * 1000.0) as u32;
-    let loop_pos = elapsed_ms % total;
-    let mut acc = 0u32;
-    for (i, d) in delays.iter().enumerate() {
-        acc += *d as u32;
-        if loop_pos < acc { return i; }
-    }
-    0
-}
-
-
 /// 并行 JPEG 编码：把 RGBA 帧转 JPEG。
 fn encode_all_parallel(frames: Vec<Vec<u8>>, width: u32, height: u32) -> Vec<anyhow::Result<Vec<u8>>> {
     let n = frames.len();
@@ -163,7 +136,7 @@ fn encode_all_parallel(frames: Vec<Vec<u8>>, width: u32, height: u32) -> Vec<any
             handles.push(scope.spawn(move || {
                 let mut out = Vec::new();
                 for rgba in local {
-                    out.push(draw::encode_jpeg(&rgba, width, height));
+                    out.push(rcore::draw::encode_jpeg(&rgba, width, height));
                 }
                 (start, out)
             }));
@@ -199,32 +172,28 @@ fn load_text_data(
 }
 
 pub struct WgpuBackend {
-    project_path: std::path::PathBuf,
-    config: ProjectFile,
     ctx: Option<RenderContext>,
-    /// 常驻 wgpu 上下文与渲染器：prepare 后创建，render_chunk 逐帧复用。
-    gpu: Option<Gpu>,
-}
-
-struct Gpu {
-    wgpu: context::WgpuContext,
-    source: draw::SourceRenderer,
-    effects: effects::EffectRenderer,
-    sprites: sprite::SpriteRenderer,
+    pipeline: Option<rcore::render::FramePipeline>,
+    gpu: Option<rcore::gpu::Gpu>,
 }
 
 impl WgpuBackend {
     pub fn new(project_path: &Path, config: &ProjectFile) -> anyhow::Result<Self> {
         Ok(Self {
-            project_path: project_path.to_path_buf(),
-            config: config.clone(),
             ctx: None,
+            pipeline: None,
             gpu: None,
         })
     }
 
     /// 单帧渲染（预览用）：传入 t 时刻的解码帧，返回合成后的 JPEG。
-    pub fn render_single(&mut self, t: f64, rgba: &[u8], width: u32, height: u32) -> anyhow::Result<Vec<u8>> {
+    pub fn render_single(
+        &mut self,
+        t: f64,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Vec<u8>> {
         let frames = [TimedFrame {
             index: 0,
             t,
@@ -238,20 +207,64 @@ impl WgpuBackend {
         Ok(self.render_chunk(&frames)?.remove(0))
     }
 
-    fn ensure_gpu(&mut self) -> anyhow::Result<&mut Gpu> {
+    fn ensure_gpu(&mut self) -> anyhow::Result<&mut rcore::gpu::Gpu> {
         if self.gpu.is_none() {
-            let ctx = self
-                .ctx
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("WgpuBackend::prepare must be called first"))?
-                .clone();
-            let wgpu = context::WgpuContext::new(ctx.width, ctx.height)?;
-            let source = draw::SourceRenderer::new(&wgpu.device)?;
-            let effects = effects::EffectRenderer::new(&wgpu.device)?;
-            let sprites = sprite::SpriteRenderer::new(&wgpu.device)?;
-            self.gpu = Some(Gpu { wgpu, source, effects, sprites });
+            let (device, queue) = rcore::gpu::create_offscreen_device()?;
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            self.gpu = Some(rcore::gpu::Gpu::from_parts(device, queue, self.ctx_width(), self.ctx_height(), format)?);
         }
         Ok(self.gpu.as_mut().unwrap())
+    }
+
+    fn ctx_width(&self) -> u32 {
+        self.ctx.as_ref().map(|c| c.width).unwrap_or(1920)
+    }
+
+    fn ctx_height(&self) -> u32 {
+        self.ctx.as_ref().map(|c| c.height).unwrap_or(1080)
+    }
+
+    fn prepare_pipeline(&mut self) -> anyhow::Result<()> {
+        let ctx = self
+            .ctx
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WgpuBackend::prepare must be called first"))?
+            .clone();
+        // 字节解析（桌面候选链） -> 注册表
+        let font = rcore::composite::FontSpec::new(&ctx.config.style.subtitle.font);
+        if rcore::composite::load_font_bytes(&font).is_none() {
+            let bytes = load_font_file(&ctx.project_path, &ctx.config.style.subtitle.font);
+            rcore::composite::set_font_bytes(&ctx.config.style.subtitle.font, bytes);
+        }
+        let (polish_subs, polish_dms) = load_text_data(&ctx);
+        let subs = polish_subs
+            .into_iter()
+            .map(|s| rcore::types::Subtitle { start: s.start, end: s.end, text: s.text, html: s.html })
+            .collect();
+        let dms = polish_dms
+            .into_iter()
+            .map(|d| rcore::types::Danmaku {
+                text: d.text,
+                start: d.start,
+                end: d.end,
+                y: d.y,
+                travel_duration: d.travel_duration,
+            })
+            .collect();
+        let sticker_assets = load_sticker_assets(&ctx);
+        self.pipeline = Some(rcore::render::FramePipeline::new(
+            &ctx.config.segments,
+            &ctx.config.layout,
+            &ctx.config.style.subtitle,
+            &ctx.config.style.danmaku,
+            &ctx.config.style.camera,
+            subs,
+            dms,
+            ctx.vertical,
+            &ctx.vertical_position,
+            font,
+        ));
+        Ok(())
     }
 }
 
@@ -262,6 +275,7 @@ impl FrameRenderer for WgpuBackend {
 
     fn prepare(&mut self, ctx: &RenderContext) -> anyhow::Result<()> {
         self.ctx = Some(ctx.clone());
+        self.pipeline = None;
         Ok(())
     }
 
@@ -269,37 +283,14 @@ impl FrameRenderer for WgpuBackend {
         if frames.is_empty() {
             return Ok(vec![]);
         }
-        let ctx = self
-            .ctx
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("WgpuBackend::prepare must be called first"))?
-            .clone();
-        let t0 = std::time::Instant::now();
-        let Gpu { wgpu, source: renderer, effects: effect_renderer, sprites: sprite_renderer } =
-            self.ensure_gpu()?;
-        let t1 = std::time::Instant::now();
-        let sticker_assets = load_sticker_assets(&ctx);
-        let t2 = std::time::Instant::now();
-        let (subs, dms) = load_text_data(&ctx);
-        let sub_style = ctx.config.style.subtitle.clone();
-        let dm_style = ctx.config.style.danmaku.clone();
-        let font = composite::FontSpec::new(&ctx.project_path, &sub_style.font);
-        // 弹幕滚动距离依赖实测文字宽度（对齐 JS measureText）
-        let dm_font_size = dm_style.font_size as f32;
-        let dm_widths: Vec<f64> = dms
-            .iter()
-            .map(|d| composite::measure_text_width(&d.text, dm_font_size, &font))
-            .collect();
-        let idx = timeline::build_index(&ctx.config);
-        let t3 = std::time::Instant::now();
-        tracing::info!(
-            "wgpu chunk timing: gpu_init={:?} stickers={:?} text={}ms widths={}ms index={}ms",
-            t1.duration_since(t0),
-            t2.duration_since(t1),
-            t3.duration_since(t2).as_millis(),
-            0,
-            0
-        );
+        if self.pipeline.is_none() {
+            self.prepare_pipeline()?;
+        }
+        self.ensure_gpu()?;
+        let pipeline = self.pipeline.as_ref().unwrap();
+        let gpu = self.gpu.as_ref().unwrap();
+        let sticker_assets = load_sticker_assets(&self.ctx.as_ref().unwrap());
+
         let total_frames = frames.len();
         let mut out_rgba_frames = Vec::with_capacity(total_frames);
         let chunk_start = std::time::Instant::now();
@@ -317,84 +308,29 @@ impl FrameRenderer for WgpuBackend {
             }
 
             let te = std::time::Instant::now();
-            let state = timeline::evaluate_frame(
-                tf.t,
-                &idx,
-                &ctx.config.layout,
-                &sub_style,
-                &dm_style,
-                &ctx.config.style.camera,
-                &subs,
-                &dms,
-                &dm_widths,
-                ctx.vertical,
-                &ctx.vertical_position,
-            );
+            let state = pipeline.evaluate(tf.t);
             eval_ms += te.elapsed().as_millis();
 
-            let (source_texture, source_view) = wgpu.create_output_texture();
-            let mut camera = timeline::get_active_camera(tf.t, &idx.camera, &ctx.config.layout, &ctx.config.style.camera);
-            // zoom_bounce / pulse 已含基准 zoom，最终缩放 = max（对齐 JS finalZoom = max(zb, pl)）
-            camera.zoom = state.zoom_bounce.max(state.pulse);
-            let mut shx = state.shake.x;
-            let mut shy = state.shake.y;
-            if let Some((sx, sy)) = state.stutter {
-                shx += sx;
-                shy += sy;
-            }
-            if let Some(sp) = &state.split {
-                shx += sp.x;
-                // split.scale 以乘法叠加（Canvas ctx.scale 语义），skew 由相机矩阵处理
-                camera.zoom *= sp.scale;
-            }
-            // blur / color_shift 作用于视频底图（对齐 Canvas ctx.filter 时机）
-            let (sepia, saturate) = parse_color_shift(&state.color_shift);
-            let fx = draw::SourceFx {
-                blur: state.blur,
-                sepia,
-                saturate,
-            };
-            renderer.render(
-                &wgpu,
-                rgba,
-                tf.frame.width,
-                tf.frame.height,
-                &camera,
-                (shx, shy),
-                state.split.as_ref(),
-                fx,
-                &source_view,
-            )?;
-
-            // GPU 特效 pass：noise/flash/hue/overlay/intro/vignette
-            let (output_texture, output_view) = wgpu.create_output_texture();
-            effect_renderer.apply(&wgpu, &state, &source_texture, &output_view)?;
-
-            sprite_renderer.draw_stickers(
-                &wgpu,
-                &state.stickers,
-                &sticker_assets,
+            let targets = gpu.create_frame_targets();
+            // 视频帧 RGBA 上传为纹理（wasm 路径换 video 拷贝纹理）
+            let source_view = gpu
+                .create_rgba_texture(tf.frame.width, tf.frame.height, rgba)
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            rcore::render::render_source_pass(gpu, &source_view, &state, &targets.source_view)?;
+            rcore::render::render_effect_pass(gpu, &targets.source_texture, &state, &targets.effect_view)?;
+            rcore::render::render_sprite_pass(
+                gpu,
+                &state,
                 tf.t,
-                &output_view,
-            )?;
-
-            sprite_renderer.draw_captions(
-                &wgpu,
-                &state.captions,
-                &sub_style,
-                &font,
-                &output_view,
-            )?;
-            sprite_renderer.draw_danmaku(
-                &wgpu,
-                &state.danmaku,
-                &dm_style,
-                &font,
-                &output_view,
+                &sticker_assets,
+                &pipeline.sub_style,
+                &pipeline.dm_style,
+                &pipeline.font,
+                &targets.effect_view,
             )?;
 
             let t_read = std::time::Instant::now();
-            let rgba_out = wgpu.read_output_rgba(&output_texture)?;
+            let rgba_out = gpu.read_output_rgba(&targets.effect_texture)?;
             read_ms += t_read.elapsed().as_millis();
             out_rgba_frames.push(rgba_out);
 
@@ -410,8 +346,7 @@ impl FrameRenderer for WgpuBackend {
                 );
             }
         }
-        // 并行 JPEG 编码加速
-        let encoded = encode_all_parallel(out_rgba_frames, ctx.width, ctx.height);
+        let encoded = encode_all_parallel(out_rgba_frames, self.ctx_width(), self.ctx_height());
         let mut out = Vec::with_capacity(encoded.len());
         for item in encoded {
             out.push(item?);
@@ -420,20 +355,26 @@ impl FrameRenderer for WgpuBackend {
     }
 }
 
-/// 解析 JS 风格的 color_shift 字符串 "sepia(x) saturate(y)" 为衰减系数。
-fn parse_color_shift(s: &str) -> (f64, f64) {
-    let mut sepia = 0.0;
-    let mut saturate = 1.0;
-    for part in s.split_whitespace() {
-        let (name, val) = match part.split_once('(') {
-            Some((n, v)) => (n, v.trim_end_matches(')').trim()),
-            None => continue,
-        };
-        if name == "sepia" {
-            sepia = val.parse().unwrap_or(0.0);
-        } else if name == "saturate" {
-            saturate = val.parse().unwrap_or(1.0);
+/// 桌面字体候选链：项目字体目录 -> 系统字体 -> 内置资源。
+fn load_font_file(project_path: &Path, name: &str) -> Option<Vec<u8>> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if !name.trim().is_empty() {
+        let base = std::path::Path::new(name);
+        for dir in [
+            project_path.join("assets").join("fonts"),
+            project_path.join("fonts"),
+            project_path.to_path_buf(),
+        ] {
+            candidates.push(dir.join(base).with_extension("ttf"));
+            candidates.push(dir.join(base).with_extension("otf"));
         }
+        candidates.push(std::path::Path::new("C:/Windows/Fonts").join(base).with_extension("ttf"));
     }
-    (sepia, saturate)
+    candidates.push(std::path::Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
+    candidates.push(std::path::Path::new("C:/Windows/Fonts/simhei.ttf").to_path_buf());
+    candidates.push(std::path::Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
+    candidates
+        .iter()
+        .find(|c| c.exists())
+        .and_then(|c| std::fs::read(c).ok())
 }

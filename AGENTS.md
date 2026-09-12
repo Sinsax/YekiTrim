@@ -36,8 +36,8 @@ vtrim process [-i] [-o] [--dry-run]      # 全自动管线
 vtrim transcribe [-i]                    # Stage 2 (local)
 vtrim detect [-t <transcript>]           # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
 vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
-vtrim silence [files...]                 # 对已输出 clips 移除长静音段 (重编码)
-       [--duration 2.0] [--threshold]    # 默认扫描 output/clips/, 输出到输入文件同目录
+vtrim silence [files...]                 # 「去静音」: 长停顿映射为屏蔽轨道 (写 polish.toml, 不改视频文件)
+       [--duration 2.0] [--threshold]    # 默认扫描 output/clips/, 未初始化则先 polish init
 vtrim download                           # 下载全部 ASR 模型 (sensevoice/firered-zh/qwen3-asr) → .vtrim/models/
 vtrim status                             # 查看当前进度
 vtrim config init [--path]               # 生成全局配置文件
@@ -74,10 +74,15 @@ vtrim polish stickers scan [--llm]       # 本地贴纸: 生成/更新 stickers.
 
 ## 配置文件
 
-两层合并: `vtrim.toml` (项目) → `.vtrim/config.toml` (程序, 后加载覆盖前者)。无环境变量。
+两层合并: `.vtrim/config.toml` (程序) → `vtrim.toml` (项目, 后加载覆盖前者)。无环境变量。
+实现见 `vtrim-core/src/config/mod.rs::load_config_at`（先 global 后 project）。
 
 `vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
-`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.vtrim/llm.toml`（`[llm]`）。
+`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.vtrim/llm.toml`（`[llm]`，覆盖写）。
+`vtrim server` 启动时若程序配置缺失会自动补齐（`service::ensure_global_config`）：只创建缺失文件；
+已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。
+设置页表单只覆盖常用项，保存走 `config::patch_config_file`（toml_edit 合并，保留其他 section 与注释），
+表单数据源用 `/api/config` 的 `global_config`（global-only），不能用 merged 的 `config`。
 
 **`vtrim.toml`** — 项目配置:
 ```toml
@@ -173,10 +178,30 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 - 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `{label}.srt`
 - 输出: `output/publish_config.json` + `output/clips/clips_order.txt` (按弹幕热度降序)
 
+## WebUI / Server
+
+- `vtrim server` 只服务 `webui/dist`（Vue3 构建产物），**不再内嵌单文件页面**：
+  找不到 `webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
+  构建：`cd webui && npm install && npm run build`。`webui/dist` **已入库**
+  （`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，否则端出旧界面。
+- 真渲染（wgpu）暂缓：未启用该 feature 时前端**隐藏**入口（`/api/health.wgpu_render` 判定），
+  日后开发时只需恢复 UI 入口，`PolishPreview` 里的逻辑与后端接口都还在。
+- API 都在 `/api/*`：未注册路径返回 **404 + JSON**（`{"ok":false,"error":"未知接口: …"}`），
+  不会回退成 SPA HTML（否则前端会把 200 HTML 解析成 `null` 静默失败）。
+- 任务模型：**同一时刻只允许一个长任务**（`JobManager::create` 返回 `BusyJob` → HTTP 409）；
+  取消经 `ProgressReporter::cancelled()` 在**阶段/批次边界**生效（进行中的单次
+  ffmpeg/ASR/LLM 调用不会被打断）；`/api/jobs/:id/events` 先回放历史事件再续传，
+  `Lagged` 不会误报成失败。
+- `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` /
+  `vtrim.toml` / 全局配置的读-改-写走 `vtrim_core::filelock::with_path_lock` 串行化。
+- 监听非 loopback 地址必须显式 `--allow-remote`（接口无鉴权，可读写本机工程目录）。
+
 ## 开发
 
 ```bash
 cargo build                    # 0 warnings
+cargo check -p vtrim-cli --all-targets   # 改 server 后必跑（0 warnings）
+cargo test -p vtrim-cli        # server 单测（JobManager / Range / 路由 404）
 cargo test --lib danmaku       # ASS 解析 + 密度计算测试
 cargo run -- status            # 查看当前进度
 ```
@@ -210,7 +235,8 @@ cargo run -- status            # 查看当前进度
 | `vtrim-core/src/danmaku/parser.rs` | ASS Dialogue 解析 |
 | `vtrim-core/src/llm/mod.rs` | 统一 LLM 客户端（core + polish 共用） |
 | `vtrim-core/src/cutting/mod.rs` | Cutter |
-| `vtrim-core/src/cutting/silence.rs` | 静音检测 + remove_silence |
+| `vtrim-core/src/cutting/silence.rs` | 静音检测（detect_silence_ranges）|
+| `vtrim-polish/src/project/silence.rs` | 「去静音」= 静音区间 ↔ 屏蔽轨道（mute_ranges / silence_ranges）|
 | `vtrim-polish/src/commands.rs` | 所有 cmd_* 精修命令入口 |
 | `vtrim-polish/src/process/mod.rs` | cmd_process 主流程（字幕/段处理/预算） |
 | `vtrim-polish/src/process/sfx.rs` | SFX 规则引擎 + 音效解析 |

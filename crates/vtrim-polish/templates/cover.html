@@ -12,7 +12,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; }
 #bg { position:absolute; inset:0; background:#000; }
 #bg img { width:100%; height:100%; object-fit:cover; display:block;
   transform-origin: var(--liver-x) var(--liver-y);
-  transform:scale(var(--zoom)); }
+  transform:var(--bg-transform); }
 #overlay { position:absolute; top:0; left:0; bottom:0; right:0; pointer-events:none;
   background:var(--grad-bg); }
 #vignette { position:absolute; inset:0; pointer-events:none; opacity:var(--vignette-op);
@@ -21,9 +21,9 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; }
   left:var(--text-x); top:var(--text-y);
   transform:translate(-50%,-50%);
   width:var(--tw);
-  display:flex; flex-direction:column; align-items:flex-start; }
-#title { font-size:var(--fs); font-weight:900; color:#f0e6d3; line-height:var(--lh); letter-spacing:var(--ls);
-  -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:0 2px 32px rgba(0,0,0,0.6);
+  display:flex; flex-direction:column; align-items:var(--align-items); }
+#title { font-size:var(--fs); font-weight:900; color:#f0e6d3; line-height:var(--lh); letter-spacing:var(--ls); text-align:var(--text-align);
+  -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:var(--text-shadow);
   opacity:0; transform:translateY(24px); animation:fadeUp 0.6s 0.3s ease both; }
 .hl { color:var(--hlc); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
 @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
@@ -34,6 +34,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; }
 <div id="bg"><img src="_cover_frame.jpg"></div>
 <div id="vignette"></div>
 <div id="overlay"></div>
+<div id="fx-extra" style="position:absolute;inset:0;pointer-events:none;z-index:1;">__FX_HTML__</div>
 <div id="title-wrap"><div id="title">__TITLE__</div></div>
 </div></div>
 <div style="position:fixed;bottom:16px;right:16px;z-index:99;">
@@ -42,7 +43,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; }
 <script>
 document.documentElement.style.setProperty('--liver-x', '__LIVER_X__');
 document.documentElement.style.setProperty('--liver-y', '__LIVER_Y__');
-document.documentElement.style.setProperty('--zoom', '__ZOOM__');
+document.documentElement.style.setProperty('--bg-transform', '__BG_TRANSFORM__');
 document.documentElement.style.setProperty('--grad-bg', '__GRAD_BG__');
 document.documentElement.style.setProperty('--vignette-op', '__VIGNETTE_OP__');
 document.documentElement.style.setProperty('--fs', '__FONT_SIZE__');
@@ -53,6 +54,9 @@ document.documentElement.style.setProperty('--text-x', '__TEXT_X__');
 document.documentElement.style.setProperty('--text-y', '__TEXT_Y__');
 document.documentElement.style.setProperty('--ls', '__LS__');
 document.documentElement.style.setProperty('--lh', '__LH__');
+document.documentElement.style.setProperty('--text-align', '__TEXT_ALIGN__');
+document.documentElement.style.setProperty('--align-items', '__TEXT_ALIGN_ITEMS__');
+document.documentElement.style.setProperty('--text-shadow', '__SHADOW__');
 function scaleCover(){var s=Math.min(window.innerWidth/1920,window.innerHeight/1080);document.getElementById('page').style.transform='scale('+s+')';}
 scaleCover();window.addEventListener('resize',scaleCover);
 setTimeout(function(){ window.__COVER_READY = true; }, 1500);

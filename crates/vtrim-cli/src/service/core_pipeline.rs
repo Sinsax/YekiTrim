@@ -119,6 +119,15 @@ async fn run_stage(
             } else if output.join("video.wav").exists() {
                 ctx.audio_path = Some(output.join("video.wav"));
             }
+            // WebUI 点“开始转写”时不需要手动先跑 extract：缺少音频则自动提取
+            if ctx.audio_path.is_none() {
+                let mut r = PipelineRunner::new(cfg.clone());
+                r.add_stage(Box::new(vtrim_core::audio::AudioExtractor));
+                r.run(&mut ctx).await?;
+                if let Some(ap) = ctx.audio_path.as_ref() {
+                    vtrim_core::config::save_audio_path_in(config_file, &rel_to_config(config_file, ap))?;
+                }
+            }
             vtrim_core::download::ensure_models(&cfg.asr).await?;
             runner.add_stage(Box::new(vtrim_core::asr::Transcriber));
             runner.run(&mut ctx).await?;

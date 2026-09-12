@@ -204,13 +204,13 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     let data_dir = project_path.join("data");
 
     // 读取解析数据
-    let subtitles: Vec<parse::srt::Subtitle> = {
+    let mut subtitles: Vec<parse::srt::Subtitle> = {
         let p = data_dir.join("subtitles.json");
         if !p.exists() { anyhow::bail!("Run 'vtrim polish init' first — missing {}", p.display()); }
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
 
-    let danmaku: Vec<vtrim_core::danmaku::DanmakuEntry> = {
+    let mut danmaku: Vec<vtrim_core::danmaku::DanmakuEntry> = {
         let p = data_dir.join("danmaku.json");
         if !p.exists() {
             vec![]
@@ -218,6 +218,16 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
             serde_json::from_str(&std::fs::read_to_string(&p)?)?
         }
     };
+
+    // 手动屏蔽区间内的字幕/弹幕不参与 LLM 生成
+    if !config.mute_ranges.is_empty() {
+        let before_sub = subtitles.len();
+        subtitles.retain(|s| !config.mute_ranges.iter().any(|r| r.overlaps(s.start, s.end)));
+        danmaku.retain(|d| !config.mute_ranges.iter().any(|r| r.overlaps(d.start, d.end)));
+        if before_sub != subtitles.len() {
+            tracing::info!("  ✂ 已从 LLM 输入过滤 {} 条屏蔽区字幕", before_sub - subtitles.len());
+        }
+    }
 
     // 从 .vtrim/llm.toml 读取 LLM 配置（与 vtrim 自身一致）
     let llm_cfg = vtrim_core::config::load_llm_config();
@@ -262,12 +272,21 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     }
 
     // 运行 LLM pipeline
-    let (segments, dm_filter, hl_words) = llm::run_llm_pipeline(
+    let (mut segments, dm_filter, hl_words) = llm::run_llm_pipeline(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
         Some(&project_path.join(".vtrim")),
     ).await?;
+
+    // LLM 生成后，再把屏蔽区间从分段中切开/移除
+    if !config.mute_ranges.is_empty() {
+        let before = segments.len();
+        project::split_segments_by_mute_ranges(&mut segments, &config.mute_ranges);
+        if segments.len() != before {
+            tracing::info!("  ✂ 已从 LLM 分段中分离屏蔽区间（{} -> {} 段）", before, segments.len());
+        }
+    }
 
     // 截断 segments 到视频实际时长
     let mut new_config = config;

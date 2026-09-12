@@ -3,7 +3,7 @@
 //! 这些是纯数学函数，输入项目数据、输出某一帧的视觉状态。
 //! 当前先落地与 JS 公式逐条对应的核心函数，绘制层 P2/P3/P4 接入。
 
-use crate::project::{Event, ProjectFile};
+use crate::types::{Event, Segment};
 
 /// 与 JS `getActiveCamera` 对齐的相机状态。
 #[derive(Debug, Clone, PartialEq)]
@@ -152,10 +152,10 @@ pub struct IndexedSticker {
 }
 
 /// 从项目配置构建事件索引。
-pub fn build_index(config: &ProjectFile) -> EventIndex {
+pub fn build_index(segments: &[Segment]) -> EventIndex {
     let mut idx = EventIndex::default();
     let mut sticker_order = 0usize;
-    for seg in &config.segments {
+    for seg in segments {
         for ev in &seg.events {
             let time = ev.get_time();
             let duration = ev.duration();
@@ -246,12 +246,12 @@ pub fn build_index(config: &ProjectFile) -> EventIndex {
 pub fn evaluate_frame(
     t: f64,
     idx: &EventIndex,
-    layout: &crate::project::Layout,
-    _sub_style: &crate::project::SubtitleStyle,
-    _dm_style: &crate::project::DanmakuStyle,
-    camera_style: &crate::project::CameraStyle,
-    subs: &[crate::parse::srt::Subtitle],
-    dms: &[vtrim_core::danmaku::DanmakuEntry],
+    layout: &crate::types::Layout,
+    _sub_style: &crate::types::SubtitleStyle,
+    _dm_style: &crate::types::DanmakuStyle,
+    camera_style: &crate::types::CameraStyle,
+    subs: &[crate::types::Subtitle],
+    dms: &[crate::types::Danmaku],
     dm_widths: &[f64],
     vertical: bool,
     vertical_position: &str,
@@ -300,15 +300,15 @@ pub fn evaluate_frame(
 pub fn get_active_camera(
     t: f64,
     cam: &[IndexedEvent],
-    layout: &crate::project::Layout,
-    camera_style: &crate::project::CameraStyle,
+    layout: &crate::types::Layout,
+    camera_style: &crate::types::CameraStyle,
 ) -> CameraState {
     let mut zoom = 1.0;
     let mut ox = 65.0;
     let mut oy = 50.0;
 
     let def_origin =
-        crate::project::region_origin(&layout.liver).unwrap_or_else(|| "65% 50%".into());
+        crate::types::region_origin(&layout.liver).unwrap_or_else(|| "65% 50%".into());
     let dp: Vec<&str> = def_origin.split_whitespace().collect();
     if let Some(v) = dp.first().and_then(|s| parse_percent(s)) {
         ox = v;
@@ -355,7 +355,7 @@ pub fn get_active_camera(
 }
 
 /// 与 JS `getActiveSubs` 一致。
-pub fn get_active_subs(t: f64, subs: &[crate::parse::srt::Subtitle]) -> Vec<CaptionState> {
+pub fn get_active_subs(t: f64, subs: &[crate::types::Subtitle]) -> Vec<CaptionState> {
     let mut out = Vec::new();
     for s in subs {
         if t < s.start || t >= s.end {
@@ -427,7 +427,7 @@ pub fn parse_highlight_parts(html: &str, fallback: &str) -> Vec<CaptionPart> {
 /// 与 JS `getActiveDms` 一致；弹幕宽度用实测宽度（swash 量宽），影响滚动距离与剔除。
 pub fn get_active_dms(
     t: f64,
-    dms: &[vtrim_core::danmaku::DanmakuEntry],
+    dms: &[crate::types::Danmaku],
     widths: &[f64],
 ) -> Vec<DanmakuState> {
     let mut out = Vec::new();
@@ -545,6 +545,12 @@ pub fn get_active_sticker(
             _ => String::new(),
         };
 
+        // 贴纸安全范围：sprite 层按中心绘制，保留 280 盒子一半 + 24px 边距
+        let sticker_safe = 32.0;
+        let half = 140.0;
+        let cx = x.clamp(sticker_safe + half, 1920.0 - sticker_safe - half);
+        let cy = (y + y_off).clamp(sticker_safe + half, 1080.0 - sticker_safe - half);
+
         out.push(StickerState {
             name,
             et,
@@ -552,9 +558,9 @@ pub fn get_active_sticker(
             opacity,
             scale,
             rot,
-            // (x, y) 为 280 盒子左上角（与模板 DOM 一致），由绘制层换算中心
-            x,
-            y: y + y_off,
+            // 绘制层会把 x/y 作为中心并减去 w/2、h/2
+            x: cx,
+            y: cy,
             w: 280.0,
             h: 280.0,
         });
@@ -982,4 +988,19 @@ mod tests {
             ]
         );
     }
+}
+
+/// 贴纸 GIF 帧序号：按事件相对时间循环（供 sprite 层调用）。
+pub fn sticker_frame_index_for(event_start: f64, t: f64, delays: &[u16]) -> usize {
+    if delays.is_empty() { return 0; }
+    let total: u32 = delays.iter().map(|d| *d as u32).sum();
+    if total == 0 { return 0; }
+    let elapsed_ms = ((t - event_start).max(0.0) * 1000.0) as u32;
+    let loop_pos = elapsed_ms % total;
+    let mut acc = 0u32;
+    for (i, d) in delays.iter().enumerate() {
+        acc += *d as u32;
+        if loop_pos < acc { return i; }
+    }
+    0
 }

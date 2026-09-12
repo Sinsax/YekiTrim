@@ -62,13 +62,17 @@
                     <Icon name="save" :size="13" /> {{ editDirty ? '保存编辑*' : '保存编辑' }}
                   </button>
                 </div>
-                <div v-if="jobRunning || job.status === 'failed'" class="job-box mt-8">
+                <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
                   <div class="row spread small">
                     <b>{{ jobLabel(job.kind) }}</b>
-                    <span class="chip" :class="job.status === 'failed' ? 'r' : 'b'">{{ job.status }}</span>
+                    <div class="row">
+                      <span v-if="jobStartMs" class="muted small mono">{{ job.status === 'succeeded' ? '完成 · 用时 ' : (jobRunning ? '运行 ' : '用时 ') }}{{ jobTimeText }}</span>
+                      <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
+                      <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
+                    </div>
                   </div>
                   <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
-                  <div class="muted small mt-6 mono">{{ job.error || job.log || '运行中…' }}</div>
+                  <div class="muted small mt-6 mono">{{ job.error || job.log || (job.status === 'succeeded' ? '任务完成' : jobRunning ? '运行中…' : '') }}</div>
                 </div>
               </div>
               <div class="col">
@@ -105,17 +109,14 @@
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="check" :size="15" /> 状态</h2>
-              <div class="row">
-                <span class="muted small">版本</span>
-                <button class="mini-btn" :class="{ selected: version !== 'silent' }" @click="switchVersion('original')">原版</button>
-                <button class="mini-btn" :class="{ selected: version === 'silent' }" @click="switchVersion('silent')">消音版</button>
-              </div>
             </div>
             <div class="chips">
               <span class="chip" :class="clipEntry?.processed ? 'g' : 'n'">{{ clipEntry?.processed ? '已 process' : '未 process' }}</span>
               <span class="chip" :class="clipEntry?.rendered ? 'g' : 'n'">{{ clipEntry?.rendered ? '已渲染' : '未渲染' }}</span>
               <span class="chip" :class="clipEntry?.cover ? 'g' : 'n'">{{ clipEntry?.cover ? '有封面' : '无封面' }}</span>
+              <span class="chip" :class="clipEntry?.mute_range_count ? 'r' : 'n'">屏蔽 {{ clipEntry?.mute_range_count || 0 }} 段</span>
             </div>
+            <div class="muted small mt-8">「去静音」在下方时间轴编辑器顶部：自动检测长停顿并加入屏蔽轨道，导出时剪掉，原始视频不会被改动。</div>
           </div>
         </div>
 
@@ -126,7 +127,7 @@
                 <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
                 <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
               </div>
-              <PolishPreview :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" @time="onPreviewTime" />
+              <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
             </div>
 
             <div class="card">
@@ -134,38 +135,31 @@
                 <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
                 <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
               </div>
-              <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" />
+              <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
             </div>
           </div>
 
-          <!-- 右栏：布局 / 字幕 二合一切换，拉伸到与时间轴对齐 -->
+          <!-- 右栏：九宫格布局；字幕编辑已并入时间轴编辑器并自动保存 -->
           <div class="right">
             <div class="card panel-card">
-              <div class="seg-toggle row mb-8">
-                <button class="mini-btn" :class="{ selected: panel === 'grid' }" @click="panel = 'grid'">
-                  <Icon name="settings" :size="12" /> 九宫格布局
-                </button>
-                <button class="mini-btn" :class="{ selected: panel === 'subs' }" @click="panel = 'subs'">
-                  <Icon name="list" :size="12" /> 字幕列表
-                </button>
+              <div class="row spread mb-8">
+                <h2 class="m-0 card-h2"><Icon name="settings" :size="15" /> 九宫格布局</h2>
               </div>
-
-              <div v-show="panel === 'grid'">
-                <div v-for="r in layoutRegions" :key="r.key" class="my-8">
-                  <div class="small muted mb-4">{{ REGION_LABELS[r.key] || r.key }}<span v-if="(r.value.grid || []).length > 1" class="muted">（可多选）</span></div>
-                  <div class="grid-3">
-                    <div v-for="cell in GRID_CELLS" :key="cell" class="grid-cell"
-                         :class="{ active: (r.value.grid || []).includes(cell) }"
-                         @click="toggleGridCell(r.key, cell, r.value)">{{ cell }}</div>
-                  </div>
+              <div v-for="r in layoutRegions" :key="r.key" class="my-8">
+                <div class="small muted mb-4">{{ REGION_LABELS[r.key] || r.key }}<span v-if="(r.value.grid || []).length > 1" class="muted">（可多选）</span></div>
+                <div class="grid-3">
+                  <div v-for="cell in GRID_CELLS" :key="cell" class="grid-cell"
+                       :class="{ active: (r.value.grid || []).includes(cell) }"
+                       @click="toggleGridCell(r.key, cell, r.value)">{{ cell }}</div>
                 </div>
-                <div v-if="!layoutRegions.length" class="empty small">暂无布局配置</div>
               </div>
-
-              <div v-show="panel === 'subs'" class="panel-body">
-                <SubtitleEditor :segments="subs" :current-time="currentTime" @save="saveSubs" @play="seekTo" />
-                <div class="muted small mt-8">与项目预览共用同一份字幕数据</div>
+              <div v-if="!layoutRegions.length" class="empty small">暂无布局配置</div>
+              <div class="row mt-8">
+                <button class="btn btn-primary" :disabled="jobRunning" @click="processByLayout">
+                  <Icon name="sparkles" :size="13" /> 按当前布局处理
+                </button>
               </div>
+              <div class="muted small mt-8">保存布局后点击处理，会按当前九宫格重新计算贴纸等位置</div>
             </div>
           </div>
         </div>
@@ -174,16 +168,16 @@
         <div class="card mt-16">
           <div class="row spread mb-8">
             <h2 class="m-0 card-h2"><Icon name="image" :size="15" /> 产物</h2>
-            <a v-if="renderedUrl" class="btn" :href="renderedUrl" download><Icon name="download" :size="13" /> 下载成片</a>
+            <a v-if="renderedUrl && !renderedFailed" class="btn" :href="renderedUrl" download><Icon name="download" :size="13" /> 下载成片</a>
           </div>
-          <div v-if="coverUrl || renderedUrl" class="product-grid">
-            <img v-if="coverUrl" :src="coverUrl" class="cover-img" alt="封面" @error="onCoverError">
-            <video v-if="renderedUrl" :src="renderedUrl" controls playsinline class="video-lg product-video" @error="onRenderedError"></video>
+          <div v-if="(coverUrl && !coverFailed) || (renderedUrl && !renderedFailed)" class="product-grid">
+            <img v-if="coverUrl && !coverFailed" :src="coverUrl" class="cover-img" alt="封面" @error="coverFailed = true">
+            <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline class="video-lg product-video" @error="renderedFailed = true"></video>
           </div>
           <div v-else class="empty small">暂无产物，渲染导出或生成封面后显示</div>
         </div>
 
-        <div class="mt-16"><CoverDesigner :dir="dir" /></div>
+        <div class="mt-16"><CoverDesigner :dir="dir" @changed="refreshClipEntry" /></div>
       </template>
     </template>
 
@@ -200,7 +194,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted, watch } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
@@ -209,19 +203,18 @@ import AppModal from '../components/AppModal.vue'
 import PolishPreview from '../components/PolishPreview.vue'
 import TimelineEditor from '../components/TimelineEditor.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
-import SubtitleEditor from '../components/SubtitleEditor.vue'
 import { mediaUrl } from '../utils'
 import { api } from '../api/client'
 import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
-  selectVersion, initPolish, runLlm, runProcess, runRender, watchJob,
+  initPolish, runLlm, runProcess, runRender, watchJob,
   fetchStickerSources,
   GRID_CELLS, REGION_LABELS,
 } from '../polish/api'
 
 const route = useRoute()
 const router = useRouter()
-const routeCfg = decodeURIComponent(route.params.cfg || '')
+const routeCfg = route.params.cfg || ''
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
 const title = ref('精修编辑器')
@@ -234,21 +227,44 @@ const clips = ref([])
 const clipEntry = ref(null)
 const currentTime = ref(0)
 const previewKey = ref(0)
-const panel = ref('grid') // 右栏二合一切换：grid 布局 | subs 字幕
 const renderModal = ref(false)
 const renderOutput = ref('')
 const coverName = ref('cover.jpg')
 const renderedName = ref('export.mp4')
 const timelineRef = ref(null)
+const previewRef = ref(null)
 const savedSegs = ref('')      // 上次保存的时间轴 JSON 快照（脏状态比对）
 const savedSubsJson = ref('')  // 上次保存的字幕 JSON 快照
 
 const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, log: '', error: '' })
 let jobClose = null
+let jobTimer = null
+let canceling = ref(false)
+const jobStartMs = ref(0)
+const jobElapsed = ref(0)
+// 服务端是否带 --features wgpu-render 构建（决定 /api/polish/render-frame 是否可用，缺失时 501）
+const wgpuRender = ref(false)
 
-const version = computed(() => clipEntry.value?.version || 'original')
-const jobRunning = computed(() => job.status === 'running' || job.status === 'queued' || job.status === 'awaiting_input')
+const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
 const pctJob = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
+const jobActive = computed(() => jobRunning.value)
+const jobFinished = computed(() => ['succeeded', 'failed', 'cancelled'].includes(job.status))
+const jobStatusText = computed(() => ({
+  queued: '排队中', running: '运行中',
+  succeeded: '完成', failed: '失败', cancelled: '已取消'
+}[job.status] || job.status))
+const jobChipClass = computed(() => {
+  if (job.status === 'failed' || job.status === 'cancelled') return 'r'
+  if (job.status === 'succeeded') return 'g'
+  return jobRunning.value ? 'b' : 'n'
+})
+const jobTimeText = computed(() => {
+  const sec = Math.max(0, Math.floor(jobElapsed.value))
+  if (sec < 60) return sec + 's'
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m + 'm' + (s ? s + 's' : '')
+})
 // 贴纸配置 = polish.toml 顶层 sticker_source（LLM 生成时可选的贴图来源池）
 const stickerSource = computed(() => cfg.value?.sticker_source || [])
 const stickerSources = ref([]) // 全局可用来源（emoji + 贴纸库包）
@@ -260,8 +276,17 @@ const layoutRegions = computed(() => {
     .filter(([, v]) => v && typeof v === 'object')
     .map(([key, value]) => ({ key, value }))
 })
-const coverUrl = computed(() => clipEntry.value?.cover ? mediaUrl(dir.value, coverName.value) : '')
-const renderedUrl = computed(() => clipEntry.value?.rendered ? mediaUrl(dir.value, renderedName.value) : '')
+// 产物优先使用后端返回的实际文件名（含 _1/_2 版本），未返回时回退固定名
+const coverFailed = ref(false)
+const renderedFailed = ref(false)
+const coverUrl = computed(() => {
+  if (clipEntry.value?.cover_file) return mediaUrl(dir.value, clipEntry.value.cover_file)
+  return dir.value ? mediaUrl(dir.value, 'cover.jpg') : ''
+})
+const renderedUrl = computed(() => {
+  if (clipEntry.value?.rendered_file) return mediaUrl(dir.value, clipEntry.value.rendered_file)
+  return dir.value ? mediaUrl(dir.value, 'vtuber-clip.mp4') : ''
+})
 
 // 脏状态：时间轴分段或字幕与上次保存不一致时，保存编辑按钮换色提醒
 const editDirty = computed(() => {
@@ -279,7 +304,14 @@ function onPreviewTime(t) {
   currentTime.value = Number(t) || 0
 }
 function seekTo(t) {
-  currentTime.value = Number(t) || 0
+  // 字幕行点击传的是字幕对象；时间轴/进度条传的是数字秒
+  const raw = (t && typeof t === 'object') ? (t.start ?? t.end) : t
+  const n = Number(raw)
+  currentTime.value = Number.isFinite(n) ? Math.round(n * 100) / 100 : 0
+  previewRef.value?.seekTo(currentTime.value)
+}
+function togglePreviewPlay() {
+  previewRef.value?.togglePlay()
 }
 
 function pickClip(c) {
@@ -291,7 +323,7 @@ function clearDir() {
 
 async function load() {
   if (route.query.dir) {
-    dir.value = decodeURIComponent(route.query.dir)
+    dir.value = String(route.query.dir || '')
   } else if (clipName.value && routeCfg) {
     try {
       const st = await api(`/api/project-data/status?config=${encodeURIComponent(routeCfg)}`)
@@ -317,6 +349,7 @@ async function load() {
   try {
     subs.value = (await fetchSubtitles(dir.value)).segments || []
   } catch { subs.value = [] }
+  subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
   try {
     const r = await fetch(mediaUrl(dir.value, 'data/danmaku.json'))
     if (r.ok) dm.value = await r.json()
@@ -347,7 +380,17 @@ async function loadClips() {
   }
 }
 
+async function reloadSubtitles() {
+  try {
+    subs.value = (await fetchSubtitles(dir.value)).segments || []
+    subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+    refreshSnapshots()
+  } catch {}
+}
+
 async function refreshClipEntry() {
+  coverFailed.value = false
+  renderedFailed.value = false
   try {
     const list = routeCfg ? await api(`/api/project-data/polish?config=${encodeURIComponent(routeCfg)}`) : []
     const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
@@ -356,10 +399,52 @@ async function refreshClipEntry() {
 }
 
 // ---- 任务驱动 ----
+
+function startJobTimer() {
+  stopJobTimer()
+  jobStartMs.value = Date.now()
+  jobElapsed.value = 0
+  jobTimer = setInterval(() => {
+    if (!jobRunning.value) return
+    jobElapsed.value = Math.floor((Date.now() - jobStartMs.value) / 1000)
+  }, 1000)
+}
+
+function stopJobTimer() {
+  if (jobTimer) {
+    clearInterval(jobTimer)
+    jobTimer = null
+  }
+  if (jobStartMs.value) {
+    jobElapsed.value = Math.max(jobElapsed.value, Math.floor((Date.now() - jobStartMs.value) / 1000))
+  }
+}
+
+async function cancelJob() {
+  if (!job.id || !jobRunning.value) return
+  canceling.value = true
+  try {
+    await api('/api/jobs/' + job.id + '/cancel', { method: 'POST' })
+    // cancel 接口已同步把任务置为 cancelled；关掉订阅避免后台迟到的完成事件再把它改回成功
+    if (jobClose) {
+      jobClose()
+      jobClose = null
+    }
+    job.status = 'cancelled'
+    stopJobTimer()
+    toast('任务已中断')
+  } catch (e) {
+    toast(e.message, 'err')
+  } finally {
+    canceling.value = false
+  }
+}
+
 function startJob(kind, call, { after } = {}) {
   if (jobRunning.value) { toast('已有任务在运行，请稍候', 'err'); return Promise.resolve(false) }
   return call().then((r) => {
     Object.assign(job, { id: r.id, kind, status: 'running', current: 0, total: 0, log: '', error: '' })
+    startJobTimer()
     jobClose?.()
     jobClose = watchJob(r.id, {
       onEvent(e) {
@@ -374,12 +459,16 @@ function startJob(kind, call, { after } = {}) {
       },
       onDone(s) {
         job.status = s.status
+        stopJobTimer()
         if (s.status === 'succeeded') {
           toast(jobLabel(kind) + '完成')
           previewKey.value++
           after && after()
         } else if (s.status === 'failed') {
           toast(jobLabel(kind) + '失败：' + (job.error || s.message || '未知错误'), 'err')
+          after && after()
+        } else if (s.status === 'cancelled') {
+          toast(jobLabel(kind) + '已取消')
           after && after()
         }
       }
@@ -429,8 +518,12 @@ async function saveEdits() {
   }
 }
 
-function onTimelineSave(segments) {
-  saveProjectPatch(dir.value, { segments })
+function onTimelineSave(changes) {
+  const segs = Array.isArray(changes) ? changes : (changes?.segments || [])
+  const mutes = Array.isArray(changes) ? null : changes?.mute_ranges
+  const patch = { segments: segs }
+  if (mutes) patch.mute_ranges = mutes
+  saveProjectPatch(dir.value, patch)
     .then(() => {
       toast('时间轴已保存，自动执行后处理…')
       return startJob('process', () => runProcess(dir.value), { after: load })
@@ -438,7 +531,23 @@ function onTimelineSave(segments) {
     .catch((e) => toast(e.message, 'err'))
 }
 
+async function onMuteSaved(ranges) {
+  try {
+    await saveProjectPatch(dir.value, { mute_ranges: ranges })
+    if (cfg.value) cfg.value.mute_ranges = ranges
+    previewKey.value++
+    // 「去静音」会直接改写 polish.toml，这里同步刷新屏蔽段数状态
+    await refreshClipEntry()
+  } catch (e) {
+    toast('屏蔽区间保存失败：' + e.message, 'err')
+  }
+}
+
 // 九宫格多选：点击切换格子是否在区域 grid 内
+function processByLayout() {
+  startJob('process', () => runProcess(dir.value), { after: load })
+}
+
 async function toggleGridCell(key, cell, region) {
   try {
     const grid = [...(region?.grid || [])]
@@ -450,16 +559,6 @@ async function toggleGridCell(key, cell, region) {
     lay[key] = { ...(region || {}), grid }
     await saveProjectPatch(dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
-  } catch (e) { toast(e.message, 'err') }
-}
-
-async function switchVersion(v) {
-  if (v === version.value) return
-  try {
-    await selectVersion(dir.value, v)
-    toast('已切换为 ' + (v === 'silent' ? '消音版' : '原版'))
-    previewKey.value++
-    await refreshClipEntry()
   } catch (e) { toast(e.message, 'err') }
 }
 
@@ -478,6 +577,14 @@ async function loadStickerSources() {
   try {
     stickerSources.value = (await fetchStickerSources()).sources || []
   } catch { stickerSources.value = [] }
+}
+
+// /api/health 的 wgpu_render：非 true（含 undefined）都视为未启用
+async function loadHealth() {
+  try {
+    const h = await api('/api/health')
+    wgpuRender.value = h?.wgpu_render === true
+  } catch { wgpuRender.value = false }
 }
 
 async function patchStickerSource(list) {
@@ -505,20 +612,21 @@ function toggleStickerSource(name) {
   else patchStickerSource([...stickerSource.value, name])
 }
 
-function onCoverError(e) {
-  if (coverName.value !== '_cover_frame.jpg') {
-    coverName.value = '_cover_frame.jpg'
-  } else {
-    e.target.style.display = 'none'
-  }
+function onCoverError() {
+  coverFailed.value = true
 }
 function onRenderedError() {
-  if (renderedName.value === 'export.mp4') renderedName.value = 'vtuber-clip.mp4'
+  renderedFailed.value = true
 }
 
 onMounted(() => {
   load()
   loadStickerSources()
+  loadHealth()
+})
+onUnmounted(() => {
+  stopJobTimer()
+  jobClose?.()
 })
 watch(dir, load)
 </script>

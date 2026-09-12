@@ -155,6 +155,41 @@ impl Ffmpeg {
         Ok(())
     }
 
+    /// 按屏蔽区间剪掉一段时间：视频/音频同步跳过的部分会被移除。
+    pub fn cut_ranges(input: &str, ranges: &[(f64, f64)], output: &str) -> anyhow::Result<()> {
+        let mut parts: Vec<String> = Vec::new();
+        for (s, e) in ranges {
+            if e > s {
+                parts.push(format!(r"not(between(t\,{s:.3}\,{e:.3}))"));
+            }
+        }
+        if parts.is_empty() {
+            return Ok(());
+        }
+        let expr = parts.join("*");
+        let vf = format!("select='{expr}',setpts=N/FRAME_RATE/TB");
+        let af = format!("aselect='{expr}',asetpts=N/SR/TB");
+        let out = Command::new("ffmpeg")
+            .args([
+                "-y", "-i", input,
+                "-vf", &vf,
+                "-af", &af,
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "20",
+                "-c:a", "aac",
+                "-b:a", "160k",
+                "-movflags", "+faststart",
+                output,
+            ])
+            .output()
+            .map_err(|e| anyhow::anyhow!("ffmpeg cut ranges 启动失败: {}", e))?;
+        if !out.status.success() {
+            anyhow::bail!("ffmpeg cut ranges failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    }
+
     /// 视频 + 音频合流
     pub fn mux(video: &str, audio: &str, output: &str) -> anyhow::Result<()> {
         let out = Command::new("ffmpeg")

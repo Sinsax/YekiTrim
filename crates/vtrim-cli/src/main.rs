@@ -91,6 +91,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         port: 7788,
         open: true,
         config: Some(cfg),
+        allow_remote: false,
         open_path,
     };
     crate::server::run(args).await
@@ -291,9 +292,8 @@ Command::Config(action) => match action {
             }
         },
 
-Command::Silence { files, duration, threshold, output } => {
-            crate::service::run_silence(files, *duration, *threshold, output.clone())?;
-            tracing::info!("静音移除完成!");
+Command::Silence { files, duration, threshold } => {
+            crate::service::run_silence(files, *duration, *threshold).await?;
         }
 
 Command::Download => {

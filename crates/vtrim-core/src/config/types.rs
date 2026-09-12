@@ -194,6 +194,9 @@ pub struct DetectionConfig {
     pub prompt_template: String,
     #[serde(default)]
     pub vtuber_name: String,
+    /// 参考标题示例（检测 + 封面标题生成共用；每项一条，可含 emoji）
+    #[serde(default)]
+    pub reference_titles: Vec<String>,
     /// 事件检测 LLM 最大并发窗口数（默认 3）
     #[serde(default = "default_detect_max_concurrent")]
     pub max_concurrent: usize,
@@ -209,6 +212,7 @@ impl Default for DetectionConfig {
             system_prompt: String::new(),
             prompt_template: String::new(),
             vtuber_name: String::new(),
+            reference_titles: Vec::new(),
             max_concurrent: default_detect_max_concurrent(),
         }
     }

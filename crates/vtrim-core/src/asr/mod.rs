@@ -148,6 +148,10 @@ impl Stage for Transcriber {
             let mut total_items = 0usize;
 
             for (i, seg) in speech_segments.iter().enumerate() {
+                // 取消在语音段边界生效
+                if ctx.progress.cancelled() {
+                    bail!("任务已取消");
+                }
                 let mut sub_start = seg.start;
                 while sub_start < seg.end {
                     let sub_end = (sub_start + MAX_QWEN_SEGMENT_SECS).min(seg.end);

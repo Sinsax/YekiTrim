@@ -22,7 +22,7 @@ export function useJobs() {
     } catch { /* SSE 不可用时靠定时轮询兜底 */ }
   }
   const hasRunning = computed(() =>
-    jobs.value.some(j => j.status === 'running' || j.status === 'queued' || j.status === 'waiting_resume')
+    jobs.value.some(j => j.status === 'running' || j.status === 'queued')
   )
   return { jobs, reload: load, hasRunning }
 }

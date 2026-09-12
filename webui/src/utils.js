@@ -35,7 +35,6 @@ export const STICKER_ICONS = ['📺', '🎮', '🍜', '🎤', '🌸', '🎬']
 // 任务状态 → chip 颜色 class（全局唯一定义）
 export function statusClass(s) {
   return s === 'failed' ? 'r'
-    : s === 'waiting_resume' ? 'a'
     : s === 'running' || s === 'queued' ? 'b'
     : 'g'
 }
@@ -71,6 +70,15 @@ export function fmtTime(sec) {
   return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
 }
 
+// 事件检测完成（events.json 已生成）的 stage：>= 此值说明预处理结束，可直接进切片页
+export const STAGE_EVENTS_READY = 3
+
+// 项目入口路由：预处理（事件检测）完成后直接进切片页，否则进预览页
+export function projectEntryPath(cfg, stage) {
+  const view = Number(stage || 0) >= STAGE_EVENTS_READY ? 'slices' : 'preview'
+  return `/project/${encodeURIComponent(cfg)}/${view}`
+}
+
 export function normalizeSlashes(p) {
   return String(p || '').split(String.fromCharCode(92)).join('/')
 }
@@ -83,12 +91,4 @@ export function mediaUrl(dir, file = 'clip.mp4') {
 export function inputMediaUrl(absPath) {
   if (!absPath) return ''
   return '/api/media/' + encodeURIComponent(normalizeSlashes(absPath)).replace(/%2F/g, '/')
-}
-
-export function thumbUrl(dir) {
-  const parts = String(dir || '').split(/[\\/]/)
-  const name = (parts.pop() || '').replace('clip-', '')
-  if (name) return '/api/data/clips/' + encodeURIComponent(name) + '/thumb'
-  const m2 = String(dir).match(/clip-(\d+)/)
-  return '/api/data/clips/' + (m2 ? m2[1] : '0') + '/thumb'
 }

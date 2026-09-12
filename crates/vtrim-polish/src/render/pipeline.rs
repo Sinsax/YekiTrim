@@ -1,6 +1,6 @@
 use base64::Engine;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::project::ProjectFile;
@@ -22,6 +22,32 @@ fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
             Ok(())
         }
         Err(e) => Err(e),
+    }
+}
+
+/// 若目标文件已存在，返回 `stem_1.ext` / `stem_2.ext` 等不冲突路径。
+pub fn unique_output_path(path: &Path) -> std::path::PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("output");
+    let (stem, ext) = match file_name.rsplit_once('.') {
+        Some((s, e)) => (s, e),
+        None => (file_name, ""),
+    };
+    let mut n = 1u32;
+    loop {
+        let name = if ext.is_empty() {
+            format!("{stem}_{n}")
+        } else {
+            format!("{stem}_{n}.{ext}")
+        };
+        let candidate = parent.join(&name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
     }
 }
 
@@ -231,18 +257,39 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     }
 
     tracing::info!("\n  -- Mux --");
-    let op = if Path::new(&resolved.output).is_absolute() {
-        resolved.output.clone()
+    let op_path = if Path::new(&resolved.output).is_absolute() {
+        PathBuf::from(&resolved.output)
     } else {
-        project_path
-            .join(&resolved.output)
-            .to_string_lossy()
-            .to_string()
+        project_path.join(&resolved.output)
     };
+    let op_path = unique_output_path(&op_path);
+    let op = op_path.to_string_lossy().into_owned();
     if let Err(e) = Ffmpeg::mux(&tv.to_string_lossy(), &ta.to_string_lossy(), &op) {
         cleanup(project_path, &tv, &ta);
         anyhow::bail!("音视频合流失败: {e:#}");
     }
+
+    // 手动屏蔽区间：导出时直接从成片中剪掉
+    let mute_ranges: Vec<(f64, f64)> = config
+        .mute_ranges
+        .iter()
+        .filter_map(|r| r.normalized())
+        .collect();
+    if !mute_ranges.is_empty() {
+        let muted_out = project_path.join("_temp_muted.mp4");
+        match Ffmpeg::cut_ranges(&op, &mute_ranges, &muted_out.to_string_lossy()) {
+            Ok(_) => {
+                if std::fs::copy(&muted_out, &op_path).is_ok() {
+                    std::fs::remove_file(&muted_out).ok();
+                    tracing::info!("  ✂ 已导出去除 {} 个屏蔽区间", mute_ranges.len());
+                } else {
+                    tracing::info!("  ⚠ 屏蔽区间结果写入失败，保留原成片");
+                }
+            }
+            Err(e) => tracing::info!("  ⚠ 屏蔽区间导出失败: {e:#}"),
+        }
+    }
+
     cleanup(project_path, &tv, &ta);
     // 自动生成封面
     if let Err(e) = cover::cmd_cover(project_path, Some(&op)).await {

@@ -6,6 +6,44 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// 解析参考标题：优先使用 `detection.reference_titles`；
+/// 旧配置则从 `prompt_template` 的“参考标题：”段落中兼容解析。
+pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in &det.reference_titles {
+        for line in raw.lines() {
+            let line = line.trim().trim_start_matches('▶').trim();
+            if !line.is_empty() {
+                out.push(line.to_string());
+            }
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    let Some(pos) = det.prompt_template.find("参考标题：") else {
+        return out;
+    };
+    let tail = &det.prompt_template[pos + "参考标题：".len()..];
+    for line in tail.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if line.starts_with("输出") || line.starts_with("转录片段") || line.starts_with("只输出") {
+            break;
+        }
+        let cleaned = line.trim_start_matches('▶').trim();
+        if !cleaned.is_empty() {
+            out.push(cleaned.to_string());
+        }
+    }
+    out
+}
+
 /// 全局默认配置模板（`vtrim config init` 生成 .vtrim/config.toml 用，`vtrim init` 的基底）
 /// 包含 {{CORRECT_SYSTEM_PROMPT}} 等占位符，由生成方替换为内建默认 prompt。
 pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
@@ -44,6 +82,10 @@ hotwords = []
 vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
+# 参考标题示例（检测和封面标题生成共用；每项一条，可含 emoji）
+# 留空则使用 prompt_template 中「参考标题：」段落的内容
+reference_titles = [
+]
 # 检测 system_prompt（修改此处覆盖内建默认）
 system_prompt = "{{DETECT_SYSTEM_PROMPT}}"
 # 检测 user prompt_template（{segments} 会被替换；留空 = 恢复内建默认值）
@@ -287,6 +329,9 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.detection.vtuber_name.is_empty() {
         base.detection.vtuber_name = overlay.detection.vtuber_name;
     }
+    if !overlay.detection.reference_titles.is_empty() {
+        base.detection.reference_titles = overlay.detection.reference_titles.clone();
+    }
     if overlay.detection.max_concurrent != 3 {
         base.detection.max_concurrent = overlay.detection.max_concurrent;
     }
@@ -452,6 +497,66 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
     }
     std::fs::write(project_file, doc.to_string())?;
     Ok(())
+}
+
+/// 用 toml_edit 把嵌套 patch（`{ section: { key: value } }`）合并进配置文件。
+///
+/// 设置页表单只覆盖常用字段，这里**只改动 patch 里出现的键**：
+/// 其他 section（如 `[correct]` 订正 prompt）、注释、键顺序全部原样保留。
+/// 直接用表单重建整个文件会把没暴露的配置整段删掉，这正是本函数要避免的。
+pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
+    let sections = patch
+        .as_object()
+        .context("patch 必须是 { section: { key: value } } 形式的对象")?;
+    edit_toml_at(path, |doc| {
+        for (section, fields) in sections {
+            let Some(fields) = fields.as_object() else { continue };
+            if !doc.get(section).map(|i| i.is_table()).unwrap_or(false) {
+                let mut table = toml_edit::Table::new();
+                table.set_implicit(false);
+                doc.insert(section, toml_edit::Item::Table(table));
+            }
+            let Some(table) = doc.get_mut(section).and_then(|i| i.as_table_mut()) else { continue };
+            for (key, value) in fields {
+                let new_value = json_to_toml_value(value);
+                // 就地替换 value：键的 decor（上方注释/缩进）挂在 Key 上，
+                // 整项 insert 会把注释一起替换掉，保存一次注释就没了
+                if let Some(existing) = table.get_mut(key).and_then(|i| i.as_value_mut()) {
+                    let decor = existing.decor().clone();
+                    *existing = new_value;
+                    *existing.decor_mut() = decor;
+                } else {
+                    table.insert(key, toml_edit::Item::Value(new_value));
+                }
+            }
+        }
+    })
+}
+
+fn json_to_toml_value(v: &serde_json::Value) -> toml_edit::Value {
+    match v {
+        serde_json::Value::Null => toml_edit::Value::from(""),
+        serde_json::Value::Bool(b) => toml_edit::Value::from(*b),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => toml_edit::Value::from(i),
+            None => toml_edit::Value::from(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => toml_edit::Value::from(s.as_str()),
+        serde_json::Value::Array(arr) => {
+            let mut out = toml_edit::Array::new();
+            for item in arr {
+                out.push(json_to_toml_value(item));
+            }
+            toml_edit::Value::Array(out)
+        }
+        serde_json::Value::Object(map) => {
+            let mut out = toml_edit::InlineTable::new();
+            for (k, val) in map {
+                out.insert(k, json_to_toml_value(val));
+            }
+            toml_edit::Value::InlineTable(out)
+        }
+    }
 }
 
 fn rel_path_for(project_file: &Path, value: &str) -> String {

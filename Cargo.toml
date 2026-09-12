@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/vtrim-core", "crates/vtrim-cli", "crates/vtrim-polish"]
+members = ["crates/vtrim-core", "crates/vtrim-cli", "crates/vtrim-polish",
+    "crates/vtrim-render-core"]
 resolver = "2"
 
 [profile.release]

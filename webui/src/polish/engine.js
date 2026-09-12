@@ -61,6 +61,17 @@ function pctPx(v, total) {
   return Number.isFinite(n) ? (n / 100) * total : NaN
 }
 
+// 贴纸安全范围：贴纸 280×280，保留边距避免出框（1920×1080 虚拟坐标）
+export const STICKER_W = 280
+export const STICKER_H = 280
+export const STICKER_SAFE_MARGIN = 32
+function clampSticker(x, y) {
+  return {
+    x: Math.max(STICKER_SAFE_MARGIN, Math.min(1920 - STICKER_W - STICKER_SAFE_MARGIN, x)),
+    y: Math.max(STICKER_SAFE_MARGIN, Math.min(1080 - STICKER_H - STICKER_SAFE_MARGIN, y))
+  }
+}
+
 // ---- 构建事件索引（预处理，只跑一次）----
 // opts: { config, subtitles, danmaku, duration, stickerSrc }
 //   stickerSrc(name) → 贴纸资源 URL（来自 config._assets.sticker_map，由调用方解析为媒体 URL）
@@ -357,7 +368,9 @@ export function subsAt(idx, t) {
     }
     // 事件联动脉冲（scale 1.25 / y −20）
     const pulse = subPulse(idx, t, s)
-    const html = s.html || s.text || ''
+    // html 只在高亮富文本时优先；普通旧数据里 html 可能与 text 脱节，应跟随用户编辑的 text
+    const rawHtml = s.html || ''
+    const html = rawHtml.includes('<span') ? rawHtml : (s.text || rawHtml || '')
     const parts = []
     const re = /<span class="hl">([^<]+)<\/span>|[^<]+/g
     let m
@@ -450,12 +463,13 @@ export function stickersAt(idx, t) {
     let yPct = parseFloat(e.ev.y)
     if (!Number.isFinite(xPct)) xPct = 50
     if (!Number.isFinite(yPct)) yPct = 50
+    const pos = clampSticker(pctPx(xPct, 1920), pctPx(yPct, 1080) + yOff)
     out.push({
       key: e.ev.name || e.ev.keyword || '',
       name: e.ev.name || e.ev.keyword || '',
       src: e.src, isEmoji: e.isEmoji, emoji: e.emoji,
       opacity, scale, rot,
-      x: pctPx(xPct, 1920), y: pctPx(yPct, 1080) + yOff, w: 280, h: 280,
+      x: pos.x, y: pos.y, w: STICKER_W, h: STICKER_H,
     })
   }
   return out

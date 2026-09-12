@@ -5,7 +5,7 @@ use std::io::Cursor;
 
 use image::{ImageFormat, RgbaImage};
 
-use super::context::WgpuContext;
+use super::gpu::Gpu;
 use super::shaders;
 #[cfg(test)]
 use super::timeline::SplitState;
@@ -18,7 +18,7 @@ pub struct SourceRenderer {
 }
 
 impl SourceRenderer {
-    pub fn new(device: &wgpu::Device) -> Result<Self> {
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vtrim-polish source shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -94,7 +94,7 @@ impl SourceRenderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: super::context::OUTPUT_FORMAT,
+                    format: target_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -121,32 +121,64 @@ impl SourceRenderer {
         })
     }
 
-    /// 渲染一帧视频底图。`rgba` 为解码后的 RGBA 原始像素。
+    /// 渲染一帧视频底图。`source_view` 为已含视频帧的纹理视图
+    /// （桌面：rgba 上传纹理；wasm：video 元素拷贝纹理）。
     /// `fx` 携带作用在视频底图上的 blur / color_shift 参数（对齐 Canvas ctx.filter 时机）。
     pub fn render(
         &self,
-        ctx: &WgpuContext,
-        rgba: &[u8],
-        src_width: u32,
-        src_height: u32,
+        gpu: &Gpu,
+        source_view: &wgpu::TextureView,
         camera: &CameraState,
         shake: (f64, f64),
         split: Option<&super::timeline::SplitState>,
         fx: SourceFx,
         output_view: &wgpu::TextureView,
     ) -> Result<()> {
-        let source_texture = ctx.create_rgba_texture(src_width, src_height, rgba);
-        let source_view = source_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut buffers = Vec::new();
+        let mut bind_groups = Vec::new();
+        self.render_into(
+            gpu,
+            source_view,
+            camera,
+            shake,
+            split,
+            fx,
+            output_view,
+            &mut encoder,
+            &mut buffers,
+            &mut bind_groups,
+        )?;
+        gpu.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
 
+    /// 批量版：把 source pass 记录进已有 encoder，资源由调用方保持到 submit。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_into(
+        &self,
+        gpu: &Gpu,
+        source_view: &wgpu::TextureView,
+        camera: &CameraState,
+        shake: (f64, f64),
+        split: Option<&super::timeline::SplitState>,
+        fx: SourceFx,
+        output_view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+        buffers: &mut Vec<wgpu::Buffer>,
+        bind_groups: &mut Vec<wgpu::BindGroup>,
+    ) -> Result<()> {
         // uniform: mat4 以列主序存储（wgpu/math 约定）
-        let transform = camera_transform(camera, shake, split, ctx.width as f32, ctx.height as f32);
-        let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let transform = camera_transform(camera, shake, split, gpu.width as f32, gpu.height as f32);
+        let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("source transform uniform"),
             size: std::mem::size_of::<[[f32; 4]; 4]>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        ctx.queue
+        gpu.queue
             .write_buffer(&uniform, 0, bytemuck::cast_slice(&transform));
 
         #[repr(C)]
@@ -163,16 +195,16 @@ impl SourceRenderer {
             saturate: fx.saturate as f32,
             _pad: 0.0,
         };
-        let frag_uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let frag_uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("source frag uniform"),
             size: std::mem::size_of::<FragUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        ctx.queue
+        gpu.queue
             .write_buffer(&frag_uniform, 0, bytemuck::bytes_of(&frag));
 
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("source bind group"),
             layout: &self.bind_group_layout,
             entries: &[
@@ -195,9 +227,6 @@ impl SourceRenderer {
             ],
         });
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("source pass"),
@@ -218,7 +247,10 @@ impl SourceRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
-        ctx.queue.submit(Some(encoder.finish()));
+
+        buffers.push(uniform);
+        buffers.push(frag_uniform);
+        bind_groups.push(bind_group);
         Ok(())
     }
 }

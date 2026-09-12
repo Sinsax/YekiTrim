@@ -10,13 +10,31 @@
         <button class="btn" @click="toggleSource">
           <Icon name="edit" :size="13" /> {{ editSource ? '返回表单' : '编辑源文件' }}
         </button>
-        <button class="btn btn-primary" @click="saveGlobal">
+        <button class="btn btn-primary" @click="saveGlobal" :disabled="!loaded">
           <Icon name="save" :size="13" /> {{ editSource ? '保存源文件' : '保存配置' }}
         </button>
       </span>
     </div>
+    <div v-if="configError" class="error-banner">
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>config.toml 解析失败，整份程序配置被忽略，表单显示的是内建默认值。</b>
+        <div class="muted small mt-4">{{ configError }}</div>
+        <div class="muted small mt-4">用「编辑源文件」按上面的行号修好后保存即可；保存时会校验语法，坏文件不会被写入。</div>
+      </div>
+    </div>
+    <div v-if="!loaded" class="error-banner">
+      <Icon name="alert" :size="15" />
+      <div>
+        <b>程序配置未加载成功，表单显示的是内建默认值。</b>
+        <div class="muted small mt-4">为避免把默认值写回配置文件，保存已禁用；请确认服务端可用后刷新页面重试。</div>
+      </div>
+    </div>
     <div class="card">
       <template v-if="!editSource">
+        <div class="muted small mb-8">
+          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>detection.max_concurrent</code>）；要改这些请点「编辑源文件」。
+        </div>
         <div class="form-section">
           <div class="form-section-title">ASR 转写</div>
           <div class="form-grid">
@@ -44,6 +62,10 @@
           <div class="grid-2">
             <div><label>弹幕窗口 danmaku_window_secs（秒）</label><input v-model.number="form.detection.danmaku_window_secs" type="number" step="0.1"></div>
             <div><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
+          </div>
+          <div style="margin-top:8px">
+            <label>参考标题 reference_titles（每行一条，可含 emoji；检测和封面标题生成都会参考）</label>
+            <textarea v-model="referenceTitlesText" rows="4" placeholder="每行一条参考标题"></textarea>
           </div>
           <div class="prompt-pair">
             <div>
@@ -112,7 +134,7 @@
           <Icon name="edit" :size="13" /> {{ editLlmSource ? '返回表单' : '编辑源文件' }}
         </button>
         <button class="btn" @click="testLlm">测试连接</button>
-        <button class="btn btn-primary" @click="saveLlm">
+        <button class="btn btn-primary" @click="saveLlm" :disabled="!loaded">
           <Icon name="save" :size="13" /> {{ editLlmSource ? '保存源文件' : '保存 LLM' }}
         </button>
       </span>
@@ -156,16 +178,19 @@ import ModelList from '../components/ModelList.vue'
 
 const globalRaw = ref('')
 const llmRaw = ref('')
+const configError = ref('')
 const models = ref([])
 const llmResult = ref('')
 const sfxBlacklistInput = ref('')
+const referenceTitlesText = ref('')
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
 const editSource = ref(false)
 const editLlmSource = ref(false)
+// 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
+const loaded = ref(false)
 
 const form = reactive({
   asr: {
-    model: 'sensevoice',
     mode: 'single',
     num_workers: 0,
     chunk_duration: 60,
@@ -176,6 +201,7 @@ const form = reactive({
   detection: {
     danmaku_window_secs: 10,
     vtuber_name: '',
+    reference_titles: [],
     system_prompt: '',
     prompt_template: ''
   },
@@ -196,51 +222,53 @@ const form = reactive({
   }
 })
 
-function tomlString(v) {
-  if (typeof v === 'string') return JSON.stringify(v)
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'boolean') return v ? 'true' : 'false'
-  return String(v)
-}
-
-function buildGlobalToml() {
+// 表单只覆盖常用项：保存时按 section/key 合并进 config.toml，
+// 未在表单中暴露的 section（如 [correct] 订正 prompt）与注释都会原样保留。
+function buildGlobalPatch() {
   const f = form
-  let s = ''
-  s += '[asr]\n'
-  s += `mode = ${tomlString(f.asr.mode || 'single')}\n`
-  s += `num_workers = ${f.asr.num_workers ?? 0}\n`
-  s += `chunk_duration = ${f.asr.chunk_duration ?? 60}\n`
-  s += `chunk_overlap = ${f.asr.chunk_overlap ?? 10}\n`
-  s += `segment_gap = ${f.asr.segment_gap ?? 1}\n`
-  s += `llm_correct = ${f.asr.llm_correct ? 'true' : 'false'}\n`
-  s += '\n[detection]\n'
-  s += `danmaku_window_secs = ${f.detection.danmaku_window_secs ?? 10}\n`
-  s += `vtuber_name = ${tomlString(f.detection.vtuber_name || '')}\n`
-  s += `system_prompt = ${tomlString(f.detection.system_prompt || '')}\n`
-  s += `prompt_template = ${tomlString(f.detection.prompt_template || '')}\n`
-  s += '\n[cutting]\n'
-  s += `output_dir = ${tomlString(f.cutting.output_dir || './output')}\n`
-  s += `overwrite = ${f.cutting.overwrite ? 'true' : 'false'}\n`
-  s += `silence_noise_db = ${f.cutting.silence_noise_db ?? -30}\n`
-  s += '\n[sfx]\n'
-  s += `blacklist = ${JSON.stringify(form.sfx.blacklist || [])}\n`
-  s += '\n[chrome]\n'
-  s += `path = ${tomlString(f.chrome.path || '')}\n`
-  return s
+  return {
+    asr: {
+      mode: f.asr.mode || 'single',
+      num_workers: Number(f.asr.num_workers) || 0,
+      chunk_duration: Number(f.asr.chunk_duration) || 60,
+      chunk_overlap: Number(f.asr.chunk_overlap) || 10,
+      segment_gap: Number(f.asr.segment_gap) || 1,
+      llm_correct: !!f.asr.llm_correct
+    },
+    detection: {
+      danmaku_window_secs: Number(f.detection.danmaku_window_secs) || 10,
+      vtuber_name: f.detection.vtuber_name || '',
+      reference_titles: f.detection.reference_titles || [],
+      system_prompt: f.detection.system_prompt || '',
+      prompt_template: f.detection.prompt_template || ''
+    },
+    cutting: {
+      output_dir: f.cutting.output_dir || './output',
+      overwrite: !!f.cutting.overwrite,
+      silence_noise_db: Number(f.cutting.silence_noise_db ?? -30)
+    },
+    sfx: { blacklist: f.sfx.blacklist || [] },
+    chrome: { path: f.chrome.path || '' }
+  }
 }
 
-function buildLlmToml() {
+function buildLlmPatch() {
   const f = form.llm
-  let s = '[llm]\n'
-  s += `base_url = ${tomlString(f.base_url || '')}\n`
-  s += `api_key = ${tomlString(f.api_key || '')}\n`
-  s += `model = ${tomlString(f.model || '')}\n`
-  s += `temperature = ${f.temperature ?? 0}\n`
-  s += `max_tokens = ${f.max_tokens ?? 65536}\n`
-  if (f.extra_params && f.extra_params.trim()) {
-    s += `extra_params = ${f.extra_params.trim()}\n`
+  const llm = {
+    base_url: f.base_url || '',
+    api_key: f.api_key || '',
+    model: f.model || '',
+    temperature: Number(f.temperature) || 0,
+    max_tokens: Number(f.max_tokens) || 65536
   }
-  return s
+  if (f.extra_params && f.extra_params.trim()) {
+    try {
+      llm.extra_params = JSON.parse(f.extra_params)
+    } catch (e) {
+      throw new Error('extra_params 不是合法 JSON，请检查格式')
+    }
+  }
+  return { llm }
 }
 
 async function loadConfig() {
@@ -248,7 +276,11 @@ async function loadConfig() {
     const d = await api('/api/config')
     globalRaw.value = d.global_raw || ''
     llmRaw.value = d.llm_raw || ''
-    const c = d.config || {}
+    // config 解析失败时后端会给出原因，必须显式提示，否则表单只是静默显示默认值
+    configError.value = d.config_error || ''
+    // 用 global_config（只含 .vtrim/config.toml）而不是 merged config：
+    // merged 会被当前工程的 vtrim.toml 覆盖，表单就会和源文件对不上
+    const c = d.global_config || d.config || {}
     if (c.asr) Object.assign(form.asr, {
       mode: c.asr.mode || 'single',
       num_workers: c.asr.num_workers ?? 0,
@@ -260,9 +292,11 @@ async function loadConfig() {
     if (c.detection) Object.assign(form.detection, {
       danmaku_window_secs: c.detection.danmaku_window_secs ?? 10,
       vtuber_name: c.detection.vtuber_name || '',
+      reference_titles: Array.isArray(c.detection.reference_titles) ? [...c.detection.reference_titles] : [],
       system_prompt: c.detection.system_prompt || '',
       prompt_template: c.detection.prompt_template || ''
     })
+    referenceTitlesText.value = (form.detection.reference_titles || []).join('\n')
     if (c.cutting) Object.assign(form.cutting, {
       output_dir: c.cutting.output_dir || './output',
       overwrite: !!c.cutting.overwrite,
@@ -283,7 +317,8 @@ async function loadConfig() {
       max_tokens: l.max_tokens ?? 65536,
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : ''
     }
-  } catch (e) {}
+    loaded.value = true
+  } catch (e) { loaded.value = false }
 }
 
 async function loadModels() {
@@ -312,13 +347,18 @@ async function toggleLlmSource() {
 }
 
 async function saveGlobal() {
+  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
   try {
+    form.detection.reference_titles = referenceTitlesText.value
+      .split('\n')
+      .map(s => s.trim())
+      .filter(Boolean)
     if (editSource.value) {
       await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ raw: globalRaw.value }) })
       toast('config.toml 已保存')
     } else {
-      await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ raw: buildGlobalToml() }) })
-      toast('程序配置已保存')
+      await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
+      toast('程序配置已保存（其余未在表单中的配置保持不变）')
     }
     await loadConfig()
     editSource.value = false
@@ -326,12 +366,13 @@ async function saveGlobal() {
 }
 
 async function saveLlm() {
+  if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
   try {
     if (editLlmSource.value) {
       await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ raw: llmRaw.value }) })
       toast('llm.toml 已保存')
     } else {
-      await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ raw: buildLlmToml() }) })
+      await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ patch: buildLlmPatch() }) })
       toast('LLM 配置已保存')
     }
     await loadConfig()
@@ -391,6 +432,7 @@ onMounted(() => {
 .check-field { display:flex; align-items:center; gap:7px; align-self:flex-start; padding:2px 0 6px; }
 .check-field label { margin:0; cursor:pointer; color:var(--ink); }
 .source-editor { font-size:12px; line-height:1.7; }
+button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 900px) {
   .llm-grid { grid-template-columns:1fr; }
   .llm-extra textarea { min-height:160px; }

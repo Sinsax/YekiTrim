@@ -55,6 +55,10 @@ impl Stage for Cutter {
         let mut clip_infos: Vec<ClipInfo> = Vec::new();
 
         for batch_start in (0..total_events).step_by(max_concurrent) {
+            // 取消在批次边界生效（进行中的 ffmpeg 不会被中断）
+            if ctx.progress.cancelled() {
+                anyhow::bail!("任务已取消");
+            }
             let batch_end = (batch_start + max_concurrent).min(total_events);
 
             let batch_results: Vec<Result<ClipInfo>> = std::thread::scope(|scope| {

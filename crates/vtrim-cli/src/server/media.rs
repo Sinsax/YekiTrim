@@ -25,34 +25,56 @@ pub fn allowed_roots(ws: &Workspace, workspace_root: &Path) -> Vec<PathBuf> {
         let out = ws.resolve(&cfg.cutting.output_dir);
         roots.push(out);
     }
+    // 多项目模式下，允许访问所有已记住项目的根目录。
+    // 否则 F:ideo\... 这类不在默认 workspace_root 下的项目，媒体预览会 400。
+    if let Some(state) = crate::server::persist::load_state() {
+        if let Some(last) = state.last_config_file.as_deref() {
+            if let Some(parent) = Path::new(last).parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+        for cfg in &state.projects {
+            if let Some(parent) = Path::new(cfg).parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
     roots
 }
 
-/// 将查询参数中的相对/绝对路径规范化为绝对路径，并在允许根内。
-pub fn safe_join(ws: &Workspace, workspace_root: &Path, requested: &str) -> Option<PathBuf> {
+/// 路径校验结果：区分「不存在」（404）与「越权」（403），
+/// 旧实现把两者合并成 400，客户端无法区分"还没生成"和"不许访问"。
+pub enum SafePath {
+    Allowed(PathBuf),
+    NotFound,
+    Forbidden,
+}
+
+/// 将查询参数中的相对/绝对路径规范化为绝对路径，并校验其位于允许根内。
+pub fn safe_join(ws: &Workspace, workspace_root: &Path, requested: &str) -> SafePath {
     let path = if Path::new(requested).is_absolute() {
         PathBuf::from(requested)
     } else {
         ws.resolve(requested)
     };
     if !path.exists() {
-        return None;
+        return SafePath::NotFound;
     }
     // 规范化后必须位于某个允许根下。
     for root in allowed_roots(ws, workspace_root) {
         if let Ok(rel) = path.strip_prefix(&root) {
             // 禁止逃逸 ../
             if !rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return Some(path);
+                return SafePath::Allowed(path);
             }
         }
     }
-    None
+    SafePath::Forbidden
 }
 
-pub fn error_response(msg: &str) -> Response {
+pub fn json_error(status: StatusCode, msg: &str) -> Response {
     (
-        StatusCode::BAD_REQUEST,
+        status,
         axum::Json(serde_json::json!({ "ok": false, "error": msg })),
     )
         .into_response()

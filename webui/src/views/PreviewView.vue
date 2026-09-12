@@ -26,6 +26,17 @@
       </div>
     </div>
 
+    <div v-if="job.id" class="card mt-8">
+      <div class="row spread small">
+        <b>{{ job.kind }}</b>
+        <div class="row">
+          <span class="muted small mono">{{ job.message || job.log || '' }}</span>
+          <span class="chip" :class="job.status === 'failed' ? 'r' : (job.status === 'succeeded' ? 'g' : 'b')">{{ jobStatusText }}</span>
+        </div>
+      </div>
+      <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+    </div>
+
     <div class="preview-layout">
       <div class="left">
         <div class="card">
@@ -68,7 +79,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onUnmounted, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
@@ -76,10 +87,11 @@ import { confirmDialog } from '../stores/dialog'
 import Icon from '../components/Icon.vue'
 import SubtitleEditor from '../components/SubtitleEditor.vue'
 import { EVENT_TYPES, TYPE_ZH, inputMediaUrl } from '../utils'
+import { watchJob } from '../polish/api'
 
 const route = useRoute()
 const router = useRouter()
-const cfg = decodeURIComponent(route.params.cfg || '')
+const cfg = String(route.params.cfg || '')
 const src = ref('')
 const videoRef = ref(null)
 const currentTime = ref(0)
@@ -100,6 +112,11 @@ const canAddClip = computed(() => {
 })
 
 const cfgQ = encodeURIComponent(cfg)
+const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, message: '' })
+let jobClose = null
+const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
+const jobPct = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
+const jobStatusText = computed(() => ({ queued:'排队中', running:'运行中', succeeded:'完成', failed:'失败', cancelled:'已取消' }[job.status] || job.status))
 
 async function load() {
   try {
@@ -113,6 +130,7 @@ async function load() {
   try {
     const d = await api(`/api/project-data/transcript?config=${cfgQ}`)
     segments.value = d.segments || []
+    segments.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
   } catch {}
 }
 
@@ -120,10 +138,32 @@ async function saveMode(silent = false) {
   try {
     const d = await api(`/api/project-data/config?config=${cfgQ}`)
     let toml = d.vtrim_raw || ''
-    if (/^mode\s*=/.test(toml)) {
-      toml = toml.replace(/^mode\s*=.*$/m, `mode = "${asrMode.value}"`)
+    const modeLine = 'mode = "' + asrMode.value + '"'
+    if (!/^\s*\[asr\]\s*$/m.test(toml)) {
+      // 没有 [asr] 段：补表头后写入
+      const base = toml.replace(/\s*$/, '')
+      toml = (base ? base + '\n\n' : '') + '[asr]\n' + modeLine + '\n'
     } else {
-      toml += '\n[asr]\nmode = "' + asrMode.value + '"\n'
+      // 已有 [asr] 段：只在该段内替换/插入 mode，绝不追加第二个表头（重复表头会破坏 TOML）
+      const lines = toml.split('\n')
+      const head = lines.findIndex(l => /^\s*\[asr\]\s*$/.test(l))
+      let end = lines.length
+      for (let i = head + 1; i < lines.length; i++) {
+        if (/^\s*\[/.test(lines[i])) { end = i; break }
+      }
+      let key = -1
+      for (let i = head + 1; i < end; i++) {
+        if (/^\s*mode\s*=/.test(lines[i])) { key = i; break }
+      }
+      if (key >= 0) {
+        lines[key] = modeLine
+      } else {
+        // 插到该段最后一行内容之后（跳过段尾空行），避免写到下一个表头前
+        let at = end
+        while (at > head + 1 && !lines[at - 1].trim()) at--
+        lines.splice(at, 0, modeLine)
+      }
+      toml = lines.join('\n')
     }
     await api(`/api/project-data/config?config=${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: toml }) })
     if (!silent) toast('模式已保存')
@@ -161,8 +201,32 @@ async function saveSubs() {
 }
 
 async function run(stage) {
+  if (jobRunning.value) { toast('已有任务在运行'); return }
   try {
-    await api(`/api/project-data/pipeline?config=${cfgQ}`, { method: 'POST', body: JSON.stringify({ config: cfg, stage, resume: 'auto' }) })
+    const r = await api(`/api/project-data/pipeline?config=${cfgQ}`, { method: 'POST', body: JSON.stringify({ config: cfg, stage, resume: 'auto' }) })
+    Object.assign(job, { id: r.id, kind: '任务', status: 'running', current: 0, total: 0, message: '已启动 ' + stage })
+    jobClose?.()
+    jobClose = watchJob(r.id, {
+      onEvent(e) {
+        if (e.type === 'progress') { job.current = e.current; job.total = e.total }
+        if (e.type === 'log') job.message = e.message
+        if (e.type === 'stage_started') job.message = e.stage + ' 运行中'
+      },
+      onSummary(s) {
+        job.status = s.status
+        job.current = s.current
+        job.total = s.total
+        job.message = s.message || job.message
+      },
+      onDone(s) {
+        job.status = s.status
+        jobClose?.()
+        jobClose = null
+        if (s.status === 'succeeded') toast(stage + ' 完成')
+        else toast(stage + ' 失败：' + (s.error || s.message || '未知错误'), 'err')
+        load()
+      }
+    })
     toast('已启动 ' + stage)
   } catch (e) { toast(e.message, 'err') }
 }
@@ -188,6 +252,9 @@ async function saveClip() {
 }
 
 onMounted(load)
+onUnmounted(() => {
+  jobClose?.()
+})
 </script>
 
 <style scoped>

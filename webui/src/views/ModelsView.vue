@@ -36,7 +36,7 @@ async function load() {
 async function downloadOne(m) {
   try {
     await api('/api/models/download', { method: 'POST' })
-    toast(m.name + ' 下载已启动')
+    toast('全部 ASR 模型下载已启动（约 1.5GB）')
   } catch (e) { toast(e.message, 'err') }
 }
 

@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "vtrim-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "V-Trim wgpu 渲染核心的 WASM 绑定：浏览器实时真渲染预览"
+
+[lib]
+name = "vtrim_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vtrim-render-core = { path = "../vtrim-render-core", features = ["wgpu"] }
+wgpu = "27"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["Window", "HtmlCanvasElement", "HtmlVideoElement"]
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

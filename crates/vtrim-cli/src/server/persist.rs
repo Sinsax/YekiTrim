@@ -41,40 +41,46 @@ pub fn save_state(state: &ServerState) {
     if let Err(e) = std::fs::write(&path, body) {
         tracing::warn!("无法保存 server 状态 {}: {e}", path.display());
     } else {
-        tracing::info!("Server 状态已保存: {}", path.display());
+        tracing::debug!("Server 状态已保存: {}", path.display());
     }
+}
+
+/// 状态文件的进程内锁：`load → 改 → save` 必须原子，
+/// 否则 `project_list` 循环里逐条 `remember_project` 会互相覆盖丢条目。
+static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 原子的「读 → 改 → 写」。
+pub fn update_state<F: FnOnce(&mut ServerState)>(f: F) {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = load_state().unwrap_or_default();
+    f(&mut state);
+    save_state(&state);
 }
 
 /// 工程切换 / 工作区修改后调用，更新记忆。
 pub fn remember_last(config_file: &Path, workspace_root: Option<&Path>) {
-    let mut state = load_state().unwrap_or_default();
-    state.last_config_file = Some(config_file.to_string_lossy().into_owned());
-    if let Some(root) = workspace_root {
-        state.workspace_root = Some(root.to_string_lossy().into_owned());
-    }
-    save_state(&state);
-}
-
-pub fn remember_workspace_root(root: &Path) {
-    let mut state = load_state().unwrap_or_default();
-    state.workspace_root = Some(root.to_string_lossy().into_owned());
-    save_state(&state);
+    let cfg = config_file.to_string_lossy().into_owned();
+    let root = workspace_root.map(|r| r.to_string_lossy().into_owned());
+    update_state(move |state| {
+        state.last_config_file = Some(cfg);
+        if let Some(root) = root {
+            state.workspace_root = Some(root);
+        }
+    });
 }
 
 /// 将项目 vtrim.toml 加入已知项目列表（不重复）。
 pub fn remember_project(config_file: &Path) {
-    let mut state = load_state().unwrap_or_default();
     let cfg = config_file.to_string_lossy().into_owned();
-    if !state.projects.contains(&cfg) {
-        state.projects.push(cfg);
-    }
-    save_state(&state);
+    update_state(|state| {
+        if !state.projects.contains(&cfg) {
+            state.projects.push(cfg);
+        }
+    });
 }
 
 /// 从已知项目列表移除一个 vtrim.toml。
 pub fn forget_project(config_file: &Path) {
-    let mut state = load_state().unwrap_or_default();
     let cfg = config_file.to_string_lossy().into_owned();
-    state.projects.retain(|p| p != &cfg);
-    save_state(&state);
+    update_state(|state| state.projects.retain(|p| p != &cfg));
 }

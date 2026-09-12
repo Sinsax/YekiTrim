@@ -45,6 +45,15 @@ pub struct ProjectFile {
     #[serde(default)]
     pub segments: Vec<Segment>,
 
+    /// 11. 视频屏蔽区间：这些时间段会被预览/导出跳过，LLM 也会忽略其中内容
+    #[serde(default)]
+    pub mute_ranges: Vec<MuteRange>,
+
+    /// 12. 「去静音」自动检测出的区间记录（对应时间轴「屏蔽」轨道里的红色块）
+    ///     仅作记录：撤销去静音时按它精确回退，不影响手动添加的屏蔽区间
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub silence_ranges: Vec<MuteRange>,
+
     /// 是否已执行过 process（preview 用它判断是否需要先 process）
     #[serde(default, skip_serializing_if = "is_false")]
     pub processed: bool,
@@ -52,6 +61,26 @@ pub struct ProjectFile {
     /// 扩展兜底
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// 一个屏蔽区间：start~end 之间的内容会被手动剪掉。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MuteRange {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl MuteRange {
+    pub fn normalized(&self) -> Option<(f64, f64)> {
+        let s = self.start.min(self.end).max(0.0);
+        let e = self.start.max(self.end);
+        if e - s > 0.001 { Some((s, e)) } else { None }
+    }
+
+    pub fn overlaps(&self, start: f64, end: f64) -> bool {
+        let Some((s, e)) = self.normalized() else { return false; };
+        start < e && end > s
+    }
 }
 
 fn is_false(v: &bool) -> bool {
@@ -77,46 +106,7 @@ pub struct ProjectMeta {
 
 // ===== 样式根 =====
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[derive(Default)]
-pub struct StyleRoot {
-    #[serde(default)]
-    pub subtitle: SubtitleStyle,
-    #[serde(default)]
-    pub danmaku: DanmakuStyle,
-    #[serde(default)]
-    pub camera: CameraStyle,
-}
-
 // ===== 运镜样式 =====
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct CameraStyle {
-    /// 中景缩放 (camera zoom="中")
-    #[serde(default = "default_zoom_mid")]
-    pub zoom_mid: f64,
-    /// 近景特写缩放 (camera zoom="近")
-    #[serde(default = "default_zoom_close")]
-    pub zoom_close: f64,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-impl Default for CameraStyle {
-    fn default() -> Self {
-        Self {
-            zoom_mid: default_zoom_mid(),
-            zoom_close: default_zoom_close(),
-            extra: HashMap::new(),
-        }
-    }
-}
-
-fn default_zoom_mid() -> f64 { 1.15 }
-fn default_zoom_close() -> f64 { 1.3 }
-
 
 // ===== 关键词过滤 =====
 
@@ -170,177 +160,14 @@ pub struct SourceRef {
 }
 
 // ===== 布局 =====
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct Layout {
-    #[serde(default = "default_liver")]
-    pub liver: LayoutRegion,
-
-    #[serde(default = "default_danmaku_area")]
-    pub danmaku_area: LayoutRegion,
-
-    #[serde(default = "default_sticker_area")]
-    pub sticker_area: LayoutRegion,
-
-    #[serde(default)]
-    pub reaction_zone: Option<LayoutRegion>,
-
-    #[serde(default)]
-    pub game_area: Option<LayoutRegion>,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Self {
-            liver: default_liver(),
-            danmaku_area: default_danmaku_area(),
-            sticker_area: default_sticker_area(),
-            reaction_zone: None,
-            game_area: None,
-            extra: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Point {
-    /// x 百分比字符串，如 "65%"
-    pub x: String,
-    /// y 百分比字符串，如 "25%"
-    pub y: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct LayoutRegion {
-    /// 九宫格格子列表（可多个合并成更大区域）；旧版配置可能没有该字段，默认空数组
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grid: Vec<String>,
-    /// 运镜聚焦中心（新）：九宫格格子名，如 "mid-right" / "center"
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin_grid: Option<String>,
-    /// 运镜聚焦中心 (旧，格式 "x% y%")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-    /// 旧版布局区域左上角/右下角（新字段为 grid，旧字段保留兼容）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub top_left: Option<Point>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bottom_right: Option<Point>,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-impl LayoutRegion {
-    /// 是否为空（无有效格子）
-    pub fn is_empty(&self) -> bool {
-        self.grid.is_empty()
-    }
-}
-
-fn default_liver() -> LayoutRegion {
-    LayoutRegion {
-        grid: vec!["mid-right".into()],
-        origin_grid: Some("mid-right".into()),
-        origin: None,
-        top_left: None,
-        bottom_right: None,
-        extra: HashMap::new(),
-    }
-}
-
-fn default_danmaku_area() -> LayoutRegion {
-    LayoutRegion {
-        grid: vec!["top-left".into()],
-        origin_grid: None,
-        origin: None,
-        top_left: None,
-        bottom_right: None,
-        extra: HashMap::new(),
-    }
-}
-
-/// 默认表情/插画区域: 优先放在 liver 左侧，覆盖中左 + 下左
-fn default_sticker_area() -> LayoutRegion {
-    LayoutRegion {
-        grid: vec!["mid-left".into(), "bot-left".into()],
-        origin_grid: None,
-        origin: None,
-        top_left: None,
-        bottom_right: None,
-        extra: HashMap::new(),
-    }
-}
+// （类型定义已迁入 vtrim-render-core/types.rs，此处重导出保持兼容）
+pub use vtrim_render_core::types::{
+    grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Event,
+    Layout,
+    LayoutRegion, Point, Segment, StyleRoot, SubtitleStyle,
+};
 
 // ===== 九宫格 =====
-
-/// 返回九宫格格子的标准矩形（百分比字符串）。
-pub fn grid_rect(name: &str) -> Option<(Point, Point)> {
-    let p = |x: f64, y: f64| Point {
-        x: format!("{x:.2}%"),
-        y: format!("{y:.2}%"),
-    };
-    let rect = match name {
-        "top-left"   => (p(0.0, 0.0),    p(33.33, 33.33)),
-        "top"        => (p(33.33, 0.0),  p(66.67, 33.33)),
-        "top-right"  => (p(66.67, 0.0),  p(100.0, 33.33)),
-        "mid-left"   => (p(0.0, 33.33),  p(33.33, 66.67)),
-        "center"     => (p(33.33, 33.33),p(66.67, 66.67)),
-        "mid-right"  => (p(66.67, 33.33),p(100.0, 66.67)),
-        "bot-left"   => (p(0.0, 66.67),  p(33.33, 100.0)),
-        "bottom"     => (p(33.33, 66.67),p(66.67, 100.0)),
-        "bot-right"  => (p(66.67, 66.67),p(100.0, 100.0)),
-        _ => return None,
-    };
-    Some(rect)
-}
-
-/// 解析百分比字符串为数值。
-fn parse_pct(s: &str) -> f64 {
-    s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
-}
-
-/// 将 LayoutRegion 的多个格子解析为独立矩形列表（不合并包围盒）。
-/// 每个格子一个矩形，调用方按需选择（如贴纸随机选一个格子）。
-/// 返回空 Vec 表示没有有效格子。
-pub fn region_rects(region: &LayoutRegion) -> Vec<(Point, Point)> {
-    let mut out = Vec::new();
-    for name in &region.grid {
-        if let Some((tl, br)) = grid_rect(name) {
-            out.push((tl, br));
-        }
-    }
-    out
-}
-
-/// 解析运镜聚焦中心（百分比字符串 "x% y%"）。
-/// 优先级：origin_grid（格子中心） > origin（旧百分比） > grid 第一个格子中心。
-pub fn region_origin(region: &LayoutRegion) -> Option<String> {
-    if let Some(g) = &region.origin_grid {
-        if let Some((tl, br)) = grid_rect(g) {
-            let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;
-            let cy = (parse_pct(&tl.y) + parse_pct(&br.y)) / 2.0;
-            return Some(format!("{cx:.2}% {cy:.2}%"));
-        }
-    }
-    if let Some(o) = &region.origin {
-        return Some(o.clone());
-    }
-    // 自动取第一个格子的中心
-    if let Some(first) = region.grid.first() {
-        if let Some((tl, br)) = grid_rect(first) {
-            let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;
-            let cy = (parse_pct(&tl.y) + parse_pct(&br.y)) / 2.0;
-            return Some(format!("{cx:.2}% {cy:.2}%"));
-        }
-    }
-    None
-}
 
 /// 兼容旧名：多个格子合并为包围盒（已废弃，保留别名避免破坏外部引用）。
 #[deprecated(note = "请改用 region_rects，多个格子不再合并")]
@@ -369,109 +196,7 @@ pub fn region_rect(region: &LayoutRegion) -> Option<(Point, Point)> {
 
 // ===== 字幕样式 =====
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct SubtitleStyle {
-    #[serde(default = "default_font")]
-    pub font: String,
-
-    #[serde(default = "default_sub_size")]
-    pub size: u32,
-
-    #[serde(default = "default_sub_color")]
-    pub color: String,
-
-    #[serde(default = "default_sub_stroke")]
-    pub stroke: String,
-
-    #[serde(default = "default_highlight_color")]
-    pub highlight_color: String,
-
-    #[serde(default = "default_entrance")]
-    pub entrance: String,
-
-    #[serde(default = "default_sub_position")]
-    pub position: String,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-impl Default for SubtitleStyle {
-    fn default() -> Self {
-        Self {
-            font: default_font(),
-            size: default_sub_size(),
-            color: default_sub_color(),
-            stroke: default_sub_stroke(),
-            highlight_color: default_highlight_color(),
-            entrance: default_entrance(),
-            position: default_sub_position(),
-            extra: HashMap::new(),
-        }
-    }
-}
-
-fn default_font() -> String { "LXGW WenKai".into() }
-fn default_sub_size() -> u32 { 72 }
-fn default_sub_color() -> String { "#dcbda0".into() }
-fn default_sub_stroke() -> String { "12px #403c3b".into() }
-fn default_highlight_color() -> String { "#f56b41".into() }
-fn default_entrance() -> String { "cycle-5".into() }
-fn default_sub_position() -> String { "bottom".into() }
-
 // ===== 弹幕样式 =====
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct DanmakuStyle {
-    #[serde(default = "default_dm_size")]
-    pub font_size: u32,
-
-    #[serde(default = "default_dm_color")]
-    pub color: String,
-
-    #[serde(default = "default_dm_stroke")]
-    pub stroke: String,
-
-    #[serde(default = "default_dm_highlight_color")]
-    pub highlight_color: String,
-
-    #[serde(default = "default_dm_speed")]
-    pub speed: f64,
-
-    #[serde(default = "default_dm_area")]
-    pub area: String,
-
-    #[serde(default = "default_dm_direction")]
-    pub scroll_direction: String,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-impl Default for DanmakuStyle {
-    fn default() -> Self {
-        Self {
-            font_size: default_dm_size(),
-            color: default_dm_color(),
-            stroke: default_dm_stroke(),
-            highlight_color: default_dm_highlight_color(),
-            speed: default_dm_speed(),
-            area: default_dm_area(),
-            scroll_direction: default_dm_direction(),
-            extra: HashMap::new(),
-        }
-    }
-}
-
-fn default_dm_size() -> u32 { 42 }
-fn default_dm_color() -> String { "#ffffff".into() }
-fn default_dm_stroke() -> String { "2px #000".into() }
-fn default_dm_highlight_color() -> String { "#ff6bcb".into() }
-fn default_dm_speed() -> f64 { 8.0 }
-fn default_dm_area() -> String { "danmaku_area".into() }
-fn default_dm_direction() -> String { "rtl".into() }
 
 // ===== 音效配置 =====
 
@@ -547,6 +272,49 @@ pub struct CoverConfig {
     /// 手动断行 (由 cover 命令自动生成, 可手动编辑)
     #[serde(default)]
     pub title_lines: Vec<String>,
+    /// 文字对齐: left/center/right
+    #[serde(default = "default_cover_text_align")]
+    pub text_align: String,
+    /// 阴影方向: none/left/right/top/bottom/center
+    #[serde(default = "default_cover_shadow_dir")]
+    pub shadow_dir: String,
+    /// 阴影强度 0~1（0 = 无阴影；旧字段，保留兼容）
+    #[serde(default = "default_cover_shadow_intensity")]
+    pub shadow_intensity: f64,
+    /// 文字阴影开关（新的语义：文字阴影只控制开关，方向由背景渐变控制）
+    #[serde(default = "default_true")]
+    pub text_shadow: bool,
+    /// 封面标题高亮关键词
+    #[serde(default)]
+    pub highlight_keywords: Vec<String>,
+    /// 可叠加封面效果
+    #[serde(default)]
+    pub effects: Vec<CoverEffect>,
+    /// 背景手动平移（1920×1080 像素坐标，预览拖拽）
+    #[serde(default)]
+    pub bg_x: f64,
+    #[serde(default)]
+    pub bg_y: f64,
+    /// 背景手动缩放倍率（预览滚轮）
+    #[serde(default = "default_cover_bg_zoom")]
+    pub bg_zoom: f64,
+}
+
+fn default_cover_bg_zoom() -> f64 { 1.0 }
+fn default_cover_effect_color() -> String { "#000000".into() }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CoverEffect {
+    pub kind: String,
+    #[serde(default = "default_cover_effect_amount")]
+    pub amount: f64,
+    #[serde(default = "default_cover_effect_x")]
+    pub x: f64,
+    #[serde(default = "default_cover_effect_y")]
+    pub y: f64,
+    /// overlay 等特效使用的颜色
+    #[serde(default = "default_cover_effect_color")]
+    pub color: String,
 }
 fn default_cover_frame_pos() -> f64 { 0.4 }
 fn default_cover_font_size() -> u32 { 120 }
@@ -559,6 +327,12 @@ fn default_cover_gradient_dir() -> String { "left".into() }
 fn default_cover_vignette() -> f64 { 0.08 }
 fn default_cover_letter_spacing() -> String { "8px".into() }
 fn default_cover_line_height() -> f64 { 1.7 }
+fn default_cover_text_align() -> String { "center".into() }
+fn default_cover_shadow_dir() -> String { "left".into() }
+fn default_cover_shadow_intensity() -> f64 { 1.0 }
+fn default_cover_effect_amount() -> f64 { 0.3 }
+fn default_cover_effect_x() -> f64 { 50.0 }
+fn default_cover_effect_y() -> f64 { 50.0 }
 impl Default for CoverConfig {
     fn default() -> Self {
         Self {
@@ -575,6 +349,15 @@ impl Default for CoverConfig {
             letter_spacing: default_cover_letter_spacing(),
             line_height: default_cover_line_height(),
             title_lines: Vec::new(),
+            text_align: default_cover_text_align(),
+            shadow_dir: default_cover_shadow_dir(),
+            shadow_intensity: default_cover_shadow_intensity(),
+            text_shadow: true,
+            highlight_keywords: Vec::new(),
+            effects: Vec::new(),
+            bg_x: 0.0,
+            bg_y: 0.0,
+            bg_zoom: default_cover_bg_zoom(),
         }
     }
 }
@@ -583,145 +366,12 @@ impl Default for CoverConfig {
 
 // Segment 仅话题分组, 运镜由 Camera event 控制
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Segment {
-    pub start: f64,
-    pub end: f64,
-
-    /// 情绪阈值: low/med/high, 控制该段反应密度
-    #[serde(default = "default_fx")]
-    pub fx: String,
-
-    #[serde(default)]
-    pub note: String,
-
-    #[serde(default)]
-    pub events: Vec<Event>,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
-}
-
-fn default_fx() -> String { "low".into() }
 #[allow(dead_code)] fn default_zoom() -> String { "中".into() }
 #[allow(dead_code)] fn default_origin() -> String { "50% 50%".into() }
 
 
 
-// Tagged Event Enum — 每个变体只有自己的字段
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    // === 贴图 (统一视觉元素, 来源由 sticker_source 配置决定) ===
-    Sticker {
-        time: f64, duration: f64,
-        /// LLM 生成的描述关键词（贴纸包名，如 "ysyk"）
-        keyword: String,
-        /// Step2a LLM 选出的语义 tag（如 "害怕"）
-        #[serde(default)]
-        sticker_tag: Option<String>,
-        /// process/Step2b 解析后的文件名 (不含扩展名)
-        #[serde(default)]
-        name: Option<String>,
-        /// process/Step2b 解析成功后实际使用的来源 (emoji/irasu/local/包名)
-        #[serde(default)]
-        source: Option<String>,
-        x: String, y: String,
-        #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
-
-    // === 运镜 (持续) ===
-    Camera {
-        time: f64, duration: f64,
-        zoom: String,  // "中" | "近"
-        origin: String,
-    },
-
-    // === 瞬时特效 (所有 sfx 接受布尔值) ===
-    // duration 可选: LLM 可写特效持续秒数, 缺省用前端默认
-    Shake      { time: f64, intensity: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Flash      { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Blur       { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    ZoomBounce { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Vignette   { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    HueShift   { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Stutter    { time: f64, intensity: Option<f64>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Split      { time: f64, intensity: Option<f64>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Noise      { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    Pulse      { time: f64, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-    ColorShift { time: f64, color: Option<String>, #[serde(default)] duration: Option<f64>, #[serde(default)] anchor: Option<String>, #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>, sfx_volume: Option<f64> },
-
-    // === 覆盖层 (持续) ===
-    Overlay {
-        time: f64, duration: f64, overlay_type: String,
-        color: Option<String>, opacity: Option<f64>,
-        colors: Option<Vec<String>>, shape: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")] sfx: Option<String>,
-        sfx_volume: Option<f64>,
-        #[serde(default)] anchor: Option<String>,
-    },
-
-    // === 纯音效 (无视觉) ===
-    // name 由规则引擎按字幕上下文填充, LLM 可以不写
-    Sfx {
-        time: f64,
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        volume: Option<f64>,
-        /// 播放时长(秒)，不指定则文件原始长度
-        #[serde(default)]
-        duration: Option<f64>,
-    },
-}
-
-impl Event {
-    pub fn get_time(&self) -> f64 {
-        match self {
-            Event::Sticker { time, .. } => *time,
-            Event::Camera { time, .. } => *time,
-            Event::Shake { time, .. } => *time,
-            Event::Flash { time, .. } => *time,
-            Event::Blur { time, .. } => *time,
-            Event::ZoomBounce { time, .. } => *time,
-            Event::Vignette { time, .. } => *time,
-            Event::HueShift { time, .. } => *time,
-            Event::Stutter { time, .. } => *time,
-            Event::Split { time, .. } => *time,
-            Event::Noise { time, .. } => *time,
-            Event::Pulse { time, .. } => *time,
-            Event::ColorShift { time, .. } => *time,
-            Event::Overlay { time, .. } => *time,
-            Event::Sfx { time, .. } => *time,
-        }
-    }
-
-    pub fn duration(&self) -> f64 {
-        match self {
-            Event::Sticker { duration, .. } => *duration,
-            Event::Camera { duration, .. } => *duration,
-            Event::Overlay { duration, .. } => *duration,
-            _ => 0.5,
-        }
-    }
-}
-
 #[allow(dead_code)] fn is_zero(v: &f64) -> bool { *v == 0.0 }
-
-/// sfx 字段的灵活反序列化: 接受字符串/null/布尔值
-/// "impact-light" → Some("impact-light"), null → None
-/// false → None, true → Some("pop-notice")
-fn flex_sfx<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    use serde::Deserialize;
-    let v = serde_json::Value::deserialize(d)?;
-    match v {
-        serde_json::Value::String(s) => Ok(if s.is_empty() { None } else { Some(s) }),
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::Bool(b) => Ok(if b { Some("pop-notice".into()) } else { None }),
-        _ => Ok(None),
-    }
-}
 
 // ===== 默认值 =====
 
@@ -785,6 +435,13 @@ impl ProjectFile {
                         "text_x" => "# 文字水平中心点",
                         "text_y" => "# 文字垂直中心点",
                         "text_width" => "# 文字区域宽度",
+                        "text_align" => "# 文字对齐: left/center/right",
+                        "shadow_dir" => "# 阴影方向: none/left/right/top/bottom/center",
+                        "shadow_intensity" => "# 阴影强度 0~1",
+                        "effects" => "# 可叠加封面效果",
+                        "bg_x" => "# 背景水平偏移(px)",
+                        "bg_y" => "# 背景垂直偏移(px)",
+                        "bg_zoom" => "# 背景缩放倍率",
                         _ => "",
                     };
                     if !comment.is_empty() {
@@ -968,6 +625,8 @@ impl ProjectFile {
                     events: vec![], extra: HashMap::new(),
                 },
             ],
+            mute_ranges: Vec::new(),
+            silence_ranges: Vec::new(),
             processed: false,
             extra: HashMap::new(),
         }
@@ -975,6 +634,54 @@ impl ProjectFile {
 }
 
 
+
+/// 将分段按屏蔽区间切开：被屏蔽的部分从 segments 中移除，剩下的部分保留原时间坐标。
+pub fn split_segments_by_mute_ranges(segments: &mut Vec<Segment>, ranges: &[MuteRange]) {
+    let ranges: Vec<(f64, f64)> = ranges.iter().filter_map(|r| r.normalized()).collect();
+    if ranges.is_empty() || segments.is_empty() {
+        return;
+    }
+    let mut out: Vec<Segment> = Vec::new();
+    for seg in segments.drain(..) {
+        let mut kept: Vec<(f64, f64)> = vec![(seg.start, seg.end)];
+        for (ms, me) in &ranges {
+            let mut next: Vec<(f64, f64)> = Vec::new();
+            for (s, e) in kept {
+                if *me <= s || *ms >= e {
+                    next.push((s, e));
+                    continue;
+                }
+                if s < *ms {
+                    next.push((s, ms.min(e)));
+                }
+                if *me < e {
+                    next.push((me.max(s), e));
+                }
+            }
+            kept = next;
+        }
+        for (s, e) in kept {
+            if e - s < 0.05 {
+                continue;
+            }
+            let mut ns = seg.clone();
+            ns.start = s;
+            ns.end = e;
+            let kept_events: Vec<Event> = seg
+                .events
+                .iter()
+                .filter(|ev| {
+                    let t = ev.get_time();
+                    t >= s - 0.001 && t < e + 0.001
+                })
+                .cloned()
+                .collect();
+            ns.events = kept_events;
+            out.push(ns);
+        }
+    }
+    *segments = out;
+}
 
 /// 将 segments/events 截断到指定时长 (防止 LLM 生成的 segment 超出视频长度)
 pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
