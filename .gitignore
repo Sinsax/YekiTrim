@@ -5,6 +5,7 @@ target
 *.srt
 /media
 /experiments
+/release
 *.txt
 *.log
 .pi/
