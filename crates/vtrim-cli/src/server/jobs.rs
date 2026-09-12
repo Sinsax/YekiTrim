@@ -1,20 +1,23 @@
 //! JobManager：任务状态与 SSE 事件流。
 //!
-//! v1 采用“单活动任务”模型：同一时间只运行一个长任务，避免 tracing 日志串线。
-//! 任务由 HTTP handler 创建，Job 状态保存在内存；历史任务仅保留最近若干条。
+//! **单活动任务模型**：同一时间只允许一个长任务（`create` 在存在活动任务时返回
+//! `BusyJob`，调用方转 409），避免并发任务写同一批文件、也让 tracing 日志不串线。
+//! 任务由 HTTP handler 创建，Job 状态保存在内存；历史任务仅保留最近若干条（只淘汰
+//! 终态任务，活动任务绝不淘汰——否则 `/api/jobs` 与 SSE 订阅会突然失效）。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Queued,
     Running,
-    AwaitingInput,
     Succeeded,
     Failed,
     Cancelled,
@@ -25,7 +28,6 @@ impl JobStatus {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
-            Self::AwaitingInput => "awaiting_input",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -33,9 +35,23 @@ impl JobStatus {
     }
 }
 
+/// 已有活动任务，拒绝创建新任务。
+#[derive(Debug, Clone)]
+pub struct BusyJob {
+    pub id: String,
+    pub kind: String,
+}
+
+impl std::fmt::Display for BusyJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "已有任务在运行: {} ({})，请等待其结束或先取消", self.kind, self.id)
+    }
+}
+
+impl std::error::Error for BusyJob {}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum JobEvent {
     Log {
         level: String,
@@ -53,14 +69,12 @@ pub enum JobEvent {
     StageCompleted {
         stage: String,
     },
-    AwaitingResume {
-        checkpoint: String,
-        question: String,
-    },
     Completed,
     Failed {
         error: String,
     },
+    /// 任务被取消（状态位已置 cancelled）。订阅方需据此结束自己的等待。
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,7 +93,10 @@ pub struct JobSummary {
     pub stage: Option<String>,
     pub current: u64,
     pub total: u64,
+    /// 失败原因（成功/取消时为 None）。前端 `onDone` 会读它。
+    pub error: Option<String>,
     pub created_at: String,
+    /// 仅在 `/api/jobs/:id` 返回；列表接口为空（避免 50 个任务各带 200 行日志）。
     pub logs: Vec<LogLine>,
 }
 
@@ -93,12 +110,13 @@ pub struct Job {
     pub current: u64,
     pub total: u64,
     pub error: Option<String>,
+    pub created_at: String,
     pub events: Vec<JobEvent>,
     pub logs: VecDeque<LogLine>,
     pub notify: tokio::sync::broadcast::Sender<JobEvent>,
     pub all_tx: tokio::sync::broadcast::Sender<JobEvent>,
-    /// 等待断点续传决策时保存 sender；正常任务为 None。
-    pub decision_tx: Option<oneshot::Sender<bool>>,
+    /// 取消令牌：长任务在阶段/批次边界轮询它。
+    pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl Job {
@@ -113,12 +131,17 @@ impl Job {
             current: 0,
             total: 0,
             error: None,
+            created_at: now_str(),
             events: Vec::new(),
             logs: VecDeque::new(),
             notify: tx,
             all_tx,
-            decision_tx: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(self.status, JobStatus::Queued | JobStatus::Running)
     }
 
     fn push(&mut self, ev: JobEvent, log_level: Option<&str>) {
@@ -130,9 +153,9 @@ impl Job {
                     format!("progress {}/{}", current, total)
                 }
                 JobEvent::StageCompleted { stage } => format!("[{}] completed", stage),
-                JobEvent::AwaitingResume { question, .. } => question.clone(),
                 JobEvent::Completed => "completed".into(),
                 JobEvent::Failed { error } => format!("failed: {}", error),
+                JobEvent::Cancelled => "cancelled".into(),
             };
             self.logs.push_back(LogLine {
                 level: level.to_string(),
@@ -149,7 +172,7 @@ impl Job {
         let _ = self.all_tx.send(ev);
     }
 
-    fn summary(&self) -> JobSummary {
+    fn summary(&self, with_logs: bool) -> JobSummary {
         JobSummary {
             id: self.id.clone(),
             kind: self.kind.clone(),
@@ -158,8 +181,13 @@ impl Job {
             stage: self.stage.clone(),
             current: self.current,
             total: self.total,
-            created_at: now_str(),
-            logs: self.logs.iter().rev().take(200).cloned().collect(),
+            error: self.error.clone(),
+            created_at: self.created_at.clone(),
+            logs: if with_logs {
+                self.logs.iter().rev().take(50).cloned().collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -182,14 +210,35 @@ impl JobManager {
         Self::default()
     }
 
-    pub async fn create(&self, kind: impl Into<String>) -> String {
-        let id = format!("{}-{}", gen_id(), time_id());
+    /// 新建任务；已有活动任务时返回 `Err(BusyJob)`。
+    pub async fn create(&self, kind: impl Into<String>) -> Result<String, BusyJob> {
         let mut jobs = self.jobs.write().await;
-        jobs.push(Job::new(id.clone(), kind.into(), self.all.clone()));
-        while jobs.len() > 50 {
-            jobs.remove(0);
+        if let Some(busy) = jobs.iter().find(|j| j.is_active()) {
+            return Err(BusyJob { id: busy.id.clone(), kind: busy.kind.clone() });
         }
-        id
+        let id = format!("{}-{}", gen_id(), time_id());
+        jobs.push(Job::new(id.clone(), kind.into(), self.all.clone()));
+        // 只淘汰终态任务
+        while jobs.len() > 50 {
+            match jobs.iter().position(|j| !j.is_active()) {
+                Some(pos) => {
+                    jobs.remove(pos);
+                }
+                None => break,
+            }
+        }
+        Ok(id)
+    }
+
+    /// 是否存在活动任务（供 `/polish/preview` 这类同步 handler 判断是否该跑隐式 process）。
+    pub async fn has_active(&self) -> bool {
+        self.jobs.read().await.iter().any(|j| j.is_active())
+    }
+
+    /// 取任务的取消令牌（长任务用它轮询 `ProgressReporter::cancelled`）。
+    pub async fn cancel_token(&self, id: &str) -> Option<Arc<AtomicBool>> {
+        let jobs = self.jobs.read().await;
+        jobs.iter().find(|j| j.id == id).map(|j| j.cancel_flag.clone())
     }
 
     pub async fn mark_running(&self, id: &str, message: impl Into<String>) {
@@ -200,7 +249,6 @@ impl JobManager {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn log(&self, id: &str, level: &str, message: impl Into<String>) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
@@ -258,66 +306,43 @@ impl JobManager {
         }
     }
 
-    #[allow(dead_code)]
-    pub async fn awaiting(&self, id: &str, checkpoint: &str, question: &str, tx: oneshot::Sender<bool>) {
-        let mut jobs = self.jobs.write().await;
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
-            job.status = JobStatus::AwaitingInput;
-            job.message = question.to_string();
-            job.decision_tx = Some(tx);
-            job.push(
-                JobEvent::AwaitingResume {
-                    checkpoint: checkpoint.to_string(),
-                    question: question.to_string(),
-                },
-                None,
-            );
-        }
-    }
-
-    pub async fn resume(&self, id: &str, decision: bool) -> bool {
-        let mut jobs = self.jobs.write().await;
-        let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
-            return false;
-        };
-        if let Some(tx) = job.decision_tx.take() {
-            let _ = tx.send(decision);
-        }
-        job.status = JobStatus::Running;
-        job.message = if decision { "继续运行".into() } else { "重新开始".into() };
-        true
-    }
-
     pub async fn complete(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            // 已取消的任务不再被迟到的完成回调覆盖为“成功”
+            if job.status == JobStatus::Cancelled {
+                return;
+            }
             job.status = JobStatus::Succeeded;
             job.message = "完成".into();
-            job.decision_tx = None;
-            job.push(JobEvent::Completed, None);
+            job.error = None;
+            job.push(JobEvent::Completed, Some("info"));
         }
     }
 
     pub async fn fail(&self, id: &str, err: String) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            if job.status == JobStatus::Cancelled {
+                return;
+            }
             job.status = JobStatus::Failed;
             job.error = Some(err.clone());
             job.message = format!("失败: {}", err);
-            job.decision_tx = None;
-            job.push(JobEvent::Failed { error: err }, None);
+            job.push(JobEvent::Failed { error: err }, Some("error"));
         }
     }
 
+    /// 取消任务：置取消令牌 + 状态位，并推 `Cancelled` 事件（否则其它订阅者会一直等）。
+    /// 真正的工作在下一个阶段/批次边界自行退出。
     pub async fn cancel(&self, id: &str) -> bool {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
-            if job.status == JobStatus::Running || job.status == JobStatus::Queued || job.status == JobStatus::AwaitingInput {
+            if job.is_active() {
+                job.cancel_flag.store(true, Ordering::SeqCst);
                 job.status = JobStatus::Cancelled;
                 job.message = "已取消".into();
-                if let Some(tx) = job.decision_tx.take() {
-                    let _ = tx.send(false);
-                }
+                job.push(JobEvent::Cancelled, Some("warn"));
                 return true;
             }
         }
@@ -326,17 +351,27 @@ impl JobManager {
 
     pub async fn get(&self, id: &str) -> Option<JobSummary> {
         let jobs = self.jobs.read().await;
-        jobs.iter().find(|j| j.id == id).map(|j| j.summary())
+        jobs.iter().find(|j| j.id == id).map(|j| j.summary(true))
     }
 
     pub async fn list(&self) -> Vec<JobSummary> {
         let jobs = self.jobs.read().await;
-        jobs.iter().rev().map(|j| j.summary()).collect()
+        jobs.iter().rev().map(|j| j.summary(false)).collect()
     }
 
-    pub async fn subscribe(&self, id: &str) -> Option<tokio::sync::broadcast::Receiver<JobEvent>> {
+    /// 订阅单个任务：返回 (历史事件, 实时接收端)。
+    ///
+    /// 先 `subscribe()` 再在同一把读锁下快照历史，二者之间不可能插入新事件
+    /// （`push` 需要写锁），因此「订阅前已结束」的快任务也能被回放，不会永久挂起。
+    pub async fn subscribe(
+        &self,
+        id: &str,
+    ) -> Option<(Vec<JobEvent>, tokio::sync::broadcast::Receiver<JobEvent>)> {
         let jobs = self.jobs.read().await;
-        jobs.iter().find(|j| j.id == id).map(|j| j.notify.subscribe())
+        let job = jobs.iter().find(|j| j.id == id)?;
+        let rx = job.notify.subscribe();
+        let history = job.events.clone();
+        Some((history, rx))
     }
 
     pub async fn subscribe_all(&self) -> tokio::sync::broadcast::Receiver<JobEvent> {
@@ -360,4 +395,79 @@ fn gen_id() -> String {
 
 fn time_id() -> String {
     chrono::Local::now().format("%H%M%S").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_one_active_job_at_a_time() {
+        let jm = JobManager::new();
+        let id = jm.create("pipeline").await.expect("首个任务应被接受");
+        jm.mark_running(&id, "run").await;
+
+        let busy = jm.create("polish_llm").await.expect_err("活动任务期间必须拒绝新任务");
+        assert_eq!(busy.kind, "pipeline");
+        assert!(busy.to_string().contains(&id));
+
+        jm.complete(&id).await;
+        assert!(jm.create("polish_llm").await.is_ok(), "终态后应可再建");
+    }
+
+    #[tokio::test]
+    async fn history_is_capped_and_keeps_newest() {
+        let jm = JobManager::new();
+        let mut oldest = String::new();
+        for i in 0..55 {
+            let id = jm.create("polish_process").await.expect("无活动任务时应可建");
+            if i == 0 {
+                oldest = id.clone();
+            }
+            jm.mark_running(&id, "x").await;
+            jm.complete(&id).await;
+        }
+        let list = jm.list().await;
+        assert_eq!(list.len(), 50);
+        assert!(!list.iter().any(|j| j.id == oldest), "最老的终态任务应被淘汰");
+    }
+
+    #[tokio::test]
+    async fn created_at_is_stable_and_error_is_reported() {
+        let jm = JobManager::new();
+        let id = jm.create("cut_one").await.unwrap();
+        let first = jm.get(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let second = jm.get(&id).await.unwrap();
+        assert_eq!(first.created_at, second.created_at, "created_at 不能每次查询都变");
+
+        jm.mark_running(&id, "r").await;
+        jm.fail(&id, "boom".into()).await;
+        let s = jm.get(&id).await.unwrap();
+        assert_eq!(s.status, "failed");
+        assert_eq!(s.error.as_deref(), Some("boom"));
+        assert!(!s.logs.is_empty(), "/api/jobs/:id 应带日志");
+        assert!(jm.list().await[0].logs.is_empty(), "列表接口不应带日志");
+    }
+
+    #[tokio::test]
+    async fn cancel_sets_token_emits_event_and_is_final() {
+        let jm = JobManager::new();
+        let id = jm.create("cut_all").await.unwrap();
+        jm.mark_running(&id, "r").await;
+        let token = jm.cancel_token(&id).await.expect("应有取消令牌");
+
+        assert!(jm.cancel(&id).await);
+        assert!(token.load(Ordering::SeqCst), "取消令牌必须置位（管线靠它退出）");
+        assert_eq!(jm.get(&id).await.unwrap().status, "cancelled");
+
+        // 迟到的完成回调不能把取消覆盖成成功
+        jm.complete(&id).await;
+        assert_eq!(jm.get(&id).await.unwrap().status, "cancelled");
+
+        // 订阅历史里必须能看到 Cancelled（否则其它 watcher 会一直等）
+        let (history, _rx) = jm.subscribe(&id).await.unwrap();
+        assert!(history.iter().any(|e| matches!(e, JobEvent::Cancelled)));
+        assert!(!jm.cancel(&id).await, "已取消的任务再次取消应返回 false");
+    }
 }

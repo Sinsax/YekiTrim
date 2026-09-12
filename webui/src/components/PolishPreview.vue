@@ -47,7 +47,9 @@
         <Icon :name="muted ? 'volume-x' : 'volume'" :size="13" />
       </button>
       <input class="vol" type="range" min="0" max="1" step="0.05" :value="volume" @input="onVolume" title="音效音量">
-      <button class="mini-btn" :class="{ selected: realRender }" @click="toggleReal" title="暂停/拖动时显示 wgpu 真实渲染帧">
+      <!-- 真渲染（wgpu）：服务端未启用该 feature 时整个入口隐藏；
+           该功能暂时搁置，日后开发时放开这里即可（下方 toggleReal/scheduleRealFrame 的逻辑保留） -->
+      <button v-if="wgpuRender" class="mini-btn" :class="{ selected: realRender }" @click="toggleReal" title="暂停/拖动时显示 wgpu 真实渲染帧">
         <Icon name="film" :size="12" /> 真渲染
       </button>
       <button class="mini-btn" @click="fullscreen" title="全屏"><Icon name="maximize" :size="13" /></button>
@@ -64,13 +66,16 @@ import { toast } from '../stores/toast'
 import { mediaUrl } from '../utils'
 import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
 import { createSfxPlayer } from '../polish/audio'
+import init, { init_renderer } from '../wasm/vtrim_wasm.js'
 
 const props = defineProps({
   dir: { type: String, required: true },
   config: { type: Object, default: null },
   subtitles: { type: Array, default: () => [] },
   danmaku: { type: Array, default: () => [] },
-  metaDuration: { type: Number, default: 0 }
+  metaDuration: { type: Number, default: 0 },
+  // 服务端 /api/health 的 wgpu_render：false 时真渲染（单帧回退）不可用
+  wgpuRender: { type: Boolean, default: false }
 })
 const emit = defineEmits(['time'])
 
@@ -92,6 +97,13 @@ const player = createSfxPlayer({
 })
 
 const videoSrc = computed(() => mediaUrl(props.dir, props.config?.source?.video || 'clip.mp4'))
+const muteRanges = computed(() => (props.config?.mute_ranges || [])
+  .map(r => ({ start: Number(r.start) || 0, end: Number(r.end) || 0 }))
+  .filter(r => r.end - r.start > 0.001)
+  .sort((a, b) => a.start - b.start))
+function muteRangeAt(t) {
+  return muteRanges.value.find(r => t >= r.start && t < r.end) || null
+}
 const vertical = computed(() => !!props.config?.vertical)
 const portraitClass = computed(() => vertical.value ? ('portrait ' + (props.config?.vertical_position || 'left')) : '')
 
@@ -126,7 +138,9 @@ const progress = computed(() => duration.value ? Math.round(current.value / dura
 const fmt = (s) => {
   const n = Number(s) || 0
   const m = Math.floor(n / 60)
-  return String(m).padStart(2, '0') + ':' + String(Math.floor(n % 60)).padStart(2, '0')
+  const sec = n - m * 60
+  const secStr = sec.toFixed(2).padStart(5, '0')
+  return String(m).padStart(2, '0') + ':' + secStr
 }
 
 const subStyle = computed(() => idx.value.subStyle || {})
@@ -186,10 +200,40 @@ function onStickerError(st) {
 }
 
 // ---- 播放控制 ----
-function tick() {
+function tick(ts) {
   const v = videoRef.value
   if (!v) return
+  // 预览时跳过手动屏蔽区间
+  if (!v.paused && !v.ended) {
+    const r = muteRangeAt(v.currentTime)
+    if (r) {
+      const target = Math.min(v.duration || (r.end + 0.01), r.end + 0.01)
+      v.currentTime = Math.max(target, r.end)
+      current.value = v.currentTime
+      if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
+      rafId = requestAnimationFrame(tick)
+      return
+    }
+  }
   current.value = v.currentTime
+  if (wasmActive.value && wasmRenderer) {
+    // wasm 真渲染也要驱动音效播放，避免开启真渲染后 sfx 不响
+    player.sync(idx.value.soundEvents, v.currentTime)
+    // wasm 真渲染较重，限制在约 30fps（33ms），避免每帧都跑完整 GPU 合成
+    const now = ts || performance.now()
+    if (now - lastWasmFrame >= 33) {
+      lastWasmFrame = now
+      try {
+        wasmRenderer.render_frame(v.currentTime, v)
+        emit('time', v.currentTime)
+      } catch (e) {
+        console.warn('wasm render_frame 失败，回退自绘', e)
+        disableWasm()
+      }
+    }
+    if (!v.paused && !v.ended) rafId = requestAnimationFrame(tick)
+    return
+  }
   player.sync(idx.value.soundEvents, v.currentTime)
   emit('time', v.currentTime)
   if (vertical.value && bgRef.value && bgRef.value.currentTime &&
@@ -251,6 +295,9 @@ function onSeeked() {
   if (!v) return
   current.value = v.currentTime
   player.seek(v.currentTime)
+  if (wasmActive.value && wasmRenderer) {
+    try { wasmRenderer.render_frame(v.currentTime, v) } catch (e) { console.warn(e) }
+  }
   if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
 }
 
@@ -267,10 +314,15 @@ function fullscreen() {
   if (stageRef.value) stageRef.value.requestFullscreen?.()
 }
 
-// ---- 真渲染预览：暂停/拖动停稳后请求 wgpu 渲染帧，叠加显示出片真实效果 ----
+// ---- 真渲染预览：wasm 实时模式优先，回退 server 单帧 ----
 const realRender = ref(false)
 const realFrameUrl = ref('')
 const realLoading = ref(false)
+const wasmActive = ref(false)
+const wasmLoading = ref(false)
+let wasmRenderer = null
+let wasmInited = false
+let lastWasmFrame = 0
 let realTimer = null
 let realAbort = null
 
@@ -287,14 +339,14 @@ function clearRealFrame() {
 }
 
 function scheduleRealFrame() {
-  if (!realRender.value || playing.value) return
+  if (!props.wgpuRender || !realRender.value || playing.value || wasmActive.value) return
   if (realTimer) clearTimeout(realTimer)
   realLoading.value = true
   realTimer = setTimeout(fetchRealFrame, 250)
 }
 
 async function fetchRealFrame() {
-  if (!realRender.value || playing.value) {
+  if (!realRender.value || playing.value || wasmActive.value) {
     realLoading.value = false
     return
   }
@@ -322,12 +374,103 @@ async function fetchRealFrame() {
 }
 
 function toggleReal() {
+  if (!props.wgpuRender) return
   realRender.value = !realRender.value
   if (!realRender.value) {
     clearRealFrame()
     if (realTimer) clearTimeout(realTimer)
+    disableWasm()
   } else {
-    scheduleRealFrame()
+    tryEnableWasm().then((ok) => {
+      if (!ok) scheduleRealFrame()
+    })
+  }
+}
+
+// ---- wasm 实时真渲染：WebGPU 可用时，渲染核心直接在浏览器合成 ----
+const wasmCanvas = ref(null)
+
+function disableWasm() {
+  wasmActive.value = false
+  if (wasmRenderer) {
+    wasmRenderer.dispose()
+    wasmRenderer = null
+  }
+}
+
+async function tryEnableWasm() {
+  if (wasmActive.value && wasmRenderer) return true
+  if (!('gpu' in navigator)) return false
+  wasmLoading.value = true
+  try {
+    if (!wasmInited) {
+      await init()
+      wasmInited = true
+    }
+    // 资源收集：贴纸字节 + 字体字节
+    const map = props.config?._assets?.sticker_map || {}
+    const names = []
+    const datas = []
+    const gifs = []
+    for (const [name, p] of Object.entries(map)) {
+      const r = await fetch(mediaUrl(props.dir, p))
+      if (!r.ok) continue
+      names.push(name)
+      datas.push(new Uint8Array(await r.arrayBuffer()))
+      gifs.push(p.toLowerCase().endsWith('.gif'))
+    }
+    let fontBytes = null
+    try {
+      const fr = await fetch(`/api/polish/font?dir=${encodeURIComponent(props.dir)}&name=${encodeURIComponent(props.config?.style?.subtitle?.font || '')}`)
+      if (fr.ok) fontBytes = new Uint8Array(await fr.arrayBuffer())
+    } catch {}
+
+    // canvas 挂进舞台
+    let c = wasmCanvas.value
+    if (!c) {
+      c = document.createElement('canvas')
+      c.className = 'wasm-canvas'
+      stageRef.value.appendChild(c)
+      wasmCanvas.value = c
+    }
+    c.width = 1920
+    c.height = 1080
+
+    wasmRenderer = await init_renderer(
+      c,
+      JSON.stringify(props.config),
+      JSON.stringify(props.subtitles),
+      JSON.stringify(props.danmaku),
+      props.config?.style?.subtitle?.font || '',
+      fontBytes,
+      names,
+      datas,
+      gifs.map((g) => (g ? 1 : 0)),
+      1920,
+      1080,
+      vertical.value,
+      props.config?.vertical_position || 'left'
+    )
+    wasmActive.value = true
+    return true
+  } catch (e) {
+    toast('wasm 真渲染不可用，回退单帧模式：' + (e.message || e), 'err')
+    console.error('wasm init 失败', e)
+    try {
+      const st = String(e.stack || '')
+      const t2 = document.createElement('div')
+      t2.className = 'toast err'
+      t2.style.maxWidth = '520px'
+      t2.style.whiteSpace = 'pre-wrap'
+      t2.textContent = st.split('\n').slice(0, 6).join('\n')
+      t2.setAttribute('data-debug', '1')
+      document.querySelector('.toast-wrap')?.appendChild(t2)
+      setTimeout(() => t2.remove(), 8000)
+    } catch {}
+    disableWasm()
+    return false
+  } finally {
+    wasmLoading.value = false
   }
 }
 
@@ -350,6 +493,7 @@ onUnmounted(() => {
   if (ro) ro.disconnect()
   clearRealFrame()
   if (realTimer) clearTimeout(realTimer)
+  disableWasm()
 })
 
 // 播放中用自绘预览；暂停/seek 停稳后按需取真渲染帧
@@ -366,7 +510,21 @@ watch(current, () => {
 })
 watch(() => props.dir, clearRealFrame)
 
-defineExpose({ seekTo })
+// wasm 真渲染激活时，字幕在 Rust pipeline 里持有副本；编辑字幕要热同步，避免预览仍显示旧字幕
+watch(() => props.subtitles, (subs) => {
+  if (!wasmActive.value || !wasmRenderer) return
+  try {
+    wasmRenderer.set_subtitles(JSON.stringify(subs || []))
+    // 暂停/未播放时也立刻重绘当前帧，让字幕修改所见即所得
+    const v = videoRef.value
+    if (v) wasmRenderer.render_frame(v.currentTime, v)
+  } catch (e) {
+    console.warn('wasm 字幕热更新失败，回退自绘', e)
+    disableWasm()
+  }
+}, { deep: true })
+
+defineExpose({ seekTo, togglePlay })
 </script>
 
 <style scoped>
@@ -405,6 +563,8 @@ defineExpose({ seekTo })
 .vol { width:80px; flex:none; padding:0; border:none; background:transparent; }
 input[type='range'] { accent-color:var(--main); padding:0; border:none; background:transparent; height:20px; }
 .real-frame { position:absolute; inset:0; width:100%; height:100%; object-fit:fill; z-index:60; pointer-events:none; }
+.wasm-canvas { position:absolute; inset:0; width:100%; height:100%; z-index:60; pointer-events:none; }
 .real-loading { position:absolute; inset:0; z-index:61; display:flex; align-items:center; justify-content:center; pointer-events:none; }
 .real-loading .spinner { width:22px; height:22px; border-width:3px; }
+button:disabled { opacity:.45; cursor:not-allowed; }
 </style>

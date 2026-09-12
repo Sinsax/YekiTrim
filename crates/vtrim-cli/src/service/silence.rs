@@ -1,51 +1,86 @@
-//! 静音压缩 Service：CLI / WebUI 共用。
+//! 消音版 Service：CLI / WebUI 共用。
+//!
+//! 静音区间不再通过重编码写到 `*_cleaned.mp4`，而是映射为精修工程的「屏蔽轨道」
+//! （polish.toml 的 `mute_ranges`），由 process/render 在导出阶段剪掉。
+//! 原始视频与字幕文件保持不变；未初始化的切片会先自动 init。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub fn run_silence(
+use anyhow::{Context, Result};
+
+/// 对一批切片应用消音版（静音 → 屏蔽轨道）。
+///
+/// `files` 为空时扫描 `output/clips/*/clip.mp4`。
+/// `duration` 为长静音判定阈值（秒），`threshold` 为音频分析噪声门限（dB）。
+pub async fn run_silence(
     files: &[PathBuf],
     duration: f64,
     threshold: Option<f64>,
-    output: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let noise_db = threshold.unwrap_or(-30.0);
-    let targets: Vec<PathBuf> = if files.is_empty() {
+) -> Result<()> {
+    let noise_db = threshold.unwrap_or(vtrim_core::cutting::DEFAULT_NOISE_DB);
+    let targets = resolve_targets(files)?;
+    if targets.is_empty() {
+        anyhow::bail!("没有找到要处理的切片目录");
+    }
+
+    let mut changed = 0usize;
+    for dir in &targets {
+        // 未初始化的切片先建精修工程，否则没有「屏蔽轨道」可写
+        if !dir.join("polish.toml").exists() {
+            vtrim_polish::commands::cmd_init(dir)
+                .await
+                .with_context(|| format!("初始化精修工程失败: {}", dir.display()))?;
+        }
+        let name = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match vtrim_polish::project::apply_silence_with(dir, duration, noise_db) {
+            Ok(applied) if applied.ranges.is_empty() => {
+                tracing::info!("  · {name}: 未检测到 {}s 以上的静音段", duration);
+            }
+            Ok(applied) => {
+                tracing::info!(
+                    "  ✓ {name}: 静音 {} 段 → 屏蔽轨道（新增 {} / 共 {}）",
+                    applied.ranges.len(), applied.added, applied.total
+                );
+                changed += 1;
+            }
+            Err(e) => tracing::warn!("  ⚠ {name}: {e:#}"),
+        }
+    }
+
+    tracing::info!(
+        "完成: {} 个切片已写入屏蔽轨道（视频文件未改动）；重新 process / render 后生效",
+        changed
+    );
+    Ok(())
+}
+
+/// 解析目标：显式传入的视频文件 → 其所在目录；默认扫描 `output/clips/`。
+fn resolve_targets(files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    if files.is_empty() {
         let clips = std::env::current_dir().unwrap_or_default().join("output").join("clips");
         let mut list = Vec::new();
         if clips.exists() {
             for e in std::fs::read_dir(&clips)? {
                 let e = e?;
-                if e.path().is_dir() {
-                    let f = e.path().join("clip.mp4");
-                    if f.exists() { list.push(f); }
+                if e.path().is_dir() && e.path().join("clip.mp4").exists() {
+                    list.push(e.path());
                 }
             }
         }
         list.sort();
-        list
-    } else {
-        files.to_vec()
-    };
-    if targets.is_empty() {
-        anyhow::bail!("没有找到要处理的视频文件");
+        return Ok(list);
     }
-    for (i, input) in targets.iter().enumerate() {
-        let out_dir = output.clone().unwrap_or_else(|| input.parent().map(|p| p.to_path_buf()).unwrap_or_default());
-        std::fs::create_dir_all(&out_dir)?;
-        let stem = input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| format!("clip_{}", i));
-        let output_path = out_dir.join(format!("{}_cleaned.mp4", stem));
-        let srt_path = input.with_extension("srt");
-        let srt_opt = if srt_path.exists() { Some(srt_path.as_path()) } else { None };
-        let segments = vtrim_core::cutting::remove_silence(input, &output_path, duration, srt_opt, noise_db)?;
-        if srt_path.exists() {
-            let out_srt = output_path.with_extension("srt");
-            vtrim_core::cutting::adjust_srt(&srt_path, &out_srt, &segments)?;
-        }
-        let dm_srt_path = input.with_extension("dm.srt");
-        if dm_srt_path.exists() {
-            let out_dm = output_path.with_extension("dm.srt");
-            vtrim_core::cutting::adjust_srt(&dm_srt_path, &out_dm, &segments)?;
+
+    let mut list = Vec::new();
+    for f in files {
+        let path = if f.is_dir() {
+            f.clone()
+        } else {
+            f.parent().map(Path::to_path_buf).unwrap_or_else(|| f.clone())
+        };
+        if !list.contains(&path) {
+            list.push(path);
         }
     }
-    Ok(())
+    Ok(list)
 }

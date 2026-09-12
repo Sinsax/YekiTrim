@@ -327,6 +327,10 @@ fn scan_sensevoice_segments(
     let mut all_chunk_results: Vec<Vec<TranscriptSegment>> = Vec::with_capacity(total_chunks);
 
     for batch_start in (0..total_chunks).step_by(workers) {
+        // 取消在批次边界生效（进行中的单块识别不会被中断）
+        if progress.cancelled() {
+            bail!("任务已取消");
+        }
         let batch_end = (batch_start + workers).min(total_chunks);
         let spawned: Vec<Vec<TranscriptSegment>> = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(batch_end - batch_start);

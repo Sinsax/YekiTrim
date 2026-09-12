@@ -28,6 +28,8 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+# 路由单测（oneshot 调用 Router）
+tower = { version = "0.5", features = ["util"] }
 
 [features]
 # 启用后 server 二进制包含 wgpu 原生渲染后端（单帧真渲染预览 + VTEDIT_RENDERER=wgpu 出片）

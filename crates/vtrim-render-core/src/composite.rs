@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::project::SubtitleStyle;
-use crate::render::native::timeline::{
+use crate::types::SubtitleStyle;
+use crate::timeline::{
     CaptionState, DanmakuState, FrameState, StickerState,
 };
 
@@ -89,69 +89,40 @@ fn blend_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4], opac
     rgba[i + 2] = ((color[2] as u32 * a + rgba[i + 2] as u32 * inv) / 255) as u8;
 }
 
-/// 字体解析描述：项目路径 + `style.subtitle.font` / `style.danmaku` 字体名。
+/// 字体描述：`style.subtitle.font` / `style.danmaku` 的字体名。
 #[derive(Debug, Clone)]
 pub struct FontSpec {
-    pub project_path: std::path::PathBuf,
     pub name: String,
 }
 
 impl FontSpec {
-    pub fn new(project_path: &Path, name: &str) -> Self {
-        Self {
-            project_path: project_path.to_path_buf(),
-            name: name.to_string(),
-        }
+    pub fn new(name: &str) -> Self {
+        Self { name: name.to_string() }
     }
 }
 
-/// 字体字节缓存：按 (项目路径, 字体名) 解析，进程内复用。
-static FONTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>>> =
-    std::sync::OnceLock::new();
+/// 字体字节注册表：桌面端由调用方从磁盘解析后注册；wasm 端由 JS fetch 注入。
+static FONT_REGISTRY: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>>,
+> = std::sync::OnceLock::new();
 
-fn fonts() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>> {
-    FONTS.get_or_init(Default::default)
+fn registry() -> &'static std::sync::Mutex<std::collections::HashMap<String, Option<Vec<u8>>>> {
+    FONT_REGISTRY.get_or_init(Default::default)
 }
 
-/// 解析字体文件字节：优先项目字体目录（assets/fonts、fonts），回退系统字体，
-/// 最后回退内置资源 lemi-bobo.ttf。结果按 (项目, 字体名) 缓存。
+/// 注册字体字节（同名覆盖）。调用方负责找到并读出字体文件。
+pub fn set_font_bytes(name: &str, bytes: Option<Vec<u8>>) {
+    if let Ok(mut m) = registry().lock() {
+        m.insert(name.to_string(), bytes);
+    }
+}
+
 pub fn load_font_bytes(font: &FontSpec) -> Option<Vec<u8>> {
-    let key = format!("{}#{}", font.project_path.display(), font.name);
-    if let Some(cached) = fonts().lock().ok().and_then(|m| m.get(&key).cloned()) {
-        return cached;
-    }
-    let name = font.name.trim();
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if !name.is_empty() {
-        let base = Path::new(&font.name);
-        for dir in [
-            font.project_path.join("assets").join("fonts"),
-            font.project_path.join("fonts"),
-            font.project_path.clone(),
-        ] {
-            candidates.push(dir.join(base).with_extension("ttf"));
-            candidates.push(dir.join(base).with_extension("otf"));
-        }
-        // Windows 系统字体按文件名直查（如 "微软雅黑" → msyh.ttc 由下方兜底覆盖）
-        candidates.push(Path::new("C:/Windows/Fonts").join(base).with_extension("ttf"));
-        candidates.push(Path::new("C:/Windows/Fonts").join(base).with_extension("otf"));
-    }
-    // 系统常见中文字体兜底（style 字体名通常匹配不到文件名）
-    candidates.push(Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
-    candidates.push(Path::new("C:/Windows/Fonts/simhei.ttf").to_path_buf());
-    // 内置资源最后回退
-    candidates.push(Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
-    candidates.push(font.project_path.join("assets").join("fonts").join("lemi-bobo.ttf"));
-
-    let found = candidates
-        .iter()
-        .find(|c| c.exists())
-        .and_then(|c| std::fs::read(c).ok());
-    fonts().lock().ok().map(|mut m| m.insert(key, found.clone()));
-    if found.is_none() {
-        tracing::warn!("wgpu: 未找到可用字体文件，字幕/弹幕将无法渲染");
-    }
-    found
+    registry()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&font.name).cloned())
+        .flatten()
 }
 
 /// 量取一行文本在给定字号下的渲染宽度（swash shaping，结果缓存）。
@@ -160,10 +131,10 @@ static MEASURE_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::Has
 
 pub fn measure_text_width(text: &str, size: f32, font: &FontSpec) -> f64 {
     let key = format!(
-        "{}#{}#{}",
+        "{}|{}|{}",
         text,
         (size * 10.0) as u32,
-        font.project_path.display()
+        font.name
     );
     if let Some(cached) = MEASURE_CACHE
         .get_or_init(Default::default)
@@ -207,8 +178,7 @@ static TEXT_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMa
 
 fn text_cache_key(font: &FontSpec, text: &str, size: f32, color: [u8; 4], stroke: [u8; 4], stroke_width: f32) -> String {
     format!(
-        "{}|{}|{}|{}|{:02x}{:02x}{:02x}{:02x}|{:02x}{:02x}{:02x}{:02x}|{}",
-        font.project_path.display(),
+        "{}|{}|{}|{:02x}{:02x}{:02x}{:02x}|{:02x}{:02x}{:02x}{:02x}|{}",
         font.name,
         text,
         (size * 10.0) as u32,
@@ -403,7 +373,7 @@ pub fn composite_frame(
     _height: u32,
     _state: &FrameState,
     _sub_style: &SubtitleStyle,
-    _dm_style: &crate::project::DanmakuStyle,
+    _dm_style: &crate::types::DanmakuStyle,
     _stickers: &[StickerState],
 ) {
     // 所有特效/贴纸/字幕/弹幕已迁移到 GPU pass，CPU 合成层不再做任何绘制。

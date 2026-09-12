@@ -1,26 +1,51 @@
 //! WebUI 静态资源服务。
 //!
-//! 优先从 `webui/dist`（Vue3 构建产物）读取；若目录不存在则回退到旧的单文件内嵌页面。
+//! 只服务 `webui/dist`（Vue3 构建产物），构建命令：
+//! `cd webui && npm install && npm run build`。
+//!
+//! 目录缺失时返回 503 + 构建指引：**不再回退到内嵌单文件页面**（那份页面长期
+//! 与 API 漂移，已删除；见 AGENTS「WebUI」一节）。
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 
-const INDEX_HTML: &str = include_str!("webui/index.html");
-
-fn dist_dir() -> PathBuf {
-    // 编译时定位仓库根：crates/vtrim-cli -> repo root -> webui/dist
-    let from_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+/// `dist` 候选目录，按优先级：
+/// 1. 仓库内 `webui/dist`（开发/源码运行）
+/// 2. 可执行文件同级 `webui/dist`（发行包）
+/// 3. 当前工作目录下 `webui/dist`
+fn candidates() -> Vec<PathBuf> {
+    let mut out = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
         .join("webui")
-        .join("dist");
-    if from_manifest.is_dir() {
-        return from_manifest;
+        .join("dist")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("webui").join("dist"));
+        }
     }
-    // 运行时兜底：从当前工作目录找
-    PathBuf::from("webui/dist")
+    out.push(PathBuf::from("webui").join("dist"));
+    out
+}
+
+/// 实际使用的 dist 目录：第一个含 `index.html` 的候选；都不存在时返回第一个候选
+/// （仅用于错误提示，调用方应先检查 [`dist_ready`]）。
+pub fn dist_dir() -> PathBuf {
+    let cands = candidates();
+    for c in &cands {
+        if c.join("index.html").is_file() {
+            return c.clone();
+        }
+    }
+    cands.into_iter().next().unwrap_or_else(|| PathBuf::from("webui/dist"))
+}
+
+/// 启动时判断 WebUI 是否可用（缺失只提示，不阻止 server 启动）。
+pub fn dist_ready() -> bool {
+    dist_dir().join("index.html").is_file()
 }
 
 fn mime_for(path: &Path) -> String {
@@ -43,24 +68,55 @@ fn mime_for(path: &Path) -> String {
     }
 }
 
-fn index_html() -> Response<Body> {
-    let dist = dist_dir();
-    let index_path = dist.join("index.html");
-    if index_path.is_file() {
-        if let Ok(bytes) = std::fs::read(&index_path) {
-            return Response::builder()
-                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                .body(Body::from(bytes))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        }
-    }
-    Html(INDEX_HTML).into_response()
+/// 缺少构建产物时的可读指引（503）。
+fn build_hint_page() -> Response<Body> {
+    let locations = candidates()
+        .iter()
+        .map(|p| format!("<li><code>{}</code></li>", p.display()))
+        .collect::<String>();
+    let body = format!(
+        r#"<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>V-Trim WebUI 未构建</title>
+<style>
+ body{{font-family:system-ui,"Microsoft YaHei",sans-serif;max-width:760px;margin:64px auto;padding:0 20px;line-height:1.8;color:#1f2937}}
+ code,pre{{background:#f3f4f6;border-radius:6px}}
+ code{{padding:2px 6px}}
+ pre{{padding:12px 14px;overflow:auto}}
+ h1{{font-size:20px}}
+</style></head><body>
+<h1>WebUI 静态资源未就绪</h1>
+<p>服务端只提供 Vue 构建产物 <code>webui/dist</code>（已不再内嵌单文件页面），但没有找到 <code>index.html</code>。</p>
+<p>查找位置（按优先级）：</p>
+<ol>{locations}</ol>
+<p>请在仓库根目录执行：</p>
+<pre><code>cd webui
+npm install
+npm run build</code></pre>
+<p>发行包请把 <code>webui/dist</code> 放到可执行文件同级目录；源码运行时直接在仓库根目录执行 <code>vtrim server</code> 即可。</p>
+</body></html>"#
+    );
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())
 }
 
+fn index_html(dist: &Path) -> Response<Body> {
+    if let Ok(bytes) = std::fs::read(dist.join("index.html")) {
+        return Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    build_hint_page()
+}
+
+/// SPA 静态资源 + index 回退。
 pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
     let dist = dist_dir();
-    if !dist.is_dir() {
-        return index_html();
+    if !dist_ready() {
+        return build_hint_page();
     }
 
     let uri_path = req.uri().path();
@@ -68,8 +124,13 @@ pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
     let file = if rel.is_empty() {
         dist.join("index.html")
     } else {
-        // 防目录穿越：只允许 dist 内部文件
-        let candidate = dist.join(rel);
+        // 防目录穿越：只允许 dist 内部的**普通路径分量**。
+        // 仅比较 `starts_with` 不够——`dist/../../secret` 在词法上仍以 dist 开头。
+        let rel_path = Path::new(rel);
+        if rel_path.components().any(|c| !matches!(c, Component::Normal(_))) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        let candidate = dist.join(rel_path);
         if !candidate.starts_with(&dist) {
             return StatusCode::FORBIDDEN.into_response();
         }
@@ -86,5 +147,5 @@ pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
     }
 
     // SPA 回退：hash 路由下通常不会请求深层路径，但保留 index 回退更稳妥
-    index_html()
+    index_html(&dist)
 }

@@ -1,5 +1,19 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import ProjectLayout from './views/ProjectLayout.vue'
+import { api } from './api/client'
+import { STAGE_EVENTS_READY } from './utils'
+
+// 直接访问 /project/:cfg（深链 / 刷新）时也按预处理进度决定入口页：
+// 事件检测已完成 → 切片页，否则 → 预览页。
+async function projectEntryGuard(to) {
+  try {
+    const st = await api(`/api/project-data/status?config=${encodeURIComponent(to.params.cfg || '')}`)
+    if ((st.current_stage || 0) >= STAGE_EVENTS_READY) {
+      return { name: 'project-slices', params: to.params }
+    }
+  } catch {}
+  return { name: 'project-preview', params: to.params }
+}
 
 const routes = [
   { path: '/', name: 'home', component: () => import('./views/HomeView.vue') },
@@ -9,7 +23,7 @@ const routes = [
     name: 'project',
     component: ProjectLayout,
     children: [
-      { path: '', redirect: { name: 'project-preview' } },
+      { path: '', name: 'project-root', beforeEnter: projectEntryGuard },
       { path: 'settings', name: 'project-settings', component: () => import('./views/ProjectSettingsView.vue') },
       { path: 'preview', name: 'project-preview', component: () => import('./views/PreviewView.vue') },
       { path: 'slices', name: 'project-slices', component: () => import('./views/ProjectSlicesView.vue') },

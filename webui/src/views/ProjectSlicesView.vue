@@ -1,10 +1,15 @@
 <template>
   <div>
     <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
+    <div class="row slices-bar">
+      <span class="muted small">片段操作</span>
+      <button class="mini-btn" :disabled="!clipsRef" @click="clipsRef?.redetect()">重新检测</button>
+      <button class="mini-btn" :disabled="!clipsRef" @click="clipsRef?.openAdd()">添加片段</button>
+    </div>
     <div v-if="loading" class="grid cols-3">
       <div v-for="i in 6" :key="'sk' + i" class="skeleton"></div>
     </div>
-    <ProjectClipsSection v-else-if="project" :project="project" :project-data="projectData" />
+    <ProjectClipsSection v-else-if="project" ref="clipsRef" :project="project" :project-data="projectData" />
     <div v-else class="empty"><div class="empty-icon"><Icon name="film" :size="24" /></div>未找到项目</div>
   </div>
 </template>
@@ -17,10 +22,11 @@ import Icon from '../components/Icon.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
 const route = useRoute()
-const cfg = decodeURIComponent(route.params.cfg || '')
+const cfg = route.params.cfg || ''
 const cfgQ = encodeURIComponent(cfg)
 const project = ref(null)
 const projectData = ref({ events: [], clips: [], polishMap: {} })
+const clipsRef = ref(null)
 const loading = ref(true)
 const loadError = ref('')
 
@@ -52,4 +58,6 @@ onMounted(load)
 
 <style scoped>
 .error-banner { margin-bottom:12px; }
+.slices-bar { align-items:center; margin-bottom:10px; }
+button:disabled { opacity:.45; cursor:not-allowed; }
 </style>

@@ -2,7 +2,7 @@
   <div class="sub-list" :style="{ maxHeight: height }">
     <div v-if="!segments.length" class="muted small sub-empty">暂无字幕</div>
     <div v-for="(seg, i) in segments" :key="i" class="sub-row" @click="emit('play', seg)">
-      <textarea v-model="seg.text" rows="1" class="sub-input" @click.stop></textarea>
+      <textarea :value="seg.text" @input="onTextInput(seg, $event.target.value)" rows="1" class="sub-input" @click.stop></textarea>
       <div class="sub-meta" :class="{ 'has-end': showEnd }">
         <span class="time-cell" :title="editableTime ? '点击编辑开始时间' : ''" @click.stop="startEdit(i, 'start')">
           <input v-if="editing && editing.i === i && editing.k === 'start'" ref="editInput" v-model="draft"
@@ -34,6 +34,16 @@ const props = defineProps({
 })
 const emit = defineEmits(['play'])
 
+function sortByStart() {
+  props.segments.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+}
+
+function onTextInput(seg, value) {
+  seg.text = value
+  // 预览引擎优先读 html 字段；普通文本编辑时必须同步，否则预览仍显示旧字幕
+  seg.html = value
+}
+
 const editing = ref(null) // { i, k }
 const draft = ref('')
 const editInput = ref(null)
@@ -57,6 +67,7 @@ function commit(i, k) {
     let n = Number(draft.value)
     if (!Number.isFinite(n) || n < 0) n = 0
     seg[k] = Math.round(n * 100) / 100
+    sortByStart()
   }
   editing.value = null
 }

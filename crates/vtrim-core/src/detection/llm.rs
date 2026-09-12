@@ -7,28 +7,26 @@ use crate::config::{DetectionConfig, LlmConfig};
 use crate::llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow};
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
 
-pub const DEFAULT_PROMPT: &str = "将直播转录切分为短视频切片。硬性要求：
-- 每个切片 0.5~3 分钟，宁可碎不要长；名场面前后的大段铺垫/闲聊不要包进来
-- 直接切入看点：事件 start 从名场面/话题真正开始处算，不要包含前戏
-- 明显话题转换才切分；ASR 乱码/哼唱不要单独成段
+pub const DEFAULT_PROMPT: &str = r#"将直播转录切分为短视频切片。硬性要求：
+- 每段 0.5~3 分钟，宁完整勿碎：优先保证事件内容完整，不要为了“碎”而把一个完整话题/名场面拦腰切断
+- start 不要过早，但也不要只切爆点瞬间：应包含让观众看懂该事件所必需的短上下文；end 应到话题自然结束，不能事件还没讲完就切
+- 明显话题转换才切分；同一个话题中途不要硬切
+- 根据字幕数量/信息密度而不是时间长度来判断：字幕很少、间隔很大的低密度长段不要单独成段，应并入相邻完整话题；字幕密集的高能段可以单独成段
+- 弹幕爆发时刻必须完整包含在某一段内，不得切在爆发区间中间
+- ASR 乱码/哼唱不要单独成段
 
 标题(label)要求（最重要）：
 - 用主播原话/名场面/具体情景 + 反应/吐槽，制造反差和梗
-- 高信息密度，8~40 字，禁止\"主播聊/主播说\"式第三人称开头
+- 高信息密度，8~40 字，禁止"主播聊/主播说"式第三人称开头
 - 相邻标题句式不得重复；同一输出内混合：直接引语、事件→反应、爆点感叹、悬念反问
 - emoji 可选，放句中/句尾，不放开头
 
-摘要(summary)：40~80 字，写清核心内容和看点。
-
-event_type 取整段主体：gameplay、interaction、qna、reaction、storytelling、music、food、chat、discussion、ranking、irl、rant、other。唱歌/哼唱短暂穿插不算 music，整段以歌为主才算。
+摘要(summary)：40~80 字，写清核心内容和看点，尽量覆盖该事件完整内容。
 
 参考标题：
-▶ 弹幕问豆今色，豆脱口而出：梅川😊我去原来豆神喜欢挂空档啊🥵
-▶ 牢豆这什么雷霆坐姿雷霆视角🥵羞死人了🥵
-▶ 难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤
-▶ 深夜鉴赏泫雅《没有明天》MV，怎么一言不合就🥵又是小时候被吓哭的一集😱
-▶ 刚出道时3D回不敢开暖空调，顶着0℃直播跟冰窖似的🥶当时居然能撑下来😲
-▶ 谁家小土豆地雷？【灰泽满Hazel】
+{reference_titles}
+
+event_type 取整段主体：gameplay、interaction、qna、reaction、storytelling、music、food、rant、chat、discussion、ranking、irl、other。唱歌/哼唱短暂穿插不算 music，整段以歌为主才算。
 
 输出：只输出 JSON 数组，每个事件含 start/end/label/summary/event_type，不要 markdown。
 
@@ -36,7 +34,14 @@ event_type 取整段主体：gameplay、interaction、qna、reaction、storytell
 {segments}
 
 只输出JSON数组：
-[{\"start\": 0.0, \"end\": 120.0, \"label\": \"这操作给我看傻了??🤣\", \"summary\": \"核心看点...\", \"event_type\": \"interaction\"}]";
+[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "核心看点...", "event_type": "interaction"}]"#;
+/// 事件检测阶段使用的标题(label)规则，封面标题生成复用同一份规则。
+pub const TITLE_RULES: &str = r#"标题(label)要求（最重要）：
+- 用主播原话/名场面/具体情景 + 反应/吐槽，制造反差和梗
+- 高信息密度，8~40 字，禁止"主播聊/主播说"式第三人称开头
+- 相邻标题句式不得重复；同一输出内混合：直接引语、事件→反应、爆点感叹、悬念反问
+- emoji 可选，放句中/句尾，不放开头
+"#;
 
 fn format_segments(segments: &[TranscriptSegment]) -> String {
     let mut out = String::new();
@@ -57,6 +62,8 @@ fn build_prompt(
         &config.prompt_template
     };
     let mut prompt = template.replace("{segments}", format_segments(segments).trim());
+    let refs = crate::config::resolve_reference_titles(config);
+    prompt = prompt.replace("{reference_titles}", &refs.join("\n"));
 
     // 追加弹幕爆发时刻：让 LLM 看到观众反应最激烈的名场面位置
     if !hot_windows.is_empty() {
@@ -258,13 +265,7 @@ fn parse_event_type(raw: &str) -> EventType {
     }
 }
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "\
-你是直播切片分析助手。把转录切成 0.5~3 分钟的短视频切片，宁可碎不要长。\
-直接切在名场面/看点上，不要包含大段前戏。\
-标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，\
-禁止\"主播聊/主播说\"式第三人称开头，相邻标题句式不得重复。\
-摘要 30~60 字。event_type 以整段主体为准，ASR 乱码不单独成段。";
-
+pub const DEFAULT_SYSTEM_PROMPT: &str = r#"你是直播切片分析助手。把转录切成 0.5~3 分钟的短视频切片，宁完整勿碎：优先保证每个事件是完整话题/名场面，不要为了多切而把内容拦腰截断。明显话题转换才切分；字幕很少的低密度长段不要单独成段，应并入相邻完整话题。start 包含必要上下文，end 到话题自然结束，禁止事件还没讲完就切。标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，禁止"主播聊/主播说"式第三人称开头，相邻标题句式不得重复。摘要 40~80 字。event_type 以整段主体为准，ASR 乱码不单独成段。"#;
 fn system_prompt(config: &DetectionConfig) -> &str {
     if !config.system_prompt.is_empty() {
         return &config.system_prompt;
@@ -735,8 +736,10 @@ mod tests {
         let cfg = crate::config::DetectionConfig::default();
 
         // 无热点：不追加爆发段落
+        // 注：默认 user prompt 模板本身就含"弹幕爆发"字样（见文件顶部 prompt），
+        // 所以这里断言的是"注入的爆发区间段落"没有出现，而不是这个词本身。
         let no_hot = build_prompt(&segs, &cfg, &[]);
-        assert!(!no_hot.contains("弹幕爆发"));
+        assert!(!no_hot.contains("观众弹幕爆发时刻"));
 
         // 有热点：追加区间 + 要求
         let hot = build_prompt(&segs, &cfg, &[(12.0, 22.0), (45.5, 55.5)]);

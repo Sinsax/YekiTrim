@@ -12,11 +12,12 @@ path = "src/lib.rs"
 default = ["chrome-render"]
 # wgpu 原生渲染（实验性）；chrome-render 为默认出片路径，wgpu 需显式启用
 chrome-render = ["dep:headless_chrome"]
-wgpu-render = ["dep:wgpu", "dep:headless_chrome", "dep:bytemuck", "dep:swash"]
+wgpu-render = ["vtrim-render-core/wgpu", "dep:wgpu", "dep:headless_chrome"]
 
 [dependencies]
 # vtrim-core (用于 .vtrim/llm.toml 路径)
 vtrim-core = { path = "../vtrim-core" }
+vtrim-render-core = { path = "../vtrim-render-core" }
 
 # 序列化
 serde = { version = "1", features = ["derive"] }
@@ -47,7 +48,6 @@ tower-http = { version = "0.5", features = ["fs"] }
 # wgpu 原生渲染 (feature=wgpu-render)
 wgpu = { version = "27", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
-swash = { version = "0.1", optional = true }
 
 # 正则
 regex-lite = "0.1"

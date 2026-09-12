@@ -2,14 +2,31 @@
   <div>
     <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
 
+    <div class="sort-bar">
+      <span class="muted small">排序</span>
+      <button
+        v-for="o in SORT_OPTIONS"
+        :key="o.key"
+        class="mini-btn"
+        :class="{ selected: sortKey === o.key }"
+        :title="sortKey === o.key ? '再次点击切换升/降序' : o.hint"
+        @click="pickSort(o)"
+      >
+        {{ o.label }}
+        <Icon v-if="sortKey === o.key" :name="sortDir === 'asc' ? 'arrow-up' : 'arrow-down'" :size="11" />
+      </button>
+      <span class="muted small sort-count">
+        {{ cutClips.length }} 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
+      </span>
+    </div>
+
     <div class="layout" :class="{ 'drawer-closed': !drawerOpen }">
       <div class="grid cols-3">
         <div
           v-for="c in cutClips"
           :key="c.dir"
           :data-clipname="c.name"
-          class="pcard"
-          @click="previewClip(c)"
+          class="pcard clip-card"
         >
           <span class="ribbon">{{ typeZh[eventMap[c.name]?.event_type] || eventMap[c.name]?.event_type || 'other' }}</span>
           <div class="head">
@@ -17,11 +34,23 @@
               <h2>{{ eventMap[c.name]?.label || c.meta?.title || c.name }}</h2>
             </div>
           </div>
-          <img v-if="hasThumb(c)" :src="thumbSrc(c)" class="thumb" alt="海报" @error="$event.target.style.display='none'">
+          <!-- 只有点预览图才弹出视频预览，卡片其他区域不响应点击 -->
+          <img
+            v-if="hasThumb(c)"
+            :src="thumbSrc(c)"
+            class="thumb"
+            alt="海报"
+            title="点击预览片段"
+            @click="previewClip(c)"
+            @error="$event.target.style.display='none'"
+          >
           <div class="chips mt-8">
             <span class="chip b">{{ Math.round(c.duration_secs) }}s</span>
             <span class="chip n">{{ Math.round(c.size_bytes / 1024 / 1024) }}MB</span>
-            <span v-if="c.silenced" class="chip p">已静音压缩</span>
+            <span v-if="Number(c.danmaku_count)" class="chip a">弹幕 {{ c.danmaku_count }}</span>
+            <span v-if="Number(c.subtitle_count)" class="chip n">字幕 {{ c.subtitle_count }}</span>
+            <span v-if="c.silenced" class="chip r">已去静音 · 屏蔽 {{ c.mute_range_count || 0 }} 段</span>
+            <span v-else-if="Number(c.mute_range_count)" class="chip n">屏蔽 {{ c.mute_range_count }} 段</span>
             <span v-if="polishMap[c.dir]?.processed" class="chip g">已精修</span>
             <span v-if="polishMap[c.dir]?.rendered" class="chip b">已渲染</span>
             <span v-if="polishMap[c.dir]?.cover" class="chip p">有封面</span>
@@ -47,9 +76,13 @@
         <template v-if="drawerOpen">
           <div class="drawer-head">
             <h2>未剪切事件</h2>
-            <button class="mini-btn" title="收起" @click="drawerOpen = false">
-              <Icon name="arrow-right" :size="13" style="transform:rotate(180deg)" />
-            </button>
+            <div class="row">
+              <button class="mini-btn" :disabled="!uncutEvents.length" @click="cutAll">全切</button>
+              <button class="mini-btn" :disabled="!uncutEvents.length" @click="maximized = true">放大</button>
+              <button class="mini-btn" title="收起" @click="drawerOpen = false">
+                <Icon name="arrow-right" :size="13" style="transform:rotate(180deg)" />
+              </button>
+            </div>
           </div>
           <div v-if="!uncutEvents.length" class="empty small">暂无未剪切事件</div>
           <div v-for="ev in uncutEvents" :key="ev.rank" class="uncut-item">
@@ -58,6 +91,10 @@
               <span class="chip p">{{ typeZh[ev.event_type] || ev.event_type }}</span>
             </div>
             <div class="muted small mono mt-4">{{ fmt(ev.start_sec) }} → {{ fmt(ev.end_sec) }}</div>
+            <div class="chips mt-4">
+              <span class="chip a">弹幕 {{ ev.danmaku_count ?? 0 }}</span>
+              <span class="chip n">字幕 {{ ev.subtitle_count ?? 0 }}</span>
+            </div>
             <div v-if="ev.summary" class="muted small mt-4">{{ ev.summary }}</div>
             <div class="row mt-6">
               <button class="btn btn-primary" @click="cutEvent(ev)">剪切</button>
@@ -113,6 +150,32 @@
     <AppModal :show="!!playing" wide :title="playing?.name || ''" @close="playing = null">
       <video controls autoplay class="video-lg" :src="playing?.url"></video>
     </AppModal>
+
+    <AppModal :show="maximized" wide :title="'未剪切事件 · ' + uncutEvents.length" @close="maximized = false">
+      <div v-if="!uncutEvents.length" class="empty small">暂无未剪切事件</div>
+      <div v-else class="max-grid">
+        <div v-for="ev in uncutEvents" :key="'max' + ev.rank" class="uncut-item max-item">
+          <div class="row spread max-title-row">
+            <b>{{ ev.label }}</b>
+            <span class="chip p">{{ typeZh[ev.event_type] || ev.event_type }}</span>
+          </div>
+          <div class="muted small mono mt-4">{{ fmt(ev.start_sec) }} → {{ fmt(ev.end_sec) }}</div>
+          <div class="chips mt-4">
+            <span class="chip a">弹幕 {{ ev.danmaku_count ?? 0 }}</span>
+            <span class="chip n">字幕 {{ ev.subtitle_count ?? 0 }}</span>
+          </div>
+          <div v-if="ev.summary" class="muted small mt-4 max-summary">{{ ev.summary }}</div>
+          <div class="row mt-6">
+            <button class="btn btn-primary" @click="cutEvent(ev)">剪切</button>
+            <button class="mini-btn" @click="editEvent(ev); maximized = false">编辑</button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <button class="btn btn-primary" :disabled="!uncutEvents.length" @click="cutAll">一键全切</button>
+        <button class="btn" @click="maximized = false">关闭</button>
+      </template>
+    </AppModal>
   </div>
 </template>
 
@@ -121,7 +184,7 @@ import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
-import { confirmDialog } from '../stores/dialog'
+import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
 import { EVENT_TYPES, TYPE_ZH, fmtClock, mediaUrl } from '../utils'
@@ -140,6 +203,7 @@ const loading = ref(false)
 const loadError = ref('')
 const showAdd = ref(false)
 const drawerOpen = ref(true)
+const maximized = ref(false)
 const playing = ref(null)
 const newLabel = ref('')
 const newStart = ref(0)
@@ -166,11 +230,87 @@ const eventMap = computed(() => {
   events.value.forEach(e => { m['clip-' + String(e.rank).padStart(2, '0')] = e })
   return m
 })
-const cutClips = computed(() => clips.value.filter(c => c.video_exists !== false))
-const uncutEvents = computed(() => events.value.filter(ev => {
-  const c = clips.value.find(x => x.name === 'clip-' + String(ev.rank).padStart(2, '0'))
-  return !c || !c.video_exists
-}))
+
+// ── 排序切换：热度 rank / 开始时间 / 弹幕量 / 字幕量 ──────────────
+const SORT_OPTIONS = [
+  { key: 'rank', label: '热度', dir: 'asc', hint: '按 rank（热度）排序，1 最热' },
+  { key: 'start', label: '开始时间', dir: 'asc', hint: '按原片开始时间排序' },
+  { key: 'danmaku', label: '弹幕量', dir: 'desc', hint: '按片段弹幕条数排序' },
+  { key: 'subtitle', label: '字幕量', dir: 'desc', hint: '按片段字幕条数排序' }
+]
+const SORT_STORE = 'vtrim.slices.sort'
+
+function readSort() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SORT_STORE) || '{}')
+    const opt = SORT_OPTIONS.find(o => o.key === raw.key)
+    if (opt) return { key: opt.key, dir: raw.dir === 'asc' || raw.dir === 'desc' ? raw.dir : opt.dir }
+  } catch {}
+  return { key: 'rank', dir: 'asc' }
+}
+
+const initialSort = readSort()
+const sortKey = ref(initialSort.key)
+const sortDir = ref(initialSort.dir)
+
+function pickSort(opt) {
+  if (sortKey.value === opt.key) sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  else { sortKey.value = opt.key; sortDir.value = opt.dir }
+}
+
+watch([sortKey, sortDir], () => {
+  try { localStorage.setItem(SORT_STORE, JSON.stringify({ key: sortKey.value, dir: sortDir.value })) } catch {}
+})
+
+function rankOf(name) {
+  return Number(String(name || '').replace(/^clip-/, '')) || 0
+}
+
+function clipStats(c) {
+  const ev = eventMap.value[c.name]
+  return {
+    rank: rankOf(c.name) || Number(c.meta?.rank) || 0,
+    start: ev ? Number(ev.start_sec) || 0 : Number(c.meta?.original_start) || 0,
+    danmaku: Number(c.danmaku_count) || 0,
+    subtitle: Number(c.subtitle_count) || 0
+  }
+}
+
+function eventStats(ev) {
+  return {
+    rank: Number(ev.rank) || 0,
+    start: Number(ev.start_sec) || 0,
+    danmaku: Number(ev.danmaku_count) || 0,
+    subtitle: Number(ev.subtitle_count) || 0
+  }
+}
+
+function makeCmp(statsOf) {
+  return (a, b) => {
+    const sa = statsOf(a)
+    const sb = statsOf(b)
+    const va = sa[sortKey.value]
+    const vb = sb[sortKey.value]
+    if (va !== vb) return (va - vb) * (sortDir.value === 'asc' ? 1 : -1)
+    // 排序值相同时：已精修优先，再按 rank
+    const pa = polishMap.value[a.dir]?.polish_ready ? 1 : 0
+    const pb = polishMap.value[b.dir]?.polish_ready ? 1 : 0
+    if (pa !== pb) return pb - pa
+    return sa.rank - sb.rank
+  }
+}
+
+const cutClips = computed(() => clips.value
+  .filter(c => c.video_exists !== false)
+  .slice()
+  .sort(makeCmp(clipStats)))
+const uncutEvents = computed(() => events.value
+  .filter(ev => {
+    const c = clips.value.find(x => x.name === 'clip-' + String(ev.rank).padStart(2, '0'))
+    return !c || !c.video_exists
+  })
+  .slice()
+  .sort(makeCmp(eventStats)))
 
 function hasThumb(c) {
   return c && c.video_exists
@@ -234,15 +374,6 @@ async function run(kind, c) {
   try {
     await api('/api/polish/' + kind, { method: 'POST', body: JSON.stringify({ dir: c.dir }) })
     toast('已启动 ' + kind)
-    if (kind === 'llm') {
-      setTimeout(async () => {
-        try {
-          await api('/api/polish/process', { method: 'POST', body: JSON.stringify({ dir: c.dir }) })
-          toast('LLM 完成，process 已执行')
-          load()
-        } catch (e) { toast('后处理失败: ' + e.message, 'err') }
-      }, 1500)
-    }
     load()
   } catch (e) { toast(e.message, 'err') }
 }
@@ -273,6 +404,25 @@ async function redetect() {
     await api(`/api/project-data/pipeline?config=${projectQ()}`, { method: 'POST', body: JSON.stringify({ config: props.project.config_file, stage: 'detect', resume: 'auto' }) })
     toast('重新检测已启动')
   } catch (e) { toast(e.message, 'err') }
+}
+
+async function cutAll() {
+  const list = uncutEvents.value.slice()
+  if (!list.length) return
+  const ok = await confirmDialog(`将对 ${list.length} 个未剪切事件执行一键全切，是否继续？`, { title: '一键全切', danger: true })
+  if (!ok) return
+  try {
+    await api('/api/project-data/events/cut-all?config=' + projectQ(), {
+      method: 'POST',
+      body: JSON.stringify({ ranks: list.map(ev => Number(ev.rank)) })
+    })
+    toast(`已启动一键全切（${list.length} 个事件），可在“运行任务”查看整体进度`)
+  } catch (e) {
+    toast('启动全切失败: ' + e.message, 'err')
+    return
+  }
+  maximized.value = false
+  load()
 }
 
 async function cutEvent(ev) {
@@ -319,31 +469,11 @@ async function goPolish(c) {
     const list = await api(`/api/project-data/polish?config=${projectQ()}`).catch(() => [])
     const found = (list || []).find(p => p.dir === c.dir)
     if (!found || !found.polish_ready) {
-      const ok = await confirmDialog('是否自动初始化并跳转精修？', { title: '该片段尚未 init' })
-      if (!ok) return
+      // 自动 init，不弹确认框
       await api('/api/polish/init', { method: 'POST', body: JSON.stringify({ dir: c.dir }) })
       toast('已自动 init')
     }
     router.push(`/project/${encodeURIComponent(props.project.config_file)}/slices/${encodeURIComponent(c.name)}`)
-  } catch (e) { toast(e.message, 'err') }
-}
-
-async function selectVersion(c, version) {
-  try {
-    await api('/api/polish/select-version', { method: 'POST', body: JSON.stringify({ dir: c.dir, version }) })
-    const pl = await api(`/api/project-data/polish?config=${projectQ()}`).catch(() => [])
-    const found = (pl || []).find(p => p.dir === c.dir)
-    if (found) polishMap.value[c.dir] = found
-    toast('已切换为 ' + (version === 'silent' ? '静音版' : '原版'))
-  } catch (e) { toast(e.message, 'err') }
-}
-
-async function silence(c) {
-  try {
-    const rank = String(c.name || '').replace('clip-', '')
-    await api(`/api/project-data/clips/${rank}/silence?config=${projectQ()}`, { method: 'POST' })
-    toast('静音压缩已启动')
-    load()
   } catch (e) { toast(e.message, 'err') }
 }
 
@@ -377,6 +507,8 @@ watch(() => props.project.config_file, load)
 </script>
 
 <style scoped>
+.sort-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+.sort-bar .sort-count { margin-left:auto; }
 .layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
 .layout.drawer-closed { grid-template-columns:minmax(0,1fr) 40px; }
 /* 抽屉展开时压缩卡片最小宽，避免半窗下只剩一张巨卡 */
@@ -387,8 +519,16 @@ watch(() => props.project.config_file, load)
 .drawer-head h2 { margin:0; }
 .drawer-expand { writing-mode:vertical-rl; letter-spacing:2px; border:1.5px dashed var(--line); border-radius:var(--r-full); background:var(--bg-soft); color:var(--ink-dim); cursor:pointer; font-size:12px; padding:12px 5px; transition:all .15s; }
 .drawer-expand:hover { color:var(--main-deep); border-color:var(--main); }
-.uncut-item { padding:10px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; background:var(--card); }
-.thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
+ .uncut-item { padding:10px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; background:var(--card); }
+.max-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; max-height:70vh; overflow:auto; padding-right:4px; }
+.max-item { margin:0; display:flex; flex-direction:column; }
+.max-title-row { align-items:flex-start; }
+.max-title-row b { flex:1; min-width:0; }
+.max-summary { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); cursor:pointer; transition:filter .15s, border-color .15s; }
+.thumb:hover { filter:brightness(1.06); border-color:var(--main); }
+/* 卡片本身不再响应点击（只有预览图会打开视频窗口），去掉手型光标 */
+.pcard.clip-card { cursor:default; }
 .pcard .ribbon { opacity:1; top:8px; right:-18px; padding:2px 30px; background:rgba(253,227,236,.5); color:rgba(216,102,155,.8); }
 
 /* 窄屏：抽屉堆叠到片段下方，横向折叠条 */

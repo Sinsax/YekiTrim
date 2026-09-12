@@ -21,6 +21,7 @@ use axum::{
 };
 use futures_util::{StreamExt, stream::Stream};
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use crate::service::Workspace;
 
 use super::model::AppState;
@@ -44,6 +45,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/project-data/events", get(project_data_events).post(project_data_events_create).put(project_data_events_put))
         .route("/project-data/clips", get(project_data_clips))
         .route("/project-data/clips/:rank/thumb", get(project_data_clip_thumb))
+        .route("/project-data/events/cut-all", post(project_data_event_cut_all))
         .route("/project-data/events/:rank/cut", post(project_data_event_cut))
         .route("/project-data/clips/:rank/silence", post(project_data_clip_silence))
         .route("/project-data/transcript", get(project_data_transcript).put(project_data_transcript_put))
@@ -56,7 +58,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/jobs", get(jobs_list))
         .route("/jobs/:id", get(job_get))
         .route("/jobs/:id/events", get(job_events))
-        .route("/jobs/:id/decision", post(job_decision))
         .route("/jobs/:id/cancel", post(job_cancel))
         .route("/polish/init", post(polish_init))
         .route("/polish/llm", post(polish_llm))
@@ -71,10 +72,29 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
         .route("/polish/sticker-sources", get(polish_sticker_sources))
         .route("/polish/render-frame", post(polish_render_frame))
+        .route("/polish/font", get(polish_font))
         .route("/polish/select-version", post(polish_select_version))
+        .route("/polish/silence", post(polish_silence))
+        .route("/polish/cover-title", post(polish_cover_title))
         .route("/polish/cover-config", post(polish_cover_config))
         .route("/media/*path", get(media_get))
+        // 未匹配的 /api/* 必须是 JSON 404：外层 fallback 是 SPA HTML，
+        // 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
+        .fallback(api_not_found)
         .with_state(state)
+}
+
+async fn api_not_found(req: axum::extract::Request) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "ok": false,
+            "error": format!("未知接口: {method} {path}"),
+        })),
+    )
+        .into_response()
 }
 
 type AppError = (StatusCode, Json<serde_json::Value>);
@@ -95,26 +115,67 @@ async fn workspace_from_state(state: &AppState) -> Workspace {
     state.workspace().await
 }
 
-fn command_available(cmd: &str) -> Option<String> {
+/// 外部命令探测结果缓存（30s TTL）。
+///
+/// `/api/health` 会被前端在页面挂载与「环境检查」时调用，同步 spawn
+/// ffmpeg/ffprobe/chrome（最多 7 个进程）会占住 tokio worker，故探测放
+/// `spawn_blocking` 并缓存。
+type ProbeCache = std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>;
+
+fn probe_cache() -> &'static ProbeCache {
+    static CACHE: std::sync::OnceLock<ProbeCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn cache_get(key: &str, ttl: Duration) -> Option<Option<String>> {
+    let cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .get(key)
+        .filter(|(t, _)| t.elapsed() < ttl)
+        .map(|(_, v)| v.clone())
+}
+
+fn cache_put(key: String, value: Option<String>) {
+    let mut cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(key, (std::time::Instant::now(), value));
+}
+
+fn command_available_blocking(cmd: &str) -> Option<String> {
     let output = std::process::Command::new(cmd).arg("-version").output().ok()?;
     if !output.status.success() { return None; }
     let first = String::from_utf8_lossy(&output.stdout).lines().next().map(|s| s.to_string()).unwrap_or_default();
     Some(first)
 }
 
-fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
+async fn command_available(cmd: &str) -> Option<String> {
+    let key = format!("cmd:{cmd}");
+    if let Some(cached) = cache_get(&key, Duration::from_secs(30)) {
+        return cached;
+    }
+    let owned = cmd.to_string();
+    let value = tokio::task::spawn_blocking(move || command_available_blocking(&owned))
+        .await
+        .ok()
+        .flatten();
+    cache_put(key, value.clone());
+    value
+}
+
+fn chrome_available_blocking(custom: &str) -> Option<String> {
+    let probe = |c: &str| -> Option<String> {
+        if Path::new(c).exists() {
+            return Some(c.to_string());
+        }
+        std::process::Command::new(c)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|_| c.to_string())
+    };
     // 全局配置 [chrome] path 优先
-    let custom = cfg
-        .map(|c| c.chrome.path.trim())
-        .unwrap_or("")
-        .to_string();
     if !custom.is_empty() {
-        return Path::new(&custom).exists()
-            || std::process::Command::new(&custom)
-                .arg("--version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+        return probe(custom);
     }
     let candidates = [
         "chrome",
@@ -123,16 +184,22 @@ fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ];
-    candidates.iter().any(|c| {
-        if Path::new(c).exists() {
-            return true;
-        }
-        std::process::Command::new(c)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    })
+    candidates.iter().find_map(|c| probe(c))
+}
+
+async fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
+    let custom = cfg.map(|c| c.chrome.path.trim()).unwrap_or("").to_string();
+    let key = format!("chrome:{custom}");
+    if let Some(cached) = cache_get(&key, Duration::from_secs(30)) {
+        return cached.is_some();
+    }
+    let value = tokio::task::spawn_blocking(move || chrome_available_blocking(&custom))
+        .await
+        .ok()
+        .flatten();
+    let ok = value.is_some();
+    cache_put(key, value);
+    ok
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> ApiResult {
@@ -142,10 +209,12 @@ async fn health(State(state): State<Arc<AppState>>) -> ApiResult {
     ok(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
-        "ffmpeg": command_available("ffmpeg"),
-        "ffprobe": command_available("ffprobe"),
-        "chrome": chrome_available(cfg.as_ref()),
+        "ffmpeg": command_available("ffmpeg").await,
+        "ffprobe": command_available("ffprobe").await,
+        "chrome": chrome_available(cfg.as_ref()).await,
         "llm": llm,
+        // 单帧真渲染（/api/polish/render-frame）只在启用该 feature 的构建里可用
+        "wgpu_render": cfg!(feature = "wgpu-render"),
         "workspace": ws.config_file.to_string_lossy(),
     }))
 }
@@ -159,8 +228,8 @@ async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
         serde_json::json!({ "name": m, "exists": models_dir.join(m).exists() })
     }).collect();
     ok(serde_json::json!({
-        "ffmpeg": command_available("ffmpeg"),
-        "ffprobe": command_available("ffprobe"),
+        "ffmpeg": command_available("ffmpeg").await,
+        "ffprobe": command_available("ffprobe").await,
         "models_dir": models_dir.to_string_lossy(),
         "models": model_status,
         "workspace": ws.config_file.to_string_lossy(),
@@ -190,15 +259,25 @@ fn config_get_impl(ws: &Workspace) -> ApiResult {
     let global_raw = std::fs::read_to_string(&global_path).unwrap_or_default();
     let llm_path = home.join("llm.toml");
     let llm_raw = std::fs::read_to_string(&llm_path).unwrap_or_default();
-    let cfg = ws.load_config().ok();
+    let cfg = ws.load_config();
+    // 设置页表单编辑的是**程序配置**，必须用 global-only 的值：
+    // merged config 会被当前工程的 vtrim.toml 覆盖，直接用会出现「表单值和源文件对不上」
+    let global_cfg = vtrim_core::config::load_global_config();
     let llm_cfg = vtrim_core::config::load_llm_config();
+    let (cfg_value, config_error) = match cfg {
+        Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
+        // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
+        Err(e) => (serde_json::Value::Null, format!("{e:#}")),
+    };
     ok(serde_json::json!({
         "config_file": ws.config_file.to_string_lossy(),
         "root_dir": ws.root_dir.to_string_lossy(),
         "vtrim_raw": vtrim_raw,
         "global_raw": global_raw,
         "llm_raw": llm_raw,
-        "config": cfg.map(|c| serde_json::to_value(c).unwrap_or_default()).unwrap_or(serde_json::Value::Null),
+        "config": cfg_value,
+        "config_error": config_error,
+        "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
         "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
     }))
 }
@@ -208,34 +287,65 @@ async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
     config_get_impl(&ws)
 }
 
-async fn config_vtrim_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    config_vtrim_put_impl(&ws, &body)
-}
-
 fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
+    // 与 config_global_put / config_llm_put 对齐：空内容或语法错误会把整个项目配置
+    // 变成不可解析（= 配置被整体忽略），必须在落盘前拦下。
+    if raw.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "内容为空，未保存"));
+    }
+    crate::service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 不是合法 TOML，未保存: {e}")))?;
     if let Some(parent) = ws.config_file.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
     std::fs::write(&ws.config_file, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
 }
 
+/// 保存程序配置。
+///
+/// - `raw`：源文件模式，整份覆盖写；
+/// - `patch`：表单模式，`{ section: { key: value } }` 合并写，未涉及的 section/注释原样保留。
 async fn config_global_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
-    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
     let path = vtrim_core::path::vtrim_home().join("config.toml");
+    // patch / 源文件两种写法都会读改写整份配置，加锁避免并发提交互相覆盖
+    vtrim_core::filelock::with_path_lock(&path, || config_global_put_locked(&path, &body)).await
+}
+
+fn config_global_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+    if let Some(patch) = body.get("patch") {
+        vtrim_core::config::patch_config_file(path, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
+    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
+    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
+    // 语法错误会令整份配置被忽略，这里直接拦下，别让用户存进一个坏文件
+    crate::service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("config.toml 不是合法 TOML，未保存: {e}")))?;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
-    std::fs::write(&path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
 }
 
+/// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
 async fn config_llm_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
-    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
     let path = vtrim_core::path::vtrim_home().join("llm.toml");
+    vtrim_core::filelock::with_path_lock(&path, || config_llm_put_locked(&path, &body)).await
+}
+
+fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+    if let Some(patch) = body.get("patch") {
+        vtrim_core::config::patch_config_file(path, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
+    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
+    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
+    crate::service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("llm.toml 不是合法 TOML，未保存: {e}")))?;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
-    std::fs::write(&path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
 }
 
@@ -254,8 +364,15 @@ async fn llm_test() -> ApiResult {
     }
 }
 
-async fn models_download(State(state): State<Arc<AppState>>, Json(_body): Json<serde_json::Value>) -> ApiResult {
-    let id = state.jobs.create("download_models").await;
+/// 下载全部 ASR 模型。
+///
+/// 前端 `POST /api/models/download` 不带 body（旧实现要求 `Json` 提取器，空 body 会被
+/// axum 直接 400，两个模型界面都因此不可用）。这里只做任务编排，不读 body。
+async fn models_download(State(state): State<Arc<AppState>>) -> ApiResult {
+    let id = match state.jobs.create("download_models").await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
     state.jobs.mark_running(&id, "下载 ASR 模型").await;
     let jobs = state.jobs.clone();
     let job_id = id.clone();
@@ -270,74 +387,30 @@ async fn models_download(State(state): State<Arc<AppState>>, Json(_body): Json<s
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn project_switch(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let Some(p) = body.get("config_path").and_then(|v| v.as_str()) else {
-        return Err(err(StatusCode::BAD_REQUEST, "缺少 config_path"));
-    };
-    let ws = Workspace::load(Some(Path::new(p))).map_err(|e| err(StatusCode::BAD_REQUEST, format!("切换失败: {e:#}")))?;
-    if ws.config_file.exists() {
-        let _ = vtrim_core::config::normalize_project_paths_in(&ws.config_file);
-    }
+/// 打开/新建项目后把"当前工程"切到它：`/api/health`、`/api/fs/list` 的默认目录与
+/// `/api/media` 的相对路径解析都依赖这份状态。
+async fn activate_workspace(state: &AppState, ws: &Workspace) {
     state.set_workspace(ws.clone()).await;
     persist::remember_last(&ws.config_file, Some(&state.workspace_root().await));
-    ok(serde_json::json!({ "ok": true, "config_file": ws.config_file.to_string_lossy() }))
 }
 
 fn project_summary(ws: &Workspace) -> serde_json::Value {
     crate::service::project_summary(ws)
 }
 
-async fn find_workspace_by_id(state: &AppState, id: &str) -> Option<Workspace> {
-    let root = state.workspace_root().await;
-    let mut stack = vec![root];
-    for depth in 0..4 {
-        if stack.is_empty() { break; }
-        let mut next = vec![];
-        for dir in stack.drain(..) {
-            let cfg_file = dir.join("vtrim.toml");
-            if cfg_file.exists() {
-                if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
-                    let pid = project_summary(&ws)["id"].as_str().unwrap_or("").to_string();
-                    if pid == id || ws.root_dir.file_name().and_then(|s| s.to_str()).map(|s| s == id).unwrap_or(false) {
-                        return Some(ws);
-                    }
-                }
-            }
-            if depth < 3 {
-                if let Ok(entries) = std::fs::read_dir(&dir) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            let name = entry.file_name().to_string_lossy().to_lowercase();
-                            if name == "target" || name == ".git" || name == "node_modules" { continue; }
-                            next.push(p);
-                        }
-                    }
-                }
-            }
-        }
-        stack = next;
-    }
-    None
-}
-
-async fn project_workspace(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let root = body.get("root").and_then(|v| v.as_str()).unwrap_or_default();
-    if root.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "缺少 root"));
-    }
-    let path = PathBuf::from(root);
-    if !path.is_dir() {
-        return Err(err(StatusCode::BAD_REQUEST, "工作区目录不存在"));
-    }
-    state.set_workspace_root(path.clone()).await;
-    persist::remember_workspace_root(&path);
-    ok(serde_json::json!({ "ok": true, "root": path.to_string_lossy() }))
-}
-
 async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let p = body.get("config_path").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 config_path"))?;
     let path = PathBuf::from(p);
+    // 语义是"从项目列表移除项目"，只允许删 vtrim.toml：
+    // 否则这个接口等价于"删除任意文件"。
+    let is_project_file = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("vtrim.toml"))
+        .unwrap_or(false);
+    if !is_project_file {
+        return Err(err(StatusCode::BAD_REQUEST, "只允许删除 vtrim.toml"));
+    }
     if path.exists() { std::fs::remove_file(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?; }
     else { return Err(err(StatusCode::NOT_FOUND, "配置文件不存在")); }
     persist::forget_project(&path);
@@ -346,53 +419,60 @@ async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<se
 
 async fn project_list(State(state): State<Arc<AppState>>) -> ApiResult {
     let root = state.workspace_root().await;
-    let saved = persist::load_state();
-    let paths = saved.as_ref().map(|s| s.projects.clone()).unwrap_or_default();
-    let mut out = vec![];
+    // 首次启动可能要扫 4 层目录，纯同步 IO：放 spawn_blocking 避免占住 tokio worker
+    let (root_display, out) = tokio::task::spawn_blocking(move || {
+        let saved = persist::load_state();
+        let paths = saved.as_ref().map(|s| s.projects.clone()).unwrap_or_default();
+        let mut out = vec![];
 
-    if paths.is_empty() {
-        // 首次启动兼容：扫描一次工作区根目录并写入 server.toml，后续不再依赖扫描
-        let mut stack = vec![root.clone()];
-        for depth in 0..4 {
-            if stack.is_empty() { break; }
-            let mut next = vec![];
-            for dir in stack.drain(..) {
-                let cfg_file = dir.join("vtrim.toml");
-                if cfg_file.exists() {
-                    if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
-                        out.push(project_summary(&ws));
-                        persist::remember_project(&ws.config_file);
+        if paths.is_empty() {
+            // 首次启动兼容：扫描一次工作区根目录并写入 server.toml，后续不再依赖扫描
+            let mut stack = vec![root.clone()];
+            for depth in 0..4 {
+                if stack.is_empty() { break; }
+                let mut next = vec![];
+                for dir in stack.drain(..) {
+                    let cfg_file = dir.join("vtrim.toml");
+                    if cfg_file.exists() {
+                        if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
+                            out.push(project_summary(&ws));
+                            persist::remember_project(&ws.config_file);
+                        }
                     }
-                }
-                if depth < 3 {
-                    if let Ok(entries) = std::fs::read_dir(&dir) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_dir() {
-                                let name = entry.file_name().to_string_lossy().to_lowercase();
-                                if name == "target" || name == ".git" || name == "node_modules" { continue; }
-                                next.push(p);
+                    if depth < 3 {
+                        if let Ok(entries) = std::fs::read_dir(&dir) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.is_dir() {
+                                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                                    if name == "target" || name == ".git" || name == "node_modules" { continue; }
+                                    next.push(p);
+                                }
                             }
                         }
                     }
                 }
+                stack = next;
             }
-            stack = next;
-        }
-    } else {
-        // 直接从 server.toml 读取项目 vtrim.toml 路径，支持任意目录
-        for cfg in paths {
-            let p = PathBuf::from(&cfg);
-            if p.exists() {
-                if let Ok(ws) = Workspace::load(Some(&p)) {
-                    out.push(project_summary(&ws));
+        } else {
+            // 直接从 server.toml 读取项目 vtrim.toml 路径，支持任意目录
+            for cfg in paths {
+                let p = PathBuf::from(&cfg);
+                if p.exists() {
+                    if let Ok(ws) = Workspace::load(Some(&p)) {
+                        out.push(project_summary(&ws));
+                    }
                 }
             }
         }
-    }
 
-    out.sort_by(|a,b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
-    ok(serde_json::json!({ "workspace_root": root.to_string_lossy(), "projects": out }))
+        out.sort_by(|a,b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+        (root.to_string_lossy().into_owned(), out)
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描工作区失败: {e}")))?;
+
+    ok(serde_json::json!({ "workspace_root": root_display, "projects": out }))
 }
 
 
@@ -405,23 +485,6 @@ fn project_snapshot(ws: &Workspace) -> serde_json::Value {
 
 fn project_status_impl(ws: &Workspace) -> ApiResult {
     ok(project_snapshot(ws))
-}
-
-async fn project_status(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    project_status_impl(&ws)
-}
-
-async fn project_detail(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    let snapshot = project_snapshot(&ws);
-    let mut detail = snapshot;
-    let clips_dir = ws.output_dir().join("clips");
-    let clip_count = if clips_dir.exists() {
-        std::fs::read_dir(&clips_dir).map(|e| e.flatten().filter(|x| x.path().is_dir()).count()).unwrap_or(0)
-    } else { 0 };
-    detail["clip_count"] = serde_json::json!(clip_count);
-    ok(detail)
 }
 
 async fn project_init(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -441,6 +504,7 @@ async fn project_init(State(state): State<Arc<AppState>>, Json(body): Json<serde
     ).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
     let ws = Workspace::load(Some(&config_path)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
     persist::remember_project(&ws.config_file);
+    activate_workspace(&state, &ws).await;
     ok(project_snapshot(&ws))
 }
 
@@ -459,31 +523,8 @@ async fn project_open(State(state): State<Arc<AppState>>, Json(body): Json<serde
     };
     let ws = Workspace::load(Some(&cfg)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
     persist::remember_project(&ws.config_file);
+    activate_workspace(&state, &ws).await;
     ok(project_snapshot(&ws))
-}
-
-async fn project_by_id_status(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
-    let ws = find_workspace_by_id(&state, &id).await
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
-    project_status_impl(&ws)
-}
-
-async fn project_by_id_events(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
-    let ws = find_workspace_by_id(&state, &id).await
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
-    data_events_impl(&ws)
-}
-
-async fn project_by_id_clips(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
-    let ws = find_workspace_by_id(&state, &id).await
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
-    data_clips_impl(&ws)
-}
-
-async fn project_by_id_polish(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
-    let ws = find_workspace_by_id(&state, &id).await
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在"))?;
-    polish_projects_impl(&ws)
 }
 
 fn workspace_from_config(config: &str) -> Result<Workspace, AppError> {
@@ -516,18 +557,43 @@ async fn project_data_clip_thumb(State(_state): State<Arc<AppState>>, Query(q): 
     let Ok(ws) = workspace_from_config(&config) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
+    // rank 直接来自 URL：必须是数字，否则会拼进路径（`clip-../../x`）
+    let Ok(rank) = rank.parse::<u32>() else {
+        return media::json_error(StatusCode::BAD_REQUEST, "rank 无效");
+    };
+    let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:02}", rank));
     let video = clip_dir.join("clip.mp4");
     let thumb = clip_dir.join("_thumb.jpg");
     if !thumb.exists() && video.exists() {
-        let _ = std::process::Command::new("ffmpeg")
-            .args(["-ss","1","-i", &video.to_string_lossy(), "-vframes","1","-q:v","4","-y", &thumb.to_string_lossy()])
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        // ffmpeg 是阻塞调用；同一张图用路径锁串行化，后到者拿到锁后重查即可跳过重复生成
+        let _guard = vtrim_core::filelock::lock_path(&thumb).await;
+        if !thumb.exists() {
+            let v = video.clone();
+            let t = thumb.clone();
+            match tokio::task::spawn_blocking(move || generate_clip_thumb(&v, &t)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("生成缩略图失败 ({}): {e}", thumb.display()),
+                Err(e) => tracing::warn!("生成缩略图任务失败 ({}): {e}", thumb.display()),
+            }
+        }
     }
     match tokio::fs::read(&thumb).await {
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => media::json_error(StatusCode::NOT_FOUND, "缩略图不存在"),
     }
+}
+
+/// 截取切片首帧为 `_thumb.jpg`（同步阻塞，调用方负责 spawn_blocking）。
+fn generate_clip_thumb(video: &Path, thumb: &Path) -> std::io::Result<()> {
+    let status = std::process::Command::new("ffmpeg")
+        .args(["-ss","1","-i", &video.to_string_lossy(), "-vframes","1","-q:v","4","-y", &thumb.to_string_lossy()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "ffmpeg 退出码非 0"));
+    }
+    Ok(())
 }
 
 async fn project_data_polish(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
@@ -545,19 +611,23 @@ async fn project_data_transcript(State(_state): State<Arc<AppState>>, Query(q): 
 async fn project_data_transcript_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let config = q.get("config").cloned().unwrap_or_default();
     let ws = workspace_from_config(&config)?;
-    data_transcript_put_impl(&ws, &body)
+    let path = ws.output_dir().join("transcript.json");
+    vtrim_core::filelock::with_path_lock(&path, || data_transcript_put_impl(&ws, &body)).await
 }
 
 async fn project_data_events_create(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let config = q.get("config").cloned().unwrap_or_default();
     let ws = workspace_from_config(&config)?;
-    data_events_create_impl(&ws, &body)
+    // events.json 是 read-modify-write：并发 PUT/POST 会丢事件
+    let path = ws.output_dir().join("events.json");
+    vtrim_core::filelock::with_path_lock(&path, || data_events_create_impl(&ws, &body)).await
 }
 
 async fn project_data_events_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let config = q.get("config").cloned().unwrap_or_default();
     let ws = workspace_from_config(&config)?;
-    data_events_put_impl(&ws, &body)
+    let path = ws.output_dir().join("events.json");
+    vtrim_core::filelock::with_path_lock(&path, || data_events_put_impl(&ws, &body)).await
 }
 
 async fn project_data_event_cut(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
@@ -566,10 +636,16 @@ async fn project_data_event_cut(State(state): State<Arc<AppState>>, Query(q): Qu
     event_cut_impl(&ws, &rank, &state.jobs).await
 }
 
-async fn project_data_clip_silence(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+async fn project_data_event_cut_all(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let config = q.get("config").cloned().unwrap_or_default();
     let ws = workspace_from_config(&config)?;
-    clip_silence_impl(&ws, &rank, &state.jobs).await
+    event_cut_all_impl(&ws, &body, &state.jobs).await
+}
+
+async fn project_data_clip_silence(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    let config = q.get("config").cloned().unwrap_or_default();
+    let ws = workspace_from_config(&config)?;
+    clip_silence_impl(&ws, &rank).await
 }
 
 async fn project_data_correct(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
@@ -578,8 +654,18 @@ async fn project_data_correct(State(state): State<Arc<AppState>>, Query(q): Quer
     correct_run_impl(&ws, &state.jobs).await
 }
 
-async fn project_data_pipeline(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = body.get("config").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+async fn project_data_pipeline(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    // 与其余 /project-data/* 一致：优先 ?config=，同时兼容 body.config
+    let config = q
+        .get("config")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .or_else(|| body.get("config").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default();
     let ws = workspace_from_config(&config)?;
     if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
         let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
@@ -611,7 +697,9 @@ async fn project_data_config(State(_state): State<Arc<AppState>>, Query(q): Quer
 async fn project_data_config_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let config = q.get("config").cloned().unwrap_or_default();
     let ws = workspace_from_config(&config)?;
-    config_vtrim_put_impl(&ws, &body)
+    // 读改写加锁：设置页可能同时提交源文件与其它字段
+    let path = ws.config_file.clone();
+    vtrim_core::filelock::with_path_lock(&path, || config_vtrim_put_impl(&ws, &body)).await
 }
 
 fn data_transcript_impl(ws: &Workspace) -> ApiResult {
@@ -638,11 +726,6 @@ fn data_transcript_impl(ws: &Workspace) -> ApiResult {
     }
 }
 
-async fn data_transcript(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_transcript_impl(&ws)
-}
-
 fn data_transcript_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let output = ws.output_dir();
     let json_path = output.join("transcript.json");
@@ -656,27 +739,57 @@ fn data_transcript_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResu
     ok(serde_json::json!({ "ok": true, "saved": transcript.segments.len() }))
 }
 
-async fn data_transcript_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_transcript_put_impl(&ws, &body)
+/// 统计 SRT 文件中的字幕条数（以时间轴行 `-->` 为准）；文件缺失/编码异常时为 0。
+fn count_srt_cues(path: &Path) -> u64 {
+    match std::fs::read(path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).lines().filter(|l| l.contains("-->")).count() as u64,
+        Err(_) => 0,
+    }
 }
 
-async fn data_heatmap(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    let danmaku = cfg.project.danmaku_file.as_ref().filter(|s| !s.is_empty()).map(|s| ws.resolve(s));
+/// 读取项目转写文件（transcript.json / video.srt）中所有字幕段的起始秒，升序。
+fn transcript_starts(ws: &Workspace) -> Vec<f64> {
+    let Ok(cfg) = ws.load_config() else { return Vec::new() };
     let output = ws.output_dir();
-    let duration = vtrim_core::detection::load_events(&output.join("events.json")).ok()
-        .and_then(|evs| evs.last().map(|e| e.end.to_seconds())).unwrap_or(0.0);
-    if let Some(dm) = danmaku.filter(|p| p.exists()) {
-        let windows = vtrim_core::danmaku::analyze(&dm, cfg.detection.danmaku_window_secs, duration)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("弹幕分析失败: {e}")))?;
-        let windows: Vec<serde_json::Value> = windows.into_iter().map(|w| serde_json::json!({
-            "start": w.start, "density": w.density, "count": w.count,
-        })).collect();
-        return ok(serde_json::json!({ "windows": windows }));
-    }
-    Err(err(StatusCode::NOT_FOUND, "无弹幕文件或数据"))
+    let path = cfg.project.transcript_file.as_ref().filter(|s| !s.is_empty())
+        .map(|s| ws.resolve(s)).filter(|p| p.exists())
+        .or_else(|| {
+            let j = output.join("transcript.json");
+            if j.exists() { Some(j) } else { let s = output.join("video.srt"); if s.exists() { Some(s) } else { None } }
+        });
+    let Some(p) = path else { return Vec::new() };
+    let Ok(raw) = std::fs::read_to_string(&p) else { return Vec::new() };
+    let mut starts: Vec<f64> = if p.extension().and_then(|e| e.to_str()) == Some("json") {
+        serde_json::from_str::<serde_json::Value>(&raw).ok()
+            .and_then(|v| v.get("segments").and_then(|s| s.as_array()).map(|arr| {
+                arr.iter().filter_map(|s| s.get("start").and_then(|x| x.as_f64())).collect::<Vec<f64>>()
+            }))
+            .unwrap_or_default()
+    } else {
+        vtrim_core::srt::parse_srt(&raw).map(|t| t.segments.iter().map(|s| s.start).collect()).unwrap_or_default()
+    };
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    starts
+}
+
+/// 读取项目弹幕文件（ASS/SRT）中所有弹幕的起始秒，升序。
+fn danmaku_starts(ws: &Workspace) -> Vec<f64> {
+    let Ok(cfg) = ws.load_config() else { return Vec::new() };
+    let path = cfg.project.danmaku_file.as_ref().filter(|s| !s.is_empty())
+        .map(|s| ws.resolve(s)).filter(|p| p.exists());
+    let Some(p) = path else { return Vec::new() };
+    let Ok(entries) = vtrim_core::danmaku::load_danmaku_auto(&p) else { return Vec::new() };
+    let mut starts: Vec<f64> = entries.iter().map(|e| e.start).collect();
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    starts
+}
+
+/// 统计落在 [start, end] 内的起始点数量（starts 必须升序）。
+fn count_in_range(starts: &[f64], start: f64, end: f64) -> u64 {
+    if starts.is_empty() || end < start { return 0; }
+    let lo = starts.partition_point(|&x| x < start);
+    let hi = starts.partition_point(|&x| x <= end);
+    hi.saturating_sub(lo) as u64
 }
 
 fn data_events_impl(ws: &Workspace) -> ApiResult {
@@ -684,6 +797,18 @@ fn data_events_impl(ws: &Workspace) -> ApiResult {
     if !path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+    // 事件区间内的弹幕量/字幕量（切片页排序用），文件缺失时为 0。
+    // 只有存在未剪切事件时才解析源弹幕/字幕，避免纯浏览列表时反复解析大文件。
+    let clips_dir = path.parent().map(|p| p.join("clips"));
+    let has_uncut = v.get("events").and_then(|e| e.as_array()).map(|evs| evs.iter().any(|ev| {
+        let rank = ev.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
+        !clips_dir.as_ref().map(|c| c.join(format!("clip-{:0>2}", rank)).join("clip.mp4").exists()).unwrap_or(false)
+    })).unwrap_or(false);
+    let (dm_starts, sub_starts) = if has_uncut {
+        (danmaku_starts(ws), transcript_starts(ws))
+    } else {
+        (Vec::new(), Vec::new())
+    };
     if let Some(evs) = v.get_mut("events").and_then(|x| x.as_array_mut()) {
         for ev in evs {
             let start = ev.get("start").and_then(|s| s.as_object())
@@ -695,14 +820,11 @@ fn data_events_impl(ws: &Workspace) -> ApiResult {
             let rank = ev.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
             let clip_dir = path.parent().map(|p| p.join("clips").join(format!("clip-{:0>2}", rank))).unwrap_or_default();
             ev["cut_exists"] = serde_json::json!(clip_dir.join("clip.mp4").exists());
+            ev["danmaku_count"] = serde_json::json!(count_in_range(&dm_starts, start, end));
+            ev["subtitle_count"] = serde_json::json!(count_in_range(&sub_starts, start, end));
         }
     }
     ok(v)
-}
-
-async fn data_events(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_events_impl(&ws)
 }
 
 fn ev_time_secs(v: &serde_json::Value, key: &str) -> f64 {
@@ -715,13 +837,13 @@ fn ev_time_secs(v: &serde_json::Value, key: &str) -> f64 {
 }
 
 
+/// 秒 → `events.json` 里的 `{h,m,s,ms}` 时间戳。
+///
+/// 用 `Timestamp::from_seconds`（按总毫秒计算）而不是手写 floor/round：
+/// 后者在 `sec = 59.9999` 时会产出非法的 `ms = 1000`（SRT 会写成 `00:00:59,1000`）。
 fn sec_to_ts_value(sec: f64) -> serde_json::Value {
-    let sec = sec.max(0.0);
-    let h = (sec / 3600.0).floor() as u64;
-    let m = ((sec % 3600.0) / 60.0).floor() as u64;
-    let s = (sec % 60.0).floor() as u64;
-    let ms = ((sec - sec.floor()) * 1000.0).round() as u64;
-    serde_json::json!({ "h": h, "m": m, "s": s, "ms": ms })
+    let ts = vtrim_core::types::Timestamp::from_seconds(sec.max(0.0));
+    serde_json::json!({ "h": ts.h, "m": ts.m, "s": ts.s, "ms": ts.ms })
 }
 
 fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
@@ -781,11 +903,6 @@ fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResul
     ok(serde_json::json!({ "ok": true, "event": event }))
 }
 
-async fn data_events_create(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_events_create_impl(&ws, &body)
-}
-
 fn data_events_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     let path = ws.output_dir().join("events.json");
     if !path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
@@ -815,11 +932,6 @@ fn data_events_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
     ok(serde_json::json!({ "ok": true }))
 }
 
-async fn data_events_put(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_events_put_impl(&ws, &body)
-}
-
 fn data_clips_impl(ws: &Workspace) -> ApiResult {
     let clips = ws.output_dir().join("clips");
     if !clips.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 clips")); }
@@ -839,65 +951,185 @@ fn data_clips_impl(ws: &Workspace) -> ApiResult {
             (size, dur)
         } else { (0,0.0) };
         let silent_files: Vec<String> = if let Ok(rd)=std::fs::read_dir(&dir_path) { rd.flatten().filter_map(|f| { let n=f.file_name().to_string_lossy().to_lowercase(); if n.contains("cleaned") && n.ends_with(".mp4") { Some(f.file_name().to_string_lossy().into_owned()) } else { None } }).collect() } else { Vec::new() };
-        let silent_exists = !silent_files.is_empty();
+        // 「消音版」= 静音区间已写入屏蔽轨道（不再产生 *_cleaned.mp4 文件）
+        let silenced = vtrim_polish::project::is_silent(&dir_path);
+        let mute_range_count = if dir_path.join("polish.toml").exists() { vtrim_polish::project::mute_range_count(&dir_path) } else { 0 };
+        // 切片自己的弹幕/字幕条数（排序用）
+        let subtitle_count = count_srt_cues(&dir_path.join("clip.srt"));
+        let danmaku_count = count_srt_cues(&dir_path.join("clip.dm.srt"));
         out.push(serde_json::json!({
             "dir": dir_path.to_string_lossy(),
             "name": entry.file_name().to_string_lossy(),
             "video_exists": video_path.exists(),
             "size_bytes": size_bytes,
             "duration_secs": duration_secs,
-            "silenced": silent_exists,
+            "silenced": silenced,
+            "mute_range_count": mute_range_count,
             "silent_files": silent_files,
             "meta": meta,
+            "subtitle_count": subtitle_count,
+            "danmaku_count": danmaku_count,
         }));
     }
     out.sort_by(|a,b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
     ok(serde_json::json!(out))
 }
 
-async fn data_clips(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    data_clips_impl(&ws)
-}
-
-async fn clip_thumb(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> Response {
-    let ws = state.workspace().await;
-    let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
-    let video = clip_dir.join("clip.mp4");
-    let thumb = clip_dir.join("_thumb.jpg");
-    if !thumb.exists() && video.exists() {
-        let _ = std::process::Command::new("ffmpeg")
-            .args(["-ss","1","-i", &video.to_string_lossy(), "-vframes","1","-q:v","4","-y", &thumb.to_string_lossy()])
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-    }
-    match tokio::fs::read(&thumb).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn clip_silence_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
+/// 「消音版」：把该切片的长静音段写入屏蔽轨道（polish.toml 的 mute_ranges）。
+/// 不生成任何新文件，原始 clip.mp4 / clip.srt 保持不变。
+async fn clip_silence_impl(ws: &Workspace, rank: &str) -> ApiResult {
     let clip_dir = ws.output_dir().join("clips").join(format!("clip-{:0>2}", rank));
     let video = clip_dir.join("clip.mp4");
     if !video.exists() { return Err(err(StatusCode::NOT_FOUND, "clip.mp4 不存在")); }
-    let id = jobs.create("silence").await;
-    jobs.mark_running(&id, format!("静音压缩 clip-{}", rank)).await;
+    ensure_polish_project(&clip_dir).await?;
+    let applied = vtrim_polish::project::apply_silence(&clip_dir)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入屏蔽轨道失败: {e:#}")))?;
+    ok(serde_json::json!({
+        "ok": true,
+        "added": applied.added,
+        "total": applied.total,
+        "ranges": applied.ranges.iter().map(|(s, e)| serde_json::json!({ "start": s, "end": e })).collect::<Vec<_>>(),
+    }))
+}
+
+/// polish 系列接口的 `dir` 参数校验：非空 + 必须已存在且是目录。
+///
+/// 前端永远传绝对路径；这里挡的是空串（会在 server 进程 CWD 下写入 polish.toml /
+/// data / sfx）和不存在的路径（错误信息也更明确）。接受 `&str`/`String`/`&String`。
+fn validated_project_dir(dir: impl AsRef<Path>) -> Result<PathBuf, AppError> {
+    let path = dir.as_ref();
+    if path.as_os_str().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 dir"));
+    }
+    if !path.is_dir() {
+        return Err(err(StatusCode::BAD_REQUEST, format!("目录不存在: {}", path.display())));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// 精修工程不存在时自动初始化（与前端进入精修时的行为一致）。
+pub(crate) async fn ensure_polish_project(dir: &Path) -> Result<(), AppError> {
+    if dir.join("polish.toml").exists() {
+        return Ok(());
+    }
+    vtrim_polish::commands::cmd_init(dir)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化精修工程失败: {e:#}")))
+}
+
+async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
+    let ev_path = ws.output_dir().join("events.json");
+    if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
+    let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+    let store: serde_json::Value = serde_json::from_str(&raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("解析失败: {e}")))?;
+    let Some(all_events) = store.get("events").and_then(|a| a.as_array()) else {
+        return Err(err(StatusCode::NOT_FOUND, "暂无事件"));
+    };
+    let only: Vec<u32> = body.get("ranks").and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_u64().and_then(|n| u32::try_from(n).ok())).collect())
+        .unwrap_or_default();
+    let has_filter = !only.is_empty();
+    let output = ws.output_dir();
+    let mut events = Vec::new();
+    for ev in all_events {
+        let Some(rank) = ev.get("rank").and_then(|r| r.as_u64()).and_then(|r| u32::try_from(r).ok()) else {
+            continue;
+        };
+        if has_filter && !only.contains(&rank) {
+            continue;
+        }
+        // 未显式指定 ranks 时遵循事件的 enabled 开关（detection::load_events 也这么做），
+        // 显式点了某个事件则按用户要求执行。
+        if !has_filter && !ev.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
+            continue;
+        }
+        let clip_dir = output.join("clips").join(format!("clip-{:02}", rank));
+        if clip_dir.join("clip.mp4").exists() {
+            continue;
+        }
+        events.push(ev.clone());
+    }
+    if events.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "没有需要剪切的未剪切事件"));
+    }
+
+    let id = match jobs.create("cut_all").await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
+    let total = events.len() as u64;
+    jobs.mark_running(&id, format!("一键全切 {} 个事件", total)).await;
+    jobs.progress(&id, 0, total).await;
     let jobs_handle = jobs.clone();
+    let cfg_file = ws.config_file.clone();
     let job_id = id.clone();
-    let out = clip_dir.join(format!("clip_{}_cleaned.mp4", rank));
+    let cancel = jobs.cancel_token(&id).await;
     tokio::spawn(async move {
-        let result = vtrim_core::cutting::remove_silence(&video, &out, 2.0, None, -30.0);
-        match result {
-            Ok(_) => jobs_handle.complete(&job_id).await,
-            Err(e) => jobs_handle.fail(&job_id, format!("{e:#}")).await,
+        // 一次全切只产生一个 cut_all 任务；内部最多 3 个 ffmpeg 并发，进度统一写回该任务。
+        let sem = Arc::new(tokio::sync::Semaphore::new(3));
+        let counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut handles = Vec::new();
+        let is_cancelled = || {
+            cancel
+                .as_ref()
+                .map(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+                .unwrap_or(false)
+        };
+        for ev in events {
+            // 取消在事件边界生效（进行中的 ffmpeg 不会被中断）
+            if is_cancelled() {
+                break;
+            }
+            let permit = match sem.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let jobs = jobs_handle.clone();
+            let cfg_file = cfg_file.clone();
+            let job_id = job_id.clone();
+            let counter = counter.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                let rank = ev.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
+                let result = run_single_cut(&cfg_file, ev).await;
+                let done = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                jobs.progress(&job_id, done, total).await;
+                if let Err(e) = result {
+                    let _ = jobs.log(&job_id, "error", format!("clip-{:02} 剪切失败: {e:#}", rank)).await;
+                    Err(e)
+                } else {
+                    Ok(())
+                }
+            }));
+        }
+        let mut failures = 0usize;
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => failures += 1,
+                Err(_) => failures += 1,
+            }
+        }
+        if failures == 0 {
+            jobs_handle.complete(&job_id).await;
+        } else {
+            jobs_handle.fail(&job_id, format!("{} 个事件剪切失败", failures)).await;
         }
     });
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn clip_silence(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    clip_silence_impl(&ws, &rank, &state.jobs).await
+async fn run_single_cut(config_file: &Path, ev: serde_json::Value) -> anyhow::Result<()> {
+    let cfg = vtrim_core::config::load_config_at(config_file)?;
+    let w = crate::service::Workspace::load(Some(config_file))?;
+    let input = cfg.project.input_file.as_ref().filter(|s| !s.is_empty()).map(|s| w.resolve(s))
+        .ok_or_else(|| anyhow::anyhow!("未初始化 input_file"))?;
+    let output = w.output_dir();
+    let mut ctx = vtrim_core::types::PipelineContext::new(input, output);
+    ctx.events = vec![serde_json::from_value(ev)?];
+    let mut r = vtrim_core::pipeline::PipelineRunner::new(cfg);
+    r.add_stage(Box::new(vtrim_core::cutting::Cutter));
+    r.run(&mut ctx).await
 }
 
 async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
@@ -909,7 +1141,10 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
     let event: serde_json::Value = store.get("events").and_then(|a| a.as_array()).and_then(|arr| arr.iter().find(|e| e.get("rank").and_then(|r| r.as_u64()).unwrap_or(0) as u32 == rank_u).cloned())
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "事件不存在"))?;
     let ev: vtrim_core::types::Event = serde_json::from_value(event).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("事件解析失败: {e}")))?;
-    let id = jobs.create("cut_one").await;
+    let id = match jobs.create("cut_one").await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
     jobs.mark_running(&id, format!("剪切事件 #{}", rank)).await;
     let jobs_handle = jobs.clone(); let cfg_file = ws.config_file.clone(); let job_id=id.clone();
     tokio::spawn(async move {
@@ -929,24 +1164,64 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn event_cut(State(state): State<Arc<AppState>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let ws = state.workspace().await;
-    event_cut_impl(&ws, &rank, &state.jobs).await
-}
-
 async fn fs_list(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or_default();
-    let target = if dir.is_empty() { ws.root_dir.clone() } else if Path::new(dir).is_absolute() { PathBuf::from(dir) } else { ws.resolve(dir) };
+    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let target = if dir.is_empty() { ws.root_dir.clone() } else if Path::new(&dir).is_absolute() { PathBuf::from(&dir) } else { ws.resolve(&dir) };
     if !target.exists() || !target.is_dir() { return Err(err(StatusCode::BAD_REQUEST, "目录不存在")); }
-    let mut files = vec![]; let mut dirs = vec![];
-    for e in std::fs::read_dir(&target).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))? {
-        let e = e.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
-        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { dirs.push(e.file_name().to_string_lossy().to_string()); }
-        else { files.push(e.file_name().to_string_lossy().to_string()); }
+    let dir_display = target.to_string_lossy().into_owned();
+    // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
+    let (dirs, files) = tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<String>, Vec<String>)> {
+        let mut files = vec![]; let mut dirs = vec![];
+        for e in std::fs::read_dir(&target)? {
+            let e = e?;
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { dirs.push(e.file_name().to_string_lossy().to_string()); }
+            else { files.push(e.file_name().to_string_lossy().to_string()); }
+        }
+        dirs.sort(); files.sort();
+        Ok((dirs, files))
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+    ok(serde_json::json!({ "dir": dir_display, "dirs": dirs, "files": files }))
+}
+
+/// 解析 `Range` 请求头（只支持单区间）。
+///
+/// - `None`：没有 / 无法解析（多区间、非 bytes 单位、数字非法）→ 调用方按 200 全量返回
+/// - `Some(None)`：语法合法但不可满足（`start >= total`、`end < start`、`bytes=-0`）→ 416
+/// - `Some(Some((start, end)))`：闭区间，已按 `total` 收敛
+///
+/// 旧实现在 handler 里直接 `end - start_raw + 1`：`bytes=500-100` 会整数下溢
+/// （debug 下 panic；release 下算出天文数字的 Content-Length，客户端挂死）。
+fn parse_byte_range(header: Option<&str>, total: u64) -> Option<Option<(u64, u64)>> {
+    let spec = header?.trim().strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None;
     }
-    dirs.sort(); files.sort();
-    ok(serde_json::json!({ "dir": target.to_string_lossy(), "dirs": dirs, "files": files }))
+    let (start_s, end_s) = spec.split_once('-')?;
+    let (start_s, end_s) = (start_s.trim(), end_s.trim());
+    if total == 0 {
+        return Some(None);
+    }
+    if start_s.is_empty() {
+        // bytes=-N：最后 N 个字节
+        let n: u64 = end_s.parse().ok()?;
+        if n == 0 {
+            return Some(None);
+        }
+        return Some(Some((total.saturating_sub(n), total - 1)));
+    }
+    let start: u64 = start_s.parse().ok()?;
+    if start >= total {
+        return Some(None);
+    }
+    let end = if end_s.is_empty() { total - 1 } else { end_s.parse::<u64>().ok()? };
+    if end < start {
+        return Some(None);
+    }
+    Some(Some((start, end.min(total - 1))))
 }
 
 async fn media_get(
@@ -958,8 +1233,12 @@ async fn media_get(
 
     let ws = state.workspace().await;
     let root = state.workspace_root().await;
-    let Some(path) = media::safe_join(&ws, &root, &path) else {
-        return media::error_response("文件不存在或不在允许范围");
+    let path = match media::safe_join(&ws, &root, &path) {
+        media::SafePath::Allowed(p) => p,
+        media::SafePath::NotFound => return media::json_error(StatusCode::NOT_FOUND, "文件不存在"),
+        media::SafePath::Forbidden => {
+            return media::json_error(StatusCode::FORBIDDEN, "文件不在允许访问的目录内")
+        }
     };
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
@@ -973,13 +1252,8 @@ async fn media_get(
         Some("mov") => "video/quicktime".to_string(),
         _ => mime_guess::from_path(&path).first_or_octet_stream().to_string(),
     };
-    let range = headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok()).and_then(|v| {
-        let v = v.trim().strip_prefix("bytes=")?;
-        let mut parts = v.split('-');
-        let start: u64 = parts.next()?.parse().ok()?;
-        let end: Option<u64> = parts.next().and_then(|e| if e.is_empty() { None } else { e.parse().ok() });
-        Some((start, end))
-    });
+    let range_header = headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok());
+    let range = parse_byte_range(range_header, total);
 
     fn stream_file(
         file: tokio::fs::File,
@@ -1005,28 +1279,32 @@ async fn media_get(
         })
     }
 
-    if let Some((start_raw, end_opt)) = range {
-        if start_raw >= total {
+    match range {
+        // 语法合法但不可满足（start >= total / end < start / 后缀长度为 0）→ 416
+        Some(None) => {
             return (StatusCode::RANGE_NOT_SATISFIABLE, [(axum::http::header::CONTENT_RANGE, format!("bytes */{}", total))]).into_response();
         }
-        let end = end_opt.unwrap_or(total.saturating_sub(1)).min(total.saturating_sub(1));
-        let len = end - start_raw + 1;
-        let mut file = match tokio::fs::File::open(&path).await {
-            Ok(f) => f,
-            Err(_) => return StatusCode::NOT_FOUND.into_response(),
-        };
-        if file.seek(std::io::SeekFrom::Start(start_raw)).await.is_err() {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        Some(Some((start_raw, end))) => {
+            let len = end - start_raw + 1;
+            let mut file = match tokio::fs::File::open(&path).await {
+                Ok(f) => f,
+                Err(_) => return StatusCode::NOT_FOUND.into_response(),
+            };
+            if file.seek(std::io::SeekFrom::Start(start_raw)).await.is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            let body = axum::body::Body::from_stream(stream_file(file, Some(len)));
+            return Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(axum::http::header::CONTENT_TYPE, mime)
+                .header(axum::http::header::CONTENT_LENGTH, len)
+                .header(axum::http::header::CONTENT_RANGE, format!("bytes {}-{}/{}", start_raw, end, total))
+                .header(axum::http::header::ACCEPT_RANGES, "bytes")
+                .body(body)
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
-        let body = axum::body::Body::from_stream(stream_file(file, Some(len)));
-        return Response::builder()
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header(axum::http::header::CONTENT_TYPE, mime)
-            .header(axum::http::header::CONTENT_LENGTH, len)
-            .header(axum::http::header::CONTENT_RANGE, format!("bytes {}-{}/{}", start_raw, end, total))
-            .header(axum::http::header::ACCEPT_RANGES, "bytes")
-            .body(body)
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        // 没有 Range 或无法解析（多区间、非 bytes 单位……）→ 200 全量
+        None => {}
     }
 
     let file = match tokio::fs::File::open(&path).await {
@@ -1052,13 +1330,17 @@ async fn run_pipeline_job(
     dry_run: bool,
     resume: bool,
 ) -> ApiResult {
-    let id = jobs.create(kind).await;
+    let id = match jobs.create(kind).await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
     jobs.mark_running(&id, "准备中").await;
     let jobs = jobs.clone();
     let run_stages = stages.clone();
     let job_id = id.clone();
+    let cancel = jobs.cancel_token(&id).await;
     tokio::spawn(async move {
-        let result = crate::server::api::core::run_stages(config_file, run_stages, dry_run, resume, job_id.clone(), jobs.clone()).await;
+        let result = crate::server::api::core::run_stages(config_file, run_stages, dry_run, resume, job_id.clone(), jobs.clone(), cancel).await;
         if let Err(e) = result {
             jobs.fail(&job_id, format!("{e:#}")).await;
             return;
@@ -1068,33 +1350,11 @@ async fn run_pipeline_job(
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn pipeline_run(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let stages = body.get("stages").and_then(|v| v.as_array()).map(|arr| {
-        arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
-    }).unwrap_or_else(|| vec!["extract".into(),"transcribe".into(),"detect".into(),"cut".into()]);
-    let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-    let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-    let ws = state.workspace().await;
-    run_pipeline_job(&state.jobs, ws.config_file.clone(), "pipeline", stages, dry, resume).await
-}
-
-async fn pipeline_stage(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let stage = body.get("stage").and_then(|v| v.as_str()).unwrap_or("");
-    let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-    let stages = match stage {
-        "extract" => vec!["extract"],
-        "transcribe" => vec!["transcribe"],
-        "detect" => vec!["detect"],
-        "cut" => vec!["cut"],
-        "process" => vec!["extract","transcribe","detect","cut"],
-        _ => return Err(err(StatusCode::BAD_REQUEST, "未知 stage")),
-    }.into_iter().map(|s| s.to_string()).collect();
-    let ws = state.workspace().await;
-    run_pipeline_job(&state.jobs, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
-}
-
 async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
-    let id = jobs.create("correct").await;
+    let id = match jobs.create("correct").await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
     jobs.mark_running(&id, "LLM 订正运行中").await;
     let jobs_handle = jobs.clone();
     let cfg_file = ws.config_file.clone();
@@ -1110,11 +1370,6 @@ async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>) -
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn correct_run(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = state.workspace().await;
-    correct_run_impl(&ws, &state.jobs).await
-}
-
 async fn jobs_list(State(state): State<Arc<AppState>>) -> ApiResult {
     let list = state.jobs.list().await;
     ok(serde_json::to_value(list).unwrap_or_default())
@@ -1127,13 +1382,50 @@ async fn job_get(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<Stri
     }
 }
 
+fn sse_event(ev: &JobEvent) -> Event {
+    Event::default()
+        .event("message")
+        .data(serde_json::to_string(ev).unwrap_or_else(|_| "{}".into()))
+}
+
+/// 终态事件：之后不会再有有意义的事件，单任务流可以主动关闭。
+fn is_terminal_event(ev: &JobEvent) -> bool {
+    matches!(
+        ev,
+        JobEvent::Completed | JobEvent::Failed { .. } | JobEvent::Cancelled
+    )
+}
+
+/// 把 broadcast 接收端映射成 SSE 事件流。
+///
+/// - `Lagged`：只是订阅者太慢丢了若干条，**绝不能**报成 `Failed`
+///   （旧实现把错误映射为 `failed: 事件流中断`，前端会把运行中的任务判为失败）；
+/// - 发送端全部退出时 broadcast 流自然结束（tokio-stream 0.1 只有 `Lagged` 一种错误），
+///   流随之正常收尾。
+fn job_event_stream(
+    rx: tokio::sync::broadcast::Receiver<JobEvent>,
+) -> impl Stream<Item = (bool, Event)> + Send + 'static {
+    BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(ev) => {
+                let terminal = is_terminal_event(&ev);
+                Some((terminal, sse_event(&ev)))
+            }
+            Err(BroadcastStreamRecvError::Lagged(n)) => Some((
+                false,
+                sse_event(&JobEvent::Log {
+                    level: "warn".into(),
+                    message: format!("事件流落后，已跳过 {n} 条事件"),
+                }),
+            )),
+        }
+    })
+}
+
 async fn global_stream(State(state): State<Arc<AppState>>) -> Response {
     let rx = state.jobs.subscribe_all().await;
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, axum::Error>> + Send>> =
-        Box::pin(BroadcastStream::new(rx).map(|item| {
-            let item = item.unwrap_or(JobEvent::Failed { error: "事件流中断".into() });
-            Ok(Event::default().event("message").data(serde_json::to_string(&item).unwrap_or_else(|_| "{}".into())))
-        }));
+        Box::pin(job_event_stream(rx).map(|(_, ev)| Ok(ev)));
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response()
 }
 
@@ -1141,24 +1433,25 @@ async fn job_events(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let Some(rx) = state.jobs.subscribe(&id).await else {
-        return (StatusCode::NOT_FOUND, "任务不存在").into_response();
+    let Some((history, rx)) = state.jobs.subscribe(&id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "ok": false, "error": "任务不存在" })),
+        )
+            .into_response();
     };
+    // 先回放历史：快任务可能在 EventSource 建立之前就结束，
+    // 只给实时流会让前端永远停在「运行中」。终态事件之后流即结束。
+    let replayed =
+        futures_util::stream::iter(history.into_iter().map(|ev| (is_terminal_event(&ev), sse_event(&ev))));
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, axum::Error>> + Send>> =
-        Box::pin(BroadcastStream::new(rx).map(|item| {
-            let item = item.unwrap_or(JobEvent::Failed { error: "事件流中断".into() });
-            Ok(Event::default().event("message").data(serde_json::to_string(&item).unwrap_or_else(|_| "{}".into())))
-        }));
+        Box::pin(
+            replayed
+                .chain(job_event_stream(rx))
+                .take_while(|(terminal, _)| std::future::ready(!*terminal))
+                .map(|(_, ev)| Ok(ev)),
+        );
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response()
-}
-
-async fn job_decision(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let decision = body.get("decision").and_then(|v| v.as_bool()).unwrap_or(false);
-    if state.jobs.resume(&id, decision).await {
-        ok(serde_json::json!({ "ok": true }))
-    } else {
-        Err(err(StatusCode::BAD_REQUEST, "任务不在等待状态或不存在"))
-    }
 }
 
 async fn job_cancel(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
@@ -1167,6 +1460,35 @@ async fn job_cancel(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<S
     } else {
         Err(err(StatusCode::BAD_REQUEST, "无法取消任务"))
     }
+}
+
+
+fn latest_numbered_file(dir: &std::path::Path, stem: &str, ext: &str) -> Option<String> {
+    let mut best: Option<(u32, String)> = None;
+    let mut consider = |n: u32, name: String| {
+        if best.as_ref().map(|(bn, _)| n > *bn).unwrap_or(true) {
+            best = Some((n, name));
+        }
+    };
+    let base = format!("{stem}.{ext}");
+    if dir.join(&base).exists() {
+        consider(0, base);
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let prefix = format!("{stem}_");
+        let suffix = format!(".{ext}");
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(&prefix) || !name.ends_with(&suffix) {
+                continue;
+            }
+            let mid = &name[prefix.len()..name.len()-suffix.len()];
+            if let Ok(n) = mid.parse::<u32>() {
+                consider(n, name);
+            }
+        }
+    }
+    best.map(|(_, name)| name)
 }
 
 // ===================== Polish =====================
@@ -1186,12 +1508,17 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
             let polish_ready = dir.join("polish.toml").exists();
             let processed = polish_ready && std::fs::read_to_string(dir.join("polish.toml")).ok()
                 .map(|raw| raw.contains("processed = true")).unwrap_or(false);
-            let rendered = dir.join("export.mp4").exists() || dir.join("vtuber-clip.mp4").exists();
-            let cover = dir.join("_cover_frame.jpg").exists() || dir.join("cover.jpg").exists();
+            let rendered_file = latest_numbered_file(&dir, "vtuber-clip", "mp4");
+            let rendered = rendered_file.is_some();
+            let cover_file = latest_numbered_file(&dir, "cover", "jpg");
+            let cover = cover_file.is_some();
             let mut version = "original";
+            let mut mute_range_count = 0usize;
             if polish_ready {
                 if let Ok(cfg) = vtrim_polish::project::load_project(&dir) {
-                    if cfg.source.video.to_lowercase().contains("cleaned") { version = "silent"; }
+                    // 消音版 = 静音区间已写入屏蔽轨道（video 始终是未改动的 clip.mp4）
+                    if !cfg.silence_ranges.is_empty() { version = "silent"; }
+                    mute_range_count = cfg.mute_ranges.len();
                 }
             }
             out.push(serde_json::json!({
@@ -1200,8 +1527,11 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
                 "polish_ready": polish_ready,
                 "processed": processed,
                 "rendered": rendered,
+                "rendered_file": rendered_file,
                 "cover": cover,
+                "cover_file": cover_file,
                 "version": version,
+                "mute_range_count": mute_range_count,
             }));
         }
     }
@@ -1209,20 +1539,20 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-async fn polish_projects(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    polish_projects_impl(&ws)
-}
-
 async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
-    let id = state.jobs.create(format!("polish_{}", kind)).await;
-    let dir_name = Path::new(&dir)
+    // dir 必须先校验：`dir: ""` 会让 cmd_init 在 server 进程的 CWD 里写出
+    // polish.toml / data / sfx，任意绝对路径也会被当作合法工程目录。
+    let path = validated_project_dir(&dir)?;
+    let id = match state.jobs.create(format!("polish_{}", kind)).await {
+        Ok(id) => id,
+        Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
+    };
+    let dir_name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir.clone());
     state.jobs.mark_running(&id, format!("polish {kind} · {dir_name}")).await;
     let jobs = state.jobs.clone();
-    let path = PathBuf::from(dir);
     let job_id = id.clone();
     let kind = kind.to_string();
     tokio::spawn(async move {
@@ -1258,7 +1588,30 @@ async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
                     }
                     Ok(())
                 }
-                "cover" => vtrim_polish::cover::cmd_cover(&path, None).await,
+                "cover" => {
+                    // 与 render 同理：封面生成也走外部 CLI 子进程，避免在 WebUI 服务进程内启动 headless Chrome 超时
+                    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("vtrim"));
+                    let dir_str = path.to_string_lossy().into_owned();
+                    let output = tokio::process::Command::new(&exe)
+                        .args(["polish", "cover", &dir_str])
+                        .output()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("封面进程启动失败: {e}"))?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let tail = if !stderr.trim().is_empty() {
+                            stderr.lines().rev().take(20).collect::<Vec<_>>().join("
+")
+                        } else {
+                            stdout.lines().rev().take(20).collect::<Vec<_>>().join("
+")
+                        };
+                        anyhow::bail!("封面进程退出码: {:?}
+{}", output.status.code(), tail);
+                    }
+                    Ok(())
+                }
                 _ => anyhow::bail!("未知 kind"),
             }
         }.await;
@@ -1288,13 +1641,20 @@ async fn polish_process(State(state): State<Arc<AppState>>, Json(body): Json<ser
 
 async fn polish_render(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let path = PathBuf::from(&dir);
+    let path = validated_project_dir(&dir)?;
     if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
     if let Some(output_file) = body.get("output_file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-        let mut cfg = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
-        cfg.project.output = output_file.to_string();
-        let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
-        std::fs::write(path.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+        // polish.toml 读改写：与设置页 / 封面保存串行化
+        let output_file = output_file.to_string();
+        let dir = path.clone();
+        vtrim_core::filelock::with_path_lock(&dir.join("polish.toml"), || -> Result<(), AppError> {
+            let mut cfg = vtrim_polish::project::load_project(&dir).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
+            cfg.project.output = output_file;
+            let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
+            std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+            Ok(())
+        })
+        .await?;
     }
     polish_spawn(&state, "render", dir).await
 }
@@ -1304,11 +1664,389 @@ async fn polish_cover(State(state): State<Arc<AppState>>, Json(body): Json<serde
     polish_spawn(&state, "cover", dir).await
 }
 
+
+fn cover_title_event_context(
+    cfg: &vtrim_polish::project::ProjectFile,
+    subtitles: &[vtrim_core::types::TranscriptSegment],
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let muted = |start: f64, end: f64| cfg.mute_ranges.iter().any(|r| r.overlaps(start, end));
+
+    if cfg.segments.is_empty() {
+        let _ = writeln!(out, "polish.toml 暂无分段，按整片 clip.srt 字幕：");
+        for s in subtitles.iter().filter(|s| !muted(s.start, s.end)) {
+            let _ = writeln!(out, "[{:.2}-{:.2}] {}", s.start, s.end, s.text);
+        }
+        return out;
+    }
+
+    for (i, seg) in cfg.segments.iter().enumerate() {
+        if muted(seg.start, seg.end) {
+            continue;
+        }
+        let _ = write!(out, "[事件/分段 {}] {:.2}s-{:.2}s", i + 1, seg.start, seg.end);
+        if !seg.note.trim().is_empty() {
+            let _ = write!(out, " 备注: {}", seg.note.trim());
+        }
+        if !seg.fx.trim().is_empty() {
+            let _ = write!(out, " 情绪: {}", seg.fx.trim());
+        }
+        let _ = writeln!(out, "");
+        if !seg.events.is_empty() {
+            let evs: Vec<String> = seg
+                .events
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap_or_else(|_| "{}".into()))
+                .collect();
+            let _ = writeln!(out, "  特效事件: {}", evs.join(" | "));
+        }
+        let _ = writeln!(out, "  有效字幕:");
+        let mut has = false;
+        for sub in subtitles
+            .iter()
+            .filter(|s| s.end >= seg.start - 0.05 && s.start <= seg.end + 0.05)
+            .filter(|s| !muted(s.start, s.end))
+        {
+            has = true;
+            let _ = writeln!(out, "    [{:.2}-{:.2}] {}", sub.start, sub.end, sub.text);
+        }
+        if !has {
+            let _ = writeln!(out, "    （无）");
+        }
+        if out.chars().count() > 8000 {
+            let _ = writeln!(out, "（上下文过长，已截断）");
+            break;
+        }
+    }
+    out
+}
+
+fn sanitize_cover_title_line(line: &str) -> String {
+    let mut s = line.trim().trim_matches(|c: char| {
+        matches!(c, '"' | '“' | '”' | '`' | '【' | '】' | '[' | ']')
+    });
+    s = s.trim();
+    s = s.trim_start_matches(|c: char| matches!(c, '▶' | '▸' | '•' | '·')).trim();
+    for prefix in ["- ", "* ", "• ", "· "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim();
+            break;
+        }
+    }
+    if let Some(pos) = s.find(|c: char| c == '.' || c == '、' || c == ')' || c == '）') {
+        let head = s[..pos].trim();
+        if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
+            let step = s[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+            s = s[pos + step..].trim();
+        }
+    }
+    s.trim().to_string()
+}
+
+fn looks_like_cover_title_context(line: &str) -> bool {
+    line.starts_with("[事件/分段")
+        || line.starts_with("事件/分段")
+        || line.starts_with("备注:")
+        || line.starts_with("情绪:")
+        || line.starts_with("特效事件:")
+        || line.starts_with("有效字幕")
+        || line.contains("title_lines")
+        || (line.starts_with('{') && line.ends_with('}'))
+        || (line.starts_with('[') && line.ends_with(']'))
+}
+
+fn push_cover_title_text(out: &mut Vec<String>, text: &str) {
+    for part in text.lines() {
+        let line = sanitize_cover_title_line(part);
+        if !line.is_empty() && !looks_like_cover_title_context(&line) {
+            out.push(line);
+        }
+    }
+}
+
+fn title_lines_from_json_value(value: &serde_json::Value) -> Option<Vec<String>> {
+    if let Some(arr) = value.get("title_lines").and_then(|x| x.as_array()) {
+        let mut out = Vec::new();
+        for item in arr {
+            if let Some(text) = item.as_str() {
+                push_cover_title_text(&mut out, text);
+            }
+        }
+        if !out.is_empty() {
+            return Some(out);
+        }
+    }
+    if let Some(text) = value.get("title_lines").and_then(|x| x.as_str()) {
+        let mut out = Vec::new();
+        push_cover_title_text(&mut out, text);
+        if !out.is_empty() {
+            return Some(out);
+        }
+    }
+    if let Some(arr) = value.as_array() {
+        let mut out = Vec::new();
+        for item in arr {
+            if let Some(text) = item.as_str() {
+                push_cover_title_text(&mut out, text);
+            } else if let Some(inner) = title_lines_from_json_value(item) {
+                return Some(inner);
+            }
+        }
+        if !out.is_empty() {
+            return Some(out);
+        }
+    }
+    if let Some(obj) = value.as_object() {
+        for child in obj.values() {
+            if let Some(inner) = title_lines_from_json_value(child) {
+                return Some(inner);
+            }
+        }
+    }
+    None
+}
+
+fn find_matching_json_end(text: &str, start: usize) -> Option<usize> {
+    let open = *text.as_bytes().get(start)?;
+    let close = if open == b'{' { b'}' } else { b']' };
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, b) in text.bytes().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == 92 {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn parse_cover_title_lines(content: &str) -> Vec<String> {
+    let text = content.trim();
+    let mut candidates: Vec<String> = vec![text.to_string()];
+    if let Some(pos) = text.find("```") {
+        let body = &text[pos + 3..];
+        let end = body.find("```").unwrap_or(body.len());
+        let fenced = body[..end].trim().trim_start_matches("json").trim();
+        if !fenced.is_empty() {
+            candidates.push(fenced.to_string());
+        }
+    }
+    for open in ['{', '['] {
+        if let Some(start) = text.find(open) {
+            if let Some(end) = find_matching_json_end(text, start) {
+                candidates.push(text[start..=end].to_string());
+            }
+        }
+    }
+    for cand in &candidates {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(cand) {
+            if let Some(lines) = title_lines_from_json_value(&v) {
+                if !lines.is_empty() {
+                    return lines;
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = sanitize_cover_title_line(line);
+        if !line.is_empty() && !looks_like_cover_title_context(&line) {
+            out.push(line);
+        }
+    }
+    out
+}
+
+fn is_emoji_char(c: char) -> bool {
+    let u = c as u32;
+    (0x1F300..=0x1FAFF).contains(&u)
+        || (0x1F000..=0x1F2FF).contains(&u)
+        || (0x2600..=0x27BF).contains(&u)
+        || (0x2190..=0x21FF).contains(&u)
+        || (0x2B00..=0x2BFF).contains(&u)
+}
+
+fn first_emoji(s: &str) -> Option<char> {
+    s.chars().find(|c| is_emoji_char(*c))
+}
+
+fn count_emoji_in_lines(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .map(|l| l.chars().filter(|c| is_emoji_char(*c)).count())
+        .sum()
+}
+
+fn title_char_count(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .flat_map(|l| l.chars())
+        .filter(|c| !c.is_whitespace())
+        .count()
+}
+
+fn trim_title_lines(lines: &mut Vec<String>, max_chars: usize) {
+    if title_char_count(lines) <= max_chars {
+        return;
+    }
+    let mut budget = max_chars;
+    let mut out: Vec<String> = Vec::new();
+    for line in lines.iter() {
+        if budget == 0 {
+            break;
+        }
+        let mut s = String::new();
+        for ch in line.chars() {
+            if ch.is_whitespace() {
+                s.push(ch);
+                continue;
+            }
+            if budget == 0 {
+                break;
+            }
+            s.push(ch);
+            budget -= 1;
+        }
+        let s = s.trim_end().to_string();
+        if !s.is_empty() {
+            out.push(s);
+        }
+    }
+    *lines = out;
+}
+
+fn keep_single_emoji(lines: &mut Vec<String>) {
+    let mut seen = false;
+    for line in lines.iter_mut() {
+        let mut out = String::new();
+        for ch in line.chars() {
+            if is_emoji_char(ch) {
+                if seen {
+                    continue;
+                }
+                seen = true;
+            }
+            out.push(ch);
+        }
+        *line = out;
+    }
+}
+
+async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
+    let path = validated_project_dir(dir)?;
+    if !path.join("polish.toml").exists() {
+        return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
+    }
+
+    // 只使用 clip.srt + polish.toml 作为输入；
+    // project.name 仅作为“参考标题”参与生成，不读取 data/subtitles.json / clip-meta.json / clip.json。
+    let cfg = vtrim_polish::project::load_project(&path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载 polish.toml 失败: {e}")))?;
+    let srt_path = path.join("clip.srt");
+    if !srt_path.exists() {
+        return Err(err(StatusCode::BAD_REQUEST, "clip.srt 不存在"));
+    }
+    let raw = std::fs::read_to_string(&srt_path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取 clip.srt 失败: {e}")))?;
+    let transcript = vtrim_core::srt::parse_srt(&raw)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("解析 clip.srt 失败: {e}")))?;
+    if transcript.segments.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "clip.srt 暂无字幕，无法生成标题"));
+    }
+    let context = cover_title_event_context(&cfg, &transcript.segments);
+    let global_cfg = vtrim_core::config::load_global_config();
+    let reference_titles = vtrim_core::config::resolve_reference_titles(&global_cfg.detection);
+    let reference_text = if !reference_titles.is_empty() {
+        reference_titles.join("\n")
+    } else {
+        let raw = cfg.project.name.trim();
+        let cleaned = raw.split('【').next().unwrap_or(raw).trim();
+        if !cleaned.is_empty() {
+            cleaned.to_string()
+        } else {
+            cfg.cover.title_lines.join(" / ")
+        }
+    };
+
+    let llm = vtrim_core::config::load_llm_config();
+    if llm.base_url.is_empty() || llm.api_key.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置"));
+    }
+    let client = vtrim_core::llm::LlmClient::from_config(&llm)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
+        .with_timeout(60)
+        .with_thinking(Some("disabled"));
+
+    let system = format!(r#"你是直播切片封面标题助手。为当前切片生成封面大字标题，必须沿用事件检测阶段的标题规则：
+{}
+封面补充要求：
+- 输出 1~3 行，适合封面大字排版；整组标题总字数严格 8~40 字，不要超长
+- 只输出封面标题本身，不要输出 ▶ / 事件 / 分段 / 备注 / 上下文原文
+- 必须且只能包含 1 个 emoji，放在句尾，不要放开头；参考标题有多个 emoji 也不要照搬
+- 不要引号、不要解释、不要 markdown
+- 参考标题只用于提取信息点，必须重新组织，不要照抄
+- 只能依据输入的 polish.toml 逐个事件/分段与其对应的 clip.srt 字幕，不要引用输入之外的信息
+- 输出 JSON：{{"title_lines": ["第一行", "第二行"]}}
+"#, vtrim_core::detection::TITLE_RULES);
+    let mut prompt_text = String::new();
+    if !reference_text.is_empty() {
+        prompt_text.push_str("参考标题示例（来自 config.toml，只参考句式、信息密度和 emoji，不要照抄）：\n");
+        prompt_text.push_str(&reference_text);
+        prompt_text.push_str("\n\n");
+    }
+    prompt_text.push_str("以下是 polish.toml 中的逐个事件/分段，以及 clip.srt 中对应字幕：\n");
+    prompt_text.push_str(&context);
+    prompt_text.push_str("\n请按上述事件标题规则生成封面标题。");
+    let content = client.chat(&system, &prompt_text).await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 生成失败: {e}")))?;
+
+    let mut lines = parse_cover_title_lines(&content);
+    // 封面最多 3 行 + 总字数 8~40，避免模型不守格式导致排版溢出
+    lines.truncate(3);
+    if lines.is_empty() {
+        return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "LLM 返回空标题"));
+    }
+    trim_title_lines(&mut lines, 40);
+    keep_single_emoji(&mut lines);
+    // 模型偶尔会漏 emoji：优先沿用参考标题里的 emoji，没有就补一个
+    if count_emoji_in_lines(&lines) == 0 {
+        trim_title_lines(&mut lines, 39);
+        if let Some(last) = lines.last_mut() {
+            let emoji = first_emoji(&reference_text).unwrap_or('✨');
+            last.push(' ');
+            last.push(emoji);
+        }
+    }
+    ok(serde_json::json!({ "ok": true, "title_lines": lines }))
+}
+
 async fn polish_cover_config(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let path = Path::new(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
-    let mut cfg = vtrim_polish::project::load_project(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
+    // 整个 read-modify-write 期间持锁：封面设计保存与时间轴保存会并发写同一份 polish.toml
+    let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
+    let mut cfg = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
     if let Some(fp) = body.get("frame_pos").and_then(|v| v.as_f64()) { cfg.cover.frame_pos = fp.clamp(0.0,1.0); }
     if let Some(lines) = body.get("title_lines").and_then(|v| v.as_array()) {
         let ls = lines.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>();
@@ -1330,6 +2068,29 @@ async fn polish_cover_config(State(_state): State<Arc<AppState>>, Json(body): Js
         if let Some(v) = cover.get("vignette").and_then(|v| v.as_f64()) { cfg.cover.vignette = v; }
         if let Some(v) = cover.get("letter_spacing").and_then(|v| v.as_str()) { cfg.cover.letter_spacing = v.to_string(); }
         if let Some(v) = cover.get("line_height").and_then(|v| v.as_f64()) { cfg.cover.line_height = v; }
+        if let Some(v) = cover.get("text_align").and_then(|v| v.as_str()) { cfg.cover.text_align = v.to_string(); }
+        if let Some(v) = cover.get("shadow_dir").and_then(|v| v.as_str()) { cfg.cover.shadow_dir = v.to_string(); }
+        if let Some(v) = cover.get("shadow_intensity").and_then(|v| v.as_f64()) { cfg.cover.shadow_intensity = v.clamp(0.0, 1.0); }
+        if let Some(v) = cover.get("text_shadow").and_then(|v| v.as_bool()) { cfg.cover.text_shadow = v; }
+        if let Some(arr) = cover.get("highlight_keywords").and_then(|v| v.as_array()) {
+            cfg.cover.highlight_keywords = arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        if let Some(v) = cover.get("bg_x").and_then(|v| v.as_f64()) { cfg.cover.bg_x = v; }
+        if let Some(v) = cover.get("bg_y").and_then(|v| v.as_f64()) { cfg.cover.bg_y = v; }
+        if let Some(v) = cover.get("bg_zoom").and_then(|v| v.as_f64()) { cfg.cover.bg_zoom = v.clamp(0.5, 3.0); }
+        if let Some(v) = cover.get("effects").and_then(|v| v.as_array()) {
+            cfg.cover.effects = v.iter().filter_map(|e| {
+                let kind = e.get("kind").and_then(|x| x.as_str())?.to_string();
+                let amount = e.get("amount").and_then(|x| x.as_f64()).unwrap_or(0.3);
+                let x = e.get("x").and_then(|x| x.as_f64()).unwrap_or(50.0);
+                let y = e.get("y").and_then(|x| x.as_f64()).unwrap_or(50.0);
+                let color = e.get("color").and_then(|x| x.as_str()).unwrap_or("#000000").to_string();
+                Some(vtrim_polish::project::CoverEffect { kind, amount, x, y, color })
+            }).collect();
+        }
         if let Some(lines) = cover.get("title_lines").and_then(|v| v.as_array()) {
             cfg.cover.title_lines = lines.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
         }
@@ -1340,45 +2101,104 @@ async fn polish_cover_config(State(_state): State<Arc<AppState>>, Json(body): Js
     ok(serde_json::json!({ "ok": true }))
 }
 
-async fn polish_select_version(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+/// 「去静音」快捷操作：把检测到的长静音段写进 / 移出 `mute_ranges`（时间轴「屏蔽」轨道）。
+///
+/// 不重编码、不改动视频文件；`action` 为 `apply`（默认）或 `clear`。
+async fn polish_silence(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let version = body.get("version").and_then(|v| v.as_str()).unwrap_or("original");
-    let path = Path::new(dir);
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("apply");
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
-    let mut cfg = vtrim_polish::project::load_project(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
-    if version == "silent" {
-        let cleaned = std::fs::read_dir(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
-        let cleaned_video = cleaned.flatten().find(|f| f.path().is_file() && f.file_name().to_string_lossy().to_lowercase().contains("cleaned") && f.file_name().to_string_lossy().to_lowercase().ends_with(".mp4"))
-            .map(|f| f.file_name().to_string_lossy().into_owned());
-        let cleaned_srt = std::fs::read_dir(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
-        let cleaned_sub = cleaned_srt.flatten().find(|f| f.path().is_file() && f.file_name().to_string_lossy().to_lowercase().contains("cleaned") && f.file_name().to_string_lossy().to_lowercase().ends_with(".srt"))
-            .map(|f| f.file_name().to_string_lossy().into_owned());
-        if let Some(v) = cleaned_video { cfg.source.video = v; }
-        if let Some(s) = cleaned_sub { cfg.source.subtitles = s; }
-    } else {
-        cfg.source.video = "clip.mp4".into();
-        cfg.source.subtitles = "clip.srt".into();
-        cfg.source.danmaku = if path.join("clip.dm.srt").exists() { "clip.dm.srt".into() } else { String::new() };
-    }
-    let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
-    std::fs::write(path.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
-    ok(serde_json::json!({ "ok": true, "version": version }))
+    let lock_path = path.join("polish.toml");
+    vtrim_core::filelock::with_path_lock(&lock_path, || match action {
+        "clear" => {
+            let removed = vtrim_polish::project::clear_silence(&path)
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("移除静音屏蔽失败: {e:#}")))?;
+            ok(serde_json::json!({ "ok": true, "applied": false, "removed": removed, "total": vtrim_polish::project::mute_range_count(&path) }))
+        }
+        "apply" => {
+            let applied = vtrim_polish::project::apply_silence(&path)
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入屏蔽轨道失败: {e:#}")))?;
+            ok(serde_json::json!({
+                "ok": true,
+                "applied": !applied.ranges.is_empty(),
+                "added": applied.added,
+                "total": applied.total,
+                "ranges": applied.ranges.iter().map(|(s, e)| serde_json::json!({ "start": s, "end": e })).collect::<Vec<_>>(),
+                "message": if applied.ranges.is_empty() { "未检测到长静音段" } else { "" },
+            }))
+        }
+        _ => Err(err(StatusCode::BAD_REQUEST, "action 必须是 apply 或 clear")),
+    })
+    .await
 }
 
-async fn polish_preview(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+/// 兼容旧接口：version=silent/original 等价于「去静音」的 apply/clear。
+async fn polish_select_version(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let version = body.get("version").and_then(|v| v.as_str()).unwrap_or("original");
+    let action = if version == "silent" { "apply" } else { "clear" };
+    let mut forwarded = body.clone();
+    forwarded["action"] = serde_json::json!(action);
+    polish_silence(State(state), Json(forwarded)).await
+}
+
+/// 取（或启动）该工程目录的预览服务端口，按 `dir|kind` 复用。
+///
+/// `RenderServer` 起的监听无法关闭：旧实现每次 `/polish/preview`、
+/// `/polish/cover-preview` 都新起一个，端口与后台任务会无限泄漏。
+/// 服务端在每次请求时按磁盘配置重建 HTML，所以复用不会端出过期内容。
+async fn preview_port_for(state: &AppState, dir: &Path, kind: &str) -> anyhow::Result<u16> {
+    let key = format!("{}|{kind}", dir.display());
+    let cached = |key: &str| -> Option<u16> {
+        state
+            .preview_servers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .copied()
+    };
+    if let Some(port) = cached(&key) {
+        return Ok(port);
+    }
+    // 同目录串行：并发首访不要同时起两个监听
+    let _guard = vtrim_core::filelock::lock_path(&dir.join(format!(".vtrim-preview-{kind}"))).await;
+    if let Some(port) = cached(&key) {
+        return Ok(port);
+    }
+    let mut server = vtrim_polish::render::server::RenderServer::new(dir.to_path_buf());
+    let port = if kind == "cover" {
+        server.start_cover().await?
+    } else {
+        server.start().await?
+    };
+    state
+        .preview_servers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, port);
+    Ok(port)
+}
+
+async fn polish_preview(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     // 启动预览服务（不阻塞，返回 URL 供前端 iframe）
     let config = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
     if !config.processed {
-        let _ = vtrim_polish::process::cmd_process(&path).await;
+        // 有任务在跑时不要并发跑隐式 process（会与任务同时写 polish.toml / 资产目录）
+        if state.jobs.has_active().await {
+            tracing::info!("有任务在运行，跳过预览前的隐式 process: {}", path.display());
+        } else {
+            let _ = vtrim_polish::process::cmd_process(&path).await;
+        }
     }
     vtrim_polish::process::ensure_assets(&path).await;
-    let mut server = vtrim_polish::render::server::RenderServer::new(path.clone());
-    let port = server.start().await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("预览启动失败: {e}")))?;
+    let port = preview_port_for(&state, &path, "video")
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("预览启动失败: {e:#}")))?;
     let video_url = format!("http://127.0.0.1:{}/", port);
     // 前端需要通过 API 代理访问本机 127.0.0.1 随机端口；这里直接返回绝对 URL（浏览器同源可访问）
     ok(serde_json::json!({ "ok": true, "video_url": video_url, "cover_url": video_url }))
@@ -1386,14 +2206,19 @@ async fn polish_preview(State(_state): State<Arc<AppState>>, Json(body): Json<se
 
 async fn polish_cover_background(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     if let Some(data) = body.get("image_data").and_then(|v| v.as_str()) {
+        // 与其它 polish.toml 写入串行化
+        let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD.decode(data)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("图片解码失败: {e}")))?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err(err(StatusCode::BAD_REQUEST, "背景图过大（上限 32MB）"));
+        }
         std::fs::write(path.join("_cover_frame.jpg"), bytes)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
         // 自定义背景后，把 cover.image 留空（使用 _cover_frame.jpg 截帧/上传帧）
@@ -1405,6 +2230,8 @@ async fn polish_cover_background(State(_state): State<Arc<AppState>>, Json(body)
         return ok(serde_json::json!({ "ok": true }));
     }
     if let Some(src) = body.get("source").and_then(|v| v.as_str()) {
+        // 与其它 polish.toml 写入串行化
+        let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
         let sp = PathBuf::from(src);
         if !sp.exists() { return Err(err(StatusCode::BAD_REQUEST, "背景文件不存在")); }
         std::fs::copy(&sp, path.join("_cover_frame.jpg"))
@@ -1421,10 +2248,12 @@ async fn polish_cover_background(State(_state): State<Arc<AppState>>, Json(body)
 
 async fn polish_cover_frame(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
+    // 与其它 polish.toml 写入串行化（本函数最后会写回 cover.image）
+    let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
     let config = vtrim_polish::project::load_project(&path)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
     let resolved = vtrim_polish::render::resolve_paths(&path, &config);
@@ -1452,9 +2281,9 @@ async fn polish_cover_frame(State(_state): State<Arc<AppState>>, Json(body): Jso
     ok(serde_json::json!({ "ok": true, "time": time }))
 }
 
-async fn polish_cover_preview(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_cover_preview(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
@@ -1479,16 +2308,17 @@ async fn polish_cover_preview(State(_state): State<Arc<AppState>>, Json(body): J
     if !cover_image.exists() {
         return Err(err(StatusCode::BAD_REQUEST, "无法截取封面帧"));
     }
-    let html = vtrim_polish::cover::build_cover_html(&path, &config, &resolved);
-    let port = vtrim_polish::render::server::start_file_server(path.clone(), Some(html)).await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("封面预览启动失败: {e}")))?;
+    // 封面服务按 dir|cover 复用；HTML 每次请求按当前 polish.toml 重建，改完设计刷新即可
+    let port = preview_port_for(&state, &path, "cover")
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("封面预览启动失败: {e:#}")))?;
     let url = format!("http://127.0.0.1:{}/", port);
     ok(serde_json::json!({ "ok": true, "cover_url": url }))
 }
 
 async fn polish_subtitles_get(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String,String>>) -> ApiResult {
     let dir = q.get("dir").ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
@@ -1516,7 +2346,7 @@ async fn polish_subtitles_get(State(_state): State<Arc<AppState>>, Query(q): Que
 
 async fn polish_subtitles_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
@@ -1587,7 +2417,7 @@ fn loudness_curve_cached(project_dir: &Path, video_path: &Path) -> serde_json::V
 
 async fn polish_project_get(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String,String>>) -> ApiResult {
     let dir = q.get("dir").ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let path = PathBuf::from(dir);
+    let path = validated_project_dir(dir)?;
     let cfg = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
     let mut value = serde_json::to_value(&cfg).unwrap_or_default();
     // preview=1: 附加预览渲染所需的计算字段（sticker_map / 竖屏检测 / 响度曲线）
@@ -1732,12 +2562,63 @@ async fn polish_render_frame(
         .into_response()
 }
 
+
+/// 字体文件端点（wasm 预览 fetch 字体字节用）：项目字体候选 -> 内置资源。
+async fn polish_font(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
+    let name = q.get("name").cloned().unwrap_or_default();
+    let dir = q.get("dir").map(std::path::PathBuf::from).unwrap_or_default();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if !name.trim().is_empty() {
+        // 只取文件名部分：name 来自查询参数，`..\..\x` 这类路径不能让字体接口越界读文件
+        let base = Path::new(name.trim())
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        if !base.as_os_str().is_empty() {
+            for d in [
+                dir.join("assets").join("fonts"),
+                dir.join("fonts"),
+                dir.clone(),
+            ] {
+                candidates.push(d.join(&base).with_extension("ttf"));
+                candidates.push(d.join(&base).with_extension("otf"));
+            }
+            candidates.push(Path::new("C:/Windows/Fonts").join(&base).with_extension("ttf"));
+        }
+    }
+    candidates.push(std::path::Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
+    candidates.push(Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
+    for c in &candidates {
+        if c.exists() {
+            match std::fs::read(c) {
+                Ok(bytes) => {
+                    return ([(axum::http::header::CONTENT_TYPE, "font/ttf")], bytes).into_response();
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
 async fn polish_project_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
-    let mut cfg = vtrim_polish::project::load_project(Path::new(dir)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
+    let path = validated_project_dir(dir)?;
+    // polish.toml 的 read-modify-write：时间轴保存 / 屏蔽区间 / 贴纸配置可能同时提交，
+    // 无锁时后写者会覆盖先写者（前端确实会并发发多个 PUT）。
+    vtrim_core::filelock::with_path_lock(&path.join("polish.toml"), || polish_project_put_locked(&path, &body)).await
+}
+
+/// 同步实现（调用方保证持有 polish.toml 的进程内锁）。
+fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) -> ApiResult {
+    let mut cfg = vtrim_polish::project::load_project(dir).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
     if let Some(segments) = body.get("segments") {
         let segs = serde_json::from_value(segments.clone()).map_err(|e| err(StatusCode::BAD_REQUEST, format!("segments 解析失败: {e}")))?;
         cfg.segments = segs;
+    }
+    if let Some(ranges) = body.get("mute_ranges") {
+        let rs = serde_json::from_value(ranges.clone()).map_err(|e| err(StatusCode::BAD_REQUEST, format!("mute_ranges 解析失败: {e}")))?;
+        cfg.mute_ranges = rs;
     }
     if let Some(layout) = body.get("layout") {
         let lay: vtrim_polish::project::Layout = serde_json::from_value(layout.clone()).map_err(|e| err(StatusCode::BAD_REQUEST, format!("layout 解析失败: {e}")))?;
@@ -1748,7 +2629,7 @@ async fn polish_project_put(State(_state): State<Arc<AppState>>, Json(body): Jso
         cfg.sticker_source = list;
     }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
-    std::fs::write(Path::new(dir).join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
 }
 
@@ -1796,9 +2677,10 @@ pub(crate) mod core {
         resume: bool,
         job_id: String,
         jobs: Arc<JobManager>,
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> anyhow::Result<()> {
         let progress: Arc<dyn vtrim_core::progress::ProgressReporter> =
-            Arc::new(WebProgress::new(job_id, jobs));
+            Arc::new(WebProgress::new(job_id, jobs, cancel));
         crate::service::run_stages(
             &config_file,
             &stages,
@@ -1811,14 +2693,28 @@ pub(crate) mod core {
     struct WebProgress {
         id: String,
         jobs: Arc<JobManager>,
+        /// 任务的取消令牌：管线在阶段边界轮询它。
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
 
     impl WebProgress {
-        fn new(id: String, jobs: Arc<JobManager>) -> Self { Self { id, jobs } }
+        fn new(
+            id: String,
+            jobs: Arc<JobManager>,
+            cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+        ) -> Self {
+            Self { id, jobs, cancel }
+        }
     }
 
     #[allow(clippy::let_underscore_future)]
     impl vtrim_core::progress::ProgressReporter for WebProgress {
+        fn cancelled(&self) -> bool {
+            self.cancel
+                .as_ref()
+                .map(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+                .unwrap_or(false)
+        }
         fn stage_started(&self, name: &str) {
             let jobs = self.jobs.clone();
             let id = self.id.clone();
@@ -1868,5 +2764,137 @@ pub(crate) mod core {
             "Cutter" => 4,
             _ => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use tower::util::ServiceExt;
+
+    #[test]
+    fn parse_byte_range_handles_edge_cases() {
+        assert_eq!(parse_byte_range(Some("bytes=0-99"), 1000), Some(Some((0, 99))));
+        assert_eq!(parse_byte_range(Some("bytes=500-"), 1000), Some(Some((500, 999))));
+        assert_eq!(parse_byte_range(Some("bytes=-100"), 1000), Some(Some((900, 999))));
+        // 尾部区间收敛到 total-1
+        assert_eq!(parse_byte_range(Some("bytes=990-5000"), 1000), Some(Some((990, 999))));
+        // 不可满足 → 416（旧实现的 `end - start` 会整数下溢）
+        assert_eq!(parse_byte_range(Some("bytes=900-100"), 1000), Some(None));
+        assert_eq!(parse_byte_range(Some("bytes=2000-"), 1000), Some(None));
+        assert_eq!(parse_byte_range(Some("bytes=-0"), 1000), Some(None));
+        // 无法解析 → 调用方按 200 全量返回
+        assert_eq!(parse_byte_range(Some("bytes=abc"), 1000), None);
+        assert_eq!(parse_byte_range(Some("items=0-1"), 1000), None);
+        assert_eq!(parse_byte_range(Some("bytes=0-1,5-6"), 1000), None);
+        assert_eq!(parse_byte_range(None, 1000), None);
+    }
+
+    #[test]
+    fn sec_to_ts_never_produces_invalid_ms() {
+        // 手写 floor/round 版本会给出 ms = 1000
+        let v = sec_to_ts_value(59.9999);
+        assert_eq!(v["m"].as_u64(), Some(1));
+        assert_eq!(v["s"].as_u64(), Some(0));
+        assert_eq!(v["ms"].as_u64(), Some(0));
+
+        let v = sec_to_ts_value(12.5);
+        assert_eq!(v["s"].as_u64(), Some(12));
+        assert_eq!(v["ms"].as_u64(), Some(500));
+        assert!(sec_to_ts_value(-3.0)["h"].as_u64() == Some(0));
+    }
+
+    #[test]
+    fn project_dir_validation_rejects_empty_and_missing() {
+        assert!(validated_project_dir("").is_err());
+        assert!(validated_project_dir("   ").is_err());
+        let missing = std::env::temp_dir().join("vtrim-dir-does-not-exist-xyz");
+        assert!(validated_project_dir(&missing).is_err());
+        assert!(validated_project_dir(std::env::temp_dir()).is_ok());
+        assert!(validated_project_dir(std::env::temp_dir().to_string_lossy().to_string()).is_ok());
+    }
+
+    fn test_state() -> Arc<AppState> {
+        let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
+        Arc::new(AppState::with_root(ws, std::env::temp_dir()).expect("state"))
+    }
+
+    /// 未注册的 /api/* 必须返回 JSON 404：外层 fallback 是 SPA HTML，
+    /// 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
+    #[tokio::test]
+    async fn unknown_api_path_returns_json_404() {
+        let app = router(test_state());
+        let res = app
+            .oneshot(HttpRequest::builder().uri("/__nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("application/json"), "content-type = {ct}");
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("未知接口"), "body = {text}");
+    }
+
+    /// 前端实际调用的核心路由必须可达（避免再次出现"handler 写了但没注册"）。
+    #[tokio::test]
+    async fn core_routes_are_reachable() {
+        let app = router(test_state());
+        for (method, uri) in [("GET", "/health"), ("GET", "/jobs"), ("GET", "/config"), ("GET", "/models")] {
+            let req = HttpRequest::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{method} {uri} 应为 200");
+        }
+    }
+
+    /// `awaiting_input` 链路（含 `/jobs/:id/decision`）已整体移除：
+    /// 该端点现在必须走 JSON 404 兜底，而不是把任务状态改成 running 再返回 200。
+    ///
+    /// 注：`/models/download` 已去掉 `Json` 提取器（空 body 不再 400），
+    /// 但这里不直接调它——它会真的启动 ~1.5GB 模型下载。
+    #[tokio::test]
+    async fn removed_decision_endpoint_falls_back_to_json_404() {
+        let app = router(test_state());
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/jobs/does-not-exist/decision")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("未知接口"));
+    }
+
+    #[tokio::test]
+    async fn project_config_put_rejects_empty_raw() {
+        let app = router(test_state());
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/project-data/config?config=vtrim.toml")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"raw":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "空内容必须被拒绝");
     }
 }

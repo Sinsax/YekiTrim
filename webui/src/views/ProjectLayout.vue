@@ -22,7 +22,7 @@ import { useRoute } from 'vue-router'
 import { api } from '../api/client'
 
 const route = useRoute()
-const cfg = computed(() => decodeURIComponent(route.params.cfg || ''))
+const cfg = computed(() => route.params.cfg || '')
 const cfgEnc = computed(() => encodeURIComponent(cfg.value))
 const isPolishRoute = computed(() => route.path.includes('/polish') || /\/slices\/[^/]+$/.test(route.path))
 const name = ref('工程')

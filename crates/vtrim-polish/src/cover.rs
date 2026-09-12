@@ -6,6 +6,95 @@ use crate::render::{ResolvedPaths, resolve_paths};
 
 
 const COVER_HTML: &str = include_str!("../templates/cover.html");
+fn cover_text_align(cc: &crate::project::CoverConfig) -> (&'static str, &'static str) {
+    match cc.text_align.as_str() {
+        "left" => ("left", "flex-start"),
+        "right" => ("right", "flex-end"),
+        _ => ("center", "center"),
+    }
+}
+
+fn cover_shadow_css(cc: &crate::project::CoverConfig) -> String {
+    // 新语义：文字阴影只控制开关；方向感由背景渐变滤镜（gradient_dir）承担。
+    // shadow_dir / shadow_intensity 仅用于兼容旧配置：旧配置关闭阴影时也能正确关闭。
+    let legacy_off = cc.shadow_dir == "none" || cc.shadow_intensity <= 0.0;
+    if cc.text_shadow && !legacy_off {
+        "0 5px 22px rgba(0,0,0,0.78)".to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+fn cover_highlight_words(config: &crate::project::ProjectFile) -> Vec<String> {
+    // 优先使用封面自己的高亮关键词；未设置时兼容旧的 filter.highlight。
+    let mut out: Vec<String> = config
+        .cover
+        .highlight_keywords
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if out.is_empty() {
+        out = config
+            .filter
+            .highlight
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    out
+}
+
+fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
+    let h = hex.trim().trim_start_matches('#');
+    if h.len() >= 6 {
+        let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(0);
+        let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(0);
+        (r, g, b)
+    } else {
+        (0, 0, 0)
+    }
+}
+
+fn cover_fx_html(cc: &crate::project::CoverConfig) -> String {
+    let mut out = String::new();
+    for fx in &cc.effects {
+        let x = fx.x.clamp(0.0, 100.0);
+        let y = fx.y.clamp(0.0, 100.0);
+        let a = fx.amount.clamp(0.0, 1.0);
+        let style = match fx.kind.as_str() {
+            "glow" => format!(
+                "position:absolute;inset:0;background:radial-gradient(circle at {x:.1}% {y:.1}%, rgba(255,220,180,{:.2}) 0%, transparent 60%);",
+                a.min(0.9)
+            ),
+            "vignette" => format!(
+                "position:absolute;inset:0;background:radial-gradient(circle at {x:.1}% {y:.1}%, transparent 40%, rgba(0,0,0,{:.2}) 100%);",
+                a
+            ),
+            "blur" => format!(
+                "position:absolute;inset:0;backdrop-filter:blur({}px);-webkit-mask-image:radial-gradient(circle at {x:.1}% {y:.1}%, black 0%, transparent 60%);mask-image:radial-gradient(circle at {x:.1}% {y:.1}%, black 0%, transparent 60%);",
+                (1.0 + a * 14.0) as u32
+            ),
+            "overlay" => {
+                let (r, g, b) = hex_to_rgb(&fx.color);
+                format!(
+                    "position:absolute;inset:0;background:rgba({r},{g},{b},{:.3});mix-blend-mode:overlay;",
+                    a
+                )
+            },
+            "scanline" => format!(
+                "position:absolute;inset:0;background:repeating-linear-gradient(0deg, rgba(255,255,255,{:.3}) 0 1px, transparent 1px 4px);",
+                (a * 0.45).min(0.5)
+            ),
+            _ => continue,
+        };
+        out.push_str(&format!("<div style=\"{style}\"></div>"));
+    }
+    out
+}
+
 
 // ============================================================
 
@@ -17,23 +106,35 @@ pub async fn cmd_cover_template(project_path: &Path, template: &str) -> anyhow::
             config.cover.text_width = 0.8;
             config.cover.gradient_dir = "radial".into();
             config.cover.vignette = 0.05;
+            config.cover.text_align = "center".into();
+            config.cover.shadow_dir = "center".into();
+            config.cover.text_shadow = true;
         }
         "right-text" => {
             config.cover.text_x = "65%".into();
             config.cover.text_width = 0.62;
             config.cover.gradient_dir = "right".into();
+            config.cover.text_align = "right".into();
+            config.cover.shadow_dir = "right".into();
+            config.cover.text_shadow = true;
         }
         "minimal" => {
             config.cover.text_x = "50%".into();
             config.cover.text_width = 0.7;
             config.cover.gradient_dir = "none".into();
             config.cover.vignette = 0.15;
+            config.cover.text_align = "center".into();
+            config.cover.shadow_dir = "none".into();
+            config.cover.text_shadow = false;
         }
         _ => { // left-text / 未知: 恢复默认
             config.cover.text_x = "35%".into();
             config.cover.text_width = 0.62;
             config.cover.gradient_dir = "left".into();
             config.cover.vignette = 0.08;
+            config.cover.text_align = "left".into();
+            config.cover.shadow_dir = "left".into();
+            config.cover.text_shadow = true;
         }
     }
     let toml_str = config.to_toml_commented()?;
@@ -77,7 +178,9 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
         .filter_map(|s| s.trim_end_matches('%').parse().ok()).collect();
     let lx = lp.first().copied().unwrap_or(65.0);
     let ly = lp.get(1).copied().unwrap_or(50.0);
-    let zoom = if lx >= 50.0 { 1.4 } else { 1.3 };
+    let base_zoom = if lx >= 50.0 { 1.4 } else { 1.3 };
+    let zoom = base_zoom * cc.bg_zoom.max(0.1);
+    let bg_transform = format!("translate({}px, {}px) scale({zoom})", cc.bg_x, cc.bg_y);
 
     // 渐变
     let hl_color = &config.style.subtitle.highlight_color;
@@ -105,7 +208,7 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
     // 标题
     let raw = &config.project.name;
     let clean = raw.split('【').next().unwrap_or(raw);
-    let hl_words: Vec<&str> = config.filter.highlight.iter().map(|s| s.as_str()).collect();
+    let hl_words = cover_highlight_words(config);
     let title_lines: Vec<String> = if !cc.title_lines.is_empty() {
         cc.title_lines.clone()
     } else {
@@ -115,15 +218,18 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
     let title_html = title_lines.iter().map(|line| {
         if hl_words.is_empty() { return line.to_string(); }
         let mut r = line.to_string();
-        for w in &hl_words { if !w.is_empty() && r.contains(w) { r = r.replace(w, &format!("<span class=\"hl\">{}</span>", w)); } }
+        for w in &hl_words { if !w.is_empty() && r.contains(w.as_str()) { r = r.replace(w.as_str(), &format!("<span class=\"hl\">{}</span>", w)); } }
         r
     }).collect::<Vec<_>>().join("<br>");
 
+    let (text_align, align_items) = cover_text_align(&cc);
+    let text_shadow = cover_shadow_css(&cc);
+    let fx_html = cover_fx_html(&cc);
     COVER_HTML
         .replace("__TITLE__", &title_html)
         .replace("__LIVER_X__", &format!("{}%", lx))
         .replace("__LIVER_Y__", &format!("{}%", ly))
-        .replace("__ZOOM__", &zoom.to_string())
+        .replace("__BG_TRANSFORM__", &bg_transform)
         .replace("__GRAD_BG__", &grad_bg)
         .replace("__VIGNETTE_OP__", &cc.vignette.to_string())
         .replace("__FONT_SIZE__", &format!("{}px", cc.font_size))
@@ -134,6 +240,10 @@ pub fn build_cover_html(_project_path: &Path, config: &project::ProjectFile, _re
         .replace("__TEXT_Y__", &cc.text_y)
         .replace("__LS__", &cc.letter_spacing)
         .replace("__LH__", &cc.line_height.to_string())
+        .replace("__TEXT_ALIGN__", text_align)
+        .replace("__TEXT_ALIGN_ITEMS__", align_items)
+        .replace("__SHADOW__", &text_shadow)
+        .replace("__FX_HTML__", &fx_html)
 }
 
 
@@ -154,16 +264,20 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     // 背景图: 自定义 image 或 ffmpeg 截帧
     let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
     if cc.image.is_empty() {
-        let video_path = existing_video.unwrap_or(&resolved.video);
-        let frame_time = (duration * cc.frame_pos).max(0.1);
-        let frame_data = std::process::Command::new("ffmpeg")
-            .args(["-ss", &frame_time.to_string(), "-i", video_path,
-                   "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()?.stdout;
-        if frame_data.is_empty() { anyhow::bail!("Frame extraction failed"); }
-        std::fs::write(project_path.join("_cover_frame.jpg"), &frame_data)?;
+        // 优先使用已导出的关键帧（cover-frame 手动导出/导入背景生成），不要每次重新截帧覆盖
+        let manual_frame = project_path.join("_cover_frame.jpg");
+        if !manual_frame.exists() {
+            let video_path = existing_video.unwrap_or(&resolved.video);
+            let frame_time = (duration * cc.frame_pos).max(0.1);
+            let frame_data = std::process::Command::new("ffmpeg")
+                .args(["-ss", &frame_time.to_string(), "-i", video_path,
+                       "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output()?.stdout;
+            if frame_data.is_empty() { anyhow::bail!("Frame extraction failed"); }
+            std::fs::write(&manual_frame, &frame_data)?;
+        }
     } else {
         let img_path = project_path.join(&cc.image);
         if !img_path.exists() { anyhow::bail!("Cover image not found: {}", img_path.display()); }
@@ -178,7 +292,9 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     let lx = lp.first().copied().unwrap_or(65.0);
     let ly = lp.get(1).copied().unwrap_or(50.0);
     // zoom: 让右侧 liver 区域放大
-    let zoom = if lx >= 50.0 { 1.4 } else { 1.3 };
+    let base_zoom = if lx >= 50.0 { 1.4 } else { 1.3 };
+    let zoom = base_zoom * cc.bg_zoom.max(0.1);
+    let bg_transform = format!("translate({}px, {}px) scale({zoom})", cc.bg_x, cc.bg_y);
 
     // 渐变颜色: 基于字幕高亮色
     let hl_color = &config.style.subtitle.highlight_color;
@@ -212,7 +328,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     // 标题: 先读 title_lines, 空则自动分行 + 写回 config
     let raw = &config.project.name;
     let clean = raw.split('【').next().unwrap_or(raw);
-    let hl_words: Vec<&str> = config.filter.highlight.iter().map(|s| s.as_str()).collect();
+    let hl_words = cover_highlight_words(&config);
 
     let title_lines: Vec<String> = if !cc.title_lines.is_empty() {
         cc.title_lines.clone()
@@ -238,18 +354,21 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         if hl_words.is_empty() { return line.to_string(); }
         let mut result = line.to_string();
         for w in &hl_words {
-            if !w.is_empty() && result.contains(w) {
-                result = result.replace(w, &format!("<span class=\"hl\">{}</span>", w));
+            if !w.is_empty() && result.contains(w.as_str()) {
+                result = result.replace(w.as_str(), &format!("<span class=\"hl\">{}</span>", w));
             }
         }
         result
     }).collect::<Vec<_>>().join("<br>");
 
+    let (text_align, align_items) = cover_text_align(&cc);
+    let text_shadow = cover_shadow_css(&cc);
+    let fx_html = cover_fx_html(&cc);
     let cover_html = COVER_HTML
         .replace("__TITLE__", &title_html)
         .replace("__LIVER_X__", &format!("{}%", lx))
         .replace("__LIVER_Y__", &format!("{}%", ly))
-        .replace("__ZOOM__", &zoom.to_string())
+        .replace("__BG_TRANSFORM__", &bg_transform)
         .replace("__GRAD_BG__", &grad_bg)
         .replace("__VIGNETTE_OP__", &cc.vignette.to_string())
         .replace("__FONT_SIZE__", &format!("{}px", cc.font_size))
@@ -259,7 +378,11 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         .replace("__TEXT_X__", &cc.text_x)
         .replace("__TEXT_Y__", &cc.text_y)
         .replace("__LS__", &cc.letter_spacing)
-        .replace("__LH__", &cc.line_height.to_string());
+        .replace("__LH__", &cc.line_height.to_string())
+        .replace("__TEXT_ALIGN__", text_align)
+        .replace("__TEXT_ALIGN_ITEMS__", align_items)
+        .replace("__SHADOW__", &text_shadow)
+        .replace("__FX_HTML__", &fx_html);
 
     let port = server::start_file_server(project_path.to_path_buf(), Some(cover_html)).await?;
     let url = format!("http://127.0.0.1:{}/", port);
@@ -286,7 +409,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
 use headless_chrome::protocol::cdp::Page;
     let jpeg = base64::engine::general_purpose::STANDARD.decode(&jpeg_data.data)?;
 
-    let cover_file = project_path.join("cover.jpg");
+    let cover_file = crate::render::unique_output_path(&project_path.join("cover.jpg"));
     std::fs::write(&cover_file, &jpeg)?;
     std::fs::remove_file(project_path.join("_cover_frame.jpg")).ok();
     tracing::info!("  ✓ Cover saved: {}", cover_file.display());

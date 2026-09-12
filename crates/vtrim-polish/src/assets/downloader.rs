@@ -78,9 +78,9 @@ impl AssetDownloader {
                                 report.sticker_downloaded += new_files.len();
                                 report.sticker_existing += existing;
                             }
-                            // 非 emoji/irasu 的来源 = 贴纸包名（如 ysyk），复制包内文件
+                            // 非 emoji/irasu 的来源 = 贴纸包名（如 ysyk），只复制该事件实际选中的文件
                             _ => {
-                                let copied = self.copy_sticker_from_local(source, &sticker_dir);
+                                let copied = self.copy_sticker_from_local(source, name.as_deref(), &sticker_dir);
                                 report.sticker_downloaded += copied;
                             }
                         }
@@ -89,51 +89,53 @@ impl AssetDownloader {
         report
     }
 
-    /// 从程序目录的 stickers/ 复制匹配的贴纸文件
-    /// 新结构：keyword = 贴纸包名（如 ysyk），复制包内全部文件。
-    /// 旧结构兜底：按文件名/tags 匹配后复制整组。
-    fn copy_sticker_from_local(&self, keyword: &str, dest_dir: &Path) -> usize {
+    /// 从程序目录的 stickers/ 复制当前事件实际使用的贴纸文件。
+    /// 新结构：优先按 event.name 精确复制包内对应文件；找不到时最多复制包内第一个，避免全量复制。
+    /// 旧结构：同样只复制匹配到的具体文件，不再复制整组。
+    fn copy_sticker_from_local(&self, keyword: &str, name: Option<&str>, dest_dir: &Path) -> usize {
         let sticker_dir = vtrim_core::path::sticker_dir();
         if !sticker_dir.exists() {
             return 0;
         }
 
-        let mut copied = 0;
+        let copy_file = |path: &PathBuf| -> usize {
+            let Some(fname) = path.file_name() else {
+                return 0;
+            };
+            let dest = dest_dir.join(fname);
+            if dest.exists() {
+                return 0;
+            }
+            if std::fs::copy(path, &dest).is_ok() { 1 } else { 0 }
+        };
 
-        // 新结构：贴纸包目录直接复制
+        // 新结构：贴纸包目录按 event.name 精确复制
         let packages = super::sticker_index::scan_packages(&sticker_dir);
         if let Some(pkg) = packages.iter().find(|p| p.name == keyword) {
-            for path in &pkg.files {
-                let Some(fname) = path.file_name() else { continue };
-                let dest = dest_dir.join(fname);
-                if dest.exists() {
-                    continue;
-                }
-                if std::fs::copy(path, &dest).is_ok() {
-                    copied += 1;
-                }
-            }
-            if copied > 0 {
-                return copied;
-            }
+            let chosen = match name {
+                Some(n) if !n.is_empty() => pkg
+                    .files
+                    .iter()
+                    .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(n)),
+                _ => pkg.files.first(),
+            };
+            return chosen.map(copy_file).unwrap_or(0);
         }
 
-        // 旧结构兜底：根目录直接放文件，评分匹配后复制整组
+        // 旧结构兜底：按文件名/tags 匹配后只复制匹配到的具体文件
         let idx = super::sticker_index::StickerIndex::scan(&sticker_dir);
         let Some(m) = idx.match_keyword(keyword) else {
             return 0;
         };
-        for path in idx.groups()[m.group_index].all_files() {
-            let Some(fname) = path.file_name() else { continue };
-            let dest = dest_dir.join(fname);
-            if dest.exists() {
-                continue;
-            }
-            if std::fs::copy(path, &dest).is_ok() {
-                copied += 1;
-            }
-        }
-        copied
+        let files = idx.groups()[m.group_index].all_files();
+        let chosen = match name {
+            Some(n) if !n.is_empty() => files
+                .iter()
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(n))
+                .copied(),
+            _ => files.first().copied(),
+        };
+        chosen.map(copy_file).unwrap_or(0)
     }
 
     /// 按需下载 segments 中引用的 SFX (blacklist 中的跳过)

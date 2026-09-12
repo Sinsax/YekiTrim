@@ -15,6 +15,12 @@ pub struct AppState {
     pub workspace_root: Arc<RwLock<PathBuf>>,
     pub jobs: Arc<JobManager>,
 
+    /// 已启动的预览服务端口，key = `"{dir}|{kind}"`（kind: video / cover）。
+    ///
+    /// `RenderServer` 起的监听**无法关闭**，旧实现每次点击预览都新起一个，
+    /// 端口与任务会无限泄漏；这里按目录复用（HTML 每次请求重建，不会过期）。
+    pub preview_servers: Arc<std::sync::Mutex<std::collections::HashMap<String, u16>>>,
+
     /// wgpu 单帧真渲染预览的常驻后端槽（feature 门控）。
     #[cfg(feature = "wgpu-render")]
     pub preview: PreviewSlot,
@@ -58,6 +64,7 @@ impl AppState {
             workspace: Arc::new(RwLock::new(workspace)),
             workspace_root: Arc::new(RwLock::new(workspace_root)),
             jobs: Arc::new(JobManager::new()),
+            preview_servers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "wgpu-render")]
             preview: PreviewSlot::default(),
         })
@@ -73,9 +80,5 @@ impl AppState {
 
     pub async fn workspace_root(&self) -> PathBuf {
         self.workspace_root.read().await.clone()
-    }
-
-    pub async fn set_workspace_root(&self, root: PathBuf) {
-        *self.workspace_root.write().await = root;
     }
 }

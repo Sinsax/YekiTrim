@@ -29,8 +29,8 @@ const start = computed(() => {
 
 function addSub() {
   const s = start.value
-  props.segments.push({ start: s, end: Math.round((s + 3) * 100) / 100, text: '' })
-  // 简单提示由父页面负责（如果需要）
+  props.segments.push({ start: s, end: Math.round((s + 3) * 100) / 100, text: '', html: '', confidence: 1.0 })
+  props.segments.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
 }
 </script>
 

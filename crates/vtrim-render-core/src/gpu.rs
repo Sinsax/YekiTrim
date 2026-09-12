@@ -1,62 +1,63 @@
-//! wgpu 离屏渲染上下文。
+//! 平台无关的 wgpu GPU 资源：渲染器集合 + 纹理/读回助手。
+//!
+//! 设备与队列由调用方创建（桌面：tokio block_on；wasm：WebGPU async），
+//! 本模块只持有并复用它们。所有渲染器以 `&TextureView` 为输出目标，
+//! 因此同一个 `Gpu` 既可以离屏渲染 + 读回（桌面出片），也可以直接
+//! 渲染到 canvas surface（wasm 实时预览）。
 
 use anyhow::{Context as _, Result};
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Runtime::new()
-        .expect("create tokio runtime for wgpu init")
-        .block_on(future)
-}
+use super::{draw, effects, sprite};
 
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// 一个无窗口 wgpu 设备 + 常用渲染资源。
-pub struct WgpuContext {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub width: u32,
-    pub height: u32,
-    readback_pool: Vec<wgpu::Buffer>,
+/// 逐帧渲染目标：source = 视频底图 pass 输出；effect = 特效 pass 输出（桌面
+/// 路径的读回源）。wasm 路径的 sprite 最终写入 surface view，effect 仅作中转。
+pub struct FrameTargets {
+    pub source_view: wgpu::TextureView,
+    pub source_texture: wgpu::Texture,
+    pub effect_view: wgpu::TextureView,
+    pub effect_texture: wgpu::Texture,
 }
 
-impl WgpuContext {
-    pub fn new(width: u32, height: u32) -> Result<Self> {
-        // 禁用 validation layer 和 debug 标志，避免在无 VK_LAYER_KHRONOS_validation 环境卡顿。
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            flags: wgpu::InstanceFlags::empty(),
-            ..Default::default()
-        });
-        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }))
-        .context("wgpu: no adapter available (try --renderer chrome)")?;
+/// 渲染器集合：设备/队列 + 三条渲染管线。
+pub struct Gpu {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub format: wgpu::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub source: draw::SourceRenderer,
+    pub effects: effects::EffectRenderer,
+    pub sprites: sprite::SpriteRenderer,
+    readback_pool: std::sync::Mutex<Vec<wgpu::Buffer>>,
+}
 
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("vtrim-polish wgpu device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
-        }))
-        .context("wgpu: request_device failed")?;
-
+impl Gpu {
+    pub fn from_parts(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self> {
         Ok(Self {
+            format,
+            source: draw::SourceRenderer::new(&device, format)?,
+            effects: effects::EffectRenderer::new(&device, format)?,
+            sprites: sprite::SpriteRenderer::new(&device, format)?,
             device,
             queue,
             width,
             height,
-            readback_pool: Vec::new(),
+            readback_pool: std::sync::Mutex::new(Vec::new()),
         })
     }
 
-    /// 创建可读回的离屏渲染目标。
+    /// 创建离屏渲染目标（桌面读回路径用）。
     pub fn create_output_texture(&self) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("vtrim-polish output"),
+            label: Some("vtrim-render-core output"),
             size: wgpu::Extent3d {
                 width: self.width,
                 height: self.height,
@@ -65,7 +66,7 @@ impl WgpuContext {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: OUTPUT_FORMAT,
+            format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -75,10 +76,23 @@ impl WgpuContext {
         (texture, view)
     }
 
-    /// 创建 RGBA 视频输入纹理。
+    /// 逐帧双纹理目标：source（视频底图 pass 输出）+ effect（特效 pass 输出，
+    /// sprite 叠加于此）。wasm 路径的 sprite 最终写入 surface view，effect 仅作中转。
+    pub fn create_frame_targets(&self) -> FrameTargets {
+        let (source_texture, source_view) = self.create_output_texture();
+        let (effect_texture, effect_view) = self.create_output_texture();
+        FrameTargets {
+            source_view,
+            source_texture,
+            effect_view,
+            effect_texture,
+        }
+    }
+
+    /// 上传 CPU 侧 RGBA 像素为纹理（wasm 路径用 copy_external_image_to_texture 替代）。
     pub fn create_rgba_texture(&self, width: u32, height: u32, data: &[u8]) -> wgpu::Texture {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("vtrim-polish source frame"),
+            label: Some("vtrim-render-core rgba input"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -145,18 +159,21 @@ impl WgpuContext {
     }
 
     /// 从渲染目标读回 RGBA 像素（复用 readback buffer 池）。
-    pub fn read_output_rgba(&mut self, texture: &wgpu::Texture) -> Result<Vec<u8>> {
+    ///
+    /// 注意：WebGPU 后端 `Device::poll` 不阻塞等待，此方法在 wasm 显示路径
+    /// 不可用——wasm 直接渲染到 canvas surface，无需读回。
+    pub fn read_output_rgba(&self, texture: &wgpu::Texture) -> Result<Vec<u8>> {
         let bytes_per_pixel = 4u64;
         let unpadded_bytes_per_row = self.width as u64 * bytes_per_pixel;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
         let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
         let buffer_size = padded_bytes_per_row * self.height as u64;
 
-        let buffer = if let Some(buf) = self.readback_pool.pop() {
+        let buffer = if let Some(buf) = self.readback_pool.lock().expect("readback pool").pop() {
             buf
         } else {
             self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("vtrim-polish readback"),
+                label: Some("vtrim-render-core readback"),
                 size: buffer_size,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
@@ -208,7 +225,37 @@ impl WgpuContext {
         }
         drop(data);
         buffer.unmap();
-        self.readback_pool.push(buffer);
+        self.readback_pool.lock().expect("readback pool").push(buffer);
         Ok(rgba)
     }
+}
+
+/// 创建离屏 wgpu 设备+队列（桌面路径；wasm 由浏览器 WebGPU 提供设备）。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_offscreen_device() -> Result<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        flags: wgpu::InstanceFlags::empty(),
+        ..Default::default()
+    });
+    let adapter = futures::executor::block_on(instance.request_adapter(
+        &wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        },
+    ))
+    .context("wgpu: no adapter available")?;
+    let (device, queue) = futures::executor::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("vtrim-render-core device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::downlevel_defaults(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+        },
+    ))
+    .context("wgpu: request_device failed")?;
+    Ok((device, queue))
 }

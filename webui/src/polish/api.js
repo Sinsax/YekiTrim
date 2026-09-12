@@ -90,12 +90,16 @@ export function watchJob(id, { onEvent, onSummary, onDone } = {}) {
   pollOnce()
   try {
     es = new EventSource('/api/jobs/' + id + '/events')
+    // 任务可能在 pollOnce() 与订阅建立之间结束（服务端不重放历史事件），
+    // 连接建立后再补拉一次当前状态。
+    es.onopen = () => { pollOnce() }
     es.onmessage = (ev) => {
       let e = null
       try { e = JSON.parse(ev.data) } catch (err) { return }
       if (onEvent) onEvent(e)
       if (e.type === 'completed') finish({ id, status: 'succeeded', message: '完成' })
       if (e.type === 'failed') finish({ id, status: 'failed', message: e.error || '失败' })
+      if (e.type === 'cancelled') finish({ id, status: 'cancelled', message: '已取消' })
     }
     es.onerror = () => {
       if (es) { es.close(); es = null }

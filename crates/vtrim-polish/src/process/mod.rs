@@ -20,11 +20,30 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     let sfx_blacklist = load_sfx_blacklist(&config);
 
     // 读取字幕数据 (用于后续处理)
-    let subtitles: Vec<parse::srt::Subtitle> = {
+    let mut subtitles: Vec<parse::srt::Subtitle> = {
         let p = data_dir.join("subtitles.json");
         if !p.exists() { anyhow::bail!("Run 'vtrim polish init' first — missing {}", p.display()); }
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
+
+    // 手动屏蔽区间内的字幕不参与后续预算/位置计算
+    if !config.mute_ranges.is_empty() {
+        let before = subtitles.len();
+        subtitles.retain(|s| !config.mute_ranges.iter().any(|r| r.overlaps(s.start, s.end)));
+        if before != subtitles.len() {
+            tracing::info!("  ✂ 已过滤 {} 条屏蔽区字幕", before - subtitles.len());
+        }
+    }
+
+    // 先把屏蔽区间从分段中切开/移除，后续所有 position/budget/process 都基于清理后的 segments
+    if !config.mute_ranges.is_empty() {
+        let before = config.segments.len();
+        let ranges = config.mute_ranges.clone();
+        project::split_segments_by_mute_ranges(&mut config.segments, &ranges);
+        if config.segments.len() != before {
+            tracing::info!("  ✂ 已从 segments 中分离屏蔽区间（{} -> {} 段）", before, config.segments.len());
+        }
+    }
 
     // Step 0: 归一化瞬时特效 duration（blur 等只允许短暂脉冲）
     normalize_fx_durations(&mut config.segments);

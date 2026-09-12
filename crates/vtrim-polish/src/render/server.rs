@@ -50,12 +50,15 @@ async fn save_config_handler(
         }
     };
 
-    let result = (|| -> anyhow::Result<()> {
+    // polish.toml 的 read-modify-write：与 WebUI / CLI 的其它写入串行化
+    let polish_toml = project_path.join("polish.toml");
+    let result = vtrim_core::filelock::with_path_lock(&polish_toml, || -> anyhow::Result<()> {
         let mut cfg = crate::project::load_project(&project_path)?;
         cfg.segments = segments;
-        std::fs::write(project_path.join("polish.toml"), cfg.to_toml_commented()?)?;
+        std::fs::write(&polish_toml, cfg.to_toml_commented()?)?;
         Ok(())
-    })();
+    })
+    .await;
 
     match result {
         Ok(()) => (
@@ -151,13 +154,18 @@ impl RenderServer {
         html.replace("<!-- __CONFIG__ -->", &config_tag)
     }
 
-    pub async fn start(&mut self) -> anyhow::Result<u16> {
+    /// 启动服务；`build` 在**每次请求**时按磁盘上的配置重新生成 `index.html`，
+    /// 因此复用同一个监听不会端出过期内容。
+    pub async fn start_with<F>(&mut self, build: F) -> anyhow::Result<u16>
+    where
+        F: Fn(&Path) -> String + Send + Sync + Clone + 'static,
+    {
         let project_path = self.project_path.clone();
         let project_path_sd = project_path.clone();
         let editor_path = project_path.clone();
         let app = Router::new()
             .route("/", get(move || {
-                let html = Self::build_html(&project_path);
+                let html = build(&project_path);
                 async move {
                     Response::builder()
                         .header("Content-Type", "text/html;charset=utf-8")
@@ -176,5 +184,28 @@ impl RenderServer {
             axum::serve(listener, app).await.unwrap();
         });
         Ok(port)
+    }
+
+    pub async fn start(&mut self) -> anyhow::Result<u16> {
+        self.start_with(Self::build_html).await
+    }
+
+    /// 封面预览服务（HTML 同样每次请求重建，避免复用端口后端出旧封面）。
+    pub async fn start_cover(&mut self) -> anyhow::Result<u16> {
+        self.start_with(Self::build_cover_html).await
+    }
+
+    /// 按当前 polish.toml 生成封面预览 HTML；加载失败时给一个可读错误页。
+    pub fn build_cover_html(project_path: &Path) -> String {
+        match crate::project::load_project(project_path) {
+            Ok(config) => {
+                let resolved = crate::render::resolve_paths(project_path, &config);
+                crate::cover::build_cover_html(project_path, &config, &resolved)
+            }
+            Err(e) => format!(
+                "<!doctype html><html><body style=\"font-family:sans-serif;padding:24px\">\
+                 <h3>无法加载 polish.toml</h3><pre>{e}</pre></body></html>"
+            ),
+        }
     }
 }

@@ -77,7 +77,14 @@ pub struct TranscriptSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    /// 置信度。前端手写字幕（新增行）可能不带该字段，缺省视为 1.0，
+    /// 否则整个 segments 数组会因缺字段反序列化失败 → 保存 400。
+    #[serde(default = "default_confidence")]
     pub confidence: f64,
+}
+
+fn default_confidence() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -120,6 +127,7 @@ pub enum EventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EventSource {
+    #[serde(alias = "manual")]
     Rules,
     LLM,
     Merged,

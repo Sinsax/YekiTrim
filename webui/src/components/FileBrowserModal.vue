@@ -97,8 +97,8 @@ function pick(file) {
 
 function confirm() {
   if (!selected.value) return
+  // 不在这里 close：由父组件根据 select 结果切换/关闭弹窗
   emit('select', selected.value)
-  close()
 }
 
 function close() {

@@ -21,6 +21,8 @@
         <span class="muted small mono">{{ proj.dir }}</span>
         <span class="muted small">{{ projectDataFor(proj).clips.length }} 个片段</span>
         <span class="row">
+          <button class="mini-btn" @click.stop="triggerRedetect(gi)">重新检测</button>
+          <button class="mini-btn" @click.stop="triggerAdd(gi)">添加片段</button>
           <button class="mini-btn">{{ isExpanded(gi) ? '收起' : '展开' }}</button>
         </span>
       </div>

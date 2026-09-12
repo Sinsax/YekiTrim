@@ -108,23 +108,19 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// 移除已输出视频中的长静音段（重编码，输出到输入文件同目录）
+    /// 把已输出切片中的长静音段映射为屏蔽轨道（写入 polish.toml，不改动视频文件）
     Silence {
-        /// 要处理的视频文件（默认扫描 output/clips/）
+        /// 要处理的视频/目录（默认扫描 output/clips/）
         #[arg(required = false)]
         files: Vec<PathBuf>,
 
-        /// 静音阈值(秒)，超过此时长的连续静音将被移除
+        /// 静音阈值(秒)，超过此时长的连续静音将被写入屏蔽轨道
         #[arg(long, default_value_t = 2.0)]
         duration: f64,
 
-        /// 噪声门限 dB (越低越敏感，默认 -30)
+        /// 音频分析噪声门限 dB（无字幕文件时才使用，默认 -30）
         #[arg(long)]
         threshold: Option<f64>,
-
-        /// 输出目录 (默认输出到输入文件同目录)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
     },
 
     /// 视频精修（GSAP 特效 + 字幕 + 弹幕 + 封面，需先 vtrim cut）

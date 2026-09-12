@@ -6,7 +6,7 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 
-use super::context::WgpuContext;
+use super::gpu::Gpu;
 use super::timeline::FrameState;
 
 #[repr(C)]
@@ -33,7 +33,7 @@ pub struct EffectRenderer {
 }
 
 impl EffectRenderer {
-    pub fn new(device: &wgpu::Device) -> Result<Self> {
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vtrim-polish effects shader"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::EFFECT_SHADER.into()),
@@ -98,7 +98,7 @@ impl EffectRenderer {
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: super::context::OUTPUT_FORMAT,
+                    format: target_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -128,19 +128,48 @@ impl EffectRenderer {
     /// 将上一 pass 输出纹理作为输入，应用全屏效果并写入 output_view。
     pub fn apply(
         &self,
-        ctx: &WgpuContext,
+        gpu: &Gpu,
         state: &FrameState,
         input_texture: &wgpu::Texture,
         output_view: &wgpu::TextureView,
     ) -> Result<()> {
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut buffers = Vec::new();
+        let mut bind_groups = Vec::new();
+        self.apply_into(
+            gpu,
+            state,
+            input_texture,
+            output_view,
+            &mut encoder,
+            &mut buffers,
+            &mut bind_groups,
+        )?;
+        gpu.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// 批量版：把 effect pass 记录进已有 encoder，资源由调用方保持到 submit。
+    pub fn apply_into(
+        &self,
+        gpu: &Gpu,
+        state: &FrameState,
+        input_texture: &wgpu::Texture,
+        output_view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
+        buffers: &mut Vec<wgpu::Buffer>,
+        bind_groups: &mut Vec<wgpu::BindGroup>,
+    ) -> Result<()> {
         let input_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // 构造 uniform
-        let flash_color = crate::render::native::composite::parse_color(&state.flash.color);
+        let flash_color = crate::composite::parse_color(&state.flash.color);
         // overlay：纯色 = 单 stop；渐变 = 最多 4 个 stop（对齐 Canvas 多 stop 渐变）
         let (grad_stops, overlay_opacity, overlay_shape): (Vec<[u8; 4]>, f32, f32) = match &state.overlay {
             Some(super::timeline::OverlayState::Color { color, opacity }) => (
-                vec![crate::render::native::composite::parse_color(color)],
+                vec![crate::composite::parse_color(color)],
                 *opacity as f32,
                 0.0,
             ),
@@ -148,7 +177,7 @@ impl EffectRenderer {
                 colors
                     .iter()
                     .take(4)
-                    .map(|c| crate::render::native::composite::parse_color(c))
+                    .map(|c| crate::composite::parse_color(c))
                     .collect(),
                 *opacity as f32,
                 if shape == "radial" { 1.0 } else { 0.0 },
@@ -169,7 +198,7 @@ impl EffectRenderer {
             ],
             flash_alpha_pad: [state.flash.opacity as f32, 0.0, 0.0, 0.0],
             hue_color: {
-                let c = state.hue_shift.as_ref().map(|h| crate::render::native::composite::parse_color(&h.color)).unwrap_or([255,0,64,255]);
+                let c = state.hue_shift.as_ref().map(|h| crate::composite::parse_color(&h.color)).unwrap_or([255,0,64,255]);
                 [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]
             },
             hue_alpha_pad: [
@@ -189,15 +218,15 @@ impl EffectRenderer {
             grad3: stop(3),
         };
 
-        let uniform = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("effects uniform"),
             size: std::mem::size_of::<EffectUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        ctx.queue.write_buffer(&uniform, 0, bytemuck::bytes_of(&uniform_data));
+        gpu.queue.write_buffer(&uniform, 0, bytemuck::bytes_of(&uniform_data));
 
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("effects bind group"),
             layout: &self.bind_group_layout,
             entries: &[
@@ -216,9 +245,6 @@ impl EffectRenderer {
             ],
         });
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("effects pass"),
@@ -239,7 +265,9 @@ impl EffectRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
-        ctx.queue.submit(Some(encoder.finish()));
+
+        buffers.push(uniform);
+        bind_groups.push(bind_group);
         Ok(())
     }
 }
