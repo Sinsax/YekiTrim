@@ -2587,6 +2587,12 @@ async fn polish_font(Query(q): Query<std::collections::HashMap<String, String>>)
         }
     }
     candidates.push(std::path::Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
+    // 发行包把内置兜底字体放在可执行文件同级 resources/ 下；开发时走仓库内的相对路径
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("resources").join("lemi-bobo.ttf"));
+        }
+    }
     candidates.push(Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
     for c in &candidates {
         if c.exists() {
