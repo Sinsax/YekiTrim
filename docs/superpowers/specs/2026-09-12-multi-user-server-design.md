@@ -21,6 +21,7 @@
 | 部署/形态 | 单机自托管；**直接改造 `vtrim server`**（本机模式＝只有 1 个账号的部署），不新增并行的服务实现 |
 | 算力/密钥 | 平台统一：共享 LLM key、共享 ASR 模型缓存、全局并发上限；用户只管用 |
 | 认证 | 账号 + 密码；**项目必须按账户隔离** |
+| 部署体验 | **部署即生成管理员账号与初始密码**（首次启动输出到日志 + `<data_dir>/initial-admin-password.txt`，首次登录后删除）；**单人/多人共用同一套认证逻辑，无免登录**；对外监听要求已改初始密码 |
 | 输入模型 | **不接收任何用户上传/本地文件**；服务只处理"服务器上已存在或自己下载的"视频 |
 | "订阅录播服务" | **对接录播姬（BililiveRecorder）这类本地录制工具**：录制完成即推送 → 自动变项目 |
 | 入口补充 | 选择 B站视频 → 转项目（服务器侧下载，次要通道） |
@@ -41,7 +42,7 @@
 1. **零文件搬运**：用户只做"配一次 webhook + 填房间映射"，之后每场直播录完自动出现项目、自动跑管线。
 2. **严格租户隔离**：A 无法读写 B 的项目/产物/任务/事件/配置；用户只提供 id 与项目内相对路径。
 3. **容量可控**：全局 + 每用户磁盘上限、入库/下载前水位预检、超限明确拒绝；不自动删用户数据。
-4. **本机零摩擦**：loopback + 仅 1 个 admin 免登录；CLI（`vtrim extract/process/polish ...`）行为不变。
+4. **一次登录、长期可用**：部署时即生成管理员与初始密码，登录后会话长期有效（7 天滑动 / 可记住 30 天）；CLI（`vtrim extract/process/polish ...`）行为不变。
 5. **平台密钥不外泄**、**任意路径面归零**。
 6. 验收可执行：§9 清单全部可跑（webhook / 下载器均用 fixture + mock，不打真实网络）。
 
@@ -61,14 +62,90 @@
 
 ## 3. 身份与授权
 
-- 表：`users(username UNIQUE, password_hash argon2id, role admin|user, quota_bytes, disabled, created_at, last_login_at)`；`sessions(id 32B, user_id, csrf, expires_at, user_agent)`。
-- Cookie `vtrim_sid`：`HttpOnly; SameSite=Lax; Path=/`（TLS 下 `Secure`），TTL 7 天滑动续期，登出删行。
+- 表：`users(id, username UNIQUE, password_hash argon2id NOT NULL, must_change_password, role admin|user, quota_bytes, disabled, created_at, last_login_at)`；`sessions(id 32B, user_id, csrf, expires_at, user_agent)`。
+- **账号始终有密码**（`NOT NULL`）：不存在"无密码账号"，也不存在任何形式的免登录。
+- Cookie `vtrim_sid`：`HttpOnly; SameSite=Lax; Path=/`（TLS 下 `Secure`），TTL 7 天滑动续期，登出删行；可选"记住此设备"（30 天）；支持"登出全部设备"。
 - CSRF：非 HttpOnly 的 `vtrim_csrf` cookie + 所有写操作必带 `X-CSRF-Token`（前端 `api()` 统一注入一处）。
-- 中间件 `require_user` / `require_admin`；白名单仅 `/api/auth/login`、`/api/health`、`/api/ingest/bililive/<token>`（自带 token 鉴权）、静态资源。
-- 首次启动：无用户则建 `admin`（密码取 `--admin-password` / `VTRIM_ADMIN_PASSWORD`，否则随机打印一次）。
-- **本机免登录**：loopback + `[server] local_auto_login=true`（默认）+ 库里恰好 1 个启用 admin → 无 cookie 视为该 admin；出现第 2 个账号或非 loopback 监听自动失效（`/api/me` 回 `auto_login` 供前端提示）。
-- 登录限流（username+IP 滑窗 5 次/15 分钟）；非 loopback 监听：强制登录 + 启动告警 + 文档给 Caddy/nginx 示例。
-- CLI 管理入口：`vtrim user add|list|passwd|disable`。
+- 中间件 `require_user` / `require_admin`；白名单仅 `/api/auth/login`、`/api/health`、`/api/ingest/bililive/<token>`（自带 token 鉴权）、静态资源。**没有"本机例外"分支**。
+- 登录限流（username+IP 滑窗 5 次/15 分钟）+ 可选弱密码拦截；校验失败一律拒绝，绝不接受空密码/未设置密码。
+- CLI 管理入口：`vtrim user add|list|passwd|disable`、`vtrim user reset-admin-password`（救援，见 §3.5.5）。
+
+## 3.5 部署即生成管理员账号：单人/多人同一套认证逻辑
+
+> 设计不变式：**认证路径与"单人还是多人"完全无关**——所有请求（含 `127.0.0.1`）都必须带会话。
+> 单人部署与多人部署的差别只剩"账号数量 / 是否显示用户管理 / 配额与并发默认值"，认证逻辑一行都不分叉。
+
+### 3.5.1 为什么不再有免登录（决策记录）
+- 曾被考虑过的方案是"loopback 请求视为管理员、免登录"，它的代价是 **本机任意进程/任意用户都等于管理员**：对"这台机器只有我"成立，对"多人共用一台服务器（多人 SSH）"就是越权通道。
+- 同时它需要判定来源地址，带来一串经典坑：反代后 `X-Forwarded-For` 不可信、`127.0.0.1` / `::1` / `localhost` / IPv6 映射写法差异、容器网络下的来源语义。
+- **结论：彻底不做免登录与来源地址判定**——部署时就把管理员和初始密码生成好（§3.5.2），所有人（含本机浏览器）走同一条登录路径。少一个分支，就少一整类风险。
+
+### 3.5.2 首次启动：生成管理员与初始密码
+- 首次启动（库中无账号）即创建 `admin`（角色 admin），密码用 **CSPRNG 生成**：
+  - 长度 ≥16、排除易混字符（`0/O/1/l`）、分组可读（形如 `ABCD-EFGH-JKMN-PQRS`）便于人工输入；
+  - 只存 argon2id 哈希；明文仅在内存中出现一次，输出到下面两处；
+  - `must_change_password = true`。
+- 明文的两条出口（都要）：
+  1. **stdout/日志**一次性打印：`首次启动管理员账号: admin ｜ 初始密码: ABCD-EFGH-JKMN-PQRS ｜ 已同时写入 <data_dir>/initial-admin-password.txt，首次登录成功后该文件自动删除`
+  2. **文件** `<data_dir>/initial-admin-password.txt`（Windows 上尽力设置仅当前用户可读的 ACL）——解决"控制台滚动丢失 / 无控制台（服务、nohup、容器）"场景。
+- **重启不重新生成**：密码只在"无账号"时生成一次；重启沿用同一密码，避免"每次重启密码都变"的惊吓。
+- **显式指定初始密码**（无人值守，推荐）：`--admin-password-file <path>`（不进进程列表）；`VTRIM_ADMIN_PASSWORD`（会出现在 `docker inspect` / `/proc/<pid>/environ`，日志给出该风险提示）；`echo 'pw' | vtrim user passwd admin --stdin`。指定后不再生成随机密码。
+- 文件生命周期：**首次成功登录后删除**（删除失败只记 warning 不阻塞）；`vtrim user passwd` 改密后也删除。
+- 因为部署时密码已就绪，**不需要** `setup` 初始化页、不需要 `setup token`、不需要"未初始化"状态。
+
+### 3.5.3 单人 / 多人只差这三件事
+| 维度 | 单人 | 多人 |
+|---|---|---|
+| 账号数 | 1（admin） | N（admin 建号） |
+| UI | 不显示用户管理/审计入口 | admin 显示 |
+| 默认值 | 配额不限、并发按单机（见 §6/§7） | 管理员按用户配 `quota_bytes`，全局 `max_concurrent_jobs` 封顶 |
+| **认证** | **必须登录（同多人）** | **必须登录** |
+
+所有项目/任务/入库记录从一开始就带 `owner_id`（单人也一样），所以**不存在"单人数据无主、多人化时要迁移"的问题**，也没有单人特例代码分支。
+
+### 3.5.4 唯一的暴露面硬门槛：不得仍用初始密码
+- 本机（loopback）监听：初始密码可登录；UI 顶部常驻横幅 + 每次启动日志 warning 提示尽快改密。
+- **对外监听（非 loopback）时必须 `must_change_password = false`**（即已改密，或在部署时用 `--admin-password-file` 显式设定），否则**拒绝启动**并给出修复命令（`vtrim user passwd admin`）。理由：初始密码会出现在日志与初始密码文件里，等同于"把密码写在服务器上"，不应对外。
+- 其余保持不变：对外强制登录 + 建议 TLS 反代（文档给 Caddy/nginx 示例）+ 启动告警。
+
+### 3.5.5 忘记密码：确定性救援路径
+- `vtrim user passwd <name> [--stdin]` / `vtrim user reset-admin-password`：**能在这台机器上执行 CLI 的人本就等价于拥有主机权限**，因此直接允许，不引入任何后门；写审计。
+- 无 CLI 的场景（容器/托管）：可选增强——启动时若存在 `<data_dir>/.admin-reset`（0600），则把 admin 密码重置为该文件内容并立即删除，日志记审计。
+- 明确不做：邮箱找回、安全问题、"密保"。
+
+### 3.5.6 代价与缓解（诚实记录）
+- 代价：连"打开本机浏览器"都需要登录一次（这是去掉免登录的直接结果）。
+- 缓解：会话 7 天滑动续期 + 可选"记住此设备 30 天"（本机浏览器基本只登录一次）；`vtrim server --open` 启动日志直接给出用户名与初始密码文件路径。
+- 明确不做：把初始密码预填到登录页、把密码放进 URL/二维码（都会造成泄露面）。
+
+### 3.5.7 身份数据不可缺省（与现有容错的差异）
+- 现有策略：程序配置目录不可写时，`vtrim server` 用内建默认值继续跑（只读安装位置仍能用）。
+- 身份/账号数据**不能这样**：`data_dir` 或 `vtrim.db` 不可写 → **启动失败**并给出修复指引（`--data-dir <可写路径>`），绝不做"静默内存模式"——否则会出现"以为改了密码/建了号，重启后全没了"。
+- 一句话原则：**配置可缺省，身份不可缺省。**
+
+### 3.5.8 单实例保护与 schema 演进
+- `<data_dir>/vtrim.lock`（pid + 启动时间，进程退出释放）：第二个实例指向同一 `data_dir` 时明确报错（避免两个 server 抢同一批项目/端口/SQLite 写）。仅当确认是崩溃残留（pid 不存在）才允许 `--force`。
+- `PRAGMA user_version` + 启动自动迁移；迁移前自动备份 `vtrim.db.bak-<old_ver>`；迁移失败则拒绝启动（不半迁移）。
+
+### 3.5.9 可观测性
+- `/api/health`：`version`、能力位（`ffmpeg/chrome/llm/downloader/wgpu_render`）、`accounts`（账号数）、`must_change_password`、`listening: loopback|remote`、`tls_terminated`（由可信代理头判定，仅作提示）。**不暴露路径，也没有 `mode/auto_login/setup_required` 这些分支字段。**
+- `vtrim doctor` 增"安全摘要"：监听地址与可达性、账号数、是否仍在使用初始密码、初始密码文件是否仍存在、TLS 终止探测、`data_dir` 可写性与剩余磁盘、备份建议。
+- 前端：`must_change_password` 时顶部横幅（一键去改密）；对外且未 TLS 时一次性提示。
+
+### 3.5.10 验收清单（"单人即开即用 + 多人原生"如何算成立）
+1. 全新解压 → `vtrim.exe server --open` → 日志打印用户名/初始密码/文件路径；`<data_dir>/initial-admin-password.txt` 存在。
+2. 浏览器打开 → **登录页** → 用初始密码登录成功 → 进入项目页；未登录访问任意接口（含 loopback）一律 401。
+3. 首次登录成功后 `initial-admin-password.txt` **被自动删除**；横幅提示"仍在使用初始密码"。
+4. 重启服务 → **密码不变**（不重新生成）；未过期的会话仍然有效。
+5. 改密后：旧密码失效、新密码可用、`must_change_password=false`、横幅消失。
+6. 建项目并跑 extract/transcribe/detect → 项目 `owner_id` = admin（`/api/projects`、`/api/storage` 正常）。
+7. 仍在使用初始密码时 `--host 0.0.0.0` → **拒绝启动** + 一条修复命令；改密后同一命令可正常启动并远程登录。
+8. `--admin-password-file pw.txt` 全新部署 → 不生成随机密码，直接用该密码登录。
+9. `vtrim user add alice` + 各自登录 → 逐接口验证互不可见（项目/任务/SSE/media 全 404）。
+10. 忘记密码 → `vtrim user reset-admin-password`（或 `passwd admin --stdin`）本机恢复，写审计。
+11. `data_dir` 只读 → 启动失败 + `--data-dir` 指引（不会表面可用实际不保存）；两个实例指向同一 `data_dir` → 第二个明确报错。
+
+
 
 ## 4. 采集：录播姬接入（主力通道）
 
@@ -155,7 +232,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 | 现在 | 改造后 |
 |---|---|
 | — | `POST /api/auth/login` `POST /api/auth/logout` `GET /api/me` |
-| `GET /api/health`（含 workspace 路径） | 无路径；含 `requires_login/auto_login/wgpu_render/ingest_ready` |
+| `GET /api/health`（含 workspace 路径） | 无路径；能力位 + `accounts / must_change_password / listening / tls_terminated` |
 | `GET /api/project/list` | `GET /api/projects`（仅本人；含来源/占用/状态） |
 | `POST /api/project/init|open|delete` | `POST /api/projects`（仅 `source`）/`DELETE /api/projects/:id`/`DELETE /api/projects/:id/source` |
 | — | `POST /api/ingest/bililive/<token>`、`GET /api/ingest/records`、`GET/PUT /api/channel-map`、`POST /api/ingest/resolve`、`GET /api/storage` |
@@ -165,7 +242,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 
 前端：
 1. `api/client.js`：注入 `X-CSRF-Token`；`401`→跳登录（记回跳）、`403` 越权、`409` 显示磁盘/队列原因、`429` 排队已满。
-2. `LoginView`；启动先 `GET /api/me`，`auto_login` 时免登录页。
+2. `LoginView`：**始终启用、无免登录分支**；启动先 `GET /api/me`，401 即跳登录并记住回跳；`must_change_password` 时顶部常驻横幅（一键去改密）。
 3. 首页新增**入库动态**与**我的房间映射**（开关 + 自动策略档位）；删除 `FileBrowserModal` 的"挑选服务器文件"用途。
 4. `StorageView`（占用/上限/按项目明细/删除源录播）、`AdminView`（账号/配额/录播姬 token 与 `recorder_root`/下载器与 cookie/全平台任务/待分配池指派）。
 5. 项目作用域 `?config=<enc path>` → `?project=<id>`（`router.js` 守卫、`ProjectLayout`、`PreviewView`、`ProjectSlicesView`、`ProjectClipsSection`、`PolishView`、`PolishProjectsView`、`ProjectSettingsView`）。
@@ -183,13 +260,13 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 - **调度**：2 用户 × 3 重活 + 1 入库 + 1 下载 → 重活 ≤2、入库 ≤1、下载 ≤1、同用户串行、FIFO；取消排队即出队；在跑任务在阶段边界停止。
 - **认证**：错误密码/禁用/过期会话/缺 CSRF/普通用户访问 admin 接口 403。
 
-手工验收：全新 `.vtrim` + `vtrim server`（loopback）→ 免登录可用、日志打印一次性 admin 密码；用 `curl` 模拟录播姬推 `FileClosed+SessionEnded`（指向测试 flv）→ 项目自动出现 → 自动转写/检测 → 切片 → 精修预览/渲染；第二账号验证完全隔离；把 `max_disk_bytes` 压到接近已用 → 新入库被明确拒绝；项目页删除源录播 → 占用回落。
+手工验收：全新 `.vtrim` + `vtrim server`（loopback）→ 日志打印初始密码与密码文件路径 → 登录页用初始密码进入 → 首次登录成功后密码文件被删除、横幅提示改密；用 `curl` 模拟录播姬推 `FileClosed+SessionEnded`（指向测试 flv）→ 项目自动出现 → 自动转写/检测 → 切片 → 精修预览/渲染；第二账号验证完全隔离；把 `max_disk_bytes` 压到接近已用 → 新入库被明确拒绝；项目页删除源录播 → 占用回落。
 
 命令：`cargo check -p vtrim-cli --all-targets`（0 warning）、`cargo test -p vtrim-cli`、`cargo test -p vtrim-core --lib`、`npm --prefix webui run build`，加上面的手工脚本。
 
 ## 10. 实施顺序（每阶段可独立交付/回滚）
 
-- **P1 账号与账本**：SQLite + users/sessions/audit + argon2 + `/api/auth/*` + `/api/me` + 中间件 + `vtrim user *` + 首次启动 admin + loopback 免登录。行为等价于今天（仅 admin）。
+- **P1 账号与账本**：SQLite + users/sessions/audit + argon2 + `/api/auth/*` + `/api/me` + 中间件 + `vtrim user *` + **首次启动生成 admin 与初始密码**（日志 + `<data_dir>/initial-admin-password.txt` + `must_change_password`）+ **全部接口统一要求会话（含 loopback，无免登录分支）**。此阶段仍只有 1 个账号，行为上就是"要登录的单人版"。
 - **P2 项目托管与隔离**：`projects` 表 + 项目目录布局 + `?config=`→`?project=` + `tenant.rs` 囚笼 + 删除全部本地路径入口 + admin-only 接口迁移 + 前端作用域改造。
 - **P3 录播姬接入**：webhook（`EventId` 去重 + 乱序容错 + 立即 2xx）+ `ingest_sessions/ingest_files` + 兜底扫描 + channel_map + 多文件聚合/合并 + XML 弹幕解析 + 水位预检 + 入库槽任务 + 首页入库动态。
 - **P4 B站链接通道**：`resolve` + 下载器适配层 + 下载槽 + 新建项目弹窗（次要入口）。
@@ -203,7 +280,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 
 ## 12. 风险与回滚
 
-1. **动到刚稳定的单机 server** → P1 先行为等价，P2 才切换选择器；`?project=` 切换期保留 `?config=` 只读兼容一版并标 deprecated。
+1. **动到刚稳定的单机 server** → P1 只加"身份 + 登录门槛"（账号仅 admin，功能面与今天一致，但浏览器开始要求登录一次）；P2 才切换数据选择器（`?config=` → `?project=`），切换期保留 `?config=` 只读兼容一版并标 deprecated。每阶段可独立回滚。
 2. **新增 SQLite/argon2 构建风险**（bundled sqlite 需 cc；仓库已有 `bzip2` 同类构建）→ 退路是文件账本（`users.toml`+`sessions.json`+复用已实现的 `vtrim_core::filelock`），隔离/调度设计不变。
 3. **录播姬 webhook 契约变化**（v1 弃用、未来新增事件类型、不保证顺序）→ 只依赖 `SessionId/RelativePath/FileSize/RoomId` 这些稳定字段；未知事件忽略并记审计；兜底扫描保证"webhook 全挂也能入库"。
 4. **跨盘移动慢/写满** → `projects_root` 默认与 `recorder_root` 同盘（rename 瞬时）；跨盘必带水位预检与半成品清理；可切 `move_into_managed=false`。
