@@ -37,6 +37,7 @@ const routes = [
     ]
   },
   { path: '/polish', name: 'polish', component: () => import('./views/PolishProjectsView.vue') },
+  { path: '/ingest', name: 'ingest', component: () => import('./views/IngestView.vue') },
   { path: '/models', name: 'models', meta: { admin: true }, component: () => import('./views/ModelsView.vue') },
   { path: '/settings', name: 'settings', meta: { admin: true }, component: () => import('./views/SettingsView.vue') },
   { path: '/jobs', name: 'jobs', component: () => import('./views/JobsView.vue') }

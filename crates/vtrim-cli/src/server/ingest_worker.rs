@@ -135,6 +135,22 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
     if recorder_root.is_empty() {
         return Ok(()); // 未配置录播姬目录：什么都不做（前端有引导卡）
     }
+
+    // 兜底扫描（按 watch_interval_mins 节流）：覆盖漏推送 / 录播姬重启 / 历史录播导入
+    let interval = cfg.ingest.recorder.watch_interval_mins as i64;
+    if interval > 0 {
+        let now = crate::service::db::now_secs();
+        let last = LAST_SCAN.load(std::sync::atomic::Ordering::Relaxed);
+        if now - last >= interval * 60 {
+            LAST_SCAN.store(now, std::sync::atomic::Ordering::Relaxed);
+            match scan_recorder(state, &cfg) {
+                Ok(n) if n > 0 => tracing::info!("兜底扫描：新登记 {n} 个完整录像"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("兜底扫描失败: {e:#}"),
+            }
+        }
+    }
+
     let sessions = db.list_ingest_sessions(None, &[], 200)?;
     let now = crate::service::db::now_secs();
     for s in sessions {
@@ -160,6 +176,158 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 上次兜底扫描时间（秒）。
+static LAST_SCAN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 兜底扫描：把 `recorder_root` 下"两轮大小/时间都没变"的文件登记成可入库会话。
+///
+/// 覆盖三类场景：webhook 漏推送、录播姬重启后没补发、把历史录播直接丢进目录。
+/// 返回本次新登记的完整文件数。
+pub fn scan_recorder(state: &Arc<AppState>, cfg: &vtrim_core::config::Config) -> Result<usize> {
+    let db = state.auth.db();
+    let root = PathBuf::from(cfg.ingest.recorder.root.trim());
+    if !root.is_dir() {
+        bail!("录播姬目录不存在: {}", root.display());
+    }
+    let exts: Vec<String> = cfg
+        .ingest
+        .recorder
+        .extensions
+        .iter()
+        .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+        .collect();
+
+    let mut files: Vec<(String, PathBuf, u64, i64)> = Vec::new();
+    collect_recordings(&root, &root, &exts, 0, &mut files)?;
+
+    let mut registered = 0usize;
+    for (rel, abs, size, mtime) in files {
+        let rel = rel.replace('\\', "/");
+        let prev = db.ingest_file(&rel)?;
+        match prev {
+            None => {
+                db.upsert_ingest_file(&rel, None, None, size, mtime, "seen")?;
+            }
+            Some(p) if p.size == size && p.mtime == mtime && p.state == "seen" => {
+                db.upsert_ingest_file(&rel, None, None, size, mtime, "stable")?;
+                if register_scan_session(state, &root, &abs, &rel, cfg)? {
+                    registered += 1;
+                }
+            }
+            Some(p) if p.size == size && p.mtime == mtime => {
+                // 已 stable/ingested：幂等，什么都不做
+                let _ = p;
+            }
+            Some(_) => {
+                // 还在写：更新为 seen，等下一轮再判稳定
+                db.upsert_ingest_file(&rel, None, None, size, mtime, "seen")?;
+            }
+        }
+    }
+    Ok(registered)
+}
+
+/// 递归收集录像文件（限制深度，避免误扫巨树）；跳过 `.vtrim`/隐藏目录。
+fn collect_recordings(
+    root: &Path,
+    dir: &Path,
+    exts: &[String],
+    depth: usize,
+    out: &mut Vec<(String, PathBuf, u64, i64)>,
+) -> Result<()> {
+    if depth > 4 {
+        return Ok(());
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect_recordings(root, &path, exts, depth + 1, out)?;
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !exts.iter().any(|e| e == &ext) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        out.push((rel, path, meta.len(), mtime));
+    }
+    Ok(())
+}
+
+/// 给扫描出来的文件补一个可入库会话（房间目录名 = RoomId；归属来自 channel_map）。
+fn register_scan_session(
+    state: &Arc<AppState>,
+    root: &Path,
+    abs: &Path,
+    rel: &str,
+    cfg: &vtrim_core::config::Config,
+) -> Result<bool> {
+    let db = state.auth.db();
+    let room = abs
+        .parent()
+        .and_then(|p| p.strip_prefix(root).ok())
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let stem = abs
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rec".to_string());
+    let session_id = format!("scan-{}-{}", if room.is_empty() { "root" } else { &room }, stem);
+
+    if let Some(existing) = db.ingest_session(&session_id)? {
+        if existing.project_id.is_some() {
+            return Ok(false); // 已经入库过
+        }
+    }
+    let rule = if room.is_empty() {
+        None
+    } else {
+        db.channel_for_room(&room)?
+    };
+    db.ingest_session_touch(&session_id, Some(&room), None)?;
+    db.ingest_session_add_file(&session_id, rel, true)?;
+    db.ingest_session_add_file(&session_id, rel, false)?;
+    let meta = std::fs::metadata(abs).ok();
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    db.upsert_ingest_file(rel, Some(&session_id), Some(&room), size, 0, "ingested")?;
+    match rule {
+        Some(r) if r.enabled => {
+            db.assign_ingest_session(&session_id, r.user_id, Some(&r.auto_pipeline))?;
+            db.set_ingest_state(&session_id, "closing", None)?;
+        }
+        _ => {
+            db.set_ingest_state(&session_id, "unassigned", None)?;
+        }
+    }
+    let _ = db.audit(
+        None,
+        "ingest_scan_register",
+        &format!("session={session_id} file={rel} auto={}", cfg.ingest.recorder.auto_pipeline),
+    );
+    tracing::info!("兜底扫描登记: session={session_id} file={rel} room={room}");
+    Ok(true)
 }
 
 /// 处理单个会话（webhook 唤醒时用；不满足完结条件就直接返回）。
