@@ -34,6 +34,64 @@ pub fn tenant_root(uid: i64) -> PathBuf {
     projects_root().join("users").join(uid.to_string())
 }
 
+/// 允许作为"本机文件"来源的根目录列表：**租户根** + `[storage] local_roots`（只保留存在的）。
+///
+/// 只有管理员会用这份列表（`POST /api/projects {kind:"local"}` 与 `/api/fs/list` 都是
+/// admin-only）；它把"任意路径"收敛成"配置里显式写下的几个根"，且永不接受上传。
+pub fn local_roots(uid: i64) -> Vec<PathBuf> {
+    let cfg = vtrim_core::config::load_global_config();
+    let mut out = vec![tenant_root(uid)];
+    for raw in &cfg.storage.local_roots {
+        let p = PathBuf::from(raw.trim());
+        if p.as_os_str().is_empty() {
+            continue;
+        }
+        let canon = p.canonicalize().unwrap_or(p);
+        if canon.is_dir() && !out.contains(&canon) {
+            out.push(canon);
+        }
+    }
+    out
+}
+
+/// 把前端传来的 `root` 解析成允许列表里的一项。
+///
+/// - 空 / `"tenant"` → 租户根；
+/// - 其它必须是允许列表里的根（比较 canonical path），否则报错。
+pub fn pick_local_root(uid: i64, hint: &str) -> anyhow::Result<PathBuf> {
+    let roots = local_roots(uid);
+    let tenant = roots[0].clone();
+    let hint = hint.trim();
+    if hint.is_empty() || hint.eq_ignore_ascii_case("tenant") {
+        return Ok(tenant);
+    }
+    let want = PathBuf::from(hint);
+    let want_canon = want.canonicalize().unwrap_or(want.clone());
+    roots
+        .iter()
+        .find(|r| **r == want_canon || **r == want)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "根目录不在允许列表内: {hint}（管理员可在 [storage] local_roots 里添加）"
+            )
+        })
+}
+
+/// 根的展示名（租户根显示为「我的托管目录」，其余用目录名）。
+pub fn root_label(uid: i64, root: &Path) -> String {
+    let tenant = tenant_root(uid);
+    let a = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let b = tenant.canonicalize().unwrap_or_else(|_| tenant.clone());
+    if a == b {
+        "我的托管目录".to_string()
+    } else {
+        root.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned())
+    }
+}
+
 /// 把任意外部字符串净化成安全的单层目录名（房间号可能来自 webhook payload）。
 #[allow(dead_code)] // P3：录播姬房间号 → 目录名
 pub fn sanitize_segment(raw: &str) -> String {

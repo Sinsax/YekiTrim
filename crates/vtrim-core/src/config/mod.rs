@@ -122,6 +122,11 @@ max_disk_bytes = 0
 disk_watermark_pct = 10
 # 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
 default_quota_bytes = 0
+# 管理员"从服务器本机文件新建项目"允许的根目录（绝对路径，仅管理员可见可用）
+# 留空 = 只能用租户根 <projects_root>/users/<uid>
+# 例: local_roots = ["F:/media", "D:/BililiveRecorder"]
+# 该功能只读取服务器上已存在的文件，永不接受上传
+local_roots = []
 
 [ingest]
 # 录播姬 webhook：启用后 POST /api/ingest/bililive/<token> 才会被接受
@@ -430,6 +435,11 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.storage.default_quota_bytes != 0 {
         base.storage.default_quota_bytes = overlay.storage.default_quota_bytes;
+    }
+    for root in &overlay.storage.local_roots {
+        if !base.storage.local_roots.contains(root) {
+            base.storage.local_roots.push(root.clone());
+        }
     }
 
     // [ingest]：同样只在项目配置显式写了非默认值时才覆盖
