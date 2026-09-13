@@ -597,8 +597,18 @@ function init(){
     var p=G[name]||[50,50];
     return p[0]+'% '+p[1]+'%';
   }
+  // 自由选框 (top_left/bottom_right, 百分比) → 中心; 与 Rust types.rs region_origin 一致
+  function freeRectOrigin(r){
+    if(!r||!r.top_left||!r.bottom_right) return null;
+    var n=function(v){var p=parseFloat(v);return isFinite(p)?Math.min(100,Math.max(0,p)):0};
+    var x0=n(r.top_left.x),x1=n(r.bottom_right.x),y0=n(r.top_left.y),y1=n(r.bottom_right.y);
+    if(x1-x0<0.5||y1-y0<0.5) return null;
+    return ((x0+x1)/2)+'% '+((y0+y1)/2)+'%';
+  }
   var liverOrigin=(function(){
     if(!layout.liver) return '65% 50%';
+    var fr=freeRectOrigin(layout.liver);
+    if(fr) return fr;
     if(layout.liver.origin_grid) return gridOrigin(layout.liver.origin_grid);
     if(layout.liver.origin) return ''+layout.liver.origin;
     if(layout.liver.grid && layout.liver.grid.length) return gridOrigin(layout.liver.grid[0]);

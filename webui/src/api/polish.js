@@ -4,13 +4,8 @@
 // （如 `output/clips/clip-01`）；服务端在 scope 守卫里归一化并校验归属。
 import { api } from './client'
 
-// 九宫格格子名 — 必须与 Rust grid_rect() 的命名一致（bot-left / bot-right）
-export const GRID_CELLS = [
-  'top-left', 'top', 'top-right',
-  'mid-left', 'center', 'mid-right',
-  'bot-left', 'bottom', 'bot-right'
-]
-
+// 区域名（与 polish.toml 的 [layout.*] 一一对应）。
+// 九宫格 → 自由选框的换算（GRID_RECTS / regionRect）在 polish/engine.js。
 export const REGION_LABELS = {
   liver: '人物',
   danmaku_area: '弹幕区域',

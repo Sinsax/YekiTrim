@@ -30,7 +30,7 @@
       </div>
 
       <!-- 未初始化：初始化卡 + 片段列表（否则无法切换/初始化其他片段） -->
-      <div v-else-if="!ready" class="init-wrap">
+      <div v-else-if="!ready" class="grid cols-main">
         <div class="card">
           <h2>未初始化精修项目</h2>
           <p class="muted small">将解析字幕/弹幕并创建 polish.toml。</p>
@@ -61,27 +61,29 @@
           </div>
         </div>
 
-        <!-- 预览左 + 右侧（生成与导出 / 九宫格布局） -->
-        <div class="polish-grid mt-16">
+        <!-- 预览左 + 右侧（生成与导出：导出动作 / 布局框选 / 贴纸来源） -->
+        <div class="grid cols-main mt-16">
           <div class="card">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+              <span v-if="selectMode" class="chip p">选框模式 · 运镜已暂停</span>
+              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
-            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
+            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="selectMode" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
           </div>
 
-          <div class="side-col">
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 生成与导出</h2>
               <span class="muted small">LLM 完成后自动执行后处理</span>
             </div>
-            <div class="row" style="gap:8px">
-              <button class="btn btn-primary" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
-              <button class="btn" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
-              <button class="btn" :disabled="jobRunning" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
+
+            <!-- ① 导出动作（对齐 v5 样稿：两键并排 + 渲染导出整宽主按钮） -->
+            <div class="row mb-8" style="gap:6px">
+              <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
+              <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
             </div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center" :disabled="jobRunning" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
             <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
               <div class="row spread small">
                 <b>{{ jobLabel(job.kind) }}</b>
@@ -96,6 +98,38 @@
             </div>
 
             <div class="dash"></div>
+
+            <!-- ② 布局框选（取代九宫格：在预览里拖出精确矩形） -->
+            <div class="row spread mb-6">
+              <b class="t" style="margin:0">布局框选</b>
+              <span class="muted small">比九宫格更精确</span>
+            </div>
+            <div class="row mb-6">
+              <select v-model="selRegion" class="mini-select flex-1">
+                <option v-for="r in layoutRegions" :key="r.key" :value="r.key">{{ regionLabel(r.key) }}</option>
+              </select>
+              <button class="mini-btn" :class="{ selected: selectMode }" :disabled="!ready" @click="toggleSelect">
+                <Icon name="crop" :size="11" /> {{ selectMode ? '退出框选' : '框选布局' }}
+              </button>
+            </div>
+            <div class="row spread small">
+              <span class="mono">{{ rectText }}</span>
+              <span v-if="hasFreeRect" class="chip p">自由选框</span>
+              <span v-else class="chip n">九宫格默认</span>
+            </div>
+            <template v-if="selectMode">
+              <div class="hint mt-6">在预览里拖框体平移、拖 8 个角/边缩放；此模式下运镜暂停、缩放复位。</div>
+              <div class="hint mt-4">{{ regionHint }}</div>
+              <div class="row mt-8">
+                <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
+              </div>
+            </template>
+            <div v-else class="muted small mt-6">点「框选布局」，在预览里拖出该区域的精确矩形（取代九宫格）。</div>
+
+            <div class="dash"></div>
+
+            <!-- ③ 贴纸来源 -->
             <div class="row spread mb-6">
               <b class="t" style="margin:0">贴纸来源</b>
               <span class="muted small">LLM 可用的贴图来源</span>
@@ -122,28 +156,6 @@
               </div>
               <div v-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
             </div>
-          </div>
-
-          <div class="card panel-card">
-            <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="settings" :size="15" /> 九宫格布局</h2>
-            </div>
-            <div v-for="r in layoutRegions" :key="r.key" class="my-8">
-              <div class="small muted mb-4">{{ REGION_LABELS[r.key] || r.key }}<span v-if="(r.value.grid || []).length > 1" class="muted">（可多选）</span></div>
-              <div class="grid-3">
-                <div v-for="cell in GRID_CELLS" :key="cell" class="grid-cell"
-                     :class="{ active: (r.value.grid || []).includes(cell) }"
-                     @click="toggleGridCell(r.key, cell, r.value)">{{ cell }}</div>
-              </div>
-            </div>
-            <div v-if="!layoutRegions.length" class="empty small">暂无布局配置</div>
-            <div class="row mt-8">
-              <button class="btn btn-primary" :disabled="jobRunning" @click="processByLayout">
-                <Icon name="sparkles" :size="13" /> 按当前布局处理
-              </button>
-            </div>
-            <div class="muted small mt-8">保存布局后点击处理，会按当前九宫格重新计算贴纸等位置</div>
-          </div>
           </div>
         </div>
         <!-- 时间轴全宽（字幕编辑在时间轴块上，自动保存） -->
@@ -213,8 +225,9 @@ import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
   initPolish, runLlm, runProcess, runRender, runSilence,
   fetchStickerSources,
-  GRID_CELLS, REGION_LABELS,
+  REGION_LABELS,
 } from '../api/polish'
+import { freeRect, regionRect } from '../polish/engine'
 import { watchJob } from '../api/jobs'
 
 const route = useRoute()
@@ -292,6 +305,99 @@ const layoutRegions = computed(() => {
     .filter(([, v]) => v && typeof v === 'object')
     .map(([key, value]) => ({ key, value }))
 })
+
+// ---- 布局框选（取代九宫格）：region → polish.toml 的 top_left/bottom_right 自由选框 ----
+const selectMode = ref(false)
+const selRegion = ref('liver')
+/** 编辑中的选框（整帧百分比），仅在框选模式下随拖拽更新 */
+const selRect = ref({ x0: 0, y0: 0, x1: 100, y1: 100 })
+const curRegion = computed(() => (cfg.value?.layout || {})[selRegion.value] || null)
+/** 该区域是否已有自由选框（否则回退到九宫格 grid） */
+const hasFreeRect = computed(() => !!freeRect(curRegion.value))
+const selLabel = computed(() => regionLabel(selRegion.value))
+const REGION_HINTS = {
+  liver: '框住主播画面：运镜聚焦到框中心（比九宫格更准）。',
+  danmaku_area: '框住直播间弹幕显示区域（供运镜参考）。',
+  sticker_area: '框住贴纸可落点范围：后处理会把贴纸随机放进框内。',
+  reaction_zone: '框住反应区（可选区域）。',
+  game_area: '框住游戏画面区（可选区域）。'
+}
+const regionHint = computed(() => REGION_HINTS[selRegion.value] || '框选该区域的实际范围。')
+/** 展示用矩形：框选模式看编辑值，否则看已保存的选框 / 九宫格包围盒 */
+const shownRect = computed(() => {
+  if (selectMode.value) return selRect.value
+  return regionRect(curRegion.value) || { x0: 0, y0: 0, x1: 100, y1: 100 }
+})
+const rectText = computed(() => {
+  const r = shownRect.value
+  const f = (v) => (Math.round((Number(v) || 0) * 10) / 10) + '%'
+  return `${f(r.x0)}, ${f(r.y0)} → ${f(r.x1)}, ${f(r.y1)}`
+})
+
+function regionLabel(key) {
+  return REGION_LABELS[key] || key
+}
+
+/** 当前区域的选框作为编辑初值（已是自由选框则用现值，否则取九宫格包围盒）。 */
+function loadSelRect() {
+  const keys = layoutRegions.value.map((r) => r.key)
+  if (keys.length && !keys.includes(selRegion.value)) selRegion.value = keys[0]
+  selRect.value = regionRect(curRegion.value) || { x0: 0, y0: 0, x1: 100, y1: 100 }
+}
+
+function onSelectRect(r) {
+  selRect.value = r
+}
+
+function toggleSelect() {
+  if (selectMode.value) { selectMode.value = false; return }
+  loadSelRect()
+  selectMode.value = true
+  // 定格当前帧，避免边播边框选
+  previewRef.value?.pause?.()
+}
+
+const pctStr = (v) => (Math.round(Math.min(100, Math.max(0, Number(v) || 0)) * 100) / 100).toFixed(2) + '%'
+
+/** 保存选框：写入 layout[region].top_left/bottom_right（服务端优先于 grid）。 */
+async function applySelect() {
+  try {
+    const lay = { ...(cfg.value?.layout || {}) }
+    const region = { ...(lay[selRegion.value] || {}) }
+    const r = selRect.value
+    region.top_left = { x: pctStr(Math.min(r.x0, r.x1)), y: pctStr(Math.min(r.y0, r.y1)) }
+    region.bottom_right = { x: pctStr(Math.max(r.x0, r.x1)), y: pctStr(Math.max(r.y0, r.y1)) }
+    lay[selRegion.value] = region
+    await saveProjectPatch(pid.value, dir.value, { layout: lay })
+    cfg.value = { ...cfg.value, layout: lay }
+    selectMode.value = false
+    toast('选框已保存，按新布局重新计算贴纸/运镜…')
+    startJob('process', () => runProcess(pid.value, dir.value), { after: load })
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+/** 清除选框：回到该区域的九宫格 grid（不动 grid 本身，可逆）。 */
+async function clearSelect() {
+  try {
+    const lay = { ...(cfg.value?.layout || {}) }
+    const region = { ...(lay[selRegion.value] || {}) }
+    delete region.top_left
+    delete region.bottom_right
+    lay[selRegion.value] = region
+    await saveProjectPatch(pid.value, dir.value, { layout: lay })
+    cfg.value = { ...cfg.value, layout: lay }
+    loadSelRect()
+    toast('已清除选框，回到九宫格区域')
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+// 切换区域 / 重新加载配置后同步选框
+watch(selRegion, loadSelRect)
+watch(() => cfg.value?.layout, () => { if (!selectMode.value) loadSelRect() })
 // 产物优先使用后端返回的实际文件名（含 _1/_2 版本），未返回时回退固定名
 const coverFailed = ref(false)
 const renderedFailed = ref(false)
@@ -638,24 +744,7 @@ async function onMuteSaved(ranges) {
   }
 }
 
-// 九宫格多选：点击切换格子是否在区域 grid 内
-function processByLayout() {
-  startJob('process', () => runProcess(pid.value, dir.value), { after: load })
-}
-
-async function toggleGridCell(key, cell, region) {
-  try {
-    const grid = [...(region?.grid || [])]
-    const i = grid.indexOf(cell)
-    if (i >= 0) grid.splice(i, 1)
-    else grid.push(cell)
-    if (!grid.length) { toast('至少保留一个格子', 'err'); return }
-    const lay = { ...(cfg.value?.layout || {}) }
-    lay[key] = { ...(region || {}), grid }
-    await saveProjectPatch(pid.value, dir.value, { layout: lay })
-    cfg.value = { ...cfg.value, layout: lay }
-  } catch (e) { toast(e.message, 'err') }
-}
+// 九宫格布局已由「布局框选」取代：区域矩形一律走 layout[region].top_left/bottom_right
 
 async function saveSubs() {
   try {
@@ -727,16 +816,7 @@ watch(dir, load)
 </script>
 
 <style scoped>
-/* 预览左 + 右侧卡列（生成与导出 / 九宫格布局） */
-.polish-grid { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
-.side-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
-.init-wrap { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
-@media (max-width: 900px) { .init-wrap { grid-template-columns:1fr; } }
-.action-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; }
-.top-cards .btn { padding:5px 13px; font-size:12px; }
-.save-btn { margin-left:auto; }
-.btn.dirty { background:var(--amber-soft); color:var(--amber-deep); border-color:var(--amber); box-shadow:none; }
-.btn.dirty:hover { background:var(--amber); border-color:var(--amber); color:#fff; }
+/* 页面专属布局（样稿无同名类）：卡内小节、贴纸来源选择器、产物体 */
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }
 .ss-x { border:none; background:none; color:inherit; cursor:pointer; display:flex; padding:2px; border-radius:50%; }
@@ -746,22 +826,9 @@ watch(dir, load)
 .ss-avail-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
 .ss-avail-item:hover { background:var(--bg-soft); }
 .ss-avail-item.on { color:var(--ink-faint); text-decoration:line-through; }
-.seg-toggle .mini-btn.selected { background:var(--main-soft); color:var(--main-deep); border-color:var(--main); }
-.add-sub { margin-left:auto; }
-.panel-card { display:flex; flex-direction:column; flex:1; }
-.panel-body { flex:1; min-height:0; display:flex; flex-direction:column; }
-.panel-body :deep(.sub-list) { flex:1; }
-.grid-cell { border:1px solid var(--line); border-radius:6px; padding:6px; text-align:center; font-size:10px; cursor:pointer; }
-.grid-cell:hover { border-color:var(--main); }
-.grid-cell.active { background:var(--main-soft); border-color:var(--main); color:var(--main-deep); }
 .job-box { border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 10px; background:var(--bg-soft); }
 .artifact-bar .cover-thumb { width:150px; border-radius:var(--r-sm); border:1px solid var(--line); }
 .artifact-bar .video-bar { max-height:32vh; border-radius:var(--r-sm); }
-.product-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
 .cover-img { width:100%; border-radius:var(--r-sm); border:1px solid var(--line); display:block; }
-.product-video { max-height:46vh; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
-@media (max-width: 1100px) {
-  .polish-grid, .action-grid, .init-wrap { grid-template-columns:1fr; }
-}
 </style>
