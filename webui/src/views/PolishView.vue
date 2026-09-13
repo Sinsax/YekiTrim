@@ -4,7 +4,8 @@
       <div>
         <span class="chip p">精修</span>
         <h1 class="mt-2">{{ dir ? title : '选择要精修的片段' }}</h1>
-        <div class="sub">{{ dir || '从片段库选择一个已剪切片段进入精修编辑器' }}</div>
+        <!-- 有片段时不再占一行 sub（片段条 + 面包屑已说明是哪个片段），把竖高留给预览 -->
+        <div v-if="!dir" class="sub">从片段库选择一个已剪切片段进入精修编辑器</div>
       </div>
       <div class="actions"></div>
     </div>
@@ -50,13 +51,9 @@
       </div>
 
       <template v-else>
-        <!-- 片段条（紧凑态）：压扁它才腾得出「预览 + 时间轴」同屏的竖高 -->
+        <!-- 片段条（一行 chip）：把它压到最扁才腾得出「预览 + 时间轴」同屏的竖高 -->
         <div class="card frag-strip">
-          <div class="row spread mb-4">
-            <b class="t" style="margin:0">片段（{{ clips.length }}）</b>
-            <span class="muted small">点击切换 · 未初始化可点「初始化」</span>
-          </div>
-          <FragmentList compact :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
+          <FragmentList chips :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
         </div>
 
         <!-- 左列 = 预览 + 时间轴（上下相邻，一起占满首屏）；右栏 = 生成与导出 -->
@@ -832,7 +829,7 @@ watch(dir, load)
 /* 左列上下排列「预览 + 时间轴」，右栏保持自然高度（不跟着左列拉长） */
 .edit-grid { align-items:start; }
 .left-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
-.frag-strip { padding:10px 12px; }
+.frag-strip { padding:8px 10px; }
 .gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }
