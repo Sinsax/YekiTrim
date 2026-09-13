@@ -54,6 +54,19 @@ pub fn local_roots(uid: i64) -> Vec<PathBuf> {
     out
 }
 
+/// 目录解析失败的友好文案：Windows 上 ERROR_INVALID_NAME(123) 基本只有一个原因——
+/// 用户粘了 `\\?\` 前缀又混进 `/`（`canonicalize` 的产物被拿去做字符串拼接）。
+fn dir_error(p: &Path, e: &std::io::Error) -> anyhow::Error {
+    match e.raw_os_error() {
+        Some(123) => anyhow::anyhow!(
+            "目录路径不合法（{}）：不要用 \\\\?\\ 前缀或混用 / 与 \\，直接填 F:/media/xxx 即可",
+            p.display()
+        ),
+        Some(2) | Some(3) => anyhow::anyhow!("目录不存在: {}", p.display()),
+        _ => anyhow::anyhow!("目录不可用（{}）: {e}", p.display()),
+    }
+}
+
 /// 把前端传来的 `root` 解析成一个目录。
 ///
 /// - 空 / `"tenant"` → 租户根；
@@ -93,17 +106,13 @@ pub fn resolve_target_dir(uid: i64, root_hint: &str, dir: &str, is_admin: bool) 
             // 非管理员只允许"自己租户根内的绝对路径"
             let tenant = tenant_root(uid);
             let tenant_canon = tenant.canonicalize().unwrap_or(tenant);
-            let real = p
-                .canonicalize()
-                .map_err(|e| anyhow::anyhow!("目录不存在: {e}"))?;
+            let real = p.canonicalize().map_err(|e| dir_error(&p, &e))?;
             if !real.starts_with(&tenant_canon) {
                 anyhow::bail!("只能用你自己的托管目录");
             }
             return Ok(real);
         }
-        return p
-            .canonicalize()
-            .map_err(|e| anyhow::anyhow!("目录不存在: {e}"));
+        return p.canonicalize().map_err(|e| dir_error(&p, &e));
     }
     let root = pick_local_root(uid, root_hint, is_admin)?;
     vtrim_core::tenant::jail_existing(&root, dir)

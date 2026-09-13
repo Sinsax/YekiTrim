@@ -27,7 +27,7 @@ pub fn project_snapshot(ws: &Workspace) -> serde_json::Value {
     let output = ws.output_dir();
     let current = cfg.as_ref().map(|c| c.project.current_stage(&output)).unwrap_or(0);
     let input = cfg.as_ref().and_then(|c| c.project.input_file.clone()).unwrap_or_default();
-    let input_abs = if input.is_empty() { String::new() } else { ws.resolve(&input).to_string_lossy().into_owned() };
+    let input_abs = if input.is_empty() { String::new() } else { vtrim_core::path::display(&ws.resolve(&input)) };
     let mut files = vec![];
     for (rel, name) in [
         ("video.wav", "音频"),
@@ -45,7 +45,7 @@ pub fn project_snapshot(ws: &Workspace) -> serde_json::Value {
         "config_file": ws.config_file.to_string_lossy(),
         "root_dir": ws.root_dir.to_string_lossy(),
         "name": project_name,
-        "output_dir": absolute_output(ws, &output).to_string_lossy(),
+        "output_dir": vtrim_core::path::display(&absolute_output(ws, &output)),
         "input_file": input,
         "input_abs": input_abs,
         "current_stage": current,
@@ -61,7 +61,7 @@ pub fn project_summary(ws: &Workspace) -> serde_json::Value {
     let output = ws.output_dir();
     let current = cfg.as_ref().map(|c| c.project.current_stage(&output)).unwrap_or(0);
     let input = cfg.as_ref().and_then(|c| c.project.input_file.clone()).unwrap_or_default();
-    let input_abs = if input.is_empty() { String::new() } else { ws.resolve(&input).to_string_lossy().into_owned() };
+    let input_abs = if input.is_empty() { String::new() } else { vtrim_core::path::display(&ws.resolve(&input)) };
     let clips = output.join("clips");
     let clip_videos = if clips.exists() {
         std::fs::read_dir(&clips).map(|entries| entries.flatten().filter(|e| e.path().is_dir()).count()).unwrap_or(0)
@@ -76,7 +76,7 @@ pub fn project_summary(ws: &Workspace) -> serde_json::Value {
         "input_file": input,
         "input_abs": input_abs,
         "stage": current,
-        "output_dir": absolute_output(ws, &output).to_string_lossy(),
+        "output_dir": vtrim_core::path::display(&absolute_output(ws, &output)),
         "clip_videos": clip_videos,
         "has_danmaku": cfg.as_ref().and_then(|c| c.project.danmaku_file.as_ref()).map(|p| !p.is_empty()).unwrap_or(false),
         "files": project_snapshot(ws).get("files").cloned().unwrap_or(serde_json::json!([])),

@@ -243,6 +243,10 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - `/api/fs/list` 仅 admin，**可以浏览服务器任意目录**（`{dir}` 绝对路径，与单用户时代一致；
     也兼容 `{root, path}` 相对写法）。这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**；
     `[storage] local_roots` 只是前端下拉的**快捷入口**，不再是硬限制。
+    **进入下一级用 `{dir, enter:"子目录名"}`，路径由服务端拼**：前端自己拼 `dir + '/' + name`
+    会把 canonicalize 的 `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows ERROR_INVALID_NAME 123）。
+    因此所有出 JSON 的路径都过 `vtrim_core::path::display()`（剥掉 `\\?\`/`\\?\UNC\`），
+    前端拿到的永远是 `F:\a\b` 这种可回传、可拼 URL 的形式。
   - 管理员「首页 →「新增项目」→ 服务器文件」：`POST /api/projects {source:{kind:"local", dir, input, danmaku, output_dir}}`
     （`dir` 绝对路径；非管理员只能用自己的租户根，且 `/api/fs/list` 与 `kind:"local"` 一律 403）；
     **目标目录已有 `vtrim.toml` 时只登记/打开、不覆盖**（保护手改过的工程设置）。

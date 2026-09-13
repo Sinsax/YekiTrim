@@ -185,6 +185,7 @@ const sources = computed(() => [
 
 // ---- ① 服务器文件 ----
 const localDir = ref('')
+const localParent = ref('')
 const localInput = ref('')
 const localRoots = ref([])
 const fsDirs = ref([])
@@ -198,12 +199,18 @@ function isVideoFile(name) {
   return VIDEO_EXTS.includes(String(name).split('.').pop().toLowerCase())
 }
 
-async function browseLocal(dir = localDir.value) {
+/**
+ * 读目录。
+ * `enter` 传"要进入的子目录名"，**由服务端拼路径**——前端做字符串拼接会把服务端回传的
+ * `\\?\F:\a` 拼成 `\\?\F:\a/b` 这种非法形式（Windows ERROR_INVALID_NAME 123）。
+ */
+async function browseLocal(dir = localDir.value, enter = '') {
   fsLoading.value = true
   fsError.value = ''
   try {
-    const d = await listTenantFiles(dir)
+    const d = await listTenantFiles(dir, enter)
     localDir.value = d.dir || dir
+    localParent.value = d.parent || ''
     localRoots.value = d.roots || []
     fsDirs.value = d.dirs || []
     fsFiles.value = d.files || []
@@ -222,13 +229,11 @@ function jumpLocal(p) {
 }
 
 function enterLocalDir(name) {
-  browseLocal((localDir.value || '').replace(/[\/\\]+$/, '') + '/' + name)
+  browseLocal(localDir.value, name)
 }
 
 function goUpLocal() {
-  const cur = (localDir.value || '').replace(/[\/\\]+$/, '')
-  const i = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'))
-  browseLocal(i > 0 ? cur.slice(0, i) : cur)
+  if (localParent.value) browseLocal(localParent.value)
 }
 
 function pickLocalFile(name) {

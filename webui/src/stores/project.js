@@ -42,9 +42,10 @@ export async function deleteProjectSource(pid) {
   return api('/api/projects/' + encodeURIComponent(pid) + '/source', { method: 'DELETE' })
 }
 
-/** 服务器本机文件浏览（仅 admin；管理员可传任意绝对路径，非管理员只能是租户根内相对路径）。 */
-export async function listTenantFiles(dir = '') {
-  return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ dir }) })
+/** 服务器本机文件浏览（仅 admin；管理员可传任意绝对路径，非管理员只能是租户根内相对路径）。
+ *  `enter` 是"进入下一级"的子目录名，由服务端拼路径（前端拼会踩 `\\?\` 前缀的坑）。 */
+export async function listTenantFiles(dir = '', enter = '') {
+  return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ dir, enter }) })
 }
 
 /** 用服务器本机文件建项目（仅 admin，永不接受上传）。已有 vtrim.toml 时只登记不覆盖。 */
