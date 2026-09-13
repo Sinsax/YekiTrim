@@ -130,6 +130,13 @@ pub enum Command {
     /// 显示当前处理进度
     Status,
 
+    /// 安全与运行状况摘要（账号/初始密码/单实例锁/数据目录磁盘/服务可达性）
+    Doctor {
+        /// 探测地址（默认 http://127.0.0.1:7788，与 `vtrim server` 默认监听一致）
+        #[arg(long, default_value = crate::service::doctor::DEFAULT_URL)]
+        url: String,
+    },
+
     /// 账号管理（多用户服务：账号账本 / 密码 / 角色）
     #[command(subcommand)]
     User(UserAction),

@@ -40,6 +40,7 @@ vtrim silence [files...]                 # 「去静音」: 长停顿映射为�
        [--duration 2.0] [--threshold]    # 默认扫描 output/clips/, 未初始化则先 polish init
 vtrim download                           # 下载全部 ASR 模型 (sensevoice/firered-zh/qwen3-asr) → .vtrim/models/
 vtrim status                             # 查看当前进度
+vtrim doctor [--url <base>]              # 安全与运行状况摘要（账号/初始密码/锁/磁盘/服务探测）
 vtrim config init [--path]               # 生成全局配置文件
 vtrim config show                        # 显示当前配置 (含 LLM)
 vtrim correct [-t <transcript>]          # LLM 订正转录文本
@@ -218,7 +219,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 |---|---|
 | P1 step-1 账号账本 + `vtrim user` CLI | ✅ 已落地 |
 | P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`server/auth.rs`、`service/instancelock.rs`） |
-| P1 step-3 `vtrim doctor` 安全摘要 | ⏳ 待做 |
+| P1 step-3 `vtrim doctor` 安全摘要 | ✅ 已落地（`service/doctor.rs`、`service/disk.rs`） |
 | P2 项目托管与隔离（`?project=`、囚笼） | ⏳ 待做 |
 | P3 录播姬接入（webhook / ingest） | ⏳ 待做 |
 | P4 B站链接通道 / P5 容量与运维 | ⏳ 待做 |

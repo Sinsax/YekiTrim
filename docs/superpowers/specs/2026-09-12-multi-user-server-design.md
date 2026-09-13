@@ -339,7 +339,12 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 6. 前端 M1（`stores/auth.js`、`api/auth.js`、`views/LoginView.vue`、路由守卫、`client.js` CSRF 注入 + 401 分支、顶栏用户区 + 改密横幅 + 改密弹窗，未登录不再轮询/开 SSE）。
 7. 测试：新增 9 个（`server/auth.rs` 6 个 + `api.rs` 4 个 oneshot 鉴权/流程 + `service/db.rs` 2 个会话 + `service/instancelock.rs` 4 个）；实测 `cargo check -p vtrim-cli --all-targets` 0 warning、`cargo test -p vtrim-cli` 40 passed、`npm run build` 通过，并按 §3.5.10 第 1–5、10–11 条手工走通（首次启动打印+落盘、401/CSRF 403、首次登录删文件、重启密码不变且会话仍有效、`0.0.0.0` 未改密拒绝启动、第二个实例报错、`--admin-password-file` 不写初始密码文件、坏 data_dir 报错并给指引）。
 
-**step-3 ⏳ 待做（P1 收尾）**：`vtrim doctor` 安全摘要（账号数 / 是否仍用初始密码 / 初始密码文件是否存在 / data_dir 可写性与剩余磁盘 / 锁持有者）——`vtrim.lock` 的 pid 存活判定与 `--force` 已在 step-2 一并实现（见 `service/instancelock.rs`）。
+**step-3 ✅ 已完成（P1 收尾）**：新增 `vtrim doctor [--url <base>]`（`service/doctor.rs` + `service/disk.rs`）——只读诊断，**不创建账号库、不改配置**：
+- 账号数据：数据目录可写性与剩余/总磁盘（Windows 走 `GetDiskFreeSpaceExW`，其它平台退回 `df -k`）、账号列表（角色/禁用/初始密码/最后登录）、`must_change_password`、未过期会话数、历史登录失败次数、初始密码文件是否存在；
+- 单实例锁：`pid=0`（上次正常退出）/ pid 存活（服务在运行）/ pid 不存在（崩溃残留，下次启动自动接管）/ 读不到内容（正被独占持有）；
+- 服务探测：裸 TCP 读 `/api/health`（不引入 HTTP 客户端依赖），报出 `listening` 与 `tls_terminated`，并对"对外监听但无 TLS"给警告；
+- 建议：只打印当前真正适用的项（改密 / 删初始密码文件 / `--data-dir` / 反代 + HTTPS / 停服后备份）。
+`vtrim.lock` 的 pid 存活判定与 `--force` 已在 step-2 一并实现（见 `service/instancelock.rs`）。
 
 > **实现偏差记录（step-2）**：单实例锁在 Windows 上用 `share_mode(0)` 独占句柄（进程崩溃即由系统释放，且外部无法抢占，`--force` 在 Windows 上抢不到活着的实例）；正常退出时把锁文件写成 `pid=0` 作为"已正常退出"标记（Windows 持独占句柄时无法删文件），下次启动看到 `pid=0` 即安静接管，只有真正的崩溃残留（pid 已不存在）才 warn。
 
