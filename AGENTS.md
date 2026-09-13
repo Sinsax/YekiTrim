@@ -187,6 +187,18 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   找不到 `webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
   构建：`cd webui && npm install && npm run build`。`webui/dist` **已入库**
   （`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，否则端出旧界面。
+- **样式纪律（前端改样式前必读）**：唯一设计标准是
+  `docs/web-ui-mockups/sakura-cream.html`（配色/圆角/阴影/字体，v0.2 §4 全量取自它），
+  v5 壳与数据型组件的布局数值取自交互基准 `docs/web-ui-mockups/ia-demos/multiuser.html`。
+  - `webui/src/styles/tokens.css` = 色板/圆角/阴影/字体变量（**不得另取色**）；
+    `webui/src/styles/app.css` = 两份样稿组件类的**并集**（`.shell/.side/.proj/.snode/.foot-item/
+    .user-chip/.card/.card-blk/.btn/.mini-btn/.chip/.state-badge/.src-badge/.tb/.tabs/.wiz-src/
+    .player/.lane/.grid9/.meter/.login-*/.empty/...`）。
+  - **组件内不再重复定义这些基准类**（scoped 样式只写样稿里没有的东西，如行内删除按钮、
+    页面专属布局）；新增组件先在样稿里找同名类，找到就照抄数值。
+  - 关键数值：侧栏 268px、卡片 `22px 22px 18px`（`.card-lg`）/`16px`（`.card-blk`）、
+    页标题 26px、chip `2px 10px`、进度条 6px、贴纸 52px/`rotate(-5deg)`、
+    `.cols-main` = `1fr 300px`、主区 padding `18px 22px 60px`。
 - **前端信息架构（v5 工作台，`docs/plan/webui-workbench-redesign.md`）**：
   - 壳：左侧栏常驻（品牌 / 项目过滤 / 项目树：名称+来源徽标+进度徽标+可展开的
     预处理·切片·精修节点+占用 / 底部全局入口：首页·入库·设置(admin) + 用户 chip）；

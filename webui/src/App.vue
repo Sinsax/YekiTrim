@@ -185,11 +185,12 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.shell { display:flex; align-items:flex-start; min-height:100vh; }
-.main { flex:1; min-width:0; display:flex; flex-direction:column; }
-.crumbs { display:flex; align-items:center; gap:8px; padding:12px 20px; border-bottom:1px solid var(--line); background:rgba(255,247,243,.85); backdrop-filter:blur(10px); position:sticky; top:0; z-index:9; font-size:14px; }
+/* 壳：布局数值取自 multiuser.html（.shell/.side/.main/.crumbs），这里只补 sticky 吸顶 */
+.crumbs { position:sticky; top:0; z-index:9; padding:12px 22px; margin:0 0 14px;
+  background:rgba(255,247,243,.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+.crumbs b { color:var(--main-deep); font-size:15px; }
 .crumbs .sep { color:var(--ink-faint); }
-.crumbs .red-dot { position:absolute; margin-left:-4px; margin-top:-10px; width:7px; height:7px; border-radius:50%; background:var(--red); }
-.pwd-banner { display:flex; align-items:center; gap:8px; padding:8px 20px; background:var(--amber-soft); color:var(--amber-deep); font-size:12px; border-bottom:1px solid var(--line); }
-.content { padding:18px 20px 80px; max-width:1360px; width:100%; }
+.pwd-banner { display:flex; align-items:center; gap:8px; padding:8px 22px; background:var(--amber-soft);
+  color:var(--amber-deep); font-size:12px; border-bottom:1px solid var(--line); }
+.content { padding:18px 22px 60px; position:relative; z-index:1; }
 </style>

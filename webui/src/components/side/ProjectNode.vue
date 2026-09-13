@@ -18,7 +18,7 @@
         <span class="ic">{{ nodeDone(s.key) ? '✓' : '' }}</span>{{ s.name }}
         <span v-if="runningPct(s.key) != null" class="pct">{{ runningPct(s.key) }}%</span>
       </div>
-      <div class="snode size">占用 {{ humanBytes(p.bytes) }}</div>
+      <div class="snode size-node"><span class="size-tag">占用 {{ humanBytes(p.bytes) }}</span></div>
     </div>
   </div>
 </template>
@@ -83,27 +83,11 @@ function toggle() {
 </script>
 
 <style scoped>
-.proj { border-radius: 12px; }
-.proj-head { display:flex; align-items:center; gap:6px; padding:7px 8px; border-radius:10px; cursor:pointer; }
-.proj-head:hover { background:var(--bg-soft); }
-.tw { flex:none; font-size:9px; color:var(--ink-faint); transition:transform .15s; }
-.proj.open .tw { transform:rotate(90deg); }
-.nm { flex:1; min-width:0; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.src-badge { flex:none; font-size:10px; padding:1px 6px; border-radius:999px; }
-.src-rec { background:var(--main-soft); color:var(--pink-text); }
-.src-bili { background:var(--blue-soft); color:var(--blue-deep); }
-.src-local { background:var(--bg-soft); color:var(--ink-dim); }
-.badge { flex:none; font-size:10px; }
-.del { flex:none; padding:1px 7px; opacity:0; }
+/* 只保留基准样式里没有的三处：行内删除按钮、当前查看高亮、"占用"行 */
+.proj-head .del { padding:1px 7px; opacity:0; }
 .proj-head:hover .del { opacity:1; }
-.proj-steps { display:flex; flex-direction:column; gap:1px; padding:2px 0 6px 18px; }
-.snode { display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px; font-size:12px; color:var(--ink-dim); cursor:pointer; }
-.snode:hover { background:var(--bg-soft); color:var(--ink); }
-.snode.done { color:var(--green-deep); }
-.snode.cur { color:var(--pink-text); font-weight:600; }
-.snode.viewing { background:var(--main-soft); }
-.snode .ic { width:10px; font-size:10px; }
-.snode .pct { margin-left:auto; font-size:10px; color:var(--pink-text); }
-.snode.size { color:var(--ink-faint); font-size:11px; cursor:default; }
-.snode.size:hover { background:transparent; }
+.badge { font-size:10px; }
+.snode.viewing { background:var(--bg-soft); }
+.snode.size-node { color:var(--ink-faint); font-size:11px; cursor:default; }
+.snode.size-node:hover { background:transparent; color:var(--ink-faint); }
 </style>

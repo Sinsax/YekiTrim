@@ -19,22 +19,19 @@
         <span class="muted small">选一个来源，下面切换成对应的导入方式</span>
       </div>
 
-      <div class="src-grid">
-        <button
+      <div class="wiz-srcs">
+        <div
           v-for="s in sources"
           :key="s.key"
-          class="src-tile"
+          class="wiz-src"
           :class="{ on: source === s.key, off: s.disabled }"
-          :disabled="s.disabled"
-          @click="source = s.key"
+          @click="!s.disabled && (source = s.key)"
         >
-          <span class="src-ic"><Icon :name="s.icon" :size="18" /></span>
-          <span class="src-txt">
-            <b>{{ s.title }}</b>
-            <span class="muted small">{{ s.desc }}</span>
-          </span>
-          <span v-if="s.badge" class="chip n src-badge">{{ s.badge }}</span>
-        </button>
+          <div class="big"><Icon :name="s.icon" :size="28" /></div>
+          <b>{{ s.title }}</b>
+          <div class="hint">{{ s.desc }}</div>
+          <span v-if="s.badge" class="chip n mt-6">{{ s.badge }}</span>
+        </div>
       </div>
 
       <!-- ① 服务器文件（管理员）：任意位置浏览 -->
@@ -331,22 +328,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.src-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
-.src-tile { display:flex; align-items:center; gap:10px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--card); cursor:pointer; text-align:left; }
-.src-tile:hover { border-color:var(--main); }
-.src-tile.on { border-color:var(--main); background:var(--main-soft); }
-.src-tile.off { opacity:.55; cursor:not-allowed; }
-.src-ic { flex:none; width:34px; height:34px; border-radius:10px; background:var(--bg-soft); display:flex; align-items:center; justify-content:center; color:var(--pink-text); }
-.src-txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
-.src-txt b { font-size:13px; }
-.src-badge { flex:none; }
-.src-body { margin-top:12px; border-top:1px dashed var(--line-soft); padding-top:12px; }
-.file-box { max-height:240px; overflow:auto; border:1px solid var(--line); border-radius:var(--r-sm); padding:8px; background:var(--card); }
-.file-row { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px; cursor:pointer; color:var(--ink-dim); }
-.file-row:hover { background:var(--bg-soft); }
-.file-row.selected { background:var(--main-soft); color:var(--main-deep); border:1px solid var(--main); }
-.file-row.video { color:var(--ink); }
-.file-icon { flex:none; display:flex; }
-.file-row .mono { font-size:12px; word-break:break-all; }
-.hint { font-size:12px; color:var(--ink-dim); }
+/* 只补基准样式里没有的：来源面板与磁贴内文字的对齐细节 */
+.wiz-src .hint { margin-top:4px; }
+.src-body { margin-top:14px; border-top:1px dashed var(--line-soft); padding-top:14px; }
 </style>

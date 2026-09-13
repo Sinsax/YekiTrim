@@ -47,14 +47,15 @@ export function setReady(v) {
 }
 
 /** 状态徽标样式类（与服务端 state 一致）。 */
+/** 会话状态 → 样稿的状态徽标类（`.st-*`，multiuser.html:129-134）。 */
 export function stateClass(state) {
   switch (state) {
-    case 'open': return 'p'
-    case 'closing': return 'a'
-    case 'finalized': return 'g'
-    case 'failed': return 'r'
-    case 'unassigned': return 'b'
-    default: return 'n'
+    case 'open': return 'st-open'
+    case 'closing': return 'st-closing'
+    case 'finalized': return 'st-finalized'
+    case 'failed': return 'st-failed'
+    case 'unassigned': return 'st-pending'
+    default: return 'st-pending'
   }
 }
 
