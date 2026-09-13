@@ -16,6 +16,7 @@ pub mod auth;
 pub mod db;
 pub mod disk;
 pub mod doctor;
+pub mod ingest;
 pub mod instancelock;
 pub mod projects;
 pub mod user;

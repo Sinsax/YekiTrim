@@ -122,6 +122,30 @@ max_disk_bytes = 0
 disk_watermark_pct = 10
 # 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
 default_quota_bytes = 0
+
+[ingest]
+# 录播姬 webhook：启用后 POST /api/ingest/bililive/<token> 才会被接受
+# token 用 `vtrim ingest token` 生成（只显示一次明文，这里只存哈希）
+webhook_enabled = false
+token_hash = ""
+# 来源 IP 白名单（空 = 不限制；同机部署建议 ["127.0.0.1", "::1"]）
+allow_ips = []
+
+[ingest.recorder]
+# 录播姬输出目录（必须与 vtrim server 同机或同可读盘）
+root = ""
+# 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
+watch_interval_mins = 10
+# SessionEnded 之后再等多久没有新 FileClosed 就认为本场结束
+finalize_idle_mins = 5
+# 落位策略：true = 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
+move_into_managed = true
+# 多分片会话合并为单个 source.mp4（ffmpeg -f concat -c copy）
+concat_files = true
+# 认定为录像的扩展名
+extensions = ["flv", "mkv", "mp4", "ts"]
+# 入库后自动执行到哪一步：none | transcribe | detect | cut
+auto_pipeline = "detect"
 "#;
 
 /// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
@@ -406,6 +430,44 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.storage.default_quota_bytes != 0 {
         base.storage.default_quota_bytes = overlay.storage.default_quota_bytes;
+    }
+
+    // [ingest]：同样只在项目配置显式写了非默认值时才覆盖
+    if overlay.ingest.webhook_enabled {
+        base.ingest.webhook_enabled = true;
+    }
+    if !overlay.ingest.token_hash.is_empty() {
+        base.ingest.token_hash = overlay.ingest.token_hash.clone();
+    }
+    for ip in &overlay.ingest.allow_ips {
+        if !base.ingest.allow_ips.contains(ip) {
+            base.ingest.allow_ips.push(ip.clone());
+        }
+    }
+    if !overlay.ingest.recorder.root.is_empty() {
+        base.ingest.recorder.root = overlay.ingest.recorder.root.clone();
+    }
+    if overlay.ingest.recorder.watch_interval_mins != 10 {
+        base.ingest.recorder.watch_interval_mins = overlay.ingest.recorder.watch_interval_mins;
+    }
+    if overlay.ingest.recorder.finalize_idle_mins != 5 {
+        base.ingest.recorder.finalize_idle_mins = overlay.ingest.recorder.finalize_idle_mins;
+    }
+    if !overlay.ingest.recorder.move_into_managed {
+        base.ingest.recorder.move_into_managed = false;
+    }
+    if !overlay.ingest.recorder.concat_files {
+        base.ingest.recorder.concat_files = false;
+    }
+    if !overlay.ingest.recorder.extensions.is_empty() {
+        for ext in &overlay.ingest.recorder.extensions {
+            if !base.ingest.recorder.extensions.contains(ext) {
+                base.ingest.recorder.extensions.push(ext.clone());
+            }
+        }
+    }
+    if overlay.ingest.recorder.auto_pipeline != "detect" {
+        base.ingest.recorder.auto_pipeline = overlay.ingest.recorder.auto_pipeline.clone();
     }
 }
 

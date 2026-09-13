@@ -13,6 +13,8 @@
 
 pub mod api;
 pub mod auth;
+pub mod ingest;
+pub mod ingest_worker;
 pub mod jobs;
 pub mod media;
 pub mod model;

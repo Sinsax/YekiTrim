@@ -141,8 +141,25 @@ pub enum Command {
     #[command(subcommand)]
     User(UserAction),
 
+    /// 录播姬采集（webhook token / 配置概览）
+    #[command(subcommand)]
+    Ingest(IngestAction),
+
     /// 启动本地 WebUI 服务（浏览器可视化操作全流程）
     Server(crate::server::ServerArgs),
+}
+
+/// 录播姬采集子命令（P3）
+#[derive(Subcommand)]
+pub enum IngestAction {
+    /// 生成 webhook token（只显示一次，写 [ingest] token_hash 并开启 webhook）
+    Token {
+        /// 只关闭 webhook（保留已生成的 token）
+        #[arg(long)]
+        disable: bool,
+    },
+    /// 显示采集配置概览（不打印任何秘密）
+    Status,
 }
 
 /// 账号管理子命令（多用户服务 P1：CLI 侧；HTTP 登录在下一步接入）

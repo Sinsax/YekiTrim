@@ -278,6 +278,14 @@ Command::User(action) => {
             }
         }
 
+        Command::Ingest(action) => {
+            use cli::IngestAction;
+            match action {
+                IngestAction::Token { disable } => crate::service::ingest::cmd_token(*disable)?,
+                IngestAction::Status => crate::service::ingest::cmd_status()?,
+            }
+        }
+
 Command::Doctor { url } => {
             crate::service::cmd_doctor(url)?;
         }
