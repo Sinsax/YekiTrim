@@ -1,36 +1,9 @@
-// 项目列表（M2）：`/api/projects` 只回**本人**项目。
+// 项目列表与租户文件（M2/M3 起的项目托管接口）。
 //
-// 服务端 P2 起归属由 DB 决定，前端不再需要（也不应该）传工程路径。
-import { reactive } from 'vue'
+// - `workbench.js` 持有列表状态；
+// - 这里保留"写操作 + 展示工具"（删除项目/删源/建项目/浏览租户文件/单位格式化）。
 import { api } from '../api/client'
 
-export const projectState = reactive({
-  list: [],
-  loading: false,
-  error: ''
-})
-
-export async function loadProjects() {
-  projectState.loading = true
-  projectState.error = ''
-  try {
-    const d = await api('/api/projects')
-    projectState.list = Array.isArray(d?.projects) ? d.projects : []
-  } catch (e) {
-    projectState.error = e?.message || '读取项目列表失败'
-    projectState.list = []
-  } finally {
-    projectState.loading = false
-  }
-  return projectState.list
-}
-
-export function projectById(pid) {
-  if (pid == null) return null
-  return projectState.list.find(p => String(p.id) === String(pid)) || null
-}
-
-/** 来源展示文字：`录制 23058` / `B站下载` / `本机文件`。 */
 export function sourceLabel(p) {
   const label = p?.source?.label
   if (label) return label
@@ -40,6 +13,12 @@ export function sourceLabel(p) {
     case 'local': return '本机文件'
     default: return '未知来源'
   }
+}
+
+export function sourceBadge(p) {
+  if (p?.source?.kind === 'recorder' && p?.room) return `录制 ${p.room}`
+  if (p?.source?.kind === 'bilibili') return 'B站'
+  return sourceLabel(p)
 }
 
 export function humanBytes(n) {
@@ -56,14 +35,11 @@ export function humanBytes(n) {
 }
 
 export async function deleteProject(pid) {
-  await api('/api/projects/' + encodeURIComponent(pid), { method: 'DELETE' })
-  await loadProjects()
+  return api('/api/projects/' + encodeURIComponent(pid), { method: 'DELETE' })
 }
 
 export async function deleteProjectSource(pid) {
-  const r = await api('/api/projects/' + encodeURIComponent(pid) + '/source', { method: 'DELETE' })
-  await loadProjects()
-  return r
+  return api('/api/projects/' + encodeURIComponent(pid) + '/source', { method: 'DELETE' })
 }
 
 /** 服务器本机文件浏览（仅 admin，囚笼在租户根内，路径一律相对）。 */
@@ -71,12 +47,10 @@ export async function listTenantFiles(path = '') {
   return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ path }) })
 }
 
-/** 用服务器本机文件建项目（仅 admin）。 */
+/** 用服务器本机文件建项目（仅 admin，永不接受上传）。 */
 export async function createLocalProject({ dir, input = '', danmaku = '', output_dir = '' }) {
-  const r = await api('/api/projects', {
+  return api('/api/projects', {
     method: 'POST',
     body: JSON.stringify({ source: { kind: 'local', dir, input, danmaku, output_dir } })
   })
-  await loadProjects()
-  return r
 }

@@ -37,31 +37,17 @@
         <div v-if="ingestState.loading" class="row muted small"><span class="spinner"></span> 加载中…</div>
         <div v-else-if="!ingestState.records.length" class="muted small">暂无记录</div>
         <div v-else class="records">
-          <div v-for="r in ingestState.records" :key="r.session_id" class="rec-row">
-            <div class="flex-1">
-              <div class="row">
-                <b>房间 {{ r.room_id || '-' }}</b>
-                <span class="chip" :class="stateClass(r.state)">{{ r.state_label }}</span>
-                <span class="muted small">{{ fmtTime(r.started_at) }}</span>
-              </div>
-              <div class="muted small mt-2">
-                {{ r.file_count }} 个文件 · {{ fmtBytes(r.bytes) }}
-                <template v-if="r.auto_pipeline"> · 自动策略 {{ pipelineLabel(r.auto_pipeline) }}</template>
-                <template v-if="r.project_id"> · <router-link :to="`/project/${r.project_id}/slices`">项目 #{{ r.project_id }}</router-link></template>
-              </div>
-              <div v-if="r.error" class="small err mt-2">{{ r.error }}</div>
-            </div>
-            <div class="row">
-              <button v-if="r.state === 'failed'" class="mini-btn" @click="retry(r)">重试</button>
-              <template v-if="isAdmin && !r.owner_id">
-                <select v-model="assignTo[r.session_id]" class="mini-select">
+          <SessionRow v-for="r in ingestState.records" :key="r.session_id" :r="r" @changed="load">
+            <template #actions="{ r: row }">
+              <template v-if="isAdmin && !row.owner_id">
+                <select v-model="assignTo[row.session_id]" class="mini-select">
                   <option value="">指派给…</option>
                   <option v-for="u in users" :key="u.id" :value="u.id">{{ u.username }}</option>
                 </select>
-                <button class="mini-btn" :disabled="!assignTo[r.session_id]" @click="assign(r)">指派</button>
+                <button class="mini-btn" :disabled="!assignTo[row.session_id]" @click="assign(row)">指派</button>
               </template>
-            </div>
-          </div>
+            </template>
+          </SessionRow>
         </div>
       </div>
     </div>
@@ -106,18 +92,16 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import SessionRow from '../components/ingest/SessionRow.vue'
 import { api } from '../api/client'
 import { authState } from '../stores/auth'
 import { toast } from '../stores/toast'
-import { PIPELINES, ingestApi, pipelineLabel } from '../api/ingest'
+import { PIPELINES, ingestApi } from '../api/ingest'
 import {
-  fmtBytes,
-  fmtTime,
   ingestState,
   loadRecords,
   loadRules,
-  saveRules,
-  stateClass
+  saveRules
 } from '../stores/ingest'
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
