@@ -19,14 +19,33 @@
     <template v-else>
       <div v-if="loading" class="card"><div class="skeleton"></div></div>
 
-      <!-- 未初始化 -->
-      <div v-else-if="!ready" class="card">
-        <h2>未初始化精修项目</h2>
-        <p class="muted small">将解析字幕/弹幕并创建 polish.toml。</p>
-        <div class="row mt-8">
-          <button class="btn btn-primary" :disabled="jobRunning" @click="initProject">
-            <Icon name="sparkles" :size="14" /> 初始化
-          </button>
+      <!-- 列表模式：没有上次操作记录 → 只显示片段列表 + 空态，视频/编辑器不加载 -->
+      <div v-else-if="!clipName" class="card card-blk">
+        <div class="row spread mb-8">
+          <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
+          <span class="muted small">点击一个片段进入精修编辑器</span>
+        </div>
+        <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
+        <div class="empty small mt-12">未选择片段：编辑器与视频会在选中片段后加载。</div>
+      </div>
+
+      <!-- 未初始化：初始化卡 + 片段列表（否则无法切换/初始化其他片段） -->
+      <div v-else-if="!ready" class="init-wrap">
+        <div class="card">
+          <h2>未初始化精修项目</h2>
+          <p class="muted small">将解析字幕/弹幕并创建 polish.toml。</p>
+          <div class="row mt-8">
+            <button class="btn btn-primary" :disabled="jobRunning" @click="initProject">
+              <Icon name="sparkles" :size="14" /> 初始化
+            </button>
+          </div>
+        </div>
+        <div class="card card-blk">
+          <div class="row spread mb-8">
+            <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
+            <span class="muted small">点击切换，或在行内初始化</span>
+          </div>
+          <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
         </div>
       </div>
 
@@ -90,23 +109,7 @@
               <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
               <span class="muted small">点击切换</span>
             </div>
-            <div class="frag-list">
-              <div
-                v-for="(c, i) in clips"
-                :key="c.name"
-                class="frag-row"
-                :class="{ on: c.name === clipName }"
-                @click="gotoClip(c.name)"
-              >
-                <span class="frag-title">{{ i + 1 }} · {{ clipRow(c).title }}</span>
-                <span class="chip" :class="clipRow(c).chip">{{ clipRow(c).state }}</span>
-                <button
-                  v-if="!clipRow(c).initialized"
-                  class="mini-btn"
-                  @click.stop="initClip(c)"
-                >初始化</button>
-              </div>
-            </div>
+            <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
           </div>
         </div>
 
@@ -204,6 +207,7 @@ import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
 import PolishPreview from '../components/PolishPreview.vue'
 import TimelineEditor from '../components/TimelineEditor.vue'
+import FragmentList from '../components/polish/FragmentList.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
 import { mediaUrl } from '../utils'
 import { api } from '../api/client'
@@ -223,6 +227,13 @@ const pid = ref(routePid)
 const routeCfg = scopeQ(pid.value)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
+// 记住最后操作过的片段：下次从侧栏进精修页自动回到它（每项目一个键）
+const LAST_CLIP_KEY = computed(() => 'vtrim.polish.last.' + pid.value)
+watch(clipName, (name) => {
+  if (name) { try { localStorage.setItem(LAST_CLIP_KEY.value, name) } catch {} }
+  // 片段切换只改路由，必须在这里触发加载（旧代码漏了：点片段行编辑器不切换）
+  load()
+})
 const title = ref('精修编辑器')
 const loading = ref(false)
 const ready = ref(false)
@@ -323,8 +334,8 @@ function togglePreviewPlay() {
 }
 
 async function load() {
-  // 入口语义（v5 §2.6）：无 :clip → 默认定位「精修中」片段（否则第一个）；
-  // 无任何切片 → 空态引导；深链无效 → 回退默认片段 + toast。
+  // 入口语义（v5 §2.6）：无 :clip → 上次操作过的片段，没有 → 列表模式；
+  // 无任何切片 → 空态引导；深链无效 → 回退列表 + toast。
   await loadClips()
   if (!clips.value.length) {
     dir.value = ''
@@ -332,14 +343,23 @@ async function load() {
     cfg.value = null
     return
   }
-  const wanted = clipName.value || defaultClipName()
-  const entry = clips.value.find((c) => c.name === wanted)
-  if (!entry) {
-    if (clipName.value) toast(`片段 ${clipName.value} 不存在，已回退到 ${defaultClipName()}`, 'err')
-    dir.value = clipDirOf(defaultClipName())
-  } else {
-    dir.value = entry.dir || clipDirOf(wanted)
+  // 无 :clip → 自动打开**上次操作过的**片段；没有记录（或已失效）→
+  // 片段列表 + 空态（视频/编辑器都不加载），不再随手挑一个默认片段。
+  let wanted = clipName.value
+  if (!wanted) {
+    let last = null
+    try { last = localStorage.getItem(LAST_CLIP_KEY.value) } catch {}
+    if (last && clips.value.some((c) => c.name === last)) wanted = last
   }
+  const entry = wanted ? clips.value.find((c) => c.name === wanted) : null
+  if (!entry) {
+    if (clipName.value) toast(`片段 ${clipName.value} 不存在，请从列表重新选择`, 'err')
+    dir.value = ''
+    ready.value = false
+    cfg.value = null
+    return
+  }
+  dir.value = entry.dir || clipDirOf(wanted)
   if (clipName.value !== wanted) {
     router.replace({ name: 'project-polish-clip', params: { pid: pid.value, clip: wanted } })
   }
@@ -377,25 +397,6 @@ function thumbSrc(c) {
 function clipDirOf(name) {
   const hit = clips.value.find((c) => c.name === name)
   return hit?.dir || name
-}
-
-/** 默认片段：已 process 未渲染（"精修中"）优先，其次第一个未渲染，最后第一个。 */
-function defaultClipName() {
-  const list = clips.value
-  const polishedOf = (name) => {
-    const dir = (list.find((c) => c.name === name)?.dir || '').replace(/\\/g, '/').toLowerCase()
-    return polishByDir.value[dir] || null
-  }
-  const mid = list.find((c) => {
-    const p = polishedOf(c.name)
-    return p && p.processed && !p.rendered
-  })
-  if (mid) return mid.name
-  const unrendered = list.find((c) => {
-    const p = polishedOf(c.name)
-    return !p || !p.rendered
-  })
-  return (unrendered || list[0]).name
 }
 
 async function loadClips() {
@@ -436,6 +437,13 @@ async function initClip(c) {
   // 绝对目录（服务端 scope 守卫校验归属），不要自己算相对前缀
   startJob('init', () => initPolish(pid.value, c.dir), { after: loadClips })
   toast('正在初始化 ' + c.name)
+}
+
+const fragRows = computed(() => clips.value.map((c) => ({ name: c.name, ...clipRow(c) })))
+
+function initClipByName(name) {
+  const c = clips.value.find((x) => x.name === name)
+  if (c) initClip(c)
 }
 
 function gotoClip(name) {
@@ -723,6 +731,8 @@ watch(dir, load)
 
 <style scoped>
 .top-cards { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+.init-wrap { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+@media (max-width: 900px) { .init-wrap { grid-template-columns:1fr; } }
 .action-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; }
 .top-cards .btn { padding:5px 13px; font-size:12px; }
 .save-btn { margin-left:auto; }

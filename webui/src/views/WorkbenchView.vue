@@ -25,12 +25,12 @@
           :key="s.key"
           class="wiz-src"
           :class="{ on: source === s.key, off: s.disabled }"
+          :title="s.desc"
           @click="!s.disabled && (source = s.key)"
         >
-          <div class="big"><Icon :name="s.icon" :size="28" /></div>
+          <Icon :name="s.icon" :size="15" />
           <b>{{ s.title }}</b>
-          <div class="hint">{{ s.desc }}</div>
-          <span v-if="s.badge" class="chip n mt-6">{{ s.badge }}</span>
+          <span v-if="s.badge" class="chip n">{{ s.badge }}</span>
         </div>
       </div>
 
@@ -40,7 +40,7 @@
           <div class="row">
             <div class="flex-1 minw-240">
               <label>目录（服务器上的任意绝对路径，可留空去托管目录）</label>
-              <input v-model.trim="localDir" placeholder="例如 F:/media/2025-09-12" @keyup.enter="browseLocal">
+              <input v-model.trim="localDir" placeholder="例如 F:/media/2025-09-12" autocomplete="off" @keyup.enter="browseLocal">
             </div>
             <button class="mini-btn mt-20" @click="browseLocal">浏览…</button>
             <button class="mini-btn mt-20" :disabled="!localDir" @click="goUpLocal">上一级</button>
@@ -126,15 +126,6 @@
       </div>
     </div>
 
-    <!-- ═════ 录制导入（最近）：活动流，只看不进 ═════ -->
-    <div class="card card-blk">
-      <div class="row spread mb-8">
-        <b class="t" style="margin:0">录制导入（最近）</b>
-        <router-link class="mini-btn" to="/ingest">全部记录</router-link>
-      </div>
-      <SessionRow v-for="r in recent" :key="r.session_id" :r="r" @changed="reloadIngest" />
-      <div v-if="!recent.length" class="hint">暂无导入记录</div>
-    </div>
   </div>
 </template>
 
@@ -261,7 +252,6 @@ const ingestReady = computed(() => ingestState.ready)
 const pending = computed(() =>
   (ingestState.records || []).filter((r) => !r.project_id && (r.state === 'unassigned' || r.state === 'failed'))
 )
-const recent = computed(() => (ingestState.records || []).slice(0, 4))
 
 async function reloadIngest() {
   await loadRecords(isAdmin.value ? 'unassigned' : 'mine')
@@ -329,7 +319,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-/* 只补基准样式里没有的：来源面板与磁贴内文字的对齐细节 */
-.wiz-src .hint { margin-top:4px; }
+/* 来源选择已改紧凑一行，说明走 title 悬停 */
 .src-body { margin-top:14px; border-top:1px dashed var(--line-soft); padding-top:14px; }
 </style>

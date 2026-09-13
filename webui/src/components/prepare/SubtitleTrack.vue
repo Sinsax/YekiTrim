@@ -7,10 +7,12 @@
         class="seg"
         :class="{ editing: editing === i, active: isActive(s) }"
         :style="styleOf(s)"
-        :title="`${fmt(s.start)} - ${fmt(s.end)}｜点击编辑文本，拖动调整时间`"
+        :title="`${fmt(s.start)} - ${fmt(s.end)}｜点击编辑文本，拖动平移，拖边缘改起止，双击删除`"
         @pointerdown.stop="startDrag(i, $event)"
         @click.stop="beginEdit(i)"
+        @dblclick.stop="removeSeg(i)"
       >
+        <span class="rz l" title="拖动调整开始时间" @pointerdown.stop="startResize(i, 'start', $event)"></span>
         <input
           v-if="editing === i"
           ref="inputRef"
@@ -22,18 +24,20 @@
           @pointerdown.stop
         />
         <span v-else class="seg-text">{{ s.text }}</span>
+        <span class="rz r" title="拖动调整结束时间" @pointerdown.stop="startResize(i, 'end', $event)"></span>
       </div>
       <div class="playhead" :style="{ left: pct(currentTime) + '%' }"></div>
     </div>
     <div class="lane-legend muted small">
       <span>{{ segments.length }} 段字幕</span>
-      <span>点击块编辑文本 · 拖动块平移时间 · 点空白跳转</span>
+      <span>点击编辑文本 · 拖动平移 · 拖边缘改起止 · 双击删除 · 点空白跳转</span>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, ref } from 'vue'
+import { confirmDialog } from '../../stores/dialog'
 
 const props = defineProps({
   segments: { type: Array, default: () => [] },
@@ -80,8 +84,10 @@ function seekFromEvent(e) {
   emit('seek', Math.max(0, ratio * span.value))
 }
 
+let gestureEndAt = 0   // 拖拽/缩放松手后的 click 不该再打开文本编辑
 function beginEdit(i) {
   if (drag?.moved) return
+  if (Date.now() - gestureEndAt < 200) return
   editing.value = i
   draft.value = props.segments[i]?.text || ''
   nextTick(() => {
@@ -103,6 +109,58 @@ function commit(i) {
   emit('save', next)
 }
 
+// ---- 双击删除（与精修时间轴一致：确认后删除并保存）----
+async function removeSeg(i) {
+  const s = props.segments[i]
+  if (!s) return
+  const ok = await confirmDialog(`删除这条字幕？「${(s.text || '').slice(0, 24)}…」`, { title: '删除字幕', danger: true })
+  if (!ok) return
+  const next = props.segments.filter((_, idx) => idx !== i)
+  editing.value = -1
+  emit('save', next, { committed: true })
+}
+
+// ---- 拖动边缘改起止（对齐精修时间轴的右缘缩放）----
+// 注意：松手时的终值必须由 drag.seg + 累积位移重算，不能读 props.segments ——
+// 父组件对 transient 更新的处理是异步的，同一事件循环里 props 还是旧值，提交会丢改动。
+let resize = null
+function resizeNext(r, dt) {
+  const s = r.seg
+  return props.segments.map((cur, idx) => {
+    if (idx !== r.i) return cur
+    if (r.edge === 'start') {
+      const start = Math.min(Math.max(0, (s.start || 0) + dt), (s.end || 0.1) - 0.1)
+      return { ...cur, start: Math.round(start * 100) / 100 }
+    }
+    const end = Math.max((s.start || 0) + 0.1, (s.end || 0) + dt)
+    return { ...cur, end: Math.round(end * 100) / 100 }
+  })
+}
+function startResize(i, edge, e) {
+  const rect = laneRef.value?.getBoundingClientRect()
+  if (!rect) return
+  resize = { i, edge, x0: e.clientX, dt: 0, seg: { ...props.segments[i] }, perPx: span.value / rect.width, moved: false }
+  window.addEventListener('pointermove', onResizeMove)
+  window.addEventListener('pointerup', onResizeUp, { once: true })
+}
+
+function onResizeMove(e) {
+  if (!resize) return
+  resize.dt = (e.clientX - resize.x0) * resize.perPx
+  if (Math.abs(e.clientX - resize.x0) > 2) resize.moved = true
+  emit('save', resizeNext(resize, resize.dt), { transient: true })
+}
+
+function onResizeUp() {
+  window.removeEventListener('pointermove', onResizeMove)
+  const r = resize
+  resize = null
+  if (r?.moved) {
+    gestureEndAt = Date.now()
+    emit('save', resizeNext(r, r.dt), { committed: true })
+  }
+}
+
 // ---- 拖动平移时间 ----
 function startDrag(i, e) {
   const rect = laneRef.value?.getBoundingClientRect()
@@ -113,23 +171,29 @@ function startDrag(i, e) {
   window.addEventListener('pointerup', onUp, { once: true })
 }
 
+function dragNext(d, dx) {
+  const dur = Math.max(0.1, (d.seg.end || 0) - (d.seg.start || 0))
+  const start = Math.max(0, (d.seg.start || 0) + dx)
+  return props.segments.map((s, idx) =>
+    idx === d.i ? { ...s, start, end: start + dur } : s
+  )
+}
+
 function onMove(e) {
   if (!drag) return
-  const dx = (e.clientX - drag.x0) * drag.perPx
+  drag.dx = (e.clientX - drag.x0) * drag.perPx
   if (Math.abs(e.clientX - drag.x0) > 3) drag.moved = true
-  const dur = Math.max(0.1, (drag.seg.end || 0) - (drag.seg.start || 0))
-  const start = Math.max(0, (drag.seg.start || 0) + dx)
-  const next = props.segments.map((s, idx) =>
-    idx === drag.i ? { ...s, start, end: start + dur } : s
-  )
-  emit('save', next, { transient: true })
+  emit('save', dragNext(drag, drag.dx), { transient: true })
 }
 
 function onUp() {
   window.removeEventListener('pointermove', onMove)
-  const moved = drag?.moved
+  const d = drag
   drag = null
-  if (moved) emit('save', props.segments, { committed: true })
+  if (d?.moved) {
+    gestureEndAt = Date.now()
+    emit('save', dragNext(d, d.dx || 0), { committed: true })
+  }
 }
 </script>
 
@@ -139,6 +203,11 @@ function onUp() {
 .seg { position:absolute; top:4px; bottom:4px; border-radius:7px; background:#5E7FD8; color:#fff; font-size:10px; display:flex; align-items:center; overflow:hidden; padding:0 4px; cursor:text; user-select:none; }
 .seg-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
 .seg.active { outline:2px solid var(--main); }
+/* 左右缘微区域拖拽改起止；hover 时高亮提示 */
+.rz { position:absolute; top:0; bottom:0; width:6px; cursor:ew-resize; }
+.rz.l { left:0; border-radius:7px 0 0 7px; }
+.rz.r { right:0; border-radius:0 7px 7px 0; }
+.rz:hover { background:rgba(255,255,255,.35); }
 .seg.editing { z-index:3; box-shadow:var(--shadow-hover); }
 .seg-input { width:100%; height:100%; padding:0 4px; font-size:11px; border:none; border-radius:6px; background:#fff; color:var(--ink); }
 .playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--red); pointer-events:none; }

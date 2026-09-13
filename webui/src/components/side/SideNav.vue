@@ -9,7 +9,7 @@
     </div>
 
     <div class="side-filter">
-      <input v-model.trim="wb.filter" placeholder="过滤项目…" />
+      <input v-model.trim="wb.filter" placeholder="过滤项目…" autocomplete="off" />
     </div>
 
     <div class="side-list">

@@ -257,13 +257,14 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .login-wrap { display:flex; flex-direction:column; gap:12px; }
 
 /* ---------- 新建 / 导入来源选择（multiuser:189-195） ---------- */
-.wiz-srcs { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:14px 0; }
-.wiz-src { border:1.5px solid var(--line); border-radius:var(--r); padding:20px; text-align:center; cursor:pointer;
-  transition:.15s; background:var(--card); }
-.wiz-src:hover { border-color:var(--main); background:var(--main-soft); transform:translateY(-2px); }
-.wiz-src .big { font-size:30px; }
-.wiz-src b { display:block; margin-top:6px; }
-.wiz-src.on { border-color:var(--main); background:var(--main-soft); }
+/* 来源选择：一行紧凑分段（说明放 title 悬停），不再用大磁贴 */
+.wiz-srcs { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 0; }
+.wiz-src { flex:1; min-width:140px; display:flex; align-items:center; justify-content:center; gap:7px;
+  padding:8px 12px; border:1.5px solid var(--line); border-radius:var(--r-sm); cursor:pointer;
+  transition:.15s; background:var(--card); color:var(--ink-dim); }
+.wiz-src:hover { border-color:var(--main); color:var(--ink); }
+.wiz-src b { font-size:12.5px; color:inherit; }
+.wiz-src.on { border-color:var(--main); background:var(--main-soft); color:var(--main-deep); }
 .wiz-src.off { opacity:.5; cursor:not-allowed; }
 .preview-card { display:flex; gap:14px; background:var(--bg-soft); border:1px solid var(--line-soft);
   border-radius:var(--r-sm); padding:14px; margin:12px 0; }
@@ -370,5 +371,5 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .sticky-side { position:sticky; top:74px; align-self:flex-start; max-height:calc(100vh - 90px); overflow:auto; }
 
 @media (max-width:1000px) {
-  .cols-main, .cols-2, .wiz-srcs { grid-template-columns:1fr; }
+  .cols-main, .cols-2 { grid-template-columns:1fr; }
 }
