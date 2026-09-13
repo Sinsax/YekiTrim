@@ -24,7 +24,7 @@
           <b>设置</b><span class="sep">/</span><span class="muted small">平台配置与模型</span>
         </template>
         <template v-else-if="route.params.pid">
-          <span>{{ currentProject?.name || ('项目 #' + route.params.pid) }}</span>
+          <span class="crumb-proj" :title="currentProject?.name">{{ currentProject?.name || ('项目 #' + route.params.pid) }}</span>
           <span class="sep">/</span>
           <b>{{ stepName }}</b>
           <span v-if="currentProject?.source?.label" class="muted small" style="margin-left:8px">
@@ -191,6 +191,8 @@ onMounted(() => {
   background:rgba(255,247,243,.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
 .crumbs b { color:var(--main-deep); font-size:15px; }
 .crumbs .sep { color:var(--ink-faint); }
+/* 长项目名截断，别把「任务」按钮顶走 */
+.crumbs .crumb-proj { max-width:42vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pwd-banner { display:flex; align-items:center; gap:8px; padding:8px 22px; background:var(--amber-soft);
   color:var(--amber-deep); font-size:12px; border-bottom:1px solid var(--line); }
 .content { padding:18px 22px 60px; position:relative; z-index:1; }

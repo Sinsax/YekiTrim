@@ -3,7 +3,7 @@
     <div class="proj-head" @click="toggle">
       <span class="tw">▶</span>
       <span class="nm" :title="p.name">{{ p.name }}</span>
-      <span class="src-badge" :class="badgeClass">{{ sourceBadge(p) }}</span>
+      <span class="src-badge" :class="badgeClass" :title="sourceBadge(p)">{{ sourceBadge(p) }}</span>
       <span class="chip badge" :class="progressChip">{{ currentLabel }}</span>
       <button class="mini-btn del" title="删除项目（只删 vtrim.toml）" @click.stop="emit('remove', p)">×</button>
     </div>
@@ -87,6 +87,8 @@ function toggle() {
 .proj-head .del { padding:1px 7px; opacity:0; }
 .proj-head:hover .del { opacity:1; }
 .badge { font-size:10px; }
+/* 进度 chip（如「预处理 42%」）保持完整单词显示：不许被长名挤瘪换行 */
+.proj-head .badge { flex:none; white-space:nowrap; }
 .snode.viewing { background:var(--bg-soft); }
 .snode.size-node { color:var(--ink-faint); font-size:11px; cursor:default; }
 .snode.size-node:hover { background:transparent; color:var(--ink-faint); }
