@@ -70,6 +70,10 @@ pub fn remember_last(config_file: &Path, workspace_root: Option<&Path>) {
 }
 
 /// 将项目 vtrim.toml 加入已知项目列表（不重复）。
+///
+/// P2 起项目列表以 `projects` 表为准，这个函数只在过渡期别名写 `server.toml` 时用，
+/// 保留是为了让"启动时只读导入"这条迁移路径有对应的写入方。
+#[allow(dead_code)]
 pub fn remember_project(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
     update_state(|state| {

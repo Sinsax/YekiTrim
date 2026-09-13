@@ -54,7 +54,8 @@ pub fn project_snapshot(ws: &Workspace) -> serde_json::Value {
     })
 }
 
-/// 项目摘要（列表页用）。
+/// 项目摘要（旧列表页形态；P2 起 `/api/projects` 用 `service::projects::summary_json`）。
+#[allow(dead_code)]
 pub fn project_summary(ws: &Workspace) -> serde_json::Value {
     let cfg = ws.load_config().ok();
     let output = ws.output_dir();

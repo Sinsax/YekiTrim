@@ -17,6 +17,7 @@ pub mod jobs;
 pub mod media;
 pub mod model;
 pub mod persist;
+pub mod scope;
 pub mod web;
 
 use std::net::SocketAddr;
