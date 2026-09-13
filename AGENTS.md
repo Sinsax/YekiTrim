@@ -188,10 +188,19 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   构建：`cd webui && npm install && npm run build`。`webui/dist` **已入库**
   （`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，否则端出旧界面。
 - **前端信息架构（v5 工作台，`docs/plan/webui-workbench-redesign.md`）**：
-  - 壳：左侧栏常驻（品牌 / ＋新建项目 / 项目过滤 / 项目树：名称+来源徽标+进度徽标+可展开的
-    预处理·切片·精修节点+占用 / 底部全局入口列表 + 用户 chip）+ 面包屑 + 内容区；
-    任务抽屉、新建向导、改密弹窗、Toast/Dialog 挂在壳上；登录页不套壳。
-  - 路由：`#/workbench`（项目列表 + 录制导入最近）、`#/p/:pid/{prepare,slices,polish,polish/:clip,settings}`、
+  - 壳：左侧栏常驻（品牌 / 项目过滤 / 项目树：名称+来源徽标+进度徽标+可展开的
+    预处理·切片·精修节点+占用 / 底部全局入口：首页·入库·设置(admin) + 用户 chip）；
+    面包屑 + 内容区；任务抽屉、改密弹窗、Toast/Dialog 挂在壳上；登录页不套壳。
+    **侧栏不再有「＋新建项目」与「当前项目」入口**（建项目在首页，导航靠项目树/面包屑）。
+  - 首页 `#/workbench` = **「新增项目」区块**（先选来源，再切换成对应的导入方式）+
+    「录制导入（最近）」；**没有项目列表**（原先的项目表已移除）：
+    - 服务器文件（仅 admin）：首页内嵌目录浏览器（任意绝对路径 + 快捷入口 + 上一级），
+      选一个视频 → 新建项目；非 admin 显示"仅管理员"；
+    - 录播姬录制：列出待处理会话（`unassigned`/`failed`）供 admin 指派并入库 + 「扫描录制目录」；
+    - B 站链接：P4 未实现，如实标注不可用。
+  - 项目级危险操作（**删除源录播 / 删除项目**）在 `#/p/:pid/settings`（项目设置页也显示
+    名称/来源/阶段/占用/源大小/产物，以及三个阶段的打开入口）。
+  - 路由：`#/workbench`（首页：新增项目 + 录制导入最近）、`#/p/:pid/{prepare,slices,polish,polish/:clip,settings}`、
     `#/ingest`、`#/settings`（仅 admin）、`#/login`；`/` 按 localStorage 回上次项目+阶段；
     **旧路径 `/project/:cfg/**`、`/polish`、`/jobs`、`/models`、`/projects` 全部 redirect**。
   - 作用域单点：`api/scope.js` 的 `scopeQ(pid)`；业务调用只在 `api/projectData.js` /
@@ -228,11 +237,13 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     旧的 `?config=<路径>` 只在"该路径已登记且属于本人"时作为过渡兼容（未登记一律 404）。
   - `vtrim-core/src/tenant.rs` 是唯一拼接入口：拒绝绝对路径/UNC/`C:foo`/`..`/符号链接逃逸。
   - `/api/media/<project_id>/<项目内相对路径>`；旧写法（绝对路径）也只在本项目内放行。
-  - `/api/admin/*`（config/models/doctor/llm test）仅 admin；旧路径作为过渡别名挂在同一层。
+  - `/api/admin/*`（config/models/doctor/llm test/**users**）仅 admin；旧路径作为过渡别名挂在同一层。
+    `GET /api/admin/users` 只回展示字段（id/username/role/disabled/quota_bytes/created_at），**不含口令哈希**，
+    供"待分配池指派给谁"下拉使用。
   - `/api/fs/list` 仅 admin，**可以浏览服务器任意目录**（`{dir}` 绝对路径，与单用户时代一致；
     也兼容 `{root, path}` 相对写法）。这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**；
     `[storage] local_roots` 只是前端下拉的**快捷入口**，不再是硬限制。
-  - 管理员「＋新建项目 → 从服务器文件」：`POST /api/projects {source:{kind:"local", dir, input, danmaku, output_dir}}`
+  - 管理员「首页 →「新增项目」→ 服务器文件」：`POST /api/projects {source:{kind:"local", dir, input, danmaku, output_dir}}`
     （`dir` 绝对路径；非管理员只能用自己的租户根，且 `/api/fs/list` 与 `kind:"local"` 一律 403）；
     **目标目录已有 `vtrim.toml` 时只登记/打开、不覆盖**（保护手改过的工程设置）。
   - 任务带 `owner_id`：`/api/jobs`、`/api/jobs/:id`、`/api/jobs/:id/events`、canc、`/api/stream`

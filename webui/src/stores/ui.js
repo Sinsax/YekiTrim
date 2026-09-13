@@ -2,17 +2,8 @@
 import { reactive } from 'vue'
 
 export const ui = reactive({
-  wizard: false,
   jobs: false
 })
-
-export function openWizard() {
-  ui.wizard = true
-}
-
-export function closeWizard() {
-  ui.wizard = false
-}
 
 export function openJobs() {
   ui.jobs = true

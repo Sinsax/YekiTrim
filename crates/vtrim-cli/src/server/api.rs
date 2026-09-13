@@ -50,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/ingest", get(super::ingest::config_view))
         .route("/admin/ingest/assign", post(super::ingest::assign))
         .route("/admin/ingest/scan", post(super::ingest::scan_now))
+        .route("/admin/users", get(admin_users))
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
@@ -421,6 +422,31 @@ async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
         "models": model_status,
         "workspace": ws.config_file.to_string_lossy(),
     }))
+}
+
+/// `GET /api/admin/users`：账号列表（**仅 admin**）。只回展示需要的字段，绝不含口令哈希。
+///
+/// 用途：入库待分配池的"指派给谁"下拉、后续管理页。
+async fn admin_users(State(state): State<Arc<AppState>>) -> ApiResult {
+    let db = state.auth.db();
+    let users = db
+        .list_users()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取账号失败: {e:#}")))?;
+    let out: Vec<serde_json::Value> = users
+        .iter()
+        .map(|u| {
+            serde_json::json!({
+                "id": u.id,
+                "username": u.username,
+                "role": if u.role == "admin" { "admin" } else { "user" },
+                "disabled": u.disabled,
+                "must_change_password": u.must_change_password,
+                "quota_bytes": u.quota_bytes,
+                "created_at": u.created_at,
+            })
+        })
+        .collect();
+    ok(serde_json::json!({ "users": out }))
 }
 
 async fn models_get() -> ApiResult {
