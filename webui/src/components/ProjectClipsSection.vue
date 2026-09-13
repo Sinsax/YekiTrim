@@ -15,15 +15,25 @@
         {{ o.label }}
         <Icon v-if="sortKey === o.key" :name="sortDir === 'asc' ? 'arrow-up' : 'arrow-down'" :size="11" />
       </button>
+      <span class="v-sep"></span>
+      <span class="muted small">筛选</span>
+      <button
+        v-for="f in CLIP_FILTERS"
+        :key="f.key"
+        class="mini-btn"
+        :class="{ selected: filterKey === f.key }"
+        :title="f.hint"
+        @click="filterKey = f.key"
+      >{{ f.label }}</button>
       <span class="muted small sort-count">
-        {{ cutClips.length }} 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
+        {{ shownClips.length }}<template v-if="filterKey !== 'all'">/{{ cutClips.length }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
     </div>
 
     <div class="layout" :class="{ 'drawer-closed': !drawerOpen }">
       <div class="grid cols-3">
         <div
-          v-for="c in cutClips"
+          v-for="c in shownClips"
           :key="c.dir"
           :data-clipname="c.name"
           class="pcard clip-card"
@@ -79,7 +89,7 @@
             <div class="row">
               <button class="mini-btn" :disabled="!uncutEvents.length" @click="cutAll">全切</button>
               <button class="mini-btn" :disabled="!uncutEvents.length" @click="maximized = true">放大</button>
-              <button class="mini-btn" title="收起" @click="drawerOpen = false">
+              <button class="mini-btn" title="收起" @click="setDrawer(false)">
                 <Icon name="arrow-right" :size="13" style="transform:rotate(180deg)" />
               </button>
             </div>
@@ -102,7 +112,7 @@
             </div>
           </div>
         </template>
-        <button v-else class="drawer-expand" @click="drawerOpen = true">
+        <button v-else class="drawer-expand" @click="setDrawer(true)">
           未剪切事件{{ uncutEvents.length ? ' · ' + uncutEvents.length : '' }}
         </button>
       </div>
@@ -204,7 +214,14 @@ const polishMap = ref({})
 const loading = ref(false)
 const loadError = ref('')
 const showAdd = ref(false)
-const drawerOpen = ref(true)
+// 用户手动收起/展开后，数据刷新（任务完成、缓存失效）不得再把抽屉弹回去。
+// 注意：切片页 loading 骨架会整个卸载重建本组件，偏好必须放模块级才能跨重挂载存活。
+let drawerUserPref = null   // null = 未表态，跟随「有无未剪切事件」
+const drawerOpen = ref(drawerUserPref ?? true)
+function setDrawer(open) {
+  drawerUserPref = open
+  drawerOpen.value = open
+}
 const maximized = ref(false)
 const playing = ref(null)
 const newLabel = ref('')
@@ -302,10 +319,27 @@ function makeCmp(statsOf) {
   }
 }
 
+// ── 精修状态筛选：全部 / 已精修（进过精修流程）/ 未精修 ─────────
+const CLIP_FILTERS = [
+  { key: 'all', label: '全部', hint: '显示全部已剪切片段' },
+  { key: 'polished', label: '已精修', hint: '已进入精修流程（初始化过 polish）' },
+  { key: 'unpolished', label: '未精修', hint: '还没进精修流程的片段' }
+]
+const FILTER_STORE = 'vtrim.slices.filter'
+const filterKey = ref((() => {
+  try { return localStorage.getItem(FILTER_STORE) || 'all' } catch { return 'all' }
+})())
+watch(filterKey, (v) => { try { localStorage.setItem(FILTER_STORE, v) } catch {} })
+
 const cutClips = computed(() => clips.value
   .filter(c => c.video_exists !== false)
   .slice()
   .sort(makeCmp(clipStats)))
+const shownClips = computed(() => {
+  if (filterKey.value === 'all') return cutClips.value
+  const polished = (c) => !!polishMap.value[c.dir]?.polish_ready
+  return cutClips.value.filter((c) => filterKey.value === 'polished' ? polished(c) : !polished(c))
+})
 const uncutEvents = computed(() => events.value
   .filter(ev => {
     const c = clips.value.find(x => x.name === 'clip-' + String(ev.rank).padStart(2, '0'))
@@ -341,7 +375,7 @@ async function load() {
     events.value = (props.projectData.events || []).slice().sort((a, b) => a.start_sec - b.start_sec)
     clips.value = props.projectData.clips || []
     polishMap.value = props.projectData.polishMap || {}
-    drawerOpen.value = uncutEvents.value.length > 0
+    drawerOpen.value = drawerUserPref ?? (uncutEvents.value.length > 0)
     return
   }
   loading.value = true
@@ -357,7 +391,7 @@ async function load() {
     const m = {}
     ;(pl || []).forEach(p => { m[p.dir] = p })
     polishMap.value = m
-    drawerOpen.value = uncutEvents.value.length > 0
+    drawerOpen.value = drawerUserPref ?? (uncutEvents.value.length > 0)
   } catch (e) {
     loadError.value = '片段数据加载失败：' + e.message
   } finally {
@@ -532,7 +566,9 @@ watch(() => props.project?.id, load)
 <style scoped>
 .sort-bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
 .sort-bar .sort-count { margin-left:auto; }
-.layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+.v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
+.layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start;
+  transition:grid-template-columns .25s ease; }
 .layout.drawer-closed { grid-template-columns:minmax(0,1fr) 40px; }
 /* 抽屉展开时压缩卡片最小宽，避免半窗下只剩一张巨卡 */
 .layout .cols-3 { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
