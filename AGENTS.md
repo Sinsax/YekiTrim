@@ -198,7 +198,22 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `vtrim.lock` 单实例保护（独占句柄 + pid 存活判定，`--force` 只在确认残留时用）；
     `--host 0.0.0.0 --allow-remote` 且 `must_change_password=1` → 拒绝启动。
   - `/api/health` 只回能力位与 `accounts / must_change_password / listening / tls_terminated`，
-    **不含任何路径**（它无鉴权）。`/api/fs/list` 仅 admin 可用（P2 会整体删除）。
+    **不含任何路径**（它无鉴权）。
+- **项目托管与隔离（P2 已落地）**：
+  - 归属由 SQLite `projects` 表决定；`/api/projects` 只回本人项目，
+    `DELETE /api/projects/:id`（只注销 + 删 vtrim.toml）、
+    `DELETE /api/projects/:id/source`（删源录播，保留产物，唯一的手动释放空间手段）。
+  - **路径面归零**：所有 `/api/project-data/*` 用 `?project=<id>`；polish 用
+    `{project, dir:"output/clips/…"}`（服务端把相对路径归一化成项目内绝对路径）。
+    旧的 `?config=<路径>` 只在"该路径已登记且属于本人"时作为过渡兼容（未登记一律 404）。
+  - `vtrim-core/src/tenant.rs` 是唯一拼接入口：拒绝绝对路径/UNC/`C:foo`/`..`/符号链接逃逸。
+  - `/api/media/<project_id>/<项目内相对路径>`；旧写法（绝对路径）也只在本项目内放行。
+  - `/api/admin/*`（config/models/doctor/llm test）仅 admin；旧路径作为过渡别名挂在同一层。
+  - `/api/fs/list` 仅 admin，且只接受**相对租户根**（`<projects_root>/users/<uid>`）的路径：
+    这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**。
+  - 任务带 `owner_id`：`/api/jobs`、`/api/jobs/:id`、`/api/jobs/:id/events`、canc、`/api/stream`
+    全部按归属过滤，他人任务 404（SSE 在服务端过滤）。
+  - 前端作用域是项目 id：`/project/:pid`，`api/scope.js` 是唯一拼 `project=<id>` 的地方。
 - 真渲染（wgpu）暂缓：未启用该 feature 时前端**隐藏**入口（`/api/health.wgpu_render` 判定），
   日后开发时只需恢复 UI 入口，`PolishPreview` 里的逻辑与后端接口都还在。
 - API 都在 `/api/*`：未注册路径返回 **404 + JSON**（`{"ok":false,"error":"未知接口: …"}`），
@@ -220,7 +235,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 | P1 step-1 账号账本 + `vtrim user` CLI | ✅ 已落地 |
 | P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`server/auth.rs`、`service/instancelock.rs`） |
 | P1 step-3 `vtrim doctor` 安全摘要 | ✅ 已落地（`service/doctor.rs`、`service/disk.rs`） |
-| P2 项目托管与隔离（`?project=`、囚笼） | ⏳ 待做 |
+| P2 项目托管与隔离（`?project=`、囚笼、任务归属、前端 M2） | ✅ 已落地（`vtrim-core/tenant.rs`、`service/projects.rs`、`server/scope.rs`） |
 | P3 录播姬接入（webhook / ingest） | ⏳ 待做 |
 | P4 B站链接通道 / P5 容量与运维 | ⏳ 待做 |
 
