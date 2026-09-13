@@ -146,8 +146,10 @@
             <div><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
             <div><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
             <div><label>model</label><input v-model="form.llm.model" type="text"></div>
-            <div><label>temperature</label><input v-model.number="form.llm.temperature" type="number" step="0.1"></div>
-            <div><label>max_tokens</label><input v-model.number="form.llm.max_tokens" type="number" step="1"></div>
+            <div class="llm-pair">
+              <div><label>temperature</label><input v-model.number="form.llm.temperature" type="number" step="0.1"></div>
+              <div><label>max_tokens</label><input v-model.number="form.llm.max_tokens" type="number" step="1"></div>
+            </div>
           </div>
           <div class="llm-extra">
             <label>extra_params（JSON 文本）</label>
@@ -412,13 +414,14 @@ onMounted(() => {
 <style scoped>
 .llm-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:10px 16px; align-items:stretch; }
 .llm-fields { display:flex; flex-direction:column; gap:8px; }
+.llm-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; }
 .llm-extra { display:flex; flex-direction:column; }
 .llm-extra textarea { flex:1; min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .form-section { padding:10px 0; border-bottom:1px dashed var(--line-soft); }
 .form-section:first-child { padding-top:0; }
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
 .form-section-title { font-weight:700; font-size:13px; margin-bottom:8px; }
-.form-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px 14px; align-items:start; }
+.form-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px 14px; align-items:start; }
 .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; }
 .field-hint { margin-top:4px; }
 .span-all { grid-column:1 / -1; }
@@ -429,12 +432,17 @@ onMounted(() => {
 .tag-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
 .tag-chip { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:999px; background:var(--main-soft); color:var(--main-deep); font-size:11px; }
 .tag-remove { border:none; background:none; color:inherit; cursor:pointer; font-size:14px; line-height:1; padding:0; }
-.check-field { display:flex; align-items:center; gap:7px; align-self:flex-start; padding:2px 0 6px; }
+.check-field { display:flex; align-items:center; gap:7px; align-self:end; padding:0 0 9px; }
 .check-field label { margin:0; cursor:pointer; color:var(--ink); }
 .source-editor { font-size:12px; line-height:1.7; }
 button:disabled { opacity:.45; cursor:not-allowed; }
+@media (max-width: 1200px) {
+  .form-grid { grid-template-columns:repeat(2, 1fr); }
+  .trio-row { grid-template-columns:1fr; }
+}
 @media (max-width: 900px) {
   .llm-grid { grid-template-columns:1fr; }
   .llm-extra textarea { min-height:160px; }
+  .form-grid { grid-template-columns:1fr; }
 }
 </style>
