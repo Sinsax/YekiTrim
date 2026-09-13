@@ -300,8 +300,47 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 都不给则生成随机密码并打印一次。口令用 **scrypt**（`scrypt$log_n$r$p$salt$hash`
 自描述哈希串）存储，将来可无损升级到 argon2id。
 
-### `vtrim doctor` — 安全与运行状况摘要
+### `vtrim ingest` — 录播姬采集
 
+录播姬（BililiveRecorder）录完一场直播就推送 webhook，服务端自动把录像变成项目并按策略跑管线。
+
+```
+vtrim ingest token            # 生成 webhook token（只显示一次），写入 [ingest] 并启用 webhook
+vtrim ingest token --disable  # 只关闭 webhook（保留 token）
+vtrim ingest status           # 采集配置概览（不打印秘密）
+```
+
+配置（`.vtrim/config.toml`）：
+
+```toml
+[ingest]
+webhook_enabled = true
+token_hash = "scrypt$…"          # 由 `vtrim ingest token` 写入；只存哈希
+allow_ips = ["127.0.0.1"]        # 可选来源白名单（同机部署建议只放行本机）
+
+[ingest.recorder]
+root = "D:/BililiveRecorder"     # 录播姬输出目录（与 server 同机或同可读盘）
+watch_interval_mins = 10         # 兜底扫描间隔（0=关闭）：漏推送/重启/历史录播导入
+finalize_idle_mins = 5           # SessionEnded 后多久没有新文件就认为本场结束
+move_into_managed = true         # 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
+concat_files = true              # 多分片合并为 source.mp4（原始分片保留）
+extensions = ["flv", "mkv", "mp4", "ts"]
+auto_pipeline = "detect"         # none | transcribe | detect | cut（房间映射可覆盖）
+```
+
+在录播姬的 Webhook 设置里填：
+
+```
+http://<本机IP>:7788/api/ingest/bililive/<token>
+```
+
+- 该端点**自带 token 鉴权、不要求登录**（录播姬只能填 URL，无法加自定义头）；
+  收到事件只做"验 token → EventId 去重 → 落库"然后立即 2xx，重活交给后台入库 worker。
+- 未映射的房间进「待分配池」，由管理员在 `#/ingest` 指派；指派后自动继续入库。
+- 入库前做磁盘水位/配额预检，不足会明确拒绝（文案含"预计需要/可用"），**绝不自动删数据**。
+- 弹幕：录播姬写的 `.xml` 会被直接解析（无需 DanmakuFactory），随片搬进项目并写进 `vtrim.toml`。
+
+---
 只读诊断（不会创建账号库、不改配置）：
 
 ```
