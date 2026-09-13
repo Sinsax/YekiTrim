@@ -122,10 +122,10 @@ max_disk_bytes = 0
 disk_watermark_pct = 10
 # 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
 default_quota_bytes = 0
-# 管理员"从服务器本机文件新建项目"允许的根目录（绝对路径，仅管理员可见可用）
-# 留空 = 只能用租户根 <projects_root>/users/<uid>
+# 管理员"从服务器本机文件新建项目"的**快捷入口**目录（绝对路径）
+# 管理员可以直接浏览/选择任意位置（与单用户时代一致），这里只是给前端下拉预置常用根
 # 例: local_roots = ["F:/media", "D:/BililiveRecorder"]
-# 该功能只读取服务器上已存在的文件，永不接受上传
+# 该功能只读取服务器上已存在的文件，永不接受上传；普通用户仍只能用 <projects_root>/users/<uid>
 local_roots = []
 
 [ingest]

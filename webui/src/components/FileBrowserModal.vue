@@ -1,22 +1,22 @@
 <template>
   <AppModal :show="show" title="选择服务器文件" @close="close">
     <div class="row mb-6">
-      <div class="flex-1 minw-180">
-        <label>根目录（管理员在 [storage] local_roots 里配置）</label>
-        <select v-model="root" @change="switchRoot">
-          <option v-for="r in roots" :key="r.path" :value="r.path">
-            {{ r.label }}{{ r.tenant ? '（托管目录）' : '' }} — {{ r.path }}
-          </option>
-        </select>
-      </div>
-    </div>
-    <div class="row">
-      <div class="flex-1 minw-180">
-        <label>相对所选根的路径（不接受绝对路径）</label>
-        <input v-model.trim="path" placeholder="留空 = 根目录" @keyup.enter="browse">
+      <div class="flex-1 minw-240">
+        <label>目录（可填任意绝对路径；管理员可浏览整台机器）</label>
+        <input v-model.trim="dir" placeholder="例如 F:/media/2025-09-12" @keyup.enter="browse">
       </div>
       <button class="mini-btn mt-20" @click="browse">打开</button>
-      <button class="mini-btn mt-20" :disabled="!path" @click="goUp">上一级</button>
+      <button class="mini-btn mt-20" :disabled="!parent" @click="goUp">上一级</button>
+    </div>
+    <div v-if="roots.length" class="row mb-6">
+      <div class="flex-1">
+        <label>快捷入口（可在 [storage] local_roots 里增删）</label>
+        <div class="row quick">
+          <button v-for="r in roots" :key="r.path" class="mini-btn" :class="{ on: r.path === dir }" @click="jump(r.path)">
+            {{ r.label }}
+          </button>
+        </div>
+      </div>
     </div>
     <div v-if="loadError" class="error-banner mt-8">{{ loadError }}</div>
     <div class="file-box mt-8">
@@ -52,9 +52,9 @@ const props = defineProps({
 const emit = defineEmits(['select', 'close'])
 
 // 路径一律**相对所选根**（服务端囚笼）；根 = 租户根 + [storage] local_roots（仅 admin）
-const path = ref('')
+// 目录一律用**绝对路径**（管理员可去任意位置）；服务端只在 admin 下接受绝对路径。
+const dir = ref('')
 const parent = ref('')
-const root = ref('')
 const roots = ref([])
 const dirs = ref([])
 const files = ref([])
@@ -75,7 +75,7 @@ const filteredFiles = computed(() => {
 })
 
 function fullPath(file) {
-  return path.value ? path.value.replace(/[\/]+$/, '') + '/' + file : file
+  return dir.value ? dir.value.replace(/[\/\\]+$/, '') + '/' + file : file
 }
 
 function isSelected(file) {
@@ -88,10 +88,9 @@ async function browse() {
   loading.value = true
   loadError.value = ''
   try {
-    const d = await listTenantFiles(path.value, root.value)
-    root.value = d.root || root.value
-    roots.value = d.roots || roots.value
-    path.value = d.path || ''
+    const d = await listTenantFiles(dir.value)
+    dir.value = d.dir || dir.value
+    roots.value = d.roots || []
     parent.value = d.parent || ''
     dirs.value = d.dirs || []
     files.value = d.files || []
@@ -105,19 +104,19 @@ async function browse() {
   }
 }
 
-/** 切根：回到该根目录 */
-function switchRoot() {
-  path.value = ''
+/** 快捷入口：直接跳到某个根（租户根 / [storage] local_roots） */
+function jump(p) {
+  dir.value = p
   browse()
 }
 
 function enterDir(name) {
-  path.value = path.value ? path.value.replace(/[\/]+$/, '') + '/' + name : name
+  dir.value = dir.value ? dir.value.replace(/[\/\\]+$/, '') + '/' + name : name
   browse()
 }
 
 function goUp() {
-  path.value = parent.value || ''
+  dir.value = parent.value || ''
   browse()
 }
 
@@ -128,7 +127,7 @@ function pick(file) {
 function confirm() {
   if (!selected.value) return
   // 不在这里 close：由父组件根据 select 结果切换/关闭弹窗
-  emit('select', { path: selected.value, root: root.value })
+  emit('select', { path: selected.value, dir: dir.value })
 }
 
 function close() {
@@ -139,7 +138,7 @@ function close() {
 watch(() => props.show, (v) => {
   selected.value = ''
   if (v) {
-    path.value = props.initialPath || ''
+    dir.value = props.initialPath || ''
     browse()
   }
 })
@@ -154,4 +153,6 @@ watch(() => props.show, (v) => {
 .file-icon { flex:none; display:flex; }
 .file-row .mono { font-size:12px; word-break:break-all; }
 .spacer { flex:1; }
+.quick { flex-wrap:wrap; gap:6px; }
+.quick .on { background:var(--main-soft); color:var(--main-deep); border-color:var(--main); }
 </style>

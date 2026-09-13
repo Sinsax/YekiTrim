@@ -8,7 +8,7 @@
     @close="close"
   />
   <AppModal :show="show && !!picked" title="从服务器文件新建项目" @close="backToBrowse">
-    <label>服务器文件（相对所选根）</label>
+    <label>服务器文件（绝对路径）</label>
     <input :value="picked" readonly>
     <template v-if="!isToml">
       <label class="mt-8">弹幕文件（可选，同目录相对路径）</label>
@@ -16,8 +16,7 @@
       <label class="mt-8">输出目录</label>
       <input v-model="output" placeholder="./output">
       <p class="muted small mt-8">
-        只使用**服务器上已存在**的视频（本机管理员来源），**不接受上传**；路径被囚笼在
-        租户根或 <span class="mono">[storage] local_roots</span> 列出的目录内。
+        只使用**服务器上已存在**的视频（管理员来源），**不接受上传**。
         若所选目录已有 <span class="mono">vtrim.toml</span>，则只登记/打开，不会覆盖。
       </p>
     </template>
@@ -46,13 +45,13 @@ defineProps({
 const emit = defineEmits(['update:show', 'created'])
 
 const picked = ref('')
-const pickedRoot = ref('')
+const pickedDir = ref('')
 const danmaku = ref('')
 const output = ref('./output')
 const creating = ref(false)
 const isToml = computed(() => picked.value.toLowerCase().endsWith('vtrim.toml'))
 
-/** 选中的是 "<dir>/<file>"（相对所选根）；建项目以**目录**为单位。 */
+/** 选中项的目录（服务端回传的绝对目录）与文件名。 */
 function splitPick(p) {
   const norm = String(p || '').split('\\').join('/')
   const i = norm.lastIndexOf('/')
@@ -61,7 +60,7 @@ function splitPick(p) {
 
 function close() {
   picked.value = ''
-  pickedRoot.value = ''
+  pickedDir.value = ''
   emit('update:show', false)
 }
 
@@ -70,9 +69,9 @@ function backToBrowse() {
 }
 
 function onPick(payload) {
-  // 兼容两种 emit：字符串（旧）与 {path, root}
+  // 兼容两种 emit：字符串（旧）与 {path, dir}
   const p = typeof payload === 'string' ? payload : payload?.path || ''
-  pickedRoot.value = typeof payload === 'string' ? '' : payload?.root || ''
+  pickedDir.value = typeof payload === 'string' ? '' : payload?.dir || ''
   picked.value = p
   danmaku.value = ''
   output.value = './output'
@@ -85,8 +84,7 @@ async function create() {
   creating.value = true
   try {
     const r = await createLocalProject({
-      root: pickedRoot.value,
-      dir,
+      dir: pickedDir.value || dir,
       input: isToml.value ? '' : file,
       danmaku: isToml.value ? '' : (danmaku.value || ''),
       output_dir: isToml.value ? '' : (output.value || '')

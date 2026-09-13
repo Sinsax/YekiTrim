@@ -36,8 +36,8 @@ pub fn tenant_root(uid: i64) -> PathBuf {
 
 /// 允许作为"本机文件"来源的根目录列表：**租户根** + `[storage] local_roots`（只保留存在的）。
 ///
-/// 只有管理员会用这份列表（`POST /api/projects {kind:"local"}` 与 `/api/fs/list` 都是
-/// admin-only）；它把"任意路径"收敛成"配置里显式写下的几个根"，且永不接受上传。
+/// 这份列表在管理员场景下只是**快捷入口**（前端下拉预置）；管理员可以直接用任意绝对路径
+/// （与改造前的单用户 `vtrim init <video>` 体验一致）。非管理员一律只能用租户根。
 pub fn local_roots(uid: i64) -> Vec<PathBuf> {
     let cfg = vtrim_core::config::load_global_config();
     let mut out = vec![tenant_root(uid)];
@@ -54,11 +54,13 @@ pub fn local_roots(uid: i64) -> Vec<PathBuf> {
     out
 }
 
-/// 把前端传来的 `root` 解析成允许列表里的一项。
+/// 把前端传来的 `root` 解析成一个目录。
 ///
 /// - 空 / `"tenant"` → 租户根；
-/// - 其它必须是允许列表里的根（比较 canonical path），否则报错。
-pub fn pick_local_root(uid: i64, hint: &str) -> anyhow::Result<PathBuf> {
+/// - 命中 `local_roots` → 用那一项；
+/// - **管理员**：任意已存在的绝对目录都接受（= 单用户时代的"随便选位置"）；
+/// - 非管理员：只允许租户根，其余报错。
+pub fn pick_local_root(uid: i64, hint: &str, is_admin: bool) -> anyhow::Result<PathBuf> {
     let roots = local_roots(uid);
     let tenant = roots[0].clone();
     let hint = hint.trim();
@@ -67,15 +69,44 @@ pub fn pick_local_root(uid: i64, hint: &str) -> anyhow::Result<PathBuf> {
     }
     let want = PathBuf::from(hint);
     let want_canon = want.canonicalize().unwrap_or(want.clone());
-    roots
-        .iter()
-        .find(|r| **r == want_canon || **r == want)
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "根目录不在允许列表内: {hint}（管理员可在 [storage] local_roots 里添加）"
-            )
-        })
+    if let Some(hit) = roots.iter().find(|r| **r == want_canon || **r == want) {
+        return Ok(hit.clone());
+    }
+    if is_admin {
+        if want_canon.is_dir() {
+            return Ok(want_canon);
+        }
+        anyhow::bail!("目录不存在: {hint}");
+    }
+    anyhow::bail!("只能用你自己的托管目录: {hint}")
+}
+
+/// 解析一个"目录"参数：绝对路径直接用（管理员场景 / 兼容旧前端），相对路径按 `root` 囚笼。
+pub fn resolve_target_dir(uid: i64, root_hint: &str, dir: &str, is_admin: bool) -> anyhow::Result<PathBuf> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return pick_local_root(uid, root_hint, is_admin);
+    }
+    let p = PathBuf::from(dir);
+    if p.is_absolute() {
+        if !is_admin {
+            // 非管理员只允许"自己租户根内的绝对路径"
+            let tenant = tenant_root(uid);
+            let tenant_canon = tenant.canonicalize().unwrap_or(tenant);
+            let real = p
+                .canonicalize()
+                .map_err(|e| anyhow::anyhow!("目录不存在: {e}"))?;
+            if !real.starts_with(&tenant_canon) {
+                anyhow::bail!("只能用你自己的托管目录");
+            }
+            return Ok(real);
+        }
+        return p
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("目录不存在: {e}"));
+    }
+    let root = pick_local_root(uid, root_hint, is_admin)?;
+    vtrim_core::tenant::jail_existing(&root, dir)
 }
 
 /// 根的展示名（租户根显示为「我的托管目录」，其余用目录名）。
