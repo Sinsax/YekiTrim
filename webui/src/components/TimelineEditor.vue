@@ -20,57 +20,15 @@
           {{ silenceApplied ? `已自动屏蔽 ${silenceCount} 段静音` : '一键跳过片段里的长停顿' }}
         </span>
       </div>
-      <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
-      <div class="timeline-labels">
-        <div v-for="lane in lanes" :key="'label-' + lane.type" class="lane-label">
-          <span>{{ lane.label }}</span>
-          <div class="lane-adds">
-            <button v-if="lane.type !== 'segments'" class="add-lane" title="添加事件" @click="addEvent(lane.type)"><Icon name="plus" :size="11" /></button>
-            <button v-else class="add-lane mute-add" title="添加屏蔽区间" @click="addMuteAtCurrent"><Icon name="scissors" :size="11" /></button>
-          </div>
+      <div class="tl-main">
+      <!-- 属性面板常驻左侧：点击时间轴上的块后在这里编辑 -->
+      <div class="props-panel card">
+        <div class="row spread">
+          <b>{{ !selected ? '属性' : (selectedMute ? '屏蔽属性' : (selectedSub ? '字幕属性' : (selectedSeg ? '分段属性' : '事件属性'))) }}</b>
+          <button v-if="selected" class="mini-btn" @click="selected = null">关闭</button>
         </div>
-        <div class="lane-label ruler-label">时间</div>
-      </div>
-      <div ref="tracksRef" class="timeline-tracks">
-        <div v-for="lane in lanes" :key="'track-' + lane.type" class="lane">
-          <div class="lane-track" :style="{ width: trackWidth + 'px' }">
-            <svg v-if="lane.type === 'subtitles'" class="wave-layer" :width="trackWidth" height="34">
-              <rect v-for="(bar, bi) in waveBars" :key="bi" :x="bar.x" :y="bar.y" :width="bar.w" :height="bar.h" fill="rgba(37,99,235,0.7)" />
-            </svg>
-            <div class="playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
-            <div
-              v-for="(block, i) in laneBlocks(lane)"
-              :key="lane.type + '-' + i"
-              class="block"
-              :class="[block.cls, { selected: isBlockSelected(lane, block) }]"
-              :style="{ left: block.left + 'px', width: block.width + 'px', background: block.color }"
-              :title="block.title"
-              @click="onBlockClick(lane, block)"
-              @pointerdown.stop="startPointer($event, lane, block, i)"
-              @dblclick.stop="onBlockDblClick(block)"
-            >
-              <span v-if="block.resizable" class="resize" @pointerdown.stop="startPointer($event, lane, block, i, true)"></span>
-              {{ block.label }}
-            </div>
-          </div>
-        </div>
-        <div class="lane ruler-lane">
-          <div ref="rulerTrackRef" class="lane-track ruler-track" :style="{ width: trackWidth + 'px' }"
-               @pointerdown="onRulerPointerDown">
-            <div v-for="(tk, i) in timeTicks" :key="'tick' + i" class="ruler-tick" :style="{ left: tk.left + 'px' }">
-              <span class="ruler-time">{{ tk.label }}</span>
-            </div>
-            <div class="playhead ruler-playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
-          </div>
-        </div>
-      </div>
-      </div>
-    </template>
-    <div v-if="selected" class="props-panel card">
-      <div class="row spread">
-        <b>{{ selectedMute ? '屏蔽属性' : (selectedSub ? '字幕属性' : (selectedSeg ? '分段属性' : '事件属性')) }}</b>
-        <button class="mini-btn" @click="selected = null">关闭</button>
-      </div>
+        <div v-if="!selected" class="props-empty muted small">点击时间轴上的分段 / 字幕 / 屏蔽 / 事件块，在这里编辑属性</div>
+        <template v-else>
       <template v-if="selectedSeg">
         <label>备注</label>
         <input v-model="selectedSeg.note" placeholder="分段备注">
@@ -127,7 +85,56 @@
       <div class="row mt-8">
         <button class="btn btn-primary" @click="selectedSub ? saveSubtitleChanges() : (selectedMute ? saveMuteChanges() : emitSave())">保存修改</button>
       </div>
-    </div>
+        </template>
+      </div>
+
+      <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
+      <div class="timeline-labels">
+        <div v-for="lane in lanes" :key="'label-' + lane.type" class="lane-label">
+          <span>{{ lane.label }}</span>
+          <div class="lane-adds">
+            <button v-if="lane.type !== 'segments'" class="add-lane" title="添加事件" @click="addEvent(lane.type)"><Icon name="plus" :size="11" /></button>
+            <button v-else class="add-lane mute-add" title="添加屏蔽区间" @click="addMuteAtCurrent"><Icon name="scissors" :size="11" /></button>
+          </div>
+        </div>
+        <div class="lane-label ruler-label">时间</div>
+      </div>
+      <div ref="tracksRef" class="timeline-tracks">
+        <div v-for="lane in lanes" :key="'track-' + lane.type" class="lane">
+          <div class="lane-track" :style="{ width: trackWidth + 'px' }">
+            <svg v-if="lane.type === 'subtitles'" class="wave-layer" :width="trackWidth" height="34">
+              <rect v-for="(bar, bi) in waveBars" :key="bi" :x="bar.x" :y="bar.y" :width="bar.w" :height="bar.h" fill="rgba(37,99,235,0.7)" />
+            </svg>
+            <div class="playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
+            <div
+              v-for="(block, i) in laneBlocks(lane)"
+              :key="lane.type + '-' + i"
+              class="block"
+              :class="[block.cls, { selected: isBlockSelected(lane, block) }]"
+              :style="{ left: block.left + 'px', width: block.width + 'px', background: block.color }"
+              :title="block.title"
+              @click="onBlockClick(lane, block)"
+              @pointerdown.stop="startPointer($event, lane, block, i)"
+              @dblclick.stop="onBlockDblClick(block)"
+            >
+              <span v-if="block.resizable" class="resize" @pointerdown.stop="startPointer($event, lane, block, i, true)"></span>
+              {{ block.label }}
+            </div>
+          </div>
+        </div>
+        <div class="lane ruler-lane">
+          <div ref="rulerTrackRef" class="lane-track ruler-track" :style="{ width: trackWidth + 'px' }"
+               @pointerdown="onRulerPointerDown">
+            <div v-for="(tk, i) in timeTicks" :key="'tick' + i" class="ruler-tick" :style="{ left: tk.left + 'px' }">
+              <span class="ruler-time">{{ tk.label }}</span>
+            </div>
+            <div class="playhead ruler-playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
+          </div>
+        </div>
+      </div>
+      </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -813,10 +820,11 @@ async function loadData() {
 <style scoped>
 .timeline { width:100%; }
 .tl-shortcuts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
-.timeline-body { display:flex; overflow-x:auto; align-items:stretch; }
+.timeline-body { flex:1; min-width:0; display:flex; overflow-x:auto; align-items:stretch; }
 .timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(90,60,70,.10); }
 .timeline-tracks { flex:none; min-width:0; }
-.lane { height:34px; border-bottom:1px solid var(--line-soft); position:relative; }
+.lane { height:34px; border-bottom:1px solid var(--line-soft); position:relative;
+  display:flex; align-items:center; gap:10px; padding:8px 12px; box-sizing:border-box; }
 .lane-label { width:96px; height:34px; box-sizing:border-box; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 8px; font-size:12px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
 .add-lane { background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:15px; line-height:1; padding:2px 4px; }
 .add-lane:hover { color:var(--main-deep); }
@@ -837,7 +845,10 @@ async function loadData() {
 .ruler-playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
 .block.type-subtitles { background:rgba(59,130,246,0.35) !important; color:#0f172a; font-weight:700; opacity:1; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.type-mutes { background:rgba(239,68,68,0.42) !important; color:#7f1d1d; font-weight:700; }
-.props-panel { margin-top:10px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; }
+.tl-main { display:flex; gap:12px; align-items:stretch; }
+.props-panel { width:232px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto; }
+.props-empty { border:1.5px dashed var(--line); border-radius:10px; padding:12px 10px; }
+@media (max-width: 900px) { .tl-main { flex-direction:column; } .props-panel { width:auto; } }
 .props-panel label { margin-top:6px; }
 .props-panel .row { margin-top:4px; }
 </style>

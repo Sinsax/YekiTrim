@@ -104,6 +104,27 @@
             </div>
           </div>
 
+          <div class="card panel-card">
+            <div class="row spread mb-8">
+              <h2 class="m-0 card-h2"><Icon name="settings" :size="15" /> 九宫格布局</h2>
+            </div>
+            <div v-for="r in layoutRegions" :key="r.key" class="my-8">
+              <div class="small muted mb-4">{{ REGION_LABELS[r.key] || r.key }}<span v-if="(r.value.grid || []).length > 1" class="muted">（可多选）</span></div>
+              <div class="grid-3">
+                <div v-for="cell in GRID_CELLS" :key="cell" class="grid-cell"
+                     :class="{ active: (r.value.grid || []).includes(cell) }"
+                     @click="toggleGridCell(r.key, cell, r.value)">{{ cell }}</div>
+              </div>
+            </div>
+            <div v-if="!layoutRegions.length" class="empty small">暂无布局配置</div>
+            <div class="row mt-8">
+              <button class="btn btn-primary" :disabled="jobRunning" @click="processByLayout">
+                <Icon name="sparkles" :size="13" /> 按当前布局处理
+              </button>
+            </div>
+            <div class="muted small mt-8">保存布局后点击处理，会按当前九宫格重新计算贴纸等位置</div>
+          </div>
+
           <div class="card card-blk">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
@@ -113,48 +134,22 @@
           </div>
         </div>
 
-        <!-- 中部：时间轴/预览 + 九宫格（字幕编辑在时间轴块上，自动保存） -->
-        <div class="layout mt-16">
-          <div class="left">
-            <div class="card">
-              <div class="row spread">
-                <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-                <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
-              </div>
-              <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
+        <!-- 中部：预览 + 时间轴全宽（九宫格已上移顶行，字幕编辑在时间轴块上，自动保存） -->
+        <div class="mt-16">
+          <div class="card">
+            <div class="row spread">
+              <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
+              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
-
-            <div class="card">
-              <div class="row spread">
-                <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
-                <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
-              </div>
-              <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
-            </div>
+            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
           </div>
 
-          <!-- 右栏：九宫格布局；字幕编辑已并入时间轴编辑器并自动保存 -->
-          <div class="right">
-            <div class="card panel-card">
-              <div class="row spread mb-8">
-                <h2 class="m-0 card-h2"><Icon name="settings" :size="15" /> 九宫格布局</h2>
-              </div>
-              <div v-for="r in layoutRegions" :key="r.key" class="my-8">
-                <div class="small muted mb-4">{{ REGION_LABELS[r.key] || r.key }}<span v-if="(r.value.grid || []).length > 1" class="muted">（可多选）</span></div>
-                <div class="grid-3">
-                  <div v-for="cell in GRID_CELLS" :key="cell" class="grid-cell"
-                       :class="{ active: (r.value.grid || []).includes(cell) }"
-                       @click="toggleGridCell(r.key, cell, r.value)">{{ cell }}</div>
-                </div>
-              </div>
-              <div v-if="!layoutRegions.length" class="empty small">暂无布局配置</div>
-              <div class="row mt-8">
-                <button class="btn btn-primary" :disabled="jobRunning" @click="processByLayout">
-                  <Icon name="sparkles" :size="13" /> 按当前布局处理
-                </button>
-              </div>
-              <div class="muted small mt-8">保存布局后点击处理，会按当前九宫格重新计算贴纸等位置</div>
+          <div class="card mt-16">
+            <div class="row spread">
+              <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
+              <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
             </div>
+            <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
           </div>
         </div>
 
@@ -730,7 +725,8 @@ watch(dir, load)
 </script>
 
 <style scoped>
-.top-cards { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+/* 顶行三卡：生成与导出 / 九宫格 / 片段 —— 九宫格上移后编辑区获得全宽 */
+.top-cards { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:start; }
 .init-wrap { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
 @media (max-width: 900px) { .init-wrap { grid-template-columns:1fr; } }
 .action-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; }
@@ -747,9 +743,6 @@ watch(dir, load)
 .ss-avail-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
 .ss-avail-item:hover { background:var(--bg-soft); }
 .ss-avail-item.on { color:var(--ink-faint); text-decoration:line-through; }
-.layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:stretch; }
-.left { display:flex; flex-direction:column; gap:16px; min-width:0; }
-.right { display:flex; flex-direction:column; gap:12px; }
 .seg-toggle .mini-btn.selected { background:var(--main-soft); color:var(--main-deep); border-color:var(--main); }
 .add-sub { margin-left:auto; }
 .panel-card { display:flex; flex-direction:column; flex:1; }
@@ -772,6 +765,6 @@ watch(dir, load)
 .product-video { max-height:46vh; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
 @media (max-width: 1100px) {
-  .top-cards, .layout, .action-grid { grid-template-columns:1fr; }
+  .top-cards, .action-grid, .init-wrap { grid-template-columns:1fr; }
 }
 </style>
