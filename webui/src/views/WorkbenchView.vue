@@ -269,7 +269,8 @@ async function reloadIngest() {
     try {
       const all = await ingestApi.records('all')
       const merged = new Map()
-      for (const r of [...(ingestState.records || []), ...(all || [])]) merged.set(r.session_id, r)
+      // records() 返回 {ok, scope, records}，不是数组
+      for (const r of [...(ingestState.records || []), ...(all?.records || [])]) merged.set(r.session_id, r)
       ingestState.records = Array.from(merged.values())
     } catch {}
   }

@@ -21,6 +21,7 @@ import { api } from '../api/client'
 import { scopeQ } from '../api/scope'
 import { loadProjects, projectById } from '../stores/workbench'
 import { projectData } from '../api/projectData'
+import { onJobDone } from '../composables/useJobs'
 import Icon from '../components/Icon.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
@@ -55,6 +56,12 @@ async function load() {
 }
 
 onMounted(load)
+
+// 剪切/管线任务多数在别的页面（预处理、精修）发起，任务结束时页面必须跟着刷新，
+// 否则列表一直停在旧数据（如已切好的事件仍挂在「未剪切」里）。
+onJobDone((job) => {
+  if (String(job.project) === String(pid)) load()
+})
 </script>
 
 <style scoped>

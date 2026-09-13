@@ -185,6 +185,7 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
 import { initPolish, polishPost, runRender } from '../api/polish'
+import { watchJob } from '../api/jobs'
 import { toast } from '../stores/toast'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
@@ -408,17 +409,28 @@ async function redetect() {
   } catch (e) { toast(e.message, 'err') }
 }
 
+// 剪切任务是异步的：发完请求就结束的话，列表永远停在「未剪切」，
+// 这里盯住任务 id，终态（成功/失败/取消）时刷新列表。
+function watchCutJob(started, label) {
+  const r = started
+  if (!r?.id) return
+  watchJob(r.id, {
+    onDone(s) {
+      if (s?.status === 'failed') toast(label + '失败：' + (s.message || '未知错误'), 'err')
+      load()
+    }
+  })
+}
+
 async function cutAll() {
   const list = uncutEvents.value.slice()
   if (!list.length) return
   const ok = await confirmDialog(`将对 ${list.length} 个未剪切事件执行一键全切，是否继续？`, { title: '一键全切', danger: true })
   if (!ok) return
   try {
-    await projectData.cutAll(props.project.id, {
-      method: 'POST',
-      body: JSON.stringify({ ranks: list.map(ev => Number(ev.rank)) })
-    })
+    const r = await projectData.cutAll(props.project.id, { ranks: list.map(ev => Number(ev.rank)) })
     toast(`已启动一键全切（${list.length} 个事件），可在“运行任务”查看整体进度`)
+    watchCutJob(r, '一键全切')
   } catch (e) {
     toast('启动全切失败: ' + e.message, 'err')
     return
@@ -431,8 +443,9 @@ async function cutEvent(ev) {
   const ok = await confirmDialog(`将剪切「${ev.label}」（${fmt(ev.start_sec)} → ${fmt(ev.end_sec)}）`, { title: '剪切该事件？' })
   if (!ok) return
   try {
-    await projectData.cutOne(props.project.id, ev.rank)
+    const r = await projectData.cutOne(props.project.id, ev.rank)
     toast('剪切任务已启动')
+    watchCutJob(r, '剪切')
     load()
   } catch (e) { toast(e.message, 'err') }
 }

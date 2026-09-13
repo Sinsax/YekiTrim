@@ -207,6 +207,7 @@ import TimelineEditor from '../components/TimelineEditor.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
 import { mediaUrl } from '../utils'
 import { api } from '../api/client'
+import { scopeQ } from '../api/scope'
 import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
   initPolish, runLlm, runProcess, runRender, runSilence,
@@ -219,7 +220,7 @@ const route = useRoute()
 const router = useRouter()
 const routePid = route.params.pid || ''
 const pid = ref(routePid)
-const routeCfg = 'project=' + encodeURIComponent(routePid)
+const routeCfg = scopeQ(pid.value)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
 const title = ref('精修编辑器')
@@ -548,9 +549,19 @@ function runLlmJob() {
   startJob('llm', () => runLlm(pid.value, dir.value), { after: load })
 }
 
-/** 去静音：把长停顿写入屏蔽轨道（不重编码、不改原始视频），随后自动 process。 */
-function doSilence() {
-  startJob('silence', () => runSilence(pid.value, dir.value), { after: load })
+/** 去静音：把长停顿写入屏蔽轨道（不重编码、不改原始视频）。
+ *  `/api/polish/silence` 是同步接口（不返回任务 id），必须直接 await，
+ *  走 startJob 会让 watchJob(undefined) 永远等不到终态、锁死整排按钮。 */
+async function doSilence() {
+  try {
+    const r = await runSilence(pid.value, dir.value)
+    if (r?.applied) toast(`去静音：${r.added ?? 0} 段静音已加入屏蔽轨道（共 ${r.total ?? 0} 段）`)
+    else toast(r?.message || '未检测到长静音段')
+    previewKey.value++
+    load()
+  } catch (e) {
+    toast(e.message, 'err')
+  }
 }
 
 /** 打开输出目录：浏览器无法打开本地目录，复制路径并提示。 */
