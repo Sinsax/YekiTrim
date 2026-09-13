@@ -91,6 +91,92 @@ pub struct Config {
     /// 多用户服务：项目托管与容量（P2 起用 `projects_root`，P3/P5 用上限与水位）
     #[serde(default)]
     pub storage: StorageConfig,
+    /// 多用户服务 P3：采集（录播姬 webhook + 兜底扫描）
+    #[serde(default)]
+    pub ingest: IngestConfig,
+}
+
+/// `[ingest]` — 采集通道（录播姬 webhook + 兜底扫描）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestConfig {
+    /// 是否启用 `POST /api/ingest/bililive/<token>`
+    #[serde(default)]
+    pub webhook_enabled: bool,
+    /// webhook token 的 KDF 哈希串（明文只在 `vtrim ingest token` 生成时显示一次）
+    #[serde(default)]
+    pub token_hash: String,
+    /// 来源 IP 白名单（空 = 不限制；录播姬与 server 同机时填 127.0.0.1）
+    #[serde(default)]
+    pub allow_ips: Vec<String>,
+    #[serde(default)]
+    pub recorder: RecorderConfig,
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
+            webhook_enabled: false,
+            token_hash: String::new(),
+            allow_ips: Vec::new(),
+            recorder: RecorderConfig::default(),
+        }
+    }
+}
+
+/// `[ingest.recorder]` — 录播姬工作目录与入库策略。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecorderConfig {
+    /// 录播姬输出目录（必须与 `vtrim server` 同机/同可读盘）
+    #[serde(default)]
+    pub root: String,
+    /// 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
+    #[serde(default = "default_watch_interval_mins")]
+    pub watch_interval_mins: u32,
+    /// `SessionEnded` 之后再等多久没有新的 `FileClosed` 视为"本场结束"
+    #[serde(default = "default_finalize_idle_mins")]
+    pub finalize_idle_mins: u32,
+    /// 落位策略：true = 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
+    #[serde(default = "default_true")]
+    pub move_into_managed: bool,
+    /// 多分片会话是否合并为单个 `source.mp4`（ffmpeg -f concat -c copy）
+    #[serde(default = "default_true")]
+    pub concat_files: bool,
+    /// 认定为录像的扩展名
+    #[serde(default = "default_recorder_extensions")]
+    pub extensions: Vec<String>,
+    /// 入库后自动执行到哪一步：none | transcribe | detect | cut（channel_map 可覆盖）
+    #[serde(default = "default_auto_pipeline")]
+    pub auto_pipeline: String,
+}
+
+fn default_watch_interval_mins() -> u32 {
+    10
+}
+fn default_finalize_idle_mins() -> u32 {
+    5
+}
+fn default_true() -> bool {
+    true
+}
+fn default_recorder_extensions() -> Vec<String> {
+    vec!["flv".into(), "mkv".into(), "mp4".into(), "ts".into()]
+}
+fn default_auto_pipeline() -> String {
+    "detect".into()
+}
+
+impl Default for RecorderConfig {
+    fn default() -> Self {
+        Self {
+            root: String::new(),
+            watch_interval_mins: default_watch_interval_mins(),
+            finalize_idle_mins: default_finalize_idle_mins(),
+            move_into_managed: true,
+            concat_files: true,
+            extensions: default_recorder_extensions(),
+            auto_pipeline: default_auto_pipeline(),
+        }
+    }
 }
 
 /// `[storage]` — 项目托管目录与磁盘上限（只在服务端生效，CLI 单机路径不受影响）。

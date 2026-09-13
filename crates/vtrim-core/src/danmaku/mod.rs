@@ -112,16 +112,124 @@ fn parse_srt_time(caps: &regex_lite::Captures, offset: usize) -> f64 {
     h * 3600.0 + m * 60.0 + s
 }
 
-/// 自动检测弹幕文件格式（ASS 或 SRT）并解析。
-/// ASS 文件包含 [Events] + Dialogue: 行；其余按 SRT 解析。
+/// 自动检测弹幕文件格式（录播姬 XML / ASS / SRT）并解析。
+/// - `.xml`（录播姬/B站标准弹幕 XML）→ [`parse_bililive_xml`]
+/// - 含 `[Events]` + `Dialogue:` → ASS
+/// - 其余按 SRT
 pub fn load_danmaku_auto(path: &Path) -> Result<Vec<DanmakuEntry>> {
+    let is_xml = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("xml"))
+        .unwrap_or(false);
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取弹幕文件失败: {}", path.display()))?;
+    if is_xml || content.trim_start().starts_with("<?xml") || content.contains("<d p=") {
+        return Ok(parse_bililive_xml(&content));
+    }
     if content.contains("[Events]") && content.contains("Dialogue:") {
         parser::parse_ass(path)
     } else {
         Ok(parse_srt_danmaku(&content))
     }
+}
+
+/// 解析（录播姬写出的）B站标准弹幕 XML。
+///
+/// 结构：`<i><d p="时间,模式,字号,颜色,时间戳,弹幕池,用户,行号">文本</d>…</i>`
+/// - 时间：秒（浮点）；模式：1/2/3 滚动、4 底端、5 顶端、6 逆向、7 高级、8 代码；
+/// - 颜色：十进制 RGB（`16777215` = 白）；行号（第 8 段）直接当作 y 坐标。
+///
+/// 不引入 XML 依赖：只按 `<d p="…">…</d>` 提取，属性顺序不敏感，实体做最小反转义。
+/// 得到的时间轴语义与 ASS/SRT 分支一致（`start`/`end`/`text`/`color`/`y`），
+/// 因此 `popularity` 计算不需要任何改动。
+pub fn parse_bililive_xml(content: &str) -> Vec<DanmakuEntry> {
+    let re = regex_lite::Regex::new(r#"(?s)<d\s+p="([^"]*)"\s*>(.*?)</d>"#)
+        .expect("弹幕 XML 正则编译失败");
+    let mut entries = Vec::new();
+    for caps in re.captures_iter(content) {
+        let attrs = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let raw_text = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let text = unescape_xml(raw_text).trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = attrs.split(',').collect();
+        let start: f64 = parts.first().and_then(|s| s.trim().parse().ok()).unwrap_or(-1.0);
+        if start < 0.0 {
+            continue;
+        }
+        let mode: u32 = parts.get(1).and_then(|s| s.trim().parse().ok()).unwrap_or(1);
+        let color_dec: u32 = parts.get(3).and_then(|s| s.trim().parse().ok()).unwrap_or(0xFF_FFFF);
+        let row: f64 = parts
+            .get(7)
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|v: &f64| *v > 0.0)
+            .unwrap_or(default_y_for_mode(mode));
+        entries.push(DanmakuEntry {
+            start,
+            // XML 不提供时长：滚动弹幕按 8 秒展示，固定弹幕按 4 秒（与 ASS 默认一致）
+            end: start + if matches!(mode, 4 | 5) { 4.0 } else { 8.0 },
+            text,
+            color: format!("#{:06x}", color_dec & 0xFF_FFFF),
+            y: row.clamp(0.0, 1500.0),
+            travel_duration: 8.0,
+        });
+    }
+    entries.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    entries
+}
+
+fn default_y_for_mode(mode: u32) -> f64 {
+    match mode {
+        4 => 1000.0, // 底端
+        5 => 100.0,  // 顶端
+        _ => 400.0,  // 滚动（与 ASS/SRT 默认一致）
+    }
+}
+
+/// 最小 XML 实体反转义（弹幕文本里会出现 `&lt;` `&amp;` 等与数字实体）。
+fn unescape_xml(raw: &str) -> String {
+    if !raw.contains('&') {
+        return raw.to_string();
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(idx) = rest.find('&') {
+        out.push_str(&rest[..idx]);
+        let tail = &rest[idx..];
+        let Some(semi) = tail.find(';').filter(|s| *s <= 10) else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let entity = &tail[1..semi];
+        let replacement = match entity {
+            "lt" => Some('<'.to_string()),
+            "gt" => Some('>'.to_string()),
+            "amp" => Some('&'.to_string()),
+            "quot" => Some('"'.to_string()),
+            "apos" => Some('\''.to_string()),
+            _ => entity
+                .strip_prefix('#')
+                .and_then(|n| {
+                    if let Some(hex) = n.strip_prefix('x').or_else(|| n.strip_prefix('X')) {
+                        u32::from_str_radix(hex, 16).ok()
+                    } else {
+                        n.parse::<u32>().ok()
+                    }
+                })
+                .and_then(char::from_u32)
+                .map(|c| c.to_string()),
+        };
+        match replacement {
+            Some(s) => out.push_str(&s),
+            None => out.push_str(&tail[..=semi]),
+        }
+        rest = &tail[semi + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Per-window danmaku density.
@@ -301,5 +409,70 @@ mod tests {
         // 纯标签无文本 → 跳过
         let only_tags = "1\n00:00:01,000 --> 00:00:05,000\n{\\move(100,300,500,300)}\n";
         assert!(parse_srt_danmaku(only_tags).is_empty());
+    }
+
+    /// 录播姬写出的 B站标准弹幕 XML（官方样例结构）
+    const BILILIVE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<i>
+  <chatserver>chat.bilibili.com</chatserver>
+  <chatid>0</chatid>
+  <mission>0</mission>
+  <maxlimit>0</maxlimit>
+  <state>0</state>
+  <real_name>0</real_name>
+  <source>k-v</source>
+  <d p="1.5,1,25,16777215,1700000000,0,abc,120">第一条 &lt;滚动&gt; 弹幕</d>
+  <d p="12.25,4,25,16711935,1700000010,0,abc,1000">底端弹幕</d>
+  <d p="20,5,25,255,1700000020,0,abc,100">顶端弹幕</d>
+  <d p="30,1,25,16711680,1700000030,0,abc,340"></d>
+</i>"#;
+
+    #[test]
+    fn test_parse_bililive_xml() {
+        let entries = parse_bililive_xml(BILILIVE_XML);
+        // 空文本的一条被跳过
+        assert_eq!(entries.len(), 3, "entries = {entries:?}");
+
+        assert!((entries[0].start - 1.5).abs() < 1e-6);
+        assert_eq!(entries[0].text, "第一条 <滚动> 弹幕", "XML 实体必须反转义");
+        assert_eq!(entries[0].color, "#ffffff");
+        assert!((entries[0].y - 120.0).abs() < 1e-6, "行号直接作为 y");
+        assert!((entries[0].end - 9.5).abs() < 1e-6, "滚动弹幕显示 8 秒");
+
+        // 底端（mode=4）：固定 4 秒 + 默认 y
+        assert!((entries[1].start - 12.25).abs() < 1e-6);
+        assert_eq!(entries[1].text, "底端弹幕");
+        assert_eq!(entries[1].color, "#ff00ff");
+        assert!((entries[1].end - 16.25).abs() < 1e-6);
+
+        // 顶端（mode=5）+ 颜色 255 = #0000ff
+        assert_eq!(entries[2].color, "#0000ff");
+        assert!((entries[2].y - 100.0).abs() < 1e-6);
+
+        // 按时间排序
+        assert!(entries.windows(2).all(|w| w[0].start <= w[1].start));
+    }
+
+    #[test]
+    fn test_parse_bililive_xml_junk() {
+        assert!(parse_bililive_xml("").is_empty());
+        assert!(parse_bililive_xml("<i></i>").is_empty());
+        // 缺 p 或时间非法 → 跳过
+        assert!(parse_bililive_xml(r#"<i><d>无属性</d></i>"#).is_empty());
+        assert!(parse_bililive_xml(r#"<i><d p="abc,1,25,1,0,0,x,1">x</d></i>"#).is_empty());
+        // 数字实体与未知实体
+        let e = parse_bililive_xml(r#"<i><d p="1,1,25,16777215,0,0,u,10">A&#65;&unknown;B</d></i>"#);
+        assert_eq!(e[0].text, "AA&unknown;B");
+    }
+
+    #[test]
+    fn test_load_danmaku_auto_detects_xml_by_extension() {
+        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-xml-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("danmaku.xml");
+        std::fs::write(&path, BILILIVE_XML).unwrap();
+        let entries = load_danmaku_auto(&path).unwrap();
+        assert_eq!(entries.len(), 3, "按扩展名分派到 XML 解析");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

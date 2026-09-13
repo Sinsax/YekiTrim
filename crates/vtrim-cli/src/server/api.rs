@@ -32,9 +32,13 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 白名单（§10.1 step-2.1）：登录端点与 /health 之外，**所有**接口都要会话。
     let public = Router::new()
         .route("/health", get(health))
-        .route("/auth/login", post(auth_login));
+        .route("/auth/login", post(auth_login))
+        // 录播姬 webhook：自带 token 鉴权（录播姬只能填 URL，无法加自定义头），
+        // 因此它**不能**挂在 require_user 下（§4.1）。
+        .route("/ingest/bililive/:token", post(super::ingest::webhook));
 
     // 平台级资源（P2 起归入 /api/admin/*，仅 admin）：配置 / 模型 / doctor / LLM 测试
+    // 旧路径作为过渡别名挂在**同一个 require_admin 层**下（否则普通账号能读到 LLM key）
     let admin = Router::new()
         .route("/admin/doctor", get(doctor))
         .route("/admin/config", get(config_get))
@@ -43,6 +47,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/llm/test", post(llm_test))
         .route("/admin/models", get(models_get))
         .route("/admin/models/download", post(models_download))
+        .route("/admin/ingest", get(super::ingest::config_view))
+        .route("/admin/ingest/assign", post(super::ingest::assign))
+        .route("/doctor", get(doctor))
+        .route("/config", get(config_get))
+        .route("/config/global", put(config_global_put))
+        .route("/config/llm", put(config_llm_put))
+        .route("/llm/test", post(llm_test))
+        .route("/models", get(models_get))
+        .route("/models/download", post(models_download))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             super::auth::require_admin,
@@ -77,14 +90,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/me", get(me))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/password", put(auth_password))
-        // 过渡期兼容别名（P2 之后前端改用 /api/admin/*，P5 删除）
-        .route("/doctor", get(doctor))
-        .route("/config", get(config_get))
-        .route("/config/global", put(config_global_put))
-        .route("/config/llm", put(config_llm_put))
-        .route("/llm/test", post(llm_test))
-        .route("/models", get(models_get))
-        .route("/models/download", post(models_download))
         .route("/project/list", get(project_list))
         .route("/projects", get(projects_list).post(projects_create))
         .route("/projects/:id", axum::routing::delete(projects_delete))
@@ -105,6 +110,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/project-data/config", get(project_data_config).put(project_data_config_put))
         .route("/project-data/polish", get(project_data_polish))
         .route("/fs/list", post(fs_list))
+        .route("/ingest/records", get(super::ingest::records))
+        .route("/ingest/retry", post(super::ingest::retry))
+        .route("/channel-map", get(super::ingest::channel_map_get).put(super::ingest::channel_map_put))
         .route("/stream", get(global_stream))
         .route("/jobs", get(jobs_list))
         .route("/jobs/:id", get(job_get))

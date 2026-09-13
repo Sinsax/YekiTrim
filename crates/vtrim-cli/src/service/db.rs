@@ -16,7 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// 账本 schema 版本（`PRAGMA user_version`）；新增迁移时递增并在 `migrate()` 中分支。
 /// - v1：users / sessions / audit
 /// - v2：projects（项目托管）+ storage（占用计量）
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VTRIM_DATA_DIR") {
@@ -92,6 +92,47 @@ impl ProjectRow {
     pub fn total_bytes(&self) -> u64 {
         self.source_bytes + self.output_bytes
     }
+}
+
+/// 录播姬会话（P3）：一场直播可能推送多个事件、输出多个分片。
+#[derive(Debug, Clone)]
+pub struct IngestSessionRow {
+    pub session_id: String,
+    pub room_id: Option<String>,
+    pub short_id: Option<String>,
+    /// `None` = 尚未指派（进"待分配池"，仅 admin 可见）
+    pub owner_id: Option<i64>,
+    /// `open` | `closing` | `finalized` | `failed` | `unassigned`
+    pub state: String,
+    pub opened_files: Vec<String>,
+    pub closed_files: Vec<String>,
+    pub first_event_at: Option<i64>,
+    pub last_event_at: Option<i64>,
+    pub project_id: Option<i64>,
+    pub auto_pipeline: Option<String>,
+    pub error: Option<String>,
+    pub created_at: i64,
+}
+
+/// 房间 → 账号 的自动导入规则（§4.2）。
+#[derive(Debug, Clone)]
+pub struct ChannelRule {
+    pub room_id: String,
+    pub user_id: i64,
+    pub auto_pipeline: String,
+    pub enabled: bool,
+}
+
+/// 兜底扫描见过的文件（§4.1）。P3b/P3c 的 worker 会读这些字段。
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct IngestFileRow {
+    pub path: String,
+    pub session_id: Option<String>,
+    pub room_id: Option<String>,
+    pub size: u64,
+    pub mtime: i64,
+    pub state: String,
 }
 
 pub struct Db {
@@ -203,6 +244,45 @@ pub struct Db {
                     user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                     bytes      INTEGER NOT NULL DEFAULT 0,
                     updated_at INTEGER NOT NULL
+                );
+                -- v3：录播姬采集（webhook 去重 / 会话聚合 / 兜底扫描 / 房间映射，§4）
+                CREATE TABLE IF NOT EXISTS ingest_events (
+                    event_id    TEXT PRIMARY KEY,
+                    received_at INTEGER NOT NULL,
+                    kind        TEXT NOT NULL,
+                    session_id  TEXT
+                );
+                CREATE TABLE IF NOT EXISTS ingest_sessions (
+                    session_id     TEXT PRIMARY KEY,
+                    room_id        TEXT,
+                    short_id       TEXT,
+                    owner_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    state          TEXT NOT NULL,
+                    opened_files   TEXT NOT NULL DEFAULT '[]',
+                    closed_files   TEXT NOT NULL DEFAULT '[]',
+                    first_event_at INTEGER,
+                    last_event_at  INTEGER,
+                    project_id     INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                    auto_pipeline  TEXT,
+                    error          TEXT,
+                    created_at     INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_ingest_sessions_owner ON ingest_sessions(owner_id);
+                CREATE INDEX IF NOT EXISTS idx_ingest_sessions_state ON ingest_sessions(state);
+                CREATE TABLE IF NOT EXISTS ingest_files (
+                    path       TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    room_id    TEXT,
+                    size       INTEGER NOT NULL DEFAULT 0,
+                    mtime      INTEGER NOT NULL DEFAULT 0,
+                    state      TEXT NOT NULL DEFAULT 'seen',
+                    seen_at    INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS channel_map (
+                    room_id       TEXT PRIMARY KEY,
+                    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    auto_pipeline TEXT NOT NULL DEFAULT 'detect',
+                    enabled       INTEGER NOT NULL DEFAULT 1
                 );
                 "#,
             )
@@ -640,6 +720,378 @@ pub struct Db {
                 params![user_id, now_secs()],
             )?;
             Ok(())
+        })
+    }
+
+    // ---- 录播姬采集（v3，§4） ----
+
+    /// 记录一个 webhook 事件；返回 `false` = 重复投递（同 `EventId` 已处理过）。
+    pub fn ingest_event_record(&self, event_id: &str, kind: &str, session_id: Option<&str>) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "INSERT OR IGNORE INTO ingest_events (event_id, received_at, kind, session_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![event_id, now_secs(), kind, session_id],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// 会话不存在则建（`state=open`），已存在则刷新 `last_event_at` / 房间信息。
+    pub fn ingest_session_touch(
+        &self,
+        session_id: &str,
+        room_id: Option<&str>,
+        short_id: Option<&str>,
+    ) -> Result<()> {
+        self.with(|conn| {
+            let now = now_secs();
+            conn.execute(
+                "INSERT INTO ingest_sessions (session_id, room_id, short_id, state, first_event_at, last_event_at, created_at)
+                 VALUES (?1, ?2, ?3, 'open', ?4, ?4, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                   last_event_at = ?4,
+                   room_id = COALESCE(ingest_sessions.room_id, excluded.room_id),
+                   short_id = COALESCE(ingest_sessions.short_id, excluded.short_id)",
+                params![session_id, room_id, short_id, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn ingest_session_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<IngestSessionRow> {
+        let parse_list = |raw: String| -> Vec<String> {
+            serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+        };
+        Ok(IngestSessionRow {
+            session_id: r.get(0)?,
+            room_id: r.get(1)?,
+            short_id: r.get(2)?,
+            owner_id: r.get(3)?,
+            state: r.get(4)?,
+            opened_files: parse_list(r.get::<_, String>(5)?),
+            closed_files: parse_list(r.get::<_, String>(6)?),
+            first_event_at: r.get(7)?,
+            last_event_at: r.get(8)?,
+            project_id: r.get(9)?,
+            auto_pipeline: r.get(10)?,
+            error: r.get(11)?,
+            created_at: r.get(12)?,
+        })
+    }
+
+    const INGEST_SESSION_COLS: &'static str = "session_id, room_id, short_id, owner_id, state, \
+         opened_files, closed_files, first_event_at, last_event_at, project_id, auto_pipeline, error, created_at";
+
+    pub fn ingest_session(&self, session_id: &str) -> Result<Option<IngestSessionRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    &format!(
+                        "SELECT {} FROM ingest_sessions WHERE session_id = ?1",
+                        Self::INGEST_SESSION_COLS
+                    ),
+                    params![session_id],
+                    Self::ingest_session_from_row,
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// `owner=None` = 全平台（admin）；`states` 为空 = 不限状态。按最近事件倒序。
+    pub fn list_ingest_sessions(
+        &self,
+        owner: Option<i64>,
+        states: &[&str],
+        limit: usize,
+    ) -> Result<Vec<IngestSessionRow>> {
+        self.with(|conn| {
+            let mut sql = format!(
+                "SELECT {} FROM ingest_sessions WHERE 1=1",
+                Self::INGEST_SESSION_COLS
+            );
+            let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(uid) = owner {
+                sql.push_str(" AND owner_id = ?");
+                args.push(Box::new(uid));
+            }
+            if !states.is_empty() {
+                let placeholders = vec!["?"; states.len()].join(",");
+                sql.push_str(&format!(" AND state IN ({placeholders})"));
+                for s in states {
+                    args.push(Box::new((*s).to_string()));
+                }
+            }
+            sql.push_str(" ORDER BY COALESCE(last_event_at, created_at) DESC LIMIT ?");
+            args.push(Box::new(limit as i64));
+            let mut stmt = conn.prepare(&sql)?;
+            let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+            let rows = stmt.query_map(refs.as_slice(), Self::ingest_session_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn ingest_session_add_file(&self, session_id: &str, rel_path: &str, opened: bool) -> Result<()> {
+        self.with(|conn| {
+            let col = if opened { "opened_files" } else { "closed_files" };
+            let current: Option<String> = conn
+                .query_row(
+                    &format!("SELECT {col} FROM ingest_sessions WHERE session_id = ?1"),
+                    params![session_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(current) = current else { return Ok(()) };
+            let mut list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+            if !list.iter().any(|p| p == rel_path) {
+                list.push(rel_path.to_string());
+            }
+            conn.execute(
+                &format!(
+                    "UPDATE ingest_sessions SET {col} = ?2, last_event_at = ?3 WHERE session_id = ?1"
+                ),
+                params![session_id, serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()), now_secs()],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn set_ingest_state(&self, session_id: &str, state: &str, error: Option<&str>) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE ingest_sessions SET state = ?2, error = COALESCE(?3, error) WHERE session_id = ?1",
+                params![session_id, state, error],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 指派归属（待分配池 → 某账号 + 自动策略）。
+    pub fn assign_ingest_session(
+        &self,
+        session_id: &str,
+        owner_id: i64,
+        auto_pipeline: Option<&str>,
+    ) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "UPDATE ingest_sessions
+                 SET owner_id = ?2, auto_pipeline = COALESCE(?3, auto_pipeline),
+                     state = CASE WHEN state = 'unassigned' THEN 'finalized' ELSE state END
+                 WHERE session_id = ?1",
+                params![session_id, owner_id, auto_pipeline],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    /// P3b 入库 worker 用（合并/落位后把会话指向新建的项目）。
+    #[allow(dead_code)]
+    pub fn set_ingest_project(&self, session_id: &str, project_id: i64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE ingest_sessions SET project_id = ?2, state = 'finalized' WHERE session_id = ?1",
+                params![session_id, project_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_ingest_file(
+        &self,
+        path: &str,
+        session_id: Option<&str>,
+        room_id: Option<&str>,
+        size: u64,
+        mtime: i64,
+        state: &str,
+    ) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO ingest_files (path, session_id, room_id, size, mtime, state, seen_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(path) DO UPDATE SET
+                   session_id = COALESCE(excluded.session_id, ingest_files.session_id),
+                   room_id = COALESCE(excluded.room_id, ingest_files.room_id),
+                   size = excluded.size, mtime = excluded.mtime,
+                   state = excluded.state, seen_at = excluded.seen_at",
+                params![path, session_id, room_id, size as i64, mtime, state, now_secs()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// P3b 入库 worker 用（合并/落位后把会话指向新建的项目）。
+    #[allow(dead_code)]
+    pub fn ingest_file(&self, path: &str) -> Result<Option<IngestFileRow>> {        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT path, session_id, room_id, size, mtime, state FROM ingest_files WHERE path = ?1",
+                    params![path],
+                    |r| {
+                        Ok(IngestFileRow {
+                            path: r.get(0)?,
+                            session_id: r.get(1)?,
+                            room_id: r.get(2)?,
+                            size: r.get::<_, i64>(3)?.max(0) as u64,
+                            mtime: r.get(4)?,
+                            state: r.get(5)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// 一组录像文件的总字节（会话列表的"大小"列）。
+    pub fn ingest_file_sizes(&self, paths: &[String]) -> Result<u64> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        self.with(|conn| {
+            let placeholders = vec!["?"; paths.len()].join(",");
+            let sql = format!("SELECT COALESCE(SUM(size), 0) FROM ingest_files WHERE path IN ({placeholders})");
+            let mut stmt = conn.prepare(&sql)?;
+            let args: Vec<&dyn rusqlite::ToSql> =
+                paths.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let total: i64 = stmt.query_row(args.as_slice(), |r| r.get(0))?;
+            Ok(total.max(0) as u64)
+        })
+    }
+
+    /// P3c 兜底扫描用。
+    #[allow(dead_code)]
+    pub fn list_ingest_files(&self, limit: usize) -> Result<Vec<IngestFileRow>> {        self.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT path, session_id, room_id, size, mtime, state FROM ingest_files
+                 ORDER BY seen_at DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| {
+                Ok(IngestFileRow {
+                    path: r.get(0)?,
+                    session_id: r.get(1)?,
+                    room_id: r.get(2)?,
+                    size: r.get::<_, i64>(3)?.max(0) as u64,
+                    mtime: r.get(4)?,
+                    state: r.get(5)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn channel_map_list(&self) -> Result<Vec<ChannelRule>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT room_id, user_id, auto_pipeline, enabled FROM channel_map ORDER BY room_id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(ChannelRule {
+                    room_id: r.get(0)?,
+                    user_id: r.get(1)?,
+                    auto_pipeline: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// 整体替换某用户的房间规则（前端 PUT 的语义）。
+    pub fn replace_channel_map(&self, user_id: i64, rules: &[(String, String, bool)]) -> Result<()> {
+        self.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("DELETE FROM channel_map WHERE user_id = ?1", params![user_id])?;
+            for (room_id, pipeline, enabled) in rules {
+                tx.execute(
+                    "INSERT INTO channel_map (room_id, user_id, auto_pipeline, enabled)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(room_id) DO UPDATE SET
+                       user_id = excluded.user_id, auto_pipeline = excluded.auto_pipeline,
+                       enabled = excluded.enabled",
+                    params![room_id, user_id, pipeline, *enabled as i64],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn channel_for_room(&self, room_id: &str) -> Result<Option<ChannelRule>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT room_id, user_id, auto_pipeline, enabled FROM channel_map WHERE room_id = ?1",
+                    params![room_id],
+                    |r| {
+                        Ok(ChannelRule {
+                            room_id: r.get(0)?,
+                            user_id: r.get(1)?,
+                            auto_pipeline: r.get(2)?,
+                            enabled: r.get::<_, i64>(3)? != 0,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// 待分配池：还没有归属的会话（仅 admin 可见并指派）。
+    pub fn unassigned_ingest_sessions(&self, limit: usize) -> Result<Vec<IngestSessionRow>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {} FROM ingest_sessions
+                 WHERE owner_id IS NULL AND state IN ('open','closing','finalized','unassigned')
+                 ORDER BY COALESCE(last_event_at, created_at) DESC LIMIT ?1",
+                Self::INGEST_SESSION_COLS
+            ))?;
+            let rows = stmt.query_map(params![limit as i64], Self::ingest_session_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// 按 id 查账号（会话/指派接口用）。
+    pub fn find_user_by_id(&self, id: i64) -> Result<Option<UserRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id, username, role, disabled, must_change_password, quota_bytes, created_at, last_login_at
+                     FROM users WHERE id = ?1",
+                    params![id],
+                    |r| {
+                        Ok(UserRow {
+                            id: r.get(0)?,
+                            username: r.get(1)?,
+                            role: r.get(2)?,
+                            disabled: r.get::<_, i64>(3)? != 0,
+                            must_change_password: r.get::<_, i64>(4)? != 0,
+                            quota_bytes: r.get(5)?,
+                            created_at: r.get(6)?,
+                            last_login_at: r.get(7)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
         })
     }
 
