@@ -229,8 +229,11 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - `vtrim-core/src/tenant.rs` 是唯一拼接入口：拒绝绝对路径/UNC/`C:foo`/`..`/符号链接逃逸。
   - `/api/media/<project_id>/<项目内相对路径>`；旧写法（绝对路径）也只在本项目内放行。
   - `/api/admin/*`（config/models/doctor/llm test）仅 admin；旧路径作为过渡别名挂在同一层。
-  - `/api/fs/list` 仅 admin，且只接受**相对租户根**（`<projects_root>/users/<uid>`）的路径：
-    这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**。
+  - `/api/fs/list` 仅 admin，且囚笼在**允许的根**内（该账号租户根 + `[storage] local_roots`）：
+    这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**；
+    请求 `{root, path}`（path 相对所选根），响应回传 `roots/root_label` 供前端下拉切换。
+  - 管理员「＋新建项目 → 从服务器文件」：`POST /api/projects {source:{kind:"local", root, dir, input, danmaku, output_dir}}`；
+    **目标目录已有 `vtrim.toml` 时只登记/打开、不覆盖**（保护手改过的工程设置）。
   - 任务带 `owner_id`：`/api/jobs`、`/api/jobs/:id`、`/api/jobs/:id/events`、canc、`/api/stream`
     全部按归属过滤，他人任务 404（SSE 在服务端过滤）。
   - 前端作用域是项目 id：`/project/:pid`，`api/scope.js` 是唯一拼 `project=<id>` 的地方。
