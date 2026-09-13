@@ -733,7 +733,6 @@ watch(dir, load)
 .layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:stretch; }
 .left { display:flex; flex-direction:column; gap:16px; min-width:0; }
 .right { display:flex; flex-direction:column; gap:12px; }
-.card-h2 { display:flex; align-items:center; gap:7px; }
 .seg-toggle .mini-btn.selected { background:var(--main-soft); color:var(--main-deep); border-color:var(--main); }
 .add-sub { margin-left:auto; }
 .panel-card { display:flex; flex-direction:column; flex:1; }

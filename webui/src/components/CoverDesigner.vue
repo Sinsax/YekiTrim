@@ -651,7 +651,6 @@ onUnmounted(() => {
 
 <style scoped>
 .designer-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start; }
-.card-h2 { display:flex; align-items:center; gap:7px; }
 .stage { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:14px; overflow:hidden; }
 .stage-media { position:absolute; inset:0; z-index:0; background:#000; }
 .stage-video { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; object-fit:cover; display:block; }

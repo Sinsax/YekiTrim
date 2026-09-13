@@ -1,9 +1,9 @@
 <template>
-  <div class="sess" :class="{ compact }">
+  <div class="event-row sess">
     <div class="flex-1">
       <div class="row">
         <b class="small">房间 {{ r.room_id || '-' }}</b>
-        <span class="chip" :class="stateClass(r.state)">{{ r.state_label }}</span>
+        <span class="state-badge" :class="stateClass(r.state)">{{ r.state_label }}</span>
         <span class="muted small">{{ fmtTime(r.started_at) }}</span>
       </div>
       <div class="muted small mt-2">
@@ -45,7 +45,7 @@ async function retry() {
 </script>
 
 <style scoped>
-.sess { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px dashed var(--line-soft); }
-.sess:last-child { border-bottom:none; }
+/* 只补两处基准没有的：竖向对齐与紧凑态 */
+.sess { align-items:flex-start; }
 .sess-actions { flex:none; }
 </style>

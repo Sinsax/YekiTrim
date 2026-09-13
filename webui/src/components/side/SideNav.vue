@@ -36,13 +36,12 @@
         <span class="av">{{ (authState.user?.username || '?')[0].toUpperCase() }}</span>
         <span class="nm">
           <b>{{ authState.user?.username }}</b>
-          <span class="muted">{{ isAdmin ? '管理员' : '用户' }} · 点击登出</span>
+          <span class="muted small">{{ isAdmin ? '管理员' : '用户' }} · 点击登出</span>
         </span>
       </div>
       <div v-for="e in entries" :key="e.key" class="foot-item" :class="{ on: current === e.key }" @click="go(e.path)">
         {{ e.label }}
-        <span v-if="e.key === 'jobs' && hasRunning" class="dot"></span>
-        <span v-if="e.badge" class="chip n foot-chip">{{ e.badge }}</span>
+        <span v-if="e.key === 'home' && hasRunning" class="dot"></span>
       </div>
     </div>
   </aside>
@@ -51,16 +50,15 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import Icon from '../Icon.vue'
 import ProjectNode from './ProjectNode.vue'
 import { authState } from '../../stores/auth'
 import { useJobs } from '../../composables/useJobs'
 import { filteredProjects, isExpanded, toggleExpand, wb } from '../../stores/workbench'
 
-const props = defineProps({
+defineProps({
   projectCount: { type: Number, default: 0 }
 })
-const emit = defineEmits(['open', 'remove', 'logout', 'new-project', 'open-jobs'])
+const emit = defineEmits(['open', 'remove', 'logout', 'open-jobs'])
 
 const route = useRoute()
 const router = useRouter()
@@ -94,36 +92,8 @@ function runningOf(pid) {
 }
 
 async function go(path) {
-  if (path === '/jobs') {
-    emit('open-jobs')
-    return
-  }
   router.push(path)
 }
 
 defineExpose({ openJobs: () => emit('open-jobs') })
 </script>
-
-<style scoped>
-.side { width:264px; flex:none; display:flex; flex-direction:column; gap:8px; padding:12px 10px; border-right:1px solid var(--line); background:var(--card); height:100vh; position:sticky; top:0; z-index:10; }
-.side-brand { display:flex; align-items:center; gap:9px; padding:2px 6px 6px; cursor:pointer; }
-.brand-logo { width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg,var(--main),var(--pink-light)); display:flex; align-items:center; justify-content:center; font-size:16px; color:#fff; box-shadow:var(--shadow-pink); }
-.brand-name { font-size:14px; font-weight:700; color:var(--main-deep); line-height:1.2; }
-.brand-sub { font-size:9px; color:var(--ink-faint); letter-spacing:.1em; }
-.side-filter input { width:100%; padding:6px 10px; font-size:12px; }
-.side-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
-.side-cap { font-size:10px; color:var(--ink-faint); letter-spacing:.08em; padding:4px 6px; }
-.hint { padding:10px; font-size:12px; color:var(--ink-dim); }
-.side-foot { border-top:1px dashed var(--line-soft); padding-top:8px; display:flex; flex-direction:column; gap:2px; }
-.user-chip { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:10px; cursor:pointer; }
-.user-chip:hover { background:var(--bg-soft); }
-.av { width:26px; height:26px; border-radius:50%; background:var(--main-soft); color:var(--pink-text); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
-.user-chip .nm { display:flex; flex-direction:column; line-height:1.25; min-width:0; }
-.user-chip .nm b { font-size:12px; }
-.user-chip .nm .muted { font-size:10px; }
-.foot-item { display:flex; align-items:center; gap:6px; padding:7px 9px; border-radius:10px; font-size:13px; color:var(--ink-dim); cursor:pointer; }
-.foot-item:hover { background:var(--bg-soft); color:var(--ink); }
-.foot-item.on { background:var(--main-soft); color:var(--pink-text); font-weight:600; }
-.dot { width:6px; height:6px; border-radius:50%; background:var(--red); }
-.foot-chip { margin-left:auto; }
-</style>

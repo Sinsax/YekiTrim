@@ -544,7 +544,6 @@ watch(() => props.project?.id, load)
 .thumb:hover { filter:brightness(1.06); border-color:var(--main); }
 /* 卡片本身不再响应点击（只有预览图会打开视频窗口），去掉手型光标 */
 .pcard.clip-card { cursor:default; }
-.pcard .ribbon { opacity:1; top:8px; right:-18px; padding:2px 30px; background:rgba(253,227,236,.5); color:rgba(216,102,155,.8); }
 
 /* 窄屏：抽屉堆叠到片段下方，横向折叠条 */
 @media (max-width: 900px) {
