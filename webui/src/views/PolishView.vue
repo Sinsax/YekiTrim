@@ -50,8 +50,28 @@
       </div>
 
       <template v-else>
-        <!-- 顶部两卡：生成与导出（含贴纸来源） + 片段列表 -->
-        <div class="top-cards">
+        <!-- 片段行：整行卡片，点击切换 -->
+        <div class="card card-blk">
+          <div class="card card-blk">
+            <div class="row spread mb-8">
+              <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
+              <span class="muted small">点击卡片切换，行内可初始化</span>
+            </div>
+            <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
+          </div>
+        </div>
+
+        <!-- 预览左 + 右侧（生成与导出 / 九宫格布局） -->
+        <div class="polish-grid mt-16">
+          <div class="card">
+            <div class="row spread">
+              <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
+              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+            </div>
+            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
+          </div>
+
+          <div class="side-col">
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 生成与导出</h2>
@@ -124,33 +144,15 @@
             </div>
             <div class="muted small mt-8">保存布局后点击处理，会按当前九宫格重新计算贴纸等位置</div>
           </div>
-
-          <div class="card card-blk">
-            <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
-              <span class="muted small">点击切换</span>
-            </div>
-            <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
           </div>
         </div>
-
-        <!-- 中部：预览 + 时间轴全宽（九宫格已上移顶行，字幕编辑在时间轴块上，自动保存） -->
-        <div class="mt-16">
-          <div class="card">
-            <div class="row spread">
-              <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
-            </div>
-            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" @time="onPreviewTime" />
+        <!-- 时间轴全宽（字幕编辑在时间轴块上，自动保存） -->
+        <div class="card mt-16">
+          <div class="row spread">
+            <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
+            <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
           </div>
-
-          <div class="card mt-16">
-            <div class="row spread">
-              <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
-              <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
-            </div>
-            <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
-          </div>
+          <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
         </div>
 
         <div class="mt-16"><CoverDesigner :dir="dir" @changed="refreshClipEntry" /></div>
@@ -434,7 +436,7 @@ async function initClip(c) {
   toast('正在初始化 ' + c.name)
 }
 
-const fragRows = computed(() => clips.value.map((c) => ({ name: c.name, ...clipRow(c) })))
+const fragRows = computed(() => clips.value.map((c) => ({ name: c.name, thumb: thumbSrc(c), ...clipRow(c) })))
 
 function initClipByName(name) {
   const c = clips.value.find((x) => x.name === name)
@@ -725,8 +727,9 @@ watch(dir, load)
 </script>
 
 <style scoped>
-/* 顶行三卡：生成与导出 / 九宫格 / 片段 —— 九宫格上移后编辑区获得全宽 */
-.top-cards { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr); gap:16px; align-items:start; }
+/* 预览左 + 右侧卡列（生成与导出 / 九宫格布局） */
+.polish-grid { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+.side-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
 .init-wrap { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
 @media (max-width: 900px) { .init-wrap { grid-template-columns:1fr; } }
 .action-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:18px; }
@@ -752,12 +755,6 @@ watch(dir, load)
 .grid-cell:hover { border-color:var(--main); }
 .grid-cell.active { background:var(--main-soft); border-color:var(--main); color:var(--main-deep); }
 .job-box { border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 10px; background:var(--bg-soft); }
-.frag-list { display:flex; flex-direction:column; gap:2px; max-height:320px; overflow:auto; }
-.frag-row { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:9px; cursor:pointer; }
-.frag-row:hover { background:var(--bg-soft); }
-.frag-row.on { background:var(--main-soft); }
-.frag-row.on .frag-title { color:var(--pink-text); font-weight:600; }
-.frag-title { flex:1; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .artifact-bar .cover-thumb { width:150px; border-radius:var(--r-sm); border:1px solid var(--line); }
 .artifact-bar .video-bar { max-height:32vh; border-radius:var(--r-sm); }
 .product-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
@@ -765,6 +762,6 @@ watch(dir, load)
 .product-video { max-height:46vh; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
 @media (max-width: 1100px) {
-  .top-cards, .action-grid, .init-wrap { grid-template-columns:1fr; }
+  .polish-grid, .action-grid, .init-wrap { grid-template-columns:1fr; }
 }
 </style>
