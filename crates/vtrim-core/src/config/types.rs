@@ -194,6 +194,13 @@ pub struct StorageConfig {
     /// 单用户默认配额（0 = 不限）；`users.quota_bytes` 优先
     #[serde(default)]
     pub default_quota_bytes: u64,
+    /// 管理员"从服务器本机文件新建项目"允许的根目录（绝对路径）。
+    ///
+    /// 默认空 = 只能用租户根（`<projects_root>/users/<uid>`）；填上例如
+    /// `["F:/media", "D:/BililiveRecorder"]` 后，**仅管理员**可以在这几个根里
+    /// 浏览并选目录建项目。任何情况下都**不接受上传**、不接受白名单之外的路径。
+    #[serde(default)]
+    pub local_roots: Vec<String>,
 }
 
 fn default_watermark_pct() -> u32 {
@@ -207,6 +214,7 @@ impl Default for StorageConfig {
             max_disk_bytes: 0,
             disk_watermark_pct: default_watermark_pct(),
             default_quota_bytes: 0,
+            local_roots: Vec::new(),
         }
     }
 }

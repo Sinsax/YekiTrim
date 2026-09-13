@@ -1,14 +1,23 @@
 <template>
   <AppModal :show="show" title="选择服务器文件" @close="close">
+    <div class="row mb-6">
+      <div class="flex-1 minw-180">
+        <label>根目录（管理员在 [storage] local_roots 里配置）</label>
+        <select v-model="root" @change="switchRoot">
+          <option v-for="r in roots" :key="r.path" :value="r.path">
+            {{ r.label }}{{ r.tenant ? '（托管目录）' : '' }} — {{ r.path }}
+          </option>
+        </select>
+      </div>
+    </div>
     <div class="row">
       <div class="flex-1 minw-180">
-        <label>当前目录（相对项目根，不接受绝对路径）</label>
-        <input v-model.trim="path" placeholder="留空 = 项目根" @keyup.enter="browse">
+        <label>相对所选根的路径（不接受绝对路径）</label>
+        <input v-model.trim="path" placeholder="留空 = 根目录" @keyup.enter="browse">
       </div>
       <button class="mini-btn mt-20" @click="browse">打开</button>
       <button class="mini-btn mt-20" :disabled="!path" @click="goUp">上一级</button>
     </div>
-    <div class="muted small mt-6">根目录：<span class="mono">{{ root }}</span>（只能浏览自己的项目目录）</div>
     <div v-if="loadError" class="error-banner mt-8">{{ loadError }}</div>
     <div class="file-box mt-8">
       <div v-if="loading" class="row muted small"><span class="spinner"></span> 加载中…</div>
@@ -42,10 +51,11 @@ const props = defineProps({
 })
 const emit = defineEmits(['select', 'close'])
 
-// 路径一律**相对租户根**（服务端囚笼）；服务端返回 path/parent/root 供前端导航
+// 路径一律**相对所选根**（服务端囚笼）；根 = 租户根 + [storage] local_roots（仅 admin）
 const path = ref('')
 const parent = ref('')
 const root = ref('')
+const roots = ref([])
 const dirs = ref([])
 const files = ref([])
 const loading = ref(false)
@@ -78,10 +88,11 @@ async function browse() {
   loading.value = true
   loadError.value = ''
   try {
-    const d = await listTenantFiles(path.value)
+    const d = await listTenantFiles(path.value, root.value)
+    root.value = d.root || root.value
+    roots.value = d.roots || roots.value
     path.value = d.path || ''
     parent.value = d.parent || ''
-    root.value = d.root || ''
     dirs.value = d.dirs || []
     files.value = d.files || []
     selected.value = ''
@@ -92,6 +103,12 @@ async function browse() {
   } finally {
     loading.value = false
   }
+}
+
+/** 切根：回到该根目录 */
+function switchRoot() {
+  path.value = ''
+  browse()
 }
 
 function enterDir(name) {
@@ -111,7 +128,7 @@ function pick(file) {
 function confirm() {
   if (!selected.value) return
   // 不在这里 close：由父组件根据 select 结果切换/关闭弹窗
-  emit('select', selected.value)
+  emit('select', { path: selected.value, root: root.value })
 }
 
 function close() {

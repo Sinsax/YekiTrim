@@ -684,6 +684,7 @@ async fn projects_create(
     create_local_project(
         &state,
         &user,
+        source.get("root").and_then(|v| v.as_str()).unwrap_or(""),
         source.get("dir").and_then(|v| v.as_str()).unwrap_or(""),
         source.get("input").and_then(|v| v.as_str()).unwrap_or(""),
         source.get("danmaku").and_then(|v| v.as_str()),
@@ -693,18 +694,24 @@ async fn projects_create(
 }
 
 /// 用"服务器本机文件"建项目的公共实现（`POST /api/projects` 与过渡期的
-/// `POST /api/project/init` 共用）。所有路径都囚笼在**租户根**之内。
+/// `POST /api/project/init` 共用）。
+///
+/// 路径囚笼在**允许的根**内（租户根 + `[storage] local_roots`）；目录里已经存在
+/// `vtrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
 async fn create_local_project(
     state: &Arc<AppState>,
     user: &super::auth::CurrentUser,
+    root_hint: &str,
     rel_dir: &str,
     input_hint: &str,
     danmaku_hint: Option<&str>,
     output_dir: Option<&str>,
 ) -> ApiResult {
-    let root = crate::service::projects::tenant_root(user.id);
-    std::fs::create_dir_all(&root)
+    let tenant = crate::service::projects::tenant_root(user.id);
+    std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
+    let root = crate::service::projects::pick_local_root(user.id, root_hint)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     let rel_dir = rel_dir.trim();
     let dir = if rel_dir.is_empty() {
         root.clone()
@@ -715,33 +722,37 @@ async fn create_local_project(
     if !dir.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
     }
-    let hint = input_hint.trim();
-    let input = if hint.is_empty() {
-        // 未指定文件时自动挑目录里第一个视频
-        find_first_video(&dir).ok_or_else(|| {
-            err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
-        })?
-    } else {
-        vtrim_core::tenant::jail_existing(&dir, hint)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
-    };
-    let danmaku = danmaku_hint
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(|rel| {
-            vtrim_core::tenant::jail_existing(&dir, &rel)
-                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("弹幕不可用: {e:#}")))
-        })
-        .transpose()?;
-
     let config_path = dir.join("vtrim.toml");
-    let output_rel = output_dir.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    if let Some(rel) = &output_rel {
-        vtrim_core::tenant::jail_join(&dir, rel)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
+    let is_existing_project = config_path.is_file();
+
+    // 已有 vtrim.toml：只登记/打开，不重写（否则会覆盖用户手改过的工程设置）
+    if !is_existing_project {
+        let hint = input_hint.trim();
+        let input = if hint.is_empty() {
+            // 未指定文件时自动挑目录里第一个视频
+            find_first_video(&dir).ok_or_else(|| {
+                err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
+            })?
+        } else {
+            vtrim_core::tenant::jail_existing(&dir, hint)
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
+        };
+        let danmaku = danmaku_hint
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(|rel| {
+                vtrim_core::tenant::jail_existing(&dir, &rel)
+                    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("弹幕不可用: {e:#}")))
+            })
+            .transpose()?;
+        let output_rel = output_dir.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if let Some(rel) = &output_rel {
+            vtrim_core::tenant::jail_join(&dir, rel)
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
+        }
+        vtrim_core::config::write_project_config(&config_path, &input, danmaku.as_deref(), output_rel.as_deref())
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
     }
-    vtrim_core::config::write_project_config(&config_path, &input, danmaku.as_deref(), output_rel.as_deref())
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
     let ws = Workspace::load(Some(&config_path))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
 
@@ -750,11 +761,19 @@ async fn create_local_project(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "project".to_string());
-    let label = dir
-        .strip_prefix(crate::service::projects::tenant_root(user.id))
-        .ok()
-        .map(|rel| format!("本机文件 · {}", rel.display()))
-        .unwrap_or_else(|| "本机文件".to_string());
+    let in_tenant = dir.starts_with(&tenant);
+    let label = if in_tenant {
+        dir.strip_prefix(&tenant)
+            .ok()
+            .map(|rel| format!("本机文件 · {}", rel.display()))
+            .unwrap_or_else(|| "本机文件".to_string())
+    } else {
+        format!(
+            "本机 · {}/{}",
+            crate::service::projects::root_label(user.id, &root),
+            dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        )
+    };
     let id = match db.project_by_config(&config_path) {
         Ok(Some(existing)) => existing.id,
         _ => db
@@ -1012,7 +1031,7 @@ async fn project_init(
     };
     let danmaku = body.get("danmaku").and_then(|v| v.as_str());
     let output = body.get("output_dir").and_then(|v| v.as_str());
-    let created = create_local_project(&state, &user, &rel_dir, "", danmaku, output).await?;
+    let created = create_local_project(&state, &user, "", &rel_dir, "", danmaku, output).await?;
     // 旧前端期待项目快照（含 current_stage / files）
     let ws = match created.0.get("id").and_then(|v| v.as_i64()).and_then(|id| state.auth.db().project_by_id(id).ok().flatten()) {
         Some(p) => Workspace::load(Some(&p.config_file))
@@ -1697,6 +1716,16 @@ async fn fs_list(
     if !user.is_admin() {
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
+    // 允许的根 = 租户根 + [storage] local_roots（管理员在配置里显式列出的目录）
+    let tenant = crate::service::projects::tenant_root(user.id);
+    std::fs::create_dir_all(&tenant)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
+    let roots = crate::service::projects::local_roots(user.id);
+    let root = crate::service::projects::pick_local_root(
+        user.id,
+        body.get("root").and_then(|v| v.as_str()).unwrap_or(""),
+    )
+    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     let rel = body
         .get("path")
         .or_else(|| body.get("dir"))
@@ -1704,9 +1733,6 @@ async fn fs_list(
         .unwrap_or("")
         .trim()
         .to_string();
-    let root = crate::service::projects::tenant_root(user.id);
-    std::fs::create_dir_all(&root)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
     let target = if rel.is_empty() {
         root.clone()
     } else {
@@ -1716,11 +1742,11 @@ async fn fs_list(
     if !target.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能浏览目录"));
     }
-    let tenant = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
     let rel_prefix = target
         .canonicalize()
         .unwrap_or_else(|_| target.clone())
-        .strip_prefix(&tenant)
+        .strip_prefix(&root_canon)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
@@ -1742,10 +1768,25 @@ async fn fs_list(
         .parent()
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
+    let root_list: Vec<serde_json::Value> = roots
+        .iter()
+        .map(|r| {
+            // 统一成 canonical 形式（Windows 上是 \\?\ 前缀），前端原样回传即可命中允许列表
+            let canon = r.canonicalize().unwrap_or_else(|_| r.clone());
+            serde_json::json!({
+                "path": canon.to_string_lossy(),
+                "label": crate::service::projects::root_label(user.id, &canon),
+                "tenant": canon == tenant.canonicalize().unwrap_or_else(|_| tenant.clone()),
+            })
+        })
+        .collect();
     ok(serde_json::json!({
+        "root": root_canon.to_string_lossy(),
+        "root_label": crate::service::projects::root_label(user.id, &root_canon),
+        "roots": root_list,
+        "tenant_root": tenant.to_string_lossy(),
         "path": rel_prefix,
         "parent": parent,
-        "root": crate::service::projects::projects_root().to_string_lossy(),
         "dirs": dirs,
         "files": files,
     }))
