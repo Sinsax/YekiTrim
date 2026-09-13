@@ -6,17 +6,7 @@
         <h1 class="mt-2">{{ dir ? title : '选择要精修的片段' }}</h1>
         <div class="sub">{{ dir || '从片段库选择一个已剪切片段进入精修编辑器' }}</div>
       </div>
-      <!-- 布局框选：只有「人物」「弹幕区域」两个区域（贴纸落点由 process 计算，不在此框选） -->
-      <div class="actions">
-        <button class="mini-btn" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-                title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
-          <Icon name="crop" :size="11" /> 人物
-        </button>
-        <button class="mini-btn" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-                title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
-          <Icon name="crop" :size="11" /> 弹幕区域
-        </button>
-      </div>
+      <div class="actions"></div>
     </div>
 
     <!-- 无切片：空态引导（不报错不白屏） -->
@@ -76,7 +66,17 @@
           <div class="card">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+              <!-- 布局框选：只有「人物」「弹幕区域」（贴纸落点由 process 计算，不在此框选） -->
+              <div class="row" style="gap:6px">
+                <button class="mini-btn" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                        title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
+                  <Icon name="crop" :size="11" /> 人物
+                </button>
+                <button class="mini-btn" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                        title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
+                  <Icon name="crop" :size="11" /> 弹幕区域
+                </button>
+              </div>
             </div>
             <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
             <!-- 框选模式操作条（只有进入框选时才出现） -->
