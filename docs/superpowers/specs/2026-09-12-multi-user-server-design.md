@@ -34,6 +34,8 @@
 4. **弹幕由服务端解析录播姬 XML**（仓库现在只吃 ASS/SRT），部署方零额外配置，不依赖 DanmakuFactory。
 5. **封面背景图导入**是"不接受本地文件"的**唯一例外**（≤32MB 图片，落项目目录）。
 6. **未映射房间**进入"待分配池"（仅 admin 可见并指派），不静默丢数据。
+7. **单人/本机部署是否保留"服务器端已有文件"作为项目来源**：工作台 v5 本期的新建向导只有「本地文件浏览」（浏览的是**服务器**目录），而本稿 §5.2 把该入口整体删掉了 → 结果是 P2 之后单人用户无法通过 UI 把"已经躺在服务器上的录像"建成项目（只能用 CLI 或等录播姬）。
+   建议：保留但收得很紧——`source.kind="local"`（**admin-only**）+ `/api/fs/list` 囚笼到该账号的项目根/租户根，仍**永不接受上传**。这样既守住"不收用户文件"的合规边界，也不丢单机工作流。**若你选"不保留"**，则单人用户添加已有录像的唯一途径是 CLI，前端新建向导只留「入库记录 / B站链接」。
 
 ---
 
@@ -128,7 +130,8 @@
 - `PRAGMA user_version` + 启动自动迁移；迁移前自动备份 `vtrim.db.bak-<old_ver>`；迁移失败则拒绝启动（不半迁移）。
 
 ### 3.5.9 可观测性
-- `/api/health`：`version`、能力位（`ffmpeg/chrome/llm/downloader/wgpu_render`）、`accounts`（账号数）、`must_change_password`、`listening: loopback|remote`、`tls_terminated`（由可信代理头判定，仅作提示）。**不暴露路径，也没有 `mode/auto_login/setup_required` 这些分支字段。**
+- `/api/health`：`version`、能力位（`ffmpeg` / `chrome` / `llm` / `ingest_ready` / `wgpu_render`）、`accounts`（账号数）、`must_change_password`、`listening: loopback|remote`、`tls_terminated`（由可信代理头判定，仅作提示）。**不暴露路径，也没有 `mode/auto_login/setup_required` 这些分支字段。**
+  注：`ingest_ready` 同时覆盖"录播姬 webhook 已启用 + B站下载器可用"，前端据此决定首页/入库区块显示引导卡还是内容。
 - `vtrim doctor` 增"安全摘要"：监听地址与可达性、账号数、是否仍在使用初始密码、初始密码文件是否仍存在、TLS 终止探测、`data_dir` 可写性与剩余磁盘、备份建议。
 - 前端：`must_change_password` 时顶部横幅（一键去改密）；对外且未 TLS 时一次性提示。
 
@@ -247,6 +250,45 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 4. `StorageView`（占用/上限/按项目明细/删除源录播）、`AdminView`（账号/配额/录播姬 token 与 `recorder_root`/下载器与 cookie/全平台任务/待分配池指派）。
 5. 项目作用域 `?config=<enc path>` → `?project=<id>`（`router.js` 守卫、`ProjectLayout`、`PreviewView`、`ProjectSlicesView`、`ProjectClipsSection`、`PolishView`、`PolishProjectsView`、`ProjectSettingsView`）。
 6. 重建并提交 `webui/dist`。
+
+### 8.1 前端契约（与 `docs/plan/webui-multiuser-frontend.md` / 工作台 v5 对齐）
+
+> 前端阶段 M1–M5 与服务端 P1–P5 一一对应（见该文 §0）。**前置**：工作台重构
+> `docs/plan/webui-workbench-redesign.md`（v5）先落地，它已预留不透明 `:pid`、`scopeQ(pid)` 单点、
+> client.js 错误分类与 CSRF 注入点、侧栏入口列表化——服务端 P1 不依赖它，可并行；M2 依赖其单点改造。
+
+**认证（M1）**
+- `GET /api/me`：已登录 → `{ user: {id, username, role}, must_change_password }`；未登录 → **401**。
+  **没有 `auto_login` / `requires_login` 字段，也没有免登录分支**（单人部署＝只有一个 admin 账号的部署）。
+- `POST /api/auth/login {username, password}` → `{ user, must_change_password }`（`Set-Cookie: vtrim_sid`；同时下发 `vtrim_csrf`）。
+  失败：401（密码错/账号禁用文案直出）、429（限流，前端文案「尝试过多，15 分钟后再试」）。
+- `POST /api/auth/logout` → 200（删会话行）。
+- `PUT /api/auth/password {old_password, new_password}` → 改自己的密码；成功后 `must_change_password=false`（横幅消失、初始密码文件已删）。
+- 前端启动：`GET /api/me` → 200 进工作台 / 401 → `#/login?redirect=<当前路由>`；任意请求 401 → 清 auth store + toast「登录已过期」+ 回登录（带回跳）。
+- 用户区：`用户名 · 角色` + 登出弹层；`must_change_password` 时顶部常驻横幅。
+- 侧栏可见性由 `role` 决定（**无"本机模式"特例**）：单人部署唯一账号是 admin，故可见 `[任务, 入库, 存储, 管理]`。
+
+**任务（M3–M5）**
+- `/api/jobs`、`/api/jobs/:id` 每项：`id, kind, status(queued|running|succeeded|failed|cancelled), message, slot(ingest|download|heavy), current, total, created_at, error?`；
+  `queued` 时附 `queued_position`（同用户队列位次，1 起）——前端显示「排队第 N 位」与槽位徽标。
+- 每用户已在跑 1 个重活时，新任务进入 `queued` 而**不是** 409（409 只用于磁盘/水位等必须用户先处理的原因）；排队上限超出 → **429**（「排队已满，请等待任务完成」）。
+- `/api/stream` 只推本人事件（服务端过滤，前端无感知）。
+
+**项目与存储（M2 / M5）**
+- `GET /api/projects` 每项：`{id, name, source:{kind:"recorder"|"bilibili"|"local", label}, stage, progress?, bytes, source_bytes, has_clips, missing?}`。
+- `DELETE /api/projects/:id/source` → 删源录播（保留产物），返回最新占用。
+- `GET /api/storage`：`{used_bytes, quota_bytes, global_max_bytes, watermark_pct, disk_free_bytes, projects:[{id, name, source_label, source_bytes, output_bytes, total_bytes, last_active_at}]}`。
+- 磁盘/配额不足统一 **409**，`error` 文案含「预计需要 / 可用 / 建议删除哪些项目的源录播」（前端据此给「去存储页」按钮）。
+
+**入库（M3）**
+- `GET /api/ingest/records`：`[{session_id, room_id, room_label, started_at, state(open|closing|finalized|failed|unassigned), files, bytes, project_id?, error?}]`。
+- `GET/PUT /api/channel-map`：`[{room_id, user_id, auto_pipeline(none|transcribe|detect|cut), enabled}]`（PUT 整体替换该用户规则表）。
+- `POST /api/admin/ingest/assign {session_id, user_id, auto_pipeline}`（待分配指派，admin）。
+- `POST /api/ingest/retry {session_id}`（失败重试）。
+- `/api/health.ingest_ready=false` → 前端显示配置引导卡（仅 admin 可跳管理页）。
+
+**封面背景图（唯一的本地文件例外）**
+- `POST /api/polish/cover-background {project, image_data}`（base64，≤32MB，落项目目录）；不接受视频或其它文件类型。
 
 ## 9. 测试与验收
 
