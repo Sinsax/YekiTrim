@@ -8,7 +8,6 @@
       @open="openProject"
       @remove="removeProject"
       @logout="doLogout"
-      @new-project="openWizard()"
       @open-jobs="openJobs()"
     />
 
@@ -51,7 +50,6 @@
     </div>
 
     <JobDrawer :show="ui.jobs" @close="closeJobs()" />
-    <NewProjectModal :show="ui.wizard" @update:show="(v) => v ? openWizard() : closeWizard()" @created="onProjectCreated" />
     <AppModal :show="showChangePassword" title="修改密码" @close="showChangePassword = false">
       <div class="error-banner" v-if="pwdError">{{ pwdError }}</div>
       <div class="mb-12"><label for="pwd-old">当前密码</label><input id="pwd-old" v-model="pwdOld" type="password" /></div>
@@ -73,7 +71,6 @@ import { useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
 import SideNav from './components/side/SideNav.vue'
 import JobDrawer from './components/jobs/JobDrawer.vue'
-import NewProjectModal from './components/NewProjectModal.vue'
 import AppModal from './components/AppModal.vue'
 import ToastHost from './components/ToastHost.vue'
 import AppDialog from './components/AppDialog.vue'
@@ -82,7 +79,7 @@ import { toast } from './stores/toast'
 import { confirmDialog } from './stores/dialog'
 import { STEPS } from './utils'
 import { useJobs, onJobDone } from './composables/useJobs'
-import { closeJobs, closeWizard, openJobs, openWizard, ui } from './stores/ui'
+import { closeJobs, openJobs, ui } from './stores/ui'
 import { loadProjectData, loadProjects, projectById, removeProject as apiRemoveProject, rememberLast, invalidate } from './stores/workbench'
 
 const route = useRoute()
@@ -150,11 +147,6 @@ async function removeProject(p) {
 }
 
 
-
-function onProjectCreated(r) {
-  loadProjects()
-  if (r?.id) router.push(`/p/${encodeURIComponent(r.id)}/prepare`)
-}
 
 function openChangePassword() {
   pwdOld.value = ''

@@ -8,10 +8,6 @@
       </div>
     </div>
 
-    <button v-if="isAdmin" class="new-btn" @click="emit('new-project')">
-      <Icon name="plus" :size="13" /> 新建项目
-    </button>
-
     <div class="side-filter">
       <input v-model.trim="wb.filter" placeholder="过滤项目…" />
     </div>
@@ -20,7 +16,7 @@
       <div class="side-cap">项目（{{ filteredProjects.length }}）</div>
       <div v-if="wb.loading && !wb.projects.length" class="hint">加载中…</div>
       <div v-else-if="!filteredProjects.length" class="hint">
-        {{ wb.projects.length ? '无匹配项目' : '还没有项目' }}
+        {{ wb.projects.length ? '无匹配项目' : '还没有项目：去首页「新增项目」' }}
       </div>
       <ProjectNode
         v-for="p in filteredProjects"
@@ -83,16 +79,10 @@ const viewingStep = computed(() => (route.name?.startsWith('project-') ? String(
 const entries = computed(() => {
   const list = [
     { key: 'home', label: '首页', path: '/workbench' },
-    { key: 'project', label: '当前项目', path: currentProjectPath.value },
     { key: 'ingest', label: '入库', path: '/ingest' },
     { key: 'settings', label: '设置', path: '/settings', admin: true }
   ]
   return list.filter((e) => !e.admin || isAdmin.value)
-})
-
-const currentProjectPath = computed(() => {
-  const pid = wb.last?.pid || wb.projects[0]?.id
-  return pid ? `/p/${encodeURIComponent(pid)}/${wb.last?.step || 'prepare'}` : '/workbench'
 })
 
 /** 项目 → 正在跑的任务（任务带 project 标签）。 */
@@ -120,7 +110,6 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 .brand-logo { width:34px; height:34px; border-radius:50%; background:linear-gradient(135deg,var(--main),var(--pink-light)); display:flex; align-items:center; justify-content:center; font-size:16px; color:#fff; box-shadow:var(--shadow-pink); }
 .brand-name { font-size:14px; font-weight:700; color:var(--main-deep); line-height:1.2; }
 .brand-sub { font-size:9px; color:var(--ink-faint); letter-spacing:.1em; }
-.new-btn { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; padding:8px; border-radius:var(--r-full); border:none; background:linear-gradient(135deg,var(--main),var(--main-deep)); color:#fff; font-size:13px; font-weight:600; cursor:pointer; box-shadow:var(--shadow-pink); }
 .side-filter input { width:100%; padding:6px 10px; font-size:12px; }
 .side-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
 .side-cap { font-size:10px; color:var(--ink-faint); letter-spacing:.08em; padding:4px 6px; }
