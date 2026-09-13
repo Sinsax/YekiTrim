@@ -96,14 +96,24 @@ pub struct JobSummary {
     /// 失败原因（成功/取消时为 None）。前端 `onDone` 会读它。
     pub error: Option<String>,
     pub created_at: String,
+    /// 任务归属（多用户：`/api/jobs`、SSE、取消都按它过滤）
+    pub owner_id: i64,
     /// 仅在 `/api/jobs/:id` 返回；列表接口为空（避免 50 个任务各带 200 行日志）。
     pub logs: Vec<LogLine>,
+}
+
+/// 全局事件流里的一条：带归属，供 `/api/stream` 过滤。
+#[derive(Debug, Clone)]
+pub struct OwnedEvent {
+    pub owner_id: i64,
+    pub event: JobEvent,
 }
 
 #[derive(Debug)]
 pub struct Job {
     pub id: String,
     pub kind: String,
+    pub owner_id: i64,
     pub status: JobStatus,
     pub message: String,
     pub stage: Option<String>,
@@ -114,17 +124,23 @@ pub struct Job {
     pub events: Vec<JobEvent>,
     pub logs: VecDeque<LogLine>,
     pub notify: tokio::sync::broadcast::Sender<JobEvent>,
-    pub all_tx: tokio::sync::broadcast::Sender<JobEvent>,
+    pub all_tx: tokio::sync::broadcast::Sender<OwnedEvent>,
     /// 取消令牌：长任务在阶段/批次边界轮询它。
     pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl Job {
-    fn new(id: String, kind: String, all_tx: tokio::sync::broadcast::Sender<JobEvent>) -> Self {
+    fn new(
+        id: String,
+        owner_id: i64,
+        kind: String,
+        all_tx: tokio::sync::broadcast::Sender<OwnedEvent>,
+    ) -> Self {
         let (tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             id,
             kind,
+            owner_id,
             status: JobStatus::Queued,
             message: String::new(),
             stage: None,
@@ -169,7 +185,7 @@ impl Job {
         self.events.push(ev.clone());
         self.events.truncate(1000);
         let _ = self.notify.send(ev.clone());
-        let _ = self.all_tx.send(ev);
+        let _ = self.all_tx.send(OwnedEvent { owner_id: self.owner_id, event: ev });
     }
 
     fn summary(&self, with_logs: bool) -> JobSummary {
@@ -183,6 +199,7 @@ impl Job {
             total: self.total,
             error: self.error.clone(),
             created_at: self.created_at.clone(),
+            owner_id: self.owner_id,
             logs: if with_logs {
                 self.logs.iter().rev().take(50).cloned().collect()
             } else {
@@ -195,7 +212,7 @@ impl Job {
 #[derive(Debug)]
 pub struct JobManager {
     jobs: RwLock<Vec<Job>>,
-    all: tokio::sync::broadcast::Sender<JobEvent>,
+    all: tokio::sync::broadcast::Sender<OwnedEvent>,
 }
 
 impl Default for JobManager {
@@ -210,14 +227,14 @@ impl JobManager {
         Self::default()
     }
 
-    /// 新建任务；已有活动任务时返回 `Err(BusyJob)`。
-    pub async fn create(&self, kind: impl Into<String>) -> Result<String, BusyJob> {
+    /// 新建任务（带归属）；已有活动任务时返回 `Err(BusyJob)`。
+    pub async fn create(&self, owner_id: i64, kind: impl Into<String>) -> Result<String, BusyJob> {
         let mut jobs = self.jobs.write().await;
         if let Some(busy) = jobs.iter().find(|j| j.is_active()) {
             return Err(BusyJob { id: busy.id.clone(), kind: busy.kind.clone() });
         }
         let id = format!("{}-{}", gen_id(), time_id());
-        jobs.push(Job::new(id.clone(), kind.into(), self.all.clone()));
+        jobs.push(Job::new(id.clone(), owner_id, kind.into(), self.all.clone()));
         // 只淘汰终态任务
         while jobs.len() > 50 {
             match jobs.iter().position(|j| !j.is_active()) {
@@ -349,11 +366,40 @@ impl JobManager {
         false
     }
 
+    /// 无归属限制的读取（单测与 P5 管理页的全平台视图用；HTTP 侧一律走
+    /// [`JobManager::get_owned`] / [`JobManager::list_scoped`]）。
+    #[allow(dead_code)]
     pub async fn get(&self, id: &str) -> Option<JobSummary> {
         let jobs = self.jobs.read().await;
         jobs.iter().find(|j| j.id == id).map(|j| j.summary(true))
     }
 
+    /// 按归属取任务：他人任务一律 `None`（上层转 404，不泄露存在性）。
+    pub async fn get_owned(&self, id: &str, uid: i64, is_admin: bool) -> Option<JobSummary> {
+        let jobs = self.jobs.read().await;
+        jobs.iter()
+            .find(|j| j.id == id && (is_admin || j.owner_id == uid))
+            .map(|j| j.summary(true))
+    }
+
+    /// 任务列表（默认只列本人；`is_admin` 且 `all=true` 时列全部）。
+    pub async fn list_scoped(&self, uid: i64, is_admin: bool, all: bool) -> Vec<JobSummary> {
+        let jobs = self.jobs.read().await;
+        jobs.iter()
+            .rev()
+            .filter(|j| (is_admin && all) || j.owner_id == uid)
+            .map(|j| j.summary(false))
+            .collect()
+    }
+
+    /// 该任务是否属于这个调用者（SSE 订阅与取消都用它）。
+    pub async fn owned_by(&self, id: &str, uid: i64, is_admin: bool) -> bool {
+        let jobs = self.jobs.read().await;
+        jobs.iter()
+            .any(|j| j.id == id && (is_admin || j.owner_id == uid))
+    }
+
+    #[allow(dead_code)]
     pub async fn list(&self) -> Vec<JobSummary> {
         let jobs = self.jobs.read().await;
         jobs.iter().rev().map(|j| j.summary(false)).collect()
@@ -374,7 +420,7 @@ impl JobManager {
         Some((history, rx))
     }
 
-    pub async fn subscribe_all(&self) -> tokio::sync::broadcast::Receiver<JobEvent> {
+    pub async fn subscribe_all(&self) -> tokio::sync::broadcast::Receiver<OwnedEvent> {
         self.all.subscribe()
     }
 }
@@ -404,15 +450,15 @@ mod tests {
     #[tokio::test]
     async fn only_one_active_job_at_a_time() {
         let jm = JobManager::new();
-        let id = jm.create("pipeline").await.expect("首个任务应被接受");
+        let id = jm.create(1, "pipeline").await.expect("首个任务应被接受");
         jm.mark_running(&id, "run").await;
 
-        let busy = jm.create("polish_llm").await.expect_err("活动任务期间必须拒绝新任务");
+        let busy = jm.create(1, "polish_llm").await.expect_err("活动任务期间必须拒绝新任务");
         assert_eq!(busy.kind, "pipeline");
         assert!(busy.to_string().contains(&id));
 
         jm.complete(&id).await;
-        assert!(jm.create("polish_llm").await.is_ok(), "终态后应可再建");
+        assert!(jm.create(1, "polish_llm").await.is_ok(), "终态后应可再建");
     }
 
     #[tokio::test]
@@ -420,7 +466,7 @@ mod tests {
         let jm = JobManager::new();
         let mut oldest = String::new();
         for i in 0..55 {
-            let id = jm.create("polish_process").await.expect("无活动任务时应可建");
+            let id = jm.create(1, "polish_process").await.expect("无活动任务时应可建");
             if i == 0 {
                 oldest = id.clone();
             }
@@ -435,7 +481,7 @@ mod tests {
     #[tokio::test]
     async fn created_at_is_stable_and_error_is_reported() {
         let jm = JobManager::new();
-        let id = jm.create("cut_one").await.unwrap();
+        let id = jm.create(1, "cut_one").await.unwrap();
         let first = jm.get(&id).await.unwrap();
         tokio::time::sleep(Duration::from_millis(1100)).await;
         let second = jm.get(&id).await.unwrap();
@@ -453,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_sets_token_emits_event_and_is_final() {
         let jm = JobManager::new();
-        let id = jm.create("cut_all").await.unwrap();
+        let id = jm.create(1, "cut_all").await.unwrap();
         jm.mark_running(&id, "r").await;
         let token = jm.cancel_token(&id).await.expect("应有取消令牌");
 

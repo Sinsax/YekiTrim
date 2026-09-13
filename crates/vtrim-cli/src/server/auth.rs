@@ -408,24 +408,53 @@ fn is_safe_method(m: &Method) -> bool {
 
 /// `require_user`：会话 cookie → 账号快照 → CSRF（写请求）→ 注入 [`CurrentUser`]。
 pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+    match authenticate(&state, &mut req) {
+        Ok(()) => next.run(req).await,
+        Err(resp) => resp,
+    }
+}
+
+/// `require_admin`：先做完整的会话/CSRF 校验，再要求 `role == "admin"`。
+///
+/// 用于 `/api/admin/*`（平台配置、模型、录播姬 token、全平台任务等，§5.3）。
+pub async fn require_admin(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+    match authenticate(&state, &mut req) {
+        Ok(()) => {
+            let is_admin = req
+                .extensions()
+                .get::<CurrentUser>()
+                .map(|u| u.is_admin())
+                .unwrap_or(false);
+            if is_admin {
+                next.run(req).await
+            } else {
+                json_error(StatusCode::FORBIDDEN, "仅管理员可访问该接口")
+            }
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// 共用认证：校验会话与 CSRF，并把 [`CurrentUser`] 注入请求扩展。
+fn authenticate(state: &Arc<AppState>, req: &mut Request) -> Result<(), Response> {
     let auth = state.auth.clone();
     let Some(sid) = cookie_value(req.headers(), kdf::COOKIE_SID) else {
-        return json_error(StatusCode::UNAUTHORIZED, "未登录，请先登录");
+        return Err(json_error(StatusCode::UNAUTHORIZED, "未登录，请先登录"));
     };
     let session = match auth.session(&sid) {
         Ok(Some(s)) => s,
-        Ok(None) => return json_error(StatusCode::UNAUTHORIZED, "登录已过期，请重新登录"),
+        Ok(None) => return Err(json_error(StatusCode::UNAUTHORIZED, "登录已过期，请重新登录")),
         Err(e) => {
             tracing::error!("读取会话失败: {e:#}");
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "读取会话失败");
+            return Err(json_error(StatusCode::INTERNAL_SERVER_ERROR, "读取会话失败"));
         }
     };
     if session.expires_at <= db::now_secs() {
         let _ = auth.db().delete_session(&sid);
-        return json_error(StatusCode::UNAUTHORIZED, "登录已过期，请重新登录");
+        return Err(json_error(StatusCode::UNAUTHORIZED, "登录已过期，请重新登录"));
     }
     if session.disabled {
-        return json_error(StatusCode::FORBIDDEN, "账号已被禁用，请联系管理员");
+        return Err(json_error(StatusCode::FORBIDDEN, "账号已被禁用，请联系管理员"));
     }
     if !is_safe_method(req.method()) {
         let token = req
@@ -434,10 +463,10 @@ pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, 
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if token.is_empty() {
-            return json_error(StatusCode::FORBIDDEN, "缺少 CSRF 令牌（请通过页面操作）");
+            return Err(json_error(StatusCode::FORBIDDEN, "缺少 CSRF 令牌（请通过页面操作）"));
         }
         if !constant_time_eq(token.as_bytes(), session.csrf.as_bytes()) {
-            return json_error(StatusCode::FORBIDDEN, "CSRF 令牌不匹配，请刷新页面后重试");
+            return Err(json_error(StatusCode::FORBIDDEN, "CSRF 令牌不匹配，请刷新页面后重试"));
         }
     }
 
@@ -449,7 +478,7 @@ pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, 
         must_change_password: session.must_change_password,
         session_id: session.id,
     });
-    next.run(req).await
+    Ok(())
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

@@ -1,75 +1,30 @@
-//! Media / 文件访问工具：受限路径校验，避免 HTTP 客户端读取任意文件。
-
-use std::path::{Path, PathBuf};
+//! Media 访问（多用户服务 P2）：只服务**本人项目内**的文件。
+//!
+//! URL 形态：
+//! - 新契约（推荐）`/api/media/<project_id>/<项目内相对路径>`，例如
+//!   `/api/media/7/output/clips/clip-01/clip.mp4`；
+//! - 过渡期兼容：`/api/media/<绝对路径>`（旧前端 `mediaUrl(dir, file)` 的写法）——
+//!   只有在 canonicalize 后落在**调用者自己的某个项目根**之内时才放行，否则 403/404。
+//!
+//! 归属校验在 `api::media_get` 里完成（依赖当前登录用户）。
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use crate::service::Workspace;
-
-/// 判定某个请求路径是否允许被静态/媒体服务访问。
-/// 允许范围：
-/// - 工作区根目录
-/// - 工程根目录
-/// - 工程输出目录
-/// - 输入视频所在目录
-pub fn allowed_roots(ws: &Workspace, workspace_root: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![workspace_root.to_path_buf(), ws.root_dir.clone()];
-    if let Ok(cfg) = ws.load_config() {
-        if let Some(p) = cfg.project.input_file.as_ref().filter(|s| !s.is_empty()) {
-            let abs = ws.resolve(p);
-            if let Some(parent) = abs.parent() {
-                roots.push(parent.to_path_buf());
-            }
-        }
-        let out = ws.resolve(&cfg.cutting.output_dir);
-        roots.push(out);
+/// 拆分 `/api/media/<...>` 的路径部分。
+///
+/// 返回 `(Some(project_id), 项目内相对路径)` 或 `(None, 原始路径)`（过渡期绝对路径）。
+pub fn split_project_media(path: &str) -> (Option<i64>, String) {
+    match path.split_once('/') {
+        Some((head, rest)) => match head.parse::<i64>() {
+            Ok(id) if id > 0 => (Some(id), rest.to_string()),
+            _ => (None, path.to_string()),
+        },
+        None => match path.parse::<i64>() {
+            Ok(id) if id > 0 => (Some(id), String::new()),
+            _ => (None, path.to_string()),
+        },
     }
-    // 多项目模式下，允许访问所有已记住项目的根目录。
-    // 否则 F:ideo\... 这类不在默认 workspace_root 下的项目，媒体预览会 400。
-    if let Some(state) = crate::server::persist::load_state() {
-        if let Some(last) = state.last_config_file.as_deref() {
-            if let Some(parent) = Path::new(last).parent() {
-                roots.push(parent.to_path_buf());
-            }
-        }
-        for cfg in &state.projects {
-            if let Some(parent) = Path::new(cfg).parent() {
-                roots.push(parent.to_path_buf());
-            }
-        }
-    }
-    roots
-}
-
-/// 路径校验结果：区分「不存在」（404）与「越权」（403），
-/// 旧实现把两者合并成 400，客户端无法区分"还没生成"和"不许访问"。
-pub enum SafePath {
-    Allowed(PathBuf),
-    NotFound,
-    Forbidden,
-}
-
-/// 将查询参数中的相对/绝对路径规范化为绝对路径，并校验其位于允许根内。
-pub fn safe_join(ws: &Workspace, workspace_root: &Path, requested: &str) -> SafePath {
-    let path = if Path::new(requested).is_absolute() {
-        PathBuf::from(requested)
-    } else {
-        ws.resolve(requested)
-    };
-    if !path.exists() {
-        return SafePath::NotFound;
-    }
-    // 规范化后必须位于某个允许根下。
-    for root in allowed_roots(ws, workspace_root) {
-        if let Ok(rel) = path.strip_prefix(&root) {
-            // 禁止逃逸 ../
-            if !rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return SafePath::Allowed(path);
-            }
-        }
-    }
-    SafePath::Forbidden
 }
 
 pub fn json_error(status: StatusCode, msg: &str) -> Response {
@@ -78,4 +33,25 @@ pub fn json_error(status: StatusCode, msg: &str) -> Response {
         axum::Json(serde_json::json!({ "ok": false, "error": msg })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_project_scoped_and_legacy_paths() {
+        assert_eq!(
+            split_project_media("7/output/clips/clip-01/clip.mp4"),
+            (Some(7), "output/clips/clip-01/clip.mp4".to_string())
+        );
+        assert_eq!(split_project_media("12"), (Some(12), String::new()));
+        // 旧前端：绝对路径（首段不是数字）
+        let (id, rest) = split_project_media("F:/media/3d/output/clips/clip-01/clip.mp4");
+        assert_eq!(id, None);
+        assert_eq!(rest, "F:/media/3d/output/clips/clip-01/clip.mp4");
+        // 0 / 负数不算项目 id，按旧路径处理
+        assert_eq!(split_project_media("0/x").0, None);
+        assert_eq!(split_project_media("-3/x").0, None);
+    }
 }

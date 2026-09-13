@@ -25,6 +25,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use crate::service::Workspace;
 
 use super::model::AppState;
+use super::scope::Scope;
 use super::{jobs::JobEvent, media, persist};
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -33,10 +34,50 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/auth/login", post(auth_login));
 
+    // 平台级资源（P2 起归入 /api/admin/*，仅 admin）：配置 / 模型 / doctor / LLM 测试
+    let admin = Router::new()
+        .route("/admin/doctor", get(doctor))
+        .route("/admin/config", get(config_get))
+        .route("/admin/config/global", put(config_global_put))
+        .route("/admin/config/llm", put(config_llm_put))
+        .route("/admin/llm/test", post(llm_test))
+        .route("/admin/models", get(models_get))
+        .route("/admin/models/download", post(models_download))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::auth::require_admin,
+        ));
+
+    // polish 系列：额外加"目录必须落在本人项目内"的守卫（路径面归零，§5.2）
+    let polish = Router::new()
+        .route("/polish/init", post(polish_init))
+        .route("/polish/llm", post(polish_llm))
+        .route("/polish/process", post(polish_process))
+        .route("/polish/render", post(polish_render))
+        .route("/polish/cover", post(polish_cover))
+        .route("/polish/preview", post(polish_preview))
+        .route("/polish/cover-preview", post(polish_cover_preview))
+        .route("/polish/cover-background", post(polish_cover_background))
+        .route("/polish/cover-frame", post(polish_cover_frame))
+        .route("/polish/project", get(polish_project_get).put(polish_project_put))
+        .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
+        .route("/polish/sticker-sources", get(polish_sticker_sources))
+        .route("/polish/render-frame", post(polish_render_frame))
+        .route("/polish/font", get(polish_font))
+        .route("/polish/select-version", post(polish_select_version))
+        .route("/polish/silence", post(polish_silence))
+        .route("/polish/cover-title", post(polish_cover_title))
+        .route("/polish/cover-config", post(polish_cover_config))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::scope::enforce_scope,
+        ));
+
     let protected = Router::new()
         .route("/me", get(me))
         .route("/auth/logout", post(auth_logout))
         .route("/auth/password", put(auth_password))
+        // 过渡期兼容别名（P2 之后前端改用 /api/admin/*，P5 删除）
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
@@ -69,31 +110,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/jobs/:id", get(job_get))
         .route("/jobs/:id/events", get(job_events))
         .route("/jobs/:id/cancel", post(job_cancel))
-        .route("/polish/init", post(polish_init))
-        .route("/polish/llm", post(polish_llm))
-        .route("/polish/process", post(polish_process))
-        .route("/polish/render", post(polish_render))
-        .route("/polish/cover", post(polish_cover))
-        .route("/polish/preview", post(polish_preview))
-        .route("/polish/cover-preview", post(polish_cover_preview))
-        .route("/polish/cover-background", post(polish_cover_background))
-        .route("/polish/cover-frame", post(polish_cover_frame))
-        .route("/polish/project", get(polish_project_get).put(polish_project_put))
-        .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
-        .route("/polish/sticker-sources", get(polish_sticker_sources))
-        .route("/polish/render-frame", post(polish_render_frame))
-        .route("/polish/font", get(polish_font))
-        .route("/polish/select-version", post(polish_select_version))
-        .route("/polish/silence", post(polish_silence))
-        .route("/polish/cover-title", post(polish_cover_title))
-        .route("/polish/cover-config", post(polish_cover_config))
         .route("/media/*path", get(media_get))
+        .merge(polish)
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             super::auth::require_user,
         ));
 
     public
+        .merge(admin)
         .merge(protected)
         // 未匹配的 /api/* 必须是 JSON 404：外层 fallback 是 SPA HTML，
         // 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
@@ -517,12 +542,18 @@ async fn llm_test() -> ApiResult {
     }
 }
 
-/// 下载全部 ASR 模型。
+/// 下载全部 ASR 模型（**仅 admin**：平台级资源，见 §5.3）。
 ///
-/// 前端 `POST /api/models/download` 不带 body（旧实现要求 `Json` 提取器，空 body 会被
+/// 前端 `POST /api/admin/models/download` 不带 body（旧实现要求 `Json` 提取器，空 body 会被
 /// axum 直接 400，两个模型界面都因此不可用）。这里只做任务编排，不读 body。
-async fn models_download(State(state): State<Arc<AppState>>) -> ApiResult {
-    let id = match state.jobs.create("download_models").await {
+async fn models_download(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+) -> ApiResult {
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可下载平台模型"));
+    }
+    let id = match state.jobs.create(user.id, "download_models").await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -547,6 +578,11 @@ async fn activate_workspace(state: &AppState, ws: &Workspace) {
     persist::remember_last(&ws.config_file, Some(&state.workspace_root().await));
 }
 
+/// 旧版项目摘要（`server.toml` 时代的列表形态）。
+///
+/// P2 起项目列表走 DB（`/api/projects`），这个函数只在过渡期别名的 stub 里出现，
+/// 保留是为了让 `vtrim status` 与旧前端 JSON 结构继续可用。
+#[allow(dead_code)]
 fn project_summary(ws: &Workspace) -> serde_json::Value {
     crate::service::project_summary(ws)
 }
@@ -629,32 +665,51 @@ async fn projects_create(
     if !user.is_admin() {
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可指定服务器本机文件"));
     }
+    create_local_project(
+        &state,
+        &user,
+        source.get("dir").and_then(|v| v.as_str()).unwrap_or(""),
+        source.get("input").and_then(|v| v.as_str()).unwrap_or(""),
+        source.get("danmaku").and_then(|v| v.as_str()),
+        source.get("output_dir").and_then(|v| v.as_str()),
+    )
+    .await
+}
 
-    let rel_dir = source
-        .get("dir")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+/// 用"服务器本机文件"建项目的公共实现（`POST /api/projects` 与过渡期的
+/// `POST /api/project/init` 共用）。所有路径都囚笼在**租户根**之内。
+async fn create_local_project(
+    state: &Arc<AppState>,
+    user: &super::auth::CurrentUser,
+    rel_dir: &str,
+    input_hint: &str,
+    danmaku_hint: Option<&str>,
+    output_dir: Option<&str>,
+) -> ApiResult {
     let root = crate::service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&root)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
-    let dir = vtrim_core::tenant::jail_existing(&root, &rel_dir)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?;
+    let rel_dir = rel_dir.trim();
+    let dir = if rel_dir.is_empty() {
+        root.clone()
+    } else {
+        vtrim_core::tenant::jail_existing(&root, rel_dir)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?
+    };
     if !dir.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
     }
-    let hint = source.get("input").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let hint = input_hint.trim();
     let input = if hint.is_empty() {
         // 未指定文件时自动挑目录里第一个视频
-        find_first_video(&dir).ok_or_else(|| err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）"))?
+        find_first_video(&dir).ok_or_else(|| {
+            err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）")
+        })?
     } else {
-        vtrim_core::tenant::jail_existing(&dir, &hint)
+        vtrim_core::tenant::jail_existing(&dir, hint)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
     };
-    let danmaku = source
-        .get("danmaku")
-        .and_then(|v| v.as_str())
+    let danmaku = danmaku_hint
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(|rel| {
@@ -664,7 +719,7 @@ async fn projects_create(
         .transpose()?;
 
     let config_path = dir.join("vtrim.toml");
-    let output_rel = source.get("output_dir").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let output_rel = output_dir.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     if let Some(rel) = &output_rel {
         vtrim_core::tenant::jail_join(&dir, rel)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
@@ -703,7 +758,7 @@ async fn projects_create(
         let _ = crate::service::projects::refresh_bytes(db, &p);
     }
     let _ = db.audit(Some(user.id), "project_create", &format!("id={id} kind=local"));
-    activate_workspace(&state, &ws).await;
+    activate_workspace(state, &ws).await;
     match db.project_by_id(id) {
         Ok(Some(p)) => ok(serde_json::json!({
             "ok": true,
@@ -834,11 +889,18 @@ async fn projects_source_delete(
     }))
 }
 
-async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let p = body.get("config_path").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 config_path"))?;
-    let path = PathBuf::from(p);
-    // 语义是"从项目列表移除项目"，只允许删 vtrim.toml：
-    // 否则这个接口等价于"删除任意文件"。
+/// **过渡期别名**：旧前端按 `config_path` 删项目；只允许删除**已登记且属于自己**的
+/// `vtrim.toml`（P2 之后前端改用 `DELETE /api/projects/:id`）。
+async fn project_delete(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let raw = body
+        .get("config_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 config_path"))?;
+    let path = PathBuf::from(raw);
     let is_project_file = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -847,69 +909,46 @@ async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<se
     if !is_project_file {
         return Err(err(StatusCode::BAD_REQUEST, "只允许删除 vtrim.toml"));
     }
-    if path.exists() { std::fs::remove_file(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?; }
-    else { return Err(err(StatusCode::NOT_FOUND, "配置文件不存在")); }
-    persist::forget_project(&path);
-    ok(serde_json::json!({ "ok": true, "deleted": path.to_string_lossy() }))
+    let db = state.auth.db();
+    let project = db
+        .project_by_config(&path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}")))?
+        .filter(|p| user.is_admin() || p.owner_id == user.id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在或无权访问"))?;
+    if project.config_file.exists() {
+        std::fs::remove_file(&project.config_file)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+    }
+    db.delete_project(project.id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("注销失败: {e:#}")))?;
+    persist::forget_project(&project.config_file);
+    let _ = db.audit(Some(user.id), "project_delete", &format!("id={}", project.id));
+    ok(serde_json::json!({ "ok": true, "deleted": project.id }))
 }
 
-async fn project_list(State(state): State<Arc<AppState>>) -> ApiResult {
+/// **过渡期别名**：旧前端的项目列表（`/api/projects` 的早期形态）。
+/// 现在直接读 DB 里**自己的**项目，不再扫描磁盘或读取 `server.toml`。
+async fn project_list(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+) -> ApiResult {
     let root = state.workspace_root().await;
-    // 首次启动可能要扫 4 层目录，纯同步 IO：放 spawn_blocking 避免占住 tokio worker
-    let (root_display, out) = tokio::task::spawn_blocking(move || {
-        let saved = persist::load_state();
-        let paths = saved.as_ref().map(|s| s.projects.clone()).unwrap_or_default();
-        let mut out = vec![];
-
-        if paths.is_empty() {
-            // 首次启动兼容：扫描一次工作区根目录并写入 server.toml，后续不再依赖扫描
-            let mut stack = vec![root.clone()];
-            for depth in 0..4 {
-                if stack.is_empty() { break; }
-                let mut next = vec![];
-                for dir in stack.drain(..) {
-                    let cfg_file = dir.join("vtrim.toml");
-                    if cfg_file.exists() {
-                        if let Ok(ws) = Workspace::load(Some(&cfg_file)) {
-                            out.push(project_summary(&ws));
-                            persist::remember_project(&ws.config_file);
-                        }
-                    }
-                    if depth < 3 {
-                        if let Ok(entries) = std::fs::read_dir(&dir) {
-                            for entry in entries.flatten() {
-                                let p = entry.path();
-                                if p.is_dir() {
-                                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                                    if name == "target" || name == ".git" || name == "node_modules" { continue; }
-                                    next.push(p);
-                                }
-                            }
-                        }
-                    }
-                }
-                stack = next;
-            }
-        } else {
-            // 直接从 server.toml 读取项目 vtrim.toml 路径，支持任意目录
-            for cfg in paths {
-                let p = PathBuf::from(&cfg);
-                if p.exists() {
-                    if let Ok(ws) = Workspace::load(Some(&p)) {
-                        out.push(project_summary(&ws));
-                    }
-                }
-            }
-        }
-
-        out.sort_by(|a,b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
-        (root.to_string_lossy().into_owned(), out)
-    })
-    .await
-    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描工作区失败: {e}")))?;
-
-    ok(serde_json::json!({ "workspace_root": root_display, "projects": out }))
+    let db = state.auth.db();
+    let rows = db
+        .list_projects(Some(user.id))
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目列表失败: {e:#}")))?;
+    let out: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|p| crate::service::projects::summary_json(p, Some(&user.username)))
+        .collect();
+    ok(serde_json::json!({
+        "workspace_root": root.to_string_lossy(),
+        "projects": out,
+        "deprecated": "请改用 GET /api/projects（本项目列表只回本人项目）",
+    }))
 }
+
+
 
 
 
@@ -923,76 +962,100 @@ fn project_status_impl(ws: &Workspace) -> ApiResult {
     ok(project_snapshot(ws))
 }
 
-async fn project_init(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let input = body.get("input").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 input"))?;
-    let config_path = body.get("config_path").and_then(|v| v.as_str()).map(PathBuf::from).unwrap_or_else(|| {
-        let p = Path::new(input);
-        if p.is_absolute() { p.parent().map(|d| d.join("vtrim.toml")).unwrap_or_else(|| PathBuf::from("vtrim.toml")) }
-        else { PathBuf::from("vtrim.toml") }
-    });
-    let input_path = PathBuf::from(input);
-    if !input_path.exists() { return Err(err(StatusCode::BAD_REQUEST, "输入视频不存在")); }
-    let danmaku = body.get("danmaku").and_then(|v| v.as_str()).map(PathBuf::from);
-    let output = body.get("output_dir").and_then(|v| v.as_str());
-    let _ = std::fs::create_dir_all(config_path.parent().unwrap_or(Path::new(".")));
-    vtrim_core::config::write_project_config(
-        &config_path, &input_path, danmaku.as_deref(), output,
-    ).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
-    let ws = Workspace::load(Some(&config_path)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
-    persist::remember_project(&ws.config_file);
-    activate_workspace(&state, &ws).await;
-    ok(project_snapshot(&ws))
-}
-
-async fn project_open(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let input = body.get("input").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let config_path = body.get("config_path").and_then(|v| v.as_str()).map(PathBuf::from).or_else(|| {
-        let p = Path::new(&input);
-        if p.is_absolute() {
-            p.parent().map(|d| d.join("vtrim.toml"))
-        } else {
-            None
-        }
-    });
-    let Some(cfg) = config_path.filter(|p| p.exists()) else {
-        return Err(err(StatusCode::NOT_FOUND, "未找到项目文件"));
-    };
-    let ws = Workspace::load(Some(&cfg)).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
-    persist::remember_project(&ws.config_file);
-    activate_workspace(&state, &ws).await;
-    ok(project_snapshot(&ws))
-}
-
-fn workspace_from_config(config: &str) -> Result<Workspace, AppError> {
-    if config.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "缺少 config 参数"));
+/// **过渡期别名**（P2 之后前端改用 `POST /api/projects {source:{kind:"local"}}`）：
+/// 旧前端传的是绝对 `input`/`config_path`，这里把它当成"相对租户根"的提示，
+/// 走同一条囚笼 + 登记流程，**不再接受任意绝对路径**。
+async fn project_init(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可指定服务器本机文件"));
     }
-    Workspace::load(Some(Path::new(config))).map_err(|e| err(StatusCode::BAD_REQUEST, format!("加载项目失败: {e:#}")))
-}
-
-async fn project_data_status(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    project_status_impl(&ws)
-}
-
-async fn project_data_events(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    data_events_impl(&ws)
-}
-
-async fn project_data_clips(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    data_clips_impl(&ws)
-}
-
-async fn project_data_clip_thumb(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> Response {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let Ok(ws) = workspace_from_config(&config) else {
-        return StatusCode::BAD_REQUEST.into_response();
+    let raw = body
+        .get("input")
+        .or_else(|| body.get("config_path"))
+        .or_else(|| body.get("dir"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 input"))?;
+    let tenant = crate::service::projects::tenant_root(user.id);
+    let abs = PathBuf::from(raw);
+    // 旧值可能是绝对路径：只接受"落在自己租户根内"的那种，其余按相对路径处理
+    let rel_dir = if abs.is_absolute() {
+        let parent = if abs.is_dir() { abs.clone() } else { abs.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| tenant.clone()) };
+        match vtrim_core::tenant::ensure_within(&tenant, &parent) {
+            Ok(inside) => inside
+                .strip_prefix(&tenant)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default(),
+            Err(_) => raw.to_string(),
+        }
+    } else {
+        raw.to_string()
     };
+    let danmaku = body.get("danmaku").and_then(|v| v.as_str());
+    let output = body.get("output_dir").and_then(|v| v.as_str());
+    let created = create_local_project(&state, &user, &rel_dir, "", danmaku, output).await?;
+    // 旧前端期待项目快照（含 current_stage / files）
+    let ws = match created.0.get("id").and_then(|v| v.as_i64()).and_then(|id| state.auth.db().project_by_id(id).ok().flatten()) {
+        Some(p) => Workspace::load(Some(&p.config_file))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?,
+        None => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "项目登记后读取失败")),
+    };
+    ok(project_snapshot(&ws))
+}
+
+/// **过渡期别名**：按 `config_path`（已登记的本人项目）激活工作区并回项目快照。
+async fn project_open(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let raw = body.get("config_path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let by_id = body.get("project").and_then(|v| v.as_i64());
+    let project = match (by_id, raw.is_empty()) {
+        (Some(id), _) => crate::service::projects::find_owned(state.auth.db(), user.id, user.is_admin(), id)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}")))?,
+        (None, false) => state
+            .auth
+            .db()
+            .project_by_config(Path::new(&raw))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}")))?
+            .filter(|p| user.is_admin() || p.owner_id == user.id),
+        _ => None,
+    };
+    let Some(project) = project else {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "项目不存在或无权访问（请用 /api/projects 的项目 id）",
+        ));
+    };
+    let ws = Workspace::load(Some(&project.config_file))
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
+    activate_workspace(&state, &ws).await;
+    ok(project_snapshot(&ws))
+}
+
+// ---- 项目数据（P2：作用域 = 本人项目 id，`?config=` 仅作过渡期反查） ----
+//
+// `Scope` 提取器从 `?project=<id>`（或过渡期的 `?config=<已登记本人项目>`）解析出项目与
+// `Workspace`；**未登记的路径一律 404**，所以"任意路径"这条入口已经关闭。
+
+async fn project_data_status(scope: Scope) -> ApiResult {
+    project_status_impl(&scope.ws)
+}
+
+async fn project_data_events(scope: Scope) -> ApiResult {
+    data_events_impl(&scope.ws)
+}
+
+async fn project_data_clips(scope: Scope) -> ApiResult {
+    data_clips_impl(&scope.ws)
+}
+
+async fn project_data_clip_thumb(scope: Scope, AxumPath(rank): AxumPath<String>) -> Response {
+    let ws = scope.ws;
     // rank 直接来自 URL：必须是数字，否则会拼进路径（`clip-../../x`）
     let Ok(rank) = rank.parse::<u32>() else {
         return media::json_error(StatusCode::BAD_REQUEST, "rank 无效");
@@ -1032,77 +1095,71 @@ fn generate_clip_thumb(video: &Path, thumb: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-async fn project_data_polish(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    polish_projects_impl(&ws)
+async fn project_data_polish(scope: Scope) -> ApiResult {
+    polish_projects_impl(&scope.ws)
 }
 
-async fn project_data_transcript(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    data_transcript_impl(&ws)
+async fn project_data_transcript(scope: Scope) -> ApiResult {
+    data_transcript_impl(&scope.ws)
 }
 
-async fn project_data_transcript_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
+async fn project_data_transcript_put(scope: Scope, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let ws = scope.ws;
     let path = ws.output_dir().join("transcript.json");
     vtrim_core::filelock::with_path_lock(&path, || data_transcript_put_impl(&ws, &body)).await
 }
 
-async fn project_data_events_create(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
+async fn project_data_events_create(scope: Scope, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let ws = scope.ws;
     // events.json 是 read-modify-write：并发 PUT/POST 会丢事件
     let path = ws.output_dir().join("events.json");
     vtrim_core::filelock::with_path_lock(&path, || data_events_create_impl(&ws, &body)).await
 }
 
-async fn project_data_events_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
+async fn project_data_events_put(scope: Scope, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let ws = scope.ws;
     let path = ws.output_dir().join("events.json");
     vtrim_core::filelock::with_path_lock(&path, || data_events_put_impl(&ws, &body)).await
 }
 
-async fn project_data_event_cut(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    event_cut_impl(&ws, &rank, &state.jobs).await
+async fn project_data_event_cut(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    scope: Scope,
+    AxumPath(rank): AxumPath<String>,
+) -> ApiResult {
+    event_cut_impl(&scope.ws, &rank, &state.jobs, user.id).await
 }
 
-async fn project_data_event_cut_all(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    event_cut_all_impl(&ws, &body, &state.jobs).await
+async fn project_data_event_cut_all(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    scope: Scope,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    event_cut_all_impl(&scope.ws, &body, &state.jobs, user.id).await
 }
 
-async fn project_data_clip_silence(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, AxumPath(rank): AxumPath<String>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    clip_silence_impl(&ws, &rank).await
+async fn project_data_clip_silence(scope: Scope, AxumPath(rank): AxumPath<String>) -> ApiResult {
+    clip_silence_impl(&scope.ws, &rank).await
 }
 
-async fn project_data_correct(State(state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    correct_run_impl(&ws, &state.jobs).await
+async fn project_data_correct(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    scope: Scope,
+) -> ApiResult {
+    correct_run_impl(&scope.ws, &state.jobs, user.id).await
 }
 
 async fn project_data_pipeline(
     State(state): State<Arc<AppState>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
+    scope: Scope,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    // 与其余 /project-data/* 一致：优先 ?config=，同时兼容 body.config
-    let config = q
-        .get("config")
-        .cloned()
-        .filter(|s| !s.is_empty())
-        .or_else(|| body.get("config").and_then(|v| v.as_str()).map(|s| s.to_string()))
-        .unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
+    // 作用域由 `Scope` 解析（`?project=` / 过渡期 `?config=`）；
+    // 旧前端还会在 body 里带 `config`，那只是冗余字段，不再作为作用域来源。
+    let ws = scope.ws;
     if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
         let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
         let stages = match stage {
@@ -1113,26 +1170,23 @@ async fn project_data_pipeline(
             "process" => vec!["extract","transcribe","detect","cut"],
             _ => return Err(err(StatusCode::BAD_REQUEST, "未知 stage")),
         }.into_iter().map(|s| s.to_string()).collect();
-        run_pipeline_job(&state.jobs, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
+        run_pipeline_job(&state.jobs, scope.project.id, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
     } else {
         let stages = body.get("stages").and_then(|v| v.as_array()).map(|arr| {
             arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
         }).unwrap_or_else(|| vec!["extract".into(),"transcribe".into(),"detect".into(),"cut".into()]);
         let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
         let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-        run_pipeline_job(&state.jobs, ws.config_file.clone(), "pipeline", stages, dry, resume).await
+        run_pipeline_job(&state.jobs, scope.project.id, ws.config_file.clone(), "pipeline", stages, dry, resume).await
     }
 }
 
-async fn project_data_config(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
-    config_get_impl(&ws)
+async fn project_data_config(scope: Scope) -> ApiResult {
+    config_get_impl(&scope.ws)
 }
 
-async fn project_data_config_put(State(_state): State<Arc<AppState>>, Query(q): Query<std::collections::HashMap<String, String>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let config = q.get("config").cloned().unwrap_or_default();
-    let ws = workspace_from_config(&config)?;
+async fn project_data_config_put(scope: Scope, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let ws = scope.ws;
     // 读改写加锁：设置页可能同时提交源文件与其它字段
     let path = ws.config_file.clone();
     vtrim_core::filelock::with_path_lock(&path, || config_vtrim_put_impl(&ws, &body)).await
@@ -1453,7 +1507,7 @@ pub(crate) async fn ensure_polish_project(dir: &Path) -> Result<(), AppError> {
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化精修工程失败: {e:#}")))
 }
 
-async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
+async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -1489,7 +1543,7 @@ async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc
         return Err(err(StatusCode::BAD_REQUEST, "没有需要剪切的未剪切事件"));
     }
 
-    let id = match jobs.create("cut_all").await {
+    let id = match jobs.create(owner, "cut_all").await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -1568,7 +1622,7 @@ async fn run_single_cut(config_file: &Path, ev: serde_json::Value) -> anyhow::Re
     r.run(&mut ctx).await
 }
 
-async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
+async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -1577,7 +1631,7 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
     let event: serde_json::Value = store.get("events").and_then(|a| a.as_array()).and_then(|arr| arr.iter().find(|e| e.get("rank").and_then(|r| r.as_u64()).unwrap_or(0) as u32 == rank_u).cloned())
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "事件不存在"))?;
     let ev: vtrim_core::types::Event = serde_json::from_value(event).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("事件解析失败: {e}")))?;
-    let id = match jobs.create("cut_one").await {
+    let id = match jobs.create(owner, "cut_one").await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -1600,21 +1654,49 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn fs_list(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    // 本地目录浏览只对管理员开放：P2 会整体删除这个入口（§5.2），
-    // 在那之前也不该让普通账号借它枚举服务器上的任意目录。
+/// `POST /api/fs/list {path}`：**仅 admin**，且囚笼在该账号的租户根内（§0.2.7 / §5.2）。
+///
+/// 保留这个入口只为"本机部署用服务器上已有文件建项目"这条 admin-only 来源；
+/// 它**不接受绝对路径**，只接受相对租户根（`<projects_root>/users/<uid>`）的路径，
+/// 也**永不接受上传**。响应同时给出相对路径，前端据此拼 `POST /api/projects`。
+async fn fs_list(
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
     if !user.is_admin() {
-        return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器目录"));
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
-    let ws = workspace_from_state(&state).await;
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let target = if dir.is_empty() { ws.root_dir.clone() } else if Path::new(&dir).is_absolute() { PathBuf::from(&dir) } else { ws.resolve(&dir) };
-    if !target.exists() || !target.is_dir() { return Err(err(StatusCode::BAD_REQUEST, "目录不存在")); }
-    let dir_display = target.to_string_lossy().into_owned();
+    let rel = body
+        .get("path")
+        .or_else(|| body.get("dir"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let root = crate::service::projects::tenant_root(user.id);
+    std::fs::create_dir_all(&root)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
+    let target = if rel.is_empty() {
+        root.clone()
+    } else {
+        vtrim_core::tenant::jail_existing(&root, &rel)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("路径不可用: {e:#}")))?
+    };
+    if !target.is_dir() {
+        return Err(err(StatusCode::BAD_REQUEST, "只能浏览目录"));
+    }
+    let tenant = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let rel_prefix = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.clone())
+        .strip_prefix(&tenant)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
+    let scan_dir = target.clone();
     let (dirs, files) = tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<String>, Vec<String>)> {
         let mut files = vec![]; let mut dirs = vec![];
-        for e in std::fs::read_dir(&target)? {
+        for e in std::fs::read_dir(&scan_dir)? {
             let e = e?;
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { dirs.push(e.file_name().to_string_lossy().to_string()); }
             else { files.push(e.file_name().to_string_lossy().to_string()); }
@@ -1625,7 +1707,17 @@ async fn fs_list(State(state): State<Arc<AppState>>, Extension(user): Extension<
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
-    ok(serde_json::json!({ "dir": dir_display, "dirs": dirs, "files": files }))
+    let parent = Path::new(&rel_prefix)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    ok(serde_json::json!({
+        "path": rel_prefix,
+        "parent": parent,
+        "root": crate::service::projects::projects_root().to_string_lossy(),
+        "dirs": dirs,
+        "files": files,
+    }))
 }
 
 /// 解析 `Range` 请求头（只支持单区间）。
@@ -1667,20 +1759,58 @@ fn parse_byte_range(header: Option<&str>, total: u64) -> Option<Option<(u64, u64
 
 async fn media_get(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
     AxumPath(path): AxumPath<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-    let ws = state.workspace().await;
-    let root = state.workspace_root().await;
-    let path = match media::safe_join(&ws, &root, &path) {
-        media::SafePath::Allowed(p) => p,
-        media::SafePath::NotFound => return media::json_error(StatusCode::NOT_FOUND, "文件不存在"),
-        media::SafePath::Forbidden => {
-            return media::json_error(StatusCode::FORBIDDEN, "文件不在允许访问的目录内")
+    // 只服务本人项目内的文件：
+    // - 新契约 `/api/media/<project_id>/<项目内相对路径>`
+    // - 过渡期 `/api/media/<绝对路径>`：必须落在自己的某个项目根内
+    let db = state.auth.db();
+    let (project, rel) = media::split_project_media(&path);
+    let path = match project {
+        Some(id) => {
+            let proj = match super::scope::find_owned_project(db, &user, id) {
+                Ok(Some(p)) => p,
+                Ok(None) => return media::json_error(StatusCode::NOT_FOUND, "项目不存在或无权访问"),
+                Err(e) => return media::json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+            };
+            match vtrim_core::tenant::jail_existing(&proj.root_dir, &rel) {
+                Ok(p) => p,
+                Err(e) => return media::json_error(StatusCode::NOT_FOUND, &format!("文件不可用: {e:#}")),
+            }
+        }
+        None => {
+            let abs = if Path::new(&rel).is_absolute() {
+                PathBuf::from(&rel)
+            } else {
+                // 相对路径必须配合项目 id（新契约）；这里用当前工作区解析后仍要过归属校验
+                state.workspace().await.resolve(&rel)
+            };
+            match super::scope::find_project_for_dir(db, &user, &abs) {
+                Ok(Some(proj)) => {
+                    let root = proj.root_dir.canonicalize().unwrap_or_else(|_| proj.root_dir.clone());
+                    let real = abs.canonicalize().unwrap_or_else(|_| abs.clone());
+                    if !real.starts_with(&root) {
+                        return media::json_error(StatusCode::FORBIDDEN, "文件不在你的项目内");
+                    }
+                    real
+                }
+                Ok(None) => {
+                    return media::json_error(
+                        StatusCode::FORBIDDEN,
+                        "文件不在你的任何项目内（新契约：/api/media/<项目id>/<相对路径>）",
+                    )
+                }
+                Err(e) => return e.into_response(),
+            }
         }
     };
+    if !path.exists() {
+        return media::json_error(StatusCode::NOT_FOUND, "文件不存在");
+    }
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -1765,13 +1895,14 @@ async fn media_get(
 
 async fn run_pipeline_job(
     jobs: &Arc<super::jobs::JobManager>,
+    owner: i64,
     config_file: std::path::PathBuf,
     kind: &str,
     stages: Vec<String>,
     dry_run: bool,
     resume: bool,
 ) -> ApiResult {
-    let id = match jobs.create(kind).await {
+    let id = match jobs.create(owner, kind).await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -1791,8 +1922,8 @@ async fn run_pipeline_job(
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>) -> ApiResult {
-    let id = match jobs.create("correct").await {
+async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
+    let id = match jobs.create(owner, "correct").await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -1811,13 +1942,27 @@ async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>) -
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn jobs_list(State(state): State<Arc<AppState>>) -> ApiResult {
-    let list = state.jobs.list().await;
+/// `GET /api/jobs`：只列**本人**任务；admin 带 `?all=1` 可看全平台（P5 管理页用）。
+async fn jobs_list(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let all = user.is_admin()
+        && q.get("all")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    let list = state.jobs.list_scoped(user.id, user.is_admin(), all).await;
     ok(serde_json::to_value(list).unwrap_or_default())
 }
 
-async fn job_get(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
-    match state.jobs.get(&id).await {
+async fn job_get(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult {
+    // 他人任务一律 404（不泄露存在性）
+    match state.jobs.get_owned(&id, user.id, user.is_admin()).await {
         Some(j) => ok(serde_json::to_value(j).unwrap_or_default()),
         None => Err(err(StatusCode::NOT_FOUND, "任务不存在")),
     }
@@ -1863,17 +2008,57 @@ fn job_event_stream(
     })
 }
 
-async fn global_stream(State(state): State<Arc<AppState>>) -> Response {
+/// 全局流的版本：额外带 `owner_id`，供 `/api/stream` 按归属过滤。
+fn global_event_stream(
+    rx: tokio::sync::broadcast::Receiver<super::jobs::OwnedEvent>,
+) -> impl Stream<Item = (i64, bool, Event)> + Send + 'static {
+    BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(ev) => {
+                let terminal = is_terminal_event(&ev.event);
+                Some((ev.owner_id, terminal, sse_event(&ev.event)))
+            }
+            Err(BroadcastStreamRecvError::Lagged(n)) => Some((
+                0, // 0 = 面向所有订阅者的提示（不属于任何用户）
+                false,
+                sse_event(&JobEvent::Log {
+                    level: "warn".into(),
+                    message: format!("事件流落后，已跳过 {n} 条事件"),
+                }),
+            )),
+        }
+    })
+}
+
+/// `/api/stream`：**只推本人事件**（服务端过滤，前端无感知）。
+async fn global_stream(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+) -> Response {
     let rx = state.jobs.subscribe_all().await;
+    let uid = user.id;
+    let is_admin = user.is_admin();
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, axum::Error>> + Send>> =
-        Box::pin(job_event_stream(rx).map(|(_, ev)| Ok(ev)));
+        Box::pin(global_event_stream(rx).filter_map(move |(owner, _, ev)| {
+            let mine = is_admin || owner == uid;
+            std::future::ready(mine.then_some(Ok(ev)))
+        }));
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response()
 }
 
 async fn job_events(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
+    // 归属校验：别人的任务连 SSE 都订不到（404）
+    if !state.jobs.owned_by(&id, user.id, user.is_admin()).await {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "ok": false, "error": "任务不存在" })),
+        )
+            .into_response();
+    }
     let Some((history, rx)) = state.jobs.subscribe(&id).await else {
         return (
             StatusCode::NOT_FOUND,
@@ -1895,7 +2080,15 @@ async fn job_events(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))).into_response()
 }
 
-async fn job_cancel(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult {
+async fn job_cancel(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult {
+    // 只能取消自己的任务（他人任务 404）
+    if !state.jobs.owned_by(&id, user.id, user.is_admin()).await {
+        return Err(err(StatusCode::NOT_FOUND, "任务不存在"));
+    }
     if state.jobs.cancel(&id).await {
         ok(serde_json::json!({ "ok": true }))
     } else {
@@ -1980,11 +2173,12 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
+async fn polish_spawn(state: &AppState, owner: i64, kind: &str, dir: String) -> ApiResult {
     // dir 必须先校验：`dir: ""` 会让 cmd_init 在 server 进程的 CWD 里写出
     // polish.toml / data / sfx，任意绝对路径也会被当作合法工程目录。
+    // 归属由 `scope::enforce_scope` 中间件保证（只能是自己项目内的目录）。
     let path = validated_project_dir(&dir)?;
-    let id = match state.jobs.create(format!("polish_{}", kind)).await {
+    let id = match state.jobs.create(owner, format!("polish_{}", kind)).await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
@@ -2065,22 +2259,22 @@ async fn polish_spawn(state: &AppState, kind: &str, dir: String) -> ApiResult {
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn polish_init(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, "init", dir).await
+    polish_spawn(&state, user.id, "init", dir).await
 }
 
-async fn polish_llm(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_llm(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, "llm", dir).await
+    polish_spawn(&state, user.id, "llm", dir).await
 }
 
-async fn polish_process(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, "process", dir).await
+    polish_spawn(&state, user.id, "process", dir).await
 }
 
-async fn polish_render(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let path = validated_project_dir(&dir)?;
     if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
@@ -2097,12 +2291,12 @@ async fn polish_render(State(state): State<Arc<AppState>>, Json(body): Json<serd
         })
         .await?;
     }
-    polish_spawn(&state, "render", dir).await
+    polish_spawn(&state, user.id, "render", dir).await
 }
 
-async fn polish_cover(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, "cover", dir).await
+    polish_spawn(&state, user.id, "cover", dir).await
 }
 
 
@@ -3280,14 +3474,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
         let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
-        auth.db()
+        let uid = auth
+            .db()
             .create_user("admin", &hash, "admin", must_change, 0)
             .unwrap();
+        // 真项目目录 + 真 vtrim.toml：P2 之后所有接口都要经过项目作用域
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(root.join("output/clips")).unwrap();
+        std::fs::write(root.join("a.mp4"), b"fake").unwrap();
+        let cfg_path = root.join("vtrim.toml");
+        std::fs::write(&cfg_path, "input_file = \"a.mp4\"\n").unwrap();
+        let project_id = auth
+            .db()
+            .create_project(uid, "proj", None, "local", Some("测试"), &root, &cfg_path, None)
+            .unwrap();
+        assert_eq!(project_id, 1, "测试项目固定为 id=1");
         let bundle = auth
             .login("admin", "initial-pass-1234", None, None)
             .expect("测试账号应能登录");
-        let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
-        let state = Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth.clone()));
+        let ws = Workspace::load(Some(&cfg_path)).expect("workspace");
+        let state = Arc::new(AppState::with_auth(ws, root.clone(), auth.clone()));
         TestApp {
             app: router(state),
             auth,
@@ -3409,7 +3615,8 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
-    /// 写请求缺 CSRF / CSRF 不匹配一律 403（cookie 会话 + 自定义头双提交）。
+    /// 写请求缺 CSRF / CSRF 不匹配一律 403（cookie 会话 + 自定义头双提交）；
+    /// 带上正确 CSRF 后**还要**通过项目作用域（未登记的路径一律 404）。
     #[tokio::test]
     async fn write_requests_require_matching_csrf() {
         let t = test_app().await;
@@ -3418,7 +3625,7 @@ mod tests {
             .call(
                 HttpRequest::builder()
                     .method("PUT")
-                    .uri("/project-data/config?config=vtrim.toml")
+                    .uri("/project-data/config?project=1")
                     .header(axum::http::header::COOKIE, t.cookie())
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(body)
@@ -3431,7 +3638,7 @@ mod tests {
             .call(
                 HttpRequest::builder()
                     .method("PUT")
-                    .uri("/project-data/config?config=vtrim.toml")
+                    .uri("/project-data/config?project=1")
                     .header(axum::http::header::COOKIE, t.cookie())
                     .header(crate::service::auth::CSRF_HEADER, "not-the-token")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
@@ -3444,13 +3651,53 @@ mod tests {
         // 带上正确 CSRF 后才会走到业务校验（空 raw → 400）
         let res = t
             .call(
-                t.req("PUT", "/project-data/config?config=vtrim.toml")
+                t.req("PUT", "/project-data/config?project=1")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"raw":""}"#))
                     .unwrap(),
             )
             .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "空内容必须被拒绝");
+    }
+
+    /// 路径面归零：未登记的路径（含任意绝对路径）一律 404，只有本人项目 id 可用。
+    #[tokio::test]
+    async fn path_face_is_closed_for_project_data() {
+        let t = test_app().await;
+        // 未登记的 config 路径
+        let res = t
+            .call(t.req("GET", "/project-data/status?config=C%3A%5CWindows%5Cvtrim.toml").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "未登记路径必须 404");
+        // 他人的项目 id
+        let res = t
+            .call(t.req("GET", "/project-data/status?project=999").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "不存在/他人的项目 id 必须 404");
+        // 本项目 id → 200
+        let res = t
+            .call(t.req("GET", "/project-data/status?project=1").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK, "本人项目应可用: {:?}", res.status());
+    }
+
+    /// polish 的 `dir` 只能落在本人项目内：项目外绝对路径 → 404。
+    #[tokio::test]
+    async fn polish_dir_must_be_inside_own_project() {
+        let t = test_app().await;
+        let outside = std::env::temp_dir().join("vtrim-not-my-project");
+        std::fs::create_dir_all(&outside).unwrap();
+        let body = serde_json::json!({ "dir": outside.to_string_lossy() }).to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/init")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "项目外目录必须 404");
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// 登录 → `/api/me` → 改密 → `must_change_password` 变 false（§3.5.10 第 1–5 条）。
