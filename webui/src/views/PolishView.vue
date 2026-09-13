@@ -6,7 +6,17 @@
         <h1 class="mt-2">{{ dir ? title : '选择要精修的片段' }}</h1>
         <div class="sub">{{ dir || '从片段库选择一个已剪切片段进入精修编辑器' }}</div>
       </div>
-      <div class="actions"></div>
+      <!-- 布局框选：只有「人物」「弹幕区域」两个区域（贴纸落点由 process 计算，不在此框选） -->
+      <div class="actions">
+        <button class="mini-btn" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
+          <Icon name="crop" :size="11" /> 人物
+        </button>
+        <button class="mini-btn" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
+          <Icon name="crop" :size="11" /> 弹幕区域
+        </button>
+      </div>
     </div>
 
     <!-- 无切片：空态引导（不报错不白屏） -->
@@ -61,15 +71,24 @@
           </div>
         </div>
 
-        <!-- 预览左 + 右侧（生成与导出：导出动作 / 布局框选 / 贴纸来源） -->
+        <!-- 预览左 + 右侧（生成与导出：导出动作 / 贴纸来源） -->
         <div class="grid cols-main mt-16">
           <div class="card">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <span v-if="selectMode" class="chip p">选框模式 · 运镜已暂停</span>
-              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+              <span class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
-            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="selectMode" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
+            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
+            <!-- 框选模式操作条（只有进入框选时才出现） -->
+            <div v-if="selectRegion" class="sel-bar">
+              <span class="chip p">选框模式 · 运镜已暂停</span>
+              <span class="mono small">{{ rectText }}</span>
+              <span v-if="hasFreeRect" class="chip p">自由选框</span>
+              <span v-else class="chip n">九宫格默认</span>
+              <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+              <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
+              <span class="hint flex-1">{{ regionHint }}</span>
+            </div>
           </div>
 
           <div class="card">
@@ -78,7 +97,7 @@
               <span class="muted small">LLM 完成后自动执行后处理</span>
             </div>
 
-            <!-- ① 导出动作（对齐 v5 样稿：两键并排 + 渲染导出整宽主按钮） -->
+            <!-- 导出动作（对齐 v5 样稿：两键并排 + 渲染导出整宽主按钮） -->
             <div class="row mb-8" style="gap:6px">
               <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
               <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
@@ -99,37 +118,7 @@
 
             <div class="dash"></div>
 
-            <!-- ② 布局框选（取代九宫格：在预览里拖出精确矩形） -->
-            <div class="row spread mb-6">
-              <b class="t" style="margin:0">布局框选</b>
-              <span class="muted small">比九宫格更精确</span>
-            </div>
-            <div class="row mb-6">
-              <select v-model="selRegion" class="mini-select flex-1">
-                <option v-for="r in layoutRegions" :key="r.key" :value="r.key">{{ regionLabel(r.key) }}</option>
-              </select>
-              <button class="mini-btn" :class="{ selected: selectMode }" :disabled="!ready" @click="toggleSelect">
-                <Icon name="crop" :size="11" /> {{ selectMode ? '退出框选' : '框选布局' }}
-              </button>
-            </div>
-            <div class="row spread small">
-              <span class="mono">{{ rectText }}</span>
-              <span v-if="hasFreeRect" class="chip p">自由选框</span>
-              <span v-else class="chip n">九宫格默认</span>
-            </div>
-            <template v-if="selectMode">
-              <div class="hint mt-6">在预览里拖框体平移、拖 8 个角/边缩放；此模式下运镜暂停、缩放复位。</div>
-              <div class="hint mt-4">{{ regionHint }}</div>
-              <div class="row mt-8">
-                <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-                <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
-              </div>
-            </template>
-            <div v-else class="muted small mt-6">点「框选布局」，在预览里拖出该区域的精确矩形（取代九宫格）。</div>
-
-            <div class="dash"></div>
-
-            <!-- ③ 贴纸来源 -->
+            <!-- 贴纸来源 -->
             <div class="row spread mb-6">
               <b class="t" style="margin:0">贴纸来源</b>
               <span class="muted small">LLM 可用的贴图来源</span>
@@ -164,10 +153,10 @@
             <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
             <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
           </div>
-          <TimelineEditor ref="timelineRef" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
         </div>
 
-        <div class="mt-16"><CoverDesigner :dir="dir" @changed="refreshClipEntry" /></div>
+        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" @changed="refreshClipEntry" /></div>
 
         <!-- 产物整行：成片 + 封面 + 输出目录 -->
         <div class="card mt-16 artifact-bar">
@@ -256,6 +245,11 @@ const clipEntry = ref(null)
 const polishByDir = ref({})
 const currentTime = ref(0)
 const previewKey = ref(0)
+/** 时间轴重挂载计数（仅当磁盘上的 segments/屏蔽轨道被服务端改写：LLM 剪辑 / 初始化 / 去静音）。
+ *  静默刷新不再卸载编辑器，所以需要重挂载的组件自己带 key。 */
+const segKey = ref(0)
+/** 封面设计器重挂载计数（渲染导出会重新生成封面文件） */
+const coverKey = ref(0)
 const renderModal = ref(false)
 const renderOutput = ref('')
 const coverName = ref('cover.jpg')
@@ -298,34 +292,26 @@ const jobTimeText = computed(() => {
 const stickerSource = computed(() => cfg.value?.sticker_source || [])
 const stickerSources = ref([]) // 全局可用来源（emoji + 贴纸库包）
 const ssInput = ref('')
-const layoutRegions = computed(() => {
-  const src = cfg.value?.layout || {}
-  // Object.entries 返回 [key, value] 数组，映射为对象避免 v-for 把索引当 key
-  return Object.entries(src)
-    .filter(([, v]) => v && typeof v === 'object')
-    .map(([key, value]) => ({ key, value }))
-})
 
-// ---- 布局框选（取代九宫格）：region → polish.toml 的 top_left/bottom_right 自由选框 ----
-const selectMode = ref(false)
-const selRegion = ref('liver')
+// ---- 布局框选（取代九宫格）：只有「人物」「弹幕区域」两个区域 ----
+// 贴纸落点由 process 按 layout.sticker_area 计算，不在 UI 里框选（要改就手改 polish.toml）。
+const FRAMEABLE = ['liver', 'danmaku_area']
+/** 正在框选的区域；'' = 不在框选模式（一个 ref 同时表达"选谁"和"是否在框选"） */
+const selectRegion = ref('')
 /** 编辑中的选框（整帧百分比），仅在框选模式下随拖拽更新 */
 const selRect = ref({ x0: 0, y0: 0, x1: 100, y1: 100 })
-const curRegion = computed(() => (cfg.value?.layout || {})[selRegion.value] || null)
+const curRegion = computed(() => (cfg.value?.layout || {})[selectRegion.value] || null)
 /** 该区域是否已有自由选框（否则回退到九宫格 grid） */
 const hasFreeRect = computed(() => !!freeRect(curRegion.value))
-const selLabel = computed(() => regionLabel(selRegion.value))
+const selLabel = computed(() => REGION_LABELS[selectRegion.value] || selectRegion.value)
 const REGION_HINTS = {
   liver: '框住主播画面：运镜聚焦到框中心（比九宫格更准）。',
-  danmaku_area: '框住直播间弹幕显示区域（供运镜参考）。',
-  sticker_area: '框住贴纸可落点范围：后处理会把贴纸随机放进框内。',
-  reaction_zone: '框住反应区（可选区域）。',
-  game_area: '框住游戏画面区（可选区域）。'
+  danmaku_area: '框住直播间弹幕显示区域（供运镜参考）。'
 }
-const regionHint = computed(() => REGION_HINTS[selRegion.value] || '框选该区域的实际范围。')
+const regionHint = computed(() => REGION_HINTS[selectRegion.value] || '')
 /** 展示用矩形：框选模式看编辑值，否则看已保存的选框 / 九宫格包围盒 */
 const shownRect = computed(() => {
-  if (selectMode.value) return selRect.value
+  if (selectRegion.value) return selRect.value
   return regionRect(curRegion.value) || { x0: 0, y0: 0, x1: 100, y1: 100 }
 })
 const rectText = computed(() => {
@@ -334,14 +320,8 @@ const rectText = computed(() => {
   return `${f(r.x0)}, ${f(r.y0)} → ${f(r.x1)}, ${f(r.y1)}`
 })
 
-function regionLabel(key) {
-  return REGION_LABELS[key] || key
-}
-
 /** 当前区域的选框作为编辑初值（已是自由选框则用现值，否则取九宫格包围盒）。 */
 function loadSelRect() {
-  const keys = layoutRegions.value.map((r) => r.key)
-  if (keys.length && !keys.includes(selRegion.value)) selRegion.value = keys[0]
   selRect.value = regionRect(curRegion.value) || { x0: 0, y0: 0, x1: 100, y1: 100 }
 }
 
@@ -349,30 +329,32 @@ function onSelectRect(r) {
   selRect.value = r
 }
 
-function toggleSelect() {
-  if (selectMode.value) { selectMode.value = false; return }
+/** 点区域按钮：同一个再点一次 = 退出框选；点另一个 = 切换区域。 */
+function toggleSelect(region) {
+  if (selectRegion.value === region) { selectRegion.value = ''; return }
+  selectRegion.value = FRAMEABLE.includes(region) ? region : ''
+  if (!selectRegion.value) return
   loadSelRect()
-  selectMode.value = true
   // 定格当前帧，避免边播边框选
   previewRef.value?.pause?.()
 }
 
 const pctStr = (v) => (Math.round(Math.min(100, Math.max(0, Number(v) || 0)) * 100) / 100).toFixed(2) + '%'
 
-/** 保存选框：写入 layout[region].top_left/bottom_right（服务端优先于 grid）。 */
+/** 保存选框：写入 layout[区域].top_left/bottom_right（读取时优先于 grid）。
+ *  只落盘、不起任务：这两处布局在渲染时直接读取，不需要重跑 process。 */
 async function applySelect() {
   try {
     const lay = { ...(cfg.value?.layout || {}) }
-    const region = { ...(lay[selRegion.value] || {}) }
+    const region = { ...(lay[selectRegion.value] || {}) }
     const r = selRect.value
     region.top_left = { x: pctStr(Math.min(r.x0, r.x1)), y: pctStr(Math.min(r.y0, r.y1)) }
     region.bottom_right = { x: pctStr(Math.max(r.x0, r.x1)), y: pctStr(Math.max(r.y0, r.y1)) }
-    lay[selRegion.value] = region
+    lay[selectRegion.value] = region
     await saveProjectPatch(pid.value, dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
-    selectMode.value = false
-    toast('选框已保存，按新布局重新计算贴纸/运镜…')
-    startJob('process', () => runProcess(pid.value, dir.value), { after: load })
+    selectRegion.value = ''
+    toast('选框已保存，渲染导出时生效')
   } catch (e) {
     toast(e.message, 'err')
   }
@@ -382,10 +364,10 @@ async function applySelect() {
 async function clearSelect() {
   try {
     const lay = { ...(cfg.value?.layout || {}) }
-    const region = { ...(lay[selRegion.value] || {}) }
+    const region = { ...(lay[selectRegion.value] || {}) }
     delete region.top_left
     delete region.bottom_right
-    lay[selRegion.value] = region
+    lay[selectRegion.value] = region
     await saveProjectPatch(pid.value, dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
     loadSelRect()
@@ -395,9 +377,8 @@ async function clearSelect() {
   }
 }
 
-// 切换区域 / 重新加载配置后同步选框
-watch(selRegion, loadSelRect)
-watch(() => cfg.value?.layout, () => { if (!selectMode.value) loadSelRect() })
+// 重新加载配置后同步选框（框选模式中不打断拖拽）
+watch(() => cfg.value?.layout, () => { if (!selectRegion.value) loadSelRect() })
 // 产物优先使用后端返回的实际文件名（含 _1/_2 版本），未返回时回退固定名
 const coverFailed = ref(false)
 const renderedFailed = ref(false)
@@ -436,55 +417,68 @@ function togglePreviewPlay() {
   previewRef.value?.togglePlay()
 }
 
-async function load() {
-  // 入口语义（v5 §2.6）：无 :clip → 上次操作过的片段，没有 → 列表模式；
-  // 无任何切片 → 空态引导；深链无效 → 回退列表 + toast。
-  await loadClips()
-  if (!clips.value.length) {
-    dir.value = ''
-    ready.value = false
-    cfg.value = null
-    return
-  }
-  // 无 :clip → 自动打开**上次操作过的**片段；没有记录（或已失效）→
-  // 片段列表 + 空态（视频/编辑器都不加载），不再随手挑一个默认片段。
-  let wanted = clipName.value
-  if (!wanted) {
-    let last = null
-    try { last = localStorage.getItem(LAST_CLIP_KEY.value) } catch {}
-    if (last && clips.value.some((c) => c.name === last)) wanted = last
-  }
-  const entry = wanted ? clips.value.find((c) => c.name === wanted) : null
-  if (!entry) {
-    if (clipName.value) toast(`片段 ${clipName.value} 不存在，请从列表重新选择`, 'err')
-    dir.value = ''
-    ready.value = false
-    cfg.value = null
-    return
-  }
-  dir.value = entry.dir || clipDirOf(wanted)
-  if (clipName.value !== wanted) {
-    router.replace({ name: 'project-polish-clip', params: { pid: pid.value, clip: wanted } })
-  }
-  loading.value = true
+/**
+ * 加载当前片段。
+ *
+ * `silent`（任务完成后的刷新）= 不闪骨架屏、不卸载编辑器、不丢滚动位置，失败时保留旧数据；
+ * 首次进入 / 切换片段仍走显式 loading（那本来就该换内容）。
+ * 非 silent 时 `loading` 会把整个编辑器换成骨架屏（`v-if="loading"`），
+ * 编辑器一旦被卸载，预览视频与滚动位置都会重置——看起来就像浏览器刷新了。
+ */
+async function load(opts = {}) {
+  const silent = !!(opts && opts.silent)
+  // loading 只在这里拨一次（loadClips 不再自己开关），避免中间出现 editor↔骨架屏 的抖动
+  if (!silent) loading.value = true
   try {
-    cfg.value = await fetchProject(pid.value, dir.value, true)
-    title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
-    ready.value = true
-  } catch {
-    ready.value = false
+    await loadClips()
+    if (!clips.value.length) {
+      dir.value = ''
+      ready.value = false
+      cfg.value = null
+      return
+    }
+    // 无 :clip → 自动打开**上次操作过的**片段；没有记录（或已失效）→
+    // 片段列表 + 空态（视频/编辑器都不加载），不再随手挑一个默认片段。
+    let wanted = clipName.value
+    if (!wanted) {
+      let last = null
+      try { last = localStorage.getItem(LAST_CLIP_KEY.value) } catch {}
+      if (last && clips.value.some((c) => c.name === last)) wanted = last
+    }
+    const entry = wanted ? clips.value.find((c) => c.name === wanted) : null
+    if (!entry) {
+      if (clipName.value) toast(`片段 ${clipName.value} 不存在，请从列表重新选择`, 'err')
+      dir.value = ''
+      ready.value = false
+      cfg.value = null
+      return
+    }
+    dir.value = entry.dir || clipDirOf(wanted)
+    if (clipName.value !== wanted) {
+      router.replace({ name: 'project-polish-clip', params: { pid: pid.value, clip: wanted } })
+    }
+    try {
+      cfg.value = await fetchProject(pid.value, dir.value, true)
+      title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
+      ready.value = true
+    } catch (e) {
+      // 静默刷新失败：保留旧画面但必须报出来，否则用户以为改动已生效
+      if (!silent) ready.value = false
+      else toast('刷新失败：' + e.message, 'err')
+    }
+    try {
+      subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
+    } catch { if (!silent) subs.value = [] }
+    subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+    try {
+      const r = await fetch(mediaUrl(dir.value, 'data/danmaku.json'))
+      if (r.ok) dm.value = await r.json()
+    } catch { if (!silent) dm.value = [] }
+    refreshSnapshots()
+    await refreshClipEntry()
+  } finally {
+    if (!silent) loading.value = false
   }
-  try {
-    subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
-  } catch { subs.value = [] }
-  subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-  try {
-    const r = await fetch(mediaUrl(dir.value, 'data/danmaku.json'))
-    if (r.ok) dm.value = await r.json()
-  } catch { dm.value = [] }
-  refreshSnapshots()
-  await refreshClipEntry()
-  loading.value = false
 }
 
 function refreshSnapshots() {
@@ -502,8 +496,8 @@ function clipDirOf(name) {
   return hit?.dir || name
 }
 
+/** 片段列表 + 每片段的精修状态。loading 由调用方（load / 任务回调）自行管理，这里不动。 */
 async function loadClips() {
-  loading.value = true
   try {
     if (!routeCfg) { clips.value = []; return }
     const [list, polish] = await Promise.all([
@@ -516,8 +510,6 @@ async function loadClips() {
     polishByDir.value = m
   } catch {
     clips.value = []
-  } finally {
-    loading.value = false
   }
 }
 
@@ -653,11 +645,12 @@ function startJob(kind, call, { after } = {}) {
 async function initProject() {
   const ok = await confirmDialog('将解析字幕/弹幕并创建 polish.toml', { title: '初始化精修项目？' })
   if (!ok) return
-  startJob('init', () => initPolish(pid.value, dir.value), { after: load })
+  startJob('init', () => initPolish(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
 function runLlmJob() {
-  startJob('llm', () => runLlm(pid.value, dir.value), { after: load })
+  // LLM 会重写 segments → 时间轴重挂载拉新数据
+  startJob('llm', () => runLlm(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
 /** 去静音：把长停顿写入屏蔽轨道（不重编码、不改原始视频）。
@@ -669,7 +662,8 @@ async function doSilence() {
     if (r?.applied) toast(`去静音：${r.added ?? 0} 段静音已加入屏蔽轨道（共 ${r.total ?? 0} 段）`)
     else toast(r?.message || '未检测到长静音段')
     previewKey.value++
-    load()
+    segKey.value++ // 屏蔽轨道是服务端写进去的，时间轴要重挂载才看得到
+    load({ silent: true })
   } catch (e) {
     toast(e.message, 'err')
   }
@@ -690,7 +684,8 @@ async function copyOutDir() {
 function doRender() {
   renderModal.value = false
   // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
-  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: load })
+  // 渲染会重新生成封面文件 → 封面设计器重挂载拉新图
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { coverKey.value++; load({ silent: true }) } })
 }
 
 // 保存编辑：时间轴分段 / 字幕，各自仅在变动时提交
@@ -715,7 +710,7 @@ async function saveEdits() {
   toast('编辑已保存')
   if (segsChanged) {
     // 时间轴变更后隐式 process（完成后刷新预览）
-    startJob('process', () => runProcess(pid.value, dir.value), { after: load })
+    startJob('process', () => runProcess(pid.value, dir.value), { after: () => load({ silent: true }) })
   }
 }
 
@@ -727,7 +722,7 @@ function onTimelineSave(changes) {
   saveProjectPatch(pid.value, dir.value, patch)
     .then(() => {
       toast('时间轴已保存，自动执行后处理…')
-      return startJob('process', () => runProcess(pid.value, dir.value), { after: load })
+      return startJob('process', () => runProcess(pid.value, dir.value), { after: () => load({ silent: true }) })
     })
     .catch((e) => toast(e.message, 'err'))
 }
@@ -816,7 +811,9 @@ watch(dir, load)
 </script>
 
 <style scoped>
-/* 页面专属布局（样稿无同名类）：卡内小节、贴纸来源选择器、产物体 */
+/* 页面专属布局（样稿无同名类）：框选操作条、贴纸来源选择器、产物体 */
+.sel-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;
+  padding-top:10px; border-top:1px dashed var(--line-soft); }
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }
 .ss-x { border:none; background:none; color:inherit; cursor:pointer; display:flex; padding:2px; border-radius:50%; }
