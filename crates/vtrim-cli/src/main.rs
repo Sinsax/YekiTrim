@@ -278,6 +278,10 @@ Command::User(action) => {
             }
         }
 
+Command::Doctor { url } => {
+            crate::service::cmd_doctor(url)?;
+        }
+
 Command::Server(args) => {
             server::run(args.clone()).await?;
         }

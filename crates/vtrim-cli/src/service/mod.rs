@@ -14,6 +14,8 @@ mod workspace;
 // 因此按 `service → server` 单向依赖显式 pub，不再层层转发。
 pub mod auth;
 pub mod db;
+pub mod disk;
+pub mod doctor;
 pub mod instancelock;
 pub mod user;
 
@@ -24,4 +26,5 @@ pub use silence::*;
 pub use status::*;
 pub use init_config::*;
 pub use workspace::*;
+pub use doctor::*;
 pub use user::*;

@@ -260,15 +260,23 @@ impl Db {
         })
     }
 
-    /// 统计某动作的审计条数。
-    ///
-    /// P1 只有单测在用；`vtrim doctor` 的安全摘要（P1 step-3）会消费它。
-    #[cfg(test)]
+    /// 统计某动作的审计条数（`vtrim doctor` 的安全摘要用）。
     pub fn count_audit(&self, action: &str) -> Result<i64> {
         self.with(|conn| {
             Ok(conn.query_row(
                 "SELECT COUNT(*) FROM audit WHERE action = ?1",
                 params![action],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// 统计未过期会话数。
+    pub fn count_sessions(&self, now: i64) -> Result<i64> {
+        self.with(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE expires_at > ?1",
+                params![now],
                 |r| r.get(0),
             )?)
         })
