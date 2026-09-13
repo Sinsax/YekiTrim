@@ -200,7 +200,8 @@ function onUp() {
 <style scoped>
 .lane-wrap { display:flex; flex-direction:column; gap:4px; }
 .lane { position:relative; height:46px; border-radius:10px; background:var(--bg-soft); border:1px solid var(--line); overflow:hidden; touch-action:none; }
-.seg { position:absolute; top:4px; bottom:4px; border-radius:7px; background:#5E7FD8; color:#fff; font-size:10px; display:flex; align-items:center; overflow:hidden; padding:0 4px; cursor:text; user-select:none; }
+.seg { position:absolute; top:4px; bottom:4px; border-radius:4px; background:rgba(59,130,246,0.35); color:#0f172a; font-weight:700; font-size:11px; line-height:1.2;
+  text-shadow:0 0 2px #fff, 0 0 2px #fff; display:flex; align-items:center; overflow:hidden; padding:0 6px; cursor:text; user-select:none; }
 .seg-text { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
 .seg.active { outline:2px solid var(--main); }
 /* 左右缘微区域拖拽改起止；hover 时高亮提示 */

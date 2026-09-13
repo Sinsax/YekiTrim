@@ -30,7 +30,7 @@
       </span>
     </div>
 
-    <div class="layout" :class="{ 'drawer-closed': !drawerOpen }">
+    <div class="layout" :class="{ 'drawer-closed': !drawerOpen, 'no-drawer': !uncutEvents.length }">
       <div class="grid cols-3">
         <div
           v-for="c in shownClips"
@@ -82,7 +82,7 @@
         <div v-for="i in 3" v-show="loading" :key="'sk' + i" class="skeleton"></div>
       </div>
 
-      <div class="drawer card" :class="{ collapsed: !drawerOpen }">
+      <div v-if="uncutEvents.length" class="drawer card" :class="{ collapsed: !drawerOpen }">
         <template v-if="drawerOpen">
           <div class="drawer-head">
             <h2>未剪切事件</h2>
@@ -215,11 +215,14 @@ const loading = ref(false)
 const loadError = ref('')
 const showAdd = ref(false)
 // 用户手动收起/展开后，数据刷新（任务完成、缓存失效）不得再把抽屉弹回去。
-// 注意：切片页 loading 骨架会整个卸载重建本组件，偏好必须放模块级才能跨重挂载存活。
+// 偏好放 localStorage：组件会被 loading 骨架卸载重建，刷新页面也不丢。
+const DRAWER_STORE = 'vtrim.slices.drawer'
 let drawerUserPref = null   // null = 未表态，跟随「有无未剪切事件」
-const drawerOpen = ref(drawerUserPref ?? true)
+try { drawerUserPref = localStorage.getItem(DRAWER_STORE) } catch {}
+const drawerOpen = ref(drawerUserPref != null ? drawerUserPref === 'open' : true)
 function setDrawer(open) {
-  drawerUserPref = open
+  drawerUserPref = open ? 'open' : 'closed'
+  try { localStorage.setItem(DRAWER_STORE, drawerUserPref) } catch {}
   drawerOpen.value = open
 }
 const maximized = ref(false)
@@ -375,7 +378,7 @@ async function load() {
     events.value = (props.projectData.events || []).slice().sort((a, b) => a.start_sec - b.start_sec)
     clips.value = props.projectData.clips || []
     polishMap.value = props.projectData.polishMap || {}
-    drawerOpen.value = drawerUserPref ?? (uncutEvents.value.length > 0)
+    drawerOpen.value = drawerUserPref != null ? drawerUserPref === 'open' : (uncutEvents.value.length > 0)
     return
   }
   loading.value = true
@@ -391,7 +394,7 @@ async function load() {
     const m = {}
     ;(pl || []).forEach(p => { m[p.dir] = p })
     polishMap.value = m
-    drawerOpen.value = drawerUserPref ?? (uncutEvents.value.length > 0)
+    drawerOpen.value = drawerUserPref != null ? drawerUserPref === 'open' : (uncutEvents.value.length > 0)
   } catch (e) {
     loadError.value = '片段数据加载失败：' + e.message
   } finally {
@@ -570,10 +573,12 @@ watch(() => props.project?.id, load)
 .layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start;
   transition:grid-template-columns .25s ease; }
 .layout.drawer-closed { grid-template-columns:minmax(0,1fr) 40px; }
+.layout.no-drawer { grid-template-columns:minmax(0,1fr); }
 /* 抽屉展开时压缩卡片最小宽，避免半窗下只剩一张巨卡 */
 .layout .cols-3 { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
 .drawer { position:sticky; top:8px; max-height:calc(70vh - 20px); overflow:auto; }
-.drawer.collapsed { padding:8px 3px; display:flex; flex-direction:column; align-items:center; gap:10px; min-height:140px; }
+.drawer.collapsed { padding:8px 2px; display:flex; flex-direction:column; align-items:center; gap:10px;
+  background:transparent; border:none; box-shadow:none; }
 .drawer-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
 .drawer-head h2 { margin:0; }
 .drawer-expand { writing-mode:vertical-rl; letter-spacing:2px; border:1.5px dashed var(--line); border-radius:var(--r-full); background:var(--bg-soft); color:var(--ink-dim); cursor:pointer; font-size:12px; padding:12px 5px; transition:all .15s; }

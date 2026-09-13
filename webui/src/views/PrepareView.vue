@@ -10,16 +10,19 @@
             <b class="t" style="margin:0">原视频</b>
             <span class="muted small mono">{{ inputName || '未记录输入文件' }}</span>
           </div>
-          <video
-            v-if="src"
-            ref="videoRef"
-            controls
-            playsinline
-            preload="metadata"
-            class="preview-video"
-            :src="src"
-            @timeupdate="currentTime = $event.target.currentTime"
-          ></video>
+          <div v-if="src" class="video-shell">
+            <video
+              ref="videoRef"
+              controls
+              playsinline
+              preload="metadata"
+              class="preview-video"
+              :src="src"
+              @timeupdate="currentTime = $event.target.currentTime"
+            ></video>
+            <!-- 字幕叠层：与精修预览同一套样式（72px@1920 缩放、同色同描边） -->
+            <div v-if="activeSub" class="cap-overlay">{{ activeSub.text }}</div>
+          </div>
           <div v-else class="empty small">暂无输入视频（先在项目设置里填写 input_file，或跑一次音频提取）</div>
           <div class="row mt-8">
             <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}（空格）</button>
@@ -145,6 +148,10 @@ const inputName = ref('')
 const duration = ref(0)
 const videoRef = ref(null)
 const currentTime = ref(0)
+// 当前时间点正在显示的字幕（叠层渲染，效果对齐精修预览）
+const activeSub = computed(() => segments.value.find(
+  (s) => currentTime.value >= (Number(s.start) || 0) && currentTime.value < (Number(s.end) || 0)
+) || null)
 const playing = ref(false)
 const loadError = ref('')
 
@@ -371,6 +378,12 @@ onUnmounted(() => {
 
 <style scoped>
 .player-card { display:flex; flex-direction:column; }
+.video-shell { position:relative; container-type:inline-size; }
+.video-shell .preview-video { display:block; width:100%; }
+/* 与精修预览字幕同参：默认 72px @1920、#dcbda0、描边 12px #403c3b（types.rs 默认值） */
+.cap-overlay { position:absolute; left:5%; right:5%; bottom:15%; text-align:center; pointer-events:none;
+  font-weight:700; font-size:3.75cqw; line-height:1.45; color:#dcbda0;
+  -webkit-text-stroke:0.625cqw #403c3b; paint-order:stroke fill; }
 .preview-video { width:100%; max-height:62vh; object-fit:contain; background:#000; border-radius:var(--r-sm); display:block; }
 .fld { width:96px; padding:5px 8px; font-size:12px; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
