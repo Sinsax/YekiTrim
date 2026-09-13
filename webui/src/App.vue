@@ -17,6 +17,8 @@
       </a>
       <nav class="nav-pills">
         <router-link class="nav-pill" to="/">总览</router-link>
+        <router-link class="nav-pill" to="/ingest">入库</router-link>
+        <router-link class="nav-pill" to="/jobs">任务</router-link>
         <router-link v-if="isAdmin" class="nav-pill" to="/settings">设置</router-link>
       </nav>
       <div class="top-actions">

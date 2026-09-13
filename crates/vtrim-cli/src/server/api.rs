@@ -49,6 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/models/download", post(models_download))
         .route("/admin/ingest", get(super::ingest::config_view))
         .route("/admin/ingest/assign", post(super::ingest::assign))
+        .route("/admin/ingest/scan", post(super::ingest::scan_now))
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
@@ -282,8 +283,8 @@ async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderM
         "llm": llm,
         // 单帧真渲染（/api/polish/render-frame）只在启用该 feature 的构建里可用
         "wgpu_render": cfg!(feature = "wgpu-render"),
-        // 录播姬/B站下载器就绪位：P3 接入后置真，前端据此显示入库引导卡
-        "ingest_ready": false,
+        // 采集就绪位（P3）：webhook 已启用 + 录播姬目录已配置，前端据此决定是否显示引导卡
+        "ingest_ready": cfg.ingest.webhook_enabled && !cfg.ingest.recorder.root.trim().is_empty(),
         "accounts": accounts,
         "must_change_password": must_change_password,
         "listening": state.auth.listening().as_str(),

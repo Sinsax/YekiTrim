@@ -360,6 +360,13 @@ pub async fn records(
         (db.unassigned_ingest_sessions(limit).map_err(internal)?, "unassigned")
     } else if user.is_admin() && flag("all") {
         (db.list_ingest_sessions(None, &[], limit).map_err(internal)?, "all")
+    } else if flag("failed") {
+        // 失败记录：每个人都能看自己的（admin 加 ?all=1 看全平台）
+        let owner = if user.is_admin() && flag("all") { None } else { Some(user.id) };
+        (
+            db.list_ingest_sessions(owner, &["failed"], limit).map_err(internal)?,
+            "failed",
+        )
     } else {
         (
             db.list_ingest_sessions(Some(user.id), &[], limit).map_err(internal)?,
@@ -502,6 +509,24 @@ pub async fn retry(
     let _ = db.audit(Some(user.id), "ingest_retry", session_id);
     crate::server::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
     ok(serde_json::json!({ "ok": true }))
+}
+
+/// `POST /api/admin/ingest/scan`：立刻跑一次兜底扫描（仅 admin）。
+///
+/// 返回本次新登记的完整录像数；用于"历史录播导入"与排障。
+pub async fn scan_now(State(state): State<Arc<AppState>>) -> ApiResult {
+    let cfg = vtrim_core::config::load_global_config();
+    if cfg.ingest.recorder.root.trim().is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "未配置 [ingest.recorder] root，无法扫描",
+        ));
+    }
+    let n = crate::server::ingest_worker::scan_recorder(&state, &cfg)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    // 扫描可能产生新的可入库会话：立刻处理一轮
+    crate::server::ingest_worker::notify(state, None);
+    ok(serde_json::json!({ "ok": true, "registered": n }))
 }
 
 /// `GET /api/admin/ingest`：录播姬配置概览（不含 token 明文，只报是否已配置）。

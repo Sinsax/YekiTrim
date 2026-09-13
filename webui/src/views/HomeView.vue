@@ -58,6 +58,32 @@
     </div>
 
     <div class="block-frame">
+      <div class="section-title row spread">
+        <span>录制导入（最近）</span>
+        <router-link class="mini-btn" to="/ingest">全部记录</router-link>
+      </div>
+      <div v-if="ingestState.ready === false" class="empty">
+        <div class="empty-icon"><Icon name="alert" :size="22" /></div>
+        录播姬尚未接入：本机执行 <span class="mono">vtrim ingest token</span> 生成 token，
+        并把录制目录填进 <span class="mono">[ingest.recorder] root</span>。
+      </div>
+      <div v-else class="card">
+        <div v-if="!ingestState.records.length" class="muted small">暂无入库记录</div>
+        <div v-else>
+          <div v-for="r in ingestState.records.slice(0, 5)" :key="r.session_id" class="row spread ingest-row">
+            <div>
+              <b>房间 {{ r.room_id || '-' }}</b>
+              <span class="chip ml-6" :class="stateClass(r.state)">{{ r.state_label }}</span>
+              <span class="muted small ml-6">{{ ingestFmtTime(r.started_at) }} · {{ r.file_count }} 文件 · {{ ingestFmtBytes(r.bytes) }}</span>
+            </div>
+            <router-link v-if="r.project_id" class="mini-btn" :to="`/project/${r.project_id}/slices`">打开项目</router-link>
+            <button v-else-if="r.state === 'failed'" class="mini-btn" @click="retryIngest(r)">重试</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block-frame">
       <div class="section-title">运行任务</div>
       <div class="card"><JobList /></div>
     </div>
@@ -72,6 +98,15 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { authState } from '../stores/auth'
 import { deleteProject, deleteProjectSource, loadProjects } from '../stores/project'
+import { ingestApi } from '../api/ingest'
+import {
+  fmtBytes as ingestFmtBytes,
+  fmtTime as ingestFmtTime,
+  ingestState,
+  loadRecords,
+  setReady,
+  stateClass
+} from '../stores/ingest'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { projectEntryPath } from '../utils'
@@ -104,9 +139,19 @@ async function load() {
     loading.value = false
   }
   try { health.value = await api('/api/health') } catch {}
+  setReady(health.value?.ingest_ready !== false)
+  try { await loadRecords('mine') } catch {}
   if (isAdmin.value) {
     try { models.value = await api('/api/admin/models') } catch {}
   }
+}
+
+async function retryIngest(r) {
+  try {
+    await ingestApi.retry(r.session_id)
+    toast('已重新排队')
+    await loadRecords('mine')
+  } catch (e) { toast(e.message, 'err') }
 }
 
 async function checkEnv() {
