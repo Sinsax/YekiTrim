@@ -577,9 +577,23 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
     } else {
         String::new()
     };
-    let mut doc: toml_edit::DocumentMut = content
-        .parse()
-        .unwrap_or_else(|_| toml_edit::DocumentMut::new());
+    let mut doc: toml_edit::DocumentMut = match content.parse() {
+        Ok(doc) => doc,
+        Err(e) => {
+            // 语法错误时**不能**静默从空文档开始：那样"改一个键"会把用户其余配置整段抹掉。
+            // 先备份成 `*.toml.broken` 并告警，再基于空文档写入本次 patch。
+            if !content.trim().is_empty() {
+                let backup = project_file.with_extension("toml.broken");
+                let _ = std::fs::copy(project_file, &backup);
+                tracing::warn!(
+                    "配置 {} 不是合法 TOML（{e}），已备份为 {} 并只写入本次改动",
+                    project_file.display(),
+                    backup.display()
+                );
+            }
+            toml_edit::DocumentMut::new()
+        }
+    };
     f(&mut doc);
     if let Some(parent) = project_file.parent() {
         std::fs::create_dir_all(parent)?;
