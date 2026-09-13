@@ -374,7 +374,7 @@ async function run(kind, c) {
     if (!ok) return
   }
   try {
-    await polishPost('/api/polish/' + kind, props.project.id, clipRelDir(c.dir))
+    await polishPost('/api/polish/' + kind, props.project.id, c.dir)
     toast('已启动 ' + kind)
     load()
   } catch (e) { toast(e.message, 'err') }
@@ -387,14 +387,14 @@ async function render(c) {
   })
   if (out === null) return
   try {
-    await runRender(props.project.id, clipRelDir(c.dir), out || 'export.mp4')
+    await runRender(props.project.id, c.dir, out || '')
     toast('渲染已启动')
   } catch (e) { toast(e.message, 'err') }
 }
 
 async function preview(c) {
   try {
-    const r = await polishPost('/api/polish/preview', props.project.id, clipRelDir(c.dir))
+    const r = await polishPost('/api/polish/preview', props.project.id, c.dir)
     const url = r.video_url || r.cover_url
     if (url) window.open(url, '_blank')
     else toast('预览返回空')
@@ -469,27 +469,22 @@ async function saveEdit() {
 async function goPolish(c) {
   try {
     const list = await projectData.polishMap(props.project.id).catch(() => [])
-    const found = (list || []).find(p => p.dir === c.dir)
-    // 精修目录用项目内相对路径传给服务端（服务端囚笼 + 归属校验）
-    const relDir = clipRelDir(c.dir)
+    const found = (list || []).find(p => sameDir(p.dir, c.dir))
+    // 传**绝对目录**（服务端 scope 守卫会校验它确实落在本人项目内）：
+    // 相对路径要自己算 output_dir 的前缀，容易错（旧写法就退化成 'output'，静音/渲染会打错目录）。
     if (!found || !found.polish_ready) {
-      // 自动 init，不弹确认框
-      await initPolish(props.project.id, relDir)
+      await initPolish(props.project.id, c.dir)
       toast('已自动 init')
     }
-    router.push(`/project/${encodeURIComponent(props.project.id)}/slices/${encodeURIComponent(c.name)}`)
+    // v5 路由：`/p/:pid/polish/:clip`（旧 `/project/:cfg/slices/:clip` 已不存在，会被 catch-all 送回首页）
+    router.push({ name: 'project-polish-clip', params: { pid: props.project.id, clip: c.name } })
   } catch (e) { toast(e.message, 'err') }
 }
 
-/// 把切片目录换算成"相对项目根的路径"（服务端只接受项目内相对路径）
-function clipRelDir(dir) {
-  const norm = String(dir || '').split(String.fromCharCode(92)).join('/')
-  const out = String(props.project?.output_dir || '').split(String.fromCharCode(92)).join('/')
-  if (out && norm.startsWith(out)) {
-    const rel = norm.slice(out.length).replace(/^\/+/, '')
-    return rel ? 'output/' + rel : 'output'
-  }
-  return 'output'
+/** 比较两条绝对目录（忽略大小写与分隔符差异）。 */
+function sameDir(a, b) {
+  const norm = (s) => String(s || '').split(String.fromCharCode(92)).join('/').toLowerCase()
+  return norm(a) === norm(b)
 }
 
 async function addClip() {

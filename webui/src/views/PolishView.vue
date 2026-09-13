@@ -184,8 +184,9 @@
 
     <!-- 渲染导出弹窗 -->
     <AppModal :show="renderModal" title="渲染导出" @close="renderModal = false">
-      <label>输出文件路径（留空使用 polish.toml 的 project.output）</label>
-      <input v-model="renderOutput" :placeholder="dir ? dir + '/export.mp4' : ''">
+      <label>输出文件（**项目内相对路径**，留空使用 polish.toml 的 project.output）</label>
+      <input v-model="renderOutput" placeholder="output/clips/clip-01/export.mp4">
+      <p class="hint mt-6">只接受项目内相对路径；绝对路径会被服务端拒绝（P2 起不再允许任意输出位置）。</p>
       <template #footer>
         <button class="btn btn-primary" :disabled="jobRunning" @click="doRender">开始渲染</button>
         <button class="btn" @click="renderModal = false">取消</button>
@@ -210,7 +211,7 @@ import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
   initPolish, runLlm, runProcess, runRender, runSilence,
   fetchStickerSources,
-  GRID_CELLS, REGION_LABELS, clipRelDir,
+  GRID_CELLS, REGION_LABELS,
 } from '../api/polish'
 import { watchJob } from '../api/jobs'
 
@@ -318,13 +319,6 @@ function seekTo(t) {
 }
 function togglePreviewPlay() {
   previewRef.value?.togglePlay()
-}
-
-function pickClip(c) {
-  router.replace({ query: { ...route.query, dir: c.dir } })
-}
-function clearDir() {
-  router.replace({ query: { ...route.query, dir: undefined } })
 }
 
 async function load() {
@@ -438,7 +432,8 @@ function clipRow(c) {
 }
 
 async function initClip(c) {
-  startJob('init', () => initPolish(pid.value, clipRelDir(c.name)), { after: loadClips })
+  // 绝对目录（服务端 scope 守卫校验归属），不要自己算相对前缀
+  startJob('init', () => initPolish(pid.value, c.dir), { after: loadClips })
   toast('正在初始化 ' + c.name)
 }
 
@@ -572,7 +567,8 @@ async function copyOutDir() {
 
 function doRender() {
   renderModal.value = false
-  startJob('render', () => runRender(pid.value, dir.value, clipRelDir(clipName.value)), { after: load })
+  // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: load })
 }
 
 // 保存编辑：时间轴分段 / 字幕，各自仅在变动时提交
