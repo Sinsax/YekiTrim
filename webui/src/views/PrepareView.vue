@@ -1,271 +1,379 @@
 <template>
   <div>
-    <div class="card">
-      <h2>预处理</h2>
-      <div class="preprocess-row">
-        <div class="pre-col">
-          <div>
-            <label>ASR 模式</label>
-            <select v-model="asrMode" @change="saveMode(true)">
-              <option value="single">单模型</option>
-              <option value="hybrid">双模型</option>
-            </select>
+    <div v-if="loadError" class="error-banner"><Icon name="alert" :size="15" /> {{ loadError }}</div>
+
+    <div class="grid cols-main">
+      <!-- 左：播放器 + 字幕轨道 + 切片标记 -->
+      <div>
+        <div class="card player-card">
+          <div class="row spread mb-8">
+            <b class="t" style="margin:0">原视频</b>
+            <span class="muted small mono">{{ inputName || '未记录输入文件' }}</span>
           </div>
-          <div class="muted small">{{ asrModeHint }}</div>
-          <div class="pre-actions">
-            <button class="btn btn-primary" @click="run('transcribe')">开始转写</button>
-            <button class="btn" @click="correct" :disabled="!hasTranscript">LLM 订正字幕</button>
-          </div>
-        </div>
-
-        <div class="pre-col">
-          <h3>事件检测</h3>
-          <button class="btn" :disabled="!canDetect" @click="run('detect')">事件检测</button>
-          <div class="muted small">需要先完成字幕转写</div>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="job.id" class="card mt-8">
-      <div class="row spread small">
-        <b>{{ job.kind }}</b>
-        <div class="row">
-          <span class="muted small mono">{{ job.message || job.log || '' }}</span>
-          <span class="chip" :class="job.status === 'failed' ? 'r' : (job.status === 'succeeded' ? 'g' : 'b')">{{ jobStatusText }}</span>
-        </div>
-      </div>
-      <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
-    </div>
-
-    <div class="preview-layout">
-      <div class="left">
-        <div class="card">
-          <h2>视频预览</h2>
-          <video v-if="src" ref="videoRef" controls playsinline preload="metadata" class="preview-video" :src="src" @timeupdate="currentTime = $event.target.currentTime"></video>
-          <div v-else class="empty small">暂无输入视频</div>
-        </div>
-
-        <div class="card">
-          <h2 class="card-h2"><Icon name="scissors" :size="15" /> 添加片段</h2>
-          <div class="row">
-            <div class="flex-1 minw-120"><label>开始时间（秒）</label><input v-model.number="start" type="number" step="0.1" min="0"></div>
-            <div class="flex-1 minw-120"><label>结束时间（秒）</label><input v-model.number="end" type="number" step="0.1" min="0"></div>
-            <button class="mini-btn" @click="takeStart">取当前为开始</button>
-            <button class="mini-btn" @click="takeEnd">取当前为结束</button>
-          </div>
+          <video
+            v-if="src"
+            ref="videoRef"
+            controls
+            playsinline
+            preload="metadata"
+            class="preview-video"
+            :src="src"
+            @timeupdate="currentTime = $event.target.currentTime"
+          ></video>
+          <div v-else class="empty small">暂无输入视频（先在项目设置里填写 input_file，或跑一次音频提取）</div>
           <div class="row mt-8">
-            <div class="flex-2 minw-180"><label>标题</label><input v-model="label" placeholder="片段标题"></div>
-            <div class="flex-1 minw-120"><label>类型</label>
-              <select v-model="eventType">
-                <option v-for="t in types" :key="t" :value="t">{{ typeZh[t] || t }}</option>
-              </select>
-            </div>
+            <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}（空格）</button>
+            <span class="muted small mono">{{ fmtTime(currentTime) }}</span>
           </div>
-          <label class="mt-8">详情</label>
-          <textarea v-model="summary" rows="2"></textarea>
-          <div class="row mt-8">
-            <button class="btn btn-primary" @click="saveClip" :disabled="!canAddClip">生成片段</button>
-            <span class="muted small">保存后自动剪切并出现在片段页</span>
+        </div>
+
+        <div class="card mt-12">
+          <div class="row spread mb-6">
+            <b class="t" style="margin:0">字幕轨道</b>
+            <span class="muted small">点击块直接改文本，回车/失焦保存</span>
+          </div>
+          <SubtitleTrack
+            :segments="segments"
+            :duration="duration"
+            :current-time="currentTime"
+            @save="onTrackSave"
+            @seek="seekTo"
+          />
+        </div>
+
+        <div class="card mt-12">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <button class="mini-btn" @click="mark('in')">标记入点</button>
+            <input class="fld" :value="fmtTime(markIn)" readonly placeholder="入点">
+            <button class="mini-btn" @click="mark('out')">标记出点</button>
+            <input class="fld" :value="fmtTime(markOut)" readonly placeholder="出点">
+            <button class="btn btn-primary" :disabled="!canSlice" @click="openAdd">切片</button>
+            <span class="muted small">标记起止后切片，片段进入「切片」页待切列表</span>
           </div>
         </div>
       </div>
 
-      <div class="right card">
-        <div class="row spread"><h2 class="m-0">字幕</h2><span class="muted small">{{ segments.length }} 段</span></div>
-        <SubtitleEditor :segments="segments" :current-time="currentTime" @save="saveSubs" @play="playAt" />
+      <!-- 右：预处理动作卡 -->
+      <div class="card card-blk" style="align-self:start">
+        <b class="t">预处理</b>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
+          <span class="chip" :class="chipClass('transcribe')">转写 {{ chipText('transcribe') }}</span>
+          <span class="chip" :class="chipClass('correct')">LLM 订正 {{ chipText('correct') }}</span>
+          <span class="chip" :class="chipClass('detect')">事件检测 {{ chipText('detect') }}</span>
+        </div>
+
+        <div class="row" style="gap:8px;margin-bottom:10px">
+          <span class="small muted" style="flex:none">ASR 模式</span>
+          <select v-model="asrMode" style="flex:1" @change="saveMode">
+            <option value="single">single · SenseVoice</option>
+            <option value="hybrid">hybrid · SenseVoice 打轴 + qwen3 填词</option>
+          </select>
+        </div>
+
+        <button class="btn run-btn" :disabled="busy" @click="run('transcribe')">
+          <span v-if="runningStage === 'transcribe'" class="spinner"></span>
+          {{ runningStage === 'transcribe' ? `转写中 ${jobPct}%` : '开始转写' }}
+        </button>
+        <button class="btn run-btn" :disabled="busy || !hasTranscript" @click="correct">
+          {{ runningStage === 'correct' ? '订正中…' : 'LLM 订正字幕' }}
+        </button>
+        <button class="btn btn-primary run-btn" :disabled="busy || !hasTranscript" @click="run('detect')">
+          <span v-if="runningStage === 'detect'" class="spinner"></span>
+          {{ runningStage === 'detect' ? `检测中 ${jobPct}%` : '开始事件检测' }}
+        </button>
+
+        <div v-if="job.id" class="job-box mt-12">
+          <div class="row spread small">
+            <b>{{ kindText(job.kind) }}</b>
+            <span class="chip" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+          </div>
+          <div class="muted small mt-2">{{ job.message || '运行中' }}</div>
+          <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: jobPct + '%' }"></div></div>
+          <button class="mini-btn mt-6" @click="openJobs()">查看任务</button>
+        </div>
+
+        <div v-if="!hasTranscript" class="hint mt-8">需要先完成字幕转写才能检测事件</div>
+
+        <button class="btn run-btn mt-12" @click="openAdd">手动添加片段</button>
       </div>
     </div>
+
+    <!-- 手动添加片段（轨道标记的落地表单） -->
+    <AppModal :show="showAdd" title="添加片段" @close="showAdd = false">
+      <div class="row">
+        <div class="flex-1 minw-120"><label>开始（秒）</label><input v-model.number="start" type="number" step="0.1" min="0"></div>
+        <div class="flex-1 minw-120"><label>结束（秒）</label><input v-model.number="end" type="number" step="0.1" min="0"></div>
+      </div>
+      <div class="row mt-8">
+        <div class="flex-2 minw-180"><label>标题</label><input v-model="label" placeholder="片段标题"></div>
+        <div class="flex-1 minw-120">
+          <label>类型</label>
+          <select v-model="eventType">
+            <option v-for="t in EVENT_TYPES" :key="t" :value="t">{{ TYPE_ZH[t] || t }}</option>
+          </select>
+        </div>
+      </div>
+      <label class="mt-8">详情</label>
+      <textarea v-model="summary" rows="2"></textarea>
+      <template #footer>
+        <button class="btn" @click="showAdd = false">取消</button>
+        <button class="btn btn-primary" :disabled="!canAddClip" @click="saveClip">生成片段</button>
+      </template>
+    </AppModal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onUnmounted, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api } from '../api/client'
+import Icon from '../components/Icon.vue'
+import AppModal from '../components/AppModal.vue'
+import SubtitleTrack from '../components/prepare/SubtitleTrack.vue'
+import { projectData } from '../api/projectData'
+import { watchJob, kindText, statusClass, statusText } from '../api/jobs'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
-import Icon from '../components/Icon.vue'
-import SubtitleEditor from '../components/SubtitleEditor.vue'
+import { openJobs } from '../stores/ui'
 import { EVENT_TYPES, TYPE_ZH, inputMediaUrl } from '../utils'
-import { watchJob } from '../api/jobs'
 
 const route = useRoute()
 const router = useRouter()
-const cfg = String(route.params.pid || '')
+const pid = computed(() => route.params.pid || '')
+
 const src = ref('')
+const inputName = ref('')
+const duration = ref(0)
 const videoRef = ref(null)
 const currentTime = ref(0)
+const playing = ref(false)
+const loadError = ref('')
+
+const segments = ref([])
+const asrMode = ref('single')
+const status = ref(null)
+
+const markIn = ref(0)
+const markOut = ref(0)
+const showAdd = ref(false)
 const start = ref(0)
 const end = ref(10)
 const label = ref('')
 const summary = ref('')
 const eventType = ref('other')
-const types = EVENT_TYPES
-const typeZh = TYPE_ZH
-const asrMode = ref('single')
-const segments = ref([])
-const asrModeHint = computed(() => asrMode.value === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
-const hasTranscript = computed(() => segments.value.length > 0)
-const canDetect = computed(() => hasTranscript.value)
-const canAddClip = computed(() => {
-  return !!(label.value.trim() && summary.value.trim() && end.value > start.value)
-})
 
-const cfgQ = 'project=' + encodeURIComponent(cfg)
 const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, message: '' })
 let jobClose = null
+let saveTimer = null
+
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
-const jobPct = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
-const jobStatusText = computed(() => ({ queued:'排队中', running:'运行中', succeeded:'完成', failed:'失败', cancelled:'已取消' }[job.status] || job.status))
+const jobPct = computed(() => (job.total > 0 ? Math.round((job.current * 100) / job.total) : 0))
+const runningStage = computed(() => (jobRunning.value ? jobStage.value : ''))
+const jobStage = computed(() => {
+  const k = job.kind || ''
+  if (k === 'correct') return 'correct'
+  if (k === 'stage_detect') return 'detect'
+  if (k === 'stage_transcribe' || k === 'pipeline') return 'transcribe'
+  return ''
+})
+const busy = computed(() => jobRunning.value)
+const hasTranscript = computed(
+  () => segments.value.length > 0 || (status.value?.files || []).some((f) => String(f).startsWith('字幕'))
+)
+const canSlice = computed(() => markOut.value > markIn.value)
+const canAddClip = computed(() => !!(label.value.trim() && summary.value.trim() && end.value > start.value))
+
+function fmtTime(t) {
+  const v = Math.max(0, Number(t) || 0)
+  const m = Math.floor(v / 60)
+  const s = (v % 60).toFixed(1)
+  return `${String(m).padStart(2, '0')}:${s.padStart(4, '0')}`
+}
+
+/** chips：由 status.files + 运行中任务推导（待开始 / 进行中 % / ✓）。 */
+function hasFile(prefix) {
+  return (status.value?.files || []).some((f) => String(f).startsWith(prefix))
+}
+function chipText(key) {
+  if (runningStage.value === key) return `${jobPct.value}%`
+  if (key === 'transcribe') return hasFile('音频') || hasFile('字幕') ? '✓' : '待开始'
+  if (key === 'correct') return '可选'
+  return hasFile('事件') ? '✓' : '待开始'
+}
+function chipClass(key) {
+  const t = chipText(key)
+  if (t === '✓') return 'g'
+  if (t.endsWith('%')) return 'p'
+  return 'n'
+}
 
 async function load() {
+  loadError.value = ''
   try {
-    const st = await api(`/api/project-data/status?${cfgQ}`)
+    const st = await projectData.status(pid.value)
+    status.value = st
+    inputName.value = st.input_file || ''
     if (st.input_abs) src.value = inputMediaUrl(st.input_abs)
-  } catch {}
+  } catch (e) {
+    loadError.value = '项目状态读取失败：' + (e?.message || '')
+  }
   try {
-    const d = await api(`/api/project-data/config?${cfgQ}`)
+    const d = await projectData.config(pid.value)
     asrMode.value = d.config?.asr?.mode || 'single'
   } catch {}
   try {
-    const d = await api(`/api/project-data/transcript?${cfgQ}`)
-    segments.value = d.segments || []
-    segments.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+    const d = await projectData.transcript(pid.value)
+    segments.value = (d.segments || []).slice().sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+    duration.value = segments.value.reduce((m, s) => Math.max(m, Number(s.end) || 0), 0)
   } catch {}
 }
 
-async function saveMode(silent = false) {
+async function saveMode() {
   try {
-    const d = await api(`/api/project-data/config?${cfgQ}`)
-    let toml = d.vtrim_raw || ''
-    const modeLine = 'mode = "' + asrMode.value + '"'
-    if (!/^\s*\[asr\]\s*$/m.test(toml)) {
-      // 没有 [asr] 段：补表头后写入
-      const base = toml.replace(/\s*$/, '')
-      toml = (base ? base + '\n\n' : '') + '[asr]\n' + modeLine + '\n'
-    } else {
-      // 已有 [asr] 段：只在该段内替换/插入 mode，绝不追加第二个表头（重复表头会破坏 TOML）
-      const lines = toml.split('\n')
-      const head = lines.findIndex(l => /^\s*\[asr\]\s*$/.test(l))
-      let end = lines.length
-      for (let i = head + 1; i < lines.length; i++) {
-        if (/^\s*\[/.test(lines[i])) { end = i; break }
-      }
-      let key = -1
-      for (let i = head + 1; i < end; i++) {
-        if (/^\s*mode\s*=/.test(lines[i])) { key = i; break }
-      }
-      if (key >= 0) {
-        lines[key] = modeLine
-      } else {
-        // 插到该段最后一行内容之后（跳过段尾空行），避免写到下一个表头前
-        let at = end
-        while (at > head + 1 && !lines[at - 1].trim()) at--
-        lines.splice(at, 0, modeLine)
-      }
-      toml = lines.join('\n')
-    }
-    await api(`/api/project-data/config?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: toml }) })
-    if (!silent) toast('模式已保存')
-  } catch (e) { toast(e.message, 'err') }
+    await projectData.patchConfig(pid.value, { asr: { mode: asrMode.value } })
+    toast('ASR 模式已保存')
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+function togglePlay() {
+  const v = videoRef.value
+  if (!v) return
+  if (v.paused) { v.play(); playing.value = true } else { v.pause(); playing.value = false }
+}
+
+function seekTo(t) {
+  const v = videoRef.value
+  if (!v) return
+  v.currentTime = Math.max(0, t)
+}
+
+function mark(which) {
+  const t = Math.round((videoRef.value?.currentTime || currentTime.value || 0) * 10) / 10
+  if (which === 'in') markIn.value = t
+  else markOut.value = t
+  start.value = markIn.value
+  end.value = Math.max(markOut.value, markIn.value + 1)
+}
+
+function onTrackSave(next, opts = {}) {
+  segments.value = next
+  if (opts.transient) return
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(saveSubs, opts.committed ? 0 : 400)
+}
+
+async function saveSubs() {
+  try {
+    await projectData.saveTranscript(pid.value, segments.value)
+    toast('字幕已保存')
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+async function run(stage) {
+  if (busy.value) { toast('已有任务在运行'); return }
+  try {
+    const r = await projectData.pipeline(pid.value, { stage, resume: 'auto' })
+    attachJob(r.id, stage === 'transcribe' ? 'stage_transcribe' : 'stage_detect')
+  } catch (e) {
+    toast(e.message, 'err')
+  }
 }
 
 async function correct() {
   const ok = await confirmDialog('将对全部字幕启动 LLM 订正', { title: '启动 LLM 订正？' })
   if (!ok) return
   try {
-    await api(`/api/project-data/correct?${cfgQ}`, { method: 'POST' })
-    toast('LLM 订正已启动')
-  } catch (e) { toast(e.message, 'err') }
-}
-
-function takeStart() {
-  if (videoRef.value) start.value = Math.round((videoRef.value.currentTime || 0) * 10) / 10
-}
-function takeEnd() {
-  if (videoRef.value) end.value = Math.round((videoRef.value.currentTime || 0) * 10) / 10
-}
-
-function playAt(seg) {
-  if (videoRef.value) {
-    videoRef.value.currentTime = seg.start
-    videoRef.value.play()
-  }
-}
-
-async function saveSubs() {
-  try {
-    await api(`/api/project-data/transcript?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ segments: segments.value, language: 'zh' }) })
-    toast('字幕已保存')
-  } catch (e) { toast(e.message, 'err') }
-}
-
-async function run(stage) {
-  if (jobRunning.value) { toast('已有任务在运行'); return }
-  try {
-    const r = await api(`/api/project-data/pipeline?${cfgQ}`, { method: 'POST', body: JSON.stringify({ stage, resume: 'auto' }) })
-    Object.assign(job, { id: r.id, kind: '任务', status: 'running', current: 0, total: 0, message: '已启动 ' + stage })
-    jobClose?.()
-    jobClose = watchJob(r.id, {
-      onEvent(e) {
-        if (e.type === 'progress') { job.current = e.current; job.total = e.total }
-        if (e.type === 'log') job.message = e.message
-        if (e.type === 'stage_started') job.message = e.stage + ' 运行中'
-      },
-      onSummary(s) {
-        job.status = s.status
-        job.current = s.current
-        job.total = s.total
-        job.message = s.message || job.message
-      },
-      onDone(s) {
-        job.status = s.status
-        jobClose?.()
-        jobClose = null
-        if (s.status === 'succeeded') toast(stage + ' 完成')
-        else toast(stage + ' 失败：' + (s.error || s.message || '未知错误'), 'err')
-        load()
-      }
-    })
-    toast('已启动 ' + stage)
-  } catch (e) { toast(e.message, 'err') }
-}
-
-async function saveClip() {
-  if (!label.value) { toast('请填写标题'); return }
-  if (end.value <= start.value) { toast('结束必须大于开始'); return }
-  try {
-    const created = await api(`/api/project-data/events?${cfgQ}`, { method: 'POST', body: JSON.stringify({
-      label: label.value,
-      start_sec: start.value,
-      end_sec: end.value,
-      event_type: eventType.value,
-      summary: summary.value
-    }) })
-    const rank = created && created.event && created.event.rank
-    if (rank) await api(`/api/project-data/events/${rank}/cut?${cfgQ}`, { method: 'POST' })
-    toast('片段已生成，正在剪切')
-    router.push('/polish')
+    const r = await projectData.correct(pid.value)
+    attachJob(r.id, 'correct')
   } catch (e) {
     toast(e.message, 'err')
   }
 }
 
-onMounted(load)
+function attachJob(id, kind) {
+  Object.assign(job, { id, kind, status: 'running', current: 0, total: 0, message: '已启动' })
+  jobClose?.()
+  jobClose = watchJob(id, {
+    onEvent(e) {
+      if (e.type === 'progress') { job.current = e.current; job.total = e.total }
+      if (e.type === 'log') job.message = e.message
+      if (e.type === 'stage_started') job.message = e.stage + ' 运行中'
+    },
+    onSummary(s) {
+      job.status = s.status
+      job.current = s.current
+      job.total = s.total
+      job.message = s.message || job.message
+      if (s.kind) job.kind = s.kind
+    },
+    onDone(s) {
+      job.status = s.status
+      jobClose = null
+      if (s.status === 'succeeded') toast('任务完成')
+      else toast('任务失败：' + (s.error || s.message || '未知错误'), 'err')
+      load()
+    }
+  })
+  toast('已启动')
+}
+
+function openAdd() {
+  start.value = markIn.value
+  end.value = markOut.value > markIn.value ? markOut.value : markIn.value + 10
+  showAdd.value = true
+}
+
+async function saveClip() {
+  if (!label.value.trim()) { toast('请填写标题'); return }
+  if (end.value <= start.value) { toast('结束必须大于开始'); return }
+  try {
+    const created = await projectData.createEvent(pid.value, {
+      label: label.value,
+      start_sec: start.value,
+      end_sec: end.value,
+      event_type: eventType.value,
+      summary: summary.value
+    })
+    const rank = created?.event?.rank
+    if (rank) await projectData.cutOne(pid.value, rank)
+    showAdd.value = false
+    label.value = ''
+    summary.value = ''
+    toast('片段已生成，正在剪切')
+    router.push(`/p/${encodeURIComponent(pid.value)}/slices`)
+  } catch (e) {
+    toast(e.message, 'err')
+  }
+}
+
+function onKey(e) {
+  const tag = (e.target?.tagName || '').toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+  if (e.code === 'Space') {
+    e.preventDefault()
+    togglePlay()
+  }
+}
+
+onMounted(() => {
+  load()
+  window.addEventListener('keydown', onKey)
+})
 onUnmounted(() => {
   jobClose?.()
+  clearTimeout(saveTimer)
+  window.removeEventListener('keydown', onKey)
 })
 </script>
 
 <style scoped>
-.preprocess-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:stretch; }
-.pre-col { display:flex; flex-direction:column; gap:8px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--bg-soft); }
-.pre-actions { display:flex; flex-direction:column; gap:6px; }
-.pre-actions .btn, .pre-col > .btn { width:100%; }
-button:disabled { opacity:.45; cursor:not-allowed; }
-.preview-layout { display:grid; grid-template-columns:minmax(0,16fr) minmax(0,9fr); gap:14px; align-items:start; margin-top:16px; }
-.left { display:flex; flex-direction:column; gap:14px; min-width:0; }
-.right { position:sticky; top:90px; max-height:calc(100vh - 120px); overflow:auto; }
-.preview-video { width:100%; max-height:72vh; object-fit:contain; background:#000; border-radius:var(--r-sm); display:block; margin:0 auto; }
-.card-h2 { display:flex; align-items:center; gap:7px; }
+.player-card { display:flex; flex-direction:column; }
+.preview-video { width:100%; max-height:62vh; object-fit:contain; background:#000; border-radius:var(--r-sm); display:block; }
+.fld { width:96px; padding:5px 8px; font-size:12px; }
+.run-btn { width:100%; justify-content:center; margin-bottom:8px; }
+.hint { font-size:12px; color:var(--ink-dim); }
+.job-box { padding:10px; border:1px dashed var(--line); border-radius:var(--r-sm); background:var(--bg-soft); }
 </style>

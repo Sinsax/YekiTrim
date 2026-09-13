@@ -475,6 +475,13 @@ async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
 }
 
 fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value) -> ApiResult {
+    // patch 模式：`{ section: { key: value } }` 合并写（保留注释与其他 section），
+    // 前端设置表单用它，避免"读整份 TOML → 正则替换 → 写回"这种易碎做法。
+    if let Some(patch) = body.get("patch") {
+        vtrim_core::config::patch_config_file(&ws.config_file, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("项目配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
     // 与 config_global_put / config_llm_put 对齐：空内容或语法错误会把整个项目配置
