@@ -1,8 +1,11 @@
 <template>
   <div class="card" id="cover-design">
-    <h2 class="card-h2"><Icon name="image" :size="16" /> 封面设计器</h2>
+    <div class="row spread">
+      <h2 class="card-h2 m-0"><Icon name="image" :size="16" /> 封面设计器</h2>
+      <button class="btn btn-primary" :disabled="generating" @click="generateCover">{{ generating ? '生成中…' : '生成封面' }}</button>
+    </div>
     <div class="designer-grid">
-      <div class="stage-wrap">
+      <div class="stage-wrap" ref="stageWrapRef">
         <div ref="stageRef" class="stage">
           <div class="stage-media">
             <video ref="videoRef" playsinline preload="metadata" class="stage-video" :src="videoSrc" :style="mediaStyle" @timeupdate="onVideoTime" @loadedmetadata="onMeta" @play="playing = true" @pause="playing = false"></video>
@@ -31,35 +34,30 @@
           <input ref="fileInput" type="file" accept="image/*" class="hidden-file" @change="importBg">
         </div>
       </div>
-      <div class="controls">
-        <details open>
+      <div class="controls" ref="controlsRef">
+        <details open class="grp">
           <summary>预设</summary>
-          <div class="row mt-6 preset-row">
+          <div class="preset-row">
             <button v-for="p in presets" :key="p.key" class="mini-btn" :class="{ selected: preset === p.key }" @click="applyPreset(p.key)">{{ p.label }}</button>
           </div>
         </details>
 
-        <details open class="mt-10">
+        <details open class="grp">
           <summary>标题与高亮</summary>
-          <label>标题（每行一段，回车换行）</label>
-          <textarea v-model="titleLinesText" rows="4" placeholder="输入封面标题，每行自动作为一行/一段"></textarea>
-          <div class="row mt-6">
-            <button class="btn" :disabled="generatingTitle" @click="generateTitleByLlm">{{ generatingTitle ? '生成中…' : 'LLM 生成标题' }}</button>
-            <span class="muted small">只用 clip.srt + polish.toml 逐个事件生成</span>
-            <span v-if="savingConfig" class="muted small">· 保存中…</span>
+          <textarea v-model="titleLinesText" rows="2" placeholder="封面标题，每行一段"></textarea>
+          <div class="mini-row mt-4">
+            <button class="mini-btn" :disabled="generatingTitle" title="只用 clip.srt + polish.toml 逐个事件生成" @click="generateTitleByLlm">{{ generatingTitle ? '生成中…' : 'LLM 生成标题' }}</button>
+            <span v-if="savingConfig" class="muted small">保存中…</span>
           </div>
-          <div class="row mt-6">
-            <div class="flex-1"><label>高亮色</label><input v-model="hlColor" type="color"></div>
-            <div class="flex-1"><label>文字阴影</label>
-              <label class="switch"><input v-model="textShadow" type="checkbox"> <span>{{ textShadow ? '开' : '关' }}</span></label>
-            </div>
+          <div class="mini-grid mt-4">
+            <div class="mini-field"><label>高亮色</label><input v-model="hlColor" type="color"></div>
+            <label class="mini-field check"><input v-model="textShadow" type="checkbox"><span>文字阴影 {{ textShadow ? '开' : '关' }}</span></label>
           </div>
-          <label class="mt-6">高亮关键词（回车添加）</label>
-          <div class="row">
-            <input v-model="highlightInput" class="flex-1" placeholder="输入关键词后回车" @keyup.enter="addHighlightKeyword">
+          <div class="mini-row mt-4">
+            <input v-model="highlightInput" class="kw-input" placeholder="高亮关键词，回车添加" @keyup.enter="addHighlightKeyword">
             <button class="mini-btn" @click="addHighlightKeyword"><Icon name="plus" :size="11" /> 添加</button>
           </div>
-          <div v-if="highlightKeywords.length" class="hl-chips mt-6">
+          <div v-if="highlightKeywords.length" class="hl-chips mt-4">
             <span v-for="(kw, i) in highlightKeywords" :key="i" class="hl-chip">
               {{ kw }}
               <button class="hl-x" title="删除" @click="removeHighlightKeyword(i)">×</button>
@@ -67,119 +65,80 @@
           </div>
         </details>
 
-        <details open class="mt-10">
-          <summary>排版（滑块调节）</summary>
-          <div class="row mt-6">
-            <div class="flex-1"><label>对齐</label>
+        <details open class="grp">
+          <summary>排版</summary>
+          <div class="mini-grid">
+            <div class="mini-field"><label>对齐</label>
               <select v-model="align">
-                <option value="left">左对齐</option>
-                <option value="center">居中</option>
-                <option value="right">右对齐</option>
+                <option value="left">左</option>
+                <option value="center">中</option>
+                <option value="right">右</option>
               </select>
             </div>
-            <div class="flex-1 range-inline">
-              <label>文字宽度</label>
-              <input type="range" min="20" max="98" step="1" v-model.number="textWidth">
-              <span class="range-val">{{ textWidth }}%</span>
-            </div>
+            <div class="mini-field"><label>宽度</label><input type="range" min="20" max="98" step="1" v-model.number="textWidth"><span class="rv">{{ textWidth }}%</span></div>
           </div>
-          <div class="range-row mt-6">
-            <label>文字 X</label>
-            <input type="range" min="0" max="100" step="1" v-model.number="textX">
-            <span class="range-val">{{ textX }}%</span>
+          <div class="mini-grid mt-4">
+            <div class="mini-field"><label>X</label><input type="range" min="0" max="100" step="1" v-model.number="textX"><span class="rv">{{ textX }}%</span></div>
+            <div class="mini-field"><label>Y</label><input type="range" min="0" max="100" step="1" v-model.number="textY"><span class="rv">{{ textY }}%</span></div>
           </div>
-          <div class="range-row mt-6">
-            <label>文字 Y</label>
-            <input type="range" min="0" max="100" step="1" v-model.number="textY">
-            <span class="range-val">{{ textY }}%</span>
+          <div class="mini-grid mt-4">
+            <div class="mini-field"><label>字号</label><input type="range" min="24" max="240" step="2" v-model.number="fontSize"><span class="rv">{{ fontSize }}px</span></div>
+            <div class="mini-field"><label>描边</label><input type="range" min="0" max="60" step="1" v-model.number="stroke"><span class="rv">{{ stroke }}px</span></div>
           </div>
-          <div class="range-row mt-6">
-            <label>字号</label>
-            <input type="range" min="24" max="240" step="2" v-model.number="fontSize">
-            <span class="range-val">{{ fontSize }}px</span>
-          </div>
-          <div class="range-row mt-6">
-            <label>描边</label>
-            <input type="range" min="0" max="60" step="1" v-model.number="stroke">
-            <span class="range-val">{{ stroke }}px</span>
-          </div>
-          <div class="range-row mt-6">
-            <label>行间距</label>
-            <input type="range" min="0.8" max="2.6" step="0.05" v-model.number="lineHeight">
-            <span class="range-val">{{ Number(lineHeight).toFixed(2) }}</span>
-          </div>
-          <div class="range-row mt-6">
-            <label>字间距</label>
-            <input type="range" min="-10" max="60" step="1" v-model.number="letterSpacing">
-            <span class="range-val">{{ letterSpacing }}px</span>
+          <div class="mini-grid mt-4">
+            <div class="mini-field"><label>行距</label><input type="range" min="0.8" max="2.6" step="0.05" v-model.number="lineHeight"><span class="rv">{{ Number(lineHeight).toFixed(2) }}</span></div>
+            <div class="mini-field"><label>字距</label><input type="range" min="-10" max="60" step="1" v-model.number="letterSpacing"><span class="rv">{{ letterSpacing }}px</span></div>
           </div>
         </details>
 
-        <details open class="mt-10">
+        <details open class="grp">
           <summary>背景与阴影</summary>
-          <label>阴影方向（背景渐变滤镜位置）</label>
-          <select v-model="gradientDir">
-            <option value="left">左</option>
-            <option value="right">右</option>
-            <option value="top">上</option>
-            <option value="bottom">下</option>
-            <option value="radial">径向</option>
-            <option value="none">无</option>
-          </select>
-          <div class="range-row mt-6">
-            <label>暗角</label>
-            <input type="range" min="0" max="1" step="0.02" v-model.number="vignette">
-            <span class="range-val">{{ Number(vignette).toFixed(2) }}</span>
+          <div class="mini-grid">
+            <div class="mini-field"><label>渐变</label>
+              <select v-model="gradientDir">
+                <option value="left">左</option>
+                <option value="right">右</option>
+                <option value="top">上</option>
+                <option value="bottom">下</option>
+                <option value="radial">径向</option>
+                <option value="none">无</option>
+              </select>
+            </div>
+            <div class="mini-field"><label>暗角</label><input type="range" min="0" max="1" step="0.02" v-model.number="vignette"><span class="rv">{{ Number(vignette).toFixed(2) }}</span></div>
           </div>
-          <div class="range-row mt-6">
-            <label>背景缩放</label>
-            <input type="range" min="0.5" max="3" step="0.05" v-model.number="coverZoom">
-            <span class="range-val">{{ Math.round(coverZoom * 100) }}%</span>
+          <div class="mini-grid mt-4">
+            <div class="mini-field"><label>缩放</label><input type="range" min="0.5" max="3" step="0.05" v-model.number="coverZoom"><span class="rv">{{ Math.round(coverZoom * 100) }}%</span></div>
+            <div class="drag-hint" title="拖动预览窗口 = 移动背景 · 滚轮 = 缩放背景">拖预览移动 · 滚轮缩放</div>
           </div>
-          <div class="muted small mt-6">拖动预览窗口 = 移动背景 · 滚轮 = 缩放背景（{{ Math.round(coverZoom * 100) }}%）</div>
         </details>
 
-        <details open class="mt-10">
+        <details open class="grp">
           <summary>封面特效（可叠加）</summary>
           <div v-for="(fx, i) in fxList" :key="i" class="fx-card">
-            <div class="row spread">
+            <div class="fx-head">
               <span class="chip p">{{ fxTypeName(fx.type) }}</span>
               <button class="mini-btn danger" @click="removeFx(i)">删除</button>
             </div>
-            <div class="range-row mt-4">
-              <label>强度</label>
-              <input type="range" min="0" max="1" step="0.05" v-model.number="fx.amount">
-              <span class="range-val">{{ Number(fx.amount).toFixed(2) }}</span>
+            <div class="mini-grid mt-4">
+              <div class="mini-field"><label>强度</label><input type="range" min="0" max="1" step="0.05" v-model.number="fx.amount"><span class="rv">{{ Number(fx.amount).toFixed(2) }}</span></div>
+              <div class="mini-field"><label>X</label><input type="range" min="0" max="100" step="1" v-model.number="fx.x"><span class="rv">{{ fx.x }}%</span></div>
             </div>
-            <div class="range-row mt-4">
-              <label>位置 X</label>
-              <input type="range" min="0" max="100" step="1" v-model.number="fx.x">
-              <span class="range-val">{{ fx.x }}%</span>
-            </div>
-            <div class="range-row mt-4">
-              <label>位置 Y</label>
-              <input type="range" min="0" max="100" step="1" v-model.number="fx.y">
-              <span class="range-val">{{ fx.y }}%</span>
-            </div>
-            <div v-if="fx.type === 'overlay'" class="row mt-4">
-              <label>覆盖颜色</label><input type="color" v-model="fx.color">
+            <div class="mini-grid mt-4">
+              <div class="mini-field"><label>Y</label><input type="range" min="0" max="100" step="1" v-model.number="fx.y"><span class="rv">{{ fx.y }}%</span></div>
+              <div v-if="fx.type === 'overlay'" class="mini-field"><label>颜色</label><input type="color" v-model="fx.color"></div>
             </div>
           </div>
-          <div class="row mt-8">
-            <select v-model="addType" class="flex-1">
+          <div class="mini-row mt-4">
+            <select v-model="addType" class="mini-select grow">
               <option value="glow">光晕</option>
               <option value="blur">模糊</option>
               <option value="vignette">暗角点</option>
               <option value="overlay">颜色覆盖</option>
               <option value="scanline">扫描线</option>
             </select>
-            <button class="mini-btn" @click="addFx"><Icon name="plus" :size="11" /> 添加特效</button>
+            <button class="mini-btn" @click="addFx"><Icon name="plus" :size="11" /> 添加</button>
           </div>
         </details>
-
-        <div class="row mt-10">
-          <button class="btn btn-primary" :disabled="generating" @click="generateCover">{{ generating ? '生成中…' : '生成封面' }}</button>
-        </div>
       </div>
     </div>
   </div>
@@ -200,6 +159,8 @@ const generatingTitle = ref(false)
 const configLoaded = ref(false)
 const savingConfig = ref(false)
 const stageRef = ref(null)
+const stageWrapRef = ref(null)
+const controlsRef = ref(null)
 const stageScale = ref(1)
 let resizeRo = null
 const videoSrc = ref('')
@@ -591,10 +552,23 @@ function updateStageScale() {
   stageScale.value = w > 0 ? w / 1920 : 1
 }
 
+// 右侧设置面板与左侧预览（含播放条）等高：超出部分面板内部滚动，
+// 不再让设置列把整张卡片撑得远高于编辑器；窄屏单列时解除限制。
+function syncControlsBound() {
+  const ctl = controlsRef.value
+  if (!ctl) return
+  if (!stageWrapRef.value || window.matchMedia('(max-width: 900px)').matches) {
+    ctl.style.maxHeight = ''
+    return
+  }
+  ctl.style.maxHeight = stageWrapRef.value.offsetHeight + 'px'
+}
+
 onMounted(async () => {
   updateStageScale()
-  resizeRo = new ResizeObserver(updateStageScale)
-  if (stageRef.value) resizeRo.observe(stageRef.value)
+  syncControlsBound()
+  resizeRo = new ResizeObserver(() => { updateStageScale(); syncControlsBound() })
+  if (stageWrapRef.value) resizeRo.observe(stageWrapRef.value)
   videoSrc.value = mediaUrl(props.dir, 'clip.mp4')
   try {
     const cfg = await api('/api/polish/project?dir=' + encodeURIComponent(props.dir))
@@ -650,7 +624,30 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:16px; align-items:start; }
+.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+/* 右侧设置列：紧凑分组 + 双列微网格；高度被 JS 限制为与左侧预览等高，超出内部滚动 */
+.controls { display:flex; flex-direction:column; gap:8px; min-width:0; overflow-y:auto; padding-right:2px; scrollbar-width:thin; }
+.controls::-webkit-scrollbar { width:6px; }
+.controls::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
+.grp { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:1px 10px 8px; }
+.grp summary { list-style:none; display:flex; align-items:center; gap:6px; font-size:12px; font-weight:700; color:var(--ink); padding:6px 0 3px; cursor:pointer; user-select:none; }
+.grp summary::-webkit-details-marker { display:none; }
+.grp summary::after { content:'▾'; margin-left:auto; font-size:10px; color:var(--ink-faint); transition:transform .15s; }
+.grp:not([open]) summary::after { transform:rotate(-90deg); }
+.grp textarea { font-size:12px; padding:5px 8px; line-height:1.5; }
+.mini-row { display:flex; align-items:center; gap:6px; min-width:0; }
+.mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; }
+.mini-field { display:flex; align-items:center; gap:5px; min-width:0; }
+.mini-field > label { flex:none; margin:0; font-size:11px; color:var(--ink-dim); white-space:nowrap; }
+.mini-field > input[type=range] { flex:1; min-width:0; padding:0; height:18px; background:transparent; border:none; box-shadow:none; accent-color:var(--main); cursor:pointer; }
+.mini-field > select { flex:1; min-width:0; width:auto; padding:2px 6px; font-size:11.5px; border-radius:6px; }
+.mini-field > input[type=color] { flex:1; min-width:0; width:auto; height:22px; padding:1px 2px; border-radius:6px; }
+.mini-field.check { gap:4px; font-size:11.5px; color:var(--ink-dim); cursor:pointer; white-space:nowrap; }
+.mini-field.check input[type=checkbox] { width:auto; margin:0; flex:none; }
+.kw-input { flex:1; min-width:0; padding:4px 8px; font-size:12px; }
+.grow { flex:1; min-width:0; }
+.rv { flex:none; min-width:32px; text-align:right; font-size:10.5px; color:var(--ink-faint); font-family:monospace; }
+.drag-hint { align-self:center; font-size:10.5px; color:var(--ink-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
 .stage { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:14px; overflow:hidden; }
 .stage-media { position:absolute; inset:0; z-index:0; background:#000; }
 .stage-video { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; object-fit:cover; display:block; }
@@ -663,26 +660,20 @@ onUnmounted(() => {
 .title-wrap { position:absolute; z-index:2; width:62%; transform:translate(-50%,-50%); text-align:center; pointer-events:none; }
 .title-text { color:#f0e6d3; font-weight:900; line-height:1.7; paint-order:stroke fill; white-space:pre-line; overflow-wrap:anywhere; }
 .title-text .hl { color:var(--hlc, #ffcc00); -webkit-text-stroke:inherit; paint-order:stroke fill; }
-.fx-row { display:flex; gap:6px; align-items:center; padding:4px 0; border-bottom:1px dashed var(--line-soft); }
-.fx-amount { width:64px; flex:none; }
-.fx-pos { width:56px; flex:none; }
-.seek-row { display:flex; align-items:center; gap:8px; }
-.seek-range { flex:1; min-width:0; padding:0; }
+.seek-row { display:flex; align-items:center; gap:8px; }.seek-range { flex:1; min-width:0; padding:0; }
 .seek-time { flex:none; min-width:120px; text-align:right; }
 .w-time { width:90px; flex:none; }
 .hidden-file { display:none; }
-.preset-row { flex-wrap:wrap; }
-.range-row { display:flex; align-items:center; gap:8px; }
-.range-row > label { flex:none; width:60px; font-size:12px; color:var(--ink-dim); }
-.range-row input[type=range] { flex:1; min-width:0; }
-.range-inline { display:flex; align-items:center; gap:8px; }
-.range-inline > label { flex:none; font-size:12px; color:var(--ink-dim); }
-.range-inline input[type=range] { flex:1; min-width:0; }
-.range-val { flex:none; min-width:52px; text-align:right; font-size:12px; color:var(--ink-faint); font-family:monospace; }
+.preset-row { display:flex; gap:6px; }
+.preset-row .mini-btn { flex:1; justify-content:center; padding:3px 0; }
 .hl-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .hl-chip { display:inline-flex; align-items:center; gap:4px; background:var(--bg-soft); border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; color:var(--ink-dim); }
 .hl-x { background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:14px; line-height:1; padding:0; }
 .hl-x:hover { color:var(--red); }
-.switch { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--ink-dim); }
-.fx-card { border:1px solid var(--line); border-radius:12px; padding:10px; margin-bottom:8px; background:var(--card); }
+.fx-card { border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--bg-soft); }
+.fx-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+@media (max-width: 900px) {
+  .designer-grid { grid-template-columns:1fr; }
+  .controls { max-height:none !important; overflow:visible; }
+}
 </style>

@@ -61,34 +61,16 @@
           </div>
         </div>
 
-        <!-- 预览左 + 右侧（生成与导出：导出动作 / 贴纸来源） -->
+        <!-- 预览左 + 右栏（生成与导出：LLM 剪辑块〔区域编辑 / 贴纸来源 + LLM 剪辑 / 去静音〕→ 渲染导出） -->
         <div class="grid cols-main mt-16">
           <div class="card">
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <!-- 布局框选：只有「人物」「弹幕区域」（贴纸落点由 process 计算，不在此框选） -->
-              <div class="row" style="gap:6px">
-                <button class="mini-btn" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-                        title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
-                  <Icon name="crop" :size="11" /> 人物
-                </button>
-                <button class="mini-btn" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-                        title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
-                  <Icon name="crop" :size="11" /> 弹幕区域
-                </button>
-              </div>
+              <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
+              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
             <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
-            <!-- 框选模式操作条（只有进入框选时才出现） -->
-            <div v-if="selectRegion" class="sel-bar">
-              <span class="chip p">选框模式 · 运镜已暂停</span>
-              <span class="mono small">{{ rectText }}</span>
-              <span v-if="hasFreeRect" class="chip p">自由选框</span>
-              <span v-else class="chip n">九宫格默认</span>
-              <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-              <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
-              <span class="hint flex-1">{{ regionHint }}</span>
-            </div>
+            <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
           </div>
 
           <div class="card">
@@ -97,12 +79,74 @@
               <span class="muted small">LLM 完成后自动执行后处理</span>
             </div>
 
-            <!-- 导出动作（对齐 v5 样稿：两键并排 + 渲染导出整宽主按钮） -->
-            <div class="row mb-8" style="gap:6px">
-              <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
-              <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
+            <!-- LLM 剪辑（参数：区域编辑 / 贴纸来源）—— 整块在「渲染导出」上方 -->
+            <div class="gen-block">
+              <div class="row spread mb-6">
+                <b class="t" style="margin:0"><Icon name="sparkles" :size="12" /> LLM 剪辑</b>
+                <span class="muted small">下列为参数</span>
+              </div>
+
+              <!-- 参数 1：区域编辑（人物 / 弹幕区域） -->
+              <div class="small muted mb-4">区域编辑<span class="hint"> · 运镜聚焦</span></div>
+              <div class="row mb-6" style="gap:6px">
+                <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                        title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
+                  <Icon name="crop" :size="11" /> 人物
+                </button>
+                <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                        title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
+                  <Icon name="crop" :size="11" /> 弹幕区域
+                </button>
+              </div>
+              <template v-if="selectRegion">
+                <div class="row spread small mb-4">
+                  <span class="mono">{{ rectText }}</span>
+                  <span v-if="hasFreeRect" class="chip p">自由选框</span>
+                  <span v-else class="chip n">九宫格默认</span>
+                </div>
+                <div class="row mb-6" style="gap:6px">
+                  <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                  <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
+                </div>
+                <div class="hint mb-6">{{ regionHint }}</div>
+              </template>
+              <div v-else class="hint mb-8">点「人物」或「弹幕区域」后到左侧预览里框选。</div>
+
+              <!-- 参数 2：贴纸来源 -->
+              <div class="small muted mb-4">贴纸来源<span class="hint"> · LLM 可用的贴图来源</span></div>
+              <div class="ss-chips">
+                <span v-for="s in stickerSource" :key="s" class="ss-chip">
+                  {{ s }}
+                  <button class="ss-x" title="移除" @click="removeStickerSource(s)"><Icon name="x" :size="10" /></button>
+                </span>
+                <span v-if="!stickerSource.length" class="muted small">未配置来源</span>
+              </div>
+              <div class="row mt-8">
+                <input v-model="ssInput" class="ss-input flex-1" placeholder="emoji 或贴纸包名，回车添加" @keyup.enter="addStickerSource">
+                <button class="mini-btn" @click="addStickerSource"><Icon name="plus" :size="11" /> 添加</button>
+              </div>
+              <div class="ss-available mt-8">
+                <div class="small muted mb-4">可用来源（点击启用 / 停用）</div>
+                <div v-for="src in stickerSources" :key="src.name" class="ss-avail-item"
+                     :class="{ on: stickerSource.includes(src.name) }"
+                     :title="src.tags.length ? 'tags: ' + src.tags.join(' / ') : src.description"
+                     @click="toggleStickerSource(src.name)">
+                  <b>{{ src.name }}</b>
+                  <span class="muted small">{{ src.builtin ? '内置 emoji' : (src.tags.length + ' tags') }}</span>
+                </div>
+                <div v-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
+              </div>
+
+              <!-- 动作 -->
+              <div class="row mt-12" style="gap:6px">
+                <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
+                <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
+              </div>
             </div>
-            <button class="btn btn-primary" style="width:100%;justify-content:center" :disabled="jobRunning" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
+
+            <!-- 导出（在 LLM 参数块下方） -->
+            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="jobRunning" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
+
             <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
               <div class="row spread small">
                 <b>{{ jobLabel(job.kind) }}</b>
@@ -114,36 +158,6 @@
               </div>
               <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
               <div class="muted small mt-6 mono">{{ job.error || job.log || (job.status === 'succeeded' ? '任务完成' : jobRunning ? '运行中…' : '') }}</div>
-            </div>
-
-            <div class="dash"></div>
-
-            <!-- 贴纸来源 -->
-            <div class="row spread mb-6">
-              <b class="t" style="margin:0">贴纸来源</b>
-              <span class="muted small">LLM 可用的贴图来源</span>
-            </div>
-            <div class="ss-chips">
-              <span v-for="s in stickerSource" :key="s" class="ss-chip">
-                {{ s }}
-                <button class="ss-x" title="移除" @click="removeStickerSource(s)"><Icon name="x" :size="10" /></button>
-              </span>
-              <span v-if="!stickerSource.length" class="muted small">未配置来源</span>
-            </div>
-            <div class="row mt-8">
-              <input v-model="ssInput" class="ss-input flex-1" placeholder="emoji 或贴纸包名，回车添加" @keyup.enter="addStickerSource">
-              <button class="mini-btn" @click="addStickerSource"><Icon name="plus" :size="11" /> 添加</button>
-            </div>
-            <div class="ss-available mt-8">
-              <div class="small muted mb-4">可用来源（点击启用 / 停用）</div>
-              <div v-for="src in stickerSources" :key="src.name" class="ss-avail-item"
-                   :class="{ on: stickerSource.includes(src.name) }"
-                   :title="src.tags.length ? 'tags: ' + src.tags.join(' / ') : src.description"
-                   @click="toggleStickerSource(src.name)">
-                <b>{{ src.name }}</b>
-                <span class="muted small">{{ src.builtin ? '内置 emoji' : (src.tags.length + ' tags') }}</span>
-              </div>
-              <div v-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
             </div>
           </div>
         </div>
@@ -811,9 +825,8 @@ watch(dir, load)
 </script>
 
 <style scoped>
-/* 页面专属布局（样稿无同名类）：框选操作条、贴纸来源选择器、产物体 */
-.sel-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;
-  padding-top:10px; border-top:1px dashed var(--line-soft); }
+/* 页面专属布局（样稿无同名类）：LLM 剪辑参数块、贴纸来源选择器、产物体 */
+.gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }
 .ss-x { border:none; background:none; color:inherit; cursor:pointer; display:flex; padding:2px; border-radius:50%; }
