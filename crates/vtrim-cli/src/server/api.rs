@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::{
     Router,
-    extract::{Path as AxumPath, Query, State},
+    extract::{Extension, Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response, sse::{Event, KeepAlive, Sse}},
     routing::{get, post, put},
@@ -28,8 +28,15 @@ use super::model::AppState;
 use super::{jobs::JobEvent, media, persist};
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    // 白名单（§10.1 step-2.1）：登录端点与 /health 之外，**所有**接口都要会话。
+    let public = Router::new()
         .route("/health", get(health))
+        .route("/auth/login", post(auth_login));
+
+    let protected = Router::new()
+        .route("/me", get(me))
+        .route("/auth/logout", post(auth_logout))
+        .route("/auth/password", put(auth_password))
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
@@ -78,6 +85,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/cover-title", post(polish_cover_title))
         .route("/polish/cover-config", post(polish_cover_config))
         .route("/media/*path", get(media_get))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::auth::require_user,
+        ));
+
+    public
+        .merge(protected)
         // 未匹配的 /api/* 必须是 JSON 404：外层 fallback 是 SPA HTML，
         // 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
         .fallback(api_not_found)
@@ -86,7 +100,13 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 async fn api_not_found(req: axum::extract::Request) -> Response {
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    // 这个 fallback 挂在 `nest("/api", …)` 里，`uri().path()` 已经去掉了 `/api` 前缀；
+    // 用 OriginalUri 还原成用户实际请求的路径，否则报错文案会指向不存在的 URL。
+    let path = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|u| u.0.path().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({
@@ -202,21 +222,151 @@ async fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
     ok
 }
 
-async fn health(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    let cfg = ws.load_config().ok();
-    let llm = cfg.as_ref().map(|c| !c.llm.api_key.is_empty() && c.llm.api_key != "sk-your-api-key-here").unwrap_or(false);
+/// `/api/health`：白名单接口（未登录也要能判断"服务是否活着/要不要登录"）。
+///
+/// §3.5.9：**不暴露任何路径**，也没有 `mode/auto_login/setup_required` 这类分支字段。
+async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
+    // 能力位只看平台级配置（global-only）：health 是公开接口，不该泄露任何工程信息
+    let cfg = vtrim_core::config::load_global_config();
+    let llm = !cfg.llm.api_key.is_empty() && cfg.llm.api_key != "sk-your-api-key-here";
+    let db = state.auth.db();
+    let accounts = db.count_users().unwrap_or(0);
+    let must_change_password = db
+        .find_user("admin")
+        .ok()
+        .flatten()
+        .map(|u| u.must_change_password)
+        .unwrap_or(false);
     ok(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "ffmpeg": command_available("ffmpeg").await,
         "ffprobe": command_available("ffprobe").await,
-        "chrome": chrome_available(cfg.as_ref()).await,
+        "chrome": chrome_available(Some(&cfg)).await,
         "llm": llm,
         // 单帧真渲染（/api/polish/render-frame）只在启用该 feature 的构建里可用
         "wgpu_render": cfg!(feature = "wgpu-render"),
-        "workspace": ws.config_file.to_string_lossy(),
+        // 录播姬/B站下载器就绪位：P3 接入后置真，前端据此显示入库引导卡
+        "ingest_ready": false,
+        "accounts": accounts,
+        "must_change_password": must_change_password,
+        "listening": state.auth.listening().as_str(),
+        "tls_terminated": super::auth::tls_terminated(&headers),
     }))
+}
+
+// ---- 认证（M1 / §3.5） ----
+
+/// `GET /api/me`：已登录 → 200 `{user, must_change_password}`；未登录 → 中间件给 401。
+async fn me(Extension(user): Extension<super::auth::CurrentUser>) -> ApiResult {
+    ok(serde_json::json!({
+        "ok": true,
+        "user": user.json(),
+        "must_change_password": user.must_change_password,
+    }))
+}
+
+/// `POST /api/auth/login {username, password}` → 200 + `Set-Cookie`；401/429。
+async fn auth_login(
+    State(state): State<Arc<AppState>>,
+    super::auth::ClientIp(ip): super::auth::ClientIp,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let username = body.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let secure = super::auth::tls_terminated(&headers);
+
+    let auth = state.auth.clone();
+    // scrypt（N=2^15）是 CPU 密集：必须在 blocking 线程池里跑，否则会卡住 tokio worker
+    let result = tokio::task::spawn_blocking(move || {
+        auth.login(&username, &password, ip.as_deref(), user_agent.as_deref())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(bundle)) => {
+            let mut resp = Json(serde_json::json!({
+                "ok": true,
+                "user": bundle.user.json(),
+                "must_change_password": bundle.user.must_change_password,
+            }))
+            .into_response();
+            super::auth::append_cookies(&mut resp, &super::auth::session_cookies(&bundle, secure));
+            resp
+        }
+        Ok(Err(super::auth::LoginError::RateLimited(secs))) => err(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("尝试次数过多，请在 {} 分钟后再试", (secs + 59) / 60),
+        )
+        .into_response(),
+        Ok(Err(super::auth::LoginError::Denied(msg))) => {
+            err(StatusCode::UNAUTHORIZED, msg).into_response()
+        }
+        Ok(Err(super::auth::LoginError::Internal(msg))) => {
+            tracing::error!("登录失败（内部错误）: {msg}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "登录失败，请查看服务端日志").into_response()
+        }
+        Err(e) => {
+            tracing::error!("登录任务失败: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "登录失败，请重试").into_response()
+        }
+    }
+}
+
+/// `POST /api/auth/logout`：删会话行 + 清 cookie。
+async fn auth_logout(
+    State(state): State<Arc<AppState>>,
+    super::auth::ClientIp(ip): super::auth::ClientIp,
+    Extension(user): Extension<super::auth::CurrentUser>,
+) -> Response {
+    state.auth.logout(&user.session_id, user.id, ip.as_deref());
+    let mut resp = ok(serde_json::json!({ "ok": true })).into_response();
+    super::auth::append_cookies(&mut resp, &super::auth::clear_cookies());
+    resp
+}
+
+/// `PUT /api/auth/password {old_password, new_password}`：改自己的密码。
+///
+/// 成功后 `must_change_password=false`（顶部横幅消失）、初始密码文件被删、
+/// 本人的其它会话全部失效（当前会话保留）。
+async fn auth_password(
+    State(state): State<Arc<AppState>>,
+    super::auth::ClientIp(ip): super::auth::ClientIp,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let old_password = body.get("old_password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_password = body.get("new_password").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let auth = state.auth.clone();
+    let user_id = user.id;
+    let session_id = user.session_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        auth.change_password(user_id, &session_id, &old_password, &new_password, ip.as_deref())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => ok(serde_json::json!({ "ok": true, "must_change_password": false })).into_response(),
+        Ok(Err(super::auth::LoginError::Denied(msg))) => {
+            err(StatusCode::BAD_REQUEST, msg).into_response()
+        }
+        Ok(Err(super::auth::LoginError::RateLimited(_))) => {
+            err(StatusCode::TOO_MANY_REQUESTS, "操作过于频繁，请稍后再试").into_response()
+        }
+        Ok(Err(super::auth::LoginError::Internal(msg))) => {
+            tracing::error!("改密失败（内部错误）: {msg}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "修改密码失败，请查看服务端日志").into_response()
+        }
+        Err(e) => {
+            tracing::error!("改密任务失败: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "修改密码失败，请重试").into_response()
+        }
+    }
 }
 
 async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
@@ -1164,7 +1314,12 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn fs_list(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn fs_list(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    // 本地目录浏览只对管理员开放：P2 会整体删除这个入口（§5.2），
+    // 在那之前也不该让普通账号借它枚举服务器上的任意目录。
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器目录"));
+    }
     let ws = workspace_from_state(&state).await;
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let target = if dir.is_empty() { ws.root_dir.clone() } else if Path::new(&dir).is_absolute() { PathBuf::from(&dir) } else { ws.resolve(&dir) };
@@ -2822,20 +2977,86 @@ mod tests {
         assert!(validated_project_dir(std::env::temp_dir().to_string_lossy().to_string()).is_ok());
     }
 
-    fn test_state() -> Arc<AppState> {
+    /// 带一套独立账号账本 + 已登录会话的测试服务。
+    ///
+    /// 账号库放在临时目录里（不经 `VTRIM_DATA_DIR` 环境变量：测试是并行跑的，
+    /// 改全局环境变量会互相踩）。登录本身也走真实 KDF 与真实会话表。
+    struct TestApp {
+        app: Router,
+        auth: Arc<crate::server::auth::AuthService>,
+        _dir: tempfile::TempDir,
+        sid: String,
+        csrf: String,
+    }
+
+    async fn test_app_with_must_change(must_change: bool) -> TestApp {
+        use crate::server::auth::{AuthService, Listening};
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
+        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        auth.db()
+            .create_user("admin", &hash, "admin", must_change, 0)
+            .unwrap();
+        let bundle = auth
+            .login("admin", "initial-pass-1234", None, None)
+            .expect("测试账号应能登录");
         let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
-        Arc::new(AppState::with_root(ws, std::env::temp_dir()).expect("state"))
+        let state = Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth.clone()));
+        TestApp {
+            app: router(state),
+            auth,
+            _dir: dir,
+            sid: bundle.session_id,
+            csrf: bundle.csrf,
+        }
+    }
+
+    async fn test_app() -> TestApp {
+        test_app_with_must_change(false).await
+    }
+
+    impl TestApp {
+        fn cookie(&self) -> String {
+            format!(
+                "{}={}; {}={}",
+                crate::service::auth::COOKIE_SID,
+                self.sid,
+                crate::service::auth::COOKIE_CSRF,
+                self.csrf
+            )
+        }
+
+        /// 构造已带会话 cookie 的请求；写请求自动带 CSRF 头。
+        fn req(&self, method: &str, uri: &str) -> axum::http::request::Builder {
+            let b = HttpRequest::builder()
+                .method(method)
+                .uri(uri)
+                .header(axum::http::header::COOKIE, self.cookie());
+            if matches!(method, "GET" | "HEAD" | "OPTIONS") {
+                b
+            } else {
+                b.header(crate::service::auth::CSRF_HEADER, self.csrf.clone())
+            }
+        }
+
+        async fn call(&self, req: axum::http::Request<Body>) -> Response {
+            self.app.clone().oneshot(req).await.unwrap()
+        }
+    }
+
+    async fn body_json(res: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 256 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     }
 
     /// 未注册的 /api/* 必须返回 JSON 404：外层 fallback 是 SPA HTML，
     /// 若让它兜住 API 请求，前端会把 200 HTML 解析成 null 并静默失败。
     #[tokio::test]
     async fn unknown_api_path_returns_json_404() {
-        let app = router(test_state());
-        let res = app
-            .oneshot(HttpRequest::builder().uri("/__nope").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let t = test_app().await;
+        let res = t
+            .call(HttpRequest::builder().uri("/__nope").body(Body::empty()).unwrap())
+            .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let ct = res
             .headers()
@@ -2851,16 +3072,351 @@ mod tests {
     /// 前端实际调用的核心路由必须可达（避免再次出现"handler 写了但没注册"）。
     #[tokio::test]
     async fn core_routes_are_reachable() {
-        let app = router(test_state());
+        let t = test_app().await;
         for (method, uri) in [("GET", "/health"), ("GET", "/jobs"), ("GET", "/config"), ("GET", "/models")] {
-            let req = HttpRequest::builder()
-                .method(method)
-                .uri(uri)
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
+            let res = t.call(t.req(method, uri).body(Body::empty()).unwrap()).await;
             assert_eq!(res.status(), StatusCode::OK, "{method} {uri} 应为 200");
         }
+    }
+
+    /// 除白名单外，**未登录一律 401**（含 loopback：没有免登录分支，§3.5.1）。
+    #[tokio::test]
+    async fn unauthenticated_requests_are_401_except_whitelist() {
+        let t = test_app().await;
+        // 白名单：/health 必须公开（前端靠它判断服务是否活着）
+        let res = t
+            .call(HttpRequest::builder().uri("/health").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let health = body_json(res).await;
+        assert_eq!(health["accounts"], 1);
+        assert_eq!(health["listening"], "loopback");
+        assert_eq!(health["must_change_password"], false);
+        assert!(health.get("workspace").is_none(), "health 不得暴露任何路径: {health}");
+
+        for (method, uri) in [
+            ("GET", "/me"),
+            ("GET", "/jobs"),
+            ("GET", "/config"),
+            ("GET", "/models"),
+            ("GET", "/project/list"),
+            ("GET", "/project-data/status?config=vtrim.toml"),
+            ("POST", "/polish/init"),
+        ] {
+            let res = t
+                .call(
+                    HttpRequest::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {uri} 未登录必须 401");
+        }
+
+        // 未知路径仍走 JSON 404（不因为没登录就变成 401/HTML）
+        let res = t
+            .call(HttpRequest::builder().uri("/does-not-exist").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// 写请求缺 CSRF / CSRF 不匹配一律 403（cookie 会话 + 自定义头双提交）。
+    #[tokio::test]
+    async fn write_requests_require_matching_csrf() {
+        let t = test_app().await;
+        let body = Body::from(r#"{"raw":""}"#);
+        let res = t
+            .call(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/project-data/config?config=vtrim.toml")
+                    .header(axum::http::header::COOKIE, t.cookie())
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "缺 CSRF 头必须 403");
+
+        let res = t
+            .call(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/project-data/config?config=vtrim.toml")
+                    .header(axum::http::header::COOKIE, t.cookie())
+                    .header(crate::service::auth::CSRF_HEADER, "not-the-token")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"raw":""}"#))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "CSRF 不匹配必须 403");
+
+        // 带上正确 CSRF 后才会走到业务校验（空 raw → 400）
+        let res = t
+            .call(
+                t.req("PUT", "/project-data/config?config=vtrim.toml")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"raw":""}"#))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "空内容必须被拒绝");
+    }
+
+    /// 登录 → `/api/me` → 改密 → `must_change_password` 变 false（§3.5.10 第 1–5 条）。
+    #[tokio::test]
+    async fn login_me_change_password_flow() {
+        use crate::server::auth::{AuthService, Listening};
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
+        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        auth.db().create_user("admin", &hash, "admin", true, 0).unwrap();
+        let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
+        let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth.clone())));
+
+        // 初始密码：错的 401、对的 200 + Set-Cookie
+        let bad = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"wrong-pass"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+
+        let good = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"admin","password":"initial-pass-1234"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(good.status(), StatusCode::OK);
+        let set_cookie: Vec<String> = good
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(set_cookie.len(), 2, "应同时下发 vtrim_sid 与 vtrim_csrf: {set_cookie:?}");
+        assert!(set_cookie[0].contains("HttpOnly"));
+        let sid = set_cookie[0]
+            .split(';')
+            .next()
+            .unwrap()
+            .trim_start_matches("vtrim_sid=")
+            .to_string();
+        let csrf = set_cookie[1]
+            .split(';')
+            .next()
+            .unwrap()
+            .trim_start_matches("vtrim_csrf=")
+            .to_string();
+        let cookie = format!("vtrim_sid={sid}; vtrim_csrf={csrf}");
+
+        // /api/me：仍在使用初始密码
+        let me = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/me")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        let v = body_json(me).await;
+        assert_eq!(v["user"]["username"], "admin");
+        assert_eq!(v["user"]["role"], "admin");
+        assert_eq!(v["must_change_password"], true);
+
+        // 旧密码错 → 400；正确 → 200 且之后 must_change_password=false
+        let wrong_old = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/auth/password")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"old_password":"nope","new_password":"new-pass-5678"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_old.status(), StatusCode::BAD_REQUEST);
+
+        let changed = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri("/auth/password")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"old_password":"initial-pass-1234","new_password":"new-pass-5678"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), StatusCode::OK, "改密应成功");
+
+        let me = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/me")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(me).await["must_change_password"], false);
+
+        // 新密码可登录、旧密码不可
+        let relogin = |pw: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    HttpRequest::builder()
+                        .method("POST")
+                        .uri("/auth/login")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"username":"admin","password":"{pw}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(relogin("initial-pass-1234").await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(relogin("new-pass-5678").await.status(), StatusCode::OK);
+
+        // 登出后会话立即失效
+        let out = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.status(), StatusCode::OK);
+        let me = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/me")
+                    .header(axum::http::header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// 连续错密码触发限流 → 429，且**正确密码也被挡住**（15 分钟内）。
+    #[tokio::test]
+    async fn login_is_rate_limited_after_five_failures() {
+        use crate::server::auth::{AuthService, Listening};
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
+        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        auth.db().create_user("admin", &hash, "admin", false, 0).unwrap();
+        let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
+        let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth)));
+
+        let attempt = |pw: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    HttpRequest::builder()
+                        .method("POST")
+                        .uri("/auth/login")
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"username":"admin","password":"{pw}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        for _ in 0..5 {
+            assert_eq!(attempt("wrong-pass").await, StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(attempt("wrong-pass").await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            attempt("initial-pass-1234").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "限流窗口内正确密码也应被拒绝"
+        );
+    }
+
+    /// 被禁用的账号：不能登录（文案直出），已建会话立即 403。
+    #[tokio::test]
+    async fn disabled_account_cannot_login_or_use_session() {
+        let t = test_app().await;
+        // 会话正常时可用
+        let res = t
+            .call(t.req("GET", "/jobs").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK);
+
+        assert!(t.auth.db().set_disabled("admin", true).unwrap());
+
+        let res = t
+            .call(t.req("GET", "/jobs").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "禁用后已有会话必须拒绝");
+        let v = body_json(res).await;
+        assert!(v["error"].as_str().unwrap_or("").contains("禁用"), "{v}");
+
+        let res = t
+            .call(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"username":"admin","password":"initial-pass-1234"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let v = body_json(res).await;
+        assert!(v["error"].as_str().unwrap_or("").contains("禁用"), "{v}");
     }
 
     /// `awaiting_input` 链路（含 `/jobs/:id/decision`）已整体移除：
@@ -2870,9 +3426,9 @@ mod tests {
     /// 但这里不直接调它——它会真的启动 ~1.5GB 模型下载。
     #[tokio::test]
     async fn removed_decision_endpoint_falls_back_to_json_404() {
-        let app = router(test_state());
-        let res = app
-            .oneshot(
+        let t = test_app().await;
+        let res = t
+            .call(
                 HttpRequest::builder()
                     .method("POST")
                     .uri("/jobs/does-not-exist/decision")
@@ -2880,27 +3436,9 @@ mod tests {
                     .body(Body::from("{}"))
                     .unwrap(),
             )
-            .await
-            .unwrap();
+            .await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         assert!(String::from_utf8_lossy(&bytes).contains("未知接口"));
-    }
-
-    #[tokio::test]
-    async fn project_config_put_rejects_empty_raw() {
-        let app = router(test_state());
-        let res = app
-            .oneshot(
-                HttpRequest::builder()
-                    .method("PUT")
-                    .uri("/project-data/config?config=vtrim.toml")
-                    .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"raw":""}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "空内容必须被拒绝");
     }
 }

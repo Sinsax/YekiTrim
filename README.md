@@ -187,17 +187,20 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 **状态机约束**：需先完成 `detect` (current >= 3)。
 
-### `vtrim silence`
+### `vtrim silence`（编辑器里的「去静音」）
 
-对已输出的 clip 视频移除长静音段 (重编码)。
+把已输出切片中的长停顿映射为**屏蔽轨道**（写入 `polish.toml` 的 `mute_ranges`），
+不生成新视频文件，原始 `clip.mp4` / `clip.srt` 保持不变；导出时由 process/render 剪掉。
+精修编辑器时间轴顶部的「去静音」快捷按钮等价于此命令。
 
 | 参数 | 作用 |
 |------|------|
-| `[files...]` | 要处理的视频文件。不传则扫描 `<cwd>/output/clips/*/clip.mp4` |
-| `--duration <sec>` | 静音阈值(秒)，默认 `2.0`。超过此长度的连续静音将被移除 |
-| `-o, --output <dir>` | 输出目录 (默认输入文件同目录) |
+| `[files...]` | 要处理的视频或目录。不传则扫描 `<cwd>/output/clips/*/` |
+| `--duration <sec>` | 静音阈值(秒)，默认 `2.0`。超过此长度的连续静音将被写入屏蔽轨道 |
+| `--threshold <dB>` | 音频分析噪声门限，默认 `-30`（仅在缺少字幕文件时使用） |
 
-输出：`{input_stem}_cleaned.mp4`，同步调整 `{input}.srt` 和 `{input}.dm.srt` 字幕时间轴。
+未初始化的切片会先自动 `polish init`（映射到屏蔽轨道需要有 `polish.toml`）。
+记录写入 `silence_ranges`，编辑器里的「撤销去静音」按它精确回退，手动添加的屏蔽区间不受影响。
 
 静音检测策略：如有同名 `.srt` 文件，优先分析 SRT 字幕间隔；否则用 ffmpeg silencedetect filter。
 
@@ -223,7 +226,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ### `vtrim config init`
 
-生成全局配置文件。
+生成全局配置文件（覆盖写，已有配置会被替换）。
 
 | 参数 | 作用 |
 |------|------|
@@ -233,6 +236,10 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 - `.vtrim/config.toml` — ASR、检测等全局参数，含内建 prompt 模板
 - `.vtrim/llm.toml` — LLM 独立配置 (API key、model 等)
 
+> `vtrim server` 首次启动时若发现程序配置缺失，会自动补齐这两个文件（只创建缺失的，
+> 已存在的配置不会被覆盖）；若已存在的文件 TOML 语法错误（整份配置都会被忽略），
+> 会先备份为 `config.toml.broken` 再重建，并在启动日志里给出原因。
+
 ### `vtrim config show`
 
 显示合并后的完整配置 (vtrim.toml + .vtrim/config.toml)。
@@ -240,6 +247,58 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 ### `vtrim version`
 
 显示版本号。
+
+---
+
+### `vtrim server` — WebUI 服务（需要登录）
+
+启动浏览器可视化服务，服务 `webui/dist` 构建产物。
+
+> **认证不可关闭**：除 `/api/health` 与 `/api/auth/login` 外，**所有**接口都要求会话，
+> 包括从 `127.0.0.1` 访问。没有"免登录/本机模式"分支——单人使用＝只有一个 `admin`
+> 账号的部署，同样要登录（设计：`docs/superpowers/specs/2026-09-12-multi-user-server-design.md` §3.5）。
+
+| 参数 | 作用 |
+|------|------|
+| `--host <addr>` | 监听地址，默认 `127.0.0.1` |
+| `--port <n>` | 监听端口，默认 `7788` |
+| `--open` | 启动后自动打开浏览器 |
+| `--config <file>` | 打开指定工程（默认恢复上次工程） |
+| `--allow-remote` | 允许监听非 loopback 地址（默认拒绝） |
+| `--data-dir <dir>` | 账号账本目录，默认 `<exe_dir>/.vtrim/cloud`（也可用 `VTRIM_DATA_DIR`） |
+| `--admin-password-file <file>` | 无人值守部署：用该文件里的密码作为初始管理员密码 |
+| `--force` | 接管残留的 `vtrim.lock`（确认上一个实例已崩溃时使用） |
+
+**首次启动**会生成管理员账号并把初始密码打印一次，同时写入
+`<data_dir>/initial-admin-password.txt`（首次登录成功后自动删除）：
+
+```
+首次启动管理员账号: admin ｜ 初始密码: ABCD-EFGH-JKMN-PQRS ｜ 已同时写入 …\initial-admin-password.txt
+```
+
+- 重启**不会**重新生成密码；会话存在 SQLite 里，7 天滑动续期，重启后仍然有效。
+- 仍在使用初始密码时，浏览器顶部常驻横幅提示改密；`--host 0.0.0.0 --allow-remote`
+  在改密前会**拒绝启动**（初始密码会出现在日志与文件里）。
+- `data_dir` 不可写 → 直接启动失败（身份数据不可缺省，不会退化成"内存模式"）。
+- 同一 `data_dir` 只允许一个实例（`vtrim.lock`），第二个实例明确报错。
+- 登录失败 5 次（同用户名 + 同 IP）后限流 15 分钟。
+
+### `vtrim user` — 账号管理
+
+| 子命令 | 作用 |
+|--------|------|
+| `list` | 列出账号（用户名/角色/状态/配额/最后登录） |
+| `info` | 显示账号账本与初始密码文件位置 |
+| `add <name> [--role admin\|user]` | 新建账号（不给密码则生成随机密码并只打印一次） |
+| `passwd <name>` | 重置账号密码 |
+| `check <name>` | 校验口令是否正确（诊断） |
+| `disable <name> [--enable]` | 禁用/启用账号 |
+| `init-admin` | 首次部署初始化管理员（幂等：已有账号则不动） |
+| `reset-admin-password` | 救援：重置管理员密码（忘记密码时在本机执行） |
+
+密码来源三选一：`--stdin`（管道）、`--password-file <f>`（推荐，不进进程列表）、
+都不给则生成随机密码并打印一次。口令用 **scrypt**（`scrypt$log_n$r$p$salt$hash`
+自描述哈希串）存储，将来可无损升级到 argon2id。
 
 ---
 

@@ -42,7 +42,7 @@ GET /api/me ──→ 200 { user: {id, username, role}, must_change_password }
 
 ### 1.4 新增文件
 ```
-stores/auth.js     { me, role, autoLogin, ready, loadMe(), login(u,p), logout() }
+stores/auth.js     { me, user, mustChangePassword, ready, loadMe(), login(u,p), logout(), changePassword(o,n) }
 api/auth.js        login / logout / me
 views/LoginView.vue
 ```
@@ -161,7 +161,7 @@ views/    LoginView.vue（M1）· IngestView.vue（M3）· StorageView.vue（M5�
 
 ## 10. 验收清单（按阶段）
 
-- [ ] M1：未登录访问任意页 → 登录页带回跳；初始密码（服务端首次启动生成）可登录成功且首次登录后密码文件被删；错误密码/禁用/限流文案正确；改密后 `must_change_password` 横幅消失；登出干净
+- [x] M1：未登录访问任意页 → 登录页带回跳；初始密码（服务端首次启动生成）可登录成功且首次登录后密码文件被删；错误密码/禁用/限流文案正确；改密后 `must_change_password` 横幅消失；登出干净
 - [ ] M2：A 账号看不到 B 的项目/任务/SSE/媒体（404）；项目行来源/占用徽标正确；删除源录播后占用回落
 - [ ] M3：模拟 webhook 完结 → 首页动态出现→项目自动出现→按策略自动跑管线；失败行可重试；admin 可指派待分配
 - [ ] M4：B站链接 resolve 预览/分P/质量/配额预检；五类错误文案正确；下载任务出现在下载槽

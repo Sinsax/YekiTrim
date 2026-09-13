@@ -21,6 +21,27 @@ const KEY_LEN: usize = 32;
 /// 用户自设密码的最小长度（生成的初始密码为 16 字符，远超此值）。
 pub const MIN_PASSWORD_LEN: usize = 8;
 
+/// 会话有效期：7 天，**每次请求滑动续期**（§3.5.6）。
+pub const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// 距离过期不足这个时长时才写库续期，避免每个 GET 都做一次 UPDATE。
+pub const SESSION_RENEW_AFTER_SECS: i64 = 60 * 60;
+
+pub const COOKIE_SID: &str = "vtrim_sid";
+pub const COOKIE_CSRF: &str = "vtrim_csrf";
+/// CSRF 令牌自定义头（写请求必带）。
+pub const CSRF_HEADER: &str = "x-csrf-token";
+/// 设置页/文档里显示的静态资源 cookie 路径。
+pub const COOKIE_PATH: &str = "/";
+
+/// CSPRNG 令牌（会话 id / CSRF），256 bit，URL 安全（可安全放进 cookie 与头）。
+pub fn new_token() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let mut raw = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    URL_SAFE_NO_PAD.encode(raw)
+}
+
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
@@ -115,5 +136,15 @@ mod tests {
     fn password_policy() {
         assert!(validate_password("short").is_err());
         assert!(validate_password("longenough").is_ok());
+    }
+
+    #[test]
+    fn session_tokens_are_url_safe_and_unique() {
+        let a = new_token();
+        let b = new_token();
+        assert_ne!(a, b);
+        // 32 字节 base64url 无填充 = 43 字符，且不含 cookie/头里需要转义的字符
+        assert_eq!(a.len(), 43, "{a}");
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 }

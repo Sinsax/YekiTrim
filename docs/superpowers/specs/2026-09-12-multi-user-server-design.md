@@ -330,16 +330,18 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 - `service/user.rs` + `vtrim user` 子命令：`list|info|add|passwd|check|disable|init-admin|reset-admin-password`；不给密码则生成随机密码并只打印一次；`init-admin` **幂等**（已有账号绝不重置）、生成时写 `<data_dir>/initial-admin-password.txt`；所有动作写 audit。
 - 验收（已实测）：`cargo check -p vtrim-cli --all-targets` 0 warning；`cargo test -p vtrim-cli` 22 passed；CLI 端到端全通过。
 
-**step-2 ⏳ 待做（完成即"浏览器开始要求登录"）**
-1. `server/auth.rs`（HTTP 侧）：`require_user` / `require_admin` 中间件 + 白名单（`/api/auth/login`、`/api/health`、静态资源）+ 内存限流（username+IP，5 次/15 分钟）。
-2. 端点：`GET /api/me`（200 `{user,must_change_password}` / 401）、`POST /api/auth/login`（Set-Cookie `vtrim_sid` + `vtrim_csrf`；401/429）、`POST /api/auth/logout`、`PUT /api/auth/password`。
-3. 会话：`sessions` 表读写 + TTL 7 天滑动续期 + 登出删行 + 首次登录成功后删除 `initial-admin-password.txt`。
-4. 启动：`server::run` 调 `ensure_admin_bootstrap`（无账号则生成 admin+初始密码并打印/落盘）；`data_dir` 不可写 → 启动失败 + `--data-dir` 指引；`vtrim.lock` 单实例保护；非 loopback 且 `must_change_password=1` → 拒绝启动。
-5. `server/*` 全部业务路由挂 `require_user`；`/api/health` 增 `accounts/must_change_password/listening/tls_terminated`。
-6. 前端 M1（`stores/auth.js`、`api/auth.js`、`LoginView.vue`、路由守卫、client.js CSRF 注入 + 401 分支、侧栏用户区 + 改密横幅）。
-7. 测试：`tower::oneshot` 断言 未登录 401 / 登录 200 / 缺 CSRF 403 / 改密后 `must_change_password=false`；手工按 §3.5.10 第 1–5、10–11 条走一遍。
+**step-2 ✅ 已完成（"浏览器开始要求登录"）**
+1. `server/auth.rs`（HTTP 侧）：`require_user` 中间件 + 白名单（`/api/auth/login`、`/api/health`；静态资源不在 `/api` 下天然公开）+ 内存限流（username+IP，5 次/15 分钟，IP 取 `ConnectInfo` 对端地址）。
+2. 端点：`GET /api/me`（200 `{user,must_change_password}` / 401）、`POST /api/auth/login`（`Set-Cookie: vtrim_sid`(HttpOnly) + `vtrim_csrf`；401/429）、`POST /api/auth/logout`、`PUT /api/auth/password`。
+3. 会话：`sessions` 表读写 + TTL 7 天滑动续期（剩余不足 1h 才写库）+ 登出删行 + 首次登录成功后删除 `initial-admin-password.txt`；改密顺带吊销本人其它会话。
+4. 启动：`ensure_admin_bootstrap`（无账号则生成 admin+初始密码并打印/落盘，有账号则只报告 `must_change_password`）；`data_dir` 不可写 → 启动失败 + `--data-dir` 指引；`vtrim.lock` 单实例保护；非 loopback 且 `must_change_password=1` → 拒绝启动。新增参数 `--data-dir`、`--admin-password-file`、`--force`。
+5. `server/api.rs` 拆成 public（`/health`、`/auth/login`）+ protected（其余全部挂 `require_user`）；`/api/health` 增 `accounts/must_change_password/listening/tls_terminated`，**去掉 `workspace` 路径字段**；`/api/fs/list` 收敛为 admin-only。
+6. 前端 M1（`stores/auth.js`、`api/auth.js`、`views/LoginView.vue`、路由守卫、`client.js` CSRF 注入 + 401 分支、顶栏用户区 + 改密横幅 + 改密弹窗，未登录不再轮询/开 SSE）。
+7. 测试：新增 9 个（`server/auth.rs` 6 个 + `api.rs` 4 个 oneshot 鉴权/流程 + `service/db.rs` 2 个会话 + `service/instancelock.rs` 4 个）；实测 `cargo check -p vtrim-cli --all-targets` 0 warning、`cargo test -p vtrim-cli` 40 passed、`npm run build` 通过，并按 §3.5.10 第 1–5、10–11 条手工走通（首次启动打印+落盘、401/CSRF 403、首次登录删文件、重启密码不变且会话仍有效、`0.0.0.0` 未改密拒绝启动、第二个实例报错、`--admin-password-file` 不写初始密码文件、坏 data_dir 报错并给指引）。
 
-**step-3（P1 收尾）**：`vtrim.lock` 崩溃残留判定（pid 存活检测 + `--force`）、`vtrim doctor` 安全摘要（账号数 / 是否仍用初始密码 / 初始密码文件是否存在 / data_dir 可写性与剩余磁盘）。
+**step-3 ⏳ 待做（P1 收尾）**：`vtrim doctor` 安全摘要（账号数 / 是否仍用初始密码 / 初始密码文件是否存在 / data_dir 可写性与剩余磁盘 / 锁持有者）——`vtrim.lock` 的 pid 存活判定与 `--force` 已在 step-2 一并实现（见 `service/instancelock.rs`）。
+
+> **实现偏差记录（step-2）**：单实例锁在 Windows 上用 `share_mode(0)` 独占句柄（进程崩溃即由系统释放，且外部无法抢占，`--force` 在 Windows 上抢不到活着的实例）；正常退出时把锁文件写成 `pid=0` 作为"已正常退出"标记（Windows 持独占句柄时无法删文件），下次启动看到 `pid=0` 即安静接管，只有真正的崩溃残留（pid 已不存在）才 warn。
 
 ## 11. 威胁模型 / 合规边界 / 非目标
 

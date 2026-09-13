@@ -92,6 +92,9 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         open: true,
         config: Some(cfg),
         allow_remote: false,
+        data_dir: None,
+        admin_password_file: None,
+        force: false,
         open_path,
     };
     crate::server::run(args).await
