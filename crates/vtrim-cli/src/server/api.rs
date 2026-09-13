@@ -1137,7 +1137,7 @@ async fn project_data_event_cut(
     scope: Scope,
     AxumPath(rank): AxumPath<String>,
 ) -> ApiResult {
-    event_cut_impl(&scope.ws, &rank, &state.jobs, user.id).await
+    event_cut_impl(&scope.ws, &rank, &state.jobs, user.id, scope.project.id).await
 }
 
 async fn project_data_event_cut_all(
@@ -1146,7 +1146,7 @@ async fn project_data_event_cut_all(
     scope: Scope,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    event_cut_all_impl(&scope.ws, &body, &state.jobs, user.id).await
+    event_cut_all_impl(&scope.ws, &body, &state.jobs, user.id, scope.project.id).await
 }
 
 async fn project_data_clip_silence(scope: Scope, AxumPath(rank): AxumPath<String>) -> ApiResult {
@@ -1158,11 +1158,12 @@ async fn project_data_correct(
     Extension(user): Extension<super::auth::CurrentUser>,
     scope: Scope,
 ) -> ApiResult {
-    correct_run_impl(&scope.ws, &state.jobs, user.id).await
+    correct_run_impl(&scope.ws, &state.jobs, user.id, scope.project.id).await
 }
 
 async fn project_data_pipeline(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
     scope: Scope,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
@@ -1171,7 +1172,7 @@ async fn project_data_pipeline(
     let ws = scope.ws;
     if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
         let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-        let stages = match stage {
+        let stages: Vec<String> = match stage {
             "extract" => vec!["extract"],
             "transcribe" => vec!["transcribe"],
             "detect" => vec!["detect"],
@@ -1179,14 +1180,14 @@ async fn project_data_pipeline(
             "process" => vec!["extract","transcribe","detect","cut"],
             _ => return Err(err(StatusCode::BAD_REQUEST, "未知 stage")),
         }.into_iter().map(|s| s.to_string()).collect();
-        run_pipeline_job(&state.jobs, scope.project.id, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
+        run_pipeline_job(&state.jobs, user.id, scope.project.id, ws.config_file.clone(), &format!("stage_{}", stage), stages, false, resume).await
     } else {
         let stages = body.get("stages").and_then(|v| v.as_array()).map(|arr| {
             arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
         }).unwrap_or_else(|| vec!["extract".into(),"transcribe".into(),"detect".into(),"cut".into()]);
         let dry = body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
         let resume = body.get("resume").and_then(|v| v.as_str()).map(|s| s != "restart").unwrap_or(true);
-        run_pipeline_job(&state.jobs, scope.project.id, ws.config_file.clone(), "pipeline", stages, dry, resume).await
+        run_pipeline_job(&state.jobs, user.id, scope.project.id, ws.config_file.clone(), "pipeline", stages, dry, resume).await
     }
 }
 
@@ -1516,7 +1517,13 @@ pub(crate) async fn ensure_polish_project(dir: &Path) -> Result<(), AppError> {
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化精修工程失败: {e:#}")))
 }
 
-async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
+async fn event_cut_all_impl(
+    ws: &Workspace,
+    body: &serde_json::Value,
+    jobs: &Arc<super::jobs::JobManager>,
+    owner: i64,
+    project: i64,
+) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -1556,6 +1563,7 @@ async fn event_cut_all_impl(ws: &Workspace, body: &serde_json::Value, jobs: &Arc
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
+    jobs.attach_project(&id, project).await;
     let total = events.len() as u64;
     jobs.mark_running(&id, format!("一键全切 {} 个事件", total)).await;
     jobs.progress(&id, 0, total).await;
@@ -1631,7 +1639,13 @@ async fn run_single_cut(config_file: &Path, ev: serde_json::Value) -> anyhow::Re
     r.run(&mut ctx).await
 }
 
-async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
+async fn event_cut_impl(
+    ws: &Workspace,
+    rank: &str,
+    jobs: &Arc<super::jobs::JobManager>,
+    owner: i64,
+    project: i64,
+) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
     let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
@@ -1644,6 +1658,7 @@ async fn event_cut_impl(ws: &Workspace, rank: &str, jobs: &Arc<super::jobs::JobM
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
+    jobs.attach_project(&id, project).await;
     jobs.mark_running(&id, format!("剪切事件 #{}", rank)).await;
     let jobs_handle = jobs.clone(); let cfg_file = ws.config_file.clone(); let job_id=id.clone();
     tokio::spawn(async move {
@@ -1905,6 +1920,7 @@ async fn media_get(
 async fn run_pipeline_job(
     jobs: &Arc<super::jobs::JobManager>,
     owner: i64,
+    project: i64,
     config_file: std::path::PathBuf,
     kind: &str,
     stages: Vec<String>,
@@ -1915,6 +1931,7 @@ async fn run_pipeline_job(
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
+    jobs.attach_project(&id, project).await;
     jobs.mark_running(&id, "准备中").await;
     let jobs = jobs.clone();
     let run_stages = stages.clone();
@@ -1931,11 +1948,17 @@ async fn run_pipeline_job(
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn correct_run_impl(ws: &Workspace, jobs: &Arc<super::jobs::JobManager>, owner: i64) -> ApiResult {
+async fn correct_run_impl(
+    ws: &Workspace,
+    jobs: &Arc<super::jobs::JobManager>,
+    owner: i64,
+    project: i64,
+) -> ApiResult {
     let id = match jobs.create(owner, "correct").await {
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
+    jobs.attach_project(&id, project).await;
     jobs.mark_running(&id, "LLM 订正运行中").await;
     let jobs_handle = jobs.clone();
     let cfg_file = ws.config_file.clone();
@@ -2182,7 +2205,13 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-async fn polish_spawn(state: &AppState, owner: i64, kind: &str, dir: String) -> ApiResult {
+async fn polish_spawn(
+    state: &AppState,
+    owner: i64,
+    project: Option<i64>,
+    kind: &str,
+    dir: String,
+) -> ApiResult {
     // dir 必须先校验：`dir: ""` 会让 cmd_init 在 server 进程的 CWD 里写出
     // polish.toml / data / sfx，任意绝对路径也会被当作合法工程目录。
     // 归属由 `scope::enforce_scope` 中间件保证（只能是自己项目内的目录）。
@@ -2191,6 +2220,9 @@ async fn polish_spawn(state: &AppState, owner: i64, kind: &str, dir: String) -> 
         Ok(id) => id,
         Err(busy) => return Err(err(StatusCode::CONFLICT, busy.to_string())),
     };
+    if let Some(pid) = project {
+        state.jobs.attach_project(&id, pid).await;
+    }
     let dir_name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -2268,22 +2300,27 @@ async fn polish_spawn(state: &AppState, owner: i64, kind: &str, dir: String) -> 
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, "init", dir).await
+/// polish 路由的作用域项目 id（由 `scope::enforce_scope` 注入；0 = 未解析）。
+fn scope_pid(ext: Option<axum::extract::Extension<super::scope::ScopeProjectId>>) -> Option<i64> {
+    ext.map(|e| e.0.0).filter(|v| *v > 0)
 }
 
-async fn polish_llm(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, pid: Option<Extension<super::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, "llm", dir).await
+    polish_spawn(&state, user.id, scope_pid(pid), "init", dir).await
 }
 
-async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_llm(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, pid: Option<Extension<super::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, "process", dir).await
+    polish_spawn(&state, user.id, scope_pid(pid), "llm", dir).await
 }
 
-async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, pid: Option<Extension<super::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    polish_spawn(&state, user.id, scope_pid(pid), "process", dir).await
+}
+
+async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, pid: Option<Extension<super::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let path = validated_project_dir(&dir)?;
     if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
@@ -2300,12 +2337,12 @@ async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Exte
         })
         .await?;
     }
-    polish_spawn(&state, user.id, "render", dir).await
+    polish_spawn(&state, user.id, scope_pid(pid), "render", dir).await
 }
 
-async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, Json(body): Json<serde_json::Value>) -> ApiResult {
+async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<super::auth::CurrentUser>, pid: Option<Extension<super::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, "cover", dir).await
+    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir).await
 }
 
 

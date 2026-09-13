@@ -734,13 +734,19 @@ async fn ingest_into(
             .unwrap_or(cfg.ingest.recorder.auto_pipeline.as_str()),
     );
     if pipeline != Pipeline::None {
-        spawn_pipeline(state, owner_id, config_path, pipeline).await;
+        spawn_pipeline(state, owner_id, project_id, config_path, pipeline).await;
     }
     Ok(project_id)
 }
 
 /// 启动自动管线任务（新项目 + 自己的 job；已有活动任务时跳过并提示）。
-async fn spawn_pipeline(state: &Arc<AppState>, owner: i64, config_file: PathBuf, pipeline: Pipeline) {
+async fn spawn_pipeline(
+    state: &Arc<AppState>,
+    owner: i64,
+    project_id: i64,
+    config_file: PathBuf,
+    pipeline: Pipeline,
+) {
     let stages = pipeline.stages();
     if stages.is_empty() {
         return;
@@ -753,6 +759,7 @@ async fn spawn_pipeline(state: &Arc<AppState>, owner: i64, config_file: PathBuf,
             return;
         }
     };
+    state.jobs.attach_project(&job_id, project_id).await;
     state.jobs.mark_running(&job_id, "入库后自动处理").await;
     let jobs = state.jobs.clone();
     let cancel = state.jobs.cancel_token(&job_id).await;
