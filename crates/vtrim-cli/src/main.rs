@@ -248,6 +248,33 @@ Command::Cut {
             tracing::info!("剪切完成");
         }
 
+Command::User(action) => {
+            use cli::UserAction;
+            let src = |stdin: bool, file: &Option<PathBuf>| crate::service::source_from(stdin, file.clone());
+            match action {
+                UserAction::List => crate::service::cmd_list()?,
+                UserAction::Info => crate::service::cmd_info()?,
+                UserAction::Add { username, role, stdin, password_file } => {
+                    crate::service::cmd_add(username, role, src(*stdin, password_file))?
+                }
+                UserAction::Passwd { username, stdin, password_file } => {
+                    crate::service::cmd_passwd(username, src(*stdin, password_file))?
+                }
+                UserAction::Check { username, stdin, password_file } => {
+                    crate::service::cmd_check(username, src(*stdin, password_file))?
+                }
+                UserAction::Disable { username, enable } => {
+                    crate::service::cmd_disable(username, *enable)?
+                }
+                UserAction::InitAdmin { stdin, password_file } => {
+                    crate::service::cmd_init_admin(src(*stdin, password_file))?
+                }
+                UserAction::ResetAdminPassword { stdin, password_file } => {
+                    crate::service::cmd_reset_admin_password(src(*stdin, password_file))?
+                }
+            }
+        }
+
 Command::Server(args) => {
             server::run(args.clone()).await?;
         }
