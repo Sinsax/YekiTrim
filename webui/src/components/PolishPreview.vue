@@ -32,6 +32,14 @@
         </div>
       </div>
       <div class="intro-black" :style="{ opacity: introBlack }"></div>
+      <!-- 框选布局：在此模式下视频运镜暂停（缩放复位），直接在整帧上拖出精确矩形 -->
+      <div v-if="selectMode" class="sel-layer" @pointerdown.prevent="startSel('new', $event)">
+        <div class="sel-box" :style="selBoxStyle" @pointerdown.prevent.stop="startSel('move', $event)">
+          <span class="sel-tag">{{ selectLabel || '框选' }}</span>
+          <span v-for="h in SEL_HANDLES" :key="h" class="sel-h" :class="'h-' + h"
+                @pointerdown.prevent.stop="startSel(h, $event)"></span>
+        </div>
+      </div>
       <!-- 真渲染帧（wgpu 出片效果）叠加层 -->
       <img v-if="realFrameUrl" class="real-frame" :src="realFrameUrl" alt="">
       <div v-if="realLoading" class="real-loading"><span class="spinner"></span></div>
@@ -76,9 +84,13 @@ const props = defineProps({
   danmaku: { type: Array, default: () => [] },
   metaDuration: { type: Number, default: 0 },
   // 服务端 /api/health 的 wgpu_render：false 时真渲染（单帧回退）不可用
-  wgpuRender: { type: Boolean, default: false }
+  wgpuRender: { type: Boolean, default: false },
+  // 框选布局模式：叠加选框 + 暂停运镜（缩放复位），选框坐标为整帧百分比
+  selectMode: { type: Boolean, default: false },
+  selectRect: { type: Object, default: null },
+  selectLabel: { type: String, default: '' }
 })
-const emit = defineEmits(['time'])
+const emit = defineEmits(['time', 'update:selectRect'])
 
 const stageRef = ref(null)
 const videoRef = ref(null)
@@ -148,6 +160,8 @@ const subStyle = computed(() => idx.value.subStyle || {})
 const dmStyleCfg = computed(() => idx.value.dmStyle || {})
 
 const videoStyle = computed(() => {
+  // 框选布局模式：运镜/缩放/抖动/滤镜全部复位，让选框直接对应整帧真实位置
+  if (props.selectMode) return { transform: 'none', transformOrigin: 'center', filter: 'none' }
   const f = vfx.value
   const t = []
   if (f.shake.x || f.shake.y) t.push(`translate(${f.shake.x}px, ${f.shake.y}px)`)
@@ -314,6 +328,101 @@ function onVolume(e) {
 function fullscreen() {
   if (stageRef.value) stageRef.value.requestFullscreen?.()
 }
+
+// ---- 框选布局：整帧百分比矩形（拖框体 = 平移，拖 8 个角/边 = 缩放）----
+const SEL_HANDLES = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']
+const SEL_MIN = 2 // 最小边长（百分比），防止拖成一条线
+let selDrag = null
+
+const r2 = (v) => Math.round(v * 100) / 100
+
+/** 选框兜底：越界裁剪 + 顺序化 + 最小尺寸（父级数据异常时不至于画出负宽盒子）。 */
+function selNorm(r) {
+  const n = (v, d) => { const x = parseFloat(v); return Number.isFinite(x) ? Math.min(100, Math.max(0, x)) : d }
+  let x0 = n(r?.x0, 0), y0 = n(r?.y0, 0), x1 = n(r?.x1, 100), y1 = n(r?.y1, 100)
+  if (x1 < x0) [x0, x1] = [x1, x0]
+  if (y1 < y0) [y0, y1] = [y1, y0]
+  if (x1 - x0 < 0.5) x1 = Math.min(100, x0 + 0.5)
+  if (y1 - y0 < 0.5) y1 = Math.min(100, y0 + 0.5)
+  return { x0, y0, x1, y1 }
+}
+
+const selBoxStyle = computed(() => {
+  const r = selNorm(props.selectRect)
+  return {
+    left: r.x0 + '%',
+    top: r.y0 + '%',
+    width: (r.x1 - r.x0) + '%',
+    height: (r.y1 - r.y0) + '%'
+  }
+})
+
+/** 指针位置 → 舞台（= 1920×1080 整帧）百分比坐标。 */
+function pctAt(e) {
+  const el = stageRef.value
+  if (!el) return null
+  const b = el.getBoundingClientRect()
+  if (!b.width || !b.height) return null
+  return {
+    x: Math.min(100, Math.max(0, ((e.clientX - b.left) / b.width) * 100)),
+    y: Math.min(100, Math.max(0, ((e.clientY - b.top) / b.height) * 100))
+  }
+}
+
+function startSel(handle, e) {
+  const p = pctAt(e)
+  if (!p) return
+  const r0 = handle === 'new' ? { x0: p.x, y0: p.y, x1: p.x, y1: p.y } : selNorm(props.selectRect)
+  selDrag = { handle, sx: p.x, sy: p.y, r0 }
+  if (handle === 'new') emitRect(r0)
+  window.addEventListener('pointermove', onSelMove)
+  window.addEventListener('pointerup', endSel)
+  window.addEventListener('pointercancel', endSel)
+}
+
+function emitRect(r) {
+  emit('update:selectRect', { x0: r2(r.x0), y0: r2(r.y0), x1: r2(r.x1), y1: r2(r.y1) })
+}
+
+function onSelMove(e) {
+  if (!selDrag) return
+  // 指针在窗口外松开（收不到 pointerup）时用 buttons=0 兜底收尾，避免选框跟着鼠标跑
+  if (e.buttons === 0) { endSel(); return }
+  const p = pctAt(e)
+  if (!p) return
+  const { handle, sx, sy, r0 } = selDrag
+  const dx = p.x - sx
+  const dy = p.y - sy
+  let { x0, y0, x1, y1 } = r0
+
+  if (handle === 'new') {
+    x0 = Math.min(sx, p.x); x1 = Math.max(sx, p.x)
+    y0 = Math.min(sy, p.y); y1 = Math.max(sy, p.y)
+    if (x1 - x0 < SEL_MIN) x1 = Math.min(100, x0 + SEL_MIN)
+    if (y1 - y0 < SEL_MIN) y1 = Math.min(100, y0 + SEL_MIN)
+  } else if (handle === 'move') {
+    const w = x1 - x0, h = y1 - y0
+    x0 = Math.min(Math.max(0, x0 + dx), 100 - w)
+    y0 = Math.min(Math.max(0, y0 + dy), 100 - h)
+    x1 = x0 + w; y1 = y0 + h
+  } else {
+    if (handle.includes('w')) x0 = Math.min(Math.max(0, r0.x0 + dx), x1 - SEL_MIN)
+    if (handle.includes('e')) x1 = Math.max(Math.min(100, r0.x1 + dx), x0 + SEL_MIN)
+    if (handle.includes('n')) y0 = Math.min(Math.max(0, r0.y0 + dy), y1 - SEL_MIN)
+    if (handle.includes('s')) y1 = Math.max(Math.min(100, r0.y1 + dy), y0 + SEL_MIN)
+  }
+  emitRect({ x0, y0, x1, y1 })
+}
+
+function endSel() {
+  selDrag = null
+  window.removeEventListener('pointermove', onSelMove)
+  window.removeEventListener('pointerup', endSel)
+  window.removeEventListener('pointercancel', endSel)
+}
+
+// 退出框选模式时收尾（父级可能在拖拽中被卸载/切换）
+watch(() => props.selectMode, (on) => { if (!on) endSel() })
 
 // ---- 真渲染预览：wasm 实时模式优先，回退 server 单帧 ----
 const realRender = ref(false)
@@ -494,6 +603,7 @@ onMounted(() => {
 onUnmounted(() => {
   cancelAnimationFrame(rafId)
   if (ro) ro.disconnect()
+  endSel()
   clearRealFrame()
   if (realTimer) clearTimeout(realTimer)
   disableWasm()
@@ -527,7 +637,13 @@ watch(() => props.subtitles, (subs) => {
   }
 }, { deep: true })
 
-defineExpose({ seekTo, togglePlay })
+defineExpose({ seekTo, togglePlay, pause })
+
+/** 供父级（框选布局等）定格画面用：正在播放则暂停。 */
+function pause() {
+  const v = videoRef.value
+  if (v && !v.paused) togglePlay()
+}
 </script>
 
 <style scoped>
@@ -560,6 +676,23 @@ defineExpose({ seekTo, togglePlay })
        -webkit-text-stroke:12px #403c3b; paint-order:stroke fill; }
 .cap .hl { color:var(--hl-color, #f56b41); }
 .intro-black { position:absolute; inset:0; z-index:50; background:#000; pointer-events:none; }
+
+/* ---- 框选布局覆盖层：盒子外用超大 box-shadow 压暗，突出选框 ---- */
+.sel-layer { position:absolute; inset:0; z-index:70; cursor:crosshair; touch-action:none; }
+.sel-box { position:absolute; border:1.5px solid var(--main-deep); cursor:move;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.42); }
+.sel-tag { position:absolute; top:4px; left:6px; padding:2px 10px; border-radius:var(--r-full);
+  background:var(--main-soft); color:var(--pink-text); font-size:11px; white-space:nowrap; }
+.sel-h { position:absolute; width:12px; height:12px; border-radius:3px; background:#fff;
+  border:1.5px solid var(--main-deep); }
+.h-nw { left:-6px; top:-6px; cursor:nwse-resize; }
+.h-n { left:50%; top:-6px; margin-left:-6px; cursor:ns-resize; }
+.h-ne { right:-6px; top:-6px; cursor:nesw-resize; }
+.h-w { left:-6px; top:50%; margin-top:-6px; cursor:ew-resize; }
+.h-e { right:-6px; top:50%; margin-top:-6px; cursor:ew-resize; }
+.h-sw { left:-6px; bottom:-6px; cursor:nesw-resize; }
+.h-s { left:50%; bottom:-6px; margin-left:-6px; cursor:ns-resize; }
+.h-se { right:-6px; bottom:-6px; cursor:nwse-resize; }
 
 .preview-controls { display:flex; align-items:center; gap:8px; margin-top:10px; }
 .time-label { min-width:96px; text-align:right; }

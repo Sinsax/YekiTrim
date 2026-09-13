@@ -162,7 +162,7 @@ pub struct SourceRef {
 // ===== 布局 =====
 // （类型定义已迁入 vtrim-render-core/types.rs，此处重导出保持兼容）
 pub use vtrim_render_core::types::{
-    grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Event,
+    free_rect, grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Event,
     Layout,
     LayoutRegion, Point, Segment, StyleRoot, SubtitleStyle,
 };
@@ -488,26 +488,25 @@ impl ProjectFile {
                 continue;
             }
 
-            // [layout.*] 前输出九宫格总说明（TOML 无 [layout] 头，挂在第一个子表前）
+            // [layout.*] 前输出布局总说明（TOML 无 [layout] 头，挂在第一个子表前）
             if trimmed == "[layout.liver]" {
-                result.push_str("\n# ===== 布局（九宫格） =====\n");
-                result.push_str("# 可用格子: top-left / top / top-right / mid-left / center / mid-right / bot-left / bottom / bot-right\n");
-                result.push_str("# 每个区域可填一个或多个格子，多个格子会合并成包围盒区域\n");
-                result.push_str("# 例如: grid = [\"mid-left\", \"center\"] 表示左中+正中合并\n");
-                result.push_str("# liver: 主播区域，origin 为运镜聚焦中心\n");
-                result.push_str("# grid 示例: [\"mid-right\"] 或 [\"mid-left\", \"center\", \"mid-right\"]\n");
+                result.push_str("\n# ===== 布局（区域） =====\n");
+                result.push_str("# 两种写法，可能同时存在，自由选框优先：\n");
+                result.push_str("# 1) grid: 九宫格名，多个格子各自成为一个矩形（不合并）\n");
+                result.push_str("#    可用格子: top-left / top / top-right / mid-left / center / mid-right / bot-left / bottom / bot-right\n");
+                result.push_str("# 2) 自由选框: [layout.<区域>.top_left] + [layout.<区域>.bottom_right] (x/y 百分比)\n");
+                result.push_str("#    WebUI「框选布局」写入, 比九宫格更精确; 清除选框后回退到 grid\n");
+                result.push_str("# liver: 主播区域, 运镜聚焦其中心 (自由选框 > origin_grid > origin > 首个格子)\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
             if trimmed == "[layout.danmaku_area]" {
-                result.push_str("# danmaku_area: 弹幕区域\n");
-                result.push_str("# grid 示例: [\"top-left\"]\n");
+                result.push_str("# danmaku_area: 弹幕显示区域 (供运镜参考)\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
             if trimmed == "[layout.sticker_area]" {
-                result.push_str("# sticker_area: 贴纸区域\n");
-                result.push_str("# grid 示例: [\"mid-left\", \"bot-left\"]\n");
+                result.push_str("# sticker_area: 贴纸落点区域 (后处理时贴纸随机落在框/格子内)\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
@@ -821,5 +820,110 @@ mod tests {
             extra: HashMap::new(),
         };
         assert_eq!(region_origin(&region).unwrap(), "50.00% 50.00%");
+    }
+
+    fn pt(x: &str, y: &str) -> Point {
+        Point { x: x.into(), y: y.into() }
+    }
+
+    #[test]
+    fn free_rect_normalizes_and_clamps() {
+        // 左上/右下颠倒 + 越界 → 顺序化并裁剪到 0~100
+        let region = LayoutRegion {
+            grid: vec![],
+            origin_grid: None,
+            origin: None,
+            top_left: Some(pt("120%", "80%")),
+            bottom_right: Some(pt("-10%", "20%")),
+            extra: HashMap::new(),
+        };
+        let (tl, br) = free_rect(&region).unwrap();
+        assert_eq!((tl.x.as_str(), tl.y.as_str()), ("0.00%", "20.00%"));
+        assert_eq!((br.x.as_str(), br.y.as_str()), ("100.00%", "80.00%"));
+        assert!(!region.is_empty());
+    }
+
+    #[test]
+    fn free_rect_rejects_degenerate() {
+        let region = LayoutRegion {
+            grid: vec![],
+            origin_grid: None,
+            origin: None,
+            top_left: Some(pt("10%", "10%")),
+            bottom_right: Some(pt("10.2%", "60%")),
+            extra: HashMap::new(),
+        };
+        assert!(free_rect(&region).is_none());
+    }
+
+    #[test]
+    fn region_rects_prefers_free_rect_over_grid() {
+        let region = LayoutRegion {
+            grid: vec!["mid-left".into(), "bot-left".into()],
+            origin_grid: None,
+            origin: None,
+            top_left: Some(pt("40%", "10%")),
+            bottom_right: Some(pt("90%", "70%")),
+            extra: HashMap::new(),
+        };
+        let rects = region_rects(&region);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].0.x, "40.00%");
+        assert_eq!(rects[0].0.y, "10.00%");
+        assert_eq!(rects[0].1.x, "90.00%");
+        assert_eq!(rects[0].1.y, "70.00%");
+    }
+
+    #[test]
+    fn region_origin_uses_free_rect_center() {
+        let region = LayoutRegion {
+            grid: vec!["mid-right".into()],
+            origin_grid: Some("mid-right".into()),
+            origin: Some("10% 20%".into()),
+            top_left: Some(pt("50%", "20%")),
+            bottom_right: Some(pt("90%", "60%")),
+            extra: HashMap::new(),
+        };
+        assert_eq!(region_origin(&region).unwrap(), "70.00% 40.00%");
+    }
+
+    #[test]
+    fn free_rect_survives_toml_roundtrip() {
+        let mut cfg = ProjectFile::example();
+        cfg.layout.liver.top_left = Some(pt("55%", "15%"));
+        cfg.layout.liver.bottom_right = Some(pt("95%", "75%"));
+        let raw = cfg.to_toml_commented().unwrap();
+        assert!(raw.contains("[layout.liver.top_left]"), "缺 top_left 子表:\n{raw}");
+        assert!(raw.contains("[layout.liver.bottom_right]"), "缺 bottom_right 子表:\n{raw}");
+        let back: ProjectFile = toml::from_str(&raw).expect("框选布局 TOML 应可回读");
+        assert_eq!(region_origin(&back.layout.liver).unwrap(), "75.00% 45.00%");
+        assert_eq!(region_rects(&back.layout.sticker_area).len(), 2);
+    }
+
+    /// 前端「框选布局」的 JSON 形状：GET 拿到的 layout → spread 区域 → 写 top_left/bottom_right → PUT 回来。
+    /// 锁住 `Layout` 的 JSON 契约（deny_unknown_fields + flatten extra 下也必须能反序列化）。
+    #[test]
+    fn layout_free_rect_json_roundtrip_from_frontend() {
+        let mut cfg = ProjectFile::example();
+        cfg.layout.sticker_area.grid = vec!["mid-left".into(), "bot-left".into()];
+        let mut lay = serde_json::to_value(&cfg.layout).unwrap();
+        let mut region = lay["sticker_area"].clone();
+        region["top_left"] = serde_json::json!({ "x": "10.00%", "y": "40.00%" });
+        region["bottom_right"] = serde_json::json!({ "x": "45.00%", "y": "95.00%" });
+        lay["sticker_area"] = region;
+        // 清除选框：删掉两个角后仍可解析（回到 grid）
+        let back: Layout = serde_json::from_value(lay.clone()).expect("前端 layout patch 应可解析");
+        let rects = region_rects(&back.sticker_area);
+        assert_eq!(rects.len(), 1, "自由选框应取代多格子");
+        assert_eq!(rects[0].0.x, "10.00%");
+        assert_eq!(rects[0].1.y, "95.00%");
+        assert_eq!(back.sticker_area.grid.len(), 2, "grid 保留作为清除后的回退");
+
+        let mut cleared = lay["sticker_area"].clone();
+        cleared.as_object_mut().unwrap().remove("top_left");
+        cleared.as_object_mut().unwrap().remove("bottom_right");
+        lay["sticker_area"] = cleared;
+        let back: Layout = serde_json::from_value(lay).expect("清除选框后应可解析");
+        assert_eq!(region_rects(&back.sticker_area).len(), 2, "清除后回到九宫格");
     }
 }

@@ -12,6 +12,7 @@
 | v2 | 转写+检测合并为预处理；预处理页契合现有逻辑；切片未剪切事件保留折叠/放大；精修功能全保留 + 片段切换带标题；删渲染导出独立页；侧栏置顶「新建项目」；预处理页改为项目总览（字幕列表移除，字幕编辑只在精修页） |
 | v3 | 细化为实施规格：页面逐卡规格、侧栏节点状态推导、store/API 契约、失效矩阵、目标文件树、阶段任务分解、风险清单 |
 | v5 | 对齐预览样稿 `ia-demos/multiuser.html`：预处理=视频+字幕轨道（块点击行内编辑）+切片标记；切片未剪切事件=侧收细条/卡片式放大；精修=直接进编辑器+片段列表、生成与导出（含贴纸来源）、LLM 剪辑、无状态与保存卡（自动保存）、无 wgpu 入口、九宫格（贴纸位置）、封面设计器独立区块、产物底部整行 |
+| v6 | **2026-09-14（用户要求）：九宫格 3×3 选择器 → 「布局框选」**。精修页的「九宫格布局」卡取消，改为「生成与导出」卡内的**布局框选**小节（区域下拉 + 框选布局按钮 + 矩形读数 + 保存/清除）；点「框选布局」后预览进入**选框模式**（此模式下视频运镜暂停、缩放复位，整帧上直接拖框体平移 / 拖 8 个角边缩放，比九宫格更精确）。落盘仍是 `polish.toml` 的 `[layout.<区域>]`，用 `top_left`/`bottom_right`（百分比）表达自由选框，**优先于 `grid`**；`grid` 保留为清除选框后的回退（旧配置零迁移）。 |
 | v4 | 对齐多用户服务器计划（`docs/superpowers/specs/2026-09-12-multi-user-server-design.md`，远期）：路由参数改不透明 `:pid`、作用域解析收敛 api 层单点、client.js 错误分类与 CSRF 注入点、新建项目来源抽象、侧栏全局入口列表化、渲染导出默认项目内 `export.mp4`；新增 §11 预留设计 |
 
 ## 1. 背景与定案
@@ -136,15 +137,24 @@ z-index 层级（统一现有散落值）：
 
 **布局**（三层）：
 
-1. **顶部两卡（同一行）**：
-   - **生成与导出**：`LLM 剪辑`（原"LLM 重新生成"更名；`polish/llm`，完成自动链 process）+ `去静音` + `渲染导出`（默认项目内 `export.mp4`，本地模式允许改路径；多用户期收敛为固定值，见 §11）+ **贴纸来源**（本地贴纸包 / emoji，同卡内分区；无 IRASUTO）
-   - **片段**：纵向列表 `N · 标题` + 状态 chip（已精修/精修中/未初始化），当前片段高亮，未初始化行内「初始化」；点击 = 路由 `polish/:clip`
-2. **中部**：左 = 播放器 + TimelineEditor（字幕/屏蔽/贴纸/音效四泳道、波形、拖拽缩放、空格播放、自动保存 polish.toml；**字幕块点击行内编辑**，与预处理轨道一致）；右 = **九宫格布局（贴纸位置）**（3×3 区域可视化，说明"贴纸默认落在所选区域"）
+1. **顶部（片段列表）**：纵向列表 `N · 标题` + 状态 chip（已精修/精修中/未初始化），当前片段高亮，未初始化行内「初始化」；点击 = 路由 `polish/:clip`（整行卡片，v6 起置于预览之上）
+2. **中部**：左 = 播放器（PolishPreview）+ TimelineEditor（字幕/屏蔽/贴纸/音效四泳道、波形、拖拽缩放、空格播放、自动保存 polish.toml；**字幕块点击行内编辑**）；右 = **生成与导出**（单卡三节：① 导出动作 `LLM 剪辑`/`去静音`/`渲染导出` + 任务框；② **布局框选**（v6，取代九宫格：区域下拉 + 「框选布局」进入预览选框模式 + 矩形读数 + 保存/清除）；③ 贴纸来源）
+   - 栅格用 `grid cols-main`（`1fr 300px`），与 v5 样稿一致；不再有第二张「九宫格布局」卡
 3. **底部**：**封面设计器**（独立区块，功能对齐现有 CoverDesigner：舞台预览 + 时间/取当前帧/导出关键帧/导入背景图片、预设（左文/居中/右文/极简）、标题与高亮（多行标题、LLM 生成标题、高亮色、文字阴影、关键词 chips）、排版滑块（对齐/字号/X/Y/描边/行距）、背景与阴影（阴影方向/暗角/背景缩放）、封面特效叠加（光晕/模糊/暗角点/颜色覆盖/扫描线）、生成封面）；最底 **产物整行**（成片 export.mp4 + 封面 cover.jpg + 打开输出目录）
 
-**已移除**：状态与保存卡（字幕与 segments 走自动保存，无手动保存按钮）、`真渲染预览` 按钮（wgpu 功能暂歇，界面不出现；后端 `render-frame` 接口保留）、独立片段选择器页、独立"字幕编辑"列表（编辑在轨道块上）。
+**布局框选（v6）与九宫格的关系**：
 
-**精修功能保留清单**（重构不触碰其行为）：九宫格布局编辑器（GRID_CELLS/REGION_LABELS）、CoverDesigner 全部能力、贴纸来源配置、字幕编辑（轨道块行内编辑，保存走 polish 字幕接口）、SFX 预览音量（audio.js）。
+| 项 | 说明 |
+|---|---|
+| 交互 | 点「框选布局」→ 预览叠加选框（盒外压暗）；拖框体平移，拖 8 个角/边缩放，空白处拖拽 = 重画。此模式**暂停视频运镜并复位缩放/滤镜**，选框坐标 = 1920×1080 整帧百分比 |
+| 落盘 | `layout[区域].top_left / bottom_right = { x = "55%", y = "15%" }`（服务端 `Layout` 已有字段，无 schema 变更） |
+| 优先级 | Rust `free_rect()` → `region_rects()` / `region_origin()` 均为**自由选框 > grid > origin_grid/origin**（贴纸落点与运镜聚焦中心随之改变）；JS 侧 `engine.js` 的 `regionOrigin/regionRect` 与 `templates/index.html` 的 `liverOrigin` 同步同一规则 |
+| 回退 | 「清除选框」删掉两个角即回到原 `grid`；`grid` 字段全程不被框选改写，旧工程零迁移 |
+| 生效 | 保存后自动跑一次 `后处理`（贴纸位置重算）；渲染导出本身已内链 process |
+
+**已移除**：状态与保存卡（字幕与 segments 走自动保存，无手动保存按钮）、`真渲染预览` 按钮（wgpu 功能暂歇，界面不出现；后端 `render-frame` 接口保留）、独立片段选择器页、独立"字幕编辑"列表（编辑在轨道块上）、**九宫格 3×3 选择器卡（v6 由布局框选取代）**。
+
+**精修功能保留清单**（重构不触碰其行为）：CoverDesigner 全部能力、贴纸来源配置、字幕编辑（轨道块行内编辑，保存走 polish 字幕接口）、SFX 预览音量（audio.js）；区域布局改为自由选框 + `REGION_LABELS` 区域下拉（九宫格 `grid` 仍可手改 TOML 作为兜底）。
 
 ### 2.7 设置页
 
@@ -270,8 +280,8 @@ webui/src/
 │  ├─ side/        SideNav.vue · ProjectNode.vue
 │  ├─ jobs/        JobDrawer.vue（JobList 迁入+查看全部弹层）
 │  ├─ timeline/    TimelineEditor.vue（骨架）· WaveformLane.vue · SubtitleLane.vue · MuteLane.vue
-│  ├─ polish/      GenerateExportCard.vue（生成与导出·含贴纸来源）· FragmentList.vue ·
-│  │               CoverDesignerSection.vue · GridNine.vue（九宫格·贴纸位置）·
+│  ├─ polish/      GenerateExportCard.vue（生成与导出·含贴纸来源与布局框选）· FragmentList.vue ·
+│  │               CoverDesignerSection.vue · ~~GridNine.vue~~（v6 取消，框选叠加层在 PolishPreview 内）·
 │  │               ArtifactBar.vue（底部产物整行）· PolishPreview.vue · TimelineEditor 装配
 │  ├─ slices/      ProjectClipsSection.vue · ClipCard.vue · UncutEventsPanel.vue
 │  └─ common/      Icon · AppModal · AppDialog · ToastHost · FileBrowserModal · NewProjectModal · Steps
@@ -308,7 +318,7 @@ webui/src/
 - [ ] 任务完成 → 侧栏徽标 + 工作区数据自动刷新（无整页重拉、无重复聚合请求）
 - [ ] 预处理轨道工作台：字幕块点击行内编辑；标记入点/出点后切片进待切列表；动作卡与现有功能一致
 - [ ] 切片：排序四键、未剪切事件侧收细条/卡片式放大、单切/全切、静音、渲染
-- [ ] 精修：片段列表切换/行内初始化、LLM 剪辑自动链 process/渲染导出/去静音/九宫格（贴纸位置）/封面设计器/时间轴全部交互；自动保存无手动保存按钮
+- [ ] 精修：片段列表切换/行内初始化、LLM 剪辑自动链 process/渲染导出/去静音/**布局框选（v6：预览选框模式 + 保存/清除，运镜暂停）**/封面设计器/时间轴全部交互；自动保存无手动保存按钮
 - [ ] 旧深链 `#/project/...` 全部 redirect 正常
 - [ ] 作用域单点：除 `api/projectData.js` / `api/polish.js` 外，无任何文件拼接 `?config=` 或 `dir=`（多用户迁移面验证）
 - [ ] `npm run build` 零错误；`cargo build` 0 warning

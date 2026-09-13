@@ -507,9 +507,9 @@ pub struct LayoutRegion {
 }
 
 impl LayoutRegion {
-    /// 是否为空（无有效格子）
+    /// 是否为空（既没有九宫格格子，也没有自由选框）
     pub fn is_empty(&self) -> bool {
-        self.grid.is_empty()
+        self.grid.is_empty() && free_rect(self).is_none()
     }
 }
 
@@ -575,8 +575,36 @@ pub fn parse_pct(s: &str) -> f64 {
     s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
 }
 
-/// 将 LayoutRegion 的多个格子解析为独立矩形列表（不合并包围盒）。
+/// 自由选框（新）：「框选布局」得到的精确矩形，落在 `top_left` / `bottom_right` 两个字段上。
+///
+/// 两个角都存在且面积有效时返回规范化的 (左上, 右下)：
+/// 顺序化（拖拽可能左上右下颠倒）、百分比裁剪到 0~100、过小/退化返回 None。
+/// 该矩形**优先于** `grid` —— 框选是更精确的表达，`grid` 保留作为清除选框后的回退。
+pub fn free_rect(region: &LayoutRegion) -> Option<(Point, Point)> {
+    let tl = region.top_left.as_ref()?;
+    let br = region.bottom_right.as_ref()?;
+    let x0 = parse_pct(&tl.x).clamp(0.0, 100.0);
+    let y0 = parse_pct(&tl.y).clamp(0.0, 100.0);
+    let x1 = parse_pct(&br.x).clamp(0.0, 100.0);
+    let y1 = parse_pct(&br.y).clamp(0.0, 100.0);
+    let (x0, x1) = (x0.min(x1), x0.max(x1));
+    let (y0, y1) = (y0.min(y1), y0.max(y1));
+    if x1 - x0 < 0.5 || y1 - y0 < 0.5 {
+        return None;
+    }
+    let p = |x: f64, y: f64| Point {
+        x: format!("{x:.2}%"),
+        y: format!("{y:.2}%"),
+    };
+    Some((p(x0, y0), p(x1, y1)))
+}
+
+/// 将 LayoutRegion 解析为矩形列表（不合并包围盒）。
+/// 优先级：自由选框（单矩形） > 九宫格格子（各自独立矩形）。
 pub fn region_rects(region: &LayoutRegion) -> Vec<(Point, Point)> {
+    if let Some(rect) = free_rect(region) {
+        return vec![rect];
+    }
     let mut out = Vec::new();
     for name in &region.grid {
         if let Some((tl, br)) = grid_rect(name) {
@@ -587,8 +615,14 @@ pub fn region_rects(region: &LayoutRegion) -> Vec<(Point, Point)> {
 }
 
 /// 解析运镜聚焦中心（百分比字符串 "x% y%"）。
-/// 优先级：origin_grid（格子中心） > origin（旧百分比） > grid 第一个格子中心。
+/// 优先级：自由选框中心（框选出来的精确位置） > origin_grid（格子中心） >
+/// origin（旧百分比） > grid 第一个格子中心。
 pub fn region_origin(region: &LayoutRegion) -> Option<String> {
+    if let Some((tl, br)) = free_rect(region) {
+        let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;
+        let cy = (parse_pct(&tl.y) + parse_pct(&br.y)) / 2.0;
+        return Some(format!("{cx:.2}% {cy:.2}%"));
+    }
     if let Some(g) = &region.origin_grid {
         if let Some((tl, br)) = grid_rect(g) {
             let cx = (parse_pct(&tl.x) + parse_pct(&br.x)) / 2.0;

@@ -33,16 +33,73 @@ export function transientDur(ev, def) {
   return Math.max(0.1, Math.min(d, cap))
 }
 
-// ---- 九宫格中心点（命名与 project/config.rs grid_rect 一致：bot-left / bot-right）----
-const GRID_CENTERS = {
-  'top-left': [16.67, 16.67], 'top': [50, 16.67], 'top-right': [83.33, 16.67],
-  'mid-left': [16.67, 50], 'center': [50, 50], 'mid-right': [83.33, 50],
-  'bot-left': [16.67, 83.33], 'bottom': [50, 83.33], 'bot-right': [83.33, 83.33],
+// ---- 九宫格格子矩形（百分比；命名与 Rust render-core/types.rs grid_rect 一致）----
+// 顺序同 Rust 的 GRID_CELLS 列表：左上→右下。
+export const GRID_RECTS = {
+  'top-left': [0, 0, 33.33, 33.33],
+  'top': [33.33, 0, 66.67, 33.33],
+  'top-right': [66.67, 0, 100, 33.33],
+  'mid-left': [0, 33.33, 33.33, 66.67],
+  'center': [33.33, 33.33, 66.67, 66.67],
+  'mid-right': [66.67, 33.33, 100, 66.67],
+  'bot-left': [0, 66.67, 33.33, 100],
+  'bottom': [33.33, 66.67, 66.67, 100],
+  'bot-right': [66.67, 66.67, 100, 100],
 }
+
+const GRID_CENTERS = Object.fromEntries(
+  Object.entries(GRID_RECTS).map(([k, r]) => [k, [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2]])
+)
 
 export function gridOrigin(name) {
   const p = GRID_CENTERS[name] || [50, 50]
   return p[0] + '% ' + p[1] + '%'
+}
+
+const clampPct = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0 }
+
+/**
+ * 自由选框（`top_left` / `bottom_right`，百分比）→ {x0,y0,x1,y1}；
+ * 未设置或退化（宽/高 < 0.5%）返回 null。与 Rust `types.rs::free_rect` 语义一致：
+ * 顺序化 + 裁剪到 0~100，且**优先于** grid。
+ */
+export function freeRect(region) {
+  const tl = region && region.top_left
+  const br = region && region.bottom_right
+  if (!tl || !br) return null
+  let [x0, x1] = [clampPct(tl.x), clampPct(br.x)].sort((a, b) => a - b)
+  let [y0, y1] = [clampPct(tl.y), clampPct(br.y)].sort((a, b) => a - b)
+  if (x1 - x0 < 0.5 || y1 - y0 < 0.5) return null
+  return { x0, y0, x1, y1 }
+}
+
+/** 区域中心（"x% y%"）：自由选框 > origin_grid > origin > 首个格子 > 65% 50%（与 Rust region_origin 一致）。 */
+export function regionOrigin(region) {
+  const fr = freeRect(region)
+  if (fr) return ((fr.x0 + fr.x1) / 2).toFixed(2) + '% ' + ((fr.y0 + fr.y1) / 2).toFixed(2) + '%'
+  if (!region) return '65% 50%'
+  if (region.origin_grid) return gridOrigin(region.origin_grid)
+  if (region.origin) return String(region.origin)
+  if (region.grid && region.grid.length) return gridOrigin(region.grid[0])
+  return '65% 50%'
+}
+
+/**
+ * 区域当前占用的矩形，用于「框选布局」进入时的初始选框：
+ * 自由选框优先；否则取所有九宫格格子的包围盒；都没有 → null。
+ */
+export function regionRect(region) {
+  const fr = freeRect(region)
+  if (fr) return fr
+  let b = null
+  for (const name of (region && region.grid) || []) {
+    const r = GRID_RECTS[name]
+    if (!r) continue
+    b = b
+      ? [Math.min(b[0], r[0]), Math.min(b[1], r[1]), Math.max(b[2], r[2]), Math.max(b[3], r[3])]
+      : [r[0], r[1], r[2], r[3]]
+  }
+  return b ? { x0: b[0], y0: b[1], x1: b[2], y1: b[3] } : null
 }
 
 // ---- 弹幕文字宽度预测量（canvas measureText，仅用离屏画布量宽）----
@@ -164,8 +221,8 @@ export function cameraAt(idx, t) {
   let zoom = 1.0
   let ox = 65
   let oy = 50
-  const liver = idx.layout.liver || {}
-  const defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%')
+  // 默认聚焦中心：自由选框（框选布局）> origin_grid > origin > 首个格子
+  const defOrigin = regionOrigin(idx.layout.liver)
   const dp = defOrigin.split(' ')
   ox = parseFloat(dp[0]) || 65
   oy = parseFloat(dp[1]) || 50
