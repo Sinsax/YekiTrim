@@ -132,7 +132,12 @@ export function projectEntryPath(pid, stage) {
 }
 
 export function normalizeSlashes(p) {
-  return String(p || '').split(String.fromCharCode(92)).join('/')
+  // 去掉 Windows 逐字前缀 `\\?\`（canonicalize 的产物）：带它去做 URL/拼接会变成非法路径
+  return String(p || '')
+    .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+    .replace(/^\\\\\?\\/, '')
+    .split(String.fromCharCode(92))
+    .join('/')
 }
 
 /**

@@ -420,7 +420,7 @@ async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
         "ffprobe": command_available("ffprobe").await,
         "models_dir": models_dir.to_string_lossy(),
         "models": model_status,
-        "workspace": ws.config_file.to_string_lossy(),
+        "workspace": vtrim_core::path::display(&ws.config_file),
     }))
 }
 
@@ -483,8 +483,8 @@ fn config_get_impl(ws: &Workspace) -> ApiResult {
         Err(e) => (serde_json::Value::Null, format!("{e:#}")),
     };
     ok(serde_json::json!({
-        "config_file": ws.config_file.to_string_lossy(),
-        "root_dir": ws.root_dir.to_string_lossy(),
+        "config_file": vtrim_core::path::display(&ws.config_file),
+        "root_dir": vtrim_core::path::display(&ws.root_dir),
         "vtrim_raw": vtrim_raw,
         "global_raw": global_raw,
         "llm_raw": llm_raw,
@@ -1510,7 +1510,7 @@ fn data_clips_impl(ws: &Workspace) -> ApiResult {
         let subtitle_count = count_srt_cues(&dir_path.join("clip.srt"));
         let danmaku_count = count_srt_cues(&dir_path.join("clip.dm.srt"));
         out.push(serde_json::json!({
-            "dir": dir_path.to_string_lossy(),
+            "dir": vtrim_core::path::display(&dir_path),
             "name": entry.file_name().to_string_lossy(),
             "video_exists": video_path.exists(),
             "size_bytes": size_bytes,
@@ -1780,15 +1780,44 @@ async fn fs_list(
             }
         }
     };
+    // `enter`：进入下一级目录（**名字由服务端拼接**，前端不再做字符串加法，
+    // 否则 `\\?\F:\a` + "/b" 会拼成非法路径 → ERROR_INVALID_NAME 123）
+    let target = match body
+        .get("enter")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        None => target,
+        Some(name) => {
+            if name.contains('/')
+                || name.contains('\\')
+                || name.contains(':')
+                || name == "."
+                || name == ".."
+            {
+                return Err(err(StatusCode::BAD_REQUEST, format!("非法目录名: {name}")));
+            }
+            let child = target.join(name);
+            if !child.is_dir() {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!("目录不存在: {name}（在 {} 下）", vtrim_core::path::display(&target)),
+                ));
+            }
+            child
+        }
+    };
     if !target.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能浏览目录"));
     }
     let cur = target.canonicalize().unwrap_or_else(|_| target.clone());
-    let cur_str = cur.to_string_lossy().into_owned();
+    // **回到"人能读、能回传"的形式**：去掉 canonicalize 产生的 `\\?\` 前缀
+    let cur_str = vtrim_core::path::display(&cur);
     // 绝对父目录：让前端"上一级"能一路走到盘符根（管理员随意浏览）
     let parent = cur
         .parent()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| vtrim_core::path::display(p))
         .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
     let scan_dir = target.clone();
@@ -1808,10 +1837,10 @@ async fn fs_list(
     let root_list: Vec<serde_json::Value> = roots
         .iter()
         .map(|r| {
-            // 统一成 canonical 形式（Windows 上是 \\?\ 前缀），前端原样回传即可命中快捷入口
+            // 显示形式（去掉 \\?\ 前缀）；前端原样回传即可命中快捷入口
             let canon = r.canonicalize().unwrap_or_else(|_| r.clone());
             serde_json::json!({
-                "path": canon.to_string_lossy(),
+                "path": vtrim_core::path::display(&canon),
                 "label": crate::service::projects::root_label(user.id, &canon),
                 "tenant": canon == tenant.canonicalize().unwrap_or_else(|_| tenant.clone()),
             })
@@ -1844,7 +1873,7 @@ async fn fs_list(
         "root": cur_str,
         "root_label": crate::service::projects::root_label(user.id, &cur),
         "roots": root_list,
-        "tenant_root": tenant.to_string_lossy(),
+        "tenant_root": vtrim_core::path::display(&tenant),
         "path": rel,
         "parent": parent,
         "dirs": dirs,
@@ -2296,7 +2325,7 @@ fn polish_projects_impl(ws: &Workspace) -> ApiResult {
                 }
             }
             out.push(serde_json::json!({
-                "dir": dir.to_string_lossy(),
+                "dir": vtrim_core::path::display(&dir),
                 "title": title,
                 "polish_ready": polish_ready,
                 "processed": processed,
