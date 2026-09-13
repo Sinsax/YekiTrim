@@ -7,6 +7,7 @@ export const KIND_ZH = {
   stage_transcribe: '语音转文字',
   stage_detect: '事件检测',
   stage_cut: '剪切',
+  stage_process: '全自动处理',
   cut_all: '一键全切',
   cut_one: '单事件剪切',
   correct: 'LLM 订正',

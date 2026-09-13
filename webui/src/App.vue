@@ -98,7 +98,8 @@ const currentProject = computed(() => projectById(route.params.pid))
 const stepName = computed(() => STEPS.find((s) => s.key === routeStep.value)?.name || '')
 const routeStep = computed(() => {
   const name = String(route.name || '')
-  if (name === 'project-polish') return 'polish'
+  // project-polish-clip（精修/:clip 片段编辑器）也算精修步，否则面包屑掉回「预处理」
+  if (name === 'project-polish' || name === 'project-polish-clip') return 'polish'
   if (name === 'project-slices') return 'slices'
   if (name === 'project-settings') return ''
   return 'prepare'

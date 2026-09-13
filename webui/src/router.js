@@ -37,8 +37,11 @@ const routes = [
 
   // ---- 旧路径 redirect（v5 之前的路由全部保留兼容） ----
   { path: '/projects', redirect: '/workbench' },
-  { path: '/project/:cfg', redirect: (to) => `/p/${encodeURIComponent(to.params.cfg)}` },
-  { path: '/project/:cfg/:rest(.*)', redirect: (to) => `/p/${encodeURIComponent(to.params.cfg)}/${to.params.rest || 'prepare'}`.replace(/\/preview$/, '/prepare') },
+  // 旧路由的 :cfg 是 config 路径；新作用域只认数字项目 id，路径形式一律回首页
+  { path: '/project/:cfg', redirect: (to) => /^\d+$/.test(to.params.cfg) ? `/p/${to.params.cfg}` : '/workbench' },
+  { path: '/project/:cfg/:rest(.*)', redirect: (to) => /^\d+$/.test(to.params.cfg)
+    ? `/p/${to.params.cfg}/${to.params.rest || 'prepare'}`.replace(/\/preview$/, '/prepare')
+    : '/workbench' },
   { path: '/polish', redirect: '/workbench' },
   { path: '/jobs', redirect: '/workbench' },
   { path: '/models', redirect: '/settings' },
