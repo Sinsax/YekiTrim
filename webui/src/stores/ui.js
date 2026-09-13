@@ -1,8 +1,21 @@
 // 全局 UI 开关（弹层这类"跨组件触发"的状态放这里，避免 router-view 事件透传）。
 import { reactive } from 'vue'
 
+const LS_SIDE = 'vtrim.ui.sideCollapsed'
+
+// 启动时同步读取：侧栏折叠态必须在首帧就生效（否则会先展开再收起来，闪一下）
+function readSideCollapsed() {
+  try {
+    return localStorage.getItem(LS_SIDE) === '1'
+  } catch {
+    return false
+  }
+}
+
 export const ui = reactive({
-  jobs: false
+  jobs: false,
+  /** 左侧栏是否折叠成图标轨（64px）；持久化在 localStorage */
+  sideCollapsed: readSideCollapsed()
 })
 
 export function openJobs() {
@@ -11,4 +24,11 @@ export function openJobs() {
 
 export function closeJobs() {
   ui.jobs = false
+}
+
+export function toggleSide() {
+  ui.sideCollapsed = !ui.sideCollapsed
+  try {
+    localStorage.setItem(LS_SIDE, ui.sideCollapsed ? '1' : '0')
+  } catch {}
 }
