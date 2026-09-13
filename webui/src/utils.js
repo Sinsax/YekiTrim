@@ -72,12 +72,63 @@ export function fmtTime(sec) {
 
 // 事件检测完成（events.json 已生成）的 stage：>= 此值说明预处理结束，可直接进切片页
 export const STAGE_EVENTS_READY = 3
+// 切片阶段跑完（output/clips/clips_order.txt 存在）的 stage
+export const STAGE_CLIPS_DONE = 4
 
-// 项目入口路由：预处理（事件检测）完成后直接进切片页，否则进预览页。
-// M2：作用域是项目 id（不再是工程路径）。
+// 三段流水线（与侧栏/面包屑共用）
+export const STEPS = [
+  { key: 'prepare', name: '预处理' },
+  { key: 'slices', name: '切片' },
+  { key: 'polish', name: '精修' }
+]
+
+/**
+ * 由项目状态推导「进度位」与各节点徽标。
+ *
+ * `detail`（来自 project store 缓存）缺省时用 `stage` 粗判（侧栏不为徽标打额外请求）；
+ * `stage >= 4` 表示切片阶段已跑完（`clips/clips_order.txt` 存在）。
+ */
+export function stageInfo(project, detail) {
+  const stage = Number(project?.stage || 0)
+  const hasDetail = !!detail
+  const clips = Number(detail?.clips?.length || 0)
+  const uncut = Number(detail?.uncutEvents?.length || 0)
+  const hasClips = hasDetail ? clips > 0 : !!project?.has_clips
+  const polished = Number(detail?.polishedCount || 0)
+
+  const prepareDone = stage >= STAGE_EVENTS_READY
+  const slicesDone = hasDetail ? hasClips && uncut === 0 : stage >= STAGE_CLIPS_DONE
+  const polishDone = hasDetail ? hasClips && clips > 0 && polished >= clips : false
+
+  let progress = 1
+  if (prepareDone) progress = 2
+  if (slicesDone) progress = 3
+
+  const badges = {
+    prepare: prepareDone ? '已预处理' : (stage > 0 ? `处理中 · ${stage}/3` : '待预处理'),
+    slices: hasDetail
+      ? (hasClips ? (uncut > 0 ? `已切 ${clips} · 待切 ${uncut}` : `已切 ${clips}`) : (prepareDone ? '待切片' : '待预处理'))
+      : (slicesDone ? '已切片' : (prepareDone ? '待切片' : '待预处理')),
+    polish: hasDetail
+      ? (hasClips ? `精修 ${polished}/${clips}` : '待切片')
+      : (hasClips || stage >= STAGE_CLIPS_DONE ? '精修 —' : '待切片')
+  }
+  const done = { prepare: prepareDone, slices: slicesDone, polish: polishDone }
+  return { progress, badges, done, clips, uncut, polished, hasClips, hasDetail }
+}
+
+/** 进度位 → 下一步（文案 + 路由 step）。 */
+export function nextStep(project, detail) {
+  const { progress } = stageInfo(project, detail)
+  if (progress <= 1) return { label: '打开预处理', step: 'prepare' }
+  if (progress === 2) return { label: '去切片', step: 'slices' }
+  return { label: '去精修', step: 'polish' }
+}
+
+/** 项目入口路由：预处理完成 → 切片页，否则 → 预处理页。 */
 export function projectEntryPath(pid, stage) {
-  const view = Number(stage || 0) >= STAGE_EVENTS_READY ? 'slices' : 'preview'
-  return `/project/${encodeURIComponent(pid)}/${view}`
+  const view = Number(stage || 0) >= STAGE_EVENTS_READY ? 'slices' : 'prepare'
+  return `/p/${encodeURIComponent(pid)}/${view}`
 }
 
 export function normalizeSlashes(p) {

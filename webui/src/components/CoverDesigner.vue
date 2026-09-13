@@ -191,7 +191,7 @@ import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import Icon from './Icon.vue'
 import { mediaUrl, fmtTime } from '../utils'
-import { watchJob } from '../polish/api'
+import { watchJob } from '../api/jobs'
 
 const props = defineProps({ dir: { type: String, required: true } })
 const emit = defineEmits(['changed'])

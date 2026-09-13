@@ -207,14 +207,16 @@ import { mediaUrl } from '../utils'
 import { api } from '../api/client'
 import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
-  initPolish, runLlm, runProcess, runRender, watchJob,
+  initPolish, runLlm, runProcess, runRender,
   fetchStickerSources,
-  GRID_CELLS, REGION_LABELS,
-} from '../polish/api'
+  GRID_CELLS, REGION_LABELS, clipRelDir,
+} from '../api/polish'
+import { watchJob } from '../api/jobs'
 
 const route = useRoute()
 const router = useRouter()
 const routePid = route.params.pid || ''
+const pid = ref(routePid)
 const routeCfg = 'project=' + encodeURIComponent(routePid)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
@@ -341,14 +343,14 @@ async function load() {
   }
   loading.value = true
   try {
-    cfg.value = await fetchProject(dir.value, true)
+    cfg.value = await fetchProject(pid.value, dir.value, true)
     title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
     ready.value = true
   } catch {
     ready.value = false
   }
   try {
-    subs.value = (await fetchSubtitles(dir.value)).segments || []
+    subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
   } catch { subs.value = [] }
   subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
   try {
@@ -383,7 +385,7 @@ async function loadClips() {
 
 async function reloadSubtitles() {
   try {
-    subs.value = (await fetchSubtitles(dir.value)).segments || []
+    subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
     subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
     refreshSnapshots()
   } catch {}
@@ -481,16 +483,16 @@ function startJob(kind, call, { after } = {}) {
 async function initProject() {
   const ok = await confirmDialog('将解析字幕/弹幕并创建 polish.toml', { title: '初始化精修项目？' })
   if (!ok) return
-  startJob('init', () => initPolish(dir.value), { after: load })
+  startJob('init', () => initPolish(pid.value, dir.value), { after: load })
 }
 
 function runLlmJob() {
-  startJob('llm', () => runLlm(dir.value), { after: load })
+  startJob('llm', () => runLlm(pid.value, dir.value), { after: load })
 }
 
 function doRender() {
   renderModal.value = false
-  startJob('render', () => runRender(dir.value, renderOutput.value.trim()), { after: load })
+  startJob('render', () => runRender(pid.value, dir.value, clipRelDir(clipName.value)), { after: load })
 }
 
 // 保存编辑：时间轴分段 / 字幕，各自仅在变动时提交
@@ -500,14 +502,14 @@ async function saveEdits() {
   const segs = timelineRef.value?.segments
   if (segs && JSON.stringify(segs) !== savedSegs.value) {
     try {
-      await saveProjectPatch(dir.value, { segments: segs })
+      await saveProjectPatch(pid.value, dir.value, { segments: segs })
       savedSegs.value = JSON.stringify(segs)
       segsChanged = true
     } catch (e) { toast('保存时间轴失败：' + e.message, 'err'); return }
   }
   if (JSON.stringify(subs.value) !== savedSubsJson.value) {
     try {
-      await saveSubtitles(dir.value, subs.value)
+      await saveSubtitles(pid.value, dir.value, subs.value)
       savedSubsJson.value = JSON.stringify(subs.value)
       previewKey.value++
     } catch (e) { toast('保存字幕失败：' + e.message, 'err'); return }
@@ -515,7 +517,7 @@ async function saveEdits() {
   toast('编辑已保存')
   if (segsChanged) {
     // 时间轴变更后隐式 process（完成后刷新预览）
-    startJob('process', () => runProcess(dir.value), { after: load })
+    startJob('process', () => runProcess(pid.value, dir.value), { after: load })
   }
 }
 
@@ -524,17 +526,17 @@ function onTimelineSave(changes) {
   const mutes = Array.isArray(changes) ? null : changes?.mute_ranges
   const patch = { segments: segs }
   if (mutes) patch.mute_ranges = mutes
-  saveProjectPatch(dir.value, patch)
+  saveProjectPatch(pid.value, dir.value, patch)
     .then(() => {
       toast('时间轴已保存，自动执行后处理…')
-      return startJob('process', () => runProcess(dir.value), { after: load })
+      return startJob('process', () => runProcess(pid.value, dir.value), { after: load })
     })
     .catch((e) => toast(e.message, 'err'))
 }
 
 async function onMuteSaved(ranges) {
   try {
-    await saveProjectPatch(dir.value, { mute_ranges: ranges })
+    await saveProjectPatch(pid.value, dir.value, { mute_ranges: ranges })
     if (cfg.value) cfg.value.mute_ranges = ranges
     previewKey.value++
     // 「去静音」会直接改写 polish.toml，这里同步刷新屏蔽段数状态
@@ -546,7 +548,7 @@ async function onMuteSaved(ranges) {
 
 // 九宫格多选：点击切换格子是否在区域 grid 内
 function processByLayout() {
-  startJob('process', () => runProcess(dir.value), { after: load })
+  startJob('process', () => runProcess(pid.value, dir.value), { after: load })
 }
 
 async function toggleGridCell(key, cell, region) {
@@ -558,14 +560,14 @@ async function toggleGridCell(key, cell, region) {
     if (!grid.length) { toast('至少保留一个格子', 'err'); return }
     const lay = { ...(cfg.value?.layout || {}) }
     lay[key] = { ...(region || {}), grid }
-    await saveProjectPatch(dir.value, { layout: lay })
+    await saveProjectPatch(pid.value, dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
   } catch (e) { toast(e.message, 'err') }
 }
 
 async function saveSubs() {
   try {
-    await saveSubtitles(dir.value, subs.value)
+    await saveSubtitles(pid.value, dir.value, subs.value)
     savedSubsJson.value = JSON.stringify(subs.value)
     toast('字幕已保存')
     previewKey.value++
@@ -576,7 +578,7 @@ async function saveSubs() {
 // ---- 贴纸配置（sticker_source，直存 polish.toml）----
 async function loadStickerSources() {
   try {
-    stickerSources.value = (await fetchStickerSources()).sources || []
+    stickerSources.value = (await fetchStickerSources(pid.value, dir.value)).sources || []
   } catch { stickerSources.value = [] }
 }
 
@@ -590,7 +592,7 @@ async function loadHealth() {
 
 async function patchStickerSource(list) {
   try {
-    await saveProjectPatch(dir.value, { sticker_source: list })
+    await saveProjectPatch(pid.value, dir.value, { sticker_source: list })
     cfg.value = { ...cfg.value, sticker_source: list }
     toast('贴纸配置已保存')
   } catch (e) { toast(e.message, 'err') }
