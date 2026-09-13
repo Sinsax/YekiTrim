@@ -221,19 +221,27 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `invalidate(...)`；`composables/useJobs.js` 的 `onJobDone` 驱动失效矩阵
     （任务结束 → 缓存失效 + 徽标刷新）。任务带 `project` 字段，侧栏显示 "预处理 42%"。
   - 预处理页 = 播放器 + 字幕轨道（块内行内编辑/拖动平移）+ 切片标记行 + 预处理动作卡；
-    精修页 = 片段列表整行 → 播放器 + **生成与导出单卡**（① 导出动作 LLM/去静音/渲染导出
-    ② **布局框选** ③ 贴纸来源）→ 时间轴 → 封面设计器 → 底部产物整行；
-    切片页 = 操作条 + 卡片墙 + 未剪切事件（侧收细条 / 卡片式放大）。
-  - **布局框选（取代九宫格 3×3 选择器）**：`#/p/:pid/polish` 的「生成与导出」卡里点
-    「框选布局」→ `PolishPreview` 进入**选框模式**（视频运镜暂停、缩放/滤镜复位；盒外压暗；
-    拖框体平移、拖 8 个角/边缩放、空白拖拽重画，坐标为 1920×1080 整帧百分比）。
+    精修页 = 片段列表整行 → 播放器（页头右上是「人物 / 弹幕区域」框选按钮）+
+    **生成与导出卡**（导出动作 LLM/去静音/渲染导出 + 贴纸来源）→ 时间轴 → 封面设计器 →
+    底部产物整行；切片页 = 操作条 + 卡片墙 + 未剪切事件（侧收细条 / 卡片式放大）。
+  - **布局框选（取代九宫格 3×3 选择器）**：`#/p/:pid/polish` **页头右侧两个按钮**
+    「人物」「弹幕区域」（同一个再点=退出，点另一个=换区域）→ `PolishPreview` 进入**选框模式**
+    （视频运镜暂停、缩放/滤镜复位；盒外压暗；拖框体平移、拖 8 个角/边缩放、空白拖拽重画，
+    坐标为 1920×1080 整帧百分比），预览下方出现操作条：读数 + 保存选框 / 清除选框 + 区域提示。
+    **贴纸落点不在 UI 里框选**（`layout.sticker_area` 由 `process` 计算，要改就手改 polish.toml）。
     保存写 `polish.toml` 的 `layout[区域].top_left/bottom_right`（"55.00%" 百分比字符串），
     清除即删除两个角回到原 `grid`（grid 永不被框选改写 → 旧工程零迁移）。
+    **保存不触发任务**：人物框只影响运镜聚焦中心（渲染时读取）、弹幕区域仅作参考，
+    都不需要重跑 process（只有贴纸落点才依赖 process，而它已不在 UI 内）。
     读取优先级（`vtrim-render-core/src/types.rs`）：`free_rect()` →
     `region_rects()`/`region_origin()` 一律**自由选框 > grid > origin_grid/origin**；
     JS 侧同一规则在 `webui/src/polish/engine.js` 的 `regionRect/regionOrigin`（GRID_RECTS
     表须与 Rust `grid_rect` 对齐）与 `templates/index.html` 的 `liverOrigin`。
-    保存后自动跑一次 `process` 重算贴纸落点。
+  - **任务完成后的刷新必须静默**（别让页面看起来像浏览器刷新）：`PolishView.load({silent:true})`
+    不置 `loading`、不卸载编辑器 —— 非静默时 `v-if="loading"` 会把整个编辑器换成骨架屏，
+    编辑器一卸载，预览视频、`selectRegion` 与滚动位置全丢。需要重新从磁盘取数的子组件
+    各自用 `:key` 计数重挂载：`TimelineEditor`=`segKey`（LLM 剪辑/初始化/去静音）、
+    `CoverDesigner`=`coverKey`（渲染导出）、`PolishPreview`=`previewKey`（任何任务完成）。
   - 设置页：全局配置表单/源码双模式 + LLM 测试 + 模型管理（`ModelList`）+ 项目设置
     （项目配置表单/源码，ASR 模式等走 `PUT /api/project-data/config {patch}`）。
 - **认证（P1 已落地）**：除 `/api/health` 与 `/api/auth/login` 外**所有接口都要求会话**，
