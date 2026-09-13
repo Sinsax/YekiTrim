@@ -317,6 +317,20 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 
 - **P1 账号与账本**：SQLite + users/sessions/audit + 口令 KDF（见 §3.6）+ `/api/auth/*` + `/api/me` + 中间件 + `vtrim user *` + **首次启动生成 admin 与初始密码**（日志 + `<data_dir>/initial-admin-password.txt` + `must_change_password`）+ **全部接口统一要求会话（含 loopback，无免登录分支）**。此阶段仍只有 1 个账号，行为上就是"要登录的单人版"。
 - **P2 项目托管与隔离**：`projects` 表 + 项目目录布局 + `?config=`→`?project=` + `tenant.rs` 囚笼 + 删除全部本地路径入口 + admin-only 接口迁移 + 前端作用域改造。
+  - **✅ 已落地**（提交 `2e58644` / `8765ad9` / `deff292`）：schema v2（projects/storage，迁移前 VACUUM INTO 备份）、
+    `vtrim-core/src/tenant.rs`（词法拒绝 + 最深已存在祖先 canonicalize，符号链接逃逸实测拦下）、
+    `service/projects.rs`（租户布局 `users/<uid>/<room>/<时间戳>-<pid>`、占用计量、归属校验、
+    旧 `server.toml` 项目只读导入 admin）；
+    路由：`GET/POST /api/projects`、`DELETE /api/projects/:id`、`DELETE /api/projects/:id/source`；
+    `server/scope.rs` 的 `Scope` 提取器 + `enforce_scope` 中间件（relative dir 归一化写回 query/body，
+    因此 18 个 polish handler 不用改）；`/api/media/<project_id>/<相对路径>`；
+    `/api/admin/*` + `require_admin`（旧路径作为过渡别名挂同一层）；
+    `/api/fs/list` 收敛为"仅 admin + 囚笼在租户根 + 只接受相对路径"（§0.2.7 的单机来源）；
+    `JobManager` 带 `owner_id`，`/api/jobs*`、`/api/stream` 按归属过滤（他人任务 404）；
+    前端 M2：`/project/:pid`、`api/scope.js` 单点拼 `project=<id>`、项目卡片来源/占用/删源、
+    「从服务器文件新建」走囚笼浏览 + `POST /api/projects`。
+  - **偏差**：过渡期仍接受 `?config=<已登记本人项目>`（只作为"路径 → 项目"反查，未登记一律 404），
+    旧路径入口 `/api/project/init|open|delete` 保留为**囚笼内的别名**，P5 删除。
 - **P3 录播姬接入**：webhook（`EventId` 去重 + 乱序容错 + 立即 2xx）+ `ingest_sessions/ingest_files` + 兜底扫描 + channel_map + 多文件聚合/合并 + XML 弹幕解析 + 水位预检 + 入库槽任务 + 首页入库动态。
 - **P4 B站链接通道**：`resolve` + 下载器适配层 + 下载槽 + 新建项目弹窗（次要入口）。
 - **P5 容量与运维**：`storage` 计量与上限、管理员页、审计、临时清理、反代/TLS 文档、`vtrim doctor` 多用户自检、备份/恢复说明、`AGENTS.md`/`README.md` 更新。
