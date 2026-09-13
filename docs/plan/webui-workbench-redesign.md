@@ -291,14 +291,14 @@ webui/src/
 
 | # | 阶段 | 任务 | 触及文件 | 验证 |
 |---|---|---|---|---|
-| 1 | 布局壳+侧栏树 | App.vue → AppShell；SideNav/ProjectNode（置顶新建入口、节点推导、展开持久化）；路由重排+redirect 表；删 HomeView/PolishProjectsView/JobsView/ModelsView；JobDrawer | App.vue、router.js、side/*、jobs/*、views/-4 | 全部旧深链 redirect；侧栏直达；新建入口可用 |
-| 2 | store+API | workbench/project store、api/{projectData,jobs}、失效矩阵接线、localStorage | stores/*、api/*、useJobs.js | 切页无重复聚合请求；任务完成自动刷新 |
-| 3 | 预处理轨道工作台 | PreviewView→PrepareView：播放器+字幕轨道（块点击行内编辑）+切片标记行；预处理动作卡与 chips；ASR patch 保存（删 saveMode 正则） | views/PrepareView.vue、utils.js | 轨道编辑/切片标记/转写→检测→跳切片动线 |
-| 4 | 切片页 | 接 store；UncutEventsPanel 侧收细条/卡片式放大；ClipCard 抽取；预览跳 polish/:clip | slices/*、ProjectClipsSection | 侧收/展开/卡片放大/排序/单切/全切全通过 |
-| 5 | 精修页 | 直接进编辑器+FragmentList（行内初始化）；GenerateExportCard（含贴纸来源）；CoverDesignerSection；GridNine；ArtifactBar 底部整行；空态引导 | polish/*、views/PolishView.vue | 直接进编辑器/列表切换/初始化/各面板逐一验证 |
-| 6 | TimelineEditor 拆分 | 三泳道 + useTimelineGestures 纯搬运 | timeline/* | 手测清单比对（拖拽/缩放/拆分/空格/自动保存） |
-| 7 | 设置页 | 全局/项目双模式表单；模型管理并入；useJobRun 统一任务 UI | views/Settings*、composables/useJobRun.js | 保存走 raw/patch 且 TOML 校验生效 |
-| 8 | 文档 | AGENTS.md WebUI 章节；本文标记已实施 | AGENTS.md、本文 | `cargo build` 0 warning；`npm run build` 通过 |
+| 1 | 布局壳+侧栏树 | App.vue → AppShell；SideNav/ProjectNode（置顶新建入口、节点推导、展开持久化）；路由重排+redirect 表；删 HomeView/PolishProjectsView/JobsView/ModelsView；JobDrawer | App.vue、router.js、side/*、jobs/*、views/-4 | ✅ 已实施（提交 `f9c44e0`） |
+| 2 | store+API | workbench/project store、api/{projectData,jobs,polish}、失效矩阵接线、localStorage | stores/*、api/*、useJobs.js | ✅ 已实施（同上） |
+| 3 | 预处理轨道工作台 | PreviewView→PrepareView：播放器+字幕轨道（块点击行内编辑）+切片标记行；预处理动作卡与 chips；ASR patch 保存（删 saveMode 正则） | views/PrepareView.vue、utils.js | ✅ 已实施（提交 `05b4748`；新增 `components/prepare/SubtitleTrack.vue`，后端补 `PUT /api/project-data/config {patch}`） |
+| 4 | 切片页 | 接 store；UncutEventsPanel 侧收细条/卡片式放大；ClipCard 抽取；预览跳 polish/:clip | slices/*、ProjectClipsSection | ✅ 侧收/放大/排序/单切/全切已在 `ProjectClipsSection` 内实现（预览仍走媒体弹层，与 v5 样稿一致）；组件未再拆分为 ClipCard/UncutEventsPanel |
+| 5 | 精修页 | 直接进编辑器+FragmentList（行内初始化）；GenerateExportCard（含贴纸来源）；CoverDesignerSection；GridNine；ArtifactBar 底部整行；空态引导 | polish/*、views/PolishView.vue | ✅ 已实施（提交 `05b4748`，仍在 PolishView 单文件内，未拆子组件） |
+| 6 | TimelineEditor 拆分 | 三泳道 + useTimelineGestures 纯搬运 | timeline/* | ⏳ 未做（纯搬运重构，不影响 IA；`TimelineEditor.vue` 原样保留） |
+| 7 | 设置页 | 全局/项目双模式表单；模型管理并入；useJobRun 统一任务 UI | views/Settings*、composables/useJobRun.js | ✅ 模型管理早已并入 `SettingsView`（`ModelList`）；未新增 `useJobRun`（各页内联 watchJob） |
+| 8 | 文档 | AGENTS.md WebUI 章节；本文标记已实施 | AGENTS.md、本文 | ✅ 已更新 |
 
 ## 9. 验收清单
 

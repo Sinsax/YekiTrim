@@ -187,6 +187,24 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   找不到 `webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
   构建：`cd webui && npm install && npm run build`。`webui/dist` **已入库**
   （`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，否则端出旧界面。
+- **前端信息架构（v5 工作台，`docs/plan/webui-workbench-redesign.md`）**：
+  - 壳：左侧栏常驻（品牌 / ＋新建项目 / 项目过滤 / 项目树：名称+来源徽标+进度徽标+可展开的
+    预处理·切片·精修节点+占用 / 底部全局入口列表 + 用户 chip）+ 面包屑 + 内容区；
+    任务抽屉、新建向导、改密弹窗、Toast/Dialog 挂在壳上；登录页不套壳。
+  - 路由：`#/workbench`（项目列表 + 录制导入最近）、`#/p/:pid/{prepare,slices,polish,polish/:clip,settings}`、
+    `#/ingest`、`#/settings`（仅 admin）、`#/login`；`/` 按 localStorage 回上次项目+阶段；
+    **旧路径 `/project/:cfg/**`、`/polish`、`/jobs`、`/models`、`/projects` 全部 redirect**。
+  - 作用域单点：`api/scope.js` 的 `scopeQ(pid)`；业务调用只在 `api/projectData.js` /
+    `api/polish.js` / `api/jobs.js` 三处拼查询串，视图/组件不自己拼。
+  - `stores/workbench.js`：项目列表 + 侧栏展开/过滤/上次位置 + per-pid 数据缓存与
+    `invalidate(...)`；`composables/useJobs.js` 的 `onJobDone` 驱动失效矩阵
+    （任务结束 → 缓存失效 + 徽标刷新）。任务带 `project` 字段，侧栏显示 "预处理 42%"。
+  - 预处理页 = 播放器 + 字幕轨道（块内行内编辑/拖动平移）+ 切片标记行 + 预处理动作卡；
+    精修页 = 直接进编辑器（默认"精修中"片段、无切片给空态引导）+ 生成与导出/片段两卡 +
+    时间轴/九宫格 + 封面设计器 + 底部产物整行；切片页 = 操作条 + 卡片墙 + 未剪切事件
+    （侧收细条 / 卡片式放大）。
+  - 设置页：全局配置表单/源码双模式 + LLM 测试 + 模型管理（`ModelList`）+ 项目设置
+    （项目配置表单/源码，ASR 模式等走 `PUT /api/project-data/config {patch}`）。
 - **认证（P1 已落地）**：除 `/api/health` 与 `/api/auth/login` 外**所有接口都要求会话**，
   含 loopback；**没有免登录分支、没有来源地址判定**。单人部署＝只有一个 admin 账号的部署：
   - 首次启动生成 `admin` + 随机初始密码，日志打印一次并写入

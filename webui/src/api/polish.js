@@ -59,6 +59,9 @@ async function startJob(url, pid, dir, extra = {}) {
   return api(url, { method: 'POST', body: JSON.stringify({ ...scoped(pid, dir), ...extra }) })
 }
 
+/** 通用 polish POST（`{project, dir, ...extra}`），供旧组件迁移用。 */
+export const polishPost = startJob
+
 export const initPolish = (pid, dir) => startJob('/api/polish/init', pid, dir)
 export const runLlm = (pid, dir) => startJob('/api/polish/llm', pid, dir)
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
