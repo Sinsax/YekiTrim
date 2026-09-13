@@ -288,6 +288,9 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
 
     let state = Arc::new(model::AppState::with_auth(workspace, workspace_root, auth));
 
+    // 录播姬入库 worker（P3）：webhook 落库后唤醒，另有 60s 兜底扫描
+    ingest_worker::start(state.clone());
+
     let router = api::router(state.clone());
     let app = Router::new()
         .nest("/api", router)
