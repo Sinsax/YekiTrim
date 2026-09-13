@@ -12,3 +12,4 @@ pub mod danmaku;
 pub mod cutting;
 pub mod progress;
 pub mod filelock;
+pub mod tenant;

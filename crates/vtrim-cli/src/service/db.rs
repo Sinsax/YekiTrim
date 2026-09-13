@@ -14,7 +14,9 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// 账本 schema 版本（`PRAGMA user_version`）；新增迁移时递增并在 `migrate()` 中分支。
-pub const SCHEMA_VERSION: i64 = 1;
+/// - v1：users / sessions / audit
+/// - v2：projects（项目托管）+ storage（占用计量）
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VTRIM_DATA_DIR") {
@@ -61,11 +63,42 @@ pub struct SessionRow {
     pub must_change_password: bool,
 }
 
-pub struct Db {
-    conn: Mutex<Connection>,
+/// 项目行（归属由 DB 决定：用户可见范围 = 他拥有的 projects 行，§5.1）。
+#[derive(Debug, Clone)]
+pub struct ProjectRow {
+    pub id: i64,
+    pub owner_id: i64,
+    pub name: String,
+    /// 房间号（录播姬来源）
+    pub room: Option<String>,
+    /// `local` | `recorder` | `bilibili`
+    pub source_kind: String,
+    /// 展示用来源文字（`录制 23058` / `B站 av123`）
+    pub source_label: Option<String>,
+    pub root_dir: PathBuf,
+    pub config_file: PathBuf,
+    /// 录播姬会话 id（P3 入库时写入，用于"同一场直播只建一个项目"）
+    #[allow(dead_code)]
+    pub session_id: Option<String>,
+    pub created_at: i64,
+    pub last_active_at: Option<i64>,
+    pub source_bytes: u64,
+    pub output_bytes: u64,
+    /// 目录/vtrim.toml 已不存在（列表里显示"缺失"而不是直接消失）
+    pub missing: bool,
 }
 
-impl Db {
+impl ProjectRow {
+    pub fn total_bytes(&self) -> u64 {
+        self.source_bytes + self.output_bytes
+    }
+}
+
+pub struct Db {
+    conn: Mutex<Connection>,
+    /// 库文件位置（迁移前备份用）
+    path: PathBuf,
+}impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -75,9 +108,15 @@ impl Db {
             .with_context(|| format!("无法打开账号账本 {}", path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .context("初始化 SQLite PRAGMA 失败")?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self { conn: Mutex::new(conn), path: path.to_path_buf() };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// 库文件位置。
+    #[allow(dead_code)] // 诊断/备份路径展示用
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn open_default() -> Result<Self> {
@@ -90,11 +129,27 @@ impl Db {
     }
 
     pub fn migrate(&self) -> Result<()> {
-        self.with(|conn| {
-            let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            if current >= SCHEMA_VERSION {
-                return Ok(());
+        let current: i64 = self.with(|conn| Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?))?;
+        if current >= SCHEMA_VERSION {
+            return Ok(());
+        }
+        // 迁移前备份（§3.5.8）：只有"已存在的旧库"才需要，新库 current==0
+        if current > 0 {
+            let backup = self.path.with_file_name(format!(
+                "{}.bak-{current}",
+                self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "vtrim.db".into())
+            ));
+            // WAL 下用 VACUUM INTO 拿到一致快照；失败退回文件拷贝
+            let vac = self.with(|conn| {
+                conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
+                    .map_err(|e| anyhow::anyhow!(e))
+            });
+            if vac.is_err() {
+                let _ = std::fs::copy(&self.path, &backup);
             }
+            tracing::info!("账号账本 schema 迁移 v{current} → v{SCHEMA_VERSION}，已备份到 {}", backup.display());
+        }
+        self.with(|conn| {
             conn.execute_batch(
                 r#"
                 CREATE TABLE IF NOT EXISTS users (
@@ -124,6 +179,30 @@ impl Db {
                     action  TEXT NOT NULL,
                     detail  TEXT,
                     ip      TEXT
+                );
+                -- v2：项目托管（归属由 DB 决定，路径面归零的地基，§5.1）
+                CREATE TABLE IF NOT EXISTS projects (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name           TEXT NOT NULL,
+                    room           TEXT,
+                    source_kind    TEXT NOT NULL DEFAULT 'local',
+                    source_label   TEXT,
+                    root_dir       TEXT NOT NULL,
+                    config_file    TEXT NOT NULL,
+                    session_id     TEXT,
+                    created_at     INTEGER NOT NULL,
+                    last_active_at INTEGER,
+                    source_bytes   INTEGER NOT NULL DEFAULT 0,
+                    output_bytes   INTEGER NOT NULL DEFAULT 0,
+                    missing        INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_config ON projects(config_file);
+                CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);
+                CREATE TABLE IF NOT EXISTS storage (
+                    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    bytes      INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
                 );
                 "#,
             )
@@ -279,6 +358,190 @@ impl Db {
                 params![now],
                 |r| r.get(0),
             )?)
+        })
+    }
+
+    // ---- 项目托管（v2） ----
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_project(
+        &self,
+        owner_id: i64,
+        name: &str,
+        room: Option<&str>,
+        source_kind: &str,
+        source_label: Option<&str>,
+        root_dir: &Path,
+        config_file: &Path,
+        session_id: Option<&str>,
+    ) -> Result<i64> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO projects
+                   (owner_id, name, room, source_kind, source_label, root_dir, config_file,
+                    session_id, created_at, last_active_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                params![
+                    owner_id,
+                    name,
+                    room,
+                    source_kind,
+                    source_label,
+                    root_dir.to_string_lossy(),
+                    config_file.to_string_lossy(),
+                    session_id,
+                    now_secs(),
+                ],
+            )
+            .with_context(|| format!("登记项目 {name} 失败（同一 vtrim.toml 是否已登记？）"))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    fn project_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
+        Ok(ProjectRow {
+            id: r.get(0)?,
+            owner_id: r.get(1)?,
+            name: r.get(2)?,
+            room: r.get(3)?,
+            source_kind: r.get(4)?,
+            source_label: r.get(5)?,
+            root_dir: PathBuf::from(r.get::<_, String>(6)?),
+            config_file: PathBuf::from(r.get::<_, String>(7)?),
+            session_id: r.get(8)?,
+            created_at: r.get(9)?,
+            last_active_at: r.get(10)?,
+            source_bytes: r.get::<_, i64>(11)?.max(0) as u64,
+            output_bytes: r.get::<_, i64>(12)?.max(0) as u64,
+            missing: r.get::<_, i64>(13)? != 0,
+        })
+    }
+
+    const PROJECT_COLS: &'static str = "id, owner_id, name, room, source_kind, source_label, \
+         root_dir, config_file, session_id, created_at, last_active_at, source_bytes, output_bytes, missing";
+
+    pub fn project_by_id(&self, id: i64) -> Result<Option<ProjectRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    &format!("SELECT {} FROM projects WHERE id = ?1", Self::PROJECT_COLS),
+                    params![id],
+                    Self::project_from_row,
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    pub fn project_by_config(&self, config_file: &Path) -> Result<Option<ProjectRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    &format!("SELECT {} FROM projects WHERE config_file = ?1", Self::PROJECT_COLS),
+                    params![config_file.to_string_lossy()],
+                    Self::project_from_row,
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// `owner=None` = 全部项目（仅 admin 用）。
+    pub fn list_projects(&self, owner: Option<i64>) -> Result<Vec<ProjectRow>> {
+        self.with(|conn| {
+            let mut out = Vec::new();
+            match owner {
+                Some(uid) => {
+                    let mut stmt = conn.prepare(&format!(
+                        "SELECT {} FROM projects WHERE owner_id = ?1 ORDER BY id",
+                        Self::PROJECT_COLS
+                    ))?;
+                    let rows = stmt.query_map(params![uid], Self::project_from_row)?;
+                    for r in rows {
+                        out.push(r?);
+                    }
+                }
+                None => {
+                    let mut stmt = conn.prepare(&format!(
+                        "SELECT {} FROM projects ORDER BY owner_id, id",
+                        Self::PROJECT_COLS
+                    ))?;
+                    let rows = stmt.query_map([], Self::project_from_row)?;
+                    for r in rows {
+                        out.push(r?);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn delete_project(&self, id: i64) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+            Ok(n > 0)
+        })
+    }
+
+    /// 记录项目最近活动时间（打开/跑管线时调用）。
+    #[allow(dead_code)]
+    pub fn touch_project(&self, id: i64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE projects SET last_active_at = ?2 WHERE id = ?1",
+                params![id, now_secs()],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn update_project_bytes(&self, id: i64, source_bytes: u64, output_bytes: u64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE projects SET source_bytes = ?2, output_bytes = ?3 WHERE id = ?1",
+                params![id, source_bytes as i64, output_bytes as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn set_project_missing(&self, id: i64, missing: bool) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE projects SET missing = ?2 WHERE id = ?1",
+                params![id, missing as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 占用汇总（按用户；`None` = 全局）。storage 表在 P5 做增量维护，
+    /// 这里直接从 projects 汇总，避免两个真相来源。
+    #[allow(dead_code)] // P5：`/api/storage` 与管理员页用
+    pub fn storage_summary(&self, owner: Option<i64>) -> Result<Vec<(i64, u64)>> {
+        self.with(|conn| {
+            let mut out = Vec::new();
+            let sql = match owner {
+                Some(_) => "SELECT owner_id, SUM(source_bytes + output_bytes) FROM projects \
+                            WHERE owner_id = ?1 GROUP BY owner_id",
+                None => "SELECT owner_id, SUM(source_bytes + output_bytes) FROM projects \
+                         GROUP BY owner_id",
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let map = |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64));
+            match owner {
+                Some(uid) => {
+                    for r in stmt.query_map(params![uid], map)? {
+                        out.push(r?);
+                    }
+                }
+                None => {
+                    for r in stmt.query_map([], map)? {
+                        out.push(r?);
+                    }
+                }
+            }
+            Ok(out)
         })
     }
 

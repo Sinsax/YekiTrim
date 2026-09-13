@@ -88,6 +88,41 @@ pub struct Config {
     pub sfx: SfxConfig,
     #[serde(default)]
     pub chrome: ChromeConfig,
+    /// 多用户服务：项目托管与容量（P2 起用 `projects_root`，P3/P5 用上限与水位）
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// `[storage]` — 项目托管目录与磁盘上限（只在服务端生效，CLI 单机路径不受影响）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// 托管项目根目录；空 = `<exe_dir>/.vtrim/projects`
+    #[serde(default)]
+    pub projects_root: String,
+    /// 全局磁盘上限（0 = 不限）；由服务端统一预检，绝不自动删用户数据
+    #[serde(default)]
+    pub max_disk_bytes: u64,
+    /// 磁盘水位百分比：低于该比例时拒绝新的入库/下载/渲染
+    #[serde(default = "default_watermark_pct")]
+    pub disk_watermark_pct: u32,
+    /// 单用户默认配额（0 = 不限）；`users.quota_bytes` 优先
+    #[serde(default)]
+    pub default_quota_bytes: u64,
+}
+
+fn default_watermark_pct() -> u32 {
+    10
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            projects_root: String::new(),
+            max_disk_bytes: 0,
+            disk_watermark_pct: default_watermark_pct(),
+            default_quota_bytes: 0,
+        }
+    }
 }
 
 impl Default for Config {

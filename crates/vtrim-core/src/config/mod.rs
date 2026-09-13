@@ -110,6 +110,18 @@ blacklist = []
 [chrome]
 # 自定义 Chrome/Chromium 可执行文件路径（留空自动检测）
 path = ""
+
+[storage]
+# 服务端托管项目根目录（多用户；留空 = <exe_dir>/.vtrim/projects）
+# 结构: <projects_root>/users/<uid>/<room>/<session>-<pid>/
+projects_root = ""
+# 全局磁盘上限（字节，0 = 不限）。只用于"入库/下载/渲染前预检"，
+# 绝不自动删除用户数据（源录播默认保留）。
+max_disk_bytes = 0
+# 磁盘水位百分比：可用空间低于该比例时拒绝新的入库/下载/渲染
+disk_watermark_pct = 10
+# 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
+default_quota_bytes = 0
 "#;
 
 /// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
@@ -379,6 +391,21 @@ fn merge(base: &mut Config, overlay: Config) {
 
     if !overlay.chrome.path.is_empty() {
         base.chrome.path = overlay.chrome.path;
+    }
+
+    // [storage] 是服务端专用段（项目配置里不写），但仍按"非默认值覆盖"合并，
+    // 以免有人在 vtrim.toml 里试写时行为诡异
+    if !overlay.storage.projects_root.is_empty() {
+        base.storage.projects_root = overlay.storage.projects_root;
+    }
+    if overlay.storage.max_disk_bytes != 0 {
+        base.storage.max_disk_bytes = overlay.storage.max_disk_bytes;
+    }
+    if overlay.storage.disk_watermark_pct != 10 {
+        base.storage.disk_watermark_pct = overlay.storage.disk_watermark_pct;
+    }
+    if overlay.storage.default_quota_bytes != 0 {
+        base.storage.default_quota_bytes = overlay.storage.default_quota_bytes;
     }
 }
 

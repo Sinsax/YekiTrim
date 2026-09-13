@@ -84,3 +84,26 @@ pub fn forget_project(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
     update_state(|state| state.projects.retain(|p| p != &cfg));
 }
+
+/// 旧版（P1 之前）的全局项目列表：`projects` 表接管后由启动流程**只读导入**一次。
+///
+/// 返回仍然存在的 `vtrim.toml` 绝对路径；缺失的条目会被忽略（不导入、不报错）。
+pub fn legacy_projects() -> Vec<PathBuf> {
+    load_state()
+        .map(|s| {
+            s.projects
+                .into_iter()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 上次记忆的工程（启动时"恢复上次工程"仍用它）。
+pub fn last_config_file() -> Option<PathBuf> {
+    load_state()
+        .and_then(|s| s.last_config_file)
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+}
