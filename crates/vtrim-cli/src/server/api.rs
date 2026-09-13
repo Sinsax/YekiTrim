@@ -45,6 +45,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
         .route("/project/list", get(project_list))
+        .route("/projects", get(projects_list).post(projects_create))
+        .route("/projects/:id", axum::routing::delete(projects_delete))
+        .route("/projects/:id/source", axum::routing::delete(projects_source_delete))
         .route("/project/delete", post(project_delete))
         .route("/project/init", post(project_init))
         .route("/project/open", post(project_open))
@@ -546,6 +549,289 @@ async fn activate_workspace(state: &AppState, ws: &Workspace) {
 
 fn project_summary(ws: &Workspace) -> serde_json::Value {
     crate::service::project_summary(ws)
+}
+
+// ---- 项目托管（P2，§5 / §8） ----
+
+/// 取项目并校验归属；他人项目一律 404（不泄露"存在但无权限"）。
+fn owned_project(
+    db: &crate::service::db::Db,
+    user: &super::auth::CurrentUser,
+    id: i64,
+) -> Result<crate::service::db::ProjectRow, AppError> {
+    match crate::service::projects::find_owned(db, user.id, user.is_admin(), id) {
+        Ok(Some(p)) => Ok(p),
+        Ok(None) => Err(err(StatusCode::NOT_FOUND, "项目不存在或无权访问")),
+        Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}"))),
+    }
+}
+
+fn owner_name(db: &crate::service::db::Db, owner_id: i64) -> Option<String> {
+    db.list_users()
+        .ok()?
+        .into_iter()
+        .find(|u| u.id == owner_id)
+        .map(|u| u.username)
+}
+
+/// `GET /api/projects`：只列本人项目；admin 额外看到所有人的（含 owner 列）。
+async fn projects_list(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+) -> ApiResult {
+    let db = state.auth.db();
+    // 始终只回本人项目：admin 的"全平台项目"视图属于 P5 管理页（`/api/admin/*`）
+    let rows = db
+        .list_projects(Some(user.id))
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目列表失败: {e:#}")))?;
+
+    let out: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|p| {
+            let json = crate::service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref());
+            // 项目目录/vtrim.toml 被外部删掉时落库标记，列表里显示"缺失"而不是静默消失
+            if json["missing"].as_bool() == Some(true) && !p.missing {
+                let _ = db.set_project_missing(p.id, true);
+            }
+            json
+        })
+        .collect();
+    ok(serde_json::json!({ "ok": true, "projects": out }))
+}
+
+/// `POST /api/projects`：新建项目。
+///
+/// 目前只支持 `source.kind = "local"`（**仅 admin**，§0.2.7：单人/本机部署保留
+/// "服务器端已有文件"来源，路径囚笼在租户根内，**永不接受上传**）。
+/// `recorder`（录播姬入库）在 P3、`bilibili` 在 P4 接入。
+async fn projects_create(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let source = body.get("source").cloned().unwrap_or(serde_json::Value::Null);
+    let kind = source.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "local" => {}
+        "recorder" | "bilibili" => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "该来源尚未开放（录播姬在 P3、B站链接在 P4）；当前请用「服务器本机文件」（admin）",
+            ))
+        }
+        other => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("未知来源 kind={other:?}（支持 local）"),
+            ))
+        }
+    }
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可指定服务器本机文件"));
+    }
+
+    let rel_dir = source
+        .get("dir")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let root = crate::service::projects::tenant_root(user.id);
+    std::fs::create_dir_all(&root)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
+    let dir = vtrim_core::tenant::jail_existing(&root, &rel_dir)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?;
+    if !dir.is_dir() {
+        return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
+    }
+    let hint = source.get("input").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let input = if hint.is_empty() {
+        // 未指定文件时自动挑目录里第一个视频
+        find_first_video(&dir).ok_or_else(|| err(StatusCode::BAD_REQUEST, "目录里没有可用的视频文件（mp4/flv/mkv/ts）"))?
+    } else {
+        vtrim_core::tenant::jail_existing(&dir, &hint)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("视频不可用: {e:#}")))?
+    };
+    let danmaku = source
+        .get("danmaku")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|rel| {
+            vtrim_core::tenant::jail_existing(&dir, &rel)
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("弹幕不可用: {e:#}")))
+        })
+        .transpose()?;
+
+    let config_path = dir.join("vtrim.toml");
+    let output_rel = source.get("output_dir").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let Some(rel) = &output_rel {
+        vtrim_core::tenant::jail_join(&dir, rel)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
+    }
+    vtrim_core::config::write_project_config(&config_path, &input, danmaku.as_deref(), output_rel.as_deref())
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化失败: {e:#}")))?;
+    let ws = Workspace::load(Some(&config_path))
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
+
+    let db = state.auth.db();
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".to_string());
+    let label = dir
+        .strip_prefix(crate::service::projects::tenant_root(user.id))
+        .ok()
+        .map(|rel| format!("本机文件 · {}", rel.display()))
+        .unwrap_or_else(|| "本机文件".to_string());
+    let id = match db.project_by_config(&config_path) {
+        Ok(Some(existing)) => existing.id,
+        _ => db
+            .create_project(
+                user.id,
+                &name,
+                None,
+                "local",
+                Some(&label),
+                &dir,
+                &config_path,
+                None,
+            )
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("登记项目失败: {e:#}")))?,
+    };
+    if let Ok(Some(p)) = db.project_by_id(id) {
+        let _ = crate::service::projects::refresh_bytes(db, &p);
+    }
+    let _ = db.audit(Some(user.id), "project_create", &format!("id={id} kind=local"));
+    activate_workspace(&state, &ws).await;
+    match db.project_by_id(id) {
+        Ok(Some(p)) => ok(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "project": crate::service::projects::summary_json(&p, Some(&user.username)),
+        })),
+        _ => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "项目登记后读取失败")),
+    }
+}
+
+/// 目录里第一个可用视频（mp4/flv/mkv/ts，按文件名排序，确定性）。
+fn find_first_video(dir: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| matches!(e.to_ascii_lowercase().as_str(), "mp4" | "flv" | "mkv" | "ts"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+/// `DELETE /api/projects/:id`：**只注销项目**（删 `vtrim.toml`），产物与源文件都保留。
+async fn projects_delete(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult {
+    let id = crate::service::projects::parse_project_id(&id)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "项目 id 无效"))?;
+    let db = state.auth.db();
+    let project = owned_project(db, &user, id)?;
+    if project.config_file.exists() {
+        std::fs::remove_file(&project.config_file)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")))?;
+    }
+    db.delete_project(id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("注销失败: {e:#}")))?;
+    // 旧列表里可能还有它：一并清掉，避免下次启动又被导入
+    persist::forget_project(&project.config_file);
+    let _ = db.audit(Some(user.id), "project_delete", &format!("id={id}"));
+    ok(serde_json::json!({ "ok": true, "deleted": id }))
+}
+
+/// `DELETE /api/projects/:id/source`：删源录播（**唯一的手动释放空间手段**，§7）。
+///
+/// 产物（切片/字幕/事件/封面）与项目本身都保留；只删 `input_file` 与根目录下的
+/// 分片/弹幕文件，并刷新占用。
+async fn projects_source_delete(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<super::auth::CurrentUser>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult {
+    let id = crate::service::projects::parse_project_id(&id)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "项目 id 无效"))?;
+    let db = state.auth.db();
+    let project = owned_project(db, &user, id)?;
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut freed = 0u64;
+    let ws = Workspace::load(Some(&project.config_file)).ok();
+    let mut targets: Vec<PathBuf> = Vec::new();
+    if let Some(ws) = &ws {
+        if let Ok(cfg) = ws.load_config() {
+            for raw in [cfg.project.input_file.clone().unwrap_or_default(), cfg.project.danmaku_file.clone().unwrap_or_default()] {
+                if !raw.trim().is_empty() {
+                    targets.push(ws.resolve(&raw));
+                }
+            }
+        }
+    }
+    // 根目录下的分片（录播姬多分片会话）也算源
+    if let Ok(entries) = std::fs::read_dir(&project.root_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            if matches!(ext.as_str(), "mp4" | "flv" | "mkv" | "ts") {
+                targets.push(path);
+            }
+        }
+    }
+    // 去重后逐个删除（只删项目根目录内的文件）
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let root = project.root_dir.canonicalize().unwrap_or_else(|_| project.root_dir.clone());
+    for target in targets {
+        let real = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if !seen.insert(real.clone()) {
+            continue;
+        }
+        if !real.starts_with(&root) {
+            tracing::warn!("跳过项目目录外的源文件: {}", real.display());
+            continue;
+        }
+        if !real.is_file() {
+            continue;
+        }
+        let size = std::fs::metadata(&real).map(|m| m.len()).unwrap_or(0);
+        match std::fs::remove_file(&real) {
+            Ok(()) => {
+                freed += size;
+                removed.push(real.to_string_lossy().into_owned());
+            }
+            Err(e) => tracing::warn!("删除源文件失败 {}: {e}", real.display()),
+        }
+    }
+    let (source_bytes, output_bytes) = crate::service::projects::refresh_bytes(db, &project)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("刷新占用失败: {e:#}")))?;
+    let _ = db.audit(
+        Some(user.id),
+        "project_source_delete",
+        &format!("id={id} files={} bytes={freed}", removed.len()),
+    );
+    ok(serde_json::json!({
+        "ok": true,
+        "removed": removed,
+        "freed_bytes": freed,
+        "source_bytes": source_bytes,
+        "output_bytes": output_bytes,
+    }))
 }
 
 async fn project_delete(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {

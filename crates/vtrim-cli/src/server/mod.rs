@@ -76,6 +76,39 @@ pub struct ServerArgs {
     pub open_path: String,
 }
 
+/// 旧版项目列表（`.vtrim/server.toml` 的 `projects[]`）一次性导入 admin 名下。
+///
+/// P2 起**归属由 DB 决定**；老用户升级后原来的项目不能凭空消失，因此在这里只读导入：
+/// 已登记过的路径会跳过（幂等），缺失的条目忽略。
+fn import_legacy_projects(db: &db::Db) -> anyhow::Result<usize> {
+    let Some(admin) = db.find_user("admin")? else {
+        return Ok(0);
+    };
+    let mut imported = 0usize;
+    for config_file in persist::legacy_projects() {
+        if db.project_by_config(&config_file)?.is_some() {
+            continue;
+        }
+        let Some(root_dir) = config_file.parent() else { continue };
+        let name = root_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "project".to_string());
+        db.create_project(
+            admin.id,
+            &name,
+            None,
+            "local",
+            Some("本机文件"),
+            root_dir,
+            &config_file,
+            None,
+        )?;
+        imported += 1;
+    }
+    Ok(imported)
+}
+
 /// 数据目录可写性预检：身份数据不可缺省，写不了就**启动失败**（§3.5.7）。
 fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| {
@@ -189,6 +222,15 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         _instance_lock.info().label()
     );
 
+    // ---- 项目托管（P2）：旧 server.toml 列表只读导入 admin，并刷新占用 ----
+    match import_legacy_projects(auth.db()) {
+        Ok(0) => {}
+        Ok(n) => info!("已把 {n} 个旧版项目导入 admin 名下（projects 表接管项目列表）"),
+        Err(e) => tracing::warn!("导入旧版项目列表失败（不影响启动）: {e:#}"),
+    }
+    let refreshed = service::projects::refresh_all_bytes(auth.db());
+    info!("项目占用已刷新（{refreshed} 个项目）");
+
     // 首次运行（没有程序配置）时自动生成默认配置；已有配置不会被覆盖
     match crate::service::ensure_global_config() {
         Ok(report) => {
@@ -207,12 +249,12 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let saved = persist::load_state();
     let workspace = if args.config.is_none() {
         // 未显式指定工程时，优先恢复上次记忆的工程
-        match saved.as_ref().and_then(|s| s.last_config_file.clone()) {
-            Some(cfg) if Path::new(&cfg).exists() => {
-                info!("恢复上次工程: {}", cfg);
-                Workspace::load(Some(Path::new(&cfg)))?
+        match persist::last_config_file() {
+            Some(cfg) => {
+                info!("恢复上次工程: {}", cfg.display());
+                Workspace::load(Some(&cfg))?
             }
-            _ => Workspace::load(args.config.as_deref())?,
+            None => Workspace::load(args.config.as_deref())?,
         }
     } else {
         Workspace::load(args.config.as_deref())?
