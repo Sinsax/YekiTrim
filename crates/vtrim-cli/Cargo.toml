@@ -25,6 +25,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.18"
 anyhow = "1"
 base64 = "0.22"
+# 多用户服务 P1：账号账本（SQLite，bundled 自带 libsqlite3）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 口令 KDF：设计稿原定 argon2id，本次离线环境无 argon2 依赖缓存，改用 scrypt（内存硬）+
+# 自描述哈希串，后续可在登录时"重哈希升级"到 argon2id（见 service/auth.rs 顶部说明）
+scrypt = { version = "0.11", default-features = false }
+subtle = "2"
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

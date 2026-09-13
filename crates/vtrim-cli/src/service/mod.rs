@@ -9,6 +9,10 @@ mod silence;
 mod status;
 mod init_config;
 mod workspace;
+// 多用户服务 P1：账号账本 / 口令 KDF / `vtrim user` CLI
+mod auth;
+mod db;
+mod user;
 
 #[allow(unused_imports)]
 pub use core_pipeline::*;
@@ -17,3 +21,5 @@ pub use silence::*;
 pub use status::*;
 pub use init_config::*;
 pub use workspace::*;
+// auth / db 目前只被 user.rs 使用（HTTP 侧接入时再决定是否对外 re-export）
+pub use user::*;
