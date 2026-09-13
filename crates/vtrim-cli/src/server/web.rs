@@ -104,8 +104,11 @@ npm run build</code></pre>
 
 fn index_html(dist: &Path) -> Response<Body> {
     if let Ok(bytes) = std::fs::read(dist.join("index.html")) {
+        // no-cache：入口 html 必须每次回源校验，否则发版后浏览器启发式缓存会
+        // 让用户停在旧界面（入口引用的是内容哈希资源名，资源本身可长缓存）。
         return Response::builder()
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-cache")
             .body(Body::from(bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
@@ -139,8 +142,12 @@ pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
 
     if file.is_file() {
         if let Ok(bytes) = std::fs::read(&file) {
-            return Response::builder()
-                .header(header::CONTENT_TYPE, mime_for(&file))
+            let mut b = Response::builder().header(header::CONTENT_TYPE, mime_for(&file));
+            // 入口 html（含 SPA 回退命中 index.html 的请求）必须 no-cache，理由见 index_html
+            if file.file_name().and_then(|n| n.to_str()) == Some("index.html") {
+                b = b.header(header::CACHE_CONTROL, "no-cache");
+            }
+            return b
                 .body(Body::from(bytes))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
