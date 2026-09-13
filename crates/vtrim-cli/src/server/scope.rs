@@ -221,6 +221,12 @@ fn is_write(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// 中间件解析出的项目 id（`0` = 没能解析，例如无 dir/project 的全局 polish 接口）。
+///
+/// polish handler 用它给任务打项目标签（侧栏按项目显示进度），`0` 时不打标签。
+#[derive(Debug, Clone, Copy)]
+pub struct ScopeProjectId(pub i64);
+
 /// `/api/polish/*` 的作用域守卫。
 ///
 /// 做两件事（一次收口，18 个 polish handler 不用各自改）：
@@ -297,6 +303,7 @@ pub async fn enforce_scope(
                 Err(e) => tracing::warn!("重写 query 失败: {e}"),
             }
         }
+        req.extensions_mut().insert(ScopeProjectId(scope.map(|p| p.id).unwrap_or(0)));
         return next.run(req).await;
     }
 
@@ -375,6 +382,10 @@ pub async fn enforce_scope(
         }
     }
     let restored = Request::from_parts(parts, axum::body::Body::from(out_bytes));
+    let mut restored = restored;
+    restored
+        .extensions_mut()
+        .insert(ScopeProjectId(scope.map(|p| p.id).unwrap_or(0)));
     next.run(restored).await
 }
 

@@ -98,6 +98,8 @@ pub struct JobSummary {
     pub created_at: String,
     /// 任务归属（多用户：`/api/jobs`、SSE、取消都按它过滤）
     pub owner_id: i64,
+    /// 任务属于哪个项目（侧栏进度徽标、按项目过滤任务用；不是所有任务都有）
+    pub project: Option<i64>,
     /// 仅在 `/api/jobs/:id` 返回；列表接口为空（避免 50 个任务各带 200 行日志）。
     pub logs: Vec<LogLine>,
 }
@@ -114,6 +116,8 @@ pub struct Job {
     pub id: String,
     pub kind: String,
     pub owner_id: i64,
+    /// 关联项目（`None` = 平台级任务，如下载模型）
+    pub project: Option<i64>,
     pub status: JobStatus,
     pub message: String,
     pub stage: Option<String>,
@@ -141,6 +145,7 @@ impl Job {
             id,
             kind,
             owner_id,
+            project: None,
             status: JobStatus::Queued,
             message: String::new(),
             stage: None,
@@ -200,6 +205,7 @@ impl Job {
             error: self.error.clone(),
             created_at: self.created_at.clone(),
             owner_id: self.owner_id,
+            project: self.project,
             logs: if with_logs {
                 self.logs.iter().rev().take(50).cloned().collect()
             } else {
@@ -250,6 +256,14 @@ impl JobManager {
     /// 是否存在活动任务（供 `/polish/preview` 这类同步 handler 判断是否该跑隐式 process）。
     pub async fn has_active(&self) -> bool {
         self.jobs.read().await.iter().any(|j| j.is_active())
+    }
+
+    /// 给任务打上项目标签（创建后由 handler 调用；侧栏按项目显示进度用它）。
+    pub async fn attach_project(&self, id: &str, project: i64) {
+        let mut jobs = self.jobs.write().await;
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            job.project = Some(project);
+        }
     }
 
     /// 取任务的取消令牌（长任务用它轮询 `ProgressReporter::cancelled`）。
