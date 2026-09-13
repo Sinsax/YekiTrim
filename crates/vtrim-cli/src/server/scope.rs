@@ -321,6 +321,20 @@ pub async fn enforce_scope(
                 }
             }
             if let Some(dir) = v.get("dir").and_then(|x| x.as_str()).map(|s| s.to_string()) {
+                // body 里只有绝对 dir（旧前端）：先按"落在本人哪个项目内"反查归属
+                if scope.is_none() && Path::new(&dir).is_absolute() {
+                    match find_project_for_dir(db, &user, Path::new(&dir)) {
+                        Ok(Some(p)) => scope = Some(p),
+                        Ok(None) => {
+                            return err(
+                                StatusCode::NOT_FOUND,
+                                format!("路径不在你的任何项目内: {dir}"),
+                            )
+                            .into_response()
+                        }
+                        Err(e) => return e.into_response(),
+                    }
+                }
                 match scope.as_ref() {
                     Some(project) => match resolve_dir(project, &dir) {
                         Ok(abs) => v["dir"] = serde_json::json!(abs.to_string_lossy()),

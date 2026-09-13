@@ -91,7 +91,7 @@ import { watchJob } from '../polish/api'
 
 const route = useRoute()
 const router = useRouter()
-const cfg = String(route.params.cfg || '')
+const cfg = String(route.params.pid || '')
 const src = ref('')
 const videoRef = ref(null)
 const currentTime = ref(0)
@@ -111,7 +111,7 @@ const canAddClip = computed(() => {
   return !!(label.value.trim() && summary.value.trim() && end.value > start.value)
 })
 
-const cfgQ = encodeURIComponent(cfg)
+const cfgQ = 'project=' + encodeURIComponent(cfg)
 const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, message: '' })
 let jobClose = null
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
@@ -120,15 +120,15 @@ const jobStatusText = computed(() => ({ queued:'排队中', running:'运行中',
 
 async function load() {
   try {
-    const st = await api(`/api/project-data/status?config=${cfgQ}`)
+    const st = await api(`/api/project-data/status?${cfgQ}`)
     if (st.input_abs) src.value = inputMediaUrl(st.input_abs)
   } catch {}
   try {
-    const d = await api(`/api/project-data/config?config=${cfgQ}`)
+    const d = await api(`/api/project-data/config?${cfgQ}`)
     asrMode.value = d.config?.asr?.mode || 'single'
   } catch {}
   try {
-    const d = await api(`/api/project-data/transcript?config=${cfgQ}`)
+    const d = await api(`/api/project-data/transcript?${cfgQ}`)
     segments.value = d.segments || []
     segments.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
   } catch {}
@@ -136,7 +136,7 @@ async function load() {
 
 async function saveMode(silent = false) {
   try {
-    const d = await api(`/api/project-data/config?config=${cfgQ}`)
+    const d = await api(`/api/project-data/config?${cfgQ}`)
     let toml = d.vtrim_raw || ''
     const modeLine = 'mode = "' + asrMode.value + '"'
     if (!/^\s*\[asr\]\s*$/m.test(toml)) {
@@ -165,7 +165,7 @@ async function saveMode(silent = false) {
       }
       toml = lines.join('\n')
     }
-    await api(`/api/project-data/config?config=${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: toml }) })
+    await api(`/api/project-data/config?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: toml }) })
     if (!silent) toast('模式已保存')
   } catch (e) { toast(e.message, 'err') }
 }
@@ -174,7 +174,7 @@ async function correct() {
   const ok = await confirmDialog('将对全部字幕启动 LLM 订正', { title: '启动 LLM 订正？' })
   if (!ok) return
   try {
-    await api(`/api/project-data/correct?config=${cfgQ}`, { method: 'POST' })
+    await api(`/api/project-data/correct?${cfgQ}`, { method: 'POST' })
     toast('LLM 订正已启动')
   } catch (e) { toast(e.message, 'err') }
 }
@@ -195,7 +195,7 @@ function playAt(seg) {
 
 async function saveSubs() {
   try {
-    await api(`/api/project-data/transcript?config=${cfgQ}`, { method: 'PUT', body: JSON.stringify({ segments: segments.value, language: 'zh' }) })
+    await api(`/api/project-data/transcript?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ segments: segments.value, language: 'zh' }) })
     toast('字幕已保存')
   } catch (e) { toast(e.message, 'err') }
 }
@@ -203,7 +203,7 @@ async function saveSubs() {
 async function run(stage) {
   if (jobRunning.value) { toast('已有任务在运行'); return }
   try {
-    const r = await api(`/api/project-data/pipeline?config=${cfgQ}`, { method: 'POST', body: JSON.stringify({ config: cfg, stage, resume: 'auto' }) })
+    const r = await api(`/api/project-data/pipeline?${cfgQ}`, { method: 'POST', body: JSON.stringify({ stage, resume: 'auto' }) })
     Object.assign(job, { id: r.id, kind: '任务', status: 'running', current: 0, total: 0, message: '已启动 ' + stage })
     jobClose?.()
     jobClose = watchJob(r.id, {
@@ -235,7 +235,7 @@ async function saveClip() {
   if (!label.value) { toast('请填写标题'); return }
   if (end.value <= start.value) { toast('结束必须大于开始'); return }
   try {
-    const created = await api(`/api/project-data/events?config=${cfgQ}`, { method: 'POST', body: JSON.stringify({
+    const created = await api(`/api/project-data/events?${cfgQ}`, { method: 'POST', body: JSON.stringify({
       label: label.value,
       start_sec: start.value,
       end_sec: end.value,
@@ -243,7 +243,7 @@ async function saveClip() {
       summary: summary.value
     }) })
     const rank = created && created.event && created.event.rank
-    if (rank) await api(`/api/project-data/events/${rank}/cut?config=${cfgQ}`, { method: 'POST' })
+    if (rank) await api(`/api/project-data/events/${rank}/cut?${cfgQ}`, { method: 'POST' })
     toast('片段已生成，正在剪切')
     router.push('/polish')
   } catch (e) {

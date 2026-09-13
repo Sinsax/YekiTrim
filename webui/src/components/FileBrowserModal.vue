@@ -1,12 +1,14 @@
 <template>
-  <AppModal :show="show" title="选择文件" @close="close">
+  <AppModal :show="show" title="选择服务器文件" @close="close">
     <div class="row">
       <div class="flex-1 minw-180">
-        <label>当前目录</label>
-        <input v-model.trim="path" placeholder="目录路径" @keyup.enter="browse">
+        <label>当前目录（相对项目根，不接受绝对路径）</label>
+        <input v-model.trim="path" placeholder="留空 = 项目根" @keyup.enter="browse">
       </div>
       <button class="mini-btn mt-20" @click="browse">打开</button>
+      <button class="mini-btn mt-20" :disabled="!path" @click="goUp">上一级</button>
     </div>
+    <div class="muted small mt-6">根目录：<span class="mono">{{ root }}</span>（只能浏览自己的项目目录）</div>
     <div v-if="loadError" class="error-banner mt-8">{{ loadError }}</div>
     <div class="file-box mt-8">
       <div v-if="loading" class="row muted small"><span class="spinner"></span> 加载中…</div>
@@ -28,7 +30,7 @@
 
 <script setup>
 import { ref, watch, computed } from 'vue'
-import { api } from '../api/client'
+import { listTenantFiles } from '../stores/project'
 import AppModal from './AppModal.vue'
 import Icon from './Icon.vue'
 
@@ -40,7 +42,10 @@ const props = defineProps({
 })
 const emit = defineEmits(['select', 'close'])
 
+// 路径一律**相对租户根**（服务端囚笼）；服务端返回 path/parent/root 供前端导航
 const path = ref('')
+const parent = ref('')
+const root = ref('')
 const dirs = ref([])
 const files = ref([])
 const loading = ref(false)
@@ -73,10 +78,13 @@ async function browse() {
   loading.value = true
   loadError.value = ''
   try {
-    const d = await api('/api/fs/list', { method: 'POST', body: JSON.stringify({ dir: path.value }) })
-    path.value = d.dir || path.value
+    const d = await listTenantFiles(path.value)
+    path.value = d.path || ''
+    parent.value = d.parent || ''
+    root.value = d.root || ''
     dirs.value = d.dirs || []
     files.value = d.files || []
+    selected.value = ''
   } catch (e) {
     dirs.value = []
     files.value = []
@@ -88,6 +96,11 @@ async function browse() {
 
 function enterDir(name) {
   path.value = path.value ? path.value.replace(/[\/]+$/, '') + '/' + name : name
+  browse()
+}
+
+function goUp() {
+  path.value = parent.value || ''
   browse()
 }
 

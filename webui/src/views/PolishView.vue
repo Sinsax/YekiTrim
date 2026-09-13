@@ -214,7 +214,8 @@ import {
 
 const route = useRoute()
 const router = useRouter()
-const routeCfg = route.params.cfg || ''
+const routePid = route.params.pid || ''
+const routeCfg = 'project=' + encodeURIComponent(routePid)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
 const title = ref('精修编辑器')
@@ -326,7 +327,7 @@ async function load() {
     dir.value = String(route.query.dir || '')
   } else if (clipName.value && routeCfg) {
     try {
-      const st = await api(`/api/project-data/status?config=${encodeURIComponent(routeCfg)}`)
+      const st = await api(`/api/project-data/status?${routeCfg}`)
       dir.value = st.output_dir + '/clips/' + clipName.value
     } catch { dir.value = '' }
   } else {
@@ -366,14 +367,14 @@ function refreshSnapshots() {
 
 function thumbSrc(c) {
   const rank = String(c.name || '').replace('clip-', '')
-  return `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?config=${encodeURIComponent(routeCfg)}`
+  return `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${routeCfg}`
 }
 
 async function loadClips() {
   loading.value = true
   try {
     if (!routeCfg) { clips.value = []; return }
-    const list = await api(`/api/project-data/clips?config=${encodeURIComponent(routeCfg)}`)
+    const list = await api(`/api/project-data/clips?${routeCfg}`)
     clips.value = (Array.isArray(list) ? list : []).filter((c) => c.video_exists)
   } catch { clips.value = [] } finally {
     loading.value = false
@@ -392,7 +393,7 @@ async function refreshClipEntry() {
   coverFailed.value = false
   renderedFailed.value = false
   try {
-    const list = routeCfg ? await api(`/api/project-data/polish?config=${encodeURIComponent(routeCfg)}`) : []
+    const list = routeCfg ? await api(`/api/project-data/polish?${routeCfg}`) : []
     const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
     clipEntry.value = (list || []).find((p) => norm(p.dir) === norm(dir.value)) || null
   } catch { clipEntry.value = null }

@@ -1,25 +1,31 @@
 <template>
   <FileBrowserModal
-    :show="show && !pickedVideo"
-    :initial-path="workspace"
+    :show="show && !picked"
+    :initial-path="''"
     video-only
     include-toml
-    @select="onPickVideo"
+    @select="onPick"
     @close="close"
   />
-  <AppModal :show="show && !!pickedVideo" title="打开项目" @close="backToBrowse">
-    <label>选择文件路径</label>
-    <input :value="pickedVideo" readonly>
-    <label v-if="!isToml" class="mt-8">弹幕文件（可选）</label>
-    <input v-if="!isToml" v-model="danmaku" placeholder="自动查找同名 .ass">
-    <label v-if="!isToml" class="mt-8">输出目录</label>
-    <input v-if="!isToml" v-model="output">
-    <div v-if="isToml" class="muted small mt-8">已选择 vtrim.toml，将直接打开项目，不执行 init。</div>
+  <AppModal :show="show && !!picked" title="从服务器文件新建项目" @close="backToBrowse">
+    <label>服务器文件（相对项目根）</label>
+    <input :value="picked" readonly>
+    <template v-if="!isToml">
+      <label class="mt-8">弹幕文件（可选，同目录相对路径）</label>
+      <input v-model="danmaku" placeholder="留空则自动查找同名弹幕">
+      <label class="mt-8">输出目录</label>
+      <input v-model="output" placeholder="./output">
+      <p class="muted small mt-8">
+        服务端只接受"服务器上已存在"的视频（本机管理员来源），**不接受上传**；
+        路径被囚笼在你的项目目录内。
+      </p>
+    </template>
+    <div v-if="isToml" class="muted small mt-8">已选择 vtrim.toml：直接登记并打开该项目，不重新 init。</div>
     <template #footer>
       <button class="btn" @click="backToBrowse">上一步</button>
       <button class="btn" @click="close">取消</button>
-      <button class="btn btn-primary" :disabled="!pickedVideo || creating" @click="create">
-        <span v-if="creating" class="spinner"></span>{{ creating ? '处理中…' : '打开项目' }}
+      <button class="btn btn-primary" :disabled="!picked || creating" @click="create">
+        <span v-if="creating" class="spinner"></span>{{ creating ? '处理中…' : (isToml ? '打开项目' : '新建项目') }}
       </button>
     </template>
   </AppModal>
@@ -27,7 +33,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { api } from '../api/client'
+import { createLocalProject } from '../stores/project'
 import { toast } from '../stores/toast'
 import AppModal from './AppModal.vue'
 import FileBrowserModal from './FileBrowserModal.vue'
@@ -38,58 +44,49 @@ defineProps({
 })
 const emit = defineEmits(['update:show', 'created'])
 
-const pickedVideo = ref('')
+const picked = ref('')
 const danmaku = ref('')
 const output = ref('./output')
 const creating = ref(false)
-const isToml = computed(() => pickedVideo.value.toLowerCase().endsWith('vtrim.toml'))
+const isToml = computed(() => picked.value.toLowerCase().endsWith('vtrim.toml'))
+
+/** 选中的是 "<dir>/<file>"（相对租户根）；建项目以**目录**为单位。 */
+function splitPick(p) {
+  const norm = String(p || '').split('\\').join('/')
+  const i = norm.lastIndexOf('/')
+  return i < 0 ? { dir: '', file: norm } : { dir: norm.slice(0, i), file: norm.slice(i + 1) }
+}
 
 function close() {
-  pickedVideo.value = ''
+  picked.value = ''
   emit('update:show', false)
 }
 
 function backToBrowse() {
-  pickedVideo.value = ''
+  picked.value = ''
 }
 
-function onPickVideo(path) {
-  pickedVideo.value = path
+function onPick(path) {
+  picked.value = path
   danmaku.value = ''
   output.value = './output'
-  if (pickedVideo.value.toLowerCase().endsWith('vtrim.toml')) {
-    create()
-  }
+  if (isToml.value) create()
 }
 
 async function create() {
-  if (!pickedVideo.value) { toast('请选择文件'); return }
+  if (!picked.value) { toast('请选择文件'); return }
+  const { dir, file } = splitPick(picked.value)
   creating.value = true
   try {
-    if (isToml.value) {
-      await api('/api/project/open', { method: 'POST', body: JSON.stringify({ config_path: pickedVideo.value }) })
-      toast('已打开项目')
-      close()
-      emit('created')
-      return
-    }
-    try {
-      await api('/api/project/open', { method: 'POST', body: JSON.stringify({ input: pickedVideo.value }) })
-      toast('已打开项目')
-      close()
-      emit('created')
-      return
-    } catch (openErr) {
-      // 不存在项目文件时走初始化
-      await api('/api/project/init', { method: 'POST', body: JSON.stringify({
-        input: pickedVideo.value,
-        danmaku: danmaku.value || null,
-        output_dir: output.value || './output'
-      }) })
-      toast('项目已创建')
-      close()
-      emit('created')
-    }
+    const r = await createLocalProject({
+      dir,
+      input: isToml.value ? '' : file,
+      danmaku: isToml.value ? '' : (danmaku.value || ''),
+      output_dir: isToml.value ? '' : (output.value || '')
+    })
+    toast(isToml.value ? '项目已打开' : '项目已创建')
+    close()
+    emit('created', r)
   } catch (e) {
     toast(e.message, 'err')
   } finally {

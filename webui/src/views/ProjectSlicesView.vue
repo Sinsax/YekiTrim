@@ -18,12 +18,14 @@
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/client'
+import { scopeQ } from '../api/scope'
+import { loadProjects, projectById } from '../stores/project'
 import Icon from '../components/Icon.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
 const route = useRoute()
-const cfg = route.params.cfg || ''
-const cfgQ = encodeURIComponent(cfg)
+const pid = route.params.pid || ''
+const cfgQ = scopeQ(pid)
 const project = ref(null)
 const projectData = ref({ events: [], clips: [], polishMap: {} })
 const clipsRef = ref(null)
@@ -34,15 +36,12 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const list = await api('/api/project/list')
-    project.value = (list.projects || []).find(p => p.config_file === cfg) || {
-      config_file: cfg,
-      dir: cfg.replace(/[\\/]vtrim\.toml$/i, ''),
-      name: cfg.replace(/[\\/]vtrim\.toml$/i, '').split(/[\\/]/).pop() || cfg
-    }
-    const ev = await api(`/api/project-data/events?config=${cfgQ}`).catch(() => ({ events: [] }))
-    const cl = await api(`/api/project-data/clips?config=${cfgQ}`).catch(() => [])
-    const pl = await api(`/api/project-data/polish?config=${cfgQ}`).catch(() => [])
+    if (!projectById(pid)) await loadProjects()
+    project.value = projectById(pid)
+    if (!project.value) throw new Error('项目不存在或无权访问')
+    const ev = await api(`/api/project-data/events?${cfgQ}`).catch(() => ({ events: [] }))
+    const cl = await api(`/api/project-data/clips?${cfgQ}`).catch(() => [])
+    const pl = await api(`/api/project-data/polish?${cfgQ}`).catch(() => [])
     const m = {}
     ;(pl || []).forEach(p => { m[p.dir] = p })
     projectData.value = { events: (ev && ev.events) || [], clips: cl || [], polishMap: m }
