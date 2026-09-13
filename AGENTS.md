@@ -184,6 +184,20 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   找不到 `webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
   构建：`cd webui && npm install && npm run build`。`webui/dist` **已入库**
   （`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，否则端出旧界面。
+- **认证（P1 已落地）**：除 `/api/health` 与 `/api/auth/login` 外**所有接口都要求会话**，
+  含 loopback；**没有免登录分支、没有来源地址判定**。单人部署＝只有一个 admin 账号的部署：
+  - 首次启动生成 `admin` + 随机初始密码，日志打印一次并写入
+    `<data_dir>/initial-admin-password.txt`（首次登录成功后自动删除）；重启不重新生成。
+  - 会话在 SQLite `sessions` 表，`vtrim_sid` cookie 为 **HttpOnly**，7 天滑动续期；
+    写请求必须带 `X-CSRF-Token`（= `vtrim_csrf` cookie，双提交），缺失/不匹配 → **403**；
+    未登录 → **401**（前端 `client.js` 统一跳登录并记回跳）。
+  - 登录失败 5 次（同用户名+同 IP，取 `ConnectInfo` 对端地址，**不信任 `X-Forwarded-For`**）
+    → **429**，窗口 15 分钟；账号禁用 → 403/401 文案直出。
+  - 启动预检：`data_dir` 不可写 → 启动失败（身份不可缺省，绝不退化成内存模式）；
+    `vtrim.lock` 单实例保护（独占句柄 + pid 存活判定，`--force` 只在确认残留时用）；
+    `--host 0.0.0.0 --allow-remote` 且 `must_change_password=1` → 拒绝启动。
+  - `/api/health` 只回能力位与 `accounts / must_change_password / listening / tls_terminated`，
+    **不含任何路径**（它无鉴权）。`/api/fs/list` 仅 admin 可用（P2 会整体删除）。
 - 真渲染（wgpu）暂缓：未启用该 feature 时前端**隐藏**入口（`/api/health.wgpu_render` 判定），
   日后开发时只需恢复 UI 入口，`PolishPreview` 里的逻辑与后端接口都还在。
 - API 都在 `/api/*`：未注册路径返回 **404 + JSON**（`{"ok":false,"error":"未知接口: …"}`），
@@ -194,7 +208,20 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   `Lagged` 不会误报成失败。
 - `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` /
   `vtrim.toml` / 全局配置的读-改-写走 `vtrim_core::filelock::with_path_lock` 串行化。
-- 监听非 loopback 地址必须显式 `--allow-remote`（接口无鉴权，可读写本机工程目录）。
+- 监听非 loopback 地址必须显式 `--allow-remote`；账号数据在
+  `<data_dir>`（`--data-dir` / `VTRIM_DATA_DIR`，默认 `<exe_dir>/.vtrim/cloud`），
+  由 `vtrim user *` 与 HTTP 侧共用同一个 SQLite 账本。
+
+### 多用户服务进度（设计：`docs/superpowers/specs/2026-09-12-multi-user-server-design.md`）
+
+| 阶段 | 状态 |
+|---|---|
+| P1 step-1 账号账本 + `vtrim user` CLI | ✅ 已落地 |
+| P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`server/auth.rs`、`service/instancelock.rs`） |
+| P1 step-3 `vtrim doctor` 安全摘要 | ⏳ 待做 |
+| P2 项目托管与隔离（`?project=`、囚笼） | ⏳ 待做 |
+| P3 录播姬接入（webhook / ingest） | ⏳ 待做 |
+| P4 B站链接通道 / P5 容量与运维 | ⏳ 待做 |
 
 ## 开发
 

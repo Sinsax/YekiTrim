@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::service::Workspace;
 
+use super::auth::AuthService;
 use super::jobs::JobManager;
 
 #[derive(Debug, Clone)]
@@ -14,6 +15,9 @@ pub struct AppState {
     pub workspace: Arc<RwLock<Workspace>>,
     pub workspace_root: Arc<RwLock<PathBuf>>,
     pub jobs: Arc<JobManager>,
+
+    /// 会话鉴权（账号账本 + 限流）。身份数据不可缺省：打不开库就没有 AppState。
+    pub auth: Arc<AuthService>,
 
     /// 已启动的预览服务端口，key = `"{dir}|{kind}"`（kind: video / cover）。
     ///
@@ -48,26 +52,24 @@ pub struct PreviewBackend {
 }
 
 impl AppState {
-    #[allow(dead_code)]
-    pub fn new(workspace: Workspace) -> anyhow::Result<Self> {
-        // 默认工作区 = 当前工程根目录的父目录，方便扫描多个子工程。
-        let default_root = workspace
-            .root_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| workspace.root_dir.clone());
-        Self::with_root(workspace, default_root)
-    }
-
-    pub fn with_root(workspace: Workspace, workspace_root: PathBuf) -> anyhow::Result<Self> {
-        Ok(Self {
+    /// 用已打开的服务（含账号账本）构造状态。
+    ///
+    /// 库/目录不可写一律在 [`AuthService::open`] 处升级为启动失败（§3.5.7：
+    /// 配置可缺省，身份不可缺省），因此这里不再有"内建默认值继续跑"的分支。
+    pub fn with_auth(
+        workspace: Workspace,
+        workspace_root: PathBuf,
+        auth: Arc<AuthService>,
+    ) -> Self {
+        Self {
             workspace: Arc::new(RwLock::new(workspace)),
             workspace_root: Arc::new(RwLock::new(workspace_root)),
             jobs: Arc::new(JobManager::new()),
+            auth,
             preview_servers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             #[cfg(feature = "wgpu-render")]
             preview: PreviewSlot::default(),
-        })
+        }
     }
 
     pub async fn workspace(&self) -> Workspace {

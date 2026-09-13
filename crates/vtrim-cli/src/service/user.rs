@@ -65,6 +65,88 @@ pub fn initial_password_path() -> PathBuf {
     db::data_dir().join("initial-admin-password.txt")
 }
 
+/// 删除初始密码文件（首次成功登录 / 改密后调用）。删不掉只记 warning，不阻塞（§3.5.2）。
+pub fn remove_initial_password_file() {
+    let path = initial_password_path();
+    if !path.exists() {
+        return;
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => tracing::info!("已删除初始密码文件: {}", path.display()),
+        Err(e) => tracing::warn!("删除初始密码文件失败（不影响使用）: {} - {e}", path.display()),
+    }
+}
+
+/// `vtrim server` 启动时的管理员引导结果。
+#[derive(Debug, Clone)]
+pub struct Bootstrap {
+    /// 本次启动是否新建了 admin（重启不会重建，见 §3.5.2）
+    pub created: bool,
+    /// 账号数
+    pub accounts: i64,
+    /// 是否仍在使用初始/重置密码（对外监听的门槛，§3.5.4）
+    pub must_change_password: bool,
+    /// 本次新建时的初始密码（明文，**只在这里出现一次**）
+    pub initial_password: Option<String>,
+    /// 初始密码文件路径（只有"生成随机密码"时才写）
+    pub password_file: Option<PathBuf>,
+}
+
+/// 服务启动引导：无账号时创建 `admin`（幂等——已有账号绝不重置，§3.5.2）。
+///
+/// `explicit` = `--admin-password-file` / `VTRIM_ADMIN_PASSWORD` 提供的密码：
+/// 显式指定时**不生成随机密码、不写初始密码文件**，且视为"已改密"（可直接对外监听）。
+pub fn ensure_admin_bootstrap(explicit: Option<String>) -> Result<Bootstrap> {
+    let db = Db::open_default()?;
+    let accounts = db.count_users()?;
+
+    if accounts == 0 {
+        let (password, generated) = match explicit {
+            Some(pw) => {
+                auth::validate_password(&pw)
+                    .context("--admin-password-file / VTRIM_ADMIN_PASSWORD 提供的密码不合法")?;
+                (pw, false)
+            }
+            None => (auth::generate_initial_password(), true),
+        };
+        let hash = auth::hash_password(&password)?;
+        let id = db.create_user("admin", &hash, "admin", generated, 0)?;
+        db.audit(Some(id), "admin_bootstrap", if generated { "generated" } else { "explicit" })?;
+
+        let password_file = if generated {
+            let path = initial_password_path();
+            std::fs::write(&path, format!("{password}\n"))
+                .with_context(|| format!("写入初始密码文件失败: {}", path.display()))?;
+            Some(path)
+        } else {
+            None
+        };
+        return Ok(Bootstrap {
+            created: true,
+            accounts: 1,
+            must_change_password: generated,
+            initial_password: Some(password),
+            password_file,
+        });
+    }
+
+    // 已有账号：不重建、不重置；只报告"是否仍在用初始密码"
+    let must_change = match db.find_user("admin")? {
+        Some(u) => u.must_change_password,
+        None => {
+            tracing::warn!("账号账本里没有 admin（可能只建了普通账号）：请用 `vtrim user init-admin` 或管理页确认");
+            false
+        }
+    };
+    Ok(Bootstrap {
+        created: false,
+        accounts,
+        must_change_password: must_change,
+        initial_password: None,
+        password_file: None,
+    })
+}
+
 fn require_role(role: &str) -> Result<()> {
     match role {
         "admin" | "user" => Ok(()),

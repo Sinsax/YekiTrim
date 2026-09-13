@@ -63,6 +63,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import { toast } from '../stores/toast'
+import { csrfHeaders } from '../api/client'
 import { mediaUrl } from '../utils'
 import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
 import { createSfxPlayer } from '../polish/audio'
@@ -355,7 +356,9 @@ async function fetchRealFrame() {
   try {
     const r = await fetch('/api/polish/render-frame', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // 裸 fetch：写请求必须自己带 CSRF 头（服务端对写请求校验 X-CSRF-Token）
+      headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+      credentials: 'same-origin',
       body: JSON.stringify({ dir: props.dir, t: current.value }),
       signal: realAbort.signal,
     })

@@ -48,6 +48,19 @@ pub struct UserRow {
     pub last_login_at: Option<i64>,
 }
 
+/// 会话 + 账号快照（登录校验与 `/api/me` 都读这一份）。
+#[derive(Debug, Clone)]
+pub struct SessionRow {
+    pub id: String,
+    pub user_id: i64,
+    pub csrf: String,
+    pub expires_at: i64,
+    pub username: String,
+    pub role: String,
+    pub disabled: bool,
+    pub must_change_password: bool,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
 }
@@ -228,12 +241,145 @@ impl Db {
     }
 
     pub fn audit(&self, user_id: Option<i64>, action: &str, detail: &str) -> Result<()> {
+        self.audit_ip(user_id, action, detail, None)
+    }
+
+    pub fn audit_ip(
+        &self,
+        user_id: Option<i64>,
+        action: &str,
+        detail: &str,
+        ip: Option<&str>,
+    ) -> Result<()> {
         self.with(|conn| {
             conn.execute(
-                "INSERT INTO audit (at, user_id, action, detail) VALUES (?1, ?2, ?3, ?4)",
-                params![now_secs(), user_id, action, detail],
+                "INSERT INTO audit (at, user_id, action, detail, ip) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![now_secs(), user_id, action, detail, ip],
             )?;
             Ok(())
+        })
+    }
+
+    /// 统计某动作的审计条数。
+    ///
+    /// P1 只有单测在用；`vtrim doctor` 的安全摘要（P1 step-3）会消费它。
+    #[cfg(test)]
+    pub fn count_audit(&self, action: &str) -> Result<i64> {
+        self.with(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = ?1",
+                params![action],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    // ---- 会话（HTTP 登录） ----
+    /// 建会话行。`id`/`csrf` 都是 CSPRNG 令牌（见 `service::auth`）。
+    pub fn create_session(
+        &self,
+        id: &str,
+        user_id: i64,
+        csrf: &str,
+        expires_at: i64,
+        user_agent: Option<&str>,
+    ) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, user_id, csrf, created_at, expires_at, user_agent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, user_id, csrf, now_secs(), expires_at, user_agent],
+            )
+            .context("创建会话失败")?;
+            Ok(())
+        })
+    }
+
+    /// 按会话 id 取会话 + 账号快照（不过滤过期，由调用方判定，便于给出"已过期"文案）。
+    pub fn session(&self, id: &str) -> Result<Option<SessionRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT s.id, s.user_id, s.csrf, s.expires_at,
+                            u.username, u.role, u.disabled, u.must_change_password
+                     FROM sessions s JOIN users u ON u.id = s.user_id
+                     WHERE s.id = ?1",
+                    params![id],
+                    |r| {
+                        Ok(SessionRow {
+                            id: r.get(0)?,
+                            user_id: r.get(1)?,
+                            csrf: r.get(2)?,
+                            expires_at: r.get(3)?,
+                            username: r.get(4)?,
+                            role: r.get(5)?,
+                            disabled: r.get::<_, i64>(6)? != 0,
+                            must_change_password: r.get::<_, i64>(7)? != 0,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// 滑动续期；返回是否命中会话行。
+    pub fn touch_session(&self, id: &str, expires_at: i64) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "UPDATE sessions SET expires_at = ?2 WHERE id = ?1",
+                params![id, expires_at],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    pub fn delete_session(&self, id: &str) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            Ok(n > 0)
+        })
+    }
+
+    /// 删除某账号的其他会话（改密/禁用后清理），`keep` 为要保留的当前会话 id。
+    pub fn delete_user_sessions(&self, user_id: i64, keep: Option<&str>) -> Result<usize> {
+        self.with(|conn| {
+            let n = match keep {
+                Some(k) => conn.execute(
+                    "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2",
+                    params![user_id, k],
+                )?,
+                None => conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?,
+            };
+            Ok(n)
+        })
+    }
+
+    pub fn purge_expired_sessions(&self, now: i64) -> Result<usize> {
+        self.with(|conn| {
+            let n = conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
+            Ok(n)
+        })
+    }
+
+    pub fn touch_last_login(&self, user_id: i64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE users SET last_login_at = ?2 WHERE id = ?1",
+                params![user_id, now_secs()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 按 id 改密（HTTP 侧用；CLI 侧按用户名走 `set_password`）。
+    pub fn set_password_by_id(&self, user_id: i64, hash: &str, must_change: bool) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "UPDATE users SET password_hash = ?2, must_change_password = ?3 WHERE id = ?1",
+                params![user_id, hash, must_change as i64],
+            )?;
+            Ok(n > 0)
         })
     }
 }
@@ -268,6 +414,66 @@ mod tests {
         assert_eq!(users[0].username, "admin");
         assert!(users[0].must_change_password);
         assert_eq!(users[1].quota_bytes, 1024);
+    }
+
+    #[test]
+    fn session_lifecycle_and_user_join() {
+        let (_d, db) = tmp_db();
+        let uid = db.create_user("admin", "hash", "admin", true, 0).unwrap();
+        db.create_session("sid-1", uid, "csrf-1", 1000, Some("pytest")).unwrap();
+
+        let s = db.session("sid-1").unwrap().expect("会话应存在");
+        assert_eq!(s.username, "admin");
+        assert_eq!(s.role, "admin");
+        assert_eq!(s.csrf, "csrf-1");
+        assert!(s.must_change_password);
+        assert!(!s.disabled);
+        assert_eq!(s.expires_at, 1000);
+
+        assert!(db.touch_session("sid-1", 2000).unwrap());
+        assert!(db.session("sid-1").unwrap().unwrap().expires_at == 2000);
+
+        db.touch_last_login(uid).unwrap();
+        assert!(db.find_user("admin").unwrap().unwrap().last_login_at.is_some());
+
+        // 级联：删账号会带走会话（foreign_keys=ON）
+        assert!(db.delete_session("sid-1").unwrap());
+        assert!(!db.delete_session("sid-1").unwrap());
+        assert!(db.session("sid-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn expired_sessions_are_purged_and_scoped_deletes_work() {
+        let (_d, db) = tmp_db();
+        let a = db.create_user("a", "h", "admin", false, 0).unwrap();
+        let b = db.create_user("b", "h", "user", false, 0).unwrap();
+        db.create_session("a1", a, "c", 100, None).unwrap();
+        db.create_session("a2", a, "c", 9_999, None).unwrap();
+        db.create_session("b1", b, "c", 9_999, None).unwrap();
+
+        assert_eq!(db.purge_expired_sessions(200).unwrap(), 1);
+        assert!(db.session("a1").unwrap().is_none());
+        assert!(db.session("a2").unwrap().is_some());
+
+        // 改密只清掉"其他"会话，当前会话保留
+        assert_eq!(db.delete_user_sessions(a, Some("a2")).unwrap(), 0);
+        assert_eq!(db.delete_user_sessions(b, None).unwrap(), 1);
+        assert!(db.session("b1").unwrap().is_none());
+        assert!(db.session("a2").unwrap().is_some());
+
+        // 会话里的账号快照跟着用户表走（禁用/改密即时可见）
+        assert!(db.set_disabled("a", true).unwrap());
+        assert!(db.session("a2").unwrap().unwrap().disabled);
+        assert!(db.set_password_by_id(a, "h2", false).unwrap());
+        assert!(!db.session("a2").unwrap().unwrap().must_change_password);
+    }
+
+    #[test]
+    fn audit_records_ip_column() {
+        let (_d, db) = tmp_db();
+        let uid = db.create_user("admin", "h", "admin", false, 0).unwrap();
+        db.audit_ip(Some(uid), "login_failed", "bad password", Some("127.0.0.1")).unwrap();
+        assert_eq!(db.count_audit("login_failed").unwrap(), 1);
     }
 
     #[test]

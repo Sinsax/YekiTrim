@@ -9,10 +9,13 @@ mod silence;
 mod status;
 mod init_config;
 mod workspace;
-// 多用户服务 P1：账号账本 / 口令 KDF / `vtrim user` CLI
-mod auth;
-mod db;
-mod user;
+// 多用户服务 P1：账号账本 / 口令 KDF / 单实例锁 / `vtrim user` CLI
+// 这三个模块同时被 `server`（HTTP 会话、启动预检）与 `user` CLI 使用，
+// 因此按 `service → server` 单向依赖显式 pub，不再层层转发。
+pub mod auth;
+pub mod db;
+pub mod instancelock;
+pub mod user;
 
 #[allow(unused_imports)]
 pub use core_pipeline::*;
@@ -21,5 +24,4 @@ pub use silence::*;
 pub use status::*;
 pub use init_config::*;
 pub use workspace::*;
-// auth / db 目前只被 user.rs 使用（HTTP 侧接入时再决定是否对外 re-export）
 pub use user::*;
