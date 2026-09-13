@@ -1,0 +1,1 @@
+import{c as e,a as s,k as o,o as t,K as c}from"./index-CQXgBOuD.js";const l={class:"card"},i={__name:"JobsView",setup(n){return(r,a)=>(t(),e("div",null,[a[0]||(a[0]=s("div",{class:"page-head"},[s("div",null,[s("h1",null,"运行监控"),s("div",{class:"sub"},"任务队列 / 进度 / 实时状态")])],-1)),s("div",l,[o(c,{actions:""})])]))}};export{i as default};

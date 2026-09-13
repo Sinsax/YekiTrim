@@ -16,18 +16,18 @@
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/client'
+import { scopeQ } from '../api/scope'
 import { toast } from '../stores/toast'
 
 const route = useRoute()
-const cfg = route.params.cfg || ''
-const cfgQ = encodeURIComponent(cfg)
+const cfgQ = scopeQ(route.params.pid || '')
 const raw = ref('')
 // 只有成功读到 vtrim.toml 原文才允许保存：否则会把空文件写回去
 const loaded = ref(false)
 
 async function load() {
   try {
-    const d = await api(`/api/project-data/config?config=${cfgQ}`)
+    const d = await api(`/api/project-data/config?${cfgQ}`)
     raw.value = d.vtrim_raw || ''
     loaded.value = true
   } catch (e) {
@@ -40,7 +40,7 @@ async function save() {
   if (!loaded.value) { toast('配置尚未加载成功，已禁止保存', 'err'); return }
   if (!raw.value.trim()) { toast('配置内容为空，已禁止保存', 'err'); return }
   try {
-    await api(`/api/project-data/config?config=${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: raw.value }) })
+    await api(`/api/project-data/config?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: raw.value }) })
     toast('项目配置已保存')
   } catch (e) {
     toast(e.message, 'err')

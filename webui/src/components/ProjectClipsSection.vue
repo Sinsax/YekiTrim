@@ -194,7 +194,7 @@ const props = defineProps({
   projectData: { type: Object, default: null }
 })
 const router = useRouter()
-const projectQ = () => encodeURIComponent(props.project.config_file)
+const projectQ = () => 'project=' + encodeURIComponent(props.project?.id ?? '')
 
 const events = ref([])
 const clips = ref([])
@@ -318,7 +318,7 @@ function hasThumb(c) {
 
 function thumbSrc(c) {
   const rank = String(c.name || '').replace('clip-', '')
-  return `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?config=${projectQ()}`
+  return `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${projectQ()}`
 }
 
 function secToTs(sec) {
@@ -346,9 +346,9 @@ async function load() {
   loadError.value = ''
   try {
     const q = projectQ()
-    const ev = await api(`/api/project-data/events?config=${q}`).catch(() => ({ events: [] }))
-    const cl = await api(`/api/project-data/clips?config=${q}`)
-    const pl = await api(`/api/project-data/polish?config=${q}`).catch(() => [])
+    const ev = await api(`/api/project-data/events?${q}`).catch(() => ({ events: [] }))
+    const cl = await api(`/api/project-data/clips?${q}`)
+    const pl = await api(`/api/project-data/polish?${q}`).catch(() => [])
     events.value = (ev.events || []).sort((a, b) => a.start_sec - b.start_sec)
     clips.value = cl || []
     const m = {}
@@ -401,7 +401,7 @@ async function preview(c) {
 
 async function redetect() {
   try {
-    await api(`/api/project-data/pipeline?config=${projectQ()}`, { method: 'POST', body: JSON.stringify({ config: props.project.config_file, stage: 'detect', resume: 'auto' }) })
+    await api(`/api/project-data/pipeline?${projectQ()}`, { method: 'POST', body: JSON.stringify({ stage: 'detect', resume: 'auto' }) })
     toast('重新检测已启动')
   } catch (e) { toast(e.message, 'err') }
 }
@@ -412,7 +412,7 @@ async function cutAll() {
   const ok = await confirmDialog(`将对 ${list.length} 个未剪切事件执行一键全切，是否继续？`, { title: '一键全切', danger: true })
   if (!ok) return
   try {
-    await api('/api/project-data/events/cut-all?config=' + projectQ(), {
+    await api('/api/project-data/events/cut-all?' + projectQ(), {
       method: 'POST',
       body: JSON.stringify({ ranks: list.map(ev => Number(ev.rank)) })
     })
@@ -429,7 +429,7 @@ async function cutEvent(ev) {
   const ok = await confirmDialog(`将剪切「${ev.label}」（${fmt(ev.start_sec)} → ${fmt(ev.end_sec)}）`, { title: '剪切该事件？' })
   if (!ok) return
   try {
-    await api(`/api/project-data/events/${ev.rank}/cut?config=${projectQ()}`, { method: 'POST' })
+    await api(`/api/project-data/events/${ev.rank}/cut?${projectQ()}`, { method: 'POST' })
     toast('剪切任务已启动')
     load()
   } catch (e) { toast(e.message, 'err') }
@@ -457,7 +457,7 @@ async function saveEdit() {
   ev.start = secToTs(editStart.value)
   ev.end = secToTs(editEnd.value)
   try {
-    await api(`/api/project-data/events?config=${projectQ()}`, { method: 'PUT', body: JSON.stringify({ events: events.value }) })
+    await api(`/api/project-data/events?${projectQ()}`, { method: 'PUT', body: JSON.stringify({ events: events.value }) })
     editing.value = null
     toast('已保存')
     load()
@@ -466,22 +466,35 @@ async function saveEdit() {
 
 async function goPolish(c) {
   try {
-    const list = await api(`/api/project-data/polish?config=${projectQ()}`).catch(() => [])
+    const list = await api(`/api/project-data/polish?${projectQ()}`).catch(() => [])
     const found = (list || []).find(p => p.dir === c.dir)
+    // 精修目录用项目内相对路径传给服务端（服务端囚笼 + 归属校验）
+    const relDir = clipRelDir(c.dir)
     if (!found || !found.polish_ready) {
       // 自动 init，不弹确认框
-      await api('/api/polish/init', { method: 'POST', body: JSON.stringify({ dir: c.dir }) })
+      await api('/api/polish/init', { method: 'POST', body: JSON.stringify({ project: props.project.id, dir: relDir }) })
       toast('已自动 init')
     }
-    router.push(`/project/${encodeURIComponent(props.project.config_file)}/slices/${encodeURIComponent(c.name)}`)
+    router.push(`/project/${encodeURIComponent(props.project.id)}/slices/${encodeURIComponent(c.name)}`)
   } catch (e) { toast(e.message, 'err') }
+}
+
+/// 把切片目录换算成"相对项目根的路径"（服务端只接受项目内相对路径）
+function clipRelDir(dir) {
+  const norm = String(dir || '').split(String.fromCharCode(92)).join('/')
+  const out = String(props.project?.output_dir || '').split(String.fromCharCode(92)).join('/')
+  if (out && norm.startsWith(out)) {
+    const rel = norm.slice(out.length).replace(/^\/+/, '')
+    return rel ? 'output/' + rel : 'output'
+  }
+  return 'output'
 }
 
 async function addClip() {
   if (!newLabel.value) { toast('请填写标题'); return }
   if (newEnd.value <= newStart.value) { toast('结束必须大于开始'); return }
   try {
-    const created = await api(`/api/project-data/events?config=${projectQ()}`, { method: 'POST', body: JSON.stringify({
+    const created = await api(`/api/project-data/events?${projectQ()}`, { method: 'POST', body: JSON.stringify({
       label: newLabel.value,
       start_sec: newStart.value,
       end_sec: newEnd.value,
@@ -489,7 +502,7 @@ async function addClip() {
       summary: newSummary.value
     }) })
     const rank = created && created.event && created.event.rank
-    if (rank) await api(`/api/project-data/events/${rank}/cut?config=${projectQ()}`, { method: 'POST' })
+    if (rank) await api(`/api/project-data/events/${rank}/cut?${projectQ()}`, { method: 'POST' })
     showAdd.value = false
     toast('片段已创建，正在剪切')
     load()
@@ -503,7 +516,7 @@ function openAdd() {
 defineExpose({ redetect, openAdd })
 
 watch(() => props.projectData, load, { immediate: true })
-watch(() => props.project.config_file, load)
+watch(() => props.project?.id, load)
 </script>
 
 <style scoped>

@@ -1,14 +1,17 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import ProjectLayout from './views/ProjectLayout.vue'
 import { api } from './api/client'
+import { scopeQ, setScope } from './api/scope'
 import { STAGE_EVENTS_READY } from './utils'
 import { authState, isAuthed, loadMe } from './stores/auth'
 
-// 直接访问 /project/:cfg（深链 / 刷新）时也按预处理进度决定入口页：
+// 直接访问 /project/:pid（深链 / 刷新）时也按预处理进度决定入口页：
 // 事件检测已完成 → 切片页，否则 → 预览页。
+// M2：作用域是**项目 id**（不再是工程路径），服务端据此校验归属。
 async function projectEntryGuard(to) {
+  setScope(to.params.pid)
   try {
-    const st = await api(`/api/project-data/status?config=${encodeURIComponent(to.params.cfg || '')}`)
+    const st = await api(`/api/project-data/status?${scopeQ(to.params.pid)}`)
     if ((st.current_stage || 0) >= STAGE_EVENTS_READY) {
       return { name: 'project-slices', params: to.params }
     }
@@ -21,7 +24,7 @@ const routes = [
   { path: '/', name: 'home', component: () => import('./views/HomeView.vue') },
   { path: '/projects', redirect: '/' },
   {
-    path: '/project/:cfg',
+    path: '/project/:pid',
     name: 'project',
     component: ProjectLayout,
     children: [

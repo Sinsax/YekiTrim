@@ -73,18 +73,29 @@ export function fmtTime(sec) {
 // 事件检测完成（events.json 已生成）的 stage：>= 此值说明预处理结束，可直接进切片页
 export const STAGE_EVENTS_READY = 3
 
-// 项目入口路由：预处理（事件检测）完成后直接进切片页，否则进预览页
-export function projectEntryPath(cfg, stage) {
+// 项目入口路由：预处理（事件检测）完成后直接进切片页，否则进预览页。
+// M2：作用域是项目 id（不再是工程路径）。
+export function projectEntryPath(pid, stage) {
   const view = Number(stage || 0) >= STAGE_EVENTS_READY ? 'slices' : 'preview'
-  return `/project/${encodeURIComponent(cfg)}/${view}`
+  return `/project/${encodeURIComponent(pid)}/${view}`
 }
 
 export function normalizeSlashes(p) {
   return String(p || '').split(String.fromCharCode(92)).join('/')
 }
 
-export function mediaUrl(dir, file = 'clip.mp4') {
-  const norm = normalizeSlashes(dir)
+/**
+ * 媒体 URL。
+ *
+ * - `mediaUrl(projectId, 'output/clips/clip-01/clip.mp4')` → 新契约（服务端按项目 id + 项目内相对路径放行）
+ * - `mediaUrl('<绝对目录>', 'clip.mp4')` → 旧写法；服务端仍接受，但只在"该路径位于本人项目内"时放行
+ */
+export function mediaUrl(dirOrPid, file = 'clip.mp4') {
+  const s = String(dirOrPid ?? '')
+  if (/^\d+$/.test(s)) {
+    return '/api/media/' + s + '/' + normalizeSlashes(file).replace(/^\/+/, '')
+  }
+  const norm = normalizeSlashes(s)
   return '/api/media/' + encodeURIComponent(norm + '/' + file).replace(/%2F/g, '/')
 }
 

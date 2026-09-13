@@ -15,10 +15,10 @@
       暂无项目
     </div>
 
-    <div v-for="(proj, gi) in projects" :key="proj.config_file" class="project-group">
+    <div v-for="(proj, gi) in projects" :key="proj.id" class="project-group">
       <div class="group-header" @click="toggleGroup(gi)">
-        <span class="group-name">{{ proj.name || proj.dir }}</span>
-        <span class="muted small mono">{{ proj.dir }}</span>
+        <span class="group-name">{{ proj.name || ('项目 #' + proj.id) }}</span>
+        <span class="chip n">{{ sourceLabel(proj) }}</span>
         <span class="muted small">{{ projectDataFor(proj).clips.length }} 个片段</span>
         <span class="row">
           <button class="mini-btn" @click.stop="triggerRedetect(gi)">重新检测</button>
@@ -37,6 +37,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api } from '../api/client'
+import { scopeQ } from '../api/scope'
+import { loadProjects, sourceLabel } from '../stores/project'
 import Icon from '../components/Icon.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
 
@@ -53,7 +55,7 @@ function setSectionRef(gi, el) {
 }
 
 function projectDataFor(proj) {
-  return projectData.value[proj.config_file] || emptyData
+  return projectData.value[proj.id] || emptyData
 }
 
 function triggerRedetect(gi) {
@@ -79,18 +81,17 @@ async function load() {
   projectData.value = {}
   expanded.value = {}
   try {
-    const d = await api('/api/project/list')
-    const list = (d.projects || []).slice().sort((a, b) => (b.mtime_ms || 0) - (a.mtime_ms || 0))
+    const list = (await loadProjects()).slice()
     projects.value = list
     for (const proj of list) {
       try {
-        const cfgQ = encodeURIComponent(proj.config_file)
-        const ev = await api(`/api/project-data/events?config=${cfgQ}`).catch(() => ({ events: [] }))
-        const cl = await api(`/api/project-data/clips?config=${cfgQ}`).catch(() => [])
-        const pl = await api(`/api/project-data/polish?config=${cfgQ}`).catch(() => [])
+        const q = scopeQ(proj.id)
+        const ev = await api(`/api/project-data/events?${q}`).catch(() => ({ events: [] }))
+        const cl = await api(`/api/project-data/clips?${q}`).catch(() => [])
+        const pl = await api(`/api/project-data/polish?${q}`).catch(() => [])
         const m = {}
         ;(pl || []).forEach(p => { m[p.dir] = p })
-        projectData.value[proj.config_file] = {
+        projectData.value[proj.id] = {
           events: (ev && ev.events) || [],
           clips: cl || [],
           polishMap: m
