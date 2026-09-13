@@ -50,27 +50,36 @@
       </div>
 
       <template v-else>
-        <!-- 片段行：整行卡片，点击切换 -->
-        <div class="card card-blk">
-          <div class="card card-blk">
-            <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="list" :size="15" /> 片段（{{ clips.length }}）</h2>
-              <span class="muted small">点击卡片切换，行内可初始化</span>
-            </div>
-            <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
+        <!-- 片段条（紧凑态）：压扁它才腾得出「预览 + 时间轴」同屏的竖高 -->
+        <div class="card frag-strip">
+          <div class="row spread mb-4">
+            <b class="t" style="margin:0">片段（{{ clips.length }}）</b>
+            <span class="muted small">点击切换 · 未初始化可点「初始化」</span>
           </div>
+          <FragmentList compact :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
         </div>
 
-        <!-- 预览左 + 右栏（生成与导出：LLM 剪辑块〔区域编辑 / 贴纸来源 + LLM 剪辑 / 去静音〕→ 渲染导出） -->
-        <div class="grid cols-main mt-16">
-          <div class="card">
-            <div class="row spread">
-              <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-              <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
-              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+        <!-- 左列 = 预览 + 时间轴（上下相邻，一起占满首屏）；右栏 = 生成与导出 -->
+        <div class="grid cols-main mt-16 edit-grid">
+          <div class="left-col">
+            <div class="card">
+              <div class="row spread">
+                <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
+                <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
+                <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+              </div>
+              <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
+              <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
             </div>
-            <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
-            <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
+
+            <!-- 时间轴（字幕编辑在时间轴块上，自动保存） -->
+            <div class="card">
+              <div class="row spread">
+                <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
+                <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
+              </div>
+              <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
+            </div>
           </div>
 
           <div class="card">
@@ -161,14 +170,7 @@
             </div>
           </div>
         </div>
-        <!-- 时间轴全宽（字幕编辑在时间轴块上，自动保存） -->
-        <div class="card mt-16">
-          <div class="row spread">
-            <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
-            <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
-          </div>
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
-        </div>
+        <!-- 时间轴已在左列（预览正下方），保证最大化窗口下两者同屏 -->
 
         <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" @changed="refreshClipEntry" /></div>
 
@@ -825,7 +827,12 @@ watch(dir, load)
 </script>
 
 <style scoped>
-/* 页面专属布局（样稿无同名类）：LLM 剪辑参数块、贴纸来源选择器、产物体 */
+/* 页面专属布局（样稿无同名类）：编辑区（预览+时间轴左列 / 生成与导出右栏）、
+   LLM 剪辑参数块、紧凑片段条、贴纸来源选择器、产物体 */
+/* 左列上下排列「预览 + 时间轴」，右栏保持自然高度（不跟着左列拉长） */
+.edit-grid { align-items:start; }
+.left-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.frag-strip { padding:10px 12px; }
 .gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }

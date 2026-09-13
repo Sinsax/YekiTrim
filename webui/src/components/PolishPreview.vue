@@ -648,7 +648,13 @@ function pause() {
 
 <style scoped>
 .polish-preview { width:100%; }
-.stage { position:relative; width:min(100%, calc(66vh * 16 / 9)); aspect-ratio:16/9; margin:0 auto; background:#000; border-radius:14px; overflow:hidden; box-shadow:0 6px 18px rgba(0,0,0,.10); }
+/* 预览尺寸：宽度由「可用高度」反推（16:9），并随视口收缩 —— 保证最大化窗口下
+   「预览 + 时间轴」同屏（750px ≈ 面包屑+页头+片段条+预览卡头/控制条+时间轴卡的固定高度，
+   调这几处布局时同步改这个数）。上限 620px 免得大屏上预览过分占位，下限 170px 保证还能看。
+   —— 用户要求：网页最大化时能同时显示 preview 和时间轴。 */
+.stage { position:relative; width:min(100%, calc(clamp(170px, 100vh - 750px, 620px) * 16 / 9));
+  aspect-ratio:16/9; margin:0 auto; background:#000; border-radius:14px; overflow:hidden;
+  box-shadow:0 6px 18px rgba(0,0,0,.10); }
 .stage:fullscreen { width:100%; border-radius:0; }
 .bg-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:blur(28px) brightness(0.5) saturate(1.15); transform:scale(1.15); max-height:none; margin:0; border-radius:0; }
 .video-wrap { position:absolute; inset:0; display:flex; align-items:center; overflow:hidden; }
