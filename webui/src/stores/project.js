@@ -42,15 +42,15 @@ export async function deleteProjectSource(pid) {
   return api('/api/projects/' + encodeURIComponent(pid) + '/source', { method: 'DELETE' })
 }
 
-/** 服务器本机文件浏览（仅 admin；囚笼在允许的根内，路径一律相对所选根）。 */
-export async function listTenantFiles(path = '', root = '') {
-  return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ path, root }) })
+/** 服务器本机文件浏览（仅 admin；管理员可传任意绝对路径，非管理员只能是租户根内相对路径）。 */
+export async function listTenantFiles(dir = '') {
+  return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ dir }) })
 }
 
 /** 用服务器本机文件建项目（仅 admin，永不接受上传）。已有 vtrim.toml 时只登记不覆盖。 */
-export async function createLocalProject({ root = '', dir, input = '', danmaku = '', output_dir = '' }) {
+export async function createLocalProject({ dir, input = '', danmaku = '', output_dir = '' }) {
   return api('/api/projects', {
     method: 'POST',
-    body: JSON.stringify({ source: { kind: 'local', root, dir, input, danmaku, output_dir } })
+    body: JSON.stringify({ source: { kind: 'local', dir, input, danmaku, output_dir } })
   })
 }

@@ -229,10 +229,11 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - `vtrim-core/src/tenant.rs` 是唯一拼接入口：拒绝绝对路径/UNC/`C:foo`/`..`/符号链接逃逸。
   - `/api/media/<project_id>/<项目内相对路径>`；旧写法（绝对路径）也只在本项目内放行。
   - `/api/admin/*`（config/models/doctor/llm test）仅 admin；旧路径作为过渡别名挂在同一层。
-  - `/api/fs/list` 仅 admin，且囚笼在**允许的根**内（该账号租户根 + `[storage] local_roots`）：
-    这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**；
-    请求 `{root, path}`（path 相对所选根），响应回传 `roots/root_label` 供前端下拉切换。
-  - 管理员「＋新建项目 → 从服务器文件」：`POST /api/projects {source:{kind:"local", root, dir, input, danmaku, output_dir}}`；
+  - `/api/fs/list` 仅 admin，**可以浏览服务器任意目录**（`{dir}` 绝对路径，与单用户时代一致；
+    也兼容 `{root, path}` 相对写法）。这是"服务器上已有文件"这条 admin-only 来源，**永不接受上传**；
+    `[storage] local_roots` 只是前端下拉的**快捷入口**，不再是硬限制。
+  - 管理员「＋新建项目 → 从服务器文件」：`POST /api/projects {source:{kind:"local", dir, input, danmaku, output_dir}}`
+    （`dir` 绝对路径；非管理员只能用自己的租户根，且 `/api/fs/list` 与 `kind:"local"` 一律 403）；
     **目标目录已有 `vtrim.toml` 时只登记/打开、不覆盖**（保护手改过的工程设置）。
   - 任务带 `owner_id`：`/api/jobs`、`/api/jobs/:id`、`/api/jobs/:id/events`、canc、`/api/stream`
     全部按归属过滤，他人任务 404（SSE 在服务端过滤）。

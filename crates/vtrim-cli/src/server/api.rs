@@ -696,8 +696,8 @@ async fn projects_create(
 /// 用"服务器本机文件"建项目的公共实现（`POST /api/projects` 与过渡期的
 /// `POST /api/project/init` 共用）。
 ///
-/// 路径囚笼在**允许的根**内（租户根 + `[storage] local_roots`）；目录里已经存在
-/// `vtrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
+/// 管理员可以给**任意绝对目录**（与单用户时代一致），非管理员只能是租户根内的相对路径；
+/// 目录里已经存在 `vtrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
 async fn create_local_project(
     state: &Arc<AppState>,
     user: &super::auth::CurrentUser,
@@ -710,15 +710,13 @@ async fn create_local_project(
     let tenant = crate::service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
-    let root = crate::service::projects::pick_local_root(user.id, root_hint)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    let rel_dir = rel_dir.trim();
-    let dir = if rel_dir.is_empty() {
-        root.clone()
-    } else {
-        vtrim_core::tenant::jail_existing(&root, rel_dir)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?
-    };
+    let dir = crate::service::projects::resolve_target_dir(
+        user.id,
+        root_hint,
+        rel_dir,
+        user.is_admin(),
+    )
+    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("目录不可用: {e:#}")))?;
     if !dir.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
     }
@@ -768,11 +766,13 @@ async fn create_local_project(
             .map(|rel| format!("本机文件 · {}", rel.display()))
             .unwrap_or_else(|| "本机文件".to_string())
     } else {
-        format!(
-            "本机 · {}/{}",
-            crate::service::projects::root_label(user.id, &root),
-            dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        )
+        // 任意位置（管理员）：用父目录名 + 目录名拼一个能认出来的标签
+        let parent_name = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("本机 · {parent_name}/{}", name)
     };
     let id = match db.project_by_config(&config_path) {
         Ok(Some(existing)) => existing.id,
@@ -1704,11 +1704,13 @@ async fn event_cut_impl(
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-/// `POST /api/fs/list {path}`：**仅 admin**，且囚笼在该账号的租户根内（§0.2.7 / §5.2）。
+/// `POST /api/fs/list {dir}`：**仅 admin**，浏览服务器任意目录（与单用户时代一致）。
 ///
-/// 保留这个入口只为"本机部署用服务器上已有文件建项目"这条 admin-only 来源；
-/// 它**不接受绝对路径**，只接受相对租户根（`<projects_root>/users/<uid>`）的路径，
-/// 也**永不接受上传**。响应同时给出相对路径，前端据此拼 `POST /api/projects`。
+/// - `dir` 可以是**任意绝对路径**（管理员），缺省 → 租户根；也兼容 `{root, path}`
+///   （path 相对所选根，囚笼在内）；
+/// - 只做目录列举，**永不接受上传**；
+/// - 响应回传 `roots`（租户根 + `[storage] local_roots`，作为快捷入口）、`dir` 与 `parent`
+///   （绝对父目录，供"上一级"一路走到盘符根）。
 async fn fs_list(
     Extension(user): Extension<super::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
@@ -1716,38 +1718,51 @@ async fn fs_list(
     if !user.is_admin() {
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
-    // 允许的根 = 租户根 + [storage] local_roots（管理员在配置里显式列出的目录）
+    // 允许的根 = 租户根 + [storage] local_roots（这些只是"快捷入口"；管理员可用任意绝对路径）
     let tenant = crate::service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
     let roots = crate::service::projects::local_roots(user.id);
-    let root = crate::service::projects::pick_local_root(
-        user.id,
-        body.get("root").and_then(|v| v.as_str()).unwrap_or(""),
-    )
-    .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    let rel = body
-        .get("path")
-        .or_else(|| body.get("dir"))
+    let is_admin = user.is_admin();
+    let dir_hint = body
+        .get("dir")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let target = if rel.is_empty() {
-        root.clone()
-    } else {
-        vtrim_core::tenant::jail_existing(&root, &rel)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("路径不可用: {e:#}")))?
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let root_hint = body.get("root").and_then(|v| v.as_str()).unwrap_or("");
+    let path_hint = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let bad = |e: anyhow::Error| err(StatusCode::BAD_REQUEST, format!("{e:#}"));
+    let target = match dir_hint {
+        // 新契约：直接给目录（绝对路径 = 任意位置；相对路径 = 相对快捷根）
+        Some(d) => {
+            crate::service::projects::resolve_target_dir(user.id, root_hint, &d, is_admin)
+                .map_err(bad)?
+        }
+        // 兼容契约：{root, path}
+        None if Path::new(path_hint.trim()).is_absolute() => {
+            crate::service::projects::resolve_target_dir(user.id, root_hint, path_hint, is_admin)
+                .map_err(bad)?
+        }
+        None => {
+            let root = crate::service::projects::pick_local_root(user.id, root_hint, is_admin)
+                .map_err(bad)?;
+            if path_hint.trim().is_empty() {
+                root
+            } else {
+                crate::service::projects::resolve_target_dir(user.id, "", path_hint, is_admin)
+                    .map_err(bad)?
+            }
+        }
     };
     if !target.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能浏览目录"));
     }
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let rel_prefix = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.clone())
-        .strip_prefix(&root_canon)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
+    let cur = target.canonicalize().unwrap_or_else(|_| target.clone());
+    let cur_str = cur.to_string_lossy().into_owned();
+    // 绝对父目录：让前端"上一级"能一路走到盘符根（管理员随意浏览）
+    let parent = cur
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
     let scan_dir = target.clone();
@@ -1764,14 +1779,10 @@ async fn fs_list(
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
-    let parent = Path::new(&rel_prefix)
-        .parent()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
     let root_list: Vec<serde_json::Value> = roots
         .iter()
         .map(|r| {
-            // 统一成 canonical 形式（Windows 上是 \\?\ 前缀），前端原样回传即可命中允许列表
+            // 统一成 canonical 形式（Windows 上是 \\?\ 前缀），前端原样回传即可命中快捷入口
             let canon = r.canonicalize().unwrap_or_else(|_| r.clone());
             serde_json::json!({
                 "path": canon.to_string_lossy(),
@@ -1780,12 +1791,35 @@ async fn fs_list(
             })
         })
         .collect();
+    // 当前目录若不是快捷入口之一，也追加进下拉（下拉始终能显示"当前位置"）
+    let mut root_list = root_list;
+    if !root_list.iter().any(|x| x["path"].as_str() == Some(cur_str.as_str())) {
+        root_list.push(serde_json::json!({
+            "path": cur_str,
+            "label": cur
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| cur_str.clone()),
+            "tenant": false,
+        }));
+    }
+    // 兼容旧前端：相对某个快捷根的路径
+    let rel = roots
+        .iter()
+        .filter_map(|r| r.canonicalize().ok())
+        .find_map(|r| {
+            cur.strip_prefix(&r)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
+        .unwrap_or_default();
     ok(serde_json::json!({
-        "root": root_canon.to_string_lossy(),
-        "root_label": crate::service::projects::root_label(user.id, &root_canon),
+        "dir": cur_str,
+        "root": cur_str,
+        "root_label": crate::service::projects::root_label(user.id, &cur),
         "roots": root_list,
         "tenant_root": tenant.to_string_lossy(),
-        "path": rel_prefix,
+        "path": rel,
         "parent": parent,
         "dirs": dirs,
         "files": files,
