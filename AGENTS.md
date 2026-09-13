@@ -41,6 +41,8 @@ vtrim silence [files...]                 # 「去静音」: 长停顿映射为�
 vtrim download                           # 下载全部 ASR 模型 (sensevoice/firered-zh/qwen3-asr) → .vtrim/models/
 vtrim status                             # 查看当前进度
 vtrim doctor [--url <base>]              # 安全与运行状况摘要（账号/初始密码/锁/磁盘/服务探测）
+vtrim ingest token [--disable]           # 录播姬: 生成 webhook token / 关闭 webhook
+vtrim ingest status                      # 录播姬: 采集配置概览
 vtrim config init [--path]               # 生成全局配置文件
 vtrim config show                        # 显示当前配置 (含 LLM)
 vtrim correct [-t <transcript>]          # LLM 订正转录文本
@@ -216,6 +218,26 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - 前端作用域是项目 id：`/project/:pid`，`api/scope.js` 是唯一拼 `project=<id>` 的地方。
 - 真渲染（wgpu）暂缓：未启用该 feature 时前端**隐藏**入口（`/api/health.wgpu_render` 判定），
   日后开发时只需恢复 UI 入口，`PolishPreview` 里的逻辑与后端接口都还在。
+- **录播姬采集（P3 已落地）**：
+  - `vtrim ingest token [--disable]` 生成 webhook token（明文只显示一次，配置里只存 scrypt 哈希）
+    并开启 `[ingest] webhook_enabled`；`vtrim ingest status` 看配置概览。
+  - `POST /api/ingest/bililive/<token>`：**自带 token 鉴权、不要求会话**（录播姬只能填 URL）；
+    只做 验 token → `EventId` 去重 → 落库，然后**立即 2xx**；`allow_ips` 白名单可选；
+    `EventData` 用大小写不敏感的多别名取值，未知事件类型忽略但记事件表。
+  - `ingest_sessions/ingest_files/ingest_events/channel_map` 四张表；
+    `GET /api/ingest/records`（本人；admin `?all=1`/`?unassigned=1`）、`GET/PUT /api/channel-map`、
+    `POST /api/ingest/retry`、`POST /api/admin/ingest/assign`、`POST /api/admin/ingest/scan`、
+    `GET /api/admin/ingest`。
+  - 入库 worker（串行＝入库槽 1）：完结判定（SessionEnded + 全部分片闭环或空闲窗口）→
+    水位/配额预检 → 落位（同盘 rename / 跨盘 copy+校验+删源）→ 多分片
+    `ffmpeg -f concat -c copy` 合并为 `source.mp4`（失败回退重编码，原始分片保留）→
+    弹幕（`.xml`/`.ass`/`.srt`）一并搬入 → 建项目 → 按 `auto_pipeline` 自动跑管线；
+    失败清理半成品目录并写 `state=failed` + 错误文案。
+  - 兜底扫描：`watch_interval_mins`（0=关闭）或手动 `POST /api/admin/ingest/scan`，
+    文件"两轮大小+mtime 不变"才登记，覆盖漏推送/录播姬重启/历史录播导入；
+    未映射房间进"待分配池"（`state=unassigned`，仅 admin 指派）。
+  - 前端：`#/ingest` 入库页（记录 + 房间映射 + 待分配 + 扫描）与总览页「录制导入（最近）」，
+    `/api/health.ingest_ready` 决定是否显示配置引导卡。
 - API 都在 `/api/*`：未注册路径返回 **404 + JSON**（`{"ok":false,"error":"未知接口: …"}`），
   不会回退成 SPA HTML（否则前端会把 200 HTML 解析成 `null` 静默失败）。
 - 任务模型：**同一时刻只允许一个长任务**（`JobManager::create` 返回 `BusyJob` → HTTP 409）；
@@ -236,7 +258,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 | P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`server/auth.rs`、`service/instancelock.rs`） |
 | P1 step-3 `vtrim doctor` 安全摘要 | ✅ 已落地（`service/doctor.rs`、`service/disk.rs`） |
 | P2 项目托管与隔离（`?project=`、囚笼、任务归属、前端 M2） | ✅ 已落地（`vtrim-core/tenant.rs`、`service/projects.rs`、`server/scope.rs`） |
-| P3 录播姬接入（webhook / ingest） | ⏳ 待做 |
+| P3 录播姬接入（webhook / 入库 worker / 兜底扫描 / 前端 M3） | ✅ 已落地（`server/ingest.rs`、`server/ingest_worker.rs`、`danmaku::parse_bililive_xml`） |
 | P4 B站链接通道 / P5 容量与运维 | ⏳ 待做 |
 
 ## 开发

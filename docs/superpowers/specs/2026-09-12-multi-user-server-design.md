@@ -332,6 +332,21 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
   - **偏差**：过渡期仍接受 `?config=<已登记本人项目>`（只作为"路径 → 项目"反查，未登记一律 404），
     旧路径入口 `/api/project/init|open|delete` 保留为**囚笼内的别名**，P5 删除。
 - **P3 录播姬接入**：webhook（`EventId` 去重 + 乱序容错 + 立即 2xx）+ `ingest_sessions/ingest_files` + 兜底扫描 + channel_map + 多文件聚合/合并 + XML 弹幕解析 + 水位预检 + 入库槽任务 + 首页入库动态。
+  - **✅ 已落地**（提交 `37b4470` / `1bee870` / `e6eff63`）：`danmaku::parse_bililive_xml`（无 XML 依赖）、
+    `[ingest]` / `[ingest.recorder]` 配置、schema v3（`ingest_events/ingest_sessions/ingest_files/channel_map`）、
+    `POST /api/ingest/bililive/<token>`（token 存 scrypt 哈希、`allow_ips` 白名单、`EventId` 去重、
+    未知事件忽略、**落库后立即 2xx**）、`GET /api/ingest/records`（`?failed=1` 本人 / admin `?all=1`/`?unassigned=1`）、
+    `GET/PUT /api/channel-map`、`POST /api/ingest/retry`、`POST /api/admin/ingest/{assign,scan}`、`GET /api/admin/ingest`、
+    `vtrim ingest token|status`；
+    入库 worker（串行＝入库槽 1）：完结判定（`SessionEnded` + 全部分片闭环 或 `finalize_idle_mins` 空闲窗口）→
+    水位/配额预检（全局 `max_disk_bytes` / `users.quota_bytes` / `disk_watermark_pct`，**绝不自动删**）→
+    落位（同盘 rename、跨盘 copy+校验+删源；`move_into_managed=false` 时项目目录＝录制目录）→
+    多分片 `ffmpeg -f concat -c copy` → `source.mp4`（失败回退 libx264，原始分片保留）→
+    弹幕随片搬入并写 `danmaku_file` → 建项目 → 按 `auto_pipeline` 跑管线；失败回滚半成品目录并记 `state=failed`；
+    兜底扫描（周期或手动）以"两轮 size+mtime 不变"判定完整文件，未映射房间进待分配池；
+    前端 `#/ingest` 入库页 + 总览页「录制导入（最近）」+ `health.ingest_ready` 引导卡。
+  - **已知简化**：`concat_files=false` 的"其余分片登记为附加片段"目前只是把分片留在项目目录里（前端可见但无专门只读列表）；
+    入库与下载槽的排队/上限（`max_concurrent_ingest` 之外的全局并发与每用户配额队列）留到 P5。
 - **P4 B站链接通道**：`resolve` + 下载器适配层 + 下载槽 + 新建项目弹窗（次要入口）。
 - **P5 容量与运维**：`storage` 计量与上限、管理员页、审计、临时清理、反代/TLS 文档、`vtrim doctor` 多用户自检、备份/恢复说明、`AGENTS.md`/`README.md` 更新。
 
