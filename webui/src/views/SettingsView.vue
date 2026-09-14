@@ -59,23 +59,23 @@
 
         <div class="form-section">
           <div class="form-section-title">检测 Detection</div>
-          <div class="grid-2">
+          <div class="form-grid det-top">
             <div><label>弹幕窗口 danmaku_window_secs（秒）</label><input v-model.number="form.detection.danmaku_window_secs" type="number" step="0.1"></div>
-            <div><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
-          </div>
-          <div style="margin-top:8px">
-            <label>参考标题 reference_titles（每行一条，可含 emoji；检测和封面标题生成都会参考）</label>
-            <textarea v-model="referenceTitlesText" rows="4" placeholder="每行一条参考标题"></textarea>
+            <div class="span-2"><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
           </div>
           <div class="prompt-pair">
             <div>
-              <label>检测 system_prompt（留空使用内建默认）</label>
-              <textarea v-model="form.detection.system_prompt" rows="5"></textarea>
+              <label>参考标题 reference_titles（每行一条，可含 emoji；检测和封面标题生成都会参考）</label>
+              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
             </div>
             <div>
-              <label>检测 prompt_template（{segments} 会被替换；留空使用内建默认）</label>
-              <textarea v-model="form.detection.prompt_template" rows="5"></textarea>
+              <label>检测 system_prompt（留空使用内建默认）</label>
+              <textarea v-model="form.detection.system_prompt" rows="8"></textarea>
             </div>
+          </div>
+          <div class="prompt-solo">
+            <label>检测 prompt_template（{segments} 会被替换；留空使用内建默认）</label>
+            <textarea v-model="form.detection.prompt_template" rows="10"></textarea>
           </div>
         </div>
 
@@ -146,10 +146,8 @@
             <div><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
             <div><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
             <div><label>model</label><input v-model="form.llm.model" type="text"></div>
-            <div class="llm-pair">
-              <div><label>temperature</label><input v-model.number="form.llm.temperature" type="number" step="0.1"></div>
-              <div><label>max_tokens</label><input v-model.number="form.llm.max_tokens" type="number" step="1"></div>
-            </div>
+            <div><label>temperature</label><input v-model.number="form.llm.temperature" type="number" step="0.1"></div>
+            <div><label>max_tokens</label><input v-model.number="form.llm.max_tokens" type="number" step="1"></div>
           </div>
           <div class="llm-extra">
             <label>extra_params（JSON 文本）</label>
@@ -413,20 +411,20 @@ onMounted(() => {
 
 <style scoped>
 .llm-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:10px 16px; align-items:stretch; }
-.llm-fields { display:flex; flex-direction:column; gap:8px; }
-.llm-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; }
+.llm-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; align-content:start; }
 .llm-extra { display:flex; flex-direction:column; }
 .llm-extra textarea { flex:1; min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
 .form-section { padding:10px 0; border-bottom:1px dashed var(--line-soft); }
 .form-section:first-child { padding-top:0; }
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
 .form-section-title { font-weight:700; font-size:13px; margin-bottom:8px; }
-.form-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px 14px; align-items:start; }
-.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; }
+.form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:12px 14px; align-items:start; }
+.span-2 { grid-column:span 2; }
 .field-hint { margin-top:4px; }
 .span-all { grid-column:1 / -1; }
 .prompt-pair { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; margin-top:10px; }
-.prompt-pair textarea { min-height:120px; resize:vertical; }
+.prompt-pair textarea, .prompt-solo textarea { min-height:230px; resize:vertical; }
+.prompt-solo { margin-top:10px; }
 .trio-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
 .vertical-form { display:flex; flex-direction:column; gap:6px; }
 .tag-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
@@ -437,12 +435,14 @@ onMounted(() => {
 .source-editor { font-size:12px; line-height:1.7; }
 button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 1200px) {
-  .form-grid { grid-template-columns:repeat(2, 1fr); }
+  .form-grid { grid-template-columns:repeat(3, 1fr); }
   .trio-row { grid-template-columns:1fr; }
 }
 @media (max-width: 900px) {
   .llm-grid { grid-template-columns:1fr; }
   .llm-extra textarea { min-height:160px; }
-  .form-grid { grid-template-columns:1fr; }
+  .form-grid { grid-template-columns:repeat(2, 1fr); }
+  .span-2 { grid-column:1 / -1; }
+  .prompt-pair { grid-template-columns:1fr; }
 }
 </style>
