@@ -243,6 +243,13 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `.lane-label`/`.lane-track` 的 26px。
     **「去静音」只在时间轴头部**（那里带状态文案与「撤销去静音」）；右侧「生成与导出」卡
     **不要再放一个去静音**（用户指出重复）。
+  - **属性面板在视频左侧、与时间轴分离**（用户要求）：面板仍由 `TimelineEditor` 渲染（选中
+    状态与全部编辑逻辑留在组件里），但用 `<Teleport :to="propsTarget">` 投到
+    **`PolishView` 预览卡里的 `#tl-props-host`**（默认值即该选择器）。挂载点必须在
+    TimelineEditor 之前渲染（同一父模板里靠前即可）；挂载点 `position:relative` +
+    `width:232px`，面板 `position:absolute; inset:0`（页面 scoped CSS 用 `:deep()` 给），
+    这样长属性表单只在面板内部滚动，**不会撑高预览卡把时间轴顶出首屏**。
+    Teleport 的目标在组件挂载时解析 —— 别把挂载点放到 v-if 分支里（会拿不到元素）。
   - **预览尺寸随视口收缩**：`PolishPreview` 的 `.stage` 宽度 =
     `min(100%, calc(clamp(170px, 100vh - 600px, 620px) * 16/9))` —— 高度按 16:9 由「剩下的
     竖高」反推；`600px` = 面包屑 66 + 内容 padding 18 + 页头 ~80 + 片段条 ~50 + 编辑区上边距 16
