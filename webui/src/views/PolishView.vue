@@ -1,12 +1,10 @@
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <span class="chip p">精修</span>
-        <h1 class="mt-2">{{ dir ? title : '选择要精修的片段' }}</h1>
-        <!-- 有片段时不再占一行 sub（片段条 + 面包屑已说明是哪个片段），把竖高留给预览 -->
-        <div v-if="!dir" class="sub">从片段库选择一个已剪切片段进入精修编辑器</div>
-      </div>
+    <!-- 紧凑页头一行：chip + 片段标题（竖高省给预览；哪个片段由面包屑/片段卡说明） -->
+    <div class="page-head compact-head">
+      <span class="chip p">精修</span>
+      <h1 class="m-0">{{ dir ? title : '选择要精修的片段' }}</h1>
+      <span v-if="!dir" class="sub m-0">从片段库选择一个已剪切片段进入精修编辑器</span>
       <div class="actions"></div>
     </div>
 
@@ -51,9 +49,16 @@
       </div>
 
       <template v-else>
-        <!-- 片段条（一行 chip）：把它压到最扁才腾得出「预览 + 时间轴」同屏的竖高 -->
+        <!-- 片段卡（小卡，只做跳转）：默认一行，可展开两行 -->
         <div class="card frag-strip">
-          <FragmentList chips :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
+          <div class="frag-strip-row">
+            <FragmentList :rows="fragRows" :current="clipName" :card-rows="ui.fragRows"
+                          @goto="gotoClip" @init="initClipByName" />
+            <button class="mini-btn frag-more" :title="ui.fragRows === 2 ? '收成一行' : '展开成两行'"
+                    @click="toggleFragRows">
+              {{ ui.fragRows === 2 ? '收起' : '展开' }}
+            </button>
+          </div>
         </div>
 
         <!-- 左列 = 预览 + 时间轴（上下相邻，一起占满首屏）；右栏 = 生成与导出 -->
@@ -219,6 +224,7 @@ import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
+import { ui, toggleFragRows } from '../stores/ui'
 import Icon from '../components/Icon.vue'
 import AppModal from '../components/AppModal.vue'
 import PolishPreview from '../components/PolishPreview.vue'
@@ -826,6 +832,12 @@ watch(dir, load)
 .props-host :deep(.props-panel) { position:absolute; inset:0; width:auto; }
 .stage-col { flex:1; min-width:0; }
 .frag-strip { padding:8px 10px; }
+.frag-strip-row { display:flex; gap:8px; align-items:flex-start; }
+.frag-strip-row :deep(.frag-cards) { flex:1; min-width:0; }
+.frag-more { flex:none; }
+/* 紧凑页头：一行放完 chip + 标题（原设计是 26px 标题 + sub 两行，这里为竖高让路） */
+.compact-head { align-items:center; margin-bottom:8px; }
+.compact-head h1 { font-size:19px; }
 /* 时间轴卡：自身 padding 收窄（内容已经很紧凑，竖高按 26px/泳道算过） */
 .tl-card { padding:12px; }
 .gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
