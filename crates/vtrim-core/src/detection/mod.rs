@@ -8,7 +8,9 @@ use crate::pipeline::{Stage, STAGE_DETECT};
 use crate::types::{Event, EventStore, PipelineContext, Timestamp, Transcript, TranscriptSegment};
 
 mod llm;
-pub use llm::{parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_SYSTEM_PROMPT, TITLE_RULES};
+pub use llm::{
+    parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_REFERENCE_TITLES, DEFAULT_SYSTEM_PROMPT, TITLE_RULES,
+};
 
 /// LLM 事件后处理参数
 const MIN_EVENT_SECS: f64 = 30.0; // 最短事件时长（保留细分，兜底 30s）

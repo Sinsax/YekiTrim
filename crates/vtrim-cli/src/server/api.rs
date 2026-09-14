@@ -2828,7 +2828,7 @@ async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json(body): Jso
 "#, vtrim_core::detection::TITLE_RULES);
     let mut prompt_text = String::new();
     if !reference_text.is_empty() {
-        prompt_text.push_str("参考标题示例（来自 config.toml，只参考句式、信息密度和 emoji，不要照抄）：\n");
+        prompt_text.push_str("参考标题示例（来自内建/全局配置，只参考句式、信息密度和 emoji，不要照抄）：\n");
         prompt_text.push_str(&reference_text);
         prompt_text.push_str("\n\n");
     }

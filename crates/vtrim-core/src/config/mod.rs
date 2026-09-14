@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// 解析参考标题：优先使用 `detection.reference_titles`；
-/// 旧配置则从 `prompt_template` 的“参考标题：”段落中兼容解析。
+/// 其次从 `prompt_template` 的“参考标题：”段落中兼容解析（旧配置）；
+/// 都为空时回退到内建示例 `detection::DEFAULT_REFERENCE_TITLES`。
 pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in &det.reference_titles {
@@ -22,7 +23,7 @@ pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
         return out;
     }
     let Some(pos) = det.prompt_template.find("参考标题：") else {
-        return out;
+        return default_reference_titles();
     };
     let tail = &det.prompt_template[pos + "参考标题：".len()..];
     for line in tail.lines() {
@@ -36,12 +37,27 @@ pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
         if line.starts_with("输出") || line.starts_with("转录片段") || line.starts_with("只输出") {
             break;
         }
+        // 新版内建 prompt 该段落是待替换的占位符：标题在运行时注入，
+        // 静态段落视为空，停在占位符处（其后的正文不能当成标题）
+        if line == "{reference_titles}" {
+            break;
+        }
         let cleaned = line.trim_start_matches('▶').trim();
         if !cleaned.is_empty() {
             out.push(cleaned.to_string());
         }
     }
+    if out.is_empty() {
+        return default_reference_titles();
+    }
     out
+}
+
+fn default_reference_titles() -> Vec<String> {
+    crate::detection::DEFAULT_REFERENCE_TITLES
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// 全局默认配置模板（`vtrim config init` 生成 .vtrim/config.toml 用，`vtrim init` 的基底）
@@ -83,7 +99,7 @@ vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
 # 参考标题示例（检测和封面标题生成共用；每项一条，可含 emoji）
-# 留空则使用 prompt_template 中「参考标题：」段落的内容
+# 留空 = 使用内建示例标题（或旧版 prompt_template「参考标题：」段落）
 reference_titles = [
 ]
 # 检测 system_prompt（修改此处覆盖内建默认）
@@ -700,4 +716,53 @@ pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod reference_titles_tests {
+    use super::*;
+
+    fn det(titles: Vec<String>, template: &str) -> DetectionConfig {
+        DetectionConfig {
+            reference_titles: titles,
+            prompt_template: template.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn config_titles_win_over_everything() {
+        let d = det(vec!["自定义标题🤣".into()], "参考标题：\n▶ 旧示例");
+        assert_eq!(resolve_reference_titles(&d), vec!["自定义标题🤣".to_string()]);
+    }
+
+    #[test]
+    fn legacy_prompt_section_is_parsed() {
+        let d = det(
+            vec![],
+            "前文\n参考标题：\n▶ 旧示例一🥵\n▶ 旧示例二😅\n\n输出：只输出 JSON",
+        );
+        assert_eq!(
+            resolve_reference_titles(&d),
+            vec!["旧示例一🥵".to_string(), "旧示例二😅".to_string()]
+        );
+    }
+
+    #[test]
+    fn placeholder_literal_is_skipped_and_builtin_used() {
+        // init 写出的新版内建 prompt：该段落只剩待替换的占位符
+        let d = det(vec![], crate::detection::DEFAULT_PROMPT);
+        let resolved = resolve_reference_titles(&d);
+        assert_eq!(resolved, crate::detection::DEFAULT_REFERENCE_TITLES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(resolved.iter().all(|t| !t.contains("{reference_titles}")));
+    }
+
+    #[test]
+    fn empty_everything_falls_back_to_builtin() {
+        let d = det(vec![], "");
+        assert_eq!(
+            resolve_reference_titles(&d),
+            crate::detection::DEFAULT_REFERENCE_TITLES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+    }
 }
