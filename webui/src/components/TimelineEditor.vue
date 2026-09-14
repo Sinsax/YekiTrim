@@ -24,10 +24,11 @@
         </template>
       </div>
     </div>
-    <div v-if="!segments.length" class="empty small mt-6">暂无时间轴数据，请先运行 LLM 自动生成分段</div>
-    <template v-else>
-      <div class="tl-main">
-      <!-- 属性面板常驻左侧：点击时间轴上的块后在这里编辑 -->
+    <!-- 属性面板：用 Teleport 投到页面给的挂载点（PolishView 把它放在视频左侧，与时间轴分离）。
+         选中状态与全部编辑逻辑仍留在这个组件里，页面只决定它出现在哪儿。
+         挂载点必须在 TimelineEditor 之前渲染出来（同一个父模板里靠前即可）。 -->
+    <Teleport :to="propsTarget">
+      <!-- 属性面板：点击时间轴上的块后在这里编辑 -->
       <div class="props-panel card">
         <div class="row spread">
           <b>{{ !selected ? '属性' : (selectedMute ? '屏蔽属性' : (selectedSub ? '字幕属性' : (selectedSeg ? '分段属性' : '事件属性'))) }}</b>
@@ -93,7 +94,10 @@
       </div>
         </template>
       </div>
+    </Teleport>
 
+    <div v-if="!segments.length" class="empty small mt-6">暂无时间轴数据，请先运行 LLM 自动生成分段</div>
+    <template v-else>
       <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
       <div class="timeline-labels">
         <div v-for="lane in lanes" :key="'label-' + lane.type" class="lane-label">
@@ -139,7 +143,6 @@
         </div>
       </div>
       </div>
-      </div>
     </template>
   </div>
 </template>
@@ -154,7 +157,9 @@ import { TIMELINE_COLORS } from '../utils'
 
 const props = defineProps({
   dir: { type: String, required: true },
-  currentTime: { type: Number, default: 0 }
+  currentTime: { type: Number, default: 0 },
+  /** 属性面板的 Teleport 挂载点（CSS 选择器）；默认由 PolishView 渲染在视频左侧 */
+  propsTarget: { type: String, default: '#tl-props-host' }
 })
 const emit = defineEmits(['seek', 'save', 'toggle', 'subtitleSaved'])
 const rootRef = ref(null)
@@ -856,10 +861,9 @@ async function loadData() {
 .ruler-playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
 .block.type-subtitles { background:rgba(59,130,246,0.35) !important; color:#0f172a; font-weight:700; opacity:1; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.type-mutes { background:rgba(239,68,68,0.42) !important; color:#7f1d1d; font-weight:700; }
-.tl-main { display:flex; gap:8px; align-items:stretch; }
+/* 属性面板已 Teleport 到页面（视频左侧），这些样式跟着元素走（scoped 属性保留） */
 .props-panel { width:232px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
 .props-empty { border:1.5px dashed var(--line); border-radius:10px; padding:12px 10px; }
-@media (max-width: 900px) { .tl-main { flex-direction:column; } .props-panel { width:auto; } }
 .props-panel label { margin-top:6px; }
 .props-panel .row { margin-top:4px; }
 </style>

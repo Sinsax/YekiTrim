@@ -65,8 +65,15 @@
                 <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
                 <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
               </div>
-              <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
-              <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
+              <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
+                   右：预览舞台 -->
+              <div class="preview-row">
+                <div id="tl-props-host" class="props-host"></div>
+                <div class="stage-col">
+                  <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
+                  <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
+                </div>
+              </div>
             </div>
 
             <!-- 时间轴（标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在时间轴上，右侧不再重复） -->
@@ -811,6 +818,13 @@ watch(dir, load)
 /* 左列上下排列「预览 + 时间轴」，右栏保持自然高度（不跟着左列拉长） */
 .edit-grid { align-items:start; }
 .left-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
+/* 预览卡内部：属性面板（时间轴 Teleport 过来的）在左，预览舞台在右 */
+.preview-row { display:flex; gap:12px; align-items:stretch; margin-top:8px; }
+/* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，
+   不会把整行/预览卡撑高（否则时间轴会被顶出首屏） */
+.props-host { position:relative; flex:none; width:232px; min-width:0; }
+.props-host :deep(.props-panel) { position:absolute; inset:0; width:auto; }
+.stage-col { flex:1; min-width:0; }
 .frag-strip { padding:8px 10px; }
 /* 时间轴卡：自身 padding 收窄（内容已经很紧凑，竖高按 26px/泳道算过） */
 .tl-card { padding:12px; }
