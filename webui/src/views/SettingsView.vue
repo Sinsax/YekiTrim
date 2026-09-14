@@ -65,7 +65,7 @@
           </div>
           <div class="prompt-pair">
             <div>
-              <label>参考标题 reference_titles（每行一条，可含 emoji；检测和封面标题生成都会参考）</label>
+              <label>参考标题 reference_titles（每行一条，可含 emoji；留空使用内建示例；检测和封面标题生成都会参考）</label>
               <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
             </div>
             <div>

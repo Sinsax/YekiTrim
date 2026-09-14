@@ -43,6 +43,17 @@ pub const TITLE_RULES: &str = r#"标题(label)要求（最重要）：
 - emoji 可选，放句中/句尾，不放开头
 "#;
 
+/// 内建参考标题示例：config `detection.reference_titles` 与旧版
+/// prompt_template「参考标题：」段落都为空时的兜底（检测与封面标题共用）。
+pub const DEFAULT_REFERENCE_TITLES: &[&str] = &[
+    "弹幕问豆今色，豆脱口而出：梅川😊我去原来豆神喜欢挂空档啊🥵",
+    "牢豆这什么雷霆坐姿雷霆视角🥵羞死人了🥵",
+    "难绷花礼连自己拉的屎都想吃😅真是老吃家了🤤",
+    "深夜鉴赏泫雅《没有明天》MV，怎么一言不合就🥵又是小时候被吓哭的一集😱",
+    "刚出道时3D回不敢开暖空调，顶着0℃直播跟冰窖似的🥶当时居然能撑下来😲",
+    "谁家小土豆地雷？【灰泽满Hazel】",
+];
+
 fn format_segments(segments: &[TranscriptSegment]) -> String {
     let mut out = String::new();
     for seg in segments {
