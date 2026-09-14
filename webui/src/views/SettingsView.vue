@@ -33,7 +33,7 @@
     <div class="card">
       <template v-if="!editSource">
         <div class="muted small mb-8">
-          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>detection.max_concurrent</code>）；要改这些请点「编辑源文件」。
+          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>[sfx]</code> blacklist、<code>detection.max_concurrent</code>）；要改这些请点「编辑源文件」。
         </div>
         <div class="form-section">
           <div class="form-section-title">ASR 转写</div>
@@ -73,49 +73,29 @@
               <textarea v-model="form.detection.system_prompt" rows="8"></textarea>
             </div>
           </div>
-          <div class="prompt-solo">
-            <label>检测 prompt_template（{segments} 会被替换；留空使用内建默认）</label>
-            <textarea v-model="form.detection.prompt_template" rows="10"></textarea>
-          </div>
-        </div>
-
-        <div class="form-section trio-row">
-          <div>
-            <div class="form-section-title">剪切 Cutting</div>
-            <div class="vertical-form">
-              <div><label>输出目录 output_dir</label><input v-model="form.cutting.output_dir" type="text"></div>
-              <div><label>静音阈值 silence_noise_db（dB）</label><input v-model.number="form.cutting.silence_noise_db" type="number" step="1"></div>
-              <div class="check-field">
-                <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
-                <label for="overwrite">覆盖已有文件 overwrite</label>
-              </div>
+          <div class="prompt-with-side">
+            <div>
+              <label>检测 prompt_template（{segments} 会被替换；留空使用内建默认）</label>
+              <textarea v-model="form.detection.prompt_template" rows="12"></textarea>
             </div>
-          </div>
-          <div>
-            <div class="form-section-title">SFX 音效屏蔽</div>
-            <div class="vertical-form">
-              <label>blacklist（精确 id 或 "tag:xxx" 屏蔽标签族；回车添加）</label>
-              <input
-                v-model="sfxBlacklistInput"
-                type="text"
-                placeholder="输入后回车添加"
-                @keyup.enter="addSfxBlacklist"
-              >
-              <div class="tag-list">
-                <span v-for="(item, i) in form.sfx.blacklist" :key="item + i" class="tag-chip">
-                  {{ item }}
-                  <button class="tag-remove" @click="removeSfxBlacklist(i)">×</button>
-                </span>
-                <span v-if="!form.sfx.blacklist.length" class="muted small">暂无屏蔽项</span>
+            <div class="side-col">
+              <div>
+                <div class="side-title">剪切 Cutting</div>
+                <label>输出目录 output_dir</label>
+                <input v-model="form.cutting.output_dir" type="text">
+                <label class="side-gap">静音阈值 silence_noise_db（dB）</label>
+                <input v-model.number="form.cutting.silence_noise_db" type="number" step="1">
+                <div class="check-field side-check">
+                  <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
+                  <label for="overwrite">覆盖已有文件 overwrite</label>
+                </div>
               </div>
-            </div>
-          </div>
-          <div>
-            <div class="form-section-title">Chrome 渲染</div>
-            <div class="vertical-form">
-              <label>Chrome 可执行文件路径 chrome.path</label>
-              <input v-model="form.chrome.path" type="text" placeholder="留空自动检测">
-              <div class="muted small">留空时按常见位置自动检测；精修渲染 / 封面生成 / 健康检查均使用该路径。</div>
+              <div>
+                <div class="side-title">Chrome 渲染</div>
+                <label>Chrome 可执行文件路径 chrome.path</label>
+                <input v-model="form.chrome.path" type="text" placeholder="留空自动检测">
+                <div class="muted small side-hint">留空时按常见位置自动检测；精修渲染 / 封面生成 / 健康检查均使用该路径。</div>
+              </div>
             </div>
           </div>
         </div>
@@ -181,7 +161,6 @@ const llmRaw = ref('')
 const configError = ref('')
 const models = ref([])
 const llmResult = ref('')
-const sfxBlacklistInput = ref('')
 const referenceTitlesText = ref('')
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
 const editSource = ref(false)
@@ -210,7 +189,6 @@ const form = reactive({
     overwrite: false,
     silence_noise_db: -30
   },
-  sfx: { blacklist: [] },
   chrome: { path: '' },
   llm: {
     api_key: '',
@@ -247,7 +225,6 @@ function buildGlobalPatch() {
       overwrite: !!f.cutting.overwrite,
       silence_noise_db: Number(f.cutting.silence_noise_db ?? -30)
     },
-    sfx: { blacklist: f.sfx.blacklist || [] },
     chrome: { path: f.chrome.path || '' }
   }
 }
@@ -302,9 +279,6 @@ async function loadConfig() {
       overwrite: !!c.cutting.overwrite,
       silence_noise_db: c.cutting.silence_noise_db ?? -30
     })
-    if (c.sfx && Array.isArray(c.sfx.blacklist)) {
-      form.sfx.blacklist = [...c.sfx.blacklist]
-    }
     if (c.chrome) {
       form.chrome.path = c.chrome.path || ''
     }
@@ -380,19 +354,6 @@ async function saveLlm() {
   } catch (e) { toast(e.message, 'err') }
 }
 
-function addSfxBlacklist() {
-  const value = sfxBlacklistInput.value.trim()
-  if (!value) return
-  if (!form.sfx.blacklist.includes(value)) {
-    form.sfx.blacklist.push(value)
-  }
-  sfxBlacklistInput.value = ''
-}
-
-function removeSfxBlacklist(i) {
-  form.sfx.blacklist.splice(i, 1)
-}
-
 async function testLlm() {
   llmResult.value = '测试中…'
   try {
@@ -423,26 +384,25 @@ onMounted(() => {
 .field-hint { margin-top:4px; }
 .span-all { grid-column:1 / -1; }
 .prompt-pair { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; margin-top:10px; }
-.prompt-pair textarea, .prompt-solo textarea { min-height:230px; resize:vertical; }
-.prompt-solo { margin-top:10px; }
-.trio-row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
-.vertical-form { display:flex; flex-direction:column; gap:6px; }
-.tag-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
-.tag-chip { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; border-radius:999px; background:var(--main-soft); color:var(--main-deep); font-size:11px; }
-.tag-remove { border:none; background:none; color:inherit; cursor:pointer; font-size:14px; line-height:1; padding:0; }
+.prompt-pair textarea, .prompt-with-side textarea { min-height:230px; resize:vertical; }
+.prompt-with-side { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 14px; margin-top:10px; align-items:start; }
+.side-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.side-title { font-weight:700; font-size:12.5px; color:var(--ink); margin-bottom:6px; }
+.side-gap { margin-top:8px; }
+.side-check { align-self:flex-start; padding:0; margin-top:2px; }
+.side-hint { margin-top:4px; }
 .check-field { display:flex; align-items:center; gap:7px; align-self:end; padding:0 0 9px; }
 .check-field label { margin:0; cursor:pointer; color:var(--ink); }
 .source-editor { font-size:12px; line-height:1.7; }
 button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 1200px) {
   .form-grid { grid-template-columns:repeat(3, 1fr); }
-  .trio-row { grid-template-columns:1fr; }
 }
 @media (max-width: 900px) {
   .llm-grid { grid-template-columns:1fr; }
   .llm-extra textarea { min-height:160px; }
   .form-grid { grid-template-columns:repeat(2, 1fr); }
   .span-2 { grid-column:1 / -1; }
-  .prompt-pair { grid-template-columns:1fr; }
+  .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
 }
 </style>
