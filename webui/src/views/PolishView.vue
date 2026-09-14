@@ -851,8 +851,13 @@ watch(dir, load)
 .ss-avail-item:hover { background:var(--bg-soft); }
 .ss-avail-item.on { color:var(--ink-faint); text-decoration:line-through; }
 .job-box { border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 10px; background:var(--bg-soft); }
-.artifact-bar .cover-thumb { width:150px; border-radius:var(--r-sm); border:1px solid var(--line); }
-.artifact-bar .video-bar { max-height:32vh; border-radius:var(--r-sm); }
+/* 成片与封面统一为同尺寸 16:9 盒子（源都是 1920×1080，比例异常时裁切对齐） */
+.artifact-bar .cover-thumb,
+.artifact-bar .video-bar {
+  width: 320px; aspect-ratio: 16/9; object-fit: cover; object-position: center;
+  max-height: none; margin-top: 0; flex: none;
+  border-radius: var(--r-sm); border: 1px solid var(--line); background: #000; display: block;
+}
 .cover-img { width:100%; border-radius:var(--r-sm); border:1px solid var(--line); display:block; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
 </style>
