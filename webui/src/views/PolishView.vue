@@ -69,13 +69,14 @@
               <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
             </div>
 
-            <!-- 时间轴（字幕编辑在时间轴块上，自动保存） -->
-            <div class="card">
-              <div class="row spread">
-                <h2 class="m-0 card-h2"><Icon name="edit" :size="15" /> 时间轴编辑器</h2>
-                <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
-              </div>
-              <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved" />
+            <!-- 时间轴（标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在时间轴上，右侧不再重复） -->
+            <div class="card tl-card">
+              <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved">
+                <template #head>
+                  <b>时间轴编辑器</b>
+                  <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
+                </template>
+              </TimelineEditor>
             </div>
           </div>
 
@@ -143,11 +144,8 @@
                 <div v-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
               </div>
 
-              <!-- 动作 -->
-              <div class="row mt-12" style="gap:6px">
-                <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
-                <button class="btn" style="flex:1;justify-content:center" :disabled="jobRunning" @click="doSilence"><Icon name="volume" :size="13" /> 去静音</button>
-              </div>
+              <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
+              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
@@ -225,7 +223,7 @@ import { api } from '../api/client'
 import { scopeQ } from '../api/scope'
 import {
   fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
-  initPolish, runLlm, runProcess, runRender, runSilence,
+  initPolish, runLlm, runProcess, runRender,
   fetchStickerSources,
   REGION_LABELS,
 } from '../api/polish'
@@ -666,22 +664,6 @@ function runLlmJob() {
   startJob('llm', () => runLlm(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
-/** 去静音：把长停顿写入屏蔽轨道（不重编码、不改原始视频）。
- *  `/api/polish/silence` 是同步接口（不返回任务 id），必须直接 await，
- *  走 startJob 会让 watchJob(undefined) 永远等不到终态、锁死整排按钮。 */
-async function doSilence() {
-  try {
-    const r = await runSilence(pid.value, dir.value)
-    if (r?.applied) toast(`去静音：${r.added ?? 0} 段静音已加入屏蔽轨道（共 ${r.total ?? 0} 段）`)
-    else toast(r?.message || '未检测到长静音段')
-    previewKey.value++
-    segKey.value++ // 屏蔽轨道是服务端写进去的，时间轴要重挂载才看得到
-    load({ silent: true })
-  } catch (e) {
-    toast(e.message, 'err')
-  }
-}
-
 /** 打开输出目录：浏览器无法打开本地目录，复制路径并提示。 */
 async function copyOutDir() {
   const p = dir.value || ''
@@ -830,6 +812,8 @@ watch(dir, load)
 .edit-grid { align-items:start; }
 .left-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
 .frag-strip { padding:8px 10px; }
+/* 时间轴卡：自身 padding 收窄（内容已经很紧凑，竖高按 26px/泳道算过） */
+.tl-card { padding:12px; }
 .gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
 .ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
 .ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }

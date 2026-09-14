@@ -1,25 +1,31 @@
 <template>
   <div ref="rootRef" class="timeline" tabindex="0">
+    <!-- 头部一行：左侧是调用方给的标题/提示（slot），右侧是去静音（含撤销）+ 状态。
+         这样页面不用再单独放一个卡片标题行 —— 时间轴本来就占竖高（用户要求精简）。 -->
+    <div class="tl-head">
+      <div class="tl-head-title"><slot name="head" /></div>
+      <div class="row" style="gap:8px">
+        <template v-if="segments.length">
+          <button
+            class="mini-btn"
+            :class="{ selected: silenceApplied }"
+            :disabled="silenceBusy"
+            :title="silenceApplied
+              ? '移除自动加入的静音屏蔽，恢复手动添加的屏蔽区间'
+              : '自动检测片段里的长停顿，加入「屏蔽」轨道；导出时剪掉，原始视频不动'"
+            @click="toggleSilence"
+          >
+            <Icon name="sparkles" :size="11" />
+            {{ silenceBusy ? '处理中…' : (silenceApplied ? '撤销去静音' : '去静音') }}
+          </button>
+          <span class="muted small">
+            {{ silenceApplied ? `已自动屏蔽 ${silenceCount} 段静音` : '一键跳过片段里的长停顿' }}
+          </span>
+        </template>
+      </div>
+    </div>
     <div v-if="!segments.length" class="empty small mt-6">暂无时间轴数据，请先运行 LLM 自动生成分段</div>
     <template v-else>
-      <!-- 快捷操作：去静音 = 自动检测长停顿并加入「屏蔽」轨道（导出时剪掉，不改动视频文件） -->
-      <div class="tl-shortcuts">
-        <button
-          class="mini-btn"
-          :class="{ selected: silenceApplied }"
-          :disabled="silenceBusy"
-          :title="silenceApplied
-            ? '移除自动加入的静音屏蔽，恢复手动添加的屏蔽区间'
-            : '自动检测片段里的长停顿，加入「屏蔽」轨道；导出时剪掉，原始视频不动'"
-          @click="toggleSilence"
-        >
-          <Icon name="sparkles" :size="11" />
-          {{ silenceBusy ? '处理中…' : (silenceApplied ? '撤销去静音' : '去静音') }}
-        </button>
-        <span class="muted small">
-          {{ silenceApplied ? `已自动屏蔽 ${silenceCount} 段静音` : '一键跳过片段里的长停顿' }}
-        </span>
-      </div>
       <div class="tl-main">
       <!-- 属性面板常驻左侧：点击时间轴上的块后在这里编辑 -->
       <div class="props-panel card">
@@ -102,7 +108,7 @@
       <div ref="tracksRef" class="timeline-tracks">
         <div v-for="lane in lanes" :key="'track-' + lane.type" class="lane">
           <div class="lane-track" :style="{ width: trackWidth + 'px' }">
-            <svg v-if="lane.type === 'subtitles'" class="wave-layer" :width="trackWidth" height="34">
+            <svg v-if="lane.type === 'subtitles'" class="wave-layer" :width="trackWidth" height="26">
               <rect v-for="(bar, bi) in waveBars" :key="bi" :x="bar.x" :y="bar.y" :width="bar.w" :height="bar.h" fill="rgba(37,99,235,0.7)" />
             </svg>
             <div class="playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
@@ -179,10 +185,10 @@ const waveBars = computed(() => {
     const t = Number(p.t) || 0
     if (t > (duration.value || 60)) break
     const db = Math.max(-60, Math.min(0, Number(p.db) || -60))
-    const h = Math.max(2, ((db + 60) / 60) * 30)
+    const h = Math.max(2, ((db + 60) / 60) * 22)
     const w = Math.max(1, scale.value * 0.02)
-    // 向下对齐：所有柱子从泳道底部向上生长
-    bars.push({ x: t * scale.value, y: 34 - h, w, h })
+    // 向下对齐：所有柱子从泳道底部向上生长（泳道 26px，留 4px 余量）
+    bars.push({ x: t * scale.value, y: 26 - h, w, h })
   }
   return bars
 })
@@ -819,34 +825,39 @@ async function loadData() {
 
 <style scoped>
 .timeline { width:100%; }
-.tl-shortcuts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+/* 头部一行（标题/提示 + 去静音）；原来标题在卡片头、去静音单独占一行，共省 ~70px */
+.tl-head { display:flex; align-items:center; justify-content:space-between; gap:10px;
+  flex-wrap:wrap; margin-bottom:6px; }
+.tl-head-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+.tl-head-title :deep(b) { font-size:13px; }
 .timeline-body { flex:1; min-width:0; display:flex; overflow-x:auto; align-items:stretch; }
 .timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(90,60,70,.10); }
 .timeline-tracks { flex:none; min-width:0; }
-.lane { height:34px; border-bottom:1px solid var(--line-soft); position:relative;
-  display:flex; align-items:center; gap:10px; padding:8px 12px; box-sizing:border-box; }
-.lane-label { width:96px; height:34px; box-sizing:border-box; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 8px; font-size:12px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
-.add-lane { background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:15px; line-height:1; padding:2px 4px; }
+/* 泳道 34 → 26px（7 条泳道省 ~56px）；块 24 → 20px */
+.lane { height:26px; border-bottom:1px solid var(--line-soft); position:relative;
+  display:flex; align-items:center; gap:10px; padding:0 12px; box-sizing:border-box; }
+.lane-label { width:96px; height:26px; box-sizing:border-box; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 8px; font-size:11.5px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
+.add-lane { background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; }
 .add-lane:hover { color:var(--main-deep); }
 .lane-adds { display:flex; align-items:center; gap:2px; }
 .mute-add { color:#ef4444; }
 .mute-add:hover { color:#b91c1c; }
-.lane-track { position:relative; height:34px; }
+.lane-track { position:relative; height:26px; }
 .wave-layer { position:absolute; top:0; left:0; pointer-events:none; opacity:1; z-index:1; }
 .playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
-.block { position:absolute; top:5px; height:24px; border-radius:4px; color:#fff; font-size:11px; line-height:24px; padding:0 6px; white-space:nowrap; overflow:hidden; cursor:grab; user-select:none; z-index:2; }
+.block { position:absolute; top:3px; height:20px; border-radius:4px; color:#fff; font-size:10px; line-height:20px; padding:0 6px; white-space:nowrap; overflow:hidden; cursor:grab; user-select:none; z-index:2; }
 .block.selected { outline:2px solid #fff; z-index:3; }
  .resize { position:absolute; right:0; top:0; width:8px; height:100%; cursor:ew-resize; background:rgba(255,255,255,0.35); border-radius:0 4px 4px 0; }
-.ruler-label { height:24px; font-size:10px; }
-.ruler-lane { height:24px; border-bottom:none; }
-.ruler-track { height:24px; cursor:col-resize; }
+.ruler-label { height:20px; font-size:10px; }
+.ruler-lane { height:20px; border-bottom:none; }
+.ruler-track { height:20px; cursor:col-resize; }
 .ruler-tick { position:absolute; top:0; bottom:0; width:1px; background:rgba(0,0,0,0.14); }
-.ruler-time { position:absolute; top:2px; left:4px; font-size:9px; color:var(--ink-dim); white-space:nowrap; pointer-events:none; }
+.ruler-time { position:absolute; top:1px; left:4px; font-size:9px; color:var(--ink-dim); white-space:nowrap; pointer-events:none; }
 .ruler-playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
 .block.type-subtitles { background:rgba(59,130,246,0.35) !important; color:#0f172a; font-weight:700; opacity:1; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.type-mutes { background:rgba(239,68,68,0.42) !important; color:#7f1d1d; font-weight:700; }
-.tl-main { display:flex; gap:12px; align-items:stretch; }
-.props-panel { width:232px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto; }
+.tl-main { display:flex; gap:8px; align-items:stretch; }
+.props-panel { width:232px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
 .props-empty { border:1.5px dashed var(--line); border-radius:10px; padding:12px 10px; }
 @media (max-width: 900px) { .tl-main { flex-direction:column; } .props-panel { width:auto; } }
 .props-panel label { margin-top:6px; }
