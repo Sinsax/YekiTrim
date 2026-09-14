@@ -26,8 +26,12 @@
     </div>
     <!-- 属性面板：用 Teleport 投到页面给的挂载点（PolishView 把它放在视频左侧，与时间轴分离）。
          选中状态与全部编辑逻辑仍留在这个组件里，页面只决定它出现在哪儿。
-         挂载点必须在 TimelineEditor 之前渲染出来（同一个父模板里靠前即可）。 -->
-    <Teleport :to="propsTarget">
+         ⚠️ Teleport 的目标是**挂载时**用 document.querySelector 解析的：本组件挂载时，
+         整个编辑器子树还没插进 document（Vue 先建子节点、最后才 hostInsert），
+         直接写 :to="propsTarget" 会解析不到、面板完全不渲染（只剩一块空白）。
+         所以用 teleportTo 门控，等 onMounted（本组件的 mounted 在 post-flush 阶段跑，
+         那时页面已插入文档）再设值。 -->
+    <Teleport v-if="teleportTo" :to="teleportTo">
       <!-- 属性面板：点击时间轴上的块后在这里编辑 -->
       <div class="props-panel card">
         <div class="row spread">
@@ -148,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { api } from '../api/client'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import { toast } from '../stores/toast'
@@ -163,6 +167,25 @@ const props = defineProps({
 })
 const emit = defineEmits(['seek', 'save', 'toggle', 'subtitleSaved'])
 const rootRef = ref(null)
+/**
+ * 属性面板的 Teleport 目标。**必须等 onMounted 才设值**：本组件挂载时整棵编辑器子树
+ * 还没插进 document，这时用选择器解析会拿到 null，Teleport 就整块不渲染。
+ */
+const teleportTo = ref('')
+onMounted(() => {
+  const target = String(props.propsTarget || '')
+  if (!target) return
+  const attach = () => {
+    if (!document.querySelector(target)) return false
+    teleportTo.value = target
+    return true
+  }
+  if (attach()) return
+  // 兜底：挂载点万一还没进文档（过渡/异步组件），下一帧再试一次
+  nextTick(() => {
+    if (!attach()) console.warn('[TimelineEditor] 属性面板挂载点不存在，属性面板不会显示：', target)
+  })
+})
 const tracksRef = ref(null)
 const bodyRef = ref(null)
 const rulerTrackRef = ref(null)
