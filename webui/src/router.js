@@ -70,3 +70,35 @@ router.beforeEach(async (to) => {
 })
 
 export default router
+
+// ---- 懒加载 chunk 失效兜底 ----
+// dist 每次构建都会换 hash 名（vite 还会清空 outDir）。浏览器里跑着旧 index 时，
+// 点侧栏/按钮切到**还没加载过的**路由 → import() 去取一个已被删掉的旧 chunk → 404，
+// vue-router 中止这次导航（控制台会报 "Failed to fetch dynamically imported module"），
+// 表现就是「点哪个按钮都不跳转，必须手动刷新」。这里检测到就自动硬刷一次拿新构建。
+//
+// sessionStorage 做一次性闸门：刷新后仍失败就不再刷（避免死循环）；
+// 任意一次导航成功即清除，这样下一次发版还能再自动刷。
+const RELOAD_KEY = 'vtrim.chunkReload'
+const CHUNK_ERR = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload|NOT_FOUND/i
+
+router.onError((err) => {
+  const msg = String((err && err.message) || err || '')
+  if (!CHUNK_ERR.test(msg)) {
+    console.error('[router] 导航失败：', err)
+    return
+  }
+  let already = false
+  try { already = sessionStorage.getItem(RELOAD_KEY) === '1' } catch {}
+  if (already) {
+    console.error('[router] 懒加载 chunk 仍取不到（已自动刷新过一次），请手动刷新：', err)
+    return
+  }
+  try { sessionStorage.setItem(RELOAD_KEY, '1') } catch {}
+  console.warn('[router] 前端已更新，自动刷新以取新构建…')
+  window.location.reload()
+})
+
+router.afterEach(() => {
+  try { sessionStorage.removeItem(RELOAD_KEY) } catch {}
+})

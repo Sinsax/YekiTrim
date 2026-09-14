@@ -648,13 +648,13 @@ function pause() {
 
 <style scoped>
 .polish-preview { width:100%; }
-/* 预览尺寸：宽度由「可用高度」反推（16:9），并随视口收缩 —— 保证最大化窗口下
-   「预览 + 时间轴」同屏（600px ≈ 其余固定部分的竖高之和：面包屑 66 + 内容 padding 18 +
-   页头 ~80 + 片段 chip 条 ~50 + 编辑区上边距 16 + 预览卡头/控制条 ~93 + 左列间距 16 +
-   时间轴卡 ~251；改这些布局时同步改这个数，留 ~10px 余量）。
-   上限 620px 免得大屏上预览过分占位，下限 170px 保证还能看。
-   —— 用户要求：网页最大化时能同时显示 preview 和时间轴。 */
-.stage { position:relative; width:min(100%, calc(clamp(170px, 100vh - 600px, 620px) * 16 / 9));
+/* 预览尺寸：宽度由「可用高度」反推（16:9），并随视口收缩 —— 目标是最大化窗口下
+   预览尽量大、时间轴基本同屏。540px ≈ 其余固定部分之和（面包屑 66 + 内容 padding 18 +
+   紧凑页头 ~38 + 片段卡条 1 行 ~105 + 编辑区上边距 16 + 预览卡头/控制条 ~93 + 左列间距 16
+   + 时间轴卡 ~259 ≈ 611），所以底部会留 ~70px 在首屏外（时间轴第 7 条泳道要小滚一下）；
+   想让它完整可见就把 540 调回 610。上限 620 免得大屏上预览过分占位，下限 170。
+   —— 用户要求：预览再放大一点。 */
+.stage { position:relative; width:min(100%, calc(clamp(170px, 100vh - 540px, 620px) * 16 / 9));
   aspect-ratio:16/9; margin:0 auto; background:#000; border-radius:14px; overflow:hidden;
   box-shadow:0 6px 18px rgba(0,0,0,.10); }
 .stage:fullscreen { width:100%; border-radius:0; }
