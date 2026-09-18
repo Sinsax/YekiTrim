@@ -33,7 +33,7 @@ fn patch_ingest(pairs: serde_json::Value) -> Result<()> {
     }
     if !path.exists() {
         // 与 `vtrim server` 一致的补齐行为
-        let _ = crate::service::ensure_global_config();
+        let _ = crate::ensure_global_config();
     }
     vtrim_core::config::patch_config_file(&path, &serde_json::json!({ "ingest": pairs }))
         .with_context(|| format!("写入 {} 失败", path.display()))?;
@@ -63,7 +63,7 @@ pub fn cmd_token(disable: bool) -> Result<()> {
     println!("  在录播姬「Webhook」里填：");
     println!(
         "    http://<本机IP>:{}/api/ingest/bililive/{token}",
-        crate::service::doctor::DEFAULT_PORT
+        crate::doctor::DEFAULT_PORT
     );
     println!("  并在配置文件 {} 里确认：", global_config_path().display());
     println!("    [ingest] webhook_enabled = true");

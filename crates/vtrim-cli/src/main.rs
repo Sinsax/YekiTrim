@@ -15,7 +15,6 @@ use crate::progress::IndicatifProgress;
 mod cli;
 mod progress;
 mod server;
-mod service;
 
 /// 订阅者 = 终端 + 进程内日志总线（设置页「运行日志」/ 日志文件）。
 ///
@@ -31,7 +30,7 @@ fn setup_tracing() {
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(service::logbus::LogBusLayer::new(service::logbus::bus()))
+        .with(vtrim_service::logbus::LogBusLayer::new(vtrim_service::logbus::bus()))
         .init();
 }
 
@@ -97,7 +96,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
     let open_path = format!("/#/project/{}/polish?dir={}", cfg_str, dir_str);
     let args = ServerArgs {
         host: "127.0.0.1".to_string(),
-        port: crate::service::doctor::DEFAULT_PORT,
+        port: vtrim_service::doctor::DEFAULT_PORT,
         open: true,
         config: Some(cfg),
         allow_remote: false,
@@ -129,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
             let out = cfg_path.clone().or_else(|| {
                 input.parent().map(|p| p.join("vtrim.toml"))
             }).unwrap_or_else(|| PathBuf::from("vtrim.toml"));
-            crate::service::init_project(
+            vtrim_service::init_project(
                 input,
                 danmaku.as_deref(),
                 output.as_deref().map(|d| d.to_string_lossy().to_string()).as_deref(),
@@ -147,7 +146,7 @@ Command::Extract { input, output } => {
             let output_override = output.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            crate::service::run_stages_with_ext(
+            vtrim_service::run_stages_with_ext(
                 &config_file,
                 &["extract".to_string()],
                 false,
@@ -166,7 +165,7 @@ Command::Process {
             output: output_dir,
             dry_run,
         } => {
-            crate::service::usage::try_install_cli_sink();
+            vtrim_service::usage::try_install_cli_sink();
             let _cfg = load_cfg(global_config)?;
             let input_override = input.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
@@ -176,7 +175,7 @@ Command::Process {
             });
             let config_file = global_config.clone().unwrap_or_else(|| PathBuf::from("vtrim.toml"));
             let stages = vec!["process".to_string()];
-            crate::service::run_stages_with(
+            vtrim_service::run_stages_with(
                 &config_file,
                 &stages,
                 *dry_run,
@@ -200,7 +199,7 @@ Command::Transcribe {
             let output_override = output.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            crate::service::run_stages_with_ext(
+            vtrim_service::run_stages_with_ext(
                 &config_file,
                 &["transcribe".to_string()],
                 false,
@@ -215,12 +214,12 @@ Command::Transcribe {
         }
 
 Command::Detect { transcript } => {
-            crate::service::usage::try_install_cli_sink();
+            vtrim_service::usage::try_install_cli_sink();
             let config_file = config_path(global_config);
             let transcript_override = transcript.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            crate::service::run_stages_with_ext(
+            vtrim_service::run_stages_with_ext(
                 &config_file,
                 &["detect".to_string()],
                 false,
@@ -249,7 +248,7 @@ Command::Cut {
             let events_override = events.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            crate::service::run_stages_with_ext(
+            vtrim_service::run_stages_with_ext(
                 &config_file,
                 &["cut".to_string()],
                 false,
@@ -265,34 +264,34 @@ Command::Cut {
 
 Command::User(action) => {
             use cli::UserAction;
-            let src = |stdin: bool, file: &Option<PathBuf>| crate::service::source_from(stdin, file.clone());
+            let src = |stdin: bool, file: &Option<PathBuf>| vtrim_service::source_from(stdin, file.clone());
             match action {
-                UserAction::List => crate::service::cmd_list()?,
-                UserAction::Info => crate::service::cmd_info()?,
+                UserAction::List => vtrim_service::cmd_list()?,
+                UserAction::Info => vtrim_service::cmd_info()?,
                 UserAction::Add { username, role, stdin, password_file } => {
-                    crate::service::cmd_add(username, role, src(*stdin, password_file))?
+                    vtrim_service::cmd_add(username, role, src(*stdin, password_file))?
                 }
                 UserAction::Passwd { username, stdin, password_file } => {
-                    crate::service::cmd_passwd(username, src(*stdin, password_file))?
+                    vtrim_service::cmd_passwd(username, src(*stdin, password_file))?
                 }
                 UserAction::Check { username, stdin, password_file } => {
-                    crate::service::cmd_check(username, src(*stdin, password_file))?
+                    vtrim_service::cmd_check(username, src(*stdin, password_file))?
                 }
                 UserAction::Disable { username, enable } => {
-                    crate::service::cmd_disable(username, *enable)?
+                    vtrim_service::cmd_disable(username, *enable)?
                 }
                 UserAction::InitAdmin { stdin, password_file } => {
-                    crate::service::cmd_init_admin(src(*stdin, password_file))?
+                    vtrim_service::cmd_init_admin(src(*stdin, password_file))?
                 }
                 UserAction::ResetAdminPassword { stdin, password_file } => {
-                    crate::service::cmd_reset_admin_password(src(*stdin, password_file))?
+                    vtrim_service::cmd_reset_admin_password(src(*stdin, password_file))?
                 }
                 UserAction::Invite { note, days, count, disable } => {
-                    crate::service::invite::cmd_invite(note.clone(), *days, *count, *disable)?
+                    vtrim_service::invite::cmd_invite(note.clone(), *days, *count, *disable)?
                 }
-                UserAction::Invites => crate::service::invite::cmd_invites()?,
+                UserAction::Invites => vtrim_service::invite::cmd_invites()?,
                 UserAction::InviteRevoke { target } => {
-                    crate::service::invite::cmd_invite_revoke(target)?
+                    vtrim_service::invite::cmd_invite_revoke(target)?
                 }
             }
         }
@@ -300,17 +299,17 @@ Command::User(action) => {
         Command::Ingest(action) => {
             use cli::IngestAction;
             match action {
-                IngestAction::Token { disable } => crate::service::ingest::cmd_token(*disable)?,
-                IngestAction::Status => crate::service::ingest::cmd_status()?,
+                IngestAction::Token { disable } => vtrim_service::ingest::cmd_token(*disable)?,
+                IngestAction::Status => vtrim_service::ingest::cmd_status()?,
             }
         }
 
 Command::Doctor { url } => {
-            crate::service::cmd_doctor(url)?;
+            vtrim_service::cmd_doctor(url)?;
         }
 
         Command::Usage { days } => {
-            crate::service::usage::cmd_usage(*days)?;
+            vtrim_service::usage::cmd_usage(*days)?;
         }
 
 Command::Server(args) => {
@@ -319,8 +318,8 @@ Command::Server(args) => {
 
         Command::Status => {
             let config_file = config_path(global_config);
-            let ws = crate::service::Workspace::load(Some(&config_file))?;
-            let snap = crate::service::project_snapshot(&ws);
+            let ws = vtrim_service::Workspace::load(Some(&config_file))?;
+            let snap = vtrim_service::project_snapshot(&ws);
             let input = snap.get("input_file").and_then(|v| v.as_str()).unwrap_or("");
             if !input.is_empty() { println!("视频工程: {}", input); }
             let current = snap.get("current_stage").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -350,34 +349,34 @@ Command::Server(args) => {
 
 Command::Config(action) => match action {
             ConfigAction::Init { path } => {
-                crate::service::init_global_config(path.as_deref())?;
+                vtrim_service::init_global_config(path.as_deref())?;
             }
             ConfigAction::Show => {
-                println!("{}", crate::service::show_config(global_config.as_deref())?);
+                println!("{}", vtrim_service::show_config(global_config.as_deref())?);
             }
         },
 
 Command::Silence { files, duration, threshold } => {
-            crate::service::run_silence(files, *duration, *threshold).await?;
+            vtrim_service::run_silence(files, *duration, *threshold).await?;
         }
 
 Command::Download => {
-            crate::service::download_models().await?;
+            vtrim_service::download_models().await?;
         }
 
 Command::Correct { transcript } => {
-            crate::service::usage::try_install_cli_sink();
+            vtrim_service::usage::try_install_cli_sink();
             let config_file = config_path(global_config);
             let transcript_override = transcript.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            crate::service::run_correct(&config_file, transcript_override, true).await?;
+            vtrim_service::run_correct(&config_file, transcript_override, true).await?;
             tracing::info!("LLM 订正完成");
         }
 
 Command::Polish(action) => {
             use vtrim_polish::{commands, cover, process, render};
-            crate::service::usage::try_install_cli_sink();
+            vtrim_service::usage::try_install_cli_sink();
 
             match action {
                 cli::PolishAction::Init { input } => {

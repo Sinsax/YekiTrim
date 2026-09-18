@@ -22,8 +22,8 @@ use axum::{
 use futures_util::{StreamExt, stream::Stream};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use crate::service::Workspace;
-use crate::service::logbus;
+use vtrim_service::Workspace;
+use vtrim_service::logbus;
 
 use super::model::AppState;
 use super::scope::Scope;
@@ -679,7 +679,7 @@ async fn admin_invites(State(state): State<Arc<AppState>>) -> ApiResult {
         .list_users()
         .map(|us| us.into_iter().map(|u| (u.id, u.username)).collect::<std::collections::HashMap<_, _>>())
         .unwrap_or_default();
-    let now = crate::service::db::now_secs();
+    let now = vtrim_service::db::now_secs();
     let invites: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -717,7 +717,7 @@ async fn admin_invite_create(
         return Err(err(StatusCode::BAD_REQUEST, "count 取值范围 1..=50"));
     }
     let days = body.get("days").and_then(|v| v.as_u64()).map(|d| d as u32);
-    let days = crate::service::invite::validate_days(days)
+    let days = vtrim_service::invite::validate_days(days)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
     let note = body
         .get("note")
@@ -726,16 +726,16 @@ async fn admin_invite_create(
         .filter(|s| !s.is_empty());
 
     let db = state.auth.db();
-    let expires_at = days.map(|d| crate::service::db::now_secs() + (d as i64) * 86400);
+    let expires_at = days.map(|d| vtrim_service::db::now_secs() + (d as i64) * 86400);
     let mut codes = Vec::new();
     for _ in 0..count {
-        let code = crate::service::auth::new_invite_code();
+        let code = vtrim_service::auth::new_invite_code();
         db.create_invite(&code, note.as_deref(), Some(user.id), expires_at)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入邀请码失败: {e:#}")))?;
         codes.push(code);
     }
     // 有可用码就顺手把总闸打开（与 CLI `vtrim user invite` 一致）
-    if let Err(e) = crate::service::invite::set_registration_enabled(true) {
+    if let Err(e) = vtrim_service::invite::set_registration_enabled(true) {
         tracing::warn!("开启注册开关失败: {e:#}");
     }
     let _ = db.audit(Some(user.id), "invite_create", &format!("count={count}"));
@@ -792,11 +792,11 @@ struct UsageQuery {
 /// `GET /api/admin/usage?days=30`：LLM 用量汇总（总量 + 按天/链路/项目/模型）。
 ///
 /// **仅 admin**：记录里带各用户的项目路径，与 `/api/admin/logs` 同一个理由。
-/// 采集点在 `vtrim_core::llm::LlmClient::send`，见 `service::usage`。
+/// 采集点在 `vtrim_core::llm::LlmClient::send`，见 `vtrim_service::usage`。
 async fn admin_usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> ApiResult {
     let days = q.days.unwrap_or(30);
     let db = state.auth.db();
-    let summary = crate::service::usage::summarize(db, days)
+    let summary = vtrim_service::usage::summarize(db, days)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取用量失败: {e:#}")))?;
     ok(serde_json::json!(summary))
 }
@@ -851,9 +851,9 @@ fn log_live_stream(
 // ===================== 直播间（录播姬） =====================
 
 /// 当前录播姬对接状态。**给普通用户只说能不能用**（不泄露地址/错误细节）。
-fn recorder_client() -> Option<crate::service::recorder::RecorderClient> {
+fn recorder_client() -> Option<vtrim_service::recorder::RecorderClient> {
     let cfg = vtrim_core::config::load_global_config();
-    crate::service::recorder::RecorderClient::from_config(&cfg.ingest.recorder)
+    vtrim_service::recorder::RecorderClient::from_config(&cfg.ingest.recorder)
 }
 
 /// `GET /api/rooms`：我的直播间 + 录播姬实时状态。
@@ -957,7 +957,7 @@ async fn rooms_add(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let room_id = crate::service::recorder::parse_room_id(&input)
+    let room_id = vtrim_service::recorder::parse_room_id(&input)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
 
     let Some(client) = recorder_client() else {
@@ -1021,7 +1021,7 @@ async fn rooms_delete(
     }
 
     if let Some(client) = recorder_client() {
-        let id = crate::service::recorder::parse_room_id(&room_id)
+        let id = vtrim_service::recorder::parse_room_id(&room_id)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e}")))?;
         client
             .remove_room(id)
@@ -1070,7 +1070,7 @@ async fn admin_registration_put(
         .get("enabled")
         .and_then(|v| v.as_bool())
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 enabled"))?;
-    crate::service::invite::set_registration_enabled(enabled)
+    vtrim_service::invite::set_registration_enabled(enabled)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入配置失败: {e:#}")))?;
     let _ = state.auth.db().audit(Some(user.id), "registration_switch", if enabled { "on" } else { "off" });
     ok(serde_json::json!({ "ok": true, "registration_enabled": enabled }))
@@ -1194,7 +1194,7 @@ fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: boo
     if raw.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "内容为空，未保存"));
     }
-    crate::service::validate_toml(raw)
+    vtrim_service::validate_toml(raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 不是合法 TOML，未保存: {e}")))?;
     // 源文件模式同样要过路径校验：TOML 解析出来的结构与 JSON 一致，直接复用上面那张键表
     if !is_admin {
@@ -1229,7 +1229,7 @@ fn config_global_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult 
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
     // 语法错误会令整份配置被忽略，这里直接拦下，别让用户存进一个坏文件
-    crate::service::validate_toml(raw)
+    vtrim_service::validate_toml(raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("config.toml 不是合法 TOML，未保存: {e}")))?;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
     std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
@@ -1251,7 +1251,7 @@ fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
     }
     let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
     let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
-    crate::service::validate_toml(raw)
+    vtrim_service::validate_toml(raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("llm.toml 不是合法 TOML，未保存: {e}")))?;
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
     std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
@@ -1332,25 +1332,25 @@ async fn activate_workspace(state: &AppState, ws: &Workspace) {
 /// 保留是为了让 `vtrim status` 与旧前端 JSON 结构继续可用。
 #[allow(dead_code)]
 fn project_summary(ws: &Workspace) -> serde_json::Value {
-    crate::service::project_summary(ws)
+    vtrim_service::project_summary(ws)
 }
 
 // ---- 项目托管（P2，§5 / §8） ----
 
 /// 取项目并校验归属；他人项目一律 404（不泄露"存在但无权限"）。
 fn owned_project(
-    db: &crate::service::db::Db,
+    db: &vtrim_service::db::Db,
     user: &super::auth::CurrentUser,
     id: i64,
-) -> Result<crate::service::db::ProjectRow, AppError> {
-    match crate::service::projects::find_owned(db, user.id, user.is_admin(), id) {
+) -> Result<vtrim_service::db::ProjectRow, AppError> {
+    match vtrim_service::projects::find_owned(db, user.id, user.is_admin(), id) {
         Ok(Some(p)) => Ok(p),
         Ok(None) => Err(err(StatusCode::NOT_FOUND, "项目不存在或无权访问")),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}"))),
     }
 }
 
-fn owner_name(db: &crate::service::db::Db, owner_id: i64) -> Option<String> {
+fn owner_name(db: &vtrim_service::db::Db, owner_id: i64) -> Option<String> {
     db.list_users()
         .ok()?
         .into_iter()
@@ -1378,7 +1378,7 @@ async fn projects_list(
         let out: Vec<serde_json::Value> = rows
             .iter()
             .map(|p| {
-                let json = crate::service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref());
+                let json = vtrim_service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref());
                 // 项目目录/vtrim.toml 被外部删掉时落库标记，列表里显示"缺失"而不是静默消失
                 if json["missing"].as_bool() == Some(true) && !p.missing {
                     let _ = db.set_project_missing(p.id, true);
@@ -1448,10 +1448,10 @@ async fn create_local_project(
     danmaku_hint: Option<&str>,
     output_dir: Option<&str>,
 ) -> ApiResult {
-    let tenant = crate::service::projects::tenant_root(user.id);
+    let tenant = vtrim_service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
-    let dir = crate::service::projects::resolve_target_dir(
+    let dir = vtrim_service::projects::resolve_target_dir(
         user.id,
         root_hint,
         rel_dir,
@@ -1490,11 +1490,11 @@ async fn create_local_project(
                 .map_err(|e| err(StatusCode::BAD_REQUEST, format!("输出目录不可用: {e:#}")))?;
         }
         // `local` 来源按策略**不预载弹幕**（用户要求"自由选择"）：没显式给弹幕就留空，
-        // 由预处理页列候选让用户自己挑（`service::assets::preload_policy`）。
+        // 由预处理页列候选让用户自己挑（`vtrim_service::assets::preload_policy`）。
         // 所以这里用 `_exact`，不做"同目录同名 .ass"自动发现 —— 那条是 `vtrim init` 的语义。
         let auto_danmaku = matches!(
-            crate::service::assets::preload_policy("local"),
-            crate::service::assets::Preload::Danmaku
+            vtrim_service::assets::preload_policy("local"),
+            vtrim_service::assets::Preload::Danmaku
         );
         let write_cfg: fn(&Path, &Path, Option<&Path>, Option<&str>) -> anyhow::Result<()> = if auto_danmaku {
             vtrim_core::config::write_project_config
@@ -1543,7 +1543,7 @@ async fn create_local_project(
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("登记项目失败: {e:#}")))?,
     };
     if let Ok(Some(p)) = db.project_by_id(id) {
-        let _ = crate::service::projects::refresh_bytes(db, &p);
+        let _ = vtrim_service::projects::refresh_bytes(db, &p);
     }
     let _ = db.audit(Some(user.id), "project_create", &format!("id={id} kind=local"));
     activate_workspace(state, &ws).await;
@@ -1551,7 +1551,7 @@ async fn create_local_project(
         Ok(Some(p)) => ok(serde_json::json!({
             "ok": true,
             "id": id,
-            "project": crate::service::projects::summary_json(&p, Some(&user.username)),
+            "project": vtrim_service::projects::summary_json(&p, Some(&user.username)),
         })),
         _ => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "项目登记后读取失败")),
     }
@@ -1587,9 +1587,9 @@ fn find_first_video(dir: &Path) -> Option<PathBuf> {
 ///
 /// 媒体文件与 `output/` 产物一律保留（那是「删除源录播」那条独立路径的事）。
 fn unregister_project(
-    db: &crate::service::db::Db,
+    db: &vtrim_service::db::Db,
     user_id: i64,
-    project: &crate::service::db::ProjectRow,
+    project: &vtrim_service::db::ProjectRow,
 ) -> ApiResult {
     db.delete_project(project.id)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("注销失败: {e:#}")))?;
@@ -1607,7 +1607,7 @@ async fn projects_delete(
     Extension(user): Extension<super::auth::CurrentUser>,
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult {
-    let id = crate::service::projects::parse_project_id(&id)
+    let id = vtrim_service::projects::parse_project_id(&id)
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "项目 id 无效"))?;
     let db = state.auth.db();
     let project = owned_project(db, &user, id)?;
@@ -1623,7 +1623,7 @@ async fn projects_source_delete(
     Extension(user): Extension<super::auth::CurrentUser>,
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult {
-    let id = crate::service::projects::parse_project_id(&id)
+    let id = vtrim_service::projects::parse_project_id(&id)
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "项目 id 无效"))?;
     let db = state.auth.db();
     let project = owned_project(db, &user, id)?;
@@ -1678,7 +1678,7 @@ async fn projects_source_delete(
             Err(e) => tracing::warn!("删除源文件失败 {}: {e}", real.display()),
         }
     }
-    let (source_bytes, output_bytes) = crate::service::projects::refresh_bytes(db, &project)
+    let (source_bytes, output_bytes) = vtrim_service::projects::refresh_bytes(db, &project)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("刷新占用失败: {e:#}")))?;
     let _ = db.audit(
         Some(user.id),
@@ -1742,7 +1742,7 @@ async fn project_list(
     let out = blocking(move || {
         Ok(rows
             .iter()
-            .map(|p| crate::service::projects::summary_json(p, Some(&user_name)))
+            .map(|p| vtrim_service::projects::summary_json(p, Some(&user_name)))
             .collect::<Vec<serde_json::Value>>())
     })
     .await?;
@@ -1760,7 +1760,7 @@ async fn project_list(
 
 
 fn project_snapshot(ws: &Workspace) -> serde_json::Value {
-    crate::service::project_snapshot(ws)
+    vtrim_service::project_snapshot(ws)
 }
 
 fn project_status_impl(ws: &Workspace) -> ApiResult {
@@ -1784,7 +1784,7 @@ async fn project_init(
         .or_else(|| body.get("dir"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 input"))?;
-    let tenant = crate::service::projects::tenant_root(user.id);
+    let tenant = vtrim_service::projects::tenant_root(user.id);
     let abs = PathBuf::from(raw);
     // 旧值可能是绝对路径：只接受"落在自己租户根内"的那种，其余按相对路径处理
     let rel_dir = if abs.is_absolute() {
@@ -1820,7 +1820,7 @@ async fn project_open(
     let raw = body.get("config_path").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let by_id = body.get("project").and_then(|v| v.as_i64());
     let project = match (by_id, raw.is_empty()) {
-        (Some(id), _) => crate::service::projects::find_owned(state.auth.db(), user.id, user.is_admin(), id)
+        (Some(id), _) => vtrim_service::projects::find_owned(state.auth.db(), user.id, user.is_admin(), id)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}")))?,
         (None, false) => state
             .auth
@@ -2091,7 +2091,7 @@ fn assets_impl(
     source_label: &str,
     room: Option<&str>,
 ) -> ApiResult {
-    use crate::service::assets::{asset_status, scan_candidates, AssetKind};
+    use vtrim_service::assets::{asset_status, scan_candidates, AssetKind};
     let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     let mut candidates = serde_json::Map::new();
     for kind in [AssetKind::Danmaku, AssetKind::Transcript] {
@@ -2111,7 +2111,7 @@ fn assets_impl(
 }
 
 fn assets_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
-    use crate::service::assets::{asset_status, set_asset, AssetKind};
+    use vtrim_service::assets::{asset_status, set_asset, AssetKind};
     let kind_raw = body.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let kind = AssetKind::parse(kind_raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -2784,7 +2784,7 @@ async fn run_single_cut(config_file: &Path, ev: serde_json::Value) -> anyhow::Re
 /// 同上，但调用方已经拿着解析好的事件（单条重切走这条，省一次 JSON 往返）。
 async fn run_single_cut_event(config_file: &Path, ev: vtrim_core::types::Event) -> anyhow::Result<()> {
     let cfg = vtrim_core::config::load_config_at(config_file)?;
-    let w = crate::service::Workspace::load(Some(config_file))?;
+    let w = vtrim_service::Workspace::load(Some(config_file))?;
     let input = cfg.project.input_file.as_ref().filter(|s| !s.is_empty()).map(|s| w.resolve(s))
         .ok_or_else(|| anyhow::anyhow!("未初始化 input_file"))?;
     let output = w.output_dir();
@@ -2849,10 +2849,10 @@ async fn fs_list(
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
     // 允许的根 = 租户根 + [storage] local_roots（这些只是"快捷入口"；管理员可用任意绝对路径）
-    let tenant = crate::service::projects::tenant_root(user.id);
+    let tenant = vtrim_service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
-    let roots = crate::service::projects::local_roots(user.id);
+    let roots = vtrim_service::projects::local_roots(user.id);
     let is_admin = user.is_admin();
     let dir_hint = body
         .get("dir")
@@ -2865,21 +2865,21 @@ async fn fs_list(
     let target = match dir_hint {
         // 新契约：直接给目录（绝对路径 = 任意位置；相对路径 = 相对快捷根）
         Some(d) => {
-            crate::service::projects::resolve_target_dir(user.id, root_hint, &d, is_admin)
+            vtrim_service::projects::resolve_target_dir(user.id, root_hint, &d, is_admin)
                 .map_err(bad)?
         }
         // 兼容契约：{root, path}
         None if Path::new(path_hint.trim()).is_absolute() => {
-            crate::service::projects::resolve_target_dir(user.id, root_hint, path_hint, is_admin)
+            vtrim_service::projects::resolve_target_dir(user.id, root_hint, path_hint, is_admin)
                 .map_err(bad)?
         }
         None => {
-            let root = crate::service::projects::pick_local_root(user.id, root_hint, is_admin)
+            let root = vtrim_service::projects::pick_local_root(user.id, root_hint, is_admin)
                 .map_err(bad)?;
             if path_hint.trim().is_empty() {
                 root
             } else {
-                crate::service::projects::resolve_target_dir(user.id, "", path_hint, is_admin)
+                vtrim_service::projects::resolve_target_dir(user.id, "", path_hint, is_admin)
                     .map_err(bad)?
             }
         }
@@ -2945,7 +2945,7 @@ async fn fs_list(
             let canon = r.canonicalize().unwrap_or_else(|_| r.clone());
             serde_json::json!({
                 "path": vtrim_core::path::display(&canon),
-                "label": crate::service::projects::root_label(user.id, &canon),
+                "label": vtrim_service::projects::root_label(user.id, &canon),
                 "tenant": canon == tenant.canonicalize().unwrap_or_else(|_| tenant.clone()),
             })
         })
@@ -2975,7 +2975,7 @@ async fn fs_list(
     ok(serde_json::json!({
         "dir": cur_str,
         "root": cur_str,
-        "root_label": crate::service::projects::root_label(user.id, &cur),
+        "root_label": vtrim_service::projects::root_label(user.id, &cur),
         "roots": root_list,
         "tenant_root": vtrim_core::path::display(&tenant),
         "path": rel,
@@ -3019,7 +3019,7 @@ async fn media_get(
 /// `/api/media/*` 的归属校验 + 路径解析（同步：DB 查询 + 项目目录上的 canonicalize/jail）。
 /// 抽出来是为了整体丢进 blocking 池 —— 见 `media_get` 的调用点。
 fn resolve_media_path(
-    db: &crate::service::db::Db,
+    db: &vtrim_service::db::Db,
     user: &super::auth::CurrentUser,
     project: Option<i64>,
     rel: &str,
@@ -3077,7 +3077,7 @@ async fn run_pipeline_job(
     // + 该切的所有 `clip-NN`（含剪切断的管线会重切同名片段，不能与正在精修/渲染的并行）。
     let mut keys = super::scope_key::pipeline_keys(project, &stages);
     if stages.iter().any(|s| s == "cut" || s == "process") {
-        if let Ok(ws) = crate::service::Workspace::load(Some(&config_file)) {
+        if let Ok(ws) = vtrim_service::Workspace::load(Some(&config_file)) {
             let out = ws.output_dir();
             keys.extend(super::scope_key::cut_stage_clip_keys(project, &out, &out.join("events.json")));
         }
@@ -3138,7 +3138,7 @@ async fn correct_run_impl(
             jobs_handle.complete(&job_id).await;
             return;
         }
-        let result = crate::service::run_correct(&cfg_file, None, true).await;
+        let result = vtrim_service::run_correct(&cfg_file, None, true).await;
         if let Err(e) = result {
             jobs_handle.fail(&job_id, format!("{e:#}")).await;
         } else {
@@ -5092,7 +5092,7 @@ pub(crate) mod core {
 
     use crate::server::jobs::JobManager;
 
-    /// WebUI 任务执行入口：复用 service::core_pipeline，只做 Job/进度桥接。
+    /// WebUI 任务执行入口：复用 vtrim_service::core_pipeline，只做 Job/进度桥接。
     pub async fn run_stages(
         config_file: PathBuf,
         stages: Vec<String>,
@@ -5104,7 +5104,7 @@ pub(crate) mod core {
     ) -> anyhow::Result<()> {
         let progress: Arc<dyn vtrim_core::progress::ProgressReporter> =
             Arc::new(WebProgress::new(job_id, jobs, cancel));
-        crate::service::run_stages(
+        vtrim_service::run_stages(
             &config_file,
             &stages,
             dry_run,
@@ -5664,7 +5664,7 @@ mod tests {
         use crate::server::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
-        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
         let uid = auth
             .db()
             .create_user("admin", &hash, "admin", must_change, 0)
@@ -5771,7 +5771,7 @@ mod tests {
         let t = test_app().await;
 
         // ① 普通用户：403
-        let hash = crate::service::auth::hash_password("pass-12345678").unwrap();
+        let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
         t.auth.db().create_user("plain_upload", &hash, "user", false, 0).unwrap();
         let b = t.auth.login("plain_upload", "pass-12345678", Some("10.9.9.9"), None).unwrap();
         let res = t
@@ -5837,9 +5837,9 @@ mod tests {
         fn cookie(&self) -> String {
             format!(
                 "{}={}; {}={}",
-                crate::service::auth::COOKIE_SID,
+                vtrim_service::auth::COOKIE_SID,
                 self.sid,
-                crate::service::auth::COOKIE_CSRF,
+                vtrim_service::auth::COOKIE_CSRF,
                 self.csrf
             )
         }
@@ -5853,7 +5853,7 @@ mod tests {
             if matches!(method, "GET" | "HEAD" | "OPTIONS") {
                 b
             } else {
-                b.header(crate::service::auth::CSRF_HEADER, self.csrf.clone())
+                b.header(vtrim_service::auth::CSRF_HEADER, self.csrf.clone())
             }
         }
 
@@ -5876,16 +5876,16 @@ mod tests {
                     axum::http::header::COOKIE,
                     format!(
                         "{}={}; {}={}",
-                        crate::service::auth::COOKIE_SID,
+                        vtrim_service::auth::COOKIE_SID,
                         sid,
-                        crate::service::auth::COOKIE_CSRF,
+                        vtrim_service::auth::COOKIE_CSRF,
                         csrf
                     ),
                 );
             if matches!(method, "GET" | "HEAD" | "OPTIONS") {
                 b
             } else {
-                b.header(crate::service::auth::CSRF_HEADER, csrf.to_string())
+                b.header(vtrim_service::auth::CSRF_HEADER, csrf.to_string())
             }
         }
     }
@@ -6014,7 +6014,7 @@ mod tests {
                     .method("PUT")
                     .uri("/project-data/config?project=1")
                     .header(axum::http::header::COOKIE, t.cookie())
-                    .header(crate::service::auth::CSRF_HEADER, "not-the-token")
+                    .header(vtrim_service::auth::CSRF_HEADER, "not-the-token")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"raw":""}"#))
                     .unwrap(),
@@ -6071,7 +6071,7 @@ mod tests {
         std::fs::write(&secret, b"api_key = 'sk-real-secret'").unwrap();
 
         // 普通用户 + 他自己的项目目录（含 clip-01 与 polish.toml，够走完前置校验）
-        let hash = crate::service::auth::hash_password("pass-12345678").unwrap();
+        let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
         let uid = t.auth.db().create_user("plain_paths", &hash, "user", false, 0).unwrap();
         let my_root = t.root.join("plain-proj");
         let my_clip = my_root.join("output/clips/clip-01");
@@ -6303,7 +6303,7 @@ mod tests {
         use crate::server::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
-        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
         auth.db().create_user("admin", &hash, "admin", true, 0).unwrap();
         let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
         let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth.clone())));
@@ -6384,7 +6384,7 @@ mod tests {
                     .method("PUT")
                     .uri("/auth/password")
                     .header(axum::http::header::COOKIE, &cookie)
-                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .header(vtrim_service::auth::CSRF_HEADER, &csrf)
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"old_password":"nope","new_password":"new-pass-5678"}"#))
                     .unwrap(),
@@ -6400,7 +6400,7 @@ mod tests {
                     .method("PUT")
                     .uri("/auth/password")
                     .header(axum::http::header::COOKIE, &cookie)
-                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .header(vtrim_service::auth::CSRF_HEADER, &csrf)
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         r#"{"old_password":"initial-pass-1234","new_password":"new-pass-5678"}"#,
@@ -6453,7 +6453,7 @@ mod tests {
                     .method("POST")
                     .uri("/auth/logout")
                     .header(axum::http::header::COOKIE, &cookie)
-                    .header(crate::service::auth::CSRF_HEADER, &csrf)
+                    .header(vtrim_service::auth::CSRF_HEADER, &csrf)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6479,7 +6479,7 @@ mod tests {
         use crate::server::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
-        let hash = crate::service::auth::hash_password("initial-pass-1234").unwrap();
+        let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
         auth.db().create_user("admin", &hash, "admin", false, 0).unwrap();
         let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
         let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth)));
@@ -6970,7 +6970,7 @@ mod tests {
     /// - 限流：连续失败会被锁（防邀请码爆破）。
     #[tokio::test]
     async fn register_flow_consumes_invite_and_respects_switch() {
-        use crate::service::auth as kdf;
+        use vtrim_service::auth as kdf;
         let t = test_app().await;
 
         // 1) 开关关着（默认）→ 公开接口 403
@@ -7009,7 +7009,7 @@ mod tests {
         assert!(!bundle.user.must_change_password, "自设密码不提示改密");
         let row = t.auth.db().find_invite_by_id(invite_id).unwrap().unwrap();
         assert_eq!(row.used_by, Some(bundle.user.id));
-        assert!(!row.is_open(crate::service::db::now_secs()), "用完即失效");
+        assert!(!row.is_open(vtrim_service::db::now_secs()), "用完即失效");
 
         // 注册即登录：这个 sid 直接能过鉴权
         let res = t
@@ -7021,7 +7021,7 @@ mod tests {
                     .uri("/me")
                     .header(
                         axum::http::header::COOKIE,
-                        format!("{}={}", crate::service::auth::COOKIE_SID, bundle.session_id),
+                        format!("{}={}", vtrim_service::auth::COOKIE_SID, bundle.session_id),
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -7102,7 +7102,7 @@ mod tests {
         assert!(t.auth.db().rooms_of_user(1).unwrap().is_empty(), "失败不该留下登记");
 
         // 普通用户：同样 200，但**不给**管理员向的 reason，也不泄露地址
-        let hash = crate::service::auth::hash_password("pass-12345678").unwrap();
+        let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
         let uid = t.auth.db().create_user("plain2", &hash, "user", false, 0).unwrap();
         t.auth.db().room_upsert("777", uid, "他的房间").unwrap();
         let b = t.auth.login("plain2", "pass-12345678", Some("10.3.3.3"), None).unwrap();
@@ -7115,7 +7115,7 @@ mod tests {
                     .uri("/rooms")
                     .header(
                         axum::http::header::COOKIE,
-                        format!("{}={}", crate::service::auth::COOKIE_SID, b.session_id),
+                        format!("{}={}", vtrim_service::auth::COOKIE_SID, b.session_id),
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -7134,10 +7134,10 @@ mod tests {
     #[tokio::test]
     async fn invite_admin_endpoints_reject_non_admin() {
         let t = test_app().await;
-        let hash = crate::service::auth::hash_password("pass-12345678").unwrap();
+        let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
         t.auth.db().create_user("plain", &hash, "user", false, 0).unwrap();
         let b = t.auth.login("plain", "pass-12345678", Some("10.1.1.1"), None).unwrap();
-        let cookie = format!("{}={}", crate::service::auth::COOKIE_SID, b.session_id);
+        let cookie = format!("{}={}", vtrim_service::auth::COOKIE_SID, b.session_id);
         for (method, uri) in [
             ("GET", "/admin/invites"),
             ("POST", "/admin/invites"),
@@ -7154,7 +7154,7 @@ mod tests {
                         .method(method)
                         .uri(uri)
                         .header(axum::http::header::COOKIE, cookie.clone())
-                        .header(crate::service::auth::CSRF_HEADER, b.csrf.clone())
+                        .header(vtrim_service::auth::CSRF_HEADER, b.csrf.clone())
                         .header(axum::http::header::CONTENT_TYPE, "application/json")
                         .body(Body::from("{}"))
                         .unwrap(),
@@ -7295,7 +7295,7 @@ mod tests {
             .all(|r| r["seq"].as_u64().unwrap_or(0) > latest));
 
         // 普通用户一律 403（日志含其他用户的路径与任务输出）
-        let hash = crate::service::auth::hash_password("pass-12345678").unwrap();
+        let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
         t.auth.db().create_user("plain_logs", &hash, "user", false, 0).unwrap();
         let b = t
             .auth
@@ -7309,7 +7309,7 @@ mod tests {
                     .uri("/admin/logs")
                     .header(
                         axum::http::header::COOKIE,
-                        format!("{}={}", crate::service::auth::COOKIE_SID, b.session_id),
+                        format!("{}={}", vtrim_service::auth::COOKIE_SID, b.session_id),
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -7446,7 +7446,7 @@ mod tests {
         assert_eq!(row["revoked"], true, "{j}");
 
         // 恢复注册开关：不给后续用例留下「已开启」状态
-        crate::service::invite::set_registration_enabled(false).unwrap();
+        vtrim_service::invite::set_registration_enabled(false).unwrap();
     }
 
     /// 项目配置里的路径键必须落在本项目内（非 admin）。

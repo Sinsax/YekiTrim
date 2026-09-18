@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/vtrim-core", "crates/vtrim-cli", "crates/vtrim-polish",
-    "crates/vtrim-render-core", "crates/xtask"]
+    "crates/vtrim-render-core", "crates/vtrim-service", "crates/xtask"]
 resolver = "2"
 
 # 版本只有这一处来源。各 crate 写 `version.workspace = true`。

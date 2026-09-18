@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 vtrim-core = { path = "../vtrim-core" }
 vtrim-polish = { path = "../vtrim-polish" }
+vtrim-service = { path = "../vtrim-service" }
 axum = "0.7"
 chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }

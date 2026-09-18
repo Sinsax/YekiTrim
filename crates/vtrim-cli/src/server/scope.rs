@@ -23,8 +23,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::service::db::{Db, ProjectRow};
-use crate::service::Workspace;
+use vtrim_service::db::{Db, ProjectRow};
+use vtrim_service::Workspace;
 
 use super::auth::CurrentUser;
 use super::model::AppState;
@@ -60,12 +60,12 @@ pub fn find_owned_project(
     user: &CurrentUser,
     id: i64,
 ) -> Result<Option<ProjectRow>, anyhow::Error> {
-    crate::service::projects::find_owned(db, user.id, user.is_admin(), id)
+    vtrim_service::projects::find_owned(db, user.id, user.is_admin(), id)
 }
 
 /// 按 `?project=<id>` 取项目并校验归属；他人项目一律 404。
 pub fn project_scope(db: &Db, user: &CurrentUser, id: i64) -> Result<Scope, AppError> {
-    let project = crate::service::projects::find_owned(db, user.id, user.is_admin(), id)
+    let project = vtrim_service::projects::find_owned(db, user.id, user.is_admin(), id)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目失败: {e:#}")))?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "项目不存在或无权访问"))?;
     let ws = load_ws(&project)?;
@@ -97,7 +97,7 @@ pub fn scope_from_query(
 ) -> Result<Scope, AppError> {
     if let Some(id) = query
         .get("project")
-        .and_then(|v| crate::service::projects::parse_project_id(v))
+        .and_then(|v| vtrim_service::projects::parse_project_id(v))
     {
         return project_scope(db, user, id);
     }
@@ -322,7 +322,7 @@ pub async fn enforce_scope(
     let query = req.uri().query().map(parse_query).unwrap_or_default();
     let explicit = query
         .get("project")
-        .and_then(|v| crate::service::projects::parse_project_id(v));
+        .and_then(|v| vtrim_service::projects::parse_project_id(v));
 
     // 显式 project 优先；否则用绝对 dir 反查归属项目
     let mut scope: Option<ProjectRow> = match explicit {
@@ -392,7 +392,7 @@ pub async fn enforce_scope(
                 if let Some(id) = v
                     .get("project")
                     .and_then(|x| x.as_i64())
-                    .and_then(|n| crate::service::projects::parse_project_id(&n.to_string()))
+                    .and_then(|n| vtrim_service::projects::parse_project_id(&n.to_string()))
                 {
                     match project_scope(db, &user, id) {
                         Ok(s) => scope = Some(s.project),

@@ -22,8 +22,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::mpsc;
 
-use crate::service::db::{Db, IngestSessionRow};
-use crate::service::{disk, projects};
+use vtrim_service::db::{Db, IngestSessionRow};
+use vtrim_service::{disk, projects};
 
 use super::model::AppState;
 
@@ -139,7 +139,7 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
     // 兜底扫描（按 watch_interval_mins 节流）：覆盖漏推送 / 录播姬重启 / 历史录播导入
     let interval = cfg.ingest.recorder.watch_interval_mins as i64;
     if interval > 0 {
-        let now = crate::service::db::now_secs();
+        let now = vtrim_service::db::now_secs();
         let last = LAST_SCAN.load(std::sync::atomic::Ordering::Relaxed);
         if now - last >= interval * 60 {
             LAST_SCAN.store(now, std::sync::atomic::Ordering::Relaxed);
@@ -157,7 +157,7 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
     }
 
     let sessions = db.list_ingest_sessions(None, &[], 200)?;
-    let now = crate::service::db::now_secs();
+    let now = vtrim_service::db::now_secs();
     for s in sessions {
         if s.project_id.is_some() {
             continue;
@@ -338,7 +338,7 @@ pub fn list_recordings(cfg: &vtrim_core::config::Config) -> Result<Vec<RecordedF
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let room = crate::service::recorder::room_id_from_rel_path(&rel);
+            let room = vtrim_service::recorder::room_id_from_rel_path(&rel);
             RecordedFile { rel, name, size, mtime, room }
         })
         .collect();
@@ -393,7 +393,7 @@ fn register_scan_session(
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
     // 归属用的房间号：优先从相对路径解析，解析不出才退回目录名（保持原行为）
-    let room = crate::service::recorder::room_id_from_rel_path(rel)
+    let room = vtrim_service::recorder::room_id_from_rel_path(rel)
         .unwrap_or_else(|| dir.clone());
     let stem = abs
         .file_stem()
@@ -460,7 +460,7 @@ async fn process_one(state: &Arc<AppState>, session_id: &str) -> Result<()> {
         db.set_ingest_state(session_id, "unassigned", None)?;
         return Ok(());
     }
-    let now = crate::service::db::now_secs();
+    let now = vtrim_service::db::now_secs();
     if !is_finalized(&s, cfg.ingest.recorder.finalize_idle_mins, now) {
         return Ok(());
     }
@@ -922,7 +922,7 @@ async fn spawn_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::db::{Db, IngestSessionRow};
+    use vtrim_service::db::{Db, IngestSessionRow};
 
     fn session(state: &str, opened: &[&str], closed: &[&str], last: i64) -> IngestSessionRow {
         IngestSessionRow {

@@ -1,0 +1,43 @@
+[package]
+name = "vtrim-service"
+version.workspace = true
+edition = "2021"
+description = "V-Trim 服务层：CLI 与服务端共用的领域逻辑（账号账本 / 项目 / 录播姬 / 用量）"
+authors = ["Sinsax"]
+license = "Apache-2.0"
+
+[lib]
+name = "vtrim_service"
+path = "src/lib.rs"
+
+[dependencies]
+vtrim-core = { path = "../vtrim-core" }
+vtrim-polish = { path = "../vtrim-polish" }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+
+# 录播姬 HTTP API 客户端（房间增删查）
+reqwest = { version = "0.12", features = ["json"] }
+
+# 多用户服务 P1：账号账本（SQLite，bundled 自带 libsqlite3）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 口令 KDF：设计稿原定 argon2id，本次离线环境无 argon2 依赖缓存，改用 scrypt（内存硬）+
+# 自描述哈希串，后续可在登录时"重哈希升级"到 argon2id（见 auth.rs 顶部说明）
+scrypt = { version = "0.11", default-features = false }
+subtle = "2"
+rand = "0.8"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+# `recorder.rs` 的测试会起一个假录播姬 HTTP 服务 —— 本 crate 主依赖不含 axum，
+# 这正是"service 是纯应用层"能成立的原因之一。
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
