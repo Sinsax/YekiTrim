@@ -122,10 +122,10 @@ vtrim server --host 127.0.0.1 --allow-remote \
 
 ## 发行给别人（自部署）
 
-1. 用 `pwsh scripts/package-release.ps1 -SmokeTest` 打包：会在打包后**清掉**
+1. 用 `cargo xtask package --smoke-test` 打包：会在打包后**清掉**
    解包目录里的 `.vtrim/` 与 `stickers/`（跑过冒烟测试会生成，含真实绝对路径）。
 2. 检查 `release/<包名>/` 里没有 `.vtrim/` 再分发。`.zip` 本身不含它。
 3. 告诉用户需要自备 `ffmpeg` / `ffprobe`（在 `PATH` 中）与 Chrome/Edge（精修出片要用）。
-4. 许可：发行二进制是 **GPL-3.0-or-later**（含静态链接的 espeak-ng），
-   再分发时按 GPL 提供对应源码与许可证副本 —— 见仓库根 `LICENSE` 与
-   [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)。
+4. 许可：发行二进制是 **Apache-2.0**（宽松许可，**允许闭源再分发**）。打包时已**强制**随包
+   附上 `LICENSE` 与 `THIRD-PARTY-NOTICES.md`，分发前确认二者在包内即可 —— 见仓库根
+   [`LICENSE`](../LICENSE) 与 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)。

@@ -1793,7 +1793,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 | `vtrim-cli/src/server/ingest.rs` | 录播姬接入：webhook 接收 + **采集配置读写**（`config_view_json` / `build_ingest_patch` / `rotate_token`） |
 | `webui/src/components/RecorderConfig.vue` | 设置页「录播姬（采集）」卡：开关 + 连接信息表单 + token 生成 + 测试连接 |
 | `vtrim-cli/src/service/doctor.rs` | 安全与运行状况摘要（直接读本机账本，不依赖服务端接口） |
-| `LICENSE` / `THIRD-PARTY-NOTICES.md` | 许可（GPL-3.0-or-later）与第三方组件/素材出处 |
+| `LICENSE` / `THIRD-PARTY-NOTICES.md` | 许可（Apache-2.0）与第三方组件/素材出处 |
 
 ## 开源与公网部署
 
@@ -1801,9 +1801,13 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 
 ### 许可
 
-- 本项目整体 **GPL-3.0-or-later**（`LICENSE`），根因是发行二进制经 `sherpa-onnx` **静态链接了
-  GPL-3.0-or-later 的 espeak-ng**（其预编译静态包里打包的第三方，且是无条件链接）。
-  改依赖（sherpa-onnx / 出片二进制）前先看 `THIRD-PARTY-NOTICES.md`，别把许可改回 MIT。
+- 本项目整体 **Apache-2.0**（`LICENSE`）。这**不是被动选择**：发行二进制已通过 TTS-off 归档
+  摆脱了 `sherpa-onnx` 无条件静态链接的 **GPL-3.0-or-later espeak-ng**，依赖审计确认运行时
+  闭包 312 个包内**没有 GPL / LGPL / AGPL**。
+- ⚠️ **别把 espeak-ng 或任何 GPL 组件弄回二进制** —— 那会让整个产物重新变成 GPL 组合作品。
+  两道防线：`vendor/sherpa-onnx-sys/build.rs` 的占位断言（缓存命中分支也会跑；非
+  Windows-x64-static 的目标直接 `Err`）与 `cargo xtask scan`（对已链接产物扫 5 个 espeak 标记）。
+  改依赖（sherpa-onnx / 出片二进制）前先看 `THIRD-PARTY-NOTICES.md`。
 - **不内置任何字体**：原先随包的兜底字体「乐米波波体」已移除 —— 它是"免费商用但**不包括
   嵌入式用途**"，随软件分发/内嵌必须另行授权。字体候选链到系统字体（`C:/Windows/Fonts/msyh.ttc`）
   为止；想用圆润风格让**用户自行安装**（备忘写在 `api.rs::polish_font` 与
@@ -1883,5 +1887,5 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 4. `<数据目录>/.vtrim/`（含 `vtrim.db`、`llm.toml`、`logs/`）**不要**放进镜像层、
    不要公开、不要打进任何分享包；备份它即可。
 5. 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下
-   `.vtrim/`（`server.toml` 含真实绝对路径）。`scripts/package-release.ps1 -SmokeTest` 会清掉它。
+   `.vtrim/`（`server.toml` 含真实绝对路径）。`cargo xtask package --smoke-test` 会清掉它。
 

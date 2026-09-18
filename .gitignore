@@ -1,5 +1,16 @@
 target
 *.mp4
+# ---- sherpa-onnx TTS-off 预编译库（106 MiB，仅离线构建用）----
+# 归档不能进 git：超过 GitHub 单文件 100 MiB 硬限，`git push` 会被直接拒收。
+# 默认构建根本不需要它 —— vendor 的 sherpa-onnx-sys/build.rs 会自己从
+# https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts （Release v1.13.3）
+# 按需下载，并做 sha256 硬校验。这条忽略规则只为**离线**场景保留：
+# 把归档放这里、再设 SHERPA_ONNX_ARCHIVE_DIR 指向它，即可无网构建。
+# 见 vendor/sherpa-onnx-sys/FORK-NOTES.md 与
+# docs/plan/sherpa-onnx-no-tts-switch-guide.md §12
+/.sherpa-libs/
+# 归档曾经就地放过的目录名，一并忽略以防回潮
+/sherpa-onnx-prebuilt-no-tts/
 *.ass
 *.wav
 *.srt
@@ -16,6 +27,11 @@ __pycache__/
 /scripts/asrtest/wavs/
 
 /.zcode/
+
+# ---- 开发过程资料 ----
+# `.workbuddy/memory/*.md` 是本项目的工作记忆：含真实绝对路径、构建实测数字与
+# 许可证处置决定。属开发过程资料，不进公开仓库。
+/.workbuddy/
 
 # ---- 运行时数据（绝不能进公开仓库）----
 #

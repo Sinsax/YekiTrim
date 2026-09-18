@@ -1,0 +1,674 @@
+//! V-Trim repo tasks. Run through the cargo alias in `.cargo/config.toml`:
+//!
+//! ```text
+//! cargo xtask scan                     # product gate: the exe must carry no espeak-ng
+//! cargo xtask package [--smoke-test]   # build -> gate -> assemble -> zip
+//! ```
+//!
+//! This replaced scripts/package-release.ps1 and scripts/scan-artifact.ps1 so the whole build
+//! and release flow runs on one toolchain, with no PowerShell, no tar/7z/bzip2/python, and the
+//! ASCII-only / BOM / `$LASTEXITCODE` quirks that came with them.
+//!
+//! Provisioning the TTS-off sherpa-onnx archive is NOT here -- that lives in the vendored
+//! sherpa-onnx-sys build script (see vendor/sherpa-onnx-sys/FORK-NOTES.md), which is the one
+//! place a build cannot route around. This binary only gates and packages what that produced.
+
+use std::env;
+use std::ffi::OsStr;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+use std::thread::sleep;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
+
+/// Markers specific to espeak-ng. Deliberately NOT the bare substring "espeak": sherpa-onnx's
+/// speaker diarization has a class named `OfflineSpeaker`, which contains "eSpeaker" and matches
+/// "espeak" under a case-insensitive search -- and so does `discreteSpeaker`, which is what the
+/// real binary actually retains. Pass --show-bare-espeak to see that misleading count.
+const MARKERS: &[&str] = &[
+    "espeak-ng",
+    "espeak ng",
+    "espeak_",
+    "libespeak",
+    "piper_phonemize",
+];
+
+/// Not release payload, and they carry cargo's own string tables (sherpa-onnx-sys's build-script
+/// binary embeds its lib-name list verbatim), which produces false positives if scanned.
+const SKIP_DIRS: &[&str] = &["build", "deps"];
+
+const SCAN_EXTENSIONS: &[&str] = &["exe", "dll"];
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("scan") => cmd_scan(&args[1..]),
+        Some("package") => cmd_package(&args[1..]),
+        Some("help") | Some("-h") | Some("--help") | None => {
+            usage();
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("xtask: unknown subcommand '{other}'\n");
+            usage();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn usage() {
+    println!(
+        "\
+usage: cargo xtask <command> [options]
+
+commands:
+  scan [path] [--show-bare-espeak]
+      Fail if a built binary links espeak-ng. `path` defaults to target/release.
+      Exit code 0 = clean, 1 = markers found, 3 = nothing was scanned.
+
+  package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR]
+      Build release, run the scan gate, assemble the Windows x64 package, zip it.
+      Output goes to <repo>/release/ (gitignored).
+      --smoke-test also boots the packaged exe and checks /api/health and the WebUI."
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// scan
+// ---------------------------------------------------------------------------------------------
+
+fn cmd_scan(args: &[String]) -> ExitCode {
+    let mut path = repo_root().join("target").join("release");
+    let mut show_bare = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--show-bare-espeak" => show_bare = true,
+            other if other.starts_with('-') => {
+                eprintln!("xtask scan: unknown flag {other}");
+                return ExitCode::from(2);
+            }
+            other => path = PathBuf::from(other),
+        }
+    }
+
+    let files = match collect_artifacts(&path) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("xtask scan: cannot read {}: {err}", path.display());
+            return ExitCode::from(3);
+        }
+    };
+
+    if files.is_empty() {
+        eprintln!("xtask scan: nothing to scan at {}", path.display());
+        eprintln!("That is itself a gate failure: it usually means the build never ran.");
+        return ExitCode::from(3);
+    }
+
+    let mut total_bytes: u64 = 0;
+    let mut per_marker = vec![0usize; MARKERS.len()];
+    let mut bare = 0usize;
+    let mut offenders: Vec<(PathBuf, usize)> = Vec::new();
+
+    for file in &files {
+        let bytes = match fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("xtask scan: cannot read {}: {err}", file.display());
+                return ExitCode::from(3);
+            }
+        };
+        total_bytes += bytes.len() as u64;
+
+        let lowered = to_ascii_lowercase(&bytes);
+        let mut hits = 0usize;
+        for (index, marker) in MARKERS.iter().enumerate() {
+            let count = count_marker(&lowered, marker);
+            per_marker[index] += count;
+            hits += count;
+        }
+        if show_bare {
+            bare += count_marker(&lowered, "espeak");
+        }
+        if hits > 0 {
+            offenders.push((file.clone(), hits));
+        }
+    }
+
+    println!("scanned: {}", path.display());
+    println!(
+        "files:   {}, {} MB",
+        files.len(),
+        total_bytes / (1024 * 1024)
+    );
+    println!("markers: {}", MARKERS.join(", "));
+    println!();
+
+    for (index, marker) in MARKERS.iter().enumerate() {
+        let count = per_marker[index];
+        if count == 0 {
+            println!("  ok      {:<18} 0", marker);
+        } else {
+            println!("  HIT     {:<18} {}", marker, count);
+        }
+    }
+    if show_bare {
+        println!();
+        println!("  bare \"espeak\" (diagnostic only): {bare}");
+        println!("  Speaker-diarization identifiers (OfflineSpeaker / discreteSpeaker) match this");
+        println!("  and are not espeak-ng. It never affects the exit code.");
+    }
+
+    let total: usize = per_marker.iter().sum();
+    if total == 0 {
+        println!();
+        println!("PASS: no espeak-ng markers found");
+        return ExitCode::SUCCESS;
+    }
+
+    println!();
+    for (file, hits) in &offenders {
+        println!("  {}  [{hits} hits]", file.display());
+    }
+    println!("FAIL: {total} espeak-ng marker(s) found");
+    ExitCode::from(1)
+}
+
+fn collect_artifacts(path: &Path) -> io::Result<Vec<PathBuf>> {
+    if !path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} does not exist", path.display()),
+        ));
+    }
+
+    let mut found = Vec::new();
+    if path.is_file() {
+        found.push(path.to_path_buf());
+        return Ok(found);
+    }
+
+    collect_dir(path, &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+fn collect_dir(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            let skip = path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .map(|name| SKIP_DIRS.contains(&name))
+                .unwrap_or(false);
+            if !skip {
+                collect_dir(&path, found)?;
+            }
+            continue;
+        }
+
+        let extension = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(|ext| ext.to_ascii_lowercase());
+        if SCAN_EXTENSIONS
+            .iter()
+            .any(|wanted| extension.as_deref() == Some(wanted))
+        {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn to_ascii_lowercase(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().map(|b| b.to_ascii_lowercase()).collect()
+}
+
+/// Non-overlapping occurrences, matching the semantics of the PowerShell scanner this replaced
+/// (it advanced `indexOf` past each match, and used a regex split for the same reason).
+fn count_marker(haystack: &[u8], needle: &str) -> usize {
+    let needle = needle.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+
+    let mut count = 0usize;
+    let mut index = 0usize;
+    while index + needle.len() <= haystack.len() {
+        if &haystack[index..index + needle.len()] == needle {
+            count += 1;
+            index += needle.len();
+        } else {
+            index += 1;
+        }
+    }
+    count
+}
+
+// ---------------------------------------------------------------------------------------------
+// package
+// ---------------------------------------------------------------------------------------------
+
+struct PackageOptions {
+    version: Option<String>,
+    out_dir: Option<PathBuf>,
+    skip_build: bool,
+    smoke_test: bool,
+}
+
+fn cmd_package(args: &[String]) -> ExitCode {
+    let mut options = PackageOptions {
+        version: None,
+        out_dir: None,
+        skip_build: false,
+        smoke_test: false,
+    };
+
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--skip-build" => options.skip_build = true,
+            "--smoke-test" => options.smoke_test = true,
+            "--version" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => options.version = Some(value.clone()),
+                    None => {
+                        eprintln!("xtask package: --version needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--out-dir" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => options.out_dir = Some(PathBuf::from(value)),
+                    None => {
+                        eprintln!("xtask package: --out-dir needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            other => {
+                eprintln!("xtask package: unknown option {other}");
+                return ExitCode::from(2);
+            }
+        }
+        index += 1;
+    }
+
+    match run_package(&options) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!();
+            eprintln!("xtask package failed: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let root = repo_root();
+
+    let version = match &options.version {
+        Some(version) => version.clone(),
+        None => cli_version(&root)?,
+    };
+    println!("==> version: {version}");
+
+    let out_dir = options
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| root.join("release"));
+    let package_name = format!("vtrim-v{version}-win-x64");
+    let package_dir = out_dir.join(&package_name);
+    let zip_path = out_dir.join(format!("{package_name}.zip"));
+
+    if !options.skip_build {
+        println!("==> cargo build --release -p vtrim-cli --locked");
+        let status = Command::new(cargo())
+            .current_dir(&root)
+            .args(["build", "--release", "-p", "vtrim-cli", "--locked"])
+            .status()?;
+        if !status.success() {
+            return Err(format!("cargo build failed ({status})").into());
+        }
+    }
+
+    let exe = root.join("target").join("release").join("vtrim.exe");
+    if !exe.is_file() {
+        return Err(format!("missing {}", exe.display()).into());
+    }
+
+    // Gate. Mandatory and unskippable, for the same reason it was unskippable in the script it
+    // replaced: linking espeak-ng turns the shipped binary into a GPL combined work, and the
+    // failure prints nothing at all. (The vendored build script already refuses to link a lib set
+    // that is not the pinned TTS-off one -- this checks the artifact that actually came out.)
+    println!("==> asserting the binary carries no espeak-ng");
+    let scan = Command::new(env::current_exe()?)
+        .args(["scan", exe.to_string_lossy().as_ref()])
+        .status()?;
+    if !scan.success() {
+        return Err(
+            "the product gate rejected target/release/vtrim.exe. Refusing to package a binary \
+             that links espeak-ng."
+                .into(),
+        );
+    }
+
+    // The WebUI ships only from webui/dist, so a stale dist ships a stale UI.
+    let dist = root.join("webui").join("dist");
+    if !dist.join("index.html").is_file() {
+        return Err("webui/dist is missing: run 'npm --prefix webui run build' first".into());
+    }
+    if let (Some(newest_src), Ok(dist_mtime)) = (
+        newest_mtime(&root.join("webui").join("src"))?,
+        fs::metadata(dist.join("index.html")).and_then(|m| m.modified()),
+    ) {
+        if newest_src > dist_mtime + Duration::from_secs(1) {
+            println!(
+                "warning: webui/src is newer than webui/dist -- run 'npm --prefix webui run build'"
+            );
+        }
+    }
+
+    println!("==> assembling {package_name}");
+    if package_dir.exists() {
+        fs::remove_dir_all(&package_dir)?;
+    }
+    fs::create_dir_all(package_dir.join("webui"))?;
+    fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
+
+    fs::copy(&exe, package_dir.join("vtrim.exe"))?;
+    copy_dir_all(&dist, &package_dir.join("webui").join("dist"))?;
+
+    // No font is bundled: the former built-in fallback's licence allowed free commercial use but
+    // not embedding into software. Users drop their own fonts in here (vtrim_core::fonts).
+    fs::write(
+        package_dir.join("resources").join("fonts").join("放这里.txt"),
+        concat!(
+            "把字体文件（.ttf / .otf / .ttc）放进这个文件夹，精修页里就会多出对应的字体可选：\n",
+            "\n",
+            "  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体\n",
+            "  - 封面字体 = 封面设计器 →「排版」组 → 字体\n",
+            "\n",
+            "本发行包刻意不带任何字体文件（授权原因，见 README「字体」）。",
+            "字体文件请自行获取并遵守其许可。\n",
+        ),
+    )?;
+
+    let notes = root
+        .join("docs")
+        .join("releases")
+        .join(format!("v{version}.md"));
+    if notes.is_file() {
+        fs::copy(&notes, package_dir.join("RELEASE-NOTES.md"))?;
+    } else {
+        println!("warning: release notes not found: {}", notes.display());
+    }
+
+    // Licence material. The shipped exe statically links third-party code that is almost entirely
+    // MIT / Apache-2.0 / BSD / ISC / Zlib, and every one of those requires the copyright notice and
+    // licence text to travel with the binary; Apache-2.0 additionally requires the licence text and
+    // any NOTICE file. Shipping *no* licence material is the one option that is certainly wrong, so
+    // these are hard requirements rather than best-effort copies -- and note this is independent of
+    // what V-Trim's own licence ends up being.
+    for asset in ["LICENSE", "THIRD-PARTY-NOTICES.md"] {
+        let source = root.join(asset);
+        if !source.is_file() {
+            return Err(format!(
+                "missing {asset} at the repo root: it must ship alongside the binary"
+            )
+            .into());
+        }
+        fs::copy(&source, package_dir.join(asset))?;
+    }
+
+    for required in [
+        "vtrim.exe",
+        "webui/dist/index.html",
+        "LICENSE",
+        "THIRD-PARTY-NOTICES.md",
+    ] {
+        if !package_dir.join(required).exists() {
+            return Err(format!("package is missing {required}").into());
+        }
+    }
+
+    if options.smoke_test {
+        smoke_test(&package_dir)?;
+    }
+
+    println!("==> compressing {}", zip_path.display());
+    if zip_path.exists() {
+        fs::remove_file(&zip_path)?;
+    }
+    zip_dir(&package_dir, &zip_path)?;
+
+    let size_mb = fs::metadata(&zip_path)?.len() as f64 / (1024.0 * 1024.0);
+    let digest = sha256_of_file(&zip_path)?;
+    println!();
+    println!("done: {}", zip_path.display());
+    println!("  size:   {size_mb:.1} MB");
+    println!("  sha256: {digest}");
+
+    Ok(())
+}
+
+fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==> smoke test: boot the packaged exe and verify");
+    let exe = package_dir.join("vtrim.exe");
+    let port = 18_000 + (SystemTime::now().duration_since(UNIX_EPOCH)?.subsec_nanos() % 1000) as u16;
+
+    let mut command = Command::new(&exe);
+    command.args(["server", "--port", &port.to_string()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command.spawn()?;
+    let mut ok = false;
+
+    for _ in 0..20 {
+        sleep(Duration::from_millis(500));
+        let health = http_get(port, "/api/health", Duration::from_secs(3));
+        let index = http_get(port, "/", Duration::from_secs(5));
+        if let (Ok(health), Ok(index)) = (health, index) {
+            if health.contains("\"ok\"")
+                && health.contains("true")
+                && index.contains(" 200 ")
+                && index.contains("<div id=\"app\">")
+            {
+                println!("    /api/health ok, / served the packaged WebUI");
+                ok = true;
+                break;
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // First run creates .vtrim / stickers next to the exe; runtime state must not ship.
+    for generated in [".vtrim", "stickers"] {
+        let path = package_dir.join(generated);
+        if path.exists() {
+            fs::remove_dir_all(&path)?;
+        }
+    }
+
+    if !ok {
+        return Err("smoke test failed: the server did not return /api/health and the WebUI in \
+                    time"
+            .into());
+    }
+    Ok(())
+}
+
+/// Minimal HTTP/1.0 GET. The server is local and short-lived, so a hand-rolled request keeps this
+/// tool free of an HTTP client dependency.
+fn http_get(port: u16, path: &str, timeout: Duration) -> io::Result<String> {
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().map_err(|err| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("bad address: {err}"))
+    })?;
+
+    let mut stream = TcpStream::connect_timeout(&address, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )?;
+    stream.flush()?;
+
+    let mut body = Vec::new();
+    stream.read_to_end(&mut body)?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+fn zip_dir(source: &Path, destination: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let file = fs::File::create(destination)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(9));
+    let base = source.parent().unwrap_or(source).to_path_buf();
+
+    add_dir_to_zip(&mut writer, source, &base, options)?;
+    writer.finish()?;
+    Ok(())
+}
+
+fn add_dir_to_zip<W: Write + io::Seek>(
+    writer: &mut zip::ZipWriter<W>,
+    dir: &Path,
+    base: &Path,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path
+            .strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if path.is_dir() {
+            writer.add_directory(format!("{name}/"), options)?;
+            add_dir_to_zip(writer, &path, base, options)?;
+        } else {
+            writer.start_file(name, options)?;
+            let mut source = fs::File::open(&path)?;
+            io::copy(&mut source, writer)?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// shared helpers
+// ---------------------------------------------------------------------------------------------
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/xtask must live two levels below the repo root")
+        .to_path_buf()
+}
+
+fn cargo() -> String {
+    env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
+/// Reads `version` from the `[package]` table, so the packaged name follows the binary.
+fn cli_version(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let manifest = root.join("crates").join("vtrim-cli").join("Cargo.toml");
+    let text = fs::read_to_string(&manifest)?;
+
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("version") {
+            if let Some(rest) = rest.trim_start().strip_prefix('=') {
+                let value = rest.trim().trim_matches('"');
+                if !value.is_empty() {
+                    return Ok(value.to_string());
+                }
+            }
+        }
+    }
+
+    Err(format!("no version found in {}", manifest.display()).into())
+}
+
+fn newest_mtime(dir: &Path) -> io::Result<Option<SystemTime>> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+
+    let mut newest: Option<SystemTime> = None;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let candidate = if path.is_dir() {
+            newest_mtime(&path)?
+        } else {
+            fs::metadata(&path).and_then(|meta| meta.modified()).ok()
+        };
+        if let Some(candidate) = candidate {
+            if newest.map(|current| candidate > current).unwrap_or(true) {
+                newest = Some(candidate);
+            }
+        }
+    }
+    Ok(newest)
+}
+
+fn copy_dir_all(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn sha256_of_file(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}

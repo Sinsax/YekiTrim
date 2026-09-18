@@ -1,0 +1,17 @@
+# Cargo 配置 —— 提交入库，团队共享。
+#
+# [alias] xtask
+# ------------
+# `cargo xtask <cmd>` = `cargo run -p xtask -- <cmd>`。仓库任务都在 crates/xtask 里：
+#
+#     cargo xtask scan                 # 产物门禁：二进制里不能有 espeak-ng
+#     cargo xtask package              # 构建 + 门禁 + 组装 + 打 zip
+#     cargo xtask package --smoke-test # 再启一次打包好的 exe，验 /api/health 与 WebUI
+#
+# 这里**刻意不再注入 SHERPA_ONNX_ARCHIVE_DIR**。sherpa-onnx 的预编译库由 vendor 的
+# sherpa-onnx-sys/build.rs 自己取（sha256 钉死 + 校验占位库），不需要、也不该靠环境变量：
+# 环境变量只在当前 shell 生效，换个终端就静默退回官方 GPL 归档。见
+# vendor/sherpa-onnx-sys/FORK-NOTES.md。
+
+[alias]
+xtask = "run -p xtask --"

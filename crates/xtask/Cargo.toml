@@ -1,0 +1,14 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "V-Trim repo tasks: product gate and release packaging"
+
+[dependencies]
+sha2 = "0.10"
+# Only deflate is needed. The default feature set also pulls zstd / bzip2 / lzma / aes, which
+# means four vendored C toolchains compiled by `cc` just to write a zip -- for a helper binary
+# whose whole point is not depending on external tools. `time` keeps real mtimes in the archive.
+zip = { version = "2", default-features = false, features = ["deflate", "time"] }
