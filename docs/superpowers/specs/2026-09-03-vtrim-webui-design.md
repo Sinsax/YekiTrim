@@ -39,7 +39,7 @@ V-Trim 目前是纯 CLI 工具，流程跨多个阶段（extract → transcribe 
 │   │  init/process/extract/transcribe/detect/cut/status/... │ │
 │   └─ vtrim server ─────────────────────────────────────────┼ │
 │      ┌───────────────────────────────────────────────────┐ │ │
-│      │ Axum HTTP Server (127.0.0.1:7788)                 │ │ │
+│      │ Axum HTTP Server (127.0.0.1:26320)                 │ │ │
 │      │  /webui (index.html) + /api + SSE                 │ │ │
 │      └──────────────────────┬────────────────────────────┘ │ │
 │                             │ 调用                            │ │
@@ -61,7 +61,7 @@ CLI 命令与 HTTP API 共用 Service Layer，避免同一逻辑存在两份。
 ## 4. CLI 接口变化
 
 ```text
-vtrim server [--host 127.0.0.1] [--port 7788] [--open]
+vtrim server [--host 127.0.0.1] [--port 26320] [--open]
              [--config <vtrim.toml>] [--no-open]
 ```
 

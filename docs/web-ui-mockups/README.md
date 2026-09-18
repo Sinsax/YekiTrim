@@ -16,10 +16,10 @@
 # 浏览器直接打开 HTML（推荐）
 start sakura-cream.html
 
-# 或重新生成 PNG（需本机 Chrome）
+# 或重新生成 PNG（需本机 Chrome；在仓库根目录执行）
 "C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --disable-gpu \
   --screenshot="sakura-cream.png" --window-size=1440,900 \
-  "file:///F:/para/Code/V-Trim/docs/web-ui-mockups/sakura-cream.html"
+  "file:///$(pwd)/docs/web-ui-mockups/sakura-cream.html"
 ```
 
 ## 三份为何不同（不只是换色）

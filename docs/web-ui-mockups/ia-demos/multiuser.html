@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>多用户前端预览 M1–M5 | V-Trim</title>
+<!--
+  ═══════════════════════════════════════════════════════════
+  多用户前端可交互预览（M1–M5），配合：
+    docs/plan/webui-multiuser-frontend.md
+    docs/superpowers/specs/2026-09-12-multi-user-server-design.md
+  基于 方案 B 工作台壳（b-workbench-sidebar.html）演进，演示：
+  M1 登录/会话（用户区点击登出，登录页任意输入可进入）
+  M2 项目行 来源/占用 徽标 + 总览页来源/占用/删除源录播
+  M3 首页=项目列表（进度/下一步/预览/打开/删源）+录制导入；入库页=录制导入+自动导入规则+待分配
+  M4 新建向导来源抽象（入库记录 / B站链接 resolve 预览+配额预检）
+  M5 存储页（计量/明细/删源）+ 管理页（账号/录播姬/任务/平台配置）
+  右上角「预览角色」可在 管理员/普通用户 间切换，观察角色驱动 UI。
+  交互均为前端假数据；箭头处标注了对应实现要点。
+  ═══════════════════════════════════════════════════════════
+-->
+<style>
+:root{
+  --bg:#FFF7F3; --bg-soft:#FFEFE7; --card:#fff; --line:#F2E1D9; --line-soft:#FAEEE7;
+  --ink:#4A3F45; --ink-dim:#9C8B92; --ink-faint:#C9B8BE;
+  --main:#F682B8; --main-deep:#EE6FA6; --main-soft:#FDE3EC; --pink-light:#FBB9D4; --pink-text:#D8669B;
+  --blue:#7FA8F0; --blue-deep:#5E7FD8; --blue-soft:#E8EEFC;
+  --amber:#F2B23E; --amber-deep:#B97A14; --amber-soft:#FCF0D9;
+  --green:#4FBF9C; --green-deep:#2FA07E; --green-soft:#DEF2EA;
+  --red:#E8727E; --red-deep:#D9566A; --red-soft:#FBE3E5;
+  --r-sm:10px; --r:16px; --r-full:999px;
+  --shadow:0 8px 26px rgba(238,111,166,.10),0 2px 6px rgba(90,60,70,.04);
+  --shadow-hover:0 12px 34px rgba(238,111,166,.18),0 3px 8px rgba(90,60,70,.05);
+  --shadow-pink:0 4px 14px rgba(238,111,166,.4);
+  --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:var(--font)}
+body{background:var(--bg);color:var(--ink);min-height:100vh;font-size:13px;line-height:1.6;overflow:hidden}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font-family:inherit}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:var(--r-full);border:1px solid var(--line);background:var(--card);font-size:13px;transition:.15s}
+.btn:hover{border-color:var(--main);color:var(--pink-text);background:var(--main-soft)}
+.btn-primary{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;border:none;font-weight:600;box-shadow:var(--shadow-pink)}
+.btn-primary:hover{filter:brightness(1.05);color:#fff}
+.btn-danger{background:var(--red-soft);color:var(--red-deep);border-color:#f3c9ce}
+.btn-danger:hover{background:var(--red);color:#fff;border-color:var(--red)}
+.mini-btn{padding:4px 11px;font-size:12px;border-radius:var(--r-full);border:1px solid var(--line);background:var(--card);transition:.15s}
+.mini-btn:hover{border-color:var(--main);color:var(--pink-text)}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:var(--r-full);font-size:11px;background:var(--bg-soft);color:var(--ink-dim)}
+.chip.g{background:var(--green-soft);color:var(--green-deep)}
+.chip.b{background:var(--blue-soft);color:var(--blue-deep)}
+.chip.a{background:var(--amber-soft);color:var(--amber-deep)}
+.chip.r{background:var(--red-soft);color:var(--red-deep)}
+.chip.p{background:var(--main-soft);color:var(--pink-text)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.progress{height:6px;border-radius:var(--r-full);background:var(--bg-soft);overflow:hidden}
+.progress>i{display:block;height:100%;border-radius:var(--r-full);background:linear-gradient(90deg,var(--main),var(--main-deep));transition:width .25s}
+.muted{color:var(--ink-dim)} .small{font-size:12px}
+.row{display:flex;align-items:center;gap:8px} .spread{justify-content:space-between}
+/* ── 布局壳 ── */
+.shell{display:flex;height:100vh}
+.side{flex:none;width:268px;background:var(--card);border-right:1px solid var(--line);display:flex;flex-direction:column;z-index:10}
+.side-brand{display:flex;align-items:center;gap:10px;padding:14px 16px 8px}
+.brand-logo{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--main),var(--pink-light));display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff;box-shadow:var(--shadow-pink)}
+.brand-name{font-size:14px;font-weight:700;color:var(--main-deep)}
+.newproj{margin:2px 10px 6px;padding:9px 12px;border-radius:var(--r-sm);border:1.5px dashed var(--main);color:var(--pink-text);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;justify-content:center;background:var(--main-soft);transition:.15s;flex:none}
+.newproj:hover{box-shadow:var(--shadow-pink);transform:translateY(-1px)}
+.side-filter{margin:0 10px 6px;position:relative;flex:none}
+.side-filter input{width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:12px;color:var(--ink);outline:none}
+.side-filter input:focus{border-color:var(--main)}
+.side-list{flex:1;overflow-y:auto;padding:0 10px 10px}
+.side-cap{font-size:10px;letter-spacing:.12em;color:var(--ink-faint);padding:6px 8px 4px}
+.proj-head{display:flex;align-items:center;gap:8px;padding:8px;border-radius:var(--r-sm);cursor:pointer;transition:.15s}
+.proj-head:hover{background:var(--bg-soft)}
+.proj-head .tw{font-size:10px;color:var(--ink-faint);transition:.2s;width:10px}
+.proj.open .proj-head .tw{transform:rotate(90deg)}
+.proj-head .nm{flex:1;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proj-steps{display:none;margin:2px 0 6px 14px;border-left:1.5px solid var(--line-soft);padding-left:8px}
+.proj.open .proj-steps{display:block}
+.snode{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-sm);cursor:pointer;font-size:12.5px;color:var(--ink-dim);transition:.12s}
+.snode:hover{background:var(--bg-soft);color:var(--ink)}
+.snode.cur{background:var(--main-soft);color:var(--pink-text);font-weight:600}
+.snode .ic{flex:none;width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);background:var(--card);font-size:9px;display:flex;align-items:center;justify-content:center;color:var(--green-deep)}
+.snode.done .ic{border-color:var(--green);background:var(--green-soft)}
+.snode.cur .ic{border-color:var(--main-deep);background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff}
+.snode .pct{margin-left:auto;font-size:10px;color:var(--blue-deep)}
+.src-badge{font-size:9px;padding:1px 6px;border-radius:var(--r-full);flex:none}
+.src-rec{background:var(--blue-soft);color:var(--blue-deep)}
+.src-bili{background:var(--red-soft);color:var(--red-deep)}
+.size-tag{font-size:9.5px;color:var(--ink-faint);flex:none}
+.side-foot{border-top:1px solid var(--line-soft);padding:8px 12px;display:flex;flex-direction:column;gap:4px;flex:none}
+.foot-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:var(--r-sm);cursor:pointer;font-size:12.5px;color:var(--ink-dim);transition:.12s}
+.foot-item:hover{background:var(--bg-soft);color:var(--ink)}
+.foot-item.on{background:var(--main-soft);color:var(--pink-text);font-weight:600}
+.foot-item .dot{margin-left:auto;width:7px;height:7px;border-radius:50%;background:var(--red)}
+.user-chip{display:flex;align-items:center;gap:8px;padding:8px;border-radius:var(--r-sm);cursor:pointer;background:var(--bg-soft);margin-bottom:4px}
+.user-chip .av{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,var(--main),var(--pink-light));color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;flex:none}
+.user-chip .nm{flex:1;font-size:12px;line-height:1.3}
+.user-chip .nm b{display:block;font-size:12.5px}
+.main{flex:1;overflow-y:auto;padding:18px 22px 60px}
+.crumbs{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px}
+.crumbs .sep{color:var(--ink-faint)}
+.crumbs b{color:var(--main-deep);font-size:15px}
+.pane{display:none} .pane.on{display:block;animation:fadein .22s}
+@keyframes fadein{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.grid{display:grid;gap:12px}
+.cols-main{grid-template-columns:1fr 300px}
+.cols-2{grid-template-columns:1fr 1fr}
+.card-blk{padding:16px}
+.card-blk>b.t{font-size:13px;display:block;margin-bottom:8px}
+.event-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px dashed var(--line-soft)}
+.event-row:last-child{border-bottom:none}
+/* 播放器 / 时间轴泳道 / 缩略图（与 b-workbench 同构） */
+.player{aspect-ratio:16/9;border-radius:var(--r);background:linear-gradient(135deg,#3b2f36,#6b4a58);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;gap:8px;box-shadow:var(--shadow)}
+.player .play{width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.5);display:flex;align-items:center;justify-content:center;font-size:20px}
+.lane{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px dashed var(--line-soft)}
+.lane:last-child{border-bottom:none}
+.lane .tag{flex:none;width:44px;font-size:11px;color:var(--ink-dim);text-align:right}
+.lane .track{flex:1;height:22px;border-radius:6px;background:var(--bg-soft);position:relative;overflow:hidden}
+.seg{position:absolute;top:3px;bottom:3px;border-radius:4px;opacity:.85}
+.thumb{display:flex;align-items:center;justify-content:center;color:#fff}
+.fld-input{width:100%;padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:12.5px;color:var(--ink);outline:none}
+.fld-input:focus{border-color:var(--main)}
+.grid9{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.grid9 i{border:1px solid var(--line);border-radius:6px;background:var(--bg-soft);font-size:10px;color:var(--ink-dim);display:flex;align-items:center;justify-content:center;height:30px;font-style:normal}
+.grid9 i.hot{background:var(--main-soft);border-color:var(--main-deep);color:var(--pink-text);font-weight:600}
+.cover-preview{aspect-ratio:16/6;border-radius:var(--r-sm);background:linear-gradient(135deg,#F682B8,#7C3AED);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:600;text-align:center;padding:0 12px}
+.state-badge{font-size:10px;padding:2px 8px;border-radius:var(--r-full);flex:none}
+.st-open{background:var(--blue-soft);color:var(--blue-deep)}
+.st-closing{background:var(--amber-soft);color:var(--amber-deep)}
+.st-finalized{background:var(--green-soft);color:var(--green-deep)}
+.st-failed{background:var(--red-soft);color:var(--red-deep)}
+.st-pending{background:var(--bg-soft);color:var(--ink-dim);border:1px dashed var(--line)}
+.meter{height:12px;border-radius:var(--r-full);background:var(--bg-soft);border:1px solid var(--line-soft);overflow:hidden}
+.meter>i{display:block;height:100%;background:linear-gradient(90deg,var(--main),var(--main-deep))}
+.meter.warn>i{background:linear-gradient(90deg,var(--amber),var(--amber-deep))}
+.meter.full>i{background:var(--red)}
+/* 表格 */
+.tb{width:100%;border-collapse:collapse;font-size:12.5px}
+.tb th,.tb td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line-soft)}
+.tb th{color:var(--ink-dim);font-weight:600;background:var(--bg-soft);position:sticky;top:0}
+.tb tr:last-child td{border-bottom:none}
+.tb td.num{font-family:Consolas,monospace}
+/* Tabs */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
+.tab{padding:7px 14px;border-radius:10px 10px 0 0;cursor:pointer;color:var(--ink-dim);font-size:13px}
+.tab.on{color:var(--pink-text);font-weight:600;background:var(--main-soft)}
+/* 抽屉 / 弹层 */
+.drawer-mask,.modal-mask{position:fixed;inset:0;background:rgba(74,63,69,.32);opacity:0;pointer-events:none;transition:.2s;z-index:60}
+.drawer-mask.on,.modal-mask.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:-380px;width:360px;height:100vh;background:var(--card);border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(90,60,70,.14);z-index:61;transition:right .25s;padding:18px;overflow-y:auto}
+body.drawer-open .drawer{right:0}
+body.drawer-open .drawer-mask{opacity:1;pointer-events:auto}
+.modal-mask{display:flex;align-items:center;justify-content:center;z-index:80}
+.modal{width:min(620px,94vw);max-height:86vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow-hover);padding:20px}
+/* 任务行 */
+.job-row{display:flex;align-items:center;gap:10px;padding:11px 4px;border-bottom:1px dashed var(--line-soft)}
+.job-row:last-child{border-bottom:none}
+.slot-badge{font-size:9.5px;padding:2px 7px;border-radius:var(--r-full);flex:none}
+.slot-ingest{background:var(--amber-soft);color:var(--amber-deep)}
+.slot-download{background:var(--blue-soft);color:var(--blue-deep)}
+.slot-heavy{background:var(--main-soft);color:var(--pink-text)}
+/* 登录 */
+.login{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:var(--bg);z-index:200}
+.login.on{display:flex}
+.login-card{width:min(360px,92vw);background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow-hover);padding:34px 32px;text-align:center}
+.login-card .logo{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--main),var(--pink-light));display:inline-flex;align-items:center;justify-content:center;font-size:24px;color:#fff;box-shadow:var(--shadow-pink);margin-bottom:12px}
+.login-card h1{font-size:19px;color:var(--main-deep);margin-bottom:2px}
+.login-card .sub{font-size:11.5px;color:var(--ink-faint);margin-bottom:20px}
+.fld{margin-bottom:12px;text-align:left}
+.fld label{display:block;font-size:11.5px;color:var(--ink-dim);margin-bottom:4px}
+.fld input{width:100%;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:13px;color:var(--ink);outline:none}
+.fld input:focus{border-color:var(--main)}
+/* 角色切换 pill */
+.rolepill{position:fixed;top:14px;right:16px;z-index:90;display:flex;align-items:center;gap:6px;background:var(--ink);color:#fff;border-radius:var(--r-full);padding:5px 6px 5px 14px;font-size:11.5px;box-shadow:var(--shadow-hover)}
+.rolepill button{background:rgba(255,255,255,.18);color:#fff;border-radius:var(--r-full);padding:3px 10px;font-size:11px}
+.rolepill button:hover{background:rgba(255,255,255,.32)}
+.backlink{position:fixed;left:288px;bottom:18px;z-index:40;font-size:12px;color:var(--ink-dim);background:var(--card);border:1px solid var(--line);border-radius:var(--r-full);padding:5px 12px;box-shadow:var(--shadow)}
+.backlink:hover{color:var(--pink-text);border-color:var(--main)}
+#toast{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:150;background:var(--ink);color:#fff;padding:8px 18px;border-radius:var(--r-full);font-size:13px;opacity:0;pointer-events:none;transition:.25s;max-width:80vw}
+#toast.on{opacity:1}
+.hint{font-size:11px;color:var(--ink-faint)}
+.switch{width:30px;height:17px;border-radius:var(--r-full);background:var(--line);position:relative;transition:.2s;cursor:pointer;flex:none}
+.switch::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.switch.on{background:var(--main)}
+.switch.on::after{left:15px}
+/* 向导 */
+.wiz-srcs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
+.wiz-src{border:1.5px solid var(--line);border-radius:var(--r);padding:20px;text-align:center;cursor:pointer;transition:.15s}
+.wiz-src:hover{border-color:var(--main);background:var(--main-soft);transform:translateY(-2px)}
+.wiz-src .big{font-size:30px}
+.wiz-src b{display:block;margin-top:6px}
+.preview-card{display:flex;gap:14px;background:var(--bg-soft);border:1px solid var(--line-soft);border-radius:var(--r-sm);padding:14px;margin:12px 0}
+.preview-card .cover{width:120px;height:74px;border-radius:8px;background:linear-gradient(135deg,#7FA8F0,#5E7FD8);display:flex;align-items:center;justify-content:center;font-size:22px;color:#fff;flex:none}
+@media(max-width:900px){.cols-main,.cols-2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<!-- ═══ M1 登录页（登出后显示；任意输入可登录） ═══ -->
+<div class="login on" id="loginView">
+  <div class="login-card">
+    <div class="logo">V</div>
+    <h1>V-TRIM</h1>
+    <div class="sub">切片工作台 · 账号登录</div>
+    <div class="fld"><label>用户名</label><input id="loginUser" placeholder="username" value="alice"></div>
+    <div class="fld"><label>密码</label><input id="loginPass" type="password" placeholder="••••••••" value="demo"></div>
+    <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px" onclick="doLogin()">登 录</button>
+    <div class="hint" style="margin-top:12px">演示：任意账号密码均可登录 · 连续失败 5 次将限流 15 分钟</div>
+  </div>
+</div>
+
+<!-- 角色切换（预览辅助，正式实现无此控件） -->
+<div class="rolepill">预览角色：<button id="roleBtn" onclick="toggleRole()">管理员</button></div>
+
+<!-- ═══ 应用壳 ═══ -->
+<div class="shell" id="appShell" style="display:none">
+  <aside class="side">
+    <div class="side-brand"><div class="brand-logo">V</div><div><div class="brand-name">V-TRIM</div><div style="font-size:9px;color:var(--ink-faint);letter-spacing:.1em">多用户工作台</div></div></div>
+    <div class="newproj" onclick="openWizard()">+ 新建项目</div>
+    <div class="side-filter"><input id="projFilter" placeholder="过滤项目…" oninput="renderTree()"></div>
+    <div class="side-list"><div class="side-cap">项目</div><div id="tree"></div></div>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <main class="main" id="main">
+    <div class="crumbs" id="crumbs"></div>
+    <div id="panes"></div>
+  </main>
+</div>
+
+<!-- 任务抽屉 -->
+<div class="drawer-mask" onclick="closeDrawer()"></div>
+<aside class="drawer">
+  <div class="row spread" style="margin-bottom:10px"><b>运行任务</b><button class="mini-btn" onclick="closeDrawer()">关闭</button></div>
+  <div id="drawerJobs"></div>
+  <div class="hint" style="margin-top:10px">同一用户的任务串行执行；取消排队中的任务会立即出队</div>
+</aside>
+
+<!-- 新建项目向导 -->
+<div class="modal-mask" id="wizModal" onclick="if(event.target===this)closeWizard()">
+  <div class="modal" id="wizBody"></div>
+</div>
+<!-- 删除源录播确认 -->
+<div class="modal-mask" id="delModal" onclick="if(event.target===this)closeDel()">
+  <div class="modal" style="width:min(460px,94vw)">
+    <b style="font-size:15px;color:var(--red-deep)">删除源录播？</b>
+    <p class="small muted" style="margin:10px 0" id="delInfo"></p>
+    <p class="small" style="background:var(--red-soft);color:var(--red-deep);border-radius:8px;padding:8px 12px;margin-bottom:14px">仅删除源录播视频，保留切片 / 字幕 / 事件 / 封面。此操作不可恢复。</p>
+    <div class="row" style="justify-content:flex-end"><button class="mini-btn" onclick="closeDel()">取消</button><button class="btn btn-danger" style="margin-left:8px" onclick="confirmDel()">确认删除</button></div>
+  </div>
+</div>
+
+<!-- 未剪切事件放大弹层（与现有交互一致） -->
+<div class="modal-mask" id="uncutModal" onclick="if(event.target===this)closeUncut()">
+  <div class="modal" style="width:min(720px,94vw)">
+    <div class="row spread" style="margin-bottom:10px"><b>未剪切事件 (7)</b><button class="mini-btn" onclick="closeUncut()">关闭</button></div>
+    <div class="grid" id="uncutGrid" style="grid-template-columns:1fr 1fr;gap:10px"></div>
+    <div class="row" style="margin-top:12px"><button class="btn btn-primary" style="flex:1;justify-content:center" onclick="toast('已加入剪切队列（7 个事件）');closeUncut()">一键全切 (7)</button></div>
+  </div>
+</div>
+
+<a class="backlink" href="index.html">← 返回对比</a>
+<div id="toast"></div>
+
+<script>
+/* ═══════════ 假数据 ═══════════ */
+let role='admin', user='alice', loggedIn=false
+let curPage='home'                 // home | ingest | storage | admin | project
+let curProj=null, curStep='prepare'
+let curFrag=null   // null=片段选择器；数字=编辑器中的片段下标
+let filterKw=''
+let delTarget=null, wizSource=null, wizStep=1, wizResolved=null
+
+const PROJECTS=[
+  {pid:'12',name:'樱花联动 4/12 双人联动回',src:'rec',room:'23058',size:'38.2 GB',prog:3,open:true},
+  {pid:'13',name:'杂谈回 4/15',src:'rec',room:'23058',size:'41.5 GB',prog:2,open:false},
+  {pid:'14',name:'歌回 4/15',src:'rec',room:'7742',size:'22.1 GB',prog:1,open:false,running:1,pct:42},
+  {pid:'16',name:'【B站】某经典游戏实况 · 2024 重置版',src:'bili',size:'8.9 GB',prog:2,open:false},
+]
+const STEPS=[{key:'prepare',name:'预处理'},{key:'slices',name:'切片'},{key:'polish',name:'精修'}]
+const SESSIONS=[
+  {room:'23058',time:'09-12 20:00',state:'open',files:'3 个分片 · 12.4 GB',mine:true},
+  {room:'23058',time:'09-12 18:00',state:'closing',files:'2 个分片 · 8.1 GB',mine:true},
+  {room:'7742',time:'09-11 19:30',state:'finalized',files:'4 个分片 · 21.7 GB',project:'歌回 4/15',mine:true},
+  {room:'9951',time:'09-11 14:00',state:'failed',files:'—',error:'磁盘空间不足（预计需要 15.2 GB / 可用 4.1 GB）',mine:true},
+  {room:'6673（未映射）',time:'09-10 22:10',state:'pending',files:'2 个分片 · 9.8 GB',mine:false},
+]
+const CHANNELS=[{room:'23058',user:'alice',strategy:'detect',on:true},{room:'7742',user:'alice',strategy:'cut',on:false}]
+const USERS=[
+  {name:'alice',role:'user',quota:'200 GB',used:'86.2 GB',disabled:false},
+  {name:'bob',role:'user',quota:'100 GB',used:'22.0 GB',disabled:false},
+  {name:'admin',role:'admin',quota:'不限',used:'3.1 GB',disabled:false},
+]
+const JOBS=[
+  {kind:'入库合并',owner:'alice',name:'09-12 20:00 场次（3 分片）',state:'running',pct:64,slot:'入库'},
+  {kind:'下载',owner:'bob',name:'BV1xx411c7mD · P3',state:'running',pct:23,slot:'下载'},
+  {kind:'转写',owner:'alice',name:'歌回 4/15 · sensevoice',state:'queued',pos:1,slot:'重活'},
+]
+
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s)
+const sleep=ms=>new Promise(r=>setTimeout(r,ms))
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('on'),2200) }
+
+/* ═══════════ M1 登录/登出 ═══════════ */
+function doLogin(){
+  user=$('#loginUser').value.trim()||'alice'
+  loggedIn=true
+  $('#loginView').classList.remove('on')
+  $('#appShell').style.display='flex'
+  curPage='home'
+  render()
+  toast('欢迎，'+user+(role==='admin'?'（管理员）':''))
+}
+function logout(){
+  loggedIn=false
+  $('#appShell').style.display='none'
+  $('#loginView').classList.add('on')
+  document.body.classList.remove('drawer-open')
+}
+function toggleRole(){
+  role=role==='admin'?'user':'admin'
+  $('#roleBtn').textContent=role==='admin'?'管理员':'普通用户'
+  if(role!=='admin'&&curPage==='admin') curPage='home'
+  render()
+  toast('已切换预览角色：'+(role==='admin'?'管理员（可见 入库/存储/管理/全平台任务/待分配池）':'普通用户（仅自己的项目与任务）'))
+}
+
+/* ═══════════ 侧栏 ═══════════ */
+function renderTree(){
+  const kw=filterKw.trim()
+  $('#tree').innerHTML=PROJECTS
+    .filter(p=>!kw||p.name.toLowerCase().includes(kw.toLowerCase())||p.room.includes(kw))
+    .map((p,i)=>{
+      const badge=`<span class="chip ${i===0?'p':'a'} badge">${STEPS[p.prog-1].name}${p.running!=null?' '+p.pct+'%':''}</span>`
+      const src=p.src==='rec'?`<span class="src-badge src-rec">录制 ${p.room}</span>`:`<span class="src-badge src-bili">B站</span>`
+      const nodes=STEPS.map((s,j)=>{
+        const n=j+1, st=n<p.prog?'done':n===p.prog?'cur':''
+        const viewing=(curPage==='project'&&curProj===p.pid&&curStep===s.key)?' viewing':''
+        const pct=(p.running===n)?`<span class="pct">${p.pct}%</span>`:''
+        return `<div class="snode ${st}${viewing}" onclick="openProject('${p.pid}','${s.key}')"><span class="ic">${st==='done'?'✓':''}</span>${s.name}${pct}</div>`
+      }).join('')
+      return `<div class="proj ${p.open?'open':''}">
+        <div class="proj-head" onclick="toggleProj('${p.pid}')"><span class="tw">▶</span><span class="nm">${p.name}</span>${src}${badge}</div>
+        <div class="proj-steps">${nodes}<div class="snode" style="color:var(--ink-faint);font-size:11px">占用 ${p.size}</div></div>
+      </div>`
+    }).join('')||'<div class="hint" style="padding:10px">无匹配项目</div>'
+}
+function toggleProj(pid){ const p=PROJECTS.find(x=>x.pid===pid); p.open=!p.open; renderTree() }
+function openProject(pid,step){ curPage='project'; curProj=pid; curStep=step; if(step==='polish') curFrag=null; const p=PROJECTS.find(x=>x.pid===pid); p.open=true; render() }
+function openPage(pg){ curPage=pg; render() }
+
+function renderFoot(){
+  const isAdmin=role==='admin'
+  $('#sideFoot').innerHTML=`
+    <div class="user-chip" title="点击登出" onclick="logout()">
+      <span class="av">${user[0].toUpperCase()}</span>
+      <span class="nm"><b>${user}</b><span class="muted">${isAdmin?'管理员':'普通用户'} · 点击登出</span></span>
+    </div>
+    <div class="foot-item ${curPage==='home'?'on':''}" onclick="openPage('home')">首页</div>
+    <div class="foot-item ${curPage==='project'?'on':''}" onclick="openProject('${PROJECTS[0].pid}','prepare')">当前项目</div>
+    <div class="foot-item" onclick="openDrawer()">运行任务 <span class="dot"></span></div>
+    <div class="foot-item ${curPage==='ingest'?'on':''}" onclick="openPage('ingest')">入库</div>
+    <div class="foot-item ${curPage==='storage'?'on':''}" onclick="openPage('storage')">存储</div>
+    ${isAdmin?`<div class="foot-item ${curPage==='admin'?'on':''}" onclick="openPage('admin')">管理</div>`:''}`
+  /* 角色矩阵：普通用户无「管理」；平台设置在多用户下并入管理页（服务端 §5.3） */
+}
+
+/* ═══════════ 页面 ═══════════ */
+const PAGE_BUILDERS={home:renderHome, ingest:renderIngest, storage:renderStorage, admin:renderAdmin, project:renderProject}
+function render(){
+  renderTree(); renderFoot()
+  $('#crumbs').innerHTML = curPage==='home' ? `<b>首页</b>`
+    : curPage==='ingest' ? `<b>入库</b><span class="sep">/</span><span class="muted small">录制导入 · 自动导入规则${role==='admin'?' · 待分配':''}</span>`
+    : curPage==='storage' ? `<b>存储</b><span class="sep">/</span><span class="muted small">我的占用与明细</span>`
+    : curPage==='admin' ? `<b>管理</b><span class="sep">/</span><span class="muted small">仅管理员可见</span>`
+    : (()=>{ const p=PROJECTS.find(x=>x.pid===curProj)||PROJECTS[0]
+        return `<span>${p.name}</span><span class="sep">/</span><b>${STEPS.find(s=>s.key===curStep).name}</b>` })()
+  $$('.pane').forEach(x=>x.classList.remove('on'))
+  let el=document.getElementById('pane-'+curPage)
+  if(!el){ el=document.createElement('div'); el.className='pane'; el.id='pane-'+curPage; $('#panes').appendChild(el) }
+  el.classList.add('on')
+  const build=PAGE_BUILDERS[curPage]; if(build) build()
+}
+
+/* ── 首页：项目列表（处理 / 预览 / 删源） + 录制导入 ── */
+const NEXT_STEP={1:['打开预处理','prepare'],2:['去切片','slices'],3:['去精修','polish']}
+function renderHome(){
+  const isAdmin=role==='admin'
+  const rows=SESSIONS.filter(s=>s.mine||isAdmin).slice(0,4).map(s=>sessionRow(s,true)).join('')
+  $('#pane-home').innerHTML=`
+    <div class="card card-blk" style="margin-bottom:12px">
+      <div class="row spread" style="margin-bottom:6px">
+        <b class="t" style="margin:0">项目（${PROJECTS.length}）</b>
+        <button class="btn btn-primary" style="padding:6px 14px" onclick="openWizard()">+ 新建项目</button>
+      </div>
+      <table class="tb">
+        <tr><th>项目</th><th style="width:190px">进度</th><th style="width:90px">占用</th><th style="width:240px">操作</th></tr>
+        ${PROJECTS.map(p=>{
+          const [label,step]=NEXT_STEP[p.prog]
+          return `<tr>
+            <td><b class="small">${p.name}</b><div class="hint">${p.src==='rec'?'录制 · 房间 '+p.room:'B站下载'}</div></td>
+            <td><div class="row"><div class="progress" style="width:80px"><i style="width:${p.prog/3*100}%"></i></div><button class="mini-btn" onclick="openProject('${p.pid}','${step}')">${label}</button></div></td>
+            <td class="num small">${p.size}</td>
+            <td><span class="row" style="gap:6px">
+              <button class="mini-btn" onclick="previewProject('${p.pid}')">预览</button>
+              <button class="mini-btn" onclick="openProject('${p.pid}','prepare')">打开</button>
+              <button class="mini-btn" style="color:var(--red-deep)" onclick="askDel('${p.pid}')">删除源录播</button>
+            </span></td>
+          </tr>`}).join('')}
+      </table>
+    </div>
+    <div class="card card-blk">
+      <div class="row spread"><b class="t" style="margin:0">录制导入（最近）</b><button class="mini-btn" onclick="openPage('ingest')">全部记录与导入规则</button></div>
+      ${rows||'<div class="hint">暂无导入记录</div>'}
+    </div>`
+}
+function previewProject(pid){
+  const p=PROJECTS.find(x=>x.pid===pid)
+  if(p.prog>=2) toast('预览「'+p.name+'」最近成片（媒体弹层）')
+  else toast('「'+p.name+'」还没有切片，请先完成预处理')
+}
+function sessionRow(s,inHome){
+  const stMap={open:['st-open','录制中'],closing:['st-closing','等待收尾'],finalized:['st-finalized','已建项目'],failed:['st-failed','失败'],pending:['st-pending','未分配']}
+  const [cls,txt]=stMap[s.state]
+  let right=''
+  if(s.state==='failed') right=`<button class="mini-btn" onclick="toast('已重新排队入库')">重试</button>`
+  if(s.state==='pending'&&role==='admin') right=`<button class="mini-btn" onclick="toast('已指派，配额预检通过后入库')">指派</button>`
+  if(s.project) right=`<button class="mini-btn" onclick="toast('打开项目：${s.project}')">${s.project}</button>`
+  return `<div class="event-row"><span class="chip b">${s.room}</span><span class="small muted" style="flex:none">${s.time}</span><span class="small" style="flex:1">${s.files}</span><span class="state-badge ${cls}">${txt}</span>${right}</div>
+    ${s.state==='failed'?`<div class="small" style="background:var(--red-soft);color:var(--red-deep);border-radius:8px;padding:6px 12px;margin:2px 0 6px">${s.error}　<button class="mini-btn" onclick="openPage('storage')">查看存储</button></div>`:''}`
+}
+
+/* ── 入库页：录制导入 + 自动导入规则 + 待分配（admin） ── */
+let ingestFilter='all'
+function renderIngest(){
+  const isAdmin=role==='admin'
+  const list=SESSIONS.filter(s=>ingestFilter==='all'?true:ingestFilter==='fail'?s.state==='failed':s.state==='pending')
+  const pending=SESSIONS.filter(s=>s.state==='pending')
+  $('#pane-ingest').innerHTML=`
+    <div class="card card-blk" style="margin-bottom:12px">
+      <div class="row spread" style="margin-bottom:6px">
+        <b class="t" style="margin:0">录制导入</b>
+        <span class="row" style="gap:6px">
+          ${[['all','全部'],['fail','失败'],['pending','未分配']].map(([k,t])=>`<button class="mini-btn" style="${ingestFilter===k?'border-color:var(--main);color:var(--pink-text)':''}" onclick="ingestFilter='${k}';renderIngest()">${t}</button>`).join('')}
+        </span>
+      </div>
+      ${list.map(s=>sessionRow(s,false)).join('')||'<div class="hint">无记录</div>'}
+      <div class="hint" style="margin-top:8px">录制完成后自动创建项目；失败不会删除已下载内容，可重试</div>
+    </div>
+    <div class="card card-blk" style="margin-bottom:12px">
+      <b class="t">自动导入规则</b>
+      <table class="tb">
+        <tr><th>房间</th><th>归属</th><th>录制完成后自动执行</th><th>启用</th></tr>
+        ${CHANNELS.map((c,i)=>`<tr>
+          <td>${c.room}</td><td>${c.user}</td>
+          <td><select style="padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:11.5px" onchange="toast('规则已更新：房间 ${c.room}')">
+            <option ${c.strategy==='none'?'selected':''}>仅入库</option>
+            <option ${c.strategy==='transcribe'?'selected':''}>转写</option>
+            <option ${c.strategy==='detect'?'selected':''}>转写 + 事件检测（默认）</option>
+            <option ${c.strategy==='cut'?'selected':''}>转写 + 检测 + 切片</option>
+          </select></td>
+          <td><i class="switch ${c.on?'on':''}" onclick="CHANNELS[${i}].on=!CHANNELS[${i}].on;renderIngest();toast('房间 ${c.room} 规则已'+(CHANNELS[${i}].on?'启用':'停用'))"></i></td>
+        </tr>`).join('')}
+      </table>
+      <div class="hint" style="margin-top:8px">规则决定录制完成后自动执行到哪一步；未配置规则的房间进入待分配列表</div>
+    </div>
+    ${isAdmin&&pending.length?`
+    <div class="card card-blk">
+      <b class="t">待分配（未配置规则的房间，仅管理员可见）</b>
+      ${pending.map(s=>`
+        <div class="event-row">
+          <span class="chip">${s.room}</span><span class="small muted">${s.time}</span>
+          <span class="small" style="flex:1">${s.files}</span>
+          <select id="assignUser" style="padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:11.5px">${USERS.filter(u=>!u.disabled).map(u=>`<option>${u.name}</option>`).join('')}</select>
+          <select style="padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:11.5px"><option>转写 + 事件检测</option><option>转写</option><option>转写 + 检测 + 切片</option><option>仅入库</option></select>
+          <button class="mini-btn" onclick="toast('已指派给 '+document.getElementById('assignUser').value+'，配额预检通过后入库')">指派</button>
+        </div>`).join('')}
+      <div class="hint" style="margin-top:8px">指派后按该用户的配额与规则入库；未指派的记录会一直保留</div>
+    </div>`:''}`
+}
+
+/* ── 存储页 ── */
+function renderStorage(){
+  const used=86.2, quota=200
+  $('#pane-storage').innerHTML=`
+    <div class="card card-blk" style="margin-bottom:12px">
+      <b class="t">我的占用</b>
+      <div class="row spread small" style="margin-bottom:6px"><span>已用 ${used} GB</span><span class="muted">上限 ${quota} GB</span></div>
+      <div class="meter ${used/quota>.8?'warn':''}"><i style="width:${used/quota*100}%"></i></div>
+      ${role==='admin'?`<div class="hint" style="margin-top:8px">全局上限 500 GB · 水位预警 10% · 超限只拒绝、绝不自动删数据（服务端 §7）</div>`:''}
+    </div>
+    <div class="card card-blk">
+      <b class="t">按项目明细</b>
+      <table class="tb"><tr><th>项目</th><th>来源</th><th>源录播</th><th>产物</th><th>合计</th><th></th></tr>
+      ${PROJECTS.map(p=>{
+        const src=(parseFloat(p.size)*0.82).toFixed(1)+' GB', out=(parseFloat(p.size)*0.18).toFixed(1)+' GB'
+        return `<tr><td>${p.name}</td><td>${p.src==='rec'?'录制':'B站'}</td><td class="num">${src}</td><td class="num">${out}</td><td class="num">${p.size}</td>
+          <td><button class="mini-btn" style="color:var(--red-deep)" onclick="askDel('${p.pid}')">删除源录播</button></td></tr>`
+      }).join('')}
+      </table>
+      <div class="hint" style="margin-top:8px">删除源录播仅删视频原件，保留切片/字幕/事件/封面；临时态（.partial/缩略图/checkpoint）超 7 天自动清理</div>
+    </div>`
+}
+function askDel(pid){ delTarget=pid; const p=PROJECTS.find(x=>x.pid===pid)
+  $('#delInfo').textContent=`项目「${p.name}」的源录播（约 ${(parseFloat(p.size)*0.82).toFixed(1)} GB）将被删除。`
+  $('#delModal').classList.add('on') }
+function closeDel(){ $('#delModal').classList.remove('on') }
+function confirmDel(){ const p=PROJECTS.find(x=>x.pid===delTarget)
+  $('#delModal').classList.remove('on')
+  toast('源录播已删除，占用回落 '+ (parseFloat(p.size)*0.82).toFixed(1) +' GB') }
+
+/* ── 管理页（admin only） ── */
+let adminTab='users'
+function renderAdmin(){
+  if(role!=='admin'){ $('#pane-admin').innerHTML='<div class="card card-blk">需要管理员权限（403）</div>'; return }
+  const tabs=[['users','账号'],['rec','录播姬'],['jobs','任务'],['config','平台配置']]
+  let body=''
+  if(adminTab==='users'){
+    body=`<table class="tb"><tr><th>用户</th><th>角色</th><th>配额</th><th>已用</th><th>状态</th><th></th></tr>
+      ${USERS.map((u,i)=>`<tr><td><b>${u.name}</b></td><td>${u.role==='admin'?'<span class="chip p">admin</span>':'用户'}</td>
+        <td><input value="${u.quota}" style="width:80px;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:12px" onchange="toast('配额已更新')"></td>
+        <td class="num">${u.used}</td>
+        <td><span class="chip ${u.disabled?'r':'g'}">${u.disabled?'已禁用':'启用'}</span></td>
+        <td><button class="mini-btn" onclick="USERS[${i}].disabled=!USERS[${i}].disabled;renderAdmin();toast('已'+(USERS[${i}].disabled?'禁用':'启用')+' '+USERS[${i}].name)">${u.disabled?'启用':'禁用'}</button>
+            <button class="mini-btn" onclick="toast('重置密码链接已生成')">重置密码</button></td></tr>`).join('')}
+      </table>
+      <button class="btn btn-primary" style="margin-top:12px" onclick="toast('用户已创建，初始密码一次性展示')">＋ 新建用户</button>`
+  } else if(adminTab==='rec'){
+    body=`<div class="card card-blk" style="margin-bottom:12px">
+      <b class="t">Webhook 接收</b>
+      <div class="row"><input readonly value="http://server:26320/api/ingest/bililive/tk_9f2c…" style="flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:12px"><button class="mini-btn" onclick="toast('已复制（录播姬 Webhook 地址贴这里）')">复制</button></div>
+      <div class="row" style="margin-top:10px"><button class="mini-btn" onclick="toast('token 已轮换（旧 token 立即失效）')">轮换 token</button><button class="mini-btn" onclick="toast('token 已禁用')">禁用</button><span class="hint">token 存哈希 · 可选来源 IP 白名单（同机填 127.0.0.1）</span></div>
+      <div class="event-row" style="margin-top:8px"><span class="small muted" style="width:100px">recorder_root</span><span class="small">D:\\BililiveRecorder（只读展示）</span></div>
+    </div>
+    <div class="card card-blk"><b class="t">入库参数</b>
+      <div class="event-row"><span class="small muted" style="flex:1">finalize_idle_mins（收尾静默判定）</span><input value="5" style="width:60px;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:12px"></div>
+      <div class="event-row"><span class="small muted" style="flex:1">watch_interval_mins（兜底扫描）</span><input value="10" style="width:60px;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg-soft);font-size:12px"></div>
+      <div class="event-row"><span class="small muted" style="flex:1">合并多分片为 source.mp4</span><i class="switch on" onclick="this.classList.toggle('on')"></i></div>
+    </div>`
+  } else if(adminTab==='jobs'){
+    body=`<table class="tb"><tr><th>任务</th><th>槽位</th><th>归属</th><th>状态</th><th></th></tr>
+      ${JOBS.map((j,i)=>`<tr><td>${j.name}</td><td><span class="slot-badge ${j.slot==='入库'?'slot-ingest':j.slot==='下载'?'slot-download':'slot-heavy'}">${j.slot}</span></td>
+        <td>${j.owner}</td>
+        <td>${j.state==='running'?`<div class="row"><div class="progress" style="width:110px"><i style="width:${j.pct}%"></i></div><span class="small muted">${j.pct}%</span></div>`:`<span class="chip a">排队第 ${j.pos} 位</span>`}</td>
+        <td><button class="mini-btn" onclick="toast('${j.state==='queued'?'排队任务已出队':'已请求取消（阶段/批次边界生效）'}')">${j.state==='queued'?'出队':'取消'}</button></td></tr>`).join('')}
+      </table>
+      <div class="hint" style="margin-top:8px">全局并发：入库 ≤1 · 下载 ≤1 · 重活 ≤2；同用户串行；FIFO</div>`
+  } else {
+    body=`<div class="grid cols-2">
+      <div class="card card-blk"><b class="t">平台配置</b>
+        <div class="event-row"><span class="small" style="flex:1">config.toml / llm.toml（共享密钥，不回传前端）</span><button class="mini-btn" onclick="toast('源码编辑（TOML 校验后保存）')">编辑</button></div>
+        <div class="event-row"><span class="small" style="flex:1">LLM 连通</span><button class="mini-btn" onclick="toast('延迟 842ms ✓')">测试</button></div>
+        <div class="event-row"><span class="small" style="flex:1">doctor 自检</span><button class="mini-btn" onclick="toast('全部通过 ✓')">运行</button></div>
+      </div>
+      <div class="card card-blk"><b class="t">模型与下载器</b>
+        <div class="event-row"><span class="small" style="flex:1">sensevoice / firered-zh / qwen3-asr</span><span class="chip g">已配置</span></div>
+        <div class="event-row"><span class="small" style="flex:1">下载器 bbdown + cookie</span><span class="chip g">就绪</span></div>
+        <div class="event-row"><span class="small" style="flex:1">max_concurrent_downloads</span><span class="chip b">1</span></div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:10px">多用户下「全局设置」并入此处（平台配置仅管理员可见），普通用户侧栏不再出现设置入口</div>`
+  }
+  $('#pane-admin').innerHTML=`<div class="tabs">${tabs.map(([k,t])=>`<div class="tab ${adminTab===k?'on':''}" onclick="adminTab='${k}';renderAdmin()">${t}</div>`).join('')}</div><div class="card card-blk">${body}</div>`
+}
+
+/* ── 项目工作区（预处理总览 / 切片 / 精修 · 精简版） ── */
+function renderProject(){
+  const p=PROJECTS.find(x=>x.pid===curProj)||PROJECTS[0]
+  const srcLine=p.src==='rec'?`房间 ${p.room} · 录播姬自动入库`:`B站 · 某UP主 · <u style="cursor:pointer" onclick="toast('打开原视频')">BV1xx411c7mD</u>`
+  if(curStep==='prepare'){
+    $('#pane-project').innerHTML=`<div class="grid cols-main">
+      <div>
+        <div class="player"><span class="play">▶</span><span class="small">原视频 · source.mp4 · 空格播放</span></div>
+        <div class="card" style="margin-top:12px">
+          <div class="lane"><span class="tag">字幕</span><div class="track" id="subTrack">
+            ${SUBS.map((x,i)=>`<i class="seg" style="left:${x.left}%;width:${x.width}%;background:#5E7FD8;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:text;padding:0 4px" title="点击编辑字幕" onclick="editSub(${i},this)">${x.text}</i>`).join('')}
+            <i id="sliceRange" style="display:none;background:rgba(242,178,62,.35);border:1px dashed var(--amber);left:20%;width:30%;top:0;bottom:0"></i>
+          </div></div>
+        </div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap">
+          <button class="mini-btn" onclick="markPt('in')">标记入点</button>
+          <input class="fld-input" id="inPt" style="width:84px" placeholder="入点" readonly>
+          <button class="mini-btn" onclick="markPt('out')">标记出点</button>
+          <input class="fld-input" id="outPt" style="width:84px" placeholder="出点" readonly>
+          <button class="btn btn-primary" style="padding:6px 16px" onclick="doSlice()">切片</button>
+          <span class="hint">标记起止后切片，片段进入「切片」页待切列表；点击字幕块直接编辑文本</span>
+        </div>
+      </div>
+      <div class="card card-blk" style="align-self:start"><b class="t">预处理</b>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0 10px">
+          <span class="chip" id="chipTranscribe">转写 待开始</span>
+          <span class="chip" id="chipCorrect">LLM 订正 可选</span>
+          <span class="chip" id="chipDetect">事件检测 待开始</span>
+        </div>
+        <div class="row" style="gap:8px;margin-bottom:10px">
+          <span class="small muted" style="flex:none">ASR 模式</span>
+          <select style="flex:1;padding:5px 8px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:12px"><option>single</option><option>hybrid</option></select>
+        </div>
+        <button class="btn" style="width:100%;justify-content:center;margin-bottom:8px" onclick="prepRun(this,'transcribe')">开始转写</button>
+        <button class="btn" style="width:100%;justify-content:center;margin-bottom:8px" onclick="toast('LLM 订正任务已启动')">LLM 订正字幕</button>
+        <button class="btn btn-primary" id="btnDetect" style="width:100%;justify-content:center" onclick="prepRun(this,'detect')">开始事件检测</button>
+        <div class="run-box progress"><i style="width:0"></i></div>
+        <button class="btn" style="width:100%;justify-content:center;margin-top:10px" onclick="toast('手动添加片段：起止时间 / 标题 / 类型')">手动添加片段</button>
+      </div>
+    </div>`
+    renderPrepPane(p)
+  } else if(curStep==='slices'){
+    $('#pane-project').innerHTML=`
+      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+        <span class="muted small">排序</span>
+        <button class="mini-btn" style="border-color:var(--main);color:var(--pink-text)" onclick="toast('按热度排序')">热度</button>
+        <button class="mini-btn" onclick="toast('按开始时间排序')">开始时间</button>
+        <button class="mini-btn" onclick="toast('按弹幕量排序')">弹幕量</button>
+        <button class="mini-btn" onclick="toast('按字幕量排序')">字幕量</button>
+        <span style="flex:1"></span>
+        <button class="mini-btn" onclick="toast('重新检测任务已启动')">重新检测</button>
+        <button class="mini-btn" onclick="toast('添加片段：起止时间 / 标题 / 类型')">添加片段</button>
+        <button class="mini-btn" onclick="toast('已加入剪切队列（3 个事件）')">一键全切 (3)</button>
+      </div>
+      <div class="grid" style="grid-template-columns:1fr ${uncutCollapsed?'44px':'300px'}">
+        <div class="grid" style="grid-template-columns:1fr 1fr;align-content:start">
+          ${['游戏翻车名场面','观众点歌环节','连麦突击','深夜食堂时间'].map((t,i)=>`
+          <div class="card" style="overflow:hidden"><div style="height:80px;background:linear-gradient(135deg,${['#7FA8F0,#5E7FD8','#F682B8,#EE6FA6','#59C0AC,#2FA07E','#F2B23E,#B97A14'][i]});display:flex;align-items:center;justify-content:center;font-size:24px">${['🎮','🎤','💬','🍜'][i]}</div>
+          <div style="padding:10px 12px"><b class="small">${t}</b><div class="row spread small muted"><span>0${i+1}:1${i}</span><span>214 条弹幕</span></div>
+          <div class="row" style="gap:6px;margin-top:8px"><button class="mini-btn" onclick="toast('媒体弹层播放（本人项目产物）')">预览</button><button class="mini-btn" onclick="toast('渲染任务已提交（输出 export.mp4）')">渲染</button><button class="mini-btn" onclick="toast('已写入屏蔽轨道')">静音</button><button class="mini-btn" onclick="curStep='polish';render()">精修</button></div></div></div>`).join('')}
+        </div>
+        ${uncutCollapsed?`
+        <div class="card" style="align-self:stretch;min-height:300px;display:flex;align-items:center;justify-content:center;cursor:pointer;writing-mode:vertical-rl;letter-spacing:.25em;font-size:12px;color:var(--pink-text);background:var(--main-soft);border-color:var(--pink-light)" onclick="uncutCollapsed=false;renderProject()" title="展开未剪切事件">未剪切事件 (7)</div>`
+        :`
+        <div class="card card-blk" style="align-self:start" id="uncutCard">
+          <div class="row spread" style="margin-bottom:6px">
+            <b style="font-size:13px">未剪切事件 (7)</b>
+            <span class="row" style="gap:6px">
+              <span class="chip a">待处理</span>
+              <button class="mini-btn" onclick="uncutCollapsed=true;renderProject()">收起</button>
+              <button class="mini-btn" onclick="zoomUncut()">放大</button>
+            </span>
+          </div>
+          <div id="uncutList">
+            <div class="event-row"><span class="chip b">游戏</span><span class="small" style="flex:1">开门首胜翻车</span><button class="mini-btn">单切</button></div>
+            <div class="event-row"><span class="chip p">音乐</span><span class="small" style="flex:1">新曲试唱</span><button class="mini-btn">单切</button></div>
+            <div class="event-row"><span class="chip g">问答</span><span class="small" style="flex:1">杂谈环节</span><button class="mini-btn">单切</button></div>
+            <div class="small muted" style="text-align:center;padding-top:6px">+4 更多（放大查看全部）</div>
+          </div>
+        </div>`}
+      </div>`
+  } else {
+    /* 精修：无切片=空态引导；未选片段=选择器（可初始化）；选中=编辑器 */
+    if(p.prog<2){
+      $('#pane-project').innerHTML=`<div class="card card-blk" style="max-width:520px;margin:48px auto;text-align:center;padding:36px">
+        <b style="font-size:15px">还没有可精修的切片</b>
+        <p class="small muted" style="margin:8px 0 16px">先在「切片」页生成片段，再回到这里逐段精修</p>
+        <button class="btn btn-primary" style="margin:0 auto" onclick="curStep='slices';render()">去切片</button>
+      </div>`
+    } else {
+      if(curFrag==null) curFrag = p.prog>=3 ? 2 : 0
+      const f=FRAGS[curFrag]
+      $('#pane-project').innerHTML=`
+      <div class="grid" style="grid-template-columns:1.2fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="card card-blk"><b class="t">生成与导出</b>
+          <div class="row" style="gap:6px;margin-bottom:10px">
+            <button class="btn" style="flex:1;justify-content:center" onclick="toast('LLM 剪辑已启动（完成后自动执行后处理）')">LLM 剪辑</button>
+            <button class="btn" style="flex:1;justify-content:center" onclick="toast('已写入屏蔽轨道')">去静音</button>
+          </div>
+          <button class="btn btn-primary" style="width:100%;justify-content:center;margin-bottom:10px" onclick="toast('渲染任务已提交（输出 export.mp4）')">渲染导出</button>
+          <b class="t">贴纸来源</b>
+          <label class="event-row" style="cursor:pointer"><input type="checkbox" checked> 本地贴纸包（86 个）</label>
+          <label class="event-row" style="cursor:pointer"><input type="checkbox" checked> emoji</label>
+        </div>
+        <div class="card card-blk"><b class="t">片段</b>
+          ${FRAGS.map((f,i)=>{
+            const st=i<2?['g','已精修']:i===2?['p','精修中']:['','未初始化']
+            const on=i===curFrag
+            const go=i<3?`curFrag=${i};renderProject()`:`toast('初始化完成');curFrag=${i};renderProject()`
+            return `<div class="event-row" style="cursor:pointer;${on?'background:var(--main-soft);border-radius:8px':''}" onclick="${go}">
+              <span class="small" style="flex:1;${on?'color:var(--pink-text);font-weight:600':''}">${i+1} · ${f}</span>
+              <span class="chip ${st[0]}">${st[1]}</span>
+              ${i>=3?`<button class="mini-btn" onclick="event.stopPropagation();toast('初始化完成');curFrag=${i};renderProject()">初始化</button>`:''}
+            </div>`}).join('')}
+        </div>
+      </div>
+      <div class="grid cols-main" style="margin-bottom:12px">
+        <div>
+          <div class="player"><span class="play">▶</span><span class="small">预览 · 片段 ${curFrag+1}/5 · ${f} · 空格播放</span></div>
+          <div class="card" style="margin-top:12px">
+            <div class="lane"><span class="tag">字幕</span><div class="track" id="subTrack">
+              ${SUBS.map((x,i)=>`<i class="seg" style="left:${x.left}%;width:${x.width}%;background:#5E7FD8;font-size:10px;color:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:text;padding:0 4px" title="点击编辑字幕" onclick="editSub(${i},this)">${x.text}</i>`).join('')}
+            </div></div>
+            <div class="lane"><span class="tag">屏蔽</span><div class="track"><i class="seg" style="left:30%;width:10%;background:#C9B8BE"></i><i class="seg" style="left:64%;width:8%;background:#C9B8BE"></i></div></div>
+            <div class="lane"><span class="tag">贴纸</span><div class="track"><i class="seg" style="left:10%;width:12%;background:#D8669B"></i><i class="seg" style="left:55%;width:14%;background:#7C3AED"></i></div></div>
+            <div class="lane"><span class="tag">音效</span><div class="track"><i class="seg" style="left:44%;width:6%;background:#B97A14"></i></div></div>
+          </div>
+        </div>
+        <div>
+          <div class="card card-blk" style="margin-bottom:12px"><b class="t">九宫格布局（贴纸位置）</b>
+            <div class="grid9" style="margin:8px 0">
+              <i>左上</i><i>上</i><i>右上</i><i>左</i><i class="hot">中</i><i>右</i><i>左下</i><i>下</i><i>右下</i>
+            </div>
+            <div class="row spread small"><span class="muted">贴纸默认落在所选区域，可在编辑模式拖拽调整</span><button class="mini-btn" onclick="toast('编辑模式：拖拽调整贴纸区域')">编辑</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="card card-blk" style="margin-bottom:12px"><b class="t">封面设计器</b>
+        <div class="grid cols-main">
+          <div>
+            <div class="cover-preview" id="coverPrev"><span>${f} · 精彩集锦</span></div>
+            <div class="row" style="margin-top:8px;flex-wrap:wrap">
+              <input class="fld-input" style="width:84px" value="12.5" title="时间(秒)">
+              <button class="mini-btn" onclick="toast('已取当前帧作为背景')">取当前帧</button>
+              <button class="mini-btn" onclick="toast('关键帧已导出')">导出关键帧</button>
+              <button class="mini-btn" onclick="toast('已导入背景图片')">导入背景图片</button>
+            </div>
+            <div class="hint" style="margin-top:6px">拖动预览 = 移动背景 · 滚轮 = 缩放背景</div>
+          </div>
+          <div>
+            <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
+              <span class="muted small">预设</span>
+              <button class="mini-btn" style="border-color:var(--main);color:var(--pink-text)" onclick="toast('已应用预设：左文')">左文</button>
+              <button class="mini-btn" onclick="toast('已应用预设：居中')">居中</button>
+              <button class="mini-btn" onclick="toast('已应用预设：右文')">右文</button>
+              <button class="mini-btn" onclick="toast('已应用预设：极简')">极简</button>
+            </div>
+            <div class="small muted" style="margin-bottom:4px">标题（每行一段）</div>
+            <textarea class="fld-input" rows="2" oninput="document.getElementById('coverPrev').firstChild.innerHTML=this.value.split('\n').join('<br>')">${f}
+精彩集锦</textarea>
+            <div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">
+              <button class="mini-btn" onclick="toast('LLM 正在用 clip.srt 生成标题')">LLM 生成标题</button>
+              <label class="row small" style="gap:4px"><input type="color" value="#F682B8"> 高亮色</label>
+              <label class="row small" style="gap:4px"><input type="checkbox" checked> 文字阴影</label>
+            </div>
+            <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
+              <span class="chip p">点歌 ×</span><span class="chip p">翻唱 ×</span>
+              <input class="fld-input" style="width:120px" placeholder="高亮关键词">
+            </div>
+            <div class="row" style="gap:8px;margin-bottom:8px">
+              <label class="row small" style="gap:4px;flex:1">对齐 <select class="fld-input" style="flex:1"><option>居中</option><option>左对齐</option><option>右对齐</option></select></label>
+              <label class="row small" style="gap:4px;flex:1">字号 <input type="range" style="flex:1" min="24" max="240" value="96"></label>
+            </div>
+            <div class="row" style="gap:8px;margin-bottom:8px">
+              <label class="row small" style="gap:4px;flex:1">文字X <input type="range" style="flex:1" min="0" max="100" value="50"></label>
+              <label class="row small" style="gap:4px;flex:1">文字Y <input type="range" style="flex:1" min="0" max="100" value="50"></label>
+            </div>
+            <div class="row" style="gap:8px;margin-bottom:8px">
+              <label class="row small" style="gap:4px;flex:1">描边 <input type="range" style="flex:1" min="0" max="60" value="12"></label>
+              <label class="row small" style="gap:4px;flex:1">行距 <input type="range" style="flex:1" min="80" max="260" value="130"></label>
+            </div>
+            <div class="row" style="gap:8px">
+              <label class="row small" style="gap:4px;flex:1">阴影方向 <select class="fld-input" style="flex:1"><option>径向</option><option>左</option><option>右</option><option>上</option><option>下</option><option>无</option></select></label>
+              <label class="row small" style="gap:4px;flex:1">暗角 <input type="range" style="flex:1" min="0" max="100" value="8"></label>
+              <label class="row small" style="gap:4px;flex:1">背景缩放 <input type="range" style="flex:1" min="50" max="300" value="100"></label>
+            </div>
+            <div class="row" style="gap:6px;margin:10px 0;flex-wrap:wrap">
+              <span class="chip p">光晕 强度 0.35 ×</span>
+              <select class="fld-input" style="width:110px"><option>光晕</option><option>模糊</option><option>暗角点</option><option>颜色覆盖</option><option>扫描线</option></select>
+              <button class="mini-btn" onclick="toast('特效已添加（可叠加）')">添加特效</button>
+            </div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="toast('封面已生成（cover.jpg）')">生成封面</button>
+          </div>
+        </div>
+      </div>
+      <div class="card card-blk"><b class="t">产物</b>
+        <div class="row" style="gap:14px;align-items:center">
+          <div class="thumb" style="height:64px;width:110px;border-radius:10px;background:linear-gradient(135deg,#7FA8F0,#5E7FD8)"></div>
+          <div class="small" style="flex:1"><b>成片 export.mp4</b><div class="hint">03:42 · 已生成</div></div>
+          <div class="thumb" style="height:64px;width:110px;border-radius:10px;background:linear-gradient(135deg,#F682B8,#EE6FA6)"></div>
+          <div class="small" style="flex:1"><b>封面 cover.jpg</b><div class="hint">已生成</div></div>
+          <button class="mini-btn" onclick="toast('打开输出目录')">打开输出目录</button>
+        </div>
+      </div>`
+
+    }
+  }
+}
+
+/* 预处理：轨道内字幕编辑 + 标记起止切片 */
+const SUBS=[
+  {left:4,width:20,text:'大家好啊，今天来玩点……'},
+  {left:27,width:20,text:'欢迎来到直播间！'},
+  {left:52,width:16,text:'这把要是再输就下播'},
+  {left:71,width:22,text:'记得点赞关注'},
+]
+let inPt=null, outPt=null
+let uncutCollapsed=false
+const UNCUT_EVTS=[
+  {type:'游戏',cls:'b',title:'开门首胜翻车',time:'03:12'},
+  {type:'音乐',cls:'p',title:'新曲试唱',time:'41:20'},
+  {type:'问答',cls:'g',title:'杂谈：最近在玩什么',time:'62:44'},
+  {type:'游戏',cls:'b',title:'最终 boss 险胜',time:'98:09'},
+  {type:'反应',cls:'a',title:'观看二创视频反应',time:'135:33'},
+  {type:'闲聊',cls:'g',title:'深夜杂谈',time:'151:07'},
+  {type:'音乐',cls:'p',title:'谢幕合唱',time:'178:52'},
+]
+function editSub(i,seg){
+  if(seg.querySelector('input')) return
+  const old=SUBS[i].text
+  seg.innerHTML=`<input class="fld-input" value="${old}" style="position:absolute;inset:0;width:100%;height:100%;border-radius:4px;font-size:10.5px;text-align:center">`
+  const inp=seg.querySelector('input'); inp.focus(); inp.select()
+  const save=()=>{ SUBS[i].text=inp.value.trim()||old; seg.textContent=SUBS[i].text; toast('字幕已更新') }
+  inp.addEventListener('blur',save)
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter') inp.blur() })
+}
+function markPt(k){
+  const v=k==='in'?'00:01:18':'00:03:42'
+  if(k==='in') inPt=v; else outPt=v
+  document.getElementById(k+'Pt').value=v
+  if(inPt&&outPt){ const r=document.getElementById('sliceRange'); r.style.display='block' }
+}
+function doSlice(){
+  if(!inPt||!outPt){ toast('请先标记入点和出点'); return }
+  toast('已添加待切事件 '+inPt+' - '+outPt+'（切片页可见）')
+  inPt=outPt=null
+  document.getElementById('inPt').value=''
+  document.getElementById('outPt').value=''
+  const r=document.getElementById('sliceRange'); if(r) r.style.display='none'
+}
+function coverBg(v){
+  const el=document.getElementById('coverPrev')
+  if(el) el.style.background = v==='g2' ? 'linear-gradient(135deg,#3b2f36,#6b4a58)' : 'linear-gradient(135deg,#F682B8,#7C3AED)'
+}
+/* 预处理动作卡：子步骤状态随项目状态推导（与现有 WebUI 语义一致） */
+function renderPrepPane(pj){
+  const tr=document.getElementById('chipTranscribe'), co=document.getElementById('chipCorrect'), dt=document.getElementById('chipDetect'), bt=document.getElementById('btnDetect')
+  if(!tr) return
+  if(pj.running===1){
+    tr.className='chip b'; tr.textContent='转写中 '+pj.pct+'%'
+    co.className='chip'; co.textContent='LLM 订正 排队'
+    dt.className='chip'; dt.textContent='事件检测 排队中'
+    if(bt) bt.textContent='开始事件检测'
+  } else if(pj.prog>1){
+    tr.className='chip g'; tr.textContent='转写 ✓'
+    co.className='chip g'; co.textContent='LLM 订正 ✓'
+    dt.className='chip g'; dt.textContent='事件检测 ✓'
+    if(bt) bt.textContent='重新检测'
+  } else {
+    tr.className='chip'; tr.textContent='转写 待开始'
+    co.className='chip'; co.textContent='LLM 订正 可选'
+    dt.className='chip'; dt.textContent='事件检测 待开始'
+    if(bt) bt.textContent='开始事件检测'
+  }
+}
+function prepRun(btn,kind){
+  const box=btn.parentElement.querySelector('.run-box'); if(!box) return
+  const bar=box.querySelector('i')
+  box.classList.add('on'); btn.disabled=true; btn.style.opacity=.5
+  let p=0
+  const h=setInterval(()=>{ p=Math.min(100,p+4); bar.style.width=p+'%'
+    if(p>=100){ clearInterval(h); box.classList.remove('on'); bar.style.width='0'
+      btn.disabled=false; btn.style.opacity=1
+      const chip=document.getElementById(kind==='transcribe'?'chipTranscribe':'chipDetect')
+      if(chip){ chip.className='chip g'; chip.textContent=(kind==='transcribe'?'转写':'事件检测')+' ✓' }
+      if(kind==='detect'){ toast('检测完成：发现 7 个事件'); curStep='slices'; render() }
+      else toast('转写完成，可继续 LLM 订正或事件检测')
+    }},60)
+}
+/* 未剪切事件：折叠 / 放大（与现有交互一致） */
+function toggleUncut(){ uncutCollapsed=!uncutCollapsed; renderProject() }
+function zoomUncut(){
+  document.getElementById('uncutGrid').innerHTML = UNCUT_EVTS.map(e=>`
+    <div class="card" style="padding:10px 12px">
+      <div class="row spread"><span class="chip ${e.cls}">${e.type}</span><span class="small muted">${e.time}</span></div>
+      <b class="small" style="display:block;margin:6px 0 8px">${e.title}</b>
+      <button class="mini-btn" style="width:100%" onclick="toast('已加入剪切队列：${e.title}')">单切</button>
+    </div>`).join('')
+  document.getElementById('uncutModal').classList.add('on')
+}
+function closeUncut(){ document.getElementById('uncutModal').classList.remove('on') }
+/* 精修片段切换（带标题） */
+const FRAGS=['开场问候','游戏翻车名场面','观众点歌环节','连麦突击','深夜食堂时间']
+
+/* ── 任务抽屉（M3–M5：槽位/排队/出队） ── */
+function openDrawer(){ renderDrawerJobs(); document.body.classList.add('drawer-open') }
+function closeDrawer(){ document.body.classList.remove('drawer-open') }
+function renderDrawerJobs(){
+  const mine=JOBS.filter(j=>role==='admin'||j.owner===user)
+  $('#drawerJobs').innerHTML=mine.map((j,i)=>`
+    <div class="job-row">
+      <span class="slot-badge ${j.slot==='入库'?'slot-ingest':j.slot==='下载'?'slot-download':'slot-heavy'}">${j.slot}</span>
+      <span class="small" style="flex:1"><b>${j.name}</b><br><span class="muted">${j.kind}${role==='admin'?' · '+j.owner:''}</span></span>
+      ${j.state==='running'?`<div class="progress" style="width:70px"><i style="width:${j.pct}%"></i></div><span class="small muted">${j.pct}%</span><button class="mini-btn" onclick="toast('已请求取消（阶段/批次边界生效）')">取消</button>`
+        :`<span class="chip a">排队第 ${j.pos} 位</span><button class="mini-btn" onclick="JOBS.splice(JOBS.indexOf(JOBS.find(x=>x===j)),1);renderDrawerJobs();toast('排队任务已出队')">出队</button>`}
+    </div>`).join('')||'<div class="hint">无任务</div>'
+}
+
+/* ── M4 新建项目向导（来源抽象） ── */
+function openWizard(){ wizSource=null; wizStep=1; wizResolved=null; $('#wizModal').classList.add('on'); renderWizard() }
+function closeWizard(){ $('#wizModal').classList.remove('on') }
+function renderWizard(){
+  let body=''
+  if(wizStep===1){
+    body=`<b style="font-size:15px;color:var(--main-deep)">新建项目 · 选择来源</b>
+      <div class="wiz-srcs">
+        <div class="wiz-src" onclick="wizSource='ingest';wizStep=2;renderWizard()"><div class="big" style="font-weight:700">01</div><b>录制导入</b><div class="hint">已完结、尚未建项目的录制会话</div></div>
+        <div class="wiz-src" onclick="wizSource='bili';wizStep=2;renderWizard()"><div class="big" style="font-weight:700">02</div><b>B站链接</b><div class="hint">输入视频地址，服务器侧下载</div></div>
+      </div>
+      <div class="hint">多用户模式不接受本地文件；单机模式保留「本地文件浏览」来源</div>`
+  } else if(wizSource==='ingest'){
+    const avail=SESSIONS.filter(s=>s.state==='finalized'||s.state==='pending')
+    body=`<div class="row spread"><b style="color:var(--main-deep)">选择入库会话</b><button class="mini-btn" onclick="wizStep=1;renderWizard()">← 来源</button></div>
+      ${avail.map((s,i)=>`<div class="event-row" style="cursor:pointer" onclick="finishWizard('入库会话 ${s.room} ${s.time}')"><span class="chip b">${s.room}</span><span class="small muted">${s.time}</span><span class="small" style="flex:1">${s.files}</span><span class="state-badge st-finalized">选择</span></div>`).join('')||'<div class="hint">暂无可用的已完结会话</div>'}`
+  } else {
+    body=`<div class="row spread"><b style="color:var(--main-deep)">B站链接转项目</b><button class="mini-btn" onclick="wizStep=1;renderWizard()">← 来源</button></div>
+      <div class="row" style="margin-top:10px">
+        <input id="biliUrl" placeholder="https://www.bilibili.com/video/BV…" style="flex:1;padding:8px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:12.5px">
+        <select style="padding:8px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--bg-soft);font-size:12px"><option>演示：成功</option><option>NeedLogin</option><option>DiskFull</option></select>
+        <button class="btn btn-primary" onclick="biliResolve()">获取信息</button>
+      </div>
+      <div id="biliPreview">${wizResolved?biliPreviewHtml():''}</div>`
+  }
+  $('#wizBody').innerHTML=body
+}
+function biliResolve(){
+  const mode=$('#wizBody select').value
+  const pv=$('#biliPreview')
+  if(mode==='NeedLogin'){ pv.innerHTML=`<div class="small" style="background:var(--amber-soft);color:var(--amber-deep);border-radius:8px;padding:10px 12px;margin-top:12px">该视频需要登录/大会员 —— 请联系管理员配置下载 cookie（服务端 §4.5）</div>`; return }
+  if(mode==='DiskFull'){ pv.innerHTML=`<div class="small" style="background:var(--red-soft);color:var(--red-deep);border-radius:8px;padding:10px 12px;margin-top:12px">磁盘空间不足：预计需要 4.2 GB / 可用 3.1 GB —— <u style="cursor:pointer" onclick="closeWizard();openPage('storage')">去存储页</u> 删除源录播后重试</div>`; return }
+  wizResolved={title:'【4K】某经典游戏实况 · 全流程',owner:'某UP主',dur:'12:34:56',parts:4,est:'4.2 GB'}
+  pv.innerHTML=biliPreviewHtml()
+}
+function biliPreviewHtml(){
+  const r=wizResolved
+  return `<div class="preview-card"><div class="cover"></div>
+    <div style="flex:1">
+      <b class="small">${r.title}</b>
+      <div class="small muted">${r.owner} · 时长 ${r.dur} · 预计占用 ${r.est}</div>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        ${[1,2,3,4].map(i=>`<label class="chip" style="cursor:pointer"><input type="checkbox" ${i===3?'disabled':''} ${i<=2?'checked':''}> P${i}${i===3?'（已存在）':''}</label>`).join('')}
+        <select style="padding:3px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);font-size:11px"><option>质量：最高</option><option>1080P</option><option>720P</option></select>
+      </div>
+      <button class="btn btn-primary" style="margin-top:10px" onclick="finishWizard('B站下载任务（下载槽，max_concurrent=1）')">创建项目并下载</button>
+    </div></div>`
+}
+function finishWizard(msg){ closeWizard(); toast('项目已创建，任务已加入队列'); const j={kind:'新项目',owner:user,name:msg,state:'queued',pos:JOBS.length?1:0,slot:'入库'}; JOBS.push(j) }
+
+/* ── 启动 ── */
+render()
+if(!loggedIn){ $('#loginView').classList.add('on') }
+</script>
+</body>
+</html>

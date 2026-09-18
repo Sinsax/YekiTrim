@@ -11,7 +11,7 @@
 
 - **主题反转**：正式 UI 由「暗色（与 polish 编辑器一致）」改为**纯浅色樱花奶油**，以 sakura-cream.html 为设计标准（原 4.4 节「浅色→暗色映射」作废，暗色主题移出范围）。
 - **信息架构变更**：左侧导航 → **顶部 pill 导航**（总览 / 项目 / 模型 / 精修 / 设置），运行监控降级为 topbar 铃铛唤起的全局抽屉。
-- **架构对齐现状**：子命令 `vtrim server`、代码位于 `crates/vtrim-cli/src/server/`、默认端口 7788（v0.1 规划的 `vtrim serve` + 新 crate `vtrim-web` + 端口 3927 作废，M1 已按 spec 落地）。
+- **架构对齐现状**：子命令 `vtrim server`、代码位于 `crates/vtrim-cli/src/server/`、默认端口 26320（v0.1 规划的 `vtrim serve` + 新 crate `vtrim-web` + 端口 3927 作废，M1 已按 spec 落地）。
 - **保持不变**：功能范围、多项目工作区扫描模型、API 契约、状态机、checkpoint 决策机制、17 事件类型色相。
 
 ### 与 spec 的差异与对齐
@@ -21,7 +21,7 @@ spec（`docs/superpowers/specs/2026-09-03-vtrim-webui-design.md`，已批准、M
 | # | 差异点 | 本设计（v0.2） | spec 现状 | 对齐方向 |
 |---|--------|----------------|-----------|----------|
 | 1 | 项目模型 | **工作区扫描多项目**（P2 卡片网格 + `#/projects/:id` 详情） | 单活动 Workspace + `POST /api/project/switch` | spec 需后续修订：补工作区扫描 → 多项目端点（M1 范围，见 11 章） |
-| 2 | 代码位置 / 命令 / 端口 | `vtrim server` · `crates/vtrim-cli/src/server/` · 7788（跟随已落地实现） | 同 | 已一致 |
+| 2 | 代码位置 / 命令 / 端口 | `vtrim server` · `crates/vtrim-cli/src/server/` · 26320（跟随已落地实现） | 同 | 已一致 |
 | 3 | 视觉主题 | 浅色 sakura-cream（本文档第 4 章为视觉权威） | spec 未定义视觉 | 一致（spec 无冲突） |
 | 4 | polish 深度 | UI 层仅跳转入口；API 层支持 process/render/cover job | spec 含完整 polish API | 已落地 API 按 spec 保留，UI 呈现按本文档 |
 
@@ -217,7 +217,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 │ .wrap (max-width 1180px · 居中 · padding 30px 28px 90px)         │
 │  ┌ page-head ─────────────────────────────────────────────────┐ │
 │  │ 项目 (12)                              [🔄 扫描] [＋ 新建] │ │
-│  │ 工作区: F:\para\Code\V-Trim\media (mono · --ink-faint)      │ │
+│  │ 工作区: D:\media (mono · --ink-faint)                      │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │  💡 warn-line: 提示文案 (12px · --ink-faint)                      │
 │  ┌─────────────────────────────────────────────────────────────┐ │
@@ -286,7 +286,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │ 项目 (12)                        [🔄 扫描工作区] [＋ 新建项目]  │
-│ 工作区: F:\para\Code\V-Trim\media                              │
+│ 工作区: D:\media                                              │
 │ 💡 删除项目只移除 vtrim.toml，不会触碰媒体文件                   │
 ├───────────────────────────────────────────────────────────────┤
 │ ┌─[C pcard]───────────┐ ┌─[C pcard]──────────┐ ┌─[C pcard]──┐ │
@@ -573,7 +573,7 @@ running 中若 stage 触发 checkpoint → waiting_resume → (UI 决策) → ru
 │ [保存] [测试连接 → [chip g ✓ 0.9s] / [chip p ✗ 超时]]           │
 ├────────────────────────────────────────────────────────────────┤
 │ ■ 工作区 ───────────────────────────────────────────────────── │
-│ 根目录: [I F:\para\Code\V-Trim\media]  [更改 ▸ FileBrowser]    │
+│ 根目录: [I D:\media]  [更改 ▸ FileBrowser]    │
 │ 扫描结果: [chip b 12 项目] · 示例: media/3d/vtrim.toml (mono)   │
 │ [立即重扫]                                                       │
 └────────────────────────────────────────────────────────────────┘
@@ -1038,7 +1038,7 @@ Stage 0 ──①提取──▶ Stage 1 ──②转写──▶ Stage 2 ──
 ```
 crates/vtrim-cli/src/
 ├── main.rs                       # Command::Server(args) → server::run()
-├── cli.rs                        # Server(ServerArgs): --host 127.0.0.1 --port 7788 --open --config
+├── cli.rs                        # Server(ServerArgs): --host 127.0.0.1 --port 26320 --open --config
 ├── service/                      # Service 层（CLI 与 HTTP 共用，避免逻辑双份）
 │   ├── mod.rs
 │   └── workspace.rs              # Workspace { config_file, root_dir } + load/resolve/current_stage
@@ -1103,8 +1103,8 @@ webui/app.js  (单一 ES module, 依赖注入顺序)
 设计标准稿: `docs/web-ui-mockups/sakura-cream.html`（P2 项目列表 · 浅色樱花奶油）。
 
 ```bash
-# 重新生成 1440×900 截图（需本机 Chrome）:
-"chrome.exe" --headless=new --disable-gpu --screenshot="sakura-cream.png" --window-size=1440,900 "file:///F:/para/Code/V-Trim/docs/web-ui-mockups/sakura-cream.html"
+# 重新生成 1440×900 截图（需本机 Chrome；在仓库根目录执行）:
+"chrome.exe" --headless=new --disable-gpu --screenshot="sakura-cream.png" --window-size=1440,900 "file:///$(pwd)/docs/web-ui-mockups/sakura-cream.html"
 ```
 
 其余样稿 `mint-soda.html`（数据表格布局）/ `sky-glow.html`（仪表盘布局）为**布局参考**，配色与组件不采用。

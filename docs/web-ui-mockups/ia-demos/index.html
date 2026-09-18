@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>V-Trim 前端框架对比 · 四种交互逻辑 Demo</title>
+<!--
+  V-Trim WebUI 前端框架对比入口
+  四个 demo 均为自包含静态页（假数据），交互逻辑各自不同：
+  A 流水线步骤条（线性引导） / B 侧边栏工作台（空间常驻导航）
+  C 看板+抽屉（状态即导航）  / D 单屏聚焦（向导式）
+  配色沿用 webui/src/styles/tokens.css 的 sakura-cream token。
+-->
+<style>
+:root{
+  --bg:#FFF7F3; --bg-soft:#FFEFE7; --card:#fff; --line:#F2E1D9; --line-soft:#FAEEE7;
+  --ink:#4A3F45; --ink-dim:#9C8B92; --ink-faint:#C9B8BE;
+  --main:#F682B8; --main-deep:#EE6FA6; --main-soft:#FDE3EC; --pink-light:#FBB9D4; --pink-text:#D8669B;
+  --blue:#7FA8F0; --blue-deep:#5E7FD8; --blue-soft:#E8EEFC;
+  --mint:#59C0AC; --mint-soft:#E2F6F1;
+  --amber:#F2B23E; --amber-deep:#B97A14; --amber-soft:#FCF0D9;
+  --green:#4FBF9C; --green-deep:#2FA07E; --green-soft:#DEF2EA;
+  --r-sm:10px; --r:16px; --r-full:999px;
+  --shadow:0 8px 26px rgba(238,111,166,.10),0 2px 6px rgba(90,60,70,.04);
+  --shadow-hover:0 12px 34px rgba(238,111,166,.18),0 3px 8px rgba(90,60,70,.05);
+  --shadow-pink:0 4px 14px rgba(238,111,166,.4);
+  --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:var(--font)}
+body{background:var(--bg);color:var(--ink);min-height:100vh;font-size:13px;line-height:1.6}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1100px;margin:0 auto;padding:48px 24px 80px}
+.hero{text-align:center;margin-bottom:36px}
+.hero .logo{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--main),var(--pink-light));display:inline-flex;align-items:center;justify-content:center;font-size:26px;color:#fff;box-shadow:var(--shadow-pink);margin-bottom:14px}
+.hero h1{font-size:26px;color:var(--main-deep);margin-bottom:6px}
+.hero p{color:var(--ink-dim)}
+.hero .sub{font-size:12px;color:var(--ink-faint);margin-top:6px}
+/* 方案卡片 */
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:44px}
+.dcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);padding:18px 16px;display:flex;flex-direction:column;gap:10px;transition:.18s}
+.dcard:hover{box-shadow:var(--shadow-hover);transform:translateY(-3px)}
+.dcard .tag{align-self:flex-start;font-size:11px;padding:2px 12px;border-radius:var(--r-full);font-weight:700}
+.dcard h2{font-size:15px}
+.dcard .desc{font-size:12px;color:var(--ink-dim);flex:1}
+.dcard .go{display:block;text-align:center;padding:8px;border-radius:var(--r-full);background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;font-weight:600;font-size:13px;box-shadow:var(--shadow-pink)}
+.dcard .go:hover{filter:brightness(1.06)}
+/* 线框示意 */
+.wire{border:1.5px solid var(--line);border-radius:var(--r-sm);background:var(--bg-soft);padding:8px;height:96px;display:flex;gap:6px;overflow:hidden}
+.wire i{border-radius:4px;background:var(--card);border:1px solid var(--line)}
+/* A: 顶栏+步骤点+内容 */
+.wire.a{flex-direction:column}
+.wire.a .top{height:10px;background:var(--main-soft);border-color:var(--pink-light)}
+.wire.a .steps{display:flex;gap:4px;margin:5px 0}
+.wire.a .steps i{height:8px;flex:1}
+.wire.a .steps i.hot{background:var(--main);border-color:var(--main-deep)}
+.wire.a .body{flex:1}
+/* B: 侧栏+内容 */
+.wire.b .side{width:34%;display:flex;flex-direction:column;gap:4px}
+.wire.b .side i{height:9px}
+.wire.b .side i.hot{background:var(--main);border-color:var(--main-deep)}
+.wire.b .body{flex:1}
+/* C: 五列看板 */
+.wire.c{align-items:stretch}
+.wire.c i{flex:1}
+.wire.c i .k{display:block;height:26%;background:var(--main-soft);border:1px solid var(--pink-light);border-radius:3px;margin:4px}
+/* D: 居中大卡 */
+.wire.d{flex-direction:column;align-items:center;justify-content:center}
+.wire.d .big{width:62%;height:70%;background:var(--main-soft);border-color:var(--pink-light)}
+/* 对比表 */
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
+th,td{padding:11px 14px;text-align:left;font-size:12.5px;border-bottom:1px solid var(--line-soft)}
+th{background:var(--bg-soft);color:var(--ink-dim);font-size:12px}
+tr:last-child td{border-bottom:none}
+td:first-child{font-weight:700;white-space:nowrap}
+td b.good{color:var(--green-deep)} td b.bad{color:var(--red-deep)} td b.mid{color:var(--amber-deep)}
+.note{margin-top:26px;background:var(--blue-soft);border:1px solid #d8e2f8;border-radius:var(--r);padding:14px 18px;font-size:12.5px;color:var(--blue-deep)}
+.note b{display:block;margin-bottom:4px}
+@media(max-width:860px){.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="logo">V</div>
+    <h1>V-Trim WebUI 框架对比</h1>
+    <p>同一套流水线（转写 → 事件检测 → 切片 → 精修 → 渲染导出），四种根本不同的交互逻辑</p>
+    <div class="sub">均为自包含静态 Demo（假数据）· 配色沿用 sakura-cream · 点击卡片进入体验</div>
+  </div>
+
+  <div class="cards">
+    <div class="dcard">
+      <span class="tag" style="background:var(--main-soft);color:var(--pink-text)">方案 A</span>
+      <h2>流水线步骤条 · 线性引导</h2>
+      <div class="wire a"><div class="top"></div><div class="steps"><i class="hot"></i><i></i><i></i><i></i><i></i></div><i class="body"></i></div>
+      <div class="desc">项目页顶部常驻可点击步骤条 + 右下角「下一步」按钮。任务跑完自动跳下一步，随时知道走到哪。</div>
+      <a class="go" href="a-pipeline-stepper.html">进入 Demo A →</a>
+    </div>
+    <div class="dcard">
+      <span class="tag" style="background:var(--blue-soft);color:var(--blue-deep)">方案 B</span>
+      <h2>侧边栏工作台 · 空间常驻</h2>
+      <div class="wire b"><div class="side"><i></i><i class="hot"></i><i></i><i></i><i></i></div><i class="body"></i></div>
+      <div class="desc">IDE 式常驻侧栏：项目 × 阶段树永远可见，单击任意节点一击直达，没有「返回」概念。多项目横跳最快。</div>
+      <a class="go" href="b-workbench-sidebar.html">进入 Demo B →</a>
+    </div>
+    <div class="dcard">
+      <span class="tag" style="background:var(--green-soft);color:var(--green-deep)">方案 C</span>
+      <h2>看板 + 抽屉 · 状态即导航</h2>
+      <div class="wire c"><i><span class="k"></span></i><i><span class="k"></span><span class="k"></span></i><i></i><i><span class="k"></span></i><i></i></div>
+      <div class="desc">列 = 阶段，卡片按状态落位，一眼纵览全部项目的生产进度；动作在右侧抽屉完成，完成后卡片流动到下一列。</div>
+      <a class="go" href="c-kanban-board.html">进入 Demo C →</a>
+    </div>
+    <div class="dcard">
+      <span class="tag" style="background:var(--amber-soft);color:var(--amber-deep)">方案 D</span>
+      <h2>单屏聚焦 · 向导式</h2>
+      <div class="wire d"><i class="big"></i></div>
+      <div class="desc">一次只呈现"现在该做的一件事"，大卡片 + 单主按钮，任务完成自动滑入下一屏。零迷失，自由度也最低。</div>
+      <a class="go" href="d-focus-wizard.html">进入 Demo D →</a>
+    </div>
+    <div class="dcard">
+      <span class="tag" style="background:var(--mint-soft);color:var(--green-deep)">M1–M5</span>
+      <h2>多用户前端预览 · 方案 B 演进</h2>
+      <div class="wire b"><div class="side"><i></i><i></i><i class="hot"></i><i></i></div><i class="body"></i></div>
+      <div class="desc">按多用户服务器计划（M1–M5）演进方案 B：登录/会话、入库动态与房间映射、B站链接向导、存储页、管理页；右上角可切换 管理员/普通用户 视角。</div>
+      <a class="go" href="multiuser.html">进入多用户 Demo →</a>
+    </div>
+  </div>
+
+  <table>
+    <tr><th>维度</th><th>A 步骤条</th><th>B 工作台侧栏</th><th>C 看板</th><th>D 聚焦向导</th></tr>
+    <tr><td>导航方式</td><td>顶部步骤条 + 下一步按钮</td><td>常驻侧栏树</td><td>状态列 + 卡片抽屉</td><td>单卡推进 + 底部圆点</td></tr>
+    <tr><td>流程引导感</td><td><b class="good">强</b>（显式推进）</td><td><b class="bad">弱</b>（自己找下一步）</td><td><b class="mid">中</b>（位置即状态）</td><td><b class="good">最强</b>（零迷失）</td></tr>
+    <tr><td>任意跳转 / 自由度</td><td><b class="mid">中</b></td><td><b class="good">最强</b>（一击直达）</td><td><b class="mid">中</b>（经抽屉）</td><td><b class="bad">弱</b>（线性锁死）</td></tr>
+    <tr><td>多项目总览</td><td><b class="bad">弱</b>（回总览）</td><td><b class="good">强</b>（侧栏常驻）</td><td><b class="good">最强</b>（一眼全局）</td><td><b class="bad">弱</b>（单项目）</td></tr>
+    <tr><td>学习成本</td><td>低</td><td>中</td><td>低</td><td>极低</td></tr>
+    <tr><td>适合场景</td><td>单项目从头做到尾，兼顾新手</td><td>多项目并行、高频操作的老手</td><td>项目多、管理型 / 批处理</td><td>纯新手、或"无人值守"节奏</td></tr>
+  </table>
+
+  <div class="note">
+    <b>体验建议</b>
+    每个 demo 都能走通「进入项目 → 切换阶段 → 切片/精修工作区」：A 里点项目卡进当前步骤、点右下角「下一步」推进；B 里展开侧栏项目、随便点节点横跳；C 里点卡片开抽屉、点「一键全切」看卡片流到下一列；D 里从头点主按钮走完全程。对比后告诉我倾向哪种（或哪几种的组合），我再出对应正式重构计划。
+  </div>
+
+</div>
+</body>
+</html>
