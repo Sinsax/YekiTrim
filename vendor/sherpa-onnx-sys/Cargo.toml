@@ -1,0 +1,37 @@
+# Vendored fork of sherpa-onnx-sys 1.13.3.
+#
+# Upstream: https://github.com/k2-fsa/sherpa-onnx (Apache-2.0, LICENSE kept alongside).
+# Only build.rs differs -- see FORK-NOTES.md for the exact deltas and how to resync.
+#
+# Why it is vendored instead of used from crates.io: upstream's build.rs downloads a
+# prebuilt archive that unconditionally links espeak-ng (GPL-3.0-or-later), and it prefers
+# its own target/ cache over any archive we point it at. Both are silent. This fork points
+# the download at the TTS-off release, pins its sha256, and asserts the placeholder libs
+# are placeholders -- including when the cache hits.
+
+[package]
+name = "sherpa-onnx-sys"
+version = "1.13.3"
+edition = "2021"
+description = "Raw FFI bindings to the sherpa-onnx C API (V-Trim fork: pinned TTS-off prebuilt archive)"
+license = "Apache-2.0"
+repository = "https://github.com/k2-fsa/sherpa-onnx"
+links = "sherpa-onnx"
+
+keywords = ["ffi", "speech", "sherpa-onnx", "bindings"]
+categories = ["external-ffi-bindings"]
+
+[features]
+default = ["static"]
+static = []
+shared = []
+
+[build-dependencies]
+bzip2 = "0.4"
+tar = "0.4"
+ureq = { version = "2.12", features = ["proxy-from-env"] }
+sha2 = "0.10"
+
+[package.metadata.docs.rs]
+default-features = false
+features = []
