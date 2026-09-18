@@ -21,9 +21,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::service::auth as kdf;
-use crate::service::db::{self, Db, SessionRow};
-use crate::service::user;
+use vtrim_service::auth as kdf;
+use vtrim_service::db::{self, Db, SessionRow};
+use vtrim_service::user;
 
 use super::model::AppState;
 

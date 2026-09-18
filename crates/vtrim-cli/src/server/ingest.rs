@@ -3,7 +3,7 @@
 //! - `POST /api/ingest/bililive/<token>`：webhook 接收端，**只做"验 token → 去重 → 落库"**
 //!   然后立即 2xx（官方对非 2xx 会最多重试 3 次且 payload 不变）；
 //!   重活（完结判定、合并、落位、跑管线）交给后台 worker（P3b）。
-//! - token 存哈希（复用 `service::auth` 的 scrypt），比对失败 401；`allow_ips` 白名单。
+//! - token 存哈希（复用 `vtrim_service::auth` 的 scrypt），比对失败 401；`allow_ips` 白名单。
 //! - 事件处理**不依赖顺序**：`FileOpening/FileClosed` 只累积文件列表，
 //!   `SessionEnded` 只把状态推到 `closing`；真正的完结判定在 worker 里（含空闲窗口）。
 //!
@@ -16,7 +16,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 
-use crate::service::db::IngestSessionRow;
+use vtrim_service::db::IngestSessionRow;
 
 use super::auth::CurrentUser;
 use super::model::AppState;
@@ -140,7 +140,7 @@ pub struct WebhookOutcome {
 ///
 /// 返回 `duplicate=true` 表示同 `EventId` 已处理过，调用方也应回 200。
 pub fn handle_event(
-    db: &crate::service::db::Db,
+    db: &vtrim_service::db::Db,
     body: &serde_json::Value,
 ) -> anyhow::Result<WebhookOutcome> {
     let kind_raw = field(body, &["EventType", "event_type"]).unwrap_or_default().to_string();
@@ -243,7 +243,7 @@ pub fn handle_event(
     })
 }
 
-/// token 的形状检查：`vtrim_` + 40 位 base64url（与 `service::ingest::generate_token` 一致）。
+/// token 的形状检查：`vtrim_` + 40 位 base64url（与 `vtrim_service::ingest::generate_token` 一致）。
 ///
 /// 放在 scrypt **之前**当快速否掉用：形状不对的输入根本没可能是 token，为它付一次
 /// N=2^15（约 32MiB 内存 + 几十毫秒 CPU）的代价是白送对方的放大器。
@@ -306,7 +306,7 @@ pub async fn webhook(
     let hash = cfg.ingest.token_hash.clone();
     let token_for_check = token.clone();
     let verified = tokio::task::spawn_blocking(move || {
-        crate::service::auth::verify_password(&hash, &token_for_check).unwrap_or(false)
+        vtrim_service::auth::verify_password(&hash, &token_for_check).unwrap_or(false)
     })
     .await
     .unwrap_or(false);
@@ -437,10 +437,10 @@ fn recording_state(
 
 /// 归属校验：房间必须是调用者自己的（admin 通吃）。不可见一律 404，不泄露存在性。
 fn owned_room(
-    db: &crate::service::db::Db,
+    db: &vtrim_service::db::Db,
     user: &CurrentUser,
     room_id: &str,
-) -> Result<crate::service::db::ChannelRule, AppError> {
+) -> Result<vtrim_service::db::ChannelRule, AppError> {
     db.channel_for_room(room_id)
         .map_err(internal)?
         .filter(|r| user.is_admin() || r.user_id == user.id)
@@ -538,7 +538,7 @@ pub async fn import_recording(
         return Err(err(StatusCode::BAD_REQUEST, "缺少 rel（录像相对路径）"));
     }
     // 这个文件必须真的属于这个房间：否则用户能拿任意 rel 把别人的录像导进自己项目
-    if crate::service::recorder::room_id_from_rel_path(&rel).as_deref() != Some(room_id.as_str()) {
+    if vtrim_service::recorder::room_id_from_rel_path(&rel).as_deref() != Some(room_id.as_str()) {
         return Err(err(
             StatusCode::BAD_REQUEST,
             format!("这个文件不属于直播间 {room_id}：{rel}"),
@@ -991,10 +991,10 @@ pub async fn rotate_token(
             ingest.insert("webhook_enabled".into(), serde_json::json!(false));
         }
         "generate" => {
-            let token = crate::service::ingest::generate_token();
+            let token = vtrim_service::ingest::generate_token();
             // scrypt（N=2^15）是 CPU 密集：别占住 tokio worker
             let t = token.clone();
-            let hash = tokio::task::spawn_blocking(move || crate::service::auth::hash_password(&t))
+            let hash = tokio::task::spawn_blocking(move || vtrim_service::auth::hash_password(&t))
                 .await
                 .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("生成线程失败: {e}")))?
                 .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("生成 token 失败: {e:#}")))?;
@@ -1029,7 +1029,7 @@ pub async fn rotate_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::db::Db;
+    use vtrim_service::db::Db;
 
     fn db() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn token_shape_gate_rejects_junk_before_kdf() {
         // 真实生成器的产物必须过
-        assert!(token_shape_ok(&crate::service::ingest::generate_token()));
+        assert!(token_shape_ok(&vtrim_service::ingest::generate_token()));
         // 前缀 / 长度 / 字符集 任一不对就否掉
         assert!(!token_shape_ok(""));
         assert!(!token_shape_ok("vtrim_"));
@@ -1310,11 +1310,11 @@ vtuber_name = \"主播\"
     /// 生成的 token 能通过它自己的哈希校验（webhook 那条链路的唯一凭据）。
     #[test]
     fn generated_token_matches_its_hash() {
-        let token = crate::service::ingest::generate_token();
+        let token = vtrim_service::ingest::generate_token();
         assert!(token_shape_ok(&token), "生成器产物必须过形状检查：{token}");
-        let hash = crate::service::auth::hash_password(&token).unwrap();
-        assert!(crate::service::auth::verify_password(&hash, &token).unwrap_or(false));
-        assert!(!crate::service::auth::verify_password(&hash, "vtrim_wrong").unwrap_or(false));
+        let hash = vtrim_service::auth::hash_password(&token).unwrap();
+        assert!(vtrim_service::auth::verify_password(&hash, &token).unwrap_or(false));
+        assert!(!vtrim_service::auth::verify_password(&hash, "vtrim_wrong").unwrap_or(false));
         assert!(hash.starts_with("scrypt$"), "配置里只该存哈希：{hash}");
     }
 

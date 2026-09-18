@@ -206,7 +206,7 @@ pub async fn pack_import(
     }
     let want_build = body.get("build").and_then(|v| v.as_bool()).unwrap_or(false);
     // 与「服务器文件」建项目同一条解析路径（管理员可指服务器上任意绝对路径）
-    let src = crate::service::projects::resolve_target_dir(user.id, "", &dir, true)
+    let src = vtrim_service::projects::resolve_target_dir(user.id, "", &dir, true)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     let raw_name = body
         .get("name")

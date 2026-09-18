@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::service::Workspace;
+use vtrim_service::Workspace;
 
 use super::auth::AuthService;
 use super::jobs::JobManager;

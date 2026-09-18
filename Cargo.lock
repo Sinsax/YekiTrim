@@ -3252,6 +3252,7 @@ dependencies = [
  "tracing-subscriber",
  "vtrim-core",
  "vtrim-polish",
+ "vtrim-service",
 ]
 
 [[package]]
@@ -3320,6 +3321,30 @@ dependencies = [
  "swash",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "vtrim-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "rand 0.8.6",
+ "reqwest",
+ "rusqlite",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "vtrim-core",
+ "vtrim-polish",
 ]
 
 [[package]]

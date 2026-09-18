@@ -274,7 +274,7 @@ pub fn parse_project_id(raw: &str) -> Option<i64> {
 pub fn summary_json(project: &ProjectRow, owner_name: Option<&str>) -> serde_json::Value {
     let (stage, has_clips, missing_config) = match Workspace::load(Some(&project.config_file)) {
         Ok(ws) => {
-            let snap = crate::service::project_snapshot(&ws);
+            let snap = crate::project_snapshot(&ws);
             let stage = snap.get("current_stage").and_then(|v| v.as_u64()).unwrap_or(0);
             let has_clips = ws.output_dir().join("clips/clips_order.txt").exists();
             (stage, has_clips, false)

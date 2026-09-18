@@ -133,7 +133,7 @@ pub enum Command {
     /// 安全与运行状况摘要（账号/初始密码/单实例锁/数据目录磁盘/服务可达性）
     Doctor {
         /// 探测地址（默认 http://127.0.0.1:26320，与 `vtrim server` 默认监听一致）
-        #[arg(long, default_value = crate::service::doctor::DEFAULT_URL)]
+        #[arg(long, default_value = vtrim_service::doctor::DEFAULT_URL)]
         url: String,
     },
 

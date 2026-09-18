@@ -29,7 +29,7 @@ fn patch_auth(pairs: serde_json::Value) -> Result<()> {
             .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
     }
     if !path.exists() {
-        let _ = crate::service::ensure_global_config();
+        let _ = crate::ensure_global_config();
     }
     vtrim_core::config::patch_config_file(&path, &serde_json::json!({ "auth": pairs }))
         .with_context(|| format!("写入 {} 失败", path.display()))?;

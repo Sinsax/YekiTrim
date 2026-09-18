@@ -38,10 +38,10 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::service::instancelock::InstanceLock;
-use crate::service::logbus;
-use crate::service::{self, db};
-use crate::service::Workspace;
+use vtrim_service::instancelock::InstanceLock;
+use vtrim_service::logbus;
+use vtrim_service::{self, db};
+use vtrim_service::Workspace;
 
 use self::auth::Listening;
 
@@ -55,8 +55,8 @@ pub struct ServerArgs {
     ///
     /// 默认 26320 是**挑出来躲开系统保留段**的（老默认 7788 在部分 Windows 上属于
     /// Hyper-V/WSL 的保留段，绑不上且 `netstat` 里看不到任何监听者）。理由与安全区间见
-    /// `service::doctor::DEFAULT_PORT`。
-    #[arg(long, default_value_t = crate::service::doctor::DEFAULT_PORT)]
+    /// `vtrim_service::doctor::DEFAULT_PORT`。
+    #[arg(long, default_value_t = vtrim_service::doctor::DEFAULT_PORT)]
     pub port: u16,
     /// 启动后自动打开浏览器
     #[arg(long)]
@@ -209,8 +209,8 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     })?;
     // LLM 用量记账：core 的 LlmClient 只负责产出记录，这里把它接到账号账本上
     // （网页端、CLI 端后续所有调用都会落 `llm_usage` 表；设置页「LLM 用量」读它）
-    service::usage::install(auth.db_arc());
-    let bootstrap = service::ensure_admin_bootstrap(explicit_pw.clone())?;
+    vtrim_service::usage::install(auth.db_arc());
+    let bootstrap = vtrim_service::ensure_admin_bootstrap(explicit_pw.clone())?;
     if bootstrap.created {
         match (&bootstrap.initial_password, &bootstrap.password_file) {
             (Some(pw), Some(path)) => info!(
@@ -239,7 +239,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
                 "拒绝在 {addr} 上监听：管理员仍在使用初始密码（初始密码会出现在日志与 {} 里，等同把密码写在服务器上）。\n\
                  请先修改密码：vtrim user passwd admin（非交互：--stdin / --password-file），\
                  或在部署时用 --admin-password-file 显式设定初始密码。",
-                service::initial_password_path().display()
+                vtrim_service::initial_password_path().display()
             );
         }
         tracing::warn!("⚠ 正在监听非 loopback 地址 {addr}：请务必使用 HTTPS 反向代理，并确保账号密码足够强");
@@ -264,11 +264,11 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         Ok(n) => info!("已把 {n} 个旧版项目导入 admin 名下（projects 表接管项目列表）"),
         Err(e) => tracing::warn!("导入旧版项目列表失败（不影响启动）: {e:#}"),
     }
-    let refreshed = service::projects::refresh_all_bytes(auth.db());
+    let refreshed = vtrim_service::projects::refresh_all_bytes(auth.db());
     info!("项目占用已刷新（{refreshed} 个项目）");
 
     // 首次运行（没有程序配置）时自动生成默认配置；已有配置不会被覆盖
-    match crate::service::ensure_global_config() {
+    match vtrim_service::ensure_global_config() {
         Ok(report) => {
             for path in &report.created {
                 info!("未找到程序配置，已生成默认配置: {}", path.display());
@@ -353,7 +353,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
                 let probe_url = url.clone();
                 tokio::task::spawn_blocking(move || {
                     (
-                        service::doctor::probe_health(probe_url.trim_end_matches('/')),
+                        vtrim_service::doctor::probe_health(probe_url.trim_end_matches('/')),
                         first_bindable_port(ip, addr.port()),
                     )
                 })
@@ -462,7 +462,7 @@ fn parse_health_peer(body: &str) -> Option<HealthPeer> {
 /// 7789、7834 也一样 `EACCES`（保留段 7735–7834），所以必须实测。
 ///
 /// 候选按「先跨平台安全带内、再其余」排序（安全带 = 15001–32767，见
-/// `service::doctor::DEFAULT_PORT`），免得给用户推荐一个刚从坑里爬出来的段。
+/// `vtrim_service::doctor::DEFAULT_PORT`），免得给用户推荐一个刚从坑里爬出来的段。
 fn first_bindable_port(ip: std::net::IpAddr, port: u16) -> Option<u16> {
     const SAFE: std::ops::RangeInclusive<u16> = 15001..=32767;
     let mut candidates: Vec<u16> = vec![18088, 28088, 38088];
