@@ -15,9 +15,18 @@ export function sourceLabel(p) {
   }
 }
 
+/**
+ * 侧栏那枚小徽标里的**来源类型**（9px 的药丸，只放得下类型）。
+ *
+ * ⚠ 本地来源**只回「本机」**，不要拼路径：服务端的 `source.label` 是
+ * `本机 · <父目录>/<目录名>`（`api.rs`，非租户根）/ `本机文件 · <相对路径>`，
+ * 而项目名本身就是那个目录名 —— 拼进去等于把名称显示两遍，还把徽标撑长。
+ * 完整标签走 `sourceLabel(p)`，挂在徽标的 `title` 上，悬停仍能看到路径。
+ */
 export function sourceBadge(p) {
   if (p?.source?.kind === 'recorder' && p?.room) return `录制 ${p.room}`
   if (p?.source?.kind === 'bilibili') return 'B站'
+  if (p?.source?.kind === 'local') return '本机'
   return sourceLabel(p)
 }
 

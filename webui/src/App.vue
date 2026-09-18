@@ -45,7 +45,12 @@
       </div>
 
       <main class="content">
-        <router-view />
+        <!-- 按**项目 id** 做 key：同一步骤下换项目时 route record 相同，vue-router 会复用组件实例，
+             setup/onMounted 不再执行 —— 于是整页还停在旧项目（只有面包屑变了），
+             而预处理器保存时用的是**新** pid，会把 A 的字幕写进 B（用户实测"两个项目会串"）。
+             跨步骤切换本来就靠组件类型不同重挂，这里的 key 不改变那条路径；
+             也不能用 fullPath 做 key（那样精修页换片段也会整块重挂，丢掉原地切换）。 -->
+        <router-view :key="route.params.pid || route.name" />
       </main>
     </div>
 
@@ -115,6 +120,8 @@ onJobDone((job) => {
     else if (kind.startsWith('stage_') || kind === 'pipeline' || kind === 'correct' || kind.startsWith('ingest_')) {
       invalidate(pid, 'status', 'events', 'clips')
     }
+    // 刷新失败已在 api()/workbench 里留痕（项目列表的 error 也由 store 记录），
+    // 这里只是别让 rejection 冒出来
     loadProjectData(pid, { force: true }).catch(() => {})
   }
   loadProjects().catch(() => {})
@@ -133,14 +140,15 @@ async function openProject({ pid, step }) {
 }
 
 async function removeProject(p) {
-  const ok = await confirmDialog('只注销项目（删 vtrim.toml），不会触碰媒体文件。', {
-    title: `删除项目「${p.name}」？`,
-    danger: true
-  })
+  // 非破坏性（目录里一个文件都不动）→ 普通样式确认；但仍要确认，误点就从列表里没了
+  const ok = await confirmDialog(
+    '只把登记从服务器列表里去掉，不会动目录里的任何文件（vtrim.toml、媒体、产物全部保留），随时可以重新导入。',
+    { title: `移除项目「${p.name}」？` }
+  )
   if (!ok) return
   try {
-    await apiRemoveProject(p.id)
-    toast('项目已删除')
+    await apiRemoveProject(p.id) // 内部已清前端本地痕迹（forgetProject）+ 刷新列表
+    toast('已从列表移除（目录与文件保留在原处）')
     if (String(route.params.pid || '') === String(p.id)) router.push('/workbench')
   } catch (e) {
     toast(e.message, 'err')
@@ -175,6 +183,8 @@ async function submitPassword() {
 }
 
 async function doLogout() {
+  const ok = await confirmDialog('退出当前账号？下次进入需要重新登录。', { title: '退出登录' })
+  if (!ok) return
   closeJobs()
   await logout()
   router.replace({ name: 'login' })

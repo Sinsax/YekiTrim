@@ -6,12 +6,29 @@ import { api } from './client'
 import { scopeQ } from './scope'
 
 export const projectData = {
-  status: (pid) => api(`/api/project-data/status?${scopeQ(pid)}`),
-  events: (pid) => api(`/api/project-data/events?${scopeQ(pid)}`),
-  clips: (pid) => api(`/api/project-data/clips?${scopeQ(pid)}`),
-  polishMap: (pid) => api(`/api/project-data/polish?${scopeQ(pid)}`),
-  config: (pid) => api(`/api/project-data/config?${scopeQ(pid)}`),
-  transcript: (pid) => api(`/api/project-data/transcript?${scopeQ(pid)}`),
+  // 读取类都收一个 `label`（业务说明，如「读取事件列表」）：失败时它会进
+  // 控制台与设置页「运行日志」，否则 `.catch(() => [])` 一兜就什么都查不到了。
+  status: (pid, label) => api(`/api/project-data/status?${scopeQ(pid)}`, { label }),
+  events: (pid, label) => api(`/api/project-data/events?${scopeQ(pid)}`, { label }),
+  clips: (pid, label) => api(`/api/project-data/clips?${scopeQ(pid)}`, { label }),
+  polishMap: (pid, label) => api(`/api/project-data/polish?${scopeQ(pid)}`, { label }),
+  config: (pid, label) => api(`/api/project-data/config?${scopeQ(pid)}`, { label }),
+  transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),
+
+  /** 输入素材（弹幕 / 字幕）：当前值 + 状态 + 项目内的候选。预处理页用它渲染两行素材。 */
+  assets: (pid, label) => api(`/api/project-data/assets?${scopeQ(pid)}`, { label }),
+  /**
+   * 选择/清除一类素材。`body` 传三选一：
+   * - `{path: ''}` 清除；`{path: 'dm.xml'}` 项目内相对（或 admin 的绝对路径）；
+   * - `{dir, name}` 服务器目录里选的（**目录与文件名分开发**，前端不拼路径：服务端回传的
+   *   目录可能是 `\\?\F:\a` 这种 verbatim 形式，前端拼出来在 Windows 上是非法名）。
+   * 服务端写前会解析一遍，失败不落盘，成功返回条数。
+   */
+  setAsset: (pid, kind, body) =>
+    api(`/api/project-data/assets?${scopeQ(pid)}`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, ...body })
+    }),
 
   /** 切片缩略图 URL（`<img :src>`/`<video :src>` 直接用，cookie 自动带上） */
   thumbUrl: (pid, rank) => `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${scopeQ(pid)}`,
@@ -62,5 +79,9 @@ export const projectData = {
       body: JSON.stringify(body)
     }),
   silenceClip: (pid, rank) =>
-    api(`/api/project-data/clips/${encodeURIComponent(rank)}/silence?${scopeQ(pid)}`, { method: 'POST' })
+    api(`/api/project-data/clips/${encodeURIComponent(rank)}/silence?${scopeQ(pid)}`, { method: 'POST' }),
+  /** 删除一个已剪切片段（整目录，含精修产物）—— 破坏性，调用方必须先二次确认。
+   *  `ref` 是**目录名**（卡片墙列的 `c.name`，服务端两种都收：数字 rank 或目录名）。 */
+  deleteClip: (pid, ref) =>
+    api(`/api/project-data/clips/${encodeURIComponent(ref)}?${scopeQ(pid)}`, { method: 'DELETE' }),
 }

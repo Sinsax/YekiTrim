@@ -129,7 +129,7 @@ async function load() {
       const me = await api('/api/me')
       users.value = [me.user]
       // 账号列表属于管理页（P5）；这里至少能指派给自己
-    } catch {}
+    } catch {} // 失败已由 api() 记日志：最多是下拉里少几个账号
   }
 }
 

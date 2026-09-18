@@ -5,7 +5,7 @@
       <div class="video-wrap" :class="portraitClass">
         <video ref="videoRef" class="source-video" :src="videoSrc" playsinline preload="auto"
                :style="videoStyle"
-               @loadedmetadata="onMeta" @seeked="onSeeked" @play="playing = true" @pause="playing = false" @ended="playing = false"></video>
+               @loadedmetadata="onMeta" @seeked="onSeeked" @play="setPlaying(true)" @pause="setPlaying(false)" @ended="setPlaying(false)"></video>
       </div>
       <div class="corner-glow"><div class="gb"></div></div>
       <div class="fx fx-vignette" :style="vignetteStyle"></div>
@@ -51,10 +51,10 @@
       </button>
       <input class="flex-1" type="range" :min="0" :max="1000" :value="progress" @input="onSeekInput">
       <span class="muted small mono time-label">{{ fmt(current) }} / {{ fmt(duration) }}</span>
-      <button class="mini-btn" :class="{ selected: muted }" @click="toggleMute" :title="muted ? '取消静音' : '静音'">
-        <Icon :name="muted ? 'volume-x' : 'volume'" :size="13" />
+      <button class="mini-btn" :class="{ selected: silenced }" @click="toggleMute" :title="silenced ? '取消静音' : '静音'">
+        <Icon :name="silenced ? 'volume-x' : 'volume'" :size="13" />
       </button>
-      <input class="vol" type="range" min="0" max="1" step="0.05" :value="volume" @input="onVolume" title="音效音量">
+      <input class="vol" type="range" min="0" max="1" step="0.05" :value="volume" @input="onVolume" title="音量（视频 + 音效）">
       <!-- 真渲染（wgpu）：服务端未启用该 feature 时整个入口隐藏；
            该功能暂时搁置，日后开发时放开这里即可（下方 toggleReal/scheduleRealFrame 的逻辑保留） -->
       <button v-if="wgpuRender" class="mini-btn" :class="{ selected: realRender }" @click="toggleReal" title="暂停/拖动时显示 wgpu 真实渲染帧">
@@ -72,9 +72,11 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import { toast } from '../stores/toast'
 import { csrfHeaders } from '../api/client'
+import { addClient } from '../stores/log'
 import { mediaUrl } from '../utils'
-import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
+import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
 import { createSfxPlayer } from '../polish/audio'
+import { ensureFontFace } from '../polish/fonts'
 import init, { init_renderer } from '../wasm/vtrim_wasm.js'
 
 const props = defineProps({
@@ -90,7 +92,7 @@ const props = defineProps({
   selectRect: { type: Object, default: null },
   selectLabel: { type: String, default: '' }
 })
-const emit = defineEmits(['time', 'update:selectRect'])
+const emit = defineEmits(['time', 'update:selectRect', 'playing'])
 
 const stageRef = ref(null)
 const videoRef = ref(null)
@@ -100,6 +102,10 @@ const duration = ref(0)
 const playing = ref(false)
 const muted = ref(false)
 const volume = ref(1)
+/** 非零音量的记忆值：从 0 恢复声音时用它（localStorage 里存的就是 masterVol） */
+let lastVol = 1
+/** 按钮/图标状态：静音或音量为 0 都算「没声音」 */
+const silenced = computed(() => muted.value || volume.value <= 0)
 const overlayScale = ref(1)
 const stickerFailed = ref({})
 let rafId = 0
@@ -167,7 +173,8 @@ const videoStyle = computed(() => {
   if (f.shake.x || f.shake.y) t.push(`translate(${f.shake.x}px, ${f.shake.y}px)`)
   if (f.stutter) t.push(`translate(${f.stutter.x}px, ${f.stutter.y}px)`)
   if (f.split && f.split.skewX) t.push(`skewX(${f.split.skewX / 100}deg)`)
-  if (f.zoom > 1.001) t.push(`scale(${f.zoom})`)
+  // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜
+  if (Math.abs(f.zoom - 1) > 0.001) t.push(`scale(${f.zoom})`)
   const filter = f.blur > 0 ? `blur(${f.blur}px)` : ''
   return {
     transform: t.join(' ') || 'none',
@@ -185,10 +192,9 @@ const colorOverlayStyle = computed(() => {
   const ov = colorOverlay.value
   if (!ov) return { opacity: 0 }
   if (ov.type === 'color') return { opacity: ov.opacity, background: ov.color }
-  const grad = ov.shape === 'radial'
-    ? 'radial-gradient(ellipse at center,transparent 0%,' + ov.colors.slice(1).join(',')
-    : 'linear-gradient(' + ov.colors.join(',')
-  return { opacity: ov.opacity, background: grad }
+  // 手拼字符串曾漏掉收尾 ')' —— 整条 background 非法会被浏览器丢弃，
+  // 表现是「设了色档但预览里什么都没有」。统一走 engine 的 gradientCss。
+  return { opacity: ov.opacity, background: gradientCss(ov.colors, ov.shape) }
 })
 
 const capLayerStyle = computed(() => {
@@ -264,15 +270,24 @@ function togglePlay() {
   if (v.paused) {
     if (vertical.value && bgRef.value) bgRef.value.play().catch(() => {})
     v.play().catch(() => {})
-    playing.value = true
+    setPlaying(true)
     cancelAnimationFrame(rafId)
     rafId = requestAnimationFrame(tick)
   } else {
     v.pause()
     if (vertical.value && bgRef.value) bgRef.value.pause()
-    playing.value = false
+    setPlaying(false)
     cancelAnimationFrame(rafId)
   }
+}
+
+/** 播放状态往外发一份：时间轴的"跟随播放头"只在**正在播放**时生效
+ *  （用户要求：拖动/跳转不该自己动视角，只有播放时才跟）。 */
+function setPlaying(v) {
+  const on = !!v
+  if (playing.value === on) return
+  playing.value = on
+  emit('playing', on)
 }
 
 function seekTo(t) {
@@ -294,6 +309,8 @@ function onMeta() {
   const v = videoRef.value
   if (!v) return
   duration.value = v.duration || 0
+  // 切片段/换源后把音量与静音重新落到视频元素上（元素属性虽会保留，这里保证与控件状态一致）
+  applyAudio()
   // seek 触发首帧解码，避免打开页面时舞台全黑
   if (v.currentTime === 0) v.currentTime = 0.001
   if (vertical.value && bgRef.value) {
@@ -316,14 +333,44 @@ function onSeeked() {
   if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
 }
 
-function toggleMute() {
-  muted.value = !muted.value
-  player.setMuted(muted.value)
+/**
+ * 音量/静音同时作用在**视频本身**和 SFX 层。
+ * 之前只调 SFX 播放器，视频里的说话声/音乐丝毫不受影响 —— 用户反馈的「音量控制不好使」就是这个：
+ * 点静音、拉滑块都对真正在响的那一路没作用。
+ */
+function applyAudio() {
+  const v = videoRef.value
+  if (!v) return
+  const n = Number(volume.value)
+  v.volume = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0
+  v.muted = !!muted.value
 }
+
+function toggleMute() {
+  if (silenced.value) {
+    // 当前没声音 → 恢复（音量被拉到 0 时抬回上次的非零值，否则按钮看着是「恢复了」却依旧静音）
+    muted.value = false
+    player.setMuted(false)
+    if (volume.value <= 0) {
+      volume.value = lastVol
+      player.setMasterVolume(lastVol)
+    }
+  } else {
+    muted.value = true
+    player.setMuted(true)
+  }
+  applyAudio()
+}
+
 function onVolume(e) {
-  volume.value = Number(e.target.value)
+  const v = Number(e.target.value)
+  volume.value = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0
+  if (volume.value > 0) {
+    lastVol = volume.value
+    if (muted.value) { muted.value = false; player.setMuted(false) }
+  }
   player.setMasterVolume(volume.value)
-  if (volume.value > 0 && muted.value) { muted.value = false; player.setMuted(false) }
+  applyAudio()
 }
 function fullscreen() {
   if (stageRef.value) stageRef.value.requestFullscreen?.()
@@ -535,7 +582,10 @@ async function tryEnableWasm() {
     try {
       const fr = await fetch(`/api/polish/font?dir=${encodeURIComponent(props.dir)}&name=${encodeURIComponent(props.config?.style?.subtitle?.font || '')}`)
       if (fr.ok) fontBytes = new Uint8Array(await fr.arrayBuffer())
-    } catch {}
+    } catch (e) {
+      // 字体缺失只是回退到内置字体，记 debug 就够（别把面板刷满）
+      addClient('debug', `字体下载失败，改用内置字体：${e.message}`, 'preview')
+    }
 
     // canvas 挂进舞台
     let c = wasmCanvas.value
@@ -594,6 +644,8 @@ watch(idx, (v) => {
 onMounted(() => {
   volume.value = player.getMasterVolume()
   muted.value = player.isMuted()
+  lastVol = volume.value > 0 ? volume.value : 1
+  applyAudio()
   ro = new ResizeObserver(() => {
     const w = stageRef.value ? stageRef.value.clientWidth : 0
     if (w) overlayScale.value = w / 1920
@@ -622,6 +674,14 @@ watch(current, () => {
   if (!playing.value) scheduleRealFrame()
 })
 watch(() => props.dir, clearRealFrame)
+
+// 字幕字体：选了程序级字体库里的字体时，浏览器得先认得它（@font-face）才会用 ——
+// 出片那条路是 render/server.rs 注入的，这里是**同一套装在 DOM 预览上**，
+// 少了它预览还是系统字体、出片却换了字体。字体加载完就自然重排，不用手动重挂。
+// `dir` 在精修页是绝对路径（服务端按它反查归属），所以这里不用再传 project。
+watch(() => [props.dir, subStyle.value.font], ([dir, font]) => {
+  if (font) ensureFontFace(null, dir, font, { onDebug: (m) => addClient('debug', m, 'preview') })
+}, { immediate: true })
 
 // wasm 真渲染激活时，字幕在 Rust pipeline 里持有副本；编辑字幕要热同步，避免预览仍显示旧字幕
 watch(() => props.subtitles, (subs) => {
@@ -705,7 +765,7 @@ function pause() {
 .preview-controls { display:flex; align-items:center; gap:8px; margin-top:10px; }
 .time-label { min-width:96px; text-align:right; }
 .vol { width:80px; flex:none; padding:0; border:none; background:transparent; }
-input[type='range'] { accent-color:var(--main); padding:0; border:none; background:transparent; height:20px; }
+/* 音量的滑块外观统一由 app.css 的 input[type=range] 提供（这里不再覆盖，避免两套外观） */
 .real-frame { position:absolute; inset:0; width:100%; height:100%; object-fit:fill; z-index:60; pointer-events:none; }
 .wasm-canvas { position:absolute; inset:0; width:100%; height:100%; z-index:60; pointer-events:none; }
 .real-loading { position:absolute; inset:0; z-index:61; display:flex; align-items:center; justify-content:center; pointer-events:none; }

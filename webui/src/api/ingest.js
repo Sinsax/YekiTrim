@@ -19,6 +19,14 @@ export const ingestApi = {
   retry: (session_id) =>
     api('/api/ingest/retry', { method: 'POST', body: JSON.stringify({ session_id }) }),
   config: () => api('/api/admin/ingest'),
+  /**
+   * 保存采集/录播姬配置（`PUT /api/admin/ingest`）。
+   * 语义：键**缺席** = 保持原值；给空串/空数组 = 清空。`api_pass` 缺席即"不改密码"。
+   */
+  saveConfig: (patch) => api('/api/admin/ingest', { method: 'PUT', body: JSON.stringify(patch) }),
+  /** 生成/关闭 webhook token（`generate` 时**只有这一次**响应里有明文 token） */
+  rotateToken: (action = 'generate') =>
+    api('/api/admin/ingest/token', { method: 'POST', body: JSON.stringify({ action }) }),
   scanNow: () => api('/api/admin/ingest/scan', { method: 'POST' })
 }
 

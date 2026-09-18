@@ -16,15 +16,19 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import JobList from '../JobList.vue'
 import { useJobs } from '../../composables/useJobs'
 
-defineProps({ show: { type: Boolean, default: false } })
+const props = defineProps({ show: { type: Boolean, default: false } })
 const emit = defineEmits(['close'])
 
 const expandAll = ref(false)
 const { reload } = useJobs()
+
+// 打开抽屉时立刻拉一次：轮询可能正处在失败/退避状态，抽屉是用户唯一的诊断入口，
+// 不能让他盯着上一份可能已经很旧的快照（以前只在挂载时取数，抽屉一开就是死的）。
+watch(() => props.show, (v) => { if (v) reload() })
 
 function close() {
   emit('close')

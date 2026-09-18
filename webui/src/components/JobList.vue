@@ -1,14 +1,25 @@
 <template>
   <div>
-    <div v-if="!shown.length" class="empty small">暂无任务</div>
+    <!-- 三态必须分开：以前"读取失败"和"真的没有任务"都渲染成「暂无任务」，
+         用户既看不出是故障、也没有重试入口（那正是"队列加载不出来"的观感） -->
+    <div v-if="lastError" class="empty small">
+      任务列表读取失败：{{ lastError }}{{ shown.length ? '（显示的是最后一份快照）' : '' }}
+      <div class="mt-6"><button class="mini-btn" @click="reload()">重试</button></div>
+    </div>
+    <div v-else-if="!shown.length" class="empty small">{{ loaded ? '暂无任务' : '读取中…' }}</div>
     <div v-for="j in shown" :key="j.id" class="job-row">
       <div class="row spread">
         <b>{{ kindText(j.kind) }}</b>
-        <span class="chip" :class="statusClass(j.status)">{{ statusText(j.status) }}</span>
+        <!-- title 说明档位与来源（悬停可见）；排队的细节在下行，别塞进 chip（全应用共用） -->
+        <span class="chip" :class="statusClass(j.status)" :title="classTitle(j)">{{ statusText(j.status) }}</span>
       </div>
-      <div v-if="showLine(j)" class="small muted">
+      <!-- 排队中的任务：报档位/上限/同档名次，替掉那句没信息量的 create 文案（"准备中"） -->
+      <div v-if="j.status === 'queued'" class="small muted">{{ queueDetail(j) }}</div>
+      <div v-else-if="showLine(j)" class="small muted">
         {{ j.message }}{{ j.total > 0 ? ' · ' + Math.round(j.current * 100 / j.total) + '%' : '' }}
       </div>
+      <!-- 运行中但久无进展：底下多半有个进程挂住了（外部 ffmpeg / 网络盘），明说出来 -->
+      <div v-if="stuckNote(j)" class="small muted">{{ stuckNote(j) }}</div>
       <div v-if="j.status === 'running' && j.total > 0" class="progress mt-6">
         <div :style="{ width: Math.round(j.current * 100 / j.total) + '%' }"></div>
       </div>
@@ -26,7 +37,7 @@
 import { computed } from 'vue'
 import { toast } from '../stores/toast'
 import { useJobs } from '../composables/useJobs'
-import { isActive, jobsApi, kindText, statusClass, statusText } from '../api/jobs'
+import { classTitle, isActive, jobsApi, kindText, queueDetail, statusClass, statusText, stuckNote } from '../api/jobs'
 
 const props = defineProps({
   actions: { type: Boolean, default: false },
@@ -34,7 +45,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['changed'])
 
-const { jobs, reload } = useJobs()
+const { jobs, reload, lastError, loaded } = useJobs()
 const shown = computed(() => (props.limit > 0 ? (jobs.value || []).slice(0, props.limit) : jobs.value || []))
 
 function showLine(j) {
