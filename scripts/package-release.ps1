@@ -1,10 +1,10 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Package a V-Trim release (Windows x64).
 
 .DESCRIPTION
-    Steps: cargo build --release -> assemble vtrim.exe + webui/dist + resources/ + release notes
+    Steps: cargo build --release -> assemble vtrim.exe + webui/dist + release notes
     -> structural checks -> optional smoke test -> zip. Output goes to <repo>/release/ (gitignored).
 
     NOTE: keep this script ASCII-only. Windows PowerShell 5.1 reads .ps1 without a BOM as ANSI,
@@ -68,17 +68,31 @@ if ($srcNewest -and $srcNewest.LastWriteTime -gt $distIndex.LastWriteTime.AddSec
     Write-Warning "webui/src is newer than webui/dist ($($srcNewest.Name)): run 'npm --prefix webui run build' first"
 }
 
-$font = Join-Path $root 'crates/vtrim-core/resources/lemi-bobo.ttf'
+# NOTE: no font is bundled. The former built-in fallback (lemi-bobo.ttf) was removed because its
+# license allows free commercial use but NOT embedding into software, so shipping the ttf inside
+# the package is not permitted. Rendering falls back to system fonts
+# (LXGW WenKai -> Noto Sans SC -> Microsoft YaHei -> C:/Windows/Fonts/msyh.ttc).
+# Users drop their own fonts into <exe_dir>/resources/fonts/ and pick them in the polish page
+# (vtrim_core::fonts); the empty folder below is what the UI points at.
 
 Write-Host "==> assembling $pkgName"
 if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
 New-Item -ItemType Directory -Path $pkg | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $pkg 'webui') | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $pkg 'resources') | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $pkg 'resources/fonts') | Out-Null
 
 Copy-Item $exe (Join-Path $pkg 'vtrim.exe')
 Copy-Item -Recurse (Join-Path $root 'webui/dist') (Join-Path $pkg 'webui/dist')
-if (Test-Path $font) { Copy-Item $font (Join-Path $pkg 'resources/lemi-bobo.ttf') }
+
+$fontReadme = @"
+把字体文件（.ttf / .otf / .ttc）放进这个文件夹，精修页里就会多出对应的字体可选：
+
+  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体
+  - 封面字体 = 封面设计器 →「排版」组 → 字体
+
+本发行包刻意不带任何字体文件（授权原因，见 README「字体」）。字体文件请自行获取并遵守其许可。
+"@
+Set-Content -Path (Join-Path $pkg 'resources/fonts/放这里.txt') -Value $fontReadme -Encoding UTF8
 
 $notes = Join-Path $root "docs/releases/v$Version.md"
 if (Test-Path $notes) {

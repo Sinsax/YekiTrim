@@ -16,3 +16,47 @@ __pycache__/
 /scripts/asrtest/wavs/
 
 /.zcode/
+
+# ---- 运行时数据（绝不能进公开仓库）----
+#
+# ⚠️ 在仓库根目录直接跑发行版 exe，会在**当前目录**生成这些：
+# `.vtrim/`（含带真 key 的 `llm.toml` 与账号账本 `vtrim.db`，后者存明文邀请码与
+# 全部项目的真实绝对路径）、`output/`、`stickers/`、`resources/fonts/`（用户自己丢进去的
+# 字体，多半是有版权/授权的商业字体，绝不能进公开仓库）。
+# 一次 `git add -A` 就会把它们带进公开仓库 —— 这几条就是拦它的。
+.vtrim/
+/stickers/
+/output/
+/data/
+/resources/
+vtrim.toml
+
+# 账号账本 / 会话 / 审计（SQLite）
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 凭据与环境
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# 配置被写坏时的备份（`ensure_global_config` 生成）、以及各种手改残留
+*.bak
+*.toml.broken
+vtrim.lock
+
+# ---- 工程产物 ----
+# 媒体文件已按扩展名忽略（见上），这里补上同目录的文本产物。
+# 注意：`docs/wgpu-effect-reference/demo/polish.toml` 是**有意入库**的演示文件；
+# 它已被跟踪，所以下面这条规则不会影响到它（gitignore 只作用于未跟踪文件）。
+polish.toml
+events.json
+loudness.json
+clip.json
+initial-admin-password.txt
