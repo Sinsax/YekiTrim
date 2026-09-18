@@ -1,6 +1,6 @@
 [package]
 name = "vtrim-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "V-Trim 核心：管线编排 + ASR / 事件检测 / 剪切全部业务逻辑"
 authors = ["Sinsax"]

@@ -3,6 +3,15 @@ members = ["crates/vtrim-core", "crates/vtrim-cli", "crates/vtrim-polish",
     "crates/vtrim-render-core", "crates/xtask"]
 resolver = "2"
 
+# 版本只有这一处来源。各 crate 写 `version.workspace = true`。
+#
+# 为什么必须同源：`/api/health` 的 version 来自 `CARGO_PKG_VERSION`（server crate），
+# `vtrim doctor` 的版本来自 service crate，而 `cargo xtask package` 的产物名
+# `vtrim-v<版本>-win-x64` 来自这里 —— 三处分别取各自 crate 的版本。一旦版本分叉，
+# 发行包名和 exe 自报版本会悄悄对不上，而且**不会报错**。
+[workspace.package]
+version = "0.1.0"
+
 # The one non-upstream crate in the build graph. It exists so that "which sherpa-onnx libs get
 # linked" is decided inside cargo rather than by whoever remembers to run a wrapper script first:
 # upstream's build.rs links GPL espeak-ng, prefers its own target/ cache over any archive we point

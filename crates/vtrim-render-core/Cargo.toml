@@ -1,6 +1,6 @@
 [package]
 name = "vtrim-render-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "V-Trim 渲染核心：时间线数学 + wgpu 合成管线（桌面/ WASM 共用，不依赖 vtrim-core/vtrim-polish/tokio）"
 authors = ["Sinsax"]
