@@ -20,7 +20,7 @@ pub struct SoundEvent {
 /// 规则与 JS 一致：
 /// - `Sfx` 事件直接输出；
 /// - 带 `sfx` 引用的事件（sticker/特效）也输出；
-/// - 事件时长不足 1s 时按 1s 兜底。
+/// - 事件跨度不足 1s 时按 1s 兜底。
 pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
     let mut out = Vec::new();
     for seg in &config.segments {
@@ -30,113 +30,106 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     time,
                     name,
                     volume,
-                    duration,
+                    end,
                 } if !name.is_empty() => {
                     let file = format!("sfx/{}.mp3", name);
-                    let dur = duration.unwrap_or(1.0).max(1.0);
+                    let dur = end.map(|e| e - *time).unwrap_or(1.0).max(1.0);
                     (*time, file, volume, dur)
                 }
+                Event::Sfx { .. } => continue,
                 Event::Sticker {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
-                } => {
-                    let file = format!("sfx/{}.mp3", name);
-                    let dur = (*duration).max(1.0);
-                    (*time, file, sfx_volume, dur)
                 }
-                Event::Shake {
+                | Event::Shake {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Flash {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Blur {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::ZoomBounce {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Vignette {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::HueShift {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Stutter {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Split {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Noise {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::Pulse {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 }
                 | Event::ColorShift {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
-                } => {
-                    let file = format!("sfx/{}.mp3", name);
-                    let dur = duration.unwrap_or(1.0).max(1.0);
-                    (*time, file, sfx_volume, dur)
                 }
-                Event::Overlay {
+                | Event::Overlay {
                     time,
                     sfx: Some(name),
                     sfx_volume,
-                    duration,
+                    end,
                     ..
                 } => {
                     let file = format!("sfx/{}.mp3", name);
-                    let dur = (*duration).max(1.0);
+                    let dur = end.map(|e| e - *time).unwrap_or(1.0).max(1.0);
                     (*time, file, sfx_volume, dur)
                 }
                 _ => continue,
@@ -196,7 +189,7 @@ mod tests {
             time: 1.0,
             name: "pop-notice".into(),
             volume: Some(0.2),
-            duration: Some(1.5),
+            end: Some(2.5),
         }];
         let events = collect_sound_events(&config);
         assert_eq!(events.len(), 1);
@@ -211,7 +204,7 @@ mod tests {
         config.segments[0].events = vec![Event::Flash {
             time: 2.0,
             color: Some("#fff".into()),
-            duration: Some(0.3),
+            end: Some(2.4),
             anchor: None,
             sfx: Some("boom".into()),
             sfx_volume: Some(0.5),

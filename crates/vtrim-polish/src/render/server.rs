@@ -1,7 +1,7 @@
 use axum::{
     Router,
     routing::{get, post},
-    response::Response,
+    response::{IntoResponse, Response},
     body::Body,
     extract::Json,
     http::StatusCode,
@@ -77,12 +77,133 @@ pub struct RenderServer {
     project_path: PathBuf,
 }
 
+// ===== 字体库（<程序目录>/resources/fonts/）=====
+//
+// 出片页面是 headless Chrome 加载本服务器上的 HTML 的，而**浏览器只认系统已装字体** ——
+// 用户丢进字体库的那个 ttf 它根本不知道。所以凡是选了库内字体，就要在页面里补一条
+// `@font-face`，把 src 指到下面这条路由（同源，不涉及 CORS）。
+//
+// ⚠️ 只在这里挂路由还不够：**两条建 router 的路都得挂** ——
+// `start_file_server`（chunk 抓帧 / 封面截图）与 `start_with`（预览 / CLI `polish render`）。
+
+/// 字体库路由：`/vt-fonts/<文件名>`（只认库目录下的单段文件名，别的都 404）。
+fn font_routes(app: Router) -> Router {
+    app.route("/vt-fonts/:name", get(serve_library_font))
+}
+
+async fn serve_library_font(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
+    // 只认"纯文件名 + 字体扩展名"：`../x.ttf`、`a/b.ttf`、`..` 都在这里被挡掉
+    let bare = Path::new(&name).file_name().and_then(|s| s.to_str()) == Some(name.as_str());
+    if !bare || !vtrim_core::fonts::is_font_file_name(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let path = vtrim_core::path::font_dir().join(&name);
+    // 字体动辄几十 MB，读盘别占着 async worker（这条服务器也要抓帧/截图）
+    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(Ok(b)) => b,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    Response::builder()
+        .header("Content-Type", font_content_type(&name))
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+fn font_content_type(file: &str) -> &'static str {
+    match Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("otf") => "font/otf",
+        Some("ttc") => "font/collection",
+        _ => "font/ttf",
+    }
+}
+
+/// 为配置里选中的字体生成 `@font-face` 片段（没选 / 不在库里 → 空串）。
+///
+/// **声明的字族名 = 配置里存的那个 id**，因为页面里读的就是它：
+/// `index.html` 的 `.cap{font-family:"<style.subtitle.font>"…}`、`cover.html` 的
+/// `__FONT_FAMILY__` 都直接把这一串当 CSS 字族名用。名字一样，那条规则一行都不用改。
+pub fn font_face_css(font_ids: &[&str]) -> String {
+    font_face_css_in(&vtrim_core::path::font_dir(), font_ids)
+}
+
+/// [`font_face_css`] 的目录版（测试用临时目录，免得往程序目录写字）。
+pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
+    let mut css = String::new();
+    for id in font_ids {
+        let id = id.trim();
+        if id.is_empty() || css.contains(&format!("font-family:{}", quote_css(id))) {
+            continue;
+        }
+        let Some(path) = vtrim_core::fonts::resolve_file_at(root, id) else {
+            // 解析不到就**什么都不注入**：老工程的 `font = "LXGW WenKai"` 走到这里，
+            // 行为与从前一致（当系统字体族名用）。
+            continue;
+        };
+        let Some(file) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let format = match ext.as_str() {
+            "otf" => " format(\"opentype\")",
+            "ttc" => "",
+            _ => " format(\"truetype\")",
+        };
+        css.push_str(&format!(
+            "@font-face{{font-family:{};src:url(\"/vt-fonts/{}\"){};font-display:block}}\n",
+            quote_css(id),
+            urlencoding::encode(file),
+            format
+        ));
+    }
+    if css.is_empty() {
+        css
+    } else {
+        format!("<style>\n{css}</style>")
+    }
+}
+
+/// 注进页面的配置 JSON 里的字幕字体（`[style.subtitle] font`）。
+///
+/// 单独拎出来是因为**键路径写错不会报错**：取不到就 `""`、不注入 @font-face，
+/// 表现是"选了字体、出片没换"（预览那边另有 @font-face，看起来还是对的）——
+/// 单测钉的就是这条路径（`subtitle_font_read_from_config_json`）。
+fn subtitle_font_of(cfg: &serde_json::Value) -> &str {
+    cfg["style"]["subtitle"]["font"].as_str().unwrap_or("")
+}
+
+/// CSS 字符串字面量：包双引号并转义 `\` 与 `"`（字体 id 来自文件名，可能有空格/括号/汉字）。
+fn quote_css(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// 没选库内字体时的字体栈（index.html / cover.html / webui 的 `--font` 同一套）。
+pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif";
+
+/// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底。
+pub fn font_family_with_stack(id: &str) -> String {
+    format!("{},{}", quote_css(id.trim()), SYSTEM_FONT_STACK)
+}
+
 /// 启动一个只提供静态文件的 HTTP server，绑定到随机端口
 /// 返回 port。用于每个 chunk 独享的静态文件服务。
 pub async fn start_file_server(project_path: PathBuf, injected_html: Option<String>) -> anyhow::Result<u16> {
     let path = project_path.clone();
     let sd_path = project_path.clone();
-    let app = Router::new()
+    let app = font_routes(Router::new()
         .route("/", get(move || {
             let p = path.clone();
             let html = injected_html.clone();
@@ -97,7 +218,7 @@ pub async fn start_file_server(project_path: PathBuf, injected_html: Option<Stri
                     .unwrap()
             }
         }))
-        .fallback_service(ServeDir::new(&sd_path));
+        .fallback_service(ServeDir::new(&sd_path)));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     tokio::spawn(async move {
@@ -132,9 +253,10 @@ impl RenderServer {
             tracing::info!("  v 竖屏视频 {}x{} → {} 布局 + 模糊背景", size.0, size.1, pos);
         }
         // 响度曲线: 注入浏览器供 preview 音效音量跟随视频 (与 render 混音同一数据)
+        // 走带缓存的那份：这个 HTML 是**每个请求**重建的，不缓存就等于每刷一次页面烧一遍 ebur128
         if let Some(video_rel) = cfg["source"]["video"].as_str() {
-            let video_path = project_path.join(video_rel).to_string_lossy().to_string();
-            let curve = crate::render::measure_loudness_curve(&video_path);
+            let video_path = project_path.join(video_rel);
+            let curve = crate::render::measure_loudness_curve_cached(project_path, &video_path);
             if !curve.is_empty() {
                 let points: Vec<serde_json::Value> = curve.iter()
                     .map(|(t, db)| serde_json::json!({"t": t, "db": db}))
@@ -142,7 +264,10 @@ impl RenderServer {
                 cfg["loudness_curve"] = serde_json::json!(points);
             }
         }
-        Self::inject_config_tag(&cfg, INDEX_HTML)
+        let html = Self::inject_config_tag(&cfg, INDEX_HTML);
+        // 字幕字体：选了字体库里的字体就补 @font-face（`.cap` 的 family 读的就是这一串）
+        let font = subtitle_font_of(&cfg).to_string();
+        html.replace("<!-- __FONT_FACE__ -->", &font_face_css(&[font.as_str()]))
     }
 
     fn inject_config_tag(cfg: &serde_json::Value, html: &str) -> String {
@@ -163,7 +288,7 @@ impl RenderServer {
         let project_path = self.project_path.clone();
         let project_path_sd = project_path.clone();
         let editor_path = project_path.clone();
-        let app = Router::new()
+        let app = font_routes(Router::new()
             .route("/", get(move || {
                 let html = build(&project_path);
                 async move {
@@ -176,7 +301,7 @@ impl RenderServer {
             .route("/api/config", post(move |body| {
                 save_config_handler(editor_path.clone(), body)
             }))
-            .fallback_service(ServeDir::new(&project_path_sd));
+            .fallback_service(ServeDir::new(&project_path_sd)));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         self.port = port;
@@ -207,5 +332,76 @@ impl RenderServer {
                  <h3>无法加载 polish.toml</h3><pre>{e}</pre></body></html>"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vtrim-fontface-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 库里的字体会被注入 @font-face，且**声明的名字就是配置里那串 id**
+    /// （页面里 `.cap{font-family:"<id>"}` 全靠它才对得上）。
+    #[test]
+    fn injects_font_face_for_library_font() {
+        let root = temp_root("inject");
+        std::fs::write(root.join("My Font.ttf"), b"x").unwrap();
+        let css = font_face_css_in(&root, &["My Font"]);
+        assert!(css.contains("@font-face"), "{css}");
+        assert!(css.contains("font-family:\"My Font\""), "{css}");
+        assert!(css.contains("url(\"/vt-fonts/My%20Font.ttf\")"), "空格要转义: {css}");
+        assert!(css.contains("format(\"truetype\")"), "{css}");
+        // 同名字体在多处出现（字幕 + 封面）只注入一条
+        let once = font_face_css_in(&root, &["My Font", "My Font"]);
+        assert_eq!(once.matches("@font-face").count(), 1, "{once}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 解析不到的字体名（老工程的 `LXGW WenKai` 这类系统族名）**不注入**任何东西 ——
+    /// 注入了就会变成一条 404 的 @font-face，白让浏览器去取。
+    #[test]
+    fn library_miss_injects_nothing() {
+        let root = temp_root("miss");
+        assert_eq!(font_face_css_in(&root, &["LXGW WenKai"]), "");
+        assert_eq!(font_face_css_in(&root, &[""]), "");
+        assert_eq!(font_face_css_in(&root, &["../etc/passwd"]), "");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn css_quotes_are_escaped() {
+        // 输入 `a"b\c` → 双引号包起来，并把里面的 `"` 与 `\` 各加一个反斜杠
+        let expected: String = ['"', 'a', '\\', '"', 'b', '\\', '\\', 'c', '"'].iter().collect();
+        assert_eq!(quote_css("a\"b\\c"), expected);
+        assert_eq!(
+            font_family_with_stack("LXGW WenKai"),
+            "\"LXGW WenKai\",'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif"
+        );
+    }
+
+    /// 两个模板都得留着字体占位符 —— 少了它注入是静默失败的（页面照出，字体不生效）。
+    #[test]
+    fn templates_keep_font_placeholders() {
+        assert!(INDEX_HTML.contains("<!-- __FONT_FACE__ -->"));
+        assert!(crate::cover::COVER_HTML.contains("<!-- __FONT_FACE__ -->"));
+        assert!(crate::cover::COVER_HTML.contains("font-family:__FONT_FAMILY__"));
+    }
+
+    /// 字幕字体的键路径：`polish.toml` 的 `[style.subtitle] font` 在注入的 JSON 里就是这一层。
+    /// 取不到时是空串（不注入），**不报错** —— 所以它需要一条钉子。
+    #[test]
+    fn subtitle_font_read_from_config_json() {
+        let v: serde_json::Value = toml::from_str("[style.subtitle]\nfont = \"simhei\"\n").unwrap();
+        assert_eq!(subtitle_font_of(&v), "simhei");
+        let empty: serde_json::Value = toml::from_str("").unwrap();
+        assert_eq!(subtitle_font_of(&empty), "");
+        let other: serde_json::Value = toml::from_str("[style]\nfoo = 1\n").unwrap();
+        assert_eq!(subtitle_font_of(&other), "");
     }
 }

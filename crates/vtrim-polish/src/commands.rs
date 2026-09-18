@@ -51,7 +51,17 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
             }
 
     let toml_str = example.to_toml_commented()?;
-    std::fs::write(&config_path, toml_str)?;
+    // 落盘放进 polish.toml 的路径锁：任务与同步 handler（缩略图/静音接口的隐式初始化）
+    // 并发初始化同一个目录时，只有一个能建，另一个老老实实报"已存在"。
+    let write_path = config_path.clone();
+    vtrim_core::filelock::with_path_lock(&config_path, move || -> anyhow::Result<()> {
+        if write_path.exists() {
+            anyhow::bail!("polish.toml already exists at {}", write_path.display());
+        }
+        crate::project::write_atomic(&write_path, &toml_str)?;
+        Ok(())
+    })
+    .await?;
     tracing::info!("  ✓ Created polish.toml");
 
     tracing::info!("  ✓ Created data/  (for parsed output)");
@@ -178,12 +188,15 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
     });
     std::fs::write(data_dir.join("clip-meta.json"), serde_json::to_string_pretty(&meta)?)?;
 
-    // 更新 polish.toml 的 project.name（从 clip.json title 同步）
+    // 更新 polish.toml 的 project.name（从 clip.json title 同步）。
+    // 必须走 `update_polish_toml`（带路径锁）：直接整份覆写会和编辑器/后处理的保存互相
+    // 覆盖 —— 那正是全 crate 统一用它的原因，这里是唯一的漏网之鱼。
     if !title.is_empty() {
-        let mut cfg = project::load_project(project_path)?;
-        cfg.project.name = title.clone();
-        let toml_str = cfg.to_toml_commented()?;
-        std::fs::write(project_path.join("polish.toml"), toml_str)?;
+        let name = title.clone();
+        project::update_polish_toml(project_path, move |cfg| {
+            cfg.project.name = name;
+        })
+        .await?;
         tracing::info!("  ✓ polish.toml: project.name ← {}", title);
     }
 
@@ -296,14 +309,21 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
         project::clamp_segments_to_duration(&mut new_config.segments, video_duration);
         let after = new_config.segments.len();
         if after < before {
-            tracing::info!("  ⚠ Removed {} segment(s) beyond video duration ({:.0}s)", before - after, video_duration);
+            tracing::info!("  ⚠ Removed {} segment(s) beyond video duration ({:.0}s)", before, video_duration);
         }
     }
     new_config.filter.danmaku = dm_filter;
     new_config.filter.highlight = hl_words;
 
-    let toml_str = new_config.to_toml_commented()?;
-    std::fs::write(project_path.join("polish.toml"), toml_str)?;
+    // 只覆盖本次负责的三个字段：LLM 跑的过程中用户改的选框 / 封面 / 屏蔽轨道
+    // （前端是自动保存的）必须留在 polish.toml 里，不能被这次整份写回吞掉。
+    let (segments, dm_filter, hl_words) = (new_config.segments, new_config.filter.danmaku, new_config.filter.highlight);
+    project::update_polish_toml(project_path, move |cfg| {
+        cfg.segments = segments;
+        cfg.filter.danmaku = dm_filter;
+        cfg.filter.highlight = hl_words;
+    })
+    .await?;
 
     tracing::info!("\n✓ polish.toml updated with LLM-generated segments and keywords");
     Ok(())
@@ -718,8 +738,30 @@ pub fn cmd_stickers_test(keywords: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 贴纸包 tag 构建的产出概要。
+#[derive(Debug, Clone, Copy)]
+pub struct PackageBuildReport {
+    /// 参与打标的文件数
+    pub files: usize,
+    /// 实际发出的 LLM 批次数
+    pub batches: usize,
+    /// 生成的 tag 数量
+    pub tags: usize,
+}
+
 /// 预处理贴纸包：用 LLM 分析包内文件并生成 `stickers/<包名>.toml` tags 候选清单。
 pub async fn cmd_stickers_build(package: &str) -> anyhow::Result<()> {
+    build_package_tags(package, &vtrim_core::progress::NoopProgress)
+        .await
+        .map(|_| ())
+}
+
+/// `cmd_stickers_build` 的实现体。WebUI 传入进度桥（复用 `ProgressReporter`：
+/// 每批 LLM 调用上报 `stage_progress`，并在**批次边界**轮询 `cancelled()`）。
+pub async fn build_package_tags(
+    package: &str,
+    progress: &dyn vtrim_core::progress::ProgressReporter,
+) -> anyhow::Result<PackageBuildReport> {
     use crate::assets::sticker_index::{
         list_package_files, package_meta_to_toml, build_package_meta_from_tags,
     };
@@ -733,14 +775,17 @@ pub async fn cmd_stickers_build(package: &str) -> anyhow::Result<()> {
     if files.is_empty() {
         anyhow::bail!("贴纸包内没有图片文件: {}", package_dir.display());
     }
-    tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
 
     let llm_cfg = vtrim_core::config::load_llm_config();
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
         anyhow::bail!("未配置 LLM API key，无法 build 贴纸包 tags (编辑 .vtrim/llm.toml)");
     }
 
-    let file_tags = llm_generate_package_tags(&llm_cfg, &files).await?;
+    tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
+    progress.stage_started("表情包标签");
+    let batches = files.len().div_ceil(PACKAGE_TAG_BATCH);
+
+    let file_tags = llm_generate_package_tags(&llm_cfg, &files, progress).await?;
     let meta = build_package_meta_from_tags(package, &file_tags)
         .ok_or_else(|| anyhow::anyhow!("LLM 未生成有效 tags"))?;
 
@@ -748,19 +793,30 @@ pub async fn cmd_stickers_build(package: &str) -> anyhow::Result<()> {
     let out = dir.join(format!("{package}.toml"));
     std::fs::write(&out, toml_str)?;
     crate::assets::sticker_index::register_package(&dir, package)?;
+    progress.stage_completed("表情包标签");
     tracing::info!("  ✓ 已生成贴纸包清单: {} ({} 个 tag)", out.display(), meta.tags.len());
-    Ok(())
+    Ok(PackageBuildReport {
+        files: files.len(),
+        batches,
+        tags: meta.tags.len(),
+    })
 }
+
+/// 每批喂给 LLM 的文件数：太大输出会被截断，太小则调用次数爆炸。
+const PACKAGE_TAG_BATCH: usize = 120;
 
 /// 调用 LLM 为贴纸包内每个文件生成语义 tags，返回 `(文件名, tags)` 列表。
 async fn llm_generate_package_tags(
     cfg: &vtrim_core::config::LlmConfig,
     files: &[String],
+    progress: &dyn vtrim_core::progress::ProgressReporter,
 ) -> anyhow::Result<Vec<(String, Vec<String>)>> {
     use vtrim_core::llm::agent::extract_json_object;
     use vtrim_core::llm::LlmClient;
 
-    let client = LlmClient::from_config(cfg)?.with_thinking(Some("disabled"));
+    let client = LlmClient::from_config(cfg)?
+        .with_thinking(Some("disabled"))
+        .with_usage_context(vtrim_core::llm::usage::UsageContext::new("贴纸包标签"));
     let system = "你是贴纸语义标签助手。分析贴纸文件名，输出一个精简的语义 tag 索引。要求：\
         \n- 输出 JSON 对象，key 为语义 tag（情绪/动作/场景词），value 为该 tag 下的文件列表\
         \n- tag 数量控制在 10~20 个，必须是常见情绪/动作词（如 笑、哭、生气、害怕、开心、害羞、呆、紧张、惊讶、得意 等）\
@@ -769,9 +825,15 @@ async fn llm_generate_package_tags(
         \n- 只输出 JSON，不要其他文字";
 
     // 一次调用输出反向索引；文件过多时仍分批，但每批独立输出 tag 索引，最终由聚合层合并同名 tag
-    const BATCH: usize = 120;
+    let total = files.len().div_ceil(PACKAGE_TAG_BATCH) as u64;
+    let mut done = 0u64;
     let mut result = Vec::with_capacity(files.len());
-    for chunk in files.chunks(BATCH) {
+    for chunk in files.chunks(PACKAGE_TAG_BATCH) {
+        // 取消只在批次边界生效（进行中的那次 LLM 调用照常跑完）
+        if progress.cancelled() {
+            anyhow::bail!("任务已取消");
+        }
+        progress.stage_progress(done, total);
         let file_list = serde_json::to_string(chunk)?;
         let user = format!(
             "贴纸文件列表:\n{}\n\n输出 JSON 对象，例如:\n{{\"害怕\": [\"害怕_1.gif\", \"紧张_1.gif\"], \"笑\": [\"笑.gif\"], \"生气\": [\"生气.gif\"]}}",
@@ -795,6 +857,8 @@ async fn llm_generate_package_tags(
                 }
             }
         }
+        done += 1;
+        progress.stage_progress(done, total);
     }
     Ok(result)
 }
@@ -848,7 +912,8 @@ async fn llm_generate_tags(
 ) -> anyhow::Result<()> {
     use vtrim_core::llm::LlmClient;
     let client = LlmClient::new(&cfg.api_key, &cfg.base_url, &cfg.model)
-        .with_thinking(Some("disabled"));
+        .with_thinking(Some("disabled"))
+        .with_usage_context(vtrim_core::llm::usage::UsageContext::new("贴纸扫描标签"));
     let system = "你是贴纸标签生成助手。为每个贴纸生成 3-6 个英文 tags（情绪/动作/场景词，供英文 keyword 匹配，如 love happy laugh shock game）。";
 
     let mut tagged = 0;

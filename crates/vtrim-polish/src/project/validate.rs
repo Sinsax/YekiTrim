@@ -6,6 +6,49 @@ pub fn load_project(project_path: &Path) -> anyhow::Result<ProjectFile> {
     load_config_from(project_path, "polish.toml")
 }
 
+/// **读-改-写 polish.toml**：`cmd_llm` / `cmd_process` / `cmd_cover` 这些长任务落盘都走这里。
+///
+/// 语义是"只覆盖我负责的字段"——闭包拿到的基线是**磁盘此刻的最新内容**，所以 LLM 剪辑
+/// 跑了两分钟期间用户存的选框 / 封面 / 屏蔽轨道不会被结尾那次整份覆写吞掉（以前是开头
+/// `load_project()` 读一次、结束把内存里那份写回去，中间的改动全没了）。
+///
+/// 锁是 `vtrim_core::filelock` 的路径锁（与服务端 handler 同一把，同进程内串行）；
+/// 闭包只做内存改动，写文件在本函数内完成。
+pub async fn update_polish_toml<F>(project_path: &Path, edit: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut ProjectFile),
+{
+    let config_path = project_path.join("polish.toml");
+    let write_path = config_path.clone();
+    let dir = project_path.to_path_buf();
+    vtrim_core::filelock::with_path_lock(&config_path, move || -> anyhow::Result<()> {
+        let mut cfg = load_project(&dir)?;
+        edit(&mut cfg);
+        let raw = cfg.to_toml_commented()?;
+        write_atomic(&write_path, &raw)?;
+        Ok(())
+    })
+    .await
+}
+
+/// 原子写配置文件：先写同目录临时文件再 rename。
+///
+/// 渲染/后处理是被父进程按 pid **杀**的（取消）——直接 `fs::write` 有可能留下半个
+/// polish.toml，下次加载直接报 TOML 解析错误，整个片段打不开。
+pub fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, contents)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// 从项目目录加载指定名称的配置文件
 pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<ProjectFile> {
     let config_path = project_path.join(filename);
@@ -17,7 +60,10 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
         );
     }
     let raw = std::fs::read_to_string(&config_path)?;
-    let mut config: ProjectFile = toml::from_str(&raw)?;
+    // 老工程的 `duration` → `end` 在反序列化前升级（见 project/legacy.rs）
+    let toml_value: toml::Value = toml::from_str(&raw)?;
+    let json = super::legacy::upgrade_toml_value(&toml_value)?;
+    let mut config: ProjectFile = serde_json::from_value(json)?;
     strip_blocked_sticker_sources(&mut config.sticker_source);
     fill_default_local_packages(&mut config.sticker_source);
     Ok(config)
@@ -108,7 +154,79 @@ pub fn validate_project(config: &ProjectFile, project_path: &Path) -> Vec<String
 
 #[cfg(test)]
 mod tests {
-    use super::strip_blocked_sticker_sources;
+    use super::{strip_blocked_sticker_sources, update_polish_toml, load_project, write_atomic};
+    use crate::project::{MuteRange, ProjectFile};
+    use vtrim_render_core::types::Point;
+
+    /// 临时精修工程：只放一份 polish.toml（`example()` 起手）。
+    fn tmp_project(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vtrim-rmw-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = ProjectFile::example();
+        std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        dir
+    }
+
+    /// 原子写：内容整体替换、不留下临时文件（取消渲染是**杀进程**的，
+    /// 半个 polish.toml 会让片段直接打不开）。
+    #[test]
+    fn write_atomic_replaces_and_cleans_up() {
+        let dir = tmp_project("atomic");
+        let path = dir.join("polish.toml");
+        write_atomic(&path, "a = 1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 1\n");
+        write_atomic(&path, "b = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b = 2\n");
+        assert!(!path.with_extension("toml.tmp").exists(), "临时文件要清掉");
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "目录里不该有残留: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **长任务落盘只写自己负责的字段**：LLM 剪辑跑着的时候用户存的选框 /
+    /// 屏蔽轨道 / 封面不能被结尾那次写回吞掉（用户报的"改了没生效"根因）。
+    #[tokio::test]
+    async fn update_polish_toml_keeps_concurrent_edits() {
+        let dir = tmp_project("keep");
+        // ① 任务开头读一次（模拟 cmd_llm 的起始 load，之后不再看磁盘）
+        let snapshot = load_project(&dir).unwrap();
+
+        // ② 任务跑的过程中，用户存了选框（走的是同一把路径锁的读-改-写）
+        update_polish_toml(&dir, |cfg| {
+            cfg.layout.liver.top_left = Some(Point { x: "11.00%".into(), y: "22.00%".into() });
+            cfg.mute_ranges.push(MuteRange { start: 3.0, end: 5.0 });
+        })
+        .await
+        .unwrap();
+
+        // ③ 任务结束落盘：只写它负责的 segments / filter
+        let mut segments = snapshot.segments.clone();
+        segments.truncate(1);
+        update_polish_toml(&dir, move |cfg| {
+            cfg.segments = segments;
+            cfg.filter.highlight = vec!["新关键词".into()];
+        })
+        .await
+        .unwrap();
+
+        let after = load_project(&dir).unwrap();
+        let tl = after.layout.liver.top_left.expect("并行改的选框必须还在");
+        assert_eq!(tl.x, "11.00%");
+        assert_eq!(tl.y, "22.00%");
+        assert_eq!(after.mute_ranges.len(), 1, "并行改的屏蔽轨道必须还在");
+        assert!(after.filter.highlight.iter().any(|w| w == "新关键词"), "本次负责的字段要写进去");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn strips_irasu_keeps_others() {

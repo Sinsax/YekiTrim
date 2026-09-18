@@ -52,11 +52,17 @@ pub fn unique_output_path(path: &Path) -> std::path::PathBuf {
 }
 
 pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
+    tracing::info!(
+        "  Rendering pipeline...（{} 构建{})",
+        if cfg!(debug_assertions) { "debug" } else { "release" },
+        if cfg!(debug_assertions) { "，逐帧的字节处理比 release 慢得多，出片请用打包版" } else { "" }
+    );
     // 自动先跑 process（幂等）
+    let t_process = std::time::Instant::now();
     if let Err(e) = process::cmd_process(project_path).await {
         tracing::info!("  ⚠ Process before render: {}", e);
     }
-    tracing::info!("  Rendering pipeline...");
+    tracing::info!("  ⏱ process {:.1}s", t_process.elapsed().as_secs_f64());
     let start_time = std::time::Instant::now();
 
     let config = project::load_project(project_path)?;
@@ -98,10 +104,12 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // 网页服务器仅预览/Chrome 出片需要；wgpu 出片不需要
     let server_url = if renderer == RenderBackendKind::Chrome {
         tracing::info!("\n  -- Server --");
+        let t = std::time::Instant::now();
         let injected_html = Some(render::server::RenderServer::build_html(project_path));
         let server_port =
             render::server::start_file_server(project_path.to_path_buf(), injected_html.clone())
                 .await?;
+        tracing::info!("  ⏱ 起服务 {:.1}s", t.elapsed().as_secs_f64());
         Some(format!("http://127.0.0.1:{}/?capture=1", server_port))
     } else {
         None
@@ -109,24 +117,35 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
     // 提取 sound data：wgpu 路径用 Rust 纯函数，Chrome 路径仍走页面协议
     tracing::info!("  -- Sound data --");
+    let t_sound = std::time::Instant::now();
     let sfx_data = if renderer == RenderBackendKind::Chrome {
         export_sound_data(server_url.as_deref().unwrap()).await?
     } else {
         collect_sound_events(&config)
     };
-    tracing::info!("  v {} sound events", sfx_data.len());
+    tracing::info!(
+        "  v {} sound events  ⏱ {:.1}s",
+        sfx_data.len(),
+        t_sound.elapsed().as_secs_f64()
+    );
 
     // 预解码 sticker GIF 帧
     tracing::info!("\n  -- Sticker GIF --");
+    let t_sticker = std::time::Instant::now();
     let sticker_data_json = prepare_sticker_data(project_path, &config);
     let sticker_count: usize = serde_json::from_str::<serde_json::Value>(&sticker_data_json)
         .map(|v| v.as_object().map(|o| o.len()).unwrap_or(0))
         .unwrap_or(0);
-    tracing::info!("  v {} stickers with animated frames", sticker_count);
+    tracing::info!(
+        "  v {} stickers with animated frames  ⏱ {:.1}s",
+        sticker_count,
+        t_sticker.elapsed().as_secs_f64()
+    );
 
     tracing::info!("\n  -- Render chunks ({}) --", parallelism);
     let enc = Ffmpeg::detect_encoder();
     tracing::info!("  Encoder: {}", enc.codec);
+    let t_chunks = std::time::Instant::now();
 
     let chunk_dur = duration / parallelism as f64;
     let mut handles = vec![];
@@ -174,8 +193,10 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             Err(_) => anyhow::bail!("Chunk panicked"),
         }
     }
+    tracing::info!("  ⏱ 分块渲染 {:.1}s", t_chunks.elapsed().as_secs_f64());
 
     tracing::info!("\n  -- Concat --");
+    let t_concat = std::time::Instant::now();
     let tv = project_path.join("_temp_video.mp4");
     let cs: Vec<String> = chunk_files
         .iter()
@@ -185,8 +206,10 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     for f in &chunk_files {
         std::fs::remove_file(f).ok();
     }
+    tracing::info!("  ⏱ 拼接 {:.1}s", t_concat.elapsed().as_secs_f64());
 
     tracing::info!("\n  -- Audio --");
+    let t_audio = std::time::Instant::now();
     let ta = project_path.join("_temp_audio.aac");
     if let Err(e) = Ffmpeg::extract_audio(&resolved.video, &ta.to_string_lossy()) {
         cleanup(project_path, &tv, &ta);
@@ -195,8 +218,10 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
     if !sfx_data.is_empty() {
         tracing::info!("  -- SFX mix ({}) --", sfx_data.len());
-        // 实时响度曲线 (ebur128 每 0.1s): 音效按所在时刻的视频响度动态调整
-        let loudness_curve = measure_loudness_curve(&ta.to_string_lossy());
+        // 实时响度曲线 (ebur128 每 0.1s): 音效按所在时刻的视频响度动态调整。
+        // 走缓存版（与出片页同一份），不再每次重跑整段 ebur128。
+        let loudness_curve =
+            measure_loudness_curve_cached(project_path, Path::new(&resolved.video));
         // 段级响度作为曲线测量失败的兜底
         let seg_loudness: Vec<(f64, f64, Option<f64>)> = config
             .segments
@@ -214,12 +239,17 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             |v: Option<f64>| -> f64 { v.map(|x| (0.5 + x).clamp(0.4, 1.2)).unwrap_or(1.0) };
         let ma = project_path.join("_temp_audio_m.aac");
         // 通用响度对齐: 每个音效文件测量自身响度 → gain = 视频时刻响度 - 8dB - 文件响度
-        // 无论音效文件本身多响多轻, 最终都落在「视频响度 - 8dB」, 且实时跟随视频
+        // 无论音效文件本身多响多轻, 最终都落在「视频响度 - 8dB」, 且实时跟随视频。
+        // 同一文件被多个事件引用时只量一次（每个事件各起一个 ffmpeg 是纯浪费）。
+        let mut file_db_cache: HashMap<String, f64> = HashMap::new();
         let se: Vec<_> = sfx_data
             .iter()
             .map(|sd| {
                 let f = project_path.join("sfx").join(sd.file.replace("sfx/", ""));
-                let file_db = measure_audio_loudness(&f.to_string_lossy()).unwrap_or(-14.0);
+                let key = f.to_string_lossy().to_string();
+                let file_db = *file_db_cache
+                    .entry(key.clone())
+                    .or_insert_with(|| measure_audio_loudness(&key).unwrap_or(-14.0));
                 // 事件时刻的视频实时响度 (曲线优先, 段级兜底)
                 let video_db = loudness_curve
                     .iter()
@@ -254,9 +284,11 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             move_file(&lim, &ma)?;
             move_file(&ma, &ta)?;
         }
+        tracing::info!("  ⏱ 音效混音 {:.1}s", t_audio.elapsed().as_secs_f64());
     }
 
     tracing::info!("\n  -- Mux --");
+    let t_mux = std::time::Instant::now();
     let op_path = if Path::new(&resolved.output).is_absolute() {
         PathBuf::from(&resolved.output)
     } else {
@@ -269,6 +301,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("音视频合流失败: {e:#}");
     }
 
+    tracing::info!("  ⏱ 合流 {:.1}s", t_mux.elapsed().as_secs_f64());
+
     // 手动屏蔽区间：导出时直接从成片中剪掉
     let mute_ranges: Vec<(f64, f64)> = config
         .mute_ranges
@@ -276,12 +310,17 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         .filter_map(|r| r.normalized())
         .collect();
     if !mute_ranges.is_empty() {
+        let t_mute = std::time::Instant::now();
         let muted_out = project_path.join("_temp_muted.mp4");
         match Ffmpeg::cut_ranges(&op, &mute_ranges, &muted_out.to_string_lossy()) {
             Ok(_) => {
                 if std::fs::copy(&muted_out, &op_path).is_ok() {
                     std::fs::remove_file(&muted_out).ok();
-                    tracing::info!("  ✂ 已导出去除 {} 个屏蔽区间", mute_ranges.len());
+                    tracing::info!(
+                        "  ✂ 已导出去除 {} 个屏蔽区间（整段重编码 ⏱ {:.1}s）",
+                        mute_ranges.len(),
+                        t_mute.elapsed().as_secs_f64()
+                    );
                 } else {
                     tracing::info!("  ⚠ 屏蔽区间结果写入失败，保留原成片");
                 }
@@ -292,9 +331,11 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
     cleanup(project_path, &tv, &ta);
     // 自动生成封面
+    let t_cover = std::time::Instant::now();
     if let Err(e) = cover::cmd_cover(project_path, Some(&op)).await {
         tracing::info!("  ⚠ Cover generation skipped: {}", e);
     }
+    tracing::info!("  ⏱ 封面 {:.1}s", t_cover.elapsed().as_secs_f64());
     print_final_stats(&op, start_time);
     Ok(())
 }
@@ -337,10 +378,12 @@ pub fn render_chunk_sync(
         chunk_idx,
         frame_count
     );
+    let t_extract = std::time::Instant::now();
     let frames = extract_chunk_frames(video_path, start_sec, end_sec, fps, need_rgba)?;
     if frames.is_empty() {
         anyhow::bail!("ffmpeg produced 0 frames");
     }
+    let extract_secs = t_extract.elapsed().as_secs_f64();
     tracing::debug!(
         "    chunk#{}: got {} frames from pipe",
         chunk_idx,
@@ -353,6 +396,7 @@ pub fn render_chunk_sync(
     ctx.server_url = server_url.map(|s| s.to_string());
     ctx.sticker_data_json = sticker_data_json.to_string();
 
+    let t_render = std::time::Instant::now();
     let mut backend = create_backend(kind, project_path, config)?;
     backend.prepare(&ctx)?;
 
@@ -364,8 +408,10 @@ pub fn render_chunk_sync(
             frames.len()
         );
     }
+    let render_secs = t_render.elapsed().as_secs_f64();
 
     // ---- 输出 ffmpeg (接收渲染后的帧) ----
+    let t_encode = std::time::Instant::now();
     let mut ffmpeg_out = Command::new("ffmpeg")
         .args([
             "-y",
@@ -392,9 +438,21 @@ pub fn render_chunk_sync(
         }
         stdin.flush()?;
     }
-    ffmpeg_out.wait()?;
+    // 退出码必须看：失败时留下的是截断/空 chunk，后面 concat/mux 报的错会与根因无关
+    let status = ffmpeg_out.wait()?;
+    if !status.success() {
+        anyhow::bail!("chunk#{chunk_idx} 编码失败（ffmpeg 退出码 {:?}）", status.code());
+    }
 
-    tracing::info!("    chunk#{}: done  {} frames", chunk_idx, rendered.len());
+    // 三个阶段分开报：出片慢的时候一眼看出是抽帧、页面渲染还是编码卡住
+    tracing::info!(
+        "    chunk#{}: done  {} frames（抽帧 {:.1}s / 渲染 {:.1}s / 编码 {:.1}s）",
+        chunk_idx,
+        rendered.len(),
+        extract_secs,
+        render_secs,
+        t_encode.elapsed().as_secs_f64()
+    );
     Ok(output.to_path_buf())
 }
 
@@ -483,39 +541,73 @@ pub fn inject_assets(project_path: &Path, config_json: &str) -> String {
 /// 仅 "emoji" 来源的 GIF 有动画帧，"irasu" 和 "local" 来源是静态图
 pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) -> String {
     let b64_engine = base64::engine::general_purpose::STANDARD;
-    let mut data: HashMap<String, serde_json::Value> = HashMap::new();
+
+    // ① 收集这份配置真正用到的贴纸（按名字去重，保持首次出现顺序）
+    let mut wanted: Vec<(String, PathBuf)> = Vec::new();
     for seg in &config.segments {
         for ev in &seg.events {
             if let project::Event::Sticker {
                 name: Some(name), ..
             } = ev
             {
-                if name.is_empty() || data.contains_key(name.as_str()) {
+                if name.is_empty() || wanted.iter().any(|(n, _)| n == name) {
                     continue;
                 }
                 let gif_path = project_path
                     .join("assets")
                     .join("stickers")
                     .join(format!("{}.gif", name));
-                if !gif_path.exists() {
-                    continue;
-                }
-                if let Ok(frames) = render::gif::decode_gif_frames_png(&gif_path) {
-                    let frame_b64: Vec<String> =
-                        frames.iter().map(|f| b64_engine.encode(&f.0)).collect();
-                    let delays: Vec<u16> = frames.iter().map(|f| f.1).collect();
-                    data.insert(
-                        name.clone(),
-                        serde_json::json!({
-                            "frames": frame_b64,
-                            "delays": delays,
-                        }),
-                    );
+                if gif_path.exists() {
+                    wanted.push((name.clone(), gif_path));
                 }
             }
         }
     }
-    serde_json::to_string(&data).unwrap_or_else(|_| "{}".into())
+    if wanted.is_empty() {
+        return "{}".into();
+    }
+
+    // ② 解码结果带缓存：GIF 没变（名字 + mtime + 大小一致）就直接复用上次的。
+    //    debug 构建下 6 个贴纸要解 40s（实测），而贴纸资产几乎从不变化。
+    let cache_file = project_path.join("data").join("sticker_frames.json");
+    let key = wanted
+        .iter()
+        .map(|(n, p)| format!("{n}|{}", media_key(p).unwrap_or_default()))
+        .collect::<Vec<_>>()
+        .join(";");
+    if let Ok(raw) = std::fs::read_to_string(&cache_file) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if v.get("key").and_then(|x| x.as_str()) == Some(key.as_str()) {
+                if let Some(data) = v.get("data") {
+                    tracing::debug!("  贴纸帧解码命中缓存（{} 个）", wanted.len());
+                    return data.to_string();
+                }
+            }
+        }
+    }
+
+    // ③ 逐个解码 GIF → PNG 帧 → base64
+    let mut data: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for (name, gif_path) in &wanted {
+        if let Ok(frames) = render::gif::decode_gif_frames_png(gif_path) {
+            let frame_b64: Vec<String> = frames.iter().map(|f| b64_engine.encode(&f.0)).collect();
+            let delays: Vec<u16> = frames.iter().map(|f| f.1).collect();
+            data.insert(
+                name.clone(),
+                serde_json::json!({
+                    "frames": frame_b64,
+                    "delays": delays,
+                }),
+            );
+        }
+    }
+    let json = serde_json::Value::Object(data.clone()).to_string();
+    let _ = std::fs::create_dir_all(project_path.join("data"));
+    let _ = std::fs::write(
+        &cache_file,
+        serde_json::json!({ "key": key, "data": data }).to_string(),
+    );
+    json
 }
 
 /// 用 ffprobe 获取视频文件实际时长 (秒)
@@ -679,6 +771,64 @@ pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
     curve
 }
 
+/// 带磁盘缓存的响度曲线：同一份媒体只跑一次整段 ebur128。
+///
+/// 出片页 (`server::RenderServer::build_html`) 与 `cmd_render` 的混音各要一份曲线，
+/// 以前每次渲染都要重跑两遍；预览服务的 HTML 还是**每个请求**重建 → 每刷一次预览页再烧一遍。
+/// 缓存按「文件名 + mtime + 字节数」失效，落在 `<工程>/data/loudness.json`。
+///
+/// ⚠ 出片混音这里量的是**源视频**而不是抽出来的 `_temp_audio.aac`：两者是同一段音频
+/// （AAC 只是重编码），量出来的曲线差异 ≪1dB，但换来的是可缓存、且与页面用的是同一份曲线。
+pub fn measure_loudness_curve_cached(cache_dir: &Path, media_path: &Path) -> Vec<(f64, f64)> {
+    let cache_file = cache_dir.join("data").join("loudness.json");
+    let key = media_key(media_path);
+    if let Some(key) = key.as_deref() {
+        if let Ok(raw) = std::fs::read_to_string(&cache_file) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if v.get("key").and_then(|x| x.as_str()) == Some(key) {
+                    if let Some(points) = v.get("points").and_then(|p| p.as_array()) {
+                        let curve: Vec<(f64, f64)> = points
+                            .iter()
+                            .filter_map(|p| Some((p.get("t")?.as_f64()?, p.get("db")?.as_f64()?)))
+                            .collect();
+                        if !curve.is_empty() {
+                            tracing::debug!("  响度曲线命中缓存（{} 个采样点）", curve.len());
+                            return curve;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let curve = measure_loudness_curve(&media_path.to_string_lossy());
+    if curve.is_empty() || key.is_none() {
+        return curve; // 量不到就不写缓存，下次再试
+    }
+    let points: Vec<serde_json::Value> = curve
+        .iter()
+        .map(|(t, db)| serde_json::json!({ "t": t, "db": db }))
+        .collect();
+    let _ = std::fs::create_dir_all(cache_dir.join("data"));
+    let _ = std::fs::write(
+        &cache_file,
+        serde_json::json!({ "key": key, "points": points }).to_string(),
+    );
+    curve
+}
+
+/// 缓存键：文件名 + 修改时间(秒) + 字节数（内容变了就失效）。
+fn media_key(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(format!("{name}|{mtime}|{}", meta.len()))
+}
+
 /// 检测音频整体响度 (mean_volume dB)
 pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
     let output = Command::new("ffmpeg")
@@ -705,4 +855,155 @@ pub fn print_final_stats(output: &str, start: std::time::Instant) {
         .map(|m| m.len() as f64 / 1048576.0)
         .unwrap_or(0.0);
     tracing::info!(" FINISHED: {} ({:.1}MB, {:.0}s)", output, size, elapsed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_output_path;
+    use std::path::{Path, PathBuf};
+
+    struct TmpDir(PathBuf);
+
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "vtrim-unique-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&base).unwrap();
+            TmpDir(base)
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 成片与封面共用这一条规则：**同名不覆盖**，已存在就往后找 `_1` / `_2`。
+    /// 用户明确要求过（"如果已经存在导出文件，就加 _n，类似封面的操作"）——
+    /// 别改成覆盖写：`Ffmpeg::mux` 带 `-y`，路径一旦重名就直接盖掉上一份成片。
+    #[test]
+    fn unique_output_path_appends_counter() {
+        let t = TmpDir::new("clip");
+        let base = t.0.join("vtuber-clip.mp4");
+
+        // 不存在 → 原样返回
+        assert_eq!(unique_output_path(&base), base);
+
+        std::fs::write(&base, b"1").unwrap();
+        let one = unique_output_path(&base);
+        assert_eq!(one.file_name().unwrap().to_str().unwrap(), "vtuber-clip_1.mp4");
+
+        std::fs::write(&one, b"2").unwrap();
+        let two = unique_output_path(&base);
+        assert_eq!(two.file_name().unwrap().to_str().unwrap(), "vtuber-clip_2.mp4");
+
+        // 封面同一套（cover.jpg → cover_1.jpg）
+        let cover = t.0.join("cover.jpg");
+        std::fs::write(&cover, b"x").unwrap();
+        assert_eq!(unique_output_path(&cover).file_name().unwrap().to_str().unwrap(), "cover_1.jpg");
+
+        // 无扩展名的路径也要能用
+        let bare = t.0.join("noext");
+        std::fs::write(&bare, b"x").unwrap();
+        assert_eq!(unique_output_path(&bare).file_name().unwrap().to_str().unwrap(), "noext_1");
+
+        // 目录仍在原处（不会把产物写到别的地方）
+        assert_eq!(unique_output_path(Path::new("rel/keep.mp4")), Path::new("rel/keep.mp4"));
+    }
+
+    /// 1×1 GIF89a（透明）：贴纸帧解码缓存的最小素材。
+    const TINY_GIF: &[u8] = &[
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xFF, 0xFF, 0xFF, 0x21, 0xF9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3B,
+    ];
+
+    fn sticker_project(tag: &str) -> TmpDir {
+        let t = TmpDir::new(tag);
+        std::fs::create_dir_all(t.0.join("assets").join("stickers")).unwrap();
+        std::fs::write(t.0.join("assets").join("stickers").join("blob.gif"), TINY_GIF).unwrap();
+        t
+    }
+
+    fn config_with_sticker() -> crate::project::ProjectFile {
+        let mut cfg = crate::project::ProjectFile::example();
+        cfg.segments[0].events = vec![crate::project::Event::Sticker {
+            time: 1.0,
+            end: Some(3.0),
+            keyword: "blob".into(),
+            sticker_tag: None,
+            name: Some("blob".into()),
+            source: None,
+            x: "0%".into(),
+            y: "0%".into(),
+            sfx: None,
+            sfx_volume: None,
+            manual: false,
+        }];
+        cfg
+    }
+
+    /// 贴纸帧解码带缓存：GIF 没变就直接复用（debug 构建下 6 个贴纸要解 40s = 整场渲染的 14%）。
+    /// 缓存必须**按内容失效**：换了 GIF 就得重新解，否则贴纸会一直显示旧图。
+    #[test]
+    fn sticker_frames_are_cached_and_invalidated_on_change() {
+        let t = sticker_project("stk-cache");
+        let cfg = config_with_sticker();
+
+        let first = super::prepare_sticker_data(&t.0, &cfg);
+        assert!(first.contains("blob"), "首次应解出贴纸帧: {first}");
+        let cache = t.0.join("data").join("sticker_frames.json");
+        assert!(cache.exists(), "缓存文件应落盘");
+
+        // 第二次：命中缓存，内容一致
+        let second = super::prepare_sticker_data(&t.0, &cfg);
+        assert_eq!(first, second);
+
+        // 换掉 GIF（内容 + 大小都变）→ 缓存 key 失效，重新解码
+        let gif = t.0.join("assets").join("stickers").join("blob.gif");
+        let mut bigger = TINY_GIF.to_vec();
+        bigger.extend_from_slice(&[0u8; 16]);
+        std::fs::write(&gif, &bigger).unwrap();
+        let cached_raw = std::fs::read_to_string(&cache).unwrap();
+        let _ = super::prepare_sticker_data(&t.0, &cfg);
+        let new_raw = std::fs::read_to_string(&cache).unwrap();
+        assert_ne!(cached_raw, new_raw, "GIF 变了之后缓存 key 必须变");
+    }
+
+    /// 只读诊断：贴纸帧解码的耗时（未命中 vs 命中缓存）。会写/删该工程的缓存文件。
+    ///
+    /// `VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diagnose_sticker_cache() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("需要 VT_POLISH_DIR=<项目目录>");
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let cfg = crate::project::load_project(&dir).expect("加载 polish.toml");
+        let cache = dir.join("data").join("sticker_frames.json");
+        if cache.exists() {
+            eprintln!("已有缓存: {} 字节", std::fs::metadata(&cache).map(|m| m.len()).unwrap_or(0));
+        }
+        let _ = std::fs::remove_file(&cache);
+
+        let t0 = std::time::Instant::now();
+        let cold = super::prepare_sticker_data(&dir, &cfg);
+        let cold_secs = t0.elapsed().as_secs_f64();
+
+        let t1 = std::time::Instant::now();
+        let warm = super::prepare_sticker_data(&dir, &cfg);
+        let warm_secs = t1.elapsed().as_secs_f64();
+
+        assert_eq!(cold, warm, "命中缓存的输出必须与重新解码一致");
+        eprintln!(
+            "贴纸帧 JSON {} 字节：解码 {cold_secs:.1}s → 命中缓存 {warm_secs:.2}s",
+            cold.len()
+        );
+    }
 }

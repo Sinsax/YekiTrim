@@ -244,6 +244,10 @@ fn default_true() -> bool { true }
 pub struct CoverConfig {
     #[serde(default)]
     pub image: String,
+    /// 封面标题字体：字体库（`<程序目录>/resources/fonts/`）里的 id，空 = 系统字体栈。
+    /// 与 `style.subtitle.font` 同一套取值规则（见 `vtrim_core::fonts`）。
+    #[serde(default)]
+    pub font: String,
     #[serde(default = "default_cover_frame_pos")]
     pub frame_pos: f64,
     #[serde(default = "default_cover_font_size")]
@@ -290,17 +294,31 @@ pub struct CoverConfig {
     /// 可叠加封面效果
     #[serde(default)]
     pub effects: Vec<CoverEffect>,
-    /// 背景手动平移（1920×1080 像素坐标，预览拖拽）
+    /// 帧层（当前帧清晰图）的位移/缩放：**活字段**，写进模板 `#frame img` 的 transform。
+    /// 背景（纯色 / 模糊帧）铺在帧**之下**，这几个值和背景无关；设计器拖预览/滚轮就是改它们。
     #[serde(default)]
     pub bg_x: f64,
     #[serde(default)]
     pub bg_y: f64,
-    /// 背景手动缩放倍率（预览滚轮）
+    /// 帧层缩放倍率（在 `layout.liver` 聚焦基准 1.3/1.4 之上再乘）
     #[serde(default = "default_cover_bg_zoom")]
     pub bg_zoom: f64,
+    /// 背景模式: color（纯色，默认黑）/ blur（当前帧模糊平铺）。
+    /// 只认这两个值，其它（含老的 frame）一律当 color —— 背景不再有"截帧"模式。
+    #[serde(default = "default_cover_bg_mode")]
+    pub bg_mode: String,
+    /// 纯色背景的颜色（bg_mode = color；同时是 blur 模式漏边时的兜底色）
+    #[serde(default = "default_cover_bg_color")]
+    pub bg_color: String,
+    /// 模糊平铺的模糊倍率（bg_mode = blur，1.0 = 基准 28px）
+    #[serde(default = "default_cover_blur_scale")]
+    pub blur_scale: f64,
 }
 
 fn default_cover_bg_zoom() -> f64 { 1.0 }
+fn default_cover_bg_mode() -> String { "color".into() }
+fn default_cover_bg_color() -> String { "#000000".into() }
+fn default_cover_blur_scale() -> f64 { 1.0 }
 fn default_cover_effect_color() -> String { "#000000".into() }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -315,6 +333,9 @@ pub struct CoverEffect {
     /// overlay 等特效使用的颜色
     #[serde(default = "default_cover_effect_color")]
     pub color: String,
+    /// kind = emoji 时贴的那串表情字符（会做 HTML 转义后再进模板）
+    #[serde(default)]
+    pub text: String,
 }
 fn default_cover_frame_pos() -> f64 { 0.4 }
 fn default_cover_font_size() -> u32 { 120 }
@@ -327,7 +348,11 @@ fn default_cover_gradient_dir() -> String { "left".into() }
 fn default_cover_vignette() -> f64 { 0.08 }
 fn default_cover_letter_spacing() -> String { "8px".into() }
 fn default_cover_line_height() -> f64 { 1.7 }
-fn default_cover_text_align() -> String { "center".into() }
+/// 默认左对齐：与默认预设「左文」（`CoverDesigner.vue` 的 presets、
+/// `cover.rs::cmd_cover_template` 的 left-text 分支）以及默认 `text_x = "35%"` 一致 ——
+/// 这三处以前是「预设左文、配置居中」，自相矛盾。
+/// 注意：已有工程的 `polish.toml` 里显式写着 `text_align = "center"`，字段存在就不走默认，不受影响。
+fn default_cover_text_align() -> String { "left".into() }
 fn default_cover_shadow_dir() -> String { "left".into() }
 fn default_cover_shadow_intensity() -> f64 { 1.0 }
 fn default_cover_effect_amount() -> f64 { 0.3 }
@@ -337,6 +362,7 @@ impl Default for CoverConfig {
     fn default() -> Self {
         Self {
             image: String::new(),
+            font: String::new(),
             frame_pos: default_cover_frame_pos(),
             font_size: default_cover_font_size(),
             stroke: default_cover_stroke(),
@@ -358,6 +384,9 @@ impl Default for CoverConfig {
             bg_x: 0.0,
             bg_y: 0.0,
             bg_zoom: default_cover_bg_zoom(),
+            bg_mode: default_cover_bg_mode(),
+            bg_color: default_cover_bg_color(),
+            blur_scale: default_cover_blur_scale(),
         }
     }
 }
@@ -439,9 +468,12 @@ impl ProjectFile {
                         "shadow_dir" => "# 阴影方向: none/left/right/top/bottom/center",
                         "shadow_intensity" => "# 阴影强度 0~1",
                         "effects" => "# 可叠加封面效果",
-                        "bg_x" => "# 背景水平偏移(px)",
-                        "bg_y" => "# 背景垂直偏移(px)",
-                        "bg_zoom" => "# 背景缩放倍率",
+                        "bg_x" => "# 帧层(当前帧)水平偏移(px)：拖动预览即可改",
+                        "bg_y" => "# 帧层(当前帧)垂直偏移(px)",
+                        "bg_zoom" => "# 帧层(当前帧)缩放倍率(在 liver 聚焦基准之上再乘)",
+                        "bg_mode" => "# 背景模式(在帧之下): color(纯色,默认黑)/blur(当前帧模糊平铺)",
+                        "bg_color" => "# 纯色背景颜色, 默认 #000000 (bg_mode=color；blur 漏边时的兜底色)",
+                        "blur_scale" => "# 模糊倍率 (bg_mode=blur，1.0 = 基准 28px)",
                         _ => "",
                     };
                     if !comment.is_empty() {
@@ -506,7 +538,9 @@ impl ProjectFile {
                 continue;
             }
             if trimmed == "[layout.sticker_area]" {
-                result.push_str("# sticker_area: 贴纸落点区域 (后处理时贴纸随机落在框/格子内)\n");
+                result.push_str("# sticker_area: 贴纸落点**偏好**（已废弃：process 每次按 人物/字幕/弹幕 动态推导安全区）\n");
+                result.push_str("#   自由选框(top_left/bottom_right) 仍作偏好：里面有安全位就优先用，没有就自动放弃;\n");
+                result.push_str("#   grid 不再参与落点。要固定某张贴纸的位置请直接手改该事件的 x/y。\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
@@ -558,7 +592,7 @@ impl ProjectFile {
             if trimmed == "events = []" {
                 result.push_str("# 在此 segment 中添加事件:\n");
                 result.push_str("# [[segments.events]]\n");
-                result.push_str("# [[segments.events]]\n# type = \"camera\"\n# time = 0\n# duration = 10\n# zoom = \"中\"\n");
+                result.push_str("# [[segments.events]]\n# type = \"camera\"\n# time = 0\n# end = 10\n# zoom = \"中\"\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
@@ -634,6 +668,22 @@ impl ProjectFile {
 
 
 
+/// 把运镜的结束时间夹到「从它起点到所属分段结束」为止。
+///
+/// 分段被屏蔽区间切开、或被截断到视频长度之后，事件自带的 `end` 还停在切分前的值。
+/// 对瞬时特效无所谓（窗口是固定常数、由 `normalize_event_ends` 接管），但运镜的
+/// `end - time` 决定过渡窗口、位移事件还靠它决定「移到那里」的时机，不夹就会移到段外。
+fn clamp_camera_end(seg: &mut Segment) {
+    for ev in seg.events.iter_mut() {
+        let room = (seg.end - ev.get_time()).max(0.0);
+        if let Event::Camera { time, end, .. } = ev {
+            if let Some(e) = *end {
+                *end = Some(*time + (e - *time).min(room).max(0.1));
+            }
+        }
+    }
+}
+
 /// 将分段按屏蔽区间切开：被屏蔽的部分从 segments 中移除，剩下的部分保留原时间坐标。
 pub fn split_segments_by_mute_ranges(segments: &mut Vec<Segment>, ranges: &[MuteRange]) {
     let ranges: Vec<(f64, f64)> = ranges.iter().filter_map(|r| r.normalized()).collect();
@@ -676,6 +726,7 @@ pub fn split_segments_by_mute_ranges(segments: &mut Vec<Segment>, ranges: &[Mute
                 .cloned()
                 .collect();
             ns.events = kept_events;
+            clamp_camera_end(&mut ns);
             out.push(ns);
         }
     }
@@ -691,6 +742,7 @@ pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
         seg.end = seg.end.min(duration);
         // 移除 segment 内起始时间 >= duration 的事件
         seg.events.retain(|e| e.get_time() < duration);
+        clamp_camera_end(seg);
     }
 }
 
@@ -925,5 +977,77 @@ mod tests {
         lay["sticker_area"] = cleared;
         let back: Layout = serde_json::from_value(lay).expect("清除选框后应可解析");
         assert_eq!(region_rects(&back.sticker_area).len(), 2, "清除后回到九宫格");
+    }
+}
+
+#[cfg(test)]
+mod camera_clamp_tests {
+    use super::*;
+
+    fn cam(time: f64, dur: f64) -> Event {
+        Event::Camera {
+            time,
+            end: Some(time + dur),
+            zoom: "中".into(),
+            origin: "50% 50%".into(),
+            anchor: None,
+            anchor_to: None,
+            to_origin: None, cut: false,
+            manual: false,
+        }
+    }
+
+    fn seg(start: f64, end: f64, events: Vec<Event>) -> Segment {
+        Segment {
+            start,
+            end,
+            fx: "low".into(),
+            note: String::new(),
+            events,
+            extra: Default::default(),
+        }
+    }
+
+    /// 被屏蔽区间切开后，运镜跨度要跟着段一起缩，否则过渡窗口会跑到段外
+    #[test]
+    fn mute_split_clamps_camera_end() {
+        let mut segs = vec![seg(0.0, 10.0, vec![cam(0.0, 10.0)])];
+        let ranges = vec![MuteRange {
+            start: 4.0,
+            end: 6.0,
+        }];
+        split_segments_by_mute_ranges(&mut segs, &ranges);
+        assert_eq!(segs.len(), 2, "{segs:?}");
+
+        // 左半段留着事件：终点从 10 缩到段尾 4
+        let (start, end) = (segs[0].start, segs[0].end);
+        let Event::Camera { time, end: cam_end, .. } = &segs[0].events[0] else {
+            panic!("左半段丢了运镜事件: {:?}", segs[0])
+        };
+        let span = cam_end.unwrap() - *time;
+        assert!(
+            span <= end - start + 1e-9,
+            "跨度 {span} 超出段长 {}",
+            end - start
+        );
+
+        // 右半段的事件起点落在被切掉的区间里 → 整条事件随切掉的部分一起没了。
+        // 这是既有行为，由 process 的 Step 1（给没有运镜的段补默认运镜）兜底，不是缺陷。
+        assert!(
+            segs[1].events.is_empty(),
+            "事件起点在屏蔽区内的应被丢弃: {:?}",
+            segs[1]
+        );
+    }
+
+    /// 截断到视频长度之后同理
+    #[test]
+    fn duration_clamp_shortens_camera() {
+        let mut segs = vec![seg(0.0, 60.0, vec![cam(0.0, 60.0)])];
+        clamp_segments_to_duration(&mut segs, 20.0);
+        let Event::Camera { time, end, .. } = &segs[0].events[0] else {
+            panic!()
+        };
+        assert!((end.unwrap() - *time - 20.0).abs() < 1e-9, "{end:?}");
     }
 }

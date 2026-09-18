@@ -27,6 +27,8 @@ pub struct EventGenTask {
     sticker_source: Vec<String>,
     sfx_blacklist: Vec<String>,
     local_sticker_text: String,
+    /// 切片目录，只用于用量记账归因。
+    project: Option<String>,
 }
 
 impl EventGenTask {
@@ -45,7 +47,14 @@ impl EventGenTask {
             sticker_source,
             sfx_blacklist,
             local_sticker_text,
+            project: None,
         }
+    }
+
+    /// 用量记账归因（链路名 + 切片目录）。
+    pub fn with_project(mut self, project: Option<&std::path::Path>) -> Self {
+        self.project = project.map(vtrim_core::path::display);
+        self
     }
 
     /// 构建一个 segment 一个窗口的 `AgentWindow` 列表。
@@ -101,6 +110,10 @@ impl AgentTask<Vec<Event>> for EventGenTask {
         "精修段事件"
     }
 
+    fn usage_context(&self) -> vtrim_core::llm::usage::UsageContext {
+        vtrim_core::llm::usage::UsageContext::new(self.name()).project(self.project.clone())
+    }
+
     fn build_global_context(&self, _items: &[AgentItem]) -> String {
         String::new()
     }
@@ -122,6 +135,12 @@ impl AgentTask<Vec<Event>> for EventGenTask {
         )
     }
 
+    /// system prompt 的指纹 → 折进窗口 id：改了 prompt 模板 / 贴纸来源 / 音效屏蔽之后
+    /// 重跑，checkpoint 里的旧窗口会失配重算，而不是拿回上一版的结果。
+    fn prompt_fingerprint(&self) -> String {
+        vtrim_core::llm::agent::fingerprint(&[&self.system_prompt()])
+    }
+
     fn user_prompt(&self, _global: &str, _window_context: &str, _window: &[AgentItem]) -> String {
         // process_window 已覆写，本方法不会被调用；返回空占位。
         String::new()
@@ -130,7 +149,10 @@ impl AgentTask<Vec<Event>> for EventGenTask {
     fn parse_output(&self, content: &str, _window: &[AgentItem]) -> Result<Vec<Event>> {
         let json = extract_json_array(content)?;
         let json = crate::llm::segment::normalize_segments_json(&json);
-        let events: Vec<Event> = serde_json::from_str(&json)?;
+        // 模型偶尔仍按老字段写 `duration` → 统一升级成 `end`（与老配置同一条路）
+        let mut value: Value = serde_json::from_str(&json)?;
+        crate::project::upgrade_event_times(&mut value);
+        let events: Vec<Event> = serde_json::from_value(value)?;
         Ok(events)
     }
 
@@ -157,7 +179,8 @@ impl AgentTask<Vec<Event>> for EventGenTask {
 
         let client = LlmClient::from_config(llm_cfg)?
             .with_timeout(120)
-            .with_thinking(Some("disabled"));
+            .with_thinking(Some("disabled"))
+            .with_usage_context(self.usage_context());
         let system_prompt = self.system_prompt();
         let user_prompt =
             crate::llm::segment::build_events_user_prompt(segment, &self.subtitles, candidate_text);
@@ -170,6 +193,9 @@ impl AgentTask<Vec<Event>> for EventGenTask {
     }
 
     fn load_windows(&self, value: Value) -> Result<Vec<AgentWindow<Vec<Event>>>> {
+        // 老 checkpoint 里的事件还是 `duration` 字段 → 升级后再解析
+        let mut value = value;
+        crate::project::upgrade_event_times(&mut value);
         Ok(serde_json::from_value(value)?)
     }
 }
@@ -185,6 +211,7 @@ pub async fn run_event_agent(
     sfx_blacklist: &[String],
     local_sticker_text: String,
     llm_cfg: &LlmConfig,
+    project: Option<&Path>,
     checkpoint_path: Option<&Path>,
 ) -> anyhow::Result<usize> {
     let task = EventGenTask::new(
@@ -194,9 +221,12 @@ pub async fn run_event_agent(
         sticker_source.to_vec(),
         sfx_blacklist.to_vec(),
         local_sticker_text,
-    );
+    )
+    .with_project(project);
     let windows = task.build_windows::<Vec<Event>>();
-    let agent = vtrim_core::llm::agent::Agent::new(llm_cfg.clone()).with_max_concurrent(3);
+    // 并发跟 .vtrim/llm.toml 的 [llm] max_concurrent（精修没有自己的并发配置项）
+    let agent = vtrim_core::llm::agent::Agent::new(llm_cfg.clone())
+        .with_max_concurrent(llm_cfg.concurrency(None));
 
     let completed = agent
         .run_windows(task, windows, checkpoint_path, None::<tokio::sync::mpsc::Sender<AgentProgress<Vec<Event>>>>)
@@ -246,6 +276,7 @@ pub struct StickerChoiceContext {
 /// 返回 `(segment_index, event_index, 文件名 stem)` 列表。
 pub async fn choose_sticker_files_batch(
     llm_cfg: &LlmConfig,
+    project: Option<&std::path::Path>,
     package_name: &str,
     tag: &str,
     candidates: &[String],
@@ -259,7 +290,11 @@ pub async fn choose_sticker_files_batch(
 
     let client = LlmClient::from_config(llm_cfg)?
         .with_timeout(120)
-        .with_thinking(Some("disabled"));
+        .with_thinking(Some("disabled"))
+        .with_usage_context(
+            vtrim_core::llm::usage::UsageContext::new("精修贴纸挑选")
+                .project(project.map(vtrim_core::path::display)),
+        );
 
     let system = format!(
         "你是直播切片贴纸选择助手。贴纸包「{}」的 tag「{}」下有以下候选文件（必须从其中选择）：\n{}",
