@@ -153,7 +153,7 @@ pub enum Command {
     Ingest(IngestAction),
 
     /// 启动本地 WebUI 服务（浏览器可视化操作全流程）
-    Server(crate::server::ServerArgs),
+    Server(vtrim_server::ServerArgs),
 }
 
 /// 录播姬采集子命令（P3）

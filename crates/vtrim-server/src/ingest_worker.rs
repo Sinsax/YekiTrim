@@ -897,12 +897,12 @@ async fn spawn_pipeline(
     let cancel = state.jobs.cancel_token(&job_id).await;
     let job_for_task = job_id.clone();
     // 自动管线是整段同步代码（转写分钟级）→ 专用任务线程，别占 HTTP worker
-    crate::server::api::spawn_job(jobs.clone(), job_for_task.clone(), move || async move {
+    crate::api::spawn_job(jobs.clone(), job_for_task.clone(), move || async move {
         if handle.wait_start().await.is_err() {
             jobs.complete(&job_for_task).await;
             return;
         }
-        let result = crate::server::api::core::run_stages(
+        let result = crate::api::core::run_stages(
             config_file,
             stages,
             false,

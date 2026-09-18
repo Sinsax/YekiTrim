@@ -608,7 +608,7 @@ fn is_safe_method(m: &Method) -> bool {
 /// **以前这里只有前端一条提示横幅**：服务端不拦，任何直接打 API 的客户端（脚本、curl、
 /// 别人写的前端）都能拿这个会话做所有事。而初始密码会同时写进日志文件与
 /// `initial-admin-password.txt`，等于把凭证摊在磁盘上 —— 所以它必须是一条**服务端**规则，
-/// 与启动时"仍用初始密码则拒绝监听非 loopback"（`server/mod.rs`）配套。
+/// 与启动时"仍用初始密码则拒绝监听非 loopback"（`lib.rs`）配套。
 ///
 /// ⚠️ 必须挂在 `require_user` **内层**（`require_user` 先跑并写入 [`CurrentUser`]）；
 /// 反过来挂就看不到用户，等于不生效。挂载顺序见 `api::router` 的注释。

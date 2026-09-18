@@ -1,12 +1,23 @@
 //! Server 支持：axum HTTP + WebUI + JobManager。
 //!
+//! 独立 crate（原 `vtrim-cli/src/server/`）。分层是**单向**的：
+//!
+//! ```text
+//! vtrim-core ─┐
+//! vtrim-polish ┼─→ vtrim-service ──→ vtrim-server ──→ vtrim-cli（只剩入口）
+//!             └──────────────────────────────────────┘
+//! ```
+//!
 //! - `vtrim server` 子命令启动
 //! - REST API 覆盖项目/状态/配置/数据/管线/精修
 //! - SSE 推送任务日志与进度
 //! - **账号与会话**：启动即引导 admin 账号；除 `/api/health`、`/api/auth/login`
-//!   外的全部接口都要求会话（含 loopback，无免登录分支，见 `server/auth.rs`）
+//!   外的全部接口都要求会话（含 loopback，无免登录分支，见 `auth.rs`）
 //! - WebUI = `webui/dist`（Vue3 构建产物）；**不再内嵌单文件页面**，
 //!   缺失时由 `web::webui_fallback` 返回 503 + 构建指引
+//!
+//! **不变式：本 crate 只依赖 `vtrim-service`，绝不反向。** 服务端要用的领域逻辑
+//! 一律通过 `vtrim-service` 暴露（`vtrim-service` 也因此不能 `use vtrim_server::*`）。
 //!
 //! 设计文档: docs/superpowers/specs/2026-09-03-vtrim-webui-design.md
 //!           docs/superpowers/specs/2026-09-12-multi-user-server-design.md（§3.5 / §10.1）

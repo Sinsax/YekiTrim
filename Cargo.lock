@@ -3229,29 +3229,16 @@ name = "vtrim-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
- "base64",
- "chrono",
  "clap",
- "futures-util",
  "indicatif",
- "mime_guess",
- "rand 0.8.6",
- "reqwest",
- "rusqlite",
- "scrypt",
- "serde",
  "serde_json",
- "subtle",
- "tempfile",
  "tokio",
- "tokio-stream",
  "toml",
- "tower",
  "tracing",
  "tracing-subscriber",
  "vtrim-core",
  "vtrim-polish",
+ "vtrim-server",
  "vtrim-service",
 ]
 
@@ -3321,6 +3308,32 @@ dependencies = [
  "swash",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "vtrim-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "clap",
+ "futures-util",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "vtrim-core",
+ "vtrim-polish",
+ "vtrim-service",
 ]
 
 [[package]]
