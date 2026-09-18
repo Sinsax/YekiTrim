@@ -31,7 +31,7 @@ fn setup_tracing() {
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .with(server::logbus::LogBusLayer::new(server::logbus::bus()))
+        .with(service::logbus::LogBusLayer::new(service::logbus::bus()))
         .init();
 }
 

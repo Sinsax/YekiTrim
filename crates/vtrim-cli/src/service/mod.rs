@@ -20,6 +20,7 @@ pub mod doctor;
 pub mod ingest;
 pub mod instancelock;
 pub mod invite;
+pub mod logbus;
 pub mod projects;
 pub mod recorder;
 pub mod usage;

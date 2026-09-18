@@ -11,6 +11,11 @@
 //!
 //! **纪律**：日志层自身绝不 panic、绝不阻塞调用方 —— 任何 IO 失败静默忽略，
 //! 否则"记日志"会把被记录的那件事一起弄挂。
+//!
+//! **为什么放在 `service/` 而不是 `server/`**：`LogBusLayer` 是 CLI 唯一需要 server
+//! 侧东西的地方（`main.rs` 的 subscriber 上挂它）。它若留在 `server/`，CLI 就会反向
+//! `use` 服务端，`service → server` 的单向依赖就断了 —— 那正是把服务端拆成独立 crate
+//! 的前提。它本身也不碰 HTTP，只依赖 `db`，本来就属于应用层。
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -22,7 +27,7 @@ use serde::Serialize;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context, Layer};
 
-use crate::service::db;
+use super::db;
 
 /// 环形缓冲条数（面板"最近 2000 条"）+ SSE 广播队列长度。
 const RING_CAP: usize = 2000;
@@ -282,8 +287,18 @@ fn level_str(level: &tracing::Level) -> &'static str {
     }
 }
 
+/// 面板里显示的模块名：剥掉 crate 前缀，只留 `http` / `job` / `api::…` 这种。
+///
+/// 要把三个前缀都列上：日志来自三个 crate（service / server / cli），而 target 既可能是
+/// `module_path!()` 推出来的，也可能是调用点硬写的字符串字面量。少一个前缀，面板里就会
+/// 突然出现 `vtrim_server::api` 这种带 crate 名的长 target —— 只是难看，但很难查。
 fn short_target(target: &str) -> String {
-    target.strip_prefix("vtrim_cli::").unwrap_or(target).to_string()
+    for prefix in ["vtrim_cli::", "vtrim_service::", "vtrim_server::"] {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    target.to_string()
 }
 
 #[cfg(test)]
@@ -309,6 +324,19 @@ mod tests {
         assert_eq!(recs[0].target, "http");
         assert_eq!(recs[0].text, "GET /api/me → 200 (3ms) user=admin");
         assert_eq!(recs[0].seq, 1);
+    }
+
+    /// 三个 crate 的前缀都要剥掉。少一个（最典型的是只写 `vtrim_cli::`）
+    /// 面板里就会冒出 `vtrim_server::api` 这种带 crate 名的 target —— 不报错、只是难看，
+    /// 属于"搬家之后没人会回头查"的那类退化。
+    #[test]
+    fn short_target_strips_every_crate_prefix() {
+        assert_eq!(short_target("vtrim_cli::http"), "http");
+        assert_eq!(short_target("vtrim_service::db"), "db");
+        assert_eq!(short_target("vtrim_server::api::router"), "api::router");
+        // 不是自家 crate 的 target 原样保留（第三方库的日志也在总线里）
+        assert_eq!(short_target("axum::serve"), "axum::serve");
+        assert_eq!(short_target("http"), "http");
     }
 
     #[test]
