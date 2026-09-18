@@ -4,10 +4,42 @@
 
 ## 架构
 
-Cargo workspace, 三个 crate:
-- `crates/vtrim-core` — 管线编排 + 全部业务逻辑
-- `crates/vtrim-cli` — CLI 入口 (clap)
+Cargo workspace, 六个 crate（分层是**单向**的，见 `docs/plan/service-direction-review.md`）:
+
+```
+vtrim-core ─┐
+vtrim-polish ┼─→ vtrim-service ──→ vtrim-server ──→ vtrim-cli
+            └──────────────────────────────────────┘
+```
+
+- `crates/vtrim-core` — 管线编排 + ASR / 事件检测 / 剪切
 - `crates/vtrim-polish` — GSAP 精修引擎（从 vtedit 合并）
+- `crates/vtrim-render-core` — GPU 绘制原语（被 polish / wasm 用）
+- `crates/vtrim-service` — CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / 用量）
+- `crates/vtrim-server` — axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块
+- `crates/vtrim-cli` — 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim`
+- `crates/vtrim-wasm` — **不在 workspace members 里**（独立 target），只依赖 `vtrim-render-core`
+- `crates/xtask` — 构建/打包/产物门禁（`cargo xtask scan|package`）
+
+**依赖方向的硬规矩**：
+- `vtrim-service` **绝不能** `use vtrim_server::*`（它能被抽出来的全部理由）；
+- `vtrim-server` 只依赖 `vtrim-service`，不碰 `vtrim_cli`；
+- CLI 侧要用服务端能力，只能经 `vtrim-server` 暴露的 `run()` / `ServerArgs` 进入。
+
+⚠️ `wgpu-render` feature 的**使用点全在 `vtrim-server`**（`api/` ×3、`model.rs` ×5）。
+`vtrim-cli` 声明的是**转发**（`wgpu-render = ["vtrim-server/wgpu-render"]`），
+`vtrim-server` 再转发给 `vtrim-polish`。漏掉转发不会报错，只会让 `/api/health` 的
+`wgpu_render` 报 false、GPU 后端静默不编译进去 —— 动构建特性要实测这一条。
+
+⚠️ `webui/dist` 的位置靠 `CARGO_MANIFEST_DIR/../..`（`vtrim-server/src/web.rs`），
+按 crate 深度算。**别把 `vtrim-server` 挪到更深的目录**，否则 WebUI 静默 404。
+
+`crates/vtrim-server/src/api/` 按领域分模块（每个文件只服务一个领域）：
+`routes`（**唯一的路由权威**）+ 共享底座 `mod.rs` + `auth` / `invite` / `logs` / `rooms` /
+`config` / `projects` / `project_data` / `pipeline` / `render` / `polish` / `core`。
+⚠️ 子模块里的 `super::` 是 `api`、**不是 crate 根**；`api/auth.rs` 与 `crate::auth` 同名不同物，
+新增代码请写全 `crate::auth`。子模块对外的项一律 `pub(super)`（只有 `api` 及其后代可见），
+被两个以上模块用到的 helper 放 `api/mod.rs`。
 
 **Stage 编号**: AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)，连续无跳过。
 
@@ -87,7 +119,7 @@ vtrim polish stickers scan [--llm]       # 本地贴纸: 生成/更新 stickers.
 
 `vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
 `vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.vtrim/llm.toml`（`[llm]`，覆盖写）。
-`vtrim server` 启动时若程序配置缺失会自动补齐（`service::ensure_global_config`）：只创建缺失文件；
+`vtrim server` 启动时若程序配置缺失会自动补齐（`vtrim_service::ensure_global_config`）：只创建缺失文件；
 已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。
 设置页表单只覆盖常用项，保存走 `config::patch_config_file`（toml_edit 合并，保留其他 section 与注释），
 表单数据源用 `/api/config` 的 `global_config`（global-only），不能用 merged 的 `config`。
@@ -201,7 +233,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   `AgentTask::usage_context()`（默认取 `name()`，事件检测/订正/精修段事件各自补 project）；
   非 Agent 的构造点（精修分段/关键词、贴纸挑选、贴纸包标签、封面文案、LLM 测试）显式
   `.with_usage_context(...)`。**新增链路记得挂 context**，否则统计里是空 label。
-- **落地**：core 只 `emit`，写库由 CLI/server 侧装的 sink 负责——`service::usage::DbSink`
+- **落地**：core 只 `emit`，写库由 CLI/server 侧装的 sink 负责——`vtrim_service::usage::DbSink`
   （进程级默认 sink，`usage::set_default_sink`；`LlmClient::with_usage_sink` 是测试用的私有注入）。
   安装点两处：`server::run`（`AuthService::open` 之后）与 CLI 的 `process/detect/correct/polish` 分支。
   写库失败只 warn，**绝不影响调用结果**。
@@ -215,7 +247,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   **缓存率 = Σcached ÷ Σprompt**（只算输入侧、先求和再相除，不是每次调用比率的平均；
   分母不掺 completion —— 缓存只作用于输入）。`prompt_tokens == 0` 显示 `—`（老中转没报 usage /
   失败行 token 全 0，不是"没命中"）。单发链路（封面文案等）天然 0%、每次任务的第一个窗口必然 0%，
-  所以看比率要按「按链路」那张表。实现只此一份：`service::usage::cache_rate`（CLI），
+  所以看比率要按「按链路」那张表。实现只此一份：`vtrim_service::usage::cache_rate`（CLI），
   前端 `LlmUsage.vue` 的 `cacheRate` 是镜像。
 - 每次调用还会打一行结构化日志 `LLM 调用 label=… prompt_tokens=… cached_tokens=… latency_ms=…`
   （logbus 渲染成 `k=v` 进设置页「运行日志」与文件日志；失败是 `LLM 调用失败` + status）。
@@ -364,7 +396,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   十几个并发（前端一次页面加载就会打出一串）就能把 worker 全占住 —— runtime 连 accept
   都排不上，浏览器表现就是"服务器无法建立连接"，而日志里一行都没有（请求根本没处理完）。
   实测样本：`GET /api/projects` 有 2288ms 的记录，日志里 1 秒内 52 次连发。
-  - **handler 里的同步文件访问**一律走 `api.rs::blocking(f)`（`spawn_blocking`，512 线程的
+  - **handler 里的同步文件访问**一律走 `api::blocking(f)`（`spawn_blocking`，512 线程的
     blocking 池），worker 留给 accept 与轻量接口。已覆盖：`projects_list` / `project_list` /
     `project_data_{status,events,clips,polish,transcript,config}` / `clips/:rank/thumb` /
     `clips/:rank`(删除) / `clips/:rank/silence` / `events/:rank/cut` / `events/cut-all` /
@@ -372,7 +404,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - 需要「async 判定 + 同步 IO」混在一起的实现（如删除片段要先问 `busy_with`）用
     `blocking(move || block_on_here(xxx_impl(...)))` —— 整段搬到 blocking 线程，自带一个
     current-thread runtime。
-  - **管线任务体**一律用 `api.rs::spawn_job(jobs, job_id, body)`（专用线程 + current-thread
+  - **管线任务体**一律用 `api::spawn_job(jobs, job_id, body)`（专用线程 + current-thread
     runtime）。管线（转写/检测/剪切/精修 process）是整段同步代码，跑在 worker 上就是白占一个到
     它结束（实测 59s 的剪切占 37s，转写是分钟级）。`cut_all` 内部的逐片段剪切走 `spawn_blocking`
     （3 路真并行），进度在 await 侧统一汇报。**入库自动管线 / `models_download` /
@@ -419,7 +451,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     这条已用 `CSS.forcePseudoState` 强制 `:hover` 验过。样式写在 `ProjectNode.vue` 的 scoped 里
     （样稿没有这个态），别塞回 app.css。
     **来源徽标只显示类型**（用户要求）：`sourceBadge(p)` 本地来源回 **`本机`**，**不要拼路径** ——
-    服务端的 `source.label` 是 `本机 · <父目录>/<目录名>`（`api.rs`，非租户根）或
+    服务端的 `source.label` 是 `本机 · <父目录>/<目录名>`（`vtrim-server/src/api/projects.rs`，非租户根）或
     `本机文件 · <相对路径>`，而项目名本身就是那个目录名，拼进去等于把名称显示两遍还把徽标撑长。
     完整标签（含路径）挂在徽标的 `title` 上（`sourceLabel(p)`），悬停仍能看到；设置页的「来源」
     仍用完整 `sourceLabel`，两处分工别混。
@@ -470,7 +502,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
       录播姬不可用（未配置 `api_base` 或连不上）时整块**置灰**且输入禁用，只给一句"录播姬未接入，
       暂时不能添加"，不给管理配置指引（用户要求）；`roomsAvailable` 初值 `null` = 还没问到，
       避免先闪一下"未接入"。管理员额外看到连接状态/测试连接/扫描/待分配池。
-      实现：`GET/POST /api/rooms` + `DELETE /api/rooms/:room_id` → `service::recorder::RecorderClient`
+      实现：`GET/POST /api/rooms` + `DELETE /api/rooms/:room_id` → `vtrim_service::recorder::RecorderClient`
       （录播姬 `POST /api/room {roomId, autoRecord:true}`，Basic 认证，见
       `docs/plan/recorder-room-flow.md`）→ 写 `channel_map`（`source='user'`）；录完 webhook 按
       `channel_map` 归属自动入库成他的项目。配置键 `[ingest.recorder] api_base/api_user/api_pass`
@@ -607,7 +639,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
       （解析失败一律不落盘），成功回 `{value, count, status}`，`count` 就是界面上的「弹幕 3 条」。
       ⚠️ **`{dir, name}` 这条形态是为了不让前端拼路径**：`/api/fs/list` 回传的目录可能带 `\\?\` verbatim
       前缀，前端拼成 `\\?\F:\a/b` 在 Windows 上是 ERROR_INVALID_NAME（首页目录选择器同款教训）。
-      实现全在 `service/assets.rs`（`classify` / `asset_status` / `scan_candidates` / `set_asset`，
+      实现全在 `vtrim-service/src/assets.rs`（`classify` / `asset_status` / `scan_candidates` / `set_asset`，
       含单测），路由与 handler 只是薄壳（`blocking` + `lock_path(vtrim.toml)`，与设置页抢同一把锁）。
     - **候选扫描范围 = 项目根 + 一层子目录**，跳过 `output`/`clips`/`.vtrim`/`stickers`/`assets` 与点开头
       目录；扩展名分类一张表：`xml`/`ass` → 弹幕、`json` → 字幕、**`srt` 两边都列**（从名字分不出是
@@ -1335,7 +1367,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     用户名/密码合规；成功后**注册即登录**（下发会话 cookie，`role` 固定 `user`，永不自助成 admin）。
     失败一律 **403**（不区分"码不对/码用过"，防止被拿来枚举），限流按 IP（key `register|<ip>`，
     与登录的限流分开），5 次锁 15 分钟。
-    - 邀请码 = 一次性 token `vtrim_inv_<43 字符 base64url>`（`service::auth::new_invite_code`）。
+    - 邀请码 = 一次性 token `vtrim_inv_<43 字符 base64url>`（`vtrim_service::auth::new_invite_code`）。
       **明文直接落库**（用户要求：管理员要能重复查看、复制再发 —— 与 `vtrim ingest token`"只见一次"
       的规矩**不同**）：库里没有 selector/哈希那一套了，注册校验就是一次明文查表（`token` 唯一索引），
       因此**别再退回"只存哈希"**，那会让管理员看不到码。
@@ -1368,10 +1400,10 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     重新导入同一个目录即可再绑回来（`create_local_project` 见到已有 `vtrim.toml`
     **只登记、不覆盖**，所以手改过的工程设置不会丢；新登记会拿到**新 id**，
     项目目录内的产物都不含服务器侧 id，换 id 安全）。
-    两个入口共用 `api.rs::unregister_project`（`DELETE /api/projects/:id` 与过渡别名
+    两个入口共用 `api::unregister_project`（`DELETE /api/projects/:id` 与过渡别名
     `POST /project/delete`）—— 以前是两份拷贝、各删一次 `vtrim.toml`，别再写回两份。
   - ⚠️ **`persist::forget_project` 必须同时清 `last_config_file`**，少了这一步"移除"会被静默撤销：
-    `server/mod.rs` 每次启动都把"当前工程"写回 `server.toml` 的 `projects[]`，而
+    `vtrim-server/src/lib.rs` 每次启动都把"当前工程"写回 `server.toml` 的 `projects[]`，而
     `import_legacy_projects` 会把 `projects[]` 里**"配置文件还在、DB 没行"**的路径重新登记到
     admin 名下 —— 注销不删文件，所以那个配置一定还在，于是"移除当前在看的项目 → 重启一次路径
     回到列表 → 再重启一次项目自己回来"。以前没这问题纯粹是因为 `vtrim.toml` 被删了
@@ -1405,7 +1437,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     （`crates/vtrim-polish/Cargo.toml` 自己的注释：「chrome-render 为默认出片路径」）。
   - 涉及的文件：`vtrim-polish/src/render/native/`（`#[cfg(feature="wgpu-render")]`）、
     `vtrim-render-core` 的 `draw/effects/render/composite/sprite/gpu`（`#[cfg(feature="wgpu")]`）、
-    `server/api.rs` 的单帧预览接口（同 feature）、前端按 `/api/health.wgpu_render` 隐藏入口。
+    `vtrim-server/src/api/` 的单帧预览接口（同 feature）、前端按 `/api/health.wgpu_render` 隐藏入口。
   - **`vtrim-render-core/timeline.rs` 不在 feature 门后，但它的唯一非测试消费者就是 wgpu**
     （原生走 `render/native/mod.rs`，浏览器走 `vtrim-wasm`——它启用了 `vtrim-render-core/wgpu`，
     产物在 `webui/src/wasm/`，由 `PolishPreview.vue` 的「真渲染」按钮使用，而那个按钮同样按
@@ -1458,7 +1490,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     - `'finalized'` = **项目已建好**（`Db::set_ingest_project` 写），别当"已指派"用。
     - 扫描（`register_scan_session`）每两轮就会重走一遍，**不能把已有归属的会话打回 `unassigned`**
       （那会和 assign 来回震荡，手动指派过的会话被反复踢回待分配池）→ 改状态前先看 `owner_id`。
-  - **房间号必须从路径里解析**（`service::recorder::room_id_from_dir_name` /
+  - **房间号必须从路径里解析**（`vtrim_service::recorder::room_id_from_dir_name` /
     `room_id_from_rel_path`），**不能拿整个目录名当房间号**：录播姬默认目录名是
     `<房间号>-<主播名>`（实测 `26320007-耶斯yeki`），而 `channel_map` 存的是 `26320007`
     —— 直接比永远不匹配，扫到的真实录像全被判成"没登记"掉进待分配池。两个用它的地方：
@@ -1479,7 +1511,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `/api/health.ingest_ready` 决定是否显示配置引导卡。
 - API 都在 `/api/*`：未注册路径返回 **404 + JSON**（`{"ok":false,"error":"未知接口: …"}`），
   不会回退成 SPA HTML（否则前端会把 200 HTML 解析成 `null` 静默失败）。
-- **访问日志（`server/access_log.rs`）**：`api::router()` 最外层挂了 `from_fn` 中间件，
+- **访问日志（`vtrim-server/src/access_log.rs`）**：`api::router()` 最外层挂了 `from_fn` 中间件，
   **每次前端交互都留痕** —— `方法 路径 → 状态 (耗时ms) user=<谁>`；状态 ≥400 时额外读
   响应体（仅 JSON，≤64KB，读完原样拼回）取出服务端的 `error` 文案，≥500 记 error、
   ≥400 记 warn。**别退回"只打成功"或"只打错误"**：handler 的 `err(...)` 与内联
@@ -1491,7 +1523,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `GET /api/jobs`、`/api/admin/logs/events`（出错仍 warn/error）。要逐条看：
     `RUST_LOG=vtrim=debug`。
   - **不记录请求体**（登录/注册含口令）。
-- **运行日志（`server/logbus.rs` + 设置页「运行日志」卡）**：
+- **运行日志（`vtrim-service/src/logbus.rs` + 设置页「运行日志」卡）**：
   `LogBusLayer` 挂在 `main.rs` 的 tracing subscriber 上（`registry + EnvFilter + fmt + logbus`），
   把每条事件同时写进 ①2000 条内存环形缓冲 ②broadcast ③文件
   `<data_dir>/logs/vtrim-YYYYMMDD.log`（`server::run` 解析完 `--data-dir` 后立刻
@@ -1546,7 +1578,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 
 **这是一条子进程链路，出过两次"任务永远运行中、日志里一行都没有"的事故，改之前先读完这节。**
 
-- **输出必须落文件，不能用管道**：`api.rs::run_polish_child` 把子进程 stdout/stderr 重定向到
+- **输出必须落文件，不能用管道**：`api::run_polish_child` 把子进程 stdout/stderr 重定向到
   `<data_dir>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
   ⚠ 绝对不要改回 `Command::output()`/管道：Chrome 与 ffmpeg 是**孙进程**，它们会继承 stdout
   句柄 —— 只要还有一个活着，管道就永远不 EOF，`output()` 一直等下去。实测子进程早已带着
@@ -1658,7 +1690,7 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   - **任务行的"卡住"提示**：`JobSummary.updated_at`（epoch 秒，`Job::push` 每次事件都更新）——
     运行中但 `IDLE_WARN_SECS`(120s) 没有新事件，就在行上写"可能卡在外部进程或网络盘上"。
     没有它，挂住的外部进程在界面上完全看不出来，只能干等。
-  - 资源键（`server/scope_key.rs`，**相等匹配**）：`p{pid}:out`（管线/剪切/订正/入库：events.json 与
+  - 资源键（`vtrim-server/src/scope_key.rs`，**相等匹配**）：`p{pid}:out`（管线/剪切/订正/入库：events.json 与
     output/*）、`p{pid}:idx`（所有 cut 共写 publish_config.json + clips_order.txt）、
     `p{pid}:clip:{clip-07}`（单条重切 + 该目录上的精修）、`models`（下载模型 vs 转写
     `ensure_models`）、`stickers`（表情包构建）、`dir:{规范化路径}`（精修目录兜底键）。
@@ -1718,11 +1750,11 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 | 阶段 | 状态 |
 |---|---|
 | P1 step-1 账号账本 + `vtrim user` CLI | ✅ 已落地 |
-| P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`server/auth.rs`、`service/instancelock.rs`） |
-| P1 step-3 `vtrim doctor` 安全摘要 | ✅ 已落地（`service/doctor.rs`、`service/disk.rs`） |
-| P2 项目托管与隔离（`?project=`、囚笼、任务归属、前端 M2） | ✅ 已落地（`vtrim-core/tenant.rs`、`service/projects.rs`、`server/scope.rs`） |
-| P3 录播姬接入（webhook / 入库 worker / 兜底扫描 / 前端 M3） | ✅ 已落地（`server/ingest.rs`、`server/ingest_worker.rs`、`danmaku::parse_bililive_xml`） |
-| 邀请码自助注册（账本 v4 `invites` / `POST /api/auth/register` / 前端 `#/register` + 设置页管理卡） | ✅ 已落地（`service/invite.rs`、`components/InviteManager.vue`） |
+| P1 step-2 HTTP 会话鉴权 + 前端 M1 登录 | ✅ 已落地（`vtrim-server/src/auth.rs`、`vtrim-service/src/instancelock.rs`） |
+| P1 step-3 `vtrim doctor` 安全摘要 | ✅ 已落地（`vtrim-service/src/doctor.rs`、`vtrim-service/src/disk.rs`） |
+| P2 项目托管与隔离（`?project=`、囚笼、任务归属、前端 M2） | ✅ 已落地（`vtrim-core/tenant.rs`、`vtrim-service/src/projects.rs`、`vtrim-server/src/scope.rs`） |
+| P3 录播姬接入（webhook / 入库 worker / 兜底扫描 / 前端 M3） | ✅ 已落地（`vtrim-server/src/ingest.rs`、`vtrim-server/src/ingest_worker.rs`、`danmaku::parse_bililive_xml`） |
+| 邀请码自助注册（账本 v4 `invites` / `POST /api/auth/register` / 前端 `#/register` + 设置页管理卡） | ✅ 已落地（`vtrim-service/src/invite.rs`、`components/InviteManager.vue`） |
 | P4 B站链接通道 / P5 容量与运维 | ⏳ 待做 |
 
 ## 开发
@@ -1749,15 +1781,14 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 
 | 路径 | 说明 |
 |------|------|
-| `vtrim-cli/src/main.rs:27` | `resolve_input()` input 回退 |
-| `vtrim-cli/src/main.rs:41` | `build_pipeline_runner()` 注册 stage |
-| `vtrim-cli/src/main.rs:62` | `check_stage()` 状态机 |
+| `vtrim-service/src/core_pipeline.rs` | `run_stages` / `run_stages_with[_ext]`：按 `-i`/`-o`/`-t`/`-e` 覆盖参数装配并跑管线（CLI 与 `vtrim-server` 共用同一份） |
+| `vtrim-core/src/config/types.rs::current_stage` | 阶段推导（**从输出文件存在性**，不再持久化；见上文「状态机」） |
 | `vtrim-core/src/pipeline/stage.rs` | STAGE_* 常量 + Stage trait |
 | `vtrim-core/src/pipeline/runner.rs` | PipelineRunner (run/run_all/run_until) |
-| `vtrim-cli/src/server/jobs.rs` | JobManager：资源域互斥 + 三档闸门 + 前后台优先级（`JobClass`/`JobPriority`/`JobSpec`/调度器/取消） |
-| `vtrim-cli/src/server/scope_key.rs` | 任务资源键：谁和谁不能同时跑（`p{pid}:out/idx/clip`、`models`、`stickers`、`dir:`） |
+| `vtrim-server/src/jobs.rs` | JobManager：资源域互斥 + 三档闸门 + 前后台优先级（`JobClass`/`JobPriority`/`JobSpec`/调度器/取消） |
+| `vtrim-server/src/scope_key.rs` | 任务资源键：谁和谁不能同时跑（`p{pid}:out/idx/clip`、`models`、`stickers`、`dir:`） |
 | `docs/job-queue.md` | 任务队列说明书：三档成员/理由、优先级、与资源键的关系、取舍、排查 |
-| `vtrim-cli/src/server/render_proc.rs` | 渲染/封面子进程：pid 登记、取消杀进程树、启动清扫孤儿（**别退回管道**，见「渲染导出」一节） |
+| `vtrim-server/src/render_proc.rs` | 渲染/封面子进程：pid 登记、取消杀进程树、启动清扫孤儿（**别退回管道**，见「渲染导出」一节） |
 | `vtrim-core/src/config/mod.rs` | 两源合并 + toml_edit（`edit_toml_at` 走 `with_path_lock_sync`） |
 | `vtrim-core/src/config/types.rs` | Config 类型定义 + Default impl |
 | `vtrim-core/src/types/mod.rs` | Event, PipelineContext, Transcript |
@@ -1788,11 +1819,11 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 | `vtrim-polish/src/render/pipeline.rs:11` | cmd_render（自动 process → render → cover） |
 | `vtrim-polish/src/commands.rs:296` | cmd_preview（自动 process → 双端口预览） |
 | `vtrim-polish/src/commands.rs:200` | cmd_llm（使用 .vtrim/llm.toml） |
-| `vtrim-cli/src/server/scope.rs` | `/api/polish/*` 的作用域守卫：`/api/polish/*` 的**路径面收口**（`EXTRA_PATH_FIELDS` + `resolve_file_in_project`） |
-| `vtrim-cli/src/server/ratelimit.rs` | 全站请求限流（按 IP 固定窗口）+ 入库 webhook 专用额度 |
-| `vtrim-cli/src/server/ingest.rs` | 录播姬接入：webhook 接收 + **采集配置读写**（`config_view_json` / `build_ingest_patch` / `rotate_token`） |
+| `vtrim-server/src/scope.rs` | `/api/polish/*` 的作用域守卫：`/api/polish/*` 的**路径面收口**（`EXTRA_PATH_FIELDS` + `resolve_file_in_project`） |
+| `vtrim-server/src/ratelimit.rs` | 全站请求限流（按 IP 固定窗口）+ 入库 webhook 专用额度 |
+| `vtrim-server/src/ingest.rs` | 录播姬接入：webhook 接收 + **采集配置读写**（`config_view_json` / `build_ingest_patch` / `rotate_token`） |
 | `webui/src/components/RecorderConfig.vue` | 设置页「录播姬（采集）」卡：开关 + 连接信息表单 + token 生成 + 测试连接 |
-| `vtrim-cli/src/service/doctor.rs` | 安全与运行状况摘要（直接读本机账本，不依赖服务端接口） |
+| `vtrim-service/src/doctor.rs` | 安全与运行状况摘要（直接读本机账本，不依赖服务端接口） |
 | `LICENSE` / `THIRD-PARTY-NOTICES.md` | 许可（Apache-2.0）与第三方组件/素材出处 |
 
 ## 开源与公网部署
@@ -1810,7 +1841,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
   改依赖（sherpa-onnx / 出片二进制）前先看 `THIRD-PARTY-NOTICES.md`。
 - **不内置任何字体**：原先随包的兜底字体「乐米波波体」已移除 —— 它是"免费商用但**不包括
   嵌入式用途**"，随软件分发/内嵌必须另行授权。字体候选链到系统字体（`C:/Windows/Fonts/msyh.ttc`）
-  为止；想用圆润风格让**用户自行安装**（备忘写在 `api.rs::polish_font` 与
+  为止；想用圆润风格让**用户自行安装**（备忘写在 `api::polish_font` 与
   `native/mod.rs` 的候选链旁，别把 ttf 塞回仓库或发布包）。
 - 素材类（`sfx_catalog.json` 音效目录、いらすとや 插画、EmoteLab 贴纸）的出处与条款见
   `THIRD-PARTY-NOTICES.md` 第五节。
@@ -1824,8 +1855,8 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 
 | 防线 | 位置 | 规矩 |
 |---|---|---|
-| ① polish body 字段收口 | `server/scope.rs::enforce_scope` | body 里每个"会被 handler 拿去开文件"的字段都要在 `EXTRA_PATH_FIELDS` 名单里（`dir` / `output_file` / `source` / `cover.image`）。**新增此类字段必须同步加进名单**，漏一个就是一条任意文件读取。 |
-| ② 项目配置路径键 | `server/api.rs::PROJECT_PATH_KEYS` + `check_project_paths` | `PUT /api/project-data/config` 的 `raw` 与 `patch` 两条分支都要过这张表（`input_file` 等 5 个 + `cutting.output_dir`）：非 admin 必须能 `jail_join` 进自己项目。`Workspace::resolve` 对**绝对路径原样放行**，所以校验只能在这里做。admin 豁免（用「服务器文件」建项目时 `input_file` 本来就是项目外的路径）。 |
+| ① polish body 字段收口 | `vtrim-server/src/scope.rs::enforce_scope` | body 里每个"会被 handler 拿去开文件"的字段都要在 `EXTRA_PATH_FIELDS` 名单里（`dir` / `output_file` / `source` / `cover.image`）。**新增此类字段必须同步加进名单**，漏一个就是一条任意文件读取。 |
+| ② 项目配置路径键 | `vtrim-server/src/api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` | `PUT /api/project-data/config` 的 `raw` 与 `patch` 两条分支都要过这张表（`input_file` 等 5 个 + `cutting.output_dir`）：非 admin 必须能 `jail_join` 进自己项目。`Workspace::resolve` 对**绝对路径原样放行**，所以校验只能在这里做。admin 豁免（用「服务器文件」建项目时 `input_file` 本来就是项目外的路径）。 |
 | ③ 消费侧纵深防御 | `vtrim-polish/src/cover.rs` | 渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。 |
 
 ⚠️ 相关的两个既有约定也别松：`every /api/media` 走 `jail_existing`；`is_safe_component`
@@ -1836,7 +1867,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 - `must_change_password` 是**服务端强制**（`auth::require_password_changed`）：仍用初始密码时
   除 `/me`、`/auth/password`、`/auth/logout` 外一律 403。**挂载顺序不能反** —— `require_user`
   必须在外层（先跑并写入 `CurrentUser`），这个门在内层才读得到用户；axum 里"后加的 layer 在外层"，
-  所以 `api.rs` 里那两行是倒着写的，有注释。
+  所以 `api/routes.rs` 里那两行是倒着写的，有注释。
 - `--trust-proxy` 是 `X-Forwarded-*` 的**唯一开关**（`auth::trust_proxy()`）：
   关了（默认）就只认 socket 对端，`X-Forwarded-For` 一律不采信 —— 否则限流能被"每个请求换个
   假 IP"绕过，`X-Forwarded-Proto: https` 还能把 cookie 的 `Secure` 判定交给请求方。
@@ -1852,9 +1883,9 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 
 | 位置 | 内容 |
 |---|---|
-| `server/ratelimit.rs` | 全站按客户端 IP 的通用额度（装得下一次页面加载的突发）+ 入库 webhook 专用额度（未认证入口，每次失败都要跑 scrypt）。挂载在 `api::router`**最外层、访问日志之外**：既要覆盖未认证入口，也不让被限流的请求各写一行日志。 |
-| `server/ingest.rs::token_shape_ok` | webhook token 的形状检查，在 scrypt **之前**快速否掉垃圾请求（别为不可能成立的输入付 32MiB 的 KDF）。形状不过**不写 audit**（否则变成"用垃圾请求放大 DB 写"）。 |
-| `server/jobs.rs` | `MAX_CREATE_PER_MINUTE` / `MAX_ACTIVE_PER_OWNER` / `MAX_ACTIVE_TOTAL`：这套队列里**唯一的"拒绝"路径**（闸门与资源键只排队）。超限 = 任务记失败 + 丢掉开跑信号（`wait_start()` 报 Err，与"排队中被取消"同一条路径）。**别给轻活加闸门名额**来替代它 —— 那会把编辑器每次改动都要重跑的 `polish_process` 一起挡住。 |
+| `vtrim-server/src/ratelimit.rs` | 全站按客户端 IP 的通用额度（装得下一次页面加载的突发）+ 入库 webhook 专用额度（未认证入口，每次失败都要跑 scrypt）。挂载在 `api::router`**最外层、访问日志之外**：既要覆盖未认证入口，也不让被限流的请求各写一行日志。 |
+| `vtrim-server/src/ingest.rs::token_shape_ok` | webhook token 的形状检查，在 scrypt **之前**快速否掉垃圾请求（别为不可能成立的输入付 32MiB 的 KDF）。形状不过**不写 audit**（否则变成"用垃圾请求放大 DB 写"）。 |
+| `vtrim-server/src/jobs.rs` | `MAX_CREATE_PER_MINUTE` / `MAX_ACTIVE_PER_OWNER` / `MAX_ACTIVE_TOTAL`：这套队列里**唯一的"拒绝"路径**（闸门与资源键只排队）。超限 = 任务记失败 + 丢掉开跑信号（`wait_start()` 报 Err，与"排队中被取消"同一条路径）。**别给轻活加闸门名额**来替代它 —— 那会把编辑器每次改动都要重跑的 `polish_process` 一起挡住。 |
 
 另外两处小坑：登录失败计数表（`auth.rs::rate_fail`）必须按 `MAX_LOGIN_KEYS` 清理（用户名来自
 请求且不要求存在，不设上限就能把内存撑爆）；访问日志必须 `redact_path` 掉 webhook 的 token 段
@@ -1862,7 +1893,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 
 ### 默认端口（26320）
 
-**唯一一份定义**在 `service/doctor.rs::DEFAULT_PORT`，`ServerArgs.port`（clap 默认值）、
+**唯一一份定义**在 `vtrim-service/src/doctor.rs::DEFAULT_PORT`，`ServerArgs.port`（clap 默认值）、
 `DEFAULT_URL`（`vtrim doctor --url` 默认 + `vtrim ingest token` 打印的 webhook 地址）都引用它；
 `main.rs` 里 `polish preview` 回退起服务的那份 `ServerArgs` 也是。
 **别在任何地方再写端口字面量**（前端 webhook 地址用 `location.origin`，不用管）。
@@ -1875,7 +1906,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 `mod.rs::first_bindable_port` 会在绑失败时**实测试绑**一个再来报（候选按"先安全带内"排序），
 `bind_conflict_hint` 按 `10013`（系统拒绝，别去 netstat）/ `10048`（真被占用，给 netstat + tasklist）
 / 未知（两种成因都列）分流，并带上本次实例的 exe 目录与数据目录 —— 同机多份解包目录时靠这个区分。
-`service::doctor` 有单测锁住 `DEFAULT_URL` 与 `DEFAULT_PORT` 一致（改一个忘另一个 =
+`vtrim_service::doctor` 有单测锁住 `DEFAULT_URL` 与 `DEFAULT_PORT` 一致（改一个忘另一个 =
 `vtrim doctor` 探测不到自己）。
 
 ### 公网部署检查清单
