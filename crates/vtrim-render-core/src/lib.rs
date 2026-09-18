@@ -4,6 +4,7 @@
 //! 不依赖 vtrim-core / vtrim-polish / tokio——设备创建与资源加载由调用方完成。
 
 pub mod easing;
+pub mod legacy;
 pub mod types;
 pub mod timeline;
 
