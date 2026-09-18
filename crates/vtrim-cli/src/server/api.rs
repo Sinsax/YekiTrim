@@ -5362,7 +5362,7 @@ mod tests {
         std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
 
         let body = serde_json::json!({ "subtitle_font": "simhei" });
-        polish_project_put_locked(&dir, &body).expect("保存字幕字体");
+        let _ = polish_project_put_locked(&dir, &body).expect("保存字幕字体");
 
         let after = vtrim_polish::project::load_project(&dir).unwrap();
         assert_eq!(after.style.subtitle.font, "simhei");

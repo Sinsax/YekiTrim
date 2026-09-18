@@ -594,32 +594,60 @@ fn cargo() -> String {
     env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
-/// Reads `version` from the `[package]` table, so the packaged name follows the binary.
+/// Reads the package version from the **single source**: `[workspace.package] version`
+/// in the root manifest.
+///
+/// Why root-first: the crates now say `version.workspace = true`, so the old per-crate
+/// scan (`crates/vtrim-cli/Cargo.toml` `[package] version`) finds nothing and packaging
+/// would fail with "no version found". Keeping that scan as a fallback preserves old
+/// checkouts. The version here is what names the release archive (`vtrim-v<版本>-win-x64`),
+/// so it must be read from the same place the binary's `CARGO_PKG_VERSION` comes from.
 fn cli_version(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let root_manifest = root.join("Cargo.toml");
+    if let Some(version) = table_version(&root_manifest, "[workspace.package]") {
+        return Ok(version);
+    }
     let manifest = root.join("crates").join("vtrim-cli").join("Cargo.toml");
-    let text = fs::read_to_string(&manifest)?;
+    if let Some(version) = table_version(&manifest, "[package]") {
+        return Ok(version);
+    }
+    Err(format!(
+        "no version found in {} ([workspace.package]) or {} ([package])",
+        root_manifest.display(),
+        manifest.display()
+    )
+    .into())
+}
 
-    let mut in_package = false;
+/// Naive scan for a literal `version = "…"` inside the named TOML table.
+///
+/// Deliberately not `version.workspace = true`-aware: an inherited version is not a
+/// literal, and silently returning `"true"` as a version string would be worse than
+/// falling through to the next source.
+fn table_version(manifest: &Path, table: &str) -> Option<String> {
+    let text = fs::read_to_string(manifest).ok()?;
+
+    let mut inside = false;
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_package = line == "[package]";
+            inside = line == table;
             continue;
         }
-        if !in_package {
+        if !inside {
             continue;
         }
         if let Some(rest) = line.strip_prefix("version") {
             if let Some(rest) = rest.trim_start().strip_prefix('=') {
                 let value = rest.trim().trim_matches('"');
                 if !value.is_empty() {
-                    return Ok(value.to_string());
+                    return Some(value.to_string());
                 }
             }
         }
     }
 
-    Err(format!("no version found in {}", manifest.display()).into())
+    None
 }
 
 fn newest_mtime(dir: &Path) -> io::Result<Option<SystemTime>> {
