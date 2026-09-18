@@ -3,22 +3,28 @@ import { api } from './api/client'
 import { scopeQ, setScope } from './api/scope'
 import { STAGE_EVENTS_READY } from './utils'
 import { authState, isAuthed, loadMe } from './stores/auth'
+import { addClient } from './stores/log'
 import { lastPath } from './stores/workbench'
 
 // `/p/:pid` 入口守卫：预处理（事件检测）已完成 → 切片页，否则 → 预处理页。
 async function projectEntryGuard(to) {
   setScope(to.params.pid)
   try {
-    const st = await api(`/api/project-data/status?${scopeQ(to.params.pid)}`)
+    const st = await api(`/api/project-data/status?${scopeQ(to.params.pid)}`, { label: '入口阶段判断' })
     if ((st.current_stage || 0) >= STAGE_EVENTS_READY) {
       return { name: 'project-slices', params: to.params }
     }
-  } catch {}
+  } catch (e) {
+    // 状态读不到就退回预处理页；留一条痕，否则"点进去老是预处理页"看不出原因
+    addClient('warn', `项目状态读取失败（${e.message}），已退回预处理页`, 'router')
+  }
   return { name: 'project-prepare', params: to.params }
 }
 
 const routes = [
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
+  // 邀请码注册：与登录页一样不套壳；未登录可访问（服务端校验开关与邀请码）
+  { path: '/register', name: 'register', component: () => import('./views/RegisterView.vue') },
   { path: '/', redirect: () => lastPath() },
   { path: '/workbench', name: 'workbench', component: () => import('./views/WorkbenchView.vue') },
   {
@@ -55,7 +61,7 @@ const router = createRouter({
 
 // 全局守卫：**没有免登录分支**（服务端 §3.5.1）。启动先问一次 `/api/me`，401 → 登录页记回跳。
 router.beforeEach(async (to) => {
-  if (to.name === 'login') {
+  if (to.name === 'login' || to.name === 'register') {
     if (!authState.ready) await loadMe()
     return isAuthed() ? { path: '/workbench' } : true
   }

@@ -41,10 +41,18 @@ export const wb = reactive({
   cache: {}
 })
 
+/** 正在飞的那次请求。**单飞（single-flight）**：这个接口对每个项目都要读
+ *  `vtrim.toml` + 扫一遍产物目录，项目在网络盘上时一次要几百毫秒到几秒；
+ *  而任务结束、页面挂载、各视图初始化都会同时来一发 —— 不去重就会成串地打
+ *  （实测服务器日志里 1 秒内 52 次），把服务端的线程全占住。
+ *  并发的调用共享同一个请求，完成后再放行下一次。 */
+let inflight = null
+
 export function loadProjects() {
+  if (inflight) return inflight
   wb.loading = true
   wb.error = ''
-  return api('/api/projects')
+  inflight = api('/api/projects')
     .then((d) => {
       wb.projects = Array.isArray(d?.projects) ? d.projects : []
       return wb.projects
@@ -56,7 +64,9 @@ export function loadProjects() {
     })
     .finally(() => {
       wb.loading = false
+      inflight = null
     })
+  return inflight
 }
 
 export function projectById(pid) {
@@ -111,18 +121,26 @@ export function cacheOf(pid) {
   return wb.cache[key]
 }
 
-/** 并行的 status+events+clips+polish（合并原先分散在三个视图里的重复聚合）。 */
+/** 并行的 status+events+clips+polish（合并原先分散在三个视图里的重复聚合）。
+ *
+ *  在飞时返回同一个 promise（单飞），但要记 `stale`：任务结束时 `invalidate()` 撞上
+ *  一个**任务前**发出的请求，那个响应会把旧数据写回缓存 —— 没有这个标记，
+ *  页面就永远停在任务前的状态（网络盘上这几个请求要跑好几秒，撞上的概率不低）。 */
 export async function loadProjectData(pid, { force = false } = {}) {
   const c = cacheOf(pid)
-  if (c.loading) return c
+  if (c.loading) {
+    if (force) c.stale = true
+    return c
+  }
   if (!force && c.status) return c
   c.loading = true
+  c.stale = false
   c.error = ''
   const [status, events, clips, polish] = await Promise.all([
-    projectData.status(pid).catch((e) => { c.error = e?.message || ''; return null }),
-    projectData.events(pid).catch(() => ({ events: [] })),
-    projectData.clips(pid).catch(() => []),
-    projectData.polishMap(pid).catch(() => [])
+    projectData.status(pid, '读取项目状态').catch((e) => { c.error = e?.message || ''; return null }),
+    projectData.events(pid, '读取事件列表').catch(() => ({ events: [] })),
+    projectData.clips(pid, '读取切片列表').catch(() => []),
+    projectData.polishMap(pid, '读取精修状态').catch(() => [])
   ])
   c.status = status
   c.events = (events && events.events) || []
@@ -131,11 +149,18 @@ export async function loadProjectData(pid, { force = false } = {}) {
   ;(polish || []).forEach((p) => { m[p.dir] = p })
   c.polishMap = m
   c.loading = false
+  // 期间被 invalidate 过 → 这一份已经过期，立刻再拉一轮（避免"刷新了但界面还是旧的"）
+  if (c.stale) {
+    c.stale = false
+    return loadProjectData(pid, { force: true })
+  }
   return c
 }
 
 export function invalidate(pid, ...keys) {
   const c = cacheOf(pid)
+  // 正在飞的那一轮取的是**失效前**的数据：标记一下，让它落地后自己再拉一轮
+  if (c.loading) c.stale = true
   const list = keys.length ? keys : ['status', 'events', 'clips', 'polishMap']
   for (const k of list) {
     if (k === 'polishMap') c.polishMap = {}
@@ -152,14 +177,22 @@ export function uncutEventsOf(pid) {
   return (c.events || []).filter((ev) => !clipNames.has('clip-' + String(ev.rank).padStart(2, '0')))
 }
 
-/** 已精修（已渲染）片段数。 */
+/** 已出片（`rendered`）的片段数 —— 喂给侧栏/阶段徽标的「精修 N/M」。
+ *  只认 `rendered`（视频），不含只有封面的：那个比例问的是"这条片段渲完了没"。
+ *  注意它与卡片上那枚「已导出」chip 的口径**不同**（chip 是 `rendered || cover`）。 */
 export function polishedCountOf(pid) {
   const c = cacheOf(pid)
   return Object.values(c.polishMap || {}).filter((p) => p.rendered).length
 }
 
+/**
+ * 移除项目登记（**不动磁盘上的任何文件**），然后刷新列表。
+ *
+ * 名字叫 remove 而不是 delete：服务端只把登记从列表里去掉，目录里一个文件都不动。
+ */
 export async function removeProject(pid) {
   await api('/api/projects/' + encodeURIComponent(pid), { method: 'DELETE' })
+  forgetProject(pid)
   await loadProjects()
 }
 
@@ -167,4 +200,32 @@ export async function removeProjectSource(pid) {
   const r = await api('/api/projects/' + encodeURIComponent(pid) + '/source', { method: 'DELETE' })
   await loadProjects()
   return r
+}
+
+/**
+ * 丢掉某个项目的**前端本地痕迹**（项目已被移除时调，见 `removeProject`）。
+ *
+ * 服务器那边只删了一行登记，而前端有三处按 pid 存的东西会永远留着：
+ * ① `wb.cache[pid]` —— per-pid 数据缓存（`loadProjectData` 命中非空 `status` 就直接返回，
+ *    是个不会自己过期的快照）；② `vtrim.wb.expanded`；③ `vtrim.wb.last`（`/` 的回落目标）。
+ * ③ 目前靠 `lastPath()` 里的 `projectById` 守卫兜住才没炸，但那只是"看不见的错"，
+ * 本地存储里一直躺着指向已移除项目的 pid。精修页还有一份 `vtrim.polish.last.<pid>`。
+ *
+ * ⚠️ 项目 id 是 `INTEGER PRIMARY KEY AUTOINCREMENT`，SQLite 保证不会复用，
+ * 所以这些残留不会"串到别的项目上"—— 清掉是为了不留垃圾，不是为了防串号。
+ */
+export function forgetProject(pid) {
+  if (pid == null || pid === '') return
+  const key = String(pid)
+  delete wb.cache[key]
+  const i = wb.expanded.indexOf(key)
+  if (i >= 0) {
+    wb.expanded.splice(i, 1)
+    localStorage.setItem(LS_EXPANDED, JSON.stringify(wb.expanded))
+  }
+  if (String(wb.last?.pid || '') === key) {
+    wb.last = { pid: '', step: wb.last?.step || 'prepare' }
+    localStorage.setItem(LS_LAST, JSON.stringify(wb.last))
+  }
+  try { localStorage.removeItem('vtrim.polish.last.' + key) } catch (e) { /* 隐私模式下会抛，忽略 */ }
 }

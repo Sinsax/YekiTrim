@@ -1,6 +1,7 @@
 // 入库状态（M3）：最近的录播姬会话 + 我的房间映射。
 import { reactive } from 'vue'
 import { ingestApi } from '../api/ingest'
+import { addClient } from './log'
 
 export const ingestState = reactive({
   records: [],
@@ -32,6 +33,7 @@ export async function loadRules() {
     ingestState.rules = d?.rules || []
   } catch (e) {
     ingestState.rules = []
+    addClient('warn', `读取房间映射失败：${e.message}`, 'ingest')
   }
   return ingestState.rules
 }

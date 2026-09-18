@@ -36,7 +36,10 @@ const emit = defineEmits(['goto', 'init'])
 </script>
 
 <style scoped>
-.frag-cards { display:grid; grid-auto-flow:column; gap:8px; overflow-x:auto; padding:2px; }
+.frag-cards { display:grid; grid-auto-flow:column; gap:8px; overflow-x:auto; padding:2px;
+  /* 列方向排列时，缺省 justify-content:normal(=stretch) 会把 auto 宽的列**撑满整行** ——
+     只有两张卡时它们会被推到两端，看着"隔了老远"。夹到左端、列宽取内容宽。 */
+  justify-content:start; grid-auto-columns:max-content; }
 .frag-cards.rows-1 { grid-template-rows:auto; }
 .frag-cards.rows-2 { grid-template-rows:repeat(2, auto); }
 .frag-card { position:relative; width:108px; border:1.5px solid var(--line); border-radius:10px;

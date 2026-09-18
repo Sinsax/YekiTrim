@@ -28,6 +28,7 @@
           :key="p.id"
           :p="p"
           :expanded="isExpanded(p.id)"
+          :current="String(p.id) === String(route.params.pid)"
           :viewing="viewingStep"
           :running="runningOf(p.id)"
           @toggle="toggleExpand"
@@ -51,15 +52,21 @@
     </div>
 
     <div class="side-foot">
-      <div v-if="!collapsed" class="user-chip" @click="emit('logout')" title="点击登出">
+      <!-- 用户信息只做展示（点它不再登出，用户要求）；登出是右边那个按钮，且要二次确认 -->
+      <div v-if="!collapsed" class="user-chip">
         <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
         <span class="nm">
           <b>{{ authState.user?.username }}</b>
-          <span class="muted small">{{ isAdmin ? '管理员' : '用户' }} · 点击登出</span>
+          <span class="muted small">{{ isAdmin ? '管理员' : '用户' }}</span>
         </span>
+        <button class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
+          <Icon name="logout" :size="12" /> 退出
+        </button>
       </div>
-      <button v-else class="rail-item rail-user" :title="`${authState.user?.username} · 点击登出`" @click="emit('logout')">
+      <button v-else class="rail-item rail-user" :title="`${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 退出登录`"
+              @click="emit('logout')">
         <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
+        <Icon name="logout" :size="14" class="rail-out" />
       </button>
 
       <template v-if="!collapsed">
@@ -115,18 +122,24 @@ const viewingStep = computed(() => (route.name?.startsWith('project-') ? String(
 const entries = computed(() => {
   const list = [
     { key: 'home', label: '首页', path: '/workbench', icon: 'home' },
-    { key: 'ingest', label: '入库', path: '/ingest', icon: 'download' },
     { key: 'settings', label: '设置', path: '/settings', icon: 'settings', admin: true }
   ]
   return list.filter((e) => !e.admin || isAdmin.value)
 })
 
-/** 项目 → 正在跑的任务（任务带 project 标签）。 */
+/**
+ * 项目 → 正在跑的任务（任务带 project 标签）。
+ *
+ * 并行之后一个项目可能同时有好几条（比如 clip-01 在渲染、clip-02 在跑 LLM）：
+ * 取第一条显示进度，另外用 `extra` 标注"还有 N 条"，别让侧栏看起来只有一个任务。
+ */
 function runningOf(pid) {
-  const j = (jobs.value || []).find(
+  const list = (jobs.value || []).filter(
     (x) => (x.status === 'running' || x.status === 'queued') && String(x.project) === String(pid)
   )
-  return j ? { kind: j.kind, current: j.current || 0, total: j.total || 0 } : null
+  if (!list.length) return null
+  const j = list[0]
+  return { kind: j.kind, current: j.current || 0, total: j.total || 0, extra: list.length - 1 }
 }
 
 /** 项目首字（emoji/中文都按字符取，不用 charAt 以免切开代理对）。 */
@@ -175,6 +188,14 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 .rail-hint { padding:4px 0; }
 
 .side.mini .side-foot { align-items:center; padding:8px 0; }
+/* 用户块只做展示（登出改成了右侧按钮 + 二次确认），光标别留成可点的手型 */
+.user-chip { cursor:default; }
+.side-logout { margin-left:auto; flex:none; padding:3px 8px; font-size:11.5px; }
+/* 折叠轨的用户块：头像 + 退出图标上下两行（原来只有头像）。
+   选择器必须比 `.rail-item`（同为 scoped (0,2,0) 且写在后面）更特指，否则 height:34px 会赢 */
+.side-foot .rail-user { flex-direction:column; height:auto; padding:4px 0; gap:2px; }
+.rail-user .rail-out { color:var(--ink-faint); }
+.rail-user:hover .rail-out { color:var(--red-deep); }
 .rail-item { position:relative; width:40px; height:34px; flex:none; border-radius:var(--r-sm);
   display:flex; align-items:center; justify-content:center; color:var(--ink-dim); }
 .rail-item:hover { background:var(--bg-soft); color:var(--ink); }

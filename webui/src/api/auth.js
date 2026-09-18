@@ -12,6 +12,14 @@ export const authApi = {
       silent401: true,
       body: JSON.stringify({ username, password })
     }),
+  // 邀请码自助注册：成功即登录（服务端同时下发会话 cookie）。
+  // 失败一律 403（码错/码用过/未开放都不区分），文案由服务端给。
+  register: (username, password, invite) =>
+    api('/api/auth/register', {
+      method: 'POST',
+      silent401: true,
+      body: JSON.stringify({ username, password, invite })
+    }),
   logout: () => api('/api/auth/logout', { method: 'POST' }),
   changePassword: (oldPassword, newPassword) =>
     api('/api/auth/password', {

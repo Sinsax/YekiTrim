@@ -8,8 +8,17 @@
       <div class="actions"></div>
     </div>
 
-    <!-- 无切片：空态引导（不报错不白屏） -->
-    <div v-if="!clips.length && !loading" class="card card-blk" style="max-width:520px;margin:48px auto;text-align:center;padding:36px">
+    <!-- 切片列表读不到：**必须与"真的没有切片"分开**（以前失败被 catch 成空数组，
+         页面显示"还没有可精修的切片"，看着像切片被删了） -->
+    <div v-if="clipsError" class="error-banner">
+      <Icon name="alert" :size="15" />
+      <span>切片列表读取失败：{{ clipsError }}</span>
+      <button class="mini-btn" style="margin-left:auto" @click="load({ silent: true })">重试</button>
+    </div>
+
+    <!-- 无切片：空态引导（不报错不白屏）。用 v-else-if 接在错误条后面：读取失败时**只**出错
+         —— 否则它会被下面的 v-else 当成"有内容"而把整个编辑器壳渲染出来 -->
+    <div v-else-if="!clips.length && !loading" class="card card-blk" style="max-width:520px;margin:48px auto;text-align:center;padding:36px">
       <b style="font-size:15px">还没有可精修的切片</b>
       <p class="small muted" style="margin:8px 0 16px">先在「切片」页生成片段，再回到这里逐段精修</p>
       <router-link class="btn btn-primary" :to="`/p/${pid}/slices`">去切片</router-link>
@@ -17,6 +26,20 @@
 
     <template v-else>
       <div v-if="loading" class="card"><div class="skeleton"></div></div>
+
+      <!-- 片段配置读不到、手上又**没有**可用数据 → 错误卡，**必须排在下一条「未初始化」前面**。
+           以前读失败会让 ready 停在 false，渲染出来就是「未初始化精修项目」+ 一颗「初始化」按钮 ——
+           用户会把一个已存在的工程当成没初始化、再点一次初始化。读取失败要用失败的样子出现。
+           带 `!ready` 是因为：已经有数据时的读取失败（静默刷新）**不许卸载编辑器**
+           （那样预览视频、选框与滚动位置全丢，见下一条分支里的横幅）。 -->
+      <div v-else-if="cfgError && !ready" class="card card-blk" style="max-width:560px">
+        <div class="error-banner">
+          <Icon name="alert" :size="15" />
+          <span>片段配置读取失败：{{ cfgError }}</span>
+          <button class="mini-btn" style="margin-left:auto" @click="load()">重试</button>
+        </div>
+        <p class="muted small m-0">这不是「未初始化」—— 工程文件可能还在，只是这次没读到。重试之前别点初始化。</p>
+      </div>
 
       <!-- 列表模式：没有上次操作记录 → 只显示片段列表 + 空态，视频/编辑器不加载 -->
       <div v-else-if="!clipName" class="card card-blk">
@@ -34,7 +57,7 @@
           <h2>未初始化精修项目</h2>
           <p class="muted small">将解析字幕/弹幕并创建 polish.toml。</p>
           <div class="row mt-8">
-            <button class="btn btn-primary" :disabled="jobRunning" @click="initProject">
+            <button class="btn btn-primary" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="initProject">
               <Icon name="sparkles" :size="14" /> 初始化
             </button>
           </div>
@@ -49,6 +72,14 @@
       </div>
 
       <template v-else>
+        <!-- 已经有数据时的读取失败（静默刷新 / 任务后重载）：**只加一条横幅，不卸载编辑器** ——
+             换掉子树会丢预览播放位置、选框状态与滚动位置。数据仍是上一次成功读到的那份。 -->
+        <div v-if="cfgError" class="error-banner">
+          <Icon name="alert" :size="15" />
+          <span>片段配置刷新失败，显示的是上一次的数据：{{ cfgError }}</span>
+          <button class="mini-btn" style="margin-left:auto" @click="load({ silent: true })">重试</button>
+        </div>
+
         <!-- 片段卡（小卡，只做跳转）：默认一行，可展开两行 -->
         <div class="card frag-strip">
           <div class="frag-strip-row">
@@ -61,34 +92,22 @@
           </div>
         </div>
 
-        <!-- 左列 = 预览 + 时间轴（上下相邻，一起占满首屏）；右栏 = 生成与导出 -->
+        <!-- 左列 = 预览（属性面板在左、舞台在右）；右栏 = 生成与导出 -->
         <div class="grid cols-main mt-16 edit-grid">
-          <div class="left-col">
-            <div class="card">
-              <div class="row spread">
-                <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
-                <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
-                <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
-              </div>
-              <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
-                   右：预览舞台 -->
-              <div class="preview-row">
-                <div id="tl-props-host" class="props-host"></div>
-                <div class="stage-col">
-                  <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @update:select-rect="onSelectRect" />
-                  <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
-                </div>
-              </div>
+          <div class="card">
+            <div class="row spread">
+              <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
+              <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
+              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
-
-            <!-- 时间轴（标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在时间轴上，右侧不再重复） -->
-            <div class="card tl-card">
-              <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :current-time="currentTime" @seek="seekTo" @save="onTimelineSave" @toggle="togglePreviewPlay" @subtitle-saved="reloadSubtitles" @mute-saved="onMuteSaved">
-                <template #head>
-                  <b>时间轴编辑器</b>
-                  <span class="muted small">拖拽移动 / 右缘缩放 / 双击删除 / 泳道 ＋ 添加</span>
-                </template>
-              </TimelineEditor>
+            <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
+                 右：预览舞台 -->
+            <div class="preview-row">
+              <div id="tl-props-host" class="props-host"></div>
+              <div class="stage-col">
+                <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" />
+                <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
+              </div>
             </div>
           </div>
 
@@ -124,8 +143,10 @@
                   <span v-else class="chip n">九宫格默认</span>
                 </div>
                 <div class="row mb-6" style="gap:6px">
-                  <button class="mini-btn primary" :disabled="jobRunning" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-                  <button class="mini-btn" :disabled="jobRunning || !hasFreeRect" @click="clearSelect">清除选框</button>
+                  <!-- 选框保存是"同步加锁写 polish.toml"，与任务不冲突：任务在跑时照样能存，
+                       随后的重算（process）会排到该片段空闲后自动补跑（reprocessLayout） -->
+                  <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                  <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除选框</button>
                 </div>
                 <div class="hint mb-6">{{ regionHint }}</div>
               </template>
@@ -153,16 +174,42 @@
                   <b>{{ src.name }}</b>
                   <span class="muted small">{{ src.builtin ? '内置 emoji' : (src.tags.length + ' tags') }}</span>
                 </div>
-                <div v-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
+                <!-- "读不到"与"库是空的"必须分开：前者不该让用户去翻 stickers/ 目录 -->
+                <div v-if="stickerSourcesError" class="row small" style="gap:6px;align-items:center">
+                  <span class="muted">贴纸来源读取失败：{{ stickerSourcesError }}</span>
+                  <button class="mini-btn" @click="loadStickerSources">重试</button>
+                </div>
+                <div v-else-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
+              </div>
+
+              <!-- 参数 3：字幕字体（字体库 = 程序目录 resources/fonts/）-->
+              <div class="small muted mb-4">字幕字体<span class="hint"> · 出片与预览的字幕</span></div>
+              <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
+                <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+              <div v-if="fontsError" class="row small mt-4" style="gap:6px;align-items:center">
+                <span class="muted">字体库读取失败：{{ fontsError }}</span>
+                <button class="mini-btn" @click="loadFonts">重试</button>
+              </div>
+              <div v-else-if="!fonts.length" class="hint mt-4">
+                字体库为空：把 .ttf / .otf / .ttc 丢进 <span class="mono">{{ fontsRoot || '程序目录 resources/fonts/' }}</span> 后刷新
+              </div>
+              <!-- root 只有 admin 拿得到（服务器安装路径不给普通用户），非 admin 不显示这一段 -->
+              <div v-else class="hint mt-4">
+                库内 {{ fonts.length }} 个字体<span v-if="fontsRoot"> · 目录 <span class="mono">{{ fontsRoot }}</span></span>
               </div>
 
               <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
-              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="jobRunning" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
+              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
-            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="jobRunning" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
+            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
 
+            <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
+            <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
+              该片段正在「{{ kindText(scopeBusyJob.kind) }}」，等它结束再做这一步。
+            </div>
             <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
               <div class="row spread small">
                 <b>{{ jobLabel(job.kind) }}</b>
@@ -177,21 +224,32 @@
             </div>
           </div>
         </div>
-        <!-- 时间轴已在左列（预览正下方），保证最大化窗口下两者同屏 -->
 
-        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" @changed="refreshClipEntry" /></div>
+        <!-- 时间轴编辑器独占一整行（在预览/生成两栏之下）：横向空间全给刻度与泳道。
+             标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
+             改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
+        <div class="card tl-card mt-16">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried">
+            <template #head>
+              <b>时间轴编辑器</b>
+              <span class="muted small">拖拽移动 / 左右缘缩放 / 双击删除 / 泳道 ＋ 在播放头处添加（特效轨先选细分类型）· 改动立即保存 · 后处理在结束编辑时跑</span>
+            </template>
+          </TimelineEditor>
+        </div>
+
+        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry" /></div>
 
         <!-- 产物整行：成片 + 封面 + 输出目录 -->
         <div class="card mt-16 artifact-bar">
           <div class="row spread">
             <div class="row" style="gap:10px">
               <b class="t" style="margin:0">产物</b>
-              <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download>
-                <Icon name="download" :size="12" /> 成片 {{ renderedName }}
+              <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download :title="renderedFile">
+                <Icon name="download" :size="12" /> 成片 {{ renderedFile }}
               </a>
               <span v-else class="muted small">未渲染</span>
-              <a v-if="coverUrl && !coverFailed" class="mini-btn" :href="coverUrl" download>
-                <Icon name="download" :size="12" /> 封面 {{ coverName }}
+              <a v-if="coverUrl && !coverFailed" class="mini-btn" :href="coverUrl" download :title="coverFile">
+                <Icon name="download" :size="12" /> 封面 {{ coverFile }}
               </a>
               <span v-else class="muted small">无封面</span>
             </div>
@@ -210,9 +268,13 @@
     <AppModal :show="renderModal" title="渲染导出" @close="renderModal = false">
       <label>输出文件（**项目内相对路径**，留空使用 polish.toml 的 project.output）</label>
       <input v-model="renderOutput" placeholder="output/clips/clip-01/export.mp4">
-      <p class="hint mt-6">只接受项目内相对路径；绝对路径会被服务端拒绝（P2 起不再允许任意输出位置）。</p>
+      <p class="hint mt-6">
+        只接受项目内相对路径；绝对路径会被服务端拒绝（P2 起不再允许任意输出位置）。
+        <b>同名文件不会被覆盖</b>：已经存在时自动写成 <span class="mono">名字_1.mp4</span> /
+        <span class="mono">_2.mp4</span>…（与封面同一套规则），产物栏显示的就是最新那份。
+      </p>
       <template #footer>
-        <button class="btn btn-primary" :disabled="jobRunning" @click="doRender">开始渲染</button>
+        <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
         <button class="btn" @click="renderModal = false">取消</button>
       </template>
     </AppModal>
@@ -232,16 +294,19 @@ import TimelineEditor from '../components/TimelineEditor.vue'
 import FragmentList from '../components/polish/FragmentList.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
 import { mediaUrl } from '../utils'
-import { api } from '../api/client'
+import { api, apiOr } from '../api/client'
+import { addClient } from '../stores/log'
 import { scopeQ } from '../api/scope'
 import {
-  fetchProject, fetchSubtitles, saveSubtitles, saveProjectPatch,
+  fetchProject, fetchSubtitles, saveProjectPatch,
   initPolish, runLlm, runProcess, runRender,
-  fetchStickerSources,
+  fetchStickerSources, fetchFonts,
   REGION_LABELS,
 } from '../api/polish'
+import { ensureFontFace } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
-import { watchJob } from '../api/jobs'
+import { jobsApi, watchJob, busyOn, clipKey, kindText, QUEUED_HINT } from '../api/jobs'
+import { useJobs } from '../composables/useJobs'
 
 const route = useRoute()
 const router = useRouter()
@@ -264,6 +329,11 @@ const cfg = ref(null)
 const subs = ref([])
 const dm = ref([])
 const clips = ref([])
+/** 切片列表读取失败的原因（非空 → 界面走错误条，**不进"还没有可精修的切片"那个空态**）。
+ *  以前失败被 `catch { clips = [] }` 伪装成空态，用户会以为切片丢了。 */
+const clipsError = ref('')
+/** 当前片段的配置读取失败的原因（非空 → 走错误条，**不落到「未初始化精修项目」**） */
+const cfgError = ref('')
 const clipEntry = ref(null)
 /** 片段目录（规范化）→ `/api/project-data/polish` 行，供片段列表显示状态 */
 const polishByDir = ref({})
@@ -276,12 +346,8 @@ const segKey = ref(0)
 const coverKey = ref(0)
 const renderModal = ref(false)
 const renderOutput = ref('')
-const coverName = ref('cover.jpg')
-const renderedName = ref('export.mp4')
 const timelineRef = ref(null)
 const previewRef = ref(null)
-const savedSegs = ref('')      // 上次保存的时间轴 JSON 快照（脏状态比对）
-const savedSubsJson = ref('')  // 上次保存的字幕 JSON 快照
 
 const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, log: '', error: '' })
 let jobClose = null
@@ -293,8 +359,24 @@ const jobElapsed = ref(0)
 const wgpuRender = ref(false)
 
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
+
+// ---- 作用域互斥（并行能力的关键）----
+// 后端按「资源键」互斥：同片段的渲染/LLM/后处理/封面互斥，不同片段、不同项目、别的
+// 项目正在转写……都不影响这一页。这里用同一套键判断"我这个片段忙不忙"，
+// 只有自己片段被占用时才禁用按钮（以前是"任何地方有任务在跑就全灰"）。
+const { jobs: allJobs, reload: reloadJobs } = useJobs()
+const myKeys = computed(() =>
+  dir.value && clipName.value ? [clipKey(pid.value, clipName.value)] : []
+)
+/** 占着这个片段的活动任务（可能是别处发起的，比如切片页的重切、另一个标签页） */
+const scopeBusyJob = computed(() => busyOn(allJobs.value, myKeys.value))
+const scopeBusy = computed(() => !!scopeBusyJob.value || jobRunning.value)
+/** 谁在占用（按钮 title 与提示文案用） */
+const scopeBusyText = computed(() => {
+  if (jobRunning.value) return jobLabel(job.kind)
+  return scopeBusyJob.value ? kindText(scopeBusyJob.value.kind) : ''
+})
 const pctJob = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
-const jobActive = computed(() => jobRunning.value)
 const jobFinished = computed(() => ['succeeded', 'failed', 'cancelled'].includes(job.status))
 const jobStatusText = computed(() => ({
   queued: '排队中', running: '运行中',
@@ -315,7 +397,29 @@ const jobTimeText = computed(() => {
 // 贴纸配置 = polish.toml 顶层 sticker_source（LLM 生成时可选的贴图来源池）
 const stickerSource = computed(() => cfg.value?.sticker_source || [])
 const stickerSources = ref([]) // 全局可用来源（emoji + 贴纸库包）
+/** 贴纸来源列表读取失败的原因（非空 → 不显示"贴纸库为空"这个假空态） */
+const stickerSourcesError = ref('')
 const ssInput = ref('')
+
+// ---- 字幕字体（字体库：程序目录 resources/fonts/）----
+// 值存 polish.toml 的 `[style.subtitle] font`，**逐片段**生效（每个片段一份 polish.toml）。
+// 空串 = 回系统字体栈；非空 = 字体库里的 id（文件名去扩展名）。
+// 字体只影响预览与出片渲染 —— 不进任务、不触发 process（贴纸/运镜那些重算不读它）。
+const fonts = ref([]) // 库里的字体（只读接口）
+const fontsRoot = ref('') // 库目录（空库时告诉用户把文件丢哪儿）
+const fontsError = ref('')
+const fontSaving = ref(false)
+const subtitleFont = computed(() => cfg.value?.style?.subtitle?.font || '')
+/** 下拉选项：`（系统默认）` + 库内字体；当前值不在库里时补一条，免得 select 落到空态 */
+const fontOptions = computed(() => {
+  const opts = [{ value: '', label: '（系统默认）' }]
+  for (const f of fonts.value) {
+    opts.push({ value: f.id, label: f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id })
+  }
+  const cur = subtitleFont.value
+  if (cur && !fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  return opts
+})
 
 // ---- 布局框选（取代九宫格）：只有「人物」「弹幕区域」两个区域 ----
 // 贴纸落点由 process 按 layout.sticker_area 计算，不在 UI 里框选（要改就手改 polish.toml）。
@@ -365,8 +469,30 @@ function toggleSelect(region) {
 
 const pctStr = (v) => (Math.round(Math.min(100, Math.max(0, Number(v) || 0)) * 100) / 100).toFixed(2) + '%'
 
-/** 保存选框：写入 layout[区域].top_left/bottom_right（读取时优先于 grid）。
- *  只落盘、不起任务：这两处布局在渲染时直接读取，不需要重跑 process。 */
+/**
+ * 落盘 layout 改动后重跑 process。
+ *
+ * 这两个框是 **process 的输入**，不是渲染的输入：Step 2b 按 `layout.liver` /
+ * `layout.danmaku_area` 反选安全区、重写每个贴纸的 `x/y`；Step 2d 把 `anchor`
+ * 解析成 `origin`/`to_origin`（每次运行都覆盖）。渲染侧只认这些结果坐标
+ * （`index.html` 的 `ce.origin || liverOrigin` 里，读 layout 的只是"事件没写 origin"的兜底），
+ * 所以不改框就跑渲染，画面还是旧焦点 —— 渲染内部虽然会先跑一次 process 兜底，
+ * 但在那之前编辑器/预览显示的都是旧坐标，看着像"没生效"。
+ *
+ * process 无 LLM、幂等（每次都按当前 layout 全量重算），与时间轴保存走同一条路。
+ */
+function reprocessLayout() {
+  if (scopeBusy.value) {
+    // 选框已经存进 polish.toml 了（保存是同步加锁写，随时可存）；重算等片段空下来
+    markPendingProcess('选框保存时该片段正忙')
+    toast('选框已保存；该片段正在' + scopeBusyText.value + '，结束后会自动重算')
+    return
+  }
+  toast('选框已保存，正在重算运镜与贴纸落点…')
+  startJob('process', () => runProcess(pid.value, dir.value), { after: () => load({ silent: true }) })
+}
+
+/** 保存选框：写入 layout[区域].top_left/bottom_right（读取时优先于 grid），随后重算。 */
 async function applySelect() {
   try {
     const lay = { ...(cfg.value?.layout || {}) }
@@ -378,13 +504,13 @@ async function applySelect() {
     await saveProjectPatch(pid.value, dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
     selectRegion.value = ''
-    toast('选框已保存，渲染导出时生效')
+    reprocessLayout()
   } catch (e) {
     toast(e.message, 'err')
   }
 }
 
-/** 清除选框：回到该区域的九宫格 grid（不动 grid 本身，可逆）。 */
+/** 清除选框：回到该区域的九宫格 grid（不动 grid 本身，可逆）。同样是布局改动 → 一并重算。 */
 async function clearSelect() {
   try {
     const lay = { ...(cfg.value?.layout || {}) }
@@ -395,7 +521,7 @@ async function clearSelect() {
     await saveProjectPatch(pid.value, dir.value, { layout: lay })
     cfg.value = { ...cfg.value, layout: lay }
     loadSelRect()
-    toast('已清除选框，回到九宫格区域')
+    reprocessLayout()
   } catch (e) {
     toast(e.message, 'err')
   }
@@ -406,22 +532,10 @@ watch(() => cfg.value?.layout, () => { if (!selectRegion.value) loadSelRect() })
 // 产物优先使用后端返回的实际文件名（含 _1/_2 版本），未返回时回退固定名
 const coverFailed = ref(false)
 const renderedFailed = ref(false)
-const coverUrl = computed(() => {
-  if (clipEntry.value?.cover_file) return mediaUrl(dir.value, clipEntry.value.cover_file)
-  return dir.value ? mediaUrl(dir.value, 'cover.jpg') : ''
-})
-const renderedUrl = computed(() => {
-  if (clipEntry.value?.rendered_file) return mediaUrl(dir.value, clipEntry.value.rendered_file)
-  return dir.value ? mediaUrl(dir.value, 'vtuber-clip.mp4') : ''
-})
-
-// 脏状态：时间轴分段或字幕与上次保存不一致时，保存编辑按钮换色提醒
-const editDirty = computed(() => {
-  if (!ready.value || !cfg.value) return false
-  const segs = timelineRef.value?.segments
-  if (segs && JSON.stringify(segs) !== savedSegs.value) return true
-  return JSON.stringify(subs.value) !== savedSubsJson.value
-})
+const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
+const renderedFile = computed(() => clipEntry.value?.rendered_file || 'vtuber-clip.mp4')
+const coverUrl = computed(() => (dir.value ? mediaUrl(dir.value, coverFile.value) : ''))
+const renderedUrl = computed(() => (dir.value ? mediaUrl(dir.value, renderedFile.value) : ''))
 
 function jobLabel(kind) {
   return { llm: 'LLM 生成', render: '渲染导出', process: '后处理', init: '初始化' }[kind] || kind
@@ -429,6 +543,11 @@ function jobLabel(kind) {
 
 function onPreviewTime(t) {
   currentTime.value = Number(t) || 0
+}
+/** 预览是不是在播（时间轴的跟随只看这个：拖动/跳转不跟，用户要求） */
+const previewPlaying = ref(false)
+function onPreviewPlaying(v) {
+  previewPlaying.value = !!v
 }
 function seekTo(t) {
   // 字幕行点击传的是字幕对象；时间轴/进度条传的是数字秒
@@ -485,29 +604,32 @@ async function load(opts = {}) {
       cfg.value = await fetchProject(pid.value, dir.value, true)
       title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
       ready.value = true
+      cfgError.value = ''
     } catch (e) {
       // 静默刷新失败：保留旧画面但必须报出来，否则用户以为改动已生效
+      // 非静默（首次进入/切片段）失败时 `ready=false` 会渲染成**「未初始化精修项目」** ——
+      // 那是"读不到"，不是"没初始化"：用户会去点「初始化」把一个已存在的工程重做一遍。
+      // 所以记下原因，模板优先显示错误条（见 `cfgError`）。
+      cfgError.value = e.message || String(e)
       if (!silent) ready.value = false
       else toast('刷新失败：' + e.message, 'err')
     }
     try {
-      subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
+      subs.value = (await fetchSubtitles(pid.value, dir.value, '读取字幕')).segments || []
     } catch { if (!silent) subs.value = [] }
     subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
     try {
       const r = await fetch(mediaUrl(dir.value, 'data/danmaku.json'))
       if (r.ok) dm.value = await r.json()
-    } catch { if (!silent) dm.value = [] }
-    refreshSnapshots()
+    } catch (e) {
+      // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
+      addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
+      if (!silent) dm.value = []
+    }
     await refreshClipEntry()
   } finally {
     if (!silent) loading.value = false
   }
-}
-
-function refreshSnapshots() {
-  savedSegs.value = JSON.stringify(cfg.value?.segments || [])
-  savedSubsJson.value = JSON.stringify(subs.value)
 }
 
 function thumbSrc(c) {
@@ -520,34 +642,53 @@ function clipDirOf(name) {
   return hit?.dir || name
 }
 
+/**
+ * `clip-NN` → 序号（解析不出就排到最后）。
+ * 片段条必须按**数字**序号排：按字符串排会得到 clip-01, clip-02, clip-100, …, clip-11（用户报过
+ * "片段列表排序有问题"）。服务端已经这么排，这里再兜一次，卡片上的序号才不会和目录对不上。
+ */
+function rankOfName(name) {
+  const n = Number(String(name || '').replace(/^clip-/, ''))
+  return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
 /** 片段列表 + 每片段的精修状态。loading 由调用方（load / 任务回调）自行管理，这里不动。 */
 async function loadClips() {
+  // ⚠️ 以前这里 `apiOr(…, [])` + `catch { clips = [] }`：读失败退化成空数组，界面上就是
+  // "还没有可精修的切片" —— 和"真的一个切片都没有"长得一模一样，用户会以为切片没了。
+  // 现在失败**保留上一次的列表**（别清空）+ 置错误条，空态卡也靠 clipsError 排除掉这种假空。
   try {
-    if (!routeCfg) { clips.value = []; return }
+    if (!routeCfg) { clips.value = []; clipsError.value = ''; return }
     const [list, polish] = await Promise.all([
-      api(`/api/project-data/clips?${routeCfg}`).catch(() => []),
-      api(`/api/project-data/polish?${routeCfg}`).catch(() => [])
+      api(`/api/project-data/clips?${routeCfg}`, { label: '读取切片列表' }),
+      api(`/api/project-data/polish?${routeCfg}`, { label: '读取精修状态' })
     ])
-    clips.value = (Array.isArray(list) ? list : []).filter((c) => c.video_exists)
+    clips.value = (Array.isArray(list) ? list : [])
+      .filter((c) => c.video_exists)
+      .sort((a, b) => rankOfName(a.name) - rankOfName(b.name))
     const m = {}
     ;(polish || []).forEach((p) => { m[String(p.dir || '').replace(/\\/g, '/').toLowerCase()] = p })
     polishByDir.value = m
-  } catch {
-    clips.value = []
+    clipsError.value = ''
+  } catch (e) {
+    clipsError.value = e.message || String(e)
   }
 }
 
-/** 片段列表行：`N · 标题` + 状态 chip（已精修 / 精修中 / 未初始化）。 */
+/** 片段列表行：`N · 标题` + 状态 chip（未初始化 / 精修中 / 已导出）。
+ *  ⚠ 与切片页卡片上那枚 chip 同一套用词（那边是 `isExported`）：**别在这里叫「已精修」** ——
+ *  「已精修 / 精修中」并列正是用户报过的那种歧义，现在全应用统一成「已导出」。
+ *  判据也一致：出过片**或**出过封面都算。 */
 function clipRow(c) {
   const dir = String(c.dir || '').replace(/\\/g, '/').toLowerCase()
   const p = polishByDir.value[dir] || null
   const initialized = !!p?.polish_ready
-  const state = !initialized ? '未初始化' : (p.rendered ? '已精修' : '精修中')
+  const state = !initialized ? '未初始化' : (p.rendered || p.cover ? '已导出' : '精修中')
   return {
     name: c.name,
     title: c.meta?.title || c.name,
     state,
-    chip: state === '已精修' ? 'g' : state === '精修中' ? 'p' : 'n',
+    chip: state === '已导出' ? 'g' : state === '精修中' ? 'p' : 'n',
     initialized
   }
 }
@@ -569,22 +710,165 @@ function gotoClip(name) {
   router.push({ name: 'project-polish-clip', params: { pid: pid.value, clip: name } })
 }
 
-async function reloadSubtitles() {
+// ---- 时间轴编辑 → 预览 → 落盘 → 后处理 ----
+
+/**
+ * 本地改动**立刻**镜像进预览的输入（cfg.segments / subs / cfg.mute_ranges），
+ * **不 bump previewKey、不重挂载** —— 视频保持播放位置，拖动时画面当场就变。
+ */
+function onTimelinePreview(patch) {
+  if (patch.segments && cfg.value) cfg.value = { ...cfg.value, segments: patch.segments }
+  if (patch.subtitles) subs.value = patch.subtitles
+  if (patch.mute_ranges && cfg.value) cfg.value = { ...cfg.value, mute_ranges: patch.mute_ranges }
+}
+
+let processTimer = null
+let processPendingDir = ''
+let processPendingReason = ''
+/** 页面已卸载（离开精修页）：之后发起的后处理只发任务，不再往这个组件上挂轮询/刷新 */
+let pageGone = false
+
+/**
+ * 时间轴「编辑完成」：跑一次后处理（贴纸落点 / 运镜锚点坐标 / 画中画守卫都是它算出来的）。
+ *
+ * **编辑过程中一律不跑** —— 编辑器只在"一次操作真的做完"时发 `done`（面板控件确定 /
+ * 取消选中 / 切片段 / 离开页面）。以前是"落盘成功后 1.2s 自动跑"，于是你刚点「＋」加完贴纸、
+ * 还在面板里填 keyword 的时候它就插进来了：半成品被当成成品处理，数量抽稀把新贴纸删掉，
+ * 用户看到的是"我自己加的东西过两秒就没了"。
+ */
+function onEditDone(payload) {
+  const target = (payload && payload.dir) || dir.value
+  if (!target) return
+  processPendingDir = target
+  processPendingReason = (payload && payload.reason) || ''
+  if (processTimer) clearTimeout(processTimer)
+  // 合并防抖：连续几次"完成"（改一个字段 → 取消选中 → 又点回去）只跑一次
+  processTimer = setTimeout(() => {
+    processTimer = null
+    const t = processPendingDir
+    const why = processPendingReason
+    processPendingDir = ''
+    processPendingReason = ''
+    runProcessFor(t, why)
+  }, 1500)
+}
+
+/**
+ * 给某个目录跑一次后处理。
+ * `target` 已经**不是当前片段**（切走了 / 离开了页面）时：只把任务发出去，不占用当前页面的
+ * 任务状态、也不刷新当前页面 —— 服务端按目录排队，跑完就完了（页面都卸载了，再挂轮询只会漏）。
+ */
+async function runProcessFor(target, reason) {
+  if (!target) return
+  if (pageGone || target !== dir.value) {
+    addClient('debug', `编辑完成（${reason || ''}）：为上一个片段补跑一次后处理`, 'polish')
+    runProcess(pid.value, target).catch((e) => addClient('warn', '补跑后处理失败：' + e.message, 'polish'))
+    return
+  }
+  // 本片段忙（自己的任务、或别处发起/排队的任务）：不塞队列，只记 pending，
+  // 等作用域空下来自动补跑一次（改动都在 polish.toml 里，那次 process 一并算进去）。
+  if (scopeBusy.value) {
+    // 兜底：本地可能停在"运行中"而服务端早就跑完了（订阅恰好错过终态）。
+    // 直接问一次服务端；真结束了就放行，别让自动后处理从此静默失效。
+    const done = await jobActuallyDone()
+    if (!done || scopeBusy.value) {
+      markPendingProcess(`编辑完成时该片段正忙（${reason || ''}）`)
+      return
+    }
+  }
+  startJob('process', () => runProcess(pid.value, target), {
+    silent: true,
+    keepPreview: true,
+    after: async () => {
+      if (pageGone) return
+      await load({ silent: true })
+      // 后处理会改写事件（贴纸吸附/落点、锚点解析、画中画守卫）——把结果同步回编辑器
+      await timelineRef.value?.reload?.()
+    }
+  })
+}
+
+/** 本地以为在跑，去服务端核实一下；已完成则把本地任务状态收敛掉并返回 true。 */
+async function jobActuallyDone() {
+  if (!job.id) return true
   try {
-    subs.value = (await fetchSubtitles(pid.value, dir.value)).segments || []
-    subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-    refreshSnapshots()
-  } catch {}
+    const j = await jobsApi.detail(job.id)
+    if (['succeeded', 'failed', 'cancelled'].includes(j.status)) {
+      job.status = j.status
+      closeJobWatcher()
+      stopJobTimer()
+      return true
+    }
+    return false
+  } catch {
+    return false // 问不到就按"忙"处理，宁可跳过
+  }
+}
+
+/**
+ * 关掉当前任务的订阅。
+ * ⚠️ `watchJob()` 返回的是 `{ close() }` **对象**，不是函数 ——
+ * 当函数调会抛 `jobClose is not a function`（压缩后就是「ve is not a function」），
+ * 而且 `startJob` 里那处就在 `jobClose = watchJob(...)` 上一行：抛错后新任务永远订阅不上，
+ * 界面从此停在「运行中」（自动后处理也会被 jobRunning 挡掉）。别再写回 `jobClose?.()`。
+ */
+function closeJobWatcher() {
+  if (!jobClose) return
+  jobClose.close()
+  jobClose = null
+}
+
+/**
+ * 待补跑的后处理：本片段忙的时候不往队列里塞 process（一次编辑风暴会塞进十几条），
+ * 只记一个标记，等它空下来自动跑一次 —— 那次 process 会读磁盘上最新的 polish.toml，
+ * 期间所有改动一并生效。
+ *
+ * 存的是 **dir**（不是片段名）：切走之后欠的那次仍要跑到**原来那个片段**上。
+ */
+const pendingProcess = ref('')
+
+function markPendingProcess(reason) {
+  pendingProcess.value = dir.value
+  addClient('debug', `后处理推迟到本片段空闲后自动补跑（${reason}）`, 'polish')
+}
+
+/** 片段空闲时补跑一次被推迟的后处理（silent：不重挂预览、不丢播放位置） */
+function flushPendingProcess() {
+  const target = pendingProcess.value
+  if (!target) return
+  if (target === dir.value && (scopeBusy.value || !ready.value)) return
+  pendingProcess.value = ''
+  runProcessFor(target, '空闲补跑')
+}
+
+// 作用域一空下来就补跑（job 列表由 /api/stream + 3 秒轮询刷新）
+watch(scopeBusy, (v) => { if (!v) flushPendingProcess() })
+
+/** 「重新后处理」按钮 */
+function runProcessJob() {
+  if (scopeBusy.value) { toast('该片段正在' + scopeBusyText.value + '，请稍候', 'err'); return }
+  startJob('process', () => runProcess(pid.value, dir.value), {
+    // keepPreview：只重算派生数据（贴纸落点/锚点坐标），预览不重挂载、播放位置不丢
+    keepPreview: true,
+    after: async () => { await load({ silent: true }); await timelineRef.value?.reload?.() }
+  })
+}
+
+/**
+ * 时间轴自己的「重试」成功了：它读的就是页面那条 `/api/polish/project`，所以页面上那条
+ * 「显示的是上一次的数据」此刻已经过期 —— 不清掉它就成了"界面在说谎"（明明好了还挂着报错）。
+ * 用 silent 重拉一次，不卸载编辑器。
+ */
+function onTimelineRetried() {
+  if (cfgError.value) load({ silent: true })
 }
 
 async function refreshClipEntry() {
   coverFailed.value = false
   renderedFailed.value = false
-  try {
-    const list = routeCfg ? await api(`/api/project-data/polish?${routeCfg}`) : []
-    const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
-    clipEntry.value = (list || []).find((p) => norm(p.dir) === norm(dir.value)) || null
-  } catch { clipEntry.value = null }
+  const list = routeCfg ? await apiOr(`/api/project-data/polish?${routeCfg}`, [], '刷新片段状态') : []
+  const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
+  clipEntry.value = (list || []).find((p) => norm(p.dir) === norm(dir.value)) || null
 }
 
 // ---- 任务驱动 ----
@@ -615,10 +899,7 @@ async function cancelJob() {
   try {
     await api('/api/jobs/' + job.id + '/cancel', { method: 'POST' })
     // cancel 接口已同步把任务置为 cancelled；关掉订阅避免后台迟到的完成事件再把它改回成功
-    if (jobClose) {
-      jobClose()
-      jobClose = null
-    }
+    closeJobWatcher()
     job.status = 'cancelled'
     stopJobTimer()
     toast('任务已中断')
@@ -629,12 +910,17 @@ async function cancelJob() {
   }
 }
 
-function startJob(kind, call, { after } = {}) {
-  if (jobRunning.value) { toast('已有任务在运行，请稍候', 'err'); return Promise.resolve(false) }
+function startJob(kind, call, { after, silent, keepPreview } = {}) {
+  if (scopeBusy.value) { toast('该片段正在' + scopeBusyText.value + '，请稍候', 'err'); return Promise.resolve(false) }
   return call().then((r) => {
-    Object.assign(job, { id: r.id, kind, status: 'running', current: 0, total: 0, log: '', error: '' })
+    Object.assign(job, { id: r.id, kind, status: r.queued ? 'queued' : 'running', current: 0, total: 0, log: '', error: '' })
+    // 服务端作用域冲突或本档名额满时是**排队**而不是报错：告诉用户轮到时自动开始，
+    // 具体排在第几位看任务抽屉（档位/名次由服务端给，前端不猜）
+    if (r.queued && !silent) toast(QUEUED_HINT)
     startJobTimer()
-    jobClose?.()
+    // ⚠️ 这里以前写的是 `jobClose?.()`（把 `{close}` 对象当函数调）——它会抛错，
+    // 导致下面这行订阅根本不执行、任务永远停在「运行中」。见 closeJobWatcher 的注释。
+    closeJobWatcher()
     jobClose = watchJob(r.id, {
       onEvent(e) {
         if (e.type === 'log') job.log = e.message
@@ -649,9 +935,13 @@ function startJob(kind, call, { after } = {}) {
       onDone(s) {
         job.status = s.status
         stopJobTimer()
+        // 全局任务列表最多滞后 3 秒：立刻拉一次，作用域门控与侧栏徽标才能马上松开
+        reloadJobs()
         if (s.status === 'succeeded') {
-          toast(jobLabel(kind) + '完成')
-          previewKey.value++
+          if (!silent) toast(jobLabel(kind) + '完成')
+          // 重挂载预览会把播放位置打回 0：编辑触发的后处理（silent / keepPreview）不重挂，
+          // 靠 load({silent:true}) 换掉 cfg 让预览自己重算索引——位置与滚动都不丢。
+          if (!silent && !keepPreview) previewKey.value++
           after && after()
         } else if (s.status === 'failed') {
           toast(jobLabel(kind) + '失败：' + (job.error || s.message || '未知错误'), 'err')
@@ -696,74 +986,56 @@ function doRender() {
   startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { coverKey.value++; load({ silent: true }) } })
 }
 
-// 保存编辑：时间轴分段 / 字幕，各自仅在变动时提交
-async function saveEdits() {
-  if (!editDirty.value) { toast('没有需要保存的修改'); return }
-  let segsChanged = false
-  const segs = timelineRef.value?.segments
-  if (segs && JSON.stringify(segs) !== savedSegs.value) {
-    try {
-      await saveProjectPatch(pid.value, dir.value, { segments: segs })
-      savedSegs.value = JSON.stringify(segs)
-      segsChanged = true
-    } catch (e) { toast('保存时间轴失败：' + e.message, 'err'); return }
-  }
-  if (JSON.stringify(subs.value) !== savedSubsJson.value) {
-    try {
-      await saveSubtitles(pid.value, dir.value, subs.value)
-      savedSubsJson.value = JSON.stringify(subs.value)
-      previewKey.value++
-    } catch (e) { toast('保存字幕失败：' + e.message, 'err'); return }
-  }
-  toast('编辑已保存')
-  if (segsChanged) {
-    // 时间轴变更后隐式 process（完成后刷新预览）
-    startJob('process', () => runProcess(pid.value, dir.value), { after: () => load({ silent: true }) })
-  }
-}
-
-function onTimelineSave(changes) {
-  const segs = Array.isArray(changes) ? changes : (changes?.segments || [])
-  const mutes = Array.isArray(changes) ? null : changes?.mute_ranges
-  const patch = { segments: segs }
-  if (mutes) patch.mute_ranges = mutes
-  saveProjectPatch(pid.value, dir.value, patch)
-    .then(() => {
-      toast('时间轴已保存，自动执行后处理…')
-      return startJob('process', () => runProcess(pid.value, dir.value), { after: () => load({ silent: true }) })
-    })
-    .catch((e) => toast(e.message, 'err'))
-}
-
-async function onMuteSaved(ranges) {
-  try {
-    await saveProjectPatch(pid.value, dir.value, { mute_ranges: ranges })
-    if (cfg.value) cfg.value.mute_ranges = ranges
-    previewKey.value++
-    // 「去静音」会直接改写 polish.toml，这里同步刷新屏蔽段数状态
-    await refreshClipEntry()
-  } catch (e) {
-    toast('屏蔽区间保存失败：' + e.message, 'err')
-  }
-}
+// 时间轴的保存与后处理见上面「时间轴编辑 → 预览 → 落盘 → 后处理」（编辑器自己防抖落盘）
 
 // 九宫格布局已由「布局框选」取代：区域矩形一律走 layout[region].top_left/bottom_right
-
-async function saveSubs() {
-  try {
-    await saveSubtitles(pid.value, dir.value, subs.value)
-    savedSubsJson.value = JSON.stringify(subs.value)
-    toast('字幕已保存')
-    previewKey.value++
-  } catch (e) { toast(e.message, 'err') }
-}
 
 // 添加字幕：开始 = 当前播放时间，结束 = +3s
 // ---- 贴纸配置（sticker_source，直存 polish.toml）----
 async function loadStickerSources() {
+  // 同 loadClips：失败不能退化成"贴纸库为空"（那是个假空态，用户会去查库而不是查服务）
   try {
-    stickerSources.value = (await fetchStickerSources(pid.value, dir.value)).sources || []
-  } catch { stickerSources.value = [] }
+    stickerSources.value = (await fetchStickerSources(pid.value, dir.value, '读取贴纸来源')).sources || []
+    stickerSourcesError.value = ''
+  } catch (e) {
+    stickerSourcesError.value = e.message || String(e)
+  }
+}
+
+// ---- 字体库（字幕字体下拉）----
+async function loadFonts() {
+  try {
+    const r = await fetchFonts('读取字体库')
+    fonts.value = r.fonts || []
+    fontsRoot.value = r.root || ''
+    fontsError.value = ''
+  } catch (e) {
+    // 与贴纸来源同规矩：读不到就是读不到，别伪装成"库是空的"
+    fontsError.value = e.message || String(e)
+  }
+}
+
+/** 换字幕字体：只改 polish.toml 的一个字段，保存后重取配置让预览/时间轴跟着变。
+ *  **不重挂载预览**（keepPreview 那套只在任务路径上有）—— cfg 变了 PolishPreview 就地重算。 */
+async function onSubtitleFontChange(e) {
+  const next = e.target.value
+  const prev = subtitleFont.value
+  if (next === prev) return
+  fontSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { subtitle_font: next })
+    // 先让浏览器认得这个字体（DOM 预览靠它），再刷新配置
+    if (next) await ensureFontFace(pid.value, dir.value, next, { onDebug: (m) => addClient('debug', m, 'polish') })
+    cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), subtitle: { ...(cfg.value?.style?.subtitle || {}), font: next } } }
+    await load({ silent: true })
+    toast(next ? `字幕字体已改为「${next}」` : '字幕字体已回到系统默认')
+  } catch (err) {
+    toast(err.message, 'err')
+    // 保存失败要让下拉回到原值（否则界面在撒谎）
+    await load({ silent: true })
+  } finally {
+    fontSaving.value = false
+  }
 }
 
 // /api/health 的 wgpu_render：非 true（含 undefined）都视为未启用
@@ -809,21 +1081,23 @@ function onRenderedError() {
 onMounted(() => {
   load()
   loadStickerSources()
+  loadFonts()
   loadHealth()
 })
 onUnmounted(() => {
+  pageGone = true
   stopJobTimer()
-  jobClose?.()
+  closeJobWatcher()
 })
-watch(dir, load)
+watch(dir, () => { load() })
 </script>
 
 <style scoped>
-/* 页面专属布局（样稿无同名类）：编辑区（预览+时间轴左列 / 生成与导出右栏）、
+/* 页面专属布局（样稿无同名类）：编辑区（预览左 / 生成与导出右栏）、独占一行的时间轴、
    LLM 剪辑参数块、紧凑片段条、贴纸来源选择器、产物体 */
-/* 左列上下排列「预览 + 时间轴」，右栏保持自然高度（不跟着左列拉长） */
+/* 两栏各取自然高度（右栏不跟着预览拉长）；时间轴在下一行整行铺开 —— 它的横向空间
+   不再被右栏吃掉（刻度/泳道多出约 300px），编辑手感与刻度精度都更好 */
 .edit-grid { align-items:start; }
-.left-col { display:flex; flex-direction:column; gap:16px; min-width:0; }
 /* 预览卡内部：属性面板（时间轴 Teleport 过来的）在左，预览舞台在右 */
 .preview-row { display:flex; gap:12px; align-items:stretch; margin-top:8px; }
 /* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，

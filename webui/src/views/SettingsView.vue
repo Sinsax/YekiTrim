@@ -33,7 +33,7 @@
     <div class="card">
       <template v-if="!editSource">
         <div class="muted small mb-8">
-          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>[sfx]</code> blacklist、<code>detection.max_concurrent</code>）；要改这些请点「编辑源文件」。
+          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>[sfx]</code> blacklist；<code>[detection]</code>/<code>[correct]</code> 的 <code>max_concurrent</code> 留空即跟随上方的全局并发）；要改这些请点「编辑源文件」。
         </div>
         <div class="form-section">
           <div class="form-section-title">ASR 转写</div>
@@ -46,10 +46,46 @@
               </select>
               <div class="muted small field-hint">{{ asrModeHint }}</div>
             </div>
-            <div><label>并行数 num_workers（0=自动）</label><input v-model.number="form.asr.num_workers" type="number" step="1"></div>
-            <div><label>分块时长 chunk_duration（秒）</label><input v-model.number="form.asr.chunk_duration" type="number" step="0.1"></div>
-            <div><label>重叠时长 chunk_overlap（秒）</label><input v-model.number="form.asr.chunk_overlap" type="number" step="0.1"></div>
-            <div><label>段间隔 segment_gap（秒）</label><input v-model.number="form.asr.segment_gap" type="number" step="0.1"></div>
+            <div class="span-2">
+              <label class="lbl-row"><span>并行数 num_workers（0=自动）</span><b class="rv">{{ form.asr.num_workers }}</b></label>
+              <input v-model.number="form.asr.num_workers" type="range" min="0" max="32" step="1">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>分块时长 chunk_duration</span><b class="rv">{{ form.asr.chunk_duration }}s</b></label>
+              <input v-model.number="form.asr.chunk_duration" type="range" min="10" max="300" step="5">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>重叠时长 chunk_overlap</span><b class="rv">{{ form.asr.chunk_overlap }}s</b></label>
+              <input v-model.number="form.asr.chunk_overlap" type="range" min="0" max="60" step="1">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>段间隔 segment_gap（强停顿，秒）</span><b class="rv">{{ form.asr.segment_gap }}s</b></label>
+              <input v-model.number="form.asr.segment_gap" type="range" min="0.1" max="5" step="0.1">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>气口 breath_gap（标点切点吸附到停顿，秒）</span><b class="rv">{{ form.asr.breath_gap }}s</b></label>
+              <input v-model.number="form.asr.breath_gap" type="range" min="0.1" max="1.5" step="0.05">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>软切 soft_cut_secs（，、；： 超过这么久才切，秒）</span><b class="rv">{{ form.asr.soft_cut_secs }}s</b></label>
+              <input v-model.number="form.asr.soft_cut_secs" type="range" min="1" max="20" step="0.5">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>字数硬上限 max_segment_chars</span><b class="rv">{{ form.asr.max_segment_chars }} 字</b></label>
+              <input v-model.number="form.asr.max_segment_chars" type="range" min="10" max="60" step="1">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>吸附半径 snap_window（秒）</span><b class="rv">{{ form.asr.snap_window }}s</b></label>
+              <input v-model.number="form.asr.snap_window" type="range" min="0" max="1" step="0.05">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>解码余量 segment_padding（前后留白，0=关；实测会扰动文本）</span><b class="rv">{{ form.asr.segment_padding }}s</b></label>
+              <input v-model.number="form.asr.segment_padding" type="range" min="0" max="1" step="0.05">
+            </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>输出上限 max_new_tokens（qwen3 单次解码）</span><b class="rv">{{ form.asr.max_new_tokens }}</b></label>
+              <input v-model.number="form.asr.max_new_tokens" type="range" min="128" max="2048" step="128">
+            </div>
             <div class="check-field">
               <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
               <label for="llmCorrect">LLM 订正转录文本（需配置 LLM）</label>
@@ -60,7 +96,10 @@
         <div class="form-section">
           <div class="form-section-title">检测 Detection</div>
           <div class="form-grid det-top">
-            <div><label>弹幕窗口 danmaku_window_secs（秒）</label><input v-model.number="form.detection.danmaku_window_secs" type="number" step="0.1"></div>
+            <div class="span-2">
+              <label class="lbl-row"><span>弹幕窗口 danmaku_window_secs</span><b class="rv">{{ form.detection.danmaku_window_secs }}s</b></label>
+              <input v-model.number="form.detection.danmaku_window_secs" type="range" min="1" max="60" step="1">
+            </div>
             <div class="span-2"><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
           </div>
           <div class="prompt-pair">
@@ -83,8 +122,8 @@
                 <div class="side-title">剪切 Cutting</div>
                 <label>输出目录 output_dir</label>
                 <input v-model="form.cutting.output_dir" type="text">
-                <label class="side-gap">静音阈值 silence_noise_db（dB）</label>
-                <input v-model.number="form.cutting.silence_noise_db" type="number" step="1">
+                <label class="lbl-row side-gap"><span>静音阈值 silence_noise_db</span><b class="rv">{{ form.cutting.silence_noise_db }} dB</b></label>
+                <input v-model.number="form.cutting.silence_noise_db" type="range" min="-60" max="0" step="1">
                 <div class="check-field side-check">
                   <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
                   <label for="overwrite">覆盖已有文件 overwrite</label>
@@ -126,13 +165,27 @@
             <div><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
             <div><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
             <div><label>model</label><input v-model="form.llm.model" type="text"></div>
-            <div><label>temperature</label><input v-model.number="form.llm.temperature" type="number" step="0.1"></div>
-            <div><label>max_tokens</label><input v-model.number="form.llm.max_tokens" type="number" step="1"></div>
+            <div>
+              <label class="lbl-row"><span>temperature</span><b class="rv">{{ Number(form.llm.temperature).toFixed(1) }}</b></label>
+              <input v-model.number="form.llm.temperature" type="range" min="0" max="2" step="0.1">
+            </div>
+            <div>
+              <label class="lbl-row"><span>max_tokens</span><b class="rv">{{ form.llm.max_tokens }}</b></label>
+              <input v-model.number="form.llm.max_tokens" type="range" min="256" max="65536" step="256">
+            </div>
+            <div>
+              <label class="lbl-row"><span>并发请求数</span><b class="rv">{{ form.llm.max_concurrent }}</b></label>
+              <input v-model.number="form.llm.max_concurrent" type="range" min="1" max="32" step="1">
+            </div>
           </div>
           <div class="llm-extra">
             <label>extra_params（JSON 文本）</label>
             <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false"></textarea>
           </div>
+        </div>
+        <div class="muted small mt-8">
+          并发请求数对<b>所有 LLM 调用</b>生效（事件检测 / 精修事件生成 / 字幕订正）；
+          实测中转站允许并发，提高它能近线性缩短批处理时间。触发限流时先调小这里。
         </div>
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
@@ -142,9 +195,34 @@
       </template>
     </div>
 
-    <div class="section-title">模型管理</div>
+    <div class="two-up">
+      <div>
+        <div class="section-title">注册与邀请码</div>
+        <div class="card">
+          <InviteManager />
+        </div>
+      </div>
+      <div>
+        <div class="section-title">模型管理</div>
+        <div class="card">
+          <ModelList :models="models" @changed="loadModels" />
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">录播姬（采集）</div>
     <div class="card">
-      <ModelList :models="models" @changed="loadModels" />
+      <RecorderConfig />
+    </div>
+
+    <div class="section-title">LLM 用量</div>
+    <div class="card">
+      <LlmUsage />
+    </div>
+
+    <div class="section-title">运行日志</div>
+    <div class="card">
+      <LogConsole />
     </div>
   </div>
 </template>
@@ -155,6 +233,10 @@ import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import ModelList from '../components/ModelList.vue'
+import InviteManager from '../components/InviteManager.vue'
+import RecorderConfig from '../components/RecorderConfig.vue'
+import LlmUsage from '../components/LlmUsage.vue'
+import LogConsole from '../components/LogConsole.vue'
 
 const globalRaw = ref('')
 const llmRaw = ref('')
@@ -175,6 +257,12 @@ const form = reactive({
     chunk_duration: 60,
     chunk_overlap: 10,
     segment_gap: 1,
+    breath_gap: 0.25,
+    soft_cut_secs: 6,
+    max_segment_chars: 30,
+    snap_window: 0.3,
+    segment_padding: 0,
+    max_new_tokens: 512,
     llm_correct: false
   },
   detection: {
@@ -196,6 +284,7 @@ const form = reactive({
     model: '',
     temperature: 0,
     max_tokens: 65536,
+    max_concurrent: 3,
     extra_params: ''
   }
 })
@@ -211,6 +300,12 @@ function buildGlobalPatch() {
       chunk_duration: Number(f.asr.chunk_duration) || 60,
       chunk_overlap: Number(f.asr.chunk_overlap) || 10,
       segment_gap: Number(f.asr.segment_gap) || 1,
+      breath_gap: Number(f.asr.breath_gap ?? 0.25),
+      soft_cut_secs: Number(f.asr.soft_cut_secs ?? 6),
+      max_segment_chars: Number(f.asr.max_segment_chars) || 30,
+      snap_window: Number(f.asr.snap_window ?? 0.3),
+      segment_padding: Number(f.asr.segment_padding ?? 0),
+      max_new_tokens: Number(f.asr.max_new_tokens) || 512,
       llm_correct: !!f.asr.llm_correct
     },
     detection: {
@@ -236,7 +331,8 @@ function buildLlmPatch() {
     api_key: f.api_key || '',
     model: f.model || '',
     temperature: Number(f.temperature) || 0,
-    max_tokens: Number(f.max_tokens) || 65536
+    max_tokens: Number(f.max_tokens) || 65536,
+    max_concurrent: Number(f.max_concurrent) || 1
   }
   if (f.extra_params && f.extra_params.trim()) {
     try {
@@ -264,7 +360,13 @@ async function loadConfig() {
       chunk_duration: c.asr.chunk_duration ?? 60,
       chunk_overlap: c.asr.chunk_overlap ?? 10,
       segment_gap: c.asr.segment_gap ?? 1,
-      llm_correct: !!c.asr.llm_correct
+      llm_correct: !!c.asr.llm_correct,
+      breath_gap: c.asr.breath_gap ?? 0.25,
+      soft_cut_secs: c.asr.soft_cut_secs ?? 6,
+      max_segment_chars: c.asr.max_segment_chars ?? 30,
+      snap_window: c.asr.snap_window ?? 0.3,
+      segment_padding: c.asr.segment_padding ?? 0,
+      max_new_tokens: c.asr.max_new_tokens ?? 512
     })
     if (c.detection) Object.assign(form.detection, {
       danmaku_window_secs: c.detection.danmaku_window_secs ?? 10,
@@ -289,6 +391,7 @@ async function loadConfig() {
       model: l.model || '',
       temperature: l.temperature ?? 0,
       max_tokens: l.max_tokens ?? 65536,
+      max_concurrent: l.max_concurrent ?? 3,
       extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : ''
     }
     loaded.value = true
@@ -297,8 +400,9 @@ async function loadConfig() {
 
 async function loadModels() {
   try {
-    const list = await api('/api/models')
-    models.value = (list || []).filter(m => m.name !== 'firered-zh')
+    const list = await api('/api/models', { label: '读取模型列表' })
+    // 列表由后端给（注册表 model_names()）：装没装、装在哪一份都由它判（与运行时同源）
+    models.value = list || []
   } catch (e) {}
 }
 
@@ -380,6 +484,8 @@ onMounted(() => {
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
 .form-section-title { font-weight:700; font-size:13px; margin-bottom:8px; }
 .form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:12px 14px; align-items:start; }
+/* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
+.two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
 .span-2 { grid-column:span 2; }
 .field-hint { margin-top:4px; }
 .span-all { grid-column:1 / -1; }
@@ -396,6 +502,7 @@ onMounted(() => {
 .source-editor { font-size:12px; line-height:1.7; }
 button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 1200px) {
+  .two-up { grid-template-columns:1fr; }
   .form-grid { grid-template-columns:repeat(3, 1fr); }
 }
 @media (max-width: 900px) {

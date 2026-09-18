@@ -23,11 +23,11 @@ function scoped(pid, dir) {
   return { project: pid, dir }
 }
 
-export const fetchProject = (pid, dir, withPreview = false) =>
-  api(`/api/polish/project?${qs(pid, dir, withPreview)}`)
+export const fetchProject = (pid, dir, withPreview = false, label = '') =>
+  api(`/api/polish/project?${qs(pid, dir, withPreview)}`, { label })
 
-export const fetchSubtitles = (pid, dir) =>
-  api(`/api/polish/subtitles?${qs(pid, dir)}`)
+export const fetchSubtitles = (pid, dir, label = '') =>
+  api(`/api/polish/subtitles?${qs(pid, dir)}`, { label })
 
 function qs(pid, dir, withPreview = false) {
   const q = new URLSearchParams()
@@ -47,8 +47,27 @@ export const saveProjectPatch = (pid, dir, patch) =>
 export const selectVersion = (pid, dir, version) =>
   api('/api/polish/select-version', { method: 'POST', body: JSON.stringify({ ...scoped(pid, dir), version }) })
 
-export const fetchStickerSources = (pid, dir) =>
-  api(`/api/polish/sticker-sources?${qs(pid, dir)}`)
+export const fetchStickerSources = (pid, dir, label = '') =>
+  api(`/api/polish/sticker-sources?${qs(pid, dir)}`, { label })
+
+/** 贴纸库全量（只读）：`[{name, built, registered, description, tags:[{tag,files}], files}]`。
+ *  编辑器里「keyword 一级 → 贴纸二级」选择的数据源（写操作仍只在 admin 侧）。 */
+export const fetchStickerLibrary = (pid, dir, label = '') =>
+  api(`/api/polish/sticker-library?${qs(pid, dir)}`, { label })
+
+/** 贴纸缩略图 URL（`<img>` 直连；服务端只读 + 路径安全校验，与 admin 预览同一个实现）。 */
+export const stickerFileUrl = (pid, dir, pack, name) => {
+  const q = new URLSearchParams()
+  if (pid != null && pid !== '') q.set('project', String(pid))
+  if (dir) q.set('dir', dir)
+  q.set('pack', pack)
+  q.set('name', name)
+  return '/api/polish/sticker-file?' + q.toString()
+}
+
+/** 音效目录（只读）：`[{id, label, cat, tags}]`，已按全局 `[sfx] blacklist` 过滤。 */
+export const fetchSfxCatalog = (pid, dir, label = '') =>
+  api(`/api/polish/sfx-catalog?${qs(pid, dir)}`, { label })
 
 async function startJob(url, pid, dir, extra = {}) {
   return api(url, { method: 'POST', body: JSON.stringify({ ...scoped(pid, dir), ...extra }) })
@@ -61,7 +80,8 @@ export const initPolish = (pid, dir) => startJob('/api/polish/init', pid, dir)
 export const runLlm = (pid, dir) => startJob('/api/polish/llm', pid, dir)
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
 export const runSilence = (pid, dir) => startJob('/api/polish/silence', pid, dir)
-/** 渲染导出：输出固定为项目内相对路径（默认 export.mp4） */
+/** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；
+ *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则） */
 export const runRender = (pid, dir, outputFile = 'export.mp4') =>
   startJob('/api/polish/render', pid, dir, { output_file: outputFile })
 export const runCover = (pid, dir) => startJob('/api/polish/cover', pid, dir)
@@ -78,5 +98,14 @@ export const renderFrame = (pid, dir, t) =>
 
 export const fontUrl = (pid, dir, name) =>
   `/api/polish/font?${qs(pid, dir)}${name ? '&name=' + encodeURIComponent(name) : ''}`
+
+/**
+ * 字体库（只读）：`{ root, fonts: [{id, file, family, bytes}] }`。
+ *
+ * 库是**程序级**的（`<程序目录>/resources/fonts/`，往里丢 .ttf/.otf/.ttc 就会出现），
+ * 与项目无关 —— 所以这里不带 `{project, dir}`，也不需要 admin。
+ * 配置里存的是 `id`（文件名去扩展名）；`family` 只是给人看的展示名。
+ */
+export const fetchFonts = (label = '') => api('/api/polish/fonts', { label })
 
 export { watchJob } from './jobs'

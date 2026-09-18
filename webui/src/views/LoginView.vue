@@ -32,13 +32,18 @@
         账号由管理员创建。首次部署的管理员密码见服务启动日志，或数据目录下的
         <span class="mono">initial-admin-password.txt</span>（首次登录成功后自动删除）。
       </div>
+      <!-- 只在注册开放时露出入口（读 /api/health 的能力位；服务端仍是最终裁判） -->
+      <div v-if="registrationEnabled" class="row mt-8">
+        <router-link class="muted small" to="/register">没有账号？用邀请码注册</router-link>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { api } from '../api/client'
 import { login } from '../stores/auth'
 
 const route = useRoute()
@@ -47,6 +52,17 @@ const username = ref('')
 const password = ref('')
 const busy = ref(false)
 const error = ref('')
+/** 注册总闸（`[auth] registration_enabled`）：关着就不显示「用邀请码注册」入口 */
+const registrationEnabled = ref(false)
+
+onMounted(async () => {
+  try {
+    const h = await api('/api/health')
+    registrationEnabled.value = h?.registration_enabled === true
+  } catch {
+    registrationEnabled.value = false
+  }
+})
 
 async function submit() {
   if (busy.value) return

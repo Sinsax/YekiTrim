@@ -27,10 +27,20 @@ export const TRANSIENT_CAP = {
   vignette: 0.6,
 }
 
+/**
+ * 事件跨度（秒）= end - time。事件统一写「开始 + 结束」；老数据/老配置的
+ * `duration` 只做兜底（与 templates/index.html 的 evDur 逐行对应）。
+ */
+export function evDuration(ev, def) {
+  if (!ev) return def
+  if (ev.end != null) return Math.max(0.1, ev.end - (ev.time || 0))
+  if (ev.duration != null) return Math.max(0.1, ev.duration)
+  return def
+}
+
 export function transientDur(ev, def) {
   const cap = TRANSIENT_CAP[ev.type] || 0.6
-  const d = ev.duration != null ? ev.duration : def
-  return Math.max(0.1, Math.min(d, cap))
+  return Math.max(0.1, Math.min(evDuration(ev, def), cap))
 }
 
 // ---- 九宫格格子矩形（百分比；命名与 Rust render-core/types.rs grid_rect 一致）----
@@ -104,13 +114,22 @@ export function regionRect(region) {
 
 // ---- 弹幕文字宽度预测量（canvas measureText，仅用离屏画布量宽）----
 let dmMeasureCtx = null
+// 按数组身份缓存：拖拽时每 60ms 重建一次索引，几万条弹幕逐个 measureText 会明显卡顿
+// （弹幕数组本身不变，只有 events 在改）。
+const dmWidthCache = new WeakMap()
 export function measureDanmakuWidths(dms, fontSize) {
+  if (!dms || !dms.length) return []
+  const size = fontSize || 42
+  const hit = dmWidthCache.get(dms)
+  if (hit && hit.size === size) return hit.widths
   if (!dmMeasureCtx) {
     const c = document.createElement('canvas')
     dmMeasureCtx = c.getContext('2d')
   }
-  dmMeasureCtx.font = '600 ' + (fontSize || 42) + 'px sans-serif'
-  return dms.map((d) => dmMeasureCtx.measureText(d.text || '').width + 20)
+  dmMeasureCtx.font = '600 ' + size + 'px sans-serif'
+  const widths = dms.map((d) => dmMeasureCtx.measureText(d.text || '').width + 20)
+  dmWidthCache.set(dms, { size, widths })
+  return widths
 }
 
 function pctPx(v, total) {
@@ -161,18 +180,18 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
     const segLabel = seg.note || ''
     ;(seg.events || []).forEach((ev) => {
       const type = ev.type || ''
-      const entry = { time: ev.time || 0, duration: ev.duration || 0, ev }
+      const entry = { time: ev.time || 0, duration: evDuration(ev, 0), ev }
       if (idx[type]) idx[type].push(entry)
       else idx[type] = [entry]
       // 音效：规则引擎指定的 sfx（无引用则静音）
       if (type === 'sfx') {
-        soundEvents.push({ time: entry.time, name: ev.name || 'pop-notice', volume: ev.volume || sfxVolume(cfg), duration: ev.duration })
+        soundEvents.push({ time: entry.time, name: ev.name || 'pop-notice', volume: ev.volume || sfxVolume(cfg), duration: evDuration(ev, 1.0) })
       } else if (ev.sfx) {
         const sd = Math.max(transientDur(ev, 1.0), 1.0)
         soundEvents.push({ time: entry.time, name: ev.sfx, volume: ev.sfx_volume || sfxVolume(cfg), duration: sd })
       }
       ptEvents.push({
-        time: entry.time, end: entry.time + (ev.duration || 1.5),
+        time: entry.time, end: entry.time + evDuration(ev, 1.5),
         type, label: ev.keyword || ev.name || ev.mode || '', seg: segLabel,
       })
       if (type === 'sticker') {
@@ -216,7 +235,18 @@ function safeEmoji(name) {
   return Number.isNaN(code) ? '✨' : String.fromCodePoint(code)
 }
 
-// ---- 运镜：zoom 近/中 = style.camera.zoom_close/zoom_mid 覆盖，默认 1.8/1.5 ----
+// ---- 运镜档位 → 缩放系数。必须与 Rust CameraStyle::factor 逐值一致 ----
+// 缺省 1.3/1.5/0.55（与 render-core 的 Default 相同）；这里曾写 1.8/1.5，
+// 于是 [style.camera] 缺失时预览比成片小一大截。
+export function camFactor(label, camStyle) {
+  const c = camStyle || {}
+  const pick = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  if (label === '近') return pick(c.zoom_close, 1.5)
+  if (label === '远') return pick(c.zoom_wide, 0.55)
+  return pick(c.zoom_mid, 1.3)
+}
+
+// ---- 运镜 ----
 export function cameraAt(idx, t) {
   let zoom = 1.0
   let ox = 65
@@ -229,16 +259,27 @@ export function cameraAt(idx, t) {
 
   if (idx.vertical) return { zoom: 1.0, ox: ox * 19.2, oy: oy * 10.8 } // 竖屏不做运镜
 
+  const wide = camFactor('远', idx.camStyle)
   for (const c of idx.camera) {
     if (t < c.time) break
-    const tgt = c.ev.zoom === '近' ? (idx.camStyle.zoom_close || 1.8) : (idx.camStyle.zoom_mid || 1.5)
+    const tgt = camFactor(c.ev.zoom, idx.camStyle)
     const td = Math.min(c.duration * 0.5, 0.6)
     const ce = c.time + td
-    if (t >= ce) zoom = tgt
-    else zoom = lerp(zoom, tgt, E.pow2Out((t - c.time) / td))
-    const o = String(c.ev.origin || defOrigin).split(' ')
-    ox = parseFloat(o[0]) || ox
-    oy = parseFloat(o[1]) || oy
+    // 硬切：本事件写了 cut（编辑器「方式 = 硬切」），或远景（画中画）进出整档都是硬切：
+    // 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，所以这一段不缓动、
+    // 连位移也一并瞬间到位。cut 把同一条规则放开给任意景别。
+    const hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6
+    const p = t >= ce || hardCut ? 1.0 : E.pow2Out((t - c.time) / td)
+    if (t >= ce || hardCut) zoom = tgt
+    else zoom = lerp(zoom, tgt, p)
+    // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
+    // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
+    const oa = String(c.ev.origin || defOrigin).split(' ')
+    const ob = String(c.ev.to_origin || c.ev.origin || defOrigin).split(' ')
+    const ax = parseFloat(oa[0]); const ay = parseFloat(oa[1])
+    const bx = parseFloat(ob[0]); const by = parseFloat(ob[1])
+    ox = lerp(Number.isFinite(ax) ? ax : ox, Number.isFinite(bx) ? bx : ox, p)
+    oy = lerp(Number.isFinite(ay) ? ay : oy, Number.isFinite(by) ? by : oy, p)
   }
   return { zoom, ox: ox * 19.2, oy: oy * 10.8 }
 }
@@ -277,7 +318,7 @@ function getShake(idx, t) {
 
 export function getFlash(idx, t) {
   for (const f of idx.flash) {
-    const et = f.time, color = f.ev.color || '#ffffff', dur = f.ev.duration || 0.35
+    const et = f.time, color = f.ev.color || '#ffffff', dur = f.duration || 0.35
     if (t >= et && t < et + 0.04 + dur) {
       const dt = t - et
       if (dt < 0.04) return { opacity: 0.2 * (dt / 0.04), color }
@@ -299,6 +340,68 @@ function getBlur(idx, t) {
   return 0
 }
 
+/**
+ * 「该色 → 透明」里的**第二档**。
+ * ⚠ 不要用 CSS 的 `transparent`（= rgba(0,0,0,0)）：canvas 的渐变在**非预乘**空间插值，
+ *    `#ff0000 → transparent` 会从中间插出 rgba(127,0,0,·) 那种暗红 —— 实测同一条红色覆盖层
+ *    （opacity 0.3、同一个源帧、同一个时刻）平均 R 从 184.12 掉到 178.82；换成同色零透明
+ *    `rgba(255,0,0,0)` 则是 193.66（干净的淡出）。而 CSS 那边两者**完全等价**（按预乘插值，
+ *    取样逐点相同），所以用 `transparent` 会让浏览器预览与出片观感不一致。
+ */
+export function overlayFadeStop(color) {
+  const s = String(color == null ? '' : color).trim()
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s)
+  if (hex) {
+    let h = hex[1]
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]
+    h = h.slice(0, 6)
+    const n = (i) => parseInt(h.slice(i, i + 2), 16)
+    return `rgba(${n(0)},${n(2)},${n(4)},0)`
+  }
+  const fn = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(s)
+  if (fn) return `rgba(${fn[1] | 0},${fn[2] | 0},${fn[3] | 0},0)`
+  return 'transparent' // 认不出的（命名色等）偏暗，但至少有东西
+}
+
+// 覆盖层「渐变」的有效色档 —— 与 Rust `timeline.rs::overlay_stops` 逐条对齐。
+// 四处实现必须同改：本文件、timeline.rs、crates/vtrim-polish/templates/index.html（出片权威路径）、
+// webui/src/components/PolishPreview.vue（用本文件的 gradientCss）。
+//
+// **保证 ≥2 档且无空串**：canvas 按 i/(n-1) 铺档，n==1 是 0/0=NaN（抛 IndexSizeError，
+// 会把整个 chunk 的渲染打断），空串色档抛 SyntaxError。
+// 老工程与 LLM 一直只写单个 color（colors 从未出现过），单色按「该色 → 透明」。
+// 漂移检查：`node webui/scripts/check-overlay.mjs`
+export function overlayStops(ev) {
+  const raw = ev.colors
+  const cleaned = []
+  if (Array.isArray(raw)) {
+    for (const c of raw) {
+      const s = String(c == null ? '' : c).trim()
+      if (s) cleaned.push(s)
+    }
+  }
+  if (cleaned.length >= 2) return cleaned
+  const base = cleaned.length ? cleaned[0] : String(ev.color == null ? '' : ev.color).trim()
+  if (!base) return null
+  return [base, overlayFadeStop(base)]
+}
+
+/**
+ * 渐变覆盖层的 CSS 字符串（仅 DOM 预览用，canvas 出片走 createLinearGradient/createRadialGradient）。
+ * ⚠ 结尾那个 ')' 不能省 —— 曾经少写一个，整条 background 声明非法被浏览器丢弃，
+ *    表现就是「在面板里设了色档，预览里却什么都没有」。
+ * 径向：canvas 是 createRadialGradient(960,540,0,…,960)，即中心该色、边缘淡出；
+ *      CSS 圆的默认半径是 farthest-corner（16:9 下比 960 大约 15%），预览近似、出片为准。
+ */
+export function gradientCss(colors, shape) {
+  const stops = colors
+    .map((c, i) => `${c} ${((i / (colors.length - 1)) * 100).toFixed(1)}%`)
+    .join(',')
+  return shape === 'radial'
+    ? `radial-gradient(circle at center, ${stops})`
+    : `linear-gradient(to bottom right, ${stops})`
+}
+
 export function getOverlayState(idx, t) {
   for (const o of idx.overlay) {
     const et = o.time, dur = o.duration || 1.5
@@ -306,13 +409,20 @@ export function getOverlayState(idx, t) {
     if (t >= et && t < et + dur) {
       const dt = t - et
       const fadeIn = 0.4, fadeOut = 0.4
-      let opacity = ev.opacity || 1
+      // 数值判定，不用 `|| 1` —— 不透明度 0 是合法值，不能被 falsy 判成 1
+      let opacity = typeof ev.opacity === 'number' ? ev.opacity : 1
       if (dt < fadeIn) opacity *= dt / fadeIn
       else if (dur - dt < fadeOut) opacity *= (dur - dt) / fadeOut
       if (opacity < 0.005) continue
       const ot = ev.overlay_type || ''
-      if (ot === 'color' && ev.color) return { type: 'color', color: ev.color, opacity }
-      if (ot === 'gradient' && ev.colors) return { type: 'gradient', colors: ev.colors, shape: ev.shape || 'linear', opacity }
+      const stops = overlayStops(ev)
+      if (ot === 'color') {
+        const solid = (ev.color != null && String(ev.color).trim()) || (stops ? stops[0] : '')
+        if (solid) return { type: 'color', color: solid, opacity }
+        continue
+      }
+      if (ot === 'gradient' && stops) return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', opacity }
+      // 类型不认识 / 值不全：继续看窗口里的下一条，别把整窗吃掉
     }
   }
   return null

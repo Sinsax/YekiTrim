@@ -56,10 +56,13 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .st-finalized { background:var(--green-soft); color:var(--green-deep); }
 .st-failed { background:var(--red-soft); color:var(--red-deep); }
 .st-pending { background:var(--bg-soft); color:var(--ink-dim); border:1px dashed var(--line); }
-/* 来源标签可能是长目录名（如 media/[2026-09-06 …][T T]）：可收缩 + 截断，
-   别把侧栏撑出横向滚动（max-width 只是上限，行内放不下时随 nm 一起缩） */
-.src-badge { font-size:9px; padding:1px 6px; border-radius:var(--r-full); flex:0 1 auto; min-width:0;
-  max-width:150px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* 来源标签现在只放**类型**（本机 / 录制 12345 / B站，见 stores/project.js::sourceBadge），
+   所以回到样稿的 `flex:none`：**绝不能被压缩** —— 一压内容区就只剩几像素，而 `.side-list` 是
+   `overflow-x:hidden`，会把「本机」硬裁掉大半个字（实测：盒被压到 18px 而文字需要 30px）。
+   要让位就让项目名（`.nm`，flex:1 1 auto + min-width:0）去截断。
+   以前那套 `flex:0 1 auto; min-width:0; max-width:150px` + 省略号是为了**长目录名**标签，
+   源标签改成只放类型之后不再适用 —— 别再改回去。 */
+.src-badge { font-size:9px; padding:1px 6px; border-radius:var(--r-full); flex:none; white-space:nowrap; }
 .src-rec { background:var(--blue-soft); color:var(--blue-deep); }
 .src-bili { background:var(--red-soft); color:var(--red-deep); }
 .src-local { background:var(--bg-soft); color:var(--ink-dim); }
@@ -155,6 +158,25 @@ input, textarea, select { width:100%; background:var(--card); border:1px solid v
   padding:7px 11px; font-size:13px; color:var(--ink); outline:none; }
 input:focus, textarea:focus, select:focus { border-color:var(--main); box-shadow:0 0 0 3px var(--main-soft); }
 input[type="checkbox"] { width:auto; accent-color:var(--main); cursor:pointer; }
+/* 滑块：不能继承文本框那套卡片底/边框（上面那条通用外观只适合文本类控件）；
+   轨道/拇指也按设计基准来——Chromium 默认会画一条近黑的轨道，在奶油底上很重。
+   轨道取 .progress 同款 `--bg-soft`，拇指取主色 + 卡片色描边。 */
+input[type="range"] { width:100%; height:20px; padding:0; border:none; border-radius:0;
+  background:transparent; cursor:pointer; -webkit-appearance:none; appearance:none; }
+input[type="range"]::-webkit-slider-runnable-track { height:6px; border-radius:var(--r-full);
+  background:var(--bg-soft); }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+  width:14px; height:14px; margin-top:-4px; border-radius:var(--r-full);
+  background:var(--main); border:2px solid var(--card); }
+input[type="range"]::-moz-range-track { height:6px; border-radius:var(--r-full); background:var(--bg-soft); }
+input[type="range"]::-moz-range-thumb { width:14px; height:14px; border-radius:var(--r-full);
+  background:var(--main); border:2px solid var(--card); }
+input[type="range"]:focus { box-shadow:none; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow:0 0 0 3px var(--main-soft); }
+/* 滑块字段：读数跟标签同一行右端（放滑块右边会紧挨下一格的标签，读起来像下一项的）。
+   等宽数字，拖动时字宽不跳。 */
+.lbl-row { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.lbl-row .rv { font-size:12.5px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
 label { font-size:12px; color:var(--ink-dim); display:block; margin-bottom:4px; }
 .fld { margin-bottom:12px; text-align:left; }
 .fld label { display:block; font-size:11.5px; color:var(--ink-dim); margin-bottom:4px; }
@@ -285,6 +307,9 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .file-row:hover { background:var(--bg-soft); }
 .file-row.selected { background:var(--main-soft); color:var(--pink-text); }
 .file-row.video { color:var(--ink); }
+/* 扩展名白名单之外的文件（`ServerDirPicker` 的 `exts`）：看得见但选不动 */
+.file-row.dim { opacity:.45; cursor:not-allowed; }
+.file-row.dim:hover { background:transparent; }
 .file-icon { flex:none; display:flex; }
 .file-row .mono { font-size:12px; word-break:break-all; }
 
@@ -322,11 +347,14 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .snode { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:var(--r-sm); cursor:pointer;
   font-size:12.5px; color:var(--ink-dim); transition:.12s; }
 .snode:hover { background:var(--bg-soft); color:var(--ink); }
-.snode.cur { background:var(--main-soft); color:var(--pink-text); font-weight:600; }
+/* 这里原有一条 `.snode.cur`（进度档高亮：走到的最远阶段 + 粉色渐变圆点）——
+   用户要求**删掉**，侧栏只保留「当前位置」高亮（选中的项目 + 该项目正在看的阶段，
+   样式在 ProjectNode.vue 的 scoped `.snode.viewing` 里）+ 已完成阶段的打勾。
+   样稿 `ia-demos/multiuser.html` 里有 `.snode.cur`，那是**有意弃用**的，别捡回来。 */
 .snode .ic { flex:none; width:16px; height:16px; border-radius:50%; border:1.5px solid var(--line);
   background:var(--card); font-size:9px; display:flex; align-items:center; justify-content:center; color:var(--green-deep); }
+/* 圆点只表**完成度**（绿底 + ✓）；"我在哪"由底色表达，两者不再打架 */
 .snode.done .ic { border-color:var(--green); background:var(--green-soft); }
-.snode.cur .ic { border-color:var(--main-deep); background:linear-gradient(135deg,var(--main),var(--main-deep)); color:#fff; }
 .snode .pct { margin-left:auto; font-size:10px; color:var(--blue-deep); }
 .side-foot { border-top:1px solid var(--line-soft); padding:8px 12px; display:flex; flex-direction:column; gap:4px; flex:none; }
 .foot-item { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:var(--r-sm); cursor:pointer;

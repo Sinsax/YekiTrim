@@ -5,13 +5,44 @@
 const MASTER_VOL_KEY = 'vtrim_master_vol'
 const MUTED_KEY = 'vtrim_muted'
 
-export function createSfxPlayer({ resolveUrl } = {}) {
-  let masterVol = 1
-  let muted = false
+/**
+ * 全应用共用的主音量读写（精修预览与切片页的原片预览都用这一份，别各写一套）。
+ *
+ * ⚠️ 读音量 **不能写 `parseFloat(...) || 1`**：音量 0 是合法值，falsy 判定会把它读回 1
+ * （用户实测：滑到 0 刷新后又响了）。统一用 isFinite + clamp。
+ */
+export function readMasterVolume() {
   try {
-    masterVol = parseFloat(localStorage.getItem(MASTER_VOL_KEY)) || 1
-    muted = localStorage.getItem(MUTED_KEY) === '1'
+    const saved = parseFloat(localStorage.getItem(MASTER_VOL_KEY))
+    if (Number.isFinite(saved)) return Math.min(1, Math.max(0, saved))
   } catch {}
+  return 1
+}
+
+export function readMuted() {
+  try {
+    return localStorage.getItem(MUTED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveMasterVolume(v) {
+  const n = Number(v)
+  try {
+    localStorage.setItem(MASTER_VOL_KEY, String(Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 1))
+  } catch {}
+}
+
+export function saveMuted(m) {
+  try {
+    localStorage.setItem(MUTED_KEY, m ? '1' : '0')
+  } catch {}
+}
+
+export function createSfxPlayer({ resolveUrl } = {}) {
+  let masterVol = readMasterVolume()
+  let muted = readMuted()
 
   const sfxCache = new Map() // name → Audio
   let currentT = 0 // 当前播放时间（音量跟随曲线用）
@@ -109,11 +140,13 @@ export function createSfxPlayer({ resolveUrl } = {}) {
   function isMuted() { return muted }
   function setMasterVolume(v) {
     masterVol = v
-    try { localStorage.setItem(MASTER_VOL_KEY, String(v)); localStorage.setItem(MUTED_KEY, muted ? '1' : '0') } catch {}
+    saveMasterVolume(v)
+    saveMuted(muted)
   }
   function setMuted(m) {
     muted = m
-    try { localStorage.setItem(MASTER_VOL_KEY, String(masterVol)); localStorage.setItem(MUTED_KEY, muted ? '1' : '0') } catch {}
+    saveMasterVolume(masterVol)
+    saveMuted(muted)
   }
 
   return { play, sync, seek, setEvents, setLoudnessCurve, getMasterVolume, isMuted, setMasterVolume, setMuted }

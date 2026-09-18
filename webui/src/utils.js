@@ -1,10 +1,72 @@
 // 通用前端工具：媒体路径 / 哈希贴纸 / 事件类型 / 时间格式化
 
+/**
+ * 「重新检测」的二次确认文案（切片页「重新检测」与预处理页「开始事件检测」共用）。
+ *
+ * 事实依据（`service/core_pipeline.rs` 的 `"detect"` 分支 + `EventDetector::run`）：
+ * 重跑只写 `output/events.json`（整份覆盖，手动改过的标题/时间也一起没），
+ * **不碰** `output/clips/` —— 已剪片段仍在，但 rank 是按热度重排的，目录名 `clip-NN`
+ * 与新事件的对应关系会错位，所以要提醒"需要时删掉重切"。
+ */
+export function redetectWarning(count = 0) {
+  const n = Number(count) || 0
+  const head = n
+    ? `将重新跑一次 LLM 事件检测，覆盖当前的 ${n} 个事件：标题、摘要、时间、类型全部重算（手动改过的也一样）。`
+    : '将重新跑一次 LLM 事件检测，覆盖上一次的检测结果。'
+  return head
+    + '\n已经剪好的片段不会被覆盖或删除（clips 目录原样保留），但事件会重新编号，'
+    + '旧片段和新事件的对应关系可能对不上 —— 需要时把旧片段删掉重切。'
+}
+
 export const EVENT_TYPES = [
   'gameplay', 'interaction', 'qna', 'reaction', 'storytelling',
   'music', 'food', 'rant', 'break', 'outro', 'chat', 'eating',
   'irl', 'ranking', 'discussion', 'intro', 'other'
 ]
+
+/** 事件 rank → 片段目录名（`clip-{rank:02}`，Cutter 就是这么建的）。 */
+export function clipNameOf(rank) {
+  const n = Math.max(0, Number(rank) || 0)
+  return 'clip-' + String(n).padStart(2, '0')
+}
+
+/**
+ * 这个片段目录**是不是这条事件**剪出来的。
+ *
+ * 只比目录名（rank）不够：`rank` 是检测按热度排出来的，**重新检测会整体重排**，
+ * 于是新事件会"继承"老片段的标题与时间、老片段被套上新事件的名字 —— 两边都错。
+ * 判据（与 Rust `cutting::foreign_clip_conflict` 一致）：目录名相同，且 **标题相同 或
+ * 原片区间基本重合（IoU ≥ 0.5）**（允许手动改过标题或时间后仍然算同一条）；
+ * 老 `clip.json` 两样都没有时退回只按目录名认。
+ */
+export function clipMatchesEvent(clip, ev) {
+  if (!clip || !ev) return false
+  if (String(clip.name || '') !== clipNameOf(ev.rank)) return false
+  const meta = clip.meta || {}
+  const oldTitle = String(meta.title || '').trim()
+  const sameTitle = !!oldTitle && oldTitle === String(ev.label || '').trim()
+  const os = Number(meta.original_start)
+  const oe = Number(meta.original_end)
+  const s = Number(ev.start_sec)
+  const e = Number(ev.end_sec)
+  const hasRange = Number.isFinite(os) && Number.isFinite(oe) && Number.isFinite(s) && Number.isFinite(e)
+  const overlap = hasRange
+    ? Math.max(0, Math.min(oe, e) - Math.max(os, s)) / Math.max(1e-6, Math.max(oe, e) - Math.min(os, s))
+    : 1
+  if (sameTitle || overlap >= 0.5) return true
+  if (!oldTitle && !hasRange) return true // 老 clip.json 什么都没有 → 只能按目录名认
+  return false
+}
+
+/**
+ * 未剪切事件 = 没有任何"属于自己的"片段的事件。
+ * 序号被**别的**片段占着（重新检测后的常见情况）也算未剪切 —— 那目录不是它剪出来的。
+ */
+export function uncutEventsOf(events, clips) {
+  const list = (clips || []).filter(c => c && c.video_exists !== false)
+  return (events || []).filter(ev => !list.some(c => clipMatchesEvent(c, ev)))
+}
+
 
 export const TYPE_ZH = {
   gameplay: '游戏', interaction: '互动', qna: '问答', reaction: '反应',
