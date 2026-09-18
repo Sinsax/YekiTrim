@@ -61,7 +61,10 @@ pub fn cmd_token(disable: bool) -> Result<()> {
     println!("  {token}");
     println!();
     println!("  在录播姬「Webhook」里填：");
-    println!("    http://<本机IP>:7788/api/ingest/bililive/{token}");
+    println!(
+        "    http://<本机IP>:{}/api/ingest/bililive/{token}",
+        crate::service::doctor::DEFAULT_PORT
+    );
     println!("  并在配置文件 {} 里确认：", global_config_path().display());
     println!("    [ingest] webhook_enabled = true");
     println!("    [ingest.recorder] root = \"<录播姬录制目录>\"");

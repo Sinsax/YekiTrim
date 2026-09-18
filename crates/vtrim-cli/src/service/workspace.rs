@@ -71,6 +71,58 @@ impl Workspace {
             .unwrap_or_else(|_| self.root_dir.join("output"))
     }
 
+    /// 当前生效的转写文件：`transcript_file` → `output/transcript.json` → `output/video.srt`。
+    ///
+    /// ⚠️ `transcript_file` 一律经 [`Workspace::resolve`]（相对**工程根**）解析。
+    /// 曾有两处口径不一：`data_transcript_impl` 用裸 `PathBuf::from(...).exists()`
+    /// （相对**进程 CWD**），`transcript_starts` 用 `ws.resolve` —— 靠 `output/` 兜底才没暴露，
+    /// 一旦把字幕指到外部文件就是"选了不生效"。**新增读取方一律走这里。**
+    pub fn transcript_path(&self, cfg: &vtrim_core::config::Config) -> Option<PathBuf> {
+        let configured = cfg
+            .project
+            .transcript_file
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| self.resolve(s))
+            .filter(|p| p.is_file());
+        if configured.is_some() {
+            return configured;
+        }
+        let output = self.output_dir();
+        let json = output.join("transcript.json");
+        if json.is_file() {
+            return Some(json);
+        }
+        let srt = output.join("video.srt");
+        if srt.is_file() { Some(srt) } else { None }
+    }
+
+    /// 当前生效的弹幕文件：`danmaku_file` → 视频同目录的 `danmu.ass` / `danmaku.ass`。
+    ///
+    /// 只定位文件、不管格式（XML / ASS / SRT 都认，由 `danmaku::load_danmaku_auto` 分派）。
+    pub fn danmaku_path(&self, cfg: &vtrim_core::config::Config) -> Option<PathBuf> {
+        if let Some(raw) = cfg.project.danmaku_file.as_ref().filter(|s| !s.is_empty()) {
+            let p = self.resolve(raw);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let input = cfg
+            .project
+            .input_file
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| self.resolve(s))?;
+        let dir = input.parent()?;
+        for name in ["danmu.ass", "danmaku.ass"] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     /// 输出目录是否存在工程文件（供 CLI 旧 `current_stage` 语义使用）。
     #[allow(dead_code)]
     pub fn current_stage(&self) -> u32 {
@@ -158,5 +210,63 @@ mod tests {
             dir.path().join("output")
         );
         let _ = fs::remove_dir_all(dir.path());
+    }
+
+    /// `transcript_file` 必须相对**工程根**解析（而不是进程 CWD），且优先于 output/ 兜底。
+    #[test]
+    fn transcript_path_resolves_configured_against_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("output")).unwrap();
+        fs::write(root.join("sub.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
+        fs::write(root.join("output/transcript.json"), "{\"segments\":[]}").unwrap();
+        let ws = Workspace {
+            config_file: root.join("vtrim.toml"),
+            root_dir: root.to_path_buf(),
+        };
+        let mut cfg = vtrim_core::config::Config::default();
+        cfg.project.transcript_file = Some("sub.srt".to_string());
+        assert_eq!(ws.transcript_path(&cfg), Some(root.join("sub.srt")));
+    }
+
+    /// 没配置时依次回退 output/transcript.json → output/video.srt。
+    #[test]
+    fn transcript_path_falls_back_to_output_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("output")).unwrap();
+        let ws = Workspace {
+            config_file: root.join("vtrim.toml"),
+            root_dir: root.to_path_buf(),
+        };
+        let cfg = vtrim_core::config::Config::default();
+        assert_eq!(ws.transcript_path(&cfg), None);
+        fs::write(root.join("output/video.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
+        assert_eq!(ws.transcript_path(&cfg), Some(root.join("output/video.srt")));
+        fs::write(root.join("output/transcript.json"), "{\"segments\":[]}").unwrap();
+        assert_eq!(ws.transcript_path(&cfg), Some(root.join("output/transcript.json")));
+    }
+
+    /// 弹幕：配置优先；缺失时回退视频同目录的 danmu.ass / danmaku.ass。
+    #[test]
+    fn danmaku_path_prefers_config_then_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("videos")).unwrap();
+        fs::write(root.join("videos/a.mp4"), b"x").unwrap();
+        let ws = Workspace {
+            config_file: root.join("vtrim.toml"),
+            root_dir: root.to_path_buf(),
+        };
+        let mut cfg = vtrim_core::config::Config::default();
+        cfg.project.input_file = Some("videos/a.mp4".to_string());
+        assert_eq!(ws.danmaku_path(&cfg), None);
+        fs::write(root.join("videos/danmu.ass"), "[Events]\n").unwrap();
+        assert_eq!(ws.danmaku_path(&cfg), Some(root.join("videos/danmu.ass")));
+
+        // 配置指向别处（工程根相对）时以配置为准。
+        fs::write(root.join("dm.xml"), "<i/>").unwrap();
+        cfg.project.danmaku_file = Some("dm.xml".to_string());
+        assert_eq!(ws.danmaku_path(&cfg), Some(root.join("dm.xml")));
     }
 }

@@ -36,9 +36,16 @@ pub async fn run_silence(
             Ok(applied) if applied.ranges.is_empty() => {
                 tracing::info!("  · {name}: 未检测到 {}s 以上的静音段", duration);
             }
+            Ok(applied) if applied.added == 0 => {
+                // 与当前屏蔽相加之后没有新东西（检测到的静音本来就屏掉了）
+                tracing::info!(
+                    "  · {name}: 检测到 {} 段静音，屏蔽轨道里已有（相加后共 {} 段）",
+                    applied.ranges.len(), applied.total
+                );
+            }
             Ok(applied) => {
                 tracing::info!(
-                    "  ✓ {name}: 静音 {} 段 → 屏蔽轨道（新增 {} / 共 {}）",
+                    "  ✓ {name}: 静音 {} 段 → 与现有屏蔽相加（新增 {} / 共 {}）",
                     applied.ranges.len(), applied.added, applied.total
                 );
                 changed += 1;

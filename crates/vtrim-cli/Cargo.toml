@@ -2,6 +2,9 @@
 name = "vtrim-cli"
 version = "0.1.0"
 edition = "2021"
+description = "V-Trim CLI 与服务端（clap 命令 + axum WebUI 后端，二进制名 vtrim）"
+authors = ["Sinsax"]
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "vtrim"
@@ -17,6 +20,8 @@ futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+# 录播姬 HTTP API 客户端（房间增删查）。树里已有 reqwest（core/polish 在用）
+reqwest = { version = "0.12", features = ["json"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.8"
 mime_guess = "2"
