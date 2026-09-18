@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "V-Trim 渲染核心：时间线数学 + wgpu 合成管线（桌面/ WASM 共用，不依赖 vtrim-core/vtrim-polish/tokio）"
 authors = ["Sinsax"]
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 
 [lib]
 name = "vtrim_render_core"
