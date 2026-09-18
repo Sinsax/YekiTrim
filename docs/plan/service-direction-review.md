@@ -274,7 +274,9 @@ S1 是刻意拆出来的**最小一步**：它单独就把「CLI → server」�
 - [ ] `cargo check --workspace --all-targets` **0 warning**（仓库基线就是 0，不能退化）
 - [ ] `cargo test --workspace` 全绿；重点看 `api.rs` 的路由单测（`tower::oneshot`）与 §5.4 那个假录播姬测试
 - [ ] **路由清单前后逐条 diff 相同**：把 `Router` 的 (method, path) 集合 dump 出来对比，这是"行为等价"最硬的证据
-- [ ] CLI 子命令清单前后 diff 相同（`cli.rs` 不动，应完全无差异）
+- [ ] CLI 子命令清单前后 diff 相同（`cli.rs` 只改了两行类型路径：`crate::service::doctor::DEFAULT_URL`
+      → `vtrim_service::doctor::DEFAULT_URL`、`crate::server::ServerArgs` → `vtrim_server::ServerArgs`；
+      clap 属性一字未动，所以 18 个子命令与 `--help` 输出无差异）
 - [ ] `cargo build --features wgpu-render` 后 `/api/health` 的 `wgpu_render == true`（§5.3 的专项校验）
 - [ ] `cargo xtask scan` 仍 PASS（产物门禁）
 - [ ] `cargo xtask package --skip-build --smoke-test` 通过（`/api/health` + `/` 的 `<div id="app">`）
@@ -311,3 +313,133 @@ S1 是刻意拆出来的**最小一步**：它单独就把「CLI → server」�
 3. **否决**「拆成两个独立交付物」：等于复制子集、维护两套（§3.3）。
 4. **采纳**「把 `server/` 拆成独立 crate」这一层含义的"分开独立"（§4、§6）。
 5. 顺带记录一处**文档债**：ROADMAP 把多用户服务写为「远期目标（暂不排期）」，与 `AGENTS.md:1716` 进度表矛盾，需另做小改动修正措辞（本文档不改）。
+
+---
+
+## 11. 实施结果（2026-09-18 收尾）
+
+S1–S4 全部落地，一步一个提交；S5（P4/P5）按设计稿另开。
+
+| 步 | 提交 | 实测结果 |
+|---|---|---|
+| **S1** logbus 下沉 | `e630bd8` | CLI 已无 `server::` 引用 |
+| **S2** 抽出 `vtrim-service` | `f1bc2ef` | 19 个模块 + `lib.rs` 逐文件 rename；`cargo tree -p vtrim-cli` 的直接依赖里不再有 axum |
+| **S3** 抽出 `vtrim-server` | `bab861a` | 16 个模块 rename；**feature 转发**已做并通过 §5.3 专项校验（`--features wgpu-render` → `/api/health` 的 `wgpu_render == true`） |
+| **S4** `api.rs` 拆模块 | `bf6535c` | 7 492 行 → 14 个文件，最大 1 718；**路由清单 110 条逐条相同** |
+
+**§7 验收清单（逐条实测）**
+
+- [x] `cargo check --workspace --all-targets` 0 warning
+- [x] `cargo test --workspace` 全绿（466 passed / 0 failed / 15 ignored）
+      （**注**：不是"拆分前后同数"——`865a4c3` 的基线是 465 passed / 487 个 `#[test]` fn，
+      拆分后是 466 / 488。多出来的那 1 条是 **S1 新增**的
+      `logbus::tests::short_target_strips_every_crate_prefix`（测 `vtrim_cli::` / `vtrim_server::`
+      前缀都要剥掉），是净增不是丢失；测试函数总数 488 在 `bab861a` 与 `HEAD` 两次清点相同。）
+- [x] 路由清单前后逐条 diff 相同：110 条 `(method, path, handler)` 完全一致 + **13 条** router
+      指令的**多重集**逐项相同（`nest`/`layer`/`route_layer`/`merge`/`fallback`/`with_state` 各归各的计数。
+      指令的**顺序**会变，那是预期的：清单按源文件顺序拼接，单体 `api.rs` 一份 vs 拆开后 14 份按名排序，
+      顺序本来就不同 —— 判"行为等价"看的是路由集合与指令计数，不是指令的书写次序。)
+- [x] CLI 子命令清单前后 diff 相同（本轮的比对口径见 §12.4 最后一条：只对**当前**二进制取了
+      `--help`，旧侧是按 `cli.rs` 的 clap 属性逐条比对推出的，不是两份二进制字节级对拍）
+- [x] `cargo build --features wgpu-render` 后 `/api/health` 的 `wgpu_render == true`
+      （带**反向对照**：同一棵树的默认 feature 构建回 `false` —— 证明这个字段真在读 feature，
+      不是恒真。feature 转发链在 `vtrim-cli/Cargo.toml`（`wgpu-render = ["vtrim-server/wgpu-render"]`）
+      → `vtrim-server/Cargo.toml`（`["vtrim-polish/wgpu-render"]`）。）
+- [x] `cargo xtask scan` PASS
+- [x] `cargo xtask package --smoke-test` 通过：产品门禁 PASS + `/api/health ok, / served the packaged WebUI`
+      ⚠️ **必须用不带 `--skip-build` 的完整打包**：`--skip-build` 会直接对 `target/release/vtrim.exe`
+      跑门禁与冒烟，而拆分前的那个 release 产物（本机实测 mtime 12:28）比 S1–S4 的提交（15:30–17:11）**更早** ——
+      这时"冒烟通过"证明的是**拆分前**的二进制，是个假阳性。完整打包会先重建 release（本机实测 4m40s）。
+      `/` 返回 `200` + `<div id="app">` 同时验证了 §5.1 的 `CARGO_MANIFEST_DIR/../..` 深度假设：
+      新 crate 同深度搬迁后 `webui/dist` 仍能被找到（路径错了会是 503 + 构建指引，不是 200）。
+- [x] `cargo tree -p vtrim-cli --depth 1` 已无 axum / rusqlite
+      （**注**：§7 原文写的是 `cargo tree -p vtrim-cli`，但那种写法会列出传递依赖 ——
+      vtrim-cli → vtrim-server → axum 本来就该出现。口径按"直接依赖"理解。）
+
+**与 §5 预先判断的偏差（都记在这里，避免下次又踩）**
+
+1. §5.3 说的 feature 静默失效**确实存在**，而且修好之后立刻又暴露一处：
+   `api.rs::polish_render_frame` 在 `wgpu-render` 下有一个从未被用的 import，
+   旧布局里也一直在报 warning（默认 feature 不编译这段代码，所以基线 0 warning 掩盖了它）。
+   搬完顺手删掉，现在两种 feature 组合都是 0 warning（`vtrim-render-core` / `vtrim-polish`
+   在 `wgpu-render` 下另有 13 条历史 warning，不在本次范围）。
+2. §5.6 说"单测跟着它测的函数走"——`api.rs` 的 2 288 行单测**大部分是接口级的**
+   （`TestApp` 建整张路由表再发请求），不是纯函数单测。所以落地成：
+   夹具单独一份 `api/test_support.rs`，用例按领域散进 12 个模块的 `#[cfg(test)] mod tests`。
+   真正的纯函数单测（`sec_to_ts_value` / `parse_chunk_progress` / `prune_clip_from_index` …）
+   就留在它被测的那个模块里。
+3. **多了一处 §5 没点名的机械改写**：原 `api.rs` 里的 `super::` 指 crate 根，
+   搬进 `api::foo` 之后 `super` 变成 `api`，所以 29 处 `crate::server::` 与 132 处
+   `super::…` 都要改写成 `crate::…`。**注意 `api/auth.rs` 与 `crate::auth` 现在同名不同物。**
+4. `scripts/route_manifest.py` 有两个一直没生效的地方（前一个提交只写了函数没调用）：
+   `normalise_handler` 从未被调用（`super::/crate::` 前缀一直留在清单里），
+   候选路径也只认 `api.rs`（拆成目录模块后直接报"找不到 api.rs"）。两处都已补齐。
+5. **§5.2 的版本同源已在前置提交 `865a4c3` 做完**，本次没有再动版本。
+
+**遗留（未做，和本次目标是两件事）**
+
+- `access_log.rs` / `jobs.rs` 里的 tracing `target: "vtrim_cli::http"` / `"vtrim_cli::job"`
+  字面量仍是旧 crate 名。它**不是代码依赖**（只是日志 target 字符串），改了会影响
+  `RUST_LOG` 过滤与用户已保存的配置，所以**有意不动**；`logbus::short_target` 本来就会
+  把 `vtrim_cli::` / `vtrim_server::` 前缀都剥掉，面板显示不受影响。
+- `docs/web-ui-design.md` 等**设计稿/历史文档**里的 `crates/vtrim-cli/src/server/` 路径
+  保持原样（那是当时的记录）。live 参考文档（`AGENTS.md` / `docs/job-queue.md` /
+  `docs/deploy.md`）已全部更新到新路径。
+
+---
+
+## 12. 独立复验（2026-09-18，第二轮）
+
+§11 是实施者自己的记录。这一轮是**不看结论、只认实测**地把 §7 重跑一遍，
+用来甄别"哪几条是真做完的、哪几条只是写成了 `[x]`"。结论：**S1–S4 全部真实落地**，
+但有 4 处**记录不准**，已就地修正（都在上面 §7/§11 的正文里）。
+
+### 12.1 复验通过项（本次实测）
+
+| 复验项 | 命令 / 方法 | 实测 |
+|---|---|---|
+| 结构 | `crates/` 目录 + `Cargo.toml` members | 6 个 crate 就位；`vtrim-cli/src/` 只剩 `main.rs`/`cli.rs`/`progress.rs` |
+| 迁移完整性 | `git diff 865a4c3 HEAD -- crates/vtrim-cli/` | 39 文件、−21 620 行；新的 `api/` 是 14 个文件 |
+| 0 warning | `cargo check --workspace --all-targets` | **0 条** `warning:` |
+| 测试 | `cargo test --workspace` | 466 passed / 0 failed / 15 ignored，exit 0 |
+| 测试未丢失 | 两次导出源码树数 `#[test]`/`#[tokio::test]` fn | `865a4c3`=487、`bab861a`=488、`HEAD`=488 |
+| 路由等价 | `scripts/route_manifest.py` 对 `bf6535c^` 导出树 vs 当前树 | 两边 **110 条**路由逐条相同；13 条指令的多重集相同 |
+| CLI 面 | `vtrim --help` + `cli.rs` 的 clap 属性逐条比对 | **18 个子命令**；`ServerArgs` 的 `#[arg]` 与旧 `server/mod.rs` 完全一致 |
+| feature 转发 | 带/不带 `--features wgpu-render` 各起一次服务读 `/api/health` | `true` / `false`（反向对照成立） |
+| WebUI 深度 | 起服务请求 `/` | `200` + `<div id="app">`（§5.1 的假设成立） |
+| 产物门禁 | `cargo xtask scan` | PASS（espeak-ng 五个标记全 0） |
+| 打包冒烟 | `cargo xtask package --smoke-test`（完整重建） | 门禁 PASS + `/api/health ok, / served the packaged WebUI`；产出 zip 14.9 MB |
+| 依赖方向 | `cargo tree -p vtrim-cli --depth 1` | 直接依赖里**无** axum / rusqlite |
+| 硬规矩 | grep `vtrim_service` | 无 `use vtrim_server` —— §8「最大的风险」复查通过 |
+| 版本同源 | 起服务读 `/api/health` | `version: "0.1.0"` 正常（§5.2 的 `[workspace.package]` 生效） |
+
+### 12.2 复验改掉的 4 处记录不准
+
+1. **`12 条 router 指令` → 13 条**（§11）。实测 13 条，且**顺序**在拆分前后不同 ——
+   顺序不同是预期的（清单按源文件拼接顺序生成），但 §11 原话"计数逐项相同"没说清"顺序会变"，
+   容易被下一个人当成回归。
+2. **`466 passed，拆分前后同数` → 不是同数**（§11）。拆分前（`865a4c3`）是 **465**，
+   拆分后 466；多出的 1 条是 **S1 净增**的 `logbus::tests::short_target_strips_every_crate_prefix`。
+   方向是"变多"不是"丢失"，但写成"同数"会掩盖"这条测试是本轮新增的"这个事实。
+3. **`cli.rs 不动` → 动了 2 行**（§7）。两行都是类型路径改写（`crate::service::` → `vtrim_service::`、
+   `crate::server::ServerArgs` → `vtrim_server::ServerArgs`），clap 属性一字未动，
+   所以**结论（子命令清单无差异）仍然成立**，只是理由不能写成"文件没动"。
+4. **`xtask package --skip-build --smoke-test` 这条口径不安全**（§7/§11）。
+   `--skip-build` 复用的是 `target/release/vtrim.exe`，而拆分前那次 release 构建**早于** S1–S4 的提交；
+   照 §7 原文跑，冒烟测的是**拆分前**的二进制 —— 通过也不说明拆分后的代码能打包能跑。
+   本次改用完整 `cargo xtask package --smoke-test`（先重建 release）才有意义。
+
+### 12.3 顺带修掉的文档错
+
+- `AGENTS.md` 防线表第 ② 行把 `PROJECT_PATH_KEYS` 的位置写成 `vtrim-server/src/api::PROJECT_PATH_KEYS`
+  ——`api::` 是模块路径、不是目录，按这个字符串找不到文件。实际在
+  `vtrim-server/src/api/config.rs`（`pub(super) const`），已改。
+
+### 12.4 复验**没有**覆盖的（如实列出）
+
+- `--features wgpu-render` 下的 GPU **出片**只验了 `/api/health` 的开关字段与单帧预览接口可编译，
+  **没有**实跑一次 `VTEDIT_RENDERER=wgpu` 的完整渲染出片。
+- `vtrim-polish` / `vtrim-render-core` 在 `wgpu-render` 下的历史 warning 没清（§11 已声明不在本次范围）。
+- §7 最后一条"CLI 子命令清单**前后** diff"里，"前"的一侧是用 `cli.rs` 的 clap 属性逐条比对推出的
+  （两棵树的 `--help` 需要两份二进制才能字节级对拍，本次没为基线单独建一份 CLI）。
+  属性集合相同 + 只改了类型路径 ⇒ 输出相同，这个推理是可靠的，但严格说不是"两份二进制对拍"。

@@ -1,6 +1,6 @@
 # 任务队列与三档并发闸门
 
-服务端所有后台任务都过 `JobManager`（`crates/vtrim-cli/src/server/jobs.rs`）。
+服务端所有后台任务都过 `JobManager`（`crates/vtrim-server/src/jobs.rs`）。
 这份文档解释**为什么要分三档、每一档装了什么、为什么这么装、什么时候会排队**。
 代码实现只此一份，本文是它的说明书 —— 改档位/上限时请一起改这里。
 
@@ -283,8 +283,8 @@ webui 任务行在排队时显示：
    典型：同一片段上的另一个精修任务、同一项目的另一个管线任务（都持 `p{pid}:out`）。
 3. **同档前面排着后台任务**（或反过来）—— 看 `priority`。
 
-对应源码：`server/jobs.rs`（`JobClass` / `JobPriority` / `JobSpec` / `schedule_locked`）、
-`server/scope_key.rs`（资源键）。单测在 `server/jobs.rs::tests`。
+对应源码：`vtrim-server/src/jobs.rs`（`JobClass` / `JobPriority` / `JobSpec` / `schedule_locked`）、
+`vtrim-server/src/scope_key.rs`（资源键）。单测在 `vtrim-server/src/jobs.rs::tests`。
 
 ### 10.1 界面看起来"卡住"时先分清是哪一种
 
@@ -324,13 +324,13 @@ webui 任务行在排队时显示：
 | `pipeline` | 同一套阶段，但阶段列表由请求显式给出（默认也是四步） | `POST /api/project-data/pipeline` 不带 `stage` | 按阶段算 |
 
 `job.kind` 里的 `stage_*` 由 `POST /api/project-data/pipeline` 的 `stage` 字段决定
-（api.rs 里拼成 `format!("stage_{}", stage)`），所以前端给「预处理」按钮分两次调用时
+（`vtrim-server/src/api/pipeline.rs` 里拼成 `format!("stage_{}", stage)`），所以前端给「预处理」按钮分两次调用时
 拿到的是两个独立任务：先 `stage_transcribe`、成功后自动接 `stage_detect`。
 
 ### 入库自动管线
 
 `ingest_*` 是上面同一批阶段的**前缀版**，由录播姬录制完成的 webhook 经 ingest worker
-**自动**发起（`Pipeline::stages()`，`server/ingest_worker.rs`）。前缀的语义就是"跑到哪一步为止"：
+**自动**发起（`Pipeline::stages()`，`vtrim-server/src/ingest_worker.rs`）。前缀的语义就是"跑到哪一步为止"：
 
 | kind | 阶段 | 档位 |
 |---|---|---|

@@ -105,7 +105,7 @@ vtrim server --host 127.0.0.1 --allow-remote \
 - [ ] 注册开关的状态是你想要的（`vtrim user invites`；不需要自助注册就用 `--disable`）
 - [ ] `data_dir` 不在公开可读的位置，也没有进镜像层
 - [ ] 知道限流与配额的存在：超出时是**拒绝**（HTTP 429 / 任务记失败），不是排队
-      —— 见 [`job-queue.md`](job-queue.md) §3.5 与 `server/ratelimit.rs`
+      —— 见 [`job-queue.md`](job-queue.md) §3.5 与 `vtrim-server/src/ratelimit.rs`
 
 ### 5. 已知边界（按此设计使用）
 
