@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "V-Trim CLI 与服务端（clap 命令 + axum WebUI 后端，二进制名 vtrim）"
 authors = ["Sinsax"]
-license = "GPL-3.0-or-later"
+license = "Apache-2.0"
 
 [[bin]]
 name = "vtrim"

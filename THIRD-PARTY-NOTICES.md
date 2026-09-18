@@ -1,6 +1,6 @@
 # 第三方组件与素材
 
-本项目（V-Trim）以 **GPL-3.0-or-later** 发布（见 [LICENSE](LICENSE)）。下面列出它会用到、链接、
+本项目（V-Trim）以 **Apache-2.0** 发布（见 [LICENSE](LICENSE)）。下面列出它会用到、链接、
 下载或引用的第三方内容及其授权，供自建与再分发时参考。
 
 > 本文档按"事实性说明"编写，不构成法律意见。各组件条款以各自上游的许可原文为准。
@@ -13,14 +13,40 @@
 
 | 组件 | 版本 | 授权 | 说明 |
 |---|---|---|---|
-| **espeak-ng** | 随 sherpa-onnx 1.13.3 预编译包 | **GPL-3.0-or-later** | 语音合成用的音素化库。**这是本项目采用 GPL-3.0 的原因**：它是 `sherpa-onnx-sys` 静态库清单里无条件 `static=` 链接的一项。 |
-| sherpa-onnx / sherpa-onnx-sys | 1.13.3 | Apache-2.0 | 语音识别（ASR）运行时。其 Cargo 元数据与 `LICENSE` 只覆盖自身，**不覆盖它打包进来的 espeak-ng**。 |
-| onnxruntime | 随同一预编译包 | MIT | 模型推理后端。 |
-| piper_phonemize / kaldi-* / kissfft / ssentencepiece_core / ucd | 随同一预编译包 | Apache-2.0 与 BSD 系（随各自上游） | 同一静态包内的其余依赖。 |
+| ~~espeak-ng~~ | — | — | **已不再链接（2026-09-18 起）**。本项目只用 ASR、从不调用 TTS，改用自行构建的 TTS-off 预编译归档后，它被替换为 896 B 的**零符号占位 `espeak-ng.lib`**；产物门禁 `cargo xtask scan` 扫描 5 个 espeak 特有标记为 **0 命中**。 |
+| sherpa-onnx / sherpa-onnx-sys | 1.13.3（本地 fork，见 `vendor/sherpa-onnx-sys/FORK-NOTES.md`） | Apache-2.0 | 语音识别（ASR）运行时。本项目用的是 **TTS-off 归档**：`espeak-ng` / `piper_phonemize` / `ucd` 均为零符号占位库（各 896 B）。 |
+| onnxruntime | 随同一预编译包 | MIT | 模型推理后端。⚠️ 其预编译包内**不含许可文件**，MIT 声明需由分发方随文档补齐（即本文档）。 |
+| kaldi-* / kissfft / ssentencepiece_core / kaldifst / openfst / simple-sentencepiece | 随同一预编译包 | Apache-2.0 与 BSD 系（随各自上游） | 同一静态包内 ASR 运行时所需的其余依赖。 |
+| piper_phonemize / ucd | — | — | **不再编译**：TTS-off 归档里与 `espeak-ng` 同样处理为零符号占位库。 |
+| Eigen | 随同一预编译包 | MPL-2.0 | 数值线性代数（经 kaldi / sherpa 间接引入）。MPL-2.0 是**文件级** copyleft：本项目未修改其任何文件，故只须保留声明。 |
 | rusqlite（`bundled`） | 0.32 | MIT（内置 SQLite 为公有领域） | 账号账本/用量账本的 SQLite 驱动。 |
 
-⚠️ **该预编译静态包内不含任何第三方许可文件**，所以上面 espeak-ng 的 GPL 义务需要由**分发方**自行
-履行（附许可证副本 + 提供对应源码）。espeak-ng 源码：<https://github.com/espeak-ng/espeak-ng>。
+⚠️ **该预编译静态包内不含任何第三方许可文件**，所以上表各组件的声明义务需由**分发方**履行。
+本项目已把本文档与 `LICENSE` 列为 `cargo xtask package` 的**强制**产物（缺任一个直接报错），
+随包分发即完成署名。
+
+### 构建期使用，但**不随二进制分发**
+
+| 组件 | 版本 | 授权 | 说明 |
+|---|---|---|---|
+| **auto_generate_cdp** | 0.4.6 | **GPL-3.0** —— 该 crate 只带 `LICENSE.txt`，**没有 SPDX `license` 字段** | `headless_chrome 1.0.22`（MIT）的 **`[build-dependencies]`**：只在构建期生成 CDP 协议绑定代码。**不在运行时依赖闭包里**，因此**不随二进制分发**。 |
+
+⚠️ 这一条是**依赖审计挖出来的**，不是手写清单发现的：它把授权正文放在 `LICENSE.txt` 里、
+没有 SPDX `license` 字段，所以任何"只匹配 `license` 字段"的清单（含本文档此前的版本）都会漏掉它。
+
+2026-09-18 完整审计结论（`cargo metadata --format-version 1 --locked`，全树 335 个包）：
+
+- 随二进制分发的**运行时闭包共 312 个包**，**没有任何 GPL / LGPL / AGPL**；逐条统计为
+  `MIT OR Apache-2.0` 174、`MIT` 59、`Unicode-3.0` 18、`Apache-2.0 OR MIT` 11、
+  `MIT/Apache-2.0` 11、LLVM-exception 系 5、`Apache-2.0` 5、`Unlicense OR MIT` 3、
+  ISC 2、BSD 系若干、`0BSD` / `Zlib` / `BSL-1.0`（Boost）各 1。
+- `r-efi` 标注为 `MIT OR Apache-2.0 OR LGPL-2.1-or-later` —— 是**三选一**，取 MIT/Apache
+  即不产生 LGPL 义务。
+- 全图只有 **8 个 build-only 包**：`auto_generate_cdp` / `autocfg` / `bzip2` / `cc` /
+  `pkg-config` / `ureq` / `vcpkg` / `version_check`。
+- 唯一需要法律确认的一点：GPLv3 §2 规定"运行 GPL 程序产生的输出，只有在该输出本身构成
+  covered work 时才受该许可约束"；这里生成的是声明式协议绑定数据，主流理解是**工具输出
+  不算衍生作品**，且该工具本身并不随包分发。
 
 ## 二、外部命令（不随包分发，也不链接）
 
