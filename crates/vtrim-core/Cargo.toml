@@ -2,6 +2,9 @@
 name = "vtrim-core"
 version = "0.1.0"
 edition = "2021"
+description = "V-Trim 核心：管线编排 + ASR / 事件检测 / 剪切全部业务逻辑"
+authors = ["Sinsax"]
+license = "GPL-3.0-or-later"
 
 [dependencies]
 sherpa-onnx = "1.13.3"

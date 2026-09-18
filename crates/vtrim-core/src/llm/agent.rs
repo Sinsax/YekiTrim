@@ -92,6 +92,11 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
     /// 任务名称（日志 / 进度显示）
     fn name(&self) -> &str;
 
+    /// 用量记账的归因（链路名 + 项目目录）。默认用 `name()`；认得出项目的任务覆写它。
+    fn usage_context(&self) -> crate::llm::usage::UsageContext {
+        crate::llm::usage::UsageContext::new(self.name())
+    }
+
     /// 是否启用思考模式（LLM 先输出 reasoning 再输出结果）
     fn thinking(&self) -> bool {
         false
@@ -133,7 +138,9 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         let system_prompt = self.system_prompt();
         let user_prompt = self.user_prompt(global, &window_context, &window.items);
 
-        let client = LlmClient::from_config(llm_cfg)?.with_timeout(120);
+        let client = LlmClient::from_config(llm_cfg)?
+            .with_timeout(120)
+            .with_usage_context(self.usage_context());
         let client = if self.thinking() {
             client.with_thinking(Some("enabled"))
         } else {
@@ -152,11 +159,36 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         self.parse_output(content, &window.items)
     }
 
+    /// 提示词指纹：折进窗口 id，参与 checkpoint 命中判断。
+    ///
+    /// checkpoint 的复用条件是 `id 相同 && items 相同`——它只保证「字幕没变」，
+    /// 保不了「提示词没变」。调 prompt 后重跑会命中旧窗口、拿回旧结果。
+    /// 把 system/user prompt 的指纹折进 id 就能让提示词一变、全部窗口失效。
+    /// 默认空（不参与）；实现了它的任务会得到内容感知的缓存。
+    fn prompt_fingerprint(&self) -> String {
+        String::new()
+    }
+
     /// 将已完成窗口持久化为 JSON（checkpoint 文件内容）。
     fn save_windows(&self, windows: &[AgentWindow<T>]) -> Result<Value>;
 
     /// 从 checkpoint JSON 恢复已完成窗口。
     fn load_windows(&self, value: Value) -> Result<Vec<AgentWindow<T>>>;
+}
+
+/// 把参与 prompt 的片段哈希成一个短串，给 checkpoint 做失效判断用。
+///
+/// 用 `DefaultHasher`（SipHash，键固定）→ 跨进程稳定；不追求抗碰撞，
+/// 它只用来判断「和上次是不是同一套提示词」。
+pub fn fingerprint(parts: &[&str]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in parts {
+        p.hash(&mut h);
+        // 分隔符：避免 ("ab","c") 与 ("a","bc") 撞成同一个指纹
+        0xffu8.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
 }
 
 /// 通用 Agent 执行器。
@@ -168,10 +200,12 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(llm: LlmConfig) -> Self {
+        // 默认并发跟随 `[llm] max_concurrent`，别在这里另写一个常数
+        let max_concurrent = llm.concurrency(None);
         Self {
             llm,
             window_size: 25,
-            max_concurrent: 3,
+            max_concurrent,
         }
     }
 
@@ -250,6 +284,15 @@ impl Agent {
     {
         if windows.is_empty() {
             return Ok(windows);
+        }
+
+        // 把提示词指纹折进窗口 id：checkpoint 的命中条件是 `id && items`，
+        // 单靠 items 挡不住「字幕没变但 prompt 改了」这种情况（会拿回旧结果）。
+        let fingerprint = task.prompt_fingerprint();
+        if !fingerprint.is_empty() {
+            for w in &mut windows {
+                w.id = format!("{}@{}", w.id, fingerprint);
+            }
         }
 
         // 恢复 checkpoint：跳过已完成窗口
@@ -459,7 +502,9 @@ fn save_checkpoint<A, O>(
                     let _ = std::fs::create_dir_all(parent);
                 }
             }
-            let tmp = path.with_extension("tmp");
+            // 临时名带 pid：同一目录可能有别的进程在写同一份 checkpoint（CLI 直跑 + 服务端），
+            // 共用 `*.tmp` 时一方 open-truncate、另一方正好 rename，会把截断的 JSON 换上去
+            let tmp = path.with_extension(format!("tmp{}", std::process::id()));
             match std::fs::write(&tmp, serde_json::to_vec_pretty(&value).unwrap_or_default()) {
                 Ok(()) => {
                     if let Err(e) = std::fs::rename(&tmp, path) {
@@ -796,5 +841,17 @@ mod tests {
         assert_eq!(result[0].output.as_ref().unwrap().text, "cached");
         assert_eq!(result[1].output.as_ref().unwrap().text, "win_1");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive() {
+        // 同一组片段 → 同一指纹（跨进程稳定，才能当 checkpoint 的失效判据）
+        assert_eq!(fingerprint(&["a", "b"]), fingerprint(&["a", "b"]));
+        // 任一片段变化 → 指纹变化
+        assert_ne!(fingerprint(&["a", "b"]), fingerprint(&["a", "c"]));
+        // 分隔符：不能把 ("ab","c") 和 ("a","bc") 当成同一套提示词
+        assert_ne!(fingerprint(&["ab", "c"]), fingerprint(&["a", "bc"]));
+        // 空集也有确定的指纹（不会退化成空串而悄悄跳过失效判断）
+        assert!(!fingerprint(&[]).is_empty());
     }
 }

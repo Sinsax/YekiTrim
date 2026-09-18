@@ -67,15 +67,31 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有�
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
-mode = "single"
+# 默认 hybrid；准备页不给切换，要改就改这里或项目 vtrim.toml（设置页表单/源码）
+mode = "hybrid"
 # 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
 num_workers = 0
 # 音频分块长度(秒)
 chunk_duration = 60
 # 块间重叠(秒，仅固定分块模式有效)
 chunk_overlap = 10.0
-# 段间静音阈值(秒)，超过此间隔才切为两条字幕
+# 强停顿阈值(秒)：相邻字停顿超过它就直接切一条（与标点无关）
 segment_gap = 1.0
+# 气口阈值(秒)：相邻字停顿达到它算一个「气口」。断句时只用它来定位切点
+# （标点决定"在哪切"，气口决定"切在哪一刻"），它本身不单独切分
+breath_gap = 0.25
+# 句中标点（，、；：）软切的时间阈值(秒)：距上一条边界超过它才在这些标点处切
+soft_cut_secs = 6.0
+# 单条字幕字数硬上限（只在没有标点/气口可用时兜底）
+max_segment_chars = 30
+# 标点边界吸附到气口的半径(秒)
+snap_window = 0.3
+# 切给识别器的音频前后余量(秒)。**默认 0 = 关** —— 实测 0.3s 会扰动识别文本、
+# 对齐命中率反而下降（净效果不明），所以不默认开。想试就设 0.1~0.3。
+segment_padding = 0.0
+# qwen3 单次解码输出上限(token)。上游默认 128；本项目的窗口 ≤30 字，512 已有充足余量。
+# 放太大（曾用 2048）会让解码失控时一直胡说到上限。
+max_new_tokens = 512
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 
@@ -155,6 +171,12 @@ allow_ips = []
 [ingest.recorder]
 # 录播姬输出目录（必须与 vtrim server 同机或同可读盘）
 root = ""
+# 录播姬 HTTP API（用户端「配置直播间」靠它加房间）：
+#   api_base 例 "http://127.0.0.1:2356"（桌面版/容器默认端口），**留空 = 未对接**
+#   api_user/api_pass = 录播姬容器的 BREC_HTTP_BASIC_USER / BREC_HTTP_BASIC_PASS（没设就都留空）
+api_base = ""
+api_user = ""
+api_pass = ""
 # 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
 watch_interval_mins = 10
 # SessionEnded 之后再等多久没有新 FileClosed 就认为本场结束
@@ -167,6 +189,12 @@ concat_files = true
 extensions = ["flv", "mkv", "mp4", "ts"]
 # 入库后自动执行到哪一步：none | transcribe | detect | cut
 auto_pipeline = "detect"
+
+[auth]
+# 自助注册（邀请码）：开启后 /api/auth/register 才受理注册请求，
+# 但**必须**有可用邀请码才能注册成功 —— 码本身才是凭证，这里只是总闸。
+# 邀请码用 `vtrim user invite` 生成（只显示一次明文，库里只存 selector + 哈希）
+registration_enabled = false
 "#;
 
 /// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
@@ -183,9 +211,16 @@ model = ""
 # 温度参数 (0=确定性输出，建议保持0)
 temperature = 0
 # 最大 Token 数 (检测事件需要较大的输出空间；思考模式建议 16384+)
+# 关了思考模式后这只是「跑飞的上限」——模型自己会停；一个检测窗口实测输出约 600 字符，
+# 4096 已很宽裕。调小它可以在模型复读时更快收尾。
 max_tokens = 16384
+# 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
+# ([detection]/[correct] 各自的 max_concurrent 留空即跟随这里)。
+# 实测中转站允许并发且接近线性，批处理时间基本按它反比缩短；触发 429 就调小。
+max_concurrent = 3
 # 额外请求参数 (seed 确保稳定输出；thinking enabled 启用思考模式，disabled 关闭)
-extra_params = { seed = 42, thinking = { type = "enabled" } }
+# response_format=json_object 让模型不写解释性前言(需中转/服务端支持，不支持就删掉这行)
+extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
 "#;
 
 /// 生成 vtrim.toml 项目配置文件（`vtrim init`）。
@@ -199,6 +234,31 @@ pub fn write_project_config(
     input: &Path,
     danmaku: Option<&Path>,
     output_dir: Option<&str>,
+) -> Result<()> {
+    write_project_config_inner(cfg_path, input, danmaku, output_dir, true)
+}
+
+/// 同 [`write_project_config`]，但**不做 `.ass` 自动发现**：`danmaku = None` 就是真的空。
+///
+/// 给"按来源类型预载"的调用方用 —— 服务器本机文件来源（`local`）按用户要求不预载弹幕，
+/// 由预处理页列候选让用户自己选（`service::assets::preload_policy`）。
+/// ⚠️ 别把这条规则塞回 `write_project_config`：CLI 的 `vtrim init` 语义是"顺手带上同名 .ass"，
+/// 两条路要分开。
+pub fn write_project_config_exact(
+    cfg_path: &Path,
+    input: &Path,
+    danmaku: Option<&Path>,
+    output_dir: Option<&str>,
+) -> Result<()> {
+    write_project_config_inner(cfg_path, input, danmaku, output_dir, false)
+}
+
+fn write_project_config_inner(
+    cfg_path: &Path,
+    input: &Path,
+    danmaku: Option<&Path>,
+    output_dir: Option<&str>,
+    auto_discover_danmaku: bool,
 ) -> Result<()> {
     // 优先从全局配置复制，不存在则使用内建默认
     let global_path = crate::path::vtrim_home().join("config.toml");
@@ -240,7 +300,7 @@ pub fn write_project_config(
     };
     let danmaku_val = match danmaku {
         Some(df) => path_to_rel(df),
-        None => {
+        None if auto_discover_danmaku => {
             let auto_ass = input.with_extension("ass");
             if auto_ass.exists() {
                 tracing::info!("自动发现弹幕文件: {}", auto_ass.display());
@@ -249,6 +309,7 @@ pub fn write_project_config(
                 String::new()
             }
         }
+        None => String::new(),
     };
 
     let mut project = toml_edit::Table::new();
@@ -365,14 +426,28 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.segment_merge_gap != 0.6 {
         base.asr.segment_merge_gap = overlay.asr.segment_merge_gap;
     }
-    if overlay.asr.segment_padding != 0.3 {
+    // `segment_padding` = 切给识别器的音频余量，**默认 0（关）**：
+    // 实测 0.3s 会扰动文本、对齐命中率反而下降，净效果不明（见 types.rs 的字段注释）
+    if overlay.asr.segment_padding != 0.0 {
         base.asr.segment_padding = overlay.asr.segment_padding;
     }
-    if overlay.asr.max_new_tokens != 2048 {
+    if overlay.asr.max_new_tokens != 512 {
         base.asr.max_new_tokens = overlay.asr.max_new_tokens;
     }
     if !overlay.asr.mode.is_empty() {
         base.asr.mode = overlay.asr.mode.clone();
+    }
+    if overlay.asr.breath_gap != 0.25 {
+        base.asr.breath_gap = overlay.asr.breath_gap;
+    }
+    if overlay.asr.soft_cut_secs != 6.0 {
+        base.asr.soft_cut_secs = overlay.asr.soft_cut_secs;
+    }
+    if overlay.asr.max_segment_chars != 30 {
+        base.asr.max_segment_chars = overlay.asr.max_segment_chars;
+    }
+    if overlay.asr.snap_window != 0.3 {
+        base.asr.snap_window = overlay.asr.snap_window;
     }
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
@@ -389,7 +464,8 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.detection.reference_titles.is_empty() {
         base.detection.reference_titles = overlay.detection.reference_titles.clone();
     }
-    if overlay.detection.max_concurrent != 3 {
+    // Option 字段：Some 才覆盖（None = 跟随 llm.toml 的全局并发）
+    if overlay.detection.max_concurrent.is_some() {
         base.detection.max_concurrent = overlay.detection.max_concurrent;
     }
 
@@ -405,7 +481,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.correct.window_size != 25 {
         base.correct.window_size = overlay.correct.window_size;
     }
-    if overlay.correct.max_concurrent != 3 {
+    if overlay.correct.max_concurrent.is_some() {
         base.correct.max_concurrent = overlay.correct.max_concurrent;
     }
     if !overlay.correct.hotwords.is_empty() {
@@ -494,6 +570,22 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.ingest.recorder.auto_pipeline != "detect" {
         base.ingest.recorder.auto_pipeline = overlay.ingest.recorder.auto_pipeline.clone();
+    }
+
+    if !overlay.ingest.recorder.api_base.is_empty() {
+        base.ingest.recorder.api_base = overlay.ingest.recorder.api_base.clone();
+    }
+    if !overlay.ingest.recorder.api_user.is_empty() {
+        base.ingest.recorder.api_user = overlay.ingest.recorder.api_user.clone();
+    }
+    if !overlay.ingest.recorder.api_pass.is_empty() {
+        base.ingest.recorder.api_pass = overlay.ingest.recorder.api_pass.clone();
+    }
+
+    // [auth]：与 [ingest] 同一规矩 —— 只有显式写了 true 才覆盖（开关只可能被打开，不会被静默关掉）；
+    // 真正生效的是全局配置，工程配置一般不该碰它。
+    if overlay.auth.registration_enabled {
+        base.auth.registration_enabled = true;
     }
 }
 
@@ -598,34 +690,38 @@ pub fn save_transcript_path_in(project_file: &Path, path: &str) -> Result<()> {
 }
 
 fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<()> {
-    let content = if project_file.exists() {
-        std::fs::read_to_string(project_file)?
-    } else {
-        String::new()
-    };
-    let mut doc: toml_edit::DocumentMut = match content.parse() {
-        Ok(doc) => doc,
-        Err(e) => {
-            // 语法错误时**不能**静默从空文档开始：那样"改一个键"会把用户其余配置整段抹掉。
-            // 先备份成 `*.toml.broken` 并告警，再基于空文档写入本次 patch。
-            if !content.trim().is_empty() {
-                let backup = project_file.with_extension("toml.broken");
-                let _ = std::fs::copy(project_file, &backup);
-                tracing::warn!(
-                    "配置 {} 不是合法 TOML（{e}），已备份为 {} 并只写入本次改动",
-                    project_file.display(),
-                    backup.display()
-                );
+    // 整段读-改-写放进同步路径锁：管线（同步上下文）与设置页保存会同时改这份文件，
+    // 无锁时后写的会把先写的键整段覆盖（丢 `transcript_file` 之类的后果是状态机错乱）。
+    crate::filelock::with_path_lock_sync(project_file, || {
+        let content = if project_file.exists() {
+            std::fs::read_to_string(project_file)?
+        } else {
+            String::new()
+        };
+        let mut doc: toml_edit::DocumentMut = match content.parse() {
+            Ok(doc) => doc,
+            Err(e) => {
+                // 语法错误时**不能**静默从空文档开始：那样"改一个键"会把用户其余配置整段抹掉。
+                // 先备份成 `*.toml.broken` 并告警，再基于空文档写入本次 patch。
+                if !content.trim().is_empty() {
+                    let backup = project_file.with_extension("toml.broken");
+                    let _ = std::fs::copy(project_file, &backup);
+                    tracing::warn!(
+                        "配置 {} 不是合法 TOML（{e}），已备份为 {} 并只写入本次改动",
+                        project_file.display(),
+                        backup.display()
+                    );
+                }
+                toml_edit::DocumentMut::new()
             }
-            toml_edit::DocumentMut::new()
+        };
+        f(&mut doc);
+        if let Some(parent) = project_file.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-    };
-    f(&mut doc);
-    if let Some(parent) = project_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(project_file, doc.to_string())?;
-    Ok(())
+        std::fs::write(project_file, doc.to_string())?;
+        Ok(())
+    })
 }
 
 /// 用 toml_edit 把嵌套 patch（`{ section: { key: value } }`）合并进配置文件。
@@ -633,6 +729,9 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
 /// 设置页表单只覆盖常用字段，这里**只改动 patch 里出现的键**：
 /// 其他 section（如 `[correct]` 订正 prompt）、注释、键顺序全部原样保留。
 /// 直接用表单重建整个文件会把没暴露的配置整段删掉，这正是本函数要避免的。
+///
+/// **支持两层以上**（`{"ingest": {"recorder": {"api_base": …}}}`）：值是对象时递归进子表合并，
+/// 不会把 `[ingest.recorder]` 里本次没提到的键丢掉。见 [`merge_into_table`] 的说明。
 pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
     let sections = patch
         .as_object()
@@ -646,20 +745,46 @@ pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
                 doc.insert(section, toml_edit::Item::Table(table));
             }
             let Some(table) = doc.get_mut(section).and_then(|i| i.as_table_mut()) else { continue };
-            for (key, value) in fields {
-                let new_value = json_to_toml_value(value);
-                // 就地替换 value：键的 decor（上方注释/缩进）挂在 Key 上，
-                // 整项 insert 会把注释一起替换掉，保存一次注释就没了
-                if let Some(existing) = table.get_mut(key).and_then(|i| i.as_value_mut()) {
-                    let decor = existing.decor().clone();
-                    *existing = new_value;
-                    *existing.decor_mut() = decor;
-                } else {
-                    table.insert(key, toml_edit::Item::Value(new_value));
-                }
-            }
+            merge_into_table(table, fields);
         }
     })
+}
+
+/// 把一层 JSON 字段合并进一张 toml 表（值为对象时递归进子表）。
+///
+/// ⚠️ **子表必须递归下去，不能把对象一律转成 inline table 后整项 `insert`**：
+/// `[ingest]` 下的 `recorder` 就是子表，整项替换会把本次 patch 里没提到的键
+/// （`root` / `api_user` / `api_pass` / `watch_interval_mins` …）与**段内注释静默丢掉** ——
+/// 曾经就是这个行为，而它不报错（文件仍是合法 TOML），只有下次读配置时才发现值没了。
+fn merge_into_table(table: &mut toml_edit::Table, fields: &serde_json::Map<String, serde_json::Value>) {
+    for (key, value) in fields {
+        // 值是对象：目标是子表 → 递归合并；其它形态（字符串/数组/inline table）或不存在
+        // → 整体替换成一张**真子表**（渲染成 `[section.sub]`，下次还能继续递归）
+        if let Some(sub) = value.as_object() {
+            let already_table = matches!(table.get(key), Some(toml_edit::Item::Table(_)));
+            if already_table {
+                if let Some(toml_edit::Item::Table(existing)) = table.get_mut(key) {
+                    merge_into_table(existing, sub);
+                }
+            } else {
+                let mut t = toml_edit::Table::new();
+                t.set_implicit(false);
+                merge_into_table(&mut t, sub);
+                table.insert(key, toml_edit::Item::Table(t));
+            }
+            continue;
+        }
+        let new_value = json_to_toml_value(value);
+        // 就地替换 value：键的 decor（上方注释/缩进）挂在 Key 上，
+        // 整项 insert 会把注释一起替换掉，保存一次注释就没了
+        if let Some(existing) = table.get_mut(key).and_then(|i| i.as_value_mut()) {
+            let decor = existing.decor().clone();
+            *existing = new_value;
+            *existing.decor_mut() = decor;
+        } else {
+            table.insert(key, toml_edit::Item::Value(new_value));
+        }
+    }
 }
 
 fn json_to_toml_value(v: &serde_json::Value) -> toml_edit::Value {
@@ -764,5 +889,108 @@ mod reference_titles_tests {
             resolve_reference_titles(&d),
             crate::detection::DEFAULT_REFERENCE_TITLES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
+    }
+}
+
+/// `patch_config_file` 的合并行为（表单保存的底层契约：只动 patch 里出现的键）。
+#[cfg(test)]
+mod patch_config_tests {
+    use super::*;
+
+    fn write_tmp(tag: &str, body: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vtrim-patch-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.toml");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    const SAMPLE: &str = "\
+# 顶部注释不能丢
+[ingest]
+# webhook 开关
+webhook_enabled = true
+token_hash = \"scrypt$hash\"
+
+[ingest.recorder]
+# 录像目录
+root = \"D:/rec\"
+api_base = \"http://127.0.0.1:2356\"
+api_user = \"admin\"
+api_pass = \"secret\"
+watch_interval_mins = 7
+
+[detection]
+vtuber_name = \"主播\"
+";
+
+    /// 嵌套 patch：只改 `[ingest.recorder]` 里提到的键，**同表其它键与注释一个都不能少**。
+    ///
+    /// 回归钉子：合并逻辑曾经不认识子表 —— `recorder` 被整项替换成 inline table，
+    /// `root`/`api_user`/`api_pass`/`watch_interval_mins` 与段内注释静默消失（文件仍是合法
+    /// TOML，所以不报错，只有下次读配置才发现值没了）。
+    #[test]
+    fn nested_patch_keeps_sibling_keys_and_comments() {
+        let p = write_tmp("nested", SAMPLE);
+        patch_config_file(
+            &p,
+            &serde_json::json!({"ingest": {"webhook_enabled": false,
+                                           "recorder": {"api_base": "http://10.0.0.5:2356",
+                                                        "api_pass": "newsecret"}}}),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+
+        // 提到的键被改
+        assert!(out.contains("api_base = \"http://10.0.0.5:2356\""), "{out}");
+        assert!(out.contains("api_pass = \"newsecret\""), "{out}");
+        assert!(out.contains("webhook_enabled = false"), "{out}");
+        // 没提到的兄弟键全在
+        for keep in ["root = \"D:/rec\"", "api_user = \"admin\"", "watch_interval_mins = 7"] {
+            assert!(out.contains(keep), "丢了 {keep}：\n{out}");
+        }
+        // 注释与其它 section 原样
+        for keep in ["# 顶部注释不能丢", "# webhook 开关", "# 录像目录", "vtuber_name = \"主播\""] {
+            assert!(out.contains(keep), "丢了 {keep}：\n{out}");
+        }
+        assert!(out.contains("[ingest.recorder]"), "子表应保持表头形式：\n{out}");
+        assert!(!out.contains("recorder = {"), "不该退化成 inline table：\n{out}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// 文件里还没有该子表时：建出**真子表** `[ingest.recorder]`，而不是 inline table。
+    /// （真子表才能被后续 patch 继续递归合并。）
+    #[test]
+    fn nested_patch_creates_real_subtable() {
+        let p = write_tmp("newsub", "[ingest]\nwebhook_enabled = true\n");
+        patch_config_file(
+            &p,
+            &serde_json::json!({"ingest": {"recorder": {"root": "D:/rec", "api_base": "http://x:1"}}}),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("[ingest.recorder]"), "{out}");
+        assert!(!out.contains("recorder = {"), "{out}");
+        // 再 patch 一次仍能命中同一张子表（合并而非追加第二张）
+        patch_config_file(&p, &serde_json::json!({"ingest": {"recorder": {"api_user": "u"}}})).unwrap();
+        let out2 = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(out2.matches("[ingest.recorder]").count(), 1, "{out2}");
+        assert!(out2.contains("root = \"D:/rec\"") && out2.contains("api_user = \"u\""), "{out2}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// 一层 patch（现有全部调用方的形态）行为不变。
+    #[test]
+    fn flat_patch_still_works() {
+        let p = write_tmp("flat", "[cutting]\noutput_dir = \"./out\"\noverwrite = false\n");
+        patch_config_file(&p, &serde_json::json!({"cutting": {"overwrite": true}})).unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("output_dir = \"./out\""), "{out}");
+        assert!(out.contains("overwrite = true"), "{out}");
+        // 新 section / 新键会补出来
+        patch_config_file(&p, &serde_json::json!({"ingest": {"allow_ips": ["127.0.0.1"]}})).unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("[ingest]") && out.contains("allow_ips = [\"127.0.0.1\"]"), "{out}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

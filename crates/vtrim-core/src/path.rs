@@ -22,6 +22,15 @@ pub fn sticker_dir() -> PathBuf {
     exe_dir().join("stickers")
 }
 
+/// 字体库路径 (程序目录下的 `resources/fonts/`)。
+///
+/// 往里丢 `.ttf` / `.otf` / `.ttc` 就能在界面上选作字幕/封面字体 —— 库本身不随包分发
+/// 任何字体文件（授权原因，见 README「字体」），所以这个目录是**用户自己填**的。
+/// 相关读写见 [`crate::fonts`]。
+pub fn font_dir() -> PathBuf {
+    exe_dir().join("resources").join("fonts")
+}
+
 /// 给"人要看的/前端要回传的"路径用的显示形式：去掉 Windows 的 `\\?\` 逐字前缀
 /// （canonicalize 的产物）。
 ///

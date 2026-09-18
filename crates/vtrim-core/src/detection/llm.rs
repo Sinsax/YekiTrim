@@ -8,7 +8,8 @@ use crate::llm::agent::{Agent, AgentItem, AgentProgress, AgentTask, AgentWindow}
 use crate::types::{Event, EventSource, EventType, Timestamp, TranscriptSegment};
 
 pub const DEFAULT_PROMPT: &str = r#"将直播转录切分为短视频切片。硬性要求：
-- 每段 0.5~3 分钟，宁完整勿碎：优先保证事件内容完整，不要为了“碎”而把一个完整话题/名场面拦腰切断
+- 时长服从话题完整：一般 0.5~3 分钟，话题没讲完就让它更长（4~6 分钟也行），不要为了压进 3 分钟而硬切
+- **禁止把同一次连续事件等分成多段**：不要产出「xxx（1/2）」「xxx（2/2）」这种同题分段；要么完整成一段，要么各自的标题独立成立（各自是不同话题）
 - start 不要过早，但也不要只切爆点瞬间：应包含让观众看懂该事件所必需的短上下文；end 应到话题自然结束，不能事件还没讲完就切
 - 明显话题转换才切分；同一个话题中途不要硬切
 - 根据字幕数量/信息密度而不是时间长度来判断：字幕很少、间隔很大的低密度长段不要单独成段，应并入相邻完整话题；字幕密集的高能段可以单独成段
@@ -30,11 +31,14 @@ event_type 取整段主体：gameplay、interaction、qna、reaction、storytell
 
 输出：只输出 JSON 数组，每个事件含 start/end/label/summary/event_type，不要 markdown。
 
-转录片段：
-{segments}
+{hot_windows}
 
 只输出JSON数组：
-[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "核心看点...", "event_type": "interaction"}]"#;
+[{"start": 0.0, "end": 120.0, "label": "这操作给我看傻了??🤣", "summary": "核心看点...", "event_type": "interaction"}]
+
+转录片段：
+
+{segments}"#;
 /// 事件检测阶段使用的标题(label)规则，封面标题生成复用同一份规则。
 pub const TITLE_RULES: &str = r#"标题(label)要求（最重要）：
 - 用主播原话/名场面/具体情景 + 反应/吐槽，制造反差和梗
@@ -72,25 +76,43 @@ fn build_prompt(
     } else {
         &config.prompt_template
     };
-    let mut prompt = template.replace("{segments}", format_segments(segments).trim());
-    let refs = crate::config::resolve_reference_titles(config);
-    prompt = prompt.replace("{reference_titles}", &refs.join("\n"));
+    let seg_text = format_segments(segments);
+    let hot = hot_windows_block(hot_windows);
+    let refs = crate::config::resolve_reference_titles(config).join("\n");
 
-    // 追加弹幕爆发时刻：让 LLM 看到观众反应最激烈的名场面位置
-    if !hot_windows.is_empty() {
-        prompt.push_str("\n\n=== 观众弹幕爆发时刻（弹幕热力图统计，以下时间区间内弹幕密度最高，是全场观众反应最激烈的名场面） ===\n");
-        for (s, e) in hot_windows {
-            prompt.push_str(&format!("[{:.1}-{:.1}] 弹幕爆发\n", s, e));
-        }
-        prompt.push_str(
-            "要求：\n\
-             - 这些时刻必须被包含在某个事件内，绝不能被遗漏\n\
-             - 事件边界不得切在这些爆发区间内部（爆发时刻不能落在两个事件的交界处或事件之外）\n\
-             - 若爆发区间横跨两段话题，将其归入与之更相关的事件\n",
-        );
+    // 前缀缓存：provider（DeepSeek 系等）按**最长公共前缀**命中上下文缓存，
+    // 所以每窗口才变化的内容要尽量靠后——模板里 {segments} 收尾，
+    // 每场固定不变的弹幕爆发块经 {hot_windows} 排在它之前。
+    // 老模板（用户 config.toml 里的副本）没有 {hot_windows}：拼进 {segments} 的替换值里，
+    // 位置等价、不丢内容，只是公共前缀短一点。
+    let has_hot_slot = template.contains("{hot_windows}");
+    let seg_value = format!("{hot}{}", seg_text.trim());
+    template
+        .replace("{hot_windows}", hot.trim_end())
+        .replace("{segments}", if has_hot_slot { seg_text.trim() } else { &seg_value })
+        .replace("{reference_titles}", &refs)
+}
+
+/// 弹幕爆发时刻块：让 LLM 看到观众反应最激烈的名场面位置。
+///
+/// **每场固定、与窗口无关**，所以放在变化部分之前吃前缀缓存。无数据时返回空串。
+fn hot_windows_block(hot_windows: &[(f64, f64)]) -> String {
+    if hot_windows.is_empty() {
+        return String::new();
     }
-
-    prompt
+    let mut s = String::from(
+        "\n\n=== 观众弹幕爆发时刻（弹幕热力图统计，以下时间区间内弹幕密度最高，是全场观众反应最激烈的名场面） ===\n",
+    );
+    for (start, end) in hot_windows {
+        s.push_str(&format!("[{start:.1}-{end:.1}] 弹幕爆发\n"));
+    }
+    s.push_str(
+        "要求：\n\
+         - 这些时刻必须被包含在某个事件内，绝不能被遗漏\n\
+         - 事件边界不得切在这些爆发区间内部（爆发时刻不能落在两个事件的交界处或事件之外）\n\
+         - 若爆发区间横跨两段话题，将其归入与之更相关的事件\n",
+    );
+    s
 }
 
 pub fn parse_json(text: &str) -> Result<serde_json::Value> {
@@ -276,7 +298,7 @@ fn parse_event_type(raw: &str) -> EventType {
     }
 }
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = r#"你是直播切片分析助手。把转录切成 0.5~3 分钟的短视频切片，宁完整勿碎：优先保证每个事件是完整话题/名场面，不要为了多切而把内容拦腰截断。明显话题转换才切分；字幕很少的低密度长段不要单独成段，应并入相邻完整话题。start 包含必要上下文，end 到话题自然结束，禁止事件还没讲完就切。标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，禁止"主播聊/主播说"式第三人称开头，相邻标题句式不得重复。摘要 40~80 字。event_type 以整段主体为准，ASR 乱码不单独成段。"#;
+pub const DEFAULT_SYSTEM_PROMPT: &str = r#"你是直播切片分析助手。把转录切成以话题为单位的短视频切片（一般 0.5~3 分钟，话题没讲完就让它更长）：优先保证每个事件是完整话题/名场面，不要为了多切而把内容拦腰截断，更不要把一个连续事件等分成「（1/2）」「（2/2）」这种同题分段。明显话题转换才切分；字幕很少的低密度长段不要单独成段，应并入相邻完整话题。start 包含必要上下文，end 到话题自然结束，禁止事件还没讲完就切。标题必须高信息密度，以主播原话/名场面/具体情景+反应吐槽为主体，禁止"主播聊/主播说"式第三人称开头，相邻标题句式不得重复。摘要 40~80 字。event_type 以整段主体为准，ASR 乱码不单独成段。"#;
 fn system_prompt(config: &DetectionConfig) -> &str {
     if !config.system_prompt.is_empty() {
         return &config.system_prompt;
@@ -285,7 +307,7 @@ fn system_prompt(config: &DetectionConfig) -> &str {
 }
 
 /// 窗口大小：每窗口最多处理多少条字幕段（避免一次塞太多导致 token 超限）
-const DETECT_WINDOW_SIZE: usize = 20;
+const DETECT_WINDOW_SIZE: usize = 30;
 /// 窗口重叠条数：保证跨窗口的事件边界不会被切断（不宜过大，否则同一内容被多次分析）
 const DETECT_WINDOW_OVERLAP: usize = 5;
 
@@ -300,6 +322,7 @@ pub async fn call_with_progress(
     llm: &LlmConfig,
     detect: &DetectionConfig,
     hot_windows: &[(f64, f64)],
+    project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
 ) -> Result<Vec<Event>> {
@@ -342,13 +365,14 @@ pub async fn call_with_progress(
         start = end.saturating_sub(overlap);
     }
 
-    let max_concurrent = detect.max_concurrent.max(1);
+    let max_concurrent = llm.concurrency(detect.max_concurrent);
     let total_windows = agent_windows.len();
     tracing::info!("事件检测: {} 个窗口，并发 {}", total_windows, max_concurrent);
 
     let task = DetectionTask {
         detect: detect.clone(),
         hot_windows: hot_windows.to_vec(),
+        project: project.map(crate::path::display),
     };
     let agent = Agent::new(llm.clone()).with_max_concurrent(max_concurrent);
 
@@ -401,12 +425,18 @@ pub async fn call_with_progress(
 struct DetectionTask {
     detect: DetectionConfig,
     hot_windows: Vec<(f64, f64)>,
+    /// 项目根目录（`output_dir` 的父级），只用于用量记账归因。
+    project: Option<String>,
 }
 
 #[async_trait]
 impl AgentTask<Vec<Event>> for DetectionTask {
     fn name(&self) -> &str {
         "事件检测"
+    }
+
+    fn usage_context(&self) -> crate::llm::usage::UsageContext {
+        crate::llm::usage::UsageContext::new(self.name()).project(self.project.clone())
     }
 
     fn thinking(&self) -> bool {
@@ -428,6 +458,22 @@ impl AgentTask<Vec<Event>> for DetectionTask {
 
     fn system_prompt(&self) -> String {
         system_prompt(&self.detect).to_string()
+    }
+
+    /// system/user prompt 的指纹 → 折进窗口 id。改了 prompt 之后重跑检测，
+    /// checkpoint 里的旧窗口会全部失配、重新调用，而不是拿回上一版的结果。
+    fn prompt_fingerprint(&self) -> String {
+        let mut parts = vec![
+            self.system_prompt(),
+            self.detect.prompt_template.clone(),
+            crate::config::resolve_reference_titles(&self.detect).join("
+"),
+        ];
+        for (s, e) in &self.hot_windows {
+            parts.push(format!("{s:.1}-{e:.1}"));
+        }
+        let refs: Vec<&str> = parts.iter().map(|p| p.as_str()).collect();
+        crate::llm::agent::fingerprint(&refs)
     }
 
     fn user_prompt(&self, global: &str, window_context: &str, window: &[AgentItem]) -> String {
@@ -468,7 +514,9 @@ impl AgentTask<Vec<Event>> for DetectionTask {
             .collect();
 
         // 思考模式透传 [llm].extra_params 配置（enabled/disabled），不在此强制
-        let client = crate::llm::LlmClient::from_config(llm_cfg)?.with_timeout(180);
+        let client = crate::llm::LlmClient::from_config(llm_cfg)?
+            .with_timeout(180)
+            .with_usage_context(self.usage_context());
         process_window_inner(&client, &segments, &self.detect, &self.hot_windows).await
     }
 
@@ -678,7 +726,9 @@ pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
         {"role": "system", "content": "你是一个 AI 助手。"},
         {"role": "user", "content": prompt}
     ]);
-    let client = crate::llm::LlmClient::from_config(llm)?.with_timeout(180);
+    let client = crate::llm::LlmClient::from_config(llm)?
+        .with_timeout(180)
+        .with_usage_context(crate::llm::usage::UsageContext::new("LLM 测试"));
     client.send(messages).await.map(|v| v.to_string())
 }
 
@@ -846,5 +896,51 @@ mod tests {
         assert_eq!(merged[1].start.to_seconds(), 400.0);
         assert_eq!(merged[1].end.to_seconds(), 700.0);
     }
-}
 
+    fn seg(t: f64, text: &str) -> TranscriptSegment {
+        TranscriptSegment { start: t, end: t + 3.0, text: text.into(), confidence: 1.0 }
+    }
+
+    /// 前缀缓存的硬性前提：每窗口才变化的内容（字幕）必须是 prompt 的**最后一段**。
+    /// provider 按最长公共前缀命中上下文缓存，变化部分一旦跑到中间，后面的内容就白扔了。
+    #[test]
+    fn prompt_puts_varying_segments_last() {
+        let cfg = DetectionConfig::default();
+        let segs = vec![seg(0.0, "第一句"), seg(10.0, "第二句")];
+        let p = build_prompt(&segs, &cfg, &[(120.0, 135.0)]);
+
+        let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
+        let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块应在 prompt 里");
+        assert!(hot_pos < seg_pos, "爆发块必须排在字幕之前");
+        // 字幕之后只剩空行（没有别的固定内容被甩到后面）
+        assert!(
+            p[seg_pos..].trim_end().ends_with("第二句"),
+            "字幕之后不该再有内容: {:?}",
+            &p[seg_pos..]
+        );
+    }
+
+    /// 老模板（用户 config.toml 里的副本）没有 {hot_windows} 占位符：
+    /// 爆发块仍要插在字幕之前，不能丢、也不能跑到字幕后面。
+    #[test]
+    fn prompt_injects_hot_block_into_legacy_template() {
+        let mut cfg = DetectionConfig::default();
+        cfg.prompt_template = "规则若干。
+转录片段：
+{segments}".to_string();
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[(120.0, 135.0)]);
+        let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块不能丢");
+        let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
+        assert!(hot_pos < seg_pos, "老模板也要把爆发块放在字幕之前: {p}");
+    }
+
+    /// 没有弹幕数据时不注入空块
+    #[test]
+    fn prompt_omits_hot_block_when_empty() {
+        let cfg = DetectionConfig::default();
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[]);
+        assert!(!p.contains("观众弹幕爆发时刻"));
+        assert!(!p.contains("{hot_windows}"), "占位符必须被替换掉");
+    }
+
+}

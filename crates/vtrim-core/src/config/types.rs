@@ -33,35 +33,46 @@ pub struct ProjectConfig {
 impl ProjectConfig {
     /// 根据实际输出文件存在性推导当前进度
     pub fn current_stage(&self, output_dir: &std::path::Path) -> u32 {
+        // `*_file` 是**相对工程根**写进 vtrim.toml 的（`vtrim init` 的 `path_to_rel`），
+        // 所以相对路径要先按 output_dir 的父目录（= 工程根）拼一次再判存在性。
+        // ⚠ 直接 `PathBuf::from(p).exists()` 是"相对进程 CWD"：`vtrim server` 是长驻进程，
+        // CWD 与具体项目无关 —— 用户上传了外部字幕、又没跑过 ASR 时这个工程会被判成 stage 0
+        // （重跑/门槛判断全跟着错）。
+        // `Path::new("").join(x) == x`，所以 output_dir 本身是相对路径时（CLI 老口径）
+        // 行为与从前逐字一致。
+        let root = output_dir.parent();
+        let exists = |raw: Option<&String>| -> bool {
+            let Some(raw) = raw.filter(|p| !p.is_empty()) else {
+                return false;
+            };
+            let p = std::path::PathBuf::from(raw);
+            let p = if p.is_absolute() {
+                p
+            } else {
+                match root {
+                    Some(root) => root.join(&p),
+                    None => p,
+                }
+            };
+            p.exists()
+        };
         // 检查剪切输出（Stage 4）
         if output_dir.join("clips").join("clips_order.txt").exists() {
             return 4;
         }
         // 检查事件文件（Stage 3）
-        let has_events = self.events_file.as_ref()
-            .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.exists())
-            .is_some();
-        if has_events || output_dir.join("events.json").exists() {
+        if exists(self.events_file.as_ref()) || output_dir.join("events.json").exists() {
             return 3;
         }
         // 检查转录文件（Stage 2）
-        let has_transcript = self.transcript_file.as_ref()
-            .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.exists())
-            .is_some();
-        if has_transcript || output_dir.join("transcript.json").exists() || output_dir.join("video.srt").exists() {
+        if exists(self.transcript_file.as_ref())
+            || output_dir.join("transcript.json").exists()
+            || output_dir.join("video.srt").exists()
+        {
             return 2;
         }
         // 检查音频文件（Stage 1）
-        let has_audio = self.audio_file.as_ref()
-            .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.exists())
-            .is_some();
-        if has_audio || output_dir.join("video.wav").exists() {
+        if exists(self.audio_file.as_ref()) || output_dir.join("video.wav").exists() {
             return 1;
         }
         0
@@ -94,6 +105,25 @@ pub struct Config {
     /// 多用户服务 P3：采集（录播姬 webhook + 兜底扫描）
     #[serde(default)]
     pub ingest: IngestConfig,
+    /// 自助注册（邀请码）
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+/// `[auth]` — 账号与自助注册。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// 是否开放邀请码注册。默认关；`vtrim user invite` 生成码时置 true，
+    /// `vtrim user invite --disable` 关闭。**开关打开也必须有可用邀请码**才能注册成功
+    /// —— 码本身才是凭证，开关只是总闸。
+    #[serde(default)]
+    pub registration_enabled: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { registration_enabled: false }
+    }
 }
 
 /// `[ingest]` — 采集通道（录播姬 webhook + 兜底扫描）。
@@ -129,6 +159,16 @@ pub struct RecorderConfig {
     /// 录播姬输出目录（必须与 `vtrim server` 同机/同可读盘）
     #[serde(default)]
     pub root: String,
+    /// 录播姬 HTTP API 地址（例 `http://127.0.0.1:2356`；桌面版默认 `http://127.0.0.1:2356`）。
+    /// **空 = 未对接**：用户端不能自助添加直播间（只能走"待分配池"兜底）。
+    #[serde(default)]
+    pub api_base: String,
+    /// 录播姬 HTTP Basic 用户名（对应容器环境变量 `BREC_HTTP_BASIC_USER`）
+    #[serde(default)]
+    pub api_user: String,
+    /// 录播姬 HTTP Basic 密码（对应 `BREC_HTTP_BASIC_PASS`）
+    #[serde(default)]
+    pub api_pass: String,
     /// 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
     #[serde(default = "default_watch_interval_mins")]
     pub watch_interval_mins: u32,
@@ -169,6 +209,9 @@ impl Default for RecorderConfig {
     fn default() -> Self {
         Self {
             root: String::new(),
+            api_base: String::new(),
+            api_user: String::new(),
+            api_pass: String::new(),
             watch_interval_mins: default_watch_interval_mins(),
             finalize_idle_mins: default_finalize_idle_mins(),
             move_into_managed: true,
@@ -265,19 +308,58 @@ pub struct AsrConfig {
     pub language: String,
     #[serde(default = "default_asr_model")]
     pub model: String,
+    /// **已废弃**（没有任何读取方，留着只为老 toml 不炸）：打轴模型已固定为 SenseVoice。
     #[serde(default)]
     pub align_model: String,
+    /// **已废弃**（没有任何读取方）：单段时长上限从未生效，最长时长交给 LLM 按话题完整性决定。
     #[serde(default = "default_max_segment_duration")]
     pub max_segment_duration: f64,
+    /// **已废弃**（没有任何读取方）：短段合并从未接上。
     #[serde(default = "default_segment_merge_gap")]
     pub segment_merge_gap: f64,
+    /// 切给识别器的音频**前后余量**(秒)。**默认 0（关）**。
+    ///
+    /// 机制：窗口边界取自 SenseVoice 的逐字时间戳，从那一帧硬切会削掉首音，所以解码时
+    /// 前后各留一点（前置余量只吃停顿、不碰上一个字的语音，见 `asr/mod.rs::decode_span`）。
+    ///
+    /// ⚠️ **为什么默认关**：0.3s 在真实音频上做过 A/B（`diagnose_head_padding`），
+    /// 17 个窗口里 11 个文本变了，平均对齐命中率 **0.473 → 0.430**（更差），
+    /// 换来的只有 2 个"整窗从空到有内容"。净效果不明确，所以不默认开 ——
+    /// 想试就设 0.1~0.3，并用那个诊断在**你的**素材上复测。
     #[serde(default = "default_segment_padding")]
     pub segment_padding: f64,
+    /// qwen3 单次解码的**输出**上限（token）。
+    ///
+    /// 上游 sherpa-onnx 对 qwen3-asr 的默认是 **128**；本项目曾一路放到 2048（16 倍），
+    /// 后果是解码一旦失控（喂到音乐/噪声段时）会一直胡说到上限 ——
+    /// 实测出现过 71 字、0.3 秒的 `<|endoftext|>Human Rights Watch…` 条目。
+    /// 窗口内容量参考：≤30 字（≈≤15 秒），极端 60 秒窗口按 ~6 字/秒 也才 ~360 token，
+    /// 所以 512 已有充足余量。
+    ///
+    /// ⚠️ 这个是**全局**的（recognizer 只建一次，API 没有每流覆盖），
+    /// 别试图按窗口动态设。改默认值时要同步 `config/mod.rs` 的 merge 条件。
     #[serde(default = "default_max_new_tokens")]
     pub max_new_tokens: u32,
     /// ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
+    ///
+    /// 只有这两个值（firered-zh 已下线）：hybrid 的填词模型固定是 qwen3-asr。
     #[serde(default = "default_asr_mode")]
     pub mode: String,
+    /// 气口阈值(秒)：相邻字之间的停顿 ≥ 此值算一个「气口」。
+    ///
+    /// 断句时**只用它来定位切点**（标点决定"在哪切"，气口决定"切在哪一刻"），
+    /// 它本身不是独立切分信号 —— 实测词中间也有 0.30s 的停顿，单靠它会切碎。
+    #[serde(default = "default_breath_gap")]
+    pub breath_gap: f64,
+    /// 句中标点（，、；：）软切的时间阈值：距上一条边界超过这么久才在这些标点处切。
+    #[serde(default = "default_soft_cut_secs")]
+    pub soft_cut_secs: f64,
+    /// 单条字幕的**字数硬上限**（只在没有标点/气口可用时兜底）。
+    #[serde(default = "default_max_segment_chars")]
+    pub max_segment_chars: usize,
+    /// 标点边界吸附到气口的半径(秒)。
+    #[serde(default = "default_snap_window")]
+    pub snap_window: f64,
 }
 
 fn default_asr_language() -> String { "zh".into() }
@@ -287,9 +369,15 @@ fn default_chunk_overlap() -> f64 { 10.0 }
 fn default_segment_gap() -> f64 { 1.0 }
 fn default_max_segment_duration() -> f64 { 15.0 }
 fn default_segment_merge_gap() -> f64 { 0.6 }
-fn default_segment_padding() -> f64 { 0.3 }
-fn default_max_new_tokens() -> u32 { 2048 }
-fn default_asr_mode() -> String { "single".into() }
+fn default_segment_padding() -> f64 { 0.0 }
+fn default_max_new_tokens() -> u32 { 512 }
+fn default_breath_gap() -> f64 { 0.25 }
+fn default_soft_cut_secs() -> f64 { 6.0 }
+fn default_max_segment_chars() -> usize { 30 }
+fn default_snap_window() -> f64 { 0.3 }
+/// ASR 模式**默认 hybrid**（用户要求固定用双模型；准备页不再给下拉，
+/// 要改只能改 `.vtrim/config.toml` / 项目 `vtrim.toml` 的 `[asr] mode`，即设置页）。
+fn default_asr_mode() -> String { "hybrid".into() }
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -309,6 +397,10 @@ impl Default for AsrConfig {
             segment_padding: default_segment_padding(),
             max_new_tokens: default_max_new_tokens(),
             mode: default_asr_mode(),
+            breath_gap: default_breath_gap(),
+            soft_cut_secs: default_soft_cut_secs(),
+            max_segment_chars: default_max_segment_chars(),
+            snap_window: default_snap_window(),
         }
     }
 }
@@ -326,13 +418,13 @@ pub struct DetectionConfig {
     /// 参考标题示例（检测 + 封面标题生成共用；每项一条，可含 emoji）
     #[serde(default)]
     pub reference_titles: Vec<String>,
-    /// 事件检测 LLM 最大并发窗口数（默认 3）
-    #[serde(default = "default_detect_max_concurrent")]
-    pub max_concurrent: usize,
+    /// 事件检测并发窗口数。**留空 = 跟随 `.vtrim/llm.toml` 的 `[llm] max_concurrent`**；
+    /// 填了才以本段为准（一般是排查限流时才需要单独压这里）。
+    #[serde(default)]
+    pub max_concurrent: Option<usize>,
 }
 
 fn default_danmaku_window_secs() -> f64 { 10.0 }
-fn default_detect_max_concurrent() -> usize { 3 }
 
 impl Default for DetectionConfig {
     fn default() -> Self {
@@ -342,7 +434,7 @@ impl Default for DetectionConfig {
             prompt_template: String::new(),
             vtuber_name: String::new(),
             reference_titles: Vec::new(),
-            max_concurrent: default_detect_max_concurrent(),
+            max_concurrent: None,
         }
     }
 }
@@ -361,6 +453,10 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub extra_params: Option<toml::Table>,
+    /// 并发请求数——**所有 LLM 调用方共用这一个旋钮**（事件检测 / 精修事件生成 / 字幕订正）。
+    /// 各段自己的 `max_concurrent` 留空即跟随这里；填了则那一段以自己的为准。
+    #[serde(default = "default_llm_max_concurrent")]
+    pub max_concurrent: usize,
 }
 
 impl Default for LlmConfig {
@@ -372,7 +468,18 @@ impl Default for LlmConfig {
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
             extra_params: None,
+            max_concurrent: default_llm_max_concurrent(),
         }
+    }
+}
+
+fn default_llm_max_concurrent() -> usize { 3 }
+
+impl LlmConfig {
+    /// 并发数的唯一解析入口：段自己的覆盖优先，否则用 `[llm] max_concurrent`，至少 1。
+    /// 检测 / 精修 / 订正三条链路都走这里，别再各写一份 `.max(1)`。
+    pub fn concurrency(&self, section_override: Option<usize>) -> usize {
+        section_override.unwrap_or(self.max_concurrent).max(1)
     }
 }
 
@@ -437,9 +544,9 @@ pub struct CorrectConfig {
     /// Agent 窗口大小（每次处理条数），默认 25
     #[serde(default = "default_correct_window_size")]
     pub window_size: usize,
-    /// Agent 最大并发数，默认 3
-    #[serde(default = "default_correct_max_concurrent")]
-    pub max_concurrent: usize,
+    /// 订正并发数。**留空 = 跟随 `.vtrim/llm.toml` 的 `[llm] max_concurrent`**。
+    #[serde(default)]
+    pub max_concurrent: Option<usize>,
     /// 自定义热词（主播名/游戏/歌曲/梗等），优先修正为这些词
     #[serde(default)]
     pub hotwords: Vec<String>,
@@ -452,12 +559,97 @@ impl Default for CorrectConfig {
             prompt: String::new(),
             thinking: false,
             window_size: default_correct_window_size(),
-            max_concurrent: default_correct_max_concurrent(),
+            max_concurrent: None,
             hotwords: Vec::new(),
         }
     }
 }
 
 fn default_correct_window_size() -> usize { 25 }
-fn default_correct_max_concurrent() -> usize { 3 }
 
+
+#[cfg(test)]
+mod current_stage_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 自建临时目录（vtrim-core 不依赖 tempfile；pid + 纳秒保证并发测试不撞名）。
+    struct TmpDir(PathBuf);
+
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let p = std::env::temp_dir().join(format!(
+                "vtrim-stage-{tag}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            TmpDir(p)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 配置里的 `*_file` 是相对**工程根**（= output_dir 的父目录）写的，
+    /// 不是相对进程 CWD —— 只有外部字幕、没跑过 ASR 的工程必须判成 stage 2。
+    #[test]
+    fn relative_project_files_resolve_against_project_root() {
+        let dir = TmpDir::new("root");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("output")).unwrap();
+        let output = root.join("output");
+        assert_eq!(ProjectConfig::default().current_stage(&output), 0);
+
+        std::fs::write(root.join("sub.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
+        let cfg = ProjectConfig {
+            transcript_file: Some("sub.srt".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.current_stage(&output), 2);
+
+        // 子目录里的素材同样算数
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/events.json"), "[]").unwrap();
+        let cfg = ProjectConfig {
+            transcript_file: Some("sub.srt".to_string()),
+            events_file: Some("sub/events.json".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.current_stage(&output), 3);
+
+        // 指到不存在的文件不能冒充已完成
+        let cfg = ProjectConfig {
+            transcript_file: Some("nope.srt".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.current_stage(&output), 0);
+    }
+
+    /// output/ 里的产物判据不受影响。
+    #[test]
+    fn output_artifacts_still_drive_stage() {
+        let dir = TmpDir::new("artifacts");
+        let output = dir.path().join("output");
+        std::fs::create_dir_all(output.join("clips")).unwrap();
+        std::fs::write(output.join("video.wav"), b"x").unwrap();
+        let cfg = ProjectConfig::default();
+        assert_eq!(cfg.current_stage(&output), 1);
+        std::fs::write(output.join("video.srt"), "1\n").unwrap();
+        assert_eq!(cfg.current_stage(&output), 2);
+        std::fs::write(output.join("events.json"), "[]").unwrap();
+        assert_eq!(cfg.current_stage(&output), 3);
+        std::fs::write(output.join("clips/clips_order.txt"), "").unwrap();
+        assert_eq!(cfg.current_stage(&output), 4);
+    }
+}

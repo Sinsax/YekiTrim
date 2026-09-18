@@ -55,12 +55,18 @@ struct CorrectTask {
     danmaku: Vec<DanmakuEntry>,
     correct: CorrectConfig,
     thinking: bool,
+    /// 项目根目录，只用于用量记账归因。
+    project: Option<String>,
 }
 
 #[async_trait]
 impl AgentTask<Vec<AgentOutput>> for CorrectTask {
     fn name(&self) -> &str {
         "字幕订正"
+    }
+
+    fn usage_context(&self) -> crate::llm::usage::UsageContext {
+        crate::llm::usage::UsageContext::new(self.name()).project(self.project.clone())
     }
 
     fn thinking(&self) -> bool {
@@ -199,11 +205,13 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
 ///
 /// `checkpoint_path` 非空时支持断点续传：已存在则跳过已完成窗口，运行中每完成一窗立即保存。
 /// `progress_tx` 非空时每完成一窗发送进度（边处理边输出）。
+/// `project` 只用于用量记账归因（填项目根目录）。
 pub async fn correct_transcript_with_checkpoint(
     segments: &[TranscriptSegment],
     danmaku: &[DanmakuEntry],
     llm: &LlmConfig,
     correct: &CorrectConfig,
+    project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentProgress<Vec<AgentOutput>>>>,
 ) -> Result<Vec<TranscriptSegment>> {
@@ -226,11 +234,12 @@ pub async fn correct_transcript_with_checkpoint(
         danmaku: danmaku.to_vec(),
         correct: correct.clone(),
         thinking: correct.thinking,
+        project: project.map(crate::path::display),
     };
 
     let agent = Agent::new(llm.clone())
         .with_window_size(correct.window_size.max(1))
-        .with_max_concurrent(correct.max_concurrent.max(1));
+        .with_max_concurrent(llm.concurrency(correct.max_concurrent));
 
     let windows = agent
         .run_with_checkpoint(task, &items, checkpoint_path, progress_tx)
@@ -256,7 +265,7 @@ pub async fn correct_transcript(
     llm: &LlmConfig,
     correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
-    correct_transcript_with_checkpoint(segments, danmaku, llm, correct, None, None).await
+    correct_transcript_with_checkpoint(segments, danmaku, llm, correct, None, None, None).await
 }
 
 #[cfg(test)]
@@ -269,6 +278,7 @@ mod tests {
             danmaku: vec![],
             correct: CorrectConfig::default(),
             thinking: false,
+            project: None,
         };
         let window = vec![
             AgentItem { index: 1, start: 0.0, end: 1.0, text: "你好".into() },
@@ -286,6 +296,7 @@ mod tests {
             danmaku: vec![],
             correct: CorrectConfig::default(),
             thinking: false,
+            project: None,
         };
         let window = vec![
             AgentItem { index: 3, start: 0.0, end: 1.0, text: "破房了".into() },
@@ -307,6 +318,7 @@ mod tests {
             danmaku: vec![],
             correct: CorrectConfig::default(),
             thinking: false,
+            project: None,
         };
         let window = vec![AgentItem { index: 1, start: 0.0, end: 1.0, text: "你好".into() }];
         let out = task.parse_output("{}", &window).unwrap();
