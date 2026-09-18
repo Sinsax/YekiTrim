@@ -1,0 +1,339 @@
+//! `api::config`：程序配置、ASR 模型与 LLM 测试。
+
+use std::path::Path;
+use std::sync::Arc;
+
+use axum::{
+    extract::{Extension, State},
+    http::StatusCode,
+    Json,
+};
+use vtrim_service::Workspace;
+
+use crate::model::AppState;
+use crate::jobs::{JobClass, JobSpec};
+use super::*;
+
+pub(super) async fn models_get() -> ApiResult {
+    // 判定与运行时同源（`download::model_install`：配置目录 → 用户目录 → 程序目录 + marker），
+    // 列表也来自注册表 `model_names()` —— 别再手写模型数组，也别只看程序目录：
+    // 曾经界面按"<exe>/.vtrim/models 有没有这个目录"判，而 qwen3-asr 放在用户目录
+    // `~/.vtrim/models/qwen3-asr`，于是显示"未下载"、实际转写一直在用它。
+    let asr = vtrim_core::config::load_global_config().asr;
+    let out: Vec<serde_json::Value> = vtrim_core::download::model_names().iter().map(|name| {
+        let st = vtrim_core::download::model_install(&asr, name);
+        serde_json::json!({
+            "name": name,
+            "installed": st.installed,
+            "dir": vtrim_core::path::display(&st.dir),
+            "source": st.source.as_str(),
+            "source_label": st.source.label(),
+            "size_label": match *name { "sensevoice"=>"165 MB", _=>"879 MB" },
+            "note": match *name { "sensevoice"=>"快", _=>"最准最慢" },
+        })
+    }).collect();
+    ok(serde_json::json!(out))
+}
+
+pub(super) fn config_get_impl(ws: &Workspace) -> ApiResult {
+    let vtrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
+    let home = vtrim_core::path::vtrim_home();
+    let global_path = home.join("config.toml");
+    let global_raw = std::fs::read_to_string(&global_path).unwrap_or_default();
+    let llm_path = home.join("llm.toml");
+    let llm_raw = std::fs::read_to_string(&llm_path).unwrap_or_default();
+    let cfg = ws.load_config();
+    // 设置页表单编辑的是**程序配置**，必须用 global-only 的值：
+    // merged config 会被当前工程的 vtrim.toml 覆盖，直接用会出现「表单值和源文件对不上」
+    let global_cfg = vtrim_core::config::load_global_config();
+    let llm_cfg = vtrim_core::config::load_llm_config();
+    let (cfg_value, config_error) = match cfg {
+        Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
+        // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
+        Err(e) => (serde_json::Value::Null, format!("{e:#}")),
+    };
+    ok(serde_json::json!({
+        "config_file": vtrim_core::path::display(&ws.config_file),
+        "root_dir": vtrim_core::path::display(&ws.root_dir),
+        "vtrim_raw": vtrim_raw,
+        "global_raw": global_raw,
+        "llm_raw": llm_raw,
+        "config": cfg_value,
+        "config_error": config_error,
+        "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
+        "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
+    }))
+}
+
+pub(super) async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
+    let ws = workspace_from_state(&state).await;
+    config_get_impl(&ws)
+}
+
+/// 项目配置里会被当作**路径**的键：`(section, key)`。
+///
+/// ⚠️ 这些值会一路进 `Workspace::resolve`（`service/workspace.rs`），而它对**绝对路径原样放行**
+/// （第 49-56 行），所以这里不校验就等于「普通用户把 `input_file` 指到别人的录像（转写完把
+/// 字幕读出来）、把 `output_dir` 指到任意目录（产物写到项目外）」。**新增路径键时同步加进来。**
+pub(super) const PROJECT_PATH_KEYS: [(&str, &str); 6] = [
+    ("project", "input_file"),
+    ("project", "danmaku_file"),
+    ("project", "transcript_file"),
+    ("project", "audio_file"),
+    ("project", "events_file"),
+    ("cutting", "output_dir"),
+];
+
+/// 校验配置里的路径键必须落在本项目内（**只对非 admin 生效**）。
+///
+/// admin 不受此限：用「服务器文件」建项目时 `input_file` 本来就是项目外的绝对路径
+/// （`service/projects.rs` 对 admin 的绝对路径不做租户根限制），卡住它会打断既有工作流；
+/// 而 admin 已经能浏览服务器目录、在任意路径建项目，这里收紧并不增加实际安全性。
+pub(super) fn check_project_paths(ws: &Workspace, value: &serde_json::Value, is_admin: bool) -> Result<(), AppError> {
+    if is_admin {
+        return Ok(());
+    }
+    for (section, key) in PROJECT_PATH_KEYS {
+        let Some(raw) = value
+            .get(section)
+            .and_then(|s| s.get(key))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        // `jail_join` 同时挡住词法越界（绝对路径 / 盘符 / UNC / `..` 段）与符号链接越界
+        vtrim_core::tenant::jail_join(&ws.root_dir, raw).map_err(|e| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("[{section}] {key} 必须是项目内相对路径（{raw}）: {e:#}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(super) fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
+    // patch 模式：`{ section: { key: value } }` 合并写（保留注释与其他 section），
+    // 前端设置表单用它，避免"读整份 TOML → 正则替换 → 写回"这种易碎做法。
+    if let Some(patch) = body.get("patch") {
+        check_project_paths(ws, patch, is_admin)?;
+        vtrim_core::config::patch_config_file(&ws.config_file, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("项目配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
+    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
+    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 字段")); };
+    // 与 config_global_put / config_llm_put 对齐：空内容或语法错误会把整个项目配置
+    // 变成不可解析（= 配置被整体忽略），必须在落盘前拦下。
+    if raw.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "内容为空，未保存"));
+    }
+    vtrim_service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 不是合法 TOML，未保存: {e}")))?;
+    // 源文件模式同样要过路径校验：TOML 解析出来的结构与 JSON 一致，直接复用上面那张键表
+    if !is_admin {
+        let parsed: toml::Value = toml::from_str(raw)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 解析失败，未保存: {e}")))?;
+        let as_json = serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
+        check_project_paths(ws, &as_json, is_admin)?;
+    }
+    if let Some(parent) = ws.config_file.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
+    std::fs::write(&ws.config_file, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
+/// 保存程序配置。
+///
+/// - `raw`：源文件模式，整份覆盖写；
+/// - `patch`：表单模式，`{ section: { key: value } }` 合并写，未涉及的 section/注释原样保留。
+pub(super) async fn config_global_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let path = vtrim_core::path::vtrim_home().join("config.toml");
+    // patch / 源文件两种写法都会读改写整份配置，加锁避免并发提交互相覆盖；
+    // 锁在 await 里持有，读改写下 blocking 池（`with_path_lock` 的闭包跑在当前线程）
+    let _guard = vtrim_core::filelock::lock_path(&path).await;
+    blocking(move || config_global_put_locked(&path, &body)).await
+}
+
+pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+    if let Some(patch) = body.get("patch") {
+        vtrim_core::config::patch_config_file(path, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
+    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
+    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
+    // 语法错误会令整份配置被忽略，这里直接拦下，别让用户存进一个坏文件
+    vtrim_service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("config.toml 不是合法 TOML，未保存: {e}")))?;
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
+    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
+/// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
+pub(super) async fn config_llm_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let path = vtrim_core::path::vtrim_home().join("llm.toml");
+    let _guard = vtrim_core::filelock::lock_path(&path).await;
+    blocking(move || config_llm_put_locked(&path, &body)).await
+}
+
+pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> ApiResult {
+    if let Some(patch) = body.get("patch") {
+        vtrim_core::config::patch_config_file(path, patch)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("LLM 配置保存失败: {e:#}")))?;
+        return ok(serde_json::json!({ "ok": true }));
+    }
+    let raw = body.get("raw").and_then(|v| v.as_str()).or_else(|| body.get("content").and_then(|v| v.as_str()));
+    let Some(raw) = raw else { return Err(err(StatusCode::BAD_REQUEST, "缺少 raw 或 patch 字段")); };
+    vtrim_service::validate_toml(raw)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("llm.toml 不是合法 TOML，未保存: {e}")))?;
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建目录失败: {e}")))?; }
+    std::fs::write(path, raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
+pub(super) async fn llm_test() -> ApiResult {
+    let llm = vtrim_core::config::load_llm_config();
+    if llm.api_key.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "LLM API key 未配置"));
+    }
+    let start = std::time::Instant::now();
+    let test_ok = vtrim_core::detection::test_llm(&llm, "ping").await.is_ok();
+    let latency_ms = start.elapsed().as_millis() as u64;
+    if test_ok {
+        ok(serde_json::json!({ "ok": true, "latency_ms": latency_ms, "model": llm.model }))
+    } else {
+        Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 连接失败 ({latency_ms}ms)")))
+    }
+}
+
+/// 下载全部 ASR 模型（**仅 admin**：平台级资源，见 §5.3）。
+///
+/// 前端 `POST /api/admin/models/download` 不带 body（旧实现要求 `Json` 提取器，空 body 会被
+/// axum 直接 400，两个模型界面都因此不可用）。这里只做任务编排，不读 body。
+pub(super) async fn models_download(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<crate::auth::CurrentUser>,
+) -> ApiResult {
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可下载平台模型"));
+    }
+    // 全局模型目录：与任何会 ensure_models 的转写任务互斥（排队）。
+    // 略重档 + 后台优先级：纯网络下载，不该插在用户点按的任务前面。
+    let handle = state
+        .jobs
+        .create(
+            user.id,
+            JobSpec::new(
+                "download_models",
+                "下载 ASR 模型",
+                vec![crate::scope_key::MODELS.to_string()],
+                JobClass::Medium,
+            )
+            .background(),
+        )
+        .await;
+    let id = handle.id.clone();
+    let queued = handle.queued;
+    let jobs = state.jobs.clone();
+    let job_id = id.clone();
+    // 下载完要解包（tar.bz2，纯同步 IO）→ 任务线程
+    spawn_job(jobs.clone(), job_id.clone(), move || async move {
+        if handle.wait_start().await.is_err() {
+            jobs.complete(&job_id).await;
+            return;
+        }
+        let result = vtrim_core::download::download_all(None).await;
+        if let Err(e) = result {
+            jobs.fail(&job_id, format!("{e:#}")).await;
+            return;
+        }
+        jobs.complete(&job_id).await;
+    });
+    ok(serde_json::json!({ "ok": true, "id": id, "queued": queued }))
+}
+
+
+
+
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::test_support::*;
+
+
+    use axum::body::Body;
+
+
+/// `/api/models` 的每条必须带上「实际路径 + 来源」：判定跟运行时同一套查找顺序
+/// （配置 → 用户目录 → 程序目录），界面照它显示。曾经只回 `dir.exists()`（程序目录），
+/// qwen3-asr 放在用户目录 → 界面说"未下载"却一直在用它（用户报过）。
+#[tokio::test]
+async fn models_endpoint_reports_runtime_resolved_dir_and_source() {
+    let t = test_app().await;
+    let res = t.call(t.req("GET", "/models").body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    let arr = v.as_array().expect("array");
+    let names: Vec<&str> = arr.iter().filter_map(|m| m["name"].as_str()).collect();
+    // 注册表驱动：firered-zh 已下线，不该再出现在清单里
+    assert_eq!(names, vec!["sensevoice", "qwen3-asr"], "{v}");
+    for m in arr {
+        let name = m["name"].as_str().unwrap();
+        assert!(m["installed"].is_boolean(), "{m}");
+        let dir = m["dir"].as_str().unwrap_or("");
+        assert!(Path::new(dir).ends_with(std::path::Path::new("models").join(name)), "{m}");
+        assert!(["config", "user", "exe"].contains(&m["source"].as_str().unwrap_or("")), "{m}");
+        assert!(!m["source_label"].as_str().unwrap_or("").is_empty(), "{m}");
+    }
+}
+
+/// 项目配置里的路径键必须落在本项目内（非 admin）。
+///
+/// 回归钉子：`config_vtrim_put_impl` 以前只校验"是合法 TOML"，于是普通用户能把
+/// `input_file` 改成别人的录像（转写完把字幕读出来）或把 `output_dir` 指到任意目录。
+#[test]
+fn project_config_paths_are_jailed_for_non_admin() {
+    let root = std::env::temp_dir().join(format!("vtrim-cfg-paths-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("output")).unwrap();
+    let ws = Workspace { config_file: root.join("vtrim.toml"), root_dir: root.clone() };
+
+    // 正常形态放行：相对路径、空串、缺键
+    let ok = serde_json::json!({
+        "project": { "input_file": "records/a.mp4", "danmaku_file": "" },
+        "cutting": { "output_dir": "./output" }
+    });
+    assert!(check_project_paths(&ws, &ok, false).is_ok(), "{ok}");
+
+    // 绝对路径 → 400（读别人录像 / 写到项目外）
+    let abs_in = serde_json::json!({ "project": { "input_file": "C:/other/clip.mp4" } });
+    assert_eq!(
+        check_project_paths(&ws, &abs_in, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    let abs_out = serde_json::json!({ "cutting": { "output_dir": "D:/tmp/out" } });
+    assert_eq!(
+        check_project_paths(&ws, &abs_out, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    // `..` 越界 → 400
+    let up = serde_json::json!({ "project": { "audio_file": "../../secret.wav" } });
+    assert_eq!(
+        check_project_paths(&ws, &up, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // admin 不受限：「服务器文件」来源建的项目里 input_file 本来就是项目外的绝对路径
+    assert!(check_project_paths(&ws, &abs_in, true).is_ok());
+    assert!(check_project_paths(&ws, &abs_out, true).is_ok());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+}

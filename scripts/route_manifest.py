@@ -157,11 +157,11 @@ def routes_from(text: str, source: str) -> tuple[list[str], list[str]]:
         found = METHOD_CALL.findall(handler_expr)
         if found:
             for method, name in found:
-                routes.append((method.upper(), path, name))
+                routes.append((method.upper(), path, normalise_handler(name)))
         elif BARE_HANDLER.match(handler_expr):
-            routes.append(("ANY", path, handler_expr))
+            routes.append(("ANY", path, normalise_handler(handler_expr)))
         else:
-            routes.append(("?", path, handler_expr))
+            routes.append(("?", path, normalise_handler(handler_expr)))
 
     for match in DIRECTIVE.finditer(text):
         # Only the directive name matters; its arguments are checked by the unit tests.
@@ -181,9 +181,13 @@ def main() -> int:
     )
     options = parser.parse_args()
 
-    # Both layouts are supported: the monolith (`server/api.rs`) and the split
-    # module tree (`server/api/*.rs`) that the refactor introduces.
+    # Three layouts, newest first: the split module tree (`server/api/mod.rs` +
+    # `server/api/*.rs`) that S4 introduces, and the two monolithic forms that
+    # came before it (`server/api.rs`, `cli/server/api.rs`). The first entry of
+    # `candidates` that exists wins; when it is a directory module, every
+    # sibling `.rs` is folded in below.
     candidates = [
+        "crates/vtrim-server/src/api/mod.rs",
         "crates/vtrim-server/src/api.rs",
         "crates/vtrim-cli/src/server/api.rs",
     ]
@@ -196,16 +200,20 @@ def main() -> int:
     else:
         raise SystemExit("找不到 api.rs（试过: " + ", ".join(candidates) + ")")
 
-    api_dir = os.path.join(
-        options.root, os.path.dirname(sources[0].replace("/", os.sep)), "api"
-    )
+    first_dir = os.path.dirname(sources[0].replace("/", os.sep))
+    # `.../api/mod.rs` names the directory module itself -- its siblings live next
+    # to it, not in an `api/` subdirectory. The monolithic forms sit one level up.
+    if os.path.basename(sources[0]) == "mod.rs":
+        api_dir = os.path.join(options.root, first_dir)
+        sibling_dir = first_dir
+    else:
+        api_dir = os.path.join(options.root, first_dir, "api")
+        sibling_dir = os.path.join(first_dir, "api")
     if os.path.isdir(api_dir):
         for name in sorted(os.listdir(api_dir)):
-            if name.endswith(".rs"):
+            if name.endswith(".rs") and name != "mod.rs":
                 sources.append(
-                    os.path.join(os.path.dirname(sources[0]), "api", name).replace(
-                        os.sep, "/"
-                    )
+                    os.path.join(sibling_dir, name).replace(os.sep, "/")
                 )
 
     all_routes: list[str] = []
