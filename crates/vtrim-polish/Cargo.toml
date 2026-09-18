@@ -3,6 +3,8 @@ name = "vtrim-polish"
 version = "0.1.0"
 edition = "2024"
 description = "VTuber clip polish engine (GSAP rendering + effects + assets)"
+authors = ["Sinsax"]
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "vtrim_polish"
@@ -65,6 +67,12 @@ base64 = "0.22"
 
 # GIF → PNG 帧解码 (用于 emoji 动画)
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg"] }
+
+# 贴纸包上传：读 zip（WebUI 上传的表情包压缩包）
+# default-features=false 关掉 aes-crypto/bzip2/zstd/lzma/xz/time —— 我们只读 deflate 条目。
+# ⚠️ 钉 2.4.2：这个版本连同它的全部传递依赖都在本机 cargo 缓存里（4.6.1 的 deflate 走
+# flate2/zlib-rs，那份没缓存，离线环境会拉不下来）。
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

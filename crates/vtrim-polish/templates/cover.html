@@ -6,11 +6,37 @@
 <title>Cover</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-html,body { width:100%; height:100%; overflow:hidden; background:#000; }
+/* 字体栈与出片模板 index.html 和应用（webui 的 `--font`）**同一套**：
+   以前这里没写 font-family，headless Chrome 就落到它自己的默认字体上 ——
+   设计器预览用的是应用字体，于是"设计器里长这样、出片是另一个样"（用户报过）。
+   表情特效那种要 emoji 的由 `cover_fx_html` 单独指定字体栈，不受这里影响。
+   `__FONT_FAMILY__` = `[cover] font` 选了字体库里的字体时「该字体的 @font-face 名 + 原栈」，
+   没选就是原来的系统栈（由 cover.rs 替换）。 */
+html,body { width:100%; height:100%; overflow:hidden; background:#000;
+  font-family:__FONT_FAMILY__; }
 #wrapper { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
 #page { position:relative; width:1920px; height:1080px; overflow:hidden; background:#000; flex-shrink:0; transform-origin:center center; }
-#bg { position:absolute; inset:0; background:#000; }
-#bg img { width:100%; height:100%; object-fit:cover; display:block;
+/* 出片模式（__EXPORT__=true）：不缩放、不居中，页面左上角对齐视口原点，
+   配合 CDP 的 clip(0,0,1920,1080) 拿到干净的 1920×1080 —— 否则抓到的是浏览器
+   视口尺寸（比 1920×1080 小），16:9 的页面被居中 → 成片左右两条黑边。
+   预览模式保持原样（缩放铺满窗口、右下角留刷新按钮）。 */
+html.export #wrapper { justify-content:flex-start; align-items:flex-start; }
+html.export #page { transform:none; }
+html.export #toolbar { display:none; }
+/* 背景层（**在帧之下**，用户要求：加的一层，不是替换帧）—— 帧缩小/平移时才露出来。
+   三种模式（[cover] bg_mode）：
+   color = 纯色（默认，黑）；blur = 当前帧（关键帧）模糊后平铺；image = 导入的自定义背景图。
+   blur / image 用的是**各自的文件**：blur 读关键帧 `_cover_frame.jpg`，image 读 `_cover_bg.jpg`
+   —— 别让它们共用一个文件，否则导入背景就把「关键帧层」盖掉了（用户报过）。 */
+#bg { position:absolute; inset:0; background:var(--bg-color); overflow:hidden; }
+#bg img { display:none; }
+#bg.bg-blur img, #bg.bg-image img { display:block; width:100%; height:100%; object-fit:cover; }
+#bg.bg-blur img { filter:blur(var(--bg-blur)); transform-origin:center center;
+  transform:scale(var(--bg-blur-scale)); }
+/* 帧层（当前帧清晰图）：可位移/缩放（bg_x/bg_y/bg_zoom + layout.liver 的聚焦原点），
+   在背景之上、渐变/暗角/标题之下。别把它并进 #bg —— 那样就又变成"背景替换帧"了。 */
+#frame { position:absolute; inset:0; overflow:hidden; }
+#frame img { width:100%; height:100%; object-fit:cover; display:block;
   transform-origin: var(--liver-x) var(--liver-y);
   transform:var(--bg-transform); }
 #overlay { position:absolute; top:0; left:0; bottom:0; right:0; pointer-events:none;
@@ -28,19 +54,25 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; }
 .hl { color:var(--hlc); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
 @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
 </style>
+<!-- 封面字体的 @font-face（cover.rs 注入；没选库内字体就不留东西） -->
+<!-- __FONT_FACE__ -->
 </head>
 <body>
 <div id="wrapper"><div id="page">
-<div id="bg"><img src="_cover_frame.jpg"></div>
+<div id="bg" class="__BG_CLASS__"><img src="__BG_SRC__"></div>
+<div id="frame"><img src="_cover_frame.jpg"></div>
 <div id="vignette"></div>
 <div id="overlay"></div>
 <div id="fx-extra" style="position:absolute;inset:0;pointer-events:none;z-index:1;">__FX_HTML__</div>
 <div id="title-wrap"><div id="title">__TITLE__</div></div>
 </div></div>
-<div style="position:fixed;bottom:16px;right:16px;z-index:99;">
+<div id="toolbar" style="position:fixed;bottom:16px;right:16px;z-index:99;">
   <button onclick="location.reload()" style="background:rgba(0,0,0,0.5);border:none;color:#fff;font-size:28px;width:48px;height:48px;border-radius:50%;cursor:pointer;line-height:48px;text-align:center;">↻</button>
 </div>
 <script>
+document.documentElement.style.setProperty('--bg-color', '__BG_COLOR__');
+document.documentElement.style.setProperty('--bg-blur', '__BG_BLUR__');
+document.documentElement.style.setProperty('--bg-blur-scale', '__BG_BLUR_SCALE__');
 document.documentElement.style.setProperty('--liver-x', '__LIVER_X__');
 document.documentElement.style.setProperty('--liver-y', '__LIVER_Y__');
 document.documentElement.style.setProperty('--bg-transform', '__BG_TRANSFORM__');
@@ -57,8 +89,10 @@ document.documentElement.style.setProperty('--lh', '__LH__');
 document.documentElement.style.setProperty('--text-align', '__TEXT_ALIGN__');
 document.documentElement.style.setProperty('--align-items', '__TEXT_ALIGN_ITEMS__');
 document.documentElement.style.setProperty('--text-shadow', '__SHADOW__');
+var EXPORT = '__EXPORT__' === 'true';
+if (EXPORT) document.documentElement.classList.add('export');
 function scaleCover(){var s=Math.min(window.innerWidth/1920,window.innerHeight/1080);document.getElementById('page').style.transform='scale('+s+')';}
-scaleCover();window.addEventListener('resize',scaleCover);
+if (!EXPORT) { scaleCover(); window.addEventListener('resize',scaleCover); }
 setTimeout(function(){ window.__COVER_READY = true; }, 1500);
 </script>
 </body>

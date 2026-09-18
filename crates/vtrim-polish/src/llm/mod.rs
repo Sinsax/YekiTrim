@@ -26,8 +26,17 @@ pub async fn run_llm_pipeline(
     sfx_blacklist: &[String],
     checkpoint_dir: Option<&PathBuf>,
 ) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>)> {
+    let project = checkpoint_dir.map(|d| d.parent().unwrap_or(d).to_path_buf());
+    // 用量归因：链路名 + 项目（切片）目录
+    let usage = |label: &str| {
+        vtrim_core::llm::usage::UsageContext::new(label)
+            .project(project.as_ref().map(|p| vtrim_core::path::display(p)))
+    };
+
     let client = std::sync::Arc::new(
-        LlmClient::from_config(llm_cfg)?.with_thinking(Some("disabled")),
+        LlmClient::from_config(llm_cfg)?
+            .with_thinking(Some("disabled"))
+            .with_usage_context(usage("精修分段")),
     );
 
     // Step 1: 分段 + 段情绪密度（全局单次调用，预算感知采样）
@@ -78,6 +87,7 @@ pub async fn run_llm_pipeline(
         sfx_blacklist,
         local_sticker_text,
         llm_cfg,
+        project.as_deref(),
         checkpoint_path.as_deref(),
     ).await?;
     println!("  ✓ {} segments generated", ok);
@@ -88,14 +98,18 @@ pub async fn run_llm_pipeline(
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
     if has_local {
-        run_sticker_choice_step(&mut segments, subtitles, llm_cfg).await?;
+        run_sticker_choice_step(&mut segments, subtitles, llm_cfg, project.as_deref()).await?;
     }
 
     // Step 3: 关键词提取
     println!("  ── LLM: Keyword extraction ──");
     let sub_texts: Vec<String> = subtitles.iter().map(|s| s.text.clone()).collect();
     let dm_texts: Vec<String> = danmaku.iter().map(|d| d.text.clone()).collect();
-    let (dm_filter, hl_words) = match keywords::extract_keywords(&client, &sub_texts, &dm_texts).await {
+    // 单开一个带自身归因的客户端：与分段那一路在用量表里分开统计
+    let kw_client = LlmClient::from_config(llm_cfg)?
+        .with_thinking(Some("disabled"))
+        .with_usage_context(usage("精修关键词"));
+    let (dm_filter, hl_words) = match keywords::extract_keywords(&kw_client, &sub_texts, &dm_texts).await {
         Ok(k) => { println!("  ✓ Keywords extracted"); k }
         Err(e) => { println!("  ⚠ Keywords failed: {}. Using defaults.", e); (vec!["OBS".into(), "游戏".into()], vec!["OBS".into()]) }
     };
@@ -105,9 +119,35 @@ pub async fn run_llm_pipeline(
         if seg.end - seg.start < 1.0 { continue; }
         if !seg.events.iter().any(|e| matches!(e, Event::Camera { .. })) {
             seg.events.push(Event::Camera {
-                time: seg.start, duration: seg.end - seg.start,
+                time: seg.start, end: Some(seg.end),
                 zoom: "中".into(), origin: "50% 50%".into(),
+                // 聚焦主播：由 process 解析成坐标（origin 是解析前的占位值）
+                anchor: Some("liver".into()), anchor_to: None, to_origin: None, cut: false,
+                manual: false,
             });
+        }
+    }
+
+    // Step 4b: 画中画三件事（降频 + 对齐字幕边界 + 到点收工；LLM 是按段窗口生成的，
+    // 数不出"整片几次"、也看不见下一条运镜隔多远）—— 落盘前先裁一遍，编辑器里看到的就已经是
+    // 合规的；cmd_process 里还会再兜一次（幂等）。
+    {
+        let demoted = crate::process::cap_pip_shots(&mut segments);
+        if demoted > 0 {
+            tracing::info!("  ⚠ 画中画降级 {} 条（整片只允许 {} 条）",
+                demoted, crate::process::MAX_PIP_SHOTS);
+        }
+        let aligned = crate::process::align_pip_shots(&mut segments, subtitles);
+        if aligned > 0 {
+            tracing::info!("  · 画中画已对齐字幕边界 {} 条", aligned);
+        }
+        let closed = crate::process::close_pip_shots(&mut segments);
+        if closed > 0 {
+            tracing::info!("  · 画中画到点收工，已补回镜头 {} 条", closed);
+        }
+        let stickers = crate::process::align_stickers_to_subtitles(&mut segments, subtitles);
+        if stickers > 0 {
+            tracing::info!("  · 贴纸已对齐最近字幕 {} 条", stickers);
         }
     }
 
@@ -122,6 +162,7 @@ async fn run_sticker_choice_step(
     segments: &mut [Segment],
     subtitles: &[Subtitle],
     llm_cfg: &LlmConfig,
+    project: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     use crate::assets::sticker_index::{load_package_meta, tag_files};
     use crate::llm::events::{choose_sticker_files_batch, StickerChoiceContext};
@@ -170,7 +211,7 @@ async fn run_sticker_choice_step(
             continue;
         }
         let contexts = groups.get(&(package_name.clone(), tag.clone())).cloned().unwrap_or_default();
-        match choose_sticker_files_batch(llm_cfg, package_name, tag, &candidates, &contexts).await {
+        match choose_sticker_files_batch(llm_cfg, project, package_name, tag, &candidates, &contexts).await {
             Ok(chosen) => {
                 for (si, ei, stem) in chosen {
                     if let Some(seg) = segments.get_mut(si)

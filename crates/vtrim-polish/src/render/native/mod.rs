@@ -355,7 +355,7 @@ impl FrameRenderer for WgpuBackend {
     }
 }
 
-/// 桌面字体候选链：项目字体目录 -> 系统字体 -> 内置资源。
+/// 桌面字体候选链：项目字体目录 -> 程序级字体库 -> 系统字体。
 fn load_font_file(project_path: &Path, name: &str) -> Option<Vec<u8>> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if !name.trim().is_empty() {
@@ -367,12 +367,19 @@ fn load_font_file(project_path: &Path, name: &str) -> Option<Vec<u8>> {
         ] {
             candidates.push(dir.join(base).with_extension("ttf"));
             candidates.push(dir.join(base).with_extension("otf"));
+            candidates.push(dir.join(base).with_extension("ttc"));
+        }
+        // 程序级字体库（`<程序目录>/resources/fonts/`）：`name` 就是字体 id。
+        // 放在项目候选之后、系统字体之前 —— "别处都没有"时才用库里的。
+        if let Some(p) = vtrim_core::fonts::resolve_file(name.trim()) {
+            candidates.push(p);
         }
         candidates.push(std::path::Path::new("C:/Windows/Fonts").join(base).with_extension("ttf"));
     }
     candidates.push(std::path::Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
     candidates.push(std::path::Path::new("C:/Windows/Fonts/simhei.ttf").to_path_buf());
-    candidates.push(std::path::Path::new("crates/vtrim-core/resources/lemi-bobo.ttf").to_path_buf());
+    // 不再内置字体文件（见 README「字体」）：系统字体是最后一档兜底。
+    // 想用乐米波波体请让用户自行安装 —— 它的授权「免费商用但不含嵌入式」，不能随包分发。
     candidates
         .iter()
         .find(|c| c.exists())

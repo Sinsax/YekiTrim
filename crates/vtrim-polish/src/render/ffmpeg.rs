@@ -1,5 +1,16 @@
 use std::process::{Command, Stdio};
 
+/// Concat 清单临时文件路径。
+///
+/// ⚠️ 必须**每个进程每次调用都不同**：以前写死 `_polish_concat.txt`，两个渲染（哪怕是
+/// 不同项目、不同进程）同时跑就会互相覆盖清单，拼出来的成片是别人的片段。
+fn concat_temp_path() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("_polish_concat-{}-{}.txt", std::process::id(), n))
+}
+
 /// ffmpeg 操作包装
 pub struct Ffmpeg;
 
@@ -40,7 +51,7 @@ impl Ffmpeg {
         let abs_output = std::path::absolute(output)
             .unwrap_or_else(|_| std::path::PathBuf::from(output));
 
-        let concat_file = std::env::temp_dir().join("_polish_concat.txt");
+        let concat_file = concat_temp_path();
         std::fs::write(&concat_file, &concat_content)?;
 
         let status = Command::new("ffmpeg")
@@ -50,9 +61,11 @@ impl Ffmpeg {
                 "-c", "copy",
                 &abs_output.to_string_lossy(),
             ])
-            .stderr(Stdio::null()).stdout(Stdio::null()).status()?;
+            .stderr(Stdio::null()).stdout(Stdio::null()).status();
 
+        // 失败路径也要删（以前只删成功路径，报错时临时文件会攒下来）
         std::fs::remove_file(&concat_file).ok();
+        let status = status?;
 
         if !status.success() {
             anyhow::bail!("ffmpeg concat failed");
@@ -156,6 +169,10 @@ impl Ffmpeg {
     }
 
     /// 按屏蔽区间剪掉一段时间：视频/音频同步跳过的部分会被移除。
+    ///
+    /// 这里是**整段重编码**（select 过滤没法流转发），所以编码器要走
+    /// [`Ffmpeg::detect_encoder`] —— 硬编码 libx264 时，一个 4 分钟的切片要 17s，
+    /// 而同一个出片流程的其它环节早就用上 NVENC 了。画质档与分块编码保持一致。
     pub fn cut_ranges(input: &str, ranges: &[(f64, f64)], output: &str) -> anyhow::Result<()> {
         let mut parts: Vec<String> = Vec::new();
         for (s, e) in ranges {
@@ -169,19 +186,23 @@ impl Ffmpeg {
         let expr = parts.join("*");
         let vf = format!("select='{expr}',setpts=N/FRAME_RATE/TB");
         let af = format!("aselect='{expr}',asetpts=N/SR/TB");
+        let enc = Self::detect_encoder();
+        let mut args: Vec<String> = vec![
+            "-y".into(), "-i".into(), input.into(),
+            "-vf".into(), vf,
+            "-af".into(), af,
+            "-c:v".into(), enc.codec.clone(),
+        ];
+        args.extend(enc.args.iter().cloned());
+        args.extend([
+            "-pix_fmt".into(), "yuv420p".into(),
+            "-c:a".into(), "aac".into(),
+            "-b:a".into(), "160k".into(),
+            "-movflags".into(), "+faststart".into(),
+            output.into(),
+        ]);
         let out = Command::new("ffmpeg")
-            .args([
-                "-y", "-i", input,
-                "-vf", &vf,
-                "-af", &af,
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "20",
-                "-c:a", "aac",
-                "-b:a", "160k",
-                "-movflags", "+faststart",
-                output,
-            ])
+            .args(&args)
             .output()
             .map_err(|e| anyhow::anyhow!("ffmpeg cut ranges 启动失败: {}", e))?;
         if !out.status.success() {

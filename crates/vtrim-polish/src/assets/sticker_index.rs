@@ -38,6 +38,32 @@ impl StickerPackage {
     }
 }
 
+/// 「一个文件名算不算贴纸图片」的**唯一判据**：只认这 5 种扩展名（大小写不敏感）。
+///
+/// 扫描包（`scan_packages`）、列包内文件（`list_package_files`）、上传压缩包解压
+/// （`sticker_zip`）三条路径都走它 —— 这张清单以前在两个地方各写了一遍，
+/// 新增格式时最容易漏改的就是这种散落副本。
+pub fn is_image_file_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| {
+            matches!(
+                x.to_ascii_lowercase().as_str(),
+                "gif" | "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 路径版判据（`scan_packages` / `list_package_files` 用）。
+pub fn is_image_path(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .map(is_image_file_name)
+        .unwrap_or(false)
+}
+
 /// 贴纸包 TOML 元数据（`stickers/<包名>.toml`，由 `stickers build --llm` 生成）。
 /// 采用 tag → 文件列表的双向索引，供 LLM 两步选择使用。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -69,12 +95,7 @@ pub fn list_package_files(package_dir: &Path) -> Vec<String> {
                 .flatten()
                 .filter_map(|e| {
                     let p = e.path();
-                    if p.is_file()
-                        && p.extension()
-                            .and_then(|x| x.to_str())
-                            .map(|x| matches!(x.to_ascii_lowercase().as_str(), "gif" | "png" | "jpg" | "jpeg" | "webp"))
-                            .unwrap_or(false)
-                    {
+                    if p.is_file() && is_image_path(&p) {
                         p.file_name().and_then(|n| n.to_str()).map(|s| s.to_string())
                     } else {
                         None
@@ -181,6 +202,152 @@ pub fn register_package(root: &Path, package_name: &str) -> anyhow::Result<()> {
 pub fn is_package_source(root: &Path, source: &str) -> bool {
     let dir = root.join(source);
     dir.is_dir()
+}
+
+// ============================================================
+// 贴纸包管理（WebUI：导入 / 逐文件 tags / 删除）
+// ============================================================
+
+/// Windows 保留设备名（`CON` / `NUL` / `COM1`…）：同名的目录根本建不出来。
+fn is_windows_reserved(stem: &str) -> bool {
+    let up = stem.to_ascii_uppercase();
+    matches!(up.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (up.len() == 4
+            && (up.starts_with("COM") || up.starts_with("LPT"))
+            && up.as_bytes()[3].is_ascii_digit())
+}
+
+/// 单段名能否安全地当作一段路径用：非空、非 `.`/`..`、不含分隔符与冒号、
+/// 无控制字符、不是 Windows 保留名。
+///
+/// 用于 `<包名>` 与包内文件名（两者都会变成 `/api/admin/stickers/...` 的路径参数）。
+/// 真正的越权拦截是 `canonicalize()` 之后的 `starts_with(root)`，这里只是第一道。
+pub fn is_safe_component(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && s.chars().count() <= 128
+        && !s.chars().any(|c| c == '/' || c == '\\' || c == ':' || c.is_control())
+        && !is_windows_reserved(s)
+}
+
+/// 包名规范化：字母/数字（含汉字、假名等 Unicode 字母）、`_`、`-`，1~32 字符。
+///
+/// 包名会变成目录名、`<包名>.toml` 文件名、LLM prompt 里的候选名，也是接口的路径参数，
+/// 所以拒绝路径分隔符、`..`、以 `.` 开头、空白与控制字符。
+pub fn sanitize_pack_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.starts_with('.') || name.chars().count() > 32 {
+        return None;
+    }
+    let ok = name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    if !ok || is_windows_reserved(name) {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// 导入结果：`copied` = 复制进来的图片数，`skipped` = 来源目录里被忽略的其它条目数
+/// （非图片文件与子目录都算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportReport {
+    pub copied: usize,
+    pub skipped: usize,
+}
+
+/// 把一个普通目录里的图片复制成新贴纸包 `root/<name>/`。
+///
+/// - `src` 必须存在、是目录，且**不在 `root` 内**（否则等于把库往自己身上拷）
+/// - 目标 `root/<name>` 已存在 → 报错：宁可让人换个名字，也不合并/覆盖已有包
+/// - 只复制 `list_package_files` 认的 5 种扩展名，其余条目跳过并计数
+/// - 一张图片都没复制成功 → 删掉刚建的空目录再报错（不留半个包）
+///
+/// **复制而不是搬移**：来源目录原样留着，导错了删掉包即可。
+pub fn import_package(root: &Path, name: &str, src: &Path) -> anyhow::Result<ImportReport> {
+    let name = sanitize_pack_name(name).ok_or_else(|| {
+        anyhow::anyhow!("包名不合法（1~32 个字母/数字/下划线/短横线/汉字）: {name}")
+    })?;
+    if !src.is_dir() {
+        anyhow::bail!("来源目录不存在或不是目录: {}", src.display());
+    }
+    let src_real = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    let root_real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if src_real.starts_with(&root_real) {
+        anyhow::bail!("来源目录就在贴纸库内，不能导入自己: {}", src_real.display());
+    }
+    let dst = root.join(&name);
+    if dst.exists() {
+        anyhow::bail!("贴纸包「{name}」已存在：换个包名，或先删掉那一个");
+    }
+
+    let files = list_package_files(src);
+    if files.is_empty() {
+        anyhow::bail!("来源目录里没有图片（支持 gif/png/jpg/jpeg/webp）");
+    }
+    std::fs::create_dir_all(&dst)?;
+    let mut copied = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for f in &files {
+        match std::fs::copy(src.join(f), dst.join(f)) {
+            Ok(_) => copied += 1,
+            Err(e) => failed.push(format!("{f}: {e}")),
+        }
+    }
+    if copied == 0 {
+        let _ = std::fs::remove_dir_all(&dst);
+        anyhow::bail!("一张图片都没复制成功（{}）", failed.join("; "));
+    }
+    let entries = std::fs::read_dir(src).map(|e| e.count()).unwrap_or(files.len());
+    Ok(ImportReport {
+        copied,
+        skipped: entries.saturating_sub(files.len()),
+    })
+}
+
+/// 反查每个文件命中的 tags（用于预览表格的「tags」列）。未构建的包返回空表。
+pub fn file_tags_map(root: &Path, package_name: &str) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(meta) = load_package_meta(root, package_name) else {
+        return out;
+    };
+    for t in &meta.tags {
+        for f in &t.files {
+            out.entry(f.clone()).or_default().push(t.tag.clone());
+        }
+    }
+    out
+}
+
+/// 从 `sticker.toml` 全局索引里摘掉一个包名（幂等）。
+pub fn unregister_package(root: &Path, package_name: &str) -> anyhow::Result<()> {
+    let mut index = load_sticker_index(root);
+    let before = index.packages.len();
+    index.packages.retain(|p| p != package_name);
+    if index.packages.len() != before {
+        save_sticker_index(root, &index)?;
+    }
+    Ok(())
+}
+
+/// 删除一个贴纸包：目录 + `<包名>.toml` + 全局索引项（幂等）。返回是否真的删掉了目录。
+///
+/// 只动贴纸库里的这三样；已经复制进各项目 `assets/stickers/` 的文件不受影响，
+/// 项目 `polish.toml` 里若还写着这个包名也只是匹配不到，不会报错。
+pub fn remove_package(root: &Path, package_name: &str) -> anyhow::Result<bool> {
+    let name = sanitize_pack_name(package_name)
+        .ok_or_else(|| anyhow::anyhow!("包名不合法: {package_name}"))?;
+    let dir = root.join(&name);
+    let removed = if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)?;
+        true
+    } else {
+        false
+    };
+    let _ = std::fs::remove_file(root.join(format!("{name}.toml")));
+    unregister_package(root, &name)?;
+    Ok(removed)
 }
 
 /// 一个贴纸组: 括号前主名相同的所有变体
@@ -483,13 +650,7 @@ pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
             let mut file_paths: Vec<PathBuf> = file_entries
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "gif" | "png" | "jpg" | "jpeg" | "webp"))
-                            .unwrap_or(false)
-                })
+                .filter(|p| p.is_file() && is_image_path(p))
                 .collect();
             file_paths.sort();
             files.append(&mut file_paths);
@@ -1211,5 +1372,152 @@ mod tests {
         register_package(dir.path(), "ysyk").unwrap(); // 幂等
         let idx = load_sticker_index(dir.path());
         assert_eq!(idx.packages, vec!["komori", "ysyk"]);
+    }
+
+    #[test]
+    fn image_extension_check_is_the_shared_judgement() {
+        for ok in ["a.gif", "b.PNG", "c.jpg", "d.jpeg", "e.webp", "x.GIF"] {
+            assert!(is_image_file_name(ok), "{ok}");
+        }
+        for no in ["a.txt", "b", "无扩展名", ".DS_Store", "", "a.gif.bak"] {
+            assert!(!is_image_file_name(no), "{no}");
+        }
+        // 路径版只看文件名那一段（调用方给的是包里的条目路径）
+        assert!(is_image_path(Path::new("dir/sub/x.webp")));
+        assert!(!is_image_path(Path::new("dir/sub")));
+    }
+
+    #[test]
+    fn sanitize_pack_name_accepts_plain_names_and_rejects_paths() {
+        assert_eq!(sanitize_pack_name("ysyk"), Some("ysyk".into()));
+        assert_eq!(sanitize_pack_name("  komori_2 "), Some("komori_2".into()));
+        assert_eq!(sanitize_pack_name("表情包-2"), Some("表情包-2".into()));
+        // 路径与保留名：包名会变成目录名 + URL 路径段，这两种都必须挡住
+        assert_eq!(sanitize_pack_name(""), None);
+        assert_eq!(sanitize_pack_name("   "), None);
+        assert_eq!(sanitize_pack_name(".."), None);
+        assert_eq!(sanitize_pack_name("../x"), None);
+        assert_eq!(sanitize_pack_name("a/b"), None);
+        assert_eq!(sanitize_pack_name("a\\b"), None);
+        assert_eq!(sanitize_pack_name("C:pack"), None);
+        assert_eq!(sanitize_pack_name(".hidden"), None);
+        assert_eq!(sanitize_pack_name("has space"), None);
+        assert_eq!(sanitize_pack_name("con"), None); // Windows 保留设备名
+        assert_eq!(sanitize_pack_name(&"a".repeat(33)), None);
+        assert_eq!(sanitize_pack_name(&"a".repeat(32)).unwrap().len(), 32);
+    }
+
+    #[test]
+    fn safe_component_rejects_separators() {
+        assert!(is_safe_component("害怕_1.gif"));
+        assert!(is_safe_component("呆(贴纸)_2.GIF"));
+        assert!(!is_safe_component(""));
+        assert!(!is_safe_component(".."));
+        assert!(!is_safe_component("../a.gif"));
+        assert!(!is_safe_component("a\\b.gif"));
+        assert!(!is_safe_component("C:/x.gif"));
+        assert!(!is_safe_component("nul"));
+    }
+
+    /// 造一个来源目录：3 张图 + 1 个 txt + 1 个子目录。
+    fn temp_source_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["害怕_1.gif", "笑.png", "呆.webp"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        std::fs::write(dir.path().join("readme.txt"), b"x").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn import_package_copies_images_and_skips_others() {
+        let root = tempfile::tempdir().unwrap();
+        let src = temp_source_dir();
+        let r = import_package(root.path(), "meme", src.path()).unwrap();
+        assert_eq!(r.copied, 3);
+        assert_eq!(r.skipped, 2, "readme.txt 与 sub/ 都算被跳过");
+        assert_eq!(
+            list_package_files(&root.path().join("meme")),
+            vec!["呆.webp", "害怕_1.gif", "笑.png"]
+        );
+        // 来源目录原样留着（复制而非搬移）
+        assert!(src.path().join("害怕_1.gif").exists());
+        // 未构建的包不进全局索引
+        assert!(load_sticker_index(root.path()).packages.is_empty());
+    }
+
+    #[test]
+    fn import_package_refuses_existing_target_and_source_inside_root() {
+        let root = tempfile::tempdir().unwrap();
+        let src = temp_source_dir();
+        std::fs::create_dir(root.path().join("meme")).unwrap();
+
+        let e = import_package(root.path(), "meme", src.path()).unwrap_err();
+        assert!(e.to_string().contains("已存在"), "{e}");
+
+        // 来源就在库内 → 拒绝（否则会把整个库往自己身上拷）
+        let inside = root.path().join("ysyk");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::write(inside.join("a.gif"), b"x").unwrap();
+        let e = import_package(root.path(), "copy", &inside).unwrap_err();
+        assert!(e.to_string().contains("不能导入自己"), "{e}");
+
+        assert!(!root.path().join("copy").exists());
+    }
+
+    #[test]
+    fn import_package_rolls_back_when_no_image() {
+        let root = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("readme.txt"), b"x").unwrap();
+
+        let e = import_package(root.path(), "empty", src.path()).unwrap_err();
+        assert!(e.to_string().contains("没有图片"), "{e}");
+        // 不留半个空包
+        assert!(!root.path().join("empty").exists());
+    }
+
+    #[test]
+    fn file_tags_map_inverts_package_meta() {
+        let root = tempfile::tempdir().unwrap();
+        let meta = build_package_meta_from_tags(
+            "ysyk",
+            &[
+                ("笑.gif".to_string(), vec!["笑".to_string(), "开心".to_string()]),
+                ("害怕_1.gif".to_string(), vec!["害怕".to_string()]),
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("ysyk.toml"),
+            package_meta_to_toml(&meta).unwrap(),
+        )
+        .unwrap();
+
+        let map = file_tags_map(root.path(), "ysyk");
+        let mut laugh = map.get("笑.gif").cloned().unwrap();
+        laugh.sort();
+        assert_eq!(laugh, vec!["开心", "笑"]);
+        assert_eq!(map.get("害怕_1.gif").unwrap(), &vec!["害怕".to_string()]);
+        // 未构建的包 / 不存在的包 → 空表，不报错
+        assert!(file_tags_map(root.path(), "nope").is_empty());
+    }
+
+    #[test]
+    fn remove_package_clears_dir_meta_and_index() {
+        let root = tempfile::tempdir().unwrap();
+        let src = temp_source_dir();
+        import_package(root.path(), "meme", src.path()).unwrap();
+        register_package(root.path(), "meme").unwrap();
+        std::fs::write(root.path().join("meme.toml"), "name = \"meme\"\n").unwrap();
+
+        assert!(remove_package(root.path(), "meme").unwrap());
+        assert!(!root.path().join("meme").exists());
+        assert!(!root.path().join("meme.toml").exists());
+        assert!(load_sticker_index(root.path()).packages.is_empty());
+
+        // 幂等：再删一次不报错，也没目录可删
+        assert!(!remove_package(root.path(), "meme").unwrap());
     }
 }

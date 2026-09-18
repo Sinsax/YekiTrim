@@ -12,6 +12,9 @@ use super::backend::FrameRenderer;
 use super::context::RenderContext;
 use super::frame::TimedFrame;
 
+/// 页面无进展多久算卡死（秒）。页面每 30 帧回写一次进度，默认值给了 60 倍余量。
+pub const DEFAULT_STALL_SECS: u64 = 180;
+
 /// Chrome CDP 控制
 pub struct ChromeRenderer;
 
@@ -26,6 +29,10 @@ impl ChromeRenderer {
             OsStr::new("--autoplay-policy=no-user-gesture-required"),
             OsStr::new("--enable-gpu-rasterization"),
             OsStr::new("--enable-zero-copy"),
+            // 组件更新/翻译之类的后台任务与出片无关，但会在这台机器上跑满好几秒到几分钟
+            // （实测临时目录里 component crx 一直在写），一次渲染要起 6 个 Chrome，乘起来很可观。
+            OsStr::new("--disable-component-update"),
+            OsStr::new("--disable-features=Translate,MediaRouter,OptimizationHints"),
         ];
         let args_vec = args.to_vec();
         let mut base = LaunchOptions::default_builder();
@@ -136,7 +143,6 @@ impl ChromeBackend {
         tab: &Tab,
         start_frame: usize,
         frame_count: usize,
-        chunk_idx: usize,
     ) -> anyhow::Result<Vec<Vec<u8>>> {
         let b64_engine = base64::engine::general_purpose::STANDARD;
         let end_frame = start_frame + frame_count;
@@ -145,6 +151,15 @@ impl ChromeBackend {
             start_frame, end_frame, self.fps,
         ), false)?;
         let chunk_start = std::time::Instant::now();
+        // 无进展超时：页面每 30 帧回写一次 __CAPTURE_PROGRESS，正常时 1~4s 一跳；
+        // 卡住（页面内的 promise 悬住、渲染进程没了）时这个循环原本会**永远转下去**，
+        // 表现为"渲染长时间无反应、日志里什么都没有"。到点直接报错退出。
+        let stall_limit: u64 = std::env::var("VTEDIT_STALL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_STALL_SECS);
+        let mut last_pct = String::new();
+        let mut last_change = std::time::Instant::now();
 
         loop {
             let done_val = tab.evaluate("window.__CAPTURE_DONE === true", false)?;
@@ -168,8 +183,21 @@ impl ChromeBackend {
                 .value
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
+            if pct != last_pct {
+                last_pct = pct.clone();
+                last_change = std::time::Instant::now();
+            } else if last_change.elapsed().as_secs() >= stall_limit {
+                anyhow::bail!(
+                    "帧 {start_frame}..{end_frame} 卡在 {}%（{}s 无进展）——页面渲染没有推进。\
+                     可调小/调大 VTEDIT_STALL_SECS 复现，详见日志里的分块进度",
+                    pct,
+                    last_change.elapsed().as_secs()
+                );
+            }
             let elapsed = chunk_start.elapsed().as_secs_f64();
-            tracing::info!("    chunk#{}: {}%  {}s", chunk_idx, pct, elapsed as usize);
+            // 用**帧区间**而不是块序号：4 个分块后端拿不到自己的序号（都写 0），
+            // 日志里会分不清是谁在报进度；帧区间天然唯一，父进程也据此做进度聚合。
+            tracing::info!("    frames {}..{}: {}%  {}s", start_frame, end_frame, pct, elapsed as usize);
 
             std::thread::sleep(Duration::from_millis(1500));
         }
@@ -238,7 +266,7 @@ impl FrameRenderer for ChromeBackend {
 
         self.send_frames(&tab, &jpegs)?;
         let start_frame = frames.first().map(|f| f.index).unwrap_or(0);
-        let out = self.capture_and_read(&tab, start_frame, frame_count, 0)?;
+        let out = self.capture_and_read(&tab, start_frame, frame_count)?;
         if out.len() != frame_count {
             anyhow::bail!(
                 "Chrome returned {} frames, expected {}",

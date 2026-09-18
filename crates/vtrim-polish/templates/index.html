@@ -169,6 +169,8 @@ body.player-only #page {
 }
 
 </style>
+<!-- 字幕字体的 @font-face（render/server.rs 注入；没选库内字体就不留东西） -->
+<!-- __FONT_FACE__ -->
 </head>
 <body>
 <div id="loading-spinner">⏳ 加载中...</div>
@@ -223,7 +225,7 @@ body.player-only #page {
       <div id="editor-props" style="display:none">
         <label>类型 <input type="text" id="ed-type" readonly></label>
         <label>开始时间 (秒) <input type="number" id="ed-time" step="0.1" min="0"></label>
-        <label>持续时长 (秒) <input type="number" id="ed-duration" step="0.1" min="0.1"></label>
+        <label>结束时间 (秒) <input type="number" id="ed-end" step="0.1"></label>
         <label>事件 JSON（高级编辑）<textarea id="ed-json" spellcheck="false"></textarea></label>
         <div class="ed-buttons">
           <button id="ed-apply-json">应用 JSON</button>
@@ -388,7 +390,8 @@ function curveAdjust(t){
 // ============================================================
 // 总音量 (预览 UI 控制, localStorage 记忆; 渲染不受影响)
 var MASTER_VOL=1,MASTER_MUTED=false;
-try{MASTER_VOL=parseFloat(localStorage.getItem('vtrim_master_vol'))||1;MASTER_MUTED=localStorage.getItem('vtrim_muted')==='1';}catch(e){}
+// 注意: 不能写成 `parseFloat(...)||1` —— 音量 0 是合法值, falsy 判定会把它读回 1
+try{var _sv=parseFloat(localStorage.getItem('vtrim_master_vol'));MASTER_VOL=isFinite(_sv)?Math.min(1,Math.max(0,_sv)):1;MASTER_MUTED=localStorage.getItem('vtrim_muted')==='1';}catch(e){}
 var audioCtx=null,sfxCache={};
 function sfxPlay(name,vol,dur){
   if(!name)return;
@@ -474,6 +477,82 @@ function gridOrigin(name){
   var p=G[name]||[50,50];
   return p[0]+'% '+p[1]+'%';
 }
+// 运镜档位 → 缩放系数。必须与 render-core 的 CameraStyle::factor 逐值一致：
+// 这里曾经硬编码 1.8/1.5，导致配置里的倍率对成片无效、预览和成片不是一回事。
+function camFactor(label){
+  var c=(CFG.style&&CFG.style.camera)||{};
+  var v,d;
+  if(label==='近'){v=c.zoom_close;d=1.5;}
+  else if(label==='远'){v=c.zoom_wide;d=0.55;}
+  else{v=c.zoom_mid;d=1.3;}
+  return (typeof v==='number'&&isFinite(v))?v:d;
+}
+// 事件跨度（秒）= end - time。事件统一写「开始 + 结束」；
+// 老数据/老缓存的 duration 只做兜底（同一份模板要能吃下两种形状）。
+//
+// ⚠ 必须留在**脚本顶层**：canvas 出片那一段（下面的 IIFE）里的 buildIndex() 也要用它。
+//    放进 init() 里只对 GSAP 预览路径可见，出片会直接抛 "evDur is not defined"。
+function evDur(ev, def){
+  if(!ev) return def;
+  if(ev.end != null) return Math.max(0.1, ev.end - (ev.time || 0));
+  if(ev.duration != null) return ev.duration;
+  return def;
+}
+// 覆盖层「渐变」的有效色档 —— 与 Rust `timeline.rs::overlay_stops` 逐条对齐。
+// 四处实现必须同改：本文件、timeline.rs、webui/src/polish/engine.js、
+// webui/src/components/PolishPreview.vue。
+//
+// **保证 ≥2 档且无空串**：canvas 按 i/(n-1) 铺档，n==1 是 0/0=NaN（抛
+// IndexSizeError，会把整个 chunk 的渲染打断），空串色档抛 SyntaxError。
+// 老工程与 LLM 一直只写单个 color（colors 从未出现过），单色按「该色 → 透明」。
+//
+// ⚠ 同样必须留在**脚本顶层**：init() 里的 handlers.overlay 与 canvas IIFE 里的
+//    getOverlayState 分处两个作用域，放进任一个另一个都看不见。
+// 「该色 → 透明」里的**第二档**。
+// ⚠ 不要用 CSS 的 `transparent`（= rgba(0,0,0,0)）：canvas 的渐变在**非预乘**空间插值，
+//    #ff0000 → transparent 会从中间插出 rgba(127,0,0,·) 那种暗红 —— 实测同一条红色覆盖层
+//    （opacity 0.3、同一个源帧、同一个时刻）平均 R 从 184.12 掉到 178.82；换成同色零透明
+//    rgba(255,0,0,0) 则是 193.66（干净的淡出）。而 CSS 那边两者完全等价（按预乘插值），
+//    所以用 transparent 会让浏览器预览与出片观感不一致。
+function overlayFadeStop(color){
+  var s = String(color == null ? '' : color).trim();
+  var m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+  if(m){
+    var h = m[1];
+    if(h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    h = h.slice(0,6);
+    return 'rgba(' + parseInt(h.slice(0,2),16) + ',' + parseInt(h.slice(2,4),16) + ',' + parseInt(h.slice(4,6),16) + ',0)';
+  }
+  m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(s);
+  if(m) return 'rgba(' + (m[1]|0) + ',' + (m[2]|0) + ',' + (m[3]|0) + ',0)';
+  return 'transparent';   // 认不出的（命名色等）偏暗，但至少有东西
+}
+function overlayStops(ev){
+  var raw = ev.colors, cleaned = [];
+  if(raw && raw.length){
+    for(var i=0;i<raw.length;i++){
+      var c = String(raw[i] == null ? '' : raw[i]).trim();
+      if(c) cleaned.push(c);
+    }
+  }
+  if(cleaned.length >= 2) return cleaned;
+  var base = cleaned.length ? cleaned[0] : String(ev.color == null ? '' : ev.color).trim();
+  if(!base) return null;
+  return [base, overlayFadeStop(base)];
+}
+// 仅在 GSAP/DOM 预览路径用（canvas 走 createLinearGradient/createRadialGradient）。
+// ⚠ 结尾那个 ')' 不能省 —— 少了它整条 background 声明非法、被浏览器丢弃，
+//    表现就是「设了色档但预览里什么都没有」。
+// 径向：canvas 是 createRadialGradient(960,540,0,…,960)，即中心该色、边缘淡出；
+//      CSS 圆的默认半径是 farthest-corner（16:9 下比 960 大约 15%），预览近似、出片为准。
+function overlayGradientCss(colors, shape){
+  var stops = colors.map(function(c, i){
+    return c + ' ' + (i / (colors.length - 1) * 100).toFixed(1) + '%';
+  }).join(',');
+  return shape === 'radial'
+    ? 'radial-gradient(circle at center, ' + stops + ')'
+    : 'linear-gradient(to bottom right, ' + stops + ')';
+}
 function init(){
   var dur=META.duration||CFG.duration||239.8;
 
@@ -515,7 +594,7 @@ function init(){
     var segLabel=sg.note||'';
     sg.events.forEach(function(ev){
       ptEvents.push({
-        time:ev.time, end:(ev.time+(ev.duration||1.5)),
+        time:ev.time, end:(ev.end != null ? ev.end : ev.time+(ev.duration||1.5)),
         type:ev.type, label:ev.keyword||ev.name||ev.mode||'',
         seg:segLabel
       });
@@ -623,15 +702,24 @@ function init(){
 
   if(CFG.vertical){curZoom=1.0;} // 竖屏不做运镜
   camEvents.forEach(function(ce){
-    var is=ce.time, ie=ce.time+ce.duration, sd=ce.duration;
+    var is=ce.time, sd=evDur(ce,1.0), ie=is+sd;
     if(sd<0.5)return;
     if(CFG.vertical)return; // 竖屏: 跳过运镜动画
     var zoom=ce.zoom||'中';
-    curZoom=zoom==='近'?(camStyle.zoom_close||1.3):(camStyle.zoom_mid||1.15);
+    var nextZoom=camFactor(zoom);
     var origin=ce.origin||liverOrigin;
-    // 直接缩放到目标，过渡 0.6s
-    tl.to(SEL_SRC,{transformOrigin:origin,scale:curZoom,x:0,y:0,
-      duration:Math.min(sd*0.5,0.6),ease:'power2.out'},is);
+    var target=ce.to_origin||origin;
+    // 硬切：本事件写了 cut，或远景（画中画）进出（同 canvas 路径）：一次性到位，不缓动、不平移
+    var hardCut=ce.cut===true||Math.abs(nextZoom-camFactor('远'))<1e-6||Math.abs(curZoom-camFactor('远'))<1e-6;
+    curZoom=nextZoom;
+    if(hardCut){
+      tl.set(SEL_SRC,{transformOrigin:target,scale:curZoom,x:0,y:0},is);
+    } else {
+      // 直接缩放到目标，过渡 0.6s；有 to_origin 时同一段缓动里把不动点也移过去
+      tl.set(SEL_SRC,{transformOrigin:origin},is);
+      tl.to(SEL_SRC,{transformOrigin:target,scale:curZoom,x:0,y:0,
+        duration:Math.min(sd*0.5,0.6),ease:'power2.out'},is);
+    }
     if(ie-is>0.3) tl.to(SEL_SRC,{x:0,y:0,duration:0.25,ease:'power2.inOut'},ie-0.25);
   });
 
@@ -647,8 +735,7 @@ function init(){
   };
   function transientDur(ev, def){
     var cap = TRANSIENT_CAP[ev.type] || 0.6;
-    var d = ev.duration != null ? ev.duration : def;
-    return Math.max(0.1, Math.min(d, cap));
+    return Math.max(0.1, Math.min(evDur(ev, def), cap));
   }
   function fxSfx(ev){
     if(!ev.sfx) return;
@@ -659,7 +746,7 @@ function init(){
   }
 
   handlers.sticker = function(ev, et) {
-    var dur=ev.duration||2.5;
+    var dur=evDur(ev,2.5);
     var eid='sticker_'+(window.__STICKER_COUNTER||0); window.__STICKER_COUNTER=(window.__STICKER_COUNTER||0)+1;
     var el=document.createElement('img');
     el.className='sticker-img'; el.id=eid;
@@ -781,33 +868,26 @@ function init(){
 
   handlers.overlay = function(ev, et) {
     var ot=ev.overlay_type||'';
-    if(ot==='color'&&ev.color){
-      tl.set('#color-overlay',{backgroundColor:ev.color,opacity:0},et);
-      tl.to('#color-overlay',{opacity:ev.opacity||1,duration:0.4,ease:'sine.out'},et);
-      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+ev.duration-0.4);
-    }else if(ot==='gradient'&&ev.colors&&ev.colors.length>=2){
-      var grad=ev.shape==='radial'?'radial-gradient(ellipse at center,transparent 0%,'+ev.colors.slice(1).join(','):'linear-gradient('+ev.colors.join(',');
-      tl.set('#color-overlay',{background:grad,opacity:0},et);
-      tl.to('#color-overlay',{opacity:ev.opacity||1,duration:0.4,ease:'sine.out'},et);
-      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+ev.duration-0.4);
-    }else if(ot==='love'){
-      for(var hi=0;hi<10;hi++){
-        var hId='lov_'+et+'_'+hi;
-        var he=document.createElement('div');
-        he.id=hId;he.textContent='♥';
-        he.style.cssText='position:absolute;font-size:'+(24+Math.random()*28)+'px;color:rgba(255,80,120,0.5);pointer-events:none;z-index:25;opacity:0';
-        he.style.left=(100+Math.random()*1500)+'px';he.style.bottom='0px';
-        document.getElementById('emoji-layer').appendChild(he);
-        tl.fromTo('#'+hId,{scale:0.3,autoAlpha:0.6,y:0},{scale:1.2,autoAlpha:0,y:-500-Math.random()*200,duration:3+Math.random()*2,ease:'power1.out'},et+Math.random()*2);
-        tl.set('#'+hId,{visibility:'hidden'},et+ev.duration+0.5);
-      }
+    // 不透明度用数值判定：0 是合法值，`|| 1` 会把它变成全不透明
+    var ovOp = typeof ev.opacity==='number' ? ev.opacity : 1;
+    var stops = overlayStops(ev);
+    if(ot==='color'&&(ev.color||stops)){
+      tl.set('#color-overlay',{backgroundColor:String(ev.color||stops[0]).trim(),opacity:0},et);
+      tl.to('#color-overlay',{opacity:ovOp,duration:0.4,ease:'sine.out'},et);
+      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+evDur(ev,1.5)-0.4);
+    }else if(ot==='gradient'&&stops){
+      tl.set('#color-overlay',{background:overlayGradientCss(stops,ev.shape),opacity:0},et);
+      tl.to('#color-overlay',{opacity:ovOp,duration:0.4,ease:'sine.out'},et);
+      tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+evDur(ev,1.5)-0.4);
     }
+    // 原先这里的 'love'（飘心）只有页内预览支持，canvas 出片/engine.js/Rust 都没有，
+    // 面板下拉也没有这一项 —— 留着就是「预览有、出片没有」的同类不一致，已删。
   };
 
   handlers.sfx = function(ev, et) {
     var sfxName = ev.name || 'pop-notice';
     var vol = ev.volume || CFG.sfx.volume || 0.1;
-    var dur = ev.duration;
+    var dur = ev.end != null ? (ev.end - ev.time) : ev.duration;
     scheduleSound(et, function(){ sfxPlay(sfxName, vol, dur); }, sfxName, vol, dur);
   };
 
@@ -870,7 +950,7 @@ function init(){
   window.__DURATION=dur;
   window.__SOUND_DATA=SOUND_EVENTS.map(function(e){
     var name=e.type||'pop-notice';
-    return{time:e.time, file:'sfx/'+name+'.mp3', type:name, volume:e.volume||0.1, duration:e.duration};
+    return{time:e.time, file:'sfx/'+name+'.mp3', type:name, volume:e.volume||0.1, duration:evDur(e,1.0)};
   });
   window.__drawVideoFrame=function(){
     var v=document.getElementById('source-video'),c=document.getElementById('video-canvas');
@@ -1074,7 +1154,7 @@ function init(){
     (CFG.segments || []).forEach(function(seg) {
       (seg.events || []).forEach(function(ev) {
         var type = ev.type || '';
-        var entry = { time: ev.time || 0, duration: ev.duration || 0, ev: ev };
+        var entry = { time: ev.time || 0, duration: evDur(ev, 0), ev: ev };
         if (type === 'sticker') {
           entry._img = document.getElementById('sticker_' + ei) || null;
           ei++;
@@ -1108,21 +1188,30 @@ function init(){
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
     var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
 
+    var wide = camFactor('远');
     for (var i = 0; i < cam.length; i++) {
       var c = cam[i];
-      var tgt = c.ev.zoom === '近' ? 1.8 : 1.5;
+      var tgt = camFactor(c.ev.zoom);
       var td = Math.min(c.duration * 0.5, 0.6);
       var ce = c.time + td;
       if (t < c.time) break;
-      if (t >= ce) { zoom = tgt; }
-      else {
-        var p = (t - c.time) / td;
-        zoom = lerp(zoom, tgt, E.pow2_out(p));
-      }
-      // update origin from event
-      var o = (c.ev.origin || defOrigin).split(' ');
-      ox = parseFloat(o[0]) || ox;
-      oy = parseFloat(o[1]) || oy;
+      // 硬切：本事件写了 cut（编辑器「方式 = 硬切」），或两端任一为远景（画中画）。
+      // 远景进出整档都是硬切 —— 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，
+      // 所以这一段不缓动、连位移也一并瞬间到位；cut 把同一条规则放开给任意景别。
+      var hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6;
+      var p = (t >= ce || hardCut) ? 1.0 : E.pow2_out((t - c.time) / td);
+      if (t >= ce || hardCut) { zoom = tgt; }
+      else { zoom = lerp(zoom, tgt, p); }
+      // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
+      // 起点取事件自己的 origin 而不是上一个事件的落点，与 zoom 同一段窗口、同一条缓动。
+      var oa = (c.ev.origin || defOrigin).split(' ');
+      var ob = (c.ev.to_origin || c.ev.origin || defOrigin).split(' ');
+      var ax = parseFloat(oa[0]); if (isNaN(ax)) ax = ox;
+      var ay = parseFloat(oa[1]); if (isNaN(ay)) ay = oy;
+      var bx = parseFloat(ob[0]); if (isNaN(bx)) bx = ax;
+      var by = parseFloat(ob[1]); if (isNaN(by)) by = ay;
+      ox = lerp(ax, bx, p);
+      oy = lerp(ay, by, p);
     }
     return { zoom: zoom, ox: ox * 1920 / 100, oy: oy * 1080 / 100 };
   }
@@ -1267,7 +1356,7 @@ function init(){
   function getFlash(t, items) {
     for (var i = 0; i < items.length; i++) {
       var f = items[i];
-      var et = f.time, color = f.ev.color || '#ffffff', dur = f.ev.duration || 0.35;
+      var et = f.time, color = f.ev.color || '#ffffff', dur = f.duration || 0.35;
       if (t >= et && t < et + 0.04 + dur) {
         var dt = t - et;
         if (dt < 0.04) return { opacity: 0.20 * (dt / 0.04), color: color };
@@ -1292,6 +1381,7 @@ function init(){
     return 0;
   }
 
+  // overlayStops / overlayGradientCss 在脚本顶层（上文），此处直接用。
   function getOverlayState(t, items) {
     for (var i = 0; i < items.length; i++) {
       var o = items[i];
@@ -1300,18 +1390,22 @@ function init(){
       if (t >= et && t < et + dur) {
         var dt = t - et;
         var fadeIn = 0.4, fadeOut = 0.4;
-        var opacity = ev.opacity || 1;
+        // 数值判定，不用 `|| 1` —— 不透明度 0 是合法值，不能被 falsy 判成 1
+        var opacity = typeof ev.opacity === 'number' ? ev.opacity : 1;
         if (dt < fadeIn) opacity *= dt / fadeIn;
         else if (dur - dt < fadeOut) opacity *= (dur - dt) / fadeOut;
         if (opacity < 0.005) continue;
         var ot = ev.overlay_type || '';
-        if (ot === 'color' && ev.color) {
-          return { type: 'color', color: ev.color, opacity: opacity };
+        var stops = overlayStops(ev);
+        if (ot === 'color') {
+          var solid = (ev.color != null && String(ev.color).trim()) || (stops ? stops[0] : '');
+          if (solid) return { type: 'color', color: solid, opacity: opacity };
+          continue;
         }
-        if (ot === 'gradient' && ev.colors) {
-          return { type: 'gradient', colors: ev.colors, shape: ev.shape || 'linear', opacity: opacity };
+        if (ot === 'gradient' && stops) {
+          return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', opacity: opacity };
         }
-        return null;
+        // 类型不认识 / 值不全：继续看窗口里的下一条，别把整窗吃掉
       }
     }
     return null;
@@ -1456,7 +1550,8 @@ function init(){
     if (stutter) ctx.translate(stutter.x, stutter.y);
     else if (split) { ctx.translate(split.x, 0); ctx.transform(1, split.skewX/100, 0, 1, 0, 0); ctx.scale(split.scale, split.scale); }
     // camera zoom
-    if (finalZoom > 1.001) {
+    // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜。
+    if (Math.abs(finalZoom - 1.0) > 0.001) {
       ctx.translate(cam.ox, cam.oy);
       ctx.scale(finalZoom, finalZoom);
       ctx.translate(-cam.ox, -cam.oy);
@@ -1502,7 +1597,8 @@ function init(){
       if (ov.type === 'color') {
         ctx.fillStyle = ov.color;
         ctx.fillRect(0, 0, 1920, 1080);
-      } else if (ov.type === 'gradient') {
+      } else if (ov.type === 'gradient' && ov.colors.length >= 2) {
+        // 长度守卫：overlayStops 已保证 ≥2 档，这里是唯一会打断整个 chunk 的地方，再兜一道
         var grad = ov.shape === 'radial'
           ? ctx.createRadialGradient(960, 540, 0, 960, 540, 960)
           : ctx.createLinearGradient(0, 0, 1920, 1080);
@@ -1734,13 +1830,17 @@ function init(){
   function getSegments(){ return CFG.segments || []; }
   function getDuration(){ return window.__DURATION || META.duration || CFG.duration || 60; }
   function defaultDuration(type){ return DEFAULT_DUR[type] || 0.4; }
-  function laneDuration(ev){
+  // 事件跨度（秒）= end - time；老数据的 duration 兜底
+  function evDur(ev, def){
+    if(ev.end != null) return Math.max(0.1, ev.end - (ev.time || 0));
     if(ev.duration != null) return Math.max(0.1, ev.duration);
-    return defaultDuration(ev.type);
+    return def;
   }
+  function laneDuration(ev){ return evDur(ev, defaultDuration(ev.type)); }
   function labelFor(ev){
     if(ev.type==='sticker') return ev.keyword || ev.name || '贴纸';
-    if(ev.type==='camera') return ev.zoom || '运镜';
+    // 硬切（cut）加「切·」前缀，与 WebUI 时间轴的块标签一致
+    if(ev.type==='camera') return (ev.cut ? '切·' : '') + (ev.zoom || '运镜');
     if(ev.type==='sfx') return ev.name || '音效';
     if(ev.type==='overlay') return ev.overlay_type || '覆盖';
     return ev.type;
@@ -2011,9 +2111,10 @@ function init(){
       var nd=Math.max(0.1, startDur+dx/EDITOR.scale);
       nd=Math.min(nd, Math.max(0.1, dur-item.ev.time));
       nd=round2(nd);
-      if(Math.abs(nd-(item.ev.duration!=null?item.ev.duration:laneDuration(item.ev)))>0.001){
+      if(Math.abs((item.ev.time+nd)-(item.ev.end!=null?item.ev.end:(item.ev.time+laneDuration(item.ev))))>0.001){
         moved=true;
-        item.ev.duration=nd;
+        item.ev.end=round2(item.ev.time+nd);
+        delete item.ev.duration;
         positionBlock(el,item);
       }
     }
@@ -2066,7 +2167,7 @@ function init(){
     empty.style.display='none';
     document.getElementById('ed-type').value=sel.ev.type || '';
     document.getElementById('ed-time').value=round2(sel.ev.time);
-    document.getElementById('ed-duration').value=round2(laneDuration(sel.ev));
+    document.getElementById('ed-end').value=round2(sel.ev.time+laneDuration(sel.ev));
     document.getElementById('ed-json').value=JSON.stringify(sel.ev,null,2);
   }
 
@@ -2078,11 +2179,14 @@ function init(){
     refreshSelectedBlock();
   }
 
-  function applyDuration(){
+  function applyEnd(){
     var sel=EDITOR.selected;
     if(!sel) return;
-    var d=parseFloat(document.getElementById('ed-duration').value);
-    if(!isNaN(d) && d>=0.1) sel.ev.duration=round2(d);
+    var e=parseFloat(document.getElementById('ed-end').value);
+    if(!isNaN(e) && e>sel.ev.time){
+      sel.ev.end=round2(e);
+      delete sel.ev.duration;
+    }
     refreshSelectedBlock();
   }
 
@@ -2181,21 +2285,24 @@ function init(){
     }
 
     var ev={ type:type, time:t };
-    if(type==='sticker'){ ev.duration=2.0; ev.keyword='laugh'; ev.x='50%'; ev.y='50%'; }
-    else if(type==='camera'){ ev.duration=3.0; ev.zoom='中'; ev.origin='50% 50%'; }
-    else if(type==='overlay'){ ev.duration=1.5; ev.overlay_type='color'; ev.color='rgba(255,50,50,0.3)'; ev.opacity=1.0; }
-    else if(type==='sfx'){ ev.name='pop-notice'; ev.volume=0.3; ev.duration=1.0; }
-    else if(type==='shake'){ ev.intensity=10; ev.duration=0.3; }
-    else if(type==='flash'){ ev.color='#ffffff'; ev.duration=0.5; }
-    else if(type==='blur'){ ev.duration=0.8; }
-    else if(type==='zoom_bounce'){ ev.duration=0.3; }
-    else if(type==='vignette'){ ev.duration=0.9; }
-    else if(type==='hue_shift'){ ev.color='#ff0040'; ev.duration=1.0; }
-    else if(type==='stutter'){ ev.intensity=12; ev.duration=0.3; }
-    else if(type==='split'){ ev.intensity=30; ev.duration=0.4; }
-    else if(type==='noise'){ ev.duration=1.0; }
-    else if(type==='pulse'){ ev.duration=0.6; }
-    else if(type==='color_shift'){ ev.color='#ff0040'; ev.duration=0.8; }
+    // 时间统一写「开始 + 结束」（end = t + 该类型默认时长）
+    var addDur = {};
+    if(type==='sticker'){ addDur.d=2.0; ev.keyword='laugh'; ev.x='50%'; ev.y='50%'; }
+    else if(type==='camera'){ addDur.d=3.0; ev.zoom='中'; ev.anchor='liver'; }
+    else if(type==='overlay'){ addDur.d=1.5; ev.overlay_type='color'; ev.color='#ff3232'; ev.opacity=0.3; }
+    else if(type==='sfx'){ addDur.d=1.0; ev.name='pop-notice'; ev.volume=0.3; }
+    else if(type==='shake'){ addDur.d=0.3; ev.intensity=10; }
+    else if(type==='flash'){ addDur.d=0.5; ev.color='#ffffff'; }
+    else if(type==='blur'){ addDur.d=0.8; }
+    else if(type==='zoom_bounce'){ addDur.d=0.3; }
+    else if(type==='vignette'){ addDur.d=0.9; }
+    else if(type==='hue_shift'){ addDur.d=1.0; ev.color='#ff0040'; }
+    else if(type==='stutter'){ addDur.d=0.3; ev.intensity=12; }
+    else if(type==='split'){ addDur.d=0.4; ev.intensity=30; }
+    else if(type==='noise'){ addDur.d=1.0; }
+    else if(type==='pulse'){ addDur.d=0.6; }
+    else if(type==='color_shift'){ addDur.d=0.8; ev.color='#ff0040'; }
+    ev.end = round2(t + (addDur.d || defaultDuration(type)));
 
     var target=null;
     for(var i=0;i<segs.length;i++){
@@ -2333,7 +2440,7 @@ function init(){
       });
     }
     document.getElementById('ed-time').addEventListener('input', applyTime);
-    document.getElementById('ed-duration').addEventListener('input', applyDuration);
+    document.getElementById('ed-end').addEventListener('input', applyEnd);
     document.getElementById('ed-apply-json').addEventListener('click', applyJson);
     document.getElementById('ed-delete').addEventListener('click', deleteSelected);
     document.getElementById('ed-duplicate').addEventListener('click', duplicateSelected);

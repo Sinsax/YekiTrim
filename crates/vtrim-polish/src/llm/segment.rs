@@ -67,25 +67,46 @@ pub(crate) fn build_events_system_prompt(
     };
     format!(r##"你是一个直播切片事件助手。为指定时间段生成视觉特效/贴纸/音效事件。
 
+事件时间一律写成 **time(开始秒) + end(结束秒)** 两个绝对时间, 不要写"时长";
+两者之差才是持续时间。
+
 事件类型 (每个事件对象以 "type" 字段开头):
-- camera: 运镜. {{"type":"camera","time":0.5,"duration":3.0,"zoom":"中","origin":"50% 50%"}}
-  zoom = "中"/"近", origin 用 "50% 50%" 格式
-- sticker: 贴图表情. {{"type":"sticker","time":10.0,"duration":2.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
+- camera: 运镜. {{"type":"camera","time":0.5,"end":3.5,"zoom":"中","anchor":"liver"}}
+  zoom = "远"/"中"/"近"（远=画面缩小成画中画）
+  anchor = 聚焦谁: "liver"(主播) / "danmaku"(弹幕) / "sticker"(贴纸) / "center"(画面中央)
+  想从一处移到另一处, 再写 anchor_to (同样的取值); 不写就是原地聚焦
+  想**硬切**(切镜, 瞬间换构图、没有推移动画)再加 "cut":true —— 只在刻意切镜时用, 不是常规手段
+  例: 主播→弹幕→回主播 = 两条事件
+    {{"type":"camera","time":5.0,"end":9.0,"zoom":"中","anchor":"liver","anchor_to":"danmaku"}}
+    {{"type":"camera","time":9.0,"end":12.0,"zoom":"中","anchor":"danmaku","anchor_to":"liver"}}
+- sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
 - 视觉特效: shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift
-  {{"type":"shake","time":8.0,"intensity":0.5,"duration":1.2,"sfx":"tag:爆発"}}
-- overlay: 覆盖层. {{"type":"overlay","time":0.0,"duration":5.0,"overlay_type":"gradient","color":"#ff0000","opacity":0.3}}
-- sfx: 纯音效. {{"type":"sfx","time":3.0,"name":"explosion","volume":0.5,"duration":1.0}}
+  {{"type":"shake","time":8.0,"end":8.3,"intensity":0.5,"sfx":"tag:爆発"}}
+- overlay: 覆盖层(氛围色). 渐变写 colors(两档起步色/终色), 纯色写 color
+  {{"type":"overlay","time":0.0,"end":5.0,"overlay_type":"gradient","colors":["#ff0000","#000000"],"shape":"linear","opacity":0.3}}
+  {{"type":"overlay","time":8.0,"end":10.0,"overlay_type":"color","color":"#ff0000","opacity":0.25}}
+  颜色用 6 位十六进制(#rrggbb); 透明度归 opacity, 不要写进颜色里
+  只写 color 不写 colors 时按「该色 → 透明」渲染, 但**优先写 colors**
+- sfx: 纯音效. {{"type":"sfx","time":3.0,"end":4.0,"name":"explosion","volume":0.5}}
 
 选择规则:
 - 音效 name/sfx 只能从"可用音效候选"中选择具体 id, 或写 tag:xxx 由系统匹配; 候选外的 id 无效
 - 音效只放在情绪爆发/转折/名场面时刻, 普通叙述不要加
-- 贴纸在情绪点使用; **如果提供了"可用本地贴纸包", keyword 必须从这些包名中选择**, 且必须从该包列的 tags 里选一个写进 sticker_tag; 候选外的 keyword/tag 无效
+- 贴纸在情绪点使用; 起止时间会被系统对齐到**最近的一条字幕**（头尾都落在字幕边界上），
+  你只要挑对是"哪句话"的情绪点即可; **如果提供了"可用本地贴纸包", keyword 必须从这些包名中选择**, 且必须从该包列的 tags 里选一个写进 sticker_tag; 候选外的 keyword/tag 无效
 - 特效分两类:
   * 瞬时特效 shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift:
-    duration 由系统接管, 你写不写都会被 clamp 到 0.1~0.6s; 只表现"爆发瞬间", 不要长时间驻留
-  * 持续效果 camera/overlay/sticker: duration 才有意义, overlay 0.5~5s, sticker 1.5~2.5s
+    它们的 end-time 由系统接管, 你写不写都会被 clamp 到 0.1~0.6s; 只表现"爆发瞬间", 不要长时间驻留
+  * 持续效果 camera/overlay/sticker: end 才有意义, overlay end-time 0.5~5s, sticker end-time 1.5~2.5s
 - blur 只用于瞬间失焦/眩晕/被击中/闪回, 严禁长时间氛围模糊
+- 运镜跟着内容走: 情绪爆发/名场面推近景("近"), 普通叙述中景("中")
+- **主角是主播**: 视角移到弹幕或贴纸之后必须移回来(再写一条 anchor_to:"liver" 的事件);
+  不要整段停在弹幕上
+- "远"(画中画)只在尴尬、冷场、幽默反差的时刻用, **整片最多一条**（系统会兜底只留最早的一条）;
+  它是**一次短暂的戏剧性停顿**: end - time 就是它在屏幕上待多久（写 1.5~3s, 到点系统会硬切回
+  上一个镜头）, 别用它铺长时间; 用它时 anchor 一般写 "center"; 起点终点要落在字幕的边界上（别切在句子中间）
+- 硬切(cut:true)同理: 整片偶尔一次就好, 连续硬切会让画面很跳
 - x/y 始终写 "auto"
 - **优先为每个特效/贴纸从候选清单配一个音效** (候选已按当前 clip 方向筛选, 配错风险低);
   仅当候选清单确实没有合适音效时才留空
@@ -133,14 +154,19 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 
 /// LLM 可能漏掉事件对象的 type 字段 (serde tagged enum 必需)。
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
-/// 推断规则: zoom/origin→camera, overlay_type→overlay, keyword→sticker,
+/// 推断规则: zoom/origin/anchor/anchor_to/cut→camera, overlay_type→overlay, keyword→sticker,
 /// name→sfx, intensity/color→shake。无法推断的保持原样（由 serde 报错）。
 pub(crate) fn normalize_segments_json(json: &str) -> String {
     let infer_type = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<&'static str> {
-        if obj.contains_key("zoom") || obj.contains_key("origin") {
+        if obj.contains_key("zoom")
+            || obj.contains_key("origin")
+            || obj.contains_key("anchor")
+            || obj.contains_key("anchor_to")
+            || obj.contains_key("cut")
+        {
             return Some("camera");
         }
-        if obj.contains_key("overlay_type") {
+        if obj.contains_key("overlay_type") || obj.contains_key("colors") {
             return Some("overlay");
         }
         if obj.contains_key("keyword") {
@@ -276,22 +302,27 @@ mod tests {
     fn normalize_infers_missing_type() {
         let raw = r#"[
           {"start":0.0,"end":8.6,"fx":"low","note":"t","events":[
-            {"time":0.5,"duration":3.0,"zoom":"中","origin":"center"},
-            {"time":8.0,"duration":0.5,"intensity":0.3,"sfx":"tag:爆発"},
-            {"type":"camera","time":2.0,"duration":1.0,"zoom":"近","origin":"50% 50%"},
-            {"time":10.0,"duration":2.0,"keyword":"laugh","x":"auto","y":"auto"},
-            {"time":3.0,"name":"pop","volume":0.5}
+            {"time":0.5,"end":3.5,"zoom":"中","origin":"center"},
+            {"time":8.0,"end":8.5,"intensity":0.3,"sfx":"tag:爆発"},
+            {"type":"camera","time":2.0,"end":3.0,"zoom":"近","origin":"50% 50%"},
+            {"time":10.0,"end":12.0,"keyword":"laugh","x":"auto","y":"auto"},
+            {"time":3.0,"name":"pop","volume":0.5},
+            {"time":12.0,"end":15.0,"anchor":"liver"}
           ]}
         ]"#;
         let norm = normalize_segments_json(raw);
         let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
         let evs = &segments[0].events;
-        assert_eq!(evs.len(), 5);
+        assert_eq!(evs.len(), 6);
         assert!(matches!(evs[0], crate::project::Event::Camera { .. }));
         assert!(matches!(evs[1], crate::project::Event::Shake { .. }));
         assert!(matches!(evs[2], crate::project::Event::Camera { .. }));
         assert!(matches!(evs[3], crate::project::Event::Sticker { .. }));
         assert!(matches!(evs[4], crate::project::Event::Sfx { .. }));
+        // 只写 anchor（没写 zoom/origin）也要认得是 camera
+        assert!(
+            matches!(&evs[5], crate::project::Event::Camera { anchor: Some(a), .. } if a == "liver")
+        );
     }
 
     /// 已有 type 的事件不被改动
