@@ -196,17 +196,21 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | 参数 | 作用 |
 |------|------|
 | `[files...]` | 要处理的视频或目录。不传则扫描 `<cwd>/output/clips/*/` |
-| `--duration <sec>` | 静音阈值(秒)，默认 `2.0`。超过此长度的连续静音将被写入屏蔽轨道 |
+| `--duration <sec>` | 静音阈值(秒)，默认 `3.5`。超过此长度的连续静音才会被写入屏蔽轨道（3.5s 以内的字幕间隔一律不处理） |
 | `--threshold <dB>` | 音频分析噪声门限，默认 `-30`（仅在缺少字幕文件时使用） |
 
 未初始化的切片会先自动 `polish init`（映射到屏蔽轨道需要有 `polish.toml`）。
-记录写入 `silence_ranges`，编辑器里的「撤销去静音」按它精确回退，手动添加的屏蔽区间不受影响。
+检测结果**并入**当前屏蔽轨道（与已有屏蔽相加：重叠/相邻的合成一段），每段静音两侧各留 0.8s
+**气口**（字幕时间戳有误差，贴边剪会削掉首尾音节；实际剪掉的是 `间隔 − 1.6s`）。
+**字幕间隔 3.5s 以内一律不动**（默认阈值，正常语气停顿就这个量级，剪了反而把对话切碎）。自动加进去的那部分记在 `silence_ranges`，
+编辑器里的「撤销去静音」按它精确相减回退，手动添加的屏蔽区间不受影响。
 
 静音检测策略：如有同名 `.srt` 文件，优先分析 SRT 字幕间隔；否则用 ffmpeg silencedetect filter。
 
 ### `vtrim download`
 
-下载全部 ASR 模型到 `.vtrim/models/<model>/`：`sensevoice`（默认）、`firered-zh`、`qwen3-asr`（各 ~165MB / ~520MB / ~879MB）。转写时按 `[asr] model` 自动懒加载，缺失才提示下载。
+下载全部 ASR 模型到 `<程序>/.vtrim/models/<model>/`：`sensevoice`（~165MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
+运行时找模型的顺序是 **配置 `local_model_dir` → 用户目录 `~/.vtrim/models` → 程序目录 `.vtrim/models`**（模型管理页显示的就是实际用到的那一份）。
 
 返回 LLM 完整 API response body。需要 `.vtrim/llm.toml` 已配置。
 
@@ -261,13 +265,20 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | 参数 | 作用 |
 |------|------|
 | `--host <addr>` | 监听地址，默认 `127.0.0.1` |
-| `--port <n>` | 监听端口，默认 `7788` |
+| `--port <n>` | 监听端口，默认 `26320` |
 | `--open` | 启动后自动打开浏览器 |
 | `--config <file>` | 打开指定工程（默认恢复上次工程） |
 | `--allow-remote` | 允许监听非 loopback 地址（默认拒绝） |
+| `--trust-proxy` | 采信反代转发的 `X-Forwarded-For` / `X-Forwarded-Proto`（默认**关**，见下） |
 | `--data-dir <dir>` | 账号账本目录，默认 `<exe_dir>/.vtrim/cloud`（也可用 `VTRIM_DATA_DIR`） |
 | `--admin-password-file <file>` | 无人值守部署：用该文件里的密码作为初始管理员密码 |
 | `--force` | 接管残留的 `vtrim.lock`（确认上一个实例已崩溃时使用） |
+
+> **端口为什么是 26320**：老默认 7788 在部分 Windows 上落进了 Hyper-V/WSL 的**保留端口段**
+> （实测 7635–7834），表现是 `10013 WSAEACCES` 绑不上，而 `netstat` 里一个监听者都没有
+> （所以不是"被占用"）。26320 落在跨平台安全带 **15001–32767** 内：既躲开 Windows 的动态段
+> （本机从 1024 起）与上述保留段，也在 Linux 动态段（32768–60999）之外。
+> 真绑不上时会打印实测可绑的替代端口，按提示 `--port` 即可。
 
 **首次启动**会生成管理员账号并把初始密码打印一次，同时写入
 `<data_dir>/initial-admin-password.txt`（首次登录成功后自动删除）：
@@ -277,11 +288,19 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 ```
 
 - 重启**不会**重新生成密码；会话存在 SQLite 里，7 天滑动续期，重启后仍然有效。
-- 仍在使用初始密码时，浏览器顶部常驻横幅提示改密；`--host 0.0.0.0 --allow-remote`
-  在改密前会**拒绝启动**（初始密码会出现在日志与文件里）。
+- 仍在使用初始密码时：浏览器顶部常驻横幅提示改密，**且服务端只放行改密/登出/自查**，
+  其余接口一律 403；`--host 0.0.0.0 --allow-remote` 在改密前还会**拒绝启动**
+  （初始密码会出现在日志与文件里）。
 - `data_dir` 不可写 → 直接启动失败（身份数据不可缺省，不会退化成"内存模式"）。
 - 同一 `data_dir` 只允许一个实例（`vtrim.lock`），第二个实例明确报错。
 - 登录失败 5 次（同用户名 + 同 IP）后限流 15 分钟。
+- **`--trust-proxy` 是 `X-Forwarded-*` 的唯一开关，默认关**：这两个头请求方可以随意伪造，
+  关着的时候服务只认 socket 对端 —— 否则伪造 `X-Forwarded-For` 就能绕过按 IP 的限流，
+  伪造 `X-Forwarded-Proto: https` 还会影响 cookie 的 `Secure` 判定。放在自己的反代后面时请打开。
+
+**对外提供服务（公网/多租户）** 还需要反代 + HTTPS + 强口令，以及一份检查清单：
+见 [`docs/deploy.md`](docs/deploy.md)。
+
 
 ### 管理员：从"服务器上的已有文件"新建项目
 
@@ -325,6 +344,10 @@ local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 
 录播姬（BililiveRecorder）录完一场直播就推送 webhook，服务端自动把录像变成项目并按策略跑管线。
 
+> **也可以在 WebUI 里配**：设置页「录播姬（采集）」卡有开关 + `root` / `api_base` / `api_user` /
+> `api_pass` / `allow_ips` / `auto_pipeline` 表单、一键生成/轮换 webhook token 与「测试连接」
+> （保存即生效，不用重启）。命令行入口保留，两者改的是同一份配置。
+
 ```
 vtrim ingest token            # 生成 webhook token（只显示一次），写入 [ingest] 并启用 webhook
 vtrim ingest token --disable  # 只关闭 webhook（保留 token）
@@ -352,7 +375,7 @@ auto_pipeline = "detect"         # none | transcribe | detect | cut（房间映�
 在录播姬的 Webhook 设置里填：
 
 ```
-http://<本机IP>:7788/api/ingest/bililive/<token>
+http://<本机IP>:26320/api/ingest/bililive/<token>
 ```
 
 - 该端点**自带 token 鉴权、不要求登录**（录播姬只能填 URL，无法加自定义头）；
@@ -365,7 +388,7 @@ http://<本机IP>:7788/api/ingest/bililive/<token>
 只读诊断（不会创建账号库、不改配置）：
 
 ```
-$ vtrim doctor [--url http://127.0.0.1:7788]
+$ vtrim doctor [--url http://127.0.0.1:26320]
 账号数据
   数据目录: …\cloud（剩余 24.3 GB / 共 251.2 GB · 可写 ✓）
   账号账本: …\vtrim.db（1 个账号）
@@ -376,14 +399,14 @@ $ vtrim doctor [--url http://127.0.0.1:7788]
 单实例锁
   …\vtrim.lock → 读不到内容（独占持有 = 有实例正在运行）
 服务探测
-  http://127.0.0.1:7788/api/health → 200（… listening=loopback，accounts=1 …）
+  http://127.0.0.1:26320/api/health → 200（… listening=loopback，accounts=1 …）
 建议 …
 ```
 
 - **单实例锁**：`pid=0` = 上次正常退出；pid 已不存在 = 崩溃残留（下次启动自动接管）；
   读不到内容 = 有实例正独占持有（服务在运行）。
 - **服务探测**：直接读 `/api/health`，能看出是否对外监听、是否走了 TLS 终止；
-  探测不到就说明服务没在跑（默认端口 7788，可用 `--url` 改）。
+  探测不到就说明服务没在跑（默认端口 26320，可用 `--url` 改）。
 
 ---
 
@@ -466,7 +489,7 @@ overwrite = false
 
 ```toml
 [asr]
-model = "sensevoice"         # sensevoice(快) | firered-zh(较准) | qwen3-asr(最准,慢)
+model = "sensevoice"         # sensevoice(快) | qwen3-asr(最准,慢)；mode=hybrid 填词固定用 qwen3-asr
 num_workers = 0              # 0=auto(CPU/4,上限4)
 chunk_duration = 60.0        # 每块秒数
 chunk_overlap = 10.0         # 块间重叠
@@ -523,4 +546,58 @@ cargo run -- status            # 查看当前进度
 
 ## 许可
 
-MIT
+**GNU General Public License v3.0 or later**（`GPL-3.0-or-later`），全文见 [LICENSE](LICENSE)。
+
+### 为什么是 GPL-3.0
+
+本项目发行的二进制里，经 `sherpa-onnx` 静态链接了 **espeak-ng**，而 espeak-ng 以
+**GPL-3.0-or-later** 授权（`sherpa-onnx` 自身是 Apache-2.0，espeak-ng 是它预编译静态包内打包的第三方，
+且那份静态库清单是无条件链接的）。GPL 的传染性因此落到整个二进制上，所以本项目整体以 GPL-3.0
+发布，而不是 MIT。
+
+> 预编译静态包内**不含**任何第三方许可文件，所以 espeak-ng 的许可义务由**分发方**（也就是你）自行履行。
+
+### 自建、二次分发与商用
+
+| 场景 | 你需要做什么 |
+|---|---|
+| 本机自用 / 自己部署服务器 | 无需任何额外动作。GPL 只约束**分发**行为，自己跑不受限。 |
+| 把发行包或改过的代码发给别人 | 按 GPL-3.0 提供完整对应源码（含你的修改）与许可证副本。 |
+| 并入闭源产品 | 不允许，除非另行取得例外授权。 |
+
+### 第三方组件
+
+`ffmpeg` / `ffprobe` 由本项目以**外部命令**方式调用，既不随包分发也不与之链接，请自行安装并遵守其
+自身许可（ffmpeg 官方构建的许可取决于其编译选项）。其余组件的授权与出处见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+## 字体
+
+发行包**不内置任何字体文件**，默认走系统字体栈
+（`LXGW WenKai` → `Noto Sans SC` → `Microsoft YaHei`，最后兜底 `C:/Windows/Fonts/msyh.ttc`）。
+
+**想换字体：把字体文件丢进程序目录的 `resources/fonts/`**（与 `vtrim.exe`、`.vtrim/`、`stickers/` 同级）：
+
+```
+<程序目录>/
+  vtrim.exe
+  .vtrim/
+  stickers/
+  resources/fonts/          ← 放 .ttf / .otf / .ttc，丢进去就会出现
+```
+
+放好之后到精修页：
+
+- **字幕字体** —— 「生成与导出」卡 → LLM 剪辑参数块 → 「字幕字体」下拉（按片段保存）；
+- **封面字体** —— 封面设计器 → 「排版」组 → 「字体」下拉。
+
+下拉里列出的是**字体库里的文件**（显示名从字体自带的字族名读取，例如 `黑体（simhei）`），
+另有一项「（系统默认）」回到上面的系统字体栈。选完**保存即生效**，不用重跑任何任务：
+预览与"渲染导出"出的成片都会用这个字体。库里没有新字体时，下拉下面会直接写出字体库的完整路径。
+
+> **想要圆润可爱的标题风格？** 可以自行安装或下载 **乐米波波体**（LemiBoBoTi，杭州乐米网络科技）。
+> 官方授权地址：<https://font.leminet.cn/>。
+> 注意它的授权是"**免费商用**"但**不包括嵌入式用途** —— 商用需按其要求取得免费商用授权书，
+> 把字体文件内嵌进软件或 APP 则必须另行授权。**本项目因此不随包分发该字体**，
+> 请你自行获取、自己放进 `resources/fonts/` 并遵守其条款。
+
