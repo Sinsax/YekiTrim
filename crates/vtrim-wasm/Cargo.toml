@@ -5,6 +5,8 @@ name = "vtrim-wasm"
 version = "0.1.0"
 edition = "2024"
 description = "V-Trim wgpu 渲染核心的 WASM 绑定：浏览器实时真渲染预览"
+authors = ["Sinsax"]
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "vtrim_wasm"

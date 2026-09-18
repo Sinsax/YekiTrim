@@ -77,8 +77,12 @@ pub async fn init_renderer(
 ) -> Result<WasmRenderer, JsValue> {
         console_error_panic_hook::set_once();
 
-        let cfg: WasmConfig =
+        let mut cfg: serde_json::Value =
             serde_json::from_str(config_json).map_err(|e| js_err(format!("config 解析失败: {e}")))?;
+        // 老 `duration` 字段 → `end`（与 polish.toml 同一条升级路径）
+        rcore::legacy::upgrade_event_times(&mut cfg);
+        let cfg: WasmConfig =
+            serde_json::from_value(cfg).map_err(|e| js_err(format!("config 解析失败: {e}")))?;
         let subs: Vec<rcore::types::Subtitle> = serde_json::from_str(subs_json)
             .map_err(|e| js_err(format!("subtitles 解析失败: {e}")))?;
         let dms: Vec<rcore::types::Danmaku> =
