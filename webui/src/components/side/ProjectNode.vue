@@ -1,11 +1,19 @@
 <template>
   <div class="proj" :class="{ open: expanded, on: current }">
+    <!-- 卡片两行（用户要求）：第一行只放箭头 + 项目名，第二行放来源徽标 + 状态 chip + 删除。
+         单行时名字要跟「来源徽标 / 状态 chip / ×」分 268px 的侧栏宽度，长名基本只露出前几个字
+         （`.nm` 是 nowrap + ellipsis）；徽标让到第二行后名字独占整行，能多显示约一倍字数。
+         `×` 也一并下移：它虽然 opacity:0，但**一直占着布局宽度**，留在第一行会白吃掉名字的空间。 -->
     <div class="proj-head" @click="toggle">
-      <span class="tw">▶</span>
-      <span class="nm" :title="p.name">{{ p.name }}</span>
-      <span class="src-badge" :class="badgeClass" :title="sourceLabel(p)">{{ sourceBadge(p) }}</span>
-      <span class="chip badge" :class="progressChip">{{ currentLabel }}</span>
-      <button class="mini-btn del" title="从列表移除（不动目录里的任何文件）" @click.stop="emit('remove', p)">×</button>
+      <div class="prow">
+        <span class="tw">▶</span>
+        <span class="nm" :title="p.name">{{ p.name }}</span>
+      </div>
+      <div class="prow pmeta">
+        <span class="src-badge" :class="badgeClass" :title="sourceLabel(p)">{{ sourceBadge(p) }}</span>
+        <span class="chip badge" :class="progressChip">{{ currentLabel }}</span>
+        <button class="mini-btn del" title="从列表移除（不动目录里的任何文件）" @click.stop="emit('remove', p)">×</button>
+      </div>
     </div>
     <div v-show="expanded" class="proj-steps">
       <!-- 只标两件事：**当前位置**（选中的项目 + 该项目正在看的阶段）与**已完成阶段的打勾**。
@@ -104,9 +112,17 @@ function toggle() {
 </script>
 
 <style scoped>
-/* 只保留基准样式里没有的几处：行内删除按钮、当前项目/当前位置高亮、"占用"行 */
-/* `×` 也钉住不压缩：`.mini-btn` 没写 flex，默认是可收缩的，行挤的时候会把 × 裁掉（虽然它平时 opacity:0） */
-.proj-head .del { padding:1px 7px; flex:none; opacity:0; }
+/* 只保留基准样式里没有的几处：两行卡片布局、行内删除按钮、当前项目/当前位置高亮、"占用"行 */
+/* 两行卡片（样稿 `ia-demos/multiuser.html` 的 `.proj-head` 是单行 flex，没有这个态，所以写在 scoped）。
+   只改主轴方向与行距：内边距 / 圆角 / 悬停底色仍走 app.css 的 `.proj-head` 基准值。
+   scoped 规则的 `[data-v]` 让它 (0,2,0) 压过 app.css 的 `.proj-head` (0,1,0)。 */
+.proj-head { flex-direction:column; align-items:stretch; gap:4px; }
+.prow { display:flex; align-items:center; gap:8px; min-width:0; }
+/* 第二行缩进到名字的左缘：箭头宽 10px + 行内 gap 8px = 18px */
+.pmeta { padding-left:18px; }
+/* `×` 钉住不压缩：`.mini-btn` 没写 flex，默认是可收缩的（虽然它平时 opacity:0）。
+   从第一行下移到第二行后，靠 margin-left:auto 顶到最右端。 */
+.proj-head .del { padding:1px 7px; flex:none; opacity:0; margin-left:auto; }
 .proj-head:hover .del { opacity:1; }
 .badge { font-size:10px; }
 /* 进度 chip（如「预处理 42%」）保持完整单词显示：不许被长名挤瘪换行 */
