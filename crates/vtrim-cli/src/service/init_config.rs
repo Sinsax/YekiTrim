@@ -52,6 +52,7 @@ pub fn init_global_config(path: Option<&Path>) -> anyhow::Result<()> {
     std::fs::write(&out, global_config_body())?;
     std::fs::write(llm_config_path(&out), vtrim_core::config::LLM_CONFIG_TOML)?;
     std::fs::create_dir_all(vtrim_core::path::sticker_dir())?;
+    vtrim_core::fonts::ensure_dir()?;
     tracing::info!("全局配置已生成: {}", out.display());
     Ok(())
 }
@@ -101,6 +102,16 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
     if !result.created.is_empty() || !result.repaired.is_empty() {
         std::fs::create_dir_all(vtrim_core::path::sticker_dir())?;
     }
+
+    // 字体库目录：**每次都保证存在**（不分"这次有没有新建配置"）——界面上要写清
+    // "把字体丢进哪个目录"，目录不存在那个提示就没法用。装到只读位置（Program Files）
+    // 时建不出来也不能拦住 server 启动，所以这里只告警。
+    if let Err(e) = vtrim_core::fonts::ensure_dir() {
+        tracing::warn!(
+            "字体库目录不可用（{}）：界面里选不了自定义字体。{e}",
+            vtrim_core::path::display(&vtrim_core::path::font_dir())
+        );
+    }
     Ok(result)
 }
 
@@ -137,6 +148,6 @@ fn toml_val(s: &str) -> String {
 }
 
 pub async fn download_models() -> anyhow::Result<()> {
-    tracing::info!("下载 ASR 模型 (sensevoice / firered-zh / qwen3-asr)...");
+    tracing::info!("下载 ASR 模型 ({})...", vtrim_core::download::model_names().join(" / "));
     vtrim_core::download::download_all(None).await
 }

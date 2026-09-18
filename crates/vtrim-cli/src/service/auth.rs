@@ -46,6 +46,15 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
+/// 邀请码前缀。码是**一次性 token**：明文落库（管理员要能重复查看、复制再发 —— 用户要求），
+/// 一次性由 `used_at/used_by` 保证：一个码只能绑一个账号。
+pub const INVITE_PREFIX: &str = "vtrim_inv_";
+
+/// 生成邀请码：`vtrim_inv_<43 字符 base64url>`（32 字节 CSPRNG）。
+pub fn new_invite_code() -> String {
+    format!("{INVITE_PREFIX}{}", new_token())
+}
+
 pub fn hash_password(password: &str) -> Result<String> {
     let mut salt = [0u8; SALT_LEN];
     rand::rngs::OsRng.fill_bytes(&mut salt);
@@ -146,5 +155,14 @@ mod tests {
         // 32 字节 base64url 无填充 = 43 字符，且不含 cookie/头里需要转义的字符
         assert_eq!(a.len(), 43, "{a}");
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn invite_code_shape_and_uniqueness() {
+        let code = new_invite_code();
+        assert!(code.starts_with("vtrim_inv_"), "{code}");
+        assert_eq!(code.len(), "vtrim_inv_".len() + 43, "{code}");
+        assert!(code.chars().all(|c| c.is_ascii()), "可安全放进 URL/表单: {code}");
+        assert_ne!(code, new_invite_code());
     }
 }

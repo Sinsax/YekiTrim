@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use vtrim_core::config::Config;
 use vtrim_core::pipeline::{PipelineRunner, Stage, STAGE_AUDIO, STAGE_CUT, STAGE_DETECT, STAGE_TRANSCRIBE};
 use vtrim_core::progress::ProgressReporter;
@@ -134,19 +135,23 @@ async fn run_stage(
             vtrim_core::config::save_transcript_path_in(config_file, &rel_to_config(config_file, &output.join("video.srt")))?;
         }
         "detect" => {
-            let tpath = transcript_override.unwrap_or_else(|| output.join("transcript.json"));
-            if tpath.exists() {
-                let raw = std::fs::read_to_string(&tpath)?;
-                let ext = tpath.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                ctx.transcript = Some(if ext == "json" { serde_json::from_str(&raw)? } else { vtrim_core::srt::parse_srt(&raw)? });
+            // 字幕来源：`-t` 覆盖 → `transcript_file` → output/transcript.json → output/video.srt。
+            // ⚠️ **必须认 `transcript_file`**：预处理页允许用户选一份外部字幕（跳过 ASR），
+            // 只认 output/ 的话"换字幕后重新检测"读到的还是旧的那份。
+            let tpath = transcript_override.or_else(|| ws.transcript_path(&cfg));
+            let Some(tpath) = tpath else {
+                anyhow::bail!("未找到转写文件（可在预处理页选择字幕文件）");
+            };
+            let raw = std::fs::read_to_string(&tpath)
+                .with_context(|| format!("读取转写文件失败: {}", tpath.display()))?;
+            let ext = tpath.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            ctx.transcript = Some(if ext == "json" {
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("转写 JSON 解析失败: {}", tpath.display()))?
             } else {
-                let srt = output.join("video.srt");
-                if srt.exists() {
-                    let raw = std::fs::read_to_string(&srt)?;
-                    ctx.transcript = Some(vtrim_core::srt::parse_srt(&raw)?);
-                }
-            }
-            if ctx.transcript.is_none() { anyhow::bail!("未找到转写文件"); }
+                vtrim_core::srt::parse_srt(&raw)
+                    .with_context(|| format!("字幕解析失败: {}", tpath.display()))?
+            });
             ctx.detect_resume = Some(resume);
             runner.add_stage(Box::new(vtrim_core::detection::EventDetector));
             runner.run(&mut ctx).await?;
@@ -215,9 +220,7 @@ async fn run_process(
         run_until(cfg.clone(), progress, &mut ctx, STAGE_TRANSCRIBE, Box::new(vtrim_core::asr::Transcriber)).await?;
         vtrim_core::config::save_transcript_path_in(config_file, &rel_to_config(config_file, &output.join("video.srt")))?;
     } else {
-        let recovery = cfg.project.transcript_file.as_ref().filter(|p| !p.is_empty()).map(|p| ws.resolve(p)).filter(|p| p.exists())
-            .or_else(|| { let j = output.join("transcript.json"); if j.exists() { Some(j) } else { None } })
-            .or_else(|| { let s = output.join("video.srt"); if s.exists() { Some(s) } else { None } });
+        let recovery = ws.transcript_path(&cfg);
         match recovery {
             Some(path) => {
                 let content = std::fs::read_to_string(&path)?;
@@ -264,7 +267,8 @@ async fn run_process(
                     }
                 });
                 let result = vtrim_core::asr::correct::correct_transcript_with_checkpoint(
-                    &segments, &danmaku, &cfg.llm, &cfg.correct, checkpoint_path, Some(tx),
+                    &segments, &danmaku, &cfg.llm, &cfg.correct,
+                    ctx.output_dir.parent(), checkpoint_path, Some(tx),
                 ).await;
                 let _ = partial_task.await;
                 if let Ok(corrected) = result {
@@ -318,24 +322,14 @@ async fn run_process(
 }
 
 
+/// 订正用的弹幕：`danmaku_file` → 视频同目录的 `danmu.ass` / `danmaku.ass`。
+///
+/// ⚠️ 用 `load_danmaku_auto`（XML / ASS / SRT 都认）而不是 `load_danmaku`（只认 ASS）——
+/// 预处理页现在可以选 `.xml` / `.srt` 弹幕，走 ASS-only 的解析器等于"选了没有弹幕"。
 fn load_danmaku_for_correct(cfg: &vtrim_core::config::Config, ws: &Workspace) -> Vec<vtrim_core::danmaku::DanmakuEntry> {
-    if let Some(p) = cfg.project.danmaku_file.as_ref().filter(|s| !s.is_empty()) {
-        let p = ws.resolve(p);
-        if p.exists() {
-            return vtrim_core::danmaku::load_danmaku(&p).unwrap_or_default();
-        }
-    }
-    let input = cfg.project.input_file.as_ref().filter(|s| !s.is_empty()).map(|s| ws.resolve(s));
-    if let Some(input_path) = input {
-        if let Some(dir) = input_path.parent() {
-            for name in ["danmu.ass", "danmaku.ass"] {
-                let candidate = dir.join(name);
-                if candidate.exists() {
-                    return vtrim_core::danmaku::load_danmaku(&candidate).unwrap_or_default();
-                }
-            }
-        }
-    }
-    Vec::new()
+    let Some(path) = ws.danmaku_path(cfg) else {
+        return Vec::new();
+    };
+    vtrim_core::danmaku::load_danmaku_auto(&path).unwrap_or_default()
 }
 

@@ -17,12 +17,21 @@ mod progress;
 mod server;
 mod service;
 
+/// 订阅者 = 终端 + 进程内日志总线（设置页「运行日志」/ 日志文件）。
+///
+/// `LogBusLayer` 必须挂上：`vtrim server` 的访问日志、任务日志、错误文案都靠它
+/// 进面板与文件；对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。
 fn setup_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    // 全局过滤器（RUST_LOG，默认 info）：三个层都受它约束，
+    // 想看高频接口的逐条访问日志用 `RUST_LOG=vtrim=debug`
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(server::logbus::LogBusLayer::new(server::logbus::bus()))
         .init();
 }
 
@@ -88,10 +97,11 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
     let open_path = format!("/#/project/{}/polish?dir={}", cfg_str, dir_str);
     let args = ServerArgs {
         host: "127.0.0.1".to_string(),
-        port: 7788,
+        port: crate::service::doctor::DEFAULT_PORT,
         open: true,
         config: Some(cfg),
         allow_remote: false,
+        trust_proxy: false,
         data_dir: None,
         admin_password_file: None,
         force: false,
@@ -156,6 +166,7 @@ Command::Process {
             output: output_dir,
             dry_run,
         } => {
+            crate::service::usage::try_install_cli_sink();
             let _cfg = load_cfg(global_config)?;
             let input_override = input.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
@@ -204,6 +215,7 @@ Command::Transcribe {
         }
 
 Command::Detect { transcript } => {
+            crate::service::usage::try_install_cli_sink();
             let config_file = config_path(global_config);
             let transcript_override = transcript.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
@@ -275,6 +287,13 @@ Command::User(action) => {
                 UserAction::ResetAdminPassword { stdin, password_file } => {
                     crate::service::cmd_reset_admin_password(src(*stdin, password_file))?
                 }
+                UserAction::Invite { note, days, count, disable } => {
+                    crate::service::invite::cmd_invite(note.clone(), *days, *count, *disable)?
+                }
+                UserAction::Invites => crate::service::invite::cmd_invites()?,
+                UserAction::InviteRevoke { target } => {
+                    crate::service::invite::cmd_invite_revoke(target)?
+                }
             }
         }
 
@@ -288,6 +307,10 @@ Command::User(action) => {
 
 Command::Doctor { url } => {
             crate::service::cmd_doctor(url)?;
+        }
+
+        Command::Usage { days } => {
+            crate::service::usage::cmd_usage(*days)?;
         }
 
 Command::Server(args) => {
@@ -343,6 +366,7 @@ Command::Download => {
         }
 
 Command::Correct { transcript } => {
+            crate::service::usage::try_install_cli_sink();
             let config_file = config_path(global_config);
             let transcript_override = transcript.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
@@ -353,6 +377,7 @@ Command::Correct { transcript } => {
 
 Command::Polish(action) => {
             use vtrim_polish::{commands, cover, process, render};
+            crate::service::usage::try_install_cli_sink();
 
             match action {
                 cli::PolishAction::Init { input } => {

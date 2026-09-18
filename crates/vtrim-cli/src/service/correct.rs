@@ -63,6 +63,7 @@ pub async fn run_correct(
         &danmaku,
         &cfg.llm,
         &cfg.correct,
+        output.parent(),
         checkpoint_path,
         Some(tx),
     ).await;

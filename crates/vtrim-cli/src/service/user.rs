@@ -179,7 +179,7 @@ pub fn cmd_list() -> Result<()> {
     Ok(())
 }
 
-fn fmt_time(secs: i64) -> String {
+pub(crate) fn fmt_time(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
         .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| secs.to_string())

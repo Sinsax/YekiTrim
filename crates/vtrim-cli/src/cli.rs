@@ -108,14 +108,14 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// 把已输出切片中的长静音段映射为屏蔽轨道（写入 polish.toml，不改动视频文件）
+    /// 把已输出切片中的长静音段并入屏蔽轨道（与现有屏蔽相加，写入 polish.toml，不改动视频文件）
     Silence {
         /// 要处理的视频/目录（默认扫描 output/clips/）
         #[arg(required = false)]
         files: Vec<PathBuf>,
 
-        /// 静音阈值(秒)，超过此时长的连续静音将被写入屏蔽轨道
-        #[arg(long, default_value_t = 2.0)]
+        /// 静音阈值(秒)，超过此时长的连续静音将被写入屏蔽轨道（默认 3.5，短于此的间隔不动）
+        #[arg(long, default_value_t = 3.5)]
         duration: f64,
 
         /// 音频分析噪声门限 dB（无字幕文件时才使用，默认 -30）
@@ -132,7 +132,7 @@ pub enum Command {
 
     /// 安全与运行状况摘要（账号/初始密码/单实例锁/数据目录磁盘/服务可达性）
     Doctor {
-        /// 探测地址（默认 http://127.0.0.1:7788，与 `vtrim server` 默认监听一致）
+        /// 探测地址（默认 http://127.0.0.1:26320，与 `vtrim server` 默认监听一致）
         #[arg(long, default_value = crate::service::doctor::DEFAULT_URL)]
         url: String,
     },
@@ -140,6 +140,13 @@ pub enum Command {
     /// 账号管理（多用户服务：账号账本 / 密码 / 角色）
     #[command(subcommand)]
     User(UserAction),
+
+    /// LLM 用量（每次调用的 token / 缓存命中 / 耗时；落 <data_dir>/vtrim.db）
+    Usage {
+        /// 统计最近多少天
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+    },
 
     /// 录播姬采集（webhook token / 配置概览）
     #[command(subcommand)]
@@ -217,6 +224,28 @@ pub enum UserAction {
         stdin: bool,
         #[arg(long)]
         password_file: Option<PathBuf>,
+    },
+    /// 生成注册邀请码（明文只显示一次）并开启注册；`--disable` 关闭注册
+    Invite {
+        /// 备注（给谁用，列表里认人）
+        #[arg(long)]
+        note: Option<String>,
+        /// 有效天数（默认不过期）
+        #[arg(long)]
+        days: Option<u32>,
+        /// 一次生成几个
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+        /// 关闭注册（已生成的邀请码保留）
+        #[arg(long)]
+        disable: bool,
+    },
+    /// 列出邀请码（只见脱敏 hint）与注册开关状态
+    Invites,
+    /// 撤销邀请码（参数用 id 或 selector）
+    InviteRevoke {
+        /// id / selector / 完整 hint
+        target: String,
     },
 }
 

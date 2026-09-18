@@ -10,13 +10,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// 账本 schema 版本（`PRAGMA user_version`）；新增迁移时递增并在 `migrate()` 中分支。
 /// - v1：users / sessions / audit
 /// - v2：projects（项目托管）+ storage（占用计量）
-pub const SCHEMA_VERSION: i64 = 3;
+/// - v3：录播姬采集（ingest_events / ingest_sessions / ingest_files / channel_map）
+/// - v4：invites（邀请码：自助注册用的一次性 token）
+/// - v6：channel_map 加 `title`（房间标题缓存）与 `source`（user=用户自己加的 / admin=兜底指派）
+/// - v5：invites 改为存**明文**（管理员要能重复查看，用户要求）——
+///   不再存 selector + scrypt 哈希：明文既然要能读回来，哈希就不再提供任何保护，留着只是噪声。
+///   一个码仍然只能绑一个账号（`used_at/used_by` + 原子消费）。
+/// - v7：llm_usage（每次 LLM 调用一行：tokens / 缓存命中 / 耗时 / 成败，设置页「LLM 用量」用）
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VTRIM_DATA_DIR") {
@@ -36,6 +43,36 @@ pub fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// 邀请码行的列清单 + 行映射（几处查询共用，列序必须与 `invite_from_row` 一致）。
+const INVITE_SELECT: &str = "SELECT id, token, note, created_by, created_at,
+                                    expires_at, used_by, used_at, revoked
+                             FROM invites";
+
+fn channel_rule_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRule> {
+    Ok(ChannelRule {
+        room_id: r.get(0)?,
+        user_id: r.get(1)?,
+        auto_pipeline: r.get(2)?,
+        enabled: r.get::<_, i64>(3)? != 0,
+        title: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        source: r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "admin".into()),
+    })
+}
+
+fn invite_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<InviteRow> {
+    Ok(InviteRow {
+        id: r.get(0)?,
+        token: r.get(1)?,
+        note: r.get(2)?,
+        created_by: r.get(3)?,
+        created_at: r.get(4)?,
+        expires_at: r.get(5)?,
+        used_by: r.get(6)?,
+        used_at: r.get(7)?,
+        revoked: r.get::<_, i64>(8)? != 0,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +98,29 @@ pub struct SessionRow {
     pub role: String,
     pub disabled: bool,
     pub must_change_password: bool,
+}
+
+/// 邀请码行（v5）。**明文就存在库里**（管理员可重复查看、复制再发；用户要求），
+/// 因此不再有 selector/哈希那一套。一次性由 `used_at` 保证。
+#[derive(Debug, Clone)]
+pub struct InviteRow {
+    pub id: i64,
+    /// `vtrim_inv_<43 字符 base64url>`
+    pub token: String,
+    pub note: Option<String>,
+    pub created_by: Option<i64>,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub used_by: Option<i64>,
+    pub used_at: Option<i64>,
+    pub revoked: bool,
+}
+
+impl InviteRow {
+    /// 还能用来注册：未使用、未撤销、未过期。
+    pub fn is_open(&self, now: i64) -> bool {
+        self.used_at.is_none() && !self.revoked && self.expires_at.map(|e| e > now).unwrap_or(true)
+    }
 }
 
 /// 项目行（归属由 DB 决定：用户可见范围 = 他拥有的 projects 行，§5.1）。
@@ -121,6 +181,10 @@ pub struct ChannelRule {
     pub user_id: i64,
     pub auto_pipeline: String,
     pub enabled: bool,
+    /// 房间标题缓存（用户加的直播间列表要显示）
+    pub title: String,
+    /// `user` = 用户自己在界面上加的；`admin` = 管理员兜底指派的
+    pub source: String,
 }
 
 /// 兜底扫描见过的文件（§4.1）。P3b/P3c 的 worker 会读这些字段。
@@ -282,11 +346,99 @@ pub struct Db {
                     room_id       TEXT PRIMARY KEY,
                     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     auto_pipeline TEXT NOT NULL DEFAULT 'detect',
-                    enabled       INTEGER NOT NULL DEFAULT 1
+                    enabled       INTEGER NOT NULL DEFAULT 1,
+                    title         TEXT,
+                    source        TEXT NOT NULL DEFAULT 'admin'
                 );
+                -- v4/v5：邀请码（自助注册用的一次性 token）
+                -- **明文落库**：管理员要能随时翻出来再发一次（用户要求）；
+                -- 一次性由 used_at/used_by 保证 —— 一个码只能绑一个账号。
+                CREATE TABLE IF NOT EXISTS invites (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token      TEXT NOT NULL UNIQUE,
+                    note       TEXT,
+                    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    used_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    used_at    INTEGER,
+                    revoked    INTEGER NOT NULL DEFAULT 0
+                );
+                -- v7：LLM 用量（每次调用一行；采集点在 vtrim_core::llm::LlmClient::send）
+                -- label = 链路名（事件检测 / 字幕订正 / 精修段事件…），project = 项目或切片目录。
+                -- attempts = 这一行包含了多少次 HTTP 尝试（重试不另起一行）。
+                CREATE TABLE IF NOT EXISTS llm_usage (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts                INTEGER NOT NULL,
+                    label             TEXT NOT NULL,
+                    project           TEXT,
+                    model             TEXT NOT NULL DEFAULT '',
+                    host              TEXT NOT NULL DEFAULT '',
+                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_tokens     INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+                    latency_ms        INTEGER NOT NULL DEFAULT 0,
+                    attempts          INTEGER NOT NULL DEFAULT 1,
+                    ok                INTEGER NOT NULL DEFAULT 1,
+                    status            INTEGER,
+                    error             TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_llm_usage_ts ON llm_usage(ts);
                 "#,
             )
             .context("建表失败")?;
+            // v4 → v5：老 invites 表只有哈希（取不回明文），重建表并把历史迁过来
+            // （已用的码保留 used_by/used_at，这样"谁用过"不丢；token 用占位串，界面上标注为旧码）
+            let has_token = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('invites') WHERE name = 'token'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(1)
+                > 0;
+            if !has_token {
+                conn.execute_batch(
+                    r#"
+                    ALTER TABLE invites RENAME TO invites_v4;
+                    CREATE TABLE invites (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        token      TEXT NOT NULL UNIQUE,
+                        note       TEXT,
+                        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        created_at INTEGER NOT NULL,
+                        expires_at INTEGER,
+                        used_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                        used_at    INTEGER,
+                        revoked    INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO invites (id, token, note, created_by, created_at, expires_at, used_by, used_at, revoked)
+                        SELECT id, '<旧邀请码 #' || id || '（明文不可查看，请重新生成）>', note, created_by,
+                               created_at, expires_at, used_by, used_at, revoked
+                        FROM invites_v4;
+                    DROP TABLE invites_v4;
+                    "#,
+                )
+                .context("v4 → v5 迁移失败")?;
+            }
+            // v5 → v6：channel_map 补 title/source（用户自助加的直播间要记标题与来源）
+            for (col, ddl) in [
+                ("title", "ALTER TABLE channel_map ADD COLUMN title TEXT"),
+                ("source", "ALTER TABLE channel_map ADD COLUMN source TEXT NOT NULL DEFAULT 'admin'"),
+            ] {
+                let has = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('channel_map') WHERE name = ?1",
+                        params![col],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(1)
+                    > 0;
+                if !has {
+                    conn.execute_batch(ddl).with_context(|| format!("加列 {col} 失败"))?;
+                }
+            }
             conn.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};"))?;
             Ok(())
         })
@@ -723,6 +875,125 @@ pub struct Db {
         })
     }
 
+    // ---- 邀请码（v4/v5：明文落库，管理员可重复查看） ----
+
+    /// 落一条邀请码（明文直接入库）。
+    pub fn create_invite(
+        &self,
+        token: &str,
+        note: Option<&str>,
+        created_by: Option<i64>,
+        expires_at: Option<i64>,
+    ) -> Result<i64> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO invites (token, note, created_by, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![token, note, created_by, now_secs(), expires_at],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// 按明文取（唯一索引命中一行）。注册校验走它，没有 KDF 开销。
+    pub fn find_invite_by_token(&self, token: &str) -> Result<Option<InviteRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(&format!("{INVITE_SELECT} WHERE token = ?1"), params![token], invite_from_row)
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    pub fn find_invite_by_id(&self, id: i64) -> Result<Option<InviteRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(&format!("{INVITE_SELECT} WHERE id = ?1"), params![id], invite_from_row)
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// 全部邀请码（新的在前），管理页/CLI 列表用。
+    pub fn list_invites(&self) -> Result<Vec<InviteRow>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(&format!("{INVITE_SELECT} ORDER BY id DESC"))?;
+            let rows = stmt.query_map([], invite_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// 撤销（幂等）：已撤销/不存在都返回影响行数 0，调用方据此报错。
+    pub fn revoke_invite(&self, id: i64) -> Result<usize> {
+        self.with(|conn| {
+            let n = conn.execute("UPDATE invites SET revoked = 1 WHERE id = ?1 AND revoked = 0", params![id])?;
+            Ok(n)
+        })
+    }
+
+    /// **原子**完成「消费邀请码 + 建账号」：注册两个人同时用同一个码时，只有一个人能建成。
+    ///
+    /// 用户名查重在调用方做（这里再判一次 `UNIQUE` 约束兜底）。返回新账号 id。
+    pub fn register_with_invite(
+        &self,
+        invite_id: i64,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<i64> {
+        self.with(|conn| {
+            let now = now_secs();
+            let used = conn.execute(
+                "UPDATE invites SET used_at = ?2
+                 WHERE id = ?1 AND used_at IS NULL AND revoked = 0
+                   AND (expires_at IS NULL OR expires_at > ?2)",
+                params![invite_id, now],
+            )?;
+            if used == 0 {
+                bail!("邀请码无效或已被使用");
+            }
+            conn.execute(
+                "INSERT INTO users (username, password_hash, must_change_password, role, quota_bytes, created_at)
+                 VALUES (?1, ?2, 0, 'user', 0, ?3)",
+                params![username, password_hash, now],
+            )
+            .with_context(|| format!("创建账号 {username} 失败（用户名是否已存在？）"))?;
+            let user_id = conn.last_insert_rowid();
+            // 归属回填：账号 id 要等 INSERT 之后才有
+            conn.execute(
+                "UPDATE invites SET used_by = ?2 WHERE id = ?1",
+                params![invite_id, user_id],
+            )?;
+            Ok(user_id)
+        })
+    }
+
+    /// 大小写不敏感地查账号：注册时挡掉 `Admin` 这类与既有账号同名不同大小写的冒充。
+    pub fn find_user_ci(&self, username: &str) -> Result<Option<UserRow>> {
+        self.with(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id, username, role, disabled, must_change_password, quota_bytes, created_at, last_login_at
+                     FROM users WHERE username = ?1 COLLATE NOCASE LIMIT 1",
+                    params![username],
+                    |r| {
+                        Ok(UserRow {
+                            id: r.get(0)?,
+                            username: r.get(1)?,
+                            role: r.get(2)?,
+                            disabled: r.get::<_, i64>(3)? != 0,
+                            must_change_password: r.get::<_, i64>(4)? != 0,
+                            quota_bytes: r.get(5)?,
+                            created_at: r.get(6)?,
+                            last_login_at: r.get(7)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
     // ---- 录播姬采集（v3，§4） ----
 
     /// 记录一个 webhook 事件；返回 `false` = 重复投递（同 `EventId` 已处理过）。
@@ -871,7 +1142,15 @@ pub struct Db {
         })
     }
 
-    /// 指派归属（待分配池 → 某账号 + 自动策略）。
+    /// 指派归属（待分配池 → 某账号 + 自动策略），**并把它推到可入库状态**。
+    ///
+    /// ⚠️ 待分配的会话要被指派后置成 `closing`（不是 `finalized`）：
+    /// 入库 worker 的完结判定 `is_finalized()` 只认 `state == "closing"`，而 `assign` 完
+    /// 只在 `state='unassigned'` 时才改状态。以前这里写成 `'finalized'`，于是「指派并入库」
+    /// 只改了归属、**永远不入库**（真实踩过：指派后会话停在 `finalized` 且 `project_id` 一直为空，
+    /// 得再点一次「重试」把它推回 closing 才会跑）。
+    ///
+    /// `'finalized'` 是"已经建完项目"的状态（由 [`Db::set_ingest_project`] 写），别混用。
     pub fn assign_ingest_session(
         &self,
         session_id: &str,
@@ -882,7 +1161,7 @@ pub struct Db {
             let n = conn.execute(
                 "UPDATE ingest_sessions
                  SET owner_id = ?2, auto_pipeline = COALESCE(?3, auto_pipeline),
-                     state = CASE WHEN state = 'unassigned' THEN 'finalized' ELSE state END
+                     state = CASE WHEN state = 'unassigned' THEN 'closing' ELSE state END
                  WHERE session_id = ?1",
                 params![session_id, owner_id, auto_pipeline],
             )?;
@@ -990,19 +1269,58 @@ pub struct Db {
         })
     }
 
+    /// 某用户的直播间（用户自己加的 + 管理员给他指派的都在内）。
+    pub fn rooms_of_user(&self, user_id: i64) -> Result<Vec<ChannelRule>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT room_id, user_id, auto_pipeline, enabled, title, source
+                 FROM channel_map WHERE user_id = ?1 ORDER BY room_id",
+            )?;
+            let rows = stmt.query_map(params![user_id], channel_rule_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// 用户自助加直播间：写/覆盖一行（`source='user'`）。
+    ///
+    /// 同一个房间号被**别人**先登记过时：`POST /api/rooms`（用户自助路径）会先查到归属并
+    /// 返回 409「这个直播间已被其他用户登记」——先到先得，不会静默改归属；能覆盖的只有
+    /// admin 的路径（`/api/channel-map` 全量替换、或 admin 替人指派）。
+    pub fn room_upsert(&self, room_id: &str, user_id: i64, title: &str) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO channel_map (room_id, user_id, auto_pipeline, enabled, title, source)
+                 VALUES (?1, ?2, 'detect', 1, ?3, 'user')
+                 ON CONFLICT(room_id) DO UPDATE SET
+                   user_id = excluded.user_id, title = excluded.title,
+                   source = 'user', enabled = 1",
+                params![room_id, user_id, title],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 删直播间登记。`owner` 为 `Some(uid)` 时只能删自己的（普通用户）；`None` = admin 全权。
+    pub fn room_delete(&self, room_id: &str, owner: Option<i64>) -> Result<usize> {
+        self.with(|conn| {
+            let n = match owner {
+                Some(uid) => conn.execute(
+                    "DELETE FROM channel_map WHERE room_id = ?1 AND user_id = ?2",
+                    params![room_id, uid],
+                )?,
+                None => conn.execute("DELETE FROM channel_map WHERE room_id = ?1", params![room_id])?,
+            };
+            Ok(n)
+        })
+    }
+
     pub fn channel_map_list(&self) -> Result<Vec<ChannelRule>> {
         self.with(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT room_id, user_id, auto_pipeline, enabled FROM channel_map ORDER BY room_id",
+                "SELECT room_id, user_id, auto_pipeline, enabled, title, source FROM channel_map ORDER BY room_id",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(ChannelRule {
-                    room_id: r.get(0)?,
-                    user_id: r.get(1)?,
-                    auto_pipeline: r.get(2)?,
-                    enabled: r.get::<_, i64>(3)? != 0,
-                })
-            })?;
+            let rows = stmt.query_map([], channel_rule_from_row)?;
             let mut out = Vec::new();
             for r in rows {
                 out.push(r?);
@@ -1035,16 +1353,9 @@ pub struct Db {
         self.with(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT room_id, user_id, auto_pipeline, enabled FROM channel_map WHERE room_id = ?1",
+                    "SELECT room_id, user_id, auto_pipeline, enabled, title, source FROM channel_map WHERE room_id = ?1",
                     params![room_id],
-                    |r| {
-                        Ok(ChannelRule {
-                            room_id: r.get(0)?,
-                            user_id: r.get(1)?,
-                            auto_pipeline: r.get(2)?,
-                            enabled: r.get::<_, i64>(3)? != 0,
-                        })
-                    },
+                    channel_rule_from_row,
                 )
                 .optional()?;
             Ok(row)
@@ -1105,6 +1416,61 @@ pub struct Db {
             Ok(n > 0)
         })
     }
+
+    // ===== v7：LLM 用量 =====
+
+    /// 记一次 LLM 调用（`DbSink` 的唯一写入路径）。
+    pub fn insert_llm_usage(&self, u: &vtrim_core::llm::usage::UsageRecord) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO llm_usage
+                   (ts, label, project, model, host, prompt_tokens, completion_tokens,
+                    cached_tokens, reasoning_tokens, latency_ms, attempts, ok, status, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    u.ts, u.label, u.project, u.model, u.host,
+                    u.prompt_tokens as i64, u.completion_tokens as i64,
+                    u.cached_tokens as i64, u.reasoning_tokens as i64,
+                    u.latency_ms as i64, u.attempts as i64, u.ok as i64,
+                    u.status.map(|s| s as i64), u.error,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// 跑一条分组聚合 SQL（`key` + 计数/求和列），供 `service::usage::summarize` 用。
+    pub fn query_llm_usage_groups(&self, sql: &str, since: i64) -> Result<Vec<super::usage::UsageGroup>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(params![since], llm_usage_group_from_row)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// 同上，但只取一行（总量）。
+    pub fn query_llm_usage_row(&self, sql: &str, since: i64) -> Result<Option<super::usage::UsageGroup>> {
+        self.with(|conn| Ok(conn.query_row(sql, params![since], llm_usage_group_from_row).optional()?))
+    }
+}
+
+/// 聚合行的列顺序固定：`key, calls, failed, prompt, completion, cached, reasoning, latency, attempts`。
+fn llm_usage_group_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<super::usage::UsageGroup> {
+    Ok(super::usage::UsageGroup {
+        key: r.get(0)?,
+        calls: r.get(1)?,
+        failed: r.get(2)?,
+        prompt_tokens: r.get(3)?,
+        completion_tokens: r.get(4)?,
+        cached_tokens: r.get(5)?,
+        reasoning_tokens: r.get(6)?,
+        latency_ms: r.get(7)?,
+        attempts: r.get(8)?,
+    })
 }
 
 #[cfg(test)]
@@ -1117,12 +1483,81 @@ mod tests {
         (dir, db)
     }
 
+    /// 指派必须把待分配会话推到 `closing`。
+    ///
+    /// 回归钉子：入库 worker 的完结判定 `is_finalized()` **只认 `state == "closing"`**，
+    /// 而这里以前写成 `'finalized'` —— 于是「指派并入库」只改了归属、永远不进库
+    /// （实测：指派后会话停在 `finalized`、`project_id` 一直是空，得再点一次「重试」才行）。
+    /// `'finalized'` 是"项目已建好"（[`Db::set_ingest_project`] 写），别混用。
+    #[test]
+    fn assign_moves_unassigned_session_to_closing() {
+        let (_d, db) = tmp_db();
+        let alice = db.create_user("alice", "h", "user", false, 0).unwrap();
+        db.ingest_session_touch("s1", Some("23058"), None).unwrap();
+        db.set_ingest_state("s1", "unassigned", None).unwrap();
+
+        assert!(db.assign_ingest_session("s1", alice, Some("detect")).unwrap());
+        let s = db.ingest_session("s1").unwrap().unwrap();
+        assert_eq!(s.owner_id, Some(alice));
+        assert_eq!(s.state, "closing", "指派完必须能被 worker 入库，否则按钮在骗人");
+        assert_eq!(s.auto_pipeline.as_deref(), Some("detect"));
+
+        // 已经建完项目的会话不该被指派动作改回去
+        db.set_ingest_state("s1", "finalized", None).unwrap();
+        db.assign_ingest_session("s1", alice, None).unwrap();
+        assert_eq!(db.ingest_session("s1").unwrap().unwrap().state, "finalized");
+    }
+
     #[test]
     fn migrate_is_idempotent_and_starts_empty() {
         let (_d, db) = tmp_db();
         assert_eq!(db.count_users().unwrap(), 0);
         db.migrate().unwrap(); // 二次迁移不应报错
         assert_eq!(db.count_users().unwrap(), 0);
+    }
+
+    /// v7 的 llm_usage：写入 + 汇总（总量 / 按链路 / 按项目 / 按天）。
+    #[test]
+    fn llm_usage_insert_and_summarize() {
+        use vtrim_core::llm::usage::{now_secs, UsageRecord};
+        let (_d, db) = tmp_db();
+        let mk = |label: &str, project: Option<&str>, prompt: u64, completion: u64, cached: u64, ok: bool| UsageRecord {
+            ts: now_secs(),
+            label: label.into(),
+            project: project.map(|p| p.to_string()),
+            model: "m1".into(),
+            host: "example.com".into(),
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cached_tokens: cached,
+            reasoning_tokens: 0,
+            latency_ms: 1000,
+            attempts: 1,
+            ok,
+            status: None,
+            error: None,
+        };
+        db.insert_llm_usage(&mk("事件检测", Some("F:/p1"), 1000, 100, 768, true)).unwrap();
+        db.insert_llm_usage(&mk("事件检测", Some("F:/p1"), 500, 50, 0, false)).unwrap();
+        db.insert_llm_usage(&mk("精修段事件", Some("F:/p1/clip-01"), 200, 20, 0, true)).unwrap();
+
+        let s = super::super::usage::summarize(&db, 30).unwrap();
+        assert_eq!(s.totals.calls, 3);
+        assert_eq!(s.totals.failed, 1);
+        assert_eq!(s.totals.prompt_tokens, 1700);
+        assert_eq!(s.totals.completion_tokens, 170);
+        assert_eq!(s.totals.cached_tokens, 768);
+
+        let d = s.by_label.iter().find(|g| g.key == "事件检测").unwrap();
+        assert_eq!((d.calls, d.prompt_tokens), (2, 1500));
+        let p = s.by_project.iter().find(|g| g.key == "F:/p1").unwrap();
+        assert_eq!(p.calls, 2, "同一项目两条归一组");
+        assert!(s.by_model.iter().any(|g| g.key == "m1@example.com"));
+        assert_eq!(s.by_day.len(), 1, "今天只有一天");
+
+        // 超出时间窗 → 不计入
+        let s0 = super::super::usage::summarize(&db, 1).unwrap();
+        assert_eq!(s0.totals.calls, 3);
     }
 
     #[test]
@@ -1197,6 +1632,99 @@ mod tests {
         let uid = db.create_user("admin", "h", "admin", false, 0).unwrap();
         db.audit_ip(Some(uid), "login_failed", "bad password", Some("127.0.0.1")).unwrap();
         assert_eq!(db.count_audit("login_failed").unwrap(), 1);
+    }
+
+    /// 邀请码：**明文可重复查看**（管理员权限，用户要求）+ 状态（未使用/已用/已撤销/已过期）。
+    #[test]
+    fn invite_rows_are_readable_and_stateful() {
+        let (_d, db) = tmp_db();
+        let admin = db.create_user("admin", "h", "admin", false, 0).unwrap();
+        let now = now_secs();
+        let code = "vtrim_inv_TESTCODE0000000000000000000000000000";
+        let id = db.create_invite(code, Some("给小明"), Some(admin), Some(now + 86400)).unwrap();
+
+        // 明文能原样读回来 —— 这正是"管理员可以重复查看"
+        let row = db.find_invite_by_token(code).unwrap().expect("按明文能查到");
+        assert_eq!(row.token, code);
+        assert_eq!(db.find_invite_by_id(id).unwrap().unwrap().token, code);
+        assert!(row.is_open(now), "未使用 = 可用");
+        assert!(!row.is_open(now + 86401), "过期后不可用");
+        assert_eq!(row.note.as_deref(), Some("给小明"));
+        assert_eq!(row.used_at, None, "还没人用");
+
+        // 用掉之后：仍然可查看明文，状态变成"已使用 + 绑定了谁"
+        let uid = db.register_with_invite(id, "xiaoming", "scrypt$y").unwrap();
+        let used = db.find_invite_by_token(code).unwrap().unwrap();
+        assert_eq!(used.token, code, "用过的码也要能查看");
+        assert_eq!(used.used_by, Some(uid));
+        assert!(used.used_at.is_some());
+        assert!(!used.is_open(now_secs()), "已使用即不可再用");
+
+        let id2 = db.create_invite("vtrim_inv_REVOKE_ME", None, None, None).unwrap();
+        assert_eq!(db.revoke_invite(id2).unwrap(), 1);
+        assert_eq!(db.revoke_invite(id2).unwrap(), 0, "重复撤销幂等");
+        assert!(!db.find_invite_by_id(id2).unwrap().unwrap().is_open(now));
+        assert!(db.find_invite_by_token("vtrim_inv_nope").unwrap().is_none(), "不存在的码查不到");
+    }
+
+    /// 用户自助登记直播间：写/覆盖、按人查、按归属删（别人删不动）。
+    #[test]
+    fn rooms_round_trip_and_scoped_delete() {
+        let (_d, db) = tmp_db();
+        let alice = db.create_user("alice", "h", "user", false, 0).unwrap();
+        let bob = db.create_user("bob", "h", "user", false, 0).unwrap();
+
+        db.room_upsert("12345", alice, "某主播").unwrap();
+        db.room_upsert("777", alice, "").unwrap();
+        let mine = db.rooms_of_user(alice).unwrap();
+        assert_eq!(mine.len(), 2);
+        assert!(mine.iter().all(|r| r.source == "user"), "界面加的都标 user");
+        assert!(mine.iter().all(|r| r.enabled));
+        let t = db.channel_for_room("12345").unwrap().unwrap();
+        assert_eq!(t.user_id, alice);
+        assert_eq!(t.title, "某主播");
+        assert!(db.rooms_of_user(bob).unwrap().is_empty(), "看不到别人的");
+
+        // 同一个房间号再登记（换人 / 换标题）→ 覆盖，不产生第二行
+        db.room_upsert("12345", bob, "改名了").unwrap();
+        assert_eq!(db.rooms_of_user(alice).unwrap().len(), 1, "被 bob 接管了");
+        assert_eq!(db.channel_for_room("12345").unwrap().unwrap().title, "改名了");
+
+        // 删：限本人；admin（None）全权
+        assert_eq!(db.room_delete("12345", Some(alice)).unwrap(), 0, "不是他的删不动");
+        assert!(db.channel_for_room("12345").unwrap().is_some());
+        assert_eq!(db.room_delete("12345", Some(bob)).unwrap(), 1);
+        assert!(db.channel_for_room("12345").unwrap().is_none());
+        assert_eq!(db.room_delete("777", None).unwrap(), 1, "admin 可删任意");
+    }
+
+    /// 注册的两步必须原子：**一个码只能绑一个账号**（第二个拿到的是"已被使用"）。
+    #[test]
+    fn register_with_invite_consumes_once_and_binds_user() {
+        let (_d, db) = tmp_db();
+        let code = "vtrim_inv_ONCE0000000000000000000000000000";
+        let inv = db.create_invite(code, None, None, None).unwrap();
+        let uid = db.register_with_invite(inv, "newbie", "scrypt$y").unwrap();
+        let user = db.find_user("newbie").unwrap().unwrap();
+        assert_eq!(user.id, uid);
+        assert_eq!(user.role, "user", "自助注册只能是 user");
+        assert!(!user.must_change_password, "自己设的密码不算初始密码");
+        assert_eq!(db.find_invite_by_token(code).unwrap().unwrap().used_by, Some(uid), "绑定到谁要记下来");
+
+        let again = db.register_with_invite(inv, "another", "scrypt$z");
+        assert!(again.is_err(), "同一个码不能绑第二个账号: {again:?}");
+        assert!(db.find_user("another").unwrap().is_none(), "失败时不应留下半个账号");
+
+        // 用户名大小写不同也算重名（挡冒充）
+        assert!(db.find_user_ci("NEWBIE").unwrap().is_some());
+        assert!(db.find_user_ci("nobody").unwrap().is_none());
+
+        // 撤销的 / 过期的码不能注册
+        let inv2 = db.create_invite("vtrim_inv_REVOKED", None, None, None).unwrap();
+        db.revoke_invite(inv2).unwrap();
+        assert!(db.register_with_invite(inv2, "revoked-try", "scrypt$w").is_err(), "撤销的码不能注册");
+        let inv3 = db.create_invite("vtrim_inv_EXPIRED", None, None, Some(now_secs() - 1)).unwrap();
+        assert!(db.register_with_invite(inv3, "expired-try", "scrypt$w").is_err(), "过期的码不能注册");
     }
 
     #[test]

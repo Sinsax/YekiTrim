@@ -143,10 +143,15 @@ async fn tick(state: &Arc<AppState>) -> Result<()> {
         let last = LAST_SCAN.load(std::sync::atomic::Ordering::Relaxed);
         if now - last >= interval * 60 {
             LAST_SCAN.store(now, std::sync::atomic::Ordering::Relaxed);
-            match scan_recorder(state, &cfg) {
-                Ok(n) if n > 0 => tracing::info!("兜底扫描：新登记 {n} 个完整录像"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("兜底扫描失败: {e:#}"),
+            // 递归 read_dir + 逐文件 metadata（录播根可能在网络盘上）→ 下 blocking 池
+            let st = state.clone();
+            let cfg_for_scan = cfg.clone();
+            let scanned = tokio::task::spawn_blocking(move || scan_recorder(&st, &cfg_for_scan)).await;
+            match scanned {
+                Ok(Ok(n)) if n > 0 => tracing::info!("兜底扫描：新登记 {n} 个完整录像"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!("兜底扫描失败: {e:#}"),
+                Err(e) => tracing::warn!("兜底扫描线程失败: {e}"),
             }
         }
     }
@@ -276,7 +281,103 @@ fn collect_recordings(
     Ok(())
 }
 
-/// 给扫描出来的文件补一个可入库会话（房间目录名 = RoomId；归属来自 channel_map）。
+/// 一条录播姬目录里的录像文件（**只读**扫描结果）。
+#[derive(Debug, Clone)]
+pub struct RecordedFile {
+    /// 相对 `[ingest.recorder] root` 的路径（正斜杠，与 `ingest_files.path` 同一口径）
+    pub rel: String,
+    /// 文件名（列表里显示用）
+    pub name: String,
+    pub size: u64,
+    pub mtime: i64,
+    /// 从路径解析出的房间号（解析不出 = `None`，这种文件不属于任何已知房间）
+    pub room: Option<String>,
+}
+
+/// 某个房间在录像目录里的汇总（房间行上显示"已录 N 个 · 大小"）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomRecordings {
+    pub files: usize,
+    pub bytes: u64,
+    /// 最新一个文件的 mtime（0 = 没有）
+    pub latest: i64,
+}
+
+/// 列出录像目录里的全部录像（**只读**：不登记会话、不改任何库表）。
+///
+/// 递归 `read_dir` + 逐文件 `metadata` 在网盘上可能要几秒 → **调用方必须下 blocking 池**。
+/// 首页「我的直播间」每行要 `已录 N 个 · 大小`、展开又要列文件，同一次页面加载会调两次，
+/// 所以这里带一层短 TTL 缓存（与 `api::probe_cache` 同一个模式，进程级、按 root+扩展名区分）。
+pub fn list_recordings(cfg: &vtrim_core::config::Config) -> Result<Vec<RecordedFile>> {
+    let root = PathBuf::from(cfg.ingest.recorder.root.trim());
+    if !root.is_dir() {
+        bail!("录播姬目录不存在: {}", root.display());
+    }
+    let exts: Vec<String> = cfg
+        .ingest
+        .recorder
+        .extensions
+        .iter()
+        .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+        .collect();
+    let sig = format!("{}|{}", root.display(), exts.join(","));
+    {
+        let (cached_sig, at, files) = recordings_cache().lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if cached_sig == sig && at.elapsed() < RECORDINGS_TTL {
+            return Ok(files);
+        }
+    }
+
+    let mut raw: Vec<(String, PathBuf, u64, i64)> = Vec::new();
+    collect_recordings(&root, &root, &exts, 0, &mut raw)?;
+    let files: Vec<RecordedFile> = raw
+        .into_iter()
+        .map(|(rel, abs, size, mtime)| {
+            let rel = rel.replace('\\', "/");
+            let name = abs
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let room = crate::service::recorder::room_id_from_rel_path(&rel);
+            RecordedFile { rel, name, size, mtime, room }
+        })
+        .collect();
+    *recordings_cache().lock().unwrap_or_else(|e| e.into_inner()) =
+        (sig, std::time::Instant::now(), files.clone());
+    Ok(files)
+}
+
+/// 扫描结果的短 TTL 缓存：`(签名, 时刻, 文件)`。
+type RecordingsCache = (String, std::time::Instant, Vec<RecordedFile>);
+static RECORDINGS_CACHE: std::sync::OnceLock<std::sync::Mutex<RecordingsCache>> =
+    std::sync::OnceLock::new();
+
+/// `Instant::now()` 不是 const，缓存只能惰性建（`OnceLock`，与 `api::probe_cache` 同一模式）。
+fn recordings_cache() -> &'static std::sync::Mutex<RecordingsCache> {
+    RECORDINGS_CACHE.get_or_init(|| {
+        std::sync::Mutex::new((String::new(), std::time::Instant::now(), Vec::new()))
+    })
+}
+const RECORDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// 按房间汇总（只统计能解析出房间号的文件）。
+pub fn room_summaries(files: &[RecordedFile]) -> std::collections::HashMap<String, RoomRecordings> {
+    let mut out: std::collections::HashMap<String, RoomRecordings> = std::collections::HashMap::new();
+    for f in files {
+        let Some(room) = f.room.as_ref() else { continue };
+        let e = out.entry(room.clone()).or_default();
+        e.files += 1;
+        e.bytes += f.size;
+        e.latest = e.latest.max(f.mtime);
+    }
+    out
+}
+
+/// 给扫描出来的文件补一个可入库会话（归属按**路径里的房间号**解析后查 channel_map）。
+///
+/// ⚠️ 房间号必须从路径里**解析**出来，不能拿整个目录名去查：录播姬默认目录名是
+/// `<房间号>-<主播名>`（实测 `26320007-耶斯yeki`），而 `channel_map` 里存的是 `26320007`
+/// —— 直接比会永远匹配不上，扫到的真实录像全被判成"没登记"、掉进待分配池。
 fn register_scan_session(
     state: &Arc<AppState>,
     root: &Path,
@@ -285,16 +386,20 @@ fn register_scan_session(
     cfg: &vtrim_core::config::Config,
 ) -> Result<bool> {
     let db = state.auth.db();
-    let room = abs
+    // 目录名只用来拼 session_id（保持既有格式，避免升级后把同一份录像重复登记成两条会话）
+    let dir = abs
         .parent()
         .and_then(|p| p.strip_prefix(root).ok())
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
+    // 归属用的房间号：优先从相对路径解析，解析不出才退回目录名（保持原行为）
+    let room = crate::service::recorder::room_id_from_rel_path(rel)
+        .unwrap_or_else(|| dir.clone());
     let stem = abs
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "rec".to_string());
-    let session_id = format!("scan-{}-{}", if room.is_empty() { "root" } else { &room }, stem);
+    let session_id = format!("scan-{}-{}", if dir.is_empty() { "root" } else { &dir }, stem);
 
     if let Some(existing) = db.ingest_session(&session_id)? {
         if existing.project_id.is_some() {
@@ -312,13 +417,24 @@ fn register_scan_session(
     let meta = std::fs::metadata(abs).ok();
     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
     db.upsert_ingest_file(rel, Some(&session_id), Some(&room), size, 0, "ingested")?;
+    let already_owned = db
+        .ingest_session(&session_id)?
+        .and_then(|s| s.owner_id)
+        .is_some();
     match rule {
         Some(r) if r.enabled => {
-            db.assign_ingest_session(&session_id, r.user_id, Some(&r.auto_pipeline))?;
+            // 只在没有归属时按规则指派：admin 手动指派过的会话不该被扫描一轮就翻转回去
+            if !already_owned {
+                db.assign_ingest_session(&session_id, r.user_id, Some(&r.auto_pipeline))?;
+            }
             db.set_ingest_state(&session_id, "closing", None)?;
         }
         _ => {
-            db.set_ingest_state(&session_id, "unassigned", None)?;
+            // 同样别打回待分配：扫描每两轮就会走到这里，无脑置 unassigned 会把已经
+            // 指派好的会话一次次踢回池子（`assign` 只把 unassigned→closing，来回震荡）
+            if !already_owned {
+                db.set_ingest_state(&session_id, "unassigned", None)?;
+            }
         }
     }
     let _ = db.audit(
@@ -374,7 +490,7 @@ pub fn is_finalized(s: &IngestSessionRow, idle_mins: u32, now: i64) -> bool {
 }
 
 /// 录播姬目录 + 相对路径 → 绝对路径（**囚笼**：§5.2 webhook 路径校验）。
-fn resolve_recorder_path(recorder_root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_recorder_path(recorder_root: &Path, rel: &str) -> Result<PathBuf> {
     let abs = vtrim_core::tenant::ensure_within(recorder_root, Path::new(rel))
         .with_context(|| format!("录像路径越出录播姬目录: {rel}"))?;
     if !abs.is_file() {
@@ -631,7 +747,9 @@ async fn ingest_into(
     let db = state.auth.db();
     let mut moved: Vec<PathBuf> = Vec::new();
 
-    // 1) 搬文件（保留原始文件名，源不删策略的"删源"只发生在跨盘搬运时）
+    // 1) 搬文件（保留原始文件名，源不删策略的"删源"只发生在跨盘搬运时）。
+    //    跨盘时要整段拷贝 GB 级录像 —— 同步做在 async 里会白占一个 HTTP worker 几十秒，
+    //    所以每搬一个都下 blocking 池。
     for src in sources {
         let name = src
             .file_name()
@@ -641,7 +759,10 @@ async fn ingest_into(
             moved.push(dst); // move_into_managed=false：文件本来就在项目目录
             continue;
         }
-        move_file(src, &dst)?;
+        let (s, d) = (src.clone(), dst.clone());
+        tokio::task::spawn_blocking(move || move_file(&s, &d))
+            .await
+            .context("搬运线程失败")??;
         moved.push(dst);
     }
 
@@ -655,7 +776,11 @@ async fn ingest_into(
                 .unwrap_or_else(|| "danmaku.xml".to_string());
             let dst = project_root.join(&name);
             if dst != dm {
-                if let Err(e) = move_file(&dm, &dst) {
+                let (s, d) = (dm.clone(), dst.clone());
+                let moved_dm = tokio::task::spawn_blocking(move || move_file(&s, &d))
+                    .await
+                    .context("弹幕搬运线程失败")?;
+                if let Err(e) = moved_dm {
                     tracing::warn!("弹幕搬运失败（项目仍可跑）: {e:#}");
                     continue;
                 }
@@ -739,7 +864,10 @@ async fn ingest_into(
     Ok(project_id)
 }
 
-/// 启动自动管线任务（新项目 + 自己的 job；已有活动任务时跳过并提示）。
+/// 启动自动管线任务（新项目 + 自己的 job）。
+///
+/// 与手动任务同规则：资源域冲突（同项目在跑别的任务 / 转写撞模型下载）就**排队**，
+/// 不再因为"别的项目有任务在跑"而整条跳过。
 async fn spawn_pipeline(
     state: &Arc<AppState>,
     owner: i64,
@@ -752,19 +880,28 @@ async fn spawn_pipeline(
         return;
     }
     let kind = format!("ingest_{}", pipeline.as_str());
-    let job_id = match state.jobs.create(owner, kind.clone()).await {
-        Ok(id) => id,
-        Err(busy) => {
-            tracing::warn!("自动管线跳过（{busy}）：项目已建好，可手动运行");
-            return;
-        }
-    };
+    let keys = super::scope_key::pipeline_keys(project_id, &stages);
+    // 后台优先级：入库自动管线排在用户点按的任务后面（同档内），不抢占已经在跑的。
+    // 档位按阶段判定，与手动触发同一条规则 —— 入库的转写同样是重活。
+    let class = super::jobs::JobClass::for_pipeline(&stages);
+    let handle = state
+        .jobs
+        .create(
+            owner,
+            super::jobs::JobSpec::new(kind.clone(), "入库后自动处理", keys, class).background(),
+        )
+        .await;
+    let job_id = handle.id.clone();
     state.jobs.attach_project(&job_id, project_id).await;
-    state.jobs.mark_running(&job_id, "入库后自动处理").await;
     let jobs = state.jobs.clone();
     let cancel = state.jobs.cancel_token(&job_id).await;
     let job_for_task = job_id.clone();
-    tokio::spawn(async move {
+    // 自动管线是整段同步代码（转写分钟级）→ 专用任务线程，别占 HTTP worker
+    crate::server::api::spawn_job(jobs.clone(), job_for_task.clone(), move || async move {
+        if handle.wait_start().await.is_err() {
+            jobs.complete(&job_for_task).await;
+            return;
+        }
         let result = crate::server::api::core::run_stages(
             config_file,
             stages,

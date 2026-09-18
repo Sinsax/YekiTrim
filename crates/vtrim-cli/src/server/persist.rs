@@ -83,10 +83,28 @@ pub fn remember_project(config_file: &Path) {
     });
 }
 
-/// 从已知项目列表移除一个 vtrim.toml。
+/// 从已知项目列表移除一个 vtrim.toml（注销项目绑定用）。
+///
+/// **同时清掉 `last_config_file`** —— 这一步不是顺手做的，少了它注销会被静默撤销：
+/// ① 启动流程每次都会把"当前工程"重新写回 `projects[]`（`server/mod.rs` 的
+///    `server_state.projects.push(cfg_str)`）；② `import_legacy_projects` 会把 `projects[]` 里
+/// **"配置文件还在、DB 里没行"** 的路径重新登记到 admin 名下。
+/// 而注销项目**不删任何文件**（用户要求：只注销绑定），所以 `vtrim.toml` 一定还在 ——
+/// 于是"移除了当前正在看的项目 → 重启一次路径回到列表 → 再重启一次项目自己回来"。
+///
+/// 清掉 `last_config_file` 之后，下次启动不再恢复那个工程，上面那条链就断了
+/// （`Workspace::load(None)` 回退到 `CWD/vtrim.toml` 且容忍文件缺失，不会因此启动失败）。
 pub fn forget_project(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
-    update_state(|state| state.projects.retain(|p| p != &cfg));
+    update_state(|state| forget_project_in(state, &cfg));
+}
+
+/// `forget_project` 的**纯逻辑**部分（不落盘，单测直接调它）。
+fn forget_project_in(state: &mut ServerState, cfg: &str) {
+    state.projects.retain(|p| p != cfg);
+    if state.last_config_file.as_deref() == Some(cfg) {
+        state.last_config_file = None;
+    }
 }
 
 /// 旧版（P1 之前）的全局项目列表：`projects` 表接管后由启动流程**只读导入**一次。
@@ -110,4 +128,38 @@ pub fn last_config_file() -> Option<PathBuf> {
         .and_then(|s| s.last_config_file)
         .map(PathBuf::from)
         .filter(|p| p.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(projects: &[&str], last: Option<&str>) -> ServerState {
+        ServerState {
+            last_config_file: last.map(|s| s.to_string()),
+            workspace_root: None,
+            projects: projects.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 注销项目**必须同时清掉 `last_config_file`**，否则移除会被启动流程静默撤销：
+    /// `server/mod.rs` 每次启动都把"当前工程"写回 `projects[]`，而
+    /// `import_legacy_projects` 会把 `projects[]` 里"配置还在、DB 没行"的路径重新登记 ——
+    /// 注销**不删任何文件**，所以那个配置一定还在，项目就会在第二次重启时自己回来。
+    #[test]
+    fn forget_project_clears_the_remembered_last_project() {
+        let mut s = state(&["/a/vtrim.toml", "/b/vtrim.toml"], Some("/a/vtrim.toml"));
+        forget_project_in(&mut s, "/a/vtrim.toml");
+        assert_eq!(s.projects, vec!["/b/vtrim.toml".to_string()]);
+        assert_eq!(s.last_config_file, None, "指向被注销工程的记忆要一起清掉");
+    }
+
+    /// 注销**别的**项目时不能顺手清掉当前记忆（否则下次启动白白丢掉"恢复上次工程"）。
+    #[test]
+    fn forget_project_keeps_an_unrelated_remembered_project() {
+        let mut s = state(&["/a/vtrim.toml", "/b/vtrim.toml"], Some("/a/vtrim.toml"));
+        forget_project_in(&mut s, "/b/vtrim.toml");
+        assert_eq!(s.projects, vec!["/a/vtrim.toml".to_string()]);
+        assert_eq!(s.last_config_file.as_deref(), Some("/a/vtrim.toml"));
+    }
 }

@@ -31,6 +31,12 @@ use super::model::AppState;
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
+/// 登录失败计数表最多留多少个 key（超出后按窗口清理，仍满则不再记新 key）。
+///
+/// 表是按 `用户名|IP` 建的，而用户名**来自请求且不要求存在** —— 不设上限的话，
+/// 逐个换用户名发请求就能把内存吃光（见 [`AuthService::rate_fail`]）。
+const MAX_LOGIN_KEYS: usize = 4096;
+
 /// 监听范围（`/api/health` 的 `listening` 字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Listening {
@@ -65,6 +71,15 @@ impl CurrentUser {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({ "id": self.id, "username": self.username, "role": self.role })
     }
+}
+
+/// 已认证调用者（写进**响应**扩展，供最外层的 `access_log` 中间件记「谁在操作」）。
+///
+/// 请求扩展里的 [`CurrentUser`] 只在被认证层包住的 handler 里可见，挂在最外层的
+/// 访问日志读不到请求扩展 —— 所以认证成功后往响应里再放一份。
+#[derive(Debug, Clone)]
+pub struct Actor {
+    pub username: String,
 }
 
 /// 登录成功后的凭据（交给 handler 写 cookie）。
@@ -135,6 +150,11 @@ impl AuthService {
         &self.db
     }
 
+    /// 账本的 `Arc`（给需要长期持有它的组件，如 LLM 用量 sink）。
+    pub fn db_arc(&self) -> Arc<Db> {
+        Arc::clone(&self.db)
+    }
+
     /// 账号数据目录（启动日志与 `vtrim doctor` 用）。
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
@@ -166,6 +186,16 @@ impl AuthService {
 
     fn rate_fail(&self, key: &str) {
         let mut map = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        // ⚠️ 这张表历史上**只增不减**：`rate_wait` 只在"被查询的同一个 key 已过期"时才删它，
+        // 而攻击者可以每次换一个用户名 → 表被无限撑大（公网部署下就是一条内存 DoS）。
+        // 表过大时先按窗口清一遍；清完仍满就不再记新 key（宁可少一层该 key 的限流，
+        // 也不把内存交给对方 —— 全站按 IP 的限流仍挡着，见 `ratelimit`）。
+        if map.len() >= MAX_LOGIN_KEYS {
+            map.retain(|_, a| a.first.elapsed() < LOGIN_WINDOW);
+            if map.len() >= MAX_LOGIN_KEYS {
+                return;
+            }
+        }
         let entry = map.entry(key.to_string()).or_insert(Attempt { count: 0, first: Instant::now() });
         if entry.first.elapsed() >= LOGIN_WINDOW {
             *entry = Attempt { count: 1, first: Instant::now() };
@@ -220,29 +250,118 @@ impl AuthService {
         }
 
         self.rate_clear(&key);
-        let session_id = kdf::new_token();
-        let csrf = kdf::new_token();
-        let expires_at = db::now_secs() + kdf::SESSION_TTL_SECS;
-        self.db
-            .create_session(&session_id, user.id, &csrf, expires_at, user_agent)
+        let bundle = self.issue_session(user.id, &user.username, &user.role, user.must_change_password, user_agent)
             .map_err(internal)?;
         let _ = self.db.touch_last_login(user.id);
         let _ = self.db.audit_ip(Some(user.id), "login", "", ip);
         // 首次成功登录即删除初始密码文件（删不掉只 warn，§3.5.2）
         user::remove_initial_password_file();
+        Ok(bundle)
+    }
 
+    /// 建会话（登录 / 注册共用）。
+    fn issue_session(
+        &self,
+        user_id: i64,
+        username: &str,
+        role: &str,
+        must_change_password: bool,
+        user_agent: Option<&str>,
+    ) -> Result<SessionBundle> {
+        let session_id = kdf::new_token();
+        let csrf = kdf::new_token();
+        let expires_at = db::now_secs() + kdf::SESSION_TTL_SECS;
+        self.db.create_session(&session_id, user_id, &csrf, expires_at, user_agent)?;
         Ok(SessionBundle {
             session_id: session_id.clone(),
             csrf,
             expires_at,
             user: CurrentUser {
-                id: user.id,
-                username: user.username,
-                role: user.role,
-                must_change_password: user.must_change_password,
+                id: user_id,
+                username: username.to_string(),
+                role: role.to_string(),
+                must_change_password,
                 session_id,
             },
         })
+    }
+
+    /// 邀请码注册（`POST /api/auth/register`，§3.5 之外的自助注册）。
+    ///
+    /// 三重条件缺一不可：注册开关打开（调用方查配置）、邀请码格式/哈希对得上、码未被用过。
+    /// 用户名查重 + 消费码 + 建账号在 DB 层是一次原子操作（`register_with_invite`），
+    /// 所以两个人同时抢同一个码时只有一个能成。注册成功直接建会话（免得再登一次）。
+    pub fn register(
+        &self,
+        username: &str,
+        password: &str,
+        invite: &str,
+        ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> std::result::Result<SessionBundle, LoginError> {
+        let username = username.trim();
+        let internal = |e: anyhow::Error| LoginError::Internal(format!("{e:#}"));
+
+        // 注册也限流：刷邀请码同样是 IP 维度的爆破（key 与登录分开，互不影响）
+        let key = format!("register|{}", ip.unwrap_or("-"));
+        let wait = self.rate_wait(&key);
+        if wait > 0 {
+            return Err(LoginError::RateLimited(wait));
+        }
+        let deny = |msg: &str, key: &str, ip: Option<&str>, this: &Self| {
+            this.rate_fail(key);
+            let _ = this.db.audit_ip(None, "register_failed", msg, ip);
+        };
+
+        if let Err(e) = validate_username(username) {
+            return Err(LoginError::Denied(format!("{e}")));
+        }
+        if let Err(e) = kdf::validate_password(password) {
+            return Err(LoginError::Denied(format!("{e}")));
+        }
+        if let Some(existing) = self.db.find_user_ci(username).map_err(internal)? {
+            // 大小写不敏感：`Admin` 不能顶着 `admin` 注册
+            deny(&format!("username taken: {username}"), &key, ip, self);
+            return Err(LoginError::Denied(format!("用户名已被占用（现有账号 {}）", existing.username)));
+        }
+
+        // 邀请码：明文存在库里（管理员可重复查看），所以这里就是一次明文查表
+        let invite = invite.trim();
+        if !invite.starts_with(kdf::INVITE_PREFIX) {
+            deny("bad invite format", &key, ip, self);
+            return Err(LoginError::Denied("邀请码无效或已被使用".into()));
+        }
+        let now = db::now_secs();
+        let found = self.db.find_invite_by_token(invite).map_err(internal)?;
+        let Some(invite_row) = found.filter(|row| row.is_open(now)) else {
+            // 不存在 / 已用过 / 已撤销 / 已过期 —— 对外都是同一句话
+            deny("invite rejected", &key, ip, self);
+            return Err(LoginError::Denied("邀请码无效或已被使用".into()));
+        };
+
+        let hash = kdf::hash_password(password).map_err(internal)?;
+        let invite_id = invite_row.id;
+        let user_id = self
+            .db
+            .register_with_invite(invite_id, username, &hash)
+            .map_err(|e| {
+                // 建号失败（用户名撞车 / 码被并发抢走）都算注册失败，按失败计数
+                deny(&format!("register rejected: {e:#}"), &key, ip, self);
+                LoginError::Denied(format!("{e}"))
+            })?;
+
+        self.rate_clear(&key);
+        let mut bundle = self
+            .issue_session(user_id, username, "user", false, user_agent)
+            .map_err(internal)?;
+        let _ = self.db.touch_last_login(user_id);
+        let _ = self
+            .db
+            .audit_ip(Some(user_id), "register", &format!("invite_id={invite_id}"), ip);
+        user::remove_initial_password_file();
+        // 注册即登录：角色固定 user（永不自助成为 admin）
+        bundle.user.role = "user".into();
+        Ok(bundle)
     }
 
     pub fn session(&self, session_id: &str) -> Result<Option<SessionRow>> {
@@ -313,8 +432,57 @@ impl AuthService {
     }
 }
 
-/// 客户端 IP，取自 `ConnectInfo`（**不信任 `X-Forwarded-For`**：反代后它不是可信输入，
-/// 见 §3.5.1）。`oneshot` 单测里没有 ConnectInfo 时为 `None`，不影响功能。
+/// 是否信任反向代理转发的 `X-Forwarded-*` 头（`vtrim server --trust-proxy` 打开）。
+///
+/// **默认关，因为这两个头是客户端可以随意伪造的**：
+/// - 伪造 `X-Forwarded-Proto: https` 会让会话 cookie 被标成 `Secure`（于是反代后反而存不下 cookie）；
+/// - 伪造 `X-Forwarded-For` 可以绕过按 IP 的限流（每个请求换一个假 IP）。
+///
+/// 只有部署者明确知道"我前面就是一台可信反代"时才该打开。见 [`resolve_client_ip`]。
+static TRUST_PROXY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 设置是否信任代理头（`server::run` 启动时按 `--trust-proxy` 调一次）。
+pub fn set_trust_proxy(on: bool) {
+    TRUST_PROXY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前是否信任代理头。
+pub fn trust_proxy() -> bool {
+    TRUST_PROXY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 取客户端 IP。
+///
+/// - 默认（`trust_proxy = false`）：只认 socket 对端（`ConnectInfo`）；
+/// - `trust_proxy = true`：改用 `X-Forwarded-For` 的**最后一段**。
+///
+/// ⚠️ 为什么是**最后**一段：自己那台反代是往列表**末尾追加**真实对端的，前面的值全是
+/// 客户端自己填的。取第一段等于把"我是谁"交给请求方声明，限流立刻形同虚设。
+pub fn resolve_client_ip(
+    connect: Option<std::net::SocketAddr>,
+    headers: &HeaderMap,
+    trust_proxy: bool,
+) -> Option<String> {
+    if trust_proxy {
+        if let Some(last) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| {
+                raw.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .next_back()
+            })
+        {
+            return Some(last.to_string());
+        }
+    }
+    connect.map(|a| a.ip().to_string())
+}
+
+/// 客户端 IP，取自 `ConnectInfo`（**默认不信 `X-Forwarded-For`**：反代后它不是可信输入，
+/// 见 §3.5.1；只有 `--trust-proxy` 打开时才改认可信反代追加的那一段，
+/// 见 [`resolve_client_ip`]）。`oneshot` 单测里没有 ConnectInfo 时为 `None`，不影响功能。
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
 
@@ -329,11 +497,15 @@ where
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let ip = parts
+        let connect = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|c| c.0.ip().to_string());
-        Ok(ClientIp(ip))
+            .map(|c| c.0);
+        Ok(ClientIp(resolve_client_ip(
+            connect,
+            &parts.headers,
+            trust_proxy(),
+        )))
     }
 }
 
@@ -351,6 +523,19 @@ pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 自助注册的用户名校验（`vtrim user add` 由管理员建号，不受此限）。
+/// 只挡明显有问题的：空白/控制字符、过长。
+pub fn validate_username(username: &str) -> Result<()> {
+    let n = username.chars().count();
+    if n < 2 || n > 32 {
+        anyhow::bail!("用户名长度需在 2~32 个字符之间");
+    }
+    if username.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("用户名不能包含空格或控制字符");
+    }
+    Ok(())
 }
 
 /// 登录成功时下发的两个 cookie：会话（HttpOnly）+ CSRF 令牌（JS 可读）。
@@ -387,8 +572,20 @@ pub fn append_cookies(resp: &mut Response, cookies: &[String]) {
     }
 }
 
-/// 请求是否走了 TLS 终止的代理（只看可信代理头，仅作提示，§3.5.9）。
+/// 请求是否走了 TLS 终止的代理。
+///
+/// ⚠️ 只在 `--trust-proxy` 打开时才采信 `X-Forwarded-Proto` —— 这个头任何人都能自己加上，
+/// 不设门控会让"是不是 HTTPS"和"cookie 要不要标 `Secure`"由请求方说了算
+/// （表现为反代后面反而登录不上：cookie 被标了 `Secure` 却是 http 连接）。
 pub fn tls_terminated(headers: &HeaderMap) -> bool {
+    tls_terminated_with(headers, trust_proxy())
+}
+
+/// [`tls_terminated`] 的纯函数版本（判定逻辑与全局开关分开，便于确定性地测）。
+fn tls_terminated_with(headers: &HeaderMap, trust_proxy: bool) -> bool {
+    if !trust_proxy {
+        return false;
+    }
     headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
@@ -406,10 +603,47 @@ fn is_safe_method(m: &Method) -> bool {
     matches!(*m, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// `require_password_changed`：仍在使用初始密码时，除改密/登出/自查外一律 403。
+///
+/// **以前这里只有前端一条提示横幅**：服务端不拦，任何直接打 API 的客户端（脚本、curl、
+/// 别人写的前端）都能拿这个会话做所有事。而初始密码会同时写进日志文件与
+/// `initial-admin-password.txt`，等于把凭证摊在磁盘上 —— 所以它必须是一条**服务端**规则，
+/// 与启动时"仍用初始密码则拒绝监听非 loopback"（`server/mod.rs`）配套。
+///
+/// ⚠️ 必须挂在 `require_user` **内层**（`require_user` 先跑并写入 [`CurrentUser`]）；
+/// 反过来挂就看不到用户，等于不生效。挂载顺序见 `api::router` 的注释。
+pub async fn require_password_changed(req: Request, next: Next) -> Response {
+    let must = req
+        .extensions()
+        .get::<CurrentUser>()
+        .map(|u| u.must_change_password)
+        .unwrap_or(false);
+    if !must {
+        return next.run(req).await;
+    }
+    // 放行列表：改密本身、登出、以及"我是谁"（前端靠它显示横幅并弹改密框）。
+    // 注意这里拿到的是 `nest("/api")` **去前缀后**的路径。
+    const ALLOWED: [&str; 3] = ["/me", "/auth/password", "/auth/logout"];
+    if ALLOWED.contains(&req.uri().path()) {
+        return next.run(req).await;
+    }
+    json_error(
+        StatusCode::FORBIDDEN,
+        "仍在使用初始密码，请先修改密码（页面右上角「修改密码」，或 PUT /api/auth/password）",
+    )
+}
+
 /// `require_user`：会话 cookie → 账号快照 → CSRF（写请求）→ 注入 [`CurrentUser`]。
 pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
     match authenticate(&state, &mut req) {
-        Ok(()) => next.run(req).await,
+        Ok(()) => {
+            let actor = actor_of(&req);
+            let mut resp = next.run(req).await;
+            if let Some(a) = actor {
+                resp.extensions_mut().insert(a);
+            }
+            resp
+        }
         Err(resp) => resp,
     }
 }
@@ -420,19 +654,32 @@ pub async fn require_user(State(state): State<Arc<AppState>>, mut req: Request, 
 pub async fn require_admin(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
     match authenticate(&state, &mut req) {
         Ok(()) => {
+            let actor = actor_of(&req);
             let is_admin = req
                 .extensions()
                 .get::<CurrentUser>()
                 .map(|u| u.is_admin())
                 .unwrap_or(false);
-            if is_admin {
+            let mut resp = if is_admin {
                 next.run(req).await
             } else {
                 json_error(StatusCode::FORBIDDEN, "仅管理员可访问该接口")
+            };
+            // 403 也带上操作者：访问日志里能看出"是谁被拒了"
+            if let Some(a) = actor {
+                resp.extensions_mut().insert(a);
             }
+            resp
         }
         Err(resp) => resp,
     }
+}
+
+/// 已认证调用者 → 响应扩展（见 [`Actor`]）。
+fn actor_of(req: &Request) -> Option<Actor> {
+    req.extensions()
+        .get::<CurrentUser>()
+        .map(|u| Actor { username: u.username.clone() })
 }
 
 /// 共用认证：校验会话与 CSRF，并把 [`CurrentUser`] 注入请求扩展。
@@ -568,11 +815,34 @@ mod tests {
         assert!(!is_safe_method(&Method::DELETE));
     }
 
+    /// 代理头只有在 `--trust-proxy` 打开时才被采信；默认一律不认。
     #[test]
-    fn tls_terminated_reads_proxy_header_only_as_hint() {
-        assert!(tls_terminated(&headers_with(&[("x-forwarded-proto", "https")])));
-        assert!(tls_terminated(&headers_with(&[("x-forwarded-proto", "https, http")])));
-        assert!(!tls_terminated(&headers_with(&[("x-forwarded-proto", "http")])));
-        assert!(!tls_terminated(&HeaderMap::new()));
+    fn tls_terminated_requires_trust_proxy() {
+        let https = headers_with(&[("x-forwarded-proto", "https")]);
+        // 判定逻辑本身（纯函数）：https / 列表取首段 / http / 无头
+        assert!(tls_terminated_with(&https, true));
+        assert!(tls_terminated_with(&headers_with(&[("x-forwarded-proto", "https, http")]), true));
+        assert!(!tls_terminated_with(&headers_with(&[("x-forwarded-proto", "http")]), true));
+        assert!(!tls_terminated_with(&HeaderMap::new(), true));
+        // 门控：关了就是关了，哪怕头里写着 https
+        assert!(!tls_terminated_with(&https, false));
+        // 全局开关默认必须是关的（公开接口上的伪造头不能影响 cookie 的 Secure 判定）
+        assert!(!trust_proxy());
+        assert!(!tls_terminated(&https));
+    }
+
+    /// 客户端 IP：默认只认 socket 对端，`trust_proxy` 打开才认 `X-Forwarded-For` 的**最后**一段。
+    #[test]
+    fn client_ip_ignores_forwarded_header_by_default() {
+        let connect: Option<std::net::SocketAddr> = Some("10.0.0.9:1234".parse().unwrap());
+        let xff = headers_with(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
+        // 默认：只认对端，伪造头无效（否则限流会被逐请求换 IP 绕过）
+        assert_eq!(resolve_client_ip(connect, &xff, false).as_deref(), Some("10.0.0.9"));
+        // 显式信任代理：取最后一段（自己那台反代追加的真实对端），不是客户端自填的第一段
+        assert_eq!(resolve_client_ip(connect, &xff, true).as_deref(), Some("5.6.7.8"));
+        // 信任代理但没有该头 → 退回对端
+        assert_eq!(resolve_client_ip(connect, &HeaderMap::new(), true).as_deref(), Some("10.0.0.9"));
+        // 没有 ConnectInfo（单测的 oneshot）→ None
+        assert_eq!(resolve_client_ip(None, &HeaderMap::new(), false), None);
     }
 }

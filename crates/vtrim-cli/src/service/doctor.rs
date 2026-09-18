@@ -16,8 +16,19 @@ use super::disk;
 use super::instancelock::{self, LockInfo};
 use super::user;
 
+/// `vtrim server` 默认监听端口（唯一一份，其余位置一律引用它）。
+///
+/// 挑 26320 是为了躲开 Windows 的动态端口段与保留段：本机 `netsh int ipv4 show dynamicport tcp`
+/// 从 1024 起（13977 个），保留段实测有 1029–1937 / 5357 / 6633–6862 / 7635–7834 /
+/// 50000–50059 / 59100，而动态段与保留段都会**动态重排**。26320 落在跨平台安全带
+/// 15001–32767 内、不在 Linux 动态段（32768–60999）里，实测可绑。
+///
+/// ⚠️ 老默认是 7788，正好掉在 Windows 保留段 7635–7834 里 —— 那台机器上直接
+/// `10013 WSAEACCES`，而 `netstat` 里**一个监听者都没有**（因为根本不是"被占用"）。
+pub const DEFAULT_PORT: u16 = 26320;
+
 /// 默认探测地址（与 `vtrim server` 默认监听一致）。
-pub const DEFAULT_URL: &str = "http://127.0.0.1:7788";
+pub const DEFAULT_URL: &str = "http://127.0.0.1:26320";
 
 fn line(title: &str) {
     println!();
@@ -118,6 +129,23 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     } else {
         println!("  初始密码文件: 不存在 ✓");
     }
+    // 运行日志（`vtrim server` 每进程一份当天的文件；顺带说清"日志在哪"）
+    let log_dir = data_dir.join("logs");
+    let latest_log = std::fs::read_dir(&log_dir)
+        .ok()
+        .and_then(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("vtrim-") && n.ends_with(".log"))
+                .max()
+        });
+    match latest_log {
+        Some(name) => println!("  运行日志: {}（最新 {name}）", log_dir.display()),
+        None => println!(
+            "  运行日志: {}（暂无；`vtrim server` 运行时会按天写在这里）",
+            log_dir.display()
+        ),
+    }
 
     // ---- 单实例锁 ----
     line("单实例锁");
@@ -142,18 +170,19 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
             let listening = v.get("listening").and_then(|x| x.as_str()).unwrap_or("?");
             let tls = v.get("tls_terminated").and_then(|x| x.as_bool()).unwrap_or(false);
             println!(
-                "  {url}/api/health → 200（版本 {}，listening={listening}，accounts={}，must_change_password={}，tls_terminated={tls}）",
+                "  {url}/api/health → 200（版本 {}，listening={listening}，tls_terminated={tls}）",
                 v.get("version").and_then(|x| x.as_str()).unwrap_or("?"),
-                v.get("accounts").and_then(|x| x.as_u64()).unwrap_or(0),
-                v.get("must_change_password").and_then(|x| x.as_bool()).unwrap_or(false),
             );
             if listening == "remote" && !tls {
                 remote_without_tls = true;
-                println!("  ⚠ 对外监听但未见 TLS 终止：请用 Caddy/nginx 反代 + HTTPS，别直接暴露明文口令");
+                println!(
+                    "  ⚠ 对外监听但未见 TLS 终止：请用 Caddy/nginx 反代 + HTTPS，别直接暴露明文口令。\
+                     \n    （反代部署还要加 `--trust-proxy`，否则服务不采信 X-Forwarded-Proto，这里永远检测不到 TLS）"
+                );
             }
-            if v.get("must_change_password").and_then(|x| x.as_bool()) == Some(true) {
-                println!("  ⚠ 服务仍在使用初始密码：登录后请立即在页面右上角修改");
-            }
+            // ⚠️「是否仍在使用初始密码」不再由 `/api/health` 暴露（未认证接口不该说这件事，
+            // 那等于告诉远端"这台机器还在用初始密码"）。上面「初始密码」那一节直接读本机账本，
+            // 信息比这里更全（逐账号列出）。
         }
         None => println!("  未检测到运行中的服务（默认探测 {DEFAULT_URL}，可用 `--url` 指定）"),
     }
@@ -280,5 +309,14 @@ mod tests {
         // 关闭的端口：必须安静地返回 None，不 panic
         assert!(probe_health("http://127.0.0.1:1").is_none());
         assert!(probe_health("not-a-url").is_none());
+    }
+
+    /// 默认端口与默认探测地址必须指向同一个端口（改一个忘另一个 = `vtrim doctor` 探测不到自己）。
+    #[test]
+    fn default_url_matches_default_port() {
+        assert!(
+            DEFAULT_URL.ends_with(&format!(":{}", DEFAULT_PORT)),
+            "DEFAULT_URL({DEFAULT_URL}) 与 DEFAULT_PORT({DEFAULT_PORT}) 不一致"
+        );
     }
 }

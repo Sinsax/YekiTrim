@@ -12,13 +12,17 @@ mod workspace;
 // 多用户服务 P1：账号账本 / 口令 KDF / 单实例锁 / `vtrim user` CLI
 // 这三个模块同时被 `server`（HTTP 会话、启动预检）与 `user` CLI 使用，
 // 因此按 `service → server` 单向依赖显式 pub，不再层层转发。
+pub mod assets;
 pub mod auth;
 pub mod db;
 pub mod disk;
 pub mod doctor;
 pub mod ingest;
 pub mod instancelock;
+pub mod invite;
 pub mod projects;
+pub mod recorder;
+pub mod usage;
 pub mod user;
 
 #[allow(unused_imports)]
