@@ -20,7 +20,7 @@ use vtrim_service::db::IngestSessionRow;
 
 use super::auth::CurrentUser;
 use super::model::AppState;
-use crate::server::auth::ClientIp;
+use crate::auth::ClientIp;
 
 type AppError = (StatusCode, Json<serde_json::Value>);
 type ApiResult<T = serde_json::Value> = Result<Json<T>, AppError>;
@@ -336,7 +336,7 @@ pub async fn webhook(
 
     // 立即 2xx：真正的入库/合并/跑管线由 worker 异步做（P3b 起会在这里唤醒 worker）
     if !outcome.duplicate {
-        crate::server::ingest_worker::notify(state.clone(), outcome.session_id.clone());
+        crate::ingest_worker::notify(state.clone(), outcome.session_id.clone());
     }
     ok(serde_json::json!({ "ok": true, "duplicate": outcome.duplicate, "kind": outcome.kind }))
 }
@@ -468,7 +468,7 @@ pub async fn room_recordings(
     }
     // 递归 read_dir + 逐文件 metadata（可能在网络盘上）→ 下 blocking 池
     let cfg_scan = cfg.clone();
-    let files = tokio::task::spawn_blocking(move || crate::server::ingest_worker::list_recordings(&cfg_scan))
+    let files = tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg_scan))
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("列目录线程失败: {e}")))?
         .map_err(internal)?;
@@ -565,7 +565,7 @@ pub async fn import_recording(
     // 路径囚笼 + 必须存在且是文件（与 webhook 同一条校验）；stat 可能落在网络盘 → blocking
     let rel_for_stat = rel.clone();
     let (abs, meta) = tokio::task::spawn_blocking(move || {
-        let abs = crate::server::ingest_worker::resolve_recorder_path(&root, &rel_for_stat)?;
+        let abs = crate::ingest_worker::resolve_recorder_path(&root, &rel_for_stat)?;
         let meta = std::fs::metadata(&abs)?;
         Ok::<_, anyhow::Error>((abs, meta))
     })
@@ -604,7 +604,7 @@ pub async fn import_recording(
         "recording_import",
         &format!("room={room_id} rel={rel}"),
     );
-    crate::server::ingest_worker::notify(state.clone(), Some(session_id.clone()));
+    crate::ingest_worker::notify(state.clone(), Some(session_id.clone()));
     ok(serde_json::json!({ "ok": true, "session_id": session_id }))
 }
 
@@ -704,7 +704,7 @@ pub async fn assign(
         &format!("session={session_id} user={target}"),
     );
     // 指派后立刻唤醒 worker：现在有归属了，可以入库
-    crate::server::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
+    crate::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
     ok(serde_json::json!({ "ok": true }))
 }
 
@@ -727,7 +727,7 @@ pub async fn retry(
     }
     db.set_ingest_state(session_id, "closing", None).map_err(internal)?;
     let _ = db.audit(Some(user.id), "ingest_retry", session_id);
-    crate::server::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
+    crate::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
     ok(serde_json::json!({ "ok": true }))
 }
 
@@ -744,12 +744,12 @@ pub async fn scan_now(State(state): State<Arc<AppState>>) -> ApiResult {
     }
     // 扫描是递归 read_dir + metadata（可能在网络盘上）→ 下 blocking 池，别占 worker
     let st = state.clone();
-    let n = tokio::task::spawn_blocking(move || crate::server::ingest_worker::scan_recorder(&st, &cfg))
+    let n = tokio::task::spawn_blocking(move || crate::ingest_worker::scan_recorder(&st, &cfg))
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("扫描线程失败: {e}")))?
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     // 扫描可能产生新的可入库会话：立刻处理一轮
-    crate::server::ingest_worker::notify(state, None);
+    crate::ingest_worker::notify(state, None);
     ok(serde_json::json!({ "ok": true, "registered": n }))
 }
 

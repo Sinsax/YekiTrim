@@ -899,8 +899,8 @@ async fn rooms_list(
     let summaries = if cfg.ingest.recorder.root.trim().is_empty() {
         None
     } else {
-        match tokio::task::spawn_blocking(move || crate::server::ingest_worker::list_recordings(&cfg)).await {
-            Ok(Ok(files)) => Some(crate::server::ingest_worker::room_summaries(&files)),
+        match tokio::task::spawn_blocking(move || crate::ingest_worker::list_recordings(&cfg)).await {
+            Ok(Ok(files)) => Some(crate::ingest_worker::room_summaries(&files)),
             Ok(Err(e)) => {
                 tracing::warn!("读录像目录失败: {e:#}");
                 None
@@ -1581,7 +1581,7 @@ fn find_first_video(dir: &Path) -> Option<PathBuf> {
 /// 这段逻辑以前是两份拷贝，两边各删一次 `vtrim.toml`；要改就一起改，否则会各处半对。
 ///
 /// ⚠️ `forget_project` 会**同时清掉 `last_config_file`**，这一步不是顺手做的：
-/// 启动流程每次都会把"当前工程"重新写回 `projects[]`（`server/mod.rs`），
+/// 启动流程每次都会把"当前工程"重新写回 `projects[]`（`lib.rs`），
 /// 而 `import_legacy_projects` 会把 `projects[]` 里"文件还在、DB 没行"的路径重新登记 ——
 /// 光删 DB 行的话，移除过的项目会在**第二次重启**时自己回来（详见 `persist::forget_project`）。
 ///
@@ -3098,7 +3098,7 @@ async fn run_pipeline_job(
             jobs.complete(&job_id).await;
             return;
         }
-        let result = crate::server::api::core::run_stages(config_file, run_stages, dry_run, resume, job_id.clone(), jobs.clone(), cancel).await;
+        let result = crate::api::core::run_stages(config_file, run_stages, dry_run, resume, job_id.clone(), jobs.clone(), cancel).await;
         if let Err(e) = result {
             jobs.fail(&job_id, format!("{e:#}")).await;
             return;
@@ -4714,7 +4714,6 @@ async fn polish_render_frame(
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     use vtrim_polish::render::backend::FrameRenderer as _;
-    use vtrim_polish::render::frame::TimedFrame;
 
     let Some(dir) = body.get("dir").and_then(|v| v.as_str()).map(PathBuf::from) else {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "缺少 dir"}))).into_response();
@@ -5090,7 +5089,7 @@ pub(crate) mod core {
     use std::sync::Arc;
     use tokio::runtime::Handle;
 
-    use crate::server::jobs::JobManager;
+    use crate::jobs::JobManager;
 
     /// WebUI 任务执行入口：复用 vtrim_service::core_pipeline，只做 Job/进度桥接。
     pub async fn run_stages(
@@ -5409,7 +5408,7 @@ mod tests {
     /// 任务体 panic 也要把 Job 收尾（否则永远 running、资源键不释放、同项目后续任务全部排队）
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_job_marks_job_failed_on_panic() {
-        let jobs = Arc::new(crate::server::jobs::JobManager::new());
+        let jobs = Arc::new(crate::jobs::JobManager::new());
         let handle = jobs
             .create(1, JobSpec::new("test_panic", "panic 测试", vec!["dir:x".into()], JobClass::Medium))
             .await;
@@ -5650,7 +5649,7 @@ mod tests {
     /// 改全局环境变量会互相踩）。登录本身也走真实 KDF 与真实会话表。
     struct TestApp {
         app: Router,
-        auth: Arc<crate::server::auth::AuthService>,
+        auth: Arc<crate::auth::AuthService>,
         /// 同一个 AppState（任务管理器在它里面）：用例可以直接造"占着资源"的任务来验互斥
         state: Arc<AppState>,
         _dir: tempfile::TempDir,
@@ -5661,7 +5660,7 @@ mod tests {
     }
 
     async fn test_app_with_must_change(must_change: bool) -> TestApp {
-        use crate::server::auth::{AuthService, Listening};
+        use crate::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
         let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
@@ -6300,7 +6299,7 @@ mod tests {
     /// 登录 → `/api/me` → 改密 → `must_change_password` 变 false（§3.5.10 第 1–5 条）。
     #[tokio::test]
     async fn login_me_change_password_flow() {
-        use crate::server::auth::{AuthService, Listening};
+        use crate::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
         let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
@@ -6476,7 +6475,7 @@ mod tests {
     /// 连续错密码触发限流 → 429，且**正确密码也被挡住**（15 分钟内）。
     #[tokio::test]
     async fn login_is_rate_limited_after_five_failures() {
-        use crate::server::auth::{AuthService, Listening};
+        use crate::auth::{AuthService, Listening};
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
         let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
@@ -6772,7 +6771,7 @@ mod tests {
                 JobSpec::new(
                     "stage_detect",
                     "检测",
-                    vec![crate::server::scope_key::project_out(1)],
+                    vec![crate::scope_key::project_out(1)],
                     JobClass::Medium,
                 ),
             )
@@ -6793,7 +6792,7 @@ mod tests {
         let id = j["id"].as_str().unwrap().to_string();
         let detail = t.state.jobs.get(&id).await.unwrap();
         assert_eq!(detail.status, "queued");
-        assert!(detail.resources.contains(&crate::server::scope_key::project_out(1)), "{detail:?}");
+        assert!(detail.resources.contains(&crate::scope_key::project_out(1)), "{detail:?}");
 
         // 排队中被取消：收到 Err 直接收工（不跑管线、不发车）
         assert!(t.state.jobs.cancel(&id).await);
@@ -6823,7 +6822,7 @@ mod tests {
                 JobSpec::new(
                     "polish_render",
                     "渲染 clip-03",
-                    vec![crate::server::scope_key::project_clip(1, "clip-03")],
+                    vec![crate::scope_key::project_clip(1, "clip-03")],
                     JobClass::Heavy,
                 ),
             )
@@ -6849,7 +6848,7 @@ mod tests {
                 JobSpec::new(
                     "stage_detect",
                     "检测",
-                    vec![crate::server::scope_key::project_out(1)],
+                    vec![crate::scope_key::project_out(1)],
                     JobClass::Medium,
                 ),
             )
@@ -7052,7 +7051,7 @@ mod tests {
         // 4) 限流：同一个 IP 连续失败会被锁（邀请码爆破防护）
         let mut limited = false;
         for _ in 0..6 {
-            if let Err(crate::server::auth::LoginError::RateLimited(_)) =
+            if let Err(crate::auth::LoginError::RateLimited(_)) =
                 t.auth.register("bruteforce", "pass-12345678", "vtrim_inv_bbbbbbbbbbbb", Some("10.9.9.9"), None)
             {
                 limited = true;

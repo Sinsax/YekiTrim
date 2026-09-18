@@ -14,7 +14,6 @@ use crate::progress::IndicatifProgress;
 
 mod cli;
 mod progress;
-mod server;
 
 /// 订阅者 = 终端 + 进程内日志总线（设置页「运行日志」/ 日志文件）。
 ///
@@ -68,7 +67,7 @@ fn percent_encode_component(s: &str) -> String {
 /// 尝试把 polish clip 目录定位到所属 vtrim 工程，并启动/打开同一 WebUI 精修页。
 /// 找不到工程时回退旧的独立 preview，保证命令仍然可用。
 async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyhow::Result<()> {
-    use crate::server::ServerArgs;
+    use vtrim_server::ServerArgs;
 
     let abs = if input.is_absolute() {
         input.to_path_buf()
@@ -106,7 +105,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         force: false,
         open_path,
     };
-    crate::server::run(args).await
+    vtrim_server::run(args).await
 }
 
 #[tokio::main]
@@ -313,7 +312,7 @@ Command::Doctor { url } => {
         }
 
 Command::Server(args) => {
-            server::run(args.clone()).await?;
+            vtrim_server::run(args.clone()).await?;
         }
 
         Command::Status => {

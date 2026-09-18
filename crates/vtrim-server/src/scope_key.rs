@@ -149,7 +149,7 @@ mod tests {
         let cut = cut_keys(pid, &out, Some(7));
         let pol = polish_keys(Some(pid), &out.join("clips").join("clip-07"));
         assert!(
-            crate::server::jobs::resources_conflict(&cut, &pol),
+            crate::jobs::resources_conflict(&cut, &pol),
             "单条重切与同片段精修必须互斥: {cut:?} vs {pol:?}"
         );
     }
@@ -161,7 +161,7 @@ mod tests {
         let cut = cut_keys(pid, &out, None);
         let pol = polish_keys(Some(pid), &out.join("clips").join("clip-02"));
         assert!(
-            !crate::server::jobs::resources_conflict(&cut, &pol),
+            !crate::jobs::resources_conflict(&cut, &pol),
             "全切只动没有 clip.mp4 的目录，不该挡住精修: {cut:?} vs {pol:?}"
         );
     }
@@ -171,7 +171,7 @@ mod tests {
         let out = std::path::PathBuf::from(r"F:\proj\output");
         let a = polish_keys(Some(1), &out.join("clips").join("clip-01"));
         let b = polish_keys(Some(1), &out.join("clips").join("clip-02"));
-        assert!(!crate::server::jobs::resources_conflict(&a, &b));
+        assert!(!crate::jobs::resources_conflict(&a, &b));
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
         // 一端有 pid、一端没有：路径键必须兜住
         let with_pid = polish_keys(Some(9), &dir);
         let without = polish_keys(None, &dir);
-        assert!(crate::server::jobs::resources_conflict(&with_pid, &without));
+        assert!(crate::jobs::resources_conflict(&with_pid, &without));
     }
 
     #[test]

@@ -86,7 +86,7 @@ pub fn remember_project(config_file: &Path) {
 /// 从已知项目列表移除一个 vtrim.toml（注销项目绑定用）。
 ///
 /// **同时清掉 `last_config_file`** —— 这一步不是顺手做的，少了它注销会被静默撤销：
-/// ① 启动流程每次都会把"当前工程"重新写回 `projects[]`（`server/mod.rs` 的
+/// ① 启动流程每次都会把"当前工程"重新写回 `projects[]`（`lib.rs` 的
 ///    `server_state.projects.push(cfg_str)`）；② `import_legacy_projects` 会把 `projects[]` 里
 /// **"配置文件还在、DB 里没行"** 的路径重新登记到 admin 名下。
 /// 而注销项目**不删任何文件**（用户要求：只注销绑定），所以 `vtrim.toml` 一定还在 ——
@@ -143,7 +143,7 @@ mod tests {
     }
 
     /// 注销项目**必须同时清掉 `last_config_file`**，否则移除会被启动流程静默撤销：
-    /// `server/mod.rs` 每次启动都把"当前工程"写回 `projects[]`，而
+    /// `lib.rs` 每次启动都把"当前工程"写回 `projects[]`，而
     /// `import_legacy_projects` 会把 `projects[]` 里"配置还在、DB 没行"的路径重新登记 ——
     /// 注销**不删任何文件**，所以那个配置一定还在，项目就会在第二次重启时自己回来。
     #[test]

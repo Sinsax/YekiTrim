@@ -16,6 +16,11 @@ use axum::response::IntoResponse;
 /// 1. 仓库内 `webui/dist`（开发/源码运行）
 /// 2. 可执行文件同级 `webui/dist`（发行包）
 /// 3. 当前工作目录下 `webui/dist`
+///
+/// ⚠️ 第 1 条的 `../..` 是**按 crate 深度**算的：`crates/vtrim-server` → 仓库根。
+/// 本 crate 从 `crates/vtrim-cli/src/server/` 搬出来时深度没变（都是 `crates/<crate>`），
+/// 所以路径照旧。**别把本 crate 挪到更深的目录**（如 `crates/server/vtrim-server`）——
+/// 那时 `../..` 指到 `crates/`，WebUI 会静默 404（构建与测试都不报错）。
 fn candidates() -> Vec<PathBuf> {
     let mut out = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
