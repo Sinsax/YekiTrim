@@ -23,6 +23,7 @@ use futures_util::{StreamExt, stream::Stream};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use crate::service::Workspace;
+use crate::service::logbus;
 
 use super::model::AppState;
 use super::scope::Scope;
@@ -778,7 +779,7 @@ struct LogsQuery {
 /// 服务端日志含其他用户的工程路径与任务输出，因此**仅 admin**（与 `/api/admin/*` 一致）。
 async fn admin_logs(Query(q): Query<LogsQuery>) -> ApiResult {
     let limit = q.limit.unwrap_or(200).clamp(1, 500);
-    let bus = super::logbus::bus();
+    let bus = logbus::bus();
     let (records, latest) = bus.snapshot(q.after.unwrap_or(0), limit);
     ok(serde_json::json!({ "records": records, "latest": latest }))
 }
@@ -805,7 +806,7 @@ async fn admin_usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQu
 /// 先回放环形缓冲里 `seq > after` 的（补上建立连接前的那几秒），再接实时。
 async fn admin_logs_stream(Query(q): Query<LogsQuery>) -> Response {
     let after = q.after.unwrap_or(0);
-    let (history, rx) = super::logbus::bus().subscribe();
+    let (history, rx) = logbus::bus().subscribe();
     let replayed = futures_util::stream::iter(
         history
             .into_iter()
@@ -819,7 +820,7 @@ async fn admin_logs_stream(Query(q): Query<LogsQuery>) -> Response {
         .into_response()
 }
 
-fn log_sse(rec: &super::logbus::LogRecord) -> Event {
+fn log_sse(rec: &logbus::LogRecord) -> Event {
     Event::default()
         .event("message")
         .data(serde_json::to_string(rec).unwrap_or_else(|_| "{}".into()))
@@ -828,14 +829,14 @@ fn log_sse(rec: &super::logbus::LogRecord) -> Event {
 /// 实时日志流。`Lagged` = 订阅者太慢丢了若干条，**不能**报成错误
 /// （与任务事件流同理），合成一条 warn 让面板自己显示"跳过 N 条"。
 fn log_live_stream(
-    rx: tokio::sync::broadcast::Receiver<super::logbus::LogRecord>,
+    rx: tokio::sync::broadcast::Receiver<logbus::LogRecord>,
 ) -> impl Stream<Item = Event> + Send + 'static {
     BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
             Ok(rec) => Some(log_sse(&rec)),
             Err(BroadcastStreamRecvError::Lagged(n)) => {
-                let (_, latest) = super::logbus::bus().snapshot(0, 1);
-                Some(log_sse(&super::logbus::LogRecord {
+                let (_, latest) = logbus::bus().snapshot(0, 1);
+                Some(log_sse(&logbus::LogRecord {
                     seq: latest,
                     time: chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                     level: "warn".into(),
@@ -7169,13 +7170,13 @@ mod tests {
     #[tokio::test]
     async fn access_log_records_requests_with_actor_and_error_text() {
         use tracing_subscriber::layer::SubscriberExt;
-        let bus = crate::server::logbus::bus();
+        let bus = logbus::bus();
         let before = bus.snapshot(0, 1).1;
         // 线程局部订阅者：只有装上 LogBusLayer，tracing 事件才会进总线
         // （测试进程不会跑 main 的 setup_tracing；guard 出作用域即还原）
         let _sub = tracing::subscriber::set_default(
             tracing_subscriber::registry()
-                .with(crate::server::logbus::LogBusLayer::new(bus.clone())),
+                .with(logbus::LogBusLayer::new(bus.clone())),
         );
 
         let t = test_app().await;
@@ -7220,11 +7221,11 @@ mod tests {
     #[tokio::test]
     async fn access_log_keeps_api_prefix_when_nested() {
         use tracing_subscriber::layer::SubscriberExt;
-        let bus = crate::server::logbus::bus();
+        let bus = logbus::bus();
         let before = bus.snapshot(0, 1).1;
         let _sub = tracing::subscriber::set_default(
             tracing_subscriber::registry()
-                .with(crate::server::logbus::LogBusLayer::new(bus.clone())),
+                .with(logbus::LogBusLayer::new(bus.clone())),
         );
         let t = test_app().await;
         let app = Router::new().nest("/api", t.app.clone());
@@ -7257,10 +7258,10 @@ mod tests {
     #[tokio::test]
     async fn admin_logs_is_admin_only_and_returns_records() {
         use tracing_subscriber::layer::SubscriberExt;
-        let bus = crate::server::logbus::bus();
+        let bus = logbus::bus();
         let _sub = tracing::subscriber::set_default(
             tracing_subscriber::registry()
-                .with(crate::server::logbus::LogBusLayer::new(bus.clone())),
+                .with(logbus::LogBusLayer::new(bus.clone())),
         );
         let t = test_app().await;
         // 先制造一条日志（这次请求本身）
@@ -7324,10 +7325,10 @@ mod tests {
     #[tokio::test]
     async fn admin_logs_stream_replays_history() {
         use tracing_subscriber::layer::SubscriberExt;
-        let bus = crate::server::logbus::bus();
+        let bus = logbus::bus();
         let _sub = tracing::subscriber::set_default(
             tracing_subscriber::registry()
-                .with(crate::server::logbus::LogBusLayer::new(bus.clone())),
+                .with(logbus::LogBusLayer::new(bus.clone())),
         );
         let t = test_app().await;
         let cursor = bus.snapshot(0, 1).1;

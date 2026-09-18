@@ -17,7 +17,6 @@ pub mod auth;
 pub mod ingest;
 pub mod ingest_worker;
 pub mod jobs;
-pub mod logbus;
 pub mod media;
 pub mod model;
 pub mod persist;
@@ -40,6 +39,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::service::instancelock::InstanceLock;
+use crate::service::logbus;
 use crate::service::{self, db};
 use crate::service::Workspace;
 
