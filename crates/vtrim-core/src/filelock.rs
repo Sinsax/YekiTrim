@@ -50,6 +50,36 @@ pub async fn lock_path(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
     lock_for(path).lock_owned().await
 }
 
+type SyncLockMap = Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>;
+
+fn sync_locks() -> &'static SyncLockMap {
+    static LOCKS: OnceLock<SyncLockMap> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn sync_lock_for(path: &Path) -> Arc<Mutex<()>> {
+    let mut map = sync_locks().lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(key(path)).or_default().clone()
+}
+
+/// **同步**版路径锁：给跑在同步上下文里的 read-modify-write 用。
+///
+/// 为什么不让异步版统一：core 管线的 `edit_toml_at`（写 `vtrim.toml`）是同步函数，
+/// 它在阻塞线程上执行，拿不到 tokio 的异步锁；而设置页保存项目配置走的是
+/// `with_path_lock` + 同一个 `edit_toml_at`。两边写的是同一份文件，无锁时后写的会把
+/// 先写的键覆盖掉（管线刚写 `transcript_file`，设置页同时保存别的字段 → 丢一个）。
+///
+/// ⚠️ 只在**微秒级**的文件读改写里用：锁在同步上下文里是阻塞等待，别拿它包 ffmpeg /
+/// 网络请求这类慢操作。另外它是**非重入**的（std Mutex），不能在已持锁的同一线程里再取。
+pub fn with_path_lock_sync<F, T>(path: &Path, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let lock = sync_lock_for(path);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

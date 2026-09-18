@@ -1,5 +1,6 @@
 pub mod types;
 pub mod config;
+pub mod fonts;
 pub mod path;
 pub mod srt;
 pub mod pipeline;

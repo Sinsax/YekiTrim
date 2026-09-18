@@ -14,7 +14,6 @@ pub use llm::{
 
 /// LLM 事件后处理参数
 const MIN_EVENT_SECS: f64 = 30.0; // 最短事件时长（保留细分，兜底 30s）
-const MAX_EVENT_SECS: f64 = 240.0; // 最长事件时长（prompt 要求 3 分钟，兜底 240s）
 const MAX_LABEL_LEN: usize = 40; // 标题长度上限（与 prompt 一致）
 
 pub struct EventDetector;
@@ -380,6 +379,7 @@ async fn process_with_llm(
         llm,
         detect,
         hot_windows,
+        output_dir.parent(),
         Some(&checkpoint_path),
         Some(partial_tx),
     );
@@ -446,8 +446,11 @@ fn extract_hot_windows(
 }
 
 /// 事件后处理管线：丢弃非法 → 按时间排序 → 区间合并 → 边界吸附 → 区间合并兜底
-/// → 最短时长强制 → 相邻间隙合并。
+/// → 最短时长强制 → 重名标题加序号。
 /// LLM 输出顺序不受保证，必须先排序再做区间合并，否则重叠事件会漏合并（事件重合的根因）。
+///
+/// **不做最长时长切分**：曾按 240s 把长事件等分成 `xxx（1/2）`/`（2/2）`，等于把一次连续
+/// 事件拦腰截断成两个片段（用户明确反对）。时长交给 LLM 按话题完整性决定，代码不硬切。
 fn postprocess_events(mut events: Vec<Event>, segments: &[TranscriptSegment]) -> Vec<Event> {
     if events.is_empty() {
         return events;
@@ -467,7 +470,6 @@ fn postprocess_events(mut events: Vec<Event>, segments: &[TranscriptSegment]) ->
     // 吸附可能使相邻事件撞到同一边界，再合并一次兜底
     events = merge_overlapping(events);
     events = enforce_min_duration(events, MIN_EVENT_SECS);
-    events = enforce_max_duration(events, segments, MAX_EVENT_SECS);
     events = disambiguate_duplicate_titles(events);
 
     events
@@ -618,54 +620,145 @@ fn enforce_min_duration(mut events: Vec<Event>, min_secs: f64) -> Vec<Event> {
     events
 }
 
-/// 合并相邻近事件：间隙 ≤ close_gap_secs 无条件合并（过渡句不单独成段）；
-/// 间隙 ≤ gap_secs 且 event_type 相同才合并（同话题内的自然停顿）。
-/// 合并后保留时长更长者的 label/summary，confidence 取最大值。
+/// 解析标题末尾的拆分后缀 `（i/n）` → `(基名, i, n)`；不是这个格式就返回 None。
+fn split_suffix(label: &str) -> Option<(&str, u32, u32)> {
+    const OPEN: char = '（';
+    const CLOSE: char = '）';
+    let s = label.trim_end();
+    let close = s.rfind(CLOSE)?;
+    if close + CLOSE.len_utf8() != s.len() {
+        return None;
+    }
+    let open = s[..close].rfind(OPEN)?;
+    let (i, n) = s[open + OPEN.len_utf8()..close].split_once('/')?;
+    let i: u32 = i.trim().parse().ok()?;
+    let n: u32 = n.trim().parse().ok()?;
+    if n < 2 || i == 0 || i > n {
+        return None;
+    }
+    let base = s[..open].trim_end();
+    if base.is_empty() {
+        return None;
+    }
+    Some((base, i, n))
+}
 
-/// 最长时长强制：超过 max_secs 的事件沿内部最大停顿/间隔拆分为多个片段。
-/// 优先在 ASR 段间 gap 最大的位置切，使切割点尽量落在自然停顿处；
-/// 找不到足够 gap 时按时间中点拆。拆出的片段继承原 label，并加（上/中/下）或（续）后缀。
-fn enforce_max_duration(
-    mut events: Vec<Event>,
-    segments: &[TranscriptSegment],
-    max_secs: f64,
-) -> Vec<Event> {
-    let _ = segments; // 等分切分，不依赖 ASR 边界（保证每段严格不超长）
-    if events.is_empty() || max_secs <= 0.0 {
-        return events;
+/// 把历史上被**等分**出来的 `基名（i/n）` 合回一个事件。
+///
+/// 背景：postprocess 曾按 240s 上限把长事件等分成 `xxx（1/2）`/`xxx（2/2）`
+/// （该逻辑已移除，见 `postprocess_events`），于是一次连续事件在事件列表/切片墙上
+/// 变成两三个片段（用户明确反对）。这个方法收拾**已有**的 events.json：
+/// 合并后取时间并集、基名作标题、摘要用最长的那条、热度/置信度取最高，
+/// **rank 沿用组内最热的一条** —— 已经剪好的片段里至少有一个目录还指向它自己，
+/// 其余旧目录需要用户删掉重切。
+///
+/// 只有「编号 1..=n 齐全 + 条数吻合 + 时间首尾相接」的一组才会合并：
+/// 同名但时间不相邻的事件是 `disambiguate_duplicate_titles` 给两个不同话题加的
+/// 区分后缀，不能被当成等分产物合掉。
+///
+/// 返回 `(合并后的事件, 合并掉的组数)`。
+pub fn merge_split_events(events: Vec<Event>) -> (Vec<Event>, usize) {
+    use std::collections::{HashMap, HashSet};
+    if events.len() < 2 {
+        return (events, 0);
     }
 
-    let mut result: Vec<Event> = Vec::with_capacity(events.len());
-    for ev in events.drain(..) {
-        let start = ev.start.to_seconds();
-        let end = ev.end.to_seconds();
-        let dur = end - start;
-        if dur <= max_secs {
-            result.push(ev);
+    // 按 (基名, n) 分组
+    let mut groups: HashMap<(String, u32), Vec<(u32, usize)>> = HashMap::new();
+    for (idx, ev) in events.iter().enumerate() {
+        if let Some((base, i, n)) = split_suffix(&ev.label) {
+            groups.entry((base.to_string(), n)).or_default().push((i, idx));
+        }
+    }
+
+    let secs = |idx: usize| (events[idx].start.to_seconds(), events[idx].end.to_seconds());
+    let mut merged_at: HashMap<usize, Event> = HashMap::new(); // 组长（组内最早那条）→ 合并结果
+    let mut skipped: HashSet<usize> = HashSet::new();
+    let mut merged_groups = 0usize;
+
+    for ((base, n), mut members) in groups {
+        members.sort_by_key(|(i, _)| *i);
+        // 编号必须 1..=n 齐全
+        if members.len() != n as usize {
+            continue;
+        }
+        if members.iter().enumerate().any(|(k, (i, _))| *i != k as u32 + 1) {
+            continue;
+        }
+        // 时间必须首尾相接（等分产物严格相接；留 1s 容差应付边界吸附与手改）
+        let contiguous = members.windows(2).all(|w| {
+            let (_, prev_end) = secs(w[0].1);
+            let (next_start, _) = secs(w[1].1);
+            (next_start - prev_end).abs() <= 1.0
+        });
+        if !contiguous {
             continue;
         }
 
-        // 等分成 n 段，每段严格 <= max_secs
-        let n = (dur / max_secs).ceil() as usize;
-        let step = dur / n as f64;
+        let hottest = members
+            .iter()
+            .map(|(_, idx)| *idx)
+            .max_by(|a, b| {
+                events[*a]
+                    .popularity
+                    .partial_cmp(&events[*b].popularity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap();
+        let longest = members
+            .iter()
+            .map(|(_, idx)| *idx)
+            .max_by(|a, b| {
+                let (sa, ea) = secs(*a);
+                let (sb, eb) = secs(*b);
+                (ea - sa)
+                    .partial_cmp(&(eb - sb))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap();
 
-        let mut prev = start;
-        for i in 1..n {
-            let cut = start + step * i as f64;
-            let mut piece = ev.clone();
-            piece.start = Timestamp::from_seconds(prev);
-            piece.end = Timestamp::from_seconds(cut);
-            piece.label = format!("{}（{}/{}）", ev.label, i, n);
-            result.push(piece);
-            prev = cut;
+        let lead = members[0].1; // 组内最早那条的位置：结果插回这里，保持时间序
+        let tail = members[members.len() - 1].1;
+        let mut merged = events[hottest].clone();
+        merged.label = base;
+        merged.start = events[lead].start;
+        merged.end = events[tail].end;
+        merged.summary = events[longest].summary.clone();
+        merged.event_type = events[longest].event_type.clone();
+        merged.popularity = members
+            .iter()
+            .map(|(_, idx)| events[*idx].popularity)
+            .fold(0.0, f64::max);
+        merged.confidence = members
+            .iter()
+            .map(|(_, idx)| events[*idx].confidence)
+            .fold(0.0, f64::max);
+        merged.enabled = members.iter().all(|(_, idx)| events[*idx].enabled);
+
+        for (_, idx) in &members {
+            if *idx != lead {
+                skipped.insert(*idx);
+            }
         }
-        let mut last_piece = ev.clone();
-        last_piece.start = Timestamp::from_seconds(prev);
-        last_piece.end = Timestamp::from_seconds(end);
-        last_piece.label = format!("{}（{}/{}）", ev.label, n, n);
-        result.push(last_piece);
+        merged_at.insert(lead, merged);
+        merged_groups += 1;
     }
-    result
+
+    if merged_groups == 0 {
+        return (events, 0);
+    }
+
+    let mut out: Vec<Event> = Vec::with_capacity(events.len());
+    for (idx, ev) in events.into_iter().enumerate() {
+        if skipped.contains(&idx) {
+            continue;
+        }
+        match merged_at.remove(&idx) {
+            Some(merged) => out.push(merged),
+            None => out.push(ev),
+        }
+    }
+    (out, merged_groups)
 }
 
 fn disambiguate_duplicate_titles(mut events: Vec<Event>) -> Vec<Event> {
@@ -935,9 +1028,8 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_max_duration_splits_long_event() {
-        // 事件 0~1300s，最大 240s：应至少拆成 6 段，且每段 <= 240s
-        let events = vec![ev(0.0, 1300.0, "超长事件", crate::types::EventType::Chat)];
+    fn test_long_event_is_not_split() {
+        // 回归：postprocess 不再按 240s 等分长事件（用户反对「xxx（1/2）」这种拆分）
         let segments: Vec<TranscriptSegment> = (0..=13)
             .map(|i| {
                 let s = i as f64 * 100.0;
@@ -949,20 +1041,81 @@ mod tests {
                 }
             })
             .collect();
-        let result = enforce_max_duration(events, &segments, 240.0);
-        assert!(result.len() >= 3, "应拆成至少 3 段，实际 {}", result.len());
-        for e in &result {
-            let dur = e.end.to_seconds() - e.start.to_seconds();
-            assert!(dur <= 240.0 + 1e-6, "片段 {} 超过 240s: {}", e.label, dur);
-        }
+        let events = vec![ev(0.0, 1300.0, "超长事件", crate::types::EventType::Chat)];
+        let result = postprocess_events(events, &segments);
+        assert_eq!(result.len(), 1, "长事件不得被等分成多段: {:?}", result.iter().map(|e| &e.label).collect::<Vec<_>>());
+        assert!(!result[0].label.contains("（1/"));
+    }
+
+    fn ev_parts(start: f64, end: f64, label: &str, pop: f64) -> Event {
+        let mut e = ev(start, end, label, crate::types::EventType::Chat);
+        e.popularity = pop;
+        e.rank = 1;
+        e
     }
 
     #[test]
-    fn test_enforce_max_duration_keeps_short_events() {
-        let events = vec![ev(100.0, 300.0, "正常事件", crate::types::EventType::Chat)];
-        let result = enforce_max_duration(events, &[], 240.0);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].label, "正常事件");
+    fn test_merge_split_events_merges_contiguous_group() {
+        // 等分产物：同基名、编号齐全、时间首尾相接 → 合回一个
+        let events = vec![
+            ev_parts(0.0, 100.0, "神婆见我一脸惊恐（1/2）", 0.2),
+            ev_parts(100.0, 200.0, "神婆见我一脸惊恐（2/2）", 0.5),
+            ev_parts(300.0, 400.0, "别的话题", 0.1),
+        ];
+        let (out, groups) = merge_split_events(events);
+        assert_eq!(groups, 1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].label, "神婆见我一脸惊恐");
+        assert_eq!(out[0].start.to_seconds(), 0.0);
+        assert_eq!(out[0].end.to_seconds(), 200.0);
+        assert_eq!(out[0].popularity, 0.5); // 取组内最高
+        assert_eq!(out[1].label, "别的话题");
+    }
+
+    #[test]
+    fn test_merge_split_events_skips_incomplete_or_noncontiguous() {
+        // 编号不全（只有 1/3）
+        let only_one = vec![ev_parts(0.0, 100.0, "话题（1/3）", 0.1)];
+        assert_eq!(merge_split_events(only_one).1, 0);
+
+        // 同名但时间不相邻：这是 disambiguate 给两个不同话题加的后缀，不能合
+        let disjoint = vec![
+            ev_parts(0.0, 100.0, "同一个话题（1/2）", 0.1),
+            ev_parts(500.0, 600.0, "同一个话题（2/2）", 0.1),
+        ];
+        let (out, groups) = merge_split_events(disjoint);
+        assert_eq!(groups, 0);
+        assert_eq!(out.len(), 2);
+
+        // 编号与时间顺序矛盾（先发生的却是 2/2）→ 不是等分产物，不合并
+        let swapped = vec![
+            ev_parts(0.0, 100.0, "话题（2/2）", 0.1),
+            ev_parts(100.0, 200.0, "话题（1/2）", 0.1),
+        ];
+        assert_eq!(merge_split_events(swapped).1, 0);
+
+        // 数组顺序颠倒但时间首尾相接 → 仍然合并（顺序无关，只看时间）
+        let reversed = vec![
+            ev_parts(100.0, 200.0, "话题（2/2）", 0.1),
+            ev_parts(0.0, 100.0, "话题（1/2）", 0.1),
+        ];
+        let (out, groups) = merge_split_events(reversed);
+        assert_eq!(groups, 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].start.to_seconds(), 0.0);
+        assert_eq!(out[0].end.to_seconds(), 200.0);
+    }
+
+    #[test]
+    fn test_split_suffix_parsing() {
+        assert_eq!(split_suffix("话题（1/2）"), Some(("话题", 1, 2)));
+        assert_eq!(split_suffix("话题（3/3） "), Some(("话题", 3, 3)));
+        assert_eq!(split_suffix("话题"), None);
+        assert_eq!(split_suffix("话题（1/1）"), None); // n < 2 不是拆分
+        assert_eq!(split_suffix("话题（0/2）"), None);
+        assert_eq!(split_suffix("话题（3/2）"), None); // i > n
+        assert_eq!(split_suffix("（1/2）"), None); // 基名为空
+        assert_eq!(split_suffix("话题（1/2）后面还有字"), None);
     }
 
     #[test]
@@ -979,5 +1132,42 @@ mod tests {
         assert_eq!(result[1].label, "同一个话题（2/3）");
         assert_eq!(result[2].label, "同一个话题（3/3）");
         assert_eq!(result[3].label, "另一个话题");
+    }
+
+    /// 只读诊断（不写任何文件）：在**真实** events.json 上干跑 `merge_split_events`，
+    /// 看看会合掉哪些组、合成什么样。
+    ///
+    /// ```bash
+    /// VT_EVENTS_JSON=<项目>/output/events.json \
+    ///   cargo test -p vtrim-core --lib diagnose_merge_splits -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn diagnose_merge_splits() {
+        let Ok(path) = std::env::var("VT_EVENTS_JSON") else {
+            eprintln!("用法: VT_EVENTS_JSON=<events.json 路径> cargo test ... diagnose_merge_splits -- --ignored --nocapture");
+            return;
+        };
+        let raw = std::fs::read_to_string(&path).expect("读取 events.json");
+        let store: crate::types::EventStore = serde_json::from_str(&raw).expect("解析 events.json");
+        let before = store.events.len();
+        let split_events: Vec<&crate::types::Event> =
+            store.events.iter().filter(|e| split_suffix(&e.label).is_some()).collect();
+        let bases: std::collections::HashSet<String> = split_events
+            .iter()
+            .filter_map(|e| split_suffix(&e.label).map(|(b, _, _)| b.to_string()))
+            .collect();
+        println!("{}", path);
+        println!("事件 {} 条，其中带（i/n）后缀 {} 条:", before, split_events.len());
+        for e in &split_events {
+            println!("  rank {:>3} [{:?}] {:.1}s-{:.1}s pop={:.3} {}", e.rank, e.event_type,
+                     e.start.to_seconds(), e.end.to_seconds(), e.popularity, e.label);
+        }
+        let (merged, groups) = merge_split_events(store.events);
+        println!("→ 合并 {} 组，事件 {} → {} 条", groups, before, merged.len());
+        for e in merged.iter().filter(|e| bases.contains(&e.label)) {
+            println!("  合成 rank {:>3} {:.1}s-{:.1}s pop={:.3} {}",
+                     e.rank, e.start.to_seconds(), e.end.to_seconds(), e.popularity, e.label);
+        }
     }
 }

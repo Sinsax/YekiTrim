@@ -1,3 +1,8 @@
+//! ⚠️ **本模块已不被转写流程使用**（2026-09 断句重做后）：
+//! `Transcriber` 现在直接调 `local::transcribe_sensevoice` 拿 **`CharTimeline` + 分段**，
+//! 一次 SenseVoice 同时供两条链路用（single 直接出字幕 / hybrid 当 qwen3 的时间轴）。
+//! 这里再跑一遍 SenseVoice 只为拿 `SpeechSegment` 是**多算一遍**，而且拿不到时间轴 ——
+//! 保留仅为兼容既有调用点，新代码别再用它。
 use std::path::Path;
 
 use anyhow::{bail, Result};
