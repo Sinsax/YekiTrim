@@ -36,13 +36,21 @@ fn default_fx() -> String {
 
 // ===== Tagged Event Enum =====
 
+/// 事件的时间一律是「开始 + 结束」两个绝对秒：`time` = 开始，`end` = 结束。
+///
+/// `end` 写成 `Option` 是为了容错：LLM 偶尔漏写、老工程写的是 `duration`
+/// （由 `vtrim_polish::project::legacy` 在反序列化前换算成 `end`）。缺失时由
+/// `process` 按类型补默认值（`Event::default_end`）——`sfx` 例外，`end` 缺失 =
+/// 用文件原始长度，不补。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     // === 贴图 (统一视觉元素, 来源由 sticker_source 配置决定) ===
     Sticker {
         time: f64,
-        duration: f64,
+        /// 结束秒。「保持」时长的终点；入场 0.35 / 浮起 0.4 / 淡出 0.3 另计。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         /// LLM 生成的描述关键词（贴纸包名，如 "ysyk"）
         keyword: String,
         /// Step2a LLM 选出的语义 tag（如 "害怕"）
@@ -59,22 +67,51 @@ pub enum Event {
         #[serde(default, deserialize_with = "flex_sfx")]
         sfx: Option<String>,
         sfx_volume: Option<f64>,
+        /// **手工定过时间**（编辑器里拖过 / 改过开始·结束）：后处理不再把它吸附到字幕边界、
+        /// 也不再往后延长尾帧（`align_stickers_to_subtitles` / Step 2c 都跳过）。
+        /// 面板上「跟随字幕」清掉它，下一次后处理就恢复自动吸附。缺省 false = 自动。
+        #[serde(default, skip_serializing_if = "is_false")]
+        manual: bool,
     },
 
     // === 运镜 (持续) ===
     Camera {
         time: f64,
-        duration: f64,
-        zoom: String, // "中" | "近"
+        /// 结束秒。普通景别 = 推移到位窗口的终点；`远`（画中画）= 待在画面上的终点。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
+        /// "远"(画中画) | "中" | "近"。缺省中景——只写 `anchor` 的事件也应当能解析。
+        #[serde(default = "default_camera_zoom")]
+        zoom: String,
+        /// 聚焦中心的字面坐标 "x% y%"。由 `anchor` 解析回填，也可直接手写。
+        #[serde(default = "default_camera_origin")]
         origin: String,
+        /// 起点聚焦目标：`liver` | `danmaku` | `sticker` | `center`。
+        /// LLM 只写这个意图，`process` 解析成 `origin`（与贴纸 keyword→name 同一套约定）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<String>,
+        /// 终点聚焦目标。写了就是「从这里移到那里」；不写即原地聚焦。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_to: Option<String>,
+        /// 终点坐标（`process` 由 `anchor_to` 解析回填）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_origin: Option<String>,
+        /// 硬切（切镜）：这一条**整档瞬间到位** —— 事件起点直接给到目标 `zoom`/不动点，
+        /// 不做 0.6s 缓动、也不从上一个落点推过去（画中画「远」本来就是这条规则，
+        /// 现在放开给任意景别）。缺省 false = 平滑运镜。
+        #[serde(default, skip_serializing_if = "is_false")]
+        cut: bool,
+        /// **手工定过时间**（见 `Sticker::manual`）：画中画的 `align_pip_shots` 会跳过它。
+        #[serde(default, skip_serializing_if = "is_false")]
+        manual: bool,
     },
 
     // === 瞬时特效 (所有 sfx 接受布尔值) ===
     Shake {
         time: f64,
         intensity: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -84,8 +121,8 @@ pub enum Event {
     Flash {
         time: f64,
         color: Option<String>,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -94,8 +131,8 @@ pub enum Event {
     },
     Blur {
         time: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -104,8 +141,8 @@ pub enum Event {
     },
     ZoomBounce {
         time: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -114,8 +151,8 @@ pub enum Event {
     },
     Vignette {
         time: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -125,8 +162,8 @@ pub enum Event {
     HueShift {
         time: f64,
         color: Option<String>,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -136,8 +173,8 @@ pub enum Event {
     Stutter {
         time: f64,
         intensity: Option<f64>,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -147,8 +184,8 @@ pub enum Event {
     Split {
         time: f64,
         intensity: Option<f64>,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -157,8 +194,8 @@ pub enum Event {
     },
     Noise {
         time: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -167,8 +204,8 @@ pub enum Event {
     },
     Pulse {
         time: f64,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -178,8 +215,8 @@ pub enum Event {
     ColorShift {
         time: f64,
         color: Option<String>,
-        #[serde(default)]
-        duration: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         #[serde(default)]
         anchor: Option<String>,
         #[serde(default, deserialize_with = "flex_sfx")]
@@ -190,7 +227,8 @@ pub enum Event {
     // === 覆盖层 (持续) ===
     Overlay {
         time: f64,
-        duration: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
         overlay_type: String,
         color: Option<String>,
         opacity: Option<f64>,
@@ -210,10 +248,26 @@ pub enum Event {
         name: String,
         #[serde(default)]
         volume: Option<f64>,
-        /// 播放时长(秒)，不指定则文件原始长度
-        #[serde(default)]
-        duration: Option<f64>,
+        /// 结束秒；不指定则用文件原始长度
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
     },
+}
+
+/// 运镜缺省聚焦中心：画面正中（老行为），有 `anchor` 时由 process 覆盖。
+fn default_camera_origin() -> String {
+    "50% 50%".to_string()
+}
+
+/// 布尔字段「假就序列化时省略」的判定（`skip_serializing_if`）。
+/// 少写一行 `cut = false`，老工程的 TOML 不会被重写成噪音。
+pub(crate) fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// 运镜缺省档位：中景（与 `CameraStyle::factor` 认不出档位时的行为一致）。
+fn default_camera_zoom() -> String {
+    "中".to_string()
 }
 
 impl Event {
@@ -237,12 +291,108 @@ impl Event {
         }
     }
 
-    pub fn duration(&self) -> f64 {
+    /// 结束秒（`None` = 没写，由调用方按 `default_end` 或文件长度兜底）。
+    pub fn end(&self) -> Option<f64> {
         match self {
-            Event::Sticker { duration, .. } => *duration,
-            Event::Camera { duration, .. } => *duration,
-            Event::Overlay { duration, .. } => *duration,
-            _ => 0.5,
+            Event::Sticker { end, .. } => *end,
+            Event::Camera { end, .. } => *end,
+            Event::Shake { end, .. } => *end,
+            Event::Flash { end, .. } => *end,
+            Event::Blur { end, .. } => *end,
+            Event::ZoomBounce { end, .. } => *end,
+            Event::Vignette { end, .. } => *end,
+            Event::HueShift { end, .. } => *end,
+            Event::Stutter { end, .. } => *end,
+            Event::Split { end, .. } => *end,
+            Event::Noise { end, .. } => *end,
+            Event::Pulse { end, .. } => *end,
+            Event::ColorShift { end, .. } => *end,
+            Event::Overlay { end, .. } => *end,
+            Event::Sfx { end, .. } => *end,
+        }
+    }
+
+    /// 写入结束秒（`None` = 清空，回到「按默认值兜底」）。
+    pub fn set_end(&mut self, value: Option<f64>) {
+        match self {
+            Event::Sticker { end, .. } => *end = value,
+            Event::Camera { end, .. } => *end = value,
+            Event::Shake { end, .. } => *end = value,
+            Event::Flash { end, .. } => *end = value,
+            Event::Blur { end, .. } => *end = value,
+            Event::ZoomBounce { end, .. } => *end = value,
+            Event::Vignette { end, .. } => *end = value,
+            Event::HueShift { end, .. } => *end = value,
+            Event::Stutter { end, .. } => *end = value,
+            Event::Split { end, .. } => *end = value,
+            Event::Noise { end, .. } => *end = value,
+            Event::Pulse { end, .. } => *end = value,
+            Event::ColorShift { end, .. } => *end = value,
+            Event::Overlay { end, .. } => *end = value,
+            Event::Sfx { end, .. } => *end = value,
+        }
+    }
+
+    /// 缺省结束秒 = `time + 该类型的默认时长`。
+    /// 与 `process::fx::transient_default_duration` 的瞬时表一致（那份表还管上限，
+    /// 这里只在「没写 end」时兜底，且不夹上限 —— 夹取在 `normalize_event_ends`）。
+    pub fn default_end(&self) -> f64 {
+        let t = self.get_time();
+        t + match self {
+            Event::Sticker { .. } => 2.0,
+            Event::Camera { .. } => 1.0,
+            Event::Overlay { .. } => 1.5,
+            Event::Shake { .. } => 0.3,
+            Event::Flash { .. } => 0.25,
+            Event::Blur { .. } => 0.3,
+            Event::ZoomBounce { .. } => 0.4,
+            Event::Vignette { .. } => 0.4,
+            Event::HueShift { .. } => 0.35,
+            Event::Stutter { .. } => 0.25,
+            Event::Split { .. } => 0.25,
+            Event::Noise { .. } => 0.3,
+            Event::Pulse { .. } => 0.4,
+            Event::ColorShift { .. } => 0.35,
+            // 音效不补：`None` 是「用文件原始长度」的合法语义
+            Event::Sfx { .. } => 0.0,
+        }
+    }
+
+    /// 结束秒（兜底后）；`sfx` 缺 end 时返回 `None`（= 文件原始长度）。
+    pub fn end_or_default(&self) -> Option<f64> {
+        match self.end() {
+            Some(e) => Some(e),
+            None => match self {
+                Event::Sfx { .. } => None,
+                _ => Some(self.default_end()),
+            },
+        }
+    }
+
+    /// 时间是不是**手工定的**（只有贴纸与运镜有这个概念，其余类型恒 false）。
+    pub fn is_time_manual(&self) -> bool {
+        match self {
+            Event::Sticker { manual, .. } | Event::Camera { manual, .. } => *manual,
+            _ => false,
+        }
+    }
+
+    /// 标记/清除「手工时间」。**只有贴纸与运镜有该字段**，其余类型是 no-op。
+    pub fn set_time_manual(&mut self, value: bool) {
+        match self {
+            Event::Sticker { manual, .. } | Event::Camera { manual, .. } => *manual = value,
+            _ => {}
+        }
+    }
+
+    /// 兼容旧调用点（wgpu 的 `timeline.rs`）：结束与开始之差，缺省 0.5s。
+    pub fn duration(&self) -> f64 {
+        match self.end() {
+            Some(e) => (e - self.get_time()).max(0.0),
+            None => match self {
+                Event::Sticker { .. } | Event::Camera { .. } | Event::Overlay { .. } => 0.5,
+                _ => 0.5,
+            },
         }
     }
 }
@@ -283,9 +433,26 @@ pub struct CameraStyle {
     /// 近景特写缩放 (camera zoom="近")
     #[serde(default = "default_zoom_close")]
     pub zoom_close: f64,
+    /// 画中画缩放 (camera zoom="远")。小于 1 = 画面缩小、四周留黑边
+    #[serde(default = "default_zoom_wide")]
+    pub zoom_wide: f64,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl CameraStyle {
+    /// 档位名 → 缩放系数。认不出的档位按中景处理（与渲染侧的历史行为一致）。
+    ///
+    /// 四个渲染/求值路径（render-core、模板 canvas、模板 GSAP、engine.js）都必须走同一张表，
+    /// 否则「预览看到的不是成片」——1.5/1.8 的硬编码就是这么来的。
+    pub fn factor(&self, label: &str) -> f64 {
+        match label.trim() {
+            "近" => self.zoom_close,
+            "远" => self.zoom_wide,
+            _ => self.zoom_mid,
+        }
+    }
 }
 
 impl Default for CameraStyle {
@@ -293,16 +460,28 @@ impl Default for CameraStyle {
         Self {
             zoom_mid: default_zoom_mid(),
             zoom_close: default_zoom_close(),
+            zoom_wide: default_zoom_wide(),
             extra: HashMap::new(),
         }
     }
 }
 
+/// 中景 / 近景倍率。
+///
+/// **只放大不缩小就不会露底**：运镜是绕「不动点」做 `scale`，`s ≥ 1` 时四周边缘一律向外扩张
+/// （`overflow:hidden` 裁掉多出来的部分），画面上不可能出现背景色/背景层；只有画中画
+/// （`zoom_wide < 1`）才刻意留黑边。所以这两个值不存在「推得太近会出框」的问题，只有
+/// 「推得够不够近」的观感问题——调大是安全的。
 fn default_zoom_mid() -> f64 {
-    1.15
+    1.3
 }
 fn default_zoom_close() -> f64 {
-    1.3
+    1.5
+}
+/// 画中画倍率：0.55 = 画面缩到 55%，四周黑边各 `(1-0.55)/2×1920 = 432px`
+/// （0.7 时是 288px）。旧工程里的 0.7 由 `cmd_process` 的迁移改成新默认。
+fn default_zoom_wide() -> f64 {
+    0.55
 }
 
 // ===== 字幕样式 =====

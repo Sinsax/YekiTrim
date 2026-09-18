@@ -321,30 +321,43 @@ pub fn get_active_camera(
         let Event::Camera {
             zoom: zoom_name,
             origin,
+            to_origin,
             ..
         } = &c.ev
         else {
             continue;
         };
-        let tgt = if zoom_name == "近" { camera_style.zoom_close } else { camera_style.zoom_mid };
+        let tgt = camera_style.factor(zoom_name);
         let td = (c.duration * 0.5).min(0.6);
         let ce = c.time + td;
         if t < c.time {
             break;
         }
-        if t >= ce {
-            zoom = tgt;
+        // td 为 0 时 ce == c.time，到这里必然走「过渡已结束」分支，不会除零
+        let p = if t >= ce {
+            1.0
         } else {
-            let p = (t - c.time) / td;
-            zoom = lerp(zoom, tgt, super::easing::pow2_out(p));
-        }
-        let o = origin.as_str();
-        if let Some(v) = o.split_whitespace().next().and_then(|s| parse_percent(s)) {
-            ox = v;
-        }
-        if let Some(v) = o.split_whitespace().nth(1).and_then(|s| parse_percent(s)) {
-            oy = v;
-        }
+            super::easing::pow2_out((t - c.time) / td)
+        };
+        zoom = if t >= ce { tgt } else { lerp(zoom, tgt, p) };
+
+        // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
+        // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
+        let mut it = origin.split_whitespace();
+        let ax = it.next().and_then(parse_percent).unwrap_or(ox);
+        let ay = it.next().and_then(parse_percent).unwrap_or(oy);
+        let (bx, by) = match to_origin.as_deref() {
+            Some(to) => {
+                let mut it = to.split_whitespace();
+                (
+                    it.next().and_then(parse_percent).unwrap_or(ax),
+                    it.next().and_then(parse_percent).unwrap_or(ay),
+                )
+            }
+            None => (ax, ay),
+        };
+        ox = lerp(ax, bx, p);
+        oy = lerp(ay, by, p);
     }
 
     CameraState {
@@ -646,53 +659,141 @@ pub fn get_blur(t: f64, items: &[IndexedEvent]) -> f64 {
     0.0
 }
 
+/// 「该色 → 透明」里的**第二档**。
+///
+/// ⚠ **不要用 CSS 的 `transparent`**（它等于 `rgba(0,0,0,0)`）：canvas 的渐变在**非预乘**空间
+/// 插值，`#ff0000 → transparent` 会从中间插出 `rgba(127,0,0,·)` 那种**暗红**。实测同一条
+/// 红色覆盖层（opacity 0.3，同一个源帧、同一个时刻）：
+///   · 第二档 `transparent`          → 画面平均 R **184.12 → 178.82**（红了反而变暗）
+///   · 第二档 `rgba(255,0,0,0)`      → 画面平均 R **184.12 → 193.66**（干净的淡出）
+/// 而 CSS 那边两者**完全等价**（按预乘插值，实测取样逐点相同）—— 所以用 `transparent` 会
+/// 让**浏览器预览与出片观感不一致**，正是覆盖层这一类 bug 的同一个坑。
+/// 认不出的颜色串（命名色等）退回 `transparent`（偏暗，但至少有东西）。
+pub fn overlay_fade_stop(color: &str) -> String {
+    match rgb_triplet(color) {
+        Some((r, g, b)) => format!("rgba({r},{g},{b},0)"),
+        None => "transparent".into(),
+    }
+}
+
+/// 从 `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` 里取 RGB 三元组。
+fn rgb_triplet(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim();
+    if let Some(h) = s.strip_prefix('#') {
+        return match h.len() {
+            3 => {
+                let mut it = h.chars().map(|c| c.to_digit(16).map(|d| (d * 17) as u8));
+                Some((it.next()??, it.next()??, it.next()??))
+            }
+            6 | 8 => {
+                let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+                Some((p(0)?, p(2)?, p(4)?))
+            }
+            _ => None,
+        };
+    }
+    let lower = s.to_ascii_lowercase();
+    let body = lower
+        .strip_prefix("rgba(")
+        .or_else(|| lower.strip_prefix("rgb("))?
+        .split(')')
+        .next()?;
+    let mut nums = body.split(',').map(|p| p.trim().parse::<f64>().ok());
+    let r = nums.next()??.clamp(0.0, 255.0) as u8;
+    let g = nums.next()??.clamp(0.0, 255.0) as u8;
+    let b = nums.next()??.clamp(0.0, 255.0) as u8;
+    Some((r, g, b))
+}
+
+/// 覆盖层「渐变」的有效色档 —— 与 JS `overlayStops(ev)` 逐条对齐。
+///
+/// 四处实现必须同改：本文件、`crates/vtrim-polish/templates/index.html`（出片权威路径）、
+/// `webui/src/polish/engine.js`、`webui/src/components/PolishPreview.vue`（经 engine）。
+///
+/// **返回的色档保证 ≥2 档且无空串**，这不是美观问题：
+/// canvas 按 `addColorStop(i / (n - 1))` 铺档，`n == 1` 时是 `0/0 = NaN` → 抛
+/// `IndexSizeError`，会把整个 chunk 的渲染打断；空串色档则抛 `SyntaxError`。
+/// 老工程与 LLM 一直只写单个 `color`（`colors` 压根没出现过），所以这条兜底是常规路径。
+pub fn overlay_stops(color: &Option<String>, colors: &Option<Vec<String>>) -> Option<Vec<String>> {
+    let cleaned: Vec<String> = colors
+        .iter()
+        .flatten()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if cleaned.len() >= 2 {
+        return Some(cleaned);
+    }
+    // 只剩一档（或只有 color）：按「该色 → 透明」渲染
+    let base = cleaned.into_iter().next().or_else(|| {
+        color
+            .as_ref()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+    })?;
+    let fade = overlay_fade_stop(&base);
+    Some(vec![base, fade])
+}
+
 /// 与 JS `getOverlayState` 一致。
 pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState> {
     for o in items {
         let et = o.time;
         let dur = o.duration.max(0.1);
-        if t >= et && t < et + dur {
-            let dt = t - et;
-            let fade_in = 0.4;
-            let fade_out = 0.4;
-            let mut opacity = match &o.ev {
-                Event::Overlay { opacity, .. } => opacity.unwrap_or(1.0),
-                _ => 1.0,
-            };
-            if dt < fade_in {
-                opacity *= dt / fade_in;
-            } else if dur - dt < fade_out {
-                opacity *= (dur - dt) / fade_out;
-            }
-            if opacity < 0.005 {
-                continue;
-            }
-            match &o.ev {
-                Event::Overlay {
-                    overlay_type,
-                    color,
-                    colors,
-                    shape,
-                    ..
-                } => {
-                    if overlay_type == "color" && color.is_some() {
-                        return Some(OverlayState::Color {
-                            color: color.clone().unwrap(),
-                            opacity,
-                        });
-                    }
-                    if overlay_type == "gradient" && colors.is_some() {
-                        return Some(OverlayState::Gradient {
-                            colors: colors.clone().unwrap(),
-                            shape: shape.clone().unwrap_or_else(|| "linear".into()),
-                            opacity,
-                        });
-                    }
-                }
-                _ => {}
-            }
-            return None;
+        if t < et || t >= et + dur {
+            continue;
         }
+        let dt = t - et;
+        let fade_in = 0.4;
+        let fade_out = 0.4;
+        let mut opacity = match &o.ev {
+            Event::Overlay { opacity, .. } => opacity.unwrap_or(1.0),
+            _ => 1.0,
+        };
+        if dt < fade_in {
+            opacity *= dt / fade_in;
+        } else if dur - dt < fade_out {
+            opacity *= (dur - dt) / fade_out;
+        }
+        if opacity < 0.005 {
+            continue;
+        }
+        let Event::Overlay {
+            overlay_type,
+            color,
+            colors,
+            shape,
+            ..
+        } = &o.ev
+        else {
+            continue;
+        };
+        let stops = overlay_stops(color, colors);
+        if overlay_type == "color" {
+            // color 缺失时退回第一档：面板把类型从「渐变」切到「纯色」不该把颜色弄丢
+            let solid = color
+                .as_ref()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .or_else(|| stops.as_ref().and_then(|s| s.first()).map(|s| s.as_str()));
+            if let Some(c) = solid {
+                return Some(OverlayState::Color {
+                    color: c.to_string(),
+                    opacity,
+                });
+            }
+            continue;
+        }
+        if overlay_type == "gradient" {
+            if let Some(stops) = stops {
+                return Some(OverlayState::Gradient {
+                    colors: stops,
+                    shape: shape.clone().unwrap_or_else(|| "linear".into()),
+                    opacity,
+                });
+            }
+        }
+        // 类型不认识 / 值不全：继续看窗口里的下一条（整窗 bail 会把后面有效的覆盖层一起吃掉）
     }
     None
 }
@@ -873,7 +974,25 @@ fn parse_percent(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::Segment;
+    use crate::types::{Layout, Segment, StyleRoot};
+
+    /// 渲染核不持有 `ProjectFile`（那是 polish 侧 `project::config` 的类型，本 crate 看不到），
+    /// 测试只用到 segments / layout / style 三样，这里给个最小替身。
+    struct Cfg {
+        segments: Vec<Segment>,
+        layout: Layout,
+        style: StyleRoot,
+    }
+
+    impl Cfg {
+        fn example() -> Self {
+            Self {
+                segments: Vec::new(),
+                layout: Layout::default(),
+                style: StyleRoot::default(),
+            }
+        }
+    }
 
     fn event(ev: Event) -> Segment {
         Segment {
@@ -886,21 +1005,83 @@ mod tests {
         }
     }
 
+    /// 只有 origin 的运镜事件（无位移）。
+    fn camera_ev(time: f64, dur: f64, zoom: &str, origin: &str) -> Event {
+        Event::Camera {
+            time,
+            end: Some(time + dur),
+            zoom: zoom.into(),
+            origin: origin.into(),
+            anchor: None,
+            anchor_to: None,
+            to_origin: None, cut: false,
+            manual: false,
+        }
+    }
+
     #[test]
     fn camera_zoom_close_matches_js() {
-        let seg = event(Event::Camera {
-            time: 0.0,
-            duration: 2.0,
-            zoom: "近".into(),
-            origin: "65% 50%".into(),
-        });
-        let mut cfg = ProjectFile::example();
-        cfg.segments = vec![seg];
-        let idx = build_index(&cfg);
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(camera_ev(0.0, 2.0, "近", "65% 50%"))];
+        let idx = build_index(&cfg.segments);
         let cam = get_active_camera(2.0, &idx.camera, &cfg.layout, &cfg.style.camera);
         assert!((cam.zoom - cfg.style.camera.zoom_close).abs() < 1e-9);
         assert!((cam.ox - 0.65 * 1920.0).abs() < 1e-6);
         assert!((cam.oy - 0.5 * 1080.0).abs() < 1e-6);
+    }
+
+    /// 「远」是画中画档：倍率小于 1，且必须真的落到 CameraState 上。
+    /// 渲染侧靠 `|zoom-1| > 0.001` 判断是否施加变换，曾经写成 `> 1` 把这一档整个吞掉。
+    #[test]
+    fn camera_wide_level_is_below_one() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(camera_ev(0.0, 2.0, "远", "50% 50%"))];
+        let idx = build_index(&cfg.segments);
+        let cam = get_active_camera(2.0, &idx.camera, &cfg.layout, &cfg.style.camera);
+        assert!(
+            (cam.zoom - cfg.style.camera.zoom_wide).abs() < 1e-9,
+            "远 档应取 zoom_wide: {}",
+            cam.zoom
+        );
+        assert!(cam.zoom < 1.0, "远 档必须小于 1（画中画）");
+        assert!(cfg.style.camera.zoom_wide < 1.0, "默认配置的 远 档就该是画中画");
+        // 具体数值也钉住：0.55 = 四周各留 432px 黑边（0.7 是迁移前的旧默认）
+        assert_eq!(cfg.style.camera.zoom_wide, 0.55);
+    }
+
+    /// 位移：不动点从 origin 移到 to_origin，与 zoom 同一段窗口、同一条 pow2Out 缓动。
+    #[test]
+    fn camera_pans_origin_over_transition() {
+        let mut cfg = Cfg::example();
+        let ev = match camera_ev(0.0, 4.0, "中", "80% 50%") {
+            Event::Camera { time, end, zoom, origin, anchor, anchor_to, cut, .. } => {
+                Event::Camera {
+                    time,
+                    end,
+                    zoom,
+                    origin,
+                    anchor,
+                    anchor_to,
+                    to_origin: Some("20% 50%".into()),
+                    cut,
+                    manual: false,
+                }
+            }
+            other => other,
+        };
+        cfg.segments = vec![event(ev)];
+        let idx = build_index(&cfg.segments);
+        let cam_at = |t: f64| get_active_camera(t, &idx.camera, &cfg.layout, &cfg.style.camera);
+
+        // 过渡窗口 = min(duration*0.5, 0.6) = 0.6s
+        assert!((cam_at(0.0).ox - 0.80 * 1920.0).abs() < 1e-6, "起点应是 origin");
+        assert!((cam_at(0.6).ox - 0.20 * 1920.0).abs() < 1e-6, "过渡结束应落到 to_origin");
+        // 中点：pow2Out(0.5) = 0.75 → 1536 + (384-1536)*0.75 = 672
+        let mid = cam_at(0.3).ox;
+        assert!((mid - 672.0).abs() < 1e-6, "中点应在两者之间: {mid}");
+        assert!((cam_at(1.5).ox - 0.20 * 1920.0).abs() < 1e-6, "过渡结束后不再变");
+        // y 没有终点，全程不动
+        assert!((cam_at(0.3).oy - 0.5 * 1080.0).abs() < 1e-6);
     }
 
     #[test]
@@ -908,14 +1089,14 @@ mod tests {
         let seg = event(Event::Shake {
             time: 1.0,
             intensity: 14.0,
-            duration: Some(0.3),
+            end: Some(1.3),
             anchor: None,
             sfx: None,
             sfx_volume: None,
         });
-        let mut cfg = ProjectFile::example();
+        let mut cfg = Cfg::example();
         cfg.segments = vec![seg];
-        let idx = build_index(&cfg);
+        let idx = build_index(&cfg.segments);
         assert_eq!(
             get_shake(1.01, &idx.shake),
             ShakeState { x: 14.0, y: -14.0 }
@@ -937,14 +1118,14 @@ mod tests {
     fn vignette_matches_js_hold_and_fade() {
         let seg = event(Event::Vignette {
             time: 1.0,
-            duration: Some(0.4),
+            end: Some(1.4),
             anchor: None,
             sfx: None,
             sfx_volume: None,
         });
-        let mut cfg = ProjectFile::example();
+        let mut cfg = Cfg::example();
         cfg.segments = vec![seg];
-        let idx = build_index(&cfg);
+        let idx = build_index(&cfg.segments);
         assert_eq!(
             get_vignette(1.0, &idx.vignette),
             VignetteState { opacity: 1.0 }
@@ -987,6 +1168,149 @@ mod tests {
                 },
             ]
         );
+    }
+
+    // ── 覆盖层色档契约（四处实现同改，见 overlay_stops 的文档注释）──────────────
+    fn overlay_ev(
+        time: f64,
+        dur: f64,
+        overlay_type: &str,
+        color: Option<&str>,
+        colors: Option<Vec<&str>>,
+    ) -> Event {
+        Event::Overlay {
+            time,
+            end: Some(time + dur),
+            overlay_type: overlay_type.into(),
+            color: color.map(|c| c.into()),
+            opacity: Some(1.0),
+            colors: colors.map(|v| v.into_iter().map(|c| c.into()).collect()),
+            shape: None,
+            sfx: None,
+            sfx_volume: None,
+            anchor: None,
+        }
+    }
+
+    fn stops(color: Option<&str>, colors: Option<Vec<&str>>) -> Option<Vec<String>> {
+        overlay_stops(
+            &color.map(|c| c.to_string()),
+            &colors.map(|v| v.into_iter().map(|c| c.to_string()).collect()),
+        )
+    }
+
+    #[test]
+    fn overlay_stops_single_color_fades_to_transparent() {
+        assert_eq!(
+            stops(Some("#ff0000"), None),
+            Some(vec!["#ff0000".to_string(), "rgba(255,0,0,0)".to_string()])
+        );
+    }
+
+    /// 第二档必须是**同色零透明**，不能是 CSS 的 `transparent`：canvas 在非预乘空间插值，
+    /// 红 → transparent 会插成暗红（实测画面平均 R 从 184.12 掉到 178.82），
+    /// 而 `rgba(255,0,0,0)` 是干净的淡出（R 升到 193.66）。CSS 那边两者等价。
+    #[test]
+    fn overlay_fade_stop_keeps_hue() {
+        assert_eq!(overlay_fade_stop("#ff0000"), "rgba(255,0,0,0)");
+        assert_eq!(overlay_fade_stop("  #00FF00 "), "rgba(0,255,0,0)");
+        assert_eq!(overlay_fade_stop("#f00"), "rgba(255,0,0,0)");
+        assert_eq!(overlay_fade_stop("#12345678"), "rgba(18,52,86,0)");
+        assert_eq!(overlay_fade_stop("rgba(255,50,50,0.3)"), "rgba(255,50,50,0)");
+        assert_eq!(overlay_fade_stop("rgb(1,2,3)"), "rgba(1,2,3,0)");
+        // 认不出的（命名色）退回 transparent：canvas 里会偏暗，但至少有东西
+        assert_eq!(overlay_fade_stop("rebeccapurple"), "transparent");
+        assert_eq!(overlay_fade_stop(""), "transparent");
+    }
+
+    #[test]
+    fn overlay_stops_single_stop_is_padded_to_two() {
+        // 一档：canvas 的 i/(n-1) 会变成 0/0 = NaN，必须补到两档
+        assert_eq!(
+            stops(Some("#ff0000"), Some(vec!["#00ff00"])),
+            Some(vec!["#00ff00".to_string(), "rgba(0,255,0,0)".to_string()])
+        );
+    }
+
+    #[test]
+    fn overlay_stops_three_stops_kept_verbatim() {
+        // demo 用的是 3 档 + 每档自带 alpha
+        let three = vec!["#140A28CC", "#28143CCC", "#140A2888"];
+        assert_eq!(
+            stops(None, Some(three.clone())),
+            Some(three.into_iter().map(|c| c.to_string()).collect())
+        );
+    }
+
+    #[test]
+    fn overlay_stops_filters_blank_entries() {
+        // 空串色档会让 canvas addColorStop 抛 SyntaxError
+        assert_eq!(
+            stops(None, Some(vec!["#ff0000", "", "   "])),
+            Some(vec!["#ff0000".to_string(), "rgba(255,0,0,0)".to_string()])
+        );
+        assert_eq!(stops(Some("  "), Some(vec!["", " "])), None);
+        assert_eq!(stops(None, None), None);
+    }
+
+    #[test]
+    fn gradient_renders_with_only_color() {
+        // 真实数据 8/8 都是这个形态：overlay_type=gradient + 单个 color，colors 从未出现过
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(overlay_ev(1.0, 3.0, "gradient", Some("#ff0000"), None))];
+        let idx = build_index(&cfg.segments);
+        match get_overlay_state(1.5, &idx.overlay) {
+            Some(OverlayState::Gradient { colors, shape, .. }) => {
+                assert_eq!(colors, vec!["#ff0000".to_string(), "rgba(255,0,0,0)".to_string()]);
+                assert_eq!(shape, "linear");
+            }
+            other => panic!("应解析成渐变，实得 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradient_without_any_color_renders_nothing() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(overlay_ev(1.0, 3.0, "gradient", None, None))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(get_overlay_state(1.5, &idx.overlay), None);
+    }
+
+    #[test]
+    fn color_overlay_falls_back_to_first_stop() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(overlay_ev(
+            1.0,
+            3.0,
+            "color",
+            None,
+            Some(vec!["#00ff00", "#000000"]),
+        ))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(
+            get_overlay_state(1.5, &idx.overlay),
+            Some(OverlayState::Color {
+                color: "#00ff00".into(),
+                opacity: 1.0
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_overlay_type_does_not_swallow_later_overlay() {
+        // 窗口里第一条类型不认识时，要接着看下一条 —— 不能整窗 bail
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![
+            event(overlay_ev(1.0, 3.0, "love", Some("#ff0000"), None)),
+            event(overlay_ev(1.2, 3.0, "gradient", Some("#0033ff"), None)),
+        ];
+        let idx = build_index(&cfg.segments);
+        match get_overlay_state(1.8, &idx.overlay) {
+            Some(OverlayState::Gradient { colors, .. }) => {
+                assert_eq!(colors, vec!["#0033ff".to_string(), "rgba(0,51,255,0)".to_string()]);
+            }
+            other => panic!("应落到第二条覆盖层，实得 {other:?}"),
+        }
     }
 }
 

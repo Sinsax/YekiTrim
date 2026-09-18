@@ -341,6 +341,32 @@ mod tests {
         assert!(m[3][1].abs() < 1e-6);
     }
 
+    /// 画中画档（zoom < 1）：变换是「以不动点为中心缩小」，不是被当成「无缩放」跳过。
+    /// 矩阵作用在顶点位置上，所以缩出来的画面四周留出的就是黑边（source pass 清屏为黑）。
+    #[test]
+    fn wide_zoom_shrinks_around_origin() {
+        let cam = CameraState {
+            zoom: 0.55,
+            ox: 960.0,
+            oy: 540.0,
+        };
+        let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
+        assert!((m[0][0] - 0.55).abs() < 1e-6, "缩放系数: {}", m[0][0]);
+        assert!((m[1][1] - 0.55).abs() < 1e-6);
+        // 不动点在帧心 → NDC 里是纯缩放（矩阵直接输出 NDC，帧心即 NDC 原点）
+        assert!(m[3][0].abs() < 1e-6, "{}", m[3][0]);
+        assert!(m[3][1].abs() < 1e-6, "{}", m[3][1]);
+
+        // 矩阵变换的是 NDC 全屏四边形：角 (-1,-1) 落到 (-0.55,-0.55)，
+        // 即画面缩到 55%、四周各留 22.5%（1920×0.225 = 432px）黑边
+        let nx = m[0][0] * -1.0 + m[3][0];
+        let ny = m[1][1] * -1.0 + m[3][1];
+        assert!((nx + 0.55).abs() < 1e-6, "NDC 左沿: {nx}");
+        assert!((ny + 0.55).abs() < 1e-6, "NDC 下沿: {ny}");
+        let border_px = (1.0_f64 - 0.55) / 2.0 * 1920.0;
+        assert!((border_px - 432.0).abs() < 1e-9);
+    }
+
     #[test]
     fn split_applies_shear_and_scale() {
         let cam = CameraState {
