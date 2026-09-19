@@ -172,6 +172,8 @@ system_prompt = "..."       # 订正 prompt（覆盖内建默认）
 vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
+# 标题+摘要 LLM 传播潜力评分权重（0=关闭；最终热度 = (1-w)*弹幕/字幕热度 + w*LLM评分）
+llm_score_weight = 0.3
 # 检测 system_prompt（修改此处覆盖内建默认）
 system_prompt = "..."
 # 检测 user prompt_template（{segments} 会被替换；留空 = 内建默认）
@@ -323,10 +325,12 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   ⚠️ 实测 0.3s 的 A/B 不划算（`diagnose_head_padding`，3 分钟真实音频、17 个窗口）：
   11 个窗口文本变了、平均对齐命中率 **0.473 → 0.430**（更差），只换来 2 个"整窗从空到有内容"，
   所以**默认关**。想试就设 0.1~0.3 并在**自己素材**上复测。同一旋钮也控制 chunk 解码的左余量。
-- **`max_new_tokens` 默认 512**（曾 2048）：上游 sherpa-onnx 对 qwen3-asr 的默认只有 **128**，
-  而本项目窗口 ≤30 字（≈≤15 秒）——512 已有充足余量。放太大只会让失控解码多说废话
-  （那才是 `<|endoftext|>` 那类长条目的来源）。`max_total_len`（**输入**上限，同样写 2048）**不要动**：
-  60 秒窗口确实需要它，历史上"踩过的坑"多半是它。
+- **`max_new_tokens` 默认 256**（曾 2048/512/128）：固定全局值，不做 per-stream 动态覆盖。
+  上游 sherpa-onnx 对 qwen3-asr 的默认是 **128**；本项目取 256 作为稳定折中：
+  30 字窗口实测正常输出约 20~40 token，余量充足；比 512 更早截断音乐/噪声段的失控输出。
+  如果以后调大 `max_segment_chars`，需要同步调大 `max_new_tokens`。
+  ⚠️ 截断时 C++ 会打 `Result is truncated. max_new_tokens ... too small` 到 stderr。
+  `max_total_len`（**输入**上限，写 2048）**不要动**：60 秒窗口确实需要它，历史上"踩过的坑"多半是它。
 - ⚠️ **`[asr]` 里 `align_model` / `max_segment_duration` / `segment_merge_gap`
   是死旋钮**（全仓库没有任何读取方，只有配置 merge 逻辑）：改它们不会有效果，
   字段只为老 toml 不炸而保留，别再往界面加。（`segment_padding` 已从这份名单里**移出** —— 它现在真的在用。）
@@ -353,8 +357,11 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
   Cutter 取弹幕也走同一条解析（`load_danmaku_auto`，ASS / 录播姬 XML / SRT 都认）——
   以前它单独用 `parse_ass`，XML 弹幕会只有热力图、没有 `clip.dm.srt`。
   只读诊断：`VT_PROJECT_DIR=<项目目录> cargo test -p vtrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture`
-- 综合评分: 有弹幕 `popularity = (0.6×弹幕峰值 + 0.4×弹幕均值 + 字幕密度) / 2`；无弹幕时只用字幕密度
-  （两个分量都是**相对量**：弹幕按全片最热的窗口归一，字幕密度按全部事件的最大值归一）。
+- 综合评分: 基础热度有弹幕 `base = (0.6×弹幕峰值 + 0.4×弹幕均值 + 字幕密度) / 2`，无弹幕时只用字幕密度；
+  再由 LLM 仅根据 `label + summary` 按预测点击率/有趣程度/爆点强度给 0~100 分，
+  `popularity = (1-w)×base + w×(LLM分/100)`，`w = detection.llm_score_weight`（默认 0.3，0=关闭）。
+  评分失败/漏评的条目保留 `base`，不阻断检测。弹幕与字幕密度都是**相对量**：弹幕按全片最热的窗口归一，
+  字幕密度按全部事件的最大值归一。
   按 popularity 降序赋 `rank`，最终按时间排序输出 —— `rank` 就是热度名次，也决定 `clips/clip-NN` 目录名。
 - 后处理: 丢非法 → 排序 → 区间合并 → **边界吸附到 ASR 段边界** → 合并兜底 → 最短 30s（不足吞并相邻）
   → 重名标题加 `（i/n）`。**不做最长时长切分**（曾按 240s 把长事件等分成 `xxx（1/2）`，用户明确反对：
@@ -379,13 +386,18 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
 ### Cutter
 - GPU 加速编码 (NVENC/QSV/AMF 自动检测, 降级 libx264)
 - `ffmpeg -ss {start} -i {input} -t {duration} -c:v {auto_encoder} -preset {auto_preset} {qparam} 23 -pix_fmt yuv420p -c:a aac -movflags +faststart {output}`
-- 命名: `output/clips/clip-{rank:02}/clip.mp4`（**标题不参与命名**，只写进同目录 `clip.json` 与 `publish_config.json` / `clips_order.txt`）
+- 命名: `output/clips/<clip_dir>/clip.mp4`。`clip_dir` 来自 `events.json` 的 `clip_dir`：
+  检测时先按标题/区间匹配旧片段（复用旧目录、保住精修产物），匹配不上再用标题 slug 生成
+  唯一目录名；旧 events.json 没有 `clip_dir` 时回退 `clip-{rank:02}`。目录名不再等于 rank，
+  `rank` 只表示热度名次。
+- `output/clips/index.json` = clips 目录索引（目录 → title/rank/popularity/时间），可从磁盘
+  `clip.json` 重建；Cutter/检测/删除后刷新，`data_clips_impl` 排序优先看 `clip.json` 的 rank。
 - `clip.json` = 剪出时冻结的元数据（`title` / **`summary`** / `event_type` / `popularity` / `rank` /
   `original_start` / `original_end` / `duration`）—— 切片页拿它当"这条片段自己的身份"，
   重新检测换掉 events.json 后照样能显示（见 WebUI 一节「切片与事件的对应关系」）
 - **不覆盖别人的片段**：目标目录已有 `clip.json` 且与本次事件标题不同、区间 IoU < 0.5 →
-  该条剪切报错跳过（`foreign_clip_conflict`，含单测），不让重排后的 rank 撞掉已剪好的成片
-- 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `clip-NN/clip.srt`（弹幕 → `clip-NN/clip.dm.srt`，元数据 → `clip.json`）
+  该条剪切报错跳过（`foreign_clip_conflict`，含单测），不让目录名变化撞掉已剪好的成片
+- 字幕: 从原始 SRT 裁剪时间范围 + 偏移 → `<clip_dir>/clip.srt`（弹幕 → `<clip_dir>/clip.dm.srt`，元数据 → `clip.json`）
 - 输出: `output/publish_config.json` + `output/clips/clips_order.txt` (按弹幕热度降序)
 
 ## WebUI / Server
@@ -480,7 +492,8 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     `[data-v]`（(0,3,0)）天然压过 app.css 的 `.snode:hover`（(0,2,0)），悬停盖不掉。
     **侧栏可向左折叠**（用户要求）：品牌行右侧的折叠按钮 → `.side.mini`（app.css，
     `width:64px` + `transition:width .18s`）。折叠态 = 品牌 V + 折叠按钮（竖排）+
-    项目首字圆头像（`title` 名称·当前阶段，点击直达该项目当前阶段，运行中红点）+
+    项目标识圆头像（**过滤数字/标点/符号**，取标题末尾相邻两个字；多项目按 id 稳定去重，
+    例如 `[2026-08-13 20-54-35-962][好困]` → `好困`；`title` 名称·当前阶段，点击直达当前阶段，运行中红点）+
     底部三图标入口 + 用户头像；展开态保留过滤框与完整项目树。状态在 `stores/ui.js`
     的 `ui.sideCollapsed` / `toggleSide()`，localStorage `vtrim.ui.sideCollapsed`，
     **模块初始化时同步读取**（放 computed 里读会在首帧闪一下展开态）。
@@ -1025,6 +1038,9 @@ merge 条件: String 字段 `!is_empty()`, f64/u32 字段 != 默认值, Vec 字�
     读数 / 保存选框 / 清除选框都在右侧同一块内，预览卡头显示「选框模式 · 运镜已暂停」chip。
     （**别把这些控件放到页头**：页头在片段列表上方、离预览很远，用户实测反馈"按钮不见了"。
     也别只放在预览卡头而让参数与动作分家 —— 用户要求"区域编辑和贴纸来源作为 LLM 剪辑的参数"。）
+    **贴纸来源 UI = 一组可点 chip**（全局可用来源 + 已配置但当前库里没有的来源）；
+    **亮 = 启用、灰 = 停用**，点击即保存 `sticker_source`。不要再加"已选列表 + 输入框 + 添加"
+    的第二套控件（用户要求精简，当前就是太臃肿）。
     **贴纸落点不在 UI 里框选，也不再由 `layout.sticker_area` 决定**：`process` 每次按
     **人物(liver) / 字幕带 / 弹幕区域(danmaku_area) + 真实弹幕带** 反选安全区，在安全区
     **中心**撒点（细节见下条「贴纸落点推导」）。
@@ -1794,7 +1810,7 @@ node webui/scripts/check-overlay.mjs   # 覆盖层色档契约：templates/index
 | `vtrim-core/src/types/mod.rs` | Event, PipelineContext, Transcript |
 | `vtrim-core/src/download.rs` | 模型/binary 下载 + 断点续传 |
 | `vtrim-core/src/asr/local.rs` | sherpa-onnx (CPU only) |
-| `vtrim-core/src/detection/llm.rs` | LLM prompt + API |
+| `vtrim-core/src/detection/llm.rs` | LLM prompt + API（事件检测 / 标题+摘要热度评分） |
 | `vtrim-core/src/detection/mod.rs` | EventDetector + 弹幕热度 |
 | `vtrim-core/src/danmaku/mod.rs` | ASS/SRT 弹幕解析 + 密度 |
 | `vtrim-core/src/danmaku/parser.rs` | ASS Dialogue 解析 |

@@ -11,14 +11,21 @@
 
 ```
 .
-├── crates/               # 源码
-│   ├── vtrim-core/       #   管线编排 + 业务逻辑
-│   ├── vtrim-cli/        #   CLI 入口 (clap)
-│   └── vtrim-polish/     #   GSAP 精修引擎
-├── docs/archived/        #   历史设计文档
-├── AGENTS.md
+├── crates/
+│   ├── vtrim-core/        # 管线编排 + ASR / 事件检测 / 剪切
+│   ├── vtrim-polish/      # GSAP 精修引擎（时间轴 / 贴纸 / 音效 / 封面 / 出片）
+│   ├── vtrim-render-core/ # GPU 绘制原语（被 polish / wasm 使用）
+│   ├── vtrim-service/     # CLI 与 WebUI 共用的领域逻辑（账号 / 项目 / 录播姬 / 用量）
+│   ├── vtrim-server/      # axum HTTP API + WebUI 宿主 + 任务队列（api/ 按领域分模块）
+│   ├── vtrim-cli/         # 入口（clap 命令 + tracing 装配），二进制名 vtrim
+│   ├── vtrim-wasm/        # 浏览器内真渲染预览（独立 target，不在 workspace members 里）
+│   └── xtask/             # 构建 / 打包 / 产物门禁（cargo xtask scan|package）
+├── webui/                 # WebUI 源码（Vue 3 + Vite）；webui/dist 是服务端唯一界面来源，已入库
+├── docs/                  # 设计稿 / 计划 / 发行说明；docs/archived 是历史设计文档
+├── AGENTS.md              # 工程约定（改代码前先读）
+├── ROADMAP.md             # 待排期功能
 ├── Cargo.toml / Cargo.lock
-└── vtrim.toml            # 项目配置 (gitignored)
+└── vtrim.toml             # 项目配置 (gitignored)
 ```
 
 ## 快速开始
@@ -149,7 +156,9 @@ Stage 3 — LLM 分析转写结果，检测高价值事件。
 检测逻辑：
 - LLM API key 非空 → 调用 LLM 分析全部转录段 (单次调用，64k+ 上下文)
 - LLM API key 为空 → 降级为单个默认事件 (覆盖整段视频)
-- 弹幕文件存在 → 计算 10s 窗口密度，输出 `popularity` (0~1) + `rank`
+- 检测到事件后 → 仅凭 `标题+概括` 让 LLM 按预测点击率/有趣程度/爆点强度给传播潜力分；
+  再与弹幕/字幕热度按 `detection.llm_score_weight` 加权，输出 `popularity` (0~1) + `rank`
+  （无弹幕时基础热度只用字幕密度；LLM 评分失败/关闭时回退基础热度）
 - 主播名称 (`detection.vtuber_name`) 非空 → 自动追加到标题末尾
 
 **状态机约束**：需先完成 `transcribe` (current >= 2)。
@@ -476,6 +485,8 @@ backend = "local"            # ASR 后端
 
 [detection]
 danmaku_window_secs = 10
+# 标题+摘要 LLM 传播潜力评分权重（0 = 关闭；最终热度 = (1-w)*弹幕/字幕热度 + w*LLM评分）
+llm_score_weight = 0.3
 silence_threshold_secs = 3.0
 min_segment_secs = 120
 max_segment_secs = 900
@@ -499,6 +510,7 @@ language = "zh"              # ASR 语言
 [detection]
 vtuber_name = ""             # 主播名称 (追加到标题末尾)
 danmaku_window_secs = 10
+llm_score_weight = 0.3       # 标题+摘要 LLM 评分权重；0=关闭
 
 [cutting]
 output_dir = "./output"
@@ -539,10 +551,18 @@ extra_params = { seed = 42, thinking = { type = "disabled" } }
 ## 开发
 
 ```bash
-cargo build                    # 0 warnings
-cargo test --lib danmaku       # ASS 解析 + 密度计算测试
-cargo run -- status            # 查看当前进度
+cargo build                              # 0 warnings
+cargo check -p vtrim-cli --all-targets   # 改 vtrim-server 后必跑（0 warnings）
+cargo test -p vtrim-cli                  # vtrim-server 单测（JobManager / Range / 路由 404 …）
+cargo test -p vtrim-core --lib           # 管线与配置单测
+cargo run -- status                      # 查看当前进度
+node webui/scripts/check-overlay.mjs     # 覆盖层色档契约：templates/index.html ↔ engine.js 对拍
+cd webui && npm install && npm run build # 改 webui/src 后必须重建（dist 已入库）
+cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
 ```
+
+> 依赖方向是**单向**的：`vtrim-service` 绝不 `use vtrim_server::*`；`vtrim-server` 只依赖
+> `vtrim-service`。细节与踩坑记录见 [AGENTS.md](AGENTS.md)。
 
 ## 许可
 
