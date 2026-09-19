@@ -43,45 +43,50 @@
           class="pcard clip-card"
         >
           <span class="ribbon">{{ typeZh[it.view.type] || it.view.type || 'other' }}</span>
-          <div class="head">
+          <div class="head card-title">
             <div>
               <h2>{{ it.view.title }}</h2>
             </div>
           </div>
-          <!-- 只有点预览图才弹出视频预览，卡片其他区域不响应点击 -->
-          <img
-            v-if="hasThumb(it.view.c)"
-            :src="thumbSrc(it.view.c)"
-            class="thumb"
-            alt="海报"
-            title="点击预览片段"
-            @click="previewClip(it.view.c)"
-            @error="$event.target.style.display='none'"
-          >
-          <div class="chips mt-8">
-            <span class="chip b">{{ Math.round(it.view.c.duration_secs) }}s</span>
-            <span class="chip n">{{ Math.round(it.view.c.size_bytes / 1024 / 1024) }}MB</span>
-            <span v-if="Number(it.view.c.danmaku_count)" class="chip a">弹幕 {{ it.view.c.danmaku_count }}</span>
-            <span v-if="Number(it.view.c.subtitle_count)" class="chip n">字幕 {{ it.view.c.subtitle_count }}</span>
+          <!-- 媒体区固定高度：已剪显示缩略图；缺图用虚线占位，保证下面每个区域都从同一高度开始。
+               只有点预览图才弹出视频预览，卡片其他区域不响应点击。 -->
+          <div class="media-slot" :class="{ 'media-empty': !hasThumb(it.view.c) }">
+            <img
+              v-if="hasThumb(it.view.c)"
+              :src="thumbSrc(it.view.c)"
+              class="thumb"
+              alt="海报"
+              title="点击预览片段"
+              @click="previewClip(it.view.c)"
+              @error="$event.target.style.display='none'"
+            >
+            <template v-else>
+              <Icon name="film" :size="22" />
+              <span>剪出后显示预览</span>
+            </template>
+          </div>
+          <!-- tag 统一成一行紧凑文字，不再用多个彩色药丸；状态只保留文字色。
+               导出相关仍**只剩一枚**：出过片或出过封面都算「已导出」；进过精修但还没导出 → 「精修中」。 -->
+          <div class="tag-row mt-8">
+            <span class="tag b">{{ Math.round(it.view.c.duration_secs) }}s</span>
+            <span class="tag n">{{ Math.round(it.view.c.size_bytes / 1024 / 1024) }}MB</span>
+            <span v-if="Number(it.view.c.danmaku_count)" class="tag a">弹幕 {{ it.view.c.danmaku_count }}</span>
+            <span v-if="Number(it.view.c.subtitle_count)" class="tag n">字幕 {{ it.view.c.subtitle_count }}</span>
             <span
               v-if="it.view.orphan"
-              class="chip n orphan-chip"
+              class="tag n orphan-chip"
               title="重新检测后已经没有和它对应的事件了：这里按剪出时的信息显示，删掉重切才会重新关联"
             >独立</span>
-            <!-- 不再显示「已去静音 / 屏蔽 N 段」：屏蔽轨道是精修编辑器内部的事（那里的时间轴有状态与撤销），
-                 对外部列表没有意义 -->
-            <!-- 导出相关**只剩一枚** chip（用户要求：「已精修」+「有封面」合并成「已导出」）：
-                 出过片或出过封面都算 —— 两者都是"精修产物已经落盘"，分成两枚会让同一张卡
-                 经常两枚并排，把"渲了没出封面 / 出了封面没渲"这种小差别放大得很显眼。
-                 进过精修但还没导出 → 「精修中」；从没进过精修 → 不挂 chip（那状态就是"已剪切"本身）。 -->
-            <span v-if="isExported(it.view.c)" class="chip g">已导出</span>
-            <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="chip b">精修中</span>
+            <span v-if="isExported(it.view.c)" class="tag g">已导出</span>
+            <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b">精修中</span>
           </div>
-          <div class="row mt-8">
+          <div class="row mt-8 meta-slot">
             <span class="muted small mono">{{ fmt(it.view.start) }} → {{ fmt(it.view.end) }}</span>
-            <span class="chip b">{{ Math.round(it.view.popularity * 100) }}%</span>
+            <span class="tag b">{{ Math.round(it.view.popularity * 100) }}%</span>
           </div>
-          <div v-if="it.view.summary" class="muted small mt-8">{{ it.view.summary }}</div>
+          <div class="summary-slot mt-8">
+            <div v-if="it.view.summary" class="muted small">{{ it.view.summary }}</div>
+          </div>
           <div class="foot">
             <button v-if="it.view.ev" class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
@@ -102,27 +107,30 @@
           class="pcard clip-card uncut-card"
         >
           <span class="ribbon">{{ typeZh[it.ev.event_type] || it.ev.event_type || 'other' }}</span>
-          <div class="head">
+          <div class="head card-title">
             <div>
               <h2>{{ it.ev.label }}</h2>
             </div>
           </div>
-          <div class="chips mt-8">
-            <span class="chip a">未剪切</span>
-            <span class="chip b">{{ Math.round((it.ev.end_sec || 0) - (it.ev.start_sec || 0)) }}s</span>
-            <span v-if="Number(it.ev.danmaku_count)" class="chip a">弹幕 {{ it.ev.danmaku_count }}</span>
-            <span v-if="Number(it.ev.subtitle_count)" class="chip n">字幕 {{ it.ev.subtitle_count }}</span>
+          <!-- 未剪切事件还没有成片，**不占缩略图区域**：省下来的高度全部让给下面的摘要。 -->
+          <div class="tag-row mt-8">
+            <span class="tag a">未剪切</span>
+            <span class="tag b">{{ Math.round((it.ev.end_sec || 0) - (it.ev.start_sec || 0)) }}s</span>
+            <span v-if="Number(it.ev.danmaku_count)" class="tag a">弹幕 {{ it.ev.danmaku_count }}</span>
+            <span v-if="Number(it.ev.subtitle_count)" class="tag n">字幕 {{ it.ev.subtitle_count }}</span>
             <span
-              v-if="occupiedRanks.has(Number(it.ev.rank))"
-              class="chip r"
+              v-if="!it.ev.clip_dir && occupiedRanks.has(Number(it.ev.rank))"
+              class="tag r"
               title="这个序号上有一个属于别的事件的旧片段：先把它删掉再剪，否则会覆盖它"
             >序号被占用</span>
           </div>
-          <div class="row mt-8">
+          <div class="row mt-8 meta-slot">
             <span class="muted small mono">{{ fmt(it.ev.start_sec) }} → {{ fmt(it.ev.end_sec) }}</span>
-            <span class="chip b">{{ Math.round((it.ev.popularity || 0) * 100) }}%</span>
+            <span class="tag b">{{ Math.round((it.ev.popularity || 0) * 100) }}%</span>
           </div>
-          <div v-if="it.ev.summary" class="muted small mt-8">{{ it.ev.summary }}</div>
+          <div class="summary-slot mt-8">
+            <div v-if="it.ev.summary" class="muted small">{{ it.ev.summary }}</div>
+          </div>
           <div class="foot">
             <button class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
@@ -141,7 +149,7 @@
                     :title="cutBusy
                       ? '该项目正在' + kindText(cutBusy.kind) + '，点下去会排队等它结束'
                       : ''"
-                    @click.stop="cutEvent(it.ev)">{{ cutBusy ? '剪切（排队）' : '剪切' }}</button>
+                    @click.stop="cutEvent(it.ev)">{{ cutBusy ? '排队中' : '剪切' }}</button>
           </div>
         </div>
       </template>
@@ -260,7 +268,11 @@
           <button class="mini-btn" title="全屏" @click="rangeFullscreen"><Icon name="maximize" :size="13" /></button>
         </div>
       </template>
-      <video v-else controls autoplay class="video-lg" :src="playing?.url"></video>
+      <div v-else class="ev-stage">
+        <video controls autoplay class="video-lg" :src="playing?.url"
+               @timeupdate="clipPos = $event.target.currentTime"></video>
+        <div v-if="activeCaption" class="ev-cap">{{ activeCaption }}</div>
+      </div>
     </AppModal>
   </div>
 </template>
@@ -277,13 +289,13 @@ import { toast } from '../stores/toast'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
-import { EVENT_TYPES, TYPE_ZH, fmtClock, mediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf } from '../utils'
 import { readMasterVolume, readMuted, saveMasterVolume, saveMuted } from '../polish/audio'
 
 const props = defineProps({
   project: { type: Object, required: true },
   projectData: { type: Object, default: null },
-  /** 原片播放地址（`inputMediaUrl(status.input_abs)`，由切片页传入）；空串 = 拿不到源视频 */
+  /** 原片播放地址（`mediaUrl(pid, status.input_file)`，由切片页传入）；空串 = 拿不到源视频 */
   sourceUrl: { type: String, default: '' }
 })
 
@@ -355,7 +367,8 @@ const canAddClip = computed(() => {
 })
 
 // ── 排序切换：热度 / 开始时间 / 弹幕量 / 字幕量 ──────────────────
-// 「热度」是**数值**（0~1 的 popularity：弹幕峰值 0.6 + 均值 0.4 + 字幕密度，见 detection::rank_events），
+// 「热度」是**数值**（0~1 的 popularity：弹幕峰值 0.6 + 均值 0.4 + 字幕密度，
+// 再与「标题+概括」LLM 传播潜力分按 detection.llm_score_weight 加权，见 detection::rank_events），
 // 不是 rank —— rank 只是按热度排出来的**名次**，重新检测后整体重排，旧片段就再也排不进去；
 // popularity 两类卡片都有（事件在 events.json、片段在 clip.json 里冻结），所以能一起排。
 const SORT_OPTIONS = [
@@ -499,9 +512,13 @@ const cutClips = computed(() => clips.value
 const uncutEvents = computed(() => uncutEventsOf(events.value, clips.value)
   .slice()
   .sort((a, b) => cmpStats(eventStats(a), eventStats(b))))
-// 序号被别的片段占着的事件：剪之前得先清掉那个目录（服务端 Cutter 也会拒绝覆盖）
+// 旧契约才需要「序号被占用」提示：新事件有 clip_dir，不再拿 rank 当目录名。
+// 这里只统计还能解析出 `clip-NN` 的旧片段；模板里再排除已有 clip_dir 的事件。
 const occupiedRanks = computed(() => new Set(
-  cutClips.value.filter(c => !matchedEventOf(c)).map(c => rankOf(c.name))
+  cutClips.value
+    .filter(c => !matchedEventOf(c))
+    .map(c => rankOf(c.name))
+    .filter(n => n > 0)
 ))
 
 /**
@@ -563,7 +580,8 @@ function secToTs(sec) {
 }
 
 function previewClip(c) {
-  playing.value = { name: c.name, url: mediaUrl(c.dir) }
+  playing.value = { name: c.name, url: clipMediaUrl(props.project?.id, c.name, 'clip.mp4') }
+  loadClipSubs(c)
 }
 
 /** 未剪切事件：播原片并把播放头锁在该事件的区间里（见模板里的区间分支）。 */
@@ -681,6 +699,71 @@ async function ensureTranscript() {
   }
 }
 
+// ── 已剪片段预览：读 clip.srt，按片段本地时间叠字幕 ──────────────
+const clipPos = ref(0)
+const clipSubs = ref([])
+let clipSubsToken = 0
+
+/** 极简 SRT 解析：只认 `00:00:01,000 --> 00:00:03,500` 这种块。 */
+function parseSrtText(raw) {
+  const text = String(raw || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const out = []
+  const toSec = (s) => {
+    const m = String(s || '').trim().match(/^(\d+):(\d+):(\d+)[,.](\d+)$/)
+    if (!m) return NaN
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])
+      + Number(m[4].padEnd(3, '0').slice(0, 3)) / 1000
+  }
+  for (const block of text.split(/\n{2,}/)) {
+    const lines = block.split('\n').map((l) => l.trim()).filter(Boolean)
+    const timeLine = lines.find((l) => l.includes('-->'))
+    if (!timeLine) continue
+    const [a, b] = timeLine.split('-->').map((s) => s.trim().split(/\s+/)[0])
+    const start = toSec(a)
+    const end = toSec(b)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue
+    const body = lines.filter((l) => l !== timeLine && !/^\d+$/.test(l)).join(' ').trim()
+    if (body) out.push({ start, end, text: body })
+  }
+  return out.sort((a, b) => a.start - b.start)
+}
+
+async function loadClipSubs(c) {
+  const token = ++clipSubsToken
+  clipPos.value = 0
+  clipSubs.value = []
+  if (!c || !Number(c.subtitle_count)) return
+  try {
+    const r = await fetch(clipMediaUrl(props.project?.id, c.name, 'clip.srt'))
+    if (token !== clipSubsToken) return
+    if (r.ok) clipSubs.value = parseSrtText(await r.text())
+  } catch {
+    // 没有 clip.srt / 读取失败：不显示字幕即可，不要干扰预览
+  }
+}
+
+/** 已剪片段：video.currentTime 就是 clip.srt 的时间轴。 */
+function clipCaptionAt(t) {
+  const arr = clipSubs.value
+  if (!arr.length) return ''
+  let lo = 0
+  let hi = arr.length - 1
+  let best = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid].start <= t) {
+      best = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  for (let i = best; i >= 0 && i > best - 4; i--) {
+    if (t >= arr[i].start && t < arr[i].end) return arr[i].text
+  }
+  return ''
+}
+
 /** 取 t 时刻的字幕文本：transcript 按 start 升序，二分找最后一条 start ≤ t，
  *  再往回看几条（手动编辑可能造成轻微重叠）。rAF 每帧都会调，别写成线性扫描。 */
 function captionAt(t) {
@@ -706,7 +789,9 @@ function captionAt(t) {
   return ''
 }
 
-const activeCaption = computed(() => (isRangeMode.value ? captionAt(rangePos.value) : ''))
+const activeCaption = computed(() => (
+  isRangeMode.value ? captionAt(rangePos.value) : clipCaptionAt(clipPos.value)
+))
 
 // ── 自写播放控件（原生 controls 那条进度条与标记条坐标系不同，会"对不上"）──
 const rangePlaying = ref(false)
@@ -1205,6 +1290,9 @@ watch(playing, (v) => {
     rangePlaying.value = false
     rangeDuration.value = 0
     rangePos.value = 0
+    clipPos.value = 0
+    clipSubs.value = []
+    clipSubsToken++
   }
 })
 onUnmounted(() => {
@@ -1220,17 +1308,47 @@ onUnmounted(() => {
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
 .clip-card .clip-del { margin-left:auto; }
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
-.thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); cursor:pointer; transition:filter .15s, border-color .15s; }
-.thumb:hover { filter:brightness(1.06); border-color:var(--main); }
-/* 卡片本身不再响应点击（只有预览图会打开视频窗口），去掉手型光标 */
-.pcard.clip-card { cursor:default; }
+/* ---- 卡片固定分区：标题 / 媒体 / 标签 / 时间热度 / 摘要 / 工具栏 ----
+   卡片撑满 grid 行高，工具栏用 margin-top:auto 钉底；各分区给固定高度，
+   这样混排时「编辑 / 预览 / 剪切」与「编辑 / 精修 / 删除」始终落在同一条底线上。 */
+.pcard.clip-card {
+  display:flex; flex-direction:column;
+  height:100%; min-height:390px;
+  cursor:default; /* 卡片本身不响应点击（只有预览图会打开视频窗口） */
+}
+/* 标题固定三行：超长省略，不把下面区域顶下去 */
+.clip-card .card-title { height:66px; min-height:66px; overflow:hidden; }
+.clip-card .card-title h2 { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+/* 媒体区缩小并固定高度：已剪是缩略图，缺图才是虚线占位（未剪切事件整块不渲染） */
+.media-slot { position:relative; height:112px; flex:none; margin-top:10px;
+  border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; background:var(--bg-soft); }
+.media-slot.media-empty { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:6px; border-style:dashed; color:var(--ink-faint); font-size:11px; }
+.thumb { width:100%; height:100%; display:block; object-fit:cover; cursor:pointer; transition:filter .15s; }
+.thumb:hover { filter:brightness(1.06); }
+/* tag 统一成紧凑文字行，不再用多个彩色药丸；状态只改文字色，不再各自占一块背景 */
+.tag-row { display:flex; flex-wrap:wrap; align-items:center; gap:3px 10px; min-height:22px; }
+.tag { font-size:11px; line-height:1.5; white-space:nowrap; color:var(--ink-dim); }
+.tag.b { color:var(--blue-deep); }
+.tag.a { color:var(--amber-deep); }
+.tag.g { color:var(--green-deep); }
+.tag.r { color:var(--red-deep); }
+.tag.n { color:var(--ink-dim); }
+/* 时间/热度固定一行 */
+.meta-slot { height:22px; overflow:hidden; white-space:nowrap; }
+/* 摘要：已剪固定两行；未剪切事件没有媒体区，摘要吃掉剩余高度（最多 8 行） */
+.summary-slot { height:40px; overflow:hidden; }
+.summary-slot > div { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.uncut-card .summary-slot { height:auto; flex:1; min-height:40px; }
+.uncut-card .summary-slot > div { -webkit-line-clamp:8; }
+/* 工具栏钉底：吃掉上面剩余空间；最小高度按最高的按钮算 */
+.clip-card .foot { margin-top:auto; flex:none; min-height:50px; }
 /* 未剪切事件卡：没有缩略图，用虚线顶边和「剪切」主按钮区分「还没剪」这件事 */
 .uncut-card { border-style:dashed; }
-.uncut-card .cut-btn { margin-left:auto; }
-/* 项目忙时这颗按钮会变成「剪切（排队）」，宽度多出两个字 —— 而 `.foot` 是**不换行**的
-   flex 行（app.css），窄卡片上撑不下就会挤压按钮、把文字折成两行。允许换行比挤变形好，
-   最多是多一行（`.cut-btn` 的 `margin-left:auto` 让它靠右单独成行，看着也是刻意的）。 */
-.uncut-card .foot { flex-wrap:wrap; }
+/* 排队时按钮文案改成「排队中」；宽度用 min-width 固定住，文案切换不再把 foot 撑换行、
+   也不会把卡片撑高。`nowrap` + 6px 间距保证最窄的 250px 卡片也放得下三个按钮。 */
+.uncut-card .cut-btn { margin-left:auto; flex:none; min-width:72px; justify-content:center; white-space:nowrap; }
+.uncut-card .foot { flex-wrap:nowrap; gap:6px; }
 /* 「独立」= 重新检测后已经没有对应事件的片段（按 clip.json 冻结的信息显示） */
 .orphan-chip { cursor:help; }
 

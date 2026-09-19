@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VTuber Clip</title>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script>
+// jsDelivr 被墙/超时时，按顺序换 unpkg、cdnjs。document.write 在解析期插入的脚本仍会阻塞后续解析。
+if (typeof gsap === 'undefined') {
+  document.write('<script src="https://unpkg.com/gsap@3.12.5/dist/gsap.min.js"><\/script>');
+}
+if (typeof gsap === 'undefined') {
+  document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"><\/script>');
+}
+</script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif; background:#2a2a2a; }
@@ -270,10 +279,11 @@ var CFG = {};
 // 错误显示
 // ============================================================
 function showError(msg){
+  window.__ERROR=String(msg||'').replace(/<br>/g,' ');
   var el=document.getElementById('error-toast');
   if(el){el.innerHTML=msg;el.classList.add('show');}
   var sp=document.getElementById('loading-spinner');
-  if(sp)sp.textContent='✗ '+msg.replace(/<br>/g,' ');
+  if(sp)sp.textContent='✗ '+String(msg||'').replace(/<br>/g,' ');
 }
 function hideLoading(){
   var sp=document.getElementById('loading-spinner');
@@ -453,15 +463,16 @@ function flash(tl,time,color,dur){
 }
 
 // ============================================================
-// 数据加载
+// 数据加载（Rust 侧已把 data/*.json 注入 CFG._data，页面不再自己 fetch）
 // ============================================================
 var SUB=[],DM=[],META={duration:239.8};
 (function load(){
-  var c=0;
-  function ok(){c++;if(c>=3){try{init();}catch(e){showError('初始化失败: '+e.message);}}}
-  fetch('data/subtitles.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){SUB=d;ok();}).catch(function(e){console.warn('subtitles fetch failed',e);ok();});
-  fetch('data/danmaku.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){DM=d;ok();}).catch(function(e){console.warn('danmaku fetch failed',e);ok();});
-  fetch('data/clip-meta.json?v='+Date.now()).then(function(r){return r.json();}).then(function(d){META=d;ok();}).catch(function(e){console.warn('meta fetch failed',e);ok();});
+  var d=(CFG&&CFG._data)||{};
+  SUB=Array.isArray(d.subtitles)?d.subtitles:[];
+  DM=Array.isArray(d.danmaku)?d.danmaku:[];
+  META=(d.meta&&typeof d.meta==='object')?d.meta:META;
+  status('数据已加载');
+  try{init();}catch(e){showError('初始化失败: '+e.message);}
 })();
 
 // ============================================================

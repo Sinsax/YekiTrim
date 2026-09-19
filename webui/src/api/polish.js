@@ -79,7 +79,7 @@ export const polishPost = startJob
 export const initPolish = (pid, dir) => startJob('/api/polish/init', pid, dir)
 export const runLlm = (pid, dir) => startJob('/api/polish/llm', pid, dir)
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
-export const runSilence = (pid, dir) => startJob('/api/polish/silence', pid, dir)
+export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silence', pid, dir, extra)
 /** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；
  *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则） */
 export const runRender = (pid, dir, outputFile = 'export.mp4') =>

@@ -225,7 +225,7 @@ import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { openJobs } from '../stores/ui'
-import { EVENT_TYPES, TYPE_ZH, inputMediaUrl, redetectWarning } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning } from '../utils'
 
 const route = useRoute()
 const router = useRouter()
@@ -409,7 +409,7 @@ async function load() {
     const st = await projectData.status(pid.value)
     status.value = st
     inputName.value = st.input_file || ''
-    if (st.input_abs) src.value = inputMediaUrl(st.input_abs)
+    src.value = mediaUrl(pid.value, st.input_file)
   } catch (e) {
     loadError.value = '项目状态读取失败：' + (e?.message || '')
   }

@@ -61,8 +61,12 @@ impl ChromeRenderer {
         Ok(tab)
     }
 
-    /// 等待页面初始化完成 — 检查 __TIMELINE
+    /// 等待页面初始化完成 — 检查 `__TIMELINE`。
+    ///
+    /// 页面里的 `showError()` 会写 `window.__ERROR`；这里轮询它并**立即**带着真实原因
+    /// 退出，而不是傻等 60s 后报一句和根因无关的“GSAP/CDN”超时。
     pub fn wait_for_ready(tab: &Tab) -> anyhow::Result<()> {
+        let mut last_state = String::new();
         for i in 0..300 {
             let result = tab.evaluate(
                 "typeof window.__TIMELINE !== 'undefined' && window.__TIMELINE !== null",
@@ -77,21 +81,54 @@ impl ChromeRenderer {
                 return Ok(());
             }
 
-            if i == 15 || i == 40 {
+            // 每 2s 取一次页面状态；有 __ERROR 立即退出。
+            if i % 10 == 0 {
                 let state = tab.evaluate(
                     r#"JSON.stringify({
                         readyState: document.readyState,
                         bodyClass: document.body.className,
+                        error: window.__ERROR || '',
+                        spinner: (document.getElementById('loading-spinner')||{}).textContent || '',
                         hasGSAP: typeof gsap !== 'undefined',
                         hasConfig: typeof CFG !== 'undefined',
                         cfgKeys: typeof CFG !== 'undefined' ? Object.keys(CFG).join(',') : '',
-                        fetchCount: typeof SUB !== 'undefined' ? SUB.length : -1,
+                        hasData: !!(CFG && CFG._data),
+                        subCount: typeof SUB !== 'undefined' ? SUB.length : -1,
+                        dmCount: typeof DM !== 'undefined' ? DM.length : -1,
                         timelineReady: typeof window.__TIMELINE !== 'undefined'
                     })"#,
                     false,
                 );
                 if let Ok(s) = state {
-                    eprintln!("  ⏳ Page state ({}s): {:?}", i / 5, s.value);
+                    if let Some(v) = s.value {
+                        let text = v.as_str().unwrap_or("").to_string();
+                        if !text.is_empty() {
+                            last_state = text.clone();
+                        }
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(err) = parsed
+                                .get("error")
+                                .and_then(|e| e.as_str())
+                                .filter(|e| !e.is_empty())
+                            {
+                                anyhow::bail!("Page init failed: {err}");
+                            }
+                            // 兜底：GSAP 连脚本都没加载出来（CDN 不可达）时尽早报清楚。
+                            if i >= 75
+                                && !parsed
+                                    .get("hasGSAP")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                            {
+                                anyhow::bail!(
+                                    "Page init failed: GSAP not loaded (CDN unreachable); state={text}"
+                                );
+                            }
+                        }
+                        if i % 50 == 0 {
+                            tracing::warn!("Chrome 页面状态 ({}s): {}", i / 5, text);
+                        }
+                    }
                 }
             }
 
@@ -99,7 +136,8 @@ impl ChromeRenderer {
         }
 
         anyhow::bail!(
-            "Page failed to initialize after 60s — check GSAP CDN reachability and data/ files exist"
+            "Page failed to initialize after 60s; last state: {}",
+            if last_state.is_empty() { "<no state>" } else { last_state.as_str() }
         )
     }
 }
