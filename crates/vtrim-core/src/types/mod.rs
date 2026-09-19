@@ -146,8 +146,26 @@ pub struct Event {
     pub popularity: f64,
     #[serde(default)]
     pub rank: u32,
+    /// 实际片段目录名（`output/clips/` 下的安全组件名）。
+    ///
+    /// `None` = 旧 events.json：Cutter / 前端回退到旧的 `clip-{rank:02}` 契约。
+    /// 新检测/手动事件会写入一个稳定目录名（可读标题 slug + 去重后缀）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_dir: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+impl Event {
+    /// 片段目录名：优先用持久化的 `clip_dir`，旧事件回退 `clip-{rank:02}`。
+    pub fn clip_dir_or_rank(&self) -> String {
+        self.clip_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("clip-{:02}", self.rank))
+    }
 }
 
 fn default_enabled() -> bool { true }

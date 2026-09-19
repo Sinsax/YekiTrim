@@ -9,6 +9,10 @@ use anyhow::{Context, Result};
 mod silence;
 pub use silence::*;
 
+pub mod clip_index;
+
+use clip_index::{clip_meta_matches, is_safe_component, refresh_index};
+
 use crate::danmaku::DanmakuEntry;
 use crate::pipeline::{Stage, STAGE_CUT};
 use crate::types::PipelineContext;
@@ -70,7 +74,7 @@ impl Stage for Cutter {
                 for event in &ctx.events[batch_start..batch_end] {
                     let start = event.start.to_seconds();
                     let end = event.end.to_seconds();
-                    let dir_name = format!("clip-{:02}", event.rank);
+                    let dir_name = clip_dir_name_for_event(event);
                     let rank = event.rank;
 
                     let v = video.to_path_buf();
@@ -120,6 +124,7 @@ impl Stage for Cutter {
                         }
 
                         Ok(ClipInfo {
+                            dir_name,
                             title: t.clone(),
                             summary: s,
                             event_type: et,
@@ -158,6 +163,12 @@ impl Stage for Cutter {
             anyhow::bail!("所有剪切任务均失败");
         }
 
+        // 索引从磁盘重建：一次扫描把所有新片段收进 `clips/index.json`。
+        // 失败只告警 —— 索引是缓存，不能因为写索引失败让已经剪好的成片算失败。
+        if let Err(e) = refresh_index(&ctx.output_dir) {
+            tracing::warn!("刷新片段索引失败: {e:#}");
+        }
+
         let publish = PublishConfig::new(video, &clip_infos);
         let json = serde_json::to_string_pretty(&publish)?;
         let publish_path = ctx.output_dir.join("publish_config.json");
@@ -168,7 +179,7 @@ impl Stage for Cutter {
         let mut order_events: Vec<_> = ctx.events.iter().collect();
         order_events.sort_by(|a, b| b.popularity.partial_cmp(&a.popularity).unwrap());
         let order_lines: Vec<String> = order_events.iter().map(|ev| {
-            format!("clip-{:02} / {}", ev.rank, ev.label)
+            format!("{} / {}", clip_dir_name_for_event(ev), ev.label)
         }).collect();
         std::fs::write(&order_path, order_lines.join("\n"))
             .context("写入 clips_order.txt 失败")?;
@@ -397,12 +408,23 @@ fn write_clip_meta(
     Ok(())
 }
 
+/// 事件实际要写入的目录名：优先 `clip_dir`，非法/缺失时回退旧的 `clip-{rank:02}`。
+pub(crate) fn clip_dir_name_for_event(event: &crate::types::Event) -> String {
+    let dir = event.clip_dir_or_rank();
+    if is_safe_component(&dir) {
+        dir
+    } else {
+        format!("clip-{:02}", event.rank)
+    }
+}
+
 /// 目标目录里已有的片段**不是**这次要剪的事件时返回一句人话（否则 None）。
 ///
-/// 目录名 = `clip-{rank}`，而 `rank` 是检测按热度排出来的 —— **重新检测会重排**，
-/// 新事件撞上老片段序号时若直接覆盖，人家剪好/精修过的成片就没了（不可恢复）。
-/// 判据与前端 `utils.js` 的 `clipMatchesEvent` 保持一致：**标题相同 或 区间 IoU ≥ 0.5**
-/// 视为同一条事件（允许手动微调后重剪），两者都对不上才拦。
+/// 目录名现在由 `event.clip_dir` 决定（检测时已按标题/区间匹配过旧片段），
+/// 这个函数是**最后一道防覆盖保险**：万一目录被手动改过，或旧 events.json
+/// 还没有 `clip_dir`，仍不能让新事件覆盖别人的成片。
+/// 判据与前端 `utils.js` 的 `clipMatchesEvent` / `clip_index::clip_meta_matches` 一致：
+/// **标题相同 或 区间 IoU ≥ 0.5** 视为同一条事件。
 /// 老目录没有 `clip.json`（或字段缺失）时放行 —— 不能挡住正常重剪。
 fn foreign_clip_conflict(
     clip_dir: &Path,
@@ -412,20 +434,17 @@ fn foreign_clip_conflict(
 ) -> Option<String> {
     let raw = std::fs::read_to_string(clip_dir.join("clip.json")).ok()?;
     let meta: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let old_title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
-    if !old_title.is_empty() && old_title == label.trim() {
+    let s = start.to_seconds();
+    let e = end.to_seconds();
+    if clip_meta_matches(label, s, e, &meta) {
         return None;
     }
+    // 旧行为：缺 original_start/original_end 时放行（老数据不能挡住重剪）。
     let (os, oe) = (
         meta.get("original_start").and_then(|v| v.as_f64())?,
         meta.get("original_end").and_then(|v| v.as_f64())?,
     );
-    let (s, e) = (start.to_seconds(), end.to_seconds());
-    let inter = (oe.min(e) - os.max(s)).max(0.0);
-    let union = (oe.max(e) - os.min(s)).max(1e-6);
-    if inter / union >= 0.5 {
-        return None;
-    }
+    let old_title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
     let dir = clip_dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -480,6 +499,7 @@ fn load_transcript(ctx: &PipelineContext) -> Option<crate::types::Transcript> {
 
 #[derive(serde::Serialize)]
 struct ClipInfo {
+    dir_name: String,
     title: String,
     summary: String,
     event_type: crate::types::EventType,
@@ -529,7 +549,7 @@ impl PublishConfig {
             .map(|c| {
                 let start = c.start.to_seconds();
                 let end = c.end.to_seconds();
-                let dir_name = format!("clip-{:02}", c.rank);
+                let dir_name = c.dir_name.clone();
                 ClipEntry {
                     file: format!("clips/{}/clip.mp4", dir_name),
                     subtitle: format!("clips/{}/clip.srt", dir_name),

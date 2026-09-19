@@ -461,8 +461,8 @@ pub(super) fn data_events_impl(ws: &Workspace) -> ApiResult {
     // 只有存在未剪切事件时才解析源弹幕/字幕，避免纯浏览列表时反复解析大文件。
     let clips_dir = path.parent().map(|p| p.join("clips"));
     let has_uncut = v.get("events").and_then(|e| e.as_array()).map(|evs| evs.iter().any(|ev| {
-        let rank = ev.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
-        !clips_dir.as_ref().map(|c| c.join(format!("clip-{:0>2}", rank)).join("clip.mp4").exists()).unwrap_or(false)
+        let dir = event_clip_dir_or_rank(ev);
+        !clips_dir.as_ref().map(|c| c.join(dir).join("clip.mp4").exists()).unwrap_or(false)
     })).unwrap_or(false);
     let (dm_starts, sub_starts) = if has_uncut {
         (danmaku_starts(ws), transcript_starts(ws))
@@ -477,14 +477,36 @@ pub(super) fn data_events_impl(ws: &Workspace) -> ApiResult {
             let end = ev_time_secs(ev, "end");
             ev["start_sec"] = serde_json::json!(start);
             ev["end_sec"] = serde_json::json!(end);
-            let rank = ev.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
-            let clip_dir = path.parent().map(|p| p.join("clips").join(format!("clip-{:0>2}", rank))).unwrap_or_default();
+            let dir = event_clip_dir_or_rank(ev);
+            let clip_dir = path.parent().map(|p| p.join("clips").join(dir)).unwrap_or_default();
             ev["cut_exists"] = serde_json::json!(clip_dir.join("clip.mp4").exists());
             ev["danmaku_count"] = serde_json::json!(count_in_range(&dm_starts, start, end));
             ev["subtitle_count"] = serde_json::json!(count_in_range(&sub_starts, start, end));
         }
     }
     ok(v)
+}
+
+/// 从 events.json 的一个事件里取实际片段目录名：优先 `clip_dir`，旧数据回退 `clip-{rank:02}`。
+pub(super) fn event_clip_dir(v: &serde_json::Value) -> Option<String> {
+    let dir = v
+        .get("clip_dir")
+        .and_then(|d| d.as_str())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())?;
+    if vtrim_core::cutting::clip_index::is_safe_component(dir) {
+        Some(dir.to_string())
+    } else {
+        None
+    }
+}
+
+pub(super) fn event_clip_dir_or_rank(v: &serde_json::Value) -> String {
+    if let Some(dir) = event_clip_dir(v) {
+        return dir;
+    }
+    let rank = v.get("rank").and_then(|r| r.as_u64()).unwrap_or(0);
+    format!("clip-{rank:02}")
 }
 
 pub(super) fn ev_time_secs(v: &serde_json::Value, key: &str) -> f64 {
@@ -537,6 +559,21 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
     let next_rank = store.get("events").and_then(|a| a.as_array()).map(|arr| {
         arr.iter().filter_map(|e| e.get("rank").and_then(|r| r.as_u64())).max().unwrap_or(0) + 1
     }).unwrap_or(1);
+    // 手动事件也分配稳定 clip_dir：rank 只做热度名次，目录名用标题 slug，
+    // 同时避开磁盘上的旧片段目录和其它事件已占用的 clip_dir。
+    let mut taken: std::collections::BTreeSet<String> = vtrim_core::cutting::clip_index::reconcile_index(&ws.output_dir())
+        .clips
+        .keys()
+        .map(|d| d.to_ascii_lowercase())
+        .collect();
+    if let Some(arr) = store.get("events").and_then(|a| a.as_array()) {
+        for e in arr {
+            if let Some(dir) = event_clip_dir(e) {
+                taken.insert(dir.to_ascii_lowercase());
+            }
+        }
+    }
+    let clip_dir = vtrim_core::cutting::clip_index::make_clip_dir_name(&label, &taken, next_rank as u32);
     let event = serde_json::json!({
         "start": sec_to_ts_value(start_sec),
         "end": sec_to_ts_value(end_sec),
@@ -547,6 +584,7 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
         "confidence": 1.0,
         "popularity": 0.0,
         "rank": next_rank,
+        "clip_dir": clip_dir,
         "enabled": true,
     });
     if let Some(arr) = store.get_mut("events").and_then(|a| a.as_array_mut()) {
@@ -674,18 +712,27 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
             "danmaku_count": danmaku_count,
         }));
     }
-    // 按**数字**序号排：`clip-100` 必须排在 `clip-02` 后面。按字符串排会变成
-    // clip-01, clip-02, clip-100, clip-101, …, clip-11, clip-110…（精修页的片段条照这个顺序显示，
-    // 用户报过"片段列表排序有问题，只有两个的时候分得太开"）。解析不出序号的退回按名字排。
-    let rank_of = |v: &serde_json::Value| -> Option<u64> {
+    // 目录名不再保证是 `clip-NN`（新片段用标题 slug）：优先按 `clip.json` 的 rank 排，
+    // 没有 rank 的老数据再尝试解析 `clip-NN`，最后按目录名兜底。
+    let rank_of = |v: &serde_json::Value| -> u64 {
+        if let Some(r) = v
+            .get("meta")
+            .and_then(|m| m.get("rank"))
+            .and_then(|r| r.as_u64())
+            .filter(|r| *r > 0)
+        {
+            return r;
+        }
         v.get("name")
             .and_then(|n| n.as_str())
             .and_then(|n| n.strip_prefix("clip-"))
             .and_then(|r| r.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
     };
-    out.sort_by(|a, b| match (rank_of(a), rank_of(b)) {
-        (Some(x), Some(y)) => x.cmp(&y),
-        _ => a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")),
+    out.sort_by(|a, b| {
+        rank_of(a)
+            .cmp(&rank_of(b))
+            .then_with(|| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")))
     });
     ok(serde_json::json!(out))
 }
@@ -813,6 +860,10 @@ pub(super) fn prune_clip_from_index(output_dir: &Path, dir_name: &str) {
             let _ = std::fs::write(&order, kept.join("\n"));
         }
     }
+    // 目录已经删掉：从磁盘重建 index.json，让被删条目同步消失。
+    if let Err(e) = vtrim_core::cutting::clip_index::refresh_index(output_dir) {
+        tracing::warn!("刷新片段索引失败（删除 {} 后）: {e:#}", dir_name);
+    }
 }
 
 /// polish 系列接口的 `dir` 参数校验：非空 + 必须已存在且是目录。
@@ -872,7 +923,7 @@ pub(super) async fn event_cut_all_impl(
         if !has_filter && !ev.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
             continue;
         }
-        let clip_dir = output.join("clips").join(format!("clip-{:02}", rank));
+        let clip_dir = output.join("clips").join(event_clip_dir_or_rank(ev));
         if clip_dir.join("clip.mp4").exists() {
             continue;
         }
@@ -987,9 +1038,10 @@ pub(super) async fn event_cut_impl(
     let rank_u: u32 = rank.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "rank 无效"))?;
     let event: serde_json::Value = store.get("events").and_then(|a| a.as_array()).and_then(|arr| arr.iter().find(|e| e.get("rank").and_then(|r| r.as_u64()).unwrap_or(0) as u32 == rank_u).cloned())
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "事件不存在"))?;
+    let clip_dir = event_clip_dir_or_rank(&event);
     let ev: vtrim_core::types::Event = serde_json::from_value(event).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("事件解析失败: {e}")))?;
     // 资源域含这个片段目录：单条重切会写 clip.mp4/clip.json，与同片段的精修互斥（排队）。
-    let keys = crate::scope_key::cut_keys(project, &ws.output_dir(), Some(rank_u));
+    let keys = crate::scope_key::cut_keys(project, &ws.output_dir(), Some(clip_dir.as_str()));
     let handle = jobs
         .create(
             owner,
