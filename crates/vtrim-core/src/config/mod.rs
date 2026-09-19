@@ -34,7 +34,8 @@ pub fn resolve_reference_titles(det: &DetectionConfig) -> Vec<String> {
             }
             continue;
         }
-        if line.starts_with("输出") || line.starts_with("转录片段") || line.starts_with("只输出") {
+        if line.starts_with("输出") || line.starts_with("转录片段") || line.starts_with("只输出")
+        {
             break;
         }
         // 新版内建 prompt 该段落是待替换的占位符：标题在运行时注入，
@@ -89,9 +90,9 @@ snap_window = 0.3
 # 切给识别器的音频前后余量(秒)。**默认 0 = 关** —— 实测 0.3s 会扰动识别文本、
 # 对齐命中率反而下降（净效果不明），所以不默认开。想试就设 0.1~0.3。
 segment_padding = 0.0
-# qwen3 单次解码输出上限(token)。上游默认 128；本项目的窗口 ≤30 字，512 已有充足余量。
-# 放太大（曾用 2048）会让解码失控时一直胡说到上限。
-max_new_tokens = 512
+# qwen3 全局输出上限(token)，固定值。上游默认 128；本项目取 256 作为稳定折中。
+# 如果以后调大 max_segment_chars，需要同步调大这个值。
+max_new_tokens = 256
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 
@@ -114,6 +115,10 @@ hotwords = []
 vtuber_name = ""
 # 弹幕密度统计窗口(秒)
 danmaku_window_secs = 10
+# 标题+摘要 LLM 传播潜力评分权重（0 = 关闭该标准）
+# 评分只喂 label+summary，按预测点击率/有趣程度/爆点强度给 0~100 分；
+# 最终 popularity = (1-w)*弹幕/字幕热度 + w*LLM评分
+llm_score_weight = 0.3
 # 参考标题示例（检测和封面标题生成共用；每项一条，可含 emoji）
 # 留空 = 使用内建示例标题（或旧版 prompt_template「参考标题：」段落）
 reference_titles = [
@@ -264,11 +269,15 @@ fn write_project_config_inner(
     let global_path = crate::path::vtrim_home().join("config.toml");
     let mut body = if global_path.exists() {
         tracing::info!("从全局配置复制: {}", global_path.display());
-        std::fs::read_to_string(&global_path)?
-            .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
+        std::fs::read_to_string(&global_path)?.replace(
+            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖",
+            "",
+        )
     } else {
-        GLOBAL_CONFIG_TOML
-            .replace("# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖", "")
+        GLOBAL_CONFIG_TOML.replace(
+            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖",
+            "",
+        )
     };
 
     let mut doc: toml_edit::DocumentMut = body.parse()?;
@@ -314,11 +323,12 @@ fn write_project_config_inner(
 
     let mut project = toml_edit::Table::new();
     project.set_implicit(true);
-    let input_for_config = if let Ok(rel) = input.strip_prefix(cfg_path.parent().unwrap_or(Path::new("."))) {
-        rel.to_string_lossy().to_string()
-    } else {
-        input.to_string_lossy().to_string()
-    };
+    let input_for_config =
+        if let Ok(rel) = input.strip_prefix(cfg_path.parent().unwrap_or(Path::new("."))) {
+            rel.to_string_lossy().to_string()
+        } else {
+            input.to_string_lossy().to_string()
+        };
     project.insert("input_file", toml_edit::value(&input_for_config));
     project.insert("danmaku_file", toml_edit::value(&danmaku_val));
     project.insert("transcript_file", toml_edit::value(""));
@@ -368,19 +378,29 @@ fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
 fn merge(base: &mut Config, overlay: Config) {
     // Project fields
     if overlay.project.input_file.is_some() {
-        base.project.input_file.clone_from(&overlay.project.input_file);
+        base.project
+            .input_file
+            .clone_from(&overlay.project.input_file);
     }
     if overlay.project.danmaku_file.is_some() {
-        base.project.danmaku_file.clone_from(&overlay.project.danmaku_file);
+        base.project
+            .danmaku_file
+            .clone_from(&overlay.project.danmaku_file);
     }
     if overlay.project.transcript_file.is_some() {
-        base.project.transcript_file.clone_from(&overlay.project.transcript_file);
+        base.project
+            .transcript_file
+            .clone_from(&overlay.project.transcript_file);
     }
     if overlay.project.audio_file.is_some() {
-        base.project.audio_file.clone_from(&overlay.project.audio_file);
+        base.project
+            .audio_file
+            .clone_from(&overlay.project.audio_file);
     }
     if overlay.project.events_file.is_some() {
-        base.project.events_file.clone_from(&overlay.project.events_file);
+        base.project
+            .events_file
+            .clone_from(&overlay.project.events_file);
     }
 
     if overlay.audio.sample_rate != 16000 {
@@ -431,7 +451,7 @@ fn merge(base: &mut Config, overlay: Config) {
     if overlay.asr.segment_padding != 0.0 {
         base.asr.segment_padding = overlay.asr.segment_padding;
     }
-    if overlay.asr.max_new_tokens != 512 {
+    if overlay.asr.max_new_tokens != 256 {
         base.asr.max_new_tokens = overlay.asr.max_new_tokens;
     }
     if !overlay.asr.mode.is_empty() {
@@ -463,6 +483,9 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if !overlay.detection.reference_titles.is_empty() {
         base.detection.reference_titles = overlay.detection.reference_titles.clone();
+    }
+    if overlay.detection.llm_score_weight != 0.3 {
+        base.detection.llm_score_weight = overlay.detection.llm_score_weight;
     }
     // Option 字段：Some 才覆盖（None = 跟随 llm.toml 的全局并发）
     if overlay.detection.max_concurrent.is_some() {
@@ -602,10 +625,12 @@ pub fn load_llm_config() -> LlmConfig {
             return LlmConfig::default();
         }
     };
-    toml::from_str::<LlmFile>(&content).map(|f| f.llm).unwrap_or_else(|e| {
-        tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
-        LlmConfig::default()
-    })
+    toml::from_str::<LlmFile>(&content)
+        .map(|f| f.llm)
+        .unwrap_or_else(|e| {
+            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            LlmConfig::default()
+        })
 }
 
 #[derive(Deserialize)]
@@ -738,13 +763,17 @@ pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
         .context("patch 必须是 { section: { key: value } } 形式的对象")?;
     edit_toml_at(path, |doc| {
         for (section, fields) in sections {
-            let Some(fields) = fields.as_object() else { continue };
+            let Some(fields) = fields.as_object() else {
+                continue;
+            };
             if !doc.get(section).map(|i| i.is_table()).unwrap_or(false) {
                 let mut table = toml_edit::Table::new();
                 table.set_implicit(false);
                 doc.insert(section, toml_edit::Item::Table(table));
             }
-            let Some(table) = doc.get_mut(section).and_then(|i| i.as_table_mut()) else { continue };
+            let Some(table) = doc.get_mut(section).and_then(|i| i.as_table_mut()) else {
+                continue;
+            };
             merge_into_table(table, fields);
         }
     })
@@ -756,7 +785,10 @@ pub fn patch_config_file(path: &Path, patch: &serde_json::Value) -> Result<()> {
 /// `[ingest]` 下的 `recorder` 就是子表，整项替换会把本次 patch 里没提到的键
 /// （`root` / `api_user` / `api_pass` / `watch_interval_mins` …）与**段内注释静默丢掉** ——
 /// 曾经就是这个行为，而它不报错（文件仍是合法 TOML），只有下次读配置时才发现值没了。
-fn merge_into_table(table: &mut toml_edit::Table, fields: &serde_json::Map<String, serde_json::Value>) {
+fn merge_into_table(
+    table: &mut toml_edit::Table,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) {
     for (key, value) in fields {
         // 值是对象：目标是子表 → 递归合并；其它形态（字符串/数组/inline table）或不存在
         // → 整体替换成一张**真子表**（渲染成 `[section.sub]`，下次还能继续递归）
@@ -832,8 +864,17 @@ pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
     edit_toml_at(project_file, |doc| {
         let project = doc.get_mut("project").and_then(|p| p.as_table_mut());
         if let Some(project) = project {
-            for key in ["input_file", "danmaku_file", "audio_file", "transcript_file", "events_file"] {
-                if let Some(val) = project.get_mut(key).and_then(|v| v.as_str().map(|s| s.to_string())) {
+            for key in [
+                "input_file",
+                "danmaku_file",
+                "audio_file",
+                "transcript_file",
+                "events_file",
+            ] {
+                if let Some(val) = project
+                    .get_mut(key)
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                {
                     if !val.is_empty() {
                         project[key] = toml_edit::value(rel_path_for(project_file, &val));
                     }
@@ -858,7 +899,10 @@ mod reference_titles_tests {
     #[test]
     fn config_titles_win_over_everything() {
         let d = det(vec!["自定义标题🤣".into()], "参考标题：\n▶ 旧示例");
-        assert_eq!(resolve_reference_titles(&d), vec!["自定义标题🤣".to_string()]);
+        assert_eq!(
+            resolve_reference_titles(&d),
+            vec!["自定义标题🤣".to_string()]
+        );
     }
 
     #[test]
@@ -878,7 +922,13 @@ mod reference_titles_tests {
         // init 写出的新版内建 prompt：该段落只剩待替换的占位符
         let d = det(vec![], crate::detection::DEFAULT_PROMPT);
         let resolved = resolve_reference_titles(&d);
-        assert_eq!(resolved, crate::detection::DEFAULT_REFERENCE_TITLES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            resolved,
+            crate::detection::DEFAULT_REFERENCE_TITLES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
         assert!(resolved.iter().all(|t| !t.contains("{reference_titles}")));
     }
 
@@ -887,7 +937,10 @@ mod reference_titles_tests {
         let d = det(vec![], "");
         assert_eq!(
             resolve_reference_titles(&d),
-            crate::detection::DEFAULT_REFERENCE_TITLES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            crate::detection::DEFAULT_REFERENCE_TITLES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -946,15 +999,30 @@ vtuber_name = \"主播\"
         assert!(out.contains("api_pass = \"newsecret\""), "{out}");
         assert!(out.contains("webhook_enabled = false"), "{out}");
         // 没提到的兄弟键全在
-        for keep in ["root = \"D:/rec\"", "api_user = \"admin\"", "watch_interval_mins = 7"] {
+        for keep in [
+            "root = \"D:/rec\"",
+            "api_user = \"admin\"",
+            "watch_interval_mins = 7",
+        ] {
             assert!(out.contains(keep), "丢了 {keep}：\n{out}");
         }
         // 注释与其它 section 原样
-        for keep in ["# 顶部注释不能丢", "# webhook 开关", "# 录像目录", "vtuber_name = \"主播\""] {
+        for keep in [
+            "# 顶部注释不能丢",
+            "# webhook 开关",
+            "# 录像目录",
+            "vtuber_name = \"主播\"",
+        ] {
             assert!(out.contains(keep), "丢了 {keep}：\n{out}");
         }
-        assert!(out.contains("[ingest.recorder]"), "子表应保持表头形式：\n{out}");
-        assert!(!out.contains("recorder = {"), "不该退化成 inline table：\n{out}");
+        assert!(
+            out.contains("[ingest.recorder]"),
+            "子表应保持表头形式：\n{out}"
+        );
+        assert!(
+            !out.contains("recorder = {"),
+            "不该退化成 inline table：\n{out}"
+        );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -972,25 +1040,42 @@ vtuber_name = \"主播\"
         assert!(out.contains("[ingest.recorder]"), "{out}");
         assert!(!out.contains("recorder = {"), "{out}");
         // 再 patch 一次仍能命中同一张子表（合并而非追加第二张）
-        patch_config_file(&p, &serde_json::json!({"ingest": {"recorder": {"api_user": "u"}}})).unwrap();
+        patch_config_file(
+            &p,
+            &serde_json::json!({"ingest": {"recorder": {"api_user": "u"}}}),
+        )
+        .unwrap();
         let out2 = std::fs::read_to_string(&p).unwrap();
         assert_eq!(out2.matches("[ingest.recorder]").count(), 1, "{out2}");
-        assert!(out2.contains("root = \"D:/rec\"") && out2.contains("api_user = \"u\""), "{out2}");
+        assert!(
+            out2.contains("root = \"D:/rec\"") && out2.contains("api_user = \"u\""),
+            "{out2}"
+        );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
     /// 一层 patch（现有全部调用方的形态）行为不变。
     #[test]
     fn flat_patch_still_works() {
-        let p = write_tmp("flat", "[cutting]\noutput_dir = \"./out\"\noverwrite = false\n");
+        let p = write_tmp(
+            "flat",
+            "[cutting]\noutput_dir = \"./out\"\noverwrite = false\n",
+        );
         patch_config_file(&p, &serde_json::json!({"cutting": {"overwrite": true}})).unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
         assert!(out.contains("output_dir = \"./out\""), "{out}");
         assert!(out.contains("overwrite = true"), "{out}");
         // 新 section / 新键会补出来
-        patch_config_file(&p, &serde_json::json!({"ingest": {"allow_ips": ["127.0.0.1"]}})).unwrap();
+        patch_config_file(
+            &p,
+            &serde_json::json!({"ingest": {"allow_ips": ["127.0.0.1"]}}),
+        )
+        .unwrap();
         let out = std::fs::read_to_string(&p).unwrap();
-        assert!(out.contains("[ingest]") && out.contains("allow_ips = [\"127.0.0.1\"]"), "{out}");
+        assert!(
+            out.contains("[ingest]") && out.contains("allow_ips = [\"127.0.0.1\"]"),
+            "{out}"
+        );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

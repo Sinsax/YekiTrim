@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -89,7 +90,14 @@ fn build_prompt(
     let seg_value = format!("{hot}{}", seg_text.trim());
     template
         .replace("{hot_windows}", hot.trim_end())
-        .replace("{segments}", if has_hot_slot { seg_text.trim() } else { &seg_value })
+        .replace(
+            "{segments}",
+            if has_hot_slot {
+                seg_text.trim()
+            } else {
+                &seg_value
+            },
+        )
         .replace("{reference_titles}", &refs)
 }
 
@@ -227,6 +235,7 @@ fn parse_events(value: serde_json::Value) -> Result<Vec<Event>> {
                 confidence: 1.0,
                 popularity: 0.0,
                 rank: 0,
+                clip_dir: None,
                 enabled: true,
             }
         })
@@ -240,7 +249,9 @@ fn parse_event_type(raw: &str) -> EventType {
     let t = raw.trim().to_lowercase();
     match t.as_str() {
         "intro" | "开场" | "开头" | "opening" => return EventType::Intro,
-        "gameplay" | "游戏" | "游玩" | "游戏/操作" | "操作" => return EventType::Gameplay,
+        "gameplay" | "游戏" | "游玩" | "游戏/操作" | "操作" => {
+            return EventType::Gameplay
+        }
         "interaction" | "互动" | "连麦" | "双播" | "联动" => return EventType::Interaction,
         "qna" | "问答" | "读sc" | "读sc环节" | "q&a" | "qa" => return EventType::QnA,
         "reaction" | "反应" | "看视频" | "观影" | "鉴赏" => return EventType::Reaction,
@@ -306,6 +317,246 @@ fn system_prompt(config: &DetectionConfig) -> &str {
     DEFAULT_SYSTEM_PROMPT
 }
 
+/// 标题+摘要传播潜力评分的 system prompt。
+///
+/// 评分阶段**只**喂 `label` + `summary`，不带转录、时间、event_type，
+/// 避免模型用"正文里有没有梗"代替"标题/摘要本身有没有吸引力"。
+const SCORE_SYSTEM_PROMPT: &str = r#"你是短视频爆款潜力评估器。你只根据用户给出的「标题」和「摘要」评分，禁止引用或脑补未提供的正文、时间、事件类型等信息。"#;
+
+/// 单次评分请求最多包含多少条事件（只含标题+摘要，40 条通常远小于上下文上限）。
+const SCORE_BATCH_SIZE: usize = 40;
+
+/// 用 LLM 给事件做标题+摘要传播潜力评分。
+///
+/// 返回与 `events` 等长的 `Vec<Option<f64>>`：成功条目是 0~1 的归一化分，
+/// 失败/漏评条目是 `None`，调用方按 `llm_score_weight` 加权，不因评分失败丢掉检测结果。
+/// `weight <= 0` 或非有限值时直接返回全 `None`，不发请求。
+pub async fn score_events_with_llm(
+    events: &[Event],
+    llm: &LlmConfig,
+    detect: &DetectionConfig,
+    project: Option<&Path>,
+) -> Result<Vec<Option<f64>>> {
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
+    let weight = if detect.llm_score_weight.is_finite() {
+        detect.llm_score_weight.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if weight <= 0.0 {
+        return Ok(vec![None; events.len()]);
+    }
+
+    let usage_project = project.map(crate::path::display);
+    let client = Arc::new(
+        crate::llm::LlmClient::from_config(llm)?
+            .with_timeout(120)
+            .with_usage_context(
+                crate::llm::usage::UsageContext::new("事件热度LLM评分").project(usage_project),
+            ),
+    );
+    let max_concurrent = llm.concurrency(detect.max_concurrent).max(1);
+
+    let all_items: Vec<(usize, String, String)> = events
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (i + 1, e.label.clone(), e.summary.clone()))
+        .collect();
+    let batches: Vec<Vec<(usize, String, String)>> = all_items
+        .chunks(SCORE_BATCH_SIZE)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    // 与检测窗口共用同一个并发旋钮；一个批次失败不影响其它批次。
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let mut join_set = tokio::task::JoinSet::new();
+    for batch in batches {
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| anyhow::anyhow!("LLM 评分并发控制失败: {e}"))?;
+        let client = Arc::clone(&client);
+        join_set.spawn(async move {
+            let _permit = permit;
+            score_batch(&client, &batch).await
+        });
+    }
+
+    let mut scores: Vec<Option<f64>> = vec![None; events.len()];
+    let mut ok_batches = 0usize;
+    let mut failed_batches = 0usize;
+    while let Some(joined) = join_set.join_next().await {
+        match joined {
+            Ok(Ok(batch_scores)) => {
+                ok_batches += 1;
+                for (index, score) in batch_scores {
+                    if let Some(slot) = scores.get_mut(index.saturating_sub(1)) {
+                        *slot = Some(score);
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                failed_batches += 1;
+                tracing::warn!("LLM 热度评分批次失败: {e:#}");
+            }
+            Err(e) => {
+                failed_batches += 1;
+                tracing::warn!("LLM 热度评分任务失败: {e}");
+            }
+        }
+    }
+
+    if ok_batches == 0 {
+        anyhow::bail!("LLM 热度评分全部失败");
+    }
+    if failed_batches > 0 {
+        tracing::warn!(
+            "LLM 热度评分部分失败: {} 批成功 / {} 批失败，失败条目保留原热度",
+            ok_batches,
+            failed_batches
+        );
+    }
+    Ok(scores)
+}
+
+/// 构建单批评分 user prompt：**只包含 label + summary**。
+fn build_score_prompt(batch: &[(usize, String, String)]) -> String {
+    let mut out = String::from(
+        "请对下列直播切片做传播潜力评分。\n\n\
+         评分标准（在心里加权后给一个综合分）：\n\
+         - 预测点击率/标题吸引力 40%\n\
+         - 有趣程度/情绪价值 30%\n\
+         - 爆点强度/冲突反转/名场面 30%\n\n\
+         要求：\n\
+         - 只依据每条给出的标题+摘要，不要假设或补充其它信息\n\
+         - 0~100 整数；50=普通，70=值得一看，85+=强爆款潜力，95+=顶级\n\
+         - 必须拉开差距，禁止所有条目同分或机械分布\n\
+         - 只输出 JSON：{\"scores\":[{\"index\":1,\"score\":86}, ...]}\n\
+         - index 与下方编号一致，数量一致，不要输出解释\n\n",
+    );
+    for (index, label, summary) in batch {
+        out.push_str(&format!("{index}. 标题：{label}\n   摘要：{summary}\n"));
+    }
+    out
+}
+
+/// 调用一批评分，兼容 content / reasoning 两种返回位置。
+async fn score_batch(
+    client: &crate::llm::LlmClient,
+    batch: &[(usize, String, String)],
+) -> Result<Vec<(usize, f64)>> {
+    let prompt = build_score_prompt(batch);
+    let messages = serde_json::json!([
+        {"role": "system", "content": SCORE_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt}
+    ]);
+    let body = client.send(messages).await?;
+    let content = body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    let reasoning = body["choices"][0]["message"]["reasoning"]
+        .as_str()
+        .unwrap_or_default();
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for source in [content, reasoning] {
+        if source.trim().is_empty() {
+            continue;
+        }
+        match parse_score_response(source, batch) {
+            Ok(scores) if !scores.is_empty() => return Ok(scores),
+            Ok(_) => last_err = Some(anyhow::anyhow!("LLM 热度评分结果为空")),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM 热度评分响应为空")))
+}
+
+/// 解析评分 JSON；兼容 `{"scores":[...]}` 和裸数组。
+fn parse_score_response(
+    text: &str,
+    batch: &[(usize, String, String)],
+) -> Result<Vec<(usize, f64)>> {
+    let value = parse_json(text)?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("LLM 热度评分 JSON 不是数组"))?;
+    let valid: std::collections::HashSet<usize> =
+        batch.iter().map(|(index, _, _)| *index).collect();
+
+    let mut out = Vec::new();
+    for (pos, item) in arr.iter().enumerate() {
+        let index = extract_score_index(item)
+            .or_else(|| batch.get(pos).map(|(index, _, _)| *index))
+            .ok_or_else(|| anyhow::anyhow!("LLM 热度评分缺少 index"))?;
+        if !valid.contains(&index) {
+            anyhow::bail!("LLM 热度评分 index {index} 不在本批范围内");
+        }
+        let raw_score = extract_score_value(item)
+            .ok_or_else(|| anyhow::anyhow!("LLM 热度评分 index {index} 缺少 score"))?;
+        if !raw_score.is_finite() {
+            anyhow::bail!("LLM 热度评分 index {index} 不是有效数字");
+        }
+        out.push((index, (raw_score / 100.0).clamp(0.0, 1.0)));
+    }
+    if out.is_empty() {
+        anyhow::bail!("LLM 热度评分结果为空");
+    }
+    Ok(out)
+}
+
+fn extract_score_index(item: &serde_json::Value) -> Option<usize> {
+    if let Some(obj) = item.as_object() {
+        for key in ["index", "id", "idx", "编号", "序号"] {
+            if let Some(n) = obj.get(key).and_then(value_as_usize) {
+                return Some(n);
+            }
+        }
+    }
+    item.as_array()
+        .and_then(|arr| arr.first())
+        .and_then(value_as_usize)
+}
+
+fn extract_score_value(item: &serde_json::Value) -> Option<f64> {
+    if let Some(obj) = item.as_object() {
+        for key in ["score", "heat", "heat_score", "rating", "热度", "得分", "分数"] {
+            if let Some(n) = obj.get(key).and_then(value_as_f64) {
+                return Some(n);
+            }
+        }
+    }
+    if let Some(arr) = item.as_array() {
+        return arr.get(1).and_then(value_as_f64);
+    }
+    value_as_f64(item)
+}
+
+fn value_as_usize(value: &serde_json::Value) -> Option<usize> {
+    match value {
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .filter(|f| f.is_finite() && f.fract() == 0.0)
+            .map(|f| f as usize),
+        serde_json::Value::String(s) => s.trim().parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn value_as_f64(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => {
+            let s = s.trim().trim_end_matches('%').trim_end_matches('分').trim();
+            s.parse::<f64>().ok()
+        }
+        _ => None,
+    }
+}
+
 /// 窗口大小：每窗口最多处理多少条字幕段（避免一次塞太多导致 token 超限）
 const DETECT_WINDOW_SIZE: usize = 30;
 /// 窗口重叠条数：保证跨窗口的事件边界不会被切断（不宜过大，否则同一内容被多次分析）
@@ -367,7 +618,11 @@ pub async fn call_with_progress(
 
     let max_concurrent = llm.concurrency(detect.max_concurrent);
     let total_windows = agent_windows.len();
-    tracing::info!("事件检测: {} 个窗口，并发 {}", total_windows, max_concurrent);
+    tracing::info!(
+        "事件检测: {} 个窗口，并发 {}",
+        total_windows,
+        max_concurrent
+    );
 
     let task = DetectionTask {
         detect: detect.clone(),
@@ -377,23 +632,22 @@ pub async fn call_with_progress(
     let agent = Agent::new(llm.clone()).with_max_concurrent(max_concurrent);
 
     // 桥接通用 Agent 进度 → 调用方的事件流（spawn 转发，避免 send 阻塞 Agent）
-    let (agent_progress_tx, mut agent_progress_rx) =
-        if let Some(tx) = progress_tx {
-            let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(64);
-            let forwarder = tokio::spawn(async move {
-                let mut rx = agent_rx;
-                while let Some(progress) = rx.recv().await {
-                    if let Some(events) = progress.output {
-                        if tx.send(events).await.is_err() {
-                            break;
-                        }
+    let (agent_progress_tx, mut agent_progress_rx) = if let Some(tx) = progress_tx {
+        let (agent_tx, agent_rx) = tokio::sync::mpsc::channel::<AgentProgress<Vec<Event>>>(64);
+        let forwarder = tokio::spawn(async move {
+            let mut rx = agent_rx;
+            while let Some(progress) = rx.recv().await {
+                if let Some(events) = progress.output {
+                    if tx.send(events).await.is_err() {
+                        break;
                     }
                 }
-            });
-            (Some(agent_tx), Some(forwarder))
-        } else {
-            (None, None)
-        };
+            }
+        });
+        (Some(agent_tx), Some(forwarder))
+    } else {
+        (None, None)
+    };
 
     let windows = agent
         .run_windows(task, agent_windows, checkpoint_path, agent_progress_tx)
@@ -450,7 +704,12 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         String::new()
     }
 
-    fn build_window_context(&self, items: &[AgentItem], window: &[AgentItem], global: &str) -> String {
+    fn build_window_context(
+        &self,
+        items: &[AgentItem],
+        window: &[AgentItem],
+        global: &str,
+    ) -> String {
         // 事件检测的 prompt 直接基于窗口 segments 构建，不额外拼接上下文
         let _ = (items, window, global);
         String::new()
@@ -466,8 +725,10 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         let mut parts = vec![
             self.system_prompt(),
             self.detect.prompt_template.clone(),
-            crate::config::resolve_reference_titles(&self.detect).join("
-"),
+            crate::config::resolve_reference_titles(&self.detect).join(
+                "
+",
+            ),
         ];
         for (s, e) in &self.hot_windows {
             parts.push(format!("{s:.1}-{e:.1}"));
@@ -594,66 +855,77 @@ fn process_window_inner<'a>(
     hot_windows: &'a [(f64, f64)],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Event>>> + Send + 'a>> {
     Box::pin(async move {
-    let win_start = segments.first().map(|s| s.start).unwrap_or(0.0);
-    let win_end = segments.last().map(|s| s.end).unwrap_or(0.0);
+        let win_start = segments.first().map(|s| s.start).unwrap_or(0.0);
+        let win_end = segments.last().map(|s| s.end).unwrap_or(0.0);
 
-    let window_hot: Vec<(f64, f64)> = hot_windows
-        .iter()
-        .copied()
-        .filter(|(s, e)| s < &win_end && e > &win_start)
-        .collect();
+        let window_hot: Vec<(f64, f64)> = hot_windows
+            .iter()
+            .copied()
+            .filter(|(s, e)| s < &win_end && e > &win_start)
+            .collect();
 
-    let prompt = build_prompt(segments, detect, &window_hot);
-    let messages = serde_json::json!([
-        {"role": "system", "content": system_prompt(detect)},
-        {"role": "user", "content": prompt}
-    ]);
+        let prompt = build_prompt(segments, detect, &window_hot);
+        let messages = serde_json::json!([
+            {"role": "system", "content": system_prompt(detect)},
+            {"role": "user", "content": prompt}
+        ]);
 
-    // 完整窗口尝试 2 次
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=2 {
-        match attempt_call(client, messages.clone()).await {
-            Ok(events) if !events.is_empty() => {
-                tracing::info!(
-                    "窗口 [{:.1}-{:.1}] 成功: {} 个事件",
-                    win_start,
-                    win_end,
-                    events.len()
-                );
-                return Ok(events);
-            }
-            Ok(_) => {
-                tracing::warn!("窗口 [{:.1}-{:.1}] 返回事件为空 (第 {} 次尝试)", win_start, win_end, attempt);
-                last_err = Some(anyhow::anyhow!("LLM 返回的事件列表为空"));
-            }
-            Err(e) => {
-                tracing::warn!("窗口 [{:.1}-{:.1}] 失败 (第 {} 次尝试): {}", win_start, win_end, attempt, e);
-                last_err = Some(e);
+        // 完整窗口尝试 2 次
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 1..=2 {
+            match attempt_call(client, messages.clone()).await {
+                Ok(events) if !events.is_empty() => {
+                    tracing::info!(
+                        "窗口 [{:.1}-{:.1}] 成功: {} 个事件",
+                        win_start,
+                        win_end,
+                        events.len()
+                    );
+                    return Ok(events);
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "窗口 [{:.1}-{:.1}] 返回事件为空 (第 {} 次尝试)",
+                        win_start,
+                        win_end,
+                        attempt
+                    );
+                    last_err = Some(anyhow::anyhow!("LLM 返回的事件列表为空"));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "窗口 [{:.1}-{:.1}] 失败 (第 {} 次尝试): {}",
+                        win_start,
+                        win_end,
+                        attempt,
+                        e
+                    );
+                    last_err = Some(e);
+                }
             }
         }
-    }
 
-    // 如果窗口还大，拆半递归，避免超时后整窗丢失
-    if segments.len() > 30 {
-        let mid = segments.len() / 2;
-        tracing::warn!(
-            "窗口 [{:.1}-{:.1}] 失败，拆半为 [{:.1}-{:.1}] 和 [{:.1}-{:.1}] 重试",
-            win_start,
-            win_end,
-            segments[0].start,
-            segments[mid].end,
-            segments[mid].start,
-            win_end
-        );
+        // 如果窗口还大，拆半递归，避免超时后整窗丢失
+        if segments.len() > 30 {
+            let mid = segments.len() / 2;
+            tracing::warn!(
+                "窗口 [{:.1}-{:.1}] 失败，拆半为 [{:.1}-{:.1}] 和 [{:.1}-{:.1}] 重试",
+                win_start,
+                win_end,
+                segments[0].start,
+                segments[mid].end,
+                segments[mid].start,
+                win_end
+            );
 
-        let left = process_window_inner(client, &segments[..mid], detect, hot_windows).await?;
-        let right = process_window_inner(client, &segments[mid..], detect, hot_windows).await?;
-        let mut combined = left;
-        combined.extend(right);
-        return Ok(combined);
-    }
+            let left = process_window_inner(client, &segments[..mid], detect, hot_windows).await?;
+            let right = process_window_inner(client, &segments[mid..], detect, hot_windows).await?;
+            let mut combined = left;
+            combined.extend(right);
+            return Ok(combined);
+        }
 
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("窗口处理失败")))
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("窗口处理失败")))
     })
 }
 
@@ -679,18 +951,14 @@ async fn attempt_call(
         .collect::<Vec<_>>();
 
     if parse_sources.is_empty() {
-        anyhow::bail!(
-            "LLM 返回 content 和 reasoning 均为空（可能是 max_tokens 过小或模型异常）"
-        );
+        anyhow::bail!("LLM 返回 content 和 reasoning 均为空（可能是 max_tokens 过小或模型异常）");
     }
 
     let mut last_err: Option<anyhow::Error> = None;
     for source in &parse_sources {
         match parse_json(source) {
             Ok(v) => {
-                return parse_events(v).map_err(|e| {
-                    anyhow::anyhow!("解析事件失败: {e:#}")
-                });
+                return parse_events(v).map_err(|e| anyhow::anyhow!("解析事件失败: {e:#}"));
             }
             Err(e) => {
                 last_err = Some(e);
@@ -746,8 +1014,9 @@ pub fn create_default_event(segments: &[TranscriptSegment]) -> Event {
         confidence: 0.3,
         popularity: 0.0,
         rank: 0,
-                enabled: true,
-            }
+        clip_dir: None,
+        enabled: true,
+    }
 }
 
 #[cfg(test)]
@@ -810,6 +1079,69 @@ mod tests {
     }
 
     #[test]
+    fn test_build_score_prompt_only_contains_label_summary() {
+        let batch = vec![
+            (1, "标题一".to_string(), "摘要一".to_string()),
+            (2, "标题二".to_string(), "摘要二".to_string()),
+        ];
+        let prompt = build_score_prompt(&batch);
+        assert!(prompt.contains("1. 标题：标题一"));
+        assert!(prompt.contains("摘要：摘要一"));
+        assert!(prompt.contains("2. 标题：标题二"));
+        assert!(prompt.contains("摘要：摘要二"));
+        assert!(prompt.contains("只依据每条给出的标题+摘要"));
+        assert!(prompt.contains("预测点击率"));
+        assert!(prompt.contains("有趣程度"));
+        assert!(prompt.contains("爆点强度"));
+    }
+
+    #[test]
+    fn test_parse_score_response_object_wrapper_and_string_score() {
+        let batch = vec![
+            (1, "标题一".to_string(), "摘要一".to_string()),
+            (2, "标题二".to_string(), "摘要二".to_string()),
+        ];
+        let text = r#"{"scores":[{"index":1,"score":86},{"index":2,"score":"42%"}]}"#;
+        let parsed = parse_score_response(text, &batch).unwrap();
+        assert_eq!(parsed, vec![(1, 0.86), (2, 0.42)]);
+    }
+
+    #[test]
+    fn test_parse_score_response_bare_array_and_position_fallback() {
+        let batch = vec![
+            (3, "标题三".to_string(), "摘要三".to_string()),
+            (4, "标题四".to_string(), "摘要四".to_string()),
+        ];
+        let text = r#"[{"score":70},{"score":"100"}]"#;
+        let parsed = parse_score_response(text, &batch).unwrap();
+        assert_eq!(parsed, vec![(3, 0.70), (4, 1.0)]);
+    }
+
+    #[tokio::test]
+    async fn test_score_events_skips_llm_when_weight_zero() {
+        let events = vec![Event {
+            start: Timestamp::from_seconds(0.0),
+            end: Timestamp::from_seconds(10.0),
+            label: "标题".into(),
+            summary: "摘要".into(),
+            event_type: EventType::Chat,
+            source: EventSource::LLM,
+            confidence: 1.0,
+            popularity: 0.0,
+            rank: 0,
+            clip_dir: None,
+            enabled: true,
+        }];
+        let llm = LlmConfig::default();
+        let mut detect = DetectionConfig::default();
+        detect.llm_score_weight = 0.0;
+        let scores = score_events_with_llm(&events, &llm, &detect, None)
+            .await
+            .unwrap();
+        assert_eq!(scores, vec![None]);
+    }
+
+    #[test]
     fn test_merge_window_events_does_not_merge_far_apart_duplicates() {
         fn ev(s: f64, e: f64, label: &str) -> Event {
             Event {
@@ -822,16 +1154,14 @@ mod tests {
                 confidence: 1.0,
                 popularity: 0.0,
                 rank: 0,
+                clip_dir: None,
                 enabled: true,
             }
         }
 
         // 两个重叠窗口各自输出同一大话题的长事件，边界差 60s。
         // 只是相邻不重叠，不应合并。
-        let events = vec![
-            ev(100.0, 700.0, "A"),
-            ev(760.0, 1300.0, "B"),
-        ];
+        let events = vec![ev(100.0, 700.0, "A"), ev(760.0, 1300.0, "B")];
         let merged = merge_window_events(events);
         assert_eq!(merged.len(), 2);
     }
@@ -849,6 +1179,7 @@ mod tests {
                 confidence: 1.0,
                 popularity: 0.0,
                 rank: 0,
+                clip_dir: None,
                 enabled: true,
             }
         }
@@ -878,6 +1209,7 @@ mod tests {
                 confidence: 1.0,
                 popularity: 0.0,
                 rank: 0,
+                clip_dir: None,
                 enabled: true,
             }
         }
@@ -898,7 +1230,12 @@ mod tests {
     }
 
     fn seg(t: f64, text: &str) -> TranscriptSegment {
-        TranscriptSegment { start: t, end: t + 3.0, text: text.into(), confidence: 1.0 }
+        TranscriptSegment {
+            start: t,
+            end: t + 3.0,
+            text: text.into(),
+            confidence: 1.0,
+        }
     }
 
     /// 前缀缓存的硬性前提：每窗口才变化的内容（字幕）必须是 prompt 的**最后一段**。
@@ -927,7 +1264,8 @@ mod tests {
         let mut cfg = DetectionConfig::default();
         cfg.prompt_template = "规则若干。
 转录片段：
-{segments}".to_string();
+{segments}"
+            .to_string();
         let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[(120.0, 135.0)]);
         let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块不能丢");
         let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
@@ -942,5 +1280,4 @@ mod tests {
         assert!(!p.contains("观众弹幕爆发时刻"));
         assert!(!p.contains("{hot_windows}"), "占位符必须被替换掉");
     }
-
 }

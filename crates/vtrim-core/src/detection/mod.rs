@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use async_trait::async_trait;
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 
 use crate::danmaku::DensityWindow;
 use crate::pipeline::{Stage, STAGE_DETECT};
@@ -9,7 +9,8 @@ use crate::types::{Event, EventStore, PipelineContext, Timestamp, Transcript, Tr
 
 mod llm;
 pub use llm::{
-    parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_REFERENCE_TITLES, DEFAULT_SYSTEM_PROMPT, TITLE_RULES,
+    parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_REFERENCE_TITLES, DEFAULT_SYSTEM_PROMPT,
+    TITLE_RULES,
 };
 
 /// LLM 事件后处理参数
@@ -49,13 +50,8 @@ impl Stage for EventDetector {
             .map(|v| v.duration_secs)
             .or_else(|| probe_duration(&ctx.input_path).ok())
             .or_else(|| segments.last().map(|s| s.end));
-        let total_duration = video_duration.unwrap_or_else(|| {
-            segments
-                .iter()
-                .map(|s| s.end)
-                .fold(0.0, f64::max)
-                .max(1.0)
-        });
+        let total_duration = video_duration
+            .unwrap_or_else(|| segments.iter().map(|s| s.end).fold(0.0, f64::max).max(1.0));
 
         // 弹幕热力图提前计算：热点窗口注入 LLM prompt + 综合评分复用
         let heatmap: Option<Vec<DensityWindow>> = match &ctx.danmaku_path {
@@ -92,7 +88,10 @@ impl Stage for EventDetector {
             .map(|h| extract_hot_windows(h, detect_config.danmaku_window_secs, 20))
             .unwrap_or_default();
         if !hot_windows.is_empty() {
-            tracing::info!("弹幕爆发时刻: {} 个区间，已注入 LLM 分析", hot_windows.len());
+            tracing::info!(
+                "弹幕爆发时刻: {} 个区间，已注入 LLM 分析",
+                hot_windows.len()
+            );
         }
 
         let mut events = if llm_config.api_key.is_empty() {
@@ -132,7 +131,8 @@ impl Stage for EventDetector {
             if max_end > 0.0 {
                 let before = events.len();
                 for event in &mut events {
-                    event.start = Timestamp::from_seconds(event.start.to_seconds().clamp(0.0, max_end));
+                    event.start =
+                        Timestamp::from_seconds(event.start.to_seconds().clamp(0.0, max_end));
                     event.end = Timestamp::from_seconds(event.end.to_seconds().clamp(0.0, max_end));
                 }
                 events.retain(|e| e.end.to_seconds() > e.start.to_seconds());
@@ -159,7 +159,42 @@ impl Stage for EventDetector {
             }
         }
 
+        // 标题+摘要 LLM 传播潜力评分：只喂 label+summary，加权进最终 popularity。
+        // 失败不阻断检测，回退到原弹幕/字幕热度。
+        let llm_scores = if !llm_config.api_key.is_empty() {
+            match llm::score_events_with_llm(
+                &events,
+                llm_config,
+                detect_config,
+                ctx.output_dir.parent(),
+            )
+            .await
+            {
+                Ok(scores) => {
+                    let scored = scores.iter().filter(|s| s.is_some()).count();
+                    if scored > 0 {
+                        tracing::info!(
+                            "LLM 标题+摘要热度评分: {}/{} 条 (权重 {:.2})",
+                            scored,
+                            events.len(),
+                            detect_config.llm_score_weight
+                        );
+                        Some(scores)
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("LLM 标题+摘要热度评分失败，回退原热度: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // 综合评分：弹幕密度（峰值+均值）+ 字幕密度（无弹幕时仅字幕密度）
+        // + LLM 标题/摘要传播潜力分（权重 detect.llm_score_weight）。
         let transcript_densities = compute_transcript_density(&events, transcript);
         match heatmap {
             Some(ref heatmap) => {
@@ -169,11 +204,32 @@ impl Stage for EventDetector {
                     Some(heatmap),
                     detect_config.danmaku_window_secs,
                     &transcript_densities,
+                    llm_scores.as_deref(),
+                    detect_config.llm_score_weight,
                 );
             }
             None => {
                 tracing::info!("无弹幕数据，使用字幕密度评分");
-                rank_events_by_transcript(&mut events, &transcript_densities);
+                rank_events_by_transcript(
+                    &mut events,
+                    &transcript_densities,
+                    llm_scores.as_deref(),
+                    detect_config.llm_score_weight,
+                );
+            }
+        }
+
+        // rank 只表示热度名次；片段目录名在这里分配/复用，和 rank 解耦。
+        // 旧 clips/clip-NN 能匹配上的事件继续复用旧目录（保住精修产物），
+        // 匹配不上的旧片段保留自己的目录，新事件拿标题目录名，避免「序号被占用」。
+        if let Err(e) = crate::cutting::clip_index::assign_clip_dirs(&ctx.output_dir, &mut events) {
+            tracing::warn!("分配片段目录失败，将回退旧 clip-{{rank}} 目录: {e:#}");
+        }
+        // 顺便把磁盘上已有的旧片段收进 `clips/index.json`（索引是缓存，失败只告警）。
+        // 没有 clips 目录时不创建：避免把“还没有任何片段”的 404 变成空列表。
+        if ctx.output_dir.join("clips").exists() {
+            if let Err(e) = crate::cutting::clip_index::refresh_index(&ctx.output_dir) {
+                tracing::warn!("刷新片段索引失败: {e:#}");
             }
         }
 
@@ -281,16 +337,20 @@ fn compute_transcript_density(events: &[Event], transcript: &Transcript) -> Vec<
 }
 
 /// 按弹幕密度（峰值+均值）+ 字幕密度综合排序
-/// 峰值权重更高：爆发瞬间更能代表"名场面"；均值避免纯峰值噪声（单窗口巧合）
+/// 峰值权重更高：爆发瞬间更能代表"名场面"；均值避免纯峰值噪声（单窗口巧合）。
+/// `llm_scores` 是标题+摘要传播潜力分（0~1，None=未评/评分失败），
+/// 按 `llm_weight` 混入最终 popularity。
 fn rank_events(
     events: &mut [Event],
     heatmap: Option<&[DensityWindow]>,
     window_secs: f64,
     transcript_densities: &[f64],
+    llm_scores: Option<&[Option<f64>]>,
+    llm_weight: f64,
 ) {
     let Some(heatmap) = heatmap else {
         tracing::warn!("弹幕热力图为空，仅使用字幕密度");
-        rank_events_by_transcript(events, transcript_densities);
+        rank_events_by_transcript(events, transcript_densities, llm_scores, llm_weight);
         return;
     };
 
@@ -301,18 +361,41 @@ fn rank_events(
         let dm_avg = crate::danmaku::average_density(heatmap, start, end, window_secs);
         let dm_score = 0.6 * dm_peak + 0.4 * dm_avg;
         let ts_density = transcript_densities.get(i).copied().unwrap_or(0.0);
-        event.popularity = (dm_score + ts_density) / 2.0;
+        let base = (dm_score + ts_density) / 2.0;
+        let llm_score = llm_scores.and_then(|scores| scores.get(i).copied().flatten());
+        event.popularity = blend_llm_score(base, llm_score, llm_weight);
     }
 
     assign_rank_and_sort(events);
 }
 
-/// 仅按字幕密度排序
-fn rank_events_by_transcript(events: &mut [Event], transcript_densities: &[f64]) {
+/// 仅按字幕密度排序（同样可混入标题+摘要 LLM 分）
+fn rank_events_by_transcript(
+    events: &mut [Event],
+    transcript_densities: &[f64],
+    llm_scores: Option<&[Option<f64>]>,
+    llm_weight: f64,
+) {
     for (i, event) in events.iter_mut().enumerate() {
-        event.popularity = transcript_densities.get(i).copied().unwrap_or(0.0);
+        let base = transcript_densities.get(i).copied().unwrap_or(0.0);
+        let llm_score = llm_scores.and_then(|scores| scores.get(i).copied().flatten());
+        event.popularity = blend_llm_score(base, llm_score, llm_weight);
     }
     assign_rank_and_sort(events);
+}
+
+/// 把 LLM 传播潜力分按权重混入基础热度。
+/// `llm_score=None` 时保持原值（评分失败/关闭时不影响原排序）。
+fn blend_llm_score(base: f64, llm_score: Option<f64>, llm_weight: f64) -> f64 {
+    let Some(llm_score) = llm_score else {
+        return base;
+    };
+    let weight = if llm_weight.is_finite() {
+        llm_weight.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (1.0 - weight) * base + weight * llm_score.clamp(0.0, 1.0)
 }
 
 /// 按 popularity 降序分配 rank，恢复时间序
@@ -364,7 +447,10 @@ async fn process_with_llm(
     // 用户选择重新开始时删除旧 checkpoint / partial
     if resume == Some(false) {
         if checkpoint_path.exists() {
-            tracing::info!("用户选择重新开始，删除旧事件断点: {}", checkpoint_path.display());
+            tracing::info!(
+                "用户选择重新开始，删除旧事件断点: {}",
+                checkpoint_path.display()
+            );
             let _ = std::fs::remove_file(&checkpoint_path);
         }
         if partial_path.exists() {
@@ -667,7 +753,10 @@ pub fn merge_split_events(events: Vec<Event>) -> (Vec<Event>, usize) {
     let mut groups: HashMap<(String, u32), Vec<(u32, usize)>> = HashMap::new();
     for (idx, ev) in events.iter().enumerate() {
         if let Some((base, i, n)) = split_suffix(&ev.label) {
-            groups.entry((base.to_string(), n)).or_default().push((i, idx));
+            groups
+                .entry((base.to_string(), n))
+                .or_default()
+                .push((i, idx));
         }
     }
 
@@ -682,7 +771,11 @@ pub fn merge_split_events(events: Vec<Event>) -> (Vec<Event>, usize) {
         if members.len() != n as usize {
             continue;
         }
-        if members.iter().enumerate().any(|(k, (i, _))| *i != k as u32 + 1) {
+        if members
+            .iter()
+            .enumerate()
+            .any(|(k, (i, _))| *i != k as u32 + 1)
+        {
             continue;
         }
         // 时间必须首尾相接（等分产物严格相接；留 1s 容差应付边界吸附与手改）
@@ -830,6 +923,7 @@ mod tests {
             confidence: 1.0,
             popularity: 0.0,
             rank: 0,
+            clip_dir: None,
             enabled: true,
         }
     }
@@ -957,7 +1051,26 @@ mod tests {
         };
         let d = compute_transcript_density(&events, &transcript);
         assert_eq!(d.len(), 1);
-        assert!((d[0] - 1.0).abs() < 1e-9, "单事件归一化为 1.0, got {}", d[0]);
+        assert!(
+            (d[0] - 1.0).abs() < 1e-9,
+            "单事件归一化为 1.0, got {}",
+            d[0]
+        );
+    }
+
+    #[test]
+    fn test_blend_llm_score() {
+        // 无评分：保持原热度（评分失败/关闭不影响原排序）
+        assert!((blend_llm_score(0.4, None, 0.3) - 0.4).abs() < 1e-9);
+        // 有评分：按权重线性混合
+        assert!((blend_llm_score(0.4, Some(0.9), 0.3) - (0.7 * 0.4 + 0.3 * 0.9)).abs() < 1e-9);
+        // 权重 0：完全保留原热度
+        assert!((blend_llm_score(0.4, Some(0.9), 0.0) - 0.4).abs() < 1e-9);
+        // 权重越界/非有限值：clamp / 回退，不产生 NaN
+        assert!((blend_llm_score(0.4, Some(1.0), 2.0) - 1.0).abs() < 1e-9);
+        assert!((blend_llm_score(0.4, Some(0.5), f64::NAN) - 0.4).abs() < 1e-9);
+        // LLM 分越界 clamp 到 [0,1]
+        assert!((blend_llm_score(0.0, Some(1.5), 1.0) - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -974,12 +1087,36 @@ mod tests {
     fn test_extract_hot_windows_merges_adjacent() {
         // 窗口宽 10s；相邻窗口合并为连续区间，孤立的保持独立
         let heatmap = vec![
-            DensityWindow { start: 0.0, density: 0.2, count: 2 },
-            DensityWindow { start: 10.0, density: 0.9, count: 9 },
-            DensityWindow { start: 20.0, density: 1.0, count: 10 },
-            DensityWindow { start: 30.0, density: 0.3, count: 3 },
-            DensityWindow { start: 40.0, density: 0.8, count: 8 },
-            DensityWindow { start: 50.0, density: 0.1, count: 1 },
+            DensityWindow {
+                start: 0.0,
+                density: 0.2,
+                count: 2,
+            },
+            DensityWindow {
+                start: 10.0,
+                density: 0.9,
+                count: 9,
+            },
+            DensityWindow {
+                start: 20.0,
+                density: 1.0,
+                count: 10,
+            },
+            DensityWindow {
+                start: 30.0,
+                density: 0.3,
+                count: 3,
+            },
+            DensityWindow {
+                start: 40.0,
+                density: 0.8,
+                count: 8,
+            },
+            DensityWindow {
+                start: 50.0,
+                density: 0.1,
+                count: 1,
+            },
         ];
         let hot = extract_hot_windows(&heatmap, 10.0, 20);
         // 10-20 与 20-30 合并 → [10,30]; 40-50 独立 → [40,50]
@@ -1004,18 +1141,28 @@ mod tests {
     fn test_extract_hot_windows_empty() {
         assert!(extract_hot_windows(&[], 10.0, 20).is_empty());
         // 全部低于阈值
-        let low = vec![DensityWindow { start: 0.0, density: 0.1, count: 1 }];
+        let low = vec![DensityWindow {
+            start: 0.0,
+            density: 0.1,
+            count: 1,
+        }];
         assert!(extract_hot_windows(&low, 10.0, 20).is_empty());
     }
 
     #[test]
     fn test_coverage_ratio() {
         // 覆盖 [0,100] + [50,150]（重叠）→ 并集 150 / 200 = 0.75
-        let events = vec![ev(0.0, 100.0, "a", crate::types::EventType::Chat), ev(50.0, 150.0, "b", crate::types::EventType::Chat)];
+        let events = vec![
+            ev(0.0, 100.0, "a", crate::types::EventType::Chat),
+            ev(50.0, 150.0, "b", crate::types::EventType::Chat),
+        ];
         assert!((coverage_ratio(&events, 200.0) - 0.75).abs() < 1e-9);
 
         // 不重叠: [0,40] + [60,100] → 0.8
-        let events2 = vec![ev(0.0, 40.0, "a", crate::types::EventType::Chat), ev(60.0, 100.0, "b", crate::types::EventType::Chat)];
+        let events2 = vec![
+            ev(0.0, 40.0, "a", crate::types::EventType::Chat),
+            ev(60.0, 100.0, "b", crate::types::EventType::Chat),
+        ];
         assert!((coverage_ratio(&events2, 100.0) - 0.8).abs() < 1e-9);
 
         // 越界 clamp: [0,120] → 覆盖 100/100 = 1.0
@@ -1043,7 +1190,12 @@ mod tests {
             .collect();
         let events = vec![ev(0.0, 1300.0, "超长事件", crate::types::EventType::Chat)];
         let result = postprocess_events(events, &segments);
-        assert_eq!(result.len(), 1, "长事件不得被等分成多段: {:?}", result.iter().map(|e| &e.label).collect::<Vec<_>>());
+        assert_eq!(
+            result.len(),
+            1,
+            "长事件不得被等分成多段: {:?}",
+            result.iter().map(|e| &e.label).collect::<Vec<_>>()
+        );
         assert!(!result[0].label.contains("（1/"));
     }
 
@@ -1124,7 +1276,12 @@ mod tests {
             ev(0.0, 100.0, "同一个话题", crate::types::EventType::Chat),
             ev(100.0, 200.0, "同一个话题", crate::types::EventType::Chat),
             ev(200.0, 300.0, "同一个话题", crate::types::EventType::Chat),
-            ev(300.0, 400.0, "另一个话题", crate::types::EventType::Gameplay),
+            ev(
+                300.0,
+                400.0,
+                "另一个话题",
+                crate::types::EventType::Gameplay,
+            ),
         ];
         let result = disambiguate_duplicate_titles(events);
         assert_eq!(result.len(), 4);
@@ -1151,23 +1308,48 @@ mod tests {
         let raw = std::fs::read_to_string(&path).expect("读取 events.json");
         let store: crate::types::EventStore = serde_json::from_str(&raw).expect("解析 events.json");
         let before = store.events.len();
-        let split_events: Vec<&crate::types::Event> =
-            store.events.iter().filter(|e| split_suffix(&e.label).is_some()).collect();
+        let split_events: Vec<&crate::types::Event> = store
+            .events
+            .iter()
+            .filter(|e| split_suffix(&e.label).is_some())
+            .collect();
         let bases: std::collections::HashSet<String> = split_events
             .iter()
             .filter_map(|e| split_suffix(&e.label).map(|(b, _, _)| b.to_string()))
             .collect();
         println!("{}", path);
-        println!("事件 {} 条，其中带（i/n）后缀 {} 条:", before, split_events.len());
+        println!(
+            "事件 {} 条，其中带（i/n）后缀 {} 条:",
+            before,
+            split_events.len()
+        );
         for e in &split_events {
-            println!("  rank {:>3} [{:?}] {:.1}s-{:.1}s pop={:.3} {}", e.rank, e.event_type,
-                     e.start.to_seconds(), e.end.to_seconds(), e.popularity, e.label);
+            println!(
+                "  rank {:>3} [{:?}] {:.1}s-{:.1}s pop={:.3} {}",
+                e.rank,
+                e.event_type,
+                e.start.to_seconds(),
+                e.end.to_seconds(),
+                e.popularity,
+                e.label
+            );
         }
         let (merged, groups) = merge_split_events(store.events);
-        println!("→ 合并 {} 组，事件 {} → {} 条", groups, before, merged.len());
+        println!(
+            "→ 合并 {} 组，事件 {} → {} 条",
+            groups,
+            before,
+            merged.len()
+        );
         for e in merged.iter().filter(|e| bases.contains(&e.label)) {
-            println!("  合成 rank {:>3} {:.1}s-{:.1}s pop={:.3} {}",
-                     e.rank, e.start.to_seconds(), e.end.to_seconds(), e.popularity, e.label);
+            println!(
+                "  合成 rank {:>3} {:.1}s-{:.1}s pop={:.3} {}",
+                e.rank,
+                e.start.to_seconds(),
+                e.end.to_seconds(),
+                e.popularity,
+                e.label
+            );
         }
     }
 }

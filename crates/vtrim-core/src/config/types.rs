@@ -122,7 +122,9 @@ pub struct AuthConfig {
 
 impl Default for AuthConfig {
     fn default() -> Self {
-        Self { registration_enabled: false }
+        Self {
+            registration_enabled: false,
+        }
     }
 }
 
@@ -285,8 +287,12 @@ impl Default for AudioConfig {
     }
 }
 
-fn default_sample_rate() -> u32 { 16000 }
-fn default_channels() -> u32 { 1 }
+fn default_sample_rate() -> u32 {
+    16000
+}
+fn default_channels() -> u32 {
+    1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrConfig {
@@ -328,16 +334,13 @@ pub struct AsrConfig {
     /// 想试就设 0.1~0.3，并用那个诊断在**你的**素材上复测。
     #[serde(default = "default_segment_padding")]
     pub segment_padding: f64,
-    /// qwen3 单次解码的**输出**上限（token）。
+    /// qwen3 单次解码的**全局输出上限**（token），固定值。
     ///
-    /// 上游 sherpa-onnx 对 qwen3-asr 的默认是 **128**；本项目曾一路放到 2048（16 倍），
-    /// 后果是解码一旦失控（喂到音乐/噪声段时）会一直胡说到上限 ——
-    /// 实测出现过 71 字、0.3 秒的 `<|endoftext|>Human Rights Watch…` 条目。
-    /// 窗口内容量参考：≤30 字（≈≤15 秒），极端 60 秒窗口按 ~6 字/秒 也才 ~360 token，
-    /// 所以 512 已有充足余量。
-    ///
-    /// ⚠️ 这个是**全局**的（recognizer 只建一次，API 没有每流覆盖），
-    /// 别试图按窗口动态设。改默认值时要同步 `config/mod.rs` 的 merge 条件。
+    /// 当前默认 256：30 字窗口实测正常输出约 20~40 token，余量充足；
+    /// 同时比 512 更早截断音乐/噪声段的失控输出。
+    /// 上游 sherpa-onnx 对 qwen3-asr 的默认是 **128**；如果以后调大
+    /// `max_segment_chars`，需要同步调大这个值。
+    /// 改默认值时要同步 `config/mod.rs` 的 merge 条件。
     #[serde(default = "default_max_new_tokens")]
     pub max_new_tokens: u32,
     /// ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -362,22 +365,50 @@ pub struct AsrConfig {
     pub snap_window: f64,
 }
 
-fn default_asr_language() -> String { "zh".into() }
-fn default_num_workers() -> u32 { 0 }
-fn default_chunk_duration() -> f64 { 60.0 }
-fn default_chunk_overlap() -> f64 { 10.0 }
-fn default_segment_gap() -> f64 { 1.0 }
-fn default_max_segment_duration() -> f64 { 15.0 }
-fn default_segment_merge_gap() -> f64 { 0.6 }
-fn default_segment_padding() -> f64 { 0.0 }
-fn default_max_new_tokens() -> u32 { 512 }
-fn default_breath_gap() -> f64 { 0.25 }
-fn default_soft_cut_secs() -> f64 { 6.0 }
-fn default_max_segment_chars() -> usize { 30 }
-fn default_snap_window() -> f64 { 0.3 }
+fn default_asr_language() -> String {
+    "zh".into()
+}
+fn default_num_workers() -> u32 {
+    0
+}
+fn default_chunk_duration() -> f64 {
+    60.0
+}
+fn default_chunk_overlap() -> f64 {
+    10.0
+}
+fn default_segment_gap() -> f64 {
+    1.0
+}
+fn default_max_segment_duration() -> f64 {
+    15.0
+}
+fn default_segment_merge_gap() -> f64 {
+    0.6
+}
+fn default_segment_padding() -> f64 {
+    0.0
+}
+fn default_max_new_tokens() -> u32 {
+    256
+}
+fn default_breath_gap() -> f64 {
+    0.25
+}
+fn default_soft_cut_secs() -> f64 {
+    6.0
+}
+fn default_max_segment_chars() -> usize {
+    30
+}
+fn default_snap_window() -> f64 {
+    0.3
+}
 /// ASR 模式**默认 hybrid**（用户要求固定用双模型；准备页不再给下拉，
 /// 要改只能改 `.vtrim/config.toml` / 项目 `vtrim.toml` 的 `[asr] mode`，即设置页）。
-fn default_asr_mode() -> String { "hybrid".into() }
+fn default_asr_mode() -> String {
+    "hybrid".into()
+}
 
 impl Default for AsrConfig {
     fn default() -> Self {
@@ -418,13 +449,26 @@ pub struct DetectionConfig {
     /// 参考标题示例（检测 + 封面标题生成共用；每项一条，可含 emoji）
     #[serde(default)]
     pub reference_titles: Vec<String>,
+    /// 标题+摘要 LLM 传播潜力评分在最终热度里的权重。
+    ///
+    /// 评分阶段只把 `label` + `summary` 发给 LLM（不带转录/时间/类型），
+    /// 按预测点击率、有趣程度、爆点强度综合给 0~100 分；最终热度：
+    /// `popularity = (1 - w) * 弹幕/字幕热度 + w * LLM评分`。
+    /// `0` = 关闭该标准（也不再发这次 LLM 请求）。
+    #[serde(default = "default_llm_score_weight")]
+    pub llm_score_weight: f64,
     /// 事件检测并发窗口数。**留空 = 跟随 `.vtrim/llm.toml` 的 `[llm] max_concurrent`**；
     /// 填了才以本段为准（一般是排查限流时才需要单独压这里）。
     #[serde(default)]
     pub max_concurrent: Option<usize>,
 }
 
-fn default_danmaku_window_secs() -> f64 { 10.0 }
+fn default_danmaku_window_secs() -> f64 {
+    10.0
+}
+fn default_llm_score_weight() -> f64 {
+    0.3
+}
 
 impl Default for DetectionConfig {
     fn default() -> Self {
@@ -434,6 +478,7 @@ impl Default for DetectionConfig {
             prompt_template: String::new(),
             vtuber_name: String::new(),
             reference_titles: Vec::new(),
+            llm_score_weight: default_llm_score_weight(),
             max_concurrent: None,
         }
     }
@@ -473,7 +518,9 @@ impl Default for LlmConfig {
     }
 }
 
-fn default_llm_max_concurrent() -> usize { 3 }
+fn default_llm_max_concurrent() -> usize {
+    3
+}
 
 impl LlmConfig {
     /// 并发数的唯一解析入口：段自己的覆盖优先，否则用 `[llm] max_concurrent`，至少 1。
@@ -493,7 +540,9 @@ pub struct CuttingConfig {
     pub silence_noise_db: f64,
 }
 
-fn default_silence_noise_db() -> f64 { -30.0 }
+fn default_silence_noise_db() -> f64 {
+    -30.0
+}
 
 impl Default for CuttingConfig {
     fn default() -> Self {
@@ -515,7 +564,9 @@ pub struct SfxConfig {
 
 impl Default for SfxConfig {
     fn default() -> Self {
-        Self { blacklist: Vec::new() }
+        Self {
+            blacklist: Vec::new(),
+        }
     }
 }
 
@@ -528,7 +579,9 @@ pub struct ChromeConfig {
 
 impl Default for ChromeConfig {
     fn default() -> Self {
-        Self { path: String::new() }
+        Self {
+            path: String::new(),
+        }
     }
 }
 
@@ -565,8 +618,9 @@ impl Default for CorrectConfig {
     }
 }
 
-fn default_correct_window_size() -> usize { 25 }
-
+fn default_correct_window_size() -> usize {
+    25
+}
 
 #[cfg(test)]
 mod current_stage_tests {
@@ -582,10 +636,8 @@ mod current_stage_tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            let p = std::env::temp_dir().join(format!(
-                "vtrim-stage-{tag}-{}-{nanos}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir()
+                .join(format!("vtrim-stage-{tag}-{}-{nanos}", std::process::id()));
             std::fs::create_dir_all(&p).unwrap();
             TmpDir(p)
         }
@@ -611,7 +663,11 @@ mod current_stage_tests {
         let output = root.join("output");
         assert_eq!(ProjectConfig::default().current_stage(&output), 0);
 
-        std::fs::write(root.join("sub.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
+        std::fs::write(
+            root.join("sub.srt"),
+            "1\n00:00:01,000 --> 00:00:02,000\nhi\n",
+        )
+        .unwrap();
         let cfg = ProjectConfig {
             transcript_file: Some("sub.srt".to_string()),
             ..Default::default()
