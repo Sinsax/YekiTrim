@@ -38,13 +38,13 @@
       </div>
     </template>
 
-    <!-- 折叠态：项目首字图标轨（悬停看全名，点击直达该项目当前阶段） -->
+    <!-- 折叠态：项目标识图标轨（过滤数字/符号，多项目去重；悬停看全名，点击直达当前阶段） -->
     <div v-else class="rail-list">
       <button v-for="p in filteredProjects" :key="p.id" class="rail-proj"
               :class="{ on: String(p.id) === String(route.params.pid) }"
               :title="`${p.name} · ${runningOf(p.id) ? '运行中' : stepLabelOf(p)}`"
               @click="openProject(p)">
-        <span class="ini">{{ initialOf(p.name) }}</span>
+        <span class="ini">{{ projectLabelOf(p) }}</span>
         <span v-if="runningOf(p.id)" class="rdot"></span>
       </button>
       <div v-if="!filteredProjects.length" class="hint rail-hint"
@@ -94,7 +94,7 @@ import Icon from '../Icon.vue'
 import { authState } from '../../stores/auth'
 import { useJobs } from '../../composables/useJobs'
 import { ui, toggleSide } from '../../stores/ui'
-import { STEPS, stageInfo } from '../../utils'
+import { STEPS, stageInfo, hashIndex } from '../../utils'
 import { filteredProjects, isExpanded, toggleExpand, wb } from '../../stores/workbench'
 
 defineProps({
@@ -106,7 +106,7 @@ const route = useRoute()
 const router = useRouter()
 const { jobs, hasRunning } = useJobs()
 
-/** 折叠态：只留品牌 / 项目首字 / 全局入口图标（状态在 stores/ui.js，localStorage 持久化） */
+/** 折叠态：只留品牌 / 项目标识 / 全局入口图标（状态在 stores/ui.js，localStorage 持久化） */
 const collapsed = computed(() => ui.sideCollapsed)
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
@@ -146,6 +146,74 @@ function runningOf(pid) {
 function initialOf(s) {
   const ch = Array.from(String(s || '').trim())[0] || '·'
   return ch.toUpperCase()
+}
+
+/**
+ * 折叠轨的项目标识：显示两个字，只取“有意义”的字符，过滤掉 `[` `]` `-` `:` 数字这些。
+ *
+ * 录播姬项目名通常是 `[2026-08-13 20-54-35-962][好困]`：
+ * 过滤后只剩 `好困`，取末尾相邻两个字（标签通常在末尾），所以折叠后显示 `好困`。
+ *
+ * 多项目去重按项目 id 固定顺序分配，先到先得；同一项目永远拿同一个标识。
+ */
+const PROJECT_FALLBACK_CHARS = [
+  '春', '夏', '秋', '冬', '东', '南', '西', '北',
+  '风', '花', '雪', '月', '星', '海', '山', '云',
+  '林', '川', '光', '影', '木', '水', '火', '土'
+]
+/** Unicode 字母（含 CJK）才算有意义；数字/标点/符号/emoji 都过滤掉。 */
+const MEANINGFUL_CHAR_RE = /[\p{L}\p{Nl}]/u
+
+function projectNameChars(name) {
+  return Array.from(String(name || '')).filter((ch) => MEANINGFUL_CHAR_RE.test(ch))
+}
+
+/** 标题里的候选两字标识：末尾相邻两字优先，再往前滑。 */
+function projectLabelCandidates(p) {
+  const chars = projectNameChars(p.name)
+  if (chars.length < 2) return []
+  const out = []
+  for (let i = chars.length - 2; i >= 0; i--) {
+    out.push(chars[i] + chars[i + 1])
+  }
+  return out
+}
+
+/** 标题没有足够可用字或候选全被占时，从固定字池里按 id 稳定挑一个两字组合。 */
+function fallbackProjectLabel(seed, used) {
+  const n = PROJECT_FALLBACK_CHARS.length
+  const total = n * n
+  const start = hashIndex(seed, total)
+  for (let k = 0; k < total; k++) {
+    const idx = (start + k) % total
+    const label = PROJECT_FALLBACK_CHARS[Math.floor(idx / n)] + PROJECT_FALLBACK_CHARS[idx % n]
+    if (!used.has(label)) return label
+  }
+  return '项目'
+}
+
+const projectLabels = computed(() => {
+  const map = {}
+  const used = new Set()
+  // 按 id 排序而不是按当前过滤/排序结果：列表顺序变化时每个项目的标识不能跟着变。
+  const list = [...(wb.projects || [])].sort((a, b) => Number(a.id) - Number(b.id))
+  for (const p of list) {
+    let label = ''
+    for (const c of projectLabelCandidates(p)) {
+      if (!used.has(c)) {
+        label = c
+        break
+      }
+    }
+    if (!label) label = fallbackProjectLabel(String(p.id ?? p.name ?? ''), used)
+    used.add(label)
+    map[String(p.id)] = label
+  }
+  return map
+})
+
+function projectLabelOf(p) {
+  return projectLabels.value[String(p.id)] || '项目'
 }
 
 /** 粗粒度当前阶段（不看缓存，够图标轨用）。 */

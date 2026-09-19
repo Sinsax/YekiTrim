@@ -73,13 +73,15 @@ import Icon from './Icon.vue'
 import { toast } from '../stores/toast'
 import { csrfHeaders } from '../api/client'
 import { addClient } from '../stores/log'
-import { mediaUrl } from '../utils'
+import { clipMediaUrl } from '../utils'
+import { fontUrl } from '../api/polish'
 import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
 import init, { init_renderer } from '../wasm/vtrim_wasm.js'
 
 const props = defineProps({
+  pid: { type: [String, Number], required: true },
   dir: { type: String, required: true },
   config: { type: Object, default: null },
   subtitles: { type: Array, default: () => [] },
@@ -112,10 +114,10 @@ let rafId = 0
 let ro = null
 
 const player = createSfxPlayer({
-  resolveUrl: (name) => mediaUrl(props.dir, 'sfx/' + name + '.mp3')
+  resolveUrl: (name) => clipMediaUrl(props.pid, props.dir, 'sfx/' + name + '.mp3')
 })
 
-const videoSrc = computed(() => mediaUrl(props.dir, props.config?.source?.video || 'clip.mp4'))
+const videoSrc = computed(() => clipMediaUrl(props.pid, props.dir, props.config?.source?.video || 'clip.mp4'))
 const muteRanges = computed(() => (props.config?.mute_ranges || [])
   .map(r => ({ start: Number(r.start) || 0, end: Number(r.end) || 0 }))
   .filter(r => r.end - r.start > 0.001)
@@ -130,7 +132,7 @@ const stickerMap = computed(() => props.config?._assets?.sticker_map || {})
 function stickerSrc(name) {
   if (stickerFailed.value[name]) return ''
   const p = stickerMap.value[name]
-  return p ? mediaUrl(props.dir, p) : ''
+  return p ? clipMediaUrl(props.pid, props.dir, p) : ''
 }
 
 const effDuration = computed(() => duration.value || props.metaDuration || 0)
@@ -572,7 +574,7 @@ async function tryEnableWasm() {
     const datas = []
     const gifs = []
     for (const [name, p] of Object.entries(map)) {
-      const r = await fetch(mediaUrl(props.dir, p))
+      const r = await fetch(clipMediaUrl(props.pid, props.dir, p))
       if (!r.ok) continue
       names.push(name)
       datas.push(new Uint8Array(await r.arrayBuffer()))
@@ -580,7 +582,7 @@ async function tryEnableWasm() {
     }
     let fontBytes = null
     try {
-      const fr = await fetch(`/api/polish/font?dir=${encodeURIComponent(props.dir)}&name=${encodeURIComponent(props.config?.style?.subtitle?.font || '')}`)
+      const fr = await fetch(fontUrl(props.pid, props.dir, props.config?.style?.subtitle?.font || ''))
       if (fr.ok) fontBytes = new Uint8Array(await fr.arrayBuffer())
     } catch (e) {
       // 字体缺失只是回退到内置字体，记 debug 就够（别把面板刷满）

@@ -7,7 +7,9 @@
     <div class="proj-head" @click="toggle">
       <div class="prow">
         <span class="tw">▶</span>
-        <span class="nm" :title="p.name">{{ p.name }}</span>
+        <span class="nm" :title="p.name" @mouseenter="startMarquee" @mouseleave="stopMarquee">
+          <span ref="nameTextEl" class="nm-text" :class="{ marquee: marqueeOn }" :style="marqueeStyle">{{ p.name }}</span>
+        </span>
       </div>
       <div class="prow pmeta">
         <span class="src-badge" :class="badgeClass" :title="sourceLabel(p)">{{ sourceBadge(p) }}</span>
@@ -36,7 +38,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { STEPS, stageInfo } from '../../utils'
 import { humanBytes, sourceBadge, sourceLabel } from '../../stores/project'
 import { cacheOf, polishedCountOf, uncutEventsOf } from '../../stores/workbench'
@@ -75,6 +77,33 @@ const progressChip = computed(() => (progress.value >= 3 ? 'g' : progress.value 
 const badgeClass = computed(() =>
   props.p.source?.kind === 'recorder' ? 'src-rec' : props.p.source?.kind === 'bilibili' ? 'src-bili' : 'src-local'
 )
+
+/* ---- 项目名跑马灯 ----
+   默认由 `.nm-text` 自己带省略号；只有鼠标移入后**实测**文字宽度超过可视宽度才启动。
+   用 `transform` + `transition` 而不是循环动画：正向滚到末尾就停住，鼠标移走时 class
+   撤销，浏览器按 transition 的反向缩短规则沿原路滚回起点（中途移开也能从当前位置返回）。 */
+const NM_SPEED = 100 // px/s，比原来的逐帧观感快约 2.4 倍
+const nameTextEl = ref(null)
+const marqueeOn = ref(false)
+const marqueeStyle = ref({})
+
+function startMarquee() {
+  const text = nameTextEl.value
+  if (!text) return
+  // 系统开了“减少动态效果”就不跑，保留省略号与 title 提示
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return
+  const distance = text.scrollWidth - text.clientWidth
+  if (distance <= 1) return
+  marqueeStyle.value = {
+    '--nm-shift': `-${distance}px`,
+    '--nm-duration': `${Math.max(0.4, distance / NM_SPEED)}s`
+  }
+  marqueeOn.value = true
+}
+
+function stopMarquee() {
+  marqueeOn.value = false
+}
 
 /**
  * 阶段节点打不打勾 —— **只有「预处理」会打 ✓**（用户要求）。
@@ -127,6 +156,12 @@ function toggle() {
 .badge { font-size:10px; }
 /* 进度 chip（如「预处理 42%」）保持完整单词显示：不许被长名挤瘪换行 */
 .proj-head .badge { flex:none; white-space:nowrap; }
+/* 项目名跑马灯：`.nm-text` 静止时自己截断并显示省略号（与旧版 `.nm` 的观感一致）；
+   只有 JS 实测溢出后加的 `.marquee` 才放开 overflow 并设置目标位移。
+   `transition` 让正向滚到末尾后停住；移走时 class 撤销，再从当前位置滚回起点。 */
+.nm-text { display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  transform:translateX(0); transition:transform var(--nm-duration,.4s) linear; }
+.nm-text.marquee { overflow:visible; transform:translateX(var(--nm-shift,0px)); will-change:transform; }
 .snode.viewing { background:var(--main-soft); color:var(--pink-text); font-weight:600; }
 /* 当前项目整行高亮。光靠底色不够：`--main-soft`(#FDE3EC) 与悬停底色 `--bg-soft`(#FFEFE7)
    太接近，所以左边再加一条 `--main` 强调条、名字走 `--pink-text`。

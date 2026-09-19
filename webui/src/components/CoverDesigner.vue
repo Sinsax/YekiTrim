@@ -237,14 +237,16 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import { addClient } from '../stores/log'
 import Icon from './Icon.vue'
-import { mediaUrl, fmtTime } from '../utils'
+import { clipMediaUrl, fmtTime } from '../utils'
 import { watchJob, busyOn, clipKey, kindText } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
-import { fetchFonts } from '../api/polish'
+import {
+  fetchFonts, fetchProject,
+  coverFrame, coverBackground, coverTitle, coverConfig, runCover,
+} from '../api/polish'
 import { ensureFontFace } from '../polish/fonts'
 
 const props = defineProps({
@@ -718,8 +720,8 @@ const bgBlurStyle = computed(() => {
 // —— 两个文件分开，导入背景不会盖掉「关键帧层」（与 Rust 的 COVER_FRAME_IMG / COVER_BG_IMG 同源）
 const bgImageSrc = computed(() => {
   if (!props.dir) return ''
-  if (bgMode.value === 'image') return mediaUrl(props.dir, '_cover_bg.jpg') + '?t=' + bgStamp.value
-  return mediaUrl(props.dir, '_cover_frame.jpg') + '?t=' + frameStamp.value
+  if (bgMode.value === 'image') return clipMediaUrl(props.pid, props.dir, '_cover_bg.jpg') + '?t=' + bgStamp.value
+  return clipMediaUrl(props.pid, props.dir, '_cover_frame.jpg') + '?t=' + frameStamp.value
 })
 
 /**
@@ -734,7 +736,7 @@ async function onBgImageError() {
   if (bgMode.value === 'image' || bgFrameTried.value) return
   bgFrameTried.value = true
   try {
-    await api('/api/polish/cover-frame', { method: 'POST', body: JSON.stringify({ dir: props.dir }) })
+    await coverFrame(props.pid, props.dir)
     frameStamp.value++
     bgImageOk.value = true
   } catch (e) {
@@ -861,7 +863,7 @@ function removeFx(i) { fxList.value.splice(i, 1) }
 
 async function exportFrame() {
   try {
-    await api('/api/polish/cover-frame', { method: 'POST', body: JSON.stringify({ dir: props.dir, time: time.value || 0 }) })
+    await coverFrame(props.pid, props.dir, time.value || 0)
     // 出片的模糊背景就是这张文件：去掉缓存让预览立刻换成新截的那一帧
     frameStamp.value++
     bgImageOk.value = true
@@ -876,7 +878,7 @@ async function importBg(e) {
   reader.onload = async () => {
     try {
       const base64 = String(reader.result).split(',')[1]
-      await api('/api/polish/cover-background', { method: 'POST', body: JSON.stringify({ dir: props.dir, image_data: base64 }) })
+      await coverBackground(props.pid, props.dir, base64)
       // 服务端写的是 `_cover_bg.jpg` + bg_mode=image：本地同步切过去并刷新图
       bgMode.value = 'image'
       bgStamp.value++
@@ -891,7 +893,7 @@ async function generateTitleByLlm() {
   if (generatingTitle.value) return
   generatingTitle.value = true
   try {
-    const r = await api('/api/polish/cover-title', { method: 'POST', body: JSON.stringify({ dir: props.dir }) })
+    const r = await coverTitle(props.pid, props.dir)
     const lines = r?.title_lines || []
     if (lines.length) {
       titleLines.value = lines
@@ -966,10 +968,7 @@ async function persistCoverConfig() {
   if (savingConfig.value) { saveConfigPending = true; return }
   savingConfig.value = true
   try {
-    await api('/api/polish/cover-config', {
-      method: 'POST',
-      body: JSON.stringify({ dir: props.dir, cover: coverConfigPayload() })
-    })
+    await coverConfig(props.pid, props.dir, coverConfigPayload())
     saveError.value = ''
   } catch (e) {
     // 以前只 `console.warn` + 一次 toast：600ms 防抖下连着改会刷屏，而且 toast 一闪就没了。
@@ -1020,10 +1019,10 @@ async function generateCover() {
   try {
     // 手动设定过时间时，先生成/刷新关键帧，避免生成时仍用默认 frame_pos
     if (Number(time.value) > 0) {
-      await api('/api/polish/cover-frame', { method: 'POST', body: JSON.stringify({ dir: props.dir, time: time.value }) })
+      await coverFrame(props.pid, props.dir, time.value)
     }
-    await api('/api/polish/cover-config', { method: 'POST', body: JSON.stringify({ dir: props.dir, cover: coverConfigPayload() }) })
-    const coverRes = await api('/api/polish/cover', { method: 'POST', body: JSON.stringify({ dir: props.dir }) })
+    await coverConfig(props.pid, props.dir, coverConfigPayload())
+    const coverRes = await runCover(props.pid, props.dir)
     if (coverRes && coverRes.id) {
       await new Promise((resolve, reject) => {
         // `watchJob()` 返回 `{ close() }` 对象（不是函数），别直接当函数调
@@ -1125,9 +1124,9 @@ function syncControlsBound() {
  */
 async function loadCoverConfig(retrying = false) {
   try {
-    const cfg = await api('/api/polish/project?dir=' + encodeURIComponent(props.dir), { label: '读取封面配置' })
+    const cfg = await fetchProject(props.pid, props.dir, false, '读取封面配置')
     layout.value = cfg?.layout || {}
-    videoSrc.value = mediaUrl(props.dir, cfg?.source?.video || 'clip.mp4')
+    videoSrc.value = clipMediaUrl(props.pid, props.dir, cfg?.source?.video || 'clip.mp4')
     // 标题行：与 `cover.rs::build_cover_html` 同一套回退规则 —— 没有 title_lines 时按标点
     // 把 `project.name` 拆行，并砍掉 `【主播名】` 后缀（以前这里直接用整串当一行，
     // 于是"设计器里一行、出片四行"）
@@ -1203,7 +1202,7 @@ onMounted(async () => {
   syncControlsBound()
   resizeRo = new ResizeObserver(() => { updateStageScale(); syncControlsBound() })
   if (stageWrapRef.value) resizeRo.observe(stageWrapRef.value)
-  videoSrc.value = mediaUrl(props.dir, 'clip.mp4')
+  videoSrc.value = clipMediaUrl(props.pid, props.dir, 'clip.mp4')
   loadFonts()
   // 首次拿到标题（磁盘上没有 title_lines）→ 把排版调好并放进 4:3 安全区。
   // 排完的改动由下面那个 600ms 防抖 watch 自动落盘，所以只跑这一次。

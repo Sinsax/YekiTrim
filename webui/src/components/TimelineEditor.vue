@@ -302,7 +302,6 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { api } from '../api/client'
 import { confirmDialog } from '../stores/dialog'
 import { addClient } from '../stores/log'
 import { toast } from '../stores/toast'
@@ -310,7 +309,10 @@ import Icon from './Icon.vue'
 import StickerPicker from './polish/StickerPicker.vue'
 import SfxPicker from './polish/SfxPicker.vue'
 import { TIMELINE_COLORS } from '../utils'
-import { fetchSfxCatalog, fetchStickerLibrary } from '../api/polish'
+import {
+  fetchProject, fetchSubtitles, fetchSfxCatalog, fetchStickerLibrary,
+  saveProjectPatch, saveSubtitles, runSilence,
+} from '../api/polish'
 
 const props = defineProps({
   dir: { type: String, required: true },
@@ -817,13 +819,13 @@ async function flushSave() {
   saveState.value = 'saving'
   try {
     if (segs || mutes) {
-      const patch = { dir: props.dir }
+      const patch = {}
       if (segs) patch.segments = segs
       if (mutes) patch.mute_ranges = mutes
-      await api('/api/polish/project', { method: 'PUT', body: JSON.stringify(patch) })
+      await saveProjectPatch(props.pid, props.dir, patch)
     }
     if (subs) {
-      await api('/api/polish/subtitles', { method: 'PUT', body: JSON.stringify({ dir: props.dir, segments: subs }) })
+      await saveSubtitles(props.pid, props.dir, subs)
     }
     dirty.segments = dirty.subtitles = dirty.mute = false
     saveAttempts = 0
@@ -1356,10 +1358,7 @@ async function toggleSilence() {
   silenceBusy.value = true
   const action = silenceApplied.value ? 'clear' : 'apply'
   try {
-    const res = await api('/api/polish/silence', {
-      method: 'POST',
-      body: JSON.stringify({ dir: props.dir, action })
-    })
+    const res = await runSilence(props.pid, props.dir, { action })
     await loadData()
     emit('preview', { mute_ranges: muteRanges.value })
     if (action === 'clear') {
@@ -1506,11 +1505,10 @@ watch(() => props.dir, async (_now, before) => {
  * 失败必须与"真的为空"分开：**失败一律不写盘**（`flushSave` 开头拦）。
  */
 async function loadData() {
+  if (!props.dir) return false
   let cfg = null
   try {
-    cfg = await api(
-      '/api/polish/project?dir=' + encodeURIComponent(props.dir) + '&preview=1',
-      { label: '读取时间轴数据' })
+    cfg = await fetchProject(props.pid, props.dir, true, '读取时间轴数据')
   } catch (e) {
     loadError.value = e.message || String(e)
     addClient('warn', '时间轴数据读取失败，已暂停保存：' + loadError.value, 'timeline')
@@ -1531,7 +1529,7 @@ async function loadData() {
   // 字幕：**404「暂无字幕文件」是正常空态**（没转写文件的片段就是没有字幕），只有其它错误
   // 才算读失败 —— 否则每个没有字幕的片段都会挂一条"读取失败，已暂停保存"。
   try {
-    const subRes = await api('/api/polish/subtitles?dir=' + encodeURIComponent(props.dir), { label: '读取字幕' })
+    const subRes = await fetchSubtitles(props.pid, props.dir, '读取字幕')
     subtitles.value = subRes?.segments || []
   } catch (e) {
     if (e.status === 404) {

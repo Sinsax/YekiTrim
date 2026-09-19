@@ -32,7 +32,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { loadProjects, projectById } from '../stores/workbench'
 import { projectData } from '../api/projectData'
-import { uncutEventsOf, inputMediaUrl } from '../utils'
+import { uncutEventsOf, mediaUrl } from '../utils'
 import { onJobDone } from '../composables/useJobs'
 import Icon from '../components/Icon.vue'
 import ProjectClipsSection from '../components/ProjectClipsSection.vue'
@@ -45,7 +45,7 @@ const clipsRef = ref(null)
 const loading = ref(true)
 const loadError = ref('')
 // 原片 URL：未剪切事件的「预览」要播**整场录播**（那片还没剪出来），
-// 与预处理页同一个来源（`status.input_abs` → `inputMediaUrl`）。
+// 与预处理页同一个来源（`status.input_file` → `mediaUrl(pid, rel)`）。
 // 服务端只放行"本人项目根内"的文件 —— 项目外的原片会拿不到，那时按钮按禁用处理。
 const sourceUrl = ref('')
 /** `load()` 的单飞状态（见 `load` 的注释）。 */
@@ -100,7 +100,7 @@ async function doLoad({ silent = false } = {}) {
     const m = {}
     ;(pl || []).forEach(p => { m[p.dir] = p })
     projectDataRef.value = { events: (ev && ev.events) || [], clips: cl || [], polishMap: m }
-    sourceUrl.value = inputMediaUrl(st && st.input_abs)
+    sourceUrl.value = mediaUrl(pid, st && st.input_file)
   } catch (e) {
     // 静默刷新也要把失败说出来（只是不换骨架屏）
     loadError.value = '切片数据加载失败：' + e.message

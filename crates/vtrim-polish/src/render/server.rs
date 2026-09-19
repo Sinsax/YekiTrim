@@ -264,6 +264,35 @@ impl RenderServer {
                 cfg["loudness_curve"] = serde_json::json!(points);
             }
         }
+        // 把 data/*.json 直接注入 HTML：出片时页面不再自己 fetch。
+        // 网络盘（RaiDrive/WebDAV）上这几个文件可能很慢，甚至 fetch 悬住 ——
+        // 旧实现会让页面在 60s 内永远等不到 init()，报一个与根因无关的“GSAP/CDN”超时。
+        let data_dir = project_path.join("data");
+        let read_data = |name: &str| -> serde_json::Value {
+            let path = data_dir.join(name);
+            match std::fs::read_to_string(&path) {
+                Ok(raw) => match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("读取 {} 失败（JSON 解析错误）: {e}", path.display());
+                        serde_json::Value::Null
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("读取 {} 失败: {e}", path.display());
+                    serde_json::Value::Null
+                }
+            }
+        };
+        let subtitles = read_data("subtitles.json");
+        let danmaku = read_data("danmaku.json");
+        let clip_meta = read_data("clip-meta.json");
+        cfg["_data"] = serde_json::json!({
+            "subtitles": if subtitles.is_null() { serde_json::json!([]) } else { subtitles },
+            "danmaku": if danmaku.is_null() { serde_json::json!([]) } else { danmaku },
+            "meta": if clip_meta.is_null() { serde_json::json!({}) } else { clip_meta },
+        });
+
         let html = Self::inject_config_tag(&cfg, INDEX_HTML);
         // 字幕字体：选了字体库里的字体就补 @font-face（`.cap` 的 family 读的就是这一串）
         let font = subtitle_font_of(&cfg).to_string();

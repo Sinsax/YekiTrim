@@ -105,7 +105,7 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" />
                 <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
               </div>
             </div>
@@ -152,34 +152,27 @@
               </template>
               <div v-else class="hint mb-8">点「人物」或「弹幕区域」后到左侧预览里框选。</div>
 
-              <!-- 参数 2：贴纸来源 -->
+              <!-- 参数 2：贴纸来源。只保留一组可点 chip：亮 = 启用，灰 = 停用。 -->
               <div class="small muted mb-4">贴纸来源<span class="hint"> · LLM 可用的贴图来源</span></div>
-              <div class="ss-chips">
-                <span v-for="s in stickerSource" :key="s" class="ss-chip">
-                  {{ s }}
-                  <button class="ss-x" title="移除" @click="removeStickerSource(s)"><Icon name="x" :size="10" /></button>
-                </span>
-                <span v-if="!stickerSource.length" class="muted small">未配置来源</span>
-              </div>
-              <div class="row mt-8">
-                <input v-model="ssInput" class="ss-input flex-1" placeholder="emoji 或贴纸包名，回车添加" @keyup.enter="addStickerSource">
-                <button class="mini-btn" @click="addStickerSource"><Icon name="plus" :size="11" /> 添加</button>
-              </div>
-              <div class="ss-available mt-8">
-                <div class="small muted mb-4">可用来源（点击启用 / 停用）</div>
-                <div v-for="src in stickerSources" :key="src.name" class="ss-avail-item"
-                     :class="{ on: stickerSource.includes(src.name) }"
-                     :title="src.tags.length ? 'tags: ' + src.tags.join(' / ') : src.description"
-                     @click="toggleStickerSource(src.name)">
+              <div class="ss-options">
+                <button
+                  v-for="src in allStickerOptions"
+                  :key="src.name"
+                  class="ss-opt"
+                  :class="{ on: stickerSource.includes(src.name) }"
+                  :title="src.tags?.length ? 'tags: ' + src.tags.join(' / ') : (src.description || '')"
+                  @click="toggleStickerSource(src.name)"
+                >
                   <b>{{ src.name }}</b>
-                  <span class="muted small">{{ src.builtin ? '内置 emoji' : (src.tags.length + ' tags') }}</span>
-                </div>
+                  <span v-if="src.tags?.length" class="ss-opt-meta">{{ src.tags.length }} tags</span>
+                  <span v-else-if="src.builtin" class="ss-opt-meta">内置</span>
+                </button>
                 <!-- "读不到"与"库是空的"必须分开：前者不该让用户去翻 stickers/ 目录 -->
                 <div v-if="stickerSourcesError" class="row small" style="gap:6px;align-items:center">
                   <span class="muted">贴纸来源读取失败：{{ stickerSourcesError }}</span>
                   <button class="mini-btn" @click="loadStickerSources">重试</button>
                 </div>
-                <div v-else-if="!stickerSources.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
+                <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
               </div>
 
               <!-- 参数 3：字幕字体（字体库 = 程序目录 resources/fonts/）-->
@@ -237,7 +230,7 @@
           </TimelineEditor>
         </div>
 
-        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry" /></div>
+        <div class="mt-16"><CoverDesigner :key="'cv' + coverKey" :dir="dir" :pid="pid" @changed="refreshClipEntry(true)" /></div>
 
         <!-- 产物整行：成片 + 封面 + 输出目录 -->
         <div class="card mt-16 artifact-bar">
@@ -293,7 +286,7 @@ import PolishPreview from '../components/PolishPreview.vue'
 import TimelineEditor from '../components/TimelineEditor.vue'
 import FragmentList from '../components/polish/FragmentList.vue'
 import CoverDesigner from '../components/CoverDesigner.vue'
-import { mediaUrl } from '../utils'
+import { clipMediaUrl } from '../utils'
 import { api, apiOr } from '../api/client'
 import { addClient } from '../stores/log'
 import { scopeQ } from '../api/scope'
@@ -315,11 +308,14 @@ const pid = ref(routePid)
 const routeCfg = scopeQ(pid.value)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
+/** 当前已经加载完成的片段名：用于跳过 `load()` 自己 `router.replace` 触发的 watch。 */
+const loadedClip = ref('')
 // 记住最后操作过的片段：下次从侧栏进精修页自动回到它（每项目一个键）
 const LAST_CLIP_KEY = computed(() => 'vtrim.polish.last.' + pid.value)
 watch(clipName, (name) => {
   if (name) { try { localStorage.setItem(LAST_CLIP_KEY.value, name) } catch {} }
-  // 片段切换只改路由，必须在这里触发加载（旧代码漏了：点片段行编辑器不切换）
+  // 片段切换只改路由，必须在这里触发加载；但 `load()` 自己 replace 路由时不要再触发一次。
+  if (name === loadedClip.value) return
   load()
 })
 const title = ref('精修编辑器')
@@ -399,7 +395,14 @@ const stickerSource = computed(() => cfg.value?.sticker_source || [])
 const stickerSources = ref([]) // 全局可用来源（emoji + 贴纸库包）
 /** 贴纸来源列表读取失败的原因（非空 → 不显示"贴纸库为空"这个假空态） */
 const stickerSourcesError = ref('')
-const ssInput = ref('')
+/** 实际渲染的选项 = 全局可用来源 + 已配置但当前库里没有的来源（后者仍能点掉）。 */
+const allStickerOptions = computed(() => {
+  const known = new Set(stickerSources.value.map((s) => s.name))
+  const extra = stickerSource.value
+    .filter((n) => !known.has(n))
+    .map((n) => ({ name: n, builtin: false, tags: [], description: '已配置，但当前贴纸库里没有这个来源' }))
+  return [...stickerSources.value, ...extra]
+})
 
 // ---- 字幕字体（字体库：程序目录 resources/fonts/）----
 // 值存 polish.toml 的 `[style.subtitle] font`，**逐片段**生效（每个片段一份 polish.toml）。
@@ -534,8 +537,8 @@ const coverFailed = ref(false)
 const renderedFailed = ref(false)
 const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
 const renderedFile = computed(() => clipEntry.value?.rendered_file || 'vtuber-clip.mp4')
-const coverUrl = computed(() => (dir.value ? mediaUrl(dir.value, coverFile.value) : ''))
-const renderedUrl = computed(() => (dir.value ? mediaUrl(dir.value, renderedFile.value) : ''))
+const coverUrl = computed(() => clipMediaUrl(pid.value, dir.value, coverFile.value))
+const renderedUrl = computed(() => clipMediaUrl(pid.value, dir.value, renderedFile.value))
 
 function jobLabel(kind) {
   return { llm: 'LLM 生成', render: '渲染导出', process: '后处理', init: '初始化' }[kind] || kind
@@ -568,7 +571,27 @@ function togglePreviewPlay() {
  * 非 silent 时 `loading` 会把整个编辑器换成骨架屏（`v-if="loading"`），
  * 编辑器一旦被卸载，预览视频与滚动位置都会重置——看起来就像浏览器刷新了。
  */
-async function load(opts = {}) {
+let loadInflight = null
+let loadQueued = null
+
+/** 单飞：并发调用合并成一次；完成后如果期间又有人请求，再按最后一次参数补跑一次。 */
+function load(opts = {}) {
+  if (loadInflight) {
+    loadQueued = opts
+    return loadInflight
+  }
+  loadInflight = doLoad(opts).finally(() => {
+    loadInflight = null
+    if (loadQueued) {
+      const next = loadQueued
+      loadQueued = null
+      load(next)
+    }
+  })
+  return loadInflight
+}
+
+async function doLoad(opts = {}) {
   const silent = !!(opts && opts.silent)
   // loading 只在这里拨一次（loadClips 不再自己开关），避免中间出现 editor↔骨架屏 的抖动
   if (!silent) loading.value = true
@@ -576,6 +599,7 @@ async function load(opts = {}) {
     await loadClips()
     if (!clips.value.length) {
       dir.value = ''
+      loadedClip.value = ''
       ready.value = false
       cfg.value = null
       return
@@ -592,11 +616,13 @@ async function load(opts = {}) {
     if (!entry) {
       if (clipName.value) toast(`片段 ${clipName.value} 不存在，请从列表重新选择`, 'err')
       dir.value = ''
+      loadedClip.value = ''
       ready.value = false
       cfg.value = null
       return
     }
     dir.value = entry.dir || clipDirOf(wanted)
+    loadedClip.value = wanted
     if (clipName.value !== wanted) {
       router.replace({ name: 'project-polish-clip', params: { pid: pid.value, clip: wanted } })
     }
@@ -614,17 +640,19 @@ async function load(opts = {}) {
       if (!silent) ready.value = false
       else toast('刷新失败：' + e.message, 'err')
     }
-    try {
-      subs.value = (await fetchSubtitles(pid.value, dir.value, '读取字幕')).segments || []
-    } catch { if (!silent) subs.value = [] }
-    subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
-    try {
-      const r = await fetch(mediaUrl(dir.value, 'data/danmaku.json'))
-      if (r.ok) dm.value = await r.json()
-    } catch (e) {
-      // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
-      addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
-      if (!silent) dm.value = []
+    if (dir.value) {
+      try {
+        subs.value = (await fetchSubtitles(pid.value, dir.value, '读取字幕')).segments || []
+      } catch { if (!silent) subs.value = [] }
+      subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+      try {
+        const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/danmaku.json'))
+        if (r.ok) dm.value = await r.json()
+      } catch (e) {
+        // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
+        addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
+        if (!silent) dm.value = []
+      }
     }
     await refreshClipEntry()
   } finally {
@@ -643,12 +671,15 @@ function clipDirOf(name) {
 }
 
 /**
- * `clip-NN` → 序号（解析不出就排到最后）。
- * 片段条必须按**数字**序号排：按字符串排会得到 clip-01, clip-02, clip-100, …, clip-11（用户报过
- * "片段列表排序有问题"）。服务端已经这么排，这里再兜一次，卡片上的序号才不会和目录对不上。
+ * 片段排序键：优先 `clip.json` 的 `rank`（新片段目录名是标题 slug，不能再解析 `clip-NN`），
+ * 旧数据没有 rank 时才回退解析 `clip-NN`，都没有就排到最后。
  */
-function rankOfName(name) {
-  const n = Number(String(name || '').replace(/^clip-/, ''))
+function rankOfClip(c) {
+  const rank = Number(c?.meta?.rank)
+  if (Number.isFinite(rank) && rank > 0) return rank
+  const name = String(c?.name || '')
+  if (!name.startsWith('clip-')) return Number.MAX_SAFE_INTEGER
+  const n = Number(name.slice('clip-'.length))
   return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER
 }
 
@@ -665,7 +696,7 @@ async function loadClips() {
     ])
     clips.value = (Array.isArray(list) ? list : [])
       .filter((c) => c.video_exists)
-      .sort((a, b) => rankOfName(a.name) - rankOfName(b.name))
+      .sort((a, b) => rankOfClip(a) - rankOfClip(b))
     const m = {}
     ;(polish || []).forEach((p) => { m[String(p.dir || '').replace(/\\/g, '/').toLowerCase()] = p })
     polishByDir.value = m
@@ -863,12 +894,19 @@ function onTimelineRetried() {
   if (cfgError.value) load({ silent: true })
 }
 
-async function refreshClipEntry() {
+async function refreshClipEntry(force = false) {
   coverFailed.value = false
   renderedFailed.value = false
-  const list = routeCfg ? await apiOr(`/api/project-data/polish?${routeCfg}`, [], '刷新片段状态') : []
   const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase()
-  clipEntry.value = (list || []).find((p) => norm(p.dir) === norm(dir.value)) || null
+  const key = norm(dir.value)
+  // `loadClips()` 刚拉过整张 polish 表；正常情况下直接用缓存，只有封面保存等确实需要
+  // 刷新产物状态时才 force 重拉，避免每次 load 都多打一次 `/api/project-data/polish`。
+  if (!force && polishByDir.value[key]) {
+    clipEntry.value = polishByDir.value[key]
+    return
+  }
+  const list = routeCfg ? await apiOr(`/api/project-data/polish?${routeCfg}`, [], '刷新片段状态') : []
+  clipEntry.value = (list || []).find((p) => norm(p.dir) === key) || null
 }
 
 // ---- 任务驱动 ----
@@ -1054,18 +1092,6 @@ async function patchStickerSource(list) {
   } catch (e) { toast(e.message, 'err') }
 }
 
-function removeStickerSource(name) {
-  patchStickerSource(stickerSource.value.filter((x) => x !== name))
-}
-
-function addStickerSource() {
-  const name = ssInput.value.trim()
-  if (!name) return
-  if (stickerSource.value.includes(name)) { toast('该来源已启用'); return }
-  ssInput.value = ''
-  patchStickerSource([...stickerSource.value, name])
-}
-
 function toggleStickerSource(name) {
   if (stickerSource.value.includes(name)) patchStickerSource(stickerSource.value.filter((x) => x !== name))
   else patchStickerSource([...stickerSource.value, name])
@@ -1089,7 +1115,6 @@ onUnmounted(() => {
   stopJobTimer()
   closeJobWatcher()
 })
-watch(dir, () => { load() })
 </script>
 
 <style scoped>
@@ -1115,15 +1140,15 @@ watch(dir, () => { load() })
 /* 时间轴卡：自身 padding 收窄（内容已经很紧凑，竖高按 26px/泳道算过） */
 .tl-card { padding:12px; }
 .gen-block { border:1px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; background:var(--bg-soft); }
-.ss-chips { display:flex; flex-wrap:wrap; gap:6px; }
-.ss-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 6px 3px 10px; border-radius:var(--r-full); background:var(--main-soft); color:var(--main-deep); font-size:12px; font-weight:600; }
-.ss-x { border:none; background:none; color:inherit; cursor:pointer; display:flex; padding:2px; border-radius:50%; }
-.ss-x:hover { background:var(--red-soft); color:var(--red-deep); }
-.ss-input { width:auto; }
-.ss-available { border-top:1px dashed var(--line-soft); padding-top:8px; max-height:150px; overflow:auto; }
-.ss-avail-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
-.ss-avail-item:hover { background:var(--bg-soft); }
-.ss-avail-item.on { color:var(--ink-faint); text-decoration:line-through; }
+/* 贴纸来源：一排可点 chip。亮 = 启用，灰 = 停用（不要再出现第二份已选列表）。 */
+.ss-options { display:flex; flex-wrap:wrap; gap:6px; }
+.ss-opt { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:var(--r-full);
+  border:1px solid var(--line); background:var(--bg-soft); color:var(--ink-faint);
+  font-size:12px; cursor:pointer; transition:.15s; opacity:.7; }
+.ss-opt:hover { border-color:var(--main); color:var(--pink-text); opacity:1; }
+.ss-opt.on { background:var(--main-soft); border-color:var(--main); color:var(--main-deep);
+  font-weight:600; opacity:1; }
+.ss-opt-meta { font-size:10px; opacity:.75; }
 .job-box { border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 10px; background:var(--bg-soft); }
 /* 成片与封面统一为同尺寸 16:9 盒子（源都是 1920×1080，比例异常时裁切对齐） */
 .artifact-bar .cover-thumb,
