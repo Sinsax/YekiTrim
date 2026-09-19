@@ -880,6 +880,7 @@ GET  /api/fs/list?path=…          → { "path": "…", "parents": ["F:\\","…
   "asr": { "model": "sensevoice", "num_workers": 0, "chunk_duration": 60.0,
            "chunk_overlap": 10.0, "segment_gap": 1.0, "llm_correct": null },
   "detection": { "danmaku_window_secs": 10.0, "vtuber_name": "",
+                 "llm_score_weight": 0.3,
                  "system_prompt": null, "prompt_template": null },
   "cutting": { "output_dir": "./output", "overwrite": null, "silence_noise_db": -30.0 },
   "sfx": { "blacklist": ["tag:special"] }

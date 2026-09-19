@@ -69,7 +69,7 @@
 |---|---|---|
 | Vue 3 / Vue Router | MIT | `webui/` 运行时依赖。 |
 | Vite / @vitejs/plugin-vue | MIT | 构建工具。 |
-| **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/vtrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5。因为不随包分发，这里只作说明。副作用：**出片时需能访问该 CDN**。许可原文：<https://gsap.com/standard-license> |
+| **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/vtrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5，失败时按顺序回退 unpkg / cdnjs。因为不随包分发，这里只作说明。副作用：**出片时需能访问这些 CDN 之一**。许可原文：<https://gsap.com/standard-license> |
 | Lucide | ISC | `webui/src/components/Icon.vue` 内联了其图标路径数据，属再分发，**需保留版权与许可声明**。上游：<https://lucide.dev> |
 | LXGW WenKai（霞鹜文楷） | SIL OFL-1.1 | 封面/预览模板的字体栈**按名称引用**，不内嵌、不分发字体文件。 |
 
