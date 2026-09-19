@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use async_trait::async_trait;
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::pipeline::{Stage, STAGE_TRANSCRIBE};
@@ -95,14 +95,20 @@ impl Stage for Transcriber {
             Some(p) => p.clone(),
             None => {
                 let fallback = ctx.output_dir.join("video.wav");
-                let from_cfg = ctx.config.project.audio_file.as_ref()
+                let from_cfg = ctx
+                    .config
+                    .project
+                    .audio_file
+                    .as_ref()
                     .filter(|p| !p.is_empty())
                     .map(std::path::PathBuf::from);
-                let path = from_cfg
-                    .filter(|p| p.exists())
-                    .or_else(|| {
-                        if fallback.exists() { Some(fallback.clone()) } else { None }
-                    });
+                let path = from_cfg.filter(|p| p.exists()).or_else(|| {
+                    if fallback.exists() {
+                        Some(fallback.clone())
+                    } else {
+                        None
+                    }
+                });
                 match path {
                     Some(p) => p,
                     None => anyhow::bail!(
@@ -202,8 +208,7 @@ impl Stage for Transcriber {
                     // 前后留一点余量再解码：从 token 时间戳处硬切会削掉首音，
                     // 而句首恰恰是识别最不稳的位置（且 qwen3 的文本就是成片字幕）。
                     // 前置余量只吃"停顿"，不碰上一个字的语音 —— 见 `decode_span`。
-                    let (dec_start, dec_end) =
-                        decode_span(&timeline, sub_start, sub_end, pad);
+                    let (dec_start, dec_end) = decode_span(&timeline, sub_start, sub_end, pad);
                     let (samples, sample_rate) =
                         local::read_wav_range(&audio_path, dec_start, dec_end)?;
 
@@ -300,7 +305,8 @@ impl Stage for Transcriber {
                     }
                     sub_start = sub_end;
                 }
-                ctx.progress.stage_progress((i + 1) as u64, speech_segments.len() as u64);
+                ctx.progress
+                    .stage_progress((i + 1) as u64, speech_segments.len() as u64);
             }
 
             if segs.is_empty() {
@@ -394,7 +400,9 @@ fn decode_span(timeline: &align::CharTimeline, start: f64, end: f64, pad: f64) -
         None => timeline.times[0].min(start - pad),
     };
     // 后置余量同理：不许越过下一个字的起点（那属于下一条）
-    let next_char = timeline.times.get(timeline.times.partition_point(|&t| t < end));
+    let next_char = timeline
+        .times
+        .get(timeline.times.partition_point(|&t| t < end));
     let upper = match next_char {
         Some(&t) => (end + pad).min(t),
         None => end + pad,
@@ -510,8 +518,14 @@ mod tests {
     fn diagnose_head_padding() {
         let wav = std::env::var("VT_ASR_WAV").expect("需要 VT_ASR_WAV=<wav 绝对路径>");
         let wav = Path::new(&wav);
-        let start: f64 = std::env::var("VT_ASR_START").ok().and_then(|v| v.parse().ok()).unwrap_or(730.0);
-        let secs: f64 = std::env::var("VT_ASR_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0);
+        let start: f64 = std::env::var("VT_ASR_START")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(730.0);
+        let secs: f64 = std::env::var("VT_ASR_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30.0);
         let pad = 0.3;
 
         let cfg = AsrConfig::default();
@@ -535,7 +549,11 @@ mod tests {
 
         // ② 按真实管线切窗口
         let windows = align::timeline_segments(&timeline, &policy);
-        println!("SenseVoice 时间轴 {} 字 → {} 个窗口\n", timeline.len(), windows.len());
+        println!(
+            "SenseVoice 时间轴 {} 字 → {} 个窗口\n",
+            timeline.len(),
+            windows.len()
+        );
 
         let qwen3 = local::create_qwen3_recognizer(&cfg).unwrap();
         let run = |s: f64, e: f64| -> String {
@@ -619,8 +637,14 @@ mod tests {
     fn diagnose_hr_effect() {
         let wav = std::env::var("VT_ASR_WAV").expect("需要 VT_ASR_WAV=<wav 绝对路径>");
         let wav = Path::new(&wav);
-        let start: f64 = std::env::var("VT_ASR_START").ok().and_then(|v| v.parse().ok()).unwrap_or(700.0);
-        let secs: f64 = std::env::var("VT_ASR_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(180.0);
+        let start: f64 = std::env::var("VT_ASR_START")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(700.0);
+        let secs: f64 = std::env::var("VT_ASR_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(180.0);
 
         let cfg = AsrConfig::default();
         let policy = align::SplitPolicy::from_config(&cfg);
@@ -647,7 +671,12 @@ mod tests {
             let (s, sr) = local::read_wav_range(wav, w.start, w.end).unwrap();
             let t = local::transcribe_qwen3_samples(&qwen3, &s, sr).unwrap_or_default();
             // 机器可读：窗口号 / 起点 / 字轴字数 / qwen3 文本
-            println!("WIN\t{:.3}\t{}\t{}", w.start, timeline.slice_by_time(w.start, w.end).len(), t.trim());
+            println!(
+                "WIN\t{:.3}\t{}\t{}",
+                w.start,
+                timeline.slice_by_time(w.start, w.end).len(),
+                t.trim()
+            );
         }
     }
 
@@ -697,7 +726,10 @@ mod tests {
             .find(|w| w.start <= 745.0 && 745.0 < w.end)
             .or_else(|| windows.get(1))
             .expect("应至少有一个窗口");
-        println!("目标窗口: [{:.2} - {:.2}]  {}", target.start, target.end, target.text);
+        println!(
+            "目标窗口: [{:.2} - {:.2}]  {}",
+            target.start, target.end, target.text
+        );
         let span = (target.start, target.end);
         let slice = timeline.slice_by_time(span.0, span.1);
 
@@ -716,7 +748,9 @@ mod tests {
                 p.start,
                 p.end,
                 p.end - p.start,
-                p.boundary.map(|b| format!("{b:?}")).unwrap_or_else(|| "tail".into()),
+                p.boundary
+                    .map(|b| format!("{b:?}"))
+                    .unwrap_or_else(|| "tail".into()),
                 p.text
             );
         }

@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 use serde::Serialize;
-use sherpa_onnx::{HomophoneReplacerConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig};
+use sherpa_onnx::{
+    HomophoneReplacerConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer,
+    OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
+};
 
 use crate::asr::align::{self, CharTimeline, SplitPolicy};
 use crate::config::AsrConfig;
@@ -56,7 +59,9 @@ impl ModelDirSource {
 /// （`download::model_install`）都走它 —— 曾出过"模型管理说没下载、实际转写一直在用"
 /// 的错位，就是界面那边自己写了另一套路径（只看程序目录）。
 pub fn resolve_model_dir(cfg: &AsrConfig, model: &str) -> (PathBuf, ModelDirSource) {
-    let user_home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+    let user_home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
     resolve_model_dir_in(cfg, model, user_home.as_deref(), &crate::path::vtrim_home())
 }
 
@@ -153,7 +158,11 @@ pub fn create_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
 
     let model_path = find_model(&mdir, "sensevoice")?;
     let tokens_path = require_file(&mdir, "tokens.txt")?;
-    let language = if cfg.language.is_empty() { "auto".to_string() } else { cfg.language.clone() };
+    let language = if cfg.language.is_empty() {
+        "auto".to_string()
+    } else {
+        cfg.language.clone()
+    };
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
         model: Some(model_path.to_string_lossy().into()),
         language: Some(language),
@@ -230,10 +239,7 @@ pub fn create_qwen3_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
 }
 
 /// 对单个 WAV 文件用 qwen3-asr 识别文本。
-pub fn transcribe_qwen3_file(
-    recognizer: &OfflineRecognizer,
-    wav_path: &Path,
-) -> Result<String> {
+pub fn transcribe_qwen3_file(recognizer: &OfflineRecognizer, wav_path: &Path) -> Result<String> {
     let mapped = MappedWave::open(wav_path)?;
     let stream = recognizer.create_stream();
     let samples = mapped.samples_f32(0, mapped.total_samples);
@@ -242,7 +248,9 @@ pub fn transcribe_qwen3_file(
 
     // 某些段（纯音乐/静音）可能没有 result，返回空字符串让上层跳过。
     let result = stream.get_result();
-    Ok(result.map(|r| r.text.trim().to_string()).unwrap_or_default())
+    Ok(result
+        .map(|r| r.text.trim().to_string())
+        .unwrap_or_default())
 }
 
 /// 转写结果 + 聚合后的 ASR 质量元数据。
@@ -458,7 +466,11 @@ fn scan_sensevoice_chunks(
             .map(|n| (n.get() / 4).clamp(1, 4))
             .unwrap_or(1)
     } else {
-        (cfg.num_workers as usize).min(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+        (cfg.num_workers as usize).min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+        )
     }
     .min(total_chunks)
     .max(1);
@@ -675,8 +687,14 @@ mod tests {
     #[ignore = "需要真实模型与音频（VT_ASR_WAV）"]
     fn diagnose_sensevoice_tokens() {
         let wav = std::env::var("VT_ASR_WAV").expect("需要 VT_ASR_WAV=<wav 绝对路径>");
-        let start: f64 = std::env::var("VT_ASR_START").ok().and_then(|v| v.parse().ok()).unwrap_or(700.0);
-        let secs: f64 = std::env::var("VT_ASR_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
+        let start: f64 = std::env::var("VT_ASR_START")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(700.0);
+        let secs: f64 = std::env::var("VT_ASR_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60.0);
 
         let cfg = AsrConfig::default();
         ensure_ready(&cfg).unwrap();
@@ -697,7 +715,11 @@ mod tests {
             .map(|&t| t as f64)
             .collect();
 
-        println!("窗口 [{start:.1}s, {:.1}s]  token 数 = {}", start + secs, tokens.len());
+        println!(
+            "窗口 [{start:.1}s, {:.1}s]  token 数 = {}",
+            start + secs,
+            tokens.len()
+        );
         println!("全文: {}", result.text);
 
         let multi: Vec<&String> = tokens.iter().filter(|t| t.chars().count() > 1).collect();
@@ -705,7 +727,11 @@ mod tests {
             "\n多字符 token: {} / {}（{}%）",
             multi.len(),
             tokens.len(),
-            if tokens.is_empty() { 0 } else { multi.len() * 100 / tokens.len() }
+            if tokens.is_empty() {
+                0
+            } else {
+                multi.len() * 100 / tokens.len()
+            }
         );
         for t in multi.iter().take(30) {
             println!("  多字符 = {:?}", t);
@@ -715,11 +741,7 @@ mod tests {
         for (i, (tok, t)) in tokens.iter().zip(ts.iter()).enumerate() {
             let gap = if i == 0 { 0.0 } else { t - ts[i - 1] };
             let mark = if gap >= 0.25 { "  <== 气口" } else { "" };
-            println!(
-                "  [{i:3}] {:>6.2}s (+{gap:.2}) {:?}{mark}",
-                start + t,
-                tok
-            );
+            println!("  [{i:3}] {:>6.2}s (+{gap:.2}) {:?}{mark}", start + t, tok);
         }
 
         println!("\n标点落在 token 内部的样本（问号/句号/感叹号，不是 token 首字符）:");
@@ -751,7 +773,9 @@ mod tests {
                 p.start,
                 p.end,
                 p.end - p.start,
-                p.boundary.map(|b| format!("{b:?}")).unwrap_or_else(|| "tail".into()),
+                p.boundary
+                    .map(|b| format!("{b:?}"))
+                    .unwrap_or_else(|| "tail".into()),
                 p.text
             );
         }
@@ -828,20 +852,37 @@ mod tests {
                 .filter(|(_, (off, end))| token_belongs_to_chunk(t, *off, *end))
                 .map(|(i, _)| i)
                 .collect();
-            assert_eq!(owners.len(), 1, "t={t} 的归属块数为 {}: {owners:?}", owners.len());
+            assert_eq!(
+                owners.len(),
+                1,
+                "t={t} 的归属块数为 {}: {owners:?}",
+                owners.len()
+            );
         }
         // 前 50s 归第 0 块，不归第 1 块（旧口径把 50~55s 判给了两块）
         assert!(token_belongs_to_chunk(49.9, 0.0, step));
-        assert!(!token_belongs_to_chunk(52.0, 0.0, step), "50~55s 不该再归第 0 块");
+        assert!(
+            !token_belongs_to_chunk(52.0, 0.0, step),
+            "50~55s 不该再归第 0 块"
+        );
         assert!(token_belongs_to_chunk(52.0, 50.0, 50.0 + step));
     }
-
 
     #[test]
     fn cleanup_removes_isolated_short_noise() {
         let segs = vec![
-            TranscriptSegment { start: 0.0, end: 10.0, text: "嗯".into(), confidence: 1.0 },
-            TranscriptSegment { start: 400.0, end: 402.0, text: "你好".into(), confidence: 1.0 },
+            TranscriptSegment {
+                start: 0.0,
+                end: 10.0,
+                text: "嗯".into(),
+                confidence: 1.0,
+            },
+            TranscriptSegment {
+                start: 400.0,
+                end: 402.0,
+                text: "你好".into(),
+                confidence: 1.0,
+            },
         ];
         let cleaned = cleanup_segments(segs);
         assert!(cleaned.is_empty(), "孤立短噪声应被清理");
@@ -854,9 +895,24 @@ mod tests {
     #[test]
     fn cleanup_keeps_short_questions_separate() {
         let segs = vec![
-            TranscriptSegment { start: 744.9, end: 745.6, text: "你们不用上班的吗？".into(), confidence: 1.0 },
-            TranscriptSegment { start: 746.7, end: 748.2, text: "你们不用赚钱的吗？".into(), confidence: 1.0 },
-            TranscriptSegment { start: 748.4, end: 750.1, text: "你们不用上学的吗？".into(), confidence: 1.0 },
+            TranscriptSegment {
+                start: 744.9,
+                end: 745.6,
+                text: "你们不用上班的吗？".into(),
+                confidence: 1.0,
+            },
+            TranscriptSegment {
+                start: 746.7,
+                end: 748.2,
+                text: "你们不用赚钱的吗？".into(),
+                confidence: 1.0,
+            },
+            TranscriptSegment {
+                start: 748.4,
+                end: 750.1,
+                text: "你们不用上学的吗？".into(),
+                confidence: 1.0,
+            },
         ];
         let cleaned = cleanup_segments(segs);
         assert_eq!(cleaned.len(), 3, "短问句被合并了: {cleaned:#?}");
