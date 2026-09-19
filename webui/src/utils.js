@@ -24,7 +24,7 @@ export const EVENT_TYPES = [
   'irl', 'ranking', 'discussion', 'intro', 'other'
 ]
 
-/** 事件 rank → 片段目录名（`clip-{rank:02}`，Cutter 就是这么建的）。 */
+/** 旧契约：事件 rank → 片段目录名（`clip-{rank:02}`）。新片段请用 `ev.clip_dir`。 */
 export function clipNameOf(rank) {
   const n = Math.max(0, Number(rank) || 0)
   return 'clip-' + String(n).padStart(2, '0')
@@ -33,14 +33,13 @@ export function clipNameOf(rank) {
 /**
  * 这个片段目录**是不是这条事件**剪出来的。
  *
- * 只比目录名（rank）不够：`rank` 是检测按热度排出来的，**重新检测会整体重排**，
- * 于是新事件会"继承"老片段的标题与时间、老片段被套上新事件的名字 —— 两边都错。
- * 判据（与 Rust `cutting::foreign_clip_conflict` 一致）：目录名相同，且 **标题相同 或
- * 原片区间基本重合（IoU ≥ 0.5）**（允许手动改过标题或时间后仍然算同一条）；
- * 老 `clip.json` 两样都没有时退回只按目录名认。
+ * 新事件有稳定的 `clip_dir`（检测时按标题/区间分配或复用），直接精确匹配即可；
+ * 旧 events.json 没有 `clip_dir` 时保留旧契约：目录名 = `clip-{rank}` 且
+ * **标题相同 或 原片区间基本重合（IoU ≥ 0.5）**。
  */
 export function clipMatchesEvent(clip, ev) {
   if (!clip || !ev) return false
+  if (ev.clip_dir) return String(clip.name || '') === String(ev.clip_dir)
   if (String(clip.name || '') !== clipNameOf(ev.rank)) return false
   const meta = clip.meta || {}
   const oldTitle = String(meta.title || '').trim()
@@ -203,21 +202,34 @@ export function normalizeSlashes(p) {
 }
 
 /**
- * 媒体 URL。
+ * 媒体 URL 的**唯一规则**：
  *
- * - `mediaUrl(projectId, 'output/clips/clip-01/clip.mp4')` → 新契约（服务端按项目 id + 项目内相对路径放行）
- * - `mediaUrl('<绝对目录>', 'clip.mp4')` → 旧写法；服务端仍接受，但只在"该路径位于本人项目内"时放行
+ *   `/api/media/<project_id>/<项目内相对路径>`
+ *
+ * - `pid` 必须是项目 id；
+ * - `relPath` 必须是项目根相对路径，统一用 `/` 分隔；
+ * - **不接受绝对路径**，也不做旧 `/api/media/<绝对路径>` 的兼容。
+ *
+ * 例：`mediaUrl(8, 'output/clips/clip-18/clip.mp4')`
  */
-export function mediaUrl(dirOrPid, file = 'clip.mp4') {
-  const s = String(dirOrPid ?? '')
-  if (/^\d+$/.test(s)) {
-    return '/api/media/' + s + '/' + normalizeSlashes(file).replace(/^\/+/, '')
-  }
-  const norm = normalizeSlashes(s)
-  return '/api/media/' + encodeURIComponent(norm + '/' + file).replace(/%2F/g, '/')
+export function mediaUrl(pid, relPath = '') {
+  const id = String(pid ?? '').trim()
+  const rel = normalizeSlashes(relPath).replace(/^\/+/, '')
+  if (!id || !rel) return ''
+  return `/api/media/${encodeURIComponent(id)}/${rel.split('/').map(encodeURIComponent).join('/')}`
 }
 
-export function inputMediaUrl(absPath) {
-  if (!absPath) return ''
-  return '/api/media/' + encodeURIComponent(normalizeSlashes(absPath)).replace(/%2F/g, '/')
+/**
+ * 片段内文件的媒体 URL：`/api/media/<pid>/output/clips/<clipName>/<file>`。
+ *
+ * `clipNameOrDir` 可以传片段目录名，也可以传绝对/相对片段目录（只取最后一段目录名）。
+ */
+export function clipMediaUrl(pid, clipNameOrDir, file = 'clip.mp4') {
+  const name = String(clipNameOrDir ?? '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .pop() || ''
+  if (!pid || !name || !file) return ''
+  return mediaUrl(pid, `output/clips/${name}/${file}`)
 }

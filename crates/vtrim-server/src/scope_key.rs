@@ -66,13 +66,12 @@ pub const MODELS: &str = "models";
 /// 全局：贴纸库（`<程序目录>/stickers`）。
 pub const STICKERS: &str = "stickers";
 
-/// 剪切任务的资源键。`rank = None` = 全切（只占 out + idx，**不带** `clip:*`，
-/// 因此可与精修并行）；`rank = Some` = 单条重切，会写那个目录，与精修互斥。
-pub fn cut_keys(pid: i64, output_dir: &Path, rank: Option<u32>) -> Keys {
+/// 剪切任务的资源键。`clip_dir = None` = 全切（只占 out + idx，**不带** `clip:*`，
+/// 因此可与精修并行）；`clip_dir = Some` = 单条重切，会写那个目录，与精修互斥。
+pub fn cut_keys(pid: i64, output_dir: &Path, clip_dir: Option<&str>) -> Keys {
     let mut keys = vec![project_out(pid), project_index(pid)];
-    if let Some(rank) = rank {
-        let name = format!("clip-{rank:02}");
-        keys.push(project_clip(pid, &name));
+    if let Some(name) = clip_dir {
+        keys.push(project_clip(pid, name));
         keys.push(dir_key(&output_dir.join("clips").join(name)));
     }
     keys
@@ -112,9 +111,15 @@ pub fn cut_stage_clip_keys(pid: i64, output_dir: &Path, events_json: &Path) -> K
         let Some(rank) = ev.get("rank").and_then(|r| r.as_u64()) else {
             continue;
         };
-        let name = format!("clip-{rank:02}");
-        keys.push(project_clip(pid, &name));
-        keys.push(dir_key(&output_dir.join("clips").join(name)));
+        let dir = ev
+            .get("clip_dir")
+            .and_then(|d| d.as_str())
+            .map(str::trim)
+            .filter(|d| !d.is_empty() && vtrim_core::cutting::clip_index::is_safe_component(d))
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("clip-{rank:02}"));
+        keys.push(project_clip(pid, &dir));
+        keys.push(dir_key(&output_dir.join("clips").join(dir)));
     }
     keys.dedup();
     keys
@@ -146,7 +151,7 @@ mod tests {
     fn cut_one_and_polish_on_same_clip_share_a_key() {
         let pid = 3;
         let out = std::path::PathBuf::from(r"F:\proj\output");
-        let cut = cut_keys(pid, &out, Some(7));
+        let cut = cut_keys(pid, &out, Some("clip-07"));
         let pol = polish_keys(Some(pid), &out.join("clips").join("clip-07"));
         assert!(
             crate::jobs::resources_conflict(&cut, &pol),
