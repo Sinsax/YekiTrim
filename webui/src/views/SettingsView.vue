@@ -100,6 +100,11 @@
               <label class="lbl-row"><span>弹幕窗口 danmaku_window_secs</span><b class="rv">{{ form.detection.danmaku_window_secs }}s</b></label>
               <input v-model.number="form.detection.danmaku_window_secs" type="range" min="1" max="60" step="1">
             </div>
+            <div class="span-2">
+              <label class="lbl-row"><span>LLM 标题+摘要评分权重 llm_score_weight</span><b class="rv">{{ Number(form.detection.llm_score_weight ?? 0.3).toFixed(2) }}</b></label>
+              <input v-model.number="form.detection.llm_score_weight" type="range" min="0" max="1" step="0.05">
+              <div class="muted small field-hint">0=关闭；最终热度 = (1-w)×弹幕/字幕热度 + w×LLM评分</div>
+            </div>
             <div class="span-2"><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
           </div>
           <div class="prompt-pair">
@@ -267,6 +272,7 @@ const form = reactive({
   },
   detection: {
     danmaku_window_secs: 10,
+    llm_score_weight: 0.3,
     vtuber_name: '',
     reference_titles: [],
     system_prompt: '',
@@ -310,6 +316,7 @@ function buildGlobalPatch() {
     },
     detection: {
       danmaku_window_secs: Number(f.detection.danmaku_window_secs) || 10,
+      llm_score_weight: Number(f.detection.llm_score_weight ?? 0.3),
       vtuber_name: f.detection.vtuber_name || '',
       reference_titles: f.detection.reference_titles || [],
       system_prompt: f.detection.system_prompt || '',
@@ -370,6 +377,7 @@ async function loadConfig() {
     })
     if (c.detection) Object.assign(form.detection, {
       danmaku_window_secs: c.detection.danmaku_window_secs ?? 10,
+      llm_score_weight: c.detection.llm_score_weight ?? 0.3,
       vtuber_name: c.detection.vtuber_name || '',
       reference_titles: Array.isArray(c.detection.reference_titles) ? [...c.detection.reference_titles] : [],
       system_prompt: c.detection.system_prompt || '',
