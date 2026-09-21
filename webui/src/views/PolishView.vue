@@ -373,7 +373,7 @@ import CoverDesigner from '../components/CoverDesigner.vue'
 import { clipMediaUrl } from '../utils'
 import { api, apiOr } from '../api/client'
 import { addClient } from '../stores/log'
-import { scopeQ } from '../api/scope'
+import { projectData } from '../api/projectData'
 import {
   fetchProject, fetchSubtitles, saveProjectPatch,
   initPolish, runLlm, runLlmSegment, runProcess, runRender,
@@ -389,7 +389,6 @@ const route = useRoute()
 const router = useRouter()
 const routePid = route.params.pid || ''
 const pid = ref(routePid)
-const routeCfg = scopeQ(pid.value)
 const dir = ref('')
 const clipName = computed(() => route.params.clip || '')
 /** 当前已经加载完成的片段名：用于跳过 `load()` 自己 `router.replace` 触发的 watch。 */
@@ -748,7 +747,7 @@ async function doLoad(opts = {}) {
 
 function thumbSrc(c) {
   const rank = String(c.name || '').replace('clip-', '')
-  return `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${routeCfg}`
+  return projectData.thumbUrl(pid.value, rank)
 }
 
 function clipDirOf(name) {
@@ -775,10 +774,10 @@ async function loadClips() {
   // "还没有可精修的切片" —— 和"真的一个切片都没有"长得一模一样，用户会以为切片没了。
   // 现在失败**保留上一次的列表**（别清空）+ 置错误条，空态卡也靠 clipsError 排除掉这种假空。
   try {
-    if (!routeCfg) { clips.value = []; clipsError.value = ''; return }
+    if (!pid.value) { clips.value = []; clipsError.value = ''; return }
     const [list, polish] = await Promise.all([
-      api(`/api/project-data/clips?${routeCfg}`, { label: '读取切片列表' }),
-      api(`/api/project-data/polish?${routeCfg}`, { label: '读取精修状态' })
+      projectData.clips(pid.value, '读取切片列表'),
+      projectData.polishMap(pid.value, '读取精修状态')
     ])
     clips.value = (Array.isArray(list) ? list : [])
       .filter((c) => c.video_exists)
@@ -991,7 +990,7 @@ async function refreshClipEntry(force = false) {
     clipEntry.value = polishByDir.value[key]
     return
   }
-  const list = routeCfg ? await apiOr(`/api/project-data/polish?${routeCfg}`, [], '刷新片段状态') : []
+  const list = pid.value ? await apiOr(projectData.paths.polishMap(pid.value), [], '刷新片段状态') : []
   clipEntry.value = (list || []).find((p) => norm(p.dir) === key) || null
 }
 

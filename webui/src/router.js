@@ -1,6 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { api } from './api/client'
-import { scopeQ, setScope } from './api/scope'
+import { projectData } from './api/projectData'
+import { setScope } from './api/scope'
 import { SETTINGS_SECTIONS, STAGE_EVENTS_READY } from './utils'
 import { authState, isAuthed, loadMe } from './stores/auth'
 import { addClient } from './stores/log'
@@ -10,7 +10,9 @@ import { lastPath } from './stores/workbench'
 async function projectEntryGuard(to) {
   setScope(to.params.pid)
   try {
-    const st = await api(`/api/project-data/status?${scopeQ(to.params.pid)}`, { label: '入口阶段判断' })
+    // 作用域只经 api 层：这里以前自己拼 `project=${scopeQ(...)}`（门禁也没盖住 router.js），
+    // 于是"查询串只在 api/ 里拼"这条不变式名存实亡。
+    const st = await projectData.status(to.params.pid, '入口阶段判断')
     if ((st.current_stage || 0) >= STAGE_EVENTS_READY) {
       return { name: 'project-slices', params: to.params }
     }

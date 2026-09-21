@@ -56,8 +56,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api } from '../api/client'
-import { scopeQ } from '../api/scope'
+import { projectData } from '../api/projectData'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { humanBytes, sourceLabel } from '../stores/project'
@@ -66,7 +65,6 @@ import { loadProjects, projectById, removeProject as apiRemoveProject, removePro
 const route = useRoute()
 const router = useRouter()
 const pid = route.params.pid || ''
-const cfgQ = scopeQ(pid)
 const raw = ref('')
 // 只有成功读到 vtrim.toml 原文才允许保存：否则会把空文件写回去
 const loaded = ref(false)
@@ -82,7 +80,7 @@ const stageText = computed(() => {
 
 async function load() {
   try {
-    const d = await api(`/api/project-data/config?${cfgQ}`)
+    const d = await projectData.config(pid, '读取项目配置')
     raw.value = d.vtrim_raw || ''
     loaded.value = true
   } catch (e) {
@@ -95,7 +93,7 @@ async function save() {
   if (!loaded.value) { toast('配置尚未加载成功，已禁止保存', 'err'); return }
   if (!raw.value.trim()) { toast('配置内容为空，已禁止保存', 'err'); return }
   try {
-    await api(`/api/project-data/config?${cfgQ}`, { method: 'PUT', body: JSON.stringify({ raw: raw.value }) })
+    await projectData.putConfigRaw(pid, raw.value)
     toast('项目配置已保存')
   } catch (e) {
     toast(e.message, 'err')

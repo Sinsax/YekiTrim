@@ -10,10 +10,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // 代理到 `vtrim server` 的默认端口（26320）；server 换 --port 时这里要跟着改
+    // 代理到 `vtrim server` 的默认端口。⚠️ 这个数是 `vtrim-service/src/doctor.rs::DEFAULT_PORT`
+    // 的**镜像**（唯一权威在那份 Rust 常量里 + 它的单测）；server 换 --port 时用 VTRIM_PORT 覆盖这里，
+    // 别再在代码里写第二处字面量。
     proxy: {
-      '/api': 'http://127.0.0.1:26320',
-      '/media': 'http://127.0.0.1:26320'
+      '/api': `http://127.0.0.1:${process.env.VTRIM_PORT || 26320}`,
+      '/media': `http://127.0.0.1:${process.env.VTRIM_PORT || 26320}`
     }
   }
 })

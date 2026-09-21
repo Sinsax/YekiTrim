@@ -133,9 +133,19 @@ RULES: list[tuple[str, list[str], str, str]] = [
     ),
     (
         "作用域查询串只在 api 层拼",
-        ["webui/src/views", "webui/src/components", "webui/src/stores", "webui/src/composables"],
-        r"[?&]pid=",
-        "`api/scope.js::scopeQ` 是唯一入口；散着拼会漏 scope，越权/串项目就出在这里",
+        [
+            "webui/src/views",
+            "webui/src/components",
+            "webui/src/stores",
+            "webui/src/composables",
+            # ⚠️ router.js 以前不在名单里，而它正是漏得最久的一处（入口守卫自己拼 status 查询串）。
+            # 单文件路径也走 source_files()。
+            "webui/src/router.js",
+        ],
+        r"[?&]pid=|\bscopeQ\(|\bscopeQuery\(",
+        "`api/scope.js::scopeQ` 是唯一入口（`api/projectData.js::paths` 给它包了一层）；散着拼会漏 scope，"
+        "越权/串项目就出在这里。旧判据只认 `[?&]pid=`，而实际代码写的是 `?${scopeQ(pid)}` —— "
+        "正则看不见，于是这条不变式长期只活在散文里",
     ),
 ]
 
