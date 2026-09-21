@@ -7,10 +7,13 @@
 //
 // 运行： node webui/scripts/check-overlay.mjs
 //
-// 为什么不写成 `node --test`：webui/package.json 没有 "type": "module"，Node 会把
-// engine.js 当 CJS，直接 import 会报 "Cannot use import statement outside a module"。
-// 这里用 data-URL 动态 import 绕开（engine.js 无任何相对 import，可以整体当 ESM 求值），
-// 既不动 package.json 的模块类型，也不需要任何依赖。
+// 为什么不写成 `node --test` / 不 import engine.js：webui/package.json 没有
+// `"type": "module"`，Node 会把 engine.js 当 CJS。这里原本用 data-URL 动态 import
+// 绕开，但 engine.js 现在有 `import { canvasOf, … } from './canvas.js'`（画布 SSOT），
+// data-URL 没有可解析的相对基准，会直接 ERR_UNSUPPORTED_RESOLVE_REQUEST —— 于是
+// 整个脚本在跑任何检查之前就崩了（"漂移防线"静默失效）。
+// 改成**从源码文本里抠函数**（与 check-caption-wrap.mjs 同一套配对括号提取），
+// 不加载模块、零依赖、也不动模块类型。
 //
 // Rust 侧那份由 `cargo test -p vtrim-render-core --lib` 覆盖，本脚本只管两份 JS。
 
@@ -70,9 +73,15 @@ const tpl = new Function(
 
 const enginePath = join(root, 'webui', 'src', 'polish', 'engine.js')
 const engineSrc = await readFile(enginePath, 'utf8')
-const engine = await import(
-  'data:text/javascript;base64,' + Buffer.from(engineSrc, 'utf8').toString('base64')
-)
+// engine.js 的函数是 `export function`，extractFunction 从 `function name(` 起取，
+// 正好把 `export ` 前缀留在外面（`new Function` 里不能出现 export）。
+const engine = new Function(
+  `${extractFunction(engineSrc, 'overlayFadeStop')}
+   ${extractFunction(engineSrc, 'overlayStops')}
+   ${extractFunction(engineSrc, 'gradientCss')}
+   ${extractFunction(engineSrc, 'getOverlayState')}
+   return { overlayFadeStop, overlayStops, gradientCss, getOverlayState }`
+)()
 
 // ── 断言脚手架 ────────────────────────────────────────────────────────────
 let failed = 0

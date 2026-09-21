@@ -1,11 +1,13 @@
 <template>
   <div class="polish-preview">
-    <div ref="stageRef" class="stage">
-      <video v-if="vertical && videoSrc" ref="bgRef" class="bg-video" :src="videoSrc" muted playsinline preload="auto"></video>
-      <div class="video-wrap" :class="portraitClass">
-        <video ref="videoRef" class="source-video" :src="videoSrc" playsinline preload="auto"
-               :style="videoStyle"
-               @loadedmetadata="onMeta" @seeked="onSeeked" @play="setPlaying(true)" @pause="setPlaying(false)" @ended="setPlaying(false)"></video>
+    <div ref="stageRef" class="stage" :style="stageStyle">
+      <video v-if="bgOn && videoSrc" ref="bgRef" class="bg-video" :src="videoSrc" muted playsinline preload="auto"></video>
+      <div class="video-wrap" :class="stageClass">
+        <div class="fit-box">
+          <video ref="videoRef" class="source-video" :src="videoSrc" playsinline preload="auto"
+                 :style="videoStyle"
+                 @loadedmetadata="onMeta" @seeked="onSeeked" @play="setPlaying(true)" @pause="setPlaying(false)" @ended="setPlaying(false)"></video>
+        </div>
       </div>
       <div class="corner-glow"><div class="gb"></div></div>
       <div class="fx fx-vignette" :style="vignetteStyle"></div>
@@ -26,8 +28,13 @@
           <div v-for="(d, i) in dmRows" :key="'d' + i" class="dm" :style="{ left: d.x + 'px', top: d.y + 'px', opacity: d.opacity }">{{ d.text }}</div>
         </div>
         <div class="captions" :style="capLayerStyle">
-          <div v-for="(c, i) in capRows" :key="'c' + i" class="cap" :style="{ opacity: c.opacity, transform: 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')' }">
-            <span v-for="(p, j) in c.parts" :key="j" :class="{ hl: p.hl }">{{ p.text }}</span>
+          <div v-for="(c, i) in capRowsWrapped" :key="'c' + i" class="cap"
+               :style="{ opacity: c.opacity, transform: 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')',
+                         fontSize: (subStyle.size || 72) * c.fontScale + 'px',
+                         WebkitTextStrokeWidth: capStrokeW * c.fontScale + 'px' }">
+            <span v-for="(line, li) in c.lines" :key="li" class="cap-line">
+              <span v-for="(p, j) in line" :key="j" :class="{ hl: p.hl }">{{ p.text }}</span>
+            </span>
           </div>
         </div>
       </div>
@@ -39,6 +46,13 @@
           <span v-for="h in SEL_HANDLES" :key="h" class="sel-h" :class="'h-' + h"
                 @pointerdown.prevent.stop="startSel(h, $event)"></span>
         </div>
+      </div>
+      <!-- 点选落点（贴纸「固定」模式）：与框选同一套交互，只是落一个点 —— 点哪儿落哪儿 -->
+      <div v-else-if="pointMode" class="point-layer" @pointerdown.prevent="pickPoint($event)">
+        <span class="point-tag">{{ pointLabel || '点选落点' }}</span>
+        <!-- 画出**贴纸真实占位**（280×短边倍率的盒子，**以锚点为中心**，并做出片同样的出框 clamp），
+             不是画一个点 —— 固定落点的含义是"贴纸中心落在这一点"（config.rs 的 position 口径） -->
+        <span class="point-box" :style="pointBoxStyle"><span class="point-dot"></span></span>
       </div>
       <!-- 真渲染帧（wgpu 出片效果）叠加层 -->
       <img v-if="realFrameUrl" class="real-frame" :src="realFrameUrl" alt="">
@@ -75,7 +89,8 @@ import { csrfHeaders } from '../api/client'
 import { addClient } from '../stores/log'
 import { clipMediaUrl } from '../utils'
 import { fontUrl } from '../api/polish'
-import { buildIndex, videoFxAt, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, introBlackAt, subsAt, danmakuAt, stickersAt } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, introBlackAt, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure } from '../polish/engine'
+import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
 import init, { init_renderer } from '../wasm/vtrim_wasm.js'
@@ -92,9 +107,14 @@ const props = defineProps({
   // 框选布局模式：叠加选框 + 暂停运镜（缩放复位），选框坐标为整帧百分比
   selectMode: { type: Boolean, default: false },
   selectRect: { type: Object, default: null },
-  selectLabel: { type: String, default: '' }
+  selectLabel: { type: String, default: '' },
+  // 点选落点模式（贴纸「固定」）：点哪儿落哪儿，坐标为整帧百分比。
+  // 与 selectMode 互斥（框选优先）—— 两者都是"在预览上取坐标"，没必要同时开。
+  pointMode: { type: Boolean, default: false },
+  point: { type: Object, default: null },
+  pointLabel: { type: String, default: '' }
 })
-const emit = defineEmits(['time', 'update:selectRect', 'playing'])
+const emit = defineEmits(['time', 'update:selectRect', 'update:point', 'playing'])
 
 const stageRef = ref(null)
 const videoRef = ref(null)
@@ -126,7 +146,63 @@ function muteRangeAt(t) {
   return muteRanges.value.find(r => t >= r.start && t < r.end) || null
 }
 const vertical = computed(() => !!props.config?.vertical)
-const portraitClass = computed(() => vertical.value ? ('portrait ' + (props.config?.vertical_position || 'left')) : '')
+
+// ---- 输出画布（`_canvas` 契约，SSOT 在 ./polish/canvas.js）----
+// 横屏 1920×1080 → k=kh=1，一切几何与改造前逐像素相同；竖屏 1080×1920 时
+// 舞台比例 / 虚拟 overlay / 弹幕带 / 字幕带 / 贴纸盒子全部随 k/kh 缩放。
+const cv = computed(() => canvasOf(props.config))
+
+// ---- 画面构成（位置 / 背景）----
+// 取值来自 `_canvas.stage` —— Rust `ProjectFile::resolve_stage` 唯一推导，前端不重算（两边不可能不一致）。
+// 拿不到 `_canvas`（老接口 / 非 preview 请求）时退回改造前的竖屏规则，行为与以前一致。
+const FALLBACK_STAGE = {
+  axis: 'fill', object_fit: 'cover', position: 'center', bg: 'none',
+  bg_color: '#000000', blur_px: 28, blur_img_scale: 1.187, scale: 1, padding: 0
+}
+const stageFit = computed(() => {
+  const s = props.config?._canvas?.stage
+  if (s) return s
+  return vertical.value
+    ? { ...FALLBACK_STAGE, axis: 'x', object_fit: 'contain', bg: 'blur',
+        position: props.config?.vertical_position || 'left' }
+    : FALLBACK_STAGE
+})
+/** 背景层（当前帧模糊）只在 bg=blur 时需要；black / color 走舞台底色 */
+const bgOn = computed(() => stageFit.value.bg === 'blur')
+const stageClass = computed(() => {
+  const s = stageFit.value
+  const axis = s.axis || 'fill'
+  return axis === 'fill' ? ['axis-fill'] : ['axis-' + axis, 'stage-' + (s.position || 'center')]
+})
+/** fit 作用域的 CSS 变量：放在 `.stage` 上，`.video-wrap` / `.fit-box` / `.bg-video` 全部继承 */
+const stageStyle = computed(() => {
+  const c = props.config?._canvas || {}
+  const s = stageFit.value
+  const src = c.src || {}
+  const v = cv.value
+  return {
+    background: s.bg === 'color' ? (s.bg_color || '#000000') : '#000',
+    '--src-ar': (src.width > 0 && src.height > 0) ? (src.width + ' / ' + src.height) : '16 / 9',
+    '--stage-pad': ((Number(s.padding) || 0) / (c.width || 1920) * 100) + '%',
+    '--stage-scale': String(s.scale || 1),
+    '--bg-blur': (s.blur_px || 28) + 'px',
+    '--bg-img-scale': String(s.blur_img_scale || 1.187),
+    // 画布驱动的舞台比例 + 虚拟 overlay / 弹幕带 / 字幕带 / 贴纸盒子尺寸
+    '--stage-ar': v.W + ' / ' + v.H,
+    // 宽 = 高度预算(clamp) × W/H。⚠️ 必须是 **W/H**（横屏 1.7778，与 P3 前的硬编码 *16/9 一致）：
+    // 曾经错写成 H/W，横屏舞台被缩到 1/3 高（用户报"横屏被改错"）。竖屏 W/H=0.5625 →
+    // 宽 = clamp×0.5625，高 = 宽÷(9/16) = clamp —— **竖屏与横屏同高**（用户要求）。
+    '--stage-ratio': String(v.W / v.H),
+    '--ov-w': v.W + 'px',
+    '--ov-h': v.H + 'px',
+    '--dm-h': (540 * v.k) + 'px',
+    '--sticker-s': (280 * stickerScale(v)) + 'px',
+    '--sticker-emoji': (200 * stickerScale(v)) + 'px',
+    '--cap-bottom': (80 * v.kh) + 'px',
+    '--cap-left': (120 * v.k) + 'px',
+    '--cap-w': (v.W - 240 * v.k) + 'px'
+  }
+})
 
 const stickerMap = computed(() => props.config?._assets?.sticker_map || {})
 function stickerSrc(name) {
@@ -136,8 +212,29 @@ function stickerSrc(name) {
 }
 
 const effDuration = computed(() => duration.value || props.metaDuration || 0)
+
+/**
+ * 喂给索引的配置：点选编辑态里把**草稿落点**临时顶上去，让贴纸本身跟着动
+ * （所见即所得；不写盘，保存由父级负责）。
+ *
+ * 只覆盖 `_canvas.sticker.position`、不动 `position_mode` —— draft 只在「固定」模式里存在
+ * （父级 `startPointEdit` 保证了这点），所以这不改变任何语义，只是把"已保存的那一版"
+ * 换成"草稿那一版"。旧对象原样返回，避免无谓重建索引。
+ */
+const indexConfig = computed(() => {
+  if (!props.pointMode || !props.point || !props.config) return props.config
+  const nx = Number(props.point.x), ny = Number(props.point.y)
+  if (!Number.isFinite(nx) || !Number.isFinite(ny)) return props.config
+  const cl = (v) => Math.round(Math.min(100, Math.max(0, v)))
+  const cv = props.config._canvas || {}
+  const st = cv.sticker || {}
+  const next = cl(nx) + '% ' + cl(ny) + '%'
+  if (String(st.position || '') === next) return props.config
+  return { ...props.config, _canvas: { ...cv, sticker: { ...st, position: next } } }
+})
+
 const idx = computed(() => buildIndex({
-  config: props.config,
+  config: indexConfig.value,
   subtitles: props.subtitles,
   danmaku: props.danmaku,
   duration: effDuration.value,
@@ -153,6 +250,17 @@ const vignette = computed(() => getVignette(idx.value, current.value))
 const colorOverlay = computed(() => getOverlayState(idx.value, current.value))
 const introBlack = computed(() => introBlackAt(current.value))
 const capRows = computed(() => subsAt(idx.value, current.value))
+
+// A5 字幕折行：与出片（templates/index.html renderFrame）同一套 wrapCaptionParts
+// —— 安全宽 = 画布宽 * 0.875、最多 3 行、装不下缩字号（下限 0.7）。
+// 行内 white-space:nowrap 禁掉浏览器自动换行，预览与出片断行位置一致。
+const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px "'
+  + (subStyle.value.font || 'LXGW WenKai') + '","Microsoft YaHei","Noto Sans SC",sans-serif')
+const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
+const capRowsWrapped = computed(() => capRows.value.map((c) => {
+  const w = wrapCaptionParts(c.parts, cv.value.W * 0.875, (tx) => capMeasure(tx, capFontSpec.value))
+  return { ...c, lines: w.lines, fontScale: w.scale }
+}))
 const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
 const progress = computed(() => duration.value ? Math.round(current.value / duration.value * 1000) : 0)
@@ -168,20 +276,31 @@ const subStyle = computed(() => idx.value.subStyle || {})
 const dmStyleCfg = computed(() => idx.value.dmStyle || {})
 
 const videoStyle = computed(() => {
+  // 内容层的 object-fit 与出片一致（axis=fill → cover；留边 → contain），由 `_canvas.stage` 决定
+  const objectFit = stageFit.value.object_fit || 'cover'
   // 框选布局模式：运镜/缩放/抖动/滤镜全部复位，让选框直接对应整帧真实位置
-  if (props.selectMode) return { transform: 'none', transformOrigin: 'center', filter: 'none' }
+  if (props.selectMode) return { transform: 'none', transformOrigin: 'center', filter: 'none', objectFit }
   const f = vfx.value
   const t = []
   if (f.shake.x || f.shake.y) t.push(`translate(${f.shake.x}px, ${f.shake.y}px)`)
   if (f.stutter) t.push(`translate(${f.stutter.x}px, ${f.stutter.y}px)`)
   if (f.split && f.split.skewX) t.push(`skewX(${f.split.skewX / 100}deg)`)
+  // 手持摇摆（运镜的附加变种）：位移在屏幕空间，旋转/呼吸缩放绕同一个不动点，
+  // 所以必须排在 scale 之前 —— transform 列表从右往左作用，而相机块（含运镜缩放）
+  // 在出片模板里是最内层（最后 apply 到画面上的那一段）。
+  const sway = handheldSway(current.value, f.camera.handheld)
+  if (sway.dx || sway.dy) t.push(`translate(${sway.dx}px, ${sway.dy}px)`)
+  if (sway.rot) t.push(`rotate(${sway.rot}deg)`)
   // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜
-  if (Math.abs(f.zoom - 1) > 0.001) t.push(`scale(${f.zoom})`)
+  // 摇摆的呼吸缩放与运镜缩放都是绕不动点的缩放，合成一个 scale（amp=0 时 sway.scale 恒为 1）
+  const camScale = f.zoom * sway.scale
+  if (Math.abs(camScale - 1) > 0.001) t.push(`scale(${camScale})`)
   const filter = f.blur > 0 ? `blur(${f.blur}px)` : ''
   return {
     transform: t.join(' ') || 'none',
-    transformOrigin: `${f.camera.ox / 19.2}% ${f.camera.oy / 10.8}%`,
-    filter: [filter, f.colorShift].filter(Boolean).join(' ') || 'none'
+    transformOrigin: `${f.camera.ox / cv.value.W * 100}% ${f.camera.oy / cv.value.H * 100}%`,
+    filter: [filter, f.colorShift].filter(Boolean).join(' ') || 'none',
+    objectFit
   }
 })
 const flashStyle = computed(() => ({ opacity: flash.value.opacity, background: flash.value.color }))
@@ -233,7 +352,7 @@ function tick(ts) {
       const target = Math.min(v.duration || (r.end + 0.01), r.end + 0.01)
       v.currentTime = Math.max(target, r.end)
       current.value = v.currentTime
-      if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
+      if (bgOn.value && bgRef.value) bgRef.value.currentTime = v.currentTime
       rafId = requestAnimationFrame(tick)
       return
     }
@@ -259,7 +378,7 @@ function tick(ts) {
   }
   player.sync(idx.value.soundEvents, v.currentTime)
   emit('time', v.currentTime)
-  if (vertical.value && bgRef.value && bgRef.value.currentTime &&
+  if (bgOn.value && bgRef.value && bgRef.value.currentTime &&
       Math.abs(bgRef.value.currentTime - v.currentTime) > 0.05) {
     bgRef.value.currentTime = v.currentTime
   }
@@ -270,14 +389,14 @@ function togglePlay() {
   const v = videoRef.value
   if (!v) return
   if (v.paused) {
-    if (vertical.value && bgRef.value) bgRef.value.play().catch(() => {})
+    if (bgOn.value && bgRef.value) bgRef.value.play().catch(() => {})
     v.play().catch(() => {})
     setPlaying(true)
     cancelAnimationFrame(rafId)
     rafId = requestAnimationFrame(tick)
   } else {
     v.pause()
-    if (vertical.value && bgRef.value) bgRef.value.pause()
+    if (bgOn.value && bgRef.value) bgRef.value.pause()
     setPlaying(false)
     cancelAnimationFrame(rafId)
   }
@@ -298,7 +417,7 @@ function seekTo(t) {
   v.currentTime = Number(t) || 0
   current.value = v.currentTime
   player.seek(current.value)
-  if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
+  if (bgOn.value && bgRef.value) bgRef.value.currentTime = v.currentTime
   if (duration.value) emit('time', v.currentTime)
 }
 
@@ -315,7 +434,7 @@ function onMeta() {
   applyAudio()
   // seek 触发首帧解码，避免打开页面时舞台全黑
   if (v.currentTime === 0) v.currentTime = 0.001
-  if (vertical.value && bgRef.value) {
+  if (bgOn.value && bgRef.value) {
     if (bgRef.value.currentTime === 0) bgRef.value.currentTime = 0.001
     if (Math.abs((bgRef.value.currentTime || 0) - v.currentTime) > 0.05) {
       bgRef.value.currentTime = v.currentTime
@@ -332,7 +451,7 @@ function onSeeked() {
   if (wasmActive.value && wasmRenderer) {
     try { wasmRenderer.render_frame(v.currentTime, v) } catch (e) { console.warn(e) }
   }
-  if (vertical.value && bgRef.value) bgRef.value.currentTime = v.currentTime
+  if (bgOn.value && bgRef.value) bgRef.value.currentTime = v.currentTime
 }
 
 /**
@@ -406,7 +525,7 @@ const selBoxStyle = computed(() => {
   }
 })
 
-/** 指针位置 → 舞台（= 1920×1080 整帧）百分比坐标。 */
+/** 指针位置 → 舞台（= 画布整帧）百分比坐标。 */
 function pctAt(e) {
   const el = stageRef.value
   if (!el) return null
@@ -472,6 +591,35 @@ function endSel() {
 
 // 退出框选模式时收尾（父级可能在拖拽中被卸载/切换）
 watch(() => props.selectMode, (on) => { if (!on) endSel() })
+
+// ---- 点选落点（贴纸「固定」模式）----
+// 与框选共用 `pctAt`（同一套"指针 → 整帧百分比"换算），只是取一个点而不是拖矩形。
+//
+// ⚠️ `[sticker] position`（manual）= **贴纸盒子的中心**（`config.rs` 的 `StickerConfig.position`
+// 注释 / 设置页口径）；auto 的事件 x/y 才是盒子左上角 —— 两个键、两种基准，不要"统一"。
+// 所以这里画的是**以锚点为中心的贴纸真实占位**（边长 280×短边倍率、边距 32×短边倍率），
+// 并做出片同样的出框 clamp；上浮量不在这里画（那是动画，且 clamp 之后才叠加）。
+const pointBoxStyle = computed(() => {
+  const c = cv.value
+  const size = 280 * stickerScale(c)
+  const margin = 32 * stickerScale(c)
+  const p = props.point
+  const nx = Number(p?.x), ny = Number(p?.y)
+  const px = (Number.isFinite(nx) ? Math.min(100, Math.max(0, nx)) : 50) / 100 * c.W
+  const py = (Number.isFinite(ny) ? Math.min(100, Math.max(0, ny)) : 50) / 100 * c.H
+  // 与出片同一个 clamp（index.html::stickerBox / engine.js::clampSticker）
+  const x = Math.max(margin, Math.min(c.W - size - margin, px - size / 2))
+  const y = Math.max(margin, Math.min(c.H - size - margin, py - size / 2))
+  // 舞台是按 CSS 缩放的，换算成舞台内的像素；overlayScale = 舞台宽 / 画布宽
+  const s = overlayScale.value || 1
+  return { left: x * s + 'px', top: y * s + 'px', width: size * s + 'px', height: size * s + 'px' }
+})
+
+function pickPoint(e) {
+  const p = pctAt(e)
+  if (!p) return
+  emit('update:point', { x: r2(p.x), y: r2(p.y) })
+}
 
 // ---- 真渲染预览：wasm 实时模式优先，回退 server 单帧 ----
 const realRender = ref(false)
@@ -597,8 +745,8 @@ async function tryEnableWasm() {
       stageRef.value.appendChild(c)
       wasmCanvas.value = c
     }
-    c.width = 1920
-    c.height = 1080
+    c.width = cv.value.W
+    c.height = cv.value.H
 
     wasmRenderer = await init_renderer(
       c,
@@ -610,8 +758,8 @@ async function tryEnableWasm() {
       names,
       datas,
       gifs.map((g) => (g ? 1 : 0)),
-      1920,
-      1080,
+      cv.value.W,
+      cv.value.H,
       vertical.value,
       props.config?.vertical_position || 'left'
     )
@@ -650,7 +798,7 @@ onMounted(() => {
   applyAudio()
   ro = new ResizeObserver(() => {
     const w = stageRef.value ? stageRef.value.clientWidth : 0
-    if (w) overlayScale.value = w / 1920
+    if (w) overlayScale.value = w / cv.value.W
   })
   if (stageRef.value) ro.observe(stageRef.value)
 })
@@ -716,16 +864,28 @@ function pause() {
    + 时间轴卡 ~259 ≈ 611），所以底部会留 ~70px 在首屏外（时间轴第 7 条泳道要小滚一下）；
    想让它完整可见就把 540 调回 610。上限 620 免得大屏上预览过分占位，下限 170。
    —— 用户要求：预览再放大一点。 */
-.stage { position:relative; width:min(100%, calc(clamp(170px, 100vh - 540px, 620px) * 16 / 9));
-  aspect-ratio:16/9; margin:0 auto; background:#000; border-radius:14px; overflow:hidden;
+/* 预览舞台比例跟随 `_canvas`（--stage-ar = W/H；--stage-ratio = W/H 数值，是"高度预算→宽度"的乘数：
+   clamp 是高度预算，横屏 ×16/9、竖屏 ×9/16 —— 两个方向的舞台**同高**）。 */
+.stage { position:relative; width:min(100%, calc(clamp(170px, 100vh - 540px, 620px) * var(--stage-ratio, 1.7778)));
+  aspect-ratio:var(--stage-ar, 16/9); margin:0 auto; background:#000; border-radius:14px; overflow:hidden;
   box-shadow:0 6px 18px rgba(0,0,0,.10); }
 .stage:fullscreen { width:100%; border-radius:0; }
-.bg-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:blur(28px) brightness(0.5) saturate(1.15); transform:scale(1.15); max-height:none; margin:0; border-radius:0; }
-.video-wrap { position:absolute; inset:0; display:flex; align-items:center; overflow:hidden; }
-.video-wrap.portrait.left { justify-content:flex-start; }
-.video-wrap.portrait.center { justify-content:center; }
-.video-wrap.portrait .source-video { width:auto; height:100%; object-fit:contain; }
-.source-video { width:100%; height:100%; max-height:none; margin:0; border-radius:0; object-fit:contain; will-change:transform,filter; }
+.bg-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+  filter:blur(var(--bg-blur, 28px)) brightness(0.5) saturate(1.15);
+  transform:scale(var(--bg-img-scale, 1.187)); max-height:none; margin:0; border-radius:0; }
+/* 画面构成（`_canvas.stage` 驱动）：主画面按比例放进 .fit-box，留边由背景层/舞台底色补 */
+.video-wrap { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  overflow:hidden; padding:var(--stage-pad, 0%); }
+.fit-box { position:relative; transform-origin:center center; transform:scale(var(--stage-scale, 1)); }
+.video-wrap.axis-fill .fit-box { width:100%; height:100%; }
+.video-wrap.axis-x .fit-box { height:100%; max-width:100%; aspect-ratio:var(--src-ar, 16 / 9); }
+.video-wrap.axis-y .fit-box { width:100%; max-height:100%; aspect-ratio:var(--src-ar, 16 / 9); }
+.video-wrap.stage-center { justify-content:center; align-items:center; }
+.video-wrap.stage-left { justify-content:flex-start; }
+.video-wrap.stage-right { justify-content:flex-end; }
+.video-wrap.stage-top { align-items:flex-start; }
+.video-wrap.stage-bottom { align-items:flex-end; }
+.source-video { width:100%; height:100%; max-height:none; margin:0; border-radius:0; object-fit:cover; will-change:transform,filter; }
 .corner-glow { position:absolute; inset:0; z-index:1; pointer-events:none; opacity:0; transition:opacity 1s; }
 .corner-glow .gb { position:absolute; bottom:-60px; right:-60px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(0,212,255,0.12),transparent 70%); filter:blur(50px); }
 .stage:hover .corner-glow { opacity:1; }
@@ -733,17 +893,19 @@ function pause() {
 .fx-noise { background:#fff; }
 .fx-color { opacity:0; }
 
-/* 1920×1080 虚拟 overlay：top:0 left:0 后由 scale 定位中心 */
-.overlay-space { position:absolute; top:50%; left:50%; width:1920px; height:1080px; transform-origin:center center; pointer-events:none; z-index:10; }
+/* 虚拟 overlay（默认 1920×1080，随 `_canvas` 由 --ov-w/--ov-h 代入）：top:0 left:0 后由 scale 定位中心 */
+.overlay-space { position:absolute; top:50%; left:50%; width:var(--ov-w, 1920px); height:var(--ov-h, 1080px); transform-origin:center center; pointer-events:none; z-index:10; }
 .sticker-layer { position:absolute; inset:0; overflow:hidden; }
-.sticker-el { position:absolute; width:280px; height:280px; display:flex; align-items:center; justify-content:center; }
+.sticker-el { position:absolute; width:var(--sticker-s, 280px); height:var(--sticker-s, 280px); display:flex; align-items:center; justify-content:center; }
 .sticker-el img { width:100%; height:100%; object-fit:contain; }
-.sticker-emoji { font-size:200px; line-height:280px; text-align:center; font-family:'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
-.danmaku-layer { position:absolute; top:0; left:0; width:1920px; height:540px; overflow:hidden; }
+.sticker-emoji { font-size:var(--sticker-emoji, 200px); line-height:var(--sticker-s, 280px); text-align:center; font-family:'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
+.danmaku-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:var(--dm-h, 540px); overflow:hidden; }
 .dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill; }
-.captions { position:absolute; bottom:80px; left:120px; width:1680px; }
-.cap { position:relative; text-align:center; padding:14px 44px; font-weight:700; line-height:1.5;
+.captions { position:absolute; bottom:var(--cap-bottom, 80px); left:var(--cap-left, 120px); width:var(--cap-w, 1680px); }
+.cap { position:relative; text-align:center; padding:14px 0; font-weight:700; line-height:1.5;
        -webkit-text-stroke:12px #403c3b; paint-order:stroke fill; }
+/* A5 折行：每行一个块级 nowrap 行 —— 断行由 wrapCaptionParts 决定（与出片一致） */
+.cap-line { display:block; white-space:nowrap; }
 .cap .hl { color:var(--hl-color, #f56b41); }
 .intro-black { position:absolute; inset:0; z-index:50; background:#000; pointer-events:none; }
 
@@ -763,6 +925,17 @@ function pause() {
 .h-sw { left:-6px; bottom:-6px; cursor:nesw-resize; }
 .h-s { left:50%; bottom:-6px; margin-left:-6px; cursor:ns-resize; }
 .h-se { right:-6px; bottom:-6px; cursor:nwse-resize; }
+
+/* ---- 点选落点覆盖层（贴纸「固定」）：**不压暗**（要能看清画面挑落点），
+   只给一个十字落点 + 中心提示；光标变十字表示可点 ---- */
+.point-layer { position:absolute; inset:0; z-index:70; cursor:crosshair; touch-action:none; }
+.point-tag { position:absolute; top:6px; left:8px; padding:2px 10px; border-radius:var(--r-full);
+  background:var(--main-soft); color:var(--pink-text); font-size:11px; white-space:nowrap; }
+/* 贴纸真实占位框（边长 280×短边倍率，**以锚点为中心**）：虚线框 + 中心一个点，便于对齐 */
+.point-box { position:absolute; border:1.5px dashed var(--main-deep); background:rgba(255,255,255,.12);
+  border-radius:4px; pointer-events:none; box-sizing:border-box; }
+.point-dot { position:absolute; left:50%; top:50%; width:12px; height:12px; margin:-6px 0 0 -6px;
+  border-radius:50%; background:#fff; border:2px solid var(--main-deep); }
 
 .preview-controls { display:flex; align-items:center; gap:8px; margin-top:10px; }
 .time-label { min-width:96px; text-align:right; }

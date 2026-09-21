@@ -98,6 +98,7 @@
             <div class="row spread">
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
               <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
+              <span v-else-if="pointEdit" class="chip p">点选落点 · 未保存</span>
               <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
             </div>
             <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
@@ -105,8 +106,9 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" />
-                <div v-if="selectRegion" class="hint mt-8">在预览里拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域编辑」里保存或清除。</div>
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <div v-if="selectRegion" class="hint mt-8">拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域与落点」里保存或清除。</div>
+                <div v-else-if="pointEdit" class="hint mt-8">点一下预览即为新落点（未保存）；右侧「区域与落点」里保存或取消。</div>
               </div>
             </div>
           </div>
@@ -114,9 +116,13 @@
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 生成与导出</h2>
-              <span class="muted small">LLM 完成后自动执行后处理</span>
+              <div class="row" style="gap:4px">
+                <button class="mini-btn" :class="{ selected: genTab === 'export' }" @click="genTab = 'export'">导出</button>
+                <button class="mini-btn" :class="{ selected: genTab === 'stage' }" @click="genTab = 'stage'">画面构成</button>
+              </div>
             </div>
 
+            <template v-if="genTab === 'export'">
             <!-- LLM 剪辑（参数：区域编辑 / 贴纸来源）—— 整块在「渲染导出」上方 -->
             <div class="gen-block">
               <div class="row spread mb-6">
@@ -124,8 +130,10 @@
                 <span class="muted small">下列为参数</span>
               </div>
 
-              <!-- 参数 1：区域编辑（人物 / 弹幕区域） -->
-              <div class="small muted mb-4">区域编辑<span class="hint"> · 运镜聚焦</span></div>
+              <!-- 参数 1：区域与落点 —— 人物 / 弹幕区域 / 贴纸落点 同一行。
+                   三者的交互是同一种（在左侧预览上取坐标），所以并列一行；
+                   贴纸那格是"自动 / 固定"二选一，切到固定后再点预览取点。 -->
+              <div class="small muted mb-4">区域与落点<span class="hint"> · 在预览上点选</span></div>
               <div class="row mb-6" style="gap:6px">
                 <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
                         title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
@@ -133,7 +141,13 @@
                 </button>
                 <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
                         title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
-                  <Icon name="crop" :size="11" /> 弹幕区域
+                  <Icon name="crop" :size="11" /> 弹幕
+                </button>
+                <button class="mini-btn" style="flex:1;justify-content:center"
+                        :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
+                        :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
+                        @click="toggleStickerMode">
+                  <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
                 </button>
               </div>
               <template v-if="selectRegion">
@@ -150,7 +164,22 @@
                 </div>
                 <div class="hint mb-6">{{ regionHint }}</div>
               </template>
-              <div v-else class="hint mb-8">点「人物」或「弹幕区域」后到左侧预览里框选。</div>
+              <template v-else-if="stickerCfg.position_mode === 'manual'">
+                <!-- 固定落点是**草稿态**：在预览上点选只改 draft，「保存落点」才写 polish.toml。
+                     以前是"固定模式即常驻点选、点哪儿存哪儿"，看一眼预览就会改坏配置。 -->
+                <div class="row spread small mb-4">
+                  <span class="mono">{{ pointEdit ? draftPosPct : stickerPosPct }}</span>
+                  <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
+                </div>
+                <div class="row mb-6" style="gap:6px">
+                  <template v-if="pointEdit">
+                    <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
+                    <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
+                  </template>
+                  <button v-else class="mini-btn" :disabled="stickerBusy || !ready" @click="startPointEdit"><Icon name="pin" :size="11" /> 改落点</button>
+                </div>
+                <div class="hint mb-6">{{ pointEdit ? '在左侧预览里点一下选新落点（贴纸中心对齐该点），保存后生效。' : '全部贴纸的中心都落在这一点。' }}</div>
+              </template>
 
               <!-- 参数 2：贴纸来源。只保留一组可点 chip：亮 = 启用，灰 = 停用。 -->
               <div class="small muted mb-4">贴纸来源<span class="hint"> · LLM 可用的贴图来源</span></div>
@@ -184,16 +213,17 @@
                 <span class="muted">字体库读取失败：{{ fontsError }}</span>
                 <button class="mini-btn" @click="loadFonts">重试</button>
               </div>
-              <div v-else-if="!fonts.length" class="hint mt-4">
-                字体库为空：把 .ttf / .otf / .ttc 丢进 <span class="mono">{{ fontsRoot || '程序目录 resources/fonts/' }}</span> 后刷新
-              </div>
               <!-- root 只有 admin 拿得到（服务器安装路径不给普通用户），非 admin 不显示这一段 -->
               <div v-else class="hint mt-4">
                 库内 {{ fonts.length }} 个字体<span v-if="fontsRoot"> · 目录 <span class="mono">{{ fontsRoot }}</span></span>
               </div>
 
               <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
-              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑</button>
+              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
+              <div class="hint mt-4">
+                想只补某一段？在时间轴上点那一段，属性面板里有「只重做本段事件」；
+                没产出事件的段会标成琥珀色。
+              </div>
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
@@ -203,6 +233,60 @@
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
               该片段正在「{{ kindText(scopeBusyJob.kind) }}」，等它结束再做这一步。
             </div>
+            </template>
+
+            <!-- 画面构成页签：画面尺寸 / 主画面位置 / 背景。值存 polish.toml 的 [canvas] / [stage]，
+                 出片与预览共用同一份推导（Rust `resolve_stage` → `_canvas`），
+                 所以这里改完预览当场就变，且与成片一致 -->
+            <template v-else>
+              <div class="small muted mb-4">画面尺寸<span class="hint"> · 画布方向，立即保存</span></div>
+              <div class="row mb-6" style="gap:6px">
+                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn" style="flex:1;justify-content:center"
+                        :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
+                        @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
+              </div>
+              <div class="hint mb-8">{{ canvasSummary }}。切方向后位置选项会跟着换方向（左中右 ↔ 上中下），预览舞台与出片画布会立即跟随（预览需重取配置，自动刷新）。改过主画面位置或方向后，自动贴纸落点要重跑后处理才更新。</div>
+
+              <div class="small muted mb-4">主画面位置<span class="hint"> · 比例一致时铺满，位置看不出效果</span></div>
+              <div class="row mb-8" style="gap:6px">
+                <button v-for="p in positionOptions" :key="p.value" class="mini-btn" style="flex:1;justify-content:center"
+                        :class="{ selected: stageCfg.position === p.value }" :disabled="stageBusy || !ready"
+                        @click="patchStage({ position: p.value })">{{ p.label }}</button>
+              </div>
+
+              <div class="small muted mb-4">背景<span class="hint"> · 主画面让出来的边补什么；竖屏一直生效（震动等位移会露边），横屏仅留边时生效</span></div>
+              <div class="row mb-6" style="gap:6px">
+                <button v-for="b in bgOptions" :key="b.value" class="mini-btn" style="flex:1;justify-content:center"
+                        :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
+                        @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
+              </div>
+              <div v-if="stageBgDisplay === 'color'" class="row mb-6" style="gap:8px;align-items:center">
+                <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
+                       :value="stageBgColor" :disabled="stageBusy || !ready"
+                       @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
+                <span class="mono small">{{ stageBgColor }}</span>
+              </div>
+              <div v-if="stageCfg.bg_mode === 'blur'" class="row mb-6" style="gap:8px;align-items:center">
+                <span class="small muted" style="flex:none">模糊强度</span>
+                <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
+                       :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
+                <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
+              </div>
+
+              <div class="row mb-6" style="gap:8px;align-items:center">
+                <span class="small muted" style="flex:none">主画面缩放</span>
+                <input type="range" class="flex-1" min="0.5" max="2" step="0.05" :value="stageCfg.scale ?? 1"
+                       :disabled="stageBusy || !ready" @change="patchStage({ scale: Number($event.target.value) })">
+                <span class="mono small">{{ Number(stageCfg.scale ?? 1).toFixed(2) }}×</span>
+              </div>
+              <div class="row mb-8" style="gap:8px;align-items:center">
+                <span class="small muted" style="flex:none">额外留白</span>
+                <input type="range" class="flex-1" min="0" max="200" step="2" :value="stageCfg.padding ?? 0"
+                       :disabled="stageBusy || !ready" @change="patchStage({ padding: Number($event.target.value) })">
+                <span class="mono small">{{ Number(stageCfg.padding ?? 0) }}px</span>
+              </div>
+              <div class="hint">{{ stageHint }}</div>
+            </template>
             <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
               <div class="row spread small">
                 <b>{{ jobLabel(job.kind) }}</b>
@@ -222,7 +306,7 @@
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
         <div class="card tl-card mt-16">
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment">
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small">拖拽移动 / 左右缘缩放 / 双击删除 / 泳道 ＋ 在播放头处添加（特效轨先选细分类型）· 改动立即保存 · 后处理在结束编辑时跑</span>
@@ -292,7 +376,7 @@ import { addClient } from '../stores/log'
 import { scopeQ } from '../api/scope'
 import {
   fetchProject, fetchSubtitles, saveProjectPatch,
-  initPolish, runLlm, runProcess, runRender,
+  initPolish, runLlm, runLlmSegment, runProcess, runRender,
   fetchStickerSources, fetchFonts,
   REGION_LABELS,
 } from '../api/polish'
@@ -409,7 +493,7 @@ const allStickerOptions = computed(() => {
 // 空串 = 回系统字体栈；非空 = 字体库里的 id（文件名去扩展名）。
 // 字体只影响预览与出片渲染 —— 不进任务、不触发 process（贴纸/运镜那些重算不读它）。
 const fonts = ref([]) // 库里的字体（只读接口）
-const fontsRoot = ref('') // 库目录（空库时告诉用户把文件丢哪儿）
+const fontsRoot = ref('') // 库目录（只有 admin 拿得到；非 admin 不显示那一行）
 const fontsError = ref('')
 const fontSaving = ref(false)
 const subtitleFont = computed(() => cfg.value?.style?.subtitle?.font || '')
@@ -465,6 +549,8 @@ function toggleSelect(region) {
   if (selectRegion.value === region) { selectRegion.value = ''; return }
   selectRegion.value = FRAMEABLE.includes(region) ? region : ''
   if (!selectRegion.value) return
+  // 与贴纸点选互斥：框选优先，进框选就丢弃点选草稿（避免两层抢指针）
+  cancelPointEdit()
   loadSelRect()
   // 定格当前帧，避免边播边框选
   previewRef.value?.pause?.()
@@ -1000,9 +1086,25 @@ async function initProject() {
   startJob('init', () => initPolish(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
-function runLlmJob() {
-  // LLM 会重写 segments → 时间轴重挂载拉新数据
-  startJob('llm', () => runLlm(pid.value, dir.value), { after: () => { segKey.value++; load({ silent: true }) } })
+async function runLlmJob() {
+  // 「LLM 剪辑」= **全部重做**（用户要求）：清掉断点续传、重新分段、重新生成全部事件。
+  // 会覆盖当前的段与事件（含手工加的），所以先确认；失败的段会在时间轴上标琥珀色，
+  // 想只补某一段就用分段属性里的「只重做本段事件」。
+  const ok = await confirmDialog(
+    '将重新分段并重做全部事件：当前的段与事件（含手工添加的贴纸/运镜）都会被替换。\n'
+    + '失败的分段会在时间轴上标出来，可以之后单独重做那一段。',
+    { title: 'LLM 剪辑（全部重做）？' }
+  )
+  if (!ok) return
+  startJob('llm', () => runLlm(pid.value, dir.value, true), { after: () => { segKey.value++; load({ silent: true }) } })
+}
+
+/** 只重做某一段的事件（时间轴 → 选中分段 → 属性面板里的按钮）。 */
+function redoSegment(index) {
+  if (index === undefined || index === null) return
+  startJob('llm_segment', () => runLlmSegment(pid.value, dir.value, index), {
+    after: () => { segKey.value++; load({ silent: true }) }
+  })
 }
 
 /** 打开输出目录：浏览器无法打开本地目录，复制路径并提示。 */
@@ -1096,6 +1198,210 @@ function toggleStickerSource(name) {
   if (stickerSource.value.includes(name)) patchStickerSource(stickerSource.value.filter((x) => x !== name))
   else patchStickerSource([...stickerSource.value, name])
 }
+
+// ---- 画面构成（[stage]：主画面位置 / 背景）----
+// 值存 polish.toml；渲染侧由 Rust `ProjectFile::resolve_stage` 推导成 `_canvas.stage`，
+// 这里**只做提交 + 重取**，不在前端重算 —— 否则又会多出一套推导，两边迟早不一致。
+/** 右栏页签：导出（LLM 参数 + 渲染）/ 画面构成（尺寸 + 位置 + 背景），头部标签切换 */
+const genTab = ref('export')
+const stageBusy = ref(false)
+const stageCfg = computed(() => cfg.value?.stage || {
+  bg_mode: 'auto', bg_color: '#000000', blur_scale: 1, position: 'auto', scale: 1, padding: 0
+})
+const isPortraitCanvas = computed(() => (cfg.value?.canvas?.orientation || 'landscape') === 'portrait')
+// 位置的方向不跨用（与 Rust `stage_position` 同规矩）：横画布只给 左/中/右，竖画布只给 上/中/下
+const positionOptions = computed(() => (isPortraitCanvas.value
+  ? [{ value: 'auto', label: '自动' }, { value: 'top', label: '靠上' }, { value: 'center', label: '居中' }, { value: 'bottom', label: '靠下' }]
+  : [{ value: 'auto', label: '自动' }, { value: 'left', label: '靠左' }, { value: 'center', label: '居中' }, { value: 'right', label: '靠右' }]))
+const bgOptions = [
+  { value: 'auto', label: '自动' },
+  { value: 'color', label: '纯色' },
+  { value: 'blur', label: '模糊' }
+]
+/** 「纯黑」已并入纯色：bg_mode='black' 与 无背景 渲染结果一样（预览露出 #player 黑底；
+ *  出片 canvas 路径上 none = 不画，透明落进 JPEG 也是黑），按钮组不再单列；
+ *  存量 black 在界面上显示为 纯色 + #000000，选中纯色时才落成 color。 */
+const stageBgDisplay = computed(() => (stageCfg.value.bg_mode === 'black' ? 'color' : (stageCfg.value.bg_mode || 'auto')))
+const stageBgColor = computed(() => stageCfg.value.bg_color || '#000000')
+const canvasSummary = computed(() => {
+  const c = cfg.value?._canvas
+  if (!c) return ''
+  const s = c.src || {}
+  return (c.orientation === 'portrait' ? '竖屏 1080×1920' : '横屏 1920×1080')
+    + (s.width ? ` · 源 ${s.width}×${s.height}` : '')
+})
+/** 源与画布同比时位置没有可见效果；但背景层仍会生效（竖屏铺满 + 特效位移会露边）——
+ *  直接说明，别让人白调半天，也别让人以为背景没接线。 */
+const stageHint = computed(() => {
+  const c = cfg.value?._canvas
+  if (!c) return '保存后即可在预览里看到效果。'
+  const s = c.src || {}
+  if (!s.width || !s.height) return '拿不到源视频尺寸（文件可能缺失）→ 暂时按铺满处理。'
+  const f = c.stage || {}
+  const bgLabel = { none: '无背景', black: '纯黑', color: '纯色', blur: '当前帧模糊' }[f.bg] || ''
+  const srcAr = s.width / s.height
+  const canvasAr = c.width / c.height
+  if (Math.abs(srcAr - canvasAr) / canvasAr <= 0.005) {
+    return `源与画布同比（${s.width}×${s.height} → ${c.width}×${c.height}）：主画面直接铺满，位置不生效；`
+      + `背景（${bgLabel}）只在特效把画面挪开时露出来。`
+  }
+  const posLabel = { left: '靠左', right: '靠右', center: '居中', top: '靠上', bottom: '靠下' }[f.position] || '居中'
+  return srcAr < canvasAr
+    ? `源比画布更窄 → 主画面${posLabel}，左右留边（${bgLabel}）。`
+    : `源比画布更扁 → 主画面${posLabel}，上下留边（${bgLabel}）。`
+})
+
+/** 保存 [stage]：与「字幕字体」同一套 —— 先乐观改本地配置（控件当场响应），再静默重取拿到新的 `_canvas` */
+async function patchStage(patch) {
+  if (!ready.value || stageBusy.value) return
+  const next = { ...stageCfg.value, ...patch }
+  stageBusy.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { stage: next })
+    cfg.value = { ...cfg.value, stage: next }
+    await load({ silent: true })
+  } catch (e) {
+    toast('画面构成保存失败：' + e.message, 'err')
+    await load({ silent: true })
+  } finally {
+    stageBusy.value = false
+  }
+}
+
+// ---- 画面尺寸（[canvas]：orientation 横屏/竖屏）----
+// 与 [stage] 同一套提交链。切方向后 Rust `stage_position` 会把方向不合法的 position
+// 净化回 auto（横=左中右 / 竖=上中下），前端的 positionOptions 也按方向换选项。
+// P3 已落地：重取配置拿到新 `_canvas`（1080×1920 / 1920×1080）后，
+// 预览舞台（PolishPreview 的 --stage-ar）、出片窗口（Chrome --window-size）
+// 与模板/引擎的全部几何都会随画布参数化生效。
+const canvasCfg = computed(() => cfg.value?.canvas || { orientation: 'landscape' })
+const orientationOptions = [
+  { value: 'landscape', label: '横屏 1920×1080' },
+  { value: 'portrait', label: '竖屏 1080×1920' }
+]
+async function patchCanvas(patch) {
+  if (!ready.value || stageBusy.value) return
+  const next = { ...canvasCfg.value, ...patch }
+  stageBusy.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { canvas: next })
+    cfg.value = { ...cfg.value, canvas: next }
+    await load({ silent: true })
+  } catch (e) {
+    toast('画面尺寸保存失败：' + e.message, 'err')
+    await load({ silent: true })
+  } finally {
+    stageBusy.value = false
+  }
+}
+
+// ---- 贴纸落点（[sticker]：auto 安全区算法 / manual 固定一点）----
+// 与 [stage] 同一套：只提交 + 重取，落点换算全在 Rust（`_canvas.sticker`）。
+// 渲染侧在**出片时**分支（模板 `stickerAnchor` / engine.js `stickerAnchor`），
+// 所以切模式不用重跑 process —— events 里的逐条 x/y 一直保留着。
+const stickerBusy = ref(false)
+const stickerCfg = computed(() => cfg.value?.sticker || { position_mode: 'auto', position: '50% 50%' })
+
+/** `"50% 50%"` → `{x:50,y:50}`；解析不出来回落 50（与渲染侧同一个兜底） */
+function parsePos(s) {
+  const p = String(s || '50% 50%').trim().split(/\s+/)
+  const a = parseFloat(p[0])
+  const b = parseFloat(p.length > 1 ? p[1] : p[0])
+  return { x: Number.isFinite(a) ? a : 50, y: Number.isFinite(b) ? b : 50 }
+}
+/** `{x,y}` → `"53% 48%"`（落盘格式：整数百分比，与九宫格时代一致） */
+const fmtPos = (p) => `${p.x}% ${p.y}%`
+
+/** 已保存的落点（贴纸盒子中心，整帧百分比） */
+const stickerPos = computed(() => parsePos(stickerCfg.value.position))
+const stickerPosPct = computed(() => fmtPos(stickerPos.value))
+
+/**
+ * 点选落点 = **草稿态**：进入编辑 → 在预览上点 → 保存 / 取消。
+ *
+ * 以前是「固定模式即常驻点选，点哪儿存哪儿」—— 于是"只是想看一眼预览"就改了配置，
+ * 用户要求补保存/取消。现在与区域框选同一套路（见 `applySelect`）：
+ * 编辑态里的点选只改 `draftPos`，只有「保存落点」才落盘，「取消」直接还原。
+ * 注意 `draftPos` 是**贴纸盒子中心**，与已保存的 `[sticker] position` 同一基准
+ * （auto 的事件 x/y 才是盒子左上角 —— 两个键两种基准，不要"统一"）。
+ */
+const pointEdit = ref(false)
+const draftPos = ref({ x: 50, y: 50 })
+const draftPosPct = computed(() => fmtPos(draftPos.value))
+
+/**
+ * 预览点选层是否生效：只在编辑态（且不在框选态）显示。
+ * 与区域框选互斥 —— 两者都是"在预览上取坐标"，框选优先，避免两层抢指针。
+ */
+const pointMode = computed(() => pointEdit.value && !selectRegion.value)
+
+/** 进入点选编辑态：草稿以已保存值为初值（取消即等于没动过）。 */
+function startPointEdit() {
+  if (stickerBusy.value || !ready.value) return
+  if (selectRegion.value) selectRegion.value = ''   // 与框选互斥
+  draftPos.value = { ...stickerPos.value }
+  pointEdit.value = true
+  // 定格当前帧，避免边播边点选
+  previewRef.value?.pause?.()
+}
+
+/** 取消点选：丢弃草稿，回到已保存值。 */
+function cancelPointEdit() {
+  pointEdit.value = false
+  draftPos.value = { ...stickerPos.value }
+}
+
+/** 保存落点：写 `[sticker] position`（不重跑 process —— 渲染侧出片时才读它）。 */
+async function savePointEdit() {
+  const p = draftPos.value
+  if (await patchSticker({ position: fmtPos(p) })) cancelPointEdit()
+}
+
+/**
+ * 贴纸落点这一格：自动 ⇄ 固定。
+ *
+ * 「固定」= 全部贴纸落在同一点，用户要求**像区域编辑那样直接在预览里点**。
+ * 切到固定 = 本来就是要去选一个点，所以顺手进编辑态（省一次点击）；
+ * 切回自动则丢弃草稿。
+ */
+async function toggleStickerMode() {
+  if (stickerBusy.value || !ready.value) return
+  if (stickerCfg.value.position_mode === 'manual') {
+    cancelPointEdit()
+    await patchSticker({ position_mode: 'auto' })
+    return
+  }
+  if (await patchSticker({ position_mode: 'manual' })) startPointEdit()
+}
+
+/** 预览点选落点 → 只改草稿（保存/取消在右侧「区域与落点」里）。 */
+function onPointPick(p) {
+  const x = Math.round(Math.min(100, Math.max(0, Number(p?.x) || 0)))
+  const y = Math.round(Math.min(100, Math.max(0, Number(p?.y) || 0)))
+  draftPos.value = { x, y }
+}
+
+/** @returns {Promise<boolean>} 是否保存成功（失败时不丢草稿，见 `savePointEdit`） */
+async function patchSticker(patch) {
+  if (!ready.value || stickerBusy.value) return false
+  const next = { ...stickerCfg.value, ...patch }
+  stickerBusy.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { sticker: next })
+    cfg.value = { ...cfg.value, sticker: next }
+    await load({ silent: true })
+    return true
+  } catch (e) {
+    toast('贴纸落点保存失败：' + e.message, 'err')
+    await load({ silent: true })
+    return false
+  } finally {
+    stickerBusy.value = false
+  }
+}
+
+// 切片段时退出编辑态：草稿属于上一个片段，不能跨片段保存
+watch(() => loadedClip.value, () => cancelPointEdit())
 
 function onCoverError() {
   coverFailed.value = true

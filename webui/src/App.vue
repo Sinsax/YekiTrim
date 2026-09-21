@@ -20,8 +20,8 @@
           <b>入库</b><span class="sep">/</span>
           <span class="muted small">录制导入 · 自动导入规则</span>
         </template>
-        <template v-else-if="route.name === 'settings'">
-          <b>设置</b><span class="sep">/</span><span class="muted small">平台配置与模型</span>
+        <template v-else-if="route.meta?.settings">
+          <b>设置</b><span class="sep">/</span><span class="muted small">{{ route.meta.title }}</span>
         </template>
         <template v-else-if="route.params.pid">
           <span class="crumb-proj" :title="currentProject?.name">{{ currentProject?.name || ('项目 #' + route.params.pid) }}</span>

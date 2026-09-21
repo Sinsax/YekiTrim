@@ -15,11 +15,17 @@ export const projectData = {
   config: (pid, label) => api(`/api/project-data/config?${scopeQ(pid)}`, { label }),
   transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),
 
-  /** 输入素材（弹幕 / 字幕）：当前值 + 状态 + 项目内的候选。预处理页用它渲染两行素材。 */
+  /**
+   * 输入素材（弹幕 / 字幕）的**清单**：每类的生效值 + 状态 + 项目内候选 + ASR 槽位。
+   *
+   * `slots`（`{hybrid: bool, single: bool}`）= 每个 ASR 模式的产物是否已经出过 ——
+   * 前端**不在本地推**（判槽还要看盘上的分模式产物），置灰转写入口一律读它。
+   */
   assets: (pid, label) => api(`/api/project-data/assets?${scopeQ(pid)}`, { label }),
   /**
-   * 选择/清除一类素材。`body` 传三选一：
-   * - `{path: ''}` 清除；`{path: 'dm.xml'}` 项目内相对（或 admin 的绝对路径）；
+   * 选择一份素材 = 置为**生效值** + 登记进清单（方便一键切回来）。`body` 三选一：
+   * - `{path: 'dm.xml'}` 清单里的一条 / 项目内相对（或 admin 的绝对路径）；
+   * - `{path: ''}` 清掉生效值（**清单不动**：候选还在，随时能切回来）；
    * - `{dir, name}` 服务器目录里选的（**目录与文件名分开发**，前端不拼路径：服务端回传的
    *   目录可能是 `\\?\F:\a` 这种 verbatim 形式，前端拼出来在 Windows 上是非法名）。
    * 服务端写前会解析一遍，失败不落盘，成功返回条数。
@@ -28,6 +34,15 @@ export const projectData = {
     api(`/api/project-data/assets?${scopeQ(pid)}`, {
       method: 'POST',
       body: JSON.stringify({ kind, ...body })
+    }),
+  /**
+   * 从清单里移除一条（`{action:'remove', path}`）—— 只改选择，**不删磁盘文件**。
+   * 它正好是生效值时会连带清掉 `*_file`；ASR 产物（文件还在）服务端一律拒绝（400）。
+   */
+  removeAsset: (pid, kind, path) =>
+    api(`/api/project-data/assets?${scopeQ(pid)}`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, action: 'remove', path })
     }),
 
   /** 切片缩略图 URL（`<img :src>`/`<video :src>` 直接用，cookie 自动带上） */

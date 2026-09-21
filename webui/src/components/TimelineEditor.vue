@@ -100,6 +100,30 @@
               <option value="med">med · 日常</option>
               <option value="high">high · 爆点</option>
             </select>
+
+            <!-- 最近一次 LLM 生成：这一段成/败 + 只重做这一段。
+                 整片重做很贵（一次 LLM 调用一段），而且限流时总会有一两段落空；
+                 以前失败**完全不可见**，用户只看到"这段 20 秒没事件"。 -->
+            <div class="seg-gen mt-6">
+              <div class="row spread small" style="gap:6px;align-items:center">
+                <span class="muted">上次生成</span>
+                <span v-if="!segGen(selected.si)" class="chip n">无记录</span>
+                <span v-else-if="segGen(selected.si).ok" class="chip p">成功 · {{ segGen(selected.si).events }} 条</span>
+                <span v-else class="chip warn">失败</span>
+              </div>
+              <div v-if="segGen(selected.si) && !segGen(selected.si).ok" class="mini-hint">
+                {{ segGen(selected.si).reason || '没有产出事件' }}（这一段的事件保持原样，没被清空）
+              </div>
+              <div v-else-if="llmStatus && llmStatus.ts" class="muted small mt-4">
+                整片最近一次：{{ llmStatus.ok }}/{{ llmStatus.total }} 段成功 · {{ fmtTs(llmStatus.ts) }}
+              </div>
+              <button class="mini-btn mt-6" style="width:100%;justify-content:center"
+                      :disabled="reprocessBusy"
+                      title="只重新生成这一段的事件（其余分段、筛选词/高亮词都不动）；失败会保留该段原事件"
+                      @click="emit('redo-segment', selected.si)">
+                <Icon name="sparkles" :size="11" /> 只重做本段事件
+              </button>
+            </div>
           </template>
 
           <template v-else-if="selected.kind === 'sub'">
@@ -130,11 +154,18 @@
                 <option value="cut">硬切（瞬间切换）</option>
               </select>
               <label>景别</label>
-              <select v-model="selItem.zoom">
+              <select :value="selItem.zoom" @change="setZoom(selItem, $event.target.value)">
                 <option value="远">远（画中画）</option>
                 <option value="中">中景</option>
                 <option value="近">近景</option>
               </select>
+              <!-- 手持摇摆：运镜的附加变种，门槛只在近景（用户定的口径）。
+                   关掉即删字段（保持配置干净）；景别改离近景由 setZoom 顺带剥掉。 -->
+              <label class="ck-row" :title="selItem.zoom === '近' ? '叠加在运镜上的持续摇摆' : '只在近景可用'">
+                <input type="checkbox" :checked="selItem.handheld === true" :disabled="selItem.zoom !== '近'"
+                       @change="setHandheld(selItem, $event.target.checked)">
+                手持摇摆<span class="muted small">（仅近景）</span>
+              </label>
               <div class="row">
                 <div class="flex-1">
                   <label>聚焦</label>
@@ -157,7 +188,8 @@
                   </select>
                 </div>
               </div>
-              <div class="hint">锚点在「后处理」时解析成坐标；「移到」非空就是从聚焦点平移过去。</div>
+              <div class="hint">锚点在「后处理」时解析成坐标；「移到」非空就是从聚焦点平移过去。<br>
+                手持摇摆：持续晃动到下一条不带它的运镜，只在近景生效（非近景会被后处理剔除）。</div>
             </template>
 
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
@@ -329,7 +361,7 @@ const props = defineProps({
 // `preview` = 本地改动立刻镜像给页面（预览实时刷新，不落盘、不重挂载）
 // `done`    = **一次编辑真的做完了**（面板控件确定 / 取消选中 / 切片段 / 离开页面）——
 //             页面据此跑一次后处理。落盘成功**不算**完成：那时你可能还在改这个事件。
-const emit = defineEmits(['seek', 'toggle', 'preview', 'done', 'reprocess', 'retried'])
+const emit = defineEmits(['seek', 'toggle', 'preview', 'done', 'reprocess', 'retried', 'redo-segment'])
 const rootRef = ref(null)
 /**
  * 属性面板的 Teleport 目标。**必须等 onMounted 才设值**：本组件挂载时整棵编辑器子树
@@ -354,6 +386,9 @@ const tracksRef = ref(null)
 const bodyRef = ref(null)
 const rulerTrackRef = ref(null)
 const segments = ref([])
+/** 最近一次 LLM 生成的结果快照（`polish_project_get?preview=1` 注入的 `_llm_status`）：
+ *  哪一段成功/失败、失败原因、生成时间。用于给分段上警示色 + 面板里显示状态。 */
+const llmStatus = ref(null)
 const subtitles = ref([])
 const muteRanges = ref([])
 const loudness = ref([])
@@ -537,6 +572,22 @@ function setEvField(ev, key, value) {
   if (value === '') delete ev[key]
   else ev[key] = value
 }
+/**
+ * 手持摇摆开关（运镜的附加变种）：关掉即删字段，保持配置干净 ——
+ * `Event::Camera::handheld` 是 `skip_serializing_if` 的可选布尔，老配置零迁移。
+ */
+function setHandheld(ev, on) {
+  if (on) ev.handheld = true
+  else delete ev.handheld
+}
+/**
+ * 景别切换：离开近景时顺带剥掉手持摇摆 —— 与后处理守卫（`process::fx::cap_handheld_sway`）
+ * 同一语义「只剥不补」，免得留下一个"看着开着、实际必被剔除"的悬空开关。
+ */
+function setZoom(ev, z) {
+  ev.zoom = z
+  if (z !== '近') delete ev.handheld
+}
 /** `#rgb` / `#rrggbb` → 取色器能认的 `#rrggbb`。 */
 function hexOf(v) {
   const s = String(v || '').trim()
@@ -566,7 +617,8 @@ function labelFor(ev) {
   if (ev.type === 'sticker') return ev.keyword || ev.name || '贴纸'
   if (ev.type === 'camera') {
     // 硬切的块加个「切」前缀：泳道上一眼能看出哪几段是瞬间换构图（用户要的切镜）
-    const z = (ev.cut ? '切·' : '') + (ev.zoom || '运镜')
+    // 「摇」= 手持摇摆（附加变种），排在最前：它是叠加状态，跟切的"瞬间换构图"是两回事
+    const z = (ev.handheld ? '摇·' : '') + (ev.cut ? '切·' : '') + (ev.zoom || '运镜')
     if (ev.anchor && ev.anchor_to) return `${z} ${ev.anchor}→${ev.anchor_to}`
     return ev.anchor ? `${z} ${ev.anchor}` : z
   }
@@ -581,6 +633,27 @@ function labelFor(ev) {
  * 唯一例外：分段**不给左缘** —— 缩它的 start 会把事件留在段外，正确处理要连带搬事件，
  * 风险太大（体拖已经把事件一起搬了，改起点请用属性面板）。
  */
+/**
+ * 最近一次 LLM 生成里这一段的结果（没有记录 = 没跑过、或跑在旧版本上）。
+ *
+ * 用它给分段上色：**成功就是当前颜色**，只有"没产出事件"的段才换成警示色。
+ * 这条以前完全没有 —— 限流导致某一窗失败时，界面上和"模型写得少"长得一模一样
+ * （用户 2026-09-20 报的就是"某段 20 秒没有任何事件，也看不出为什么"）。
+ */
+function segGen(si) {
+  const list = llmStatus.value?.segments
+  if (!Array.isArray(list) || si === undefined || si === null) return null
+  return list.find((s) => Number(s.index) === Number(si)) || null
+}
+
+/** unix 秒 → `MM-DD HH:MM`（本地时区），用于"整片最近一次生成"那行。 */
+function fmtTs(ts) {
+  const d = new Date(Number(ts) * 1000)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function laneBlocks(lane) {
   const out = []
   if (lane.type === 'subtitles') {
@@ -606,18 +679,22 @@ function laneBlocks(lane) {
   }
   if (lane.type === 'segments') {
     segments.value.forEach((seg, si) => {
+      // 上次 LLM 生成没产出事件的段：换个颜色标出来（成功 = 当前颜色，用户要求）
+      const gen = segGen(si)
+      const bad = !!gen && gen.ok === false
       out.push({
         kind: 'seg', si,
         time: seg.start,
         left: seg.start * scale.value,
         width: Math.max((seg.end - seg.start) * scale.value, 8),
         label: seg.note || ('分段 ' + (si + 1)),
-        title: '分段 ' + Number(seg.start).toFixed(1) + 's → ' + Number(seg.end).toFixed(1) + 's',
-        color: TIMELINE_COLORS.segments,
+        title: '分段 ' + Number(seg.start).toFixed(1) + 's → ' + Number(seg.end).toFixed(1) + 's'
+          + (bad ? `\n⚠ 上次 LLM 生成失败：${gen.reason || '没有产出事件'}（选中它可「只重做本段事件」）` : ''),
+        color: bad ? '#f59e0b' : TIMELINE_COLORS.segments,
         resizable: true,
         leftResizable: false,
         minLen: 0.1,
-        cls: 'type-segments'
+        cls: bad ? 'type-segments seg-gen-failed' : 'type-segments'
       })
     })
     muteRanges.value.forEach((m, i) => {
@@ -1516,6 +1593,7 @@ async function loadData() {
   }
   loadError.value = ''
   segments.value = cfg?.segments || []
+  llmStatus.value = cfg?._llm_status && Array.isArray(cfg._llm_status.segments) ? cfg._llm_status : null
   muteRanges.value = Array.isArray(cfg?.mute_ranges) ? cfg.mute_ranges.map(m => ({ start: Number(m.start) || 0, end: Number(m.end) || 0 })) : []
   applySilenceState(cfg)
   const last = cfg?.segments?.[cfg.segments.length - 1]
@@ -1583,6 +1661,11 @@ async function loadData() {
 .ruler-playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--main); z-index:5; pointer-events:none; }
 .block.type-subtitles { background:rgba(59,130,246,0.35) !important; color:#0f172a; font-weight:700; opacity:1; text-shadow:0 0 2px #fff, 0 0 2px #fff; }
 .block.type-mutes { background:rgba(239,68,68,0.42) !important; color:#7f1d1d; font-weight:700; }
+/* 上次 LLM 生成没产出事件的分段：琥珀色 + 虚框（颜色是用户要求的"标出来"，虚框照顾色觉） */
+.block.seg-gen-failed { background:#f59e0b !important; color:#4a2c00; font-weight:700; outline:1.5px dashed #b45309; }
+/* 分段属性里的"上次生成"状态块 */
+.seg-gen { border-top:1px solid var(--line-soft); padding-top:6px; }
+.chip.warn { background:#fde68a; color:#7c4a03; }
 /* 属性面板已 Teleport 到页面（视频左侧），这些样式跟着元素走（scoped 属性保留） */
 .props-panel { width:232px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
 .props-empty { border:1.5px dashed var(--line); border-radius:10px; padding:12px 10px; }
@@ -1598,6 +1681,11 @@ async function loadData() {
 .type-ro b { font-size: 12.5px; }
 /* 手工时间状态行（贴纸/运镜）：chip + 说明 +「跟随字幕」 */
 .manual-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+/* 运镜「手持摇摆」开关行：紧跟景别下拉，禁用态表示当前景别不满足门槛 */
+.ck-row { display:flex; align-items:center; gap:5px; margin-top:8px; font-size:12px;
+  color:var(--ink); cursor:pointer; }
+.ck-row input[type="checkbox"]:disabled { cursor:not-allowed; }
+.ck-row:has(input:disabled) { color:var(--ink-faint); cursor:not-allowed; }
 /* 视觉特效轨道 ＋ 的细分类型菜单（fixed：不随时间轴滚动、不被卡片裁切） */
 .fx-menu { position:fixed; z-index:40; min-width:132px; padding:4px; background:var(--card);
   border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 22px rgba(90,60,70,.18); }

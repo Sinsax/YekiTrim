@@ -27,7 +27,37 @@ export const ingestApi = {
   /** 生成/关闭 webhook token（`generate` 时**只有这一次**响应里有明文 token） */
   rotateToken: (action = 'generate') =>
     api('/api/admin/ingest/token', { method: 'POST', body: JSON.stringify({ action }) }),
-  scanNow: () => api('/api/admin/ingest/scan', { method: 'POST' })
+  scanNow: () => api('/api/admin/ingest/scan', { method: 'POST' }),
+
+  // ---- B站链接通道（P4）----
+
+  /**
+   * 解析一个 B站链接（`POST /api/ingest/resolve`）。
+   *
+   * **薄壳、不落库** —— 用户每改一次输入就点一下，不会攒出没人要的会话。
+   * 返回 `{ bvid, title, uploader, cover, duration_secs, pages:[{index,cid,part,duration_secs,estimate_bytes}],
+   *          estimate_bytes, quality, downloader_ready, danmaku_total, view_total }`。
+   */
+  resolveBilibili: (url) =>
+    api('/api/ingest/resolve', { method: 'POST', body: JSON.stringify({ url }) }),
+
+  /**
+   * 提交下载（`POST /api/ingest/bilibili`）。**每个 P 一个会话/一个项目**。
+   *
+   * `pages` 不传 = 只下第 1 P（**默认不全选**：23P 全下会直接撑爆配额）。
+   * 返回 `{ accepted:[{session_id,page,title,cid,duration_secs,created}], skipped:[{...,reason,project_id}] }`。
+   */
+  submitBilibili: (url, pages, auto_pipeline) =>
+    api('/api/ingest/bilibili', {
+      method: 'POST',
+      body: JSON.stringify({ url, pages, ...(auto_pipeline ? { auto_pipeline } : {}) })
+    }),
+
+  /** 下载器就绪位（任何登录用户可看；响应里**不含路径**）。 */
+  downloaderStatus: () => api('/api/ingest/downloader'),
+
+  /** 下载内置 yt-dlp（仅 admin；会校验 sha256）。 */
+  installDownloader: () => api('/api/admin/downloader/install', { method: 'POST' })
 }
 
 /** 自动策略档位（与服务端 auto_pipeline 一致）。 */
