@@ -1,0 +1,323 @@
+{
+  "version": 1,
+  "_comment": [
+    "V-Trim 代码结构注册表：模块 id → 目录 → 模块卡（该目录的 AGENTS.md）→ 验证命令。",
+    "读取方：scripts/check_module_map.py（覆盖率 / 预算 / 骨架 / 索引一致 / ⚠️ 下限）。",
+    "为什么要有它：模块卡是 agent 在触到该目录时被自动注入的规则，'哪个目录归哪张卡、改完跑什么'",
+    "必须有一份可校验的单一来源，否则卡会漂移成无人维护的散文。",
+    "改这里要同步：根 AGENTS.md 的模块索引表（<!-- module-index:begin/end --> 之间）。"
+  ],
+  "budgets": {
+    "root_bytes": 20480,
+    "module_bytes": 24576,
+    "chain_bytes": 57344,
+    "_why": "DSH 工作区指令预算 65536 B/次；**真正的约束是 chain_bytes**（链 = 根 + 沿途每级模块卡），根与单卡上限只是防止某一份卡无限膨胀。module_bytes 取 24 KiB 是因为 webui/src/views 这类页面纪律卡确实要装很多条踩坑记录 —— 宁可单卡大一点，也不要把规则删掉；若某条链因此超限，门禁会点名要求把叙述挪去 docs/ 指针。链留 8 KiB 余量给用户全局 AGENTS.md 与预算通知文本。超预算时 DSH 会先整份丢掉较宽的文件 —— 根文件超标会让全局规矩全丢。"
+  },
+  "warning_floor": 117,
+  "_warning_floor_why": "迁移前根 AGENTS.md 有 117 行含 ⚠️ 的规则；这些是踩坑换来的，只许多不许少。",
+  "coverage_roots": [
+    "crates/*/src",
+    "crates/*/examples",
+    "crates/*/templates",
+    "webui/src",
+    "webui/scripts",
+    "scripts"
+  ],
+  "exclude": [
+    "target",
+    "vendor",
+    "node_modules",
+    "webui/dist",
+    ".git",
+    ".workbuddy",
+    "release"
+  ],
+  "modules": [
+    {
+      "id": "root",
+      "title": "全局路由：架构与改代码协议",
+      "dir": ".",
+      "card": "AGENTS.md",
+      "kind": "root",
+      "verify": [
+        "python3 scripts/check_module_map.py",
+        "python3 scripts/check_module_boundaries.py"
+      ]
+    },
+    {
+      "id": "scripts",
+      "title": "门禁与工具脚本",
+      "dir": "scripts",
+      "card": "scripts/AGENTS.md",
+      "kind": "area",
+      "verify": [
+        "python3 scripts/check_module_map.py",
+        "python3 scripts/check_module_boundaries.py"
+      ]
+    },
+    {
+      "id": "core",
+      "title": "vtrim-core 管线与基础能力",
+      "dir": "crates/vtrim-core",
+      "card": "crates/vtrim-core/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check -p vtrim-core"]
+    },
+    {
+      "id": "core-config",
+      "title": "配置：两层合并 / patch / Default",
+      "dir": "crates/vtrim-core/src/config",
+      "card": "crates/vtrim-core/src/config/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib config"]
+    },
+    {
+      "id": "core-pipeline",
+      "title": "Stage 与 PipelineRunner",
+      "dir": "crates/vtrim-core/src/pipeline",
+      "card": "crates/vtrim-core/src/pipeline/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib pipeline"]
+    },
+    {
+      "id": "core-asr",
+      "title": "ASR 转写链路（断句 / VAD / qwen3）",
+      "dir": "crates/vtrim-core/src/asr",
+      "card": "crates/vtrim-core/src/asr/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib asr"]
+    },
+    {
+      "id": "core-detection",
+      "title": "事件检测与热度评分",
+      "dir": "crates/vtrim-core/src/detection",
+      "card": "crates/vtrim-core/src/detection/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib detection"]
+    },
+    {
+      "id": "core-danmaku",
+      "title": "弹幕解析与密度",
+      "dir": "crates/vtrim-core/src/danmaku",
+      "card": "crates/vtrim-core/src/danmaku/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib danmaku"]
+    },
+    {
+      "id": "core-cutting",
+      "title": "Cutter：切片与片段元数据",
+      "dir": "crates/vtrim-core/src/cutting",
+      "card": "crates/vtrim-core/src/cutting/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib cutting"]
+    },
+    {
+      "id": "core-llm",
+      "title": "统一 LLM 客户端与用量记账",
+      "dir": "crates/vtrim-core/src/llm",
+      "card": "crates/vtrim-core/src/llm/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-core --lib llm"]
+    },
+    {
+      "id": "render-core",
+      "title": "vtrim-render-core 绘制原语",
+      "dir": "crates/vtrim-render-core",
+      "card": "crates/vtrim-render-core/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check -p vtrim-render-core"]
+    },
+    {
+      "id": "polish",
+      "title": "vtrim-polish 精修引擎",
+      "dir": "crates/vtrim-polish",
+      "card": "crates/vtrim-polish/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check -p vtrim-polish"]
+    },
+    {
+      "id": "polish-process",
+      "title": "精修后处理：字幕 / 段 / 贴纸 / 音效",
+      "dir": "crates/vtrim-polish/src/process",
+      "card": "crates/vtrim-polish/src/process/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-polish --lib process"]
+    },
+    {
+      "id": "polish-render",
+      "title": "渲染导出与封面（子进程链路）",
+      "dir": "crates/vtrim-polish/src/render",
+      "card": "crates/vtrim-polish/src/render/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-polish --lib render"]
+    },
+    {
+      "id": "polish-templates",
+      "title": "出片模板（真实渲染路径）",
+      "dir": "crates/vtrim-polish/templates",
+      "card": "crates/vtrim-polish/templates/AGENTS.md",
+      "kind": "module",
+      "verify": ["node webui/scripts/check-overlay.mjs"]
+    },
+    {
+      "id": "polish-project",
+      "title": "精修项目配置与去静音",
+      "dir": "crates/vtrim-polish/src/project",
+      "card": "crates/vtrim-polish/src/project/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-polish --lib project"]
+    },
+    {
+      "id": "polish-assets",
+      "title": "贴纸库 / 音效目录 / 资产下载",
+      "dir": "crates/vtrim-polish/src/assets",
+      "card": "crates/vtrim-polish/src/assets/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-polish --lib assets"]
+    },
+    {
+      "id": "polish-llm",
+      "title": "精修侧 LLM：分段 / 事件生成 / 关键词",
+      "dir": "crates/vtrim-polish/src/llm",
+      "card": "crates/vtrim-polish/src/llm/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-polish --lib llm"]
+    },
+    {
+      "id": "service",
+      "title": "vtrim-service 领域逻辑",
+      "dir": "crates/vtrim-service",
+      "card": "crates/vtrim-service/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo test -p vtrim-service"]
+    },
+    {
+      "id": "service-ingest",
+      "title": "采集入库：容量预检 / 项目落地",
+      "dir": "crates/vtrim-service/src/ingest",
+      "card": "crates/vtrim-service/src/ingest/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-service ingest"]
+    },
+    {
+      "id": "service-downloader",
+      "title": "下载器端口与 yt-dlp 适配器",
+      "dir": "crates/vtrim-service/src/downloader",
+      "card": "crates/vtrim-service/src/downloader/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-service downloader"]
+    },
+    {
+      "id": "service-bilibili",
+      "title": "B站链接通道（bvid / cid / 弹幕）",
+      "dir": "crates/vtrim-service/src/bilibili",
+      "card": "crates/vtrim-service/src/bilibili/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-service bilibili"]
+    },
+    {
+      "id": "service-net",
+      "title": "HTTP 小工具（解压 / UA）",
+      "dir": "crates/vtrim-service/src/net",
+      "card": "crates/vtrim-service/src/net/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-service net"]
+    },
+    {
+      "id": "server",
+      "title": "vtrim-server：HTTP / 任务队列 / 宿主",
+      "dir": "crates/vtrim-server",
+      "card": "crates/vtrim-server/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo test -p vtrim-server"]
+    },
+    {
+      "id": "server-api",
+      "title": "HTTP 领域模块与共享底座",
+      "dir": "crates/vtrim-server/src/api",
+      "card": "crates/vtrim-server/src/api/AGENTS.md",
+      "kind": "module",
+      "verify": ["cargo test -p vtrim-server"]
+    },
+    {
+      "id": "cli",
+      "title": "vtrim CLI 入口",
+      "dir": "crates/vtrim-cli",
+      "card": "crates/vtrim-cli/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check -p vtrim-cli"]
+    },
+    {
+      "id": "xtask",
+      "title": "构建 / 打包 / 产物门禁",
+      "dir": "crates/xtask",
+      "card": "crates/xtask/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check -p xtask"]
+    },
+    {
+      "id": "wasm",
+      "title": "vtrim-wasm（独立 target）",
+      "dir": "crates/vtrim-wasm",
+      "card": "crates/vtrim-wasm/AGENTS.md",
+      "kind": "crate",
+      "verify": ["cargo check --manifest-path crates/vtrim-wasm/Cargo.toml --target wasm32-unknown-unknown"]
+    },
+    {
+      "id": "webui",
+      "title": "WebUI 工程：构建与契约脚本",
+      "dir": "webui",
+      "card": "webui/AGENTS.md",
+      "kind": "area",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-src",
+      "title": "WebUI 源码：路由 / 视图 / 缓存",
+      "dir": "webui/src",
+      "card": "webui/src/AGENTS.md",
+      "kind": "area",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-api",
+      "title": "前端接口层（作用域单点）",
+      "dir": "webui/src/api",
+      "card": "webui/src/api/AGENTS.md",
+      "kind": "module",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-views",
+      "title": "页面级规则（预处理 / 切片 / 精修 / 设置）",
+      "dir": "webui/src/views",
+      "card": "webui/src/views/AGENTS.md",
+      "kind": "module",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-components",
+      "title": "组件级规则（时间轴 / 预览 / 封面设计器）",
+      "dir": "webui/src/components",
+      "card": "webui/src/components/AGENTS.md",
+      "kind": "module",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-styles",
+      "title": "样式纪律与设计 token",
+      "dir": "webui/src/styles",
+      "card": "webui/src/styles/AGENTS.md",
+      "kind": "module",
+      "verify": ["npm --prefix webui run build"]
+    },
+    {
+      "id": "webui-polish",
+      "title": "精修预览共享模块",
+      "dir": "webui/src/polish",
+      "card": "webui/src/polish/AGENTS.md",
+      "kind": "module",
+      "verify": ["node webui/scripts/check-overlay.mjs"]
+    }
+  ]
+}
