@@ -120,6 +120,14 @@ pub(super) async fn polish_spawn(
             jobs.complete(&job_id).await;
             return;
         }
+        // 取消探针：精修 llm 是分钟级链路（窗口多、默认并发 3），Agent 必须能在**窗口边界**
+        // 轮询它 —— 只在阶段边界查一次 = 用户点了停止、后台仍把剩下的窗口成批跑完。
+        // 判据与管线/贴纸构建同源：Job 的取消令牌 → `ProgressReporter::cancelled()`。
+        let token = jobs.cancel_token(&job_id).await;
+        let bridge = super::core::progress_bridge(job_id.clone(), jobs.clone(), token);
+        let cancel: Option<vtrim_core::llm::agent::CancelProbe> = Some(std::sync::Arc::new(move || {
+            vtrim_core::progress::ProgressReporter::cancelled(&*bridge)
+        }));
         let result = async {
             match kind.as_str() {
                 "init" => vtrim_polish::commands::cmd_init(&path).await,
@@ -130,7 +138,7 @@ pub(super) async fn polish_spawn(
                     } else {
                         "LLM 生成中…"
                     }).await;
-                    vtrim_polish::commands::cmd_llm(&path, opts.full).await?;
+                    vtrim_polish::commands::cmd_llm(&path, opts.full, cancel.clone()).await?;
                     jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
                     vtrim_polish::process::cmd_process(&path).await
                 }
@@ -141,7 +149,7 @@ pub(super) async fn polish_spawn(
                         .segment_index
                         .ok_or_else(|| anyhow::anyhow!("缺少 segment_index"))?;
                     jobs.log(&job_id, "info", format!("只重做分段 #{idx} 的事件…")).await;
-                    vtrim_polish::commands::cmd_llm_segment(&path, idx).await?;
+                    vtrim_polish::commands::cmd_llm_segment(&path, idx, cancel.clone()).await?;
                     jobs.log(&job_id, "info", "完成，自动执行 process 后处理…").await;
                     vtrim_polish::process::cmd_process(&path).await
                 }

@@ -10,6 +10,7 @@ pub async fn run_correct(
     config_file: &Path,
     transcript_override: Option<PathBuf>,
     resume: bool,
+    progress: Option<std::sync::Arc<dyn vtrim_core::progress::ProgressReporter>>,
 ) -> anyhow::Result<()> {
     let cfg = vtrim_core::config::load_config_at(config_file)?;
     let ws = Workspace::load(Some(config_file))?;
@@ -58,6 +59,11 @@ pub async fn run_correct(
         }
     });
 
+    // 取消探针：订正是分钟级链路，必须让 Agent 在窗口边界轮询它
+    //（判据与检测/精修同源：`ProgressReporter::cancelled()`）。
+    let cancel: Option<vtrim_core::llm::agent::CancelProbe> = progress.clone().map(|p| {
+        std::sync::Arc::new(move || p.cancelled()) as vtrim_core::llm::agent::CancelProbe
+    });
     let result = vtrim_core::asr::correct::correct_transcript_with_checkpoint(
         &transcript_data.segments,
         &danmaku,
@@ -66,6 +72,7 @@ pub async fn run_correct(
         output.parent(),
         checkpoint_path,
         Some(tx),
+        cancel,
     ).await;
     let _ = partial_task.await;
 

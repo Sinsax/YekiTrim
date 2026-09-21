@@ -36,6 +36,7 @@ pub async fn run_llm_pipeline(
     sfx_budget: usize,
     sfx_blacklist: &[String],
     checkpoint_dir: Option<&PathBuf>,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>, Vec<SegmentGenStatus>)> {
     let project = checkpoint_dir.map(|d| d.parent().unwrap_or(d).to_path_buf());
     // 链路解析：精修这一整条（分段 / 逐段事件 / 贴纸精挑 / 关键词）共用 `[llm.overrides.polish]`。
@@ -103,6 +104,7 @@ pub async fn run_llm_pipeline(
         llm_cfg,
         project.as_deref(),
         checkpoint_path.as_deref(),
+        cancel.clone(),
     ).await?;
     println!(
         "  ✓ {} / {} 段生成成功",
@@ -116,7 +118,7 @@ pub async fn run_llm_pipeline(
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
     if has_local {
-        run_sticker_choice_step(&mut segments, subtitles, llm_cfg, project.as_deref()).await?;
+        run_sticker_choice_step(&mut segments, subtitles, llm_cfg, project.as_deref(), cancel.clone()).await?;
     }
 
     // Step 3: 关键词提取
@@ -195,6 +197,7 @@ pub async fn regenerate_segment_events(
     segments: &mut [Segment],
     index: usize,
     project: Option<&Path>,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<SegmentGenStatus> {
     let Some(seg) = segments.get(index) else {
         anyhow::bail!("分段下标越界: {index}（当前只有 {} 段）", segments.len());
@@ -242,6 +245,7 @@ pub async fn regenerate_segment_events(
         llm_cfg,
         project,
         None,
+        cancel.clone(),
     )
     .await?;
     let status = statuses
@@ -259,7 +263,7 @@ pub async fn regenerate_segment_events(
 
     // Step2b：本地贴纸精挑（只在这一段上跑）
     if has_local {
-        run_sticker_choice_step(&mut one, subtitles, llm_cfg, project).await?;
+        run_sticker_choice_step(&mut one, subtitles, llm_cfg, project, cancel).await?;
     }
     // 与整片那条路同一批段级收尾：贴纸吸附最近字幕 + 画中画守卫
     crate::process::align_stickers_to_subtitles(&mut one, subtitles);
@@ -279,6 +283,7 @@ async fn run_sticker_choice_step(
     subtitles: &[Subtitle],
     llm_cfg: &LlmConfig,
     project: Option<&std::path::Path>,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     use crate::assets::sticker_index::{load_package_meta, tag_files};
     use crate::llm::events::{choose_sticker_files_batch, StickerChoiceContext};
@@ -317,6 +322,10 @@ async fn run_sticker_choice_step(
     }
 
     for (package_name, tag) in groups.keys() {
+        // 每个 (包, tag) 都是一次独立 LLM 调用：逐个查取消，别把剩下的成批发完
+        if cancel.as_ref().is_some_and(|c| c()) {
+            anyhow::bail!("任务已取消");
+        }
         let Some(meta) = load_package_meta(&root, package_name) else {
             tracing::warn!("  ⚠ 贴纸包 TOML 不存在: {package_name}.toml，跳过 Step2b");
             continue;

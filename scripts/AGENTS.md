@@ -12,12 +12,16 @@
 
 ### 门禁（改动必跑）
 
-- **`check_module_boundaries.py`** —— 边界门禁：14 条规则（P4 隔离 + 分层方向 + 前端边界），违规**非零退出**。
+- **`check_module_boundaries.py`** —— 边界门禁：15 条规则（14 条行级 + 1 条**成对判据**；P4 隔离 + 分层方向 + 前端边界），违规**非零退出**。
   覆盖：`downloader` 不许开子进程 / 不许知道 B站；`bilibili` 不许知道下载器；`net/` 不许知道 B站；
   `download_worker` 不许引用 `ingest_worker` / 不许有录播姬语义；`core` / `render-core` / `polish` 不许认识上层；
   `service` 不许认识 `server`；`server` 不许认识 `cli`；`cli` 只用 server 的入口；
   `components` 不许 import `views`；作用域查询串只在 `webui/src/api/` 里拼。
   **加规则的方法：往 `RULES` 表加一条 `(规则名, 相对路径列表, 正则, 为什么)`**（`why` 会在报错时打出来）。
+  ⚠️ **"用了 X 就必须同时有 Y"这类文件级约束加进 `PAIRED_RULES`**（`(规则名, 路径, trigger, need, why)`）：
+  行级正则表达不了跨行成对关系（`Agent::new(` 与 `with_cancel(` 本来就在不同行）。现有那条是
+  「批量 LLM 循环必须交出取消探针」。判据刻意做粗（文件级）—— 目的是别漏掉新的批量循环，不是精确到语句；
+  自证方法：临时放一个只含 `Agent::new(` 的文件进 `crates/vtrim-polish/src/llm/`，门禁应当 exit 1。
   用法：`python3 scripts/check_module_boundaries.py [-v]`。
 - **`check_module_map.py`** —— 模块卡门禁：读 `docs/module-map.json`（模块 id → 目录 → 卡 → verify），
   校验**覆盖率 / 预算 / 四节骨架 / 索引表一致 / ⚠️ 行数下限**，违规非零退出。
@@ -109,5 +113,5 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 ```
 
 两条都要求 **0 违规**：前者看模块结构（覆盖率 / 预算 / 骨架 / 索引一致 / ⚠️ 下限），
-后者看边界（14 条：分层方向 + P4 隔离 + 前端）。加/改规则后**一定重跑两条**——
+后者看边界（15 条：分层方向 + P4 隔离 + 前端 + 成对判据）。加/改规则后**一定重跑两条**——
 判据写错的表现是"看起来全过"，比报错更难发现；`-v` 会同时列出通过项。
