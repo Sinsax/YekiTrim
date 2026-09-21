@@ -101,7 +101,9 @@
     同项目/同片段的后续任务会全部排队饿死。新增任务入口时把 `(jobs, job_id)` 传进去。
     ⚠️ **两条兜底缺一不可**：panic（`catch_unwind`）与**线程都起不来**（`spawn.await` 之前就 `Err`）时，
     也必须替任务 `fail` —— 只 `tracing::error!` 就完了的话，Job 停在 Running 谁也查不出来。
-    注意 **release 构建是 `panic = "abort"`，panic 那条兜底在 release 里其实是失效的**，别指望它。
+    注意 **`[profile.release]` 不再设 `panic = "abort"`**（2026-09 改）：panic 那条兜底在 release 里
+    **真的会跑**，所以新增任务入口必须把 `(jobs, job_id)` 交给 `spawn_job` —— 否则 panic 会让 Job
+    永远停在 Running。别把 abort 加回去：单进程服务下那是"一个人搞挂所有人"。
   - 其余同类修复（一并照此维护）：`serve_file` 的元数据、`/api/media` 的归属校验 + `jail_existing`
     （播放会打出一串 Range 请求）、`polish_silence`/`polish_project_put`/`config_*_put`
     （`with_path_lock` 的闭包跑在当前线程，改成 `lock_path().await` + `blocking(...)`）、
@@ -122,7 +124,7 @@
 | 防线 | 位置 | 规矩 |
 |---|---|---|
 | ① polish body 字段收口 | `vtrim-server/src/scope.rs::enforce_scope` | body 里每个"会被 handler 拿去开文件"的字段都要在 `EXTRA_PATH_FIELDS` 名单里（`dir` / `output_file` / `source` / `cover.image`）。**新增此类字段必须同步加进名单**，漏一个就是一条任意文件读取。 |
-| ② 项目配置路径键 | `vtrim-server/src/api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` | `PUT /api/project-data/config` 的 `raw` 与 `patch` 两条分支都要过这张表（`input_file` 等 5 个 + `cutting.output_dir`）：非 admin 必须能 `jail_join` 进自己项目。**素材清单也在这条线上**：同一函数末尾的 `check_material_paths` 逐条校验 `[project.materials].{transcript,danmaku}[].path`（2026-09 预处理页的清单，漏了就成逃逸口）。`Workspace::resolve` 对**绝对路径原样放行**，所以校验只能在这里做。admin 豁免（用「服务器文件」建项目时 `input_file` 本来就是项目外的路径）。 |
+| ② 项目配置路径键 | `vtrim-server/src/api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` | `PUT /api/project-data/config` 的 `raw` 与 `patch` 两条分支都要过这张表（`input_file` 等 5 个 + `cutting.output_dir` + **`[ingest]` 的 `ytdlp_path`/`cookie_file`/`recorder.root`**）：非 admin 必须能 `jail_join` 进自己项目。`section` 支持点号路径（`ingest.recorder` 是两级表）。**素材清单也在这条线上**：同一函数末尾的 `check_material_paths` 逐条校验 `[project.materials].{transcript,danmaku}[].path`（2026-09 预处理页的清单，漏了就成逃逸口）。`Workspace::resolve` 对**绝对路径原样放行**，所以校验只能在这里做。admin 豁免（用「服务器文件」建项目时 `input_file` 本来就是项目外的路径）。 |
 | ③ 消费侧纵深防御 | `vtrim-polish/src/cover.rs` | 渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。 |
 
 ⚠️ 相关的两个既有约定也别松：`every /api/media` 走 `jail_existing`；`is_safe_component`

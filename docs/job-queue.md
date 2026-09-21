@@ -230,8 +230,11 @@ tick 保证其它任务不会因此永远不动（见 §7）：
 | 4 | **调度器自愈 tick**：`jobs::spawn_housekeeping` 每 `SCHED_TICK`(5s) 重跑一次调度 | 没人再触发调度器时，排队的任务停在原地等下一次 `create` |
 | 5 | **淘汰只吃"已终态且不再占资源"的**（`Job::evictable`） | 淘汰掉"已取消但协程没退出"的任务后，它的 `complete`/`fail` 会找不到 Job 直接 `return`：资源键不再被计入（两个任务可能同时写一个目录）**且**没人再触发调度器 |
 
-⚠️ 第 1 条在 **release 构建里其实是失效的**：`Cargo.toml` 的 `[profile.release] panic = "abort"`
-下 `catch_unwind` 永远不会返回 `Err`。别指望它，真正兜住的是 2/3/4。
+⚠️ 第 1 条**已经真正生效**（2026-09）：`Cargo.toml` 的 `[profile.release]` 去掉了 `panic = "abort"`，
+`catch_unwind` 现在能接住任务体的 panic 并替它 `fail`。在此之前的 release 构建里它是失效的
+（abort 不 unwind），真正兜住的只有 2/3/4。
+**别把 `panic = "abort"` 加回去**：server 是单进程，那等于"任何一个人的一次 panic 带走所有用户"。回归见
+`vtrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。
 
 **tick 还会点名**：有任务排队超过 `BLOCKED_WARN`(120s) 时打一条 warn，说明**谁被谁挡住、因为什么**
 （`blocked_report`：先按资源冲突找，找不到才是本档名额满 —— 两者的处置完全不同）。

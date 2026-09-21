@@ -45,7 +45,8 @@
 - 每个创建点（8 处，清单见 `docs/job-queue.md`）都必须先 `handle.wait_start()` 再干活 —— 排队期间被取消时它返回
   `Err`，**直接收工**。
 - **任务一定要有终态**（否则**永久**占着资源键与档位名额，同项目后续任务无声排队）：① 任务体 panic / 线程起不来 →
-  `api::spawn_job` 的兜底替它 `fail`（**release 构建是 `panic = "abort"`，panic 那条兜底其实是失效的**，别指望它）；
+  `api::spawn_job` 的兜底替它 `fail`（`[profile.release]` **不再** `panic = "abort"`，所以 panic 那条兜底真的会跑；
+  `api::tests::spawn_job_marks_job_failed_on_panic` 钉住它。**别再把 abort 加回去** —— 那等于一个人 panic 带走所有人）；
   ② **外部进程要有超时**：`cutting::cut_segment` 的 ffmpeg 走 `run_ffmpeg(cmd, timeout, what)`（按片长给
   `max(3×时长, 180s)`）。新增外部进程调用照这个来，别再写裸 `.output()`。
 - **调度器自愈 tick**：调度是事件驱动的，只要有人永远不返回就**没有任何事件**再触发它。`jobs::spawn_housekeeping`

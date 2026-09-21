@@ -48,7 +48,7 @@
   **不设 `Accept-Encoding`**：实测 B站**强制** deflate 且忽略 `identity`，默认值反而省事 ——
   手工解压见 `deflate::inflate`。
 - 客户端建不出来只可能是 TLS 后端起不来这种环境级问题：**降级为默认客户端 + warn 继续**，
-  让业务层拿到"请求失败"而不是在构造点 panic（release 是 `panic = "abort"`）。
+  让业务层拿到"请求失败"而不是在构造点 panic（构造点没有 `catch_unwind` 兜底，panic 会连累调用它的那个任务）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

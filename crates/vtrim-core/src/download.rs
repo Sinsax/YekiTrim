@@ -145,7 +145,10 @@ async fn download_model(target: &Path, model: &str) -> Result<()> {
         return Ok(());
     }
 
-    let archive = model_archive(model).unwrap();
+    // ⚠️ 别 `unwrap()`：`model_marker` 与 `model_archive` 是两张表，用户手改
+    // `[asr] model` 后完全可能只命中一张 —— 那是配置错误，该报错而不是 panic。
+    let archive = model_archive(model)
+        .ok_or_else(|| anyhow::anyhow!("未知模型: {}", model))?;
     let url = format!("{ASR_MODELS_BASE}/{archive}");
     tracing::info!("下载模型 {model} ...");
 

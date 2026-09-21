@@ -420,6 +420,10 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 4. **跨盘移动慢/写满** → `projects_root` 默认与 `recorder_root` 同盘（rename 瞬时）；跨盘必带水位预检与半成品清理；可切 `move_into_managed=false`。
 5. **源文件不释放 ⇒ 磁盘单调增长** → 靠全局/每用户上限 + 水位预检 + 手动删源 + 占用明细提示；这是既定策略，不做自动删除。
 6. **`panic = "abort"`** → 多用户下放大为"一个人搞挂所有人"：P5 增加 `catch_unwind` 兜底中间件并审计 handler 内 `unwrap/expect`；不想要兜底则明确接受该风险。
+   → **已按"要兜底"落地**（2026-09）：`[profile.release]` 去掉 `panic = "abort"`，`api::spawn_job` 的
+   `catch_unwind` 因此真正生效（回归：`api::tests::spawn_job_marks_job_failed_on_panic`）；单例下载 worker
+   加了 `catch_panic` + 替停摆任务收尾（`download_worker::fail_stuck_download_job`）；同时逐点消除了已知
+   可触发的 panic（切片越界、detached task 的 `unwrap`、锁中毒、`as_ref().unwrap()` 等）。
 
 ---
 

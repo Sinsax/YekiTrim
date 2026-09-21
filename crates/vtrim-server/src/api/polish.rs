@@ -1120,7 +1120,9 @@ pub(super) async fn polish_render_frame(
     let video_path = dir.join(&cfg.source.video);
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let mut slot = state.preview.0.lock().expect("preview slot poisoned");
+        // 锁中毒不该让单帧预览永久不可用（与 persist.rs / logbus.rs 同口径）：
+        // 以前这里 `.expect("preview slot poisoned")` 会把之后每一次预览请求都打成 panic。
+        let mut slot = state.preview.0.lock().unwrap_or_else(|e| e.into_inner());
         // 目录切换 / 首次请求：重建后端（wgpu 设备常驻复用）
         let rebuild = match slot.as_ref() {
             Some(b) => b.dir != dir,
