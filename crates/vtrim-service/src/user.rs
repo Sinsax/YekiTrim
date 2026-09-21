@@ -292,7 +292,10 @@ pub fn cmd_reset_admin_password(source: PasswordSource) -> Result<()> {
     println!("已重置管理员密码");
     if generated {
         let path = initial_password_path();
-        let _ = std::fs::write(&path, format!("{password}\n"));
+        // ⚠️ 写盘失败不能"看起来成功"：这是**刚生成**的新密码，只在终端打印一次，
+        // 文件是用户唯一的第二条退路（`--data-dir` 与测试都断言它存在）。
+        // 以前是 `let _ =`，写失败等于把新密码悄悄丢掉。
+        std::fs::write(&path, format!("{password}\n"))?;
         print_once(&password, "新的管理员密码");
         println!("已同步写入: {}", path.display());
     }
