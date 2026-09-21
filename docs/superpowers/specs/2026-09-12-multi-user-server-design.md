@@ -198,9 +198,31 @@
 - 关联规则：与视频**同 session / 同目录同前缀**的 `.xml`/`.ass`；写进项目 `vtrim.toml` 的 `danmaku_file`；缺失时项目仍可跑（只是失去 popularity 排序，前端明确提示）。
 
 ### 4.5 次要通道：B站链接转项目
+
+> ⚠️ **本节已被 2026-09-19 的落地实现取代，下面是历史设计**。两处关键前提经实测**被推翻**：
+> ①默认引擎不是 `bbdown` —— **BBDown 仓库已归档**（`archived: true`、默认分支被删、最后发布
+> 距今约 2 年），默认改为 **yt-dlp**（Unlicense，仍在日更）；
+> ②"让下载器直接出 ASS"**不应做** —— 弹幕改走**旁路**（按 `cid` 自己 GET
+> `comment.bilibili.com/{cid}.xml`），因为该 XML 与录播姬的**同构**、现有 `parse_bililive_xml`
+> 直接复用，而 ASS 要新解析器还会丢 mode/color 语义。
+> 权威文档：`docs/plan/p4-bilibili-downloader-selection.md`（选型）、
+> `docs/plan/p4-prerequisite-verification.md`（实测 T0–T10）、
+> `docs/plan/p4-implementation-plan.md`（S0–S7 落地）；硬规矩见 AGENTS.md「B站链接通道」。
+
 - `POST /api/ingest/resolve {url}` → `{video_id, title, duration, owner, parts[], cover, estimated_bytes, already_exists}`；确认后 `POST /api/projects {source:{kind:"bilibili", url|video_id, part_ids?, quality?}}`。
 - 下载器适配层：`[ingest] downloader = "bbdown"|"yt-dlp"|"<绝对路径>"`、`max_quality`、`rate_limit_kbps`、`max_concurrent_downloads=1`、`cookie_file`（仅 admin）；错误分类可读（`UnsupportedUrl/NeedLogin/MemberOnly/RateLimited/ToolMissing/DiskFull`）。
 - 分P 默认每 P 一个项目；弹幕优先让下载器直接出 ASS，否则走 §4.4 的解析路径。
+
+**落地后的实际形态（以代码为准）**：
+
+| 项 | 设计（本节原文） | 实际落地 |
+|---|---|---|
+| 端点 | `POST /api/ingest/resolve` + `POST /api/projects` | `POST /api/ingest/resolve` + **`POST /api/ingest/bilibili`**（一次提交可勾多个 P，逐 P 建会话） |
+| 默认引擎 | `bbdown` | **`yt-dlp`**（`"yt-dlp"` = 内置；其它值 = 自备绝对路径逃生舱） |
+| 调用形态 | 未指定 | **按任务 spawn 的 sidecar 子进程**，跑完即退（非嵌入、非常驻） |
+| 弹幕 | 下载器出 ASS | **旁路**：view API 拿 `cid` → 自 GET XML → 现有解析器复用 |
+| 分P | 每 P 一个项目 | 同左，但**默认只选第 1 P**（23P 全下会直接撑爆 P5 的配额） |
+| 就绪位 | `ingest_ready` | 保持；另加 `POST /api/admin/downloader/{install,status}` |
 
 ## 5. 存储与隔离
 

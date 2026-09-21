@@ -4,16 +4,19 @@
 
 ## 进行中：多用户服务（账号隔离 + 录播姬接入）
 
-⚠️ **不是"远期目标"** —— 本节的 P1 / P2 / P3 + 邀请码自助注册**已全部落地**
-（进度表见 AGENTS.md「多用户服务」一节；代码在 `crates/vtrim-service` + `crates/vtrim-server`）。
-只剩 P4（B站链接，设计稿自己标为"次要通道"）与 P5（容量与运维）。
+⚠️ **不是"远期目标"** —— 本节 P1 / P2 / P3 + 邀请码自助注册**已全部落地**，
+**P4（B站链接通道）也已落地**（2026-09-19；选型/实测/计划见 `docs/plan/p4-*.md`，
+硬规矩见 `crates/vtrim-service/src/bilibili/AGENTS.md`、`.../downloader/AGENTS.md` 与
+`crates/vtrim-server/AGENTS.md`（`download_worker`））。
+只剩 **P5（容量与运维）**。
 2026-09-18 的结构前置（`server/` → `vtrim-service` + `vtrim-server` 两个 crate，
 `api.rs` 按领域拆成 `api/` 模块树）已完成，见 `docs/plan/service-direction-review.md`。
 
 把 `vtrim server` 从"单机单用户"改造为"单机多账号"（≤10 人）：**部署即生成管理员账号与初始密码**，
 **单人/多人共用同一套认证逻辑（无免登录，本机也要登录）**，唯一门槛是"对外监听要求已改初始密码"；
 项目按账户隔离、平台统一 LLM key/模型与全局并发上限、**对接录播姬**（录制完成 webhook 自动
-入库并跑管线，多分片会话自动聚合、XML 弹幕直解）、B站链接转项目（次要通道）、
+入库并跑管线，多分片会话自动聚合、XML 弹幕直解）、B站链接转项目（粘贴链接 →
+解析预览 → 勾选分P → yt-dlp 下载 → 弹幕旁路自取 → 自动建项目，与录播姬产物同构）、
 只限制最大磁盘空间（**源录播不自动释放**，仅在项目页手动删源）。
 
 - 完整设计（决策记录、现状冲突点、里程碑 P1–P5、测试与验收、风险与回滚）：
@@ -21,7 +24,7 @@
 - 地基已完成（2026-09-12 提交 `ba1dafb`、`5e9d4c0`）：JSON 404 兜底、单活动任务与协作式取消、
   SSE 历史回放、Range/路径校验、`filelock` 串行化、`webui/dist` 入库——见设计稿 §13。
   （「单活动任务」后来先放宽成"资源域互斥 + 单一并发上限 3"，再细化为**三档闸门 + 前后台优先级**
-  ——轻活不排队、略重/重活各有名额，见 AGENTS.md「任务模型」与 `vtrim-server/src/jobs.rs`。）
+  ——轻活不排队、略重/重活各有名额，见 `crates/vtrim-server/AGENTS.md`（任务队列）与 `vtrim-server/src/jobs.rs`。）
 
 ## 高优先级
 

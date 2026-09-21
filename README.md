@@ -22,11 +22,18 @@
 │   └── xtask/             # 构建 / 打包 / 产物门禁（cargo xtask scan|package）
 ├── webui/                 # WebUI 源码（Vue 3 + Vite）；webui/dist 是服务端唯一界面来源，已入库
 ├── docs/                  # 设计稿 / 计划 / 发行说明；docs/archived 是历史设计文档
-├── AGENTS.md              # 工程约定（改代码前先读）
+├── AGENTS.md              # 工程约定（**路由页**：全局不变式 + 模块索引 + 改代码协议）
+├── docs/module-map.json   # 模块结构注册表：模块 → 目录 → 模块卡 → 验证命令
 ├── ROADMAP.md             # 待排期功能
 ├── Cargo.toml / Cargo.lock
 └── vtrim.toml             # 项目配置 (gitignored)
 ```
+
+> **改代码前先读对应模块目录的 `AGENTS.md`**：全局规矩在根 `AGENTS.md`（路由页），
+> 每个模块的"职责 / 入口 / 边界 / 验证"在它自己目录的卡里（清单见
+> `docs/module-map.json` 与根 `AGENTS.md` 的模块索引表）。改完跑两条门禁：
+> `python3 scripts/check_module_map.py`（结构/覆盖率/预算）与
+> `python3 scripts/check_module_boundaries.py`（分层与前端边界）。
 
 ## 快速开始
 
@@ -324,9 +331,13 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ```toml
 [storage]
-projects_root = "D:/vtrim-projects"        # 托管项目目录（默认 <exe_dir>/.vtrim/projects）
+projects_root = "D:/vtrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.vtrim/projects）
 local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 ```
+
+- **B站下载、录播姬入库、本机导入落的是同一个根**：`<projects_root>/users/<uid>/<房间或 BV 号>/<时间戳>-<pid>/`
+  （没有单独的"下载目录"）。这一项也能在设置页「B站链接下载 → 项目存放位置」里改，
+  改动**只影响新建项目**，已有项目仍在原位置，且改完立即生效、不用重启。
 
 - 目标目录里**已有 `vtrim.toml`** 时只登记/打开，**不会覆盖**（保护手改过的工程设置）；
 - 普通用户**只能用**自己的 `<projects_root>/users/<uid>`，`/api/fs/list` 与 `kind="local"`
@@ -390,7 +401,8 @@ http://<本机IP>:26320/api/ingest/bililive/<token>
 - 该端点**自带 token 鉴权、不要求登录**（录播姬只能填 URL，无法加自定义头）；
   收到事件只做"验 token → EventId 去重 → 落库"然后立即 2xx，重活交给后台入库 worker。
 - 未映射的房间进「待分配池」，由管理员在 `#/ingest` 指派；指派后自动继续入库。
-- 入库前做磁盘水位/配额预检，不足会明确拒绝（文案含"预计需要/可用"），**绝不自动删数据**。
+- 入库前做磁盘水位/配额预检，不足会明确拒绝（文案含"本次需要/磁盘可用/需保留底线"），**绝不自动删数据**。
+  水位换算出的保留量被钳在 512 MiB ~ 8 GiB，所以"大容量但已用掉大半"的数据盘不会连几 MB 的入库都拒。
 - 弹幕：录播姬写的 `.xml` 会被直接解析（无需 DanmakuFactory），随片搬进项目并写进 `vtrim.toml`。
 
 ---
@@ -557,12 +569,16 @@ cargo test -p vtrim-cli                  # vtrim-server 单测（JobManager / Ra
 cargo test -p vtrim-core --lib           # 管线与配置单测
 cargo run -- status                      # 查看当前进度
 node webui/scripts/check-overlay.mjs     # 覆盖层色档契约：templates/index.html ↔ engine.js 对拍
+node webui/scripts/check-caption-wrap.mjs    # 竖屏折行契约（wrapCaptionParts 两份实现）
+node webui/scripts/check-sticker-anchor.mjs  # 贴纸锚点/尺寸契约（锚点=盒子左上、position=中心）
+node webui/scripts/check-cover-stage.mjs     # 封面舞台契约（设计器黑边覆盖 + 恒横版画布 + 模糊数字同源）
 cd webui && npm install && npm run build # 改 webui/src 后必须重建（dist 已入库）
 cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
 ```
 
 > 依赖方向是**单向**的：`vtrim-service` 绝不 `use vtrim_server::*`；`vtrim-server` 只依赖
-> `vtrim-service`。细节与踩坑记录见 [AGENTS.md](AGENTS.md)。
+> `vtrim-service`。细节与踩坑记录见各模块目录的 `AGENTS.md`（清单见
+> [docs/module-map.json](docs/module-map.json) 与 [AGENTS.md](AGENTS.md) 的模块索引表）。
 
 ## 许可
 
