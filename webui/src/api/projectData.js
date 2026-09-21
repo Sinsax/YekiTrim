@@ -5,14 +5,34 @@
 import { api } from './client'
 import { scopeQ } from './scope'
 
+/**
+ * **原始路径**（不含 HTTP 调用）：给两类调用方用 ——
+ * ① 需要自己当 URL 的（缩略图 `<img :src>`、`<video :src>`，cookie 自动带上）；
+ * ② 需要"读失败保留上一次快照"的读取（`apiOr(path, fallback, label)`）。
+ *
+ * ⚠️ 它存在的理由就是**让视图不用自己拼作用域**：`scopeQ` 只允许出现在 `api/` 里，
+ * 门禁会卡 `views/`、`components/`、`stores/`、`composables/` 与 `router.js` 里的
+ * `scopeQ(` / `scopeQuery(`。新增端点时**在这里加一条**，别在调用点手拼。
+ */
+export const paths = {
+  status: (pid) => `/api/project-data/status?${scopeQ(pid)}`,
+  clips: (pid) => `/api/project-data/clips?${scopeQ(pid)}`,
+  polishMap: (pid) => `/api/project-data/polish?${scopeQ(pid)}`,
+  config: (pid) => `/api/project-data/config?${scopeQ(pid)}`,
+  thumb: (pid, rank) =>
+    `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${scopeQ(pid)}`
+}
+
 export const projectData = {
+  /** 原始路径集合（见 `paths` 的说明） */
+  paths,
   // 读取类都收一个 `label`（业务说明，如「读取事件列表」）：失败时它会进
   // 控制台与设置页「运行日志」，否则 `.catch(() => [])` 一兜就什么都查不到了。
-  status: (pid, label) => api(`/api/project-data/status?${scopeQ(pid)}`, { label }),
+  status: (pid, label) => api(paths.status(pid), { label }),
   events: (pid, label) => api(`/api/project-data/events?${scopeQ(pid)}`, { label }),
-  clips: (pid, label) => api(`/api/project-data/clips?${scopeQ(pid)}`, { label }),
-  polishMap: (pid, label) => api(`/api/project-data/polish?${scopeQ(pid)}`, { label }),
-  config: (pid, label) => api(`/api/project-data/config?${scopeQ(pid)}`, { label }),
+  clips: (pid, label) => api(paths.clips(pid), { label }),
+  polishMap: (pid, label) => api(paths.polishMap(pid), { label }),
+  config: (pid, label) => api(paths.config(pid), { label }),
   transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),
 
   /**
@@ -46,7 +66,7 @@ export const projectData = {
     }),
 
   /** 切片缩略图 URL（`<img :src>`/`<video :src>` 直接用，cookie 自动带上） */
-  thumbUrl: (pid, rank) => `/api/project-data/clips/${encodeURIComponent(rank)}/thumb?${scopeQ(pid)}`,
+  thumbUrl: (pid, rank) => paths.thumb(pid, rank),
 
   correct: (pid) => api(`/api/project-data/correct?${scopeQ(pid)}`, { method: 'POST' }),
 
