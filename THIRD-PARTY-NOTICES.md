@@ -62,6 +62,11 @@
 | Qwen3-ASR 模型 | 随上游（Qwen） | 同上，`hybrid` 模式的填词模型。 |
 | 模型/VAD 文件来源 | — | `github.com/k2-fsa/sherpa-onnx` 的 `asr-models` / `hr-files` release 产物。当前**未做校验和/签名校验**。 |
 | Noto Emoji | Apache-2.0（部分 CC-BY 4.0） | 封面 emoji 特效按需从 `fonts.gstatic.com` 拉取。 |
+| **yt-dlp** | **Unlicense**（公有领域） | B站链接通道的下载引擎。由管理员在设置页一键触发，从 `github.com/yt-dlp/yt-dlp` 官方 release 下载 **`yt-dlp.exe`** 到 `<exe同级>/.vtrim/bin/` —— **不随仓库、不随发行包分发**，所以不产生再分发义务（`cargo xtask scan` 也扫不到它）。内置引擎**钉死版本与 sha256**（`vtrim_service::downloader::registry`，当前 `2026.08.19`；实测与官方 `SHA2-256SUMS` 逐字节一致）。⚠️ 目前**只有 Windows 那份带 sha256**，其它平台禁止自动下载、需管理员用 `[ingest] ytdlp_path` 指定自备副本。 |
+
+> ⚠️ **`[ingest] downloader` 的逃生舱**：把它填成其它值时，V-Trim 会用用户自备的「yt-dlp 兼容」
+> 可执行文件（绝对路径）。那份东西**与本项目无关、也不由本项目分发**，因此不在本文档的声明范围内；
+> 使用者需自行确认其授权与合规性。
 
 ## 四、前端与渲染侧引用
 

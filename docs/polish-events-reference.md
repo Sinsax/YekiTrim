@@ -23,7 +23,7 @@
 
 | type | 类别 | 主要参数 | `end - time` | 编辑器可改 |
 |---|---|---|---|---|
-| `camera` | 持续 · 运镜 | `zoom`(远/中/近)、`anchor`/`anchor_to`、`origin`/`to_origin`、`cut` | 事件自带（秒） | 时间/起止/类型/zoom/anchor/anchor_to/cut/配音 |
+| `camera` | 持续 · 运镜 | `zoom`(远/中/近)、`anchor`/`anchor_to`、`origin`/`to_origin`、`cut`、`handheld` | 事件自带（秒） | 时间/起止/类型/zoom/anchor/anchor_to/cut/handheld/配音 |
 | `sticker` | 持续 · 贴纸 | `keyword`、`sticker_tag`、`name`、`source`、`x`、`y`、`sfx`、`sfx_volume` | 1.5~2.5s（prompt 建议；process 可延长到后一条字幕结束，≤ +50%） | 时间/起止/keyword→贴纸两级列表/配音 |
 | `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient)、`color`、`opacity`、`colors[]`、`shape`(linear/radial) | 0.5~5s（prompt 建议） | 时间/起止/类型/颜色/渐变/不透明度/形状/配音 |
 | `sfx` | 点 · 音效 | `name`(音效 id)、`volume`、`end` | 缺省 = 文件原始长度 | 时间/起止/音效列表/音量 |
@@ -69,6 +69,7 @@ anchor_to = "danmaku"  # 可省；写了就是「从 anchor 移到 anchor_to」
 origin = "83.33% 50%"  # 由 anchor 解析回填；也可直接手写坐标
 to_origin = "16.67% 16.67%"  # 由 anchor_to 解析回填
 cut = true           # 可省；硬切（切镜）—— 瞬间换构图，不做 0.6s 推移
+handheld = true      # 可省；手持摇摆（附加变种）—— 只在 zoom = "近" 上有效
 ```
 
 - **两种写法，别混**：写 `anchor`/`anchor_to` 是「意图」，`process`（Step 2d）解析成 `origin`/`to_origin`，
@@ -79,7 +80,7 @@ cut = true           # 可省；硬切（切镜）—— 瞬间换构图，不�
 - `zoom` 只是**档位名**，实际倍率来自 `polish.toml [style.camera]`：
   `zoom_mid = 1.3`（中）、`zoom_close = 1.5`（近）、`zoom_wide = 0.55`（远，小于 1 = 画面缩小）。
   **四条路径共用 `CameraStyle::factor` 这一张表**（模板 canvas = 出片权威 / 模板 GSAP / `engine.js`，
-  外加 wgpu 的 `timeline.rs` —— 那条未启用，见 AGENTS.md「wgpu 真渲染」）；
+  外加 wgpu 的 `timeline.rs` —— 那条未启用，见 `crates/vtrim-render-core/AGENTS.md`（wgpu 真渲染））；
   这里曾经只有模板 canvas 硬编码 1.5/1.8，导致配置对成片无效、预览与成片不是一回事。
   **放大档位不会「推出框」**：运镜是绕不动点做 `scale`，`s ≥ 1` 时画面四周一律向外扩张
   （`overflow:hidden` 裁掉多出来的部分），任何倍率都盖满整个画面，不可能露出背景色/背景层；
@@ -127,10 +128,28 @@ cut = true           # 可省；硬切（切镜）—— 瞬间换构图，不�
   三处求值器都读了它（模板 canvas / 模板 GSAP / `engine.js`），贴纸避让侧走
   `placement::transition_secs(label, prev, cut)` → `transition = 0`，
   否则会按 0.6s 过渡凭空多算一个早已结束的旧状态当障碍。
-- 过渡：`min((end-time)*0.5, 0.6)` 秒，`pow2Out` 曲线；**竖屏（`vertical = true`）完全不运镜**。
+- **手持摇摆 `handheld = true`（附加变种，用户要求）**：把相机换成「手持」——低频位移
+  （横 ≈±9.5px / 纵 ≈±7.4px @1920 基准，主次两路正弦不成整数比，避免钟摆感）+ 轻微倾斜
+  （≈±0.48°，绕**聚焦中心**）+ 呼吸缩放（≈±0.7%），**叠加在当前景别之上**。
+  参数表是唯一真源：`render-core::types::handheld_sway`（两个 JS 副本
+  `templates/index.html::handheldSway` / `engine.js::handheldSway` 由
+  `webui/scripts/check-handheld.mjs` 对拍，Rust↔JS 由 `timeline.rs` 的采样测试钉住）。
+  波形是**纯 `t` 的函数**：跳帧 / seek / 并行求值结果一致。
+  - 与 `zoom` 同一套**状态机**：它也是持续状态 —— 从这条运镜起生效、一直跟到下一条运镜
+    （交回稳镜头就再写一条不带它的运镜）；幅度起停复用该事件的过渡窗口，`cut` 即瞬变。
+    与 `zoom` 一样**分量在段间按时间序求值**（不是文件序）。
+  - ⚠ **只有近景（`zoom = "近"`）可用**：可选能力、**不自动补**。`process` 的
+    `fx::cap_handheld_sway` 把非近景上的 `handheld` 直接剔除（只剥不补、幂等；
+    排在画中画收工**之后**，回镜头承接的值一起吃守卫，日志报条数）。
+    LLM prompt 只写「近景专用」的口径，真正的兜底是这道守卫。
+  - 编辑器：运镜面板「手持摇摆」开关（**非近景置灰**）、块标签前缀「摇·」；
+    景别改离近景时面板会顺带剥掉这个字段（与守卫同语义，避免悬空开关）。
+  - 参数固定：不开放 `[style.camera]` 旋钮，也没有事件级强弱。
+- 过渡：`min((end-time)*0.5, 0.6)` 秒，`pow2Out` 曲线；**竖屏（`vertical = true`）完全不运镜**，
+  手持摇摆跟着整条运镜一起屏蔽（幅度归零，四条求值路径都是）。
 - 分段被屏蔽区间切开、或截断到视频长度时，运镜的 `end` 会被夹到段尾（`clamp_camera_end`）——
   不夹的话位移会移到段外。
-- 编辑器：时间轴「运镜」泳道可拖 / 左右缘缩放；属性面板可改 `type/time/end/zoom/anchor/anchor_to/cut`；
+- 编辑器：时间轴「运镜」泳道可拖 / 左右缘缩放；属性面板可改 `type/time/end/zoom/anchor/anchor_to/cut/handheld`；
   **`[style.camera]` 的三个倍率仍然只能手改 `polish.toml`**。
   想让运镜对准人物 → 右栏「区域编辑 → 人物」框选（写 `layout.liver.top_left/bottom_right`），
   锚点或默认运镜都会读它。
