@@ -14,6 +14,17 @@
 //! 7. 建项目 + 按 `auto_pipeline`（none|transcribe|detect|cut）自动跑管线。
 //!
 //! 任何一步失败都回滚刚建的托管目录并把会话标为 `failed`（错误文案直接给用户看）。
+//!
+//! ## 与 B站下载通道（`download_worker`）的边界
+//!
+//! 两者**不许互相调用**。共用的东西已经按用途分流（计划 §2）：
+//! - 水位/配额预检 → `vtrim_service::ingest::capacity`
+//! - 建项目 + 登记 → `vtrim_service::ingest::landing`
+//! - 起管线 → `crate::pipeline_boot`
+//!
+//! 留在这里的是**录播姬独有**的语义：待分配池、`is_finalized` 空闲窗口、
+//! 多分片合并、从录像目录搬文件。B站是"用户主动提交、进程退出即完结、下载器直接
+//! 写进托管目录"，这些一个都用不上。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -22,50 +33,13 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::mpsc;
 
-use vtrim_service::db::{Db, IngestSessionRow};
-use vtrim_service::{disk, projects};
+use vtrim_service::db::IngestSessionRow;
+use vtrim_service::ingest::{capacity, landing};
+use vtrim_service::projects;
+
+use crate::pipeline_boot::{spawn_pipeline, Pipeline};
 
 use super::model::AppState;
-
-/// 自动策略档位。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Pipeline {
-    None,
-    Transcribe,
-    Detect,
-    Cut,
-}
-
-impl Pipeline {
-    pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "none" | "" => Pipeline::None,
-            "transcribe" => Pipeline::Transcribe,
-            "cut" => Pipeline::Cut,
-            _ => Pipeline::Detect,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Pipeline::None => "none",
-            Pipeline::Transcribe => "transcribe",
-            Pipeline::Detect => "detect",
-            Pipeline::Cut => "cut",
-        }
-    }
-
-    /// 管线阶段（`resume` 会跳过已有输出的阶段）。
-    pub fn stages(self) -> Vec<String> {
-        let names: &[&str] = match self {
-            Pipeline::None => &[],
-            Pipeline::Transcribe => &["extract", "transcribe"],
-            Pipeline::Detect => &["extract", "transcribe", "detect"],
-            Pipeline::Cut => &["extract", "transcribe", "detect", "cut"],
-        };
-        names.iter().map(|s| s.to_string()).collect()
-    }
-}
 
 type Notify = mpsc::Sender<Option<String>>;
 
@@ -516,73 +490,6 @@ fn file_size(p: &Path) -> u64 {
     std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
 }
 
-/// 水位/配额预检（§7）：不足一律报错，**绝不自动删用户数据**。
-///
-/// 阈值全部来自传入的 `cfg`（而不是在这里重新读全局配置）：调用方拿的是同一份快照，
-/// 测试也能构造确定性的阈值。
-fn check_capacity(
-    db: &Db,
-    owner_id: i64,
-    incoming: u64,
-    target_dir: &Path,
-    cfg: &vtrim_core::config::Config,
-) -> Result<()> {
-    // 每用户配额（users.quota_bytes 优先，其次 [storage] default_quota_bytes）
-    let user_quota = db
-        .find_user_by_id(owner_id)?
-        .map(|u| u.quota_bytes.max(0) as u64)
-        .filter(|q| *q > 0)
-        .or_else(|| {
-            let q = cfg.storage.default_quota_bytes;
-            if q > 0 {
-                Some(q)
-            } else {
-                None
-            }
-        });
-    if let Some(quota) = user_quota {
-        let used = db
-            .storage_summary(Some(owner_id))?
-            .first()
-            .map(|(_, b)| *b)
-            .unwrap_or(0);
-        if used + incoming > quota {
-            bail!(
-                "入库被拒绝：本账号配额不足（预计需要 {}，可用 {}）；请删除部分项目的源录播后重试",
-                disk::human_bytes(incoming),
-                disk::human_bytes(quota.saturating_sub(used))
-            );
-        }
-    }
-
-    // 全局上限
-    let max_disk = cfg.storage.max_disk_bytes;
-    if max_disk > 0 {
-        let used: u64 = db.storage_summary(None)?.iter().map(|(_, b)| *b).sum();
-        if used + incoming > max_disk {
-            bail!(
-                "入库被拒绝：服务端磁盘上限已达（预计需要 {}，可用 {}）；请在存储页删除部分项目的源录播",
-                disk::human_bytes(incoming),
-                disk::human_bytes(max_disk.saturating_sub(used))
-            );
-        }
-    }
-
-    // 磁盘水位：可用空间低于 disk_watermark_pct% 就拒绝
-    if let Some((avail, total)) = disk::space_bytes(target_dir) {
-        let pct = cfg.storage.disk_watermark_pct.min(99) as u64;
-        let floor = total / 100 * pct;
-        if avail.saturating_sub(incoming) < floor {
-            bail!(
-                "入库被拒绝：目标磁盘剩余空间不足（预计需要 {}，可用 {}，水位 {}%）；请先清理磁盘",
-                disk::human_bytes(incoming),
-                disk::human_bytes(avail),
-                pct
-            );
-        }
-    }
-    Ok(())
-}
 
 /// 把文件搬进项目目录：同盘 `rename`，跨盘 `copy + 校验 + 删源`。
 fn move_file(src: &Path, dst: &Path) -> Result<()> {
@@ -713,7 +620,7 @@ async fn ingest_one(
     };
 
     // 2) 水位/配额预检（在建目录之前）
-    check_capacity(db, owner_id, incoming, &project_root, cfg)?;
+    capacity::check_capacity(db, owner_id, incoming, &project_root, cfg)?;
 
     // 3) 落位（失败时清掉刚建的托管目录）
     let created_dir = cfg.ingest.recorder.move_into_managed;
@@ -803,16 +710,7 @@ async fn ingest_into(
             .ok_or_else(|| anyhow!("录像文件名异常"))?
     };
 
-    // 4) 建项目 + 登记
-    let config_path = project_root.join("vtrim.toml");
-    vtrim_core::config::write_project_config(
-        &config_path,
-        Path::new(&input_name),
-        danmaku_rel.as_deref().map(Path::new),
-        None,
-    )
-    .context("写 vtrim.toml 失败")?;
-
+    // 4) 建项目 + 登记（**共用逻辑已下沉**：`vtrim_service::ingest::landing`）
     let name = session
         .room_id
         .clone()
@@ -822,33 +720,26 @@ async fn ingest_into(
         "录播姬 · 房间 {}",
         session.room_id.clone().unwrap_or_else(|| "-".into())
     );
-    let existing = db.project_by_config(&config_path)?;
-    let project_id = match existing {
-        Some(p) => p.id,
-        None => db.create_project(
+    let landed = landing::land_project(
+        db,
+        &landing::ProjectLanding {
             owner_id,
-            &name,
-            session.room_id.as_deref(),
-            "recorder",
-            Some(&label),
+            name,
+            source_kind: "recorder",
+            source_label: Some(&label),
+            room: session.room_id.as_deref(),
             project_root,
-            &config_path,
-            Some(&session.session_id),
-        )?,
-    };
-    if let Ok(Some(p)) = db.project_by_id(project_id) {
-        let _ = projects::refresh_bytes(db, &p);
-    }
-    db.set_ingest_project(&session.session_id, project_id)?;
-    let _ = db.audit(
-        Some(owner_id),
-        "ingest_project",
-        &format!("session={} project={project_id}", session.session_id),
-    );
+            input_file: &input_name,
+            danmaku_file: danmaku_rel.as_deref(),
+            session_id: Some(&session.session_id),
+        },
+    )?;
+    let project_id = landed.project_id;
     tracing::info!(
-        "入库完成: session={} → project={project_id}（{} 个文件，合并={concat}）",
+        "入库完成: session={} → project={project_id}（{} 个文件，合并={concat}，新建={}）",
         session.session_id,
-        moved.len()
+        moved.len(),
+        landed.created
     );
 
     // 5) 自动管线
@@ -859,70 +750,22 @@ async fn ingest_into(
             .unwrap_or(cfg.ingest.recorder.auto_pipeline.as_str()),
     );
     if pipeline != Pipeline::None {
-        spawn_pipeline(state, owner_id, project_id, config_path, pipeline).await;
+        spawn_pipeline(
+            state,
+            owner_id,
+            project_id,
+            landed.config_path,
+            pipeline,
+            "入库后自动处理",
+        )
+        .await;
     }
     Ok(project_id)
-}
-
-/// 启动自动管线任务（新项目 + 自己的 job）。
-///
-/// 与手动任务同规则：资源域冲突（同项目在跑别的任务 / 转写撞模型下载）就**排队**，
-/// 不再因为"别的项目有任务在跑"而整条跳过。
-async fn spawn_pipeline(
-    state: &Arc<AppState>,
-    owner: i64,
-    project_id: i64,
-    config_file: PathBuf,
-    pipeline: Pipeline,
-) {
-    let stages = pipeline.stages();
-    if stages.is_empty() {
-        return;
-    }
-    let kind = format!("ingest_{}", pipeline.as_str());
-    let keys = super::scope_key::pipeline_keys(project_id, &stages);
-    // 后台优先级：入库自动管线排在用户点按的任务后面（同档内），不抢占已经在跑的。
-    // 档位按阶段判定，与手动触发同一条规则 —— 入库的转写同样是重活。
-    let class = super::jobs::JobClass::for_pipeline(&stages);
-    let handle = state
-        .jobs
-        .create(
-            owner,
-            super::jobs::JobSpec::new(kind.clone(), "入库后自动处理", keys, class).background(),
-        )
-        .await;
-    let job_id = handle.id.clone();
-    state.jobs.attach_project(&job_id, project_id).await;
-    let jobs = state.jobs.clone();
-    let cancel = state.jobs.cancel_token(&job_id).await;
-    let job_for_task = job_id.clone();
-    // 自动管线是整段同步代码（转写分钟级）→ 专用任务线程，别占 HTTP worker
-    crate::api::spawn_job(jobs.clone(), job_for_task.clone(), move || async move {
-        if handle.wait_start().await.is_err() {
-            jobs.complete(&job_for_task).await;
-            return;
-        }
-        let result = crate::api::core::run_stages(
-            config_file,
-            stages,
-            false,
-            true,
-            job_for_task.clone(),
-            jobs.clone(),
-            cancel,
-        )
-        .await;
-        match result {
-            Ok(()) => jobs.complete(&job_for_task).await,
-            Err(e) => jobs.fail(&job_for_task, format!("{e:#}")).await,
-        }
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vtrim_service::db::{Db, IngestSessionRow};
 
     fn session(state: &str, opened: &[&str], closed: &[&str], last: i64) -> IngestSessionRow {
         IngestSessionRow {
@@ -939,20 +782,9 @@ mod tests {
             auto_pipeline: None,
             error: None,
             created_at: 0,
+            kind: "recorder".into(),
+            source_ref: None,
         }
-    }
-
-    #[test]
-    fn pipeline_levels_map_to_stages() {
-        assert!(Pipeline::parse("none").stages().is_empty());
-        assert_eq!(Pipeline::parse("transcribe").stages(), vec!["extract", "transcribe"]);
-        assert_eq!(
-            Pipeline::parse("detect").stages(),
-            vec!["extract", "transcribe", "detect"]
-        );
-        assert_eq!(Pipeline::parse("cut").stages().len(), 4);
-        // 未知值按默认 detect
-        assert_eq!(Pipeline::parse("whatever"), Pipeline::Detect);
     }
 
     #[test]
@@ -971,68 +803,4 @@ mod tests {
         assert!(is_finalized(&session("closing", &["a.flv", "b.flv"], &["a.flv"], 9_000), 5, 10_000));
     }
 
-    #[test]
-    fn capacity_precheck_reports_quota_shortage() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
-        let uid = db.create_user("alice", "h", "user", false, 1000).unwrap();
-        db.create_project(
-            uid,
-            "p",
-            None,
-            "local",
-            None,
-            dir.path(),
-            &dir.path().join("vtrim.toml"),
-            None,
-        )
-        .unwrap();
-        db.update_project_bytes(1, 900, 0).unwrap();
-        // 测试里关掉磁盘水位（CI 卷可能本来就在水位线以下），只验配额逻辑
-        let mut cfg = vtrim_core::config::Config::default();
-        cfg.storage.disk_watermark_pct = 0;
-
-        let err = check_capacity(&db, uid, 500, dir.path(), &cfg).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("预计需要"), "{msg}");
-        assert!(msg.contains("可用"), "{msg}");
-        // 配额内放行
-        assert!(check_capacity(&db, uid, 50, dir.path(), &cfg).is_ok());
-    }
-
-    #[test]
-    fn capacity_precheck_enforces_global_max_and_watermark() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
-        let uid = db.create_user("bob", "h", "user", false, 0).unwrap();
-
-        // 全局上限 100 字节 → 入库 200 字节被拒
-        let mut cfg = vtrim_core::config::Config::default();
-        cfg.storage.disk_watermark_pct = 0;
-        cfg.storage.max_disk_bytes = 100;
-        let err = format!("{:#}", check_capacity(&db, uid, 200, dir.path(), &cfg).unwrap_err());
-        assert!(err.contains("磁盘上限"), "{err}");
-
-        // 水位 100% → 永远拒绝（可用空间不可能 ≥ 全盘）
-        cfg.storage.max_disk_bytes = 0;
-        cfg.storage.disk_watermark_pct = 100;
-        let err = format!("{:#}", check_capacity(&db, uid, 1, dir.path(), &cfg).unwrap_err());
-        assert!(err.contains("水位"), "{err}");
-
-        // 水位 0 → 放行
-        cfg.storage.disk_watermark_pct = 0;
-        assert!(check_capacity(&db, uid, 1, dir.path(), &cfg).is_ok());
-    }
-
-    #[test]
-    fn recorder_path_is_jailed() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("rec");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("a.flv"), b"x").unwrap();
-        assert!(resolve_recorder_path(&root, "a.flv").is_ok());
-        assert!(resolve_recorder_path(&root, "../outside.flv").is_err());
-        assert!(resolve_recorder_path(&root, "C:\\Windows\\notepad.exe").is_err());
-        assert!(resolve_recorder_path(&root, "missing.flv").is_err());
-    }
 }

@@ -91,7 +91,11 @@ pub(super) async fn projects_list(
 ///
 /// 目前只支持 `source.kind = "local"`（**仅 admin**，§0.2.7：单人/本机部署保留
 /// "服务器端已有文件"来源，路径囚笼在租户根内，**永不接受上传**）。
-/// `recorder`（录播姬入库）在 P3、`bilibili` 在 P4 接入。
+///
+/// ⚠️ `recorder` / `bilibili` **不该走这个端点**：它们建项目的时间点不是"用户点新建"，
+/// 而是**素材落位之后**（`ingest_worker` / `download_worker` 里调
+/// `vtrim_service::ingest::landing`）。在这里放行只会建出一个**没有视频的空项目**。
+/// 提交入口在 `POST /api/ingest/bilibili`。
 pub(super) async fn projects_create(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
@@ -101,10 +105,18 @@ pub(super) async fn projects_create(
     let kind = source.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     match kind {
         "local" => {}
-        "recorder" | "bilibili" => {
+        "bilibili" => {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                "该来源尚未开放（录播姬在 P3、B站链接在 P4）；当前请用「服务器本机文件」（admin）",
+                "B站链接请用「B站链接」提交入口（POST /api/ingest/bilibili）：\
+                 下载完成后会自动建项目，不在这里建",
+            ))
+        }
+        "recorder" => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "录播姬来源的项目由采集入库自动创建（POST /api/ingest/bililive/<token>）；\
+                 请到「采集记录」页指派与查看",
             ))
         }
         other => {

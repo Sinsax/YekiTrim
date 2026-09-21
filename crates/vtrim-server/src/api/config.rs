@@ -113,6 +113,38 @@ pub(super) fn check_project_paths(ws: &Workspace, value: &serde_json::Value, is_
             )
         })?;
     }
+    check_material_paths(ws, value)
+}
+
+/// `[project.materials]` 里每条素材的 `path` 也是路径 —— 按同一口径校验。
+///
+/// 清单本身不改管线读什么（下游只认 `*_file`），但它是**要 stat 的**：让非 admin 往里塞
+/// 一条 `C:\...\别人的文件.srt`，预处理页就会把那台机器上的文件存在性与大小回显出来。
+/// 与 [`set_asset`]（选中时才 `jail_join`）是同一条规矩，只是这里堵的是直接改配置那条路。
+///
+/// [`set_asset`]: vtrim_service::assets::set_asset
+fn check_material_paths(ws: &Workspace, value: &serde_json::Value) -> Result<(), AppError> {
+    let Some(materials) = value.get("project").and_then(|p| p.get("materials")) else {
+        return Ok(());
+    };
+    for (kind, list) in materials.as_object().into_iter().flatten() {
+        for raw in list.as_array().into_iter().flatten().filter_map(|e| {
+            e.get("path")
+                .and_then(|p| p.as_str())
+                .or_else(|| e.as_str())
+        }) {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            vtrim_core::tenant::jail_join(&ws.root_dir, raw).map_err(|e| {
+                err(
+                    StatusCode::BAD_REQUEST,
+                    format!("[project.materials] {kind} 的素材必须是项目内相对路径（{raw}）: {e:#}"),
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -334,6 +366,56 @@ fn project_config_paths_are_jailed_for_non_admin() {
     assert!(check_project_paths(&ws, &abs_in, true).is_ok());
     assert!(check_project_paths(&ws, &abs_out, true).is_ok());
 
+    // 素材清单里的 path 同口径：清单只是"要 stat 的候选"，塞一条项目外的进去
+    // 就等于让预处理页回显那台机器上的文件存在性与大小
+    let materials_ok = serde_json::json!({
+        "project": { "materials": { "transcript": [{ "path": "output/video.srt", "source": "asr", "mode": "hybrid" }] } }
+    });
+    assert!(check_project_paths(&ws, &materials_ok, false).is_ok());
+    let materials_abs = serde_json::json!({
+        "project": { "materials": { "danmaku": [{ "path": "C:/other/dm.xml" }] } }
+    });
+    assert_eq!(
+        check_project_paths(&ws, &materials_abs, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    let materials_up = serde_json::json!({
+        "project": { "materials": { "transcript": [{ "path": "../outside.srt" }] } }
+    });
+    assert_eq!(
+        check_project_paths(&ws, &materials_up, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    // admin 加的工程外素材（列表里那条绝对路径）不该被拦
+    assert!(check_project_paths(&ws, &materials_abs, true).is_ok());
+
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 设置页「清空 = 跟随全局」这条链路：patch 里的 `null` 一路走到 llm.toml 的**键删除**。
+///
+/// 回归钉子：patch 从前把 null 写成空串（`max_tokens = ""`）—— 文件看着合法，
+/// 下次 `load_llm_config` 解析 u32 失败，整份 LLM 配置（含 api_key）被打回默认值。
+#[test]
+fn llm_put_null_patch_removes_override_key() {
+    let dir = std::env::temp_dir().join(format!("vtrim-llm-put-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("llm.toml");
+    std::fs::write(
+        &p,
+        "[llm]\napi_key = \"k\"\nmax_tokens = 16384\n\n[llm.overrides.detect]\nmax_tokens = 8192\n",
+    )
+    .unwrap();
+
+    let body = serde_json::json!({
+        "patch": {"llm": {"overrides": {"detect": {"max_tokens": null}}}}
+    });
+    let _ = config_llm_put_locked(&p, &body).unwrap();
+
+    let out = std::fs::read_to_string(&p).unwrap();
+    assert!(!out.contains("8192"), "被 null 的覆盖值该删掉：\n{out}");
+    assert!(out.contains("api_key = \"k\""), "其余键不能动：\n{out}");
+    assert!(out.contains("max_tokens = 16384"), "全局值不能动：\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 }

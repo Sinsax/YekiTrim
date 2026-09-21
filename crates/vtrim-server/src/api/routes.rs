@@ -47,6 +47,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/ingest/token", post(crate::ingest::rotate_token))
         .route("/admin/ingest/assign", post(crate::ingest::assign))
         .route("/admin/ingest/scan", post(crate::ingest::scan_now))
+        // 内置下载器（yt-dlp）安装：全局资产（下到 <程序目录>/.vtrim/bin/），仅 admin
+        .route("/admin/downloader/install", post(crate::ingest::downloader_install))
         .route("/admin/users", get(admin_users))
         .route("/admin/recorder/test", post(admin_recorder_test))
         .route("/admin/invites", get(admin_invites).post(admin_invite_create))
@@ -91,6 +93,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let polish = Router::new()
         .route("/polish/init", post(polish_init))
         .route("/polish/llm", post(polish_llm))
+        .route("/polish/llm-segment", post(polish_llm_segment))
         .route("/polish/process", post(polish_process))
         .route("/polish/render", post(polish_render))
         .route("/polish/cover", post(polish_cover))
@@ -159,6 +162,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/fs/list", post(fs_list))
         .route("/ingest/records", get(crate::ingest::records))
         .route("/ingest/retry", post(crate::ingest::retry))
+        // B站链接通道（P4）：解析（不落库）/ 提交下载 / 下载器就绪位
+        .route("/ingest/resolve", post(crate::ingest::bilibili_resolve))
+        .route("/ingest/bilibili", post(crate::ingest::bilibili_submit))
+        .route("/ingest/downloader", get(crate::ingest::downloader_status))
         .route("/channel-map", get(crate::ingest::channel_map_get).put(crate::ingest::channel_map_put))
         .route("/stream", get(global_stream))
         .route("/jobs", get(jobs_list))

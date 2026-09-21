@@ -144,7 +144,8 @@ impl JobClass {
     pub fn for_polish(kind: &str) -> Self {
         match kind {
             "render" => Self::Heavy,
-            "llm" => Self::Medium,
+            // 单段事件重做 = 一次 LLM 调用 + 后处理，与整片 llm 同档
+            "llm" | "llm_segment" => Self::Medium,
             _ => Self::Light,
         }
     }
