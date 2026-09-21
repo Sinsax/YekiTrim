@@ -1165,9 +1165,54 @@ async fn attempt_call(
         .as_secs();
     // 转储落到程序目录的 `.vtrim/llm_debug/`：以前写的是**相对进程 CWD** 的路径，
     // server 的 CWD 是仓库根 —— 一轮重跑就在仓库里堆 70+ 个 vtrim_llm_debug_*.log。
+    //
+    // ⚠️ 这个目录**不在任何租户囚笼里**，而内容是**用户的直播转录原文** + 模型推理。
+    // 所以三条一起做：① 不再退回进程 CWD；② 有保留期（只留最新若干份）；③ 单份有体积上限。
+    fn prune_debug_dir(dir: &std::path::Path, keep: usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut files: Vec<std::path::PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("vtrim_llm_debug_") && n.ends_with(".log"))
+            })
+            .collect();
+        if files.len() <= keep {
+            return;
+        }
+        // 文件名里的 unix 秒是等宽十进制 → 字典序 == 时间序
+        files.sort();
+        let drop_n = files.len() - keep;
+        for p in files.into_iter().take(drop_n) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    /// 单份转储的体积上限（超出截断并注明 —— 别让"看不全"被误读成"模型只输出了这些"）。
+    fn cap_debug(full: &str) -> std::borrow::Cow<'_, str> {
+        const MAX: usize = 256 * 1024;
+        if full.len() <= MAX {
+            return std::borrow::Cow::Borrowed(full);
+        }
+        let mut cut = MAX;
+        while cut > 0 && !full.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let mut out = String::with_capacity(cut + 96);
+        out.push_str(&full[..cut]);
+        out.push_str(&format!(
+            "\n\n--- 已截断：完整转储 {} 字节，此处只保留前 {} 字节 ---\n",
+            full.len(),
+            cut
+        ));
+        std::borrow::Cow::Owned(out)
+    }
+
     let dir = crate::path::vtrim_home().join("llm_debug");
     let _ = std::fs::create_dir_all(&dir);
-    let mut log_path = dir.join(format!("vtrim_llm_debug_{ts}.log"));
+    prune_debug_dir(&dir, 50);
+    let log_path = dir.join(format!("vtrim_llm_debug_{ts}.log"));
     let full = format!(
         "--- 截断: {} ---\n--- content ---\n{}\n\n--- reasoning ---\n{}\n\n--- full response ---\n{}",
         truncated
@@ -1178,10 +1223,11 @@ async fn attempt_call(
         reasoning,
         serde_json::to_string_pretty(&body).unwrap_or_default()
     );
-    if std::fs::write(&log_path, &full).is_err() {
-        // 程序目录不可写时退回旧行为（当前工作目录），至少别把这次现场丢了
-        log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{ts}.log"));
-        let _ = std::fs::write(&log_path, &full);
+    let full = cap_debug(&full);
+    if let Err(e) = std::fs::write(&log_path, full.as_bytes()) {
+        // ⚠️ 不再退回进程 CWD：那等于往仓库/启动目录里丢文件，用户既找不到也清不掉。
+        // 写不了就只留一行 error —— 现场丢了，也好过污染工作目录。
+        tracing::error!("LLM 调试转储写入失败（{}）: {e}", log_path.display());
     }
     match truncated {
         Some(t) => {

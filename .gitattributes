@@ -1,0 +1,27 @@
+# 换行策略（2026-09）。
+#
+# 背景：本机 `core.autocrlf=true`，而仓库里已有的文件是 **LF** —— 于是每次 `git add`
+# 都会对几十个文件打 "LF will be replaced by CRLF the next time Git touches it"，
+# 制造噪声；而一旦有人按 CRLF 检出，跨平台 diff 就全是空白差异。
+# 这份文件把口径写死：**源码统一 LF 存储 + LF 检出**。
+#
+# ⚠️ 加这个文件**不会**重写历史或工作区。要让已入库的文件真正归一化，需要单独的
+# `git add --renormalize .` 提交 —— 那是纯空白改动，刻意留作独立批次，别混进功能提交
+# （否则 review 全是无意义 diff）。
+* text=auto eol=lf
+
+# 二进制：明确标记，免得 git 试图做行尾/文本处理（也在 diff/merge 里少出错）
+*.wasm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.mp3 binary
+*.wav binary
+*.mp4 binary
+*.ttf binary
+*.otf binary
+*.ttc binary

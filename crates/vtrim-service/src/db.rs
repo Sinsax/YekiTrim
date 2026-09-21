@@ -263,7 +263,13 @@ pub struct Db {
                     .map_err(|e| anyhow::anyhow!(e))
             });
             if vac.is_err() {
-                let _ = std::fs::copy(&self.path, &backup);
+                if let Err(e) = std::fs::copy(&self.path, &backup) {
+                    // ⚠️ 备份是 schema 迁移前**唯一的退路**，失败必须留痕：
+                    // 以前是 `let _ =`，真出问题时才发现"备份根本没生成"。
+                    tracing::error!(
+                        "迁移前备份失败（VACUUM INTO 与文件拷贝都没成），继续迁移有风险: {e}"
+                    );
+                }
             }
             tracing::info!("账号账本 schema 迁移 v{current} → v{SCHEMA_VERSION}，已备份到 {}", backup.display());
         }
@@ -1122,7 +1128,15 @@ pub struct Db {
 
     fn ingest_session_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<IngestSessionRow> {
         let parse_list = |raw: String| -> Vec<String> {
-            serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+            // 读侧：解析失败按空处理是安全的（不会写回），但必须留痕 ——
+            // 否则"记着 3 个文件"静默变成"0 个"，没有任何地方能看出来。
+            match serde_json::from_str::<Vec<String>>(&raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("ingest_sessions 的文件列表 JSON 解析失败（按空处理）: {e}");
+                    Vec::new()
+                }
+            }
         };
         Ok(IngestSessionRow {
             session_id: r.get(0)?,
@@ -1212,15 +1226,34 @@ pub struct Db {
                 )
                 .optional()?;
             let Some(current) = current else { return Ok(()) };
-            let mut list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+            // ⚠️ 解析失败**绝不能**当成空列表再写回去：那会把这一列里本来记着的其它路径
+            // **永久丢掉**（`opened_files`/`closed_files` 是 JSON 数组）。损坏时唯一安全的
+            // 动作是"这一次不写 + 记 error"。
+            let mut list: Vec<String> = match serde_json::from_str(&current) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        "解析 ingest_sessions.{col} 失败（session={session_id}），本次不写入以免覆盖原值: {e}"
+                    );
+                    return Ok(());
+                }
+            };
             if !list.iter().any(|p| p == rel_path) {
                 list.push(rel_path.to_string());
             }
+            // 同理：序列化失败也不能写 "[]" —— 那等于把这一列清空
+            let encoded = match serde_json::to_string(&list) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("序列化 ingest_sessions.{col} 失败，本次不写入: {e}");
+                    return Ok(());
+                }
+            };
             conn.execute(
                 &format!(
                     "UPDATE ingest_sessions SET {col} = ?2, last_event_at = ?3 WHERE session_id = ?1"
                 ),
-                params![session_id, serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()), now_secs()],
+                params![session_id, encoded, now_secs()],
             )?;
             Ok(())
         })
