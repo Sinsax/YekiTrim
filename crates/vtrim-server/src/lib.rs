@@ -190,6 +190,19 @@ fn explicit_admin_password(args: &ServerArgs) -> anyhow::Result<Option<String>> 
     Ok(None)
 }
 
+/// 对外暴露（非 loopback 监听，或显式 `--allow-remote`）且仍在用初始密码 → 拒绝启动。
+///
+/// ⚠️ 判据必须是"是否对外暴露"，不是"是否非 loopback"：`--host 127.0.0.1 --allow-remote`
+/// 是 `docs/deploy.md` 推荐的公网部署姿势（反代就在本机），旧判据只认非 loopback，
+/// 于是文档承诺的护栏在它自己推荐的配置下从不触发。
+fn must_refuse_initial_password(
+    is_loopback: bool,
+    allow_remote: bool,
+    must_change_password: bool,
+) -> bool {
+    (!is_loopback || allow_remote) && must_change_password
+}
+
 /// 启动 HTTP server（阻塞直至监听关闭）。
 pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -248,20 +261,23 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
                  如确需对外监听，请显式加上 --allow-remote"
             );
         }
-        if bootstrap.must_change_password {
-            anyhow::bail!(
-                "拒绝在 {addr} 上监听：管理员仍在使用初始密码（初始密码会出现在日志与 {} 里，等同把密码写在服务器上）。\n\
-                 请先修改密码：vtrim user passwd admin（非交互：--stdin / --password-file），\
-                 或在部署时用 --admin-password-file 显式设定初始密码。",
-                vtrim_service::initial_password_path().display()
-            );
-        }
         tracing::warn!("⚠ 正在监听非 loopback 地址 {addr}：请务必使用 HTTPS 反向代理，并确保账号密码足够强");
         if args.trust_proxy {
             tracing::info!("已信任反向代理头（--trust-proxy）：限流按 X-Forwarded-For 最后一段，cookie 按 X-Forwarded-Proto 标 Secure");
         } else {
             tracing::info!("未信任反向代理头：所有请求都算作来自反代本机（限流粒度退化），且不会下发 Secure cookie；确认前置反代后加 --trust-proxy");
         }
+    }
+    // ⚠️ 判据是"是否**对外暴露**"，不是"是否非 loopback"：`--host 127.0.0.1 --allow-remote`
+    // 是 `docs/deploy.md` 推荐的公网部署姿势（反代就在本机），旧判据只认非 loopback，
+    // 于是文档承诺的这条护栏在它自己推荐的配置下**从不触发**。
+    if must_refuse_initial_password(is_loopback, args.allow_remote, bootstrap.must_change_password) {
+        anyhow::bail!(
+            "拒绝在 {addr} 上对外监听：管理员仍在使用初始密码（初始密码会出现在日志与 {} 里，等同把密码写在服务器上）。\n\
+             请先修改密码：vtrim user passwd admin（非交互：--stdin / --password-file），\
+             或在部署时用 --admin-password-file 显式设定初始密码。",
+            vtrim_service::initial_password_path().display()
+        );
     }
 
     // 单实例保护：两个实例指向同一 data_dir 会抢项目/端口/SQLite 写（§3.5.8）
@@ -564,6 +580,22 @@ fn bind_conflict_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 初始密码护栏的判据：**是否对外暴露**，不是"是否非 loopback"。
+    #[test]
+    fn initial_password_is_refused_whenever_exposed() {
+        // 公网直连（非 loopback、没给 --allow-remote，上面那条已经先报错了）
+        assert!(must_refuse_initial_password(false, false, true));
+        // 非 loopback + --allow-remote
+        assert!(must_refuse_initial_password(false, true, true));
+        // ⚠️ 反代姿势：host 是 loopback 但显式 --allow-remote —— 旧判据放行，文档却承诺拒绝
+        assert!(must_refuse_initial_password(true, true, true));
+        // 纯本机自用：不拦（否则开发机第一次启动就没法用）
+        assert!(!must_refuse_initial_password(true, false, true));
+        // 改过密码：一律放行
+        assert!(!must_refuse_initial_password(false, true, false));
+        assert!(!must_refuse_initial_password(true, true, false));
+    }
 
     fn addr() -> SocketAddr {
         "127.0.0.1:7788".parse().unwrap()

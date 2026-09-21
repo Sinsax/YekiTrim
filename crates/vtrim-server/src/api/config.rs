@@ -75,13 +75,24 @@ pub(super) async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult 
 /// ⚠️ 这些值会一路进 `Workspace::resolve`（`service/workspace.rs`），而它对**绝对路径原样放行**
 /// （第 49-56 行），所以这里不校验就等于「普通用户把 `input_file` 指到别人的录像（转写完把
 /// 字幕读出来）、把 `output_dir` 指到任意目录（产物写到项目外）」。**新增路径键时同步加进来。**
-pub(super) const PROJECT_PATH_KEYS: [(&str, &str); 6] = [
+///
+/// `section` 支持点号路径（如 `ingest.recorder`），与 TOML 的表名一一对应。
+pub(super) const PROJECT_PATH_KEYS: [(&str, &str); 9] = [
     ("project", "input_file"),
     ("project", "danmaku_file"),
     ("project", "transcript_file"),
     ("project", "audio_file"),
     ("project", "events_file"),
     ("cutting", "output_dir"),
+    // ⚠️ `[ingest]` 这几个是**后补的**：它们由 `config/mod.rs` 的 merge 从**项目** `vtrim.toml`
+    // 并进生效配置（`ingest.ytdlp_path` / `cookie_file` / `recorder.root`），
+    // 于是非 admin 可以经 `PUT /api/project-data/config` 写进去。
+    // 今天没有实弹：消费侧（`download_worker` / `ingest`）读的是**全局**配置，而全局只有 admin 能写。
+    // 但 `registry::find_ytdlp` 接受配置里的路径时**不做 sha256 校验**就进 `CommandSpec.program`
+    // ——「下一次改成读工作区配置」的重构会让它变成任意程序执行。所以现在就把面收掉。
+    ("ingest", "ytdlp_path"),
+    ("ingest", "cookie_file"),
+    ("ingest.recorder", "root"),
 ];
 
 /// 校验配置里的路径键必须落在本项目内（**只对非 admin 生效**）。
@@ -94,11 +105,22 @@ pub(super) fn check_project_paths(ws: &Workspace, value: &serde_json::Value, is_
         return Ok(());
     }
     for (section, key) in PROJECT_PATH_KEYS {
-        let Some(raw) = value
-            .get(section)
-            .and_then(|s| s.get(key))
-            .and_then(|v| v.as_str())
-        else {
+        // `section` 允许点号路径（`ingest.recorder`）：逐级下钻，任一级缺失就跳过这条键
+        let mut node = value;
+        let mut missing = false;
+        for part in section.split('.') {
+            match node.get(part) {
+                Some(next) => node = next,
+                None => {
+                    missing = true;
+                    break;
+                }
+            }
+        }
+        if missing {
+            continue;
+        }
+        let Some(raw) = node.get(key).and_then(|v| v.as_str()) else {
             continue;
         };
         let raw = raw.trim();
@@ -365,6 +387,37 @@ fn project_config_paths_are_jailed_for_non_admin() {
     // admin 不受限：「服务器文件」来源建的项目里 input_file 本来就是项目外的绝对路径
     assert!(check_project_paths(&ws, &abs_in, true).is_ok());
     assert!(check_project_paths(&ws, &abs_out, true).is_ok());
+
+    // ⚠️ `[ingest]` 的路径键（后补的）：它们在 `config/mod.rs` 里会从**项目**配置 merge 进
+    // 生效配置，非 admin 曾经可以写进去。`ingest.recorder` 是**两级**表名，走点号下钻。
+    let ingest_ytdlp = serde_json::json!({ "ingest": { "ytdlp_path": "C:/evil/yt-dlp.exe" } });
+    assert_eq!(
+        check_project_paths(&ws, &ingest_ytdlp, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    let ingest_cookie = serde_json::json!({ "ingest": { "cookie_file": "../../cookies.txt" } });
+    assert_eq!(
+        check_project_paths(&ws, &ingest_cookie, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    let ingest_root = serde_json::json!({ "ingest": { "recorder": { "root": "D:/brec" } } });
+    assert_eq!(
+        check_project_paths(&ws, &ingest_root, false).unwrap_err().0,
+        StatusCode::BAD_REQUEST
+    );
+    // 相对且在项目内 → 放行；缺表 / 缺键不误报
+    let ingest_ok = serde_json::json!({
+        "ingest": { "ytdlp_path": "bin/yt-dlp.exe", "recorder": { "root": "records" } }
+    });
+    assert!(check_project_paths(&ws, &ingest_ok, false).is_ok(), "{ingest_ok}");
+    // `[ingest.recorder]` 里非路径的兄弟键（api_base / api_user）不该被当路径校验
+    let ingest_siblings = serde_json::json!({
+        "ingest": { "recorder": { "api_base": "http://10.0.0.5:2356", "api_user": "u" } }
+    });
+    assert!(check_project_paths(&ws, &ingest_siblings, false).is_ok(), "{ingest_siblings}");
+    // admin 不受限（全局采集配置本来就是绝对路径）
+    assert!(check_project_paths(&ws, &ingest_ytdlp, true).is_ok());
+    assert!(check_project_paths(&ws, &ingest_root, true).is_ok());
 
     // 素材清单里的 path 同口径：清单只是"要 stat 的候选"，塞一条项目外的进去
     // 就等于让预处理页回显那台机器上的文件存在性与大小

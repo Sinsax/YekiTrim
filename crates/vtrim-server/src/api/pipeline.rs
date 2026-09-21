@@ -316,7 +316,15 @@ pub(super) fn latest_numbered_file(dir: &std::path::Path, stem: &str, ext: &str)
             if !name.starts_with(&prefix) || !name.ends_with(&suffix) {
                 continue;
             }
-            let mid = &name[prefix.len()..name.len()-suffix.len()];
+            // ⚠️ 用 strip_prefix/strip_suffix，别用算术切片：`cover_.jpg`（前后缀之间为空）
+            // 会让 `name.len() - suffix.len() < prefix.len()` → `&name[6..5]` 直接 panic。
+            // release 下 panic 会按 `panic = "abort"` 终止整个 server（不是 500）。
+            let Some(mid) = name
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(&suffix))
+            else {
+                continue;
+            };
             if let Ok(n) = mid.parse::<u32>() {
                 consider(n, name);
             }
@@ -401,5 +409,37 @@ fn subprocess_note_extracts_written_path() {
     // 没有那行（老版本 CLI / 失败路径）时返回 None，调用方就不写日志
     assert_eq!(subprocess_note("boom", "FINISHED:"), None);
     assert_eq!(strip_ansi("\u{1b}[1mhi\u{1b}[0m"), "hi");
+}
+
+/// `cover_.jpg` 这类"前缀与后缀之间为空"的文件名曾经直接 panic：
+/// 旧写法是 `&name[prefix.len()..name.len()-suffix.len()]`，`cover_.jpg` 时算出 `&name[6..5]`，
+/// `start > end` 越界 panic。HTTP 可达（`/project-data/clips` 一类的扫描路径），
+/// release 下 `panic = "abort"` 会终止整个 server。
+#[test]
+fn latest_numbered_file_ignores_empty_middle() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("cover_.jpg"), b"x").unwrap();
+    std::fs::write(dir.path().join("cover_3.jpg"), b"x").unwrap();
+    std::fs::write(dir.path().join("cover_12.jpg"), b"x").unwrap();
+    // 空中间名跳过、按编号取最大
+    assert_eq!(
+        latest_numbered_file(dir.path(), "cover", "jpg").as_deref(),
+        Some("cover_12.jpg")
+    );
+    // 只有空中间名时返回 None（不 panic、不误判成 0 号）
+    let only_empty = tempfile::tempdir().unwrap();
+    std::fs::write(only_empty.path().join("cover_.jpg"), b"x").unwrap();
+    assert_eq!(latest_numbered_file(only_empty.path(), "cover", "jpg"), None);
+    // 无编号后缀的基础名仍然认（老行为不能回退）
+    let plain = tempfile::tempdir().unwrap();
+    std::fs::write(plain.path().join("cover.jpg"), b"x").unwrap();
+    assert_eq!(
+        latest_numbered_file(plain.path(), "cover", "jpg").as_deref(),
+        Some("cover.jpg")
+    );
+    // 非数字中间名（cover_abc.jpg）同样跳过
+    let nonnum = tempfile::tempdir().unwrap();
+    std::fs::write(nonnum.path().join("cover_abc.jpg"), b"x").unwrap();
+    assert_eq!(latest_numbered_file(nonnum.path(), "cover", "jpg"), None);
 }
 }
