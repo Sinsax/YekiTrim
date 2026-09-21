@@ -1,3 +1,8 @@
+//! polish::cover：封面生成（三层结构 文字/关键帧/背景 → HTML 构建 + headless Chrome 截图）。
+//!
+//! 入口：`cmd_cover`、`cmd_cover_template`、`cmd_preview_cover`、`build_cover_html`、`cover_bg_vars`、`cover_frame_vars`、`cover_blur_css`、`sanitize_hex_color`、`cover_bg_mode`。
+//! 边界：`cover.image` 在消费侧要再做一次 `tenant::ensure_within`（纵深防御第③道，别删）；颜色进 HTML/CSS 前必须 `sanitize_hex_color`，公式只此一份（前端是镜像） —— 见 `crates/vtrim-polish/AGENTS.md`
+
 use std::path::Path;
 
 use crate::project;
@@ -196,11 +201,11 @@ pub fn cover_frame_vars(config: &crate::project::ProjectFile) -> CoverFrameVars 
     }
 }
 
-/// 出片时抓取的区域：就是 `#page` 的固定画布（配合模板里的 `html.export`，
+/// 出片时抓取的区域：就是 `#page` 的整块画布（配合模板里的 `html.export`，
 /// 页面不再缩放/居中，左上角对齐视口原点）。不这么抓拿到的是浏览器视口尺寸
-/// （实测 1904×929），16:9 页面被居中 → 成片左右两条黑边。
-pub const COVER_CAPTURE_W: f64 = 1920.0;
-pub const COVER_CAPTURE_H: f64 = 1080.0;
+/// （实测 1904×929），页面被居中 → 成片四周黑边。
+/// ⚠️ 画布**恒 1920×1080 横版**，不读 `[canvas] orientation`（平台封面就是横的）。
+/// 竖屏素材不改比例靠模板的 `object-fit:contain`，改这两个常量前先看那个测试。
 
 /// 进模板前必须转义：`fx.text`（emoji 字符）是用户输入，直接拼进 HTML 就是模板注入。
 fn escape_html(raw: &str) -> String {
@@ -373,10 +378,18 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
     loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
 }
 
+/// 封面画布：**恒 1920×1080 横版**（不跟随 `[canvas] orientation` —— 平台封面就是横的）。
+/// 竖屏素材在封面里靠模板的 `object-fit:contain` 保持原比例，画布尺寸本身不动。
+pub const COVER_CAPTURE_W: f64 = 1920.0;
+pub const COVER_CAPTURE_H: f64 = 1080.0;
+
 pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _resolved: &ResolvedPaths) -> String {
     let bg_image = project_path.join(COVER_BG_IMG).is_file();
     // 从 cmd_cover 中提取相同逻辑 (略缩版)
     let cc = &config.cover;
+    // 封面画布**恒横版**（不读 `[canvas] orientation`）：平台封面就是横的。
+    // 竖屏素材靠模板的 `object-fit:contain` 保持原比例，画布尺寸本身不动。
+    let (cw, ch) = (COVER_CAPTURE_W, COVER_CAPTURE_H);
 
     // 渐变（走 hex_to_rgb：3 位简写/非法值都不能越界 panic）
     let hl_color = &config.style.subtitle.highlight_color;
@@ -423,6 +436,8 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
     let frame = cover_frame_vars(config);
     let font = cover_font_css(&cc);
     COVER_HTML
+        .replace("__COVER_W__", &cw.to_string())
+        .replace("__COVER_H__", &ch.to_string())
         .replace("__TITLE__", &title_html)
         .replace("__FONT_FAMILY__", &font.family)
         .replace("__BG_CLASS__", &bg.class)
@@ -566,7 +581,11 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     let frame = cover_frame_vars(&config);
     // 封面字体（`[cover] font` = 字体库里的 id）：与预览链同一份替换，**两条都要改**
     let font = cover_font_css(&cc);
+    // 封面画布**恒横版**：与 build_cover_html 同一把尺（竖屏素材不改比例，见模板 contain）
+    let (cw, ch) = (COVER_CAPTURE_W, COVER_CAPTURE_H);
     let cover_html = COVER_HTML
+        .replace("__COVER_W__", &cw.to_string())
+        .replace("__COVER_H__", &ch.to_string())
         .replace("__TITLE__", &title_html)
         .replace("__FONT_FAMILY__", &font.family)
         .replace("__BG_CLASS__", &bg.class)
@@ -597,11 +616,12 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
     let port = server::start_file_server(project_path.to_path_buf(), Some(cover_html)).await?;
     let url = format!("http://127.0.0.1:{}/", port);
 
-    let browser = ChromeRenderer::launch()?;
+    // 封面画布**恒横版**（1920×1080），与成片方向解耦
+    let browser = ChromeRenderer::launch((cw as u32, ch as u32))?;
     let tab = ChromeRenderer::create_tab(&browser, &url)?;
     tab.set_default_timeout(std::time::Duration::from_secs(30));
 
-    // 视口必须**正好**是封面画布：headless 窗口 1920×1080 实测视口只有 1904×929，
+    // 视口必须**正好**是封面画布：headless 窗口名义尺寸实测视口更小（如 1904×929），
     // 视口之外的那截不会被绘制 —— 不设的话抓出来底部（以及左右）会是黑边。
     {
         use headless_chrome::protocol::cdp::Emulation;
@@ -633,13 +653,13 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         format: Some(Page::CaptureScreenshotFormatOption::Jpeg),
         quality: Some(85),
         // 精确抓 `#page` 那块画布（模板的 `html.export` 已把它对齐到视口原点、不缩放）。
-        // 之前 clip: None 抓到的是浏览器视口尺寸（实拍 1904×929），16:9 页面被居中
-        // → 成片左右两条黑边，尺寸也不是 1920×1080。
+        // 之前 clip: None 抓到的是浏览器视口尺寸（实拍 1904×929），页面被居中
+        // → 成片四周黑边，尺寸也不对。
         clip: Some(Page::Viewport {
             x: 0.0,
             y: 0.0,
-            width: COVER_CAPTURE_W,
-            height: COVER_CAPTURE_H,
+            width: cw as f64,
+            height: ch as f64,
             scale: 1.0,
         }),
         from_surface: Some(true),
@@ -740,6 +760,26 @@ mod tests {
             // 字体栈占位符必须被替换掉 —— 留着就是一条非法的 font-family，整个字体设置静默失效
             assert!(!html.contains("__FONT_FAMILY__"), "{mode} 字体栈占位符没替换：{html}");
             assert!(html.contains(server::SYSTEM_FONT_STACK), "{mode} 缺系统字体栈兜底：{html}");
+        }
+    }
+
+    /// 封面画布**恒 1920×1080 横版**：即使工程是竖屏（`[canvas] orientation = portrait`）
+    /// 封面也不跟着变 —— 平台封面就是横的，竖屏素材靠模板 `object-fit:contain` 保原比例。
+    /// （曾经跟随过 orientation，用户要求改回固定横版。）
+    #[test]
+    fn cover_html_page_size_is_always_landscape() {
+        for (label, orientation) in [("默认", ""), ("显式横屏", "landscape"), ("竖屏", "portrait")] {
+            let mut c = cfg_with("color", "#000000", 1.0);
+            if !orientation.is_empty() {
+                c.canvas.orientation = orientation.into();
+            }
+            let html = build_cover_html(Path::new("."), &c, &resolved());
+            assert!(html.contains("width:1920px; height:1080px"),
+                "{label}封面 #page 必须是 1920×1080：{html}");
+            assert!(html.contains("window.innerWidth/1920"),
+                "{label}封面缩放基准必须是 1920：{html}");
+            assert!(!html.contains("__COVER_W__") && !html.contains("__COVER_H__"),
+                "{label}封面画布占位符没替换：{html}");
         }
     }
 

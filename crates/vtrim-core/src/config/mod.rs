@@ -1,3 +1,8 @@
+//! config：全站配置类型（`types.rs`）与两层合并 / 安全写入（本文件）。
+//!
+//! 入口：`load_config` / `load_config_at` / `load_global_config` / `load_llm_config`、`patch_config_file`（设置页唯一保存通道）、`write_project_config`、`save_*_path_in`、`resolve_reference_titles`。
+//! 边界：改字段必须走四步（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）；`patch_config_file` 是递归深合并，别退回"一层 section" —— 见 `crates/vtrim-core/src/config/AGENTS.md`
+
 mod types;
 pub use types::*;
 
@@ -68,7 +73,7 @@ pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有�
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
-# 默认 hybrid；准备页不给切换，要改就改这里或项目 vtrim.toml（设置页表单/源码）
+# 默认 hybrid；预处理页有下拉可直接改（写进项目 vtrim.toml），设置页表单/源码也能改
 mode = "hybrid"
 # 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
 num_workers = 0
@@ -95,6 +100,14 @@ segment_padding = 0.0
 max_new_tokens = 256
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
+# single 模式先用 VAD(silero) 只挑语音段解码：静音/BGM 不解，快 2~3 倍。
+# hybrid 不受影响（它的时间几乎全在 qwen3 上）。模型随 `vtrim download` 一起下（约 209KB）。
+vad = true
+# silero 语音概率阈值(0~1)：调高=更保守（多解码、少省时间）
+vad_threshold = 0.5
+# 动态电平兜底(dB)：低于「本片语音电平 − 此值」的空档才允许跳过，0=关掉兜底。
+# 兜底只会多解码（宁可多花时间也不漏字幕）；实测 16 能捞回 8 漏掉的短促插话，代价 +1.6% 解码量。
+vad_rescue_db = 16.0
 
 [correct]
 # 订正 system_prompt（修改此处覆盖内建默认）
@@ -155,7 +168,9 @@ projects_root = ""
 # 全局磁盘上限（字节，0 = 不限）。只用于"入库/下载/渲染前预检"，
 # 绝不自动删除用户数据（源录播默认保留）。
 max_disk_bytes = 0
-# 磁盘水位百分比：可用空间低于该比例时拒绝新的入库/下载/渲染
+# 磁盘水位百分比：写完这一份后剩余空间低于该比例才拒绝新的入库/下载/渲染
+# 保留量会被钳在 512 MiB ~ 8 GiB——比例只对中小容量卷起作用，
+# 大容量数据盘上不会要求保留几十上百 GB（0 = 关闭水位检查）
 disk_watermark_pct = 10
 # 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
 default_quota_bytes = 0
@@ -172,6 +187,24 @@ webhook_enabled = false
 token_hash = ""
 # 来源 IP 白名单（空 = 不限制；同机部署建议 ["127.0.0.1", "::1"]）
 allow_ips = []
+
+# B站链接通道（P4）：
+# 下载器引擎。"yt-dlp" = 内置（版本 + sha256 钉死，随包分发）；
+# 其它值 = 逃生舱，写「yt-dlp 兼容可执行文件的绝对路径」（用户自备，不随包分发）。
+downloader = "yt-dlp"
+# yt-dlp 可执行文件位置覆盖（留空 = 自动发现：配置目录 → <程序目录>/.vtrim/bin/ → PATH）
+ytdlp_path = ""
+# 最大清晰度："1080p" | "720p" | "480p" | "best"（best = 不限高）
+max_quality = "1080p"
+# 限速 KB/s（0 = 不限）→ --limit-rate <n>K
+rate_limit_kbps = 0
+# 同时下载数。**别放大**：B站 412 风控与 IP 频次相关
+max_concurrent_downloads = 1
+# B站 cookie 文件（**Netscape 格式**；JSON 会静默失效）。
+# 无 cookie 时清晰度封顶 480/720p，部分视频直接需要登录。
+cookie_file = ""
+# 下载卡死判定：连续这么多秒一行输出都没有就 kill（唯一的子进程兜底）
+download_idle_timeout_secs = 120
 
 [ingest.recorder]
 # 录播姬输出目录（必须与 vtrim server 同机或同可读盘）
@@ -215,9 +248,8 @@ api_key = ""
 model = ""
 # 温度参数 (0=确定性输出，建议保持0)
 temperature = 0
-# 最大 Token 数 (检测事件需要较大的输出空间；思考模式建议 16384+)
-# 关了思考模式后这只是「跑飞的上限」——模型自己会停；一个检测窗口实测输出约 600 字符，
-# 4096 已很宽裕。调小它可以在模型复读时更快收尾。
+# 最大 Token 数：**没在下面 [llm.overrides.*] 里单独配的链路**用它。
+# 这只是「跑飞的上限」——模型自己会停；检测窗口实测输出 1.9k~4.1k（思考占大头）。
 max_tokens = 16384
 # 并发请求数——事件检测 / 精修事件生成 / 字幕订正**共用这一个值**
 # ([detection]/[correct] 各自的 max_concurrent 留空即跟随这里)。
@@ -226,6 +258,23 @@ max_concurrent = 3
 # 额外请求参数 (seed 确保稳定输出；thinking enabled 启用思考模式，disabled 关闭)
 # response_format=json_object 让模型不写解释性前言(需中转/服务端支持，不支持就删掉这行)
 extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
+
+# ── 按链路覆盖（缺一项 = 跟随上面 [llm] 的同名项）──
+# 各链路要的输出长度天差地别，别用同一个上限互相迁就。想「恢复跟随全局」就把那一行删掉
+# （设置页把输入框清空也会删掉它）。可选键：max_tokens / temperature / thinking。
+[llm.overrides.detect]
+# 事件检测窗口 + 标题摘要热度评分：实测输出 1.9k~4.1k token，8k 留 2× 余量
+max_tokens = 8192
+[llm.overrides.polish]
+# 精修 LLM 剪辑（分段 + 逐段事件）：输出比检测长。
+# thinking 不写 = 关闭思考（分段/逐段事件的既定行为）；要开就在这写 thinking = "enabled"
+max_tokens = 32768
+[llm.overrides.correct]
+# 字幕订正：输出量随输入走
+max_tokens = 8192
+# [llm.overrides.utility]
+# 零散单发（贴纸包/扫描标签、封面文案、连通测试）默认跟随 [llm]；要单独限就取消注释
+# max_tokens = 8192
 "#;
 
 /// 生成 vtrim.toml 项目配置文件（`vtrim init`）。
@@ -402,6 +451,21 @@ fn merge(base: &mut Config, overlay: Config) {
             .events_file
             .clone_from(&overlay.project.events_file);
     }
+    // 素材清单是**项目级**的（全局 config.toml 不放它）：项目文件里非空才覆盖。
+    // ⚠️ 新增 `project.*` 字段时必须在这里补一条 —— 漏了不会报错，
+    // 只是项目文件里写了也永远读不到（merge 后仍是默认值）。
+    if !overlay.project.materials.transcript.is_empty() {
+        base.project
+            .materials
+            .transcript
+            .clone_from(&overlay.project.materials.transcript);
+    }
+    if !overlay.project.materials.danmaku.is_empty() {
+        base.project
+            .materials
+            .danmaku
+            .clone_from(&overlay.project.materials.danmaku);
+    }
 
     if overlay.audio.sample_rate != 16000 {
         base.audio.sample_rate = overlay.audio.sample_rate;
@@ -468,6 +532,17 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if overlay.asr.snap_window != 0.3 {
         base.asr.snap_window = overlay.asr.snap_window;
+    }
+    // VAD：`Option<bool>` 与 `llm_correct` 同款 —— 只有**显式写了**才覆盖，
+    // 这样"全局关、单个工程开"（或反过来）都表达得出来（bool 会掉进"≠默认才覆盖"的坑）。
+    if let Some(v) = overlay.asr.vad {
+        base.asr.vad = Some(v);
+    }
+    if overlay.asr.vad_threshold != 0.5 {
+        base.asr.vad_threshold = overlay.asr.vad_threshold;
+    }
+    if overlay.asr.vad_rescue_db != 16.0 {
+        base.asr.vad_rescue_db = overlay.asr.vad_rescue_db;
     }
     if overlay.detection.danmaku_window_secs != 10.0 {
         base.detection.danmaku_window_secs = overlay.detection.danmaku_window_secs;
@@ -603,6 +678,19 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if !overlay.ingest.recorder.api_pass.is_empty() {
         base.ingest.recorder.api_pass = overlay.ingest.recorder.api_pass.clone();
+    }
+
+    // [ingest] 的 B站下载通道（P4）：同样是"非空才覆盖"。
+    // `max_quality` / `rate_limit_kbps` / `max_concurrent_downloads` 属于**平台级资源策略**
+    // （风控与磁盘），工程配置不该改它 —— 与 [storage] 同规矩，不参与 overlay。
+    if !overlay.ingest.downloader.is_empty() && overlay.ingest.downloader != "yt-dlp" {
+        base.ingest.downloader = overlay.ingest.downloader.clone();
+    }
+    if !overlay.ingest.ytdlp_path.is_empty() {
+        base.ingest.ytdlp_path = overlay.ingest.ytdlp_path.clone();
+    }
+    if !overlay.ingest.cookie_file.is_empty() {
+        base.ingest.cookie_file = overlay.ingest.cookie_file.clone();
     }
 
     // [auth]：与 [ingest] 同一规矩 —— 只有显式写了 true 才覆盖（开关只可能被打开，不会被静默关掉）；
@@ -790,6 +878,13 @@ fn merge_into_table(
     fields: &serde_json::Map<String, serde_json::Value>,
 ) {
     for (key, value) in fields {
+        // `null` = **删掉这个键**。patch 是合并语义，没有别的办法表达"取消覆盖 / 回到跟随全局"
+        // （设置页把链路覆盖输入框清空走的就是这条）。从前 null 会落到 `json_to_toml_value` 的
+        // Null 分支被写成空串 —— `max_tokens = ""` 下次读配置直接解析失败。
+        if value.is_null() {
+            table.remove(key);
+            continue;
+        }
         // 值是对象：目标是子表 → 递归合并；其它形态（字符串/数组/inline table）或不存在
         // → 整体替换成一张**真子表**（渲染成 `[section.sub]`，下次还能继续递归）
         if let Some(sub) = value.as_object() {
@@ -821,6 +916,8 @@ fn merge_into_table(
 
 fn json_to_toml_value(v: &serde_json::Value) -> toml_edit::Value {
     match v {
+        // `patch_config_file` 走的是"null = 删键"（见 `merge_into_table`），这里只是
+        // 数组元素等边角形态的兜底 —— 别把这条路当成 null 的语义。
         serde_json::Value::Null => toml_edit::Value::from(""),
         serde_json::Value::Bool(b) => toml_edit::Value::from(*b),
         serde_json::Value::Number(n) => match n.as_i64() {
@@ -880,8 +977,77 @@ pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
                     }
                 }
             }
+            // 素材清单里的路径同样要相对化：清单是写进 `vtrim.toml` 的候选项，
+            // 项目目录搬走后得跟着走（同样是「新增路径键要同步加」的那张表）。
+            if let Some(materials) = project
+                .get_mut("materials")
+                .and_then(|v| v.as_table_mut())
+            {
+                for key in ["transcript", "danmaku"] {
+                    let Some(arr) = materials.get_mut(key).and_then(|v| v.as_array_mut()) else {
+                        continue;
+                    };
+                    for item in arr.iter_mut() {
+                        // 清单条目由 `patch_config_file` 写成 inline table（`{ path = …, source = … }`）
+                        let Some(table) = item.as_inline_table_mut() else {
+                            continue;
+                        };
+                        let Some(raw) = table.get("path").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        if raw.is_empty() {
+                            continue;
+                        }
+                        let rel = rel_path_for(project_file, raw);
+                        if rel != raw {
+                            table.insert("path", toml_edit::Value::from(rel));
+                        }
+                    }
+                }
+            }
         }
     })
+}
+
+#[cfg(test)]
+mod vad_merge_tests {
+    use super::*;
+
+    /// VAD 的合并口径：开关是 `Option<bool>`（**显式写了才覆盖**），阈值/兜底按既有的
+    /// "≠默认才覆盖"。用 Option 的理由就在这里 —— 用 bool 的话"全局关、单工程开"表达不出来。
+    #[test]
+    fn vad_switch_is_explicit_and_thresholds_follow_default_rule() {
+        let mut base = Config::default();
+        base.asr.vad = Some(false);
+        base.asr.vad_threshold = 0.8;
+        base.asr.vad_rescue_db = 4.0;
+
+        // 工程层写 vad = true → 必须覆盖全局的 false
+        let mut overlay = Config::default();
+        overlay.asr.vad = Some(true);
+        merge(&mut base, overlay);
+        assert_eq!(base.asr.vad, Some(true), "显式 true 覆盖全局 false");
+        assert_eq!(base.asr.vad_threshold, 0.8, "工程层没写就不动全局值");
+        assert_eq!(base.asr.vad_rescue_db, 4.0);
+
+        // 工程层写了非默认的阈值/兜底 → 覆盖
+        let mut overlay = Config::default();
+        overlay.asr.vad_threshold = 0.7;
+        overlay.asr.vad_rescue_db = 20.0;
+        merge(&mut base, overlay);
+        assert_eq!(base.asr.vad_threshold, 0.7);
+        assert_eq!(base.asr.vad_rescue_db, 20.0);
+        assert_eq!(base.asr.vad, Some(true), "工程层没写 vad 就保持不变");
+
+        // 全是默认值的 overlay 不该改动任何 VAD 项
+        let mut base2 = Config::default();
+        base2.asr.vad_threshold = 0.9;
+        base2.asr.vad = Some(false);
+        merge(&mut base2, Config::default());
+        assert_eq!(base2.asr.vad_threshold, 0.9);
+        assert_eq!(base2.asr.vad, Some(false));
+        assert_eq!(base2.asr.vad_rescue_db, 16.0, "默认兜底 = 16dB");
+    }
 }
 
 #[cfg(test)]
@@ -1077,5 +1243,102 @@ vtuber_name = \"主播\"
             "{out}"
         );
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// `null` = **删键**（设置页把链路覆盖清空 = 回到"跟随全局"）。
+    ///
+    /// 回归钉子：从前 null 会落到 `json_to_toml_value` 的 Null 分支被写成空串 ——
+    /// `max_tokens = ""` 是合法 TOML 但读不出 u32，`load_llm_config` 直接整份打回默认值。
+    #[test]
+    fn null_patch_removes_key_and_keeps_siblings() {
+        let body = "\
+# 顶部注释
+[llm]
+max_tokens = 16384
+
+# 链路覆盖
+[llm.overrides.detect]
+max_tokens = 8192
+thinking = \"disabled\"
+
+[llm.overrides.polish]
+max_tokens = 32768
+";
+        let p = write_tmp("null-del", body);
+        patch_config_file(
+            &p,
+            &serde_json::json!({"llm": {"overrides": {"detect": {"max_tokens": null,
+                                                                 "thinking": "enabled"}}}}),
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+
+        assert!(!out.contains("8192"), "被 null 的键必须删掉：\n{out}");
+        assert!(
+            out.contains("thinking = \"enabled\""),
+            "同一次 patch 里的其它键照常写入：\n{out}"
+        );
+        for keep in [
+            "# 顶部注释",
+            "# 链路覆盖",
+            "max_tokens = 16384",
+            "[llm.overrides.polish]",
+            "max_tokens = 32768",
+        ] {
+            assert!(out.contains(keep), "丢了 {keep}：\n{out}");
+        }
+        // 删掉之后必须还能被解析（空串那版就是在这一步炸的），且该链路回到跟随 [llm]
+        #[derive(serde::Deserialize)]
+        struct File {
+            llm: types::LlmConfig,
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        let f: File = toml::from_str(&text).expect("删键后的 llm.toml 仍须可解析");
+        assert_eq!(
+            f.llm.for_link(types::LlmLink::Detect).max_tokens,
+            16384,
+            "删掉覆盖 = 跟随 [llm].max_tokens"
+        );
+        assert_eq!(f.llm.for_link(types::LlmLink::Polish).max_tokens, 32768);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// 空子表 patch（`{}`）什么都不动 —— 别把整张表（含注释）当成"没提到的键"删掉。
+    #[test]
+    fn empty_subtable_patch_changes_nothing() {
+        let body = "[llm]\nmax_tokens = 16384\n\n[llm.overrides.detect]\nmax_tokens = 8192\n";
+        let p = write_tmp("empty-sub", body);
+        patch_config_file(&p, &serde_json::json!({"llm": {"overrides": {"detect": {}}}})).unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("max_tokens = 8192"), "{out}");
+        assert!(out.contains("[llm.overrides.detect]"), "{out}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// 模板必须是合法 TOML，且带着按链路的推荐值（新装的文件直接就是"检测 8k / 精修 32k"）。
+    #[test]
+    fn llm_config_template_parses_with_link_overrides() {
+        #[derive(serde::Deserialize)]
+        struct File {
+            llm: types::LlmConfig,
+        }
+        let f: File = toml::from_str(LLM_CONFIG_TOML).expect("LLM_CONFIG_TOML 必须是合法 TOML");
+        assert_eq!(
+            f.llm.for_link(types::LlmLink::Detect).max_tokens,
+            8192,
+            "检测链路应带自己的上限"
+        );
+        assert_eq!(f.llm.for_link(types::LlmLink::Polish).max_tokens, 32768);
+        assert_eq!(f.llm.for_link(types::LlmLink::Correct).max_tokens, 8192);
+        // utility 没写覆盖 → 跟随 [llm]
+        assert_eq!(
+            f.llm.for_link(types::LlmLink::Utility).max_tokens,
+            f.llm.max_tokens
+        );
+        // 精修/零散单发的默认关思考由链路默认给出
+        assert_eq!(
+            f.llm.for_link(types::LlmLink::Polish).thinking.as_deref(),
+            Some("disabled")
+        );
     }
 }

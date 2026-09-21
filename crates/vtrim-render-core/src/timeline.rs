@@ -11,6 +11,9 @@ pub struct CameraState {
     pub zoom: f64,
     pub ox: f64,
     pub oy: f64,
+    /// 手持摇摆的**幅度** 0~1（`Event::Camera::handheld` 的状态机值，与 `zoom` 同一段缓动）。
+    /// 波形本身见 `types::handheld_sway(t, amp)`。
+    pub handheld: f64,
 }
 
 /// 与 JS `getShake` 对齐的震动位移。
@@ -257,6 +260,12 @@ pub fn evaluate_frame(
     vertical_position: &str,
 ) -> FrameState {
     let camera = get_active_camera(t, &idx.camera, layout, camera_style);
+    // 竖屏（源素材竖）不做运镜 —— 手持摇摆是叠加在运镜上的状态，跟着一起屏蔽
+    let camera = if vertical {
+        CameraState { handheld: 0.0, ..camera }
+    } else {
+        camera
+    };
     let shake = get_shake(t, &idx.shake);
     let flash = get_flash(t, &idx.flash);
     let blur = get_blur(t, &idx.blur);
@@ -306,6 +315,9 @@ pub fn get_active_camera(
     let mut zoom = 1.0;
     let mut ox = 65.0;
     let mut oy = 50.0;
+    // 手持摇摆幅度：与 zoom 完全同一套状态机（同一段 td / 同一条缓动），
+    // 差别只是它的"档位"只有 0/1 —— 开了就跟到下一条不带 handheld 的运镜。
+    let mut handheld = 0.0;
 
     let def_origin =
         crate::types::region_origin(&layout.liver).unwrap_or_else(|| "65% 50%".into());
@@ -322,6 +334,7 @@ pub fn get_active_camera(
             zoom: zoom_name,
             origin,
             to_origin,
+            handheld: handheld_ev,
             ..
         } = &c.ev
         else {
@@ -340,6 +353,9 @@ pub fn get_active_camera(
             super::easing::pow2_out((t - c.time) / td)
         };
         zoom = if t >= ce { tgt } else { lerp(zoom, tgt, p) };
+        // ⚠️ 这一份（wgpu 求值）还没有 JS 侧的 hardCut（cut / 任一端远景 → 瞬间到位）口径，
+        // 是老差异；手持摇摆这里就按同一段 p 缓动，等 wgpu 路径启用时与 JS 一起对齐。
+        handheld = lerp(handheld, if *handheld_ev { 1.0 } else { 0.0 }, p);
 
         // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
         // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
@@ -364,6 +380,7 @@ pub fn get_active_camera(
         zoom,
         ox: ox * 1920.0 / 100.0,
         oy: oy * 1080.0 / 100.0,
+        handheld,
     }
 }
 
@@ -485,15 +502,31 @@ pub fn get_active_dms(
     out
 }
 
-/// 与 JS `getActiveSticker` 一致；竖屏时按 vertical_position 覆盖/左右交替 x（对齐模板 GSAP 段）。
+/// 与 JS `getActiveSticker` 一致（DOM 路径回读 `style.left/top` 再 +`140*CK`）。
+///
+/// 落点取事件自带的 `x` / `y`（**盒子左上角**百分比），即 `process/placement.rs`
+/// 安全区算法写进 segments 的值 —— 与 Chrome 出片路径的 `auto` 模式一致。
+/// 返回的 [`StickerState`] 的 `x` / `y` 是**盒子中心**（sprite 层按中心绘制），
+/// 盒子 280×280（本路径固定 1920×1080 画布，`sticker_scale` 恒为 1）。
+///
+/// ⚠️ **本路径还没接 `[sticker] position_mode = manual`**（固定落点）—— 它需要把
+/// `_canvas.sticker` 传进来，即改签名 + 重生成 wasm-bindgen 胶水，本阶段不动；
+/// 已知缺口见 `docs/plan/polish-vertical-canvas.md` §1.4 第 7 条。
+///
+/// ⚠️ 这里原本还有一段「竖屏时按 `vertical_position` 覆盖 x / 左右交替」的强制覆盖，
+/// 已随 `[sticker] position_mode` 落地而删除（该行为由 `manual` 模式正式替代，
+/// `auto` 一律走安全区算法）。见 `docs/plan/polish-vertical-canvas.md` §A4。
+///
+/// `vertical` / `vertical_position` **保留形参**：GPU 路径（`vtrim-wasm` 的
+/// `init_renderer` JS 绑定 + `vtrim-polish/wgpu-render`）仍在传，改签名要重生成
+/// wasm-bindgen 胶水，本阶段不动。落点已与这两个参数无关。
 pub fn get_active_sticker(
     t: f64,
     items: &[IndexedSticker],
-    vertical: bool,
-    vertical_position: &str,
+    _vertical: bool,
+    _vertical_position: &str,
 ) -> Vec<StickerState> {
     let mut out = Vec::new();
-    let mut side_toggle = false;
     for (i, e) in items.iter().enumerate() {
         let et = e.time;
         let dur = e.duration;
@@ -533,19 +566,17 @@ pub fn get_active_sticker(
             continue;
         }
 
-        let (x, y) = match &e.ev {
+        // 落点：`ev.x` / `ev.y` 是**贴纸盒子左上角**百分比（`process/placement.rs` 契约）
+        // → 先换成盒子中心。⚠️ 曾经直接把百分比当中心用，比 DOM 路径（`index.html`
+        // 的 `el.style.left/top` + `engine.js::stickersAt` 都按左上角）整整偏了半个盒子。
+        let (tl_x, tl_y) = match &e.ev {
             Event::Sticker { x, y, .. } => {
-                let mut lx = parse_percent(x).unwrap_or(50.0);
+                // 落点只用事件自带值：竖屏不再覆盖（原先「视频在左→居中 / 否则左右交替」
+                // 是一刀切 hack，现由 [sticker] position_mode=manual 正式表达；
+                // ⚠️ manual 的固定落点本路径还没接 —— 它需要新的形参，而签名连着
+                // wasm-bindgen 胶水，见函数头注释）
+                let lx = parse_percent(x).unwrap_or(50.0);
                 let ly = parse_percent(y).unwrap_or(50.0);
-                // 竖屏：视频在左 → 贴纸居中；视频居中 → 左右交替（对齐模板 GSAP 段）
-                if vertical {
-                    if vertical_position == "left" {
-                        lx = 50.0;
-                    } else {
-                        side_toggle = !side_toggle;
-                        lx = if side_toggle { 15.0 } else { 85.0 };
-                    }
-                }
                 (lx / 100.0 * 1920.0, ly / 100.0 * 1080.0)
             }
             _ => (0.0, 0.0),
@@ -558,11 +589,16 @@ pub fn get_active_sticker(
             _ => String::new(),
         };
 
-        // 贴纸安全范围：sprite 层按中心绘制，保留 280 盒子一半 + 24px 边距
+        // 贴纸安全范围：sprite 层按**中心**绘制（`draw_stickers_into` 减 w/2、h/2），
+        // 所以中心必须落在 `[32 + 半盒, 画布边 - 32 - 半盒]` —— 与 DOM 路径对盒子左上角的
+        // `[32, 边 - 280 - 32]` 钳制等价。
+        // ⚠️ **先 clamps 再叠加 `y_off`**：DOM 侧的 `y:-18` 是 GSAP transform，作用在已钳制
+        // 的位置上（允许越出安全区一个上浮量）；顺序反过来两边就差 18px。
         let sticker_safe = 32.0;
         let half = 140.0;
-        let cx = x.clamp(sticker_safe + half, 1920.0 - sticker_safe - half);
-        let cy = (y + y_off).clamp(sticker_safe + half, 1080.0 - sticker_safe - half);
+        let cx = (tl_x + half).clamp(sticker_safe + half, 1920.0 - sticker_safe - half);
+        let cy =
+            (tl_y + half).clamp(sticker_safe + half, 1080.0 - sticker_safe - half) + y_off;
 
         out.push(StickerState {
             name,
@@ -1007,6 +1043,11 @@ mod tests {
 
     /// 只有 origin 的运镜事件（无位移）。
     fn camera_ev(time: f64, dur: f64, zoom: &str, origin: &str) -> Event {
+        camera_ev_h(time, dur, zoom, origin, false)
+    }
+
+    /// 同上，可带手持摇摆。
+    fn camera_ev_h(time: f64, dur: f64, zoom: &str, origin: &str, handheld: bool) -> Event {
         Event::Camera {
             time,
             end: Some(time + dur),
@@ -1015,6 +1056,7 @@ mod tests {
             anchor: None,
             anchor_to: None,
             to_origin: None, cut: false,
+            handheld,
             manual: false,
         }
     }
@@ -1051,10 +1093,9 @@ mod tests {
 
     /// 位移：不动点从 origin 移到 to_origin，与 zoom 同一段窗口、同一条 pow2Out 缓动。
     #[test]
-    fn camera_pans_origin_over_transition() {
-        let mut cfg = Cfg::example();
+    fn camera_pans_origin_over_transition() {        let mut cfg = Cfg::example();
         let ev = match camera_ev(0.0, 4.0, "中", "80% 50%") {
-            Event::Camera { time, end, zoom, origin, anchor, anchor_to, cut, .. } => {
+            Event::Camera { time, end, zoom, origin, anchor, anchor_to, cut, handheld, .. } => {
                 Event::Camera {
                     time,
                     end,
@@ -1064,6 +1105,7 @@ mod tests {
                     anchor_to,
                     to_origin: Some("20% 50%".into()),
                     cut,
+                    handheld,
                     manual: false,
                 }
             }
@@ -1082,6 +1124,69 @@ mod tests {
         assert!((cam_at(1.5).ox - 0.20 * 1920.0).abs() < 1e-6, "过渡结束后不再变");
         // y 没有终点，全程不动
         assert!((cam_at(0.3).oy - 0.5 * 1080.0).abs() < 1e-6);
+    }
+
+    /// 手持摇摆是**持续状态**：开了就一直跟到下一条不带 handheld 的运镜，
+    /// 起停与景别共用同一段 `min(dur*0.5, 0.6)` 缓动。
+    #[test]
+    fn camera_handheld_follows_state_machine() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 12.0,
+            fx: "low".into(),
+            note: String::new(),
+            events: vec![
+                camera_ev_h(0.0, 4.0, "近", "65% 50%", true),
+                camera_ev_h(6.0, 4.0, "中", "65% 50%", false),
+            ],
+            extra: Default::default(),
+        }];
+        let idx = build_index(&cfg.segments);
+        let amp = |t: f64| get_active_camera(t, &idx.camera, &cfg.layout, &cfg.style.camera).handheld;
+
+        assert_eq!(amp(0.0), 0.0, "起点幅度为 0（缓动刚起步）");
+        assert!((amp(0.6) - 1.0).abs() < 1e-9, "过渡结束即全幅摇摆: {}", amp(0.6));
+        assert!((amp(5.9) - 1.0).abs() < 1e-9, "一路跟到下一条运镜");
+        // 下一条不带 handheld：同一段缓动收回去（pow2Out(0.5)=0.75 → 0.25）
+        let mid = amp(6.3);
+        assert!((mid - 0.25).abs() < 1e-9, "收尾中点: {mid}");
+        assert_eq!(amp(6.6), 0.0, "收完就静止（不能留残余摆动）");
+    }
+
+    /// 摇摆波形必须与 JS 两份实现逐值一致（漂移了预览就和成片不一样）。
+    /// 期望值取自 `webui/src/polish/engine.js::handheldSway`（由 `check-handheld.mjs` 对拍的那份）。
+    #[test]
+    fn handheld_sway_matches_js_reference() {
+        let v = |t: f64, amp: f64| {
+            let s = crate::types::handheld_sway(t, amp);
+            [s.dx, s.dy, s.rot, s.scale]
+        };
+        // amp=0 → 完全静止（OFF），与 t 无关
+        assert_eq!(v(3.7, 0.0), [0.0, 0.0, 0.0, 1.0]);
+        // 全幅：四个采样点把两个正弦分量的相位都覆盖到
+        for (t, want) in [
+            (0.0, [2.974_994_431_357_405_5, 5.537_746_181_460_179, 0.162_893_762_213_005_36, 1.006_238_451_520_430_2]),
+            (1.5, [-6.534_804_875_504_133, 1.998_507_667_634_624_3, -0.358_933_426_843_904_06, 0.998_691_374_050_889_2]),
+            (4.25, [-2.966_335_968_174_989, -1.859_259_740_722_605_2, -0.100_907_167_151_848_72, 1.003_076_791_799_218_5]),
+            (9.9, [-5.095_502_881_135_531, -1.502_144_180_998_791_4, -0.287_127_406_065_839_97, 1.003_292_193_865_482]),
+        ] {
+            let got = v(t, 1.0);
+            for i in 0..4 {
+                assert!(
+                    (got[i] - want[i]).abs() < 1e-9,
+                    "t={t} 第 {i} 项漂移: 实得 {} 期望 {}",
+                    got[i],
+                    want[i]
+                );
+            }
+        }
+        // 幅度按比例缩放（起停过渡的那 0.6s）
+        let half = v(1.5, 0.5);
+        for i in 0..3 {
+            assert!((half[i] - v(1.5, 1.0)[i] * 0.5).abs() < 1e-9);
+        }
+        assert!((half[3] - 1.0 - (v(1.5, 1.0)[3] - 1.0) * 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -1311,6 +1416,54 @@ mod tests {
             }
             other => panic!("应落到第二条覆盖层，实得 {other:?}"),
         }
+    }
+
+    /// 贴纸事件（`x` / `y` 是**盒子左上角**百分比，与 `process/placement.rs` 的契约一致）。
+    fn sticker_ev(time: f64, dur: f64, x: &str, y: &str) -> Event {
+        Event::Sticker {
+            time,
+            end: Some(time + dur),
+            keyword: "ysyk".into(),
+            sticker_tag: None,
+            name: Some("1f600".into()),
+            source: None,
+            x: x.into(),
+            y: y.into(),
+            sfx: None,
+            sfx_volume: None,
+            manual: false,
+        }
+    }
+
+    /// 落点：事件 `x` / `y` 是**盒子左上角**，本函数返回的 `x` / `y` 是**盒子中心**
+    /// （sprite 层按中心绘制，`x - w/2`）。曾经直接把百分比当中心用，整整偏半个盒子。
+    /// 同一套数字由 JS 侧对拍：`node webui/scripts/check-sticker-anchor.mjs`（横屏那几例）。
+    #[test]
+    fn sticker_anchor_is_box_top_left_plus_half_box() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(sticker_ev(0.0, 2.5, "12%", "42%"))];
+        let idx = build_index(&cfg.segments);
+        // 12%*1920 = 230.4、42%*1080 = 453.6 → 加半个盒子 140 → 中心 (370.4, 593.6)。
+        // t=1.5 落在「保持」段（入场 0.35 + 浮起 0.4 = 0.75 之后），y_off 恒为 -18。
+        let s = get_active_sticker(1.5, &idx.sticker, false, "").pop().expect("应有贴纸");
+        assert!((s.x - 370.4).abs() < 1e-6, "x 应为盒子中心: {}", s.x);
+        assert!((s.y - (593.6 - 18.0)).abs() < 1e-6, "y 应为「盒子中心 - 上浮」: {}", s.y);
+        assert!((s.w - 280.0).abs() < 1e-9 && (s.h - 280.0).abs() < 1e-9, "盒子应为 280×280");
+    }
+
+    /// 左上角越界时：**先把中心钳进安全区、再叠加 `y_off`**。
+    /// ⚠️ 顺序反过来（先叠上浮再钳）两边的数会差 18px —— DOM 侧的 `y:-18` 是作用在
+    /// 已钳制的 CSS 位置上的 transform，允许越出安全区一个上浮量。
+    #[test]
+    fn sticker_center_is_clamped_before_float_up() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(sticker_ev(0.0, 2.5, "0%", "0%"))];
+        let idx = build_index(&cfg.segments);
+        // 左上角 (0,0) → 中心 (140,140) → 钳到下限 32 + 140 = 172 → 再减 18
+        // （= DOM 侧盒子 top 14px，与 index.html `stickerBox` + GSAP `y:-18*SK` 一致）
+        let s = get_active_sticker(1.5, &idx.sticker, false, "").pop().expect("应有贴纸");
+        assert!((s.x - 172.0).abs() < 1e-6, "x 应被钳到 172: {}", s.x);
+        assert!((s.y - 154.0).abs() < 1e-6, "y 应「先钳到 172 再减 18」: {}", s.y);
     }
 }
 

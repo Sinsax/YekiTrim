@@ -1,3 +1,8 @@
+//! asr::correct：LLM 订正转写文本（分窗走 `Agent`，带 checkpoint 续传）。
+//!
+//! 入口：`correct_transcript`、`correct_transcript_with_checkpoint`、`DEFAULT_SYSTEM_PROMPT`、`DEFAULT_USER_PROMPT`。
+//! 边界：订正稿是**普通素材**，走 `bind_derived_material`、不占 ASR 槽；改内建 prompt 对 `.vtrim/config.toml` 里的副本无效 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -237,6 +242,8 @@ pub async fn correct_transcript_with_checkpoint(
         project: project.map(crate::path::display),
     };
 
+    // 链路解析：订正走 `[llm.overrides.correct]`（Agent 的 llm 会传给默认的 `process_window` 建客户端）
+    let llm = llm.for_link(crate::config::LlmLink::Correct);
     let agent = Agent::new(llm.clone())
         .with_window_size(correct.window_size.max(1))
         .with_max_concurrent(llm.concurrency(correct.max_concurrent));

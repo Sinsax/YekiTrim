@@ -1,7 +1,12 @@
+//! asr::local：sherpa-onnx 识别器构建与分块解码（SenseVoice 打轴 / qwen3-asr 填词）。
+//!
+//! 入口：`create_recognizer`、`create_qwen3_recognizer`、`transcribe_sensevoice`、`transcribe_qwen3_samples`、`resolve_model_dir`、`read_wav_range`、`ensure_ready`。
+//! 边界：模型选择与解码线程数（`decode_threads`）只在这里；sherpa-onnx 一律 CPU only，改并行方式要连带看 qwen3 全局锁 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use memmap2::Mmap;
 use serde::Serialize;
 use sherpa_onnx::{
@@ -10,6 +15,7 @@ use sherpa_onnx::{
 };
 
 use crate::asr::align::{self, CharTimeline, SplitPolicy};
+use crate::asr::vad;
 use crate::config::AsrConfig;
 use crate::progress::ProgressReporter;
 use crate::types::{AsrMetadata, TranscriptSegment};
@@ -409,6 +415,7 @@ pub fn transcribe_sensevoice(
         max_interp_span: 0,
         fallback_reason: Some("sensevoice_single".into()),
         model: "sensevoice".into(),
+        mode: cfg.mode.trim().to_ascii_lowercase(),
     };
 
     Ok(TranscribeOutput {
@@ -428,19 +435,82 @@ fn token_belongs_to_chunk(abs: f64, chunk_offset: f64, claim_end: f64) -> bool {
     abs >= chunk_offset && abs < claim_end
 }
 
-/// 用 sensevoice 并行扫描音频：返回**每块的原始 token** 与合并后的**字符级时间轴**。
+/// 一个解码窗口：**解码区间**与 **token 归属区间**是两件事。
 ///
-/// 时间轴是断句的唯一时间权威 —— 逐字时间戳在这里就位，之后无论是 single 直接切，
-/// 还是 hybrid 用 qwen3 的文本按标点切，切点时间都从这里取。
-fn scan_sensevoice_chunks(
-    mapped: &MappedWave,
-    recognizer: &OfflineRecognizer,
-    cfg: &AsrConfig,
-    progress: &dyn ProgressReporter,
-) -> Result<(Vec<RawChunk>, CharTimeline)> {
-    let sample_rate = mapped.sample_rate;
-    let total_samples = mapped.total_samples;
+/// 解码时可以往前多喂一点（`segment_padding` 的余量、VAD 段两侧的余量），
+/// 但**只有归属区间里的字会被采纳** —— 否则同一句话会被相邻两个窗口各写一次
+/// （时间轴是逐字的，没有段级去重兜底，见 `token_belongs_to_chunk` 的注释）。
+///
+/// 采样下标用整数存：切音频必须按样本对齐；秒只用于时间戳还原与归属判定。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DecodeWindow {
+    decode_start_sample: usize,
+    decode_end_sample: usize,
+    /// 时间戳是相对**解码起点**报的，绝对时间要加它还原
+    decode_start_secs: f64,
+    claim_start: f64,
+    /// 最后一块传 `f64::INFINITY`（解码到哪收到哪）
+    claim_end: f64,
+}
 
+/// VAD 只用在 **single 模式**。
+///
+/// hybrid 的时间几乎全在 qwen3 上（实测 3 小时素材 12.4 min vs 打轴 2.5 min，占八成），
+/// 而两模式共用这一遍 SenseVoice 打轴 —— 想在 hybrid 上也省，得先动 qwen3，
+/// 那是另一件事（见 `docs/plan/`）。所以先按用户诉求落在 single：**hybrid 的输出一个字都不变**。
+fn use_vad(cfg: &AsrConfig) -> bool {
+    cfg.vad_enabled() && cfg.mode.trim().eq_ignore_ascii_case("single")
+}
+
+/// silero 权重的位置。
+///
+/// ⚠️ 与 `resolve_model_dir` 同一套查找顺序，但 silero 是**裸 onnx 文件**（没有注册表 marker），
+/// 所以这里逐个目录找文件，而不是问 `download::model_install`。
+fn vad_model_path(cfg: &AsrConfig) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if !cfg.local_model_dir.is_empty() {
+        let base = PathBuf::from(&cfg.local_model_dir);
+        dirs.push(base.join(vad::MODEL_DIR_NAME));
+        dirs.push(base);
+    }
+    dirs.push(resolve_model_dir(cfg, vad::MODEL_DIR_NAME).0);
+    dirs.into_iter().find_map(|d| vad::find_vad_model(&d))
+}
+
+/// 解码窗口的**唯一来源**：VAD 开了走语音段，否则（或 VAD 不可用）走固定分块。
+///
+/// VAD 失败一律**回退**而不是报错：转写了一辈子都是固定分块，模型没下、判定异常
+/// 都不该让整场转写停在半路 —— 这也是"效果对齐"的底线（退化成老口径，不会更差）。
+fn plan_windows(
+    mapped: &MappedWave,
+    cfg: &AsrConfig,
+    _progress: &dyn ProgressReporter,
+) -> Result<Vec<DecodeWindow>> {
+    if use_vad(cfg) {
+        match plan_vad_windows(mapped, cfg) {
+            Ok(w) if !w.is_empty() => return Ok(w),
+            Ok(_) => tracing::warn!("VAD 没找到语音段（整段无语音？），回退固定分块"),
+            Err(e) => tracing::warn!("VAD 不可用（{e:#}），回退固定分块"),
+        }
+    }
+    plan_fixed_windows(cfg, mapped.total_samples, mapped.sample_rate)
+}
+
+/// 固定分块（原口径，未动）：60s 一块、10s 重叠、步进 `chunk_duration - chunk_overlap`。
+///
+/// 重叠区归属**按下一块的起点切**，每块只认自己那一个 `step`。
+///
+/// ⚠️ 这里曾经是按「块中点之后交给下一块」（`offset + duration - overlap/2`，即 55s），
+/// 于是 `[50s, 55s)` 这一截**两块都留下**；旧代码靠 `dedup_overlaps` 在段一级去重兜住，
+/// 而时间轴是逐字的、没有那层兜底 —— 5 秒的字会被写进去两次，进而切出两个覆盖同一段音频的
+/// 窗口（qwen3 白跑一遍、字幕重复）。按下一块起点切是**无重叠的分区**：
+/// token ∈ `[offset, offset+step)` 归本块，它同时被下一块（从前 10s 预卷开始解码）正确识别，不会漏。
+/// 最后一块没有"下一块起点"，它解码到哪就收到哪（`claim_end = INFINITY`）。
+fn plan_fixed_windows(
+    cfg: &AsrConfig,
+    total_samples: usize,
+    sample_rate: usize,
+) -> Result<Vec<DecodeWindow>> {
     let chunk_samples = (cfg.chunk_duration * sample_rate as f64) as usize;
     let overlap_samples = (cfg.chunk_overlap * sample_rate as f64) as usize;
     let step_samples = chunk_samples.saturating_sub(overlap_samples);
@@ -453,15 +523,40 @@ fn scan_sensevoice_chunks(
         );
     }
 
+    // 左余量：多喂 `segment_padding` 秒**已经被上一块认领过的**音频，只为了让本块开头的字
+    // 有左上下文 —— 从块起点硬解码等于让识别器从半个词中间开始听，块首几个字容易丢/错。
+    // ⚠️ 归属判定不含余量，所以分区不变；但 token 时间戳是相对**解码起点**报的。
+    let pad_samples = (cfg.segment_padding.max(0.0) * sample_rate as f64) as usize;
     let total_chunks = total_samples.div_ceil(step_samples);
-    tracing::info!(
-        "sensevoice 扫描: 音频分 {total_chunks} 块 (每块 {:.0}s, 重叠 {:.0}s, 步进 {:.1}s)",
-        cfg.chunk_duration,
-        cfg.chunk_overlap,
-        step_samples as f64 / sample_rate as f64
-    );
 
-    let workers = if cfg.num_workers == 0 {
+    let mut out = Vec::with_capacity(total_chunks);
+    for i in 0..total_chunks {
+        let sample_start = i * step_samples;
+        let sample_end = (sample_start + chunk_samples).min(total_samples);
+        let decode_start = sample_start.saturating_sub(pad_samples);
+        let offset = sample_start as f64 / sample_rate as f64;
+        let is_last = i + 1 == total_chunks;
+        out.push(DecodeWindow {
+            decode_start_sample: decode_start,
+            decode_end_sample: sample_end,
+            decode_start_secs: decode_start as f64 / sample_rate as f64,
+            claim_start: offset,
+            claim_end: if is_last {
+                f64::INFINITY
+            } else {
+                offset + step_samples as f64 / sample_rate as f64
+            },
+        });
+    }
+    Ok(out)
+}
+
+/// 并行度：默认 CPU/4（上限 4），`num_workers` 显式给了就按它（不超过核数）。
+///
+/// VAD 分块与 SenseVoice 解码**共用这一个口径** —— 两处各写一份必然漂移，
+/// 而"并行度"这件事没有第二个语义。
+fn decode_workers(cfg: &AsrConfig, total_items: usize) -> usize {
+    let base = if cfg.num_workers == 0 {
         std::thread::available_parallelism()
             .map(|n| (n.get() / 4).clamp(1, 4))
             .unwrap_or(1)
@@ -471,9 +566,256 @@ fn scan_sensevoice_chunks(
                 .map(|n| n.get())
                 .unwrap_or(1),
         )
+    };
+    base.min(total_items.max(1)).max(1)
+}
+
+/// VAD 分块并行扫描。
+///
+/// silero 是**单线程流式**的：实测 184 分钟素材要 61s，而 SenseVoice 那一段总共才 2.5 分钟
+/// —— 串行跑 VAD 会把省下来的一半吐回去。所以按块并行（块数 = worker 数）：
+///
+/// - 每块从 `start - SEAM_MARGIN` 开始喂（把 LSTM 状态喂热），**名义区间之外的结果不采纳**；
+/// - 接缝处相邻两块的段本来就会小幅重叠（后一块会重新检出延续过来的那段话音），
+///   交给后面的 `merge_regions` 收口 —— 宁可重叠也不能留缝（留缝就是丢字幕）。
+fn detect_speech_parallel(
+    mapped: &MappedWave,
+    params: &vad::VadParams,
+    workers: usize,
+    chunk_duration: f32,
+) -> Result<Vec<vad::SpeechRegion>> {
+    /// 接缝余量：喂给检测器把状态喂热的那一段（秒）。
+    const SEAM_MARGIN_SECS: f64 = 1.0;
+
+    let sr = mapped.sample_rate;
+    let total = mapped.total_samples;
+    let workers = workers.clamp(1, 16);
+    let chunk_samples = total.div_ceil(workers).max(1);
+    let margin = (SEAM_MARGIN_SECS * sr as f64) as usize;
+
+    let parts: Vec<Vec<vad::SpeechRegion>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .filter_map(|i| {
+                let nominal_start = i * chunk_samples;
+                if nominal_start >= total {
+                    return None;
+                }
+                let nominal_end = ((i + 1) * chunk_samples).min(total);
+                let feed_start = nominal_start.saturating_sub(margin);
+                let feed_len = nominal_end - feed_start;
+                Some(scope.spawn(move || {
+                    // 相对喂入起点的下标 → 绝对样本下标
+                    let mut read = |start: usize, count: usize| {
+                        let abs = feed_start + start;
+                        let count = count.min(total.saturating_sub(abs));
+                        mapped.samples_f32(abs, count)
+                    };
+                    match vad::detect_speech(&mut read, feed_len, params, chunk_duration) {
+                        // ⚠️ `detect_speech` 报的是**相对喂入起点**的时间，必须加回 `feed_start`：
+                        // 忘了这一步，第 2 块之后的段会全部落在 [0, feed_len] 里，
+                        // 与第 1 块大段重叠，一合并就整片消失（实测 1410 段塌成 79 段）。
+                        Ok(regions) => {
+                            let off = feed_start as f64 / sr as f64;
+                            regions
+                                .into_iter()
+                                .map(|r| vad::SpeechRegion {
+                                    start: r.start + off,
+                                    end: r.end + off,
+                                })
+                                .collect()
+                        }
+                        Err(e) => {
+                            tracing::warn!("VAD 分块 {} 失败（{e:#}），该块按无语音处理", i);
+                            Vec::new()
+                        }
+                    }
+                }))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+
+    let total_secs = total as f64 / sr as f64;
+    let mut regions: Vec<vad::SpeechRegion> = parts.into_iter().flatten().collect();
+    regions.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(vad::clamp_regions(regions, total_secs))
+}
+
+/// VAD：只把语音段切给识别器。
+///
+/// 流程 = silero 判定 → 合并近邻 → **动态电平兜底** → 转成解码窗口。每一步都会打日志，
+/// 因为"这次到底省了多少、兜底捞回多少"必须能在日志里对上（不然只能靠感觉）。
+fn plan_vad_windows(mapped: &MappedWave, cfg: &AsrConfig) -> Result<Vec<DecodeWindow>> {
+    let sample_rate = mapped.sample_rate;
+    let total_samples = mapped.total_samples;
+    let total_secs = total_samples as f64 / sample_rate as f64;
+    let started = std::time::Instant::now();
+
+    let model = vad_model_path(cfg).ok_or_else(|| {
+        anyhow!(
+            "未找到 silero VAD 模型（找过 {} 与 {}）",
+            cfg.local_model_dir,
+            resolve_model_dir(cfg, vad::MODEL_DIR_NAME).0.display()
+        )
+    })?;
+    let params = vad::VadParams {
+        model: model.clone(),
+        threshold: cfg.vad_threshold.clamp(0.05, 0.95) as f32,
+        min_silence: 0.5,
+        min_speech: 0.25,
+        sample_rate,
+    };
+
+    let read = |start: usize, count: usize| mapped.samples_f32(start, count);
+    let vad_workers = decode_workers(cfg, mapped.total_samples);
+    let raw = detect_speech_parallel(mapped, &params, vad_workers, cfg.chunk_duration as f32)?;
+    let regions = vad::expand_regions(
+        vad::clamp_regions(vad::merge_regions(raw, vad::MERGE_GAP_SECS), total_secs),
+        vad::GUARD_SECS,
+        total_secs,
+    );
+    let speech_secs: f64 = regions.iter().map(vad::SpeechRegion::duration).sum();
+
+    // 动态电平兜底：按**本片自己的**语音电平放宽，宁可多解码也不漏语音。
+    let mut rescued = 0.0;
+    let regions = if cfg.vad_rescue_db > 0.0 {
+        let frame = (vad::LEVEL_FRAME_SECS * sample_rate as f64).max(1.0) as usize;
+        let levels = vad::frame_levels_db(&mut { read }, total_samples, frame);
+        match vad::speech_level_db(&levels, &regions, vad::LEVEL_FRAME_SECS) {
+            Some(level) => {
+                let floor = level - cfg.vad_rescue_db as f32;
+                let (r, secs) = vad::rescue_by_level(
+                    regions,
+                    &levels,
+                    vad::LEVEL_FRAME_SECS,
+                    floor,
+                    vad::RESCUE_MIN_SPAN_SECS,
+                );
+                rescued = secs;
+                r
+            }
+            None => regions,
+        }
+    } else {
+        regions
+    };
+    let kept_secs: f64 = regions.iter().map(vad::SpeechRegion::duration).sum();
+
+    let windows = plan_speech_windows(&regions, cfg, sample_rate, total_samples);
+    // 固定分块要解的量是 `音频 × chunk/step`（默认 1.2 倍）—— 这才是"省了多少"的对照基准
+    let fixed_secs = total_secs * (cfg.chunk_duration / (cfg.chunk_duration - cfg.chunk_overlap).max(0.1));
+    tracing::info!(
+        "VAD: {} 段语音 {:.0}s（占 {:.1}%）+ 电平兜底捞回 {:.0}s → 解码 {:.0}s（固定分块要解 {:.0}s，约 {:.2}×）; \
+         用时 {:.1}s; 模型 {}",
+        regions.len(),
+        speech_secs,
+        speech_secs / total_secs.max(1.0) * 100.0,
+        rescued,
+        kept_secs,
+        fixed_secs,
+        fixed_secs / kept_secs.max(0.1),
+        started.elapsed().as_secs_f64(),
+        model.display()
+    );
+
+    Ok(windows)
+}
+
+/// 语音段 → 解码窗口。
+///
+/// - 短于一个 chunk 的段：整段一次解码（两侧各留 `segment_padding`，只有归属段内的字被采纳）；
+/// - 超过一个 chunk 的段（连续说话）：与固定分块**同一套步进**切开，claim 依次相接、绝不重叠。
+fn plan_speech_windows(
+    regions: &[vad::SpeechRegion],
+    cfg: &AsrConfig,
+    sample_rate: usize,
+    total_samples: usize,
+) -> Vec<DecodeWindow> {
+    let sr = sample_rate as f64;
+    let chunk_samples = (cfg.chunk_duration.max(1.0) * sr) as usize;
+    let overlap_samples = (cfg.chunk_overlap.max(0.0) * sr) as usize;
+    let step_samples = chunk_samples.saturating_sub(overlap_samples).max(1);
+    let pad_samples = (cfg.segment_padding.max(0.0) * sr) as usize;
+
+    let mut out: Vec<DecodeWindow> = Vec::new();
+    for r in regions {
+        let claim_start_s = (r.start.max(0.0) * sr) as usize;
+        let claim_end_s = ((r.end.max(0.0) * sr) as usize).min(total_samples);
+        if claim_end_s <= claim_start_s {
+            continue;
+        }
+        let decode_start = claim_start_s.saturating_sub(pad_samples);
+        let decode_end = (claim_end_s + pad_samples).min(total_samples);
+
+        if decode_end - decode_start <= chunk_samples {
+            out.push(DecodeWindow {
+                decode_start_sample: decode_start,
+                decode_end_sample: decode_end,
+                decode_start_secs: decode_start as f64 / sr,
+                claim_start: claim_start_s as f64 / sr,
+                claim_end: claim_end_s as f64 / sr,
+            });
+            continue;
+        }
+
+        let mut off = decode_start;
+        loop {
+            let win_end = (off + chunk_samples).min(decode_end);
+            let is_last = win_end >= decode_end;
+            let claim_s = off.max(claim_start_s);
+            let claim_e = if is_last {
+                claim_end_s
+            } else {
+                (off + step_samples).min(claim_end_s)
+            };
+            if claim_e > claim_s {
+                // 段内的窗口同样给左余量（与固定分块同一个理由：别从半个词中间开始听）
+                let dec_start = off.saturating_sub(pad_samples).max(decode_start);
+                out.push(DecodeWindow {
+                    decode_start_sample: dec_start,
+                    decode_end_sample: win_end,
+                    decode_start_secs: dec_start as f64 / sr,
+                    claim_start: claim_s as f64 / sr,
+                    claim_end: claim_e as f64 / sr,
+                });
+            }
+            if is_last {
+                break;
+            }
+            off += step_samples;
+            if off >= decode_end {
+                break;
+            }
+        }
     }
-    .min(total_chunks)
-    .max(1);
+    out
+}
+
+/// 用 sensevoice 并行扫描音频：返回**每块的原始 token** 与合并后的**字符级时间轴**。
+///
+/// 时间轴是断句的唯一时间权威 —— 逐字时间戳在这里就位，之后无论是 single 直接切，
+/// 还是 hybrid 用 qwen3 的文本按标点切，切点时间都从这里取。
+fn scan_sensevoice_chunks(
+    mapped: &MappedWave,
+    recognizer: &OfflineRecognizer,
+    cfg: &AsrConfig,
+    progress: &dyn ProgressReporter,
+) -> Result<(Vec<RawChunk>, CharTimeline)> {
+    let sample_rate = mapped.sample_rate;
+
+    let windows = plan_windows(mapped, cfg, progress)?;
+    let total_chunks = windows.len();
+    tracing::info!(
+        "sensevoice 扫描: {total_chunks} 个解码窗口（chunk {:.0}s / 重叠 {:.0}s / VAD {}）",
+        cfg.chunk_duration,
+        cfg.chunk_overlap,
+        if use_vad(cfg) { "开" } else { "关" }
+    );
+
+    let workers = decode_workers(cfg, total_chunks);
 
     let mut all_chunks: Vec<RawChunk> = Vec::with_capacity(total_chunks);
 
@@ -486,42 +828,22 @@ fn scan_sensevoice_chunks(
         let spawned: Vec<RawChunk> = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(batch_end - batch_start);
 
-            for chunk_idx in batch_start..batch_end {
-                let sample_start = chunk_idx * step_samples;
-                let sample_end = (sample_start + chunk_samples).min(total_samples);
-                let chunk_offset = sample_start as f64 / sample_rate as f64;
-                // 左余量：多喂 `segment_padding` 秒**已经被上一块认领过的**音频，
-                // 只为了让本块开头的字有左上下文 —— 从块起点硬解码等于让识别器
-                // 从半个词中间开始听，块首几个字容易丢/错。
-                // ⚠️ 归属判定仍用 `chunk_offset`（不含余量），所以分区不变；
-                // 但 token 时间戳是相对**解码起点**报的，绝对时间要用 `decode_offset` 还原。
-                let pad_samples = (cfg.segment_padding.max(0.0) * sample_rate as f64) as usize;
-                let decode_start = sample_start.saturating_sub(pad_samples);
-                let decode_offset = decode_start as f64 / sample_rate as f64;
-                // 重叠区归属：**按下一块的起点切**，每块只认自己那 50s（`step`）。
-                //
-                // ⚠️ 这里曾经是按「块中点之后交给下一块」（`offset + duration - overlap/2`，
-                // 即 55s），于是 [50s, 55s) 这一截**两块都留下**；旧代码靠 `dedup_overlaps`
-                // 在段一级去重兜住，而时间轴是逐字的，没有那层兜底 —— 5 秒的字会被写进去两次，
-                // 进而切出两个覆盖同一段音频的窗口（qwen3 白跑一遍、字幕重复）。
-                // 按下一块起点切是**无重叠的分区**：token ∈ [offset, offset+step) 归本块，
-                // 它同时被下一块（从前 10s 预卷开始解码）正确识别，不会漏。
-                // 最后一块没有"下一块起点"，它解码到哪就收到哪
-                let step_secs = step_samples as f64 / sample_rate as f64;
-                let is_last = chunk_idx == total_chunks - 1;
-                let claim_end = if is_last {
-                    f64::INFINITY
-                } else {
-                    chunk_offset + step_secs
-                };
-
-                // 从 `decode_start`（含左余量）解码，但只有 `[chunk_offset, claim_end)` 的字被采纳
-                let chunk_f32 = mapped.samples_f32(decode_start, sample_end - decode_start);
+            for (offset_in_batch, win) in windows[batch_start..batch_end].iter().enumerate() {
+                let win_idx = batch_start + offset_in_batch;
+                let win = *win;
+                let decode_offset = win.decode_start_secs;
+                let claim_start = win.claim_start;
+                let claim_end = win.claim_end;
+                // 从 `decode_start`（含余量）解码，但只有 `[claim_start, claim_end)` 的字被采纳
+                let chunk_f32 = mapped.samples_f32(
+                    win.decode_start_sample,
+                    win.decode_end_sample.saturating_sub(win.decode_start_sample),
+                );
 
                 handles.push(scope.spawn(move || {
                     let mut out = RawChunk {
-                        index: chunk_idx,
-                        offset: chunk_offset,
+                        index: win_idx,
+                        offset: claim_start,
                         first_kept_time: None,
                         tokens: Vec::new(),
                         timestamps: Vec::new(),
@@ -534,9 +856,9 @@ fn scan_sensevoice_chunks(
                     if let Some(result) = stream.get_result() {
                         if let Some(ts) = &result.timestamps {
                             for (tok, &t) in result.tokens.iter().zip(ts.iter()) {
-                                // 时间戳相对**解码起点**（含左余量）→ 用 decode_offset 还原
+                                // 时间戳相对**解码起点**（含余量）→ 用 decode_offset 还原
                                 let abs = decode_offset + t as f64;
-                                if token_belongs_to_chunk(abs, chunk_offset, claim_end) {
+                                if token_belongs_to_chunk(abs, claim_start, claim_end) {
                                     if out.first_kept_time.is_none() {
                                         out.first_kept_time = Some(abs);
                                     }
@@ -964,6 +1286,422 @@ mod tests {
         assert_eq!(timeline.text(), "你好世界");
         for w in timeline.times.windows(2) {
             assert!(w[1] >= w[0], "时间轴不单调: {:?}", timeline.times);
+        }
+    }
+
+    /// 语音段 → 解码窗口：**claim 必须铺满每个语音段且互不重叠**。
+    ///
+    /// 这是 VAD 路径的核心不变量 —— claim 之间留缝会丢字（那一段没人认领），
+    /// 重叠会让同一个字写两遍（时间轴是逐字的，没有段级去重兜底）。
+    #[test]
+    fn speech_windows_tile_every_region_without_gap() {
+        let cfg = AsrConfig::default(); // chunk 60 / overlap 10 / pad 0
+        let sr = 16_000usize;
+        let total_secs = 400.0;
+        let total_samples = (total_secs * sr as f64) as usize;
+        let regions = vec![
+            vad::SpeechRegion {
+                start: 10.0,
+                end: 20.0,
+            }, // 短段：一窗
+            vad::SpeechRegion {
+                start: 100.0,
+                end: 260.0,
+            }, // 160s：切成 3 窗（步进 50）
+        ];
+        let windows = plan_speech_windows(&regions, &cfg, sr, total_samples);
+        assert_eq!(windows.len(), 4, "{windows:#?}");
+
+        // ① 每个语音段被完整覆盖；段**内**相邻 claim 严丝合缝（段与段之间的静音本来就没人认领）
+        assert_eq!(
+            (windows[0].claim_start, windows[0].claim_end),
+            (10.0, 20.0),
+            "短段一窗搞定: {windows:#?}"
+        );
+        let mut cursor = 100.0;
+        for w in windows.iter().skip(1) {
+            assert!(
+                (w.claim_start - cursor).abs() < 1e-6,
+                "段内 claim 之间有缝/重叠: 期望 {cursor}，实际 {}",
+                w.claim_start
+            );
+            assert!(w.claim_end > w.claim_start);
+            cursor = w.claim_end;
+        }
+        assert!((cursor - 260.0).abs() < 1e-6, "长段没铺满: 到 {cursor}");
+        let second: Vec<f64> = windows
+            .iter()
+            .skip(1)
+            .flat_map(|w| [w.claim_start, w.claim_end])
+            .collect();
+        assert_eq!(
+            second,
+            vec![100.0, 150.0, 150.0, 200.0, 200.0, 260.0],
+            "长段按步进 50 切开（与固定分块的 claim 口径一致：非末窗只认一个 step，末窗收到段尾）"
+        );
+
+        // ② 解码区间永远包住 claim，且不越界
+        for w in &windows {
+            assert!(w.decode_start_sample as f64 / sr as f64 <= w.claim_start + 1e-6);
+            assert!(w.decode_end_sample as f64 / sr as f64 >= w.claim_end - 1e-6);
+            assert!(w.decode_end_sample <= total_samples);
+        }
+        // ③ 窗口按时间有序（时间轴合并按这个顺序）
+        for pair in windows.windows(2) {
+            assert!(pair[0].claim_start <= pair[1].claim_start);
+        }
+    }
+
+    /// VAD 只在 **single** 模式生效：hybrid 的输出必须一个字都不变。
+    #[test]
+    fn vad_is_single_mode_only() {
+        let mut cfg = AsrConfig {
+            mode: "single".into(),
+            ..Default::default()
+        };
+        assert!(use_vad(&cfg), "single 默认开（vad 没写 = 跟随默认）");
+        cfg.vad = Some(false);
+        assert!(!use_vad(&cfg), "显式关要生效");
+        cfg.vad = None;
+        cfg.mode = "SINGLE".into();
+        assert!(use_vad(&cfg), "模式名大小写不敏感");
+        cfg.mode = "hybrid".into();
+        assert!(!use_vad(&cfg), "hybrid 不走 VAD");
+        assert!(cfg.vad_enabled(), "但开关本身还是开着的（只是这个模式不用）");
+    }
+
+    /// 关掉 VAD 时窗口必须与老口径**逐样本一致**（这是"hybrid 输出一个字不变"的依据）。
+    #[test]
+    fn fixed_windows_keep_legacy_geometry() {
+        let cfg = AsrConfig::default();
+        let sr = 16_000usize;
+        let total = (165.0 * sr as f64) as usize; // 165s → 4 块（步进 50）
+        let windows = plan_fixed_windows(&cfg, total, sr).unwrap();
+        assert_eq!(windows.len(), 4);
+        let step = 50 * sr;
+        let chunk = 60 * sr;
+        for (i, w) in windows.iter().enumerate() {
+            assert_eq!(w.decode_start_sample, i * step);
+            assert_eq!(w.decode_end_sample, (i * step + chunk).min(total));
+            assert!((w.claim_start - i as f64 * 50.0).abs() < 1e-6);
+            if i + 1 == windows.len() {
+                assert!(w.claim_end.is_infinite(), "最后一块的解码尽头就是尽头");
+            } else {
+                assert!((w.claim_end - (i as f64 * 50.0 + 50.0)).abs() < 1e-6);
+            }
+        }
+    }
+
+    /// VAD 自检（合成音频）：**绝对时间戳**与"静音不判语音"这两件事一起验。
+    ///
+    /// 用法：`VT_VAD_MODEL_DIR=<models 根> VT_VAD_SPEECH_WAV=<一段真实语音 wav> \
+    ///        cargo test -p vtrim-core --lib diagnose_vad_synthetic -- --ignored --nocapture`
+    #[test]
+    #[ignore = "需要真实 VAD 模型与一段语音 wav"]
+    fn diagnose_vad_synthetic() {
+        fn model_path_for(p: &Path) -> std::path::PathBuf {
+            p.to_path_buf()
+        }
+        fn rms_of(v: &[f32]) -> f64 {
+            if v.is_empty() {
+                return 0.0;
+            }
+            (v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / v.len() as f64).sqrt()
+        }
+        fn slice_of(pcm: &[f32], a: f64, b: f64, sr: usize) -> Vec<f32> {
+            let s = (a * sr as f64).max(0.0) as usize;
+            let e = ((b * sr as f64) as usize).min(pcm.len());
+            if s >= e {
+                return Vec::new();
+            }
+            pcm[s..e].to_vec()
+        }
+        let cfg = AsrConfig {
+            local_model_dir: std::env::var("VT_VAD_MODEL_DIR").unwrap_or_default(),
+            ..Default::default()
+        };
+        // 测试进程的 CWD 是 crate 根，默认样本用 CARGO_MANIFEST_DIR 拼绝对路径
+        let speech_wav = std::env::var("VT_VAD_SPEECH_WAV").unwrap_or_else(|_| {
+            format!(
+                "{}/../../target/debug/.vtrim/models/sensevoice/test_wavs/zh.wav",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        });
+        let (speech, sr) = read_wav_range(Path::new(&speech_wav), 0.0, 600.0).unwrap();
+        assert!(!speech.is_empty(), "语音样本为空: {speech_wav}");
+
+        let lead = 20.0 * sr as f64;
+        let tail = 20.0 * sr as f64;
+        let mut pcm = vec![0.0f32; lead as usize];
+        pcm.extend_from_slice(&speech);
+        let speech_span = (speech.len() as f64 / sr as f64, 0.0);
+        pcm.extend(std::iter::repeat_n(0.0f32, tail as usize));
+        let speech_at = (lead / sr as f64, speech_span.0);
+
+        let model = vad_model_path(&cfg).expect("找不到 silero VAD 模型");
+        let dir = model.parent().unwrap().to_path_buf();
+
+        // 逐一体检：两个 silero 导出 × 两档阈值，外加"纯静音"这一格（模型在数字零上不该判语音）
+        let cases: Vec<(String, f32, std::path::PathBuf)> = {
+            let mut v = Vec::new();
+            for name in ["silero_vad.onnx", "silero_vad.int8.onnx"] {
+                let p = dir.join(name);
+                if !p.exists() {
+                    continue;
+                }
+                for thr in [0.5f32, 0.9] {
+                    v.push((format!("{name} @{thr}"), thr, model_path_for(&p)));
+                }
+            }
+            v.push((
+                "纯静音 30s（int8@0.5）".to_string(),
+                0.5,
+                model_path_for(&dir.join("silero_vad.int8.onnx")),
+            ));
+            v
+        };
+
+        for (label, thr, path) in cases {
+            let zeros_only = label.starts_with("纯静音");
+            let input: Vec<f32> = if zeros_only {
+                vec![0.0f32; (30.0 * sr as f64) as usize]
+            } else {
+                pcm.clone()
+            };
+            let params = vad::VadParams {
+                model: path,
+                threshold: thr,
+                min_silence: 0.5,
+                min_speech: 0.25,
+                sample_rate: sr,
+            };
+            let segs = vad::detect_speech_with_samples(
+                &mut |s, n| input[s..(s + n).min(input.len())].to_vec(),
+                input.len(),
+                &params,
+                cfg.chunk_duration as f32,
+            )
+            .unwrap();
+            let kept: f64 = segs.iter().map(|(r, _)| r.duration()).sum();
+            let where_ = if zeros_only {
+                String::new()
+            } else {
+                format!(
+                    "（真语音 {:.2}~{:.2}s）",
+                    speech_at.0 + 0.75,
+                    speech_at.0 + speech_at.1
+                )
+            };
+            println!(
+                "{label:26} → {} 段 / 覆盖 {:.2}s {where_}",
+                segs.len(),
+                kept
+            );
+            for (r, samples) in segs.iter().take(4) {
+                let at_reported = slice_of(&input, r.start, r.end, sr);
+                println!(
+                    "      {:.2}~{:.2}s ({:.2}s) RMS 段={:.4} 同区间={:.4}",
+                    r.start,
+                    r.end,
+                    r.duration(),
+                    rms_of(samples),
+                    rms_of(&at_reported)
+                );
+            }
+        }
+
+        // 单模型断言（默认参数）：真语音必须被覆盖，且不能把整段 40s 静音吃进来
+        let params = vad::VadParams {
+            model: vad_model_path(&cfg).unwrap(),
+            threshold: cfg.vad_threshold as f32,
+            min_silence: 0.5,
+            min_speech: 0.25,
+            sample_rate: sr,
+        };
+        let regions = vad::detect_speech(
+            &mut |s, n| pcm[s..(s + n).min(pcm.len())].to_vec(),
+            pcm.len(),
+            &params,
+            cfg.chunk_duration as f32,
+        )
+        .unwrap();
+
+        println!(
+            "合成音频: {}s 静音 + {:.2}s 语音({:.2}~{:.2}s) + {}s 静音",
+            20.0, speech_at.1, speech_at.0, speech_at.0 + speech_at.1, 20.0
+        );
+        let mut kept = 0.0;
+        for r in &regions {
+            println!("  段: {:.2} ~ {:.2}s ({:.2}s)", r.start, r.end, r.duration());
+            kept += r.duration();
+        }
+        println!(
+            "共 {} 段、覆盖 {:.2}s（真语音 {:.2}s）→ 覆盖率 {:.0}%",
+            regions.len(),
+            kept,
+            speech_at.1,
+            kept / speech_at.1 * 100.0
+        );
+        assert!(!regions.is_empty(), "合成音频里的语音没被检出");
+        // 绝对时间戳：语音在 [20, 20+len]，检出的段必须落在这附近（不是"从 0 开始"或"从缓冲头算"）
+        let first = regions[0];
+        assert!(
+            (first.start - speech_at.0).abs() < 1.5,
+            "起点不在语音处（{:.2} vs {:.2}）—— 时间戳不是绝对的",
+            first.start,
+            speech_at.0
+        );
+        // 静音不判：整段覆盖不该把 40s 静音吃进去
+        assert!(
+            kept < speech_at.1 + 6.0,
+            "静音被算进语音了：覆盖 {kept:.1}s ≫ 语音 {:.1}s",
+            speech_at.1
+        );
+    }
+
+    /// VAD 分段诊断（**只跑 VAD，不跑 ASR**）：在真实素材上看"跳过多少、兜底捞回多少"。
+    ///
+    /// 用法（路径写绝对路径；模型走 `VT_VAD_MODEL_DIR` 或默认查找顺序）：
+    /// `VT_ASR_WAV=<wav> cargo test -p vtrim-core --lib diagnose_vad_regions -- --ignored --nocapture`
+    /// 可选：`VT_VAD_THRESHOLD` / `VT_VAD_RESCUE_DB` / `VT_VAD_MODEL_DIR`
+    #[test]
+    #[ignore = "需要真实 VAD 模型与音频（VT_ASR_WAV）"]
+    fn diagnose_vad_regions() {
+        let wav = std::env::var("VT_ASR_WAV").expect("需要 VT_ASR_WAV=<wav 绝对路径>");
+        let cfg = AsrConfig {
+            mode: "single".into(),
+            local_model_dir: std::env::var("VT_VAD_MODEL_DIR").unwrap_or_default(),
+            vad_threshold: std::env::var("VT_VAD_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.5),
+            vad_rescue_db: std::env::var("VT_VAD_RESCUE_DB")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16.0),
+            ..Default::default()
+        };
+
+        let mapped = MappedWave::open(Path::new(&wav)).unwrap();
+        let sr = mapped.sample_rate as f64;
+        let total_secs = mapped.total_samples as f64 / sr;
+        let sum = |ws: &[DecodeWindow]| -> f64 {
+            ws.iter()
+                .map(|w| (w.decode_end_sample - w.decode_start_sample) as f64 / sr)
+                .sum()
+        };
+
+        let fixed = plan_fixed_windows(&cfg, mapped.total_samples, mapped.sample_rate).unwrap();
+        let fixed_secs = sum(&fixed);
+
+        // 一次 VAD 扫描 + 一次电平扫描，然后把各档兜底阈值**离线**算出来对比
+        // （不然每试一个阈值就重扫一遍 3 小时音频）。
+        let model = vad_model_path(&cfg).expect("找不到 silero VAD 模型");
+        let params = vad::VadParams {
+            model,
+            threshold: cfg.vad_threshold as f32,
+            min_silence: 0.5,
+            min_speech: 0.25,
+            sample_rate: mapped.sample_rate,
+        };
+        let t0 = std::time::Instant::now();
+        let raw = detect_speech_parallel(
+            &mapped,
+            &params,
+            decode_workers(&cfg, mapped.total_samples),
+            cfg.chunk_duration as f32,
+        )
+        .unwrap();
+        let vad_secs = t0.elapsed().as_secs_f64();
+        let t1 = std::time::Instant::now();
+        let frame = (vad::LEVEL_FRAME_SECS * sr) as usize;
+        let levels =
+            vad::frame_levels_db(&mut |s, n| mapped.samples_f32(s, n), mapped.total_samples, frame);
+        let level_secs = t1.elapsed().as_secs_f64();
+
+        let regions = vad::expand_regions(
+            vad::clamp_regions(
+                vad::merge_regions(raw.clone(), vad::MERGE_GAP_SECS),
+                total_secs,
+            ),
+            vad::GUARD_SECS,
+            total_secs,
+        );
+        println!("原始段（前 5 个 / 后 3 个）:");
+        for r in raw.iter().take(5).chain(raw.iter().rev().take(3).rev()) {
+            println!("  {:.2} ~ {:.2}s ({:.1}s)", r.start, r.end, r.duration());
+        }
+        let raw_kept: f64 = raw.iter().map(vad::SpeechRegion::duration).sum();
+        // 让外部（python）能拿它跟已知正确的字幕时间戳对齐，验证"时间戳到底准不准"
+        if let Ok(path) = std::env::var("VT_VAD_DUMP") {
+            let j = serde_json::json!({
+                "total": total_secs,
+                "sample_rate": mapped.sample_rate,
+                "raw": raw.iter().map(|r| [r.start, r.end]).collect::<Vec<_>>(),
+                "merged": regions.iter().map(|r| [r.start, r.end]).collect::<Vec<_>>(),
+            });
+            std::fs::write(&path, j.to_string()).expect("写 VT_VAD_DUMP 失败");
+            println!("已写 VAD 区间: {path}");
+        }
+        println!(
+            "原始覆盖 {:.0}s ({:.1}%)，合并后 {:.0}s —— 若原始时间戳不是绝对时间，这里会明显对不上",
+            raw_kept,
+            raw_kept / total_secs * 100.0,
+            regions.iter().map(vad::SpeechRegion::duration).sum::<f64>()
+        );
+        let pure_kept: f64 = regions.iter().map(vad::SpeechRegion::duration).sum();
+        let speech_level = vad::speech_level_db(&levels, &regions, vad::LEVEL_FRAME_SECS);
+        let pct = |p: f64| vad::percentile(&levels, p).unwrap_or(f32::NAN);
+
+        println!("音频: {total_secs:.1}s ({:.1} 分钟)", total_secs / 60.0);
+        println!("固定分块: {} 窗，解码 {fixed_secs:.0}s", fixed.len());
+        println!(
+            "silero:   {} 段（合并后）{pure_kept:.0}s = {:.1}%（探测 {vad_secs:.1}s）",
+            regions.len(),
+            pure_kept / total_secs * 100.0
+        );
+        println!(
+            "电平:     语音 {:.1}dB | 帧分位 p10={:.1} p25={:.1} p50={:.1} p75={:.1} p90={:.1}（扫描 {level_secs:.1}s）",
+            speech_level.unwrap_or(f32::NAN),
+            pct(0.10),
+            pct(0.25),
+            pct(0.50),
+            pct(0.75),
+            pct(0.90)
+        );
+        println!("兜底 rescue_db → 保留 / 相对固定分块的解码比:");
+        for rescue in [0.0f64, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0] {
+            let regions = if rescue <= 0.0 {
+                regions.clone()
+            } else {
+                let floor = speech_level.unwrap_or(-60.0) - rescue as f32;
+                vad::rescue_by_level(
+                    regions.clone(),
+                    &levels,
+                    vad::LEVEL_FRAME_SECS,
+                    floor,
+                    vad::RESCUE_MIN_SPAN_SECS,
+                )
+                .0
+            };
+            let windows = plan_speech_windows(&regions, &cfg, mapped.sample_rate, mapped.total_samples);
+            let kept = sum(&windows);
+            let est = fixed_secs / kept.max(1.0);
+            println!(
+                "  {rescue:>5.1}dB → 保留 {kept:>7.0}s ({:>4.1}%)，解码量 {est:.2}× 更少，窗口 {} 个",
+                kept / total_secs * 100.0,
+                windows.len()
+            );
+        }
+
+        let windows = plan_windows(&mapped, &cfg, &crate::progress::NoopProgress).unwrap();
+        assert!(!windows.is_empty());
+        let mut prev = 0.0f64;
+        for w in &windows {
+            assert!(w.claim_start + 1e-6 >= prev, "claim 重叠: {w:?}");
+            assert!(w.claim_end <= total_secs + 1e-6, "claim 越界: {w:?}");
+            assert!(w.decode_end_sample <= mapped.total_samples);
+            prev = w.claim_end;
         }
     }
 }

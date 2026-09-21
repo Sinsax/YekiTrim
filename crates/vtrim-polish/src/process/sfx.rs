@@ -1,3 +1,8 @@
+//! polish::process::sfx：音效规则引擎（字幕关键词 → 音效 tag）与解析 / 屏蔽。
+//!
+//! 入口：`match_sfx_rule`、`resolve_event_sfx`、`resolve_sfx_value`、`resolve_sfx_tag`、`load_sfx_blacklist`、`find_uncovered_sfx_moments`、`subtitle_context`。
+//! 边界：规则未命中的事件按"宁缺毋滥"清空音效；屏蔽语义（精确 id 屏蔽单个、`tag:xxx` 屏蔽整个标签族）在 `assets/sfx_catalog.rs::is_blacklisted` —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+
 use crate::parse;
 use crate::project;
 

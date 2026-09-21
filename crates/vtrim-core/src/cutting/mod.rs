@@ -1,3 +1,8 @@
+//! cutting：Stage 4 切片（按事件剪视频，写片段元数据与片段弹幕字幕）。
+//!
+//! 入口：`Cutter`；子模块 `silence`（静音检测，整体重导出）、`clip_index`（片段目录命名与索引刷新）。
+//! 边界：产物 `clips/clips_order.txt` 是 Stage 4 的推导依据，别改目录布局；取弹幕一律走 `danmaku::load_danmaku_auto` —— 见 `crates/vtrim-core/src/cutting/AGENTS.md`
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
@@ -409,7 +414,10 @@ fn write_clip_meta(
 }
 
 /// 事件实际要写入的目录名：优先 `clip_dir`，非法/缺失时回退旧的 `clip-{rank:02}`。
-pub(crate) fn clip_dir_name_for_event(event: &crate::types::Event) -> String {
+///
+/// pub 是给**剪切收尾**用的（`vtrim_service::init_polish_for_events` 要按同一条规则
+/// 算出刚剪出来的目录，再补精修工程）—— 别在服务层再抄一份命名规则。
+pub fn clip_dir_name_for_event(event: &crate::types::Event) -> String {
     let dir = event.clip_dir_or_rank();
     if is_safe_component(&dir) {
         dir

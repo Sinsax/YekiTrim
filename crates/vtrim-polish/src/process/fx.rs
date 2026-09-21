@@ -1,3 +1,8 @@
+//! polish::process::fx：事件默认值补齐与守卫（瞬时特效跨度 / 画中画配额与对齐 / 手持摇摆 / 贴纸对齐字幕）。
+//!
+//! 入口：`transient_duration_cap`、`transient_default_duration`、`normalize_event_ends`、`cap_pip_shots`、`align_pip_shots`、`close_pip_shots`、`cap_handheld_sway`、`align_stickers_to_subtitles`。
+//! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+
 use crate::parse::srt::Subtitle;
 use crate::project::{Event, Segment};
 
@@ -212,6 +217,8 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
         zoom: String,
         origin: String,
         anchor: Option<String>,
+        /// 前一条镜头带不带手持摇摆：回镜头把它一并复原（景别不对时由守卫剥掉）
+        handheld: bool,
     }
 
     // 全部运镜事件按**时间**排序（跨段）：求值器就是按时间排序再走的，所以"前一条镜头"和
@@ -230,7 +237,7 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
     let mut prev: Option<Shot> = None;
     let mut inserts: Vec<(usize, usize, Event)> = Vec::new();
     for (i, (si, ei, time)) in order.iter().enumerate() {
-        let Event::Camera { end, zoom, origin, anchor, anchor_to, to_origin, .. } =
+        let Event::Camera { end, zoom, origin, anchor, anchor_to, to_origin, handheld, .. } =
             &segments[*si].events[*ei]
         else {
             continue;
@@ -241,6 +248,7 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
                 zoom: zoom.clone(),
                 origin: to_origin.clone().unwrap_or_else(|| origin.clone()),
                 anchor: anchor_to.clone().or_else(|| anchor.clone()),
+                handheld: *handheld,
             });
             continue;
         }
@@ -270,6 +278,8 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
             anchor_to: None,
             to_origin: None,
             cut: false,
+            // 回镜头复原的是「前一条那条镜头」，手持摇摆也一并复原（非近景由守卫剥掉）
+            handheld: prev.as_ref().is_some_and(|s| s.handheld),
             manual: false,
         };
         tracing::info!(
@@ -299,6 +309,28 @@ fn restore_zoom(ev: &Event) -> &str {
         Event::Camera { zoom, .. } => zoom,
         _ => "",
     }
+}
+
+/// 手持摇摆（`handheld`）只允许挂在**近景**上（用户定的门槛：这是近景专用的附加变种）。
+///
+/// 兜底理由与画中画同一条：LLM 会写错景别，用户也会在编辑器里把景别改掉（改成「中」之后
+/// `handheld` 还留在事件上），两边都拦不住，所以这里做确定性剔除。**只剥不补**：非近景的
+/// `handheld` 一律改回 `false`；近景上没写就是没有这个效果（它是可选项，系统不替用户开）。
+///
+/// 放在 `cmd_process` Step 1 补默认运镜**之后**、画中画收工之后调用（回镜头也一起吃这道守卫）。
+/// 幂等；返回被剥掉的条数。
+pub fn cap_handheld_sway(segments: &mut [Segment]) -> usize {
+    let mut stripped = 0usize;
+    for seg in segments.iter_mut() {
+        for ev in seg.events.iter_mut() {
+            let Event::Camera { zoom, handheld, .. } = ev else { continue };
+            if *handheld && zoom.trim() != CLOSE_LABEL {
+                *handheld = false;
+                stripped += 1;
+            }
+        }
+    }
+    stripped
 }
 
 /// 运镜倍率的**旧默认值**（都只可能来自内建 Default，UI 从来没有入口改它们——
@@ -372,6 +404,9 @@ fn dist_to(t: f64, s: &Subtitle) -> f64 {
 
 /// 画中画档位的档位名（与 `placement::WIDE_LABEL` 同源，别各写一份字面量）。
 const PIP_LABEL: &str = crate::process::placement::WIDE_LABEL;
+
+/// 近景档位的档位名（与 `placement::CLOSE_LABEL` 同源）。
+const CLOSE_LABEL: &str = crate::process::placement::CLOSE_LABEL;
 
 fn normalize_event_end(event: &mut Event) {
     if event.end().is_none() {
@@ -469,6 +504,7 @@ mod tests {
                     anchor: None,
                     anchor_to: None,
                     to_origin: None, cut: false,
+                    handheld: false,
                     manual: false,
                 },
             ],
@@ -514,6 +550,7 @@ mod tests {
                     anchor_to: None,
                     to_origin: None,
                     cut: false,
+                    handheld: false,
                     manual: false,
                 },
                 Event::Overlay {
@@ -539,6 +576,11 @@ mod tests {
 
     // ── 画中画降频守卫 ──────────────────────────────────────────────
     fn cam(time: f64, zoom: &str) -> Event {
+        cam_h(time, zoom, false)
+    }
+
+    /// 带手持摇摆的运镜（`handheld` 只在近景上合法，测试里自行组合景别来验守卫）。
+    fn cam_h(time: f64, zoom: &str, handheld: bool) -> Event {
         Event::Camera {
             time,
             end: Some(time + 2.0),
@@ -548,6 +590,7 @@ mod tests {
             anchor_to: None,
             to_origin: None,
             cut: false,
+            handheld,
             manual: false,
         }
     }
@@ -651,6 +694,7 @@ mod tests {
             anchor_to: Some("danmaku".into()),
             to_origin: to_origin.map(String::from),
             cut: false,
+            handheld: false,
             manual: false,
         };
         for to_origin in [Some("70% 30%"), None] {
@@ -950,5 +994,69 @@ mod tests {
             }
             _ => panic!("expected camera"),
         }
+    }
+
+    // ── 手持摇摆守卫 ────────────────────────────────────────────────
+    fn handheld_flags(segs: &[Segment]) -> Vec<bool> {
+        segs.iter()
+            .flat_map(|s| s.events.iter())
+            .filter_map(|e| match e {
+                Event::Camera { handheld, .. } => Some(*handheld),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn handheld_only_survives_on_close_up() {
+        // 近景（含带空格的写法）保留，其余景别一律剥掉 —— 用户定的门槛：只允许近景
+        let mut segs = vec![Segment {
+            start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
+            events: vec![
+                cam_h(0.0, "近", true),
+                cam_h(5.0, " 近 ", true),
+                cam_h(10.0, "中", true),
+                cam_h(15.0, "远", true),
+                cam_h(20.0, "", true),
+                cam_h(25.0, "近", false),
+            ],
+            extra: Default::default(),
+        }];
+        assert_eq!(cap_handheld_sway(&mut segs), 3, "中 / 远 / 空标签各剥一条");
+        assert_eq!(handheld_flags(&segs), vec![true, true, false, false, false, false]);
+        // 幂等：再跑一次没有可剥的了
+        assert_eq!(cap_handheld_sway(&mut segs), 0);
+    }
+
+    #[test]
+    fn handheld_guard_is_strip_only() {
+        // 中景不会被自动补上（可选项：系统不替用户开），近景没写就是没有
+        let mut segs = segs_of(&[(0.0, "中"), (10.0, "近")]);
+        assert_eq!(cap_handheld_sway(&mut segs), 0);
+        assert_eq!(handheld_flags(&segs), vec![false, false]);
+    }
+
+    #[test]
+    fn pip_close_restores_handheld_from_previous_shot() {
+        // 前一条是「近」+ 手持摇摆：画中画收工回到近景，摇摆跟着回来
+        let mut segs = vec![Segment {
+            start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
+            events: vec![cam_h(0.0, "近", true), cam(10.0, "远")],
+            extra: Default::default(),
+        }];
+        assert_eq!(close_pip_shots(&mut segs), 1);
+        assert_eq!(handheld_flags(&segs), vec![true, false, true], "回镜头承接前一条的手持摇摆");
+
+        // 回到非近景（前一条被手改/LLM 写成中景 + handheld）：回镜头也承接，
+        // 但两条中景都会被 cap_handheld_sway 剥掉 —— cmd_process 里守卫就排在收工之后
+        let mut segs = vec![Segment {
+            start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
+            events: vec![cam_h(0.0, "中", true), cam(10.0, "远")],
+            extra: Default::default(),
+        }];
+        assert_eq!(close_pip_shots(&mut segs), 1);
+        assert_eq!(handheld_flags(&segs), vec![true, false, true]);
+        assert_eq!(cap_handheld_sway(&mut segs), 2, "前一条与回镜头都剥掉");
+        assert_eq!(handheld_flags(&segs), vec![false, false, false]);
     }
 }

@@ -1,3 +1,8 @@
+//! config::types：全站配置类型定义（`Config` / `ProjectConfig` 与各 section）。
+//!
+//! 入口：`Config`、`ProjectConfig`（`current_stage`）、`AsrConfig`、`DetectionConfig`、`LlmConfig`（`concurrency`）、`CuttingConfig`、`MaterialEntry`、`Materials`。
+//! 边界：所有类型必须**手动**实现 `Default`（不能 derive），新增字段要同时改 `merge()` 与 `config/default.toml` —— 见 `crates/vtrim-core/src/config/AGENTS.md`
+
 use serde::{Deserialize, Serialize};
 
 fn default_local_model() -> String {
@@ -28,6 +33,107 @@ pub struct ProjectConfig {
     pub audio_file: Option<String>,
     #[serde(default)]
     pub events_file: Option<String>,
+    /// 预处理页的**素材清单**（列表里能一键切换的候选项）。
+    #[serde(default)]
+    pub materials: Materials,
+}
+
+/// 预处理页「素材清单」：用户在列表里加过、能一键切换的候选。
+///
+/// ⚠️ 与 `transcript_file` / `danmaku_file` 的分工：那两个是**当前生效值**，
+/// 下游所有读取入口（`Workspace::transcript_path` / `danmaku_path`、检测、切片）只认它们；
+/// 这里只回答「列表里有哪些候选、各自哪来的」。
+///
+/// **ASR 链路产物**（`source = "asr"`）按模式占槽：`[asr] mode` 只有 hybrid / single 两种，
+/// 所以最多两条，且不可删除 —— 这就是"输出一次绑定一次、只能两次"的落地形态。
+/// 用户自己加的字幕/弹幕（`source` 为空或其它值）不占槽、可随时删除。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Materials {
+    #[serde(default)]
+    pub transcript: Vec<MaterialEntry>,
+    #[serde(default)]
+    pub danmaku: Vec<MaterialEntry>,
+}
+
+impl Materials {
+    /// 某一类的条目（`"danmaku"` / 其它一律当 `"transcript"`）。
+    pub fn of(&self, kind: &str) -> &[MaterialEntry] {
+        if kind == "danmaku" {
+            &self.danmaku
+        } else {
+            &self.transcript
+        }
+    }
+
+    /// 某一类条目的可变引用。
+    pub fn of_mut(&mut self, kind: &str) -> &mut Vec<MaterialEntry> {
+        if kind == "danmaku" {
+            &mut self.danmaku
+        } else {
+            &mut self.transcript
+        }
+    }
+}
+
+/// ASR 的**全部模式**（`[asr] mode` 只有这两个值）。
+///
+/// 素材清单里 ASR 产物**按模式占槽** —— 这里就是用户说的「输出一次绑定一次、
+/// 只能两次」里的那个 2。加模式要同步改这里（和预处理页的下拉）。
+pub const ASR_MODES: [&str; 2] = ["hybrid", "single"];
+
+/// 素材清单里的一条。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterialEntry {
+    /// 路径（相对**工程根**；工程外只可能是 admin，那时存绝对路径）。
+    #[serde(default)]
+    pub path: String,
+    /// 来源：`"asr"` = ASR 链路产物（不可删、占一个模式槽）。
+    ///
+    /// 用 `String` 而不是 enum 是有意的：手改 toml 写错一个词**不该让整份配置解析失败**
+    /// —— `load_config_at` 一旦报错，这个工程在服务端就整个不可用。未知值一律当用户素材。
+    #[serde(default)]
+    pub source: String,
+    /// ASR 模式槽位：`hybrid` / `single`（只有 `source = "asr"` 的条目有）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+/// `source` 字段里代表「ASR 链路产物」的那个值。
+pub const MATERIAL_SOURCE_ASR: &str = "asr";
+
+impl MaterialEntry {
+    pub fn asr(path: String, mode: &str) -> Self {
+        Self {
+            path,
+            source: MATERIAL_SOURCE_ASR.to_string(),
+            mode: Some(mode.trim().to_ascii_lowercase()),
+        }
+    }
+
+    pub fn user(path: String) -> Self {
+        Self {
+            path,
+            source: String::new(),
+            mode: None,
+        }
+    }
+
+    /// 是不是 ASR 链路产物（不可删、占模式槽）。
+    pub fn is_asr(&self) -> bool {
+        self.source.eq_ignore_ascii_case(MATERIAL_SOURCE_ASR)
+    }
+
+    /// 占用的 ASR 模式槽（小写；非 ASR 条目或没记模式时为空串 = 不占槽）。
+    pub fn slot(&self) -> String {
+        if !self.is_asr() {
+            return String::new();
+        }
+        self.mode
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    }
 }
 
 impl ProjectConfig {
@@ -142,6 +248,57 @@ pub struct IngestConfig {
     pub allow_ips: Vec<String>,
     #[serde(default)]
     pub recorder: RecorderConfig,
+    /// **B站链接通道（P4）**：下载器引擎。
+    ///
+    /// `"yt-dlp"` = 内置引擎（版本 + sha256 钉死在 `vtrim_service::downloader::registry`，
+    /// **运行时**由设置页/`ensure_ytdlp` 下到 `<程序目录>/.vtrim/bin/` —— 和 ASR 模型一样，
+    /// **不进发行包**，所以许可声明走 `THIRD-PARTY-NOTICES.md` 的"运行时下载"那一节）；
+    /// 其它值 = **逃生舱**：用户自备的「yt-dlp 兼容」可执行文件**绝对路径**
+    /// （同样不随包分发，`cargo xtask scan` 扫不到）。
+    /// 加第二个引擎 = 加一个适配器，server 侧不改（见 `vtrim_service::downloader`）。
+    #[serde(default = "default_downloader")]
+    pub downloader: String,
+    /// yt-dlp 可执行文件路径覆盖（留空 = 自动发现：配置目录 → `<程序目录>/.vtrim/bin/` → PATH）。
+    ///
+    /// ⚠️ 与 `downloader` 的分工：`downloader` 选**引擎**，这里只覆盖**二进制位置**
+    /// （例如想让内置引擎用你自己更新的那份 yt-dlp）。
+    #[serde(default)]
+    pub ytdlp_path: String,
+    /// 最大清晰度：`"1080p"` / `"720p"` / `"480p"` / `"best"`（`best` = 不限高）
+    #[serde(default = "default_max_quality")]
+    pub max_quality: String,
+    /// 限速（KB/s，0 = 不限）→ `--limit-rate <n>K`
+    #[serde(default)]
+    pub rate_limit_kbps: u64,
+    /// 同时下载数。**默认 1，别放大**：B站 412 风控与 IP 频次相关（选型文档 §8.5）。
+    #[serde(default = "default_max_concurrent_downloads")]
+    pub max_concurrent_downloads: u32,
+    /// B站 cookie 文件（**Netscape 格式**；JSON 格式会被 yt-dlp 静默忽略）。
+    /// 仅 admin 可写：无 cookie 时清晰度封顶 480/720p，部分视频直接 `NeedLogin`。
+    #[serde(default)]
+    pub cookie_file: String,
+    /// 下载"卡死"判定：连续这么多秒**一行输出都没有**就 kill 并标失败。
+    ///
+    /// ⚠️ 这是**唯一的进程兜底**。`jobs` 那层只管 async 任务体，管不到子进程 ——
+    /// 没有它，一个挂死的 yt-dlp 会永久占住下载槽（会话停在 `downloading`）。
+    ///
+    /// 别因为"大文件本来就慢"而调大：卡死不是慢，是**一行不出**（进度行也算输出）。
+    /// B站的 WBI/风控偶尔会让请求吊住，120s 足够区分"慢"与"死"。
+    #[serde(default = "default_download_idle_timeout")]
+    pub download_idle_timeout_secs: u32,
+}
+
+fn default_downloader() -> String {
+    "yt-dlp".into()
+}
+fn default_max_quality() -> String {
+    "1080p".into()
+}
+fn default_max_concurrent_downloads() -> u32 {
+    1
+}
+fn default_download_idle_timeout() -> u32 {
+    120
 }
 
 impl Default for IngestConfig {
@@ -151,8 +308,27 @@ impl Default for IngestConfig {
             token_hash: String::new(),
             allow_ips: Vec::new(),
             recorder: RecorderConfig::default(),
+            downloader: default_downloader(),
+            ytdlp_path: String::new(),
+            max_quality: default_max_quality(),
+            rate_limit_kbps: 0,
+            max_concurrent_downloads: default_max_concurrent_downloads(),
+            cookie_file: String::new(),
+            download_idle_timeout_secs: default_download_idle_timeout(),
         }
     }
+}
+
+/// 清晰度档位 → 下载器 `-f` 里的高度上限（`None` = 不限）。
+///
+/// 放在 core 而不是下载器适配层：**它是配置语义**（`[ingest] max_quality` 的取值域），
+/// 前端下拉、服务端校验、命令构造三处要认同一张表。
+pub fn quality_height(raw: &str) -> Option<u32> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.is_empty() || s == "best" {
+        return None;
+    }
+    s.trim_end_matches('p').parse::<u32>().ok().filter(|h| *h > 0)
 }
 
 /// `[ingest.recorder]` — 录播姬工作目录与入库策略。
@@ -233,7 +409,11 @@ pub struct StorageConfig {
     /// 全局磁盘上限（0 = 不限）；由服务端统一预检，绝不自动删用户数据
     #[serde(default)]
     pub max_disk_bytes: u64,
-    /// 磁盘水位百分比：低于该比例时拒绝新的入库/下载/渲染
+    /// 磁盘水位百分比：**写完这一份之后**剩余空间低于该比例就拒绝新的入库/下载/渲染。
+    ///
+    /// 注意它不是"必须空出整盘的百分之几"：换算出的保留量会被钳在 **512 MiB ~ 8 GiB**
+    /// （见 `vtrim_service::ingest::capacity::reserve_bytes`）。比例只对中小容量卷起作用，
+    /// 大容量数据盘上不会平白保留出几十上百 GB。`0` = 关闭水位检查。
     #[serde(default = "default_watermark_pct")]
     pub disk_watermark_pct: u32,
     /// 单用户默认配额（0 = 不限）；`users.quota_bytes` 优先
@@ -363,6 +543,32 @@ pub struct AsrConfig {
     /// 标点边界吸附到气口的半径(秒)。
     #[serde(default = "default_snap_window")]
     pub snap_window: f64,
+    /// **single 模式**要不要先用 VAD（silero）只挑出语音段解码。
+    ///
+    /// 为什么值钱：SenseVoice 是非自回归模型，代价与喂进去的音频长度成正比，而固定分块会把
+    /// 静音/BGM 一起送进去（解码量 = 音频 × 1.2）。实测三场真实录播"真有字"的时间只占 33~43%。
+    ///
+    /// `None`（没写这一项）= 跟随默认（开）；写 `true`/`false` 才是显式覆盖 ——
+    /// 用 `Option` 而不是 `bool` 是因为 merge 的口径是"≠默认值才覆盖"，
+    /// 那样全局关掉之后就**再也**没法在单个工程里打开。
+    #[serde(default)]
+    pub vad: Option<bool>,
+    /// silero VAD 的语音概率阈值（0~1）。调高 = 更保守（多解码、少省时间），调低反之。
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f64,
+    /// 动态电平兜底：低于「本片语音电平 − 此值」的空档才允许跳过（dB，0 = 关掉兜底）。
+    ///
+    /// 兜底只做加法（VAD 判非语音、但电平够响的空档照样解码回来），所以它的失效方向是
+    /// "多花点时间"，而不是"字幕少一条" —— 这是与单模型效果对齐的结构性保证。
+    #[serde(default = "default_vad_rescue_db")]
+    pub vad_rescue_db: f64,
+}
+
+impl AsrConfig {
+    /// VAD 是否生效（`single` 模式）：没写这一项按开。
+    pub fn vad_enabled(&self) -> bool {
+        self.vad.unwrap_or(true)
+    }
 }
 
 fn default_asr_language() -> String {
@@ -404,8 +610,21 @@ fn default_max_segment_chars() -> usize {
 fn default_snap_window() -> f64 {
     0.3
 }
-/// ASR 模式**默认 hybrid**（用户要求固定用双模型；准备页不再给下拉，
-/// 要改只能改 `.vtrim/config.toml` / 项目 `vtrim.toml` 的 `[asr] mode`，即设置页）。
+/// silero 官方默认阈值就是 0.5。
+fn default_vad_threshold() -> f64 {
+    0.5
+}
+/// 动态电平兜底的宽容度（dB）。
+///
+/// 判据是"比本片语音电平低一档"，所以对不同增益的录播（手机麦 / 声卡 / 录播姬直出）都成立。
+/// **默认 16**：实测 184 分钟真实录播上，8dB 会漏掉几句短促的插话（"好冷啊空调关""哪有啊"），
+/// 16dB 把它们捞回来，代价只是解码量 +1.6%（2.12× → 2.03×）。偏大只会多解码
+/// （最坏退化成固定分块 = 现在的行为），偏小才会漏语音 —— 所以宁可偏大。
+fn default_vad_rescue_db() -> f64 {
+    16.0
+}
+/// ASR 模式**默认 hybrid**（用户要求默认双模型）。预处理页有下拉可改（写项目
+/// `vtrim.toml`），设置页/项目配置也能改；读不到配置时按这个默认值显示。
 fn default_asr_mode() -> String {
     "hybrid".into()
 }
@@ -432,6 +651,9 @@ impl Default for AsrConfig {
             soft_cut_secs: default_soft_cut_secs(),
             max_segment_chars: default_max_segment_chars(),
             snap_window: default_snap_window(),
+            vad: None,
+            vad_threshold: default_vad_threshold(),
+            vad_rescue_db: default_vad_rescue_db(),
         }
     }
 }
@@ -484,6 +706,103 @@ impl Default for DetectionConfig {
     }
 }
 
+/// 链路标识：决定 `.vtrim/llm.toml` 的 `[llm.overrides.*]` 里哪一组覆盖生效，
+/// 也是设置页「按链路覆盖」小表的行、日志与用量统计里能对上的那条链路。
+///
+/// `key()` 是 TOML 键名（英文，写进配置文件）；`label_zh()` 只给界面看。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmLink {
+    /// 事件检测窗口 + 标题/摘要热度评分（同一次检测的两次批量调用）
+    Detect,
+    /// 精修 LLM 剪辑：分段、逐段事件、贴纸精挑、关键词
+    Polish,
+    /// 字幕订正
+    Correct,
+    /// 零散单发：贴纸包/扫描标签、封面文案、连通测试
+    Utility,
+}
+
+impl LlmLink {
+    /// 设置页那张表的行顺序 = 这个顺序。
+    pub const ALL: [LlmLink; 4] = [
+        LlmLink::Detect,
+        LlmLink::Polish,
+        LlmLink::Correct,
+        LlmLink::Utility,
+    ];
+
+    /// TOML 键名（`[llm.overrides.<key>]`）。
+    pub fn key(self) -> &'static str {
+        match self {
+            LlmLink::Detect => "detect",
+            LlmLink::Polish => "polish",
+            LlmLink::Correct => "correct",
+            LlmLink::Utility => "utility",
+        }
+    }
+
+    /// 界面文案。
+    pub fn label_zh(self) -> &'static str {
+        match self {
+            LlmLink::Detect => "事件检测",
+            LlmLink::Polish => "精修剪辑",
+            LlmLink::Correct => "字幕订正",
+            LlmLink::Utility => "零散单发",
+        }
+    }
+
+    /// 该链路的**代码级默认** thinking（都没配时的兜底）。
+    ///
+    /// - `Polish` / `Utility` = `disabled`：精修分段/逐段事件、贴纸包标签、封面文案
+    ///   历史上就在代码里写死了关思考，这里把它收成一处；
+    /// - `Detect` = `None`：检测从来没强制过，交给 `extra_params.thinking`；
+    /// - `Correct` = `None`：订正另有 `[correct] thinking` 老开关（见 `AgentTask::thinking`），
+    ///   LLM 层没表态时它照旧生效。
+    pub fn default_thinking(self) -> Option<&'static str> {
+        match self {
+            LlmLink::Detect | LlmLink::Correct => None,
+            LlmLink::Polish | LlmLink::Utility => Some("disabled"),
+        }
+    }
+}
+
+/// 单条链路的 LLM 调用参数覆盖；**字段缺席 = 跟随 `[llm]` 的同名项**。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmOverride {
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    /// `"enabled"` / `"disabled"`；其它值原样透传给 provider。
+    #[serde(default)]
+    pub thinking: Option<String>,
+}
+
+/// 按链路的覆盖表（`[llm.overrides]`）。未知键忽略，与其余配置类型一致 ——
+/// 一个拼错的键不该让整份 llm.toml 被打回默认值。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmOverrides {
+    #[serde(default)]
+    pub detect: LlmOverride,
+    #[serde(default)]
+    pub polish: LlmOverride,
+    #[serde(default)]
+    pub correct: LlmOverride,
+    #[serde(default)]
+    pub utility: LlmOverride,
+}
+
+impl LlmOverrides {
+    pub fn of(&self, link: LlmLink) -> &LlmOverride {
+        match link {
+            LlmLink::Detect => &self.detect,
+            LlmLink::Polish => &self.polish,
+            LlmLink::Correct => &self.correct,
+            LlmLink::Utility => &self.utility,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     #[serde(default)]
@@ -502,6 +821,13 @@ pub struct LlmConfig {
     /// 各段自己的 `max_concurrent` 留空即跟随这里；填了则那一段以自己的为准。
     #[serde(default = "default_llm_max_concurrent")]
     pub max_concurrent: usize,
+    /// 全局思考开关。`None` = 不设置（由 `extra_params.thinking` 决定）。
+    /// ⚠️ `build_body` 里 `self.thinking` 会**盖掉** `extra_params.thinking`，所以这里是更高优先级的开关。
+    #[serde(default)]
+    pub thinking: Option<String>,
+    /// 按链路的调用参数覆盖（见 [`LlmConfig::for_link`]）。
+    #[serde(default)]
+    pub overrides: LlmOverrides,
 }
 
 impl Default for LlmConfig {
@@ -514,6 +840,8 @@ impl Default for LlmConfig {
             max_tokens: default_max_tokens(),
             extra_params: None,
             max_concurrent: default_llm_max_concurrent(),
+            thinking: None,
+            overrides: LlmOverrides::default(),
         }
     }
 }
@@ -527,6 +855,58 @@ impl LlmConfig {
     /// 检测 / 精修 / 订正三条链路都走这里，别再各写一份 `.max(1)`。
     pub fn concurrency(&self, section_override: Option<usize>) -> usize {
         section_override.unwrap_or(self.max_concurrent).max(1)
+    }
+
+    /// 某链路的**有效** LLM 调用参数 —— **所有构造 `LlmClient` 的地方都必须走这里**，
+    /// 别再裸 `from_config` + 手写 `with_max_tokens` / `with_temperature` / `with_thinking`
+    /// （漏一个调用点 = 那个旋钮静默不生效）。
+    ///
+    /// 优先级（高 → 低）：
+    /// - `max_tokens`：`overrides.<link>.max_tokens` → `[llm].max_tokens`（`0` 视为未设置）
+    /// - `temperature`：`overrides.<link>.temperature` → `[llm].temperature`（非有限值忽略，夹 [0,2]）
+    /// - `thinking`：`overrides.<link>.thinking` → `[llm].thinking` → [`LlmLink::default_thinking`]
+    ///   → 都没给就不设置（此时 `extra_params.thinking` 生效）
+    pub fn for_link(&self, link: LlmLink) -> LlmConfig {
+        let ov = self.overrides.of(link);
+
+        let max_tokens = match ov.max_tokens {
+            // 0 = 没配（设置页的输入框清空后会写成 null，但不排除手改出 0）：别把 0 发给 provider
+            Some(0) => {
+                tracing::warn!(
+                    "[llm.overrides.{}] max_tokens = 0 无效，按未设置处理（跟随 [llm].max_tokens = {}）",
+                    link.key(),
+                    self.max_tokens
+                );
+                self.max_tokens
+            }
+            Some(n) => n,
+            None => self.max_tokens,
+        };
+
+        let temperature = match ov.temperature {
+            Some(t) if t.is_finite() => t.clamp(0.0, 2.0),
+            Some(t) => {
+                tracing::warn!(
+                    "[llm.overrides.{}] temperature = {t} 不是有限值，按未设置处理",
+                    link.key()
+                );
+                self.temperature
+            }
+            None => self.temperature,
+        };
+
+        let thinking = ov
+            .thinking
+            .clone()
+            .or_else(|| self.thinking.clone())
+            .or_else(|| link.default_thinking().map(|s| s.to_string()));
+
+        LlmConfig {
+            max_tokens,
+            temperature,
+            thinking,
+            ..self.clone()
+        }
     }
 }
 
@@ -620,6 +1000,119 @@ impl Default for CorrectConfig {
 
 fn default_correct_window_size() -> usize {
     25
+}
+
+#[cfg(test)]
+mod llm_link_tests {
+    use super::*;
+
+    fn base() -> LlmConfig {
+        let mut c = LlmConfig::default();
+        c.model = "m".into();
+        c.max_tokens = 16384;
+        c.temperature = 0.1;
+        c
+    }
+
+    /// 没配覆盖 = 逐项跟随 `[llm]`（既有安装升级上来行为不变）。
+    #[test]
+    fn for_link_inherits_global_when_no_override() {
+        let c = base();
+        let d = c.for_link(LlmLink::Detect);
+        assert_eq!(d.max_tokens, 16384);
+        assert_eq!(d.temperature, 0.1);
+        assert_eq!(d.model, "m");
+        assert_eq!(d.max_concurrent, c.max_concurrent);
+        // 检测不强制思考（历史上就没有写死），交给 extra_params
+        assert_eq!(d.thinking, None);
+    }
+
+    /// 覆盖 > 全局，且只影响自己那条链路。
+    #[test]
+    fn for_link_applies_override_only_to_that_link() {
+        let mut c = base();
+        c.overrides.detect.max_tokens = Some(8192);
+        c.overrides.detect.temperature = Some(0.7);
+        c.overrides.detect.thinking = Some("enabled".into());
+
+        let d = c.for_link(LlmLink::Detect);
+        assert_eq!(d.max_tokens, 8192);
+        assert!((d.temperature - 0.7).abs() < 1e-9);
+        assert_eq!(d.thinking.as_deref(), Some("enabled"));
+
+        let p = c.for_link(LlmLink::Polish);
+        assert_eq!(p.max_tokens, 16384, "别的链路不受影响");
+        assert!((p.temperature - 0.1).abs() < 1e-9);
+    }
+
+    /// 链路代码默认：精修/零散单发关思考（历史写死的那两处），可被覆盖或全局顶掉。
+    #[test]
+    fn link_thinking_defaults_and_precedence() {
+        let mut c = base();
+        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("disabled"));
+        assert_eq!(c.for_link(LlmLink::Utility).thinking.as_deref(), Some("disabled"));
+        assert_eq!(c.for_link(LlmLink::Correct).thinking, None);
+
+        // 链路覆盖 > 全局
+        c.thinking = Some("enabled".into());
+        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("enabled"));
+        assert_eq!(c.for_link(LlmLink::Detect).thinking.as_deref(), Some("enabled"));
+        c.overrides.polish.thinking = Some("disabled".into());
+        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("disabled"));
+    }
+
+    /// 手改坏的值不能让整条链路炸：0 = 未设置，非有限 temperature 忽略，超范围夹回来。
+    #[test]
+    fn for_link_ignores_bogus_values() {
+        let mut c = base();
+        c.overrides.detect.max_tokens = Some(0);
+        c.overrides.detect.temperature = Some(f64::NAN);
+        let d = c.for_link(LlmLink::Detect);
+        assert_eq!(d.max_tokens, 16384);
+        assert_eq!(d.temperature, 0.1);
+
+        c.overrides.correct.temperature = Some(5.0);
+        assert_eq!(c.for_link(LlmLink::Correct).temperature, 2.0);
+    }
+
+    /// TOML 形态（= 用户手写的那张表）；未知键忽略，不把整份配置打回默认。
+    #[test]
+    fn parses_overrides_table_from_toml() {
+        let text = r#"
+api_key = "k"
+max_tokens = 16384
+thinking = "disabled"
+
+[overrides.detect]
+max_tokens = 8192
+[overrides.polish]
+max_tokens = 32768
+temperature = 0.2
+thinking = "enabled"
+"#;
+        let c: LlmConfig = toml::from_str(text).unwrap();
+        assert_eq!(c.for_link(LlmLink::Detect).max_tokens, 8192);
+        assert_eq!(c.for_link(LlmLink::Polish).max_tokens, 32768);
+        assert_eq!(c.for_link(LlmLink::Polish).thinking.as_deref(), Some("enabled"));
+        // utility 缺席 → 跟随全局
+        assert_eq!(c.for_link(LlmLink::Utility).max_tokens, 16384);
+
+        let typo: LlmConfig =
+            toml::from_str("api_key = \"k\"\n[overrides.detectt]\nmax_tokens = 1\n").unwrap();
+        assert_eq!(typo.api_key, "k");
+        assert_eq!(
+            typo.for_link(LlmLink::Detect).max_tokens,
+            LlmConfig::default().max_tokens,
+            "拼错的表名只被忽略，不该生效也不该撑大范围"
+        );
+    }
+
+    /// 枚举 ↔ TOML 键名是契约（设置页与配置文件都按这个走）。
+    #[test]
+    fn link_keys_are_stable() {
+        let keys: Vec<&str> = LlmLink::ALL.iter().map(|l| l.key()).collect();
+        assert_eq!(keys, vec!["detect", "polish", "correct", "utility"]);
+    }
 }
 
 #[cfg(test)]

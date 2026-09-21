@@ -1,8 +1,14 @@
+//! polish::llm：精修侧 LLM 流水线的串联（全局分段 → 逐段事件 → 关键词 → 逐段状态快照）。
+//!
+//! 入口：`run_llm_pipeline`、`regenerate_segment_events`；子模块 `segment` / `events` / `keywords` / `status`。
+//! 边界：一律走 `vtrim_core::llm::LlmClient::from_config` 并挂 `with_usage_context`（不挂就是空 label）；空结果/失败一律不覆盖已有事件；落盘前的运镜与守卫与 `process` 是两份重复实现，要一起改 —— 见 `crates/vtrim-polish/src/llm/AGENTS.md`
+
 pub mod segment;
 pub mod keywords;
 pub mod events;
+pub mod status;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::parse::srt::Subtitle;
 use crate::project::{Segment, Event};
@@ -10,11 +16,16 @@ use vtrim_core::config::LlmConfig;
 use vtrim_core::danmaku::DanmakuEntry;
 use vtrim_core::llm::LlmClient;
 
+use status::SegmentGenStatus;
+
 /// 运行 LLM 全流程: 话题区间 + 关键词提取
 /// LLM 直接在 segment.events 中生成事件, 不再经 reaction_rules 中转
 /// sticker_source 控制提示词中是否提及 sticker 及其语言风格
 /// sticker_budget/sfx_budget: 数量上限, 提示词中明确约束
 /// sfx_blacklist: 被屏蔽的音效/标签, 注入 prompt
+///
+/// 返回 `(segments, 弹幕筛选詞, 高亮词, 逐段生成状态)` —— 最后一项供调用方落盘成快照，
+/// 编辑器据此给"没产出事件的段"上警示色（见 `llm::status`）。
 pub async fn run_llm_pipeline(
     llm_cfg: &LlmConfig,
     subtitles: &[Subtitle],
@@ -25,8 +36,12 @@ pub async fn run_llm_pipeline(
     sfx_budget: usize,
     sfx_blacklist: &[String],
     checkpoint_dir: Option<&PathBuf>,
-) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>)> {
+) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>, Vec<SegmentGenStatus>)> {
     let project = checkpoint_dir.map(|d| d.parent().unwrap_or(d).to_path_buf());
+    // 链路解析：精修这一整条（分段 / 逐段事件 / 贴纸精挑 / 关键词）共用 `[llm.overrides.polish]`。
+    // thinking 的"默认关思考"也在这里给出，别在下面各调用点再写一遍 with_thinking。
+    let linked = llm_cfg.for_link(vtrim_core::config::LlmLink::Polish);
+    let llm_cfg = &linked;
     // 用量归因：链路名 + 项目（切片）目录
     let usage = |label: &str| {
         vtrim_core::llm::usage::UsageContext::new(label)
@@ -35,7 +50,6 @@ pub async fn run_llm_pipeline(
 
     let client = std::sync::Arc::new(
         LlmClient::from_config(llm_cfg)?
-            .with_thinking(Some("disabled"))
             .with_usage_context(usage("精修分段")),
     );
 
@@ -79,7 +93,7 @@ pub async fn run_llm_pipeline(
     } else {
         String::new()
     };
-    let ok = events::run_event_agent(
+    let statuses = events::run_event_agent(
         &mut segments,
         subtitles,
         candidate_texts,
@@ -90,7 +104,11 @@ pub async fn run_llm_pipeline(
         project.as_deref(),
         checkpoint_path.as_deref(),
     ).await?;
-    println!("  ✓ {} segments generated", ok);
+    println!(
+        "  ✓ {} / {} 段生成成功",
+        statuses.iter().filter(|s| s.ok).count(),
+        statuses.len()
+    );
 
     // Step 2b: 本地贴纸按 tag 批量精挑具体文件
     let sticker_root = vtrim_core::path::sticker_dir();
@@ -107,7 +125,6 @@ pub async fn run_llm_pipeline(
     let dm_texts: Vec<String> = danmaku.iter().map(|d| d.text.clone()).collect();
     // 单开一个带自身归因的客户端：与分段那一路在用量表里分开统计
     let kw_client = LlmClient::from_config(llm_cfg)?
-        .with_thinking(Some("disabled"))
         .with_usage_context(usage("精修关键词"));
     let (dm_filter, hl_words) = match keywords::extract_keywords(&kw_client, &sub_texts, &dm_texts).await {
         Ok(k) => { println!("  ✓ Keywords extracted"); k }
@@ -123,6 +140,8 @@ pub async fn run_llm_pipeline(
                 zoom: "中".into(), origin: "50% 50%".into(),
                 // 聚焦主播：由 process 解析成坐标（origin 是解析前的占位值）
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None, cut: false,
+                // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
+                handheld: false,
                 manual: false,
             });
         }
@@ -154,7 +173,104 @@ pub async fn run_llm_pipeline(
     // Step 5: emoji/irasu 位置计算 ("auto" → 计算值, 未来实现)
     // LLM 输出的 x/y 如果是 "auto", 由 cmd_process 统一计算
 
-    Ok((segments, dm_filter, hl_words))
+    Ok((segments, dm_filter, hl_words, statuses))
+}
+
+/// **只重做某一段**的事件（编辑器里分段属性面板上的那颗按钮）。
+///
+/// 与整片重做的区别（这些都是**有意**的）：
+/// - **不重跑 Step1 分段**：用户点的是"重做这一段的事件"，段的时间边界必须原样保留；
+/// - **不走 checkpoint**：单段重做的全部意义就是"这一次要重新问模型"，读缓存等于什么都不做；
+/// - 只把该段的事件换掉，别的段一个字节都不动；
+/// - 仍然跑 Step2b（贴纸精挑）与段级的对齐，否则新生成的事件缺 `name` / 没吸附字幕。
+///
+/// 生成失败（429 等）时**保留该段原有事件**并如实返回失败状态
+/// —— `apply_outputs` 对空结果不覆盖，这里也不动 polish.toml（调用方只写成功的结果）。
+pub async fn regenerate_segment_events(
+    llm_cfg: &LlmConfig,
+    subtitles: &[Subtitle],
+    sticker_source: &[String],
+    sfx_blacklist: &[String],
+    event_type: &str,
+    segments: &mut [Segment],
+    index: usize,
+    project: Option<&Path>,
+) -> anyhow::Result<SegmentGenStatus> {
+    let Some(seg) = segments.get(index) else {
+        anyhow::bail!("分段下标越界: {index}（当前只有 {} 段）", segments.len());
+    };
+    let (start, end) = (seg.start, seg.end);
+
+    // 段内没有字幕就没什么可生成的（也与整片那条路同一口径：窗口字幕来自 ±3s 过滤）。
+    // 提前返回是**有意的**：省一次调用，而且给出的原因比"模型返回空"准确。
+    let has_subs = subtitles
+        .iter()
+        .any(|s| s.end >= start - 3.0 && s.start <= end + 3.0);
+    if !has_subs {
+        return Ok(SegmentGenStatus::failed(
+            index, start, end, "这一段没有字幕，无法生成事件", seg.events.len(),
+        ));
+    }
+
+    // 该段的音效候选：与整片那条路同一个入口（按 clip 方向筛过的候选清单）
+    let tags = sfx_tags_for_event_type(event_type);
+    let candidate_text = crate::assets::sfx_catalog::candidates_text(
+        &tags,
+        &std::collections::HashSet::new(),
+        32,
+        sfx_blacklist,
+    );
+    let sticker_root = vtrim_core::path::sticker_dir();
+    let has_local = sticker_source
+        .iter()
+        .any(|s| crate::assets::sticker_index::is_package_source(&sticker_root, s));
+    let local_sticker_text = if has_local {
+        crate::assets::sticker_index::local_sticker_candidates_text(&sticker_root)
+    } else {
+        String::new()
+    };
+
+    // 只把这一段做成一个窗口跑（checkpoint = None → 一定重新问模型）
+    let mut one = vec![segments[index].clone()];
+    let statuses = events::run_event_agent(
+        &mut one,
+        subtitles,
+        vec![candidate_text],
+        sticker_source,
+        sfx_blacklist,
+        local_sticker_text,
+        llm_cfg,
+        project,
+        None,
+    )
+    .await?;
+    let status = statuses
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            SegmentGenStatus::failed(index, start, end, "没有拿到该段的结果", 0)
+        });
+
+    // 失败/空结果：不动 segments[index]（保持用户原来那一份）
+    if !status.ok {
+        tracing::warn!("  ⚠ 段 {index} 重做未产出事件：{}（保留原有事件）", status.reason);
+        return Ok(status);
+    }
+
+    // Step2b：本地贴纸精挑（只在这一段上跑）
+    if has_local {
+        run_sticker_choice_step(&mut one, subtitles, llm_cfg, project).await?;
+    }
+    // 与整片那条路同一批段级收尾：贴纸吸附最近字幕 + 画中画守卫
+    crate::process::align_stickers_to_subtitles(&mut one, subtitles);
+    crate::process::cap_pip_shots(&mut one);
+    crate::process::align_pip_shots(&mut one, subtitles);
+    crate::process::close_pip_shots(&mut one);
+
+    let events = std::mem::take(&mut one[0].events);
+    let count = events.len();
+    segments[index].events = events;
+    Ok(SegmentGenStatus::ok(index, start, end, count))
 }
 
 /// Step2b：读取本地贴纸包 TOML，按 `(包名, sticker_tag)` 分组批量精挑具体文件，写回 event.name/source。

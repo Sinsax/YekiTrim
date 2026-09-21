@@ -1,3 +1,8 @@
+//! polish::commands：`vtrim polish *` 各子命令的实现（CLI 与 WebUI 共用同一份）。
+//!
+//! 入口：`cmd_init`、`cmd_parse`、`cmd_llm`、`cmd_llm_segment`、`cmd_preview`、`cmd_test`、`cmd_doctor`、`cmd_stickers_list` / `cmd_stickers_test` / `cmd_stickers_build` / `cmd_stickers_scan`、`build_package_tags`。
+//! 边界：长任务写 `polish.toml` 一律走 `project::update_polish_toml`（锁内重新 load + 只覆盖自己负责的字段），不许"开头 load、结尾整份写回" —— 见 `crates/vtrim-polish/AGENTS.md`
+
 use crate::{cover, process, render};
 
 use std::path::{Path, PathBuf};
@@ -103,7 +108,13 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
         vec![]
     } else {
         // 弹幕是可选的: 文件缺失/解析失败不中断 SRT 解析, 降级为无弹幕
-        match vtrim_core::danmaku::parse_srt_file(std::path::Path::new(&resolved.danmaku)) {
+        //
+        // ⚠️ 必须用 `load_danmaku_auto`（**XML / ASS / SRT 都认**），不能用 `parse_srt_file`：
+        // 后者只走 SRT 分支，而录播姬与 B站下载写的都是 `.xml` —— 实测真实 XML
+        // （4 个样本，1200~3600 条）会被 SRT 分支全部解析成 **0 条**，而且不报错。
+        // 后果是精修页"没有弹幕"：LLM 看不到弹幕、`danmaku_band` 为空（贴纸不避让）。
+        // 这正是 `cutting/mod.rs` 记过的那类"换了解析器就静默变差"的坑，别退回。
+        match vtrim_core::danmaku::load_danmaku_auto(std::path::Path::new(&resolved.danmaku)) {
             Ok(mut raw) => {
                 parse::text::assign_danmaku_tracks(&mut raw);
                 raw
@@ -210,8 +221,27 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
 // ============================================================
 // llm
 // ============================================================
-pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
-    tracing::info!("🤖  LLM config generation...");
+/// LLM 剪辑（整片）。
+///
+/// `full = true`（编辑器按钮的默认语义）= **全部重做**：先清掉断点续传缓存，
+/// 再去重新分段 + 逐段生成事件。`full = false` 才允许复用 checkpoint。
+///
+/// 为什么默认要 "全部重做"：断点续传的命中条件（`id && items`）在**重新分段之后**
+/// 会给出"跳过 4 个窗口、实际只匹配 1 个"这种半吊子状态，用户看到的是
+/// 「点一次 LLM 剪辑，事件反而被换乱了」。重做是用户点这颗按钮的意图；
+/// 想省调用就该用**单段重做**（时间轴分段的属性面板），而不是赌缓存。
+pub async fn cmd_llm(project_path: &Path, full: bool) -> anyhow::Result<()> {
+    tracing::info!("🤖  LLM config generation... (full={full})");
+
+    // 全部重做：先把 checkpoint 拿掉，之后每个窗口都会真问模型一次
+    if full {
+        let cp = project_path.join(".vtrim").join("polish_events.checkpoint.json");
+        match std::fs::remove_file(&cp) {
+            Ok(()) => tracing::info!("  ♻ 全部重做：已清空断点续传缓存 {}", cp.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("  ⚠ 清空断点续传缓存失败（继续重做）: {e}"),
+        }
+    }
 
     let config = project::load_project(project_path)?;
     let data_dir = project_path.join("data");
@@ -285,7 +315,7 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     }
 
     // 运行 LLM pipeline
-    let (mut segments, dm_filter, hl_words) = llm::run_llm_pipeline(
+    let (mut segments, dm_filter, hl_words, gen_status) = llm::run_llm_pipeline(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
@@ -317,6 +347,10 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
 
     // 只覆盖本次负责的三个字段：LLM 跑的过程中用户改的选框 / 封面 / 屏蔽轨道
     // （前端是自动保存的）必须留在 polish.toml 里，不能被这次整份写回吞掉。
+    //
+    // 先留一份最终 segments：下面的状态快照要按**它**映射（上面用屏蔽区间切过段、
+    // 也砍过超出时长的段，窗口下标与最终段下标已经对不上，不对齐界面就会给错段标色）。
+    let final_segments = new_config.segments.clone();
     let (segments, dm_filter, hl_words) = (new_config.segments, new_config.filter.danmaku, new_config.filter.highlight);
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
@@ -326,6 +360,96 @@ pub async fn cmd_llm(project_path: &Path) -> anyhow::Result<()> {
     .await?;
 
     tracing::info!("\n✓ polish.toml updated with LLM-generated segments and keywords");
+    let remapped = llm::status::remap_to_segments(&gen_status, &final_segments);
+    // 失败段要在**任务日志**里也点名（编辑器里另有琥珀色 + 面板原因；
+    // 只写进快照的话，看日志排查时还是一头雾水）
+    let failed: Vec<String> = remapped
+        .iter()
+        .filter(|s| !s.ok)
+        .map(|s| format!("#{}（{}）", s.index + 1, s.reason))
+        .collect();
+    if !failed.is_empty() {
+        tracing::warn!(
+            "⚠ {} 段没有产出事件：{} —— 可在时间轴上点那一段「只重做本段事件」",
+            failed.len(),
+            failed.join("；")
+        );
+    }
+    if let Err(e) = llm::status::save(project_path, &llm::status::LlmRunStatus::from_full(remapped)) {
+        // 快照只服务界面提示，写不进去不能算这次生成失败
+        tracing::warn!("  ⚠ 生成状态快照写入失败: {e}");
+    }
+    Ok(())
+}
+
+/// **只重做某一段**的事件（编辑器：时间轴 → 分段属性 → 「只重做本段事件」）。
+///
+/// 只换 `segments[index].events`，别的段与筛选词/高亮词一律不动；
+/// 失败时（429/超时/空结果）**保留该段原有事件**并如实报错，绝不把事件清空。
+pub async fn cmd_llm_segment(project_path: &Path, index: usize) -> anyhow::Result<()> {
+    tracing::info!("🤖  重做分段 #{index} 的事件...");
+
+    let config = project::load_project(project_path)?;
+    if index >= config.segments.len() {
+        anyhow::bail!("分段下标越界: {index}（当前 {} 段）", config.segments.len());
+    }
+    let data_dir = project_path.join("data");
+
+    // 与 cmd_llm 同一份输入：字幕按屏蔽区间过滤
+    let mut subtitles: Vec<parse::srt::Subtitle> = {
+        let p = data_dir.join("subtitles.json");
+        if !p.exists() { anyhow::bail!("缺少 {}，先跑一次「初始化」", p.display()); }
+        serde_json::from_str(&std::fs::read_to_string(&p)?)?
+    };
+    if !config.mute_ranges.is_empty() {
+        subtitles.retain(|s| !config.mute_ranges.iter().any(|r| r.overlaps(s.start, s.end)));
+    }
+
+    let llm_cfg = vtrim_core::config::load_llm_config();
+    if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
+        // 单段重做是用户明确点的动作：不做就报错，别静默返回"成功"
+        anyhow::bail!("未配置 LLM API key（设置页「LLM 配置」或 .vtrim/llm.toml）");
+    }
+
+    let event_type: String = std::fs::read_to_string(data_dir.join("clip-meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("event_type").and_then(|e| e.as_str().map(|s| s.to_string())))
+        .unwrap_or_default();
+    let sfx_blacklist = crate::process::load_sfx_blacklist(&config);
+
+    let mut segments = config.segments.clone();
+    let status = llm::regenerate_segment_events(
+        &llm_cfg,
+        &subtitles,
+        &config.sticker_source,
+        &sfx_blacklist,
+        &event_type,
+        &mut segments,
+        index,
+        Some(project_path),
+    )
+    .await?;
+
+    if !status.ok {
+        // 保持原样（连状态快照也要标失败，界面才知道这一段没换成）
+        let _ = llm::status::upsert_segment(project_path, status.clone());
+        anyhow::bail!("分段 #{} 重做失败：{}", index, status.reason);
+    }
+
+    // 只写回这一段的事件（其余字段由 update_polish_toml 的读改写保证不变）
+    let events = segments[index].events.clone();
+    let n = events.len();
+    project::update_polish_toml(project_path, move |cfg| {
+        if let Some(seg) = cfg.segments.get_mut(index) {
+            seg.events = events;
+        }
+    })
+    .await?;
+    if let Err(e) = llm::status::upsert_segment(project_path, status) {
+        tracing::warn!("  ⚠ 生成状态快照写入失败: {e}");
+    }
+    tracing::info!("  ✓ 分段 #{index} 已重做：{n} 个事件");
     Ok(())
 }
 
@@ -814,8 +938,9 @@ async fn llm_generate_package_tags(
     use vtrim_core::llm::agent::extract_json_object;
     use vtrim_core::llm::LlmClient;
 
-    let client = LlmClient::from_config(cfg)?
-        .with_thinking(Some("disabled"))
+    // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
+    let linked = cfg.for_link(vtrim_core::config::LlmLink::Utility);
+    let client = LlmClient::from_config(&linked)?
         .with_usage_context(vtrim_core::llm::usage::UsageContext::new("贴纸包标签"));
     let system = "你是贴纸语义标签助手。分析贴纸文件名，输出一个精简的语义 tag 索引。要求：\
         \n- 输出 JSON 对象，key 为语义 tag（情绪/动作/场景词），value 为该 tag 下的文件列表\
@@ -911,8 +1036,11 @@ async fn llm_generate_tags(
     metas: &mut [crate::assets::sticker_index::StickerMeta],
 ) -> anyhow::Result<()> {
     use vtrim_core::llm::LlmClient;
-    let client = LlmClient::new(&cfg.api_key, &cfg.base_url, &cfg.model)
-        .with_thinking(Some("disabled"))
+    // 链路解析：零散单发链路（见 [llm.overrides.utility]）。
+    // 以前这里是裸 `LlmClient::new`（不发送 max_tokens/temperature/extra_params）——
+    // 于是这条链路既不受 [llm] 也不受链路覆盖约束，改成与其它调用点同一条路。
+    let linked = cfg.for_link(vtrim_core::config::LlmLink::Utility);
+    let client = LlmClient::from_config(&linked)?
         .with_usage_context(vtrim_core::llm::usage::UsageContext::new("贴纸扫描标签"));
     let system = "你是贴纸标签生成助手。为每个贴纸生成 3-6 个英文 tags（情绪/动作/场景词，供英文 keyword 匹配，如 love happy laugh shock game）。";
 

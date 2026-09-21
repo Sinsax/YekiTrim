@@ -267,6 +267,10 @@ pub struct SourceFx {
 ///
 /// 完整合成 Canvas 的变换链：T(shake) · T(split.x) · Shear(b) · S(split.scale) ·
 /// T(cam) · S(zoom) · T(-cam)，其中 Shear 的 b = split.skew_x / 100。
+///
+/// ⚠️ **手持摇摆没进这条链**（`CameraState::handheld` 只是状态机的幅度）：本条路径（wgpu）尚未启用，
+/// 出片权威是模板 canvas 的 `renderFrame`（那里逐帧取 `handheldSway`）。启用 wgpu 时要一起补
+/// 位移/倾斜/呼吸缩放三项，否则「预览有摇摆、成片没有」。
 pub fn camera_transform(
     camera: &CameraState,
     shake: (f64, f64),
@@ -319,6 +323,7 @@ mod tests {
             zoom: 1.0,
             ox: 960.0,
             oy: 540.0,
+            handheld: 0.0,
         };
         let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
         assert!((m[0][0] - 1.0).abs() < 1e-6);
@@ -333,6 +338,7 @@ mod tests {
             zoom: 1.5,
             ox: 960.0,
             oy: 540.0,
+            handheld: 0.0,
         };
         let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
         assert!((m[0][0] - 1.5).abs() < 1e-6);
@@ -349,6 +355,7 @@ mod tests {
             zoom: 0.55,
             ox: 960.0,
             oy: 540.0,
+            handheld: 0.0,
         };
         let m = camera_transform(&cam, (0.0, 0.0), None, 1920.0, 1080.0);
         assert!((m[0][0] - 0.55).abs() < 1e-6, "缩放系数: {}", m[0][0]);
@@ -373,6 +380,7 @@ mod tests {
             zoom: 1.0,
             ox: 960.0,
             oy: 540.0,
+            handheld: 0.0,
         };
         let sp = SplitState {
             scale: 0.95,

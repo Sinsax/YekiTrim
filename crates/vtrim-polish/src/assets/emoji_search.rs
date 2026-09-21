@@ -1,3 +1,8 @@
+//! polish::assets::emoji_search：Noto 动态 emoji 的检索与下载。
+//!
+//! 入口：`EmojiCatalog::{fetch, search, all}`、`download_images`、`download_images_by_codepoints`、`collect_keywords`。
+//! 边界：走 Google Fonts 的公开 API/CDN，目录拿不到时退回编译期嵌入的 `FALLBACK_MAP`；图片扩展名判据统一用 `sticker_index::is_image_file_name` —— 见 `crates/vtrim-polish/src/assets/AGENTS.md`
+
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use serde::Deserialize;

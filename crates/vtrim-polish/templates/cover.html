@@ -15,10 +15,13 @@
 html,body { width:100%; height:100%; overflow:hidden; background:#000;
   font-family:__FONT_FAMILY__; }
 #wrapper { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
-#page { position:relative; width:1920px; height:1080px; overflow:hidden; background:#000; flex-shrink:0; transform-origin:center center; }
+/* 封面画布尺寸由 cover.rs 注入（__COVER_W__/__COVER_H__）：**恒横版 1920×1080**，
+   不跟随 [canvas] orientation —— 平台封面就是横的；竖屏素材靠下面 #frame 的
+   object-fit:contain 保持原比例，画布尺寸本身不动。 */
+#page { position:relative; width:__COVER_W__px; height:__COVER_H__px; overflow:hidden; background:#000; flex-shrink:0; transform-origin:center center; }
 /* 出片模式（__EXPORT__=true）：不缩放、不居中，页面左上角对齐视口原点，
-   配合 CDP 的 clip(0,0,1920,1080) 拿到干净的 1920×1080 —— 否则抓到的是浏览器
-   视口尺寸（比 1920×1080 小），16:9 的页面被居中 → 成片左右两条黑边。
+   配合 CDP 的 clip(0,0,W,H) 拿到干净的整幅封面 —— 否则抓到的是浏览器
+   视口尺寸（比画布小），页面被居中 → 成片四周黑边。
    预览模式保持原样（缩放铺满窗口、右下角留刷新按钮）。 */
 html.export #wrapper { justify-content:flex-start; align-items:flex-start; }
 html.export #page { transform:none; }
@@ -36,7 +39,9 @@ html.export #toolbar { display:none; }
 /* 帧层（当前帧清晰图）：可位移/缩放（bg_x/bg_y/bg_zoom + layout.liver 的聚焦原点），
    在背景之上、渐变/暗角/标题之下。别把它并进 #bg —— 那样就又变成"背景替换帧"了。 */
 #frame { position:absolute; inset:0; overflow:hidden; }
-#frame img { width:100%; height:100%; object-fit:cover; display:block;
+/* object-fit:contain —— 素材**保持原比例**完整显示（用户要求）：竖屏素材在横版封面上
+   左右留边（露出背景层），不再被 cover 裁掉上下。 */
+#frame img { width:100%; height:100%; object-fit:contain; display:block;
   transform-origin: var(--liver-x) var(--liver-y);
   transform:var(--bg-transform); }
 #overlay { position:absolute; top:0; left:0; bottom:0; right:0; pointer-events:none;
@@ -91,7 +96,7 @@ document.documentElement.style.setProperty('--align-items', '__TEXT_ALIGN_ITEMS_
 document.documentElement.style.setProperty('--text-shadow', '__SHADOW__');
 var EXPORT = '__EXPORT__' === 'true';
 if (EXPORT) document.documentElement.classList.add('export');
-function scaleCover(){var s=Math.min(window.innerWidth/1920,window.innerHeight/1080);document.getElementById('page').style.transform='scale('+s+')';}
+function scaleCover(){var s=Math.min(window.innerWidth/__COVER_W__,window.innerHeight/__COVER_H__);document.getElementById('page').style.transform='scale('+s+')';}
 if (!EXPORT) { scaleCover(); window.addEventListener('resize',scaleCover); }
 setTimeout(function(){ window.__COVER_READY = true; }, 1500);
 </script>

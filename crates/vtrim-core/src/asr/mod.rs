@@ -1,3 +1,8 @@
+//! asr：Stage 2 转写链路（sherpa-onnx 本地识别 → 逐字时间轴 / 断句 → 文本后处理）。
+//!
+//! 入口：`Transcriber`；子模块 `align` / `artifacts` / `correct` / `local` / `text` / `vad`。
+//! 边界：产物固定名 `output/video.srt` + `output/transcript.json` 被 `status.rs` / `current_stage()` 认死，不许改成按模式命名；登记生效值只有 `assets::bind_asr_artifact` 一条路 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -323,6 +328,7 @@ impl Stage for Transcriber {
                 max_interp_span: 0,
                 fallback_reason: None,
                 model: "qwen3-asr".into(),
+                mode: mode.clone(),
             };
         }
 
@@ -368,11 +374,42 @@ impl Stage for Transcriber {
         tracing::info!("字幕已生成: {}", srt_path.display());
         tracing::info!("转录 JSON 已保存: {}", json_path.display());
 
+        // 分模式留档：`output/transcript.<mode>.json`。
+        //
+        // 预处理页的素材清单里，**每个 ASR 模式下最多一条产物**（hybrid / single 各一条，
+        // 也就是用户说的"输出一次绑定一次、只能两次"）。`output/` 下那两份是"最新一次"的
+        // 覆盖式产物，两条清单条目指着同一份文件就没法切换了，所以每个模式各留一份。
+        // 同一模式重跑直接覆盖自己那一份，不新增条目。
+        //
+        // ⚠️ **别把 `video.srt` / `transcript.json` 改成按模式命名**：`status.rs` 的
+        // 「字幕」判定、`ProjectConfig::current_stage` 的 stage 2 推导、老 CLI 都认这两个固定名。
+        if let Some(slug) = mode_slug(&mode) {
+            let mode_path = ctx.output_dir.join(format!("transcript.{slug}.json"));
+            save_transcript_json(&transcript, &mode_path)?;
+            tracing::info!("分模式转录 JSON 已保存: {}", mode_path.display());
+        }
+
         ctx.transcript = Some(transcript);
 
         tracing::info!("语音转文字完成");
         Ok(())
     }
+}
+
+/// ASR 模式 → 文件名 slug（`hybrid` / `single`）。不认识的模式返回 `None`：
+/// 模式串来自配置，手改成乱七八糟的值时**别把它拼进文件名**。
+fn mode_slug(raw: &str) -> Option<String> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.is_empty() || s.len() > 32 {
+        return None;
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(s)
 }
 
 /// 给识别器切音频时的实际解码区间：窗口 `[start, end)` 前后各留 `pad` 余量。

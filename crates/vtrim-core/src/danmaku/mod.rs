@@ -1,9 +1,14 @@
+//! danmaku：弹幕解析（ASS / 录播姬 XML / SRT）与时间窗密度（热力图）。
+//!
+//! 入口：`load_danmaku_auto`（唯一该用的格式自适应入口）、`analyze`、`average_density`、`peak_density`、`parse_bililive_xml`、`parse_srt_file`；`parser` 是私有子模块。
+//! 边界：**别用 `parse_ass` 直读用户的 `danmaku_file`**（真实弹幕是 XML，会静默吐 0 条还不报错），格式判据只在 `load_danmaku_auto` 里有一份 —— 见 `crates/vtrim-core/src/danmaku/AGENTS.md`
+
 mod parser;
 pub use parser::*;
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 /// Load danmaku from an ASS file as a flat list (for correction context, etc.)
 pub fn load_danmaku(path: &Path) -> Result<Vec<DanmakuEntry>> {
@@ -65,10 +70,22 @@ pub fn parse_srt_danmaku(content: &str) -> Vec<DanmakuEntry> {
     entries
 }
 
-/// 从 SRT 弹幕文件路径解析
+/// 从 **SRT** 弹幕文件路径解析。
+///
+/// ⚠️ 这个函数**只认 SRT**：`danmaku_file` 指向 `.xml`/`.ass` 时，正确入口是
+/// [`load_danmaku_auto`]。历史上有调用点用错（精修 `cmd_parse`），真实 B站 XML 被
+/// SRT 分支解析成 **0 条**且不报错 —— 所以这里加一道护栏：内容看着像弹幕 XML 就直接
+/// 报错，把"静默 0 条"变成"一眼可见的失败"。
 pub fn parse_srt_file(path: &Path) -> Result<Vec<DanmakuEntry>> {
     let content =
         std::fs::read_to_string(path).with_context(|| format!("读取弹幕文件失败: {}", path.display()))?;
+    let head = content.trim_start_matches('\u{feff}').trim_start();
+    if head.starts_with("<?xml") || content.contains("<d p=") {
+        bail!(
+            "{} 是弹幕 XML，不是 SRT —— 请改用 load_danmaku_auto（XML/ASS/SRT 都认）",
+            path.display()
+        );
+    }
     Ok(parse_srt_danmaku(&content))
 }
 
@@ -134,11 +151,19 @@ pub fn load_danmaku_auto(path: &Path) -> Result<Vec<DanmakuEntry>> {
     }
 }
 
-/// 解析（录播姬写出的）B站标准弹幕 XML。
+/// 解析 B站标准弹幕 XML（`<i><d p="…">文本</d>…</i>`）。
 ///
-/// 结构：`<i><d p="时间,模式,字号,颜色,时间戳,弹幕池,用户,行号">文本</d>…</i>`
-/// - 时间：秒（浮点）；模式：1/2/3 滚动、4 底端、5 顶端、6 逆向、7 高级、8 代码；
-/// - 颜色：十进制 RGB（`16777215` = 白）；行号（第 8 段）直接当作 y 坐标。
+/// **两种方言都要吃**，`p` 的段数与第 8 段含义不同：
+///
+/// | 来源 | 段数 | `[7]` 是什么 |
+/// |---|---|---|
+/// | 主站 `comment.bilibili.com/{cid}.xml` | **9** | 弹幕数据库 ID（17–19 位 dmid），`[8]` 是 4..10 的枚举 |
+/// | 录播姬 `BililiveRecorder` | **8** | **恒为 `0`**（rec.danmuji.org/user/danmaku 字段说明） |
+///
+/// 两边一致的段（本函数只用这三个）：`[0]` 时间(秒,浮点) `[1]` 模式 `[3]` 颜色(十进制 RGB)。
+/// 模式：1/2/3 滚动、4 底端、5 顶端、6 逆向、7 高级、8 代码。
+///
+/// ⚠️ **`[7]` 不作为 y 坐标** —— 它在两种方言里都不是行号，原因见函数内注释。
 ///
 /// 不引入 XML 依赖：只按 `<d p="…">…</d>` 提取，属性顺序不敏感，实体做最小反转义。
 /// 得到的时间轴语义与 ASS/SRT 分支一致（`start`/`end`/`text`/`color`/`y`），
@@ -161,18 +186,21 @@ pub fn parse_bililive_xml(content: &str) -> Vec<DanmakuEntry> {
         }
         let mode: u32 = parts.get(1).and_then(|s| s.trim().parse().ok()).unwrap_or(1);
         let color_dec: u32 = parts.get(3).and_then(|s| s.trim().parse().ok()).unwrap_or(0xFF_FFFF);
-        let row: f64 = parts
-            .get(7)
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|v: &f64| *v > 0.0)
-            .unwrap_or(default_y_for_mode(mode));
+        // ⚠️ `parts[7]` **不是行号**，不要拿它当 y：
+        //   - 主站 XML 放的是弹幕数据库 ID（实测 17 位，如 `22772981386706944`）；
+        //   - 录播姬放的是固定 `0`（rec.danmuji.org/user/danmaku 字段说明）。
+        // 早先这里写的是「第 8 段直接当 y」+ `.clamp(0.0, 1500.0)`：
+        // 录播姬路径上因为恒 0 被 `filter(> 0.0)` 挡掉而"碰巧"没暴露，
+        // 一旦吃主站 XML，`clamp` 会把**每一条**都压到 y = 1500（实测 3600/3600 条）。
+        // 所以一律走 `default_y_for_mode`，与 ASS/SRT 分支的默认取值一致。
+        let y = default_y_for_mode(mode);
         entries.push(DanmakuEntry {
             start,
             // XML 不提供时长：滚动弹幕按 8 秒展示，固定弹幕按 4 秒（与 ASS 默认一致）
             end: start + if matches!(mode, 4 | 5) { 4.0 } else { 8.0 },
             text,
             color: format!("#{:06x}", color_dec & 0xFF_FFFF),
-            y: row.clamp(0.0, 1500.0),
+            y,
             travel_duration: 8.0,
         });
     }
@@ -411,46 +439,74 @@ mod tests {
         assert!(parse_srt_danmaku(only_tags).is_empty());
     }
 
-    /// 录播姬写出的 B站标准弹幕 XML（官方样例结构）
-    const BILILIVE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+    /// 主站 `comment.bilibili.com/{cid}.xml` 的真实样本。
+    ///
+    /// `p` 属性**逐字节取自** 2026-09-19 实测抓取的 `BV1TE411f7f1`（cid=122300483）：
+    /// 9 段、`[7]` 是 17 位 dmid、`[8]` 恒为 `10`。
+    /// 文本换成中性内容 —— 本固件要验的是**字段结构**，不是内容。
+    const BILIBILI_MAIN_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<i><chatserver>chat.bilibili.com</chatserver><chatid>122300483</chatid><mission>0</mission><maxlimit>3000</maxlimit><state>0</state><real_name>0</real_name><source>k-v</source>
+<d p="723.86400,5,25,16776960,1570578189,0,b89a0835,22772981386706944,10">顶端弹幕 &lt;带实体&gt;</d>
+<d p="910.57100,1,25,16777215,1570552938,0,ea1655b6,22759742137958404,10">滚动弹幕一</d>
+<d p="997.12000,1,25,16707842,1570644088,0,c4ad06c5,22807531222990850,10">带尾空格 </d>
+<d p="1128.56300,4,25,15138834,1570604421,0,8a7f4628,22786734369013762,10">底端弹幕</d>
+<d p="130.59400,5,25,15138834,1570580838,0,fe37d44d,22774369895841792,10"></d>
+</i>"#;
+
+    /// 录播姬写出的弹幕 XML：**8 段、`[7]` 恒为 `0`**。
+    ///
+    /// 字段顺序按 rec.danmuji.org/user/danmaku 的官方说明构造
+    /// （第 7 段 = 发送者 UID 的 CRC32；第 8 段 = 固定 0，即主站那边的数据库 ID 位）。
+    const BILILIVE_RECORDER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <i>
   <chatserver>chat.bilibili.com</chatserver>
   <chatid>0</chatid>
-  <mission>0</mission>
   <maxlimit>0</maxlimit>
   <state>0</state>
-  <real_name>0</real_name>
   <source>k-v</source>
-  <d p="1.5,1,25,16777215,1700000000,0,abc,120">第一条 &lt;滚动&gt; 弹幕</d>
-  <d p="12.25,4,25,16711935,1700000010,0,abc,1000">底端弹幕</d>
-  <d p="20,5,25,255,1700000020,0,abc,100">顶端弹幕</d>
-  <d p="30,1,25,16711680,1700000030,0,abc,340"></d>
+  <d p="1.500,1,25,16777215,1700000000,0,3d4a1b2c,0">滚动弹幕</d>
+  <d p="12.250,4,25,16711935,1700000010,0,3d4a1b2c,0">底端弹幕</d>
+  <d p="20.000,5,25,255,1700000020,0,3d4a1b2c,0">顶端弹幕</d>
+  <d p="30.000,1,25,16711680,1700000030,0,3d4a1b2c,0"></d>
 </i>"#;
 
     #[test]
-    fn test_parse_bililive_xml() {
-        let entries = parse_bililive_xml(BILILIVE_XML);
-        // 空文本的一条被跳过
-        assert_eq!(entries.len(), 3, "entries = {entries:?}");
+    fn test_parse_main_site_xml_nine_fields() {
+        let entries = parse_bililive_xml(BILIBILI_MAIN_XML);
+        // 空文本那条被跳过
+        assert_eq!(entries.len(), 4, "entries = {entries:?}");
 
-        assert!((entries[0].start - 1.5).abs() < 1e-6);
-        assert_eq!(entries[0].text, "第一条 <滚动> 弹幕", "XML 实体必须反转义");
-        assert_eq!(entries[0].color, "#ffffff");
-        assert!((entries[0].y - 120.0).abs() < 1e-6, "行号直接作为 y");
-        assert!((entries[0].end - 9.5).abs() < 1e-6, "滚动弹幕显示 8 秒");
+        assert!((entries[0].start - 723.864).abs() < 1e-6);
+        assert_eq!(entries[0].text, "顶端弹幕 <带实体>", "XML 实体必须反转义");
+        assert_eq!(entries[0].color, "#ffff00");
+        assert!((entries[0].end - 727.864).abs() < 1e-6, "固定弹幕显示 4 秒");
 
-        // 底端（mode=4）：固定 4 秒 + 默认 y
-        assert!((entries[1].start - 12.25).abs() < 1e-6);
-        assert_eq!(entries[1].text, "底端弹幕");
-        assert_eq!(entries[1].color, "#ff00ff");
-        assert!((entries[1].end - 16.25).abs() < 1e-6);
+        // ⚠️ 回归钉子：`[7]` 是 17 位 dmid，**绝不能被当成 y**。
+        // 旧实现把它 clamp 到 1500，导致所有条目 y 全相等（实测 3600/3600 条）。
+        let ys: Vec<f64> = entries.iter().map(|e| e.y).collect();
+        assert!(!ys.windows(2).all(|w| w[0] == w[1]), "y 不能全塌成同一个值：{ys:?}");
+        assert!(ys.iter().all(|y| *y < 1500.0), "dmid 被当成 y 了：{ys:?}");
 
-        // 顶端（mode=5）+ 颜色 255 = #0000ff
-        assert_eq!(entries[2].color, "#0000ff");
-        assert!((entries[2].y - 100.0).abs() < 1e-6);
+        assert_eq!(entries[2].text, "带尾空格", "文本要 trim");
+        assert!((entries[0].y - 100.0).abs() < 1e-6, "mode=5 顶端默认 y");
+        assert!((entries[3].y - 1000.0).abs() < 1e-6, "mode=4 底端默认 y");
 
         // 按时间排序
         assert!(entries.windows(2).all(|w| w[0].start <= w[1].start));
+    }
+
+    #[test]
+    fn test_parse_recorder_xml_eight_fields_unchanged() {
+        let entries = parse_bililive_xml(BILILIVE_RECORDER_XML);
+        assert_eq!(entries.len(), 3, "entries = {entries:?}");
+        // `[7]` 恒为 0 → 旧实现也被 `filter(> 0.0)` 挡掉、走 `default_y_for_mode`，
+        // 所以修 y 取值对录播姬是**行为等价**的。这里钉住"行为不变"。
+        assert!((entries[0].y - 400.0).abs() < 1e-6, "滚动默认 y");
+        assert!((entries[1].y - 1000.0).abs() < 1e-6, "底端默认 y");
+        assert!((entries[2].y - 100.0).abs() < 1e-6, "顶端默认 y");
+        assert_eq!(entries[0].color, "#ffffff");
+        assert_eq!(entries[1].color, "#ff00ff");
+        assert_eq!(entries[2].color, "#0000ff");
     }
 
     #[test]
@@ -470,9 +526,38 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vtrim-danmaku-xml-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("danmaku.xml");
-        std::fs::write(&path, BILILIVE_XML).unwrap();
+        std::fs::write(&path, BILILIVE_RECORDER_XML).unwrap();
         let entries = load_danmaku_auto(&path).unwrap();
         assert_eq!(entries.len(), 3, "按扩展名分派到 XML 解析");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠️ 回归钉子：把**弹幕 XML 喂给 `parse_srt_file` 必须报错**，不能静默 0 条。
+    ///
+    /// 这个坑真发生过：精修 `cmd_parse` 用 `parse_srt_file` 读 `danmaku_file`，
+    /// 而录播姬/B站写的都是 `.xml` —— 实测 4 个真实样本（1200~3600 条）全被
+    /// SRT 分支解析成 0 条且没有任何报错，表现只是"精修页没有弹幕"。
+    #[test]
+    fn test_parse_srt_file_refuses_xml_loudly() {
+        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 带 XML 声明的主站形态
+        let main = dir.join("main.xml");
+        std::fs::write(&main, BILIBILI_MAIN_XML).unwrap();
+        let e = parse_srt_file(&main).unwrap_err();
+        assert!(format!("{e}").contains("load_danmaku_auto"), "错误里要给出正确入口: {e}");
+
+        // 没有声明、但含 `<d p=` 的录播姬形态也要挡住
+        let rec = dir.join("rec.xml");
+        std::fs::write(&rec, BILILIVE_RECORDER_XML).unwrap();
+        assert!(parse_srt_file(&rec).is_err(), "含 <d p= 的也必须报错");
+
+        // 真正的 SRT 不受影响
+        let srt = dir.join("dm.srt");
+        std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:09,000\n{\\move(2000,0,0,0)}hi\n").unwrap();
+        assert_eq!(parse_srt_file(&srt).unwrap().len(), 1);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

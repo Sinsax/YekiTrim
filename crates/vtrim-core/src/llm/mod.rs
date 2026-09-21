@@ -1,3 +1,8 @@
+//! llm：统一 LLM 客户端（OpenAI 兼容）与用量记账出口。
+//!
+//! 入口：`LlmClient`（`new` / `from_config` / `chat` / `send` / `with_usage_context`）；子模块 `agent`（批量窗口编排）、`usage`（用量记录与 sink）。
+//! 边界：core 只 `emit` 用量记录，写库由 CLI / server 侧装的 sink 负责；各链路别自己写 `reqwest` —— 见 `crates/vtrim-core/src/llm/AGENTS.md`
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

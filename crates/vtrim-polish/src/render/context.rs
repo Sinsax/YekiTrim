@@ -28,11 +28,14 @@ pub struct RenderContext {
 
 impl RenderContext {
     pub fn new(project_path: PathBuf, config: ProjectFile) -> Self {
+        // 画布尺寸从 `[canvas]` 推导（横 1920×1080 / 竖 1080×1920）——
+        // 消掉「字段恒默认」的谎：这里不再是写死的 1920×1080。
+        let (cw, ch) = config.canvas_size();
         Self {
             project_path,
             config,
-            width: 1920,
-            height: 1080,
+            width: cw,
+            height: ch,
             fps: 30,
             server_url: None,
             sticker_data_json: "{}".into(),

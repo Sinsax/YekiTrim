@@ -1,3 +1,8 @@
+//! polish::render::server：预览/出片用的本地 HTTP server（`ServeDir` 根 = 项目目录）。
+//!
+//! 入口：`RenderServer::{new, build_html, start_with, start, start_cover}`、`start_file_server`、`build_sticker_map`、`font_face_css(_in)`、`font_family_with_stack`、`SYSTEM_FONT_STACK`。
+//! 边界：`/vt-fonts/:name` 两条建 router 的路都要挂（漏一条 = 预览有、成片没有）；`INDEX_HTML` 走 `include_str!`，改 `templates/index.html` 必须重建二进制 —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+
 use axum::{
     Router,
     routing::{get, post},
@@ -234,23 +239,38 @@ impl RenderServer {
 
     pub fn build_html(project_path: &Path) -> String {
         let config_path = project_path.join("polish.toml");
-        let mut cfg: serde_json::Value = std::fs::read_to_string(&config_path).ok()
-            .and_then(|raw| toml::from_str(&raw).ok())
+        let raw_cfg = std::fs::read_to_string(&config_path).ok();
+        let mut cfg: serde_json::Value = raw_cfg.as_deref()
+            .and_then(|raw| toml::from_str(raw).ok())
             .unwrap_or(serde_json::Value::Object(Default::default()));
         cfg["_assets"] = serde_json::json!({
             "sticker_map": build_sticker_map(project_path),
         });
-        // 竖屏检测: 视频高 > 宽 时启用竖屏布局 (主视频左/中放置 + 模糊背景)
-        if let Some(video_rel) = cfg["source"]["video"].as_str()
-            && let Some(size) = crate::render::get_video_size(
-                &project_path.join(video_rel).to_string_lossy())
-            && size.1 > size.0
-        {
-            let pos = cfg["layout"]["vertical_position"]
-                .as_str().unwrap_or("left").to_string();
-            cfg["vertical"] = serde_json::json!(true);
-            cfg["vertical_position"] = serde_json::json!(pos);
-            tracing::info!("  v 竖屏视频 {}x{} → {} 布局 + 模糊背景", size.0, size.1, pos);
+        // 画布契约：尺寸（横/竖画布）+ 画面构成（位置/背景）—— **唯一真相源**，
+        // 由 `ProjectFile::canvas_contract` 推导。`api/polish.rs` 的预览注入读的是同一份，
+        // 所以「出片」与「WebUI 预览」不可能算出不同的画布。
+        // ⚠️ 只留这一份实现：这里曾经还有第二份「竖屏检测」，改画布方向时两边会不同步。
+        // `vertical` 只表示「源视频是竖的」（特效用它做门控），摆放由 `_canvas.stage` 决定。
+        let project: Option<crate::project::ProjectFile> =
+            raw_cfg.as_deref().and_then(|raw| toml::from_str(raw).ok());
+        if let Some(project) = project {
+            let src_size = cfg["source"]["video"].as_str().and_then(|rel| {
+                crate::render::get_video_size(&project_path.join(rel).to_string_lossy())
+            });
+            let contract = project.canvas_contract(src_size);
+            let vertical = src_size.map(|(w, h)| h > w).unwrap_or(false);
+            cfg["vertical"] = serde_json::json!(vertical);
+            // 兼容：模板里贴纸的老分支仍按 `vertical_position` 取位置（P2 由 `[sticker] manual` 接管）
+            cfg["vertical_position"] = contract["stage"]["position"].clone();
+            if vertical || project.canvas.is_portrait() {
+                tracing::info!(
+                    "  画布 {}x{} · 源 {:?} → axis={} position={} bg={} (vertical={})",
+                    contract["width"], contract["height"], src_size,
+                    contract["stage"]["axis"], contract["stage"]["position"],
+                    contract["stage"]["bg"], vertical
+                );
+            }
+            cfg["_canvas"] = contract;
         }
         // 响度曲线: 注入浏览器供 preview 音效音量跟随视频 (与 render 混音同一数据)
         // 走带缓存的那份：这个 HTML 是**每个请求**重建的，不缓存就等于每刷一次页面烧一遍 ebur128

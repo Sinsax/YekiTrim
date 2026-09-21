@@ -1,3 +1,8 @@
+//! polish::render::pipeline：出片主链路（起预览 server → Chrome 逐块截帧/逐帧绘制 → ffmpeg 编码混流 → 统计）。
+//!
+//! 入口：`cmd_render`、`render_chunk_sync`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`export_sound_data`、`cleanup`。
+//! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（Chrome/ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+
 use base64::Engine;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -460,7 +465,7 @@ pub fn render_chunk_sync(
 pub type SoundEvent = crate::render::sound::SoundEvent;
 
 pub async fn export_sound_data(url: &str) -> anyhow::Result<Vec<SoundEvent>> {
-    let browser = ChromeRenderer::launch()?;
+    let browser = ChromeRenderer::launch((1920, 1080))?;
     let tab = ChromeRenderer::create_tab(&browser, url)?;
     tab.evaluate("window.__RNG_SEED=42;", false)?;
 
