@@ -64,13 +64,24 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
     ok(serde_json::json!(out))
 }
 
+/// polish 任务的附加参数（不同 kind 用法不同；用一个结构体是为了别再加第 7 个位置参数）。
+#[derive(Default, Clone)]
+pub(super) struct PolishJobOpts {
+    /// `render`：输出文件名（真开跑时才落盘）
+    pub output_file: Option<String>,
+    /// `llm`：true = **全部重做**（先清掉断点续传缓存）
+    pub full: bool,
+    /// `llm_segment`：只重做这一段的事件（下标见 `polish.toml` 的 `[[segments]]`）
+    pub segment_index: Option<usize>,
+}
+
 pub(super) async fn polish_spawn(
     state: &AppState,
     owner: i64,
     project: Option<i64>,
     kind: &str,
     dir: String,
-    output_file: Option<String>,
+    opts: PolishJobOpts,
 ) -> ApiResult {
     // dir 必须先校验：`dir: ""` 会让 cmd_init 在 server 进程的 CWD 里写出
     // polish.toml / data / sfx，任意绝对路径也会被当作合法工程目录。
@@ -114,16 +125,31 @@ pub(super) async fn polish_spawn(
                 "init" => vtrim_polish::commands::cmd_init(&path).await,
                 // LLM 是显式步骤，process 隐式：完成后同一 job 内自动执行后处理
                 "llm" => {
-                    jobs.log(&job_id, "info", "LLM 生成中…").await;
-                    vtrim_polish::commands::cmd_llm(&path).await?;
+                    jobs.log(&job_id, "info", if opts.full {
+                        "LLM 生成中（全部重做，不读断点续传）…"
+                    } else {
+                        "LLM 生成中…"
+                    }).await;
+                    vtrim_polish::commands::cmd_llm(&path, opts.full).await?;
                     jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
+                    vtrim_polish::process::cmd_process(&path).await
+                }
+                // 只重做某一段的事件（编辑器：时间轴 → 分段属性）。失败会**保留该段原有事件**，
+                // 所以这里 fail 掉任务不会让用户丢东西；后处理照跑（别的段不动，幂等）。
+                "llm_segment" => {
+                    let idx = opts
+                        .segment_index
+                        .ok_or_else(|| anyhow::anyhow!("缺少 segment_index"))?;
+                    jobs.log(&job_id, "info", format!("只重做分段 #{idx} 的事件…")).await;
+                    vtrim_polish::commands::cmd_llm_segment(&path, idx).await?;
+                    jobs.log(&job_id, "info", "完成，自动执行 process 后处理…").await;
                     vtrim_polish::process::cmd_process(&path).await
                 }
                 "process" => vtrim_polish::process::cmd_process(&path).await,
                 "render" => {
                     // 输出文件名在**真开跑之后**才落到 polish.toml（排队期间写会覆盖别人
                     // 的改动，而且任务可能还要等很久）。update_polish_toml 自己带路径锁。
-                    if let Some(name) = output_file.clone() {
+                    if let Some(name) = opts.output_file.clone() {
                         vtrim_polish::project::update_polish_toml(&path, |cfg| {
                             cfg.project.output = name.clone();
                         })
@@ -156,17 +182,43 @@ pub(super) fn scope_pid(ext: Option<axum::extract::Extension<crate::scope::Scope
 
 pub(super) async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "init", dir, None).await
+    polish_spawn(&state, user.id, scope_pid(pid), "init", dir, PolishJobOpts::default()).await
 }
 
+/// LLM 剪辑（整片）。
+///
+/// `full`（默认 **true**）= 全部重做：清掉断点续传缓存、重新分段 + 逐段生成。
+/// 用户点这颗按钮的意图就是"重做一遍"；半吊子的续传反而会让事件看起来被换乱
+/// （2026-09-20 用户报的「续传把所有事件删了只留一个 auto」）。
+/// 想省调用请用**单段重做**（`/api/polish/llm-segment`）。
 pub(super) async fn polish_llm(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "llm", dir, None).await
+    // 缺省 true：宁可重做，也不要静默续传
+    let full = body.get("full").and_then(|v| v.as_bool()).unwrap_or(true);
+    polish_spawn(&state, user.id, scope_pid(pid), "llm", dir, PolishJobOpts { full, ..Default::default() }).await
+}
+
+/// 只重做某一段的事件（编辑器：时间轴 → 选中分段 → 「只重做本段事件」）。
+pub(super) async fn polish_llm_segment(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let index = body
+        .get("index")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少分段下标 index"))? as usize;
+    polish_spawn(
+        &state,
+        user.id,
+        scope_pid(pid),
+        "llm_segment",
+        dir,
+        PolishJobOpts { segment_index: Some(index), ..Default::default() },
+    )
+    .await
 }
 
 pub(super) async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "process", dir, None).await
+    polish_spawn(&state, user.id, scope_pid(pid), "process", dir, PolishJobOpts::default()).await
 }
 
 pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -180,12 +232,12 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    polish_spawn(&state, user.id, scope_pid(pid), "render", dir, output_file).await
+    polish_spawn(&state, user.id, scope_pid(pid), "render", dir, PolishJobOpts { output_file, ..Default::default() }).await
 }
 
 pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, None).await
+    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, PolishJobOpts::default()).await
 }
 
 
@@ -516,10 +568,11 @@ pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json
     if llm.base_url.is_empty() || llm.api_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "LLM 未配置"));
     }
-    let client = vtrim_core::llm::LlmClient::from_config(&llm)
+    // 链路解析：零散单发链路（见 [llm.overrides.utility]）；thinking 的默认关思考由它给出
+    let linked = llm.for_link(vtrim_core::config::LlmLink::Utility);
+    let client = vtrim_core::llm::LlmClient::from_config(&linked)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("LLM 配置错误: {e}")))?
         .with_timeout(60)
-        .with_thinking(Some("disabled"))
         .with_usage_context(
             vtrim_core::llm::usage::UsageContext::new("封面文案")
                 .project(Some(vtrim_core::path::display(std::path::Path::new(&dir)))),
@@ -1010,18 +1063,28 @@ pub(super) async fn polish_project_get_impl(
                 "sticker_map": vtrim_polish::render::server::build_sticker_map(&path),
             }));
             let video_path = path.join(&cfg.source.video);
+            // 画布契约与出片读的是**同一份推导**（`ProjectFile::canvas_contract`）。
+            // 这里以前自己写了一份「竖屏检测」，与 `render/server.rs` 各一份 —— 改画布方向会不同步。
+            let src_size = vtrim_polish::render::get_video_size(&video_path.to_string_lossy());
+            let contract = cfg.canvas_contract(src_size);
+            obj.insert(
+                "vertical".into(),
+                serde_json::json!(src_size.map(|(w, h)| h > w).unwrap_or(false)),
+            );
+            obj.insert(
+                "vertical_position".into(),
+                contract["stage"]["position"].clone(),
+            );
+            obj.insert("_canvas".into(), contract);
+            // 最近一次 LLM 生成的结果（哪段成/哪段失败），编辑器按它给分段上警示色。
+            // 只是展示用：读不到就当没有，绝不影响加载。
+            if let Some(st) = vtrim_polish::llm::status::load(&path) {
+                obj.insert(
+                    "_llm_status".into(),
+                    serde_json::to_value(st).unwrap_or(serde_json::Value::Null),
+                );
+            }
             if video_path.exists() {
-                if let Some((w, h)) = vtrim_polish::render::get_video_size(&video_path.to_string_lossy()) {
-                    if h > w {
-                        let pos = obj.get("layout")
-                            .and_then(|l| l.get("vertical_position"))
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("left")
-                            .to_string();
-                        obj.insert("vertical".into(), serde_json::json!(true));
-                        obj.insert("vertical_position".into(), serde_json::json!(pos));
-                    }
-                }
                 obj.insert("loudness_curve".into(), loudness_curve_cached(&path, &video_path));
             }
         }
@@ -1283,6 +1346,21 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     if let Some(f) = body.get("subtitle_font").and_then(|v| v.as_str()) {
         cfg.style.subtitle.font = f.trim().to_string();
     }
+    // 输出画布 / 画面构成 / 贴纸落点：整块提交（前端给全量字段，缺键走 serde 默认）。
+    // ⚠️ 这里是**逐字段白名单**：没列进来的键保存时不报错、但静默存不进去。
+    // `sticker` 只落点策略（来源仍是根级 `sticker_source`，见上一段）。
+    if let Some(v) = body.get("canvas") {
+        cfg.canvas = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("canvas 解析失败: {e}")))?;
+    }
+    if let Some(v) = body.get("stage") {
+        cfg.stage = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("stage 解析失败: {e}")))?;
+    }
+    if let Some(v) = body.get("sticker") {
+        cfg.sticker = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("sticker 解析失败: {e}")))?;
+    }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
@@ -1441,6 +1519,126 @@ fn polish_project_put_writes_subtitle_font_only() {
     // 空串 = 回到系统字体栈
     let _ = polish_project_put_locked(&dir, &serde_json::json!({ "subtitle_font": "" })).unwrap();
     assert_eq!(vtrim_polish::project::load_project(&dir).unwrap().style.subtitle.font, "");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 画布方向 / 画面构成 / 贴纸落点要能真写进 `polish.toml`，且**不碰**没提到的段。
+///
+/// 回归：PUT 是**逐字段白名单**（见 `polish_project_put_locked`）——漏一个分支就是
+/// "保存不报错、但值静默丢掉"，前端还会以为存上了。
+#[test]
+fn polish_project_put_writes_canvas_stage_sticker() {
+    let dir = std::env::temp_dir().join(format!("vtrim-stage-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = vtrim_polish::project::ProjectFile::example();
+    cfg.mute_ranges.push(vtrim_polish::project::MuteRange { start: 1.0, end: 2.0 });
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) 只切画布方向：其它段原样保留
+    let body = serde_json::json!({ "canvas": { "orientation": "portrait" } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存画布方向");
+    let after = vtrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.canvas.size(), (1080, 1920));
+    assert_eq!(after.mute_ranges.len(), 1, "没提到的字段必须原样保留");
+    assert_eq!(after.stage.position, "auto", "没提交的段走默认，不能被顺手重置");
+
+    // 2) 画面构成
+    let body = serde_json::json!({ "stage": {
+        "bg_mode": "color", "bg_color": "#112233", "blur_scale": 2.0,
+        "position": "bottom", "scale": 1.25, "padding": 30,
+    }});
+    let _ = polish_project_put_locked(&dir, &body).expect("保存画面构成");
+    let after = vtrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.canvas.size(), (1080, 1920), "没提交 canvas 就不能被重置");
+    let fit = after.resolve_stage(Some((1920, 1080)));
+    assert_eq!(fit.axis, "y", "竖画布 × 横素材 = 上下留边");
+    assert_eq!(fit.position, "bottom");
+    assert_eq!(fit.bg, "color");
+    assert_eq!(fit.bg_color, "#112233");
+    assert!((fit.padding - 16.875).abs() < 1e-9, "30px × k(0.5625)");
+
+    // 3) 贴纸落点
+    let body = serde_json::json!({ "sticker": { "position_mode": "manual", "position": "20% 80%" } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存贴纸落点");
+    let after = vtrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.sticker.position_mode, "manual");
+    assert_eq!(after.sticker.position, "20% 80%");
+    assert_eq!(after.stage.position, "bottom", "上一段必须还在");
+
+    // 4) 落到 toml 文本上：段在、段注释在、根级 sticker_source 没被 [sticker] 顶掉
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    for needle in [
+        "[canvas]",
+        "[stage]",
+        "[sticker]",
+        "orientation = \"portrait\"",
+        "position_mode = \"manual\"",
+        "# ===== 画面构成",
+        "# ===== 贴纸落点",
+        "sticker_source",
+    ] {
+        assert!(raw.contains(needle), "缺 {needle}:\n{raw}");
+    }
+
+    // 5) 非法值：文件照存（不篡改用户输入），但渲染侧取到的是安全值
+    let body = serde_json::json!({ "stage": {
+        "bg_mode": "frame", "bg_color": "url(evil)", "position": "top"
+    }});
+    let _ = polish_project_put_locked(&dir, &body).expect("保存非法值也不应报错");
+    let after = vtrim_polish::project::load_project(&dir).unwrap();
+    let fit = after.resolve_stage(Some((1920, 1080)));
+    assert_eq!(fit.position, "top");
+    assert_eq!(fit.bg, "blur", "未知 bg_mode 回落 auto → 补边时按模糊处理");
+    assert_eq!(fit.bg_color, "#000000", "颜色必须净化，不能把 url(...) 带进模板 CSS");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 手持摇摆（`Event::Camera::handheld`）随 `segments` 整体收下 ——
+/// 运镜新字段走的是既有的 segments 通道（不是逐字段白名单里的新分支），
+/// 但正因如此必须**断言它真的落到 toml 上**：反序列化若把未知字段静默丢掉，
+/// PUT 依旧返回 ok、前端以为存上了（同一个坑见上一测试的注释）。
+///
+/// 同时钉住「老配置零迁移」：`handheld` 缺省 false 不落盘（`skip_serializing_if`），
+/// 没开摇摆的事件在 toml 里不该多出 `handheld = false` 这行噪音。
+#[test]
+fn polish_project_put_roundtrips_handheld_sway() {
+    let dir = std::env::temp_dir().join(format!("vtrim-handheld-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("polish.toml"),
+        "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n",
+    )
+    .unwrap();
+
+    let body = serde_json::json!({ "segments": [
+        { "start": 0.0, "end": 30.0, "fx": "high", "note": "",
+          "events": [
+            { "type": "camera", "time": 1.0, "end": 3.0, "zoom": "近", "origin": "50% 50%", "handheld": true },
+            { "type": "camera", "time": 5.0, "end": 7.0, "zoom": "中", "origin": "50% 50%" }
+          ] }
+    ]});
+    let _ = polish_project_put_locked(&dir, &body).expect("保存运镜事件");
+
+    // 1) 重新加载：值还在
+    let after = vtrim_polish::project::load_project(&dir).unwrap();
+    let flags: Vec<bool> = after.segments[0]
+        .events
+        .iter()
+        .map(|ev| match ev {
+            vtrim_polish::project::Event::Camera { handheld, .. } => *handheld,
+            other => panic!("应当是运镜事件: {other:?}"),
+        })
+        .collect();
+    assert_eq!(flags, vec![true, false]);
+
+    // 2) 落盘文本：true 必须写出、缺省 false 不写
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    assert!(raw.contains("handheld = true"), "手持摇摆没落到 toml:\n{raw}");
+    assert!(!raw.contains("handheld = false"), "缺省值不该落盘:\n{raw}");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

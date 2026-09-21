@@ -349,16 +349,29 @@ pub fn state_label(state: &str) -> &'static str {
         "finalized" => "已建项目",
         "failed" => "失败",
         "unassigned" => "未分配",
+        // B站下载通道（P4）
+        "queued" => "等待下载",
+        "downloading" => "下载中",
         _ => "未知",
     }
 }
 
 fn session_json(s: &IngestSessionRow, room_label: Option<&str>, bytes: u64) -> serde_json::Value {
+    // 列表页那一列「来源标识」：录播姬是房间号，B站是 BV 号（多P 形如 `BV1xx-p3`）。
+    // 两者共用一个字段，前端不用按 kind 分叉渲染。
+    let fallback_label = if s.kind == "bilibili" {
+        s.source_ref.as_deref().unwrap_or("")
+    } else {
+        s.room_id.as_deref().unwrap_or("")
+    };
     serde_json::json!({
         "session_id": s.session_id,
+        // 来源判别（v8 新增列）：前端据此换图标与文案，也是重试语义的分歧点
+        "kind": s.kind,
+        "source_ref": s.source_ref,
         "room_id": s.room_id,
         "short_id": s.short_id,
-        "room_label": room_label.unwrap_or_else(|| s.room_id.as_deref().unwrap_or("")),
+        "room_label": room_label.unwrap_or(fallback_label),
         "state": s.state,
         "state_label": state_label(&s.state),
         "files": s.closed_files,
@@ -709,6 +722,10 @@ pub async fn assign(
 }
 
 /// `POST /api/ingest/retry {session_id}`：把失败会话重新排队（本人或 admin）。
+///
+/// ⚠️ 目标状态**按来源分派**：录播姬靠 `state == "closing"` 触发入库判定
+/// （`ingest_worker::is_finalized`），B站下载则靠 `"queued"` 等下载 worker 认领。
+/// 早先这里写死 `"closing"`，B站会话点"重试"会**永远不动**（下载 worker 只认 queued）。
 pub async fn retry(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
@@ -725,10 +742,17 @@ pub async fn retry(
     if !user.is_admin() && session.owner_id != Some(user.id) {
         return Err(err(StatusCode::NOT_FOUND, "会话不存在"));
     }
-    db.set_ingest_state(session_id, "closing", None).map_err(internal)?;
+    let requeued = if session.kind == "bilibili" {
+        db.set_ingest_state(session_id, "queued", None).map_err(internal)?;
+        crate::download_worker::notify(state.clone(), Some(session_id.to_string()));
+        "queued"
+    } else {
+        db.set_ingest_state(session_id, "closing", None).map_err(internal)?;
+        crate::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
+        "closing"
+    };
     let _ = db.audit(Some(user.id), "ingest_retry", session_id);
-    crate::ingest_worker::notify(state.clone(), Some(session_id.to_string()));
-    ok(serde_json::json!({ "ok": true }))
+    ok(serde_json::json!({ "ok": true, "state": requeued }))
 }
 
 /// `POST /api/admin/ingest/scan`：立刻跑一次兜底扫描（仅 admin）。
@@ -777,8 +801,35 @@ fn config_view_json() -> serde_json::Value {
             "extensions": cfg.ingest.recorder.extensions,
             "auto_pipeline": cfg.ingest.recorder.auto_pipeline,
         },
+        // B站下载通道（P4）。前端表单只要这几项；`cookie_file` 是**路径**，
+        // 但它是本机配置项（不是会话 cookie 内容），且这个接口本身仅 admin 可读。
+        //
+        // ⚠️ 分组名叫 `download` 而**不是** `downloader`：`[ingest] downloader` 是一个
+        // **字符串键**（引擎名），把它当成子表分组名会让读代码的人以为配置里有个
+        // `[ingest.downloader]` 子表 —— 那正是 `build_ingest_patch` 要小心的坑。
+        "download": {
+            "engine": cfg.ingest.downloader,
+            "ytdlp_path": cfg.ingest.ytdlp_path,
+            "max_quality": cfg.ingest.max_quality,
+            "rate_limit_kbps": cfg.ingest.rate_limit_kbps,
+            "max_concurrent_downloads": cfg.ingest.max_concurrent_downloads,
+            "cookie_file": cfg.ingest.cookie_file,
+            "idle_timeout_secs": cfg.ingest.download_idle_timeout_secs,
+        },
         // 前端拿 `location.origin` 拼完整地址；录播姬不在本机时把主机名换成 V-Trim 的局域网 IP
         "webhook_path": "/api/ingest/bililive/<token>",
+        // 项目存放位置（`[storage] projects_root`）。**这是"下载/入库落到哪"的唯一开关**，
+        // 与 B站通道无关（录播姬入库、本机导入同一个根），但设置页把它放在下载器卡里 ——
+        // 用户问"下载到哪"时先在那一块找。
+        //
+        // `projects_root` 是配置原值（空 = 用默认），`projects_root_effective` 是**解析后**
+        // 的真实落点：只回值不回结构，前端照原样展示即可（别让它自己拼默认路径）。
+        "storage": {
+            "projects_root": cfg.storage.projects_root,
+            "projects_root_effective": vtrim_core::path::display(
+                &vtrim_service::projects::projects_root(),
+            ),
+        },
     })
 }
 
@@ -790,19 +841,32 @@ pub async fn config_view() -> ApiResult {
 /// 允许的自动入库终点（与 `RecorderConfig::auto_pipeline` 的取值一致）。
 const AUTO_PIPELINES: [&str; 4] = ["none", "transcribe", "detect", "cut"];
 
-/// 把 `PUT /api/admin/ingest` 的 body 变成"要合并进 `[ingest]` 的字段" + 警告列表。
+/// 把 `PUT /api/admin/ingest` 的 body 变成"要合并进配置的字段" + 警告列表。
 ///
 /// 抽成纯函数有两个理由：校验规则能直接单测（不需要起服务、也不碰真实全局配置），
 /// 而且"哪些键会被写"这件事在一处看得完。
 ///
+/// 返回值是 `(要并进 [ingest] 的字段, 要并进 [storage] 的字段, 警告)` ——
+/// `[storage]` 那一份只有 `projects_root` 一个键（项目存放位置），
+/// 它跟采集无关，但设置页把它摆在下载器卡里，所以走同一个保存端点。
+///
 /// 语义（表单友好，关键是让"清空"与"不改"分得开）：
 /// - 键**缺席** = 保持原值；
-/// - 字符串给 `""` = 显式清空（`api_pass` 同此：给空串才清掉，缺省则保留原密码）；
+/// - 字符串给 `""` = 显式清空（`api_pass` 同此：给空串才清掉，缺省则保留原密码；
+///   `projects_root` 给空串 = 回默认的"程序目录下"）；
 /// - `allow_ips` 给 `[]` = 清空白名单。
 fn build_ingest_patch(
     body: &serde_json::Value,
-) -> Result<(serde_json::Map<String, serde_json::Value>, Vec<String>), AppError> {
+) -> Result<
+    (
+        serde_json::Map<String, serde_json::Value>,
+        serde_json::Map<String, serde_json::Value>,
+        Vec<String>,
+    ),
+    AppError,
+> {
     let mut ingest = serde_json::Map::new();
+    let mut storage = serde_json::Map::new();
     let mut warnings: Vec<String> = Vec::new();
 
     if let Some(v) = body.get("webhook_enabled") {
@@ -899,7 +963,126 @@ fn build_ingest_patch(
         ingest.insert("recorder".into(), serde_json::Value::Object(out));
     }
 
-    Ok((ingest, warnings))
+    // B站下载通道（P4）。⚠️ 这里必须**平铺**成 `[ingest]` 的扁平键，不能嵌套成子表：
+    // `[ingest] downloader` 本身是一个**字符串键**（引擎名）。提交 `{"downloader": {…}}`
+    // 会把这一项写成 inline table —— 文件仍是合法 TOML、写入也不报错，
+    // 但下次读配置时 `downloader` 反序列化成 `String` 直接失败，**整份配置被静默忽略**。
+    // 回归钉子见 `patch_download_keys_are_flat_not_nested`。
+    if let Some(v) = body.get("download") {
+        let d = v
+            .as_object()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "download 必须是对象"))?;
+
+        for (key, field) in [
+            ("engine", "downloader"),
+            ("ytdlp_path", "ytdlp_path"),
+            ("cookie_file", "cookie_file"),
+        ] {
+            if let Some(x) = d.get(key) {
+                let s = x
+                    .as_str()
+                    .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("download.{key} 必须是字符串")))?
+                    .trim();
+                ingest.insert(field.into(), serde_json::json!(s));
+            }
+        }
+
+        if let Some(x) = d.get("max_quality") {
+            let s = x
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "download.max_quality 必须是字符串"))?;
+            check_quality(s)
+                .map_err(|r| err(StatusCode::BAD_REQUEST, format!("download.max_quality：{r}")))?;
+            ingest.insert("max_quality".into(), serde_json::json!(s.trim()));
+        }
+
+        for (key, field) in [
+            ("rate_limit_kbps", "rate_limit_kbps"),
+            ("max_concurrent_downloads", "max_concurrent_downloads"),
+            ("idle_timeout_secs", "download_idle_timeout_secs"),
+        ] {
+            if let Some(x) = d.get(key) {
+                let n = x
+                    .as_u64()
+                    .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("download.{key} 必须是非负整数")))?;
+                // 0 是合法的（不限速 / 不限并发由 core 侧 `.max(1)` 兜住）；
+                // 但并发调大就是给 B站风控送人头，这里给一条 warning 说清楚。
+                if key == "max_concurrent_downloads" && n > 2 {
+                    warnings.push(format!(
+                        "同时下载数设为 {n}：B站的 412 风控与 IP 频次相关，调大更容易被拦（建议 1）"
+                    ));
+                }
+                ingest.insert(field.into(), serde_json::json!(n));
+            }
+        }
+
+        // 自备路径/引擎名写错了不拒绝（可能只是文件还没放好），但要提醒
+        if let Some(p) = ingest.get("ytdlp_path").and_then(|v| v.as_str()) {
+            if !p.is_empty() && !std::path::Path::new(p).is_file() {
+                warnings.push(format!(
+                    "yt-dlp 路径当前不可执行（{p}）：会自动回退到托管副本或 PATH 里的 yt-dlp。"
+                ));
+            }
+        }
+    }
+
+    // 项目存放位置（`[storage] projects_root`）：下载与入库的**共同**落点。
+    // 放在 `[storage]` 而不是 `[ingest]` —— 它是平台级存储配置，录播姬入库/本机导入也用同一个根。
+    if let Some(v) = body.get("storage") {
+        let s = v
+            .as_object()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "storage 必须是对象"))?;
+        if let Some(x) = s.get("projects_root") {
+            let raw = x
+                .as_str()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "storage.projects_root 必须是字符串"))?;
+            storage.insert("projects_root".into(), serde_json::json!(check_projects_root(raw)?));
+        }
+    }
+
+    Ok((ingest, storage, warnings))
+}
+
+/// 校验 `[storage] projects_root`，返回**要写进配置的值**（`""` = 回默认）。
+///
+/// 与 `recorder.root` 那条"不可达只 warning"不同 —— 那个目录是**别人写的**（录播姬），
+/// 我们只能读、不能替它建；而这是**我们自己要往里写**的根，所以在这里就把它建出来：
+/// 等到下载跑完才发现目录建不了，用户已经白等了。
+///
+/// 判定顺序（先便宜后昂贵）：
+/// 1. 空 → 回默认（程序目录下的 `.vtrim/projects`）；
+/// 2. 必须是**绝对路径** —— 相对路径的基准是进程 cwd，服务重启后可能换目录，落点会漂；
+/// 3. 已存在但不是目录 → 拒（填成了某个文件）；
+/// 4. `create_dir_all` + 真实写一个探针文件再删（`disk::writable`，与 `vtrim doctor` 同一套判据）
+///    → 建不出来或写不进去就拒。
+fn check_projects_root(raw: &str) -> Result<String, AppError> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(String::new());
+    }
+    let p = std::path::Path::new(s);
+    if !p.is_absolute() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("项目存放位置必须是绝对路径（例如 F:/vtrim-projects，不要用相对路径）：{s}"),
+        ));
+    }
+    if p.exists() && !p.is_dir() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("项目存放位置指向的是一个文件，不是目录：{}", vtrim_core::path::display(p)),
+        ));
+    }
+    if !vtrim_service::disk::writable(p) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "项目存放位置不可用（建不出目录或写不进去）：{} —— 换个存在的盘符或有写权限的目录",
+                vtrim_core::path::display(p)
+            ),
+        ));
+    }
+    Ok(vtrim_core::path::display(p))
 }
 
 /// `PUT /api/admin/ingest`：保存采集/录播姬配置（仅 admin）。
@@ -913,15 +1096,19 @@ pub async fn put_config(
     ClientIp(ip): ClientIp,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    let (ingest, warnings) = build_ingest_patch(&body)?;
+    let (ingest, storage, warnings) = build_ingest_patch(&body)?;
 
-    if ingest.is_empty() {
+    if ingest.is_empty() && storage.is_empty() {
         return ok(serde_json::json!({ "ok": true, "warnings": warnings, "changed": [] }));
     }
 
     // 审计只记**键名**：把 api_pass 的值写进 audit 表等于把口令抄一份到数据库里
-    let changed = audit_keys(&ingest);
-    write_global_config(ingest).await?;
+    let changed = {
+        let mut keys = audit_keys("ingest", &ingest);
+        keys.extend(audit_keys("storage", &storage));
+        keys.join(", ")
+    };
+    write_global_config(ingest, storage).await?;
     let _ = state
         .auth
         .db()
@@ -933,11 +1120,33 @@ pub async fn put_config(
     ok(out)
 }
 
-/// 把 `{ingest: {...}}` 合并进**全局配置**（默认路径：`<程序目录>/.vtrim/config.toml`）。
+/// 组装要合并进全局配置的补丁：`{ section: { key: value } }`。
+///
+/// **空的 section 不写进去** —— 否则一次"只改下载参数"的保存会凭空造出一个空的 `[storage]`。
+fn config_patch(
+    ingest: serde_json::Map<String, serde_json::Value>,
+    storage: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut patch = serde_json::Map::new();
+    if !ingest.is_empty() {
+        patch.insert("ingest".into(), serde_json::Value::Object(ingest));
+    }
+    if !storage.is_empty() {
+        patch.insert("storage".into(), serde_json::Value::Object(storage));
+    }
+    serde_json::Value::Object(patch)
+}
+
+/// 把 `[ingest]` / `[storage]` 的字段合并进**全局配置**（默认 `<程序目录>/.vtrim/config.toml`）。
 async fn write_global_config(
     ingest: serde_json::Map<String, serde_json::Value>,
+    storage: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), AppError> {
-    write_global_config_at(&vtrim_core::path::vtrim_home().join("config.toml"), ingest).await
+    write_global_config_at(
+        &vtrim_core::path::vtrim_home().join("config.toml"),
+        config_patch(ingest, storage),
+    )
+    .await
 }
 
 /// [`write_global_config`] 的带路径版本（单测直接打临时文件，不碰真实全局配置）。
@@ -946,10 +1155,9 @@ async fn write_global_config(
 /// 锁在 await 里持有，真正写盘那段搬到 blocking 线程。
 async fn write_global_config_at(
     path: &std::path::Path,
-    ingest: serde_json::Map<String, serde_json::Value>,
+    patch: serde_json::Value,
 ) -> Result<(), AppError> {
     let _guard = vtrim_core::filelock::lock_path(path).await;
-    let patch = serde_json::json!({ "ingest": serde_json::Value::Object(ingest) });
     let p = path.to_path_buf();
     let res = tokio::task::spawn_blocking(move || vtrim_core::config::patch_config_file(&p, &patch))
         .await
@@ -957,19 +1165,19 @@ async fn write_global_config_at(
     res.map_err(|e| err(StatusCode::BAD_REQUEST, format!("保存配置失败: {e:#}")))
 }
 
-/// 这次改了哪些键（用于审计与响应里的 `changed`）。只列键名，不带值。
-fn audit_keys(ingest: &serde_json::Map<String, serde_json::Value>) -> String {
+/// 这次改了哪些键（用于审计与响应里的 `changed`）。只列键名（带 section 前缀），不带值。
+fn audit_keys(section: &str, map: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
-    for (k, v) in ingest {
+    for (k, v) in map {
         if let Some(sub) = v.as_object() {
             for sk in sub.keys() {
-                keys.push(format!("{k}.{sk}"));
+                keys.push(format!("{section}.{k}.{sk}"));
             }
         } else {
-            keys.push(k.clone());
+            keys.push(format!("{section}.{k}"));
         }
     }
-    keys.join(", ")
+    keys
 }
 
 /// `POST /api/admin/ingest/token {action:"generate"|"disable"}`：生成/轮换/关闭 webhook token。
@@ -1010,7 +1218,7 @@ pub async fn rotate_token(
         }
     }
 
-    write_global_config(ingest).await?;
+    write_global_config(ingest, serde_json::Map::new()).await?;
     // 审计**不记 token 明文**
     let detail = if plaintext.is_some() { "generated" } else { "disabled" };
     let _ = state
@@ -1024,6 +1232,337 @@ pub async fn rotate_token(
         out["token"] = serde_json::json!(t);
     }
     ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// B站链接通道（P4）
+// ---------------------------------------------------------------------------
+//
+// 这一节与上面的录播姬 webhook 是**两个来源**，但共用同一张 `ingest_sessions` 表
+// （靠 `kind` 列区分）。放在同一个模块是因为它们是同一件事的两半：把外部素材接进来。
+//
+// 分工：
+// - 本模块 = **HTTP 入口**（校验、预检、建会话、唤醒 worker）；
+// - `crate::download_worker` = **执行**（spawn 下载器、落弹幕、建项目）。
+//   两者之间只有 `ingest_sessions` 一行数据，不共享任何函数 —— 这是刻意的（计划 §2）。
+
+/// B站接口错误 → HTTP 状态码。
+///
+/// 分开映射而不是一律 500：前端据此决定文案与"要不要让用户重试"
+/// （`RateLimited` 是"稍后再来"，`Forbidden` 是"换链接"，完全不同）。
+fn bili_status(e: &vtrim_service::bilibili::BiliError) -> StatusCode {
+    use vtrim_service::bilibili::BiliError as B;
+    match e {
+        B::BadInput(_) => StatusCode::BAD_REQUEST,
+        B::NotFound => StatusCode::NOT_FOUND,
+        B::Forbidden | B::NotAvailable(_) => StatusCode::FORBIDDEN,
+        B::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        B::Api { .. } | B::Transport(_) | B::Malformed(_) => StatusCode::BAD_GATEWAY,
+    }
+}
+
+fn bili_err(e: vtrim_service::bilibili::BiliError) -> AppError {
+    err(bili_status(&e), e.user_facing())
+}
+
+/// 清晰度档位合法性（前端下拉的取值域）。
+///
+/// 非法值**明确拒绝**而不是回退默认：`quality_height` 对认不出的串会返回 `None`
+/// （= 不限高），静默接受会让"写错的清晰度"变成"下最高画质"，把磁盘与带宽吃光。
+///
+/// 返回的是**原因**而不是 `AppError`：两个调用点字段名不同
+/// （提交端点叫 `quality`，设置页表单叫 `download.max_quality`），
+/// 字段名前缀由调用方补 —— 共用校验、各自定位。
+fn check_quality(raw: &str) -> Result<(), String> {
+    let s = raw.trim().to_ascii_lowercase();
+    let ok = s.is_empty()
+        || s == "best"
+        || matches!(s.as_str(), "1080p" | "720p" | "480p" | "360p")
+        || s.trim_end_matches('p').parse::<u32>().is_ok();
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "未知清晰度 {raw:?}（可用 1080p / 720p / 480p / 360p / best）"
+        ))
+    }
+}
+
+/// 存放位置门禁：`None` = 放行；`Some(msg)` = 拒绝理由（**按角色**给文案）。
+///
+/// B站下载是唯一"替用户往磁盘写大量数据"的入口，落点必须有人显式选过 ——
+/// 没配置就静默落到程序目录旁的默认位置，用户根本不知道东西下到哪了。
+/// 文案分角色：管理员给去处（设置页）；普通用户只说联系管理员
+/// （不暴露管理端入口，与前文 `dl.ready === false` 那张卡的措辞同一套）。
+fn projects_root_gate(role: &str, projects_root: &str) -> Option<&'static str> {
+    if !projects_root.trim().is_empty() {
+        return None;
+    }
+    Some(if role == "admin" {
+        "尚未配置项目存放位置：请在 设置 → 下载 里配置后重试"
+    } else {
+        "管理员尚未配置下载存放位置，暂时无法下载；请联系管理员"
+    })
+}
+
+/// `POST /api/ingest/resolve {url}`：解析 B站链接，返回预览卡数据。
+///
+/// **薄壳、不落库**：用户每改一次输入框都会点一下解析，落库会攒出一堆没人要的会话。
+///
+/// 走的是 view API 而不是 `yt-dlp -J`（实测 T3：后者拿不到 cid 且慢得多，见
+/// `vtrim_service::bilibili` 的模块说明）。
+///
+/// 要求登录：这是个"替用户去请求 B站"的代理口，匿名开放等于给我们自己招风控。
+pub async fn bilibili_resolve(
+    axum::extract::Extension(_user): axum::extract::Extension<CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if url.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "请输入 B站视频链接"));
+    }
+    let bvid = vtrim_service::bilibili::extract_bvid(url).map_err(bili_err)?;
+    let info = vtrim_service::bilibili::fetch_view(&bvid).await.map_err(bili_err)?;
+
+    // 预览卡要显示"总占用" —— 前端不做码率估算，服务端给一个统一口径
+    let cfg = vtrim_core::config::load_global_config();
+    let estimate_per_page: Vec<Option<u64>> = info
+        .pages
+        .iter()
+        .map(|p| crate::download_worker::estimate_bytes(p.duration_secs, &cfg.ingest.max_quality))
+        .collect();
+    let total_estimate: u64 = estimate_per_page.iter().flatten().sum();
+
+    ok(serde_json::json!({
+        "ok": true,
+        "bvid": info.bvid,
+        "title": info.title,
+        "uploader": info.uploader,
+        "cover": info.cover,
+        "duration_secs": info.duration_secs,
+        "danmaku_total": info.danmaku_total,
+        "view_total": info.view_total,
+        // 多P 展开（单P 也会有一个元素，前端统一按列表渲染即可）
+        "pages": info.pages.iter().zip(&estimate_per_page).map(|(p, est)| serde_json::json!({
+            "index": p.index,
+            "cid": p.cid,
+            "part": p.part,
+            "duration_secs": p.duration_secs,
+            "estimate_bytes": est,
+        })).collect::<Vec<_>>(),
+        "estimate_bytes": total_estimate,
+        "quality": cfg.ingest.max_quality,
+        // 工具就绪位：没装时不拦解析（用户可以先看预览），提交时再引导
+        "downloader_ready": vtrim_service::downloader::registry::find_ytdlp(&cfg).is_some(),
+    }))
+}
+
+/// `POST /api/ingest/bilibili {url, pages:[1,3], quality?, auto_pipeline?}`：提交下载。
+///
+/// 一次提交可以选多个 P —— **每个 P 一个会话**，一 P 一个项目。
+/// 返回 `accepted`（本次真正入队的）与 `skipped`（已完成的），前端逐个跟进度。
+pub async fn bilibili_submit(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if url.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "请输入 B站视频链接"));
+    }
+    let bvid = vtrim_service::bilibili::extract_bvid(url).map_err(bili_err)?;
+
+    // 工具没就绪就**不收单**：收了也只能排在队列里干等，用户会以为卡住了。
+    // 明确告诉他去装（前端有引导卡）。
+    let cfg = vtrim_core::config::load_global_config();
+    if vtrim_service::downloader::registry::find_ytdlp(&cfg).is_none() {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "下载器（yt-dlp）未就绪；请在设置页一键下载后再提交",
+        ));
+    }
+    if let Some(msg) = projects_root_gate(&user.role, &cfg.storage.projects_root) {
+        return Err(err(StatusCode::PRECONDITION_REQUIRED, msg.to_string()));
+    }
+    if let Some(q) = body.get("quality").and_then(|v| v.as_str()) {
+        check_quality(q)
+            .map_err(|r| err(StatusCode::BAD_REQUEST, format!("quality：{r}")))?;
+    }
+    let auto_pipeline = body
+        .get("auto_pipeline")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let info = vtrim_service::bilibili::fetch_view(&bvid).await.map_err(bili_err)?;
+    if info.pages.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "这个视频没有可下载的分P"));
+    }
+
+    // 选中的 P：不传 = 第 1 P（**不默认全选** —— 23P 全下会直接撑爆配额）
+    let wanted: Vec<u32> = match body.get("pages").and_then(|v| v.as_array()) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_u64())
+            .map(|n| n as u32)
+            .collect(),
+        None => vec![1],
+    };
+    if wanted.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "请至少选择一个分P"));
+    }
+    let mut picked: Vec<&vtrim_service::bilibili::BvPage> = Vec::new();
+    for n in &wanted {
+        let p = info
+            .pages
+            .iter()
+            .find(|p| p.index == *n)
+            .ok_or_else(|| {
+                err(
+                    StatusCode::BAD_REQUEST,
+                    format!("这个视频没有第 {n} P（共 {} P）", info.pages.len()),
+                )
+            })?;
+        if !picked.iter().any(|q| q.index == p.index) {
+            picked.push(p);
+        }
+    }
+
+    // 提交时先做一次**粗估**预检：不足就当场拒绝（别让用户等 worker 几分钟才失败）。
+    // worker 里还会再查一次（那时下载目录已建、估算更准）。
+    let incoming: u64 = picked
+        .iter()
+        .filter_map(|p| crate::download_worker::estimate_bytes(p.duration_secs, &cfg.ingest.max_quality))
+        .sum();
+    let probe_dir = vtrim_service::projects::tenant_root(user.id);
+    vtrim_service::ingest::capacity::check_capacity(
+        state.auth.db(),
+        user.id,
+        incoming,
+        &probe_dir,
+        &cfg,
+    )
+    .map_err(|e| err(StatusCode::INSUFFICIENT_STORAGE, format!("{e:#}")))?;
+
+    let db = state.auth.db();
+    let total = info.pages.len();
+    let mut accepted: Vec<serde_json::Value> = Vec::new();
+    let mut skipped: Vec<serde_json::Value> = Vec::new();
+
+    for p in picked {
+        let sid = format!("bili-{bvid}-p{}", p.index);
+        let sref = vtrim_service::bilibili::session_ref(&bvid, Some(p.index));
+
+        // 已建过项目的：不重下（用户想重来应当去项目页删掉再提交）
+        if let Some(existing) = db.ingest_session(&sid).map_err(internal)? {
+            if existing.project_id.is_some() {
+                skipped.push(serde_json::json!({
+                    "session_id": sid,
+                    "page": p.index,
+                    "reason": "已存在项目",
+                    "project_id": existing.project_id,
+                }));
+                continue;
+            }
+        }
+
+        let created = db
+            .create_ingest_session(
+                &sid,
+                "bilibili",
+                user.id,
+                Some(&sref),
+                "queued",
+                auto_pipeline.as_deref(),
+            )
+            .map_err(internal)?;
+        // 重投同一份（上次失败/被取消）：显式打回队列 —— `create_ingest_session`
+        // 幂等时不改 state，不给这一步的话"再点一次提交"会毫无反应。
+        db.set_ingest_state(&sid, "queued", None).map_err(internal)?;
+
+        let title = {
+            let part = p.part.trim();
+            if total <= 1 {
+                info.title.clone()
+            } else if part.is_empty() {
+                format!("{} P{}", info.title, p.index)
+            } else {
+                format!("{} P{} {part}", info.title, p.index)
+            }
+        };
+        accepted.push(serde_json::json!({
+            "session_id": sid,
+            "page": p.index,
+            "title": title,
+            "cid": p.cid,
+            "duration_secs": p.duration_secs,
+            "created": created,
+        }));
+    }
+
+    let _ = db.audit(
+        Some(user.id),
+        "ingest_bilibili_submit",
+        &format!("bvid={bvid} pages={} accepted={}", wanted.len(), accepted.len()),
+    );
+    // 唤醒 worker（周期 tick 也会兜底）
+    crate::download_worker::notify(state, None);
+    ok(serde_json::json!({
+        "ok": true,
+        "bvid": bvid,
+        "accepted": accepted,
+        "skipped": skipped,
+        "estimate_bytes": incoming,
+    }))
+}
+
+/// `POST /api/admin/downloader/install`：下载内置 yt-dlp 并校验 sha256（仅 admin）。
+///
+/// 同步等它下完（17.8MB，实测 1.8s，但网络差时会久）→ 下到 blocking 池外面，
+/// 用 async；前端显示"正在下载"。
+pub async fn downloader_install(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Extension(user): axum::extract::Extension<CurrentUser>,
+) -> ApiResult {
+    if !user.is_admin() {
+        return Err(err(StatusCode::FORBIDDEN, "仅管理员可安装下载器"));
+    }
+    let path = vtrim_service::downloader::registry::ensure_ytdlp(&vtrim_core::config::load_global_config())
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("安装下载器失败: {e:#}")))?;
+    let cfg = vtrim_core::config::load_global_config();
+    // ⚠️ 只回版本与是否通过哈希校验，**不回路径**（与 §3.5.9 一致）
+    let (verified, source) = match vtrim_service::downloader::registry::find_ytdlp(&cfg) {
+        Some(i) => {
+            let s = i.source.label();
+            (i.verified, s)
+        }
+        None => (false, "未知"),
+    };
+    ok(serde_json::json!({
+        "ok": true,
+        "path_present": path.is_file(),
+        "version": vtrim_service::downloader::registry::VERSION,
+        "verified": verified,
+        "source": source,
+    }))
+}
+
+/// `GET /api/ingest/downloader`：下载器就绪位（任何登录用户可看，供前端引导卡）。
+pub async fn downloader_status(
+    State(_state): State<Arc<AppState>>,
+) -> ApiResult {
+    let cfg = vtrim_core::config::load_global_config();
+    let found = vtrim_service::downloader::registry::find_ytdlp(&cfg);
+    let kind = vtrim_service::downloader::DownloaderKind::parse(&cfg.ingest.downloader);
+    // 同样**不含路径**：这个响应给非管理员看
+    ok(serde_json::json!({
+        "ok": true,
+        "kind": kind.label(),
+        "ready": found.is_some(),
+        "verified": found.map(|i| i.verified).unwrap_or(false),
+        "pinned_version": vtrim_service::downloader::registry::VERSION,
+        "license": vtrim_service::downloader::registry::LICENSE,
+    }))
 }
 
 #[cfg(test)]
@@ -1057,6 +1596,21 @@ mod tests {
         assert_eq!(normalize_kind("FileClosed"), "file_closed");
         assert_eq!(normalize_kind("SessionStarted"), "session_started");
         assert_eq!(normalize_kind("UnknownThing"), "unknown_thing");
+    }
+
+    /// 存放位置门禁：未配置时**按角色**给不同文案；已配置（含看似空白）放行。
+    #[test]
+    fn projects_root_gate_by_role() {
+        // 未配置：管理员给去处，普通用户不暴露管理端
+        let a = projects_root_gate("admin", "").unwrap();
+        assert!(a.contains("设置"), "{a}");
+        let u = projects_root_gate("user", "").unwrap();
+        assert!(u.contains("联系管理员") && !u.contains("设置"), "{u}");
+        // 空白串（用户存了 " "）也算未配置
+        assert!(projects_root_gate("admin", "   ").is_some());
+        // 已配置：放行
+        assert!(projects_root_gate("admin", "F:/media/vtrim").is_none());
+        assert!(projects_root_gate("user", "D:\\x").is_none());
     }
 
     #[test]
@@ -1178,6 +1732,152 @@ mod tests {
         }
     }
 
+    /// 项目存放位置（`[storage] projects_root`）—— 下载与入库的**共同**落点。
+    ///
+    /// 三条边界各对应一个真实事故：相对路径的基准是进程 cwd，服务换个启动目录落点就漂；
+    /// 指向文件会让 `create_dir_all` 等到**下载阶段**才炸（用户白等几分钟）；
+    /// 盘符写错是最常见的手滑，现场建一下目录就能立刻发现。
+    #[test]
+    fn projects_root_is_validated_and_created() {
+        // ① 键缺席 = 不动它（不许凭空造出一个空 [storage] 段）
+        let (_, st, _) = build_ingest_patch(&serde_json::json!({"webhook_enabled": true})).unwrap();
+        assert!(st.is_empty(), "没提 storage 就不该动它：{st:?}");
+
+        // ② 空串 = 显式回默认（程序目录下的 .vtrim/projects）
+        let (_, st, _) =
+            build_ingest_patch(&serde_json::json!({"storage": {"projects_root": ""}})).unwrap();
+        assert_eq!(st["projects_root"], serde_json::json!(""));
+
+        // ③ 相对路径：拒
+        for bad in ["vtrim-projects", "./out", "../out"] {
+            let e = build_ingest_patch(&serde_json::json!({"storage": {"projects_root": bad}}))
+                .unwrap_err();
+            assert_eq!(e.0, StatusCode::BAD_REQUEST, "{bad}");
+            let msg = serde_json::to_string(&e.1 .0).unwrap();
+            assert!(msg.contains("绝对路径"), "{bad} → {msg}");
+        }
+
+        // ④ 指向一个已存在的文件：拒
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let e = build_ingest_patch(
+            &serde_json::json!({"storage": {"projects_root": file.to_string_lossy()}}),
+        )
+        .unwrap_err();
+        let msg = serde_json::to_string(&e.1 .0).unwrap();
+        assert!(msg.contains("不是目录"), "{msg}");
+
+        // ⑤ 全新目录：放行，且**保存时就真的建出来**（等下载跑完才发现建不了就太晚了）
+        let fresh = dir.path().join("projects").join("vtrim");
+        let (_, st, _) = build_ingest_patch(
+            &serde_json::json!({"storage": {"projects_root": fresh.to_string_lossy()}}),
+        )
+        .unwrap();
+        assert_eq!(
+            st["projects_root"].as_str().unwrap(),
+            vtrim_core::path::display(&fresh)
+        );
+        assert!(fresh.is_dir(), "保存时就该把目录建出来：{}", fresh.display());
+    }
+
+    /// 落盘：全局配置里**原本没有 `[storage]` 段**时要能把它建出来，且不碰其它 section。
+    ///
+    /// 这条路径是本次新开的（`patch_config_file` 只在 section 不是表时插入新表，
+    /// 之前所有调用方写的都是已存在的 `[ingest]`），所以要有钉子。
+    #[tokio::test]
+    async fn save_projects_root_creates_missing_storage_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "\
+# 顶部注释不能丢
+[ingest]
+webhook_enabled = true
+
+[detection]
+vtuber_name = \"主播\"
+",
+        )
+        .unwrap();
+
+        let target = dir.path().join("my-projects");
+        let (_, storage, _) = build_ingest_patch(
+            &serde_json::json!({"storage": {"projects_root": target.to_string_lossy()}}),
+        )
+        .unwrap();
+        write_global_config_at(&path, config_patch(serde_json::Map::new(), storage))
+            .await
+            .unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("[storage]"), "该段必须被建出来：\n{out}");
+        // TOML 会把路径里的反斜杠转义成 `\\`，逐字符比对太脆 —— 归一化后核对即可
+        let expected = vtrim_core::path::display(&target);
+        assert!(
+            out.contains("projects_root =") && out.replace("\\\\", "\\").contains(&expected),
+            "写入的路径不对（期望 {expected}）：\n{out}"
+        );
+        // 原有内容一字不动
+        for keep in ["# 顶部注释不能丢", "webhook_enabled = true", "vtuber_name = \"主播\""] {
+            assert!(out.contains(keep), "丢了 {keep}：\n{out}");
+        }
+
+        // 再存一次"空 = 回默认"：只改值，不把段清空、也不动别的 section
+        let (_, storage, _) =
+            build_ingest_patch(&serde_json::json!({"storage": {"projects_root": ""}})).unwrap();
+        write_global_config_at(&path, config_patch(serde_json::Map::new(), storage))
+            .await
+            .unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("projects_root = \"\""), "回默认应写成空串：\n{out}");
+        assert!(out.contains("webhook_enabled = true"), "{out}");
+    }
+
+    /// ⚠️ 回归钉子：**B站下载那几项必须平铺在 `[ingest]` 下，不能嵌套成子表**。
+    ///
+    /// `[ingest] downloader` 是一个**字符串键**（引擎名）。如果这里手滑写成
+    /// `ingest.insert("downloader", json!({...}))`，文件写出来仍是合法 TOML、写入也不报错，
+    /// 但下次读配置时 `downloader` 反序列化成 `String` 会失败 → **整份配置被静默忽略**
+    /// （表现为"改完设置重启后所有设置都回到默认"，极难归因）。
+    #[test]
+    fn patch_download_keys_are_flat_not_nested() {
+        let (m, _, _) = build_ingest_patch(&serde_json::json!({
+            "download": { "engine": "D:/tools/yt-dlp.exe", "max_quality": "720p", "max_concurrent_downloads": 2 }
+        }))
+        .unwrap();
+
+        assert!(
+            m.get("downloader").map(|v| v.is_string()).unwrap_or(false),
+            "downloader 必须是字符串（平铺键），不是对象：{m:?}"
+        );
+        assert_eq!(m.get("downloader").unwrap(), &serde_json::json!("D:/tools/yt-dlp.exe"));
+        assert_eq!(m.get("max_quality").unwrap(), &serde_json::json!("720p"));
+        assert_eq!(m.get("max_concurrent_downloads").unwrap(), &serde_json::json!(2));
+        // 分组名本身不能出现在 patch 里（它只是 HTTP 层的容器）
+        assert!(m.get("download").is_none(), "分组名不该落进配置：{m:?}");
+        // 并发调大要给出风控提醒
+        let (_, _, w) = build_ingest_patch(&serde_json::json!({
+            "download": { "max_concurrent_downloads": 5 }
+        }))
+        .unwrap();
+        assert!(w.iter().any(|s| s.contains("412")), "并发调大应提醒风控：{w:?}");
+
+        // 非法值同样要挡（清晰度写错会静默变成"不限高"，把磁盘吃光）
+        for (body, needle) in [
+            (serde_json::json!({"download": {"max_quality": "超清"}}), "max_quality"),
+            (serde_json::json!({"download": {"engine": 123}}), "engine"),
+            (serde_json::json!({"download": "yt-dlp"}), "download"),
+            (serde_json::json!({"download": {"rate_limit_kbps": -1}}), "rate_limit_kbps"),
+        ] {
+            let e = build_ingest_patch(&body).unwrap_err();
+            assert_eq!(e.0, StatusCode::BAD_REQUEST, "{body}");
+            let msg = serde_json::to_string(&e.1 .0).unwrap();
+            assert!(msg.contains(needle), "{needle}: {msg}");
+        }
+    }
+
     /// 表单语义：**键缺席 = 不改**、给空串 = 清空、空数组 = 清空白名单。
     ///
     /// 这条是"留空不改"能不能成立的基础：如果缺席也被写成空串，
@@ -1185,13 +1885,13 @@ mod tests {
     #[test]
     fn ingest_patch_distinguishes_absent_from_empty() {
         // 缺席：patch 里连键都没有（于是文件里那行原样不动）
-        let (m, w) = build_ingest_patch(&serde_json::json!({"webhook_enabled": true})).unwrap();
+        let (m, _, w) = build_ingest_patch(&serde_json::json!({"webhook_enabled": true})).unwrap();
         assert_eq!(m.len(), 1);
         assert!(m.get("recorder").is_none(), "没提到 recorder 就不该出现：{m:?}");
         assert!(w.is_empty());
 
         // 显式空串 / 空数组 = 清空
-        let (m, _) = build_ingest_patch(&serde_json::json!({
+        let (m, _, _) = build_ingest_patch(&serde_json::json!({
             "allow_ips": [],
             "recorder": {"api_base": "", "api_pass": ""}
         }))
@@ -1201,7 +1901,7 @@ mod tests {
         assert_eq!(m["recorder"]["api_pass"], serde_json::json!(""));
 
         // 口令不 trim（首尾空格是合法字符），其余路径/地址 trim；空项被丢掉、重复项去重
-        let (m, _) = build_ingest_patch(&serde_json::json!({
+        let (m, _, _) = build_ingest_patch(&serde_json::json!({
             "allow_ips": [" 127.0.0.1 ", "", "127.0.0.1"],
             "recorder": {"root": "  D:/rec  ", "api_pass": " p w "}
         }))
@@ -1211,7 +1911,7 @@ mod tests {
         assert_eq!(m["recorder"]["api_pass"], serde_json::json!(" p w "), "口令原样");
 
         // 目录不可达只给 warning，不拒绝（网络盘可能只是暂时没挂上）
-        let (_, w) = build_ingest_patch(&serde_json::json!({
+        let (_, _, w) = build_ingest_patch(&serde_json::json!({
             "recorder": {"root": "Z:/definitely-not-here-vtrim"}
         }))
         .unwrap();
@@ -1252,12 +1952,12 @@ vtuber_name = \"主播\"
         )
         .unwrap();
 
-        let (ingest, _) = build_ingest_patch(&serde_json::json!({
+        let (ingest, _, _) = build_ingest_patch(&serde_json::json!({
             "allow_ips": ["127.0.0.1"],
             "recorder": {"api_base": "http://10.0.0.5:2356", "auto_pipeline": "cut"}
         }))
         .unwrap();
-        write_global_config_at(&path, ingest).await.unwrap();
+        write_global_config_at(&path, config_patch(ingest, serde_json::Map::new())).await.unwrap();
 
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("api_base = \"http://10.0.0.5:2356\""), "{out}");
@@ -1281,8 +1981,8 @@ vtuber_name = \"主播\"
         assert!(!out.contains("recorder = {"), "不该退化成 inline table：\n{out}");
 
         // 显式给空串才清掉密码
-        let (ingest, _) = build_ingest_patch(&serde_json::json!({"recorder": {"api_pass": ""}})).unwrap();
-        write_global_config_at(&path, ingest).await.unwrap();
+        let (ingest, _, _) = build_ingest_patch(&serde_json::json!({"recorder": {"api_pass": ""}})).unwrap();
+        write_global_config_at(&path, config_patch(ingest, serde_json::Map::new())).await.unwrap();
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("api_pass = \"\""), "显式清空应生效：\n{out}");
         assert!(out.contains("api_user = \"admin\""), "清密码不该连用户名一起动：\n{out}");
@@ -1305,6 +2005,18 @@ vtuber_name = \"主播\"
             assert!(v["recorder"].get(k).is_some(), "缺字段 recorder.{k}");
         }
         assert!(v["recorder"]["api_pass_set"].is_boolean());
+        // B站下载分组（P4）：表单要的字段一个都不能少，否则设置页会显示成空
+        for k in [
+            "engine",
+            "ytdlp_path",
+            "max_quality",
+            "rate_limit_kbps",
+            "max_concurrent_downloads",
+            "cookie_file",
+            "idle_timeout_secs",
+        ] {
+            assert!(v["download"].get(k).is_some(), "缺字段 download.{k}");
+        }
     }
 
     /// 生成的 token 能通过它自己的哈希校验（webhook 那条链路的唯一凭据）。
@@ -1321,14 +2033,19 @@ vtuber_name = \"主播\"
     /// 审计只记键名（绝不把口令值写进 audit 表）。
     #[test]
     fn audit_keys_are_names_only() {
-        let (ingest, _) = build_ingest_patch(&serde_json::json!({
+        let (ingest, _, _) = build_ingest_patch(&serde_json::json!({
             "webhook_enabled": true,
             "recorder": {"api_pass": "supersecret", "api_base": "http://x:1"}
         }))
         .unwrap();
-        let s = audit_keys(&ingest);
-        assert!(s.contains("recorder.api_pass") && s.contains("recorder.api_base"), "{s}");
-        assert!(s.contains("webhook_enabled"), "{s}");
+        let keys = audit_keys("ingest", &ingest);
+        let s = keys.join(", ");
+        assert!(s.contains("ingest.recorder.api_pass") && s.contains("ingest.recorder.api_base"), "{s}");
+        assert!(s.contains("ingest.webhook_enabled"), "{s}");
         assert!(!s.contains("supersecret"), "审计不得带值：{s}");
+
+        // `[storage]` 走同一个函数，但必须带自己的 section 前缀（否则审计里看不出改的是哪一段）
+        let st = audit_keys("storage", &serde_json::json!({"projects_root": "F:/x"}).as_object().unwrap().clone());
+        assert_eq!(st, vec!["storage.projects_root".to_string()]);
     }
 }

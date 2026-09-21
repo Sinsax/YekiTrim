@@ -2,7 +2,9 @@
 //!
 //! - `AppError` / `ApiResult` / `err` / `ok`：全部 handler 的返回约定
 //! - `blocking` / `block_on_here` / `spawn_job`：同步 IO 与任务的落点（见 AGENTS「同步 IO 绝不能留在 async 线程上」）
-//! - `workspace_from_state` / 命令探测缓存：被多个领域模块复用
+//! - `workspace_from_state`：被多个领域模块复用
+//!
+//! 外部命令探测（原 `probe_cache` / `command_available`）已搬去 `crate::tool_probe` —— 见该模块说明。
 //!
 //! 这里只放**被两个以上子模块用到**的东西；只服务一个领域的 helper 跟着那个模块走。
 
@@ -18,6 +20,12 @@ use axum::{
 use vtrim_service::Workspace;
 
 use crate::model::AppState;
+use crate::tool_probe::{cache_get, cache_put, command_available};
+
+/// ffmpeg / ffprobe 这一族的版本参数（`-version`）。
+///
+/// ⚠️ **yt-dlp 要 `--version`**，不是这个 —— 所以 `command_available` 强制调用方显式传参。
+const FFMPEG_VERSION_ARG: &str = "-version";
 
 pub(crate) type AppError = (StatusCode, Json<serde_json::Value>);
 pub(crate) type ApiResult<T = serde_json::Value> = Result<Json<T>, AppError>;
@@ -115,51 +123,9 @@ pub(crate) async fn workspace_from_state(state: &AppState) -> Workspace {
     state.workspace().await
 }
 
-/// 外部命令探测结果缓存（30s TTL）。
-///
-/// `/api/health` 会被前端在页面挂载与「环境检查」时调用，同步 spawn
-/// ffmpeg/ffprobe/chrome（最多 7 个进程）会占住 tokio worker，故探测放
-/// `spawn_blocking` 并缓存。
-pub(crate) type ProbeCache = std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>;
-
-pub(crate) fn probe_cache() -> &'static ProbeCache {
-    static CACHE: std::sync::OnceLock<ProbeCache> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-pub(crate) fn cache_get(key: &str, ttl: Duration) -> Option<Option<String>> {
-    let cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
-    cache
-        .get(key)
-        .filter(|(t, _)| t.elapsed() < ttl)
-        .map(|(_, v)| v.clone())
-}
-
-pub(crate) fn cache_put(key: String, value: Option<String>) {
-    let mut cache = probe_cache().lock().unwrap_or_else(|e| e.into_inner());
-    cache.insert(key, (std::time::Instant::now(), value));
-}
-
-pub(crate) fn command_available_blocking(cmd: &str) -> Option<String> {
-    let output = std::process::Command::new(cmd).arg("-version").output().ok()?;
-    if !output.status.success() { return None; }
-    let first = String::from_utf8_lossy(&output.stdout).lines().next().map(|s| s.to_string()).unwrap_or_default();
-    Some(first)
-}
-
-pub(crate) async fn command_available(cmd: &str) -> Option<String> {
-    let key = format!("cmd:{cmd}");
-    if let Some(cached) = cache_get(&key, Duration::from_secs(30)) {
-        return cached;
-    }
-    let owned = cmd.to_string();
-    let value = tokio::task::spawn_blocking(move || command_available_blocking(&owned))
-        .await
-        .ok()
-        .flatten();
-    cache_put(key, value.clone());
-    value
-}
+// 外部命令探测（`command_available` / `command_available_blocking` / 30s 缓存）
+// 已搬去 `crate::tool_probe` —— 任务 worker 也要探外部工具，
+// 让 worker 去 `use crate::api` 是反向依赖。见该模块头部说明。
 
 pub(crate) fn chrome_available_blocking(custom: &str) -> Option<String> {
     let probe = |c: &str| -> Option<String> {
@@ -215,17 +181,27 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
     // 能力位只看平台级配置（global-only）：health 是公开接口，不该泄露任何工程信息
     let cfg = vtrim_core::config::load_global_config();
     let llm = !cfg.llm.api_key.is_empty() && cfg.llm.api_key != "sk-your-api-key-here";
+    // ⚠️ 只查一次，别在 json! 里连着调两遍：`find_ytdlp` 会做 sha256 校验（17.8MB），
+    // 而 health 是前端反复轮询的接口（registry 侧另有 (path,len,mtime) 缓存兜底，但两次调用仍多余）。
+    let dl = vtrim_service::downloader::registry::find_ytdlp(&cfg);
     ok(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
-        "ffmpeg": command_available("ffmpeg").await,
-        "ffprobe": command_available("ffprobe").await,
+        "ffmpeg": command_available("ffmpeg", FFMPEG_VERSION_ARG).await,
+        "ffprobe": command_available("ffprobe", FFMPEG_VERSION_ARG).await,
         "chrome": chrome_available(Some(&cfg)).await,
         "llm": llm,
         // 单帧真渲染（/api/polish/render-frame）只在启用该 feature 的构建里可用
         "wgpu_render": cfg!(feature = "wgpu-render"),
         // 采集就绪位（P3）：webhook 已启用 + 录播姬目录已配置，前端据此决定是否显示引导卡
         "ingest_ready": cfg.ingest.webhook_enabled && !cfg.ingest.recorder.root.trim().is_empty(),
+        // B站下载就绪位（P4）：只回"能不能用"，**不回路径**（与 ffmpeg 那些字段一个口径）。
+        // 探测只查文件存在性 + 哈希标记，不跑进程 —— health 会被前端反复轮询。
+        "downloader": {
+            "kind": vtrim_service::downloader::DownloaderKind::parse(&cfg.ingest.downloader).label(),
+            "ready": dl.is_some(),
+            "verified": dl.as_ref().map(|i| i.verified).unwrap_or(false),
+        },
         // 注册开关（登录页据此决定要不要显示「用邀请码注册」入口）
         "registration_enabled": cfg.auth.registration_enabled,
         // 本机/远端与是否走 HTTPS 反代：只影响本地排查提示，不含任何账号信息

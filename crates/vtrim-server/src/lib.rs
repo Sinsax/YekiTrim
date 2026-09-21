@@ -25,17 +25,20 @@
 pub mod access_log;
 pub mod api;
 pub mod auth;
+pub mod download_worker;
 pub mod ingest;
 pub mod ingest_worker;
 pub mod jobs;
 pub mod media;
 pub mod model;
 pub mod persist;
+pub mod pipeline_boot;
 pub mod ratelimit;
 pub mod render_proc;
 pub mod scope;
 pub mod scope_key;
 pub mod stickers;
+pub mod tool_probe;
 pub mod web;
 
 use std::net::SocketAddr;
@@ -341,6 +344,10 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
 
     // 录播姬入库 worker（P3）：webhook 落库后唤醒，另有 60s 兜底扫描
     ingest_worker::start(state.clone());
+
+    // B站下载 worker（P4）：提交后唤醒，另有 10s 队列扫描 + 僵尸回收。
+    // 与上一个**并列**、互不调用（共享部分已下沉到 `vtrim_service::ingest`）。
+    download_worker::start(state.clone());
 
     // 任务调度器自愈：调度是事件驱动的，有个工作协程永远不返回时就没有任何事件了 ——
     // 这个 tick 保证其它任务不会因此永远卡在队列里（并把"谁挡住谁"写进日志）。

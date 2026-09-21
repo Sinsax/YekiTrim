@@ -203,8 +203,8 @@ pub(super) async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
         })
     }).collect();
     ok(serde_json::json!({
-        "ffmpeg": command_available("ffmpeg").await,
-        "ffprobe": command_available("ffprobe").await,
+        "ffmpeg": command_available("ffmpeg", "-version").await,
+        "ffprobe": command_available("ffprobe", "-version").await,
         "models_dir": models_dir.to_string_lossy(),
         "models": model_status,
         "workspace": vtrim_core::path::display(&ws.config_file),

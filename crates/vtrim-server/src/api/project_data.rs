@@ -197,16 +197,28 @@ pub(super) async fn project_data_pipeline(
     // 旧前端还会在 body 里带 `config`，那只是冗余字段，不再作为作用域来源。
     let ws = scope.ws;
     if let Some(stage) = body.get("stage").and_then(|v| v.as_str()) {
-        // 转写一生只跑一次：工程里已经有转写（ASR 产物或用户选的外部字幕）就不再提供重跑入口。
-        // 想换字幕走「选择字幕文件」（`POST /api/project-data/assets`）。
+        // 转写**每个模式只跑一次**：ASR 产物按模式占槽（`[asr] mode` 只有 hybrid / single
+        // 两种，见 `vtrim_service::assets`），该模式已经出过产物就不再提供重跑入口。
+        // 想换字幕走素材列表（`POST /api/project-data/assets`）里已有的那份。
         // ⚠️ 只拦 HTTP 这一侧：CLI `vtrim transcribe` 直接调 `core_pipeline::run_stage`，
         // 仍然可以强制重跑（转写中途崩掉、只留了半份产物时它是逃生口）。
         if stage == "transcribe" {
             let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-            if ws.transcript_path(&cfg).is_some() {
+            let mode = cfg.asr.mode.trim().to_string();
+            // 模式串空（配置被清掉）= 没选模式：退回老口径"有转写就不给重跑"
+            let bound = if mode.is_empty() {
+                ws.transcript_path(&cfg).is_some()
+            } else {
+                vtrim_service::assets::slot_bound(&ws, &cfg, vtrim_service::assets::AssetKind::Transcript, &mode)
+            };
+            if bound {
                 return Err(err(
                     StatusCode::CONFLICT,
-                    "该工程的转写已完成，不能再重跑；要换字幕请用「选择字幕文件」",
+                    if mode.is_empty() {
+                        "该工程的转写已完成，不能再重跑；要换字幕请用素材列表里的那份".to_string()
+                    } else {
+                        format!("「{mode}」模式的转写已完成，不能再重跑；要换字幕请用素材列表里的那份")
+                    },
                 ));
             }
         }
@@ -235,10 +247,14 @@ pub(super) async fn project_data_config(scope: Scope) -> ApiResult {
     blocking(move || config_get_impl(&ws)).await
 }
 
-/// `GET /api/project-data/assets`：当前弹幕/字幕 + 项目内的候选。
+/// `GET /api/project-data/assets`：当前弹幕/字幕 + **素材清单** + 项目内的候选 + ASR 槽位。
 ///
 /// 候选一次扫完（项目根 + 一层子目录），预处理页打开弹窗即可直接用。
 /// 只 stat、不解析文件内容（3 小时录播的弹幕 XML 有几十 MB），所以这里不需要担心耗时。
+///
+/// `slots` 是**每个 ASR 模式是否已经出过产物**：它决定转写入口置灰。
+/// 前端不去自己从 `items` 推 —— 判槽还要看盘上的分模式产物（老工程没登记过），
+/// 那是服务端的口径（`assets::slot_bound`），抄一份到前端就会漂。
 pub(super) async fn project_data_assets(scope: Scope) -> ApiResult {
     let ws = scope.ws;
     let source_kind = scope.project.source_kind.clone();
@@ -247,7 +263,11 @@ pub(super) async fn project_data_assets(scope: Scope) -> ApiResult {
     blocking(move || assets_impl(&ws, &source_kind, &source_label, room.as_deref())).await
 }
 
-/// `POST /api/project-data/assets` `{kind, path}`：选择/清除一类素材。
+/// `POST /api/project-data/assets`：改一类素材的清单 / 生效值。
+///
+/// - `{kind, path|dir+name}` → 选它（进清单 + 置为生效值）
+/// - `{kind, path: ""}` → 清除生效值（清单不动，随时能切回来）
+/// - `{kind, action: "remove", path}` → 从清单里删掉这条
 ///
 /// 写前**解析一遍**（解析失败不落盘），成功返回条数供前端提示。
 pub(super) async fn project_data_assets_put(
@@ -269,7 +289,7 @@ pub(super) fn assets_impl(
     source_label: &str,
     room: Option<&str>,
 ) -> ApiResult {
-    use vtrim_service::assets::{asset_status, scan_candidates, AssetKind};
+    use vtrim_service::assets::{asset_status, scan_candidates, slot_bound, AssetKind};
     let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     let mut candidates = serde_json::Map::new();
     for kind in [AssetKind::Danmaku, AssetKind::Transcript] {
@@ -279,17 +299,25 @@ pub(super) fn assets_impl(
             serde_json::to_value(list).unwrap_or(serde_json::Value::Array(vec![])),
         );
     }
+    let mut slots = serde_json::Map::new();
+    for mode in vtrim_core::config::ASR_MODES {
+        slots.insert(
+            mode.to_string(),
+            serde_json::Value::Bool(slot_bound(ws, &cfg, AssetKind::Transcript, mode)),
+        );
+    }
     ok(serde_json::json!({
         "danmaku": asset_status(ws, &cfg, AssetKind::Danmaku),
         "transcript": asset_status(ws, &cfg, AssetKind::Transcript),
         "source": { "kind": source_kind, "label": source_label, "room": room },
         "candidates": candidates,
+        "slots": slots,
         "root_dir": vtrim_core::path::display(&ws.root_dir),
     }))
 }
 
 pub(super) fn assets_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
-    use vtrim_service::assets::{asset_status, set_asset, AssetKind};
+    use vtrim_service::assets::{asset_status, remove_material, set_asset, AssetKind};
     let kind_raw = body.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     let kind = AssetKind::parse(kind_raw)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
@@ -306,12 +334,32 @@ pub(super) fn assets_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin
             .into_owned(),
         _ => body.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
     };
+    // 删清单条目：`remove_material` 自带"ASR 产物（文件还在）不给删"的守卫
+    let removing = body
+        .get("action")
+        .and_then(|v| v.as_str())
+        .map(|a| a.eq_ignore_ascii_case("remove"))
+        .unwrap_or(false);
+    if removing {
+        remove_material(ws, kind, &path)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        return ok(serde_json::json!({
+            "ok": true,
+            "kind": kind.as_str(),
+            "removed": true,
+            "value": "",
+            "count": 0,
+            "status": asset_status(ws, &cfg, kind),
+        }));
+    }
     let (value, count) = set_asset(ws, kind, &path, is_admin)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     ok(serde_json::json!({
         "ok": true,
         "kind": kind.as_str(),
+        "removed": false,
         "value": value,
         "count": count,
         "status": asset_status(ws, &cfg, kind),
@@ -442,6 +490,53 @@ pub(super) fn danmaku_starts(ws: &Workspace) -> Vec<f64> {
     let mut starts: Vec<f64> = entries.iter().map(|e| e.start).collect();
     starts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     starts
+}
+
+/// 单个路径的 mtime（unix 秒）；取不到（不存在 / 权限 / 时钟怪值）时是 0。
+fn mtime_secs(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 目录「最后一次改动」的 unix 秒 = 目录本身与**最多两层**子项里最新的 mtime。
+///
+/// 首页「切片总览」按这个值倒序（最新改动的片段浮到最前），所以它要覆盖「用户刚动过这个片段」
+/// 的几条路：剪切（`clip.mp4` / `clip.json`）、精修保存（`polish.toml` / `clip.srt`）、
+/// 出片与封面（`vtuber-clip_N.mp4` / `cover_N.jpg` —— 都是**直接子项**），精修侧的数据文件
+/// 在 `data/` 里（只多一层，且新增/删除会带起 `data/` 自己的 mtime）。
+/// ⚠️ **不递归到底**：项目目录经常挂在网络盘上（RaiDrive / WebDAV），深扫一个项目几百个片段
+/// 的代价不可控，而这个接口每次页面加载都会打。
+fn last_touched_secs(dir: &Path) -> u64 {
+    fn walk(path: &Path, depth: u8, best: &mut u64) {
+        *best = (*best).max(mtime_secs(path));
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else { return };
+        for entry in entries.flatten() {
+            // `DirEntry::metadata()` 在 Windows 上直接用目录项里的数据，不额外 `stat` ——
+            // 网络盘上这一条很要紧（这里每个片段要走一遍）。
+            let Ok(meta) = entry.metadata() else { continue };
+            if let Some(secs) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+            {
+                *best = (*best).max(secs);
+            }
+            if depth > 1 && meta.is_dir() {
+                walk(&entry.path(), depth - 1, best);
+            }
+        }
+    }
+    let mut best = 0;
+    walk(dir, 2, &mut best);
+    best
 }
 
 /// 统计落在 [start, end] 内的起始点数量（starts 必须升序）。
@@ -704,6 +799,9 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
             "video_exists": video_path.exists(),
             "size_bytes": size_bytes,
             "duration_secs": duration_secs,
+            // 「最后一次改动」= 这个片段目录里最新的 mtime（unix 秒，见 `last_touched_secs`）：
+            // 首页「切片总览」按它倒序，刚剪完 / 刚精修的片段排在最前面。
+            "mtime": last_touched_secs(&dir_path),
             "silenced": silenced,
             "mute_range_count": mute_range_count,
             "silent_files": silent_files,
@@ -882,13 +980,17 @@ pub(super) fn validated_project_dir(dir: impl AsRef<Path>) -> Result<PathBuf, Ap
 }
 
 /// 精修工程不存在时自动初始化（与前端进入精修时的行为一致）。
+///
+/// 实现在 `vtrim_service::init_polish_for_clip`（**唯一一份**）：剪切收尾也用同一条路，
+/// 这里只把错误映射成 HTTP。`Ok(false)` = 已经有工程（或目录里没有 clip.mp4）= 无事可做。
 pub(crate) async fn ensure_polish_project(dir: &Path) -> Result<(), AppError> {
-    if dir.join("polish.toml").exists() {
-        return Ok(());
+    match vtrim_service::init_polish_for_clip(dir).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("初始化精修工程失败: {e:#}"),
+        )),
     }
-    vtrim_polish::commands::cmd_init(dir)
-        .await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("初始化精修工程失败: {e:#}")))
 }
 
 pub(super) async fn event_cut_all_impl(
@@ -1021,7 +1123,14 @@ pub(super) async fn run_single_cut_event(config_file: &Path, ev: vtrim_core::typ
     ctx.events = vec![ev];
     let mut r = vtrim_core::pipeline::PipelineRunner::new(cfg);
     r.add_stage(Box::new(vtrim_core::cutting::Cutter));
-    r.run(&mut ctx).await
+    r.run(&mut ctx).await?;
+    // **剪切收尾 = 补精修工程**（用户口径：剪切这个行为本身包含精修 init）。
+    // 单条剪切与一键全切都走这里（`event_cut_all_impl` → `run_single_cut`），
+    // 于是切片页的「精修」按钮、首页切片总览、`polish_ready` 判据进来时工程已经在了，
+    // 不再有"发完 init 就跳转、页面先读到 polish.toml not found"的竞态。
+    // 失败只 warn：剪切已经成功，进入精修时还有 `ensure_polish_project` 兜底。
+    vtrim_service::init_polish_for_events(&ctx.output_dir, &ctx.events).await;
+    Ok(())
 }
 
 pub(super) async fn event_cut_impl(
@@ -1371,6 +1480,78 @@ fn assets_impl_reports_source_and_candidates() {
     assert_eq!(v["danmaku"]["exists"], false);
     assert_eq!(v["candidates"]["danmaku"][0]["name"], "video.xml");
     assert_eq!(v["candidates"]["danmaku"][0]["same_stem"], true);
+    // 两种 ASR 模式都没产物 → 转写入口不置灰
+    assert_eq!(v["slots"]["hybrid"], false);
+    assert_eq!(v["slots"]["single"], false);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 某模式的 ASR 产物一落盘，`slots` 就报该槽已占（前端据此把转写入口置灰）。
+#[test]
+fn assets_impl_reports_asr_slots() {
+    let (ws, root) = tmp_workspace("assets-slots");
+    std::fs::create_dir_all(root.join("output")).unwrap();
+    std::fs::write(
+        root.join("output/transcript.hybrid.json"),
+        r#"{"segments":[{"start":0.0,"end":1.0,"text":"a"}],"language":"zh"}"#,
+    )
+    .unwrap();
+    let v = assets_impl(&ws, "local", "", None).unwrap();
+    assert_eq!(v["slots"]["hybrid"], true);
+    assert_eq!(v["slots"]["single"], false);
+    // 清单里也要能看到它（盘上有、没登记过 → 兜底列出来），且不可删
+    let items = v["transcript"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["mode"], "hybrid");
+    assert_eq!(items[0]["is_asr"], true);
+    assert_eq!(items[0]["removable"], false);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 清单删除：用户素材可删，ASR 产物（文件还在）必须被拒。
+#[test]
+fn assets_put_impl_remove_protects_asr_items() {
+    let (ws, root) = tmp_workspace("assets-remove");
+    std::fs::create_dir_all(root.join("output")).unwrap();
+    std::fs::write(root.join("dm.xml"), "<?xml version=\"1.0\"?><i><d p=\"1.5,1,25,16777215,0\">hi</d></i>").unwrap();
+    std::fs::write(
+        root.join("output/transcript.hybrid.json"),
+        r#"{"segments":[{"start":0.0,"end":1.0,"text":"a"}],"language":"zh"}"#,
+    )
+    .unwrap();
+    // 选中 ASR 产物 → 按槽登记（不可删）
+    let v = assets_put_impl(
+        &ws,
+        &serde_json::json!({ "kind": "transcript", "path": "output/transcript.hybrid.json" }),
+        false,
+    )
+    .unwrap();
+    assert_eq!(v["value"], "output/transcript.hybrid.json");
+    assert_eq!(v["removed"], false);
+
+    let e = assets_put_impl(
+        &ws,
+        &serde_json::json!({ "kind": "transcript", "action": "remove", "path": "output/transcript.hybrid.json" }),
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(e.0, StatusCode::BAD_REQUEST);
+
+    // 用户素材：选了能删，删掉的正好是生效值 → 连带清空 `danmaku_file`
+    let _ = assets_put_impl(&ws, &serde_json::json!({ "kind": "danmaku", "path": "dm.xml" }), false).unwrap();
+    let v = assets_put_impl(
+        &ws,
+        &serde_json::json!({ "kind": "danmaku", "action": "remove", "path": "dm.xml" }),
+        false,
+    )
+    .unwrap();
+    assert_eq!(v["removed"], true);
+    assert_eq!(v["value"], "");
+    let cfg = ws.load_config().unwrap();
+    assert_eq!(cfg.project.danmaku_file.as_deref(), Some(""));
+    assert!(cfg.project.materials.danmaku.is_empty());
+    // 字幕的 ASR 条目还在（删弹幕不该动字幕）
+    assert_eq!(cfg.project.materials.transcript.len(), 1);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1746,6 +1927,51 @@ async fn merge_splits_endpoint_merges_equal_splits_only() {
     let j = body_json(res).await;
     assert_eq!(j["groups"], 0, "{j}");
     assert_eq!(j["after"], 4, "{j}");
+}
+
+/// `GET /project-data/clips` 要带「最后一次改动」时间（`mtime`，unix 秒）—— 首页「切片总览」
+/// 按它倒序，刚剪完 / 刚精修过的片段要浮到最前面。
+///
+/// 取值 = 片段目录里最新的 mtime，**直接子项**（精修保存会改写 `polish.toml` / `clip.srt`）与
+/// 精修数据目录 `data/` 下的文件都要算进去：只 stat 目录本身的话，改写**既有**文件不会带起
+/// 目录的 mtime（只有新建/删除才会），刚精修过的片段就浮不上来。
+#[tokio::test]
+async fn clips_expose_last_touched_mtime() {
+    let t = test_app().await;
+    let clips = t.root.join("output").join("clips");
+    std::fs::create_dir_all(&clips).unwrap();
+    write_clip_dir(&clips, 1, 0.0, 10.0, 1, None);
+    write_clip_dir(&clips, 2, 0.0, 10.0, 1, None);
+
+    let now = std::time::SystemTime::now();
+    let at = |secs: u64| now + std::time::Duration::from_secs(secs);
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let touch = |p: &std::path::Path, when: std::time::SystemTime| {
+        std::fs::File::options().write(true).open(p).unwrap().set_modified(when).unwrap();
+    };
+
+    // clip-01：动的是**直接子项** `polish.toml`（精修保存就改它）
+    let one = clips.join("clip-01");
+    std::fs::write(one.join("polish.toml"), "[source]\n").unwrap();
+    touch(&one.join("polish.toml"), at(3_600));
+    // clip-02：只动过 `data/` 里的文件（两层：片段目录 → data/ → 文件）
+    let two_data = clips.join("clip-02").join("data");
+    std::fs::create_dir_all(&two_data).unwrap();
+    std::fs::write(two_data.join("subtitles.json"), "{}").unwrap();
+    touch(&two_data.join("subtitles.json"), at(7_200));
+
+    let res = t.call(t.req("GET", "/project-data/clips?project=1").body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    let mtime_of = |name: &str| -> u64 {
+        v.as_array().unwrap().iter()
+            .find(|c| c["name"].as_str() == Some(name))
+            .and_then(|c| c["mtime"].as_u64())
+            .unwrap_or_else(|| panic!("{name} 没有 mtime: {v}"))
+    };
+    assert_eq!(mtime_of("clip-01"), secs(at(3_600)), "直接子项的 mtime 要算进来: {v}");
+    assert_eq!(mtime_of("clip-02"), secs(at(7_200)), "data/ 里的改动也要算进来: {v}");
+    assert!(mtime_of("clip-02") > mtime_of("clip-01"), "最后改动的片段 mtime 更大: {v}");
 }
 
 /// `GET /project-data/clips` 必须按**数字**序号返回：`clip-100` 排在 `clip-02` 之后。

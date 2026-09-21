@@ -63,6 +63,15 @@ fn canonical_or_join(path: &Path) -> std::path::PathBuf {
 /// 全局：ASR 模型目录。
 pub const MODELS: &str = "models";
 
+/// 下载任务（B站链接通道）：**按会话**互斥，不与项目资源键相交。
+///
+/// 为什么不用 `dir:{project_root}`：下载启动时项目目录刚建、还没登记项目，
+/// 而 `dir_key` 在目录不存在时要回退到父目录 —— 那时算出来的键与"下载完成后"不一致，
+/// 会让同一个下载在两次 tick 之间被认成两把不同的锁。会话 id 是稳定的。
+pub fn download_key(session_id: &str) -> String {
+    format!("dl:{session_id}")
+}
+
 /// 全局：贴纸库（`<程序目录>/stickers`）。
 pub const STICKERS: &str = "stickers";
 
