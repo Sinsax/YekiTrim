@@ -291,6 +291,28 @@ fn is_write(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// 把同步解析搬出 async worker（与 `api::blocking` 同款，只是用本文件自己的 `AppError` 类型）。
+///
+/// ⚠️ 为什么这个中间件特别需要它：`enforce_scope` 挂在**整个 `/api/polish/*` 子树**上，
+/// 每次请求都要走 SQLite 查询 + 若干次 `canonicalize()` —— 项目目录常在网络盘上
+/// （RaiDrive/WebDAV），一次 canonicalize 就是几百毫秒到几秒。留在 worker 上做，
+/// 前端一次页面加载打出的那一串 polish 请求就能把 worker 全占住：
+/// runtime 连 accept 都排不上，日志里一行都没有（请求根本没处理完）。
+/// 细则见 `src/api/AGENTS.md`「同步 IO 纪律」。
+async fn off<T, F>(f: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(e) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("阻塞任务失败: {e}"),
+        )),
+    }
+}
+
 /// 中间件解析出的项目 id（`0` = 没能解析，例如无 dir/project 的全局 polish 接口）。
 ///
 /// polish handler 用它给任务打项目标签（侧栏按项目显示进度），`0` 时不打标签。
@@ -316,7 +338,9 @@ pub async fn enforce_scope(
     let Some(user) = req.extensions().get::<CurrentUser>().cloned() else {
         return err(StatusCode::UNAUTHORIZED, "未登录，请先登录").into_response();
     };
-    let db = state.auth.db();
+    // `db_arc()` 而不是 `db()`：同步解析要搬进 `spawn_blocking`，闭包必须是 'static，
+    // 所以每次按需 clone 这个 Arc（见本文件 `off`）。
+    let db = state.auth.db_arc();
 
     // 先解析作用域与"路径类"字段（不消费 body，body 在需要时再缓冲）
     let query = req.uri().query().map(parse_query).unwrap_or_default();
@@ -326,16 +350,24 @@ pub async fn enforce_scope(
 
     // 显式 project 优先；否则用绝对 dir 反查归属项目
     let mut scope: Option<ProjectRow> = match explicit {
-        Some(id) => match project_scope(db, &user, id) {
-            Ok(s) => Some(s.project),
-            Err(e) => return e.into_response(),
-        },
+        Some(id) => {
+            let db = db.clone();
+            let user = user.clone();
+            match off(move || project_scope(&db, &user, id)).await {
+                Ok(s) => Some(s.project),
+                Err(e) => return e.into_response(),
+            }
+        }
         None => None,
     };
     if scope.is_none() {
         if let Some(dir) = query_path_field(&query) {
             if Path::new(&dir).is_absolute() {
-                match find_project_for_dir(db, &user, Path::new(&dir)) {
+                let db = db.clone();
+                let user = user.clone();
+                let dir_for_lookup = dir.clone();
+                match off(move || find_project_for_dir(&db, &user, Path::new(&dir_for_lookup))).await
+                {
                     Ok(Some(p)) => scope = Some(p),
                     Ok(None) => {
                         return err(StatusCode::NOT_FOUND, format!("路径不在你的任何项目内: {dir}"))
@@ -348,14 +380,17 @@ pub async fn enforce_scope(
     }
 
     let rewritten_query = match (scope.as_ref(), query_path_field(&query)) {
-        (Some(project), Some(dir)) => match resolve_dir(project, &dir) {
-            Ok(abs) => Some(replace_query_value(
-                req.uri().query().unwrap_or(""),
-                "dir",
-                &abs.to_string_lossy(),
-            )),
-            Err(e) => return e.into_response(),
-        },
+        (Some(project), Some(dir)) => {
+            let project = project.clone();
+            match off(move || resolve_dir(&project, &dir)).await {
+                Ok(abs) => Some(replace_query_value(
+                    req.uri().query().unwrap_or(""),
+                    "dir",
+                    &abs.to_string_lossy(),
+                )),
+                Err(e) => return e.into_response(),
+            }
+        }
         (None, Some(dir)) => {
             return err(
                 StatusCode::NOT_FOUND,
@@ -394,7 +429,9 @@ pub async fn enforce_scope(
                     .and_then(|x| x.as_i64())
                     .and_then(|n| vtrim_service::projects::parse_project_id(&n.to_string()))
                 {
-                    match project_scope(db, &user, id) {
+                    let db = db.clone();
+                    let user = user.clone();
+                    match off(move || project_scope(&db, &user, id)).await {
                         Ok(s) => scope = Some(s.project),
                         Err(e) => return e.into_response(),
                     }
@@ -403,7 +440,12 @@ pub async fn enforce_scope(
             if let Some(dir) = v.get("dir").and_then(|x| x.as_str()).map(|s| s.to_string()) {
                 // body 里只有绝对 dir（旧前端）：先按"落在本人哪个项目内"反查归属
                 if scope.is_none() && Path::new(&dir).is_absolute() {
-                    match find_project_for_dir(db, &user, Path::new(&dir)) {
+                    let db = db.clone();
+                    let user = user.clone();
+                    let dir_for_lookup = dir.clone();
+                    match off(move || find_project_for_dir(&db, &user, Path::new(&dir_for_lookup)))
+                        .await
+                    {
                         Ok(Some(p)) => scope = Some(p),
                         Ok(None) => {
                             return err(
@@ -416,10 +458,14 @@ pub async fn enforce_scope(
                     }
                 }
                 match scope.as_ref() {
-                    Some(project) => match resolve_dir(project, &dir) {
-                        Ok(abs) => v["dir"] = serde_json::json!(abs.to_string_lossy()),
-                        Err(e) => return e.into_response(),
-                    },
+                    Some(project) => {
+                        let project = project.clone();
+                        let dir = dir.clone();
+                        match off(move || resolve_dir(&project, &dir)).await {
+                            Ok(abs) => v["dir"] = serde_json::json!(abs.to_string_lossy()),
+                            Err(e) => return e.into_response(),
+                        }
+                    }
                     None => {
                         return err(
                             StatusCode::NOT_FOUND,
@@ -436,7 +482,19 @@ pub async fn enforce_scope(
                         return err(StatusCode::BAD_REQUEST, "output_file 需要 project 作用域")
                             .into_response();
                     };
-                    if vtrim_core::tenant::jail_join(&project.root_dir, &out).is_err() {
+                    let project_for_jail = project.clone();
+                    let out_for_jail = out.clone();
+                    // `jail_join` 内部要 canonicalize（网络盘上就是几百毫秒）→ 搬出 worker
+                    let jail_ok = off(move || {
+                        Ok(vtrim_core::tenant::jail_join(
+                            &project_for_jail.root_dir,
+                            &out_for_jail,
+                        )
+                        .is_ok())
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !jail_ok {
                         return err(
                             StatusCode::BAD_REQUEST,
                             format!("output_file 必须是项目内相对路径: {out}"),
@@ -461,7 +519,9 @@ pub async fn enforce_scope(
                     )
                     .into_response();
                 };
-                match resolve_file_in_project(project, &raw, field) {
+                let project = project.clone();
+                let raw_for_resolve = raw.clone();
+                match off(move || resolve_file_in_project(&project, &raw_for_resolve, field)).await {
                     Ok(abs) => json_set_str(&mut v, field, &abs.to_string_lossy()),
                     Err(e) => return e.into_response(),
                 }
