@@ -15,6 +15,12 @@ use crate::jobs::{JobClass, JobSpec};
 use super::*;
 
 pub(super) async fn models_get() -> ApiResult {
+    // ⚠️ 同步 IO：`load_global_config` + 每个模型的 `model_install`（3 个候选目录 × N 个模型）都要
+    // stat 磁盘 —— 项目/程序目录在网络盘上时就是秒级。搬出 async worker（同 `config_get` 的包法）。
+    blocking(models_impl).await
+}
+
+fn models_impl() -> ApiResult {
     // 判定与运行时同源（`download::model_install`：配置目录 → 用户目录 → 程序目录 + marker），
     // 列表也来自注册表 `model_names()` —— 别再手写模型数组，也别只看程序目录：
     // 曾经界面按"<exe>/.vtrim/models 有没有这个目录"判，而 qwen3-asr 放在用户目录
@@ -67,7 +73,9 @@ pub(super) fn config_get_impl(ws: &Workspace) -> ApiResult {
 
 pub(super) async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
-    config_get_impl(&ws)
+    // ⚠️ 同步 IO：读 vtrim.toml / config.toml / llm.toml 三份 + 解析合并（含 llm.toml 的 API key）。
+    // `project_data.rs` 里同一个 impl 早就这么包了，这条 `/api/config` 路由漏了。
+    blocking(move || config_get_impl(&ws)).await
 }
 
 /// 项目配置里会被当作**路径**的键：`(section, key)`。
@@ -251,7 +259,8 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
 }
 
 pub(super) async fn llm_test() -> ApiResult {
-    let llm = vtrim_core::config::load_llm_config();
+    // 只有"读配置"是同步 IO（HTTP 调用本身是 async，保持不动）
+    let llm = blocking(|| Ok(vtrim_core::config::load_llm_config())).await?;
     if llm.api_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "LLM API key 未配置"));
     }

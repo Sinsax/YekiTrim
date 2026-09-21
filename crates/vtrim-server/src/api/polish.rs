@@ -820,47 +820,66 @@ pub(super) async fn polish_preview(State(state): State<Arc<AppState>>, Json(body
     ok(serde_json::json!({ "ok": true, "video_url": video_url, "cover_url": video_url }))
 }
 
+/// 写完背景图之后的收尾：切 `bg_mode = "image"` 并回写 `polish.toml`（**同步 IO，调用方须在 blocking 里**）。
+fn set_bg_image_mode(path: &Path) -> Result<(), AppError> {
+    let mut cfg = vtrim_polish::project::load_project(path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
+    // 导入即切到「自定义图片」背景；关键帧与 cover.image 都不动
+    cfg.cover.bg_mode = "image".into();
+    let raw = cfg
+        .to_toml_commented()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
+    std::fs::write(path.join("polish.toml"), raw)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+    Ok(())
+}
+
 pub(super) async fn polish_cover_background(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    // `validated_project_dir` 内部要 canonicalize（网络盘上几百毫秒）→ blocking
+    let path = blocking(move || validated_project_dir(&dir)).await?;
+    let polish_toml = path.join("polish.toml");
+    if !blocking({
+        let polish_toml = polish_toml.clone();
+        move || Ok(polish_toml.exists())
+    })
+    .await?
+    {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     if let Some(data) = body.get("image_data").and_then(|v| v.as_str()) {
-        // 与其它 polish.toml 写入串行化
-        let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD.decode(data)
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("图片解码失败: {e}")))?;
         if bytes.len() > 32 * 1024 * 1024 {
             return Err(err(StatusCode::BAD_REQUEST, "背景图过大（上限 32MB）"));
         }
-        // ⚠️ 写**背景层自己的文件** `_cover_bg.jpg`：封面三层 = 文字 / 关键帧(_cover_frame.jpg) / 背景，
-        // 导入背景不能把关键帧那层盖掉（用户报过"又把关键帧那一层给我删了"）。
-        std::fs::write(path.join(vtrim_polish::cover::COVER_BG_IMG), bytes)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
-        let mut cfg = vtrim_polish::project::load_project(&path)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
-        // 导入即切到「自定义图片」背景；关键帧与 cover.image 都不动
-        cfg.cover.bg_mode = "image".into();
-        let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
-        std::fs::write(path.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
-        return ok(serde_json::json!({ "ok": true, "bg_mode": "image" }));
+        // 与其它 polish.toml 写入串行化
+        let _guard = vtrim_core::filelock::lock_path(&polish_toml).await;
+        return blocking(move || {
+            // ⚠️ 写**背景层自己的文件** `_cover_bg.jpg`：封面三层 = 文字 / 关键帧(_cover_frame.jpg) / 背景，
+            // 导入背景不能把关键帧那层盖掉（用户报过"又把关键帧那一层给我删了"）。
+            std::fs::write(path.join(vtrim_polish::cover::COVER_BG_IMG), bytes)
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
+            set_bg_image_mode(&path)?;
+            ok(serde_json::json!({ "ok": true, "bg_mode": "image" }))
+        })
+        .await;
     }
     if let Some(src) = body.get("source").and_then(|v| v.as_str()) {
+        let src = src.to_string();
         // 与其它 polish.toml 写入串行化
-        let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
-        let sp = PathBuf::from(src);
-        if !sp.exists() { return Err(err(StatusCode::BAD_REQUEST, "背景文件不存在")); }
-        // 同上：走背景层的文件，别碰关键帧
-        std::fs::copy(&sp, path.join(vtrim_polish::cover::COVER_BG_IMG))
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("复制失败: {e}")))?;
-        let mut cfg = vtrim_polish::project::load_project(&path)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
-        cfg.cover.bg_mode = "image".into();
-        let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
-        std::fs::write(path.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入失败: {e}")))?;
-        return ok(serde_json::json!({ "ok": true }));
+        let _guard = vtrim_core::filelock::lock_path(&polish_toml).await;
+        return blocking(move || {
+            let sp = PathBuf::from(&src);
+            if !sp.exists() { return Err(err(StatusCode::BAD_REQUEST, "背景文件不存在")); }
+            // 同上：走背景层的文件，别碰关键帧
+            std::fs::copy(&sp, path.join(vtrim_polish::cover::COVER_BG_IMG))
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("复制失败: {e}")))?;
+            set_bg_image_mode(&path)?;
+            ok(serde_json::json!({ "ok": true }))
+        })
+        .await;
     }
     Err(err(StatusCode::BAD_REQUEST, "需要 image_data 或 source"))
 }
@@ -984,6 +1003,12 @@ pub(super) async fn polish_subtitles_get_impl(
 }
 
 pub(super) async fn polish_subtitles_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
+    // ⚠️ 整段都是同步 IO：`validated_project_dir` 的 canonicalize + 建 data/ + 写两份文件。
+    // GET 孪生（polish_subtitles_get）早就这么包了，PUT 这一半漏了。
+    blocking(move || polish_subtitles_put_impl(body)).await
+}
+
+fn polish_subtitles_put_impl(body: serde_json::Value) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
     if !path.join("polish.toml").exists() {

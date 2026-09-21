@@ -36,6 +36,25 @@ fn ok<T: serde::Serialize>(v: T) -> ApiResult<T> {
     Ok(Json(v))
 }
 
+/// 把同步 IO 搬出 async worker（与 `api::blocking` / `scope::off` 同款，只是用本文件自己的 `AppError`）。
+///
+/// ⚠️ 本文件的接口里有**未认证**入口（录播姬 webhook），读配置、写审计、事件落库全是同步 IO
+/// —— 项目/数据目录在网络盘上时一次 `read_to_string` 就是几百毫秒，十几个 webhook 就能把
+/// tokio worker 占满。细则见 `src/api/AGENTS.md`「同步 IO 纪律」。
+async fn off<T, F>(f: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(r) => r,
+        Err(e) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("阻塞任务失败: {e}"),
+        )),
+    }
+}
+
 /// 大小写不敏感的多别名取值（`SessionId` / `session_id` / `sessionId` 都认）。
 ///
 /// 官方的 `RoomId` / `ShortId` 是**数字**，所以这里同时接受字符串与数字。
@@ -265,7 +284,8 @@ pub async fn webhook(
     ClientIp(ip): ClientIp,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    let cfg = vtrim_core::config::load_global_config();
+    // ⚠️ 未认证入口：连"读全局配置"都不该留在 async worker 上（读的是磁盘上的 config.toml）
+    let cfg = off(|| Ok(vtrim_core::config::load_global_config())).await?;
     if !cfg.ingest.webhook_enabled || cfg.ingest.token_hash.trim().is_empty() {
         return Err(err(
             StatusCode::FORBIDDEN,
@@ -311,20 +331,30 @@ pub async fn webhook(
     .await
     .unwrap_or(false);
     if !verified {
-        let _ = state
-            .auth
-            .db()
-            .audit_ip(None, "ingest_token_rejected", "", ip.as_deref());
+        // 审计是同步 DB 写，且这是失败路径（可能被刷）→ 同样搬出 worker
+        let db = state.auth.db_arc();
+        let ip_for_audit = ip.clone();
+        let _ = off(move || {
+            let _ = db.audit_ip(None, "ingest_token_rejected", "", ip_for_audit.as_deref());
+            Ok(())
+        })
+        .await;
         return Err(err(StatusCode::UNAUTHORIZED, "token 无效"));
     }
 
-    let db = state.auth.db();
-    let outcome = match handle_event(db, &body) {
+    // 事件落库全是同步 SQLite 写 → blocking。错误语义保持原样：
+    // "落库失败"仍然回 200（payload 重试也不会成功，而官方会对非 2xx 重试 3 次）。
+    let db = state.auth.db_arc();
+    let body_for_event = body.clone();
+    let handled = off(move || {
+        Ok(handle_event(&db, &body_for_event).map_err(|e| format!("{e:#}")))
+    })
+    .await?;
+    let outcome = match handled {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!("录播姬事件落库失败: {e:#}");
-            // 仍然回 200：payload 重试也不会成功，而且官方会对非 2xx 重试 3 次
-            return ok(serde_json::json!({ "ok": false, "error": format!("{e:#}") }));
+            tracing::warn!("录播姬事件落库失败: {e}");
+            return ok(serde_json::json!({ "ok": false, "error": e }));
         }
     };
     tracing::info!(

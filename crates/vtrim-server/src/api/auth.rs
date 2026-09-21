@@ -191,17 +191,21 @@ pub(super) async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
     let ws = workspace_from_state(&state).await;
     let home = vtrim_core::path::vtrim_home();
     let models_dir = home.join("models");
-    // 与 /api/models 同源：按运行时查找顺序（配置 → 用户目录 → 程序目录）判"能不能用"
-    let asr = vtrim_core::config::load_global_config().asr;
-    let model_status: Vec<_> = vtrim_core::download::model_names().iter().map(|m| {
-        let st = vtrim_core::download::model_install(&asr, m);
-        serde_json::json!({
-            "name": m,
-            "installed": st.installed,
-            "dir": vtrim_core::path::display(&st.dir),
-            "source": st.source.as_str(),
-        })
-    }).collect();
+    // 与 /api/models 同源：按运行时查找顺序（配置 → 用户目录 → 程序目录）判"能不能用"。
+    // ⚠️ 同步 IO：`load_global_config` + 每个模型的 `model_install` 都要 stat 磁盘 → 搬出 async worker
+    //（`/api/admin/doctor` 与旧别名 `/api/doctor` 都走这里）。
+    let model_status: Vec<serde_json::Value> = blocking(|| {
+        let asr = vtrim_core::config::load_global_config().asr;
+        Ok(vtrim_core::download::model_names().iter().map(|m| {
+            let st = vtrim_core::download::model_install(&asr, m);
+            serde_json::json!({
+                "name": m,
+                "installed": st.installed,
+                "dir": vtrim_core::path::display(&st.dir),
+                "source": st.source.as_str(),
+            })
+        }).collect::<Vec<_>>())
+    }).await?;
     ok(serde_json::json!({
         "ffmpeg": command_available("ffmpeg", "-version").await,
         "ffprobe": command_available("ffprobe", "-version").await,
