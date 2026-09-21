@@ -84,6 +84,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/llm/test", post(llm_test))
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
+        // ⚠️ 改密强制门**也必须盖住 admin 路由**：初始密码会同时写进日志与
+        // `initial-admin-password.txt`，持它的会话若能调 `/api/config`，就等于直接拿到
+        // 明文 LLM API key（`config_get_impl` 会回 `llm_raw`）并能铸造邀请码 ——
+        // 那正是 `require_password_changed` 存在的理由。
+        // ⚠️ 这一行必须写在 `require_admin` **之前**：axum 里"后加的 layer 在外层"，
+        // 写在前面 `require_admin` 才是外层、才会先跑并注入 `CurrentUser`；
+        // 反过来的话改密门读不到用户，按 `unwrap_or(false)` fail-open —— 等于没挂。
+        .route_layer(axum::middleware::from_fn(crate::auth::require_password_changed))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_admin,

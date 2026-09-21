@@ -36,8 +36,9 @@ vtrim server --host 0.0.0.0 --allow-remote
 ```
 
 - `--allow-remote` 是必须的：不加它服务会拒绝监听非 loopback 地址。
-- **仍在使用初始密码时会直接拒绝启动** —— 初始密码会写进日志文件与
-  `<data_dir>/initial-admin-password.txt`，等于把凭证摊在磁盘上。
+- **仍在用初始密码时，只要对外暴露就拒绝启动** —— 判据是「非 loopback 监听 **或** 显式加了
+  `--allow-remote`」：`--host 127.0.0.1 --allow-remote` 也算暴露（反代就在本机），同样会被拦。
+  初始密码会写进日志文件与 `<data_dir>/initial-admin-password.txt`，等于把凭证摊在磁盘上。
 - 邀请制注册：`vtrim user invite --count 5` 生成邀请码并打开注册开关
   （`vtrim user invites` 查看，`--disable` 关闭）。
 - 到这一步仍建议套一层 HTTPS（自签或内网证书），否则口令与 cookie 是明文过网的。
@@ -73,7 +74,7 @@ vtrim server --host 127.0.0.1 --allow-remote \
 | 参数 | 为什么 |
 |---|---|
 | `--host 127.0.0.1` | 让服务只被本机反代访问，公网入口只有反代一个。多一层隔离。 |
-| `--allow-remote` | 不加就不许监听非 loopback（即使 host 写的是 127.0.0.1 也建议显式加上，避免后续误改 host 时被拒启动搞混）。 |
+| `--allow-remote` | 不加就不许监听非 loopback（即使 host 写的是 127.0.0.1 也建议显式加上，避免后续误改 host 时被拒启动搞混）。⚠️ 它同时**打开初始密码护栏**：显式加了它就视为对外暴露，未改初始密码会被拒绝启动。 |
 | `--trust-proxy` | **反代后面必须加**。不加的话所有请求都被当成来自反代本机：按 IP 的限流退化成全局一份额度，`Secure` cookie 也不会下发。 |
 | `--data-dir` | 账号账本、日志、模型的落点。默认在 `<exe_dir>/.vtrim/`，容器里通常是只读层 → 会启动失败。 |
 

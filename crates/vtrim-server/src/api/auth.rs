@@ -260,11 +260,18 @@ async fn must_change_password_blocks_everything_but_the_password_flow() {
         t.call(t.req("GET", "/me").body(Body::empty()).unwrap()).await.status(),
         StatusCode::OK
     );
-    // 其余接口一律 403
+    // 其余接口一律 403。
+    // ⚠️ admin 路由必须在名单里：它们是**另一条**路由树（只挂 `require_admin`），
+    // 曾经因为改密门只挂在 `protected` 上，持初始密码的会话可以拿 `/api/config`
+    // 读到明文 LLM key、并调 `/api/admin/invites` 铸造邀请码。
     for (method, uri) in [
         ("GET", "/projects"),
         ("GET", "/jobs"),
         ("GET", "/project-data/status?project=1"),
+        ("GET", "/config"),
+        ("GET", "/admin/config"),
+        ("GET", "/admin/users"),
+        ("GET", "/admin/invites"),
     ] {
         let res = t.call(t.req(method, uri).body(Body::empty()).unwrap()).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{method} {uri} 应被改密门拦住");
@@ -288,6 +295,11 @@ async fn must_change_password_blocks_everything_but_the_password_flow() {
         t.call(t.req("GET", "/projects").body(Body::empty()).unwrap()).await.status(),
         StatusCode::OK,
         "改密后应恢复正常"
+    );
+    assert_eq!(
+        t.call(t.req("GET", "/admin/config").body(Body::empty()).unwrap()).await.status(),
+        StatusCode::OK,
+        "改密后 admin 路由也应恢复（改密门不该把它永久关掉）"
     );
 }
 
