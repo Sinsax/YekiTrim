@@ -1,3 +1,8 @@
+//! types：跨 stage 共享的数据类型（时间戳 / 转写 / 事件 / 管线上下文）。
+//!
+//! 入口：`PipelineContext`、`Timestamp`、`VideoInfo`、`Transcript`、`TranscriptSegment`、`Event`、`EventType`、`EventSource`、`EventStore`。
+//! 边界：全管线的公共数据面，改字段会连带四个 stage 与落盘的 `transcript.json` / `events.json`；`types/` 无专卡，规矩在其上层卡 —— 见 `crates/vtrim-core/AGENTS.md`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -70,6 +75,13 @@ pub struct AsrMetadata {
     pub fallback_reason: Option<String>,
     #[serde(default)]
     pub model: String,
+    /// 这次转写用的 `[asr] mode`（`hybrid` / `single`）。
+    ///
+    /// 预处理页据此给字幕条目标「ASR · hybrid」这类徽标，并在老工程（`materials` 还是空的）
+    /// 里推断这份产物占的是哪个模式槽。LLM 订正后的产物 `asr_metadata` 会被置空，
+    /// 所以**别把槽位判定只建在这个字段上** —— 清单里的 `source`/`mode` 才是权威。
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

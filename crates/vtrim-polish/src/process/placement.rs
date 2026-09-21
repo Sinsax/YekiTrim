@@ -1,10 +1,15 @@
 //! 贴纸落点推导：从 **人物 / 字幕 / 弹幕** 反选安全区，并在安全区**中心**撒点。
 //!
 //! 坐标系与渲染端一致（`templates/index.html` 的 Canvas，1920×1080 整帧）：
-//! - `Event::Sticker` 的 x/y 是**贴纸盒子左上角**百分比 —— 模板 DOM/canvas
-//!   (`index.html:675` 钳制 + `:1246` 画 `left+140`) 与 `webui/src/polish/engine.js:517`
-//!   都按左上角消费；盒子固定 `STICKER_SIZE` × `STICKER_SIZE`。
-//! - 模板把 left/top 钳制在 `[32, 1920-280-32] × [32, 1080-280-32]`，
+//! - `Event::Sticker` 的 x/y 是**贴纸盒子左上角**百分比 —— 模板 DOM
+//!   (`index.html` 的 `el.style.left/top`) 与 `webui/src/polish/engine.js::stickersAt`
+//!   都按左上角消费；盒子边长 `STICKER_SIZE × sticker_scale`（见 [`Frame::sticker_scale`]）。
+//! - ⚠️ **`[sticker] position`（manual 固定落点）不是这个口径**：它是**盒子中心**百分比
+//!   （`project/config.rs` 的 `StickerConfig::position` 注释），两条渲染路径的
+//!   `stickerAnchor` 在 manual 分支里减去半个盒子换成左上角，本模块不参与 manual。
+//!   两者是**不同的键**、不同的基准 —— 别顺手"统一"成一种（GPU 路径
+//!   `vtrim-render-core/src/timeline.rs` 曾按中心读事件 x/y，与 DOM 差半个盒子）。
+//! - 渲染端把 left/top 钳制在 `[margin, W-margin-sticker] × [margin, H-margin-sticker]`，
 //!   本模块的候选网格限制在同一范围内（`STICKER_MARGIN`）。
 //!
 //! 障碍来源（渲染顺序：视频 → 字幕 → 弹幕 → 贴纸，贴纸画在最上层，压住谁就是挡住谁）：
@@ -24,15 +29,79 @@
 
 use crate::project::{parse_pct, Point};
 
-/// 输出帧尺寸（模板 Canvas 硬编码 1920×1080）。
+/// 输出帧尺寸基准（横画布）。竖画布（1080×1920）见 [`Frame`]；
+/// 模板 Canvas 已改为从 `_canvas` 读宽高，这里的常量只作 **k/kh 缩放的基准**。
 pub const FRAME_W: f64 = 1920.0;
 pub const FRAME_H: f64 = 1080.0;
-/// 贴纸盒子边长（模板 `.sticker-img` 280×280）。
+/// 贴纸盒子基准边长（模板 `.sticker-img` = `280 × sticker_scale`）。
 pub const STICKER_SIZE: f64 = 280.0;
-/// 贴纸安全边距（模板 `index.html:675` / `engine.js:124` 的 32px）。
+/// 贴纸安全边距基准（渲染端 clamp 的 `32 × sticker_scale` / `engine.js` 同源）。
 pub const STICKER_MARGIN: f64 = 32.0;
-/// 贴纸 floatUp 动画的上浮量（`getActiveSticker`: `yOff = -18`），测试障碍时算进去。
+/// 贴纸 floatUp 动画的基准上浮量（渲染端 `yOff = -18 × sticker_scale`），测试障碍时算进去。
 pub const FLOAT_UP: f64 = 18.0;
+
+/// 输出画布（`[canvas] orientation` 唯一推导，横 1920×1080 / 竖 1080×1920）。
+///
+/// 本模块所有几何都以 `Frame` 为坐标系：**贴纸**像素量（盒、边距、上浮）按
+/// [`Frame::sticker_scale`] = **短边/1080** 缩放（横竖两种画布的短边都是 1080 →
+/// 贴纸绝对像素相同），弹幕带高按 `k = W/1920`，纵向锚点（字幕底距）按 `kh = H/1080`
+/// —— 横画布下三者皆 = 1，与改造前的硬编码逐像素一致。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Frame {
+    pub fn new(w: u32, h: u32) -> Self {
+        Self {
+            w: w as f64,
+            h: h as f64,
+        }
+    }
+
+    /// 横画布基准帧（1920×1080）—— **只有单测用**（正常运行时的 Frame 由画布尺寸构造），
+    /// 所以 `#[cfg(test)]`：留在非测试构建里就是一个 dead_code 警告（仓库规矩是 0 warnings）。
+    #[cfg(test)]
+    pub fn landscape() -> Self {
+        Self::new(1920, 1080)
+    }
+
+    /// 宽度基准比例 `W/1920`。
+    pub fn k(&self) -> f64 {
+        self.w / FRAME_W
+    }
+
+    /// 高度基准比例 `H/1080`。
+    pub fn kh(&self) -> f64 {
+        self.h / FRAME_H
+    }
+
+    /// **贴纸**缩放基准：短边 / 1080 —— 横竖画布下贴纸的绝对像素相同。
+    ///
+    /// 横 1920×1080 → 1（280px，零回归）；竖 1080×1920 → 1（**也是 280px**）。
+    /// ⚠️ 竖屏别再退回 `k() = W/1920`（= 0.5625 → 157.5px）：贴纸会明显偏小，
+    /// 而同一画布上的字幕/弹幕字号本来就不随画布缩放（决策表第 8 条），
+    /// 于是贴纸成了唯一"竖屏缩水"的元素 —— 用户报的就是这个。
+    pub fn sticker_scale(&self) -> f64 {
+        self.w.min(self.h) / FRAME_H
+    }
+
+    /// 贴纸盒边长（渲染端 `.sticker-img` = `280 × sticker_scale`，两处必须同源）。
+    pub fn sticker_size(&self) -> f64 {
+        STICKER_SIZE * self.sticker_scale()
+    }
+
+    /// 贴纸安全边距（渲染端 clamp 的 `32 × sticker_scale`）。
+    pub fn margin(&self) -> f64 {
+        STICKER_MARGIN * self.sticker_scale()
+    }
+
+    /// floatUp 上浮量（渲染端 `yOff = -18 × sticker_scale`）。
+    pub fn float_up(&self) -> f64 {
+        FLOAT_UP * self.sticker_scale()
+    }
+}
 
 /// 候选网格步长（16px ≈ 帧宽的 0.83%）。
 const GRID_STEP: f64 = 16.0;
@@ -49,6 +118,9 @@ pub const TRANSITION_SECS: f64 = 0.6;
 
 /// 画中画档位的档位名。
 pub const WIDE_LABEL: &str = "远";
+
+/// 近景档位的档位名 —— 手持摇摆（`handheld`）唯一可用的景别，见 `process::fx::cap_handheld_sway`。
+pub const CLOSE_LABEL: &str = "近";
 
 /// 这一段运镜的过渡时长：**硬切条件**（两端任一为远景「画中画」，或本事件自带 `cut`）
 /// 时是 **0 = 硬切**，否则 0.6s 缓动。
@@ -87,13 +159,13 @@ impl Rect {
         }
     }
 
-    /// 百分比角点（`region_rects` 的输出）→ 帧像素。
-    pub fn from_points(tl: &Point, br: &Point) -> Self {
+    /// 百分比角点（`region_rects` 的输出）→ 画布像素。
+    pub fn from_points(tl: &Point, br: &Point, f: Frame) -> Self {
         Self::new(
-            parse_pct(&tl.x) / 100.0 * FRAME_W,
-            parse_pct(&tl.y) / 100.0 * FRAME_H,
-            parse_pct(&br.x) / 100.0 * FRAME_W,
-            parse_pct(&br.y) / 100.0 * FRAME_H,
+            parse_pct(&tl.x) / 100.0 * f.w,
+            parse_pct(&tl.y) / 100.0 * f.h,
+            parse_pct(&br.x) / 100.0 * f.w,
+            parse_pct(&br.y) / 100.0 * f.h,
         )
     }
 
@@ -129,8 +201,8 @@ impl Rect {
     }
 
     /// 到帧边（安全边距之外的部分）的距离。
-    pub fn gap_to_frame_edge(&self) -> f64 {
-        self.x0.min(self.y0).min(FRAME_W - self.x1).min(FRAME_H - self.y1)
+    pub fn gap_to_frame_edge(&self, f: Frame) -> f64 {
+        self.x0.min(self.y0).min(f.w - self.x1).min(f.h - self.y1)
     }
 
     pub fn center(&self) -> (f64, f64) {
@@ -138,12 +210,12 @@ impl Rect {
     }
 
     /// 裁剪到帧内（相机变换会把矩形推到帧外）。
-    pub fn clamp_to_frame(&self) -> Self {
+    pub fn clamp_to_frame(&self, f: Frame) -> Self {
         Self::new(
-            self.x0.max(0.0).min(FRAME_W),
-            self.y0.max(0.0).min(FRAME_H),
-            self.x1.max(0.0).min(FRAME_W),
-            self.y1.max(0.0).min(FRAME_H),
+            self.x0.max(0.0).min(f.w),
+            self.y0.max(0.0).min(f.h),
+            self.x1.max(0.0).min(f.w),
+            self.y1.max(0.0).min(f.h),
         )
     }
 }
@@ -160,6 +232,9 @@ pub enum ObstacleKind {
     DanmakuArea,
     /// 输出帧里我们自己滚动的弹幕。
     DanmakuBand,
+    /// 主画面（视频层）在画布上实际占的那块 —— 只在视频**没铺满**画布时才是障碍
+    /// （`axis = x/y`；铺满时见 `main_frame_rect` 的说明：那时加它等于处处不安全）。
+    MainFrame,
     /// 同刻已落位的另一张贴纸。
     Sticker,
 }
@@ -171,6 +246,7 @@ impl ObstacleKind {
             Self::Captions => "字幕",
             Self::DanmakuArea => "弹幕区域",
             Self::DanmakuBand => "弹幕",
+            Self::MainFrame => "主画面",
             Self::Sticker => "贴纸",
         }
     }
@@ -180,6 +256,8 @@ impl ObstacleKind {
         match self {
             Self::Liver => 3.0,
             Self::Captions => 3.0,
+            // 略低于 Liver：非要压的话，压在主画面的**非人物区域**比压住主播好
+            Self::MainFrame => 2.5,
             Self::DanmakuArea => 2.0,
             Self::DanmakuBand => 1.0,
             Self::Sticker => 0.5,
@@ -218,12 +296,12 @@ pub struct CameraShot {
 /// 瞬时运镜（zoom_bounce ×1.10 / pulse ×1.06）的预留系数，避免贴纸被瞬时放大的人物压住。
 pub const TRANSIENT_ZOOM: f64 = 1.10;
 
-/// 解析 `"50% 50%"` 形式的运镜中心。
-pub fn parse_origin(s: &str) -> Option<(f64, f64)> {
+/// 解析 `"50% 50%"` 形式的运镜中心（`f` = 输出画布）。
+pub fn parse_origin(s: &str, f: Frame) -> Option<(f64, f64)> {
     let mut it = s.split_whitespace();
     let x = parse_pct(it.next()?);
     let y = parse_pct(it.next()?);
-    Some((x / 100.0 * FRAME_W, y / 100.0 * FRAME_H))
+    Some((x / 100.0 * f.w, y / 100.0 * f.h))
 }
 
 /// 以 `(ox, oy)` 为中心缩放 `rect`（与 `renderFrame` 的 translate/scale/translate 一致）。
@@ -308,42 +386,144 @@ pub fn parse_px(s: &str) -> f64 {
     head.parse().unwrap_or(0.0)
 }
 
-/// 字幕带（输出帧固定）：Canvas 一行居中于 `cy=960`；DOM 容器 `bottom:80px` + 行高 1.5 + 内边距。
+/// 字幕带（输出帧随画布参数化）：Canvas 一行居中于 `cy = H - 120×kh`；
+/// DOM 容器 `bottom: 80×kh` + 行高 1.5 + 内边距；横向 = `#captions` 的
+/// `left = W×0.0625 / width = W×0.875`（A5 的 maxLineW，同一个常量）。
 ///
 /// 两条渲染路径都取并集，宁可多让一点。`style.subtitle.position` 目前渲染端未消费
 /// （只有 `"bottom"` 有实现），所以不区分。
-pub fn caption_band(font_size: f64, stroke_px: f64) -> Rect {
+pub fn caption_band(f: Frame, font_size: f64, stroke_px: f64) -> Rect {
     const PAD: f64 = 8.0;
+    /// 横画布基准底距（渲染端 80×kh）。
     const BOTTOM_OFFSET: f64 = 80.0;
+    /// 基准基线高度（渲染端 Canvas `cy = H - 120×kh`）。
+    const BASELINE_INSET: f64 = 120.0;
     const DOM_PAD_V: f64 = 14.0;
+    let (bottom_off, baseline_inset) = (BOTTOM_OFFSET * f.kh(), BASELINE_INSET * f.kh());
     let line_h = font_size * 1.5;
-    let dom_top = FRAME_H - BOTTOM_OFFSET - (line_h + DOM_PAD_V * 2.0);
+    let dom_top = f.h - bottom_off - (line_h + DOM_PAD_V * 2.0);
+    let cy = f.h - baseline_inset;
     let canvas_half = font_size * 0.5 + stroke_px * 0.5;
-    let top = dom_top.min(960.0 - canvas_half) - PAD;
-    let bottom = (FRAME_H - BOTTOM_OFFSET).max(960.0 + canvas_half) + PAD;
-    // 横向取 DOM 容器（`#captions`: left 120 / width 1680），居中文字落不出这个盒子。
-    Rect::new(120.0, top, 1800.0, bottom)
+    let top = dom_top.min(cy - canvas_half) - PAD;
+    let bottom = (f.h - bottom_off).max(cy + canvas_half) + PAD;
+    // 横向取 DOM 容器（`#captions`），居中文字落不出这个盒子。
+    Rect::new(f.w * 0.0625, top, f.w * 0.9375, bottom)
 }
 
-/// 输出帧弹幕带：按模板 `y = (d.y / 1920) * 540` 映射实际轨道高度，取最小/最大轨道并加字高。
-/// 没有弹幕（`ys` 为空）→ `None`（此时弹幕图层根本不画）。
-pub fn danmaku_band(font_size: f64, stroke_px: f64, ys: &[f64]) -> Option<Rect> {
+/// 输出帧弹幕带：按模板 `y = (d.y / 1920) * (540×k)` 映射实际轨道高度，
+/// 取最小/最大轨道并加字高。没有弹幕（`ys` 为空）→ `None`（此时弹幕图层根本不画）。
+pub fn danmaku_band(f: Frame, font_size: f64, stroke_px: f64, ys: &[f64]) -> Option<Rect> {
     const PAD: f64 = 8.0;
-    /// 模板 `#danmaku { height:540px }`，超出即被裁掉。
-    const LAYER_H: f64 = 540.0;
+    /// 模板 `#danmaku { height: 540×k px }`，超出即被裁掉。
+    fn layer_h(f: Frame) -> f64 {
+        540.0 * f.k()
+    }
     if ys.is_empty() {
         return None;
     }
-    let mapped: Vec<f64> = ys.iter().map(|y| y / 1920.0 * LAYER_H).collect();
+    let layer_h = layer_h(f);
+    let mapped: Vec<f64> = ys.iter().map(|y| y / 1920.0 * layer_h).collect();
     let lo = mapped.iter().cloned().fold(f64::MAX, f64::min);
     let hi = mapped.iter().cloned().fold(f64::MIN, f64::max);
     let half = font_size * 0.5 + stroke_px * 0.5;
     Some(Rect::new(
         0.0,
         (lo - half).max(0.0) - PAD,
-        FRAME_W,
-        (hi + half).min(LAYER_H) + PAD,
+        f.w,
+        (hi + half).min(layer_h) + PAD,
     ))
+}
+
+// ===== 主画面 =====
+
+/// 主画面矩形的**纯几何**（坐标系 = `canvas`，**未**做整帧钳制）。`axis = fill` 返回 `None`。
+///
+/// 与 `main_frame_rect` 拆开是因为本模块的坐标系仍是硬编码的 1920×1080，
+/// 而这段几何要能算竖画布（P4）—— 拆开后几何本身可以脱开坐标系守卫单测。
+fn main_frame_geometry(
+    stage: &crate::project::StageFit,
+    src: Option<(u32, u32)>,
+    canvas: (u32, u32),
+) -> Option<Rect> {
+    if stage.axis != "x" && stage.axis != "y" {
+        return None;
+    }
+    let (sw, sh) = src?;
+    if sw == 0 || sh == 0 || canvas.0 == 0 || canvas.1 == 0 {
+        return None;
+    }
+    let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
+    // 模板把 padding 写成 `padding: var(--stage-pad)`（百分比）。
+    // ⚠️ CSS 的百分比 padding **四个方向都按包含块的宽度解析**，所以四边等量。
+    let p = stage.padding.max(0.0);
+    let (aw, ah) = (cw - 2.0 * p, ch - 2.0 * p);
+    if aw <= 0.0 || ah <= 0.0 {
+        return None;
+    }
+
+    let (swf, shf) = (sw as f64, sh as f64);
+    let (bw, bh) = if stage.axis == "x" {
+        (ah * swf / shf, ah)
+    } else {
+        (aw, aw * shf / swf)
+    };
+    let s = if stage.scale.is_finite() && stage.scale > 0.0 {
+        stage.scale
+    } else {
+        1.0
+    };
+    let (bw, bh) = (bw * s, bh * s);
+
+    let x0 = match stage.position.as_str() {
+        "left" => p,
+        "right" => cw - p - bw,
+        _ => (cw - bw) / 2.0,
+    };
+    let y0 = match stage.position.as_str() {
+        "top" => p,
+        "bottom" => ch - p - bh,
+        _ => (ch - bh) / 2.0,
+    };
+    Some(Rect::new(x0, y0, x0 + bw, y0 + bh))
+}
+
+/// 把主画面当作贴纸障碍时的矩形；不需要避让时返回 `None`。
+///
+/// 本模块的其它障碍（人物 / 弹幕区域选框、字幕带、弹幕带）都在 1920×1080 整帧坐标系里，
+/// 隐含假设「视频铺满画布」。横画布 × 竖素材（`axis = x`）时视频其实只占一侧一条，
+/// 于是 `auto` 会把贴纸放到主视频身上 —— 把这块矩形也当障碍，auto 才算真的自动避让。
+///
+/// **`axis = fill` 时返回 `None`**（视频铺满画布，含改造前的全部横素材项目）：
+/// 整帧都是画面，拿它当障碍等价于「处处不安全」，只会把所有贴纸推进 relaxed 兜底，
+/// 反而变差。那种情况下的避让本来就由 `layout.liver` 选框负责 → 行为与改造前一致。
+///
+/// 几何口径与 `templates/index.html` 的 `#video-wrap` + `#fit-box` 一致：
+/// 内容盒 = 画布去掉四周留白，`axis=x` 按高度铺满/`axis=y` 按宽度铺满，
+/// `scale` 绕盒子中心放大，最后 `position` 决定靠哪一边（另一轴居中）。
+pub fn main_frame_rect(
+    stage: &crate::project::StageFit,
+    src: Option<(u32, u32)>,
+    canvas: (u32, u32),
+) -> Option<Rect> {
+    let f = Frame::new(canvas.0, canvas.1);
+    let rect = main_frame_geometry(stage, src, canvas)?.clamp_to_frame(f);
+    if rect.is_degenerate() {
+        return None;
+    }
+    // 只在「画面上还剩下能放下一张贴纸的地方」时才把它当障碍。
+    //
+    // 这一条不能省：主画面几乎铺满但没完全铺满时（例如 `scale = 3` 只剩 48px 侧边、
+    // 或 4:3 源显式居中只剩 240px 边），加上障碍会让**所有**候选都相交 →
+    // 每张贴纸都退化到 relaxed 兜底，结果比不加还差。
+    // 阈值口径与候选网格一致：可用的左沿范围是
+    // `[margin, W - sticker - margin]`，所以一条边带至少要 `sticker + margin` 才放得下
+    // （`TOUCH` 再放宽 1px）。
+    let need = f.sticker_size() + f.margin() - TOUCH;
+    let bands = [rect.x0, f.w - rect.x1, rect.y0, f.h - rect.y1];
+    if !bands.iter().any(|b| *b >= need) {
+        return None;
+    }
+    Some(rect)
 }
 
 // ===== 落点 =====
@@ -360,22 +540,22 @@ pub struct Pick {
 }
 
 impl Pick {
-    pub fn x_pct(&self) -> String {
-        format!("{:.0}%", self.x / FRAME_W * 100.0)
+    pub fn x_pct(&self, f: Frame) -> String {
+        format!("{:.0}%", self.x / f.w * 100.0)
     }
 
-    pub fn y_pct(&self) -> String {
-        format!("{:.0}%", self.y / FRAME_H * 100.0)
+    pub fn y_pct(&self, f: Frame) -> String {
+        format!("{:.0}%", self.y / f.h * 100.0)
     }
 }
 
 /// 贴纸盒子占位（含 floatUp 上浮；碰撞测试与「同刻贴纸互斥」共用）。
-pub fn sticker_box(x: f64, y: f64) -> Rect {
-    Rect::new(x, y - FLOAT_UP, x + STICKER_SIZE, y + STICKER_SIZE)
+pub fn sticker_box(x: f64, y: f64, f: Frame) -> Rect {
+    Rect::new(x, y - f.float_up(), x + f.sticker_size(), y + f.sticker_size())
 }
 
-fn probe(x: f64, y: f64) -> Rect {
-    sticker_box(x, y)
+fn probe(x: f64, y: f64, f: Frame) -> Rect {
+    sticker_box(x, y, f)
 }
 
 /// 候选坐标轴：等距网格 + 各障碍边缘的「临界位」（贴着障碍刚好放下）。
@@ -400,22 +580,22 @@ fn axis(min: f64, max: f64, critical: impl Iterator<Item = f64>) -> Vec<f64> {
     out
 }
 
-fn center_dist(x: f64, y: f64) -> f64 {
-    let dx = x + STICKER_SIZE / 2.0 - FRAME_W / 2.0;
-    let dy = y + STICKER_SIZE / 2.0 - FRAME_H / 2.0;
+fn center_dist(x: f64, y: f64, f: Frame) -> f64 {
+    let dx = x + f.sticker_size() / 2.0 - f.w / 2.0;
+    let dy = y + f.sticker_size() / 2.0 - f.h / 2.0;
     (dx * dx + dy * dy).sqrt()
 }
 
 /// 从可行候选里挑「安全区中心」的一个：clearance 最高档 → 最靠近帧心的前 N 个 → seed 伪随机。
-fn central_pick(cands: &[(f64, f64, f64)], seed: f64) -> Pick {
+fn central_pick(cands: &[(f64, f64, f64)], seed: f64, f: Frame) -> Pick {
     let best = cands.iter().map(|c| c.2).fold(f64::MIN, f64::max);
     let mut band: Vec<&(f64, f64, f64)> = cands
         .iter()
         .filter(|c| c.2 >= best * CENTRAL_RATIO - 1e-6)
         .collect();
     band.sort_by(|a, b| {
-        center_dist(a.0, a.1)
-            .partial_cmp(&center_dist(b.0, b.1))
+        center_dist(a.0, a.1, f)
+            .partial_cmp(&center_dist(b.0, b.1, f))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
             .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -432,21 +612,22 @@ fn central_pick(cands: &[(f64, f64, f64)], seed: f64) -> Pick {
 /// - `allow`：可选的偏好区域（手写的 `layout.sticker_area` 自由选框）；**只作偏好**，
 ///   当它里面没有安全位置时自动放弃（安全优先）。
 /// - `seed`：0~1 的确定性伪随机数（调用方按 段起点 + 事件序号 生成）。
-pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64) -> Pick {
+/// - `f`：输出画布（`[canvas]` 推导；所有边界/盒子尺寸随它缩放）。
+pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64, f: Frame) -> Pick {
     // 临界候选：盒子刚好贴在障碍右侧/下方，或刚好停在左侧/上方
     let xs = axis(
-        STICKER_MARGIN,
-        FRAME_W - STICKER_MARGIN - STICKER_SIZE,
+        f.margin(),
+        f.w - f.margin() - f.sticker_size(),
         blocked
             .iter()
-            .flat_map(|b| [b.rect.x1 + TOUCH, b.rect.x0 - STICKER_SIZE - TOUCH]),
+            .flat_map(|b| [b.rect.x1 + TOUCH, b.rect.x0 - f.sticker_size() - TOUCH]),
     );
     let ys = axis(
-        STICKER_MARGIN + FLOAT_UP,
-        FRAME_H - STICKER_MARGIN - STICKER_SIZE,
+        f.margin() + f.float_up(),
+        f.h - f.margin() - f.sticker_size(),
         blocked
             .iter()
-            .flat_map(|b| [b.rect.y1 + FLOAT_UP + TOUCH, b.rect.y0 - STICKER_SIZE - TOUCH]),
+            .flat_map(|b| [b.rect.y1 + f.float_up() + TOUCH, b.rect.y0 - f.sticker_size() - TOUCH]),
     );
 
     let mut free: Vec<(f64, f64, f64)> = Vec::new();
@@ -456,8 +637,8 @@ pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64) -> 
 
     for &x in &xs {
         for &y in &ys {
-            let p = probe(x, y);
-            let mut clearance = p.gap_to_frame_edge();
+            let p = probe(x, y, f);
+            let mut clearance = p.gap_to_frame_edge(f);
             let mut cost = 0.0;
             for b in blocked {
                 if b.rect.intersects(&p) {
@@ -489,23 +670,23 @@ pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64) -> 
 
     let pool = if !free_in_allow.is_empty() { &free_in_allow } else { &free };
     if !pool.is_empty() {
-        return central_pick(pool, seed);
+        return central_pick(pool, seed, f);
     }
 
     // 兜底：所有位置都压着东西 → 取重叠代价最小者，并列时取最靠近帧心的。
     lowest.sort_by(|a, b| {
-        center_dist(a.1, a.2)
-            .partial_cmp(&center_dist(b.1, b.2))
+        center_dist(a.1, a.2, f)
+            .partial_cmp(&center_dist(b.1, b.2, f))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let n = lowest.len().min(CENTRAL_PICK).max(1);
     let idx = ((seed.clamp(0.0, 0.999_999) * n as f64) as usize).min(n - 1);
     let (_, x, y) = lowest[idx];
-    let p = probe(x, y);
+    let p = probe(x, y, f);
     let clearance = blocked
         .iter()
         .map(|b| p.gap_to(&b.rect))
-        .fold(p.gap_to_frame_edge(), f64::min);
+        .fold(p.gap_to_frame_edge(f), f64::min);
     Pick { x, y, clearance, relaxed: true }
 }
 
@@ -519,8 +700,48 @@ impl Rect {
 mod tests {
     use super::*;
 
+    /// 横画布基准（与改造前硬编码逐像素一致）。
+    const F: Frame = Frame { w: 1920.0, h: 1080.0 };
+
     fn band_caption() -> Rect {
-        caption_band(72.0, 12.0)
+        caption_band(F, 72.0, 12.0)
+    }
+
+    /// 竖屏贴纸尺寸 = **短边**基准：横竖画布下贴纸绝对像素相同（都是 280×280），
+    /// 不再按 `k = W/1920` 缩成 157.5（用户报「贴纸在竖屏模式没有正常大小」）。
+    #[test]
+    fn sticker_scale_is_short_edge_based() {
+        let port = Frame::new(1080, 1920);
+        for f in [Frame::landscape(), port] {
+            assert!((f.sticker_scale() - 1.0).abs() < 1e-9, "{f:?}");
+            assert!((f.sticker_size() - STICKER_SIZE).abs() < 1e-9, "{f:?}");
+            assert!((f.margin() - STICKER_MARGIN).abs() < 1e-9, "{f:?}");
+            assert!((f.float_up() - FLOAT_UP).abs() < 1e-9, "{f:?}");
+        }
+        // `k`（宽度比）**不参与**贴纸尺寸：竖屏 k=0.5625，按它会得到 157.5
+        assert!((port.k() * STICKER_SIZE - 157.5).abs() < 1e-9);
+
+        // 短边更小的画布按短边等比缩（720×1280 → 720/1080，而不是按宽 720/1920）
+        let small = Frame::new(720, 1280);
+        assert!((small.sticker_size() - STICKER_SIZE * 720.0 / 1080.0).abs() < 1e-9);
+    }
+
+    /// 竖屏落点网格跟着新尺寸走：盒子 280 + 边距 32 → 候选左上角范围
+    /// 恰好是 `[32, 1080-280-32] × [50, 1920-280-32]`（y 下界含上浮量）。
+    #[test]
+    fn portrait_grid_fits_a_full_size_box() {
+        let port = Frame::new(1080, 1920);
+        let blocked = vec![Blocked::new(
+            Rect::new(0.0, 0.0, 400.0, 1920.0),
+            ObstacleKind::Liver,
+        )];
+        let p = pick_sticker_position(&blocked, &[], 0.42, port);
+        assert!(!p.relaxed, "{p:?}");
+        assert!(p.x >= port.margin(), "{p:?}");
+        assert!(p.y >= port.margin() + port.float_up(), "{p:?}");
+        assert!(p.x + port.sticker_size() <= port.w - port.margin(), "{p:?}");
+        assert!(p.y + port.sticker_size() <= port.h - port.margin(), "{p:?}");
+        assert_no_overlap(&blocked, &p, 0.42, port);
     }
 
     #[test]
@@ -535,17 +756,17 @@ mod tests {
     #[test]
     fn danmaku_band_tracks_real_lanes() {
         // TRACK_YS 300..1500 → (y/1920)*540 = 84.4..421.9
-        let b = danmaku_band(42.0, 2.0, &[300.0, 900.0, 1500.0]).unwrap();
+        let b = danmaku_band(F, 42.0, 2.0, &[300.0, 900.0, 1500.0]).unwrap();
         assert!((b.y0 - (84.375 - 22.0 - 8.0)).abs() < 0.01, "{b:?}");
         assert!((b.y1 - (421.875 + 22.0 + 8.0)).abs() < 0.01, "{b:?}");
-        assert_eq!(b.x1, FRAME_W);
-        assert!(danmaku_band(42.0, 2.0, &[]).is_none());
+        assert_eq!(b.x1, F.w);
+        assert!(danmaku_band(F, 42.0, 2.0, &[]).is_none());
     }
 
     #[test]
     fn camera_expand_scales_around_origin() {
         let r = Rect::new(1028.5, 12.2, 1727.2, 656.4);
-        let z = camera_expand(r, 960.0, 540.0, 1.5).clamp_to_frame();
+        let z = camera_expand(r, 960.0, 540.0, 1.5).clamp_to_frame(F);
         assert!((z.x0 - 1062.75).abs() < 0.05, "{z:?}");
         assert!((z.y1 - 714.6).abs() < 0.05, "{z:?}");
         assert_eq!(z.y0, 0.0);
@@ -672,7 +893,7 @@ mod tests {
             Blocked::new(band_caption(), ObstacleKind::Captions),
         ];
         for seed in [0.0, 0.3, 0.6, 0.99] {
-            let p = pick_sticker_position(&blocked, &[], seed);
+            let p = pick_sticker_position(&blocked, &[], seed, F);
             assert!(!p.relaxed);
             // 盒子完全落在走廊里（640..1060）
             assert!(p.x >= 640.0 && p.x + STICKER_SIZE <= 1060.0, "seed {seed}: {p:?}");
@@ -686,7 +907,7 @@ mod tests {
     #[test]
     fn picks_far_from_frame_edge_when_space_allows() {
         let blocked = vec![Blocked::new(band_caption(), ObstacleKind::Captions)];
-        let p = pick_sticker_position(&blocked, &[], 0.5);
+        let p = pick_sticker_position(&blocked, &[], 0.5, F);
         assert!(!p.relaxed);
         // 帧心就是最优：盒心几乎落在 (960, 540)
         assert!((p.x + 140.0 - 960.0).abs() <= 40.0, "{p:?}");
@@ -702,7 +923,7 @@ mod tests {
         )];
         // 偏好区落在人物上 → 放弃偏好，改去右侧空白
         let allow = vec![Rect::new(100.0, 300.0, 600.0, 800.0)];
-        let p = pick_sticker_position(&blocked, &allow, 0.4);
+        let p = pick_sticker_position(&blocked, &allow, 0.4, F);
         assert!(!p.relaxed);
         assert!(p.x >= 1000.0, "{p:?}");
     }
@@ -713,7 +934,7 @@ mod tests {
             Rect::new(0.0, 0.0, FRAME_W, FRAME_H),
             ObstacleKind::Liver,
         )];
-        let p = pick_sticker_position(&blocked, &[], 0.1);
+        let p = pick_sticker_position(&blocked, &[], 0.1, F);
         assert!(p.relaxed);
         assert!(p.x >= STICKER_MARGIN && p.y >= STICKER_MARGIN);
     }
@@ -721,8 +942,8 @@ mod tests {
     #[test]
     fn seed_is_deterministic() {
         let blocked = vec![Blocked::new(band_caption(), ObstacleKind::Captions)];
-        let a = pick_sticker_position(&blocked, &[], 0.42);
-        let b = pick_sticker_position(&blocked, &[], 0.42);
+        let a = pick_sticker_position(&blocked, &[], 0.42, F);
+        let b = pick_sticker_position(&blocked, &[], 0.42, F);
         assert_eq!((a.x, a.y), (b.x, b.y));
     }
 
@@ -736,8 +957,8 @@ mod tests {
         let mut blocked = vec![Blocked::new(caption, ObstacleKind::Captions)];
         let (mut corridor_l, mut corridor_r) = (0.0f64, FRAME_W);
         for (o, z) in states {
-            let l = camera_expand(liver, o.0, o.1, *z).clamp_to_frame();
-            let p = camera_expand(panel, o.0, o.1, *z).clamp_to_frame();
+            let l = camera_expand(liver, o.0, o.1, *z).clamp_to_frame(F);
+            let p = camera_expand(panel, o.0, o.1, *z).clamp_to_frame(F);
             corridor_l = corridor_l.max(p.x1);
             corridor_r = corridor_r.min(l.x0);
             blocked.push(Blocked::new(l, ObstacleKind::Liver));
@@ -762,9 +983,9 @@ mod tests {
         let (blocked, l, r) = clip61_obstacles(&states, band_caption());
         assert!(r - l >= STICKER_SIZE, "走廊 {l}~{r} 放不下贴纸");
         for seed in [0.0, 0.25, 0.5, 0.75, 0.99] {
-            let p = pick_sticker_position(&blocked, &[], seed);
+            let p = pick_sticker_position(&blocked, &[], seed, F);
             assert!(!p.relaxed, "seed {seed}: {p:?}");
-            assert_no_overlap(&blocked, &p, seed);
+            assert_no_overlap(&blocked, &p, seed, F);
             assert!(p.x >= l && p.x + STICKER_SIZE <= r, "seed {seed}: {p:?}");
             let (sl, sr) = (p.x - l, r - (p.x + STICKER_SIZE));
             assert!((sl - sr).abs() <= 2.0 * GRID_STEP, "seed {seed} 贴边: {sl} vs {sr}");
@@ -788,16 +1009,203 @@ mod tests {
         let (blocked, l, r) = clip61_obstacles(&states, band_caption());
         // 面板右沿(746.1) 与人物左沿(1028.5) 之间只剩 ~2.4px：靠临界候选仍能放下
         assert!(r - l >= STICKER_SIZE, "走廊 {l}~{r}");
-        let p = pick_sticker_position(&blocked, &[], 0.5);
+        let p = pick_sticker_position(&blocked, &[], 0.5, F);
         assert!(!p.relaxed, "{p:?}");
-        assert_no_overlap(&blocked, &p, 0.5);
+        assert_no_overlap(&blocked, &p, 0.5, F);
         assert!(p.x >= l - TOUCH && p.x + STICKER_SIZE <= r + TOUCH, "{p:?}");
     }
 
-    fn assert_no_overlap(blocked: &[Blocked], p: &Pick, seed: f64) {
-        let box_ = sticker_box(p.x, p.y);
+    fn assert_no_overlap(blocked: &[Blocked], p: &Pick, seed: f64, f: Frame) {
+        let box_ = sticker_box(p.x, p.y, f);
         for b in blocked {
             assert!(!box_.intersects(&b.rect), "seed {seed} 压住 {:?}: {p:?}", b.kind);
         }
+    }
+
+    // ===== 主画面障碍 =====
+
+    /// 测试用 `StageFit`：只关心 axis / position / scale / padding 四项。
+    fn stage(axis: &str, position: &str, scale: f64, padding: f64) -> crate::project::StageFit {
+        crate::project::StageFit {
+            axis: axis.into(),
+            object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
+            position: position.into(),
+            bg: if axis == "fill" { "none" } else { "blur" }.into(),
+            bg_color: "#000000".into(),
+            blur_px: 28,
+            blur_img_scale: 1.187,
+            scale,
+            padding,
+        }
+    }
+
+    /// **零回归钉子**：`axis = fill`（视频铺满画布，含改造前全部横素材项目）不产生主画面障碍。
+    /// 否则整帧都是障碍 → 所有贴纸退化成 relaxed 兜底，比改造前更差。
+    #[test]
+    fn fill_axis_yields_no_main_frame_obstacle() {
+        let s = stage("fill", "center", 1.0, 0.0);
+        assert!(main_frame_rect(&s, Some((1920, 1080)), (1920, 1080)).is_none());
+        // 4:3 源也是 fill（改造前就是裁切），同样不产生障碍
+        assert!(main_frame_rect(&s, Some((1440, 1080)), (1920, 1080)).is_none());
+    }
+
+    #[test]
+    fn main_frame_needs_a_source_size() {
+        let s = stage("x", "left", 1.0, 0.0);
+        assert!(main_frame_rect(&s, None, (1920, 1080)).is_none(), "拿不到尺寸就不计障碍");
+        assert!(main_frame_rect(&s, Some((0, 0)), (1920, 1080)).is_none());
+    }
+
+    /// 横画布 × 竖素材：视频按高度铺满 → 宽 = 1080 * 1080/1920 = 607.5
+    #[test]
+    fn portrait_source_on_landscape_canvas_sits_on_one_side() {
+        let (cw, ch) = (1920u32, 1080u32);
+        let src = Some((1080u32, 1920u32));
+
+        let l = main_frame_rect(&stage("x", "left", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((l.x0 - 0.0).abs() < 0.01 && (l.x1 - 607.5).abs() < 0.01, "{l:?}");
+        assert!((l.y0 - 0.0).abs() < 0.01 && (l.y1 - 1080.0).abs() < 0.01, "{l:?}");
+
+        let c = main_frame_rect(&stage("x", "center", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((c.x0 - 656.25).abs() < 0.01 && (c.x1 - 1263.75).abs() < 0.01, "{c:?}");
+
+        let r = main_frame_rect(&stage("x", "right", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((r.x0 - 1312.5).abs() < 0.01 && (r.x1 - 1920.0).abs() < 0.01, "{r:?}");
+    }
+
+    /// 竖画布 × 横素材：视频按宽度铺满 → 高 = 1080 * 1080/1920 = 607.5（对称支持 上/中/下）。
+    ///
+    /// P3 把坐标系参数化之后，`main_frame_rect` 直接接受竖画布 —— 这条改测完整路径。
+    #[test]
+    fn landscape_source_on_portrait_canvas_stacks_vertically() {
+        let (cw, ch) = (1080u32, 1920u32);
+        let src = Some((1920u32, 1080u32));
+
+        let t = main_frame_rect(&stage("y", "top", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((t.y0 - 0.0).abs() < 0.01 && (t.y1 - 607.5).abs() < 0.01, "{t:?}");
+        assert!((t.x0 - 0.0).abs() < 0.01 && (t.x1 - 1080.0).abs() < 0.01, "{t:?}");
+
+        let c = main_frame_rect(&stage("y", "center", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((c.y0 - 656.25).abs() < 0.01 && (c.y1 - 1263.75).abs() < 0.01, "{c:?}");
+
+        let b = main_frame_rect(&stage("y", "bottom", 1.0, 0.0), src, (cw, ch)).unwrap();
+        assert!((b.y0 - 1312.5).abs() < 0.01 && (b.y1 - 1920.0).abs() < 0.01, "{b:?}");
+    }
+
+    /// P3 起竖画布与横画布走同一套几何与坐标系（P2 时的守卫已随 `Frame` 参数化移除）：
+    /// 竖画布 × 横素材的主画面**计入**，且与纯几何钳制后逐像素一致。
+    #[test]
+    fn portrait_canvas_main_frame_is_now_considered() {
+        let src = Some((1920u32, 1080u32));
+        let f = Frame::new(1080, 1920);
+        let s = stage("y", "center", 1.0, 0.0);
+        let rect = main_frame_rect(&s, src, (1080, 1920)).unwrap();
+        let geo = main_frame_geometry(&s, src, (1080, 1920)).unwrap().clamp_to_frame(f);
+        assert_eq!(rect, geo);
+    }
+
+    /// 竖画布 × 横素材（画面靠上）：auto 落点要落到主画面**下方**的空带，
+    /// 不再压在主视频身上 —— 与横画布 `sticker_avoids_the_main_frame_it_cannot_fill` 对称。
+    #[test]
+    fn sticker_avoids_main_frame_on_portrait_canvas() {
+        let (cw, ch) = (1080u32, 1920u32);
+        let f = Frame::new(cw, ch);
+        let main = main_frame_rect(&stage("y", "top", 1.0, 0.0), Some((1920, 1080)), (cw, ch)).unwrap();
+        let blocked = vec![Blocked::new(main, ObstacleKind::MainFrame)];
+        for seed in [0.0, 0.3, 0.5, 0.8, 0.99] {
+            let p = pick_sticker_position(&blocked, &[], seed, f);
+            assert!(!p.relaxed, "下方 {}px 空间充足: {p:?}", f.h - main.y1);
+            assert_no_overlap(&blocked, &p, seed, f);
+            assert!(p.y >= main.y1 - TOUCH, "落点应在主画面下方: {p:?}");
+        }
+    }
+
+    /// `scale` 绕盒子中心放大（对应模板把 scale 挂在 `#fit-box` 上）
+    #[test]
+    fn scale_grows_main_frame_around_its_center() {
+        let base = main_frame_rect(
+            &stage("x", "center", 1.0, 0.0),
+            Some((1080, 1920)),
+            (1920, 1080),
+        )
+        .unwrap();
+        let big = main_frame_rect(
+            &stage("x", "center", 2.0, 0.0),
+            Some((1080, 1920)),
+            (1920, 1080),
+        )
+        .unwrap();
+        assert!((big.width() - base.width() * 2.0).abs() < 0.01, "{big:?}");
+        let (bcx, bcy) = ((base.x0 + base.x1) / 2.0, (base.y0 + base.y1) / 2.0);
+        assert!(((big.x0 + big.x1) / 2.0 - bcx).abs() < 0.01, "中心不动: {big:?}");
+        assert!(((big.y0 + big.y1) / 2.0 - bcy).abs() < 0.01, "中心不动: {big:?}");
+    }
+
+    /// 留白缩小内容盒：视频跟着变窄，靠边时留白量就是偏移量
+    #[test]
+    fn padding_shrinks_the_content_box() {
+        let r = main_frame_rect(
+            &stage("x", "left", 1.0, 60.0),
+            Some((1080, 1920)),
+            (1920, 1080),
+        )
+        .unwrap();
+        assert!((r.x0 - 60.0).abs() < 0.01, "靠左时偏移 = padding: {r:?}");
+        assert!((r.height() - 960.0).abs() < 0.01, "内容盒高 1080-120: {r:?}");
+        assert!((r.width() - 960.0 * 0.5625).abs() < 0.01, "{r:?}");
+    }
+
+    /// 放大到铺满整帧时不算障碍（没有可避让的余地）
+    #[test]
+    fn oversized_main_frame_is_not_an_obstacle() {
+        let r = main_frame_rect(
+            &stage("x", "center", 3.0, 0.0),
+            Some((1080, 1920)),
+            (1920, 1080),
+        );
+        assert!(r.is_none(), "铺满整帧 → 不该当障碍: {r:?}");
+    }
+
+    /// **A4b 的目的**：主画面算障碍后，auto 落点不再压在主视频身上。
+    ///
+    /// 用 `center` 而不是 `left`：没有任何障碍时落点会跑到帧中心（x≈820），
+    /// 靠左那条竖带（0~607）本来就不在帧中心，测不出东西；居中的竖带（656~1264）
+    /// 才真正套住帧中心 —— 这正是「横画布 × 竖素材居中摆放」时的实际缺陷。
+    #[test]
+    fn sticker_avoids_the_main_frame_it_cannot_fill() {
+        for pos in ["center", "left", "right"] {
+            let main = main_frame_rect(
+                &stage("x", pos, 1.0, 0.0),
+                Some((1080, 1920)),
+                (1920, 1080),
+            )
+            .unwrap();
+            let blocked = vec![Blocked::new(main, ObstacleKind::MainFrame)];
+            for seed in [0.0, 0.13, 0.5, 0.77, 0.99] {
+                let p = pick_sticker_position(&blocked, &[], seed, F);
+                assert!(
+                    !p.relaxed,
+                    "position={pos}: 两侧各有 656px 空带, 不该兜底: {p:?}"
+                );
+                assert_no_overlap(&blocked, &p, seed, F);
+            }
+        }
+    }
+
+    /// 对照：**不加**主画面障碍时（= 改造前行为）同一个 seed 会压在主画面上。
+    /// 没有这条，上面那条测试可能只是「本来就压不到」而白过。
+    #[test]
+    fn without_the_obstacle_the_same_seed_lands_on_the_video() {
+        let main = main_frame_rect(
+            &stage("x", "center", 1.0, 0.0),
+            Some((1080, 1920)),
+            (1920, 1080),
+        )
+        .unwrap();
+        let p = pick_sticker_position(&[], &[], 0.5, F);
+        assert!(
+            sticker_box(p.x, p.y, F).intersects(&main),
+            "对照组应该压在主画面上, 否则那条钉子没意义: {p:?} vs {main:?}"
+        );
     }
 }

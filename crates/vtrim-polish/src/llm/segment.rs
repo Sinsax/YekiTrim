@@ -1,3 +1,8 @@
+//! polish::llm::segment：Step 1 全局分段（一窗一段，产出 `Segment`）与分段/事件的提示词拼装。
+//!
+//! 入口：`generate_segments`、`build_segmentation_system_prompt`、`build_segmentation_user_prompt`、`build_events_system_prompt`、`build_events_user_prompt`、`normalize_segments_json`。
+//! 边界：覆盖层示例必须给 `colors` 数组（四处求值器只认 `colors`，只写 `color` 会导致覆盖层全画不出来）；改内建 prompt 要同步用户配置里的副本 —— 见 `crates/vtrim-polish/src/llm/AGENTS.md`
+
 use crate::parse::srt::Subtitle;
 use crate::project::Segment;
 use vtrim_core::llm::agent::extract_json_array;
@@ -76,6 +81,9 @@ pub(crate) fn build_events_system_prompt(
   anchor = 聚焦谁: "liver"(主播) / "danmaku"(弹幕) / "sticker"(贴纸) / "center"(画面中央)
   想从一处移到另一处, 再写 anchor_to (同样的取值); 不写就是原地聚焦
   想**硬切**(切镜, 瞬间换构图、没有推移动画)再加 "cut":true —— 只在刻意切镜时用, 不是常规手段
+  近景想要"手持相机"的临场晃动感, 再加 "handheld":true —— **只在 zoom:"近" 上有效**（其他景别会被系统剔除）;
+  它是叠加在运镜上的**持续状态**: 开了就一直摇到下一条不带它的运镜, 不是一次性特效
+  例: {{"type":"camera","time":20.0,"end":24.0,"zoom":"近","anchor":"liver","handheld":true}}
   例: 主播→弹幕→回主播 = 两条事件
     {{"type":"camera","time":5.0,"end":9.0,"zoom":"中","anchor":"liver","anchor_to":"danmaku"}}
     {{"type":"camera","time":9.0,"end":12.0,"zoom":"中","anchor":"danmaku","anchor_to":"liver"}}
@@ -107,6 +115,8 @@ pub(crate) fn build_events_system_prompt(
   它是**一次短暂的戏剧性停顿**: end - time 就是它在屏幕上待多久（写 1.5~3s, 到点系统会硬切回
   上一个镜头）, 别用它铺长时间; 用它时 anchor 一般写 "center"; 起点终点要落在字幕的边界上（别切在句子中间）
 - 硬切(cut:true)同理: 整片偶尔一次就好, 连续硬切会让画面很跳
+- handheld 是**可选的附加变种**（近景专用）: 只在正想要"手持镜头/临场纪实"的紧张、沉浸时刻用,
+  **不是每条近景都要摇**; 它是持续状态 —— 想切回平稳镜头就再写一条不带 handheld 的运镜
 - x/y 始终写 "auto"
 - **优先为每个特效/贴纸从候选清单配一个音效** (候选已按当前 clip 方向筛选, 配错风险低);
   仅当候选清单确实没有合适音效时才留空
@@ -154,7 +164,7 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 
 /// LLM 可能漏掉事件对象的 type 字段 (serde tagged enum 必需)。
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
-/// 推断规则: zoom/origin/anchor/anchor_to/cut→camera, overlay_type→overlay, keyword→sticker,
+/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld→camera, overlay_type→overlay, keyword→sticker,
 /// name→sfx, intensity/color→shake。无法推断的保持原样（由 serde 报错）。
 pub(crate) fn normalize_segments_json(json: &str) -> String {
     let infer_type = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<&'static str> {
@@ -163,6 +173,7 @@ pub(crate) fn normalize_segments_json(json: &str) -> String {
             || obj.contains_key("anchor")
             || obj.contains_key("anchor_to")
             || obj.contains_key("cut")
+            || obj.contains_key("handheld")
         {
             return Some("camera");
         }
@@ -307,13 +318,14 @@ mod tests {
             {"type":"camera","time":2.0,"end":3.0,"zoom":"近","origin":"50% 50%"},
             {"time":10.0,"end":12.0,"keyword":"laugh","x":"auto","y":"auto"},
             {"time":3.0,"name":"pop","volume":0.5},
-            {"time":12.0,"end":15.0,"anchor":"liver"}
+            {"time":12.0,"end":15.0,"anchor":"liver"},
+            {"time":20.0,"end":24.0,"handheld":true}
           ]}
         ]"#;
         let norm = normalize_segments_json(raw);
         let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
         let evs = &segments[0].events;
-        assert_eq!(evs.len(), 6);
+        assert_eq!(evs.len(), 7);
         assert!(matches!(evs[0], crate::project::Event::Camera { .. }));
         assert!(matches!(evs[1], crate::project::Event::Shake { .. }));
         assert!(matches!(evs[2], crate::project::Event::Camera { .. }));
@@ -322,6 +334,11 @@ mod tests {
         // 只写 anchor（没写 zoom/origin）也要认得是 camera
         assert!(
             matches!(&evs[5], crate::project::Event::Camera { anchor: Some(a), .. } if a == "liver")
+        );
+        // 只写 handheld 同理（附加变种常常不重复景别之外的字段）
+        assert!(
+            matches!(&evs[6], crate::project::Event::Camera { handheld: true, .. }),
+            "只写 handheld 的应推断成 camera: {norm}"
         );
     }
 

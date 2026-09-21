@@ -1,3 +1,8 @@
+//! cutting::silence：静音检测（字幕间隔优先，音频分析兜底）。
+//!
+//! 入口：`detect_silence`、`detect_silence_from_srt`、`silence_gaps_from_segments`、`detect_silence_ranges`、`DEFAULT_MIN_GAP_SECS`、`DEFAULT_NOISE_DB`。
+//! 边界：默认阈值 3.5s 是用户定的，别下调；乱序/重叠字幕必须先排序合并再取相邻间隔，否则会造出几十秒假静音 —— 见 `crates/vtrim-core/src/cutting/AGENTS.md`
+
 use std::path::Path;
 use std::process::Command;
 

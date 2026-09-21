@@ -1,3 +1,8 @@
+//! polish::render::sound：音效事件的收集与文件存在性检查（喂给出片模板的 `__SOUND_DATA`）。
+//!
+//! 入口：`SoundEvent`、`collect_sound_events`、`sound_file_exists`。
+//! 边界：`SoundEvent` 的字段与序列化必须与 `templates/index.html` 的 `__SOUND_DATA` 对齐，改一边要改另一边 —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+
 use std::path::Path;
 
 use crate::project::{Event, ProjectFile};

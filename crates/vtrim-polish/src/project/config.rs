@@ -1,3 +1,8 @@
+//! polish::project::config：`polish.toml` 的类型真源（`ProjectFile` 与各 section）与画面构成推导、时间轴工具函数。
+//!
+//! 入口：`ProjectFile`、`MuteRange`、`CoverConfig`、`CoverEffect`、`FilterConfig`、`SourceRef`、`CanvasConfig`、`StageConfig`、`StickerConfig`、`StageFit`；`resolve_stage`、`to_toml_commented`、`split_segments_by_mute_ranges`、`clamp_segments_to_duration`。
+//! 边界：`resolve_stage` 是画面构成的**唯一推导**（模板/编辑器只读注入结果）；`CANVAS_*` / `CAPTION_*` / `STICKER_SAFE_MARGIN` 等常量与前端 JS 是镜像，改一边要改另一边 —— 见 `crates/vtrim-polish/src/project/AGENTS.md`
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,27 +34,39 @@ pub struct ProjectFile {
     #[serde(default)]
     pub layout: Layout,
 
-    /// 7. 视觉样式
+    /// 7. 输出画布（方向 → 宽高，见 [`CanvasConfig::size`]）
+    #[serde(default)]
+    pub canvas: CanvasConfig,
+
+    /// 8. 画面构成（主画面位置 / 背景）
+    #[serde(default)]
+    pub stage: StageConfig,
+
+    /// 9. 贴纸落点策略（**贴图来源**仍是根级的 `sticker_source`，不在这个表里）
+    #[serde(default)]
+    pub sticker: StickerConfig,
+
+    /// 10. 视觉样式
     #[serde(default)]
     pub style: StyleRoot,
 
-    /// 8. 贴图来源配置
+    /// 11. 贴图来源配置
     #[serde(default = "default_sticker_source")]
     pub sticker_source: Vec<String>,
 
-    /// 9. 音效
+    /// 12. 音效
     #[serde(default)]
     pub sfx: SfxConfig,
 
-    /// 10. 时间轴
+    /// 13. 时间轴
     #[serde(default)]
     pub segments: Vec<Segment>,
 
-    /// 11. 视频屏蔽区间：这些时间段会被预览/导出跳过，LLM 也会忽略其中内容
+    /// 14. 视频屏蔽区间：这些时间段会被预览/导出跳过，LLM 也会忽略其中内容
     #[serde(default)]
     pub mute_ranges: Vec<MuteRange>,
 
-    /// 12. 「去静音」自动检测出的区间记录（对应时间轴「屏蔽」轨道里的红色块）
+    /// 15. 「去静音」自动检测出的区间记录（对应时间轴「屏蔽」轨道里的红色块）
     ///     仅作记录：撤销去静音时按它精确回退，不影响手动添加的屏蔽区间
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub silence_ranges: Vec<MuteRange>,
@@ -391,6 +408,208 @@ impl Default for CoverConfig {
     }
 }
 
+// ===== 输出画布 / 画面构成（竖屏支持）=====
+
+/// 横画布（默认）：1920×1080。
+pub const CANVAS_LANDSCAPE_WH: (u32, u32) = (1920, 1080);
+/// 竖画布 9:16：1080×1920。
+pub const CANVAS_PORTRAIT_WH: (u32, u32) = (1080, 1920);
+/// 字幕安全区宽度占画布宽度的比例（剩下的是左右留白）。
+///
+/// ⚠️ 1920 下正好等于改造前的 `.captions{left:120; width:1680}`（120 = 1920×(1-0.875)/2），
+/// 所以**横画布下逐像素不变**。模板的 `_canvas.caps` 与 WebUI 的 `canvas.js` 都从这里取。
+pub const CAPTION_SAFE_WIDTH_RATIO: f64 = 0.875;
+/// 字幕最多折几行（超了就按比例缩字号，见 [`CAPTION_MIN_FONT_RATIO`]）。
+pub const CAPTION_MAX_LINES: u32 = 3;
+/// 折行后仍超行数上限时的最小字号倍率。
+pub const CAPTION_MIN_FONT_RATIO: f64 = 0.7;
+/// 贴纸安全边距（px，1920×1080 基准）—— 与 `process/placement.rs` 的 `STICKER_MARGIN` 同源。
+pub const STICKER_SAFE_MARGIN: f64 = 32.0;
+
+/// 输出画布。**只给方向，宽高由 [`CanvasConfig::size`] 推导**（不做分辨率档位、不做自定义宽高）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasConfig {
+    /// `landscape`（默认，1920×1080）| `portrait`（1080×1920，9:16）。其它值一律当 landscape。
+    #[serde(default = "default_canvas_orientation")]
+    pub orientation: String,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn default_canvas_orientation() -> String {
+    "landscape".into()
+}
+
+impl Default for CanvasConfig {
+    fn default() -> Self {
+        Self {
+            orientation: default_canvas_orientation(),
+            extra: HashMap::new(),
+        }
+    }
+}
+
+impl CanvasConfig {
+    pub fn is_portrait(&self) -> bool {
+        self.orientation.trim().eq_ignore_ascii_case("portrait")
+    }
+
+    /// 输出画布尺寸 —— **唯一推导点**。
+    pub fn size(&self) -> (u32, u32) {
+        if self.is_portrait() {
+            CANVAS_PORTRAIT_WH
+        } else {
+            CANVAS_LANDSCAPE_WH
+        }
+    }
+}
+
+/// 画面构成：源视频比例 ≠ 画布比例时，主画面怎么摆、空出来的地方补什么。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct StageConfig {
+    /// 背景：`auto`（默认）/ `black` / `color` / `blur`。其它值（含老配置里的 `frame`）一律当 `auto`。
+    #[serde(default = "default_stage_bg_mode")]
+    pub bg_mode: String,
+
+    /// `bg_mode = color` 时的颜色（注入模板前经 [`crate::cover::sanitize_hex_color`] 净化）。
+    #[serde(default = "default_cover_bg_color")]
+    pub bg_color: String,
+
+    /// 模糊倍率（`bg_mode = blur`，1.0 = 基准 28px，区间与 `[cover].blur_scale` 同一套）。
+    #[serde(default = "default_cover_blur_scale")]
+    pub blur_scale: f64,
+
+    /// 主画面位置：`auto`（默认）/ `left|center|right`（横画布）/ `top|center|bottom`（竖画布）。
+    /// **方向不跨用**：横画布写 `top`、竖画布写 `left` 都会被净化成 `auto`（不做猜测性翻译）。
+    #[serde(default = "default_stage_position")]
+    pub position: String,
+
+    /// 主画面缩放倍率（1.0 = contain，完整可见不裁切）。
+    #[serde(default = "default_stage_scale")]
+    pub scale: f64,
+
+    /// 主画面额外留白（px，横画布基准，按 `k` 缩放）。
+    #[serde(default)]
+    pub padding: u32,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn default_stage_bg_mode() -> String {
+    "auto".into()
+}
+fn default_stage_position() -> String {
+    "auto".into()
+}
+fn default_stage_scale() -> f64 {
+    1.0
+}
+
+impl Default for StageConfig {
+    fn default() -> Self {
+        Self {
+            bg_mode: default_stage_bg_mode(),
+            bg_color: default_cover_bg_color(),
+            blur_scale: default_cover_blur_scale(),
+            position: default_stage_position(),
+            scale: default_stage_scale(),
+            padding: 0,
+            extra: HashMap::new(),
+        }
+    }
+}
+
+/// 贴纸落点策略。`auto` = 沿用安全区算法（逐条变化）；`manual` = 渲染时固定到 `position`。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct StickerConfig {
+    /// `auto`（默认）| `manual`。其它值一律当 `auto`。
+    #[serde(default = "default_sticker_position_mode")]
+    pub position_mode: String,
+
+    /// `manual` 的固定落点：百分比，相对输出画布，中心基准，如 `"50% 50%"`。
+    #[serde(default = "default_sticker_position")]
+    pub position: String,
+
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+fn default_sticker_position_mode() -> String {
+    "auto".into()
+}
+fn default_sticker_position() -> String {
+    "50% 50%".into()
+}
+
+impl Default for StickerConfig {
+    fn default() -> Self {
+        Self {
+            position_mode: default_sticker_position_mode(),
+            position: default_sticker_position(),
+            extra: HashMap::new(),
+        }
+    }
+}
+
+/// 背景模式规范化：`auto`（默认）/ `black` / `color` / `blur`。
+/// 写法照抄 [`crate::cover::cover_bg_mode`]：未知值一律回落，绝不原样吃用户字符串。
+pub fn stage_bg_mode(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "black" => "black",
+        "color" => "color",
+        "blur" => "blur",
+        _ => "auto",
+    }
+}
+
+/// 主画面位置规范化。**方向不跨用**：横画布只认 left/center/right，竖画布只认 top/center/bottom；
+/// 其余（含 `auto` 与写错方向的值）→ `auto`。
+pub fn stage_position(raw: &str, portrait: bool) -> &'static str {
+    match (raw.trim().to_ascii_lowercase().as_str(), portrait) {
+        ("left", false) => "left",
+        ("right", false) => "right",
+        ("top", true) => "top",
+        ("bottom", true) => "bottom",
+        ("center", _) => "center",
+        _ => "auto",
+    }
+}
+
+/// 贴纸落点模式规范化：只认 `manual`，其余一律 `auto`。
+pub fn sticker_position_mode(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "manual" => "manual",
+        _ => "auto",
+    }
+}
+
+/// 主画面摆放的解析结果 —— **唯一推导点**：模板读 `_canvas.stage`、WebUI 读 `canvas.js`，都不再自己算。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StageFit {
+    /// 缩放轴：`x` = 按高度铺满、左右留边；`y` = 按宽度铺满、上下留边；`fill` = 直接铺满画布。
+    pub axis: String,
+    /// 内容层（`#source-video` 与 `#video-canvas`）的 `object-fit`。
+    pub object_fit: String,
+    /// 主画面位置：`left|center|right`（axis=x）或 `top|center|bottom`（axis=y）。恒为具体值。
+    pub position: String,
+    /// 背景：`none` | `black` | `color` | `blur`。只有**横画布铺满**才是 `none`；
+    /// 竖画布铺满也给底色（特效会把主画面挪出画布，没有底色就露透明）。
+    pub bg: String,
+    pub bg_color: String,
+    /// 模糊半径（px，已按 `blur_scale` 换算）。
+    pub blur_px: u32,
+    /// 模糊层放大倍数（把模糊溢出的边缘推出画面）。
+    pub blur_img_scale: f64,
+    pub scale: f64,
+    /// 主画面额外留白（px，已按 `k` 缩放）。
+    pub padding: f64,
+}
+
 // ===== 时间轴 =====
 
 // Segment 仅话题分组, 运镜由 Camera event 控制
@@ -409,6 +628,140 @@ fn default_metadata() -> String { "clip.json".into() }
 
 
 impl ProjectFile {
+    /// 输出画布尺寸（唯一推导点）。
+    pub fn canvas_size(&self) -> (u32, u32) {
+        self.canvas.size()
+    }
+
+    /// 兼容读取：位置原本写在 `layout.vertical_position`（`[layout]` 的 flatten extra 里）。
+    /// 提升成 `[stage] position` 之后仍读它做一次性映射，否则老项目的位置会悄悄回默认。
+    fn legacy_vertical_position(&self) -> Option<&str> {
+        self.layout
+            .extra
+            .get("vertical_position")
+            .and_then(|v| v.as_str())
+    }
+
+    /// 解析主画面摆放。`src` = 源视频尺寸（ffprobe；拿不到给 `None`）。
+    ///
+    /// `position = "auto"` 时**逐字段等价于改造前**（存量项目出片不变）：
+    /// - 源是竖素材（`h > w`，沿用既有判据）→ 按高度铺满 + 靠左（`layout.vertical_position` 兼容读取）
+    ///   + 当前帧模糊背景；
+    /// - 否则 → 直接铺满（`object-fit: cover`，与改造前的 `.source-video` 一致）+ 无背景层
+    ///   —— **包括 4:3 这类"不匹配但非竖素材"的源，改造前就是裁切**，auto 必须照抄。
+    ///
+    /// ⚠️ 铺满**不等于**不要背景层：竖画布（1080×1920）下竖素材正好铺满画布，而特效
+    /// （`shake` / `stutter` / `split` / 运镜）会把主画面挪出画布，让出来的那条边在出片里
+    /// 是**透明**的（JPEG 里就是纯黑）—— 所以**竖画布**铺满时仍按 `bg_mode` 给一层底色
+    /// （见 `resolve_stage` 的 `bg` 推导）。横画布铺满保持 `none`，存量横画布项目逐帧零回归。
+    ///
+    /// `position` 显式指定时才按比例算留边轴（源比画布高 → 左右留边；比画布扁 → 上下留边）。
+    pub fn resolve_stage(&self, src: Option<(u32, u32)>) -> StageFit {
+        let (cw, ch) = self.canvas.size();
+        let portrait = self.canvas.is_portrait();
+        let k = cw as f64 / CANVAS_LANDSCAPE_WH.0 as f64;
+
+        // 显式位置：方向不匹配的值在净化阶段就成 auto，不做跨方向翻译
+        let explicit = stage_position(&self.stage.position, portrait);
+        let auto_pos = explicit == "auto";
+
+        // 源是不是竖的：这是**既有的唯一判据**（`render/server.rs` 的竖屏检测），auto 必须照抄
+        let src_portrait = src.map(|(sw, sh)| sh > sw).unwrap_or(false);
+
+        // 比例比较用交叉相乘，避免浮点除法
+        let aspect = src
+            .filter(|(w, h)| *w > 0 && *h > 0)
+            .map(|(sw, sh)| {
+                ((sh as u128) * (cw as u128)).cmp(&((sw as u128) * (ch as u128)))
+            });
+
+        let axis = if auto_pos {
+            if src_portrait { "x" } else { "fill" }
+        } else {
+            match aspect {
+                Some(std::cmp::Ordering::Greater) => "x", // 源比画布"高" → 左右留边
+                Some(std::cmp::Ordering::Less) => "y",    // 源比画布"扁" → 上下留边
+                _ => "fill",
+            }
+        };
+
+        let position = if auto_pos {
+            if src_portrait {
+                // 老工程把位置写在 `layout.vertical_position`（默认 left）
+                match stage_position(self.legacy_vertical_position().unwrap_or("left"), portrait) {
+                    "auto" => "center",
+                    p => p,
+                }
+            } else {
+                "center"
+            }
+        } else {
+            explicit
+        };
+
+        // 背景：**横画布**铺满才不需要背景层（改造前就是不匹配才补边，存量零回归）；
+        // 竖画布铺满仍按 `bg_mode` 给底色 —— 否则特效（shake / split / 运镜）把主画面挪开时
+        // 让出来的边是透明的，出片 JPEG 里就是纯黑。
+        // 补边时 auto = 改造前的竖屏行为（当前帧模糊）。
+        let bg = if axis == "fill" && !portrait {
+            "none"
+        } else {
+            match stage_bg_mode(&self.stage.bg_mode) {
+                "black" => "black",
+                "color" => "color",
+                _ => "blur",
+            }
+        };
+
+        let (blur_px, blur_img_scale) = crate::cover::cover_blur_css(self.stage.blur_scale);
+
+        StageFit {
+            axis: axis.into(),
+            object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
+            position: position.into(),
+            bg: bg.into(),
+            bg_color: crate::cover::sanitize_hex_color(&self.stage.bg_color, "#000000"),
+            blur_px,
+            blur_img_scale,
+            scale: if self.stage.scale.is_finite() && self.stage.scale > 0.0 {
+                self.stage.scale.clamp(0.1, 4.0)
+            } else {
+                1.0
+            },
+            padding: self.stage.padding as f64 * k,
+        }
+    }
+
+    /// 注入给模板与 WebUI 的画布契约（`_canvas`）—— 尺寸 / 摆放 / 字幕安全宽 / 贴纸落点的**唯一来源**。
+    ///
+    /// 模板 `index.html` 与前端 `webui/src/polish/canvas.js` 都只读它，杜绝第二套常量。
+    pub fn canvas_contract(&self, src: Option<(u32, u32)>) -> serde_json::Value {
+        let (cw, ch) = self.canvas.size();
+        let (sw, sh) = src.unwrap_or((0, 0));
+        serde_json::json!({
+            "width": cw,
+            "height": ch,
+            // k = 宽度基准（横画布 1.0），kh = 高度基准（竖画布 1.778）—— 9:16 下两者不等
+            "k": cw as f64 / CANVAS_LANDSCAPE_WH.0 as f64,
+            "kh": ch as f64 / CANVAS_LANDSCAPE_WH.1 as f64,
+            "orientation": if self.canvas.is_portrait() { "portrait" } else { "landscape" },
+            "src": { "width": sw, "height": sh },
+            "stage": self.resolve_stage(src),
+            "caps": {
+                "safe_width_ratio": CAPTION_SAFE_WIDTH_RATIO,
+                "margin_x": cw as f64 * (1.0 - CAPTION_SAFE_WIDTH_RATIO) / 2.0,
+                "max_width": cw as f64 * CAPTION_SAFE_WIDTH_RATIO,
+                "max_lines": CAPTION_MAX_LINES,
+                "min_font_ratio": CAPTION_MIN_FONT_RATIO,
+            },
+            "sticker": {
+                "safe_margin": STICKER_SAFE_MARGIN,
+                "position_mode": sticker_position_mode(&self.sticker.position_mode),
+                "position": self.sticker.position.trim(),
+            },
+        })
+    }
+
     /// 序列化为 TOML 并注入注释
     pub fn to_toml_commented(&self) -> anyhow::Result<String> {
         let raw = toml::to_string_pretty(self)?;
@@ -496,6 +849,33 @@ impl ProjectFile {
                 else if trimmed.starts_with("text_x") { result.push_str("# 文字水平中心点\n"); }
                 else if trimmed.starts_with("text_y") { result.push_str("# 文字垂直中心点\n"); }
                 else if trimmed.starts_with("text_width") { result.push_str("# 文字区域宽度\n"); }
+            }
+
+            // [canvas] / [stage] / [sticker]：段头 + 字段速查（本次新增的三张表）
+            if trimmed == "[canvas]" || trimmed == "[stage]" || trimmed == "[sticker]" {
+                match trimmed {
+                    "[canvas]" => {
+                        result.push_str("\n# ===== 输出画布 =====\n");
+                        result.push_str("# orientation: landscape(1920x1080, 默认) / portrait(1080x1920, 9:16)\n");
+                        result.push_str("# 宽高由方向推导，不单独配置\n");
+                    }
+                    "[stage]" => {
+                        result.push_str("\n# ===== 画面构成（源比例 ≠ 画布比例时才有可见效果） =====\n");
+                        result.push_str("# bg_mode: auto(默认, 等同改造前) / black / color / blur(当前帧模糊铺满)\n");
+                        result.push_str("# bg_color: bg_mode=color 的颜色(#rrggbb)\n");
+                        result.push_str("# blur_scale: 模糊倍率, 1.0 = 基准 28px\n");
+                        result.push_str("# position: auto(默认) / left|center|right(横画布) / top|center|bottom(竖画布)\n");
+                        result.push_str("# scale: 主画面缩放, 1.0 = 完整可见不裁切\n");
+                        result.push_str("# padding: 主画面额外留白(px, 横画布基准)\n");
+                    }
+                    _ => {
+                        result.push_str("\n# ===== 贴纸落点 =====\n");
+                        result.push_str("# position_mode: auto(默认, 安全区算法自动避让) / manual(固定到 position)\n");
+                        result.push_str("# position: manual 的固定落点, 相对画布的百分比 \"x% y%\"\n");
+                    }
+                }
+                result.push_str(line); result.push('\n');
+                continue;
             }
 
             // [filter] 后加注释
@@ -644,6 +1024,9 @@ impl ProjectFile {
             },
             duration: None,
             layout: Layout::default(),
+            canvas: CanvasConfig::default(),
+            stage: StageConfig::default(),
+            sticker: StickerConfig::default(),
             style: StyleRoot::default(),
             sticker_source: vec!["emoji".into(), "ysyk".into()],
             filter: FilterConfig {
@@ -993,6 +1376,7 @@ mod camera_clamp_tests {
             anchor: None,
             anchor_to: None,
             to_origin: None, cut: false,
+            handheld: false,
             manual: false,
         }
     }
@@ -1049,5 +1433,324 @@ mod camera_clamp_tests {
             panic!()
         };
         assert!((end.unwrap() - *time - 20.0).abs() < 1e-9, "{end:?}");
+    }
+}
+
+#[cfg(test)]
+mod canvas_stage_tests {
+    use super::*;
+
+    fn src_portrait() -> Option<(u32, u32)> {
+        Some((1080, 1920))
+    }
+    fn src_landscape() -> Option<(u32, u32)> {
+        Some((1920, 1080))
+    }
+
+    /// 画布尺寸只由方向推导
+    #[test]
+    fn canvas_size_follows_orientation() {
+        let mut cfg = ProjectFile::example();
+        assert_eq!(cfg.canvas_size(), (1920, 1080), "默认必须是横画布");
+        cfg.canvas.orientation = "portrait".into();
+        assert_eq!(cfg.canvas_size(), (1080, 1920));
+        cfg.canvas.orientation = " PORTRAIT ".into();
+        assert_eq!(cfg.canvas_size(), (1080, 1920), "大小写/空白不敏感");
+        cfg.canvas.orientation = "garbage".into();
+        assert_eq!(cfg.canvas_size(), (1920, 1080), "非法值回落横画布");
+    }
+
+    /// **零回归钉子**：横画布下字幕安全宽必须正好是改造前的 1680 / 120
+    #[test]
+    fn caption_safe_width_matches_legacy_1680() {
+        let cfg = ProjectFile::example();
+        let c = cfg.canvas_contract(src_landscape());
+        assert!((c["caps"]["max_width"].as_f64().unwrap() - 1680.0).abs() < 1e-9, "{c}");
+        assert!((c["caps"]["margin_x"].as_f64().unwrap() - 120.0).abs() < 1e-9, "{c}");
+        assert!((c["k"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!((c["kh"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(c["caps"]["max_lines"], 3);
+
+        let mut p = ProjectFile::example();
+        p.canvas.orientation = "portrait".into();
+        let c2 = p.canvas_contract(src_portrait());
+        assert!((c2["caps"]["max_width"].as_f64().unwrap() - 945.0).abs() < 1e-9, "{c2}");
+        assert!((c2["k"].as_f64().unwrap() - 0.5625).abs() < 1e-9);
+        assert!((c2["kh"].as_f64().unwrap() - 1920.0 / 1080.0).abs() < 1e-9);
+    }
+
+    /// auto + 竖素材 = 改造前的竖屏行为（按高度铺满 + 靠左 + 模糊背景）
+    #[test]
+    fn auto_with_portrait_source_reproduces_legacy() {
+        let cfg = ProjectFile::example();
+        let f = cfg.resolve_stage(src_portrait());
+        assert_eq!(f.axis, "x");
+        assert_eq!(f.object_fit, "contain");
+        assert_eq!(f.position, "left", "改造前默认靠左");
+        assert_eq!(f.bg, "blur");
+        assert_eq!(f.bg_color, "#000000");
+        assert_eq!(f.blur_px, 28, "blur_scale=1.0 → 基准 28px");
+    }
+
+    /// auto + 横素材 = 改造前的直接铺满（cover），没有背景层。
+    /// ⚠️ 4:3 这类"不匹配但非竖素材"的源改造前也是**裁切**，auto 必须保持一致。
+    /// ⚠️ 这里断言的是**横画布**（`ProjectFile::example` 的默认方向）。竖画布铺满仍给底色，
+    /// 见 `portrait_canvas_fill_still_paints_backdrop`。
+    #[test]
+    fn auto_with_landscape_source_stays_fill() {
+        let cfg = ProjectFile::example();
+        assert_eq!(cfg.canvas_size(), (1920, 1080), "前提：默认横画布");
+        for src in [src_landscape(), Some((1440, 1080)), None] {
+            let f = cfg.resolve_stage(src);
+            assert_eq!(f.axis, "fill", "{src:?}");
+            assert_eq!(f.object_fit, "cover", "{src:?}");
+            assert_eq!(f.bg, "none", "{src:?}");
+        }
+    }
+
+    /// **铺满 ≠ 不要背景层**：竖画布铺满时仍按 `bg_mode` 给底色。
+    /// 特效（`shake` / `split` / 画中画运镜 / 手持摇摆）会把主画面挪出画布，
+    /// 没有底色时让出来的那条边是**透明**的 —— 落进 JPEG 就是纯黑（用户报的"震动露出黑边"）。
+    /// 门控是**画布方向**，不是 `bg_mode`：横画布铺满照旧 `none`（存量逐帧零回归）。
+    ///
+    /// 用例照抄用户实际项目（`[stage] position = "center"` + 源 720×1280 / 画布 1080×1920）：
+    /// `position = "auto"` 时竖素材走 `x`（对比态），**显式位置**才按比例推轴 —— 同比例 → `fill`。
+    #[test]
+    fn portrait_canvas_fill_still_paints_backdrop() {
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.stage.position = "center".into();
+        let same_ratio = Some((720, 1280)); // 9:16 == 画布比例
+
+        let f = cfg.resolve_stage(same_ratio);
+        assert_eq!(f.axis, "fill", "同比例源 + 显式位置 → 铺满");
+        assert_eq!(f.object_fit, "cover");
+        assert_eq!(f.bg, "blur", "auto → 竖画布铺满也要模糊底色");
+
+        cfg.stage.bg_mode = "black".into();
+        assert_eq!(cfg.resolve_stage(same_ratio).bg, "black");
+        cfg.stage.bg_mode = "color".into();
+        cfg.stage.bg_color = "#112233".into();
+        let f = cfg.resolve_stage(same_ratio);
+        assert_eq!(f.bg, "color");
+        assert_eq!(f.bg_color, "#112233");
+        cfg.stage.bg_mode = "garbage".into(); // 未知值 → auto → blur
+        assert_eq!(cfg.resolve_stage(same_ratio).bg, "blur");
+
+        // auto 位置的竖素材走对比态（axis=x）—— 底色照旧由 bg_mode 给，不受本次门控影响
+        let mut auto_cfg = ProjectFile::example();
+        auto_cfg.canvas.orientation = "portrait".into();
+        let f = auto_cfg.resolve_stage(same_ratio);
+        assert_eq!(f.axis, "x", "auto 位置：竖素材 = 按高度铺满");
+        assert_eq!(f.bg, "blur");
+
+        // 反证：同一份 `bg_mode` 换回横画布同比源 → 又回到 none（门控只跟画布方向有关）
+        cfg.stage.bg_mode = "blur".into();
+        cfg.canvas.orientation = "landscape".into();
+        let f = cfg.resolve_stage(Some((1920, 1080)));
+        assert_eq!(f.axis, "fill");
+        assert_eq!(f.bg, "none", "横画布铺满：即使用户显式选了 blur 也保持 none");
+    }
+
+    /// 显式位置：按比例选留边轴。4:3 源比 16:9 画布"高" → 左右留边（不是上下）
+    #[test]
+    fn explicit_position_derives_axis_from_aspect() {
+        let mut cfg = ProjectFile::example();
+        cfg.stage.position = "right".into();
+        let f = cfg.resolve_stage(Some((1440, 1080)));
+        assert_eq!(f.axis, "x");
+        assert_eq!(f.position, "right");
+        assert_eq!(f.bg, "blur", "auto 背景在需要补边时 = 当前帧模糊");
+    }
+
+    /// 竖画布 × 横素材：对称支持 top/center/bottom
+    #[test]
+    fn portrait_canvas_with_landscape_source() {
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.stage.position = "top".into();
+        let f = cfg.resolve_stage(src_landscape());
+        assert_eq!(f.axis, "y");
+        assert_eq!(f.object_fit, "contain");
+        assert_eq!(f.position, "top");
+        assert_eq!(f.bg, "blur");
+    }
+
+    /// 方向不跨用：横画布写 top / 竖画布写 left 都被净化成 auto
+    #[test]
+    fn cross_direction_position_sanitized() {
+        assert_eq!(stage_position("top", false), "auto");
+        assert_eq!(stage_position("bottom", false), "auto");
+        assert_eq!(stage_position("left", true), "auto");
+        assert_eq!(stage_position("right", true), "auto");
+        assert_eq!(stage_position("center", false), "center");
+        assert_eq!(stage_position("center", true), "center");
+        assert_eq!(stage_position(" left ", false), "left");
+        assert_eq!(stage_position("RIGHT", false), "right");
+        assert_eq!(stage_position("TOP", true), "top");
+    }
+
+    /// 跨方向的显式值在竖画布上退化成 center，而不是把 top 当 left 用
+    #[test]
+    fn cross_direction_position_falls_back_to_center() {
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.stage.position = "left".into();
+        assert_eq!(cfg.resolve_stage(src_landscape()).position, "center");
+    }
+
+    /// 背景模式与颜色的净化（颜色直接进模板 CSS，绝不能原样吃字符串）
+    #[test]
+    fn bg_mode_and_color_sanitized() {
+        assert_eq!(stage_bg_mode("frame"), "auto", "老配置里的 frame 回落 auto");
+        assert_eq!(stage_bg_mode(" BLUR "), "blur");
+        assert_eq!(stage_bg_mode(""), "auto");
+
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.stage.position = "center".into();
+        cfg.stage.bg_mode = "color".into();
+        cfg.stage.bg_color = "javascript:alert(1)".into();
+        let f = cfg.resolve_stage(src_landscape());
+        assert_eq!(f.bg, "color");
+        assert_eq!(f.bg_color, "#000000", "非法颜色必须回落");
+        cfg.stage.bg_color = "#ABC".into();
+        assert_eq!(cfg.resolve_stage(src_landscape()).bg_color, "#abc");
+    }
+
+    /// scale 夹取与 padding 随 k 缩放
+    #[test]
+    fn scale_and_padding_clamped() {
+        let mut cfg = ProjectFile::example();
+        cfg.stage.position = "left".into();
+        cfg.stage.scale = -2.0;
+        assert_eq!(cfg.resolve_stage(src_portrait()).scale, 1.0, "非法 scale 回落 1.0");
+        cfg.stage.scale = 99.0;
+        assert_eq!(cfg.resolve_stage(src_portrait()).scale, 4.0);
+        cfg.stage.scale = 1.0;
+
+        cfg.stage.padding = 40;
+        assert!((cfg.resolve_stage(src_portrait()).padding - 40.0).abs() < 1e-9, "横画布 k=1");
+        cfg.canvas.orientation = "portrait".into();
+        assert!(
+            (cfg.resolve_stage(src_portrait()).padding - 22.5).abs() < 1e-9,
+            "竖画布 k=0.5625"
+        );
+    }
+
+    /// `vertical_position` 提升后的兼容读取 + 显式 `[stage] position` 优先
+    #[test]
+    fn legacy_vertical_position_still_applies() {
+        let mut cfg = ProjectFile::example();
+        assert_eq!(cfg.resolve_stage(src_portrait()).position, "left", "缺省 = 老的 left");
+        cfg.layout
+            .extra
+            .insert("vertical_position".into(), serde_json::json!("center"));
+        assert_eq!(cfg.resolve_stage(src_portrait()).position, "center");
+        cfg.stage.position = "right".into();
+        assert_eq!(
+            cfg.resolve_stage(src_portrait()).position,
+            "right",
+            "显式位置必须压过老字段"
+        );
+    }
+
+    /// 三张新表要能进 `to_toml_commented` 再读回来（含段注释）
+    #[test]
+    fn new_sections_survive_commented_toml_roundtrip() {
+        let mut cfg = ProjectFile::example();
+        cfg.canvas.orientation = "portrait".into();
+        cfg.stage.bg_mode = "color".into();
+        cfg.stage.bg_color = "#123456".into();
+        cfg.stage.blur_scale = 2.0;
+        cfg.stage.position = "bottom".into();
+        cfg.stage.scale = 1.2;
+        cfg.stage.padding = 24;
+        cfg.sticker.position_mode = "manual".into();
+        cfg.sticker.position = "25% 70%".into();
+
+        let raw = cfg.to_toml_commented().unwrap();
+        for sec in ["[canvas]", "[stage]", "[sticker]"] {
+            assert!(raw.contains(sec), "缺 {sec}:\n{raw}");
+        }
+        assert!(raw.contains("# ===== 输出画布 ====="), "段注释要在:\n{raw}");
+        assert!(raw.contains("# ===== 画面构成"), "{raw}");
+
+        let back: ProjectFile = toml::from_str(&raw).expect("新表应可回读");
+        assert_eq!(back.canvas.size(), (1080, 1920));
+        assert_eq!(back.stage.position, "bottom");
+        assert_eq!(back.stage.bg_mode, "color");
+        assert_eq!(back.stage.bg_color, "#123456");
+        assert!((back.stage.blur_scale - 2.0).abs() < 1e-9);
+        assert!((back.stage.scale - 1.2).abs() < 1e-9);
+        assert_eq!(back.stage.padding, 24);
+        assert_eq!(back.sticker.position_mode, "manual");
+        assert_eq!(back.sticker.position, "25% 70%");
+    }
+
+    /// **存量工程的零回归**：没有这三张表的老 polish.toml，解析结果必须等同改造前
+    #[test]
+    fn legacy_project_without_new_sections_behaves_like_before() {
+        let raw = "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n";
+        let cfg: ProjectFile = toml::from_str(raw).expect("老工程应可解析");
+        assert_eq!(cfg.canvas.size(), (1920, 1080));
+        assert_eq!(cfg.stage.position, "auto");
+        assert_eq!(cfg.stage.bg_mode, "auto");
+        assert_eq!(cfg.stage.scale, 1.0);
+        assert_eq!(cfg.stage.padding, 0);
+        assert_eq!(cfg.sticker.position_mode, "auto");
+        let f = cfg.resolve_stage(Some((1080, 1920)));
+        assert_eq!(
+            (f.axis.as_str(), f.position.as_str(), f.bg.as_str()),
+            ("x", "left", "blur"),
+            "竖素材 + 全 auto 必须等价于改造前"
+        );
+    }
+
+    /// **模板消费面的一致性钉子**：`_canvas.stage` 的每个字段、JS 里拼出的每个 class、
+    /// 每个 CSS 变量，都必须真在 `templates/index.html` 里有定义/被读到 ——
+    /// 这类错误**不会编译报错**，只会表现成"改了没反应"，是最难查的一类回归。
+    #[test]
+    fn template_stage_hooks_match_contract() {
+        let html = include_str!("../../templates/index.html");
+        let contract = ProjectFile::example().canvas_contract(Some((1080, 1920)));
+        let stage = contract["stage"].as_object().expect("stage 必须是对象");
+        // 契约字段 ↔ 模板 JS 读的字段名（同名，缺一个就是"注入了却没人消费"）
+        for key in [
+            "axis", "object_fit", "position", "bg", "bg_color", "blur_px", "blur_img_scale",
+            "scale", "padding",
+        ] {
+            assert!(stage.contains_key(key), "契约缺 stage.{key}");
+            assert!(html.contains(key), "模板没消费 stage.{key}");
+        }
+        // CSS class：JS 里是 'axis-'+axis / 'stage-'+position 拼出来的，CSS 必须两套都全
+        for cls in [
+            "axis-fill", "axis-x", "axis-y",
+            "stage-center", "stage-left", "stage-right", "stage-top", "stage-bottom",
+        ] {
+            assert!(html.contains(cls), "模板 CSS 缺 .{cls} 规则");
+        }
+        for needle in ["#fit-box", "--src-ar", "--stage-pad", "--stage-scale", "--bg-blur", "--bg-img-scale"] {
+            assert!(html.contains(needle), "模板缺 {needle}");
+        }
+        // ⚠️ **出片路径（canvas `renderFrame`）的消费面**：DOM 的 `#bg-video-wrap` 只服务预览，
+        // **不参与出片**（导出是 canvas 逐帧）。只把 `stage.bg` 消费在 DOM 上，
+        // 表现就是"预览里有底色、成片被 shake / 画中画挪开就露纯黑"——注释修不掉，必须有消费点。
+        for needle in [
+            "function drawStageBackdrop",
+            "function stageCoverRect",
+            "var STAGE_BG=STAGE.bg||'none'",
+            "drawStageBackdrop(ctx, videoBitmap)",
+            "STAGE.blur_px||0",
+        ] {
+            assert!(html.contains(needle), "出片 canvas 路径缺背景层消费面: {needle}");
+        }
+        // 顺序钉子：背景层必须先于视频层绘制（画反了铺满时就整块看不到底色）
+        let backdrop = html.find("drawStageBackdrop(ctx, videoBitmap)").unwrap();
+        let video_layer = html.find("ctx.drawImage(videoBitmap, 0, 0, CW, CH)").unwrap();
+        assert!(backdrop < video_layer, "背景层必须画在视频层之前");
+        // 改造前的竖屏布局（`.portrait` + `left/center`）必须彻底退场，
+        // 留着就会和新的 `axis-x` + `stage-*` 规则打架
+        assert!(!html.contains("portrait"), "模板里还有老的 portrait 布局残留");
     }
 }

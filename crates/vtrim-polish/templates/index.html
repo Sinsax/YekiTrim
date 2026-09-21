@@ -25,14 +25,31 @@ body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
 
 #bg-video-wrap { position:absolute; inset:0; z-index:0; overflow:hidden; display:none; }
 #bg-video-wrap.on { display:block; }
-#bg-video { width:100%; height:100%; object-fit:cover; filter:blur(28px) brightness(0.5) saturate(1.15); transform:scale(1.15); }
-#video-wrap { position:absolute; inset:0; overflow:hidden; z-index:1; }
+/* 背景层（bg=blur = 当前帧模糊平铺）。模糊半径/放大倍率由 `--bg-blur` / `--bg-img-scale` 注入
+   （值来自 Rust 侧 `_canvas.stage`，与封面 [cover].blur_scale 同一套换算） */
+#bg-video { width:100%; height:100%; object-fit:cover;
+            filter:blur(var(--bg-blur, 28px)) brightness(0.5) saturate(1.15);
+            transform:scale(var(--bg-img-scale, 1.187)); }
+/* 画面构成：主画面按比例放进 #fit-box，空出来的边由背景层补。
+   一切取值都来自 `_canvas.stage`（Rust `ProjectFile::resolve_stage` 唯一推导），这里只做代入：
+     axis-fill = 直接铺满（源比例 == 画布比例，或改造前的横素材行为）
+     axis-x    = 按高度铺满、左右留边（源比画布"高"）→ 位置走主轴 left/center/right
+     axis-y    = 按宽度铺满、上下留边（源比画布"扁"）→ 位置走交叉轴 top/center/bottom   */
+#video-wrap { position:absolute; inset:0; overflow:hidden; z-index:1;
+              display:flex; align-items:center; justify-content:center;
+              padding:var(--stage-pad, 0%); }
+#fit-box { position:relative; transform-origin:center center;
+           transform:scale(var(--stage-scale, 1)); }
+#video-wrap.axis-fill #fit-box { width:100%; height:100%; }
+#video-wrap.axis-x #fit-box { height:100%; max-width:100%; aspect-ratio:var(--src-ar, 16 / 9); }
+#video-wrap.axis-y #fit-box { width:100%; max-height:100%; aspect-ratio:var(--src-ar, 16 / 9); }
+#video-wrap.stage-center { justify-content:center; align-items:center; }
+#video-wrap.stage-left { justify-content:flex-start; }
+#video-wrap.stage-right { justify-content:flex-end; }
+#video-wrap.stage-top { align-items:flex-start; }
+#video-wrap.stage-bottom { align-items:flex-end; }
+/* 内容层：object-fit 由 `_canvas.stage.object_fit` 注入（fill=cover，留边=contain） */
 #video-wrap .source-video { width:100%; height:100%; object-fit:cover; display:block; }
-/* 竖屏布局: 主视频保持比例, 左/中放置 */
-#video-wrap.portrait { display:flex; align-items:center; }
-#video-wrap.portrait.left { justify-content:flex-start; }
-#video-wrap.portrait.center { justify-content:center; }
-#video-wrap.portrait .source-video { width:auto; height:100%; object-fit:contain; }
 
 
 #video-canvas { position:absolute; top:0; left:0; width:100%; height:100%; z-index:2; pointer-events:none; object-fit:cover; }
@@ -44,7 +61,7 @@ body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
 
 #overlay { position:absolute; top:50%; left:50%; width:1920px; height:1080px; transform-origin:center center; pointer-events:none; z-index:10; }
 #captions { position:absolute; bottom:80px; left:120px; width:1680px; z-index:10; pointer-events:none; }
-.cap { position:absolute; bottom:0; left:0; width:100%; text-align:center; padding:14px 44px; font-weight:700; line-height:1.5; opacity:0; will-change:transform,opacity; }
+.cap { position:absolute; bottom:0; left:0; width:100%; text-align:center; padding:14px 0; font-weight:700; line-height:1.5; opacity:0; will-change:transform,opacity; }
 .cap .hl { paint-order:stroke fill; }
 
 #danmaku { position:absolute; top:0; left:0; width:1920px; height:540px; z-index:20; pointer-events:none; overflow:hidden; }
@@ -190,9 +207,11 @@ body.player-only #page {
   <div id="player">
     <div id="bg-video-wrap"><video id="bg-video" muted playsinline></video></div>
     <div id="video-wrap">
-      <video id="source-video" class="source-video" playsinline preload="auto">
-        <source src="clip.mp4" type="video/mp4"></video>
-      <canvas id="video-canvas" class="video-canvas"></canvas>
+      <div id="fit-box">
+        <video id="source-video" class="source-video" playsinline preload="auto">
+          <source src="clip.mp4" type="video/mp4"></video>
+        <canvas id="video-canvas" class="video-canvas"></canvas>
+      </div>
     </div>
     <div id="corner-glow"><div class="gb"></div></div>
     <div id="flash-overlay"></div>
@@ -276,6 +295,20 @@ var CFG = {};
 })();
 
 // ============================================================
+// 输出画布 —— `_canvas` 唯一推导 (SSOT)。1920×1080 为基准，CK=宽比、CKH=高比；
+// 横屏画布 CK=CKH=1，所有坐标逐像素不变（零回归）。
+// ============================================================
+// 贴纸另有一套倍率：盒子/边距/上浮都按**短边**缩放（SK = min(CW,CH)/1080，
+// 与 placement.rs `Frame::sticker_scale` 同源）。横竖画布短边都是 1080 ⇒ SK 恒为 1，
+// 贴纸不随画布缩水（字幕/弹幕字号同样不缩放，见 polish-vertical-canvas.md 决策表第 8 条）。
+var CW=1920, CH=1080, CK=1, CKH=1, SK=1;
+(function(){
+  var c=(CFG&&CFG._canvas)||{};
+  if(c.width>0&&c.height>0){CW=c.width;CH=c.height;}
+  CK=CW/1920; CKH=CH/1080; SK=Math.min(CW,CH)/1080;
+})();
+
+// ============================================================
 // 错误显示
 // ============================================================
 function showError(msg){
@@ -312,6 +345,20 @@ setTimeout(function(){
   var params=new URLSearchParams(location.search);
   var isCapture=params.has('capture');
   var isRecord=params.has('record');
+  // 覆盖层尺寸跟随 _canvas（CSS 里写的是 1920×1080 基准值，这里按画布代入）
+  o.style.width=CW+'px'; o.style.height=CH+'px';
+  var dmBox=document.getElementById('danmaku');
+  if(dmBox){dmBox.style.width=CW+'px'; dmBox.style.height=(540*CK)+'px';}
+  var emBox=document.getElementById('emoji-layer');
+  if(emBox){emBox.style.width=CW+'px'; emBox.style.height=CH+'px';}
+  var capBox=document.getElementById('captions');
+  if(capBox){capBox.style.bottom=(80*CKH)+'px'; capBox.style.left=(120*CK)+'px'; capBox.style.width=(CW-240*CK)+'px';}
+  (function(){var st=document.createElement('style');st.textContent='.sticker-img{width:'+(280*SK)+'px;height:'+(280*SK)+'px;}';document.head.appendChild(st);})();
+  // 预览舞台比例跟随画布（capture/record 模式下 wrap 已是全屏，不受影响）
+  if(!isCapture&&!isRecord){
+    p.style.aspectRatio=CW+'/'+CH;
+    pw.style.width='min(96vw,calc((100vh - var(--editor-h, 0px) - 20px)*'+(CH/CW)+'))';
+  }
   if(isCapture){
     document.body.classList.add('capture');
     pw.style.width='100vw'; pw.style.height='100vh'; pw.style.borderRadius='0';
@@ -339,7 +386,7 @@ setTimeout(function(){
   function r(){
     if(!p) return;
     // 同时考虑宽高，避免窗口/编辑器改变宽高比时字幕贴纸偏移
-    var s=Math.min(p.clientWidth/1920, p.clientHeight/1080);
+    var s=Math.min(p.clientWidth/CW, p.clientHeight/CH);
     o.style.transform='translate(-50%,-50%) scale('+s+')';
     window.__overlayScale=s;
   }
@@ -347,10 +394,51 @@ setTimeout(function(){
   window.__updateOverlayScale=r;
 })();
 
-// 百分比字符串 → 像素 (基于 1920×1080 虚拟画布)
+// 百分比字符串 → 像素 (基于 _canvas 虚拟画布)
 function pctPx(v,total){return parseFloat(v)/100*total;}
-function pctX(v){return pctPx(v,1920);}
-function pctY(v){return pctPx(v,1080);}
+function pctX(v){return pctPx(v,CW);}
+function pctY(v){return pctPx(v,CH);}
+
+// ============================================================
+// 字幕折行（A5）—— 画布出片（renderFrame）与 DOM 预览共用同一套。
+// parts: [{text, hl}]（高亮分段）；measure(text) → 基准字号下的像素宽。
+// 规则：安全宽 = maxLineW（调用方传 CW*0.875）；最多 3 行；
+//       总宽装不下时按 maxLineW*3/总宽 比例缩字号，下限 0.7。
+// 逐字符贪心（中文无空格），高亮分段可跨行、断行处自动拆开再按 hl 合并。
+// 返回 { lines: [[{text,hl}]], scale }；单行放得下时 scale=1、只有 1 行。
+// ============================================================
+var __capMeasureCtx=null;
+function capMeasure(text,font){
+  if(!__capMeasureCtx)__capMeasureCtx=document.createElement('canvas').getContext('2d');
+  __capMeasureCtx.font=font;
+  return __capMeasureCtx.measureText(text).width;
+}
+function wrapCaptionParts(parts,maxLineW,measure){
+  var MAX_LINES=3, MIN_RATIO=0.7, EPS=0.5;
+  function total(){var w=0;for(var i=0;i<parts.length;i++)w+=measure(parts[i].text);return w;}
+  function wrap(scale){
+    var lines=[],cur=null,curW=0;
+    function pushLine(){if(cur&&cur.length)lines.push(cur);cur=null;curW=0;}
+    function append(ch,hl,w){
+      // ⚠️ 溢出换行后必须重新起一行：pushLine() 把 cur 置空后，下面读 cur.length 会崩。
+      if(cur&&cur.length&&curW+w>maxLineW+EPS)pushLine();
+      if(!cur)cur=[];
+      var last=cur.length?cur[cur.length-1]:null;
+      if(last&&last.hl===hl)last.text+=ch;else cur.push({text:ch,hl:hl});
+      curW+=w;
+    }
+    for(var i=0;i<parts.length;i++){
+      var t=parts[i].text,hl=parts[i].hl;
+      for(var j=0;j<t.length;j++)append(t.charAt(j),hl,measure(t.charAt(j))*scale);
+    }
+    pushLine();
+    return lines;
+  }
+  var tw=total(),scale=1;
+  if(tw>maxLineW+EPS)scale=Math.max(MIN_RATIO,Math.min(1,maxLineW*MAX_LINES/tw));
+  return {lines:wrap(scale),scale:scale};
+}
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 // AABB 碰撞检测
 function rectOverlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
 
@@ -498,6 +586,24 @@ function camFactor(label){
   else{v=c.zoom_mid;d=1.3;}
   return (typeof v==='number'&&isFinite(v))?v:d;
 }
+// 手持摇摆（运镜的附加变种，`Event::Camera::handheld`）——
+// 与 Rust `types::handheld_sway`、`webui/src/polish/engine.js::handheldSway` **逐值同源**：
+// Rust↔engine.js 由 `timeline.rs::handheld_sway_matches_js_reference` 钉住，
+// 本副本与 engine.js 由 `webui/scripts/check-handheld.mjs` 对拍。
+// 位移单位 = 1920×1080 输出像素；倾斜是度，绕聚焦中心；波形纯 `t` 的函数（跳帧/seek 结果一致）。
+//
+// ⚠ 必须留在**脚本顶层**：canvas 出片那一段（下面的 IIFE）与顶层 DOM 预览层各要一份。
+function handheldSway(t, amp){
+  var a=(amp>0)?amp:0;
+  if(a===0) return {dx:0,dy:0,rot:0,scale:1};
+  var TAU=Math.PI*2;
+  return {
+    dx:(6.5*Math.sin(TAU*0.47*t)+3.0*Math.sin(TAU*0.83*t+1.7))*a,
+    dy:(5.0*Math.sin(TAU*0.59*t+0.9)+2.4*Math.sin(TAU*1.13*t+2.4))*a,
+    rot:(0.32*Math.sin(TAU*0.37*t+0.4)+0.16*Math.sin(TAU*0.91*t+2.9))*a,
+    scale:1.0+0.007*Math.sin(TAU*0.53*t+1.1)*a
+  };
+}
 // 事件跨度（秒）= end - time。事件统一写「开始 + 结束」；
 // 老数据/老缓存的 duration 只做兜底（同一份模板要能吃下两种形状）。
 //
@@ -579,18 +685,44 @@ function init(){
   var tl=gsap.timeline({paused:true});
   var SEL_SRC='#source-video';
   var video=document.getElementById('source-video');
-  // 竖屏布局: 模糊背景 + 主视频左/中放置
-  if(CFG.vertical){
-    var vpos=(CFG.layout&&CFG.layout.vertical_position)||'left';
-    document.getElementById('video-wrap').classList.add('portrait',vpos);
-    var bg=document.getElementById('bg-video');
-    bg.src=video.currentSrc||'clip.mp4';
-    document.getElementById('bg-video-wrap').classList.add('on');
-    bg.play().catch(function(){});
-    video.addEventListener('timeupdate',function(){
-      if(bg.currentTime&&Math.abs(bg.currentTime-video.currentTime)>0.05){bg.currentTime=video.currentTime;}
-    });
-  }
+  // ---- 画面构成：位置 / 背景 ----
+  // 取值全部来自 `_canvas.stage`（Rust `ProjectFile::resolve_stage` 唯一推导），这里只做代入：
+  //   axis-fill = 直接铺满；axis-x = 按高度铺满、左右留边；axis-y = 按宽度铺满、上下留边
+  //   bg = none(铺满，无需背景层) / black / color / blur(当前帧模糊)
+  var STAGE=(CFG._canvas&&CFG._canvas.stage)||{axis:'fill',object_fit:'cover',position:'center',
+    bg:'none',bg_color:'#000000',blur_px:28,blur_img_scale:1.187,scale:1,padding:0};
+  var CANVAS=CFG._canvas||{width:1920,height:1080,src:{width:0,height:0}};
+  (function applyStage(){
+    var vw=document.getElementById('video-wrap');
+    var src=CANVAS.src||{};
+    var axis=STAGE.axis||'fill';
+    vw.style.setProperty('--src-ar',(src.width>0&&src.height>0)?(src.width+' / '+src.height):'16 / 9');
+    vw.style.setProperty('--stage-pad',((STAGE.padding||0)/(CANVAS.width||1920)*100)+'%');
+    // 刷新配置时会重建页面；这里仍先清掉上一轮的位置类，避免残留
+    vw.className='';
+    vw.classList.add('axis-'+axis);
+    if(axis!=='fill') vw.classList.add('stage-'+(STAGE.position||'center'));
+    document.getElementById('fit-box').style.setProperty('--stage-scale',String(STAGE.scale||1));
+    var fits=document.querySelectorAll('#video-wrap .source-video,#video-wrap .video-canvas');
+    for(var i=0;i<fits.length;i++) fits[i].style.objectFit=STAGE.object_fit||'cover';
+
+    var bgMode=STAGE.bg||'none';
+    document.getElementById('player').style.background=
+      (bgMode==='color')?(STAGE.bg_color||'#000000'):'#000000';
+    if(bgMode==='blur'){
+      var player=document.getElementById('player');
+      player.style.setProperty('--bg-blur',(STAGE.blur_px||28)+'px');
+      player.style.setProperty('--bg-img-scale',String(STAGE.blur_img_scale||1.187));
+      var bg=document.getElementById('bg-video');
+      bg.src=video.currentSrc||'clip.mp4';
+      document.getElementById('bg-video-wrap').classList.add('on');
+      bg.play().catch(function(){});
+      video.addEventListener('timeupdate',function(){
+        if(bg.currentTime&&Math.abs(bg.currentTime-video.currentTime)>0.05){bg.currentTime=video.currentTime;}
+      });
+    }
+    window.__STAGE=STAGE;
+  })();
   var layout=CFG.layout||{};
   var subStyle=(CFG.style&&CFG.style.subtitle)||{};
   var dmStyle=(CFG.style&&CFG.style.danmaku)||{};
@@ -619,10 +751,11 @@ function init(){
     'font-size:'+(subStyle.size||72)+'px;'+
     'font-weight:700;line-height:1.5;'+
     'color:'+(subStyle.color||'#dcbda0')+';'+
-    'padding:14px 44px;text-align:center;'+
+    'padding:14px 0;text-align:center;'+
     '-webkit-text-stroke:'+(subStyle.stroke||'12px #403c3b')+';'+
     'paint-order:stroke fill;'+
     'text-shadow:0 2px 12px rgba(0,0,0,0.4);}'+
+    '.cap-line{display:block;white-space:nowrap;}'+
     '.cap .hl{color:'+(subStyle.highlight_color||'#f56b41')+';'+
     'font-weight:900;'+
     '-webkit-text-stroke:8px #403c3b;'+
@@ -640,10 +773,26 @@ function init(){
 
   // --- 字幕 ---
   var capEl=document.getElementById('captions');
+  var capFont='700 '+(subStyle.size||72)+'px "'+(subStyle.font||'LXGW WenKai')+'","Microsoft YaHei","Noto Sans SC",sans-serif';
   SUB.forEach(function(s,i){
     var el=document.createElement('div');
     el.className='cap'; el.id='c'+i;
-    el.innerHTML=s.html||s.text;
+    // A5 折行：与画布出片同一套 wrapCaptionParts（安全宽 87.5% / 最多 3 行 / 最小 0.7 字号），
+    // 行内 white-space:nowrap 禁掉浏览器自动换行，保证预览与出片断行位置一致
+    var parts=[];var capRe=/<span class="hl">([^<]+)<\/span>|[^<]+/g;var cm;
+    var capHtml=s.html||s.text||'';
+    while((cm=capRe.exec(capHtml))!==null){
+      if(cm[1])parts.push({text:cm[1],hl:true});
+      else if(cm[0].trim())parts.push({text:cm[0],hl:false});
+    }
+    if(!parts.length)parts.push({text:s.text||'',hl:false});
+    var wrapped=wrapCaptionParts(parts,CW*0.875,function(tx){return capMeasure(tx,capFont);});
+    if(wrapped.scale<1)el.style.fontSize=((subStyle.size||72)*wrapped.scale)+'px';
+    el.innerHTML=wrapped.lines.map(function(line){
+      return '<span class="cap-line">'+line.map(function(p){
+        return p.hl?('<span class="hl">'+escHtml(p.text)+'</span>'):escHtml(p.text);
+      }).join('')+'</span>';
+    }).join('');
     capEl.appendChild(el);
   });
 
@@ -654,7 +803,7 @@ function init(){
     var el=document.createElement('div');
     el.className='dm'; el.id='d'+i;
     el.textContent=d.text;
-    el.style.top=Math.min(Math.max((d.y/1920)*540,10),520)+'px';
+    el.style.top=Math.min(Math.max((d.y/1920)*(540*CK),10*CK),520*CK)+'px';
     dmEl.appendChild(el);
   });
   var dmWidths=[];
@@ -734,6 +883,28 @@ function init(){
     if(ie-is>0.3) tl.to(SEL_SRC,{x:0,y:0,duration:0.25,ease:'power2.inOut'},ie-0.25);
   });
 
+  // ---- 手持摇摆（DOM/GSAP 预览层）----
+  // GSAP 是「关键帧」时间线，表达不了多正弦叠加的持续状态，所以这一层不走 tl：
+  // 由 ui(t) 每帧把摇摆写进 #fit-box 的 inline transform —— 那是唯一没被 GSAP 占用的层
+  // （#source-video 归运镜缩放与瞬时特效、#video-wrap 归 shake/blur/color_shift）。
+  // 幅度与不动点由 canvas IIFE 的 `window.__CAM_STATE` 给出（同一条求值路径，竖屏已在它里面归零）。
+  var fitBox = document.getElementById('fit-box');
+  function applyHandheldDOM(t) {
+    if (!fitBox || !window.__CAM_STATE) return;
+    var cam = window.__CAM_STATE(t);
+    var sw = handheldSway(t, cam.handheld);
+    if (!sw.dx && !sw.dy && !sw.rot && sw.scale === 1) {
+      if (fitBox.style.transform) { fitBox.style.transform = ''; fitBox.style.transformOrigin = ''; }
+      return;
+    }
+    // 位移是 1920×1080 出片像素 → 按 #fit-box 实际宽度等比缩小；缩放与 CSS 的 --stage-scale 合成。
+    // 倾斜/呼吸缩放绕聚焦中心（与 canvas 路径、WebUI 预览同一个不动点）。
+    var k = (fitBox.clientWidth || CW) / CW;
+    var sc = (STAGE.scale || 1) * sw.scale;
+    fitBox.style.transformOrigin = (cam.ox / CW * 100) + '% ' + (cam.oy / CH * 100) + '%';
+    fitBox.style.transform = 'translate(' + (sw.dx * k) + 'px,' + (sw.dy * k) + 'px) rotate(' + sw.rot + 'deg) scale(' + sc + ')';
+  }
+
   // ---- 事件处理器注册表 ----
   // 新增事件: 加一行 handlers.xxx = function(ev, et) { ... }
   var handlers = {};
@@ -756,6 +927,36 @@ function init(){
     scheduleSound(ev.time, function(){ sfxPlay(name,vol,sd); }, name, vol, sd);
   }
 
+  // 贴纸落点（百分比）——返回值是**锚点**，`center` 说明它是盒子中心还是左上角：
+  //   auto   = 用事件自己带的 x/y —— 由 process/placement.rs 的安全区算法算好写进 segments，
+  //            含义是**盒子左上角**（placement.rs 模块头第 2 条）
+  //   manual = 所有贴纸固定到 `[sticker] position` 那一点（电台/竖屏常用），忽略事件的 x/y，
+  //            含义是**盒子中心**（config.rs 的 `StickerConfig.position` 注释 / 设置页口径）
+  // 两个键基准不同、不要"统一"：manual 是用户在预览上点出来的中心，auto 是算法给的左上角。
+  // 两种模式都保留入场动画与出框 clamp —— "固定"指落点固定，不是取消动画。
+  // 值来自 CFG._canvas.sticker（Rust resolve_stage 唯一推导），模板不重算。
+  function stickerAnchor(ev){
+    var st=(CFG._canvas&&CFG._canvas.sticker)||null;
+    if(st&&st.position_mode==='manual'){
+      var parts=String(st.position||'50% 50%').trim().split(/\s+/);
+      var mx=parseFloat(parts[0]);
+      var my=parseFloat(parts.length>1?parts[1]:parts[0]);
+      return { x: isFinite(mx)?mx:50, y: isFinite(my)?my:50, center:true };
+    }
+    var ex=parseFloat(ev.x), ey=parseFloat(ev.y);
+    return { x: isFinite(ex)?ex:50, y: isFinite(ey)?ey:50, center:false };
+  }
+
+  // 锚点 → 盒子**左上角**像素（clamp 进安全区，与 engine.js::clampSticker 同一套）
+  function stickerBox(anc){
+    var S=280*SK, M=32*SK;
+    var x=anc.x/100*CW, y=anc.y/100*CH;
+    if(anc.center){x-=S/2; y-=S/2;}   // manual 给的是中心
+    return { left: Math.max(M, Math.min(CW-S-M, x)),
+             top:  Math.max(M, Math.min(CH-S-M, y)),
+             size: S };
+  }
+
   handlers.sticker = function(ev, et) {
     var dur=evDur(ev,2.5);
     var eid='sticker_'+(window.__STICKER_COUNTER||0); window.__STICKER_COUNTER=(window.__STICKER_COUNTER||0)+1;
@@ -763,18 +964,21 @@ function init(){
     el.className='sticker-img'; el.id=eid;
     var en=ev.name||ev.keyword||'';
     var src=STICKER_MAP[en]||'';
+    var box=stickerBox(stickerAnchor(ev));
+    var stLeft=box.left, stTop=box.top, stSize=box.size;
     // emoji 来源的 name 是 codepoint: 本地缺失时回退到 Noto Emoji CDN
     if(!src&&/^[0-9a-f]+$/i.test(en)){src='https://fonts.gstatic.com/s/e/notoemoji/latest/'+en+'/512.gif';}
     el.src=src;
     el.onerror=function(){
       var code=parseInt(en,16);
-      if(!isNaN(code))this.outerHTML='<span style="font-size:200px;text-align:center;line-height:280px;font-family:\'Noto Color Emoji\',\'Apple Color Emoji\',\'Segoe UI Emoji\',sans-serif;opacity:0;position:absolute;width:280px;height:280px" id="'+eid+'">'+String.fromCodePoint(code)+'</span>';
+      // 把落点一起搬进 span（outerHTML 换掉元素后拿不到 el.style，落点会丢）
+      if(!isNaN(code))this.outerHTML='<span style="left:'+stLeft+'px;top:'+stTop+'px;font-size:'+(200*SK)+'px;text-align:center;line-height:'+stSize+'px;font-family:\'Noto Color Emoji\',\'Apple Color Emoji\',\'Segoe UI Emoji\',sans-serif;opacity:0;position:absolute;width:'+stSize+'px;height:'+stSize+'px" id="'+eid+'">'+String.fromCodePoint(code)+'</span>';
     }.bind(el);
-    el.alt=''; var stLeft=Math.max(32, Math.min(1920-280-32, pctX(ev.x))); var stTop=Math.max(32, Math.min(1080-280-32, pctY(ev.y))); el.style.left=stLeft+'px'; el.style.top=stTop+'px';
+    el.alt=''; el.style.left=stLeft+'px'; el.style.top=stTop+'px';
     document.getElementById('emoji-layer').appendChild(el);
     fxSfx(ev);
     tl.fromTo('#'+el.id,{scale:0.3,rotation:-15,autoAlpha:0},{scale:1,rotation:0,autoAlpha:1,duration:0.35,ease:'back.out(3)'},et);
-    tl.to('#'+el.id,{y:-18,duration:0.4,ease:'power2.out'},et+0.25);
+    tl.to('#'+el.id,{y:-18*SK,duration:0.4,ease:'power2.out'},et+0.25);
     var fadeStart=et+0.35+dur;
     tl.to('#'+el.id,{autoAlpha:0,duration:0.3,ease:'power2.in'},fadeStart);
     tl.set('#'+el.id,{visibility:'hidden'},fadeStart+0.3);
@@ -908,17 +1112,12 @@ function init(){
       var et=ev.time;
       var fn=handlers[ev.type];
       if(fn){
-        if(CFG.vertical){
-          // 竖屏: 视觉特效跳过视觉只播音效
-          var VIS={shake:1,flash:1,blur:1,zoom_bounce:1,vignette:1,hue_shift:1,stutter:1,split:1,noise:1,pulse:1,color_shift:1,overlay:1};
-          if(VIS[ev.type]){ fxSfx(ev); return; }
-          // 竖屏贴纸: 视频在左 → 贴纸居中; 视频居中 → 左右交替
-          if(ev.type==='sticker'){
-            var vpos=(CFG.layout&&CFG.layout.vertical_position)||'left';
-            if(vpos==='left'){ ev.x='50%'; }
-            else { ev.x=(window.__STICKER_SIDE=!window.__STICKER_SIDE)?'15%':'85%'; }
-          }
-        }
+        // 竖屏不再一刀切屏蔽视觉特效: 各 handler 的作用对象本来就是对的
+        // （shake/blur/color_shift 打 #video-wrap、其余打 #source-video，背景层是兄弟节点不受波及）。
+        // 音效不受影响 —— 每个 handler 内部自己会调 fxSfx(ev)。
+        // 竖屏下唯一需要屏蔽的是运镜 camera，它在上面的 camEvents 段处理（transformOrigin 按横屏九宫格算，
+        // 作用在窄竖视频上会指到画面外）。
+        // 参考: docs/plan/polish-vertical-canvas.md §1.3 实测表。
         fn(ev,et);
       }
 
@@ -949,7 +1148,7 @@ function init(){
     var td=d.travel_duration||8;
     var textW=dmWidths[i]||Math.max(d.text.length*55,100);
     // 淡入 + 滚动
-    tl.set(sel,{x:1920,autoAlpha:0},d.start);
+    tl.set(sel,{x:CW,autoAlpha:0},d.start);
     tl.to(sel,{autoAlpha:0.9,duration:0.3},d.start);
     tl.to(sel,{x:-textW,autoAlpha:0.9,duration:td,ease:'none'},d.start+0.3);
     tl.to(sel,{autoAlpha:0,duration:0.2},d.end-0.2);
@@ -974,7 +1173,7 @@ function init(){
   var playStartAt=0,playStartT=0; // 墙钟锚点: t = playStartT + (now - playStartAt)/1000
   function clockT(){return playStartT+(performance.now()-playStartAt)/1000;}
   function fmt(s){var m=Math.floor(s/60),s2=Math.floor(s%60);return(m<10?'0':'')+m+':'+(s2<10?'0':'')+s2;}
-  function ui(t){fireSounds(t);tl.seek(t);td.textContent=fmt(t)+' / '+fmt(dur);sb.value=(t/dur*1000);}
+  function ui(t){fireSounds(t);tl.seek(t);applyHandheldDOM(t);td.textContent=fmt(t)+' / '+fmt(dur);sb.value=(t/dur*1000);}
   function updatePlayTest(t){
     var el=document.getElementById('playtest');
     if(!el)return;
@@ -1194,6 +1393,9 @@ function init(){
 
   function getActiveCamera(t, cam) {
     var zoom = 1.0, ox = 65, oy = 50;
+    // 手持摇摆的**幅度** 0~1：与 zoom 完全同一套状态机（同一段 td / 同一条缓动），
+    // 差别只是档位只有 0/1 —— 开了就跟到下一条不带 handheld 的运镜。
+    var handheld = 0.0;
     var layout = (EVENT_IDX && EVENT_IDX.layout) || {};
     var liver = layout.liver || {};
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
@@ -1213,6 +1415,8 @@ function init(){
       var p = (t >= ce || hardCut) ? 1.0 : E.pow2_out((t - c.time) / td);
       if (t >= ce || hardCut) { zoom = tgt; }
       else { zoom = lerp(zoom, tgt, p); }
+      // 手持摇摆是状态机上的持续项：与 zoom 走同一段窗口、同一条缓动（硬切时一起瞬间到位）。
+      handheld = lerp(handheld, c.ev.handheld === true ? 1.0 : 0.0, p);
       // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
       // 起点取事件自己的 origin 而不是上一个事件的落点，与 zoom 同一段窗口、同一条缓动。
       var oa = (c.ev.origin || defOrigin).split(' ');
@@ -1224,8 +1428,17 @@ function init(){
       ox = lerp(ax, bx, p);
       oy = lerp(ay, by, p);
     }
-    return { zoom: zoom, ox: ox * 1920 / 100, oy: oy * 1080 / 100 };
+    // 竖屏（源素材竖）不做运镜 —— 手持摇摆是叠加在运镜上的状态，跟着一起屏蔽
+    // （与 render-core `evaluate_frame`、engine.js `cameraAt`、DOM 预览层同一口径）
+    return { zoom: zoom, ox: ox * CW / 100, oy: oy * CH / 100, handheld: CFG.vertical ? 0.0 : handheld };
   }
+
+  // DOM/GSAP 预览层（脚本顶层作用域，看不见这个 IIFE）取相机状态：
+  // 走 canvas 的同一条求值路径 —— 预览与成片的摇摆起停、不动点必然一致；
+  // 波形用顶层的 `handheldSway`（竖屏在 getActiveCamera 里已归零）。
+  window.__CAM_STATE = function(t) {
+    return getActiveCamera(t, (EVENT_IDX || buildIndex()).camera);
+  };
 
   function getActiveSubs(t, subs) {
     var out = [];
@@ -1269,17 +1482,17 @@ function init(){
       var textW = DM_WIDTHS[i] || (d.text || '').length * 55;
       var el = t - d.start;
       var fadeIn = 0.3, fadeOut = 0.2;
-      var y = (d.y / 1920) * 540;
+      var y = (d.y / 1920) * (540 * CK);
 
       // x 始终由滚动进度决定 (与 opacity 独立)
       var progress = Math.max(0, (el - fadeIn) / travel);
-      var x = 1920 - Math.min(progress, 1) * (1920 + textW);
+      var x = CW - Math.min(progress, 1) * (CW + textW);
 
       // opacity = fadeIn × fadeOut
       var opacity = 0.9;
       if (el < fadeIn) {
         opacity = 0.9 * (el / fadeIn);
-        x = 1920;
+        x = CW;
       } else if (t > d.end - fadeOut) {
         opacity = 0.9 * Math.max(0, (d.end - t) / fadeOut);
       }
@@ -1310,14 +1523,14 @@ function init(){
       } else if (t < et + popIn + floatUp) {
         var p = (t - et - popIn) / floatUp;
         opacity = 1; scale = 1; rot = 0;
-        yOff = -18 * p;
+        yOff = -18 * SK * p;
       } else if (t < et + popIn + floatUp + dur) {
-        opacity = 1; yOff = -18;
+        opacity = 1; yOff = -18 * SK;
       } else {
         var p = (t - et - popIn - floatUp - dur) / fadeOut;
         opacity = 1 - p;
         scale = 1 - 0.6 * p;
-        yOff = -18;
+        yOff = -18 * SK;
       }
       if (opacity < 0.005) continue;
 
@@ -1341,9 +1554,9 @@ function init(){
       }
 
       var src = (e._bitmaps && e._bitmaps[frameIndex]) || imgEl;
-      var w = 280, h = 280;
+      var S = 280 * SK;
       out.push({ img: src, opacity: opacity, scale: scale, rot: rot,
-                 x: left + 140, y: top + 140 + yOff, w: w, h: h });
+                 x: left + S / 2, y: top + S / 2 + yOff, w: S, h: S });
     }
     return out;
   }
@@ -1521,8 +1734,8 @@ function init(){
       if (!CANVAS) {
         CANVAS = document.createElement('canvas');
         CANVAS.id = '_polish_cc';
-        CANVAS.width = 1920;
-        CANVAS.height = 1080;
+        CANVAS.width = CW;
+        CANVAS.height = CH;
         CANVAS.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:1px';
         document.body.appendChild(CANVAS);
       }
@@ -1538,8 +1751,44 @@ function init(){
     });
   }
 
+  // ---- 画面构成：背景层（出片 canvas 路径） ----
+  // 取值来自 `_canvas.stage`（Rust `ProjectFile::resolve_stage` 唯一推导），与 DOM 的
+  // `#bg-video-wrap` 同视觉。⚠️ DOM 那层**不参与出片**（导出走本 canvas），所以必须在这里
+  // 自己补：不补的话主画面被 shake / split / 画中画运镜挪开时，让出来的边是**透明**的，
+  // 落进 JPEG 就是纯黑（用户报的"震动露出黑边"）。
+  // `bg=none` 照旧不画（横画布铺满）：透明区在 JPEG 里本来就是黑，与改造前逐字节一致。
+  var STAGE=(CFG._canvas&&CFG._canvas.stage)||{};
+  var STAGE_BG=STAGE.bg||'none';
+
+  // 与 CSS `object-fit:cover` 同义：按短边放大到铺满，居中裁切
+  function stageCoverRect(sw,sh,dw,dh){
+    var s=Math.max(dw/sw,dh/sh),w=sw*s,h=sh*s;
+    return {x:(dw-w)/2,y:(dh-h)/2,w:w,h:h};
+  }
+
+  // 背景层：black / color 铺满纯色；blur = 同一帧画面铺满 + 高斯模糊 + 压暗去饱和，
+  // 再绕中心放大把模糊溢出的边缘推出画布（倍数 `blur_img_scale`，与 DOM `#bg-video` 的
+  // `transform:scale(var(--bg-img-scale))` 同源）。模糊半径 `blur_px` 是**画布 px**。
+  function drawStageBackdrop(ctx,bmp){
+    if(STAGE_BG==='none')return;
+    if(STAGE_BG==='black'||STAGE_BG==='color'){
+      ctx.fillStyle=(STAGE_BG==='color')?(STAGE.bg_color||'#000000'):'#000000';
+      ctx.fillRect(0,0,CW,CH);
+      return;
+    }
+    var r=stageCoverRect(bmp.width||CW,bmp.height||CH,CW,CH);
+    var bs=STAGE.blur_img_scale||1;
+    ctx.save();
+    ctx.filter='blur('+(STAGE.blur_px||0)+'px) brightness(0.5) saturate(1.15)';
+    ctx.translate(CW/2,CH/2); ctx.scale(bs,bs); ctx.translate(-CW/2,-CH/2);
+    ctx.drawImage(bmp,r.x,r.y,r.w,r.h);
+    ctx.restore();
+  }
+
   function renderFrame(t, ctx, idx, videoBitmap) {
-    ctx.clearRect(0, 0, 1920, 1080);
+    ctx.clearRect(0, 0, CW, CH);
+    // 背景层必须画在视频层之前：铺满（axis=fill）时被视频层整块盖住，有位移才露出来
+    drawStageBackdrop(ctx, videoBitmap);
 
     var cam = getActiveCamera(t, idx.camera);
     var shake = getShake(t, idx.shake);
@@ -1560,14 +1809,21 @@ function init(){
     // stutter / split / zoom on video
     if (stutter) ctx.translate(stutter.x, stutter.y);
     else if (split) { ctx.translate(split.x, 0); ctx.transform(1, split.skewX/100, 0, 1, 0, 0); ctx.scale(split.scale, split.scale); }
-    // camera zoom
+    // camera zoom + 手持摇摆
     // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜。
-    if (Math.abs(finalZoom - 1.0) > 0.001) {
+    // 手持摇摆（运镜的附加变种）叠在运镜之上：位移在屏幕空间、倾斜与呼吸缩放绕同一个不动点。
+    // canvas 的 CTM 是后乘（先调用的 transform 后作用于画面），所以位移排在最外层，
+    // 顺序与 WebUI 预览的 transform 列表（translate → rotate → scale）等价。
+    var sway = handheldSway(t, cam.handheld);
+    var camScale = finalZoom * sway.scale;
+    if (Math.abs(camScale - 1.0) > 0.001 || sway.rot !== 0 || sway.dx !== 0 || sway.dy !== 0) {
+      if (sway.dx || sway.dy) ctx.translate(sway.dx, sway.dy);
       ctx.translate(cam.ox, cam.oy);
-      ctx.scale(finalZoom, finalZoom);
+      if (sway.rot) ctx.rotate(sway.rot * Math.PI / 180);
+      ctx.scale(camScale, camScale);
       ctx.translate(-cam.ox, -cam.oy);
     }
-    ctx.drawImage(videoBitmap, 0, 0, 1920, 1080);
+    ctx.drawImage(videoBitmap, 0, 0, CW, CH);
     ctx.restore();
 
     // ---- noise overlay ----
@@ -1576,7 +1832,7 @@ function init(){
       ctx.save();
       ctx.globalAlpha = noiseOp;
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.fillRect(0, 0, CW, CH);
       ctx.restore();
     }
 
@@ -1586,7 +1842,7 @@ function init(){
       ctx.save();
       ctx.globalAlpha = flash.opacity;
       ctx.fillStyle = flash.color;
-      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.fillRect(0, 0, CW, CH);
       ctx.restore();
     }
 
@@ -1596,7 +1852,7 @@ function init(){
       ctx.save();
       ctx.globalAlpha = hueFl.opacity;
       ctx.fillStyle = hueFl.color;
-      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.fillRect(0, 0, CW, CH);
       ctx.restore();
     }
 
@@ -1607,17 +1863,17 @@ function init(){
       ctx.globalAlpha = ov.opacity;
       if (ov.type === 'color') {
         ctx.fillStyle = ov.color;
-        ctx.fillRect(0, 0, 1920, 1080);
+        ctx.fillRect(0, 0, CW, CH);
       } else if (ov.type === 'gradient' && ov.colors.length >= 2) {
         // 长度守卫：overlayStops 已保证 ≥2 档，这里是唯一会打断整个 chunk 的地方，再兜一道
         var grad = ov.shape === 'radial'
-          ? ctx.createRadialGradient(960, 540, 0, 960, 540, 960)
-          : ctx.createLinearGradient(0, 0, 1920, 1080);
+          ? ctx.createRadialGradient(CW/2, CH/2, 0, CW/2, CH/2, CW/2)
+          : ctx.createLinearGradient(0, 0, CW, CH);
         for (var gi = 0; gi < ov.colors.length; gi++) {
           grad.addColorStop(gi / (ov.colors.length - 1), ov.colors[gi]);
         }
         ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, 1920, 1080);
+        ctx.fillRect(0, 0, CW, CH);
       }
       ctx.restore();
     }
@@ -1628,7 +1884,7 @@ function init(){
       ctx.save();
       ctx.globalAlpha = ib;
       ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, 1920, 1080);
+      ctx.fillRect(0, 0, CW, CH);
       ctx.restore();
     }
 
@@ -1636,7 +1892,6 @@ function init(){
     var subS = idx.subStyle;
     var caps = getActiveSubs(t, idx.subs);
     if (caps.length > 0) {
-      var fs = (subS.size || 72) + 'px';
       var ff = (subS.font || 'LXGW WenKai') + ',"Microsoft YaHei","Noto Sans SC",sans-serif';
       var color = subS.color || '#dcbda0';
       var hlColor = subS.highlight_color || '#f56b41';
@@ -1644,33 +1899,46 @@ function init(){
       var sw = parseFloat(strokeStr) || 12;
       var sc = strokeStr.replace(/^[\d.]+px\s*/, '') || '#403c3b';
 
-      ctx.font = '700 ' + fs + ' ' + ff;
+      // ⚠️ 这里**不要**再写一句 `ctx.font = '700 ' + fs + ' ' + ff;`：A5 折行改造把字号挪到了
+      // 逐条字幕里（`baseSize` / `wrapped.scale`，见下面 `ctx.font = '700 ' + baseSize + 'px ' + ff`），
+      // 而 `fs` 在这个作用域里**从来没有声明**过（只有另外两个函数里各自的局部 `var fs`）——
+      // 于是「只要这一帧有字幕」就抛 `ReferenceError: fs is not defined`，
+      // 整块 chunk 直接失败（日志：`Chunk: Render error: fs is not defined`，
+      // 表现是**所有带字幕的片段都导不出来**）。字号必须在量宽之前设好，
+      // 所以基准字号与缩放后的字号都在 forEach 里设（下面 1915/1918 两行）。
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
-      var cx = 960, cy = 960;
+      var cx = CW / 2, cy = CH - 120 * CKH;
 
       caps.forEach(function(cap) {
         ctx.save();
         ctx.globalAlpha = cap.opacity;
-        // measure total width
+        // A5 折行：安全宽 87.5% 画布宽、最多 3 行、装不下缩字号（下限 0.7）。
+        // 先按基准字号量总宽定 scale，再按缩放后的 font 逐行量宽绘制。
+        var baseSize = subS.size || 72;
+        ctx.font = '700 ' + baseSize + 'px ' + ff;
+        var wrapped = wrapCaptionParts(cap.parts, CW * 0.875, function(tx) { return ctx.measureText(tx).width; });
+        var size = baseSize * wrapped.scale;
+        if (wrapped.scale < 1) ctx.font = '700 ' + size + 'px ' + ff;
+        var swEff = sw * wrapped.scale;
         ctx.textAlign = 'left';
-        var totalW = 0;
-        cap.parts.forEach(function(p) { totalW += ctx.measureText(p.text).width; });
-        var sx = cx - totalW / 2;
-        cap.parts.forEach(function(p) {
-          var pw = ctx.measureText(p.text).width;
-          if (p.hl) {
-            ctx.strokeStyle = sc; ctx.lineWidth = sw;
-            ctx.strokeText(p.text, sx, cy + cap.yOffset);
-            ctx.fillStyle = hlColor;
-          } else {
-            ctx.strokeStyle = sc; ctx.lineWidth = sw;
-            ctx.strokeText(p.text, sx, cy + cap.yOffset);
-            ctx.fillStyle = color;
-          }
-          ctx.fillText(p.text, sx, cy + cap.yOffset);
-          sx += pw;
-        });
+        var lh = size * 1.5; // 与 DOM .cap line-height:1.5 一致
+        var y0 = cy + (cap.yOffset || 0) - (wrapped.lines.length - 1) * lh / 2;
+        for (var li = 0; li < wrapped.lines.length; li++) {
+          var line = wrapped.lines[li];
+          var lineW = 0;
+          line.forEach(function(p) { lineW += ctx.measureText(p.text).width; });
+          var sx = cx - lineW / 2;
+          var ly = y0 + li * lh;
+          line.forEach(function(p) {
+            var pw = ctx.measureText(p.text).width;
+            ctx.strokeStyle = sc; ctx.lineWidth = swEff;
+            ctx.strokeText(p.text, sx, ly);
+            ctx.fillStyle = p.hl ? hlColor : color;
+            ctx.fillText(p.text, sx, ly);
+            sx += pw;
+          });
+        }
         ctx.restore();
       });
     }
@@ -1850,8 +2118,8 @@ function init(){
   function laneDuration(ev){ return evDur(ev, defaultDuration(ev.type)); }
   function labelFor(ev){
     if(ev.type==='sticker') return ev.keyword || ev.name || '贴纸';
-    // 硬切（cut）加「切·」前缀，与 WebUI 时间轴的块标签一致
-    if(ev.type==='camera') return (ev.cut ? '切·' : '') + (ev.zoom || '运镜');
+    // 硬切（cut）加「切·」前缀、「摇」（handheld）加「摇·」前缀，与 WebUI 时间轴的块标签一致
+    if(ev.type==='camera') return (ev.handheld ? '摇·' : '') + (ev.cut ? '切·' : '') + (ev.zoom || '运镜');
     if(ev.type==='sfx') return ev.name || '音效';
     if(ev.type==='overlay') return ev.overlay_type || '覆盖';
     return ev.type;

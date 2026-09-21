@@ -1,3 +1,8 @@
+//! llm::agent：把条目切成窗口、并发跑 LLM 任务的通用编排器（含 checkpoint 续传）。
+//!
+//! 入口：`Agent`（`new` / `with_window_size` / `with_max_concurrent` / `with_cancel` / `run` / `run_with_checkpoint` / `run_windows`）、`AgentTask`、`AgentItem`、`AgentWindow`、`CancelProbe`、`extract_json_array` / `extract_json_object`、`windows_from_checkpoint`。
+//! 边界：checkpoint 按提示词指纹失效（`prompt_fingerprint`），别绕过；并发只由 `LlmConfig::concurrency` 决定，别写死数字 —— 见 `crates/vtrim-core/src/llm/AGENTS.md`
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,6 +14,14 @@ use tokio::task::JoinSet;
 
 use crate::config::LlmConfig;
 use crate::llm::LlmClient;
+
+/// 取消探针：返回 true = 任务已被请求取消。
+///
+/// `Agent` 在**派发每个窗口之前**与**每收一个窗口之后**检查它：命中就不再起新窗口，
+/// 并 `abort_all()` 掉在飞的窗口（在飞的那次 HTTP 请求会随 future 一起被丢弃）。
+/// 没有这道闸，"取消"只在**整个阶段跑完之后**才生效 —— 用户点了停止，LLM 还在后台
+/// 一个窗口接一个窗口地跑（实测 18 个窗口要再跑十几分钟）。
+pub type CancelProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Agent 输入项：带时间戳的文本片段（字幕段、事件候选等）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -141,7 +154,10 @@ pub trait AgentTask<T: Send + Sync + Clone + 'static>: Send + Sync {
         let client = LlmClient::from_config(llm_cfg)?
             .with_timeout(120)
             .with_usage_context(self.usage_context());
-        let client = if self.thinking() {
+        // `AgentTask::thinking()` 是**订正那条链路的老开关**（`[correct] thinking`）。
+        // LLM 层已经表态时（`[llm].thinking` 或 `[llm.overrides.<link>].thinking`，由
+        // `LlmConfig::for_link` 解析出来）以 LLM 层为准 —— 否则它会把解析结果顶掉。
+        let client = if self.thinking() && llm_cfg.thinking.is_none() {
             client.with_thinking(Some("enabled"))
         } else {
             client
@@ -196,6 +212,8 @@ pub struct Agent {
     llm: LlmConfig,
     window_size: usize,
     max_concurrent: usize,
+    /// 取消探针（不给 = 不支持取消，跑完为止）。
+    cancel: Option<CancelProbe>,
 }
 
 impl Agent {
@@ -206,7 +224,19 @@ impl Agent {
             llm,
             window_size: 25,
             max_concurrent,
+            cancel: None,
         }
+    }
+
+    /// 注入取消探针（见 [`CancelProbe`]）。不给时行为与从前一致（跑完为止）。
+    pub fn with_cancel(mut self, cancel: CancelProbe) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// 现在是否已被请求取消。
+    fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c())
     }
 
     pub fn with_window_size(mut self, n: usize) -> Self {
@@ -389,6 +419,12 @@ impl Agent {
         };
 
         for idx in pending {
+            // 派发前先看取消：已经点了停止就别再起新窗口（每个窗口都是一次几十秒的 LLM 调用）
+            if self.cancelled() {
+                tracing::warn!("{} 已被取消：停止派发剩余窗口", task.name());
+                pb.abandon_with_message(format!("{} 已取消", task_name));
+                return Err(anyhow::anyhow!("任务已取消"));
+            }
             let task = task.clone();
             let llm = llm.clone();
             let sem = sem.clone();
@@ -463,6 +499,17 @@ impl Agent {
                 Err(e) => {
                     tracing::warn!("并行任务失败: {}", e);
                 }
+            }
+
+            // 记完这一个窗口（含 checkpoint）再看取消：命中就 abort 在飞的（连带丢弃
+            // 它们的 HTTP 请求）并报「任务已取消」，而不是把剩下十几个窗口跑完。
+            // 已经完成的窗口留在 checkpoint 里，重跑时续传不重做。
+            if self.cancelled() {
+                let inflight = set.len();
+                tracing::warn!("{} 已被取消：中止 {inflight} 个在飞窗口", task.name());
+                set.abort_all();
+                pb.abandon_with_message(format!("{} 已取消", task_name));
+                return Err(anyhow::anyhow!("任务已取消"));
             }
         }
 
@@ -618,6 +665,122 @@ mod tests {
     #[test]
     fn extract_json_strips_code_fence() {
         assert_eq!(extract_json("```json\n{\"1\":\"你好\"}\n```"), "{\"1\":\"你好\"}");
+    }
+
+    /// 取消探针生效：已跑完的窗口算数，剩下的**不再跑**，返回「任务已取消」。
+    ///
+    /// 回归的是"点了停止、后台还在一个窗口接一个窗口地跑 LLM"——旧实现只在**阶段边界**
+    /// 检查取消，而 `Agent` 内部从来不查，整段检测（18 个窗口、十几分钟）取消不了。
+    #[tokio::test]
+    async fn run_windows_stops_when_cancel_probe_turns_true() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct FakeTask {
+            entered: Arc<AtomicUsize>,
+            completed: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl AgentTask<AgentOutput> for FakeTask {
+            fn name(&self) -> &str {
+                "fake"
+            }
+
+            fn build_global_context(&self, _items: &[AgentItem]) -> String {
+                String::new()
+            }
+
+            fn build_window_context(
+                &self,
+                _items: &[AgentItem],
+                _window: &[AgentItem],
+                _global: &str,
+            ) -> String {
+                String::new()
+            }
+
+            fn system_prompt(&self) -> String {
+                String::new()
+            }
+
+            fn user_prompt(
+                &self,
+                _global: &str,
+                _window_context: &str,
+                _window: &[AgentItem],
+            ) -> String {
+                String::new()
+            }
+
+            fn parse_output(&self, content: &str, _window: &[AgentItem]) -> Result<AgentOutput> {
+                Ok(AgentOutput { index: content.parse()?, text: String::new() })
+            }
+
+            async fn process_window(
+                &self,
+                _all_items: &[AgentItem],
+                window: &AgentWindow<AgentOutput>,
+                _global: &str,
+                _llm_cfg: &LlmConfig,
+            ) -> Result<AgentOutput> {
+                // 第一个窗口立刻完成；其余模拟"在飞的 LLM 调用"：一直挂着，直到被 abort
+                if self.entered.fetch_add(1, Ordering::SeqCst) > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                }
+                self.completed.fetch_add(1, Ordering::SeqCst);
+                Ok(AgentOutput { index: window.items[0].index, text: "done".into() })
+            }
+
+            fn save_windows(
+                &self,
+                windows: &[AgentWindow<AgentOutput>],
+            ) -> Result<serde_json::Value> {
+                Ok(serde_json::to_value(windows)?)
+            }
+
+            fn load_windows(
+                &self,
+                value: serde_json::Value,
+            ) -> Result<Vec<AgentWindow<AgentOutput>>> {
+                Ok(serde_json::from_value(value)?)
+            }
+        }
+
+        let items: Vec<AgentItem> = (1..=4)
+            .map(|i| AgentItem {
+                index: i,
+                start: i as f64,
+                end: i as f64 + 1.0,
+                text: format!("seg{i}"),
+            })
+            .collect();
+
+        let entered = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let task = FakeTask {
+            entered: entered.clone(),
+            completed: completed.clone(),
+        };
+        // 第一个窗口一跑完就当作"用户点了停止"
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let probe_flag = cancelled.clone();
+        let probe_completed = completed.clone();
+        let agent = Agent::new(LlmConfig::default())
+            .with_window_size(1)
+            .with_max_concurrent(1)
+            .with_cancel(Arc::new(move || {
+                if probe_completed.load(Ordering::SeqCst) >= 1 {
+                    probe_flag.store(true, Ordering::SeqCst);
+                }
+                probe_flag.load(Ordering::SeqCst)
+            }));
+
+        let windows = agent.build_windows(&items);
+        let err = agent.run_windows(task, windows, None, None).await.unwrap_err();
+
+        assert!(err.to_string().contains("任务已取消"), "错误应是取消而不是失败: {err}");
+        assert_eq!(completed.load(Ordering::SeqCst), 1, "取消后剩下的窗口不该再跑完");
     }
 
     #[tokio::test]

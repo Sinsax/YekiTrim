@@ -101,6 +101,18 @@ pub enum Event {
         /// 现在放开给任意景别）。缺省 false = 平滑运镜。
         #[serde(default, skip_serializing_if = "is_false")]
         cut: bool,
+        /// **手持摇摆**（附加变种）：把相机换成「手持」——低频位移 + 轻微倾斜 + 呼吸缩放，
+        /// 叠加在当前景别之上（见 [`handheld_sway`]）。
+        ///
+        /// 与 `zoom` 同一套状态机：**持续状态**，从这条运镜起生效、一直跟到下一条运镜
+        /// （把相机交回稳镜头就再写一条不带 `handheld` 的运镜），不是一次性特效；
+        /// 起停跟随该事件的过渡窗口（硬切即瞬变）。
+        ///
+        /// ⚠️ **只有近景（`zoom = "近"`）允许**。它是可选能力，不是自动补的：
+        /// `process` 会把非近景上的 `handheld` 直接剔除（`process::fx::cap_handheld_sway`）。
+        /// ⚠️ 竖屏（源素材竖）整个运镜都被屏蔽，它跟着一起屏蔽。
+        #[serde(default, skip_serializing_if = "is_false")]
+        handheld: bool,
         /// **手工定过时间**（见 `Sticker::manual`）：画中画的 `align_pip_shots` 会跳过它。
         #[serde(default, skip_serializing_if = "is_false")]
         manual: bool,
@@ -463,6 +475,57 @@ impl Default for CameraStyle {
             zoom_wide: default_zoom_wide(),
             extra: HashMap::new(),
         }
+    }
+}
+
+// ===== 手持摇摆（`Event::Camera::handheld` 的固定参数表）=====
+
+/// 手持摇摆的**固定参数**：一个开关、一套参数 ——
+/// 不开放 `[style.camera]` 旋钮、也没有事件级强弱（用户已定）。
+///
+/// 幅度基准是 **1920×1080 输出像素 / 度**；DOM 预览换成画布占比（百分比）与 px 同构，不用换算。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HandheldSway {
+    /// 横向位移（输出像素，1920 基准）
+    pub dx: f64,
+    /// 纵向位移（输出像素，1080 基准）
+    pub dy: f64,
+    /// 倾斜（度，绕**聚焦中心**，正=顺时针）
+    pub rot: f64,
+    /// 呼吸缩放倍率（绕聚焦中心，1.0 = 不缩放）
+    pub scale: f64,
+}
+
+impl HandheldSway {
+    /// 静止：未开启、或幅度为 0（竖屏 / 非近景被剔除后）。
+    pub const OFF: HandheldSway = HandheldSway {
+        dx: 0.0,
+        dy: 0.0,
+        rot: 0.0,
+        scale: 1.0,
+    };
+}
+
+/// 手持摇摆波形：**纯 `t` 的函数**，无累积状态 ——
+/// 所以跳帧求值、并行求值、seek 到任意时刻，结果都一样（与其余瞬时效应的窗口函数同一约定）。
+///
+/// 四个低频正弦叠加：纵横位移各两路（主次频不成整数比，避免机械的钟摆感）+ 轻微倾斜 + 呼吸缩放。
+/// `amp` 是状态机给出的幅度 0~1（与景别同一段缓动窗口，见 `timeline::get_active_camera`）：
+/// 1 = 全幅摇摆，0 = 静止，中间值只在起停的 0.6s 过渡里出现。
+///
+/// ⚠️ 改这里的常数必须同步 `templates/index.html::handheldSway` 与
+/// `webui/src/polish/engine.js::handheldSway`（后者由 `webui/scripts/check-handheld.mjs` 对拍，
+/// Rust↔JS 由 `timeline.rs` 的 `handheld_sway_matches_js_reference` 钉住）。
+pub fn handheld_sway(t: f64, amp: f64) -> HandheldSway {
+    if amp <= 0.0 {
+        return HandheldSway::OFF;
+    }
+    const TAU: f64 = std::f64::consts::TAU;
+    HandheldSway {
+        dx: (6.5 * (TAU * 0.47 * t).sin() + 3.0 * (TAU * 0.83 * t + 1.7).sin()) * amp,
+        dy: (5.0 * (TAU * 0.59 * t + 0.9).sin() + 2.4 * (TAU * 1.13 * t + 2.4).sin()) * amp,
+        rot: (0.32 * (TAU * 0.37 * t + 0.4).sin() + 0.16 * (TAU * 0.91 * t + 2.9).sin()) * amp,
+        scale: 1.0 + 0.007 * (TAU * 0.53 * t + 1.1).sin() * amp,
     }
 }
 

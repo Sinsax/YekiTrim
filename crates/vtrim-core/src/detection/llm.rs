@@ -1,3 +1,8 @@
+//! detection::llm：检测侧 prompt 与 LLM 调用（单窗口请求 / 重试 / 传播潜力评分）。
+//!
+//! 入口：`score_events_with_llm`、`call_with_progress`、`test_llm`、`create_default_event`、`parse_json`、`DEFAULT_PROMPT` / `DEFAULT_SYSTEM_PROMPT` / `TITLE_RULES`。
+//! 边界：`DEFAULT_PROMPT` 里 `{segments}` 必须留在最后（provider 前缀缓存）；改内建 prompt 对 `.vtrim/config.toml` 里的副本无效 —— 见 `crates/vtrim-core/src/detection/AGENTS.md`
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -123,6 +128,106 @@ fn hot_windows_block(hot_windows: &[(f64, f64)]) -> String {
     s
 }
 
+/// 响应被输出上限截断（`finish_reason == "length"` / Anthropic 风格 `stop_reason == "max_tokens"`）。
+///
+/// 单独成一个错误类型是因为**同样的参数重试必然再截断**：调用方要换策略（拆窗 / 提示调大
+/// `[llm].max_tokens`），而不是照原样再发一次。实测一个 4096 的窗口重试两次要白烧 ~45s 与
+/// 两份输出 token，最后还是整窗丢掉。
+#[derive(Debug)]
+pub(crate) struct TruncatedOutput {
+    pub reason: String,
+    pub completion_tokens: u64,
+}
+
+impl std::fmt::Display for TruncatedOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LLM 输出被 max_tokens 截断（finish_reason={}，已用满 {} 输出 token）：\
+             调大 [llm].max_tokens，或让检测窗口更小",
+            self.reason, self.completion_tokens
+        )
+    }
+}
+
+impl std::error::Error for TruncatedOutput {}
+
+/// 响应是否被输出上限截断；是则带上原因与已用输出 token 数。
+fn truncation_of(body: &serde_json::Value) -> Option<TruncatedOutput> {
+    let choice = body.get("choices").and_then(|c| c.get(0));
+    let reason = choice
+        .and_then(|c| c.get("finish_reason"))
+        .or_else(|| choice.and_then(|c| c.get("stop_reason")))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if !matches!(reason, "length" | "max_tokens" | "max_output_tokens") {
+        return None;
+    }
+    Some(TruncatedOutput {
+        reason: reason.to_string(),
+        completion_tokens: body["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+    })
+}
+
+/// 从**被截断**的文本里抢救已经完整的 JSON 数组元素。
+///
+/// max_tokens 用尽时数组会停在中途（`[{…},{…},{"start":12`），整段判废等于把一个窗口的结果
+/// 全丢掉。这里用状态机扫出每个顶层元素的收尾位置（字符串里的括号不计数），从后往前补一个
+/// `]` 试解析，命中就返回「截断前已经完整的那些元素」。
+///
+/// 只处理**未闭合**的数组：已闭合的数组交给正常解析，它解析失败就是真的坏了（比如键没引号），
+/// 那种情况不该被"抢救"成半截结果。
+fn salvage_truncated_array(text: &str) -> Option<serde_json::Value> {
+    let start = text.find('[')?;
+    let body = &text[start..];
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escaped = false;
+    let mut cuts: Vec<usize> = Vec::new();
+
+    for (i, b) in body.bytes().enumerate() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'[' | b'{' => depth += 1,
+            // 数组自己闭合了 → 不是截断，别抢正常解析的判定权
+            b']' => {
+                depth -= 1;
+                if depth <= 0 {
+                    return None;
+                }
+            }
+            // 顶层元素（depth 2 → 1）的收尾处是一个可截断点
+            b'}' => {
+                depth -= 1;
+                if depth == 1 {
+                    cuts.push(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for cut in cuts.iter().rev() {
+        let candidate = format!("{}]", &body[..*cut]);
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            if value.is_array() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 pub fn parse_json(text: &str) -> Result<serde_json::Value> {
     let text = text.trim();
 
@@ -197,6 +302,16 @@ pub fn parse_json(text: &str) -> Result<serde_json::Value> {
                 }
             }
         }
+    }
+
+    // 整段解析不出来时最后试一次「截断抢救」：把截断前已经完整的元素捡回来 ——
+    // 丢一个窗口（实测事件覆盖率因此掉到 46%）比接受半截结果糟得多。
+    if let Some(value) = salvage_truncated_array(json_str) {
+        tracing::warn!(
+            "LLM 输出疑似被 max_tokens 截断：已从截断的 JSON 里抢救出 {} 条完整结果",
+            value.as_array().map(|a| a.len()).unwrap_or(0)
+        );
+        return Ok(value);
     }
 
     anyhow::bail!("LLM 返回的 JSON 格式无效")
@@ -350,8 +465,10 @@ pub async fn score_events_with_llm(
     }
 
     let usage_project = project.map(crate::path::display);
+    // 链路解析：热度评分与检测窗口同属一次检测，共用 `[llm.overrides.detect]`
+    let llm = llm.for_link(crate::config::LlmLink::Detect);
     let client = Arc::new(
-        crate::llm::LlmClient::from_config(llm)?
+        crate::llm::LlmClient::from_config(&llm)?
             .with_timeout(120)
             .with_usage_context(
                 crate::llm::usage::UsageContext::new("事件热度LLM评分").project(usage_project),
@@ -568,6 +685,8 @@ const DETECT_WINDOW_OVERLAP: usize = 5;
 ///   已存在的 checkpoint 会跳过其中已完成窗口。
 /// - `progress_tx`：非空时，每个窗口完成后立即发送该窗口事件（可用于边分析边保存，
 ///   中断后至少保留已完成窗口的结果）。
+/// - `cancel`：取消探针。给了就在**每个窗口派发前**与每收一个窗口后检查，命中即中止
+///   （含 abort 在飞的窗口），返回「任务已取消」而不是继续把剩下的窗口跑完。
 pub async fn call_with_progress(
     segments: &[TranscriptSegment],
     llm: &LlmConfig,
@@ -575,6 +694,7 @@ pub async fn call_with_progress(
     hot_windows: &[(f64, f64)],
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
+    cancel: Option<crate::llm::agent::CancelProbe>,
     progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
 ) -> Result<Vec<Event>> {
     if segments.is_empty() {
@@ -629,7 +749,13 @@ pub async fn call_with_progress(
         hot_windows: hot_windows.to_vec(),
         project: project.map(crate::path::display),
     };
-    let agent = Agent::new(llm.clone()).with_max_concurrent(max_concurrent);
+    // 链路解析：窗口调用走 `[llm.overrides.detect]`（Agent 的 llm 会传给 `process_window` 建客户端）
+    let agent = Agent::new(llm.for_link(crate::config::LlmLink::Detect))
+        .with_max_concurrent(max_concurrent);
+    let agent = match cancel {
+        Some(probe) => agent.with_cancel(probe),
+        None => agent,
+    };
 
     // 桥接通用 Agent 进度 → 调用方的事件流（spawn 转发，避免 send 阻塞 Agent）
     let (agent_progress_tx, mut agent_progress_rx) = if let Some(tx) = progress_tx {
@@ -778,7 +904,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         let client = crate::llm::LlmClient::from_config(llm_cfg)?
             .with_timeout(180)
             .with_usage_context(self.usage_context());
-        process_window_inner(&client, &segments, &self.detect, &self.hot_windows).await
+        process_window_inner(&client, &segments, &self.detect, &self.hot_windows, 0).await
     }
 
     fn save_windows(&self, windows: &[AgentWindow<Vec<Event>>]) -> Result<serde_json::Value> {
@@ -847,12 +973,18 @@ fn merge_window_events(events: Vec<Event>) -> Vec<Event> {
     merged
 }
 
-/// 处理一个窗口：先完整尝试，失败且窗口较大时拆半递归。
+/// 拆窗下限：比它更小的窗口不值得再拆 —— 每半只剩几条字幕，切出来的事件没有意义。
+const MIN_SPLIT_SEGMENTS: usize = 8;
+/// 拆窗最大递归深度（30 → 17+17 → 11+11）：防止"拆了还是失败"时无限递归。
+const MAX_SPLIT_DEPTH: u8 = 2;
+
+/// 处理一个窗口：先完整尝试，失败且窗口还够大时拆半递归。`depth` 是拆窗层数（顶层 0）。
 fn process_window_inner<'a>(
     client: &'a crate::llm::LlmClient,
     segments: &'a [TranscriptSegment],
     detect: &'a DetectionConfig,
     hot_windows: &'a [(f64, f64)],
+    depth: u8,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Event>>> + Send + 'a>> {
     Box::pin(async move {
         let win_start = segments.first().map(|s| s.start).unwrap_or(0.0);
@@ -900,29 +1032,58 @@ fn process_window_inner<'a>(
                         attempt,
                         e
                     );
+                    let truncated = e.downcast_ref::<TruncatedOutput>().is_some();
                     last_err = Some(e);
+                    // 参数一个没变，第二次必然还是同样的截断：别白烧一次调用，直接拆窗
+                    if truncated {
+                        tracing::warn!(
+                            "窗口 [{:.1}-{:.1}] 输出被 max_tokens 截断，同样参数重试必然再截断 → 拆窗重跑",
+                            win_start,
+                            win_end
+                        );
+                        break;
+                    }
                 }
             }
         }
 
-        // 如果窗口还大，拆半递归，避免超时后整窗丢失
-        if segments.len() > 30 {
+        // 拆半递归，避免整窗丢失。
+        //
+        // ⚠️ 这里原来的条件是 `segments.len() > 30`，而窗口大小就是 30（`DETECT_WINDOW_SIZE`）——
+        // 这条兜底从来没触发过一次。实测被截断的窗口因此整段丢失，事件覆盖率掉到 46%。
+        if depth < MAX_SPLIT_DEPTH && segments.len() >= MIN_SPLIT_SEGMENTS {
             let mid = segments.len() / 2;
+            // 拆分点两侧各留一点重叠（与相邻窗口的重叠同理）：跨越拆分点的话题在两半里都出现，
+            // 交给 merge_window_events 去重，而不是被硬切在中间。
+            let pad = (DETECT_WINDOW_OVERLAP / 2).max(1).min(mid);
+            let left = &segments[..(mid + pad).min(segments.len())];
+            let right = &segments[mid - pad..];
             tracing::warn!(
-                "窗口 [{:.1}-{:.1}] 失败，拆半为 [{:.1}-{:.1}] 和 [{:.1}-{:.1}] 重试",
+                "窗口 [{:.1}-{:.1}] 失败，拆半为 [{:.1}-{:.1}] 和 [{:.1}-{:.1}] 重跑",
                 win_start,
                 win_end,
-                segments[0].start,
-                segments[mid].end,
-                segments[mid].start,
-                win_end
+                left.first().map(|s| s.start).unwrap_or(0.0),
+                left.last().map(|s| s.end).unwrap_or(0.0),
+                right.first().map(|s| s.start).unwrap_or(0.0),
+                right.last().map(|s| s.end).unwrap_or(0.0)
             );
 
-            let left = process_window_inner(client, &segments[..mid], detect, hot_windows).await?;
-            let right = process_window_inner(client, &segments[mid..], detect, hot_windows).await?;
-            let mut combined = left;
-            combined.extend(right);
-            return Ok(combined);
+            // 两半各自记成败：**一半成功也把结果留下**（整段丢弃正是覆盖率掉一半的直接原因）。
+            // 顺序执行（不并发），避免绕过 Agent 的并发闸门把在飞请求数翻倍。
+            let mut combined: Vec<Event> = Vec::new();
+            let mut errs: Vec<String> = Vec::new();
+            match process_window_inner(client, left, detect, hot_windows, depth + 1).await {
+                Ok(mut events) => combined.append(&mut events),
+                Err(e) => errs.push(format!("{e:#}")),
+            }
+            match process_window_inner(client, right, detect, hot_windows, depth + 1).await {
+                Ok(mut events) => combined.append(&mut events),
+                Err(e) => errs.push(format!("{e:#}")),
+            }
+            if !combined.is_empty() {
+                return Ok(combined);
+            }
+            return Err(anyhow::anyhow!("拆窗后仍全部失败: {}", errs.join(" | ")));
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("窗口处理失败")))
@@ -934,6 +1095,8 @@ async fn attempt_call(
     messages: serde_json::Value,
 ) -> Result<Vec<Event>> {
     let body = client.send(messages).await?;
+    // 先看截断标记：解析失败时它决定「这条错误该不该让调用方原样重试」
+    let truncated = truncation_of(&body);
 
     let content = body["choices"][0]["message"]["content"]
         .as_str()
@@ -951,15 +1114,28 @@ async fn attempt_call(
         .collect::<Vec<_>>();
 
     if parse_sources.is_empty() {
+        // 截断且两处都空 = 模型把整个输出预算烧在思考上（实测 reasoning 占满 4096，
+        // content 一个字都没留下）：报「截断」，别报成"模型异常"
+        if let Some(t) = truncated {
+            return Err(anyhow::Error::new(t));
+        }
         anyhow::bail!("LLM 返回 content 和 reasoning 均为空（可能是 max_tokens 过小或模型异常）");
     }
 
     let mut last_err: Option<anyhow::Error> = None;
     for source in &parse_sources {
         match parse_json(source) {
-            Ok(v) => {
-                return parse_events(v).map_err(|e| anyhow::anyhow!("解析事件失败: {e:#}"));
-            }
+            Ok(v) => match parse_events(v) {
+                Ok(events) => return Ok(events),
+                Err(e) => {
+                    // 截断的响应里字段不完整是常态：报「截断」比报"字段解析失败"更可操作
+                    let err = anyhow::anyhow!("解析事件失败: {e:#}");
+                    return Err(match truncated {
+                        Some(t) => anyhow::Error::new(t),
+                        None => err,
+                    });
+                }
+            },
             Err(e) => {
                 last_err = Some(e);
             }
@@ -970,20 +1146,40 @@ async fn attempt_call(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{}.log", ts));
+    // 转储落到程序目录的 `.vtrim/llm_debug/`：以前写的是**相对进程 CWD** 的路径，
+    // server 的 CWD 是仓库根 —— 一轮重跑就在仓库里堆 70+ 个 vtrim_llm_debug_*.log。
+    let dir = crate::path::vtrim_home().join("llm_debug");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut log_path = dir.join(format!("vtrim_llm_debug_{ts}.log"));
     let full = format!(
-        "--- content ---\n{}\n\n--- reasoning ---\n{}\n\n--- full response ---\n{}",
+        "--- 截断: {} ---\n--- content ---\n{}\n\n--- reasoning ---\n{}\n\n--- full response ---\n{}",
+        truncated
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "否".to_string()),
         content,
         reasoning,
         serde_json::to_string_pretty(&body).unwrap_or_default()
     );
-    let _ = std::fs::write(&log_path, &full);
-    tracing::warn!(
-        "LLM 响应解析失败: {}，已保存到 {}",
-        last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
-        log_path.display()
-    );
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM 响应 JSON 解析失败")))
+    if std::fs::write(&log_path, &full).is_err() {
+        // 程序目录不可写时退回旧行为（当前工作目录），至少别把这次现场丢了
+        log_path = std::path::PathBuf::from(format!("vtrim_llm_debug_{ts}.log"));
+        let _ = std::fs::write(&log_path, &full);
+    }
+    match truncated {
+        Some(t) => {
+            tracing::warn!("LLM 响应解析失败：{t}，已保存到 {}", log_path.display());
+            Err(anyhow::Error::new(t))
+        }
+        None => {
+            tracing::warn!(
+                "LLM 响应解析失败: {}，已保存到 {}",
+                last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                log_path.display()
+            );
+            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("LLM 响应 JSON 解析失败")))
+        }
+    }
 }
 
 pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
@@ -994,7 +1190,7 @@ pub async fn test_llm(llm: &LlmConfig, prompt: &str) -> Result<String> {
         {"role": "system", "content": "你是一个 AI 助手。"},
         {"role": "user", "content": prompt}
     ]);
-    let client = crate::llm::LlmClient::from_config(llm)?
+    let client = crate::llm::LlmClient::from_config(&llm.for_link(crate::config::LlmLink::Utility))?
         .with_timeout(180)
         .with_usage_context(crate::llm::usage::UsageContext::new("LLM 测试"));
     client.send(messages).await.map(|v| v.to_string())
@@ -1279,5 +1475,217 @@ mod tests {
         let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[]);
         assert!(!p.contains("观众弹幕爆发时刻"));
         assert!(!p.contains("{hot_windows}"), "占位符必须被替换掉");
+    }
+
+    // ---- max_tokens 截断：抢救完整元素 + 拆窗兜底 ----
+
+    /// 被截断的数组：截断前已经完整的元素要能捡回来（整窗作废是覆盖率掉到 46% 的直接原因）。
+    #[test]
+    fn parse_json_salvages_complete_items_from_truncated_array() {
+        let text = r#"[{"start":1.0,"end":2.0,"label":"一"},{"start":3.0,"end":4.0,"label":"二"},{"start":5.0,"end":6.0,"la"#;
+        let arr = parse_json(text).unwrap();
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "只保留截断前完整的元素");
+        assert_eq!(arr[1]["label"], "二");
+    }
+
+    /// 字符串里的括号不参与深度计数（时间轴文本/emoji 里出现 `}` 很常见）。
+    #[test]
+    fn salvage_ignores_braces_inside_strings() {
+        let text = r#"[{"label":"a}b}c","start":1.0,"end":2.0},{"label":"tail"#;
+        let arr = parse_json(text).unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 1);
+    }
+
+    /// 已闭合的数组解析失败 = 真的坏了（比如键没引号），不该被"抢救"成半截结果。
+    #[test]
+    fn parse_json_does_not_salvage_closed_array() {
+        assert!(parse_json(r#"[{start: 1, end: 2}]"#).is_err());
+        // 一个完整元素都没有时也没有可抢救的东西
+        assert!(parse_json(r#"[{"start":1.0,"la"#).is_err());
+        // 空数组是合法结果，走正常解析
+        assert_eq!(parse_json("[]").unwrap().as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn truncation_of_reads_finish_reason() {
+        let truncated = serde_json::json!({
+            "choices": [{"finish_reason": "length"}],
+            "usage": {"completion_tokens": 4096}
+        });
+        let t = truncation_of(&truncated).expect("finish_reason=length 就是截断");
+        assert_eq!(t.completion_tokens, 4096);
+        assert!(t.to_string().contains("max_tokens"), "提示里要给出调参方向");
+
+        // Anthropic 风格的 stop_reason 也认
+        let anthropic = serde_json::json!({"choices": [{"stop_reason": "max_tokens"}]});
+        assert!(truncation_of(&anthropic).is_some());
+
+        let normal = serde_json::json!({"choices": [{"finish_reason": "stop"}]});
+        assert!(truncation_of(&normal).is_none());
+    }
+
+    /// 极简脚本化假 LLM：第 n 个请求回 `script[n]`，用完后一直回最后一条。
+    /// 返回 (base_url, 请求计数, **每个请求的 body**) —— 后者用来断言链路覆盖真的落进了请求体。
+    async fn fake_llm(
+        script: Vec<String>,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = Arc::clone(&bodies);
+        tokio::spawn(async move {
+            let mut n = 0usize;
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                // 把请求读干净再回（请求体 >8KB，只读一次会留下半个请求）
+                let mut raw: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 65536];
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_millis(50), sock.read(&mut buf)).await {
+                        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                        Ok(Ok(read)) => raw.extend_from_slice(&buf[..read]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some((_, body)) = text.split_once("\r\n\r\n") {
+                    captured.lock().unwrap().push(body.to_string());
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body = script
+                    .get(n)
+                    .or_else(|| script.last())
+                    .cloned()
+                    .unwrap_or_default();
+                if n + 1 < script.len() {
+                    n += 1;
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.as_bytes().len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1"), hits, bodies)
+    }
+
+    fn truncated_body() -> String {
+        serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": "", "reasoning": "让我先想想……[6221.0-6266.1] 这段是在聊"}
+            }],
+            "usage": {"completion_tokens": 4096}
+        })
+        .to_string()
+    }
+
+    /// 截断的窗口不原样重试，而是拆成两半各跑一次（共 3 次请求）；两半结果都留下。
+    #[tokio::test]
+    async fn truncated_window_is_split_instead_of_retried_verbatim() {
+        use std::sync::atomic::Ordering;
+
+        let ok = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": r#"[{"start":0.0,"end":30.0,"label":"左","summary":"摘要","event_type":"chat"}]"#}
+            }]
+        })
+        .to_string();
+        let (base, hits, _bodies) = fake_llm(vec![truncated_body(), ok.clone(), ok]).await;
+        let client = crate::llm::LlmClient::new("k", &base, "m").with_max_tokens(4096);
+        let segs: Vec<TranscriptSegment> = (0..12)
+            .map(|i| seg(i as f64 * 10.0, &format!("第 {i} 句")))
+            .collect();
+
+        let events = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            3,
+            "截断后应直接拆窗（1 次截断 + 2 次半窗），而不是原样重试"
+        );
+        assert_eq!(events.len(), 2, "两半的结果都要留下");
+    }
+
+    /// 窗口小到不值得拆时，截断错误必须带上可操作提示，而且不再原样重试。
+    #[tokio::test]
+    async fn truncated_small_window_fails_fast_with_max_tokens_hint() {
+        use std::sync::atomic::Ordering;
+
+        let (base, hits, _bodies) = fake_llm(vec![truncated_body()]).await;
+        let client = crate::llm::LlmClient::new("k", &base, "m").with_max_tokens(4096);
+        let segs: Vec<TranscriptSegment> = (0..4).map(|i| seg(i as f64 * 10.0, "短句")).collect();
+
+        let err = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0)
+            .await
+            .unwrap_err();
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "截断后不该用同样参数重试");
+        assert!(
+            err.to_string().contains("max_tokens"),
+            "错误信息要指出调大 max_tokens: {err}"
+        );
+    }
+
+    /// 链路覆盖必须真的落到请求体里：检测窗口走 `[llm.overrides.detect].max_tokens`，
+    /// 而不是 `[llm].max_tokens`（改了 `for_link` 但某个调用点忘了走它 → 这条会红）。
+    #[tokio::test]
+    async fn detect_window_request_carries_link_max_tokens() {
+        let ok = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": r#"[{"start":0.0,"end":60.0,"label":"标题","summary":"摘要","event_type":"chat"}]"#}
+            }]
+        })
+        .to_string();
+        let (base, _hits, bodies) = fake_llm(vec![ok]).await;
+
+        let mut llm = LlmConfig::default();
+        llm.base_url = base;
+        llm.api_key = "k".into();
+        llm.model = "m".into();
+        llm.max_tokens = 16384;
+        llm.overrides.detect.max_tokens = Some(8192);
+
+        let segs = vec![seg(0.0, "第一句"), seg(30.0, "第二句")];
+        let events = call_with_progress(
+            &segs,
+            &llm,
+            &DetectionConfig::default(),
+            &[],
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!events.is_empty(), "假响应应能解析成事件");
+
+        let sent = bodies.lock().unwrap().join("\n");
+        assert!(
+            sent.contains("\"max_tokens\":8192"),
+            "请求体里应是链路覆盖的上限：{sent}"
+        );
+        assert!(
+            !sent.contains("16384"),
+            "不该再用 [llm].max_tokens：{sent}"
+        );
     }
 }

@@ -1,3 +1,8 @@
+//! polish::assets::sfx_catalog：内建音效目录（编译期嵌入 `sfx_catalog.json`）与查询 / 屏蔽 / 候选与模糊搜索。
+//!
+//! 入口：`all`、`lookup`、`lookup_variant`、`lookup_label`、`is_blacklisted`、`search_by_tags`、`candidates_for_tags`、`candidates_text`、`fuzzy_search`、`categories_text`、`all_tags`、`CATEGORY_ORDER`、`SfxEntry`。
+//! 边界：屏蔽语义 = 精确 id 屏蔽单个、`tag:xxx` 屏蔽整个标签族；项目级与全局黑名单由 `process::load_sfx_blacklist` 求并集 —— 见 `crates/vtrim-polish/src/assets/AGENTS.md`
+
 /// 音效数据库 — 从 assets/sfx_catalog.json 编译时嵌入（小森平/効果音ラボ全量 + 变体归组）
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;

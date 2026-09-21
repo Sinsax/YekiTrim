@@ -1,3 +1,8 @@
+//! pipeline::runner：管线编排器（顺序驱动 stage，按文件存在性决定跑不跑、从哪跑）。
+//!
+//! 入口：`PipelineRunner::{new, add_stage, config, set_progress, run, run_all, run_until}`。
+//! 边界：三种运行模式各对应一类命令，别各写一套；弹幕相对路径解析只在这里的 `resolve_danmaku`（工程根 → 视频父目录，两个基准都试） —— 见 `crates/vtrim-core/src/pipeline/AGENTS.md`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

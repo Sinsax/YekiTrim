@@ -1,3 +1,8 @@
+//! detection：Stage 3 事件检测（LLM 分批窗口 + 弹幕/字幕热度 + LLM 传播潜力评分 + 后处理）。
+//!
+//! 入口：`EventDetector`、`load_events`、`merge_split_events`；`llm` 子模块的 prompt 常量与 `test_llm` 在此重导出。
+//! 边界：**不做最长时长等分切分**（曾把连续事件切成 `xxx（1/2）`，用户明确反对）；后处理顺序（丢非法 → 排序 → 合并 → 吸附到段边界 → 最短 30s）是硬约束 —— 见 `crates/vtrim-core/src/detection/AGENTS.md`
+
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
@@ -98,6 +103,10 @@ impl Stage for EventDetector {
             tracing::warn!("未配置 LLM API key (llm.api_key)，使用默认事件");
             vec![llm::create_default_event(segments)]
         } else {
+            // 取消探针：Agent 在窗口边界轮询它（点了「停止」不该再一个窗口接一个窗口地跑下去）
+            let progress = ctx.progress.clone();
+            let cancel: Option<crate::llm::agent::CancelProbe> =
+                Some(std::sync::Arc::new(move || progress.cancelled()));
             process_with_llm(
                 segments,
                 llm_config,
@@ -105,6 +114,7 @@ impl Stage for EventDetector {
                 &hot_windows,
                 &ctx.output_dir,
                 ctx.detect_resume,
+                cancel,
             )
             .await?
         };
@@ -157,6 +167,12 @@ impl Stage for EventDetector {
                     );
                 }
             }
+        }
+
+        // 取消在**窗口边界**生效（Agent 内部已在轮询探针）；这里再拦一道：
+        // 检测刚跑完但用户已经点了停止时，不该再发下一批 LLM 调用（热度评分）。
+        if ctx.progress.cancelled() {
+            anyhow::bail!("任务已取消");
         }
 
         // 标题+摘要 LLM 传播潜力评分：只喂 label+summary，加权进最终 popularity。
@@ -423,6 +439,7 @@ async fn process_with_llm(
     hot_windows: &[(f64, f64)],
     output_dir: &std::path::Path,
     resume: Option<bool>,
+    cancel: Option<crate::llm::agent::CancelProbe>,
 ) -> Result<Vec<Event>> {
     // 预合并：相邻短段（间距 <2s）合并，减少 LLM 输入量
     let merged = merge_segments_for_detection(segments);
@@ -467,6 +484,7 @@ async fn process_with_llm(
         hot_windows,
         output_dir.parent(),
         Some(&checkpoint_path),
+        cancel.clone(),
         Some(partial_tx),
     );
 
@@ -484,7 +502,12 @@ async fn process_with_llm(
 
     let events_result = events_fut.await;
     let _partial = partial_task.await.unwrap_or_default();
-    let events = events_result.map_err(|e| anyhow::anyhow!("LLM 事件检测失败: {}", e))?;
+    let events = match events_result {
+        Ok(events) => events,
+        // 取消不是"检测失败"：原样透传（Job 状态已经是 cancelled，不该再报一条失败）
+        Err(e) if cancel.as_ref().is_some_and(|c| c()) => return Err(e),
+        Err(e) => return Err(anyhow::anyhow!("LLM 事件检测失败: {e}")),
+    };
 
     let events = postprocess_events(events, segments);
 

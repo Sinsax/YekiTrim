@@ -1,3 +1,8 @@
+//! polish::render::ffmpeg：ffmpeg 调用的唯一收口（编码器探测 / 拼接 / 抽音 / 混 SFX / 按屏蔽区间重编码 / 合流）。
+//!
+//! 入口：`Ffmpeg::{detect_encoder, concat, extract_audio, apply_limiter, mix_sfx, cut_ranges, mux}`、`EncoderInfo`、`SfxEvent`。
+//! 边界：不许改回 `Command::output()` / 管道（Chrome/ffmpeg 是孙进程，会一直持有 stdout 句柄）；编码器一律用 `detect_encoder()` 的结果，别硬编码 —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+
 use std::process::{Command, Stdio};
 
 /// Concat 清单临时文件路径。

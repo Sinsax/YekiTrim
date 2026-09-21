@@ -1,3 +1,8 @@
+//! polish::process：`polish process` 后处理主流程（LLM 写完事件之后、出片之前的全部确定性处理）。
+//!
+//! 入口：`cmd_process`、`content_budget`、`cap_events`；子模块 `sfx`（音效规则）、`fx`（守卫与对齐）、`download`（贴纸/SFX 下载，重导出）、`placement`（落点几何，私有）。
+//! 边界：Step 顺序是硬约束（2b1 先于 2b、2d 后于 2b/2c、1c 的配额守卫后于 Step 1）；带 `manual` 的手工事件不被后处理改写，抽稀也要跳过 —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+
 use std::path::Path;
 
 use crate::{assets, parse, project};
@@ -64,6 +69,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             zoom: "中".into(), origin: "50% 50%".into(),
             // 聚焦主播：由 resolve_camera_anchors 解析成坐标（origin 是解析前的占位值）
             anchor: Some("liver".into()), anchor_to: None, to_origin: None, cut: false,
+            // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
+            handheld: false,
             manual: false,
         });
     }
@@ -111,6 +118,16 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let closed = close_pip_shots(&mut config.segments);
         if closed > 0 {
             tracing::info!("  · 画中画到点收工，已补回镜头 {} 条", closed);
+        }
+    }
+
+    // Step 1d: 手持摇摆只允许挂在近景上（用户定的门槛：那是近景专用的附加变种）。
+    // 放在画中画收工之后 —— 那一步补出来的回镜头（可能承接了前一条的 handheld）也一起吃这道守卫。
+    // 与画中画同一条道理：LLM 会写错景别、用户也会在编辑器里把景别改掉，靠 prompt 和界面都拦不住。
+    {
+        let stripped = cap_handheld_sway(&mut config.segments);
+        if stripped > 0 {
+            tracing::info!("  ⚠ 手持摇摆只在近景可用，已剔除 {stripped} 条（非近景）");
         }
     }
 
@@ -256,10 +273,20 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 障碍：layout.liver(人物) 与 layout.danmaku_area(弹幕区域) 在**源帧**坐标里框选
     // （选框模式下运镜暂停/缩放复位），出片时视频被运镜整体缩放，所以先按该贴纸可见
     // 窗口内的相机状态投到输出帧；字幕带与真实弹幕带在输出帧固定不动。
-    // 落点写 ev.x/ev.y = 贴纸盒子(280×280)左上角百分比（模板 DOM/canvas 与 webui engine.js 一致）。
+    // 落点写 ev.x/ev.y = 贴纸盒子（`280 × sticker_scale`，竖屏也是 280 —— 短边基准）**左上角**
+    // 百分比（模板 DOM/canvas 与 webui engine.js 一致）。⚠️ `[sticker] position`（manual）
+    // 是**盒子中心**口径，两者不同基准，见 placement.rs 模块头。
     // 细节见 process/placement.rs。
     {
-        let obstacles = sticker_obstacles(&config, &data_dir);
+        // 源视频尺寸：只有「主画面避让」这一项障碍需要它（决定视频在画布上占多大）。
+        // 取不到不算失败 —— 该项障碍退化成不计入，落点照旧。
+        let video_size = crate::render::get_video_size(
+            &project_path.join(&config.source.video).to_string_lossy(),
+        );
+        if video_size.is_none() {
+            tracing::info!("  · 读不到源视频尺寸(ffprobe), 贴纸不避让主画面");
+        }
+        let obstacles = sticker_obstacles(&config, &data_dir, video_size);
         if obstacles.allow.is_empty() && !config.layout.sticker_area.grid.is_empty() {
             tracing::info!("  · 忽略 layout.sticker_area.grid（落点改为按 人物/字幕/弹幕 动态推导）");
         }
@@ -280,14 +307,14 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 };
                 let blocked = obstacles.blocked_at(time, end, &placed);
                 let seed = (idx as f64 * 3.7 + seg.start * 1.3).fract();
-                let pick = placement::pick_sticker_position(&blocked, &obstacles.allow, seed);
-                *x = pick.x_pct();
-                *y = pick.y_pct();
+                let pick = placement::pick_sticker_position(&blocked, &obstacles.allow, seed, obstacles.frame);
+                *x = pick.x_pct(obstacles.frame);
+                *y = pick.y_pct(obstacles.frame);
                 if pick.relaxed {
                     relaxed += 1;
                     tracing::info!("  ⚠ sticker @{time:.1}s: 帧内无安全落点, 取重叠最小 ({}, {})", &*x, &*y);
                 }
-                placed.push((time, end + 0.65, placement::sticker_box(pick.x, pick.y)));
+                placed.push((time, end + 0.65, placement::sticker_box(pick.x, pick.y, obstacles.frame)));
                 count += 1;
                 min_clearance = min_clearance.min(pick.clearance);
                 min_x = min_x.min(pick.x);
@@ -298,11 +325,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
 
         if count > 0 {
-            tracing::info!(
-                "  ✓ sticker 落点 {} 个 (安全区中心撒点{}, 最小余量 {:.0}px): 避让 {}×{} {}×{} {} + {}×{}; x {:.0}~{:.0}% y {:.0}~{:.0}%",
-                count,
-                if relaxed > 0 { format!(", {relaxed} 个兜底") } else { String::new() },
-                min_clearance,
+            // 障碍摘要拼成一个串，别塞进 format! —— 可选的那一项（主画面）会让占位符数量
+            // 和参数对不上，而这类错误只在编译期暴露一次、改格式串时极易再犯。
+            let mut avoided = format!(
+                "{}×{} {}×{} {} + {}×{}",
                 placement::ObstacleKind::Liver.label(),
                 obstacles.liver_count,
                 placement::ObstacleKind::DanmakuArea.label(),
@@ -310,10 +336,20 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 placement::ObstacleKind::Captions.label(),
                 placement::ObstacleKind::DanmakuBand.label(),
                 obstacles.danmaku_rows,
-                min_x / placement::FRAME_W * 100.0,
-                max_x / placement::FRAME_W * 100.0,
-                min_y / placement::FRAME_H * 100.0,
-                max_y / placement::FRAME_H * 100.0,
+            );
+            if obstacles.main_frame {
+                avoided.push_str(&format!(" + {}", placement::ObstacleKind::MainFrame.label()));
+            }
+            tracing::info!(
+                "  ✓ sticker 落点 {} 个 (安全区中心撒点{}, 最小余量 {:.0}px): 避让 {}; x {:.0}~{:.0}% y {:.0}~{:.0}%",
+                count,
+                if relaxed > 0 { format!(", {relaxed} 个兜底") } else { String::new() },
+                min_clearance,
+                avoided,
+                min_x / obstacles.frame.w * 100.0,
+                max_x / obstacles.frame.w * 100.0,
+                min_y / obstacles.frame.h * 100.0,
+                max_y / obstacles.frame.h * 100.0,
             );
             if min_clearance < 20.0 {
                 tracing::info!("  ⚠ 贴纸安全区余量最小仅 {min_clearance:.0}px: 人物/弹幕区域选框贴得太近, 建议放宽选框或减少贴纸数量");
@@ -509,6 +545,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
 
 /// 贴纸避让上下文：按项目算一次，逐张贴纸再按自己的可见窗口取障碍。
 struct StickerObstacles {
+    /// 输出画布（`[canvas]` 推导；所有几何的坐标系）
+    frame: placement::Frame,
     /// 输出帧固定障碍：字幕带 + 真实弹幕带（该片没有弹幕时不含弹幕带）
     fixed: Vec<placement::Blocked>,
     /// **源帧**障碍（人物 / 弹幕区域），需按相机状态投射到输出帧
@@ -521,6 +559,8 @@ struct StickerObstacles {
     panel_count: usize,
     /// 该片真实弹幕条数（0 = 弹幕图层不画）
     danmaku_rows: usize,
+    /// 主画面矩形是否已计入障碍（视频没铺满画布时才计）
+    main_frame: bool,
 }
 
 impl StickerObstacles {
@@ -529,7 +569,7 @@ impl StickerObstacles {
         let mut blocked = self.fixed.clone();
         for ((ox, oy), zoom) in placement::camera_states_for(&self.shots, self.default_origin, t0, t1) {
             for (rect, kind) in &self.source {
-                let hit = placement::camera_expand(*rect, ox, oy, zoom).clamp_to_frame();
+                let hit = placement::camera_expand(*rect, ox, oy, zoom).clamp_to_frame(self.frame);
                 if !hit.is_degenerate() {
                     blocked.push(placement::Blocked::new(hit, *kind));
                 }
@@ -545,19 +585,28 @@ impl StickerObstacles {
     }
 }
 
-/// 汇集贴纸落点推导所需的障碍（人物 / 字幕 / 弹幕区域 / 真实弹幕带）
-fn sticker_obstacles(config: &project::ProjectFile, data_dir: &Path) -> StickerObstacles {
-    let liver_source = source_rects(&config.layout.liver);
+/// 汇集贴纸落点推导所需的障碍（人物 / 字幕 / 弹幕区域 / 真实弹幕带 / 主画面）
+///
+/// `video_size` = 源视频尺寸（ffprobe）；拿不到就传 `None` —— 只影响「主画面」这一项障碍
+/// （算不出摆放就退化成改造前的行为），不会让落点失败。
+fn sticker_obstacles(
+    config: &project::ProjectFile,
+    data_dir: &Path,
+    video_size: Option<(u32, u32)>,
+) -> StickerObstacles {
+    let (cw, ch) = config.canvas_size();
+    let frame = placement::Frame::new(cw, ch);
+    let liver_source = source_rects(&config.layout.liver, frame);
     let liver_rects = if liver_source.is_empty() {
         // 没框过人物 → 用运镜聚焦中心兜一个保守盒子（宁可多让）
         match project::region_origin(&config.layout.liver)
-            .and_then(|o| placement::parse_origin(&o))
+            .and_then(|o| placement::parse_origin(&o, frame))
         {
             Some((ox, oy)) => {
                 tracing::info!("  ⚠ layout.liver 无区域, 按运镜中心 ({ox:.0},{oy:.0}) 估 35%×50% 盒子");
                 vec![placement::Rect::new(
-                    ox - 0.175 * placement::FRAME_W, oy - 0.25 * placement::FRAME_H,
-                    ox + 0.175 * placement::FRAME_W, oy + 0.25 * placement::FRAME_H,
+                    ox - 0.175 * frame.w, oy - 0.25 * frame.h,
+                    ox + 0.175 * frame.w, oy + 0.25 * frame.h,
                 )]
             }
             None => Vec::new(),
@@ -565,10 +614,11 @@ fn sticker_obstacles(config: &project::ProjectFile, data_dir: &Path) -> StickerO
     } else {
         liver_source
     };
-    let panel_rects = source_rects(&config.layout.danmaku_area);
+    let panel_rects = source_rects(&config.layout.danmaku_area, frame);
 
     let mut fixed = vec![placement::Blocked::new(
         placement::caption_band(
+            frame,
             config.style.subtitle.size as f64,
             placement::parse_px(&config.style.subtitle.stroke),
         ),
@@ -576,6 +626,7 @@ fn sticker_obstacles(config: &project::ProjectFile, data_dir: &Path) -> StickerO
     )];
     let danmaku_ys = read_danmaku_ys(data_dir);
     if let Some(band) = placement::danmaku_band(
+        frame,
         config.style.danmaku.font_size as f64,
         placement::parse_px(&config.style.danmaku.stroke),
         &danmaku_ys,
@@ -583,9 +634,22 @@ fn sticker_obstacles(config: &project::ProjectFile, data_dir: &Path) -> StickerO
         fixed.push(placement::Blocked::new(band, placement::ObstacleKind::DanmakuBand));
     }
 
+    // 主画面：只有视频**没铺满**画布（axis = x / y）时才算障碍 ——
+    // 铺满时整帧都是画面，拿它当障碍等于「处处不安全」，只会把贴纸全推进 relaxed 兜底。
+    // 所以改造前的横素材项目（axis = fill）行为逐像素不变；受益的是
+    // 「横画布 × 竖素材」这类主画面只占一侧的场景（原先把贴纸放到主视频身上）。
+    let main_rect = placement::main_frame_rect(
+        &config.resolve_stage(video_size),
+        video_size,
+        config.canvas_size(),
+    );
+    if let Some(rect) = main_rect {
+        fixed.push(placement::Blocked::new(rect, placement::ObstacleKind::MainFrame));
+    }
+
     let default_origin = project::region_origin(&config.layout.liver)
-        .and_then(|o| placement::parse_origin(&o))
-        .unwrap_or((placement::FRAME_W * 0.65, placement::FRAME_H * 0.5));
+        .and_then(|o| placement::parse_origin(&o, frame))
+        .unwrap_or((frame.w * 0.65, frame.h * 0.5));
 
     let mut source: Vec<(placement::Rect, placement::ObstacleKind)> = liver_rects
         .iter()
@@ -594,24 +658,26 @@ fn sticker_obstacles(config: &project::ProjectFile, data_dir: &Path) -> StickerO
     source.extend(panel_rects.iter().map(|r| (*r, placement::ObstacleKind::DanmakuArea)));
 
     StickerObstacles {
+        frame,
         fixed,
         source,
-        shots: camera_shots(&config.segments, default_origin, &config.style.camera),
+        shots: camera_shots(&config.segments, default_origin, &config.style.camera, frame),
         default_origin,
         allow: project::free_rect(&config.layout.sticker_area)
-            .map(|(tl, br)| vec![placement::Rect::from_points(&tl, &br)])
+            .map(|(tl, br)| vec![placement::Rect::from_points(&tl, &br, frame)])
             .unwrap_or_default(),
         liver_count: liver_rects.len(),
         panel_count: panel_rects.len(),
         danmaku_rows: danmaku_ys.len(),
+        main_frame: main_rect.is_some(),
     }
 }
 
-/// `layout.<区域>` → 帧矩形列表（**源帧**坐标，未做运镜变换）
-fn source_rects(region: &project::LayoutRegion) -> Vec<placement::Rect> {
+/// `layout.<区域>` → 画布矩形列表（**源帧**坐标，未做运镜变换）
+fn source_rects(region: &project::LayoutRegion, frame: placement::Frame) -> Vec<placement::Rect> {
     project::region_rects(region)
         .iter()
-        .map(|(tl, br)| placement::Rect::from_points(tl, br))
+        .map(|(tl, br)| placement::Rect::from_points(tl, br, frame))
         .collect()
 }
 
@@ -621,6 +687,7 @@ fn camera_shots(
     segments: &[project::Segment],
     default_origin: (f64, f64),
     camera_style: &project::CameraStyle,
+    frame: placement::Frame,
 ) -> Vec<placement::CameraShot> {
     // 档位名 + 是否硬切要留到最后才用得上：过渡长度取决于**相邻两段**的档位与本条自己的 cut
     let mut pairs: Vec<(bool, String, placement::CameraShot)> = segments
@@ -631,11 +698,11 @@ fn camera_shots(
                 let shot = placement::CameraShot {
                     time: *time,
                     end: end.unwrap_or(*time),
-                    origin: placement::parse_origin(origin).unwrap_or(default_origin),
+                    origin: placement::parse_origin(origin, frame).unwrap_or(default_origin),
                     origin_to: to_origin
                         .as_deref()
-                        .and_then(placement::parse_origin)
-                        .unwrap_or_else(|| placement::parse_origin(origin).unwrap_or(default_origin)),
+                        .and_then(|o| placement::parse_origin(o, frame))
+                        .unwrap_or_else(|| placement::parse_origin(origin, frame).unwrap_or(default_origin)),
                     zoom: camera_style.factor(zoom) * placement::TRANSIENT_ZOOM,
                     transition: placement::TRANSITION_SECS,
                 };
@@ -691,17 +758,20 @@ struct AnchorCtx {
     /// 弹幕字号 / 描边宽（弹幕带厚度靠它算，与贴纸避让用的是同一组值）
     danmaku_font: f64,
     danmaku_stroke: f64,
+    /// 输出画布（`[canvas]` 推导；坐标换算用）
+    frame: placement::Frame,
 }
 
 impl AnchorCtx {
     fn collect(config: &project::ProjectFile, data_dir: &Path) -> Self {
+        let frame = placement::Frame::new(config.canvas_size().0, config.canvas_size().1);
         let stickers = config
             .segments
             .iter()
             .flat_map(|seg| seg.events.iter())
             .filter_map(|ev| match ev {
                 crate::project::Event::Sticker { time, end, x, y, .. } => {
-                    let (cx, cy) = sticker_center_pct(x, y)?;
+                    let (cx, cy) = sticker_center_pct(x, y, frame)?;
                     Some((cx, cy, *time, end.unwrap_or(*time)))
                 }
                 _ => None,
@@ -714,6 +784,7 @@ impl AnchorCtx {
             danmaku: read_danmaku_rows(data_dir),
             danmaku_font: config.style.danmaku.font_size as f64,
             danmaku_stroke: placement::parse_px(&config.style.danmaku.stroke),
+            frame,
         }
     }
 
@@ -737,9 +808,9 @@ impl AnchorCtx {
             .filter(|(_, s, e)| *e <= *s || (t >= *s - 0.001 && t <= *e + 0.001))
             .map(|(y, _, _)| *y)
             .collect();
-        let band = placement::danmaku_band(self.danmaku_font, self.danmaku_stroke, &ys)?;
+        let band = placement::danmaku_band(self.frame, self.danmaku_font, self.danmaku_stroke, &ys)?;
         let (cx, cy) = band.center();
-        Some(pct_pair(cx, cy))
+        Some(pct_pair(cx, cy, self.frame))
     }
 
     /// 时间上离 `t` 最近的贴纸盒子中心（覆盖 `t` 的优先）。
@@ -758,28 +829,30 @@ impl AnchorCtx {
         }
         let (cx, cy) = best?;
         Some(pct_pair(
-            cx / 100.0 * placement::FRAME_W,
-            cy / 100.0 * placement::FRAME_H,
+            cx / 100.0 * self.frame.w,
+            cy / 100.0 * self.frame.h,
+            self.frame,
         ))
     }
 }
 
-/// 贴纸 x/y（280×280 盒子**左上角**百分比）→ 盒子中心百分比。未解析（"auto"）返回 None。
-fn sticker_center_pct(x: &str, y: &str) -> Option<(f64, f64)> {
+/// 贴纸 x/y（盒子**左上角**百分比，盒子边长 = `280 × sticker_scale`）→ 盒子中心百分比。
+/// 未解析（"auto"）返回 None。
+fn sticker_center_pct(x: &str, y: &str, frame: placement::Frame) -> Option<(f64, f64)> {
     let (xs, ys) = (x.trim(), y.trim());
     if !xs.ends_with('%') || !ys.ends_with('%') {
         return None;
     }
-    let half_w = placement::STICKER_SIZE / 2.0 / placement::FRAME_W * 100.0;
-    let half_h = placement::STICKER_SIZE / 2.0 / placement::FRAME_H * 100.0;
+    let half_w = frame.sticker_size() / 2.0 / frame.w * 100.0;
+    let half_h = frame.sticker_size() / 2.0 / frame.h * 100.0;
     Some((project::parse_pct(xs) + half_w, project::parse_pct(ys) + half_h))
 }
 
-fn pct_pair(x_px: f64, y_px: f64) -> String {
+fn pct_pair(x_px: f64, y_px: f64, frame: placement::Frame) -> String {
     format!(
         "{:.2}% {:.2}%",
-        x_px / placement::FRAME_W * 100.0,
-        y_px / placement::FRAME_H * 100.0
+        x_px / frame.w * 100.0,
+        y_px / frame.h * 100.0
     )
 }
 
@@ -980,7 +1053,7 @@ mod tests {
     }
 
     fn camera() -> Event {
-        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, manual: false }
+        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false }
     }
 
     #[test]
@@ -1192,7 +1265,7 @@ mod tests {
         assert_eq!(moments.len(), 3, "0.2s 与 0.5s 声音事件冲突被跳过");
         assert_eq!(moments[0].0, 5.2);
         // camera 等无声音事件不挡补位
-        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, manual: false }];
+        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false }];
         let moments = find_uncovered_sfx_moments(&subs, &cam, 4);
         assert_eq!(moments[0].0, 0.2, "camera 不占用音效时刻");
         // 预算 0 → 空
@@ -1209,7 +1282,7 @@ mod tests {
         assert!(!event_has_sfx_ref(&Event::Shake { time: 1.0, intensity: 0.5, end: None, anchor: None, sfx: None, sfx_volume: None }));
         assert!(!event_has_sfx_ref(&Event::Camera {
             time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(),
-            anchor: None, anchor_to: None, to_origin: None, cut: false, manual: false,
+            anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false,
         }));
     }
 
@@ -1302,7 +1375,11 @@ mod tests {
         for f in files {
             let dir = f.parent().unwrap();
             let Ok(cfg) = crate::project::load_project(dir) else { continue };
-            let ob = sticker_obstacles(&cfg, &dir.join("data"));
+            // 与 cmd_process 同口径：读真实源尺寸，主画面障碍才是生产里的那一个
+            let video_size = crate::render::get_video_size(
+                &dir.join(&cfg.source.video).to_string_lossy(),
+            );
+            let ob = sticker_obstacles(&cfg, &dir.join("data"), video_size);
             let mut placed = Vec::new();
             let mut rows = Vec::new();
             for seg in &cfg.segments {
@@ -1311,16 +1388,16 @@ mod tests {
                     let sticker_end = end.unwrap_or(*time);
                     let blocked = ob.blocked_at(*time, sticker_end, &placed);
                     let seed = (idx as f64 * 3.7 + seg.start * 1.3).fract();
-                    let pick = placement::pick_sticker_position(&blocked, &ob.allow, seed);
-                    placed.push((*time, sticker_end + 0.65, placement::sticker_box(pick.x, pick.y)));
+                    let pick = placement::pick_sticker_position(&blocked, &ob.allow, seed, ob.frame);
+                    placed.push((*time, sticker_end + 0.65, placement::sticker_box(pick.x, pick.y, ob.frame)));
                     n_sticker += 1;
                     if pick.relaxed {
                         n_relaxed += 1;
                     }
                     rows.push(format!(
                         "      t={time:5.1} x={:>4.0}% y={:>4.0}% clearance={:>5.0} relaxed={}",
-                        pick.x / placement::FRAME_W * 100.0,
-                        pick.y / placement::FRAME_H * 100.0,
+                        pick.x / ob.frame.w * 100.0,
+                        pick.y / ob.frame.h * 100.0,
                         pick.clearance,
                         pick.relaxed,
                     ));
@@ -1381,6 +1458,7 @@ mod tests {
             danmaku: vec![(300.0, 0.0, 5.0), (900.0, 20.0, 25.0)],
             danmaku_font: 42.0,
             danmaku_stroke: 2.0,
+            frame: placement::Frame::landscape(),
         }
     }
 
@@ -1432,14 +1510,15 @@ mod tests {
     /// 贴纸 x/y 是盒子**左上角**百分比，锚点要的是中心，别把角落当成中心。
     #[test]
     fn sticker_center_offsets_by_half_box() {
-        let (cx, cy) = sticker_center_pct("10%", "20%").unwrap();
-        let half_w = placement::STICKER_SIZE / 2.0 / placement::FRAME_W * 100.0;
-        let half_h = placement::STICKER_SIZE / 2.0 / placement::FRAME_H * 100.0;
+        let f = placement::Frame::landscape();
+        let (cx, cy) = sticker_center_pct("10%", "20%", f).unwrap();
+        let half_w = f.sticker_size() / 2.0 / f.w * 100.0;
+        let half_h = f.sticker_size() / 2.0 / f.h * 100.0;
         assert!((cx - (10.0 + half_w)).abs() < 1e-9, "{cx}");
         assert!((cy - (20.0 + half_h)).abs() < 1e-9, "{cy}");
         // 还没被落点解析过的 "auto" 不能当成坐标用
-        assert_eq!(sticker_center_pct("auto", "auto"), None);
-        assert_eq!(sticker_center_pct("10%", "auto"), None);
+        assert_eq!(sticker_center_pct("auto", "auto", f), None);
+        assert_eq!(sticker_center_pct("10%", "auto", f), None);
     }
 }
 

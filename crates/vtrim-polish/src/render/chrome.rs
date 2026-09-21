@@ -1,3 +1,8 @@
+//! polish::render::chrome：headless Chrome 的浏览器/标签页管理与卡死守卫。
+//!
+//! 入口：`ChromeRenderer`、`launch`、`create_tab`、`wait_for_ready`、`ChromeBackend`、`DEFAULT_STALL_SECS`。
+//! 边界：卡死守卫是"渲染卡住、日志里一行都没有"事故的防线，别退回无超时轮询；改超时口径要连带看页面侧的 `__CAPTURE_PROGRESS` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,12 +24,14 @@ pub const DEFAULT_STALL_SECS: u64 = 180;
 pub struct ChromeRenderer;
 
 impl ChromeRenderer {
-    /// 启动 Chrome (headless)
-    pub fn launch() -> anyhow::Result<Browser> {
+    /// 启动 Chrome (headless)。视口尺寸跟随 `[canvas]` 推导的画布
+    /// （对 canvas 抓帧无强制力，但影响页面布局/视频解码视口，方向变了要一起改）。
+    pub fn launch(size: (u32, u32)) -> anyhow::Result<Browser> {
         use std::ffi::OsStr;
+        let ws = format!("--window-size={},{}", size.0, size.1);
         let args = [
             OsStr::new("--headless=new"),
-            OsStr::new("--window-size=1920,1080"),
+            OsStr::new(&ws),
             OsStr::new("--disable-dev-shm-usage"),
             OsStr::new("--autoplay-policy=no-user-gesture-required"),
             OsStr::new("--enable-gpu-rasterization"),
@@ -39,7 +46,7 @@ impl ChromeRenderer {
         let mut builder = base
             .headless(true)
             .sandbox(false)
-            .window_size(Some((1920, 1080)))
+            .window_size(Some(size))
             .args(args_vec);
         // 全局配置 [chrome] path 优先（留空走 headless_chrome 自动检测）
         let global_cfg = vtrim_core::config::load_global_config();
@@ -150,6 +157,8 @@ pub struct ChromeBackend {
     server_url: String,
     sticker_data_json: String,
     fps: usize,
+    /// 输出画布（`RenderContext` 的 width/height，随 `[canvas]` 推导）
+    canvas: (u32, u32),
 }
 
 impl ChromeBackend {
@@ -159,6 +168,7 @@ impl ChromeBackend {
             server_url: String::new(),
             sticker_data_json: "{}".into(),
             fps: 30,
+            canvas: (1920, 1080),
         })
     }
 
@@ -273,6 +283,7 @@ impl FrameRenderer for ChromeBackend {
         self.server_url = ctx.server_url.clone().unwrap_or_default();
         self.sticker_data_json = ctx.sticker_data_json.clone();
         self.fps = ctx.fps;
+        self.canvas = (ctx.width, ctx.height);
         if self.server_url.is_empty() {
             anyhow::bail!("ChromeBackend requires server_url in RenderContext");
         }
@@ -289,7 +300,7 @@ impl FrameRenderer for ChromeBackend {
             return Ok(vec![]);
         }
 
-        let browser = ChromeRenderer::launch()?;
+        let browser = ChromeRenderer::launch(self.canvas)?;
         let tab = ChromeRenderer::create_tab(&browser, &self.server_url)?;
         tab.set_default_timeout(Duration::from_secs(600));
         ChromeRenderer::wait_for_ready(&tab)?;
