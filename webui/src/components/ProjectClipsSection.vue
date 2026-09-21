@@ -18,9 +18,9 @@
       <span class="v-sep"></span>
       <span class="muted small">筛选</span>
       <!-- 一级：已剪切 / 未剪切 / **全部放最后**（用户要求）。
-           「已剪切」被选中时，紧挨着它展开**二级**「未精修 / 已精修」（用户要求：
-           `已剪切[未精修][已精修] 未剪切 全部` 这个手感）：一级回答"剪出来没有"，
-           二级回答"剪出来的里面进没进过精修"。
+           「已剪切」被选中时，紧挨着它展开**二级**「精修中 / 已导出」（用户要求：
+           `已剪切[精修中][已导出] 未剪切 全部` 这个手感）：一级回答"剪出来没有"，
+           二级回答"剪出来的里面出没出片"。
            ⚠️ 二级只渲染在 `cut` 档下 —— 它筛的是**已剪片段**，挂到「未剪切 / 全部」上
            就会出现"点了筛选但另一边没反应"的空按钮（见 `SUB_FILTERS` 的注释）。 -->
       <template v-for="f in FILTERS" :key="f.key">
@@ -493,32 +493,42 @@ function cmpStats(sa, sb) {
 
 // ── 筛选：一级 已剪切 / 未剪切 / 全部（**全部放最后**，用户要求）──
 // 一级只回答「剪出来了没有」；「精修」不再是一级档位，降为**「已剪切」下的二级筛选**
-// （用户要求：`已剪切[未精修][已精修] 未剪切 全部`）——
-// 精修状态只对已剪片段成立（未剪切事件还没进精修流程），混在一级里会让人点了
-// 「精修中」却以为漏了未剪切事件那一半。
+// （用户要求：`已剪切[精修中][已导出] 未剪切 全部`）——
+// 片状态只对已剪片段成立（未剪切事件还没进精修流程），混在一级里会让人点了
+// 二级却以为漏了未剪切事件那一半。
 const FILTERS = [
   { key: 'cut', label: '已剪切', hint: '已经剪出成片的片段' },
   { key: 'uncut', label: '未剪切', hint: '检测到但还没剪的事件' },
   { key: 'all', label: '全部', hint: '已剪切 + 未剪切全部显示' }
 ]
-// 二级（只在 `cut` 档出现）：未精修 / 已精修。
-// 「已精修」沿用原一级「精修中」的含义 —— **进过精修的都算**（含已经导出的），
-// 不是"已经出片"；想只看已导出的，看卡片上那枚「已导出」chip（用户要求过合并，别单开一档）。
-// 「未精修」= 已剪但 `isInPolish` 为假，即从没进过精修流程的那些。
+// 二级（只在 `cut` 档出现）：精修中 / 已导出。
+//
+// ⚠️ 判据是**是否已经导出**（`isExported` = `rendered || cover`），与卡片上那枚 chip 是**同一套口径**。
+// 不再用"进没进过精修"（旧的 `isInPolish` = `polish_ready || rendered || cover`）：
+// **剪切收尾本身就会 `polish init`**（见 `crates/vtrim-service/AGENTS.md`「剪切收尾 = 补精修工程」），
+// 于是每个已剪片段都 `polish_ready` → 旧判据对已剪片段**恒为真** → 「未精修」那一档永远是空的。
+// 两档互斥互补：精修中 = 已剪但还没出片/出封面；已导出 = 出过其中任意一个。
 // 保留「全部」在前：一级「已剪切」的老行为（所有已剪片段）由此一键回到，不用再点回一级。
 const SUB_FILTERS = [
   { key: 'all', label: '全部', hint: '已剪片段全部都看' },
-  { key: 'unpolished', label: '未精修', hint: '已剪但还没进过精修的片段' },
-  { key: 'polished', label: '已精修', hint: '进过精修的片段（含已经导出的）' }
+  { key: 'polishing', label: '精修中', hint: '已剪但还没有导出成片或封面' },
+  { key: 'exported', label: '已导出', hint: '已经出过片或出过封面（与卡片上的 chip 同口径）' }
 ]
 const FILTER_STORE = 'vtrim.slices.filter'
 const SUB_FILTER_STORE = 'vtrim.slices.subfilter'
 // 两级化之前存的 key 要**翻译成"一级 + 二级"**再回填，否则老用户打开切片页会退到默认档、
-// 以为筛选坏了：上一版的 `polish`（一级「精修中」）→ 已剪切 + 已精修。
-// ⚠️ 更早那版 `unpolished` 是**没出片**（`rendered` 为假），与二级的「未精修」不是一个集合
-//   （已精修但没出片的片段属于后者）——**不能迁移**，认不出就交给 `applyDefaultFilter` 回落。
+// 以为筛选坏了：上一版的 `polish`（一级「精修中」）→ 已剪切 + 已导出。
 const LEGACY_FILTERS = {
-  polish: { primary: 'cut', sub: 'polished' }
+  polish: { primary: 'cut', sub: 'exported' }
+}
+// 二级自己也有历史值要翻译：`unpolished` / `polished` 是"进没进过精修"那一代的口径（2026-09 改成"出没出片"）。
+// ⚠️ 这对映射**有损、且是有意为之**：旧 `polished`（进过精修，含没出片的）在新口径下只有"已导出"那一半能表达；
+//   旧 `unpolished`（从没进过精修）在新口径下属于「精修中」。
+//   还能这么迁的理由：`polish_ready` 现在对所有已剪片段都为真，旧两档本身已经退化成"全满 / 恒空"，
+//   继续认旧 key 只会让用户看到一排永远筛不出东西（或永远等于没筛）的按钮。
+const LEGACY_SUB_FILTERS = {
+  unpolished: 'polishing',
+  polished: 'exported'
 }
 // 只在**用户自己点过**之后才记住；没存过时按数量定默认（见 applyDefaultFilter）——
 // 存下来的默认值会在项目状态变化后过期（比如本来全是未剪切、后来全剪完了）。
@@ -534,7 +544,9 @@ const savedSub = (() => {
   if (savedFilter.sub) return savedFilter.sub
   try {
     const v = localStorage.getItem(SUB_FILTER_STORE) || ''
-    return SUB_FILTERS.some(s => s.key === v) ? v : ''
+    if (SUB_FILTERS.some(s => s.key === v)) return v
+    // 旧口径的二级值（见 `LEGACY_SUB_FILTERS`）翻译过来；认不出的交给默认档
+    return LEGACY_SUB_FILTERS[v] || ''
   } catch { return '' }
 })()
 const filterKey = ref(savedFilter.primary)
@@ -575,30 +587,27 @@ const occupiedRanks = computed(() => new Set(
 ))
 
 /**
- * 这枚片段"精修产物已经落盘"了吗 —— 出过片或出过封面都算。
- * 卡片上那枚「已导出」chip 与「进过精修」的判据都从这里来（`rendered`/`cover` 是服务端
- * `/api/project-data/polish` 按文件存在性给的，见 `polish_ready` 同一处）。
+ * 这枚片段"导出产物已经落盘"了吗 —— 出过片或出过封面都算。
+ * 卡片上那枚「已导出」chip 与二级筛选**共用这一条判据**（`rendered`/`cover` 是服务端
+ * `/api/project-data/polish` 按文件存在性给的）。
+ *
+ * ⚠️ 判据刻意**不含** `polish_ready`：剪切收尾就会 `polish init`，那个字段对所有已剪片段
+ * 都为真，拿它当筛选条件等于没筛 —— 旧的二级「未精修 / 已精修」就是这么退化成恒空/恒满的。
  */
 const isExported = (c) => {
   const m = polishMap.value[c.dir]
   return !!(m?.rendered || m?.cover)
 }
-/** 「已精修」筛选 = 进过精修的（含已导出）。`polish_ready` 是 `polish.toml` 存在，
- *  产物文件都长在精修目录里，所以正常三者同真；这里仍 OR 一遍防单侧缺文件。 */
-const isInPolish = (c) => {
-  const m = polishMap.value[c.dir]
-  return !!(m?.polish_ready || m?.rendered || m?.cover)
-}
-/** 「未精修」= 否定上面那条（已剪但精修目录里什么都没有），**不是**"没出片"。 */
-const isUnpolished = (c) => !isInPolish(c)
+/** 二级「精修中」= 已剪但还没导出（**不是**"没进过精修"—— 剪切收尾就 init 了）。 */
+const isPolishing = (c) => !isExported(c)
 const cutCards = computed(() => cutClips.value.map(clipView))
 /** 墙面上的条目：已剪片段 + 未剪切事件**按同一个排序键混排**（热度是数值，两边都算得出来）。 */
 const shownItems = computed(() => {
   const k = filterKey.value
-  // 已剪片段：一级 `uncut` 不显示；`cut` 档再按二级收窄一次（全部 / 未精修 / 已精修）
+  // 已剪片段：一级 `uncut` 不显示；`cut` 档再按二级收窄一次（全部 / 精修中 / 已导出）
   let clips = k === 'uncut' ? [] : cutCards.value
-  if (k === 'cut' && polishFilter.value === 'unpolished') clips = clips.filter(v => isUnpolished(v.c))
-  if (k === 'cut' && polishFilter.value === 'polished') clips = clips.filter(v => isInPolish(v.c))
+  if (k === 'cut' && polishFilter.value === 'polishing') clips = clips.filter(v => isPolishing(v.c))
+  if (k === 'cut' && polishFilter.value === 'exported') clips = clips.filter(v => isExported(v.c))
   // 未剪切事件只在「未剪切 / 全部」出现 —— 二级筛选是已剪片段的事，不参与这两档
   const events = (k === 'uncut' || k === 'all') ? uncutEvents.value : []
   const items = [
@@ -610,7 +619,7 @@ const shownItems = computed(() => {
 const statsOfItem = (it) => (it.kind === 'clip' ? clipStats(it.view.c) : eventStats(it.ev))
 const shownTotal = computed(() => shownItems.value.length)
 /** 计数分母 = 当前**一级**档位涉及的片段总数（二级只收窄，不改分母）——
- *  否则「已剪切 / 未精修」的读数会拿"已剪 + 未剪切"当分母，看起来像筛丢了。 */
+ *  否则「已剪切 / 精修中」的读数会拿"已剪 + 未剪切"当分母，看起来像筛丢了。 */
 const poolTotal = computed(() => {
   if (filterKey.value === 'uncut') return uncutEvents.value.length
   return cutClips.value.length
@@ -620,8 +629,8 @@ const emptyText = computed(() => {
   if (filterKey.value === 'uncut') return '暂无未剪切事件'
   if (filterKey.value === 'cut') {
     // 二级档位下的空态要能自解释：别让人以为"已剪片段全没了"
-    if (polishFilter.value === 'unpolished') return '已剪片段都进过精修了'
-    if (polishFilter.value === 'polished') return '已剪片段还没有进过精修的（去精修页跑一次）'
+    if (polishFilter.value === 'polishing') return '已剪片段都导出过了'
+    if (polishFilter.value === 'exported') return '已剪片段还没有导出过（去精修页出一片或导出封面）'
     return '暂无已剪切片段'
   }
   return '暂无片段'
@@ -1419,7 +1428,7 @@ onUnmounted(() => {
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
 .clip-card .clip-del { margin-left:auto; }
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
-/* 二级筛选（未精修 / 已精修）：做成挂在「已剪切」旁边的一个**内嵌分组**——
+/* 二级筛选（精修中 / 已导出）：做成挂在「已剪切」旁边的一个**内嵌分组**——
    虚线边 + 略浅的底 + 更小的字号，一眼看出它从属于左边那颗一级按钮，不是并列的第五档。
    组内选中的那颗用卡片白底「抬起」，与一级 `.mini-btn.selected` 的绿色块区分开。 */
 .subfilters { display:inline-flex; align-items:center; gap:2px; padding:2px; margin:0 2px; flex:none;

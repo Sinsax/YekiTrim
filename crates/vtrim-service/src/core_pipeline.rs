@@ -74,10 +74,16 @@ fn save_corrected_transcript(
 /// 「剪切收尾」：给一个**刚剪出来的**片段目录补精修工程（`polish.toml` + `data/`）。
 ///
 /// 用户口径：**剪切这个动作本身就包含精修 init** —— 剪完的片段立刻能被精修页打开。
-/// 切片页的「精修」按钮、首页「切片总览」卡片、「已精修 / 未精修」筛选都只看
+/// 切片页的「精修」按钮（`goPolish`）与首页「切片总览」卡片都只看
 /// `polish_ready`（= `polish.toml` 存在）。放在剪切收尾里而不是等前端进页面时再补，
 /// 是为了消掉那条竞态：前端发完 init 请求就跳转，工程还没落盘 → 精修页读到
 /// 「片段配置读取失败：polish.toml not found」（慢盘、或 init 被资源键排队时必现）。
+///
+/// ⚠️ **副作用：`polish_ready` 不再是"用户进过精修"的信号** —— 每个已剪片段都为真。
+/// 所以切片页的二级筛选（精修中 / 已导出）看的是**导出产物**（`rendered || cover`），
+/// 不是 `polish_ready`：拿后者当筛选条件等于不筛（旧「未精修 / 已精修」就是这么退化的）。
+/// 判据在 `webui/src/components/ProjectClipsSection.vue::isExported`，
+/// 口径说明在 `webui/src/views/AGENTS.md`。
 ///
 /// - **已有 `polish.toml` 一律不动**（`cmd_init` 自己也会报"已存在"）—— 绝不覆盖用户改过的工程；
 /// - 目录里没有 `clip.mp4` 就跳过（`cmd_init` 会 `create_dir_all`，不能拿一条没剪成的事件建工程）；
