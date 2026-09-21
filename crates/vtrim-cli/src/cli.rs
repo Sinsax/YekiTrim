@@ -1,3 +1,8 @@
+//! vtrim-cli 命令定义：clap 的顶层 `Cli` 与全部子命令枚举。
+//!
+//! 入口：`Cli`、`Command`、`IngestAction`、`UserAction`、`ConfigAction`、`PolishAction`、`StickerAction`、`stage_name`。
+//! 边界：只放命令表面（命令 / 参数 / 默认值 / 帮助文案），实现分别在 `main.rs` 与 `vtrim-service` / `vtrim-polish`，这里不该有业务逻辑 —— 见 `crates/vtrim-cli/AGENTS.md`
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

@@ -1,3 +1,8 @@
+//! vtrim-cli 入口：装配 tracing 订阅者，把 clap 命令分发到各实现（二进制名 `vtrim`）。
+//!
+//! 入口：`#[tokio::main] async fn main()`、`setup_tracing`、`load_cfg`；子模块 `cli`（命令定义）、`progress`（终端进度条）。
+//! 边界：这里只剩入口装配 —— CLI 要用服务端能力只能经 `vtrim-server` 暴露的 `run()` / `ServerArgs` 进入，别在本地重实现领域逻辑 —— 见 `crates/vtrim-cli/AGENTS.md`
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -382,7 +387,8 @@ Command::Polish(action) => {
                     commands::cmd_init(input).await?;
                 }
                 cli::PolishAction::Llm { input } => {
-                    commands::cmd_llm(input).await?;
+                    // CLI 保留断点续传（长片重跑很贵）；编辑器那颗按钮走的是 full=true
+                    commands::cmd_llm(input, false).await?;
                 }
                 cli::PolishAction::Process { input } => {
                     process::cmd_process(input).await?;
