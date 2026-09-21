@@ -27,13 +27,21 @@ mod workspace;
 // 因此显式 pub，不再层层转发。
 pub mod assets;
 pub mod auth;
+// P4：B站链接通道。`bilibili` 只认 bvid/cid/弹幕，`downloader` 只认 URL + 通用下载选项，
+// 两者**只在 server 侧装配**（`download_worker`）——
+// 加第二个下载引擎 = 加一个 `downloader` 适配器，server 一行不改。
+pub mod bilibili;
 pub mod db;
 pub mod disk;
 pub mod doctor;
+pub mod downloader;
+// `ingest` 是采集/入库领域（录播姬 CLI + 共享的容量预检/项目落地）
 pub mod ingest;
 pub mod instancelock;
 pub mod invite;
 pub mod logbus;
+// `net`：HTTP 层小工具（解压 / 浏览器 UA），不含任何平台知识
+pub mod net;
 pub mod projects;
 pub mod recorder;
 pub mod usage;

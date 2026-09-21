@@ -4,12 +4,25 @@
 //!   `[ingest] token_hash` 并开启 `webhook_enabled`；
 //! - `vtrim ingest token --disable`：只关闭 webhook（保留 token）；
 //! - `vtrim ingest status`：显示当前采集配置（不打印任何秘密）。
+//!
+//! ## 这里同时是"入库共享逻辑"的落点
+//!
+//! `capacity`（水位/配额预检）与 `landing`（把一份素材落成项目）**与录播姬无关**，
+//! 只是历史上长在 `server::ingest_worker` 里。B站下载通道要复用同一套规则，
+//! 所以它们被下沉到这里 —— 见 `docs/plan/p4-implementation-plan.md` §2。
+//!
+//! ⚠️ 它们的**消费者**是 `vtrim-server` 的两个 worker（`ingest_worker` / `download_worker`）。
+//! **两个 worker 之间不许互相调用**：共享的东西一律下沉到本模块，否则录播姬那套
+//! 「待分配池 / is_finalized 空闲窗口」的语义会顺着调用链渗进 B站通道。
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
 use super::auth;
+
+pub mod capacity;
+pub mod landing;
 
 fn global_config_path() -> PathBuf {
     vtrim_core::path::vtrim_home().join("config.toml")

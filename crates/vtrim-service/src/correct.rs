@@ -75,8 +75,14 @@ pub async fn run_correct(
             let llm_srt = output.join("video_llm.srt");
             std::fs::create_dir_all(&output)?;
             vtrim_core::srt::write_srt(&transcript_data, &llm_srt)?;
-            let rel = rel_for_config(config_file, &llm_srt);
-            vtrim_core::config::save_transcript_path_in(config_file, &rel)?;
+            // 与 `core_pipeline` 的订正落账同一口径：登记成普通清单条目（不占 ASR 槽，
+            // 可删除），别让它只在 `output/` 里躺着 —— 列表里切不回去等于白订正。
+            if crate::assets::bind_derived_material(&ws, crate::assets::AssetKind::Transcript, &llm_srt)
+                .is_none()
+            {
+                let rel = rel_for_config(config_file, &llm_srt);
+                vtrim_core::config::save_transcript_path_in(config_file, &rel)?;
+            }
             let _ = std::fs::remove_file(&checkpoint);
             let _ = std::fs::remove_file(&partial_path);
             Ok(())

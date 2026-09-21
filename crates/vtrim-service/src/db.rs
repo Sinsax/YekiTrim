@@ -23,7 +23,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 ///   不再存 selector + scrypt 哈希：明文既然要能读回来，哈希就不再提供任何保护，留着只是噪声。
 ///   一个码仍然只能绑一个账号（`used_at/used_by` + 原子消费）。
 /// - v7：llm_usage（每次 LLM 调用一行：tokens / 缓存命中 / 耗时 / 成败，设置页「LLM 用量」用）
-pub const SCHEMA_VERSION: i64 = 7;
+/// - v8：ingest_sessions 加 `kind` / `source_ref` —— 同一张会话表被两个来源共用
+///   （`recorder` 录播姬 / `bilibili` 链接下载）。**必须显式判别**：B站是"用户主动提交、
+///   有身份、进程退出即完结"，录播姬是"webhook 无身份、进待分配池、靠空闲窗口完结"，
+///   两条流程的语义完全不同，混在一起会互相踩（见 `docs/plan/p4-implementation-plan.md` §2）。
+pub const SCHEMA_VERSION: i64 = 8;
 
 pub fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VTRIM_DATA_DIR") {
@@ -163,6 +167,7 @@ pub struct IngestSessionRow {
     /// `None` = 尚未指派（进"待分配池"，仅 admin 可见）
     pub owner_id: Option<i64>,
     /// `open` | `closing` | `finalized` | `failed` | `unassigned`
+    ///（B站下载另用 `downloading`，见 `kind`）
     pub state: String,
     pub opened_files: Vec<String>,
     pub closed_files: Vec<String>,
@@ -172,6 +177,14 @@ pub struct IngestSessionRow {
     pub auto_pipeline: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
+    /// 来源判别列（v8）：`recorder`（默认，录播姬）/ `bilibili`（链接下载）。
+    ///
+    /// 这张表被两个来源共用（复用的理由：重试端点、记录页、容量预检、SSE 全是现成的）。
+    /// ⚠️ 别拿 `room_id` 塞 bvid 来区分来源 —— `room_id` 会被 `channel_map`
+    /// 按房间号查的规则命中，把 B站会话误判成某个直播间。
+    pub kind: String,
+    /// 来源侧标识：录播姬侧留 `None`（用 `room_id`），B站侧放 bvid（多P 用 `BV1xx-p3`）。
+    pub source_ref: Option<String>,
 }
 
 /// 房间 → 账号 的自动导入规则（§4.2）。
@@ -329,7 +342,10 @@ pub struct Db {
                     project_id     INTEGER REFERENCES projects(id) ON DELETE SET NULL,
                     auto_pipeline  TEXT,
                     error          TEXT,
-                    created_at     INTEGER NOT NULL
+                    created_at     INTEGER NOT NULL,
+                    -- v8：来源判别（recorder | bilibili）+ 来源侧标识（bvid）
+                    kind           TEXT NOT NULL DEFAULT 'recorder',
+                    source_ref     TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_ingest_sessions_owner ON ingest_sessions(owner_id);
                 CREATE INDEX IF NOT EXISTS idx_ingest_sessions_state ON ingest_sessions(state);
@@ -430,6 +446,27 @@ pub struct Db {
                 let has = conn
                     .query_row(
                         "SELECT COUNT(*) FROM pragma_table_info('channel_map') WHERE name = ?1",
+                        params![col],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(1)
+                    > 0;
+                if !has {
+                    conn.execute_batch(ddl).with_context(|| format!("加列 {col} 失败"))?;
+                }
+            }
+            // v7 → v8：ingest_sessions 加 kind/source_ref（B站下载会话与录播姬共用这张表）。
+            // 默认值 `'recorder'`：已存在的行全是录播姬会话，不用回填也能语义正确。
+            for (col, ddl) in [
+                (
+                    "kind",
+                    "ALTER TABLE ingest_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'recorder'",
+                ),
+                ("source_ref", "ALTER TABLE ingest_sessions ADD COLUMN source_ref TEXT"),
+            ] {
+                let has = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('ingest_sessions') WHERE name = ?1",
                         params![col],
                         |r| r.get::<_, i64>(0),
                     )
@@ -1008,6 +1045,59 @@ pub struct Db {
         })
     }
 
+    /// 新建一个**非录播姬来源**的会话（目前只有 B站链接下载）。
+    ///
+    /// 与 [`Db::ingest_session_touch`] 的区别（这也是为什么不复用它）：
+    /// - `owner_id` 立刻有值 —— B站是**用户主动提交**的，不需要"待分配池 + admin 指派"；
+    /// - `kind` 由调用方指定（`touch` 永远写默认 `recorder`）；
+    /// - `room_id`/`short_id` 一律留空，来源标识走 `source_ref`（避免撞 `channel_map`）。
+    ///
+    /// 幂等：`session_id` 已存在时**不覆盖** `kind`/`owner_id`/`state`，只刷新 `last_event_at`
+    /// 并补上缺失的 `source_ref`/`auto_pipeline` —— 重试同一份下载不该把状态打回去。
+    ///
+    /// 返回 `true` = 本次真的新建了（调用方据此决定要不要记日志/建目录）。
+    pub fn create_ingest_session(
+        &self,
+        session_id: &str,
+        kind: &str,
+        owner_id: i64,
+        source_ref: Option<&str>,
+        state: &str,
+        auto_pipeline: Option<&str>,
+    ) -> Result<bool> {
+        self.with(|conn| {
+            let now = now_secs();
+            // 先查存在性：`INSERT OR IGNORE` 分不出"新建"还是"已存在"
+            let exists = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM ingest_sessions WHERE session_id = ?1",
+                    params![session_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if exists {
+                conn.execute(
+                    "UPDATE ingest_sessions
+                     SET last_event_at = ?2,
+                         source_ref = COALESCE(source_ref, ?3),
+                         auto_pipeline = COALESCE(auto_pipeline, ?4)
+                     WHERE session_id = ?1",
+                    params![session_id, now, source_ref, auto_pipeline],
+                )?;
+                return Ok(false);
+            }
+            conn.execute(
+                "INSERT INTO ingest_sessions
+                   (session_id, kind, owner_id, source_ref, state, auto_pipeline,
+                    first_event_at, last_event_at, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7)",
+                params![session_id, kind, owner_id, source_ref, state, auto_pipeline, now],
+            )?;
+            Ok(true)
+        })
+    }
+
     /// 会话不存在则建（`state=open`），已存在则刷新 `last_event_at` / 房间信息。
     pub fn ingest_session_touch(
         &self,
@@ -1048,11 +1138,15 @@ pub struct Db {
             auto_pipeline: r.get(10)?,
             error: r.get(11)?,
             created_at: r.get(12)?,
+            // v8 的新列**追加在 SELECT 末尾**，这样 0..12 的索引不用动（少改一处就少错一处）
+            kind: r.get(13)?,
+            source_ref: r.get(14)?,
         })
     }
 
     const INGEST_SESSION_COLS: &'static str = "session_id, room_id, short_id, owner_id, state, \
-         opened_files, closed_files, first_event_at, last_event_at, project_id, auto_pipeline, error, created_at";
+         opened_files, closed_files, first_event_at, last_event_at, project_id, auto_pipeline, error, created_at, \
+         kind, source_ref";
 
     pub fn ingest_session(&self, session_id: &str) -> Result<Option<IngestSessionRow>> {
         self.with(|conn| {
