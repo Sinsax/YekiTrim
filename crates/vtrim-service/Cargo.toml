@@ -23,8 +23,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 
-# 录播姬 HTTP API 客户端（房间增删查）
+# 录播姬 HTTP API 客户端（房间增删查）+ B站 view API / 弹幕 XML
 reqwest = { version = "0.12", features = ["json"] }
+
+# B站弹幕响应是**裸 deflate**（wbits=-15，非 zlib 包装），而 `Accept-Encoding: identity`
+# 会被服务端忽略 —— 手工解压是必须的。两者都已在 Cargo.lock 里（经 png/ureq/zip 引入），
+# 提升为直接依赖不引入新的传递依赖。
+flate2 = "1.1"
+# yt-dlp 供应链：注册表钉死 sha256，下载后必须校验
+sha2 = "0.10"
 
 # 多用户服务 P1：账号账本（SQLite，bundled 自带 libsqlite3）
 rusqlite = { version = "0.32", features = ["bundled"] }
