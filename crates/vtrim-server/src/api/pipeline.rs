@@ -96,7 +96,11 @@ pub(super) async fn correct_run_impl(
             jobs_handle.complete(&job_id).await;
             return;
         }
-        let result = vtrim_service::run_correct(&cfg_file, None, true).await;
+        // 取消令牌 → `ProgressReporter` → Agent 的窗口边界探针（订正是分钟级链路，
+        // 该跟检测/精修一个口径；用户在任务卡上点停止要真的能停）。
+        let token = jobs_handle.cancel_token(&job_id).await;
+        let progress = super::core::progress_bridge(job_id.clone(), jobs_handle.clone(), token);
+        let result = vtrim_service::run_correct(&cfg_file, None, true, Some(progress)).await;
         if let Err(e) = result {
             jobs_handle.fail(&job_id, format!("{e:#}")).await;
         } else {

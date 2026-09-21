@@ -371,9 +371,14 @@ async fn run_process(
                         }
                     }
                 });
+                // 取消探针：订正跑在管线里（分钟级），用户在阶段边界点的停止必须能穿透到窗口边界
+                let cancel: Option<vtrim_core::llm::agent::CancelProbe> = progress.map(|p| {
+                    let p = p.clone();
+                    std::sync::Arc::new(move || p.cancelled()) as vtrim_core::llm::agent::CancelProbe
+                });
                 let result = vtrim_core::asr::correct::correct_transcript_with_checkpoint(
                     &segments, &danmaku, &cfg.llm, &cfg.correct,
-                    ctx.output_dir.parent(), checkpoint_path, Some(tx),
+                    ctx.output_dir.parent(), checkpoint_path, Some(tx), cancel,
                 ).await;
                 let _ = partial_task.await;
                 if let Ok(corrected) = result {

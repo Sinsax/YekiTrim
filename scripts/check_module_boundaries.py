@@ -139,6 +139,23 @@ RULES: list[tuple[str, list[str], str, str]] = [
     ),
 ]
 
+# 成对判据：**命中 `trigger` 的文件必须同时出现 `need`**。
+#
+# 为什么单独立一类：`RULES` 是"某行不许出现 X"的行级正则，而"用了 Agent 就必须交出取消探针"
+# 是文件级约束 —— 正确写法里 `Agent::new(` 与 `with_cancel(` 本来就在不同行（有时还隔着
+# `match`），行级正则表达不出来。判据刻意做粗（文件级），因为它的目的是"别漏掉新的批量循环"，
+# 不是精确到语句；宁可偶尔要求一次人工确认，也不要脆到一改格式就失效。
+PAIRED_RULES: list[tuple[str, list[str], str, str, str]] = [
+    (
+        "把取消探针交给 Agent",
+        ["crates/vtrim-polish/src/llm", "crates/vtrim-core/src/asr/correct.rs"],
+        r"Agent::new\(",
+        r"with_cancel\(",
+        "批量 LLM 循环必须在**窗口边界**响应取消（`Agent::with_cancel`）：只在阶段边界查一次 = "
+        "用户点了停止、后台仍把窗口一个个（甚至成批）跑完 —— 检测链路实测 18 个窗口、十几分钟",
+    ),
+]
+
 
 def strip_comments(line: str) -> str:
     """去掉 `//` 起的注释，但保留 `https://` 这类 URL。
@@ -195,11 +212,48 @@ def main() -> int:
         elif verbose:
             print(f"[OK] {name}（{len(files)} 个文件）")
 
+    # 成对判据（文件级）：见 PAIRED_RULES 的说明
+    for name, paths, trigger, need, why in PAIRED_RULES:
+        tx = re.compile(trigger)
+        nx = re.compile(need)
+        files: list[Path] = []
+        for rel in paths:
+            files.extend(source_files(rel))
+        if not files:
+            print(f"[!!] {name}：规则指向的路径不存在（判据已失效，请修脚本）")
+            total += 1
+            continue
+        checked += len(files)
+        for f in files:
+            body = "\n".join(
+                strip_comments(line)
+                for line in f.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            if tx.search(body) and not nx.search(body):
+                total += 1
+                print(f"[!!] {name}  —— {why}")
+                print(
+                    f"       {f.relative_to(REPO).as_posix()}："
+                    f"用了 `{trigger}` 但全文没有 `{need}`"
+                )
+        if verbose and not any(
+            tx.search(
+                "\n".join(
+                    strip_comments(line)
+                    for line in f.read_text(encoding="utf-8", errors="replace").splitlines()
+                )
+            )
+            for f in files
+        ):
+            print(f"[OK] {name}（{len(files)} 个文件，无一命中）")
+
     print()
     if total:
         print(f">>> {total} 处违规，边界被破坏。别绕过这个检查 —— 破了要说明理由并同步改规则。")
         return 1
-    print(f">>> 边界完整：{len(RULES)} 条规则 / {checked} 个文件，0 违规。")
+    print(
+        f">>> 边界完整：{len(RULES) + len(PAIRED_RULES)} 条规则 / {checked} 个文件，0 违规。"
+    )
     return 0
 
 

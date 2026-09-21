@@ -230,7 +230,11 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
 /// 会给出"跳过 4 个窗口、实际只匹配 1 个"这种半吊子状态，用户看到的是
 /// 「点一次 LLM 剪辑，事件反而被换乱了」。重做是用户点这颗按钮的意图；
 /// 想省调用就该用**单段重做**（时间轴分段的属性面板），而不是赌缓存。
-pub async fn cmd_llm(project_path: &Path, full: bool) -> anyhow::Result<()> {
+pub async fn cmd_llm(
+    project_path: &Path,
+    full: bool,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
+) -> anyhow::Result<()> {
     tracing::info!("🤖  LLM config generation... (full={full})");
 
     // 全部重做：先把 checkpoint 拿掉，之后每个窗口都会真问模型一次
@@ -320,6 +324,7 @@ pub async fn cmd_llm(project_path: &Path, full: bool) -> anyhow::Result<()> {
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
         Some(&project_path.join(".vtrim")),
+        cancel,
     ).await?;
 
     // LLM 生成后，再把屏蔽区间从分段中切开/移除
@@ -386,7 +391,11 @@ pub async fn cmd_llm(project_path: &Path, full: bool) -> anyhow::Result<()> {
 ///
 /// 只换 `segments[index].events`，别的段与筛选词/高亮词一律不动；
 /// 失败时（429/超时/空结果）**保留该段原有事件**并如实报错，绝不把事件清空。
-pub async fn cmd_llm_segment(project_path: &Path, index: usize) -> anyhow::Result<()> {
+pub async fn cmd_llm_segment(
+    project_path: &Path,
+    index: usize,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
+) -> anyhow::Result<()> {
     tracing::info!("🤖  重做分段 #{index} 的事件...");
 
     let config = project::load_project(project_path)?;
@@ -428,6 +437,7 @@ pub async fn cmd_llm_segment(project_path: &Path, index: usize) -> anyhow::Resul
         &mut segments,
         index,
         Some(project_path),
+        cancel,
     )
     .await?;
 
@@ -1016,7 +1026,7 @@ pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
             tracing::info!("  ⚠ 未配置 LLM API key (编辑 .vtrim/llm.toml), tags 留空");
         } else {
             tracing::info!("  🤖 用 LLM 生成 tags ({})...", llm_cfg.model);
-            if let Err(e) = llm_generate_tags(&llm_cfg, &mut metas).await {
+            if let Err(e) = llm_generate_tags(&llm_cfg, &mut metas, None).await {
                 tracing::info!("  ⚠ LLM tags 生成失败: {} (tags 留空)", e);
             }
         }
@@ -1034,6 +1044,7 @@ const TAG_BATCH_SIZE: usize = 40;
 async fn llm_generate_tags(
     cfg: &vtrim_core::config::LlmConfig,
     metas: &mut [crate::assets::sticker_index::StickerMeta],
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
     use vtrim_core::llm::LlmClient;
     // 链路解析：零散单发链路（见 [llm.overrides.utility]）。
@@ -1046,6 +1057,10 @@ async fn llm_generate_tags(
 
     let mut tagged = 0;
     for batch in metas.chunks_mut(TAG_BATCH_SIZE) {
+        // 每个批次一次 LLM 调用：逐个查取消（与其它批量循环同口径）
+        if cancel.as_ref().is_some_and(|c| c()) {
+            anyhow::bail!("任务已取消");
+        }
         let names: Vec<String> = batch.iter().map(|m| m.name.clone()).collect();
         let user = format!(
             "贴纸列表 (JSON 数组):\n{}\n\n输出 JSON 对象: {{\"贴纸名\": [\"tag1\",\"tag2\",...]}}\n只输出 JSON，不要多余文字。",

@@ -374,7 +374,7 @@ Command::Correct { transcript } => {
             let transcript_override = transcript.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            vtrim_service::run_correct(&config_file, transcript_override, true).await?;
+            vtrim_service::run_correct(&config_file, transcript_override, true, None).await?;
             tracing::info!("LLM 订正完成");
         }
 
@@ -388,7 +388,7 @@ Command::Polish(action) => {
                 }
                 cli::PolishAction::Llm { input } => {
                     // CLI 保留断点续传（长片重跑很贵）；编辑器那颗按钮走的是 full=true
-                    commands::cmd_llm(input, false).await?;
+                    commands::cmd_llm(input, false, None).await?;
                 }
                 cli::PolishAction::Process { input } => {
                     process::cmd_process(input).await?;

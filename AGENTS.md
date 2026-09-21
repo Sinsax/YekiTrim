@@ -34,7 +34,7 @@ vtrim-render-core ←── vtrim-polish ──┐
 | `crates/vtrim-wasm` | **不在 workspace members 里**（独立 target），只依赖 `vtrim-render-core` |
 | `crates/xtask` | 构建/打包/产物门禁（`cargo xtask scan|package`） |
 
-硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，14 条规则）：
+硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，15 条规则）：
 
 - `vtrim-service` **绝不能** `use vtrim_server::*`（它能被抽出来的全部理由）；
 - `vtrim-server` 只依赖 `vtrim-service`，不碰 `vtrim_cli`；
@@ -189,7 +189,7 @@ vtrim polish stickers list|test|scan     # 本地贴纸: 列出 / 测 keyword �
 ```bash
 # 结构门禁（本文件与模块卡的预算/覆盖率/骨架/索引一致/⚠️ 下限）
 python3 scripts/check_module_map.py
-# 边界门禁（14 条：分层方向 + P4 隔离 + 前端）
+# 边界门禁（15 条：分层方向 + P4 隔离 + 前端 + 成对判据）
 python3 scripts/check_module_boundaries.py
 
 # 改任何 crate 之后

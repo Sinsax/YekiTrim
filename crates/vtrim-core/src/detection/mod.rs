@@ -99,14 +99,17 @@ impl Stage for EventDetector {
             );
         }
 
+        // 取消探针：Agent 在窗口边界轮询它（点了「停止」不该再一个窗口接一个窗口地跑下去）。
+        // ⚠️ 上提到这里、两处共用一份 —— 检测窗口与**热度评分**必须是同一个探针，
+        // 否则会出现"检测阶段停得下来、评分阶段停不下来"。
+        let progress = ctx.progress.clone();
+        let cancel: Option<crate::llm::agent::CancelProbe> =
+            Some(std::sync::Arc::new(move || progress.cancelled()));
+
         let mut events = if llm_config.api_key.is_empty() {
             tracing::warn!("未配置 LLM API key (llm.api_key)，使用默认事件");
             vec![llm::create_default_event(segments)]
         } else {
-            // 取消探针：Agent 在窗口边界轮询它（点了「停止」不该再一个窗口接一个窗口地跑下去）
-            let progress = ctx.progress.clone();
-            let cancel: Option<crate::llm::agent::CancelProbe> =
-                Some(std::sync::Arc::new(move || progress.cancelled()));
             process_with_llm(
                 segments,
                 llm_config,
@@ -114,7 +117,7 @@ impl Stage for EventDetector {
                 &hot_windows,
                 &ctx.output_dir,
                 ctx.detect_resume,
-                cancel,
+                cancel.clone(),
             )
             .await?
         };
@@ -183,6 +186,7 @@ impl Stage for EventDetector {
                 llm_config,
                 detect_config,
                 ctx.output_dir.parent(),
+                cancel.clone(),
             )
             .await
             {
@@ -201,6 +205,11 @@ impl Stage for EventDetector {
                     }
                 }
                 Err(e) => {
+                    // ⚠️ 取消**不是**"评分失败"：不能顺着"回退原热度"继续把检测/剪切跑完 ——
+                    // 否则用户点了停止，后台照样一路做到最后。
+                    if cancel.as_ref().is_some_and(|c| c()) {
+                        anyhow::bail!("任务已取消");
+                    }
                     tracing::warn!("LLM 标题+摘要热度评分失败，回退原热度: {e:#}");
                     None
                 }

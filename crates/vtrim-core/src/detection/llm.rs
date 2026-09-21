@@ -451,9 +451,15 @@ pub async fn score_events_with_llm(
     llm: &LlmConfig,
     detect: &DetectionConfig,
     project: Option<&Path>,
+    cancel: Option<crate::llm::agent::CancelProbe>,
 ) -> Result<Vec<Option<f64>>> {
     if events.is_empty() {
         return Ok(Vec::new());
+    }
+    // 取消探针在**建客户端之前**先查一次：用户在检测阶段点了停止时，不该再为评分发任何请求
+    //（顺带让"探针一开始就为真"成为一条不需要网络的单测）。
+    if cancel.as_ref().is_some_and(|c| c()) {
+        anyhow::bail!("任务已取消");
     }
     let weight = if detect.llm_score_weight.is_finite() {
         detect.llm_score_weight.clamp(0.0, 1.0)
@@ -490,6 +496,12 @@ pub async fn score_events_with_llm(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut join_set = tokio::task::JoinSet::new();
     for batch in batches {
+        // 派发前查一次：命中就掐掉在飞的批次并报取消（尺度与 `Agent::run_windows` 一致：
+        // 派发每个窗口前 + 每收一个窗口后各查一次，只在阶段边界查等于取消按钮形同虚设）。
+        if cancel.as_ref().is_some_and(|c| c()) {
+            join_set.abort_all();
+            anyhow::bail!("任务已取消");
+        }
         let permit = semaphore
             .clone()
             .acquire_owned()
@@ -506,6 +518,11 @@ pub async fn score_events_with_llm(
     let mut ok_batches = 0usize;
     let mut failed_batches = 0usize;
     while let Some(joined) = join_set.join_next().await {
+        // 每收一批再查一次：剩下的批次不该在用户点了停止之后继续跑完
+        if cancel.as_ref().is_some_and(|c| c()) {
+            join_set.abort_all();
+            anyhow::bail!("任务已取消");
+        }
         match joined {
             Ok(Ok(batch_scores)) => {
                 ok_batches += 1;
@@ -1331,10 +1348,43 @@ mod tests {
         let llm = LlmConfig::default();
         let mut detect = DetectionConfig::default();
         detect.llm_score_weight = 0.0;
-        let scores = score_events_with_llm(&events, &llm, &detect, None)
+        let scores = score_events_with_llm(&events, &llm, &detect, None, None)
             .await
             .unwrap();
         assert_eq!(scores, vec![None]);
+    }
+
+    /// 探针一开始就为真 → 立刻报「任务已取消」，**且一次请求都不发**。
+    ///
+    /// 这条链路历史上只查 `llm_score_weight`：`weight <= 0` 直接返回全 `None`，
+    /// 而探针检查刻意放在**建客户端之前**，所以这个用例不需要网络（也不该需要）。
+    #[tokio::test]
+    async fn score_events_bails_immediately_when_cancelled() {
+        let events = vec![Event {
+            start: Timestamp::from_seconds(0.0),
+            end: Timestamp::from_seconds(10.0),
+            label: "标题".into(),
+            summary: "摘要".into(),
+            event_type: EventType::Chat,
+            source: EventSource::LLM,
+            confidence: 1.0,
+            popularity: 0.0,
+            rank: 0,
+            clip_dir: None,
+            enabled: true,
+        }];
+        let mut llm = LlmConfig::default();
+        // 给个非空 key + 非 0 权重，确保不会被"未配置/权重为 0"的早退挡住，
+        // 真正走到探针那一步（它是比建客户端更早的那道门）。
+        llm.api_key = "sk-test".into();
+        let mut detect = DetectionConfig::default();
+        detect.llm_score_weight = 0.3;
+        let cancel: Option<crate::llm::agent::CancelProbe> =
+            Some(std::sync::Arc::new(|| true));
+        let err = score_events_with_llm(&events, &llm, &detect, None, cancel)
+            .await
+            .expect_err("已取消时不应返回评分");
+        assert!(format!("{err:#}").contains("任务已取消"), "{err:#}");
     }
 
     #[test]

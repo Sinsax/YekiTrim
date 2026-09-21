@@ -244,6 +244,7 @@ pub async fn run_event_agent(
     llm_cfg: &LlmConfig,
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
+    cancel: Option<vtrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<Vec<SegmentGenStatus>> {
     // 链路解析：精修这条链路（见 [llm.overrides.polish]）。
     // 幂等：从 `run_llm_pipeline` 传进来的可能已经是解析过的配置。
@@ -262,6 +263,13 @@ pub async fn run_event_agent(
     // 并发跟 .vtrim/llm.toml 的 [llm] max_concurrent（精修没有自己的并发配置项）
     let agent = vtrim_core::llm::agent::Agent::new(llm_cfg.clone())
         .with_max_concurrent(llm_cfg.concurrency(None));
+    // ⚠️ 取消探针必须真的交给 Agent（窗口边界生效）。精修 llm 是分钟级链路：
+    // 只在阶段边界查一次 = 用户点了停止、后台仍把每个窗口跑完 —— 而这条链路
+    // 默认并发 3，剩下的窗口是**成批**继续发的，用户看到的就是"停止没反应"。
+    let agent = match cancel {
+        Some(probe) => agent.with_cancel(probe),
+        None => agent,
+    };
 
     let completed = agent
         .run_windows(task, windows, checkpoint_path, None::<tokio::sync::mpsc::Sender<AgentProgress<Vec<Event>>>>)

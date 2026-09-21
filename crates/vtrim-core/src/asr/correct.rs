@@ -215,6 +215,7 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
 ///
 /// `checkpoint_path` 非空时支持断点续传：已存在则跳过已完成窗口，运行中每完成一窗立即保存。
 /// `progress_tx` 非空时每完成一窗发送进度（边处理边输出）。
+/// `cancel` 非空时 Agent 在**窗口边界**轮询它（`Agent::with_cancel`）：不传 = 跑完为止。
 /// `project` 只用于用量记账归因（填项目根目录）。
 pub async fn correct_transcript_with_checkpoint(
     segments: &[TranscriptSegment],
@@ -224,6 +225,7 @@ pub async fn correct_transcript_with_checkpoint(
     project: Option<&Path>,
     checkpoint_path: Option<&Path>,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentProgress<Vec<AgentOutput>>>>,
+    cancel: Option<crate::llm::agent::CancelProbe>,
 ) -> Result<Vec<TranscriptSegment>> {
     if segments.is_empty() {
         return Ok(Vec::new());
@@ -252,6 +254,12 @@ pub async fn correct_transcript_with_checkpoint(
     let agent = Agent::new(llm.clone())
         .with_window_size(correct.window_size.max(1))
         .with_max_concurrent(llm.concurrency(correct.max_concurrent));
+    // ⚠️ 探针必须真的交给 Agent：只在阶段边界查一次等于"用户点了停止、后台仍把窗口一个个跑完"。
+    // 订正是分钟级链路（窗口多、每次调用几十秒），这条以前漏了 —— 与检测链路同一个坑。
+    let agent = match cancel {
+        Some(probe) => agent.with_cancel(probe),
+        None => agent,
+    };
 
     let windows = agent
         .run_with_checkpoint(task, &items, checkpoint_path, progress_tx)
@@ -277,7 +285,7 @@ pub async fn correct_transcript(
     llm: &LlmConfig,
     correct: &CorrectConfig,
 ) -> Result<Vec<TranscriptSegment>> {
-    correct_transcript_with_checkpoint(segments, danmaku, llm, correct, None, None, None).await
+    correct_transcript_with_checkpoint(segments, danmaku, llm, correct, None, None, None, None).await
 }
 
 #[cfg(test)]
