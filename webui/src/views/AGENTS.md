@@ -155,25 +155,22 @@
   提示并刷新，而不是报删除失败。
 - ⚠️ `readSort()` 的回落必须用 **`SORT_OPTIONS[0]`**：以前写死 `key:'rank'`，换成 popularity 之后
   旧偏好失配 → 排序栏一个都不高亮、还按不存在的键静默排序（实测踩过）。
-- 筛选两级（v6.7）：一级 **已剪切 / 未剪切 / 全部（最后）**（`filterKey`），二级 **全部 / 未精修 / 已精修**
-  （`polishFilter`）**只在选中「已剪切」时渲染**，DOM 上紧跟在「已剪切」那颗按钮之后（`.subfilters` 内嵌分组）。
-- ⚠️ 二级挂到「未剪切 / 全部」上是**错的**：它筛的是已剪片段，那两档下会出现"点了没反应"的按钮。
-  二级含义：**「已精修」= 进过精修的都算**（`isInPolish` = `polish_ready || rendered || cover`，
-  **已导出的也在内**）；**「未精修」= `!isInPolish`**（已剪但精修目录里什么都没有），**不是**"没出片"。
-  默认见 `applyDefaultFilter()`：**有已剪切就选「已剪切」，一个都没有就选「未剪切」**，且默认值**不写盘**；
-  二级默认 `SUB_FILTERS[0]`。计数读数的**分母 = 当前一级档位涉及的片段数**（`poolTotal`），
-  别退回"已剪 + 未剪切"；空态文案随二级变（`emptyText`）。
-- ⚠️ 两级化的 localStorage 迁移（`LEGACY_FILTERS`）：上一版的 `polish`（一级「精修中」）
-  → 已剪切 + 已精修；**更早那版 `unpolished` 故意不迁移** —— 它的含义是"没出片"
-  （`rendered` 为假），与二级「未精修」不是同一个集合（已精修但没出片的片段属于后者），
-  硬迁会把用户带到另一批片段上；认不出就回落默认档。
-  存 key：一级 `vtrim.slices.filter` / 二级 `vtrim.slices.subfilter`（认不出的值一律回落）。
-- 卡片导出状态只剩一枚 chip **`已导出`**（`isExported` = **`rendered || cover`**）；进过精修未导出 →
-  「精修中」；从没进过 → 不挂 chip。**全应用统一用「已导出」**。
-- ⚠️ **唯一例外是上一条的筛选栏**：「未精修 / 已精修」是**用户点名要的字面**，
-  且两档互斥互补（同屏没有「精修中」与之并列，歧义不复发），**别把它"统一"回「已导出」**；
-  chip 与筛选的判据不同（`isExported` 只认 rendered||cover，`isInPolish` 还认 `polish_ready`），
-  所以卡片可能同时出现「已精修」高亮与「精修中」chip ——那是两套口径，不是 bug。
+- 筛选两级（v6.7）：一级 **已剪切 / 未剪切 / 全部（最后）**（`filterKey`），二级 **全部 / 精修中 / 已导出**
+  （`polishFilter`）**只在选中「已剪切」时渲染**，紧跟「已剪切」之后（`.subfilters` 内嵌分组）；
+  挂到「未剪切 / 全部」上是错的（那两档下会"点了没反应"）。
+- ⚠️ 二级判据（2026-09 改口径）= **`isExported`（`rendered || cover`）**，与卡片那枚 `已导出` chip
+  **同一套**；「精修中」= `!isExported`。**别再改回"进没进过精修"**（`isInPolish` =
+  `polish_ready || rendered || cover`）：**剪切收尾本身就会 `polish init`**，每个已剪片段都
+  `polish_ready` → 那个判据恒为真，旧两档退化成"恒空 / 恒满"。
+  默认（`applyDefaultFilter`）：有已剪切则选「已剪切」，否则「未剪切」，**不写盘**；二级默认 `SUB_FILTERS[0]`。
+  读数分母 = 一级档位涉及的片段数（`poolTotal`）；空态文案随二级变（`emptyText`）。
+- ⚠️ localStorage 迁移：`LEGACY_FILTERS` 把上一版的 `polish` → 已剪切 + 已导出；二级旧值走
+  `LEGACY_SUB_FILTERS`（`unpolished`→`polishing`、`polished`→`exported`）。后一对**有损且有意**：
+  旧 `polished` 含"进过精修但没出片"那批，新口径只有"已导出"能表达；旧两档本身已退化，
+  继续认旧 key 只会让用户看到一排筛不出东西的按钮。认不出回落默认档。
+  存 key：`vtrim.slices.filter` / `vtrim.slices.subfilter`。
+- 卡片状态只有一枚 chip **`已导出`**（`isExported`）；没导出**不挂 chip**。筛选栏与 chip 已统一到同一判据，
+  不会再出现"某档高亮、卡片挂另一个词"。⚠️ 历史上这里写着「别把它统一回已导出」——**已被用户推翻**。
 - 操作条 = 重新检测 / 添加片段 / **一键全切（N）**（`ProjectSlicesView` 调 `cutAll`）。
   **「重新检测」在已有检测结果时必须二次确认**（`utils.js::redetectWarning()`，与预处理页共用同一份文案）：
   重跑只整份覆盖 `output/events.json`，**`output/clips/` 一个文件都不动**；事件按热度重新编号后目录名
