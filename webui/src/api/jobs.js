@@ -16,6 +16,7 @@ export const KIND_ZH = {
   download_models: '下载模型',
   polish_init: '精修初始化',
   polish_llm: 'LLM 剪辑',
+  polish_llm_segment: '分段事件重做',
   polish_process: '精修后处理',
   polish_render: '渲染导出',
   polish_cover: '封面生成',
@@ -31,7 +32,8 @@ export const STATUS_ZH = {
   running: '运行中',
   succeeded: '完成',
   failed: '失败',
-  cancelled: '已取消'
+  cancelled: '已取消',
+  lost: '记录已失效'
 }
 
 /**
@@ -225,7 +227,15 @@ export function watchJob(id, { onEvent, onSummary, onDone } = {}) {
       if (onSummary) onSummary(j)
       if (JOB_DONE.has(j.status)) finish(j)
     } catch (e) {
-      // 轮询失败会自己重试；只在日志面板留一条 debug（否则每 2 秒刷一条 warn）
+      // 404 = 这条任务永远查不到了：任务表在内存里，服务重启会清空全部历史
+      // （浏览器标签页留宿一夜后就是这种现场：每 2 秒一条 404 刷到天明）。
+      // 继续轮询不会有结果，收掉订阅并把"记录已失效"交给调用方。
+      if (e && e.status === 404) {
+        addClient('warn', `任务 ${id} 已不存在（服务重启会清空任务历史），停止轮询`, 'jobs')
+        finish({ id, status: 'lost', message: '任务记录已不存在（服务重启会清空任务历史）' })
+        return
+      }
+      // 其余轮询失败会自己重试；只在日志面板留一条 debug（否则每 2 秒刷一条 warn）
       addClient('debug', `任务 ${id} 轮询失败：${e.message}（下次重试）`, 'jobs')
     }
   }
@@ -260,6 +270,9 @@ export function watchJob(id, { onEvent, onSummary, onDone } = {}) {
   } catch (e) {
     startPolling()
   }
+  // 首轮 `pollOnce()` 可能已经判定「记录已失效」并收尾（closed=true）：
+  // 收尾时 `es` 还没建出来，别把这条 SSE 留在外面自己重连。
+  if (closed && es) { es.close(); es = null }
 
   function cleanup() {
     if (es) { es.close(); es = null }

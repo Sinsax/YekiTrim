@@ -17,17 +17,32 @@
       </button>
       <span class="v-sep"></span>
       <span class="muted small">筛选</span>
-      <!-- 顺序：已剪切 / 未剪切 / 精修中 / **全部放最后**（用户要求） -->
-      <button
-        v-for="f in FILTERS"
-        :key="f.key"
-        class="mini-btn"
-        :class="{ selected: filterKey === f.key }"
-        :title="f.hint"
-        @click="pickFilter(f)"
-      >{{ f.label }}</button>
+      <!-- 一级：已剪切 / 未剪切 / **全部放最后**（用户要求）。
+           「已剪切」被选中时，紧挨着它展开**二级**「未精修 / 已精修」（用户要求：
+           `已剪切[未精修][已精修] 未剪切 全部` 这个手感）：一级回答"剪出来没有"，
+           二级回答"剪出来的里面进没进过精修"。
+           ⚠️ 二级只渲染在 `cut` 档下 —— 它筛的是**已剪片段**，挂到「未剪切 / 全部」上
+           就会出现"点了筛选但另一边没反应"的空按钮（见 `SUB_FILTERS` 的注释）。 -->
+      <template v-for="f in FILTERS" :key="f.key">
+        <button
+          class="mini-btn"
+          :class="{ selected: filterKey === f.key }"
+          :title="f.hint"
+          @click="pickFilter(f)"
+        >{{ f.label }}</button>
+        <span v-if="f.key === 'cut' && filterKey === 'cut'" class="subfilters">
+          <button
+            v-for="s in SUB_FILTERS"
+            :key="s.key"
+            class="sub-btn"
+            :class="{ selected: polishFilter === s.key }"
+            :title="s.hint"
+            @click="pickPolishFilter(s)"
+          >{{ s.label }}</button>
+        </span>
+      </template>
       <span class="muted small sort-count">
-        {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ cutClips.length + uncutEvents.length }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
+        {{ shownTotal }}<template v-if="filterKey !== 'all'">/{{ poolTotal }}</template> 个片段<template v-if="uncutEvents.length"> · 未剪切 {{ uncutEvents.length }}</template>
       </span>
     </div>
 
@@ -91,9 +106,11 @@
             <button v-if="it.view.ev" class="mini-btn" :disabled="!!outBusy"
                     :title="outBusy ? '该项目正在' + kindText(outBusy.kind) : ''"
                     @click.stop="editEvent(it.view.ev)">编辑</button>
-            <button class="mini-btn" :disabled="!!clipBusyOf(it.view.c.name)"
-                    :title="clipBusyOf(it.view.c.name) ? '该片段正在' + kindText(clipBusyOf(it.view.c.name).kind) : ''"
-                    @click.stop="goPolish(it.view.c)">精修 <Icon name="arrow-right" :size="11" /></button>
+            <button class="mini-btn" :disabled="!!clipBusyOf(it.view.c.name) || polishOpening === it.view.c.dir"
+                    :title="polishOpening === it.view.c.dir
+                      ? '正在初始化精修工程…'
+                      : (clipBusyOf(it.view.c.name) ? '该片段正在' + kindText(clipBusyOf(it.view.c.name).kind) : '')"
+                    @click.stop="goPolish(it.view.c)">{{ polishOpening === it.view.c.dir ? '初始化中…' : '精修' }} <Icon name="arrow-right" :size="11" /></button>
             <button class="mini-btn danger clip-del"
                     :disabled="deletingDirs.has(it.view.c.dir)"
                     :title="deletingDirs.has(it.view.c.dir) ? '正在删除…' : '删除该片段（含精修产物）'"
@@ -336,6 +353,10 @@ const loading = ref(false)
 const loadError = ref('')
 /** 正在删除的片段目录（删除是慢 IO：目录里可能有几百 MB 成片，删的过程中禁掉那颗按钮防连点） */
 const deletingDirs = ref(new Set())
+/** 正在"补 init 后进精修"的片段目录：双击防抖，也避免同一片段发两次 init 任务 */
+const polishOpening = ref('')
+/** 等 init 任务期间开着的 watchJob 订阅，组件卸载时统一关掉（与首页 `HomeClipsOverview` 同款） */
+const jobClosers = []
 const showAdd = ref(false)
 const playing = ref(null)
 // 区间预览（未剪切事件播原片时）：
@@ -470,32 +491,64 @@ function cmpStats(sa, sb) {
   return sa.rank - sb.rank
 }
 
-// ── 筛选：已剪切 / 未剪切 / 精修中 / 全部（**全部放最后**，用户要求）──
-// 「精修中」只对已剪片段有意义（未剪切事件还没进精修流程），且**含义放宽成"进过精修的都算"**：
-// 包括已经导出的（用户要求把原来的「已精修＝已出片」那一档合并进来，不再单列）。
-// 想只看已导出的，看卡片上那枚「已导出」chip —— 筛选栏不再为它单开一档。
-// ⚠ key 从 `unpolished` 改成了 `polish`：含义变了（旧＝还没出片，新＝进过精修），
-//   沿用旧 key 会让 localStorage 里存过的偏好静默指向另一批片段。
-//   这里靠启动时的 `FILTERS.some(f => f.key === v)` 把两个旧 key 一并挡掉、回落到默认档。
+// ── 筛选：一级 已剪切 / 未剪切 / 全部（**全部放最后**，用户要求）──
+// 一级只回答「剪出来了没有」；「精修」不再是一级档位，降为**「已剪切」下的二级筛选**
+// （用户要求：`已剪切[未精修][已精修] 未剪切 全部`）——
+// 精修状态只对已剪片段成立（未剪切事件还没进精修流程），混在一级里会让人点了
+// 「精修中」却以为漏了未剪切事件那一半。
 const FILTERS = [
   { key: 'cut', label: '已剪切', hint: '已经剪出成片的片段' },
   { key: 'uncut', label: '未剪切', hint: '检测到但还没剪的事件' },
-  { key: 'polish', label: '精修中', hint: '进过精修的片段（含已经导出的）' },
   { key: 'all', label: '全部', hint: '已剪切 + 未剪切全部显示' }
 ]
+// 二级（只在 `cut` 档出现）：未精修 / 已精修。
+// 「已精修」沿用原一级「精修中」的含义 —— **进过精修的都算**（含已经导出的），
+// 不是"已经出片"；想只看已导出的，看卡片上那枚「已导出」chip（用户要求过合并，别单开一档）。
+// 「未精修」= 已剪但 `isInPolish` 为假，即从没进过精修流程的那些。
+// 保留「全部」在前：一级「已剪切」的老行为（所有已剪片段）由此一键回到，不用再点回一级。
+const SUB_FILTERS = [
+  { key: 'all', label: '全部', hint: '已剪片段全部都看' },
+  { key: 'unpolished', label: '未精修', hint: '已剪但还没进过精修的片段' },
+  { key: 'polished', label: '已精修', hint: '进过精修的片段（含已经导出的）' }
+]
 const FILTER_STORE = 'vtrim.slices.filter'
+const SUB_FILTER_STORE = 'vtrim.slices.subfilter'
+// 两级化之前存的 key 要**翻译成"一级 + 二级"**再回填，否则老用户打开切片页会退到默认档、
+// 以为筛选坏了：上一版的 `polish`（一级「精修中」）→ 已剪切 + 已精修。
+// ⚠️ 更早那版 `unpolished` 是**没出片**（`rendered` 为假），与二级的「未精修」不是一个集合
+//   （已精修但没出片的片段属于后者）——**不能迁移**，认不出就交给 `applyDefaultFilter` 回落。
+const LEGACY_FILTERS = {
+  polish: { primary: 'cut', sub: 'polished' }
+}
 // 只在**用户自己点过**之后才记住；没存过时按数量定默认（见 applyDefaultFilter）——
 // 存下来的默认值会在项目状态变化后过期（比如本来全是未剪切、后来全剪完了）。
-const filterKey = ref((() => {
+const savedFilter = (() => {
   try {
     const v = localStorage.getItem(FILTER_STORE) || ''
-    return FILTERS.some(f => f.key === v) ? v : ''
+    if (FILTERS.some(f => f.key === v)) return { primary: v, sub: '' }
+    if (LEGACY_FILTERS[v]) return { primary: LEGACY_FILTERS[v].primary, sub: LEGACY_FILTERS[v].sub }
+  } catch {}
+  return { primary: '', sub: '' }
+})()
+const savedSub = (() => {
+  if (savedFilter.sub) return savedFilter.sub
+  try {
+    const v = localStorage.getItem(SUB_FILTER_STORE) || ''
+    return SUB_FILTERS.some(s => s.key === v) ? v : ''
   } catch { return '' }
-})())
+})()
+const filterKey = ref(savedFilter.primary)
+/** 二级筛选：没存过就用「全部」（= 一级「已剪切」的原义）。 */
+const polishFilter = ref(savedSub || SUB_FILTERS[0].key)
 
 function pickFilter(f) {
   filterKey.value = f.key
   try { localStorage.setItem(FILTER_STORE, f.key) } catch {}
+}
+
+function pickPolishFilter(s) {
+  polishFilter.value = s.key
+  try { localStorage.setItem(SUB_FILTER_STORE, s.key) } catch {}
 }
 
 /** 没存过偏好时：有已剪切就勾「已剪切」，一个都没有就勾「未剪切」（用户要求）。 */
@@ -530,18 +583,23 @@ const isExported = (c) => {
   const m = polishMap.value[c.dir]
   return !!(m?.rendered || m?.cover)
 }
-/** 「精修中」筛选 = 进过精修的（含已导出）。`polish_ready` 是 `polish.toml` 存在，
+/** 「已精修」筛选 = 进过精修的（含已导出）。`polish_ready` 是 `polish.toml` 存在，
  *  产物文件都长在精修目录里，所以正常三者同真；这里仍 OR 一遍防单侧缺文件。 */
 const isInPolish = (c) => {
   const m = polishMap.value[c.dir]
   return !!(m?.polish_ready || m?.rendered || m?.cover)
 }
+/** 「未精修」= 否定上面那条（已剪但精修目录里什么都没有），**不是**"没出片"。 */
+const isUnpolished = (c) => !isInPolish(c)
 const cutCards = computed(() => cutClips.value.map(clipView))
 /** 墙面上的条目：已剪片段 + 未剪切事件**按同一个排序键混排**（热度是数值，两边都算得出来）。 */
 const shownItems = computed(() => {
   const k = filterKey.value
-  const clips = k === 'uncut' ? [] : cutCards.value.filter(v =>
-    k === 'polish' ? isInPolish(v.c) : true)
+  // 已剪片段：一级 `uncut` 不显示；`cut` 档再按二级收窄一次（全部 / 未精修 / 已精修）
+  let clips = k === 'uncut' ? [] : cutCards.value
+  if (k === 'cut' && polishFilter.value === 'unpolished') clips = clips.filter(v => isUnpolished(v.c))
+  if (k === 'cut' && polishFilter.value === 'polished') clips = clips.filter(v => isInPolish(v.c))
+  // 未剪切事件只在「未剪切 / 全部」出现 —— 二级筛选是已剪片段的事，不参与这两档
   const events = (k === 'uncut' || k === 'all') ? uncutEvents.value : []
   const items = [
     ...clips.map(v => ({ kind: 'clip', id: 'c:' + v.c.dir, view: v })),
@@ -551,11 +609,21 @@ const shownItems = computed(() => {
 })
 const statsOfItem = (it) => (it.kind === 'clip' ? clipStats(it.view.c) : eventStats(it.ev))
 const shownTotal = computed(() => shownItems.value.length)
+/** 计数分母 = 当前**一级**档位涉及的片段总数（二级只收窄，不改分母）——
+ *  否则「已剪切 / 未精修」的读数会拿"已剪 + 未剪切"当分母，看起来像筛丢了。 */
+const poolTotal = computed(() => {
+  if (filterKey.value === 'uncut') return uncutEvents.value.length
+  return cutClips.value.length
+})
 
 const emptyText = computed(() => {
   if (filterKey.value === 'uncut') return '暂无未剪切事件'
-  if (filterKey.value === 'cut') return '暂无已剪切片段'
-  if (filterKey.value === 'polish') return '还没有片段进过精修（去精修页跑一次）'
+  if (filterKey.value === 'cut') {
+    // 二级档位下的空态要能自解释：别让人以为"已剪片段全没了"
+    if (polishFilter.value === 'unpolished') return '已剪片段都进过精修了'
+    if (polishFilter.value === 'polished') return '已剪片段还没有进过精修的（去精修页跑一次）'
+    return '暂无已剪切片段'
+  }
   return '暂无片段'
 })
 const emptyIcon = computed(() => (filterKey.value === 'uncut' ? 'film' : 'scissors'))
@@ -1226,21 +1294,60 @@ async function saveEdit() {
   } catch (e) { toast(e.message, 'err') }
 }
 
+/**
+ * 去精修页。切片本身已经在**剪切收尾**里建好精修工程（`vtrim-service::init_polish_for_events`），
+ * 所以正常情况下这儿是"直接进"；只有在**老片段**（这次改动之前剪的）上才需要补一次 init。
+ *
+ * ⚠️ 补 init 必须**等任务跑完再跳**（与首页「切片总览」的 `openClip` 同一手感）：
+ * `POST /api/polish/init` 建完任务就返回，工程还没落盘 —— 跳过去时 `GET /api/polish/project`
+ * 会 500「polish.toml not found」，精修页渲染成「片段配置读取失败」，用户还得手动重试。
+ */
 async function goPolish(c) {
   const busy = clipBusyOf(c.name)
   if (busy) { toast('该片段正在' + kindText(busy.kind) + '，请等它结束', 'err'); return }
+  // 双击防抖：第二次点击不该再发一次 init（服务端会因"已存在"把它记成失败任务）
+  if (polishOpening.value) return
+  const toPolish = { name: 'project-polish-clip', params: { pid: props.project.id, clip: c.name } }
   try {
     const list = await projectData.polishMap(props.project.id, '读取精修状态').catch(() => [])
     const found = (list || []).find(p => sameDir(p.dir, c.dir))
+    if (found && found.polish_ready) {
+      router.push(toPolish)
+      return
+    }
     // 传**绝对目录**（服务端 scope 守卫会校验它确实落在本人项目内）：
     // 相对路径要自己算 output_dir 的前缀，容易错（旧写法就退化成 'output'，静音/渲染会打错目录）。
-    if (!found || !found.polish_ready) {
-      await initPolish(props.project.id, c.dir)
-      toast('已自动 init')
-    }
-    // v5 路由：`/p/:pid/polish/:clip`（旧 `/project/:cfg/slices/:clip` 已不存在，会被 catch-all 送回首页）
-    router.push({ name: 'project-polish-clip', params: { pid: props.project.id, clip: c.name } })
-  } catch (e) { toast(e.message, 'err') }
+    polishOpening.value = c.dir
+    const r = await initPolish(props.project.id, c.dir)
+    if (r?.queued) toast(QUEUED_HINT)
+    toast('正在初始化精修工程，完成后自动进入…')
+    await waitJobDone(r?.id)
+    router.push(toPolish)
+  } catch (e) {
+    toast('精修初始化失败：' + e.message, 'err')
+  } finally {
+    polishOpening.value = ''
+  }
+}
+
+/**
+ * 把一次 `watchJob` 订阅包成 promise：终态 `succeeded` 才 resolve，其余按错误抛。
+ * 订阅在终态里自己关（`watchJob::finish`），所以这里只记在 `jobClosers` 里供卸载时兜底。
+ */
+function waitJobDone(id) {
+  return new Promise((resolve, reject) => {
+    if (!id) { resolve(null); return }
+    let settled = false
+    const w = watchJob(id, {
+      onDone(s) {
+        if (settled) return
+        settled = true
+        if (s?.status === 'succeeded') resolve(s)
+        else reject(new Error(s?.message || s?.error || '任务' + (s?.status || '异常结束')))
+      }
+    })
+    jobClosers.push(() => w.close())
+  })
 }
 
 /** 比较两条绝对目录（忽略大小写与分隔符差异）。 */
@@ -1299,6 +1406,10 @@ onUnmounted(() => {
   stopRangeClock()
   stopRangeDrag()
   window.removeEventListener('keydown', onRangeKey)
+  // 等 init 的订阅若还开着（用户中途走了），卸载时关掉；`watchJob` 在终态里也会自己关
+  while (jobClosers.length) {
+    try { jobClosers.pop()() } catch { /* 已关过就忽略 */ }
+  }
 })
 </script>
 
@@ -1308,6 +1419,17 @@ onUnmounted(() => {
 /* 删除（破坏性）推到卡片右下角，离「精修」远一点，别误点 */
 .clip-card .clip-del { margin-left:auto; }
 .v-sep { width:1px; height:14px; background:var(--line); margin:0 4px; flex:none; }
+/* 二级筛选（未精修 / 已精修）：做成挂在「已剪切」旁边的一个**内嵌分组**——
+   虚线边 + 略浅的底 + 更小的字号，一眼看出它从属于左边那颗一级按钮，不是并列的第五档。
+   组内选中的那颗用卡片白底「抬起」，与一级 `.mini-btn.selected` 的绿色块区分开。 */
+.subfilters { display:inline-flex; align-items:center; gap:2px; padding:2px; margin:0 2px; flex:none;
+  border:1px dashed var(--line); border-radius:var(--r-full); background:var(--bg-soft); }
+.subfilters .sub-btn { display:inline-flex; align-items:center; padding:3px 10px; font-size:11px; line-height:1.5;
+  border:0; border-radius:var(--r-full); background:transparent; color:var(--ink-dim);
+  white-space:nowrap; cursor:pointer; transition:.15s; }
+.subfilters .sub-btn:hover { color:var(--pink-text); }
+.subfilters .sub-btn.selected { background:var(--card); color:var(--main-deep); font-weight:600;
+  box-shadow:0 1px 3px rgba(238,111,166,.18); }
 /* ---- 卡片固定分区：标题 / 媒体 / 标签 / 时间热度 / 摘要 / 工具栏 ----
    卡片撑满 grid 行高，工具栏用 margin-top:auto 钉底；各分区给固定高度，
    这样混排时「编辑 / 预览 / 剪切」与「编辑 / 精修 / 删除」始终落在同一条底线上。 */

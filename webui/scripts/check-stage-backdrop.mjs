@@ -1,0 +1,331 @@
+// 竖屏「模糊衬底」（背景层）的契约与回归钉子 —— 出片 canvas 路径 + 预览 DOM 路径。
+//
+// 用户报的现象（2026-09-20）：**精修竖屏时，震动等特效会把主画面挪开，露出来的是纯黑**，
+// 需要「在视频底下垫一层当前帧的模糊」。两个叠加成因，缺一条都还是黑：
+//   ① `resolve_stage` 曾经在 `axis=fill` 时**强制 `bg=none`**，把用户选的"模糊"整个吞掉
+//      —— 竖画布铺满（源比例 == 画布比例）时恰好落到这一支，于是衬底根本没被要求画。
+//      现在门控是**画布方向**：`axis=="fill" && !portrait` 才 none（横画布铺满保持零回归）。
+//      （Rust 侧钉子在 `project::config::tests::portrait_canvas_fill_still_paints_backdrop`）
+//   ② 出片是 canvas `renderFrame` **逐帧绘制**，DOM 的 `#bg-video-wrap` **完全不参与导出**：
+//      `clearRect` 之后的透明区落进 JPEG 就是纯黑。只把 `stage.bg` 消费在 DOM 上，表现就是
+//      「预览里有模糊底、成片被 shake 挪开露纯黑」—— 不报错、不崩溃，只有逐帧像素能发现。
+//      本脚本钉住出片侧的消费面与行为（真实像素实证见 `crates/vtrim-polish/tests/portrait_backdrop.rs`）。
+//
+// 运行： node webui/scripts/check-stage-backdrop.mjs
+//
+// 零依赖、不 import 模块（`webui/package.json` 没有 `"type":"module"`），
+// 从源码文本里抠函数（配对括号），用**假 ctx** 记录绘制调用 —— 不需要浏览器。
+
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const root = join(here, '..', '..')
+
+const read = async (...parts) => readFile(join(root, ...parts), 'utf8')
+const html = await read('crates', 'vtrim-polish', 'templates', 'index.html')
+const previewVue = await read('webui', 'src', 'components', 'PolishPreview.vue')
+
+/** 去掉 `//` 行注释与块注释（字符串字面量原样保留）。
+ *  ⚠️ **源码断言必须先过它**：注释里出现的 `fs` / `drawStageBackdrop(...)` 会让判据假阳性 ——
+ *  实测踩过：`renderFrame` 里那句"别再写 `ctx.font='700 '+fs+…`"的注释
+ *  把「不许出现裸 fs」这条判据自己顶翻了。 */
+function stripComments(src) {
+  let out = ''
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]
+    const nxt = src[i + 1]
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const q = ch
+      out += ch
+      i++
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === '\\') { out += src[i]; i++ }
+        out += src[i]
+        i++
+      }
+      out += src[i] ?? ''
+      continue
+    }
+    if (ch === '/' && nxt === '/') {
+      const nl = src.indexOf('\n', i)
+      i = nl < 0 ? src.length : nl - 1
+      continue
+    }
+    if (ch === '/' && nxt === '*') {
+      const e = src.indexOf('*/', i + 2)
+      i = e < 0 ? src.length : e + 1
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+/** 去掉注释后的模板源码 —— 所有"源码里有没有 / 谁在前"的判据都该用它 */
+const code = stripComments(html)
+
+// ── 从模板里抠顶层函数（配对括号，跳过注释与字符串；与 check-caption-wrap.mjs 同一套）──
+function extractFunction(src, name) {
+  const start = src.indexOf(`function ${name}(`)
+  if (start < 0) throw new Error(`index.html 里找不到 function ${name}(`)
+  let i = src.indexOf('{', start)
+  let depth = 0
+  for (; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i)
+      if (nl < 0) break
+      i = nl
+      continue
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2)
+      i = e < 0 ? src.length : e + 1
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const q = ch
+      i++
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === '\\') i++
+        i++
+      }
+      continue
+    }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return src.slice(start, i + 1)
+    }
+  }
+  throw new Error(`function ${name} 的括号没配平`)
+}
+
+/** 把 `stageCoverRect` + `drawStageBackdrop` 装进一个作用域，`CW/CH/STAGE/STAGE_BG` 由调用方给 */
+function loadBackdrop(src) {
+  return new Function(
+    'CW', 'CH', 'STAGE', 'STAGE_BG',
+    `${extractFunction(src, 'stageCoverRect')}
+     ${extractFunction(src, 'drawStageBackdrop')}
+     return { stageCoverRect, drawStageBackdrop }`
+  )
+}
+
+const tpl = loadBackdrop(html)
+
+// ── 假 2D 上下文：记录每个绘制调用（含当时的 filter / fillStyle） ─────────────
+function fakeCtx() {
+  const calls = []
+  const ctx = {
+    calls,
+    _filter: 'none',
+    fillStyle: '',
+    save() { calls.push({ op: 'save' }) },
+    restore() { calls.push({ op: 'restore' }) },
+    translate(x, y) { calls.push({ op: 'translate', x, y }) },
+    scale(sx, sy) { calls.push({ op: 'scale', sx, sy }) },
+    fillRect(x, y, w, h) { calls.push({ op: 'fillRect', x, y, w, h, fillStyle: ctx.fillStyle, filter: ctx._filter }) },
+    drawImage(img, x, y, w, h) { calls.push({ op: 'drawImage', x, y, w, h, filter: ctx._filter }) },
+  }
+  Object.defineProperty(ctx, 'filter', {
+    get() { return ctx._filter },
+    set(v) { ctx._filter = v; calls.push({ op: 'filter', v }) },
+  })
+  return ctx
+}
+
+const CW = 1080
+const CH = 1920
+const BMP = { width: 720, height: 1280 } // 9:16 竖素材：与画布同比例
+/** 源比画布更宽（16:9 素材进竖画布）：cover 会裁掉左右 */
+const BMP_WIDE = { width: 1280, height: 720 }
+
+function run(html_, stageBg, stage = {}, bmp = BMP) {
+  const CW_ = stage.CW || CW
+  const CH_ = stage.CH || CH
+  const fn = loadBackdrop(html_)
+  const api = fn(CW_, CH_, stage, stageBg)
+  const ctx = fakeCtx()
+  api.drawStageBackdrop(ctx, bmp)
+  return { ctx, api, CW: CW_, CH: CH_ }
+}
+
+// ── 断言脚手架 ────────────────────────────────────────────────────────────
+let failed = 0
+/** 深比较（数组/对象按值）：`check` 里经常拿数组当"一组事实"用，`===` 会永远不等 */
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+function check(label, ok, want = true, hint = '') {
+  if (same(ok, want)) console.log(`  ok   ${label}`)
+  else {
+    failed++
+    console.log(`  FAIL ${label}`)
+    console.log(`         实得 ${JSON.stringify(ok)}，期望 ${JSON.stringify(want)}${hint ? '：' + hint : ''}`)
+  }
+}
+const draws = (ctx) => ctx.calls.filter((c) => c.op === 'drawImage' || c.op === 'fillRect')
+const approx = (a, b, eps = 0.5) => Math.abs(a - b) <= eps
+
+/** `object-fit:cover` 的语义：等比放大到**两个方向都盖住**画布（x/y ≤ 0、右/下 ≥ 画布） */
+function coversCanvas(r, cw, ch) {
+  return r.x <= 0.5 && r.y <= 0.5 && r.x + r.w >= cw - 0.5 && r.y + r.h >= ch - 0.5
+}
+
+// ── ① 几何：cover 铺满（`Math.max` 而不是 `Math.min`） ───────────────────────
+console.log('① stageCoverRect = cover 铺满（两个方向都必须盖住画布）')
+{
+  for (const [label, bmp] of [['竖素材 720×1280 → 竖画布', BMP], ['横素材 1280×720 → 竖画布', BMP_WIDE]]) {
+    const r = tpl(CW, CH, {}, 'blur').stageCoverRect(bmp.width, bmp.height, CW, CH)
+    check(`${label} cover 盖满画布`, coversCanvas(r, CW, CH), true, `rect=${JSON.stringify(r)}`)
+    // 等比：宽高比与源一致（不拉伸）
+    check(`${label} 保持源比例`, approx(r.w / r.h, bmp.width / bmp.height, 0.01), true)
+  }
+}
+
+// ── ② 行为：四种 bg 各自画什么 ──────────────────────────────────────────────
+console.log('\n② drawStageBackdrop 的四种模式')
+{
+  // none：一个绘制调用都不该有（横画布铺满 = 改造前的零回归路径）
+  const none = run(html, 'none')
+  check('bg=none → 不画任何东西（透明 = JPEG 黑，与改造前逐字节一致）', draws(none.ctx).length, 0)
+
+  // black：整幅铺纯黑
+  const black = run(html, 'black')
+  check('bg=black → 一次整幅 fillRect', draws(black.ctx).length, 1)
+  check('bg=black 的 fillStyle 是 #000000', black.ctx.calls[0]?.fillStyle, '#000000')
+  check('bg=black 铺满整幅', [black.ctx.calls[0]?.x, black.ctx.calls[0]?.y, black.ctx.calls[0]?.w, black.ctx.calls[0]?.h], [0, 0, CW, CH])
+
+  // color：整幅铺配置色
+  const color = run(html, 'color', { bg_color: '#123456' })
+  check('bg=color → 整幅 fillRect 用 bg_color', [draws(color.ctx).length, color.ctx.calls[0]?.fillStyle], [1, '#123456'])
+
+  // blur：当前帧按 cover 铺满 + 高斯模糊 + 压暗去饱和 + 绕中心放大
+  const blur = run(html, 'blur', { blur_px: 28, blur_img_scale: 1.187 })
+  const d = draws(blur.ctx)
+  check('bg=blur → 一次 drawImage（画当前帧）', d.length, 1)
+  check('bg=blur 的 filter 带 blur(28px) 与压暗去饱和',
+    /blur\(28px\)/.test(d[0]?.filter || '') && /brightness\(0\.5\)/.test(d[0]?.filter || '') && /saturate\(1\.15\)/.test(d[0]?.filter || ''), true,
+    `filter=${d[0]?.filter}`)
+  // 放大是把模糊溢出的边缘推出画布：放 1.187 倍后仍然要盖满
+  const bs = 1.187
+  const eff = {
+    x: CW / 2 + bs * (d[0].x - CW / 2),
+    y: CH / 2 + bs * (d[0].y - CH / 2),
+    w: bs * d[0].w,
+    h: bs * d[0].h,
+  }
+  check('bg=blur 放大 blur_img_scale 后仍盖满画布', coversCanvas(eff, CW, CH), true, `eff=${JSON.stringify(eff)}`)
+  // 模糊半径来自注入的 blur_px（写死 28 会让「模糊强度」滑杆失效）
+  const blur40 = run(html, 'blur', { blur_px: 40, blur_img_scale: 1.187 })
+  check('bg=blur 的半径跟随注入的 blur_px', /blur\(40px\)/.test(draws(blur40.ctx)[0]?.filter || ''), true)
+  // save/restore 必须配对：filter 泄漏出去会让**视频层也永久糊掉**
+  const s = blur.ctx.calls.filter((c) => c.op === 'save').length
+  const r = blur.ctx.calls.filter((c) => c.op === 'restore').length
+  check('bg=blur 的 save/restore 配对（filter 不许泄漏到视频层）', [s, r, s === r && s > 0], [1, 1, true])
+  check('bg=blur 的 filter 在 restore 之后没有残留吗（由配对保证）', blur.ctx.calls.at(-1)?.op, 'restore')
+}
+
+// ── ③ 出片顺序：衬底必须先于视频层绘制 ──────────────────────────────────────
+console.log('\n③ 出片 canvas 路径的图层顺序')
+{
+  // ⚠️ 用去注释后的源码：注释里提到过这两个调用点，拿原始文本比顺序会被注释带偏
+  const backdrop = code.indexOf('drawStageBackdrop(ctx, videoBitmap)')
+  const video = code.indexOf('ctx.drawImage(videoBitmap, 0, 0, CW, CH)')
+  check('renderFrame 里能找到衬底绘制点', backdrop > 0, true)
+  check('renderFrame 里能找到视频层绘制点', video > 0, true)
+  check('衬底画在视频层之前（画反了铺满时整块看不到底色）', backdrop > 0 && video > 0 && backdrop < video, true)
+  check('renderFrame 每帧先 clearRect 再画衬底',
+    code.indexOf('ctx.clearRect(0, 0, CW, CH)') > 0 && code.indexOf('ctx.clearRect(0, 0, CW, CH)') < backdrop, true)
+  check('出片路径的 STAGE 读的是注入的 _canvas.stage',
+    /var STAGE=\(CFG\._canvas&&CFG\._canvas\.stage\)\|\|\{\};/.test(code), true)
+  check('STAGE_BG 默认 none（没注入契约时 = 改造前行为）',
+    code.includes("var STAGE_BG=STAGE.bg||'none';"), true)
+}
+
+// ── ③b 出片逐帧路径：不许引用作用域里没声明的变量（实测踩过，代价是整块 chunk 失败）──
+console.log('\n③b renderFrame 里的裸变量（ReferenceError = 整块 chunk 失败）')
+{
+  const rf = extractFunction(code, 'renderFrame')
+  check('renderFrame 里接到了字幕折行（wrapCaptionParts）', /wrapCaptionParts\(/.test(rf), true)
+  // ⚠️ A5 折行改造把字号挪进逐条字幕（`baseSize` / `size`），却留下 `ctx.font='700 '+fs+' '+ff`：
+  // `fs` 只在另外两个函数里各自 `var` 过，在 `renderFrame` 里是**未声明标识符** →
+  // 只要这一帧有字幕就 `ReferenceError: fs is not defined`，
+  // 出片日志是 `Chunk: Render error: fs is not defined`，表现是**所有带字幕的片段都导不出来**。
+  check('renderFrame 里没有裸 `fs`（历史 ReferenceError：带字幕必崩）',
+    /['"`]\s*700\s*['"`]\s*\+\s*fs\s*\+/.test(rf), false, '字号要写 baseSize / size，见 A5 折行')
+  check('renderFrame 的基准字号来自 subS.size（不是外部变量）', /baseSize\s*=\s*subS\.size/.test(rf), true)
+  // 变异自证：把这行塞回去，判据必须翻面
+  const withFs = code.replace(
+    'caps.forEach(function(cap) {',
+    "ctx.font = '700 ' + fs + ' ' + ff;\n      caps.forEach(function(cap) {"
+  )
+  check('[变异] 塞回 `ctx.font=\'700 \'+fs+\' \'+ff` → 判据翻面', withFs !== code, true)
+  check('[变异] 塞回后该判据确实翻面',
+    /['"`]\s*700\s*['"`]\s*\+\s*fs\s*\+/.test(extractFunction(withFs, 'renderFrame')), true)
+}
+
+// ── ④ 预览 DOM 路径：模糊层必须在主画面之下并被 .on 打开 ─────────────────────
+console.log('\n④ 预览 DOM 路径（模板 + WebUI 编辑器）')
+{
+  const bgWrap = html.indexOf('#bg-video-wrap {')
+  const videoWrap = html.indexOf('#video-wrap {')
+  const bgZ = Number(/z-index:(\d+)/.exec(html.slice(bgWrap, html.indexOf('}', bgWrap)))?.[1] ?? NaN)
+  const videoZ = Number(/z-index:(\d+)/.exec(html.slice(videoWrap, html.indexOf('}', videoWrap)))?.[1] ?? NaN)
+  check('#bg-video-wrap 的 z-index 小于 #video-wrap（衬底在视频之下）', bgZ < videoZ, true, `${bgZ} < ${videoZ}`)
+  check('模板按 STAGE.bg 打开模糊层（只有 blur 才 on）',
+    /if\(bgMode==='blur'\)/.test(html) && html.includes("getElementById('bg-video-wrap').classList.add('on')"), true)
+  check('模板的模糊半径/放大倍率来自注入契约（不是写死 28px）',
+    html.includes("player.style.setProperty('--bg-blur',(STAGE.blur_px||28)+'px')")
+    && html.includes("player.style.setProperty('--bg-img-scale',String(STAGE.blur_img_scale||1.187))"), true)
+
+  const bgEl = previewVue.indexOf('class="bg-video"')
+  const wrapEl = previewVue.indexOf('class="video-wrap"')
+  check('PolishPreview：模糊层元素排在 .video-wrap 之前（同 z-index 下先画的在下层）', bgEl > 0 && wrapEl > 0 && bgEl < wrapEl, true)
+  check('PolishPreview：bgOn 只在 bg=blur 时开模糊层',
+    /const bgOn = computed\(\(\) => stageFit\.value\.bg === 'blur'\)/.test(previewVue), true)
+  check('PolishPreview：拿不到 _canvas 时退回旧竖屏规则（bg=blur）',
+    /props\.config\?\._canvas\?\.stage/.test(previewVue) && previewVue.includes("bg: 'blur'"), true)
+  check('PolishPreview：--bg-blur 接的是契约里的 blur_px',
+    /'--bg-blur': \(s\.blur_px \|\| 28\) \+ 'px'/.test(previewVue), true)
+}
+
+// ── ⑤ 自证有效：把源码改回修复前，上面的判据必须翻面 ────────────────────────
+console.log('\n⑤ 自证有效：变异后判据必须翻面（否则本脚本是空转的）')
+{
+  // 变异 1：cover 的 Math.max → Math.min（= 变成 contain，边角就填不满了）
+  // ⚠️ 必须用**比例不匹配**的素材：同比例时 max 与 min 恰好相等，变异体看不出来（空转）
+  const minMath = html.replace('var s=Math.max(dw/sw,dh/sh),w=sw*s,h=sh*s;', 'var s=Math.min(dw/sw,dh/sh),w=sw*s,h=sh*s;')
+  check('[变异] stageCoverRect 的替换确实命中了源码', minMath !== html, true)
+  const rMin = loadBackdrop(minMath)(CW, CH, {}, 'blur').stageCoverRect(BMP_WIDE.width, BMP_WIDE.height, CW, CH)
+  check('[变异] stageCoverRect 改成 contain → 横素材在竖画布上盖不满', coversCanvas(rMin, CW, CH), false,
+    `rect=${JSON.stringify(rMin)}（min 会算出 1080×607.5，下方留白就是露出黑色/衬底的地方）`)
+
+  // 变异 2：删掉 `if(STAGE_BG==='none')return;` → 该不画的也要画
+  const noGuard = html.replace("if(STAGE_BG==='none')return;\r\n", '').replace("if(STAGE_BG==='none')return;\n", '')
+  check('[变异] 去掉 none 守卫（源码确实被改了）', noGuard !== html, true)
+  check('[变异] 去掉 none 守卫 → bg=none 也画东西', draws(run(noGuard, 'none').ctx).length > 0, true)
+
+  // 变异 3：背景层画到视频层之后（顺序钉子该翻面）
+  const swapped = html.replace('drawStageBackdrop(ctx, videoBitmap);', '/* moved */')
+    .replace('ctx.drawImage(videoBitmap, 0, 0, CW, CH);', 'ctx.drawImage(videoBitmap, 0, 0, CW, CH);\n    drawStageBackdrop(ctx, videoBitmap);')
+  check('[变异] 背景层挪到视频层之后 → 顺序判据翻面',
+    swapped.indexOf('drawStageBackdrop(ctx, videoBitmap)') > swapped.indexOf('ctx.drawImage(videoBitmap, 0, 0, CW, CH)'), true)
+
+  // 变异 4：模糊半径写死 28（滑杆失效）
+  const hardBlur = html.replace("ctx.filter='blur('+(STAGE.blur_px||0)+'px)", "ctx.filter='blur(28px)")
+  check('[变异] 模糊半径写死 28 → 「跟随 blur_px」判据翻面',
+    /blur\(40px\)/.test(draws(run(hardBlur, 'blur', { blur_px: 40, blur_img_scale: 1.187 }).ctx)[0]?.filter || ''), false)
+
+  // 变异 5：去掉 save/restore（filter 泄漏到视频层）
+  const noSave = html.replace("ctx.save();\r\n    ctx.filter=", 'ctx.filter=').replace("ctx.save();\n    ctx.filter=", 'ctx.filter=')
+  check('[变异] 去掉衬底的 save/restore（源码确实被改了）', noSave !== html, true)
+  if (noSave !== html) {
+    const c = run(noSave, 'blur', { blur_px: 28, blur_img_scale: 1.187 }).ctx
+    const nSave = c.calls.filter((x) => x.op === 'save').length
+    const nRestore = c.calls.filter((x) => x.op === 'restore').length
+    check('[变异] 没有 save/restore 时配对判据翻面', nSave === nRestore && nSave > 0, false)
+  }
+}
+
+console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
+process.exit(failed ? 1 : 0)

@@ -1,7 +1,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { api } from './api/client'
 import { scopeQ, setScope } from './api/scope'
-import { STAGE_EVENTS_READY } from './utils'
+import { SETTINGS_SECTIONS, STAGE_EVENTS_READY } from './utils'
 import { authState, isAuthed, loadMe } from './stores/auth'
 import { addClient } from './stores/log'
 import { lastPath } from './stores/workbench'
@@ -21,6 +21,18 @@ async function projectEntryGuard(to) {
   return { name: 'project-prepare', params: to.params }
 }
 
+// ---- 设置页：按区块拆成子页 ----
+// 五块内容都在同一个 SettingsView 里（表单状态、/api/config 加载与保存都在那一个文件），靠 props.section 切；
+// 拆成独立组件要额外铺一层 props/emit，收益不抵成本。子页各自带 meta.admin —— 守卫读的是**最终落到**的
+// 路由（`/settings` 那条 redirect 不参与判定），它落到最常用的「程序配置」。
+const SETTINGS_ROUTES = SETTINGS_SECTIONS.map((s) => ({
+  path: `/settings/${s.key}`,
+  name: `settings-${s.key}`,
+  meta: { admin: true, settings: true, title: s.label },
+  props: { section: s.key },
+  component: () => import('./views/SettingsView.vue')
+}))
+
 const routes = [
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
   // 邀请码注册：与登录页一样不套壳；未登录可访问（服务端校验开关与邀请码）
@@ -39,7 +51,8 @@ const routes = [
     ]
   },
   { path: '/ingest', name: 'ingest', component: () => import('./views/IngestView.vue') },
-  { path: '/settings', name: 'settings', meta: { admin: true }, component: () => import('./views/SettingsView.vue') },
+  { path: '/settings', redirect: '/settings/config' },
+  ...SETTINGS_ROUTES,
 
   // ---- 旧路径 redirect（v5 之前的路由全部保留兼容） ----
   { path: '/projects', redirect: '/workbench' },
@@ -50,7 +63,7 @@ const routes = [
     : '/workbench' },
   { path: '/polish', redirect: '/workbench' },
   { path: '/jobs', redirect: '/workbench' },
-  { path: '/models', redirect: '/settings' },
+  { path: '/models', redirect: '/settings/account' },
   { path: '/:pathMatch(.*)*', redirect: '/workbench' }
 ]
 

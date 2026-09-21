@@ -1,9 +1,18 @@
 <template>
   <div>
     <div class="page-head">
-      <div><h1>设置</h1><div class="sub">程序配置 / LLM / 模型管理</div></div>
+      <div><h1>设置</h1><div class="sub">{{ active.sub }}</div></div>
     </div>
 
+    <!-- 子页标签：每项是一条路由（settings-<key>），切页即换 URL，可直接刷新/分享。
+         标签与路由同源（utils.js 的 SETTINGS_SECTIONS），别在别处再抄一份。 -->
+    <nav class="tabs">
+      <router-link v-for="s in SETTINGS_SECTIONS" :key="s.key" :to="{ name: 'settings-' + s.key }"
+                   class="tab" :class="{ on: s.key === section }">{{ s.label }}</router-link>
+    </nav>
+
+    <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .vtrim/config.toml） -->
+    <template v-if="section === 'config'">
     <div class="section-title row spread">
       <span>程序配置 config.toml</span>
       <span class="row">
@@ -38,53 +47,42 @@
         <div class="form-section">
           <div class="form-section-title">ASR 转写</div>
           <div class="form-grid">
-            <div>
-              <label>Mode</label>
-              <select v-model="form.asr.mode">
+            <div class="mode-field span-2">
+              <label for="asrMode">Mode</label>
+              <select id="asrMode" v-model="form.asr.mode">
                 <option value="single">单模型</option>
                 <option value="hybrid">双模型</option>
               </select>
-              <div class="muted small field-hint">{{ asrModeHint }}</div>
+              <span class="muted small mode-hint">{{ asrModeHint }}</span>
             </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>并行数 num_workers（0=自动）</span><b class="rv">{{ form.asr.num_workers }}</b></label>
-              <input v-model.number="form.asr.num_workers" type="range" min="0" max="32" step="1">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>分块时长 chunk_duration</span><b class="rv">{{ form.asr.chunk_duration }}s</b></label>
-              <input v-model.number="form.asr.chunk_duration" type="range" min="10" max="300" step="5">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>重叠时长 chunk_overlap</span><b class="rv">{{ form.asr.chunk_overlap }}s</b></label>
-              <input v-model.number="form.asr.chunk_overlap" type="range" min="0" max="60" step="1">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>段间隔 segment_gap（强停顿，秒）</span><b class="rv">{{ form.asr.segment_gap }}s</b></label>
-              <input v-model.number="form.asr.segment_gap" type="range" min="0.1" max="5" step="0.1">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>气口 breath_gap（标点切点吸附到停顿，秒）</span><b class="rv">{{ form.asr.breath_gap }}s</b></label>
-              <input v-model.number="form.asr.breath_gap" type="range" min="0.1" max="1.5" step="0.05">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>软切 soft_cut_secs（，、；： 超过这么久才切，秒）</span><b class="rv">{{ form.asr.soft_cut_secs }}s</b></label>
-              <input v-model.number="form.asr.soft_cut_secs" type="range" min="1" max="20" step="0.5">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>字数硬上限 max_segment_chars</span><b class="rv">{{ form.asr.max_segment_chars }} 字</b></label>
-              <input v-model.number="form.asr.max_segment_chars" type="range" min="10" max="60" step="1">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>吸附半径 snap_window（秒）</span><b class="rv">{{ form.asr.snap_window }}s</b></label>
-              <input v-model.number="form.asr.snap_window" type="range" min="0" max="1" step="0.05">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>解码余量 segment_padding（前后留白，0=关；实测会扰动文本）</span><b class="rv">{{ form.asr.segment_padding }}s</b></label>
-              <input v-model.number="form.asr.segment_padding" type="range" min="0" max="1" step="0.05">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>输出上限 max_new_tokens（qwen3 单次解码）</span><b class="rv">{{ form.asr.max_new_tokens }}</b></label>
-              <input v-model.number="form.asr.max_new_tokens" type="range" min="128" max="2048" step="128">
+            <SliderField v-model="form.asr.num_workers" class="span-2" label="并行数 num_workers（0=自动）"
+                         :min="0" :max="32" :step="1" />
+            <SliderField v-model="form.asr.chunk_duration" class="span-2" label="分块时长 chunk_duration"
+                         unit="s" :min="10" :max="300" :step="5" />
+            <SliderField v-model="form.asr.chunk_overlap" class="span-2" label="重叠时长 chunk_overlap"
+                         unit="s" :min="0" :max="60" :step="1" />
+            <SliderField v-model="form.asr.segment_gap" class="span-2" label="段间隔 segment_gap（强停顿，秒）"
+                         unit="s" :min="0.1" :max="5" :step="0.1" />
+            <SliderField v-model="form.asr.breath_gap" class="span-2" label="气口 breath_gap（标点切点吸附到停顿，秒）"
+                         unit="s" :min="0.1" :max="1.5" :step="0.05" />
+            <SliderField v-model="form.asr.soft_cut_secs" class="span-2" label="软切 soft_cut_secs（，、；： 超过这么久才切，秒）"
+                         unit="s" :min="1" :max="20" :step="0.5" />
+            <SliderField v-model="form.asr.max_segment_chars" class="span-2" label="字数硬上限 max_segment_chars"
+                         unit="字" :min="10" :max="60" :step="1" />
+            <SliderField v-model="form.asr.snap_window" class="span-2" label="吸附半径 snap_window（秒）"
+                         unit="s" :min="0" :max="1" :step="0.05" />
+            <SliderField v-model="form.asr.segment_padding" class="span-2" label="解码余量 segment_padding（前后留白，0=关；实测会扰动文本）"
+                         unit="s" :min="0" :max="1" :step="0.05" />
+            <SliderField v-model="form.asr.max_new_tokens" class="span-2" label="输出上限 max_new_tokens（qwen3 单次解码）"
+                         :min="128" :max="2048" :step="128" />
+            <SliderField v-model="form.asr.vad_threshold" class="span-2" label="VAD 阈值 vad_threshold（调高=多解码、少省时间）"
+                         :min="0.05" :max="0.95" :step="0.05" />
+            <SliderField v-model="form.asr.vad_rescue_db" class="span-2" label="VAD 电平兜底 vad_rescue_db（本片语音电平 − 此值以下的空档才跳过）"
+                         unit="dB" :min="0" :max="24" :step="1"
+                         hint="兜底只做加法：VAD 判非语音但电平够响的段落照样解码，宁可多花时间也不漏字幕；0=关掉兜底" />
+            <div class="check-field">
+              <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
+              <label for="vadEnabled">VAD 只解码语音段（single 模式快 2~3 倍，hybrid 不受影响）</label>
             </div>
             <div class="check-field">
               <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
@@ -96,15 +94,11 @@
         <div class="form-section">
           <div class="form-section-title">检测 Detection</div>
           <div class="form-grid det-top">
-            <div class="span-2">
-              <label class="lbl-row"><span>弹幕窗口 danmaku_window_secs</span><b class="rv">{{ form.detection.danmaku_window_secs }}s</b></label>
-              <input v-model.number="form.detection.danmaku_window_secs" type="range" min="1" max="60" step="1">
-            </div>
-            <div class="span-2">
-              <label class="lbl-row"><span>LLM 标题+摘要评分权重 llm_score_weight</span><b class="rv">{{ Number(form.detection.llm_score_weight ?? 0.3).toFixed(2) }}</b></label>
-              <input v-model.number="form.detection.llm_score_weight" type="range" min="0" max="1" step="0.05">
-              <div class="muted small field-hint">0=关闭；最终热度 = (1-w)×弹幕/字幕热度 + w×LLM评分</div>
-            </div>
+            <SliderField v-model="form.detection.danmaku_window_secs" class="span-2"
+                         label="弹幕窗口 danmaku_window_secs" unit="s" :min="1" :max="60" :step="1" />
+            <SliderField v-model="form.detection.llm_score_weight" class="span-2"
+                         label="LLM 标题+摘要评分权重 llm_score_weight" :min="0" :max="1" :step="0.05"
+                         hint="0=关闭；最终热度 = (1-w)×弹幕/字幕热度 + w×LLM评分" />
             <div class="span-2"><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
           </div>
           <div class="prompt-pair">
@@ -127,8 +121,8 @@
                 <div class="side-title">剪切 Cutting</div>
                 <label>输出目录 output_dir</label>
                 <input v-model="form.cutting.output_dir" type="text">
-                <label class="lbl-row side-gap"><span>静音阈值 silence_noise_db</span><b class="rv">{{ form.cutting.silence_noise_db }} dB</b></label>
-                <input v-model.number="form.cutting.silence_noise_db" type="range" min="-60" max="0" step="1">
+                <SliderField v-model="form.cutting.silence_noise_db" class="side-gap"
+                             label="静音阈值 silence_noise_db" unit="dB" :min="-60" :max="0" :step="1" />
                 <div class="check-field side-check">
                   <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
                   <label for="overwrite">覆盖已有文件 overwrite</label>
@@ -150,7 +144,10 @@
         <textarea v-model="globalRaw" rows="24" class="mono source-editor"></textarea>
       </template>
     </div>
+    </template>
 
+    <!-- LLM 配置：写入 .vtrim/llm.toml -->
+    <template v-else-if="section === 'llm'">
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
       <span class="row">
@@ -170,18 +167,9 @@
             <div><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
             <div><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
             <div><label>model</label><input v-model="form.llm.model" type="text"></div>
-            <div>
-              <label class="lbl-row"><span>temperature</span><b class="rv">{{ Number(form.llm.temperature).toFixed(1) }}</b></label>
-              <input v-model.number="form.llm.temperature" type="range" min="0" max="2" step="0.1">
-            </div>
-            <div>
-              <label class="lbl-row"><span>max_tokens</span><b class="rv">{{ form.llm.max_tokens }}</b></label>
-              <input v-model.number="form.llm.max_tokens" type="range" min="256" max="65536" step="256">
-            </div>
-            <div>
-              <label class="lbl-row"><span>并发请求数</span><b class="rv">{{ form.llm.max_concurrent }}</b></label>
-              <input v-model.number="form.llm.max_concurrent" type="range" min="1" max="32" step="1">
-            </div>
+            <SliderField v-model="form.llm.temperature" label="temperature" :min="0" :max="2" :step="0.1" />
+            <SliderField v-model="form.llm.max_tokens" label="max_tokens" :min="256" :max="65536" :step="256" />
+            <SliderField v-model="form.llm.max_concurrent" label="并发请求数" :min="1" :max="32" :step="1" />
           </div>
           <div class="llm-extra">
             <label>extra_params（JSON 文本）</label>
@@ -192,6 +180,37 @@
           并发请求数对<b>所有 LLM 调用</b>生效（事件检测 / 精修事件生成 / 字幕订正）；
           实测中转站允许并发，提高它能近线性缩短批处理时间。触发限流时先调小这里。
         </div>
+        <!-- 按链路覆盖：各链路要的输出长度天差地别，别用同一个上限互相迁就。
+             一行一条链路：勾上「单独设置」才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
+        <div class="llm-links">
+          <div class="llm-links-head">
+            <span>按链路覆盖</span>
+            <span class="muted small">勾上才单独设置；不勾 = 这一条跟随上面的全局值</span>
+          </div>
+          <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
+            <label class="ln-name">
+              <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
+            </label>
+            <template v-if="form.llm.overrides[l.key].on">
+              <SliderField v-model="form.llm.overrides[l.key].max_tokens"
+                           label="max_tokens" :min="256" :max="65536" :step="256" />
+              <SliderField v-model="form.llm.overrides[l.key].temperature"
+                           label="temperature" :min="0" :max="2" :step="0.1" />
+              <select v-model="form.llm.overrides[l.key].thinking" aria-label="thinking">
+                <option value="">默认 thinking</option>
+                <option value="disabled">关思考</option>
+                <option value="enabled">开思考</option>
+              </select>
+            </template>
+            <span v-else class="muted small ln-inherit">
+              跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
+            </span>
+          </div>
+          <div class="muted small mt-8">
+            勾上 = 这一条的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；
+            取消勾选会把这三项从 llm.toml 里删掉，回到跟随全局。
+          </div>
+        </div>
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
@@ -199,7 +218,10 @@
         <textarea v-model="llmRaw" rows="14" class="mono source-editor"></textarea>
       </template>
     </div>
+    </template>
 
+    <!-- 账号与模型：邀请码/注册 与 ASR 模型清单 -->
+    <template v-else-if="section === 'account'">
     <div class="two-up">
       <div>
         <div class="section-title">注册与邀请码</div>
@@ -214,12 +236,23 @@
         </div>
       </div>
     </div>
+    </template>
 
+    <!-- 系统集成：录播姬采集（webhook / 导入规则）与 B 站链接下载 -->
+    <template v-else-if="section === 'integrations'">
     <div class="section-title">录播姬（采集）</div>
     <div class="card">
       <RecorderConfig />
     </div>
 
+    <div class="section-title">B站链接下载</div>
+    <div class="card">
+      <DownloaderConfig />
+    </div>
+    </template>
+
+    <!-- 用量与日志：LLM 账本与运行日志 -->
+    <template v-else-if="section === 'monitor'">
     <div class="section-title">LLM 用量</div>
     <div class="card">
       <LlmUsage />
@@ -229,6 +262,7 @@
     <div class="card">
       <LogConsole />
     </div>
+    </template>
   </div>
 </template>
 
@@ -237,11 +271,22 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
+import SliderField from '../components/SliderField.vue'
 import ModelList from '../components/ModelList.vue'
 import InviteManager from '../components/InviteManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
+import DownloaderConfig from '../components/DownloaderConfig.vue'
 import LlmUsage from '../components/LlmUsage.vue'
 import LogConsole from '../components/LogConsole.vue'
+import { SETTINGS_SECTIONS, settingsSection } from '../utils'
+
+// 子页 key 由路由的 props 传进来（config / llm / account / integrations / monitor）。
+// 五块内容都留在这一个组件里：表单状态、/api/config 的加载与保存、源码编辑器都在这一处，
+// 拆成子组件反而要额外铺一层 props/emit。
+const props = defineProps({
+  section: { type: String, default: 'config' }
+})
+const active = computed(() => settingsSection(props.section))
 
 const globalRaw = ref('')
 const llmRaw = ref('')
@@ -267,7 +312,10 @@ const form = reactive({
     max_segment_chars: 30,
     snap_window: 0.3,
     segment_padding: 0,
-    max_new_tokens: 512,
+    max_new_tokens: 256,
+    vad: true,
+    vad_threshold: 0.5,
+    vad_rescue_db: 16,
     llm_correct: false
   },
   detection: {
@@ -291,9 +339,35 @@ const form = reactive({
     temperature: 0,
     max_tokens: 65536,
     max_concurrent: 3,
-    extra_params: ''
+    extra_params: '',
+    // 按链路覆盖：每行 = { on, max_tokens, temperature, thinking }；
+    // `on` 决定保存时写值还是发 null（服务端 patch 的 null = 删键 = 回到跟随全局，见 buildLlmPatch）
+    overrides: {}
   }
 })
+
+/** 链路 key → 中文名（key 与后端 `LlmLink::key()` 一致；表行按 llm_config.overrides 的键来） */
+const LLM_LINK_ZH = { detect: '事件检测', polish: '精修剪辑', correct: '字幕订正', utility: '零散单发' }
+/** 该链路 thinking 不写时的生效值（与 `LlmLink::default_thinking` 一致）—— 只用于"跟随全局"那句灰字的展示 */
+const LLM_LINK_THINKING = { polish: '关思考', utility: '关思考' }
+function defaultThinking(key) {
+  return LLM_LINK_THINKING[key] || '跟随 extra_params'
+}
+
+/** 表行：只列后端回给你的链路（新增链路不用改这里就会冒出来） */
+const llmLinks = computed(() =>
+  Object.keys(form.llm.overrides || {}).map((key) => ({
+    key,
+    label: LLM_LINK_ZH[key] || key
+  }))
+)
+
+/** 只夹范围、不吸附 step（SliderField 的手填也是这个口径）；非数字回落 fallback。 */
+function clampNum(v, min, max, fallback) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
 
 // 表单只覆盖常用项：保存时按 section/key 合并进 config.toml，
 // 未在表单中暴露的 section（如 [correct] 订正 prompt）与注释都会原样保留。
@@ -311,7 +385,10 @@ function buildGlobalPatch() {
       max_segment_chars: Number(f.asr.max_segment_chars) || 30,
       snap_window: Number(f.asr.snap_window ?? 0.3),
       segment_padding: Number(f.asr.segment_padding ?? 0),
-      max_new_tokens: Number(f.asr.max_new_tokens) || 512,
+      max_new_tokens: Number(f.asr.max_new_tokens) || 256,
+      vad: !!f.asr.vad,
+      vad_threshold: Number(f.asr.vad_threshold ?? 0.5),
+      vad_rescue_db: Number(f.asr.vad_rescue_db ?? 16),
       llm_correct: !!f.asr.llm_correct
     },
     detection: {
@@ -348,6 +425,20 @@ function buildLlmPatch() {
       throw new Error('extra_params 不是合法 JSON，请检查格式')
     }
   }
+  // 按链路覆盖：勾上的写值，没勾的**发 null** —— `patch_config_file` 把 null 当「删键」，
+  // 这样"取消勾选 = 回到跟随全局"才表达得出来（发空串会写出 max_tokens = ""，
+  // 下次读配置直接解析失败、整份 LLM 配置被打回默认值）。
+  llm.overrides = {}
+  for (const [key, row] of Object.entries(f.overrides || {})) {
+    llm.overrides[key] = row.on
+      ? {
+          max_tokens: Math.round(clampNum(row.max_tokens, 256, 65536, f.max_tokens)),
+          temperature: clampNum(row.temperature, 0, 2, f.temperature),
+          // thinking 留「默认」就不写这个键（生效值由链路默认 / [llm].thinking 决定）
+          thinking: row.thinking ? row.thinking : null
+        }
+      : { max_tokens: null, temperature: null, thinking: null }
+  }
   return { llm }
 }
 
@@ -373,7 +464,11 @@ async function loadConfig() {
       max_segment_chars: c.asr.max_segment_chars ?? 30,
       snap_window: c.asr.snap_window ?? 0.3,
       segment_padding: c.asr.segment_padding ?? 0,
-      max_new_tokens: c.asr.max_new_tokens ?? 512
+      max_new_tokens: c.asr.max_new_tokens ?? 256,
+      // 没写这一项 = 跟随默认（开）；表单要给个能点的复选框，所以在这里落到布尔值
+      vad: c.asr.vad ?? true,
+      vad_threshold: c.asr.vad_threshold ?? 0.5,
+      vad_rescue_db: c.asr.vad_rescue_db ?? 16
     })
     if (c.detection) Object.assign(form.detection, {
       danmaku_window_secs: c.detection.danmaku_window_secs ?? 10,
@@ -393,14 +488,29 @@ async function loadConfig() {
       form.chrome.path = c.chrome.path || ''
     }
     const l = d.llm_config || {}
+    const gMax = l.max_tokens ?? 65536
+    const gTemp = l.temperature ?? 0
     form.llm = {
       api_key: l.api_key || '',
       base_url: l.base_url || '',
       model: l.model || '',
-      temperature: l.temperature ?? 0,
-      max_tokens: l.max_tokens ?? 65536,
+      temperature: gTemp,
+      max_tokens: gMax,
       max_concurrent: l.max_concurrent ?? 3,
-      extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : ''
+      extra_params: l.extra_params ? JSON.stringify(l.extra_params, null, 2) : '',
+      // 后端把四张覆盖表都序列化出来（缺席的项是 null）→ 行按它的键走。
+      // on = 这条链路在 llm.toml 里已经有一项覆盖；滑块显示值取"覆盖值，否则当前全局值"。
+      overrides: Object.fromEntries(
+        Object.entries(l.overrides || {}).map(([k, v]) => [
+          k,
+          {
+            on: v?.max_tokens != null || v?.temperature != null || !!v?.thinking,
+            max_tokens: v?.max_tokens ?? gMax,
+            temperature: v?.temperature ?? gTemp,
+            thinking: v?.thinking || ''
+          }
+        ])
+      )
     }
     loaded.value = true
   } catch (e) { loaded.value = false }
@@ -477,35 +587,63 @@ async function testLlm() {
 }
 
 onMounted(() => {
-  loadConfig()
-  loadModels()
+  // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
+  // 其余子页的组件自带接口，别白拉一遍。
+  if (props.section === 'config' || props.section === 'llm') loadConfig()
+  if (props.section === 'account') loadModels()
 })
 </script>
 
 <style scoped>
-.llm-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:10px 16px; align-items:stretch; }
-.llm-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; align-content:start; }
+/* 标签条下面紧接第一个区块标题：section-title 自带 20px 上边距，这里已经翻到新的一页了 */
+.tabs { margin-bottom: 10px; }
+.tabs + .section-title { margin-top: 4px; }
+/* 表单密度：字段是一行「标签·滑块·数字框」，行高本来就矮，留白按行距给（8px 上下 / 12px 左右）。
+   下面的 section/prompt 间距都跟着这条口径收，别再单独放大某一处。 */
+.llm-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:8px 14px; align-items:stretch; }
+.llm-fields { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:start; }
 .llm-extra { display:flex; flex-direction:column; }
 .llm-extra textarea { flex:1; min-height:230px; resize:vertical; font-size:12px; line-height:1.6; }
-.form-section { padding:10px 0; border-bottom:1px dashed var(--line-soft); }
+/* 按链路覆盖：一行一条链路 —— [勾选+名字] [max_tokens 滑块] [temperature 滑块] [thinking 下拉]。
+   没勾的只占一行灰字（跟随全局），所以默认状态是 4 行矮的、勾开才长出滑块。
+   数值项走 SliderField（与上面那几格同一套控件），别退回裸数字框。
+   ⚠️ 两个数值格子给**上限 300px + justify-content:start**：默认的 1fr 会把滑块拉到格子中央，
+   一行里三样东西散开、看着很空（实测过）。`:deep(.slf-name)` 改成不伸展，标签紧贴滑块；
+   滑块宽度仍是格子宽的 1/3（SliderField 自己的约定，不改）。 */
+.llm-links { margin-top:12px; }
+.llm-links-head { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; font-weight:700; font-size:12.5px; }
+.llm-link-row { display:grid; grid-template-columns:max-content minmax(0,300px) minmax(0,300px) max-content;
+  justify-content:start; gap:2px 10px; align-items:center; min-width:0; }
+.llm-link-row + .llm-link-row { margin-top:2px; }
+.llm-link-row .ln-name { display:flex; align-items:center; gap:6px; font-size:12.5px; white-space:nowrap; cursor:pointer; }
+.llm-link-row :deep(.slf-name) { flex:0 1 auto; }
+.llm-link-row select { width:auto; min-width:112px; padding:3px 6px; font-size:12.5px; }
+.ln-inherit { grid-column:2 / -1; }
+.form-section { padding:8px 0; border-bottom:1px dashed var(--line-soft); }
 .form-section:first-child { padding-top:0; }
 .form-section:last-child { border-bottom:none; padding-bottom:0; }
-.form-section-title { font-weight:700; font-size:13px; margin-bottom:8px; }
-.form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:12px 14px; align-items:start; }
+.form-section-title { font-weight:700; font-size:13px; margin-bottom:6px; }
+.form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px 12px; align-items:start; }
 /* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
 .two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
 .span-2 { grid-column:span 2; }
-.field-hint { margin-top:4px; }
+/* Mode = 一行「标签 · 下拉 · 说明」：说明原本另起一行，把这一格撑到 81px，
+   而同一行的数值行只有 23px —— 那一行右侧因此空出 58px 的竖向留白（量过）。
+   下拉给 auto 宽 + 收窄内边距，一行放得下（窄屏自动折行）。 */
+.mode-field { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; min-width:0; }
+.mode-field > label { margin:0; white-space:nowrap; }
+.mode-field > select { width:auto; min-width:104px; padding:4px 8px; font-size:12.5px; }
+.mode-field > .mode-hint { min-width:0; overflow-wrap:anywhere; }
 .span-all { grid-column:1 / -1; }
-.prompt-pair { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; margin-top:10px; }
+.prompt-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; margin-top:8px; }
 .prompt-pair textarea, .prompt-with-side textarea { min-height:230px; resize:vertical; }
-.prompt-with-side { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 14px; margin-top:10px; align-items:start; }
-.side-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
-.side-title { font-weight:700; font-size:12.5px; color:var(--ink); margin-bottom:6px; }
-.side-gap { margin-top:8px; }
+.prompt-with-side { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px 12px; margin-top:8px; align-items:start; }
+.side-col { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.side-title { font-weight:700; font-size:12.5px; color:var(--ink); margin-bottom:4px; }
+.side-gap { margin-top:6px; }
 .side-check { align-self:flex-start; padding:0; margin-top:2px; }
-.side-hint { margin-top:4px; }
-.check-field { display:flex; align-items:center; gap:7px; align-self:end; padding:0 0 9px; }
+.side-hint { margin-top:2px; }
+.check-field { display:flex; align-items:center; gap:7px; align-self:end; padding:0 0 6px; }
 .check-field label { margin:0; cursor:pointer; color:var(--ink); }
 .source-editor { font-size:12px; line-height:1.7; }
 button:disabled { opacity:.45; cursor:not-allowed; }
@@ -516,8 +654,12 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 @media (max-width: 900px) {
   .llm-grid { grid-template-columns:1fr; }
   .llm-extra textarea { min-height:160px; }
+  /* 链路覆盖行：窄屏一行放不下「名字 + 两个滑块 + 下拉」→ 拆成一列（名字占一行） */
+  .llm-link-row { grid-template-columns:minmax(0,1fr); }
+  .llm-link-row .ln-name, .ln-inherit { grid-column:1 / -1; }
   .form-grid { grid-template-columns:repeat(2, 1fr); }
   .span-2 { grid-column:1 / -1; }
   .prompt-pair, .prompt-with-side { grid-template-columns:1fr; }
 }
 </style>
+

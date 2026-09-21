@@ -77,7 +77,13 @@ async function startJob(url, pid, dir, extra = {}) {
 export const polishPost = startJob
 
 export const initPolish = (pid, dir) => startJob('/api/polish/init', pid, dir)
-export const runLlm = (pid, dir) => startJob('/api/polish/llm', pid, dir)
+/** LLM 剪辑（整片）。`full` 默认 **true** = 全部重做：清掉断点续传缓存、重新分段 + 重生成全部事件。
+ *  想省调用就用 `runLlmSegment`（只重做某一段）。 */
+export const runLlm = (pid, dir, full = true) => startJob('/api/polish/llm', pid, dir, { full })
+/** 只重做某一段的事件（`index` = polish.toml 里 `[[segments]]` 的下标）。
+ *  别的段、筛选词、高亮词一律不动；失败时保留该段原有事件。 */
+export const runLlmSegment = (pid, dir, index) =>
+  startJob('/api/polish/llm-segment', pid, dir, { index })
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
 export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silence', pid, dir, extra)
 /** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；

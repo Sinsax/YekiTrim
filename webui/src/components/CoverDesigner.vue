@@ -38,6 +38,7 @@
           <div class="stage-gesture-layer" title="拖动 = 移动当前帧 · 滚轮 = 缩放当前帧"
                @pointerdown="onStagePointerDown" @wheel.prevent="onStageWheel"></div>
           <!-- 安全区线框（纯辅助线，只画在设计器里，**不在 cover.html 出片模板里**）：
+               封面画布恒 1920×1080 横版，所以两个框都按横版算：
                16:9 框 = 四周等比内缩 5%（1824×1026），4:3 框 = 满高居中（1440×1080）。
                压在手势层之上（z7）才看得出标题有没有越线；pointer-events:none 所以不挡拖动。 -->
           <div v-if="showGuide169 || showGuide43" class="guide-layer">
@@ -113,16 +114,12 @@
             <div class="mini-field"><label>字号</label><input type="range" min="24" max="240" step="2" v-model.number="fontSize"><span class="rv">{{ fontSize }}px</span></div>
             <div class="mini-field"><label>描边</label><input type="range" min="0" max="60" step="1" v-model.number="stroke"><span class="rv">{{ stroke }}px</span></div>
           </div>
-          <!-- 封面字体：字体库（程序目录 resources/fonts/）里的字体。空 = 系统字体栈。
-               库是空的就把目录写出来 —— 不然用户没处知道该往哪儿丢字体文件。 -->
+          <!-- 封面字体：字体库（程序目录 resources/fonts/）里的字体。空 = 系统字体栈。 -->
           <div class="mini-field mt-4">
             <label>字体</label>
             <select :value="coverFont" :disabled="!configLoaded" @change="onCoverFontChange">
               <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
-          </div>
-          <div v-if="!fonts.length" class="muted small mt-4">
-            字体库为空：把 .ttf / .otf / .ttc 丢进 <span class="mono">{{ fontsRoot || '程序目录 resources/fonts/' }}</span>
           </div>
           <div class="mini-grid mt-4">
             <div class="mini-field"><label>行距</label><input type="range" min="0.8" max="2.6" step="0.05" v-model.number="lineHeight"><span class="rv">{{ Number(lineHeight).toFixed(2) }}</span></div>
@@ -304,7 +301,6 @@ const highlightKeywords = ref([])
 // 值存 polish.toml 的 `[cover] font`：空 = 系统字体栈（老工程就是这个状态），
 // 非空 = 库里的字体 id。出片由 cover.rs 注入 @font-face，这里负责**让设计器预览也认得它**。
 const fonts = ref([])
-const fontsRoot = ref('')
 const coverFont = ref('')
 const fontOptions = computed(() => {
   const opts = [{ value: '', label: '（系统默认）' }]
@@ -322,7 +318,6 @@ async function loadFonts() {
   try {
     const r = await fetchFonts('读取字体库')
     fonts.value = r.fonts || []
-    fontsRoot.value = r.root || ''
   } catch (e) {
     addClient('warn', '字体库读取失败，封面字体只能手填：' + (e.message || e), 'cover')
   }
@@ -345,6 +340,11 @@ const align = ref('left')
 /** 字幕高亮色（`[style.subtitle] highlight_color`）—— 出片的渐变底色由它推导，预览要跟着它 */
 const subtitleHlColor = ref('')
 const layout = ref({})
+// ---- 封面画布：**恒 1920×1080 横版**（不跟随 [canvas] orientation —— 平台封面就是横的）。
+// 「素材原比例」指封面里的**帧层**（.stage-video / cover.html #frame）用 object-fit:contain
+// 完整显示、不被裁切；画布尺寸本身与项目方向无关。
+const COVER_W = 1920
+const COVER_H = 1080
 const duration = ref(0)
 const playing = ref(false)
 /** 背景模式：color（16 进制纯色，默认黑）/ blur（当前帧模糊平铺）—— 只有这两种。
@@ -536,6 +536,7 @@ const titleStyle = computed(() => {
 // 目标矩形 = 设计器里那条 **4:3 裁切区** 线框（`.guide-43`）。线框是 `height:100%` +
 // `aspect-ratio:4/3` 居中，所以在 1920×1080 画布上它是 1440 宽、左右各留 240px、上下贴边。
 // 标题放进去的含义：封面被平台裁成 4:3 时一个字都不会掉。
+// （封面画布恒 1920×1080 横版，不随项目方向变。）
 // 安全区目前**只存在于设计器**（`cover.rs` / `cover.html` 完全不知道它），所以这件事只能在
 // 前端做 —— 好在设计器用的是与出片同一套 CSS（字体栈、line-height、text-align、
 // `-webkit-text-stroke`），能量到真实排版。
@@ -579,7 +580,7 @@ async function fitTitleIntoSafeArea() {
   const left = (SAFE_X0 + m) * s
   const right = (SAFE_X1 - m) * s
   const top = m * s
-  const bottom = (1080 - m) * s
+  const bottom = (COVER_H - m) * s
   const maxW = Math.max(1, right - left)
   const maxH = Math.max(1, bottom - top)
 
@@ -622,7 +623,7 @@ async function fitTitleIntoSafeArea() {
   let b = measure()
   if (!fits(b) && b.h > maxH && b.w <= maxW) {
     const before = textWidth.value
-    const wider = Math.min(96, Math.max(before + 6, Math.ceil((maxW / s / 1920) * 100)))
+    const wider = Math.min(96, Math.max(before + 6, Math.ceil((maxW / s / W) * 100)))
     if (wider > before) {
       textWidth.value = wider
       await nextTick()
@@ -658,9 +659,9 @@ async function fitTitleIntoSafeArea() {
   // 判定 = 「到最小字号仍然溢出」，也就是现在这一刻还没进框。
   const relaxed = !fits(b)
   titleFitHint.value = relaxed
-    ? '标题按最小字号仍放不进 4:3 安全区，已按最小溢出摆放 —— 建议缩短标题或调窄文字区'
+    ? '标题按最小字号仍放不进安全区，已按最小溢出摆放 —— 建议缩短标题或调窄文字区'
     : ''
-  if (relaxed) console.warn('[cover] 标题按最小字号仍放不进 4:3 安全区', b, { maxW, maxH })
+  if (relaxed) console.warn('[cover] 标题按最小字号仍放不进安全区', b, { maxW, maxH })
 }
 
 /** 渐变底色：与 `cover.rs::build_cover_html` **同一套推导**（从字幕高亮色反推一个暗色调）。
@@ -1069,7 +1070,8 @@ function onSeekInput(e) {
 }
 function updateStageScale() {
   const w = stageRef.value ? stageRef.value.clientWidth : 0
-  stageScale.value = w > 0 ? w / 1920 : 1
+  // 基准 = 封面画布宽 1920：字号、描边、位移这些"画布 px"预览与出片必须同一把尺。
+  stageScale.value = w > 0 ? w / COVER_W : 1
 }
 
 /** 拖动预览 = 平移「当前帧」（背景不动）；松手让自动保存链把 bg_x/bg_y 写进 polish.toml。 */
@@ -1126,6 +1128,8 @@ async function loadCoverConfig(retrying = false) {
   try {
     const cfg = await fetchProject(props.pid, props.dir, false, '读取封面配置')
     layout.value = cfg?.layout || {}
+    updateStageScale()
+    syncControlsBound()
     videoSrc.value = clipMediaUrl(props.pid, props.dir, cfg?.source?.video || 'clip.mp4')
     // 标题行：与 `cover.rs::build_cover_html` 同一套回退规则 —— 没有 title_lines 时按标点
     // 把 `project.name` 拆行，并砍掉 `【主播名】` 后缀（以前这里直接用整串当一行，
@@ -1270,7 +1274,17 @@ onUnmounted(() => {
 .stage-bg { position:absolute; inset:0; z-index:0; overflow:hidden; }
 .stage-bg-img { display:block; width:100%; height:100%; object-fit:cover; transform-origin:center center; }
 .stage-media { position:absolute; inset:0; z-index:1; overflow:hidden; }
-.stage-video { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; object-fit:cover; display:block; }
+/* object-fit:contain —— 素材**保持原比例**完整显示（与出片模板 #frame img 同规则）：
+   竖屏素材在 16:9 封面上左右留边（露出背景层），不再被 cover 裁掉上下。
+   ⚠️ `background:transparent` / `border-radius:0` 是**必需的覆盖**，不是装饰：
+   `styles/app.css` 有一条全局元素选择器 `video { … background:#000; border-radius:var(--r-sm) }`
+   （给剪辑卡片那类视频缩略图用的）。类选择器只覆盖自己写了的属性，这两条会**穿透**到本元素：
+   contain 让出来的左右留白区由**元素自身背景**填充 → 竖屏素材在设计器里是两条**纯黑边**，
+   还压在 `.stage-bg`（模糊背景层）之上，把背景层整个盖住（出片用 <img>、无 app.css，所以只有
+   设计器这样 —— 用户报过"设计器素材左右黑边、出片正常"）。改这段前先跑
+   `node webui/scripts/check-cover-stage.mjs`。 */
+.stage-video { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; object-fit:contain; display:block;
+  background:transparent; border-radius:0; }
 .fx-layer { position:absolute; inset:0; pointer-events:none; z-index:4; }
 .fx-item { position:absolute; inset:0; }
 /* 表情特效：不是铺满的图层，而是一个点 —— 位置/字号/阴影走行内样式，居中在这。

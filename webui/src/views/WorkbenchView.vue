@@ -12,6 +12,9 @@
 
     <div v-if="wb.error" class="error-banner"><Icon name="alert" :size="15" /> {{ wb.error }}</div>
 
+    <!-- ═════ 切片总览：全部项目的切片卡片预览（进行中 / 已完成导出 两个列表） ═════ -->
+    <HomeClipsOverview />
+
     <!-- ═════ 新增项目：先选来源，再走对应导入方式 ═════ -->
     <div class="card card-blk mb-12">
       <div class="row spread mb-8">
@@ -153,13 +156,137 @@
         </template>
       </div>
 
-      <!-- ③ B 站链接（P4 未实现，如实标注） -->
+      <!-- ③ B 站链接：粘贴 → 解析预览 → 勾选分P → 下载 -->
       <div v-if="source === 'bilibili'" class="src-body">
-        <div class="empty small">
-          B 站链接导入（输入视频地址 → 下载 → 建项目）属于后续版本（P4），当前不可用。
-          <template v-if="isAdmin">现在可以用「服务器文件」把已下载好的录像建成项目。</template>
-          <template v-else>你的项目由管理员指派，或让管理员配置录播姬自动入库。</template>
+        <!-- 下载器没装：先解决这个（管理员一键装，普通用户只能等） -->
+        <div v-if="dl.ready === false" class="bili-gate">
+          <div class="row" style="gap:8px; align-items:flex-start">
+            <Icon name="alert" :size="15" />
+            <div class="flex-1">
+              <b>下载器未就绪</b>
+              <div class="muted small mt-4">
+                B 站下载需要 <span class="mono">yt-dlp</span>（{{ dl.license || 'Unlicense' }}，
+                {{ dl.pinned_version ? '版本 ' + dl.pinned_version : '内置' }}）。
+                <template v-if="isAdmin">点右边按钮下载并校验（约 17 MB，只下一次）。</template>
+                <template v-else>请联系管理员在「设置 → 系统」里安装后再试。</template>
+              </div>
+              <div v-if="dlError" class="error-banner mt-6">{{ dlError }}</div>
+            </div>
+            <button v-if="isAdmin" class="btn btn-primary" :disabled="dlBusy" @click="installDownloader">
+              <span v-if="dlBusy" class="spinner"></span> 下载并校验
+            </button>
+          </div>
         </div>
+
+      <template v-else>
+        <!-- 存放位置没配置：管理员给去处（仅管理员可见这张卡）；普通用户提交时后端会拒绝并提示联系管理员 -->
+        <div v-if="isAdmin && rootConfigured === false" class="bili-gate">
+          <div class="row" style="gap:8px; align-items:flex-start">
+            <Icon name="alert" :size="15" />
+            <div class="flex-1">
+              <b>尚未配置项目存放位置</b>
+              <div class="muted small mt-4">
+                下载前需要先确定项目落到哪个目录。去
+                <router-link to="/settings/integrations">设置 → 下载</router-link>
+                里配置「项目存放位置」后即可开始下载。
+              </div>
+            </div>
+            <router-link class="btn btn-primary" to="/settings/integrations">去配置</router-link>
+          </div>
+        </div>
+        <div class="row" style="gap:8px">
+            <input
+              v-model="biliUrl"
+              class="flex-1"
+              :disabled="biliBusy"
+              placeholder="粘贴视频链接或 BV 号，例如 https://www.bilibili.com/video/BV1xx  /  BV1xx"
+              @keyup.enter="resolveBili"
+            >
+            <button class="btn btn-primary" :disabled="biliBusy || !biliUrl.trim()" @click="resolveBili">
+              <span v-if="biliBusy && !biliInfo" class="spinner"></span> 解析
+            </button>
+          </div>
+          <div v-if="biliError" class="error-banner mt-8"><Icon name="alert" :size="15" /> {{ biliError }}</div>
+          <div v-if="biliHint" class="hint mt-6">{{ biliHint }}</div>
+
+          <!-- 预览卡 -->
+          <div v-if="biliInfo" class="bili-preview">
+            <img v-if="biliInfo.cover" class="bili-cover" :src="biliInfo.cover" alt="" referrerpolicy="no-referrer">
+            <div class="bili-meta flex-1">
+              <b class="bili-title" :title="biliInfo.title">{{ biliInfo.title }}</b>
+              <div class="muted small mt-4">
+                {{ biliInfo.uploader || '（未知 UP 主）' }}
+                <template v-if="biliInfo.duration_secs"> · {{ fmtClock(biliInfo.duration_secs) }}</template>
+                <template v-if="biliInfo.danmaku_total"> · 弹幕 {{ fmtCount(biliInfo.danmaku_total) }}</template>
+                <template v-if="biliInfo.view_total"> · 播放 {{ fmtCount(biliInfo.view_total) }}</template>
+              </div>
+              <div class="muted small mt-4">
+                {{ biliInfo.pages.length }} 个分P · 已选 {{ pickedPages.length }} 个 ·
+                预计占用 <b>{{ fmtBytes(pickedEstimate) }}</b>
+                <span class="muted">（清晰度上限 {{ biliInfo.quality }}，在设置页改）</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 多P 勾选：默认全不选（P 多的时候全下会撑爆配额） -->
+          <div v-if="biliInfo?.pages?.length" class="bili-pages">
+            <div class="row spread bili-pages-head">
+              <span class="muted small">
+                <template v-if="biliInfo.pages.length > 1">选择要下载的分P（各建一个项目，可随时再下别的）</template>
+                <template v-else>单 P 视频</template>
+              </span>
+              <div v-if="biliInfo.pages.length > 1" class="row" style="gap:6px">
+                <button class="mini-btn" @click="pickAllPages">全选</button>
+                <button class="mini-btn" @click="pickedPages = []">清空</button>
+              </div>
+            </div>
+            <label
+              v-for="p in biliInfo.pages"
+              :key="p.index"
+              class="bili-page"
+              :class="{ on: pickedPages.includes(p.index) }"
+            >
+              <input type="checkbox" :value="p.index" v-model="pickedPages">
+              <span class="mono bili-pnum">P{{ p.index }}</span>
+              <span class="bili-pname flex-1" :title="p.part">{{ p.part || '（无标题）' }}</span>
+              <span class="muted small">{{ p.duration_secs ? fmtClock(p.duration_secs) : '-' }}</span>
+              <span class="muted small bili-pest">{{ p.estimate_bytes ? fmtBytes(p.estimate_bytes) : '-' }}</span>
+            </label>
+          </div>
+
+          <div v-if="biliInfo" class="row mt-8" style="gap:8px">
+            <span class="muted small flex-1">
+              下载完成后自动建项目；<b>弹幕会一并抓取</b>（事件检测的热度排序要用）。
+              <template v-if="!pickedPages.length">请先勾选分P。</template>
+            </span>
+            <button
+              class="btn btn-primary"
+              :disabled="biliSubmitting || !pickedPages.length || (isAdmin && rootConfigured === false)"
+              @click="submitBili"
+            >
+              <span v-if="biliSubmitting" class="spinner"></span>
+              开始下载{{ pickedPages.length > 1 ? `（${pickedPages.length} 个）` : '' }}
+            </button>
+          </div>
+
+          <!-- 已提交的结果 -->
+          <div v-if="biliSubmitted" class="bili-done">
+            <div class="row spread">
+              <b class="small">已提交 {{ biliSubmitted.accepted.length }} 个下载</b>
+              <router-link class="mini-btn" to="/ingest">查看进度</router-link>
+            </div>
+            <div v-for="a in biliSubmitted.accepted" :key="a.session_id" class="muted small mt-4">
+              · P{{ a.page }} {{ a.title }}
+            </div>
+            <div v-for="s in biliSubmitted.skipped" :key="s.session_id" class="muted small mt-4">
+              · P{{ s.page }} 已跳过（{{ s.reason }}）
+            </div>
+          </div>
+
+          <p class="muted small mt-8">
+            当前只支持单个视频链接与它的分P。番剧 / 课程 / UP 主空间 / 收藏夹批量**不支持** —— 链接认不出来会明确报错。
+          </p>
+        </template>
       </div>
     </div>
 
@@ -171,15 +298,18 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import ServerDirPicker from '../components/ServerDirPicker.vue'
 import StickerPacks from '../components/StickerPacks.vue'
+import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import { authState } from '../stores/auth'
 import { createLocalProject } from '../stores/project'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { ingestApi } from '../api/ingest'
 import { fmtBytes, fmtTime, ingestState, setReady } from '../stores/ingest'
+import { fmtClock, fmtCount } from '../utils'
 import { loadProjects, wb } from '../stores/workbench'
 import { api } from '../api/client'
 
@@ -205,10 +335,9 @@ const sources = computed(() => {
     {
       key: 'bilibili',
       title: 'B 站链接',
-      desc: '粘贴视频地址下载后建项目（后续版本）',
+      desc: '粘贴视频地址，下载完成后自动建项目（弹幕一并抓取）',
       icon: 'link',
-      badge: 'P4',
-      disabled: true
+      badge: ''
     }
   )
   return list
@@ -396,6 +525,120 @@ async function createFromLocal() {
   }
 }
 
+// ---- ③ B站链接（P4）----
+//
+// 交互形状：粘贴 → 解析（薄壳，不落库）→ 勾选分P → 提交（每 P 一个会话/项目）。
+// 下载与建项目都在服务端 worker 里跑，这里只负责"提交"，进度去采集记录页看。
+const dl = reactive({
+  /** null = 还没问到（别先闪一下"未就绪"）；true/false = 下载器可用位 */
+  ready: null,
+  verified: false,
+  kind: '',
+  pinned_version: '',
+  license: ''
+})
+const dlBusy = ref(false)
+const dlError = ref('')
+
+const biliUrl = ref('')
+const biliBusy = ref(false)
+const biliError = ref('')
+const biliHint = ref('')
+const biliInfo = ref(null)
+/// 选中的分P。**默认全不选**：23P 全下会直接撑爆配额，必须让用户主动选。
+const pickedPages = ref([])
+const biliSubmitting = ref(false)
+const biliSubmitted = ref(null)
+/// 存放位置是否已显式配置（`[storage] projects_root`）。null = 还没问到 / 查询失败
+/// （此时**不拦**，让后端兜底——前端查不到就别替后端做决定）。
+/// 只有管理员会查（config 是 admin-only 端点），普通用户提交时由后端按角色给文案。
+const rootConfigured = ref(null)
+
+/// 只统计选中的 P（预览卡上的"预计占用"要跟着勾选实时变）。
+const pickedEstimate = computed(() => {
+  const info = biliInfo.value
+  if (!info) return 0
+  return info.pages
+    .filter((p) => pickedPages.value.includes(p.index))
+    .reduce((sum, p) => sum + (p.estimate_bytes || 0), 0)
+})
+
+async function loadDownloader() {
+  try {
+    const d = await ingestApi.downloaderStatus()
+    Object.assign(dl, {
+      ready: d?.ready === true,
+      verified: d?.verified === true,
+      kind: d?.kind || '',
+      pinned_version: d?.pinned_version || '',
+      license: d?.license || ''
+    })
+  } catch {
+    // 读不到就当作"未知"，不拦用户（提交时服务端还会拦一次）
+    dl.ready = null
+  }
+}
+
+async function installDownloader() {
+  dlBusy.value = true
+  dlError.value = ''
+  try {
+    const r = await ingestApi.installDownloader()
+    await loadDownloader()
+    toast(r?.verified ? '下载器已安装并通过校验' : '下载器已安装（未通过 sha256 校验，请检查）', r?.verified ? 'ok' : 'err')
+  } catch (e) {
+    dlError.value = e?.message || '安装失败'
+    toast(dlError.value, 'err')
+  } finally {
+    dlBusy.value = false
+  }
+}
+
+async function resolveBili() {
+  biliBusy.value = true
+  biliError.value = ''
+  biliHint.value = ''
+  biliSubmitted.value = null
+  try {
+    const d = await ingestApi.resolveBilibili(biliUrl.value.trim())
+    biliInfo.value = d
+    // 单P 默认勾上（只有一个选项时让用户再点一次是多余的）；
+    // 多P 一律留空 —— 由用户自己决定下哪几 P
+    pickedPages.value = d.pages.length === 1 ? [d.pages[0].index] : []
+    if (d.pages.length > 1) {
+      biliHint.value = `这是个 ${d.pages.length} 分P 的合集，选好要下载的 P（每个 P 会建成一个项目）。`
+    }
+  } catch (e) {
+    biliInfo.value = null
+    pickedPages.value = []
+    biliError.value = e?.message || '解析失败'
+  } finally {
+    biliBusy.value = false
+  }
+}
+
+function pickAllPages() {
+  pickedPages.value = (biliInfo.value?.pages || []).map((p) => p.index)
+}
+
+async function submitBili() {
+  biliSubmitting.value = true
+  biliError.value = ''
+  try {
+    const r = await ingestApi.submitBilibili(biliUrl.value.trim(), pickedPages.value)
+    biliSubmitted.value = r
+    const n = r?.accepted?.length || 0
+    toast(n ? `已提交 ${n} 个下载，完成后自动建项目` : '没有新的下载（都已存在项目）')
+    // 提交后会话就在采集记录页里，提示用户去哪儿看进度
+    if (n) await loadRecords().catch(() => {})
+  } catch (e) {
+    biliError.value = e?.message || '提交失败'
+    toast(biliError.value, 'err')
+  } finally {
+    biliSubmitting.value = false
+  }
+}
+
 // ---- ② 录播姬录制 ----
 const scanning = ref(false)
 const ingestReady = computed(() => ingestState.ready)
@@ -421,8 +664,28 @@ onMounted(async () => {
   try {
     const h = await api('/api/health')
     setReady(h?.ingest_ready !== false)
+    // 下载器就绪位顺便从 health 拿一次（省一个请求），再单独查一次细节（版本/许可）
+    if (h?.downloader) Object.assign(dl, { ready: h.downloader.ready === true, verified: h.downloader.verified === true, kind: h.downloader.kind || '' })
   } catch {} // /api/health 是高频成功路径，失败由 api() 记日志即可（不挡首屏）
   await loadRooms()
+  await loadDownloader()
+  // 管理员顺路查一次存放位置是否已配置（config 是 admin-only；失败不拦，后端兜底）
+  if (isAdmin.value) {
+    try {
+      const d = await ingestApi.config()
+      rootConfigured.value = !!(d?.storage?.projects_root || '').trim()
+    } catch {}
+  }
+})
+
+// 从设置页配置完回来要重查（组件被 keep-alive / 复用时 onMounted 不会重跑）
+const route = useRoute()
+watch(() => route.fullPath, (to, from) => {
+  if (isAdmin.value && to !== from && String(to).startsWith('/workbench')) {
+    ingestApi.config()
+      .then((d) => { rootConfigured.value = !!(d?.storage?.projects_root || '').trim() })
+      .catch(() => {})
+  }
 })
 </script>
 
@@ -445,4 +708,42 @@ onMounted(async () => {
 .rec-row { display:flex; align-items:center; gap:8px; padding:4px 0; flex-wrap:wrap; }
 .rec-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rec-meta { flex:none; white-space:nowrap; }
+
+/* ── B站链接向导 ── */
+/* 下载器未就绪：整块给"怎么解决"，但不给普通用户一个点不动的安装按钮 */
+.bili-gate {
+  padding:10px 12px; border:1px solid var(--line-soft); border-radius:8px;
+  background:var(--bg-soft, transparent);
+}
+.bili-preview { display:flex; gap:12px; margin-top:12px; align-items:flex-start; }
+.bili-cover {
+  width:160px; flex:none; border-radius:6px; border:1px solid var(--line-soft);
+  aspect-ratio:16/9; object-fit:cover; background:var(--bg-soft, transparent);
+}
+.bili-meta { min-width:0; }
+.bili-title {
+  display:block; font-size:14px; line-height:1.4;
+  overflow:hidden; text-overflow:ellipsis; display:-webkit-box;
+  -webkit-line-clamp:2; -webkit-box-orient:vertical;
+}
+/* 分P 列表：可滚，P 多时不把页面撑长 */
+.bili-pages {
+  margin-top:10px; max-height:280px; overflow-y:auto;
+  border:1px solid var(--line-soft); border-radius:8px; padding:4px 8px;
+}
+.bili-pages-head { padding:4px 0 6px; position:sticky; top:0; background:var(--bg, transparent); z-index:1; }
+.bili-page {
+  display:flex; align-items:center; gap:10px; padding:5px 4px; cursor:pointer;
+  border-radius:6px; border-bottom:1px dashed var(--line-soft);
+}
+.bili-page:last-child { border-bottom:none; }
+.bili-page:hover { background:var(--bg-soft, transparent); }
+.bili-page.on { background:var(--bg-soft, transparent); }
+.bili-pnum { flex:none; font-size:12px; min-width:34px; }
+.bili-pname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.bili-pest { flex:none; min-width:64px; text-align:right; }
+.bili-done {
+  margin-top:10px; padding:10px 12px; border:1px solid var(--line-soft);
+  border-radius:8px; background:var(--bg-soft, transparent);
+}
 </style>

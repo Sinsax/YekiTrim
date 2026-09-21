@@ -2,6 +2,8 @@
 // （真实出片路径 renderFrame）忠实移植的纯函数特效状态机。
 // buildIndex() 一次性预处理 → 各 *At(idx, t) 逐帧查询覆盖层状态。不读 DOM、不持有组件状态。
 // 修改特效表现时先改 templates/index.html，再同步移植到这里，保持预览与出片一致。
+// 画布尺寸/缩放一律取自 ./canvas.js（`_canvas` 契约），不再写死 1920×1080。
+import { canvasOf, stickerSize, stickerMargin, stickerFloatUp } from './canvas.js'
 
 // ---- GSAP 兼容 easing ----
 export const E = {
@@ -137,15 +139,42 @@ function pctPx(v, total) {
   return Number.isFinite(n) ? (n / 100) * total : NaN
 }
 
-// 贴纸安全范围：贴纸 280×280，保留边距避免出框（1920×1080 虚拟坐标）
-export const STICKER_W = 280
-export const STICKER_H = 280
-export const STICKER_SAFE_MARGIN = 32
-function clampSticker(x, y) {
+// 贴纸安全范围：盒子 280×短边倍率、边距 32×短边倍率（与 placement.rs
+// `Frame::sticker_scale` 同源；横竖画布短边都是 1080 ⇒ 恒为 280/32）。
+export const STICKER_BASE = 280
+export const STICKER_MARGIN_BASE = 32
+function stickerGeom(idx) {
+  const cv = canvasOf(idx.canvas)
+  return { cv, s: stickerSize(cv), m: stickerMargin(cv) }
+}
+// 把**盒子左上角**钳进安全区（与 templates/index.html 的 stickerBox 逐行对应）。
+// ⚠️ 只钳左上角；上浮量在本函数之外叠加 —— 出片侧是 GSAP transform（作用在已钳制
+// 的位置之后），GPU 侧（timeline.rs）同样是"先钳中心再叠 y_off"。别再改回"先加 yOff 再钳"。
+function clampSticker(g, left, top) {
   return {
-    x: Math.max(STICKER_SAFE_MARGIN, Math.min(1920 - STICKER_W - STICKER_SAFE_MARGIN, x)),
-    y: Math.max(STICKER_SAFE_MARGIN, Math.min(1080 - STICKER_H - STICKER_SAFE_MARGIN, y))
+    x: Math.max(g.m, Math.min(g.cv.W - g.s - g.m, left)),
+    y: Math.max(g.m, Math.min(g.cv.H - g.s - g.m, top))
   }
+}
+
+// 贴纸落点（百分比）——与 templates/index.html 的 stickerAnchor 同构，改一处必须改两处。
+// 返回值是**锚点**，`center` 说明它是盒子中心还是左上角：
+//   auto   = 事件自带的 x/y（process/placement.rs 的安全区算法算好写进 segments），
+//            含义是**盒子左上角**（placement.rs 模块头第 2 条）
+//   manual = 全部固定到 `[sticker] position` 那一点（电台/竖屏常用），忽略事件的 x/y，
+//            含义是**盒子中心**（config.rs 的 `StickerConfig.position` 注释 / 设置页口径）
+// 两个键基准不同、不要"统一"。两种模式都保留入场动画与出框 clamp ——
+// "固定"指落点固定，不是取消动画。
+function stickerAnchor(idx, ev) {
+  const st = (idx.canvas && idx.canvas.sticker) || null
+  if (st && st.position_mode === 'manual') {
+    const parts = String(st.position || '50% 50%').trim().split(/\s+/)
+    const mx = parseFloat(parts[0])
+    const my = parseFloat(parts.length > 1 ? parts[1] : parts[0])
+    return { x: Number.isFinite(mx) ? mx : 50, y: Number.isFinite(my) ? my : 50, center: true }
+  }
+  const ex = parseFloat(ev.x); const ey = parseFloat(ev.y)
+  return { x: Number.isFinite(ex) ? ex : 50, y: Number.isFinite(ey) ? ey : 50, center: false }
 }
 
 // ---- 构建事件索引（预处理，只跑一次）----
@@ -174,7 +203,6 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   }
   const soundEvents = [] // 音效事件表：sfx 类型事件 + 任意带 ev.sfx 的事件
   const ptEvents = [] // playtest 标签表（拍平全部事件）
-  let sideToggle = false
 
   segs.forEach((seg) => {
     const segLabel = seg.note || ''
@@ -199,11 +227,9 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
         entry.src = stickerSrc ? stickerSrc(name) : ''
         entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
         entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
-        // 竖屏贴纸：视频在左 → 贴纸居中；视频居中 → 左右交替
-        if (cfg.vertical) {
-          const vpos = cfg.vertical_position || (cfg.layout && cfg.layout.vertical_position) || 'left'
-          entry.xOverride = vpos === 'left' ? 50 : ((sideToggle = !sideToggle) ? 15 : 85)
-        }
+        // 落点不在这里改：auto 用 ev.x/ev.y（process 安全区算法），
+        // manual 固定到 _canvas.sticker.position —— 统一在 stickersAt 里算，
+        // 免得"落点"散在索引期与求值期两处（老代码的竖屏 xOverride 就是这种双头）。
       }
     })
   })
@@ -220,7 +246,10 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   idx.dmStyle = (cfg.style && cfg.style.danmaku) || {}
   idx.camStyle = (cfg.style && cfg.style.camera) || {}
   idx.vertical = !!cfg.vertical
-  idx.verticalPosition = cfg.vertical_position || (cfg.layout && cfg.layout.vertical_position) || 'left'
+  // 画面构成契约（Rust resolve_stage 唯一推导）：贴纸落点模式 / 字幕安全宽 / 画布尺寸都从这里取
+  idx.canvas = cfg._canvas || null
+  // 画布参数（由 `_canvas` 推导）：百分比 → 像素、运镜不动点、贴纸几何都用它
+  idx.cv = canvasOf(idx.canvas)
   idx.soundEvents = soundEvents
   idx.ptEvents = ptEvents
   idx.segs = segs
@@ -246,18 +275,39 @@ export function camFactor(label, camStyle) {
   return pick(c.zoom_mid, 1.3)
 }
 
+// ---- 手持摇摆（运镜的附加变种，`Event::Camera::handheld`） ----
+// 与 vtrim-render-core 的 `types::handheld_sway`、模板 `handheldSway` **逐值同源**
+// （Rust↔JS 由 `timeline.rs::handheld_sway_matches_js_reference` 钉住，
+// 模板/engine 两个 JS 副本由 `webui/scripts/check-handheld.mjs` 对拍）。
+// 位移单位 = 1920×1080 输出像素（预览里画布 px 与 CSS px 同构，直接当 px 用）；
+// 倾斜是度，绕聚焦中心；波形纯 `t` 的函数（无累积状态 → 跳帧/seek 结果一致）。
+const HANDHELD_TAU = Math.PI * 2
+export function handheldSway(t, amp) {
+  const a = amp > 0 ? amp : 0
+  if (a === 0) return { dx: 0, dy: 0, rot: 0, scale: 1 }
+  return {
+    dx: (6.5 * Math.sin(HANDHELD_TAU * 0.47 * t) + 3.0 * Math.sin(HANDHELD_TAU * 0.83 * t + 1.7)) * a,
+    dy: (5.0 * Math.sin(HANDHELD_TAU * 0.59 * t + 0.9) + 2.4 * Math.sin(HANDHELD_TAU * 1.13 * t + 2.4)) * a,
+    rot: (0.32 * Math.sin(HANDHELD_TAU * 0.37 * t + 0.4) + 0.16 * Math.sin(HANDHELD_TAU * 0.91 * t + 2.9)) * a,
+    scale: 1.0 + 0.007 * Math.sin(HANDHELD_TAU * 0.53 * t + 1.1) * a
+  }
+}
+
 // ---- 运镜 ----
 export function cameraAt(idx, t) {
   let zoom = 1.0
   let ox = 65
   let oy = 50
+  // 手持摇摆的**幅度** 0~1：与 zoom 同一段窗口、同一条缓动（状态机：保持到下一条运镜）
+  let handheld = 0
   // 默认聚焦中心：自由选框（框选布局）> origin_grid > origin > 首个格子
   const defOrigin = regionOrigin(idx.layout.liver)
   const dp = defOrigin.split(' ')
   ox = parseFloat(dp[0]) || 65
   oy = parseFloat(dp[1]) || 50
 
-  if (idx.vertical) return { zoom: 1.0, ox: ox * 19.2, oy: oy * 10.8 } // 竖屏不做运镜
+  // 竖屏不做运镜 —— 手持摇摆是运镜的附加变种，跟随屏蔽
+  if (idx.vertical) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
 
   const wide = camFactor('远', idx.camStyle)
   for (const c of idx.camera) {
@@ -272,6 +322,8 @@ export function cameraAt(idx, t) {
     const p = t >= ce || hardCut ? 1.0 : E.pow2Out((t - c.time) / td)
     if (t >= ce || hardCut) zoom = tgt
     else zoom = lerp(zoom, tgt, p)
+    // 手持摇摆是状态机上的持续项（跟到下一条不带 handheld 的运镜），同一段 p 起停
+    handheld = lerp(handheld, c.ev.handheld === true ? 1 : 0, p)
     // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
     // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
     const oa = String(c.ev.origin || defOrigin).split(' ')
@@ -281,21 +333,24 @@ export function cameraAt(idx, t) {
     ox = lerp(Number.isFinite(ax) ? ax : ox, Number.isFinite(bx) ? bx : ox, p)
     oy = lerp(Number.isFinite(ay) ? ay : oy, Number.isFinite(by) ? by : oy, p)
   }
-  return { zoom, ox: ox * 19.2, oy: oy * 10.8 }
+  return { zoom, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld }
 }
 
 // ---- 视频层复合状态：shake/blur/colorShift/stutter/split/最终 zoom ----
+// 竖屏不再屏蔽这些视觉特效（只有运镜 camera 被屏蔽，见 cameraAt 顶部）。
+// 与 templates/index.html 的 handlers 段保持一致：作用对象本来就对，
+// blur/color_shift 打 #video-wrap、其余打 #source-video，背景层是兄弟节点不受波及。
 export function videoFxAt(idx, t) {
   const shake = getShake(idx, t)
   const blurAmt = getBlur(idx, t)
   const colorShift = getColorShift(idx, t)
-  const stutter = idx.vertical ? null : getStutterVideo(idx, t)
-  const split = idx.vertical ? null : getSplitVideo(idx, t)
+  const stutter = getStutterVideo(idx, t)
+  const split = getSplitVideo(idx, t)
   const cam = cameraAt(idx, t)
-  const zb = idx.vertical ? cam.zoom : getZoomBounce(idx, t, cam.zoom)
-  const pl = idx.vertical ? cam.zoom : getPulse(idx, t, cam.zoom)
+  const zb = getZoomBounce(idx, t, cam.zoom)
+  const pl = getPulse(idx, t, cam.zoom)
   return {
-    shake, blur: idx.vertical ? 0 : blurAmt, colorShift: idx.vertical ? '' : colorShift,
+    shake, blur: blurAmt, colorShift,
     stutter, split, zoom: Math.max(zb, pl), camera: cam,
   }
 }
@@ -551,8 +606,47 @@ export function subsAt(idx, t) {
   return out
 }
 
-function subPulse(idx, t, sub) {
-  // 与模板一致：事件落在字幕区间内时，该字幕 scale 1.25 / y −20 强调后 0.35s 回落
+// ---- 字幕折行（A5）—— 与 templates/index.html 的 wrapCaptionParts 同一算法 ----
+// parts: [{text, hl}]；measure(text) → 基准字号下的像素宽。
+// 安全宽 = maxLineW（调用方传画布宽 * 0.875）；最多 3 行；装不下缩字号（下限 0.7）。
+// 逐字符贪心（中文无空格），高亮分段可跨行、断行处自动拆开再按 hl 合并。
+let capMeasureCtx = null
+export function capMeasure(text, font) {
+  if (!capMeasureCtx) capMeasureCtx = document.createElement('canvas').getContext('2d')
+  capMeasureCtx.font = font
+  return capMeasureCtx.measureText(text).width
+}
+export function wrapCaptionParts(parts, maxLineW, measure) {
+  const MAX_LINES = 3, MIN_RATIO = 0.7, EPS = 0.5
+  const total = () => parts.reduce((w, p) => w + measure(p.text), 0)
+  function wrap(scale) {
+    const lines = []
+    let cur = null, curW = 0
+    const pushLine = () => { if (cur && cur.length) lines.push(cur); cur = null; curW = 0 }
+    const append = (ch, hl, w) => {
+      // ⚠️ 溢出换行后必须**重新起一行**：`pushLine()` 会把 cur 置空，紧接着读 `cur.length`
+      // 就是 `TypeError: can't access property "length", cur is null`（竖屏安全宽只有 945px，
+      // 一条长字幕必折行 → 播放到它就崩）。两行顺序不能对调。
+      if (cur && cur.length && curW + w > maxLineW + EPS) pushLine()
+      if (!cur) cur = []
+      const last = cur.length ? cur[cur.length - 1] : null
+      if (last && last.hl === hl) last.text += ch
+      else cur.push({ text: ch, hl })
+      curW += w
+    }
+    for (const p of parts) {
+      for (const ch of p.text) append(ch, p.hl, measure(ch) * scale)
+    }
+    pushLine()
+    return lines
+  }
+  const tw = total()
+  let scale = 1
+  if (tw > maxLineW + EPS) scale = Math.max(MIN_RATIO, Math.min(1, maxLineW * MAX_LINES / tw))
+  return { lines: wrap(scale), scale }
+}
+
+function subPulse(idx, t, sub) {  // 与模板一致：事件落在字幕区间内时，该字幕 scale 1.25 / y −20 强调后 0.35s 回落
   for (const seg of idx.segs || []) {
     for (const ev of seg.events || []) {
       const et = ev.time || 0
@@ -580,13 +674,14 @@ export function danmakuAt(idx, t) {
     const textW = idx.dmWidths[i] || (d.text || '').length * 55
     const el = t - d.start
     const fadeIn = 0.3, fadeOut = 0.2
-    const y = (d.y / 1920) * 540
+    const cv = idx.cv
+    const y = (d.y / 1920) * (540 * cv.k)
     const progress = Math.max(0, (el - fadeIn) / travel)
-    let x = 1920 - Math.min(progress, 1) * (1920 + textW)
+    let x = cv.W - Math.min(progress, 1) * (cv.W + textW)
     let opacity = 0.9
     if (el < fadeIn) {
       opacity = 0.9 * (el / fadeIn)
-      x = 1920
+      x = cv.W
     } else if (t > d.end - fadeOut) {
       opacity = 0.9 * Math.max(0, (d.end - t) / fadeOut)
     }
@@ -613,30 +708,32 @@ export function stickersAt(idx, t) {
     } else if (t < et + popIn + floatUp) {
       const p = (t - et - popIn) / floatUp
       opacity = 1; scale = 1; rot = 0
-      yOff = -18 * p
+      yOff = -stickerFloatUp(idx.cv) * p
     } else if (t < et + popIn + floatUp + dur) {
-      opacity = 1; yOff = -18
+      opacity = 1; yOff = -stickerFloatUp(idx.cv)
     } else {
       const p = (t - et - popIn - floatUp - dur) / fadeOut
       opacity = 1 - p
       scale = 1 - 0.6 * p
-      yOff = -18
+      yOff = -stickerFloatUp(idx.cv)
     }
     if (opacity < 0.005) continue
 
-    // 位置：事件 x/y 百分比 → 1920×1080 像素（280 盒子的左上角，与模板 DOM/canvas 出片一致）；
-    // 竖屏按 vertical_position 覆盖/左右交替
-    let xPct = e.xOverride != null ? e.xOverride : parseFloat(e.ev.x)
-    let yPct = parseFloat(e.ev.y)
-    if (!Number.isFinite(xPct)) xPct = 50
-    if (!Number.isFinite(yPct)) yPct = 50
-    const pos = clampSticker(pctPx(xPct, 1920), pctPx(yPct, 1080) + yOff)
+    // 位置：百分比 → 画布像素。manual 的锚点是**盒子中心**、auto 的事件 x/y 是**盒子左上角**，
+    // 统一换成左上角再钳进安全区；上浮量在钳制**之后**叠加（出片侧是 GSAP transform，
+    // GPU 侧 timeline.rs 也是"先钳再叠"）。
+    const anc = stickerAnchor(idx, e.ev)
+    const g = stickerGeom(idx)
+    let left = pctPx(anc.x, g.cv.W)
+    let top = pctPx(anc.y, g.cv.H)
+    if (anc.center) { left -= g.s / 2; top -= g.s / 2 }
+    const pos = clampSticker(g, left, top)
     out.push({
       key: e.ev.name || e.ev.keyword || '',
       name: e.ev.name || e.ev.keyword || '',
       src: e.src, isEmoji: e.isEmoji, emoji: e.emoji,
       opacity, scale, rot,
-      x: pos.x, y: pos.y, w: STICKER_W, h: STICKER_H,
+      x: pos.x, y: pos.y + yOff, w: g.s, h: g.s,
     })
   }
   return out

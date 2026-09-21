@@ -131,6 +131,20 @@ export function fmtTime(sec) {
   return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
 }
 
+/**
+ * 大数 → 中文口径（B站的播放/弹幕数就是按这个展示的）。
+ *
+ * 只做"万/亿"两级：B站接口给的是原始整数（如 149494），界面上写全数字读起来很累。
+ * `undefined`/`null` 返回空串（调用方常直接拼进文案，别渲染出 "NaN万"）。
+ */
+export function fmtCount(n) {
+  const v = Number(n)
+  if (!Number.isFinite(v) || v <= 0) return ''
+  if (v >= 100000000) return (v / 100000000).toFixed(1).replace(/\.0$/, '') + '亿'
+  if (v >= 10000) return (v / 10000).toFixed(1).replace(/\.0$/, '') + '万'
+  return String(Math.round(v))
+}
+
 // 事件检测完成（events.json 已生成）的 stage：>= 此值说明预处理结束，可直接进切片页
 export const STAGE_EVENTS_READY = 3
 // 切片阶段跑完（output/clips/clips_order.txt 存在）的 stage
@@ -142,6 +156,22 @@ export const STEPS = [
   { key: 'slices', name: '切片' },
   { key: 'polish', name: '精修' }
 ]
+
+// 设置页的子页（与路由 / 页内标签条 / 面包屑共用）：key 既是路径段也是路由名后缀（settings-<key>）。
+// 顺序 = 标签条顺序；`/settings` 落到第一项。
+export const SETTINGS_SECTIONS = [
+  { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切 / Chrome，写入 .vtrim/config.toml' },
+  { key: 'llm', label: 'LLM 配置', sub: '接口地址、密钥、模型与并发，写入 .vtrim/llm.toml' },
+  { key: 'account', label: '账号与模型', sub: '注册邀请码 与 ASR 模型管理' },
+  { key: 'integrations', label: '系统集成', sub: '录播姬采集 与 B 站链接下载' },
+  { key: 'monitor', label: '用量与日志', sub: 'LLM 用量账本 与 运行日志' }
+]
+
+/** 路由名（settings-llm）或子页 key（llm）→ 子页定义；认不出来时回第一项（程序配置）。 */
+export function settingsSection(nameOrKey) {
+  const key = String(nameOrKey || '').replace(/^settings-/, '')
+  return SETTINGS_SECTIONS.find((s) => s.key === key) || SETTINGS_SECTIONS[0]
+}
 
 /**
  * 由项目状态推导「进度位」与各节点徽标。

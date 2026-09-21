@@ -113,7 +113,8 @@ const isAdmin = computed(() => authState.user?.role === 'admin')
 const current = computed(() => {
   if (route.name === 'workbench') return 'home'
   if (route.name === 'ingest') return 'ingest'
-  if (route.name === 'settings') return 'settings'
+  // 设置页拆成了子页（settings-config / settings-llm…）：认 meta 标记，别写死路由名
+  if (route.meta?.settings) return 'settings'
   return 'project'
 })
 const viewingStep = computed(() => (route.name?.startsWith('project-') ? String(route.name).split('-')[1] : ''))
