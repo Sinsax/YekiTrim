@@ -318,7 +318,7 @@ pub(super) fn latest_numbered_file(dir: &std::path::Path, stem: &str, ext: &str)
             }
             // ⚠️ 用 strip_prefix/strip_suffix，别用算术切片：`cover_.jpg`（前后缀之间为空）
             // 会让 `name.len() - suffix.len() < prefix.len()` → `&name[6..5]` 直接 panic。
-            // release 下 panic 会按 `panic = "abort"` 终止整个 server（不是 500）。
+            // （任务体的 panic 现在会被 `spawn_job` 接住，但那次任务就失败了 —— 这里本来就该不 panic。）
             let Some(mid) = name
                 .strip_prefix(&prefix)
                 .and_then(|rest| rest.strip_suffix(&suffix))
@@ -414,7 +414,7 @@ fn subprocess_note_extracts_written_path() {
 /// `cover_.jpg` 这类"前缀与后缀之间为空"的文件名曾经直接 panic：
 /// 旧写法是 `&name[prefix.len()..name.len()-suffix.len()]`，`cover_.jpg` 时算出 `&name[6..5]`，
 /// `start > end` 越界 panic。HTTP 可达（`/project-data/clips` 一类的扫描路径），
-/// release 下 `panic = "abort"` 会终止整个 server。
+/// HTTP 可达（`/project-data/clips` 一类的扫描路径），当时 release 下还会连带终止整个 server 进程。
 #[test]
 fn latest_numbered_file_ignores_empty_middle() {
     let dir = tempfile::tempdir().unwrap();

@@ -20,10 +20,15 @@ pub fn parse_color(s: &str) -> [u8; 4] {
             return [r, g, b, 255];
         }
         if hex.len() == 3 {
-            let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) * 17;
-            return [r, g, b, 255];
+            // ⚠️ 按**字节**切 `&hex[0..1]` 只在全 ASCII 时安全：`#あ` 是 3 个字节的**一个字符**，
+            // `hex.len() == 3` 通过，但 `[0..1]` 会切在字符边界中间 → panic。
+            // 形状先用 ASCII 挡住，再按字节切。
+            if hex.is_ascii() {
+                let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) * 17;
+                return [r, g, b, 255];
+            }
         }
     }
     match s.to_lowercase().as_str() {

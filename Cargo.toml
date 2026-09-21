@@ -25,4 +25,13 @@ sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+# ⚠️ 刻意**不**设 `panic = "abort"`。
+#
+# 多用户下 abort 会把"一个人的一次 panic"放大成"所有人的任务一起死"：server 是单进程，
+# 渲染 / 转写 / 入库 / 下载全在同一进程里跑，任何一个 unwrap 命中都会带走整个服务
+# （所有在跑的任务、所有 SSE 连接、所有正在下载的会话）。
+#
+# 改成 unwind 之后，`api::spawn_job` 的 `catch_unwind` 兜底才**真正生效**：任务体的 panic
+# 被接住、替它调 `fail()`，Job 走到终态、资源键释放 —— 同项目/同片段的后续任务不会被饿死。
+# 代价是二进制略大，以及 panic 从"响亮的进程崩溃"变成"一个任务失败"；对服务端后者才是对的。
+# 回归：`vtrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。

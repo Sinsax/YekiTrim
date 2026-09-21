@@ -355,7 +355,12 @@ impl RenderServer {
         let port = listener.local_addr()?.port();
         self.port = port;
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            // ⚠️ detached task：`serve` 出错时 `unwrap()` 会直接 panic。
+            // 出片/预览本身由调用方的超时与卡死守卫兜住，这里记一行日志就够 ——
+            // 别让"本地静态服务退出"变成整个任务（历史上是整个进程）的崩溃。
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("本地渲染服务退出: {e}");
+            }
         });
         Ok(port)
     }

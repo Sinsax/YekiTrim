@@ -8,7 +8,7 @@
 `templates/index.html` 逐块（chunk）截帧/逐帧 canvas 绘制 → ffmpeg 编码、混 SFX、合流、按屏蔽区间重编码
 → 统计；`cover.rs` 走同一个 server 的另一条路由出封面。`server.rs` 同时是**预览 HTTP server**（ServeDir 根 = 项目目录，
 `/vt-fonts/:name` 给库内字体一条自己的路由，`@font-face` 注入两个模板）；`chrome.rs` 管浏览器与卡死守卫；
-`ffmpeg.rs` 管编码器探测与全部 ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`runner.rs`/`backend.rs`/`context.rs` 是底层件；
+`ffmpeg.rs` 管编码器探测与全部 ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底层件；
 `native/`（`WgpuBackend`）在 `wgpu-render` feature 下才有，**chrome-render 是默认出片路径**。
 
 ## 入口
@@ -26,8 +26,11 @@
 - `chrome`：`ChromeRenderer`、`launch(size)`、`create_tab(browser, url)`、`wait_for_ready(tab)`、
   `ChromeBackend`、`DEFAULT_STALL_SECS = 180`。
 - `frame`：`extract_chunk_frames`、`split_jpeg_frames`；`gif`：`decode_gif_frames_rgba` / `decode_gif_frames_png`；
-  `sound`：`collect_sound_events(config)` / `sound_file_exists`；`runner`：`RenderRunner::{new, run}`、`extract_frames_to_dir`；
+  `sound`：`collect_sound_events(config)` / `sound_file_exists`；
   `backend::create_backend`；`native::WgpuBackend`（feature `wgpu-render`）。
+  ⚠️ **`runner.rs` 已删除**（2026-09）：它自带一份 `ResolvedPaths` + `RenderRunner`，全仓库零消费者
+  （真正的 `ResolvedPaths`/`resolve_paths` 在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），
+  整模块只有一个 `#[allow(dead_code)]` 撑着。要加回"提帧 runner"先确认有第二条链路需要它。
 
 ## 边界
 

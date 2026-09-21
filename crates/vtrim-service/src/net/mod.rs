@@ -28,7 +28,7 @@ pub fn browser_client() -> reqwest::Client {
         .build()
         .unwrap_or_else(|e| {
             // 建不出来只可能是 TLS 后端起不来这种环境级问题；用默认客户端降级继续，
-            // 让业务层拿到"请求失败"而不是在构造点 panic（release 是 panic=abort）。
+            // 让业务层拿到"请求失败"而不是在构造点 panic（构造点没有兜底，panic 会连累调用它的任务/请求）。
             tracing::warn!("构造 HTTP 客户端失败（降级为默认客户端）: {e}");
             reqwest::Client::new()
         })

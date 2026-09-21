@@ -160,7 +160,7 @@ impl SpriteRenderer {
         w: u32,
         h: u32,
     ) -> (wgpu::TextureView, u32, u32) {
-        let mut cache = self.texture_cache.lock().expect("sprite texture cache");
+        let mut cache = self.texture_cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.len() >= TEXTURE_CACHE_CAP {
             cache.clear();
         }
@@ -178,12 +178,12 @@ impl SpriteRenderer {
     }
 
     fn get_texture(&self, key: u64) -> Option<(wgpu::TextureView, u32, u32)> {
-        let cache = self.texture_cache.lock().expect("sprite texture cache");
+        let cache = self.texture_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.get(&key).map(|c| (c.view.clone(), c.width, c.height))
     }
 
     fn texture_size(&self, key: u64) -> Option<(u32, u32)> {
-        let cache = self.texture_cache.lock().expect("sprite texture cache");
+        let cache = self.texture_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.get(&key).map(|c| (c.width, c.height))
     }
 

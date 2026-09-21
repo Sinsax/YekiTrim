@@ -394,7 +394,7 @@ impl Agent {
         let mut set: JoinSet<(usize, Result<O>)> = JoinSet::new();
 
         let completed_initial = {
-            let guard = windows.lock().unwrap();
+            let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
             guard.iter().filter(|w| w.output.is_some()).count()
         };
 
@@ -409,7 +409,7 @@ impl Agent {
 
         // 收集需要处理的窗口索引（已完成的不 spawn）
         let pending: Vec<usize> = {
-            let guard = windows.lock().unwrap();
+            let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
             guard
                 .iter()
                 .enumerate()
@@ -434,8 +434,13 @@ impl Agent {
             set.spawn(async move {
                 let _permit = sem.acquire().await.expect("Semaphore 仅在本函数内使用");
                 let (all_items, window) = {
-                    let guard = windows.lock().unwrap();
-                    let window = guard[idx].clone();
+                    let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
+                    // 用 `get` 而不是 `guard[idx]`：idx 出自同一把锁下的 pending 列表、
+                    // 且 windows 不会被裁剪，所以越界"不该发生"—— 但真发生时该是**一次窗口失败**，
+                    // 不是一个 panic（panic 会毒化这把锁，把整批窗口一起带走）。
+                    let Some(window) = guard.get(idx).cloned() else {
+                        return (idx, Err(anyhow::anyhow!("窗口下标越界: {idx}")));
+                    };
                     let all_items: Vec<AgentItem> = guard
                         .iter()
                         .flat_map(|w| w.items.iter().cloned())
@@ -460,7 +465,7 @@ impl Agent {
             match joined {
                 Ok((idx, Ok(output))) => {
                     {
-                        let mut guard = windows.lock().unwrap();
+                        let mut guard = windows.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(w) = guard.get_mut(idx) {
                             w.output = Some(output);
                         }
@@ -468,13 +473,13 @@ impl Agent {
                     completed_count += 1;
                     pb.inc(1);
                     tracing::info!("窗口 {} 完成", {
-                        let guard = windows.lock().unwrap();
-                        guard[idx].id.clone()
+                        let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.get(idx).map(|w| w.id.clone()).unwrap_or_else(|| format!("#{idx}"))
                     });
 
                     let output = {
-                        let guard = windows.lock().unwrap();
-                        guard[idx].output.clone()
+                        let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.get(idx).and_then(|w| w.output.clone())
                     };
                     if let Some(tx) = &progress_tx {
                         let _ = tx.send(AgentProgress {
@@ -491,8 +496,8 @@ impl Agent {
                 Ok((idx, Err(e))) => {
                     pb.inc(1);
                     tracing::warn!("窗口 {} 失败: {e:#}", {
-                        let guard = windows.lock().unwrap();
-                        guard[idx].id.clone()
+                        let guard = windows.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.get(idx).map(|w| w.id.clone()).unwrap_or_else(|| format!("#{idx}"))
                     });
                     last_err = Some(e);
                 }
@@ -517,7 +522,9 @@ impl Agent {
 
         let final_windows = match Arc::try_unwrap(windows) {
             Ok(mutex) => mutex.into_inner().unwrap_or_else(|p| p.into_inner()),
-            Err(arc) => arc.lock().unwrap().clone(),
+            // 锁中毒也要能取回数据（与 persist.rs / logbus.rs 同口径）：
+            // `unwrap()` 会让"一次窗口任务 panic"升级成"之后每一次加锁都 panic"。
+            Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
 
         // 失败窗口保留 output None，由调用方决定兜底策略

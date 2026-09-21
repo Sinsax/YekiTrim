@@ -39,6 +39,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
+use futures_util::FutureExt;
+
 use vtrim_service::bilibili;
 use vtrim_service::db::IngestSessionRow;
 use vtrim_service::downloader::registry;
@@ -76,6 +78,51 @@ fn active() -> &'static Mutex<HashMap<String, Instant>> {
 
 fn active_count() -> usize {
     active().lock().map(|m| m.len()).unwrap_or(0)
+}
+
+/// panic 载荷 → 一行可读文本（与 `api::spawn_job` 同一口径）。
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "载荷不是字符串".into())
+}
+
+/// 跑一段 worker 任务体并**接住 panic**：返回 `(正常结果, panic 文本)`。
+///
+/// 为什么必须有这一层：这个 worker 是**单例**（`channel()` 只让启动一次），它的循环就是一个
+/// tokio task —— 任务体 panic 会把整个循环 future 掀掉，**从此再没有任何东西消费下载队列**
+/// （要重启 server 才恢复）。而且任务体创建的 Job 会永远停在 `Running`、占着
+/// `dl:<session>` 资源键，让重新排队的那个会话永远排在它后面。
+async fn catch_panic<F, X>(fut: F) -> (Option<Result<X>>, Option<String>)
+where
+    F: std::future::Future<Output = Result<X>>,
+{
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(v) => (Some(v), None),
+        Err(payload) => (None, Some(panic_text(&payload))),
+    }
+}
+
+/// 替"因 panic 而停摆"的下载任务收尾（按资源键找出停在 `running` 的那个）。
+async fn fail_stuck_download_job(state: &Arc<AppState>, session_id: &str, msg: &str) {
+    let key = crate::scope_key::download_key(session_id);
+    let stuck: Vec<String> = state
+        .jobs
+        .list()
+        .await
+        .into_iter()
+        .filter(|j| j.status == "running" && j.resources.iter().any(|r| r == &key))
+        .map(|j| j.id)
+        .collect();
+    for id in stuck {
+        tracing::error!("下载任务 panic，替它收尾（job={id} session={session_id}）：{msg}");
+        state
+            .jobs
+            .fail(&id, format!("下载任务内部错误（panic）: {msg}"))
+            .await;
+    }
 }
 
 /// RAII：任务结束（**含 panic 与提前 `?` 返回**）时把会话从活跃表里摘掉。
@@ -119,12 +166,19 @@ pub fn start(state: Arc<AppState>) {
                 msg = rx.recv() => {
                     match msg {
                         Some(Some(id)) => {
-                            if let Err(e) = kick_one(&state, &id).await {
+                            let (res, panicked) = catch_panic(kick_one(&state, &id)).await;
+                            if let Some(msg) = panicked {
+                                tracing::error!("下载 worker 任务 panic（session={id}）：{msg}");
+                                fail_stuck_download_job(&state, &id, &msg).await;
+                            } else if let Some(Err(e)) = res {
                                 tracing::warn!("下载启动失败 session={id}: {e:#}");
                             }
                         }
                         Some(None) => {
-                            if let Err(e) = tick(&state).await {
+                            let (res, panicked) = catch_panic(tick(&state)).await;
+                            if let Some(msg) = panicked {
+                                tracing::error!("下载队列扫描 panic：{msg}");
+                            } else if let Some(Err(e)) = res {
                                 tracing::warn!("下载队列扫描失败: {e:#}");
                             }
                         }
@@ -132,7 +186,10 @@ pub fn start(state: Arc<AppState>) {
                     }
                 }
                 _ = ticker.tick() => {
-                    if let Err(e) = tick(&state).await {
+                    let (res, panicked) = catch_panic(tick(&state)).await;
+                    if let Some(msg) = panicked {
+                        tracing::error!("下载队列周期扫描 panic：{msg}");
+                    } else if let Some(Err(e)) = res {
                         tracing::warn!("下载队列周期扫描失败: {e:#}");
                     }
                 }
@@ -725,6 +782,69 @@ pub fn estimate_bytes(duration_secs: Option<f64>, max_quality: &str) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// panic 载荷的两种标准形态都要能读出来（第三行是"不是字符串"的兜底）。
+    #[test]
+    fn panic_text_reads_str_and_string_payloads() {
+        let borrowed: &str = "boom";
+        assert_eq!(panic_text(&borrowed as &(dyn std::any::Any + Send)), "boom");
+        let owned = String::from("boom2");
+        assert_eq!(panic_text(&owned as &(dyn std::any::Any + Send)), "boom2");
+        assert_eq!(
+            panic_text(&42u8 as &(dyn std::any::Any + Send)),
+            "载荷不是字符串"
+        );
+    }
+
+    /// panic 路径的收尾：停在 `running` 的下载任务必须被标失败并**释放 `dl:<session>` 键**。
+    ///
+    /// 不释放的后果很具体：`tick` 的僵尸回收会把会话打回 `queued`，但重试新建的任务
+    /// 会撞上那把仍然被占着的资源键 —— 于是永远排队，而队列里只有一个"运行中"的任务什么都查不出来。
+    /// 回归钉子对应 `start()` 里的 `catch_panic` + [`fail_stuck_download_job`]。
+    #[tokio::test]
+    async fn fail_stuck_download_job_releases_the_key() {
+        use crate::api::test_support::test_app;
+        let t = test_app().await;
+        let session = "bili-sess-1";
+        let key = crate::scope_key::download_key(session);
+
+        let job = t
+            .state
+            .jobs
+            .create(
+                1,
+                JobSpec::new("download_bilibili", "下载 测试", vec![key.clone()], JobClass::Medium),
+            )
+            .await;
+        assert!(
+            t.state.jobs.busy_with(&[key.clone()]).await.is_some(),
+            "刚创建的任务应当占着 dl:<session> 键"
+        );
+
+        // 另一个会话的任务不该被误伤（收尾是按资源键精确匹配的）
+        let other_key = crate::scope_key::download_key("bili-sess-2");
+        let other = t
+            .state
+            .jobs
+            .create(
+                1,
+                JobSpec::new("download_bilibili", "下载 别的", vec![other_key.clone()], JobClass::Medium),
+            )
+            .await;
+
+        fail_stuck_download_job(&t.state, session, "boom").await;
+
+        assert_eq!(t.state.jobs.get(&job.id).await.unwrap().status, "failed");
+        assert!(
+            t.state.jobs.busy_with(&[key]).await.is_none(),
+            "收尾后资源键必须释放，否则重试的下载永远排队"
+        );
+        assert!(
+            t.state.jobs.busy_with(&[other_key]).await.is_some(),
+            "别的会话的任务不该被误伤"
+        );
+        assert_eq!(t.state.jobs.get(&other.id).await.unwrap().status, "running");
+    }
 
     fn page(index: u32, part: &str, cid: i64) -> bilibili::BvPage {
         bilibili::BvPage {

@@ -169,7 +169,9 @@ impl Gpu {
         let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
         let buffer_size = padded_bytes_per_row * self.height as u64;
 
-        let buffer = if let Some(buf) = self.readback_pool.lock().expect("readback pool").pop() {
+        // 锁中毒也要取回缓冲池（与 persist.rs / logbus.rs 同口径）：`expect` 会让上一次
+        // 崩溃残留把它变成"之后每次回读都 panic"。
+        let buffer = if let Some(buf) = self.readback_pool.lock().unwrap_or_else(|e| e.into_inner()).pop() {
             buf
         } else {
             self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -225,7 +227,7 @@ impl Gpu {
         }
         drop(data);
         buffer.unmap();
-        self.readback_pool.lock().expect("readback pool").push(buffer);
+        self.readback_pool.lock().unwrap_or_else(|e| e.into_inner()).push(buffer);
         Ok(rgba)
     }
 }

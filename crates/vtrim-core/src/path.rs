@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 /// 程序所在目录：`.vtrim/`（配置、模型、server.toml）与 `stickers/` 的父目录。
 ///
 /// 取不到可执行文件路径时回退当前工作目录。这两个函数在 HTTP handler 里被频繁调用，
-/// 而 release 构建是 `panic = "abort"`——任何 panic 都会直接终止整个 server 进程，
+/// 一旦 panic 会连累整条调用链（任务体的 panic 由 `spawn_job` 兜住、但那次任务就失败了），
 /// 所以这里绝不 `expect`。
 fn exe_dir() -> PathBuf {
     std::env::current_exe()

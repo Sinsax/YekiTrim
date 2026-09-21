@@ -150,7 +150,12 @@ impl AgentTask<Vec<AgentOutput>> for CorrectTask {
 
     fn user_prompt(&self, global: &str, window_context: &str, window: &[AgentItem]) -> String {
         let user_prompt = effective_user_prompt(&self.correct);
-        let seg_json = items_to_json(window).expect("序列化失败");
+        // 这里以前是 `.expect("序列化失败")`：一个窗口的序列化失败会直接 panic 掉整条订正任务。
+        // 退化成空数组即可 —— prompt 少一段窗口上下文，比整个任务失败好。
+        let seg_json = items_to_json(window).unwrap_or_else(|e| {
+            tracing::warn!("订正窗口序列化失败（退化为空数组）: {e:#}");
+            serde_json::Value::Array(Vec::new())
+        });
         let seg_text = serde_json::to_string_pretty(&seg_json).unwrap_or_default();
         let combined_context = format!("{}{}", global, window_context);
 
