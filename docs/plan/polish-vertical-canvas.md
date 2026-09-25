@@ -1,7 +1,8 @@
 # 精修：画面构成（位置/背景）增强 + 竖屏 9:16 画布编辑与导出
 
-> 日期：2026-09-19 · 状态：**已定稿，待实施**（决策点已全部确认，见第十节）
-> 本轮变更：决策落定 + **修正了初版一处判断错误**（特效作用域，见 §1.3）
+> 日期：2026-09-19（末次更新 **2026-09-21**）· 状态：**P0–P3 已落地并验证，P4 部分落地**（阶段表见第六节）
+> 本轮变更：竖素材出片的**画面摆放 + 运镜门控**修复 —— 用户报告「横屏导出时竖屏素材被拉伸成宽屏，
+> 而不是竖屏素材 + 模糊的关键帧」「竖屏素材没有禁用运镜，横屏竖屏导出都一样」（见文末 2026-09-21 节）
 > 范围：`vtrim-polish` + `vtrim-server` + `webui`（**仅 Chrome 出片路径**，wgpu 不修）
 
 ## 需求（两部分）
@@ -184,6 +185,9 @@ position = "50% 50%"
 - **保留 `index.html:714` 与 `:718`**（竖屏 `curZoom=1.0` + 跳过运镜事件）。
 - 依据见 §1.3 实测表：其余特效的作用对象本来就是正确的，无需改作用域。
 - **`engine.js` 同步**：删掉对应的 `VIS` 屏蔽分支（`engine.js` 里同名逻辑）。
+- 📌 **出片（canvas）侧的运镜门在 `getActiveCamera` 函数开头**（`CFG.vertical` → 整条返回
+  `zoom=1 / handheld=0`，与 `engine.js::cameraAt:310` 逐值同口径）。`.portrait` 布局在 P1 删除后，
+  这套门控一度只在 DOM 侧完整 —— 循环末尾归零 `handheld` 挡不住 `zoom`，成片仍在缩放（见文末 2026-09-21）。
 - 📌 若日后想让「竖画布 + 竖素材」（主画面正好铺满画布）也能运镜，
   只需把屏蔽判据从「源素材竖屏」改成「主画面未铺满画布」——**一行判据**，本计划按已定决策不做。
 
@@ -364,7 +368,7 @@ position = "50% 50%"
 | **P1** | Part A 画面构成：位置 left/center/right + 背景 black/blur/color + `scale` + 「画面构成」UI 分组 | 低 | **✅ 已完成** |
 | **P2** | A3 特效解禁（删 `VIS` 块，两处同步）+ A4 贴纸 auto/manual（含 placement 主画面障碍）+ 删竖屏贴纸强制覆盖 | 中 | **✅ 已完成** |
 | **P3** | Part B 画布参数化：模板 + chrome + placement + 前端舞台 + `canvas.js` + **A5 字幕限宽折行（canvas 与两处 DOM 预览共用 `wrapCaptionParts`）** + 画布方向开关进 UI | 高（常量面最大，靠 grep 验收） | **✅ 已完成** |
-| **P4** | Part B 收尾：竖画布×横素材对称适配 + 导出摘要 + 画布变更提示重跑 process | 中 | 待做（~~P2 遗留：`main_frame_rect` 坐标系守卫~~ 已在 P3 放开；~~封面"固定 1920×1080"提示~~ 封面恒横版，无需提示） |
+| **P4** | Part B 收尾：竖画布×横素材对称适配 + 导出摘要 + 画布变更提示重跑 process | 中 | **部分**（2026-09-21：canvas 出片路径的**视频层摆位 + 运镜门控**已落地并逐帧实证，见文末；导出摘要 / 画布变更提示仍未做。~~P2 遗留：`main_frame_rect` 坐标系守卫~~ 已在 P3 放开；~~封面"固定 1920×1080"提示~~ 封面恒横版，无需提示） |
 | **P5** | 一致性测试 + 冒烟矩阵 | — | 部分（模板消费面钉子已进 `canvas_stage_tests`；**竖屏"衬底"另有 Node 契约 + 真实像素 A/B**，见下） |
 
 ### 已落地清单（P0 + P1，仅记录事实）
@@ -550,6 +554,8 @@ position = "50% 50%"
     这类错**不报错、不崩溃**，只有逐帧像素能发现。新增任何"底色/衬底"类字段都要问一句：
     **出片路径谁画？**（钉子在 §九.7 与 `template_stage_hooks_match_contract` 的
     "先于视频层绘制"断言。）
+    **摆放与运镜同理**：`_canvas.stage` 与 `CFG.vertical` 只消费在 DOM/CSS 上 = 成片与预览静默分叉
+    —— 2026-09-21 的「竖素材被拉成宽屏 + 运镜没禁」就是这一条的两次（见 §九.8 与文末）。
 14. **预览模糊半径 ≠ 出片模糊半径（已知偏差，未修）**：`blur_px` 是**画布 px**（出片直接用它），
     DOM 预览把它当**布局 px**（`.stage` / `#player` 被 CSS 缩到视口大小），
     所以预览看起来比成片更糊（差一个 `显示宽 / 画布宽` 的系数）。要收敛就在预览侧乘 `overlayScale`，
@@ -585,6 +591,18 @@ position = "50% 50%"
    - 模板契约：`template_stage_hooks_match_contract` 断言出片 canvas 路径有背景层消费面
      （`drawStageBackdrop` / `stageCoverRect` / `STAGE_BG`）且**先于视频层绘制**；
    - 像素实证：真实项目出片后在 `shake` 帧上取四角像素，断言**不是纯黑**（`blur` 底色）。
+8. 竖素材"被拉成宽屏 + 运镜没禁"专项（2026-09-21 用户报告，见文末）：
+   - 模板契约：`check-stage-backdrop.mjs` 的 ③c 段 —— **独立复刻** `stageDrawRect` 求期望矩形，
+     覆盖 `fill`/`x`/`y` 三支 + `position` 三档 + `padding` + `scale`，其中
+     **「`axis=fill` + 无 padding + 比例相同 → 必须精确等于整块画布」是存量零回归的判据**；
+     外加「改回拉伸」「去掉 CTM 摆位」两处变异自证。`check-handheld.mjs` 钉竖素材
+     `zoom=1 / handheld=0`（与 `engine.js::cameraAt` 同口径）。
+   - 像素实证：`VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`
+     —— 真模板 + **三段变异**（硬铺满 / `if(false)` 去运镜门 / `STAGE_BG='none'`），逐帧读白描边 bbox
+     （= 内容框）、亮绿块 bbox 与占比、框外亮度与纯黑占比、逐帧占比稳定性。
+   - 真出片 A/B（release 二进制，各 3 个探针工程）：**横素材×横画布 前后 SHA-256 完全相同**
+     （`815F331C…6ED1`，12,530,137 B）—— 逐字节零回归；竖素材两向的绿块占比
+     52.0% → 7.92%（横画布）/ 52.6% → 24.91%（竖画布，= 1.34² 等比）。
 
 ---
 
@@ -606,6 +624,7 @@ position = "50% 50%"
 | 11 | 固定落点的交互（2026-09-20 用户要求） | **草稿态**：进「固定」= 进编辑态，点预览只写草稿，必须「保存落点」才落盘（「取消」丢弃；保存**成功**才退出编辑态）；切回「自动」丢草稿；与框选互斥；切片段清草稿。**不再是**常驻点选态、也不再只有数字输入 + 九宫格 |
 | 12 | 设计器素材左右黑边（2026-09-20 用户报告） | **不是 contain、不是出片几何问题**：`app.css` 的全局 `video { background:#000; border-radius:var(--r-sm) }` 穿透到 `.stage-video`，填满 contain 让出的留白并盖住 `.stage-bg`。修法 = `.stage-video` 显式 `background:transparent; border-radius:0`（**必需覆盖**，见 §B4），钉子 `check-cover-stage.mjs` |
 | 13 | 竖屏出片露黑边（2026-09-20 用户报告：震动等特效露出黑色） | 两个叠加成因：① `resolve_stage` 在 `axis=fill` 时**强制 `bg=none`**，把用户选的"模糊"吞掉 → 门控改为**画布方向**（`axis=="fill" && !portrait`），横画布铺满保持 `none`（零回归）；② 出片是 canvas `renderFrame` 逐帧绘制，**DOM 的 `#bg-video-wrap` 完全不参与导出**，`clearRect` 之后的透明区落进 JPEG 就是纯黑 → 在 `renderFrame` 里补 canvas 侧背景层（`black`/`color` 铺色；`blur` 用同一帧 bitmap 按 cover 铺满 + 模糊 + 放大 `blur_img_scale`），并断言它**画在视频层之前**。`bg_mode=auto` 语义不变；`bg=none` 保持"不画"（透明 = 黑，与改造前逐字节一致） |
+| 14 | 竖素材出片被拉伸 + 运镜没禁（2026-09-21 用户报告） | **同一类成因的第三次**（出片走 canvas、不读 DOM），两条修法：① 视频层摆位搬进 canvas 路径 —— 新增顶层 `stageDrawRect(bw,bh,cw,ch,st)` 求画面矩形，`axis/position/scale/padding` 逐值对齐 CSS（`scale` 绕内容框盒心、`padding` 只改布局盒不裁剪），经 CTM 送入矩形，`drawImage` 的 dst **保持 `(0,0,CW,CH)` 字面量**（既有顺序钉子与两处变异锚在它上面）；`axis=fill` + 无 padding + 比例相同 → 精确 `(0,0,CW,CH)` = 横屏存量零回归。② 运镜门提到 `getActiveCamera` 开头（`CFG.vertical` 整条返回 `zoom=1/handheld=0`），**判据是源视频竖、与画布方向无关**；`vtrim-render-core::evaluate_frame` 只归零 handheld（wgpu 路径，不在 Chrome 出片链路上），**不跟着改**。`contain` + 模糊关键帧当底的观感由 `bg_mode` 决定，本修法不动 `resolve_stage` |
 
 **剩余开放项**（不阻塞 P0–P2，可实施中再定）
 - ~~`manual` 点在编辑器里的交互形态：先数字输入 + 九宫格快选，**拖拽放置列为后续增强**。~~
@@ -654,6 +673,9 @@ position = "50% 50%"
 | 真实像素 A/B | `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture` | 同帧同角、A/B 各 30 帧：**真模板最暗角 73.9**（模糊衬底）/ 变异体（`STAGE_BG` 变异常量成 `none`）**最暗角 0.0**；逐帧差最小 67.8、平均 72.2。探针工程每帧都带字幕 + 弹幕 + 一串瞬时特效（见下条 `fs` 崩溃） |
 | 工程形态 | — | 画布 1080×1920（portrait）× 源 720×1280、`axis=x / position=center / bg=blur / 28px×1.187`（= 用户那个竖屏工程） |
 
+> 注：上表是**当轮**计数。脚本此后有扩充（③b 裸变量 / ③c 视频层摆位 + 更多变异），
+> 最新计数与新一轮实证见文末「2026-09-21」。
+
 **踩坑记录（写测试时）**：探针里 Chrome 抓帧是同步的，而页面要访问的 HTTP server 跑在同一个 tokio
 runtime 上 —— 直接在 `await` 里同步跑会把 runtime 线程占死、server 不回包，报一个与根因无关的
 `The event waited for never came`。必须 `spawn_blocking`（生产路径同理，见 AGENTS.md 的
@@ -695,3 +717,79 @@ Error: Chunk: Render error: fs is not defined   job=0000-150630 kind=polish_rend
 - 画面尺寸（横屏/竖屏）开关进「画面构成」页签，写 [canvas] orientation（patchCanvas 与
   patchStage 同一提交链）；位置选项方向随画布联动（左中右 ↔ 上中下）。预览/出片尺寸
   参数化仍属 P3，UI 提示已写明。
+
+### 竖素材出片的摆放 + 运镜（决策 14）—— 2026-09-21
+
+用户原话：
+
+> 对于竖屏的导出没有正常实现，具体为横屏时的效果显示为竖屏素材被拉伸成宽屏，而不是竖屏素材+模糊的
+> 关键帧。而且对于竖屏素材没有禁用运镜，即使是横屏导出还是竖屏导出
+
+**根因：两条都在同一条路径上** —— 出片走 canvas `renderFrame` 逐帧绘制、**不读 DOM**，而画布契约
+（`_canvas.stage` 的摆放）与竖素材标记（`CFG.vertical` 的运镜门控）此前**只被 DOM/CSS 消费**：
+
+1. 视频层是 `ctx.drawImage(videoBitmap, 0, 0, CW, CH)` —— **硬铺满整块画布**。竖素材进横画布
+   （`axis=x`、720×1280 → 1920×1080）被横向拉成宽屏；预览侧 CSS 走 `contain`，所以**预览完全正常**。
+2. `getActiveCamera` 只在循环末尾 `handheld: CFG.vertical ? 0.0 : handheld` —— **`zoom` 没被吃掉**：
+   预览侧 `engine.js::cameraAt:310` 早就整条返回了，于是"预览不动、成片在缩放"。
+
+两条都**不报错、不崩溃**（与决策 13 的衬底同一类），只有逐帧像素能发现。
+
+**实现**（`crates/vtrim-polish/templates/index.html`，CRLF 保持；模板内仍不许出现子串 `portrait`）：
+
+| 改动 | 内容 |
+|---|---|
+| 新增顶层 `stageDrawRect(bw,bh,cw,ch,st)` | 画面矩形 = `axis/position/scale/padding` → 画布矩形。`axis=x` 按高度等比 + `position` 左/中/右，`axis=y` 按宽度等比 + 上/中/下（等比溢出时按 contain 截住 = CSS `max-width/height:100%`），`fill` = cover 居中；`padding` 只改布局盒、`scale` 绕**盒心** |
+| `renderFrame` 视频层 | `var sr = stageDrawRect(...)`；运镜不动点按 `sr` 映射（`sr.x + cam.ox/CW*sr.w`）；在 `drawImage` 之前 `ctx.translate(sr.x, sr.y); ctx.scale(sr.w/CW, sr.h/CH);` —— dst **仍是 `(0,0,CW,CH)` 字面量** |
+| `getActiveCamera` 开头 | `if (CFG.vertical) return { zoom: 1.0, ox:…, oy:…, handheld: 0.0 }`（与 `engine.js::cameraAt` 同口径）；循环末尾那句 `CFG.vertical ? 0.0 : handheld` 随之删掉 |
+
+`resolve_stage` / `canvas_contract` / `engine.js` / `PolishPreview.vue` **一行未动** —— 缺陷只在
+"出片这一步没消费契约"。
+
+**验证**（三套探针工程：竖素材×横画布 / 竖素材×竖画布 / 横素材×横画布。自造 720×1280 探针源 =
+整帧品红 + 最外圈 6px 白描边 + 正中央 360×640 亮绿块，均带三条字幕 + 一条整段 `camera zoom=近`；
+release 二进制的 `before` / `after` 各跑一遍）：
+
+| 项 | 结果 |
+|---|---|
+| 存量零回归 | 横素材×横画布 **前后 SHA-256 完全相同**（`815F331C…6ED1`，12,530,137 B） |
+| 竖素材 × 横画布 | 修复前：绿块 **52.0%** + 白描边被推出画布（拉伸 + 运镜）；修复后：内容框 `x0 y0 608×1080`、绿块 **7.92%**（= 内容框面积 × 25%）、框外是模糊衬底、逐帧全稳 |
+| 竖素材 × 竖画布 | 修复前 **52.6%**；修复后内容框铺满 1080×1920、绿块 **24.91%**（= 1.34² 等比） |
+| 字幕出片 | 成片在下半屏取字幕色像素：修复后 `t=1.5 / 4.5 / 7.0` = 25856 / 35925 / 33963（`t=0.2` 无字幕时 = 1）—— 折行 + 绘制没被摆位改动打破 |
+| 契约钉子 | `check-stage-backdrop.mjs` **73 项**（新增 ③c 段几何 + 「改回拉伸」「去掉 CTM 摆位」两处变异）/ `check-handheld.mjs` **63 项**（竖素材 `zoom` + `handheld` 归零 + 变异自证）/ `check-overlay` · `check-caption-wrap` · `check-sticker-anchor` 全过 |
+| Rust 钉子 | `project::config::template_stage_hooks_match_contract` 新增三条消费面 needle + 两条顺序断言（摆放矩形在衬底之后、`drawImage` 之前）；`cargo test -p vtrim-polish --lib` 179 全绿，`cargo check --workspace --all-targets` 0 warning |
+| 像素探针（新） | `VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`：真模板 18 帧全过（内容框 608×1080、纵横比 0.5630、绿块 7.87%、框外亮度 74.5 / 纯黑 0.00%），**三段变异全部翻面** —— 硬铺满 → 内容框 1920×1080 + 绿块 24.90%；`if(false)` 去运镜门 → 绿块 16.76%；`STAGE_BG='none'` → 框外纯黑 96.0% |
+
+⚠️ 「硬铺满」变异体在真模板的运镜门加持下会把画面整个推出画布（白描边不可见），所以判据写成
+「内容框变宽 **或** 白描边消失」+ 绿块 > 1.5× 期望 —— 这正是改造前那版二进制的实测形态
+（`无白像素 + 绿块 52%`）。探针的期望矩形是**独立复刻**（Rust 侧再写一遍 `stageDrawRect`），
+不读模板函数，避免自证。
+
+#### 连带发现：既有的 `portrait_backdrop` 探针原来靠"被修掉的缺陷"在露底
+
+同一轮把决策 13 的像素探针 `crates/vtrim-polish/tests/portrait_backdrop.rs` 重跑，**发现它几乎哑了**：
+30 帧里只剩 1 帧（`t=1.13s`）真让出衬底，其余帧四角都是主画面自己盖住的 —— A/B 比的是同一份像素，
+差值天然 ≈ 0，判据 `AB_DELTA_MIN_LUMA=40` 于是在 `t=1.00s`（差 36.7）报红。
+
+根因：探针工程的"画中画"当初是用 `[[segments.events]] type="camera" zoom="远"`（`zoom_wide=0.55`）
+做的 —— 而**竖素材的运镜正是本轮被门控吃掉的那条**。2026-09-20 那轮"30 帧全部露底（逐帧差最小 67.8、
+平均 72.2）"是**靠这个 bug 撑出来的**：运镜把画面缩成 0.55，四周才露出衬底。
+
+处置（两处，**阈值一个没动**）：
+
+| 面 | 改法 |
+|---|---|
+| 判据 | `AB_DELTA_MIN_LUMA` 仍 40，但只断在**真露底帧**上（变异体最暗角 ≤ 12，新常数 `EXPOSED_BACKDROP_MAX_LUMA`），另加一条「窗口里至少有一帧真露底」—— 否则报"探针在空转，把 `T` 挪到主画面真被推出画布的时刻"。四角被画面盖住的帧没有判据意义 |
+| 探针工程 | 画中画改由 `[stage] scale = 0.55` 做（**结构性**露底、与运镜无关）；camera 事件留着跑那条被门控的代码路径 |
+
+阈值 12 与判据 ① 是配套的：① 要求真模板四角 > 20，而四角被盖住的帧里 A/B 是同一份像素 → 变异体
+那角也 ≳ 20（> 12）→ 被跳过；反过来只有真缺衬底的角才会掉到 12 以下。`noise` 这类全屏覆盖层把缺衬底
+的角抬到 13~21 的帧同样被跳过 —— 它们不提供证据，也不需要。
+
+重跑（新工程）：30 帧全过、**20/30 帧真露底**、这些帧差值最小 **71.1**；把 10 个被覆盖层抬亮的帧也算
+进来则逐帧差最小 **67.8**、平均 **72.2** —— 与 2026-09-20 那轮记录**逐项一致**（`scale=0.55` 与
+`zoom_wide=0.55` 是同一个取景），说明现在这份数字不再依赖任何被修掉的缺陷。收窄后的判据先在旧工程上
+实跑过一次（1/30 帧露底 → 通过），两条路径都有实测。
+
+⚠️ 过程纪律：验证用 `target/release` + 沙箱副本（用户 dev 实例占着 `target/debug`），
+探针素材/工程/脚本一律在 `.workbuddy/perf/vertical/`（已 gitignore），**不碰线上数据目录**。

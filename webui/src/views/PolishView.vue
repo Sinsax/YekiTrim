@@ -1435,6 +1435,15 @@ onUnmounted(() => {
 .props-host { position:relative; flex:none; width:232px; min-width:0; }
 .props-host :deep(.props-panel) { position:absolute; inset:0; width:auto; }
 .stage-col { flex:1; min-width:0; }
+/* 「区域与落点」的四颗取坐标按钮（人物 / 弹幕 / 固定 / 改落点）必须同一行：
+   右栏是定宽 300px 的 grid 轨道，卡片 1px 边框 + 16px 内边距 → 行内容宽 266px；
+   `.mini-btn` 默认 `padding:4px 11px` 时四颗最小宽度合计 282px（11px 图标 + 4px 内间距 +
+   汉字 12px/字），必然折成 3+1（第四颗单独占满一行）。本行单独收窄到 4px 8px + gap 4px
+   → 合计 252px、余量 14px。四颗仍是行内 `flex:1`，会均分整行，肉眼观感不受影响
+   （同 CoverDesigner.vue 的 `.preset-row .mini-btn`）。宽度是按 `getBoundingClientRect`
+   在真实 dist 样式下实测的，改这行之前先重测。 */
+.region-row { gap: 4px; }
+.region-row .mini-btn { padding: 4px 8px; }
 .frag-strip { padding:8px 10px; }
 .frag-strip-row { display:flex; gap:8px; align-items:flex-start; }
 .frag-strip-row :deep(.frag-cards) { flex:1; min-width:0; }

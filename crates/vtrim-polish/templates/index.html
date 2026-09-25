@@ -1401,6 +1401,13 @@ function init(){
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
     var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
 
+    // 竖视频素材不做运镜 —— **与画布方向无关**（用户报的就是"竖素材进横画布导出还在缩放"）。
+    // 与 engine.js `cameraAt` 逐值同口径：zoom 一并归零，不只是 handheld；不动点仍按
+    // `layout.liver` 的 origin 给（zoom=1 时用不到，纯为三条 JS 路径同值）。
+    // ⚠️ vtrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
+    // 既有实现（不在 Chrome 出片链路上），两边口径的差异记在这里，别照抄回去。
+    if (CFG.vertical) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
+
     var wide = camFactor('远');
     for (var i = 0; i < cam.length; i++) {
       var c = cam[i];
@@ -1428,9 +1435,9 @@ function init(){
       ox = lerp(ax, bx, p);
       oy = lerp(ay, by, p);
     }
-    // 竖屏（源素材竖）不做运镜 —— 手持摇摆是叠加在运镜上的状态，跟着一起屏蔽
-    // （与 render-core `evaluate_frame`、engine.js `cameraAt`、DOM 预览层同一口径）
-    return { zoom: zoom, ox: ox * CW / 100, oy: oy * CH / 100, handheld: CFG.vertical ? 0.0 : handheld };
+    // 竖素材已在函数开头整条返回（zoom 与 handheld 一起归零），走到这里的 handheld 必然是
+    // 运镜状态机上的持续项（开了就跟到下一条不带 handheld 的运镜），直接交出。
+    return { zoom: zoom, ox: ox * CW / 100, oy: oy * CH / 100, handheld: handheld };
   }
 
   // DOM/GSAP 预览层（脚本顶层作用域，看不见这个 IIFE）取相机状态：
@@ -1766,6 +1773,46 @@ function init(){
     return {x:(dw-w)/2,y:(dh-h)/2,w:w,h:h};
   }
 
+  // 主画面（视频层）的摆放矩形 —— 与 CSS `#video-wrap` / `#fit-box` / `.axis-*` / `.stage-*`
+  // 逐值同义。**出片走 canvas、不读 DOM**（DOM 那层只服务预览），所以必须在出片路径里自己算：
+  // 不算的话视频层被硬铺满整块画布 —— 竖素材进横画布就表现成"被拉成宽屏"（用户报的现象）。
+  //   axis=fill → 布局盒 = 内容框，再由 cover 裁切（`stageCoverRect` 语义，居中）
+  //   axis=x    → 按高度等比铺满、按 position 左/中/右水平摆（交叉轴居中）
+  //   axis=y    → 按宽度等比铺满、按 position 上/中/下垂直摆（交叉轴居中）
+  // `padding`（画布 px）只改布局盒、不裁剪（CSS 的 overflow:hidden 裁在 padding box 上，一义）；
+  // `scale` 绕盒心放大（与 `#fit-box` 的 `transform-origin:center` 一义）。
+  function stageDrawRect(bw,bh,cw,ch,st){
+    if(!(bw>0)||!(bh>0))return {x:0,y:0,w:cw,h:ch};
+    var pad=st.padding||0;
+    var cap=Math.min(cw,ch)/2-1;         // padding 不许把内容框吃穿（CSS 里会撑成 0 宽）
+    if(pad>cap)pad=cap>0?cap:0;
+    var bx=pad,by=pad,bwid=cw-pad*2,bhgt=ch-pad*2;
+    var axis=st.axis||'fill';
+    var pos=st.position||'center';
+    var x,y,w,h;
+    if(axis==='x'){
+      h=bhgt; w=bw*h/bh;
+      if(w>bwid){w=bwid; h=bh*w/bw;}     // CSS max-width:100% 截住时按 contain 落（等比留边）
+      x=(pos==='left')?bx:(pos==='right')?(bx+bwid-w):bx+(bwid-w)/2;
+      y=by+(bhgt-h)/2;
+    }else if(axis==='y'){
+      w=bwid; h=bh*w/bw;
+      if(h>bhgt){h=bhgt; w=bw*h/bh;}     // CSS max-height:100% 同理
+      y=(pos==='top')?by:(pos==='bottom')?(by+bhgt-h):by+(bhgt-h)/2;
+      x=bx+(bwid-w)/2;
+    }else{
+      var s=Math.max(bwid/bw,bhgt/bh);
+      w=bw*s; h=bh*s;
+      x=bx+(bwid-w)/2; y=by+(bhgt-h)/2;
+    }
+    var sc=st.scale||1;
+    if(Math.abs(sc-1)>1e-9){
+      var mx=x+w/2,my=y+h/2;
+      w*=sc; h*=sc; x=mx-w/2; y=my-h/2;
+    }
+    return {x:x,y:y,w:w,h:h};
+  }
+
   // 背景层：black / color 铺满纯色；blur = 同一帧画面铺满 + 高斯模糊 + 压暗去饱和，
   // 再绕中心放大把模糊溢出的边缘推出画布（倍数 `blur_img_scale`，与 DOM `#bg-video` 的
   // `transform:scale(var(--bg-img-scale))` 同源）。模糊半径 `blur_px` 是**画布 px**。
@@ -1802,6 +1849,9 @@ function init(){
     var colorShift = getColorShift(t, idx.color_shift);
 
     // ---- video layer ----
+    // 主画面的摆放矩形（源比例 ≠ 画布比例时不再硬铺满：竖素材进横画布 = 等比缩进 + 衬底补边）。
+    // 铺满（axis=fill、无 padding、源比例 == 画布比例）时算得 (0,0,CW,CH)，与改造前逐值一致。
+    var sr = stageDrawRect(videoBitmap.width || CW, videoBitmap.height || CH, CW, CH, STAGE);
     ctx.save();
     if (shake.x || shake.y) ctx.translate(shake.x, shake.y);
     if (blurAmt > 0) ctx.filter = 'blur(' + blurAmt + 'px)';
@@ -1816,13 +1866,19 @@ function init(){
     // 顺序与 WebUI 预览的 transform 列表（translate → rotate → scale）等价。
     var sway = handheldSway(t, cam.handheld);
     var camScale = finalZoom * sway.scale;
+    // 不动点：DOM 预览把它挂在主画面（`#fit-box`）自己的百分比上，所以这里也要把 cam.ox/oy
+    // （画布百分比的像素形式）映射进画面矩形 —— 铺满时 sr=(0,0,CW,CH)，与改造前逐值一致。
+    var anchorX = sr.x + cam.ox / CW * sr.w;
+    var anchorY = sr.y + cam.oy / CH * sr.h;
     if (Math.abs(camScale - 1.0) > 0.001 || sway.rot !== 0 || sway.dx !== 0 || sway.dy !== 0) {
       if (sway.dx || sway.dy) ctx.translate(sway.dx, sway.dy);
-      ctx.translate(cam.ox, cam.oy);
+      ctx.translate(anchorX, anchorY);
       if (sway.rot) ctx.rotate(sway.rot * Math.PI / 180);
       ctx.scale(camScale, camScale);
-      ctx.translate(-cam.ox, -cam.oy);
+      ctx.translate(-anchorX, -anchorY);
     }
+    // 画面矩形 → 画布：CTM 后乘，所以这段在最内层 —— 运镜 / 瞬时特效作用在**摆好的画面**上
+    ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);
     ctx.drawImage(videoBitmap, 0, 0, CW, CH);
     ctx.restore();
 
