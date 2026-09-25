@@ -96,6 +96,7 @@ pub(crate) fn build_events_system_prompt(
   {{"type":"overlay","time":8.0,"end":10.0,"overlay_type":"color","color":"#ff0000","opacity":0.25}}
   颜色用 6 位十六进制(#rrggbb); 透明度归 opacity, 不要写进颜色里
   只写 color 不写 colors 时按「该色 → 透明」渲染, 但**优先写 colors**
+  fade_in/fade_out(黑场淡入/淡出, 整块时长=渐变时长)只用于片头片尾, 片头那份系统只在初次后处理时自动补, 不要重复写
 - sfx: 纯音效. {{"type":"sfx","time":3.0,"end":4.0,"name":"explosion","volume":0.5}}
 
 选择规则:

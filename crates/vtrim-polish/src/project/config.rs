@@ -75,6 +75,13 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "is_false")]
     pub processed: bool,
 
+    /// 16. 片头淡入（`overlay_type = "fade_in"`）的补种时机**已经用掉**：初次 process 判定过片头之后置位，
+    ///     往后这条事件在不在、长什么样都由用户说了算 —— 删掉再跑 process 也不会补回来（那是用户意图，
+    ///     不是"默认观感没生效"）。想重新拿回默认片头：删掉这一行再跑 process。
+    ///     判定细节与"什么时候不算用掉"见 `process::ensure_intro_fade_in`。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub intro_fade_seeded: bool,
+
     /// 扩展兜底
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -1044,6 +1051,7 @@ impl ProjectFile {
             mute_ranges: Vec::new(),
             silence_ranges: Vec::new(),
             processed: false,
+            intro_fade_seeded: false,
             extra: HashMap::new(),
         }
     }
@@ -1360,6 +1368,27 @@ mod tests {
         lay["sticker_area"] = cleared;
         let back: Layout = serde_json::from_value(lay).expect("清除选框后应可解析");
         assert_eq!(region_rects(&back.sticker_area).len(), 2, "清除后回到九宫格");
+    }
+
+    /// 片头淡入的补种标记：默认 false（老工程没有这一行，也照旧解析）、true 能落进 toml 并回读。
+    /// 这条标记是"初次 process 用掉补种时机"的唯一判据，落了 false 就不该出现在文件里。
+    #[test]
+    fn intro_fade_seeded_roundtrip_and_legacy_default() {
+        let mut cfg = ProjectFile::example();
+        assert!(!cfg.intro_fade_seeded);
+        let raw = cfg.to_toml_commented().unwrap();
+        assert!(!raw.contains("intro_fade_seeded"), "false 不该写进文件:\n{raw}");
+
+        cfg.intro_fade_seeded = true;
+        let raw = cfg.to_toml_commented().unwrap();
+        assert!(raw.contains("intro_fade_seeded = true"), "{raw}");
+        let back: ProjectFile = toml::from_str(&raw).expect("置位后应可回读");
+        assert!(back.intro_fade_seeded);
+
+        // 老工程（没有这一行）→ 默认 false，等于"还没补过片头"，下次 process 照常补
+        let legacy: ProjectFile =
+            toml::from_str("[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n").unwrap();
+        assert!(!legacy.intro_fade_seeded);
     }
 }
 
@@ -1745,10 +1774,24 @@ mod canvas_stage_tests {
         ] {
             assert!(html.contains(needle), "出片 canvas 路径缺背景层消费面: {needle}");
         }
-        // 顺序钉子：背景层必须先于视频层绘制（画反了铺满时就整块看不到底色）
+        // 视频层（主画面）的摆放面：`stageDrawRect` 必须在，且被**用在 CTM 上** ——
+        // 「算了不用」的表现就是源比例 ≠ 画布比例时整帧被硬铺满：竖素材进横画布 = 被拉成宽屏。
+        // （几何断言在 `webui/scripts/check-stage-backdrop.mjs` ③c，这里只盯消费面别被删掉。）
+        for needle in [
+            "function stageDrawRect",
+            "var sr = stageDrawRect(videoBitmap.width || CW",
+            "ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);",
+        ] {
+            assert!(html.contains(needle), "出片 canvas 路径缺视频层摆位消费面: {needle}");
+        }
+        // 顺序钉子：背景层必须先于视频层绘制（画反了铺满时就整块看不到底色）；
+        // 摆放矩形的计算与 CTM 都必须在视频层 drawImage 之前。
         let backdrop = html.find("drawStageBackdrop(ctx, videoBitmap)").unwrap();
         let video_layer = html.find("ctx.drawImage(videoBitmap, 0, 0, CW, CH)").unwrap();
         assert!(backdrop < video_layer, "背景层必须画在视频层之前");
+        let stage_rect = html.find("var sr = stageDrawRect(").unwrap();
+        assert!(backdrop < stage_rect && stage_rect < video_layer, "摆放矩形要在衬底之后、视频层之前算");
+        assert!(html.find("ctx.translate(sr.x, sr.y)").unwrap() < video_layer, "CTM 摆位必须在视频层 drawImage 之前");
         // 改造前的竖屏布局（`.portrait` + `left/center`）必须彻底退场，
         // 留着就会和新的 `axis-x` + `stage-*` 规则打架
         assert!(!html.contains("portrait"), "模板里还有老的 portrait 布局残留");

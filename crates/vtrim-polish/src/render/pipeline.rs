@@ -727,11 +727,18 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
 
 /// 用 ebur128 测量音频瞬时响度曲线 (每 ~0.1s 一个点, LUFS)
 /// 返回 [(时间, 响度)] — 音效按所在时刻的响度实时调整音量
+///
+/// ⚠ **`-vn` 不能省**：这条只关心音频。不带它 ffmpeg 会把整段**视频**也解码一遍再丢掉
+/// （实测同一片段 5.6s → 0.4s；曲线逐点一致，1330 个采样点全等）—— 它只是不往输出写视频流，
+/// 音频滤镜链一分不变。剪切收尾会给每个新片段预热这条曲线
+/// （`vtrim-service` 的 `core_pipeline::warm_loudness_cache`），热路径上一次剪切要跑 N 遍。
 pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
     let output = Command::new("ffmpeg")
         .args([
             "-i",
             audio_path,
+            // 输出参数段：作用于 `-f null -`，只解码音频
+            "-vn",
             "-af",
             "ebur128=peak=true",
             "-f",

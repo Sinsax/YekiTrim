@@ -527,6 +527,18 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 3c: 首段补一条片头淡入覆盖事件 —— 原内建片头黑场（固定 0.5s）退役成普通
+    // overlay 事件之后，"开头渐入"这个默认观感就靠这一步兜住。**只在初次后处理补**：判定过片头就
+    // 置位 `intro_fade_seeded`（随下面的写回落盘），往后时间轴上改/拖/删都由用户说了算 ——
+    // 删掉之后再跑 process 也不会补回来（那是用户意图，不是"默认观感没生效"）。
+    //
+    // 为什么排在 Step 3 之后而不是 Step 0b：音效规则引擎会把**没有音效引用**的覆盖事件也扫一遍，
+    // 排它前面的话这条纯视觉的黑场每跑一次都会多记一句「特效无匹配、移除音效」，字幕恰好命中
+    // 规则时还会凭空给它挂一个音效 —— 补默认事件不该去动声音。
+    if ensure_intro_fade_in(&mut config) {
+        tracing::info!("  ➕ 首段补片头淡入（fade_in {INTRO_FADE_SECS}s，可在时间轴上改/删）");
+    }
+
     // Step 4: 自动下载 sticker + SFX
     let downloader = assets::downloader::AssetDownloader::new(project_path);
     download_keyword_assets(&downloader, &config, &sfx_blacklist).await;
@@ -534,8 +546,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 标记 process 已完成（preview 依赖此标记决定是否先跑 process）。
     // 只写回 process 负责的字段：这中间用户存的选框 / 封面 / 屏蔽轨道不能被吞掉。
     let segments = config.segments;
+    let intro_fade_seeded = config.intro_fade_seeded; // Step 3c 用掉的补种时机（只从 false 变 true）
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
+        cfg.intro_fade_seeded = intro_fade_seeded;
         cfg.processed = true;
     })
     .await?;
@@ -903,6 +917,79 @@ fn migrate_camera_zoom(camera: &mut project::CameraStyle) -> Vec<(&'static str, 
     changed
 }
 
+/// 片头淡入的默认时长（秒）。原内建片头黑场（`intro_black`，固定 0.5s 正弦淡出）退役成普通
+/// overlay 事件后，这个默认观感由 [`ensure_intro_fade_in`] 在**初次** `process` 时补出来；
+/// 渲染侧的语义见 `vtrim-render-core/src/timeline.rs::get_overlay_state`。
+pub const INTRO_FADE_SECS: f64 = 0.5;
+
+/// 首段补一条片头淡入覆盖事件（`overlay_type = "fade_in"`、纯黑、满不透明度）。
+///
+/// `fade_in` 的**整窗就是过渡本身**（起点全遮 → 末端全透，线性；不叠常规 0.4s 进出包络），
+/// `opacity` = 遮罩色的最大不透明度，`color` 缺省黑。复用 overlay 通道 ⇒ 不需要新字段，
+/// 也不进 `default_end` 兜底（本条自带 `end`）。
+///
+/// **补种时机只有一次**（用户报的"删掉之后再跑 process 又回来了"）：判据是
+/// `ProjectFile::intro_fade_seeded` —— 判定过片头就置位落盘，往后片头有没有这条事件、长什么样
+/// 都由用户说了算；想重新拿回默认片头就删掉 polish.toml 里那一行。**别改回"看窗口有没有覆盖事件"**：
+/// 那等于"用户每删一次就再补一次"。
+///
+/// 补的条件（全部满足才补）：
+/// - 取**时间最早**且起点 < 0.5s 的段 —— 段之间时间会重叠（LLM 按窗口生成 + 去静音切段），
+///   不能拿文件顺序当片头；
+/// - 该段跨度 ≥ 0.2s（塞不下一条 0.5s 淡入的段不补）；
+/// - **整片**没有任何覆盖事件与这条淡入的窗口重叠（本段有、或别的段跨过来盖住它，都算片头已有表现）。
+///
+/// 标记**用掉**的时机 = 片头窗口真的判定过：补了、或已被覆盖事件盖着（那是用户/LLM 自己写的片头，
+/// 补种时机同样用掉）。段表为空 / 最早段起点 ≥ 0.5s / 段跨度 < 0.2s 时**不**用掉 —— 那时片头还不存在
+/// （分段还没生成、或整片从 0.5s 之后才开始），下次 process 照旧能补。
+/// 返回是否补了。
+pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
+    if config.intro_fade_seeded {
+        return false; // 补种时机已经用掉：这条事件现在归用户
+    }
+    // 段之间时间上会重叠，所以按时间挑最早的段，不按文件顺序
+    let Some(idx) = config
+        .segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.start < 0.5)
+        .min_by(|(_, a), (_, b)| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+    else {
+        return false;
+    };
+    let (start, end) = (config.segments[idx].start, config.segments[idx].end);
+    if end - start < 0.2 {
+        return false;
+    }
+    let fade_end = (start + INTRO_FADE_SECS).min(end);
+    let covered = config.segments.iter().any(|s| {
+        s.events.iter().any(|e| {
+            matches!(e, crate::project::Event::Overlay { .. })
+                && e.get_time() < fade_end
+                && e.end().unwrap_or_else(|| e.get_time()) > start
+        })
+    });
+    // 片头窗口到这儿就判定过了：空着就补一条，盖着就认用户那份 —— 两种都算补种时机用完。
+    config.intro_fade_seeded = true;
+    if covered {
+        return false;
+    }
+    config.segments[idx].events.push(crate::project::Event::Overlay {
+        time: start,
+        end: Some(fade_end),
+        overlay_type: "fade_in".into(),
+        color: Some("#000000".into()),
+        opacity: Some(1.0),
+        colors: None,
+        shape: None,
+        sfx: None,
+        sfx_volume: None,
+        anchor: None,
+    });
+    true
+}
+
 /// 把 `anchor`/`anchor_to` 解析成 `origin`/`to_origin`。
 ///
 /// 与贴纸的 keyword→name 同一套约定：锚点是**意图**（LLM 或人写的），每次 process 重算，
@@ -1054,6 +1141,127 @@ mod tests {
 
     fn camera() -> Event {
         Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false }
+    }
+
+    /// 覆盖事件（默认 1s 窗口）。
+    fn overlay_at(time: f64) -> Event {
+        Event::Overlay {
+            time, end: Some(time + 1.0), overlay_type: "color".into(), color: Some("#ff3232".into()),
+            opacity: Some(0.3), colors: None, shape: None, sfx: None, sfx_volume: None, anchor: None,
+        }
+    }
+
+    fn seg_span(start: f64, end: f64, events: Vec<Event>) -> Segment {
+        Segment { start, end, ..seg_with(events) }
+    }
+
+    /// 片头淡入用的最小工程：换掉段表，其余取 `example()`（`[source]` 是必填项）。
+    fn cfg_with(segments: Vec<Segment>) -> project::ProjectFile {
+        project::ProjectFile { segments, ..project::ProjectFile::example() }
+    }
+
+    fn overlays(segments: &[Segment]) -> Vec<&Event> {
+        segments.iter().flat_map(|s| s.events.iter())
+            .filter(|e| matches!(e, Event::Overlay { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn intro_fade_in_is_added_once_to_the_head_segment() {
+        let mut cfg = cfg_with(vec![seg_span(0.0, 10.0, vec![camera()]), seg_span(10.0, 20.0, vec![sfx_ev()])]);
+        assert!(ensure_intro_fade_in(&mut cfg));
+        assert!(cfg.intro_fade_seeded, "补种时机应置位（随 process 写回 polish.toml）");
+        let Event::Overlay { time, end, overlay_type, color, opacity, .. } =
+            cfg.segments[0].events.last().expect("补在首段的事件末尾")
+        else {
+            panic!("补的应该是覆盖事件");
+        };
+        assert_eq!(overlay_type, "fade_in");
+        assert_eq!(color.as_deref(), Some("#000000"));
+        assert_eq!(*opacity, Some(1.0));
+        assert_eq!((*time, *end), (0.0, Some(0.5)));
+        assert_eq!(cfg.segments[1].events.len(), 1, "别的段不碰");
+
+        // 标记置位后不再补（同一次 process 里再调一次也不重复）
+        assert!(!ensure_intro_fade_in(&mut cfg));
+        assert_eq!(overlays(&cfg.segments).len(), 1);
+    }
+
+    /// 用户报的那条：**删掉片头淡入之后再跑 process 不许补回来**；把标记删掉才拿回默认片头。
+    #[test]
+    fn intro_fade_in_is_not_restored_after_the_user_deletes_it() {
+        let mut cfg = cfg_with(vec![seg_span(0.0, 10.0, vec![])]);
+        assert!(ensure_intro_fade_in(&mut cfg));
+        // 用户在时间轴上把它删了（或手改 polish.toml）
+        cfg.segments[0].events.clear();
+        assert!(!ensure_intro_fade_in(&mut cfg), "补过之后不许再补");
+        assert!(cfg.segments[0].events.is_empty());
+        assert!(cfg.intro_fade_seeded, "标记保持置位");
+
+        // 反向逃生门：删掉 polish.toml 里那一行 → 下次 process 又能拿回默认片头
+        cfg.intro_fade_seeded = false;
+        assert!(ensure_intro_fade_in(&mut cfg));
+    }
+
+    #[test]
+    fn intro_fade_in_skips_when_the_head_is_already_covered() {
+        // 本段已有覆盖事件
+        let mut cfg = cfg_with(vec![seg_span(0.0, 10.0, vec![overlay_at(0.0)])]);
+        assert!(!ensure_intro_fade_in(&mut cfg));
+        assert_eq!(cfg.segments[0].events.len(), 1);
+        assert!(cfg.intro_fade_seeded, "片头已有表现 = 判定过，补种时机同样用掉");
+
+        // 别的段跨过来盖住片头（段之间时间会重叠，判据是整个窗口而不是"本段有没有"）
+        let mut cfg = cfg_with(vec![seg_span(0.0, 10.0, vec![]), seg_span(0.1, 0.4, vec![overlay_at(0.1)])]);
+        assert!(!ensure_intro_fade_in(&mut cfg));
+        assert!(cfg.intro_fade_seeded);
+
+        // 窗口不相交（0.6s 起，本条的淡入是 [0.0, 0.5)）→ 片头仍是空的，照补
+        let mut cfg = cfg_with(vec![seg_span(0.0, 10.0, vec![overlay_at(0.6)])]);
+        assert!(ensure_intro_fade_in(&mut cfg));
+        assert_eq!(overlays(&cfg.segments).len(), 2);
+    }
+
+    /// 片头还不存在时**不烧标记** —— 那不是"补过"，下次 process 照旧能补。
+    #[test]
+    fn intro_fade_in_keeps_the_marker_unused_when_there_is_no_head() {
+        // 起点已经在 0.5s 之外：这不是"片子的开头"
+        let mut cfg = cfg_with(vec![seg_span(3.0, 9.0, vec![])]);
+        assert!(!ensure_intro_fade_in(&mut cfg));
+        // 段太短（< 0.2s）：塞不下淡入
+        let mut cfg_short = cfg_with(vec![seg_span(0.0, 0.15, vec![])]);
+        assert!(!ensure_intro_fade_in(&mut cfg_short));
+        // 空段表
+        let mut cfg_empty = cfg_with(vec![]);
+        assert!(!ensure_intro_fade_in(&mut cfg_empty));
+        assert!(
+            !cfg.intro_fade_seeded && !cfg_short.intro_fade_seeded && !cfg_empty.intro_fade_seeded,
+            "没判定过片头就不该用掉补种时机"
+        );
+
+        // 分段补上来了 → 同一份 config 再跑就能补（"分段还没生成时先跑过一次 process"）
+        cfg.segments = vec![seg_span(0.0, 9.0, vec![])];
+        assert!(ensure_intro_fade_in(&mut cfg));
+        assert_eq!(overlays(&cfg.segments).len(), 1);
+    }
+
+    #[test]
+    fn intro_fade_in_picks_the_earliest_segment_not_the_first_in_file() {
+        let mut cfg = cfg_with(vec![seg_span(5.0, 9.0, vec![]), seg_span(0.0, 4.0, vec![])]);
+        assert!(ensure_intro_fade_in(&mut cfg));
+        assert_eq!(cfg.segments[0].events.len(), 0);
+        assert_eq!(cfg.segments[1].events.len(), 1);
+    }
+
+    #[test]
+    fn intro_fade_in_is_clipped_to_a_short_head_segment() {
+        // 首段只有 0.3s：淡入止步于段尾，窗口不许拖到段外
+        let mut cfg = cfg_with(vec![seg_span(0.0, 0.3, vec![])]);
+        assert!(ensure_intro_fade_in(&mut cfg));
+        let Event::Overlay { time, end, .. } = &cfg.segments[0].events[0] else {
+            panic!("补的应该是覆盖事件");
+        };
+        assert_eq!((*time, *end), (0.0, Some(0.3)));
     }
 
     #[test]
