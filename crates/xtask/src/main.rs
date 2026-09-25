@@ -70,6 +70,7 @@ usage: cargo xtask <command> [options]
 commands:
   scan [path] [--show-bare-espeak]
       Fail if a built binary links espeak-ng. `path` defaults to target/release.
+      The scanner's own binary is a dev tool, not payload, and is skipped.
       Exit code 0 = clean, 1 = markers found, 3 = nothing was scanned.
 
   package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR]
@@ -98,15 +99,21 @@ fn cmd_scan(args: &[String]) -> ExitCode {
         }
     }
 
-    let files = match collect_artifacts(&path) {
-        Ok(files) => files,
+    let artifacts = match collect_artifacts(&path) {
+        Ok(artifacts) => artifacts,
         Err(err) => {
             eprintln!("xtask scan: cannot read {}: {err}", path.display());
             return ExitCode::from(3);
         }
     };
 
-    if files.is_empty() {
+    if artifacts.found.is_empty() {
+        for skipped in &artifacts.skipped_self {
+            eprintln!(
+                "note: skipped {} (this tool's own binary)",
+                skipped.display()
+            );
+        }
         eprintln!("xtask scan: nothing to scan at {}", path.display());
         eprintln!("That is itself a gate failure: it usually means the build never ran.");
         return ExitCode::from(3);
@@ -117,7 +124,7 @@ fn cmd_scan(args: &[String]) -> ExitCode {
     let mut bare = 0usize;
     let mut offenders: Vec<(PathBuf, usize)> = Vec::new();
 
-    for file in &files {
+    for file in &artifacts.found {
         let bytes = match fs::read(file) {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -145,9 +152,15 @@ fn cmd_scan(args: &[String]) -> ExitCode {
     println!("scanned: {}", path.display());
     println!(
         "files:   {}, {} MB",
-        files.len(),
+        artifacts.found.len(),
         total_bytes / (1024 * 1024)
     );
+    for skipped in &artifacts.skipped_self {
+        println!(
+            "skip:    {} (this tool's own binary, not release payload)",
+            skipped.display()
+        );
+    }
     println!("markers: {}", MARKERS.join(", "));
     println!();
 
@@ -181,7 +194,13 @@ fn cmd_scan(args: &[String]) -> ExitCode {
     ExitCode::from(1)
 }
 
-fn collect_artifacts(path: &Path) -> io::Result<Vec<PathBuf>> {
+struct Artifacts {
+    found: Vec<PathBuf>,
+    /// The scanner's own binaries, reported but never counted. See `is_self_artifact`.
+    skipped_self: Vec<PathBuf>,
+}
+
+fn collect_artifacts(path: &Path) -> io::Result<Artifacts> {
     if !path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -189,18 +208,35 @@ fn collect_artifacts(path: &Path) -> io::Result<Vec<PathBuf>> {
         ));
     }
 
-    let mut found = Vec::new();
+    let mut artifacts = Artifacts {
+        found: Vec::new(),
+        skipped_self: Vec::new(),
+    };
     if path.is_file() {
-        found.push(path.to_path_buf());
-        return Ok(found);
+        artifacts.found.push(path.to_path_buf());
+        return Ok(artifacts);
     }
 
-    collect_dir(path, &mut found)?;
-    found.sort();
-    Ok(found)
+    collect_dir(path, &mut artifacts)?;
+    artifacts.found.sort();
+    artifacts.skipped_self.sort();
+    Ok(artifacts)
 }
 
-fn collect_dir(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+/// Both profiles build this crate, so the scanner meets its own binary whenever it walks
+/// `target/<profile>`. That binary is a dev tool, not release payload, and it carries MARKERS
+/// verbatim as string literals -- scanning it is a guaranteed false positive. Skipping by name
+/// cannot hide a real offender: the package gate scans `target/release/vtrim.exe` explicitly.
+///
+/// An explicit single-file argument is always scanned as given; this only filters directory walks.
+fn is_self_artifact(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .map(|stem| stem.eq_ignore_ascii_case("xtask"))
+        .unwrap_or(false)
+}
+
+fn collect_dir(dir: &Path, artifacts: &mut Artifacts) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -212,7 +248,7 @@ fn collect_dir(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
                 .map(|name| SKIP_DIRS.contains(&name))
                 .unwrap_or(false);
             if !skip {
-                collect_dir(&path, found)?;
+                collect_dir(&path, artifacts)?;
             }
             continue;
         }
@@ -225,7 +261,11 @@ fn collect_dir(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
             .iter()
             .any(|wanted| extension.as_deref() == Some(wanted))
         {
-            found.push(path);
+            if is_self_artifact(&path) {
+                artifacts.skipped_self.push(path);
+            } else {
+                artifacts.found.push(path);
+            }
         }
     }
     Ok(())

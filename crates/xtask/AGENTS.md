@@ -19,8 +19,9 @@
   `cargo xtask scan [path] [--show-bare-espeak]` 与
   `cargo xtask package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR]`。
 - `scan`：`path` 默认 `target/release`；递归收 `SCAN_EXTENSIONS`（`exe` / `dll`），
-  跳过 `SKIP_DIRS`（`build` / `deps`），逐文件计数 `MARKERS`（5 个：
+  跳过 `SKIP_DIRS`（`build` / `deps`）与**本工具自己的二进制**（见「边界」），逐文件计数 `MARKERS`（5 个：
   `espeak-ng` / `espeak ng` / `espeak_` / `libespeak` / `piper_phonemize`，**不区分大小写**）。
+  显式传单个文件时按原样扫、不做自我过滤（`package` 的门禁走的正是这条）。
 - `package`：版本 → `cargo build --release -p vtrim-cli --locked` → `vtrim.exe` → 调 `scan` 门禁 →
   查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256。
 - 打包内容：`vtrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、
@@ -45,6 +46,9 @@
   "nothing to scan" 通常意味着构建根本没跑过。未知子命令与未知 flag 是 `2`。
 - `SKIP_DIRS = ["build", "deps"]`：它们不是 release payload，而且带着 cargo 自己的 string tables
   （`sherpa-onnx-sys` 的 build-script 二进制把 lib 名清单逐字嵌进去），扫它们会产生假阳性。
+  同理**必须跳过本工具自己的二进制**（`is_self_artifact`：文件名 `xtask`）—— 它把 5 个 `MARKERS`
+  逐字嵌在自己的字符串表里，扫 `target/release/xtask.exe` 必然假阳性（实测 11 命中）；
+  而它是 dev 工具、不是 payload。跳过的文件会打一行 `skip: <路径>`，不会被静默吞掉。
   计数用**不重叠**出现次数（与它取代的 PowerShell 扫描器同语义）。
 - ⚠️ **版本同源**：版本只从**一处**读 —— 根 `Cargo.toml` 的 `[workspace.package] version`；
   找不到才回退 `crates/vtrim-cli/Cargo.toml` 的 `[package]`（保住老 checkout）。
@@ -70,6 +74,9 @@
   **挪动这个 crate 的深度会直接 panic**。`cargo()` 优先用 `CARGO` 环境变量。
 - ⚠️ 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下 `.vtrim/`
   （`server.toml` 含真实绝对路径）。`cargo xtask package --smoke-test` 会清掉它 —— 这是这条开关的主要用途之一。
+- ⚠️ **验证发行行为要拿 `release/` 里的 exe，别拿 `cargo build --release`（工作区级）的那份**：
+  `package` 建的是 `-p vtrim-cli`（feature 统一域更窄），两者**字节不同**（实测 sha256 不一样），
+  拿错等于验证了一个不发的二进制。`--skip-build` 复跑只重组装与 zip，不会换掉这一份。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
