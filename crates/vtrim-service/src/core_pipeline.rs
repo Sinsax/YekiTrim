@@ -110,8 +110,43 @@ pub async fn init_polish_for_clip(clip_dir: &Path) -> anyhow::Result<bool> {
     }
 }
 
+/// 剪切收尾的第二件小事：把精修页要用的**整段响度曲线**量好落盘（`<片段>/data/loudness.json`）。
+///
+/// `preview=1` 那次工程请求会带上这条曲线，而它是整段 ebur128（秒级）。页面 `load()` 是
+/// **串行 await** 的（`PolishView.vue`）—— 少了这一步，每个片段第一次进页都必然白等它量完。
+/// 挪到剪切收尾里预热之后，进页面那一步就只剩读文件。
+///
+/// **「只补缺失」**：缓存判定是 `clip.mp4` 的「文件名 + mtime + 字节数」（`measure_loudness_curve_cached`）——
+/// 命中就**一个字节都不动**（用户/CLI 处理过一半的文件也照原样留着），只有真没缓存
+/// （或引入 `key` 之前的旧格式，永远 miss）才当场量一次、就地补上。重剪过的话 mtime 变了，
+/// 自然按新片段重算，不需要额外清理。
+///
+/// 失败**静默 warn**：剪切本身已经成功，量不到曲线顶多让页面退回"现场重算"的老行为
+/// （与 `init_polish_for_clip` 只 warn 同口径）。
+fn warm_loudness_cache(clip_dir: &Path) {
+    let clip = clip_dir.join("clip.mp4");
+    if !clip.exists() {
+        // 与 init 同一条判据：事件没剪成时连 `data/` 都不该建
+        return;
+    }
+    let curve = vtrim_polish::render::measure_loudness_curve_cached(clip_dir, &clip);
+    if curve.is_empty() {
+        tracing::warn!(
+            "剪切收尾：响度曲线测量失败 {}（不影响剪切结果，进精修时会重试）",
+            clip_dir.display()
+        );
+    } else {
+        tracing::debug!(
+            "剪切收尾：响度曲线就绪 {}（{} 个采样点）",
+            clip_dir.display(),
+            curve.len()
+        );
+    }
+}
+
 /// 上面那条的批量版：按 `cutting::Cutter` 的同一套目录命名算出每个事件的目标目录，
-/// 逐个补精修工程。**只 warn 不失败** —— 剪切本身已经成功，前端进精修时还有一次兜底
+/// 逐个补精修工程 + 预热响度曲线（[`warm_loudness_cache`]，只补缺失、命中零成本）。
+/// **只 warn 不失败** —— 剪切本身已经成功，前端进精修时还有一次兜底
 /// init（`vtrim-server` 的 `ensure_polish_project`）。返回新建条数。
 pub async fn init_polish_for_events(
     output_dir: &Path,
@@ -130,6 +165,9 @@ pub async fn init_polish_for_events(
                 dir.display()
             ),
         }
+        // 工程在不在都要预热：重剪过同一片段时 `polish.toml` 已存在，但 `clip.mp4` 换了，
+        // 缓存 key 跟着失效 —— 只判"有没有工程"会把这种片段漏掉。
+        warm_loudness_cache(&dir);
     }
     created
 }
@@ -534,6 +572,109 @@ mod tests {
             init_polish_for_events(tmp.path(), &[event(1, None)]).await,
             0
         );
+    }
+
+    /// 预热**只补缺失**：缓存有效（key = 文件名 + mtime + 字节数，对得上）时一个字节都不动
+    /// —— 包括用户/CLI 已经处理过一半的文件；反过来，没有 `clip.mp4` 的事件目录
+    /// 连 `data/` 都不许建（与 init 同一条判据）。
+    #[tokio::test]
+    async fn warm_loudness_cache_keeps_valid_cache_and_skips_uncut_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = made_clip(tmp.path());
+        let meta = std::fs::metadata(dir.join("clip.mp4")).unwrap();
+        let mtime = mtime_secs(&meta);
+        let cache = dir.join("data").join("loudness.json");
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        let raw = format!(
+            r#"{{"key":"clip.mp4|{mtime}|{}","points":[{{"t":0.1,"db":-20.0}}]}}"#,
+            meta.len()
+        );
+        std::fs::write(&cache, &raw).unwrap();
+
+        init_polish_for_events(tmp.path(), &[event(1, None), event(2, None)]).await;
+
+        assert_eq!(
+            std::fs::read_to_string(&cache).unwrap(),
+            raw,
+            "命中缓存不许重写（连带 key 的格式都不动）"
+        );
+        assert!(
+            !tmp.path().join("clips").join("clip-02").exists(),
+            "没有 clip.mp4 的事件目录一个文件都不该建"
+        );
+    }
+
+    /// 真 ffmpeg 的端到端钉子（`#[ignore]`：需要本机有 ffmpeg，手动跑）：
+    /// 剪切收尾对新片段**真的量出一条带 key 的响度曲线**，二次收尾命中缓存一动不动。
+    ///
+    /// ```text
+    /// cargo test -p vtrim-service --lib warm_loudness_cache_with_real_ffmpeg -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn warm_loudness_cache_with_real_ffmpeg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("clips").join("clip-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("clip.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15",
+                "-f", "lavfi", "-i", "sine=frequency=440",
+                "-t", "6", "-c:v", "libx264", "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            ])
+            .arg(&clip)
+            .status()
+            .expect("这条钉子需要本机 ffmpeg（`--ignored` 才跑）");
+        assert!(status.success(), "造测试片段失败");
+        std::fs::write(
+            dir.join("clip.json"),
+            r#"{"title":"测试片段","duration":6.0,"rank":1}"#,
+        )
+        .unwrap();
+
+        let t0 = std::time::Instant::now();
+        init_polish_for_events(tmp.path(), &[event(1, None)]).await;
+        let cold = t0.elapsed();
+
+        let cache = dir.join("data").join("loudness.json");
+        let raw = std::fs::read_to_string(&cache).expect("剪切收尾应当量出 loudness.json");
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let meta = std::fs::metadata(&clip).unwrap();
+        let want_key = format!("clip.mp4|{}|{}", mtime_secs(&meta), meta.len());
+        assert_eq!(
+            v["key"].as_str().unwrap(),
+            want_key,
+            "新写的缓存必须按当前 clip.mp4 算 key（这就是页面读的那份）"
+        );
+        let points = v["points"].as_array().unwrap().len();
+        assert!(points > 0, "曲线不能是空的");
+        assert!(dir.join("polish.toml").exists());
+
+        let mtime_before = std::fs::metadata(&cache).unwrap().modified().unwrap();
+        let t1 = std::time::Instant::now();
+        init_polish_for_events(tmp.path(), &[event(1, None)]).await;
+        let hot = t1.elapsed();
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), raw, "命中不许重写");
+        assert_eq!(
+            std::fs::metadata(&cache).unwrap().modified().unwrap(),
+            mtime_before,
+            "命中连 mtime 都不该动"
+        );
+        println!(
+            "冷收尾（init + 量曲线）{:?} / 热收尾（命中）{:?} / {points} 个采样点",
+            cold, hot
+        );
+    }
+
+    fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
+        meta.modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 }
 
