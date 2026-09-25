@@ -61,7 +61,9 @@
 - **带磁盘缓存的预计算**（都在 `<工程>/data/`，按「文件名 + mtime + 大小」失效）：
   - `loudness.json`（`render::measure_loudness_curve_cached`，出片页与混音共用一份）——
     预览服务的 HTML 是**每个请求**重建的，不缓存等于每刷一次页面烧一遍整段 ebur128；
-    实测「起服务」16.1s → 0.1s。
+    实测「起服务」16.1s → 0.1s。⚠️ 量它那条 ebur128 **必须带 `-vn`**（只要音频：同一片段
+    5.6s → 0.4s，曲线逐点一致）—— 剪切收尾会给每个新片段预热这份缓存
+    （`vtrim-service::core_pipeline::warm_loudness_cache`，只补缺失），热路径上一次剪切跑 N 遍。
   - `sticker_frames.json`（`prepare_sticker_data` 的 GIF 解码结果）——6 个贴纸解 40.4s → 命中 1.67s
     （产物 95MB，断言过冷/热输出一致）。贴纸多一个就多一份解码，别把缓存去掉。
   - 诊断：`VT_POLISH_DIR=<项目> cargo test -p vtrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
@@ -88,6 +90,9 @@
 - **模板里两条"四处/两份实现"的契约**（改 `templates/index.html` 或 `webui/src/polish/engine.js` 前必读）：
   - **覆盖层色档**：`overlay_type == "gradient"` 的有效色档规则见 `vtrim-render-core/src/timeline.rs::overlay_stops`；
   四处实现为 `timeline.rs`、`templates/index.html`（**出片权威路径**）、`engine.js`、`PolishPreview.vue`。
+  另两档 `fade_in` / `fade_out`（黑场淡入/淡出，2026-09 新增，内建 `intro-black` 随之退役）**不铺色档**：
+  整窗就是过渡（`opacity × (1 − dt/dur)`，`fade_out` 镜像）、**不叠 0.4s 包络** —— 分支必须排在包络之前，
+  否则起点不透明度被乘成 0、「开头渐入没生效」。片头那份由 `process` **只在初次后处理**补 `fade_in` 事件，对拍同上。
   ⚠ 求值器**必须保证返回 ≥2 档且无空串**（`n == 1` 是 `0/0 = NaN` 抛 `IndexSizeError`、空串色档抛
   `SyntaxError`，两者都会**打断整个 chunk 的渲染**）；⚠ 兜底出来的第二档必须是**同色零透明**
   （`overlay_fade_stop` / `overlayFadeStop`），**不能用 CSS 的 `transparent`** —— canvas 渐变在

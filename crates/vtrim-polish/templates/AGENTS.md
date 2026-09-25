@@ -14,10 +14,13 @@
 
 - `INDEX_HTML`（`crates/vtrim-polish/src/render/server.rs`）—— 模板进二进制的唯一入口。
 - 与 `engine.js` 成对存在的顶层函数（改动必须成对）：
-  - 覆盖层色档求值器（`overlay_fade_stop` / `overlayFadeStop`）；
+  - 覆盖层求值 `getOverlayState`（四档：`color` / `gradient` / `fade_in` / `fade_out`；**fade 两档 = 整窗
+    线性斜坡、不叠 0.4s 包络**，所以分支必须排在包络之前）与色档助手（`overlay_fade_stop` / `overlayFadeStop`）；
   - `wrapCaptionParts`（字幕限宽折行，上限 `MAX_LINES = 3`、`MIN_RATIO = 0.7`、安全宽 = 画布宽 × 0.875）；
-  - `getActiveCamera` / `cameraAt`（运镜）、`liverOrigin`（立绘原点，须与 Rust `grid_rect` 对齐）；
-  - `drawStageBackdrop`（画面衬底：`blur` / `black` / `color` / `none` 四种模式）。
+  - `getActiveCamera` / `cameraAt`（运镜；两句函数开头都有**竖素材门**：`CFG.vertical` → 整条返回
+    `zoom=1 / handheld=0`）、`liverOrigin`（立绘原点，须与 Rust `grid_rect` 对齐）；
+  - `stageDrawRect`（视频层摆放矩形，**出片专用、`engine.js` 没有对应实现**）与
+    `drawStageBackdrop`（画面衬底：`blur` / `black` / `color` / `none` 四种模式）。
 
 ## 边界
 
@@ -35,6 +38,10 @@
   实测同一条红色覆盖层（opacity 0.3、同一个源帧、同一时刻）画面平均 R「184.12 → **178.82**」
   （红了反而变暗）；换成 `rgba(255,0,0,0)` 才是「184.12 → **193.66**」的干净淡出。
   而 CSS 那边两者**完全等价**（按预乘插值），所以写 `transparent` 恰好让**预览与出片不一致**。
+- ⚠️ **片头黑场不再是内建表现**（`intro-black` 2026-09-22 整条退役）：模板里已无 `#intro-black` /
+  `getIntroBlack()` / 那段 GSAP；片头那份是 `process::ensure_intro_fade_in` **只在初次后处理**补的一条
+  `fade_in` 覆盖事件（`#000000` + `opacity 1`；判据 = `polish.toml` 的 `intro_fade_seeded`，
+  用户删掉之后不再补）。**别往回加内建黑幕** —— 它没有手动入口、用户改不了，这正是退役的原因。
 - ⚠️ **色档求值器必须保证返回 ≥2 档且无空串**：出片路径按 `addColorStop(i/(n-1))` 铺档，
   `n == 1` 是 `0/0 = NaN` 抛 `IndexSizeError`、空串色档抛 `SyntaxError`，
   两者都会**打断整个 chunk 的渲染**。四处实现（`vtrim-render-core/src/timeline.rs`、
@@ -43,6 +50,20 @@
   **完全不参与导出** —— `clearRect` 之后的透明区落进 JPEG 就是纯黑。只把 `stage.bg` 消费在 DOM 上，
   表现就是「预览里有模糊底、成片被 shake / 画中画 / 手持摇摆挪开露纯黑」：**不报错、不崩溃，
   只有逐帧像素能发现**。模糊半径/倍率一律取契约里的值，**别写死 28px**；`none` 一个像素都不画。
+- ⚠️ **视频层必须在出片路径里自己算摆放矩形**（`stageDrawRect`）：出片走 canvas、**不读 DOM** ——
+  DOM 那层（`#video-wrap` / `#fit-box` / `.axis-*` / `.stage-*`）只服务预览。只在 CSS 上消费
+  `_canvas.stage` 的话，`ctx.drawImage(videoBitmap, 0, 0, CW, CH)` 就是**硬铺满整块画布**：
+  竖素材进横画布 → 成片"被拉成宽屏"（用户 2026-09-21 报的原文），预览里却完全正常、**不报错**。
+  `axis`/`position`/`scale`/`padding` 逐值对齐 CSS 那套（`scale` 绕**内容框盒心**、`padding` 只改
+  布局盒不裁剪）；`axis=fill` + 无 padding + 源比例 == 画布比例 时**必须精确算出 `(0,0,CW,CH)`**
+  —— 那是"存量逐字节零回归"的判据。摆位经 CTM 送入矩形（`ctx.translate(sr.x,sr.y)` +
+  `ctx.scale(sr.w/CW, sr.h/CH)`），`drawImage` 的 dst **保持字面量 `(0,0,CW,CH)`**：
+  顺序钉子与两处变异都锚在它上面，别顺手改成 dest 矩形参数。
+- ⚠️ **竖素材屏蔽运镜与画布方向无关**：判据是**源视频**竖（注入的 `CFG.vertical`，`render/server.rs`
+  按 `h > w` 给），不是画布方向。只在循环末尾归零 `handheld` 不够 —— `zoom` 照旧把画面拖走，
+  而预览侧（`engine.js::cameraAt:310`）早就整条返回了：**预览不动、成片在缩放**，同样不报错。
+  另注：`vtrim-render-core::evaluate_frame` 只归零 handheld（wgpu 路径的既有实现，不在 Chrome
+  出片链路上），两边口径差异记在这里，改之前先确认动的是哪条路径。
 - ⚠️ **字幕折行同样是两份实现**（本模板 `wrapCaptionParts` ↔ `engine.js::wrapCaptionParts`），
   必须逐字一致。曾经 `append` 先读 `cur.length` 再判溢出，而溢出分支的 `pushLine()` 会把 `cur` 置空
   → **任何一次折行都抛 `TypeError: can't access property "length", cur is null`**
@@ -53,13 +74,18 @@
 ## 验证
 
 ```bash
-node webui/scripts/check-overlay.mjs        # 覆盖层色档契约：本模板 ↔ engine.js 逐例对拍
+node webui/scripts/check-overlay.mjs        # 覆盖层色档 + fade 两档契约：本模板 ↔ engine.js 逐例对拍（77 项）
 node webui/scripts/check-caption-wrap.mjs   # 折行契约（21 项 + 4 处变异自证）
-node webui/scripts/check-stage-backdrop.mjs # 衬底契约（34 项 + 5 处变异自证；含裸变量检查）
+node webui/scripts/check-handheld.mjs       # 手持摇摆 + 运镜起停状态机（63 项，含竖素材 zoom/handheld 归零）
+node webui/scripts/check-sticker-anchor.mjs # 贴纸锚点（64 项）
+node webui/scripts/check-stage-backdrop.mjs # 衬底 + 视频层摆位（73 项 + 8 处变异自证；③b 裸变量 / ③c 几何）
 
 # 改了模板后必须重建二进制，并真跑一次带字幕的出片
 cargo build -p vtrim-cli
 ```
 
 Rust 侧的钉子：`template_stage_hooks_match_contract`、`portrait_canvas_fill_still_paints_backdrop`
-（`cargo test -p vtrim-polish`）；真实像素 A/B 见 `VTEDIT_BACKDROP_DIR=<竖屏工程>` 那条诊断。
+（`cargo test -p vtrim-polish`）；真实像素 A/B 见 `VTEDIT_BACKDROP_DIR=<竖屏工程>` 那条诊断，
+以及竖素材摆放 + 运镜门的整链实证
+`VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`
+（真模板 + 三段变异，逐帧读像素，见文件头）。

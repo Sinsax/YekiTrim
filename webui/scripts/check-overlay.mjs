@@ -165,6 +165,47 @@ for (const c of CASES) {
   check(`[engine  ] ${c.name}`, engState(c.evs), c.want)
 }
 
+// ── 淡入 / 淡出：**整窗就是过渡本身**，不叠 0.4s 进出包络 ──────────────────────
+// 语义来源：把内建片头黑场（`intro-black`，四处硬编码、没有任何手动入口）换成可手改的
+// overlay 事件。窗口起点必须**全遮**（=1）；一旦被 0.4s 包络乘一次就变成 0 ——
+// 黑场打不开，用户看到的正是「开头渐入没生效」。这组用例就是钉死这一条的。
+const tplAt = (evs, t, dur) => tpl.getOverlayState(t, evs.map((ev) => ({ time: 0, duration: dur, ev })))
+const engAt = (evs, t, dur) => engine.getOverlayState({ overlay: evs.map((ev) => ({ time: 0, duration: dur, ev })) }, t)
+
+const BLACK = (opacity) => ({ type: 'color', color: '#000000', opacity })
+const FADE_CASES = [
+  // 窗长 4s 取 0/1/2/3 四个点：斜坡值 1 / 0.75 / 0.5 / 0.25 在二进制里精确，能直接比相等
+  { name: '淡入 t=0 全遮（叠了包络这里会变成 0）', evs: [{ overlay_type: 'fade_in', color: '#000000' }], t: 0, dur: 4, want: BLACK(1) },
+  { name: '淡入 t=1', evs: [{ overlay_type: 'fade_in', color: '#000000' }], t: 1, dur: 4, want: BLACK(0.75) },
+  { name: '淡入 t=2 中点', evs: [{ overlay_type: 'fade_in', color: '#000000' }], t: 2, dur: 4, want: BLACK(0.5) },
+  { name: '淡入 t=3', evs: [{ overlay_type: 'fade_in', color: '#000000' }], t: 3, dur: 4, want: BLACK(0.25) },
+  { name: '淡入 t=4 窗口外 → 什么都不画', evs: [{ overlay_type: 'fade_in', color: '#000000' }], t: 4, dur: 4, want: null },
+  { name: '淡出 t=0 全透 → 什么都不画', evs: [{ overlay_type: 'fade_out', color: '#000000' }], t: 0, dur: 4, want: null },
+  { name: '淡出 t=1（淡入的镜像）', evs: [{ overlay_type: 'fade_out', color: '#000000' }], t: 1, dur: 4, want: BLACK(0.25) },
+  { name: '淡出 t=2 中点', evs: [{ overlay_type: 'fade_out', color: '#000000' }], t: 2, dur: 4, want: BLACK(0.5) },
+  { name: '淡出 t=3', evs: [{ overlay_type: 'fade_out', color: '#000000' }], t: 3, dur: 4, want: BLACK(0.75) },
+  // 短窗（0.4s = 包络的长度）：包络同样不许叠 —— t=0 必须仍是全遮，t=0.2 恰好一半
+  { name: '淡入 0.4s 短窗 t=0 仍全遮', evs: [{ overlay_type: 'fade_in' }], t: 0, dur: 0.4, want: BLACK(1) },
+  { name: '淡入 0.4s 短窗 t=0.2', evs: [{ overlay_type: 'fade_in' }], t: 0.2, dur: 0.4, want: BLACK(0.5) },
+  // opacity = 遮罩的**最大**不透明度，乘在斜坡上（0 是合法值，不该被 `|| 1` 抬成全遮）
+  { name: '淡入 + opacity 0.6（t=0）', evs: [{ overlay_type: 'fade_in', color: '#101010', opacity: 0.6 }], t: 0, dur: 4,
+    want: { type: 'color', color: '#101010', opacity: 0.6 } },
+  { name: '淡入 + opacity 0.6（t=2 中点）', evs: [{ overlay_type: 'fade_in', color: '#101010', opacity: 0.6 }], t: 2, dur: 4,
+    want: { type: 'color', color: '#101010', opacity: 0.3 } },
+  { name: '淡入 + opacity 0 → 整窗不出画', evs: [{ overlay_type: 'fade_in', opacity: 0 }], t: 0, dur: 4, want: null },
+  { name: '淡入 不写颜色 → 缺省黑', evs: [{ overlay_type: 'fade_in' }], t: 0, dur: 4, want: BLACK(1) },
+  { name: '淡入 只有色档 → 取第一档当遮罩色', evs: [{ overlay_type: 'fade_in', colors: ['#203040', '#203040'] }], t: 0, dur: 4,
+    want: { type: 'color', color: '#203040', opacity: 1 } },
+  { name: '淡入 排在认不出的类型后面也照样生效', evs: [{ overlay_type: 'love', color: '#ff0000', opacity: 1 }, { overlay_type: 'fade_in' }], t: 0, dur: 4,
+    want: BLACK(1) },
+]
+
+console.log('\n淡入 / 淡出（整窗斜坡，不叠 0.4s 包络）')
+for (const c of FADE_CASES) {
+  check(`[template] ${c.name}`, tplAt(c.evs, c.t, c.dur), c.want)
+  check(`[engine  ] ${c.name}`, engAt(c.evs, c.t, c.dur), c.want)
+}
+
 console.log('\n色档 CSS（DOM 预览路径）')
 // 收尾 ')' 曾经漏掉，整条 background 非法被浏览器丢弃——这是"设了色档却什么都看不见"的直接原因
 const LIN = 'linear-gradient(to bottom right, #ff0000 0.0%,rgba(255,0,0,0) 100.0%)'
@@ -196,6 +237,16 @@ for (const [label, fn] of [['engine  ', engine.overlayFadeStop], ['template', tp
 
 // LOVE 分支只有页内预览支持过（canvas/engine/Rust 都没有），已删；模板里不该再有那套飘心元素
 check('[template] 已删除只有预览支持的 love 飘心分支', /lov_/.test(html), false)
+
+// ── 内建片头黑场已退役 ────────────────────────────────────────────────────
+// `intro-black` 原来是四条硬编码路径上的内建表现（DOM 黑幕 + GSAP 时间轴 / canvas 消费段 /
+// engine.js 求值器 / Rust `get_intro_black`），没有任何手动入口 —— 用户要的是「能改时长、能删」，
+// 所以整条退役成 overlay 的 `fade_in` / `fade_out` 两档。这里挡住"某个实现偷偷把它加回来"。
+const previewSrc = await readFile(join(root, 'webui', 'src', 'components', 'PolishPreview.vue'), 'utf8')
+console.log('\n内建片头黑场已退役（改成了 overlay 的 fade_in / fade_out）')
+check('[template] index.html 无 intro-black（CSS/DOM/GSAP/求值器全算）', /intro[-_]?black/i.test(html), false)
+check('[engine  ] engine.js 无 introBlack', /introBlack/i.test(engineSrc), false)
+check('[preview ] PolishPreview.vue 无 introBlack', /introBlack/i.test(previewSrc), false)
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

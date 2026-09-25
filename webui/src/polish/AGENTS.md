@@ -35,6 +35,11 @@
   `overlay_type == "gradient"` 的有效色档是 —— `colors` 滤掉空串后 ≥2 档就用它 / 恰好 1 档则用它 +
   同色零透明凑两档 / 没有 `colors` 但有 `color` 则 `[color, 同色零透明]` / 都没有就不渲染；
   `"color"` 以 `color` 为准、缺失时退回 `colors[0]`。**单色一律「该色 → 透明」**（用户定的语义）。
+  **`fade_in` / `fade_out`**（黑场淡入/淡出，2026-09）走另一条口：整窗就是过渡（`fade_in` 起点全遮 →
+  末端全透 = `opacity × (1 − dt/dur)`，`fade_out` 镜像），**不叠 0.4s 包络**（分支排在包络之前判），
+  `color` 缺省 `#000000`、`opacity` = 遮罩最大不透明度。内建片头黑场 `intro-black` 已整条退役，
+  片头那份是 `process` **只在初次后处理**补的 `fade_in` 事件（可拖可删、删掉后不再补，见
+  `process/AGENTS.md` Step 3c）。
   ⚠ 求值器**必须保证返回 ≥2 档且无空串**（出片路径 `n == 1` 是 `0/0 = NaN` 抛 `IndexSizeError`，
   空串色档抛 `SyntaxError`，两者都会**打断整个 chunk 的渲染**）；⚠ 兜底出来的第二档必须是
   **同色零透明**（`overlayFadeStop`），**不能用 CSS 的 `transparent`** —— canvas 渐变在非预乘空间

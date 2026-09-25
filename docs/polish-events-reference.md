@@ -12,7 +12,7 @@
 |---|---|---|
 | 定义 | `render-core/types.rs` 的 `Event`（serde tagged enum，`type` 字段） | 15 个变体 + 结构类 `Segment`/`Subtitle`/`MuteRange` |
 | 生成 | `polish/llm/segment.rs` Step1（分段）+ Step2（逐段生成事件） | LLM 按 prompt 写 `type/time/end/...` |
-| 后处理 | `process/mod.rs`（剥静音区间、贴纸落点/跨度、预算、音效规则）`process/fx.rs`（缺 `end` 补默认 + 瞬时跨度 clamp）`process/download.rs`（资产） | 把 LLM 的粗事件补成可出片的事件；写回 `polish.toml` |
+| 后处理 | `process/mod.rs`（剥静音区间、贴纸落点/跨度、预算、音效规则、片头 fade_in）`process/fx.rs`（缺 `end` 补默认 + 瞬时跨度 clamp）`process/download.rs`（资产） | 把 LLM 的粗事件补成可出片的事件；写回 `polish.toml` |
 | 消费 | 预览 `engine.js`（DOM 自绘）／出片 `timeline.rs`（wgpu 原生、wasm）／`templates/index.html`（Chrome+GSAP） | 逐帧求值成画面与声音 |
 
 `polish.toml` 里一段视频的全部事件都挂在 `[[segments]]` + `[[segments.events]]` 下（`segments[].events[]`）。
@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | `camera` | 持续 · 运镜 | `zoom`(远/中/近)、`anchor`/`anchor_to`、`origin`/`to_origin`、`cut`、`handheld` | 事件自带（秒） | 时间/起止/类型/zoom/anchor/anchor_to/cut/handheld/配音 |
 | `sticker` | 持续 · 贴纸 | `keyword`、`sticker_tag`、`name`、`source`、`x`、`y`、`sfx`、`sfx_volume` | 1.5~2.5s（prompt 建议；process 可延长到后一条字幕结束，≤ +50%） | 时间/起止/keyword→贴纸两级列表/配音 |
-| `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient)、`color`、`opacity`、`colors[]`、`shape`(linear/radial) | 0.5~5s（prompt 建议） | 时间/起止/类型/颜色/渐变/不透明度/形状/配音 |
+| `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient/fade_in/fade_out)、`color`、`opacity`、`colors[]`、`shape`(linear/radial) | 0.5~5s（prompt 建议；fade 两档整块时长＝渐变时长） | 时间/起止/类型/颜色/不透明度/配音（渐变档另有 colors/形状） |
 | `sfx` | 点 · 音效 | `name`(音效 id)、`volume`、`end` | 缺省 = 文件原始长度 | 时间/起止/音效列表/音量 |
 | `shake` | 瞬时 · 视觉 | `intensity`(默认 14) | cap 0.5 / 默认 0.3 | 时间/起止/intensity/配音 |
 | `flash` | 瞬时 · 视觉 | `color`(默认 `#ffffff`) | cap 0.3 / 默认 0.25 | 时间/起止/color/配音 |
@@ -50,7 +50,7 @@
 | `subtitles`（`data/subtitles.json`） | `start`/`end`/`text`/`html` | **拖 / 左右缘缩放** / 面板改内容 / 拆分 / 设入出点 / 删除 / ＋新增（与事件同一套控件） |
 | `mute_ranges` + `silence_ranges` | `start`/`end` | 添加 / **拖 / 左右缘缩放** / 拆分 / 删除；「去静音」把检测结果**并入** `mute_ranges`（与现有屏蔽相加，重叠/相邻合成一段），只有自动加进去的那部分记进 `silence_ranges`（撤销按它相减回退） |
 
-另外两个非事件的内建表现：片头 0.5s 黑场淡出（`intro-black`）、字幕/弹幕/贴纸图层本身。
+另外非事件的内建表现：字幕/弹幕/贴纸图层本身 —— 原来的内建片头黑场（`intro-black`）**已退役**，片头渐入改由 `process` 在**初次**后处理补的 `overlay` 事件承担（见 §2.3）。
 
 ---
 
@@ -196,16 +196,24 @@ manual = true           # 手工定过时间（编辑器里拖过/改过）→ �
 
 ```toml
 type = "overlay"; time = 0.0; end = 5.0
-overlay_type = "gradient"   # "color" | "gradient"
-color = "#ff0000"           # color 用；gradient 用 colors[]
+overlay_type = "gradient"   # "color" | "gradient" | "fade_in" | "fade_out"
+color = "#ff0000"           # color / fade 两档用；gradient 用 colors[]
 colors = ["rgba(0,0,0,0)", "rgba(0,0,0,0.6)"]
-opacity = 0.3               # 默认 1
+opacity = 0.3               # 默认 1；fade 两档 = 遮罩色的最大不透明度
 shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 ```
 
 - 表现：进入 0.4s 淡入、结束前 0.4s 淡出；`color` 是纯色覆盖，`gradient` 是线性/径向渐变。
-- 编辑器：泳道拖 / 左右缘缩放 + 属性面板 —— `overlay_type` 下拉（纯色 / 渐变）、颜色取色器、渐变两端色、
-  不透明度、形状（线性 / 径向）全部可改（`colors` 在面板里就是两个取色器）。
+- `fade_in` / `fade_out`（**黑场淡入 / 淡出**，名字说的是画面）：**整窗就是过渡本身**，线性、**不叠**那
+  0.4s 包络 —— `fade_in` 起点全遮 → 末端全透（`opacity × (1 − dt/dur)`），`fade_out` 镜像；`color` 缺省
+  `#000000`，所以「纯黑遮罩 + `opacity = 1`」＝开头从纯黑淡开。窗口之外照常是正常画面（覆盖层没有
+  「无限保持」的语义，想让画面**停在**黑场就把末端拖到片子结束）。
+- 片头那 0.5s 原来是内建 `intro-black` 硬编码，已退役：现在由 `process` 在**初次**后处理给首段补一条 `fade_in`
+  事件，在时间轴上可拖 / 可改时长 / 可改色 / 可删。**只补这一次** —— 删掉之后再跑 `process` **不会**补回来
+  （那是你的意图，不是"默认观感没生效"）；想拿回默认片头就删掉 `polish.toml` 里的 `intro_fade_seeded` 那一行再跑。
+- 编辑器：泳道拖 / 左右缘缩放 + 属性面板 —— `overlay_type` 下拉（纯色 / 渐变 / 淡入（黑场）/ 淡出（黑场））、
+  颜色取色器、渐变两端色、不透明度、形状（线性 / 径向）可改（`colors` 在面板里就是两个取色器）；
+  fade 两档只留颜色（整块时长＝渐变时长，拖右缘改）。
 
 ### 2.4 音效 `sfx`（点事件 + 挂在别的特效上）
 
@@ -292,7 +300,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 | 音效的 `name` / `volume` | 属性面板（音效目录列表） | 同上 |
 | 任意视觉事件的 `sfx` 引用 / `sfx_volume` | 属性面板「配声」 | 同上 |
 | 运镜的**方式**（平滑 / 硬切 `cut`）、`zoom`、`anchor` / `anchor_to` | 属性面板（「方式」+「景别」+「聚焦/移到」） | 同上 |
-| 覆盖层 `overlay_type` / `color` / `colors` / `opacity` / `shape` | 属性面板（下拉 + 取色器） | 同上 |
+| 覆盖层 `overlay_type` / `color` / `colors` / `opacity` / `shape` | 属性面板（下拉 + 取色器；fade 两档只留颜色） | 同上 |
 | 瞬时特效 `intensity`（shake/stutter/split）、`color`（flash/hue_shift/color_shift） | 属性面板 | 同上 |
 | 分段 `note` / `fx` / `start` / `end`（体拖、右缘缩放、面板确认后删） | 时间轴 + 属性面板 | 同上 |
 | 字幕增删改拆、设入出点、拖动 | 字幕泳道 + 属性面板 | `PUT /api/polish/subtitles` |
@@ -372,5 +380,6 @@ Step 2b 按它们反选安全区、**重写每个贴纸的 `x/y`**，Step 2d 把
       两者上限都是 segment 数 − 1（至少 1）
 贴纸盒子：280×280，安全边距 32px；popIn 0.35 → floatUp 0.4（上移18px）→ hold 到 end → fadeOut 0.3
 弹幕：1920×1080 画布上半，y = y/1920*540，travel_duration 默认 8s，opacity 0.9
-片头：0.5s 黑场淡出（内建，不是事件）
+片头淡入：process 只在初次后处理给「时间最早且 start<0.5s」的段补一条 overlay fade_in（#000000 / opacity 1 /
+          opacity 1 / 0.5s 或到段末）；判据 polish.toml 的 intro_fade_seeded；段跨度<0.2s、或该窗口已有覆盖事件则不补；可删可拖，删掉再跑不会补（想拿回就删掉那一行）
 ```

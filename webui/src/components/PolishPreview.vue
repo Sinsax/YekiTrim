@@ -38,7 +38,6 @@
           </div>
         </div>
       </div>
-      <div class="intro-black" :style="{ opacity: introBlack }"></div>
       <!-- 框选布局：在此模式下视频运镜暂停（缩放复位），直接在整帧上拖出精确矩形 -->
       <div v-if="selectMode" class="sel-layer" @pointerdown.prevent="startSel('new', $event)">
         <div class="sel-box" :style="selBoxStyle" @pointerdown.prevent.stop="startSel('move', $event)">
@@ -89,7 +88,7 @@ import { csrfHeaders } from '../api/client'
 import { addClient } from '../stores/log'
 import { clipMediaUrl } from '../utils'
 import { fontUrl } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, introBlackAt, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -248,7 +247,6 @@ const hueFlash = computed(() => getHueShiftFlash(idx.value, current.value))
 const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
 const vignette = computed(() => getVignette(idx.value, current.value))
 const colorOverlay = computed(() => getOverlayState(idx.value, current.value))
-const introBlack = computed(() => introBlackAt(current.value))
 const capRows = computed(() => subsAt(idx.value, current.value))
 
 // A5 字幕折行：与出片（templates/index.html renderFrame）同一套 wrapCaptionParts
@@ -907,7 +905,6 @@ function pause() {
 /* A5 折行：每行一个块级 nowrap 行 —— 断行由 wrapCaptionParts 决定（与出片一致） */
 .cap-line { display:block; white-space:nowrap; }
 .cap .hl { color:var(--hl-color, #f56b41); }
-.intro-black { position:absolute; inset:0; z-index:50; background:#000; pointer-events:none; }
 
 /* ---- 框选布局覆盖层：盒子外用超大 box-shadow 压暗，突出选框 ---- */
 .sel-layer { position:absolute; inset:0; z-index:70; cursor:crosshair; touch-action:none; }

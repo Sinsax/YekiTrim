@@ -22,6 +22,9 @@
   - 安全区读取优先级 `free_rect()`（自由选框 → grid → origin）与 `grid_rect`（必须与
     `templates/index.html` 的 `liverOrigin` 对齐）。
 - `timeline.rs`：`overlay_stops`（**覆盖层契约的全文就在它的文档注释里** —— 一条规则、四处实现）、
+  `get_overlay_state`（覆盖层求值：`color`/`gradient` 走 0.4s 进出包络，`fade_in`/`fade_out` 是**整窗
+  线性斜坡** —— 分支必须排在包络之前，叠了起点不透明度会乘成 0、黑场打不开；内建片头黑场
+  `intro_black` 已整条退役，片头那份由 `process` 只在初次后处理补 `fade_in` 事件）、
   `upgrade_event_times`（**在反序列化前**把 `end = time + duration` 换算好）、
   `handheld_sway_matches_js_reference`（Rust↔JS 采样点对拍）。
 - `legacy.rs`：老工程字段兼容（与 `upgrade_event_times` 同一条"读时兜底"路线）。

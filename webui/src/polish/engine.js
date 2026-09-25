@@ -466,11 +466,21 @@ export function getOverlayState(idx, t) {
       const fadeIn = 0.4, fadeOut = 0.4
       // 数值判定，不用 `|| 1` —— 不透明度 0 是合法值，不能被 falsy 判成 1
       let opacity = typeof ev.opacity === 'number' ? ev.opacity : 1
+      const ot = ev.overlay_type || ''
+      const stops = overlayStops(ev)
+      // fade_in/fade_out：**整窗就是过渡本身**（fade_in 起点全遮 → 末端全透，fade_out 反过来），
+      // 是线性斜坡，**不叠**下面那 0.4s 进出包络 —— 叠了起点会乘成 0，黑场压根打不开
+      // （用户看到的症状就是「开头渐入没生效」）。与出片模板 / Rust `get_overlay_state` 同口径。
+      if (ot === 'fade_in' || ot === 'fade_out') {
+        opacity *= ot === 'fade_in' ? 1 - dt / dur : dt / dur
+        if (opacity < 0.005) continue
+        // 缺省黑：面板切到这两档时不写颜色也能用
+        const maskCol = (ev.color != null && String(ev.color).trim()) || (stops ? stops[0] : '') || '#000000'
+        return { type: 'color', color: maskCol, opacity }
+      }
       if (dt < fadeIn) opacity *= dt / fadeIn
       else if (dur - dt < fadeOut) opacity *= (dur - dt) / fadeOut
       if (opacity < 0.005) continue
-      const ot = ev.overlay_type || ''
-      const stops = overlayStops(ev)
       if (ot === 'color') {
         const solid = (ev.color != null && String(ev.color).trim()) || (stops ? stops[0] : '')
         if (solid) return { type: 'color', color: solid, opacity }
@@ -481,10 +491,6 @@ export function getOverlayState(idx, t) {
     }
   }
   return null
-}
-
-export function introBlackAt(t) {
-  return t < 0.5 ? 1 - E.sineOut(t / 0.5) : 0
 }
 
 function getStutterVideo(idx, t) {
