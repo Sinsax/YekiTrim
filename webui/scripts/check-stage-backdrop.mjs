@@ -1,7 +1,7 @@
 // 竖屏「模糊衬底」（背景层）的契约与回归钉子 —— 出片 canvas 路径 + 预览 DOM 路径。
 //
 // 用户报的现象（2026-09-20）：**精修竖屏时，震动等特效会把主画面挪开，露出来的是纯黑**，
-// 需要「在视频底下垫一层当前帧的模糊」。两个叠加成因，缺一条都还是黑：
+// 需要「在视频底下垫一层当前帧的模糊」。三个叠加成因，缺一条都还是黑：
 //   ① `resolve_stage` 曾经在 `axis=fill` 时**强制 `bg=none`**，把用户选的"模糊"整个吞掉
 //      —— 竖画布铺满（源比例 == 画布比例）时恰好落到这一支，于是衬底根本没被要求画。
 //      现在门控是**画布方向**：`axis=="fill" && !portrait` 才 none（横画布铺满保持零回归）。
@@ -10,6 +10,12 @@
 //      `clearRect` 之后的透明区落进 JPEG 就是纯黑。只把 `stage.bg` 消费在 DOM 上，表现就是
 //      「预览里有模糊底、成片被 shake 挪开露纯黑」—— 不报错、不崩溃，只有逐帧像素能发现。
 //      本脚本钉住出片侧的消费面与行为（真实像素实证见 `crates/vtrim-polish/tests/portrait_backdrop.rs`）。
+//   ③ 视频层（主画面）在出片路径里**被硬铺满整块画布**（`ctx.drawImage(videoBitmap, 0, 0, CW, CH)`），
+//      `_canvas.stage` 只被背景层消费 —— 源比例 ≠ 画布比例时整帧被拉伸。
+//      用户报的现象（2026-09-21）：**竖素材进横画布，导出里被拉成宽屏**（要的是"竖素材 + 模糊关键帧"）。
+//      修法：出片侧自己按 `_canvas.stage` 算摆放矩形（`stageDrawRect`，与 CSS `#video-wrap` / `#fit-box`
+//      逐值同义），再用 CTM `translate + scale` 把整帧送进矩形 —— `drawImage` 的字面量保持不变
+//      （③ 的顺序钉子与 ⑤ 的变异都用它当锚点，别顺手改成 dest 矩形参数）。
 //
 // 运行： node webui/scripts/check-stage-backdrop.mjs
 //
@@ -113,6 +119,11 @@ function loadBackdrop(src) {
 }
 
 const tpl = loadBackdrop(html)
+
+/** 把 `stageDrawRect` 装进一个作用域（全部走参数，不依赖 CW/CH/STAGE 全局，便于直接喂几何用例） */
+function loadRect(src) {
+  return new Function(`${extractFunction(src, 'stageDrawRect')}\n return stageDrawRect`)()
+}
 
 // ── 假 2D 上下文：记录每个绘制调用（含当时的 filter / fillStyle） ─────────────
 function fakeCtx() {
@@ -264,6 +275,71 @@ console.log('\n③b renderFrame 里的裸变量（ReferenceError = 整块 chunk 
     /['"`]\s*700\s*['"`]\s*\+\s*fs\s*\+/.test(extractFunction(withFs, 'renderFrame')), true)
 }
 
+// ── ③c 视频层摆位：源比例 ≠ 画布比例时等比缩进（不许拉伸）───────────────────
+// 与 CSS 的对应关系（`applyStage` 写入的那几条规则）：
+//   `#video-wrap` 的 padding = `--stage-pad`；`#fit-box` 的 axis-*/stage-* = 布局盒；object-fit = cover/contain
+// 这里的判据全部是**几何**判据：等比（w/h == 源比例）+ 铺满的那条边贴齐 + position 三档 + padding / scale。
+console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
+{
+  const rect = loadRect(html)
+  const SW = 720, SH = 1280            // 9:16 竖素材
+  const WIDE_W = 1280, WIDE_H = 720    // 16:9 横素材
+  /** 与源比例一致 = 1（不拉伸）；≈1.78 就是被拉宽、≈0.32 就是被压扁 */
+  const ratio = (r, sw, sh) => r.w / r.h / (sw / sh)
+
+  // ① 存量零回归：铺满（axis=fill、无 padding、源比例 == 画布比例）必须精确是整块画布
+  check('axis=fill + 同比例 → 精确 (0,0,CW,CH)（存量横画布逐像素零回归）',
+    rect(1920, 1080, 1920, 1080, { axis: 'fill' }), { x: 0, y: 0, w: 1920, h: 1080 })
+
+  // ② 竖素材进横画布（axis=x）：按高度铺满 + 等比（用户报的"被拉成宽屏"就是这条判据翻面）
+  for (const [pos, wantX] of [['left', 0], ['center', 656.25], ['right', 1312.5]]) {
+    const r = rect(SW, SH, 1920, 1080, { axis: 'x', position: pos })
+    check(`竖素材进横画布 axis=x ${pos}：等比（720×1280 → 607.5×1080）`, approx(ratio(r, SW, SH), 1, 1e-9), true, JSON.stringify(r))
+    check(`竖素材进横画布 axis=x ${pos}：高度铺满、交叉轴居中`, approx(r.h, 1080, 1e-6) && approx(r.y, 0, 1e-6), true, JSON.stringify(r))
+    check(`竖素材进横画布 axis=x ${pos}：水平摆位 x=${wantX}`, approx(r.x, wantX, 1e-6), true, `x=${r.x}`)
+  }
+
+  // ③ 横素材进竖画布（axis=y）：按宽度铺满 + 上下三档
+  for (const [pos, wantY] of [['top', 0], ['center', 656.25], ['bottom', 1312.5]]) {
+    const r = rect(WIDE_W, WIDE_H, 1080, 1920, { axis: 'y', position: pos })
+    check(`横素材进竖画布 axis=y ${pos}：等比（1280×720 → 1080×607.5）`, approx(ratio(r, WIDE_W, WIDE_H), 1, 1e-9), true, JSON.stringify(r))
+    check(`横素材进竖画布 axis=y ${pos}：宽度铺满、交叉轴居中`, approx(r.w, 1080, 1e-6) && approx(r.x, 0, 1e-6), true, JSON.stringify(r))
+    check(`横素材进竖画布 axis=y ${pos}：垂直摆位 y=${wantY}`, approx(r.y, wantY, 1e-6), true, `y=${r.y}`)
+  }
+
+  // ④ fill 分支 = cover（4:3 源进 16:9 画布：裁切而不是拉伸）
+  const cover = rect(1440, 1080, 1920, 1080, { axis: 'fill' })
+  check('axis=fill + 4:3 源 → 等比裁切（不是拉伸）', approx(ratio(cover, 1440, 1080), 1, 1e-9), true, JSON.stringify(cover))
+  check('axis=fill 的裁切仍然盖满画布（与 stageCoverRect 同一语义）', coversCanvas(cover, 1920, 1080), true, JSON.stringify(cover))
+
+  // ⑤ padding：只改布局盒（内容框 = 画布 − 四周 padding），不裁剪
+  const padded = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'left', padding: 100 })
+  check('padding=100 时内容框 = (100,100,1720,880) 内的等比摆放',
+    approx(padded.x, 100, 1e-6) && approx(padded.y, 100, 1e-6) && approx(padded.h, 880, 1e-6) && approx(padded.w, 495, 1e-6),
+    true, JSON.stringify(padded))
+
+  // ⑥ scale 绕盒心放大（与 #fit-box 的 transform-origin:center 一义）
+  const scaled = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'center', scale: 1.25 })
+  check('scale=1.25 绕盒心：中心不动、宽高 ×1.25',
+    approx(scaled.w, 759.375, 1e-6) && approx(scaled.h, 1350, 1e-6)
+    && approx(scaled.x + scaled.w / 2, 960, 1e-6) && approx(scaled.y + scaled.h / 2, 540, 1e-6),
+    true, JSON.stringify(scaled))
+
+  // ⑦ 源尺寸拿不到（0×0）时退回整块画布：不许 NaN 画出空白帧
+  check('源尺寸缺失 → 退回整块画布（无 NaN）',
+    rect(0, 0, 1920, 1080, { axis: 'x' }), { x: 0, y: 0, w: 1920, h: 1080 })
+
+  // ⑧ 源码消费面：算了要用（不是算完还硬铺满）
+  const srDecl = code.indexOf('var sr = stageDrawRect(')
+  const videoLayer = code.indexOf('ctx.drawImage(videoBitmap, 0, 0, CW, CH)')
+  check('renderFrame 里算出了摆放矩形', srDecl > 0, true)
+  check('衬底之后、视频层之前算矩形', srDecl > code.indexOf('drawStageBackdrop(ctx, videoBitmap)') && srDecl < videoLayer, true)
+  check('drawImage 之前把 CTM 送进矩形（translate + scale）',
+    code.indexOf('ctx.translate(sr.x, sr.y)') > srDecl && code.indexOf('ctx.translate(sr.x, sr.y)') < videoLayer, true)
+  check('运镜不动点映射进画面矩形（与 DOM 预览挂 #fit-box 同一语义）',
+    code.includes('sr.x + cam.ox / CW * sr.w') && code.includes('sr.y + cam.oy / CH * sr.h'), true)
+}
+
 // ── ④ 预览 DOM 路径：模糊层必须在主画面之下并被 .on 打开 ─────────────────────
 console.log('\n④ 预览 DOM 路径（模板 + WebUI 编辑器）')
 {
@@ -325,6 +401,21 @@ console.log('\n⑤ 自证有效：变异后判据必须翻面（否则本脚本�
     const nRestore = c.calls.filter((x) => x.op === 'restore').length
     check('[变异] 没有 save/restore 时配对判据翻面', nSave === nRestore && nSave > 0, false)
   }
+
+  // 变异 6：axis=x 分支改回「拉伸」（= 用户报的现象）—— 等比判据必须翻面
+  const stretch = html.replace('h=bhgt; w=bw*h/bh;', 'w=bwid; h=bhgt;')
+  check('[变异] 拉伸替换确实命中源码', stretch !== html, true)
+  if (stretch !== html) {
+    const r = loadRect(stretch)(720, 1280, 1920, 1080, { axis: 'x', position: 'left' })
+    check('[变异] 改回拉伸 → 等比判据翻面（w/h 不再等于 9:16）',
+      approx(r.w / r.h / (720 / 1280), 1, 1e-9), false, JSON.stringify(r))
+  }
+
+  // 变异 7：删掉 CTM 摆位（矩形算了不用 = 视频层还是硬铺满）
+  const noCtm = html.replace('ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);', '')
+  check('[变异] 去掉 CTM 摆位（源码确实被改了）', noCtm !== html, true)
+  check('[变异] 去掉 CTM 摆位 → 消费面判据翻面',
+    stripComments(noCtm).indexOf('ctx.translate(sr.x, sr.y)') >= 0, false)
 }
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

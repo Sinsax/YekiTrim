@@ -9,8 +9,10 @@
 //! 本测试跑 **A/B 两次**，第二次把服务给页面的 HTML 里的 `STAGE_BG` 强制改成 `'none'`
 //! （等价于改造前的实现）：
 //! - A（真模板）：四角亮度必须 > 阈值（= 画上了衬底）
-//! - B（变异体）：同一帧四角必须是纯黑（= 证明这个探针**真的能看见**这个缺陷）
-//! 只断言 A 不断言 B，等于不知道探针是否空转。
+//! - B（变异体）：在**真露出衬底的那几帧**上，四角必须明显更暗
+//!   （= 证明这个探针**真的能看见**这个缺陷）
+//! 只断言 A 不断言 B，等于不知道探针是否空转；但 B 只能断在"衬底真露出来"的帧上 ——
+//! 判据与理由见下面 `EXPOSED_BACKDROP_MAX_LUMA`。
 //!
 //! 运行（需要能起 Chrome 的环境）：
 //! ```text
@@ -20,14 +22,21 @@
 //! ```
 //! - `VTEDIT_BACKDROP_T`（秒，默认 `1.5`）= 探针时刻，要落在**主画面被挪开**的那一段里；
 //! - `VTEDIT_BACKDROP_SPAN`（秒，默认 `1.0`）= 以 T 为中心渲染多长一段（30fps → 帧数）。
+//! - 跑完先看输出的「真露底 n / 总帧」：**n = 0 就换个 `T`**（这一段里主画面把四角全盖住了，
+//!   衬底压根没露出来，A/B 比的是同一份像素，什么都看不出来）。
 //!   这一段**每一帧都要画出来**，所以它同时是"逐帧绘制路径"的冒烟测试：
 //!   页面里任何一处 `ReferenceError`（实测踩过：字幕分支里一个没声明的 `fs`
 //!   → `Chunk: Render error: fs is not defined`，**所有带字幕的片段都导不出来**）
 //!   都会让整块 chunk 失败、这里帧数对不上。
 //!
 //! 探针工程可以用 `target/tmp-vertprobe/proj`（内置生成脚本没有，是手里那个竖屏工程的最小复刻：
-//! 720×1280 源 + 画中画相机 + 全特效 + 一条 30 字必折行的字幕 + 两条弹幕），
-//! 也可以指向真实工程 —— 但真实工程得挑一个主画面真被挪开的时刻，否则四角本来就是画面本身。
+//! 720×1280 源 + 画中画 + 全特效 + 一条 30 字必折行的字幕 + 两条弹幕），也可以指向真实工程
+//! —— 但真实工程得挑一个主画面真被挪开的时刻，否则四角本来就是画面本身。
+//!
+//! ⚠️ 这个"画中画"**不许**再用 `[[segments.events]] type="camera"` 做（探针工程最初是那样写的）：
+//! 竖素材的运镜已被模板门控成 `zoom=1.0 / handheld=0`，运镜再也挪不开主画面 —— 靠它露底
+//! 就是靠在一个**刚被修掉的缺陷**上（实测：门控落地后 30 帧里只剩 1 帧真露底，探针近乎空转）。
+//! 现在改由 `[stage] scale` 结构性露底，运镜事件留着只为跑那条被门控的代码路径。
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +57,23 @@ const BACKDROP_MIN_LUMA: f64 = 20.0;
 /// 视频层之后的，它会把变异体那圈黑也一起抬亮（实测 noise 淡出期 0 → 14）。
 /// 相对判据不受这类覆盖层影响，而且正是"探针看得见这个缺陷"的直接表述。
 const AB_DELTA_MIN_LUMA: f64 = 40.0;
+
+/// 「这一帧真的把衬底露出来了」的判定：变异体（不画衬底）的最暗角必须接近它下面的底色。
+///
+/// ⚠️ 为什么 A/B 判据需要这个前置条件：四角被主画面盖住的帧里，A/B 比的就是**同一份画面像素**
+/// （衬底压根没露出来），差值天然 ≈ 0 —— 实测同一段 30 帧里，主画面只在特效把它推开的一两帧
+/// 才让出边角。把这类帧也要求成"变异体必须更暗"，等于要求**每一帧**都露底，那是拿判据去赌
+/// 运镜/特效的轨迹，不是判据。所以：
+/// - 「至少有一帧露底」= 探针有效性的下限（否则整段都在空转）；
+/// - 「每个露底帧的 A/B 差 ≥ `AB_DELTA_MIN_LUMA`」= 缺陷已修的直接表述。
+///
+/// 变异体那条边什么都不画，而画布每帧都 `clearRect` 过 → 透明编码成纯黑（实测 0.0）。
+///
+/// 阈值 12 与上面 ① 是配套的：① 要求真模板四角 > `BACKDROP_MIN_LUMA`(20)，而四角被盖住的帧里
+/// A/B 是同一份像素 → 变异体那角也 ≳ 20（> 12）→ 被跳过；反过来只有真缺了衬底的角才会掉到 12
+/// 以下。全屏覆盖层（`noise`）把缺衬底的角抬到 13~21 的帧同样被跳过 —— 它们不提供证据、
+/// 也不需要（只要窗口里还剩得下能判定的帧）。
+const EXPOSED_BACKDROP_MAX_LUMA: f64 = 12.0;
 
 fn luma(r: u8, g: u8, b: u8) -> f64 {
     0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64
@@ -232,7 +258,9 @@ async fn portrait_backdrop_is_not_black() {
             );
         }
     }
-    // ② A/B 自证：同帧只差一个 `STAGE_BG`，变异体的四角必须明显更暗（否则探针看不见缺陷、在空转）
+    // ② A/B 自证：同帧只差一个 `STAGE_BG`，**在真露底的那几帧**变异体的四角必须明显更暗
+    //    （否则探针看不见缺陷、在空转）+ 整段至少得有一帧真露底。判据为什么只落在露底帧上、
+    //    为什么不能逐帧都要求见 `EXPOSED_BACKDROP_MAX_LUMA` 的注释。
     assert_eq!(
         real.len(),
         mutated.len(),
@@ -240,21 +268,36 @@ async fn portrait_backdrop_is_not_black() {
         real.len(),
         mutated.len()
     );
-    let mut worst_delta = f64::MAX;
+    let mut exposed: Vec<(f64, f64)> = Vec::new(); // (时刻, A/B 最暗角之差)
     for ((real_jpeg, tt), (mut_jpeg, _)) in real.iter().zip(mutated.iter()) {
         let (r, m) = (min_corner(real_jpeg), min_corner(mut_jpeg));
-        worst_delta = worst_delta.min(r - m);
+        if m > EXPOSED_BACKDROP_MAX_LUMA {
+            continue; // 四角还是主画面本身（衬底没露出来）→ 这一帧 A/B 不可比
+        }
         assert!(
             r - m >= AB_DELTA_MIN_LUMA,
-            "t={tt:.2}s 真模板最暗角 {r:.1} vs 变异体 {m:.1}，只差 {:.1} < {AB_DELTA_MIN_LUMA} —— 衬底没起作用，或探针在空转",
+            "t={tt:.2}s（露底帧）真模板最暗角 {r:.1} vs 变异体 {m:.1}，只差 {:.1} < {AB_DELTA_MIN_LUMA} —— 衬底没起作用",
             r - m
         );
+        exposed.push((*tt, r - m));
     }
+    assert!(
+        !exposed.is_empty(),
+        "整段 [{start:.2}, {end:.2}) 没有一帧把主画面挪开（变异体四角最暗 {:.1}，全是画面本身）—— \
+         探针在空转，把 VTEDIT_BACKDROP_T 挪到主画面真被推出画布的时刻（或让探针工程结构性露底）",
+        mutated.iter().map(|(j, _)| min_corner(j)).fold(f64::MAX, f64::min)
+    );
+    let worst_delta = exposed.iter().map(|(_, d)| *d).fold(f64::MAX, f64::min);
+    let real_min = real.iter().map(|(j, _)| min_corner(j)).fold(f64::MAX, f64::min);
     println!(
-        "✓ {} 帧全部渲染成功、四角都是衬底（最暗角 {:.1}）；同帧变异体最暗角平均低 {:.1}（最小 {:.1}）—— 探针有效且缺陷已修",
+        "✓ {} 帧全部渲染成功、四角都是衬底（最暗角 {:.1}）；其中 {} / {} 帧真露底（t={:.2}~{:.2}s），\
+         这些帧的 A/B 差最小 {:.1} —— 探针有效且缺陷已修",
         real.len(),
-        real.iter().map(|(j, _)| min_corner(j)).fold(f64::MAX, f64::min),
-        real.iter().zip(mutated.iter()).map(|((r, _), (m, _))| min_corner(r) - min_corner(m)).sum::<f64>() / real.len() as f64,
+        real_min,
+        exposed.len(),
+        real.len(),
+        exposed[0].0,
+        exposed[exposed.len() - 1].0,
         worst_delta
     );
 }
