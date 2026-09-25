@@ -769,6 +769,18 @@ pub fn overlay_stops(color: &Option<String>, colors: &Option<Vec<String>>) -> Op
 }
 
 /// 与 JS `getOverlayState` 一致。
+///
+/// `overlay_type` 认四档：`color`（纯色）、`gradient`（色档渐变）、`fade_in` / `fade_out`
+/// （**黑场淡入 / 淡出** —— 名字说的是**画面**：`fade_in` 画面从遮罩里浮起来、`fade_out` 沉进去）。
+/// 这两档**整窗就是过渡本身**（`fade_in`：窗口起点全遮 → 窗口末端全透；`fade_out` 反过来），
+/// 不叠那 0.4s 的进出包络；`color` 是遮罩颜色（缺省黑）、`opacity` 是遮罩的最大不透明度。
+/// 想让画面**停在**黑场，把窗口末端拖到片子结束 —— 事件窗口之外照常是正常画面，
+/// 覆盖层没有"无限保持"的语义（这是刻意的）。
+///
+/// ⚠ 片头那 0.5s 黑场原来是**内建** `intro-black`（四处硬编码、没有任何手动入口，用户
+/// 2026-09-22 提出要能自己改）。现在由 `process` 在首段补一条 `fade_in` 事件表达：它出现在
+/// 时间轴上，可拖、可改时长、可换色、可删。内建那套**已整条退役**（本文件、出片模板、
+/// `engine.js`、`PolishPreview.vue`、wgpu effects 同步删），别再往回加。
 pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState> {
     for o in items {
         let et = o.time;
@@ -783,14 +795,6 @@ pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState>
             Event::Overlay { opacity, .. } => opacity.unwrap_or(1.0),
             _ => 1.0,
         };
-        if dt < fade_in {
-            opacity *= dt / fade_in;
-        } else if dur - dt < fade_out {
-            opacity *= (dur - dt) / fade_out;
-        }
-        if opacity < 0.005 {
-            continue;
-        }
         let Event::Overlay {
             overlay_type,
             color,
@@ -802,6 +806,36 @@ pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState>
             continue;
         };
         let stops = overlay_stops(color, colors);
+        if overlay_type == "fade_in" || overlay_type == "fade_out" {
+            // 整窗线性斜坡：窗口就是过渡，不叠 0.4s 包络（叠了会变成"两头各一段缓入缓出"）
+            opacity *= if overlay_type == "fade_in" {
+                1.0 - dt / dur
+            } else {
+                dt / dur
+            };
+            if opacity < 0.005 {
+                continue;
+            }
+            let solid = color
+                .as_ref()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .or_else(|| stops.as_ref().and_then(|s| s.first()).map(|s| s.as_str()))
+                // 淡入/淡出缺省就是黑场：面板切到这两档时不写颜色也能用
+                .unwrap_or("#000000");
+            return Some(OverlayState::Color {
+                color: solid.to_string(),
+                opacity,
+            });
+        }
+        if dt < fade_in {
+            opacity *= dt / fade_in;
+        } else if dur - dt < fade_out {
+            opacity *= (dur - dt) / fade_out;
+        }
+        if opacity < 0.005 {
+            continue;
+        }
         if overlay_type == "color" {
             // color 缺失时退回第一档：面板把类型从「渐变」切到「纯色」不该把颜色弄丢
             let solid = color
@@ -1399,6 +1433,127 @@ mod tests {
             }
             other => panic!("应落到第二条覆盖层，实得 {other:?}"),
         }
+    }
+
+    /// fade 两档的专用构造：`opacity` 是遮罩**最大**不透明度。
+    fn fade_ev(time: f64, dur: f64, kind: &str, color: Option<&str>, opacity: f64) -> Event {
+        let mut ev = overlay_ev(time, dur, kind, color, None);
+        if let Event::Overlay { opacity: o, .. } = &mut ev {
+            *o = Some(opacity);
+        }
+        ev
+    }
+
+    /// ⚠ `fade_in` 是**整窗线性斜坡**：窗口起点全遮、末端全透、中点 0.5。
+    /// 关键是**不叠**那 0.4s 进出包络 —— 叠了起点会变成 0，黑场压根打不开
+    /// （用户看到的症状就是「开头渐入没生效」）。出片模板与 `engine.js` 同口径，
+    /// JS 侧对拍见 `node webui/scripts/check-overlay.mjs`。
+    #[test]
+    fn fade_in_is_a_whole_window_ramp() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(fade_ev(1.0, 2.0, "fade_in", None, 1.0))];
+        let idx = build_index(&cfg.segments);
+        // 起点：全遮 + 缺省黑（面板切到「淡入」不写颜色也能用）
+        assert_eq!(
+            get_overlay_state(1.0, &idx.overlay),
+            Some(OverlayState::Color {
+                color: "#000000".into(),
+                opacity: 1.0
+            })
+        );
+        match get_overlay_state(2.0, &idx.overlay) {
+            Some(OverlayState::Color { color, opacity }) => {
+                assert_eq!(color, "#000000");
+                assert!((opacity - 0.5).abs() < 1e-9, "中点应 0.5，实得 {opacity}");
+            }
+            other => panic!("中点应仍是黑幕，实得 {other:?}"),
+        }
+        // 窗口之外没有"无限保持"的语义：想停在黑场就把末端拖到片子结束
+        assert_eq!(get_overlay_state(0.99, &idx.overlay), None);
+        assert_eq!(get_overlay_state(3.0, &idx.overlay), None);
+    }
+
+    /// `fade_out` 是 `fade_in` 的镜像；窗口起点不透明度 0（没画东西）→ 返回 `None`。
+    #[test]
+    fn fade_out_mirrors_fade_in() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(fade_ev(1.0, 2.0, "fade_out", None, 1.0))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(get_overlay_state(1.0, &idx.overlay), None);
+        // 前 1% 窗口低于 0.005 阈值（与 color / gradient 同一条判据）
+        assert_eq!(get_overlay_state(1.005, &idx.overlay), None);
+        match get_overlay_state(2.0, &idx.overlay) {
+            Some(OverlayState::Color { color, opacity }) => {
+                assert_eq!(color, "#000000");
+                assert!((opacity - 0.5).abs() < 1e-9, "中点应 0.5，实得 {opacity}");
+            }
+            other => panic!("中点应仍是黑幕，实得 {other:?}"),
+        }
+    }
+
+    /// `opacity` 是**遮罩最大不透明度**（乘在斜坡上），颜色可换 —— 「黑色遮罩」只是缺省。
+    #[test]
+    fn fade_opacity_scales_the_ramp() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(fade_ev(1.0, 2.0, "fade_in", Some("#ff3232"), 0.6))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(
+            get_overlay_state(1.0, &idx.overlay),
+            Some(OverlayState::Color {
+                color: "#ff3232".into(),
+                opacity: 0.6
+            })
+        );
+        match get_overlay_state(1.5, &idx.overlay) {
+            Some(OverlayState::Color { opacity, .. }) => {
+                assert!((opacity - 0.45).abs() < 1e-9, "0.6 × 0.75 应 0.45，实得 {opacity}");
+            }
+            other => panic!("实得 {other:?}"),
+        }
+    }
+
+    /// fade 取色链与 `color` 档一致：`color` → `colors[0]` → 黑（LLM 只写 `colors` 也不会没颜色）。
+    #[test]
+    fn fade_color_falls_back_to_first_stop() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(overlay_ev(
+            1.0,
+            2.0,
+            "fade_in",
+            None,
+            Some(vec!["#00ff00", "#000000"]),
+        ))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(
+            get_overlay_state(1.0, &idx.overlay),
+            Some(OverlayState::Color {
+                color: "#00ff00".into(),
+                opacity: 1.0
+            })
+        );
+    }
+
+    /// 老两档（`color` / `gradient`）的 0.4s 进出包络**没被动过** —— fade 走的是另一条分支。
+    /// 这是"零行为回归"的钉子：改动 fade 时别顺手把包络改了。
+    #[test]
+    fn color_overlay_keeps_the_0_4s_envelope() {
+        let mut cfg = Cfg::example();
+        cfg.segments = vec![event(overlay_ev(1.0, 3.0, "color", Some("#000000"), None))];
+        let idx = build_index(&cfg.segments);
+        assert_eq!(get_overlay_state(1.0, &idx.overlay), None);
+        match get_overlay_state(1.2, &idx.overlay) {
+            Some(OverlayState::Color { opacity, .. }) => {
+                assert!((opacity - 0.5).abs() < 1e-9, "0.2s 应在包络半程，实得 {opacity}");
+            }
+            other => panic!("实得 {other:?}"),
+        }
+        assert_eq!(
+            get_overlay_state(2.0, &idx.overlay),
+            Some(OverlayState::Color {
+                color: "#000000".into(),
+                opacity: 1.0
+            })
+        );
     }
 
     /// 贴纸事件（`x` / `y` 是**盒子左上角**百分比，与 `process/placement.rs` 的契约一致）。

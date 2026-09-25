@@ -204,9 +204,8 @@
             <!-- 覆盖层 -->
             <template v-else-if="selItem.type === 'overlay'">
               <label>覆盖类型</label>
-              <select v-model="selItem.overlay_type">
-                <option value="color">纯色</option>
-                <option value="gradient">渐变</option>
+              <select v-model="selItem.overlay_type" @change="onOverlayTypePick(selItem, $event.target.value)">
+                <option v-for="o in OVERLAY_TYPES" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
               <template v-if="selItem.overlay_type === 'gradient'">
                 <div class="row">
@@ -223,6 +222,13 @@
                   <option value="linear">线性（左上 → 右下）</option>
                   <option value="radial">径向（中心实、边缘淡出）</option>
                 </select>
+              </template>
+              <!-- 淡入 / 淡出：整块就是过渡本身（遮罩由全遮线性化到全透，反向同理），
+                   所以这一档没有形状，颜色缺省就是黑色 -->
+              <template v-else-if="isOverlayFade(selItem)">
+                <label>颜色</label>
+                <input type="color" :value="hexOf(selItem.color, '#000000')" @input="selItem.color = $event.target.value">
+                <p class="mini-hint">整块时长＝渐变时长，拖右缘改。</p>
               </template>
               <template v-else>
                 <label>颜色</label>
@@ -522,6 +528,19 @@ const TYPE_LABELS = {
   overlay: '覆盖层', sfx: '音效'
 }
 const isFxType = (t) => FX_TYPES.includes(t)
+/** 覆盖类型（`overlay_type`）→ 中文名：属性面板下拉与泳道块标签共用一份，别各写一遍。 */
+const OVERLAY_TYPES = [
+  { value: 'color', label: '纯色' },
+  { value: 'gradient', label: '渐变' },
+  { value: 'fade_in', label: '淡入（黑场）' },
+  { value: 'fade_out', label: '淡出（黑场）' }
+]
+const overlayLabel = (t) => OVERLAY_TYPES.find((o) => o.value === t)?.label || t || '覆盖'
+/** 淡入/淡出是「整块就是过渡本身」的两档（与出片模板同口径）：只有颜色 + 不透明度有意义。 */
+const isOverlayFade = (ev) => ev.overlay_type === 'fade_in' || ev.overlay_type === 'fade_out'
+/** 新建覆盖层的默认色/不透明度（`defaultEvent` 给的那两个值）：切到淡入/淡出时按值迁移成黑色遮罩。 */
+const OVERLAY_NEW_COLOR = '#ff3232'
+const OVERLAY_NEW_OPACITY = 0.3
 // 与 Rust 端 Event::default_end 的默认时长逐值一致
 const DEFAULT_SPAN = {
   camera: 1.0, sticker: 2.0, overlay: 1.5, sfx: 1.0,
@@ -588,8 +607,8 @@ function setZoom(ev, z) {
   ev.zoom = z
   if (z !== '近') delete ev.handheld
 }
-/** `#rgb` / `#rrggbb` → 取色器能认的 `#rrggbb`。 */
-function hexOf(v) {
+/** `#rgb` / `#rrggbb` → 取色器能认的 `#rrggbb`（认不出时给 `fallback`，淡入/淡出用黑色）。 */
+function hexOf(v, fallback = '#ffffff') {
   const s = String(v || '').trim()
   if (/^#[0-9a-f]{6}/i.test(s)) return s.slice(0, 7)
   if (/^#[0-9a-f]{3}$/i.test(s)) return '#' + s.slice(1).split('').map((c) => c + c).join('')
@@ -597,7 +616,7 @@ function hexOf(v) {
   // 不认的话取色器会一律显示白色、首次编辑就把原色丢掉
   const m = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i)
   if (m) return '#' + [m[1], m[2], m[3]].map((n) => Math.min(255, Number(n)).toString(16).padStart(2, '0')).join('')
-  return '#ffffff'
+  return fallback
 }
 function gradientColor(ev, i) {
   const arr = ev.colors || []
@@ -613,6 +632,18 @@ function setGradientColor(ev, i, color) {
   ev.colors = arr
 }
 
+/**
+ * 覆盖类型切换。淡入/淡出是「黑色遮罩」的语义，而新建覆盖层给的是 `#ff3232` + 0.3 ——
+ * 切过去先得手改两处才能用。所以只把**还是新建默认值**的那两项按值迁移成黑色 + 全遮
+ * （与 Rust 侧「旧内建默认按值迁移」同一套做法），用户改过的一律原样保留。
+ */
+function onOverlayTypePick(ev, ot) {
+  ev.overlay_type = ot
+  if (ot !== 'fade_in' && ot !== 'fade_out') return
+  if (!ev.color || hexOf(ev.color) === OVERLAY_NEW_COLOR) ev.color = '#000000'
+  if (ev.opacity == null || Number(ev.opacity) === OVERLAY_NEW_OPACITY) ev.opacity = 1
+}
+
 function labelFor(ev) {
   if (ev.type === 'sticker') return ev.keyword || ev.name || '贴纸'
   if (ev.type === 'camera') {
@@ -623,7 +654,7 @@ function labelFor(ev) {
     return ev.anchor ? `${z} ${ev.anchor}` : z
   }
   if (ev.type === 'sfx') return ev.name || '音效'
-  if (ev.type === 'overlay') return ev.overlay_type || '覆盖'
+  if (ev.type === 'overlay') return overlayLabel(ev.overlay_type)
   return ev.type
 }
 

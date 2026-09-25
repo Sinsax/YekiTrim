@@ -165,14 +165,34 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
     { handheld: round(b.handheld), zoom: round(b.zoom), ox: round(b.ox, 3), oy: round(b.oy, 3) }
   )
 }
-// 竖屏必须归零（模板 getActiveCamera 的口径；engine cameraAt 另有自己的门）
+// 竖素材必须**整条**归零（模板 getActiveCamera 的口径；engine cameraAt 另有自己的门）。
+// 用户报的「竖屏素材没禁运镜、横屏导出也还在缩放」= 模板曾只归零 handheld、zoom 照跑：
+// 这一条就是那个门，摘掉它 zoom 立刻回到 1.5。
 {
+  const verticalSrc = STUB.replace('{ vertical: false,', '{ vertical: true,')
   const verticalTpl = new Function(
-    `${STUB.replace('{ vertical: false,', '{ vertical: true,')}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
+    `${verticalSrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
   )()
-  check('[template] 竖屏 → 幅度归零', verticalTpl(2.0, CAMS).handheld, 0)
+  const tv = verticalTpl(2.0, CAMS)
+  check('[template] 竖素材 → 幅度归零', tv.handheld, 0)
+  check('[template] 竖素材 → 景别也归零（zoom=1，横画布导出同样禁）', tv.zoom, 1)
   const idxV = { ...engIdx, vertical: true }
-  check('[engine  ] 竖屏 → 幅度归零', engCam(idxV, 2.0).handheld, 0)
+  const ev = engCam(idxV, 2.0)
+  check('[engine  ] 竖素材 → 幅度归零', ev.handheld, 0)
+  check('[对拍] 竖素材 → 模板与 engine 的 zoom / 不动点逐值一致',
+    { zoom: round(tv.zoom), ox: round(tv.ox, 3), oy: round(tv.oy, 3) },
+    { zoom: round(ev.zoom), ox: round(ev.ox, 3), oy: round(ev.oy, 3) })
+
+  // 自证有效：把模板的竖素材门摘掉 → 上面两条必须翻面（CAMS 在 t=2.0 是「近」= 1.5、摇摆开着）
+  const noGate = html.replace('if (CFG.vertical) return { zoom: 1.0,', 'if (false) return { zoom: 1.0,')
+  check('[变异] 竖素材门确实被摘掉（源码被改了）', noGate !== html, true)
+  if (noGate !== html) {
+    const tplNoGate = new Function(
+      `${verticalSrc}\n${extractFunction(noGate, 'getActiveCamera')}\n return getActiveCamera`
+    )()
+    check('[变异] 摘掉竖素材门 → zoom 判据翻面（回到 1.5）', tplNoGate(2.0, CAMS).zoom, 1.5)
+    check('[变异] 摘掉竖素材门 → 幅度判据翻面（回到 1）', tplNoGate(2.0, CAMS).handheld, 1)
+  }
 }
 
 // ── 4. 自证有效：改一个常数必须被抓到（否则本脚本是空转的）───────────────────
