@@ -62,12 +62,17 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   `bind_derived_material`，订正稿是**普通条目**、不占 ASR 槽）。绑不上（产物没落盘等）才退回裸写
   `transcript_file`。**别再在别处手写 `transcript_file`** —— 漏登记 = 那个模式的槽明明占了却看不见，
   用户就少一次转写机会。
-- ⚠️ **剪切收尾 = 补精修工程**（用户口径：剪切这个行为本身包含精修 init）：`run_stage("cut")` 与
+- ⚠️ **剪切收尾 = 补精修工程 + 预热响度曲线**（用户口径：剪切这个行为本身包含精修 init）：`run_stage("cut")` 与
   `run_process` 的 Stage 4 之后都调 `core_pipeline::init_polish_for_events`，`vtrim-server` 的单条剪切 /
   一键全切（`run_single_cut_event`）走同一条路。实现只此一份 `init_polish_for_clip`：
   **有 `polish.toml` 或没有 `clip.mp4` 就返回 `Ok(false)`**（`cmd_init` 会 `create_dir_all`，不能拿错目录建工程）、
   失败只 warn（剪切已经成功，进精修时还有 `ensure_polish_project` 兜底）。别再退回"等前端进页面才 init"
   —— 那样慢盘上会先撞 `polish.toml not found` 的竞态。
+  同一条收尾里的 `warm_loudness_cache` 把 `clip.mp4` 的整段响度曲线量进 `<片段>/data/loudness.json`
+  （精修页 `preview=1` 带的 `loudness_curve` 就是它）：**只补缺失** —— key（文件名+mtime+字节数）命中
+  就零成本跳过、**一个字节都不动**，旧格式（无 `key`，永远 miss）与没缓存的才当场补一次；
+  重剪后 mtime 变了自然按新片段重算。⚠️ 它挂在**共用的**收尾路径上（CLI `cut`/`process` 一样预热），
+  **别再开第二条只服务 webui 的路径**；失败不影响剪切结果。
 - ⚠️ **邀请码明文直接落库**（用户要求：管理员要能重复查看、复制再发 —— 与 `vtrim ingest token`"只见一次"
   的规矩**不同**）：库里没有 selector/哈希那一套，注册校验就是一次明文查表。
   **别再退回"只存哈希"**，那会让管理员看不到码。**一个码只能绑一个账号**：消费走

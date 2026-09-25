@@ -66,11 +66,18 @@
 - `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` / `vtrim.toml` / 全局配置的读-改-写
   走 `vtrim_core::filelock::with_path_lock` 串行化；**写 `polish.toml` 一律走路径锁**（编辑器保存、去静音、封面配置、
   `cmd_parse` 全在改同一份文件 —— 无锁的 read-modify-write 会静默丢改动）。
-- ⚠️ **剪切收尾要补精修工程**（用户口径：剪切这个行为本身包含精修 init）：单条剪切与一键全切共用的
-  `run_single_cut_event` 在 `Cutter` 跑完后调 `vtrim_service::init_polish_for_events(...)`；本模块的
-  `ensure_polish_project`（去静音接口的隐式初始化）只是同一个 `init_polish_for_clip` 的 HTTP 包装。
+- ⚠️ **渲染 / 封面任务的收尾日志只报状态、不带路径**（2026-09-21 用户要求）：成功行就是
+  `成片已写出` / `封面已写出`。子进程写出的是 `\\?\E:\media\…\vtuber-clip_1.mp4` 这种 verbatim 长路径，
+  塞进任务日志会撑满任务框那一行（那里只有一行高度）；实际文件名在精修页「产物」区
+  （`rendered_file` / `cover_file`，含 `_1`/`_2` 版本）与切片卡片上都能看到，日志不必重复。
+  `subprocess_note` 仍然要跑 —— 它是「子进程真的写出了文件」的证据，不是装饰。
+- ⚠️ **剪切收尾要补精修工程 + 预热响度曲线**（用户口径：剪切这个行为本身包含精修 init）：单条剪切与一键全切共用的
+  `run_single_cut_event` 在 `Cutter` 跑完后调 `vtrim_service::init_polish_for_events(...)` —— 它顺手把
+  `<片段>/data/loudness.json` 也量好（只补缺失，精修页 `preview=1` 那步因此只是读文件，正文在
+  `crates/vtrim-service/AGENTS.md`）；本模块的 `ensure_polish_project`（去静音接口的隐式初始化）只是同一个
+  `init_polish_for_clip` 的 HTTP 包装。
   「剪切完成 ⇒ `polish_ready`」是切片页「精修」按钮不再撞 `polish.toml not found` 的前提，
-  **别在 handler 里另开一条 init 路径**（两份实现必然漂移）。
+  **别在 handler 里另开一条 init（或预热）路径**（两份实现必然漂移）。
 - `/api/health` 是**未认证**接口：不含账号数量、不含"是否仍用初始密码"（那等于告诉远端"这台机器还在用初始密码"），
   也不含任何路径；要看这些走 `/api/admin/users`、`/api/me` 或 `vtrim doctor`。`GET /api/admin/usage` 与
   `/api/admin/logs` **仅 admin**：记录含**其他用户的工程路径**与任务输出（两者同一个理由）。

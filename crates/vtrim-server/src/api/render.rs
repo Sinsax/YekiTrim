@@ -320,16 +320,19 @@ pub(super) async fn run_polish_child(
         let tail = out.tail_text();
         anyhow::bail!("{sub} 进程退出码: {:?}\n{}", status.code(), tail);
     }
-    // 成功也要把「写到哪个文件」带进日志：同名不覆盖，产出可能是 `xxx_1.mp4` /
-    // `cover_2.jpg`（见 render::unique_output_path），不说清楚用户会以为"又覆盖了同一个文件"。
+    // 成功只报一句状态，**不带路径**（2026-09-21 用户要求）：写出的是
+    // `\\?\E:\media\…\vtuber-clip_1.mp4` 这种 verbatim 长路径，塞进任务日志会撑满整行，
+    // 而任务框只有一行高度。实际文件名在精修页「产物」区（`rendered_file` / `cover_file`，
+    // 含 `_1`/`_2` 版本）与切片卡片上都能看到，日志不必重复。
+    // `subprocess_note` 仍然要跑：它是「子进程真的写出了文件」的证据，不是装饰。
     let tail = out.tail_text();
     let (needle, label) = if sub == "cover" {
         ("Cover saved:", "封面已写出")
     } else {
         ("FINISHED:", "成片已写出")
     };
-    if let Some(p) = subprocess_note(&tail, needle) {
-        jobs.log(job_id, "info", &format!("{label}：{p}")).await;
+    if subprocess_note(&tail, needle).is_some() {
+        jobs.log(job_id, "info", label).await;
     }
     Ok(())
 }
