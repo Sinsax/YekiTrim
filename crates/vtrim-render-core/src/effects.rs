@@ -1,6 +1,6 @@
 //! wgpu 全屏特效 pass。
 //!
-//! 目前先把 flash / overlay / intro_black / vignette 这类简单全屏效果
+//! 目前先把 flash / overlay / vignette 这类简单全屏效果
 //! 从 CPU 合成迁移到 GPU：通过一个全屏 shader 读取输入纹理并叠加效果。
 
 use anyhow::Result;
@@ -16,7 +16,8 @@ pub struct EffectUniform {
     pub flash_alpha_pad: [f32; 4],
     pub hue_color: [f32; 4],
     pub hue_alpha_pad: [f32; 4],
-    // x=intro black, y=vignette, z=noise(白色叠加 alpha), w=overlay 渐变 stop 数
+    // x=保留（原内建片头黑场 intro_black，已退役成 overlay 事件）, y=vignette,
+    // z=noise(白色叠加 alpha), w=overlay 渐变 stop 数
     pub misc: [f32; 4],
     // x=overlay 透明度, y=shape(0 linear / 1 radial)
     pub overlay_meta: [f32; 4],
@@ -206,7 +207,8 @@ impl EffectRenderer {
                 0.0, 0.0, 0.0,
             ],
             misc: [
-                state.intro_black as f32,
+                // 恒 0：片头黑场不再是内建效果，改由 overlay 的 `fade_in` 事件表达
+                0.0,
                 state.vignette.opacity as f32,
                 state.noise as f32,
                 grad_stops.len() as f32,

@@ -70,9 +70,20 @@
   `renderFrame` 的 `drawStageBackdrop` **必须画在视频层之前**：`blur` = 同一帧 bitmap 按 cover 铺满
   + `blur(blur_px) brightness(.5) saturate(1.15)` + 绕中心放大 `blur_img_scale`；`black`/`color` 铺色；
   `none` 一个像素都不画（透明 = 黑，与改造前同源）。模糊半径/倍率一律取契约里的值，别写死 28px。
-  钉子：`node webui/scripts/check-stage-backdrop.mjs`（34 项 + 5 处变异自证）、Rust
-  `template_stage_hooks_match_contract` + `portrait_canvas_fill_still_paints_backdrop`、真实像素 A/B
-  `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture`。
+  ③ **摆放与运镜同样必须落在 canvas 出片路径里**：`resolve_stage` 推的 `axis/position/scale/padding`
+  由模板 `stageDrawRect` 算成画面矩形（`ctx.translate/scale` 送进 CTM，`drawImage` 的 dst 仍是
+  `(0,0,CW,CH)` 字面量），**竖素材再额外吃掉运镜**（`getActiveCamera` 开头 `CFG.vertical` →
+  `zoom=1 / handheld=0`；`CFG.vertical` 由 `render/server.rs:261` 按「源 `h > w`」注入，**与画布方向无关**）。
+  只在 DOM/CSS 上消费这套推导的表现是「成片被拉成宽屏 + 竖素材在成片里照旧缩放」（用户 2026-09-21
+  报的原文），预览侧全程正常、**不报错**。`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍算出
+  `(0,0,CW,CH)` —— 横屏存量逐字节零回归的判据（真出片对拍过 SHA-256）。
+  钉子：`node webui/scripts/check-stage-backdrop.mjs`（73 项 + 8 处变异自证；③c 段钉摆放几何）、
+  `node webui/scripts/check-handheld.mjs`、Rust `template_stage_hooks_match_contract` +
+  `portrait_canvas_fill_still_paints_backdrop`、真实像素 A/B
+  `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture`
+  （A/B 判据只断在**真露底帧**上 + "至少一帧露底"；跑完看输出的「真露底 n / 总帧」，n=0 就换 `T`
+  —— 竖素材的运镜已被门控吃掉，露底只能来自其它特效或 `[stage] scale` 这类结构性留边）、
+  `VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`。
 - **读取优先级**（`vtrim-render-core/src/types.rs`）：`free_rect()` → `region_rects()`/`region_origin()`
   一律**自由选框 > grid > origin_grid/origin**；JS 侧同一规则在 `webui/src/polish/engine.js` 的
   `regionRect/regionOrigin`（GRID_RECTS 表须与 Rust `grid_rect` 对齐）与 `templates/index.html` 的 `liverOrigin`。

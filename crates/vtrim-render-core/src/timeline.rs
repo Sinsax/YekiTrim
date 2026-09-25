@@ -87,7 +87,6 @@ pub struct FrameState {
     pub color_shift: String,
     pub overlay: Option<OverlayState>,
     pub vignette: VignetteState,
-    pub intro_black: f64,
     pub captions: Vec<CaptionState>,
     pub danmaku: Vec<DanmakuState>,
     pub stickers: Vec<StickerState>,
@@ -279,7 +278,6 @@ pub fn evaluate_frame(
     let color_shift = get_color_shift(t, &idx.color_shift);
     let overlay = get_overlay_state(t, &idx.overlay);
     let vignette = get_vignette(t, &idx.vignette);
-    let intro_black = get_intro_black(t);
     let captions = get_active_subs(t, subs);
     let danmaku = get_active_dms(t, dms, dm_widths);
     let stickers = get_active_sticker(t, &idx.sticker, vertical, vertical_position);
@@ -298,7 +296,6 @@ pub fn evaluate_frame(
         color_shift,
         overlay,
         vignette,
-        intro_black,
         captions,
         danmaku,
         stickers,
@@ -853,14 +850,6 @@ pub fn get_vignette(t: f64, items: &[IndexedEvent]) -> VignetteState {
     VignetteState { opacity: 0.0 }
 }
 
-/// 与 JS `getIntroBlack` 一致。
-pub fn get_intro_black(t: f64) -> f64 {
-    if t < 0.5 {
-        return 1.0 - super::easing::sine_out(t / 0.5);
-    }
-    0.0
-}
-
 /// 与 JS `getStutterVideo` 一致。
 pub fn get_stutter_video(t: f64, items: &[IndexedEvent]) -> Option<(f64, f64)> {
     for st in items {
@@ -1211,12 +1200,6 @@ mod tests {
             ShakeState { x: -14.0, y: 14.0 }
         );
         assert_eq!(get_shake(1.2, &idx.shake), ShakeState { x: 0.0, y: 0.0 });
-    }
-
-    #[test]
-    fn intro_black_uses_sine_out() {
-        assert!((get_intro_black(0.0) - 1.0).abs() < 1e-9);
-        assert!((get_intro_black(0.5) - 0.0).abs() < 1e-9);
     }
 
     #[test]

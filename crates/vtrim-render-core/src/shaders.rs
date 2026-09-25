@@ -161,7 +161,8 @@ struct Uniforms {
     flash_alpha_pad: vec4<f32>,
     hue_color: vec4<f32>,
     hue_alpha_pad: vec4<f32>,
-    // x=intro black, y=vignette, z=noise(白色叠加 alpha), w=overlay 渐变 stop 数
+    // x=保留（原内建片头黑场，已退役成 overlay 事件）, y=vignette,
+    // z=noise(白色叠加 alpha), w=overlay 渐变 stop 数
     misc: vec4<f32>,
     // x=overlay 透明度, y=shape(0 linear / 1 radial)
     overlay_meta: vec4<f32>,
@@ -224,11 +225,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         let g = sample_gradient(t, i32(u.misc.w));
         color = mix(color, vec4<f32>(g.rgb, 1.0), u.overlay_meta.x);
-    }
-
-    // intro black
-    if (u.misc.x > 0.0) {
-        color = mix(color, vec4<f32>(0.0, 0.0, 0.0, 1.0), u.misc.x);
     }
 
     // vignette: 径向暗角

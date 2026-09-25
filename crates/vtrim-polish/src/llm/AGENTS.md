@@ -74,7 +74,8 @@
 - **覆盖层提示词示例**：LLM 提示词里的示例长期只写 `{"overlay_type":"gradient","color":"#ff0000"}`，
   而四处求值器都只认 `colors` —— 实测 4 个项目 **8/8 覆盖层全都没画出来**。所以提示词示例现在给
   `colors` 数组 + 纯色两个写法（`llm/segment.rs`，另有单测锁住），且写了 `colors`/`color` 却漏掉
-  `overlay_type` 时也会被推断成 overlay；老工程靠**读时兜底**，不用重跑 LLM。
+  `overlay_type` 时也会被推断成 overlay；老工程靠**读时兜底**，不用重跑 LLM。`fade_in`/`fade_out`（黑场淡入/淡出）**不进示例**：提示词里只有
+  一句「系统只在初次后处理时在片头补、不要重复写」，片头那份见 `process/AGENTS.md` Step 3c（用户可手动改/删）。
 - **老 checkpoint 必须过时间迁移**：里面的事件还是 `duration` 字段 → `EventGenTask::load_windows` 会先
   走 `crate::project::upgrade_event_times` 再解析，别绕过它。
 - ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` / `.vtrim/llm.toml` 里的是

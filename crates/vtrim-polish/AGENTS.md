@@ -51,6 +51,15 @@
   表现是**所有带字幕的片段都导不出来、无字幕的正常**）。改了 `renderFrame` 附近后至少跑一次
   带字幕的出片；`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段钉住这类裸变量
   （判据走**去注释后的源码** —— 注释里出现同样的字样会把判据自己顶翻）。
+- ⚠️ **`templates/index.html` 是出片路径的唯一实现，DOM/CSS 那层不算数**：canvas `renderFrame`
+  **不读 DOM**。只把 `_canvas.stage`（画面摆放）与 `CFG.vertical`（运镜门控）消费在 DOM 上的话，
+  成片与预览会**静默分叉**：竖素材进横画布 → 成片被拉成宽屏、竖素材在成片里照旧被 zoom 拖走
+  （用户 2026-09-21 报的原文），预览里全程正常、不报错。两条消费点：`stageDrawRect`
+  （`axis/position/scale/padding` → 画面矩形；`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍
+  **精确等于整块画布** = 横屏存量零回归）与 `getActiveCamera` 开头的 `CFG.vertical` 早退
+  （`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径；`vtrim-render-core::evaluate_frame`
+  只归零 handheld —— 那是 wgpu 路径，不在 Chrome 出片链路上）。细节见 `templates/AGENTS.md`、
+  `src/project/AGENTS.md`。
 - ⚠️ **消费侧纵深防御**：渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`
   （`vtrim-polish/src/cover.rs`）。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。
 - 公式与净化都在 `cover.rs` 且**只此一份**：`cover_blur_css(scale)`（基准 28px、
@@ -94,4 +103,5 @@ cargo check -p vtrim-polish
 ```
 
 0 warnings。动了 `templates/index.html` / `cover.html` 之后必须再真跑一次出片：
-预览看着正常 ≠ 出片正常。
+预览看着正常 ≠ 出片正常。模板侧的漂移对拍与真实像素探针（`check-*.mjs` 五条 +
+`--test portrait_backdrop` / `--test portrait_stage_fit`）命令见 `templates/AGENTS.md` 的「验证」。
