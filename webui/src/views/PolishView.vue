@@ -4,7 +4,7 @@
     <div class="page-head compact-head">
       <span class="chip p">精修</span>
       <h1 class="m-0">{{ dir ? title : '选择要精修的片段' }}</h1>
-      <span v-if="!dir" class="sub m-0">从片段库选择一个已剪切片段进入精修编辑器</span>
+      <span v-if="!dir" class="sub m-0">从片段库选一个片段开始精修</span>
       <div class="actions"></div>
     </div>
 
@@ -20,7 +20,7 @@
          —— 否则它会被下面的 v-else 当成"有内容"而把整个编辑器壳渲染出来 -->
     <div v-else-if="!clips.length && !loading" class="card card-blk" style="max-width:520px;margin:48px auto;text-align:center;padding:36px">
       <b style="font-size:15px">还没有可精修的切片</b>
-      <p class="small muted" style="margin:8px 0 16px">先在「切片」页生成片段，再回到这里逐段精修</p>
+      <p class="small muted" style="margin:8px 0 16px">先到「切片」页生成片段，再回来精修</p>
       <router-link class="btn btn-primary" :to="`/p/${pid}/slices`">去切片</router-link>
     </div>
 
@@ -38,7 +38,7 @@
           <span>片段配置读取失败：{{ cfgError }}</span>
           <button class="mini-btn" style="margin-left:auto" @click="load()">重试</button>
         </div>
-        <p class="muted small m-0">这不是「未初始化」—— 工程文件可能还在，只是这次没读到。重试之前别点初始化。</p>
+        <p class="muted small m-0">工程文件可能还在，先重试，别点初始化。</p>
       </div>
 
       <!-- 列表模式：没有上次操作记录 → 只显示片段列表 + 空态，视频/编辑器不加载 -->
@@ -48,14 +48,14 @@
           <span class="muted small">点击一个片段进入精修编辑器</span>
         </div>
         <FragmentList :rows="fragRows" :current="clipName" @goto="gotoClip" @init="initClipByName" />
-        <div class="empty small mt-12">未选择片段：编辑器与视频会在选中片段后加载。</div>
+        <div class="empty small mt-12">未选择片段 · 选中后才加载编辑器</div>
       </div>
 
       <!-- 未初始化：初始化卡 + 片段列表（否则无法切换/初始化其他片段） -->
       <div v-else-if="!ready" class="grid cols-main">
         <div class="card">
           <h2>未初始化精修项目</h2>
-          <p class="muted small">将解析字幕/弹幕并创建 polish.toml。</p>
+          <p class="muted small">解析字幕与弹幕，创建工程文件</p>
           <div class="row mt-8">
             <button class="btn btn-primary" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="initProject">
               <Icon name="sparkles" :size="14" /> 初始化
@@ -99,7 +99,7 @@
               <h2 class="m-0 card-h2"><Icon name="video" :size="16" /> 视频预览（preview 效果）</h2>
               <span v-if="selectRegion" class="chip p">选框模式 · 运镜已暂停</span>
               <span v-else-if="pointEdit" class="chip p">点选落点 · 未保存</span>
-              <span v-else class="muted small">字幕 / 贴纸 / 运镜 / 弹幕 / 音效实时预览</span>
+              <span v-else class="muted small">字幕 · 贴纸 · 运镜 · 弹幕 · 音效</span>
             </div>
             <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
                  右：预览舞台 -->
@@ -107,8 +107,8 @@
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
                 <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
-                <div v-if="selectRegion" class="hint mt-8">拖框体平移、拖 8 个角/边缩放、空白拖拽重画；右侧「区域与落点」里保存或清除。</div>
-                <div v-else-if="pointEdit" class="hint mt-8">点一下预览即为新落点（未保存）；右侧「区域与落点」里保存或取消。</div>
+                <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
+                <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
             </div>
           </div>
@@ -134,7 +134,7 @@
                    三者的交互是同一种（在左侧预览上取坐标），所以并列一行；
                    贴纸那格是"自动 / 固定"二选一，切到固定后再点预览取点。 -->
               <div class="small muted mb-4">区域与落点<span class="hint"> · 在预览上点选</span></div>
-              <div class="row mb-6" style="gap:6px">
+              <div class="row mb-6 region-row">
                 <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
                         title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
                   <Icon name="crop" :size="11" /> 人物
@@ -148,6 +148,14 @@
                         :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
                         @click="toggleStickerMode">
                   <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
+                </button>
+                <!-- 「改落点」与上面三格同一行（用户要求：它原本单独占一行，白吃一行高度）。
+                     只存在于「固定」模式；编辑态里它让位给下面那行的「保存落点 / 取消」。
+                     点它会清掉框选态（`startPointEdit` 里），两者都是"在预览上取坐标"。 -->
+                <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn" style="flex:1;justify-content:center"
+                        :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
+                        @click="startPointEdit">
+                  <Icon name="pin" :size="11" /> 改落点
                 </button>
               </div>
               <template v-if="selectRegion">
@@ -171,14 +179,17 @@
                   <span class="mono">{{ pointEdit ? draftPosPct : stickerPosPct }}</span>
                   <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
                 </div>
-                <div class="row mb-6" style="gap:6px">
-                  <template v-if="pointEdit">
-                    <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
-                    <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
-                  </template>
-                  <button v-else class="mini-btn" :disabled="stickerBusy || !ready" @click="startPointEdit"><Icon name="pin" :size="11" /> 改落点</button>
+                <!-- 保存/取消与说明只在编辑态出现：常态下「改落点」在上面那行，这里不留空行 -->
+                <div v-if="pointEdit" class="row mb-6" style="gap:6px">
+                  <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
+                  <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
                 </div>
-                <div class="hint mb-6">{{ pointEdit ? '在左侧预览里点一下选新落点（贴纸中心对齐该点），保存后生效。' : '全部贴纸的中心都落在这一点。' }}</div>
+                <!-- 一句话说清"点哪儿、什么时候生效"就够：括号里的坐标基准（点 = 贴纸盒中心）收进 title，
+                     与上面「字体目录」同法 —— 摆进行内会把 266px 的行撑成两行（`.hint` 是 11px）。 -->
+                <div v-if="pointEdit" class="hint mb-6"
+                     title="点选的位置 = 贴纸盒中心；保存后才写 polish.toml">
+                  在预览上点选新落点，保存后生效。
+                </div>
               </template>
 
               <!-- 参数 2：贴纸来源。只保留一组可点 chip：亮 = 启用，灰 = 停用。 -->
@@ -201,7 +212,7 @@
                   <span class="muted">贴纸来源读取失败：{{ stickerSourcesError }}</span>
                   <button class="mini-btn" @click="loadStickerSources">重试</button>
                 </div>
-                <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空（程序目录 stickers/ 下放置贴纸包）</div>
+                <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
               </div>
 
               <!-- 参数 3：字幕字体（字体库 = 程序目录 resources/fonts/）-->
@@ -213,17 +224,15 @@
                 <span class="muted">字体库读取失败：{{ fontsError }}</span>
                 <button class="mini-btn" @click="loadFonts">重试</button>
               </div>
-              <!-- root 只有 admin 拿得到（服务器安装路径不给普通用户），非 admin 不显示这一段 -->
-              <div v-else class="hint mt-4">
-                库内 {{ fonts.length }} 个字体<span v-if="fontsRoot"> · 目录 <span class="mono">{{ fontsRoot }}</span></span>
+              <!-- 只报「库里有几个字体」：安装目录只有 admin 拿得到，而且是 `\\?\F:\…\fonts` 这种长路径，
+                   摆在标题行会撑满一整行 —— 收进 title，悬停可见（非 admin 没有 root，title 为空） -->
+              <div v-else class="hint mt-4" :title="fontsRoot ? '字体目录：' + fontsRoot : ''">
+                库内 {{ fonts.length }} 个字体
               </div>
 
               <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
               <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
-              <div class="hint mt-4">
-                想只补某一段？在时间轴上点那一段，属性面板里有「只重做本段事件」；
-                没产出事件的段会标成琥珀色。
-              </div>
+              <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
@@ -231,7 +240,7 @@
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
-              该片段正在「{{ kindText(scopeBusyJob.kind) }}」，等它结束再做这一步。
+              该片段正在「{{ kindText(scopeBusyJob.kind) }}」，请稍候
             </div>
             </template>
 
@@ -245,7 +254,7 @@
                         :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
                         @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
               </div>
-              <div class="hint mb-8">{{ canvasSummary }}。切方向后位置选项会跟着换方向（左中右 ↔ 上中下），预览舞台与出片画布会立即跟随（预览需重取配置，自动刷新）。改过主画面位置或方向后，自动贴纸落点要重跑后处理才更新。</div>
+              <div class="hint mb-8" title="切方向后位置选项跟着换（左中右 ↔ 上中下），预览与出片画布立即跟随">{{ canvasSummary }} · 改方向或位置后需重跑后处理</div>
 
               <div class="small muted mb-4">主画面位置<span class="hint"> · 比例一致时铺满，位置看不出效果</span></div>
               <div class="row mb-8" style="gap:6px">
@@ -254,7 +263,7 @@
                         @click="patchStage({ position: p.value })">{{ p.label }}</button>
               </div>
 
-              <div class="small muted mb-4">背景<span class="hint"> · 主画面让出来的边补什么；竖屏一直生效（震动等位移会露边），横屏仅留边时生效</span></div>
+              <div class="small muted mb-4" title="竖屏一直生效（特效位移会露边），横屏仅在留边时生效">背景<span class="hint"> · 主画面让出来的边补什么</span></div>
               <div class="row mb-6" style="gap:6px">
                 <button v-for="b in bgOptions" :key="b.value" class="mini-btn" style="flex:1;justify-content:center"
                         :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
@@ -287,17 +296,19 @@
               </div>
               <div class="hint">{{ stageHint }}</div>
             </template>
-            <div v-if="job.id && (jobRunning || jobFinished)" class="job-box mt-8">
+            <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
+                 同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
+            <div class="job-box mt-8">
               <div class="row spread small">
-                <b>{{ jobLabel(job.kind) }}</b>
+                <b>{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
                 <div class="row">
-                  <span v-if="jobRunning" class="muted small mono">运行 {{ jobTimeText }}</span>
+                  <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
                   <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
                   <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
                 </div>
               </div>
               <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
-              <div class="muted small mt-6 mono">{{ job.error || job.log || (job.status === 'succeeded' ? '任务完成' : jobRunning ? '运行中…' : '') }}</div>
+              <div v-if="job.error || (jobRunning && job.log)" class="muted small mt-6 mono">{{ job.error || job.log }}</div>
             </div>
           </div>
         </div>
@@ -309,7 +320,7 @@
           <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment">
             <template #head>
               <b>时间轴编辑器</b>
-              <span class="muted small">拖拽移动 / 左右缘缩放 / 双击删除 / 泳道 ＋ 在播放头处添加（特效轨先选细分类型）· 改动立即保存 · 后处理在结束编辑时跑</span>
+              <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
             </template>
           </TimelineEditor>
         </div>
@@ -343,12 +354,10 @@
 
     <!-- 渲染导出弹窗 -->
     <AppModal :show="renderModal" title="渲染导出" @close="renderModal = false">
-      <label>输出文件（**项目内相对路径**，留空使用 polish.toml 的 project.output）</label>
+      <label>输出文件（项目内相对路径，留空用默认）</label>
       <input v-model="renderOutput" placeholder="output/clips/clip-01/export.mp4">
       <p class="hint mt-6">
-        只接受项目内相对路径；绝对路径会被服务端拒绝（P2 起不再允许任意输出位置）。
-        <b>同名文件不会被覆盖</b>：已经存在时自动写成 <span class="mono">名字_1.mp4</span> /
-        <span class="mono">_2.mp4</span>…（与封面同一套规则），产物栏显示的就是最新那份。
+        只接受项目内相对路径；同名不覆盖，自动写成 <span class="mono">名字_1.mp4</span>。
       </p>
       <template #footer>
         <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
@@ -457,10 +466,10 @@ const scopeBusyText = computed(() => {
 })
 const pctJob = computed(() => job.total > 0 ? Math.round(job.current * 100 / job.total) : 0)
 const jobFinished = computed(() => ['succeeded', 'failed', 'cancelled'].includes(job.status))
-const jobStatusText = computed(() => ({
-  queued: '排队中', running: '运行中',
-  succeeded: '完成', failed: '失败', cancelled: '已取消'
-}[job.status] || job.status))
+const jobStatusText = computed(() => {
+  if (!job.id) return '空闲' // 状态栏常驻：没任务时也要有状态，不许整块消失
+  return { queued: '排队中', running: '运行中', succeeded: '完成', failed: '失败', cancelled: '已取消' }[job.status] || job.status
+})
 const jobChipClass = computed(() => {
   if (job.status === 'failed' || job.status === 'cancelled') return 'r'
   if (job.status === 'succeeded') return 'g'
@@ -519,8 +528,8 @@ const curRegion = computed(() => (cfg.value?.layout || {})[selectRegion.value] |
 const hasFreeRect = computed(() => !!freeRect(curRegion.value))
 const selLabel = computed(() => REGION_LABELS[selectRegion.value] || selectRegion.value)
 const REGION_HINTS = {
-  liver: '框住主播画面：运镜聚焦到框中心（比九宫格更准）。',
-  danmaku_area: '框住直播间弹幕显示区域（供运镜参考）。'
+  liver: '框住主播，运镜聚焦框中心',
+  danmaku_area: '框住弹幕显示区（供运镜参考）'
 }
 const regionHint = computed(() => REGION_HINTS[selectRegion.value] || '')
 /** 展示用矩形：框选模式看编辑值，否则看已保存的选框 / 九宫格包围盒 */
@@ -573,7 +582,7 @@ function reprocessLayout() {
   if (scopeBusy.value) {
     // 选框已经存进 polish.toml 了（保存是同步加锁写，随时可存）；重算等片段空下来
     markPendingProcess('选框保存时该片段正忙')
-    toast('选框已保存；该片段正在' + scopeBusyText.value + '，结束后会自动重算')
+    toast('选框已保存；该片段忙，稍后自动重算')
     return
   }
   toast('选框已保存，正在重算运镜与贴纸落点…')
@@ -1235,19 +1244,18 @@ const stageHint = computed(() => {
   const c = cfg.value?._canvas
   if (!c) return '保存后即可在预览里看到效果。'
   const s = c.src || {}
-  if (!s.width || !s.height) return '拿不到源视频尺寸（文件可能缺失）→ 暂时按铺满处理。'
+  if (!s.width || !s.height) return '读不到源尺寸（文件可能缺失）→ 按铺满处理'
   const f = c.stage || {}
   const bgLabel = { none: '无背景', black: '纯黑', color: '纯色', blur: '当前帧模糊' }[f.bg] || ''
   const srcAr = s.width / s.height
   const canvasAr = c.width / c.height
   if (Math.abs(srcAr - canvasAr) / canvasAr <= 0.005) {
-    return `源与画布同比（${s.width}×${s.height} → ${c.width}×${c.height}）：主画面直接铺满，位置不生效；`
-      + `背景（${bgLabel}）只在特效把画面挪开时露出来。`
+    return `源与画布同比（${s.width}×${s.height}）→ 铺满，位置不生效；背景仅在画面挪开时露出`
   }
   const posLabel = { left: '靠左', right: '靠右', center: '居中', top: '靠上', bottom: '靠下' }[f.position] || '居中'
   return srcAr < canvasAr
-    ? `源比画布更窄 → 主画面${posLabel}，左右留边（${bgLabel}）。`
-    : `源比画布更扁 → 主画面${posLabel}，上下留边（${bgLabel}）。`
+    ? `源更窄 → 主画面${posLabel}，左右留边（${bgLabel}）`
+    : `源更扁 → 主画面${posLabel}，上下留边（${bgLabel}）`
 })
 
 /** 保存 [stage]：与「字幕字体」同一套 —— 先乐观改本地配置（控件当场响应），再静默重取拿到新的 `_canvas` */
