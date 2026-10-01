@@ -280,6 +280,28 @@ check('[变异] 面板类名改回 .pane → 判据翻面',
 check('[变异] 去掉 min-height → 判据翻面',
   paneMinHeight(designer.replace('min-height:120px', '')) === null, true)
 
+// ⚠️ 高亮词是**经 `v-html` 注入**的（`highlightTitleLine()` 拼 <span class="hl">），而 Vue 的 scoped 编译
+// **不给 v-html 内容打 data-v 属性**。所以 `:deep()` 不能省 —— 写成 `.title-text .hl` 会编译成
+// `.title-text .hl[data-v-xxx]`、永远匹配不上，症状是「字体照旧会变（fontFamily 在父级、span 继承）、
+// 只有高亮色静默失效」（用户 2026-10 报的原文）。出片侧不受影响：`cover.rs` 把那串 HTML 注入到
+// `cover.html` 的**全局** <style> 里，没有 scope 这回事。
+console.log('\n⑥b 高亮词：v-html 注入的 .hl 必须能命中（scoped → 非 :deep() 就静默失效）')
+const hlRuleIsDeep = (src) => {
+  // 只认 `.title-text :deep(.hl)`；写成 `.title-text .hl` 就是那个 bug 的回归
+  return /\.title-text\s*:deep\(\.hl\)/.test(src)
+}
+check('设计器里有 `.title-text :deep(.hl)` 高亮规则', hlRuleIsDeep(designer), true,
+  '少了 :deep() → v-html 的 span 没有 data-v 属性、规则匹配不上 → 高亮色不生效（字体却照常继承，极易误判）')
+check('该规则确实给高亮色（color:var(--hlc…)，与出片模板 .hl 同口径）',
+  /:deep\(\.hl\)\s*\{[^}]*color\s*:\s*var\(--hlc/.test(designer), true,
+  '高亮色必须走同一个 --hlc 变量（titleStyle 行内注入），否则预览与出片两个颜色')
+check('titleStyle 仍然注入 --hlc（变量的源头）', /'--hlc'\s*:/.test(designer), true,
+  '变量没了 → :deep(.hl) 退到 fallback #ffcc00，用户改的高亮色不生效')
+check('[变异] :deep() 去掉（退回 scoped 直配 .hl）→ 判据翻面',
+  hlRuleIsDeep(designer.replace('.title-text :deep(.hl)', '.title-text .hl')) === false, true)
+check('[变异] 高亮色不接 --hlc（写死颜色）→ 判据翻面',
+  /:deep\(\.hl\)\s*\{[^}]*color\s*:\s*var\(--hlc/.test(designer.replace('color:var(--hlc, #ffcc00)', 'color:#ffcc00')) === false, true)
+
 // ── ⑦ 图层栈在两端都不许被"两处实现"拆开 ─────────────────────────────────────
 // 图层栈的 z-index 注入必须**只有一条替换链**（`build_cover_page`）：以前预览与出片各写一份，
 // 漏改一边就是"预览有层序、出片没有"；`#fx-extra` 一旦有 z-index 就会把特效锁进同一个 stacking

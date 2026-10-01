@@ -84,7 +84,7 @@
   ⚠️ 面板是**定高**的（`syncControlsBound` 给 `height`，不是 `max-height`；预览矮到放不下时还有
   `CONTROLS_MIN_H` 380px 下限，否则 `overflow:hidden` 会裁掉最底下的工具条），`.lyr-list` 用 `flex:0 0 50%`
   **钉在面板下半部**（⚠️ shrink 必须是 0）—— 属性面板内容长短不再让列表上下跳（改回 `auto` 高度就会跳）。
-  列宽 = `minmax(0,1fr) minmax(440px, 40%)`（用户要求：预览小一点、右栏宽一点；改前定宽 372px）。
+  列宽 = `minmax(0,1fr) minmax(440px, 40%)`（用户要求：预览小、右栏宽；改前定宽 372px）。
   列表**上 = 更靠前** = `[cover] layers` 的**倒序**（栈从下到上）。顺序与可见性都落盘，出片由
   `cover.rs::resolve_cover_stack`/`plan_cover_layers` 注入 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/
   `layerStyle` 是**镜像**（容错规则一起抄）——**两边必须一起改**。细节见 `docs/webui-components.md` ③。
@@ -102,10 +102,11 @@
   不用 `SliderField.vue` —— `@container` 会把标签挤到第二行）。
 - ⚠️ **高亮词要显示"出片真正在用的那串"**：`cover.highlight_keywords` 为空时出片**回退** `[filter] highlight`
   （`cover.rs::cover_highlight_words`）—— 面板必须照实显示它并写明来源（`hlFromFilter`/`hlSourceHint`），
-  用户一增删就写进封面自己的那份。以前只显示封面那份 → "看着没设置、其实在生效"（用户报过「高亮词没有实际使用上」）。
+  用户一增删就写进封面那份（以前只读 `cover.*` → "面板空、标题却高亮"）。
+  ⚠️ 高亮串走 `v-html`，CSS **必须 `:deep()`**（否则匹配不上 → 高亮色失效；钉子 ⑥b）。
 - **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
   `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**＝选中/打开）。
-  视频预览与安全区不在菜单里。**文字预设已删**（"只给基础功能"）：`presets`/`applyPreset`/`.preset-row` 一起没了，
+  视频预览与安全区不在菜单里。**文字预设已删**：`presets`/`applyPreset`/`.preset-row` 一起没了，
   ⚠️ CLI 侧 `polish cover --template` 还在。
 - ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许再写 `.stage-bg/.stage-media/.vignette-layer/
   .gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面（拖拽层 900 / 线框 950）。
@@ -113,8 +114,8 @@
   `isolation:isolate`（改造前它没真混合，省了老封面变色），`blur` 的槽位**不能**加；`.fx-layer` 也不许有 z-index。
 - **三层各有各的图源，谁也不许覆盖谁**（文字 / 关键帧 `_cover_frame.jpg` / 背景 `_cover_bg.jpg`）。
 - ⚠️ **属性面板类名不能叫 `.pane`**：`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**
-  （同 `.stage-video` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0 高）。
-  两条钉子 = `check-cover-stage.mjs` ⑥。⚠️ 删掉选中的层后要自动落到文字/栈顶，别让面板空着。
+  （同 `video{}` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0 高）。
+  两条钉子 = `check-cover-stage.mjs` ⑥。删掉选中的层后要自动落到文字/栈顶，别让面板空着。
 - ⚠️ **导入背景图片写 `_cover_bg.jpg`**（同时置 `bg_mode=image`），**别再写回 `_cover_frame.jpg`**；
   `cover.image` 导入时不要清空；⚠️ **出片不再删 `_cover_frame.jpg`**（它就是关键帧层的图源）。
 - ⚠️ **关键帧文件可能不存在**：模糊背景先 404 → `onBgImageError()` **只对 blur**、**不带 time** 调
