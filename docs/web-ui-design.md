@@ -167,7 +167,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 
 | Token | 值 | 用途 |
 |-------|-----|------|
-| `--font` | `'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif` | 全站正文（sakura:24；本地无霞鹜文楷时系统回退，与 polish 同一字体栈） |
+| `--font` | `'Noto Sans SC','Microsoft YaHei',sans-serif` | 全站正文（sakura:24；与 polish 同一字体栈口径体栈） |
 | `--mono` | `'Consolas','Courier New',monospace` | 文件路径、时间码、数据、日志台（sakura:25） |
 
 字号体系（sakura 实测值）: 页标题 26px/700 · 品牌名 17px/700 · 卡片标题 16px/700 · 正文/按钮 13px · 次级 12px · chip/路径 11px · 小注 10-12px。

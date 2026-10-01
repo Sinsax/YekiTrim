@@ -900,3 +900,285 @@ Takumi 的 fallback 桶 = **已注册字体按注册序的全集**
 > ⚠️ 教训：**带 feature gate 的集成测试，必须用"实际出片时的那套 feature"跑一遍**。
 > `cargo test -p vtrim-polish`（默认不带 `cover-takumi`）会把这个文件整个编译掉、
 > 报 `0 passed` —— 看着像"没有测试"，实际是"测试被跳过了"。
+
+---
+
+## 21. P1-g 落地记录：400 修复 + 管理页收进首页区块（2026-10-02）
+
+### 21.1 「下载自带字体 400」的根因：body 没序列化
+
+用户报：首页点「下载自带字体」→ `下载失败：接口不存在或返回格式错误: /api/polish/fonts/builtin (400)`，
+且库一直停在「已装 0 支 · 自带还缺 2 支」。
+
+- **根因不在服务端**：`importFont` / `setDefaultFont` / `downloadBuiltinFonts`（`webui/src/api/polish.js`）
+  从 f38eb4e 出生起就把 **裸 JS 对象** 传给 `api()` 的 `body`，而 `client.js` 不做序列化（约定是调用方自己
+  `JSON.stringify`，全仓其它接口都这么写）。`fetch` 对非 BodyInit 的对象走 USVString 转换，实际发出去的
+  body 是字面量 **`[object Object]`** → axum 的 `Json` 提取器 `JsonSyntaxError` 回 **400 + `text/plain`**
+  → `client.js` 只认 JSON，把这条报成「接口不存在或返回格式错误」。
+- **后果面**：三个字体写接口（导入 / 设为默认 / 下载自带）**全坏**，只有 DELETE（无 body）能通；
+  「设为默认」表面有按钮、点了必 400。修复 = 这三处补 `JSON.stringify(...)`，并把这条约定
+  （**裸对象会被 fetch 转成 `[object Object]`**）写进 `polish.js` 的注释里。
+- 顺带澄清「之前误删了」：两支自带字体可以因换目录/手动清库而缺席，但**重新下载的入口一直被这个
+  400 挡死** —— 修好它，缺的字体一键就能回来（幂等）。
+
+### 21.2 管理页收进首页区块（用户拍板：不要单独页面）
+
+用户：字体库 + 管理页 UI「其实只需要这个区域显示即可，而不是单独的页面」。
+
+| 文件 | 改动 |
+|---|---|
+| `webui/src/components/FontLibrary.vue` | **新组件**（照 `StickerPacks` 的首页区块模式）：状态行 + 导入（`ServerDirPicker`）+ 缺自带下载条 + 卡片墙（预览/族名/徽标/设默认/删除）+「测试文本」，原 `FontsView` 的全部能力 |
+| `webui/src/views/FontsView.vue` | **删除**（能力整体迁进上面那个组件，无一丢失） |
+| `webui/src/router.js` | 删 `#/fonts` 路由 |
+| `webui/src/views/WorkbenchView.vue` | 字体卡换成 `<FontLibrary v-if="isAdmin" />`；`homeFonts*` 状态、route watch 里的字体重查、`.wb-fonts` 样式一并删除 |
+| `webui/src/api/polish.js` | §21.1 的三处 `JSON.stringify` |
+| `crates/vtrim-server/src/api/polish.rs` | 仅注释：`FontsView.vue` 指针改指 `FontLibrary.vue`（跨模块纯注释改动，理由在此） |
+
+- 保留口径：写操作仅 admin（整块 `v-if="isAdmin"`）、读失败可见可重试、下载失败原话显示、
+  预览注册出片同源字节、认不出的格式挂「预览不可用」—— 全部原样随组件迁移。
+- 组件级细节的权威记录在 `docs/webui-components.md` ⑥（`webui/src/components/AGENTS.md` 的指令链
+  `root+webui+webui-src+webui-components` 只剩 10 B 余量，卡里一个字都加不进 —— 这是预算墙，不是遗漏）。
+
+### 21.3 复跑
+
+```bash
+npm --prefix webui run build                  # dist 重建（FontsView-*.js/.css 退出，FontLibrary 并入 Workbench chunk）
+node webui/scripts/check-*.mjs                # 7 个契约脚本
+python3 scripts/check_module_map.py           # 结构门禁（views 卡替换段落净缩短）
+python3 scripts/check_module_boundaries.py    # 边界门禁
+cargo check -p vtrim-server                   # polish.rs 注释改动
+```
+
+### 21.4 复验记录（2026-10-02，真机浏览器）
+
+- **下载自带字体**：真实下载落盘 `~/.vtrim/fonts/{LXGWWenKaiLite-Regular, NotoColorEmoji}/`（14 + 25 MB，
+  各含 `font.ttf + FONT.toml + LICENSE.txt`），首页状态行变「已装 2 支」。
+- **设为默认**：浏览器点按钮 → `is_default` 服务端翻转 + 卡片 chip 实时跟移，往返各一次均正常。
+- **顺带修掉一个从 FontsView 一路继承的响应式 bug**：`registerAll(list)` 遍历的是 load() 里的**原始数组**，
+  `f.ok = true` 写在原始对象上 —— Vue 模板（走代理读）永远看不见，卡片**永久卡在「预览不可用」**
+  （`document.fonts` 里其实两支都 `loaded`）。现在 `registerAll()` 遍历 `fonts.value`（响应式代理）；
+  顺带把 chip 的判据从 `!f.ok`（注册进行中也为真）改成 `f.ok === false`，注册中不再误报。
+- 预览几何断言：`.fcard .preview` 高 47px > 0，计算字体族指向注册的同名 FontFace。
+
+---
+
+## 22. 字体职责分离 + 输入层收敛（2026-10-02）
+
+### 22.1 两个目标
+
+1. **输入层收敛**：所有用字体的功能，字体输入走**同一个标准接入**，以保证库的正确性。
+2. **职责分离**：字体不一定含 emoji ⇒ **管字的**与**管表情的**分开。
+
+### 22.2 收敛前：7 个输入口、3 种形态、7 处写死栈
+
+| 形态 | 输入口 |
+|---|---|
+| **库 id** | `[style.subtitle] font` · `[cover] font` · `subtitle_font` API · `cover.font` API |
+| **文件绝对路径** | `VTEDIT_DHAMPIR_FONT`（env，**优先于一切**） |
+| **写死的系统族名栈** | `server.rs::SYSTEM_FONT_STACK` · `cover.rs::EMOJI_FONT` · `takumi.rs::ensure_emoji_fallback` · `PolishPreview.vue` 字面量 · `CoverDesigner.vue` ×3 · `tokens.css` · `web.rs` |
+
+同一份知识写 7 遍、靠注释互相提醒"要同序"。漂移的症状是**预览和成片不一样，而且不报错**。
+
+### 22.3 收敛后：`vtrim_core::fonts` 是唯一权威
+
+```rust
+pub struct FontPlan {
+    pub text_family: Option<String>,   // 正文族名（用户选的那支的内部族名）
+    pub selected_raw: String,          // 库外 id 原样保留（当系统族名用）
+    pub emoji_family: Option<String>,  // ★ emoji 补充槽位（独立字段，不是拼进 fallback）
+    pub fallback: Vec<String>,         // 兜底链（不含 emoji）
+}
+pub fn resolve_font_plan(root: &Path, selected_id: Option<&str>) -> FontPlan;
+pub fn emoji_font(root: &Path) -> Option<FontEntry>;   // 至多一支，自动选
+pub fn fallback_chain() -> Vec<String>;                // 兜底链唯一一份定义
+```
+
+**为什么 `emoji_family` 是独立字段、而不是拼进 `fallback`**：三条消费链语义不同，必须各自决定怎么用 ——
+
+| 消费链 | 怎么用 emoji 槽位 |
+|---|---|
+| 字幕**预览**（浏览器） | 追加到 `font-family` **栈尾** |
+| 封面（Takumi） | **不看 font-family 栈**，看**注册顺序** ⇒ emoji 排**最后注册** |
+| 字幕**成片**（Dhampir 底座） | **用不上** —— 它没有逐字形回退 |
+
+拼成一个字符串栈会让后两条被误导（A2 那条计划就是这么被推翻的）。
+
+### 22.4 emoji 字体的三处拦截（A4）
+
+emoji 字体**不参与正文竞争**，三道闸：
+
+1. `fonts::set_default` —— 直接 `bail!`（"emoji 字体自动补充，不参与默认"）；
+2. `fonts::scan_dirs` 出口 —— `is_default: meta.is_default && !meta.emoji`（**最关键的一处**：
+   `is_default` 有两个真消费者 —— `preferred_fallback_family` 选**栈首**、`cover_font_files_in` 选**注册序第一支**，
+   让 emoji 拿到默认位会让**整条栈的中文全部落空**）；
+3. `resolve_font_plan` —— 不给 emoji 正文族名（用户手改配置显式选它也没用）。
+
+界面侧：两个下拉滤掉 `f.emoji`（C9）+ 字体库卡片对 emoji 不给「设为默认」（C10，改成「自动补充」静态标签）。
+
+### 22.5 ⚠️ emoji 字体必须 CBDT / COLRv0，**不能是 COLRv1**
+
+**这是本节最重要的一条**，实测字节定的：
+
+```
+takumi-core-0.25.0/src/resources/glyph.rs:440-443
+    self.color_glyphs.get_with_format(glyph_id, ColorGlyphFormat::ColrV0)?   // 写死 V0
+。
+。
+三级解析：① 位图 strikes → ② 只问 COLRv0 → ③ 普通 glyf 描边
+```
+
+上游 `google/fonts` 的 `main` 分支那份 Noto Color Emoji **早已迁到 COLRv1** ⇒ Takumi 不问它，
+一级级落空。**实测结果不是"渲染成单色剪影"（那还是看得见的），而是 emoji 整片消失** ——
+与"一个 emoji 字体都没有"的产物**逐字节相同**（sha `f1af84a1`），且**不报错**、界面照样显示已装。
+
+⇒ 自带字体已钉到 **`googlefonts/noto-emoji` 的 `v2020-09-16-unicode13_1`**（COLRv1 迁移前的最后一版）：
+实测表结构 **`CBDT + CBLC`、无 COLR、无 sbix**，且**连 `glyf` 都没有** ⇒ 不存在退化成剪影那条路。
+
+| 字段 | 值 |
+|---|---|
+| id | `NotoColorEmoji-CBDT`（**必须换新 id**，见 22.6） |
+| url | `github.com/googlefonts/noto-emoji/raw/v2020-09-16-unicode13_1/fonts/NotoColorEmoji.ttf` |
+| sha256 | `2b106b88034043001f28b3ee8e58f62e867f0f0666ea072a4acf6cbd956ca160` |
+| bytes | 10,419,948 |
+| 内部族名 | `Noto Color Emoji`（与旧那支相同 ⇒ 匹配口径不变） |
+
+### 22.6 ⚠️ 换 id 造出的"新旧并存"窗口（执行时踩到的坑）
+
+换 id 的理由是"下载幂等（已装就跳过）⇒ 复用同 id 老机器永远不重下"。但**换 id 同时制造了另一个问题**：
+
+```text
+"NotoColorEmoji" < "NotoColorEmoji-CBDT"   （纯 id 字典序）
+=> emoji_font() 选到旧那支 COLRv1 => 封面 emoji 整片消失
+```
+
+而界面显示"已装"、接口照样回 `emoji_family` —— **没有任何一处会报错**。
+修法：`emoji_font()` **自带（清单内、验证过格式）优先**，其余按 id 稳定序；
+回归钉子 `builtin_emoji_wins_over_a_stale_leftover`。
+
+> **教训**：换资源 id 时，除了想"新机器怎么拿到"，还要想"**老机器上旧那份怎么办**"。
+
+### 22.7 三条消费链的最终状态
+
+| 消费点 | 状态 | 判据 |
+|---|---|---|
+| 字幕**预览** | ✅ 支持（浏览器自带系统 emoji + 库里那支追加栈尾） | `capFallback` 追 `emojiFamily` |
+| 封面**标题 + emoji 特效层** | ✅ 支持，**实测彩色** | `cover_font_files_in` emoji 收尾 + `emoji_font_stack()` |
+| 字幕**成片** | ❌ **本仓不可修**，已记档 | `font_search_order` 的钉子单测：emoji 族不许进搜索序 |
+
+**为什么字幕成片修不了**（不是"还没做"，是**这条链路结构上不支持**）：
+`dhampir.rs::find_font` 命中第一个能解析的族就 `return`，只交出**一个**文件；
+底座 `pick_font` → `Option<PathBuf>`，最终落 ffmpeg `drawtext=fontfile=<单支>` ——
+**没有回退链、没有 fontconfig**。要支持得改底座契约（逐字形 runs + 彩色位图光栅化）。
+⚠️ 反过来：emoji 族一旦混进 `font_search_order` 并排在前，**整条字幕轨**都会交给一支没有中文字形的字体
+—— 中文全变豆腐块（`dhampir.rs` 有单测钉住这条）。
+
+### 22.8 门禁：`scripts/check-font-inputs.mjs`
+
+防"第 8 份写死又长出来"。**两向判据**：
+
+1. **登记的来源必须真的存在**（权威符号 + 白名单文件都必须在，且白名单那些文件确实还有字面量 —— 防腐坏）；
+2. **不许有没人认领的字体栈字面量**（扫 `crates` / `webui/src` / `scripts`）。
+
+⚠️ **必须认两种形态**（踩过）：`font-family:'A','B',sans-serif`（CSS）**和**
+`pub const EMOJI_FONT: &str = "'A','B',sans-serif"`（**裸常量**）—— 后者不带 `font-family:` 前缀，
+而 `EMOJI_FONT` / `SYSTEM_FONT_STACK` 正是最该收敛的两处；只写 CSS 判据会让门禁"绿着"放过它们。
+
+⚠️ **测试模块要跳过**（`#[cfg(test)]` / `mod tests` 之后的行）：那里的字体栈是**夹具**，
+不是产品里的字体选择（踩过：给 `ensure_emoji_fallback` 写的幂等单测被自己的门禁报红）。
+
+`--self-test` **7 项**，已进 `.workbuddy/gates.mjs`（主检查 + 自检**都进** —— 同 `check-effect-registry` 的教训）。
+
+### 22.9 验证
+
+```bash
+cargo test -p vtrim-core --lib fonts        # 22 项（含 emoji 槽位/拦截/优先序 6 条）
+cargo test -p vtrim-polish --lib render     # 29 项（含零回归钉子/幂等/emoji 不入搜索序）
+cargo test -p vtrim-server                  # 151 项
+node scripts/check-font-inputs.mjs          # 字体输入面（+ --self-test 7 项）
+node .workbuddy/gates.mjs                   # 全部门禁
+```
+
+出图证据留档 `.workbuddy/emoji-cover-test/`：`s2.jpg`（只有 CBDT ⇒ 全彩）、
+`s1.jpg`（只有旧 COLRv1 ⇒ 与无 emoji 字体逐字节相同）、`FIXED-with-both-fonts.jpg`（两支都在 ⇒ 全彩）。
+
+---
+
+## 23. 自带字体改「内嵌」（2026-10-02 用户拍板）
+
+### 23.1 为什么改
+
+原来的方案是「首次使用时按需下载」（`vtrim fonts download` / WebUI「下载自带字体」）。两个问题：
+
+1. **多了一个莫名其妙的操作** —— 用户要先「下载字体」才能「选字体」。这不是用户的心智模型。
+2. **离线/内网环境下静默降级** —— 没网就装不上，而症状是「字体回落到系统栈」，
+   用户根本不知道少了什么（不是报错，是观感悄悄变了）。
+
+`dsh` 那边一问「首次启动时自动下载吗」，答案是**不会**（下载全是用户显式触发的），
+于是这个缺陷就显出来了：**新机器上从没点过下载 ⇒ 库里没字体 ⇒ 封面/字幕用不了库内字体**。
+
+### 23.2 做法：`include_bytes!` 进二进制
+
+字体字节入库到 `crates/vtrim-core/assets/fonts/`，经 `include_bytes!` 编进 `vtrim.exe`：
+
+```
+crates/vtrim-core/assets/fonts/
+  LXGWWenKaiLite-Regular.ttf    13.2 MB
+  LXGWWenKaiLite-Regular.OFL     5.1 KB
+  NotoColorEmoji-CBDT.ttf        9.9 MB
+  NotoColorEmoji-CBDT.OFL        4.3 KB
+```
+
+- `BUILTIN_FONTS` 多了两个字段：`bytes` / `license_bytes`。
+- `install_builtin_font(root, b)` 从「下载 + 校验 + 改名」变成「**校验内嵌字节 + `fs::write`**」
+  —— **同步**、不联网。`sha256` 那条校验**保留**（内嵌字节也要核对源码里钉的常量）。
+- `install_builtin_fonts` / `ensure_builtin_fonts()`：后者挂在 `ensure_dir()` 之后的启动路径上
+  （`init_config.rs` 的 `config init` 与 `ensure_global_config` 两处），**失败只 warn、不拦启动**。
+- CLI `fonts download` → **`fonts install`**；HTTP `POST /polish/fonts/builtin` 语义不变（仍是修复入口）。
+
+### 23.3 授权依据（**别再把字节拿掉**）
+
+两支都是 **SIL OFL-1.1**，OFL 正文原文：
+
+> The fonts, including any derivative works, can be **bundled, embedded, redistributed and/or sold
+> with any software** provided that any reserved names are not used by derivative works.
+
+⚠️ **README 里「不包括嵌入式用途」那句说的是乐米波波体**（第三方字体，杭州乐米网络科技），
+**不是这两支自带字体**。看到那句话就把这里的字节拿掉 = 误读。
+
+### 23.4 顺带修掉的一个真 bug：许可 URL 404 → 存了 HTML 错误页
+
+`NotoColorEmoji` 的 `license_url` 原指 `.../raw/main/fonts/LICENSE` —— **实测 404**
+（文件挪过位置）。而 GitHub 对 404 回的是 **HTML 页面**、下载器又不校验内容，
+于是 `LICENSE.txt` 里存了 **268 KB 的 GitHub 报错页**（OFL 要求随附的许可原文，成了垃圾）。
+
+修正：`license_url` 钉到**我们那份字体的 tag**（`v2020-09-16-unicode13_1/fonts/LICENSE`，
+与 `url` 同源）；并且**许可走内嵌字节**（`license_bytes`）—— 它不该依赖网络，
+必须与字节同在，否则这个包的授权状态说不清。
+
+⚠️ 注意仓库根 `LICENSE` 是 **Apache-2.0**，而 `fonts/LICENSE` 才是 **OFL-1.1** —— 别取错那一层。
+
+### 23.5 规模代价
+
+| | 改前 | 改后 |
+|---|---|---|
+| debug `vtrim.exe` | 81 MB | **104 MB** |
+| 仓库新增 | 0 | **+23.2 MB**（4 个文件入库） |
+| 首次启动 | 需联网下载 ~38 MB | **不联网**，本地写 23.2 MB |
+
+### 23.6 顺带改掉的界面口径（同一次用户拍板）
+
+1. **字体下拉去掉「（系统默认）」**（`PolishView.vue` / `CoverDesigner.vue`）：自带字体就在库里，
+   再给一个「回到系统字体栈」的选项 = 给一个**必然更差**的选择。空值仍合法（老工程就是这一档），
+   但只显示成「（跟随默认）」，不再作为可选项。
+2. **「设为默认」按钮撤掉**（`FontLibrary.vue`）：默认位只作**初始化设定**
+   （老工程没显式选过字体时用哪支），不是给用户点的操作 —— 留按钮会让人以为
+   "选了它所有工程的字幕都变"，而实际只影响没选过的那些。
+   ⚠️ 服务端 `set_default` 与 CLI 面**保留**（初始化/修复要用），只是界面不再暴露。
+
+### 23.7 验收
+
+- 单测：`embedded_bytes_match_their_pinned_sha256`（内嵌字节 vs 源码常量）、
+  `embedded_bytes_are_parseable_fonts`（不是空壳/HTML）。
+- **真机全过程**：把 `~/.vtrim/fonts` 整个移走（模拟全新机器）→ 跑一次 `vtrim config init`
+  → 日志 `自带字体已就绪（本次安装 2 支）` → 库里出现两支（`FONT.toml` 完整、`LICENSE.txt` 是**真 OFL 全文**）
+  → `vtrim polish cover --renderer takumi` 出图：**中文 + emoji 全彩**。

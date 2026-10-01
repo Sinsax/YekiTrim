@@ -102,9 +102,8 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 | Vite / @vitejs/plugin-vue | MIT | 构建工具。 |
 | **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/vtrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5，失败时按顺序回退 unpkg / cdnjs。因为不随包分发，这里只作说明。副作用：**出片时需能访问这些 CDN 之一**。许可原文：<https://gsap.com/standard-license> |
 | Lucide | ISC | `webui/src/components/Icon.vue` 内联了其图标路径数据，属再分发，**需保留版权与许可声明**。上游：<https://lucide.dev> |
-| LXGW WenKai（霞鹜文楷） | SIL OFL-1.1 | 封面/预览模板的字体栈**按名称引用**；自带字体那两支见下（**首次使用时按需下载，不随仓库分发**）。 |
-| **LXGW WenKai Lite（霞鹜文楷 Lite）** | **SIL OFL-1.1** | **自带字体（可选）**：用户点「下载自带字体」或跑 `vtrim fonts download` 时从上游拉取，落 `<程序目录>/resources/fonts/LXGWWenKaiLite-Regular/`，**不随仓库或发行包分发**；随字体落盘 `LICENSE.txt`（上游 `OFL.txt` 原文）。上游：<https://github.com/lxgw/LxgwWenKai-Lite>（v1.522）。⚠️ 该许可含 ADDITIONAL PERMISSION：保留字（`霞鹜`/`LXGW` 等）在**重编译的修改版**中可继续使用；**单纯子集化用于网页字体交付**亦被明确允许。 |
-| **Noto Color Emoji** | **SIL OFL-1.1** | 同上（**自带字体**，按需下载），落 `resources/fonts/NotoColorEmoji/`；随附上游 `OFL.txt` 原文。上游：<https://github.com/google/fonts/tree/main/ofl/notocoloremoji>。 |
+| **Noto Sans SC** | **SIL OFL-1.1** | **自带字体**（2026-10-02 起替代 LXGW WenKai Lite）：字节内嵌在 `vtrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoSansSC-Regular.ttf`），首次启动自动落盘到字体库；OFL 全文随字节一并内嵌。上游：<https://github.com/notofonts/noto-cjk>（取自 Google Fonts 的**单字重 TTF**：<https://fonts.gstatic.com/s/notosanssc/v40/>） |
+| **Noto Color Emoji** | **SIL OFL-1.1** | **自带字体**：字节内嵌在 `vtrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoColorEmoji-CBDT.ttf`，取自上游 `v2020-09-16-unicode13_1`），首次启动自动落盘；OFL 全文随字节一并内嵌。上游：<https://github.com/googlefonts/noto-emoji> |
 
 ## 五、素材来源（请自行核对条款后再对外使用）
 
@@ -114,7 +113,7 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 | 音效文件本体 | 运行时下载到工程的 `sfx/` 目录，**不随仓库分发**。备选下载源为 `sounddictionary.info`。 |
 | **いらすとや** 插画 | `vtrim-polish` 可按需从 <https://www.irasutoya.com/> 检索并下载插画。该站**免费额度有限且条款较严**（例如单次使用有数量限制、禁止转售素材本身），请使用前自行确认。 |
 | EmoteLab 贴纸包 | 本地贴纸库（`<exe同级>/stickers/`）由用户自行导入的贴纸包构成，**不随仓库分发**。 |
-| 内置字体 | **不随仓库/发行包分发**。两支**自带字体**（霞鹜文楷 Lite、Noto Color Emoji，均 SIL OFL-1.1）改由**首次使用时按需下载**到 `<程序目录>/resources/fonts/`，随字体落盘上游 `OFL.txt` 原文。见上表与 `docs/plan/font-library.md` §15。 |
+| 内置字体 | **随二进制分发**（内嵌）。两支**自带字体**（**Noto Sans SC**、Noto Color Emoji，均 SIL OFL-1.1）的字节编译进 `vtrim.exe`，首次启动自动落盘到字体库，OFL 全文一并内嵌落盘。OFL-1.1 正文明确允许 `bundled, embedded, redistributed`，故随包分发合规。见上表与 `docs/plan/font-library.md`。 |
 
 ## 六、平台名称
 

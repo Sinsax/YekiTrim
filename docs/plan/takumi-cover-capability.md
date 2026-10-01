@@ -137,6 +137,16 @@ python make_assets.py && points.exe ..\assets.txt ..\points5 <字体...>   # 26 
 
 > 字体：实验台用系统 `msyh.ttc`（中文）+ `seguiemj.ttf`（彩色 emoji）+ `arial.ttf`。
 > 接入本仓时要改成"库内字体 + 显式注册"（Takumi 不读系统字体），并**复用同一个 `Fonts` 上下文**共享解码缓存。
+>
+> ⚠️⚠️ **2026-10-02 补的限定：实验台那支 `seguiemj.ttf` 实测是 `COLR version 0`，**
+> **而 Takumi 的彩色字形解析写死只问 COLRv0**（`takumi-core-0.25.0/src/resources/glyph.rs:440-443`
+> 的 `ColorGlyphFormat::ColrV0`；顺序是「位图 strikes → COLRv0 → 普通 `glyf` 描边」）。
+> 所以本节所有"
+> **"emoji 逐像素级通过"的结论，只对 COLRv0（或 CBDT/sbix 位图）字体成立** ——
+> 对 **COLRv1** 与 **SVG-in-font** 都**不成立**，而它们 Takumi 一个都不支持。
+> 实测（`.workbuddy/emoji-cover-test/`，三组对照留了产物）：库里放一支 COLRv1 的 Noto Color Emoji 时，
+> 封面上的 emoji **整片消失**（与"一个 emoji 字体都没有"的产物**逐字节相同**），
+> 且**不报错、界面照样显示已装**。⇒ 自带 emoji 字体已换成 CBDT 版（见 §11.3 与 font-library.md）。
 
 
 ---
@@ -341,6 +351,8 @@ y3    0.7   0.8   0.8   1.6
 - **能**：版面几何（位移搜索最优在 (0,0)）、背景三模式、帧层 contain、渐变/暗角/扫描线、
   `filter:blur`、`backdrop-filter`+mask、`mix-blend-mode`+isolation、图层栈顺序与隐藏、
   字距/行高/对齐/逐词高亮、emoji、JPEG 产物 —— 实测**逐像素级**（≤1.6/255）。
+  ⚠️ **emoji 那条有前提**：见 §11 开头的字体限定 —— 只对 **COLRv0 / CBDT / sbix** 字体成立；
+  **COLRv1 会整片消失**（2026-10-02 实测，自带那支已从 COLRv1 换成 CBDT）。
 - **不能**：标题字形的**逐像素**一致（~15/255 的固有差）。
 - ⇒ 所以"接 Takumi"的验收线应当是**分区的**：非文字区按严格阈值，文字区另定（或按 SSIM/结构相似度），
   而不是拿全图均值一刀切。
@@ -391,6 +403,7 @@ node scripts/check-cover-takumi.mjs --project <工程目录>          # 双通�
 
 - **可换**：除"标题字形逐像素一致"外，封面的一切（几何 / 背景三模式 / 帧层 / 渐变 / 暗角 / 扫描线 /
   滤镜 / 混合 / 图层栈 / 字距行高对齐 / 逐词高亮 / emoji）都已验证到**逐像素级**；
+  ⚠️ **emoji 那条的字体格式前提见 §11**（只支持 COLRv0 / CBDT / sbix，**COLRv1 会整片消失**）；
   但**速度上别期待收益**：这一份工程里 takumi 反而更慢（4.4s vs 3.4s，图片内联吃掉了优势）。
 - **不可换**：标题字形（~15/255 固有差 = 两个栅格化器之差）。
 - ⇒ 建议落点：**默认仍是 Chrome**（现状），静态通道作为**显式可选**；用它出片时按 §12.1 的分区阈值验收。
