@@ -12,7 +12,7 @@
   [落盘与后处理](#14-落盘后处理与-manual) · [Teleport 与 harness](#15-teleport-面板与-headless-harness) ·
   [播放头 / 空分段 / 读取失败](#16-播放头空分段与读取失败)
 - ② [精修预览 `PolishPreview.vue`](#②-精修预览polishpreviewvue)
-- ③ [封面设计器 `CoverDesigner.vue`](#③-封面设计器coverdesignervue)：[三层与背景模式](#31-封面三层与背景模式) ·
+- ③ [封面设计器 `CoverDesigner.vue`](#③-封面设计器coverdesignervue)：[三层与背景模式](#31-封面三层与背景模式) · · [右栏左右排布](#310-右栏内部左设置-右列表左右排布--宽度减半2026-10)
   [关键帧手势](#32-关键帧手势与-transform-的单一来源) · [安全区线框（几何表）](#33-安全区线框几何表) ·
   [标题自动排版](#34-标题首次自动排版) · [镜像清单](#35-设计器预览--出片的镜像清单) ·
   [素材黑边根因](#36-设计器的素材左右黑边根因) · [三处同步与写入门闸](#37-三处同步与写入门闸)
@@ -499,11 +499,21 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
 - ⚠️ **属性面板的类名不能叫 `.pane`**：`app.css` 里有一条**全局** `.pane { display:none }`（设置页那几个 tab 面板
   靠 `.on` 才显示）。新面板如果也叫这个类名，就**整块 display:none** —— 页面不报错、只是没有属性面板。
   现名 `.lyr-props`。同一个机制、同一条教训：**给组件起类名之前先看 app.css 有没有同名规则**。
-- ⚠️ **`.lyr-props` 的 `min-height` 不能省**：整列的 `maxHeight` 是 JS（`syncControlsBound`）按左侧预览高度设的，
-  而文字层那一屏属性比可用空间高得多 —— flex 收缩按 flex-basis 比例分配，没有下限时属性面板会被压成
-  **0 高**（列表把空间吃光）。下限 120px 之后，先被压缩的是上面那个可滚动的图层列表。
-- 两条钉子都在 `node webui/scripts/check-cover-stage.mjs` 的 **⑥**（`usesClass` + `paneMinHeight`，含两处变异自证）。
-  真挂载组件量 `getBoundingClientRect()` / `getComputedStyle().display` 的做法见「附：验证与门禁」的 harness 段。
+- ⚠️ **高亮词的字体会被全局通配符抢走**（2026-10 用户报「高亮词和标题字体不一样，后端没问题、前端有问题」）：
+  `styles/app.css` + `styles/tokens.css` **各有一条** `* { … font-family:var(--font) }`。通配符**直接命中**
+  `v-html` 注入的 `<span class="hl">` —— 直接命中的声明压过**继承**来的值，于是库字体在 span 上被换回全站
+  `--font`：**标题是选的库字体、高亮词是系统字体**。出片侧没这问题（`cover.html` 的 `*` 只设
+  `margin/padding/box-sizing`，**不设 font-family**），所以只有设计器会漂 —— 正是"后端没问题"的原因。
+  修法 = 高亮规则里显式写 `font-family:inherit`。**别只查 `.hl` 有没有自己的 `font-family`**（它确实没有，
+  继承看起来天经地义）—— 这类 bug 的判据是"有没有**更靠近** span 的规则命中它"；本机 headless 实测 A/B：
+  没有 `inherit` 时 `getComputedStyle(.hl).fontFamily` 退成 `"Noto Sans SC", …`，加上就是库字体。
+- ⚠️ **两栏的 `min-height` 必须是 0**（2026-10 起）：整列高度是 JS（`syncControlsBound`）按左侧预览高度设的，
+  两栏要能**各自滚**。flex/grid 子项默认 `min-height:auto`（= 内容高度）⇒ **永远出不了滚动条**，而是把两栏
+  连同外层一起撑高、溢出被 `.controls{overflow:hidden}` 裁掉（表现：最底下那排控件点不到，且**不报错**）。
+  （旧结构是上下排列 + `min-height:120px` 下限，防的是"属性面板被压成 0 高"；左右排布后那个理由不再适用。）
+- 钉子都在 `node webui/scripts/check-cover-stage.mjs` 的 **⑥ / ⑥b / ⑥c**（`usesClass` + `paneCanScroll` +
+  两栏并排/减半/字体 inherit，各含变异自证）。真挂载组件量 `getBoundingClientRect()` / `getComputedStyle()`
+  的做法见「附：验证与门禁」的 harness 段。
 
 ### 3.9 四处同步与写入门闸
 
@@ -518,6 +528,34 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
   读失败必须出错误条 + 「重试」，保存失败用面板头那一行常驻的 `.save-line.err`（**不再用 toast**：600ms 防抖会刷屏）。
 - **服务端钉子**：`crates/vtrim-server/src/api/polish.rs` 的
   `cover_config_persists_layer_stack_and_effect_ids`（空 id 丢掉、`visible` 落盘、未知 id 只在解析侧忽略）。
+
+### 3.10 右栏内部：左「设置」/ 右「列表」左右排布 + 宽度减半（2026-10）
+
+用户原文：「图层列表和图层设置改为左右排布，而不是上下结构，减少宽度为原来的一半来换取更多显示范围」。
+
+- **结构**：`.controls`（面板）> `.lyr-head`（标题行）· `.lyr-body`（两栏）· `.lyr-bar`（底部工具条）。
+  `.lyr-body` 是 **两列 grid**：**左 = `.lyr-props`（设置）/ 右 = `.lyr-col` > `.lyr-list`（列表）**。
+  工具条在两栏**之外**、横跨整个面板宽度 —— 别把它塞进某一栏。
+- **宽度**：`.designer-grid` 的右栏 `minmax(440px, 40%)` → **`minmax(220px, 20%)`**（减半）。
+  左栏是 `1fr`，右栏一窄预览就自动变大 —— 这就是"换取更多显示范围"。
+- **为什么用 grid 而不是两个 flex 子项**：flex 子项的 `flex-basis` 会被**内容高度**顶开（文字层那一屏属性
+  约 800px），两栏就不按比例了；grid 的 `grid-template-columns` 只看轨道定义，与内容无关。
+  两栏都写 `min-width:0`，否则长的设置项会把 grid 撑破、右栏被挤出面板。
+- **实测几何**（本机 headless 真挂载组件 + 真 dist CSS，外层内容宽 1146px）：
+
+  | | 改前 | 改后 |
+  |---|---|---|
+  | 右栏总宽 | 458px | **229px** |
+  | 两栏位置 | 上下叠 | 设置 x=937 / 列表 x=1055，**同一 y** |
+  | 每栏宽 | — | 各 111px（等宽） |
+  | 左侧预览 | 672px | **901px** |
+
+- ⚠️ 量几何必须给测试页的元素补上 `data-v-<scopeId>` —— 本仓的布局规则全是 scoped 的，
+  光挂 dist CSS 一个都不命中（实测会得到"两栏上下叠、各 1146px 宽"的假象）。
+  scope id 生产构建会随源码变（见 `webui/AGENTS.md`），**别在探针里写死**。
+- 钉子在 `check-cover-stage.mjs` **⑥c**（两栏并排 / 设置在前 / 宽度减半 / `min-width:0`，含两处变异自证）。
+- **窄屏退路**：`@media (max-width:900px)` 下 `.lyr-body` 退回单列，两栏各给 `max-height:260px`
+  （两栏并排在这个宽度下每栏只剩百来像素，没法用）。
 
 ---
 

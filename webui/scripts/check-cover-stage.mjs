@@ -34,6 +34,8 @@ const root = join(here, '..', '..')
 
 const read = async (...parts) => readFile(join(root, ...parts), 'utf8')
 const appCss = await read('webui', 'src', 'styles', 'app.css')
+// ⚠️ 通配规则在 app.css 与 tokens.css **各有一份**（历史遗留），两边都要查 —— 只查一处会漏。
+const tokensCss = await read('webui', 'src', 'styles', 'tokens.css')
 const designer = await read('webui', 'src', 'components', 'CoverDesigner.vue')
 const coverHtml = await read('crates', 'vtrim-polish', 'templates', 'cover.html')
 const coverRs = await read('crates', 'vtrim-polish', 'src', 'cover.rs')
@@ -259,26 +261,33 @@ check('[变异] 只把 Rust 的基准改成 40 → 与设计器的 28 不再相�
 // `styles/app.css` 有一条**全局** `.pane { display:none }`（设置页那几个 tab 面板靠 `.on` 才显示）。
 // 封面设计器 2026-09 图层化时新加的"属性面板"如果也叫 `.pane`，整块面板会**直接隐身** ——
 // 与 `.stage-video` 那两条黑边同一个机制（全局规则穿透组件里没显式覆盖的属性），而且**不报错**。
-// 同一块面板还有第二种隐身：`.controls` 的高度被 JS 限到与预览等高，而文字层那一屏内容更高，
-// flex 收缩按 flex-basis 比例来 —— 没有 `min-height` 下限时它会被压成 **0 高**（两者都实测过：
-// 用本机 headless Chrome 真挂载组件量 `getBoundingClientRect()` + `getComputedStyle().display`）。
+// 同一块面板还有第二种隐身：面板高度被 JS 限到与预览等高（`syncControlsBound`），两栏**内部滚动**。
+// ⚠️ 2026-10 起面板内部改成「左设置 / 右列表」左右排布（⑥c），滚动前提从"给 min-height 下限"
+// 变成了 **`min-height:0`** —— flex/grid 子项默认 `min-height:auto`（= 内容高度），不给 0
+// 就**永远出不了滚动条**，而是把两栏连同外层一起撑高、溢出被 `.controls{overflow:hidden}` 裁掉
+// （表现：最底下那排控件点不到，且**不报错**）。两种都实测过：用本机 headless Chrome 真挂载，
+// 量 `getBoundingClientRect()` + `getComputedStyle().display`。
 const usesClass = (src, name) => new RegExp('class="[^"]*\\b' + name + '\\b').test(src)
 /** `.lyr-props` 的 min-height（px）——`num()` 吃不了带单位的声明，这里 parseFloat */
 const paneMinHeight = (src) => {
   const n = parseFloat(String(decl(rule(src, '.lyr-props'), 'min-height') ?? ''))
   return Number.isFinite(n) ? n : null
 }
+/** 两栏都必须能滚：`min-height:0` 是 flex/grid 子项出滚动条的**前提**（见上面那段注释） */
+const paneCanScroll = (src) => paneMinHeight(src) === 0
 console.log('\n⑥ 全局类名穿透：设计器不许复用 app.css 里 display:none 的类名')
 check('app.css 仍有全局 `.pane { display:none }`（这条就是理由）',
   /display\s*:\s*none/.test(rule(appCss, '.pane') || ''), true)
 check('设计器的属性面板没叫 .pane', usesClass(designer, 'pane'), false,
   '改回 .pane → 属性面板整块 display:none，页面不报错、只是面板没了')
-check('属性面板 .lyr-props 带 min-height 下限', (paneMinHeight(designer) || 0) > 0, true,
-  'flex 收缩（.controls 被 JS 限高）会把它压成 0 高')
+check('属性面板 .lyr-props 的 min-height 是 0（能真正滚起来）', paneCanScroll(designer), true,
+  'min-height 不是 0 → 子项被内容顶开、滚动条永远不出现，溢出被 .controls 裁掉')
 check('[变异] 面板类名改回 .pane → 判据翻面',
   usesClass(designer.replace(/class="lyr-props/g, 'class="pane'), 'pane'), true)
-check('[变异] 去掉 min-height → 判据翻面',
-  paneMinHeight(designer.replace('min-height:120px', '')) === null, true)
+// ⚠️ 变异必须只打 `.lyr-props` 那条：`min-height:0` 在文件里出现多处（`.lyr-body`/`.lyr-col` 也有），
+// 裸的 `replace` 只换第一处，变异就白做了。这里先切出 `.lyr-props` 的规则体再改。
+check('[变异] .lyr-props 的 min-height 改成 120px → 判据翻面',
+  paneCanScroll(designer.replace(/(\.lyr-props \{[^}]*?)min-height:0/, '$1min-height:120px')) === false, true)
 
 // ⚠️ 高亮词是**经 `v-html` 注入**的（`highlightTitleLine()` 拼 <span class="hl">），而 Vue 的 scoped 编译
 // **不给 v-html 内容打 data-v 属性**。所以 `:deep()` 不能省 —— 写成 `.title-text .hl` 会编译成
@@ -321,6 +330,60 @@ check('[变异] 设计器字号写死（不接 --hl-fs）→ 判据翻面',
   /:deep\(\.hl\)\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(designer.replace('font-size:var(--hl-fs, 1em)', 'font-size:1em')) === false, true)
 check('[变异] 模板 .hl 去掉 font-size（出片不认字号）→ 判据翻面',
   /\.hl\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(coverHtml.replace('font-size:var(--hl-fs, 1em); ', '')) === false, true)
+// ⚠️ **高亮词的字体必须与标题同源**（用户 2026-10 报「高亮词和标题字体不一样，后端没问题、前端有问题」）。
+// 根因不是 `.hl` 自己设了字体，而是`styles/app.css` + `styles/tokens.css` 里那条**通配规则**
+// `* { font-family:var(--font) }` **直接命中**了 v-html 注入的 `<span class="hl">` —— 直接命中的声明
+// 压过**继承**来的值，于是库字体在 span 上被换回全站 `--font`：标题是库字体、高亮词是系统字体。
+// 出片侧没这问题：`cover.html` 的 `*` 只设 margin/padding/box-sizing，**不设 font-family`**。
+// 修法 = 在高亮规则里显式写 `font-family:inherit`（用本机 headless 实测过 A/B：
+// 没有它 computed font-family 退成 `"Noto Sans SC", …`，加上它就是库字体）。
+const appCssHasUniversalFont = () =>
+  /\*\s*\{[^}]*font-family\s*:\s*var\(--font\)/.test(appCss) ||
+  /\*\s*\{[^}]*font-family\s*:\s*var\(--font\)/.test(tokensCss)
+const hlInheritsFont = (src) =>
+  /:deep\(\.hl\)\s*\{[^}]*font-family\s*:\s*inherit/.test(src)
+check('通配规则 *{font-family:var(--font)} 仍在（这就是必须写 inherit 的理由）',
+  appCssHasUniversalFont(), true)
+check('设计器 .hl 规则显式 font-family:inherit（压过通配符，与标题同字）',
+  hlInheritsFont(designer), true,
+  '少了它 → 通配符直接命中 v-html 的 span，库字体被换回全站 --font，高亮词变成另一种字体')
+check('[变异] .hl 去掉 font-family:inherit → 判据翻面',
+  hlInheritsFont(designer.replace('font-family:inherit; ', '')) === false, true)
+
+
+// ── ⑥c 右栏内部：**左设置 / 右列表** 左右排布 + 右栏宽度减半 ─────────────────
+// 用户 2026-10 要求：① 图层列表与图层设置从"上下结构"改成左右；② 右栏宽度减到原来一半，
+// 省下的横向空间还给左侧预览（左栏是 `1fr`，右栏一窄预览就变大）。
+// ⚠️ 两栏用 **grid** 而不是两个 flex 子项：flex-basis 会被"文字那一屏 ~800px 内容高度"顶开，
+// 两栏宽度就不按比例了（这正是旧注释里记的那次踩坑）。
+// 几何实证（本机 headless，外层 1146px）：改前右栏 458px、两栏上下叠；
+// 改后右栏 229px、设置 x=937 / 列表 x=1055 同一 y、各 111px 宽，舞台涨到 901px。
+const layerBodyIsSideBySide = (src) => {
+  const r = rule(src, '.lyr-body') || ''
+  return /display\s*:\s*grid/.test(r) && /grid-template-columns\s*:\s*minmax\(0,1fr\)\s+minmax\(0,1fr\)/.test(r)
+}
+/** `.lyr-body` 里两栏的**顺序**：设置在前 = 左、列表在后 = 右（DOM 顺序即视觉顺序） */
+const propsBeforeList = (src) => {
+  const iProps = src.indexOf('class="lyr-props"'), iList = src.indexOf('class="lyr-list"')
+  return iProps > 0 && iList > 0 && iProps < iList
+}
+/** 右栏宽度：从 `minmax(440px, 40%)` 收到 `minmax(220px, 20%)`（≠ 就是被改回去了） */
+const gridRightColumn = (src) => (rule(src, '.designer-grid') || '').match(/minmax\([^)]*\)\s*$/)
+check('右栏内部两栏并排（.lyr-body 是两列 grid）', layerBodyIsSideBySide(designer), true,
+  '退回上下结构 → 用户要的左右排布没了')
+check('设置栏在左、列表在右（DOM 顺序）', propsBeforeList(designer), true,
+  '顺序反了就是"左列表 / 右设置"，与用户要求相反')
+check('右栏宽度已减半（minmax(220px, 20%)）',
+  /minmax\(220px,\s*20%\)/.test(rule(designer, '.designer-grid') || ''), true,
+  '改回 440px/40% → 右栏又占走一半横向空间、预览变小')
+check('两栏各有 min-width:0（长设置项不会把 grid 撑破）',
+  /min-width\s*:\s*0/.test(rule(designer, '.lyr-props') || '') || /min-width\s*:\s*0/.test(rule(designer, '.lyr-col') || ''), true)
+// ⚠️ 变异必须只打 `.lyr-body` 那条：那个 minmax 串在源码里出现**两次**（`.txt-top` 也有一份），
+// 裸的 `replace` 只换第一处（= `.txt-top`），变异就白做了 —— 这里先切出 `.lyr-body` 那一段再改。
+check('[变异] .lyr-body 退回单列 → 判据翻面',
+  layerBodyIsSideBySide(designer.replace(/\.lyr-body \{[^}]*\}/, '.lyr-body { display:flex; }')) === false, true)
+check('[变异] 右栏宽度改回 440px/40% → 判据翻面',
+  /minmax\(220px,\s*20%\)/.test(rule(designer.replace('minmax(220px, 20%)', 'minmax(440px, 40%)'), '.designer-grid') || '') === false, true)
 
 // ── ⑦ 图层栈在两端都不许被"两处实现"拆开 ─────────────────────────────────────
 // 图层栈的 z-index 注入必须**只有一条替换链**（`build_cover_page`）：以前预览与出片各写一份，

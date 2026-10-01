@@ -16,7 +16,7 @@
   `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`/`fontFallback`；
   emits `time`/`playing`/`update:selectRect`/`update:point`。字体栈纪律见下节。
 - `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（只在该片段被占用时禁用「生成封面」）。
-  **图层面板**（左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」与
+  **图层面板**（左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」与
   `docs/webui-components.md` ③。
 - 其余组件逐个的职责与规则见「边界 · 其他组件」。
 
@@ -80,14 +80,14 @@
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
 ### 封面设计器（`CoverDesigner.vue`）
-- **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」（用户要求换位）。
-  ⚠️ 面板是**定高**的（`syncControlsBound` 给 `height`，不是 `max-height`；预览矮到放不下时还有
-  `CONTROLS_MIN_H` 380px 下限，否则 `overflow:hidden` 会裁掉最底下的工具条），`.lyr-list` 用 `flex:0 0 50%`
-  **钉在面板下半部**（⚠️ shrink 必须是 0）—— 属性内容长短不再让列表上下跳（改回 `auto` 就会跳）。
-  列宽 = `minmax(0,1fr) minmax(440px, 40%)`（用户要求：预览小、右栏宽；改前定宽 372px）。
-  列表**上 = 更靠前** = `[cover] layers` 的**倒序**（栈从下到上）。顺序与可见性都落盘，出片由
+- **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「**左：属性 · 右：图层列表** · 底：工具条」。
+  ⚠️ 2026-10 用户要求：**列表与设置改左右排布**，右栏宽度**减半**（→ `minmax(220px,20%)`，省下的给预览）。
+  两栏走 **grid**（`.lyr-body` 两列），别退回 flex 子项（`flex-basis` 会被内容顶开、不等宽）。
+  ⚠️ 面板**定高**（`syncControlsBound` + `CONTROLS_MIN_H` 380px 下限，否则裁掉底部工具条）；
+  两栏各自滚、`min-height` 必须是 **0**（`auto` ⇒ 永不出滚动条）。详见 ③.8。
+  列表**上 = 更靠前** = `[cover] layers` 的**倒序**。顺序与可见性都落盘，出片由
   `cover.rs::resolve_cover_stack`/`plan_cover_layers` 注入 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/
-  `layerStyle` 是**镜像**（容错规则一起抄）——**两边必须一起改**。细节见 `docs/webui-components.md` ③。
+  `layerStyle` 是**镜像**（容错规则一起抄）——**两边必须一起改**。
 - **图层行** `[拖柄 ⠿][眼睛][缩略][名字][徽标][垃圾桶]`：**眼睛 = 非破坏性隐藏**（`visible:false` → `display:none`，
   行留着淡化；安全区那两行走 localStorage）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即恢复；
   **特效/表情连 `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。
@@ -114,9 +114,10 @@
 - ⚠️ **特效要有槽位结构**：`.fx-slot`（承载 z-index）> `.fx-item`，与出片 HTML 同构；`overlay` 的槽位必须带
   `isolation:isolate`（改造前它没真混合，省了老封面变色），`blur` 的槽位**不能**加；`.fx-layer` 也不许有 z-index。
 - **三层各有各的图源，谁也不许覆盖谁**（文字 / 关键帧 `_cover_frame.jpg` / 背景 `_cover_bg.jpg`）。
-- ⚠️ **属性面板类名不能叫 `.pane`**：`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**
-  （同 `video{}` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0）。
-  两条钉子 = `check-cover-stage.mjs` ⑥。删掉选中的层后要自动落到文字/栈顶，别让面板空着。
+- ⚠️ **属性面板类名不能叫 `.pane`**（`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**）；
+  ⚠️ **高亮词必须 `font-family:inherit`**（全局 `*{font-family:var(--font)}` 直接命中 `v-html` 的 `span.hl`，
+  直接命中压过继承 ⇒ 只有前端会漂；③.7）。钉子 = `check-cover-stage.mjs` ⑥/⑥b/⑥c。
+  删掉选中的层后要自动落到文字/栈顶，别让面板空着。
 - ⚠️ **导入背景图片写 `_cover_bg.jpg`**（同时置 `bg_mode=image`），**别再写回 `_cover_frame.jpg`**；
   `cover.image` 导入时不要清空；⚠️ **出片不再删 `_cover_frame.jpg`**（它就是关键帧层的图源）。
 - ⚠️ **关键帧文件可能不存在**：模糊背景先 404 → `onBgImageError()` **只对 blur**、**不带 time** 调
