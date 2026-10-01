@@ -440,8 +440,8 @@ Command::Polish(action) => {
         Command::Fonts(action) => match action {
             // 字体库是**程序级全局资产**，与贴纸库同规矩；这两条命令就是它的 CLI 面
             cli::FontAction::List => vtrim_polish::commands::cmd_fonts_list()?,
-            cli::FontAction::Download { id } => {
-                vtrim_polish::commands::cmd_fonts_download(id.as_deref()).await?
+            cli::FontAction::Install { id } => {
+                vtrim_polish::commands::cmd_fonts_install(id.as_deref())?
             }
         },
     }

@@ -1160,17 +1160,21 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
         );
     }
     if installed == 0 {
-        tracing::info!("  💡 一支都没有？跑 `vtrim fonts download` 下自带字体（OFL 许可，可商用）");
+        tracing::info!("  💡 一支都没有？跑 `vtrim fonts install` 装上自带字体（已内嵌在程序里，不需要联网）");
     }
     Ok(())
 }
 
-/// `vtrim fonts download [--id X]`：下载自带字体（幂等，已装好的跳过）。
+/// `vtrim fonts install [--id X]`：装上自带字体（把**内嵌字节**写进字体库，幂等、不联网）。
 ///
 /// ⚠️ 根目录必须走 `ensure_dir()`（**写路径** = 用户固定目录，含老库搬家）——
-/// 直接拿 `font_dir()` 当写目标会退回"读侧解析"，把字体下进程序目录、
-/// 换个构建目录就全部「未下载」。
-pub async fn cmd_fonts_download(id: Option<&str>) -> anyhow::Result<()> {
+/// 直接拿 `font_dir()` 当写目标会退回"读侧解析"，把字体写进程序目录、
+/// 换个构建目录就全部「未安装」。
+///
+/// ⚠️ 2026-10-02 从"下载"改成"内嵌"：正常情况下**根本不该需要这条命令** ——
+/// 首次启动 `ensure_builtin_fonts` 已经自动装好了。它留作**修复入口**
+/// （用户手删了库里那支、或落盘失败之后想补回来）。
+pub fn cmd_fonts_install(id: Option<&str>) -> anyhow::Result<()> {
     let root = vtrim_core::fonts::ensure_dir()?;
     let want: Vec<&vtrim_core::fonts::BuiltinFont> = match id {
         Some(id) => {
@@ -1191,15 +1195,15 @@ pub async fn cmd_fonts_download(id: Option<&str>) -> anyhow::Result<()> {
             tracing::info!("  ✓ {} 已安装，跳过", b.id);
             continue;
         }
-        tracing::info!("  ⬇ 下载 {}（{}）…", b.display_name, b.license);
-        vtrim_core::fonts::download_builtin_font(&root, b).await?;
+        tracing::info!("  ⬇ 安装 {}（{}）…", b.display_name, b.license);
+        vtrim_core::fonts::install_builtin_font(&root, b)?;
         n += 1;
         tracing::info!("  ✓ {} 已安装到 {}/", b.id, root.display());
     }
     if n == 0 {
-        tracing::info!("  没有需要下载的字体（都装好了）");
+        tracing::info!("  没有需要安装的字体（都装好了）");
     } else {
-        tracing::info!("  🎉 完成：本次下载 {n} 支");
+        tracing::info!("  🎉 完成：本次安装 {n} 支");
     }
     Ok(())
 }

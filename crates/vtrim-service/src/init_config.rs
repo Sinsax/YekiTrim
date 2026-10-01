@@ -53,6 +53,8 @@ pub fn init_global_config(path: Option<&Path>) -> anyhow::Result<()> {
     std::fs::write(llm_config_path(&out), vtrim_core::config::LLM_CONFIG_TOML)?;
     std::fs::create_dir_all(vtrim_core::path::sticker_dir())?;
     vtrim_core::fonts::ensure_dir()?;
+    // 自带字体是**内嵌**的（2026-10-02）：建完库就地装好，用户不需要任何额外操作
+    vtrim_core::fonts::ensure_builtin_fonts();
     tracing::info!("全局配置已生成: {}", out.display());
     Ok(())
 }
@@ -114,6 +116,10 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
             vtrim_core::path::display(&vtrim_core::path::font_dir())
         );
     }
+    // ⚠️ **自带字体在这里自动装好**（内嵌字节，不联网、幂等）。
+    // 放在 server 启动路径上是有意的：用户第一次打开 WebUI 时字体就该是"能选"的状态，
+    // 而不是先去点一个「下载自带字体」。装失败只 warn，不拦启动。
+    vtrim_core::fonts::ensure_builtin_fonts();
     Ok(result)
 }
 
