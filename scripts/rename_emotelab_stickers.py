@@ -31,7 +31,7 @@ def normalize_content(content: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="EmoteLab 贴纸重命名工具: 备份 -> 原地改名")
-    ap.add_argument("--src", default=r"target\debug\stickers",
+    ap.add_argument("--src", default=r"F:\\para\\Code\\V-Trim\\release\\vtrim-v0.2.1-win-x64\\stickers\\ysyk_0.9.0",
                     help="贴纸目录 (默认 target\\debug\\stickers)")
     ap.add_argument("--dry-run", action="store_true", help="只预览改动, 不改任何文件")
     ap.add_argument("--no-backup", action="store_true", help="跳过备份步骤")
