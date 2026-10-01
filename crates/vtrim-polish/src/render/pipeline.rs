@@ -1,6 +1,6 @@
 //! polish::render::pipeline：出片主链路（转译成底座工程 → `dhampir.exe` 整段出片 → ffmpeg 编码混流 → 统计）。
 //!
-//! 入口：`cmd_render`、`render_chunk_sync`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`cleanup`。
+//! 入口：`cmd_render`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`cleanup`。
 //! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
 
 use base64::Engine;
@@ -9,10 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::project::ProjectFile;
-use crate::render::backend::{RenderBackendKind, create_backend};
-use crate::render::context::RenderContext;
+use crate::render::backend::RenderBackendKind;
 use crate::render::ffmpeg::Ffmpeg;
-use crate::render::frame::extract_chunk_frames;
 use crate::render::sound::collect_sound_events;
 use crate::{assets, cover, process, project, render};
 
@@ -252,8 +250,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // 贴纸帧**不再在这里预解码**。
     //
     // 这一步曾经是给已删除的 Chrome 那条腿用的（页面靠 `sticker_frames.json` 里的 PNG base64
-    // 逐帧画贴纸），而它唯一的消费者 `render_chunk_sync` 现在**全仓零调用者** ——
-    // 出片只剩底座一条腿，贴纸由转译器自己带图。
+    // 逐帧画贴纸），它唯一的消费者 `render_chunk_sync`（逐帧接缝）已随 2026-10-02 的 B2 收口
+    // **整段删除** —— 出片只剩底座一条腿，贴纸由转译器自己带图。
     //
     // ⚠️ **别把它加回来**：实测 `clip-04`（4 张贴纸）冷解码 **20.2s**、产物 **67.7MB**
     // （源 GIF 合计才 38MB），而这份 JSON 写完盘**没有任何人读**。它以前是"顺带预热磁盘缓存"，
@@ -428,122 +426,6 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("  ⏱ 封面 {:.1}s", t_cover.elapsed().as_secs_f64());
     print_final_stats(&op, start_time);
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn render_chunk_sync(
-    project_path: &Path,
-    config: &ProjectFile,
-    kind: RenderBackendKind,
-    server_url: Option<&str>,
-    start_sec: f64,
-    end_sec: f64,
-    output: &Path,
-    video_path: &str,
-    sticker_data_json: &str,
-    codec: &str,
-    codec_args: &[String],
-    fps: usize,
-    chunk_idx: usize,
-    need_rgba: bool,
-) -> anyhow::Result<std::path::PathBuf> {
-    let start_frame = (start_sec * fps as f64).ceil() as usize;
-    let end_frame = (end_sec * fps as f64).ceil() as usize;
-    let frame_count = end_frame - start_frame;
-    if frame_count == 0 {
-        anyhow::bail!("Empty chunk");
-    }
-
-    tracing::debug!(
-        "  Chunk #{}: {:.1}s-{:.1}s ({} frames)",
-        chunk_idx,
-        start_sec,
-        end_sec,
-        frame_count
-    );
-
-    // ---- ffmpeg 帧提取 (pipe, 不写磁盘) ----
-    tracing::debug!(
-        "    chunk#{}: extracting {} frames via ffmpeg...",
-        chunk_idx,
-        frame_count
-    );
-    let t_extract = std::time::Instant::now();
-    let frames = extract_chunk_frames(video_path, start_sec, end_sec, fps, need_rgba)?;
-    if frames.is_empty() {
-        anyhow::bail!("ffmpeg produced 0 frames");
-    }
-    let extract_secs = t_extract.elapsed().as_secs_f64();
-    tracing::debug!(
-        "    chunk#{}: got {} frames from pipe",
-        chunk_idx,
-        frames.len()
-    );
-
-    // ---- 后端渲染 ----
-    let mut ctx = RenderContext::new(project_path.to_path_buf(), config.clone());
-    ctx.fps = fps;
-    ctx.server_url = server_url.map(|s| s.to_string());
-    ctx.sticker_data_json = sticker_data_json.to_string();
-
-    let t_render = std::time::Instant::now();
-    let mut backend = create_backend(kind, project_path, config)?;
-    backend.prepare(&ctx)?;
-
-    let rendered = backend.render_chunk(&frames)?;
-    if rendered.len() != frames.len() {
-        anyhow::bail!(
-            "backend returned {} frames, expected {}",
-            rendered.len(),
-            frames.len()
-        );
-    }
-    let render_secs = t_render.elapsed().as_secs_f64();
-
-    // ---- 输出 ffmpeg (接收渲染后的帧) ----
-    let t_encode = std::time::Instant::now();
-    let mut ffmpeg_out = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "image2pipe",
-            "-framerate",
-            &fps.to_string(),
-            "-i",
-            "-",
-            "-c:v",
-            codec,
-        ])
-        .args(codec_args)
-        .args(["-pix_fmt", "yuv420p", &output.to_string_lossy()])
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .spawn()?;
-    {
-        use std::io::Write;
-        let mut stdin = ffmpeg_out.stdin.take().unwrap();
-        for jpeg in &rendered {
-            stdin.write_all(jpeg)?;
-        }
-        stdin.flush()?;
-    }
-    // 退出码必须看：失败时留下的是截断/空 chunk，后面 concat/mux 报的错会与根因无关
-    let status = ffmpeg_out.wait()?;
-    if !status.success() {
-        anyhow::bail!("chunk#{chunk_idx} 编码失败（ffmpeg 退出码 {:?}）", status.code());
-    }
-
-    // 三个阶段分开报：出片慢的时候一眼看出是抽帧、页面渲染还是编码卡住
-    tracing::info!(
-        "    chunk#{}: done  {} frames（抽帧 {:.1}s / 渲染 {:.1}s / 编码 {:.1}s）",
-        chunk_idx,
-        rendered.len(),
-        extract_secs,
-        render_secs,
-        t_encode.elapsed().as_secs_f64()
-    );
-    Ok(output.to_path_buf())
 }
 
 /// 与 `render::sound::SoundEvent` 相同；保留旧 pub 名避免破坏外部引用。
