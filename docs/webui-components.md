@@ -463,6 +463,13 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
   也就是「设置 · 关键词过滤」里那串）—— 设计器必须照实显示**回退后真正生效的那串**并写明来源
   （`hlFromFilter` / `hlSourceHint`），用户一增删就写进封面自己的那份。以前只读 `cover.*`，
   于是"面板里空的、标题却在高亮"。
+  ⚠️ **另一处更隐蔽的同款（2026-10 用户报「关键词字体被改了、高亮色没显示」）**：高亮那段 HTML 是
+  `highlightTitleLine()` 拼出来后经 **`v-html`** 注入 `.title-text` 的，而 **Vue 的 scoped 编译不会给
+  `v-html` 内容打 `data-v-xxx`** —— 规则写成 `.title-text .hl` 会编译成 `.title-text .hl[data-v-xxx]`，
+  **永远匹配不上**（实测 dist CSS 就是这个形态）。症状极具迷惑性：**字体照旧会变**（`fontFamily` 在父级
+  `.title-text` 上、span 继承），只有**高亮色**静默退成继承来的 `#f0e6d3`。**必须写 `.title-text :deep(.hl)`**
+  （编译成 `.title-text[data-v-xxx] .hl`，属性落在父级、`.hl` 不受限）。出片侧没这问题：`cover.rs` 把
+  同一串 HTML 注入 `cover.html` 的**全局** `<style>`，没有 scope。钉子在 `check-cover-stage.mjs` ⑥b。
 - **文字面板分三区**（位置大小 / 排版 / 高亮 tag）：小标题走 `.lyr-sec`（小字 + 一条发丝线）。
   ⚠️ 它**不能**叫 `pane-sec`：`check-cover-stage.mjs` ⑥ 的 `\bpane\b` 钉子会把它判成"复用了全局
   `.pane{display:none}`"（2026-09 就这么红了一次）。

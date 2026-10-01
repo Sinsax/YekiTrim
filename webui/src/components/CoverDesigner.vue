@@ -2018,7 +2018,13 @@ onUnmounted(() => {
    —— 于是永不折行，与出片模板 `#title{white-space:nowrap}` 同口径（模板那边靠 `<br>` 断行）。
    文字超宽就溢出（`.stage{overflow:hidden}` 与出片 `#page` 一样裁掉）—— 要放进画面就手动断行或缩字号。 */
 .title-text { color:#f0e6d3; font-weight:900; line-height:1.7; paint-order:stroke fill; white-space:pre-line; width:max-content; }
-.title-text .hl { color:var(--hlc, #ffcc00); -webkit-text-stroke:inherit; paint-order:stroke fill; }
+/* ⚠️ 高亮词必须用 `:deep()`：`.hl` 那段 HTML 是 `highlightTitleLine()` 拼出来、经 **`v-html`** 注入的，
+   Vue 的 scoped 编译**不会**给 v-html 内容打 `data-v-xxx` —— 写成 `.title-text .hl` 编译成
+   `.title-text .hl[data-v-xxx]`，**永远匹配不上**（实测 dist CSS 就是这么生成的）。
+   症状很具迷惑性：字体照旧会变（`fontFamily` 在父级 `.title-text` 上，span 继承），只有**高亮色**
+   静默失效、退成继承来的 `#f0e6d3` —— 用户报的「关键词字体被改了、高亮色没显示」。
+   出片侧没这个问题：`cover.rs` 注入 <span class="hl"> 到模板的**全局** <style> 里。 */
+.title-text :deep(.hl) { color:var(--hlc, #ffcc00); -webkit-text-stroke:inherit; paint-order:stroke fill; }
 .seek-row { display:flex; align-items:center; gap:8px; }.seek-range { flex:1; min-width:0; padding:0; }
 .seek-time { flex:none; min-width:120px; text-align:right; }
 .w-time { width:90px; flex:none; }
