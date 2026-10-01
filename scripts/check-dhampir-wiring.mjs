@@ -507,6 +507,26 @@ function fnBodyOf(src, name) {
     )
   }
 
+  // ⚠️ **延迟表冲突必须报**（T3）：解码器读的那份是事实、工程 JSON 那份退为诊断，
+  // 但两者不一致时**不能静默** —— 症状是"动图越播越偏"，属于最难归因的那类。
+  {
+    check(
+      /frame_delays_ms/.test(previewSrc) && /diff >= 0/.test(previewSrc),
+      '动图加载后应当把解码器的帧延迟表与工程 JSON 对一下并报冲突',
+      '只看 frame_delays_ms 不看差异 = 存下来但从不核对，漂移会静默发生',
+    )
+    check(
+      /declared\.length !== st\.delays\.length/.test(previewSrc),
+      '帧延迟表长度不一致也要报（比逐值不同更严重的漂移）',
+      '工程表长度对不上时，那份表会被当权威用在别处',
+    )
+    check(
+      /延迟表冲突/.test(previewSrc),
+      '冲突读数要露在工具条上（不能只 console.warn）',
+      '只写控制台 = 用户看不到，等于没报',
+    )
+  }
+
   // 字幕重喂还依赖 response 的旁写内容字段名 —— 两端各一份，钉一起。
   check(
     /res\.subtitles/.test(previewSrc),
