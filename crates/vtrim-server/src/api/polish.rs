@@ -13,6 +13,8 @@ use vtrim_service::Workspace;
 
 use crate::model::AppState;
 use crate::jobs::{JobClass, JobSpec};
+// 贴纸两接口的路径判据：**唯一一份**在 `crate::scope`（中间件与 handler 两层共用）
+use crate::scope::is_safe_project_relative;
 use super::*;
 use super::{pipeline::*, project_data::*, render::*};
 
@@ -1249,12 +1251,17 @@ pub(super) async fn polish_project_get_impl(
 
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
-/// 库位置 = `<程序目录>/resources/fonts/`（`vtrim_core::path::font_dir`）。**以磁盘为准**：
-/// 往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
+/// 库位置走 `vtrim_core::path::font_dir` 的解析（**用户固定目录 `~/.vtrim/fonts` 优先**，
+/// 不存在才回落 `<程序目录>/resources/fonts/`；写路径一律落用户目录，见 `fonts::ensure_dir`）。
+/// **以磁盘为准**：往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
 /// `id` = 目录名（v2 布局）或文件名去扩展名（老布局）—— **配置里存的就是它**；
 /// `family` = **内部族名**（`FONT.toml` 的 `family`，唯一权威：预览 / 出片 `@font-face` / Takumi 三处都认它）。
 /// `display_name` 只是给人看的标签，别拿它当族名用（详见 `docs/plan/font-library.md` §13）。
 /// 扫描要读字体文件解析字族名，所以整段走 `blocking`（同步 IO 不能留在 worker 上）。
+///
+/// `fallback_stack` = 出片侧的**动态兜底字体栈**（`vtrim-polish` 的 `server::fallback_stack`：
+/// 首项随库里默认那支走）—— 预览（`PolishPreview.vue` 的 `.cap` 栈）据它与成片保持同源，
+/// 这是三处字体来源里"预览那一腿"的收口。
 ///
 /// `root`（服务器上的绝对路径）**只给 admin**：非 admin 拿它没用（也丢不进文件），
 /// 而它泄露的是服务器的安装路径 —— 与 `/api/admin/usage` 的理由同一条。
@@ -1281,6 +1288,8 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
                     // ⚠️ 自带字体**没下载**时也在列表里（`installed: false`）：界面据此给"下载"按钮，
                     // 而不是当成"库里有这支"。用户自己导入的永远是 true。
                     "installed": f.installed,
+                    // 老平铺布局（散文件直接在库根目录）⇒ 界面打「老布局」标签
+                    "flat": f.flat,
                 })
             })
             .collect();
@@ -1302,6 +1311,8 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
             "ok": true,
             // 出 JSON 的路径必须过 display（去掉 `\\?\` 逐字前缀），否则前端拼路径会炸
             "root": if is_admin { vtrim_core::path::display(&root) } else { String::new() },
+            // 动态兜底字体栈（首项随库里默认走）：预览 `.cap` 栈与成片同源的收口
+            "fallback_stack": vtrim_polish::render::server::fallback_stack(),
             "fonts": fonts,
             "builtin": builtin,
         }))
@@ -1351,7 +1362,11 @@ pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> 
         // 目录布局写入 + 读字体表都碰磁盘（可能是网络盘），一律留在 blocking 池上。
         // ⚠️ 字体库的错都是 `anyhow`（"只收 .ttf/.otf"、"程序自带字体不可删除"…），
         // 转成 400 + 原话：用户要看到"为什么这支不行"，不是笼统的 500。
-        vtrim_core::fonts::import_font(&vtrim_core::path::font_dir(), &path, display.as_deref())
+        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录 `~/.vtrim/fonts`，含老库一次性搬家），
+        // 不能拿 `font_dir()`（读侧解析：用户目录还没建出来时会回落程序目录，字体就导歪了）。
+        let root = vtrim_core::fonts::ensure_dir()
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
+        vtrim_core::fonts::import_font(&root, &path, display.as_deref())
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
     })
     .await?;
@@ -1372,6 +1387,8 @@ pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) ->
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 id"))?
         .to_string();
     blocking(move || {
+        // set_default / remove 操作的是**当前可见的那份库**（`font_dir()` 读侧解析），
+        // 不是写路径 —— 用户目录还没建出来时，可见的库就在程序目录，改的应当是它。
         vtrim_core::fonts::set_default(&vtrim_core::path::font_dir(), &id)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
     })
@@ -1422,7 +1439,10 @@ pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) ->
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let report = blocking(move || {
-        let root = vtrim_core::path::font_dir();
+        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录，含老库一次性搬家）——
+        // 否则约 38 MB 会下进程序目录，换个构建/安装目录就全部「未下载」。
+        let root = vtrim_core::fonts::ensure_dir()
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         // 点名单支时先确认它真是自带的 —— 否则用户等半天才发现 id 打错
         if let Some(id) = &only {
             if !vtrim_core::fonts::is_builtin_id(id) {
@@ -2878,8 +2898,8 @@ pub(super) async fn polish_sticker_frame(
         .to_string();
     let frame = body.get("frame").and_then(|v| v.as_u64()).unwrap_or(0);
     let path = validated_project_dir(dir)?;
-    // 越界防护：asset 必须是**工程内相对路径** —— 判据在 `is_safe_project_relative`
-    // （与 `polish_sticker_prewarm` 共用同一份，不许各写一遍）。
+    // 越界防护：asset 必须是**工程内相对路径** —— 判据在 `crate::scope::is_safe_project_relative`
+    // （与 `polish_sticker_prewarm`、scope 中间件共用同一份，不许各写一遍；这是 handler 侧的第二道）。
     if !is_safe_project_relative(&asset) {
         return Err(err(StatusCode::BAD_REQUEST, "asset 必须是工程内的相对路径"));
     }
@@ -2922,37 +2942,18 @@ pub(super) async fn polish_sticker_frame(
     })))
 }
 
-/// 单个"工程内相对路径"是否合格。
+/// 判据本体在 [`crate::scope::is_safe_project_relative`]（**全仓只此一份**）：
+/// 中间件（`enforce_scope`，第一道）与这里的两个 handler（第二道）共用。
+/// 当年"两份实现、判据还漏了根相对"就是 `/etc/passwd` 那条洞的成因 —— 别再把判据抄回来。
 ///
-/// # 为什么不能只用 `Path::is_absolute()`
-///
-/// 那一条在 **Windows 上是漏的**：`Path::new("/etc/passwd").is_absolute()` 返回 **false**
-/// （无盘符/无前缀），于是 `/etc/passwd` 能穿过判据，而 `Path::join` 对"有根无前缀"的路径
-/// **会替换掉基准**（实测 `Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`
-/// —— 已经跑到工程外去了）。反斜杠同理（`\windows\x` → `C:\windows\x`）。
-///
-/// 这里改成**显式逐字符判**：空 / 绝对 / 根相对（`/` `\` 开头）/ 盘符（`:`）/ `..` / 反斜杠
-/// 全挡。它与平台无关，两个贴纸 handler 共用一份，**不许各写一遍** ——
-/// 已有的 `sticker-frame` 与新的 `sticker-prewarm` 当年就是两份，改一边漏另一边。
-fn is_safe_project_relative(p: &str) -> bool {
-    !p.is_empty()
-        && !std::path::Path::new(p).is_absolute()
-        && !p.starts_with('/')
-        && !p.starts_with('\\')
-        && !p.starts_with('.')   // `../x` 与隐藏目录都不该从请求里进来
-        && !p.contains("..")
-        && !p.contains(':')
-        && !p.contains('\\')
-}
-
-/// 把前端交上来的贴纸路径数组过滤成**工程内的相对路径**（判据见 `is_safe_project_relative`）。
+/// 把前端交上来的贴纸路径数组过滤成**工程内的相对路径**（判据见上）。
 ///
 /// 写成函数而不是内联闭包，是为了让"越界值被挡掉"有单测钉住 —— 内联在 handler 里的 filter
-/// 没有单测能碰它（这正是 `/etc/passwd` 那条洞一直没被发现的原因）。
+/// 没有单测能碰它（这正是那条洞一直没被发现的原因）。
 fn safe_sticker_assets(assets: Vec<String>, base: &std::path::Path) -> Vec<std::path::PathBuf> {
     assets
         .into_iter()
-        .filter(|a| is_safe_project_relative(a))
+        .filter(|a| crate::scope::is_safe_project_relative(a))
         .map(|a| base.join(a))
         .collect()
 }

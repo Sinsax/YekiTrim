@@ -126,16 +126,21 @@ export const fontUrl = (pid, dir, name) =>
   `/api/polish/font?${qs(pid, dir)}${name ? '&name=' + encodeURIComponent(name) : ''}`
 
 /**
- * 字体库（只读）：`{ root, fonts: [{id, file, family, display_name, bytes, builtin, is_default,
- * license, scripts, emoji, installed}], builtin: [{id, display_name, family, license, license_url, installed}] }`。
+ * 字体库（只读）：`{ root, fallback_stack, fonts: [{id, file, family, display_name, bytes, builtin,
+ * is_default, license, scripts, emoji, installed, flat}], builtin: [{id, display_name, family,
+ * license, license_url, installed}] }`。
  *
  * ⚠️ `family` 自 v2 起是**字体内部族名**（预览/出片/Takumi 三处唯一认的那个名字），
  * 给人看的标签是 `display_name` —— 别再拿 id 或文件名当族名用。
  * ⚠️ `installed` 只对**自带字体**有意义：`false` = 清单里有它但还没下载（界面给「下载」而非「删除」）；
  * 用户自己导入的永远是 `true`。
+ * ⚠️ `fallback_stack` = **动态兜底字体栈**（首项随库里"设为默认"那支走，与出片同一份计算）：
+ * 预览的 `.cap` 栈从这取，别在前端写死字体名 —— 写死的话"设为默认"对预览永远无效。
+ * ⚠️ `flat` = 老平铺布局（散文件直接在库根目录）；`.ttc` 条目（`file` 以 `.ttc` 结尾）
+ * 浏览器 @font-face 认不出，**只展示、不进字体下拉**。
  *
- * 库是**程序级**的（`<程序目录>/resources/fonts/`），与项目无关 —— 所以这里不带 `{project, dir}`；
- * 读不需要 admin（写才要）。
+ * 库是**程序级**的（用户固定目录 `~/.vtrim/fonts`，读侧另有老安装回落），与项目无关 ——
+ * 所以这里不带 `{project, dir}`；读不需要 admin（写才要）。
  */
 export const fetchFonts = (label = '') => api('/api/polish/fonts', { label })
 

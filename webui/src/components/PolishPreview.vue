@@ -155,7 +155,11 @@ const props = defineProps({
   // 与 selectMode 互斥（框选优先）—— 两者都是"在预览上取坐标"，没必要同时开。
   pointMode: { type: Boolean, default: false },
   point: { type: Object, default: null },
-  pointLabel: { type: String, default: '' }
+  pointLabel: { type: String, default: '' },
+  // 动态兜底字体栈（页面侧从 `/api/polish/fonts` 的 `fallback_stack` 透传进来）：
+  // 首项随字体库里"设为默认"的那支走 —— 与成片（`server.rs::fallback_stack`）同一份计算。
+  // 缺省 = 老的字面量栈（库里没有可用中文时服务端算出来的回落态就是它，不回归）。
+  fontFallback: { type: String, default: '"LXGW WenKai","Microsoft YaHei","Noto Sans SC",sans-serif' }
 })
 const emit = defineEmits(['time', 'update:selectRect', 'update:point', 'playing'])
 
@@ -1331,8 +1335,10 @@ const capRows = computed(() => subsAt(idx.value, current.value))
 // A5 字幕折行：与出片（templates/index.html renderFrame）同一套 wrapCaptionParts
 // —— 安全宽 = 画布宽 * 0.875、最多 3 行、装不下缩字号（下限 0.7）。
 // 行内 white-space:nowrap 禁掉浏览器自动换行，预览与出片断行位置一致。
-const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px "'
-  + (subStyle.value.font || 'LXGW WenKai') + '","Microsoft YaHei","Noto Sans SC",sans-serif')
+/** 量宽用的字体简写。⚠️ 兜底栈走 props.fontFallback（服务端动态算、与成片同源）——
+ *  这里曾写死 `"LXGW WenKai",…`，"设为默认"对预览的量宽/折行完全无效。 */
+const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
+  + (subStyle.value.font ? '"' + subStyle.value.font + '",' : '') + props.fontFallback)
 const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
 const capRowsWrapped = computed(() => capRows.value.map((c) => {
   const w = wrapCaptionParts(c.parts, cv.value.W * 0.875, (tx) => capMeasure(tx, capFontSpec.value))
@@ -1396,7 +1402,9 @@ const colorOverlayStyle = computed(() => {
 const capLayerStyle = computed(() => {
   const s = subStyle.value
   return {
-    fontFamily: `"${s.font || 'LXGW WenKai'}","Microsoft YaHei","Noto Sans SC",sans-serif`,
+    // ⚠️ 兜底栈 = props.fontFallback（服务端动态算、与成片同源）；选了库内字体时排最前。
+    // 这里曾写死 `"${s.font || 'LXGW WenKai'}","Microsoft YaHei",…` —— "设为默认"对预览无效。
+    fontFamily: s.font ? `"${s.font}",${props.fontFallback}` : props.fontFallback,
     fontSize: (s.size || 72) + 'px',
     color: s.color || '#dcbda0',
     WebkitTextStroke: s.stroke || '12px #403c3b',

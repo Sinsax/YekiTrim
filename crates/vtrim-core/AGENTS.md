@@ -27,7 +27,7 @@
 - `config::{load_config, load_config_at, load_global_config, load_llm_config, patch_config_file,
   write_project_config, save_transcript_path_in, normalize_project_paths_in}`；
   `config::types::Config` / `ProjectConfig::current_stage(&output_dir)`。
-- `path::{vtrim_home, sticker_dir, font_dir, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
+- `path::{vtrim_home, sticker_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
   resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
 - `progress::ProgressReporter`（trait）+ `NoopProgress`；`filelock::{with_path_lock, lock_path,
   with_path_lock_sync}`；`tenant::{jail_join, jail_existing, ensure_within}`。
@@ -62,14 +62,19 @@
 - **弹幕路径解析在 `pipeline/runner.rs::resolve_danmaku`**（`inject_config` 调它）：相对路径按
   **工程根（`output_dir` 的父目录）→ 视频父目录**的顺序试，两个基准都试一遍，否则
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
-- **字体库**：`vtrim_core::fonts` + `path::font_dir()`，程序级固定在 `<程序目录>/resources/fonts/`
-  （与 `.vtrim/`、`stickers/` 同级；`config init` 与 `server` 启动时都会 `ensure_dir`）。
+- **字体库**：`vtrim_core::fonts` + `path::font_dir()`，**用户固定目录 `~/.vtrim/fonts` 优先**
+  （存在即用；写路径一律落它，`fonts::ensure_dir` 首次调用时把程序目录老库**整体复制一次**并落
+  `.migrated-from-program-dir` 记号，之后"换构建目录字体全没"不再发生）；用户目录不存在才回落
+  `<程序目录>/resources/fonts/`（老安装兼容，手工丢进去的字体继续可见）。`config init` 与 `server`
+  启动都会 `ensure_dir`。
   **两种布局都支持**：① v2「每支一个目录」`<slug>/font.ttf|otf` + `FONT.toml`（**id = 目录名**，
   元数据含 `family`（**内部族名，唯一权威**）/ `display_name` / `builtin` / `is_default` / `license` / `scripts`）；
   ② 老布局（`.ttf` 直接丢在库里，id = 文件名去扩展名）—— **继续支持**，`scan_all`/`resolve_all` **目录优先**，
   `scan()`/`resolve_file()` 已改走 `*_all`。`family` 仍是内部族名（手写最小 `name` 表解析，按
   `(路径, mtime, 体积)` 缓存，别每次请求重读几十 MB）；**空串 = 系统字体栈**（首项由
   `vtrim-polish` 的 `preferred_fallback_family()` 按“库里装了哪支”算，见其卡），老工程就是这一档。
+  ⚠️ **平铺条目 `flat: true`**（`FontEntry`，界面打「老布局」标签）：散文件直接在库根目录的老布局，
+  与导入/下载进来的库字体不是一回事（当年手工拷进来的系统字体常是这种）。
   ⚠️ **`.ttc`/`.otc` 导入一律拒收**（要收得先拆包）：浏览器
   `@font-face` **不认字体集合** ⇒ 收进来会“预览回退系统字体、出片却用了它”。`import_font` 还要求
   “读得出内部族名”；`remove_font` 对 `builtin=true` 直接拒绝（“程序自带字体不可删除”）。
@@ -81,8 +86,8 @@
   方案与理由：`docs/plan/font-library.md`（§5 设计 / §10 契约 / §15 自带字体）。
   ⚠️ **别改成“把字体拷进项目”**：预览页面由渲染服务器（ServeDir 根 = 项目目录）端给浏览器，
   所以库里字体必须有一条自己的路由 `/vt-fonts/:name`（在 `vtrim-polish`，见其卡）。
-  回归钉子：`fonts::tests`（扫描/解析/越权）+ `fonts::tests_v2`（布局/导入/自带/默认）。
-  发行包**不带字体文件**，只建空目录 + `放这里.txt` 说明怎么下载（见 README「字体」）。
+  回归钉子：`fonts::tests`（扫描/解析/越权）+ `fonts::tests_v2`（布局/导入/自带/默认/搬家）。
+  发行包**不带字体文件**，只建空目录 + `放这里.txt`（文案写明正式位置在用户固定目录，见 README「字体」）。
 - `filelock` 的两种锁别混用：异步 `with_path_lock` / `lock_path` 给 handler，
   **同步** `with_path_lock_sync` 只给同步上下文的 read-modify-write（core 管线的 `edit_toml_at` 用）
   —— ⚠️ 只在**微秒级**的文件读改写里用，别拿它包 ffmpeg / 网络请求；它**非重入**。

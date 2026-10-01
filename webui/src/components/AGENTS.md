@@ -13,8 +13,8 @@
   `reprocess`/`retried`/`redo-segment`。**`preview` = 本地改动立刻镜像给页面**（不落盘、不重挂载）；
   **`done` = 一次编辑真的做完了**，页面据此跑后处理。
 - `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
-  `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`；
-  emits `time`/`playing`/`update:selectRect`/`update:point`。
+  `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`/`fontFallback`；
+  emits `time`/`playing`/`update:selectRect`/`update:point`。字体栈纪律见下节。
 - `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（只在该片段被占用时禁用「生成封面」）。
   **图层面板**（左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」与
   `docs/webui-components.md` ③。
@@ -74,8 +74,9 @@
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
 - 音量/静音 = **总音量，必须同时落到 `<video>` 元素**（**只调 SFX 播放器就是 bug**）；读回用 `isFinite` + clamp，
   **不能写 `parseFloat(...) || 1`**。**别再写死 `66vh`**。
-- ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ `SYSTEM_FONT_STACK`、`--font-bold-file`）：
-  漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
+- ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ 服务端 `fallback_stack`：页面透传
+  `fetchFonts().fallback_stack`，**不许前端写死字体名** —— 写死则「设为默认」对预览永远无效；
+  另有 `--font-bold-file`）：漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
 ### 封面设计器（`CoverDesigner.vue`）
@@ -97,8 +98,8 @@
   特效/表情→`x/y`（滚轮 `amount`）· 滤镜/背景/安全区→**不可拖**（`not-allowed`）。`Shift` 约束单轴。
 - **文字面板**（用户样稿）：左文本框 / 右控件列**各占 50%**（LLM 生成标题 · X · Y · 字体 · 字号），下面两列一行
   （对齐·行距 / 描边·字距）→ 高亮色·文字阴影 → 高亮关键词。**每个数值都是「滑块 + 行尾可填数字」**
-  （`.rv-input`：滑块有 step 栅格，手填才落得到栅格之外；夹 `[min,max]`、**不吸附 step**、清空/非数字不写模型）。
-  没用 `SliderField.vue`：它 `@container 220px` 会把标签挤到第二行（同一条理由的紧凑版）。
+  （`.rv-input`：手填可越 step 栅格；夹 `[min,max]`、**不吸附 step**、清空/非数字不写模型；
+  不用 `SliderField.vue` —— `@container` 会把标签挤到第二行）。
 - ⚠️ **高亮词要显示"出片真正在用的那串"**：`cover.highlight_keywords` 为空时出片**回退** `[filter] highlight`
   （`cover.rs::cover_highlight_words`）—— 面板必须照实显示它并写明来源（`hlFromFilter`/`hlSourceHint`），
   用户一增删就写进封面自己的那份。以前只显示封面那份 → "看着没设置、其实在生效"（用户报过「高亮词没有实际使用上」）。
@@ -131,15 +132,15 @@
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
   `bg_zoom` 0.5~3。
 - ⚠️ **设计器"素材左右黑边"**：`app.css` 的全局 `video{background:#000;border-radius:var(--r-sm)}` 穿透
-  `.stage-video`（类选择器只覆盖自己写过的属性）→ `background:transparent; border-radius:0` 是**必需的覆盖**（②）。
+  `.stage-video`（类选择器只覆盖自己写过的属性）→ `background:transparent; border-radius:0` 必需（②）。
 - **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器镜像**；
   `sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出错误条 + 「重试」。
 ### 运镜（camera）
 - **倍率只有一张表**：`CameraStyle::factor`，四处都走它。⚠ 模板 canvas 路径曾硬编码 `1.8/1.5` 且完全不读
   `[style.camera]`，而它才是出片路径（当年 `chrome-render` 是默认路径，那条腿已删除）——别写回去。
-- **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**。**放大档位不存在「推出框露背景」的风险**（运镜是绕不动点
-  做 `scale`，`s ≥ 1` 时四周一律向外扩张；露底只发生在画中画 `zoom_wide < 1`，刻意留黑边 `(1-factor)/2×1920 = 432px`）。
-  三处兜底默认值（`default_zoom_mid/close/wide()`、模板与 `engine.js` 的 `camFactor`）必须一起改。
+- **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**。**放大档位不存在「推出框露背景」的风险**（绕不动点
+  做 `scale`，`s ≥ 1` 四周一律向外；露底只在画中画 `zoom_wide < 1`，刻意留黑边 `(1-factor)/2×1920 = 432px`）。
+  三处兜底默认值（`default_zoom_mid/close/wide()`、模板与 `engine.js` 的 `camFactor`）一起改。
   **别再退回"靠 prompt/界面拦"**：守卫是唯一兜底。
 - ⚠ **竖屏（`vertical = true`）跟运镜一起屏蔽**：四条求值路径全部归零（`timeline::evaluate_frame`、
   模板 `getActiveCamera` 返回 `CFG.vertical ? 0 : handheld`、`engine.js cameraAt` 竖屏分支返回 `handheld: 0`）。
@@ -164,10 +165,10 @@
 - `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 标签行右端可直填的数字框，16 处）。
   ⚠ **滑块宽度 = 所在格子的 1/3**（`input[type=range]` 的 `width:100%` 会被 flex-basis 盖掉，**别再改回 100%**）；
 - `JobList`/`jobs/JobDrawer`（任务列表与按钮门控 —— "界面哑火"的来源，2026-09-16 一次补齐）：
-  - ⚠ **请求必须有超时**：`api()` 默认兜一个松上限（10 min），`jobsApi` 自己传 **10s**。没有超时的
-    `fetch` 一旦卡住就永不 settle，而 `useJobs` 的去重 `inflight` 只由 `.finally` 清 —— 一次卡住的
-    `/api/jobs` 会把任务列表与所有按作用域门控的按钮一起冻在最后一帧。用户症状正是**"队列加载不出来 +
-    剪切按钮一直灰"**，而日志里**一条 `/api/jobs` 都没有**（它在 `access_log.rs` 的 noisy 名单里只记 debug）。
+  - ⚠ **请求必须有超时**：`api()` 默认兜 10 min，`jobsApi` 自己传 **10s** —— 没有超时的
+    `fetch` 卡住就永不 settle，而 `useJobs` 的去重 `inflight` 只由 `.finally` 清，一次卡住的
+    `/api/jobs` 会把任务列表与所有按作用域门控的按钮一起冻住（症状：**"队列加载不出来 +
+    剪切按钮一直灰"**，日志里一条 `/api/jobs` 都没有 —— noisy 名单只记 debug）。
     新增轮询类接口自己给短超时；noisy 接口**慢过 `SLOW_MS`(1s) 照样记 info**。
   - ⚠ **读失败 ≠ 没有任务**：`useJobs.load()` 失败时**保留上一份快照**并置 `lastError`，`JobList` 把
     「读取中 / 读取失败（带重试按钮）/ 真的没有任务」**分三态**显示。以前失败写 `jobs.value = []`，

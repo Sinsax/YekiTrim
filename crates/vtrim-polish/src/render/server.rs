@@ -203,13 +203,13 @@ fn quote_css(s: &str) -> String {
     out
 }
 
-/// 没选库内字体时的字体栈（index.html / cover.html / webui 的 `--font` 同一套）。
+/// 没选库内字体时的字体栈（**空库回落态**）：`'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif`。
 ///
-/// ⚠️ **顺序有意义，且必须与 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈同序**
-/// （那里是 `"<项目字体>","Microsoft YaHei","Noto Sans SC",sans-serif`）：项目选的那支没装时，
-/// **谁排前面谁就是用户在预览里看到的字体**。这里曾经把 `Noto Sans SC` 排在 `Microsoft YaHei`
-/// 前、而预览是雅黑在前 —— 同一个工程：预览是雅黑、成片是 Noto（用户报的"字体不对"）。
-/// 底座那条腿（`render/dhampir.rs::find_font`）直接读这个常量，所以改这一处三处一起变。
+/// ⚠️ **这不再是"用哪支"的权威** —— 权威是 [`fallback_stack()`]（首项随库里默认那支走）。
+/// 本常量现在只扮演两个角色：① `fallback_stack()` 在**库里没有可用中文**时的回落态
+/// （`stack_head_tracks_installed_library_font` 单测钉着"回落时逐字相同"，存量工程的像素不变）；
+/// ② 文档锚点：尾部顺序必须与 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈同序
+/// （那里是 `"<项目字体>",<fallback_stack>`）。
 pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif";
 
 /// 字体栈的**首项**：装没装自带中文字体，这里不一样。
@@ -247,6 +247,17 @@ pub fn preferred_fallback_family() -> String {
     } else {
         quote_css(preferred.trim())
     }
+}
+
+/// **兜底字体栈（动态版）**：`preferred_fallback_family()` + [`TAIL_STACK`]。
+///
+/// 这是"没选库内字体时用哪支"的**唯一权威**：库里设了默认 ⇒ 首项就是它的内部族名；
+/// 库里没有可用中文 ⇒ 与 [`SYSTEM_FONT_STACK`] 常量逐字相同（单测钉着，存量零回归）。
+/// 消费者：① 底座那条腿（`render/dhampir.rs::font_search_order`，成片按它找字体文件）；
+/// ② 封面没选字体时的 `font-family`（`cover.rs::cover_font_css`）；③ `/api/polish/fonts`
+/// 回给前端的 `fallback_stack`（预览 `.cap` 栈据此与成片同源）。
+pub fn fallback_stack() -> String {
+    format!("{},{}", preferred_fallback_family(), TAIL_STACK)
 }
 
 /// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底（首项是

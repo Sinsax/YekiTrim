@@ -63,6 +63,7 @@
           <div class="tags">
             <span v-if="f.builtin" class="tag builtin">程序自带</span>
             <span v-if="f.is_default" class="tag def">默认</span>
+            <span v-if="f.flat" class="tag" title="散文件直接放在库目录（老布局），不是导入/下载进来的库字体 —— 当年手工拷进来的系统字体（msyh.ttc、seguiemj.ttf 这类）常是这种。">老布局</span>
             <span v-if="f.license" class="tag" :title="f.license">{{ f.license }}</span>
             <span v-if="f.emoji" class="tag">emoji</span>
             <span v-if="f.installed === false" class="tag warn">未下载</span>

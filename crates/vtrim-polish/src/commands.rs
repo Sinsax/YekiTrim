@@ -1166,9 +1166,12 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
 }
 
 /// `vtrim fonts download [--id X]`：下载自带字体（幂等，已装好的跳过）。
+///
+/// ⚠️ 根目录必须走 `ensure_dir()`（**写路径** = 用户固定目录，含老库搬家）——
+/// 直接拿 `font_dir()` 当写目标会退回"读侧解析"，把字体下进程序目录、
+/// 换个构建目录就全部「未下载」。
 pub async fn cmd_fonts_download(id: Option<&str>) -> anyhow::Result<()> {
-    let root = vtrim_core::path::font_dir();
-    vtrim_core::fonts::ensure_dir()?;
+    let root = vtrim_core::fonts::ensure_dir()?;
     let want: Vec<&vtrim_core::fonts::BuiltinFont> = match id {
         Some(id) => {
             let hit: Vec<_> = vtrim_core::fonts::builtin_fonts()
