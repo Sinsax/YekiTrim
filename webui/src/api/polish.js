@@ -136,6 +136,10 @@ export const fontUrl = (pid, dir, name) =>
  * 用户自己导入的永远是 `true`。
  * ⚠️ `fallback_stack` = **动态兜底字体栈**（首项随库里"设为默认"那支走，与出片同一份计算）：
  * 预览的 `.cap` 栈从这取，别在前端写死字体名 —— 写死的话"设为默认"对预览永远无效。
+ * ⚠️ `emoji_family`（2026-10-02 字体职责分离）= **emoji 补充槽位**：库里那支负责表情的字体
+ * （由服务端 `fonts::emoji_font` 自动选、至多一支），库里没有就是 `null`。
+ * 它是**独立字段**、不并进 `fallback_stack` —— 预览把它追加在字体栈**末尾**（正文在前、
+ * emoji 兜底），封面那条链则靠**注册顺序**而不是这个栈。
  * ⚠️ `flat` = 老平铺布局（散文件直接在库根目录）；`.ttc` 条目（`file` 以 `.ttc` 结尾）
  * 浏览器 @font-face 认不出，**只展示、不进字体下拉**。
  *
@@ -158,31 +162,69 @@ export const importFont = ({ path = '', dir = '', fileName = '', name = '' }) =>
     method: 'POST',
     // ⚠️ 优先 `{dir, name}`：路径**由服务端拼**（前端拼会把 `\\?\` verbatim 前缀拼坏，
     // 与素材清单同一条规矩）。`path` 只留给"我就是要给绝对路径"的调用方。
-    body: dir && fileName ? { dir, name: fileName, display: name } : { path, display: name },
+    // ⚠️ body 必须 JSON.stringify：裸对象会被 fetch 转成字面量 "[object Object]"，
+    // 服务端 Json 提取器报 400 + text/plain（"接口不存在或返回格式错误"就是这么来的）。
+    body: JSON.stringify(dir && fileName ? { dir, name: fileName, display: name } : { path, display: name }),
     label: '导入字体',
   })
 
+/** 字体上传上限（字节）：与 Rust vtrim_server::api::polish::FONT_UPLOAD_MAX_BYTES
+ *  是**同一个数**（改一处要改两处，同贴纸那条规矩）。
+ *  ⚠️ 前端必须先挡：axum 超限回的是 **413 + 纯文本**，而 client.js 只认 JSON，
+ *  会把「文件太大」报成「接口不存在或返回格式错误」（与贴纸上传同一个坑）。 */
+export const FONT_UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+
+/**
+ * **上传**一支字体（**仅 admin**）—— 拖拽/选文件那条路。
+ *
+ * 请求体是字体的**原始字节**（application/octet-stream，不是 multipart）—— 与贴纸上传同一条做法。
+ * name = **文件名**（服务端拿它当 id），显示名走 display。
+ *
+ * ⚠️ 与 importFont 的分工：那条收的是**服务器上已存在的绝对路径**（浏览器里的 File 对象
+ * **没有磁盘路径**，所以拖拽走不了它）；这条收的是**浏览器里的字节**。
+ */
+export const uploadFont = (file, display = '') => {
+  if (file && file.size > FONT_UPLOAD_MAX_BYTES) {
+    // 前端先挡：否则拿到的是 413 纯文本，会被 client.js 报成「接口不存在或返回格式错误」
+    return Promise.reject(
+      new Error('文件超过 ' + Math.round(FONT_UPLOAD_MAX_BYTES / 1024 / 1024) + ' MB 上限'),
+    )
+  }
+  const q = new URLSearchParams({ name: file.name })
+  if (display) q.set('display', display)
+  return api('/api/polish/fonts/upload?' + q.toString(), {
+    method: 'POST',
+    body: file,
+    headers: { 'Content-Type': 'application/octet-stream' },
+    label: '上传字体',
+    // 上传几十 MB 到（可能很慢的）磁盘：别套用任何比默认更紧的超时
+    timeout: 0,
+  })
+}
+
 /** 设为默认字体（**仅 admin**，唯一默认）。⚠️ 只影响推荐位，**不动任何工程的字体配置**。 */
 export const setDefaultFont = (id) =>
-  api('/api/polish/fonts/default', { method: 'POST', body: { id }, label: '设为默认字体' })
+  api('/api/polish/fonts/default', { method: 'POST', body: JSON.stringify({ id }), label: '设为默认字体' })
 
 /** 删除一支字体（**仅 admin**）。程序自带的返回 **403「程序自带字体不可删除」**。 */
 export const deleteFont = (id) =>
   api('/api/polish/fonts?id=' + encodeURIComponent(id), { method: 'DELETE', label: '删除字体' })
 
 /**
- * 下载**自带字体**（**仅 admin**；幂等，已装好的跳过）。
+ * 装上**自带字体**（**仅 admin**；幂等，已装好的跳过）。
  *
- * ⚠️ 会联网、约 38 MB（霞鹜文楷 Lite + Noto Color Emoji）⇒ 给足超时；
- * `id` 缺省 = 下全部还缺的。清单与校验和都在服务端（`vtrim_core::fonts::BUILTIN_FONTS`），
+ * ⚠️ 2026-10-02 起字体是**内嵌在二进制里**的：这条请求**不联网**，只是把内嵌字节写进字体库。
+ * 正常路径下**走不到这里**（`ensure_global_config` 在 server 启动时已自动装好），
+ * 它是**修复入口** —— 用户手删了库里那支之后补回来。
+ * `id` 缺省 = 装全部还缺的。清单与校验和都在服务端（`vtrim_core::fonts::BUILTIN_FONTS`），
  * 前端**不自己维护这份清单**。
  */
 export const downloadBuiltinFonts = (id = '') =>
   api('/api/polish/fonts/builtin', {
     method: 'POST',
-    body: id ? { id } : {},
-    label: '下载自带字体',
-    // 几十 MB 的外网下载：别用默认那 10 分钟里的任何更紧的值
+    body: JSON.stringify(id ? { id } : {}),
+    label: '安装自带字体',
+    // 写 ~23 MB 到（可能很慢的）磁盘：别用默认那 10 分钟里的任何更紧的值
     timeout: 0,
   })
 

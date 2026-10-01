@@ -364,10 +364,14 @@ const props = defineProps({
   /** 属性面板的 Teleport 挂载点（CSS 选择器）；默认由 PolishView 渲染在视频左侧 */
   propsTarget: { type: String, default: '#tl-props-host' }
 })
-// `preview` = 本地改动立刻镜像给页面（预览实时刷新，不落盘、不重挂载）
-// `done`    = **一次编辑真的做完了**（面板控件确定 / 取消选中 / 切片段 / 离开页面）——
-//             页面据此跑一次后处理。落盘成功**不算**完成：那时你可能还在改这个事件。
-const emit = defineEmits(['seek', 'toggle', 'preview', 'done', 'reprocess', 'retried', 'redo-segment'])
+// 三个信号，**含义各不相同，别互相替代**：
+//   `preview` = 本地改动**立刻**镜像给页面（预览实时刷新，**不落盘**、不重挂载）
+//   `saved`   = **这批改动已经落盘**（磁盘上那份是最新的了）—— Dhampir 那条腿据此重载
+//   `done`    = **一次编辑真的做完了**（面板控件确定 / 取消选中 / 切片段 / 离开页面），
+//                页面据此跑一次后处理；它保证**已在 `saved` 之后**（见 `commitEdit`）。
+// ⚠️ `saved` 与 `done` **不是**"落盘成功就算完成"：落盘了你还可能在改这个事件，
+//    所以后处理仍要等 `done`。两个信号各自服务一个消费者。
+const emit = defineEmits(['seek', 'toggle', 'preview', 'saved', 'done', 'reprocess', 'retried', 'redo-segment'])
 const rootRef = ref(null)
 /**
  * 属性面板的 Teleport 目标。**必须等 onMounted 才设值**：本组件挂载时整棵编辑器子树
@@ -849,6 +853,33 @@ function touch(kind) {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(flushSave, 700)
 }
+/**
+ * 把"这次编辑已经落盘了"这个名字挂到**当前这一轮**保存上。
+ *
+ * 为什么需要它：页面要拿"落盘完成"当 Dhampir 那条腿的重载信号 —— 工程是**从磁盘
+ * `polish.toml` 转译**出来的，抢在 PUT 之前去读只会拿回旧内容（画面闪回改动前）。
+ *
+ * 注册时若手上已经没有待落的改动（比如上一次 flushSave 刚好跑完），**立刻回调** ——
+ * 否则那个"完成"信号会永远等一个不会到来的保存，页面就一直不重载。
+ */
+let onSavedHook = null
+function onceSaved(fn) {
+  const pending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute || saving
+  if (!pending) { fn(); return }
+  onSavedHook = fn
+}
+/**
+ * 「这批改动已经落盘」——发给页面，让 Dhampir 那条腿据此重载（它只认磁盘）。
+ *
+ * ⚠️ 与 `preview`（本地镜像、不落盘）是**两个不同的信号**，别合并：预览要立刻变，
+ * 而"重新拉工程"必须等到磁盘真被写过。
+ */
+function fireSavedHook() {
+  const fn = onSavedHook
+  onSavedHook = null
+  if (fn) fn()
+  emit('saved')
+}
 /** 只标脏 + 节流镜像（拖拽过程中用：预览要跟着动，落盘等松手）。 */
 function markDirty(kind) {
   dirty[kind] = true
@@ -886,11 +917,26 @@ function onPanelCommit() {
 // 用户看到的是"我自己加的东西过两秒就没了"。
 let editTouched = false // 有改动、还没跑过后处理
 
+/**
+ * 「编辑完成」= **这次改动已经落盘**，然后才通知页面。
+ *
+ * ⚠️ **顺序不能反**（2026-10-02 修）：以前这里是把 `done` 当场发出去，而落盘是
+ * `touch()` 排的 700ms 定时器 —— **`done` 抢在落盘前面**。页面收到"完成了"就带着
+ * "磁盘上已有这次改动"的假设去干活（跑 `process`、以及重新拉 Dhampir 工程），
+ * 而磁盘上那时还是旧的。
+ *
+ * 以前侥幸没出事，纯粹是时序巧合：`process` 前面还压着 1.5s 防抖 > 700ms 落盘。
+ * 一旦有消费者不等那 1.5s（Dhampir 热重载就是），它立刻读到旧内容 ——
+ * 表现正是"拖完松手，画面先闪回改动前的样子"。
+ *
+ * 所以 `done` 挂到"落盘成功"上；页面那边的防抖与后处理顺序都不用动。
+ */
 function commitEdit(reason, dirOverride) {
   if (!editTouched) return
   editTouched = false
+  const payload = { dir: dirOverride || props.dir, reason }
   // 切片段时 props.dir 已经是新的，必须显式传**旧目录**，否则后处理会跑到新片段上
-  emit('done', { dir: dirOverride || props.dir, reason })
+  onceSaved(() => emit('done', payload))
 }
 // 取消选中（点空白 / 点别的块 / 删除后 / 点面板「关闭」）= 这一轮编辑结束了
 watch(selected, (now, before) => { if (before && !now) commitEdit('取消选中') })
@@ -927,7 +973,9 @@ async function flushSave() {
   const segs = dirty.segments ? segments.value : null
   const mutes = dirty.mute ? muteRanges.value : null
   const subs = dirty.subtitles ? subtitles.value : null
-  if (!segs && !mutes && !subs) return
+  // 没有待落的改动 = 磁盘上已经是最新的 ⇒ 等在这里的那个「完成」信号没有保存可等了，
+  // 当场放行（否则页面会为一个**本来就已落盘**的改动一直不重载）。
+  if (!segs && !mutes && !subs) { fireSavedHook(); return }
   normalizeLocal()
   saving = true
   saveState.value = 'saving'
@@ -957,6 +1005,9 @@ async function flushSave() {
   } finally {
     saving = false
     drainQueuedReload()
+    // 「落盘完成」的信号在这一刻发出去（成功才发；失败留在 dirty 上等退避重试，
+    // 由那一次成功的 flushSave 补发 —— 页面不会为一个没落盘的改动去重载）。
+    if (!dirty.segments && !dirty.subtitles && !dirty.mute && !loadError.value) fireSavedHook()
   }
 }
 function scheduleSaveRetry() {

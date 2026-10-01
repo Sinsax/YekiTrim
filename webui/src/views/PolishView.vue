@@ -106,7 +106,7 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
@@ -230,6 +230,19 @@
                 库内 {{ fonts.length }} 个字体
               </div>
 
+              <!-- 参数 4：弹幕时间偏移（默认 -3 = 整体提前 3 秒，直接热重载预览） -->
+              <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+                <span class="small muted" style="flex:none">弹幕时间偏移</span>
+                <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
+                       :disabled="dmOffsetSaving || !ready" :title="'当前 ' + dmOffset + 's，负 = 提前出现，正 = 推后；默认 -3（弹幕比直播晚约 3 秒）'"
+                       @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
+                <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
+                       :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
+                       title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
+                <span class="mono small" style="flex:none">s</span>
+              </div>
+              <div class="hint mt-4" title="弹幕显示普遍比画面晚几秒；调成 0 可完全关闭偏移">负 = 弹幕提前，正 = 推后</div>
+
               <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
               <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
               <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
@@ -317,7 +330,7 @@
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
         <div class="card tl-card mt-16">
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment">
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
@@ -550,22 +563,48 @@ const fontsRoot = ref('') // 库目录（只有 admin 拿得到；非 admin 不�
 // 动态兜底字体栈（服务端算：首项随库里默认那支走）—— 透传给预览，`.cap` 栈与成片同源。
 // 「设为默认」曾经对预览无效（预览写死 LXGW 开头的栈），就是这行的由来。
 const fontFallback = ref('')
+// emoji 补充槽位（服务端自动选，至多一支；库里没有就是空串）—— 透传给预览拼在栈尾。
+const fontEmoji = ref('')
 const fontsError = ref('')
 const fontSaving = ref(false)
 const subtitleFont = computed(() => cfg.value?.style?.subtitle?.font || '')
-/** 下拉选项：`（系统默认）` + 库内字体；当前值不在库里时补一条，免得 select 落到空态。
- *  ⚠️ 只列**真能用**的：`.ttc`（浏览器 @font-face 不认）与没下载的自带字体都不进下拉，
- *  否则就是"选得出来、用不了"。默认字体带 `[默认]` 标记 —— 与字体库管理页 / 首页卡
- *  同一份 `is_default`（服务端唯一权威），三处联动。 */
+// 弹幕时间偏移（精修工程参数，[style.danmaku] offset_secs，默认 -3 = 整体提前 3 秒）。
+// 老工程 / 手写 toml 缺这个键时按 serde 默认 -3 显示。
+const dmOffset = computed(() => {
+  const raw = cfg.value?.style?.danmaku?.offset_secs
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : -3
+})
+const dmOffsetSaving = ref(false)
+/** 下拉选项：**只有库内字体**（2026-10-02 起不再有「（系统默认）」这一项）。
+ *
+ *  ⚠️ **为什么去掉「（系统默认）」**：自带字体已改成**内嵌**（首次启动就装好），库永远是"有字可用"的
+ *  —— 再留一个"回到系统字体栈"的选项，等于给用户一个**必然更差**的选择（系统栈里的
+ *  `Microsoft YaHei` 与霞鹜文楷观感差很远，而后者就在库里）。默认字体（`is_default`）只做
+ *  **初始化设定**：老工程没显式选过字体时由它兜底，不是给用户点的按钮。
+ *  ⚠️ **空值不再作为可选字体出现**（2026-10-02 用户要求「这里应该只显示已有的字体」）：
+ *  老工程没选过字体时配置里就是空串，那是**合法状态**，但它是「初始化」的表达、不是一种字体，
+ *  摆在列表里会让人以为「跟随默认」是第四种字体。它仍会通过**占位项**照实显示（见下面 `if (!cur)`），
+ *  用户一旦选了具体字体就再也看不到它。
+ *
+ *  ⚠️ 只列**真能用**的：`.ttc`（浏览器 @font-face 不认）与没装的自带字体都不进下拉，
+ *  否则就是"选得出来、用不了"。
+ *  ⚠️ **emoji 字体不进这个下拉**（字体职责分离）：它管"表情"、由系统**自动补充**
+ *  （服务端 `fonts::emoji_font` 选一支，经 `/api/polish/fonts` 的 `emoji_family` 透传给预览），
+ *  用户不该把一支没有中文字形的字体选成正文 —— 那会让整条字幕变成豆腐块。
+ *  服务端 `set_default` / `resolve_font_plan` 也各挡一道（配置是文本文件，用户能手改）。 */
 const fontOptions = computed(() => {
-  const opts = [{ value: '', label: '（系统默认）' }]
+  const opts = []
   for (const f of fonts.value) {
-    if (f.installed === false || /\.ttc$/i.test(f.file || '')) continue
+    if (f.installed === false || /\.ttc$/i.test(f.file || '') || f.emoji) continue
     const base = f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id
     opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
   const cur = subtitleFont.value
-  if (cur && !fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  // ⚠️ 空值只是**占位**、不是「一种可选字体」（老工程从没选过字体时就是它）：
+  // 显示成「未指定 · 用默认文字字体」而非列表里的一档 —— 用户选任何具体字体后它自然消失。
+  // 这样列表内容 = **库里已有的字体**，与用户口径一致。
+  if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
+  else if (!fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
   return opts
 })
 
@@ -733,6 +772,17 @@ function togglePreviewPlay() {
 let loadInflight = null
 let loadQueued = null
 
+/**
+ * 「磁盘上那份配置」—— Dhampir 热重载只认它（见 `PolishPreview` 的 `persistedConfig`）。
+ *
+ * 与 `cfg` 的**唯一区别**是它保证已落盘。两条更新时机：
+ *   ① 时间轴/面板真的把改动 PUT 上去了（`onEditSaved`，由 TimelineEditor 的 `@saved` 来）；
+ *   ② 任务跑完 `load({silent:true})` 从盘上读回新配置（下面 `doLoad` 里同步）。
+ * 拖动过程中的 `onTimelinePreview` **不碰它** —— 那时磁盘上还是旧内容，
+ * 拿它去触发重载只会让画面闪回改动前的样子。
+ */
+const persistedCfg = ref(null)
+
 /** 单飞：并发调用合并成一次；完成后如果期间又有人请求，再按最后一次参数补跑一次。 */
 function load(opts = {}) {
   if (loadInflight) {
@@ -787,6 +837,9 @@ async function doLoad(opts = {}) {
     }
     try {
       cfg.value = await fetchProject(pid.value, dir.value, true)
+      // **这就是"磁盘上那份"**：刚从盘上读回来的，天然已落盘 ⇒ Dhampir 热重载的
+      // 第二条触发时机（任务跑完 `after: load()`，含 `process` 的校准结果）。
+      persistedCfg.value = cfg.value
       title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
       ready.value = true
       cfgError.value = ''
@@ -906,6 +959,11 @@ function gotoClip(name) {
  * 本地改动**立刻**镜像进预览的输入（cfg.segments / subs / cfg.mute_ranges），
  * **不 bump previewKey、不重挂载** —— 视频保持播放位置，拖动时画面当场就变。
  */
+/** 时间轴/面板「落盘完成」：把当前镜像当成磁盘版本交给预览。 */
+function onEditSaved() {
+  persistedCfg.value = cfg.value
+}
+
 function onTimelinePreview(patch) {
   if (patch.segments && cfg.value) cfg.value = { ...cfg.value, segments: patch.segments }
   if (patch.subtitles) subs.value = patch.subtitles
@@ -1222,6 +1280,7 @@ async function loadFonts() {
     fonts.value = r.fonts || []
     fontsRoot.value = r.root || ''
     fontFallback.value = r.fallback_stack || ''
+    fontEmoji.value = r.emoji_family || ''
     fontsError.value = ''
   } catch (e) {
     // 与贴纸来源同规矩：读不到就是读不到，别伪装成"库是空的"
@@ -1242,7 +1301,7 @@ async function onSubtitleFontChange(e) {
     if (next) await ensureFontFace(pid.value, dir.value, next, { onDebug: (m) => addClient('debug', m, 'polish') })
     cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), subtitle: { ...(cfg.value?.style?.subtitle || {}), font: next } } }
     await load({ silent: true })
-    toast(next ? `字幕字体已改为「${next}」` : '字幕字体已回到系统默认')
+    toast(next ? `字幕字体已改为「${next}」` : '字幕字体已恢复为未指定（用默认文字字体）')
   } catch (err) {
     toast(err.message, 'err')
     // 保存失败要让下拉回到原值（否则界面在撒谎）
@@ -1252,10 +1311,66 @@ async function onSubtitleFontChange(e) {
   }
 }
 
+/** 弹幕时间偏移（精修工程参数，[style.danmaku] offset_secs）。
+ *  拖动（input）只更新内存镜像 cfg → DOM/GSAP 预览即时重算（不落盘、不触发 Dhampir 重载）；
+ *  松手（change）才落盘 + 更新 persistedCfg 触发 Dhampir 那条腿重拉（贴纸来源那套流程）。
+ *  两条预览腿各吃各的：DOM 腿靠 buildIndex 平移 idx.dms，Dhampir 腿靠转译器平移 cue。 */
+function onDanmakuOffsetInput(e) {
+  const next = Number(e.target.value)
+  if (!Number.isFinite(next) || next === dmOffset.value) return
+  cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), danmaku: { ...(cfg.value?.style?.danmaku || {}), offset_secs: next } } }
+}
+
+/** 行尾数字框直填：只在 [-10, 10] 上夹、**不吸附滑块步进**（滑块才有栅格）；
+ *  清空/非数字还原显示、不写模型（否则退格清空的一瞬间就把值变成 0）。
+ *  夹回来的值可能等于原值（填 99 被夹到 10）→ 模型没变、Vue 不会回写 DOM，手动同步一次。 */
+function onDanmakuOffsetType(e) {
+  const raw = String(e.target.value ?? '').trim()
+  const n = Number(raw)
+  if (raw === '' || !Number.isFinite(n)) {
+    e.target.value = String(dmOffset.value)
+    return
+  }
+  const next = Math.min(10, Math.max(-10, n))
+  e.target.value = String(next)
+  cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), danmaku: { ...(cfg.value?.style?.danmaku || {}), offset_secs: next } } }
+  saveDanmakuOffset(next)
+}
+
+/** 落盘 + 触发 Dhampir 腿重载（滑块 change 与直填框共用）。 */
+async function saveDanmakuOffset(next) {
+  dmOffsetSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { danmaku_offset_secs: next })
+    cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), danmaku: { ...(cfg.value?.style?.danmaku || {}), offset_secs: next } } }
+    // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘，认的是 persistedConfig）。
+    persistedCfg.value = cfg.value
+    toast(`弹幕偏移已保存（${next}s）`)
+  } catch (err) {
+    toast(err.message, 'err')
+    // 保存失败要让滑块/数字框回到磁盘上的值（否则界面在撒谎）
+    await load({ silent: true })
+  } finally {
+    dmOffsetSaving.value = false
+  }
+}
+
+async function onDanmakuOffsetChange(e) {
+  // ⚠️ 这里**不能**拿 next 与 dmOffset.value 比较来去重：input 阶段已经把镜像
+  // 更新成 next 了，那样比永远相等 ⇒ 永不落盘。change 本身只在值被改动后触发，
+  // 偶发的原值 change 就是多一次幂等保存，无害。
+  const next = Number(e.target.value)
+  if (!Number.isFinite(next)) return
+  await saveDanmakuOffset(next)
+}
+
 async function patchStickerSource(list) {
   try {
     await saveProjectPatch(pid.value, dir.value, { sticker_source: list })
     cfg.value = { ...cfg.value, sticker_source: list }
+    // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘）。这里原先**只有** `cfg.value`，
+    // 于是"贴纸来源"这类改动永远触不到引擎重载。
+    persistedCfg.value = cfg.value
     toast('贴纸配置已保存')
   } catch (e) { toast(e.message, 'err') }
 }
@@ -1538,4 +1653,14 @@ onUnmounted(() => {
 }
 .cover-img { width:100%; border-radius:var(--r-sm); border:1px solid var(--line); display:block; }
 .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:var(--r-sm); margin-top:10px; border:1px solid var(--line); }
+/* 弹幕偏移的行尾数字框（照 CoverDesigner 的 .rv-input）：常态隐形、hover/focus 现出可编辑 */
+.rv-input { flex:none; width:6ch; padding:1px 3px; text-align:right; font-size:10.5px; font-family:monospace;
+  background:transparent; border:1px solid transparent; border-radius:var(--r-sm); color:var(--ink); }
+.rv-input:hover { border-color:var(--line); background:var(--card); }
+.rv-input:focus { border-color:var(--main); box-shadow:0 0 0 3px var(--main-soft); }
+.rv-input:invalid { box-shadow:none; }
+.rv-input:invalid:focus { box-shadow:0 0 0 3px var(--main-soft); }
+.rv-input::-webkit-outer-spin-button, .rv-input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+.rv-input { -moz-appearance:textfield; appearance:textfield; }
+.rv-input:disabled { opacity:.5; cursor:not-allowed; }
 </style>

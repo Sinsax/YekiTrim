@@ -144,6 +144,17 @@ const props = defineProps({
   pid: { type: [String, Number], required: true },
   dir: { type: String, required: true },
   config: { type: Object, default: null },
+  /**
+   * 「磁盘上那份配置」——与 `config` 的区别就是**它已经落盘了**。
+   *
+   * `config` 是页面手里的**镜像**：编辑器拖动时会 60ms 节流地把它换成内存里的中间态
+   * （`onTimelinePreview`，**不落盘**）。而 Dhampir 那条腿的工程是从**磁盘 `polish.toml`
+   * 转译**出来的 —— 拿镜像的变化去触发重载，只会读到还没写下去的内容，
+   * 表现是"拖完松手，画面先闪回改动前的样子"。
+   *
+   * 所以页面在**落盘完成**（以及任务跑完 `load()`）时更新它；热重载只认它。
+   */
+  persistedConfig: { type: Object, default: null },
   subtitles: { type: Array, default: () => [] },
   danmaku: { type: Array, default: () => [] },
   metaDuration: { type: Number, default: 0 },
@@ -159,7 +170,11 @@ const props = defineProps({
   // 动态兜底字体栈（页面侧从 `/api/polish/fonts` 的 `fallback_stack` 透传进来）：
   // 首项随字体库里"设为默认"的那支走 —— 与成片（`server.rs::fallback_stack`）同一份计算。
   // 缺省 = 老的字面量栈（库里没有可用中文时服务端算出来的回落态就是它，不回归）。
-  fontFallback: { type: String, default: '"LXGW WenKai","Microsoft YaHei","Noto Sans SC",sans-serif' }
+  fontFallback: { type: String, default: '"Noto Sans SC","Microsoft YaHei",sans-serif' },
+  // ⚠️ **emoji 补充槽位**（2026-10-02 字体职责分离）：库里那支负责表情的字体（服务端自动选、
+  // 至多一支），空串 = 库里没有 ⇒ 不追加（浏览器自带系统 emoji）。
+  // 它是**独立 prop**、不并进 fontFallback —— 服务端就是这么分的（见 api/polish.js 的说明）。
+  emojiFamily: { type: String, default: '' }
 })
 const emit = defineEmits(['time', 'update:selectRect', 'update:point', 'playing'])
 
@@ -206,6 +221,14 @@ const dhampirStickerInfo = ref('')
 let dhampirEngine = null
 let dhampirRaf = 0
 let dhampirBusy = false // 同一时刻只让一帧在飞：`seek` 是异步的，堆起来只会越拖越远
+/** 正在热重载工程（见 `reloadDhampirProject`）：期间不重入、也不让 `tick()` 抢 seek */
+let dhampirReloading = false
+/** 重载请求撞上"有帧在飞"被拦下 → 那一帧收尾后补跑一次（别把这次改动丢了） */
+let dhampirReloadPending = false
+/** 热重载的合并防抖定时器（连续改动只重载最后一次）；`stopDhampir` 也要能取消它 */
+let dhampirReloadTimer = 0
+/** 上一次喂给重载判据的配置指纹（见下面那个 `watch`） */
+let dhampirCfgKey = ''
 /**
  * **三档纠偏**（A 案）的阈值，单位**秒**。
  *
@@ -465,6 +488,107 @@ function dhampirSourcesReady(f) {
   return true
 }
 
+/**
+ * **把磁盘上的工程热重载进引擎**（改效果 / 挪事件时间后不用刷新页面）。
+ *
+ * ## 为什么非有不可
+ *
+ * 画面是**引擎按它自己那份工程**画的（`open()` 在 `startDhampir` 里只调用**一次**），
+ * 而工程 JSON 是**从磁盘 `polish.toml` 转译**来的（`POST /polish/dhampir-project`）。
+ * `props.config` 一变，DOM 那条腿会重算（`buildIndex`），**但引擎收不到任何通知** ——
+ * 于是"改一个效果 / 把一个事件挪个时间"必须刷新页面（= 重挂载 → `startDhampir` 重跑
+ * → 重新读盘）才看得见。这里补上的就是这条缝。
+ *
+ * ## 只换工程，不重建别的
+ *
+ * `open()` 内部会 `bumpPlanGeneration()` 作废帧标识缓存（底座为这种场景准备的），
+ * 而 `<video>` 源 / 解码器 / 贴纸位图 / 字体 / rAF **全都留着** —— 所以播放位置不丢、
+ * 画面不黑。**不要**改成 `stopDhampir() + startDhampir()`：那会重建全部源与解码器，
+ * 播放位置打回 0、画面闪一下（只有在热重载真的失败时才值得退回那条路）。
+ *
+ * ## 失败不许静默
+ *
+ * `open()` 失败时**底座保留上一份可用工程**（Rust 侧口径），所以画面不会崩 ——
+ * 但那正是最容易变成"改了没反应、也不报错"的地方，所以失败要留痕。
+ */
+async function reloadDhampirProject() {
+  if (!dhampirMode.value || !dhampirEngine || dhampirReloading) return
+  // 有帧在飞时别换工程：`tick()` 正在对旧工程 seek，换掉会让那一帧对不上。
+  if (dhampirBusy) { dhampirReloadPending = true; return }
+  dhampirReloading = true
+  try {
+    const res = await api('/api/polish/dhampir-project', {
+      method: 'POST',
+      label: 'Dhampir 工程（重载）',
+      body: JSON.stringify({ dir: props.dir }),
+    })
+    // 期间可能已经退出 Dhampir 模式（`stopDhampir` 把引擎置空了）—— 那就别往回写。
+    if (!dhampirMode.value || !dhampirEngine) return
+    const project = res.project
+    if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
+    // ⚠️ **字体必须在 `open()` 之前装好**（2026-10-02 修）：canvas 栅格化用的是页面里
+    // 已有的字体，没装好就静默回退 —— 换字体不生效、且字号/位置/颜色全对，最难查的那一类。
+    // 这段原先只在 `startDhampir` 里跑，热重载从不执行 ⇒ "换字体不热重载"。
+    await ensureProjectFonts(project)
+    const tb = project.timeline.timebase
+    if (tb && tb.num > 0 && tb.den > 0) dhampirFps.value = tb.num / tb.den
+    // 段落表**必须跟着换**：时间线被压缩（`keep_muted = false`）时段落边界会变，
+    // 不换的话 `dhampirFrameAt` 的帧号映射整体错位（画面与时间轴对不上）。
+    dhampirBuildSegments(project)
+
+    // 画布尺寸跟着工程走（渲染提示可能变了；只缩不放、保宽高比，口径与首启一致）。
+    {
+      const canvas = dhampirCanvasRef.value
+      const size = canvas ? dhampirCanvasSizeFor(project, canvas) : null
+      if (size && (canvas.width !== size.w || canvas.height !== size.h)) {
+        canvas.width = size.w
+        canvas.height = size.h
+        if (dhampirEngine) dhampirEngine.resize(size.w, size.h)
+      }
+    }
+
+    // **贴纸层描述必须重建**：新增/删除/挪时间的贴纸要新的 spans 才看得见。
+    // 解码缓存按 uri+fps 继承（见 dhampirStickersFrom），不会重复解码。
+    dhampirStickers = dhampirStickersFrom(project)
+    dhampirStickerDiag = null
+    Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
+    const opened = dhampirEngine.open(project)
+    if (opened && opened.ok !== true) {
+      // 旧工程还在（底座口径）⇒ 画面不会崩，但要说清这次改动没生效。
+      console.warn('Dhampir 热重载被拒（保留上一份工程）：' + JSON.stringify((opened && opened.issues) || []).slice(0, 200))
+      dhampirStatus.value = '工程重载被拒（画面仍是上一版）'
+      setTimeout(() => { if (dhampirMode.value) dhampirStatus.value = '' }, 2500)
+      return
+    }
+    // 换绑源：新工程的 asset 区间可能变了，按当前的 `sourcesFor` 重新核对一遍。
+    // （元素没变，`bindSource` 只是把 source→video 的映射重写一次，代价极小。）
+    for (const [assetId, v] of dhampirSourceVideos) {
+      if (v && v.id) { try { dhampirEngine.bindSource(assetId, v.id) } catch (e) { /* 源可能已不在工程里 */ } }
+    }
+    // 重新预热新一批贴纸（fire-and-forget，串行解；与首启同一入口）。
+    // 放在 open() 成功之后：被拒的那次不必白烧服务端解码。
+    callPrewarmStickers()
+    // **字幕/弹幕必须重喂**：loadSubtitles 是替换语义（resetTextMemos + 逐条 set），
+    // 新工程改过的字幕内容只有重喂才进引擎 —— 原先漏了这步，改字幕热重载不生效。
+    await dhampirApplySubtitles(project, res.subtitles)
+
+    // **强制下一帧重画**：帧号没变的话 `tick()` 会以为"还是这一帧"直接 return
+    // （那是 30fps 内容在 60Hz rAF 上的正常优化）。播放位置**不动** ✓
+    dhampirFrameShown = -1
+    dhampirLastFrameDrawn = -1
+    dhampirStatus.value = ''
+    scheduleDhampir()
+  } catch (e) {
+    console.warn('Dhampir 热重载失败：' + ((e && e.message) || e))
+    dhampirStatus.value = '工程重载失败：' + ((e && e.message) || e)
+    setTimeout(() => { if (dhampirMode.value) dhampirStatus.value = '' }, 4000)
+  } finally {
+    dhampirReloading = false
+    // 重载期间被拦下的那次（有帧在飞）：现在补一次，别把改动丢了。
+    if (dhampirReloadPending) { dhampirReloadPending = false; scheduleDhampir(); reloadDhampirProject() }
+  }
+}
+
 /** 进/出 Dhampir 模式。**按钮切换保留**：出去时把引擎停掉、回到 DOM 那一套。 */
 async function toggleDhampir() {
   if (dhampirMode.value) {
@@ -494,6 +618,129 @@ async function toggleDhampir() {
 }
 
 /** 起引擎：工程 JSON -> 每个视频素材一个 <video> -> loadEngine -> open/attach/resize/bind */
+/**
+ * 把工程声明的字体族装进页面（canvas 栅格化用的是**页面里已有的字体**）。
+ *
+ * ⚠️ **热重载也必须走这一步**（2026-10-02 修）。这段原先写死在 `startDhampir` 里，
+ * 而 `reloadDhampirProject` 不跑它 —— 于是**换字体不生效**：新字体族从没注册进页面，
+ * canvas 静默回退成默认字形，而字号/位置/颜色全对，看起来就像"字体那项坏了"。
+ *
+ * 字体是异步到位的，不等 `document.fonts.ready` 的话重载后第一屏仍是回退字形。
+ * 已经装过的族由 `ensureFontFace` 自己幂等，重复调用不会重复取字节。
+ */
+async function ensureProjectFonts(project) {
+  const families = new Set()
+  for (const track of (project.timeline && project.timeline.tracks) || []) {
+    const f = (track.subtitle && track.subtitle.font_family) || (track.danmaku && track.danmaku.font_family)
+    if (f) families.add(f)
+  }
+  for (const family of families) {
+    try {
+      await ensureFontFace(null, props.dir, family, { onDebug: (m) => addClient('debug', m, 'dhampir') })
+    } catch (e) {
+      dhampirStatus.value = '字体 ' + family + ' 没装上（预览会用回退字体）'
+    }
+  }
+  // 字体是异步到位的；不等它的话第一屏会是回退字形。
+  try { if (document.fonts && document.fonts.ready) await document.fonts.ready } catch (e) { /* 等不到就算了 */ }
+}
+
+/**
+ * 按工程给的渲染提示（render_hints）与窗口尺寸决定画布目标分辨率（只缩不放、保宽高比）。
+ * **startDhampir 与热重载共用** —— 尺寸口径两处必须一致，所以抽成一份。
+ * 默认满分辨率（fit 实测会裁切/放大视频层，见 startDhampir 里的对拍记录）。
+ */
+function dhampirCanvasSizeFor(project, canvas) {
+  const hints = project.render_hints || {}
+  if (!(hints.width > 0 && hints.height > 0)) return null
+  const full = { w: hints.width, h: hints.height }
+  let w = full.w
+  let h = full.h
+  const forceFull = new URLSearchParams(location.search).get('fit') !== '1'
+    && window.__dhampirFit !== true
+  if (!forceFull) {
+    const box = canvas.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    if (box.width > 0 && box.height > 0) {
+      const scale = Math.min((box.width * dpr) / full.w, (box.height * dpr) / full.h, 1)
+      if (scale < 1) {
+        w = Math.max(320, Math.round(full.w * scale))
+        h = Math.max(180, Math.round(full.h * scale))
+      }
+    }
+  }
+  return { w, h }
+}
+
+/**
+ * 从新工程重建贴纸层描述（活跃区间 / 素材时基 / 相位锚点）。
+ * **热重载也必须重建**（2026-10-02 补）：贴纸的新增/删除/时间挪动都要新的 spans 才看得见，
+ * 而这段原先只在 `startDhampir` 里跑 —— 热重载后 `dhampirStickers` 还是旧的，
+ * 症状是“改了贴纸时间，Dhampir 预览里不生效；DOM 预览却是对的”。
+ * 解码缓存（bytes/bytesIdx）**继承**：同 uri 同 fps 的缓存仍然有效，不重复解码。
+ */
+function dhampirStickersFrom(project) {
+  const stickerImages = (project.assets || [])
+    .filter((a) => (a.kind === 'image_sequence' || a.kind === 'image') && a.uri)
+  const prevByUri = new Map((dhampirStickers || []).map((x) => [x.uri + '|' + x.fps, x]))
+  return stickerImages.map((a) => {
+    const tb = a.timebase || {}
+    const fps = (tb.num > 0 && tb.den > 0) ? (tb.num / tb.den) : 30
+    const spans = []
+    for (const track of (project.timeline && project.timeline.tracks) || []) {
+      for (const layer of track.layers || []) {
+        if (layer.enabled === false) continue
+        if (layer.source && layer.source.asset_id === a.id) {
+          spans.push({
+            start: Number(layer.start) || 0,
+            end: Number(layer.end) || 0,
+            sourceIn: Number((layer.source && layer.source.source_in) || 0),
+          })
+        }
+      }
+    }
+    spans.sort((x, y) => x.start - y.start)
+    // 继承解码缓存：同一素材文件（uri）+ 同一时基，逐帧缓存不用作废。
+    // assetId 取**新工程**的（理论上不变，但别让旧工程残留值漏进来）。
+    const prev = prevByUri.get(a.uri + '|' + fps)
+    if (prev) return { ...prev, assetId: a.id, spans }
+    return { assetId: a.id, uri: a.uri, fps, spans, activeKey: null, bytes: null, bytesIdx: -1, count: 0, lastFrame: -1 }
+  })
+}
+
+/**
+ * 把随工程带回来的字幕/弹幕旁写内容转成 blob URL 并喂给引擎。
+ * **热重载也必须重跑**（2026-10-02 衑）：`loadSubtitles` 的语义是**替换**（它先 `resetTextMemos`
+ * 再逐条 `dhampir_project_set_subtitles`），所以新工程改了字幕内容/新增弹幕后必须重喂；
+ * 原先只在 `startDhampir` 里跑 ⇒ 热重载后改的字幕不进引擎。
+ * 旧的 blob URL 在这里一并释放（entries 是全量替换）。
+ */
+async function dhampirApplySubtitles(project, subtitles) {
+  // **旧的 blob URL 先释放**：entries 是全量替换，旧 URL 留着就是泄漏
+  // （首启时这个数组本来就是空的 —— stopDhampir 已清；重载时这里才是唯一的回收点）。
+  for (const old of dhampirBlobUrls) URL.revokeObjectURL(old)
+  dhampirBlobUrls = []
+  const subTexts = subtitles || {}
+  const entries = []
+  for (const a of project.assets || []) {
+    if (a.kind !== 'subtitle') continue
+    const name = String(a.uri || '').split(/[\\/]/).pop()
+    const text = subTexts[name]
+    if (!text) continue
+    const ext = (name.split('.').pop() || '').toLowerCase()
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+    dhampirBlobUrls.push(url)
+    entries.push({ assetId: a.id, url, format: ext === 'ass' || ext === 'ssa' ? 'ass' : 'srt' })
+  }
+  if (entries.length > 0) {
+    const loaded = await dhampirEngine.loadSubtitles(entries)
+    const failed = (loaded && loaded.failed) || []
+    if (failed.length > 0) {
+      dhampirStatus.value = '（字幕 ' + failed.length + ' 路没登记上）'
+    }
+  }
+}
+
 async function startDhampir() {
   if (dhampirEngine) return
   if (!navigator.gpu) throw new Error('这个浏览器没有 WebGPU（Dhampir 实时预览需要它）')
@@ -515,54 +762,15 @@ async function startDhampir() {
   dhampirBuildSegments(project)
   dhampirStickerDiag = null
   Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
-  const hints = project.render_hints || {}
-  if (hints.width > 0 && hints.height > 0) {
-    // ① **按窗口尺寸渲染**（只作用于预览 UI；随时可切回满分辨率）。
-    //
-    // 目标尺寸是引擎里**一切尺寸的源头**：合成面积、宿主栅格化（文字/贴纸位图）、
-    // 上传纹理都随它变小 —— 所以这一处能同时吃掉 draw 与上传那两段。
-    //
-    // **只缩不放**（scale ≤ 1），且**保持工程宽高比**：目标尺寸一改，wasm 会按新尺寸
-    // 重新排版；宽高比变了画面框架就跟着变 —— 那不是"变快"，那是"画错了"。
-    //
-    // 切回满分辨率：URL 加 `?nofit=1`（与引擎的 `?src=` 同一套口径），
-    // 或运行时设 `window.__dhampirFit = false`。
-    // 读数：canvas 元素自身的 width/height 就是最终目标尺寸（驱动一直在打这个字段）。
-    const full = { w: hints.width, h: hints.height }
-    let w = full.w
-    let h = full.h
-    // ⚠️ **默认关掉**（= 走满分辨率）。实测它**会把画面裁切/放大** ✗：
-        //    同一帧、同窗口、只切这个开关 ⇒ 两次画布 PNG 差 **61.82%**，
-        //    而**字幕层完全一致** ✓ ⇒ 文字是按目标尺寸等比重排的 ✓，**视频层不是** ✗
-        //    （并排图见 out/cmp-fit-nofit.png；结论写进 docs/vtrim-integration.md §11）
-        // **取景正确 > 帧率** ⇒ 默认满分辨率；想再试就地开：地址加 `?fit=1`，
-        //    或运行时 `window.__dhampirFit = true`。
-        const forceFull = new URLSearchParams(location.search).get('fit') !== '1'
-          && window.__dhampirFit !== true
-    if (!forceFull) {
-      const box = canvas.getBoundingClientRect()
-      const dpr = window.devicePixelRatio || 1
-      if (box.width > 0 && box.height > 0) {
-        const scale = Math.min((box.width * dpr) / full.w, (box.height * dpr) / full.h, 1)
-        if (scale < 1) {
-          // 下限兜住一个能看的尺寸：极小窗口下压成几十像素的话，字和贴纸都没法看了。
-          w = Math.max(320, Math.round(full.w * scale))
-          h = Math.max(180, Math.round(full.h * scale))
-        }
-      }
-    }
-    canvas.width = w
-    canvas.height = h
+  // 画布目标尺寸：与热重载共用同一份口径（dhampirCanvasSizeFor）。
+  {
+    const size = dhampirCanvasSizeFor(project, canvas)
+    if (size) { canvas.width = size.w; canvas.height = size.h }
   }
 
   // ② 每个**视频类**素材一个 <video>。贴纸（image_sequence）与音频走别的路，
   //    是下一步的事 —— 这一步只接视频层，先让画面动起来。
   const videos = (project.assets || []).filter((a) => a.kind === 'video' && a.uri)
-  // **贴纸 / 图片序列**：这些素材**没有 <video>**，引擎不会替它们生成位图
-  // （它的 prepare 只处理 this.videos 里的元素）—— 契约要求**宿主自己交**：
-  // `dhampir_project_set_bitmap(source, bitmap)`。不交的症状是**静默少画几层**。
-  const stickerImages = (project.assets || [])
-    .filter((a) => (a.kind === 'image_sequence' || a.kind === 'image') && a.uri)
   host.innerHTML = ''
   const bindings = []
   videos.forEach((a, i) => {
@@ -702,52 +910,13 @@ async function startDhampir() {
     dhampirTwins.set(assetId, { el: twin, id: twin.id, want: 0, ready: false })
   }
 
-  // 贴纸：**自己解码 GIF，按工程要的帧号取帧**（见下面 `ImageDecoder` 那段）。
-  dhampirStickers = stickerImages.map((a, k) => {
-    // 素材时基（贴纸 GIF 是 100/3 ≈ 33.33fps）—— 用来把"这一帧第几秒"换成第几帧。
-    //
-    // **GIF 的解码放到服务端**（`/polish/sticker-frame` 按帧给 PNG）。浏览器这条路
-    // 两条都实测过、都不可用：`<img>` 的动画时钟会被节流（不可见 / 被 canvas 遮住 /
-    // 1×1 盖在最上层——三种可见性写法都不推进帧），而 `ImageDecoder`（WebCodecs）
-    // 在目标浏览器里根本不存在（`typeof ImageDecoder !== 'function'` → 帧数 0）。
-    // 服务端用的是**出片那同一个解码器**，于是预览与成片的贴纸逐帧一致。
-    const tb = a.timebase || {}
-    const fps = (tb.num > 0 && tb.den > 0) ? (tb.num / tb.den) : 30
-    // **这个素材被用在哪些"层区间"里**（工程帧）。两个用处：
-    //
-    //   1. **活跃判据**：只有当前帧落在某个区间里才值得交位图 —— 引擎的
-    //      `sources_for` 只看这一帧的合成，不活跃的层它根本不会去取。
-    //      每帧白交 6 张 500×500（`drawImage` + `createImageBitmap` + 上传）是纯浪费，
-    //      而这段正是"帧率不够"的一块。
-    //   2. **GIF 的相位锚点**：`<img>` 的动画时钟从**页面加载**那一刻开始跑，
-    //      与"工程第几帧"毫无关系 —— 不重启的话，贴纸显示的是**随机相位**的 GIF 帧
-    //      （看起来就是"GIF 没有正常播放"）。素材 timebase 是 100/3 ≈ 33.33fps，
-    //      所以相位必须锚在**层的起点**上。
-    const spans = []
-    for (const track of (project.timeline && project.timeline.tracks) || []) {
-      for (const layer of track.layers || []) {
-        if (layer.enabled === false) continue
-        if (layer.source && layer.source.asset_id === a.id) {
-          spans.push({
-            start: Number(layer.start) || 0,
-            end: Number(layer.end) || 0,
-            // **这个区间起点对应的素材帧**（层里的 `source.source_in`）。
-            // 有了它，"这一帧该放 GIF 的第几帧"可以自己算出来，不必依赖
-            // `sourcesFor` 返回的字段名 —— 那条路我一开始就赌错了字段名的话，
-            // 症状恰好是"贴纸一直是同一帧"（`sec` 拿不到 → `lastFrame` 永远 -1 → 不交）。
-            sourceIn: Number((layer.source && layer.source.source_in) || 0),
-          })
-        }
-      }
-    }
-    spans.sort((x, y) => x.start - y.start)
-    // **`uri` 与 `assetId` 是两样东西**：工程里的 `asset.uri` 才是"工程内相对路径"
-    // （`assets/stickers/问号.gif`），而 `assetId`（`sticker/问号.gif`）只是素材表的键。
-    // 服务端是拿 uri 往**片段目录**上 join 的 —— 传 id 的后果是 404「贴纸不存在」，
-    // 而日志里那句话看起来像"文件没了"，其实是参数给错了（我踩过）。
-    return { assetId: a.id, uri: a.uri, fps, spans, activeKey: null, bytes: null, bytesIdx: -1, count: 0, lastFrame: -1 }
-    // 「产品没建」与「驱动的查询看不到」这两种可能。
-  })
+  // 贴纸：**自己解码 GIF，按工程要的帧号取帧**。位图由宿主按帧交
+  // （`dhampir_project_set_bitmap`，没有 <video>），层描述（活跃区间/相位锚点）
+  // 从新工程重建 —— startDhampir 与热重载共用 dhampirStickersFrom。
+  dhampirStickers = dhampirStickersFrom(project)
+  dhampirStickerDiag = null
+  Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
+
   // **预热贴纸帧表**（2026-10-01）：服务端第一次被要某张贴纸的某一帧时，得**整段解码**那张
   // GIF（debug 构建实测单张 3~9 秒、`clip-04` 四张合计 20.2 秒）。而逐帧接口那头
   // `Promise.race([…, 30ms])` 超时就"这一帧不交" ⇒ 症状是**播放走到贴纸先空一段、然后突然出现**。
@@ -768,47 +937,15 @@ async function startDhampir() {
   // 这里转成 blob URL 喂给引擎；**解析在 wasm 里**（parse_srt / parse_ass）。
   //
   // 不做这一步的症状是最难查的那一类：**预览看起来正常、只是没有字幕**，还不报错。
+  await dhampirApplySubtitles(project, res.subtitles)
+
   // **把工程声明的字体族装进页面。**
   //
   // canvas 栅格化用的是**页面里已有的字体**：字体没加载就**静默回退**，
   // 而症状正是"字体不对"（字号/位置/颜色都对）。DOM 预览那条路已经在用
   // `ensureFontFace`，这里复用同一个入口 —— 它取的是 `/api/polish/font`，
   // 与出片侧注入的 @font-face 是同一份字节。
-  const families = new Set()
-  for (const track of (project.timeline && project.timeline.tracks) || []) {
-    const f = (track.subtitle && track.subtitle.font_family) || (track.danmaku && track.danmaku.font_family)
-    if (f) families.add(f)
-  }
-  for (const family of families) {
-    try {
-      ensureFontFace(null, props.dir, family, { onDebug: (m) => addClient('debug', m, 'dhampir') })
-    } catch (e) {
-      dhampirStatus.value = '字体 ' + family + ' 没装上（预览会用回退字体）'
-    }
-  }
-  // 字体是异步到位的；不等它的话第一屏会是回退字形。
-  try { if (document.fonts && document.fonts.ready) await document.fonts.ready } catch (e) { /* 等不到就算了 */ }
-
-  const subTexts = res.subtitles || {}
-  const entries = []
-  for (const a of project.assets || []) {
-    if (a.kind !== 'subtitle') continue
-    const name = String(a.uri || '').split(/[\\/]/).pop()
-    const text = subTexts[name]
-    if (!text) continue
-    const ext = (name.split('.').pop() || '').toLowerCase()
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
-    dhampirBlobUrls.push(url)
-    entries.push({ assetId: a.id, url, format: ext === 'ass' || ext === 'ssa' ? 'ass' : 'srt' })
-  }
-  if (entries.length > 0) {
-    const loaded = await dhampirEngine.loadSubtitles(entries)
-    const failed = (loaded && loaded.failed) || []
-    // **失败要看得见**：登记不上的那一路，画面里就是"没有字幕/弹幕"，不报错。
-    if (failed.length > 0) {
-      dhampirStatus.value = '（字幕 ' + failed.length + ' 路没登记上）'
-    }
-  }
+  await ensureProjectFonts(project)
 }
 
 function stopDhampir() {
@@ -821,6 +958,10 @@ function stopDhampir() {
   dhampirEngine = null // wasm 侧是单例宿主；下次 attach 会重新接上
   dhampirSegments = []
   dhampirBusy = false
+  // 收摊时把热重载的状态一起清掉：留着的话下一次进 Dhampir 会被一个陈旧的 pending 触发。
+  dhampirReloading = false
+  dhampirReloadPending = false
+  if (dhampirReloadTimer) { clearTimeout(dhampirReloadTimer); dhampirReloadTimer = 0 }
   dhampirSourceVideos = new Map()
   dhampirVideos = []
   dhampirTwins = new Map()
@@ -1153,6 +1294,12 @@ function scheduleDhampir() {
       })
       .finally(() => {
         dhampirBusy = false
+        // 重载请求撞上"有帧在飞"被拦下（见 reloadDhampirProject）：这一帧收尾了就补跑，
+        // 否则那次改动会**静默丢掉**（用户看到的就是"改了没反应"）。
+        if (dhampirReloadPending && !dhampirReloading) {
+          dhampirReloadPending = false
+          reloadDhampirProject()
+        }
         // **帧尾排帧**（B 案）：一帧画完**立刻续跑**，不等一个显示刷新周期。
         //
         // 为什么：一帧的活（prep + draw ≈ 20ms）本来就长于一个刷新间隔 ⇒ 帧尾若再
@@ -1343,8 +1490,15 @@ const capRows = computed(() => subsAt(idx.value, current.value))
  *  旧 server（`/api/polish/fonts` 还没有 `fallback_stack` 字段）下传来的是空串 ——
  *  直接拼进 font 简写会得到 `'700 72px '` 这种**非法值**，canvas 的 font 赋值被静默忽略，
  *  量宽/折行全乱（症状是预览字幕排版崩坏）。 */
-const capFallback = computed(() => (props.fontFallback || '').trim()
-  || '"LXGW WenKai","Microsoft YaHei","Noto Sans SC",sans-serif')
+const capFallback = computed(() => {
+  const base = (props.fontFallback || '').trim()
+    || '"Noto Sans SC","Microsoft YaHei",sans-serif'
+  // ⚠️ **emoji 追加在末尾**（职责分离）：正文在前、emoji 只兜底别人都没有的字形。
+  // 排在末尾而不是开头，是因为排在前面会**抢走**数字/字母这类它也有的字形（观感突变）。
+  // 库里没有 emoji 字体时不追加 —— 浏览器还有系统 emoji 那层兜底，别把手写死。
+  const em = (props.emojiFamily || '').trim()
+  return em ? `${base},"${em}",sans-serif` : base
+})
 /** 量宽用的字体简写。⚠️ 兜底栈走 capFallback（服务端动态算、与成片同源）——
  *  这里曾写死 `"LXGW WenKai",…`，"设为默认"对预览的量宽/折行完全无效。 */
 const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
@@ -2053,6 +2207,38 @@ function pickPoint(e) {
 watch(idx, (v) => {
   player.setEvents(v.soundEvents)
   player.setLoudnessCurve(props.config?.loudness_curve || [])
+}, { immediate: true })
+
+// ---- Dhampir 工程热重载：**磁盘上的 polish.toml 变了**就把新工程推进引擎 ----
+//
+// ⚠️ **认的是 `persistedConfig`，不是 `config`**（2026-10-02 修）。
+//
+// 这条缝的第一版挂在 `props.config` 上，而那是**页面手里的镜像**：编辑器拖动时会
+// 60ms 节流地把它换成内存中间态（`onTimelinePreview`，**不落盘**）。于是每次拖拽都会
+// 去磁盘要一份**还没写下去**的改动 —— 拿回旧工程、`open()` 覆盖掉画面，
+// 表现是"拖完松手，画面先闪回改动前的样子，等后处理跑完才追上"。
+//
+// 现在两个信号各有明确含义，**触发两次、各管一段**：
+//   ① `persistedConfig` 变（落盘完成）→ 反映**你手改的值**（快，松手就变）
+//   ② 任务跑完 `load()` 之后再更新它 → 反映**后处理的校准结果**（慢，但与出片一致）
+//
+// 深比较：父级每次都造一个新对象，浅比较 `!==` 会误判成"变了"；而配置本来就小。
+// 防抖 300ms：连续改动（拖滑块 / 连点）只重载最后一次。
+watch(() => props.persistedConfig, (cfg) => {
+  // 只认"能进 Dhampir 工程"的那几棵子树（= 转译器真正读的那些，见
+  // `tools/polish-to-dhampir.mjs`）：别让无关字段触发重载，也别漏掉真正相关的。
+  // 字段名对着 `ProjectFile`（`vtrim-polish/src/project/config.rs`）抄，别自己编。
+  const key = JSON.stringify([
+    cfg && cfg.segments, cfg && cfg.mute_ranges, cfg && cfg.silence_ranges,
+    cfg && cfg.layout, cfg && cfg.canvas, cfg && cfg.stage, cfg && cfg.sticker,
+    cfg && cfg.style, cfg && cfg.filter, cfg && cfg.sfx,
+    cfg && cfg.sticker_source, cfg && cfg.duration,
+  ])
+  if (key === dhampirCfgKey) return
+  dhampirCfgKey = key
+  if (!dhampirMode.value || !dhampirEngine) return
+  if (dhampirReloadTimer) clearTimeout(dhampirReloadTimer)
+  dhampirReloadTimer = setTimeout(() => { dhampirReloadTimer = 0; reloadDhampirProject() }, 300)
 }, { immediate: true })
 
 // ===== 默认进 Dhampir（用户要求：默认为 dhampir；旧预览暂时禁用）=====
