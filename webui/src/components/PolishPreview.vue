@@ -1214,7 +1214,10 @@ let rafId = 0
 let ro = null
 
 const player = createSfxPlayer({
-  resolveUrl: (name) => clipMediaUrl(props.pid, props.dir, 'sfx/' + name + '.mp3')
+  resolveUrl: (name) => clipMediaUrl(props.pid, props.dir, 'sfx/' + name + '.mp3'),
+  // 音效加载失败（文件缺失 / 格式不对）以前是纯静默 —— "预览没有音效"连个可查的痕迹都没有。
+  // 每个 name 只报一次，走 debug（可预期失败不刷 warn，见前端留痕纪律）。
+  onError: (name) => addClient('debug', `音效 sfx/${name}.mp3 加载失败 —— 预览里这条不会响（出片侧同样会跳过它）`, 'preview'),
 })
 
 const videoSrc = computed(() => clipMediaUrl(props.pid, props.dir, props.config?.source?.video || 'clip.mp4'))
@@ -1335,10 +1338,17 @@ const capRows = computed(() => subsAt(idx.value, current.value))
 // A5 字幕折行：与出片（templates/index.html renderFrame）同一套 wrapCaptionParts
 // —— 安全宽 = 画布宽 * 0.875、最多 3 行、装不下缩字号（下限 0.7）。
 // 行内 white-space:nowrap 禁掉浏览器自动换行，预览与出片断行位置一致。
-/** 量宽用的字体简写。⚠️ 兜底栈走 props.fontFallback（服务端动态算、与成片同源）——
+/** 兜底字体栈：页面透传的 props.fontFallback（服务端动态算、与成片同源）。
+ *  ⚠️ **空串必须回落到字面量**：Vue 的 prop 默认值只在 undefined 时生效，而页面侧在
+ *  旧 server（`/api/polish/fonts` 还没有 `fallback_stack` 字段）下传来的是空串 ——
+ *  直接拼进 font 简写会得到 `'700 72px '` 这种**非法值**，canvas 的 font 赋值被静默忽略，
+ *  量宽/折行全乱（症状是预览字幕排版崩坏）。 */
+const capFallback = computed(() => (props.fontFallback || '').trim()
+  || '"LXGW WenKai","Microsoft YaHei","Noto Sans SC",sans-serif')
+/** 量宽用的字体简写。⚠️ 兜底栈走 capFallback（服务端动态算、与成片同源）——
  *  这里曾写死 `"LXGW WenKai",…`，"设为默认"对预览的量宽/折行完全无效。 */
 const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
-  + (subStyle.value.font ? '"' + subStyle.value.font + '",' : '') + props.fontFallback)
+  + (subStyle.value.font ? '"' + subStyle.value.font + '",' : '') + capFallback.value)
 const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
 const capRowsWrapped = computed(() => capRows.value.map((c) => {
   const w = wrapCaptionParts(c.parts, cv.value.W * 0.875, (tx) => capMeasure(tx, capFontSpec.value))
@@ -1402,9 +1412,9 @@ const colorOverlayStyle = computed(() => {
 const capLayerStyle = computed(() => {
   const s = subStyle.value
   return {
-    // ⚠️ 兜底栈 = props.fontFallback（服务端动态算、与成片同源）；选了库内字体时排最前。
+    // ⚠️ 兜底栈 = capFallback（服务端动态算、与成片同源，空串回落字面量）；选了库内字体时排最前。
     // 这里曾写死 `"${s.font || 'LXGW WenKai'}","Microsoft YaHei",…` —— "设为默认"对预览无效。
-    fontFamily: s.font ? `"${s.font}",${props.fontFallback}` : props.fontFallback,
+    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : capFallback.value,
     fontSize: (s.size || 72) + 'px',
     color: s.color || '#dcbda0',
     WebkitTextStroke: s.stroke || '12px #403c3b',

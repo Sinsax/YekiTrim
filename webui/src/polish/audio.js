@@ -40,11 +40,12 @@ export function saveMuted(m) {
   } catch {}
 }
 
-export function createSfxPlayer({ resolveUrl } = {}) {
+export function createSfxPlayer({ resolveUrl, onError } = {}) {
   let masterVol = readMasterVolume()
   let muted = readMuted()
 
   const sfxCache = new Map() // name → Audio
+  const loadFailed = new Set() // 加载失败已上报过的 name（每个只报一次，别刷屏）
   let currentT = 0 // 当前播放时间（音量跟随曲线用）
   let curve = []
 
@@ -83,6 +84,15 @@ export function createSfxPlayer({ resolveUrl } = {}) {
     vol = vol || 0.04
     const target = vol * curveAdjust(currentT) * (muted ? 0 : masterVol)
     const a = obtain(name)
+    // 加载失败（404 / 解码不了）以前是**纯静默** —— "预览没有音效"连个可查的痕迹都没有。
+    // cloneNode 出来的实例不带原监听，所以在每次拿到实例时都补挂（failed 去重）。
+    if (!loadFailed.has(name)) {
+      a.addEventListener('error', () => {
+        if (loadFailed.has(name)) return
+        loadFailed.add(name)
+        try { onError && onError(name) } catch {}
+      }, { once: true })
+    }
     a.volume = 0
     a.play().catch(() => {})
     // ~30ms 缓入，消除爆音

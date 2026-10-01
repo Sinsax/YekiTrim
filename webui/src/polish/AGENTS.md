@@ -25,7 +25,9 @@
 - `canvas.js`：`BASE_W` / `BASE_H` / `canvasOf(cfg)` / `stickerScale` / `stickerSize` / `stickerMargin` /
   `stickerFloatUp`（**画布参数 SSOT**，别在组件里另算一份）。
 - `audio.js`：`readMasterVolume` / `readMuted` / `saveMasterVolume` / `saveMuted` /
-  `createSfxPlayer({resolveUrl})`（localStorage `vtrim_master_vol` / `vtrim_muted`）。
+  `createSfxPlayer({resolveUrl, onError})`（localStorage `vtrim_master_vol` / `vtrim_muted`；
+  ⚠️ 音效**加载失败**经 `onError` 每个 name 只上报一次 —— 以前是纯静默，"预览没有音效"无从查起；
+  组件侧记 debug 不刷 warn）。
 - `fonts.js`：`ensureFontFace(pid, dir, id, {onDebug})`；`api.js`：polish 端点 + `watchJob`。
 - 漂移对拍脚本：`webui/scripts/check-overlay.mjs`（覆盖层色档）、`check-caption-wrap.mjs`（折行）、
   `check-sticker-anchor.mjs`（贴纸锚点/尺寸）、`check-handheld.mjs`（手持摇摆）、

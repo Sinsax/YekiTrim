@@ -43,9 +43,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   `readiness(font, strict)`、`find_translator()`（`VTEDIT_TRANSLATOR` 可覆盖 —— 手动探针靠它做变异）。
 - `frame`：`extract_chunk_frames`、`split_jpeg_frames`；`gif`：`decode_gif_frames_rgba` / `decode_gif_frames_png` /
   **`decode_sticker_frames_png`（贴纸图统一入口：GIF 多帧、PNG/JPEG 单帧）**；
-  `sound`：`collect_sound_events(config)` / `sound_file_exists`（⚠️ `collect_sound_events` 现在没有生产
-  调用者 —— 它当年是 wgpu 那条路用的"替代页面 `__SOUND_DATA`"；留着是因为它有单测、且任何非页面后端
-  都要这份 SFX 列表）；`backend::create_backend`（`Dhampir` 走到这里会**明确报错** ——
+  `sound`：`collect_sound_events(config)`（**cmd_render 的 SFX 收口**：底座腿不带页面，事件由
+  Rust 直接收，响度对齐后 `Ffmpeg::mix_sfx` 混入 —— "画面归底座、声音归本仓"；缺文件会打 warn
+  并跳过该条，不再静默）/ `sound_file_exists`（暂无消费者，判据与 collect 同源）；`backend::create_backend`（`Dhampir` 走到这里会**明确报错** ——
   它是整段后端，不走逐帧接口）。
   ⚠️ **`runner.rs` 已删除**（2026-09）：它自带一份 `ResolvedPaths` + `RenderRunner`，全仓库零消费者
   （真正的 `ResolvedPaths`/`resolve_paths` 在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），
@@ -106,6 +106,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
 - **分类规则**：`frames A..B: NN%` / `chunk#N: ...%` → `jobs.progress()`（按**最小值**聚合：
   最慢的分块决定整体）；`-- Xxx --`、`FINISHED:`、`Cover saved:`、`✂ 已导出去除`、`⏱` 等里程碑
   → `jobs.log(info)`（进运行日志面板与文件）；其余行 → `debug`（只挂在任务卡上，不刷日志）。
+  ⚠️ **例外**：底座带 `--no-audio` 时对自己工程音轨发的那句「本次出片是无声的」是**误导**
+  （声音由本仓 ffmpeg 混入，成片有声），日志层把它整行换成准确说法
+  （`api/render.rs::is_base_no_audio_notice`，有单测钉住原文不进日志）。
 - **取消 = 杀进程树**：子进程是另一个进程，看不到进程内标志。`render_proc::kill_tree(pid)`
   在取消时 `taskkill /F /T`（含 ffmpeg 与底座拉起的孙进程），父进程再清 `_chunk_*` / `_temp_*`。
 - **启动清扫孤儿**：每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，
