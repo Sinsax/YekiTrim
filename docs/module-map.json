@@ -21,7 +21,8 @@
     "crates/*/templates",
     "webui/src",
     "webui/scripts",
-    "scripts"
+    "scripts",
+    "tools"
   ],
   "exclude": [
     "target",
@@ -52,7 +53,19 @@
       "kind": "area",
       "verify": [
         "python3 scripts/check_module_map.py",
-        "python3 scripts/check_module_boundaries.py"
+        "python3 scripts/check_module_boundaries.py",
+        "node scripts/check-dhampir-wiring.mjs"
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "对底座出片的转译器（方言 → Dhampir 契约）",
+      "dir": "tools",
+      "card": "tools/AGENTS.md",
+      "kind": "area",
+      "verify": [
+        "node scripts/check-vtrim-translator.mjs",
+        "node scripts/check-vtrim-translator.mjs --mutate"
       ]
     },
     {
@@ -254,14 +267,6 @@
       "card": "crates/xtask/AGENTS.md",
       "kind": "crate",
       "verify": ["cargo check -p xtask"]
-    },
-    {
-      "id": "wasm",
-      "title": "vtrim-wasm（独立 target）",
-      "dir": "crates/vtrim-wasm",
-      "card": "crates/vtrim-wasm/AGENTS.md",
-      "kind": "crate",
-      "verify": ["cargo check --manifest-path crates/vtrim-wasm/Cargo.toml --target wasm32-unknown-unknown"]
     },
     {
       "id": "webui",

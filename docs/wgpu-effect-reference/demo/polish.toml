@@ -15,7 +15,6 @@ output = "export.mp4"
 created = "2026-09-06"
 version = 1
 
-
 # ----- 素材路径 -----
 [source]
 # danmaku: 可选, 没有就留空
@@ -24,7 +23,6 @@ video = "clip.mp4"
 subtitles = "clip.srt"
 danmaku = ""
 metadata = "clip.json"
-
 
 # ===== 封面 =====
 [cover]
@@ -53,12 +51,10 @@ line_height = 1.7
 # 手动断行,修改后不会被覆盖
 title_lines = []
 
-
 # ===== 关键词过滤 =====
 [filter]
 danmaku = []
 highlight = []
-
 
 # ===== 布局（九宫格） =====
 # 可用格子: top-left / top / top-right / mid-left / center / mid-right / bot-left / bottom / bot-right
@@ -101,13 +97,11 @@ speed = 8.0
 area = "danmaku_area"
 scroll_direction = "rtl"
 
-
 # ===== 运镜缩放 =====
 # zoom_mid: 中景缩放 (camera zoom=中), zoom_close: 近景特写缩放
 [style.camera]
 zoom_mid = 1.5
 zoom_close = 1.8
-
 
 # ===== 音效 =====
 # blacklist: 屏蔽列表, 精确 id 或 tag:xxx 整族 (与全局配置合并)
@@ -128,14 +122,12 @@ end = 4.0
 fx = "low"
 note = "开场：贴纸/渐变/运镜"
 
-
 [[segments.events]]
 type = "camera"
 time = 0.3
 duration = 1.5
 zoom = "近"
 origin = "center"
-
 
 [[segments.events]]
 type = "overlay"
@@ -149,20 +141,17 @@ colors = [
 ]
 shape = "linear"
 
-
 [[segments.events]]
 type = "shake"
 time = 2.5
 intensity = 14.0
 duration = 0.3
 
-
 [[segments.events]]
 type = "flash"
 time = 3.0
 color = "#ffffff"
 duration = 0.3
-
 
 # ============================================================
 # Segment 2
@@ -175,48 +164,30 @@ end = 8.5
 fx = "low"
 note = "中段：滤镜/脉冲类"
 
-
 [[segments.events]]
 type = "blur"
 time = 4.2
 duration = 0.4
-
-
-[[segments.events]]
-type = "color_shift"
-time = 4.8
-duration = 0.5
-
 
 [[segments.events]]
 type = "noise"
 time = 5.4
 duration = 0.4
 
-
-[[segments.events]]
-type = "zoom_bounce"
-time = 5.8
-duration = 0.4
-
-
 [[segments.events]]
 type = "pulse"
 time = 6.4
 duration = 0.5
-
 
 [[segments.events]]
 type = "vignette"
 time = 7.0
 duration = 0.6
 
-
 [[segments.events]]
 type = "hue_shift"
 time = 7.6
 duration = 0.5
-
 
 [[segments.events]]
 type = "camera"
@@ -224,7 +195,6 @@ time = 7.0
 duration = 1.2
 zoom = "中"
 origin = "center"
-
 
 # ============================================================
 # Segment 3
@@ -237,20 +207,6 @@ end = 12.0
 fx = "low"
 note = "尾段：stutter/split/纯色overlay/PNG贴纸"
 
-
-[[segments.events]]
-type = "stutter"
-time = 8.6
-duration = 0.3
-
-
-[[segments.events]]
-type = "split"
-time = 9.0
-intensity = 30.0
-duration = 0.35
-
-
 [[segments.events]]
 type = "overlay"
 time = 9.5
@@ -258,7 +214,6 @@ duration = 1.2
 overlay_type = "color"
 color = "#E8727E"
 opacity = 0.3
-
 
 [[segments.events]]
 type = "sticker"
@@ -269,13 +224,6 @@ name = "demo_v"
 source = "local"
 x = "8%"
 y = "40%"
-
-
-[[segments.events]]
-type = "zoom_bounce"
-time = 10.5
-duration = 0.4
-
 
 [[segments.events]]
 type = "camera"

@@ -25,19 +25,15 @@
 |---|---|---|---|---|
 | `camera` | 持续 · 运镜 | `zoom`(远/中/近)、`anchor`/`anchor_to`、`origin`/`to_origin`、`cut`、`handheld` | 事件自带（秒） | 时间/起止/类型/zoom/anchor/anchor_to/cut/handheld/配音 |
 | `sticker` | 持续 · 贴纸 | `keyword`、`sticker_tag`、`name`、`source`、`x`、`y`、`sfx`、`sfx_volume` | 1.5~2.5s（prompt 建议；process 可延长到后一条字幕结束，≤ +50%） | 时间/起止/keyword→贴纸两级列表/配音 |
-| `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient/fade_in/fade_out)、`color`、`opacity`、`colors[]`、`shape`(linear/radial) | 0.5~5s（prompt 建议；fade 两档整块时长＝渐变时长） | 时间/起止/类型/颜色/不透明度/配音（渐变档另有 colors/形状） |
+| `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient/fade_in/fade_out)、`color`、`opacity`、`colors[]`、`shape`(linear/radial)、`angle`(线性档方向；CSS 约定 0=向上，缺省=右下 135°) | 0.5~5s（prompt 建议；fade 两档整块时长＝渐变时长） | 时间/起止/类型/颜色/不透明度/配音（渐变档另有 colors/形状/方向） |
 | `sfx` | 点 · 音效 | `name`(音效 id)、`volume`、`end` | 缺省 = 文件原始长度 | 时间/起止/音效列表/音量 |
 | `shake` | 瞬时 · 视觉 | `intensity`(默认 14) | cap 0.5 / 默认 0.3 | 时间/起止/intensity/配音 |
 | `flash` | 瞬时 · 视觉 | `color`(默认 `#ffffff`) | cap 0.3 / 默认 0.25 | 时间/起止/color/配音 |
 | `blur` | 瞬时 · 视觉 | —（固定 8px） | cap 0.4 / 默认 0.3 | 时间/起止/配音 |
-| `zoom_bounce` | 瞬时 · 视觉 | —（当前 zoom ×1.10） | cap 0.6 / 默认 0.4 | 时间/起止/配音 |
 | `vignette` | 瞬时 · 视觉 | —（四角暗角） | cap 0.6 / 默认 0.4 | 时间/起止/配音 |
 | `hue_shift` | 瞬时 · 视觉 | `color`(默认 `#ff0040`) | cap 0.5 / 默认 0.35 | 时间/起止/color/配音 |
-| `stutter` | 瞬时 · 视觉 | `intensity`(默认 12) | cap 0.35 / 默认 0.25 | 时间/起止/intensity/配音 |
-| `split` | 瞬时 · 视觉 | `intensity`(默认 30) | cap 0.35 / 默认 0.25 | 时间/起止/intensity/配音 |
 | `noise` | 瞬时 · 视觉 | —（噪点 opacity 0.08） | cap 0.4 / 默认 0.3 | 时间/起止/配音 |
 | `pulse` | 瞬时 · 视觉 | —（zoom ×1.06 → ×0.97） | cap 0.5 / 默认 0.4 | 时间/起止/配音 |
-| `color_shift` | 瞬时 · 视觉 | —（sepia+saturate） | cap 0.5 / 默认 0.35 | 时间/起止/color/配音 |
 
 「配音」= 所有视觉事件都可挂 `sfx` 引用 + `sfx_volume`（`sfx` 事件本身用 `name`/`volume`）。
 所有类型的公共块是 **开始 / 结束 / 设为入点 / 设为出点 / 定位 / 删除**；改完自动保存并自动跑一次后处理。
@@ -220,7 +216,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 两种用法：
 
 1. **独立音效事件**：`{"type":"sfx","time":3.0,"end":4.0,"name":"<音效 id>","volume":0.5}`（`end` 可省 = 用文件原始长度）
-2. **挂在任何视觉事件上**：`sticker/shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift/overlay` 都有 `sfx` + `sfx_volume` 两个字段（`sfx = false/null` 表示不响，`sfx = true` 会解析成 `pop-notice`）。
+2. **挂在任何视觉事件上**：`sticker/shake/flash/blur/vignette/hue_shift/noise/pulse/overlay` 都有 `sfx` + `sfx_volume` 两个字段（`sfx = false/null` 表示不响，`sfx = true` 会解析成 `pop-notice`）。
 
 **可用音效目录**：`crates/vtrim-polish/assets/sfx_catalog.json`（小森平音效库，编译期内嵌）
 
@@ -259,14 +255,10 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 | `shake` | 抖动：+off → −off → ±off/2，0.2s 内四段 | `intensity`（默认 14px） | 0.5 / 0.3 |
 | `flash` | 前 0.04s 冲到 0.2 不透明度再线性淡出 | `color`（默认白） | 0.3 / 0.25 |
 | `blur` | 固定 8px：0.48s 满 + 0.32s 淡出（共 0.8s 窗口） | — | 0.4 / 0.3 |
-| `zoom_bounce` | 前 0.08s 当前 zoom ×1.10 | — | 0.6 / 0.4 |
 | `vignette` | 四角暗角：前 40% 保持 1.0 再淡出 | — | 0.6 / 0.4 |
 | `hue_shift` | 0.15s 淡入 0.25 不透明度再 0.8s 淡出（共 0.95s 窗口） | `color`（默认 `#ff0040`） | 0.5 / 0.35 |
-| `stutter` | 0.12s 内两段反向位移 | `intensity`（默认 12px） | 0.35 / 0.25 |
-| `split` | 0.12s：缩到 0.95 + 斜切 + 水平位移 | `intensity`（默认 30） | 0.35 / 0.25 |
 | `noise` | 噪点：0.08s 升到 0.08 不透明度，0.72s 淡出（共 0.8s 窗口） | — | 0.4 / 0.3 |
 | `pulse` | 0.12s ×1.06 → 0.28s ×0.97 → 回正（共 0.48s） | — | 0.5 / 0.4 |
-| `color_shift` | 1.0s：sepia 0.6→0 + saturate 1.4→1.0 | — | 0.5 / 0.35 |
 
 - **跨度由系统接管**：`process/fx.rs::normalize_event_ends` 把每个瞬时特效的 `end - time` clamp 到 `0.1 ~ cap`，
   缺失 `end` 的按类型补默认值 —— LLM 写多长都会被改（prompt 里也明说了）。
@@ -274,7 +266,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
   **事件类型由所在轨道决定，面板里不给跨轨道选择**：泳道标签的 `＋` 负责定类型 —— 运镜/贴纸/覆盖层/音效轨
   直接加该类型，**特效轨的 `＋` 弹 11 项细分类型菜单**（选哪个加哪个）；属性面板里特效事件只列这 11 种可换
   （切换按新类型重建字段、保留时间跨度与配音），其余事件只读展示「类型 贴纸 sticker」。
-  `intensity`（shake/stutter/split）与 `color`（flash/hue_shift/color_shift）都有输入控件。
+  `intensity`（shake）与 `color`（flash/hue_shift）都有输入控件。
 
 ### 2.6 其余事件字段
 
@@ -301,7 +293,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 | 任意视觉事件的 `sfx` 引用 / `sfx_volume` | 属性面板「配声」 | 同上 |
 | 运镜的**方式**（平滑 / 硬切 `cut`）、`zoom`、`anchor` / `anchor_to` | 属性面板（「方式」+「景别」+「聚焦/移到」） | 同上 |
 | 覆盖层 `overlay_type` / `color` / `colors` / `opacity` / `shape` | 属性面板（下拉 + 取色器；fade 两档只留颜色） | 同上 |
-| 瞬时特效 `intensity`（shake/stutter/split）、`color`（flash/hue_shift/color_shift） | 属性面板 | 同上 |
+| 瞬时特效 `intensity`（shake）、`color`（flash/hue_shift） | 属性面板 | 同上 |
 | 分段 `note` / `fx` / `start` / `end`（体拖、右缘缩放、面板确认后删） | 时间轴 + 属性面板 | 同上 |
 | 字幕增删改拆、设入出点、拖动 | 字幕泳道 + 属性面板 | `PUT /api/polish/subtitles` |
 | 屏蔽区间增删改拆、拖动 | 屏蔽泳道 + 属性面板 | `PUT /api/polish/project {mute_ranges}` |
@@ -339,7 +331,7 @@ Step 2b 按它们反选安全区、**重写每个贴纸的 `x/y`**，Step 2d 把
 
 **已对齐**（逐条核对 `engine.js` ↔ `timeline.rs`）：
 
-- 瞬时特效的求值窗口：shake 0.2s、blur 0.8s(0.48 满)、hue_shift 0.95s、noise 0.8s、color_shift 1.0s、stutter/split 0.12s、zoom_bounce 0.30s、pulse 0.48s、vignette = `(end-time)*0.4` 保持后淡出。
+- 瞬时特效的求值窗口：shake 0.2s、blur 0.8s(0.48 满)、hue_shift 0.95s、noise 0.8s、pulse 0.48s、vignette = `(end-time)*0.4` 保持后淡出。
 - 瞬时跨度上限表：`process/fx.rs` 与 `engine.js` 的 `TRANSIENT_CAP` 完全一致。
 - 贴纸四阶段、字幕 fade+事件联动脉冲、弹幕滚动、运镜过渡时长与曲线。
 
@@ -357,8 +349,8 @@ Step 2b 按它们反选安全区、**重写每个贴纸的 `x/y`**，Step 2d 把
 ## 5. 默认值 / 上限速查
 
 ```
-瞬时特效跨度 (end-time)：shake 0.5 | flash 0.3 | blur 0.4 | zoom_bounce 0.6 | stutter 0.35
-                    split 0.35 | noise 0.4 | pulse 0.5 | hue_shift 0.5 | color_shift 0.5 | vignette 0.6
+瞬时特效跨度 (end-time)：shake 0.5 | flash 0.3 | blur 0.4
+                    noise 0.4 | pulse 0.5 | hue_shift 0.5 | vignette 0.6
                     缺失时默认：0.3 / 0.25 / 0.3 / 0.4 / 0.25 / 0.25 / 0.3 / 0.4 / 0.35 / 0.35 / 0.4
                     下限一律 0.1s
 运镜倍率：[style.camera] zoom_mid 1.3（中） zoom_close 1.5（近） zoom_wide 0.55（远=画中画，四周黑边 432px）

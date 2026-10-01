@@ -1,4 +1,10 @@
-# wgpu 渲染效果参考
+# wgpu 渲染效果参考（**历史**：那条 wgpu 后端已删除）
+
+> ⚠️ **这里记的是一条已经删掉的路径**：V-Trim 自带的 wgpu 原生渲染后端（`vtrim-render-core` 的 wgpu
+> 合成管线 + `vtrim-polish/src/render/native/` + `VTEDIT_RENDERER=wgpu`）连同浏览器真渲染预览
+> `vtrim-wasm` 已整体删除 —— GPU 那侧交给独立的 **Dhampir 底座**。所以本目录只剩**参照价值**：
+> 它是"同一 demo 工程经两条后端渲染"的同帧对比，可以当作**特效观感/边缘情况**的视觉参照，
+> **不是**当前出片行为的说明。当前出片路径只有一条：`templates/index.html` 的 canvas（headless Chrome）。
 
 wgpu 原生渲染后端 vs Chrome headless 基准的同帧对比。两份成片由**同一 demo 工程**分别经 `VTEDIT_RENDERER=wgpu` 与 `VTEDIT_RENDERER=chrome` 渲染生成。
 
