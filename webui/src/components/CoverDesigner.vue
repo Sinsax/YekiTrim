@@ -317,16 +317,17 @@
 
     </div>
   </div>
-  <!-- 生成封面：选渲染通道。Takumi = 静态渲染（进程内出图、不需要装浏览器）；
-       与浏览器的差别只在字形栅格化（实测非文字区 0.89/255、标题band约 15/255）。 -->
+  <!-- 生成封面：选渲染通道。**Takumi 是默认**（静态渲染，进程内出图、不需要装浏览器）；
+       与浏览器的差别只在字形栅格化（实测非文字区 1.17/255、整图 11.44/255）。
+       Chrome 仍留着当兜底，但它要外部浏览器、且已计划删除（P3）。 -->
   <div v-if="coverRendererDialog"
        style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)"
        @click.self="coverRendererDialog = false">
     <div style="background:#20222a;border:1px solid #3a3d47;border-radius:10px;padding:18px 20px;min-width:360px;max-width:92vw">
       <div style="font-size:15px;font-weight:600;margin-bottom:8px">生成封面：选择渲染通道</div>
       <div style="font-size:12px;opacity:.72;line-height:1.7;margin-bottom:14px">
-        <b>Chrome</b>：headless 浏览器截图（现状，与设计器逐像素一致；约 11 进程 / 520MB）。<br>
-        <b>Takumi</b>：静态渲染，进程内出图（单进程 / 约 54MB，无需安装浏览器）；标题字形与浏览器略有差异。
+        <b>Takumi（默认）</b>：静态渲染，进程内出图（单进程 / 约 54MB，无需安装浏览器）；标题字形与浏览器略有差异。<br>
+        <b>Chrome</b>：headless 浏览器截图（兜底；约 11 进程 / 520MB，需机器上装了浏览器）。
         <b v-if="coverCap.loaded && !coverCap.ready" style="color:#ffb46b">（当前不可用：{{ coverCap.why }}）</b>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">

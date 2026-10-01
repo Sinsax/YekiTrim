@@ -112,8 +112,10 @@
   HTML/CSS** 是它唯一的不变式 —— 换渲染器就是第三份实现。且 Dhampir 今天缺的正好是封面全在用的
   （字距/行高/文字阴影/描边宽度与颜色/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），
   速度上也没有收益（实测一张封面 ≈3.0–3.3s，Dhampir 单帧冷启动就要 1.5–3.2s）。
-- **封面有两条渲染通道**（2026-10-01 起）：默认仍是 headless Chrome（**兜底**），
-  可选 `VTEDIT_COVER_RENDERER=takumi` 走**静态渲染**（`src/render/takumi.rs`，`cover-takumi` feature **默认关**）。
+- **封面有两条渲染通道**（2026-10-01 起）：**默认 `takumi`**（静态渲染，`src/render/takumi.rs`，
+  `cover-takumi` feature **默认关**但 CLI 的 `default` 带上它），`chrome` = headless Chrome **兜底**
+  （要外部 Chrome，P3 计划删除）。切换依据 = 字体三处来源收敛后重跑封面门禁（clip-14 真工程）
+  非文字区 **1.17/255**、整图 **11.44/255**，均在阈值内 —— 且现在是**同库同字体**的对比。
   - `build_cover_page_static` 是静态那条的构建入口（= 原替换链 + 填 `__EXPORT_CSS__`）；
     **Chrome 那条一个字都不改** —— 零回归由构造保证：实测把那三条"关动画"规则挂上去会**改变 Chrome 的像素**
     （动画把元素提升成合成层，关掉就换光栅化路径，存量 SHA 立刻变）。
@@ -127,7 +129,7 @@
     **`docs/plan/takumi-cover-capability.md`**。
   - **怎么用**：CLI `vtrim polish cover <目录> --renderer takumi`；WebUI 在封面设计器点「生成封面」，
     弹窗选 Chrome / Takumi（`CoverDesigner.vue` → `POST /api/polish/cover {renderer}`）。
-    两条路都**只透传**，取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > chrome，认不出就报错）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出（编了 feature + 字体库非空），经 `/api/health.cover_static` 给前端置灰用。
+    两条路都**只透传**，取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > **takumi**，认不出就报错）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出（编了 feature + 字体库非空），经 `/api/health.cover_static` 给前端置灰用。
 - 封面特效 emoji：`text` 最多 `COVER_EMOJI_MAX_CHARS`(12) 个字符（带 ZWJ/肤色修饰符的一个 emoji
   就要 7~8 个码点），`x/y` 是**字符中心**，`amount` 当大小用（`COVER_EMOJI_MIN_PX`(48) ~
   `COVER_EMOJI_MAX_PX`(288)px，公式只在 `cover.rs::cover_fx_html` 里一份，前端 `fxStyle` 是镜像）。
