@@ -427,6 +427,7 @@ function fnBodyOf(src, name) {
     ['dhampirCanvasSizeFor', '画布目标尺寸（render_hints → 只缩不放）', 'canvas'],
     ['dhampirStickersFrom', '贴纸层描述（活跃区间/相位锚点；解码缓存按 uri+fps 继承）', 'stickers'],
     ['dhampirApplySubtitles', '字幕/弹幕旁写（loadSubtitles 是替换语义，必须重喂）', 'subs'],
+    ['dhampirLoadAnimations', '动图直通（整段字节交给引擎，引擎自己解码取帧）', 'animations'],
   ]) {
     const re = new RegExp('function\\s+' + fn + '\\b')
     const call = fn + '('
@@ -446,6 +447,48 @@ function fnBodyOf(src, name) {
       '热重载调了、首启没调 = 进页面时状态就是缺的',
     )
   }
+  // ---- 4e-2：**动图直通真的接上了没有**（2026-10-02，host_api v6）----
+  //
+  // 版本号改成 6 只是"拦住两端错配"的闸，**不证明新能力被用上** ——
+  // 改了数字却没接那两条导出 = 贴纸静默不动（与"字段少了"同一类症状）。
+  // 所以这里断言：宿主确实调了 `dhampir_asset_load_animation`，且**不再**对动图
+  // 逐帧调 `/polish/sticker-frame`。
+  check(
+    /dhampir_asset_load_animation/.test(previewSrc),
+    'PolishPreview.vue 应当调底座的 dhampir_asset_load_animation（host_api v6）',
+    '只把 DHAMPIR_HOST_API 改成 6 而不接这条导出 = 动图贴纸静默不动',
+  )
+  // 动图那条路**不许**再走逐帧位图：`dhampirLoadAnimations` 成功的资产在帧循环里
+  // 必须是 `continue`（由引擎供帧），否则宿主与引擎缓存两边抢 ——
+  // 底座把动图排在 `texture_for` 最前，宿主再交位图就会把贴纸**钉死在**它给的那一帧。
+  check(
+    /if\s*\(st\.animLoaded\)\s*continue/.test(previewSrc),
+    '帧循环里动图必须 continue（引擎供帧，宿主不再 setSourceBitmap）',
+    '不跳过 = 与引擎的动图缓存抢，症状是"动图不动了"（钉在宿主给的那一帧）',
+  )
+
+  // ⚠️ **loadAnimations 必须排在 attach 之后**（2026-10-02 实测）：
+  // 底座把纹理上传挂在 attach 上 —— host 没接上时 `dhampir_asset_load_animation`
+  // 返回 `parsed:true, ok:false, error:"还没 attach 上 canvas：动图现在只能先记账"`，
+  // 也就是说**字节白传了、贴纸一张都不出**。这条顺序错了两端都不会报错，
+  // 只会表现成"动图不动"，所以在这里钉住。
+  {
+    const iOpen = startBody.indexOf('dhampirEngine.open(')
+    const iAttach = startBody.indexOf('dhampirEngine.attach(')
+    const iAnim = startBody.indexOf('dhampirLoadAnimations(')
+    check(
+      iOpen >= 0 && iAttach >= 0 && iAnim >= 0,
+      'startDhampir 里应当有 open / attach / dhampirLoadAnimations 三处调用',
+      '找到的位置：open=' + iOpen + ' attach=' + iAttach + ' anim=' + iAnim,
+    )
+    check(
+      iAnim > iAttach && iAttach > iOpen,
+      'startDhampir 里的顺序必须是 open → attach → dhampirLoadAnimations',
+      '实测顺序 = open(' + iOpen + ') attach(' + iAttach + ') anim(' + iAnim + ')；' +
+        'load 排在 attach 之前时底座只记账、不上传纹理（ok:false，"还没 attach 上 canvas"）⇒ 贴纸全不出且不报错',
+    )
+  }
+
   // 字幕重喂还依赖 response 的旁写内容字段名 —— 两端各一份，钉一起。
   check(
     /res\.subtitles/.test(previewSrc),

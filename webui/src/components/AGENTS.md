@@ -22,10 +22,8 @@
 
 ## 边界
 > 组件逐个的详细清单、实测数字、几何/常量表与推导见 **`docs/webui-components.md`**，按组件分节：
-> ① 时间轴编辑器（布局几何 / 响度包络线 / 时间模型与控件 / 落盘与后处理 / Teleport・headless harness）
-> ② 精修预览 ③ 封面设计器（图层栈与画布拖动 / 类型选择器 / 调序与隐藏 / 安全区几何 / 标题自动排版 /
-> 镜像清单 / 两种「隐身」根因 / 四处同步）④ 运镜（倍率表 / 硬切与手持摇摆 / 画中画配额·对齐·收工 / 位移 / 迁移）
-> ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
+> ① 时间轴编辑器 ② 精修预览 ③ 封面设计器 ④ 运镜 ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
+> 各节内部自带子目录（布局几何 / 安全区几何 / 两种「隐身」根因等）。
 ### 时间轴编辑器
 - **布局必须保持紧凑**（用户要求精简；它是竖高大户，且**独占一整行**：v6.4 起横向空间 = 整个内容宽度，
   别再把它塞回左列）：泳道 **26px（原 34）×7 条 + 标尺 20px = 202px**；卡片头取消 —— 标题/提示经 `<slot name="head">` 进 `.tl-head`，与「去静音/撤销去静音」「重新后处理」同排。
@@ -77,6 +75,7 @@
 - ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ 服务端 `fallback_stack`：页面透传
   `fetchFonts().fallback_stack`，**不许前端写死字体名** —— 写死则「设为默认」对预览永远无效；
   另有 `--font-bold-file`）：漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
+- ⚠ 动图（GIF/动画 WebP）由底座自己解码（v6）：四条硬规矩与调用顺序陷阱见 **`docs/webui-components.md` ②.4**。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
 ### 封面设计器（`CoverDesigner.vue`）
@@ -85,9 +84,8 @@
   两栏走 **grid**（`.lyr-body` 两列），别退回 flex 子项（`flex-basis` 会被内容顶开、不等宽）。
   ⚠️ 面板**定高**（`syncControlsBound` + `CONTROLS_MIN_H` 380px 下限，否则裁掉底部工具条）；
   两栏各自滚、`min-height` 必须是 **0**（`auto` ⇒ 永不出滚动条）。详见 ③.8。
-  列表**上 = 更靠前** = `[cover] layers` 的**倒序**。顺序与可见性都落盘，出片由
-  `cover.rs::resolve_cover_stack`/`plan_cover_layers` 注入 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/
-  `layerStyle` 是**镜像**（容错规则一起抄）——**两边必须一起改**。
+  列表**上 = 更靠前** = `[cover] layers` 的**倒序**。顺序与可见性都落盘，出片由 `resolve_cover_stack`/
+  `plan_cover_layers` 注 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/`layerStyle` 是**镜像** —— **两边一起改**。
 - **图层行** `[拖柄 ⠿][眼睛][缩略][名字][徽标][垃圾桶]`：**眼睛 = 非破坏性隐藏**（`visible:false` → `display:none`，
   行留着淡化；安全区那两行走 localStorage）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即恢复；
   **特效/表情连 `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。

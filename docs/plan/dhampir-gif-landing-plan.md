@@ -2,7 +2,8 @@
 
 > 上游提案：`docs/plan/dhampir-gif-native-decode-proposal.md`（讨论稿，111 行）
 > 底座定稿：`../Dhampir/plan/dhampir-gif-native-decode-proposal.md` §8–§10（383 行）
-> 状态：**底座已交付 v6，V-Trim 侧尚未接线** —— 本文件是 V-Trim 侧的落地清单。
+> 状态：**V-Trim 侧已接线（2026-10-02）** —— 版本对齐 + 宿主接线 + 门禁都落地了，
+> 只剩浏览器真素材验证。执行记录见 §7。
 
 ---
 
@@ -65,6 +66,29 @@
 - 解码器读出的延迟表与 V-Trim 探测的那份**逐值相同**（全 30ms）——"时间真值归一"有实测依据。
 - 传输量 **46.2 MiB → 8.4 MiB**（4.1x 膨胀消失）。
 - 四张贴纸解码+上传 218ms（Vulkan 真机）。
+
+### 1.3b ⚠️ 实测出来的调用顺序契约（**做的时候才发现，提案里没有**）
+
+拿真 GIF 直接打底座 wasm（node + `dhampir_wasm_bg.wasm`）量出来的：
+
+```
+load 在 attach 之前  →  {parsed:true, ok:false, error:"还没 attach 上 canvas：动图现在只能先记账"}
+load 在 attach 之后  →  {parsed:true, ok:true, info:{format, width, height, frame_count, ...}}
+```
+
+- **纹理上传挂在 `attach()` 上**：host 还没接上时底座**只记账时间真值**、不上传纹理，
+  并返回 `ok:false`。也就是说字节白传了、**贴纸一张都不出**。
+- ⚠️ **两端都不会报错**：它是个正常的 `ok:false` 返回体，没有异常、没有堆栈 ——
+  症状就是"动图不动"，与"格式不支持"长得一模一样。
+- ⚠️ `info`（`frame_count` / `frame_delays_ms` / …）**只在 `ok:true` 时给出**，
+  所以 attach 之前也拿不到延迟表（"时间真值归一"那一步同样做不了）。
+
+**所以顺序必须是 `open()` → `attach()` → `load_animation()`**，
+而且是**两次**都要对：首启（`startDhampir`）与热重载（`reloadDhampirProject`）。
+`open()` 会 `clear_animations()`（换工程就是换一批素材），所以 load 也不能排在 open 之前。
+
+本仓的钉子：`scripts/check-dhampir-wiring.mjs` 里断言 `startDhampir` 里
+`open` < `attach` < `dhampirLoadAnimations` 的**下标顺序**（含三处缺失的报错分支）。
 
 ### 1.4 ⚠️ 一个必须先决策的问题：显存预算
 
@@ -211,3 +235,46 @@ wasm 接线只编译过、没喂过真 GIF。这一步的风险最高。
 | `crates/dhampir-core/src/animation.rs` | 解码模块（449 行）+ 三道闸 |
 | `crates/dhampir-core/src/render/animation.rs` | 纹理缓存 + 显存预算闸 |
 | `docs/host-api.md` | v5→v6 一节（契约正文） |
+
+---
+
+## 7. 执行记录（V-Trim 侧，2026-10-02）
+
+### 已完成
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| T1 版本对齐 | `PolishPreview.vue` | `DHAMPIR_HOST_API` 5 → **6** |
+| T2 宿主接线 | `PolishPreview.vue` | 新增 `dhampirLoadAnimations()`；删掉动图的逐帧取帧/位图提交 |
+| T3 时间真值 | 同上 | 把 `info.frame_delays_ms` 存进 `st.delays` |
+| T4 服务端标注 | `api/polish.rs` | `sticker-frame` 注释标明"只剩出片腿 + 静态图用" |
+| T5 门禁 | `check-dhampir-wiring.mjs` | 动图探针 + **顺序探针** |
+| — 预热收窄 | `PolishPreview.vue` | `callPrewarmStickers` 不再把动图交上去（白烧 CPU） |
+| — 读数分栏 | `PolishPreview.vue` | 工具条把"引擎解码 / 取帧"分开念 |
+
+### 关键实现点
+
+1. **`pkgNs` 提到模块作用域**（`dhampirPkgNs`）：底座的 `loadEngine()` 返回的是
+   `new Engine(mod)` **包装对象**，那两条 v6 导出**不在它身上**（底座 `web/engine.js` 还没包）。
+   所以只能拿模块命名空间直调 —— ESM 缓存保证与 `loadEngine` 内部同一份，不重复下载。
+2. **`open → attach → loadAnimations`**：见 §1.3b（本轮实测才发现，已加门禁钉子）。
+3. **静态图仍走老路**：底座的动图这条路**只收动图**（单帧图明确报 `NotAnimation`），
+   所以帧循环里 `if (st.animLoaded) continue` 只跳过动图，静态图照旧逐帧交位图。
+4. **动图绝不调 `setSourceBitmap`**：底座把动图缓存排在 `texture_for` 最前，
+   宿主再交位图就是两边抢 —— 症状是贴纸**永远钉在宿主给的那一帧**。
+
+### 验证
+
+- `node scripts/check-dhampir-wiring.mjs` —— **84 项全绿**（含跨仓版本 6 == 6）。
+- 7 个 `webui/scripts/check-*.mjs` + `check-font-inputs` + `check-vtrim-translator`
+  + 两条模块门禁 —— 全绿。
+- `npm --prefix webui run build` —— 通过，`dist` 已重建。
+- **直打底座 wasm 量出调用顺序契约**（node + 真 GIF 非问号.gif，2.6MB）—— 见 §1.3b。
+
+### 未做（诚实的边界）
+
+- **浏览器真素材验证**：本机没有 `clip-18` 那批素材（`media/` 是空的），
+  只用手头的 `问号.gif` 验到了"load 契约与顺序"这一层。
+  真正的"动图在预览里动起来"需要在有素材的机器上开真浏览器跑一遍。
+- T3 只做了"存下来"，还没把冲突（解码表 vs 工程 JSON）报成 warning。
+- 显存预算问题（§1.4）按用户要求**本轮不处理**。
