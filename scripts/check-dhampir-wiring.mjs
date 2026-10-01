@@ -74,6 +74,30 @@ function check(ok, label, detail) {
   for (const key of ['shadow_color', 'shadow_dx_px', 'shadow_dy_px', 'shadow_blur_ratio']) {
     check(doc.includes(key), '底座契约文档写了 ' + key, HOST_API_DOC);
   }
+  // ⚠️ 版本断言必须问**模块命名空间**，不能问 `loadEngine` 的返回值：底座那个函数返回的是
+  // `new Engine(mod)` **包装对象**，`dhampir_host_api_version` 不在它身上。
+  // 2026-10-01 我写成 `dhampirEngine.dhampir_host_api_version()` ⇒ 永远报"没有这个导出"，
+  // 预览被**我们自己的断言**挡掉（用户只看到「当前是近似预览」）—— 静态判据抓不住这类"问错对象"，
+  // 所以在这里钉两条：**不许**问包装对象、**必须**自己 import pkg 拿命名空间。
+  // ⚠️ 判据必须走**去注释后的源码**：上面那段解释里就写着反面例子
+  // （`dhampirEngine.dhampir_host_api_version()`），裸匹配会把注释自己顶翻。
+  // ⚠️ 反过来，"必须自己 import"那条要测**原文** —— 去注释会把 `/* @vite-ignore */` 一起吃掉，
+  // 于是正则永远匹配不上（第一版就是这么红的 ✗）。
+  const vueCode = vue
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1'))
+    .join('\n');
+  check(
+    !/dhampirEngine\.dhampir_host_api_version/.test(vueCode),
+    '版本断言不许问 loadEngine 的返回值（那是 Engine 包装对象，没有这个导出）',
+    PREVIEW_VUE,
+  );
+  check(
+    /await import\(\/\* @vite-ignore \*\/ PKG_URL\)/.test(vue),
+    '版本断言要自己 `await import(PKG_URL)` 拿模块命名空间（ESM 缓存 ⇒ 不会重复下载）',
+    PREVIEW_VUE,
+  );
 }
 
 const routesSrc = readFileSync(ROUTES, 'utf8');
