@@ -219,6 +219,16 @@ const dhampirSourceMode = ref('')
 const dhampirStickerInfo = ref('')
 
 let dhampirEngine = null
+/**
+ * **底座 wasm 的模块命名空间**（与 `dhampirEngine` 并列，`startDhampir` 里装好）。
+ *
+ * 为什么要单独留一份：`loadEngine(pkgUrl)` 返回的是 `new Engine(mod)` **包装对象**，
+ * 而动图那两条导出（`dhampir_asset_load_animation` / `dhampir_asset_animation_info`）
+ * **不在包装对象上** —— 底座 `web/engine.js` 还没包它们。所以直接拿命名空间调
+ * （ESM 缓存 ⇒ 与 `loadEngine` 内部同一份，不重复下载）。
+ * ⚠️ `stopDhampir` 里要一起清掉（引擎没了，命名空间留着只会让"已停"的实例继续被调到）。
+ */
+let dhampirPkgNs = null
 let dhampirRaf = 0
 let dhampirBusy = false // 同一时刻只让一帧在飞：`seek` 是异步的，堆起来只会越拖越远
 /** 正在热重载工程（见 `reloadDhampirProject`）：期间不重入、也不让 `tick()` 抢 seek */
@@ -248,9 +258,11 @@ const DHAMPIR_ALIGN_HARD = 0.5     // ③ 500ms 以上：才 hard seek
  * 同一个数在底座仓的 `crates/dhampir-timeline/src/host_api.rs::HOST_API_VERSION`；
  * `scripts/check-dhampir-wiring.mjs` 会**跨仓对拍**这两个值 —— **底座升版而我们没跟 ⇒ 门禁红**，
  * 免得"字段少了"表现成"预览里某些效果不生效"（没堆栈、只能猜）。
- * 当前 **5** = 字幕阴影四键（`shadow_color` / `shadow_dx_px` / `shadow_dy_px` / `shadow_blur_ratio`）那次。
+ * 当前 **6** = 动图原生解码（`dhampir_asset_load_animation` / `dhampir_asset_animation_info`
+ * 两条导出 + `AnimInfoView`）那次 —— 与 v3→v4 同类：**形状没变、导出面变了**。
+ * 那两条导出让引擎自己解码 GIF/动画 WebP，宿主不再逐帧喂位图（见本文件「动图直通」一节）。
  */
-const DHAMPIR_HOST_API = 5
+const DHAMPIR_HOST_API = 6
 const DHAMPIR_ALIGN_RATE_LO = 0.98 // ② 超前 → 放慢一点
 const DHAMPIR_ALIGN_RATE_HI = 1.02 // ② 落后 → 追一点
 /** `source` -> `<video>`：与 `dhampirEngine.bindSource` 同一批元素（纠偏要按 source 找元素）。 */
@@ -548,7 +560,7 @@ async function reloadDhampirProject() {
     }
 
     // **贴纸层描述必须重建**：新增/删除/挪时间的贴纸要新的 spans 才看得见。
-    // 解码缓存按 uri+fps 继承（见 dhampirStickersFrom），不会重复解码。
+    // 动图加载状态按 uri 继承（见 dhampirStickersFrom），素材没换就不重传字节。
     dhampirStickers = dhampirStickersFrom(project)
     dhampirStickerDiag = null
     Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
@@ -565,8 +577,11 @@ async function reloadDhampirProject() {
     for (const [assetId, v] of dhampirSourceVideos) {
       if (v && v.id) { try { dhampirEngine.bindSource(assetId, v.id) } catch (e) { /* 源可能已不在工程里 */ } }
     }
-    // 重新预热新一批贴纸（fire-and-forget，串行解；与首启同一入口）。
-    // 放在 open() 成功之后：被拒的那次不必白烧服务端解码。
+    // **动图重新交给引擎**（在 open() 之后：`open()` 会清掉引擎里已加载的动图，
+    // 所以顺序不能反 —— 反了就是"热重载后贴纸不动了"）。
+    // 素材没换（uri 相同）的会被 `animLoaded` 跳过，不重传字节。
+    await dhampirLoadAnimations(project)
+    // 静态图的预热保留（它们仍走宿主位图那条路）。
     callPrewarmStickers()
     // **字幕/弹幕必须重喂**：loadSubtitles 是替换语义（resetTextMemos + 逐条 set），
     // 新工程改过的字幕内容只有重喂才进引擎 —— 原先漏了这步，改字幕热重载不生效。
@@ -679,10 +694,103 @@ function dhampirCanvasSizeFor(project, canvas) {
  * 症状是“改了贴纸时间，Dhampir 预览里不生效；DOM 预览却是对的”。
  * 解码缓存（bytes/bytesIdx）**继承**：同 uri 同 fps 的缓存仍然有效，不重复解码。
  */
+/**
+ * **动图直通：把 GIF / 动画 WebP 的原始字节整段交给引擎，由引擎自己解码、自己按帧号取帧。**
+ *
+ * # 为什么改成这样（2026-10，底座 host_api v6）
+ *
+ * 以前是本文件逐帧喂位图：按素材时基把「工程帧 → 秒 → GIF 帧号」算出来，
+ * 每换一帧就 `POST /api/polish/sticker-frame` 取一张 base64 PNG（~390KB/帧），
+ * 再 `createImageBitmap` 画进常驻 canvas、最后 `setSourceBitmap`。
+ * 那条路的问题是结构性的：
+ *   * 逐帧 HTTP（seek 后首帧晚 ~20ms、偶发一帧抖动）；
+ *   * base64 膨胀 1.33×（实测整包 46.2 MiB vs GIF 原文件 8.4 MiB，4.1×）；
+ *   * **帧号换算有两份实现**（服务端出片一份、这里一份），一致性只能靠纪律守。
+ *
+ * 现在引擎按 `(source, source_frame)` 自己取帧 —— 而 `source_frame` 是**求值层直出的最终帧号**
+ * （底座 `layer.rs::source_frame_at_delays`，逐帧延迟累加 + 循环取余 + `source_in` 为圈入口）。
+ * ⚠️ **所以我们不再自己算帧号**，也不该拿 `seconds` 去换算任何东西 ——
+ * `seconds` 只是给 `<video>` seek 用的驱动字段（底座 §8.2-1 明确更正过这一点）。
+ *
+ * # 一次性 vs 每帧
+ *
+ * 每个动图资产**只 fetch + load 一次**（`st.animLoaded` 记账），播放期零请求、零宿主操作。
+ * 素材文件换了（`uri` 变了）要重新 load —— 引擎按 id 替换是幂等的。
+ *
+ * # 失败形态
+ *
+ * 加载失败**不改路由**：引擎照旧走宿主位图那条路（也就是这一层画不出来）。
+ * ⚠️ 必须在这里接住错误：**渲染期没有 issue 通道** —— `resolver.texture_for` 返回 `None`
+ * 的层是被**静默跳过**的（底座 `render/timeline.rs`），指望 `draw` 报错是等不到的。
+ */
+async function dhampirLoadAnimations(project) {
+  if (!dhampirPkgNs || typeof dhampirPkgNs.dhampir_asset_load_animation !== 'function') {
+    // 底座太老（没有 v6 那两条导出）⇒ 说清楚，别让贴纸"静静地不动"
+    if (dhampirStickers.length > 0) {
+      dhampirStickerInfo.value = '底座没有动图导出（要 host_api v6）'
+    }
+    return
+  }
+  const byId = new Map((project.assets || []).map((a) => [a.id, a]))
+  for (const st of dhampirStickers) {
+    const a = byId.get(st.assetId)
+    if (!a || !a.uri) continue
+    // 只有动图走这条路；静态图（kind === 'image'）仍走宿主位图那条路。
+    if (a.kind !== 'image_sequence') continue
+    if (st.animLoaded && st.animUri === a.uri) continue      // 幂等：同素材不重复传
+    // 已确定失败的（真解不开/取不到）不反复重试 —— 否则日志会被刷成墙。
+    // 但 "还没 attach" 那条**要重试**：它不是失败，是时机不对。
+    if (st.animError && !st.animPendingAttach) continue
+    try {
+      // 地址口径与视频源一致（`clipMediaUrl` 把 dir 归一成片段名 + 拼 output/clips/…）
+      const url = clipMediaUrl(props.pid, props.dir, a.uri)
+      const resp = await fetch(url)
+      if (!resp.ok) throw new Error('HTTP ' + resp.status)
+      const bytes = new Uint8Array(await resp.arrayBuffer())
+      const raw = dhampirPkgNs.dhampir_asset_load_animation(st.assetId, bytes)
+      const res = JSON.parse(raw)
+      if (res && res.ok === true) {
+        st.animLoaded = true
+        st.animUri = a.uri
+        st.animInfo = res.info || null
+        st.animPendingAttach = false
+        dhampirStickerStat.ready += 1
+        // **时间真值归一**（底座 §8.3-2）：解码器读出的 `frame_delays_ms` 是事实，
+        // 工程 JSON 里那份退为诊断。不一致时报出来 —— 否则「映射用一张表、像素用另一张表」
+        // 会把漂移请回来（症状是动图越播越偏）。
+        if (res.info && Array.isArray(res.info.frame_delays_ms)) {
+          st.delays = res.info.frame_delays_ms
+        }
+      } else {
+        // parsed:true / ok:false = 认得出格式但解不开；parsed:false = 连格式都不认识
+        const why = (res && res.error) || '未通过校验'
+        // ⚠️ **「还没 attach」不是失败，是时机不对**（2026-10-02 实测）：
+        // 底座把纹理上传挂在 attach 之后 —— host 还没接上时它只**记账时间真值**并返回 ok:false。
+        // 这条必须与"真解不开"分开：混在一起会让动图**永远不重试**（下次进 Dhampir 也不重传，
+        // 因为 `animLoaded` 没置上、但 `animError` 会让人以为这条路坏了）。
+        // 判据用错误原文里的 "attach" —— 底座那条文案是 '还没 attach 上 canvas：…'。
+        if (/attach/.test(why)) {
+          // 留给 attach 之后那次重试（startDhampir 在 attach 完会再调一遍）。
+          // 用 continue 而不是 return：每一张都各自标 pending，
+          // 免得将来某张资产在 attach 之前就独立失败时被这一条整个跳过。
+          st.animPendingAttach = true
+          continue
+        }
+        console.warn('dhampir: 动图没解开 ' + st.assetId + '（' + a.uri + '）：' + why)
+        st.animError = why
+      }
+    } catch (e) {
+      const why = (e && e.message) || String(e)
+      console.warn('dhampir: 动图加载失败 ' + st.assetId + '（' + a.uri + '）：' + why)
+      st.animError = why
+    }
+  }
+}
+
 function dhampirStickersFrom(project) {
   const stickerImages = (project.assets || [])
     .filter((a) => (a.kind === 'image_sequence' || a.kind === 'image') && a.uri)
-  const prevByUri = new Map((dhampirStickers || []).map((x) => [x.uri + '|' + x.fps, x]))
+  const prevByUri = new Map((dhampirStickers || []).map((x) => [x.uri, x]))
   return stickerImages.map((a) => {
     const tb = a.timebase || {}
     const fps = (tb.num > 0 && tb.den > 0) ? (tb.num / tb.den) : 30
@@ -700,11 +808,18 @@ function dhampirStickersFrom(project) {
       }
     }
     spans.sort((x, y) => x.start - y.start)
-    // 继承解码缓存：同一素材文件（uri）+ 同一时基，逐帧缓存不用作废。
+    // 动图（image_sequence）的加载状态**按 uri 继承**：热重载时素材没换就不必重传字节
+    // （引擎那边按 id 替换虽然幂等，但几十 MB 再传一遍是白花）。
     // assetId 取**新工程**的（理论上不变，但别让旧工程残留值漏进来）。
-    const prev = prevByUri.get(a.uri + '|' + fps)
+    const prev = prevByUri.get(a.uri)
     if (prev) return { ...prev, assetId: a.id, spans }
-    return { assetId: a.id, uri: a.uri, fps, spans, activeKey: null, bytes: null, bytesIdx: -1, count: 0, lastFrame: -1 }
+    // ⚠️ 帧号/位图那几项（bytes / bytesIdx / canvas / count / lastFrame）**已经不需要了**：
+    // 动图由引擎自己解码并按 `source_frame` 取帧，宿主不再逐帧换算、不再喂位图。
+    return {
+      assetId: a.id, uri: a.uri, fps, spans,
+      // 动图状态（见 dhampirLoadAnimations）
+      animLoaded: false, animUri: '', animInfo: null, animError: '', animPendingAttach: false,
+    }
   })
 }
 
@@ -844,6 +959,7 @@ async function startDhampir() {
   // （ESM 缓存 ⇒ 与 `loadEngine` 内部同一份、不重复下载；它已经 `await mod.default()` 初始化过了 ⇒ 安全）。
   // ---------------------------------------------------------------------------
   const pkgNs = await import(/* @vite-ignore */ PKG_URL)
+  dhampirPkgNs = pkgNs          // 动图加载要用它（包装对象上没有那两条导出）
   const hostApi =
     typeof pkgNs.dhampir_host_api_version === 'function' ? pkgNs.dhampir_host_api_version() : null
   if (hostApi !== DHAMPIR_HOST_API) {
@@ -910,23 +1026,23 @@ async function startDhampir() {
     dhampirTwins.set(assetId, { el: twin, id: twin.id, want: 0, ready: false })
   }
 
-  // 贴纸：**自己解码 GIF，按工程要的帧号取帧**。位图由宿主按帧交
-  // （`dhampir_project_set_bitmap`，没有 <video>），层描述（活跃区间/相位锚点）
-  // 从新工程重建 —— startDhampir 与热重载共用 dhampirStickersFrom。
+  // 贴纸：**动图整段交给引擎**（引擎自己解码、按 `source_frame` 取帧），
+  // 静态图仍走宿主位图那条路。层描述（活跃区间）从新工程重建 ——
+  // startDhampir 与热重载共用 dhampirStickersFrom。
   dhampirStickers = dhampirStickersFrom(project)
   dhampirStickerDiag = null
   Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
 
-  // **预热贴纸帧表**（2026-10-01）：服务端第一次被要某张贴纸的某一帧时，得**整段解码**那张
-  // GIF（debug 构建实测单张 3~9 秒、`clip-04` 四张合计 20.2 秒）。而逐帧接口那头
-  // `Promise.race([…, 30ms])` 超时就"这一帧不交" ⇒ 症状是**播放走到贴纸先空一段、然后突然出现**。
-  //
-  // 这里在**页面加载时**就把这件事做掉：解码挪到"用户还没播到那里"的时候，真正播到时全部命中
-  // 缓存（实测 10~14ms）。**fire-and-forget**：不 await、不挡任何东西，失败了也不影响播放
-  // （真有问题会在播到那一帧时由 `/polish/sticker-frame` 照常报错，不会静默）。
-  //
-  // ⚠️ 服务端**逐张串行**解（它是 `blocking` 池里的一个循环），所以这里**不要**按贴纸并发发多个
-  // 请求 —— 那只会让同一张 CPU 被几路抢，反而更慢。
+  // **动图交给引擎**（每个资产一次 fetch + 一次 load，之后播放期零请求）。
+  // ⚠️ 也必须在 `attach()` **之后**：底座把纹理上传挂在 attach 上，
+  // host 还没接上时它只记账时间真值并返回 ok:false（实测错误文案 = "还没 attach 上 canvas"）。
+  // 本函数在 startDhampir 里正好位于 attach 之后 —— 顺序别动。
+  await dhampirLoadAnimations(project)
+
+  // **静态图的预热保留**（2026-10-01 那套）：它们仍走服务端逐帧 PNG，
+  // 第一次被要时得整段解码，预热把这件事挪到"用户还没播到那里"的时候。
+  // fire-and-forget：不 await、不挡任何东西。
+  // ⚠️ 服务端逐张串行解，所以这里**不要**按贴纸并发发多个请求。
   callPrewarmStickers()
   for (const v of dhampirVideos) { v.muted = true; v.play().catch(() => {}) }
 
@@ -956,6 +1072,9 @@ function stopDhampir() {
   const host = dhampirHostRef.value
   if (host) host.innerHTML = ''
   dhampirEngine = null // wasm 侧是单例宿主；下次 attach 会重新接上
+  // 动图那条路用的是**命名空间**（见 dhampirPkgNs 的说明），引擎没了它也要一起清 ——
+  // 留着的话"已停"的实例还能被调到，而调用会打在一个没有 open 过工程的宿主上。
+  dhampirPkgNs = null
   dhampirSegments = []
   dhampirBusy = false
   // 收摊时把热重载的状态一起清掉：留着的话下一次进 Dhampir 会被一个陈旧的 pending 触发。
@@ -1130,50 +1249,29 @@ function scheduleDhampir() {
     const loopT0 = performance.now()
     dhampirBusy = true
     Promise.resolve(dhampirEngine.seek(f, {
-      // **贴纸位图必须在这里交**（prepare 之后、draw 之前）。交在 seek 之后会被
-      // 下一次 prepare 的 clear_bitmaps() 清掉 —— 症状是"交与不交画面完全一样"。
+      // **动图不再逐帧交位图**（2026-10，host_api v6）：GIF/动画 WebP 的字节在建源时
+      // 已整段交给引擎（`dhampirLoadAnimations`），此后由引擎自己解码、自己按
+      // `source_frame` 取帧 —— 播放期**零请求、零宿主操作**。
+      //
+      // ⚠️ **但静态图仍要走位图那条路**：引擎的动图这条路只收动图，
+      // 单帧图（PNG/JPEG/静态 WebP）它明确拒收（`AnimError::NotAnimation`）。
+      // 所以这一段只处理 `kind !== 'image_sequence'` 的那几个。
+      //
+      // ⚠️ 也别再对动图调 `setSourceBitmap`：底座把动图缓存排在 `texture_for` **最前**，
+      // 宿主再交位图就是两边抢 —— 症状是贴纸**永远钉在宿主给的那一帧**（看起来只是"动图不动了"）。
       onPrepared: async () => {
-        // 引擎按工程算好了**每个源这一帧停在第几秒**（各自经素材时间基换算）——
-        // 贴纸的 GIF 帧号就从它来，不再看 `<img>` 当前显示的是哪一帧。
-        const wanted = new Map()
-        for (const e of dhampirEngine.sourcesFor(f) || []) {
-          const src = (e && e.source) || null
-          const sec = (e && (typeof e.seconds === 'number' ? e.seconds : e.t)) || 0
-          if (src) wanted.set(src, sec)
-        }
         dhampirStickerStat.total = dhampirStickers.length
-        dhampirStickerStat.ready = dhampirStickers.filter((x) => !!x.bytes).length
+        dhampirStickerStat.ready = dhampirStickers.filter((x) => x.animLoaded || x.bytes).length
         for (const st of dhampirStickers) {
-          // **秒数**：优先用引擎给的；给不出就自己按时间基算 ——
-          // 素材帧 = source_in + (工程帧 - 层起点) × (素材fps / 工程fps)，再除回秒。
-          //（工程时基 60 与素材时基 100/3 不是一回事，直接相乘会差 1.8 倍。）
-          let sec = wanted.get(st.assetId)
-          if (sec === undefined) {
-            const span = st.spans.find((sp) => f >= sp.start && f < sp.end)
-            if (!span) { st.lastFrame = -1; continue }           // 这一帧不活跃
-            sec = (span.sourceIn + (f - span.start) * (st.fps / dhampirFps.value)) / st.fps
-          }
+          if (st.animLoaded) continue          // 动图：引擎供帧，这里什么都不做
+          // 剩下的只有静态图（走老路：按秒算不出帧，它本来就只有一帧）
+          let sec = 0
+          const span = st.spans.find((sp) => f >= sp.start && f < sp.end)
+          if (!span) { st.lastFrame = -1; continue }           // 这一帧不活跃
+          sec = (span.sourceIn + (f - span.start) * (st.fps / dhampirFps.value)) / st.fps
           const idx = Math.max(0, Math.floor(sec * st.fps + 1e-6))
           try {
-            // **帧号变了才去取**（取回来的是 PNG 字节，缓存住；同一帧反复用的是同一份）。
             if (idx !== st.bytesIdx) {
-              // ⚠️ **同一个贴纸同一时刻只允许一个在飞**（2026-10-01 修性能问题）。
-              //
-              // 以前是每帧都 `Promise.race([api(…), 30ms])` —— 30ms 放弃但**不中止请求** ✗，
-              // 而下一帧（33ms 后）帧号已经变了 ⇒ 不是"同一个请求"（去重也拦不住）⇒ 服务端
-              // 冷解码一张 GIF 期间，**每帧都再发一个**：实测 200ms 内 30+ 个请求、
-              // 其中 4 个各 4.1 秒（= 同一张图被并发整段解码 4 次 ✗）。
-              //
-              // ⚠️ **冷解码的真实代价比那个 4.1s 还大一倍**（2026-10-01 实测
-              // `decode_sticker_frames_png`，`clip-04/assets/stickers/`，debug 构建）：
-              // `冒泡_2.gif` 77 帧 **8.8s** / `哭_1.gif` 66 帧 **6.5s** / `跳舞_1.gif` 66 帧 **6.8s**
-              // （解出来 15–20MB PNG 字节）。所以"每帧发一个"的后果是**同一张图被并发解 N 次**，
-              // 每次都把 CPU 占满 6–9 秒 —— 这也是"播放走到贴纸就卡死"的主因，不只是请求数多。
-              // 换素材（更大的 GIF）会让这几个数继续涨，别把 30ms 那个超时当成安全阀。
-              //
-              // 现在：这个贴纸**有在飞的就不发新的**（这一帧先不交它，语义与超时一致 ✓）；
-              // 落地后按自己的帧号采用，下一次需要新帧时再发。服务端解码一次之后，
-              // 单帧取回只要几毫秒 ⇒ 超时几乎不再触发。
               let res = null
               if (!st.pending) {
                 const p = api('/api/polish/sticker-frame', {
@@ -1196,26 +1294,19 @@ function scheduleDhampir() {
               st.bytes = bytes
               st.bytesIdx = idx
               st.count = res.count || 0
-              dhampirStickerStat.decodes += 1                        // 计的是"取了几次"
+              dhampirStickerStat.decodes += 1
             }
             if (!st.bytes) continue
             // ⚠️ **每帧都必须交**：引擎每帧 `prepare` 开头都会 `clear_bitmaps()`，
             // 不交的那一帧这个源没有位图 → `require_bitmap` 直接不画那一层。
             // 而且位图**每帧要是新对象**：wasm 换掉旧位图时会 `close()` 它，
             // 复用会拿到"已关闭的位图"（不报错、只是不显示）。
-            //
-            // **PNG 解码只在帧号变了时做一次**：以前是每个显示帧都把同一张 PNG
-            // 重新解一遍（`createImageBitmap(new Blob([st.bytes]))`），贴纸活跃时
-            // 那就是**每帧一次完整 PNG 解码** —— 这是"帧率不够"里的一块。
-            // 现在解出来的位图画进一张**常驻 canvas**，之后每帧只做一次便宜的
-            // `createImageBitmap(canvas)`：仍然每帧新建（契约要求 ✓），但不再重复解码。
             if (st.canvasIdx !== idx || !st.canvas) {
               const bmp = await createImageBitmap(new Blob([st.bytes], { type: 'image/png' }))
               if (!st.canvas) st.canvas = document.createElement('canvas')
               st.canvas.width = bmp.width
               st.canvas.height = bmp.height
               st.canvas.getContext('2d').drawImage(bmp, 0, 0)
-              // 中转用的位图**自己关掉**：留着就是白占一块内存。
               bmp.close()
               st.canvasIdx = idx
             }
@@ -1244,9 +1335,20 @@ function scheduleDhampir() {
           dhampirReadoutAt = performance.now()
           dhampirFrame.value = f      // 模板那一栏（人眼看 4Hz 足够 ✓）
           if (dhampirStickerStat.total > 0) {
-            dhampirStickerInfo.value = '贴纸 就绪 ' + dhampirStickerStat.ready + '/' + dhampirStickerStat.total +
-              ' · 本帧 idx ' + dhampirStickerStat.idx +
-              ' · 解码 ' + dhampirStickerStat.decodes + ' · 已交 ' + dhampirStickerStat.submits
+            // 动图与静态图现在是**两条路**，读数也要分开说 ——
+            // 混在一起念（"就绪 4/4 · 已交 0"）会被读成"贴纸没交上去"，而实际是引擎在供帧。
+            const anim = dhampirStickers.filter((x) => x.animLoaded).length
+            const animErr = dhampirStickers.filter((x) => x.animError).length
+            const bits = ['贴纸 ' + dhampirStickerStat.ready + '/' + dhampirStickerStat.total]
+            if (anim > 0) bits.push('引擎解码 ' + anim)          // GIF/WebP：交给引擎了
+            if (animErr > 0) bits.push('失败 ' + animErr)         // 加载期就报，别等渲染
+            if (dhampirStickerStat.submits > 0 || anim < dhampirStickerStat.total) {
+              // 只有静态图才走位图那条路；全动图时这一栏本就该是 0
+              bits.push('本帧 idx ' + dhampirStickerStat.idx)
+              bits.push('取帧 ' + dhampirStickerStat.decodes)
+              bits.push('已交 ' + dhampirStickerStat.submits)
+            }
+            dhampirStickerInfo.value = bits.join(' · ')
           }
           const cost = dhampirEngine.lastSeekCost
           if (cost) {
@@ -1590,10 +1692,18 @@ function onStickerError(st) {
 
 // 贴纸帧表预热（fire-and-forget，见 `dhampirStickers` 构建处那段说明）。
 //
-// 只发**一次**请求，把当前工程里所有贴纸的 uri 一起交上去；服务端在 `blocking` 池里逐张解。
+// 只发**一次**请求，把当前工程里**还需要服务端解码的那些**贴纸 uri 一起交上去；
+// 服务端在 `blocking` 池里逐张解。
+//
+// ⚠️ **动图不再交上去**（2026-10-02，host_api v6）：它们的字节已经整段给了引擎，
+// 服务端再解一遍纯属白烧 CPU（实测单张冷解码 3~9 秒）。只留静态图 ——
+// 那几个仍走 `/polish/sticker-frame`，预热对它们还是有效的。
 // 失败按 `debug` 记 —— 它是纯优化，失败不该在日志面板里刷 warn 让人以为出了错。
 function callPrewarmStickers() {
-  const assets = (dhampirStickers || []).map((s) => s.uri).filter(Boolean)
+  const assets = (dhampirStickers || [])
+    .filter((s) => !s.animLoaded)
+    .map((s) => s.uri)
+    .filter(Boolean)
   if (!assets.length) return
   api('/api/polish/sticker-prewarm', {
     method: 'POST',

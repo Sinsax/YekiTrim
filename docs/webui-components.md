@@ -279,6 +279,57 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
 * 实测证据与完整推导在 `docs/plan/dhampir-parity-register.md`「2026-10-01 追加」一节
   （A/B 对照图 `.workbuddy/font-compare/bold-ab.png`：同一帧，给不给粗体文件）。
 
+
+### 2.4 动图贴纸：由底座自己解码（host_api v6，2026-10-02）
+
+GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给引擎（`dhampirLoadAnimations()`），
+之后波放期**零请求、零宿主操作**。改造前是每换一帧就 `POST /polish/sticker-frame`
+取一张 base64 PNG（~390KB/帧）—— 整包实测 **46.2 MiB → 8.4 MiB**（原文件 8.4 MiB，4.1× 膨胀消失）。
+
+#### 四条硬规矩
+
+1. **顺序必须 `open()` → `attach()` → load** —— 底座把**纹理上传挂在 `attach` 上**：
+   host 还没接上时，它**只记账时间真值**、不上传纹理，并返回
+   `{parsed:true, ok:false, error:"还没 attach 上 canvas：动图现在只能先记账"}`。
+   也就是说**字节白传了、贴纸一张都不出**。⚠️ 它是个**正常的** `ok:false` 返回体，
+   没异常、没堆栈 —— 两端都不报错，症状只是"动图不动"，与"格式不支持"长得一模一样。
+   ⚠ `info`（`frame_count` / `frame_delays_ms` / …）**只在 `ok:true` 时给出**，所以 attach 之前也拿不到延迟表。
+   ⚠️ `open()` 会 `clear_animations()`（换工程 = 换一批素材），所以 load 也不能排在 `open` 之前。
+   钉子：`scripts/check-dhampir-wiring.mjs` 断言 `startDhampir` 里三者的**下标顺序**。
+2. **动图绝不能再调 `setSourceBitmap`** —— 底座把动图缓存排在 `texture_for` **最前**，
+   宿主再交位图就是两边抢 —— 症状是贴纸**永远钉在宿主给的那一帧**。
+   帧循环里的判据就是 `if (st.animLoaded) continue`。
+3. **静态图仍走老路**（宿主逐帧位图 + `sticker-prewarm` 预热）：底座的动图这条路
+   **只收动图**，单帧图它明确拒收（`AnimError::NotAnimation`）。所以两条路并存，**不能互相替代**。
+4. **那两条导出不在引擎包装对象上** —— `loadEngine()` 返回的是 `new Engine(mod)`，
+   底座 `web/engine.js` 还没包它们。要拿**模块命名空间**（本仓存为 `dhampirPkgNs`，`stopDhampir` 里清）：
+   ESM 缓存保证与 `loadEngine` 内部同一份，不重复下载。
+
+#### 时间真值归一
+
+**解码器读出的 `frame_delays_ms` 是事实**（存进 `st.delays`），工程 JSON 里那份退为诊断。
+底座实测：clip-18 四张动图全是均匀 30 ms，**与 V-Trim 探测的那份逐值相同**。
+⚠ 不一致时必须报出来——否则「映射用一张表、像素用另一张表」会把漂移请回来
+（症状是动图越播越偏）。**当前只做了"存下来"，冲突警告待补。**
+
+⚠ **不要自己算帧号**：`source_frame` 是**求值层直出的最终值**（`layer.rs::source_frame_at_delays`，
+逐帧延迟累加 + 循环取余 + `source_in` 为圈入口）。`seconds` 只是给 `<video>` seek 用的驱动字段，
+**不能拿它去换算任何东西**（底座 §8.2-1 明确更正过提案里的"从秒映射"写法）。
+
+#### 失败形态
+
+加载失败**不改路由**：没解开的资产照旧走宿主位图那条路（也就是"这一层画不出来"），
+而不是把工程搞坏。⚠ 必须在**加载期**就接住：渲染期没有 issue 通道 ——
+`resolver.texture_for` 返回 `None` 的层是被**静默跳过**的（底座 `render/timeline.rs`），指望 `draw` 报错是等不到的。
+
+⚠ **"还没 attach" 不是失败，是时机不对**：必须与"真解不开"分开（判据 = 错误原文里的 `attach`），
+混在一起会让动图**永远不重试**。本仓做法：标 `st.animPendingAttach` 并 `continue`，attach 之后那次调用会重试。
+
+#### 参考
+
+- 计划与执行记录：`docs/plan/dhampir-gif-landing-plan.md`（§1.3b 调用顺序契约 / §7 执行记录）
+- 底座方案与实测：`../Dhampir/plan/dhampir-gif-native-decode-proposal.md`（§8 复核 / §10 执行）
+
 ---
 
 ## ③ 封面设计器（`CoverDesigner.vue`）
