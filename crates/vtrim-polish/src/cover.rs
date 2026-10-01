@@ -31,6 +31,134 @@ fn cover_shadow_css(cc: &crate::project::CoverConfig) -> String {
     }
 }
 
+/// 出片/截图模式追加的静态规则（模板占位 `__EXPORT_CSS__`）。///
+/// **为什么必须在 CSS 里、而不是靠页面 JS 加那个 `.export` 类**：截图这条路径（headless Chrome、
+/// 以及将来的 Takumi）**不跑时间** —— `animation: fadeUp … both` 在"动画时间 0"下会把元素钉在起始帧
+/// （`opacity:0`），静态渲染出来的标题**整块不可见**（实测：真封面 38.44/255，肉眼标题消失）。
+///
+/// 三条**各自独立**的规则：有的静态渲染器遇到不可解析的值会**丢掉整条声明块**
+/// （Takumi 就是），所以不要把三条挤在一个块里。
+///
+/// 对 headless Chrome 是**像素等价**的：动画跑完的终态就是 `opacity:1 / translateY(0)`，
+/// 与这三条一致（`transform:none` ≡ `translateY(0)`）。零回归 SHA 实测不变。
+const COVER_EXPORT_CSS: &str = "#title{animation:none}#title{opacity:1}#title{transform:none}";
+
+/// 封面渲染通道名（`VTEDIT_COVER_RENDERER`）——静态渲染那条。
+const RENDERER_TAKUMI: &str = "takumi";
+
+/// 读封面渲染通道：空 / `chrome` = headless Chrome（**默认、兜底**）；`takumi` = 静态渲染（Takumi）。
+/// ⚠️ 认不出的值**当场报错**，不静默回退 —— 与 `render/dhampir.rs` 同一条口径（静默回退会让人
+/// 以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来）。
+fn resolve_cover_renderer(explicit: Option<&str>) -> anyhow::Result<String> {
+    // 优先级：**显式参数（CLI/WebUI）> 环境变量 > chrome**。认不出的值一律当场报错 ——
+    // 静默回退会让人以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来。
+    // ⚠️ 取值口径只此一份：服务端与 CLI 都不抄第二份（同 `--renderer` 默认值那条纪律）。
+    if let Some(v) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
+        return normalize_cover_renderer(v, "--renderer");
+    }
+    let raw = std::env::var("VTEDIT_COVER_RENDERER").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok("chrome".to_string());
+    }
+    normalize_cover_renderer(raw, "VTEDIT_COVER_RENDERER")
+}
+
+fn normalize_cover_renderer(raw: &str, src: &str) -> anyhow::Result<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "chrome" => Ok("chrome".to_string()),
+        RENDERER_TAKUMI => Ok(RENDERER_TAKUMI.to_string()),
+        other => anyhow::bail!("{src} 认不出 `{other}`（只认 chrome / takumi）"),
+    }
+    }
+
+/// **静态封面渲染（Takumi）在本构建 / 本机上能不能用**：`(编了 feature, 字体库字体数, 字体库目录)`。
+///
+/// 给 `/api/health` 的能力位与排查用。判据 = ① 编了 `cover-takumi` feature ② 字体库里至少一个字体
+/// —— Takumi **不读系统字体**，空库会明确报错（不静默出豆腐块）。
+///
+/// ⚠️ 字体库的过滤判据与紧邻的 `cover_font_files()` **同源**（都按 `vtrim_core::fonts::is_font_file_name`），
+/// 两处挨着、互相指着；改一处要改另一处。
+pub fn cover_static_capability() -> (bool, usize, std::path::PathBuf) {
+    let dir = vtrim_core::fonts::dir();
+    let n = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    e.path().is_file()
+                        && e.file_name()
+                            .to_str()
+                            .map(vtrim_core::fonts::is_font_file_name)
+                            .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    (cfg!(feature = "cover-takumi"), n, dir)
+}
+
+/// 字体库里的全部字体文件。
+///
+/// 静态渲染**必须显式喂字体**（Takumi 不读系统字体、内置只有拉丁），所以这条路要求字体库里
+/// 至少有一个字体；一个都没有时由 `render/takumi.rs` 明确报错（不静默出豆腐块）。
+#[cfg(feature = "cover-takumi")]
+fn cover_font_files() -> Vec<std::path::PathBuf> {
+    let dir = vtrim_core::fonts::dir();
+    let mut out: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .and_then(|s| s.to_str())
+                            .map(vtrim_core::fonts::is_font_file_name)
+                            .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
+/// 静态渲染（Takumi）出封面：与 Chrome 那条**同一份模板 + 同一条替换链**（只多 `__EXPORT_CSS__`），
+/// 产物同样走 `unique_output_path`（同名加 `_1/_2`）。
+#[cfg(feature = "cover-takumi")]
+fn cover_render_static(
+    project_path: &Path,
+    config: &project::ProjectFile,
+    title_lines: &[String],
+    (cw, ch): (u32, u32),
+) -> anyhow::Result<()> {
+    let html = build_cover_page_static(config, project_path.join(COVER_BG_IMG).is_file(), title_lines);
+    // CSS 由桥那边从同一份 HTML 里抽（`extract_style_blocks` 会先剥 HTML 注释 —— 模板里那句注释
+    // 提到了 `<style>`，不剥就会被当成样式表）。
+    let css = crate::render::takumi::extract_style_blocks(&html);
+    let fonts = cover_font_files();
+    let cover_file = crate::render::unique_output_path(&project_path.join("cover.jpg"));
+    let t = std::time::Instant::now();
+    crate::render::takumi::render_cover_png(&html, &css, project_path, &cover_file, cw, ch, &fonts)?;
+    // 与 Chrome 那条同样的里程碑文本（`api/render.rs` 靠 `Cover saved:` 归类进任务日志）
+    tracing::info!("   ✓ Cover saved: {}", cover_file.display());
+    tracing::info!("   ⏱ 封面 {:.1}s（takumi / {} 个字体）", t.elapsed().as_secs_f64(), fonts.len());
+    Ok(())
+}
+
+/// 没编 `cover-takumi` 时的占位：**明确报错**，别静默换回 chrome。
+#[cfg(not(feature = "cover-takumi"))]
+fn cover_render_static(
+    _project_path: &Path,
+    _config: &project::ProjectFile,
+    _title_lines: &[String],
+    (_cw, _ch): (u32, u32),
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "`VTEDIT_COVER_RENDERER=takumi` 但这个二进制没编 `cover-takumi` feature。\
+         重编：cargo build -p vtrim-cli --features vtrim-polish/cover-takumi"
+    )
+}
+
 /// 封面字体：`[cover] font` 选中的库内字体。
 ///
 /// - `family` 直接进 CSS `__FONT_FAMILY__`（选中字体 + 系统栈兜底）；
@@ -201,6 +329,191 @@ pub fn cover_frame_vars(config: &crate::project::ProjectFile) -> CoverFrameVars 
     }
 }
 
+// ===== 图层栈（`[cover] layers`）=================================================
+//
+// 出片的叠放序**只此一份推导** = [`resolve_cover_stack`] + [`plan_cover_layers`]；
+// 设计器（`webui/src/components/CoverDesigner.vue`）里有一份 JS 镜像，默认序两边必须一致
+// （`node webui/scripts/check-cover-stage.mjs` 钉住）。
+//
+// 老工程没有 `layers` 字段 → 走 [`default_cover_stack`]，它与改造前模板写死的叠放序**逐像素等价**
+// （bg < frame < 暗角 < 渐变 < 每个特效 < 标题），所以存量工程零迁移（判据 = 改前改后成片 SHA-256 相同）。
+
+/// 栈里一层的**类型**。`Filter` 是"一层两块"：暗角 + 渐变永远相邻（设计器与出片都按这个前提走）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverLayerKind {
+    Bg,
+    Frame,
+    Filter,
+    Effect(usize),
+    Title,
+}
+
+/// 解析出来的一层：`id` + 类型 + 可见性（`visible = false` = **在，但不画**）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedCoverLayer {
+    pub id: String,
+    pub kind: CoverLayerKind,
+    pub visible: bool,
+}
+
+/// 图层 id（`[cover] layers` 与设计器共用一套字面量）
+pub const COVER_LAYER_BG: &str = "bg";
+pub const COVER_LAYER_FRAME: &str = "frame";
+pub const COVER_LAYER_FILTER: &str = "filter";
+pub const COVER_LAYER_TITLE: &str = "title";
+/// 特效/表情层的 id 前缀：`fx:<CoverEffect::id>`
+pub const COVER_LAYER_FX_PREFIX: &str = "fx:";
+
+/// 特效在栈里的 id：优先用它自己的 `id`；老数据（没有 id）按数组序合成 `fx:#<i>`
+/// —— 只用来在栈里匹配，**不回写**（老工程照旧零迁移）。
+fn effect_slot_id(i: usize, fx: &crate::project::CoverEffect) -> String {
+    let raw = fx.id.trim();
+    if raw.is_empty() {
+        format!("{COVER_LAYER_FX_PREFIX}#{i}")
+    } else {
+        format!("{COVER_LAYER_FX_PREFIX}{raw}")
+    }
+}
+
+/// 默认栈：**就是改造前模板写死的叠放序**（从下到上）。
+pub fn default_cover_stack(cc: &crate::project::CoverConfig) -> Vec<ResolvedCoverLayer> {
+    let mut out = vec![
+        ResolvedCoverLayer { id: COVER_LAYER_BG.into(), kind: CoverLayerKind::Bg, visible: true },
+        ResolvedCoverLayer { id: COVER_LAYER_FRAME.into(), kind: CoverLayerKind::Frame, visible: true },
+        ResolvedCoverLayer { id: COVER_LAYER_FILTER.into(), kind: CoverLayerKind::Filter, visible: true },
+    ];
+    for (i, fx) in cc.effects.iter().enumerate() {
+        out.push(ResolvedCoverLayer {
+            id: effect_slot_id(i, fx),
+            kind: CoverLayerKind::Effect(i),
+            visible: true,
+        });
+    }
+    out.push(ResolvedCoverLayer { id: COVER_LAYER_TITLE.into(), kind: CoverLayerKind::Title, visible: true });
+    out
+}
+
+/// 配置 → 图层栈（从下到上）。**容错优先**，四条规则都有单测：
+/// ① 没有 `layers`（老工程）→ 默认栈；
+/// ② `layers` 里缺了某层 → 按它在默认栈里的相对位置**补回来**（手改 toml 删一行不会让整层消失）；
+/// ③ 未知 id → 忽略（前向兼容，别报错挡住出片）；同一个 id 出现多次 → 只认第一次；
+/// ④ **没被 `layers` 列出的特效仍然渲染**（按数组序插回默认位置）—— 手改 toml 加一条 `[[cover.effects]]`
+///    忘了同步 `layers`，不该"凭空少一层"；设计器删除特效层时会连 `effects` 那条一起删，所以不会有孤儿。
+pub fn resolve_cover_stack(cc: &crate::project::CoverConfig) -> Vec<ResolvedCoverLayer> {
+    let defaults = default_cover_stack(cc);
+    if cc.layers.is_empty() {
+        return defaults;
+    }
+    let mut out: Vec<ResolvedCoverLayer> = Vec::with_capacity(defaults.len());
+    let mut seen: Vec<String> = Vec::new();
+    for entry in &cc.layers {
+        let id = entry.id.trim();
+        if id.is_empty() || seen.iter().any(|s| s == id) {
+            continue;
+        }
+        let Some(d) = defaults.iter().find(|d| d.id == id) else { continue };
+        seen.push(d.id.clone());
+        out.push(ResolvedCoverLayer { id: d.id.clone(), kind: d.kind, visible: entry.visible });
+    }
+    // 补齐：默认栈里没被列出的层，插在"它前面最近一个已经在栈里的默认项"之后
+    for (di, d) in defaults.iter().enumerate() {
+        if seen.iter().any(|s| s == &d.id) {
+            continue;
+        }
+        let anchor = defaults[..di].iter().rev().find(|p| seen.iter().any(|s| s == &p.id));
+        let pos = match anchor {
+            Some(p) => out.iter().position(|l| &l.id == &p.id).map(|i| i + 1).unwrap_or(out.len()),
+            None => 0,
+        };
+        seen.push(d.id.clone());
+        out.insert(pos, ResolvedCoverLayer { id: d.id.clone(), kind: d.kind, visible: true });
+    }
+    out
+}
+
+/// 是不是"**默认栈 + 全部可见**"：老工程（没有 `layers`）以及没动过图层顺序的工程都走它。
+///
+/// 这种情况下**沿用改造前的渲染形式**（不注入逐层 z-index、特效不套 wrapper），让存量工程的成片与
+/// 改造前**逐像素相同**。为什么必须这么做：实测给固定的五块都写上 z-index 之后，Chrome 会换一条合成
+/// 路径，缩放中的帧层重采样差 ~9/255 —— 肉眼看不出来，但 SHA-256 会变，而"横屏存量逐字节零回归"
+/// 是本仓真出片对拍过的硬判据（见 `crates/vtrim-polish/AGENTS.md`）。
+pub fn is_default_stack(cc: &crate::project::CoverConfig) -> bool {
+    let stack = resolve_cover_stack(cc);
+    let defaults = default_cover_stack(cc);
+    stack.len() == defaults.len()
+        && stack.iter().zip(defaults.iter()).all(|(a, d)| a.id == d.id && a.visible)
+}
+
+/// 栈 → 每块的 `z-index`（整数，越大越靠前）与可见性。**出片只认它**（`cover_layer_css` + `cover_fx_html`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverLayerPlan {
+    pub bg: (u32, bool),
+    pub frame: (u32, bool),
+    pub vignette: (u32, bool),
+    pub overlay: (u32, bool),
+    pub title: (u32, bool),
+    /// 与 `cc.effects` **同序**：`(z, visible)`
+    pub effects: Vec<(u32, bool)>,
+}
+
+pub fn plan_cover_layers(cc: &crate::project::CoverConfig) -> CoverLayerPlan {
+    let stack = resolve_cover_stack(cc);
+    let mut plan = CoverLayerPlan {
+        bg: (0, true),
+        frame: (0, true),
+        vignette: (0, true),
+        overlay: (0, true),
+        title: (0, true),
+        effects: vec![(0, true); cc.effects.len()],
+    };
+    let mut z = 1u32;
+    for layer in &stack {
+        match layer.kind {
+            CoverLayerKind::Bg => { plan.bg = (z, layer.visible); z += 1; }
+            CoverLayerKind::Frame => { plan.frame = (z, layer.visible); z += 1; }
+            // 一层两块：**先暗角后渐变**（与改造前的实际叠放序一致）
+            CoverLayerKind::Filter => {
+                plan.vignette = (z, layer.visible);
+                z += 1;
+                plan.overlay = (z, layer.visible);
+                z += 1;
+            }
+            CoverLayerKind::Effect(i) => {
+                if let Some(slot) = plan.effects.get_mut(i) {
+                    *slot = (z, layer.visible);
+                }
+                z += 1;
+            }
+            CoverLayerKind::Title => { plan.title = (z, layer.visible); z += 1; }
+        }
+    }
+    plan
+}
+
+/// 计划 → 注入模板 `__LAYER_CSS__` 的规则块。
+///
+/// - `legacy = true`（默认栈）：**只把模板里那条 `#fx-extra{z-index:1}` 补回来** —— 改造前它是内联的，
+///   其余五块一律不写 z-index，渲染路径与改造前完全一致（逐字节零回归）。
+/// - `legacy = false`：固定的五块按栈写 z-index，并且**必须**把 `#fx-extra` 退回 `z-index:auto`
+///   （它一有 z-index 就是个 stacking context，所有特效的 z-index 会被锁死在同一层里 ——
+///   拖动排序看着生效、出片却不动，而且不报错）。
+///
+/// ⚠️ 这段两个构建器都要注入（预览与出片现在同走 `build_cover_page`）—— 只加一处就是"预览有层序、出片没有"。
+pub fn cover_layer_css(plan: &CoverLayerPlan, legacy: bool) -> String {
+    if legacy {
+        return "#fx-extra{z-index:1;}".to_string();
+    }
+    let disp = |v: bool| if v { "" } else { "display:none;" };
+    format!(
+        "#bg{{z-index:{};{}}}#frame{{z-index:{};{}}}#vignette{{z-index:{};{}}}#overlay{{z-index:{};{}}}#title-wrap{{z-index:{};{}}}#fx-extra{{z-index:auto;}}",
+        plan.bg.0, disp(plan.bg.1),
+        plan.frame.0, disp(plan.frame.1),
+        plan.vignette.0, disp(plan.vignette.1),
+        plan.overlay.0, disp(plan.overlay.1),
+        plan.title.0, disp(plan.title.1),
+    )
+}
+
 /// 出片时抓取的区域：就是 `#page` 的整块画布（配合模板里的 `html.export`，
 /// 页面不再缩放/居中，左上角对齐视口原点）。不这么抓拿到的是浏览器视口尺寸
 /// （实测 1904×929），页面被居中 → 成片四周黑边。
@@ -234,9 +547,15 @@ pub const COVER_EMOJI_MAX_PX: f64 = 288.0;
 /// emoji 的字体栈：Windows 的 Segoe UI Emoji、macOS 的 Apple Color Emoji、Linux 的 Noto。
 const EMOJI_FONT: &str = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
 
-fn cover_fx_html(cc: &crate::project::CoverConfig) -> String {
+/// 特效 / 表情 → HTML。
+///
+/// - `legacy = true`（默认栈）：**就是改造前那份输出**（一个 div、不带 z-index、不套 wrapper）——
+///   存量工程逐字节零回归的前提。
+/// - `legacy = false`：每条特效套一层只负责全局 `z-index` 的 wrapper（它才是独立图层），
+///   `visible=false` 写 `display:none`。
+fn cover_fx_html(cc: &crate::project::CoverConfig, plan: &CoverLayerPlan, legacy: bool) -> String {
     let mut out = String::new();
-    for fx in &cc.effects {
+    for (i, fx) in cc.effects.iter().enumerate() {
         let x = fx.x.clamp(0.0, 100.0);
         let y = fx.y.clamp(0.0, 100.0);
         let a = fx.amount.clamp(0.0, 1.0);
@@ -297,7 +616,23 @@ fn cover_fx_html(cc: &crate::project::CoverConfig) -> String {
             }
             _ => continue,
         };
-        out.push_str(&format!("<div style=\"{style}\">{content}</div>"));
+        if legacy {
+            out.push_str(&format!("<div style=\"{style}\">{content}</div>"));
+            continue;
+        }
+        // 每条特效一层：**外层 div 只负责全局 z-index**（特效之间、以及特效与固定块之间于是能任意排序），
+        // 内层还是原来那个效果 div（内联样式一字不改）。
+        let (z, visible) = plan.effects.get(i).copied().unwrap_or((0, true));
+        let hidden = if visible { "" } else { "display:none;" };
+        // ⚠️ `overlay` 额外加 `isolation:isolate`：它的 `mix-blend-mode:overlay` 在改造前**没有背景可混**
+        //    （`#fx-extra` 当年是 stacking context，六条特效被锁成一个隔离组），实测"绿底叠 #ff3366"
+        //    是橄榄绿；拆掉隔离会变成鲜绿 —— 那是**老封面变色**，不属于这次"图层栈"的范围。
+        //    想要真正的混合走 P2 的「每层混合模式」（显式选择，才谈得上观感预期）。
+        //    `isolation` 只加在这一种特效上：`blur` 的 backdrop-filter 要靠下层画面做背景，加不得。
+        let iso = if fx.kind == "overlay" { "isolation:isolate;" } else { "" };
+        out.push_str(&format!(
+            "<div style=\"position:absolute;inset:0;z-index:{z};{hidden}{iso}\"><div style=\"{style}\">{content}</div></div>"
+        ));
     }
     out
 }
@@ -383,15 +718,60 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
 pub const COVER_CAPTURE_W: f64 = 1920.0;
 pub const COVER_CAPTURE_H: f64 = 1080.0;
 
-pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _resolved: &ResolvedPaths) -> String {
-    let bg_image = project_path.join(COVER_BG_IMG).is_file();
-    // 从 cmd_cover 中提取相同逻辑 (略缩版)
+/// 标题行：`cc.title_lines` 非空就用它；否则按中英标点拆 `project.name`（并砍掉 `【主播名】` 前缀）。
+///
+/// **纯函数**：出片那条路还要把首次拆出来的行写回 `polish.toml`（见 `cmd_cover`），那是调用方的事
+/// —— 预览不该写盘。
+fn cover_title_lines(config: &project::ProjectFile) -> Vec<String> {
     let cc = &config.cover;
-    // 封面画布**恒横版**（不读 `[canvas] orientation`）：平台封面就是横的。
-    // 竖屏素材靠模板的 `object-fit:contain` 保持原比例，画布尺寸本身不动。
-    let (cw, ch) = (COVER_CAPTURE_W, COVER_CAPTURE_H);
+    if !cc.title_lines.is_empty() {
+        return cc.title_lines.clone();
+    }
+    let raw = &config.project.name;
+    let clean = raw.split('【').next().unwrap_or(raw);
+    clean
+        .split(['，', '。', '！', '？', '、', ',', '.', '!'])
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
 
-    // 渐变（走 hex_to_rgb：3 位简写/非法值都不能越界 panic）
+/// 封面页 HTML 的**唯一实现**：预览（[`build_cover_html`]）与出片（`cmd_cover`）共用同一条替换链。
+///
+/// ⚠️ 以前两个构建器各写一份（漏改一边 = "预览有、出片没有"，**而且不报错**）。新增任何模板变量
+/// **只在这里加一处**；图层栈的注入走 [`cover_layer_css`] + [`cover_fx_html`]。
+fn build_cover_page(
+    config: &project::ProjectFile,
+    bg_image: bool,
+    title_lines: &[String],
+    export: bool,
+) -> String {
+    build_cover_page_ex(config, bg_image, title_lines, export, false)
+}
+
+/// **静态渲染器**（不执行 JS、不推进动画时间 —— 如 Takumi）用的那份：多填一张 `__EXPORT_CSS__`
+/// （见 [`COVER_EXPORT_CSS`]）。
+///
+/// ⚠️ **必须是独立入口，不能顺手挂在 Chrome 那条链上**：实测（真封面 + headless Chrome 逐字节对拍）
+/// `#title{animation:none…}` 会**改变 Chrome 的像素**（`72CD3A09…` → `46F19E2A…`）——
+/// 动画会让该元素被提升成合成层，关掉之后回到主绘制，光栅化路径就换了（与仓库里
+/// "给五块都写 z-index → 换合成路径 → SHA 变了"同一类）。所以 Chrome 侧**一个字都不改**，
+/// 零回归由构造保证；这三条只喂给静态通道。
+pub fn build_cover_page_static(config: &project::ProjectFile, bg_image: bool, title_lines: &[String]) -> String {
+    build_cover_page_ex(config, bg_image, title_lines, true, true)
+}
+
+fn build_cover_page_ex(
+    config: &project::ProjectFile,
+    bg_image: bool,
+    title_lines: &[String],
+    export: bool,
+    static_render: bool,
+) -> String {
+    let cc = &config.cover;
+
+    // 渐变（走 hex_to_rgb：3 位简写 / 非法值都不能越界 panic）
     let hl_color = &config.style.subtitle.highlight_color;
     let (gr, gg, gb) = if !hl_color.is_empty() && hl_color.starts_with('#') {
         let (r, g, b) = hex_to_rgb(hl_color);
@@ -400,7 +780,9 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
         let ng = ((1.0 - g) * 25.0) as u8;
         let nb = ((1.0 - b) * 50.0) as u8;
         (nr.max(10), ng.max(10), nb.max(15))
-    } else { (20, 10, 40) };
+    } else {
+        (20, 10, 40)
+    };
     let grad_from = format!("rgba({},{},{},0.55)", gr, gg, gb);
     let grad_to = format!("rgba({},{},{},0.15)", gr, gg, gb);
     let grad_bg = match cc.gradient_dir.as_str() {
@@ -412,16 +794,8 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
         _ => format!("linear-gradient(90deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
     };
 
-    // 标题
-    let raw = &config.project.name;
-    let clean = raw.split('【').next().unwrap_or(raw);
+    // 标题 + 关键词高亮
     let hl_words = cover_highlight_words(config);
-    let title_lines: Vec<String> = if !cc.title_lines.is_empty() {
-        cc.title_lines.clone()
-    } else {
-        clean.split(['，', '。', '！', '？', '、', ',', '.', '!'])
-            .map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
-    };
     let title_html = title_lines.iter().map(|line| {
         if hl_words.is_empty() { return line.to_string(); }
         let mut r = line.to_string();
@@ -429,15 +803,20 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
         r
     }).collect::<Vec<_>>().join("<br>");
 
-    let (text_align, align_items) = cover_text_align(&cc);
-    let text_shadow = cover_shadow_css(&cc);
-    let fx_html = cover_fx_html(&cc);
+    let (text_align, align_items) = cover_text_align(cc);
+    let text_shadow = cover_shadow_css(cc);
+    // 图层栈（`[cover] layers`）：默认栈走**改造前的渲染形式**（逐字节零回归），
+    // 自定义栈才注入逐层 z-index / display
+    let plan = plan_cover_layers(cc);
+    let legacy = is_default_stack(cc);
+    let fx_html = cover_fx_html(cc, &plan, legacy);
+    let layer_css = cover_layer_css(&plan, legacy);
     let bg = cover_bg_vars(config, bg_image);
     let frame = cover_frame_vars(config);
-    let font = cover_font_css(&cc);
+    let font = cover_font_css(cc);
     COVER_HTML
-        .replace("__COVER_W__", &cw.to_string())
-        .replace("__COVER_H__", &ch.to_string())
+        .replace("__COVER_W__", &COVER_CAPTURE_W.to_string())
+        .replace("__COVER_H__", &COVER_CAPTURE_H.to_string())
         .replace("__TITLE__", &title_html)
         .replace("__FONT_FAMILY__", &font.family)
         .replace("__BG_CLASS__", &bg.class)
@@ -448,7 +827,9 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
         .replace("__LIVER_X__", &frame.liver_x)
         .replace("__LIVER_Y__", &frame.liver_y)
         .replace("__BG_TRANSFORM__", &frame.transform)
-        .replace("__EXPORT__", "false")
+        .replace("__EXPORT__", if export { "true" } else { "false" })
+        .replace("__LAYER_CSS__", &layer_css)
+        .replace("__EXPORT_CSS__", if static_render { COVER_EXPORT_CSS } else { "" })
         .replace("__GRAD_BG__", &grad_bg)
         .replace("__VIGNETTE_OP__", &cc.vignette.to_string())
         .replace("__FONT_SIZE__", &format!("{}px", cc.font_size))
@@ -466,8 +847,15 @@ pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _res
         .replace("<!-- __FONT_FACE__ -->", &font.face)
 }
 
+/// 预览用的封面页（`polish preview` / WebUI 的封面预览）：标题走纯函数、**不写盘**。
+pub fn build_cover_html(project_path: &Path, config: &project::ProjectFile, _resolved: &ResolvedPaths) -> String {
+    let bg_image = project_path.join(COVER_BG_IMG).is_file();
+    let title_lines = cover_title_lines(config);
+    build_cover_page(config, bg_image, &title_lines, false)
+}
 
-pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> anyhow::Result<()> {
+
+pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, renderer: Option<&str>) -> anyhow::Result<()> {
     tracing::info!("\n  -- Cover --");
     let config = project::load_project(project_path)?;
     let resolved = resolve_paths(project_path, &config);
@@ -509,50 +897,11 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         tracing::info!("    using custom image: {}", cc.image);
     }
 
-    // 渐变颜色: 基于字幕高亮色
-    let hl_color = &config.style.subtitle.highlight_color;
-    let _sub_color = &config.style.subtitle.color;
-    let (grad_r, grad_g, grad_b) = if !hl_color.is_empty() && hl_color.starts_with('#') {
-        // 走 hex_to_rgb：3 位简写 / 非法值都不能越界 panic（颜色是用户输入）
-        let (r, g, b) = hex_to_rgb(hl_color);
-        let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
-        // complementary: invert and darken
-        let nr = ((1.0 - r) * 30.0) as u8;
-        let ng = ((1.0 - g) * 25.0) as u8;
-        let nb = ((1.0 - b) * 50.0) as u8;
-        (nr.max(10), ng.max(10), nb.max(15))
-    } else {
-        (20, 10, 40)
-    };
-    let grad_from = format!("rgba({},{},{},0.55)", grad_r, grad_g, grad_b);
-    let grad_to = format!("rgba({},{},{},0.15)", grad_r, grad_g, grad_b);
-
-    // 渐变背景 CSS
-    let grad_bg = match cc.gradient_dir.as_str() {
-        "right" => format!("linear-gradient(270deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
-        "top" => format!("linear-gradient(180deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
-        "bottom" => format!("linear-gradient(0deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
-        "radial" => format!("radial-gradient(ellipse at 30% 50%,{} 0%,{} 60%,transparent 100%)", grad_from, grad_to),
-        "none" => "none".into(),
-        _ => format!("linear-gradient(90deg,{} 0%,{} 50%,transparent 100%)", grad_from, grad_to),
-    };
-
-    // 标题: 先读 title_lines, 空则自动分行 + 写回 config
-    let raw = &config.project.name;
-    let clean = raw.split('【').next().unwrap_or(raw);
-    let hl_words = cover_highlight_words(&config);
-
-    let title_lines: Vec<String> = if !cc.title_lines.is_empty() {
-        cc.title_lines.clone()
-    } else {
-        let lines: Vec<String> = clean
-            .split(['，', '。', '！', '？', '、', ',', '.', '!'])
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-        if lines.len() > 1 {
-            // 写入 polish.toml (仅首次)：读-改-写，只动 title_lines
+    // 标题: 先读 title_lines, 空则自动分行；**首次**把它写回 `polish.toml`（读-改-写，只动 title_lines）
+    // —— 这是出片独有的副作用（预览不写盘），所以放在这里而不是 `build_cover_page` 里
+    let title_lines: Vec<String> = {
+        let lines = cover_title_lines(&config);
+        if cc.title_lines.is_empty() && lines.len() > 1 {
             let to_write = lines.clone();
             project::update_polish_toml(project_path, move |cfg| {
                 cfg.cover.title_lines = to_write;
@@ -562,56 +911,23 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>) -> any
         lines
     };
 
-    // 关键词高亮
-    let title_html = title_lines.iter().map(|line| {
-        if hl_words.is_empty() { return line.to_string(); }
-        let mut result = line.to_string();
-        for w in &hl_words {
-            if !w.is_empty() && result.contains(w.as_str()) {
-                result = result.replace(w.as_str(), &format!("<span class=\"hl\">{}</span>", w));
-            }
-        }
-        result
-    }).collect::<Vec<_>>().join("<br>");
-
-    let (text_align, align_items) = cover_text_align(&cc);
-    let text_shadow = cover_shadow_css(&cc);
-    let fx_html = cover_fx_html(&cc);
-    let bg = cover_bg_vars(&config, project_path.join(COVER_BG_IMG).is_file());
-    let frame = cover_frame_vars(&config);
-    // 封面字体（`[cover] font` = 字体库里的 id）：与预览链同一份替换，**两条都要改**
-    let font = cover_font_css(&cc);
-    // 封面画布**恒横版**：与 build_cover_html 同一把尺（竖屏素材不改比例，见模板 contain）
+    // 封面画布**恒横版**（1920×1080），与成片方向解耦（竖屏素材靠模板的 contain 保持比例）
     let (cw, ch) = (COVER_CAPTURE_W, COVER_CAPTURE_H);
-    let cover_html = COVER_HTML
-        .replace("__COVER_W__", &cw.to_string())
-        .replace("__COVER_H__", &ch.to_string())
-        .replace("__TITLE__", &title_html)
-        .replace("__FONT_FAMILY__", &font.family)
-        .replace("__BG_CLASS__", &bg.class)
-        .replace("__BG_COLOR__", &bg.color)
-        .replace("__BG_BLUR__", &bg.blur)
-        .replace("__BG_BLUR_SCALE__", &bg.blur_scale)
-        .replace("__BG_SRC__", &bg.src)
-        .replace("__LIVER_X__", &frame.liver_x)
-        .replace("__LIVER_Y__", &frame.liver_y)
-        .replace("__BG_TRANSFORM__", &frame.transform)
-        .replace("__EXPORT__", "true")
-        .replace("__GRAD_BG__", &grad_bg)
-        .replace("__VIGNETTE_OP__", &cc.vignette.to_string())
-        .replace("__FONT_SIZE__", &format!("{}px", cc.font_size))
-        .replace("__STROKE__", &format!("{}px", cc.stroke))
-        .replace("__HL_COLOR__", &cc.hl_color)
-        .replace("__TEXT_WIDTH__", &format!("{}%", (cc.text_width * 100.0) as u32))
-        .replace("__TEXT_X__", &cc.text_x)
-        .replace("__TEXT_Y__", &cc.text_y)
-        .replace("__LS__", &cc.letter_spacing)
-        .replace("__LH__", &cc.line_height.to_string())
-        .replace("__TEXT_ALIGN__", text_align)
-        .replace("__TEXT_ALIGN_ITEMS__", align_items)
-        .replace("__SHADOW__", &text_shadow)
-        .replace("__FX_HTML__", &fx_html)
-        .replace("<!-- __FONT_FACE__ -->", &font.face);
+
+    // 渲染通道：默认 headless Chrome（**兜底**）。`VTEDIT_COVER_RENDERER=takumi` 走静态渲染。
+    // ⚠️ 认不出的值**当场报错**：静默回退会让人以为"我在用静态渲染"（与 `render/dhampir.rs` 同一条口径）。
+    if resolve_cover_renderer(renderer)? == RENDERER_TAKUMI {
+        cover_render_static(project_path, &config, &title_lines, (cw as u32, ch as u32))?;
+        return Ok(());
+    }
+
+    // 封面页 HTML：与预览**同一条替换链**（`build_cover_page`），出片只多一个 `export = true`
+    let cover_html = build_cover_page(
+        &config,
+        project_path.join(COVER_BG_IMG).is_file(),
+        &title_lines,
+        true,
+    );
 
     let port = server::start_file_server(project_path.to_path_buf(), Some(cover_html)).await?;
     let url = format!("http://127.0.0.1:{}/", port);
@@ -712,6 +1028,197 @@ mod tests {
         assert_eq!(hex_to_rgb("#12345"), (0, 0, 0)); // 长度不对
         assert_eq!(hex_to_rgb("#啊啊啊啊"), (0, 0, 0)); // 非 ASCII（字节切分会崩）
         assert_eq!(hex_to_rgb("#zzzzzz"), (0, 0, 0)); // 非十六进制
+    }
+
+    // ===== 图层栈（`[cover] layers`）=====
+
+    fn fx(id: &str, kind: &str) -> crate::project::CoverEffect {
+        crate::project::CoverEffect {
+            id: id.into(),
+            kind: kind.into(),
+            amount: 0.3,
+            x: 50.0,
+            y: 50.0,
+            color: "#000000".into(),
+            text: String::new(),
+        }
+    }
+
+    fn layer(id: &str, visible: bool) -> crate::project::CoverLayer {
+        crate::project::CoverLayer { id: id.into(), visible }
+    }
+
+    /// 栈的 id 序列（从下到上）
+    fn stack_ids(cc: &crate::project::CoverConfig) -> Vec<String> {
+        resolve_cover_stack(cc).into_iter().map(|l| l.id).collect()
+    }
+
+    /// **零迁移的判据**：没有 `layers` 时，默认栈就是改造前模板写死的叠放序
+    /// （bg < frame < 暗角<渐变 = filter < 每个特效 < 标题）。
+    #[test]
+    fn default_stack_matches_legacy_template_order() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.effects = vec![fx("a", "glow"), fx("", "emoji")];
+        assert_eq!(stack_ids(&cc), vec!["bg", "frame", "filter", "fx:a", "fx:#1", "title"]);
+        let plan = plan_cover_layers(&cc);
+        assert!(
+            plan.bg.0 < plan.frame.0 && plan.frame.0 < plan.vignette.0 && plan.vignette.0 < plan.overlay.0,
+            "固定四块的层级必须严格递增：{plan:?}"
+        );
+        assert!(
+            plan.overlay.0 < plan.effects[0].0 && plan.effects[0].0 < plan.effects[1].0 && plan.effects[1].0 < plan.title.0,
+            "特效在渐变之上、标题之下：{plan:?}"
+        );
+        assert!(plan.bg.1 && plan.title.1, "默认全部可见");
+    }
+
+    /// `layers` 权威地描述顺序：显式栈怎么排，`plan` 就怎么给层级（表情可以跑到标题上面）。
+    #[test]
+    fn explicit_stack_drives_z_index() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.effects = vec![fx("a", "emoji")];
+        cc.layers = vec![layer("title", true), layer("fx:a", true), layer("frame", false)];
+        let plan = plan_cover_layers(&cc);
+        assert!(plan.title.0 < plan.effects[0].0, "表情要排在标题之上：{plan:?}");
+        assert!(!plan.frame.1, "frame 被隐藏");
+        let got = stack_ids(&cc);
+        assert_eq!(got[0], "bg", "缺项补齐：bg 应回到最底");
+        assert!(got.contains(&"filter".to_string()), "缺项补齐：filter 要在：{got:?}");
+        assert_eq!(got.iter().filter(|s| *s == "frame").count(), 1, "补齐不该出现重复：{got:?}");
+    }
+
+    /// 容错：未知 id 忽略、重复 id 只认第一次、空 id 跳过（手改 toml 不该让出片失败或丢层）。
+    #[test]
+    fn stack_tolerates_unknown_duplicate_and_empty_ids() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.layers = vec![
+            layer("nope", true),
+            layer("", true),
+            layer("title", false),
+            layer("title", true),
+        ];
+        let got = stack_ids(&cc);
+        assert_eq!(got.iter().filter(|s| *s == "title").count(), 1, "{got:?}");
+        assert!(!got.iter().any(|s| s == "nope"), "未知 id 要忽略：{got:?}");
+        assert_eq!(got.last().map(String::as_str), Some("title"));
+        assert!(!resolve_cover_stack(&cc).last().unwrap().visible, "重复项只认第一次（false）");
+    }
+
+    /// 手改 toml 加了一条 `[[cover.effects]]` 却没同步 `layers`：**仍然渲染**（插回默认位置）——
+    /// 否则用户会看到"我配的特效凭空少了一层"，而且不报错。
+    #[test]
+    fn effects_missing_from_stack_still_render() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.effects = vec![fx("a", "glow"), fx("b", "scanline")];
+        cc.layers = vec![layer("bg", true), layer("fx:a", true), layer("title", true)];
+        let got = stack_ids(&cc);
+        assert!(got.contains(&"fx:b".to_string()), "{got:?}");
+        assert!(plan_cover_layers(&cc).effects[1].1, "没被列出的特效照旧可见");
+    }
+
+    /// 注入的 CSS：自定义栈时固定的五块带 z-index、隐藏的带 display:none，且 `#fx-extra` 必须退回
+    /// `z-index:auto`（它有 z-index 就是 stacking context，特效全被锁死在一层）；
+    /// **默认栈则一个 z-index 都不注入**（只补回模板原来那条 `#fx-extra`，存量成片逐字节不变）。
+    #[test]
+    fn layer_css_injects_z_index_and_display() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.layers = vec![layer("bg", false), layer("frame", true), layer("filter", true), layer("title", true)];
+        let custom = cover_layer_css(&plan_cover_layers(&cc), false);
+        assert!(custom.contains("#bg{z-index:1;display:none;}"), "{custom}");
+        assert!(custom.contains("#frame{z-index:2;}"), "{custom}");
+        assert!(custom.contains("#vignette{z-index:3;}") && custom.contains("#overlay{z-index:4;}"), "{custom}");
+        assert!(custom.contains("#fx-extra{z-index:auto;}"), "自定义栈必须解掉 #fx-extra 的 stacking context：{custom}");
+
+        let legacy = cover_layer_css(&plan_cover_layers(&crate::project::CoverConfig::default()), true);
+        assert_eq!(legacy, "#fx-extra{z-index:1;}", "默认栈只能补回模板原来那一条");
+    }
+
+    /// 默认栈 vs 自定义栈的判定：老工程（没有 `layers`）与"顺序没动过且都可见"都算默认。
+    #[test]
+    fn default_stack_detection() {
+        let mut cc = crate::project::CoverConfig::default();
+        cc.effects = vec![fx("a", "glow")];
+        assert!(is_default_stack(&cc), "没有 layers = 默认栈");
+        cc.layers = vec![layer("bg", true), layer("frame", true), layer("filter", true), layer("fx:a", true), layer("title", true)];
+        assert!(is_default_stack(&cc), "显式写了一遍默认序也算默认");
+        cc.layers[3].visible = false;
+        assert!(!is_default_stack(&cc), "隐藏了任意一层就不再是默认渲染路径");
+        cc.layers[3].visible = true;
+        cc.layers.swap(0, 4);
+        assert!(!is_default_stack(&cc), "调过序就不再是默认渲染路径");
+    }
+
+    /// 出片 HTML 真的带上了注入，而且**预览/出片同一条链**（只有 `__EXPORT__` 不同）；
+    /// 默认栈那份 HTML 必须是"改造前形状"（特效一个 div、不带 z-index）。
+    #[test]
+    fn cover_page_carries_layer_css_for_both_builders() {
+        let mut c = cfg_with("color", "#000000", 1.0);
+        c.cover.title_lines = vec!["标题".into()];
+        c.cover.effects = vec![fx("e1", "glow")];
+        // 默认栈（老工程的样子）：不注入逐层 z-index，特效就是原来那个 div
+        let legacy = build_cover_page(&c, false, &c.cover.title_lines, false);
+        assert!(legacy.contains("<style>#fx-extra{z-index:1;}</style>"), "{legacy}");
+        assert!(!legacy.contains("#bg{z-index:"), "默认栈不该注入逐层 z-index：{legacy}");
+        assert!(!legacy.contains("z-index:5;"), "默认栈的特效不带 z-index：{legacy}");
+
+        // 自定义栈：逐层 z-index + 隐藏层 display:none
+        c.cover.layers = vec![
+            layer("bg", true),
+            layer("frame", true),
+            layer("filter", true),
+            layer("fx:e1", false),
+            layer("title", true),
+        ];
+        for export in [false, true] {
+            let html = build_cover_page(&c, false, &c.cover.title_lines, export);
+            assert!(html.contains("<style>#bg{z-index:1;}"), "export={export} 没注入图层 CSS：{html}");
+            assert!(html.contains("z-index:5;display:none;"), "隐藏的特效要 display:none：{html}");
+            assert!(!html.contains("__LAYER_CSS__"), "占位符没被替换：{html}");
+            let want = if export { "var EXPORT = 'true' === 'true';" } else { "var EXPORT = 'false' === 'true';" };
+            assert!(html.contains(want), "export={export} 的 EXPORT 变量不对：{html}");
+        }
+    }
+
+    /// 静态渲染通道（Takumi）与 Chrome 那条**必须是两个入口**，且模板里的两个新占位符都被替换掉。
+    ///
+    /// 1. Chrome/预览那条：**不含** `#title{animation:none…}`（实测它会改变 Chrome 的像素 ——
+    ///    动画把元素提升成合成层，关掉后光栅化路径就换了，SHA 会变）；
+    /// 2. 静态那条：**必须含**这三条（不跑时间的渲染器会停在 `opacity:0`，标题整块不可见）；
+    /// 3. 两条都不许残留模板占位符：模板加了占位、替换链漏了，字面量就会泄漏进 HTML（**不报错**）。
+    ///    ⚠️ 判据要按**占位符名单**列，不能写成"含 `__` 就算漏" —— 模板里本来就有
+    ///    `window.__COVER_READY`、`__CAPTURE_PROGRESS` 这类正常名字。
+    #[test]
+    fn static_builder_only_fills_export_css_and_no_placeholder_leaks() {
+        let placeholders = [
+            "__BG_COLOR__", "__BG_BLUR__", "__BG_BLUR_SCALE__", "__BG_TRANSFORM__", "__BG_CLASS__", "__BG_SRC__",
+            "__LIVER_X__", "__LIVER_Y__", "__GRAD_BG__", "__VIGNETTE_OP__", "__FONT_SIZE__", "__STROKE__",
+            "__HL_COLOR__", "__TEXT_WIDTH__", "__TEXT_X__", "__TEXT_Y__", "__LS__", "__LH__", "__TEXT_ALIGN__",
+            "__TEXT_ALIGN_ITEMS__", "__SHADOW__", "__TITLE__", "__LAYER_CSS__", "__EXPORT_CSS__",
+        ];
+        let no_leak = |html: &str| {
+            for p in placeholders {
+                assert!(!html.contains(p), "占位符 {p} 没被替换（模板加了、替换链漏了）：{html}");
+            }
+        };
+        let mut c = cfg_with("color", "#000000", 1.0);
+        c.cover.title_lines = vec!["标题".into()];
+
+        for export in [false, true] {
+            let chrome_html = build_cover_page(&c, false, &c.cover.title_lines, export);
+            assert!(
+                !chrome_html.contains("animation:none"),
+                "Chrome/预览这条链不该有关动画的规则（会改像素）：{chrome_html}"
+            );
+            assert!(chrome_html.contains("--fs:"), "静态变量块两条链都要有：{chrome_html}");
+            no_leak(&chrome_html);
+        }
+
+        let static_html = build_cover_page_static(&c, false, &c.cover.title_lines);
+        for want in ["#title{animation:none}", "#title{opacity:1}", "#title{transform:none}"] {
+            assert!(static_html.contains(want), "静态那条链缺规则 {want}：{static_html}");
+        }
+        assert!(static_html.contains("var EXPORT = 'true' === 'true';"), "静态渲染按出片形态：{static_html}");
+        no_leak(&static_html);
     }
 
     fn cfg_with(bg_mode: &str, color: &str, scale: f64) -> crate::project::ProjectFile {
@@ -866,6 +1373,7 @@ mod tests {
     fn cover_emoji_fx_renders_text_and_escapes_html() {
         fn fx(amount: f64, x: f64, y: f64, text: &str) -> crate::project::CoverEffect {
             crate::project::CoverEffect {
+                id: String::new(),
                 kind: "emoji".into(),
                 amount,
                 x,
@@ -883,7 +1391,7 @@ mod tests {
             fx(0.3, 7.0, 8.0, "   "),
             fx(0.3, 9.0, 9.0, "😆😆😆😆😆😆😆😆😆😆😆😆😆😆😆"),
         ];
-        let html = cover_fx_html(&c.cover);
+        let html = cover_fx_html(&c.cover, &plan_cover_layers(&c.cover), false);
         // 位置：x/y 是**字符中心**（translate(-50%,-50%)），缩放/字体栈都要在
         assert!(
             html.contains("left:83.3%;top:50.0%;transform:translate(-50%,-50%)"),
@@ -975,6 +1483,7 @@ subtitles=\"a.srt\"
         c.cover.title_lines = vec!["测试标题第一行".into()];
         c.cover.effects = vec![
             crate::project::CoverEffect {
+                id: "e1".into(),
                 kind: "emoji".into(),
                 amount: 0.5,
                 x: 83.3,
@@ -983,6 +1492,7 @@ subtitles=\"a.srt\"
                 text: "😆".into(),
             },
             crate::project::CoverEffect {
+                id: "e2".into(),
                 kind: "emoji".into(),
                 amount: 0.2,
                 x: 20.0,

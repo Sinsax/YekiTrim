@@ -41,14 +41,19 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
-    // 先把屏蔽区间从分段中切开/移除，后续所有 position/budget/process 都基于清理后的 segments
-    if !config.mute_ranges.is_empty() {
-        let before = config.segments.len();
-        let ranges = config.mute_ranges.clone();
-        project::split_segments_by_mute_ranges(&mut config.segments, &ranges);
-        if config.segments.len() != before {
-            tracing::info!("  ✂ 已从 segments 中分离屏蔽区间（{} -> {} 段）", before, config.segments.len());
-        }
+    // **屏蔽区间只做标记，不切段、不删事件**（用户要求）：`mute_ranges` 由**消费侧**生效 ——
+    // 出片在合流之后 `Ffmpeg::cut_ranges` 把这几段剪掉、预览跳过它、字幕在上面已经过滤过。
+    //
+    // ⚠️ 这里以前会 `split_segments_by_mute_ranges`：把屏蔽区里的事件**从 polish.toml 里删掉**
+    // （段一起切碎），而 process 会被预览/出片**隐式触发** —— 于是"随手屏蔽一段"等于
+    // **永久删掉那一段的全部事件**，事后把屏蔽撤掉也回不来。**别再把这个调用加回来。**
+
+    // 前置（Step 0 之前）：把 `data/danmaku.json` 的在屏窗口抬到"至少够它滚完"。
+    // 必须排在最前 —— Step 2b 的"真实弹幕带"障碍读的就是这份文件，窗口不对，
+    // 贴纸避让的那条带也就跟着不对。老工程靠这一步自愈，明细见函数注释。
+    let extended = normalize_danmaku_windows(&data_dir);
+    if extended > 0 {
+        tracing::info!("  ✓ 弹幕在屏窗口已抬到「滚完为止」{extended} 条（data/danmaku.json）");
     }
 
     // Step 0: 归一化事件时间跨度（缺 end 的补默认、瞬时特效应只允许短暂脉冲）
@@ -407,14 +412,10 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                     | crate::project::Event::Shake { .. }
                     | crate::project::Event::Flash { .. }
                     | crate::project::Event::Blur { .. }
-                    | crate::project::Event::ZoomBounce { .. }
                     | crate::project::Event::Vignette { .. }
                     | crate::project::Event::HueShift { .. }
-                    | crate::project::Event::Stutter { .. }
-                    | crate::project::Event::Split { .. }
                     | crate::project::Event::Noise { .. }
                     | crate::project::Event::Pulse { .. }
-                    | crate::project::Event::ColorShift { .. }
                     | crate::project::Event::Overlay { .. } => true,
                     _ => false,
                 };
@@ -739,6 +740,46 @@ fn camera_shots(
         .collect()
 }
 
+/// 把 `data/danmaku.json` 的**在屏窗口**抬到"至少够它滚完"（见
+/// `vtrim_core::danmaku::clamp_display_windows`）。
+///
+/// # 为什么在这里、而不只在 `cmd_parse`
+///
+/// `polish.toml` 已存在的工程**没有 CLI / WebUI 入口能重跑 parse**（`cmd_init` 见到
+/// `polish.toml` 直接 bail），而这些工程的 `data/danmaku.json` 是修复**之前**写的。
+/// 于是消费侧那份数据只会越来越旧 —— process 是预览 / 出片 / WebUI 都会（隐式）跑一步的那道口，
+/// 在这里归一化，老工程下一次精修就自愈。
+///
+/// ⚠️ **只在真的变了的时候写回**：首页「切片总览」按片段目录里最新文件的 mtime 排序
+/// （`vtrim_service::project_data::last_touched_secs`），每次 process 都无条件写一次
+/// 会把老片段一直顶到最前面。归一化是幂等的，第二次进来 `changed == 0`、一个字节都不动。
+///
+/// 读不出来 / 解析失败一律**不动**（与 `read_danmaku_ys` 的降级口径一致）。
+fn normalize_danmaku_windows(data_dir: &Path) -> usize {
+    let path = data_dir.join("danmaku.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return 0 };
+    let Ok(mut entries) = serde_json::from_str::<Vec<vtrim_core::danmaku::DanmakuEntry>>(&raw) else {
+        return 0;
+    };
+    let changed = vtrim_core::danmaku::clamp_display_windows(&mut entries);
+    if changed == 0 {
+        return 0;
+    }
+    match serde_json::to_string_pretty(&entries) {
+        Ok(text) => {
+            if let Err(e) = crate::project::write_atomic(&path, &text) {
+                tracing::info!("  ⚠ danmaku.json 在屏窗口归一化写回失败: {e}");
+                return 0;
+            }
+            changed
+        }
+        Err(e) => {
+            tracing::info!("  ⚠ danmaku.json 序列化失败: {e}");
+            0
+        }
+    }
+}
+
 /// `data/danmaku.json` 的轨道高度（空/缺失/解析失败 → 无弹幕障碍）
 fn read_danmaku_ys(data_dir: &Path) -> Vec<f64> {
     #[derive(serde::Deserialize)]
@@ -983,6 +1024,7 @@ pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
         opacity: Some(1.0),
         colors: None,
         shape: None,
+        angle: None,
         sfx: None,
         sfx_volume: None,
         anchor: None,
@@ -1121,10 +1163,72 @@ pub fn cap_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{Event, Segment};
+    use crate::project::{Event, MuteRange, ProjectFile, Segment};
 
     fn seg_with(events: Vec<Event>) -> Segment {
         Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, extra: Default::default() }
+    }
+
+    /// **屏蔽只做标记**：`cmd_process` 不许删掉屏蔽区间里的事件，也不许把段切碎。
+    ///
+    /// 历史行为（已删）：`split_segments_by_mute_ranges` 会把屏蔽区内的事件从 segments 里删掉
+    /// 并落盘，而 `cmd_process` 会被预览/出片**隐式触发** —— 于是"随手屏蔽一段"等于永久丢事件，
+    /// 事后撤销屏蔽也回不来（用户报的就是这个）。出片由 `Ffmpeg::cut_ranges` 剪、预览跳过，
+    /// 事件留在文件里不动。
+    ///
+    /// 用 `manual: true` 的贴纸是为了把判据与"预算抽稀"分开：这一条只问"屏蔽有没有删事件"。
+    #[tokio::test]
+    async fn mute_range_keeps_events() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        // cmd_process 要求 data/subtitles.json 存在；屏蔽区内外各一条
+        let subs = serde_json::json!([
+            {"index": 1, "start": 1.0, "end": 3.0, "text": "屏蔽区外", "html": ""},
+            {"index": 2, "start": 4.5, "end": 5.5, "text": "屏蔽区里", "html": ""},
+        ]);
+        std::fs::write(path.join("data").join("subtitles.json"), subs.to_string()).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new(); // 空来源表：Step 2 不解析关键字、不联网
+        cfg.mute_ranges = vec![MuteRange { start: 4.0, end: 6.0 }];
+        cfg.segments = vec![Segment {
+            start: 0.0,
+            end: 10.0,
+            fx: "low".into(),
+            note: String::new(),
+            events: vec![Event::Sticker {
+                time: 5.0,
+                end: Some(6.0),
+                keyword: "ysyk".into(),
+                sticker_tag: None,
+                name: Some("生气".into()),
+                source: Some("ysyk".into()),
+                x: "auto".into(),
+                y: "auto".into(),
+                sfx: None,
+                sfx_volume: None,
+                manual: true,
+            }],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+
+        let after = crate::project::load_project(path).expect("重新读 polish.toml");
+        let kept: Vec<f64> = after
+            .segments
+            .iter()
+            .flat_map(|s| s.events.iter())
+            .filter(|e| matches!(e, Event::Sticker { name: Some(n), .. } if n == "生气"))
+            .map(|e| e.get_time())
+            .collect();
+        assert_eq!(kept, vec![5.0], "屏蔽区间里的事件被删掉了 —— 屏蔽只做标记，不许删事件");
+
+        let spans: Vec<(f64, f64)> = after.segments.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(spans, vec![(0.0, 10.0)], "屏蔽区间不许把分段切碎");
     }
 
     fn sticker() -> Event {
@@ -1147,7 +1251,7 @@ mod tests {
     fn overlay_at(time: f64) -> Event {
         Event::Overlay {
             time, end: Some(time + 1.0), overlay_type: "color".into(), color: Some("#ff3232".into()),
-            opacity: Some(0.3), colors: None, shape: None, sfx: None, sfx_volume: None, anchor: None,
+            opacity: Some(0.3), colors: None, shape: None, angle: None, sfx: None, sfx_volume: None, anchor: None,
         }
     }
 

@@ -53,12 +53,32 @@ html.export #toolbar { display:none; }
   transform:translate(-50%,-50%);
   width:var(--tw);
   display:flex; flex-direction:column; align-items:var(--align-items); }
+/* 标题**不做自动换行**（用户要求）：每行就是你敲的一行（`title_lines` 用 <br> 断行），
+   超宽就溢出、由 `#page{overflow:hidden}` 裁掉 —— 要放进画面请手动断行或缩字号。
+   预览侧（`CoverDesigner.vue` 的 `.title-text`）是镜像：`white-space:pre-line` + `width:max-content`。 */
 #title { font-size:var(--fs); font-weight:900; color:#f0e6d3; line-height:var(--lh); letter-spacing:var(--ls); text-align:var(--text-align);
+  white-space:nowrap;
   -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:var(--text-shadow);
   opacity:0; transform:translateY(24px); animation:fadeUp 0.6s 0.3s ease both; }
 .hl { color:var(--hlc); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
 @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
 </style>
+<!-- 图层栈（[cover] layers）的 z-index / display：`cover.rs::cover_layer_css()` 注入，
+     **固定的那五块**由它定位；每个特效/表情各带内联 z-index（见 __FX_HTML__）。
+     单独一个 <style> 放在主样式之后：同特异度时按文档序覆盖，别合并进上面那一块。 -->
+<style>__LAYER_CSS__</style>
+<!-- ⚠️ **静态渲染通道（不跑 JS，如 Takumi）也要拿得到这些变量。**
+     变量的唯一来源曾经是下面 `<script>` 里的 `setProperty` —— 静态渲染器不执行 JS ⇒ 19 个变量全未定义
+     ⇒ 所有 `var(--…)` 声明**整条被丢**：标题没字号没描边、背景没模糊没亮度、渐变底与暗角全丢
+     （实测整图平均差 38.44/255；补上这里之后 3.03/255，残差只剩字形边缘）。
+     值取自同一批 `__PLACEHOLDER__`，与 Script 那份**完全一致**，所以 Chrome 那条通道像素不变
+     （内联 style 优先级更高、值又相同）。 -->
+<style>:root{--bg-color:__BG_COLOR__;--bg-blur:__BG_BLUR__;--bg-blur-scale:__BG_BLUR_SCALE__;--liver-x:__LIVER_X__;--liver-y:__LIVER_Y__;--bg-transform:__BG_TRANSFORM__;--grad-bg:__GRAD_BG__;--vignette-op:__VIGNETTE_OP__;--fs:__FONT_SIZE__;--sk:__STROKE__;--hlc:__HL_COLOR__;--tw:__TEXT_WIDTH__;--text-x:__TEXT_X__;--text-y:__TEXT_Y__;--ls:__LS__;--lh:__LH__;--text-align:__TEXT_ALIGN__;--align-items:__TEXT_ALIGN_ITEMS__;--text-shadow:__SHADOW__;}</style>
+<!-- 出片/截图模式追加的静态规则（`cover.rs::COVER_EXPORT_CSS`；预览模式为空串）：
+     **截图这条路径不跑时间** ⇒ 入场动画必须在这里关掉 —— `animation: … both` 在"动画时间 0"下会让元素
+     停在起始帧（`opacity:0`），静态渲染出来的标题整块不可见。动画跑完的终态就是
+     `opacity:1 / translateY(0)`，所以这三条对 Chrome 那条通道**像素等价**（逐字节零回归实测过）。 -->
+<style>__EXPORT_CSS__</style>
 <!-- 封面字体的 @font-face（cover.rs 注入；没选库内字体就不留东西） -->
 <!-- __FONT_FACE__ -->
 </head>
@@ -68,7 +88,10 @@ html.export #toolbar { display:none; }
 <div id="frame"><img src="_cover_frame.jpg"></div>
 <div id="vignette"></div>
 <div id="overlay"></div>
-<div id="fx-extra" style="position:absolute;inset:0;pointer-events:none;z-index:1;">__FX_HTML__</div>
+<!-- 特效/表情：**这一层故意不设 z-index**（`z-index:auto` 不建 stacking context），每个特效 div
+     自带 z-index，才能成为**独立图层**参与全局叠放（`[cover] layers` 的顺序）。
+     ⚠️ 设了 z-index 就把所有特效锁死在同一层里 —— 拖动排序看着生效、出片却不动，**而且不报错**。 -->
+<div id="fx-extra" style="position:absolute;inset:0;pointer-events:none;">__FX_HTML__</div>
 <div id="title-wrap"><div id="title">__TITLE__</div></div>
 </div></div>
 <div id="toolbar" style="position:fixed;bottom:16px;right:16px;z-index:99;">

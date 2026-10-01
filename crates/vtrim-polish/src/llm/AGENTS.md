@@ -51,10 +51,10 @@
 - **逐段状态快照** `<project>/.vtrim/polish_events.status.json`：`cmd_llm` 落盘、
   `polish_project_get?preview=1` 注入 `_llm_status`、`TimelineEditor` 给**没产出事件的段**上琥珀色
   （成功 = 当前颜色，用户要求），分段属性面板显示失败原因 + 「只重做本段事件」。
-  ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会用屏蔽区间切段、
-  砍超出视频时长的段，窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
+  ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会砍掉超出视频时长的段，
+  窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
   成败**不看最终事件数** —— 空事件段会被 process 补上默认运镜，用 `events.is_empty()` 当判据
-  会让失败永远显示成成功。
+  会让失败永远显示成成功。（屏蔽区间**不再**改段的构成 —— 只做标记，见 `project/AGENTS.md`。）
 - **入口语义**：`POST /api/polish/llm {full}` 的 `full` **默认 true = 全部重做**（先清 checkpoint；
   编辑器按钮再带一次二次确认，因为它会重写当前全部段与事件，含手工加的）；
   `POST /api/polish/llm-segment {index}` = **只重做这一段**（不重跑分段、不走 checkpoint、

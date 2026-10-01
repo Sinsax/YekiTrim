@@ -319,7 +319,7 @@ pub async fn cmd_llm(
     }
 
     // 运行 LLM pipeline
-    let (mut segments, dm_filter, hl_words, gen_status) = llm::run_llm_pipeline(
+    let (segments, dm_filter, hl_words, gen_status) = llm::run_llm_pipeline(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
@@ -327,14 +327,8 @@ pub async fn cmd_llm(
         cancel,
     ).await?;
 
-    // LLM 生成后，再把屏蔽区间从分段中切开/移除
-    if !config.mute_ranges.is_empty() {
-        let before = segments.len();
-        project::split_segments_by_mute_ranges(&mut segments, &config.mute_ranges);
-        if segments.len() != before {
-            tracing::info!("  ✂ 已从 LLM 分段中分离屏蔽区间（{} -> {} 段）", before, segments.len());
-        }
-    }
+    // 屏蔽区间**不切段、不删事件**（用户要求：屏蔽只做标记）—— 出片时 `Ffmpeg::cut_ranges`
+    // 会把这几段剪掉、预览也会跳过；事件留在文件里，用户撤销屏蔽之后内容原样还在。
 
     // 截断 segments 到视频实际时长
     let mut new_config = config;
@@ -353,8 +347,9 @@ pub async fn cmd_llm(
     // 只覆盖本次负责的三个字段：LLM 跑的过程中用户改的选框 / 封面 / 屏蔽轨道
     // （前端是自动保存的）必须留在 polish.toml 里，不能被这次整份写回吞掉。
     //
-    // 先留一份最终 segments：下面的状态快照要按**它**映射（上面用屏蔽区间切过段、
-    // 也砍过超出时长的段，窗口下标与最终段下标已经对不上，不对齐界面就会给错段标色）。
+    // 先留一份最终 segments：下面的状态快照要按**它**映射（上面砍过超出视频时长的段，
+    // 窗口下标与最终段下标已经对不上，不对齐界面就会给错段标色）。
+    // 注：屏蔽区间**不再**改段的构成（只做标记，见上），所以这里只可能因时长截断而对不上。
     let final_segments = new_config.segments.clone();
     let (segments, dm_filter, hl_words) = (new_config.segments, new_config.filter.danmaku, new_config.filter.highlight);
     project::update_polish_toml(project_path, move |cfg| {
@@ -668,7 +663,6 @@ size = 72
 color = "#dcbda0"
 stroke = "12px #403c3b"
 highlight_color = "#f56b41"
-entrance = "fade-up"
 position = "bottom"
 
 [style.danmaku]
@@ -810,6 +804,47 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         tracing::info!("  ✓ LLM: model={}, base={}", llm_cfg.model, llm_cfg.base_url);
     } else {
         tracing::info!("  ⚠ LLM: no API key in .vtrim/llm.toml");
+    }
+
+    // ---- Dhampir 出片通道（默认通道）----
+    //
+    // 这一段是"底座不可用要在渲染前可见"的命令行那一半（另一半是 `/api/polish/dhampir`
+    // 与前端那颗通道下拉）。**只做定位、不渲染**：六项各查一次文件。
+    tracing::info!("\n  -- Dhampir（默认出片通道）--");
+    let ready = crate::render::dhampir::readiness("", true);
+    for (label, value) in [
+        ("二进制", &ready.binary),
+        ("转译器", &ready.translator),
+        ("字体", &ready.font),
+        ("字体粗体", &ready.font_bold),
+        ("预览产物", &ready.preview),
+        ("Node", &ready.node_version),
+    ] {
+        match value {
+            Some(p) => tracing::info!("  ✓ {label}: {p}"),
+            None => tracing::info!("  ✗ {label}: 没找到"),
+        }
+    }
+    // 词汇表单独印（**它不是"没找到就错"的那一类**）：包内没有时会退到编译期内嵌那份，
+    // 行为等价 —— 但它与前三件一样是**包内交付物**（`xtask package` 会带 `spec/effects.json`），
+    // 也是那道"兜底通道冻结闸门"的输入，所以要让人看得见它在哪。
+    match &ready.spec {
+        Some(p) => tracing::info!("  ✓ 效果词汇表: {p}"),
+        None => tracing::info!("  · 效果词汇表: 内嵌（包内没有 spec/effects.json，用编译期那份）"),
+    }
+    if let Some(v) = &ready.contract_version {
+        tracing::info!("  · 版本契约 project_schema={v}");
+    }
+    for problem in &ready.problems {
+        tracing::info!("  ✗ {problem}");
+    }
+    if ready.ready {
+        tracing::info!("  ✓ 底座可用（出片默认走它；`--renderer chrome` 可退回本仓）");
+    } else {
+        tracing::info!(
+            "  ⚠ 底座**当前不可用** —— 出片会失败并报出上面这些原因；\
+             也可以先用 `vtrim polish render --renderer chrome` 出片"
+        );
     }
 
     tracing::info!("\n  vtrim-polish v{}", env!("CARGO_PKG_VERSION"));

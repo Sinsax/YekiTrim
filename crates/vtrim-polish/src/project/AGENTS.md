@@ -12,11 +12,13 @@
 
 - `config`：`ProjectFile`（`source` / `layout` / `style` / `canvas` / `stage` / `sticker` / `sfx` / `cover` /
   `mute_ranges` / `silence_ranges` / `segments` / `processed` …）、`Event` / `Segment`、`MuteRange`
-  （`normalized()` / `overlaps(start, end)`）、`CoverConfig` / `CoverEffect` / `SfxConfig` / `FilterConfig` /
+  （`normalized()` / `overlaps(start, end)`）、`CoverConfig` / `CoverLayer`（图层栈一项：`id` + `visible`；
+  **顺序 = 数组顺序、从下到上**，解析在 `cover.rs::resolve_cover_stack`）/ `CoverEffect`（`id` 是栈引用的
+  稳定标识；`visible` 不存在 —— 可见性**只住 `layers` 里**）/ `SfxConfig` / `FilterConfig` /
   `SourceRef` / `CanvasConfig` / `StageConfig` / `StickerConfig` / `StageFit`；
   `resolve_stage(src) -> StageFit`（画面构成的**唯一推导**）、`canvas_contract`、`canvas_size`、`is_portrait`、
   `region_rect`、`stage_bg_mode` / `stage_position` / `sticker_position_mode`、`to_toml_commented`、`example`、
-  `split_segments_by_mute_ranges`、`clamp_segments_to_duration`；
+  `clamp_segments_to_duration`；**没有** `split_segments_by_mute_ranges`（已删除，见边界第一条）；
   常量 `CANVAS_LANDSCAPE_WH = (1920,1080)` / `CANVAS_PORTRAIT_WH = (1080,1920)` /
   `CAPTION_SAFE_WIDTH_RATIO = 0.875` / `CAPTION_MAX_LINES = 3` / `CAPTION_MIN_FONT_RATIO = 0.7` /
   `STICKER_SAFE_MARGIN = 32.0`。
@@ -40,6 +42,12 @@
   **默认阈值 `DEFAULT_MIN_GAP_SECS = 3.5s`**（字幕间隔 3.5s 以内一律不处理，用户要求；
   实际剪掉 = 间隔 − 1.6s）。`union_ranges`/`subtract_ranges`/`pad_ranges` 是纯函数，有单测；
   `pad_ranges` 收没了（`e - s <= 0.05`）就整段丢掉。
+- ⚠️ **屏蔽只做标记：不许切段、不许删事件**（用户要求）。`mute_ranges` 由**消费侧**生效 ——
+  出片在合流后 `Ffmpeg::cut_ranges` 剪掉、预览跳过、字幕在 `cmd_process` 里按 `MuteRange::overlaps` 过滤。
+  曾经有个 `split_segments_by_mute_ranges`：`cmd_process` / `cmd_llm` 会用它把屏蔽区里的事件
+  **从 `polish.toml` 删掉**并落盘，而 `cmd_process` 会被预览/出片**隐式触发** —— 于是"随手屏蔽一段"
+  等于**永久丢事件**，撤销屏蔽也回不来。**已删除，别再加回来**（回归：`cargo test -p vtrim-polish --lib
+  mute_range_keeps_events`，它会在删事件时打红）。
 - **静音检测先按时间排序 + 合并重叠区间再取相邻间隔**（`vtrim_core::cutting::silence::silence_gaps_from_segments`，含单测）
   —— 乱序/重叠的字幕按文件顺序硬算会造出几十秒假静音。去静音只按字幕间隔检测（列表接口
   `allow_audio_fallback=false`，避免逐条解码视频），音频只作兜底。
@@ -53,10 +61,16 @@
 - **时间模型 = 开始 + 结束**（v6.6）：事件字段是 `time`（开始秒）+ `end`（结束秒），**没有 `duration` 了**；
   分段/字幕/屏蔽本来就是 `start`/`end`，四类块因此共用同一套控件。老工程的 `duration` 由
   `vtrim-render-core/src/legacy.rs::upgrade_event_times` 在**反序列化前**换算（`end = time + duration`，
-  渲染 1:1 不变，下次保存即完成迁移），入口四处：`polish.toml` 加载（`validate.rs`）、
-  `PUT /api/polish/project` 的 segments、LLM 事件输出 + 老 checkpoint（`llm/events.rs`）、wasm 预览配置。
+  渲染 1:1 不变，下次保存即完成迁移），入口三处：`polish.toml` 加载（`validate.rs`）、
+  `PUT /api/polish/project` 的 segments、LLM 事件输出 + 老 checkpoint（`llm/events.rs`）。
+  （原来还有第四处「wasm 预览配置」—— 那条浏览器真渲染路径随「作废 wgpu」一起删掉了。）
   缺 `end` 的由 `process` Step 0 补默认（`Event::default_end`；`sfx` 例外 = 用文件原始长度）。
   三处求值器统一走各自的 `evDur()` / `evDuration()`，别再直接读 `.duration`。
+- ⚠️ **已下线特效类型的人话报错**（2026-10-01，为 `docs/plan/fx-type-consolidation.md` 的类型收敛铺路）：
+  `validate.rs::retired_effect_message()` 把 serde 的 `unknown variant \`stutter\`…` 包成
+  "该工程含**已下线的特效事件**（…）" + 两条路（旧版本删事件 / 直接编辑 `polish.toml`），
+  **普通解析错误原样透传**（判据只在 serde 明说 `unknown variant \`X\`` 时命中，`expected one of` 列表不算 ——
+  裸匹配类型名必然误判）。那份名单是**历史清单**，别拿效果词汇表去校验它（那几个类型正是要消失的）。
 - **画面构成（`[canvas] orientation` + `[stage] position / bg_mode / scale / padding`）与"衬底"**：
   摆放与背景由 `ProjectFile::resolve_stage(src)` **唯一推导**，模板与编辑器只读注入的 `_canvas.stage`，
   两边不各算一份。

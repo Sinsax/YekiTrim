@@ -32,6 +32,15 @@
 - 库固定在 `vtrim_core::path::sticker_dir()` = **`<程序目录>/stickers/`**（不是项目里那份拷贝）：
   一个子文件夹 = 一个包，`<包名>.toml` = LLM 压出来的 tag 索引，`sticker.toml` = 已构建包的注册表。
   **debug 与 release 实例各有一份库，互不相干**（改包别只改一个）。
+- ⚠️ **项目要用的是"复制进项目的那一份"**：`AssetDownloader::download_stickers` 把事件**选中的那个文件**
+  复制到 `<项目>/assets/stickers/`，而**出片与预览只读项目目录**（`prepare_sticker_data` 解帧、
+  `build_sticker_map` 给 DOM）。这是"单个 polish 项目能独立复现"的唯一保证 —— 库改名/换图/换机器之后
+  老项目照样出得来。
+  两条硬规矩：① 判据取**事件自己的 `source`**（`process` Step 2 落过盘的那个），`sticker_source`
+  只给"没有 `source` 的老工程"兜底轮询（以前拿 `sticker_source` 非空当门控，用户清空来源列表后
+  **一个文件都不复制**，项目就悄悄不自包含了）；② **复制失败必须报出来**（`report.errors` +
+  `process` 的逐条 warn）—— "项目里没有这张图"以前是一条看不见的失败，日志一个字都没有，
+  出片时贴纸凭空消失。
 - 列表**以磁盘为准**（`scan_packages`）：手工把文件夹丢进 `stickers/` 也会出现。
   「未构建」= 没有 `<包名>.toml`：图能看，但 LLM 生成事件时读不到这个包
   （`local_sticker_candidates_text` 只列已构建的，`fill_default_local_packages`
