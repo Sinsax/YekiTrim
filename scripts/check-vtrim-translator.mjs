@@ -410,7 +410,7 @@ function checkCurves(curves) {
     .split('\n')
     .filter((line) => !/^\s*(\/\/|\/\*|\*|<!--)/.test(line));
   const windowGuardOf = (source) => {
-    const lines = codeLines(source).map((line) => line.replace(/\s+/g, ' ').trim());
+    const lines = codeLines(source).map((line) => line.replace(/\\s+/g, ' ').trim());
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (!line.includes('t < et') || !line.includes('+ dur')) continue;
@@ -598,6 +598,80 @@ function checkCurves(curves) {
     checks += 1;
   }
 
+  // -------------------------------------------------------------------------
+  // 6c-bis. **`manual` 落点必须真的进底座的工程**（2026-10-02 修）
+  // -------------------------------------------------------------------------
+  //
+  // 症状：设计器里把贴纸落点改成「固定」并点保存，**预览（DOM 那条腿）当场就对**
+  // （`engine.js::stickerAnchor` 有 `manual` 分支），而出片那条腿里贴纸还在老位置 ——
+  // 而且**报告里一行差异都没有**，因为转译器根本没意识到自己丢了一个字段。
+  //
+  // 根因：转译器只读 `event.x/y`（那是 `process` 按安全区算出来的 **auto** 落点），
+  // 而 `manual` 模式下真正生效的是 `[sticker] position`。改的键与读的键**根本不是同一个**。
+  // 两份参照都写着两个键**基准不同、不许统一**：`auto` = 盒子左上角、`manual` = 盒子中心。
+  //
+  // 判据盯两件事：① 转译器里必须有 `manual` 分支且读的是 `config.sticker.position`；
+  // ② **两种模式算出来的落点必须不同**（同值 = 分支是空转的，等于没收复）。
+  // 判据走**行为**而不是源码文本：源码正则在这个变异台里是**抓不住的**
+  // （它读的是磁盘上那份真文件，变异体在临时目录里），实测变异因此漏网 —— 改成**行为判据**。
+  //
+  // 判据盯两件事：① 两种模式算出来的落点**必须不同**（同值 = 分支空转 = 没收复）；
+  // ② 各自都必须符合自己那份基准（auto = 左上角、manual = 盒子中心）。
+  {
+    const SYNTH = (stickerExtra, evX, evY) => [
+      'duration = 4.0',
+      '[project]',
+      'name = "manual-probe"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip.mp4"',
+      stickerExtra,
+      '[[segments]]',
+      'start = 0.0',
+      'end = 4.0',
+      '[[segments.events]]',
+      'type = "sticker"',
+      'time = 1.0',
+      'end = 2.0',
+      'name = "生气"',
+      `x = "${evX}"`,
+      `y = "${evY}"`,
+      '',
+    ].join('\n');
+    const anchorOf = (extra, evX, evY) => {
+      const dir = mkdtempSync(join(tmpdir(), 'vtrim-manual-'));
+      try {
+        mkdirSync(join(dir, 'assets', 'stickers'), { recursive: true });
+        writeFileSync(join(dir, 'assets', 'stickers', '生气.gif'), 'GIF89a(fake)', 'utf8');
+        const doc = curves.translate(curves.parseToml(SYNTH(extra, evX, evY)), dir, join(dir, 'p.doc.json'));
+        const layer = doc.timeline.tracks
+          .flatMap((tr) => tr.layers ?? [])
+          .find((l) => String(l.id ?? '').startsWith('sticker-'));
+        return layer ? layer.transform : null;
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    };
+    const W = 1920;
+    const H = 1080;
+    const BOX = 280 * (Math.min(W, H) / 1080);
+    // auto：锚点 = 事件给的**左上角**
+    const auto = anchorOf('[sticker]\nposition_mode = "auto"', '30%', '40%');
+    assert.ok(auto, 'auto 模式应当转出贴纸图层');
+    near(auto.x, 0.3 * W - W / 2 + BOX / 2, 1e-9, 'auto 落点必须按**盒子左上角**算');
+    near(auto.y, 0.4 * H - H / 2 + BOX / 2, 1e-9, 'auto 落点 y 同上');
+    checks += 2;
+    // manual：锚点是**盒子中心**，且**忽略事件的 x/y**（事件里仍写着 30%/40%）
+    const man = anchorOf('[sticker]\nposition_mode = "manual"\nposition = "35% 50%"', '30%', '40%');
+    assert.ok(man, 'manual 模式应当转出贴纸图层');
+    near(man.x, 0.35 * W - BOX / 2 - W / 2 + BOX / 2, 1e-9, 'manual 落点必须按**盒子中心**算');
+    near(man.y, 0.5 * H - BOX / 2 - H / 2 + BOX / 2, 1e-9, 'manual 落点 y 同上');
+    checks += 2;
+    assert.notEqual(
+      man.x,
+      auto.x,
+      'manual 与 auto 算出了同一个落点 —— manual 分支是空转的（等于没收复「固定落点」）',
+    );
+    checks += 1;
+  }
   // -------------------------------------------------------------------------
   // 6d. **弹幕在屏窗口的末尾**（`danmakuExitMs`，2026-09 修）
   // -------------------------------------------------------------------------
@@ -805,6 +879,31 @@ const MUTATIONS = [
     name: '贴纸落点 `auto` 被猜成 50%（只报错不猜 那条不变量）',
     from: "  if (text === 'auto') return null;",
     to: "  if (text === 'auto') return 50;",
+  },
+  {
+    // 2026-10-02：`manual` 落点分支被删掉 —— 就是「设计器里改了固定落点、出片里没变」那次回归。
+    // 判据（6c-bis）断言转译器里**必须有**这个分支且读 `config.sticker.position`，删掉即打红。
+    name: '`manual` 落点分支被整条删掉（固定落点在那条腿上丢失）',
+    from: "          if (stickerMode === 'manual') {",
+    to: "          if (false && stickerMode === 'manual') {",
+  },
+  {
+    // 2026-10-02：`manual` 分支读错键（读事件的 x/y 而不是 `[sticker] position`）——
+    // 表现与「整条丢了」一样，但更难看出来（分支在、却走不到对的数据）。
+    name: '`manual` 分支没有读 `[sticker] position`',
+    from: "            const parts = String(config.sticker?.position || '50% 50%').trim().split(/\\s+/);",
+    to: "            const parts = String(event.stickerHint || '50% 50%').trim().split(/\\s+/);",
+  },
+  {
+    name: '弹幕偏移从源轴挪到成片轴（remap 之后才平移 —— 被裁掉的那段不再丢，时刻却错了）',
+    from: [
+      "          const cue = rawCues[index];",
+      "          const pieces = remapCueMs(cue.startMs + dmOffsetSecs * 1000, cue.endMs + dmOffsetSecs * 1000);",
+    ].join("\n"),
+    to: [
+      "          const cue = rawCues[index];",
+      "          const pieces = remapCueMs(cue.startMs, cue.endMs).map((p) => ({ startMs: p.startMs + dmOffsetSecs * 1000, endMs: p.endMs + dmOffsetSecs * 1000 }));",
+    ].join("\n"),
   },
 ];
 
@@ -1165,6 +1264,65 @@ function checkMappings(mod) {
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ---- 3c. **弹幕时间偏移**（`[style.danmaku] offset_secs`，默认 -3 = 整体提前 3s）----
+  //
+  // 偏移必须落在**源时间轴**上（先平移、再走 `remapCueMs` 的裁剪重映射）——
+  // 落在成片轴上（remap 之后才平移）的话，落在被裁掉的屏蔽段里的弹幕就**不会被丢**，
+  // 而是平移进邻段里冒出来（"把屏蔽段里的弹幕洗回来"）。合成工程：**无 mute_ranges**
+  // （remap = 恒等，两轴数值相同 ⇒ 这份断言只能钉"有没有平移"、钉不了"在哪条轴上"），
+  // "轴"由变异台钉："remap 之后才平移"那条变异会让负偏移算出**负的毫秒**，
+  // `assTime` 对负数产出的 `h:m:s` 全是负数段 —— 任何 `0:00:xx` 判据都接不住它。
+  // 判据落在 `dhampir-danmaku.ass` 的 `Dialogue` 行上；fps 固定 60、取整值，无取整噪声。
+  {
+    const dir = mkdtempSync(join(tmpdir(), 'vtrim-map-dmoff-'));
+    try {
+      // 字幕与弹幕：1 条 cue，2.5~4.5s（默认偏移 -3 ⇒ 源轴 [-0.5,1.5]，
+      // 起点落在 0 帧之前的那半段被重映射裁掉 —— 与模板腿对负窗口的取舍同口径）
+      writeFileSync(join(dir, 'clip.srt'),
+        '1\n00:00:00,500 --> 00:00:02,500\n占位字幕\n\n',
+        'utf8');
+      writeFileSync(join(dir, 'clip.dm.srt'),
+        '1\n00:00:02,500 --> 00:00:04,500\n偏移对齐用弹幕\n\n',
+        'utf8');
+      const base = [
+        'duration = 5.0',
+        '[project]',
+        'name = "dm-offset"',
+        'output = "o.mp4"',
+        '[source]',
+        'video = "clip.mp4"',
+        'subtitles = "clip.srt"',
+        'danmaku = "clip.dm.srt"',
+      ].join('\n');
+      // 无 mute：cue 2.0~4.0 偏移 -3 ⇒ 源轴 -1.0~1.0，remap 恒等 ⇒ 成片 [-1,1]，
+      // 起点在 0 帧之前的那半段被丢，Dialogue 从 0.0s 起（与模板腿同口径）
+      {
+        writeFileSync(join(dir, 'polish.toml'), base + '\n', 'utf8');
+        const doc = mod.translate(mod.parseToml(base + '\n'), dir, join(dir, 'p.doc.json'));
+        const ass = (doc.assets ?? []).find((a) => a.id === 'dhampir-danmaku.ass');
+        if (!ass) throw new Error('合成工程里没有弹幕轨（clip.dm.srt 解析失败？）');
+        const dialogue = readFileSync(ass.uri, 'utf8').split('\n').filter((l) => l.startsWith('Dialogue:'));
+        eq(dialogue.length, 1, '无 mute：偏移后弹幕还剩 1 条');
+        eq(dialogue[0].slice(12, 22), '0:00:00.00', '无 mute：默认偏移 -3 ⇒ cue 从 2.5s 提前到 0.0s（isFinite 兜底生效）');
+        // 终点不钉：`danmakuExitMs` 会把在屏窗口抬到"够它滚完"（travel ≈ 11.7s），
+        // 终点被 travel 主导、与偏移无关 —— 钉它只会把无关常数冻进判据。
+      }
+      // 显式 `offset_secs = 0`：cue 原样保留（2.5~4.5）—— 平移逻辑一旦被丢（
+      // "写的时候忘了读配置"）或被翻转（正负号写反），这两条 0.0/1.5 判据
+      // 与这一条 2.5/4.5 判据必有一个翻面。
+      {
+        const zero = base + '\n[style.danmaku]\noffset_secs = 0.0\n';
+        const doc = mod.translate(mod.parseToml(zero), dir, join(dir, 'p2.doc.json'));
+        const ass = (doc.assets ?? []).find((a) => a.id === 'dhampir-danmaku.ass');
+        const dialogue = readFileSync(ass.uri, 'utf8').split('\n').filter((l) => l.startsWith('Dialogue:'));
+        eq(dialogue.length, 1, 'offset_secs = 0：显式零偏移不许弄丢弹幕');
+        eq(dialogue[0].slice(12, 22), '0:00:02.50', 'offset_secs = 0 ⇒ cue 保持 2.5s 起（平移丢失/翻转都会翻面）');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
   return checks;
 }

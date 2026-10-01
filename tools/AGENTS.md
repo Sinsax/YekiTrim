@@ -51,7 +51,7 @@
   预览是 0.025s 连续交替（`index.html:532`），出片是固定 0.2s 的四级阶梯（`:1575`）。
 - ⚠️ **改那 6 个纯函数（含 `hexColor`）/ `zoomFactor` / `translate` 或弹幕窗口的 `danmakuExitMs`
   = 必须跑 `--mutate`**：这几条曲线/解析/映射是"看着差不多、差得远"的重灾区，守卫按**逐值**钉了
-  **339 项曲线 + 13 项颜色 + 40 项映射**，并要求 **20 处变异全部打红**。新增曲线/常量/解析分支/映射时
+  **339 项曲线 + 13 项颜色 + 40 项映射**，并要求 **22 处变异全部打红**。新增曲线/常量/解析分支/映射时
   **往守卫的 `MUTATIONS` 里加一条**（"一条不会红的用例不算用例"）。⚠️ 新加的检查**要抽成函数
   并在 `mutate` 里也调**：只写在顶层的话 `--mutate` 那条路径根本不跑它（颜色那条第一版就是这么漏的）。
   `translate` 与 `zoomFactor` 是**为了守卫才 export** 的（`isEntryPoint` 那道门保证直接跑仍是 CLI）。
@@ -64,6 +64,15 @@
   `gradient`（色档 + 同一包络）。参照是 `index.html:1642-1669`；底座那边四档都是同一个 ColorMask 的
   `overlay`，`shape` = Solid(0)/Linear(1)/Radial(2)、逐帧曲线走**图层不透明度关键帧**（`placeEnvelope`）。
   以前 `color` / `fade_in|fade_out` **整条 DROP** —— 也就是说"开头渐入没生效"曾经有一条是转译侧丢的。
+- ⚠️ **贴纸落点有两种模式，基准不同、不许"统一"**（2026-10-02 修）：`auto` 用事件自带的
+  `x`/`y`（`process` 安全区算法算好的 **盒子左上角**）；`manual` 固定到 `[sticker] position`
+  那一点、**忽略事件的 `x/y`**、含义是 **盒子中心**。两份参照都写着这条（`templates/index.html::stickerAnchor`
+  与 `engine.js::stickerAnchor`）。⚠️ **本条曾经整条缺失**：转译器只读 `event.x/y`，于是"设计器里把落点
+  改成固定、点保存"在那条腿上**完全丢失** —— 而 DOM 预览（有 `manual` 分支）当场就对，
+  **报告里一行差异都没有**，症状极具迷惑性。判据在 `check-vtrim-translator.mjs` 的 6c-bis
+  （**行为**判据：两种模式必须算出不同落点 + 各自符合自己那份基准）+ 两处变异自证。
+  ⚠️ 那条"没有 x/y 就拒转"的不变量，判据必须是 `ratio()` 的结果，**不能写 `event.x !== undefined`** ——
+  没跑过后处理的工程里那个键**存在**、值恰好是字符串 `"auto"`。
 - ⚠️ **贴纸的两处旧伤**（2026-09-30 M2 修）：① **不许因为"没有 `sticker_tag`"就提前 return** ——
   `name` 才是 `Step2b` 选定的文件名（只有它是空的才退回去按 tag 猜）；② 找文件**要试全部图片扩展名**
   （`gif/png/jpg/jpeg/webp`，`event.name` 不带扩展名；只试 `.gif` 会让 PNG 贴纸进不了成片 —— 本仓
@@ -110,7 +119,7 @@
 
 ```bash
 node scripts/check-vtrim-translator.mjs            # 339 曲线 + 13 颜色 + 40 映射（含弹幕窗口逐值检查、字幕阴影四键）
-node scripts/check-vtrim-translator.mjs --mutate   # 20 处变异必须**全部打红**
+node scripts/check-vtrim-translator.mjs --mutate   # 22 处变异必须**全部打红**
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）

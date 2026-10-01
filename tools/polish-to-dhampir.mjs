@@ -1825,14 +1825,51 @@ export function translate(config, clipDir, outPath, options = {}) {
             break;
           }
           const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
-          // 落点：`x`/`y` 是**贴纸盒子的左上角**（V-Trim `process/mod.rs:276`），
-          // 而底座 `Transform` 的 origin 是图层中心 —— 所以要挪半个盒子。
+          // 落点：两种模式，**基准不同、不许"统一"**
+          // （与 `templates/index.html::stickerAnchor`、`engine.js::stickerAnchor` 逐字同口径）：
+          //
+          //   `auto`   = 用事件自带的 `x`/`y`（`process/placement.rs` 安全区算法算好写进 segments），
+          //                含义是**贴纸盒子的左上角**（V-Trim `process/mod.rs:276`）
+          //   `manual` = 全部固定到 `[sticker] position` 那一点，**忽略事件的 `x`/`y`**，
+          //                含义是**盒子中心**（`config.rs` 的 `StickerConfig.position` / 设置页口径）
+          //
+          // ⚠️ **2026-10-02 修**：以前这里**只读 `event.x/y`**，整个 `case` 里没有 `manual` 分支 ——
+          // 于是"设计器里把落点改成固定、点保存"**在那条腿上完全丢失**：改的是
+          // `[sticker] position`，而这里读的是 auto 落点算出来的 `ev.x/y`。
+          // 症状极具迷惑性：**预览（DOM 那条腿）当场就对**（engine.js 有这个分支），
+          // 只有底座出的片子里贴纸还在老位置，报告里一行差异都没有。
+          // 而 `process` 每次都把 `ev.x/y` 重算一遍，所以那个旧值还会一直"看起来很新"。
           //
           // 盒子边长按 V-Trim 的规则算：`280 * min(W,H)/1080`。
           // 素材是 500×500 的原图，要塞进这个盒子，所以 `scale = 盒子/素材`。
-          const px = ratio(event.x);
-          const py = ratio(event.y);
-          const hasPos = px !== null && py !== null;
+          const stickerMode = config.sticker?.position_mode === 'manual' ? 'manual' : 'auto';
+          let anchor; // { x, y, center } —— center = 这个点是盒子中心（manual）还是左上角（auto）
+          if (stickerMode === 'manual') {
+            // `[sticker] position` 形如 `"35% 50%"`（也接受单值 = 两轴同值），缺省 `"50% 50%"`。
+            // 解析口径照抄那两份参照：按空白拆、`parseFloat`、非有限数回落 50。
+            const parts = String(config.sticker?.position || '50% 50%').trim().split(/\s+/);
+            const mx = parseFloat(parts[0]);
+            const my = parseFloat(parts.length > 1 ? parts[1] : parts[0]);
+            anchor = {
+              x: Number.isFinite(mx) ? mx : 50,
+              y: Number.isFinite(my) ? my : 50,
+              center: true,
+            };
+          } else {
+            const ex = parseFloat(String(event.x ?? '').replace(/%$/, ''));
+            const ey = parseFloat(String(event.y ?? '').replace(/%$/, ''));
+            anchor = {
+              x: Number.isFinite(ex) ? ex : 50,
+              y: Number.isFinite(ey) ? ey : 50,
+              center: false,
+            };
+          }
+          // manual 模式**永远有落点**（`[sticker] position` 自带缺省值）⇒ 不走下面那条 DROP。
+          // 只有 auto 才需要"事件里有没有 x/y"这一关 —— 而且判据必须是 `ratio()` 的结果，
+          // **不能写 `event.x !== undefined`**：没跑过后处理的工程里那个键是**存在**的，
+          // 值恰好是字符串 `"auto"` ⇒ 旧判据会当"有落点"，然后拿 `NaN` 去算位置
+          // （贴纸安静地贴到错的地方，报告里一行差异都没有）。
+          const hasPos = stickerMode === 'manual' || (ratio(event.x) !== null && ratio(event.y) !== null);
           if (!hasPos) {
             // ⚠️ 这句要给**下一步怎么做**（2026-09-30 M2 改）：落点是 `process` 的产物
             // （`vtrim-polish/src/process/mod.rs:276` 按 人物/字幕/弹幕 推导安全区后写死百分比），
@@ -1854,8 +1891,16 @@ export function translate(config, clipDir, outPath, options = {}) {
           const sourceH = size.height ?? box;
           // 按"装进正方形盒子"算缩放：取长边，保证不溢出盒子。
           const fit = box / Math.max(sourceW, sourceH);
-          const baseX = px * width - width / 2 + box / 2;
-          const baseY = py * height - height / 2 + box / 2;
+          // 锚点百分比 → **盒子左上角**（像素），再折算成底座 `Transform` 的中心基准
+          // （底座 origin 是图层中心，所以要挪半个盒子）。
+          //   manual：锚点**本来就是中心** ⇒ 不能再挪那半个盒子
+          //   auto  ：锚点是左上角 ⇒ 要挪
+          const anchorPxX = (anchor.x / 100) * width;
+          const anchorPxY = (anchor.y / 100) * height;
+          const leftTopX = anchor.center ? anchorPxX - box / 2 : anchorPxX;
+          const leftTopY = anchor.center ? anchorPxY - box / 2 : anchorPxY;
+          const baseX = leftTopX - width / 2 + box / 2;
+          const baseY = leftTopY - height / 2 + box / 2;
 
           // ---- 贴纸动效：逐帧采样 `stickerStateAt`（不再是手写关键帧）----
           //
@@ -3393,11 +3438,23 @@ export function translate(config, clipDir, outPath, options = {}) {
         const meanTravel = travels.reduce((sum, value) => sum + value, 0) / travels.length;
         const dmDurationMs = Math.round(meanTravel * 1000);
 
+        // **弹幕时间偏移**（`[style.danmaku] offset_secs`，默认 -3 = 整体提前 3s）。
+        //
+        // 录播姬的弹幕时间戳普遍比画面晚几秒（用户在直播回放里发弹幕的时机
+        // 滞后于说话），精修时把弹幕整体提前几秒更贴合内容。偏移落在**源
+        // 时间轴**上 —— 先平移、再走下面的 `remapCueMs` 裁剪重映射，被裁掉
+        // 的部分语义与手改弹幕文件一致。与预览两条腿（出片模板的 DM 注入点、
+        // `engine.js::buildIndex`）同口径：三处各自在入口平移一次，sign 一致
+        // （负 = 提前），`isFinite` 兜住坏值回默认。
+        const dmOffsetRaw = config.style?.danmaku?.offset_secs;
+        const dmOffsetSecs = typeof dmOffsetRaw === 'number' && Number.isFinite(dmOffsetRaw)
+          ? dmOffsetRaw
+          : -3.0;
         const cues = [];
         let straddled = 0;
         for (let index = 0; index < rawCues.length; index += 1) {
           const cue = rawCues[index];
-          const pieces = remapCueMs(cue.startMs, cue.endMs);
+          const pieces = remapCueMs(cue.startMs + dmOffsetSecs * 1000, cue.endMs + dmOffsetSecs * 1000);
           if (pieces.length === 0) continue;
           if (pieces.length > 1) straddled += 1;
           // **travel 跟着 cue 走**（一条被裁成两段时，两段用同一个 travel ——
