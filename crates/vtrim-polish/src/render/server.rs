@@ -203,14 +203,20 @@ fn quote_css(s: &str) -> String {
     out
 }
 
-/// 没选库内字体时的字体栈（**空库回落态**）：`'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif`。
+/// 没选库内字体时的字体栈（**空库回落态**）：`'Noto Sans SC','Microsoft YaHei','Noto Sans SC',sans-serif`。
+///
+/// ⚠️ **首项与第三项字面量相同，这是有意的、不是笔误**：首项是「库里那支」（可能被用户换成别的，
+/// 见 [`preferred_fallback_family`]），第三项是「系统里装的 Noto Sans SC」—— 两者可能不是同一支。
+/// ⚠️ **`'LXGW WenKai'` 已从链里去掉**（2026-10-02 自带中文换成 Noto Sans SC）：
+/// 我们不再自带它，继续留一个「刚决定不用」的字体在栈里只会让结果不确定 ——
+/// 用户系统恰好装了霞鹜文楷时，落到的观感与库里那支不一致，而没人预期到这一点。
 ///
 /// ⚠️ **这不再是"用哪支"的权威** —— 权威是 [`fallback_stack()`]（首项随库里默认那支走）。
 /// 本常量现在只扮演两个角色：① `fallback_stack()` 在**库里没有可用中文**时的回落态
 /// （`stack_head_tracks_installed_library_font` 单测钉着"回落时逐字相同"，存量工程的像素不变）；
 /// ② 文档锚点：尾部顺序必须与 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈同序
 /// （那里是 `"<项目字体>",<fallback_stack>`）。
-pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif";
+pub const SYSTEM_FONT_STACK: &str = "'Noto Sans SC','Microsoft YaHei','Noto Sans SC',sans-serif";
 
 /// 字体栈的**首项**：装没装自带中文字体，这里不一样。
 ///
@@ -222,6 +228,10 @@ pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Microsoft YaHei','Noto Sans 
 /// 所以首项按"库里默认那支 / 内置那支"算：解析得到就返回它的**内部族名**，
 /// 否则回落到原来的字面量（系统里真装了 `LXGW WenKai` 的人照旧命中）。
 /// ⚠️ 顺序不能变（仍然排在 `Microsoft YaHei` 前），否则就是上面那条老 bug 的翻版。
+///
+/// ⚠️ **emoji 字体进不了这里**（2026-10-02 职责分离）：两处拦截都在 `vtrim-core::fonts` ——
+/// `scan_dirs` 对 `emoji==true` 强制 `is_default=false`（所以上面的 `.find(|e| e.is_default)` 选不到它），
+/// `builtin_fonts` 那条也显式滤掉了 id 含 emoji 的。**别再在这里补判据**（那就又是"各处各写一份"）。
 pub fn preferred_fallback_family() -> String {
     let root = vtrim_core::fonts::dir();
     // ① 库里显式设过默认的那支（用户意图最强）
@@ -242,8 +252,9 @@ pub fn preferred_fallback_family() -> String {
         })
         .unwrap_or_default();
     if preferred.trim().is_empty() {
-        // 库里没有可用中文 ⇒ 保持老字面量（系统里真装了 `LXGW WenKai` 的人仍然命中）
-        quote_css("LXGW WenKai")
+        // 库里没有可用中文 ⇒ 回落到**系统里那支 `Noto Sans SC`**（不再是 `LXGW WenKai`：
+        // 我们已不自带它，见 `SYSTEM_FONT_STACK` 上的说明）
+        quote_css("Noto Sans SC")
     } else {
         quote_css(preferred.trim())
     }
@@ -257,7 +268,7 @@ pub fn preferred_fallback_family() -> String {
 /// ② 封面没选字体时的 `font-family`（`cover.rs::cover_font_css`）；③ `/api/polish/fonts`
 /// 回给前端的 `fallback_stack`（预览 `.cap` 栈据此与成片同源）。
 pub fn fallback_stack() -> String {
-    format!("{},{}", preferred_fallback_family(), TAIL_STACK)
+    format!("{},{}", preferred_fallback_family(), authority_tail())
 }
 
 /// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底（首项是
@@ -270,9 +281,37 @@ pub fn font_family_with_stack(id: &str) -> String {
 }
 
 /// [`SYSTEM_FONT_STACK`] 里首项**之后**的部分（首项由 [`preferred_fallback_family`] 动态给）。
-/// ⚠️ 与 `SYSTEM_FONT_STACK` 的尾巴必须逐字一致；`preferred_fallback_family` 回落时拼出来
-/// 的整串要与这个常量**完全相同**（有单测钉着）。
+///
+/// ⚠️ **数据源是 `vtrim_core::fonts::fallback_chain()`（唯一权威）**，本常量只是它的字面量投影 ——
+/// 两者必须逐字一致（有单测钉着）。改兜底链**只改 core 那一处**，这里跟着走。
+///
+/// ⚠️ 为什么仍然保留这个 `const` 而不是每次调用 `fallback_chain()`：它是**编译期字面量**，
+/// 让下面几条单测能直接对字符串做断言（`concat!` 需要编译期值），也当文档锚点用。
+/// 运行时的拼接仍走 `fallback_chain()`（见 `fallback_stack`），所以不存在"两边各跑一套"。
 const TAIL_STACK: &str = "'Microsoft YaHei','Noto Sans SC',sans-serif";
+
+/// 权威兜底链的**首项之后的字面量投影**（给单测做"两份定义不许漂"的判据）。
+///
+/// ⚠️ 为什么要有这个函数：`TAIL_STACK` 是编译期常量、`vtrim_core::fonts::fallback_chain()`
+/// 是运行时的唯一权威 —— 两者**必须有机器判据钉住**。只靠注释提醒的话，改了一边忘另一边
+/// **不会报错**，症状是"库里设了默认，成片和预览差一段"（正是 P1-f 收敛过的那类）。
+fn authority_tail() -> String {
+    let chain = vtrim_core::fonts::fallback_chain();
+    // 权威链 = [首项, 尾巴...]；这里取**首项之后**的部分，拼成与 TAIL_STACK 同形状的串。
+    //
+    // ⚠️ **通用族（`sans-serif` / `serif` / `monospace`）不能加引号**：
+    // `'sans-serif'` 在 CSS 里被解释成"一个叫 sans-serif 的**字体族名**"而不是通用族
+    // —— 浏览器不认识这个名字就丢掉这一项，兜底链**从最后一个保险变成没有保险**。
+    // （这条是单测 `tail_stack_matches_core_authority` 抓出来的：第一版统一走 `quote_css`，
+    // 拼出来是 `'sans-serif'`，与 TAIL_STACK 对不上。）
+    let is_generic = |s: &str| matches!(s.to_ascii_lowercase().as_str(), "sans-serif" | "serif" | "monospace");
+    chain
+        .iter()
+        .skip(1)
+        .map(|f| if is_generic(f) { f.clone() } else { quote_css(f) })
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// 启动一个只提供静态文件的 HTTP server，绑定到随机端口
 /// 返回 port。用于每个 chunk 独享的静态文件服务。
@@ -559,6 +598,34 @@ mod tests {
                 "回落时必须与老常量同族名同顺序（不然存量工程跟着变）"
             );
         }
+    }
+
+    /// ⚠️ **两份兜底链定义不许漂**（2026-10-02 输入层收敛的钉子）。
+    ///
+    /// `TAIL_STACK`（本文件的编译期常量）与 `vtrim_core::fonts::fallback_chain()`（唯一权威）
+    /// 必须逐字一致。这条单测就是"改了一边忘另一边"的机器判据 —— 没有它，症状是
+    /// "库里设了默认，成片和预览差一段"，而且**不报错**。
+    #[test]
+    fn tail_stack_matches_core_authority() {
+        let norm = |s: &str| s.replace('"', "'").replace(' ', "");
+        assert_eq!(
+            norm(&authority_tail()),
+            norm(TAIL_STACK),
+            "TAIL_STACK 与 vtrim_core::fonts::fallback_chain() 漂了 —— 改兜底链只改 core 那一处"
+        );
+    }
+
+    /// ⚠️ **emoji 不许进兜底链**（职责分离的钉子）。
+    ///
+    /// 一是语义（emoji 是独立槽位，不是兜底的一段），二是**它撑破下面那条"四段"断言**，
+    /// 三是它对底座（Dhampir）那条腿**零效果**（它没有逐字形回退，见 dhampir.rs 的说明）。
+    #[test]
+    fn fallback_stack_never_carries_emoji() {
+        let stack = fallback_stack();
+        assert!(
+            !stack.to_lowercase().contains("emoji"),
+            "兜底链里出现了 emoji 族名：{stack}"
+        );
     }
 
     /// 两个模板都得留着字体占位符 —— 少了它注入是静默失败的（页面照出，字体不生效）。

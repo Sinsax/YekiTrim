@@ -536,7 +536,13 @@ impl Default for SubtitleStyle {
 }
 
 fn default_font() -> String {
-    "LXGW WenKai".into()
+    // ⚠️ **2026-10-02 由 `LXGW WenKai` 换成 `Noto Sans SC`**（自带中文那支换了）。
+    // 这是**新工程**没选字体时写进 `polish.toml` 的值，所以它与：
+    //   * `vtrim_core::fonts::fallback_chain()` 首项
+    //   * `render/server.rs::SYSTEM_FONT_STACK` 首项
+    // 三处**必须同名**，否则"新工程默认"与"库里装的那支"对不上（当年 P1-e 那类对不上的老坑）。
+    // ⚠️ 老工程不受影响：它们的 `font` 字段已显式写着旧值，读到什么用什么（`family_for` 原文保留）。
+    "Noto Sans SC".into()
 }
 fn default_sub_size() -> u32 {
     72
@@ -580,6 +586,13 @@ pub struct DanmakuStyle {
     #[serde(default = "default_dm_direction")]
     pub scroll_direction: String,
 
+    /// 弹幕时间偏移（秒，负 = 提前出现）。默认 −3.0：录播姬的弹幕时间戳
+    /// 与视频成片之间普遍有一个系统性滞后，弹幕普遍比话说完晚几秒才出现，
+    /// 整体提前 3 秒是精修时的常用起点。只影响弹幕的显示时刻（渲染/预览侧
+    /// 平移 `start`/`end`），不参与分段与贴纸遮挡计算。
+    #[serde(default = "default_dm_offset")]
+    pub offset_secs: f64,
+
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -594,6 +607,7 @@ impl Default for DanmakuStyle {
             speed: default_dm_speed(),
             area: default_dm_area(),
             scroll_direction: default_dm_direction(),
+            offset_secs: default_dm_offset(),
             extra: HashMap::new(),
         }
     }
@@ -619,6 +633,9 @@ fn default_dm_area() -> String {
 }
 fn default_dm_direction() -> String {
     "rtl".into()
+}
+fn default_dm_offset() -> f64 {
+    -3.0
 }
 
 // ===== 布局 =====
