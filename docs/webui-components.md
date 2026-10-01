@@ -322,6 +322,15 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
 而不是把工程搞坏。⚠ 必须在**加载期**就接住：渲染期没有 issue 通道 ——
 `resolver.texture_for` 返回 `None` 的层是被**静默跳过**的（底座 `render/timeline.rs`），指望 `draw` 报错是等不到的。
 
+#### ⚠ 排查第一课：报"版本不匹配"先量 wasm 字节数
+
+预览报 `底座 wasm API 版本不匹配：期望 6，实得 5` 时，**先别怀疑源码** ——
+本仓 `wasm_dirs()` 里 `preview_dir()` 是**定版产物优先**（`<程序目录>/dhampir/preview`），
+那一份会把底座源码树里**当前**的 wasm 整个遮住。实测撞过：`target/debug/dhampir/preview/pkg/`
+躺着旧的 **1.18 MB（v5）**，而底座源码树里是 **8.04 MB（v6）**，症状就是这句版本不匹配。
+刷新：把 `../Dhampir/crates/dhampir-wasm/www/pkg/*` 覆盖过去（打包时 `xtask` 会做这件事）。
+**判据是字节数**：两边量一下就知道是不是过期产物，比读代码快得多。
+
 ⚠ **"还没 attach" 不是失败，是时机不对**：必须与"真解不开"分开（判据 = 错误原文里的 `attach`），
 混在一起会让动图**永远不重试**。本仓做法：标 `st.animPendingAttach` 并 `continue`，attach 之后那次调用会重试。
 
