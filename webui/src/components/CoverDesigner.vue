@@ -87,6 +87,7 @@
           <span v-else-if="savingConfig" class="save-line">保存中…</span>
         </div>
 
+        <div class="lyr-body">
         <!-- 属性面板：选谁改谁（安全区只给显隐）。
              ⚠️ 类名必须叫 `.lyr-props`：`styles/app.css` 有一条**全局** `.pane { display:none }`
              （设置页那几个 tab 面板靠 `.on` 才显示），叫 `.pane` 会让整块属性面板直接隐身
@@ -262,7 +263,7 @@
             <div class="lyr-props-note mt-4">{{ fxHint(sel.type) }}</div>
           </template>
         </div>
-
+        <div class="lyr-col">
         <!-- 图层组列表（**上 = 画得更靠前**）：安全区在最上、只可隐藏（不进 `[cover] layers`）；
              下面就是 `[cover] layers` 的**倒序**（栈底在最下），顺序可以任意拖。
              出片按同一个栈注入 z-index，所以列表里看到的先后就是成片里的先后。 -->
@@ -301,6 +302,9 @@
               <button v-if="!l.locked" class="ico-btn del" title="删除这一层（属性还在，加回来就恢复）" @click.stop="removeLayer(l)"><Icon name="trash" :size="12" /></button>
             </span>
           </div>
+        </div>
+
+        </div>
         </div>
 
         <!-- 底部工具条（PS 的图层面板底部那一排）：新建图层 + 一句用法提示 -->
@@ -1899,9 +1903,11 @@ onUnmounted(() => {
    改前是 372px，一格只有 ~170px、标签会折行）；宽屏按 40% 跟着长（1920 窗口 ≈ 630px）。
    左栏是 `1fr`，右栏一变宽预览就自动缩小 —— 预览高度 = 宽度 × 9/16，所以它同时决定右栏的高度基准
    （`syncControlsBound`，还带一个 `CONTROLS_MIN_H` 下限），别只改一边。
-   实测（外层内容宽 1146px，harness 量 `gridTemplateColumns`）：改前 755/376 → 改后 672/458
-   （预览 −11%，面板 +22%）。 */
-.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(440px, 40%); gap:16px; align-items:start; }
+   ⚠️ **2026-10 用户要求右栏宽度减半**（`minmax(440px,40%)` → `minmax(220px,20%)`）：
+   面板内部已改成「左设置 / 右列表」的左右排布，横向不再需要那么多地方，省下来的都还给预览
+   （左栏是 `1fr`，右栏一窄预览就变大）。改这一条**要连着** `syncControlsBound` 的高度基准一起看：
+   预览高度 = 宽度 × 9/16，所以预览变大会把右栏的定高也顶上去。 */
+.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px, 20%); gap:16px; align-items:start; }
 /* 右栏 = 图层组列表 + 选中层的属性面板（PS 式）：两块**各自滚动**，
    整列高度由 JS（`syncControlsBound`）限到与左侧预览等高（预览矮到放不下时给 `CONTROLS_MIN_H` 下限）
    —— 所以这里是 overflow:hidden，滚动交给里面的 .lyr-list / .lyr-props，
@@ -2032,7 +2038,7 @@ onUnmounted(() => {
    症状很具迷惑性：字体照旧会变（`fontFamily` 在父级 `.title-text` 上，span 继承），只有**高亮色**
    静默失效、退成继承来的 `#f0e6d3` —— 用户报的「关键词字体被改了、高亮色没显示」。
    出片侧没这个问题：`cover.rs` 注入 <span class="hl"> 到模板的**全局** <style> 里。 */
-.title-text :deep(.hl) { color:var(--hlc, #ffcc00); font-size:var(--hl-fs, 1em); -webkit-text-stroke:inherit; paint-order:stroke fill; }
+.title-text :deep(.hl) { font-family:inherit; color:var(--hlc, #ffcc00); font-size:var(--hl-fs, 1em); -webkit-text-stroke:inherit; paint-order:stroke fill; }
 .seek-row { display:flex; align-items:center; gap:8px; }.seek-range { flex:1; min-width:0; padding:0; }
 .seek-time { flex:none; min-width:120px; text-align:right; }
 .w-time { width:90px; flex:none; }
@@ -2076,13 +2082,16 @@ onUnmounted(() => {
 .save-line { margin-left:auto; flex:none; font-size:11px; color:var(--ink-faint); }
 .save-line.err { color:var(--red-deep); }
 
-/* 图层列表：**固定在面板下半部**（用户要求：位置不随属性面板内容跳动）。
-   `flex:0 0 50%` 的百分比基准 = 面板的确定高度（JS 给的 `height`，见 `syncControlsBound`）；
-   所以属性面板内容多少都只影响它自己（内部滚动），列表的上下位置恒定。
-   ⚠️ **`flex-shrink` 必须是 0**：写成 `0 1 50%` 试过 —— 属性面板的 flex-basis 是**内容高度**
-   （文字那一屏 ~800px），基准之和早就溢出，于是列表也被按 basis 比例收缩（实测 422px 的面板里
-   列表只剩 120px），而且**换选中层时列表位置跟着跳**（334 → 243）—— 正是这条规则要防的那件事。 */
-.lyr-list { flex:0 0 50%; min-height:72px; overflow-y:auto;
+/* 面板主体 = **左「设置」/ 右「列表」左右排布**（用户要求：原来是上下结构，改成左右）。
+   两栏各自内部滚动（`min-height:0` 是 flex 子项能滚的前提，别删），面板总高仍由 JS 给定
+   （`syncControlsBound`）—— 所以外层 `overflow:hidden` + 两栏 `overflow-y:auto` 就是全部滚动面。
+   ⚠️ 用 grid 而不是两个 flex 子项：`grid-template-columns` 让两栏**宽度按比例**确定，
+   不受内容多少影响（flex-basis 会被"文字那一屏 ~800px 内容高度"顶开）。
+   ⚠️ `min-width:0` 同样不能省：没有它，长的设置项会把 grid 撑破、右栏被挤出面板。 */
+.lyr-body { flex:1 1 auto; min-height:0; display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; align-items:stretch; }
+.lyr-col { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.lyr-list { flex:1 1 auto; min-height:0; overflow-y:auto;
   border:1px solid var(--line); border-radius:10px; background:var(--card); scrollbar-width:thin; }
 .lyr-list::-webkit-scrollbar { width:6px; }
 .lyr-list::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
@@ -2126,13 +2135,12 @@ onUnmounted(() => {
 .ico-btn:disabled { opacity:.3; cursor:default; }
 .ico-btn.del:hover { color:var(--red-deep); border-color:var(--red); background:var(--red-soft); }
 
-/* 属性面板（选谁改谁）：在上、自己内部滚。
+/* 属性面板（选谁改谁）：在**左栏**、自己内部滚。
    ⚠️ 类名不能叫 `.pane`：`styles/app.css` 有全局 `.pane { display:none }`（设置页 tab 用），
    叫那个名字整块面板会隐身 —— harness 里就是这条抓出来的（与 `.stage-video` 黑边同源）。
-   ⚠️ `min-height` 也不能省：`.controls` 的高度被 JS 限到与预览等高，文字层那一屏内容比空间高得多，
-   flex 收缩按 flex-basis 比例来 —— 没有下限时面板会被压成 0 高。下限给到 120px 后，
-   先被压缩的是下面那个图层列表，属性面板始终留得住一屏。 */
-.lyr-props { flex:1 1 auto; min-height:120px; overflow-y:auto; padding:8px 10px;
+   ⚠️ `min-height:0` 不能省：它是 flex 子项能真正滚动的前提；换成固定 `min-height` 会让
+   内容比自己那一栏高时**撑破面板**（外层 `overflow:hidden` 一裁，最底下那排控件就点不到了）。 */
+.lyr-props { flex:1 1 auto; min-height:0; overflow-y:auto; padding:8px 10px;
   border:1px solid var(--line); border-radius:10px; background:var(--card); scrollbar-width:thin; }
 .lyr-props::-webkit-scrollbar { width:6px; }
 .lyr-props::-webkit-scrollbar-thumb { background:var(--line); border-radius:3px; }
@@ -2142,7 +2150,9 @@ onUnmounted(() => {
   .designer-grid { grid-template-columns:1fr; }
   /* 单列时不再定高/定比例：让内容自己撑（列表给个上限就够） */
   .controls { height:auto !important; overflow:visible; }
-  .lyr-list { flex:0 0 auto; max-height:260px; }
+  /* 窄屏：面板主体从「左设置 / 右列表」退回上下排（两栏并排在这点宽度下每栏只剩百来像素） */
+  .lyr-body { grid-template-columns:1fr; }
+  .lyr-props, .lyr-list { min-height:0; max-height:260px; }
   /* 窄屏：文字面板的"文本框 + 右侧控件列"改上下排 */
   .txt-top { grid-template-columns:1fr; }
 }
