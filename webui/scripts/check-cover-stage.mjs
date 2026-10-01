@@ -87,23 +87,34 @@ const frameImgFillsStage = (css) => {
  *  只有 `_cover_frame.jpg` 一份（出片只有一个 `#frame img`，两帧图源就是那次不一致的成因）；
  *  ③ 监视器是声明了尺寸的真盒子（不是隐身的 1px），显式清掉全局 video 规则的
  *  `max-height:170px`/`margin-top`「卡片缩略图」口径。 */
-const designerHasVideoRef = (src) => /<video ref="videoRef"/.test(src)
-const stageHasNoVideo = (src) => {
+/** 取帧播放器（2026-10 第二轮口径：**选中「视频预览」层时，舞台帧层本体就是播放器**；
+ *  未选中时回落静态图 + 舞台外兜底进度条）：① 模板必须同时有两个分支 —— 舞台内
+ *  `v-if="frameSelected"` 的实况播放器与 `_cover_frame.jpg` 的静态 <img>；
+ *  ② 静态图与出片同源（`_cover_frame.jpg`，不回归 11.09/255 那次）；③ 播放器清掉全局
+ *  `video{}` 的黑底/圆角/170px 缩略图口径，盒子与静态帧一致（inset:0 + contain）。 */
+const hasStageLiveVideo = (src) => {
   const clean = src.replace(/<!--[\s\S]*?-->/g, '') // 注释里的字面量不算（讲历史会写到 <video>）
-  const m = /class="stage"[^>]*>[\s\S]*?class="scrub-row/.exec(clean)
-  return !!m && !/<video/.test(m[0])
+  return /v-if="frameSelected"[^>]*class="stage-video-live"/.test(clean)
 }
-const scrubVideoIsRealBox = (css) => {
-  const b = rule(css, '.scrub-video')
-  return !!b && /aspect-ratio\s*:\s*16\/9/.test(b) && /object-fit\s*:\s*contain/.test(b)
-    && /margin\s*:\s*0/.test(b) && !/opacity\s*:\s*0/.test(b)
+const hasStaticFrameFallback = (src) => /v-else-if="frameImageOk"[^>]*class="stage-frame-img"/.test(src)
+const stageVideoClearsGlobal = (css) => {
+  const b = rule(css, '.stage-video-live')
+  const v = /^(transparent|none)$/i.test(decl(b, 'background') || '') && num(decl(b, 'border-radius')) === 0
+  return v && /max-height\s*:\s*none/.test(b || '') && /margin\s*:\s*0/.test(b || '')
+    && /object-fit\s*:\s*contain/.test(b || '') && !/opacity\s*:\s*0/.test(b || '')
 }
 /** ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
  *  以前这里放的是实时 `<video>`（打开时恒在第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
  *  ⇒「设计器里是这一帧、成片里是另一帧」，两边都不报错，只能比对产物才发现。 */
-const frameLayerIsImg = (src) =>
-  /class="stage-media"[^>]*>[\s\S]{0,300}?<img[^>]*class="stage-frame-img"/.test(src)
-  && !/class="stage-media"[^>]*>[\s\S]{0,300}?<video/.test(src)
+/** 帧层内容判据（2026-10 第二轮口径）：静态回落必须是 `_cover_frame.jpg` 的 <img>；
+ *  里面的 video **必须是 `v-if="frameSelected"` 门控的**实况播放器（选中该层才渲染），
+ *  常驻 video（= 修复前的根因：打开恒第 0 秒、成片却是 frame_pos 那帧）仍然禁止。 */
+const frameLayerIsImg = (src) => {
+  const m = /class="stage-media"[^>]*>[\s\S]{0,300}?(<img[^>]*class="stage-frame-img"|<video[^>]*>)/.exec(src)
+  if (!m) return false
+  if (m[1].startsWith('<img')) return true
+  return /v-if="frameSelected"/.test(m[1]) || /v-if="frameSelected"[^>]*class="stage-video-live"/.test(src)
+}
 /** 「生成封面」必须**无条件**按当前进度刷新关键帧：0 秒是合法取值，不能拿 `time > 0` 当门控
  *  （那会让"没拖过进度条"的用户选的那一帧永远进不了产物）。 */
 const coverFrameIsUnconditional = (src) =>
@@ -163,12 +174,12 @@ check('帧层 img 保持原比例（object-fit:contain，与 #frame img 同规�
   '竖屏素材会被裁掉 —— 那是用户明确否掉的（要求完整显示、左右留白露出背景层）')
 check('帧层 img 铺满舞台（width/height 100%）', frameImgFillsStage(designer), true,
   '不铺满 → 帧层缩在某一角，与出片 #frame img 的 100%/100% 不同口径')
-check('取帧播放器还在（<video ref="videoRef">）', designerHasVideoRef(designer), true,
-  '删掉它 → loadedmetadata 不触发、duration 恒 0，进度条与 frame_pos 反推全部失灵')
-check('取帧播放器在舞台外（.stage 内没有任何 <video>，帧源唯一）', stageHasNoVideo(designer), true,
-  '舞台内出现第二个帧源 = 设计器与成片看到两帧（2026-10 那次不一致的成因）')
-check('监视器是可见的真盒子（16:9 + contain + 清掉缩略图口径，不隐身）', scrubVideoIsRealBox(designer), true,
-  '隐身/1px 的播放器 = 拖进度条盲选（用户报的「没法播视频选关键帧」）')
+check('选中「视频预览」层时舞台本体就是播放器（stage-video-live）', hasStageLiveVideo(designer), true,
+  '没有它 = 用户只能拖进度条盲选，图层里的视频预览名不副实（2026-10 用户口径）')
+check('未选中时回落静态图（_cover_frame.jpg，与出片同源）', hasStaticFrameFallback(designer), true,
+  '帧层契约：静态图必须还是 _cover_frame.jpg（11.09/255 那次同帧修复的根子）')
+check('舞台播放器清掉全局 video 口径（黑底/圆角/170px 缩略图）', stageVideoClearsGlobal(designer), true,
+  '全局 video{} 穿透：黑边盖住下层模糊背景（用户报过「设计器黑边、出片正常」）')
 check('.stage-media 容器没有底色', mediaWrapHasNoBg(designer), true)
 // ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
 // 以前这里放的是实时 `<video>`（打开时恒为第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
@@ -219,17 +230,17 @@ check('设计器没把两个文件弄混（blur→关键帧、image→背景图�
 
 // ── ⑤ 自证有效：把源码改回修复前，上面那批判据必须翻面 ────────────────────────
 console.log('\n⑤ 自证有效：变异后上面的断言必须失败（否则本脚本是空转的）')
-check('[变异] 监视器删掉（取帧播放器没了）→ 判据翻面',
-  designerHasVideoRef(designer.replace('<video ref="videoRef"', '<video data-x="videoRef"')) === false, true)
-check('[变异] 监视器搬回舞台内 → 判据翻面',
-  stageHasNoVideo(designer.replace('<div v-if="showGuide169"', '<video class="x"></video><div v-if="showGuide169"')) === false, true)
-check('[变异] 监视器改回隐身（opacity:0）→ 判据翻面',
-  scrubVideoIsRealBox(designer.replace('object-fit:contain; background:#000', 'object-fit:contain; opacity:0; background:#000')) === false, true)
+check('[变异] 舞台播放器分支删掉（退回纯静态图）→ 判据翻面',
+  hasStageLiveVideo(designer.replace('v-if="frameSelected" ref="videoRef" class="stage-video-live"', 'v-if="false" data-x class="stage-video-live"')) === false, true)
+check('[变异] 静态图回落分支删掉（切换后没有图）→ 判据翻面',
+  hasStaticFrameFallback(designer.replace('v-else-if="frameImageOk" class="stage-frame-img"', 'v-else-if="false" class="stage-frame-img"')) === false, true)
+check('[变异] 舞台播放器改回隐身（opacity:0）→ 判据翻面',
+  stageVideoClearsGlobal(designer.replace('object-fit:contain;\n  background:transparent', 'object-fit:contain; opacity:0;\n  background:transparent')) === false, true)
 check('[变异] 帧层 contain → cover（两份同时改）→ 判据翻面',
   frameIsContained(designer.replace('.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }', '.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }')) === false
   && tplFrameIsContained(coverHtml.replace('object-fit:contain; display:block;', 'object-fit:cover; display:block;')) === false, true)
-check('[变异] 帧层放回 <video>（= 修复前的根因）→ 判据翻面',
-  frameLayerIsImg(designer.replace('</div>\n          <!-- 每个特效', '</div>\n          <video class="x"></video>\n          <!-- 每个特效')) === false, true)
+check('[变异] 帧层放回常驻 <video>（= 修复前的根因）→ 判据翻面',
+  frameLayerIsImg(designer.replace('<video v-if="frameSelected"', '<video v-if="true"')) === false, true)
 check('[变异] 背景层 cover → contain → 判据翻面',
   tplBgImgIsCovered(coverHtml.replace('display:block; width:100%; height:100%; object-fit:cover;', 'display:block; width:100%; height:100%; object-fit:contain;')), false)
 // 只改一边的数字同源：`rsNum` 吃的是被替换过的源码文本，必须立刻读到新值（否则这项是空转的）
