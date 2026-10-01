@@ -69,7 +69,7 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
 pub(super) struct PolishJobOpts {
     /// `render`：输出文件名（真开跑时才落盘）
     pub output_file: Option<String>,
-    /// `render`：出片通道（`dhampir` = 底座，默认；`chrome` = 本仓兜底）。
+    /// `render`：出片通道（现在只有 `dhampir` = 底座；`chrome` 那条腿已删除）。
     /// **None = 不传 `--renderer`**，让 CLI 用它自己的默认值 —— 默认值只有一处（`cli.rs`），
     /// 服务端不抄第二份。
     pub renderer: Option<String>,
@@ -167,7 +167,7 @@ pub(super) async fn polish_spawn(
                         })
                         .await?;
                     }
-                    // 用外部 CLI 子进程渲染：headless Chrome 在 WebUI 服务进程内启动会超时。
+                    // 用外部 CLI 子进程渲染：出片是分钟级的重活，跑在服务进程里会拖着整个服务一起卡。
                     // 输出流式回灌任务日志 + 取消时杀进程树，见 run_polish_child。
                     // 通道：body 显式给了才透传（白名单已在这一层的入口处校验过），
                     // 否则不带 `--renderer` —— CLI 的默认值（现在是 dhampir）说了算。
@@ -181,7 +181,7 @@ pub(super) async fn polish_spawn(
                 "cover" => {
                     // 与 render 同理：封面也走外部 CLI（同样要能看进度、能取消）。
                     // 通道：body 显式给了就透传，否则不带 `--renderer` —— `cover.rs`
-                    // 的解析（显式 > `VTEDIT_COVER_RENDERER` > chrome）说了算，白名单也只那一份。
+                    // 的解析（显式 > `VTEDIT_COVER_RENDERER` > takumi）说了算，白名单也只那一份。
                     let mut extra: Vec<String> = Vec::new();
                     if let Some(r) = opts.renderer.clone() {
                         extra.push("--renderer".into());
@@ -265,16 +265,21 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    // 出片通道：**白名单**（不给就跟随 CLI 的默认值 —— 现在是底座 dhampir）。
-    // ⚠️ 非法值回 **400**，不静默当默认：那会让人以为"选了 chrome 却在跑底座"，
+    // 出片通道：**白名单**（不给就跟随 CLI 的默认值 —— 现在也只有底座 dhampir 一个值）。
+    // ⚠️ 非法值回 **400**，不静默当默认：那会让人以为"选了别的通道却在跑底座"，
     // 而两版成片的差别只有对着看才发现（与 CLI 侧"认不出就报错"同一条口径）。
+    // ⚠️ `chrome` 也要落进 400：那条本仓 headless Chrome 的兜底腿已于 2026-10-01 整条删除，
+    // 但还会有人照老文档/老脚本传它 —— 白名单是最先能给出明确答复的地方。
     let renderer = match body.get("renderer").and_then(|v| v.as_str()) {
         None | Some("") => None,
-        Some(r @ ("dhampir" | "chrome")) => Some(r.to_string()),
+        Some(r @ "dhampir") => Some(r.to_string()),
         Some(other) => {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                &format!("认不出的出片通道 `{other}`（可用：dhampir | chrome）"),
+                &format!(
+                    "认不出的出片通道 `{other}`（现在只有 dhampir —— \
+                     本仓 headless Chrome 那条兜底腿已于 2026-10-01 整条删除）"
+                ),
             ))
         }
     };
@@ -291,7 +296,8 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
 
 pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    // 通道由**前端弹窗**选（`chrome` / `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）。
+    // 通道由**前端**给（现在只有 `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）——
+    // 传 `chrome` 会由那里**明确报错**（那条截图腿已删除），这一层不抄第二份白名单。
     let renderer = body.get("renderer").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
 }
@@ -1239,7 +1245,7 @@ pub(super) async fn polish_project_get_impl(
 // 路由 `/api/polish/render-frame`），以及 feature 未启用时的那个 501 占位版本。**整条已删除**
 // （用户拍板：GPU 那侧交给独立的 Dhampir 底座），`/api/health` 的 `wgpu_render` 能力位一并去掉 ——
 // 前端也不再按它隐藏任何入口。**别再把它加回来**：要"真渲染预览"就走底座那条链路；
-// 本仓预览与出片的事实来源始终是 `templates/index.html` 的 canvas 那条腿。
+// 出片的事实来源是底座（`render/dhampir.rs`），预览那层是 `webui/src/polish/engine.js`。
 
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
@@ -1783,7 +1789,7 @@ mod tests {
     }
 
     /// 出片通道是**白名单**：认不出的值必须 **400**，**不许静默当默认** ——
-    /// 那会让人以为"选了 chrome 却在跑底座"，而两版成片的差别只有对着看才发现。
+    /// 那会让人以为"选了别的通道却在跑底座"，而两版成片的差别只有对着看才发现。
     ///
     /// ⚠️ 只打 **400 那条路**：合法值会真的起一个渲染任务（几分钟 + 要底座 + 要 ffmpeg），
     /// 那不是接口级单测该干的事（真跑一次出片的验收见 `crates/vtrim-polish/src/render/AGENTS.md`）。

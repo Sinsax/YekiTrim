@@ -1,4 +1,4 @@
-//! polish::cover：封面生成（三层结构 文字/关键帧/背景 → HTML 构建 + headless Chrome 截图）。
+//! polish::cover：封面生成（图层栈 文字/关键帧/背景 → HTML 构建 + Takumi 静态渲染）。
 //!
 //! 入口：`cmd_cover`、`cmd_cover_template`、`cmd_preview_cover`、`build_cover_html`、`cover_bg_vars`、`cover_frame_vars`、`cover_blur_css`、`sanitize_hex_color`、`cover_bg_mode`。
 //! 边界：`cover.image` 在消费侧要再做一次 `tenant::ensure_within`（纵深防御第③道，别删）；颜色进 HTML/CSS 前必须 `sanitize_hex_color`，公式只此一份（前端是镜像） —— 见 `crates/vtrim-polish/AGENTS.md`
@@ -6,8 +6,7 @@
 use std::path::Path;
 
 use crate::project;
-use crate::render::{chrome::ChromeRenderer, server};
-use crate::render::{ResolvedPaths, resolve_paths};
+use crate::render::{ResolvedPaths, resolve_paths, server};
 
 // `pub(crate)`：render/server.rs 的测试要断言模板里还留着字体占位符
 pub(crate) const COVER_HTML: &str = include_str!("../templates/cover.html");
@@ -31,34 +30,38 @@ fn cover_shadow_css(cc: &crate::project::CoverConfig) -> String {
     }
 }
 
-/// 出片/截图模式追加的静态规则（模板占位 `__EXPORT_CSS__`）。///
-/// **为什么必须在 CSS 里、而不是靠页面 JS 加那个 `.export` 类**：截图这条路径（headless Chrome、
-/// 以及将来的 Takumi）**不跑时间** —— `animation: fadeUp … both` 在"动画时间 0"下会把元素钉在起始帧
+/// 出片模式追加的静态规则（模板占位 `__EXPORT_CSS__`）。
+/// **为什么必须在 CSS 里、而不是靠页面 JS 加那个 `.export` 类**：出片这条路径（Takumi 静态渲染）
+/// **不跑时间** —— `animation: fadeUp … both` 在"动画时间 0"下会把元素钉在起始帧
 /// （`opacity:0`），静态渲染出来的标题**整块不可见**（实测：真封面 38.44/255，肉眼标题消失）。
 ///
 /// 三条**各自独立**的规则：有的静态渲染器遇到不可解析的值会**丢掉整条声明块**
 /// （Takumi 就是），所以不要把三条挤在一个块里。
 ///
-/// 对 headless Chrome 是**像素等价**的：动画跑完的终态就是 `opacity:1 / translateY(0)`，
-/// 与这三条一致（`transform:none` ≡ `translateY(0)`）。零回归 SHA 实测不变。
+/// 当年对 headless Chrome 逐字节验过**像素等价**：动画跑完的终态就是 `opacity:1 / translateY(0)`，
+/// 与这三条一致（`transform:none` ≡ `translateY(0)`），零回归 SHA 不变。那条截图腿已删除，
+/// 但**这三条只喂静态通道、不挂到预览链上**的理由不变（见 `build_cover_page_static`）。
 const COVER_EXPORT_CSS: &str = "#title{animation:none}#title{opacity:1}#title{transform:none}";
 
-/// 封面渲染通道名（`VTEDIT_COVER_RENDERER`）——静态渲染那条。
+/// 封面渲染通道名（`VTEDIT_COVER_RENDERER`）——静态渲染那条，也是**唯一一条**。
 const RENDERER_TAKUMI: &str = "takumi";
 
-/// 读封面渲染通道：空 / `chrome` = headless Chrome（兜底）；`takumi` = 静态渲染（Takumi，**默认**）。
+/// 读封面渲染通道：空 / `takumi` = 静态渲染（Takumi，**唯一**）。
+///
 /// ⚠️ 认不出的值**当场报错**，不静默回退 —— 与 `render/dhampir.rs` 同一条口径（静默回退会让人
 /// 以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来）。
+/// ⚠️ `chrome` 单独点名报错（**不是说它"认不出"**）：那条 headless Chrome 截图腿已于
+/// 2026-10-01 整条删除，老脚本 / 老配置里还写着它的值。把它归到"认不出的值"里会让用户
+/// 以为是打错字、去反复改拼写；这里必须直说"这条通道没了"。
 fn resolve_cover_renderer(explicit: Option<&str>) -> anyhow::Result<String> {
     // 优先级：**显式参数（CLI/WebUI）> 环境变量 > takumi**。认不出的值一律当场报错 ——
     // 静默回退会让人以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来。
     // ⚠️ 取值口径只此一份：服务端与 CLI 都不抄第二份（同 `--renderer` 默认值那条纪律）。
     //
-    // 2026-10-01 切换：默认通道由 chrome 改为 **takumi**（用户拍板）。
+    // 2026-10-01 切换：默认通道由 chrome 改为 **takumi**（用户拍板）；同日把 chrome 那条腿删除。
     // 依据：字体三处来源收敛之后重跑封面门禁（`scripts/check-cover-takumi.mjs`，clip-14 真工程）
     // 非文字区 **1.17/255**、整图 **11.44/255**，都在阈值内 —— 而且现在是**同库同字体**的对比，
-    // 不再有"预览与实际对不上"那层偏差。chrome 仍保留为兜底（`--renderer chrome` /
-    // `VTEDIT_COVER_RENDERER=chrome`），但它需要外部 Chrome 且已被判定要删（见 P3）。
+    // 不再有"预览与实际对不上"那层偏差。参照帧已冻结在 `scripts/fixtures/cover-golden/`。
     if let Some(v) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
         return normalize_cover_renderer(v, "--renderer");
     }
@@ -72,11 +75,17 @@ fn resolve_cover_renderer(explicit: Option<&str>) -> anyhow::Result<String> {
 
 fn normalize_cover_renderer(raw: &str, src: &str) -> anyhow::Result<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "chrome" => Ok("chrome".to_string()),
         RENDERER_TAKUMI => Ok(RENDERER_TAKUMI.to_string()),
-        other => anyhow::bail!("{src} 认不出 `{other}`（只认 chrome / takumi）"),
+        // ⚠️ 这条分支是**给老配置/老脚本的明确答复**，不是"还没删干净"：别把它简化掉，
+        // 也别把它合并进下面的 `other`（那样用户只会看到"认不出 `chrome`"，去猜拼写）。
+        "chrome" => anyhow::bail!(
+            "{src} 传了 `chrome` —— 封面的 headless Chrome 截图通道已于 2026-10-01 **整条删除**，\
+             现在只有 `takumi` 一条（静态渲染，进程内出图、不需要装浏览器）。\
+             去掉这个参数即可用默认值；`VTEDIT_COVER_RENDERER` 请改成 `takumi` 或留空。"
+        ),
+        other => anyhow::bail!("{src} 认不出 `{other}`（现在只认 takumi）"),
     }
-    }
+}
 
 /// **静态封面渲染（Takumi）在本构建 / 本机上能不能用**：`(编了 feature, 字体库字体数, 字体库目录)`。
 ///
@@ -123,7 +132,7 @@ fn cover_font_files() -> Vec<std::path::PathBuf> {
     out
 }
 
-/// 静态渲染（Takumi）出封面：与 Chrome 那条**同一份模板 + 同一条替换链**（只多 `__EXPORT_CSS__`），
+/// 静态渲染（Takumi）出封面：与预览那条**同一份模板 + 同一条替换链**（只多 `__EXPORT_CSS__`），
 /// 产物同样走 `unique_output_path`（同名加 `_1/_2`）。
 #[cfg(feature = "cover-takumi")]
 fn cover_render_static(
@@ -140,13 +149,13 @@ fn cover_render_static(
     let cover_file = crate::render::unique_output_path(&project_path.join("cover.jpg"));
     let t = std::time::Instant::now();
     crate::render::takumi::render_cover_png(&html, &css, project_path, &cover_file, cw, ch, &fonts)?;
-    // 与 Chrome 那条同样的里程碑文本（`api/render.rs` 靠 `Cover saved:` 归类进任务日志）
+    // 与预览那条同样的里程碑文本（`api/render.rs` 靠 `Cover saved:` 归类进任务日志）
     tracing::info!("   ✓ Cover saved: {}", cover_file.display());
     tracing::info!("   ⏱ 封面 {:.1}s（takumi / {} 个字体）", t.elapsed().as_secs_f64(), fonts.len());
     Ok(())
 }
 
-/// 没编 `cover-takumi` 时的占位：**明确报错**，别静默换回 chrome。
+/// 没编 `cover-takumi` 时的占位：**明确报错**（封面只剩这一条通道，没有可退的）。
 #[cfg(not(feature = "cover-takumi"))]
 fn cover_render_static(
     _project_path: &Path,
@@ -435,7 +444,7 @@ pub fn resolve_cover_stack(cc: &crate::project::CoverConfig) -> Vec<ResolvedCove
 /// 是不是"**默认栈 + 全部可见**"：老工程（没有 `layers`）以及没动过图层顺序的工程都走它。
 ///
 /// 这种情况下**沿用改造前的渲染形式**（不注入逐层 z-index、特效不套 wrapper），让存量工程的成片与
-/// 改造前**逐像素相同**。为什么必须这么做：实测给固定的五块都写上 z-index 之后，Chrome 会换一条合成
+/// 改造前**逐像素相同**。为什么必须这么做：实测给固定的五块都写上 z-index 之后，浏览器会换一条合成
 /// 路径，缩放中的帧层重采样差 ~9/255 —— 肉眼看不出来，但 SHA-256 会变，而"横屏存量逐字节零回归"
 /// 是本仓真出片对拍过的硬判据（见 `crates/vtrim-polish/AGENTS.md`）。
 pub fn is_default_stack(cc: &crate::project::CoverConfig) -> bool {
@@ -754,11 +763,11 @@ fn build_cover_page(
 /// **静态渲染器**（不执行 JS、不推进动画时间 —— 如 Takumi）用的那份：多填一张 `__EXPORT_CSS__`
 /// （见 [`COVER_EXPORT_CSS`]）。
 ///
-/// ⚠️ **必须是独立入口，不能顺手挂在 Chrome 那条链上**：实测（真封面 + headless Chrome 逐字节对拍）
-/// `#title{animation:none…}` 会**改变 Chrome 的像素**（`72CD3A09…` → `46F19E2A…`）——
+/// ⚠️ **必须是独立入口，不能顺手挂在预览那条链上**：实测（真封面 + headless Chrome 逐字节对拍）
+/// `#title{animation:none…}` 会**改变浏览器的像素**（`72CD3A09…` → `46F19E2A…`）——
 /// 动画会让该元素被提升成合成层，关掉之后回到主绘制，光栅化路径就换了（与仓库里
-/// "给五块都写 z-index → 换合成路径 → SHA 变了"同一类）。所以 Chrome 侧**一个字都不改**，
-/// 零回归由构造保证；这三条只喂给静态通道。
+/// "给五块都写 z-index → 换合成路径 → SHA 变了"同一类）。所以预览侧**一个字都不改**；
+/// 这三条只喂给静态通道（那条截图腿已删除，但**预览仍是浏览器渲染**，道理一样）。
 pub fn build_cover_page_static(config: &project::ProjectFile, bg_image: bool, title_lines: &[String]) -> String {
     build_cover_page_ex(config, bg_image, title_lines, true, true)
 }
@@ -915,84 +924,13 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
     // 封面画布**恒横版**（1920×1080），与成片方向解耦（竖屏素材靠模板的 contain 保持比例）
     let (cw, ch) = (COVER_CAPTURE_W, COVER_CAPTURE_H);
 
-    // 渲染通道：默认 headless Chrome（**兜底**）。`VTEDIT_COVER_RENDERER=takumi` 走静态渲染。
+    // 渲染通道：`takumi` 静态渲染是**唯一**一条（2026-10-01 起默认，同日删掉 headless Chrome 截图腿）。
+    // 传 `chrome` 会被下面那条单独点名报错，别把它折进"认不出"。
     // ⚠️ 认不出的值**当场报错**：静默回退会让人以为"我在用静态渲染"（与 `render/dhampir.rs` 同一条口径）。
-    if resolve_cover_renderer(renderer)? == RENDERER_TAKUMI {
-        cover_render_static(project_path, &config, &title_lines, (cw as u32, ch as u32))?;
-        return Ok(());
-    }
-
-    // 封面页 HTML：与预览**同一条替换链**（`build_cover_page`），出片只多一个 `export = true`
-    let cover_html = build_cover_page(
-        &config,
-        project_path.join(COVER_BG_IMG).is_file(),
-        &title_lines,
-        true,
-    );
-
-    let port = server::start_file_server(project_path.to_path_buf(), Some(cover_html)).await?;
-    let url = format!("http://127.0.0.1:{}/", port);
-
-    // 封面画布**恒横版**（1920×1080），与成片方向解耦
-    let browser = ChromeRenderer::launch((cw as u32, ch as u32))?;
-    let tab = ChromeRenderer::create_tab(&browser, &url)?;
-    tab.set_default_timeout(std::time::Duration::from_secs(30));
-
-    // 视口必须**正好**是封面画布：headless 窗口名义尺寸实测视口更小（如 1904×929），
-    // 视口之外的那截不会被绘制 —— 不设的话抓出来底部（以及左右）会是黑边。
-    {
-        use headless_chrome::protocol::cdp::Emulation;
-        tab.call_method(Emulation::SetDeviceMetricsOverride {
-            width: COVER_CAPTURE_W as u32,
-            height: COVER_CAPTURE_H as u32,
-            device_scale_factor: 1.0,
-            mobile: false,
-            scale: None,
-            screen_width: None,
-            screen_height: None,
-            position_x: None,
-            position_y: None,
-            dont_set_visible_size: None,
-            screen_orientation: None,
-            viewport: None,
-            display_feature: None,
-            device_posture: None,
-        })?;
-    }
-
-    for _ in 0..100 {
-        let ready = tab.evaluate("window.__COVER_READY === true", false)?;
-        if ready.value.and_then(|v| v.as_bool()).unwrap_or(false) { break; }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-
-        let jpeg_data = tab.call_method(Page::CaptureScreenshot {
-        format: Some(Page::CaptureScreenshotFormatOption::Jpeg),
-        quality: Some(85),
-        // 精确抓 `#page` 那块画布（模板的 `html.export` 已把它对齐到视口原点、不缩放）。
-        // 之前 clip: None 抓到的是浏览器视口尺寸（实拍 1904×929），页面被居中
-        // → 成片四周黑边，尺寸也不对。
-        clip: Some(Page::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: cw as f64,
-            height: ch as f64,
-            scale: 1.0,
-        }),
-        from_surface: Some(true),
-        capture_beyond_viewport: Some(true),
-        optimize_for_speed: Some(false),
-    })?;
-    use base64::Engine;
-use headless_chrome::protocol::cdp::Page;
-    let jpeg = base64::engine::general_purpose::STANDARD.decode(&jpeg_data.data)?;
-
-    let cover_file = crate::render::unique_output_path(&project_path.join("cover.jpg"));
-    std::fs::write(&cover_file, &jpeg)?;
-    // ⚠️ **不要删 `_cover_frame.jpg`**：它就是「关键帧层」的图源（封面三层 = 文字 / 关键帧 / 背景）。
-    // 删掉的话：① 用户导出的那一帧（含他选的时间点）白导；② 下次出片又按 frame_pos 重新截，
-    // 同一份封面每次出片都可能换脸。背景层的图源是另一个文件（COVER_BG_IMG），互不影响。
-    tracing::info!("  ✓ Cover saved: {}", cover_file.display());
+    // 这里**只做校验**、不再分支 —— 解析出来不是 takumi 就是错误。
+    let channel = resolve_cover_renderer(renderer)?;
+    debug_assert_eq!(channel, RENDERER_TAKUMI);
+    cover_render_static(project_path, &config, &title_lines, (cw as u32, ch as u32))?;
     Ok(())
 }
 
@@ -1180,10 +1118,11 @@ mod tests {
         }
     }
 
-    /// 静态渲染通道（Takumi）与 Chrome 那条**必须是两个入口**，且模板里的两个新占位符都被替换掉。
+    /// 静态渲染通道（Takumi）与**预览那条**必须是两个入口，且模板里的两个新占位符都被替换掉。
     ///
-    /// 1. Chrome/预览那条：**不含** `#title{animation:none…}`（实测它会改变 Chrome 的像素 ——
-    ///    动画把元素提升成合成层，关掉后光栅化路径就换了，SHA 会变）；
+    /// 1. 预览那条：**不含** `#title{animation:none…}`（当年实测它会改变 headless Chrome 的像素 ——
+    ///    动画把元素提升成合成层，关掉后光栅化路径就换了，SHA 会变。那条截图腿已删除，
+    ///    但**预览仍是浏览器渲染**，同理不许挂"关动画"规则）；
     /// 2. 静态那条：**必须含**这三条（不跑时间的渲染器会停在 `opacity:0`，标题整块不可见）；
     /// 3. 两条都不许残留模板占位符：模板加了占位、替换链漏了，字面量就会泄漏进 HTML（**不报错**）。
     ///    ⚠️ 判据要按**占位符名单**列，不能写成"含 `__` 就算漏" —— 模板里本来就有
@@ -1205,13 +1144,13 @@ mod tests {
         c.cover.title_lines = vec!["标题".into()];
 
         for export in [false, true] {
-            let chrome_html = build_cover_page(&c, false, &c.cover.title_lines, export);
+            let preview_html = build_cover_page(&c, false, &c.cover.title_lines, export);
             assert!(
-                !chrome_html.contains("animation:none"),
-                "Chrome/预览这条链不该有关动画的规则（会改像素）：{chrome_html}"
+                !preview_html.contains("animation:none"),
+                "预览这条链不该有关动画的规则（浏览器渲染会改像素）：{preview_html}"
             );
-            assert!(chrome_html.contains("--fs:"), "静态变量块两条链都要有：{chrome_html}");
-            no_leak(&chrome_html);
+            assert!(preview_html.contains("--fs:"), "静态变量块两条链都要有：{preview_html}");
+            no_leak(&preview_html);
         }
 
         let static_html = build_cover_page_static(&c, false, &c.cover.title_lines);
@@ -1463,7 +1402,7 @@ subtitles=\"a.srt\"
     }
 
     /// 视觉验收用：把三种模式的真实 HTML 落到 `target/tmp-cover/`，
-    /// 配一张 `_cover_frame.jpg` 就能用浏览器 1:1 看效果（Chrome 出片就是这份 HTML）。
+    /// 配一张 `_cover_frame.jpg` 就能用浏览器 1:1 看效果（预览就是这份 HTML）。
     /// 跑法：`cargo test -p vtrim-polish --lib dump_cover_variants -- --ignored --nocapture`
     #[test]
     #[ignore]

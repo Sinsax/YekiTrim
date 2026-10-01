@@ -81,7 +81,7 @@ pub struct ServerArgs {
 
     /// 允许监听非 loopback 地址。
     ///
-    /// 服务可读写本机工程目录并调用 ffmpeg/Chrome，默认只允许 127.0.0.1 / ::1；
+    /// 服务可读写本机工程目录并调用 ffmpeg，默认只允许 127.0.0.1 / ::1；
     /// 确需对外监听必须显式打开，且**不允许仍在使用初始密码**（§3.5.4）。
     #[arg(long)]
     pub allow_remote: bool,
@@ -352,7 +352,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let state = Arc::new(model::AppState::with_auth(workspace, workspace_root, auth));
 
     // 清扫上次运行遗留的渲染子进程：服务器重启不会带走 `polish render` 及它的
-    // Chrome/ffmpeg（实测空转两小时，把后续渲染拖到跑不完）。
+    // ffmpeg / 底座孙进程（实测空转两小时，把后续渲染拖到跑不完）。
     let swept = render_proc::sweep_orphans(state.auth.data_dir());
     if !swept.is_empty() {
         info!("已结束 {} 个遗留的渲染子进程: {:?}", swept.len(), swept);

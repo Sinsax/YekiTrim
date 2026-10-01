@@ -7,7 +7,9 @@
 本目录**已有一份 `README.md`**（`api.js` / `engine.js` / `audio.js` 的三行说明 + 那条移植纪律）
 —— **动手前先读它**。与 Rust 侧的对应关系：`engine.js` 是出片模板
 `crates/vtrim-polish/templates/index.html` 的 Canvas 渲染器**移植**（纯函数特效状态机 + 各 `*At(idx, t)`
-预览求值器），**`templates/index.html` 才是真实出片路径**（headless Chrome 渲染）。
+预览求值器）。⚠️ **真实出片路径**由**底座 Dhampir** 走（`tools/polish-to-dhampir.mjs` 把 `polish.toml`
+转译成底座工程）；`templates/index.html` 是**参照实现**（它当年是 canvas 那条腿的模板，那条腿已删除），
+转译器是它的平行重写 —— 两边仍然必须同口径，但"改模板 = 改出片"这句话**不再成立**。
 ⚠️ 曾经还有第三条 `vtrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `vtrim-wasm` 已整体删除
 （GPU 那侧交给独立的 Dhampir 底座）；`timeline.rs` 还在，但只剩 CPU 参考与覆盖层契约的正文，**不是预览的参照**。
 `canvas.js` 是画布参数 SSOT，

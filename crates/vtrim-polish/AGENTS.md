@@ -6,7 +6,7 @@
 
 从 `events.json` 出发生成片段/字幕/贴纸/音效/特效，输出渲染工程与成片。整条链：
 `polish init`（初始化 + 解析字幕弹幕）→ `polish llm`（分段 + 逐段事件）→ `polish process`（后处理 + 下载资源 + 计算位置）
-→ `polish render`（headless Chrome 逐帧 + ffmpeg 合成）→ `polish cover`（封面）。工程状态只在项目目录的
+→ `polish render`（底座 Dhampir 整段出画面 + 本仓 ffmpeg 混音/合流）→ `polish cover`（封面）。工程状态只在项目目录的
 `polish.toml` + `data/` 里，不碰数据库。
 
 子模块各有专卡，先读它们再动手：`process/`（后处理主流程 / 音效 / 特效 / 落点）、`render/`（出片链路 / 预览服务器）、
@@ -83,8 +83,10 @@
   `z-index`，`cover_layer_css()` + `cover_fx_html()` 负责注入。**三层各有各的图源，谁也不许覆盖谁**。
   - ⚠️ **老工程零迁移靠"默认栈走改造前的渲染形式"**（`is_default_stack`）：默认栈时**一个 z-index 都不注入**
     （只把模板里那条 `#fx-extra{z-index:1}` 补回来）、特效还是一个 div —— 实测给五块都写上 z-index 之后
-    Chrome 会换一条合成路径，缩放中的帧层重采样差 ~9/255，**SHA-256 会变**，而"存量逐字节零回归"是本仓的硬判据。
+    浏览器会换一条合成路径，缩放中的帧层重采样差 ~9/255，**SHA-256 会变**，而"存量逐字节零回归"是本仓的硬判据。
     判据：`.workbuddy/cover-layer/` 里三个样本（含六种特效全上的 rich 工程）改前改后 **SHA-256 相同**。
+    ⚠️ 那条基线是**旧 chrome 截图通道**上量的；现在出片走 Takumi（静态光栅化，没有这条合成路径差异），
+    所以这一项对**当前**封面出片不再适用 —— 它留着是为了解释"为什么默认栈一个 z-index 都不注入"这个**设计**。
   - ⚠️ **自定义栈时 `#fx-extra` 必须退回 `z-index:auto`**：它一带 z-index 就是个 stacking context，
     所有特效的 z-index 会被锁死在同一层（拖动排序看着生效、出片不动，**而且不报错**）。
   - ⚠️ **`overlay` 特效额外加 `isolation:isolate`**（只加它、`blur` 加不得）：改造前 `#fx-extra` 是 stacking
@@ -112,24 +114,28 @@
   HTML/CSS** 是它唯一的不变式 —— 换渲染器就是第三份实现。且 Dhampir 今天缺的正好是封面全在用的
   （字距/行高/文字阴影/描边宽度与颜色/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），
   速度上也没有收益（实测一张封面 ≈3.0–3.3s，Dhampir 单帧冷启动就要 1.5–3.2s）。
-- **封面有两条渲染通道**（2026-10-01 起）：**默认 `takumi`**（静态渲染，`src/render/takumi.rs`，
-  `cover-takumi` feature **默认关**但 CLI 的 `default` 带上它），`chrome` = headless Chrome **兜底**
-  （要外部 Chrome，P3 计划删除）。切换依据 = 字体三处来源收敛后重跑封面门禁（clip-14 真工程）
-  非文字区 **1.17/255**、整图 **11.44/255**，均在阈值内 —— 且现在是**同库同字体**的对比。
-  - `build_cover_page_static` 是静态那条的构建入口（= 原替换链 + 填 `__EXPORT_CSS__`）；
-    **Chrome 那条一个字都不改** —— 零回归由构造保证：实测把那三条"关动画"规则挂上去会**改变 Chrome 的像素**
-    （动画把元素提升成合成层，关掉就换光栅化路径，存量 SHA 立刻变）。
+- **封面只剩一条渲染通道**（2026-10-01 用户拍板）：**`takumi`**（静态渲染，`src/render/takumi.rs`，
+  `cover-takumi` feature **默认关**但 CLI 的 `default` 带上它）。**`chrome` 那条 headless Chrome 截图通道
+  已整条删除** —— `normalize_cover_renderer` 对 `"chrome"` 给的是**单独的**「这条腿已删除」错误
+  （**不是**折进"认不出"：那样用户只会去猜拼写）。切到 takumi 的依据 = 字体三处来源收敛后重跑封面门禁
+  （clip-14 真工程）非文字区 **1.17/255**、整图 **11.44/255**，均在阈值内 —— 且是**同库同字体**的对比。
+  对拍基线已**冻结**（`scripts/fixtures/cover-golden/`，取自删除前最后一次 chrome 渲染）：
+  `node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden`，**不再需要 chrome**。
+  - `build_cover_page_static` 是静态那条的构建入口（= 原替换链 + 填 `__EXPORT_CSS__`）。
+  - ⚠️ 当年记录下来的那条"零回归由构造保证"（动画把元素提升成合成层、挂上"关动画"规则会换光栅化路径
+    ⇒ 存量 SHA 变）**随 chrome 那条腿一起作废** —— 它描述的是一条已经不存在的路径，别再照着它推。
   - ⚠️ 模板里 `:root{}` 那个变量块**必须留**：静态渲染器不跑 JS，而变量的唯一来源曾是页面脚本的
     `setProperty` —— 缺了它所有 `var(--…)` 声明**整条被丢**（标题没字号没描边、背景没模糊，实测 38.44/255）。
-    它对 Chrome 是**逐字节中性**的（同值、内联优先）。
   - ⚠️ **字体**：Takumi 不读系统字体，靠 `cover_font_files()` 把字体库全量注册；一个字体都没有时**明确报错**
     （静默出豆腐块是最坏形态）。`VTEDIT_COVER_RENDERER` 认不出的值也**当场报错、不静默回退**。
   - 验收口径、四个引擎差异（`@font-face` 不支持 / 无资源解析器要内联 / 复合选择器 `#id.class` 不匹配 /
     忽略 `paint-order`）与残差（标题字形 ~15/255 是栅格化固有差，**适配层修不了**）见
     **`docs/plan/takumi-cover-capability.md`**。
-  - **怎么用**：CLI `vtrim polish cover <目录> --renderer takumi`；WebUI 在封面设计器点「生成封面」，
-    弹窗选 Chrome / Takumi（`CoverDesigner.vue` → `POST /api/polish/cover {renderer}`）。
-    两条路都**只透传**，取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > **takumi**，认不出就报错）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出（编了 feature + 字体库非空），经 `/api/health.cover_static` 给前端置灰用。
+  - **怎么用**：CLI `vtrim polish cover <目录> --renderer takumi`（不传 = 默认链）；WebUI 封面设计器点
+    「生成封面」直接出图 —— **通道弹窗已删**（只剩一个按钮的弹窗不再是"选择"），前端不传 `renderer`。
+    取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > **takumi**，认不出就报错，
+    `chrome` 给"已删除"的专门错误）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出
+    （编了 feature + 字体库非空），经 `/api/health.cover_static` 给前端置灰 + 写原因用。
 - 封面特效 emoji：`text` 最多 `COVER_EMOJI_MAX_CHARS`(12) 个字符（带 ZWJ/肤色修饰符的一个 emoji
   就要 7~8 个码点），`x/y` 是**字符中心**，`amount` 当大小用（`COVER_EMOJI_MIN_PX`(48) ~
   `COVER_EMOJI_MAX_PX`(288)px，公式只在 `cover.rs::cover_fx_html` 里一份，前端 `fxStyle` 是镜像）。

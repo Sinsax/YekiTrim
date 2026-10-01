@@ -105,6 +105,8 @@
     （`ref.mp4` = `vtrim render --renderer chrome` 的产物），删掉兜底腿会同时失去参照；冻结之后
     删了也能验回归。实测（`demo`）：判据全过、基线中位 **15.07**（与冻结点一致，JPEG 只把均值抬了 0.33）、
     27.8s（比带兜底腿的 ~90s 快），日志里不再有"V-Trim（chrome 后端…）"。
+    ⚠️ **2026-10-01 起 `--capture-golden` 与"活参照"两条路都已作废**（它们都要跑那条已删除的兜底腿）：
+    现在**只有 `--golden`**，脚本对活参照那条路**当场报错并指路 `--golden`**（不静默换口径）。
     ⚠️ **两套基线数字别混**（同一份代码、两种参照口径）：**活参照**（现渲染兜底腿，基线采样点开 ±1 帧
     时间对齐）`demo` 15.07 / `portrait` 9.87 / `real` 9.77；**冻结帧**（JPEG q2 + 不做时间对齐）`demo` 15.07 /
     `portrait` **9.90** / `real` **11.80**。差在 `real` 最明显（它的底噪本来就只有 ~9，去掉 ±1 帧自由度就涨到 ~11.8），
@@ -208,8 +210,9 @@
 ```bash
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py
 node scripts/check-dhampir-wiring.mjs
-# 封面双通道对拍（Chrome ↔ Takumi）：--self-test 自证判据；缺工程/字体/带 feature 的二进制时 SKIP 并打印要准备什么
-node scripts/check-cover-takumi.mjs --project <精修工程目录>
+# 封面通道对拍（冻结参照帧 ↔ Takumi）：--self-test 自证判据；缺工程/字体/带 feature 的二进制时 SKIP
+# ⚠️ 2026-10-01 起 chrome 那条通道已删除，只能用 --golden（活的 chrome 对拍已无意义）
+node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden --project <精修工程目录>
 ```
 
 两条都要求 **0 违规**：前者看模块结构（覆盖率 / 预算 / 骨架 / 索引一致 / ⚠️ 下限），

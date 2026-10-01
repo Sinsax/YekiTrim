@@ -229,17 +229,17 @@ pub(super) fn cleanup_render_leftovers(dir: &Path) {
 
 /// 跑一个 `vtrim polish <sub>` 子进程：输出**落文件**并流式回灌任务日志。
 ///
-/// 为什么不是 `.output()`：Chrome/ffmpeg 会继承 stdout 句柄，只要还有一个活着，
-/// 管道就永远不 EOF —— 子进程早就失败退出了，任务却永远停在"运行中"，连错误都看不到
-/// （实测挂过两次，每次都留下 3 个 headless Chrome 空转两小时）。落文件 + `wait()`
+/// 为什么不是 `.output()`：子进程拉起的 ffmpeg（以及底座）会继承 stdout 句柄，只要还有一个
+/// 活着，管道就永远不 EOF —— 子进程早就失败退出了，任务却永远停在"运行中"，连错误都看不到
+/// （实测挂过两次，每次都留下 3 个渲染孙进程空转两小时）。落文件 + `wait()`
 /// 判定退出就没有这个问题。
 ///
-/// `extra` 是**透传给子命令的额外参数**（现在只有 `render` 用：`["--renderer", "chrome"]`）。
+/// `extra` 是**透传给子命令的额外参数**（`render` / `cover` 用：`["--renderer", "dhampir"|"takumi"]`）。
 /// 不放宽成任意参数的入口 —— 这个函数是"服务端起自己的一个 polish 子命令"，
 /// 参数面越窄越好；白名单在 handler 那一侧（`polish_render`）。
 ///
 /// 取消：子进程是**另一个进程**，看不到我们的进程内标志 —— 由 `cancel_watch`
-/// 按 pid 杀掉整棵树（含 Chrome / ffmpeg）。
+/// 按 pid 杀掉整棵树（含 ffmpeg 与底座拉起的孙进程）。
 pub(super) async fn run_polish_child(
     data_dir: &Path,
     jobs: &Arc<crate::jobs::JobManager>,
@@ -425,8 +425,8 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
         &path,
         format!(
             "{}  INFO vtrim_polish::render::pipeline:   -- Render chunks (4) --\n\
-             {}  INFO vtrim_polish::render::chrome:     frames 0..1969: 45%  120s\n\
-             {}  INFO headless_chrome::browser: Starting Chrome\n",
+             {}  INFO vtrim_polish::render::dhampir:    frames 0..1969: 45%  120s\n\
+             {}  INFO dhampir::render: Starting render\n",
             now_stamp(),
             now_stamp(),
             now_stamp()
@@ -459,14 +459,14 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
         "里程碑行要进日志: {logs:?}"
     );
     assert!(
-        logs.iter().any(|l| l.contains("Starting Chrome")),
+        logs.iter().any(|l| l.contains("Starting render")),
         "其余行进 debug 日志: {logs:?}"
     );
     assert!(
         logs.iter().all(|l| !l.contains("45%")),
         "进度行不该重复进日志: {logs:?}"
     );
-    assert!(out.tail_text().contains("Starting Chrome"), "尾部要有最后一行");
+    assert!(out.tail_text().contains("Starting render"), "尾部要有最后一行");
     let _ = std::fs::remove_file(&path);
 }
 }

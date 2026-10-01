@@ -94,12 +94,13 @@ export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silenc
 /** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；
  *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则）。
  *
- *  `renderer` = 出片通道（`'dhampir'` 底座 / `'chrome'` 本仓兜底）。**留空 = 不传**：
- *  默认值只有一处（CLI 的 `--renderer`，现在是 dhampir），前端不抄第二份、也不写回落。 */
-export const runRender = (pid, dir, outputFile = 'export.mp4', renderer = '') =>
-  startJob('/api/polish/render', pid, dir,
-    renderer ? { output_file: outputFile, renderer } : { output_file: outputFile })
-/** 生成封面。`renderer`：`chrome`（默认）| `takumi`（静态渲染，不出浏览器、内存小）；不传 = 服务端默认。 */
+ *  出片通道**没有可选项**：只有底座 dhampir 一条腿（本仓那条兜底腿已整条删除）。 */
+// `renderer` 参数**已删除**：出片只剩底座一条腿（本仓 headless Chrome 那条 2026-10-01 整条删除），
+// 传它没有意义 —— 传 `chrome` 服务端会回 **400**（不静默当默认）。
+export const runRender = (pid, dir, outputFile = 'export.mp4') =>
+  startJob('/api/polish/render', pid, dir, { output_file: outputFile })
+/** 生成封面。`renderer`：只有 `takumi`（静态渲染，不出浏览器、内存小）；不传 = 服务端默认。
+ *  ⚠️ 老脚本里的 `chrome` 已整条删除，传了会由 `cover.rs` **明确报错**（不是"认不出"）。 */
 export const runCover = (pid, dir, renderer) =>
   startJob('/api/polish/cover', pid, dir, renderer ? { renderer } : {})
 /** 底座**出片**通道的就绪位（M3）：`{ready, binary, preview, translator, font, contract_version, problems[]}`。

@@ -68,9 +68,9 @@
 
 - **输出必须落文件，不能用管道**：`api::run_polish_child` 把子进程 stdout/stderr 重定向到
   `<data_dir>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
-  ⚠ 绝对不要改回 `Command::output()`/管道：Chrome 与 ffmpeg 是**孙进程**，它们会继承 stdout
+  ⚠ 绝对不要改回 `Command::output()`/管道：ffmpeg 与底座拉起的孙进程是**孙进程**，它们会继承 stdout
   句柄 —— 只要还有一个活着，管道就永远不 EOF，`output()` 一直等下去。
-- **取消 = 杀进程树**（`render_proc::kill_tree(pid)` → `taskkill /F /T`，含 Chrome/ffmpeg）。**启动清扫孤儿**：
+- **取消 = 杀进程树**（`render_proc::kill_tree(pid)` → `taskkill /F /T`，含 ffmpeg 与底座拉起的孙进程）。**启动清扫孤儿**：
   每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，`server::run` 启动时 `render_proc::sweep_orphans`
   结束遗留渲染（**先核对命令行**再杀，pid 会被系统回收）。
 

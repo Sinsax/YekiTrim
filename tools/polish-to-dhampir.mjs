@@ -1056,7 +1056,7 @@ export const SHAKE_SECONDS = 0.2;
 // 过一遍 `translate`，断言"某一档真的转出来了"。只有 `isEntryPoint` 那道门保证直接跑仍然是 CLI。
 export function translate(config, clipDir, outPath, options = {}) {
   /// **出片那条腿传 `true`**：时间线保持整条（屏蔽区间留给出片尾部的整段重编码去剪，
-  /// 与 chrome 那条腿同一条口径）。预览必须留 `false`（客户端要靠压缩时间线跳屏蔽区间）——
+  /// 与成片那条口径一致）。预览必须留 `false`（客户端要靠压缩时间线跳屏蔽区间）——
   /// 详见下面 `keepRanges` 那段注释。
   const keepMuted = options.keepMuted === true;
   const timebase = { num: 60, den: 1 }; // 素材实测 60fps
@@ -1214,8 +1214,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   // ⚠️ **`--keep-muted`（出片那条腿）下这里退化成"整条一条保留区间"**（2026-09-30）：
   // 预览必须用压缩时间线（客户端靠"落在被掐掉的段里 = 没有对应帧"去跳屏蔽区间），
-  // 而**出片不能** —— 出片尾部还有一道 `Ffmpeg::cut_ranges`（与 chrome 那条腿共用的整段重编码），
-  // 它按**源时间**剪。这里先掐一遍、尾部再剪一遍 = **剪两次**：实测成片比 chrome 短一大截，
+  // 而**出片不能** —— 出片尾部还有一道 `Ffmpeg::cut_ranges`（本仓那侧的整段重编码），
+  // 它按**源时间**剪。这里先掐一遍、尾部再剪一遍 = **剪两次**：实测成片短一大截，
   // 而且音轨是从**整条**源视频抽的、没跟着压缩，第一刀之后全错位。
   // ⇒ 出片给"整条时间线"，屏蔽区间交给尾部那一剪（两边口径就统一了）。
   const keepRanges = [];
@@ -1446,7 +1446,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       'mute_ranges',
       keepMuted
         ? `${muteFrames.length} 段屏蔽区间（共 ${(muteFrames.reduce((s, m) => s + (m.end - m.start), 0) / fps).toFixed(2)} 秒）**保留在时间线里**` +
-          `（--keep-muted：出片尾部按源时间剪一次，与 chrome 那条腿同一条口径；` +
+          `（--keep-muted：出片尾部按源时间剪一次（本仓那侧）；` +
           `预览那条腿不能这么转）`
         : `${muteFrames.length} 段被**掐掉**（不是静音）：共 ${(cutFrames / fps).toFixed(2)} 秒，` +
           `成片从 ${(totalFrames / fps).toFixed(2)}s 变成 ${(durationFrames / fps).toFixed(2)}s；` +

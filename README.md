@@ -6,10 +6,10 @@
 
 - **ffmpeg** + **ffprobe** — 需在 PATH 中，用于音频提取和视频剪切
 - **Rust** 工具链 (构建用)
-- **Node.js 18+**（可选但**默认出片通道需要**）：精修出片默认走独立的 **Dhampir 底座**
-  （本机 GPU + ffmpeg），而"把 `polish.toml` 转译成底座工程"那一步是
-  `tools/polish-to-dhampir.mjs`（node 脚本）。没装 Node 也能用 ——
-  用 `vtrim polish render --renderer chrome` 走本仓的 Chrome 出片；
+- **Node.js 18+**（**出片必需**）：精修出片走独立的 **Dhampir 底座**（本机 GPU + ffmpeg），
+  而"把 `polish.toml` 转译成底座工程"那一步是 `tools/polish-to-dhampir.mjs`（node 脚本）。
+  ⚠️ **出片只有底座这一条腿** —— 本仓当年那条逐帧 Chrome 兜底腿已于 2026-10-01 整条删除，
+  所以没装 Node / 底座不可用时是**明确报错**，没有第二条路可退。
   `vtrim polish doctor` 的 `[dhampir]` 块会告诉你缺什么。
   （底座二进制放在同层 `Dhampir/target/{debug,release}/` 或 `<程序目录>/dhampir/bin/`，
   也可用 `VTEDIT_DHAMPIR` / `VTEDIT_DHAMPIR_CLI` 指定。）
@@ -451,7 +451,7 @@ $ vtrim doctor [--url http://127.0.0.1:26320]
 | `render [<dir>]` | 渲染视频，自动先跑 process |
 | `cover [<dir>] [--template <t>]` | 生成封面，可选模板: `left-text` / `center-text` / `right-text` / `minimal` |
 | `preview [<dir>] [mode]` | 浏览器预览，自动先跑 process。mode: `video` / `cover` / 留空(双端口) |
-| `doctor [<dir>]` | 系统检查：ffmpeg、Chrome、LLM 配置 |
+| `doctor [<dir>]` | 系统检查：ffmpeg、底座（Dhampir）、LLM 配置 |
 | `test [<dir>]` | 测试模式，生成测试素材 + 预览 |
 
 ## 管线流程

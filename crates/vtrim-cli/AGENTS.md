@@ -44,7 +44,7 @@
 
 ## 边界
 
-- `polish cover` 有 **`--renderer chrome|takumi`**（不传 = `cover.rs` 的默认：显式参数 > `VTEDIT_COVER_RENDERER` > chrome）。⚠️ **封面与视频的出片通道互相独立**：视频走底座时封面仍可走静态截图/浏览器，别把两者绑一起。
+- `polish cover` 有 **`--renderer takumi`**（**唯一一个值**；不传 = `cover.rs` 的默认链：显式参数 > `VTEDIT_COVER_RENDERER` > takumi）。⚠️ 老脚本里的 `--renderer chrome` 现在会由 `cover.rs` **明确报错**（那条 headless Chrome 截图腿 2026-10-01 整条删除）。⚠️ **封面与视频的出片通道互相独立**：视频走底座时封面仍走 Takumi（静态光栅化），两者是不同的引擎，别把它们绑一起。
 
 - ⚠️ **CLI 只用 server 的入口**：`vtrim_server::` 只许出现 `run` / `ServerArgs`，不许直接调 server 内部模块。
   这是机器门禁（`cli 只用 server 的入口`）：`python3 scripts/check_module_boundaries.py`。
@@ -71,7 +71,9 @@
   `vtrim_polish::commands::cmd_preview`，保证命令仍然可用。
 - `polish llm` 在 CLI 保留**断点续传**（`cmd_llm(input, false)`）——长片重跑很贵；编辑器那颗按钮走的是 `full=true`。
 - `polish render` 用 `std::env::set_var("VTEDIT_RENDERER", renderer)` 传后端。⚠️ **默认 `dhampir`**
-  （底座出片，2026-09-30 用户拍板切换），`chrome` 是本仓兜底；老写法 `wgpu` / `native` 视作 dhampir
+  （**出片只剩这一条腿**，2026-09-30 用户拍板切换）；老写法 `wgpu` / `native` 视作 dhampir，
+  `chrome` 是本仓那条**已整条删除**的兜底腿 —— 现在 `RenderBackendKind::parse("chrome")` 返回 `None`、
+  出片**明确报错**（不静默改走底座）
   （它们本来就是"用 GPU 出片"，而 GPU 出片现在只有底座那一条路）。**认不出的值由 `pipeline.rs`
   一处报错**（不静默换路）—— 校验别在 `cli.rs` 里再抄一份。
   ⚠️ `--strict` 走 `VTEDIT_STRICT=1`：转译报告里 `DROP > 0` 就拒绝出片（判据在

@@ -66,7 +66,7 @@
   **其余失败（网络/超时）仍照旧重试**，别一起收。
 - ⚠️ **出片通道（`polish.js::runRender(pid, dir, outputFile, renderer)`）留空 = 跟随默认**：
   默认通道只有一处定义（CLI 的 `--renderer`，现在是底座 `dhampir`），前端**不许写回落**
-  （写 `|| 'chrome'` 就成了第二处默认值，两边一漂就变成"看着选了底座、其实在跑 chrome"）。
+  （写 `|| 'dhampir'` 就成了第二处默认值，两边一漂就变成"看着选了底座、其实在跑别的"）。
   服务端对认不出的值回 **400**（`/polish/render` 的白名单）。
 - **`polish.js` 的写请求统一带 `{project, dir}`**，`dir` 是**项目内相对路径**（如
   `output/clips/clip-01`，由 `clipRelDir(clipName)` 造）；**路由参数 `:clip` 用目录名、`polishMap`

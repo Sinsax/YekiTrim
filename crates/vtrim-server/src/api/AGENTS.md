@@ -29,7 +29,7 @@
 | `project_data` | 项目数据面：`/project-data/{status,events,clips,transcript,pipeline,correct,config,assets,polish}`、`clips/:rank`(删除)、`events/:rank/cut`、`events/cut-all`、`fs/list`、`media/*path`；`assets` 的三种形态见下「素材清单端点」 |
 | `pipeline` | 管线任务体 / 队列查询 / SSE：`run_pipeline_job`、`jobs_list`、`job_get`、`job_events`、`job_cancel`、`global_stream` |
 | `render` | 渲染/封面出片子进程与进度解析：`run_polish_child(data_dir, jobs, job_id, sub, dir, extra)`（`extra` = 透传给子命令的额外参数，现在只有 `render` 用：`["--renderer", …]`）、`follow_render_output`、`RENDER_MILESTONES`（含底座那条腿的 `-- Dhampir …` 行）；里程碑 → progress/`jobs.log` 的分类规则与 `loudness.json`/`sticker_frames.json` 缓存失效口径见 `crates/vtrim-polish/src/render/AGENTS.md` |
-| `polish` | 精修编辑器后端：`/polish/{init,llm,llm-segment,process,render,cover,preview,cover-config,project,subtitles,silence,fonts,sticker-library}`。⚠️ `/polish/render` 的 `body.renderer` 是**白名单**（`dhampir` 默认 / `chrome`；认不出 → **400**，不静默当默认），不给就不带 `--renderer` —— 默认通道只有 `cli.rs` 一处。⚠️ `/polish/dhampir-status`（M3）= 底座**出片**通道就绪位（六项文件定位，不渲染）；`/api/health` 的 `dhampir_ready` 是它的**布尔投影**（health 无鉴权 ⇒ 只回布尔、不回路径） |
+| `polish` | 精修编辑器后端：`/polish/{init,llm,llm-segment,process,render,cover,preview,cover-config,project,subtitles,silence,fonts,sticker-library}`。⚠️ `/polish/render` 的 `body.renderer` 是**白名单**（**只有 `dhampir`**；认不出 → **400**，不静默当默认 —— `chrome` 也落这条，那条腿已删除），不给就不带 `--renderer` —— 默认通道只有 `cli.rs` 一处。⚠️ `/polish/dhampir-status`（M3）= 底座**出片**通道就绪位（六项文件定位，不渲染）；`/api/health` 的 `dhampir_ready` 是它的**布尔投影**（health 无鉴权 ⇒ 只回布尔、不回路径） |
 | `core` | 管线执行入口与进度桥：`run_stages`、`progress_bridge` |
 | `test_support` | `TestApp`（整张路由表的接口级夹具），**只在测试编译** |
 
@@ -41,7 +41,7 @@
   读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default` 等）。
   ⚠️ 这三条**有意不挂 `enforce_scope`**：字体库是**程序级全局资产**、不在任何项目内，
   与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
-- **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（`chrome`|`takumi`）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把弹窗里那个选项置灰；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
+- **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
 
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。

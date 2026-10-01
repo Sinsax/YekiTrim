@@ -30,7 +30,7 @@
 //!
 //! # 找不到东西就**报错**，不静默回退
 //!
-//! 二进制、转译器、字体三者任一找不到都**返回 Err**。静默回退到 chrome 会让人
+//! 二进制、转译器、字体三者任一找不到都**返回 Err**。静默回退到别的通道会让人
 //! 以为"我在用 Dhampir 出片" —— 而那种错只有在对比两版成片时才看得出来。
 
 use std::path::{Path, PathBuf};
@@ -204,7 +204,7 @@ fn find_binary() -> Result<PathBuf> {
 
     bail!(
         "找不到 Dhampir 二进制（{exe}）。设 VTEDIT_DHAMPIR=<路径>，或把 Dhampir 与 V-Trim 放在同一层目录。\n  找过：\n    {}\n  \
-         （默认出片通道就是它；要改用本仓的 chrome 出片：`vtrim polish render <片段目录> --renderer chrome`）",
+         （出片只有这一条腿 —— 本仓那条 headless Chrome 兜底腿已于 2026-10-01 整条删除，别去找它）",
         tried.join("\n    ")
     )
 }
@@ -539,7 +539,7 @@ pub fn wasm_dirs() -> Result<(PathBuf, PathBuf)> {
     )
 }
 
-/// 出片的产物路径（与 chrome 路径**同一个**中间文件，后面音轨链路原样接上）。
+/// 出片的产物路径（与当年那条 chrome 腿**同一个**中间文件 `_temp_video.mp4`，后面音轨链路原样接上）。
 pub fn video_intermediate(project_path: &Path) -> PathBuf {
     project_path.join("_temp_video.mp4")
 }
@@ -665,7 +665,7 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
         problems.push(
             format!(
                 "转译器要 Node {MIN_NODE_MAJOR}+（`node --version` 能跑通），当前 PATH 上找不到 —— \
-                 装 Node，或改用 `--renderer chrome`"
+                 先装 Node（出片只有底座这一条腿，没有可退的第二条）"
             ),
         );
     } else if deep {
@@ -673,7 +673,7 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
             Some((major, minor, raw)) => {
                 if major < MIN_NODE_MAJOR {
                     problems.push(format!(
-                        "Node 版本太低：{raw}（转译器要 ≥ v{MIN_NODE_MAJOR}）——升级 Node，或改用 `--renderer chrome`"
+                        "Node 版本太低：{raw}（转译器要 ≥ v{MIN_NODE_MAJOR}）——升级 Node（出片只有底座这一条腿）"
                     ));
                 }
                 node_version_label = Some(format!("{raw}（v{major}.{minor}）"));
@@ -682,7 +682,7 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
                 // PATH 里有个 `node` 却跑不出 `--version`：多半是桩 / 装了一半。
                 problems.push(
                     "PATH 上有 `node`，但 `node --version` 跑不通（商店桩或装了一半？）—— \
-                     重装 Node，或改用 `--renderer chrome`"
+                     重装 Node（出片只有底座这一条腿）"
                         .to_string(),
                 );
             }
@@ -971,7 +971,7 @@ pub fn sequence_frames(translated: &Path) -> Result<usize> {
 /// # 为什么把底座的 stdout **落文件**、再边等边 tail
 ///
 /// 底座的进度是 NDJSON（`start` / `progress` / `done`）。**不翻译的话外面那层收不到任何进度**：
-/// `vtrim server` 的 `follow_render_output` 认的是 chrome 那条腿的 `frames A..B: NN%` 形状 ——
+/// `vtrim server` 的 `follow_render_output` 认的是当年那条 chrome 腿留下的 `frames A..B: NN%` 形状 ——
 /// 分钟级的出片在 WebUI 上就是"卡在 0%"。契约留在本仓（不让底座为 V-Trim 定制输出）。
 ///
 /// 但**不能用管道**收（本仓踩过两次：Chrome/ffmpeg 是孙进程，它们继承 stdout 句柄，
@@ -1035,7 +1035,7 @@ fn run_render(
         .spawn()
         .with_context(|| format!("起 Dhampir 失败：{}", binary.display()))?;
 
-    // 边等边翻译进度：每行翻成与 chrome 同形的 `frames A..B: NN%`（父进程的 parser 认这个），
+    // 边等边翻译进度：每行翻成与当年 chrome 腿同形的 `frames A..B: NN%`（父进程的 parser 认这个），
     // 但最多每 1.5s 打一条（进度行本身不进日志，靠任务卡的进度条表达）。
     let mut offset = 0u64;
     let mut buf: Vec<u8> = Vec::new();
@@ -1098,7 +1098,7 @@ pub fn render_video_only(
 ) -> Result<PathBuf> {
     let out = video_intermediate(project_path);
     // **出片：整条时间线**（`keep_muted = true`）—— 屏蔽区间由 `cmd_render` 尾部那一剪按源时间去掉，
-    // 与 chrome 那条腿同一处、同一条口径。传 false 会**剪两次**（成片短一大截 + 音轨错位）。
+    // 与当年 chrome 那条腿同一处、同一条口径。传 false 会**剪两次**（成片短一大截 + 音轨错位）。
     let (translated, report) = prepare_project_reporting(clip_dir, project_path, true)?;
     if strict && report.drop_count > 0 {
         cleanup_project(project_path);

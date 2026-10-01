@@ -1,7 +1,7 @@
-//! polish::render::pipeline：出片主链路（起预览 server → Chrome 逐块截帧/逐帧绘制 → ffmpeg 编码混流 → 统计）。
+//! polish::render::pipeline：出片主链路（转译成底座工程 → `dhampir.exe` 整段出片 → ffmpeg 编码混流 → 统计）。
 //!
-//! 入口：`cmd_render`、`render_chunk_sync`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`export_sound_data`、`cleanup`。
-//! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（Chrome/ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+//! 入口：`cmd_render`、`render_chunk_sync`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`cleanup`。
+//! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
 
 use base64::Engine;
 use std::collections::HashMap;
@@ -10,7 +10,6 @@ use std::process::Command;
 
 use crate::project::ProjectFile;
 use crate::render::backend::{RenderBackendKind, create_backend};
-use crate::render::chrome::ChromeRenderer;
 use crate::render::context::RenderContext;
 use crate::render::ffmpeg::Ffmpeg;
 use crate::render::frame::extract_chunk_frames;
@@ -31,7 +30,7 @@ fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// 兜底通道的冻结闸门（S4）：用**效果词汇表**当支持矩阵
+// 效果词汇表（`spec/effects.json`）的定位
 // ---------------------------------------------------------------------------
 
 /// 效果词汇表原文：**运行时**先找包内（`<程序目录>/spec/effects.json`）或开发树
@@ -48,7 +47,7 @@ fn effect_spec_json() -> String {
 /// 词汇表（`spec/effects.json`）在**包内 / 开发树**里的路径；找不到就 `None`（改用编译期内嵌那份）。
 ///
 /// 抽成函数是为了让 `polish doctor` 也能**把它印出来**（2026-10-01）：它是包内的第 4 件交付物，
-/// 也是下面那道"兜底通道冻结闸门"的输入 —— doctor 只印二进制/转译器/预览产物的话，
+/// 也是转译器与出片两侧共同的输入 —— doctor 只印二进制/转译器/预览产物的话，
 /// 会让人以为词汇表不在包里（包内路径与内嵌那份**行为上等价**，但"在哪"这件事必须可见）。
 pub(crate) fn spec_effects_path() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -67,10 +66,17 @@ pub(crate) fn spec_effects_path() -> Option<PathBuf> {
     })
 }
 
-/// canvas 兜底通道**支持**的效果集合（词汇表 `anchors.canvas` 里非 null 的那些）。
+/// canvas 通道**支持**的效果集合（词汇表 `anchors.canvas` 里非 null 的那些）。
 ///
 /// `None` = 词汇表读不出来（理论上只有内嵌那份坏了才会）⇒ 调用方**只警告不拦**
 /// —— 因为一个坏文件不该让整条出片链路停摆。
+///
+/// ⚠️ **现在没有生产调用者**：它当年是"canvas 兜底通道冻结闸门"（S4）的输入，而 canvas 那条腿
+/// （`render/chrome.rs`）已于 2026-10-01 删除。留着是因为两件事都要它：① `spec_effects_path()`
+/// 的词汇表定位仍被 `polish doctor` 与转译链使用；② 下面的单测钉住"`anchors.canvas` 与
+/// `effects[].id` 必须对得上"（词汇表与模板 `index.html` 的漂移防线）。**别再把它接回一条
+/// 出片分支** —— 出片只有底座那条腿。
+#[cfg_attr(not(test), allow(dead_code))]
 fn canvas_supported_effects() -> Option<std::collections::HashSet<String>> {
     let spec: serde_json::Value = serde_json::from_str(&effect_spec_json()).ok()?;
     let canvas = spec.get("anchors")?.get("canvas")?.as_object()?;
@@ -87,6 +93,10 @@ fn canvas_supported_effects() -> Option<std::collections::HashSet<String>> {
 ///
 /// 走序列化而不是 match 枚举：`serde_json::to_value(config)` 得到的就是写进 `polish.toml` 的那套
 /// 类型名，**加新类型时这里不用改**（而 match 枚举会漏掉新变体）。
+///
+/// ⚠️ 同 `canvas_supported_effects()`：生产路径上暂时没有调用者（它当年喂给 canvas 冻结闸门），
+/// 留着是因为它自带单测、且任何"这个工程用了哪些效果"的判断都得走它。
+#[cfg_attr(not(test), allow(dead_code))]
 fn used_effect_types(config: &ProjectFile) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let Ok(value) = serde_json::to_value(config) else {
@@ -111,6 +121,7 @@ fn used_effect_types(config: &ProjectFile) -> Vec<String> {
 }
 
 /// 纯函数：`used` 里哪些不在 `supported` 里（去重、保持顺序）—— 抽出来是为了可测。
+#[cfg_attr(not(test), allow(dead_code))]
 fn missing_support<'a>(
     used: impl Iterator<Item = &'a str>,
     supported: &std::collections::HashSet<String>,
@@ -122,17 +133,6 @@ fn missing_support<'a>(
         }
     }
     out
-}
-
-/// 工程里用到的、canvas 兜底通道**没实现**的效果（顺序 = 工程里的出现顺序）。
-fn unsupported_for_canvas<'a>(used: impl Iterator<Item = &'a str>) -> Vec<String> {
-    match canvas_supported_effects() {
-        Some(supported) => missing_support(used, &supported),
-        None => {
-            tracing::warn!("  效果词汇表读不出来，跳过 canvas 通道的支持矩阵校验");
-            Vec::new()
-        }
-    }
 }
 
 
@@ -203,6 +203,10 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("  Duration: {:.1}s", duration);
 
     let fps = 30;
+    // ⚠️ `VTEDIT_PARALLELISM` 与这里那个 30fps 的 `frame_count` 都是**已删除的 Chrome 分块腿**
+    // 留下的（它按 fps × 时长切块、4 路并行）。底座那条腿**不用它们**：帧数由
+    // `dhampir::render_video_only` 从转译产物里读（唯一权威，见 `render/AGENTS.md`）。
+    // 留着只为了下面那条日志（"这个工程多少秒 / 多少帧"是排查时第一眼要看的数字）。
     let parallelism = std::env::var("VTEDIT_PARALLELISM")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -210,77 +214,35 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         .max(1);
     let frame_count = (duration * fps as f64).ceil() as usize;
     tracing::info!("    {} frames at {} fps", frame_count, fps);
+    tracing::debug!("    (VTEDIT_PARALLELISM={parallelism} —— 仅历史遗留，底座那条腿不分块)");
 
     // 选择渲染后端。
     //
-    // ⚠️ **默认是 Dhampir（底座）**（2026-09-30 用户拍板切换）：GPU 那侧整条已交给独立底座，
-    // 本仓的 chrome 那条腿退成**兜底**。取不到环境变量时的兜底值也必须与 CLI 的
+    // ⚠️ **现在只有 Dhampir（底座）一条腿**（2026-09-30 用户拍板切默认；2026-10-01 把本仓那条
+    // headless Chrome 逐帧腿整条删掉）。取不到环境变量时的兜底值也必须与 CLI 的
     // `--renderer` 默认值一致 —— 两处不一致会让"库里调用"与"命令行调用"走出两条不同的路。
     // 老命令行里的 `wgpu` / `native` 由 `RenderBackendKind::parse` 认成 Dhampir（它们本来就是
     // "用 GPU 出片"的意思，而 GPU 出片现在只有底座这一条）。
     let renderer = match std::env::var("VTEDIT_RENDERER") {
         Ok(v) => RenderBackendKind::parse(&v).ok_or_else(|| {
-            // **打错字不许被静静当成别的通道**：默认通道现在是 GPU 那条腿，静默误路由
-            // 表现为"选错了渲染器却没报错"，而两版成片的差别只有对着看才发现。
+            // **打错字不许被静静当成别的通道**：静默误路由表现为"选错了渲染器却没报错"，
+            // 而两版成片的差别只有对着看才发现。
             anyhow::anyhow!(
-                "认不出的渲染后端 `{v}`（VTEDIT_RENDERER / --renderer）。可用值：dhampir | chrome\n  \
-                 （老写法 wgpu / native 等同 dhampir —— GPU 出片现在只有底座那一条路）"
+                "认不出的渲染后端 `{v}`（VTEDIT_RENDERER / --renderer）。现在只有 dhampir 一个值\n  \
+                 （老写法 wgpu / native 等同 dhampir —— GPU 出片现在只有底座那一条路；\n  \
+                 `chrome` 那条本仓 headless Chrome 的兜底腿已于 2026-10-01 **整条删除**，\n  \
+                 装外部浏览器的出片路径不再存在）"
             )
         })?,
         Err(_) => RenderBackendKind::Dhampir,
     };
     tracing::info!("  Renderer: {}", renderer.as_str());
 
-    // ---- 兜底通道的**冻结闸门**（2026-10-01，S4）----
-    //
-    // 收敛之后：预览与默认出片都走 doc（底座引擎 / 底座二进制），**canvas 那条腿只保老集合**。
-    // 问题是"某个效果 canvas 没实现"以前是**静默少画**：工程里加了新效果、用 `--renderer chrome`
-    // 出片，成片里那一块就是没有，而日志里一个字都没有。
-    //
-    // 现在：拿效果词汇表（`spec/effects.json`）的 `anchors.canvas` 当**支持矩阵**，
-    // 工程里用到了不在矩阵里的效果 ⇒ **当场报错**（列清楚是哪几种），不静默出片。
-    // 词汇表在"包内 / 开发树"两处按运行时读，读不到就用编译期内嵌的那份 —— 三种情况都不会崩。
-    if renderer == RenderBackendKind::Chrome {
-        let used = used_effect_types(&config);
-        let missing = unsupported_for_canvas(used.iter().map(String::as_str));
-        if !missing.is_empty() {
-            anyhow::bail!(
-                "这个工程用了 canvas 兜底通道**没实现**的效果：{}\n  \
-                 兜底通道（`--renderer chrome`）只保冻结前的老集合，新效果只在底座那条腿上实现。\n  \
-                 两条路：① 用默认通道 `--renderer dhampir`（预览与成片都走它）；\
-                 ② 把该效果从工程里去掉再出（`polish.toml` 的 `[[segments.events]]`）。",
-                missing.join("、")
-            );
-        }
-        tracing::info!(
-            "  · canvas 兜底通道：工程用到的 {} 种效果都在它的冻结集合里",
-            used.len()
-        );
-    }
-
-    // 网页服务器仅 chrome 那条腿需要（它靠页面 `window.__SOUND_DATA` 与 canvas 逐帧出图）。
-    // 底座那条腿不需要页面：声音事件由 `collect_sound_events` 在 Rust 里直接收。
-    let server_url = if renderer == RenderBackendKind::Chrome {
-        tracing::info!("\n  -- Server --");
-        let t = std::time::Instant::now();
-        let injected_html = Some(render::server::RenderServer::build_html(project_path));
-        let server_port =
-            render::server::start_file_server(project_path.to_path_buf(), injected_html.clone())
-                .await?;
-        tracing::info!("  ⏱ 起服务 {:.1}s", t.elapsed().as_secs_f64());
-        Some(format!("http://127.0.0.1:{}/?capture=1", server_port))
-    } else {
-        None
-    };
-
-    // 提取 sound data：走页面协议（`window.__SOUND_DATA`）
-    tracing::info!("  -- Sound data --");
+    // 网页服务器与页面 `window.__SOUND_DATA` 都是**已删除的 Chrome 那条腿**的依赖：
+    // 底座那条腿不需要页面，声音事件由 `collect_sound_events` 在 Rust 里直接收。
+    tracing::info!("\n  -- Sound data --");
     let t_sound = std::time::Instant::now();
-    let sfx_data = if renderer == RenderBackendKind::Chrome {
-        export_sound_data(server_url.as_deref().unwrap()).await?
-    } else {
-        collect_sound_events(&config)
-    };
+    let sfx_data = collect_sound_events(&config);
     tracing::info!(
         "  v {} sound events  ⏱ {:.1}s",
         sfx_data.len(),
@@ -288,6 +250,11 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     );
 
     // 预解码 sticker GIF 帧
+    //
+    // ⚠️ 这一步现在**没有消费者**：它当年是给已删除的 Chrome 那条腿用的（页面靠
+    // `sticker_frames.json` 里的 PNG base64 逐帧画贴纸）。底座那条腿由转译器自己带贴纸图。
+    // **留着**是因为它顺带把磁盘缓存 `data/sticker_frames.json` 预热出来（诊断与后续接第二个
+    // 后端都要它），而且它有自己的单测与诊断用例（`diagnose_sticker_cache`）。
     tracing::info!("\n  -- Sticker GIF --");
     let t_sticker = std::time::Instant::now();
     let sticker_data_json = prepare_sticker_data(project_path, &config);
@@ -301,21 +268,14 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     );
 
     // ---------------------------------------------------------------------
-    // **Dhampir 后端**：整段出片交给独立仓的二进制
+    // **出片**：整段交给独立仓的 Dhampir 二进制（唯一一条腿）
     // ---------------------------------------------------------------------
     //
-    // 跳过的只有**画面**那三样：预解码贴纸 GIF / 分块渲染 / 拼接。
-    // 上面 Server 与 Sound 两段**不用动** —— 它们的 else 分支本来就是
-    // 非页面路径：`server_url = None`、`sfx_data = collect_sound_events()`（纯 Rust）。
-    //
-    // 产物落在**同一个** `_temp_video.mp4` 上，后面的音轨链路（抽音轨 / 音效
-    // 混音 / 响度 / 合流）一行不改。
+    // 产物落在 `_temp_video.mp4` 上，后面的音轨链路（抽音轨 / 音效混音 / 响度 / 合流）一行不改。
     //
     // **画面归 Dhampir、声音归本仓**：二进制那一趟带 `--no-audio`。
-    // （`tv` 在分支之外已经声明：两条路都写同一个中间文件）
-    // 两条路写**同一个中间文件**，后面的音轨链路才不用管是哪条路出的。
     let tv = project_path.join("_temp_video.mp4");
-    if renderer == RenderBackendKind::Dhampir {
+    {
         tracing::info!("\n  -- Dhampir（二进制后端，只出画面）--");
         for line in render::dhampir::describe(&config.style.subtitle.font).lines() {
             tracing::info!("  {line}");
@@ -334,76 +294,6 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         render::dhampir::render_video_only(project_path, &clip_dir, &config.style.subtitle.font, strict)?;
-    } else {
-    tracing::info!("\n  -- Render chunks ({}) --", parallelism);
-    let enc = Ffmpeg::detect_encoder();
-    tracing::info!("  Encoder: {}", enc.codec);
-    let t_chunks = std::time::Instant::now();
-
-    let chunk_dur = duration / parallelism as f64;
-    let mut handles = vec![];
-    for ci in 0..parallelism {
-        let start_sec = ci as f64 * chunk_dur;
-        let end_sec = ((ci + 1) as f64 * chunk_dur).min(duration);
-        if start_sec >= duration {
-            break;
-        }
-        let out = project_path.join(format!("_chunk_{}.mp4", ci));
-        let cc = enc.codec.clone();
-        let ca = enc.args.clone();
-        let url = server_url.clone();
-        let vp = resolved.video.clone();
-        let sdj = sticker_data_json.clone();
-        let cfg = config.clone();
-        let pp = project_path.to_path_buf();
-        // **恒 false**：`need_rgba=true` 是当年 WgpuBackend 要的东西，而那条链路已删除。
-        // `TimedFrame::rgba` 现在只有基准/诊断在用（见 `render/frame.rs` 的说明），
-        // chrome 走的是 `jpeg` 那条零回归路径。
-        let need_rgba = false;
-        let kind = renderer;
-        handles.push(std::thread::spawn(move || {
-            render_chunk_sync(
-                &pp,
-                &cfg,
-                kind,
-                url.as_deref(),
-                start_sec,
-                end_sec,
-                &out,
-                &vp,
-                &sdj,
-                &cc,
-                &ca,
-                fps,
-                ci,
-                need_rgba,
-            )
-        }));
-    }
-
-    let mut chunk_files = vec![];
-    for h in handles {
-        match h.join() {
-            Ok(Ok(f)) => chunk_files.push(f),
-            Ok(Err(e)) => anyhow::bail!("Chunk: {}", e),
-            Err(_) => anyhow::bail!("Chunk panicked"),
-        }
-    }
-    tracing::info!("  ⏱ 分块渲染 {:.1}s", t_chunks.elapsed().as_secs_f64());
-
-    tracing::info!("\n  -- Concat --");
-    let t_concat = std::time::Instant::now();
-    let tv = project_path.join("_temp_video.mp4");
-    let cs: Vec<String> = chunk_files
-        .iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    Ffmpeg::concat(&cs, &tv.to_string_lossy())?;
-    for f in &chunk_files {
-        std::fs::remove_file(f).ok();
-    }
-    tracing::info!("  ⏱ 拼接 {:.1}s", t_concat.elapsed().as_secs_f64());
-
     }
     tracing::info!("\n  -- Audio --");
     let t_audio = std::time::Instant::now();
@@ -529,8 +419,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     cleanup(project_path, &tv, &ta);
     // 自动生成封面
     let t_cover = std::time::Instant::now();
-// 出片末尾的封面：**不指定通道**（None）—— 用 cover.rs 的解析（显式 > VTEDIT_COVER_RENDERER > chrome），
-    // 与视频那条通道解耦（视频可能是底座，封面仍是 HTML/CSS 截图）。
+// 出片末尾的封面：**不指定通道**（None）—— 用 cover.rs 的解析（显式 > VTEDIT_COVER_RENDERER > takumi），
+    // 与视频那条通道解耦（视频走底座，封面是自己的 HTML/CSS 静态渲染）。
     if let Err(e) = cover::cmd_cover(project_path, Some(&op), None).await {
         tracing::info!("  ⚠ Cover generation skipped: {}", e);
     }
@@ -657,35 +547,6 @@ pub fn render_chunk_sync(
 
 /// 与 `render::sound::SoundEvent` 相同；保留旧 pub 名避免破坏外部引用。
 pub type SoundEvent = crate::render::sound::SoundEvent;
-
-pub async fn export_sound_data(url: &str) -> anyhow::Result<Vec<SoundEvent>> {
-    let browser = ChromeRenderer::launch((1920, 1080))?;
-    let tab = ChromeRenderer::create_tab(&browser, url)?;
-    tab.evaluate("window.__RNG_SEED=42;", false)?;
-
-    // 等待 __TIMELINE 和 __SOUND_DATA
-    for _ in 0..50 {
-        let has_data = tab.evaluate("typeof window.__SOUND_DATA !== 'undefined'", false);
-        if let Ok(val) = has_data
-            && val
-                .value
-                .map(|v| v.as_bool().unwrap_or(false))
-                .unwrap_or(false)
-        {
-            let result = tab.evaluate("JSON.stringify(window.__SOUND_DATA||[])", false)?;
-            let json = result
-                .value
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "[]".into());
-            let data: Vec<SoundEvent> = serde_json::from_str(&json)?;
-            std::mem::drop(browser);
-            return Ok(data);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    std::mem::drop(browser);
-    Ok(vec![])
-}
 
 // ============================================================
 // process
@@ -1215,9 +1076,13 @@ mod tests {
         );
     }
 
-    // ---- S4：兜底通道的冻结闸门 ----
+    // ---- 效果词汇表（`anchors.canvas` 与 `effects[].id` 的对齐）----
+    //
+    // ⚠️ 这两条**不再是出片闸门**（canvas 兜底腿已于 2026-10-01 删除）。它们守的是**词汇表自身**：
+    // `anchors.canvas` 与模板 `index.html` 的漂移防线 —— 词汇表是转译器与出片两侧共同的输入，
+    // 写错了不会有任何东西报错，只会静默换个渲染结果。
 
-    /// **支持矩阵生效**：不在集合里的效果必须被点名（这就是"加新效果只进底座、chrome 腿不会静默少画"）。
+    /// **支持矩阵的纯函数**：不在集合里的效果必须被点名（去重 + 保持出现顺序）。
     #[test]
     fn canvas_guard_names_the_unsupported_effects() {
         let supported: std::collections::HashSet<String> =
@@ -1238,7 +1103,7 @@ mod tests {
         assert!(missing_support(std::iter::empty(), &supported).is_empty());
     }
 
-    /// **词汇表本身要有内容**：`anchors.canvas` 至少得覆盖当前这批效果，否则闸门会把正常工程全拦下。
+    /// **词汇表本身要有内容**：`anchors.canvas` 至少得覆盖当前这批效果（模板 canvas 实现的那批）。
     #[test]
     fn canvas_support_matrix_comes_from_the_vocabulary() {
         let supported = canvas_supported_effects().expect("内嵌的词汇表必须可解析");

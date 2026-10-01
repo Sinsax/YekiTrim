@@ -4,7 +4,7 @@
       <h2 class="card-h2 m-0"><Icon name="image" :size="16" /> 封面设计器</h2>
       <button class="btn btn-primary" :disabled="generating || !!clipBusyJob"
               :title="clipBusyJob ? '该片段正在' + kindText(clipBusyJob.kind) : ''"
-              @click="openCoverRendererDialog">{{ generating ? '生成中…' : '生成封面' }}</button>
+              @click="generateCover()">{{ generating ? '生成中…' : '生成封面' }}</button>
     </div>
     <!-- 配置没读回来 → `configLoaded` 这道写入门闸继续关着，这个面板之后**不会**再保存任何改动。
          必须摆到最显眼处并给重试：否则就是"改了十分钟、关掉再打开全没了"，还没有一句解释。 -->
@@ -317,26 +317,10 @@
 
     </div>
   </div>
-  <!-- 生成封面：选渲染通道。**Takumi 是默认**（静态渲染，进程内出图、不需要装浏览器）；
-       与浏览器的差别只在字形栅格化（实测非文字区 1.17/255、整图 11.44/255）。
-       Chrome 仍留着当兜底，但它要外部浏览器、且已计划删除（P3）。 -->
-  <div v-if="coverRendererDialog"
-       style="position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)"
-       @click.self="coverRendererDialog = false">
-    <div style="background:#20222a;border:1px solid #3a3d47;border-radius:10px;padding:18px 20px;min-width:360px;max-width:92vw">
-      <div style="font-size:15px;font-weight:600;margin-bottom:8px">生成封面：选择渲染通道</div>
-      <div style="font-size:12px;opacity:.72;line-height:1.7;margin-bottom:14px">
-        <b>Takumi（默认）</b>：静态渲染，进程内出图（单进程 / 约 54MB，无需安装浏览器）；标题字形与浏览器略有差异。<br>
-        <b>Chrome</b>：headless 浏览器截图（兜底；约 11 进程 / 520MB，需机器上装了浏览器）。
-        <b v-if="coverCap.loaded && !coverCap.ready" style="color:#ffb46b">（当前不可用：{{ coverCap.why }}）</b>
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="mini-btn" @click="coverRendererDialog = false">取消</button>
-        <button class="mini-btn" @click="pickCoverRenderer('chrome')">Chrome</button>
-        <button class="btn btn-primary" :disabled="!coverCap.ready" :title="coverCap.why" @click="pickCoverRenderer('takumi')">Takumi</button>
-      </div>
-    </div>
-  </div>
+  <!-- 渲染通道弹窗**已删除**（2026-10-01）：封面只剩 Takumi 一条通道，本仓那条 headless Chrome
+       截图腿整条删掉了。只剩一个按钮的弹窗不再是"选择"，只是多点一下才出图。
+       Takumi 不可用时（没编 feature / 字体库为空）由下面这行说清，同时把按钮置灰。 -->
+  <p v-if="coverCap.loaded && !coverCap.ready" class="hint warn">{{ coverCap.why }}</p>
 </template>
 
 <script setup>
@@ -361,11 +345,10 @@ const props = defineProps({
 })
 const emit = defineEmits(['changed'])
 const generating = ref(false)
-// 生成封面时的**通道选择弹窗**：默认 Chrome（现状）；Takumi 是静态渲染（不出浏览器、内存小）。
-// 摆成弹窗是为了**实测对比**两版的观感与开销，而不是把选择藏进设置页。
-const coverRendererDialog = ref(false)
-// 服务端能力位（`/api/health.cover_static`）：没编 feature / 字体库为空时把 Takumi 那个按钮置灰，
-// 并在弹窗里**说清为什么**（宁可点不动，也别点了才在任务日志里才知道）。
+// 封面**只有 Takumi 一条通道**（本仓那条 headless Chrome 截图腿 2026-10-01 整条删除）——
+// 通道选择弹窗与它的 state 一并删掉了；别再凭"当年有个弹窗"把它加回来。
+// 服务端能力位（`/api/health.cover_static`）：没编 feature / 字体库为空时把「生成封面」置灰，
+// 并在卡片里**说清为什么**（宁可点不动，也别点了才在任务日志里才知道）。
 const coverCap = ref({ loaded: false, ready: false, why: "" })
 
 async function loadCoverCap() {
@@ -1470,19 +1453,10 @@ watch(
   scheduleCoverConfigSave
 )
 
-function openCoverRendererDialog() {
-  // 按钮本来就 disabled，这里再兜一层（弹窗开着时片段被占用也不至于白跑）
-  if (generating.value || clipBusyJob.value) return
-  coverRendererDialog.value = true
-  void loadCoverCap()
-}
+// 「生成封面」直接出图（`@click="generateCover()"`）—— 原来这里有个选通道的弹窗，
+// 通道只剩 Takumi 之后就删掉了。`loadCoverCap()` 仍由 `onMounted` 调（能力位用来置灰 + 说明原因）。
 
-function pickCoverRenderer(renderer) {
-  coverRendererDialog.value = false
-  void generateCover(renderer)
-}
-
-async function generateCover(renderer) {
+async function generateCover() {
   if (generating.value) return
   if (clipBusyJob.value) { toast('该片段正在' + kindText(clipBusyJob.value.kind) + '，请等它结束', 'err'); return }
   generating.value = true
@@ -1492,7 +1466,9 @@ async function generateCover(renderer) {
       await coverFrame(props.pid, props.dir, time.value)
     }
     await coverConfig(props.pid, props.dir, coverConfigPayload())
-    const coverRes = await runCover(props.pid, props.dir, renderer)
+    // 通道不传：只剩 Takumi 一个值，`cover.rs` 那条默认链（显式 > `VTEDIT_COVER_RENDERER` >
+    // takumi）是唯一权威，前端不抄第二份。
+    const coverRes = await runCover(props.pid, props.dir)
     if (coverRes && coverRes.id) {
       await new Promise((resolve, reject) => {
         // `watchJob()` 返回 `{ close() }` 对象（不是函数），别直接当函数调

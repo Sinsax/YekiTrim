@@ -1,5 +1,4 @@
 pub mod backend;
-pub mod chrome;
 pub mod dhampir;
 // 静态封面渲染（Takumi）：**默认不编**，只在 `cover-takumi` feature 打开时存在。
 #[cfg(feature = "cover-takumi")]

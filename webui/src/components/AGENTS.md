@@ -136,11 +136,10 @@
   `sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出错误条 + 「重试」。
 ### 运镜（camera）
 - **倍率只有一张表**：`CameraStyle::factor`，四处都走它。⚠ 模板 canvas 路径曾硬编码 `1.8/1.5` 且完全不读
-  `[style.camera]`，而它才是出片路径（`chrome-render` 为默认出片路径）——别再把倍率写回去。
+  `[style.camera]`，而它才是出片路径（当年 `chrome-render` 是默认路径，那条腿已删除）——别写回去。
 - **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**。**放大档位不存在「推出框露背景」的风险**（运镜是绕不动点
   做 `scale`，`s ≥ 1` 时四周一律向外扩张；露底只发生在画中画 `zoom_wide < 1`，刻意留黑边 `(1-factor)/2×1920 = 432px`）。
-  三处兜底默认值（`default_zoom_mid/close/wide()`、模板 `camFactor`、
-  `engine.js` `camFactor`）必须一起改。
+  三处兜底默认值（`default_zoom_mid/close/wide()`、模板与 `engine.js` 的 `camFactor`）必须一起改。
   **别再退回"靠 prompt/界面拦"**：守卫是唯一兜底。
 - ⚠ **竖屏（`vertical = true`）跟运镜一起屏蔽**：四条求值路径全部归零（`timeline::evaluate_frame`、
   模板 `getActiveCamera` 返回 `CFG.vertical ? 0 : handheld`、`engine.js cameraAt` 竖屏分支返回 `handheld: 0`）。

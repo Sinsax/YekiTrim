@@ -359,22 +359,19 @@
       <p class="hint mt-6">
         只接受项目内相对路径；同名不覆盖，自动写成 <span class="mono">名字_1.mp4</span>。
       </p>
-      <label class="mt-12">出片通道</label>
-      <select v-model="renderChannel">
-        <option value="">默认（底座 Dhampir · GPU 出片）</option>
-        <option value="chrome">本仓 Chrome（兜底：底座没装/版本不符时用）</option>
-      </select>
+      <!-- 出片通道下拉已删：出片只有底座一条腿（本仓那条 headless Chrome 兜底腿 2026-10-01
+           整条删除），留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。 -->
       <!-- 就绪位（M3）：底座不可用时**在点渲染之前**就说明白，而不是任务跑到一半才失败。
            只报"能不能用 + 什么原因"，列出的路径挂在 title 里（不占行内宽度）。 -->
       <p v-if="dhampirStatus && !dhampirStatus.ready" class="hint mt-6 warn">
-        底座当前不可用：{{ dhampirProblems }}（可以先选 Chrome 出片）
+        底座当前不可用：{{ dhampirProblems }}
       </p>
       <p v-else-if="dhampirStatus && dhampirStatus.ready" class="hint mt-6" :title="dhampirDetail">
         底座就绪 ✓（画面归它、音轨仍由本仓混）
       </p>
       <p v-else class="hint mt-6">
-        默认走独立的 Dhampir 底座（本机 GPU + ffmpeg，画面归它、音轨仍由本仓混）。
-        底座不可用时**明确报错**、不会静默换路；这时选 Chrome 即可。
+        出片走独立的 Dhampir 底座（本机 GPU + ffmpeg，画面归它、音轨仍由本仓混）。
+        底座不可用时**明确报错**、不会静默换路。
       </p>
       <template #footer>
         <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
@@ -451,9 +448,8 @@ const segKey = ref(0)
 const coverKey = ref(0)
 const renderModal = ref(false)
 const renderOutput = ref('')
-/** 出片通道：`''` = 不传，跟随服务端/CLI 的默认值（现在是底座 dhampir）。
- *  ⚠️ **不写回落**：默认值只有一处（`cli.rs` 的 `--renderer`），前端抄第二份就会漂。 */
-const renderChannel = ref('')
+// 出片通道这个选择项**已删除**（2026-10-01）：出片只剩底座一条腿，本仓那条 headless
+// Chrome 兜底腿整条删掉了，留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。
 /** 底座出片通道的就绪位（M3）：打开渲染弹窗时抓一次；`null` = 还没问到（不显示任何提示）。 */
 const dhampirStatus = ref(null)
 const dhampirProblems = computed(() =>
@@ -1192,7 +1188,7 @@ function doRender() {
   renderModal.value = false
   // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
   // 渲染会重新生成封面文件 → 封面设计器重挂载拉新图
-  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim(), renderChannel.value), { after: () => { coverKey.value++; load({ silent: true }) } })
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { coverKey.value++; load({ silent: true }) } })
 }
 
 // 时间轴的保存与后处理见上面「时间轴编辑 → 预览 → 落盘 → 后处理」（编辑器自己防抖落盘）
