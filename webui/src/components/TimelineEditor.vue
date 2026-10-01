@@ -1045,6 +1045,8 @@ function resetTimelineState() {
 
 // ── 拖拽（所有块统一：体拖 = 移动；左缘 = 改开始；右缘 = 改结束）──
 let drag = null
+/** 本次拖拽是否**真的**产生了位移（纯点击不算一次编辑 → 不触发后处理）。 */
+let dragMoved = false
 
 function startPointer(e, lane, block, mode = 'move') {
   const item = blockItem(block)
@@ -1074,6 +1076,8 @@ function startPointer(e, lane, block, mode = 'move') {
   const apply = {
     move(evt) {
       const delta = (evt.clientX - startX) / scale.value
+      // 位移超过 1px 才算"真的拖过"（手抖 / 点一下不该触发一次后处理）
+      if (Math.abs(evt.clientX - startX) > 1) dragMoved = true
       let ns = origStart + delta
       ns = Math.max(0, Math.min(dur - origSpan, ns))
       if (isSeg) {
@@ -1089,12 +1093,14 @@ function startPointer(e, lane, block, mode = 'move') {
     },
     'resize-l'(evt) {
       const delta = (evt.clientX - startX) / scale.value
+      if (Math.abs(evt.clientX - startX) > 1) dragMoved = true
       const ns = Math.max(0, Math.min(origEnd - minLen, origStart + delta))
       put(ns, origEnd)
       markDirty(dk)
     },
     'resize-r'(evt) {
       const delta = (evt.clientX - startX) / scale.value
+      if (Math.abs(evt.clientX - startX) > 1) dragMoved = true
       const ne = Math.max(origStart + minLen, Math.min(dur, origEnd + delta))
       put(origStart, ne)
       markDirty(dk)
@@ -1103,11 +1109,28 @@ function startPointer(e, lane, block, mode = 'move') {
 
   if (!apply) return
   drag = { move: apply }
+  dragMoved = false
   const onMove = (evt) => { if (drag) drag.move(evt) }
-  const onUp = () => {
+  const onUp = (evt) => {
     removeListeners()
+    const moved = dragMoved
     drag = null
+    dragMoved = false
     touch(dk)
+    // ⚠️ **拖拽松手 = 一次编辑做完了 → 必须通知页面跑后处理**（2026-10-01 修）。
+    //
+    // 只 `touch(dk)` 是不够的：它只落盘，而后处理（贴纸落点 / 锚点坐标 / 画中画守卫）
+    // 要等 `commitEdit` 发出的 `done`。修之前这里**没有** commitEdit，于是拖完一个事件
+    // 后处理**一直不跑** —— 而拖拽是改事件时间最常见的方式。
+    //
+    // 当时唯一能救回来的路径是"取消选中"（`watch(selected)`），但 `startPointer` 一进来就
+    // `selectBlock`，松手时那一项**仍然选中着**；模板里又没有"点空白取消选中"
+    // （只有属性面板那颗「关闭」按钮与删除会清空 selected）。所以实际表现是：
+    // 拖完事件 → 画面上的贴纸/运镜仍是旧坐标 → 用户以为"后处理坏了"，
+    // 直到**切片段或离开页面**才补跑一次（那时才 emit done）。
+    //
+    // 只在**真的动过**时才通知：一次点击（pointerdown+up 没位移）不该触发后处理。
+    if (moved) commitEdit('拖拽结束')
   }
   function removeListeners() {
     window.removeEventListener('pointermove', onMove)
