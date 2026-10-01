@@ -946,6 +946,14 @@ impl ProjectFile {
                 continue;
             }
 
+            // [style.danmaku] 后加注释（offset_secs 由 WebUI「弹幕时间偏移」滑块写入）
+            if trimmed == "[style.danmaku]" {
+                result.push_str("\n# ===== 弹幕样式 =====\n");
+                result.push_str("# offset_secs: 弹幕时间偏移（秒，负 = 提前出现，默认 -3）\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+
             // [layout.*] 前输出布局总说明（TOML 无 [layout] 头，挂在第一个子表前）
             if trimmed == "[layout.liver]" {
                 result.push_str("\n# ===== 布局（区域） =====\n");

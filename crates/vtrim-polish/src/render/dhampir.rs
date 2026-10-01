@@ -1292,11 +1292,18 @@ mod artifact_tests {
         assert_eq!(font_search_order("SimHei")[0], "SimHei");
         assert_eq!(font_search_order("  ")[0], font_search_order("")[0], "空字体不产生空段");
         // 项目字体之后 = 动态兜底栈逐支同序（就是预览 `.cap` 那份的来源）
-        let stack: Vec<String> = crate::render::server::fallback_stack()
-            .split(',')
-            .map(|s| s.trim().trim_matches(['\'', '"']).trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        //
+        // ⚠️ **这里必须去重**：动态首项可能恰好等于栈里某项 —— 库里那支的内部族名
+        // 就是 `Noto Sans SC`，而尾巴里也有一项 `Noto Sans SC`（那是"系统里那支"）。
+        // `font_search_order` 本身就按族名去重，所以拿来比的期望值也得去重，否则
+        // 比的是"原始串"、而被比的是"去重后的搜索序"，两者形状根本不同。
+        let mut stack: Vec<String> = Vec::new();
+        for family in crate::render::server::fallback_stack().split(',') {
+            let s = family.trim().trim_matches(['\'', '"']).trim().to_string();
+            if !s.is_empty() && !stack.iter().any(|x| x.eq_ignore_ascii_case(&s)) {
+                stack.push(s);
+            }
+        }
         assert!(!stack.is_empty(), "兜底栈不能是空的");
         let with_font = font_search_order("SimHei");
         assert_eq!(with_font[1..], stack[..], "项目字体之后必须 = 动态兜底栈逐支同序");
@@ -1308,11 +1315,34 @@ mod artifact_tests {
         );
         // 空项目字体 = 就是栈本身（不产生空段）
         assert_eq!(font_search_order("  "), stack, "空字体 ⇒ 兜底栈本身");
-        // 尾部顺序钉死：雅黑在 Noto 前（与预览 `.cap` 栈同序 —— 预览的赢家 = 成片的赢家）
+        // 尾部顺序钉死：**雅黑在 `sans-serif` 前**（与预览 `.cap` 栈同序 —— 预览的赢家 = 成片的赢家）。
+        //
+        // ⚠️ 这里原来断言的是"雅黑在 `Noto Sans SC` 前"。2026-10-02 换字体后那条**失效了**：
+        // 动态首项的内部族名就是 `Noto Sans SC`，去重后它只剩**下标 0 那一份** ——
+        // 再去比 "雅黑 < Noto" 就变成比"雅黑 < 首项"，与它想守的"尾部顺序"不是一回事。
+        // 真正要守的不变式是：**雅黑与通用族都排在末尾那段、且 sans-serif 永远垫底**。
         let order = font_search_order("");
         let yahei = order.iter().position(|s| s == "Microsoft YaHei").expect("栈里必须有雅黑");
-        let noto = order.iter().position(|s| s == "Noto Sans SC").expect("栈里必须有 Noto");
-        assert!(yahei < noto, "雅黑必须在 Noto 前（预览那份栈的顺序）: {order:?}");
+        let last = order.len() - 1;
+        assert_eq!(order[last], "sans-serif", "通用族必须垫底（它是最后一道保险）: {order:?}");
+        assert!(yahei < last, "雅黑必须排在通用族之前: {order:?}");
+        assert!(
+            order.iter().any(|s| s == "Noto Sans SC"),
+            "栈里必须有 Noto Sans SC（自带中文那支的族名）: {order:?}"
+        );
+        // ⚠️ **emoji 字体永远不许出现在这个搜索序里**（2026-10-02 职责分离的收口判据）。
+        //
+        // 底座那条腿**没有逐字形回退**：`find_font` 命中第一个能解析的族就 return，
+        // 最终落成 ffmpeg `drawtext=fontfile=<单支>`（见本文件与 Dhampir 仓的 `text_raster.rs`）。
+        // 所以 emoji 族一旦混进这张表并排在前面，**整条字幕轨**都会交给一支没有中文字形的字体
+        // —— 中文全变豆腐块（而且不报错）。这正是"字幕 emoji 本仓不可支持"的原因：
+        // 要支持得改底座契约（逐字形 runs + 彩色位图光栅化），不是改这里的栈。
+        for fam in &order {
+            assert!(
+                !fam.to_ascii_lowercase().contains("emoji"),
+                "emoji 族名不许进底座的字体搜索序（会让整条字幕轨变豆腐块）：{fam}"
+            );
+        }
         // （"回落态与老常量同族名同序"那条钉在 `server.rs::stack_head_tracks_installed_library_font`
         //   —— 它必须条件化（开发机设了默认字体时首项不同），别在这里写死再红一遍。）
     }

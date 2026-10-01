@@ -134,9 +134,24 @@ fn cover_font_files() -> Vec<std::path::PathBuf> {
 fn cover_font_files_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut defaults: Vec<std::path::PathBuf> = Vec::new();
     let mut rest: Vec<(String, std::path::PathBuf)> = Vec::new();
+    // ⚠️ **emoji 字体单独拎出来、排到最后注册**（2026-10-02，字体职责分离）。
+    //
+    // 为什么"排最后"就是"能找到 emoji"：Takumi 的 fallback 桶 = **全部已注册字体按注册序**
+    // （本仓不设 `font_families`，见 `render/takumi.rs` 的 `RenderOptions` 与
+    // `tests/takumi_font_id.rs` 的实测记录），所以"认不出的字形"按注册序找**第一个有它的**。
+    // emoji 摆在最后 ⇒ 中文/标点先命中前面的正文字体，只有它们都没有的字形（就是 emoji）
+    // 才落到 emoji 字体 —— 正是我们要的"独立补充槽位"。
+    //
+    // ⚠️ 反过来（emoji 排在前面）**不会**让它去画中文：Takumi 是**逐字形**找字体，
+    // emoji 字体没有"中"字就去下一支。但把它排前面仍有两个坏处：
+    // ① 数字/字母这类 emoji 字体**也有**的字形会被它抢走（观感突变）；
+    // ② 与下面 `is_default` 的语义冲突（默认位是给正文用的）。
+    let mut emojis: Vec<std::path::PathBuf> = Vec::new();
     for e in vtrim_core::fonts::scan_all(root) {
         if let Some(p) = vtrim_core::fonts::resolve_all(root, &e.id).filter(|p| p.is_file()) {
-            if e.is_default {
+            if e.emoji {
+                emojis.push(p);
+            } else if e.is_default {
                 defaults.push(p);
             } else {
                 rest.push((e.id.to_lowercase(), p));
@@ -146,7 +161,10 @@ fn cover_font_files_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     // 多个默认 = 手改过 FONT.toml 的病态情况：也排个稳定的序，别 panic
     defaults.sort();
     rest.sort();
+    emojis.sort();
     defaults.extend(rest.into_iter().map(|(_, p)| p));
+    // emoji 收尾（注册序最后 = fallback 桶的最后一档 = 只兜底别人都没有的字形）
+    defaults.extend(emojis);
     defaults
 }
 
@@ -574,8 +592,44 @@ pub const COVER_EMOJI_MAX_CHARS: usize = 12;
 pub const COVER_EMOJI_MIN_PX: f64 = 48.0;
 pub const COVER_EMOJI_MAX_PX: f64 = 288.0;
 
-/// emoji 的字体栈：Windows 的 Segoe UI Emoji、macOS 的 Apple Color Emoji、Linux 的 Noto。
-const EMOJI_FONT: &str = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+/// emoji 的字体栈：**先问库里那支（`vtrim_core::fonts::emoji_font`），没有才回落到系统族名**。
+///
+/// ⚠️ **为什么必须动态**（2026-10-02 输入层收敛）：这段栈原来在**四处各写一份**
+/// （这里、`takumi.rs::ensure_emoji_fallback`、`CoverDesigner.vue` ×3、`PolishPreview.vue`），
+/// 靠注释互相提醒"要同源"。漂移的症状是"设计器里有 emoji、出片里没有"，而且**不报错**。
+/// 现在库里那支是**权威**，系统族名只是"库是空的"时的兜底。
+///
+/// ⚠️ **系统族名在 Takumi 上是死代码**：Takumi 不读系统字体、只认注册过的字体
+/// （`render/takumi.rs` 的 `Fonts::register`），所以 `'Segoe UI Emoji'` 这类名字
+/// **不解析、也不起兜底作用** —— 真正让 Takumi 出 emoji 的是**注册序**（见
+/// `cover_font_files_in` 的 emoji 收尾）。保留系统族名只是为了浏览器预览（设计器）那条路。
+pub fn emoji_font_stack() -> String {
+    let root = vtrim_core::path::font_dir();
+    let tail = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+    match vtrim_core::fonts::emoji_font(&root) {
+        Some(e) => {
+            // ⚠️ 用**内部族名** —— 封面模板按族名请求（`__FONT_FAMILY__` / inline style），
+            // 而 Takumi 注册时同时注册了内嵌族名与库 id 别名，两个都认；用内嵌族名更稳。
+            let fam = if e.family_internal.trim().is_empty() { e.id } else { e.family_internal };
+            format!("{},{}", quote_family(&fam), tail)
+        }
+        None => tail.to_string(),
+    }
+}
+
+/// CSS 族名字面量：包单引号并转义（族名来自用户字体文件的 `name` 表，可能带引号）。
+fn quote_family(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' || ch == '\\' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('\'');
+    out
+}
 
 /// 特效 / 表情 → HTML。
 ///
@@ -637,9 +691,13 @@ fn cover_fx_html(cc: &crate::project::CoverConfig, plan: &CoverLayerPlan, legacy
                 // 别让一长串字把封面糊了
                 let text: String = raw.chars().take(COVER_EMOJI_MAX_CHARS).collect();
                 let size = (COVER_EMOJI_MIN_PX + a * (COVER_EMOJI_MAX_PX - COVER_EMOJI_MIN_PX)).round() as u32;
+                // ⚠️ 走 `emoji_font_stack()`（唯一权威），别再就地写字体栈。
+                // 这里是 **inline style** —— `takumi.rs::ensure_emoji_fallback` 只扫 `<style>` 块，
+                // **永远扫不到这一处**，所以它必须自带完整栈（不能指望事后补）。
+                let emoji_stack = emoji_font_stack();
                 (
                     format!(
-                        "position:absolute;left:{x:.1}%;top:{y:.1}%;transform:translate(-50%,-50%);font-size:{size}px;line-height:1;font-family:{EMOJI_FONT};filter:drop-shadow(0 6px 14px rgba(0,0,0,0.45));"
+                        "position:absolute;left:{x:.1}%;top:{y:.1}%;transform:translate(-50%,-50%);font-size:{size}px;line-height:1;font-family:{emoji_stack};filter:drop-shadow(0 6px 14px rgba(0,0,0,0.45));"
                     ),
                     escape_html(&text),
                 )
@@ -968,8 +1026,15 @@ mod tests {
         let off = cover_font_css(&cc);
         // 首项随"库里默认那支"走（动态栈），别断言常量 —— 开发机装了默认字体时两者不同
         assert_eq!(off.family, server::fallback_stack(), "没选 = 兜底栈");
+        // ⚠️ 比**族名与顺序**，不比引号风格：本文件的运行时串走 `quote_css`（**双引号**），
+        // 而 `TAIL_STACK` 常量保留单引号（与真模板一致）—— 直接 `ends_with` 逐字比**必红**。
+        // 这条断言第一版就是那么写错的，只是当时库里**没有默认字体**、`fallback_stack()` 的首项
+        // 恰好也不带引号，才一直没暴露；2026-10-02 自带字体内嵌化之后库里一定有默认中文，
+        // 于是它当场翻红（`cover_font_css_falls_back_to_system_stack`）。
+        // 归一化写法与 `render/server.rs::stack_head_tracks_installed_library_font` 同口径。
+        let norm = |s: &str| s.replace('"', "'").replace(' ', "");
         assert!(
-            off.family.ends_with(",'Microsoft YaHei','Noto Sans SC',sans-serif"),
+            norm(&off.family).ends_with(&norm(",'Microsoft YaHei','Noto Sans SC',sans-serif")),
             "尾部系统栈兜底必须在: {}",
             off.family
         );

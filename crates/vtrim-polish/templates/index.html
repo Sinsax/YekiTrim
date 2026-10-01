@@ -16,7 +16,7 @@ if (typeof gsap === 'undefined') {
 </script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-html,body { width:100%; height:100%; overflow:hidden; font-family:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif; background:#2a2a2a; }
+html,body { width:100%; height:100%; overflow:hidden; font-family:'Noto Sans SC','Microsoft YaHei',sans-serif; background:#2a2a2a; }
 #page { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; background:#2a2a2a; padding:10px 0; transition:height 0.2s ease; }
 body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
 #player-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; width:min(96vw,calc((100vh - var(--editor-h, 0px) - 20px)*16/9)); max-height:calc(100vh - var(--editor-h, 0px) - 12px); transition:width 0.2s ease, max-height 0.2s ease; }
@@ -551,6 +551,11 @@ var SUB=[],DM=[],META={duration:239.8};
   var d=(CFG&&CFG._data)||{};
   SUB=Array.isArray(d.subtitles)?d.subtitles:[];
   DM=Array.isArray(d.danmaku)?d.danmaku:[];
+  // ---- 弹幕时间偏移（[style.danmaku] offset_secs，默认 -3 = 整体提前 3s）----
+  // 只平移显示时刻（start/end）；y 泳道与 travel 与时间无关，不用动。
+  // 在注入点平移一次，fDM / GSAP 循环 / canvas renderFrame / buildIndex 全吃这一份。
+  var dmOff=(CFG&&CFG.style&&CFG.style.danmaku&&isFinite(CFG.style.danmaku.offset_secs))?CFG.style.danmaku.offset_secs:-3;
+  if(dmOff!==0){for(var di=0;di<DM.length;di++){DM[di]={start:DM[di].start+dmOff,end:DM[di].end+dmOff,text:DM[di].text,color:DM[di].color,y:DM[di].y,travel_duration:DM[di].travel_duration};}}
   META=(d.meta&&typeof d.meta==='object')?d.meta:META;
   status('数据已加载');
   try{init();}catch(e){showError('初始化失败: '+e.message);}
@@ -743,7 +748,7 @@ function init(){
   // ---- 应用样式 ----
   var styleTag=document.createElement('style');
   styleTag.textContent=
-    '.cap{font-family:"'+(subStyle.font||'LXGW WenKai')+'","Microsoft YaHei","Noto Sans SC",sans-serif;'+
+    '.cap{font-family:"'+(subStyle.font||'Noto Sans SC')+'","Microsoft YaHei","Noto Sans SC",sans-serif;'+
     'font-size:'+(subStyle.size||72)+'px;'+
     'font-weight:700;line-height:1.5;'+
     'color:'+(subStyle.color||'#dcbda0')+';'+
@@ -769,7 +774,7 @@ function init(){
 
   // --- 字幕 ---
   var capEl=document.getElementById('captions');
-  var capFont='700 '+(subStyle.size||72)+'px "'+(subStyle.font||'LXGW WenKai')+'","Microsoft YaHei","Noto Sans SC",sans-serif';
+  var capFont='700 '+(subStyle.size||72)+'px "'+(subStyle.font||'Noto Sans SC')+'","Microsoft YaHei","Noto Sans SC",sans-serif';
   SUB.forEach(function(s,i){
     var el=document.createElement('div');
     el.className='cap'; el.id='c'+i;
@@ -1941,7 +1946,7 @@ function init(){
     var subS = idx.subStyle;
     var caps = getActiveSubs(t, idx.subs);
     if (caps.length > 0) {
-      var ff = (subS.font || 'LXGW WenKai') + ',"Microsoft YaHei","Noto Sans SC",sans-serif';
+      var ff = (subS.font || 'Noto Sans SC') + ',"Microsoft YaHei","Noto Sans SC",sans-serif';
       var color = subS.color || '#dcbda0';
       var hlColor = subS.highlight_color || '#f56b41';
       var strokeStr = subS.stroke || '12px #403c3b';

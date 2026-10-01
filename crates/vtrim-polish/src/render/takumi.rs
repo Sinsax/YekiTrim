@@ -190,13 +190,46 @@ pub fn hoist_frame_transform(css: &str) -> String {
 }
 
 ///
-/// **为什么必须**：封面的字体栈是 `'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif` ——
+/// **为什么必须**：封面的字体栈是 `'Noto Sans SC','Microsoft YaHei','Noto Sans SC',sans-serif` ——
 /// 浏览器会退回**系统** emoji 字体，而 Takumi 只在**注册过**的字体里找 ⇒ 标题里的 🩸 变成黑块。
+///
+/// ⚠️ **三个修正**（2026-10-02，输入层收敛 + 职责分离）：
+///
+/// ① **族名来自唯一权威**（`cover::emoji_font_stack`），不再就地写死。原来这里与
+///    `cover.rs::EMOJI_FONT` 各写一份，靠注释互相提醒"要同源"——漂移的症状是
+///    "设计器里有 emoji、出片里没有"，**不报错**。
+///
+/// ② **幂等**（修一个既有 bug）。原来的正则**无条件**往通用族前插前缀，
+///    对已经带 emoji 的栈会插第二遍：
+///
+///    `'Noto Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif` ← 多一段
+///
+///    当时**没暴露**纯属侥幸：封面 emoji 特效层是 **inline style**，而本函数的调用点
+///    只扫 `<style>` 块（`extract_style_blocks`，见 `adapt_css_for_takumi`），所以那层根本走不到这里。
+///    但一旦有人改了调用点（或模板里用了 `<style>` 写 emoji 层），重复就生效了。
+///    现在带 "已在其中就不插" 的判据。
+///
+/// ③ 插入的族名以**库里那支**为主（没有才用系统名）—— 与 `emoji_font_stack()` 同源。
 pub fn ensure_emoji_fallback(css: &str) -> String {
+    let stack = crate::cover::emoji_font_stack();
+    // 权威栈形如 `'族名','Segoe UI Emoji',...,sans-serif`；这里要的是**通用族之前**那一段。
+    let Some(inject) = stack.rsplit_once(',').map(|(head, _)| head) else {
+        return css.to_string();
+    };
     let Ok(re) = regex_lite::Regex::new(r"(font-family\s*:[^;}]*?)(sans-serif|serif|monospace)") else {
         return css.to_string();
     };
-    re.replace_all(css, "${1}'Segoe UI Emoji','Noto Color Emoji',${2}").to_string()
+    re.replace_all(css, |c: &regex_lite::Captures| {
+        let prefix = c.get(1).map(|m| m.as_str()).unwrap_or("");
+        let generic = c.get(2).map(|m| m.as_str()).unwrap_or("sans-serif");
+        // ⚠️ 幂等判据：这一段 font-family 里**已经出现 emoji 族名**就不插。
+        // 探针用子串 `emoji`（覆盖 `'Noto Color Emoji'` / `'Segoe UI Emoji'` / `'Apple Color Emoji'`）。
+        if prefix.to_ascii_lowercase().contains("emoji") {
+            return format!("{prefix}{generic}");
+        }
+        format!("{prefix}{inject},{generic}")
+    })
+    .to_string()
 }
 
 fn scale_blur(css: &str, factor: f64) -> String {
@@ -625,6 +658,34 @@ mod tests {
             font_aliases(Path::new("/fonts/font.ttf")),
             vec!["fonts".to_string()]
         );
+    }
+
+    /// ⚠️ **emoji 兜底注入必须幂等**（2026-10-02 修掉的既有 bug）。
+    ///
+    /// 原来的实现**无条件**往通用族前插前缀：对已经带 emoji 的栈会插第二遍，
+    /// 拼出 `'Noto Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif`。
+    /// 它当时没暴露纯属侥幸（emoji 特效层是 inline style、本函数的调用点只扫 `<style>` 块），
+    /// 所以这条判据是**防止将来有人改了调用点就中招**。
+    #[test]
+    fn emoji_fallback_is_idempotent() {
+        let once = ensure_emoji_fallback(".cap{font-family:'Noto Sans SC',sans-serif;}");
+        assert!(once.contains("Emoji"), "第一遍该插进去：{once}");
+        let twice = ensure_emoji_fallback(&once);
+        assert_eq!(once, twice, "第二遍不许再插一次（幂等）");
+        // 幂等的实质判据：通用族前那段只出现一次 emoji 家族
+        let head = twice.split("sans-serif").next().unwrap_or("");
+        let n = head.matches("Emoji").count();
+        assert!(n <= 2, "emoji 族名重复注入（{n} 处）：{twice}");
+    }
+
+    /// emoji 兜底注入要覆盖三种通用族，且不动别处。
+    #[test]
+    fn emoji_fallback_covers_generic_families() {
+        let out = ensure_emoji_fallback("a{font-family:'X',serif;}b{font-family:'Y',monospace;}");
+        assert!(out.contains("Emoji"), "serif/monospace 也要覆盖：{out}");
+        // 没有 font-family 的规则行不受影响
+        let plain = ensure_emoji_fallback("c{color:red;}");
+        assert_eq!(plain, "c{color:red;}", "没有 font-family 就别动它");
     }
 
     /// ⚠️ 这条钉的是**真实模板**：它的注释里提到了 `<style>`，naive 抽取会把注释当 CSS
