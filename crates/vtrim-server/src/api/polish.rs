@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
+    // `Bytes` = 字体拖拽上传的**原始字节**载体（与贴纸上传同一条做法，不用 multipart）
+    body::Bytes,
     extract::{Extension, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -1287,6 +1289,11 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
                     "license": f.license,
                     "scripts": f.scripts,
                     "emoji": f.emoji,
+                    // 彩色字形能力（`cbdt`/`sbix`/`colrv0`/`colrv1`/`svg`/`none`）。
+                    // ⚠️ 界面据此判「这支 emoji 字体到底能不能出彩色」：`colrv1`/`svg` 会**静默**坏掉
+                    // （Takumi 只认 COLRv0，见 `vtrim_core::fonts::color_glyph_support` 的表）。
+                    // 纯文字字体这里是 `none` —— 正常，别当成错误。
+                    "color_format": f.color_format,
                     // ⚠️ 自带字体**没下载**时也在列表里（`installed: false`）：界面据此给"下载"按钮，
                     // 而不是当成"库里有这支"。用户自己导入的永远是 true。
                     "installed": f.installed,
@@ -1315,6 +1322,19 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
             "root": if is_admin { vtrim_core::path::display(&root) } else { String::new() },
             // 动态兜底字体栈（首项随库里默认走）：预览 `.cap` 栈与成片同源的收口
             "fallback_stack": vtrim_polish::render::server::fallback_stack(),
+            // ⚠️ **emoji 补充槽位**（2026-10-02 字体职责分离）：库里那支负责表情的字体，
+            // 由 `vtrim_core::fonts::emoji_font` **自动选**（至多一支），**用户不选**。
+            //
+            // 前端拿它做两件事：① 预览 `.cap` 栈把它追加在**末尾**（正文在前、emoji 兜底）；
+            // ② 界面据此说明"emoji 由系统自动补充"。库里没有就是 null ⇒ 前端不追加
+            // （浏览器自带系统 emoji）。
+            //
+            // ⚠️ 是**独立字段**、不是拼进 `fallback_stack` 的一段：封面那条链看的是
+            // **注册顺序**而不是这个栈（Takumi 不读系统字体），底座那条链**根本没有回退**
+            // —— 拼进去对它们零效果，还会撑破 polish 侧"四段"那条单测。
+            "emoji_family": vtrim_core::fonts::emoji_font(&root).map(|e| {
+                if e.family_internal.trim().is_empty() { e.id } else { e.family_internal }
+            }),
             "fonts": fonts,
             "builtin": builtin,
         }))
@@ -1375,6 +1395,55 @@ pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> 
     ok(serde_json::json!({ "ok": true, "font": entry }))
 }
 
+/// 字体库单文件**上传上限**（2026-10-02 拖拽导入）。
+///
+/// ⚠️ 与前端 `webui/src/api/polish.js::FONT_UPLOAD_MAX_BYTES` 是**同一个数**（改一处要改两处，
+/// 同贴纸那条规矩）。取 64 MiB 的理由：常见中文字体 10~30 MB，彩色 emoji 位图字体 ~10 MB，
+/// 给到 64 MiB 能收下绝大多数；再大就不该走浏览器这条链路了。
+pub(crate) const FONT_UPLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// `POST /api/polish/fonts/upload?name=<文件名>` —— **拖拽上传**一支字体（**仅 admin**）。
+///
+/// 请求体是字体的**原始字节**（`application/octet-stream`，不是 multipart）—— 与贴纸上传同一条
+/// 做法：单文件用 multipart 只是多一层边界解析，而前端 `api()` 本来就能直接传 `File`。
+/// 路由上挂了 `DefaultBodyLimit::max(FONT_UPLOAD_MAX_BYTES)`（axum 默认只有 2 MB）。
+///
+/// ⚠️ `name` 是**文件名**（服务端拿它当 id），显示名走独立的 `display` 查询参数 ——
+/// 两个字段语义别混（与 `polish_fonts_import` 同一口径）。
+///
+/// ⚠️ 与 import 的分工：import 收的是**服务器上已有的路径**（admin 浏览服务器文件那条来源），
+/// 这条收的是**浏览器里的字节**。两条都能进库，但来源不同、安全考量也不同 ——
+/// 这条不需要路径归属校验（没有路径），只需要体积上限 + 格式校验。
+pub(super) async fn polish_fonts_upload(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    body: Bytes,
+) -> ApiResult {
+    let file_name = q.get("name").map(String::as_str).unwrap_or("").trim();
+    if file_name.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 name（字体文件名）"));
+    }
+    // ⚠️ 只取 basename：`name` 来自查询串，`..\\..\\x.ttf` 不能让它决定落盘位置
+    // （库内的 id 与文件名由 `import_bytes` 自己从 basename 推，这里只是先挡一道）。
+    let base = Path::new(file_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if base.is_empty() || base.starts_with('.') {
+        return Err(err(StatusCode::BAD_REQUEST, "name 不是合法文件名"));
+    }
+    let display = q.get("display").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let entry = blocking(move || {
+        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录 `~/.vtrim/fonts`，含老库一次性搬家），
+        // 拿 `font_dir()` 会写进程序目录 —— 换个构建目录就全部「未装上」。
+        let root = vtrim_core::fonts::ensure_dir()
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
+        vtrim_core::fonts::import_font_bytes(&root, &base, &body, display.as_deref())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
+    })
+    .await?;
+    ok(serde_json::json!({ "ok": true, "font": entry }))
+}
+
 /// 把某支字体设为**默认字体**（**仅 admin**）。body：`{id}`。
 ///
 /// ⚠️ 默认是**互斥**的（`fonts::set_default` 会把别的清掉）。
@@ -1412,7 +1481,7 @@ pub(super) async fn polish_fonts_delete(
     }
     blocking(move || {
         // ⚠️ `builtin` 那一支**必须**能被用户看见 —— 403 的文案就是「程序自带字体不可删除」，
-        // 与 `webui/src/views/FontsView.vue` 里把自带字体的删除键置灰是同一条规矩。
+        // 与 `webui/src/components/FontLibrary.vue`（首页字体库区块）里把自带字体的删除键置灰是同一条规矩。
         vtrim_core::fonts::remove_font(&vtrim_core::path::font_dir(), &id).map_err(|e| {
             let msg = e.to_string();
             let status = if msg.contains("程序自带") {
@@ -1431,8 +1500,13 @@ pub(super) async fn polish_fonts_delete(
 ///
 /// 清单与校验和都在 `vtrim_core::fonts::BUILTIN_FONTS`（**不在这一层抄第二份**）。
 /// ⚠️ 幂等：已装好的**不重复下**（用户可能手动替换过那支字体）。
-/// ⚠️ 这是条**会联网、约 38 MB** 的活，所以走 `blocking`（别把 worker 占住）；
-/// 下载失败的**原话**要回给用户（校验和不符 / 网络不通 / 上游改了内容，三种处置不同）。
+/// 装上自带字体（**内嵌写入，不联网**；幂等，已装好的跳过）。
+///
+/// ⚠️ 2026-10-02 从"下载"改成"内嵌"：正常路径下**前端不该再调它** ——
+/// `ensure_global_config`（server 启动）已经自动装好。留这条接口是**修复入口**
+/// （用户手删了库里那支之后想补回来），语义与 CLI 的 `vtrim fonts install` 完全一致。
+///
+/// 仍然走 `blocking`：写 ~23 MB 到（可能很慢的）磁盘上，不该占住 tokio worker。
 pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) -> ApiResult {
     let only = body
         .get("id")
@@ -1442,10 +1516,10 @@ pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) ->
         .map(str::to_string);
     let report = blocking(move || {
         // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录，含老库一次性搬家）——
-        // 否则约 38 MB 会下进程序目录，换个构建/安装目录就全部「未下载」。
+        // 否则字体会写进程序目录，换个构建/安装目录就全部「未安装」。
         let root = vtrim_core::fonts::ensure_dir()
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
-        // 点名单支时先确认它真是自带的 —— 否则用户等半天才发现 id 打错
+        // 点名单支时先确认它真是自带的 —— 否则用户白等一场才发现 id 打错
         if let Some(id) = &only {
             if !vtrim_core::fonts::is_builtin_id(id) {
                 return Err(err(
@@ -1454,44 +1528,27 @@ pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) ->
                 ));
             }
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("建运行时失败: {e}")))?;
-        rt.block_on(async {
-            let mut done: Vec<String> = Vec::new();
-            for b in vtrim_core::fonts::builtin_fonts() {
-                if let Some(want) = &only {
-                    if !b.id.eq_ignore_ascii_case(want) {
-                        continue;
-                    }
-                }
-                // 已装好的跳过（幂等）
-                if vtrim_core::fonts::builtin_installed(&root, b) {
+        let mut done: Vec<String> = Vec::new();
+        for b in vtrim_core::fonts::builtin_fonts() {
+            if let Some(want) = &only {
+                if !b.id.eq_ignore_ascii_case(want) {
                     continue;
                 }
-                install_one(&root, b).await.map_err(|e| {
-                    // 下载/校验失败的原话对用户有意义（网络？校验和不符？）
-                    err(StatusCode::BAD_GATEWAY, format!("下载自带字体失败: {e}"))
-                })?;
-                done.push(b.id.to_string());
             }
-            Ok(serde_json::json!({ "ok": true, "downloaded": done, "installed": vtrim_core::fonts::builtin_status(&root) }))
-        })
+            // 已装好的跳过（幂等）
+            if vtrim_core::fonts::builtin_installed(&root, b) {
+                continue;
+            }
+            vtrim_core::fonts::install_builtin_font(&root, b)
+                // 校验和不符 / 落盘失败的原话对用户有意义，照实回
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("安装自带字体失败: {e}")))?;
+            done.push(b.id.to_string());
+        }
+        Ok(serde_json::json!({ "ok": true, "installed_now": done, "installed": vtrim_core::fonts::builtin_status(&root) }))
     })
     .await?;
     ok(report)
 }
-
-/// 装一支自带字体（`blocking` 里跑，所以这里同步等它）。
-async fn install_one(
-    root: &std::path::Path,
-    b: &vtrim_core::fonts::BuiltinFont,
-) -> anyhow::Result<()> {
-    // 复用 core 的安装实现（清单/校验和/落盘形状只此一份）
-    vtrim_core::fonts::download_builtin_font(root, b).await
-}
-
 /// 字体文件端点（wasm 预览 fetch 字体字节用）：项目字体候选 -> 内置资源。
 // polish_font_async_read_fixed
 pub(super) async fn polish_font(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
@@ -1603,6 +1660,18 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     // 只影响渲染与预览（process 的贴纸/运镜重算不读它），所以**保存即生效、不用重跑任务**。
     if let Some(f) = body.get("subtitle_font").and_then(|v| v.as_str()) {
         cfg.style.subtitle.font = f.trim().to_string();
+    }
+    // 弹幕时间偏移（秒，负 = 提前）：精修工程参数，只影响弹幕显示时刻（三条消费腿各自
+    // 在入口平移：出片模板 DM 注入点 / engine.js::buildIndex / 转译器 remap 之前），
+    // 所以**保存即生效、不用重跑任务**。范围收在 ±10s，坏值当场报错不静默。
+    if let Some(v) = body.get("danmaku_offset_secs") {
+        let raw = v
+            .as_f64()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "danmaku_offset_secs 必须是数字"))?;
+        if !raw.is_finite() {
+            return Err(err(StatusCode::BAD_REQUEST, "danmaku_offset_secs 必须是有限数字"));
+        }
+        cfg.style.danmaku.offset_secs = raw.clamp(-10.0, 10.0);
     }
     // 输出画布 / 画面构成 / 贴纸落点：整块提交（前端给全量字段，缺键走 serde 默认）。
     // ⚠️ 这里是**逐字段白名单**：没列进来的键保存时不报错、但静默存不进去。
@@ -1767,6 +1836,40 @@ mod tests {
     use super::*;
     use crate::api::test_support::*;
     use axum::body::Body;
+
+    /// 字体库只读接口的**载荷契约**（2026-10-02 字体职责分离新增两个字段的落点）。
+    ///
+    /// 前端有三处直接吃这个 JSON：
+    /// * `PolishPreview` 的 `.cap` 栈取 `fallback_stack`（首项随库里默认走）；
+    /// * 字幕预览把 `emoji_family` **追加在栈尾**（正文在前、emoji 兜底）；
+    /// * 两个字体下拉按每支的 `emoji` 过滤（emoji 字体不许被选成正文）。
+    ///
+    /// 所以这里钉两件事：**字段在**，且 **`emoji_family` 不是 `fallback_stack` 的一段**
+    /// —— 后者是有意的（封面靠注册顺序、底座没有回退，拼进去只会误导）。
+    #[test]
+    fn 字体库载荷带上_emoji_槽位且与兜底栈分开() {
+        let payload = serde_json::json!({
+            "root": "",
+            "fallback_stack": vtrim_polish::render::server::fallback_stack(),
+            "emoji_family": vtrim_core::fonts::emoji_font(&vtrim_core::path::font_dir()).map(|e| {
+                if e.family_internal.trim().is_empty() { e.id } else { e.family_internal }
+            }),
+            "fonts": [],
+            "builtin": [],
+        });
+        let stack = payload["fallback_stack"].as_str().expect("fallback_stack 必须在");
+        assert!(!stack.is_empty(), "兜底栈不能是空的");
+        // 兜底栈**永远不含 emoji**（vtrim-core 有单测钉着；这里从 HTTP 载荷再确认一次）
+        assert!(
+            !stack.to_ascii_lowercase().contains("emoji"),
+            "emoji 不许混进兜底栈（它走独立字段）: {stack}"
+        );
+        // `emoji_family` 字段本身必须在（值可以是 null —— 库里没装 emoji 字体就是 null）
+        assert!(
+            payload.get("emoji_family").is_some(),
+            "emoji_family 字段必须在（前端据此决定要不要追加栈尾）"
+        );
+    }
 
     /// 贴纸预热接口的**路径面**：`..` / 绝对 / 盘符 / 反斜杠 / **根相对**必须被挡掉。
     ///

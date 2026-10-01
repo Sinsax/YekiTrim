@@ -86,8 +86,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/models/download", post(models_download))
         // 字体库**写**操作：库是**程序级全局资产**（`<exe 同级>/resources/fonts/`），
         // 与贴纸库同规矩 —— **读**谁都能读（`GET /api/polish/fonts`），**写只给 admin**。
-        // 导入走"服务器上已有的文件路径"（`/api/fs/list` 也仅 admin），不做 base64 上传。
+        // 导入走"服务器上已有的文件路径"（`/api/fs/list` 也仅 admin）—— 这条仍在，
+        // 用于"服务器上已经躺着那支字体"的场景。
         .route("/polish/fonts/import", post(polish_fonts_import))
+        // **拖拽上传**（2026-10-02 用户要求"导入字体改为拖拽字体文件"）：请求体是字体的
+        // 原始字节（`application/octet-stream`，不是 multipart —— 同贴纸上传那条做法）。
+        // ⚠️ 必须单独给这一条放开体积上限：axum 默认只收 2 MB，而字体动辄 10~30 MB
+        // （413 就是这层丢了）。上限常量与前端预检是同一个数。
+        .route(
+            "/polish/fonts/upload",
+            post(polish_fonts_upload).layer(axum::extract::DefaultBodyLimit::max(
+                FONT_UPLOAD_MAX_BYTES,
+            )),
+        )
         // 设为默认（唯一默认；**不动任何工程的字体配置**）
         .route("/polish/fonts/default", post(polish_fonts_default))
         // 下载**自带字体**（清单见 `vtrim_core::fonts::BUILTIN_FONTS`；幂等，已装好的跳过）。
@@ -362,9 +373,11 @@ async fn font_write_routes_are_admin_only() {
     for (method, uri) in [
         ("POST", "/polish/fonts/import"),
         ("POST", "/polish/fonts/default"),
-        // 下载自带字体**必须**仅 admin：它会联网并把几十 MB 写进程序目录，
-        // 让普通用户能触发就是"任意用户往服务器磁盘写大文件 + 打外部网络"
+        // 安装自带字体**必须**仅 admin：它会往服务器磁盘写几十 MB
+        // （字体已内嵌、**不联网**，但仍不能让普通用户触发"任意用户写大文件"）
         ("POST", "/polish/fonts/builtin"),
+        // 上传（拖拽导入）：同样仅 admin —— 它是"任意用户往服务器写大文件"的另一个口子
+        ("POST", "/polish/fonts/upload?name=x.ttf"),
         ("DELETE", "/polish/fonts?id=whatever"),
     ] {
         let res = t
@@ -384,6 +397,8 @@ async fn font_write_routes_are_admin_only() {
         ("POST", "/polish/fonts/import", r#"{"dir":"F:\\x"}"#),
         ("POST", "/polish/fonts/default", "{}"),
         ("DELETE", "/polish/fonts", "{}"),
+        // 上传缺 name：400（拿不到文件名就没法定 id，不能静默用一个随机名）
+        ("POST", "/polish/fonts/upload", "{}"),
     ] {
         let res = t
             .call(
