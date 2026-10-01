@@ -1,8 +1,7 @@
 //! 渲染核心的输入类型定义。
 //!
-//! 这些类型从 vtrim-polish 的 project/config.rs 迁入，作为渲染核心与
-//! vtrim-polish / vtrim-wasm 的共享契约。vtrim-polish 通过 `pub use`
-//! 重导出保持既有代码路径兼容。
+//! 这些类型从 vtrim-polish 的 project/config.rs 迁入，现在是 `vtrim-polish` 的字段类型
+//! （`polish.toml` 的序列化格式就是它们）；vtrim-polish 通过 `pub use` 重导出保持既有代码路径兼容。
 
 use std::collections::HashMap;
 
@@ -151,16 +150,6 @@ pub enum Event {
         sfx: Option<String>,
         sfx_volume: Option<f64>,
     },
-    ZoomBounce {
-        time: f64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        end: Option<f64>,
-        #[serde(default)]
-        anchor: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")]
-        sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
     Vignette {
         time: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,28 +163,6 @@ pub enum Event {
     HueShift {
         time: f64,
         color: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        end: Option<f64>,
-        #[serde(default)]
-        anchor: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")]
-        sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
-    Stutter {
-        time: f64,
-        intensity: Option<f64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        end: Option<f64>,
-        #[serde(default)]
-        anchor: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")]
-        sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
-    Split {
-        time: f64,
-        intensity: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end: Option<f64>,
         #[serde(default)]
@@ -224,17 +191,6 @@ pub enum Event {
         sfx: Option<String>,
         sfx_volume: Option<f64>,
     },
-    ColorShift {
-        time: f64,
-        color: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        end: Option<f64>,
-        #[serde(default)]
-        anchor: Option<String>,
-        #[serde(default, deserialize_with = "flex_sfx")]
-        sfx: Option<String>,
-        sfx_volume: Option<f64>,
-    },
 
     // === 覆盖层 (持续) ===
     Overlay {
@@ -246,6 +202,13 @@ pub enum Event {
         opacity: Option<f64>,
         colors: Option<Vec<String>>,
         shape: Option<String>,
+        /// 线性渐变的**方向**（CSS 约定：0 = 向上、顺时针增大）。`None` = 参照的缺省方向
+        /// （CSS 的 `to bottom right`，即 135°）。
+        ///
+        /// ⚠️ 与底座那侧的约定**不同**：底座的 `angle` 是度、在 shader 里当 `(cos, sin)` 用
+        /// （0 = 向右、90 = 向下），所以转译器要换算（`base = css - 90`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle: Option<f64>,
         #[serde(default, deserialize_with = "flex_sfx")]
         sfx: Option<String>,
         sfx_volume: Option<f64>,
@@ -290,14 +253,10 @@ impl Event {
             Event::Shake { time, .. } => *time,
             Event::Flash { time, .. } => *time,
             Event::Blur { time, .. } => *time,
-            Event::ZoomBounce { time, .. } => *time,
             Event::Vignette { time, .. } => *time,
             Event::HueShift { time, .. } => *time,
-            Event::Stutter { time, .. } => *time,
-            Event::Split { time, .. } => *time,
             Event::Noise { time, .. } => *time,
             Event::Pulse { time, .. } => *time,
-            Event::ColorShift { time, .. } => *time,
             Event::Overlay { time, .. } => *time,
             Event::Sfx { time, .. } => *time,
         }
@@ -311,14 +270,10 @@ impl Event {
             Event::Shake { end, .. } => *end,
             Event::Flash { end, .. } => *end,
             Event::Blur { end, .. } => *end,
-            Event::ZoomBounce { end, .. } => *end,
             Event::Vignette { end, .. } => *end,
             Event::HueShift { end, .. } => *end,
-            Event::Stutter { end, .. } => *end,
-            Event::Split { end, .. } => *end,
             Event::Noise { end, .. } => *end,
             Event::Pulse { end, .. } => *end,
-            Event::ColorShift { end, .. } => *end,
             Event::Overlay { end, .. } => *end,
             Event::Sfx { end, .. } => *end,
         }
@@ -332,14 +287,10 @@ impl Event {
             Event::Shake { end, .. } => *end = value,
             Event::Flash { end, .. } => *end = value,
             Event::Blur { end, .. } => *end = value,
-            Event::ZoomBounce { end, .. } => *end = value,
             Event::Vignette { end, .. } => *end = value,
             Event::HueShift { end, .. } => *end = value,
-            Event::Stutter { end, .. } => *end = value,
-            Event::Split { end, .. } => *end = value,
             Event::Noise { end, .. } => *end = value,
             Event::Pulse { end, .. } => *end = value,
-            Event::ColorShift { end, .. } => *end = value,
             Event::Overlay { end, .. } => *end = value,
             Event::Sfx { end, .. } => *end = value,
         }
@@ -357,14 +308,10 @@ impl Event {
             Event::Shake { .. } => 0.3,
             Event::Flash { .. } => 0.25,
             Event::Blur { .. } => 0.3,
-            Event::ZoomBounce { .. } => 0.4,
             Event::Vignette { .. } => 0.4,
             Event::HueShift { .. } => 0.35,
-            Event::Stutter { .. } => 0.25,
-            Event::Split { .. } => 0.25,
             Event::Noise { .. } => 0.3,
             Event::Pulse { .. } => 0.4,
-            Event::ColorShift { .. } => 0.35,
             // 音效不补：`None` 是「用文件原始长度」的合法语义
             Event::Sfx { .. } => 0.0,
         }
@@ -567,9 +514,6 @@ pub struct SubtitleStyle {
     #[serde(default = "default_highlight_color")]
     pub highlight_color: String,
 
-    #[serde(default = "default_entrance")]
-    pub entrance: String,
-
     #[serde(default = "default_sub_position")]
     pub position: String,
 
@@ -585,7 +529,6 @@ impl Default for SubtitleStyle {
             color: default_sub_color(),
             stroke: default_sub_stroke(),
             highlight_color: default_highlight_color(),
-            entrance: default_entrance(),
             position: default_sub_position(),
             extra: HashMap::new(),
         }
@@ -606,9 +549,6 @@ fn default_sub_stroke() -> String {
 }
 fn default_highlight_color() -> String {
     "#f56b41".into()
-}
-fn default_entrance() -> String {
-    "cycle-5".into()
 }
 fn default_sub_position() -> String {
     "bottom".into()

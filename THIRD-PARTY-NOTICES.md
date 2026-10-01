@@ -25,6 +25,21 @@
 本项目已把本文档与 `LICENSE` 列为 `cargo xtask package` 的**强制**产物（缺任一个直接报错），
 随包分发即完成署名。
 
+### 可选 feature `cover-takumi`（静态封面渲染，**默认关**）
+
+该 feature **默认不编**，所以**不在默认发行产物里**（`cargo xtask scan` 扫的就是默认产物，因此看不到这一路）。
+一旦用它构建（`--features vtrim-polish/cover-takumi`），以下组件会随二进制静态分发，
+声明义务与上表同样由分发方履行：
+
+| 组件 | 版本 | 授权 | 说明 |
+|---|---|---|---|
+| takumi / takumi-core / takumi-html / takumi-raster | 2.14.0 / 0.25.0 / 0.3.4 / 0.5.1 | **MIT OR Apache-2.0** | 封面静态渲染（HTML+CSS → 位图），不依赖浏览器。判定与证据见 `docs/plan/takumi-cover-capability.md`。 |
+| parley / harfrust / swash 等文字排版栈 | 随 takumi | MIT OR Apache-2.0 | 文本整形、换行与字形光栅化（takumi 的传递依赖）。 |
+| ICU4X（`icu_*` 系列） | 随 takumi | **Unicode-3.0** | 文本分段/断行数据。⚠️ Unicode-3.0 是宽松许可（非 copyleft），但**不在 MIT/Apache 之列** —— 再分发时要一并保留其许可声明（本表即该声明）。 |
+| libwebp-sys / libwebp | 0.14.4 | BSD-3-Clause | WebP 解码（takumi 的 `image-decoding` 默认 feature 拉入）。⚠️ 它用**静态 CRT**，链接期会出现 `LNK4098: 默认库"LIBCMT"与其他库的使用冲突` —— 只在这个 feature 打开时出现，默认构建**没有**这条。 |
+
+⚠️ **若将来把 `cover-takumi` 打进发行包，必须重跑 `cargo xtask scan` 并复核本表。**
+
 ### 构建期使用，但**不随二进制分发**
 
 | 组件 | 版本 | 授权 | 说明 |

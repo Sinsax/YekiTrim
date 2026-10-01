@@ -7,7 +7,7 @@
 //! （下一次保存即完成迁移，渲染结果 1:1 不变）。
 //!
 //! 入口：`vtrim-polish` 的 polish.toml 加载与 `PUT /api/polish/project`、LLM 事件生成
-//! （含老 checkpoint）、`vtrim-wasm` 的预览配置。
+//! （含老 checkpoint）。—— 原来的第四处「`vtrim-wasm` 的预览配置」随「作废 wgpu」一起删除了。
 
 use serde_json::{Map, Value};
 
