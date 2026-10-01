@@ -317,7 +317,7 @@ let dhampirStickerDiag = null
  *   * `就绪 4/4` 且 `idx` 在变、`已交` 在涨 → 解码与提交都对，问题在引擎那边
  *   * `已交 0` → `onPrepared` 没被调到
  */
-const dhampirStickerStat = { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 }
+const dhampirStickerStat = { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0, delayConflict: 0 }
 
 function dhampirBuildSegments(project) {
   const track = ((project.timeline && project.timeline.tracks) || []).find((t) => t.id === 'v1')
@@ -760,6 +760,28 @@ async function dhampirLoadAnimations(project) {
         // 会把漂移请回来（症状是动图越播越偏）。
         if (res.info && Array.isArray(res.info.frame_delays_ms)) {
           st.delays = res.info.frame_delays_ms
+          // ⚠️ **冲突要报**（T3）：判据是"**解码器赢**"，所以只可能是一边静默漂 ——
+          // 工程 JSON 那份是转译器用 ffprobe 探的，解码器是底座自己读的，两者
+          // 只在"文件被换过 / 探测器与解码器口径不同"时才会不一致。
+          // 报的目的是**别让漂移静默发生**（用户看到的是"贴纸越播越偏"，最难归因的那种）。
+          const declared = Array.isArray(a.frame_delays_ms) ? a.frame_delays_ms : null
+          if (declared && declared.length === st.delays.length) {
+            const diff = declared.findIndex((v, i) => v !== st.delays[i])
+            if (diff >= 0) {
+              const msg = 'dhampir: 动图 ' + st.assetId + ' 的帧延迟表与工程 JSON 不一致，'
+                + '按解码器为准（第 ' + diff + ' 帧：工程 ' + declared[diff] + 'ms / 解码器 ' + st.delays[diff] + 'ms）'
+              console.warn(msg)
+              dhampirStickerStat.delayConflict += 1
+              st.animDelayConflict = msg
+            }
+          } else if (declared && declared.length !== st.delays.length) {
+            // 帧数都对不上是更严重的漂移（工程表会被当权威用错地方）
+            const msg = 'dhampir: 动图 ' + st.assetId + ' 的帧延迟表长度不一致（工程 '
+              + declared.length + ' / 解码器 ' + st.delays.length + '），按解码器为准'
+            console.warn(msg)
+            dhampirStickerStat.delayConflict += 1
+            st.animDelayConflict = msg
+          }
         }
       } else {
         // parsed:true / ok:false = 认得出格式但解不开；parsed:false = 连格式都不认识
@@ -819,6 +841,7 @@ function dhampirStickersFrom(project) {
       assetId: a.id, uri: a.uri, fps, spans,
       // 动图状态（见 dhampirLoadAnimations）
       animLoaded: false, animUri: '', animInfo: null, animError: '', animPendingAttach: false,
+      animDelayConflict: '',
     }
   })
 }
@@ -1342,6 +1365,9 @@ function scheduleDhampir() {
             const bits = ['贴纸 ' + dhampirStickerStat.ready + '/' + dhampirStickerStat.total]
             if (anim > 0) bits.push('引擎解码 ' + anim)          // GIF/WebP：交给引擎了
             if (animErr > 0) bits.push('失败 ' + animErr)         // 加载期就报，别等渲染
+            // ⚠️ **延迟表冲突必须露出来**：它不会让贴纸"不动"，只会让它**越播越偏** ——
+            // 静默的话就变成最难归因的那类问题（细节见 docs/webui-components.md ②.4）。
+            if (dhampirStickerStat.delayConflict > 0) bits.push('延迟表冲突 ' + dhampirStickerStat.delayConflict)
             if (dhampirStickerStat.submits > 0 || anim < dhampirStickerStat.total) {
               // 只有静态图才走位图那条路；全动图时这一栏本就该是 0
               bits.push('本帧 idx ' + dhampirStickerStat.idx)
