@@ -131,8 +131,8 @@
   特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
   `bg_zoom` 0.5~3。
-- ⚠️ **取帧播放器在舞台外**（`.scrub-row` 可见监视器；隐身播放器=拖进度条盲选，2026-10 用户报过）：
-  舞台内帧源只有 `_cover_frame.jpg` 一份；监视器显式给尺寸清掉全局 `video{}` 口径（钉子 ②）。
+- ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**
+  （曾这么干 → 切层没法拖进度条、选好的帧跳回去）；前端不是帧源（后端 ffmpeg 截帧），同帧靠 `seekToFramePos`（钉子 ②）。
 - **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器镜像**；
   `sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出错误条 + 「重试」。
 ### 运镜（camera）
