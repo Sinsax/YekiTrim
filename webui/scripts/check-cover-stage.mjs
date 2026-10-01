@@ -15,7 +15,9 @@
 //   · 帧层：两边都 `object-fit:contain`（素材保持原比例，**用户明确要求**，别改回 cover）；
 //   · 背景层：两边都 `object-fit:cover` + `blur(28px×倍率)` + `scale(1+px/150)`；
 //   · 画布：**恒 1920×1080 横版**（不跟 `[canvas] orientation`）；
-//   · 背景图文件名：blur 读关键帧 `_cover_frame.jpg`、image 读 `_cover_bg.jpg`（别共用一个文件）。
+//   · 背景图文件名：blur 读关键帧 `_cover_frame.jpg`、image 读 `_cover_bg.jpg`（别共用一个文件）；
+//   · **全局类名穿透**：`app.css` 的 `.pane { display:none }` 不许被设计器复用（⑥，2026-09 图层化
+//     改造时踩到 —— 与上面那条 `video { background:#000 }` 同一个机制）。
 //
 // 运行： node webui/scripts/check-cover-stage.mjs
 //
@@ -92,12 +94,15 @@ const tplBlurHasFilterAndScale = (html) => {
   const b = rule(html, '#bg.bg-blur img')
   return /filter\s*:\s*blur\(var\(--bg-blur\)\)/.test(b || '') && /transform\s*:\s*scale\(var\(--bg-blur-scale\)\)/.test(b || '')
 }
-/** 图层序：背景层在帧层之下（z-index 0 < 1） */
-const bgUnderFrame = (css) => {
-  const bg = num(decl(rule(css, '.stage-bg'), 'z-index'))
-  const media = num(decl(rule(css, '.stage-media'), 'z-index'))
-  return bg !== null && media !== null && bg < media
-}
+/** 图层序：**默认栈**里背景层在帧层之下。
+ *  2026-09 起 z-index 由 `[cover] layers` 决定（行内样式），所以判据从"读 CSS 的 z-index"
+ *  改成两条：① 设计器的默认序里 bg 在 frame 之前；② 内容层的 z-index 不再写死在 CSS 里。 */
+const defaultStackHasBgUnderFrame = (src) => /['"]bg['"][\s\S]{0,60}?['"]frame['"]/.test(src)
+const contentZIndexOf = (css, sel) => num(decl(rule(css, sel), 'z-index'))
+const contentZIndexesGone = (css) =>
+  ['.stage-bg', '.stage-media', '.vignette-layer', '.gradient-layer', '.title-wrap'].every(
+    (sel) => contentZIndexOf(css, sel) === null
+  )
 
 /** Rust 常量（类型不写死：`f64`/`u32` 都有） */
 const rsNum = (name, src = coverRs) => {
@@ -126,7 +131,10 @@ check('.stage-video background 是 transparent', frameVideoBgIsClear(designer), 
 check('.stage-video border-radius 被清成 0', frameVideoRadiusIsZero(designer), true,
   '全局 video 的 --r-sm(10px) 也漏进来了：现在被 .stage 的 14px 盖住看不出，但别留这个口子')
 check('.stage-media 容器没有底色', mediaWrapHasNoBg(designer), true)
-check('图层序：.stage-bg 在 .stage-media 之下', bgUnderFrame(designer), true)
+check('图层序：默认栈里 bg 在 frame 之前（z-index 由栈给）', defaultStackHasBgUnderFrame(designer), true,
+  '把默认序改成 frame 在前 → 帧层会被背景层盖住')
+check('内容层的 z-index 不再写死在 CSS 里（只允许行内/栈给）', contentZIndexesGone(designer), true,
+  'CSS 里写死图层序 = 列表里这么排、成片里那么画（不报错的那类 bug）')
 
 // ── ③ 出片模板：同一套图层契约 ──────────────────────────────────────────────
 console.log('\n③ 出片模板 cover.html 同口径')
@@ -173,6 +181,50 @@ check('[变异] 背景层 cover → contain → 判据翻面',
 const rsMismatch = coverRs.replace(/(COVER_BLUR_BASE_PX\s*:\s*[a-z0-9]+\s*=\s*)[0-9.]+/, '$140.0')
 check('[变异] 只把 Rust 的基准改成 40 → 与设计器的 28 不再相等（本脚本能抓到）',
   rsNum('COVER_BLUR_BASE_PX', rsMismatch) === 40 && designerConst('COVER_BLUR_BASE_PX') === 28, true)
+
+// ── ⑥ 全局类名穿透（`.pane`）与属性面板高度 ──────────────────────────────────
+// `styles/app.css` 有一条**全局** `.pane { display:none }`（设置页那几个 tab 面板靠 `.on` 才显示）。
+// 封面设计器 2026-09 图层化时新加的"属性面板"如果也叫 `.pane`，整块面板会**直接隐身** ——
+// 与 `.stage-video` 那两条黑边同一个机制（全局规则穿透组件里没显式覆盖的属性），而且**不报错**。
+// 同一块面板还有第二种隐身：`.controls` 的高度被 JS 限到与预览等高，而文字层那一屏内容更高，
+// flex 收缩按 flex-basis 比例来 —— 没有 `min-height` 下限时它会被压成 **0 高**（两者都实测过：
+// 用本机 headless Chrome 真挂载组件量 `getBoundingClientRect()` + `getComputedStyle().display`）。
+const usesClass = (src, name) => new RegExp('class="[^"]*\\b' + name + '\\b').test(src)
+/** `.lyr-props` 的 min-height（px）——`num()` 吃不了带单位的声明，这里 parseFloat */
+const paneMinHeight = (src) => {
+  const n = parseFloat(String(decl(rule(src, '.lyr-props'), 'min-height') ?? ''))
+  return Number.isFinite(n) ? n : null
+}
+console.log('\n⑥ 全局类名穿透：设计器不许复用 app.css 里 display:none 的类名')
+check('app.css 仍有全局 `.pane { display:none }`（这条就是理由）',
+  /display\s*:\s*none/.test(rule(appCss, '.pane') || ''), true)
+check('设计器的属性面板没叫 .pane', usesClass(designer, 'pane'), false,
+  '改回 .pane → 属性面板整块 display:none，页面不报错、只是面板没了')
+check('属性面板 .lyr-props 带 min-height 下限', (paneMinHeight(designer) || 0) > 0, true,
+  'flex 收缩（.controls 被 JS 限高）会把它压成 0 高')
+check('[变异] 面板类名改回 .pane → 判据翻面',
+  usesClass(designer.replace(/class="lyr-props/g, 'class="pane'), 'pane'), true)
+check('[变异] 去掉 min-height → 判据翻面',
+  paneMinHeight(designer.replace('min-height:120px', '')) === null, true)
+
+// ── ⑦ 图层栈在两端都不许被"两处实现"拆开 ─────────────────────────────────────
+// 图层栈的 z-index 注入必须**只有一条替换链**（`build_cover_page`）：以前预览与出片各写一份，
+// 漏改一边就是"预览有层序、出片没有"；`#fx-extra` 一旦有 z-index 就会把特效锁进同一个 stacking
+// context（拖动排序看着生效、出片不动）。
+console.log('\n⑦ 图层栈：一条替换链 + #fx-extra 不许有 z-index')
+check('`COVER_HTML` 只在 `build_cover_page` 里替换一次（没有第二份构建器）',
+  (coverRs.match(/COVER_HTML\s*\n?\s*\.replace/g) || []).length === 1, true,
+  '出现两次 → 又分叉了；预览与出片必须同走 build_cover_page')
+check('cover.rs 调了 `cover_layer_css` 与 `cover_fx_html`',
+  /cover_layer_css\(&plan, legacy\)/.test(coverRs) && /cover_fx_html\(cc, &plan, legacy\)/.test(coverRs), true)
+/** `#fx-extra` 既不能在样式表里、也不能在内联里带 z-index */
+const fxExtraHasNoZIndex = (html) =>
+  !/z-index/.test(rule(html, '#fx-extra') || '') && !/id="fx-extra"[^>]*z-index/.test(html)
+check('模板 `#fx-extra` 没有 z-index（否则特效被锁死在一层）', fxExtraHasNoZIndex(coverHtml), true,
+  '内联 z-index 会让所有特效进同一个 stacking context，拖动排序就白做了')
+check('模板有 `__LAYER_CSS__` 占位（图层栈注入点）', /<style>__LAYER_CSS__<\/style>/.test(coverHtml), true)
+check('[变异] 给 #fx-extra 加回内联 z-index → 判据翻面',
+  fxExtraHasNoZIndex(coverHtml.replace('id="fx-extra" style="position:absolute;inset:0;pointer-events:none;"', 'id="fx-extra" style="position:absolute;inset:0;pointer-events:none;z-index:1;"')), false)
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

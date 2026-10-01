@@ -503,30 +503,41 @@ const panelTitle = computed(() => {
   return { seg: '分段属性', event: '事件属性', sub: '字幕属性', mute: '屏蔽属性' }[selected.value.kind] || '属性'
 })
 
-// 视觉特效泳道的**细分类型**（顺序 = 面板下拉与 ＋ 菜单的顺序）。
-// 类型不是让用户从 15 种里随便挑的：**轨道上的 ＋ 负责定类型**，
-// 面板里只允许在同一个轨道的细分类型之间换（全片只有这一条轨道有 11 个细分）。
-const FX_TYPES = ['shake', 'flash', 'blur', 'zoom_bounce', 'vignette', 'hue_shift',
-  'stutter', 'split', 'noise', 'pulse', 'color_shift']
+// **效果词汇表派生**（2026-10-01）：这四张表与两个分组原先手写在这里，
+// 而同一份词汇表散在 15 处代码里（见 spec/effects.json 头注释与 docs/plan/effect-pipeline-unification.md）。
+// 现在**只读那一份权威**：加/删效果改 `spec/effects.json`，这里自动跟上；
+// `scripts/check-effect-registry.mjs` 仍会检查"读没读"与"锚点在不在"。
+import EFFECT_SPEC from '../../../spec/effects.json'
+
+const EFFECTS = EFFECT_SPEC.effects
+/** 视觉特效泳道的**细分类型**（顺序 = 面板下拉与 ＋ 菜单的顺序 = 词汇表里的顺序）。
+ *  ⚠️ 按 `lane` 而不是 `kind` 派生：D3 之后「覆盖层」并进了这条泳道，而 `overlay` 的
+ *  `kind` 仍是 `durable`（那是**语义**，用于时长上限与 LLM 提示词分组）。两者别混。 */
+const FX_TYPES = EFFECTS.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.id)
+/** 类型中文名（只用于展示；可选性由轨道决定，见 `isFxType`）。 */
+const TYPE_LABELS = Object.fromEntries(EFFECTS.map((e) => [e.id, e.label]))
+/** 能挂音效的类型（`SFX_CAPABLE`）。 */
+const SFX_CAPABLE = EFFECTS.filter((e) => e.sfx_capable === true).map((e) => e.id)
+/** 属性面板的两组（`ui` 分组；原先两组数组也在这里手写）。
+ *  ⚠️ `ui` **必须是数组**（词汇表门禁会校验；2026-10-01 出过一次事故：`overlay.ui` 写成对象 `{}`
+ *  ⇒ 这里 `.includes` 抛 `(intermediate value).includes is not a function` ⇒ 编辑器 setup 直接抛错）。
+ *  这里再加一层防御：拿到非数组就当"没有分组"，别让一个坏词条连累整块界面。 */
+const uiGroup = (name) =>
+  EFFECTS.filter((e) => (Array.isArray(e.ui) ? e.ui : []).includes(name)).map((e) => e.id)
+
+/** 轨道成员由词汇表的 `lane` 派生（D3：overlay 已并入「视觉特效」泳道，覆盖层泳道删除）。 */
+const LANE_TYPES = (lane) => (lane === 'fx' ? FX_TYPES : EFFECTS.filter((e) => (e.lane ?? 'fx') === lane).map((e) => e.id))
 
 const LANE_DEFS = [
   { type: 'segments', label: '分段 / 屏蔽', color: TIMELINE_COLORS.segments, resizable: true },
   { type: 'subtitles', label: '字幕', color: 'rgba(59,130,246,0.35)', resizable: true },
-  { type: 'camera', label: '运镜', color: TIMELINE_COLORS.camera, resizable: true },
-  { type: 'sticker', label: '贴纸', color: TIMELINE_COLORS.sticker, resizable: true },
-  { type: 'fx', label: '视觉特效', color: TIMELINE_COLORS.flash, types: FX_TYPES, resizable: true },
-  { type: 'overlay', label: '覆盖层', color: TIMELINE_COLORS.overlay, resizable: true },
-  { type: 'sfx', label: '音效', color: TIMELINE_COLORS.sfx, resizable: true }
+  { type: 'camera', label: '运镜', color: TIMELINE_COLORS.camera, types: LANE_TYPES('camera'), resizable: true },
+  { type: 'sticker', label: '贴纸', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  { type: 'fx', label: '视觉特效', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
+  { type: 'sfx', label: '音效', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
 ]
 const lanes = LANE_DEFS
 
-/** 类型中文名（只用于展示；可选性由轨道决定，见 `isFxType`）。 */
-const TYPE_LABELS = {
-  camera: '运镜', sticker: '贴纸', shake: '抖动', flash: '闪白', blur: '模糊',
-  zoom_bounce: '缩放弹跳', vignette: '暗角', hue_shift: '色相偏移', stutter: '卡顿',
-  split: '撕裂', noise: '噪点', pulse: '脉冲', color_shift: '色偏',
-  overlay: '覆盖层', sfx: '音效'
-}
 const isFxType = (t) => FX_TYPES.includes(t)
 /** 覆盖类型（`overlay_type`）→ 中文名：属性面板下拉与泳道块标签共用一份，别各写一遍。 */
 const OVERLAY_TYPES = [
@@ -541,18 +552,13 @@ const isOverlayFade = (ev) => ev.overlay_type === 'fade_in' || ev.overlay_type =
 /** 新建覆盖层的默认色/不透明度（`defaultEvent` 给的那两个值）：切到淡入/淡出时按值迁移成黑色遮罩。 */
 const OVERLAY_NEW_COLOR = '#ff3232'
 const OVERLAY_NEW_OPACITY = 0.3
-// 与 Rust 端 Event::default_end 的默认时长逐值一致
-const DEFAULT_SPAN = {
-  camera: 1.0, sticker: 2.0, overlay: 1.5, sfx: 1.0,
-  shake: 0.3, flash: 0.25, blur: 0.3, zoom_bounce: 0.4, vignette: 0.4,
-  hue_shift: 0.35, stutter: 0.25, split: 0.25, noise: 0.3, pulse: 0.4, color_shift: 0.35
-}
-const INTENSITY_TYPES = ['shake', 'stutter', 'split']
-const COLOR_TYPES = ['flash', 'hue_shift', 'color_shift']
+// **也派生自词汇表**（与 Rust `Event::default_end` / `fx.rs::transient_default_duration` 逐值一致 ——
+// 门禁会把这三处钉在一起，见 `scripts/check-effect-registry.mjs` 的值级检查）。
+const DEFAULT_SPAN = Object.fromEntries(EFFECTS.map((e) => [e.id, e.default_span]))
+const INTENSITY_TYPES = uiGroup('intensity')
+const COLOR_TYPES = uiGroup('color')
 /** 时间会被后处理吸附/延长的类型（有 `manual` 字段的那两类）。 */
 const MANUAL_TYPES = ['sticker', 'camera']
-const SFX_CAPABLE = ['sticker', 'shake', 'flash', 'blur', 'zoom_bounce', 'vignette',
-  'hue_shift', 'stutter', 'split', 'noise', 'pulse', 'color_shift', 'overlay']
 
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100
 const span0 = (type) => DEFAULT_SPAN[type] ?? 0.5
@@ -1205,7 +1211,7 @@ function defaultEvent(type, t) {
   else if (type === 'sticker') { ev.keyword = ''; ev.x = '50%'; ev.y = '50%' }
   else if (type === 'overlay') { ev.overlay_type = 'color'; ev.color = '#ff3232'; ev.opacity = 0.3 }
   else if (type === 'sfx') { ev.name = ''; ev.volume = 0.3 }
-  else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 10 : type === 'stutter' ? 12 : 30
+  else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 10 : 30
   else if (COLOR_TYPES.includes(type)) ev.color = '#ffffff'
   return ev
 }

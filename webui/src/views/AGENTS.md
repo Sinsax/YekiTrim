@@ -71,8 +71,9 @@
    `cmd_llm` 落盘、`polish_project_get?preview=1` 注入 `_llm_status`、
    `TimelineEditor` 给**没产出事件的段**上琥珀色（成功 = 当前颜色，用户要求），
    分段属性面板显示失败原因 + 「只重做本段事件」。
-   ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会用屏蔽区间切段、
-   砍超出视频时长的段，窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
+   ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会砍掉超出视频时长的段，
+   窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
+   （屏蔽区间**不再**改段的构成 —— 它只做标记、不许删事件，见 `crates/vtrim-polish/src/project/AGENTS.md`。）
    成败**不看最终事件数** —— 空事件段会被 process 补上默认运镜，用 `events.is_empty()` 当判据
    会让失败永远显示成成功。
 4. **入口语义**：`POST /api/polish/llm {full}` 的 `full` **默认 true = 全部重做**（先清 checkpoint；
@@ -87,6 +88,7 @@
   **别加第五颗、别改回去**）：右栏是 `.cols-main` 定宽 300px 轨道 ⇒ 行内容宽 **266px**，
   而 `.mini-btn` 默认内边距下四颗最小宽度合计 282px、必折成 3+1。几何推导在 `PolishView.vue`
   该行注释里；**这条没有门禁能抓**。
+- **出片通道下拉留在渲染弹窗里**：`''` = 跟随默认（底座 dhampir），`chrome` = 兜底。
 
 **预处理页 `PrepareView`（一个按钮、两段任务）**
 

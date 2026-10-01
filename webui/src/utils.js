@@ -85,9 +85,9 @@ export const TYPE_COLORS = {
 // 时间轴泳道/事件块着色（TimelineEditor 专用色板，与 TYPE_COLORS 同一色族）
 export const TIMELINE_COLORS = {
   segments: '#525252', camera: '#2563eb', sticker: '#7c3aed', shake: '#dc2626',
-  flash: '#d97706', blur: '#0891b2', zoom_bounce: '#059669', vignette: '#4d7c0f',
-  hue_shift: '#db2777', stutter: '#9333ea', split: '#ea580c', noise: '#64748b',
-  pulse: '#0d9488', color_shift: '#c026d3', overlay: '#ca8a04', sfx: '#6d28d9'
+  flash: '#d97706', blur: '#0891b2', vignette: '#4d7c0f',
+  hue_shift: '#db2777', noise: '#64748b',
+  pulse: '#0d9488', overlay: '#ca8a04', sfx: '#6d28d9'
 }
 
 export const STICKER_COLORS = ['pink', 'blue', 'mint', 'amber']

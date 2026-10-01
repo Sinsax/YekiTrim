@@ -106,7 +106,7 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :wgpu-render="wgpuRender" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
@@ -236,7 +236,7 @@
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
-            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="renderModal = true"><Icon name="film" :size="13" /> 渲染导出</button>
+            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
@@ -359,6 +359,23 @@
       <p class="hint mt-6">
         只接受项目内相对路径；同名不覆盖，自动写成 <span class="mono">名字_1.mp4</span>。
       </p>
+      <label class="mt-12">出片通道</label>
+      <select v-model="renderChannel">
+        <option value="">默认（底座 Dhampir · GPU 出片）</option>
+        <option value="chrome">本仓 Chrome（兜底：底座没装/版本不符时用）</option>
+      </select>
+      <!-- 就绪位（M3）：底座不可用时**在点渲染之前**就说明白，而不是任务跑到一半才失败。
+           只报"能不能用 + 什么原因"，列出的路径挂在 title 里（不占行内宽度）。 -->
+      <p v-if="dhampirStatus && !dhampirStatus.ready" class="hint mt-6 warn">
+        底座当前不可用：{{ dhampirProblems }}（可以先选 Chrome 出片）
+      </p>
+      <p v-else-if="dhampirStatus && dhampirStatus.ready" class="hint mt-6" :title="dhampirDetail">
+        底座就绪 ✓（画面归它、音轨仍由本仓混）
+      </p>
+      <p v-else class="hint mt-6">
+        默认走独立的 Dhampir 底座（本机 GPU + ffmpeg，画面归它、音轨仍由本仓混）。
+        底座不可用时**明确报错**、不会静默换路；这时选 Chrome 即可。
+      </p>
       <template #footer>
         <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
         <button class="btn" @click="renderModal = false">取消</button>
@@ -386,7 +403,7 @@ import { projectData } from '../api/projectData'
 import {
   fetchProject, fetchSubtitles, saveProjectPatch,
   initPolish, runLlm, runLlmSegment, runProcess, runRender,
-  fetchStickerSources, fetchFonts,
+  fetchDhampirStatus, fetchStickerSources, fetchFonts,
   REGION_LABELS,
 } from '../api/polish'
 import { ensureFontFace } from '../polish/fonts'
@@ -434,6 +451,40 @@ const segKey = ref(0)
 const coverKey = ref(0)
 const renderModal = ref(false)
 const renderOutput = ref('')
+/** 出片通道：`''` = 不传，跟随服务端/CLI 的默认值（现在是底座 dhampir）。
+ *  ⚠️ **不写回落**：默认值只有一处（`cli.rs` 的 `--renderer`），前端抄第二份就会漂。 */
+const renderChannel = ref('')
+/** 底座出片通道的就绪位（M3）：打开渲染弹窗时抓一次；`null` = 还没问到（不显示任何提示）。 */
+const dhampirStatus = ref(null)
+const dhampirProblems = computed(() =>
+  (dhampirStatus.value?.problems ?? []).map((p) => String(p).split('（')[0]).join('；'),
+)
+const dhampirDetail = computed(() =>
+  [
+    dhampirStatus.value?.binary ? `二进制：${dhampirStatus.value.binary}` : '',
+    dhampirStatus.value?.translator ? `转译器：${dhampirStatus.value.translator}` : '',
+    dhampirStatus.value?.font ? `字体：${dhampirStatus.value.font}` : '',
+    dhampirStatus.value?.font_bold
+      ? `字体粗体：${dhampirStatus.value.font_bold}`
+      : dhampirStatus.value?.font
+        ? '字体粗体：没有（700/600 的字重会退回常规体，成片笔画会比预览细）'
+        : '',
+    dhampirStatus.value?.node_version ? `Node：${dhampirStatus.value.node_version}` : '',
+    dhampirStatus.value?.contract_version ? `project_schema=${dhampirStatus.value.contract_version}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n'),
+)
+/** 打开"渲染导出"时顺带问一次底座就绪位 —— 失败不影响出片流程（提示而已，`api()` 已记日志）。 */
+async function openRenderModal() {
+  renderModal.value = true
+  dhampirStatus.value = null
+  try {
+    dhampirStatus.value = await fetchDhampirStatus(pid.value, dir.value)
+  } catch {
+    // 就绪位拿不到 = 不显示提示（点渲染时该报的错照旧会报）
+  }
+}
 const timelineRef = ref(null)
 const previewRef = ref(null)
 
@@ -443,8 +494,6 @@ let jobTimer = null
 let canceling = ref(false)
 const jobStartMs = ref(0)
 const jobElapsed = ref(0)
-// 服务端是否带 --features wgpu-render 构建（决定 /api/polish/render-frame 是否可用，缺失时 501）
-const wgpuRender = ref(false)
 
 const jobRunning = computed(() => job.status === 'running' || job.status === 'queued')
 
@@ -626,13 +675,25 @@ async function clearSelect() {
 
 // 重新加载配置后同步选框（框选模式中不打断拖拽）
 watch(() => cfg.value?.layout, () => { if (!selectRegion.value) loadSelRect() })
-// 产物优先使用后端返回的实际文件名（含 _1/_2 版本），未返回时回退固定名
+// 产物**只**用后端返回的实际文件名（含 _1/_2 版本）：没返回就是**还没渲染过**。
+//
+// ⚠️ 以前这里回退到一个固定名（`vtuber-clip.mp4`）—— 那个文件通常**不存在**，
+// 于是页面挂上一个指向 404 的 `<video>`。而**媒体元素会无限重试**，
+// 把浏览器对同一主机的连接数（HTTP/1.1 是 6 条）占住：
+// 表现是**其它接口再也排不上队** —— `/api/jobs`（页面每 5~10s 轮询）稳定 10s 超时，
+// `engine.js` 模块偶发载入失败，而**服务端日志显示它对每个请求都很快**（200/几十 ms）。
+// 排查代价：重启服务、强刷新都无效（问题在浏览器侧），看起来像"服务端卡死"。
+// 实测触发：`GET /api/media/2/output/clips/clip-25/vtuber-clip.mp4 → 404`，
+// 同时 `/api/jobs → 请求超时（10000ms）` 连续出现。
+const renderedFile = computed(() => clipEntry.value?.rendered_file || null)
+const renderedUrl = computed(() => (renderedFile.value
+  ? clipMediaUrl(pid.value, dir.value, renderedFile.value)
+  : null))
+
 const coverFailed = ref(false)
 const renderedFailed = ref(false)
 const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
-const renderedFile = computed(() => clipEntry.value?.rendered_file || 'vtuber-clip.mp4')
 const coverUrl = computed(() => clipMediaUrl(pid.value, dir.value, coverFile.value))
-const renderedUrl = computed(() => clipMediaUrl(pid.value, dir.value, renderedFile.value))
 
 function jobLabel(kind) {
   return { llm: 'LLM 生成', render: '渲染导出', process: '后处理', init: '初始化' }[kind] || kind
@@ -1131,7 +1192,7 @@ function doRender() {
   renderModal.value = false
   // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
   // 渲染会重新生成封面文件 → 封面设计器重挂载拉新图
-  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { coverKey.value++; load({ silent: true }) } })
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim(), renderChannel.value), { after: () => { coverKey.value++; load({ silent: true }) } })
 }
 
 // 时间轴的保存与后处理见上面「时间轴编辑 → 预览 → 落盘 → 后处理」（编辑器自己防抖落盘）
@@ -1184,14 +1245,6 @@ async function onSubtitleFontChange(e) {
   } finally {
     fontSaving.value = false
   }
-}
-
-// /api/health 的 wgpu_render：非 true（含 undefined）都视为未启用
-async function loadHealth() {
-  try {
-    const h = await api('/api/health')
-    wgpuRender.value = h?.wgpu_render === true
-  } catch { wgpuRender.value = false }
 }
 
 async function patchStickerSource(list) {
@@ -1421,7 +1474,6 @@ onMounted(() => {
   load()
   loadStickerSources()
   loadFonts()
-  loadHealth()
 })
 onUnmounted(() => {
   pageGone = true
