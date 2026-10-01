@@ -158,11 +158,9 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
   必须同口径 —— 覆盖层色档走 `engine.js::gradientCss`、字幕折行走 `engine.js::wrapCaptionParts`
   （经 `capRowsWrapped`）、贴纸尺寸走 `polish/canvas.js::stickerScale`、运镜/手持摇摆走 `engine.js`。
   改这些函数前先读 `webui/src/polish/AGENTS.md`（漂移对拍脚本在那儿）。
-- **真渲染是可选能力**：`wgpuRender`（来自 `/api/health` 的 `wgpu_render` 能力位）为 false 时整个「真渲染」入口隐藏。
-  打开后 **wasm 实时模式优先**（WebGPU 可用时渲染核心直接在浏览器合成），失败/不可用则
-  **回退 server 单帧** `POST /api/polish/render-frame`（裸 `fetch`，写请求必须自己带 `csrfHeaders()`）；
-  播放中不发单帧请求（`scheduleRealFrame` 里 `playing` 早退）。**默认构建下整条真渲染路不可达，
-  别为它做语义同步**（见根卡「wgpu 真渲染：暂不使用」）。
+- ⚠️ **真渲染那条路已整条删除**（wasm 实时模式 + `POST /api/polish/render-frame` 单帧回退、
+  `/api/health` 的 `wgpu_render` 能力位 —— 随「作废 wgpu」一起没了，GPU 那侧交给独立的 Dhampir 底座）。
+  预览**只有自绘 DOM/GSAP 这一层**；`PolishPreview.vue` 也不再收 `wgpuRender` prop。**别再照本节旧写法加回来。**
 - **字体要注册 `FontFace`**：页面 DOM 只认注册过的字体，所以经 `polish/fonts.js::ensureFontFace` 把同一份字节
   注册一遍（字幕字体在预览里注册；封面标题字体在 `CoverDesigner` 里注册）。
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
@@ -174,49 +172,226 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。任何"改完没反应"先怀疑没重建/没重启。
 
+### 2.1 跳手动屏蔽区间为什么要有"定格遮罩"（2026-09）
+
+用户报的现象：**播到手动屏蔽区间时黑屏一下 + 极短卡顿，然后继续**。
+
+机制：预览跳过 `mute_ranges` 的办法是给 `<video>` 改 `currentTime`（`tick()` 里那一跳）。
+观测台 `.workbuddy/mute-skip/run.mjs`（CDP 录**合成器输出** + 页内逐帧轨迹；软件解码 / GPU 解码 ×
+headless / 真窗口 **四种组合**；样本是单关键帧长 GOP 的 720p，配一个"远段延迟 600ms 才发"的
+静态服务来模拟"seek 目标未缓冲"）实测：
+
+| 观测项 | 实测值 |
+|---|---|
+| seek 期间元素 `readyState` | 掉到 **1**（HAVE_METADATA）→ **整段没有可呈现的帧** |
+| seek 时长 | 缓冲好的 190ms；未缓冲的远跳 **707ms** |
+| 四种组合里的黑帧 | **0 张** —— 本机合成器会**保持上一帧**（这四种组合都拍到了"画面停住"而不是变黑） |
+
+所以：**黑屏那一档取决于解码路径/平台**（元素没有帧时，露出来的是它自己的黑底
+`app.css` 全局 `video{background:#000}`），本机复现不出来、但**不能因此认为它不存在**；
+而**与平台无关、必然发生**的是**错位** —— 画面停住等解码（最长 700ms），而改造前
+`current`/字幕/弹幕/时间轴是**立刻**跳到剪切后的：那段时间里字已经换了、画面还是剪切前那一张，
+看起来正是"卡一下"。
+
+做法（`PolishPreview.vue`）：
+
+* `beginSkipFreeze()`：**改 `currentTime` 之前**把"此刻屏幕上那块画面"快照进 `.freeze-frame`
+  画布（`.stage` 内 `inset:0`）。几何一律照元素的 `getBoundingClientRect()` 走 —— `axis/position/
+  scale/padding` 与运镜那套 transform 已经由 CSS 应用过一次，照包围盒画即可（手持摇摆那零点几度的
+  rotate 不复现，一帧的误差看不出来）。Dhampir 模式直接照抄那块 canvas（它本来就铺满舞台）。
+* `armFreezeRelease(wantFrame)`：等**新帧真的上屏**才撤 —— 首选 `requestVideoFrameCallback`（回调时新帧已交给
+  合成器），没有它的浏览器退到 `seeked` + 两帧（`seeked` 只说明解码好了、还没上屏，直接撤会露出黑的那一帧）。
+  ⚠️ **两条腿不一样**（2026-09-30）：DOM 模式等 `videoRef` 那一帧就够了（画面就是它自己）；
+  **Dhampir 模式还要等"引擎已经画到目标帧"**（`freezeTargetDrawn`：`dhampirFrameShown ≥ dhampirFrameAt(target)`）
+  —— 那块 canvas 是引擎用**它自己那套 `<video>` 源**画的，与 DOM 时钟**不是同一个解码器**：
+  只等后者时遮罩会在源就绪前撤掉，引擎先画的那一张没有像素（画布露黑）—— 症状就是"跳屏蔽区还是黑一下"。
+  DOM 模式传 `wantFrame = null`，判据恒真，行为与改造前逐字节相同。
+* `endSkipFreeze()`：撤遮罩的那一帧**才推时钟**（`current`/`emit('time')`）—— 定格期间 `tick()`/`onSeeked()`
+  都不推，否则就是"字先动、画后到"。
+* 层级别弄反：**DOM 模式 `z-index:5`**（只冻视频像素，DOM 覆盖层 z-index 10 留在上面一起定格），
+  **Dhampir 模式 60**（画面是那块 canvas，z-index 40，遮罩必须盖在它上面）。
+  `.fx` 那五层（flash / color / hue / vignette / noise）是 **`z-index:6`** —— 快照里没有它们（遮罩只拍
+  视频像素），不抬到 6 的话定格那 200~700ms 里它们会**整块消失再回来**，又是一次眨眼。
+* 常量：`SKIP_FREEZE_MAX_MS=700`（防"永久定格"）、`SKIP_FREEZE_MIN_MS=30`（rvfc 可能在 seek 生效前回调）、
+  `SKIP_LOOKAHEAD=0.03`（提前一帧认定要进区间，剪辑点才落在区间起点上 —— 否则区间里那一帧会先被显示）。
+* **观测台的实测数字**（`.workbuddy/mute-skip/run.mjs`，2026-09-30 复跑：headless 与真窗口 GPU 解码各一趟）：
+  seek 窗口 **340~370ms**（skip→seeked），窗口内亮度 119.1~119.3 —— **元素保持上一帧、0 张黑帧**；
+  `readyState` 掉到 1、`seeking=1` 的 ~50 帧里，fix 档遮罩**全程都在**（baseline 0 帧）。
+  也就是说：黑底这一档在**本机**复现不出来（平台/解码路径相关），而与平台无关的是**那 340ms 的定格** ——
+  遮罩把它从"黑一下"变成"画面停一下再硬切"，**要去掉这 340ms 只能把 seek 藏到切割之前**（预滚双缓冲）。
+* 用户机器上 GPU 解码路径是否真会露黑底仍未复现（本机四种组合都没有），处置仍是这一层遮罩。
+
+### 2.2 A/B 预滚：把"停一下"也消掉（2026-09-30）
+
+用户复报"**整块纯黑 + 画面停住**"。定位到是 **Dhampir 那条腿**（组件挂载 300ms 后默认进 Dhampir）：
+
+* **黑从哪来**：`followPlayback = true` 时引擎**不 await seek**（`webui/web/engine.js`：
+  `const following = this.followPlayback === true && video.paused !== true; if (following !== true) await this.seekVideo(...)`
+  —— Dhampir 仓的 `web/engine.js:962`）。跳屏蔽区间时宿主把源 `<video>` 一把改 `currentTime`
+  （`syncDhampirTime`），源进入 `seeking`、`readyState` 掉到 1 —— 而引擎这一帧照画：
+  视频层没有像素，合成出来就是整块黑。
+* **为什么遮罩救不了它**：那块 canvas 是 WebGPU 表面，**读不回来**（surface 只有 `RENDER_ATTACHMENT`，
+  没有 `COPY_SRC` —— Dhampir 仓 `crates/dhampir-wasm/src/timeline_host.rs:399` 自己写着这件事），
+  所以 `drawImage(canvas)` 拿不到像素、定格遮罩是**透明**的，黑画布照旧露出来。
+
+做法（`PolishPreview.vue`）：
+
+* **宿主闸门**：`dhampirSourcesReady(f)` —— 这一帧要用的源只要有一个在 `seeking` / `readyState < 2`，
+  这一帧**不交给引擎**（`dhampirHoldSince` ≤ `DHAMPIR_SOURCE_WAIT_MS=700` 兜底，超了照画）。
+  不画，画布会**保留上一帧**（交换链的既有行为）⇒ 从"整块黑"变成"停一下"。
+* **A/B（真正消掉那一下）**：每个源多备一块同 `src` 的 `<video>`（`dhampirTwins`，1px、暂停、静音、
+  `preload=metadata`），进屏蔽区前 `PREROLL_SECS=0.8` 把**下一段起点**在它上面 seek 好
+  （`dhampirPrerollTarget` 往前看：`dhampirFrameAt(t + PREROLL_SECS) === null` = 马上要切）；
+  到点 `dhampirSwapSources()` 用 **`engine.bindSource(assetId, twinId)` 换绑** + 让备用的播起来、
+  旧的暂停并接下一次预滚（角色互换）⇒ 引擎那一帧**本来就有像素**，零等待。
+  ⚠️ 只换"这一趟武装过的源"（`dhampirArmedIds`）：工程里不活跃的第二路素材没有目标位置，
+  把它算进"全都就绪"会让换绑永远等不齐（A/B 静默失效）。
+* **DOM 那条腿同样 A/B**：`.fit-box` 里放两块 `<video>`（`stage0Ref`/`stage1Ref`），
+  台下那块是 `.source-video-standby`（1px、仍在渲染树里 ⇒ 照旧解码 —— `display:none` 会停解码）。
+  **`videoRef` 改成了 `computed`**（`activeStage` 选中哪块就是哪块）：组件里几十处读 `videoRef.value`
+  的地方一个字都没改，换台就是翻一个数。到点 `tryStageSwap()` 换台 ⇒ 零等待、连遮罩都不用上；
+  没备好（刚拖过进度条、区间太近）才回落到定格遮罩那条老路。
+* 两腿的兜底都在：只要预滚没赶上，行为与改造前一致（DOM 定格遮罩 / Dhampir 闸门 + 定格遮罩）。
+* 守卫：`node webui/scripts/check-preview-ab.mjs`（17 项 + 3 处变异自证）—— 守"`videoRef` 必须是
+  computed、换台先翻 `activeStage` 再 `pause`、Dhampir 必有那道闸门与备用源换绑"这三件**错了也不报错**
+  的事。
+
+还没验到的一档：**真机上的观感**（A/B 命中时那一下是不是真的"无缝"）。观测台只覆盖了 DOM 那条腿的
+seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— 请在精修页里把预览切到 Dhampir
+（默认就是）播到一段屏蔽区间上看。
+
+### 2.3 预览的字体是"一套口径"，出片必须照抄（2026-10-01，"字体不对"）
+
+用户实测报"字体不对，其他的正确"。查下来**不是选错字体文件**，而是预览与出片在**两件**事上不同口径：
+
+| 项 | 预览（本组件） | 出片（底座那条腿） | 结论 |
+|---|---|---|---|
+| 族名顺序 | `.cap` 的 `fontFamily = "<项目字体/缺省 LXGW WenKai>","Microsoft YaHei","Noto Sans SC",sans-serif` | 读 `render/server.rs::SYSTEM_FONT_STACK`，而它原本是 `LXGW → **Noto** → YaHei` | 顺序**相反** ⇒ 没装项目字体的工程：**预览雅黑、成片 Noto**（两者都装了），且不报错 |
+| 字重 | `.cap{font-weight:700}`、`.dm{font-weight:600}`（+ `-webkit-text-stroke`） | 转译器写了 `font_weight: 700/600`，但底座**不合成粗体**：它只在 `>=600` 时去要 `--font-bold-file`，而这条参数**从来没传过** | 成片退回常规体 ⇒ **笔画比预览细一圈** |
+
+修法与判据：
+
+* `SYSTEM_FONT_STACK` 改成与 `.cap` **同序**（`'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif`）
+  —— 它同时喂 index.html / cover.html 与底座那条腿，一处改三处对齐；
+* 底座侧 `find_font` 返回 `(常规, Option<粗体>)`（`msyh.ttc` ↔ `msyhbd.ttc`）并传 `--font-bold-file`；
+  就绪位/`polish doctor` 把"有没有粗体那一支"露出来（没有就是细一圈的直接原因）。
+* 本组件**不许改 `.cap` 的顺序/权重而不改 `SYSTEM_FONT_STACK`**（反之亦然）。
+* 实测证据与完整推导在 `docs/plan/dhampir-parity-register.md`「2026-10-01 追加」一节
+  （A/B 对照图 `.workbuddy/font-compare/bold-ab.png`：同一帧，给不给粗体文件）。
+
 ---
 
 ## ③ 封面设计器（`CoverDesigner.vue`）
 
 `CoverDesigner.vue` —— 封面设计器，props `dir`（必填）/`pid`，emit `changed`；只在该片段被占用时禁用「生成封面」。
 
-### 3.1 封面三层与背景模式
+### 3.1 真图层栈（2026-09 起）与背景模式
 
-- **封面三层：文字 / 关键帧 / 背景**：`#title`（文字）在最上、`#frame`（**关键帧层**：当前帧清晰图 `_cover_frame.jpg`）
-  居中、`#bg`（**背景层**）在最下，再往上才是渐变/暗角/特效。**三层各有各的图源，谁也不许覆盖谁**。
+- **面板布局**（用户要求把设置栏与图层栏**换位**）：左预览 / 右面板 = **上：属性面板 · 下：图层组列表 ·
+  最底：工具条（`+ 新建图层` + 用法提示）**。整列高度由 `syncControlsBound()` 限到与左侧预览等高，
+  三块各自滚动。
+  ⚠️ 那个高度必须是**确定高度**（给 `height`，不是 `max-height`）：`height:auto` 的 flex 列没有"剩余空间"
+  可分，属性面板会长成内容高度、**图层列表跟着上下跳**（用户报过："固定图层组位置在列表的下 50%"）。
+  定高之后 `.lyr-list` 的 `flex:0 0 50%` 才有百分比基准 → 列表**钉在面板下半部**，换选中层（属性面板
+  长短变化）它的位置一动不动；窄屏（≤900px）单列时解除定高、列表退回内容高度（上限 260px）。
+- **列宽 = `minmax(0,1fr) minmax(440px, 40%)`**（2026-09 用户要求："封面设计区小一点、右侧图层编辑和图层设置
+  宽一点"；改前是定宽 `372px`）。40% 只在宽屏生效、`440px` 是下限（图层行的六个格与文字面板"两列一行"要放得下）。
+  实测（外层内容宽 1146px，harness 读 `gridTemplateColumns`）：**755/376 → 672/458**（预览 −11%、面板 +22%）；
+  内容宽 902px 时是 446/440。
+  ⚠️ 两个方向是**联动**的：预览高度 = 宽度 × 9/16，而面板高度跟着预览 → **把右栏再改宽 = 面板变矮**、
+  文字那一屏要滚的地方更多。改这一条要连着看下面那条下限。
+- ⚠️ 面板高度是"等于预览高度"**外加一个下限** `CONTROLS_MIN_H`(380px)。面板里能压缩的只有属性面板
+  （`min-height:120px`），`.lyr-list` 是 `flex:0 0 50%`、工具条 `flex:none` —— 再挤就是
+  `.controls{overflow:hidden}` 把**最底下那条工具条裁掉**（实测内容宽 936px：面板 288px、工具条被裁 46px，
+  "新建图层"整个看不见）。⚠️ **`.lyr-list` 的 `flex-shrink` 必须是 0**：改成 `0 1 50%` 会让它被按 flex-basis
+  比例收缩（属性面板的 basis 是**内容高度**，基准之和早就溢出）—— 422px 的面板里列表只剩 120px，而且
+  **换选中层时列表位置跟着跳**（实测 334 → 243），正是这条规则要防的那件事。
+- **顺序与可见性都落盘**（不再是 v1 那种"只读投影"）：`[cover] layers = [{id, visible}, …]`，
+  id = `bg` / `frame` / `filter`（渐变+暗角，一层两块）/ `title` / `fx:<CoverEffect::id>`。
+  出片由 `cover.rs::resolve_cover_stack` + `plan_cover_layers` 折成每块的 `z-index`；
+  前端 `resolveStack()` / `blockZ` / `layerVisible` 是**镜像**（连容错规则一起抄：缺项按默认序的相对位置
+  补齐、未知 id 忽略、重复只认第一次、没列出的特效仍然渲染）。**两边必须一起改。**
+- **图层行**：`[拖柄 ⠿] [眼睛] [缩略] [名字] [锁定/辅助线徽标] [垃圾桶]`。
+  - **眼睛 = 非破坏性隐藏**（`visible:false` → 出片 `display:none`）：属性一个字节不动，行留着（淡化）。
+    两条安全区走 `localStorage['vtrim.ui.coverGuides']`（不在 `layers` 里），交互一样、含义不同。
+  - **删除 = 从栈里摘掉**：固定层（背景/滤镜/文字）属性全留，`+ 新建图层` 加回来就恢复；
+    **特效/表情例外** —— 它的"属性"就是 `[[cover.effects]]` 那一条，删除连它一起删。
+  - **视频预览 `locked`**：可隐藏，**不给删也不给拖**（它就是封面那一帧）。
+  - ⚠️ **别退回"用属性字段模拟开关"**：v1 那套存续判据（`title_lines=['']` / 清渐变 / 纯黑背景）已废，
+    层存在性只看 `layers`。
+- **拖动排序**：行上 HTML5 DnD（`draggable` + `dragstart/dragover/drop`），落点画 2px 主色指示线
+  （`drop-before/after`），`Esc`/无效落点复原；**列表显示序 = 栈的倒序**，换算集中在 `moveLayerTo()`。
+  快捷键绑在 `.controls` 上（**别挂 window**，精修页还有别的全局键）：`Ctrl/Cmd+[ ]` 上下移一层、
+  加 `Shift` 置顶/置底、`Delete` 删选中层。
+- **画布拖动 = 跟着"选中的那一层"走**（用户口径："选中哪个图层就可以手动拖动"）：
+  `dragTarget` 是唯一判据 —— 视频预览 → `bg_x/bg_y`（滚轮 `bg_zoom`）· 文字 → `text_x/text_y` ·
+  特效/表情 → `x/y`（滚轮 `amount`）· 滤镜/背景/安全区 → **不可拖**（光标 `not-allowed`，`title` 里说明）。
+  `Shift` 约束单轴；拖动过程只改本地 ref，落盘仍走 600ms 防抖。
+- **封面三层：文字 / 关键帧 / 背景**：`#title`（文字）、`#frame`（**关键帧层**：当前帧清晰图 `_cover_frame.jpg`）、
+  `#bg`（**背景层**）—— **三层各有各的图源，谁也不许覆盖谁**（层序可以拖，图源不会互换）。
   背景层三种模式（`[cover] bg_mode`）：`color` 纯色（默认黑）/ `blur` 关键帧**模糊副本**平铺（`blur_scale` 0.2~4）/
   `image` 导入的自定义图片 `_cover_bg.jpg`；各自读各自的文件（blur → `COVER_FRAME_IMG`，image → `COVER_BG_IMG`），
-  `image` 模式**没有那个文件就退回 color**（别在模板里挂死图）。设计器分组按三层排：
-  「标题与高亮」（文字）·「关键帧」·「背景与阴影」；「导入背景图片」按钮**在背景组里**。
+  `image` 模式**没有那个文件就退回 color**（别在模板里挂死图）。
 - ⚠️ **导入背景图片写的是 `_cover_bg.jpg`**（`/api/polish/cover-background` 同时把 `bg_mode` 设成 `image`）。
   **别再写回 `_cover_frame.jpg`** —— 那是"背景替换关键帧"的老 bug（用户报过「又把关键帧那一层给我删了」）。
   `cover.image` 也**不要**在导入时清空（它是关键帧的来源之一）。
 - ⚠️ **出片不再删 `_cover_frame.jpg`**（`cmd_cover` 末尾那句 `remove_file` 已删）：它就是关键帧层的图源，
   删了等于①用户导出的那一帧白导、②下次出片又按 `frame_pos` 重新截、同一份封面每次换脸。
 
-### 3.2 关键帧手势与 transform 的单一来源
+### 3.2 新建图层：类型选择器
 
-- **关键帧可拖动/滚轮缩放**（`.stage-gesture-layer`）：`coverOffsetX/Y`、`coverZoom` → payload `bg_x/bg_y/bg_zoom`
-  （服务端存 1920 画布 px，预览按 `stageScale` 换算）→ 出片写进 `#frame img` 的 `transform`，**与背景层互不影响**；
-  这几个是**活字段**。帧的 transform 只此一份：`cover.rs::cover_frame_vars`（原点取 `layout.liver` 的聚焦点，
-  右半边基准 1.4 / 左半边 1.3，再乘 `bg_zoom` 夹到 0.2~3）；前端 `mediaStyle`+`GRID_CENTERS` 是镜像。
+底部工具条的 `+ 新建图层` 弹一个小面板（**向上弹**），**按类型分两组**（判据是"能不能再叠一层"）：
+
+| 组 | 类型 | 落在哪 | 说明 |
+|---|---|---|---|
+| 可叠加（任意多个） | 表情 · 光晕 · 模糊 · 暗角点 · 颜色覆盖 · 扫描线 | `[[cover.effects]]` 各一条（带稳定 `id`） | 表情与特效是同一条数据的两个 `kind`；表情默认贴主播（`liverOrigin()`，帧层变换的不动点），新层**追加到栈顶** |
+| 单层（每种一层） | 背景 · 滤镜 · 文字 | `[cover] bg_*` / `gradient_dir+vignette` / `title_*` | 已经在栈里 → 标「已有」；**不置灰**，点它 = 选中那一层（被隐藏时顺带打开） |
+
+- **视频预览与两条安全区不在菜单里**：前者是基础层（`locked`），后者只是辅助线 —— 菜单底下一行写明。
+- 这九项就是"当前设计器里能编辑的全部类型"，`+ 新建图层` 是它们唯一的入口（别再退回一排 `<details>` 分组）。
+- ⚠️ **特效 `id` 用短随机串**（不是自增序号）：序号会"这次会话删过一条、下次会话又从 1 数起"撞车，
+  撞了之后栈里两条同 `id` 只解析出一条（= 图层凭空少一个）。老数据的空 id 在**读回时补一个**再落盘。
+
+### 3.3 出片侧的注入与"零回归"快路径
+
+- `cover_layer_css(plan, legacy)`：**自定义栈**时给固定的五块写 `z-index` + 隐藏层 `display:none`，
+  并把 `#fx-extra` 退回 `z-index:auto`；**默认栈**（含全部可见）时只补回模板原来那条
+  `#fx-extra{z-index:1}`、**一个逐层 z-index 都不注入**。
+- ⚠️ **为什么要有这条快路径**：实测给五块都写上 z-index 之后，Chrome 会换一条合成路径 ——
+  缩放中的帧层重采样差 ~9/255，肉眼看不出，但 **SHA-256 会变**，而"存量逐字节零回归"是本仓
+  真出片对拍过的硬判据。判据：`.workbuddy/cover-layer/` 三个样本（横 / 竖 / 六种特效全上的 rich 工程）
+  改前改后 **SHA-256 相同**（rich：`F608702D96C0D7BC`）。
+- ⚠️ **`overlay` 特效额外带 `isolation:isolate`**（只它，`blur` 加不得）：改造前 `#fx-extra` 是 stacking
+  context，`mix-blend-mode:overlay` **没有背景可混**（实测"绿底叠 #ff3366"是橄榄绿）；拆开后会真混合 →
+  **老封面会变色**。设计器的 `.fx-slot-iso` 是镜像（**同构，不能省**）。
+- 自定义栈的验收（端到端）：把 `title` 排到栈底 + `filter` 隐藏 + 表情隐藏 → 成片里标题被盖住、
+  没有渐变/暗角、没有表情（`.workbuddy/cover-layer/after/LAYERS-cover.jpg`）。
+
+### 3.4 画布拖动（跟着选中层）与帧层 transform 的单一来源
+
+- **画布上的拖动改哪一层，只看"当前选中哪一层"**（用户口径）——`dragTarget` 一个判据：
+  视频预览 → `bg_x/bg_y`（画布 px，按 `stageScale` 换算）· 文字 → `text_x/text_y`（百分比，中心点）·
+  特效/表情 → `x/y`（百分比）· 滤镜/背景/安全区 → 没有位置可拖（光标 `not-allowed` + `title` 说明）。
+  `Shift` 约束单轴（锁定开始拖动那一刻的主方向）；拖动过程只改本地 ref，松手让 600ms 防抖保存落盘。
+- **帧层（视频预览）的 transform 只此一份**：`cover.rs::cover_frame_vars`（原点取 `layout.liver` 的聚焦点，
+  右半边基准 1.4 / 左半边 1.3，再乘 `bg_zoom` 夹到 0.5~3）；前端 `mediaStyle` + `GRID_CENTERS` 是镜像。
   模糊倍率同理：`cover_blur_css` ↔ `coverBlurCss`。**改一边要改另一边。**
 - ⚠️ **关键帧文件可能不存在**（新工程没导出过、也没出片过）：设计器里模糊背景会先 404 ——
   图被 v-if 摘掉、看着像"没运行"。`onBgImageError()` 的补法：**只对 blur 模式**（image 模式缺图只提示"还没导入"）
   **不带 time** 调 `/api/polish/cover-frame`，服务端按 `[cover] frame_pos` 截，只补一次（`bgFrameTried` 防循环），
   再失败就在模式下面提示手动「导出关键帧」。换背景模式会重置这两个状态。
 
-### 3.3 安全区线框（几何表）
+### 3.5 安全区线框（几何表）
 
-- **安全区线框**：舞台（1920×1080）上叠 `.guide-layer`（`inset:0`、`z-index:7`、`pointer-events:none`），
-  压在标题(z5)与手势层(z6)之上才看得出"标题有没有越线"。两条框：**16:9 安全区**（`.guide-169`）= `width:95%; height:95%`
+- **安全区线框**：舞台（1920×1080）上叠 `.guide-layer`（`inset:0`、`z-index:950`、`pointer-events:none`），
+  压在手势层（`900`）与所有内容层之上才看得出"标题有没有越线"。两条框：**16:9 安全区**（`.guide-169`）= `width:95%; height:95%`
   居中 → 舞台坐标 **1824×1026**；**4:3 裁切区**（`.guide-43`）= `height:100%` + `aspect-ratio:4/3` 居中 → **1440×1080**。
   ⚠️ **别写成 `inset:5%`**：CSS 的 inset 百分比是**横向按父宽、纵向按父高**解析的，
   看着像等比其实不是（这么写会得到 1728×972，连 16:9 都不是）。等比缩放只能写 width/height。
   两条框**故意互相交叠**，别为了"好看"改成嵌套。线是**白线 + 1px 深色外圈**（封面素材亮暗不定）；
-  线宽与字号用**预览 px**（**不乘 `stageScale`**）。开关在舞台下方独立一行两个 chip，**各自独立**、默认都开，
-  偏好落 `localStorage['vtrim.ui.coverGuides']`，**在 setup 里同步读**（放 computed / onMounted 会先画一帧展开态再切，闪一下）；
-  **不写 `cover.toml`、不加后端接口**。
+  线宽与字号用**预览 px**（**不乘 `stageScale`**）。显隐 = **图层列表里那两行上的眼睛**（各自独立、默认都开，
+  舞台下**不再放 chip**：同一件事不说两遍），偏好落 `localStorage['vtrim.ui.coverGuides']`，
+  **在 setup 里同步读**（放 computed / onMounted 会先画一帧展开态再切，闪一下）；**不写 `polish.toml`、不加后端接口**。
 - ⚠️ **只画在设计器里**：`crates/vtrim-polish/templates/cover.html` 与 `cover.rs` 一个字都没改，
   所以线框**不可能**进入成片。将来若要往 CLI 那个独立预览页加，必须同时补 `html.export .guide-layer{display:none}`
   （与 `#toolbar` 同一机制），否则进成片。
@@ -228,20 +403,21 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
 | 16:9 安全区 | `.guide-169` | `width:95%; height:95%` 居中 | **1824×1026** |
 | 4:3 裁切区 | `.guide-43` | `height:100%` + `aspect-ratio:4/3` 居中 | **1440×1080** |
 
-### 3.4 标题首次自动排版
+### 3.6 标题首次自动排版
 
 - **标题首次自动排版 = `fitTitleIntoSafeArea()` 塞进 4:3 裁切区**：触发只有两处（`loadCoverConfig` 发现磁盘上
-  `title_lines` **为空**；`generateTitleByLlm` 拿到新标题），手动操作（改文字 / 拖滑杆 / 点预设 / 拖拽）**一律不触发**
+  `title_lines` **为空**；`generateTitleByLlm` 拿到新标题），手动操作（改文字 / 拖滑杆 / 拖拽）**一律不触发**
   —— **别在 watch 里接它**。**已有封面一律不碰**（判据 = 磁盘上有没有 `title_lines`）；只动
   `font_size` / `text_x` / `text_y`（必要时一次 `text_width`），零后端改动。目标矩形 = 那条 `.guide-43` 线框
   （画布 `x ∈ [240, 1680]`、`y ∈ [0, 1080]`）再内缩 `12 + stroke/2` 画布 px。**量的是 `.title-text` 而不是
   `.title-wrap`**（后者是 62% 宽的容器）。顺序：先按 `min(tW/bW, tH/bH)` 比例缩字号**并迭代**（字号一变
   换行数会跳变），到下限 24 还偏高才放宽一档文字区，最后按各边溢出量平移；**告警只看最终状态**
   （`relaxed = !fits(b)`）。实在放不下会 `console.warn` + `.fit-hint` 琥珀提示，不静默。
-- ⚠️ **默认对齐是 `left`**（`default_cover_text_align()`，2026-09 由 `center` 改来）：默认预设
-  就叫「左文」、默认 `text_x = "35%"`，三处以前是"预设左文、配置居中"，自相矛盾。已有工程的 `polish.toml`
-  里都显式写着 `text_align = "center"`，字段存在就不走默认，**不受影响**。改这个默认值**不要顺手改
-  `cover.rs::cover_text_align` 的 `_ => ("center","center")` 兜底** —— 那个 `_` 同时兜着合法值 `"center"` 本身。
+- ⚠️ **默认对齐是 `left`**（`default_cover_text_align()`，2026-09 由 `center` 改来）：默认 `text_x = "35%"`。
+  已有工程的 `polish.toml` 里都显式写着 `text_align`（含 `"center"`），字段存在就不走默认，**不受影响**。
+  改这个默认值**不要顺手改 `cover.rs::cover_text_align` 的 `_ => ("center","center")` 兜底** ——
+  那个 `_` 同时兜着合法值 `"center"` 本身。
+  （设计器里那 4 个排版预设 —— 左文/居中/右文/极简 —— 已按用户要求删掉；CLI 侧 `polish cover --template` 仍在。）
 - **标题文本框固定 5 行高、不可拖拽缩放**（`rows="5"` + `.title-lines { line-height:1.5; resize:none }`）。
   别改回 `rows="2"`，也别加 `resize:vertical`；字段外观用设计基准 `.fld-input`，不要再加紧凑覆盖。
   出片与预览都按 `title_lines` 逐行渲染。
@@ -249,7 +425,7 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
 推导留档：左对齐 + `text_x=35%` / `text_width=62%` 时，文字左边缘落在 76.8px，**本就在 4:3 裁切区
 （左边界 240px）之外**，所以上面的"按各边溢出量平移"对左对齐而言是第一次必然发生。
 
-### 3.5 设计器预览 ⇄ 出片的镜像清单
+### 3.7 设计器预览 ⇄ 出片的镜像清单
 
 - **封面特效 emoji（`[[cover.effects]]` kind = `emoji`）**：`text` 是贴的字符（默认 `🙂`，最多
   `COVER_EMOJI_MAX_CHARS`(12) 个字符），`x/y` 是**字符中心**（画布百分比，`translate(-50%,-50%)`），
@@ -263,28 +439,59 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
   `'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif`）· 文字描边色 `#2a2522`、阴影
   `0 5px 22px rgba(0,0,0,0.78)`（预览按 `stageScale` 缩放）· **渐变底色**取自
   `[style.subtitle] highlight_color`（那套 `(1-c)×{30,25,50}` + min 10/10/15）· **图层序**（自下而上）：
-  背景 < 帧 < 暗角 < 渐变 < 特效 < 标题（预览 `.vignette/.gradient/.fx` 按 2/3/4 给 z-index）·
-  特效公式（`blur` = `1 + amount×14` px、`overlay` = `rgba(hex→rgb, amount)` + `mix-blend-mode`；
-  emoji 字号 `48+amount×240`、`drop-shadow(0 6px 14px)`，预览一律乘 `stageScale`）·
+  由 `[cover] layers` 决定 —— 设计器与出片**都从栈算 z-index**（前端 `blockZ`、Rust `plan_cover_layers`），
+  **CSS 里不许再写内容层的 z-index**（`check-cover-stage.mjs` ②/⑦ 钉住）·
+  特效公式（`blur` = `1 + amount×14` px、`overlay` = `rgba(hex→rgb, amount)` + `mix-blend-mode`（外面套
+  `isolation:isolate` 的槽位，见 3.3）；emoji 字号 `48+amount×240`、`drop-shadow(0 6px 14px)`，
+  预览一律乘 `stageScale`）·
   **`liverOrigin()` 的优先序必须与 `region_origin` 一致**：自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%` ·
   `bg_zoom` 夹取范围四处统一 **0.5~3** · 没有 `title_lines` 时按标点拆 `project.name` 并砍掉 `【主播名】`（预览也要拆）。
+- ⚠️ **高亮关键词也是"两份实现"的一处**（2026-09 用户报「高亮词没有实际使用上」）：出片认
+  `cover.highlight_keywords`，**为空时回退 `[filter] highlight`**（`cover.rs::cover_highlight_words`，
+  也就是「设置 · 关键词过滤」里那串）—— 设计器必须照实显示**回退后真正生效的那串**并写明来源
+  （`hlFromFilter` / `hlSourceHint`），用户一增删就写进封面自己的那份。以前只读 `cover.*`，
+  于是"面板里空的、标题却在高亮"。
+- **文字面板分三区**（位置大小 / 排版 / 高亮 tag）：小标题走 `.lyr-sec`（小字 + 一条发丝线）。
+  ⚠️ 它**不能**叫 `pane-sec`：`check-cover-stage.mjs` ⑥ 的 `\bpane\b` 钉子会把它判成"复用了全局
+  `.pane{display:none}`"（2026-09 就这么红了一次）。
+  「位置大小」那一行 = **左文本框 / 右侧控件列各占 50%**（用户要求；以前右列钉死 `168px`），
+  两侧都写 `minmax(0,1fr)` —— `1fr` 的自动下限是 `auto`，文本框的固有宽度会把轨道顶出去。
+- **文字面板的数值是"滑块 + 行尾可填数字"**（`.rv-input`）：滑块有 step 栅格（`line_height` 0.05、
+  `font_size` 2…），手填才落得到栅格之外；手填值只在 `[min, max]` 上夹、**不吸附 step**，清空/非数字还原、不写模型。
+  没用 `SliderField.vue`（设置页那 16 处的组件）：它 `@container (max-width:220px)` 会把标签挤到第二行，
+  而这里是**一行两列**的紧凑栅格（面板 458px 时每格 ≈210px；改列宽前右栏只有 372px、每格 ~170px）。
 
-### 3.6 设计器的"素材左右黑边"根因
+### 3.8 设计器里的两种「隐身」根因（都不报错）
 
-- · ⚠️ **设计器的"素材左右黑边"**（用户报过"设计器里素材左右两条黑边、出片正常"）：`contain`
+两种都是"整块东西看不见，但控制台一个字都没有"，2026-09 图层化改造时被 headless harness 抓到：
+
+- ⚠️ **设计器的"素材左右黑边"**（用户报过"设计器里素材左右两条黑边、出片正常"）：`contain`
   让出的留白区由**元素自身背景**填充，而 `styles/app.css` 有一条**全局元素选择器** `video { … background:#000; border-radius:var(--r-sm) }`。
   `.stage-video` 是类选择器、**只覆盖自己写过的属性**，这两条会**穿透**进来，还压在 `.stage-bg`（z-index:0 < `.stage-media` 的 1）
   之上把模糊背景层整个盖住 —— 竖屏素材于是在设计器里是**两条纯黑边**。因此 `.stage-video` 的
-  `background:transparent; border-radius:0` 是**必需的覆盖、不是装饰**；根因与几何都钉在
-  `node webui/scripts/check-cover-stage.mjs`（含 6 处变异自证）。
+  `background:transparent; border-radius:0` 是**必需的覆盖、不是装饰**；出片模板用 `<img>` 且不引 app.css，所以**只有设计器**这样。
+- ⚠️ **属性面板的类名不能叫 `.pane`**：`app.css` 里有一条**全局** `.pane { display:none }`（设置页那几个 tab 面板
+  靠 `.on` 才显示）。新面板如果也叫这个类名，就**整块 display:none** —— 页面不报错、只是没有属性面板。
+  现名 `.lyr-props`。同一个机制、同一条教训：**给组件起类名之前先看 app.css 有没有同名规则**。
+- ⚠️ **`.lyr-props` 的 `min-height` 不能省**：整列的 `maxHeight` 是 JS（`syncControlsBound`）按左侧预览高度设的，
+  而文字层那一屏属性比可用空间高得多 —— flex 收缩按 flex-basis 比例分配，没有下限时属性面板会被压成
+  **0 高**（列表把空间吃光）。下限 120px 之后，先被压缩的是上面那个可滚动的图层列表。
+- 两条钉子都在 `node webui/scripts/check-cover-stage.mjs` 的 **⑥**（`usesClass` + `paneMinHeight`，含两处变异自证）。
+  真挂载组件量 `getBoundingClientRect()` / `getComputedStyle().display` 的做法见「附：验证与门禁」的 harness 段。
 
-### 3.7 三处同步与写入门闸
+### 3.9 四处同步与写入门闸
 
-- **三处必须同步**：`CoverConfig`（`vtrim-polish/src/project/config.rs`）、`/api/polish/cover-config` 的白名单 patch
-  （漏键＝"点了没反应"）、`templates/cover.html`。公式与净化只在 `cover.rs` 一份：`cover_blur_css(scale)`、
-  `sanitize_hex_color`（**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`
-  （只有 `blur` 走模糊，其余一律 `color`）。`CoverDesigner` 的 `configLoaded` 是**写入门闸**（读失败时拿默认值
-  写回会把磁盘配置清成默认），读失败必须出错误条 + 「重试」，保存失败用常驻 `.save-err`。
+- **四处必须同步**（漏一处的表现都是"点了没反应 / 两边不一样"）：
+  ① `CoverConfig`（`vtrim-polish/src/project/config.rs`，含 `layers` / `CoverLayer` / `CoverEffect.id`）；
+  ② `/api/polish/cover-config` 的白名单 patch（`layers` 整数组替换、`effects[].id`）；
+  ③ `templates/cover.html`（`__LAYER_CSS__` 占位 + `#fx-extra` 不许有 z-index）；
+  ④ **设计器的镜像**（`resolveStack` 的容错、`blockZ` 的编号、`layerStyle()` 的行内 z-index/display）。
+  公式与净化只在 `cover.rs` 一份：`cover_blur_css(scale)`、`sanitize_hex_color`
+  （**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`（只有 `blur` 走模糊，其余一律 `color`）。
+- **写入门闸**：`CoverDesigner` 的 `configLoaded`（读失败时拿默认值写回会把磁盘配置清成默认），
+  读失败必须出错误条 + 「重试」，保存失败用面板头那一行常驻的 `.save-line.err`（**不再用 toast**：600ms 防抖会刷屏）。
+- **服务端钉子**：`crates/vtrim-server/src/api/polish.rs` 的
+  `cover_config_persists_layer_stack_and_effect_ids`（空 id 丢掉、`visible` 落盘、未知 id 只在解析侧忽略）。
 
 ---
 
@@ -482,6 +689,20 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 贴纸锚点 / 手持摇摆 / 衬底 / 封面舞台）再加跑对应的 `node webui/scripts/check-*.mjs`（清单见
 `webui/src/polish/AGENTS.md` 与 `webui/AGENTS.md`，退出码非 0 即漂移）。改布局后按几何断言
 （`getBoundingClientRect()` 宽高 > 0）实测。
+
+**布局类改动的实测办法（封面设计器，2026-09）**：本仓没装 jsdom/vitest，但本机有 Chrome —— 临时搭一个
+headless harness 就能真挂载组件、真量几何，`.workbuddy/`（已 gitignore）里做过一轮，抓到了 3.8 那两条"隐身"：
+
+1. 用 `@vue/compiler-sfc` 把 `CoverDesigner.vue` 的 `<script setup>` 抠出来（剥掉 `import`，把
+   `ref/computed/…` 与那几个 api 替身挂到 `window`），模板用 `vue.global.js`（全量包，带运行时编译器）。
+2. 页面里 `app.component('Icon', …)` + `app.config.globalProperties.fmtTime = …`（运行时编译的模板不认 setup
+   之外的 import），`link` 上 `app.css` 与组件的 scoped CSS，宿主宽度按真实卡片宽度给。
+3. 断言用 `chrome --headless=new --window-size=1600,1000 --virtual-time-budget=20000 --dump-dom` 读回来：
+   行数/文字、点击后的显隐、payload（替身 `coverConfig` 收 `__saved`）、以及
+   `getBoundingClientRect()` + `getComputedStyle().display/minHeight` + `elementFromPoint`（弹层是否被盖住）。
+   ⚠️ 两个坑：脚本在 `<head>` 里同步执行时 `document.body` 还是 null（整段要等 `DOMContentLoaded`）；
+   `<script setup>` 的 setup 会给自己返回的对象打**不可枚举且不可配置**的 `__isScriptSetup`，Vue 见到它就不再让
+   `_ctx.x` 解析 setup 绑定 —— 浅拷一份再交出去。
 
 ---
 

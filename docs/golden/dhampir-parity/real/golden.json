@@ -1,0 +1,39 @@
+{
+  "fixture": "real",
+  "captured_at": "2026-10-01T09:06:51.964Z",
+  "frozen_from": "vtrim polish render --renderer chrome（兜底腿最后一次渲染）",
+  "frames": 4000,
+  "duration": 133.333333,
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "times": [
+    1.2,
+    2.6,
+    4,
+    5.4,
+    6.8
+  ],
+  "frames_meta": [
+    {
+      "t": 1.2,
+      "file": "ref-1.200.jpg"
+    },
+    {
+      "t": 2.6,
+      "file": "ref-2.600.jpg"
+    },
+    {
+      "t": 4,
+      "file": "ref-4.000.jpg"
+    },
+    {
+      "t": 5.4,
+      "file": "ref-5.400.jpg"
+    },
+    {
+      "t": 6.8,
+      "file": "ref-6.800.jpg"
+    }
+  ]
+}
