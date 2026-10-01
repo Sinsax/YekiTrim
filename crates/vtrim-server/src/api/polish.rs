@@ -69,6 +69,10 @@ pub(super) fn polish_projects_impl(ws: &Workspace) -> ApiResult {
 pub(super) struct PolishJobOpts {
     /// `render`：输出文件名（真开跑时才落盘）
     pub output_file: Option<String>,
+    /// `render`：出片通道（`dhampir` = 底座，默认；`chrome` = 本仓兜底）。
+    /// **None = 不传 `--renderer`**，让 CLI 用它自己的默认值 —— 默认值只有一处（`cli.rs`），
+    /// 服务端不抄第二份。
+    pub renderer: Option<String>,
     /// `llm`：true = **全部重做**（先清掉断点续传缓存）
     pub full: bool,
     /// `llm_segment`：只重做这一段的事件（下标见 `polish.toml` 的 `[[segments]]`）
@@ -165,11 +169,25 @@ pub(super) async fn polish_spawn(
                     }
                     // 用外部 CLI 子进程渲染：headless Chrome 在 WebUI 服务进程内启动会超时。
                     // 输出流式回灌任务日志 + 取消时杀进程树，见 run_polish_child。
-                    run_polish_child(&data_dir, &jobs, &job_id, "render", &path).await
+                    // 通道：body 显式给了才透传（白名单已在这一层的入口处校验过），
+                    // 否则不带 `--renderer` —— CLI 的默认值（现在是 dhampir）说了算。
+                    let mut extra: Vec<String> = Vec::new();
+                    if let Some(r) = opts.renderer.clone() {
+                        extra.push("--renderer".into());
+                        extra.push(r);
+                    }
+                    run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra).await
                 }
                 "cover" => {
-                    // 与 render 同理：封面也走外部 CLI（同样要能看进度、能取消）
-                    run_polish_child(&data_dir, &jobs, &job_id, "cover", &path).await
+                    // 与 render 同理：封面也走外部 CLI（同样要能看进度、能取消）。
+                    // 通道：body 显式给了就透传，否则不带 `--renderer` —— `cover.rs`
+                    // 的解析（显式 > `VTEDIT_COVER_RENDERER` > chrome）说了算，白名单也只那一份。
+                    let mut extra: Vec<String> = Vec::new();
+                    if let Some(r) = opts.renderer.clone() {
+                        extra.push("--renderer".into());
+                        extra.push(r);
+                    }
+                    run_polish_child(&data_dir, &jobs, &job_id, "cover", &path, &extra).await
                 }
                 _ => anyhow::bail!("未知 kind"),
             }
@@ -232,7 +250,14 @@ pub(super) async fn polish_process(State(state): State<Arc<AppState>>, Extension
 pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let path = validated_project_dir(&dir)?;
-    if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } { return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish")); }
     // 输出文件名**不在这里写**：任务可能被排到后面，等它真开跑时再落到 polish.toml
     // （见 polish_spawn 的 render 分支）—— 否则排队期间别的任务/用户改动会被这次预写覆盖。
     let output_file = body
@@ -240,12 +265,35 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    polish_spawn(&state, user.id, scope_pid(pid), "render", dir, PolishJobOpts { output_file, ..Default::default() }).await
+    // 出片通道：**白名单**（不给就跟随 CLI 的默认值 —— 现在是底座 dhampir）。
+    // ⚠️ 非法值回 **400**，不静默当默认：那会让人以为"选了 chrome 却在跑底座"，
+    // 而两版成片的差别只有对着看才发现（与 CLI 侧"认不出就报错"同一条口径）。
+    let renderer = match body.get("renderer").and_then(|v| v.as_str()) {
+        None | Some("") => None,
+        Some(r @ ("dhampir" | "chrome")) => Some(r.to_string()),
+        Some(other) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("认不出的出片通道 `{other}`（可用：dhampir | chrome）"),
+            ))
+        }
+    };
+    polish_spawn(
+        &state,
+        user.id,
+        scope_pid(pid),
+        "render",
+        dir,
+        PolishJobOpts { output_file, renderer, ..Default::default() },
+    )
+    .await
 }
 
 pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, PolishJobOpts::default()).await
+    // 通道由**前端弹窗**选（`chrome` / `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）。
+    let renderer = body.get("renderer").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
 }
 
 
@@ -538,7 +586,14 @@ pub(super) fn keep_single_emoji(lines: &mut Vec<String>) {
 pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
 
@@ -632,7 +687,14 @@ pub(super) async fn polish_cover_title(State(_state): State<Arc<AppState>>, Json
 pub(super) async fn polish_cover_config(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
     // 整个 read-modify-write 期间持锁：封面设计保存与时间轴保存会并发写同一份 polish.toml
     let _guard = vtrim_core::filelock::lock_path(&path.join("polish.toml")).await;
     let mut cfg = vtrim_polish::project::load_project(&path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e}")))?;
@@ -688,13 +750,26 @@ pub(super) async fn polish_cover_config(State(_state): State<Arc<AppState>>, Jso
         }
         if let Some(v) = cover.get("effects").and_then(|v| v.as_array()) {
             cfg.cover.effects = v.iter().filter_map(|e| {
+                // 图层栈用 `fx:<id>` 指向这条特效；设计器新建时给个短 id。
+                // 老数据为空 = 栈里按数组序兜底（`resolve_cover_stack`），不报错也不丢层。
+                let id = e.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
                 let kind = e.get("kind").and_then(|x| x.as_str())?.to_string();
                 let amount = e.get("amount").and_then(|x| x.as_f64()).unwrap_or(0.3);
                 let x = e.get("x").and_then(|x| x.as_f64()).unwrap_or(50.0);
                 let y = e.get("y").and_then(|x| x.as_f64()).unwrap_or(50.0);
                 let color = e.get("color").and_then(|x| x.as_str()).unwrap_or("#000000").to_string();
                 let text = e.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                Some(vtrim_polish::project::CoverEffect { kind, amount, x, y, color, text })
+                Some(vtrim_polish::project::CoverEffect { id, kind, amount, x, y, color, text })
+            }).collect();
+        }
+        // 图层栈（顺序 + 可见性）：**整数组替换**。给空数组 = 回到默认栈（与老工程同义）。
+        // ⚠️ 顺序与可见性**只住在这一个字段里**（`effects` 只带 id、不带 visible），别再开第二个开关。
+        if let Some(arr) = cover.get("layers").and_then(|v| v.as_array()) {
+            cfg.cover.layers = arr.iter().filter_map(|l| {
+                let id = l.get("id").and_then(|x| x.as_str())?.trim().to_string();
+                if id.is_empty() { return None; }
+                let visible = l.get("visible").and_then(|x| x.as_bool()).unwrap_or(true);
+                Some(vtrim_polish::project::CoverLayer { id, visible })
             }).collect();
         }
         if let Some(lines) = cover.get("title_lines").and_then(|v| v.as_array()) {
@@ -714,7 +789,14 @@ pub(super) async fn polish_silence(State(_state): State<Arc<AppState>>, Json(bod
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("apply");
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } { return Err(err(StatusCode::BAD_REQUEST, "未初始化 polish")); }
     // 去静音要跑 ffmpeg silencedetect（整个视频）+ 读改写 polish.toml，全是同步重活：
     // 锁在 await 里持有，活儿下 blocking 池（`with_path_lock` 的闭包是在当前线程跑的）
     let lock_file = path.join("polish.toml");
@@ -800,7 +882,14 @@ pub(super) async fn preview_port_for(state: &AppState, dir: &Path, kind: &str) -
 pub(super) async fn polish_preview(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     // 启动预览服务（不阻塞，返回 URL 供前端 iframe）
@@ -895,7 +984,14 @@ pub(super) async fn polish_cover_background(State(_state): State<Arc<AppState>>,
 pub(super) async fn polish_cover_frame(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     // 与其它 polish.toml 写入串行化（本函数最后会写回 cover.image）；
@@ -936,7 +1032,14 @@ pub(super) async fn polish_cover_frame(State(_state): State<Arc<AppState>>, Json
 pub(super) async fn polish_cover_preview(State(state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     // 缺关键帧时现场截一帧（ffmpeg，可能数百 ms~数秒）→ 整段下 blocking 池
@@ -985,7 +1088,14 @@ pub(super) async fn polish_subtitles_get_impl(
 ) -> ApiResult {
     let dir = q.get("dir").ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
     let path = validated_project_dir(dir)?;
-    if !path.join("polish.toml").exists() {
+    if !{
+        let __p = path.join("polish.toml");
+        // 同步 stat 不能留在 async worker 上（api/mod.rs:44-51 ✓）：
+        // 工程常在慢盘/网络盘上，一次 exists() 就要几百 ms ✗
+        tokio::task::spawn_blocking(move || __p.exists())
+            .await
+            .unwrap_or(false)
+    } {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
     let json_path = path.join("data").join("subtitles.json");
@@ -1117,7 +1227,7 @@ pub(super) async fn polish_project_get_impl(
                     serde_json::to_value(st).unwrap_or(serde_json::Value::Null),
                 );
             }
-            if video_path.exists() {
+            if { let __p = video_path.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) } {
                 obj.insert("loudness_curve".into(), loudness_curve_cached(&path, &video_path));
             }
         }
@@ -1125,123 +1235,11 @@ pub(super) async fn polish_project_get_impl(
     ok(value)
 }
 
-/// 单帧真渲染预览：用常驻 wgpu 后端渲染 dir 项目在 t 时刻的合成画面，返回 JPEG。
-#[cfg(feature = "wgpu-render")]
-pub(super) async fn polish_render_frame(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> Response {
-    use vtrim_polish::render::backend::FrameRenderer as _;
-
-    let Some(dir) = body.get("dir").and_then(|v| v.as_str()).map(PathBuf::from) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"ok": false, "error": "缺少 dir"}))).into_response();
-    };
-    let t = body.get("t").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
-    let fps = 30usize;
-
-    let cfg = {
-        let t0 = std::time::Instant::now();
-        let c = vtrim_polish::project::load_project(&dir);
-        tracing::info!("render-frame: config load {}ms", t0.elapsed().as_millis());
-        match c {
-            Ok(c) => c,
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": format!("加载失败: {e:#}")}))).into_response();
-            }
-        }
-    };
-    let video_path = dir.join(&cfg.source.video);
-
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        // 锁中毒不该让单帧预览永久不可用（与 persist.rs / logbus.rs 同口径）：
-        // 以前这里 `.expect("preview slot poisoned")` 会把之后每一次预览请求都打成 panic。
-        let mut slot = state.preview.0.lock().unwrap_or_else(|e| e.into_inner());
-        // 目录切换 / 首次请求：重建后端（wgpu 设备常驻复用）
-        let rebuild = match slot.as_ref() {
-            Some(b) => b.dir != dir,
-            None => true,
-        };
-        if rebuild {
-            let backend = vtrim_polish::render::native::WgpuBackend::new(&dir, &cfg)?;
-            *slot = Some(crate::model::PreviewBackend {
-                dir: dir.clone(),
-                backend,
-                last_t: -1.0,
-                last_jpeg: None,
-                video_size: None,
-            });
-        }
-        let pb = slot.as_mut().unwrap();
-        // 时间取整到帧网格，同帧命中缓存
-        let round_t = (t * fps as f64).round() / fps as f64;
-        if (pb.last_t - round_t).abs() < 1e-9 && pb.last_jpeg.is_some() {
-            return Ok(pb.last_jpeg.clone().unwrap());
-        }
-        let mut ctx = vtrim_polish::render::RenderContext::new(dir.clone(), cfg.clone());
-        ctx.fps = fps;
-        // ffprobe 结果缓存（省 ~50ms/请求）
-        if pb.video_size.is_none() {
-            pb.video_size = vtrim_polish::render::get_video_size(&video_path.to_string_lossy());
-        }
-        let t_vs = std::time::Instant::now();
-        if let Some((vw, vh)) = pb.video_size {
-            if vh > vw {
-                ctx.vertical = true;
-            }
-        }
-        tracing::info!("render-frame: video size {}ms", t_vs.elapsed().as_millis());
-        pb.backend.prepare(&ctx)?;
-        let t_ex = std::time::Instant::now();
-        let mut frames = vtrim_polish::render::frame::extract_chunk_frames(
-            &video_path.to_string_lossy(),
-            round_t,
-            round_t + 1.0 / fps as f64,
-            fps,
-            true,
-        )?;
-        frames.truncate(1);
-        if frames.is_empty() {
-            anyhow::bail!("抽帧为空");
-        }
-        tracing::info!("render-frame: extract {}ms ({} frames)", t_ex.elapsed().as_millis(), frames.len());
-        let t_rd = std::time::Instant::now();
-        let jpeg = pb.backend.render_chunk(&frames)?.remove(0);
-        tracing::info!("render-frame: render {}ms", t_rd.elapsed().as_millis());
-        pb.last_t = round_t;
-        pb.last_jpeg = Some(jpeg.clone());
-        Ok(jpeg)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(jpeg)) => ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], jpeg).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"ok": false, "error": format!("{e:#}")})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"ok": false, "error": format!("任务失败: {e}")})),
-        )
-            .into_response(),
-    }
-}
-
-/// feature 未启用时的占位响应。
-#[cfg(not(feature = "wgpu-render"))]
-pub(super) async fn polish_render_frame(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
-) -> Response {
-    let _ = (state, body);
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"ok": false, "error": "wgpu-render feature 未启用（cargo build --features wgpu-render）"})),
-    )
-        .into_response()
-}
-
+// ⚠️ 这里曾经有 `polish_render_frame`（单帧真渲染预览：常驻 wgpu 后端 + `model::PreviewBackend` 槽，
+// 路由 `/api/polish/render-frame`），以及 feature 未启用时的那个 501 占位版本。**整条已删除**
+// （用户拍板：GPU 那侧交给独立的 Dhampir 底座），`/api/health` 的 `wgpu_render` 能力位一并去掉 ——
+// 前端也不再按它隐藏任何入口。**别再把它加回来**：要"真渲染预览"就走底座那条链路；
+// 本仓预览与出片的事实来源始终是 `templates/index.html` 的 canvas 那条腿。
 
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
@@ -1279,6 +1277,7 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
 }
 
 /// 字体文件端点（wasm 预览 fetch 字体字节用）：项目字体候选 -> 内置资源。
+// polish_font_async_read_fixed
 pub(super) async fn polish_font(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
     let name = q.get("name").cloned().unwrap_or_default();
     let dir = q.get("dir").map(std::path::PathBuf::from).unwrap_or_default();
@@ -1314,8 +1313,16 @@ pub(super) async fn polish_font(Query(q): Query<std::collections::HashMap<String
     // 官方授权地址 https://font.leminet.cn/）——它的授权是「免费商用，但**不包括嵌入式用途**」，
     // 随软件分发/内嵌字体文件必须另行授权，所以别再把 ttf 塞回仓库或发布包。
     for c in &candidates {
-        if c.exists() {
-            match std::fs::read(c) {
+        if { let __p = c.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) } {
+            match {
+        let v2 = c.clone();
+        // ⚠️ 整文件同步读不能留在 async worker 上（api/mod.rs:44-51 纪律 ✓）：
+        // 字体几十 MB，且字幕渲染首次用到字体就会打这条路由 ⇒ 占住 worker 时
+        // 同一时刻的其他请求（含 engine.js）都产不出响应 ✗
+        tokio::task::spawn_blocking(move || std::fs::read(v2))
+            .await
+            .unwrap_or_else(|_| Err(std::io::Error::other("读取字体任务崩了")))
+    } {
                 Ok(bytes) => {
                     return ([(axum::http::header::CONTENT_TYPE, font_content_type(c))], bytes)
                         .into_response();
@@ -1506,8 +1513,23 @@ pub(super) async fn polish_sticker_file(
         return crate::media::json_error(StatusCode::BAD_REQUEST, "文件名不合法");
     }
     let path = root.join(&pack).join(name);
-    let real = path.canonicalize().unwrap_or_else(|_| path.clone());
-    let root_real = root.canonicalize().unwrap_or_else(|_| root.clone());
+    // ⚠️ 同步 canonicalize 不能留在 async worker 上（api/mod.rs:44-51 纪律 ✓）——
+    // 这条是**播放热路径**：一进 Dhampir 就连打贴纸 PNG，而工程常在慢盘上 ⇒
+    // worker 被占住 ⇒ 同时刻的 engine.js 响应产不出来（用户实测的黑屏 ✗）。
+    let (real, root_real) = {
+        let p2 = path.clone();
+        let r2 = root.clone();
+        match tokio::task::spawn_blocking(move || {
+            let a = p2.canonicalize().unwrap_or_else(|_| p2.clone());
+            let b = r2.canonicalize().unwrap_or_else(|_| r2.clone());
+            (a, b)
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => (path.clone(), root.clone()),
+        }
+    };
     if !real.starts_with(&root_real) {
         return crate::media::json_error(StatusCode::NOT_FOUND, "文件不在贴纸库内");
     }
@@ -1528,34 +1550,204 @@ pub(super) async fn polish_sticker_file(
 mod tests {
     use super::*;
     use crate::api::test_support::*;
-
-
     use axum::body::Body;
 
+    /// 底座就绪位端点（M3）：**必须 200**，且回包里有 `ready` 布尔与 `problems` 数组。
+    ///
+    /// 这条守的是"渲染前可见"那条链路的**接口面**：前端渲染弹窗一打开就调它，
+    /// 一次 500 或一个缺字段的回包 = 提示永远不出现（而那正是它存在的理由）。
+    /// 它**不断言 ready 的真假**：那取决于跑测试这台机器装没装底座（两种都是合法结果）。
+    #[tokio::test]
+    async fn 底座就绪位端点回布尔与问题清单() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/ready");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = vtrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
 
-/// 换字幕字体只改 `[style.subtitle] font` 一个字段：别的段（分段/屏蔽/封面）原样保留
-/// —— 它是"保存即生效"的同步接口，写坏了会把整个片段的精修配置一起带走。
-#[test]
-fn polish_project_put_writes_subtitle_font_only() {
-    let dir = std::env::temp_dir().join(format!("vtrim-font-put-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut cfg = vtrim_polish::project::ProjectFile::example();
-    cfg.mute_ranges.push(vtrim_polish::project::MuteRange { start: 1.0, end: 2.0 });
-    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        let body = serde_json::json!({ "dir": clip.to_string_lossy() }).to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/dhampir-status")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        let status = res.status();
+        let v = body_json(res).await;
+        assert_eq!(status, StatusCode::OK, "就绪位应当 200：{v}");
+        assert_eq!(v["ready"].is_boolean(), true, "要回 `ready` 布尔：{v}");
+        assert_eq!(v["problems"].is_array(), true, "要回 `problems` 数组：{v}");
+        // `node_version` 这一位是**深探**才有的（这条接口是深探）：null 或字符串都合法，
+        // 但**键必须在** —— 前端把它放进提示的 `title`。
+        assert!(
+            v.get("node_version").is_some(),
+            "深探要回 `node_version`（可为 null）：{v}"
+        );
+        // 不 ready 时必须至少有一条原因 —— 否则前端只能显示"不可用"而说不出为什么。
+        if v["ready"] == serde_json::json!(false) {
+            assert!(
+                v["problems"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+                "不可用时必须给出原因：{v}"
+            );
+        }
+    }
 
-    let body = serde_json::json!({ "subtitle_font": "simhei" });
-    let _ = polish_project_put_locked(&dir, &body).expect("保存字幕字体");
+    /// 出片通道是**白名单**：认不出的值必须 **400**，**不许静默当默认** ——
+    /// 那会让人以为"选了 chrome 却在跑底座"，而两版成片的差别只有对着看才发现。
+    ///
+    /// ⚠️ 只打 **400 那条路**：合法值会真的起一个渲染任务（几分钟 + 要底座 + 要 ffmpeg），
+    /// 那不是接口级单测该干的事（真跑一次出片的验收见 `crates/vtrim-polish/src/render/AGENTS.md`）。
+    #[tokio::test]
+    async fn 出片通道认不出就_400_不静默当默认() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/chan");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = vtrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
 
-    let after = vtrim_polish::project::load_project(&dir).unwrap();
-    assert_eq!(after.style.subtitle.font, "simhei");
-    assert_eq!(after.mute_ranges.len(), 1, "没提到的字段必须原样保留");
+        let body = serde_json::json!({ "dir": clip.to_string_lossy(), "renderer": "chrom" }).to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/render")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        let status = res.status();
+        let detail = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&detail);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "认不出的通道必须 400；响应：{text}");
+        assert!(text.contains("dhampir"), "报错要把可用值列出来：{text}");
+    }
 
-    // 空串 = 回到系统字体栈
-    let _ = polish_project_put_locked(&dir, &serde_json::json!({ "subtitle_font": "" })).unwrap();
-    assert_eq!(vtrim_polish::project::load_project(&dir).unwrap().style.subtitle.font, "");
-    let _ = std::fs::remove_dir_all(&dir);
-}
+    /// **工程 JSON 走真 HTTP**：路由接上了、转译真的跑了、回来的是能喂给 wasm 的工程。
+    ///
+    /// 不需要 Dhampir 二进制（转译器是 node 脚本），所以这条**进默认测试**。
+    #[tokio::test]
+    async fn dhampir_project_走真_http_出转译后的工程() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/conv");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = vtrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        let dir = clip.to_string_lossy().into_owned();
+
+        let body = serde_json::json!({ "dir": dir }).to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/dhampir-project")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        let status = res.status();
+        if status != StatusCode::OK {
+            let detail = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            panic!("工程转译应当成功，实际 {status}；响应：{}", String::from_utf8_lossy(&detail));
+        }
+        let v = body_json(res).await;
+        assert_eq!(v["ok"], serde_json::json!(true));
+        // 形状要真的是 Dhampir 工程：浏览器那边是直接喂给 dhampir_project_open 的。
+        assert!(
+            v["project"]["timeline"]["tracks"].is_array(),
+            "回包要带可用的工程（timeline.tracks 缺失）：{v}"
+        );
+        // 草稿要清掉：`_dhampir_project.json` 是这一趟的中间产物，不该留在片段目录里。
+        assert!(
+            !clip.join("_dhampir_project.json").exists(),
+            "转译草稿没有清掉"
+        );
+        // **字幕/弹幕的文本要带回来。**
+        //
+        // 工程里那两条资产的 `uri` 是**绝对路径**（指向转译输出目录），浏览器取不到 ——
+        // 所以内容只能由这里带回去。少了它，预览会"看起来正常、只是没有字幕"。
+        let subs = v["subtitles"].as_object().expect("回包要带 subtitles");
+        // ⚠️ **条件断言**：这条用例用的是合成片段（`ProjectFile::example()`，
+        // 目录里没有 `clip.srt` / `clip.dm.srt`），所以转译器**不产**旁写文件、
+        // `subtitles` 就是空的 —— 那是正常的。
+        //
+        // 第一版我拿真片段的情况去断言它，结果红了。正确的判据是**跟着工程走**：
+        // 工程里有字幕类资产（`kind == "subtitle"`）时，内容就**必须**带回来 ——
+        // 这才是"浏览器取不到旁写文件"那条不变量的可检形式。
+        let wants_subtitles = v["project"]["assets"]
+            .as_array()
+            .map(|assets| {
+                assets
+                    .iter()
+                    .any(|a| a["kind"].as_str() == Some("subtitle"))
+            })
+            .unwrap_or(false);
+        if wants_subtitles {
+            assert!(
+                !subs.is_empty(),
+                "工程里有字幕类资产，但字幕内容没带回来：预览会\"看起来正常、只是没有字幕\""
+            );
+            for (name, text) in subs {
+                assert!(
+                    text.as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                    "{name} 的内容是空的"
+                );
+            }
+        }
+    }
+
+    /// **wasm 资源转发**：`engine.js` 取得到、`.wasm` 的 MIME 正确、路径穿越被挡。
+    ///
+    /// `#[ignore]`：要有**同层的 Dhampir 仓**（`web/engine.js` + `crates/dhampir-wasm/www/pkg`）。
+    /// 这几条断的是"浏览器能不能把 wasm 加载起来"，缺了包就无从谈起 —— 所以宁可显式跳过，
+    /// 也不写成"找不到包时自动通过"（那种测试永远不会红）。
+    #[tokio::test]
+    #[ignore = "手动：要同层的 Dhampir 仓（含已构建的 wasm 包）"]
+    async fn dhampir_wasm_资源可转发且_mime_正确() {
+        let t = test_app().await;
+        let get = |uri: String| {
+            let t = &t;
+            async move { t.call(t.req("GET", &uri).body(Body::empty()).unwrap()).await }
+        };
+
+        // engine.js：页面的宿主引擎
+        let res = get("/polish/dhampir-wasm/engine.js".to_string()).await;
+        assert_eq!(res.status(), StatusCode::OK, "engine.js 应当取得到");
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(ct.contains("javascript"), "engine.js 的 MIME 不对：{ct}");
+        let js = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(js.len() > 1024, "engine.js 太小（{} 字节），不像是真的", js.len());
+
+        // wasm 包：**MIME 必须是 application/wasm**，给错浏览器会拒绝流式实例化
+        let res = get("/polish/dhampir-wasm/pkg/dhampir_wasm_bg.wasm".to_string()).await;
+        assert_eq!(res.status(), StatusCode::OK, "wasm 应当取得到");
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert_eq!(ct, "application/wasm", "wasm 的 MIME 必须精确是 application/wasm，实际：{ct}");
+
+        // 穿越必须被挡
+        for bad in [
+            "/polish/dhampir-wasm/../Cargo.toml",
+            "/polish/dhampir-wasm/pkg/../../Cargo.toml",
+            "/polish/dhampir-wasm/pkg/nope.wasm",
+        ] {
+            let res = get(bad.to_string()).await;
+            assert!(
+                res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::NOT_FOUND,
+                "{bad} 应当被挡，实际 {}",
+                res.status()
+            );
+        }
+    }
+
 
 /// 画布方向 / 画面构成 / 贴纸落点要能真写进 `polish.toml`，且**不碰**没提到的段。
 ///
@@ -1858,7 +2050,7 @@ async fn polish_path_fields_cannot_read_outside_files() {
             .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "绝对路径键必须 400：{patch}");
     }
-    let saved = std::fs::read_to_string(&my_cfg).unwrap();
+    let saved = tokio::task::spawn_blocking({ let __p = my_cfg.clone(); move || std::fs::read_to_string(__p) }).await.unwrap_or_else(|_| Err(std::io::Error::other("读取任务崩了"))).unwrap();
     assert!(!saved.contains("secret.txt"), "被拒的配置不得落盘：{saved}");
     // 正对照：项目内相对路径照常能存
     let body = serde_json::json!({ "patch": { "project": { "input_file": "a.mp4" } } }).to_string();
@@ -1945,4 +2137,425 @@ async fn cover_config_persists_background_mode_and_sanitizes_color() {
     let raw = std::fs::read_to_string(clip.join("polish.toml")).unwrap();
     assert!(raw.contains("bg_mode") && raw.contains("blur_scale"), "polish.toml 缺键：{raw}");
 }
+
+/// 图层栈（`[cover] layers`）与特效 id 也必须真的落进 `polish.toml`：设计器保存走的是
+/// **白名单 patch**，漏一个键就是"拖了半天没反应、重开又变回原样"。
+#[tokio::test]
+async fn cover_config_persists_layer_stack_and_effect_ids() {
+    let t = test_app().await;
+    let clip = t.root.join("output/clips/clip-02");
+    std::fs::create_dir_all(&clip).unwrap();
+    std::fs::write(clip.join("polish.toml"), "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n").unwrap();
+    let dir = clip.to_string_lossy().to_string();
+
+    let body = serde_json::json!({
+        "dir": dir,
+        "cover": {
+            "effects": [
+                { "id": "e1", "kind": "glow", "amount": 0.5, "x": 10.0, "y": 20.0 },
+                { "kind": "emoji", "amount": 0.4, "x": 65.0, "y": 50.0, "text": "😆" }
+            ],
+            "layers": [
+                { "id": "title", "visible": true },
+                { "id": "bg", "visible": false },
+                { "id": "fx:e1", "visible": true },
+                { "id": "", "visible": true },
+                { "id": "nope", "visible": true }
+            ]
+        }
+    })
+    .to_string();
+    let res = t
+        .call(
+            t.req("POST", "/polish/cover-config")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let cfg = vtrim_polish::project::load_project(&clip).unwrap();
+    assert_eq!(cfg.cover.effects.len(), 2);
+    assert_eq!(cfg.cover.effects[0].id, "e1");
+    assert_eq!(cfg.cover.effects[1].id, "", "没给 id 的特效保持空（解析侧按数组序兜底）");
+    let ids: Vec<&str> = cfg.cover.layers.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(ids, vec!["title", "bg", "fx:e1", "nope"], "空 id 丢掉、其余原样留下：{ids:?}");
+    assert!(!cfg.cover.layers[1].visible, "visible=false 要落盘");
+
+    // 落盘后再解析：未知 id 忽略、缺的层补齐、顺序照栈（title 在栈底 = 第一条）
+    let stack: Vec<String> = vtrim_polish::cover::resolve_cover_stack(&cfg.cover)
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(stack.first().map(String::as_str), Some("title"), "{stack:?}");
+    assert!(stack.contains(&"frame".to_string()) && stack.contains(&"filter".to_string()), "{stack:?}");
+    assert!(!stack.iter().any(|s| s == "nope"), "未知 id 不该出现在解析结果里：{stack:?}");
+    let raw = std::fs::read_to_string(clip.join("polish.toml")).unwrap();
+    assert!(raw.contains("layers"), "polish.toml 缺 layers 键：{raw}");
+}
+}
+
+// ===================== Dhampir 浏览器端预览（wasm + 工程 JSON） =====================
+//
+// 「预览交给浏览器」：渲染跑在页面上（Dhampir 的 wasm + WebGPU），**后端只做两件事** ——
+//
+//   ① 把 wasm 包与宿主引擎 `engine.js` 发给浏览器（[`polish_dhampir_wasm`]）；
+//   ② 把 `polish.toml` 转译成 Dhampir 的工程 JSON（页面 `loadEngine` 要吃它，
+//      [`polish_dhampir_project`]）。
+//
+// **后端不渲染任何预览帧。** 实测口径：服务端那条路 PNG 出口 **1250 ms/帧** ✗；
+// 浏览器腿 1080p 顺序播放 **7.0 ms/帧（142.9 fps）** ✓。像素不过边界，就没有"传输"这个瓶颈。
+
+/// 把阻塞的转译丢到 blocking 线程池，并统一成接口错误。
+///
+/// 转译要起一个 `node` 子进程（百毫秒级），直接在 async 上下文里等会占住运行时线程。
+async fn run_blocking<T, F>(what: &str, job: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(job).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what}失败: {}", vtrim_polish::render::dhampir::explain(&e)),
+        )),
+        Err(e) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what}的任务崩了: {e}"),
+        )),
+    }
+}
+
+/// `GET /polish/dhampir-wasm/*path` —— 静态转发 Dhampir 的预览资源。
+///
+/// 两份根：`pkg/` 前缀走 wasm 包，其余走 `<Dhampir>/web`（`engine.js` 在那）。
+/// **不缓存、不复制**：Dhampir 那边重新构建 wasm 之后，刷新页面就是新的。
+pub(super) async fn polish_dhampir_wasm(
+    axum::extract::Path(path): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // ⚠️ **这一整段必须走 blocking 池** —— 它是本路由曾经的真实故障 ✗：
+    //
+    // 这段以前直接在 async worker 上做同步 FS（`wasm_dirs()` 里的一串 `is_file()`、
+    // 两次 `canonicalize()`、一次 `is_file()`）。工程/仓库目录在慢盘或网络盘上时
+    // （本项目头顶那条纪律记的就是这个：一次 `exists()` 就要几百 ms 到几秒 ✗），
+    // worker 被占住 ⇒ **本路由自己的响应产不出来** ⇒ 浏览器报
+    // `error loading dynamically imported module`（**没有 net:: 码** ✓ 正是"连上了、拿不到"）
+    // ⇒ 画布黑 + 同一时刻 `/api/jobs` 10s 超时 ✓✓（用户实测）。
+    //
+    // 注意日志形态：请求被受理但响应迟迟完不成 ⇒ **服务端日志里根本不出现这一条** ✓
+    // （`→ 200 OK (1ms)` 是响应写完之后才打的）。所以"日志里没有它"不是"没发请求" ✗。
+    let dirs = tokio::task::spawn_blocking(vtrim_polish::render::dhampir::wasm_dirs).await;
+    let Ok((web, pkg)) = dirs.unwrap_or_else(|e| Err(anyhow::anyhow!("定位任务崩了: {e}"))) else {
+        return crate::media::json_error(
+            StatusCode::NOT_FOUND,
+            "找不到 Dhampir 的 wasm 预览包（设 VTEDIT_DHAMPIR_WASM=<Dhampir 仓根>，或先在那边跑 wasm-pack）",
+        );
+    };
+    let (root, rel) = match path.strip_prefix("pkg/") {
+        Some(rest) => (pkg, rest.to_string()),
+        None => (web, path.clone()),
+    };
+    // 越界防护：`..` 与绝对路径都挡掉 —— 与 `polish_sticker_file` 同一条纪律。
+    if rel.is_empty()
+        || rel.starts_with('/')
+        || rel.starts_with('\\')
+        || rel.split(['/', '\\']).any(|seg| seg == "..")
+    {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "路径不合法");
+    }
+    let file = root.join(rel.replace('\\', "/"));
+    // 同上：`canonicalize` / `is_file` 都是同步 FS，一并挪出去。
+    let probe_root = root.clone();
+    let probed = tokio::task::spawn_blocking(move || {
+        let real = file.canonicalize().unwrap_or_else(|_| file.clone());
+        let root_real = probe_root
+            .canonicalize()
+            .unwrap_or_else(|_| probe_root.clone());
+        let ok = real.starts_with(&root_real) && real.is_file();
+        (real, ok)
+    })
+    .await;
+    let Ok((real, ok)) = probed else {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "资源不存在");
+    };
+    if !ok {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "资源不存在");
+    }
+    // `.wasm` 必须给对 MIME：给错浏览器会拒绝流式实例化（症状是"加载没反应"）。
+    let mime = if real.extension().and_then(|e| e.to_str()) == Some("wasm") {
+        "application/wasm".to_string()
+    } else {
+        mime_guess::from_path(&real).first_or_octet_stream().to_string()
+    };
+    let range = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    crate::media::serve_file(&real, &mime, range).await
+}
+
+/// `GET /polish/dhampir-status` —— **底座出片通道的就绪位**（M3）。
+///
+/// 回包（`dhampir::Readiness` 直接序列化）：`{ ready, binary, preview, translator, font,
+/// contract_version, problems[] }`。
+///
+/// 为什么要它：默认出片通道就是底座，而"底座不可用"以前**只在渲染时报错**（几分钟的任务跑到一半才失败）。
+/// 这条让前端在**点渲染之前**就能看见 —— 前端那颗通道下拉旁边会挂提示，`vtrim doctor` 用同一份判断。
+///
+/// ⚠️ 只做**定位**（六项各查一次文件），不渲染、不跑转译器 —— 它会在打开渲染弹窗时被调，
+/// 也可能被反复调。⚠️ 路径**只回给已登录用户**（这条路由在 `require_user` 层内），
+/// 与 `/api/health` 的口径不同：health 是公开接口、只回布尔位（见 `api/mod.rs::health`）。
+pub(super) async fn polish_dhampir_status(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    // 带了 `dir` 就按那个工程选的字体判（`style.subtitle.font`）——字体是"按工程"解析的，
+    // 不带就按缺省（系统字体栈）判。读工程要落盘 IO，所以整段走 `blocking`。
+    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let readiness = blocking(move || {
+        let font = if dir.trim().is_empty() {
+            String::new()
+        } else {
+            vtrim_polish::project::load_project(std::path::Path::new(&dir))
+                .map(|cfg| cfg.style.subtitle.font)
+                .unwrap_or_default()
+        };
+        // `blocking` 要 `Result`：读工程失败**不该**让就绪位请求 500 ——
+        // 字体会退成"系统字体栈"那条判断，问题照样在 `problems` 里说得清。
+        // `deep = true`：这条是**已登录**接口、打开渲染弹窗时调一次 —— 顺带跑 `node --version`，
+        // 把"PATH 上有 node 但它跑不通（商店桩）/ 版本太低"这两类也说清楚。
+        // `/api/health` 那条（无鉴权 + 被轮询）只走便宜判断。
+        Ok(vtrim_polish::render::dhampir::readiness(&font, true))
+    })
+    .await?;
+    ok(serde_json::json!(readiness))
+}
+
+/// `POST /polish/dhampir-project` —— 转译 `polish.toml`，把工程 JSON **内容**交给浏览器。
+///
+/// 请求：`{ "dir": "<片段目录（绝对路径）>" }`
+/// 回包：`{ "ok": true, "project": { …Dhampir 工程… } }`
+///
+/// 页面那边是 `JSON.stringify(project)` 之后交给 `dhampir_project_open`。
+pub(super) async fn polish_dhampir_project(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+    let path = validated_project_dir(dir)?;
+    if !path.join("polish.toml").is_file() {
+        return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
+    }
+    let scratch = path.join(".vtrim");
+    std::fs::create_dir_all(&scratch)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("建缓存目录失败: {e}")))?;
+    let clip = path.clone();
+    // **顺带把字幕/弹幕的文本带回去。**
+    //
+    // 转译器把这两个写成**旁写文件**，而工程里那两条资产的 `uri` 是**绝对路径**
+    // （指向转译输出目录）—— 浏览器拿不到它：`/api/media` 只服务项目内相对路径，
+    // 而且 `cleanup_project` 之后那个文件就没了。
+    //
+    // 症状是最难查的那一类：**预览看起来正常，只是没有字幕和弹幕**，还不报错。
+    // 所以这里在 cleanup **之前**把内容读出来，让前端用 blob URL 喂给
+    // `engine.loadSubtitles([{ assetId, url, format }])`（解析在 wasm 里，走 parse_srt/parse_ass）。
+    let (json, subs) = run_blocking(
+        "Dhampir 转译",
+        move || -> anyhow::Result<(String, Vec<(String, String)>)> {
+            // ⚠️ **预览这条腿必须 `keep_muted = false`**（压缩时间线）：客户端靠"落在被掐掉的段里
+        // = 没有对应帧"去跳屏蔽区间，整条时间线会让它一路播过那些段。
+        // 出片那条腿相反（`render_video_only` 传 true，屏蔽区间交给尾部那一剪）。
+        let translated = vtrim_polish::render::dhampir::prepare_project(&clip, &scratch, false)?;
+            let text = std::fs::read_to_string(&translated)
+                .map_err(|e| anyhow::anyhow!("读不出转译产物 {}：{e}", translated.display()))?;
+            let mut subs: Vec<(String, String)> = Vec::new();
+            for name in ["dhampir-subtitle.srt", "dhampir-danmaku.ass"] {
+                let side = translated.with_file_name(name);
+                match std::fs::read_to_string(&side) {
+                    Ok(content) => subs.push((name.to_string(), content)),
+                    // 缺一个不是错误（这份片段可能就没有弹幕）—— 但要**记下来**，
+                    // 免得"预览里没字幕"又变成一次静默。
+                    Err(e) => tracing::warn!("读不出旁写字幕 {}：{e}", side.display()),
+                }
+            }
+            // 草稿用完就清（与出片那条同一个纪律：只删自己造的）。
+            vtrim_polish::render::dhampir::cleanup_project(&scratch);
+            Ok((text, subs))
+        },
+    )
+    .await?;
+    let project: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("转译产物不是合法 JSON: {e}")))?;
+    let subtitles: serde_json::Map<String, serde_json::Value> = subs
+        .into_iter()
+        .map(|(name, text)| (name, serde_json::Value::String(text)))
+        .collect();
+    ok(serde_json::json!({ "ok": true, "project": project, "subtitles": subtitles }))
+}
+
+/// 贴纸逐帧 PNG 的**进程内缓存**。
+///
+/// # 为什么必须有（这是踩出来的）
+///
+/// 解一段 GIF 要跑满它的**全部帧** —— `哭_1.gif` 66 帧、数百毫秒；而预览在 33fps 下
+/// 会**反复**要同一张贴纸的不同帧。不缓存的话每个请求都重解整段，
+/// 请求立刻堆起来把服务端 CPU 打满 —— 现象是**播放一走到贴纸就卡死**，
+/// 而且一个请求都回不来（工具条上是 `就绪 0/4 · 解码 0 · 已交 0`）。
+///
+/// 键带上 **mtime + 文件长度**：素材被换掉时自动失效，不需要谁记得清缓存。
+/// 上限 64 条（贴纸数量本来就少，换素材会不断产生新键，得有个头）。
+fn sticker_frames_cached(
+    file: &std::path::Path,
+) -> Result<std::sync::Arc<Vec<(Vec<u8>, u16)>>, super::AppError> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Key = (std::path::PathBuf, u64, u64);
+    // **按字节上限的 LRU** ✓ —— 以前是"条目数 > 64 就 `clear()`"✗：
+    // 那不是淘汰是清零，贴纸一多/换素材就整表作废 ⇒ 同一个 GIF 被反复整段解码（一次数百 ms ✗）
+    // ⇒ 现象正是"播放一走到贴纸就卡死"（实测 `解码 49` ✗）。
+    const CAP_BYTES: usize = 512 * 1024 * 1024;   // 512MB 硬上限
+    struct Entry {
+        used: u64,            // 最近一次使用序号（LRU ✓）
+        bytes: usize,
+        frames: Arc<Vec<(Vec<u8>, u16)>>,
+    }
+    static CACHE: OnceLock<Mutex<(HashMap<Key, Entry>, u64, usize)>> = OnceLock::new();
+
+    let meta = std::fs::metadata(file)
+        .map_err(|e| err(StatusCode::NOT_FOUND, format!("贴纸读不到: {e}")))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let key = (file.to_path_buf(), mtime, meta.len());
+
+    let cache = CACHE.get_or_init(|| Mutex::new((HashMap::new(), 0, 0)));
+    let mut guard = cache.lock().expect("贴纸缓存锁中毒");
+    guard.1 += 1;
+    let now = guard.1;
+    if let Some(hit) = guard.0.get_mut(&key) {
+        hit.used = now;                       // 命中即刷新活跃度 ✓
+        let frames = hit.frames.clone();
+        drop(guard);
+        return Ok(frames);
+    }
+    drop(guard);
+    // 解码放在锁**外面**：同一张图被两个请求同时要时，宁可多解一次，
+    // 也不要让慢解码堵住整张表的读（那又是另一种"卡死"）。
+    let frames = vtrim_polish::render::gif::decode_sticker_frames_png(file)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("贴纸解码失败: {e}")))?;
+    let bytes: usize = frames.iter().map(|(b, _)| b.len()).sum();
+    let arc = Arc::new(frames);
+    let mut guard = cache.lock().expect("贴纸缓存锁中毒");
+    guard.1 += 1;
+    guard.2 += bytes;
+    let used = guard.1;
+    guard.0.insert(key, Entry { used, bytes, frames: arc.clone() });
+    // **超上限时只逐出最久未用的，直到回到上限以内** ✓（绝不再清零 ✗）
+    while guard.2 > CAP_BYTES && guard.0.len() > 1 {
+        let victim = guard
+            .0
+            .iter()
+            .min_by_key(|(_, e)| e.used)
+            .map(|(k, _)| k.clone());
+        match victim {
+            Some(k) => {
+                if let Some(e) = guard.0.remove(&k) {
+                    guard.2 = guard.2.saturating_sub(e.bytes);
+                }
+            }
+            None => break,
+        }
+    }
+    Ok(arc)
+}
+
+/// `POST /polish/sticker-frame` —— 贴纸的**第 k 帧**，PNG 以 base64 装在 JSON 里。
+///
+/// # 为什么"谁来解多帧图"必须由服务端回答
+///
+/// 浏览器这一侧**两条路都实测过、都不可用**：
+///
+///   * `<img>` 的动画时钟会被节流 —— 不可见、被 canvas 遮住、甚至 1×1 盖在最上层
+///     （不被遮挡）都不推进帧；宿主 `drawImage` 拿到的永远是同一张；
+///   * `ImageDecoder`（WebCodecs）在目标浏览器里**根本不存在**
+///     （`typeof ImageDecoder !== 'function'` → `decoder=false`、帧数 0）。
+///
+/// 而 Dhampir 的设计是"序列帧由宿主交进来"（`AssetKind::ImageSequence` 只是个校验标记，
+/// 那边没有任何 GIF 解码器）。所以这一环只能由服务端补上 —— 而且**必须与出片同源**：
+/// 这里走的就是出片用的 `decode_sticker_frames_png`，于是**预览与成片的贴纸逐帧一致**。
+///
+/// # 为什么逐帧，而不是一次给整段
+///
+/// 整段拼成一张横向 PNG 实测是 **19 MB**（500×500 × 66 帧），而且宽度 33000px
+/// 超过浏览器单图上限（16384）。预览一次只要一帧，所以按帧取。
+///
+/// 帧号越界**报错**而不是夹到范围内：夹住会让"贴纸停在最后一帧"看起来像素材放完了。
+pub(super) async fn polish_sticker_frame(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let dir = body
+        .get("dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺 dir"))?;
+    // 取成**自有 String**：下面要 move 进 blocking 闭包，借用 `body` 活不了那么久。
+    let asset: String = body
+        .get("asset")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺 asset"))?
+        .to_string();
+    let frame = body.get("frame").and_then(|v| v.as_u64()).unwrap_or(0);
+    let path = validated_project_dir(dir)?;
+    // 越界防护：asset 必须是**工程内相对路径**，`..` / 绝对路径 / 盘符 / 反斜杠全挡掉
+    // —— 与 `polish_sticker_file`、`polish_dhampir_wasm` 同一条纪律。
+    if asset.is_empty()
+        || std::path::Path::new(&asset).is_absolute()
+        || asset.contains("..")
+        || asset.contains(':')
+        || asset.contains('\\')
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "asset 必须是工程内的相对路径"));
+    }
+    let file = path.join(&asset);
+    // 解码要跑满 66 帧（数百 ms）→ 整段下 blocking 池，别占 worker。
+    let (png, count) = blocking(move || {
+        if !file.exists() {
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                format!("贴纸不存在：{asset}"),
+            ));
+        }
+        // **走缓存**：同一个文件只解一次（见 `sticker_frames_cached` 的说明 ——
+        // 不缓存的话，播放一走到贴纸就会把服务端打满、页面卡死）。
+        let frames = sticker_frames_cached(&file)?;
+        let count = frames.len();
+        let idx = frame as usize;
+        if count == 0 {
+            return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "贴纸一帧都没有"));
+        }
+        if idx >= count {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                format!("帧号 {idx} 越界（共 {count} 帧）"),
+            ));
+        }
+        let (png, _delay) = frames[idx].clone();
+        // 尺寸不回填：页面拿到 PNG 之后 `createImageBitmap` 自己就有宽高，
+        // 在这儿再解一次 PNG 只是白花时间（而且 `image` 也不是 server 的依赖）。
+        Ok((png, count))
+    })
+    .await?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "count": count,
+        "frame": frame,
+        "png_base64": b64,
+    })))
 }

@@ -12,8 +12,8 @@ pub struct VideoFrame {
 
 /// 后端无关的输入帧。
 ///
-/// - ChromeBackend 优先消费 `jpeg`，保持现有零回归路径；
-/// - WgpuBackend 消费 `rgba`（也保留 `jpeg` 供调试/对拍）。
+/// - ChromeBackend 优先消费 `jpeg`（`need_rgba = false`，零回归路径）；
+/// - `rgba` 现在只有基准/诊断在用（当年的 WgpuBackend 已删除），`jpeg` 也一起留着供对拍。
 #[derive(Debug, Clone)]
 pub struct RenderFrame {
     pub width: u32,

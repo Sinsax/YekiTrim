@@ -70,13 +70,6 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     end,
                     ..
                 }
-                | Event::ZoomBounce {
-                    time,
-                    sfx: Some(name),
-                    sfx_volume,
-                    end,
-                    ..
-                }
                 | Event::Vignette {
                     time,
                     sfx: Some(name),
@@ -91,20 +84,6 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     end,
                     ..
                 }
-                | Event::Stutter {
-                    time,
-                    sfx: Some(name),
-                    sfx_volume,
-                    end,
-                    ..
-                }
-                | Event::Split {
-                    time,
-                    sfx: Some(name),
-                    sfx_volume,
-                    end,
-                    ..
-                }
                 | Event::Noise {
                     time,
                     sfx: Some(name),
@@ -113,13 +92,6 @@ pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
                     ..
                 }
                 | Event::Pulse {
-                    time,
-                    sfx: Some(name),
-                    sfx_volume,
-                    end,
-                    ..
-                }
-                | Event::ColorShift {
                     time,
                     sfx: Some(name),
                     sfx_volume,
@@ -160,14 +132,10 @@ fn type_name(ev: &Event) -> String {
         Event::Shake { .. } => "shake".into(),
         Event::Flash { .. } => "flash".into(),
         Event::Blur { .. } => "blur".into(),
-        Event::ZoomBounce { .. } => "zoom_bounce".into(),
         Event::Vignette { .. } => "vignette".into(),
         Event::HueShift { .. } => "hue_shift".into(),
-        Event::Stutter { .. } => "stutter".into(),
-        Event::Split { .. } => "split".into(),
         Event::Noise { .. } => "noise".into(),
         Event::Pulse { .. } => "pulse".into(),
-        Event::ColorShift { .. } => "color_shift".into(),
         Event::Overlay { .. } => "overlay".into(),
         Event::Camera { .. } => "camera".into(),
     }

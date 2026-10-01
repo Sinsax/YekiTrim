@@ -23,9 +23,18 @@
   `espeak-ng` / `espeak ng` / `espeak_` / `libespeak` / `piper_phonemize`，**不区分大小写**）。
   显式传单个文件时按原样扫、不做自我过滤（`package` 的门禁走的正是这条）。
 - `package`：版本 → `cargo build --release -p vtrim-cli --locked` → `vtrim.exe` → 调 `scan` 门禁 →
-  查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256。
+  查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256 →
+  **写 `<zip>.sha256.txt` 校验文件**（2026-10-01 起自动生成，见「边界」最后一条）。
 - 打包内容：`vtrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、
-  `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷）。
+  `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷）；
+  **外加默认出片通道的随身件（2026-10-01）**：`tools/polish-to-dhampir.mjs`（转译器，它按**同层**
+  `../spec/effects.json` 读效果词汇表）、`spec/effects.json`，以及底座三样
+  `dhampir/bin/<exe>` + `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
+  （包内形状由 `vtrim_polish::render::dhampir::{find_binary,wasm_dirs,preview_dir}` 定义；
+  ⚠️ `VERSION` 在 **`dhampir/` 下**、不在 `preview/` 里 —— 摆错报错只说"缺 VERSION"）。
+  底座来源 = 同层 `../Dhampir`（产物默认 `../Dhampir/out`、二进制默认 `../Dhampir/target/release/dhampir.exe`）；
+  可用 `--dhampir-artifact <dir>` / `--dhampir-exe <path>` 覆盖。**找不到就拒绝打包** ——
+  确实要打"没有底座"的包得显式 `--no-dhampir`（那台机器上默认通道会不可用）。
   输出到 `<repo>/release/`（gitignored），包名 `vtrim-v<版本>-win-x64`，zip 用 Deflated level 9。
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），
@@ -77,6 +86,11 @@
 - ⚠️ **验证发行行为要拿 `release/` 里的 exe，别拿 `cargo build --release`（工作区级）的那份**：
   `package` 建的是 `-p vtrim-cli`（feature 统一域更窄），两者**字节不同**（实测 sha256 不一样），
   拿错等于验证了一个不发的二进制。`--skip-build` 复跑只重组装与 zip，不会换掉这一份。
+- ⚠️ **`<zip>.sha256.txt` 由 `package` 每次重新生成**（2026-10-01 修）：以前它只手工写，
+  于是 `vtrim-v0.2.1-win-x64.zip.sha256.txt` 从 2026-09-22 起就没更新过、而 zip 换过好几版 ——
+  **一个撒谎的校验和比没有更糟**（用户照它校验会以为下载坏了）。现在 `write_checksum_sidecar`
+  跟着 zip 一起写（`built` 那行用 `fmt_utc_date` 打 UTC 日期：本 crate 刻意不带 chrono，
+  用 Howard Hinnant 的 `civil_from_days`）。⚠️ 手工改了 zip 就必须重跑 `package`（或删掉侧车文件）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

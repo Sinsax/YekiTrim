@@ -305,6 +305,13 @@ struct PackageOptions {
     out_dir: Option<PathBuf>,
     skip_build: bool,
     smoke_test: bool,
+    /// Dhampir 预览产物目录（含 `preview/` 与 `VERSION`）。默认找同层 `../Dhampir/out`。
+    dhampir_artifact: Option<PathBuf>,
+    /// Dhampir 出片二进制。默认找同层 `../Dhampir/target/release/dhampir.exe`。
+    dhampir_exe: Option<PathBuf>,
+    /// 显式**不打**底座：默认通道在目标机器上就不存在（要用户自己装）。
+    /// 不写这个开关而找不到底座 ⇒ **直接拒绝打包**（"默认出片通道"是产品的主路径，不能悄悄没有）。
+    no_dhampir: bool,
 }
 
 fn cmd_package(args: &[String]) -> ExitCode {
@@ -313,6 +320,9 @@ fn cmd_package(args: &[String]) -> ExitCode {
         out_dir: None,
         skip_build: false,
         smoke_test: false,
+        dhampir_artifact: None,
+        dhampir_exe: None,
+        no_dhampir: false,
     };
 
     let mut index = 0usize;
@@ -320,6 +330,27 @@ fn cmd_package(args: &[String]) -> ExitCode {
         match args[index].as_str() {
             "--skip-build" => options.skip_build = true,
             "--smoke-test" => options.smoke_test = true,
+            "--no-dhampir" => options.no_dhampir = true,
+            "--dhampir-artifact" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => options.dhampir_artifact = Some(PathBuf::from(value)),
+                    None => {
+                        eprintln!("xtask package: --dhampir-artifact needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--dhampir-exe" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => options.dhampir_exe = Some(PathBuf::from(value)),
+                    None => {
+                        eprintln!("xtask package: --dhampir-exe needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             "--version" => {
                 index += 1;
                 match args.get(index) {
@@ -433,6 +464,79 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     fs::copy(&exe, package_dir.join("vtrim.exe"))?;
     copy_dir_all(&dist, &package_dir.join("webui").join("dist"))?;
 
+    // ---- 默认出片通道的随身件（2026-10-01）----
+    //
+    // 底座那条腿要三样东西，缺一样"默认通道"在目标机器上就起不来：
+    //   ① 转译器 `tools/polish-to-dhampir.mjs`（它按**同层** `../spec/effects.json` 读效果词汇表）
+    //   ② 效果词汇表 `spec/effects.json`
+    //   ③ 底座自己：`dhampir/bin/<exe>`（出片）+ `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
+    //      —— 包内形状由 `vtrim_polish::render::dhampir::{find_binary, wasm_dirs, preview_dir}` 定义
+    //      （`<程序目录>/dhampir/…`），底座侧的产出来自它自己的 `node scripts/package.mjs`。
+    fs::create_dir_all(package_dir.join("tools"))?;
+    fs::create_dir_all(package_dir.join("spec"))?;
+    let translator = root.join("tools").join("polish-to-dhampir.mjs");
+    if !translator.is_file() {
+        return Err(format!("missing translator at {}", translator.display()).into());
+    }
+    fs::copy(&translator, package_dir.join("tools").join("polish-to-dhampir.mjs"))?;
+    let vocab = root.join("spec").join("effects.json");
+    if !vocab.is_file() {
+        return Err(format!("missing effect vocabulary at {}", vocab.display()).into());
+    }
+    fs::copy(&vocab, package_dir.join("spec").join("effects.json"))?;
+
+    if options.no_dhampir {
+        println!("warning: --no-dhampir：包里**不带底座** —— 目标机器上默认出片通道不可用");
+        println!("         （用户需自行放置 <程序目录>/dhampir/…，或用 --renderer chrome）");
+    } else {
+        // 同层目录规则与 `find_binary` 一致：`V-Trim` 与 `Dhampir` 并排时才好找。
+        let sibling = root.parent().map(|p| p.join("Dhampir"));
+        let artifact = options
+            .dhampir_artifact
+            .clone()
+            // ⚠️ 2026-10-01：底座 `scripts/package.mjs` 的默认输出是 **`dist/dhampir-<版本>+<sha>`**，
+            // 不是 `out/` —— 我们一直按 `out/` 找，于是"底座明明打好了"却报"产物不齐"。
+            // 现在：先取 `dist/dhampir-*` 里**最新**的一份，再退回 `out/`（老布局）。
+            .or_else(|| sibling.as_ref().and_then(|d| newest_dhampir_dist(d).or_else(|| Some(d.join("out")))))
+            .ok_or("no sibling Dhampir checkout: pass --dhampir-artifact <dir> or --no-dhampir")?;
+        let base_exe = options.dhampir_exe.clone().unwrap_or_else(|| {
+            sibling
+                .as_ref()
+                .map(|d| d.join("target").join("release").join("dhampir.exe"))
+                .unwrap_or_else(|| PathBuf::from("dhampir.exe"))
+        });
+        for required in [
+            artifact.join("preview").join("engine.js"),
+            artifact.join("preview").join("pkg").join("dhampir_wasm.js"),
+            artifact.join("preview").join("pkg").join("dhampir_wasm_bg.wasm"),
+            artifact.join("VERSION"),
+        ] {
+            if !required.is_file() {
+                return Err(format!(
+                    "Dhampir 产物不齐：{} 不存在。\n  \
+                     在 Dhampir 仓跑 `node scripts/package.mjs` 生成产物，或用 --dhampir-artifact <dir> 指定；\
+                     确实要打成「没有底座」的包就加 --no-dhampir",
+                    required.display()
+                )
+                .into());
+            }
+        }
+        if !base_exe.is_file() {
+            return Err(format!(
+                "找不到 Dhampir 出片二进制 {}（用 --dhampir-exe <path> 指定，或 --no-dhampir 明确不带）",
+                base_exe.display()
+            )
+            .into());
+        }
+        copy_dir_all(&artifact.join("preview"), &package_dir.join("dhampir").join("preview"))?;
+        fs::copy(&artifact.join("VERSION"), package_dir.join("dhampir").join("VERSION"))?;
+        fs::create_dir_all(package_dir.join("dhampir").join("bin"))?;
+        let base_name = if cfg!(windows) { "dhampir.exe" } else { "dhampir" };
+        fs::copy(&base_exe, package_dir.join("dhampir").join("bin").join(base_name))?;
+        println!("    + dhampir/（出片二进制 + 预览产物 + VERSION）");
+    }
+    println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
+
     // No font is bundled: the former built-in fallback's licence allowed free commercial use but
     // not embedding into software. Users drop their own fonts in here (vtrim_core::fonts).
     fs::write(
@@ -497,13 +601,100 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     zip_dir(&package_dir, &zip_path)?;
 
     let size_mb = fs::metadata(&zip_path)?.len() as f64 / (1024.0 * 1024.0);
+    let size_bytes = fs::metadata(&zip_path)?.len();
     let digest = sha256_of_file(&zip_path)?;
     println!();
     println!("done: {}", zip_path.display());
     println!("  size:   {size_mb:.1} MB");
     println!("  sha256: {digest}");
 
+    // ⚠️ **校验和文件也必须每次重新生成**（2026-10-01 修）。
+    //
+    // 这个旁路文件以前只在手工发版时写：于是 `release/vtrim-v0.2.1-win64.zip.sha256.txt`
+    // 从 2026-09-22 起就没再更新过，而 zip 早换过好几版 —— **一个撒谎的校验和比没有更糟**
+    // （用户会照它校验，然后以为下载坏了）。现在它在 `package` 里跟着 zip 一起写。
+    let sidecar = write_checksum_sidecar(&zip_path, &digest, size_bytes, options.smoke_test)?;
+    println!("  checksum: {}", sidecar.display());
+
     Ok(())
+}
+
+/// 把 zip 的校验和写成**每次都重新生成**的旁路文件（放在发行包**之外**，避免自指）。
+/// 底座新的默认产物目录：`<dhampir>/dist/dhampir-<版本>+<sha>/`，取**最新**的一份。
+///
+/// 为什么要有它：底座 `scripts/package.mjs` 的默认输出改成了 `dist/`，而我们的打包器一直按 `out/` 找，
+/// 症状是"底座明明打好了，这边却报产物不齐"（2026-10-01 踩到）。两份都认：这里给 dist 里最新的那份，
+/// 调用方拿不到时再退回 `out/`。
+fn newest_dhampir_dist(root: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = fs::read_dir(root.join("dist"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("dhampir-"))
+        })
+        .collect();
+    found.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+    found.pop()
+}
+
+fn write_checksum_sidecar(
+    zip_path: &Path,
+    digest: &str,
+    size_bytes: u64,
+    smoke_tested: bool,
+) -> io::Result<PathBuf> {
+    let path = PathBuf::from(format!("{}.sha256.txt", zip_path.display()));
+    let name = zip_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mb = size_bytes as f64 / (1024.0 * 1024.0);
+    let built = fmt_utc_date(SystemTime::now());
+    let how = if smoke_tested {
+        "cargo xtask package --smoke-test"
+    } else {
+        "cargo xtask package"
+    };
+    let text = format!(
+        "{name}\n\
+         sha256  {digest}\n\
+         size    {size_bytes} bytes ({mb:.1} MB)\n\
+         built   {built}（Windows x64；{how}）\n\
+         \n\
+         校验：\n  \
+         certutil -hashfile {name} SHA256\n  \
+         (Get-FileHash .\\{name} -Algorithm SHA256).Hash\n\
+         \n\
+         说明：本文件由 `cargo xtask package` **每次重新生成**（别手工改）；\n\
+         刻意放在发行包**之外** —— RELEASE-NOTES.md 在 zip 内，把校验和写进去会形成自指。\n"
+    );
+    fs::write(&path, text)?;
+    Ok(path)
+}
+
+/// UTC 日期（YYYY-MM-DD）。xtask 刻意不带 chrono（依赖只有 std + sha2 + zip），
+/// 这里用 Howard Hinnant 的 civil_from_days（纯整数运算）。
+fn fmt_utc_date(t: SystemTime) -> String {
+    let secs = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {

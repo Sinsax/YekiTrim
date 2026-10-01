@@ -11,13 +11,9 @@ name = "vtrim_server"
 path = "src/lib.rs"
 
 [features]
-# 启用后服务端包含 wgpu 原生渲染后端（单帧真渲染预览 + VTEDIT_RENDERER=wgpu 出片）。
-#
-# ⚠️ `cargo build --features wgpu-render` 只写这一个 feature 是**不够的**：
-# `#[cfg(feature = "wgpu-render")]` 的 8 处使用全在本 crate（`api.rs` ×3、`model.rs` ×5）。
-# feature 随 crate 走，所以 `vtrim-cli` 必须把它**转发**过来（见 cli 清单里的同名 feature）。
-# 漏掉转发不会报错，只会让 `/api/health` 的 `wgpu_render` 报 false、GPU 后端静默不编译进去。
-wgpu-render = ["vtrim-polish/wgpu-render"]
+# ⚠️ 这里曾经有 `wgpu-render = ["vtrim-polish/wgpu-render"]`（wgpu 单帧真渲染预览 + GPU 出片）。
+# **整条已删除**（用户拍板：GPU 那侧交给独立的 Dhampir 底座，见根卡）。`/api/health` 不再有
+# `wgpu_render` 这一位。别再把 feature 加回来。
 
 [dependencies]
 vtrim-core = { path = "../vtrim-core" }

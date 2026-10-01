@@ -21,10 +21,11 @@
 
 - **依赖方向（第一条）**：**只依赖 `vtrim-service`**，绝不反向；**不碰 `vtrim_cli`**。两条都已是机器门禁
   `scripts/check_module_boundaries.py`（见根卡）。
-- ⚠️ `wgpu-render` feature 的**使用点全在 `vtrim-server`**（`api/` ×3、`model.rs` ×5）。
-  `vtrim-cli` 声明的是**转发**（`wgpu-render = ["vtrim-server/wgpu-render"]`），
-  `vtrim-server` 再转发给 `vtrim-polish`。漏掉转发不会报错，只会让 `/api/health` 的
-  `wgpu_render` 报 false、GPU 后端静默不编译进去 —— 动构建特性要实测这一条。
+- ⚠️ **`wgpu-render` feature 已整条删除**：`api/` ×3 与 `model.rs` ×5 那些 `#[cfg(feature = "wgpu-render")]`
+  分支（单帧真渲染预览 `POST /api/polish/render-frame`、常驻后端槽、`/api/health` 的 `wgpu_render` 能力位）
+  连同 `vtrim-polish/wgpu-render`、`vtrim-render-core/wgpu`、`vtrim-wasm` 一起没了 ——
+  GPU 那侧交给独立的 Dhampir 底座。所以本 crate **没有任何 feature**。
+  **别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
 - ⚠️ `webui/dist` 的位置靠 `CARGO_MANIFEST_DIR/../..`（`vtrim-server/src/web.rs`），
   按 crate 深度算。**别把 `vtrim-server` 挪到更深的目录**，否则 WebUI 静默 404。
 - `src/web.rs` 只服务 `webui/dist`：缺 `index.html` 时 `/` 回 **503 + 构建指引**，启动日志也告警。

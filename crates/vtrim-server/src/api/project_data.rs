@@ -1002,7 +1002,7 @@ pub(super) async fn event_cut_all_impl(
 ) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
-    let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+    let raw = tokio::task::spawn_blocking({ let __p = ev_path.clone(); move || std::fs::read_to_string(__p) }).await.unwrap_or_else(|_| Err(std::io::Error::other("读取任务崩了"))).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let store: serde_json::Value = serde_json::from_str(&raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("解析失败: {e}")))?;
     let Some(all_events) = store.get("events").and_then(|a| a.as_array()) else {
         return Err(err(StatusCode::NOT_FOUND, "暂无事件"));
@@ -1142,7 +1142,7 @@ pub(super) async fn event_cut_impl(
 ) -> ApiResult {
     let ev_path = ws.output_dir().join("events.json");
     if !ev_path.exists() { return Err(err(StatusCode::NOT_FOUND, "暂无 events.json")); }
-    let raw = std::fs::read_to_string(&ev_path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+    let raw = tokio::task::spawn_blocking({ let __p = ev_path.clone(); move || std::fs::read_to_string(__p) }).await.unwrap_or_else(|_| Err(std::io::Error::other("读取任务崩了"))).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
     let store: serde_json::Value = serde_json::from_str(&raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("解析失败: {e}")))?;
     let rank_u: u32 = rank.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "rank 无效"))?;
     let event: serde_json::Value = store.get("events").and_then(|a| a.as_array()).and_then(|arr| arr.iter().find(|e| e.get("rank").and_then(|r| r.as_u64()).unwrap_or(0) as u32 == rank_u).cloned())
