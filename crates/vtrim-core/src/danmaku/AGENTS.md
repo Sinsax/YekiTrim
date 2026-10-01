@@ -16,6 +16,9 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
 - `danmaku::parse_srt_file(path)` / `parse_srt_danmaku(content)` / `parse_bililive_xml(content)` /
   `parser::parse_ass(path)`；条目类型 `danmaku::DanmakuEntry`（`start`/`end`/`text`/`color`/`y`/
   `travel_duration`）。
+- 在屏窗口：`travel_duration_for(text)`（滚动时长，**唯一一份公式**，按 UTF-8 字节数）、
+  `clamp_display_windows(&mut entries) -> usize`（把窗口末尾抬到"至少够它滚完"）、
+  常量 `DANMAKU_FADE_IN_SECS`（渲染侧 `fadeIn` 的那 0.3s）。
 - 密度：`danmaku::analyze(path, window_secs, total_duration) -> Vec<DensityWindow>`（按
   `danmaku_window_secs`，默认 10s 归一化）、`average_density(heatmap, start, end, window_secs)`、
   `peak_density(...)`。
@@ -35,6 +38,17 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
   归一化口径见 `detection` 与 `cutting` 的卡；改这里的窗口口径会同时改热度排序与 `rank`。
 - 同一份弹幕可能被检测与切片各读一次（`analyze` / `load_danmaku_auto`）：解析要能重复调用、
   不许有跨调用的可变状态。
+- ⚠️ **在屏窗口必须够它滚完**（`clamp_display_windows`）：渲染侧的渐隐钉在窗口末尾
+  （`d.end - 0.2` 起渐隐、`t >= d.end` 整条丢掉），而滚动由 `travel` 决定 —— 两口钟不耦合时，
+  一条 8 秒窗口、10.4 秒 travel 的弹幕会在**还没到左边缘**时消失（实测距左边缘 337px 处就在渐隐、
+  39 字节那条在屏幕中段 728px 处没了）。录播姬 XML 给的窗口是固定 8 秒，中文弹幕几乎全部命中。
+  调用点：精修 `cmd_parse`（`assign_danmaku_tracks`）与 `process`（`normalize_danmaku_windows`，
+  老工程自愈）；底座那条腿是 `tools/polish-to-dhampir.mjs::danmakuExitMs`（同一规则的另一份实现，
+  由 `scripts/check-vtrim-translator.mjs` 对拍常数）。
+- ⚠️ **窗口比较带 1 ns 容差，别写回严格相等**：`serde_json` 读 f64 会**差 1 ulp**
+  （`"10.700000000000001".parse::<f64>()` 与 `serde_json::from_str::<f64>()` 的位不同），
+  严格相等会让每次 `process` 都重写一遍 `data/danmaku.json` —— 内容不变、mtime 一直翻新，
+  而首页「切片总览」按 mtime 排序，老片段会被一直顶在最前面。见 `WINDOW_EPS_SECS`。
 - Web 侧拿弹幕路径的**统一入口是 `Workspace::danmaku_path`**（`danmaku_file` 是相对工程目录存的）；
   管线侧是 `pipeline::runner::resolve_danmaku`。别在别处 `PathBuf::from` 之后直接用。
 

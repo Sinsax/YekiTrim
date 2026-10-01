@@ -193,14 +193,21 @@ fn sensevoice_dir(cfg: &AsrConfig) -> Option<PathBuf> {
     }
 }
 
-/// qwen3 单流解码用几个线程：`min(4, 核数)`。
+/// qwen3 单流解码用几个线程：`min(4, 核数 - 1)`。
 ///
 /// 上游 sherpa-onnx 对该 session 的默认是 1；本项目的用法是**串行**的
 /// （`QWEN3_RECOGNIZER` 那个全局 Mutex），所以多给线程不会互相抢，
 /// 而是让唯一在跑的那次解码快一些。
+///
+/// ⚠️ **但必须给服务端留至少一个核。** ASR 与 HTTP 服务器是**同一个进程**：
+/// 把这台机器的核全给解码，tokio 的 worker 与 blocking 池会**一起饿死** ——
+/// 症状不是"慢"，而是**连 `/api/jobs` 这种只读任务表都超时**、界面切不动 Dhampir。
+/// 用户实测：ASR 期间 `POST /api/polish/dhampir-project` 挂 **182 秒后连接失败**，
+/// 而同一个请求在 ASR 结束后只要 **314ms**。
+/// 所以这里从核数里扣掉一个 —— 少一个核，换"ASR 期间界面还能用"。
 fn decode_threads() -> i32 {
     std::thread::available_parallelism()
-        .map(|n| n.get().min(4).max(1))
+        .map(|n| n.get().saturating_sub(1).clamp(1, 4))
         .unwrap_or(1) as i32
 }
 
