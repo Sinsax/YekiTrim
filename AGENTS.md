@@ -27,11 +27,10 @@ vtrim-render-core ←── vtrim-polish ──┐
 |---|---|
 | `crates/vtrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / LLM 客户端 / 弹幕 |
 | `crates/vtrim-polish` | GSAP 精修引擎（从 vtedit 合并）：字幕/贴纸/音效/特效 → 出片与封面 |
-| `crates/vtrim-render-core` | GPU 绘制原语（被 polish / wasm 用），不认识业务 |
+| `crates/vtrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
 | `crates/vtrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
 | `crates/vtrim-server` | axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块 |
 | `crates/vtrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim` |
-| `crates/vtrim-wasm` | **不在 workspace members 里**（独立 target），只依赖 `vtrim-render-core` |
 | `crates/xtask` | 构建/打包/产物门禁（`cargo xtask scan|package`） |
 
 硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，15 条规则）：
@@ -65,28 +64,9 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 ### CLI（命令表面）
 
-```
-vtrim init <video> [--danmaku <file>]    # 创建 vtrim.toml
-vtrim extract [-i] [-o]                  # 提取音频 (Stage 1)
-vtrim process [-i] [-o] [--dry-run]      # 全自动管线
-vtrim transcribe [-i]                    # Stage 2 (local)
-vtrim detect [-t <transcript>]           # Stage 3 (自动发现: 参数 > config > output_dir/*.json > *.srt)
-vtrim cut [-i] [-e <events>] [-o]        # Stage 4 (自动发现: 参数 > config/output_dir/events.json)
-vtrim silence [files...] [--duration 3.5] [--threshold]   # 「去静音」: 写 polish.toml，不改视频
-vtrim download                           # 下载全部 ASR 模型 → <程序>/.vtrim/models/
-vtrim status                             # 查看当前进度
-vtrim usage [--days N]                   # LLM 用量（token/缓存命中/耗时，账本 llm_usage）
-vtrim doctor [--url <base>]              # 安全与运行状况摘要
-vtrim ingest token [--disable] | ingest status            # 录播姬: webhook / 采集配置概览
-vtrim user invite|invites|invite-revoke  # 邀请码（明文落库，可重复查看）+ 注册开关
-vtrim user list|info|add|passwd|check|disable|init-admin|reset-admin-password
-vtrim config init [--path] | config show # 全局配置生成 / 显示
-vtrim correct [-t <transcript>]          # LLM 订正转录文本
-vtrim polish init|llm|process|render|cover|preview|doctor|test [<dir>]
-vtrim polish stickers list|test|scan     # 本地贴纸: 列出 / 测 keyword 匹配 / 生成清单
-```
-
-所有 stage 命令的 `-i` 可选，默认从 `vtrim.toml` 的 `input_file` 读取。
+**命令面归 `crates/vtrim-cli/AGENTS.md`**（那里有完整清单与"各命令是什么"）。根文件只放全局不变式、模块索引、
+改代码协议与验证命令 —— 这张表原先在根文件里与那张卡重复，这次迁 `tools/` 时因**最坏指令链预算**
+（`root + webui + webui/src + webui/src/views`）只剩 8 B 余量，把它挪回了它该在的卡。**别再往这里抄第二份。**
 
 ## 入口
 
@@ -97,6 +77,7 @@ vtrim polish stickers list|test|scan     # 本地贴纸: 列出 / 测 keyword �
 |---|---|---|---|
 | `root` | `.` | `AGENTS.md` | 每次会话都会加载（本文件） |
 | `scripts` | `scripts` | `scripts/AGENTS.md` | 改门禁/加规则时 |
+| `tools` | `tools` | `tools/AGENTS.md` | 动转译器（`polish.toml` → 底座工程）之前 |
 | `core` | `crates/vtrim-core` | `crates/vtrim-core/AGENTS.md` | 动 `crates/vtrim-core/` 下的东西之前 |
 | `core-config` | `crates/vtrim-core/src/config` | `crates/vtrim-core/src/config/AGENTS.md` | 动 `crates/vtrim-core/src/config/` 下的东西之前 |
 | `core-pipeline` | `crates/vtrim-core/src/pipeline` | `crates/vtrim-core/src/pipeline/AGENTS.md` | 动 `crates/vtrim-core/src/pipeline/` 下的东西之前 |
@@ -122,7 +103,6 @@ vtrim polish stickers list|test|scan     # 本地贴纸: 列出 / 测 keyword �
 | `server-api` | `crates/vtrim-server/src/api` | `crates/vtrim-server/src/api/AGENTS.md` | 加接口/改路由之前（含同步 IO 纪律） |
 | `cli` | `crates/vtrim-cli` | `crates/vtrim-cli/AGENTS.md` | 加命令/改入口之前 |
 | `xtask` | `crates/xtask` | `crates/xtask/AGENTS.md` | 动构建/打包/产物门禁之前 |
-| `wasm` | `crates/vtrim-wasm` | `crates/vtrim-wasm/AGENTS.md` | 动 wasm 之前（生成物不许手改） |
 | `webui` | `webui` | `webui/AGENTS.md` | 改构建、`dist`、契约脚本时 |
 | `webui-src` | `webui/src` | `webui/src/AGENTS.md` | 动前端源码之前（路由/重挂/缓存纪律） |
 | `webui-api` | `webui/src/api` | `webui/src/api/AGENTS.md` | 动接口层/作用域之前 |
@@ -173,16 +153,21 @@ vtrim polish stickers list|test|scan     # 本地贴纸: 列出 / 测 keyword �
 - ⚠️ **`webui/dist` 的位置靠 `CARGO_MANIFEST_DIR/../..`**（`vtrim-server/src/web.rs`），按 crate 深度算：
   别把 `vtrim-server` 挪到更深的目录，否则 WebUI 静默 404。`webui/dist` **已入库**，改了
   `webui/src` 必须重建并一起提交。
-- ⚠️ **`wgpu-render` feature 的转发链**：使用点全在 `vtrim-server`（`api/` ×3、`model.rs` ×5），
-  `vtrim-cli` 与 `vtrim-server` 都只是转发。漏掉转发不报错，只会让 `/api/health` 的
-  `wgpu_render` 报 false、GPU 后端静默不编译进去 —— 动构建特性要实测这一条。
+- ⚠️ **本仓不再自带任何 GPU 渲染**：`vtrim-render-core` 的 wgpu 管线、`polish/src/render/native/`、
+  `vtrim-wasm` + `webui/src/wasm/`、`/api/health` 的 `wgpu_render` 与 `POST /api/polish/render-frame`
+  **整条已删除**；GPU 那侧交给独立的 **Dhampir 底座**。出片/预览的事实来源只有 `templates/index.html`
+  的 canvas 路径，**别再往本仓加回 GPU 管线**。⚠️ **出片默认就是底座**（`dhampir`，2026-09-30 拍板；
+  `chrome` 兜底、认不出的值直接报错），画面归底座、音轨仍归本仓 —— 细节见 `polish-render` 卡。
 - ⚠️ **默认端口 26320 只有一份定义**：`vtrim-service/src/doctor.rs::DEFAULT_PORT`。
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
   `--trust-proxy` 是 `X-Forwarded-*` 的唯一开关（决定限流键与 cookie 的 `Secure`）。
 - ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` 里的检测 prompt 是 `config init`
   填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**（debug / release 互不相干）。
-- ⚠️ **不许手改生成物**：`webui/src/wasm/`、`crates/vtrim-wasm/src/wasm/`（wasm-bindgen 输出）。
+- ⚠️ **不许手改生成物**：`webui/dist/`（vite 构建产物，**已入库**）—— 改了 `webui/src` 必须
+  `npm --prefix webui run build` 重建，再一起提交；别直接编辑 dist 里的 js/css。
+  （曾经还有 `webui/src/wasm/` 与 `crates/vtrim-wasm/src/wasm/` 两份 wasm-bindgen 生成物 ——
+  随「作废 wgpu」一起删掉了。）
 
 ## 验证
 
@@ -201,6 +186,10 @@ cargo test -p vtrim-core --lib danmaku         # ASS + XML 解析 + 密度
 # 改了前端（webui/src）之后：必须重建 dist
 npm --prefix webui run build
 node webui/scripts/check-overlay.mjs           # 覆盖层色档（另有 5 个 check-*.mjs，见 webui/AGENTS.md）
+
+# 改了转译器（tools/polish-to-dhampir.mjs）之后：曲线守卫 + 变异自证（见 tools/AGENTS.md）
+node scripts/check-vtrim-translator.mjs
+node scripts/check-vtrim-translator.mjs --mutate
 
 cargo run -- status                            # 查看当前进度
 ```
