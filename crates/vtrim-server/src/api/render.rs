@@ -166,6 +166,11 @@ pub(super) async fn emit_render_line(
         jobs.progress(job_id, slowest as u64, 100).await;
         return; // 每 1.5s 一条的进度行不进日志，靠任务卡的进度条表达
     }
+    // 底座那句「--no-audio 无声」是误导（声音由本仓混入），换掉原文
+    if is_base_no_audio_notice(&msg) {
+        jobs.log(job_id, "info", BASE_NO_AUDIO_REPLACEMENT).await;
+        return;
+    }
     if msg.contains('⚠') {
         jobs.log(job_id, "warn", &msg).await;
     } else if RENDER_MILESTONES.iter().any(|m| msg.contains(m)) {
@@ -174,6 +179,17 @@ pub(super) async fn emit_render_line(
         jobs.log(job_id, "debug", &msg).await;
     }
 }
+
+/// 底座带 `--no-audio` 出画面时，它会对着自己工程里登记的音轨（a0/a1）发一条
+/// 「本次出片是无声的」—— 那句话在 V-Trim 的管线里是**误导**：底座只负责画面，
+/// 原声与音效由本仓 ffmpeg 在混音/合流阶段混入，**最终成片有声**。
+/// 这里把原文拦下换成准确说法（匹配放宽到"两个特征同时命中"，措辞变了也能接住）。
+fn is_base_no_audio_notice(msg: &str) -> bool {
+    msg.contains("--no-audio") && msg.contains("无声")
+}
+
+const BASE_NO_AUDIO_REPLACEMENT: &str =
+    "底座只出画面（--no-audio）：原声与音效由本仓 ffmpeg 在混音/合流阶段混入 —— 最终成片有声。";
 
 /// 边跑边读子进程日志：里程碑进日志、`chunk#N: P%` 进进度条、长时间静默告警。
 pub(super) async fn follow_render_output(
@@ -469,4 +485,30 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
     assert!(out.tail_text().contains("Starting render"), "尾部要有最后一行");
     let _ = std::fs::remove_file(&path);
 }
+
+    /// 底座对着自己工程音轨发的那句「--no-audio 无声」在 V-Trim 管线里是误导
+    /// （声音由本仓 ffmpeg 混入，**成片有声**）—— 必须被换成准确说法，原文不许进日志。
+    #[tokio::test]
+    async fn base_no_audio_notice_is_replaced_not_passed_through() {
+        let jobs = Arc::new(crate::jobs::JobManager::new());
+        let handle = jobs
+            .create(1, JobSpec::new("polish_render", "polish render", vec![], JobClass::Heavy))
+            .await;
+        let id = handle.id.clone();
+        handle.wait_start().await.expect("资源不相干，应该直接开跑");
+        let mut out = RenderOutput::new(
+            std::env::temp_dir().join(format!("vtrim-noaudio-{}.log", std::process::id())),
+        );
+        emit_render_line(
+            &jobs,
+            &id,
+            &mut out,
+            "注意：你给了 --no-audio，本次出片是无声的（工程里有音轨：a0, a1）。",
+        )
+        .await;
+        let summary = jobs.get(&id).await.expect("任务存在");
+        let logs: Vec<String> = summary.logs.iter().map(|l| l.message.clone()).collect();
+        assert!(logs.iter().any(|l| l.contains("最终成片有声")), "要回准确的说明: {logs:?}");
+        assert!(logs.iter().all(|l| !l.contains("无声的")), "误导原文不许进日志: {logs:?}");
+    }
 }

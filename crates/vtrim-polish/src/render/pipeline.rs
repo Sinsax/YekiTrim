@@ -327,8 +327,14 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         let mut file_db_cache: HashMap<String, f64> = HashMap::new();
         let se: Vec<_> = sfx_data
             .iter()
-            .map(|sd| {
+            .filter_map(|sd| {
                 let f = project_path.join("sfx").join(sd.file.replace("sfx/", ""));
+                // ⚠️ 缺文件**必须留痕**（以前是静默 filter —— 成片少了一个音效且查不到原因）：
+                // 转译器那边同样情况会进 DROP 报告，这里至少打一行 warn（进任务日志）。
+                if !f.exists() {
+                    tracing::warn!("  ⚠ 音效文件缺失，这一条混不进成片（预览里同样不会响）：{}", sd.file);
+                    return None;
+                }
                 let key = f.to_string_lossy().to_string();
                 let file_db = *file_db_cache
                     .entry(key.clone())
@@ -350,14 +356,13 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
                 let target = video_db - 8.0;
                 let vol = 10.0_f64.powf((target - file_db) / 20.0) * llm_factor(sd.volume);
                 let vol = vol.clamp(0.005, 1.0);
-                render::ffmpeg::SfxEvent {
+                Some(render::ffmpeg::SfxEvent {
                     time: sd.time,
                     file: f.to_string_lossy().to_string(),
                     volume: vol,
                     duration: sd.duration,
-                }
+                })
             })
-            .filter(|e| Path::new(&e.file).exists())
             .collect();
         if !se.is_empty() {
             // 混音 + 限幅保护 (防止音效峰值爆音)
