@@ -22,14 +22,14 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
 封面那条对 `chrome` 给的是**单独的**"这条腿已删除"错误，不是折进"认不出"。
 `wgpu` / `native` 仍只作 `dhampir` 的**别名**（老配置/老脚本的兼容映射）。
 原来的 `native/`（`WgpuBackend`）与 `wgpu-render` feature 已整条删除（GPU 那侧交给底座）。
-`backend.rs` 的 `FrameRenderer` 抽象**留着** —— 但底座**不走它**：底座是"整段一起出"，
-硬塞进逐帧接口就得每帧起一个进程；它走 `cmd_render` 里的**另一条分支**，产物落在同一个
+`backend.rs` 的逐帧接缝（`FrameRenderer` trait + `create_backend` + `render_chunk_sync`）**已整段删除**
+（2026-10-02，S4 阻断 B 拍 **B2** 后的收口；真要接第二个逐帧后端从 git 历史挖形状重新评估）。
+底座是"整段一起出"，走 `cmd_render` 里的**另一条分支**，产物落在同一个
 `_temp_video.mp4` 上，后面的音轨链路一行不改（**画面归底座、声音归本仓** `--no-audio`）。
 
 ## 入口
 
-- `pipeline`：`cmd_render(project_path)`、`render_chunk_sync(...)`（**逐帧渲染的接缝**：已无生产调用者，
-  留着是因为它是"任何非底座后端"的接口形状，且有测试钉着）、`resolve_paths(project_path, config) -> ResolvedPaths`、
+- `pipeline`：`cmd_render(project_path)`、`resolve_paths(project_path, config) -> ResolvedPaths`、
   `inject_assets(project_path, config_json)`、`prepare_sticker_data(project_path, config)`、
   `unique_output_path(path)`、`get_video_size` / `get_video_duration`、
   `measure_loudness_curve(_cached)` / `measure_segment_loudness` / `measure_audio_loudness`、
@@ -45,8 +45,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   **`decode_sticker_frames_png`（贴纸图统一入口：GIF 多帧、PNG/JPEG 单帧）**；
   `sound`：`collect_sound_events(config)`（**cmd_render 的 SFX 收口**：底座腿不带页面，事件由
   Rust 直接收，响度对齐后 `Ffmpeg::mix_sfx` 混入 —— "画面归底座、声音归本仓"；缺文件会打 warn
-  并跳过该条，不再静默）/ `sound_file_exists`（暂无消费者，判据与 collect 同源）；`backend::create_backend`（`Dhampir` 走到这里会**明确报错** ——
-  它是整段后端，不走逐帧接口）。
+  并跳过该条，不再静默）/ `sound_file_exists`（暂无消费者，判据与 collect 同源）。
   ⚠️ **`runner.rs` 已删除**（2026-09）：它自带一份 `ResolvedPaths` + `RenderRunner`，全仓库零消费者
   （真正的 `ResolvedPaths`/`resolve_paths` 在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），
   整模块只有一个 `#[allow(dead_code)]` 撑着。要加回"提帧 runner"先确认有第二条链路需要它。
@@ -205,10 +204,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   - 非 API 的失败（裸 fetch、SSE、解析）用 `stores/log.js` 的 `addClient(level, text, source)`；
     高频可预期失败（弹幕文件缺失、字体回退、任务轮询重试）记 `debug`，不要刷 warn。
   - 不做 toast→日志桥（err toast 本来就可见，桥接只会和 `api()` 的记录重复）。
-- `render_chunk_sync` 的编码失败按 `chunk#{idx} 编码失败（ffmpeg 退出码 …）` 报错。
-  模板 canvas 是**唯一**的出片路径（原 `native/` wgpu 那条链已删除，见上）——
-  ⚠ 模板 canvas 路径曾硬编码 `1.8/1.5` 且完全不读 `[style.camera]`，而它才是出片路径，
-  别再把倍率写回去（倍率只有一张表 `CameraStyle::factor`）。
+- ⚠️ **出片路径 = 底座整段**（逐帧接缝已删，见上）；`templates/index.html` 的 canvas
+  `renderFrame` 是**惰性参照**（对拍黄金帧的冻结源、转译器注释的行号锚点），不再被任何生产路径执行 ——
+  ⚠ 它曾硬编码 `1.8/1.5` 且完全不读 `[style.camera]`，别再把倍率写回去（倍率只有一张表 `CameraStyle::factor`）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
