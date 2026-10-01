@@ -78,8 +78,12 @@
   ⚠️ **`.ttc`/`.otc` 导入一律拒收**（要收得先拆包）：浏览器
   `@font-face` **不认字体集合** ⇒ 收进来会“预览回退系统字体、出片却用了它”。`import_font` 还要求
   “读得出内部族名”；`remove_font` 对 `builtin=true` 直接拒绝（“程序自带字体不可删除”）。
-  **自带字体（P1-f）**：`BUILTIN_FONTS` 里两支（霞鹜文楷 Lite + Noto Color Emoji，均 SIL OFL-1.1），
-  **清单随代码、字节首次使用时下载**（`download_builtin_font(s)`，校验 `sha256`、随附上游 `OFL.txt`）。
+  **自带字体（P1-f）**：`BUILTIN_FONTS` 里两支（**Noto Sans SC** + Noto Color Emoji，均 SIL OFL-1.1）——
+  ⚠️ **2026-10-02 中文那支由「霞鹜文楷 Lite」换成 Noto Sans SC**（体积 13.2→10.0 MB、观感更中性；
+  族名恰好就是 `Noto Sans SC`，与 `fallback_chain()` 里那项**天然对上**，不像旧的英文/中文族名对不上）。
+  中文正文**已内嵌**（`include_bytes!`，源在 `assets/fonts/`）——**首次启动自动落盘**，不联网。
+  ⚠️ 这条卡原来写的「字节首次使用时下载」**已过时**：`download_builtin_font(s)` 与 `url` 字段仍在，
+  但走的是"内嵌优先、只有内嵌字节不可用时才下载"的次序；`sha256` 仍是下载路径的最终防线。
   `scan_all()` 会**把没下载的自带字体也列出来**（`installed: false`、`file` 空）—— 界面据此给「下载」；
   ⚠️ **数「有没有可用字体」时必须滤掉它们**（`resolve_all` 解析得到才算数），否则会告诉用户「有字体」
   然后出片炸在「至少一个字体文件」上。**别把 ttf 塞进仓库**（约 38 MB 且会进 git 历史）。

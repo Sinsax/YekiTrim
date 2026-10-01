@@ -165,6 +165,12 @@ pub struct FontEntry {
     /// 与"正经导入/下载进来的库字体"不是一回事，得让人一眼分出来。
     #[serde(default)]
     pub flat: bool,
+    /// **彩色字形能力**（`"cbdt"` / `"sbix"` / `"colrv0"` / `"colrv1"` / `"svg"` / `"none"`）。
+    ///
+    /// 界面据此：① 给 emoji 候选标"能不能用"② 对 COLRv1/SVG 明确警告"这个格式出不了彩色"。
+    /// ⚠️ 对**纯文字字体**它通常是 `"none"` —— 那是正常的，不是缺陷，别当成错误提示。
+    #[serde(default)]
+    pub color_format: String,
 }
 
 fn ext_rank(ext: &str) -> usize {
@@ -358,6 +364,151 @@ pub fn family_of(bytes: &[u8]) -> Option<String> {
         }
     }
     best.map(|(_, t)| t)
+}
+
+/// 字体的**彩色能力**（2026-10-02 加：emoji 字体选错格式会静默坏掉）。
+///
+/// ⚠️ 为什么需要这个：emoji 字体的格式**不是都能用**。封面走 Takumi 静态光栅化，
+/// 它对彩色字形的支持是**硬编码**的（`takumi-core` 只认 `ColorGlyphFormat::ColrV0`），
+/// 实测四档：
+///
+/// | 格式 | 结果 |
+/// |---|---|
+/// | `CBDT`/`CBLC` 位图 | 彩色正常（当前自带那支就是它） |
+/// | `sbix` 位图 | 彩色正常 |
+/// | `COLR` **v0** | 彩色正常 |
+/// | `COLR` **v1** | **emoji 整片消失**（不是变黑白 —— 更隐蔽：无报错、界面还显示已装） |
+/// | `SVG ` in-font | 不支持 |
+///
+/// ⚠️ **口径是「能不能真的出彩色」，不是「是不是 CBDT」**：
+/// COLRv0 / sbix 同样能用，一律要求 CBDT 会误伤它们。真正要拦的只有 COLRv1 与 SVG。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorGlyphSupport {
+    /// 有彩色字形表，且实测能渲染
+    Color(ColorGlyphFormatKind),
+    /// 有彩色字形表，但**当前渲染器出不来**（COLRv1 / SVG）—— 界面要明确警告
+    Unsupported(ColorGlyphFormatKind),
+    /// 没有任何彩色字形表（纯轮廓字体；当 emoji 字体用只会出黑白或豆腐块）
+    None,
+}
+
+/// 彩色字形表的种类（诊断与界面提示用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorGlyphFormatKind {
+    /// `CBDT`+`CBLC` 位图（Google 的 Noto Color Emoji 走的这条）
+    Cbdt,
+    /// `sbix` 位图（Apple 的 Apple Color Emoji）
+    Sbix,
+    /// `COLR` v0（矢量分层，Takumi 认这条）
+    ColrV0,
+    /// `COLR` v1（矢量分层 + 渐变/变换，**Takumi 不认**）
+    ColrV1,
+    /// 字体里内嵌 SVG 文档（**Takumi 不认**）
+    Svg,
+}
+
+impl ColorGlyphFormatKind {
+    /// 给界面看的短名（纯 ASCII）。
+    pub fn short(&self) -> &'static str {
+        match self {
+            Self::Cbdt => "CBDT",
+            Self::Sbix => "sbix",
+            Self::ColrV0 => "COLRv0",
+            Self::ColrV1 => "COLRv1",
+            Self::Svg => "SVG",
+        }
+    }
+    /// 界面契约串（**改值要同步前端** `FontLibrary.vue`）。
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Cbdt => "cbdt",
+            Self::Sbix => "sbix",
+            Self::ColrV0 => "colrv0",
+            Self::ColrV1 => "colrv1",
+            Self::Svg => "svg",
+        }
+    }
+}
+
+/// 判一支字体的彩色能力（读 sfnt 表目录，**不解析字形数据**）。
+///
+/// ⚠️ 判据只看**表在不在**（加 COLR 的 version）：这是「这支字体声称有什么格式」，
+/// 不是「每个 emoji 都能出彩色」—— 后者的完整判定要真的栅格化一遍（代价远超一次列表请求）。
+/// 对界面提示来说前者够用，且不会误报：真正的坑（COLRv1 / SVG）恰好是**表级的**。
+pub fn color_glyph_support(bytes: &[u8]) -> ColorGlyphSupport {
+    let Some(base) = sfnt_base(bytes) else { return ColorGlyphSupport::None };
+    let Some(num) = be_u16(bytes, base + 4) else { return ColorGlyphSupport::None };
+    let has = |tag: &[u8; 4]| -> bool {
+        // 表目录最多 num 条；越界一律当没有（坏文件不该 panic）
+        (0..num as usize).any(|i| {
+            let off = base + 12 + 16 * i;
+            bytes.get(off..off + 4) == Some(&tag[..])
+        })
+    };
+    // ⚠️ COLR 必须先判、且**要读 version**：v1 是向后兼容的（v1 字体通常也带 v0 子表），
+    // 而 Takumi 的判定是读 COLR 的 version 字段 —— 我们必须照它的口径，见 COLR 就当能用。
+    if has(b"COLR") {
+        return match colr_version(bytes, base, num) {
+            Some(v) if v >= 1 => ColorGlyphSupport::Unsupported(ColorGlyphFormatKind::ColrV1),
+            _ => ColorGlyphSupport::Color(ColorGlyphFormatKind::ColrV0),
+        };
+    }
+    if has(b"CBDT") && has(b"CBLC") {
+        return ColorGlyphSupport::Color(ColorGlyphFormatKind::Cbdt);
+    }
+    if has(b"sbix") {
+        return ColorGlyphSupport::Color(ColorGlyphFormatKind::Sbix);
+    }
+    if has(b"SVG ") {
+        return ColorGlyphSupport::Unsupported(ColorGlyphFormatKind::Svg);
+    }
+    ColorGlyphSupport::None
+}
+
+/// 读 `COLR` 表的 version（0 = v0，1 = v1）。表缺失/越界返回 None。
+fn colr_version(bytes: &[u8], base: usize, num: u16) -> Option<u16> {
+    for i in 0..num as usize {
+        let off = base + 12 + 16 * i;
+        if bytes.get(off..off + 4) == Some(&b"COLR"[..]) {
+            let table_off = be_u32(bytes, off + 8)? as usize;
+            return be_u16(bytes, table_off);
+        }
+    }
+    None
+}
+
+/// 彩色能力 → 界面契约串（`"cbdt"` / `"sbix"` / `"colrv0"` / `"colrv1"` / `"svg"` / `"none"`）。
+///
+/// ⚠️ 返回值是**契约**：前端按它决定标什么角标、显示什么警告，改值要同步前端。
+pub fn color_format_tag(support: ColorGlyphSupport) -> &'static str {
+    match support {
+        ColorGlyphSupport::Color(k) => k.tag(),
+        ColorGlyphSupport::Unsupported(k) => k.tag(),
+        ColorGlyphSupport::None => "none",
+    }
+}
+
+/// 从**文件**判彩色能力（只读表目录，不整份读进来 —— 字体可达 14 MB）。
+///
+/// ⚠️ 只读前 `HEAD_BYTES`：sfnt 表目录固定在文件最前面（12 字节头 + 16×n 条），
+/// 表目录本身不会超过几千字节，不需要读整个字体（`scan_all` 是**每次开字体下拉都跑**的热路径）。
+pub fn color_format_of_file(path: &Path) -> String {
+    use std::io::Read as _;
+    // 表目录最多 128 张表 × 16 B + 12 B 头 ≈ 2 KB；给 16 KB 富余（含 ttcf 集合的偏移）
+    const HEAD_BYTES: usize = 16 * 1024;
+    let Ok(mut f) = std::fs::File::open(path) else { return "none".to_string() };
+    let mut buf = vec![0u8; HEAD_BYTES];
+    let n = match f.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return "none".to_string(),
+    };
+    buf.truncate(n);
+    color_format_tag(color_glyph_support(&buf)).to_string()
+}
+
+/// 这支字体的彩色能力**能不能用**（界面用它决定要不要警告）。
+pub fn color_supported(support: ColorGlyphSupport) -> bool {
+    matches!(support, ColorGlyphSupport::Color(_))
 }
 
 /// sfnt 表目录起点：普通字体从 0 开始，`ttcf` 字体集合取第一个字体的目录偏移。
@@ -588,11 +739,21 @@ pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
             scripts: meta.scripts,
             emoji: meta.emoji,
             builtin: meta.builtin,
-            is_default: meta.is_default,
+            // ⚠️ **emoji 字体强制 `is_default = false`**（字体职责分离，2026-10-02）。
+            // 这是 A4 的**第三处、也是最关键的一处**拦截：`FONT.toml` 是文本文件，
+            // 用户能手改成 `emoji = true` + `is_default = true`；而 `is_default` 有两个真消费者——
+            //   * `render/server.rs::preferred_fallback_family` 用它选**字体栈首项**
+            //     ⇒ 栈首变 emoji 族 ⇒ **整条栈的中文全部落空**；
+            //   * `cover.rs::cover_font_files_in` 用它把该支排到**注册序最前**
+            //     ⇒ 封面上"认不出的族名"全落到 emoji 字体。
+            // 两处都不是"emoji 当正文"那么直白，所以**必须在数据出口这一层掐掉**，
+            // 而不是指望每个消费者各判一次（那正是本仓反复吃亏的"四处各写一份"）。
+            is_default: meta.is_default && !meta.emoji,
             // 目录布局不是平铺（`flat` 只属于散文件直接躺在库根目录的老布局）
             flat: false,
             // 它在磁盘上 scanned 出来的 ⇒ 当然是"装好了"（`installed: false` 只属于"清单里有、盘上没有"）
             installed: true,
+            color_format: color_format_of_file(&path),
         });
     }
     out
@@ -633,6 +794,9 @@ pub fn scan_all(root: &Path) -> Vec<FontEntry> {
             // 未下载的自带字体走目录布局（下载后落 `<id>/font.ttf`），不是平铺
             flat: false,
             installed: false,
+            // ⚠️ 还没落盘也能判：**直接用内嵌字节**（`BUILTIN_FONTS[i].bytes`）——
+            // 这样"未装"的卡片也能如实告诉用户这支格式能不能用。
+            color_format: color_format_tag(color_glyph_support(b.bytes)).to_string(),
         });
     }
     out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
@@ -686,6 +850,155 @@ pub fn family_for_at(root: &Path, id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+// ===== 字体解析的唯一入口 =====
+//
+// ⚠️ **这一节是"用哪支字体"的唯一权威**（2026-10-02 字体职责分离）。
+// 在此之前，"字体栈"在四处各写一份、靠注释互相提醒"要同序"：
+//   ① \`render/server.rs::SYSTEM_FONT_STACK\`（兜底链）
+//   ② \`cover.rs::EMOJI_FONT\`（封面 emoji 特效层）
+//   ③ \`webui PolishPreview.vue\` 的字面量兜底
+//   ④ \`render/takumi.rs::ensure_emoji_fallback\` 的正则注入
+// 四处漂移的症状都是"预览和成片不一样，且不报错"。现在全部改为问这里。
+//
+// **职责分离**：\`FontPlan\` 把"文字"与"emoji"分成**两个独立字段**，而不是拼成一串。
+// 原因是三条消费链的语义根本不同（各自决定怎么用这个槽位）：
+//   * 字幕**预览**（浏览器）：可以把 emoji 族追加到 font-family 栈尾；
+//   * 封面（Takumi）：**不看 font-family 栈**，看的是**注册顺序**（feed 桶 = 全部已注册字体按注册序）——
+//     所以它要的是"把 emoji 排到最后注册"，不是"拼进栈"；
+//   * 字幕**成片**（Dhampir 底座）：**根本没有逐字形回退**（find_font 只交出第一个能解析的文件，
+//     最终落 ffmpeg \`drawtext=fontfile=<单支>\`）—— 所以它**用不上**这个槽位。
+// 把它们统一成"一个字符串栈"会让第二条与第三条都被误导（试过：往栈尾插 emoji 对成片零效果，
+// 对封面也几乎无效）。所以这里返回**结构化**的槽位，由消费点自己决定。
+
+/// **字体解析的唯一入口**：给定用户选择，返回角色化的字体组合。
+///
+/// * \`selected_id\`：配置里那串 id（\`[style.subtitle] font\` / \`[cover] font\`）。
+///   空串 = 用户没选（走兜底）。库外/解析不到的值**原样当作系统族名**（老工程行为，一字不变）。
+/// * \`text_family\`：正文该用的族名（\`Some\` = 库里认这个 id，返回它的内部族名；
+///   \`None\` = 没选或不在库里，消费点走 \`fallback\`）。
+/// * \`emoji_family\`：**emoji 补充槽位** —— 库里 \`emoji==true\` 且**已装**的字体，
+///   id 稳定序取第一支；库里没有就是 \`None\`（那时消费点回落到系统 emoji 族名栈）。
+/// * \`fallback\`：兜底链（**不含** emoji）。空库时逐字等于老的 \`SYSTEM_FONT_STACK\` 语义。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FontPlan {
+    pub text_family: Option<String>,
+    /// 用户选了、但库里解析不到 ⇒ 原样保留（当系统字体族名用）。
+    pub selected_raw: String,
+    pub emoji_family: Option<String>,
+    pub fallback: Vec<String>,
+}
+
+impl FontPlan {
+    /// 页面用的 CSS \`font-family\` 串：选中的排最前，后面跟兜底链。
+    ///
+    /// ⚠️ **不含 emoji** —— emoji 由消费点自己决定插不插、插在哪（见上面的说明）。
+    /// ⚠️ **声明名 = 配置里那串 id**（\`@font-face\` 也按 id 声明），别改成内部族名：
+    /// 模板与 \`webui/src/polish/fonts.js\` 都按 id 请求，改了就是"注入了但页面请求另一个名字"
+    /// —— 浏览器静默回退系统字体（P1-e 收敛的就是这条）。所以这里的"正文族名"用**用户选的 id**，
+    /// 而 \`text_family\`（内部族名）是**给 Takumi/底座**那两条不看 id 的链用的。
+    pub fn css_stack(&self, selected: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let sel = selected.trim();
+        if !sel.is_empty() {
+            out.push(sel.to_string());
+        }
+        for f in &self.fallback {
+            if !out.iter().any(|x| x.eq_ignore_ascii_case(f)) {
+                out.push(f.clone());
+            }
+        }
+        out
+    }
+}
+
+/// 库里**至多一支生效**的 emoji 字体：\`emoji == true\` 且**已装**，id 稳定序取第一支。
+///
+/// ⚠️ **只取已装的**：\`scan_all\` 会把"清单里有、盘上没有"的自带字体也列出来（\`installed: false\`），
+/// 拿它当"库里有 emoji 字体"会告诉用户"有"然后在渲染时炸掉 —— 与 \`cover_font_files_in\` 同口径
+/// （都要求 \`resolve_all\` 真的解析得到文件）。
+///
+/// ⚠️ **\`is_default\` 在这里被无视**：emoji 字体的"默认位"没有意义（它不参与正文竞争），
+/// 见 \`set_default\` 的拒绝逻辑与 \`read_meta\` 侧的口径。
+pub fn emoji_font(root: &Path) -> Option<FontEntry> {
+    let mut hits: Vec<FontEntry> = scan_all(root)
+        .into_iter()
+        .filter(|e| e.emoji && e.installed && resolve_all(root, &e.id).is_some_and(|p| p.is_file()))
+        .collect();
+    // ⚠️ **优先序：自带(清单内) > 其它，再按 id 稳定序**（2026-10-02，实测踩到）。
+    //
+    // 为什么不能只按 id 排：库里同时存在**新旧两支 emoji 字体**时（用户装过旧版、而我们换了新 id
+    // —— 这正是本次换字体造成的情形），id 字典序会让**旧那支赢**：
+    //
+    //     "NotoColorEmoji" < "NotoColorEmoji-CBDT"  ⇒ 旧的 COLRv1 被选中，新的 CBDT 永远轮不上
+    //
+    // 症状极隐蔽：封面上的 emoji **整片消失**（旧 COLRv1 对 Takumi 等于不存在），
+    // 而"库里明明有 emoji 字体"、界面也显示它已装 —— 只有对着出图看才发现。
+    // 自带字体是我们**验证过格式**的那支（单测钉着它必须是 CBDT / COLRv0），所以让它优先。
+    let builtin_ids: Vec<String> = builtin_fonts().iter().map(|b| b.id.to_lowercase()).collect();
+    // 自带排在后面（false < true），供最后 pop 取走；同档内再按 id 稳定序
+    hits.sort_by(|a, b| {
+        let ab = builtin_ids.contains(&a.id.to_lowercase());
+        let bb = builtin_ids.contains(&b.id.to_lowercase());
+        ab.cmp(&bb)
+            .then_with(|| b.id.to_lowercase().cmp(&a.id.to_lowercase()))
+    });
+    hits.pop()
+}
+
+/// 兜底链（**不含 emoji**）：与老的 \`SYSTEM_FONT_STACK\` 同族名同顺序。
+///
+/// ⚠️ 这是"空库回落态"的**唯一一份**定义。\`render/server.rs::SYSTEM_FONT_STACK\` 常量仍保留
+/// （它是文档锚点 + 单测钉子），两者必须逐字一致（有单测钉着）。
+pub fn fallback_chain() -> Vec<String> {
+    // ⚠️ **2026-10-02 首项由 `LXGW WenKai` 换成 `Noto Sans SC`**（自带中文那支换成了它）。
+    // 三项顺序不变（首项 = 库里那支，其余是系统回退），只把首项对上新的内部族名。
+    // `Microsoft YaHei` 仍排在 `Noto Sans SC` 之前：它对 Windows 用户是**一定有**的字体，
+    // 而"库里那支装好了"由首项保证 —— 所以这个顺序既保了同源、又保了系统兜底。
+    vec![
+        "Noto Sans SC".to_string(),
+        "Microsoft YaHei".to_string(),
+        "Noto Sans SC".to_string(),
+        "sans-serif".to_string(),
+    ]
+}
+
+/// **字体解析的唯一入口**（见 \`FontPlan\` 的说明）。所有消费点都必须经它取字体。
+pub fn resolve_font_plan(root: &Path, selected_id: Option<&str>) -> FontPlan {
+    let selected = selected_id.unwrap_or("").trim().to_string();
+    let entries = scan_all(root);
+
+    // 正文族名：用户选的那支（库里认 ⇒ 内部族名；不认 ⇒ None，由消费点走 fallback）。
+    //
+    // ⚠️ **不许把 emoji 字体选成正文**：它管的是"表情"，拿去排中文就是一个字都出不来。
+    // 两道拦截（这里 + \`set_default\`）是"职责分离"落在代码上的地方：
+    // 界面已经把 emoji 从正文下拉里滤掉了，但配置是文本文件，用户能手改，
+    // 所以**消费侧必须再挡一次**（与路径面三防线同一个理由）。
+    let text_family = entries
+        .iter()
+        .find(|e| e.id.eq_ignore_ascii_case(&selected) && !e.emoji && e.installed)
+        .map(|e| {
+            if e.family_internal.trim().is_empty() {
+                e.id.clone()
+            } else {
+                e.family_internal.clone()
+            }
+        })
+        .filter(|s| !s.trim().is_empty());
+
+    FontPlan {
+        text_family,
+        selected_raw: selected,
+        emoji_family: emoji_font(root).map(|e| {
+            if e.family_internal.trim().is_empty() {
+                e.id
+            } else {
+                e.family_internal
+            }
+        }),
+        fallback: fallback_chain(),
+    }
+}
+
 /// **自带字体注册表**（唯一权威：清单、下载、界面三处都读它）。
 ///
 /// 字段：`(id, 下载文件名, URL, sha256, 显示名, 内部族名提示, license, 许可 URL)`。
@@ -697,25 +1010,75 @@ pub fn family_for_at(root: &Path, id: &str) -> String {
 /// - **内部族名只是"提示"**（写进 `FONT.toml` 的 `family`）；真值以落盘后 `family_of` 读到的为准，
 ///   上游改字重/子集时族名可能变，硬信提示会静默对不上（P1-e 那条"字体对不上"的老路）。
 const BUILTIN_FONTS: &[BuiltinFont] = &[
+    // ⚠️ **中文正文那支：2026-10-02 由霞鹜文楷 Lite 换成 Noto Sans SC**（用户口径：
+    // "lxgw 有点不是很好看"）。选它的四条理由：
+    //
+    // ① **观感更中性**：霞鹜文楷是**手写楷体**风格，当正文字幕偏"文艺"；Noto Sans SC 是黑体，
+    //    字幕要的正是中性、可读。
+    // ② **体积更小**：10.05 MB（原 13.23 MB），exe 反而缩了 3 MB。
+    // ③ **本就在设计意图里**：`fallback_chain()` 的第二/三项早就有 `"Noto Sans SC"`，
+    //    而族名恰好就是 `Noto Sans SC`（实测 name 表 platform=3 enc=1）⇒ **栈不用改**，
+    //    装进库后"库里那支"与"栈里那项"天然对上（这正是当年 LXGW 对不上的老坑）。
+    // ④ **OFL-1.1**，与原来同规矩（`bundled/embedded/redistributed` 明确许可，见 §授权原文）；
+    //    字节同样**内嵌**，不联网。
+    //
+    // ⚠️ **不是 CC0**：CJK 领域基本没有 CC0 正文字体（CC0 不含 OFL 的 RFN 保护、也不要求
+    //    保留许可，中文项目普遍不愿用）。现实上限就是 OFL，别去找 CC0 了。
+    //
+    // ⚠️ 上游是 **Google Fonts 的 TTF 直链**（`fonts.gstatic.com`），不是 GitHub release：
+    //    notofonts/noto-cjk 的 release 是**整套**（`09_NotoSerifSC.zip` 65 MB 起、含多字重），
+    //    Google Fonts 给的是**单字重单文件**，这才是能内嵌的粒度。
+    // ⚠️ URL 带版本段（`v40`）：上游改版会换路径 ⇒ 直链可能 404。**sha256 是最终防线**，
+    //    校验不过就停下来（`install_builtin_font` 会拒），别把不确定的字节写进用户环境。
     BuiltinFont {
-        id: "LXGWWenKaiLite-Regular",
-        file: "LXGWWenKaiLite-Regular.ttf",
-        url: "https://github.com/lxgw/LxgwWenKai-Lite/releases/download/v1.522/LXGWWenKaiLite-Regular.ttf",
-        sha256: "140c99ba4e28e817cec49bf82a0c5fcdc4fe633fb9dfda16d0ee8d59a8545f15",
-        display_name: "霞鹜文楷 Lite",
-        family: "霞鹜文楷 轻便版",
+        id: "NotoSansSC-Regular",
+        file: "NotoSansSC-Regular.ttf",
+        url: "https://fonts.gstatic.com/s/notosanssc/v40/k3kCo84MPvpLmixcA63oeAL7Iqp5IZJF9bmaG9_FnYw.ttf",
+        sha256: "450625c8d46ab3df97b7904ded955ec2746d17ec76740cb1e91d1ba63a0f89af",
+        display_name: "Noto Sans SC",
+        // ⚠️ 内部族名就是 "Noto Sans SC"（实测 name 表），**与 fallback_chain 里的字面量一致**
+        // —— 这是它比 LXGW 省事的关键（LXGW 的族名是中文"霞鹜文楷 轻便版"，栈里写英文名，
+        // 两者永远匹配不上，当年专门写了 `authority_tail` 去绕）。
+        family: "Noto Sans SC",
         license: "OFL-1.1",
-        license_url: "https://github.com/lxgw/LxgwWenKai-Lite/raw/main/OFL.txt",
+        license_url: "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE",
+        bytes: include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf"),
+        license_bytes: include_bytes!("../assets/fonts/NotoSansSC-Regular.OFL"),
     },
+    // ⚠️ **emoji 字体必须是 CBDT、不能是 COLRv1**（2026-10-02，实测字节定的）。
+    //
+    // Takumi 的彩色字形解析**写死只问 COLRv0**（takumi-core-0.25.0/src/resources/glyph.rs:440-443
+    // 的 ColorGlyphFormat::ColrV0），三级顺序是「位图 strikes → COLRv0 → 普通 glyf 描边」。
+    // 上游 Noto Color Emoji v2.x 已迁到 COLRv1 —— 而 COLRv1 那张表 Takumi 不问、SVG-in-font 也没实现，
+    // 于是对一支 COLRv1-only 字体它一路落空到 glyf。旧那版（google/fonts 的 main 分支）
+    // 带 3.4 MB glyf ⇒ 封面上的 emoji 渲染成 **单色实心剪影**，不是彩色、也不是豆腐块，
+    // **看着就有东西所以没人会去查**（最坏的失败形态）。
+    //
+    // 钉死到 googlefonts/noto-emoji 的 **v2020-09-16-unicode13_1**（COLRv1 迁移前的最后一版）：
+    // 实测表结构 CBDT + CBLC、**无 COLR、无 sbix**，且**连 glyf 都没有** ⇒ 不存在退化成剪影这条路。
+    // 内部族名仍是 Noto Color Emoji（与旧那支相同）⇒ 字体匹配口径不变。
+    //
+    // ⚠️ **id 必须换新**：下载三入口都幂等（builtin_installed 为真就跳过），
+    // 复用 NotoColorEmoji 会让**已装过的机器永远不重下** —— 症状是我改了字体但用户那边没变。
+    // 旧 id 遗留的目录（COLRv1 那份）仍留在库里，用户可在字体库界面自行删除。
     BuiltinFont {
-        id: "NotoColorEmoji",
-        file: "NotoColorEmoji-Regular.ttf",
-        url: "https://github.com/google/fonts/raw/main/ofl/notocoloremoji/NotoColorEmoji-Regular.ttf",
-        sha256: "4d82a18d8d95f60ba883ce242bbadbf84a576e987745dd7ba38d71c67cff2d73",
+        id: "NotoColorEmoji-CBDT",
+        file: "NotoColorEmoji-CBDT.ttf",
+        url: "https://github.com/googlefonts/noto-emoji/raw/v2020-09-16-unicode13_1/fonts/NotoColorEmoji.ttf",
+        sha256: "2b106b88034043001f28b3ee8e58f62e867f0f0666ea072a4acf6cbd956ca160",
         display_name: "Noto Color Emoji",
         family: "Noto Color Emoji",
         license: "OFL-1.1",
-        license_url: "https://github.com/google/fonts/raw/main/ofl/notocoloremoji/OFL.txt",
+        // ⚠️ 许可 URL 必须指到**字体**那层，不是仓库那层：noto-emoji 仓库根是 **Apache-2.0**，
+        // 而 fonts/ 下才是 **SIL OFL-1.1**（我们用的就是它）。指错会让随附的 LICENSE.txt
+        // 变成 Apache 原文、与清单里写的 OFL-1.1 自相矛盾。
+        // 也**别用 main**：实测 main/fonts/LICENSE 早就 404 了（文件挪过位置），
+        // 而 GitHub 对 404 回的是 **HTML 错误页** —— 下载器不校验内容，会把那一坨 HTML
+        // 原样存成 LICENSE.txt（实测 268 KB 的 GitHub 页面）。所以钉到**我们那份字体的 tag**，
+        // 与 url 同源、永远能拿到对应的许可原文。
+        license_url: "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2020-09-16-unicode13_1/fonts/LICENSE",
+        bytes: include_bytes!("../assets/fonts/NotoColorEmoji-CBDT.ttf"),
+        license_bytes: include_bytes!("../assets/fonts/NotoColorEmoji-CBDT.OFL"),
     },
 ];
 
@@ -724,14 +1087,32 @@ const BUILTIN_FONTS: &[BuiltinFont] = &[
 pub struct BuiltinFont {
     pub id: &'static str,
     pub file: &'static str,
+    /// 上游地址。**只作留档/溯源用**（内嵌之后运行时不再下载），见 `bytes`。
     pub url: &'static str,
-    /// 下载后必须对得上（不符 = 上游换了内容，**停下来**，别把不确定的字节装进用户环境）
+    /// 字节的 sha256：`bytes`（内嵌）与旧下载路径**共用**这一份校验值。
+    /// 不符 = 上游换了内容，**停下来**，别把不确定的字节装进用户环境。
     pub sha256: &'static str,
     pub display_name: &'static str,
     /// 期望的内部族名（写进 `FONT.toml`；真值以落盘后读到的为准）
     pub family: &'static str,
     pub license: &'static str,
     pub license_url: &'static str,
+    /// **字体字节本身**（编译期内嵌，见 `assets/fonts/`）。
+    ///
+    /// ⚠️ 这是 2026-10-02 从"首次用时下载"改成"内嵌"的落点。两个理由：
+    /// ① **离线可用** —— 下载方案在没网/内网/慢速环境下，封面与字幕会用不了库内字体，
+    ///    而症状是"字体静默回落"，用户根本不知道少了什么；
+    /// ② **省掉一个莫名其妙的操作** —— 用户不该先"下载字体"才能选字体。
+    ///
+    /// 授权依据：两支都是 **SIL OFL-1.1**，OFL 正文明确写了
+    /// "The fonts ... can be bundled, embedded, redistributed and/or sold with any software"，
+    /// 所以随二进制分发是许可允许的（`LICENSE` 原文随字节一起内嵌）。
+    /// ⚠️ README 里"不含嵌入式用途"那句说的是**乐米波波体**（第三方字体），**不是这两支** ——
+    /// 别看到那句话就把这里的字节又拿掉。
+    pub bytes: &'static [u8],
+    /// 许可原文（OFL 全文），随字体一起落盘到 `LICENSE.txt`。
+    /// **OFL 要求随附**，所以它是内嵌内容的一部分，不是可选装饰。
+    pub license_bytes: &'static [u8],
 }
 
 /// 自带字体清单（界面/CLI 列"可以下载什么"的唯一来源）。
@@ -765,58 +1146,49 @@ pub fn builtin_status(root: &Path) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// 下载**全部还缺的**自带字体（已装好的跳过）。返回实际下载的 id 列表。
+/// **把还缺的自带字体装上**（已装好的跳过）。返回实际写入的 id 列表。
 ///
 /// ⚠️ 幂等：`builtin_installed` 为真就**不碰磁盘**（用户可能已经手动替换过那支字体）。
-/// ⚠️ 下载完**必须校验 sha256**：不符 ⇒ 删掉刚下的文件 + 报错（**绝不**把不确定的字节留下）。
-pub async fn download_builtin_fonts(root: &Path) -> anyhow::Result<Vec<String>> {
+/// ⚠️ "装"= 把**内嵌字节**写到 `<root>/<id>/`，**不再联网**（2026-10-02 从下载改成内嵌）。
+pub fn install_builtin_fonts(root: &Path) -> anyhow::Result<Vec<String>> {
     let mut done = Vec::new();
     for b in BUILTIN_FONTS {
         if builtin_installed(root, b) {
             continue;
         }
-        install_builtin_font(root, b).await?;
+        install_builtin_font(root, b)?;
         done.push(b.id.to_string());
     }
     Ok(done)
 }
 
-/// 下载并安装**一支**自带字体（写 `<root>/<id>/{font.ttf,FONT.toml,LICENSE.txt}`）。
+/// 装上**一支**自带字体（写 `<root>/<id>/{font.ttf,FONT.toml,LICENSE.txt}`）。
 ///
-/// ⚠️ 幂等由**调用方**决定：这个函数本身"你叫我装我就装"（会覆盖已存在的）。
-/// 想跳过已装好的用 [`builtin_installed`] 先判，或直接用 [`download_builtin_fonts`]。
-pub async fn download_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> {
-    install_builtin_font(root, b).await
-}
-
-async fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> {
+/// ⚠️ 幂等由**调用方**决定：这个函数"你叫我装我就装"（会覆盖已存在的）。
+/// 想跳过已装好的用 [`builtin_installed`] 先判，或直接用 [`install_builtin_fonts`]。
+pub fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
-    let dest_dir = builtin_dir(root, b);
-    std::fs::create_dir_all(&dest_dir)
-        .with_context(|| format!("建字体目录失败: {}", dest_dir.display()))?;
-    // 下载到目录内的 `.part`（与模型下载同一套：先 part 再改名，中断可续）
-    let part = dest_dir.join(format!("{}.part", b.file));
-
-    crate::download::fetch_url_to(b.url, &part)
-        .await
-        .with_context(|| format!("下载字体失败: {} ({})", b.id, b.url))?;
-
-    // 校验和：不符就删掉，别留一个"看着下载完了但内容不对"的文件
-    let bytes = std::fs::read(&part).with_context(|| format!("读下载文件失败: {}", part.display()))?;
-    let got = sha256_hex(&bytes);
+    // ⚠️ **内嵌字节也要校验**（别以为"编译进去的就一定对"）：它是构建期从上游取的，
+    // 而 `sha256` 是**钉在源码里**的那条独立事实 —— 两者对不上说明 `assets/fonts/` 里的
+    // 文件被谁换过（或替换时忘了更新常量）。这里当场停住，绝不把没核过的字节装进用户环境。
+    let got = sha256_hex(b.bytes);
     if !got.eq_ignore_ascii_case(b.sha256) {
-        let _ = std::fs::remove_file(&part);
         anyhow::bail!(
-            "字体校验和不符（{}）：期望 {}，实际 {} —— 上游内容可能已变，已删除下载文件",
+            "内嵌字体校验和不符（{}）：期望 {}，实际 {} —— assets/fonts/ 里那份与源码常量不一致",
             b.id, b.sha256, got
         );
     }
 
-    // 内部族名以**文件里读到的**为准（清单里的只是提示）
-    let family = family_of(&bytes).unwrap_or_else(|| b.family.to_string());
+    let dest_dir = builtin_dir(root, b);
+    std::fs::create_dir_all(&dest_dir)
+        .with_context(|| format!("建字体目录失败: {}", dest_dir.display()))?;
+
+    // 内部族名以**字节里读到的**为准（清单里的只是提示）
+    let family = family_of(b.bytes).unwrap_or_else(|| b.family.to_string());
     let dest = dest_dir.join("font.ttf");
-    std::fs::rename(&part, &dest).with_context(|| format!("改名失败: {}", dest.display()))?;
+    std::fs::write(&dest, b.bytes)
+        .with_context(|| format!("写字体失败: {}", dest.display()))?;
 
     write_meta(&dest_dir, &FontMeta {
         display_name: b.display_name.to_string(),
@@ -827,22 +1199,43 @@ async fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()
         builtin: true,
         // ⚠️ 这两个**必须写**（别留空）：`sha256` 是"盘上这支到底是不是清单里那支"的凭据
         // （用户手动替换过字体时，它就是唯一的证据），`added_at` 是"什么时候装进来的"。
-        // 以前这里漏了，落盘的 `FONT.toml` 里两个字段都是空串 —— 校验过的东西**没留下来**。
-        sha256: got.clone(),
+        sha256: got,
         added_at: chrono::Utc::now().to_rfc3339(),
         ..Default::default()
     })
     .with_context(|| format!("写 FONT.toml 失败: {}", dest_dir.display()))?;
 
-    // 许可原文：**OFL 要求随附**，所以与字体一起落盘
-    match crate::download::fetch_text_to(b.license_url, &dest_dir.join("LICENSE.txt")).await {
-        Ok(()) => {}
-        Err(e) => {
-            // 许可拿不到不算致命（字体本身合法且已校验），但要在日志里说清楚
-            tracing::warn!("自带字体的许可原文没下下来（{}）：{e}", b.id);
-        }
-    }
+    // 许可原文：**OFL 要求随附**，所以与字体一起落盘。
+    // ⚠️ 同样走内嵌字节：以前是 `fetch_text_to(license_url)`，而 GitHub 对 404 回的是
+    // **HTML 错误页**、下载器又不校验内容 —— 实测把 268 KB 的 GitHub 页面存成了 `LICENSE.txt`。
+    // 许可原文**不该依赖网络**（它必须与字节同在，否则这个包的授权状态说不清）。
+    let lic = dest_dir.join("LICENSE.txt");
+    std::fs::write(&lic, b.license_bytes)
+        .with_context(|| format!("写许可原文失败: {}", lic.display()))?;
+
     Ok(())
+}
+/// **首次运行时把自带字体一次装好**（幂等；已经装过就是空转）。
+///
+/// 这是 2026-10-02 内嵌化的**落地点**：调用方（`ensure_dir` 之后）不再需要用户做任何操作，
+/// 字体库一建出来就是"能选字"的状态。**失败只 warn、不返回 Err** —— 字体装不上不该拦住
+/// `vtrim server` 启动或一条 CLI 命令（没有它顶多是回落到系统字体栈，功能降级不是故障）。
+///
+/// ⚠️ 要 `ensure_dir()` 已经跑过（写路径 = 用户固定目录）。
+pub fn ensure_builtin_fonts() {
+    let root = match ensure_dir() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("字体库目录不可用，跳过自带字体安装：{e}");
+            return;
+        }
+    };
+    match install_builtin_fonts(&root) {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => tracing::info!("自带字体已就绪（本次安装 {} 支）：{}", ids.len(), ids.join(", ")),
+        // 只 warn：装不上不影响启动，用户仍可用系统字体栈 + 手动导入
+        Err(e) => tracing::warn!("自带字体安装失败（不影响启动）：{e}"),
+    }
 }
 
 /// 十六进制 sha256（字体校验和用；只此一处实现）。
@@ -859,19 +1252,45 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// 导入一支字体到库（目录布局 + 写 `FONT.toml`）。**失败原因要说清**，别静默塞进去。
+/// 导入一支字体到库（目录布局 + 写 `FONT.toml`）—— 从**服务器上的文件路径**。
+///
+/// ⚠️ 实际校验与落盘全在 [`import_font_bytes`]；这里只负责读文件再转调。
+/// 拖拽上传那条链路走的是 `import_font_bytes`（同一个库、同一套校验，只是字节来源不同）。
 ///
 /// ⚠️ 拒收 `.ttc`/`.otc`（字体集合）：**浏览器的 `@font-face` 不认集合**，
 /// 收进来就会出现"预览回退到系统字体、出片却用了它"——这正是"预览与实际对不上"的一个来源。
 /// 要收集合得先拆包，留后续。
 pub fn import_font(root: &Path, src: &Path, display_name: Option<&str>) -> anyhow::Result<FontEntry> {
     let file = src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    let bytes = std::fs::read(src)?;
+    import_font_bytes(root, &file, &bytes, display_name)
+}
+
+/// 导入一支字体到库 —— **字节版**（2026-10-02 加，服务拖拽上传）。
+///
+/// ⚠️ 与 [`import_font`]（从服务器上的路径拷）是**同一条管线**：后者现在只是"读文件 + 转调这里"。
+/// 别把校验/落盘逻辑写两份 —— 两份必然漂移，而这里漂移的后果是**坏字体进了库却没人拦**。
+///
+/// `file_name` 只当**文件名**用（它同时决定 id），所以要过 basename 与 `is_safe_id` 两道。
+pub fn import_font_bytes(
+    root: &Path,
+    file_name: &str,
+    bytes: &[u8],
+    display_name: Option<&str>,
+) -> anyhow::Result<FontEntry> {
+    // ⚠️ 只取 basename：`file_name` 可能来自查询串/请求体，`..\\..\\x.ttf` 不能决定落盘位置
+    let file = Path::new(file_name)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
     let ext = Path::new(&file).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if !matches!(ext.as_str(), "ttf" | "otf") {
         anyhow::bail!("只收 .ttf / .otf（.ttc / .otc 是字体集合，浏览器 @font-face 不认，请先拆包）");
     }
-    let bytes = std::fs::read(src)?;
-    let family = family_of(&bytes)
+    if bytes.is_empty() {
+        anyhow::bail!("文件是空的：{file}");
+    }
+    let family = family_of(bytes)
         .ok_or_else(|| anyhow::anyhow!("读不出字体内部族名（文件可能损坏或不是字体）"))?;
     let id = Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("").trim().to_string();
     if !is_safe_id(&id) {
@@ -879,7 +1298,7 @@ pub fn import_font(root: &Path, src: &Path, display_name: Option<&str>) -> anyho
     }
     let dest_dir = root.join(&id);
     std::fs::create_dir_all(&dest_dir)?;
-    std::fs::copy(src, dest_dir.join(&file))?;
+    std::fs::write(dest_dir.join(&file), bytes)?;
     let meta = FontMeta {
         display_name: display_name.map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
             .unwrap_or_else(|| family.clone()),
@@ -887,7 +1306,7 @@ pub fn import_font(root: &Path, src: &Path, display_name: Option<&str>) -> anyho
         license: String::new(),
         added_at: chrono::Utc::now().to_rfc3339(),
         // 导入时也记一份校验和：与自带字体那条路同口径，"盘上这支是什么"永远有据可查
-        sha256: sha256_hex(&bytes),
+        sha256: sha256_hex(bytes),
         ..Default::default()
     };
     write_meta(&dest_dir, &meta)?;
@@ -898,7 +1317,7 @@ pub fn import_font(root: &Path, src: &Path, display_name: Option<&str>) -> anyho
         bytes: bytes.len() as u64,
         display_name: meta.display_name,
         family_internal: meta.family,
-        // 刚拷进来的，就在盘上
+        // 刚写进来的，就在盘上
         installed: true,
         ..Default::default()
     })
@@ -925,6 +1344,13 @@ pub fn remove_font(root: &Path, id: &str) -> anyhow::Result<()> {
 }
 
 /// 设为默认字体（写进 `FONT.toml`；**目录布局专用** —— 老平铺文件没有元数据可写）。
+///
+/// ⚠️ **emoji 字体一律拒绝**（字体职责分离，2026-10-02）：emoji 是**独立的补充槽位**
+/// （`emoji_font()` 自动选、至多一支），不参与"正文默认位"的竞争。
+/// 放它进默认位的后果不是"emoji 当正文"那么简单 —— `preferred_fallback_family()` 会把它当
+/// 栈首，于是**整条字体栈的中文全部落空**（emoji 字体没有中文字形）。
+/// 界面（`FontLibrary.vue`）已经把「设为默认」按钮对 emoji 卡片隐藏了，这里是**第二道**
+/// —— 配置是文本文件，用户能手改 `FONT.toml`。
 pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
     let id = id.trim();
     if !is_safe_id(id) {
@@ -935,6 +1361,11 @@ pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
         anyhow::bail!("这支字体不在目录布局里（老布局没有元数据），先重新导入一次：{id}");
     }
     let mut meta = read_meta(&dir).unwrap_or_default();
+    // ⚠️ 判据用**元数据 + id 兜底**：老库/手写的 `FONT.toml` 可能没写 `emoji` 字段，
+    // 那时按 id 里含 "emoji" 判（与 `scan_all` 给未下载自带字体打标的口径同源）。
+    if meta.emoji || id.to_ascii_lowercase().contains("emoji") {
+        anyhow::bail!("emoji 字体自动补充，不参与默认（它只负责表情，不排正文）");
+    }
     let mut entries = scan_dirs(root);
     for e in entries.iter_mut() {
         if e.id.eq_ignore_ascii_case(id) {
@@ -1170,6 +1601,307 @@ mod tests_v2 {
         assert!(!read_meta(&root.join("a")).unwrap().is_default);
         assert!(read_meta(&root.join("b")).unwrap().is_default);
         assert!(set_default(&root, "nope").is_err());
+    }
+
+    // ===== 字体解析唯一入口（FontPlan）的钉子 =====
+    //
+    // ⚠️ 这一组是"字体职责分离"的核心判据（2026-10-02）。它们**不渲染**（纯函数、毫秒级），
+    // 所以能穷举分支；而"出没出彩色 emoji"那种要靠真渲染的验收在 C2/C3 那两步单独跑。
+    //
+    // 这一组的价值在于：往后每接一个消费点（预览 / 封面 / 成片），只要它经 `resolve_font_plan`
+    // 取字体，它的行为就被这几条钉住了 —— **不用每接一处就重新对一遍像素**。
+
+    /// 造一支"已装"的字体目录（带元数据）。
+    fn put_font(root: &Path, id: &str, family: &str, emoji: bool, is_default: bool) {
+        let d = root.join(id);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("font.ttf"), b"x").unwrap();
+        write_meta(
+            &d,
+            &FontMeta {
+                display_name: id.into(),
+                family: family.into(),
+                emoji,
+                is_default,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    /// ⚠️ **零回归的钉子**：空库时兜底链必须与老的 `SYSTEM_FONT_STACK` **逐字同族名同顺序**。
+    ///
+    /// 这是"存量工程零像素回归"的判据 —— 与 `render/server.rs::stack_head_tracks_installed_library_font`
+    /// 那条**互相印证**（那条钉的是 polish 侧拼出来的串，这条钉的是 core 侧那份数据）。
+    /// 改这条断言之前先想清楚：它会同时改掉所有存量工程的出片像素。
+    #[test]
+    fn empty_library_fallback_chain_matches_legacy_stack() {
+        let root = tmp("plan-empty");
+        std::fs::create_dir_all(&root).unwrap();
+        let plan = resolve_font_plan(&root, None);
+        assert_eq!(
+            plan.fallback,
+            vec!["Noto Sans SC", "Microsoft YaHei", "Noto Sans SC", "sans-serif"],
+            // ⚠️ 2026-10-02：首项由 LXGW WenKai 换成 Noto Sans SC（自带中文换了那支）。
+            // 这条**会改变存量工程的出片像素**（首项 = "没选字体时用哪支"）—— 但那正是本次换字体的
+            // 目的，属**有意变更**、不是回归。与 render/server.rs 的 SYSTEM_FONT_STACK 同步。
+            "空库兜底链必须与 SYSTEM_FONT_STACK 逐字一致（两份定义不许漂）"
+        );
+        assert!(plan.emoji_family.is_none(), "空库没有 emoji 槽位");
+        assert!(plan.text_family.is_none(), "没选 ⇒ 没有正文族名");
+        // id 不在库里 ⇒ 走兜底，且原文保留（老工程的 `font = "LXGW WenKai"` 行为不变）
+        let plan2 = resolve_font_plan(&root, Some("LXGW WenKai"));
+        assert!(plan2.text_family.is_none(), "库外 id 不产生正文族名");
+        assert_eq!(plan2.selected_raw, "LXGW WenKai", "原文保留（当系统族名用）");
+    }
+
+    /// **emoji 槽位**：库里装了 emoji 字体 ⇒ 独立字段有值，**且不影响正文族名**。
+    ///
+    /// 这是"职责分离"最直接的判据：emoji 走自己的槽位，正文还是正文。
+    #[test]
+    fn emoji_slot_is_separate_from_text_family() {
+        let root = tmp("plan-emoji");
+        std::fs::create_dir_all(&root).unwrap();
+        put_font(&root, "WenKai", "霞鹜文楷 轻便版", false, true);
+        put_font(&root, "Emoji", "Noto Color Emoji", true, false);
+
+        let plan = resolve_font_plan(&root, Some("WenKai"));
+        assert_eq!(plan.text_family.as_deref(), Some("霞鹜文楷 轻便版"), "正文 = 用户选那支");
+        assert_eq!(plan.emoji_family.as_deref(), Some("Noto Color Emoji"), "emoji 走独立槽位");
+        assert!(
+            !plan.fallback.iter().any(|f| f.contains("Emoji")),
+            "⚠️ emoji **不许**混进兜底链 —— 混进去就会撑破 polish 侧那条'四段'单测，             而且对底座(Dhampir)那条腿零效果（它没有逐字形回退）"
+        );
+    }
+
+    /// **只有 emoji、没有中文字体** ⇒ 正文必须为空（**不能**把 emoji 当正文）。
+    ///
+    /// 这条防的是"库里只有一支 emoji 字体，于是它被当成正文"——
+    /// 那会让**所有中文变成豆腐块**，而且不报错。
+    #[test]
+    fn emoji_only_library_never_becomes_text_font() {
+        let root = tmp("plan-emoji-only");
+        std::fs::create_dir_all(&root).unwrap();
+        put_font(&root, "Emoji", "Noto Color Emoji", true, false);
+
+        let plan = resolve_font_plan(&root, Some("Emoji"));
+        assert!(plan.text_family.is_none(), "⚠️ emoji 字体不能当正文");
+        // 即使用户**显式**选了它（手改配置），也不给正文族名
+        assert_eq!(plan.emoji_family.as_deref(), Some("Noto Color Emoji"), "但仍然进 emoji 槽位");
+    }
+
+    /// ⚠️ **手改 FONT.toml 把 emoji 设成 default** ⇒ 扫描时强制视为 false。
+    ///
+    /// 这是 A4 最关键的一处：`is_default` 有两个真消费者 ——
+    /// `preferred_fallback_family`（选字体栈**首项**）与 `cover.rs::cover_font_files_in`（选**注册序第一支**）。
+    /// 让 emoji 拿到默认位 ⇒ 整条栈的中文全部落空。所以**在数据出口这一层**就掐掉。
+    #[test]
+    fn emoji_font_cannot_hold_the_default_slot() {
+        let root = tmp("plan-emoji-default");
+        std::fs::create_dir_all(&root).unwrap();
+        put_font(&root, "Emoji", "Noto Color Emoji", true, true); // 手改成 default
+        put_font(&root, "WenKai", "霞鹜文楷 轻便版", false, false);
+
+        let scanned = scan_all(&root);
+        let emoji = scanned.iter().find(|e| e.id == "Emoji").unwrap();
+        assert!(emoji.emoji, "它确实是 emoji 字体");
+        assert!(!emoji.is_default, "⚠️ emoji 的 is_default 必须被强制为 false");
+        // 正文族名不受污染（它本来就不该被 emoji 影响）
+        let plan = resolve_font_plan(&root, None);
+        assert!(plan.text_family.is_none(), "没选 ⇒ 走兜底，不该冒出一个 emoji 正文族名");
+    }
+
+    /// **`import_font_bytes` 与 `import_font` 走的是同一条管线**（2026-10-02 加拖拽上传时）。
+    ///
+    /// 这条守的是「两份实现漂移」：拖拽走字节、从服务器导入走路径，若各写一套校验，
+    /// 迟早出现「拖进来的坏字体没被拦」。判据 = 同样非法/合法的输入，两条路的**结论相同**。
+    #[test]
+    fn import_font_bytes_shares_the_same_rules_as_import_font() {
+        // 用本模块既有的 tmp 助手（别再引 tempfile 依赖）
+        let owned = tmp("import-bytes");
+        let root = owned.as_path();
+        let src = root.join("gone.ttf");
+
+        // ① 拒收：非 ttf/otf，两条路都要拒（且理由一样）
+        let a = import_font(root, &src.with_extension("ttc"), None);
+        let b = import_font_bytes(root, "x.ttc", b"whatever", None);
+        assert!(a.is_err() && b.is_err(), "两条路都必须拒收 .ttc");
+
+        // ② 拒收：空文件（字节路独有 —— 路径路读一个空文件同样会栽在族名那步）
+        assert!(import_font_bytes(root, "empty.ttf", b"", None).is_err(), "空文件不能进库");
+
+        // ③ 拒收：读不出族名的垃圾字节（两条路同一个判据）
+        assert!(import_font_bytes(root, "junk.ttf", b"not a font at all", None).is_err());
+
+        // ④ `..\..\x.ttf` 不能决定落盘位置：文件名的目录部分必须被剥掉
+        let evil = import_font_bytes(root, "..\\..\\evil.ttf", b"not a font", None);
+        assert!(evil.is_err(), "越界路径不该成功");
+        assert!(!root.join("..").join("..").join("evil.ttf").exists());
+
+        // ⑤ 合法输入：真字体（拿内嵌那支）两条路都该成功，且落同一个布局
+        let bytes = &builtin_fonts()[0].bytes;
+        let e = import_font_bytes(root, "Dropped.ttf", bytes, Some("拖进来的")).unwrap();
+        assert_eq!(e.id, "Dropped");
+        assert!(root.join("Dropped").join("Dropped.ttf").is_file());
+        // 元数据也照写（显示名 / 校验和 / 族名都该在）
+        let meta = read_meta(&root.join("Dropped")).unwrap();
+        assert_eq!(meta.display_name, "拖进来的");
+        assert_eq!(meta.sha256, sha256_hex(bytes), "校验和必须与字节一致");
+        assert!(!meta.family.is_empty(), "族名必须读出来");
+    }
+
+    /// **自带那支 emoji 必须是渲染器真能出彩色的格式**（2026-10-02）。
+    ///
+    /// 这条守的是一个**静默**故障：如果哪天把资产换成 COLRv1 的 Noto Color Emoji
+    /// （上游 `main` 分支就是 COLRv1），封面的 emoji 会**整片消失** —— 不报错、
+    /// 界面还显示"已装"。实测控制实验：只装 COLRv1 时输出与"完全没装 emoji 字体"**逐字节相同**。
+    #[test]
+    fn builtin_emoji_is_a_renderable_color_format() {
+        for b in builtin_fonts() {
+            if !b.id.to_ascii_lowercase().contains("emoji") {
+                continue;
+            }
+            let s = color_glyph_support(b.bytes);
+            assert!(
+                color_supported(s),
+                "{} 的格式是 {}，渲染器出不了彩色（emoji 会整片消失）—— 换回 CBDT/COLRv0/sbix 那份",
+                b.id,
+                color_format_tag(s)
+            );
+            // 顺带钉住"就是 CBDT"：当前资产是刻意选的 CBDT 版，换格式要有人知道
+            assert_eq!(color_format_tag(s), "cbdt", "{} 的格式变了", b.id);
+        }
+    }
+
+    /// 格式判定要能真的把 COLRv1 与 SVG 挑出来（否则警告文案永远不触发）。
+    ///
+    /// 用**手搓的最小 sfnt**测：只要能摆出表目录，判定就该认。
+    #[test]
+    fn color_format_detection_distinguishes_the_dangerous_ones() {
+        fn fake_sfnt(tags: &[&[u8; 4]], colr_version: Option<u16>) -> Vec<u8> {
+            let n = tags.len() as u16;
+            // ⚠️ 目录区必须先撑出来（12 字节头 + 16×n 条记录）：只给 12 字节再写目录会越界
+            let dir_end = 12 + 16 * tags.len();
+            let mut out = vec![0u8; dir_end];
+            out[0..4].copy_from_slice(b"\x00\x01\x00\x00");
+            out[4..6].copy_from_slice(&n.to_be_bytes());
+            for (i, tag) in tags.iter().enumerate() {
+                let off = 12 + 16 * i;
+                out[off..off + 4].copy_from_slice(&tag[..]);
+                // 表偏移指向目录之后；COLR 的表体就是 version(2B)
+                // 表体统一放在目录区之后。COLR 的表体就是 version(2B)。
+                // ⚠️ 偏移必须用**追加前的实际长度**：Rust 的 extend 落在 `out.len()` 上，
+                // 不是 `dir_end + 2` —— 差 2 就会读到全 0（v0），COLRv1 的断言因此永不触发。
+                let table_off = if &tag[..] == b"COLR" {
+                    let o = out.len() as u32;
+                    out.extend_from_slice(&colr_version.unwrap_or(0).to_be_bytes());
+                    o
+                } else {
+                    dir_end as u32
+                };
+                out[off + 8..off + 12].copy_from_slice(&table_off.to_be_bytes());
+            }
+            out
+        }
+        assert!(matches!(
+            color_glyph_support(&fake_sfnt(&[b"CBDT", b"CBLC"], None)),
+            ColorGlyphSupport::Color(ColorGlyphFormatKind::Cbdt)
+        ));
+        assert_eq!(color_format_tag(color_glyph_support(&fake_sfnt(&[b"CBDT", b"CBLC"], None))), "cbdt");
+        assert_eq!(color_glyph_support(&fake_sfnt(&[b"sbix"], None)), ColorGlyphSupport::Color(ColorGlyphFormatKind::Sbix));
+        // COLR v0 可用；v1 **必须**被判成不可用（这是 Takumi 的真实行为）
+        assert_eq!(
+            color_glyph_support(&fake_sfnt(&[b"COLR", b"CPAL"], Some(0))),
+            ColorGlyphSupport::Color(ColorGlyphFormatKind::ColrV0)
+        );
+        assert_eq!(
+            color_glyph_support(&fake_sfnt(&[b"COLR", b"CPAL"], Some(1))),
+            ColorGlyphSupport::Unsupported(ColorGlyphFormatKind::ColrV1)
+        );
+        assert_eq!(color_format_tag(color_glyph_support(&fake_sfnt(&[b"COLR"], Some(1)))), "colrv1");
+        assert_eq!(color_glyph_support(&fake_sfnt(&[b"SVG "], None)), ColorGlyphSupport::Unsupported(ColorGlyphFormatKind::Svg));
+        // 纯文字字体：有 glyf、无彩色表 ⇒ none（**正常**，不是缺陷）
+        assert_eq!(color_glyph_support(&fake_sfnt(&[b"glyf"], None)), ColorGlyphSupport::None);
+        // 垃圾字节不许 panic
+        assert_eq!(color_glyph_support(b"not a font"), ColorGlyphSupport::None);
+        assert_eq!(color_glyph_support(&[]), ColorGlyphSupport::None);
+    }
+
+    /// **内嵌字体的字节必须与源码里钉的 sha256 对得上**（2026-10-02 内嵌化的守门测试）。
+    ///
+    /// 这条比「下载校验」更要紧：内嵌之后**校验发生在编译期之外** —— 没人会去核对
+    /// assets/fonts/ 里的 ttf 与 BUILTIN_FONTS 里的常量是否一致。替换字体文件时忘了同步常量
+    /// （或反过来），后果是**装到用户库里的字节和 FONT.toml 记的 sha256 不一样**，
+    /// 而那个 sha256 正是「盘上这支到底是不是清单里那支」的唯一凭据。
+    ///
+    /// install_builtin_font 会在运行时挡住这种不一致（当场 bail），这里让它在**跑测试时**就红。
+    #[test]
+    fn embedded_bytes_match_their_pinned_sha256() {
+        for b in builtin_fonts() {
+            assert!(!b.bytes.is_empty(), "{} 的内嵌字节是空的", b.id);
+            let got = sha256_hex(b.bytes);
+            assert_eq!(
+                got.to_lowercase(),
+                b.sha256.to_lowercase(),
+                "{} 的内嵌字节与清单里的 sha256 不一致（换了字体文件却没同步常量？）",
+                b.id
+            );
+            // 许可原文也要在（OFL 要求随附）—— 别让它悄悄变空
+            assert!(!b.license_bytes.is_empty(), "{} 的内嵌许可原文是空的", b.id);
+        }
+    }
+
+    /// 内嵌字体**真的能被解析出族名**（字节没坏、格式还是有效字体）。
+    ///
+    /// ⚠️ 这条同时守着「许可原文不能是 HTML 错误页」那类事故：
+    /// 当年就是拿 GitHub 的 404 HTML 页面当过 LICENSE.txt（下载器不校验内容）。
+    #[test]
+    fn embedded_bytes_are_parseable_fonts() {
+        for b in builtin_fonts() {
+            let fam = family_of(b.bytes);
+            assert!(fam.is_some(), "{} 的内嵌字节解不出族名（不是有效字体？）", b.id);
+        }
+    }
+
+    /// ⚠️ **库里有两支 emoji 字体时，必须选中自带那支**（2026-10-02 实测踩到的坑）。
+    ///
+    /// 现场：我们换了 emoji 字体的 id（旧 COLRv1 → 新 CBDT），但**老机器上旧那份还在库里**。
+    /// 只看 id 字典序的话：
+    ///
+    ///     "NotoColorEmoji" < "NotoColorEmoji-CBDT"  ⇒ 旧 COLRv1 被选中
+    ///
+    /// 而旧那支对 Takumi **等于不存在**（它只认 COLRv0）⇒ 封面 emoji **整片消失**，
+    /// 界面却显示"已装"。所以自带（我们验证过格式）必须优先。
+    #[test]
+    fn builtin_emoji_wins_over_a_stale_leftover() {
+        let root = tmp("plan-emoji-prio");
+        std::fs::create_dir_all(&root).unwrap();
+        // 旧遗留（id 字典序更小，会「赢」纯 id 排序）+ 自带那支（id 更长）
+        put_font(&root, "NotoColorEmoji", "Noto Color Emoji", true, false);
+        let b = builtin_fonts()
+            .iter()
+            .find(|b| b.id.to_lowercase().contains("emoji"))
+            .expect("清单里得有 emoji 那支");
+        put_font(&root, b.id, b.family, true, false);
+        assert!("NotoColorEmoji" < b.id, "前提：旧 id 字典序更小（否则这条测不到那个坑）");
+        let picked = emoji_font(&root).expect("应当选中一支");
+        assert_eq!(picked.id, b.id, "自带那支必须赢过旧遗留");
+    }
+
+    /// \`set_default\` 对 emoji 字体**直接拒绝**（界面的第二道防线）。
+    #[test]
+    fn set_default_rejects_emoji_font() {
+        let root = tmp("plan-set-default-emoji");
+        std::fs::create_dir_all(&root).unwrap();
+        put_font(&root, "Emoji", "Noto Color Emoji", true, false);
+        put_font(&root, "WenKai", "霞鹜文楷 轻便版", false, false);
+
+        let e = set_default(&root, "Emoji").unwrap_err();
+        assert!(e.to_string().contains("emoji"), "报错要说清是 emoji 不受理：{e}");
+        assert!(!read_meta(&root.join("Emoji")).unwrap().is_default);
+        // 正常字体照旧
+        set_default(&root, "WenKai").unwrap();
+        assert!(read_meta(&root.join("WenKai")).unwrap().is_default);
     }
 
     /// ⚠️ **字体库固定到用户目录的钉子**：老库（程序目录）在首次 `ensure_dir` 时整体
