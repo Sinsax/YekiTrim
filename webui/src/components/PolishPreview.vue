@@ -1001,15 +1001,36 @@ function scheduleDhampir() {
           try {
             // **帧号变了才去取**（取回来的是 PNG 字节，缓存住；同一帧反复用的是同一份）。
             if (idx !== st.bytesIdx) {
-              const res = await Promise.race([
-                  api('/api/polish/sticker-frame', {
-                method: 'POST',
-                label: '贴纸帧',
-                body: JSON.stringify({ dir: props.dir, asset: st.uri, frame: idx }),
-              }),
-                  new Promise((r) => setTimeout(() => r(null), 30))
-                ])
-                if (!res) continue   // **超时 ⇒ 这一帧不交该贴纸** ✓ 永不卡帧 ✓
+              // ⚠️ **同一个贴纸同一时刻只允许一个在飞**（2026-10-01 修性能问题）。
+              //
+              // 以前是每帧都 `Promise.race([api(…), 30ms])` —— 30ms 放弃但**不中止请求** ✗，
+              // 而下一帧（33ms 后）帧号已经变了 ⇒ 不是"同一个请求"（去重也拦不住）⇒ 服务端
+              // 冷解码一张 GIF 期间，**每帧都再发一个**：实测 200ms 内 30+ 个请求、
+              // 其中 4 个各 4.1 秒（= 同一张图被并发整段解码 4 次 ✗）。
+              //
+              // ⚠️ **冷解码的真实代价比那个 4.1s 还大一倍**（2026-10-01 实测
+              // `decode_sticker_frames_png`，`clip-04/assets/stickers/`，debug 构建）：
+              // `冒泡_2.gif` 77 帧 **8.8s** / `哭_1.gif` 66 帧 **6.5s** / `跳舞_1.gif` 66 帧 **6.8s**
+              // （解出来 15–20MB PNG 字节）。所以"每帧发一个"的后果是**同一张图被并发解 N 次**，
+              // 每次都把 CPU 占满 6–9 秒 —— 这也是"播放走到贴纸就卡死"的主因，不只是请求数多。
+              // 换素材（更大的 GIF）会让这几个数继续涨，别把 30ms 那个超时当成安全阀。
+              //
+              // 现在：这个贴纸**有在飞的就不发新的**（这一帧先不交它，语义与超时一致 ✓）；
+              // 落地后按自己的帧号采用，下一次需要新帧时再发。服务端解码一次之后，
+              // 单帧取回只要几毫秒 ⇒ 超时几乎不再触发。
+              let res = null
+              if (!st.pending) {
+                const p = api('/api/polish/sticker-frame', {
+                  method: 'POST',
+                  label: '贴纸帧',
+                  body: JSON.stringify({ dir: props.dir, asset: st.uri, frame: idx }),
+                })
+                  .catch(() => null)
+                  .finally(() => { st.pending = null })
+                st.pending = p
+                res = await Promise.race([p, new Promise((r) => setTimeout(() => r(null), 30))])
+              }
+              if (!res) continue   // **在飞/超时 ⇒ 这一帧不交该贴纸** ✓ 永不卡帧 ✓
               if (res.ok !== true || !res.png_base64) {
                 throw new Error('接口没给 png_base64' + (res && res.count ? '（共 ' + res.count + ' 帧）' : ''))
               }
