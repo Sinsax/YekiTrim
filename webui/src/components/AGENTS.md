@@ -2,16 +2,16 @@
 > 范围：`webui/src/components`/** ｜ 上游：`webui/src/views/*`（传 `pid`/`dir`/配置，接 `preview`/`done`/`changed`）｜ 验证：`npm --prefix webui run build`
 ## 职责
 
-精修页与设置页的全部子组件。壳 / 侧栏 / 路由 / 缓存与单飞纪律见 `webui/src/AGENTS.md`，页面文件纪律见
-`webui/src/views/AGENTS.md`，求值器与出片模板的同口径算法（覆盖层色档 / 字幕折行 / 贴纸锚点 / 手持摇摆 /
-衬底）见 `webui/src/polish/AGENTS.md` —— 本卡只写**组件级**规矩，不重复它们。
+精修页与设置页的全部子组件。壳/侧栏/路由/缓存纪律见 `webui/src/AGENTS.md`，页面纪律见
+`webui/src/views/AGENTS.md`，与出片模板的同口径算法见 `webui/src/polish/AGENTS.md`
+—— 本卡只写**组件级**规矩，不重复它们。
 
 ## 入口
 
 - `TimelineEditor.vue`（7 条泳道，`kind` = `seg|event|sub|mute`）：props `dir`(必填)/`pid`/`currentTime`/
-  `playing`/`reprocessBusy`/`propsTarget`(默认 `'#tl-props-host'`)；emits `seek`/`toggle`/`preview`/`done`/
-  `reprocess`/`retried`/`redo-segment`。**`preview` = 本地改动立刻镜像给页面**（不落盘、不重挂载）；
-  **`done` = 一次编辑真的做完了**，页面据此跑后处理。
+  `playing`/`reprocessBusy`/`propsTarget`(默认 `'#tl-props-host'`)；emits `seek`/`toggle`/`preview`/`saved`/`done`/
+  `reprocess`/`retried`/`redo-segment`。`saved` = **这批改动已落盘**（Dhampir 那条腿据此重载），
+  与 `preview`（本地镜像、**不落盘**）**别互相替代**；`done` 保证在它之后。
 - `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
   `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`/`fontFallback`；
   emits `time`/`playing`/`update:selectRect`/`update:point`。字体栈纪律见下节。
@@ -47,7 +47,7 @@
   `splice(i+1, 0, …)` 插在原块**后面**，**不能 `push` 到数组末尾** —— 追加会让落盘的 `clip.srt` /
   `data/subtitles.json` 乱序（去静音按相邻间隔曾判出 13 段/121s 的假静音、预览按时间二分取当前字幕）。
 - ⚠️ **别再改回"落盘后 1.2s 自动跑"**：你还在面板里给新建的贴纸填 keyword 时它就会插进来，
-  半成品被当成品处理（数量抽稀直接把它删掉）。**落盘 ≠ 编辑完成**：后处理只在 `emit('done')` 之后跑 ——
+  半成品被当成品处理（数量抽稀直接把它删掉）。**落盘 ≠ 编辑完成**：后处理只在 `done` 之后跑（而 `done` 本身等落盘成功）——
   控件 `change`（`input` 每敲一键**不算**）/取消选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；**三处吸附与 `cap_events` 数量抽稀全部跳过**。
 - **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中状态与编辑逻辑留在组件里）。
@@ -131,8 +131,8 @@
   特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
   `bg_zoom` 0.5~3。
-- ⚠️ **设计器"素材左右黑边"**：`app.css` 的全局 `video{background:#000;border-radius:var(--r-sm)}` 穿透
-  `.stage-video`（类选择器只覆盖自己写过的属性）→ `background:transparent; border-radius:0` 必需（②）。
+- ⚠️ **取帧播放器在舞台外**（`.scrub-row` 可见监视器；隐身播放器=拖进度条盲选，2026-10 用户报过）：
+  舞台内帧源只有 `_cover_frame.jpg` 一份；监视器显式给尺寸清掉全局 `video{}` 口径（钉子 ②）。
 - **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器镜像**；
   `sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出错误条 + 「重试」。
 ### 运镜（camera）

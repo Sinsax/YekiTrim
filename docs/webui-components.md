@@ -337,6 +337,16 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
   `cover.image` 也**不要**在导入时清空（它是关键帧的来源之一）。
 - ⚠️ **出片不再删 `_cover_frame.jpg`**（`cmd_cover` 末尾那句 `remove_file` 已删）：它就是关键帧层的图源，
   删了等于①用户导出的那一帧白导、②下次出片又按 `frame_pos` 重新截、同一份封面每次换脸。
+- ⚠️ **帧层（2026-10 修）**：设计器里那一层显示的就是 **`_cover_frame.jpg` 本身**（`<img>`，与
+  `cover.html` 的 `#frame > img` 逐字同构）；取帧/播放的 `<video>` 在**舞台外**（`.scrub-row` 的可见小监视器，
+  进度条旁边 —— 隐身播放器让拖进度条成了盲选，用户报过「没法播视频选关键帧」）。
+  以前帧层直接放实时 `<video>`，而出片读 `_cover_frame.jpg`（`cover.rs` 按 `[cover] frame_pos` 截，
+  **文件已存在时直接用、不再重截**）⇒ 打开设计器视频恒在第 0 秒、成片却是 `frame_pos` 那帧，
+  **两边都不报错**。同工程实测（8s 片、`frame_pos=0.4`）：帧层若按旧行为取 0 秒与成片差 **11.09/255**，
+  改成同一帧后 **0.00/255**。配套三条：① 打开时 `framePos ← frame_pos` 并 `seekToFramePos()` 对上进度条；
+  ② 「导出关键帧」把时间点**写回 `frame_pos`**（`at / duration`，图与点成对）；
+  ③ 「生成封面」**无条件**刷新关键帧 —— 原判据 `if (time > 0)` 会让「没拖过进度条」的用户选的那一帧
+  永远进不了产物（0 秒是合法取值，与「音量 0 是合法值」同一条教训）。
 
 ### 3.2 新建图层：类型选择器
 
@@ -637,6 +647,12 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
   ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust `UPLOAD_MAX_BYTES`
   是同一个数（改一处要改两处），前端必须先挡。**`preview` 只存 `{pack, name}`**，文件对象由 `previewFile`
   从 `detail` 现取（别存快照）。
+- `FontLibrary`：首页字体库区块（**仅 admin**；2026-10-02 起管理就内嵌在这一块，**没有单独的 `#/fonts` 页**）。
+  导入（`ServerDirPicker mode="file" :exts="['ttf','otf']"`，**路径由服务端拼**，与「表情包 → 添加」同一份）/
+  下载自带字体（幂等，清单在服务端）/ 删除（自带的那支按钮置灰 + 服务端 403）/ 设为默认（`is_default`
+  与字幕/封面下拉、状态行三处共用）全在这一块；「测试文本」实时喂所有卡片试渲染（空 = 各卡用「永 Aa 123」）。
+  预览用**现场注册的出片同源字节**（`/api/polish/font?name=<id>` 建 `FontFace`），浏览器认不出的格式
+  卡片上挂「预览不可用」，**不许静默回退到系统字体假装换好了** —— 详见 `docs/plan/font-library.md` §12/§21。
 - `polish/StickerPicker`：贴纸两级列表（keyword 一级 → 缩略图二级）；选中写 `keyword/sticker_tag/name/source`，
   **`name` 必须是去扩展名的文件名**（后处理与出片按 stem 匹配）；数据来自**只读**接口
   `GET /api/polish/sticker-library`（写操作只在 admin 侧，别把库管理接口开到 `/polish/*`）。

@@ -73,14 +73,47 @@ function decl(block, prop) {
 
 // ── 判据（每条都写成函数：变异自证段要对同一批判据复跑） ──────────────────────
 const appVideoBgIsBlack = (css) => /^#000(000)?$/i.test(decl(rule(css, 'video'), 'background') || '')
-/** 帧层不能有底色：`transparent`/`none` 才算清掉全局的 `video{background:#000}` */
-const frameVideoBgIsClear = (css) => /^(transparent|none)$/i.test(decl(rule(css, '.stage-video'), 'background') || '')
-const frameVideoRadiusIsZero = (css) => num(decl(rule(css, '.stage-video'), 'border-radius')) === 0
+/** 帧层**显示的那张图**（`_cover_frame.jpg`，与出片模板 `#frame img` 同源）不能有底色。
+ *  2026-10 起帧层从 `<video>` 换成 `<img>` —— `img` 不是全局 `video{}` 规则的目标，所以这里
+ *  钉的是「帧层仍然 contain 且铺满」；取帧的 video 元素在舞台外（.scrub-row 监视器，见下）。 */
+const frameImgIsContained = (css) => (decl(rule(css, '.stage-frame-img'), 'object-fit') || '') === 'contain'
+const frameImgFillsStage = (css) => {
+  const b = rule(css, '.stage-frame-img')
+  return /width\s*:\s*100%/.test(b || '') && /height\s*:\s*100%/.test(b || '')
+}
+/** 取帧播放器（2026-10 起 = 舞台**外面** .scrub-row 的可见小监视器；用户报「没法播视频选关键帧」，
+ *  隐身播放器让拖进度条成了盲选）：① `<video>` 必须还在（删了取帧/时长就全失灵）；
+ *  ② 它必须在 .scrub-row 里、**舞台（.stage）内不许再出现任何 <video>** —— 舞台内的帧源
+ *  只有 `_cover_frame.jpg` 一份（出片只有一个 `#frame img`，两帧图源就是那次不一致的成因）；
+ *  ③ 监视器是声明了尺寸的真盒子（不是隐身的 1px），显式清掉全局 video 规则的
+ *  `max-height:170px`/`margin-top`「卡片缩略图」口径。 */
+const designerHasVideoRef = (src) => /<video ref="videoRef"/.test(src)
+const stageHasNoVideo = (src) => {
+  const clean = src.replace(/<!--[\s\S]*?-->/g, '') // 注释里的字面量不算（讲历史会写到 <video>）
+  const m = /class="stage"[^>]*>[\s\S]*?class="scrub-row/.exec(clean)
+  return !!m && !/<video/.test(m[0])
+}
+const scrubVideoIsRealBox = (css) => {
+  const b = rule(css, '.scrub-video')
+  return !!b && /aspect-ratio\s*:\s*16\/9/.test(b) && /object-fit\s*:\s*contain/.test(b)
+    && /margin\s*:\s*0/.test(b) && !/opacity\s*:\s*0/.test(b)
+}
+/** ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
+ *  以前这里放的是实时 `<video>`（打开时恒在第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
+ *  ⇒「设计器里是这一帧、成片里是另一帧」，两边都不报错，只能比对产物才发现。 */
+const frameLayerIsImg = (src) =>
+  /class="stage-media"[^>]*>[\s\S]{0,300}?<img[^>]*class="stage-frame-img"/.test(src)
+  && !/class="stage-media"[^>]*>[\s\S]{0,300}?<video/.test(src)
+/** 「生成封面」必须**无条件**按当前进度刷新关键帧：0 秒是合法取值，不能拿 `time > 0` 当门控
+ *  （那会让"没拖过进度条"的用户选的那一帧永远进不了产物）。 */
+const coverFrameIsUnconditional = (src) =>
+  !/> 0\)\s*\{\s*\n\s*await coverFrame\(props\.pid, props\.dir, time\.value\)/.test(src)
+  && /const frameAt = Number\(time\.value\) \|\| 0[\s\S]{0,200}?await coverFrame\(props\.pid, props\.dir, frameAt\)/.test(src)
 const mediaWrapHasNoBg = (css) => {
   const v = decl(rule(css, '.stage-media'), 'background')
   return v === null || /^(transparent|none)$/i.test(v)
 }
-const frameIsContained = (css) => (decl(rule(css, '.stage-video'), 'object-fit') || '') === 'contain'
+const frameIsContained = (css) => (decl(rule(css, '.stage-frame-img'), 'object-fit') || '') === 'contain'
 const tplFrameIsContained = (html) => {
   const b = rule(html, '#frame img')
   return (decl(b, 'object-fit') || '') === 'contain' && /width:100%/.test(b || '') && /height:100%/.test(b || '')
@@ -125,12 +158,32 @@ check('app.css 的 `video {}` 带 background:#000', appVideoBgIsBlack(appCss), t
   '全局黑底规则没了 → 可以删掉 .stage-video 的 background:transparent，并同步本脚本与 AGENTS.md')
 
 // ── ② 设计器帧层：不许有黑底 / 圆角（回归钉子） ─────────────────────────────
-console.log('\n② 设计器帧层不许刷底色（竖屏素材黑边的根因）')
-check('.stage-video background 是 transparent', frameVideoBgIsClear(designer), true,
-  '漏了这条 → contain 的左右留白被元素自身背景填成纯黑，还盖住 .stage-bg 模糊层')
-check('.stage-video border-radius 被清成 0', frameVideoRadiusIsZero(designer), true,
-  '全局 video 的 --r-sm(10px) 也漏进来了：现在被 .stage 的 14px 盖住看不出，但别留这个口子')
+console.log('\n② 设计器帧层与出片同构（帧层 = `_cover_frame.jpg` 的 <img>，取帧监视器在舞台外）')
+check('帧层 img 保持原比例（object-fit:contain，与 #frame img 同规则）', frameImgIsContained(designer), true,
+  '竖屏素材会被裁掉 —— 那是用户明确否掉的（要求完整显示、左右留白露出背景层）')
+check('帧层 img 铺满舞台（width/height 100%）', frameImgFillsStage(designer), true,
+  '不铺满 → 帧层缩在某一角，与出片 #frame img 的 100%/100% 不同口径')
+check('取帧播放器还在（<video ref="videoRef">）', designerHasVideoRef(designer), true,
+  '删掉它 → loadedmetadata 不触发、duration 恒 0，进度条与 frame_pos 反推全部失灵')
+check('取帧播放器在舞台外（.stage 内没有任何 <video>，帧源唯一）', stageHasNoVideo(designer), true,
+  '舞台内出现第二个帧源 = 设计器与成片看到两帧（2026-10 那次不一致的成因）')
+check('监视器是可见的真盒子（16:9 + contain + 清掉缩略图口径，不隐身）', scrubVideoIsRealBox(designer), true,
+  '隐身/1px 的播放器 = 拖进度条盲选（用户报的「没法播视频选关键帧」）')
 check('.stage-media 容器没有底色', mediaWrapHasNoBg(designer), true)
+// ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
+// 以前这里放的是实时 `<video>`（打开时恒为第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
+// ⇒「设计器里是这一帧、成片里是另一帧」，两边都不报错，只能比对产物才发现。
+check('帧层（.stage-media）里放的是 img，不是 video', frameLayerIsImg(designer), true,
+  '帧层用 <video> = 设计器与出片两帧图源（打开时视频恒在第 0 秒，成片却是 frame_pos 那帧）')
+check('帧层的 img 指向 `_cover_frame.jpg`（与出片同一个文件）',
+  /frameImageSrc\s*=\s*computed[\s\S]{0,400}?'_cover_frame\.jpg'/.test(designer), true,
+  '换成别的图源 → 两边又不是同一张图了')
+check('打开设计器会按 frame_pos × 时长 seek（不再是恒 0 秒）',
+  /function seekToFramePos\(\)[\s\S]{0,300}?framePos\.value \* duration\.value/.test(designer)
+  && /framePos\.value = Math\.min\(1, Math\.max\(0, Number\(cfg\?\.cover\?\.frame_pos/.test(designer), true,
+  '反推不出 frame_pos → 打开时视频停在 0 秒，与出片截的那一帧不同')
+check('「生成封面」不再用 `time > 0` 当门控（0 秒是合法取值）', coverFrameIsUnconditional(designer), true,
+  '留着这个门控 → 用户没拖过进度条时，他选的那一帧永远进不了产物')
 check('图层序：默认栈里 bg 在 frame 之前（z-index 由栈给）', defaultStackHasBgUnderFrame(designer), true,
   '把默认序改成 frame 在前 → 帧层会被背景层盖住')
 check('内容层的 z-index 不再写死在 CSS 里（只允许行内/栈给）', contentZIndexesGone(designer), true,
@@ -166,15 +219,17 @@ check('设计器没把两个文件弄混（blur→关键帧、image→背景图�
 
 // ── ⑤ 自证有效：把源码改回修复前，上面那批判据必须翻面 ────────────────────────
 console.log('\n⑤ 自证有效：变异后上面的断言必须失败（否则本脚本是空转的）')
-check('[变异] .stage-video 不声明 background（= 修复前）→ 判据翻面',
-  frameVideoBgIsClear(designer.replace(/;\r?\n\s*background:transparent; border-radius:0;/, ';')), false)
-check('[变异] .stage-video 写成 background:#000 → 判据翻面',
-  frameVideoBgIsClear(designer.replace('background:transparent; border-radius:0;', 'background:#000;')), false)
-check('[变异] 去掉 border-radius:0 → 判据翻面',
-  frameVideoRadiusIsZero(designer.replace('background:transparent; border-radius:0;', 'background:transparent;')), false)
+check('[变异] 监视器删掉（取帧播放器没了）→ 判据翻面',
+  designerHasVideoRef(designer.replace('<video ref="videoRef"', '<video data-x="videoRef"')) === false, true)
+check('[变异] 监视器搬回舞台内 → 判据翻面',
+  stageHasNoVideo(designer.replace('<div v-if="showGuide169"', '<video class="x"></video><div v-if="showGuide169"')) === false, true)
+check('[变异] 监视器改回隐身（opacity:0）→ 判据翻面',
+  scrubVideoIsRealBox(designer.replace('object-fit:contain; background:#000', 'object-fit:contain; opacity:0; background:#000')) === false, true)
 check('[变异] 帧层 contain → cover（两份同时改）→ 判据翻面',
-  frameIsContained(designer.replace('object-fit:contain; display:block;', 'object-fit:cover; display:block;')) === false
+  frameIsContained(designer.replace('.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }', '.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }')) === false
   && tplFrameIsContained(coverHtml.replace('object-fit:contain; display:block;', 'object-fit:cover; display:block;')) === false, true)
+check('[变异] 帧层放回 <video>（= 修复前的根因）→ 判据翻面',
+  frameLayerIsImg(designer.replace('</div>\n          <!-- 每个特效', '</div>\n          <video class="x"></video>\n          <!-- 每个特效')) === false, true)
 check('[变异] 背景层 cover → contain → 判据翻面',
   tplBgImgIsCovered(coverHtml.replace('display:block; width:100%; height:100%; object-fit:cover;', 'display:block; width:100%; height:100%; object-fit:contain;')), false)
 // 只改一边的数字同源：`rsNum` 吃的是被替换过的源码文本，必须立刻读到新值（否则这项是空转的）
