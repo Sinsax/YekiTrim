@@ -1746,6 +1746,179 @@ mod tests {
     use crate::api::test_support::*;
     use axum::body::Body;
 
+    /// 贴纸预热接口的**路径面**：`..` / 绝对 / 盘符 / 反斜杠 / **根相对**必须被挡掉。
+    ///
+    /// 根相对那两条（`/etc/passwd`、`\windows\x`）是**这条单测逼出来的加固**：
+    /// 原判据只看 `Path::is_absolute()`，而它在 Windows 上对 `/etc/passwd` 返回 **false**，
+    /// 且 `Path::join` 对"有根无前缀"的路径会**替换基准**（实测 `C:\proj` + `/etc/passwd`
+    /// → `C:/etc/passwd`，已经出了工程）。判据已换成与平台无关的逐字符判定。
+    #[test]
+    fn 贴纸预热把越界路径全挡掉() {
+        let base = std::path::Path::new(r"C:\proj");
+        let out = safe_sticker_assets(
+            vec![
+                "assets/stickers/问号.gif".into(),  // 正常：工程内相对路径
+                "".into(),                            // 空
+                "../secret.gif".into(),               // 上跳
+                r"..\secret.gif".into(),             // 反斜杠 + 上跳
+                "C:/windows/x.gif".into(),           // 盘符
+                "/etc/passwd".into(),                 // 根相对（Windows 上 is_absolute()==false）
+                r"\windows\x.gif".into(),            // 根相对（反斜杠）
+                ".hidden.gif".into(),                 // 隐藏文件
+                "assets/../../escape.gif".into(),     // 夹在中间的 ..
+            ],
+            base,
+        );
+        assert_eq!(out.len(), 1, "只有第一个该活下来：{out:?}");
+        assert_eq!(out[0], base.join("assets/stickers/问号.gif"));
+    }
+
+    /// 同一句判据在 `sticker-frame`（单值）与 `sticker-prewarm`（数组）上必须一致 ——
+    /// 各写一份就是"改一边漏另一边"，`/etc/passwd` 那条洞就是这么留下来的。
+    #[test]
+    fn 两个贴纸接口共用同一条路径判据() {
+        for bad in ["", "/etc/passwd", r"\windows\x", "C:/x.gif", "../x.gif", ".x"] {
+            assert!(
+                !is_safe_project_relative(bad),
+                "`{bad}` 本该被判为越界"
+            );
+            assert!(
+                safe_sticker_assets(vec![bad.into()], std::path::Path::new("/p")).is_empty(),
+                "`{bad}` 本该被数组版判据挡掉"
+            );
+        }
+        assert!(is_safe_project_relative("assets/stickers/问号.gif"));
+    }
+
+    /// 读 `/polish/sticker-frame` 的响应体：base64 的 PNG 一帧约 **390 KB**，
+    /// 而 `test_support::body_json` 的 256 KB 上限装不下（`LengthLimitError`）——
+    /// 这里按 8 MB 读，只让预热这一条测试用。
+    async fn sticker_frame_json(res: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 8 * 1024 * 1024)
+            .await
+            .expect("贴纸帧响应体读不出来");
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// **预热真的省时间**：拿一张真 GIF 走完整条链，对比"直接要第 0 帧"与
+    /// "先预热、再要第 0 帧"。判据是**预热之后的取帧明显更快**（同一进程内的服务端缓存）。
+    ///
+    /// 为什么不 Mock 解码：这条要证的正是"冷解码 3~9 秒"这个用户可见症状，
+    /// 拿假 GIF 量不出那个数。样本是 `assets/` 里的真贴纸。
+    #[tokio::test]
+    async fn 贴纸预热让随后的取帧快得多() {
+        // 找一张真的贴纸 GIF（贴纸库或某个真工程的产物）。
+        let gif = [
+            vtrim_core::path::sticker_dir(),
+            std::path::PathBuf::from(r"E:\media\.vtrim-cover-e2e\clip14\proj\assets\stickers"),
+        ]
+        .into_iter()
+        .map(|d| d.join("思考(认真地).gif"))
+        .find(|p| p.exists());
+        let Some(gif) = gif else {
+            eprintln!("跳过：本机没有可用的贴纸 GIF 样本");
+            return;
+        };
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/prewarm-timing");
+        let dir = clip.join("assets/stickers");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(clip.join("polish.toml"), vtrim_polish::project::ProjectFile::example().to_toml_commented().unwrap())
+            .unwrap();
+        let rel = "assets/stickers/思考(认真地).gif";
+        std::fs::copy(&gif, dir.join("思考(认真地).gif")).unwrap();
+        let d = clip.to_string_lossy().to_string();
+
+        // ① **冷**：直接要第 0 帧（此时进程内缓存必没有它）。
+        let req = |uri: &str, body: serde_json::Value| {
+            let (t, uri, body) = (&t, uri.to_string(), body.to_string());
+            async move {
+                t.call(
+                    t.req("POST", &uri)
+                        .header(axum::http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+            }
+        };
+        let t0 = std::time::Instant::now();
+        let cold = req("/polish/sticker-frame", serde_json::json!({ "dir": d, "asset": rel, "frame": 0 }))
+            .await;
+        let cold_ms = t0.elapsed().as_millis();
+        assert_eq!(cold.status(), StatusCode::OK, "冷取帧应当成功");
+        let cold_v = sticker_frame_json(cold).await;
+        assert!(cold_v["png_base64"].as_str().is_some_and(|s| !s.is_empty()));
+
+        // ② 换一张还没进缓存的（同一张 GIF 复制一份改内容 → key 变 ⇒ 一定走解码）。
+        //    先预热它，再立刻取帧 —— 后者命中的正是预热放进去的那份。
+        let hot_name = "assets/stickers/hot.gif";
+        std::fs::copy(&gif, clip.join(hot_name)).unwrap();
+        let mut bytes = std::fs::read(&gif).unwrap();
+        bytes.extend_from_slice(b"prewarm-probe");      // 改大小 ⇒ 缓存 key 变，必然重新解
+        std::fs::write(clip.join(hot_name), &bytes).unwrap();
+
+        let t1 = std::time::Instant::now();
+        let pre = req(
+            "/polish/sticker-prewarm",
+            serde_json::json!({ "dir": d, "assets": [hot_name] }),
+        )
+        .await;
+        let pre_ms = t1.elapsed().as_millis();
+        assert_eq!(pre.status(), StatusCode::OK);
+        assert_eq!(body_json(pre).await["decoded"].as_u64(), Some(1));
+
+        let t2 = std::time::Instant::now();
+        let warm = req("/polish/sticker-frame", serde_json::json!({ "dir": d, "asset": hot_name, "frame": 0 }))
+            .await;
+        let warm_ms = t2.elapsed().as_millis();
+        assert_eq!(warm.status(), StatusCode::OK, "预热后取帧应当成功");
+        let warm_v = sticker_frame_json(warm).await;
+        assert!(
+            warm_v["png_base64"].as_str().is_some_and(|s| !s.is_empty()),
+            "预热之后仍应拿到同一张 PNG"
+        );
+
+        eprintln!("贴纸取帧：冷 {cold_ms}ms → 预热 {pre_ms}ms → 预热后取帧 {warm_ms}ms");
+        // 预热本身就是那次冷解码，所以它取帧那一下必须快得多。
+        assert!(
+            warm_ms * 4 < cold_ms.max(1),
+            "预热后应比冷解码快一个量级：冷 {cold_ms}ms vs 预热后 {warm_ms}ms"
+        );
+    }
+
+    /// 贴纸预热接口：**不存在的贴纸不让整个请求失败**（它是预热，不是业务操作）。
+    ///
+    /// 回 200 + `decoded: 0`，前端才好 fire-and-forget。
+    #[tokio::test]
+    async fn 贴纸预热对不存在的文件也回成功() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/prewarm-missing");
+        std::fs::create_dir_all(&clip).unwrap();
+        let cfg = vtrim_polish::project::ProjectFile::example();
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+        let body = serde_json::json!({
+            "dir": clip.to_string_lossy(),
+            "assets": ["assets/stickers/不存在.gif", "../../etc/passwd"],
+        })
+        .to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/sticker-prewarm")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        // 越界那条被挡掉之后只剩一个不存在的文件，但**整体仍应成功**。
+        assert_eq!(res.status(), StatusCode::OK, "预热是尽力而为，不该把请求判失败");
+        let v = body_json(res).await;
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["decoded"].as_u64(), Some(0));
+        assert_eq!(v["failed"].as_u64(), Some(1), "只有那一个文件被真的尝试过：{v}");
+    }
+
     /// 底座就绪位端点（M3）：**必须 200**，且回包里有 `ready` 布尔与 `problems` 数组。
     ///
     /// 这条守的是"渲染前可见"那条链路的**接口面**：前端渲染弹窗一打开就调它，
@@ -2705,14 +2878,9 @@ pub(super) async fn polish_sticker_frame(
         .to_string();
     let frame = body.get("frame").and_then(|v| v.as_u64()).unwrap_or(0);
     let path = validated_project_dir(dir)?;
-    // 越界防护：asset 必须是**工程内相对路径**，`..` / 绝对路径 / 盘符 / 反斜杠全挡掉
-    // —— 与 `polish_sticker_file`、`polish_dhampir_wasm` 同一条纪律。
-    if asset.is_empty()
-        || std::path::Path::new(&asset).is_absolute()
-        || asset.contains("..")
-        || asset.contains(':')
-        || asset.contains('\\')
-    {
+    // 越界防护：asset 必须是**工程内相对路径** —— 判据在 `is_safe_project_relative`
+    // （与 `polish_sticker_prewarm` 共用同一份，不许各写一遍）。
+    if !is_safe_project_relative(&asset) {
         return Err(err(StatusCode::BAD_REQUEST, "asset 必须是工程内的相对路径"));
     }
     let file = path.join(&asset);
@@ -2751,5 +2919,107 @@ pub(super) async fn polish_sticker_frame(
         "count": count,
         "frame": frame,
         "png_base64": b64,
+    })))
+}
+
+/// 单个"工程内相对路径"是否合格。
+///
+/// # 为什么不能只用 `Path::is_absolute()`
+///
+/// 那一条在 **Windows 上是漏的**：`Path::new("/etc/passwd").is_absolute()` 返回 **false**
+/// （无盘符/无前缀），于是 `/etc/passwd` 能穿过判据，而 `Path::join` 对"有根无前缀"的路径
+/// **会替换掉基准**（实测 `Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`
+/// —— 已经跑到工程外去了）。反斜杠同理（`\windows\x` → `C:\windows\x`）。
+///
+/// 这里改成**显式逐字符判**：空 / 绝对 / 根相对（`/` `\` 开头）/ 盘符（`:`）/ `..` / 反斜杠
+/// 全挡。它与平台无关，两个贴纸 handler 共用一份，**不许各写一遍** ——
+/// 已有的 `sticker-frame` 与新的 `sticker-prewarm` 当年就是两份，改一边漏另一边。
+fn is_safe_project_relative(p: &str) -> bool {
+    !p.is_empty()
+        && !std::path::Path::new(p).is_absolute()
+        && !p.starts_with('/')
+        && !p.starts_with('\\')
+        && !p.starts_with('.')   // `../x` 与隐藏目录都不该从请求里进来
+        && !p.contains("..")
+        && !p.contains(':')
+        && !p.contains('\\')
+}
+
+/// 把前端交上来的贴纸路径数组过滤成**工程内的相对路径**（判据见 `is_safe_project_relative`）。
+///
+/// 写成函数而不是内联闭包，是为了让"越界值被挡掉"有单测钉住 —— 内联在 handler 里的 filter
+/// 没有单测能碰它（这正是 `/etc/passwd` 那条洞一直没被发现的原因）。
+fn safe_sticker_assets(assets: Vec<String>, base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    assets
+        .into_iter()
+        .filter(|a| is_safe_project_relative(a))
+        .map(|a| base.join(a))
+        .collect()
+}
+
+/// `POST /polish/sticker-prewarm` —— 把若干贴纸的帧表**先解码进内存缓存**，不返回任何帧。
+///
+/// # 为什么需要它
+///
+/// `/polish/sticker-frame` 是"播到哪一帧才取哪一帧"，而**第一次**取某张贴纸时服务端要
+/// **整段解码**那张 GIF（实测 `clip-04` 的 4 张贴纸冷解 **20.2s**、单张 3~9s，debug 构建）。
+/// 页面那头 `Promise.race([…, 30ms])` 超时就**这一帧不交**，于是表现是
+/// **"播放走到贴纸就有一段时间什么都不显示，然后突然出现"**（用户报的"贴纸有延迟"）。
+///
+/// 所以让客户端**在页面加载时**就把这件事做掉：解码挪到"用户还没播到那里"的时候，
+/// 播放真正走到贴纸时全部命中缓存（实测命中 **10~14ms**）。
+///
+/// # 语义
+///
+/// * `assets` 是工程内相对路径数组（与 `/polish/sticker-frame` 的 `asset` 同一条纪律）。
+/// * **尽力而为**：单张贴纸解不出来只跳过它，**不让整个请求失败** —— 它是预热，不是业务操作；
+///   真有问题会在用户播到那帧时由 `sticker-frame` 照常报错。
+/// * 返回 `{ok, decoded, failed, skipped}`，前端只用来打日志。
+/// * 走 `blocking` 池：解码是纯 CPU 的同步活，占满一个核数秒，绝不能留在 async worker 上
+///   （见 `crates/vtrim-server/src/api/AGENTS.md` 的同步 IO 纪律）。
+pub(super) async fn polish_sticker_prewarm(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let dir = body
+        .get("dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺 dir"))?;
+    let assets: Vec<String> = body
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = validated_project_dir(dir)?;
+    let files = safe_sticker_assets(assets, &path);
+    let (decoded, failed) = blocking(move || {
+        let mut ok_count = 0usize;
+        let mut fail_count = 0usize;
+        for f in &files {
+            if !f.exists() {
+                fail_count += 1;
+                continue;
+            }
+            // 命中缓存就直接算成功（`sticker_frames_cached` 自己判），不做任何多余解码。
+            match sticker_frames_cached(f) {
+                Ok(_) => ok_count += 1,
+                Err((_status, body)) => {
+                    tracing::warn!("贴纸预热失败（{}）：{}", f.display(), body.0);
+                    fail_count += 1;
+                }
+            }
+        }
+        Ok((ok_count, fail_count))
+    })
+    .await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "decoded": decoded,
+        "failed": failed,
     })))
 }

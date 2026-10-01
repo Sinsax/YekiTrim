@@ -249,23 +249,19 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         t_sound.elapsed().as_secs_f64()
     );
 
-    // 预解码 sticker GIF 帧
+    // 贴纸帧**不再在这里预解码**。
     //
-    // ⚠️ 这一步现在**没有消费者**：它当年是给已删除的 Chrome 那条腿用的（页面靠
-    // `sticker_frames.json` 里的 PNG base64 逐帧画贴纸）。底座那条腿由转译器自己带贴纸图。
-    // **留着**是因为它顺带把磁盘缓存 `data/sticker_frames.json` 预热出来（诊断与后续接第二个
-    // 后端都要它），而且它有自己的单测与诊断用例（`diagnose_sticker_cache`）。
-    tracing::info!("\n  -- Sticker GIF --");
-    let t_sticker = std::time::Instant::now();
-    let sticker_data_json = prepare_sticker_data(project_path, &config);
-    let sticker_count: usize = serde_json::from_str::<serde_json::Value>(&sticker_data_json)
-        .map(|v| v.as_object().map(|o| o.len()).unwrap_or(0))
-        .unwrap_or(0);
-    tracing::info!(
-        "  v {} stickers with animated frames  ⏱ {:.1}s",
-        sticker_count,
-        t_sticker.elapsed().as_secs_f64()
-    );
+    // 这一步曾经是给已删除的 Chrome 那条腿用的（页面靠 `sticker_frames.json` 里的 PNG base64
+    // 逐帧画贴纸），而它唯一的消费者 `render_chunk_sync` 现在**全仓零调用者** ——
+    // 出片只剩底座一条腿，贴纸由转译器自己带图。
+    //
+    // ⚠️ **别把它加回来**：实测 `clip-04`（4 张贴纸）冷解码 **20.2s**、产物 **67.7MB**
+    // （源 GIF 合计才 38MB），而这份 JSON 写完盘**没有任何人读**。它以前是"顺带预热磁盘缓存"，
+    // 但只有同一工程反复出片才省；第一次出片与每次改贴纸之后都要白付这 20 秒。
+    //
+    // 需要这份数据的地方**自己调** `prepare_sticker_data`（缓存照旧落 `data/sticker_frames.json`，
+    // 按「文件名 + mtime + 大小」失效）：诊断用例 `diagnose_sticker_cache` 就是这么用的，
+    // 将来真接第二个逐帧后端时也由那个后端自己的入口决定要不要付这笔钱。
 
     // ---------------------------------------------------------------------
     // **出片**：整段交给独立仓的 Dhampir 二进制（唯一一条腿）
