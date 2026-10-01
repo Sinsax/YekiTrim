@@ -537,18 +537,27 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     }
     println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
 
-    // No font is bundled: the former built-in fallback's licence allowed free commercial use but
-    // not embedding into software. Users drop their own fonts in here (vtrim_core::fonts).
+    // 发行包**不带字体文件**（两者合计约 38 MB，且需要联网取上游）。两支**自带字体**
+    // （霞鹜文楷 Lite + Noto Color Emoji，均 SIL OFL-1.1）改由**首次使用时按需下载**：
+    // `vtrim fonts download`，或 WebUI 首页「字体库」→「下载自带字体」。
+    // 用户自己导入的字体放这里（`vtrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
     fs::write(
         package_dir.join("resources").join("fonts").join("放这里.txt"),
         concat!(
-            "把字体文件（.ttf / .otf / .ttc）放进这个文件夹，精修页里就会多出对应的字体可选：\n",
+            "把字体文件（.ttf / .otf）放进这个文件夹，精修页里就会多出对应的字体可选：\n",
             "\n",
             "  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体\n",
             "  - 封面字体 = 封面设计器 →「排版」组 → 字体\n",
             "\n",
-            "本发行包刻意不带任何字体文件（授权原因，见 README「字体」）。",
-            "字体文件请自行获取并遵守其许可。\n",
+            "⚠️ .ttc / .otc（字体集合）用不了：浏览器的 @font-face 不认集合，\n",
+            "   收进来会出现「预览回退系统字体、出片却用了它」。请先拆包成单个 .ttf/.otf。\n",
+            "\n",
+            "自带字体（可选；OFL 许可，可商用/可嵌入/可再分发）不随包分发，需要时下载：\n",
+            "  vtrim fonts list       看看库里有什么（含还没下载的自带字体）\n",
+            "  vtrim fonts download   下载全部还缺的（霞鹜文楷 Lite + Noto Color Emoji）\n",
+            "也可以登录 WebUI → 首页「字体库」→「下载自带字体」。\n",
+            "\n",
+            "其余字体请自行获取并遵守其许可（见 README「字体」）。\n",
         ),
     )?;
 

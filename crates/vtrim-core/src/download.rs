@@ -1,6 +1,7 @@
 //! download：ASR 模型下载与就位检查（`vtrim download` 与转写前的 `ensure_models`）。
 //!
-//! 入口：`model_names`、`model_install`、`download_all`、`download_vad_model`、`ensure_models`。
+//! 入口：`model_names`、`model_install`、`download_all`、`download_vad_model`、`ensure_models`；
+//! 另有两个**通用**下载件给别处复用：`fetch_url_to` / `fetch_text_to`（自带字体下载用，见 `fonts::BUILTIN_FONTS`）。
 //! 边界：模型落在 `<程序目录>/.vtrim/models/`（debug / release 各一份，互不相干）；许可上别把 espeak-ng 等 GPL 组件带回来 —— 见 `crates/vtrim-core/AGENTS.md`
 
 use std::path::{Path, PathBuf};
@@ -256,6 +257,55 @@ async fn download_file(url: &str, part_path: &Path) -> Result<()> {
     }
 
     bar.finish_and_clear();
+    Ok(())
+}
+
+/// **通用**下载：把 `url` 的内容落到 `dest`（先写 `dest`，调用方自己决定用不用 `.part`）。
+///
+/// 与 `download_file` 的区别：那个是"模型那条路"的带续传 + 进度条实现（写 `.part` 再改名），
+/// 这个是给**别的调用方**（自带字体）用的最小件 —— 同一套 `reqwest` 与错误口径，不再各写一份。
+/// ⚠️ 目标目录必须已存在（调用方建），失败**不留半个文件**。
+pub async fn fetch_url_to(url: &str, dest: &Path) -> Result<()> {
+    let resp = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("请求失败: {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!("下载返回 {} ({url})", status);
+    }
+    let bytes = resp.bytes().await.with_context(|| format!("读响应体失败: {url}"))?;
+    if bytes.is_empty() {
+        bail!("下载到 0 字节 ({url})");
+    }
+    tokio::fs::write(dest, &bytes)
+        .await
+        .with_context(|| format!("写入失败: {}", dest.display()))?;
+    Ok(())
+}
+
+/// **通用**下载：取一段**文本**（许可原文这类）落到 `dest`。
+///
+/// 与 [`fetch_url_to`] 分开是因为"文本"与"二进制"的失败语义不同：文本拿不到通常只该警告
+/// （字体本体已校验过、合法），不该把整件事判失败。
+pub async fn fetch_text_to(url: &str, dest: &Path) -> Result<()> {
+    let text = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("请求失败: {url}"))?
+        .error_for_status()
+        .with_context(|| format!("下载返回非 2xx: {url}"))?
+        .text()
+        .await
+        .with_context(|| format!("读文本失败: {url}"))?;
+    if text.trim().is_empty() {
+        bail!("下载到空文本 ({url})");
+    }
+    tokio::fs::write(dest, text.as_bytes())
+        .await
+        .with_context(|| format!("写入失败: {}", dest.display()))?;
     Ok(())
 }
 

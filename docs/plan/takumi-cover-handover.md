@@ -86,7 +86,11 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
   clip-14 的帧层 `object-fit:contain + scale(1.386)` **盖满画布**，背景层根本没有露出的地方，
   所以 `bg=blur/image` 与 base 数值相同是**符合预期**的，不是一个有效样本。
   要压真实差距：准备一个**帧层不铺满**（竖素材或带留边）的工程，再跑 `sweep-effects.mjs`。
-- **b. 是否把 `cover-takumi` 设为默认 —— 待你拍板。** 两种粒度：
+- **b. 【已定】`cover-takumi` 对 **CLI** 默认开（2026-10-01 用户拍板）。** 落地：`crates/vtrim-cli/Cargo.toml`
+  的 `[features]` 加了转发 `cover-takumi = ["vtrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`；
+  已验证：不带任何 feature 的 `cargo build --bin vtrim` 能出 takumi 封面（`✓ Cover saved … 3.6s（takumi / 2 个字体）`）。
+  **仍需你做**：在新 release 产物上重跑 `cargo xtask scan`（发行面变了）；Windows 上默认构建会多一条
+  `LNK4098`（Linux 无）。以下几行的两种粒度**保留**作参考，前半段历史状态：） 两种粒度：
   ① 只影响 CLI：`crates/vtrim-cli/Cargo.toml` 加 `cover-takumi = ["vtrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`
   （你的 `cargo run --bin vtrim server` 直接带上，而**库**构建仍精简）；
   ② 全局：`crates/vtrim-polish/Cargo.toml` 的 `default` 里加 `cover-takumi`。

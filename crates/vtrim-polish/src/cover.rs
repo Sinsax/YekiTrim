@@ -77,47 +77,42 @@ fn normalize_cover_renderer(raw: &str, src: &str) -> anyhow::Result<String> {
 /// 给 `/api/health` 的能力位与排查用。判据 = ① 编了 `cover-takumi` feature ② 字体库里至少一个字体
 /// —— Takumi **不读系统字体**，空库会明确报错（不静默出豆腐块）。
 ///
-/// ⚠️ 字体库的过滤判据与紧邻的 `cover_font_files()` **同源**（都按 `vtrim_core::fonts::is_font_file_name`），
-/// 两处挨着、互相指着；改一处要改另一处。
+/// ⚠️ 计数判据与 `cover_font_files()` **同源**（同一个函数），别再手写第二份"数文件"的逻辑。
 pub fn cover_static_capability() -> (bool, usize, std::path::PathBuf) {
-    let dir = vtrim_core::fonts::dir();
-    let n = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| {
-                    e.path().is_file()
-                        && e.file_name()
-                            .to_str()
-                            .map(vtrim_core::fonts::is_font_file_name)
-                            .unwrap_or(false)
-                })
-                .count()
-        })
-        .unwrap_or(0);
-    (cfg!(feature = "cover-takumi"), n, dir)
+    // ⚠️ **必须与 `cover_font_files()` 同源**（都走 `fonts::scan_all` + `resolve_all`）。
+    // 以前这里手写"只数顶层文件"，v2 目录布局下**恒为 0** ⇒ `/api/health.cover_static.fonts` 报 0
+    // ⇒ 前端把 Takumi 选项置灰 —— 明明有字体却"用不了静态封面"。
+    // ⚠️ 数的是**真能用的**（`resolve_all` 解析得到的）："清单里有、还没下载"的自带字体不算，
+    // 否则会告诉用户"有字体"然后出片时炸在"至少一个字体文件"上。
+    let fonts = cover_font_files().len();
+    (cfg!(feature = "cover-takumi"), fonts, vtrim_core::fonts::dir())
 }
 
-/// 字体库里的全部字体文件。
+/// 字体库里的全部字体文件（**真能用的那些**）。
 ///
 /// 静态渲染**必须显式喂字体**（Takumi 不读系统字体、内置只有拉丁），所以这条路要求字体库里
 /// 至少有一个字体；一个都没有时由 `render/takumi.rs` 明确报错（不静默出豆腐块）。
-#[cfg(feature = "cover-takumi")]
+///
+/// ⚠️ **不按 feature 门控**：`cover_static_capability()`（health 那个"有没有字体"的计数）
+/// 也要用它，而那个函数在**没编 cover-takumi** 时同样要能算 —— 否则前端连
+/// "为什么用不了静态封面"都问不出来（门控会让它编译不过，而不是回 0）。
+#[cfg_attr(not(feature = "cover-takumi"), allow(dead_code))]
 fn cover_font_files() -> Vec<std::path::PathBuf> {
-    let dir = vtrim_core::fonts::dir();
-    let mut out: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.file_name()
-                            .and_then(|s| s.to_str())
-                            .map(vtrim_core::fonts::is_font_file_name)
-                            .unwrap_or(false)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // ⚠️ **必须走 `fonts::scan_all`**（两种布局都认：v2 目录 `<slug>/font.ttf` + 老平铺文件）。
+    // 以前这里手写"只列顶层文件"，v2 布局下**一个都扫不到** —— 而"一个字体都没有"这条路上
+    // `render_cover_png` 是**明确报错**的（不静默出豆腐块），所以症状是"静态封面直接出不来"。
+    // 同时它也保证"渲染看到的字体集合"与界面上列出来的**同一份**（同一个权威）。
+    //
+    // ⚠️ 仍按 `is_font_file_name` 过滤是多余但无害的一道（`scan_all` 内部已过滤）。
+    // `FontEntry` **不带路径**（它是元数据：id / file / family…），所以按 id 走
+    // `resolve_all` 反查文件 —— 与渲染路由 `/vt-fonts/:name` 解析的是同一套规则。
+    // ⚠️ **`resolve_all` 这一步也顺手滤掉了"清单里有、还没下载"的自带字体**（`installed: false`，
+    // 那时它没有文件）—— 所以别把 `scan_all` 换成"直接信 `installed`"，那条路上没有路径。
+    let mut out: Vec<std::path::PathBuf> = vtrim_core::fonts::scan_all(&vtrim_core::fonts::dir())
+        .into_iter()
+        .filter_map(|e| vtrim_core::fonts::resolve_all(&vtrim_core::fonts::dir(), &e.id))
+        .filter(|p| p.is_file())
+        .collect();
     out.sort();
     out
 }

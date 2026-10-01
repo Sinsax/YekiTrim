@@ -157,6 +157,10 @@ pub enum Command {
     #[command(subcommand)]
     Ingest(IngestAction),
 
+    /// 字体库（列出 / 下载自带字体）—— 程序级全局资产，与 `polish` 无关，所以是顶层命令
+    #[command(subcommand)]
+    Fonts(FontAction),
+
     /// 启动本地 WebUI 服务（浏览器可视化操作全流程）
     Server(vtrim_server::ServerArgs),
 }
@@ -337,6 +341,19 @@ pub enum PolishAction {
     Stickers {
         #[command(subcommand)]
         action: StickerAction,
+    },
+}
+
+/// 字体库子命令（见 `docs/plan/font-library.md`）
+#[derive(Subcommand)]
+pub enum FontAction {
+    /// 列出字体库（id / 内部族名 / 显示名 / 体积 / 自带 / 默认 / 装没装）
+    List,
+    /// 下载**自带字体**（幂等：已装好的跳过；`--id` 只下某一支）
+    Download {
+        /// 只下这一支（不给 = 下全部还缺的）
+        #[arg(long)]
+        id: Option<String>,
     },
 }
 

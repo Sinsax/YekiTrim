@@ -144,7 +144,10 @@ pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
         if id.is_empty() || css.contains(&format!("font-family:{}", quote_css(id))) {
             continue;
         }
-        let Some(path) = vtrim_core::fonts::resolve_file_at(root, id) else {
+        // ⚠️ **必须走 `resolve_all`**（两种布局都认：v2 目录 `<slug>/font.ttf` + 老平铺文件）。
+        // 以前这里是 `resolve_file_at`（**只认老平铺**）⇒ v2 目录布局下**什么都不注入**，
+        // 于是"选了库里的字体、出片没换"（而预览那边另有 @font-face，看着还是对的）。
+        let Some(path) = vtrim_core::fonts::resolve_all(root, id) else {
             // 解析不到就**什么都不注入**：老工程的 `font = "LXGW WenKai"` 走到这里，
             // 行为与从前一致（当系统字体族名用）。
             continue;
@@ -158,6 +161,11 @@ pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
             "ttc" => "",
             _ => " format(\"truetype\")",
         };
+        // ⚠️ **声明的族名 = 配置里那一串 id**（与页面的 `font-family`、预览的 `FontFace` 同源）。
+        // 别改成"内部族名"：模板 `.cap{font-family:"<config[id]>"}` 与
+        // `webui/src/polish/fonts.js` 的 `new FontFace(id, …)` 都按 **id** 请求，
+        // 声明成别的名字就会"注入了 @font-face 但页面请求的是另一个名字"——浏览器静默回退系统字体。
+        // Takumi 那条腿走**别名注册**（`render/takumi.rs`）来对齐，而不是靠改这里。
         css.push_str(&format!(
             "@font-face{{font-family:{};src:url(\"/vt-fonts/{}\"){};font-display:block}}\n",
             quote_css(id),
@@ -204,10 +212,56 @@ fn quote_css(s: &str) -> String {
 /// 底座那条腿（`render/dhampir.rs::find_font`）直接读这个常量，所以改这一处三处一起变。
 pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif";
 
-/// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底。
-pub fn font_family_with_stack(id: &str) -> String {
-    format!("{},{}", quote_css(id.trim()), SYSTEM_FONT_STACK)
+/// 字体栈的**首项**：装没装自带中文字体，这里不一样。
+///
+/// ⚠️ **为什么不能只写死 `'LXGW WenKai'`**（P1-f 实测）：自带那支字体的**内部族名是
+/// `霞鹜文楷 轻便版`**（中文），而栈里写的是英文名 `LXGW WenKai` —— 两者**永远匹配不上**，
+/// 于是"装了自带字体"这件事在页面上**完全没有效果**（静默回退雅黑），
+/// 而用户明明在字体库里看到了它。
+///
+/// 所以首项按"库里默认那支 / 内置那支"算：解析得到就返回它的**内部族名**，
+/// 否则回落到原来的字面量（系统里真装了 `LXGW WenKai` 的人照旧命中）。
+/// ⚠️ 顺序不能变（仍然排在 `Microsoft YaHei` 前），否则就是上面那条老 bug 的翻版。
+pub fn preferred_fallback_family() -> String {
+    let root = vtrim_core::fonts::dir();
+    // ① 库里显式设过默认的那支（用户意图最强）
+    let preferred = vtrim_core::fonts::scan_all(&root)
+        .into_iter()
+        .filter(|e| e.installed)
+        .find(|e| e.is_default)
+        .map(|e| e.family_internal.trim().to_string())
+        // ② 否则内置那支中文（自带字体里只有它不是 emoji）
+        .or_else(|| {
+            vtrim_core::fonts::builtin_fonts()
+                .iter()
+                .find(|b| {
+                    !b.id.to_ascii_lowercase().contains("emoji")
+                        && vtrim_core::fonts::builtin_installed(&root, b)
+                })
+                .map(|b| vtrim_core::fonts::family_for_at(&root, b.id))
+        })
+        .unwrap_or_default();
+    if preferred.trim().is_empty() {
+        // 库里没有可用中文 ⇒ 保持老字面量（系统里真装了 `LXGW WenKai` 的人仍然命中）
+        quote_css("LXGW WenKai")
+    } else {
+        quote_css(preferred.trim())
+    }
 }
+
+/// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底（首项是
+/// [`preferred_fallback_family`]，其余与 [`SYSTEM_FONT_STACK`] 同序）。
+pub fn font_family_with_stack(id: &str) -> String {
+    // ⚠️ 与 `font_face_css` 声明的名字**必须同一个**（两处都是**配置里那串 id**）：
+    // 一处按 id、一处按内部族名，就会出现"注入了 @font-face 但页面请求的是另一个名字"
+    // —— 浏览器静默回退系统字体，只有像素能看出（P1-e 收敛的就是这条）。
+    format!("{},{},{}", quote_css(id.trim()), preferred_fallback_family(), TAIL_STACK)
+}
+
+/// [`SYSTEM_FONT_STACK`] 里首项**之后**的部分（首项由 [`preferred_fallback_family`] 动态给）。
+/// ⚠️ 与 `SYSTEM_FONT_STACK` 的尾巴必须逐字一致；`preferred_fallback_family` 回落时拼出来
+/// 的整串要与这个常量**完全相同**（有单测钉着）。
+const TAIL_STACK: &str = "'Microsoft YaHei','Noto Sans SC',sans-serif";
 
 /// 启动一个只提供静态文件的 HTTP server，绑定到随机端口
 /// 返回 port。用于每个 chunk 独享的静态文件服务。
@@ -423,6 +477,25 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// ⚠️ **v2 目录布局也必须注入 @font-face**（P1-e 发现的老 bug）。
+    ///
+    /// 以前这里走 `resolve_file_at`（**只认老平铺文件**），而 v2 布局是
+    /// `<slug>/font.ttf` ⇒ **一条都不注入**。症状："选了库里的字体、出片没换"，
+    /// 而预览那边另有 `FontFace`（它也解析得到）⇒ 看起来还是对的，只有成片不对。
+    #[test]
+    fn injects_font_face_for_dir_layout_too() {
+        let root = temp_root("inject-dir");
+        let slug = root.join("my-font");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"x").unwrap();
+        let css = font_face_css_in(&root, &["my-font"]);
+        assert!(css.contains("@font-face"), "v2 目录布局没注入：{css}");
+        // 声明的族名 = 配置里那串 id（与模板 / 预览同源）
+        assert!(css.contains("font-family:\"my-font\""), "{css}");
+        assert!(css.contains("url(\"/vt-fonts/font.ttf\")"), "{css}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// 解析不到的字体名（老工程的 `LXGW WenKai` 这类系统族名）**不注入**任何东西 ——
     /// 注入了就会变成一条 404 的 @font-face，白让浏览器去取。
     #[test]
@@ -439,13 +512,42 @@ mod tests {
         // 输入 `a"b\c` → 双引号包起来，并把里面的 `"` 与 `\` 各加一个反斜杠
         let expected: String = ['"', 'a', '\\', '"', 'b', '\\', '\\', 'c', '"'].iter().collect();
         assert_eq!(quote_css("a\"b\\c"), expected);
-        assert_eq!(
-            font_family_with_stack("LXGW WenKai"),
-            // ⚠️ 顺序**不是随手写的**：它必须等于 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈
-            // （雅黑在 Noto 前）—— 项目选的那支没装时，这里的第一支就是用户在预览里看到的字体。
-            // 改这条断言之前先确认另一边也跟着改了（`dhampir.rs::font_search_order` 有对应钉子）。
-            "\"LXGW WenKai\",'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif"
-        );
+        // ⚠️ 断言里**不能写死首项**：首项由 `preferred_fallback_family()` 按"库里装了什么"算
+        // （装了自带中文就是 `霞鹜文楷 轻便版`，没装才是 `LXGW WenKai`）—— 写死就会在
+        // "开发机装了字体、CI 没装"时随机红。这里钉的是**结构与尾部顺序**。
+        let stack = font_family_with_stack("LXGW WenKai");
+        assert!(stack.starts_with("\"LXGW WenKai\","), "{stack}");
+        // ⚠️ 尾部顺序**不是随手写的**：它必须等于 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈
+        // （雅黑在 Noto 前）—— 项目选的那支没装时，栈里第一支就是用户在预览里看到的字体。
+        // 改这条断言之前先确认另一边也跟着改了（`dhampir.rs::font_search_order` 有对应钉子）。
+        assert!(stack.ends_with(",'Microsoft YaHei','Noto Sans SC',sans-serif"), "{stack}");
+        assert_eq!(stack.matches(',').count(), 4, "四段：项目字体 + 首项 + 雅黑 + Noto: {stack}");
+    }
+
+    /// ⚠️ **P1-f 的钉子**：字体栈首项必须跟着"库里装了什么"走。
+    ///
+    /// 自带那支的内部族名是 **`霞鹜文楷 轻便版`**（中文），而常量里写的是英文 `LXGW WenKai` ——
+    /// 两者**永远匹配不上**，于是"装了自带字体"在页面上**完全没有效果**（静默回退雅黑），
+    /// 而用户明明在字体库里看得到它。这条测试把"首项会不会跟着变"钉住。
+    #[test]
+    fn stack_head_tracks_installed_library_font() {
+        // 这台机器上装没装自带中文，决定首项 —— 两种情况都必须自洽
+        let head = preferred_fallback_family();
+        assert!(!head.trim().is_empty(), "首项不能是空的（整串会多出个空段）");
+        let stack = font_family_with_stack("x");
+        assert!(stack.contains(&head), "栈里必须含首项本身: {head} vs {stack}");
+        // 回落态（库里没有可用中文）必须与老常量**同一套族名与顺序**，否则存量工程的像素会变。
+        // ⚠️ 比的是**族名与顺序**，不是引号风格：`TAIL_STACK` 保留单引号（与真模板一致）、
+        // 首项走 `quote_css` 的双引号 —— CSS 里 '阿里' 与 "阿里" 完全等价，逐字比必红
+        // （这条断言第一版就是这么写错的，两次）。
+        if head == quote_css("LXGW WenKai") {
+            let norm = |s: &str| s.replace('\'', "\"").replace(" ", "");
+            assert_eq!(
+                norm(&format!("{},{}", head, TAIL_STACK)),
+                norm(SYSTEM_FONT_STACK),
+                "回落时必须与老常量同族名同顺序（不然存量工程跟着变）"
+            );
+        }
     }
 
     /// 两个模板都得留着字体占位符 —— 少了它注入是静默失败的（页面照出，字体不生效）。

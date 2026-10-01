@@ -52,7 +52,10 @@
   `vtrim_server::run()` / `ServerArgs` 进。
 - ⚠️ **`wgpu-render` 转发链已删除**：那条 GPU 出片链路（`vtrim-server` 的 `api/` ×3 与 `model.rs` ×5、
   `vtrim-polish/wgpu-render`、`vtrim-render-core/wgpu`）整条没了 —— GPU 那侧交给独立的 Dhampir 底座。
-  所以 `[features]` 里**不再有任何 feature**，`/api/health` 也不再回 `wgpu_render`。
+  所以 `[features]` 里**不再有 GPU 那条**，`/api/health` 也不再回 `wgpu_render`。
+  现在只有一条**封面**转发 `cover-takumi = ["vtrim-polish/cover-takumi"]`，且 **CLI `default` 带上它**
+  （`cargo run --bin vtrim server` 开箱可选 Takumi；库构建仍精简）。代价：Windows 默认构建会多一条
+  `LNK4098` 链接器警告（libwebp-sys 静态 CRT）—— `cargo check` 不链接所以仍是 0 warning。
   **别为了"留个口子"把它加回来**（加了不报错，只会让人以为还有 GPU 出片）。
 - ⚠️ **端口/默认地址一律引用 `vtrim_service::doctor::{DEFAULT_PORT, DEFAULT_URL}`，别写字面量**：
   `Command::Doctor` 的 `#[arg(long, default_value = vtrim_service::doctor::DEFAULT_URL)]`，

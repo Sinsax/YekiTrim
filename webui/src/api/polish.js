@@ -125,12 +125,59 @@ export const fontUrl = (pid, dir, name) =>
   `/api/polish/font?${qs(pid, dir)}${name ? '&name=' + encodeURIComponent(name) : ''}`
 
 /**
- * 字体库（只读）：`{ root, fonts: [{id, file, family, bytes}] }`。
+ * 字体库（只读）：`{ root, fonts: [{id, file, family, display_name, bytes, builtin, is_default,
+ * license, scripts, emoji, installed}], builtin: [{id, display_name, family, license, license_url, installed}] }`。
  *
- * 库是**程序级**的（`<程序目录>/resources/fonts/`，往里丢 .ttf/.otf/.ttc 就会出现），
- * 与项目无关 —— 所以这里不带 `{project, dir}`，也不需要 admin。
- * 配置里存的是 `id`（文件名去扩展名）；`family` 只是给人看的展示名。
+ * ⚠️ `family` 自 v2 起是**字体内部族名**（预览/出片/Takumi 三处唯一认的那个名字），
+ * 给人看的标签是 `display_name` —— 别再拿 id 或文件名当族名用。
+ * ⚠️ `installed` 只对**自带字体**有意义：`false` = 清单里有它但还没下载（界面给「下载」而非「删除」）；
+ * 用户自己导入的永远是 `true`。
+ *
+ * 库是**程序级**的（`<程序目录>/resources/fonts/`），与项目无关 —— 所以这里不带 `{project, dir}`；
+ * 读不需要 admin（写才要）。
  */
 export const fetchFonts = (label = '') => api('/api/polish/fonts', { label })
+
+/**
+ * 导入一支字体（**仅 admin**）：`{path}` = **服务器上**字体文件的绝对路径。
+ *
+ * ⚠️ 不是上传：字体几十 MB、axum 默认 body limit 2 MB，走"服务器上已有文件"这条
+ * （与 `/api/fs/list` 同一条来源）。服务端只收 `.ttf`/`.otf`，
+ * `.ttc`/`.otc`（字体集合）会被**明确拒绝**并把原因回在 error 里 —— 别在前端自己判。
+ *
+ * ⚠️ 字段名别混：`name` 是**文件名**（服务端用它当 id），显示名走 `display`。
+ */
+export const importFont = ({ path = '', dir = '', fileName = '', name = '' }) =>
+  api('/api/polish/fonts/import', {
+    method: 'POST',
+    // ⚠️ 优先 `{dir, name}`：路径**由服务端拼**（前端拼会把 `\\?\` verbatim 前缀拼坏，
+    // 与素材清单同一条规矩）。`path` 只留给"我就是要给绝对路径"的调用方。
+    body: dir && fileName ? { dir, name: fileName, display: name } : { path, display: name },
+    label: '导入字体',
+  })
+
+/** 设为默认字体（**仅 admin**，唯一默认）。⚠️ 只影响推荐位，**不动任何工程的字体配置**。 */
+export const setDefaultFont = (id) =>
+  api('/api/polish/fonts/default', { method: 'POST', body: { id }, label: '设为默认字体' })
+
+/** 删除一支字体（**仅 admin**）。程序自带的返回 **403「程序自带字体不可删除」**。 */
+export const deleteFont = (id) =>
+  api('/api/polish/fonts?id=' + encodeURIComponent(id), { method: 'DELETE', label: '删除字体' })
+
+/**
+ * 下载**自带字体**（**仅 admin**；幂等，已装好的跳过）。
+ *
+ * ⚠️ 会联网、约 38 MB（霞鹜文楷 Lite + Noto Color Emoji）⇒ 给足超时；
+ * `id` 缺省 = 下全部还缺的。清单与校验和都在服务端（`vtrim_core::fonts::BUILTIN_FONTS`），
+ * 前端**不自己维护这份清单**。
+ */
+export const downloadBuiltinFonts = (id = '') =>
+  api('/api/polish/fonts/builtin', {
+    method: 'POST',
+    body: id ? { id } : {},
+    label: '下载自带字体',
+    // 几十 MB 的外网下载：别用默认那 10 分钟里的任何更紧的值
+    timeout: 0,
+  })
 
 export { watchJob } from './jobs'

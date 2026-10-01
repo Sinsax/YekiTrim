@@ -53,6 +53,14 @@ const routes = [
     ]
   },
   { path: '/ingest', name: 'ingest', component: () => import('./views/IngestView.vue') },
+  // 字体库（程序级全局资产）：**仅 admin**（写操作只在 admin 层，见 server/api 卡）。
+  // 入口在首页（与"表情包"同款 admin 区块），不占侧栏 —— 侧栏全局入口只有 首页 / 设置。
+  {
+    path: '/fonts',
+    name: 'fonts',
+    meta: { admin: true, title: '字体库' },
+    component: () => import('./views/FontsView.vue'),
+  },
   { path: '/settings', redirect: '/settings/config' },
   ...SETTINGS_ROUTES,
 

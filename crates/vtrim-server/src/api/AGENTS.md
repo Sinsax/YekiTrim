@@ -35,6 +35,12 @@
 
 ## 边界
 
+- **字体库的`写`只在 admin 层**：`POST /api/polish/fonts/import`（body `{path, name?}`，只收
+  `ttf/otf`，**拒收 `.ttc/.otc`**）、`POST /api/polish/fonts/default`（`{id}`，**唯一默认**）、
+  `DELETE /api/polish/fonts?id=`（`builtin=true` → **403「程序自带字体不可删除」**）。
+  读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default` 等）。
+  ⚠️ 这三条**有意不挂 `enforce_scope`**：字体库是**程序级全局资产**、不在任何项目内，
+  与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（`chrome`|`takumi`）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把弹窗里那个选项置灰；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
 
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。

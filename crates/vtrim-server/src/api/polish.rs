@@ -1245,7 +1245,9 @@ pub(super) async fn polish_project_get_impl(
 ///
 /// 库位置 = `<程序目录>/resources/fonts/`（`vtrim_core::path::font_dir`）。**以磁盘为准**：
 /// 往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
-/// `id` = 文件名去扩展名（配置里存的就是它）；`family` 是从字体 `name` 表读出来的展示名。
+/// `id` = 目录名（v2 布局）或文件名去扩展名（老布局）—— **配置里存的就是它**；
+/// `family` = **内部族名**（`FONT.toml` 的 `family`，唯一权威：预览 / 出片 `@font-face` / Takumi 三处都认它）。
+/// `display_name` 只是给人看的标签，别拿它当族名用（详见 `docs/plan/font-library.md` §13）。
 /// 扫描要读字体文件解析字族名，所以整段走 `blocking`（同步 IO 不能留在 worker 上）。
 ///
 /// `root`（服务器上的绝对路径）**只给 admin**：非 admin 拿它没用（也丢不进文件），
@@ -1254,14 +1256,39 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
     let is_admin = user.is_admin();
     let payload = blocking(move || {
         let root = vtrim_core::path::font_dir();
-        let fonts: Vec<serde_json::Value> = vtrim_core::fonts::scan()
+        let fonts: Vec<serde_json::Value> = vtrim_core::fonts::scan_all(&root)
             .into_iter()
             .map(|f| {
                 serde_json::json!({
                     "id": f.id,
                     "file": f.file,
-                    "family": f.family,
+                    // ⚠️ 走 `family_for`（唯一权威），别直接回 `f.family`（那是"从文件读到的名字"，
+                    // 可能与 FONT.toml 不一致）—— 界面上"内部族名 vs 显示名"两行要靠它对得上。
+                    "family": vtrim_core::fonts::family_for_at(&root, &f.id),
+                    "display_name": f.display_name,
                     "bytes": f.bytes,
+                    "builtin": f.builtin,
+                    "is_default": f.is_default,
+                    "license": f.license,
+                    "scripts": f.scripts,
+                    "emoji": f.emoji,
+                    // ⚠️ 自带字体**没下载**时也在列表里（`installed: false`）：界面据此给"下载"按钮，
+                    // 而不是当成"库里有这支"。用户自己导入的永远是 true。
+                    "installed": f.installed,
+                })
+            })
+            .collect();
+        // 自带字体清单（"还能下什么"）：与 `fonts::BUILTIN_FONTS` 同源，别在这一层手抄
+        let builtin: Vec<serde_json::Value> = vtrim_core::fonts::builtin_fonts()
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "id": b.id,
+                    "display_name": b.display_name,
+                    "family": b.family,
+                    "license": b.license,
+                    "license_url": b.license_url,
+                    "installed": vtrim_core::fonts::builtin_installed(&root, b),
                 })
             })
             .collect();
@@ -1270,10 +1297,171 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
             // 出 JSON 的路径必须过 display（去掉 `\\?\` 逐字前缀），否则前端拼路径会炸
             "root": if is_admin { vtrim_core::path::display(&root) } else { String::new() },
             "fonts": fonts,
+            "builtin": builtin,
         }))
     })
     .await?;
     ok(payload)
+}
+
+/// 往字体库里**导入**一支字体（**仅 admin**）。
+///
+/// body：`{path}` —— 服务器上那个**字体文件**的绝对路径；或 `{dir, name}`（推荐，
+/// **由服务端拼**，免得前端把 `\\?\F:\a` 拼成 `\\?\F:\a/b` 撞上 Windows 123，同 `/api/fs/list` 的规矩）。
+/// 可选 `{name}` 当给人看的显示名（`display_name`）；**id 永远取自文件名**（配置里存的就是它）。
+///
+/// ⚠️ 收的是**服务器上的路径**，不是上传 —— 与 `/api/fs/list` 同一条来源（axum 默认 body 上限 2 MB，
+/// 上传要像贴纸那样单独放宽 `DefaultBodyLimit`，那是另一件事）。所以这条**必须** `require_admin`：
+/// 普通用户让它读服务器任意文件就是路径面事故。
+pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> ApiResult {
+    let path = match body.get("path").and_then(|v| v.as_str()).map(str::trim) {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => {
+            // `{dir, name}`：**服务端拼**（前端自己拼 Windows verbatim 前缀会出 123）
+            let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if dir.is_empty() || name.is_empty() {
+                return Err(err(StatusCode::BAD_REQUEST, "缺少 path，或 dir + name"));
+            }
+            // 只取文件名那一段：`name` 来自请求体，`..\..\x` 不能让它越界读文件
+            let base = Path::new(name)
+                .file_name()
+                .map(PathBuf::from)
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "name 不是合法文件名"))?;
+            if base.as_os_str().is_empty() {
+                return Err(err(StatusCode::BAD_REQUEST, "name 不是合法文件名"));
+            }
+            Path::new(dir).join(base)
+        }
+    };
+    // ⚠️ 显示名读 **`display`**（它与 `name` 撞语义：`name` 是**文件名**，服务端拿它拼路径 / 当 id）。
+    // 兼容老的 `name`-当显示名（那时 `{path}` 分支没有文件名冲突）。
+    let display = body
+        .get("display")
+        .or_else(|| body.get("name").filter(|_| body.get("path").is_some()))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let entry = blocking(move || {
+        // 目录布局写入 + 读字体表都碰磁盘（可能是网络盘），一律留在 blocking 池上。
+        // ⚠️ 字体库的错都是 `anyhow`（"只收 .ttf/.otf"、"程序自带字体不可删除"…），
+        // 转成 400 + 原话：用户要看到"为什么这支不行"，不是笼统的 500。
+        vtrim_core::fonts::import_font(&vtrim_core::path::font_dir(), &path, display.as_deref())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
+    })
+    .await?;
+    ok(serde_json::json!({ "ok": true, "font": entry }))
+}
+
+/// 把某支字体设为**默认字体**（**仅 admin**）。body：`{id}`。
+///
+/// ⚠️ 默认是**互斥**的（`fonts::set_default` 会把别的清掉）。
+/// ⚠️ 只影响**新建项目**用它；已有工程里 `polish.toml` 存的那串 id 不会被改写
+/// （改了就是替用户改他已定的稿子）。
+pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) -> ApiResult {
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 id"))?
+        .to_string();
+    blocking(move || {
+        vtrim_core::fonts::set_default(&vtrim_core::path::font_dir(), &id)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
+    })
+    .await?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
+/// 删除库里一支字体（**仅 admin**）。`DELETE /api/polish/fonts?id=<id>`。
+///
+/// ⚠️ 用 **query 参数**而不是路径段：`axum::extract::Path` 会与本文件里的 `std::path::Path` 撞名，
+/// 而且"字体 id 可以带空格/CJK"（`is_safe_id` 允许）—— 放进路径段还要额外转义。
+/// ⚠️ `builtin = true`（程序自带）**返回 403**（`fonts::remove_font` 直接 bail，文案「程序自带字体不可删除」）。
+pub(super) async fn polish_fonts_delete(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let id = q.get("id").map(String::as_str).unwrap_or("").trim().to_string();
+    if id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 id"));
+    }
+    blocking(move || {
+        // ⚠️ `builtin` 那一支**必须**能被用户看见 —— 403 的文案就是「程序自带字体不可删除」，
+        // 与 `webui/src/views/FontsView.vue` 里把自带字体的删除键置灰是同一条规矩。
+        vtrim_core::fonts::remove_font(&vtrim_core::path::font_dir(), &id).map_err(|e| {
+            let msg = e.to_string();
+            let status = if msg.contains("程序自带") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            err(status, msg)
+        })
+    })
+    .await?;
+    ok(serde_json::json!({ "ok": true }))
+}
+
+/// 下载**自带字体**（**仅 admin**）。body 可为空（下全部还缺的）或 `{id}`（只下某一支）。
+///
+/// 清单与校验和都在 `vtrim_core::fonts::BUILTIN_FONTS`（**不在这一层抄第二份**）。
+/// ⚠️ 幂等：已装好的**不重复下**（用户可能手动替换过那支字体）。
+/// ⚠️ 这是条**会联网、约 38 MB** 的活，所以走 `blocking`（别把 worker 占住）；
+/// 下载失败的**原话**要回给用户（校验和不符 / 网络不通 / 上游改了内容，三种处置不同）。
+pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) -> ApiResult {
+    let only = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let report = blocking(move || {
+        let root = vtrim_core::path::font_dir();
+        // 点名单支时先确认它真是自带的 —— 否则用户等半天才发现 id 打错
+        if let Some(id) = &only {
+            if !vtrim_core::fonts::is_builtin_id(id) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!("不是自带字体（自带清单里没有它）: {id}"),
+                ));
+            }
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("建运行时失败: {e}")))?;
+        rt.block_on(async {
+            let mut done: Vec<String> = Vec::new();
+            for b in vtrim_core::fonts::builtin_fonts() {
+                if let Some(want) = &only {
+                    if !b.id.eq_ignore_ascii_case(want) {
+                        continue;
+                    }
+                }
+                // 已装好的跳过（幂等）
+                if vtrim_core::fonts::builtin_installed(&root, b) {
+                    continue;
+                }
+                install_one(&root, b).await.map_err(|e| {
+                    // 下载/校验失败的原话对用户有意义（网络？校验和不符？）
+                    err(StatusCode::BAD_GATEWAY, format!("下载自带字体失败: {e}"))
+                })?;
+                done.push(b.id.to_string());
+            }
+            Ok(serde_json::json!({ "ok": true, "downloaded": done, "installed": vtrim_core::fonts::builtin_status(&root) }))
+        })
+    })
+    .await?;
+    ok(report)
+}
+
+/// 装一支自带字体（`blocking` 里跑，所以这里同步等它）。
+async fn install_one(
+    root: &std::path::Path,
+    b: &vtrim_core::fonts::BuiltinFont,
+) -> anyhow::Result<()> {
+    // 复用 core 的安装实现（清单/校验和/落盘形状只此一份）
+    vtrim_core::fonts::download_builtin_font(root, b).await
 }
 
 /// 字体文件端点（wasm 预览 fetch 字体字节用）：项目字体候选 -> 内置资源。

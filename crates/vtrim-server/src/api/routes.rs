@@ -9,7 +9,7 @@ use axum::{
     Router,
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json,
 };
 
@@ -84,6 +84,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/llm/test", post(llm_test))
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
+        // 字体库**写**操作：库是**程序级全局资产**（`<exe 同级>/resources/fonts/`），
+        // 与贴纸库同规矩 —— **读**谁都能读（`GET /api/polish/fonts`），**写只给 admin**。
+        // 导入走"服务器上已有的文件路径"（`/api/fs/list` 也仅 admin），不做 base64 上传。
+        .route("/polish/fonts/import", post(polish_fonts_import))
+        // 设为默认（唯一默认；**不动任何工程的字体配置**）
+        .route("/polish/fonts/default", post(polish_fonts_default))
+        // 下载**自带字体**（清单见 `vtrim_core::fonts::BUILTIN_FONTS`；幂等，已装好的跳过）。
+        // ⚠️ 会联网（约 38 MB），所以是 POST 而不是 GET 的副作用；**仅 admin**。
+        .route("/polish/fonts/builtin", post(polish_fonts_builtin))
+        // 删除（`?id=`，与 `/polish/font?name=` 同形）；**程序自带的返回 403**
+        .route("/polish/fonts", delete(polish_fonts_delete))
         // ⚠️ 改密强制门**也必须盖住 admin 路由**：初始密码会同时写进日志与
         // `initial-admin-password.txt`，持它的会话若能调 `/api/config`，就等于直接拿到
         // 明文 LLM API key（`config_get_impl` 会回 `llm_raw`）并能铸造邀请码 ——
@@ -130,7 +141,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         // （GPU 那侧交给独立的 Dhampir 底座）。别把它加回来。
         .route("/polish/font", get(polish_font))
         // 字体库只读浏览（exe 同级 resources/fonts/）：字幕/封面字体的下拉数据源。
-        // 与贴纸库同规矩 —— 只管读，**不放上传**（字体由管理员自己丢进目录）
+        // ⚠️ 写入（导入/设默认/删除）**不在这里**，在 admin 层（见上面那三条）：
+        // 库是程序级全局资产，一张普通账号的会话不该能改所有人的字体
+        // （读走 `GET /api/polish/fonts`，写走 admin 层的 `/api/polish/fonts/*`）
         .route("/polish/fonts", get(polish_fonts))
         .route("/polish/select-version", post(polish_select_version))
         .route("/polish/silence", post(polish_silence))
@@ -326,6 +339,73 @@ async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
             .collect();
         assert!(leftovers.is_empty(), "上传失败不该留残留: {leftovers:?}");
     }
+}
+
+/// 字体库的三条**写**路由（P1-e）：只有 admin 能调、缺参数是 400。
+///
+/// 与贴纸那条同规矩：字体库是**程序级全局资产**（`<程序目录>/resources/fonts/`），
+/// 非 admin 能动它就是"普通用户往服务器写文件"。这里刻意只走**失败路径**，
+/// 不往真实字体库里写东西（成功路径用临时目录，在 `vtrim-core::fonts` 的 11 条单测里）。
+#[tokio::test]
+async fn font_write_routes_are_admin_only() {
+    let t = test_app().await;
+
+    // 普通用户：三条全 403（读是敞开的，写是 admin 的）
+    let hash = vtrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth.db().create_user("plain_font", &hash, "user", false, 0).unwrap();
+    let b = t
+        .auth
+        .login("plain_font", "pass-12345678", Some("10.9.9.8"), None)
+        .unwrap();
+    for (method, uri) in [
+        ("POST", "/polish/fonts/import"),
+        ("POST", "/polish/fonts/default"),
+        // 下载自带字体**必须**仅 admin：它会联网并把几十 MB 写进程序目录，
+        // 让普通用户能触发就是"任意用户往服务器磁盘写大文件 + 打外部网络"
+        ("POST", "/polish/fonts/builtin"),
+        ("DELETE", "/polish/fonts?id=whatever"),
+    ] {
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, method, uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(b"{}".to_vec()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{method} {uri} 必须仅 admin");
+    }
+
+    // admin + 缺参数：400（不是 500，也不能当成功）
+    for (method, uri, body) in [
+        ("POST", "/polish/fonts/import", "{}"),
+        ("POST", "/polish/fonts/import", r#"{"dir":"F:\\x"}"#),
+        ("POST", "/polish/fonts/default", "{}"),
+        ("DELETE", "/polish/fonts", "{}"),
+    ] {
+        let res = t
+            .call(
+                t.req(method, uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string().into_bytes()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{method} {uri} {body}");
+    }
+
+    // 导入一个**不存在**的路径：400 且带原因（服务端读不到就说清楚，不是静默成功）
+    let res = t
+        .call(
+            t.req("POST", "/polish/fonts/import")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    br#"{"path":"F:\\__no_such_font_zz.ttf"}"#.to_vec(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "不存在的字体文件应当是 400");
 }
 
 /// 未注册的 /api/* 必须返回 JSON 404：外层 fallback 是 SPA HTML，

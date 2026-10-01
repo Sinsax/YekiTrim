@@ -631,17 +631,43 @@ cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espea
 
 ## 字体
 
-发行包**不内置任何字体文件**，默认走系统字体栈
-（`LXGW WenKai` → `Noto Sans SC` → `Microsoft YaHei`，最后兜底 `C:/Windows/Fonts/msyh.ttc`）。
+发行包**不内置字体文件**，默认走系统字体栈
+（`LXGW WenKai` → `Microsoft YaHei` → `Noto Sans SC`，最后兜底 `C:/Windows/Fonts/msyh.ttc`）。
 
-**想换字体：把字体文件丢进程序目录的 `resources/fonts/`**（与 `vtrim.exe`、`.vtrim/`、`stickers/` 同级）：
+### 自带字体（首次使用时按需下载）
+
+有两支**自带字体**，都是 **SIL OFL-1.1**（可商用 / 可嵌入 / 可再分发）。它们**不随仓库或发行包分发**
+（加起来约 38 MB），需要时从上游下载到程序目录：
+
+| 字体 | 用途 | 体积 |
+|---|---|---|
+| **霞鹜文楷 Lite**（LXGW WenKai Lite） | 中文正文（字幕/封面） | 13.5 MB |
+| **Noto Color Emoji** | 彩色 emoji | 24.7 MB |
+
+两种下法（都会**校验 sha256**、随字体落盘上游 `OFL.txt` 原文；已装好的会跳过）：
+
+```bash
+vtrim fonts list                # 看库里有什么、自带那两支装没装
+vtrim fonts download            # 下载全部还缺的
+vtrim fonts download --id NotoColorEmoji   # 只下某一支
+```
+
+也可以登录 WebUI（admin）→ 首页「字体库」→ 点「下载自带字体」。
+装好之后，**没选字体的工程**会优先用霞鹜文楷 Lite（栈里写的是它的内部族名，见
+`docs/plan/font-library.md` §15）。
+
+**想用别的字体：把字体文件丢进程序目录的 `resources/fonts/`**
+（与 `vtrim.exe`、`.vtrim/`、`stickers/` 同级），或在「字体库」页导入：
 
 ```
 <程序目录>/
   vtrim.exe
   .vtrim/
   stickers/
-  resources/fonts/          ← 放 .ttf / .otf / .ttc，丢进去就会出现
+  resources/fonts/          ← 放 .ttf / .otf；丢进去就会出现
+    <字体名>/               ← 导入的字体按「一支一个目录」存
+      font.ttf
+      FONT.toml             ← 元数据（内部族名 / 显示名 / 许可 / 是否自带）
 ```
 
 放好之后到精修页：
@@ -649,9 +675,11 @@ cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espea
 - **字幕字体** —— 「生成与导出」卡 → LLM 剪辑参数块 → 「字幕字体」下拉（按片段保存）；
 - **封面字体** —— 封面设计器 → 「排版」组 → 「字体」下拉。
 
-下拉里列出的是**字体库里的文件**（显示名从字体自带的字族名读取，例如 `黑体（simhei）`），
-另有一项「（系统默认）」回到上面的系统字体栈。选完**保存即生效**，不用重跑任何任务：
-预览与"渲染导出"出的成片都会用这个字体。库里没有新字体时，下拉下面会直接写出字体库的完整路径。
+下拉里列出的是**字体库里的文件**，另有一项「（系统默认）」回到上面的系统字体栈。
+选完**保存即生效**，不用重跑任何任务：预览与"渲染导出"出的成片都会用这个字体。
+
+> ⚠️ `.ttc` / `.otc`（字体集合）**用不了** —— 浏览器的 `@font-face` 不认集合，
+> 收进来会出现"预览回退系统字体、出片却用了它"。导入时会被直接拒绝，请先拆包成单个 `.ttf`/`.otf`。
 
 > **想要圆润可爱的标题风格？** 可以自行安装或下载 **乐米波波体**（LemiBoBoTi，杭州乐米网络科技）。
 > 官方授权地址：<https://font.leminet.cn/>。
