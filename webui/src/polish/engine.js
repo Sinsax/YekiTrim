@@ -24,8 +24,8 @@ export function lerp(a, b, t) { return a + (b - a) * t }
 
 // ---- 瞬时特效时长钳制（与 process/fx.rs transient_duration_cap 一致）----
 export const TRANSIENT_CAP = {
-  shake: 0.5, flash: 0.3, blur: 0.4, zoom_bounce: 0.6, stutter: 0.35,
-  split: 0.35, noise: 0.4, pulse: 0.5, hue_shift: 0.5, color_shift: 0.5,
+  shake: 0.5, flash: 0.3, blur: 0.4,
+  noise: 0.4, pulse: 0.5, hue_shift: 0.5,
   vignette: 0.6,
 }
 
@@ -180,6 +180,15 @@ function stickerAnchor(idx, ev) {
 // ---- 构建事件索引（预处理，只跑一次）----
 // opts: { config, subtitles, danmaku, duration, stickerSrc }
 //   stickerSrc(name) → 贴纸资源 URL（来自 config._assets.sticker_map，由调用方解析为媒体 URL）
+/// **索引里预建哪些桶** —— 初始化与排序共用这一份清单（见 `buildIndex` 里那段事故注释）。
+///
+/// ⚠️ 它必须与 `templates/index.html::buildIndex` 的集合**完全一致**（那份是出片权威路径），
+/// `scripts/check-preview-engine.mjs` 会逐项对拍；**加类型时两处一起加**。
+export const INDEXED_TYPES = [
+  'camera', 'sticker', 'shake', 'flash', 'blur', 'overlay',
+  'vignette', 'hue_shift', 'noise', 'pulse', 'sfx',
+]
+
 export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
@@ -196,11 +205,16 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
     segs.push(...kept)
   }
 
-  const idx = {
-    camera: [], sticker: [], shake: [], flash: [], blur: [], overlay: [],
-    sfx: [], stutter: [], split: [], zoom_bounce: [], vignette: [],
-    hue_shift: [], noise: [], pulse: [], color_shift: [],
-  }
+  // ⚠️ **桶清单只能有一份**（2026-10-01 修事故）。以前这里手写对象字面量、下面又手写一条排序数组 ——
+  // 上一轮删类型时两边各改各的，结果这里丢了 `vignette` / `sfx`，而排序那条还留着它们。
+  // 后果不是"少个桶"那么轻：桶是**按需创建**的（见下面的 `else idx[type] = [entry]`），
+  // 所以**工程里恰好没有该类型事件**时它就是 `undefined` ⇒ `getVignette(t, idx.vignette)`
+  // 里 `for (const v of undefined)` 抛错 ⇒ 预览整块被 Vue 卸载（用户报的"视频和控件一起消失"，
+  // 控制台是 `can't access property Symbol.iterator, d.vignette is undefined`）。
+  // 现在：一份 `INDEXED_TYPES`，初始化与排序都用它；模板那份（`templates/index.html::buildIndex`）
+  // 必须有**同一个集合**（`scripts/check-preview-engine.mjs` 逐项对拍）。
+  const idx = {}
+  for (const type of INDEXED_TYPES) idx[type] = []
   const soundEvents = [] // 音效事件表：sfx 类型事件 + 任意带 ev.sfx 的事件
   const ptEvents = [] // playtest 标签表（拍平全部事件）
 
@@ -233,9 +247,7 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
       }
     })
   })
-  ;['camera', 'shake', 'flash', 'blur', 'overlay', 'stutter', 'split', 'zoom_bounce',
-    'vignette', 'hue_shift', 'noise', 'pulse', 'color_shift', 'sfx']
-    .forEach((k) => idx[k] && idx[k].sort((a, b) => a.time - b.time))
+  ;INDEXED_TYPES.forEach((k) => idx[k].sort((a, b) => a.time - b.time))
 
   idx.subs = subtitles || []
   idx.dms = danmaku || []
@@ -336,22 +348,24 @@ export function cameraAt(idx, t) {
   return { zoom, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld }
 }
 
-// ---- 视频层复合状态：shake/blur/colorShift/stutter/split/最终 zoom ----
+// ---- 视频层复合状态：shake/blur/最终 zoom ----
 // 竖屏不再屏蔽这些视觉特效（只有运镜 camera 被屏蔽，见 cameraAt 顶部）。
 // 与 templates/index.html 的 handlers 段保持一致：作用对象本来就对，
 // blur/color_shift 打 #video-wrap、其余打 #source-video，背景层是兄弟节点不受波及。
 export function videoFxAt(idx, t) {
   const shake = getShake(idx, t)
   const blurAmt = getBlur(idx, t)
-  const colorShift = getColorShift(idx, t)
-  const stutter = getStutterVideo(idx, t)
-  const split = getSplitVideo(idx, t)
   const cam = cameraAt(idx, t)
-  const zb = getZoomBounce(idx, t, cam.zoom)
   const pl = getPulse(idx, t, cam.zoom)
+  // ⚠️ **这个返回对象的字段就是预览的契约**（`PolishPreview.vue` 读 `f.shake` / `f.blur` /
+  // `f.camera.handheld` / `f.camera.ox|oy` / `f.zoom`）。2026-10-01 删类型时它被削成了
+  // `{ shake, blur }` ⇒ 预览在 `f.camera.handheld` 上抛 `can't access property "handheld",
+  // i.camera is undefined`（同样会让整块预览消失）。所以：**删字段前先 grep 消费者**，
+  // 并且 `scripts/check-preview-engine.mjs` 会真跑一次断言这几个字段都在。
   return {
-    shake, blur: blurAmt, colorShift,
-    stutter, split, zoom: Math.max(zb, pl), camera: cam,
+    shake, blur: blurAmt,
+    camera: cam,
+    zoom: pl,
   }
 }
 
@@ -448,13 +462,16 @@ export function overlayStops(ev) {
  * 径向：canvas 是 createRadialGradient(960,540,0,…,960)，即中心该色、边缘淡出；
  *      CSS 圆的默认半径是 farthest-corner（16:9 下比 960 大约 15%），预览近似、出片为准。
  */
-export function gradientCss(colors, shape) {
+export function gradientCss(colors, shape, angle) {
   const stops = colors
     .map((c, i) => `${c} ${((i / (colors.length - 1)) * 100).toFixed(1)}%`)
     .join(',')
-  return shape === 'radial'
-    ? `radial-gradient(circle at center, ${stops})`
-    : `linear-gradient(to bottom right, ${stops})`
+  if (shape === 'radial') return `radial-gradient(circle at center, ${stops})`
+  // 没写 angle ⇒ 参照缺省方向 `to bottom right`（**与改造前逐字一致**）；写了就用 CSS 角度
+  // （0 = 向上、顺时针）。⚠️ 与模板 `overlayGradientCss` **必须同口径**（`check-overlay.mjs` 对拍）。
+  if (typeof angle !== 'number' || !Number.isFinite(angle)) return `linear-gradient(to bottom right, ${stops})`
+  const deg = ((angle % 360) + 360) % 360
+  return `linear-gradient(${deg}deg, ${stops})`
 }
 
 export function getOverlayState(idx, t) {
@@ -486,37 +503,15 @@ export function getOverlayState(idx, t) {
         if (solid) return { type: 'color', color: solid, opacity }
         continue
       }
-      if (ot === 'gradient' && stops) return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', opacity }
+      if (ot === 'gradient' && stops) return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', angle: ev.angle, opacity }
       // 类型不认识 / 值不全：继续看窗口里的下一条，别把整窗吃掉
     }
   }
   return null
 }
 
-function getStutterVideo(idx, t) {
-  for (const st of idx.stutter) {
-    const et = st.time, off = st.ev.intensity || 12
-    if (t >= et && t < et + 0.12) return (t - et) < 0.06 ? { x: -off, y: off } : { x: off, y: -off }
-  }
-  return null
-}
 
-function getSplitVideo(idx, t) {
-  for (const sp of idx.split) {
-    const et = sp.time, inten = sp.ev.intensity || 30
-    if (t >= et && t < et + 0.12) {
-      return (t - et) < 0.06 ? { scale: 0.95, skewX: -inten, x: -inten * 0.3 } : { scale: 1, skewX: 0, x: 0 }
-    }
-  }
-  return null
-}
 
-function getZoomBounce(idx, t, curZoom) {
-  for (const zb of idx.zoom_bounce) {
-    if (t >= zb.time && t < zb.time + 0.3) return (t - zb.time) < 0.08 ? curZoom * 1.1 : curZoom
-  }
-  return curZoom
-}
 
 function getPulse(idx, t, curZoom) {
   for (const p of idx.pulse) {
@@ -566,18 +561,6 @@ export function getVignette(idx, t) {
   return 0
 }
 
-function getColorShift(idx, t) {
-  for (const c of idx.color_shift) {
-    const et = c.time
-    if (t >= et && t < et + 1.0) {
-      const dt = t - et
-      if (dt < 0.1) return 'sepia(0.6) saturate(1.4)'
-      const p = (dt - 0.1) / 0.6
-      return 'sepia(' + 0.6 * (1 - p) + ') saturate(' + (1.4 - 0.4 * p) + ')'
-    }
-  }
-  return ''
-}
 
 // ---- 字幕：fade in/out + 高亮分段 ----
 export function subsAt(idx, t) {
@@ -698,12 +681,19 @@ export function danmakuAt(idx, t) {
 }
 
 // ---- 贴纸四阶段：popIn back.out(3) / floatUp / hold / fadeOut ----
+// 窗口 = **事件时长** `dur`（不溢出）：淡出在窗口**内部**消化（`dur - 0.3 -> dur` 渐隐），
+// 所以出点 = 最后一帧。旧判据 `dur + (0.35 + 0.4 + 0.3)` 多显示 0.4 秒 ✗（与模板/CPU 参考同形）。
 export function stickersAt(idx, t) {
   const out = []
   for (const e of idx.sticker) {
     const et = e.time, dur = e.duration || 2.5
-    if (t < et || t > et + dur + 0.65) continue
-    const popIn = 0.35, floatUp = 0.4, fadeOut = 0.3
+    if (t < et || t > et + dur) continue
+    const fadeOut = Math.min(0.3, dur)
+    if (!(fadeOut > 0)) continue   // 退化时长（<= 0）没有可见窗口
+    // 装不下 `popIn 0.35 + floatUp 0.4 + fadeOut 0.3` 时**优先保淡出**：
+    // 前两段按可用时长等比压缩，淡出起点不得早于 0。
+    const k = Math.min(1, Math.max(0, dur - fadeOut) / (0.35 + 0.4))
+    const popIn = 0.35 * k, floatUp = 0.4 * k, fadeStart = dur - fadeOut
     let opacity = 0, scale = 1, rot = 0, yOff = 0
     if (t - et < popIn) {
       const p = (t - et) / popIn
@@ -715,11 +705,12 @@ export function stickersAt(idx, t) {
       const p = (t - et - popIn) / floatUp
       opacity = 1; scale = 1; rot = 0
       yOff = -stickerFloatUp(idx.cv) * p
-    } else if (t < et + popIn + floatUp + dur) {
+    } else if (t < et + fadeStart) {
       opacity = 1; yOff = -stickerFloatUp(idx.cv)
     } else {
-      const p = (t - et - popIn - floatUp - dur) / fadeOut
-      opacity = 1 - p
+      const p = (t - et - fadeStart) / fadeOut
+      // `Math.max(0, …)` 只吃掉上界那一帧的浮点尾数：出点必须**恰好 0**。
+      opacity = Math.max(0, 1 - p)
       scale = 1 - 0.6 * p
       yOff = -stickerFloatUp(idx.cv)
     }

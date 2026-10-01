@@ -7,8 +7,10 @@
 本目录**已有一份 `README.md`**（`api.js` / `engine.js` / `audio.js` 的三行说明 + 那条移植纪律）
 —— **动手前先读它**。与 Rust 侧的对应关系：`engine.js` 是出片模板
 `crates/vtrim-polish/templates/index.html` 的 Canvas 渲染器**移植**（纯函数特效状态机 + 各 `*At(idx, t)`
-预览求值器），**`templates/index.html` 才是真实出片路径**（headless Chrome 渲染），
-`vtrim-render-core/src/timeline.rs` 是第三条（wgpu，未启用）。`canvas.js` 是画布参数 SSOT，
+预览求值器），**`templates/index.html` 才是真实出片路径**（headless Chrome 渲染）。
+⚠️ 曾经还有第三条 `vtrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `vtrim-wasm` 已整体删除
+（GPU 那侧交给独立的 Dhampir 底座）；`timeline.rs` 还在，但只剩 CPU 参考与覆盖层契约的正文，**不是预览的参照**。
+`canvas.js` 是画布参数 SSOT，
 `audio.js` 是 SFX 播放器与全应用共用的音量读写，`fonts.js` 按需加载项目字体。
 
 ## 入口
@@ -91,6 +93,20 @@
   改了 `renderFrame` 附近（模板与 engine 同构）后至少跑一次带字幕的出片 —— 症状是**所有带字幕的
   片段都导不出来、无字幕的正常**。`check-stage-backdrop.mjs` 的 ③b 段钉住这类裸变量（判据走
   **去注释后的源码**，注释里出现同样字样会把判据自己顶翻）。
+
+- ⚠️ **事故（2026-10-01）：删效果类型时"同一个手法"在三处留下连带损伤，预览整块消失**
+  （用户报"视频和控件一起消失"，而服务端日志全是 200 —— 因为 Vue 遇到 render/setup 抛错会**卸载整块子树**）：
+  ① `buildIndex` 的**桶清单**丢了 `vignette`/`sfx`（模板那份是全的）—— 桶是**按需创建**的，
+  工程里恰好没有该类型事件时它就是 `undefined` ⇒ `for (const v of idx.vignette)` 抛
+  `Symbol.iterator ... undefined`（实测那个工程有**五个**类型没有事件 ⇒ 会连炸五处）；
+  ② `videoFxAt` 的**返回对象**被削成 `{shake, blur}` ⇒ 预览读 `f.camera.handheld` 抛
+  `can't access property "handheld", i.camera is undefined`；
+  ③ 词汇表 `overlay.ui` 写成**对象** `{}` ⇒ 编辑器 `(e.ui ?? []).includes()` 抛
+  `includes is not a function`。
+  **防它**：桶清单只许有一份（`INDEXED_TYPES`，初始化与排序共用；必须与 `templates/index.html` 同集合）、
+  删字段前先 grep 消费者、`ui` 只许是数组 —— 三条都由 **`node scripts/check-preview-engine.mjs`**
+  真跑一遍钉住（它 import 本模块、用**空工程**建索引跑那一族求值器；`--self-test` 证明删桶会抛）。
+  **静态读源码抓不住这一类**，所以它在门禁链里（`.workbuddy/gates.mjs`）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

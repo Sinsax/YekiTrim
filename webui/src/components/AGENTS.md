@@ -12,18 +12,20 @@
   `playing`/`reprocessBusy`/`propsTarget`(默认 `'#tl-props-host'`)；emits `seek`/`toggle`/`preview`/`done`/
   `reprocess`/`retried`/`redo-segment`。**`preview` = 本地改动立刻镜像给页面**（不落盘、不重挂载）；
   **`done` = 一次编辑真的做完了**，页面据此跑后处理。
-- `PolishPreview.vue`（自绘 DOM/GSAP 层 + 可选真渲染）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
-  `metaDuration`/`wgpuRender`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`；
+- `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
+  `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`；
   emits `time`/`playing`/`update:selectRect`/`update:point`。
 - `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（只在该片段被占用时禁用「生成封面」）。
+  **图层面板**（左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」与
+  `docs/webui-components.md` ③。
 - 其余组件逐个的职责与规则见「边界 · 其他组件」。
 
 ## 边界
 > 组件逐个的详细清单、实测数字、几何/常量表与推导见 **`docs/webui-components.md`**，按组件分节：
-> ① 时间轴编辑器（布局几何 / 响度包络线 / 时间模型与控件 / 落盘与后处理 / Teleport 与 headless harness /
-> 播放头·空分段·读取失败）② 精修预览 ③ 封面设计器（三层与背景模式 / 关键帧手势 / 安全区线框几何 /
-> 标题自动排版 / 镜像清单 / 素材黑边根因 / 三处同步与写入门闸）④ 运镜（倍率表 / 硬切与手持摇摆 /
-> 画中画配额·对齐·收工 / 位移 / 默认与迁移）⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
+> ① 时间轴编辑器（布局几何 / 响度包络线 / 时间模型与控件 / 落盘与后处理 / Teleport・headless harness）
+> ② 精修预览 ③ 封面设计器（图层栈与画布拖动 / 类型选择器 / 调序与隐藏 / 安全区几何 / 标题自动排版 /
+> 镜像清单 / 两种「隐身」根因 / 四处同步）④ 运镜（倍率表 / 硬切与手持摇摆 / 画中画配额·对齐·收工 / 位移 / 迁移）
+> ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
 ### 时间轴编辑器
 - **布局必须保持紧凑**（用户要求精简；它是竖高大户，且**独占一整行**：v6.4 起横向空间 = 整个内容宽度，
   别再把它塞回左列）：泳道 **26px（原 34）×7 条 + 标尺 20px = 202px**；卡片头取消 —— 标题/提示经 `<slot name="head">` 进 `.tl-head`，与「去静音/撤销去静音」「重新后处理」同排。
@@ -49,10 +51,12 @@
   控件 `change`（`input` 每敲一键**不算**）/取消选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；**三处吸附与 `cap_events` 数量抽稀全部跳过**。
 - **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中状态与编辑逻辑留在组件里）。
-  **⚠️ 必须门控 Teleport**：Teleport 的目标在**挂载时**用 `document.querySelector` 解析，而子组件挂载时整棵子树还没 `hostInsert` 进 document → 直接 `:to="propsTarget"` 解析到 null、**面板整块不渲染**。做法：`teleportTo = ref('')`，`onMounted` 里 query 到了再设值（`nextTick` 重试 + 失败 warn）。
+  **⚠️ 必须门控 Teleport**：目标是**挂载时**解析的，而那时子树还没进 document ⇒ 直接 `:to="propsTarget"` 会
+  解析到 null、**面板整块不渲染**（做法与踩坑：`docs/webui-components.md` ①.5）。
 - ⚠️ **别用裸 `<template>` 包裹要无条件渲染的内容**：Vue 会把它渲染成真正的 `<template>` 元素，
   要无条件渲染就直接把内容展开。同理：**前端布局类改动必须做几何断言**（`getBoundingClientRect()` 宽高 > 0）。
-- ⚠️ 写 headless harness 时：**`app.mount(host)` 会清空 `host` 的内容** —— 挂载点（`#tl-props-host`）要挂在 host 的**内层节点**、组件 mount 到另一个内层节点；选中块靠 **pointerdown**（`startPointer`，`block.click()` 不会选中）。
+- ⚠️ 写 headless harness 时：**`app.mount(host)` 会清空 `host` 的内容**、选中块只能靠 **pointerdown**
+  （`block.click()` 不选中）—— 布局与做法见 `docs/webui-components.md` ①.5。
 - **播放头跟随 = 只在播放时跟，且越界才滚、只滚刚好**：`watch(currentTime)` 第一句是 `if (!props.playing) return`；
   `drag`/`rulerDragging`/手动滚动后 2 秒（`userScrolling`）一律不跟。**别再退回"每帧把播放头钉在 30% 处"**。
 - **分段为空时时间轴照常渲染**：「去静音」在时间轴头部**常显**，**别再加回 `v-if="segments.length"` 门控**；
@@ -60,36 +64,76 @@
   `flushSave` 开头 `if (loadError.value) return`；横幅 + 「重试」在 `tl-head` 下面（**不能放进 Teleport 的面板**）；
   `/api/polish/subtitles` 的 **404 是空态、不是错误**；**不许静默丢弃**；`watch(() => props.dir)` 里 `commitEdit` 之后必须 `resetTimelineState()` 再 `loadData()`
 ### 精修预览（`PolishPreview.vue`）
-- 自绘层与出片模板 `crates/vtrim-polish/templates/index.html` **必须同口径**（覆盖层色档 `gradientCss`、
-  失败则**回退 server 单帧** `POST /api/polish/render-frame`（裸 `fetch`，写请求必须自己带 `csrfHeaders()`）；
+- ⚠️ **跳手动屏蔽区间 = A/B 预滚（首选）+ 定格遮罩（兜底），不许退回"直接 seek"**：`videoRef` 是
+  **computed**（换台靠 `activeStage`；Dhampir 那条腿靠 `engine.bindSource` 换绑 + 源没就绪不画），
+  改回模板 ref、删掉备用源/那道闸门 = A/B **静默失效**。详见 `docs/webui-components.md` ②。
+- 自绘层与出片模板 `crates/vtrim-polish/templates/index.html` **必须同口径**（覆盖层色档 `gradientCss`
+  等纯函数从 `polish/engine.js` 来）；
+  ⚠️ **只有自绘这一层**：原来还有两条真渲染通道（wasm 实时 + `POST /api/polish/render-frame` 单帧回退），
+  随「作废 wgpu」一起删掉了 —— **别再把它接回来**，要真渲染就走 Dhampir 底座那条链路。
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
 - 音量/静音 = **总音量，必须同时落到 `<video>` 元素**（**只调 SFX 播放器就是 bug**）；读回用 `isFinite` + clamp，
   **不能写 `parseFloat(...) || 1`**。**别再写死 `66vh`**。
+- ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ `SYSTEM_FONT_STACK`、`--font-bold-file`）：
+  漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
 ### 封面设计器（`CoverDesigner.vue`）
-- **三层：文字 / 关键帧 / 背景**（`#title` / `#frame` = `_cover_frame.jpg` / `#bg`）：**三层各有各的图源，谁也不许覆盖谁**。
-- ⚠️ **导入背景图片写的是 `_cover_bg.jpg`**（`/api/polish/cover-background` 同时把 `bg_mode` 设成 `image`）。
-  **别再写回 `_cover_frame.jpg`** —— 那是"背景替换关键帧"的老 bug（用户报过「又把关键帧那一层给我删了」）；`cover.image` 导入时**不要清空**（它也是关键帧的来源之一）。
-- ⚠️ **出片不再删 `_cover_frame.jpg`**（`cmd_cover` 末尾那句 `remove_file` 已删）：它就是关键帧层的图源，删了等于①用户导出的那一帧白导、②下次出片又按 `frame_pos` 重新截、同一份封面每次换脸。
-- ⚠️ **关键帧文件可能不存在**（新工程没导出过、也没出片过）：模糊背景会先 404、图被 v-if 摘掉像"没运行" → `onBgImageError()` **只对 blur 模式**、**不带 time** 调 `/api/polish/cover-frame`（按 `[cover] frame_pos` 截），只补一次（`bgFrameTried`），再失败提示手动「导出关键帧」。
-- **安全区线框**：**16:9 安全区**（`.guide-169`）= `width:95%; height:95%` 居中 → 舞台坐标 **1824×1026**；
-  **4:3 裁切区**（`.guide-43`）= `height:100%` + `aspect-ratio:4/3` 居中 → **1440×1080**。
-  ⚠️ **别写成 `inset:5%`**：CSS 的 inset 百分比是**横向按父宽、纵向按父高**解析的，看着像等比其实不是（会得到 1728×972，连 16:9 都不是）；等比只能写 width/height。
-- ⚠️ **只画在设计器里**：`templates/cover.html` 与 `cover.rs` 一个字都没改，所以线框**不可能**进入成片。
-  将来若要往 CLI 那个独立预览页加，必须同时补 `html.export .guide-layer{display:none}`，否则进成片。
-- **标题首次自动排版 `fitTitleIntoSafeArea()`**：触发只有两处（`loadCoverConfig` 发现磁盘上 `title_lines` **为空**、
-  `generateTitleByLlm` 拿到新标题），手动操作**一律不触发** —— **别在 watch 里接它**。
-  **已有封面一律不碰**（判据 = 磁盘上有没有 `title_lines`）；只动 `font_size`/`text_x`/`text_y`（必要时一次 `text_width`）。
-- ⚠️ **默认对齐是 `left`**（`default_cover_text_align()`，2026-09 由 `center` 改来）：已有工程的 `polish.toml` 都显式写了 `text_align`，字段存在就不走默认；**不要顺手改 `cover.rs::cover_text_align` 的 `_ => ("center","center")` 兜底** —— 那个 `_` 同时兜着合法值 `"center"` 本身，改了会把显式居中的老封面一起翻成左对齐。
-- ⚠️ **`text` 是用户输入，进模板前必须 `escape_html`**（不转义＝往封面 HTML 里注模板，有单测）。
-- ⚠️ **设计器预览 ⇄ 出片的镜像清单**（用户报过"设计器和实际渲染的图片不一致"；下列每一项
-  emoji 字号 `48+amount×240`、`drop-shadow(0 6px 14px)`，预览一律乘 `stageScale`）·
-  **`liverOrigin()` 的优先序必须与 `region_origin` 一致**：自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%` ·
-- · ⚠️ **设计器的"素材左右黑边"**（用户报过"设计器里素材左右两条黑边、出片正常"）：`contain` 让出的留白由**元素自身背景**填充，而 `styles/app.css` 的全局元素选择器 `video { background:#000; border-radius:var(--r-sm) }` 会穿透 `.stage-video`（类选择器只覆盖自己写过的属性），还压在 `.stage-bg`（z-index 0 < `.stage-media` 的 1）之上把模糊背景层整个盖住。所以 `.stage-video` 的 `background:transparent; border-radius:0` 是**必需的覆盖、不是装饰**；出片模板用 `<img>` 且不引 app.css，所以**只有设计器**这样（根因与几何钉在 `node webui/scripts/check-cover-stage.mjs`）。
-- **三处必须同步**：`CoverConfig`、`/api/polish/cover-config` 的白名单 patch（漏键＝"点了没反应"）、`templates/cover.html`。
-  `sanitize_hex_color`（**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`
-  （只有 `blur` 走模糊，其余一律 `color`）。`configLoaded` 是**写入门闸**：读失败必须出错误条 + 「重试」。
+- **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」（用户要求换位）。
+  ⚠️ 面板是**定高**的（`syncControlsBound` 给 `height`，不是 `max-height`；预览矮到放不下时还有
+  `CONTROLS_MIN_H` 380px 下限，否则 `overflow:hidden` 会裁掉最底下的工具条），`.lyr-list` 用 `flex:0 0 50%`
+  **钉在面板下半部**（⚠️ shrink 必须是 0）—— 属性面板内容长短不再让列表上下跳（改回 `auto` 高度就会跳）。
+  列宽 = `minmax(0,1fr) minmax(440px, 40%)`（用户要求：预览小一点、右栏宽一点；改前定宽 372px）。
+  列表**上 = 更靠前** = `[cover] layers` 的**倒序**（栈从下到上）。顺序与可见性都落盘，出片由
+  `cover.rs::resolve_cover_stack`/`plan_cover_layers` 注入 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/
+  `layerStyle` 是**镜像**（容错规则一起抄）——**两边必须一起改**。细节见 `docs/webui-components.md` ③。
+- **图层行** `[拖柄 ⠿][眼睛][缩略][名字][徽标][垃圾桶]`：**眼睛 = 非破坏性隐藏**（`visible:false` → `display:none`，
+  行留着淡化；安全区那两行走 localStorage）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即恢复；
+  **特效/表情连 `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。
+  ⚠️ 别退回"用属性字段模拟开关"（v1 那套存续判据已废）。
+- **拖动排序**：行上 HTML5 DnD + 2px 插入指示线（显示序 = 栈倒序，换算集中在 `moveLayerTo`）；快捷键绑
+  `.controls`（**别挂 window**）：`Ctrl/Cmd+[ ]` 上下移、加 `Shift` 置顶底、`Delete` 删层。
+- **画布拖动跟选中层走**（`dragTarget` 是唯一判据）：视频预览→`bg_x/bg_y`（滚轮 `bg_zoom`）· 文字→`text_x/text_y` ·
+  特效/表情→`x/y`（滚轮 `amount`）· 滤镜/背景/安全区→**不可拖**（`not-allowed`）。`Shift` 约束单轴。
+- **文字面板**（用户样稿）：左文本框 / 右控件列**各占 50%**（LLM 生成标题 · X · Y · 字体 · 字号），下面两列一行
+  （对齐·行距 / 描边·字距）→ 高亮色·文字阴影 → 高亮关键词。**每个数值都是「滑块 + 行尾可填数字」**
+  （`.rv-input`：滑块有 step 栅格，手填才落得到栅格之外；夹 `[min,max]`、**不吸附 step**、清空/非数字不写模型）。
+  没用 `SliderField.vue`：它 `@container 220px` 会把标签挤到第二行（同一条理由的紧凑版）。
+- ⚠️ **高亮词要显示"出片真正在用的那串"**：`cover.highlight_keywords` 为空时出片**回退** `[filter] highlight`
+  （`cover.rs::cover_highlight_words`）—— 面板必须照实显示它并写明来源（`hlFromFilter`/`hlSourceHint`），
+  用户一增删就写进封面自己的那份。以前只显示封面那份 → "看着没设置、其实在生效"（用户报过「高亮词没有实际使用上」）。
+- **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
+  `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**＝选中/打开）。
+  视频预览与安全区不在菜单里。**文字预设已删**（"只给基础功能"）：`presets`/`applyPreset`/`.preset-row` 一起没了，
+  ⚠️ CLI 侧 `polish cover --template` 还在。
+- ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许再写 `.stage-bg/.stage-media/.vignette-layer/
+  .gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面（拖拽层 900 / 线框 950）。
+- ⚠️ **特效要有槽位结构**：`.fx-slot`（承载 z-index）> `.fx-item`，与出片 HTML 同构；`overlay` 的槽位必须带
+  `isolation:isolate`（改造前它没真混合，省了老封面变色），`blur` 的槽位**不能**加；`.fx-layer` 也不许有 z-index。
+- **三层各有各的图源，谁也不许覆盖谁**（文字 / 关键帧 `_cover_frame.jpg` / 背景 `_cover_bg.jpg`）。
+- ⚠️ **属性面板类名不能叫 `.pane`**：`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**
+  （同 `.stage-video` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0 高）。
+  两条钉子 = `check-cover-stage.mjs` ⑥。⚠️ 删掉选中的层后要自动落到文字/栈顶，别让面板空着。
+- ⚠️ **导入背景图片写 `_cover_bg.jpg`**（同时置 `bg_mode=image`），**别再写回 `_cover_frame.jpg`**；
+  `cover.image` 导入时不要清空；⚠️ **出片不再删 `_cover_frame.jpg`**（它就是关键帧层的图源）。
+- ⚠️ **关键帧文件可能不存在**：模糊背景先 404 → `onBgImageError()` **只对 blur**、**不带 time** 调
+  `/api/polish/cover-frame`，只补一次（`bgFrameTried`），再失败提示手动「导出关键帧」。
+- **安全区线框**：`.guide-169` = `width:95%; height:95%`（1824×1026）· `.guide-43` = `height:100%` +
+  `aspect-ratio:4/3`（1440×1080）；⚠️ **别写 `inset:5%`**（百分比横竖不同基准，会得到 1728×972）；
+  显隐 = 列表里那两行的眼睛，偏好 `localStorage['vtrim.ui.coverGuides']`；⚠️ **只画在设计器里**。
+- **标题首次自动排版 `fitTitleIntoSafeArea()`**：只在两处触发（磁盘 `title_lines` 为空；LLM 拿到新标题），
+  手动操作一律不触发（**别在 watch 里接**）；已有封面不碰（判据 = 磁盘上有无 `title_lines`），只动字号/位置。
+- ⚠️ **默认对齐 `left`**、`text_x = "35%"`：老工程字段存在就不走默认；**别改 `cover.rs::cover_text_align` 的
+  `_ => ("center","center")` 兜底**（那个 `_` 也兜着合法值 `"center"`）。⚠️ `text` 进模板前必须 `escape_html`。
+- ⚠️ **镜像清单**（用户报过"设计器与成片不一致"）：字体栈 · 描边 `#2a2522` · 阴影 `0 5px 22px rgba(0,0,0,.78)`
+  （×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index 走同一个栈** ·
+  特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
+  `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
+  `bg_zoom` 0.5~3。
+- ⚠️ **设计器"素材左右黑边"**：`app.css` 的全局 `video{background:#000;border-radius:var(--r-sm)}` 穿透
+  `.stage-video`（类选择器只覆盖自己写过的属性）→ `background:transparent; border-radius:0` 是**必需的覆盖**（②）。
+- **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器镜像**；
+  `sanitize_hex_color`、`cover_bg_mode` 只在 `cover.rs` 一份。`configLoaded` 是**写入门闸**：读失败出错误条 + 「重试」。
 ### 运镜（camera）
 - **倍率只有一张表**：`CameraStyle::factor`，四处都走它。⚠ 模板 canvas 路径曾硬编码 `1.8/1.5` 且完全不读
   `[style.camera]`，而它才是出片路径（`chrome-render` 为默认出片路径）——别再把倍率写回去。

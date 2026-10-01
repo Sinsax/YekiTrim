@@ -1,7 +1,12 @@
 // 精修 API —— 唯一的 polish 调用出口。
 //
-// 多用户契约（P2 起）：写请求统一带 `{ project, dir }`，`dir` 是**项目内相对路径**
-// （如 `output/clips/clip-01`）；服务端在 scope 守卫里归一化并校验归属。
+// 多用户契约（P2 起）：写请求统一带 `{ project, dir }`。
+//
+// ⚠️ **`dir` 是片段目录的绝对路径，不是项目内相对路径。**
+// 服务端那边是 `validated_project_dir(dir)`：非空 + `Path::is_dir()`，
+// 然后按它反查归属（`PolishPreview.vue` 的注释也写着"`dir` 在精修页是绝对路径"）。
+// 这里以前写的是「项目内相对路径（如 `output/clips/clip-01`）」—— **那句是错的**，
+// 而它错得有代价：照它拼出来的路径一定 404，且「查不到目录」与「路径写错」长得一样。
 import { api } from './client'
 
 // 区域名（与 polish.toml 的 [layout.*] 一一对应）。
@@ -87,10 +92,24 @@ export const runLlmSegment = (pid, dir, index) =>
 export const runProcess = (pid, dir) => startJob('/api/polish/process', pid, dir)
 export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silence', pid, dir, extra)
 /** 渲染导出：输出固定为项目内相对路径（默认 export.mp4）；
- *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则） */
-export const runRender = (pid, dir, outputFile = 'export.mp4') =>
-  startJob('/api/polish/render', pid, dir, { output_file: outputFile })
-export const runCover = (pid, dir) => startJob('/api/polish/cover', pid, dir)
+ *  **同名不覆盖** —— 已存在时写成 `export_1.mp4`（`render::unique_output_path`，封面同一套规则）。
+ *
+ *  `renderer` = 出片通道（`'dhampir'` 底座 / `'chrome'` 本仓兜底）。**留空 = 不传**：
+ *  默认值只有一处（CLI 的 `--renderer`，现在是 dhampir），前端不抄第二份、也不写回落。 */
+export const runRender = (pid, dir, outputFile = 'export.mp4', renderer = '') =>
+  startJob('/api/polish/render', pid, dir,
+    renderer ? { output_file: outputFile, renderer } : { output_file: outputFile })
+/** 生成封面。`renderer`：`chrome`（默认）| `takumi`（静态渲染，不出浏览器、内存小）；不传 = 服务端默认。 */
+export const runCover = (pid, dir, renderer) =>
+  startJob('/api/polish/cover', pid, dir, renderer ? { renderer } : {})
+/** 底座**出片**通道的就绪位（M3）：`{ready, binary, preview, translator, font, contract_version, problems[]}`。
+ *  渲染弹窗打开时调一次 —— "底座不可用"要在**点渲染之前**可见，而不是任务跑到一半才失败。 */
+export const fetchDhampirStatus = (pid, dir) =>
+  api('/api/polish/dhampir-status', {
+    method: 'POST',
+    body: JSON.stringify({ ...scoped(pid, dir) }),
+    label: '底座出片通道就绪位',
+  })
 export const coverTitle = (pid, dir) => startJob('/api/polish/cover-title', pid, dir)
 export const coverFrame = (pid, dir, time) => startJob('/api/polish/cover-frame', pid, dir, { time })
 export const coverConfig = (pid, dir, cover) => startJob('/api/polish/cover-config', pid, dir, { cover })
@@ -98,9 +117,9 @@ export const coverBackground = (pid, dir, imageData) =>
   startJob('/api/polish/cover-background', pid, dir, { image_data: imageData })
 export const coverPreview = (pid, dir) => startJob('/api/polish/cover-preview', pid, dir)
 
-/** 渲染单帧预览（wgpu feature 关闭时后端回 404/400，前端不显示入口） */
-export const renderFrame = (pid, dir, t) =>
-  startJob('/api/polish/render-frame', pid, dir, { t })
+// ⚠️ 这里曾经有 `renderFrame`（`POST /api/polish/render-frame`，wgpu 单帧真渲染预览）——
+// 那条 GPU 链路已删除（GPU 那侧交给独立的 Dhampir 底座），预览只走 `polish/engine.js` 自绘。
+// 别把它加回来：要真渲染预览就走底座那条链路。
 
 export const fontUrl = (pid, dir, name) =>
   `/api/polish/font?${qs(pid, dir)}${name ? '&name=' + encodeURIComponent(name) : ''}`
