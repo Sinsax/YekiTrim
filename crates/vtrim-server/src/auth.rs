@@ -415,7 +415,10 @@ impl AuthService {
             .set_password_by_id(user_id, &new_hash, false)
             .map_err(internal)?;
         let removed = self.db.delete_user_sessions(user_id, Some(current_session)).unwrap_or(0);
-        user::remove_initial_password_file();
+        // 用户自设的密码 ⇒ 处置（删除）初始密码文件（2026-10-02 统一到 retire）。
+        // ⚠️ 别再在这里手写 remove_initial_password_file —— 「改密入口必须处置该文件」
+        // 这条规矩只该有一个落点（user::retire_initial_password_file）。
+        user::retire_initial_password_file(None);
         let _ = self.db.audit_ip(
             Some(user_id),
             "password_change",
