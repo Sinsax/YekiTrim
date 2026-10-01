@@ -280,6 +280,10 @@ pub struct CoverConfig {
     pub stroke: u32,
     #[serde(default = "default_cover_hl_color")]
     pub hl_color: String,
+    /// 高亮词的相对字号（1.0 = 与标题同号）。只作用于 `<span class="hl">` 那几段，
+    /// 出片模板与设计器用**同一个** `--hl-fs` 变量（镜像清单里的一条）。
+    #[serde(default = "default_cover_hl_font_scale")]
+    pub hl_font_scale: f64,
     #[serde(default = "default_cover_text_width")]
     pub text_width: f64,
     /// 文字中心点百分比, 如 "30%"
@@ -394,6 +398,9 @@ fn default_cover_frame_pos() -> f64 { 0.4 }
 fn default_cover_font_size() -> u32 { 120 }
 fn default_cover_stroke() -> u32 { 20 }
 fn default_cover_hl_color() -> String { "#ffcc00".into() }
+
+/// 高亮词与标题同号 = 1.0（老工程零回归：不写这个键就是原来的样子）
+fn default_cover_hl_font_scale() -> f64 { 1.0 }
 fn default_cover_text_width() -> f64 { 0.62 }
 fn default_cover_text_x() -> String { "35%".into() }
 fn default_cover_text_y() -> String { "50%".into() }
@@ -420,6 +427,7 @@ impl Default for CoverConfig {
             font_size: default_cover_font_size(),
             stroke: default_cover_stroke(),
             hl_color: default_cover_hl_color(),
+            hl_font_scale: default_cover_hl_font_scale(),
             text_width: default_cover_text_width(),
             text_x: default_cover_text_x(),
             text_y: default_cover_text_y(),

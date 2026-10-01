@@ -222,6 +222,9 @@
                 <button class="mini-btn" @click="addHighlightKeyword"><Icon name="plus" :size="11" /> 添加</button>
               </div>
             </div>
+            <!-- 高亮字号：只作用于高亮词那一段（不改字体、不改整块标题的字号）。
+                 落到 `--hl-fs`，出片模板的 `.hl` 读同一个变量 ⇒ 预览与成片同口径。 -->
+            <div class="mini-field mt-4"><label>高亮字号</label><input type="range" min="0.5" max="2" step="0.05" v-model.number="hlFontScale" title="只改高亮关键词那一段的字号，不动字体与整块标题字号"><input class="rv-input" type="number" min="0.5" max="2" step="0.05" :value="hlFontScale" title="可直接填写（0.5 ~ 2 倍）" @change="numBind(hlFontScale, (v) => (hlFontScale = v), $event, 0.5, 2)"></div>
             <!-- 高亮词：出片认的是 `cover.highlight_keywords`，**它为空时会回退用 polish.toml 的
                  `[filter] highlight`**（`cover.rs::cover_highlight_words`）—— 所以这里必须把回退那一串
                  也显示出来，否则"看着没设置、其实在生效"（用户报过「高亮词没有实际使用上」）。 -->
@@ -426,6 +429,8 @@ const textWidth = ref(62)
 const fontSize = ref(120)
 const stroke = ref(20)
 const hlColor = ref('#ffcc00')
+// 高亮词的相对字号（1.0 = 与标题同号）；落到根变量 --hl-fs，出片模板的 .hl 读同一个变量
+const hlFontScale = ref(1)
 const highlightKeywords = ref([])
 /** 高亮词现在**是回退来的**（`cover.highlight_keywords` 为空 → 用 `[filter] highlight`）。
  *  只为了让面板说实话：用户一增删就固化成封面自己的那份。 */
@@ -1019,6 +1024,7 @@ const titleStyle = computed(() => {
     WebkitTextStroke: ((stroke.value || 20) * s).toFixed(1) + 'px #2a2522',
     textShadow: coverShadowCss(s),
     '--hlc': hlColor.value,
+    '--hl-fs': (Number(hlFontScale.value) || 1) + 'em',
     textAlign: align.value || 'left'
   }
 })
@@ -1443,6 +1449,7 @@ function coverConfigPayload() {
     font: coverFont.value,
     stroke: stroke.value,
     hl_color: hlColor.value,
+    hl_font_scale: Number(hlFontScale.value) || 1,
     // 高亮词：**还在沿用 `[filter] highlight` 时就照旧写空数组**（空 = 出片回退用它），
     // 这样"打开一次设计器"不会把继承关系冻成封面自己的（用户以后在设置页改关键词，封面还能跟着走）。
     // 用户一增删，`hlFromFilter` 变 false，写的就是封面自己那份。
@@ -1780,6 +1787,7 @@ async function loadCoverConfig(retrying = false) {
     if (coverFont.value) ensureFontFace(props.pid, props.dir, coverFont.value, { onDebug: (m) => addClient('debug', m, 'cover') })
     stroke.value = cfg?.cover?.stroke || 20
     hlColor.value = cfg?.cover?.hl_color || '#ffcc00'
+    hlFontScale.value = Number(cfg?.cover?.hl_font_scale) || 1
     // 高亮词：与 `cover.rs::cover_highlight_words` **同一套回退** —— 封面自己的为空时用
     // `[filter] highlight`（「设置 · 关键词过滤」里那串）。以前只显示封面那份，于是"出片在给标题上高亮、
     // 面板里却是空的"（用户报过「高亮词没有实际使用上」）。这里照实显示，改一下就固化。
@@ -2024,7 +2032,7 @@ onUnmounted(() => {
    症状很具迷惑性：字体照旧会变（`fontFamily` 在父级 `.title-text` 上，span 继承），只有**高亮色**
    静默失效、退成继承来的 `#f0e6d3` —— 用户报的「关键词字体被改了、高亮色没显示」。
    出片侧没这个问题：`cover.rs` 注入 <span class="hl"> 到模板的**全局** <style> 里。 */
-.title-text :deep(.hl) { color:var(--hlc, #ffcc00); -webkit-text-stroke:inherit; paint-order:stroke fill; }
+.title-text :deep(.hl) { color:var(--hlc, #ffcc00); font-size:var(--hl-fs, 1em); -webkit-text-stroke:inherit; paint-order:stroke fill; }
 .seek-row { display:flex; align-items:center; gap:8px; }.seek-range { flex:1; min-width:0; padding:0; }
 .seek-time { flex:none; min-width:120px; text-align:right; }
 .w-time { width:90px; flex:none; }

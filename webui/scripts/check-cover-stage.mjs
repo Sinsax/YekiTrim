@@ -301,6 +301,26 @@ check('[变异] :deep() 去掉（退回 scoped 直配 .hl）→ 判据翻面',
   hlRuleIsDeep(designer.replace('.title-text :deep(.hl)', '.title-text .hl')) === false, true)
 check('[变异] 高亮色不接 --hlc（写死颜色）→ 判据翻面',
   /:deep\(\.hl\)\s*\{[^}]*color\s*:\s*var\(--hlc/.test(designer.replace('color:var(--hlc, #ffcc00)', 'color:#ffcc00')) === false, true)
+// 高亮字号（2026-10 用户要求「给高亮区域一个字号设置」）：**两端必须读同一个变量** ——
+// 设计器把 `--hl-fs` 写进行内 style、出片模板从 `__HL_FS__` 填进 `:root`（静态渲染器不跑 JS，
+// 变量只能从那儿来）。任一端写死 px/em，预览与成片就会各按各的字号排。
+check('设计器 .hl 规则的字号走 --hl-fs 变量',
+  /:deep\(\.hl\)\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(designer), true,
+  '写死字号 → 用户调「高亮字号」时预览不动（或出片不动）')
+check('titleStyle 注入 --hl-fs（设计器那侧的源头）', /'--hl-fs'\s*:/.test(designer), true,
+  '变量没了 → :deep(.hl) 退到 fallback 1em，高亮字号设置不生效')
+check('出片模板的 .hl 读同一个 --hl-fs（与设计器同口径）',
+  /\.hl\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(coverHtml), true,
+  '模板 .hl 不读变量 → 成片恒为 1em，"预览调了、成片没变"')
+check('出片模板 :root 填了 --hl-fs 占位符（静态渲染路径的变量源）',
+/--hl-fs\s*:\s*__HL_FS__/.test(coverHtml), true,
+  ':root 少了它 → 静态渲染器把整条 var(--hl-fs) 声明丢掉（Takumi 不跑 JS，只能从这儿取值）')
+check('cover.rs 替换了 __HL_FS__', /__HL_FS__/.test(coverRs), true,
+  '占位符没被替换 → 成片里出现字面量 __HL_FS__、字号整条失效')
+check('[变异] 设计器字号写死（不接 --hl-fs）→ 判据翻面',
+  /:deep\(\.hl\)\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(designer.replace('font-size:var(--hl-fs, 1em)', 'font-size:1em')) === false, true)
+check('[变异] 模板 .hl 去掉 font-size（出片不认字号）→ 判据翻面',
+  /\.hl\s*\{[^}]*font-size\s*:\s*var\(--hl-fs/.test(coverHtml.replace('font-size:var(--hl-fs, 1em); ', '')) === false, true)
 
 // ── ⑦ 图层栈在两端都不许被"两处实现"拆开 ─────────────────────────────────────
 // 图层栈的 z-index 注入必须**只有一条替换链**（`build_cover_page`）：以前预览与出片各写一份，
