@@ -744,6 +744,17 @@ async function startDhampir() {
     return { assetId: a.id, uri: a.uri, fps, spans, activeKey: null, bytes: null, bytesIdx: -1, count: 0, lastFrame: -1 }
     // 「产品没建」与「驱动的查询看不到」这两种可能。
   })
+  // **预热贴纸帧表**（2026-10-01）：服务端第一次被要某张贴纸的某一帧时，得**整段解码**那张
+  // GIF（debug 构建实测单张 3~9 秒、`clip-04` 四张合计 20.2 秒）。而逐帧接口那头
+  // `Promise.race([…, 30ms])` 超时就"这一帧不交" ⇒ 症状是**播放走到贴纸先空一段、然后突然出现**。
+  //
+  // 这里在**页面加载时**就把这件事做掉：解码挪到"用户还没播到那里"的时候，真正播到时全部命中
+  // 缓存（实测 10~14ms）。**fire-and-forget**：不 await、不挡任何东西，失败了也不影响播放
+  // （真有问题会在播到那一帧时由 `/polish/sticker-frame` 照常报错，不会静默）。
+  //
+  // ⚠️ 服务端**逐张串行**解（它是 `blocking` 池里的一个循环），所以这里**不要**按贴纸并发发多个
+  // 请求 —— 那只会让同一张 CPU 被几路抢，反而更慢。
+  callPrewarmStickers()
   for (const v of dhampirVideos) { v.muted = true; v.play().catch(() => {}) }
 
   // ④ **字幕 / 弹幕**。
@@ -1403,6 +1414,20 @@ const dmLayerStyle = computed(() => {
 
 function onStickerError(st) {
   stickerFailed.value = { ...stickerFailed.value, [st.name]: true }
+}
+
+// 贴纸帧表预热（fire-and-forget，见 `dhampirStickers` 构建处那段说明）。
+//
+// 只发**一次**请求，把当前工程里所有贴纸的 uri 一起交上去；服务端在 `blocking` 池里逐张解。
+// 失败按 `debug` 记 —— 它是纯优化，失败不该在日志面板里刷 warn 让人以为出了错。
+function callPrewarmStickers() {
+  const assets = (dhampirStickers || []).map((s) => s.uri).filter(Boolean)
+  if (!assets.length) return
+  api('/api/polish/sticker-prewarm', {
+    method: 'POST',
+    label: '贴纸预热',
+    body: JSON.stringify({ dir: props.dir, assets }),
+  }).catch(() => null)
 }
 
 // ---- 跳手动屏蔽区间：定格遮罩（2026-09）----

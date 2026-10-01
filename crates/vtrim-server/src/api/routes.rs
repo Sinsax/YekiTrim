@@ -131,6 +131,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
         // 贴纸的**第 k 帧**（浏览器侧没有可用的多帧图解码，见那个函数的说明）
         .route("/polish/sticker-frame", post(polish_sticker_frame))
+        // 贴纸帧表**预热**：页面加载时就把"播到才解"的整段解码挪走（见那个函数的说明）
+        .route("/polish/sticker-prewarm", post(polish_sticker_prewarm))
         .route("/polish/sticker-sources", get(polish_sticker_sources))
         // 贴纸库只读浏览（编辑器里 keyword→贴纸 的两级选择）；写操作仍只在 admin
         .route("/polish/sticker-library", get(polish_sticker_library))

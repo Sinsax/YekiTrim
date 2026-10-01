@@ -145,6 +145,16 @@
 ⚠️ 相关的两个既有约定也别松：`every /api/media` 走 `jail_existing`；`is_safe_component`
 挡路径拼接（删除片段/贴纸文件名）。
 
+⚠️ **`Path::is_absolute()` 在 Windows 上挡不住根相对路径**（2026-10-01 给 `/polish/sticker-frame`
+加预热接口时发现；那条洞**早就在 `sticker-frame` 里**，只是没人从那儿穿过）：
+`Path::new("/etc/passwd").is_absolute()` 在 Windows 上返回 **false**（无盘符/无前缀），
+而 `Path::join` 对"有根无前缀"的路径**会替换掉基准** —— 实测
+`Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`，**已经出了工程目录**。
+所以判"工程内相对路径"必须**逐字符**来：空 / 绝对 / **以 `/` 或 `\` 开头** / 含 `:` / 含 `..` / 含 `\` 全挡。
+现成的一份在 `api/polish.rs::is_safe_project_relative`（`sticker-frame` 与
+`sticker-prewarm` **共用**它，别各写一遍）。无论用什么办法，**都要有一条单测**钉住
+`/etc/passwd` 与 `\windows\x` —— 这两条正是当年漏掉、而我这次是靠写测试才发现的原因。
+
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
