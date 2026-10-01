@@ -1,7 +1,8 @@
 //! 外部命令探测（进程级 30s TTL 缓存）。
 //!
 //! **为什么是独立模块**：`/api/health`、`vtrim doctor` 与**任务 worker** 都要探外部工具
-//! （ffmpeg / ffprobe / chrome / yt-dlp）。这几个函数原先住在 `api/mod.rs` 里，
+//! （ffmpeg / ffprobe / yt-dlp；chrome 那个探针随 headless Chrome 链路一起删除了）。
+//! 这几个函数原先住在 `api/mod.rs` 里，
 //! 于是 worker 想探一个命令就得 `use crate::api`（web 层）—— 那是**反向依赖**。
 //! 现在它是叶子模块：两边都用，谁也不用认识谁。
 //!
