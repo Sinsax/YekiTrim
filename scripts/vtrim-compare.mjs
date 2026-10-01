@@ -1008,8 +1008,9 @@ function main() {
       throw new Error(
         '活参照模式已作废：它渲染的是本仓那条 headless Chrome 兜底腿，而那条腿 2026-10-01 已整条删除。' +
           '改用冻结参照帧：\n' +
-          `    node scripts/vtrim-compare.mjs --fixture ${goldenName} --golden scripts/fixtures/compare-golden\n` +
-          '  （`--capture-golden` 也一起作废了 —— 它同样要跑那条腿，冻结帧是删除前冻的，不再重冻。）',
+          `    node scripts/vtrim-compare.mjs --fixture ${goldenName} --golden docs/golden/dhampir-parity\n` +
+          '  （冻结帧在 docs/golden/dhampir-parity/<样本>/，2026-10-01 删除前用那条腿冻的；\n' +
+          '   `--capture-golden` 一并作废 —— 它同样要跑那条腿，不再重冻。）',
       );
       // eslint-disable-next-line no-unreachable
       log('  V-Trim（chrome 后端，会自动先跑 process）…');
