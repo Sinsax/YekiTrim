@@ -113,23 +113,41 @@ pub fn cover_static_capability() -> (bool, usize, std::path::PathBuf) {
 /// "为什么用不了静态封面"都问不出来（门控会让它编译不过，而不是回 0）。
 #[cfg_attr(not(feature = "cover-takumi"), allow(dead_code))]
 fn cover_font_files() -> Vec<std::path::PathBuf> {
-    // ⚠️ **必须走 `fonts::scan_all`**（两种布局都认：v2 目录 `<slug>/font.ttf` + 老平铺文件）。
-    // 以前这里手写"只列顶层文件"，v2 布局下**一个都扫不到** —— 而"一个字体都没有"这条路上
-    // `render_cover_png` 是**明确报错**的（不静默出豆腐块），所以症状是"静态封面直接出不来"。
-    // 同时它也保证"渲染看到的字体集合"与界面上列出来的**同一份**（同一个权威）。
-    //
-    // ⚠️ 仍按 `is_font_file_name` 过滤是多余但无害的一道（`scan_all` 内部已过滤）。
-    // `FontEntry` **不带路径**（它是元数据：id / file / family…），所以按 id 走
-    // `resolve_all` 反查文件 —— 与渲染路由 `/vt-fonts/:name` 解析的是同一套规则。
-    // ⚠️ **`resolve_all` 这一步也顺手滤掉了"清单里有、还没下载"的自带字体**（`installed: false`，
-    // 那时它没有文件）—— 所以别把 `scan_all` 换成"直接信 `installed`"，那条路上没有路径。
-    let mut out: Vec<std::path::PathBuf> = vtrim_core::fonts::scan_all(&vtrim_core::fonts::dir())
-        .into_iter()
-        .filter_map(|e| vtrim_core::fonts::resolve_all(&vtrim_core::fonts::dir(), &e.id))
-        .filter(|p| p.is_file())
-        .collect();
-    out.sort();
-    out
+    cover_font_files_in(&vtrim_core::fonts::dir())
+}
+
+/// [`cover_font_files`] 的可注入版本（单测用临时库）。
+///
+/// ⚠️ **必须走 `fonts::scan_all`**（两种布局都认：v2 目录 `<slug>/font.ttf` + 老平铺文件）。
+// 以前这里手写"只列顶层文件"，v2 布局下**一个都扫不到** —— 而"一个字体都没有"这条路上
+// `render_cover_png` 是**明确报错**的（不静默出豆腐块），所以症状是"静态封面直接出不来"。
+// 同时它也保证"渲染看到的字体集合"与界面上列出来的**同一份**（同一个权威）。
+//
+// ⚠️ `FontEntry` 不带路径（它是元数据），所以按 id 走 `resolve_all` 反查文件 —— 与渲染路由
+// `/vt-fonts/:name` 解析的是同一套规则；这一步也顺手滤掉"清单里有、还没下载"的自带字体
+// （`installed: false`，那时它没有文件）。
+//
+// ⚠️ **顺序有意义（2026-10-01 收敛）**：Takumi 对认不出的族名会回退到"已注册字体按注册序"
+// 的全集（实测见 `tests/takumi_font_id.rs`），所以**注册序第一支 ≈ 真正画标题的那支**。
+// 这里把**库里设了默认的那支排最前**、其余按 id 稳定排序 —— 不再是裸 `out.sort()`：
+// 那只按路径字典序排，"设为默认"对封面完全无效（LXGW 排在 Emoji 前纯属 L < N 的运气）。
+fn cover_font_files_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut defaults: Vec<std::path::PathBuf> = Vec::new();
+    let mut rest: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for e in vtrim_core::fonts::scan_all(root) {
+        if let Some(p) = vtrim_core::fonts::resolve_all(root, &e.id).filter(|p| p.is_file()) {
+            if e.is_default {
+                defaults.push(p);
+            } else {
+                rest.push((e.id.to_lowercase(), p));
+            }
+        }
+    }
+    // 多个默认 = 手改过 FONT.toml 的病态情况：也排个稳定的序，别 panic
+    defaults.sort();
+    rest.sort();
+    defaults.extend(rest.into_iter().map(|(_, p)| p));
+    defaults
 }
 
 /// 静态渲染（Takumi）出封面：与预览那条**同一份模板 + 同一条替换链**（只多 `__EXPORT_CSS__`），
@@ -182,8 +200,10 @@ struct CoverFont {
 fn cover_font_css(cc: &crate::project::CoverConfig) -> CoverFont {
     let id = cc.font.trim();
     if id.is_empty() {
-        // 老工程 / 没选：与从前完全一致，只是那行 font-family 由 Rust 侧填（模板里是占位符）
-        return CoverFont { family: server::SYSTEM_FONT_STACK.to_string(), face: String::new() };
+        // 老工程 / 没选：字体栈 = **动态兜底栈**（`fallback_stack`：首项 = 库里默认那支的
+        // 内部族名；库里没有可用中文时与老的 `SYSTEM_FONT_STACK` 常量同族名同序 —— 单测钉着）。
+        // ⚠️ 不能写死常量：「设为默认」对封面要真的生效。
+        return CoverFont { family: server::fallback_stack(), face: String::new() };
     }
     // 值不在字体库里时也照写（当系统字体族名用），与字幕字体同一条规矩
     CoverFont { family: server::font_family_with_stack(id), face: server::font_face_css(&[id]) }
@@ -938,13 +958,19 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
 mod tests {
     use super::*;
 
-    /// 封面字体：没选（空串）→ 系统字体栈 + 不注入；选了库外的值 → 当系统族名用、仍要有兜底栈，
+    /// 封面字体：没选（空串）→ **动态兜底栈** + 不注入；选了库外的值 → 当系统族名用、仍要有兜底栈，
     /// 而且**不注入 @font-face**（注了就是一条 404）。
     #[test]
     fn cover_font_css_falls_back_to_system_stack() {
         let mut cc = crate::project::CoverConfig::default();
         let off = cover_font_css(&cc);
-        assert_eq!(off.family, server::SYSTEM_FONT_STACK);
+        // 首项随"库里默认那支"走（动态栈），别断言常量 —— 开发机装了默认字体时两者不同
+        assert_eq!(off.family, server::fallback_stack(), "没选 = 兜底栈");
+        assert!(
+            off.family.ends_with(",'Microsoft YaHei','Noto Sans SC',sans-serif"),
+            "尾部系统栈兜底必须在: {}",
+            off.family
+        );
         assert_eq!(off.face, "");
 
         cc.font = "not-in-library-xyz".into();
@@ -952,6 +978,38 @@ mod tests {
         assert!(miss.family.starts_with("\"not-in-library-xyz\","), "{}", miss.family);
         assert!(miss.family.contains("Microsoft YaHei"), "后面必须还有系统栈兜底: {}", miss.family);
         assert_eq!(miss.face, "");
+    }
+
+    /// ⚠️ 「设为默认」必须真的决定 Takumi 的兜底（注册序第一支）：
+    /// 默认字体排最前、其余按 id 稳定排序 —— 不再是裸 `out.sort()` 的文件名运气。
+    #[test]
+    fn cover_font_files_put_default_first() {
+        let root = std::env::temp_dir().join(format!("vt-cover-font-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mk = |id: &str, def: bool| {
+            let d = root.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("font.ttf"), b"x").unwrap();
+            vtrim_core::fonts::write_meta(
+                &d,
+                &vtrim_core::fonts::FontMeta { family: id.into(), is_default: def, ..Default::default() },
+            )
+            .unwrap();
+        };
+        mk("aaa-normal", false);
+        mk("zzz-default", true);
+        mk("mmm-normal", false);
+        let files = cover_font_files_in(&root);
+        assert_eq!(files.len(), 3, "未下载的自带字体不该算进来: {files:?}");
+        assert!(
+            files[0].to_string_lossy().contains("zzz-default"),
+            "默认那支必须排第一（其余按 id 稳定序）: {files:?}"
+        );
+        let ids: Vec<String> = files.iter().map(|p| {
+            p.parent().unwrap().file_name().unwrap().to_string_lossy().to_string()
+        }).collect();
+        assert_eq!(ids, vec!["zzz-default", "aaa-normal", "mmm-normal"], "{files:?}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// 颜色是用户输入（手改 polish.toml / 老工程 / 取色器）：3 位简写、非 ASCII、空串都不能 panic。
@@ -1206,7 +1264,7 @@ mod tests {
             );
             // 字体栈占位符必须被替换掉 —— 留着就是一条非法的 font-family，整个字体设置静默失效
             assert!(!html.contains("__FONT_FAMILY__"), "{mode} 字体栈占位符没替换：{html}");
-            assert!(html.contains(server::SYSTEM_FONT_STACK), "{mode} 缺系统字体栈兜底：{html}");
+            assert!(html.contains(&server::fallback_stack()), "{mode} 缺兜底字体栈（首项随库里默认走）：{html}");
         }
     }
 

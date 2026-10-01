@@ -541,10 +541,16 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // （霞鹜文楷 Lite + Noto Color Emoji，均 SIL OFL-1.1）改由**首次使用时按需下载**：
     // `vtrim fonts download`，或 WebUI 首页「字体库」→「下载自带字体」。
     // 用户自己导入的字体放这里（`vtrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
+    // ⚠️ 2026-10 起字体库的**正式位置是用户固定目录** `%USERPROFILE%\.vtrim\fonts`
+    // （首次启动会把这里已有的字体整体复制过去，之后写路径不再回到本目录）——
+    // 提示文案必须说清，否则用户照旧往这里丢字体、库里却看不见。
     fs::write(
         package_dir.join("resources").join("fonts").join("放这里.txt"),
         concat!(
-            "把字体文件（.ttf / .otf）放进这个文件夹，精修页里就会多出对应的字体可选：\n",
+            "【字体库的正式位置是用户固定目录 %USERPROFILE%\\.vtrim\\fonts ——\n",
+            "首次启动 vtrim 会把本目录已有的字体整体复制过去；本目录只在用户目录\n",
+            "还没建出来时兜底，往这里新放的字体不会进库。】\n",
+            "把字体文件（.ttf / .otf）放进字体库，精修页里就会多出对应的字体可选：\n",
             "\n",
             "  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体\n",
             "  - 封面字体 = 封面设计器 →「排版」组 → 字体\n",

@@ -106,6 +106,8 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
     // 字体库目录：**每次都保证存在**（不分"这次有没有新建配置"）——界面上要写清
     // "把字体丢进哪个目录"，目录不存在那个提示就没法用。装到只读位置（Program Files）
     // 时建不出来也不能拦住 server 启动，所以这里只告警。
+    // ⚠️ `ensure_dir` 建的是**写路径**（用户固定目录 `~/.vtrim/fonts`，含老库一次性搬家）；
+    // 成功之后 `font_dir()`（读侧解析）与它就是同一个目录，告警里显示的才没写错对象。
     if let Err(e) = vtrim_core::fonts::ensure_dir() {
         tracing::warn!(
             "字体库目录不可用（{}）：界面里选不了自定义字体。{e}",

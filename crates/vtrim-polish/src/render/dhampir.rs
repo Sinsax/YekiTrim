@@ -388,10 +388,13 @@ fn pick_font_from_listing(listing: &[(String, PathBuf)], family: &str) -> Option
 
 /// **要按哪几支族名去找字体**（顺序就是"预览会用哪一支"的顺序）。
 ///
-/// ⚠️ 这是本次修的核心：预览/Chrome 那条腿用的是 `render::server::SYSTEM_FONT_STACK`
-/// （`'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif`），**底座那条腿以前不看它** ——
-/// 结果：本机没装 LXGW、装了 Noto Sans SC ⇒ 预览是 Noto Sans SC，成片却是 `msyh.ttc`（雅黑）✗
-/// （用户报的"字体不对"）。现在两侧**同一份栈**，用户选的那支排在最前。
+/// ⚠️ 这是"字体不对"那次的修点：预览那条腿按字体栈走，**底座这条腿以前完全不看** ——
+/// 结果：本机没装栈首那支、装了栈里后面的 ⇒ 预览与成片字族不同（用户报的"字体不对"）。
+/// 现在两侧**同一份栈**，用户选的那支排在最前。
+///
+/// ⚠️ **栈用动态版 [`server::fallback_stack()`]**（首项 = 库里默认那支的内部族名），**不是**
+/// `SYSTEM_FONT_STACK` 常量 —— 常量只是空库回落态。用常量的话「设为默认」对成片永远无效
+/// （预览变了、成片不变，正是这轮要收掉的第三处不统一）。
 fn font_search_order(project_font: &str) -> Vec<String> {
     let mut order: Vec<String> = Vec::new();
     let mut push = |s: &str| {
@@ -401,7 +404,7 @@ fn font_search_order(project_font: &str) -> Vec<String> {
         }
     };
     push(project_font);
-    for family in crate::render::server::SYSTEM_FONT_STACK.split(',') {
+    for family in crate::render::server::fallback_stack().split(',') {
         push(family);
     }
     order
@@ -414,8 +417,9 @@ fn font_search_order(project_font: &str) -> Vec<String> {
 ///
 /// 1. `VTEDIT_DHAMPIR_FONT`（显式指定，最高优先）
 /// 2. `font_search_order(style.subtitle.font)`：**项目选的那支排最前**，然后是
-///    `render::server::SYSTEM_FONT_STACK` —— 它必须与 **`PolishPreview.vue` 的 `.cap` 栈**
-///    （`"LXGW WenKai","Microsoft YaHei","Noto Sans SC",sans-serif`）**同序**：栈的顺序决定
+///    `render::server::fallback_stack()`（动态兜底栈，首项随库里默认走）—— 它必须与
+///    **`PolishPreview.vue` 的 `.cap` 栈**同源（预览的 fallback 来自
+///    `/api/polish/fonts` 的 `fallback_stack`，同一份计算）：栈的顺序决定
 ///    "项目选的那支没装时谁赢"，而用户在预览里看到的就是这个赢家。
 ///
 /// 每一支都按 **① 字体库（`<程序目录>/resources/fonts`，id = 文件名去扩展名）
@@ -1277,37 +1281,40 @@ mod artifact_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **"要按哪几支族名去找"= 项目选的那支 + 预览那份字体栈**（顺序就是优先级）。
+    /// **"要按哪几支族名去找"= 项目选的那支 + 预览那份动态栈**（顺序就是优先级）。
     ///
-    /// 这条钉的是本次"字体不对"的根因：底座那条腿以前**完全不看** `SYSTEM_FONT_STACK`，
-    /// 只查字体库（库里没有就退 `msyh.ttc`），而预览落到栈里第一支装了的字体 ⇒ 两边字族不同。
+    /// 这条钉的是"字体不对"的根因：底座那条腿以前**完全不看**字体栈，只查字体库
+    /// （库里没有就退 `msyh.ttc`），而预览落到栈里第一支装了的字体 ⇒ 两边字族不同。
+    /// ⚠️ 断言**动态**算（首项随库里默认走，开发机装了字体、CI 没装都不能红）。
     #[test]
     fn font_search_order_follows_preview_stack() {
-        let order = font_search_order("LXGW WenKai");
-        assert_eq!(
-            order,
-            vec!["LXGW WenKai", "Microsoft YaHei", "Noto Sans SC", "sans-serif"],
-            "顺序应当 = 项目选的 + **预览那份栈**（雅黑在 Noto 前 —— 与 `.cap` 同序）"
-        );
-        // 空的项目字体 ⇒ 就是栈本身
-        assert_eq!(
-            font_search_order("  "),
-            vec!["LXGW WenKai", "Microsoft YaHei", "Noto Sans SC", "sans-serif"]
-        );
-        // 项目另选一支 ⇒ 排最前、且不与栈重复
+        // 项目选的那支永远排最前
         assert_eq!(font_search_order("SimHei")[0], "SimHei");
+        assert_eq!(font_search_order("  ")[0], font_search_order("")[0], "空字体不产生空段");
+        // 项目字体之后 = 动态兜底栈逐支同序（就是预览 `.cap` 那份的来源）
+        let stack: Vec<String> = crate::render::server::fallback_stack()
+            .split(',')
+            .map(|s| s.trim().trim_matches(['\'', '"']).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(!stack.is_empty(), "兜底栈不能是空的");
+        let with_font = font_search_order("SimHei");
+        assert_eq!(with_font[1..], stack[..], "项目字体之后必须 = 动态兜底栈逐支同序");
+        // 与栈里已有的重名只留一份（Noto 在栈里 ⇒ 比"项目字体 + 全栈"短一项）
         assert_eq!(
             font_search_order("Noto Sans SC").len(),
-            4,
-            "与栈里已有的重名只留一份"
+            with_font.len() - 1,
+            "与栈重名只留一份"
         );
-        // 栈本身必须是 `server.rs` 的那一份（唯一来源），且**顺序 = 预览那份**：
-        // 本机没装 LXGW、装了 Noto —— 而预览是雅黑在前 ⇒ 成片也必须落到雅黑。
-        assert_eq!(
-            crate::render::server::SYSTEM_FONT_STACK,
-            "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif"
-        );
-        assert_eq!(order[1], "Microsoft YaHei", "项目字体之后的第一支必须是雅黑（预览的赢家）");
+        // 空项目字体 = 就是栈本身（不产生空段）
+        assert_eq!(font_search_order("  "), stack, "空字体 ⇒ 兜底栈本身");
+        // 尾部顺序钉死：雅黑在 Noto 前（与预览 `.cap` 栈同序 —— 预览的赢家 = 成片的赢家）
+        let order = font_search_order("");
+        let yahei = order.iter().position(|s| s == "Microsoft YaHei").expect("栈里必须有雅黑");
+        let noto = order.iter().position(|s| s == "Noto Sans SC").expect("栈里必须有 Noto");
+        assert!(yahei < noto, "雅黑必须在 Noto 前（预览那份栈的顺序）: {order:?}");
+        // （"回落态与老常量同族名同序"那条钉在 `server.rs::stack_head_tracks_installed_library_font`
+        //   —— 它必须条件化（开发机设了默认字体时首项不同），别在这里写死再红一遍。）
     }
 
     /// **粗体那一支**：`msyh.ttc` → `msyhbd.ttc`；可变字体没有独立粗体文件就得老实给 `None`

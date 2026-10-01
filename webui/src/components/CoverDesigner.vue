@@ -433,14 +433,17 @@ function numBind(cur, set, e, lo, hi) {
   e.target.value = String(c)
 }
 
-// ---- 封面字体（字体库 = 程序目录 resources/fonts/）----
-// 值存 polish.toml 的 `[cover] font`：空 = 系统字体栈（老工程就是这个状态），
+// ---- 封面字体（字体库：用户固定目录 ~/.vtrim/fonts，读侧另有老安装回落）----
+// 值存 polish.toml 的 `[cover] font`：空 = 兜底字体栈（首项随库里默认走，老工程就是这个状态），
 // 非空 = 库里的字体 id。出片由 cover.rs 注入 @font-face，这里负责**让设计器预览也认得它**。
 const fonts = ref([])
 const coverFont = ref('')
 const fontOptions = computed(() => {
   const opts = [{ value: '', label: '（系统默认）' }]
   for (const f of fonts.value) {
+    // ⚠️ `.ttc`（字体集合）浏览器 @font-face 认不出 ⇒ 不能当可选值（选了就是
+    // "预览回退系统字体、出片却用了它"）—— 只在字体库里挂着展示。
+    if (/\.ttc$/i.test(f.file || '')) continue
     opts.push({ value: f.id, label: f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id })
   }
   const cur = coverFont.value

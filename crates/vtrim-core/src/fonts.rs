@@ -1,7 +1,8 @@
-//! 程序级字体库：`<程序目录>/resources/fonts/`。
+//! 程序级字体库：**用户固定目录 `~/.vtrim/fonts`**（存在即用）；否则回落程序目录的
+//! `resources/fonts/`（老安装兼容）。写路径一律落用户目录（[`ensure_dir`] 含老库一次性搬家）。
 //!
 //! 用户把 `.ttf` / `.otf` 丢进这个目录，界面就能把它们列出来当字幕/封面字体用。
-//! 目录随程序走（[`crate::path::font_dir`]）。
+//! 解析规则见 [`crate::path::font_dir`]。
 //!
 //! # 自带字体（[\`BUILTIN_FONTS\`]）走**首次使用下载**，不随发行包分发
 //!
@@ -31,11 +32,74 @@ pub fn dir() -> PathBuf {
     crate::path::font_dir()
 }
 
-/// 建好字体库目录（`config init` / `server` 启动时用）。
+/// 一次性搬家记号：老库（程序目录 `resources/fonts/`）的内容复制进用户目录之后落下的。
+/// 有了它就**不再搬第二次** —— 用户之后在库里删了哪支，下次启动也不会从老库又长回来。
+const MIGRATED_MARKER: &str = ".migrated-from-program-dir";
+
+/// 建好字体库目录并返回**写路径**（`config init` / `server` 启动 / 下载导入前用）。
+///
+/// ⚠️ 写一律落在**用户固定目录** `~/.vtrim/fonts`（字体库不随构建/安装目录漂移，见
+/// [`crate::path::font_dir`]）：存在即直接返回；不存在时，若程序目录老库里真有字体，
+/// 先**整体复制一次**（不动老库的任何文件），再落 [`MIGRATED_MARKER`]。取不到用户
+/// 主目录时退回程序目录（老行为）。读侧的 [`dir`] 用"存在即用"的同一套解析，所以
+/// 本函数返回之后，[`dir`] 与这里返回的就是同一个目录。
 pub fn ensure_dir() -> std::io::Result<PathBuf> {
-    let d = dir();
-    std::fs::create_dir_all(&d)?;
-    Ok(d)
+    ensure_dir_in(crate::path::user_home().as_deref(), &crate::path::exe_dir())
+}
+
+/// [`ensure_dir`] 的可注入版本（单测用）。
+pub fn ensure_dir_in(user_home: Option<&Path>, exe_home: &Path) -> std::io::Result<PathBuf> {
+    let Some(home) = user_home else {
+        let d = exe_home.join("resources").join("fonts");
+        std::fs::create_dir_all(&d)?;
+        return Ok(d);
+    };
+    let user = home.join(".vtrim").join("fonts");
+    let legacy = exe_home.join("resources").join("fonts");
+    if !user.is_dir() && legacy.is_dir() {
+        migrate_program_library(&user, &legacy)?;
+    }
+    std::fs::create_dir_all(&user)?;
+    Ok(user)
+}
+
+/// 老库 → 用户目录的一次性复制（复制、不移动：绝不碰安装目录里的东西）。
+fn migrate_program_library(user: &Path, legacy: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(user)?;
+    // 顶层逐条搬：字体目录整目录复制、平铺字体文件按文件复制。点开头（记号/暂存）与
+    // 非字体文件（发行包的 `放这里.txt`）都不搬。
+    for entry in std::fs::read_dir(legacy)?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let src = entry.path();
+        let dst = user.join(&name);
+        if src.is_dir() {
+            if font_file_in(&src).is_some() && !dst.exists() {
+                copy_dir_recursive(&src, &dst)?;
+            }
+        } else if is_font_file_name(&name) && !dst.exists() {
+            std::fs::copy(&src, &dst)?;
+        }
+    }
+    std::fs::write(user.join(MIGRATED_MARKER), "")?;
+    Ok(())
+}
+
+/// 递归复制目录（字体库搬家用：字体目录里是 `font.ttf` + `FONT.toml` + `LICENSE.txt`，很浅）。
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)?.flatten() {
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn is_font_file_name(name: &str) -> bool {
@@ -94,6 +158,13 @@ pub struct FontEntry {
     /// （它是"发给界面看的视图"，不是配置），那个 default 永远不会被调用，只会换来一条
     /// "function is never used" 警告。构造点**显式给值**。
     pub installed: bool,
+    /// **老平铺布局**（散文件直接躺在库根目录，id = 文件名去扩展名）⇒ `true`。
+    ///
+    /// v2 目录布局与未下载的自带字体都是 `false`。界面据此打「老布局」标签 ——
+    /// 这类条目常是当年手工拷进来的系统字体（`msyh.ttc` / `seguiemj.ttf`），
+    /// 与"正经导入/下载进来的库字体"不是一回事，得让人一眼分出来。
+    #[serde(default)]
+    pub flat: bool,
 }
 
 fn ext_rank(ext: &str) -> usize {
@@ -144,7 +215,8 @@ pub fn scan_at(root: &Path) -> Vec<FontEntry> {
         let family = cached_family(&path).unwrap_or_else(|| id.clone());
         // ⚠️ `installed: true` **必须显式写**：`..Default::default()` 给的是 `false`
         // （bool 的默认值），那会把这支**真实存在**的老布局字体标成"没装"。
-        out.push(FontEntry { id, file, family, bytes, installed: true, ..Default::default() });
+        // `flat: true` 同理：能走到这里就是老平铺布局（散文件直接在库根目录）。
+        out.push(FontEntry { id, file, family, bytes, installed: true, flat: true, ..Default::default() });
     }
     out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
     out
@@ -517,6 +589,8 @@ pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
             emoji: meta.emoji,
             builtin: meta.builtin,
             is_default: meta.is_default,
+            // 目录布局不是平铺（`flat` 只属于散文件直接躺在库根目录的老布局）
+            flat: false,
             // 它在磁盘上 scanned 出来的 ⇒ 当然是"装好了"（`installed: false` 只属于"清单里有、盘上没有"）
             installed: true,
         });
@@ -556,6 +630,8 @@ pub fn scan_all(root: &Path) -> Vec<FontEntry> {
             emoji: b.id.to_ascii_lowercase().contains("emoji"),
             builtin: true,
             is_default: false,
+            // 未下载的自带字体走目录布局（下载后落 `<id>/font.ttf`），不是平铺
+            flat: false,
             installed: false,
         });
     }
@@ -1094,5 +1170,71 @@ mod tests_v2 {
         assert!(!read_meta(&root.join("a")).unwrap().is_default);
         assert!(read_meta(&root.join("b")).unwrap().is_default);
         assert!(set_default(&root, "nope").is_err());
+    }
+
+    /// ⚠️ **字体库固定到用户目录的钉子**：老库（程序目录）在首次 `ensure_dir` 时整体
+    /// 复制进 `~/.vtrim/fonts`，之后写路径不再随构建/安装目录漂移。
+    ///
+    /// 三件事各自对应一次真实风险：
+    /// ① 只搬**字体**（目录布局 + 平铺文件），发行包的 `放这里.txt`、点开头的伴随文件不搬；
+    /// ② 搬完落**记号**，且"删了又搬回来"不会发生（记号在，第二次启动不重搬）；
+    /// ③ 取不到主目录时退回程序目录（老行为），复制是**复制**不是移动 —— 绝不碰安装目录。
+    #[test]
+    fn ensure_dir_adopts_user_dir_and_migrates_legacy_once() {
+        let home = tmp("ensure-home");
+        let exe = tmp("ensure-exe");
+        let legacy = exe.join("resources").join("fonts");
+        // 老库：一支目录布局 + 一支平铺 + 杂项（不该搬的）
+        let slug = legacy.join("MyFont");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"x").unwrap();
+        write_meta(&slug, &FontMeta { display_name: "我的字体".into(), ..Default::default() }).unwrap();
+        std::fs::write(legacy.join("Old.ttf"), b"y").unwrap();
+        std::fs::write(legacy.join("放这里.txt"), b"hint").unwrap();
+        std::fs::write(legacy.join(".hidden.ttf"), b"z").unwrap();
+
+        let user = ensure_dir_in(Some(&home), &exe).unwrap();
+        assert_eq!(user, home.join(".vtrim").join("fonts"));
+        assert!(user.join("MyFont").join("font.ttf").is_file(), "目录布局要整目录搬过来");
+        assert!(user.join("MyFont").join("FONT.toml").is_file(), "元数据跟着走");
+        assert!(user.join("Old.ttf").is_file(), "平铺字体也要搬");
+        assert!(!user.join("放这里.txt").exists(), "杂项文件不搬");
+        assert!(!user.join(".hidden.ttf").exists(), "点开头的不搬");
+        assert!(user.join(MIGRATED_MARKER).exists(), "搬完要落记号");
+        // 老库原样保留（复制不是移动）
+        assert!(slug.join("font.ttf").is_file());
+
+        // 记号在 ⇒ 用户目录里删掉的东西**不会**从老库长回来
+        std::fs::remove_dir_all(user.join("MyFont")).unwrap();
+        ensure_dir_in(Some(&home), &exe).unwrap();
+        assert!(!user.join("MyFont").exists(), "有记号就不再搬第二次");
+
+        // 老库不存在：用户目录照样建（全新安装的路径）
+        let home2 = tmp("ensure-home2");
+        let exe2 = tmp("ensure-exe2");
+        let user2 = ensure_dir_in(Some(&home2), &exe2).unwrap();
+        assert!(user2.is_dir());
+
+        // 取不到主目录：退回程序目录（老行为）
+        let exe3 = tmp("ensure-exe3");
+        let d3 = ensure_dir_in(None, &exe3).unwrap();
+        assert_eq!(d3, exe3.join("resources").join("fonts"));
+        assert!(d3.is_dir());
+    }
+
+    /// 老平铺布局的条目要带上 `flat: true`（界面打「老布局」标签的依据），
+    /// 目录布局与未下载的自带字体不是 flat。
+    #[test]
+    fn flat_layout_entries_are_marked() {
+        let root = tmp("flat-mark");
+        std::fs::write(root.join("OldFont.ttf"), b"x").unwrap();
+        let list = scan_all(&root);
+        let flat: Vec<_> = list.iter().filter(|e| e.id == "OldFont").collect();
+        assert_eq!(flat.len(), 1);
+        assert!(flat[0].flat, "平铺条目必须标 flat");
+        assert!(flat[0].installed);
+        // 未下载的自带字体不是 flat
+        let missing = list.iter().find(|e| !e.installed).expect("空库里应有未下载的自带字体");
+        assert!(!missing.flat);
     }
 }

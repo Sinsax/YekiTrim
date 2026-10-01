@@ -9,7 +9,9 @@
 //!    404，handler 里原有的 `dir` 逻辑保持不变（旧前端仍可用，但只能操作自己的项目）。
 //!
 //! ⚠️ **body 里所有会被 handler 拿去开文件的字段都必须在这里收口** ——
-//! `dir` / `output_file` / `source` / `cover.image`。漏一个就是一条任意文件读取：
+//! `dir` / `output_file` / `source` / `cover.image`，以及贴纸两接口的 `asset` / `assets`
+//! （它们相对的是 **`dir`** 而不是项目根，走 [`is_safe_project_relative`] 单独收口）。
+//! 漏一个就是一条任意文件读取：
 //! 曾经 `source`（`polish_cover_background`）与 `cover.image`（`polish_cover_config`）
 //! 就因为不在收口名单里，普通用户能把服务器上任意文件（例如 `.vtrim/llm.toml`，
 //! 里面有 LLM API key）复制进自己的项目、再用 `/api/media` 读回来。
@@ -229,7 +231,59 @@ pub fn resolve_dir(project: &ProjectRow, dir: &str) -> Result<PathBuf, AppError>
 ///
 /// ⚠️ **新增任何"拿 body 字段去开文件"的 handler 都要同步加进来** —— 漏一个就是一条
 /// 任意文件读取（`source` 与 `cover.image` 就是这么漏的，见本模块顶部说明）。
+/// ⚠️ 这张名单的语义是"**相对项目根**的路径字段"；贴纸两接口的 `asset` / `assets`
+/// 相对的是 **`dir`**（clip 目录），基准不同进不了这个循环 —— 在 [`enforce_scope`]
+/// 里用 [`is_safe_project_relative`] 单独收口（见 [`sanitize_sticker_paths`]）。
 const EXTRA_PATH_FIELDS: [&str; 2] = ["source", "cover.image"];
+
+/// **"工程内相对路径"的判据（贴纸两接口的 `asset` / `assets` 用）**。
+///
+/// # 为什么不能只用 `Path::is_absolute()`
+///
+/// 那一条在 **Windows 上是漏的**：`Path::new("/etc/passwd").is_absolute()` 返回 **false**
+/// （无盘符/无前缀），于是 `/etc/passwd` 能穿过判据，而 `Path::join` 对"有根无前缀"的路径
+/// **会替换掉基准**（实测 `Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`
+/// —— 已经跑到工程外去了）。反斜杠同理（`\windows\x` → `C:\windows\x`）。
+///
+/// 所以**显式逐字符判**：空 / 绝对 / 根相对（`/` `\` 开头）/ 盘符（`:`）/ `..` / 反斜杠
+/// 全挡。它与平台无关、无 IO；**全仓只此一份**（`api/polish.rs` 的两个 handler 用它做
+/// handler 侧兜底，本模块的中间件用它做第一道收口 —— 两层缺一不可，
+/// `/etc/passwd` 那条洞就是"只有一份实现、且藏在 handler 里没有第二道"留下的）。
+pub(crate) fn is_safe_project_relative(p: &str) -> bool {
+    !p.is_empty()
+        && !std::path::Path::new(p).is_absolute()
+        && !p.starts_with('/')
+        && !p.starts_with('\\')
+        && !p.starts_with('.')   // `../x` 与隐藏目录都不该从请求里进来
+        && !p.contains("..")
+        && !p.contains(':')
+        && !p.contains('\\')
+}
+
+/// 收口贴纸路径字段（[`is_safe_project_relative`] 的中间件入口）。
+///
+/// 看两个字段：`asset`（`/polish/sticker-frame`，单值）与 `assets`
+/// （`/polish/sticker-prewarm`，字符串数组）。语义跟着各自的 handler 走：
+/// - **单值坏 → `Err`（400）**：handler 对坏 `asset` 本来就是 400，这里只是提前一跳；
+/// - **数组坏条目 → 就地剔除**：预热是"尽力而为"（单张贴纸失败只计数、**不让整个请求失败**，
+///   有单测钉着）—— 但被剔除的值也**绝不允许到 handler 手里**，两层判据同一份。
+///
+/// **只做逐字符判定、不做 canonicalize**（无 IO，不把预热打成 400）。
+fn sanitize_sticker_paths(v: &mut serde_json::Value) -> Result<(), String> {
+    if let Some(a) = v.get("asset").and_then(|x| x.as_str()) {
+        if !a.trim().is_empty() && !is_safe_project_relative(a) {
+            return Err(a.to_string());
+        }
+    }
+    if let Some(list) = v.get_mut("assets").and_then(|x| x.as_array_mut()) {
+        list.retain(|x| {
+            x.as_str()
+                .map(|s| !s.trim().is_empty() && is_safe_project_relative(s))
+                .unwrap_or(false)
+        });
+    }
+    Ok(())
+}
 
 /// 读点号路径（不存在 / 不是字符串 → `None`）。
 fn json_get_str<'a>(v: &'a serde_json::Value, path: &str) -> Option<&'a str> {
@@ -323,8 +377,9 @@ pub struct ScopeProjectId(pub i64);
 ///
 /// 做两件事（一次收口，18 个 polish handler 不用各自改）：
 /// 1. **归属校验**：`project=<id>` 或路径类字段必须落在调用者自己的某个项目根之内，否则 404。
-///    收口的字段是 [`EXTRA_PATH_FIELDS`] 加上单独处理的 `dir` / `output_file`，共四个 ——
-///    **handler 里新出现"拿 body 字段去开文件"的写法时，必须同步加进这张名单**；
+///    收口的字段是 [`EXTRA_PATH_FIELDS`]（相对项目根）加上单独处理的 `dir` / `output_file`
+///    与贴纸的 `asset` / `assets`（相对 `dir`，[`sanitize_sticker_paths`]）——
+///    **handler 里新出现"拿 body 字段去开文件"的写法时，必须同步收口**；
 /// 2. **归一化**：把 `dir` 换成"该项目内的绝对路径"（相对路径按项目根解析），
 ///    写回 query 或 JSON body，于是 handler 里原有的 `validated_project_dir(dir)`
 ///    继续有效 —— 新前端可以只传 `{project, dir:"output/clips/clip-01"}`。
@@ -526,6 +581,16 @@ pub async fn enforce_scope(
                     Err(e) => return e.into_response(),
                 }
             }
+            // `asset` / `assets`（贴纸两接口）：相对 **`dir`** 的工程内相对路径 ——
+            // 基准与 EXTRA_PATH_FIELDS 那批（相对项目根）不同，单独收口（判据见
+            // [`sanitize_sticker_paths`]）。handler 里还有同一份判据兜底，两层缺一不可。
+            if let Err(bad) = sanitize_sticker_paths(&mut v) {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    format!("贴纸路径必须是工程内的相对路径: {bad}"),
+                )
+                .into_response();
+            }
             out_bytes = axum::body::Bytes::from(serde_json::to_vec(&v).unwrap_or_else(|_| bytes.to_vec()));
         }
     }
@@ -602,6 +667,41 @@ mod tests {
         assert_eq!(q.get("config").map(|s| s.as_str()), Some(r"F:\media\3d\vtrim.toml"));
         assert_eq!(q.get("dir").map(|s| s.as_str()), Some("a/b c"));
         assert!(parse_query("").is_empty());
+    }
+
+    /// ⚠️ 中间件层的贴纸路径收口：Windows 上 `is_absolute()` 挡不住的"有根无前缀"路径
+    /// （`/etc/passwd`、`\windows\x`）必须在这里与 handler 里**各挡一次** ——
+    /// `/etc/passwd` 那条洞就是"只有 handler 一层、且判据漏了根相对"留下的。
+    #[test]
+    fn sticker_path_fields_are_rejected_at_middleware_layer() {
+        for bad in [
+            "", "/etc/passwd", r"\windows\x", "C:/x.gif", r"C:\x.gif", "../x.gif", "a/../../x", ".x",
+        ] {
+            assert!(!is_safe_project_relative(bad), "`{bad}` 本该被判为越界");
+        }
+        assert!(is_safe_project_relative("assets/stickers/问号.gif"));
+        // asset 单值：坏 → 400（Err）
+        assert_eq!(
+            sanitize_sticker_paths(&mut serde_json::json!({ "asset": "/etc/passwd" })),
+            Err("/etc/passwd".to_string())
+        );
+        assert_eq!(
+            sanitize_sticker_paths(&mut serde_json::json!({ "asset": r"\windows\x" })),
+            Err(r"\windows\x".to_string())
+        );
+        // assets 数组：坏条目**就地剔除**（预热尽力而为，但越界值绝不许到 handler）
+        let mut v = serde_json::json!({ "assets": ["assets/stickers/问号.gif", "../x.gif", "ok.gif"] });
+        sanitize_sticker_paths(&mut v).unwrap();
+        assert_eq!(v["assets"], serde_json::json!(["assets/stickers/问号.gif", "ok.gif"]));
+        // 全坏 ⇒ 剔成空数组（handler 对空数组照常 200，decoded/failed 都是 0）
+        let mut v = serde_json::json!({ "assets": ["/etc/passwd"] });
+        sanitize_sticker_paths(&mut v).unwrap();
+        assert_eq!(v["assets"], serde_json::json!([]));
+        // 合法值 / 字段缺席 → 都不拦
+        let mut v = serde_json::json!({ "asset": "assets/stickers/问号.gif" });
+        sanitize_sticker_paths(&mut v).unwrap();
+        let mut v = serde_json::json!({ "dir": "x" });
+        sanitize_sticker_paths(&mut v).unwrap();
     }
 
     #[test]

@@ -36,7 +36,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   `spec_effects_path`、`print_final_stats`、`cleanup`。
 - `server`：`RenderServer::{new, build_html, start_with, start, start_cover}`、`start_file_server(project_path, injected_html)`、
   `build_sticker_map(project_path)`、`build_cover_html`、`font_face_css` / `font_face_css_in` /
-  `font_family_with_stack` / `SYSTEM_FONT_STACK`。
+  `font_family_with_stack` / **`fallback_stack`（动态兜底栈，唯一权威）** / `SYSTEM_FONT_STACK`（空库回落态常量）。
 - `ffmpeg`：`detect_encoder() -> EncoderInfo`、`concat`、`extract_audio`、`apply_limiter`、
   `mix_sfx(..., &[SfxEvent])`、`cut_ranges(input, ranges, output)`、`mux(video, audio, output)`。
 - `dhampir`：`render_video_only(project_path, clip_dir, project_font, strict)`、`prepare_project(_reporting)`、
@@ -83,9 +83,13 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     `find_font(style.subtitle.font) -> (常规, Option<粗体>)`，逐支按
     **① 字体库（`vtrim_core::fonts::resolve_file`，id = 文件名去扩展名）
     → ② 系统字体目录（族名归一化包含 + 别名表：`Microsoft YaHei` → `msyh.ttc`）** 解析；
-    要按的顺序 = 项目选的那支 + **`render::server::SYSTEM_FONT_STACK`**，而那个常量**必须与
-    `webui/src/components/PolishPreview.vue` 的 `.cap` 栈同序**（它俩曾经不一致：常量把 Noto 排在雅黑前、
-    预览是雅黑在前 ⇒ 同一个工程**预览是雅黑、成片是 Noto** —— 用户报的"字体不对"）。
+    要按的顺序 = 项目选的那支 + **`render::server::fallback_stack()`（动态兜底栈，唯一权威）** ——
+    首项随**库里"设为默认"那支**的内部族名走，库里没有可用中文时才回落到 `SYSTEM_FONT_STACK`
+    常量（回落态逐字相同有单测钉着）。⚠️ **别改回读常量**：那会让「设为默认」对成片永远无效
+    （2026-10-01 收掉的三处不统一之一）。栈还必须与 `webui/src/components/PolishPreview.vue`
+    的 `.cap` 栈同源（预览的兜底栈经 `/api/polish/fonts` 的 `fallback_stack` 透传，同一份计算）——
+    它仨曾经各写各的：常量把 Noto 排在雅黑前、预览是雅黑在前 ⇒ 同一个工程**预览是雅黑、成片是
+    Noto**（用户报的"字体不对"）。
     整个字体库照旧交给底座（`--font-dir`，它按每条轨的 `font_family` 在目录里找）。
     ⚠️ **`--font-bold-file` 必须传**：转译器给字幕写 `font_weight: 700`、弹幕 `600`（与预览的
     `.cap{font-weight:700}` / `.dm{font-weight:600}` 同口径），而底座**不合成粗体** ——
@@ -162,7 +166,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   别名由 `font_aliases(path)` 算：文件名是约定的 `font.<ext>` ⇒ id = 目录名，否则 = 文件名去扩展名
   （与 `fonts::scan_all` 同规则）；字节用 `FontSource::from_shared` 共享，不翻倍内存。
   ⚠️ `cover_font_files()` **必须走 `fonts::scan_all`**：曾只手写"列顶层文件"⇒ v2 布局零字体，
-  而零字体那条路是**明确报错**的（"静态封面直接出不来"）。真渲染验收与变异自证见
+  而零字体那条路是**明确报错**的（"静态封面直接出不来"）。⚠️ **顺序 = 默认字体第一、其余按 id
+  稳定序**（`cover_font_files_in`）：Takumi 对认不出的族名回退到"注册序第一支"，裸 `out.sort()`
+  的字典序运气会让「设为默认」对封面完全无效。真渲染验收与变异自证见
   `tests/takumi_font_id.rs` 与 `docs/plan/font-library.md` §13。
 - **模板里两条"四处/两份实现"的契约**（改 `templates/index.html` 或 `webui/src/polish/engine.js` 前必读）：
   - **覆盖层色档**：`overlay_type == "gradient"` 的有效色档规则见 `vtrim-render-core/src/timeline.rs::overlay_stops`；

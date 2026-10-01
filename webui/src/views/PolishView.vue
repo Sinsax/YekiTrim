@@ -106,7 +106,7 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
@@ -541,19 +541,25 @@ const allStickerOptions = computed(() => {
   return [...stickerSources.value, ...extra]
 })
 
-// ---- 字幕字体（字体库：程序目录 resources/fonts/）----
+// ---- 字幕字体（字体库：用户固定目录 ~/.vtrim/fonts，读侧另有老安装回落）----
 // 值存 polish.toml 的 `[style.subtitle] font`，**逐片段**生效（每个片段一份 polish.toml）。
-// 空串 = 回系统字体栈；非空 = 字体库里的 id（文件名去扩展名）。
+// 空串 = 回兜底字体栈；非空 = 字体库里的 id（文件名去扩展名）。
 // 字体只影响预览与出片渲染 —— 不进任务、不触发 process（贴纸/运镜那些重算不读它）。
 const fonts = ref([]) // 库里的字体（只读接口）
 const fontsRoot = ref('') // 库目录（只有 admin 拿得到；非 admin 不显示那一行）
+// 动态兜底字体栈（服务端算：首项随库里默认那支走）—— 透传给预览，`.cap` 栈与成片同源。
+// 「设为默认」曾经对预览无效（预览写死 LXGW 开头的栈），就是这行的由来。
+const fontFallback = ref('')
 const fontsError = ref('')
 const fontSaving = ref(false)
 const subtitleFont = computed(() => cfg.value?.style?.subtitle?.font || '')
-/** 下拉选项：`（系统默认）` + 库内字体；当前值不在库里时补一条，免得 select 落到空态 */
+/** 下拉选项：`（系统默认）` + 库内字体；当前值不在库里时补一条，免得 select 落到空态。
+ *  ⚠️ `.ttc`（字体集合）浏览器 @font-face 认不出 ⇒ 不能当可选值（选了就是"预览回退系统字体、
+ *  出片却用了它"）—— 只在字体库里挂着展示。 */
 const fontOptions = computed(() => {
   const opts = [{ value: '', label: '（系统默认）' }]
   for (const f of fonts.value) {
+    if (/\.ttc$/i.test(f.file || '')) continue
     opts.push({ value: f.id, label: f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id })
   }
   const cur = subtitleFont.value
@@ -1213,6 +1219,7 @@ async function loadFonts() {
     const r = await fetchFonts('读取字体库')
     fonts.value = r.fonts || []
     fontsRoot.value = r.root || ''
+    fontFallback.value = r.fallback_stack || ''
     fontsError.value = ''
   } catch (e) {
     // 与贴纸来源同规矩：读不到就是读不到，别伪装成"库是空的"

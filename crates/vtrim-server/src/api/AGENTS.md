@@ -38,7 +38,12 @@
 - **字体库的`写`只在 admin 层**：`POST /api/polish/fonts/import`（body `{path, name?}`，只收
   `ttf/otf`，**拒收 `.ttc/.otc`**）、`POST /api/polish/fonts/default`（`{id}`，**唯一默认**）、
   `DELETE /api/polish/fonts?id=`（`builtin=true` → **403「程序自带字体不可删除」**）。
-  读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default` 等）。
+  读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default`
+  /`flat`（老平铺布局标签）/`fallback_stack`（**动态兜底字体栈**，预览 `.cap` 栈与成片同源的收口））。
+  ⚠️ **写路径（导入/下载自带）必须走 `fonts::ensure_dir()`**（用户固定目录 `~/.vtrim/fonts`，
+  含老库一次性搬家）——拿 `font_dir()` 当写目标会退回"读侧解析"，把字体写进程序目录，
+  换个构建/安装目录就全部「未下载」（2026-10 实际发生过）。`set_default`/`remove` 操作的是
+  **当前可见的那份库**（`font_dir()`），这是有意的。
   ⚠️ 这三条**有意不挂 `enforce_scope`**：字体库是**程序级全局资产**、不在任何项目内，
   与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
@@ -138,7 +143,7 @@
 
 | 防线 | 位置 | 规矩 |
 |---|---|---|
-| ① polish body 字段收口 | `vtrim-server/src/scope.rs::enforce_scope` | body 里每个"会被 handler 拿去开文件"的字段都要在 `EXTRA_PATH_FIELDS` 名单里（`dir` / `output_file` / `source` / `cover.image`）。**新增此类字段必须同步加进名单**，漏一个就是一条任意文件读取。 |
+| ① polish body 字段收口 | `vtrim-server/src/scope.rs::enforce_scope` | body 里每个"会被 handler 拿去开文件"的字段都要收口：**相对项目根**的进 `EXTRA_PATH_FIELDS` 名单（`source` / `cover.image`），`dir` / `output_file` 单独处理，贴纸的 `asset` / `assets`（**相对 `dir`**，基准不同进不了那个循环）走 `is_safe_project_relative` + `bad_sticker_path_in` 单独收口。**新增此类字段必须同步收口**，漏一个就是一条任意文件读取。 |
 | ② 项目配置路径键 | `vtrim-server/src/api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` | `PUT /api/project-data/config` 的 `raw` 与 `patch` 两条分支都要过这张表（`input_file` 等 5 个 + `cutting.output_dir` + **`[ingest]` 的 `ytdlp_path`/`cookie_file`/`recorder.root`**）：非 admin 必须能 `jail_join` 进自己项目。`section` 支持点号路径（`ingest.recorder` 是两级表）。**素材清单也在这条线上**：同一函数末尾的 `check_material_paths` 逐条校验 `[project.materials].{transcript,danmaku}[].path`（2026-09 预处理页的清单，漏了就成逃逸口）。`Workspace::resolve` 对**绝对路径原样放行**，所以校验只能在这里做。admin 豁免（用「服务器文件」建项目时 `input_file` 本来就是项目外的路径）。 |
 | ③ 消费侧纵深防御 | `vtrim-polish/src/cover.rs` | 渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。 |
 
@@ -151,8 +156,9 @@
 而 `Path::join` 对"有根无前缀"的路径**会替换掉基准** —— 实测
 `Path::new(r"C:\proj").join("/etc/passwd")` → `C:/etc/passwd`，**已经出了工程目录**。
 所以判"工程内相对路径"必须**逐字符**来：空 / 绝对 / **以 `/` 或 `\` 开头** / 含 `:` / 含 `..` / 含 `\` 全挡。
-现成的一份在 `api/polish.rs::is_safe_project_relative`（`sticker-frame` 与
-`sticker-prewarm` **共用**它，别各写一遍）。无论用什么办法，**都要有一条单测**钉住
+现成的**唯一一份**在 `scope.rs::is_safe_project_relative`（`pub(crate)`）：scope 中间件（第一道，
+`bad_sticker_path_in` 收口 `asset`/`assets`）与 `api/polish.rs` 两个 handler（第二道兜底）共用，
+**不许各写一遍**。无论用什么办法，**都要有一条单测**钉住
 `/etc/passwd` 与 `\windows\x` —— 这两条正是当年漏掉、而我这次是靠写测试才发现的原因。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
