@@ -1,4 +1,4 @@
-﻿# vtrim-core — 管线编排 + ASR / 事件检测 / 剪切
+# vtrim-core — 管线编排 + ASR / 事件检测 / 剪切
 
 > 范围：`crates/vtrim-core`/** ｜ 上游：`vtrim-polish` / `vtrim-service` / `vtrim-server` / `vtrim-cli` 都依赖我 ｜ 验证：`cargo check -p vtrim-core`
 
@@ -40,7 +40,6 @@
 分层是单向的 core → polish → service → server → cli，底层一旦反向引用，两层就粘回去。
 需要上层能力时由调用方**注入**（sink / 回调 / 参数），不是在 core 里 `use` 上来。
 
-⚠️ **`wgpu-render` feature 的使用点全在 `vtrim-server`**，core 不参与这条转发链。
 ⚠️ core 只 `emit` LLM 用量记录，**写库由 CLI/server 侧装的 sink 负责**（见 `src/llm/AGENTS.md`）。
 
 - **Stage 1（`audio/`，没有专卡，规矩在这里）**：输入视频 → ffmpeg 16kHz mono WAV + ffprobe

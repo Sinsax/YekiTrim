@@ -260,6 +260,71 @@ fn unescape_xml(raw: &str) -> String {
     out
 }
 
+/// 弹幕淡入的时长（秒）—— 渲染侧 `getActiveDms` 的 `fadeIn`
+/// （`crates/vtrim-polish/templates/index.html`，同一份也在 `webui/src/polish/engine.js`）。
+pub const DANMAKU_FADE_IN_SECS: f64 = 0.3;
+
+/// 窗口比较的容差（秒）：**1 ns**。
+///
+/// ⚠️ 不写严格相等是因为 `serde_json` 读 f64 会**差 1 ulp**（实测
+/// `"10.700000000000001".parse::<f64>()` 的位是 `…6667`、而 `serde_json::from_str::<f64>()`
+/// 是 `…6666`）。于是"算出来的需要长度"永远比刚写回去的那个值大 1 ulp，每次 process 都
+/// 判定要抬一次 —— 内容一个字节没变、mtime 却一直翻新，而首页「切片总览」按 mtime 排序，
+/// 等于把老片段一直顶在最前面（这正是 `normalize_danmaku_windows` 要避开的那个坑）。
+/// 1 ns 远小于一帧（60fps = 16.7ms），不会吞掉真实的窗口差额。
+const WINDOW_EPS_SECS: f64 = 1e-9;
+
+/// 滚动弹幕**走完全程**要多久（秒）。
+///
+/// 唯一一份公式：`(1080 + UTF-8 字节数 × 32) / 150`。
+/// ⚠️ `text.len()` 是 **UTF-8 字节数**（一个汉字 3 字节）—— 按字符数算会让中文弹幕滚快一倍，
+/// 而"看起来差不多"正是这类错最难查的地方。`tools/polish-to-dhampir.mjs` 抄的是同一份
+/// （那边必须先剥掉 `{\move(...)}` 标签再数字节）。
+pub fn travel_duration_for(text: &str) -> f64 {
+    (1080.0 + text.len() as f64 * 32.0) / 150.0
+}
+
+/// 把弹幕的**在屏窗口末尾**抬到"至少够它滚到左边出画"，返回被改动的条数。
+///
+/// # 为什么必须抬
+///
+/// 渲染侧是**两口独立的钟**：滚动由 `travel_duration` 决定
+/// （`progress = (el - fadeIn) / travel`、`min(progress, 1)`），而**渐隐钉在窗口末尾**
+/// （`d.end - 0.2` 起渐隐、`t >= d.end` 整条丢掉）—— 两者之间本来没有任何约束，
+/// 于是窗口短于"淡入 + travel"的弹幕会在**还没走到左边缘**时提前渐隐，
+/// 唯一的"已出屏"判据（`x < -textW - 50`）永远轮不到执行。
+///
+/// 实测：录播姬 XML 给的窗口是**固定 8 秒**（[`parse_bililive_xml`]），而 5 个汉字的
+/// `travel` 就有 10.4 秒 —— 「还能续约吗」在距左边缘 **337px** 处开始渐隐，
+/// 13 个汉字那条（39 字节、travel 15.52s）在**屏幕中段 728px** 处就没了。
+/// 中文弹幕（1 个汉字 = 3 字节）几乎全部命中，越长越早。
+///
+/// `assign_danmaku_tracks` 占轨道用的本来就是 `start + travel`（分配器早就认为一条弹幕
+/// 在屏 `travel` 秒），只有 `end` 这个字段没跟上 —— 这个函数把它对齐。
+///
+/// # 口径
+///
+/// * 抬到 `start + DANMAKU_FADE_IN_SECS + travel`：渐隐整段落在字**已经出画之后**。
+/// * 只**抬**不压：素材里显式写了更长窗口的（滚到左边停一会儿再消失）原样保留。
+/// * `travel_duration` 为 0 时按 **8.0** 兜底 —— 与渲染侧 `d.travel_duration || 8` 同口径。
+/// * **幂等**（跨 `serde_json` 往返也逐字节不变）：比较带 1 ns 容差，见 [`WINDOW_EPS_SECS`]。
+pub fn clamp_display_windows(entries: &mut [DanmakuEntry]) -> usize {
+    let mut changed = 0;
+    for entry in entries.iter_mut() {
+        let travel = if entry.travel_duration > 0.0 {
+            entry.travel_duration
+        } else {
+            8.0
+        };
+        let need = entry.start + DANMAKU_FADE_IN_SECS + travel;
+        if entry.end + WINDOW_EPS_SECS < need {
+            entry.end = need;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Per-window danmaku density.
 #[derive(Debug, Clone)]
 pub struct DensityWindow {
@@ -364,6 +429,35 @@ pub fn peak_density(heatmap: &[DensityWindow], start: f64, end: f64, window_secs
 mod tests {
     use super::*;
 
+    /// ⚠️ 幂等的判据是"**不触发写回**"：`serde_json` 读 f64 会**差 1 ulp**
+    /// （`"10.700000000000001".parse::<f64>()` 是 `…6667`，`serde_json::from_str::<f64>()` 是 `…6666`），
+    /// 所以严格相等的话，"算出来的需要长度"永远比刚写回去的值大 1 ulp → 每次 process 都判定要抬一次，
+    /// 内容一个字节没变、mtime 却一直翻新，而首页「切片总览」按 mtime 排序 —— 老片段被一直顶在最前面。
+    ///
+    /// 注意**不能**断言"往返逐字节相同"：`serde_json` 的往返本来就不是逐字节稳定的
+    /// （上面那个 1 ulp 就足以让 ryu 打出另一个串）。这里钉的是"第二次跑不再判定要抬"。
+    #[test]
+    fn clamp_display_windows_is_idempotent_across_json_roundtrip() {
+        let mut entries = vec![DanmakuEntry {
+            start: 0.0,
+            end: 1.0,
+            text: "还能续约吗".into(),
+            color: "#ffffff".into(),
+            y: 300.0,
+            travel_duration: 10.4,
+        }];
+        assert_eq!(clamp_display_windows(&mut entries), 1);
+        let json = serde_json::to_string(&entries).unwrap();
+        let mut again: Vec<DanmakuEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            clamp_display_windows(&mut again),
+            0,
+            "读回来之后不许再判定要抬（serde_json 的 f64 差 1 ulp）—— 否则每次 process 都重写"
+        );
+        // 再跑一遍仍然不抬：这就是"process 每次都调它、但只有真的变了才落盘"的完整判据。
+        assert_eq!(clamp_display_windows(&mut again), 0);
+    }
+
     #[test]
     fn test_peak_density() {
         let windows = vec![
@@ -401,6 +495,63 @@ mod tests {
         ];
         let avg = average_density(&windows, 5.0, 15.0, 10.0);
         assert!((avg - 0.75).abs() < 1e-6);
+    }
+
+    /// `travel_duration_for` 数的是 **UTF-8 字节**：5 个汉字 = 15 字节 → 10.4 秒。
+    /// 按字符数算会得到 6.53 秒（滚快一倍），这条把口径钉住。
+    #[test]
+    fn travel_duration_is_byte_based() {
+        assert!((travel_duration_for("还能续约吗") - 10.4).abs() < 1e-6, "15 字节");
+        assert!((travel_duration_for("abc") - 7.84).abs() < 1e-6, "3 字节");
+        // 同样的"5 个字"，全角与半角的字节数不同 —— 差的就是这里。
+        assert!(travel_duration_for("还有五個字") > travel_duration_for("abcde"));
+    }
+
+    /// 录播姬 XML 的 8 秒窗口对中文弹幕**不够**：抬到 `start + 0.3 + travel`。
+    #[test]
+    fn clamp_display_windows_extends_short_xml_window() {
+        let mut entries = vec![DanmakuEntry {
+            start: 0.0,
+            end: 8.0, // parse_bililive_xml 给滚动弹幕的固定窗口
+            text: "还能续约吗".into(),
+            color: "#ffffff".into(),
+            y: 300.0,
+            travel_duration: travel_duration_for("还能续约吗"), // 10.4s
+        }];
+        assert_eq!(clamp_display_windows(&mut entries), 1);
+        assert!((entries[0].end - 10.7).abs() < 1e-6, "0.3 + 10.4");
+        // 幂等：再跑一次不再改、也不再计数（process 每次都会调它）。
+        assert_eq!(clamp_display_windows(&mut entries), 0);
+    }
+
+    /// 素材显式写了**更长**窗口的（滚到左边停一会儿再消失）只抬不压。
+    #[test]
+    fn clamp_display_windows_never_shortens() {
+        let mut entries = vec![DanmakuEntry {
+            start: 5.0,
+            end: 40.0,
+            text: "短".into(), // 3 字节 → travel 7.84s，窗口本来就够
+            color: "#ffffff".into(),
+            y: 300.0,
+            travel_duration: travel_duration_for("短"),
+        }];
+        assert_eq!(clamp_display_windows(&mut entries), 0);
+        assert!((entries[0].end - 40.0).abs() < 1e-6);
+    }
+
+    /// `travel_duration` 为 0（老/手写数据）按 8.0 兜底 —— 与渲染侧 `|| 8` 同口径。
+    #[test]
+    fn clamp_display_windows_zero_travel_falls_back_to_eight() {
+        let mut entries = vec![DanmakuEntry {
+            start: 10.0,
+            end: 12.0,
+            text: "x".into(),
+            color: "#ffffff".into(),
+            y: 300.0,
+            travel_duration: 0.0,
+        }];
+        assert_eq!(clamp_display_windows(&mut entries), 1);
+        assert!((entries[0].end - 18.3).abs() < 1e-6, "10 + 0.3 + 8");
     }
 
     #[test]
