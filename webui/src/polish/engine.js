@@ -250,7 +250,16 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   ;INDEXED_TYPES.forEach((k) => idx[k].sort((a, b) => a.time - b.time))
 
   idx.subs = subtitles || []
-  idx.dms = danmaku || []
+  // ---- 弹幕时间偏移（[style.danmaku] offset_secs，默认 -3 = 整体提前 3s）----
+  // 只平移显示时刻（start/end）；y 泳道与 travel 与时间无关，不用动。
+  // 与 templates/index.html 的 DM 注入点同口径：那里在注入时平移一次，
+  // 这里在 buildIndex 平移一次 —— GSAP / canvas / getActiveDms 全吃这一份。
+  // ⚠️ 必须拷贝、不能写回调用方的数组：buildIndex 会被响应式地重复求值，
+  // 写回去等于每次重算再叠一次偏移（模板那份只 load 一次，没有这个问题）。
+  const dmOff = (cfg.style && cfg.style.danmaku && isFinite(cfg.style.danmaku.offset_secs)) ? cfg.style.danmaku.offset_secs : -3
+  idx.dms = (danmaku && dmOff !== 0)
+    ? danmaku.map((d) => ({ start: d.start + dmOff, end: d.end + dmOff, text: d.text, color: d.color, y: d.y, travel_duration: d.travel_duration }))
+    : (danmaku || [])
   idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg))
   idx.dur = dur
   idx.layout = cfg.layout || {}

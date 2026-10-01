@@ -41,7 +41,7 @@
   --shadow: 0 8px 26px rgba(238,111,166,.10), 0 2px 6px rgba(90,60,70,.04);
   --shadow-hover: 0 12px 34px rgba(238,111,166,.18), 0 3px 8px rgba(90,60,70,.05);
   --shadow-pink: 0 4px 14px rgba(238,111,166,.4);
-  --font: 'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --font: 'Noto Sans SC','Microsoft YaHei',sans-serif;  /* 2026-10-02：自带中文换成 Noto Sans SC（原 LXGW WenKai）*/
   --mono: 'Consolas','Courier New',monospace;
 }
 * { margin:0; padding:0; box-sizing:border-box; font-family:var(--font); }

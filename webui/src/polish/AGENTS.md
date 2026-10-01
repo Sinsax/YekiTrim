@@ -72,6 +72,22 @@
   `engine.js cameraAt` 的竖屏分支返回 `handheld: 0`（四条求值路径全部归零，DOM 预览层共用
   `window.__CAM_STATE` 自动跟随）。transform 组装顺序三处一致：`translate(sway)` → `rotate(sway)` →
   `scale(zoom × sway.scale)`。
+- ⚠ **Dhampir 预览的画面由引擎自己那份工程画 —— 改 `props.config` 不会自动生效**：
+  `dhampirEngine.open()` 只在 `startDhampir()` 里调**一次**，而工程 JSON 是**从磁盘 `polish.toml`
+  转译**来的（`POST /polish/dhampir-project`）—— DOM 那条腿会 `buildIndex` 重算，引擎那条
+  **收不到任何通知**。所以"改一个效果 / 把一个事件挪个时间"必须**重新拉工程 + `open()`**
+  （`PolishPreview.vue::reloadDhampirProject`）；**触发点是"改动已落盘"，认的是
+  `props.persistedConfig`**（= 磁盘上那份），⚠ **不是 `props.config`**。
+  `config` 是页面手里的**镜像**：编辑器拖动时会 60ms 节流地把它换成内存中间态
+  （`onTimelinePreview`，**不落盘**）。挂在它上面 = 每次拖拽都去磁盘要一份**还没写下去**的改动，
+  拿回旧工程盖掉画面 —— 症状是"拖完松手，画面先闪回改动前的样子，等后处理跑完才追上"。
+  两个信号**各有语义、触发两次**：① 落盘完成 ⇒ 反映你**手改的值**（快，松手就变）；
+  ② 任务跑完 `load()` 之后再更新它 ⇒ 反映**后处理的校准结果**（慢，但与出片一致）。
+  ⚠ `TimelineEditor` 的 `done` 同样挂在"落盘成功"上（`onceSaved`）—— 它原先**抢在 PUT 之前**
+  发，以前侥幸没出事只是因为 `process` 前压着 1.5s > 700ms 落盘；有不等那 1.5s 的消费者就立刻穿帮。
+  ⚠ **换字体也要走这条路**：`ensureProjectFonts(project)` 必须在 `open()` **之前**跑
+  （首启 `startDhampir` 与热重载**两条路都要**）—— 这段原先只写死在 `startDhampir` 里，
+  于是"换字体不热重载"；canvas 只用页面里已有的字体，没装就**静默回退**，而字号/位置/颜色全对。
 - **贴纸尺寸与落点口径（四条路径同源）**：尺寸基准 = **画布短边** `stickerScale(cv)` =
   `min(W,H)/1080`（`canvas.js`，`stickerSize/Margin/FloatUp` 都乘它）——**竖屏也是 280px**，
   ⚠ 别改成 `W/1920`（那会按宽缩小、竖屏贴纸变小）；字幕/弹幕字号仍**不随画布缩放**，别顺手"统一"。
@@ -122,6 +138,7 @@ node webui/scripts/check-caption-wrap.mjs
 node webui/scripts/check-sticker-anchor.mjs
 node webui/scripts/check-handheld.mjs
 node webui/scripts/check-stage-backdrop.mjs
+node scripts/check-dhampir-wiring.mjs --self-test   # Dhampir 接线（含热重载判据自证）
 npm --prefix webui run build
 ```
 

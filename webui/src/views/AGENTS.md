@@ -183,9 +183,8 @@
 - **「弹幕量」排序**：有 `clip.dm.srt` 就用它，**没有（老切片）就按 `clip.json` 的 `original_start/end`
   从源弹幕里数**（`count_in_range`）—— 否则整列 0，排序静默退化成按 rank。
 
-**字体库页 `#/fonts`（`FontsView.vue`，仅 admin）**：见 `docs/plan/font-library.md` §12。
-「测试文本」喂所有字体卡片试渲染；字幕/封面下拉、管理页、首页卡共用 `is_default`（选项带
-`[默认]` 标记），未下载与 `.ttc` 不进下拉；首页卡只做"看得见+缺自带一键下载"，读失败可见。
+**字体库（`components/FontLibrary.vue`，首页内嵌区块，仅 admin，无单独页面）**：见
+`docs/webui-components.md` ⑥ 与 `docs/plan/font-library.md` §12/§21。
 
 **项目设置页 / 设置页 / 模型管理 / 登录注册 / 首页**
 
