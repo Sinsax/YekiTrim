@@ -625,11 +625,15 @@ async function startDhampir() {
   // "预览里某些效果不生效"（那种症状没有堆栈、只能靠猜）。
   // 数字的来源：底座 `crates/dhampir-timeline/src/host_api.rs::HOST_API_VERSION`；
   // `scripts/check-dhampir-wiring.mjs` 会**跨仓**把这两个数钉在一起（它变了我们这门禁就红）。
+  //
+  // ⚠️ **不能问 `dhampirEngine`**：底座的 `loadEngine(pkgUrl)` 返回的是 **`new Engine(mod)` 包装对象**，
+  // 不是 wasm 模块命名空间 ⇒ 那样写永远报"没有这个导出"，**预览会被我们自己的断言挡掉**
+  // （用户看到的就是「当前是近似预览」）。正确做法：自己 import 同一个 URL 拿命名空间
+  // （ESM 缓存 ⇒ 与 `loadEngine` 内部同一份、不重复下载；它已经 `await mod.default()` 初始化过了 ⇒ 安全）。
   // ---------------------------------------------------------------------------
+  const pkgNs = await import(/* @vite-ignore */ PKG_URL)
   const hostApi =
-    typeof dhampirEngine.dhampir_host_api_version === 'function'
-      ? dhampirEngine.dhampir_host_api_version()
-      : null
+    typeof pkgNs.dhampir_host_api_version === 'function' ? pkgNs.dhampir_host_api_version() : null
   if (hostApi !== DHAMPIR_HOST_API) {
     throw new Error(
       "底座 wasm API 版本不匹配：期望 " + DHAMPIR_HOST_API + "，实得 " +
