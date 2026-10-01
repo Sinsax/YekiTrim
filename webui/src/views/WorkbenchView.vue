@@ -290,6 +290,18 @@
       </div>
     </div>
 
+    <!-- 字体库：程序级全局资产，写操作仅管理员 —— 与上一块同规矩，普通用户整块不显示。
+         页面在 #/fonts（不占侧栏：侧栏全局入口只有 首页 / 设置）。 -->
+    <section v-if="isAdmin" class="wb-fonts">
+      <div class="hf">
+        <div>
+          <div class="hf-t">字体库</div>
+          <div class="hf-s">字幕与封面用的字体都在这里管：导入 / 删除 / 设为默认。<b>程序自带的那支不可删除。</b></div>
+        </div>
+        <button class="btn" @click="router.push({ name: 'fonts' })">管理字体</button>
+      </div>
+    </section>
+
     <!-- 表情包（本地贴纸库）：全局资产，仅管理员 —— 普通用户整块不显示 -->
     <StickerPacks v-if="isAdmin" />
 
@@ -746,4 +758,11 @@ watch(() => route.fullPath, (to, from) => {
   margin-top:10px; padding:10px 12px; border:1px solid var(--line-soft);
   border-radius:8px; background:var(--bg-soft, transparent);
 }
+.wb-fonts { margin: 14px 0; }
+.wb-fonts .hf {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; background: var(--bg-soft, #faf6f4); border-radius: 10px;
+}
+.wb-fonts .hf-t { font-size: 13px; font-weight: 600; }
+.wb-fonts .hf-s { margin-top: 2px; color: var(--muted, #7a6f6a); font-size: 11px; }
 </style>

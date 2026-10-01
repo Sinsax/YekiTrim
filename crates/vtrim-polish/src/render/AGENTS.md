@@ -147,6 +147,18 @@
   `__FONT_FAMILY__` 占位（空串时替换回系统栈）。库外/解析不到的值**什么都不注入** ——
   注入了就是一条 404 的 @font-face，老工程的 `font = "LXGW WenKai"` 行为必须保持原样。
   ⚠️ **别改成"把字体拷进项目"**（贴纸那套 `copy_sticker_from_local` 是另一回事）。
+  ⚠️ **解析必须走 `resolve_all`**（两种布局：v2 目录 `<slug>/font.ttf` + 老平铺文件）：
+  曾用 `resolve_file_at`（只认平铺）⇒ v2 布局下**一条都不注入**，症状是"选了库里的字体、出片没换"
+  （预览另有 `FontFace`，看着还对）—— P1-e 修的就是它，钉子 `injects_font_face_for_dir_layout_too`。
+  ⚠️ **声明名保持 id、别改成内部族名**：模板与 `webui/src/polish/fonts.js` 都按 **id** 请求。
+- **Takumi（`takumi.rs`）的字体口径 = 每支注册两次**：① 内嵌族名（原生）② **库 id 别名**
+  （`FontResource::override_info(FontOverride{family_name})`）。Takumi **只按内嵌族名建族**，
+  id ≠ 内嵌族名时（id 是文件名、内嵌族名带空格那种）它会**静默回退**内置 Geist ⇒ 中文标题变豆腐块。
+  别名由 `font_aliases(path)` 算：文件名是约定的 `font.<ext>` ⇒ id = 目录名，否则 = 文件名去扩展名
+  （与 `fonts::scan_all` 同规则）；字节用 `FontSource::from_shared` 共享，不翻倍内存。
+  ⚠️ `cover_font_files()` **必须走 `fonts::scan_all`**：曾只手写"列顶层文件"⇒ v2 布局零字体，
+  而零字体那条路是**明确报错**的（"静态封面直接出不来"）。真渲染验收与变异自证见
+  `tests/takumi_font_id.rs` 与 `docs/plan/font-library.md` §13。
 - **模板里两条"四处/两份实现"的契约**（改 `templates/index.html` 或 `webui/src/polish/engine.js` 前必读）：
   - **覆盖层色档**：`overlay_type == "gradient"` 的有效色档规则见 `vtrim-render-core/src/timeline.rs::overlay_stops`；
   四处实现为 `timeline.rs`、`templates/index.html`（**出片权威路径**）、`engine.js`、`PolishPreview.vue`。

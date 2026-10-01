@@ -4,10 +4,9 @@
 
 ## 职责
 
-9 个页面组件：`WorkbenchView` / `PrepareView` / `ProjectSlicesView` / `PolishView` / `ProjectSettingsView` /
-`SettingsView` / `IngestView` / `LoginView` / `RegisterView`。**壳与侧栏、路由表、换项目重挂 key、
-`:clip` 用目录名、设置页五子页、缓存与单飞、`useJobs` 退订、首页新增项目 / 录播姬 / B站** 见
-`webui/src/AGENTS.md`，本卡不重复；这里只写页面文件自身的纪律（读失败、静默刷新、置灰判据、文案口径）。
+9 个页面组件（清单见下「入口」，与 `router.js` 同源）。**壳与侧栏、路由表、换项目重挂 key、`:clip` 用目录名、
+设置页五子页、缓存与单飞、`useJobs` 退订、首页新增项目 / 录播姬 / B站** 见 `webui/src/AGENTS.md`，
+本卡不重复；这里只写页面文件自身的纪律（读失败、静默刷新、置灰判据、文案口径）。
 
 ## 入口
 
@@ -101,11 +100,10 @@
   vtrim.toml 里绑定一次、只能两次、用尽后转写入口置灰"；旧口径"转写一生只跑一次、跑过就再没有
   转写入口"作废）：产物落盘时 `assets::bind_asr_artifact` 把它**登记进素材清单**并置为生效字幕，
   那个模式的槽就算用掉了（`GET …/assets` 的 `slots`，与后端 `assets::slot_bound` 同口径）。
-  两格都占满 ⇒ 转写入口（主按钮 + 「跑 ASR」）一起置灰，字幕只能在清单里切；要再出一份就换另一个模式。
+  **两格都占满才**一起置灰（`canPickAsr = slotFree` + 任务运行中）—— 单格占满仍可切到另一个模式去跑，
+  那正是"两种模式各出一次"的正常路径，别写成"有产物就灰"；要再出一份就换另一个模式。
   服务端同口径在 `project_data_pipeline` 里守着（`stage == "transcribe"` 且 `slot_bound(模式)` → **409**），
   但**只拦 HTTP 这一侧**：CLI `vtrim transcribe` 不受影响，是转写崩在中途时的逃生口。
-- ⚠️ **两格槽都占满时才置灰**（`canPickAsr = slotFree` + 任务运行中置灰）：单格占满仍可切到另一个
-  模式去跑 —— 那正是"两种模式各出一次"的正常路径，别写成"有产物就灰"。
 - ⚠️ 行内还有一颗 **「跑 ASR」**（2026-09）：**只转写、不接检测**（`chainDetect = false`），
   是"换模式再出一份"的入口；`canRunAsr = !slotUsed(当前模式)`，两模式都跑过时文案变「已跑过」。
   跑完产物进字幕列表并自动成为生效值，要不要接着检测由用户点主按钮决定。
@@ -132,8 +130,6 @@
   单独跑一次「跑 ASR」不消费切过的弹幕/字幕，那句提示要留着。
 - ⚠️ `slots`（`{hybrid, single}`）**由服务端算**（遍历 `vtrim_core::config::ASR_MODES` 调
   `slot_bound`），前端**不自己从 `items` 推** —— 判槽还要看盘上那些没登记的老产物，抄一份就会漂。
-- ⚠️ **`{dir, name}` 这条形态是为了不让前端拼路径**：`/api/fs/list` 回传的目录可能带 `\\?\` verbatim
-  前缀，前端拼成 `\\?\F:\a/b` 在 Windows 上是 ERROR_INVALID_NAME（首页目录选择器同款教训）。
 - ⚠️ **清单写入必须单次 `patch_config_file`**（生效值 + 整份清单走同一个 patch，
   见 `assets.rs::write_state` 的注释）：拆两次会连撞两次它内部的路径锁
   （`filelock::with_path_lock_sync`，**非重入**的 std Mutex），中间那一小段还会出现
@@ -173,19 +169,20 @@
   `polish_ready` → 那个判据恒为真，旧两档退化成"恒空 / 恒满"。
   默认（`applyDefaultFilter`）：有已剪切则选「已剪切」，否则「未剪切」，**不写盘**；二级默认 `SUB_FILTERS[0]`。
   读数分母 = 一级档位涉及的片段数（`poolTotal`）；空态文案随二级变（`emptyText`）。
-- ⚠️ localStorage 迁移：`LEGACY_FILTERS` 把上一版的 `polish` → 已剪切 + 已导出；二级旧值走
-  `LEGACY_SUB_FILTERS`（`unpolished`→`polishing`、`polished`→`exported`）。后一对**有损且有意**：
-  旧 `polished` 含"进过精修但没出片"那批，新口径只有"已导出"能表达；旧两档本身已退化，
-  继续认旧 key 只会让用户看到一排筛不出东西的按钮。认不出回落默认档。
-  存 key：`vtrim.slices.filter` / `vtrim.slices.subfilter`。
-- 卡片状态只有一枚 chip **`已导出`**（`isExported`）；没导出**不挂 chip**。筛选栏与 chip 已统一到同一判据，
-  不会再出现"某档高亮、卡片挂另一个词"。⚠️ 历史上这里写着「别把它统一回已导出」——**已被用户推翻**。
+- ⚠️ localStorage 迁移（存 key：`vtrim.slices.filter` / `.subfilter`）：`LEGACY_FILTERS` 把上一版
+  `polish` → 已剪切 + 已导出；二级旧值走 `LEGACY_SUB_FILTERS`（`unpolished`→`polishing`、
+  `polished`→`exported`）。后一对**有损且有意**（旧 `polished` 含"进过精修但没出片"那批，
+  新口径只有"已导出"能表达；旧两档本身已退化，继续认只会让用户看到一排筛不出东西的按钮）。认不出回落默认档。
+- 卡片状态只有一枚 chip **`已导出`**（`isExported`）、没导出**不挂 chip**，与筛选栏**同一判据**（不会"某档高亮、
+  卡片挂另一个词"）。⚠️ 历史上这里写着「别把它统一回已导出」——**已被用户推翻**。
 - 操作条 = 重新检测 / 添加片段 / **一键全切（N）**（`ProjectSlicesView` 调 `cutAll`）。
   **「重新检测」在已有检测结果时必须二次确认**（`utils.js::redetectWarning()`，与预处理页共用同一份文案）：
   重跑只整份覆盖 `output/events.json`，**`output/clips/` 一个文件都不动**；事件按热度重新编号后目录名
   `clip-NN`（= rank）会与新事件对不上 —— 文案要提醒"需要时删掉重切"，别写成"会删片段"。
 - **「弹幕量」排序**：有 `clip.dm.srt` 就用它，**没有（老切片）就按 `clip.json` 的 `original_start/end`
   从源弹幕里数**（`count_in_range`）—— 否则整列 0，排序静默退化成按 rank。
+
+**字体库页 `#/fonts`（`FontsView.vue`，仅 admin）**：见 `docs/plan/font-library.md` §12。
 
 **项目设置页 / 设置页 / 模型管理 / 登录注册 / 首页**
 

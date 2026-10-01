@@ -64,12 +64,25 @@
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
 - **字体库**：`vtrim_core::fonts` + `path::font_dir()`，程序级固定在 `<程序目录>/resources/fonts/`
   （与 `.vtrim/`、`stickers/` 同级；`config init` 与 `server` 启动时都会 `ensure_dir`）。
-  往里丢 `.ttf`/`.otf`/`.ttc` 就会出现在精修页两个下拉里。**id = 文件名去扩展名**，
-  `family` 只是展示名（手写最小 `name` 表解析，按 `(路径, mtime, 体积)` 缓存，别每次请求重读几十 MB）；
-  **空串 = 系统字体栈**（`LXGW WenKai → Noto Sans SC → Microsoft YaHei`），老工程就是这一档。
-  ⚠️ **别改成"把字体拷进项目"**：出片页由渲染服务器（ServeDir 根 = 项目目录）端给 headless Chrome，
+  **两种布局都支持**：① v2「每支一个目录」`<slug>/font.ttf|otf` + `FONT.toml`（**id = 目录名**，
+  元数据含 `family`（**内部族名，唯一权威**）/ `display_name` / `builtin` / `is_default` / `license` / `scripts`）；
+  ② 老布局（`.ttf` 直接丢在库里，id = 文件名去扩展名）—— **继续支持**，`scan_all`/`resolve_all` **目录优先**，
+  `scan()`/`resolve_file()` 已改走 `*_all`。`family` 仍是内部族名（手写最小 `name` 表解析，按
+  `(路径, mtime, 体积)` 缓存，别每次请求重读几十 MB）；**空串 = 系统字体栈**（首项由
+  `vtrim-polish` 的 `preferred_fallback_family()` 按“库里装了哪支”算，见其卡），老工程就是这一档。
+  ⚠️ **`.ttc`/`.otc` 导入一律拒收**（要收得先拆包）：浏览器
+  `@font-face` **不认字体集合** ⇒ 收进来会“预览回退系统字体、出片却用了它”。`import_font` 还要求
+  “读得出内部族名”；`remove_font` 对 `builtin=true` 直接拒绝（“程序自带字体不可删除”）。
+  **自带字体（P1-f）**：`BUILTIN_FONTS` 里两支（霞鹜文楷 Lite + Noto Color Emoji，均 SIL OFL-1.1），
+  **清单随代码、字节首次使用时下载**（`download_builtin_font(s)`，校验 `sha256`、随附上游 `OFL.txt`）。
+  `scan_all()` 会**把没下载的自带字体也列出来**（`installed: false`、`file` 空）—— 界面据此给「下载」；
+  ⚠️ **数「有没有可用字体」时必须滤掉它们**（`resolve_all` 解析得到才算数），否则会告诉用户「有字体」
+  然后出片炸在「至少一个字体文件」上。**别把 ttf 塞进仓库**（约 38 MB 且会进 git 历史）。
+  方案与理由：`docs/plan/font-library.md`（§5 设计 / §10 契约 / §15 自带字体）。
+  ⚠️ **别改成“把字体拷进项目”**：出片页由渲染服务器（ServeDir 根 = 项目目录）端给 headless Chrome，
   所以库里字体必须有一条自己的路由 `/vt-fonts/:name`（在 `vtrim-polish`，见其卡）。
-  回归钉子：`fonts::tests`（扫描/解析/越权）。发行包**不带任何字体**（授权原因，见 README「字体」）。
+  回归钉子：`fonts::tests`（扫描/解析/越权）+ `fonts::tests_v2`（布局/导入/自带/默认）。
+  发行包**不带字体文件**，只建空目录 + `放这里.txt` 说明怎么下载（见 README「字体」）。
 - `filelock` 的两种锁别混用：异步 `with_path_lock` / `lock_path` 给 handler，
   **同步** `with_path_lock_sync` 只给同步上下文的 read-modify-write（core 管线的 `edit_toml_at` 用）
   —— ⚠️ 只在**微秒级**的文件读改写里用，别拿它包 ffmpeg / 网络请求；它**非重入**。

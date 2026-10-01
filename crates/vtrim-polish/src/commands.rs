@@ -1142,3 +1142,83 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+/// `vtrim fonts list`：列出字体库（含**没下载的自带字体**）。
+///
+/// ⚠️ 判据全走 `vtrim_core::fonts`（`scan_all` / `family_for_at` / `builtin_status`），
+/// 本层只负责排版 —— 库的形状只有一份，别在这里重新解释一遍。
+///
+/// ⚠️ "未安装"必须**看得见**：`scan_all` 会把清单里有、盘上没有的自带字体也列出来，
+/// 这里要把它们标成 `未安装（可下载）`，否则用户以为库里空空如也。
+pub fn cmd_fonts_list() -> anyhow::Result<()> {
+    let root = vtrim_core::path::font_dir();
+    tracing::info!("🔤  字体库: {}", root.display());
+    let list = vtrim_core::fonts::scan_all(&root);
+    let installed = list.iter().filter(|e| e.installed).count();
+    tracing::info!("  共 {} 支（已安装 {} 支 / 待下载 {} 支）", list.len(), installed, list.len() - installed);
+    for e in &list {
+        let mut tags: Vec<String> = Vec::new();
+        if e.builtin {
+            tags.push("自带".into());
+        }
+        if e.is_default {
+            tags.push("默认".into());
+        }
+        if e.emoji {
+            tags.push("emoji".into());
+        }
+        if !e.installed {
+            tags.push("未安装（可下载）".into());
+        }
+        let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join("·")) };
+        // 内部族名是**唯一权威**（预览/出片/Takumi 三处都认它），显示名只是标签 —— 两个都打出来
+        tracing::info!(
+            "  {}  族名={:?}  显示名={:?}  {}{}",
+            e.id,
+            vtrim_core::fonts::family_for_at(&root, &e.id),
+            e.display_name,
+            if e.installed { format!("{}KB", e.bytes / 1024) } else { "-".to_string() },
+            tags
+        );
+    }
+    if installed == 0 {
+        tracing::info!("  💡 一支都没有？跑 `vtrim fonts download` 下自带字体（OFL 许可，可商用）");
+    }
+    Ok(())
+}
+
+/// `vtrim fonts download [--id X]`：下载自带字体（幂等，已装好的跳过）。
+pub async fn cmd_fonts_download(id: Option<&str>) -> anyhow::Result<()> {
+    let root = vtrim_core::path::font_dir();
+    vtrim_core::fonts::ensure_dir()?;
+    let want: Vec<&vtrim_core::fonts::BuiltinFont> = match id {
+        Some(id) => {
+            let hit: Vec<_> = vtrim_core::fonts::builtin_fonts()
+                .iter()
+                .filter(|b| b.id.eq_ignore_ascii_case(id.trim()))
+                .collect();
+            if hit.is_empty() {
+                anyhow::bail!("不是自带字体（自带清单里没有它）: {id}");
+            }
+            hit
+        }
+        None => vtrim_core::fonts::builtin_fonts().iter().collect(),
+    };
+    let mut n = 0usize;
+    for b in want {
+        if vtrim_core::fonts::builtin_installed(&root, b) {
+            tracing::info!("  ✓ {} 已安装，跳过", b.id);
+            continue;
+        }
+        tracing::info!("  ⬇ 下载 {}（{}）…", b.display_name, b.license);
+        vtrim_core::fonts::download_builtin_font(&root, b).await?;
+        n += 1;
+        tracing::info!("  ✓ {} 已安装到 {}/", b.id, root.display());
+    }
+    if n == 0 {
+        tracing::info!("  没有需要下载的字体（都装好了）");
+    } else {
+        tracing::info!("  🎉 完成：本次下载 {n} 支");
+    }
+    Ok(())
+}

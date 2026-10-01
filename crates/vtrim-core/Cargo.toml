@@ -28,3 +28,6 @@ bzip2 = "0.5"
 indicatif = "0.18"
 memmap2 = "0.9"
 regex-lite = "0.1"
+# 自带字体（`fonts::BUILTIN_FONTS`）的下载校验：清单里钉死 sha256，下完当场比对。
+# 与 `vtrim-service` 那条 yt-dlp 供应链同一条规矩（字体文件是解析器要读的**内容载体**）。
+sha2 = "0.10"

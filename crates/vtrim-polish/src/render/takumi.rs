@@ -36,6 +36,9 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 // 入口函数在 crate 根，**不在 prelude 里**（prelude 只有数据类型）
 use takumi::prelude::*;
+// `FontOverride.family_name`：把一支字体**按我们指定的族名**注册（而不是它内嵌的名字）。
+// 这是让模板里的 `font-family:"<字体库 id>"` 能命中 Takumi 的唯一手段。
+use std::sync::Arc;
 use takumi::{from_html, render, write_image};
 use std::hash::{Hash, Hasher};
 
@@ -404,6 +407,48 @@ pub fn inline_local_images(html: &str, asset_root: &Path) -> String {
     out
 }
 
+/// 把已读进内存的字体字节交给 Takumi —— **共享、不复制**。
+///
+/// `FontResource::new` 收 `impl Into<FontSource>`，而 `FontSource::from_shared` 接
+/// `Arc<dyn AsRef<[u8]> + Send + Sync>`：同一支几十 MB 的字体要注册两个族名（内嵌名 + 库 id），
+/// 每支 `fs::read` 一次、`Arc` 克隆两次指针 —— 不然峰值内存直接翻倍。
+fn shared_font_bytes(bytes: std::sync::Arc<Vec<u8>>) -> FontSource<'static> {
+    FontSource::from_shared(bytes)
+}
+
+/// 一支字体文件在 CSS 里**可能被请求到的库 id**（不含内嵌族名，那个 Takumi 自己就会注册）。
+///
+/// 模板与配置里存的是**库 id**，而 `scan_all` 的规则是：
+/// **v2 目录布局**（`<slug>/font.ttf|otf`）⇒ id = **目录名**；
+/// **老平铺布局**（`<id>.ttf` 直接躺在库里）⇒ id = **文件名去扩展名**。
+/// 两种布局**互斥**（判据就是"文件名是不是约定的 `font.<ext>`"），所以这里也按同一条判据走，
+/// 命中的那个才是别名；都算不出来（路径不在库里）就返回空 —— 只按内嵌族名注册，与改造前一致。
+///
+/// ⚠️ 这里**不能**无条件把父目录名也当别名：库里那些老平铺文件（`/fonts/X.ttf`）的父目录
+/// 就叫 `fonts`，多注册一个叫 `fonts` 的族名纯属污染（测试逮到过）。
+///
+/// ⚠️ 为什么不是"直接问 `fonts::scan_all` 反查"：`cover_font_files()` 给的是**路径列表**，
+/// 而 id 是"目录名或文件名去扩展名"这条**由路径即可算出**的规则；反查还要建映射，
+/// 且库里同名文件/目录的存在与否不该影响"这支文件怎么注册"。
+fn font_aliases(path: &Path) -> Vec<String> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").trim();
+    // v2 目录布局的判据：文件名就是约定的 `font.<ext>`
+    if stem.eq_ignore_ascii_case("font") {
+        if let Some(slug) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+            let slug = slug.trim();
+            if !slug.is_empty() && vtrim_core::fonts::is_safe_id(slug) {
+                return vec![slug.to_string()];
+            }
+        }
+        return Vec::new();
+    }
+    // 老平铺布局：id = 文件名去扩展名
+    if !stem.is_empty() && vtrim_core::fonts::is_safe_id(stem) {
+        return vec![stem.to_string()];
+    }
+    Vec::new()
+}
+
 /// 渲染一张封面 PNG。`fonts` 是字体文件（**至少一个**，否则中文/emoji 是豆腐块）；
 /// `asset_root` 是工程目录（相对路径图片从它下面读）。
 pub fn render_cover_png(
@@ -424,11 +469,29 @@ pub fn render_cover_png(
     }
 
     let mut font_ctx = Fonts::default();
+    // ⚠️ 每支字体注册**两次**：
+    //   ① 内嵌族名 —— Takumi 默认行为（CSS 里写真实族名时用它）；
+    //   ② **字体库 id（别名）** —— 模板里的字体栈写的是**配置里存的那串 id**
+    //      （`.cap{font-family:"<id>"}`、封面的 `__FONT_FAMILY__` / `[cover] font`），
+    //      而 Takumi **只按内嵌族名匹配**；两者不等时（很常见：id 是文件名
+    //      `LXGWWenKaiLite-Regular`、内嵌族名 `LXGW WenKai Lite`）它**静默回退**到内置 Geist
+    //      —— 中文标题变豆腐块，而预览与 Chrome 出片都是对的（"预览和实际对不上"的 Takumi 版）。
+    // 字节用 `Arc` 共享：`FontSource::from_shared` 只克隆指针，不复制整支字体。
     for path in fonts {
-        let bytes = fs::read(path).with_context(|| format!("读字体失败: {}", path.display()))?;
+        let bytes: Arc<Vec<u8>> =
+            Arc::new(fs::read(path).with_context(|| format!("读字体失败: {}", path.display()))?);
         font_ctx
-            .register(FontResource::new(bytes))
+            .register(FontResource::new(shared_font_bytes(bytes.clone())))
             .with_context(|| format!("注册字体失败: {}", path.display()))?;
+        for alias in font_aliases(path) {
+            let res = FontResource::new(shared_font_bytes(bytes.clone())).override_info(FontOverride {
+                family_name: Some(Arc::from(alias.as_str())),
+                ..Default::default()
+            });
+            font_ctx.register(res).with_context(|| {
+                format!("按 id 别名注册字体失败: {} -> {}", path.display(), alias)
+            })?;
+        }
     }
 
     // 图片内联 + 标题双层（描边在下、填充在上）—— 都在交给 HTML 前端之前做完
@@ -515,6 +578,44 @@ pub fn render_cover_png(
 mod tests {
     use super::*;
 
+    /// ⚠️ **P1-e 的钉子**：一支库里字体在 CSS 里可能被请求到的 id，必须**两种布局都算得出来**。
+    ///
+    /// 背景：模板里的字体栈写的是**配置里存的 id**（库 id），而 Takumi 只按字体文件内嵌的族名匹配。
+    /// 两者不等时（常见：id 是文件名、内嵌族名是"LXGW WenKai Lite"）它**静默回退**内置 Geist
+    /// —— 中文标题变豆腐块、不报错。所以"能不能算出别名"直接决定封面字体对不对。
+    #[test]
+    fn font_aliases_cover_both_layouts() {
+        // v2 目录布局：id = 目录名（约定文件名 font.ttf **不**当 id 用）
+        assert_eq!(
+            font_aliases(Path::new("/fonts/LXGW-WenKai-Lite/font.ttf")),
+            vec!["LXGW-WenKai-Lite".to_string()],
+            "目录布局的 id 是目录名，且 font.ttf 本身不是 id"
+        );
+        // 老平铺布局：id = 文件名去扩展名
+        assert_eq!(
+            font_aliases(Path::new("/fonts/LXGWWenKaiLite-Regular.ttf")),
+            vec!["LXGWWenKaiLite-Regular".to_string()],
+            "老布局的 id 是文件名去扩展名"
+        );
+        // 带空格的 id（库允许）照样算得出来
+        assert_eq!(
+            font_aliases(Path::new("/fonts/My Font/font.otf")),
+            vec!["My Font".to_string()]
+        );
+        // 目录组件不参与取名（`evil` 是合法 id，`..` 在目录那一段被忽略 ——
+        // 而且 `cover_font_files()` 只会给出 `scan_all` 产出的安全 id，这条路上不会有穿越路径）
+        assert_eq!(
+            font_aliases(Path::new("/fonts/../evil.ttf")),
+            vec!["evil".to_string()]
+        );
+        // `font.ttf` 一律按 v2 目录布局解释、id = 父目录名 —— 与 `scan_all` 同口径
+        // （哪怕父目录恰好叫 `fonts`：那是库里真有一个叫 `fonts` 的 slug，不是特例）
+        assert_eq!(
+            font_aliases(Path::new("/fonts/font.ttf")),
+            vec!["fonts".to_string()]
+        );
+    }
+
     /// ⚠️ 这条钉的是**真实模板**：它的注释里提到了 `<style>`，naive 抽取会把注释当 CSS
     /// （Takumi 报 `DanglingCombinator`）。实测踩到过，所以判据按真模板来。
     #[test]
@@ -557,7 +658,6 @@ mod tests {
     }
 
     /// 标题双层：描边层插在**前面**（同 z-index 时 DOM 序决定上下），填充层是原块。
-    #[test]
     /// 标题双层：**钉住我踩过的三个真 bug** ——
     /// ① 发出去的 HTML 必须配平（第一版正则少吃了 `</div>` ⇒ `<div>12 vs </div>11`，两层关系全乱）；
     /// ② 两层必须**同一个盒子**（一层 flex 子项 max-content、另一层 width:100% 时错位，整图差反而变大）；
