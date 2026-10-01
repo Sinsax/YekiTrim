@@ -489,6 +489,24 @@ function fnBodyOf(src, name) {
     )
   }
 
+  // ⚠️⚠️ **播放期零请求**（这次改造最大的收益，也是最容易被顺手改回去的一条）：
+  // 帧循环里那个 `/polish/sticker-frame` 调用**必须在** `if (st.animLoaded) continue` **之后**。
+  // 不然动图会重新走回逐帧 HTTP 取 PNG（~390KB/帧），而且与引擎自己的解码两边冲突。
+  {
+    const iSkip = previewSrc.indexOf('if (st.animLoaded) continue')
+    const iFetch = previewSrc.indexOf("'/api/polish/sticker-frame'")
+    check(
+      iSkip >= 0,
+      '帧循环里应当有 if (st.animLoaded) continue 跳过动图',
+      '没有这一行 = 动图又回到了宿主位图那条路（引擎供帧与宿主交图两边抢）',
+    )
+    check(
+      iSkip >= 0 && iFetch >= 0 && iFetch > iSkip,
+      '动图跳过必须发生在取帧之前（这样播放期才是零请求）',
+      '下标 = skip(' + iSkip + ') fetch(' + iFetch + ')；反过来就是每帧发一次 HTTP',
+    )
+  }
+
   // 字幕重喂还依赖 response 的旁写内容字段名 —— 两端各一份，钉一起。
   check(
     /res\.subtitles/.test(previewSrc),
