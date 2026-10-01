@@ -29,12 +29,21 @@
 | `p9-downstream-requirements.md` | P9 的**下游需求来源**：V-Trim polish 的 15 个事件变体 / 样式表 / 布局表，以及"什么归底座、什么归 V-Trim"的分工表 |
 | `base-handoff.md` | 2026-10-01 交给底座的**问题交接单**（D1–D4 / B1–B5，含最小复现与验收判据）。**处置结果记在 Dhampir 仓的 `plan/dhampir-base-handoff.md`**（那份已被底座中性化，只留"下游"的说法） |
 | `../scripts/vtrim-compare.mjs` | 一步跑完整条回路的对比工具（转译 → 两边出片 → 按事件窗口出表） |
+| `../plan/dhampir-animation-handoff.md` | **动图（GIF / 动画 WebP）原生解码的接入说明**（底座 host_api **6**）：两条新导出的契约、要改的三处调用点、「`sources_for` 会照旧包含动图层」这个坑、显存按原生尺寸算这条约束，以及**那一版没有验的**（浏览器侧未跑真素材 / WebP 无真实素材）。放在 `docs/plan/` 而不是这里，是因为它是**接入动作清单**，与本目录那几份"承接关系说明"性质不同 |
 
 ## 边界（一句话）
 
 **V-Trim 决定"画什么"，Dhampir 决定"怎么画出来，且预览与成片画得一样"。**
 底座对外承诺的只有 Dhampir 仓的 `docs/api-surface.md` 与 `docs/host-api.md`，
-以及产物 `VERSION` 里的 `project_schema`；**转译器不承诺兼容**，形状可以随本仓演化。
+以及产物 `VERSION` 里的**两条版本线**：
+
+* `project_schema` —— 工程文件能不能读（动图这一版**没动**，仍是 1）；
+* `host_api` —— wasm 导出面/形状对不对得上（动图这一版 **5 → 6**）。
+
+**启动时两条都要校验。** 只查 `project_schema` 会漏掉「工程能读、但少了两条导出」那种错配 ——
+那时对端拿到的是 `undefined`，而不是一个说得清的错误。
+
+**转译器不承诺兼容**，形状可以随本仓演化。
 
 ## 怎么跑对比回路
 
