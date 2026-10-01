@@ -87,34 +87,36 @@ const frameImgFillsStage = (css) => {
  *  只有 `_cover_frame.jpg` 一份（出片只有一个 `#frame img`，两帧图源就是那次不一致的成因）；
  *  ③ 监视器是声明了尺寸的真盒子（不是隐身的 1px），显式清掉全局 video 规则的
  *  `max-height:170px`/`margin-top`「卡片缩略图」口径。 */
-/** 取帧播放器（2026-10 第二轮口径：**选中「视频预览」层时，舞台帧层本体就是播放器**；
- *  未选中时回落静态图 + 舞台外兜底进度条）：① 模板必须同时有两个分支 —— 舞台内
- *  `v-if="frameSelected"` 的实况播放器与 `_cover_frame.jpg` 的静态 <img>；
- *  ② 静态图与出片同源（`_cover_frame.jpg`，不回归 11.09/255 那次）；③ 播放器清掉全局
- *  `video{}` 的黑底/圆角/170px 缩略图口径，盒子与静态帧一致（inset:0 + contain）。 */
+/** 取帧播放器（2026-10 **第三轮：口径修正**）。出图链路是「ffmpeg 按 frame_pos×时长 截帧 →
+ *  写 `_cover_frame.jpg` → 塞进 `cover.html` → 出图程序渲染」——**前端从来不是帧源**，
+ *  它只负责让用户**选时间点**。所以舞台里**常驻**一个播放器是对的，**不需要**也没有理由
+ *  把它按"当前选中哪个层"门控（那正是两个真 bug 的来源：选中别的层就没法拖进度条；
+ *  刚选好的帧一切层就跳回静态图）。
+ *  ① 舞台帧层必须有 `.stage-video-live` 的 <video>（**不得**挂 frameSelected 之类门控）；
+ *  ② `_cover_frame.jpg` 的静态 <img> 保留为**取不到视频时的兜底**（与出片同源，别删）；
+ *  ③ 播放器清掉全局 `video{}` 的黑底/圆角/170px 口径，盒子与静态帧一致。 */
 const hasStageLiveVideo = (src) => {
-  const clean = src.replace(/<!--[\s\S]*?-->/g, '') // 注释里的字面量不算（讲历史会写到 <video>）
-  return /v-if="frameSelected"[^>]*class="stage-video-live"/.test(clean)
+  const clean = src.replace(/<!--[\s\S]*?-->/g, '')
+  return /<video[^>]*class="stage-video-live"/.test(clean)
 }
-const hasStaticFrameFallback = (src) => /v-else-if="frameImageOk"[^>]*class="stage-frame-img"/.test(src)
+/** ⚠️ 播放器**不许**按层选中态门控（口径修正的钉子：再挂回 v-if/frameSelected 就是回退）。 */
+const liveVideoIsNotGated = (src) => {
+  const clean = src.replace(/<!--[\s\S]*?-->/g, '')
+  const m = /<video([^>]*)class="stage-video-live"/.exec(clean)
+  return !!m && !/v-if|v-show/.test(m[1])
+}
+const hasStaticFrameFallback = (src) => /class="stage-frame-img"/.test(src)
 const stageVideoClearsGlobal = (css) => {
   const b = rule(css, '.stage-video-live')
   const v = /^(transparent|none)$/i.test(decl(b, 'background') || '') && num(decl(b, 'border-radius')) === 0
   return v && /max-height\s*:\s*none/.test(b || '') && /margin\s*:\s*0/.test(b || '')
     && /object-fit\s*:\s*contain/.test(b || '') && !/opacity\s*:\s*0/.test(b || '')
 }
-/** ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
- *  以前这里放的是实时 `<video>`（打开时恒在第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
- *  ⇒「设计器里是这一帧、成片里是另一帧」，两边都不报错，只能比对产物才发现。 */
-/** 帧层内容判据（2026-10 第二轮口径）：静态回落必须是 `_cover_frame.jpg` 的 <img>；
- *  里面的 video **必须是 `v-if="frameSelected"` 门控的**实况播放器（选中该层才渲染），
- *  常驻 video（= 修复前的根因：打开恒第 0 秒、成片却是 frame_pos 那帧）仍然禁止。 */
-const frameLayerIsImg = (src) => {
-  const m = /class="stage-media"[^>]*>[\s\S]{0,300}?(<img[^>]*class="stage-frame-img"|<video[^>]*>)/.exec(src)
-  if (!m) return false
-  if (m[1].startsWith('<img')) return true
-  return /v-if="frameSelected"/.test(m[1]) || /v-if="frameSelected"[^>]*class="stage-video-live"/.test(src)
-}
+/** ⚠️（2026-10 第三轮）**"帧层不许放 video"是错的契约，已删除** —— 出图链路是 ffmpeg 截帧写
+ *  `_cover_frame.jpg` → 注入 `cover.html` → 出图程序渲染，**前端从来不是帧源**，它只是让用户**选
+ *  时间点**。当年那次"设计器第 0 秒 vs 成片 frame_pos"的真根因是**没把播放头对到 frame_pos**，
+ *  守门人是下面的「打开设计器会按 frame_pos × 时长 seek」那条，而不是"禁止播放"。
+ *  代码里若再出现 `v-if="frameSelected"` 之类的层选中门控，`liveVideoIsNotGated` 会当场报红。 */
 /** 「生成封面」必须**无条件**按当前进度刷新关键帧：0 秒是合法取值，不能拿 `time > 0` 当门控
  *  （那会让"没拖过进度条"的用户选的那一帧永远进不了产物）。 */
 const coverFrameIsUnconditional = (src) =>
@@ -169,13 +171,15 @@ check('app.css 的 `video {}` 带 background:#000', appVideoBgIsBlack(appCss), t
   '全局黑底规则没了 → 可以删掉 .stage-video 的 background:transparent，并同步本脚本与 AGENTS.md')
 
 // ── ② 设计器帧层：不许有黑底 / 圆角（回归钉子） ─────────────────────────────
-console.log('\n② 设计器帧层与出片同构（帧层 = `_cover_frame.jpg` 的 <img>，取帧监视器在舞台外）')
+console.log('\n② 设计器帧层与出片同构（舞台常驻取帧播放器 + `_cover_frame.jpg` 兜底图）')
 check('帧层 img 保持原比例（object-fit:contain，与 #frame img 同规则）', frameImgIsContained(designer), true,
   '竖屏素材会被裁掉 —— 那是用户明确否掉的（要求完整显示、左右留白露出背景层）')
 check('帧层 img 铺满舞台（width/height 100%）', frameImgFillsStage(designer), true,
   '不铺满 → 帧层缩在某一角，与出片 #frame img 的 100%/100% 不同口径')
-check('选中「视频预览」层时舞台本体就是播放器（stage-video-live）', hasStageLiveVideo(designer), true,
-  '没有它 = 用户只能拖进度条盲选，图层里的视频预览名不副实（2026-10 用户口径）')
+check('舞台帧层有常驻取帧播放器（stage-video-live）', hasStageLiveVideo(designer), true,
+  '没有它 = 用户只能看静态图 + 拖进度条盲选（2026-10 用户口径：图层里的视频预览就该能播）')
+check('播放器**不**按选中层门控（全局取景 UI，切层不影响找帧）', liveVideoIsNotGated(designer), true,
+  '挂回 v-if/frameSelected = 回退到两个真 bug：选中别的层没法拖进度条、选好的帧一切层就跳回去')
 check('未选中时回落静态图（_cover_frame.jpg，与出片同源）', hasStaticFrameFallback(designer), true,
   '帧层契约：静态图必须还是 _cover_frame.jpg（11.09/255 那次同帧修复的根子）')
 check('舞台播放器清掉全局 video 口径（黑底/圆角/170px 缩略图）', stageVideoClearsGlobal(designer), true,
@@ -184,8 +188,8 @@ check('.stage-media 容器没有底色', mediaWrapHasNoBg(designer), true)
 // ⚠️ **根因钉子（2026-10）**：帧层必须是 `_cover_frame.jpg` 的图 —— 与出片模板 `#frame img` 同源。
 // 以前这里放的是实时 `<video>`（打开时恒为第 0 秒），出片却读 `_cover_frame.jpg`（按 frame_pos 截），
 // ⇒「设计器里是这一帧、成片里是另一帧」，两边都不报错，只能比对产物才发现。
-check('帧层（.stage-media）里放的是 img，不是 video', frameLayerIsImg(designer), true,
-  '帧层用 <video> = 设计器与出片两帧图源（打开时视频恒在第 0 秒，成片却是 frame_pos 那帧）')
+check('帧层静态兜底图与出片同源（_cover_frame.jpg 的 <img>）', hasStaticFrameFallback(designer), true,
+  '取不到视频就黑屏 —— 这张图就是兜底；图源必须仍是 _cover_frame.jpg（与出片同一个文件）')
 check('帧层的 img 指向 `_cover_frame.jpg`（与出片同一个文件）',
   /frameImageSrc\s*=\s*computed[\s\S]{0,400}?'_cover_frame\.jpg'/.test(designer), true,
   '换成别的图源 → 两边又不是同一张图了')
@@ -230,17 +234,20 @@ check('设计器没把两个文件弄混（blur→关键帧、image→背景图�
 
 // ── ⑤ 自证有效：把源码改回修复前，上面那批判据必须翻面 ────────────────────────
 console.log('\n⑤ 自证有效：变异后上面的断言必须失败（否则本脚本是空转的）')
-check('[变异] 舞台播放器分支删掉（退回纯静态图）→ 判据翻面',
-  hasStageLiveVideo(designer.replace('v-if="frameSelected" ref="videoRef" class="stage-video-live"', 'v-if="false" data-x class="stage-video-live"')) === false, true)
-check('[变异] 静态图回落分支删掉（切换后没有图）→ 判据翻面',
-  hasStaticFrameFallback(designer.replace('v-else-if="frameImageOk" class="stage-frame-img"', 'v-else-if="false" class="stage-frame-img"')) === false, true)
+check('[变异] 舞台播放器删掉（退回纯静态图）→ 判据翻面',
+  hasStageLiveVideo(designer.replace('class="stage-video-live"', 'class="stage-video-x"')) === false, true)
+check('[变异] 播放器挂回选中层门控（= 两个真 bug 回退）→ 判据翻面',
+  liveVideoIsNotGated(designer.replace('<video ref="videoRef" class="stage-video-live"', '<video v-if="frameSelected" ref="videoRef" class="stage-video-live"')) === false, true)
+check('[变异] 静态兜底图删掉（取不到视频就黑屏）→ 判据翻面',
+  hasStaticFrameFallback(designer.replace('class="stage-frame-img"', 'class="stage-frame-x"')) === false, true)
 check('[变异] 舞台播放器改回隐身（opacity:0）→ 判据翻面',
   stageVideoClearsGlobal(designer.replace('object-fit:contain;\n  background:transparent', 'object-fit:contain; opacity:0;\n  background:transparent')) === false, true)
 check('[变异] 帧层 contain → cover（两份同时改）→ 判据翻面',
   frameIsContained(designer.replace('.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }', '.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }')) === false
   && tplFrameIsContained(coverHtml.replace('object-fit:contain; display:block;', 'object-fit:cover; display:block;')) === false, true)
-check('[变异] 帧层放回常驻 <video>（= 修复前的根因）→ 判据翻面',
-  frameLayerIsImg(designer.replace('<video v-if="frameSelected"', '<video v-if="true"')) === false, true)
+check('[变异] 打开时不 seek 到 frame_pos（= 真正的 2026-10 根因）→ 判据翻面',
+  !/function seekToFramePos\(\)/.test(designer.replace('function seekToFramePos()', 'function seekToFramePosX()')), true,
+  '去掉 seekToFramePos = 打开恒第 0 秒、成片却是 frame_pos 那帧（当年只能比对产物才发现）')
 check('[变异] 背景层 cover → contain → 判据翻面',
   tplBgImgIsCovered(coverHtml.replace('display:block; width:100%; height:100%; object-fit:cover;', 'display:block; width:100%; height:100%; object-fit:contain;')), false)
 // 只改一边的数字同源：`rsNum` 吃的是被替换过的源码文本，必须立刻读到新值（否则这项是空转的）

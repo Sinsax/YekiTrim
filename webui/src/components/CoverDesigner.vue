@@ -24,17 +24,23 @@
                  :class="{ 'bg-blur': bgMode === 'blur' }" :src="bgImageSrc"
                  :style="bgMode === 'blur' ? bgBlurStyle : null" alt="" @error="onBgImageError">
           </div>
-          <!-- 帧层 = 「视频预览」层本体（图源契约：静态时是 `_cover_frame.jpg`，与出片模板
-               `cover.html` 的 `#frame > img` 逐字同构 —— 同一个文件 → 设计器与成片不可能看到两帧）。
-               ⚠️ **选中该层时这一层就是播放器本体**（2026-10 用户口径：图层里的视频预览要能播，
-               直接在舞台上找帧，不是"大静态图 + 迷你监视器"）。同帧契约靠三件事守住：
-               ① 切换显示**不写盘**（frame_pos 不动，磁盘上仍是那张图）；② 「生成封面」**无条件**
-               按当前时间重新截帧（0 秒也合法，generateCover 本来就这么做）；③ 落盘时间点
-               =「导出关键帧 / 生成封面」，不是拖动本身。未选中时 = 静态图（老契约，逐字不变）。 -->
+          <!-- 帧层 = 「视频预览」层本体，**常驻的播放器**（2026-10 用户口径修正）。
+               ⚠️ **不再用"选中该层才渲染 video"的门控** —— 那是两个真 bug 的来源：
+               ① 选中别的层就没法拖进度条找帧；② 刚选好的帧一切层就跳回静态图（user 报的
+               「选了其他图层立马又给我改回去」）。播放器是**全局取景 UI**，与"当前选中哪个层"无关；
+               层选中只决定右侧属性面板显示什么。
+               同帧契约没变、也不靠藏起播放器来守：出图链路是 ffmpeg 按 `frame_pos × 时长` 截帧
+               写 `_cover_frame.jpg` → 塞进 `cover.html` → 出图程序渲染；**前端从来不是帧源**，
+               它只负责让用户**选时间点**。故：① 打开时 `seekToFramePos()` 把播放头对到
+               `frame_pos`（与出片同一帧）；② 「生成封面/导出关键帧」按当前时间重截并写回
+               `frame_pos`；③ 拖动/播放本身**不写盘**。
+               `_cover_frame.jpg` 的 <img> 仍是兜底：视频取不到（文件缺/编码坏）时顶上，
+               与出片模板 `#frame > img` 逐字同源。 -->
           <div class="stage-media" :style="layerStyle('frame')">
-            <video v-if="frameSelected" ref="videoRef" class="stage-video-live" :style="mediaStyle" :src="videoSrc"
-                   @timeupdate="onVideoTime" @loadedmetadata="onMeta" @play="playing = true" @pause="playing = false"></video>
-            <img v-else-if="frameImageOk" class="stage-frame-img" :style="mediaStyle" :src="frameImageSrc" alt="" @error="onFrameImageError">
+            <video ref="videoRef" class="stage-video-live" :style="mediaStyle" :src="videoSrc"
+                   @timeupdate="onVideoTime" @loadedmetadata="onMeta" @error="onVideoError"
+                   @play="playing = true" @pause="playing = false"></video>
+            <img v-if="!videoOk && frameImageOk" class="stage-frame-img" :style="mediaStyle" :src="frameImageSrc" alt="" @error="onFrameImageError">
           </div>
           <!-- 每个特效 = 一个**槽位**（槽位只管 z-index，内层才是效果本身）：必须与出片那份 HTML 同构，
                否则 overlay 的混合 / blur 的 backdrop 会与成片对不上（`isolation` 只给 overlay 那一种）。 -->
@@ -62,9 +68,10 @@
         </div>
         <!-- 安全区的显隐搬进右侧图层列表（组「安全区」里的两行，各带一只眼睛）——
              这里不再放一份 chip，同一件事不说两遍。 -->
-        <!-- 舞台外兜底进度条：选中「视频预览」层时舞台本体在播，这条管未选中态与数字微调。
-             时间点落盘 =「导出关键帧 / 生成封面」（不是拖动本身）—— 同帧契约见上面帧层注释。 -->
+        <!-- 取景搬运工（**全局**，与"当前选中哪个层"无关 —— 选文字/特效时照样能拖进度条找帧）：
+             播放/暂停 + 进度条 + 时间。落盘只在「导出关键帧 / 生成封面」发生，拖动本身不写盘。 -->
         <div class="seek-row mt-4">
+          <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</button>
           <input class="flex-1 seek-range" type="range" min="0" :max="duration || 1" step="0.1" :value="time" @input="onSeekInput">
           <span class="muted small mono seek-time">{{ fmtTime(time) }} / {{ fmtTime(duration) }}</span>
         </div>
@@ -101,10 +108,6 @@
             <div class="lyr-props-h">视频预览</div>
             <div class="lyr-props-note">基础层：封面用的那一帧。缩放 / 偏移都作用在这一层（不可删除）。</div>
             <div class="mini-row mt-4">
-              <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</button>
-              <span class="mini-label">直接在舞台上播放 / 拖进度条找帧</span>
-            </div>
-            <div class="mini-row">
               <span class="mini-label">时间</span>
               <input v-model.number="time" type="number" step="0.1" class="w-time" title="填秒数回车，画面跳到那一帧" @change="seekToFramePos">
               <button class="mini-btn" @click="takeCurrent">取当前帧</button>
@@ -1590,9 +1593,14 @@ function seekToFramePos() {
   time.value = Math.round(t * 10) / 10
 }
 
+/** 取不到视频源（片段被删/编码不支持）⇒ 退回静态关键帧，别留黑屏。 */
+function onVideoError() {
+  videoOk.value = false
+}
 function onMeta() {
   const v = videoRef.value
   if (!v) return
+  videoOk.value = true
   duration.value = v.duration || 0
   // 元数据到手才知道时长 ⇒ 把进度条对到出片要截的那一帧（config 先到时由这里补）
   seekToFramePos()
@@ -1610,10 +1618,10 @@ function onSeekInput(e) {
   v.currentTime = t
   time.value = Math.round(t * 10) / 10
 }
-/** 帧层显示模式：选中「视频预览」层 ⇒ 这一层就是播放器本体（直接在舞台上播/拖找帧）。
- *  切换**不写盘**：磁盘上仍是 `_cover_frame.jpg`、`frame_pos` 不动 —— 预览态与出片态是
- *  两种显示，不是两个帧源（同帧契约见模板注释）。 */
-const frameSelected = computed(() => selectedKey.value === 'frame')
+/** 舞台播放器能不能用。取不到视频（文件缺 / 编码坏）时置 false → 静态图兜底顶上，
+ *  设计器照常可用（老形态），不会留一块黑。加载成功（loadedmetadata）即复位。
+ *  ⚠️ 与「选中哪个层」**无关**：播放器是全局取景 UI（见模板注释里的口径修正）。 */
+const videoOk = ref(true)
 function updateStageScale() {
   const w = stageRef.value ? stageRef.value.clientWidth : 0
   // 基准 = 封面画布宽 1920：字号、描边、位移这些"画布 px"预览与出片必须同一把尺。
@@ -1766,7 +1774,7 @@ async function loadCoverConfig(retrying = false) {
     coverFont.value = cfg?.cover?.font || ''
     // 关键帧的时间点：出片按 `frame_pos × 时长` 截帧，设计器必须用**同一个值**去 seek 舞台播放器，
     // 否则「打开设计器 = 第 0 秒那一帧、出片 = frame_pos 那一帧」（两边都不报错，只能比对产物发现）。
-    // 播放器此刻在舞台上（默认选中「视频预览」层）⇒ seek 立即可见；若选中别的层则等挂载后重载。
+    // 播放器常驻舞台 ⇒ 这里 seek 立即可见；若元数据还没到（duration 为 0）则由 onMeta 补一次。
     framePos.value = Math.min(1, Math.max(0, Number(cfg?.cover?.frame_pos ?? 0.4)))
     seekToFramePos()
     if (coverFont.value) ensureFontFace(props.pid, props.dir, coverFont.value, { onDebug: (m) => addClient('debug', m, 'cover') })
@@ -1843,9 +1851,8 @@ onMounted(async () => {
   resizeRo = new ResizeObserver(() => { updateStageScale(); syncControlsBound() })
   if (stageWrapRef.value) resizeRo.observe(stageWrapRef.value)
   videoSrc.value = clipMediaUrl(props.pid, props.dir, 'clip.mp4')
-  // 默认选中「视频预览」层 ⇒ 开箱即是舞台播放器（loadedmetadata 在 stage-video-live 上触发，
-  // 时长与 seekToFramePos 由 onMeta 接）；若初始选中别的层，兜底 seek-row 里没有 video 元素，
-  // duration 会一直是 0 —— 用户点进「视频预览」层时 v-if 挂上播放器，元数据重新加载补上。
+  // 舞台播放器**常驻**（与选中哪个层无关）：loadedmetadata 触发 onMeta 拿到 duration，
+  // 再由 seekToFramePos 把播放头对到 frame_pos —— 打开设计器看到的就是出片要截的那一帧。
   // 「新建图层」菜单：点空白处关掉。捕获阶段监听，点别的按钮时先关菜单再走它自己的逻辑
   document.addEventListener('pointerdown', onDocPointerDown, true)
   loadFonts()
@@ -1959,8 +1966,8 @@ onUnmounted(() => {
    ⚠️ 这里**不需要**那条 `background:transparent` 覆盖（那是给 `video` 元素用的，`app.css` 的全局
    规则只命中 `video{…}`）—— 但必须是 contain，否则竖素材会被裁掉。 */
 .stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }
-/* 舞台内实况播放器（选中「视频预览」层时 = 帧层本体，用户直接在舞台上播/拖找帧）：
-   盒子与静态帧完全一致（inset:0 + contain + mediaStyle 变换共用）—— 切换时除内容外零跳变。
+/* 舞台内实况播放器 = 帧层本体（**常驻**，与选中哪个层无关；用户直接在舞台上播/拖找帧）：
+   盒子与静态兜底帧完全一致（inset:0 + contain + mediaStyle 变换共用）—— 切换时除内容外零跳变。
    ⚠️ `background:transparent` / `border-radius:0` 是**必需的覆盖**，不是装饰：
    `styles/app.css` 全局 `video{}`（黑底/圆角/max-height:170px/margin-top:6px 的卡片缩略图口径）
    会穿透 —— 黑边会盖住下层模糊背景（用户报过"设计器素材左右黑边、出片正常"）。 */
