@@ -24,9 +24,15 @@
                  :class="{ 'bg-blur': bgMode === 'blur' }" :src="bgImageSrc"
                  :style="bgMode === 'blur' ? bgBlurStyle : null" alt="" @error="onBgImageError">
           </div>
-          <!-- 帧层（当前帧清晰图）：选中它时拖动平移 / 滚轮缩放，出片里就是 #frame img 的 transform -->
+          <!-- 帧层（当前帧清晰图）：**图源必须是 `_cover_frame.jpg`，与出片模板 `cover.html` 的
+               `#frame > img` 逐字同构**（同一个文件 → 设计器与成片不可能看到两帧）。
+               ⚠️ 这里以前放的是**实时 video 元素**：出片读 `_cover_frame.jpg`（按 `[cover] frame_pos`
+               截帧），设计器却显示播放器当前帧（打开时恒为第 0 秒）⇒「设计器里是这一帧、成片里是
+               另一帧」，而且出片只在文件不存在时才重新截帧，一旦生成就**永远粘住**。
+               取帧/播放用的 video 元素在舞台**外面**（下面 .scrub-row 的可见小监视器）——
+               舞台内保持只有这一个帧源。 -->
           <div class="stage-media" :style="layerStyle('frame')">
-            <video ref="videoRef" playsinline preload="metadata" class="stage-video" :src="videoSrc" :style="mediaStyle" @timeupdate="onVideoTime" @loadedmetadata="onMeta" @play="playing = true" @pause="playing = false"></video>
+            <img v-if="frameImageOk" class="stage-frame-img" :style="mediaStyle" :src="frameImageSrc" alt="" @error="onFrameImageError">
           </div>
           <!-- 每个特效 = 一个**槽位**（槽位只管 z-index，内层才是效果本身）：必须与出片那份 HTML 同构，
                否则 overlay 的混合 / blur 的 backdrop 会与成片对不上（`isolation` 只给 overlay 那一种）。 -->
@@ -54,10 +60,16 @@
         </div>
         <!-- 安全区的显隐搬进右侧图层列表（组「安全区」里的两行，各带一只眼睛）——
              这里不再放一份 chip，同一件事不说两遍。 -->
-        <div class="seek-row mt-4">
-          <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</button>
-          <input class="flex-1 seek-range" type="range" min="0" :max="duration || 1" step="0.1" :value="time" @input="onSeekInput">
-          <span class="muted small mono seek-time">{{ fmtTime(time) }} / {{ fmtTime(duration) }}</span>
+        <!-- 取帧播放器 = 舞台**外面**的可见小监视器（2026-10 用户报「没法播视频选关键帧」：
+             隐身播放器让拖进度条成了盲选）。拖进度条/播放时在这里出画，舞台的帧层仍只在
+             「导出关键帧 / 生成封面」后换图 —— 舞台内只有 `_cover_frame.jpg` 一个帧源。 -->
+        <div class="scrub-row mt-4">
+          <video ref="videoRef" class="scrub-video" :src="videoSrc" @timeupdate="onVideoTime" @loadedmetadata="onMeta" @play="playing = true" @pause="playing = false"></video>
+          <div class="seek-row grow">
+            <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}</button>
+            <input class="flex-1 seek-range" type="range" min="0" :max="duration || 1" step="0.1" :value="time" @input="onSeekInput">
+            <span class="muted small mono seek-time">{{ fmtTime(time) }} / {{ fmtTime(duration) }}</span>
+          </div>
         </div>
       </div>
       <!-- 右侧 = **图层属性面板（上）+ 图层组列表（下）**（PS 口径；用户要求把设置栏与图层栏换位）。
@@ -93,7 +105,7 @@
             <div class="lyr-props-note">基础层：封面用的那一帧。缩放 / 偏移都作用在这一层（不可删除）。</div>
             <div class="mini-row mt-4">
               <span class="mini-label">时间</span>
-              <input v-model.number="time" type="number" step="0.1" class="w-time">
+              <input v-model.number="time" type="number" step="0.1" class="w-time" title="回车/失焦让监视器跳到这一秒" @change="onTimeBox">
               <button class="mini-btn" @click="takeCurrent">取当前帧</button>
               <button class="mini-btn" @click="exportFrame">导出关键帧</button>
             </div>
@@ -400,6 +412,9 @@ const titleLines = ref([])
 const titleTextRef = ref(null)
 /** 自动排版放不下时给用户的一句提示（放不下就说出来，别静默） */
 const titleFitHint = ref('')
+/** 封面关键帧的时间点（`[cover] frame_pos`，0~1 的比例）—— 出片按它截帧，
+ *  设计器必须**按同一个值反推出秒数**去 seek，否则打开时视频停在 0 秒、成片却是另一帧。 */
+const framePos = ref(0.4)
 const time = ref(0)
 const textX = ref(35)
 const textY = ref(50)
@@ -439,16 +454,24 @@ function numBind(cur, set, e, lo, hi) {
 const fonts = ref([])
 const coverFont = ref('')
 const fontOptions = computed(() => {
-  const opts = [{ value: '', label: '（系统默认）' }]
+  // ⚠️ **不再有「（系统默认）」这一项**（2026-10-02，与字幕字体下拉同一口径）：
+  // 自带字体已内嵌、库里永远有字可用，再留一个"回到系统栈"的选择只会让人选到更差的观感。
+  // ⚠️ **空值同理不再作为可选字体出现**（2026-10-02 用户要求「只显示已有的字体」）：它是老工程
+  // 的"没选过"状态，不是一种字体。当前值真为空时补一条**占位**项照实说明，选了具体字体即消失。
+  const opts = []
   for (const f of fonts.value) {
     // ⚠️ 只列**真能用**的：`.ttc`（浏览器 @font-face 不认）与没下载的自带字体都不进下拉；
     // 默认字体带 `[默认]` 标记（与字幕字体下拉 / 字体库管理页同一份 `is_default`，三处联动）。
-    if (f.installed === false || /\.ttc$/i.test(f.file || '')) continue
+    // ⚠️ **emoji 字体不进这个下拉**（2026-10-02 职责分离）：封面上的 emoji 由
+    // `cover.rs::emoji_font_stack()` **自动补充**（库里那支排在字体栈尾部 / 注册序最后），
+    // 用户选它当正文只会把没字形的中文交给它。字幕字体下拉同一条判据。
+    if (f.installed === false || /\.ttc$/i.test(f.file || '') || f.emoji) continue
     const base = f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id
     opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
   const cur = coverFont.value
-  if (cur && !fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
+  else if (!fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
   return opts
 })
 /** 选中的即浏览器里要用的字族名；未选时交给全站 `--font`（不写 fontFamily，保持继承） */
@@ -498,6 +521,12 @@ const blurScale = ref(1)
 const bgImageOk = ref(true)
 /** 那张截帧不在时自动补一次（出片结束会删掉它，所以平时确实没有这个文件） */
 const bgFrameTried = ref(false)
+/** 帧层（`_cover_frame.jpg`）能不能显示。缺文件时置 false，由 onMounted / exportFrame 补出来。
+ *  ⚠️ 帧层与背景层**共用同一个文件**（`COVER_FRAME_IMG`），但各有一条加载状态：
+ *  背景层那条是 blur 模式专用的兜底（`bgFrameTried`），这条是帧层自己的。 */
+const frameImageOk = ref(true)
+/** 帧层的补帧只做一次（与 `bgFrameTried` 同款，避免 404 死循环） */
+const frameFrameTried = ref(false)
 /** 导出关键帧后自增，给 URL 去缓存 */
 const frameStamp = ref(0)
 const BG_MODES = [
@@ -1184,6 +1213,34 @@ const bgImageSrc = computed(() => {
   return clipMediaUrl(props.pid, props.dir, '_cover_frame.jpg') + '?t=' + frameStamp.value
 })
 
+/** 帧层的图源 = `_cover_frame.jpg`（**与出片模板同源**，见模板里那段注释）。
+ *  与背景层 blur 模式读的是**同一个文件**，但这是两层各自的消费点，别合并成一份状态：
+ *  背景层缺图只是「模糊底没出来」，帧层缺图是「封面主体没了」，两者的兜底与提示都不同。 */
+const frameImageSrc = computed(() => {
+  if (!props.dir) return ''
+  return clipMediaUrl(props.pid, props.dir, '_cover_frame.jpg') + '?t=' + frameStamp.value
+})
+
+/**
+ * 帧层图缺失（`_cover_frame.jpg` 不在）。
+ * ⚠️ 与背景层那条的差别：**这里不能只补一次就罢手** —— 帧层是封面主体，缺了整张封面就是空的，
+ * 必须按 `[cover] frame_pos` 把关键帧补出来（与出片 `cover.rs` 自己截的那一帧**同一个时间点**）。
+ * 补过了还失败就置 `frameImageOk=false` 并提示用「导出关键帧」手动指定一帧。
+ */
+async function onFrameImageError() {
+  frameImageOk.value = false
+  if (frameFrameTried.value) return
+  frameFrameTried.value = true
+  try {
+    // 不带 time ⇒ 服务端按 `[cover] frame_pos` 截，与出片自己要截的是同一帧
+    await coverFrame(props.pid, props.dir)
+    frameStamp.value++
+    frameImageOk.value = true
+  } catch (e) {
+    console.warn('帧层关键帧生成失败', e)
+  }
+}
+
 /**
  * 背景截帧（`_cover_frame.jpg`）**平时不存在**：出片写完 cover.jpg 就把它删了，
  * 所以「当前帧模糊」一进设计器基本必然 404 → 图被 v-if 摘掉，看起来"没运行"。
@@ -1295,10 +1352,20 @@ function takeCurrent() {
 
 async function exportFrame() {
   try {
-    await coverFrame(props.pid, props.dir, time.value || 0)
+    const at = Number(time.value) || 0
+    await coverFrame(props.pid, props.dir, at)
+    // ⚠️ **必须把时间点写回 `[cover] frame_pos`**：出片只在 `_cover_frame.jpg` 不存在时才按
+    // frame_pos 重新截帧，文件在的时候**直接用这张图** —— 所以只要写回这个比例，
+    // 设计器截的这一帧与出片用的那一帧就永远是同一张（不写回的话：换了帧、出片还是老位置）
+    if (duration.value > 0) {
+      const pos = Math.min(1, Math.max(0, at / duration.value))
+      framePos.value = pos
+      await coverConfig(props.pid, props.dir, { frame_pos: pos })
+    }
     // 出片的模糊背景就是这张文件：去掉缓存让预览立刻换成新截的那一帧
     frameStamp.value++
     bgImageOk.value = true
+    frameImageOk.value = true
     toast('关键帧已导出')
   } catch (e) { toast(e.message) }
 }
@@ -1360,6 +1427,9 @@ function removeHighlightKeyword(i) {
 
 function coverConfigPayload() {
   return {
+    // 关键帧时间点：与 `_cover_frame.jpg` **成对**保存 —— 只存图不存点，下次出片若重新截帧
+    // （文件被删/换工程）就会用回旧比例，图与点脱钩
+    frame_pos: framePos.value,
     title_lines: titleLines.value,
     text_width: textWidth.value / 100,
     text_x: textX.value + '%',
@@ -1452,7 +1522,9 @@ watch(
     // 图层栈（顺序 + 可见性）：拖一下/点一下眼睛就走同一条 600ms 防抖保存
     JSON.stringify(stack.value),
     bgMode.value, bgColor.value, blurScale.value,
-    coverOffsetX.value, coverOffsetY.value, coverZoom.value
+    coverOffsetX.value, coverOffsetY.value, coverZoom.value,
+    // 关键帧时间点：导出关键帧/取当前帧改了它也要落盘（与图成对）
+    framePos.value
   ],
   scheduleCoverConfigSave
 )
@@ -1465,9 +1537,15 @@ async function generateCover() {
   if (clipBusyJob.value) { toast('该片段正在' + kindText(clipBusyJob.value.kind) + '，请等它结束', 'err'); return }
   generating.value = true
   try {
-    // 手动设定过时间时，先生成/刷新关键帧，避免生成时仍用默认 frame_pos
-    if (Number(time.value) > 0) {
-      await coverFrame(props.pid, props.dir, time.value)
+    // 出片要截的关键帧 = 设计器里选的这一帧：**无条件**按当前进度刷新一次，并把时间点写回
+    // `[cover] frame_pos`。
+    // ⚠️ 这里原来是 `if (Number(time.value) > 0)`：用户没拖过进度条（time 恒为 0）时直接跳过，
+    // 于是「我在设计器里选的这一帧」从来没进过产物，出片照旧用旧/默认 frame_pos 的那张图。
+    // 0 秒是合法取值，不能拿它当「没设置」——与「音量 0 是合法值」是同一条教训。
+    const frameAt = Number(time.value) || 0
+    await coverFrame(props.pid, props.dir, frameAt)
+    if (duration.value > 0) {
+      framePos.value = Math.min(1, Math.max(0, frameAt / duration.value))
     }
     await coverConfig(props.pid, props.dir, coverConfigPayload())
     // 通道不传：只剩 Takumi 一个值，`cover.rs` 那条默认链（显式 > `VTEDIT_COVER_RENDERER` >
@@ -1500,9 +1578,23 @@ function onVideoTime() {
   const v = videoRef.value
   if (v) time.value = Math.round((v.currentTime || 0) * 10) / 10
 }
+/** `frame_pos × 时长` 就是出片截帧的那个时间点（与 `cover.rs` / `api/polish.rs` 同一条公式）。
+ *  ⚠️ 时长要等 `loadedmetadata` 才有，而配置可能先回来、也可能后回来 —— 两边都调一次，
+ *  谁后到谁负责把进度条对上（`duration.value` 为 0 时什么都不做，等那次 loadedmetadata）。 */
+function seekToFramePos() {
+  const v = videoRef.value
+  if (!v || !duration.value) return
+  const t = Math.min(duration.value, Math.max(0, framePos.value * duration.value))
+  v.currentTime = t
+  time.value = Math.round(t * 10) / 10
+}
+
 function onMeta() {
   const v = videoRef.value
-  if (v) duration.value = v.duration || 0
+  if (!v) return
+  duration.value = v.duration || 0
+  // 元数据到手才知道时长 ⇒ 把进度条对到出片要截的那一帧（config 先到时由这里补）
+  seekToFramePos()
 }
 function togglePlay() {
   const v = videoRef.value
@@ -1514,6 +1606,14 @@ function onSeekInput(e) {
   const v = videoRef.value
   if (!v || !duration.value) return
   const t = Number(e.target.value) || 0
+  v.currentTime = t
+  time.value = Math.round(t * 10) / 10
+}
+/** 时间数字框：回车/失焦让监视器真的跳过去（以前只改导出时间、画面不动，看着像坏了）。 */
+function onTimeBox(e) {
+  const v = videoRef.value
+  if (!v || !duration.value) return
+  const t = Math.min(duration.value, Math.max(0, Number(e.target.value) || 0))
   v.currentTime = t
   time.value = Math.round(t * 10) / 10
 }
@@ -1667,6 +1767,10 @@ async function loadCoverConfig(retrying = false) {
     textWidth.value = Math.round((cfg?.cover?.text_width ?? 0.62) * 100)
     fontSize.value = cfg?.cover?.font_size || 120
     coverFont.value = cfg?.cover?.font || ''
+    // 关键帧的时间点：出片按 `frame_pos × 时长` 截帧，设计器必须用**同一个值**去 seek 隐藏播放器，
+    // 否则「打开设计器 = 第 0 秒那一帧、出片 = frame_pos 那一帧」（两边都不报错，只能比对产物发现）
+    framePos.value = Math.min(1, Math.max(0, Number(cfg?.cover?.frame_pos ?? 0.4)))
+    seekToFramePos()
     if (coverFont.value) ensureFontFace(props.pid, props.dir, coverFont.value, { onDebug: (m) => addClient('debug', m, 'cover') })
     stroke.value = cfg?.cover?.stroke || 20
     hlColor.value = cfg?.cover?.hl_color || '#ffcc00'
@@ -1850,8 +1954,16 @@ onUnmounted(() => {
    还压在 `.stage-bg`（模糊背景层）之上，把背景层整个盖住（出片用 <img>、无 app.css，所以只有
    设计器这样 —— 用户报过"设计器素材左右黑边、出片正常"）。改这段前先跑
    `node webui/scripts/check-cover-stage.mjs`。 */
-.stage-video { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; object-fit:contain; display:block;
-  background:transparent; border-radius:0; }
+/* 帧层的图 = `_cover_frame.jpg`，与出片模板 #frame img **同一条规则**（object-fit:contain 保持原比例）。
+   ⚠️ 这里**不需要**那条 `background:transparent` 覆盖（那是给 `video` 元素用的，`app.css` 的全局
+   规则只命中 `video{…}`）—— 但必须是 contain，否则竖素材会被裁掉。 */
+.stage-frame-img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:block; }
+/* 取帧播放器 = 舞台**外面**（.scrub-row）的可见小监视器：舞台内的帧源只有 `_cover_frame.jpg`
+   一份（见模板注释）。它自己声明盒子（16:9 + contain + 黑底留白）—— 全局
+   `video{background:#000;border-radius:…;max-height:170px;margin-top:6px}` 那条对它无害
+   （它不参与舞台合成），但 margin/max-height 的"卡片缩略图"口径要显式归零/定尺寸。 */
+.scrub-row { display:flex; align-items:center; gap:10px; }
+.scrub-video { flex:none; width:128px; aspect-ratio:16/9; object-fit:contain; background:#000; border-radius:8px; margin:0; }
 /* 特效/表情：**每个特效一个槽位**（`.fx-slot` 承载 z-index，内层 `.fx-item` 才是效果本身）——
    与出片那份 HTML 同构：`overlay` 的 `isolation` 只加在它自己的槽位上（保持改造前"不真混合"的观感），
    `blur` 的槽位**不能**加 isolation（它的 backdrop-filter 要靠下层的画面做背景）。
