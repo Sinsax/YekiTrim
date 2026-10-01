@@ -441,10 +441,11 @@ const coverFont = ref('')
 const fontOptions = computed(() => {
   const opts = [{ value: '', label: '（系统默认）' }]
   for (const f of fonts.value) {
-    // ⚠️ `.ttc`（字体集合）浏览器 @font-face 认不出 ⇒ 不能当可选值（选了就是
-    // "预览回退系统字体、出片却用了它"）—— 只在字体库里挂着展示。
-    if (/\.ttc$/i.test(f.file || '')) continue
-    opts.push({ value: f.id, label: f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id })
+    // ⚠️ 只列**真能用**的：`.ttc`（浏览器 @font-face 不认）与没下载的自带字体都不进下拉；
+    // 默认字体带 `[默认]` 标记（与字幕字体下拉 / 字体库管理页同一份 `is_default`，三处联动）。
+    if (f.installed === false || /\.ttc$/i.test(f.file || '')) continue
+    const base = f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id
+    opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
   const cur = coverFont.value
   if (cur && !fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })

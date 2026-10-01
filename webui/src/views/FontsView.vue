@@ -4,7 +4,7 @@
       <h2>字体库</h2>
       <p class="sub">
         程序级字体库 —— 精修页的字幕与封面字体都从这里选。
-        库里<b>程序自带</b>的那支不可删除。
+        库里<b>程序自带的两支</b>不可删除。
       </p>
     </header>
 
@@ -37,6 +37,12 @@
       </p>
     </section>
 
+    <!-- 测试字体：一段共享文本喂给所有卡片试渲染（中英混排 + 数字，够看出字形差异） -->
+    <div class="testbar">
+      <label>测试文本</label>
+      <input v-model="testText" placeholder="输入文字，所有字体卡片实时用它试渲染（默认：永 Aa 123）" />
+    </div>
+
     <p v-if="loading" class="hint">载入中…</p>
     <p v-else-if="!fonts.length" class="hint">字体库是空的 —— 导入一支，或把字体文件放进上面的库目录。</p>
 
@@ -53,7 +59,7 @@
 
     <div class="grid">
       <article v-for="f in fonts" :key="f.id" class="card" :class="{ off: f.installed === false }">
-        <div class="preview" :style="{ fontFamily: previewStack(f) }">永 Aa 123</div>
+        <div class="preview" :style="{ fontFamily: previewStack(f) }">{{ testText.trim() || '永 Aa 123' }}</div>
         <div class="meta">
           <div class="name" :title="f.id">{{ f.display_name || f.id }}</div>
           <!-- ⚠️ 内部族名与显示名**分开显示**：两者不一致时正是"预览与实际对不上"的现场 -->
@@ -107,6 +113,8 @@ const importName = ref('')
 const showPicker = ref(false)
 const pickedDir = ref('')
 const pickedName = ref('')
+/** 测试文本：空 = 各卡片用默认样张「永 Aa 123」。中英数字混排才看得出字形/字重差异。 */
+const testText = ref('')
 const downloading = ref(false)
 
 /** 还没下载的自带字体（清单来自服务端；界面据此给「下载」入口）。 */
@@ -225,6 +233,12 @@ onMounted(load)
   color: var(--muted, #7a6f6a); font-size: 11px; align-self: center;
 }
 .hint { margin: 6px 0 0; color: var(--muted, #7a6f6a); font-size: 11px; }
+.testbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.testbar label { flex: none; font-size: 12px; color: var(--muted, #7a6f6a); }
+.testbar input {
+  flex: 1 1 auto; min-width: 0; padding: 6px 9px;
+  border: 1px solid var(--line, #e4dcd8); border-radius: 6px; font-size: 12px;
+}
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .card {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
