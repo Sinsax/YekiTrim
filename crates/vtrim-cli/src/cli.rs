@@ -296,7 +296,7 @@ pub enum PolishAction {
         /// clip 目录（默认当前目录）
         #[arg(default_value = ".")]
         input: PathBuf,
-        /// 渲染后端: dhampir | chrome（默认 dhampir = 底座出片；chrome = 本仓兜底）
+        /// 渲染后端: dhampir（底座出片，**唯一一个值**；本仓的 chrome 兜底腿已删除）
         #[arg(long, default_value = "dhampir")]
         renderer: String,
         /// 严格模式：转译报告里出现 DROP（参照有、底座表达不了的）就**拒绝出片**
@@ -311,9 +311,9 @@ pub enum PolishAction {
         /// 封面模板预设 (left-text/center-text/right-text/minimal)
         #[arg(long)]
         template: Option<String>,
-        /// 封面渲染通道：`takumi`（默认，静态渲染，需要编 `cover-takumi` feature）
-        /// 或 `chrome`（headless Chrome 截图，兜底）。**不传** = 用 `cover.rs` 的默认（读
-        /// `VTEDIT_COVER_RENDERER`，空则 takumi）—— 默认值只有那一处，这里不抄第二份。
+        /// 封面渲染通道：`takumi`（静态渲染，需要编 `cover-takumi` feature）—— **唯一一个值**。
+        /// **不传** = 用 `cover.rs` 的默认（读 `VTEDIT_COVER_RENDERER`，空则 takumi）——
+        /// 默认值只有那一处，这里不抄第二份。（老脚本里的 `chrome` 那条截图腿已删除，会明确报错。）
         #[arg(long)]
         renderer: Option<String>,
     },
@@ -325,7 +325,7 @@ pub enum PolishAction {
         /// 预览模式 (video / cover)，默认同时预览
         mode: Option<String>,
     },
-    /// 系统检查（ffmpeg, Chrome, LLM 配置）
+    /// 系统检查（ffmpeg, 底座, LLM 配置）
     Doctor {
         /// clip 目录（默认当前目录）
         #[arg(default_value = ".")]

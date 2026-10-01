@@ -681,3 +681,172 @@ python3 scripts/check_module_boundaries.py    # 15 规则 / 244 文件 / 0 违�
   留待用户拍板。
 - **「设为默认」只影响推荐位**：不改任何工程的 `font` 配置（有意）。
 - **离线兜底**：下载失败就是失败（原话回给用户），不静默换别的字体。
+
+
+---
+
+## 17. P2 落地记录：封面默认通道切到 takumi（2026-10-01）
+
+### 17.1 前置条件（P1-e/P1-f 解锁的）
+
+切默认之前必须证明"字体统一之后，takumi 出的封面与参照仍然达标"。重跑
+`scripts/check-cover-takumi.mjs`（真工程 clip-14，**活的 chrome 双腿对拍**）：
+
+| 指标 | 实测 | 阈值 | 余量 |
+|---|---|---|---|
+| 非文字区 均值 | **1.17/255** | 4 | 3.4× |
+| 非文字区 >32 | 0.58% | 1.0% | 1.7× |
+| 整图 均值 | **11.44/255** | 22 | 1.9× |
+| 整图 >32 | 7.75% | 13% | 1.7× |
+
+⇒ 达标。而且这一版是**同库同字体**的对比 —— P1-e 之前两边字体来源不同，"对不上"里混着
+字体来源的差；现在剩下的只有栅格化固有差。
+
+### 17.2 改动
+
+`resolve_cover_renderer` 的空值回落由 `chrome` 改为 **`takumi`**。
+优先级不变：**显式参数 > `VTEDIT_COVER_RENDERER` > takumi**；认不出的值仍当场报错。
+
+实测三条路（真跑）：
+- 不传 `--renderer`、不设环境变量 → 走 takumi（日志 `封面(takumi)`，注册 4 个字体，4.1s）
+- `--renderer chrome` → 仍能走 headless Chrome（兜底没坏）
+- `--renderer bogus` → `Error: --renderer 认不出 bogus（只认 chrome / takumi）`（不静默回退）
+
+### 17.3 ⚠️ 一个"假绿"陷阱（**记住它**）
+
+默认通道改成 takumi **之后**，门禁脚本里 chrome 那条腿传的还是 `{}`（吃默认）——
+于是它**又渲染了一遍 takumi**，冻出来的"参照帧"是 takumi 的，门禁报 **0.32/255**：
+自比自当然几乎为 0，看着像"完美通过"。**判据**：
+`PSNR(ref, chrome)=45.97dB` vs `PSNR(ref, takumi)=20.67dB` —— 谁近谁是真身。
+
+教训：**改了默认值，所有"靠默认值"的调用点都要重新过一遍**；显式传值的地方不会漂，
+吃默认的地方会静默变味。现在两条腿都显式给 `VTEDIT_COVER_RENDERER`。
+
+### 17.4 副产品：takumi 是**逐字节确定**的
+
+连跑三次同一工程，`cover.jpg` 的 sha256 **完全相同**（`6d27cae4…`）。
+这比 chrome 强（chrome 每次都有轻微差异）—— 意味着冻结参照帧是**长期稳定**的基线，
+不会因为"参照自己漂了"而假红。
+
+
+---
+
+## 18. P3-a 落地记录：冻结封面参照帧（删 chrome 的前提）
+
+### 18.1 为什么必须"先冻结、后删除"
+
+这道门禁原本的参照是**活的 chrome 渲染**（`run(A,'chrome',{})`）。chrome 一删，参照就没了 ——
+门禁会退化成 SKIP，也就**再也没有东西保证 takumi 没坏**。
+做法抄 `scripts/vtrim-compare.mjs` 的 `--capture-golden/--golden` 先例（同类问题已有解法）。
+
+### 18.2 新增的三个开关
+
+| 开关 | 作用 |
+|---|---|
+| `--capture-golden <目录>` | 跑一次 chrome，把产物冻成 `ref-cover.jpg` + `golden.json` |
+| `--golden [目录]` | **完全不渲染 chrome**；不给目录就用**入库的** `scripts/fixtures/cover-golden/` |
+| `--mutate` | **变异自证**：给非文字区人为加偏差，证明判据能红也能绿（秒级、不渲染） |
+
+### 18.3 冻结产物（**入库**，320 KB）
+
+```
+scripts/fixtures/cover-golden/
+  ref-cover.jpg   327,147 B（1920×1080，chrome 产物经 PNG 中转后 q=2 JPEG）
+  golden.json     标定记录（冻结时间 / 来源 / 标题矩形 / 验证方法）
+```
+
+⚠️ **经 PNG 中转**：chrome 那份本身就是 q=85 的 JPEG，直接再存一遍等于**二次编码**、噪声会叠。
+先从它转 PNG 再压 q=2，只吃一次编码损失。
+
+### 18.4 验收（四模式全跑过）
+
+- `--self-test`：3 项通过（全同必过 / 黑白必红 / 分区独立生效）
+- `--mutate`：原样绿、非文字区提亮 60 后红（均值 56.37）
+- `--golden`：非文字区 **1.60**、整图 **11.84** → ✅（**不需要 chrome**）
+- 默认双腿：非文字区 1.17、整图 11.44 → ✅（chrome 还在时的过渡态）
+
+### 18.5 golden 模式的稳定性与余量
+
+连跑三次，**数字完全一致**（1.60 / 11.84）。余量：四项指标都在阈值的 40%~60%，
+即 **1.7×~2.5× 余量** —— 不是"卡在阈值边上勉强过"。
+
+> ⚠️ `--golden` 的数字（1.60/11.84）比双腿模式（1.17/11.44）**略高**，这是预期的：
+> 参照帧多经了一次 JPEG 编码（q=2）。差值 0.4/255 远小于阈值余量，不影响判据。
+
+
+---
+
+## 19. P3-b 落地记录：Chrome 链路整条删除（2026-10-01）
+
+### 19.1 删掉了什么
+
+| 位置 | 内容 |
+|---|---|
+| `crates/vtrim-polish/src/render/chrome.rs` | **整文件**（328 行，`headless_chrome::{Browser,LaunchOptions,Tab}`） |
+| `render/mod.rs` | `pub mod chrome;` |
+| `render/backend.rs` | `RenderBackendKind::Chrome` 变体 + `as_str` + `from_str`（含老的 `"chome"` 错拼别名）+ `create_backend` 那一臂 |
+| `render/pipeline.rs` | 全部 `renderer == Chrome` 分支（逐帧 canvas 那条 + `start_file_server` + `RenderServer::build_html`） |
+| `cover.rs` | `RENDERER_CHROME` 常量 + 内联的 headless 截图路径 |
+| `Cargo.toml` | `headless_chrome` 依赖 + `chrome-render` feature |
+| server | `/api/health` 的 `chrome` 能力位、`/api/polish/render` 白名单里的 `chrome` |
+| WebUI | 出片通道下拉（`PolishView`）、封面通道弹窗（`CoverDesigner`） |
+| **`[chrome] path` 配置** | 见 19.3 —— 这是收尾时**额外发现**的死配置 |
+| 文档 | README / THIRD-PARTY-NOTICES / 12 张 `AGENTS.md` 卡 / `cli.rs --renderer` 帮助 |
+
+### 19.2 语义决定：`chrome` **报错**，不静默回退
+
+- 出片侧：`RenderBackendKind::parse("chrome")` → `None`，由 `pipeline.rs` **一处**报错。
+  **没有**把它归到 `dhampir` 上 —— 那是静默换路，而两版成片的差别只有对着看才发现
+  （这条仓库里已经踩过一次）。
+- 封面侧：`normalize_cover_renderer("chrome")` 给的是**单独的**「这条腿已删除」错误，
+  **不是**折进"认不出"那一支 —— 折进去用户只会去猜自己是不是拼错了。
+- 代价（**已知且有意**）：老脚本里的 `--renderer chrome` / `VTEDIT_COVER_RENDERER=chrome`
+  从"能跑"变成**硬报错**。这是唯一一处用户可见的破坏性变化，换的是"不会以为自己在跑 chrome"。
+
+### 19.3 收尾时额外发现的死配置：`[chrome] path`
+
+`vtrim-core` 的 `Config.chrome: ChromeConfig`（+ `[chrome]` 模板段 + `merge()` 分支 +
+`SettingsView.vue` 的「Chrome 渲染」输入框）在删掉出片/封面两条链路之后**已经没人读了** ——
+`tool_probe.rs` 里那个 Chrome 探测函数也随任务一起没了，只剩它自己跟自己的 `merge()`。
+留一个"Chrome 可执行文件路径"输入框会让人以为**装了 Chrome 就能用上**，实际它什么也不影响。
+⇒ 四层一起删（字段 / 结构体+Default / 模板段+merge / 前端表单与 hydrate）。
+
+### 19.4 验收（删 chrome 之后的完整一轮）
+
+```
+cargo check --workspace --all-targets   → 0 warnings
+cargo test -p vtrim-polish --lib        → 214 passed; 0 failed
+cargo test -p vtrim-server              → 145 passed; 0 failed
+cargo test -p vtrim-core --lib          → 177 passed; 0 failed
+cargo test -p vtrim-service             → 125 passed; 0 failed
+check-cover-takumi --self-test / --mutate → 3 项通过 / 判据能红也能绿
+check_module_map.py / check_module_boundaries.py → 35 模块 / 15 规则 0 违规
+cargo tree -p vtrim-polish | grep -i chrome → 空
+webui/dist 里 chrome 字样                      → 空（重建后）
+```
+
+**端到端真跑（不是只编译）**：`clip-14` 真工程出片成功 ——
+`vtuber-clip_1.mp4`（160.7 MB / 145s）+ Takumi 封面（324,943 B，hash `263d2e42`）。
+即：删掉 chrome 之后，**出片（底座）+ 封面（Takumi）两条路都还在走**。
+
+唯一剩下的 `headless_chrome` 字样在 `render/backend.rs` 的**注释**里
+（"曾经有 Chrome，2026-10-01 整条删除"）—— 那是有意留的历史说明，**不是引用**；
+`grep` 判据要把注释排除掉，否则会永远红。
+
+### 19.5 ⚠️ 排查中被误导的一件事（记下来省下次的时间）
+
+跑 `--test portrait_backdrop` 时它一路失败，看着像"删 chrome 把探针搞坏了"。**实际是两个独立问题**：
+
+1. **真 bug（已修）**：探针的变异锚点写的是 `drawStageBackdrop(` —— 那是
+   `templates/index.html` 里的函数名，**转译器根本不调它**（它把衬底内联成 `backdropTracks`，
+   那个名字只在**注释**里出现过一次）。锚点命中 0 次 ⇒ 变异体 == 原件 ⇒
+   **A/B 比的是同一份产物**，判据"自己跟自己比"。这正是那段代码注释里警告的静默失效形态。
+   已改成锚在真实的那道闸 `if (BACKDROP_ENABLED && STAGE_BG === 'blur') {`（恰好 1 次），
+   并且**两次变异都要先打开 `BACKDROP_ENABLED`** —— 它默认 `false`，
+   只变异一侧的话两边都不画衬底，**还是**自己比自己。
+2. **环境问题（非代码）**：探针要在一个进程里**渲染两遍**，第二遍 `wgpu error: Out of Memory`
+   （显存不够，**不是**磁盘 —— C 盘还有 34 GB）。Dhampir 退出 101。
+   同一台机器上 `vtrim polish render` **单遍**跑得好好的。⇒ 与本次改动无关。
+
+> 教训：**探针失败先看它的锚点命中几次**。"0 次"是静默空转，"1 次"才是真在比；
+> 而"看起来像回归"的失败，也可能只是这台机器的显存不够。

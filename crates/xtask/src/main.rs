@@ -487,7 +487,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
 
     if options.no_dhampir {
         println!("warning: --no-dhampir：包里**不带底座** —— 目标机器上默认出片通道不可用");
-        println!("         （用户需自行放置 <程序目录>/dhampir/…，或用 --renderer chrome）");
+        println!("         （用户需自行放置 <程序目录>/dhampir/…；出片只有这一条腿，没有可退的第二条）");
     } else {
         // 同层目录规则与 `find_binary` 一致：`V-Trim` 与 `Dhampir` 并排时才好找。
         let sibling = root.parent().map(|p| p.join("Dhampir"));

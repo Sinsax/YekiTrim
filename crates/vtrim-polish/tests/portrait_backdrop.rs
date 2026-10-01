@@ -2,56 +2,58 @@
 //! 挪开时，让出来的那条边必须是**当前帧的模糊衬底**，不能是纯黑。
 //!
 //! 为什么必须是像素级、而不是"看代码里有没有那个函数"：
-//! 出片路径是 canvas `renderFrame` 逐帧绘制，DOM 的 `#bg-video-wrap` **完全不参与导出**。
-//! 只把 `stage.bg` 消费在 DOM 上，表现就是「预览里有模糊底、成片被 shake 挪开露纯黑」——
-//! 不报错、不崩溃，只有逐帧像素能发现（见 `docs/plan/polish-vertical-canvas.md` §八.13 / §九.7）。
+//! 出片路径上"衬底"这件事由**转译器 + 底座**共同决定（参照实现在 `templates/index.html`
+//! 的 `drawStageBackdrop`，转译器逐条对着它重写），只把 `stage.bg` 消费在 DOM 预览上，
+//! 表现就是「预览里有模糊底、成片被 shake 挪开露纯黑」—— 不报错、不崩溃，
+//! 只有逐帧像素能发现（见 `docs/plan/polish-vertical-canvas.md` §八.13 / §九.7）。
 //!
-//! 本测试跑 **A/B 两次**，第二次把服务给页面的 HTML 里的 `STAGE_BG` 强制改成 `'none'`
-//! （等价于改造前的实现）：
-//! - A（真模板）：四角亮度必须 > 阈值（= 画上了衬底）
+//! ⚠️ **2026-10-01 起探针不再起浏览器**：它当年驱动本仓的 headless Chrome 逐帧腿
+//! （`ChromeBackend`），那条腿已整条删除。现在跑的是**出片真正的后端**（底座），
+//! 变异打在**转译器**上 —— 改 `templates/index.html` 对底座那条腿一个像素都不影响
+//! （转译器根本不读它），A/B 会永远"看不出差别"而判据照旧全绿。细节见 `tests/common/mod.rs`。
+//!
+//! 本测试跑 **A/B 两次**，第二次把转译器里画衬底的那段关掉（等价于改造前的实现）：
+//! - A（真转译器）：四角亮度必须 > 阈值（= 画上了衬底）
 //! - B（变异体）：在**真露出衬底的那几帧**上，四角必须明显更暗
 //!   （= 证明这个探针**真的能看见**这个缺陷）
 //! 只断言 A 不断言 B，等于不知道探针是否空转；但 B 只能断在"衬底真露出来"的帧上 ——
 //! 判据与理由见下面 `EXPOSED_BACKDROP_MAX_LUMA`。
 //!
-//! 运行（需要能起 Chrome 的环境）：
+//! 运行（需要底座二进制 + Node 转译器）：
 //! ```text
 //! VTEDIT_BACKDROP_DIR="F:/para/Code/V-Trim/target/tmp-vertprobe/proj" \
 //! VTEDIT_BACKDROP_OUT="F:/para/Code/V-Trim/target/tmp-vertprobe/out" \
 //! cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture
 //! ```
 //! - `VTEDIT_BACKDROP_T`（秒，默认 `1.5`）= 探针时刻，要落在**主画面被挪开**的那一段里；
-//! - `VTEDIT_BACKDROP_SPAN`（秒，默认 `1.0`）= 以 T 为中心渲染多长一段（30fps → 帧数）。
-//! - 跑完先看输出的「真露底 n / 总帧」：**n = 0 就换个 `T`**（这一段里主画面把四角全盖住了，
-//!   衬底压根没露出来，A/B 比的是同一份像素，什么都看不出来）。
-//!   这一段**每一帧都要画出来**，所以它同时是"逐帧绘制路径"的冒烟测试：
-//!   页面里任何一处 `ReferenceError`（实测踩过：字幕分支里一个没声明的 `fs`
-//!   → `Chunk: Render error: fs is not defined`，**所有带字幕的片段都导不出来**）
-//!   都会让整块 chunk 失败、这里帧数对不上。
+//! - `VTEDIT_BACKDROP_SPAN`（秒，默认 `1.0`）= 以 T 为中心渲染多长一段（30fps → 帧数）；
+//! - `VTEDIT_BACKDROP_ANCHOR`（默认 = 转译器里那道衬底闸）= 锚点必须真实存在且只出现一次，
+//!   变异就打在它的**调用点**上（转译器改了措辞时用它兜，不必改探针源码）。
+//!
+//! ⚠️ 跑完先看输出的「真露底 n / 总帧」：**n = 0 就换个 `T`**（这一段里主画面把四角全盖住了，
+//! 衬底压根没露出来，A/B 比的是同一份像素，什么都看不出来）。
+//! ⚠️ 探针工程请用**副本**：渲染产物（`_temp_video.mp4` / `_dhampir_project.json`）会落在工程里。
 //!
 //! 探针工程可以用 `target/tmp-vertprobe/proj`（内置生成脚本没有，是手里那个竖屏工程的最小复刻：
 //! 720×1280 源 + 画中画 + 全特效 + 一条 30 字必折行的字幕 + 两条弹幕），也可以指向真实工程
 //! —— 但真实工程得挑一个主画面真被挪开的时刻，否则四角本来就是画面本身。
 //!
 //! ⚠️ 这个"画中画"**不许**再用 `[[segments.events]] type="camera"` 做（探针工程最初是那样写的）：
-//! 竖素材的运镜已被模板门控成 `zoom=1.0 / handheld=0`，运镜再也挪不开主画面 —— 靠它露底
+//! 竖素材的运镜已被门控成 `zoom=1.0 / handheld=0`，运镜再也挪不开主画面 —— 靠它露底
 //! 就是靠在一个**刚被修掉的缺陷**上（实测：门控落地后 30 帧里只剩 1 帧真露底，探针近乎空转）。
 //! 现在改由 `[stage] scale` 结构性露底，运镜事件留着只为跑那条被门控的代码路径。
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use std::path::PathBuf;
 
 use vtrim_polish::project::load_project;
-use vtrim_polish::render::backend::FrameRenderer;
-use vtrim_polish::render::chrome::ChromeBackend;
-use vtrim_polish::render::context::RenderContext;
-use vtrim_polish::render::frame::extract_chunk_frames;
-use vtrim_polish::render::server::{RenderServer, start_file_server};
 
 /// 「有衬底」判定阈值：衬底是当前帧 `brightness(0.5)` 的模糊拷贝，
 /// 只要源画面不是纯黑，四角亮度必然远高于它。测试素材是亮色（#FF7040 + 白色方块）。
 const BACKDROP_MIN_LUMA: f64 = 20.0;
-/// A/B 里"衬底到底贡献了多少亮度"的下限：同一帧、只差 `STAGE_BG`，
-/// 真模板的四角必须比变异体（不画衬底）**亮这么多**。
+/// A/B 里"衬底到底贡献了多少亮度"的下限：同一帧、只差衬底那一段代码，
+/// 真转译器的四角必须比变异体（不画衬底）**亮这么多**。
 ///
 /// ⚠️ 为什么不用"变异体必须纯黑（<8）"：flash / noise 这类**全屏白覆盖**是画在
 /// 视频层之后的，它会把变异体那圈黑也一起抬亮（实测 noise 淡出期 0 → 14）。
@@ -67,9 +69,9 @@ const AB_DELTA_MIN_LUMA: f64 = 40.0;
 /// - 「至少有一帧露底」= 探针有效性的下限（否则整段都在空转）；
 /// - 「每个露底帧的 A/B 差 ≥ `AB_DELTA_MIN_LUMA`」= 缺陷已修的直接表述。
 ///
-/// 变异体那条边什么都不画，而画布每帧都 `clearRect` 过 → 透明编码成纯黑（实测 0.0）。
+/// 变异体那条边什么都不画，而画布每帧都清过 → 透明编码成纯黑（实测 0.0）。
 ///
-/// 阈值 12 与上面 ① 是配套的：① 要求真模板四角 > `BACKDROP_MIN_LUMA`(20)，而四角被盖住的帧里
+/// 阈值 12 与上面 ① 是配套的：① 要求真转译器四角 > `BACKDROP_MIN_LUMA`(20)，而四角被盖住的帧里
 /// A/B 是同一份像素 → 变异体那角也 ≳ 20（> 12）→ 被跳过；反过来只有真缺了衬底的角才会掉到 12
 /// 以下。全屏覆盖层（`noise`）把缺衬底的角抬到 13~21 的帧同样被跳过 —— 它们不提供证据、
 /// 也不需要（只要窗口里还剩得下能判定的帧）。
@@ -112,66 +114,26 @@ fn stats(jpeg: &[u8]) -> Stats {
     Stats { corners, all: sum / (w as f64 * h as f64) }
 }
 
-/// 起服务 + Chrome 渲染 `[start, end)` 这一段每一帧（**一次 ffmpeg 抽帧 + 一次 Chrome**），
-/// 返回 (jpeg, t)。索引从 `start*fps` 起算，与出片时的帧号一致。
-async fn render_range(
-    dir: &Path,
-    html: String,
-    start: f64,
-    end: f64,
-    out_dir: &Path,
-    label: &str,
-) -> anyhow::Result<Vec<(Vec<u8>, f64)>> {
-    let cfg = load_project(dir)?;
-    let fps = 30usize;
-    let video = dir.join(&cfg.source.video);
-
-    let frames = extract_chunk_frames(&video.to_string_lossy(), start, end, fps, false)?;
-    anyhow::ensure!(!frames.is_empty(), "[{start},{end}) 抽帧为空");
-
-    let port = start_file_server(dir.to_path_buf(), Some(html)).await?;
-    let url = format!("http://127.0.0.1:{}/?capture=1", port);
-
-    let mut ctx = RenderContext::new(dir.to_path_buf(), cfg.clone());
-    ctx.fps = fps;
-    ctx.server_url = Some(url);
-    let _ = &ctx; // 贴纸帧数据（GIF）留给出片链路自己准备；探针只关心衬底像素 + 不抛异常
-    //
-    // ⚠️ 渲染必须挪到 blocking 线程：Chrome 抓帧是**整段同步**的（等页面回写进度），
-    // 而本测试页面要访问的那个 HTTP server 就跑在同一个 tokio runtime 上 ——
-    // 直接 await 里同步跑，runtime 线程被占死、server 永远不回包，
-    // 页面 `load` 事件等不到，报一个和根因无关的 `The event waited for never came`。
-    // 生产路径同理（`pipeline.rs` 用 spawn_blocking / 专用线程 + current-thread runtime）。
-    let frame_times: Vec<f64> = frames.iter().map(|f| f.t).collect();
-    let dir_b = dir.to_path_buf();
-    let cfg_b = cfg.clone();
-    let jpegs = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut backend = ChromeBackend::new(&dir_b, &cfg_b)?;
-        backend.prepare(&ctx)?;
-        backend.render_chunk(&frames)
-    })
-    .await??;
-
-    anyhow::ensure!(
-        jpegs.len() == frame_times.len(),
-        "{label}: 引擎回了 {} 帧、期望 {} 帧（页面里只要有异常就整块 chunk 失败）",
-        jpegs.len(),
-        frame_times.len()
-    );
-
-    std::fs::create_dir_all(out_dir)?;
-    let mut out = Vec::new();
-    for (i, (jpeg, t)) in jpegs.into_iter().zip(frame_times).enumerate() {
-        let path = out_dir.join(format!("{label}_{i:04}_t{t:.2}.jpg"));
-        std::fs::write(&path, &jpeg)?;
-        out.push((jpeg, t));
-    }
-    println!("  [{label}] 写出 {} 帧 → {}", out.len(), out_dir.display());
-    Ok(out)
+/// 衬底那一段代码在转译器里的锚点。
+///
+/// ⚠️ **这里必须写转译器里真实存在、且只出现一次的那一行**。
+/// 老锚点是 `drawStageBackdrop(`（照抄 `templates/index.html` 的函数名）—— 可转译器
+/// **根本不调这个函数**：它把衬底内联重写成 `backdropTracks`，那个名字只在**注释**里出现过一次。
+/// 于是 `matches(..).count() == 0` ⇒ 变异体 == 原件 ⇒ A/B 比的是同一份产物，
+/// 判据变成"自己和自己比"（正是这段注释下面警告的那种静默失效）。
+/// 现在锚在**真实的那道闸**上（`if (BACKDROP_ENABLED && STAGE_BG === 'blur') {`，恰好 1 次）。
+fn backdrop_guard() -> String {
+    std::env::var("VTEDIT_BACKDROP_ANCHOR")
+        .unwrap_or_else(|_| "if (BACKDROP_ENABLED && STAGE_BG === 'blur') {".to_string())
 }
 
+/// 转译器里那道"衬底总开关"。默认 `false` ⇒ 真实产物**本来就不画衬底**，
+/// 所以只想比"默认行为 vs 关掉衬底"是没有意义的（两边都不画）。
+/// 探针必须**先把它打开**，再比"打开后画了没"。
+const BACKDROP_FLAG: &str = "const BACKDROP_ENABLED = false;";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "手动像素探针：需要 VTEDIT_BACKDROP_DIR 指向真实竖屏工程，且本机能起 Chrome"]
+#[ignore = "手动像素探针：需要 VTEDIT_BACKDROP_DIR 指向真实竖屏工程，且本机能跑底座（二进制 + node 转译器）"]
 async fn portrait_backdrop_is_not_black() {
     let dir = PathBuf::from(
         std::env::var("VTEDIT_BACKDROP_DIR")
@@ -185,8 +147,6 @@ async fn portrait_backdrop_is_not_black() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1.5);
     // 探针窗口：以 T 为中心各取 `span/2` 秒（默认 ±0.5s = 30 帧 @30fps）。
-    // **区间里每一帧都要能画出来** —— 页面里任何一处 `ReferenceError`（曾经是字幕分支里
-    // 一个没声明的 `fs`）都会让整块 chunk 失败，所以这一段顺带是全帧路径的冒烟测试。
     let span: f64 = std::env::var("VTEDIT_BACKDROP_SPAN")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -211,22 +171,40 @@ async fn portrait_backdrop_is_not_black() {
     );
     assert_ne!(fit.bg, "none", "该工程解析出的 bg=none，衬底本就不该画，请换个工程/画布方向");
 
-    // A：真模板，渲染 [start, end) 整段
-    let html = RenderServer::build_html(&dir);
-    assert!(
-        html.contains("drawStageBackdrop"),
-        "出片页面里没有背景层消费点 —— 这正是「预览有模糊底、成片纯黑」的成因"
-    );
-    println!("A/B 里的 A = 真模板，渲染 [{start:.2}, {end:.2}) 每帧");
-    let real = render_range(&dir, html.clone(), start, end, &out_dir, "real").await.unwrap();
+    // 变异体：把衬底那段关掉。
+    //
+    // ⚠️ 变异打在**转译器**上、不是 `templates/index.html` 上：底座那条腿由转译器出工程，
+    // 它**根本不读** `index.html`（那是已作废的 canvas 参照实现）。改 HTML 会让 A/B 比同一份
+    // 产物、判据静默失效 —— 那正是"探针在空转"最坏的一种。
+    // A = **把总开关打开**的真转译器（衬底应该画出来）。
+    // B = 同一个转译器、但把整道衬底闸拆掉（`if (…)` → `if (false)`）。
+    //
+    // ⚠️ 两次都要动那个开关：只变异 A 的话，A 和 B 都不画衬底 —— 又变成自己比自己。
+    let on = common::mutated_translator(
+        "backdrop-on",
+        &[(BACKDROP_FLAG, "const BACKDROP_ENABLED = true;")],
+    )
+    .unwrap_or_else(|e| panic!("无法打开衬底总开关：{e:#}"));
 
-    // B：变异体 —— 把 `STAGE_BG` 钉成 'none'（等价于改造前：DOM 有衬底、出片没有）。
-    // **同一段每一帧都渲染**，这样 A/B 是逐帧可比的（只有 `STAGE_BG` 一个变量）。
-    let marker = "var STAGE_BG=STAGE.bg||'none';";
-    assert!(html.contains(marker), "模板里找不到 STAGE_BG 的赋值点（探针需要它做变异）");
-    let mutated_html = html.replace(marker, "var STAGE_BG='none';");
-    println!("A/B 里的 B = 变异体（STAGE_BG 强制 none），同样渲染 [{start:.2}, {end:.2})");
-    let mutated = render_range(&dir, mutated_html, start, end, &out_dir, "mutant").await.unwrap();
+    let anchor = backdrop_guard();
+    let off = common::mutated_translator(
+        "backdrop-off",
+        &[
+            (BACKDROP_FLAG, "const BACKDROP_ENABLED = true;"),
+            (anchor.as_str(), "if (false) {"),
+        ],
+    )
+    .unwrap_or_else(|e| panic!("无法构造变异转译器：{e:#}"));
+
+    println!("A/B 里的 A = 总开关**打开**的转译器（衬底应当画出来），渲染 [{start:.2}, {end:.2}) 每帧");
+    let real = common::render_range(&dir, Some(&on), start, end).unwrap();
+    common::save_frames(&real, Some(&out_dir), "real").unwrap();
+
+    println!(
+        "A/B 里的 B = 同一个转译器、但把衬底闸（`{anchor}`）改成 `if (false)`，同样渲染 [{start:.2}, {end:.2})"
+    );
+    let mutated = common::render_range(&dir, Some(&off), start, end).unwrap();
+    common::save_frames(&mutated, Some(&out_dir), "mutant").unwrap();
 
     let brief = |frames: &[(Vec<u8>, f64)]| -> String {
         let mut out = Vec::new();
@@ -241,14 +219,14 @@ async fn portrait_backdrop_is_not_black() {
         out.push(format!("…共 {} 帧", frames.len()));
         out.join(" | ")
     };
-    println!("  [真模板] {}", brief(&real));
-    println!("  [变异体] {}", brief(&mutated));
+    println!("  [真转译器] {}", brief(&real));
+    println!("  [变异体]   {}", brief(&mutated));
 
     let min_corner = |jpeg: &[u8]| -> f64 {
         stats(jpeg).corners.iter().cloned().fold(f64::MAX, f64::min)
     };
 
-    // ① 真模板：整段每一帧的**每个**角都得是衬底（不是黑）
+    // ① 真转译器：整段每一帧的**每个**角都得是衬底（不是黑）
     for (jpeg, tt) in &real {
         let s = stats(jpeg);
         for (i, c) in s.corners.iter().enumerate() {
@@ -258,13 +236,13 @@ async fn portrait_backdrop_is_not_black() {
             );
         }
     }
-    // ② A/B 自证：同帧只差一个 `STAGE_BG`，**在真露底的那几帧**变异体的四角必须明显更暗
+    // ② A/B 自证：同帧只差衬底那一段，**在真露底的那几帧**变异体的四角必须明显更暗
     //    （否则探针看不见缺陷、在空转）+ 整段至少得有一帧真露底。判据为什么只落在露底帧上、
     //    为什么不能逐帧都要求见 `EXPOSED_BACKDROP_MAX_LUMA` 的注释。
     assert_eq!(
         real.len(),
         mutated.len(),
-        "A/B 两边的帧数必须一致才能逐帧比（真模板 {} / 变异体 {}）",
+        "A/B 两边的帧数必须一致才能逐帧比（真转译器 {} / 变异体 {}）",
         real.len(),
         mutated.len()
     );
@@ -276,7 +254,7 @@ async fn portrait_backdrop_is_not_black() {
         }
         assert!(
             r - m >= AB_DELTA_MIN_LUMA,
-            "t={tt:.2}s（露底帧）真模板最暗角 {r:.1} vs 变异体 {m:.1}，只差 {:.1} < {AB_DELTA_MIN_LUMA} —— 衬底没起作用",
+            "t={tt:.2}s（露底帧）真转译器最暗角 {r:.1} vs 变异体 {m:.1}，只差 {:.1} < {AB_DELTA_MIN_LUMA} —— 衬底没起作用",
             r - m
         );
         exposed.push((*tt, r - m));

@@ -128,12 +128,6 @@
                   <label for="overwrite">覆盖已有文件 overwrite</label>
                 </div>
               </div>
-              <div>
-                <div class="side-title">Chrome 渲染</div>
-                <label>Chrome 可执行文件路径 chrome.path</label>
-                <input v-model="form.chrome.path" type="text" placeholder="留空自动检测">
-                <div class="muted small side-hint">留空时按常见位置自动检测；精修渲染 / 封面生成 / 健康检查均使用该路径。</div>
-              </div>
             </div>
           </div>
         </div>
@@ -331,7 +325,6 @@ const form = reactive({
     overwrite: false,
     silence_noise_db: -30
   },
-  chrome: { path: '' },
   llm: {
     api_key: '',
     base_url: '',
@@ -404,7 +397,6 @@ function buildGlobalPatch() {
       overwrite: !!f.cutting.overwrite,
       silence_noise_db: Number(f.cutting.silence_noise_db ?? -30)
     },
-    chrome: { path: f.chrome.path || '' }
   }
 }
 
@@ -484,9 +476,6 @@ async function loadConfig() {
       overwrite: !!c.cutting.overwrite,
       silence_noise_db: c.cutting.silence_noise_db ?? -30
     })
-    if (c.chrome) {
-      form.chrome.path = c.chrome.path || ''
-    }
     const l = d.llm_config || {}
     const gMax = l.max_tokens ?? 65536
     const gTemp = l.temperature ?? 0

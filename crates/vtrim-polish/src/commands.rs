@@ -772,31 +772,9 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         Err(_) => tracing::info!("  ✗ ffmpeg: NOT FOUND"),
     }
 
-    // Check Chrome
-    let chrome_check = if cfg!(target_os = "windows") {
-        Command::new("where").arg("chrome").output()
-    } else {
-        Command::new("which").arg("google-chrome").output()
-    };
-    if chrome_check.map(|o| o.status.success()).unwrap_or(false) {
-        tracing::info!("  ✓ Chrome: found in PATH");
-    } else {
-        // Try common paths
-        let common_paths = if cfg!(target_os = "windows") {
-            vec![
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ]
-        } else {
-            vec!["/usr/bin/google-chrome", "/usr/bin/chromium-browser"]
-        };
-        let found = common_paths.iter().any(|p| Path::new(p).exists());
-        if found {
-            tracing::info!("  ✓ Chrome: found (common path)");
-        } else {
-            tracing::info!("  ✗ Chrome: NOT FOUND in PATH or common locations");
-        }
-    }
+    // ⚠️ 这里曾经探 Chrome（PATH + 常见安装路径）—— 出片与封面那两条 headless Chrome 腿
+    // 都已整条删除（2026-10-01），本仓不再需要外部浏览器。**别把它加回来**：doctor 里报一条
+    // "✗ Chrome: NOT FOUND" 会让人去装一个已经没有任何消费者、也没有任何出片路径会用的东西。
 
     // Check LLM config
     let llm_cfg = vtrim_core::config::load_llm_config();
@@ -839,11 +817,11 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         tracing::info!("  ✗ {problem}");
     }
     if ready.ready {
-        tracing::info!("  ✓ 底座可用（出片默认走它；`--renderer chrome` 可退回本仓）");
+        tracing::info!("  ✓ 底座可用（出片只有它一条腿）");
     } else {
         tracing::info!(
-            "  ⚠ 底座**当前不可用** —— 出片会失败并报出上面这些原因；\
-             也可以先用 `vtrim polish render --renderer chrome` 出片"
+            "  ⚠ 底座**当前不可用** —— 出片会失败并报出上面这些原因。\
+             出片只有底座这一条腿（本仓那条逐帧腿已整条删除），先把上面那几项补齐。"
         );
     }
 

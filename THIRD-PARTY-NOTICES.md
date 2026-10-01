@@ -42,26 +42,37 @@
 
 ### 构建期使用，但**不随二进制分发**
 
-| 组件 | 版本 | 授权 | 说明 |
-|---|---|---|---|
-| **auto_generate_cdp** | 0.4.6 | **GPL-3.0** —— 该 crate 只带 `LICENSE.txt`，**没有 SPDX `license` 字段** | `headless_chrome 1.0.22`（MIT）的 **`[build-dependencies]`**：只在构建期生成 CDP 协议绑定代码。**不在运行时依赖闭包里**，因此**不随二进制分发**。 |
+⚠️ **本条曾经的最大一项已随功能删除**：`headless_chrome`（MIT）以及它那个
+**GPL-3.0 的构建期依赖 `auto_generate_cdp`** —— 2026-10-01 用户拍板把本仓那条
+headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删除**，`headless_chrome`
+依赖随之从 `vtrim-polish` 的 `Cargo.toml` 摘掉。所以：
 
-⚠️ 这一条是**依赖审计挖出来的**，不是手写清单发现的：它把授权正文放在 `LICENSE.txt` 里、
-没有 SPDX `license` 字段，所以任何"只匹配 `license` 字段"的清单（含本文档此前的版本）都会漏掉它。
+- `headless_chrome` / `auto_generate_cdp` **已不在依赖图里**（`cargo tree -p vtrim-cli`
+  与 `-p vtrim-polish` 都搜不到 `chrome`）；
+- 那份 **GPL-3.0 的构建期组件不再随本仓构建出现**，下面那条"唯一需要法律确认的一点"
+  随之作废（留在这里只是为了让审计的来龙去脉有据可查，**它已不适用于当前代码**）。
 
-2026-09-18 完整审计结论（`cargo metadata --format-version 1 --locked`，全树 335 个包）：
+⚠️ 这一条当初是**依赖审计挖出来的**，不是手写清单发现的：它把授权正文放在 `LICENSE.txt` 里、
+没有 SPDX `license` 字段，所以任何"只匹配 `license` 字段"的清单（含本文档更早的版本）都会漏掉它。
+**教训留着**：新增依赖后要按同样的方式重跑审计（看 `Cargo.lock` 里每个包的
+`license` **与 `license-file`**，再按 build-dep 子树单独过一遍）。
 
-- 随二进制分发的**运行时闭包共 312 个包**，**没有任何 GPL / LGPL / AGPL**；逐条统计为
-  `MIT OR Apache-2.0` 174、`MIT` 59、`Unicode-3.0` 18、`Apache-2.0 OR MIT` 11、
-  `MIT/Apache-2.0` 11、LLVM-exception 系 5、`Apache-2.0` 5、`Unlicense OR MIT` 3、
-  ISC 2、BSD 系若干、`0BSD` / `Zlib` / `BSL-1.0`（Boost）各 1。
+2026-10-01 复核（`cargo tree -p vtrim-cli`，默认 feature）：
+
+- 全树 **317 个包**（`--prefix none` 去重后；含 build 依赖）。
+- 随二进制分发的**运行时闭包共 298 个包**，**没有任何 GPL / LGPL / AGPL**；逐条统计为
+  `MIT OR Apache-2.0` 176、`MIT` 57、`Unicode-3.0` 18、`Apache-2.0 OR MIT` 11、
+  `MIT/Apache-2.0` 11、`Apache-2.0` 9、LLVM-exception 系 5、`Zlib` 3、
+  `Unlicense OR MIT` 3、BSD 系若干、`0BSD` / `BSL-1.0`（Boost）各 1。
 - `r-efi` 标注为 `MIT OR Apache-2.0 OR LGPL-2.1-or-later` —— 是**三选一**，取 MIT/Apache
   即不产生 LGPL 义务。
-- 全图只有 **8 个 build-only 包**：`auto_generate_cdp` / `autocfg` / `bzip2` / `cc` /
-  `pkg-config` / `ureq` / `vcpkg` / `version_check`。
-- 唯一需要法律确认的一点：GPLv3 §2 规定"运行 GPL 程序产生的输出，只有在该输出本身构成
-  covered work 时才受该许可约束"；这里生成的是声明式协议绑定数据，主流理解是**工具输出
-  不算衍生作品**，且该工具本身并不随包分发。
+- **19 个 build-only 包**（`comm` 全树与运行时闭包：`autocfg` / `cc` / `find-msvc-tools` /
+  `glob` / `jobserver` / `phf_codegen` / `pkg-config` / `ring` / `rustc_version` / `rustls` /
+  `rustls-webpki` / `semver` / `shlex` / `string_cache_codegen` / `untrusted` / `ureq` /
+  `vcpkg` / `version_check` / `webpki-roots`）。其中 `ring` / `rustls` / `rustls-webpki` /
+  `webpki-roots` / `untrusted` 是 TLS 栈经 `ureq` 走的构建期分支 —— 它们**同时**在运行时
+  闭包里被别处用到，列在这里只是说明"构建期也拉了一次"。
+- 全树搜 **`chrome` 零命中**：GPL-3.0 那一项已随功能删除，不再是需要法律确认的点。
 
 ## 二、外部命令（不随包分发，也不链接）
 

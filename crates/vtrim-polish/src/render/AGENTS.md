@@ -1,24 +1,26 @@
-# render/ — 出片链路（headless Chrome 逐帧 + ffmpeg 合成）与预览 HTTP server
+# render/ — 出片链路（底座 Dhampir 整段出片 + 本仓音轨/合流）与预览 HTTP server
 
 > 范围：`crates/vtrim-polish/src/render`/** ｜ 上游：`commands::cmd_preview` / `cover::cmd_cover` / `vtrim-server::api`（渲染任务）｜ 验证：`cargo test -p vtrim-polish --lib render`
 
 ## 职责
 
-把精修工程变成成片：`pipeline.rs::cmd_render` 起本地预览 server → headless Chrome 打开
-`templates/index.html` 逐块（chunk）截帧/逐帧 canvas 绘制 → ffmpeg 编码、混 SFX、合流、按屏蔽区间重编码
-→ 统计；`cover.rs` 走同一个 server 的另一条路由出封面。`server.rs` 同时是**预览 HTTP server**（ServeDir 根 = 项目目录，
-`/vt-fonts/:name` 给库内字体一条自己的路由，`@font-face` 注入两个模板）；`chrome.rs` 管浏览器与卡死守卫；
-`ffmpeg.rs` 管编码器探测与全部 ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底层件。
-⚠️ **`takumi.rs` 是封面那条的第三个后端**（**静态封面渲染**：不跑浏览器、不跑 JS/时间）——
-`cover-takumi` feature **默认关**，只由 `VTEDIT_COVER_RENDERER=takumi` + 该 feature 启用；它只做
-`from_html` + `StyleSheet::parse` + 字体注册 + **四处引擎差异适配**，产物与 Chrome 同口径（JPEG q85）。
+把精修工程变成成片：`pipeline.rs::cmd_render` 把 `polish.toml` 转译成底座工程
+（`dhampir.rs` → `tools/polish-to-dhampir.mjs`）→ 调 `dhampir.exe render` 整段出**画面** →
+ffmpeg 编混 SFX、合流、按屏蔽区间重编码 → 统计。`server.rs` 是**预览 HTTP server**（ServeDir 根 = 项目目录，
+`/vt-fonts/:name` 给库内字体一条自己的路由，`@font-face` 注入模板）；`ffmpeg.rs` 管编码器探测与全部
+ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底层件。
+⚠️ **`takumi.rs` 是封面那条的后端**（**静态封面渲染**：不跑浏览器、不跑 JS/时间）——
+`cover-takumi` feature **默认关**（vtrim-cli 的 `default` 打开），由 `VTEDIT_COVER_RENDERER=takumi` + 该 feature
+启用；它只做 `from_html` + `StyleSheet::parse` + 字体注册 + **四处引擎差异适配**，产物是 JPEG q85。
 判定、残差与复跑命令见 **`docs/plan/takumi-cover-capability.md`**（见 polish 卡末段）。
-⚠️ **出片有两条通道**：`chrome`（本仓 headless Chrome 逐帧 canvas，**兜底**）与
-`dhampir`（**默认**：独立仓的 `dhampir.exe render`，见 `render/dhampir.rs`、`RenderBackendKind`）。
-⚠️ **兜底通道自 2026-10-01 起是冻结的**（S4：新效果只加进 doc 那条链路，见
-`docs/plan/effect-pipeline-unification.md` §3.1）：`cmd_render` 在选 `chrome` 时会拿效果词汇表的
-`anchors.canvas` 当支持矩阵，工程里用到矩阵外的效果就**当场报错并点名**（以前是静默少画）；
-词汇表运行时读包内/开发树那份、读不到用编译期内嵌那份，**读不出来只警告不拦**（一个坏文件不该挡出片）。
+⚠️⚠️ **出片只剩一条腿（2026-10-01 用户拍板）**：`dhampir`（独立仓的 `dhampir.exe render`，
+见 `render/dhampir.rs`、`RenderBackendKind`）。**本仓那条 headless Chrome 逐帧腿已整条删除** ——
+`render/chrome.rs`、`RenderBackendKind::Chrome`、`headless_chrome` 依赖、封面那条 Chrome 截图通道
+（`cover.rs` 里 `chrome` 分支）、`/api/health` 的 `chrome` 能力位、WebUI 的出片通道下拉与封面通道弹窗
+——**全部一起没了**。`RenderBackendKind::parse("chrome")` 现在返回 `None`，`cmd_render` 会**明确报错**
+（**不静默改走底座**：那会让人以为"我在用 chrome 出片"，而两版成片的差别只有对着看才发现）。
+封面那条对 `chrome` 给的是**单独的**"这条腿已删除"错误，不是折进"认不出"。
+`wgpu` / `native` 仍只作 `dhampir` 的**别名**（老配置/老脚本的兼容映射）。
 原来的 `native/`（`WgpuBackend`）与 `wgpu-render` feature 已整条删除（GPU 那侧交给底座）。
 `backend.rs` 的 `FrameRenderer` 抽象**留着** —— 但底座**不走它**：底座是"整段一起出"，
 硬塞进逐帧接口就得每帧起一个进程；它走 `cmd_render` 里的**另一条分支**，产物落在同一个
@@ -26,23 +28,24 @@
 
 ## 入口
 
-- `pipeline`：`cmd_render(project_path)`、`render_chunk_sync(...)`、`resolve_paths(project_path, config) -> ResolvedPaths`、
+- `pipeline`：`cmd_render(project_path)`、`render_chunk_sync(...)`（**逐帧渲染的接缝**：已无生产调用者，
+  留着是因为它是"任何非底座后端"的接口形状，且有测试钉着）、`resolve_paths(project_path, config) -> ResolvedPaths`、
   `inject_assets(project_path, config_json)`、`prepare_sticker_data(project_path, config)`、
   `unique_output_path(path)`、`get_video_size` / `get_video_duration`、
   `measure_loudness_curve(_cached)` / `measure_segment_loudness` / `measure_audio_loudness`、
-  `export_sound_data(url)`、`print_final_stats`、`cleanup`。
+  `spec_effects_path`、`print_final_stats`、`cleanup`。
 - `server`：`RenderServer::{new, build_html, start_with, start, start_cover}`、`start_file_server(project_path, injected_html)`、
   `build_sticker_map(project_path)`、`build_cover_html`、`font_face_css` / `font_face_css_in` /
   `font_family_with_stack` / `SYSTEM_FONT_STACK`。
 - `ffmpeg`：`detect_encoder() -> EncoderInfo`、`concat`、`extract_audio`、`apply_limiter`、
   `mix_sfx(..., &[SfxEvent])`、`cut_ranges(input, ranges, output)`、`mux(video, audio, output)`。
-- `chrome`：`ChromeRenderer`、`launch(size)`、`create_tab(browser, url)`、`wait_for_ready(tab)`、
-  `ChromeBackend`、`DEFAULT_STALL_SECS = 180`。
+- `dhampir`：`render_video_only(project_path, clip_dir, project_font, strict)`、`prepare_project(_reporting)`、
+  `readiness(font, strict)`、`find_translator()`（`VTEDIT_TRANSLATOR` 可覆盖 —— 手动探针靠它做变异）。
 - `frame`：`extract_chunk_frames`、`split_jpeg_frames`；`gif`：`decode_gif_frames_rgba` / `decode_gif_frames_png` /
   **`decode_sticker_frames_png`（贴纸图统一入口：GIF 多帧、PNG/JPEG 单帧）**；
   `sound`：`collect_sound_events(config)` / `sound_file_exists`（⚠️ `collect_sound_events` 现在没有生产
   调用者 —— 它当年是 wgpu 那条路用的"替代页面 `__SOUND_DATA`"；留着是因为它有单测、且任何非页面后端
-  都要这份 SFX 列表）；`backend::create_backend`（`Chrome` 那条实现；`Dhampir` 走到这里会**明确报错** ——
+  都要这份 SFX 列表）；`backend::create_backend`（`Dhampir` 走到这里会**明确报错** ——
   它是整段后端，不走逐帧接口）。
   ⚠️ **`runner.rs` 已删除**（2026-09）：它自带一份 `ResolvedPaths` + `RenderRunner`，全仓库零消费者
   （真正的 `ResolvedPaths`/`resolve_paths` 在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），
@@ -54,7 +57,7 @@
 
 - **输出必须落文件，不能用管道**：`api::run_polish_child`（`vtrim-server`）把子进程 stdout/stderr 重定向到
   `<data_dir>/logs/render-<job_id>.log`，再用 `follow_render_output` 边跑边读。
-  ⚠ 绝对不要改回 `Command::output()`/管道：Chrome 与 ffmpeg 是**孙进程**，它们会继承 stdout
+  ⚠ 绝对不要改回 `Command::output()`/管道：ffmpeg 与底座拉起的孙进程是**孙进程**，它们会继承 stdout
   句柄 —— 只要还有一个活着，管道就永远不 EOF，`output()` 一直等下去。实测子进程早已带着
   `Render error: evDur is not defined` 退出，任务却卡了半小时、错误全被闷在缓冲区里。
 - ⚠️ **底座那条腿（`dhampir`，**默认通道**）的三条实测规矩**（`render/dhampir.rs`，2026-09-30 全链真跑过）：
@@ -100,14 +103,15 @@
   最慢的分块决定整体）；`-- Xxx --`、`FINISHED:`、`Cover saved:`、`✂ 已导出去除`、`⏱` 等里程碑
   → `jobs.log(info)`（进运行日志面板与文件）；其余行 → `debug`（只挂在任务卡上，不刷日志）。
 - **取消 = 杀进程树**：子进程是另一个进程，看不到进程内标志。`render_proc::kill_tree(pid)`
-  在取消时 `taskkill /F /T`（含 Chrome/ffmpeg），父进程再清 `_chunk_*` / `_temp_*`。
+  在取消时 `taskkill /F /T`（含 ffmpeg 与底座拉起的孙进程），父进程再清 `_chunk_*` / `_temp_*`。
 - **启动清扫孤儿**：每次渲染往 `<data_dir>/render-procs/<job_id>.pid` 登记 pid，
   `server::run` 启动时 `render_proc::sweep_orphans` 结束上一次遗留的渲染（**先核对命令行**
-  再杀，pid 会被系统回收）。服务器重启带不走子进程 —— 实测两个渲染各留 3 个 Chrome 空转两小时，
+  再杀，pid 会被系统回收）。服务器重启带不走子进程 —— 实测两个渲染各留 3 个渲染孙进程空转两小时，
   把后续渲染拖到根本跑不完。
-- **卡死守卫**：页面侧 `capture_and_read` 记录 `__CAPTURE_PROGRESS` 的最后变化时间，
-  超过 `VTEDIT_STALL_SECS`（默认 180s，`chrome::DEFAULT_STALL_SECS`）报错退出；父进程另有
-  "子进程 60s 无输出 → warn"。别再退回**无超时轮询**：那是"长时间无反应 + 日志空白"的直接来源。
+- **卡死守卫**：父进程按"子进程 60s 无输出 → warn"看着底座；底座自己的进度在
+  `_temp_dhampir_progress.ndjson` 里（见上面那条）。别再退回**无超时轮询**：那是"长时间无反应 +
+  日志空白"的直接来源。（页面侧那条 `VTEDIT_STALL_SECS` / `chrome::DEFAULT_STALL_SECS` 的抓帧卡死
+  守卫随 chrome 那条腿一起删了 —— 现在**没有**它，卡死只能靠上面那条无输出 warn 发现。）
 - **分阶段打点**：`cmd_render` 每段一条 `⏱ 阶段 {:.1}s`，`render_chunk_sync` 把每块的
   **抽帧 / 渲染 / 编码**分开报（`chunk#N: done N frames（抽帧 …s / 渲染 …s / 编码 …s）`）。
   实测 clip-35（262s 片段，debug 构建）294s 里：起服务 16.1s、贴纸 GIF 40.8s、分块 210.7s
@@ -136,9 +140,10 @@
   **模板改完必须真跑一次出片验证**（预览看着正常 ≠ 出片正常）。
   ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进
   `render/server.rs::INDEX_HTML`，运行中的 `vtrim server` 端出的仍是旧页面。
-- **字体库的渲染侧**：出片页面由渲染服务器端给 headless Chrome，所以库里字体必须有**自己的一条路由**
-  —— `/vt-fonts/:name`（只认库目录下的单段文件名）。**两条建 router 的路都要挂**
-  （`start_file_server` 提帧/封面截图 + `start_with` 预览/CLI 出片），漏一条就是"预览有、成片没有"。
+- **字体库的渲染侧**：`/vt-fonts/:name` 是给**浏览器里那两个模板**（DOM/GSAP 预览 + 封面模板）用的
+  —— 底座那条腿**不走这个 server**，它的字体走 `dhampir.rs` 的 `--font-dir` / `--font-bold-file`。
+  库里字体必须有**自己的一条路由**（只认库目录下的单段文件名）。**两条建 router 的路都要挂**
+  （`start_file_server`（预览 + 封面）+ `start_with` 预览），漏一条就是"预览有、出片没有"。
   **浏览器只认系统已装字体**，所以选了库内字体就**必须注入 `@font-face`**：`server::font_face_css(...)`
   拼出来的片段进两个模板的 `<!-- __FONT_FACE__ -->` 占位（`index.html` 由 `build_html` 注入字幕字体、
   `cover.html` 由 `cover.rs` 的 `cover_font_css` 注入封面字体，**两条 replace 链都要改**）。

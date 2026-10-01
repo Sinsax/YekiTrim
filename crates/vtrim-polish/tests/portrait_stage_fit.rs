@@ -3,14 +3,20 @@
 //! 用户原话：「横屏时的效果显示为竖屏素材被拉伸成宽屏，而不是竖屏素材+模糊的关键帧。
 //! 而且对于竖屏素材没有禁用运镜，即使是横屏导出还是竖屏导出」。
 //!
-//! 两个成因都在**出片 canvas 路径**（`renderFrame` 的视频层）：
-//! ① 视频层被硬铺满整块画布（`drawImage` 的 dst 直接用画布尺寸 `CW/CH`），
-//!    `_canvas.stage` 推导出的 `axis/position/scale/padding` 只有 DOM 预览在消费 → 成片是拉伸的；
-//! ② `getActiveCamera` 的竖素材门控只存在于 DOM 预览（`engine.js` / 模板的 DOM 分支），
-//!    canvas 逐帧路径照旧套运镜 → 竖素材在预览里不动、在成片里被 zoom/origin 拖着走。
+//! 两个成因都在**画面那条腿**上：
+//! ① 视频层被硬铺满整块画布（参照实现在 `templates/index.html` 的 `stageDrawRect`，
+//!    `_canvas.stage` 推导出的 `axis/position/scale/padding` 只有 DOM 预览在消费 → 成片是拉伸的）；
+//! ② 竖素材门控只存在于 DOM 预览（`engine.js` / 模板的 DOM 分支），
+//!    画面那条腿照旧套运镜 → 竖素材在预览里不动、在成片里被 zoom/origin 拖着走。
 //!
 //! 为什么必须是像素级：这两条都**不报错、不崩溃**，"改好了 DOM 预览"照样看起来正常，
 //! 只有逐帧像素能发现（与 `tests/portrait_backdrop.rs` 同一类事故）。
+//!
+//! ⚠️ **2026-10-01 起探针不再起浏览器**：它当年驱动本仓的 headless Chrome 逐帧腿
+//! （`ChromeBackend`），那条腿已整条删除。现在跑的是**出片真正的后端**（底座），
+//! **变异打在转译器上** —— 底座那条腿由 `tools/polish-to-dhampir.mjs` 出工程，
+//! 它**根本不读** `templates/index.html`（后者是已作废的 canvas 参照实现）。改 HTML 会让
+//! A/B 比同一份产物、判据静默失效。细节见 `tests/common/mod.rs`。
 //!
 //! 探针素材约定（自造，720×1280 竖屏 8s + 静音轨）：
 //! - 整帧品红 `#ff00ff` + 最外圈 6px **白描边** + 正中央 **360×640 亮绿块**（源画面的 50%×50%）；
@@ -26,7 +32,7 @@
 //! 探针工程 = 上面这颗源 + `[canvas] orientation="landscape"` + `[stage] bg_mode="blur"` +
 //! 一条整段 `type="camera" zoom="近"`（`zoom_close=1.5`，竖素材下必须被吃掉）。
 //!
-//! 运行（需要能起 Chrome 的环境）：
+//! 运行（需要底座二进制 + Node 转译器）：
 //! ```text
 //! VTEDIT_FIT_DIR="F:/para/Code/V-Trim/.workbuddy/perf/vertical/vert-land" \
 //! VTEDIT_FIT_OUT="F:/para/Code/V-Trim/target/tmp-stagefit/out" \
@@ -34,20 +40,21 @@
 //! ```
 //! - `VTEDIT_FIT_T`（秒，默认 `2.0`）= 探针时刻；
 //! - `VTEDIT_FIT_SPAN`（秒，默认 `0.6`）= 以 T 为中心渲染多长一段（30fps → 帧数）。
+//! - 探针工程请用**副本**：渲染产物（`_temp_video.mp4` / `_dhampir_project.json`）会落在工程里。
 //!
-//! **A/B 三段变异，每段都断言"翻面"**（只断言真模板 = 不知道探针是不是空转）：
+//! **A/B 三段变异，每段都断言"翻面"**（只断言真转译器 = 不知道探针是不是空转）：
 //! - 变异①「硬铺满」：`axis==='x'` 分支的等比改成拉伸 → 内容框必须变成整块画布；
-//! - 变异②「去掉竖屏运镜门」：`if (CFG.vertical)` → `if (false)` → 绿块面积必须明显变大；
-//! - 变异③「不画衬底」：`STAGE_BG` 钉成 `'none'` → 内容框之外必须掉到纯黑。
+//! - 变异②「去掉竖屏运镜门」：竖屏早退条件改成恒假 → 绿块面积必须明显变大；
+//! - 变异③「不画衬底」：衬底那段关掉 → 内容框之外必须掉到纯黑。
+//!
+//! ⚠️ 变异锚点（①②③）在转译器里改了措辞就会**当场失败**（锚点必须恰好命中一次），
+//! 不会静默比同一份产物。
+
+mod common;
 
 use std::path::{Path, PathBuf};
 
 use vtrim_polish::project::{StageFit, load_project};
-use vtrim_polish::render::backend::FrameRenderer;
-use vtrim_polish::render::chrome::ChromeBackend;
-use vtrim_polish::render::context::RenderContext;
-use vtrim_polish::render::frame::extract_chunk_frames;
-use vtrim_polish::render::server::{RenderServer, start_file_server};
 
 /// 白描边判定（三通道都 > 235）：字幕色 `#dcbda0`（220/189/160）与衬底都不达标，不污染 bbox。
 const WHITE: u8 = 235;
@@ -208,72 +215,48 @@ fn stats(jpeg: &[u8], cw: u32, ch: u32, inside: Option<&Rect>) -> Shot {
     }
 }
 
-/// 在 `anchor` 之后第一次出现的 `needle` 处替换 —— 绕开**行尾**假设：
-/// `include_str!` 进来的是工作区字节（Windows 上是 CRLF、CI 上是 LF）。
-fn replace_first_after(html: &str, anchor: &str, needle: &str, replacement: &str) -> String {
-    let a = html.find(anchor).unwrap_or_else(|| panic!("模板里找不到锚点 {anchor:?}"));
+fn replace_first_after(code: &str, anchor: &str, needle: &str, replacement: &str) -> String {
+    let a = code.find(anchor).unwrap_or_else(|| panic!("代码里找不到锚点 {anchor:?}"));
     let tail = a + anchor.len();
     let at = tail
-        + html[tail..]
+        + code[tail..]
             .find(needle)
             .unwrap_or_else(|| panic!("锚点 {anchor:?} 之后找不到 {needle:?}"));
-    let mut out = String::with_capacity(html.len());
-    out.push_str(&html[..at]);
+    let mut out = String::with_capacity(code.len());
+    out.push_str(&code[..at]);
     out.push_str(replacement);
-    out.push_str(&html[at + needle.len()..]);
+    out.push_str(&code[at + needle.len()..]);
     out
 }
 
-async fn render_range(
+/// 把一份**变异过的转译器**写到临时目录，返回路径（给 `common::render_range` 用）。
+fn translator_with(tag: &str, mutate: impl FnOnce(&str) -> String) -> PathBuf {
+    let src = common::translator_path();
+    let code = std::fs::read_to_string(&src).expect("读转译器");
+    let out = mutate(&code);
+    let dir = std::env::temp_dir().join(format!("vtrim-stagefit-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dst = dir.join(format!("polish-to-dhampir-{tag}.mjs"));
+    std::fs::write(&dst, out).unwrap();
+    dst
+}
+
+/// 用**出片真正的后端**（底座）渲染 `[start, end)` 每一帧（走 `common` 的共享实现）。
+fn render_range(
     dir: &Path,
-    html: String,
+    translator: Option<&Path>,
     start: f64,
     end: f64,
     out_dir: Option<&Path>,
     label: &str,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
-    let cfg = load_project(dir)?;
-    let fps = 30usize;
-    let video = dir.join(&cfg.source.video);
-    let frames = extract_chunk_frames(&video.to_string_lossy(), start, end, fps, false)?;
-    anyhow::ensure!(!frames.is_empty(), "[{start},{end}) 抽帧为空");
-
-    let port = start_file_server(dir.to_path_buf(), Some(html)).await?;
-    let url = format!("http://127.0.0.1:{}/?capture=1", port);
-
-    let mut ctx = RenderContext::new(dir.to_path_buf(), cfg.clone());
-    ctx.fps = fps;
-    ctx.server_url = Some(url);
-
-    // ⚠️ Chrome 抓帧是**整段同步**的，而页面要访问的 HTTP server 跑在同一个 tokio runtime 上：
-    // 直接在 async 里同步跑会把 runtime 线程占死（同 `portrait_backdrop.rs` 的注释）。
-    let expected = frames.len();
-    let dir_b = dir.to_path_buf();
-    let cfg_b = cfg.clone();
-    let jpegs = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<u8>>> {
-        let mut backend = ChromeBackend::new(&dir_b, &cfg_b)?;
-        backend.prepare(&ctx)?;
-        backend.render_chunk(&frames)
-    })
-    .await??;
-
-    anyhow::ensure!(
-        jpegs.len() == expected,
-        "{label}: 引擎回了 {} 帧、期望 {expected} 帧（页面里只要有异常就整块 chunk 失败）",
-        jpegs.len()
-    );
-    if let Some(out_dir) = out_dir {
-        std::fs::create_dir_all(out_dir)?;
-        for (i, jpeg) in jpegs.iter().enumerate() {
-            std::fs::write(out_dir.join(format!("{label}_{i:04}.jpg")), jpeg)?;
-        }
-    }
-    println!("  [{label}] {} 帧全部渲染成功", jpegs.len());
-    Ok(jpegs)
+    let frames = common::render_range(dir, translator, start, end)?;
+    common::save_frames(&frames, out_dir, label)?;
+    Ok(frames.into_iter().map(|(jpeg, _)| jpeg).collect())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "手动像素探针：需要 VTEDIT_FIT_DIR 指向竖素材探针工程，且本机能起 Chrome"]
+#[ignore = "手动像素探针：需要 VTEDIT_FIT_DIR 指向竖素材探针工程（渲染走底座 Dhampir）"]
 async fn portrait_source_is_contained_and_motion_locked() {
     let dir = PathBuf::from(
         std::env::var("VTEDIT_FIT_DIR").expect("set VTEDIT_FIT_DIR to a polish project dir"),
@@ -326,22 +309,13 @@ async fn portrait_source_is_contained_and_motion_locked() {
         if keep_outside { "" } else { " · 内容框≈铺满画布，跳过框外判据" }
     );
 
-    let html = RenderServer::build_html(&dir);
-    for marker in [
-        "function stageDrawRect",
-        "var sr = stageDrawRect(videoBitmap.width || CW",
-        "ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);",
-        "if (CFG.vertical) return { zoom: 1.0,",
-    ] {
-        assert!(html.contains(marker), "出片页面里找不到消费点：{marker:?}");
-    }
     let inside = if keep_outside { Some(&expect) } else { None };
     let shots = |jpegs: &[Vec<u8>]| -> Vec<Shot> {
         jpegs.iter().map(|j| stats(j, cw as u32, ch as u32, inside)).collect()
     };
 
-    // ---------- A：真模板 ----------
-    let real = render_range(&dir, html.clone(), start, end, Some(&out_dir), "real").await.unwrap();
+    // ---------- A：真转译器 ----------
+    let real = render_range(&dir, None, start, end, Some(&out_dir), "real").unwrap();
     let real_shots = shots(&real);
     for (i, s) in real_shots.iter().enumerate() {
         let r = s.rect.unwrap_or_else(|| {
@@ -419,7 +393,7 @@ async fn portrait_source_is_contained_and_motion_locked() {
         lime_max / lime_min
     );
     println!(
-        "✓ A 真模板：{} 帧内容框 {} · 纵横比 {:.4} · 绿块 {:.2}%（逐帧 {:.2}%~{:.2}%）· 框外衬底亮度 {:.1} 纯黑 {:.2}%",
+        "✓ A 真转译器：{} 帧内容框 {} · 纵横比 {:.4} · 绿块 {:.2}%（逐帧 {:.2}%~{:.2}%）· 框外衬底亮度 {:.1} 纯黑 {:.2}%",
         real_shots.len(),
         {
             let r = real_shots[0].rect.unwrap();
@@ -437,18 +411,25 @@ async fn portrait_source_is_contained_and_motion_locked() {
     );
 
     // ---------- B①：硬铺满（等价改造前的 `drawImage(videoBitmap,0,0,CW,CH)` 语义）----------
-    let stretched = replace_first_after(
-        &html,
-        "if(axis==='x'){",
-        "h=bhgt; w=bw*h/bh;",
-        "w=bwid; h=bhgt;",
-    );
-    assert_eq!(
-        stretched.matches("h=bhgt; w=bw*h/bh;").count(),
-        1,
-        "变异①没生效（改完应只剩 axis=y 分支那一处）"
-    );
-    let m1 = render_range(&dir, stretched, start, end, None, "mut_stretch").await.unwrap();
+    //
+    // ⚠️ 变异打在**转译器**上（不是模板）：底座那条腿的摆放几何由转译器算
+    // （`stageDrawRect` 的复刻）。锚点是它 `axis === 'x'` 分支里的等比那两行 ——
+    // 改成"直接铺满内容区"就是改造前的 `drawImage(…,0,0,CW,CH)`。
+    // 锚点没命中会 **panic**（不是静默比同一份产物）。
+    let stretched = translator_with("stretch", |code| {
+        let out = replace_first_after(
+            code,
+            "if (axis === 'x') {\n      h = bhgt;",
+            "w = (bw * h) / bh;",
+            "w = bwid;",
+        );
+        assert!(
+            !out.contains("if (axis === 'x') {\n      h = bhgt;\n      w = (bw * h) / bh;"),
+            "变异①没生效（等比那行还在）"
+        );
+        out
+    });
+    let m1 = render_range(&dir, Some(&stretched), start, end, None, "mut_stretch").unwrap();
     let m1_shots = shots(&m1);
     {
         // 铺满之后再套运镜（真模板的运镜门只挡竖素材，这里没变异它），白描边会被整个推出画布 ——
@@ -481,12 +462,22 @@ async fn portrait_source_is_contained_and_motion_locked() {
     }
 
     // ---------- B②：去掉竖屏运镜门（等价改造前：竖素材照样套 zoom_close=1.5）----------
-    let no_gate = html.replace(
-        "if (CFG.vertical) return { zoom: 1.0,",
-        "if (false) return { zoom: 1.0,",
-    );
-    assert_ne!(no_gate, html, "变异②没生效");
-    let m2 = render_range(&dir, no_gate, start, end, None, "mut_camera").await.unwrap();
+    //
+    // 转译器里那道门是 `if (sourceIsVertical === true) { …整条运镜不生效… }` ——
+    // 把它改成恒假，竖素材就会照旧套运镜（判据看绿块面积）。
+    let no_gate = translator_with("camera", |code| {
+        let mut out = code.replacen(
+            "if (sourceIsVertical === true) {",
+            "if (false) {",
+            1,
+        );
+        // `sourceIsVertical === null`（探不到媒体）那条分支也要关掉：探针工程探得到，
+        // 留着它不影响；但万一本机 ffprobe 探不到，两条分支都成了"不关运镜"，变异照样成立。
+        out = out.replacen("if (sourceIsVertical === null) {", "if (false) {", 1);
+        assert_ne!(out, code, "变异②没生效（竖屏门锚点没命中）");
+        out
+    });
+    let m2 = render_range(&dir, Some(&no_gate), start, end, None, "mut_camera").unwrap();
     let m2_shots = shots(&m2);
     for (i, s) in m2_shots.iter().enumerate() {
         assert!(
@@ -503,20 +494,43 @@ async fn portrait_source_is_contained_and_motion_locked() {
     );
 
     // ---------- B③：不画衬底（等价改造前：DOM 有模糊底、出片没有）----------
+    //
+    // 转译器里背景层那个开关是 `const BACKDROP_ENABLED = false;`（**当前默认就是关的**，
+    // 理由见转译器里的长注释：底座侧的长片 OOM 还没修完）。所以这条变异**只在开关已经打开
+    // 的版本上**有意义 —— 打不开时它证明不了"框外判据看得见衬底缺失"，那就**明说并跳过**，
+    // 而不是假装验过（静默跳过一条自证 = 让整段判据的可信度归零）。
     if keep_outside {
-        let no_bg = html.replace("var STAGE_BG=STAGE.bg||'none';", "var STAGE_BG='none';");
-        assert_ne!(no_bg, html, "变异③没生效");
-        let m3 = render_range(&dir, no_bg, start, end, None, "mut_backdrop").await.unwrap();
-        let m3_shots = shots(&m3);
-        assert!(
-            m3_shots[0].outside_black >= 90.0,
-            "变异③（不画衬底）后内容框外纯黑只有 {:.1}% —— 框外判据看不见「衬底缺失」",
-            m3_shots[0].outside_black
-        );
-        println!(
-            "✓ B③ 变异「不画衬底」翻面：框外纯黑 {:.1}%（真模板 {:.2}%）",
-            m3_shots[0].outside_black, real_shots[0].outside_black
-        );
+        let mutacked = translator_with("backdrop", |code| {
+            code.replacen("const BACKDROP_ENABLED = false;", "const BACKDROP_ENABLED = true;", 1)
+        });
+        let src = std::fs::read_to_string(&mutacked).unwrap();
+        if !src.contains("const BACKDROP_ENABLED = true;") {
+            println!(
+                "· 变异③「不画衬底」跳过：转译器里衬底那条路**本来就是关的**\
+                 （`BACKDROP_ENABLED = false`），没有可关的东西 —— 框外判据的自证等它打开后补"
+            );
+        } else {
+            let no_bg = translator_with("nobackdrop", |code| {
+                let out = code.replacen(
+                    "const BACKDROP_ENABLED = false;",
+                    "const BACKDROP_ENABLED = true;",
+                    1,
+                );
+                // 打开之后再把"画"那一步拆掉：`STAGE_BG === 'blur'` 的判据改成恒假。
+                out.replacen("if (BACKDROP_ENABLED && STAGE_BG === 'blur') {", "if (false) {", 1)
+            });
+            let m3 = render_range(&dir, Some(&no_bg), start, end, None, "mut_backdrop").unwrap();
+            let m3_shots = shots(&m3);
+            assert!(
+                m3_shots[0].outside_black >= 90.0,
+                "变异③（不画衬底）后内容框外纯黑只有 {:.1}% —— 框外判据看不见「衬底缺失」",
+                m3_shots[0].outside_black
+            );
+            println!(
+                "✓ B③ 变异「不画衬底」翻面：框外纯黑 {:.1}%（真模板 {:.2}%）",
+                m3_shots[0].outside_black, real_shots[0].outside_black
+            );
+        }
     }
 
     println!(

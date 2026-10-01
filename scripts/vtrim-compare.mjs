@@ -996,6 +996,22 @@ function main() {
           `  -> ${goldenDir}`,
       );
     } else {
+      // ⚠️ **活参照那条路已随兜底腿一起作废**（2026-10-01）。
+      //
+      // 这里原本是 `vtrim polish render --renderer chrome`：拿本仓那条 headless Chrome 逐帧腿
+      // 当**活的参照**。那条腿已被用户拍板整条删除，所以这条路现在**必然失败** ——
+      // 而且失败的样子很难看：`render --renderer chrome` 会报"认不出的出片通道"，
+      // 与"参照渲染坏了"看起来一模一样，很容易被当成工具坏了去查。
+      //
+      // 所以这里**当场说清楚**：要参照就用**冻结帧**（`--golden`），别去修这条已经不存在的路。
+      // 冻结帧是 2026-10-01 在删除前用那条腿跑出来冻上的（`--capture-golden`）。
+      throw new Error(
+        '活参照模式已作废：它渲染的是本仓那条 headless Chrome 兜底腿，而那条腿 2026-10-01 已整条删除。' +
+          '改用冻结参照帧：\n' +
+          `    node scripts/vtrim-compare.mjs --fixture ${goldenName} --golden scripts/fixtures/compare-golden\n` +
+          '  （`--capture-golden` 也一起作废了 —— 它同样要跑那条腿，冻结帧是删除前冻的，不再重冻。）',
+      );
+      // eslint-disable-next-line no-unreachable
       log('  V-Trim（chrome 后端，会自动先跑 process）…');
       run(vtrim, ['polish', 'render', clip, '--renderer', 'chrome']);
       const vtrimOut = [outSuffixed, outPlain].find((p) => existsSync(p));
@@ -1139,7 +1155,7 @@ function main() {
           {
             fixture: goldenName,
             captured_at: new Date().toISOString(),
-            frozen_from: 'vtrim polish render --renderer chrome（兜底腿最后一次渲染）',
+            frozen_from: 'vtrim polish render --renderer chrome（兜底腿最后一次渲染；那条腿 2026-10-01 已删除）',
             frames: refInfo.frames,
             duration: refInfo.duration,
             fps: refInfo.fps,

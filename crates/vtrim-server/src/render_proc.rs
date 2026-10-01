@@ -1,12 +1,12 @@
 //! 渲染/封面子进程的登记、取消与孤儿清扫。
 //!
-//! `vtrim polish render` 自己会再拉起 headless Chrome 与 ffmpeg 一堆**孙进程**：
+//! `vtrim polish render` 自己会再拉起 ffmpeg / 底座二进制一堆**孙进程**：
 //!
-//! - 服务器重启不会带走它们（父进程死了，Chrome 照样活着）；
+//! - 服务器重启不会带走它们（父进程死了，它们照样活着）；
 //! - 取消任务原本只置一个进程内标志，子进程根本不看 —— 停不下来；
-//! - 子进程失败退出后，活着的 Chrome 还会继续占着 CPU。
+//! - 子进程失败退出后，活着的它们还会继续占着 CPU。
 //!
-//! 实测：两次渲染各留下 3 个 headless Chrome 空转两小时，把后续渲染拖到根本跑不完。
+//! 实测：两次渲染各留下 3 个渲染进程空转两小时，把后续渲染拖到根本跑不完。
 //! 这里把每次渲染的 pid 落盘（`<data_dir>/render-procs/<job_id>.pid`），
 //! 取消时按 pid 杀**整棵进程树**，启动时清扫上一次运行留下的孤儿。
 
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// 子进程日志文件：`<data_dir>/logs/render-<job_id>.log`。
 ///
 /// ⚠ 渲染/封面的输出**必须落文件**，不能用管道：
-/// Chrome/ffmpeg 会继承 stdout 句柄，只要还有一个活着管道就永远不 EOF，
+/// ffmpeg / 底座孙进程会继承 stdout 句柄，只要还有一个活着管道就永远不 EOF，
 /// `Command::output()` 会一直等下去（实测任务在日志里"一行没有、永远运行中"）。
 pub fn log_file(data_dir: &Path, job_id: &str) -> PathBuf {
     data_dir.join("logs").join(format!("render-{}.log", sanitize(job_id)))
@@ -72,9 +72,9 @@ pub fn sweep_orphans(data_dir: &Path) -> Vec<u32> {
     killed
 }
 
-/// 杀掉整棵进程树（渲染子进程 + 它的 Chrome / ffmpeg）。
+/// 杀掉整棵进程树（渲染子进程 + 它的 ffmpeg / 底座孙进程）。
 ///
-/// Windows 用 `taskkill /T`：只 `child.kill()` 的话 Chrome 会留下来继续烧 CPU。
+/// Windows 用 `taskkill /T`：只 `child.kill()` 的话孙进程会留下来继续烧 CPU。
 pub fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
@@ -86,7 +86,7 @@ pub fn kill_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        // 负号 = 进程组；拿不到进程组时退回杀单个（Chrome 由子进程退出时自行收尾）
+        // 负号 = 进程组；拿不到进程组时退回杀单个（孙进程由子进程退出时自行收尾）
         let _ = std::process::Command::new("kill")
             .args(["-9", &pid.to_string()])
             .stdout(std::process::Stdio::null())
@@ -195,7 +195,7 @@ mod tests {
         assert!(is_our_render(r"/usr/bin/vtrim polish cover /srv/a"));
         // 别的程序 / 别的子命令都不认
         assert!(!is_our_render(r"F:\para\Code\V-Trim\target\debug\vtrim.exe server"));
-        assert!(!is_our_render(r"C:\Program Files\Google\Chrome\Application\chrome.exe --headless"));
+        assert!(!is_our_render(r"C:\Program Files\SomeBrowser\browser.exe --headless"));
     }
 
     #[test]

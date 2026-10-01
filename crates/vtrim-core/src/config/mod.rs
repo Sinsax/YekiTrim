@@ -157,10 +157,6 @@ silence_noise_db = -30
 # 项目 polish.toml 的 [sfx] blacklist 可再追加
 blacklist = []
 
-[chrome]
-# 自定义 Chrome/Chromium 可执行文件路径（留空自动检测）
-path = ""
-
 [storage]
 # 服务端托管项目根目录（多用户；留空 = <exe_dir>/.vtrim/projects）
 # 结构: <projects_root>/users/<uid>/<room>/<session>-<pid>/
@@ -608,9 +604,6 @@ fn merge(base: &mut Config, overlay: Config) {
         }
     }
 
-    if !overlay.chrome.path.is_empty() {
-        base.chrome.path = overlay.chrome.path;
-    }
 
     // [storage] 是服务端专用段（项目配置里不写），但仍按"非默认值覆盖"合并，
     // 以免有人在 vtrim.toml 里试写时行为诡异

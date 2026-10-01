@@ -203,8 +203,6 @@ pub struct Config {
     pub cutting: CuttingConfig,
     #[serde(default)]
     pub sfx: SfxConfig,
-    #[serde(default)]
-    pub chrome: ChromeConfig,
     /// 多用户服务：项目托管与容量（P2 起用 `projects_root`，P3/P5 用上限与水位）
     #[serde(default)]
     pub storage: StorageConfig,
@@ -946,21 +944,6 @@ impl Default for SfxConfig {
     fn default() -> Self {
         Self {
             blacklist: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChromeConfig {
-    /// 自定义 Chrome/Chromium 可执行文件路径（留空自动检测）
-    #[serde(default)]
-    pub path: String,
-}
-
-impl Default for ChromeConfig {
-    fn default() -> Self {
-        Self {
-            path: String::new(),
         }
     }
 }

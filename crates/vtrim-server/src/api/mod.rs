@@ -8,9 +8,13 @@
 //!
 //! 这里只放**被两个以上子模块用到**的东西；只服务一个领域的 helper 跟着那个模块走。
 
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+
+// ⚠️ `Path` 只有**测试**用得到（`mod.rs` 自己的 `#[cfg(test)]` 与子模块的测试都从
+// 这里的 `super::*` 拿它）。放 `#[cfg(test)]` 里，别为了"看着整齐"提到顶层 ——
+// 顶层那会是一条 `unused_imports` 警告（本仓 0 warnings 是硬门禁）。
+#[cfg(test)]
+use std::path::Path;
 
 use axum::{
     extract::State,
@@ -20,7 +24,7 @@ use axum::{
 use vtrim_service::Workspace;
 
 use crate::model::AppState;
-use crate::tool_probe::{cache_get, cache_put, command_available};
+use crate::tool_probe::command_available;
 
 /// ffmpeg / ffprobe 这一族的版本参数（`-version`）。
 ///
@@ -126,47 +130,11 @@ pub(crate) async fn workspace_from_state(state: &AppState) -> Workspace {
 // 外部命令探测（`command_available` / `command_available_blocking` / 30s 缓存）
 // 已搬去 `crate::tool_probe` —— 任务 worker 也要探外部工具，
 // 让 worker 去 `use crate::api` 是反向依赖。见该模块头部说明。
-
-pub(crate) fn chrome_available_blocking(custom: &str) -> Option<String> {
-    let probe = |c: &str| -> Option<String> {
-        if Path::new(c).exists() {
-            return Some(c.to_string());
-        }
-        std::process::Command::new(c)
-            .arg("--version")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|_| c.to_string())
-    };
-    // 全局配置 [chrome] path 优先
-    if !custom.is_empty() {
-        return probe(custom);
-    }
-    let candidates = [
-        "chrome",
-        "google-chrome",
-        "chromium",
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    ];
-    candidates.iter().find_map(|c| probe(c))
-}
-
-pub(crate) async fn chrome_available(cfg: Option<&vtrim_core::config::Config>) -> bool {
-    let custom = cfg.map(|c| c.chrome.path.trim()).unwrap_or("").to_string();
-    let key = format!("chrome:{custom}");
-    if let Some(cached) = cache_get(&key, Duration::from_secs(30)) {
-        return cached.is_some();
-    }
-    let value = tokio::task::spawn_blocking(move || chrome_available_blocking(&custom))
-        .await
-        .ok()
-        .flatten();
-    let ok = value.is_some();
-    cache_put(key, value);
-    ok
-}
+//
+// ⚠️ 这里曾经还有 `chrome_available()` / `chrome_available_blocking()`（`/api/health` 的
+// `chrome` 能力位）。**别把它们加回来**：出片那条 headless Chrome 腿与封面那条 headless Chrome
+// 截图腿都已整条删除（2026-10-01），本仓不再需要外部浏览器，探测它的结果没有任何消费者 ——
+// 留在 health 上只会让前端以为"还能选 Chrome 出片"。
 
 /// `/api/health`：白名单接口（未登录也要能判断"服务是否活着/要不要登录"）。
 ///
@@ -191,7 +159,9 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         "version": env!("CARGO_PKG_VERSION"),
         "ffmpeg": command_available("ffmpeg", FFMPEG_VERSION_ARG).await,
         "ffprobe": command_available("ffprobe", FFMPEG_VERSION_ARG).await,
-        "chrome": chrome_available(Some(&cfg)).await,
+        // ⚠️ 这里曾经有 `"chrome"` 能力位（探测外部浏览器，给出片/封面那两条 headless Chrome
+        // 腿用）。两条腿都已整条删除（2026-10-01），本仓不再需要外部浏览器 —— **别加回来**：
+        // 它会让人以为还有"选 Chrome 出片/出封面"这条路（前端会据此露出入口）。
         "llm": llm,
         // ⚠️ 这里曾经有 `"wgpu_render"` 能力位（单帧真渲染 /api/polish/render-frame 的开关）。
         // 那条 GPU 链路已删除（用户拍板：GPU 那侧交给独立的 Dhampir 底座），能力位一并去掉 ——
