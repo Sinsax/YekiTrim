@@ -1,4 +1,8 @@
-// 封面双通道对拍门禁（chrome ↔ takumi）。
+// 封面渲染门禁（**默认：takumi ↔ 冻结参照帧**）。
+//
+// ⚠️ 2026-10-01 起：Chrome 链路正在被删除，参照改为**冻结参照帧**
+// （`scripts/fixtures/cover-golden/`，pixel 来自删除前最后一次 chrome 渲染）。
+// 不带参数时仍是"活的 chrome ↔ takumi"对拍（chrome 还在的过渡期才有意义）。
 //
 // 为什么要"分区"判据：实测（docs/plan/takumi-cover-capability.md §10–§11）
 //   · **非文字区**（背景/帧层/渐变/暗角/扫描线/滤镜/图层栈）：**≤1.6/255**（逐像素级）；
@@ -9,12 +13,26 @@
 // 用法：
 //   node scripts/check-cover-takumi.mjs [--project <精修工程目录>] [--exe <vtrim.exe>]
 //        [--work <临时目录>] [--font <字体文件>] [--require] [--self-test]
+//        [--capture-golden <目录>] [--golden <目录>]
 //   · 缺工程/缺二进制（没编 cover-takumi）/缺字体 → **SKIP** 并打印要准备什么（`--require` 时算失败）。
 //   · 阈值与标定依据写在 THRESHOLDS 旁；超阈值 **exit 1**（报告照留）。
 //   · `--self-test` 自证判据本身（不再渲染）：全 0 必须过、大差必须红、分区必须独立生效。
+//   · `--mutate` **变异自证**：拿冻结参照帧人为造偏差，证明判据真的会红（也真的会绿）。秒级。
+//
+// **冻结参照帧**（2026-10-01，Chrome 链路删除前；做法抄 `scripts/vtrim-compare.mjs` 的先例）：
+//   · `--capture-golden <目录>`：跑一次 chrome 通道，把产物**冻结**成参照帧 + `golden.json`。
+//   · `--golden <目录>`：**完全不渲染 chrome**（它即将被删），只把 takumi 的产物与冻结帧对拍。
+//   ⚠️ 为什么必须"先冻结再删"：这道门禁原本的参照是**活的 chrome 渲染**。删掉 chrome 之后
+//   参照就没了 —— 而"已经渲染过的那一版就是当时的可信参照"，冻结下来即可（q=2 JPEG 肉眼无损，
+//   但带一点编码噪声 ⇒ 黄金帧模式的基线会比现在略高，阈值余量足够）。
+//   ⚠️ 冻结的是 **PNG 源图转的 JPEG**（不直接存 chrome 的 `cover.jpg`）：chrome 那份本身就是
+//   JPEG，再转一次等于**二次编码**，噪声会叠；从它出封面时的 PNG 中转一次更干净。
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const args = process.argv.slice(2)
 const has = (n) => args.includes('--' + n)
@@ -115,6 +133,41 @@ function selfTest() {
 
 if (has('self-test')) selfTest()
 
+// **变异自证**（`--mutate`）：证明这道门禁**真的会红**，不是永远绿的摆设。
+// 做法：拿冻结参照帧，人为地把它和"正确的 takumi 产物"错开（整体位移/提亮），
+// 判据必须变红；再确认原样的那一对是绿的。**不渲染**，纯内存 —— 秒级。
+if (has('mutate')) {
+  const refPath = path.join(__dirname, 'fixtures', 'cover-golden', 'ref-cover.jpg')
+  if (!fs.existsSync(refPath)) { console.log(`❌ 找不到参照帧: ${refPath}`); process.exit(2) }
+  const tmp = path.join(process.env.TEMP || '.', 'vtrim-cover-mutate')
+  fs.mkdirSync(tmp, { recursive: true })
+  // ⚠️ 不能调 `gray()`：它定义在下面（`const` 的 TDZ），`--mutate` 在模块顶层跑到这儿就炸。
+  // 自己用 ffmpeg 转一次 rawvideo —— 几行代码换掉一个"顺序耦合"，值。
+  const baseGray = (() => {
+    const out = path.join(tmp, 'base.gray')
+    const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', refPath, '-f', 'rawvideo', '-pix_fmt', 'gray', out], { stdio: 'ignore' })
+    if (r.status !== 0) { console.log('❌ ffmpeg 读参照帧失败'); process.exit(2) }
+    return fs.readFileSync(out)
+  })()
+  const rows = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'cover-golden', 'golden.json'), 'utf8')).rows
+  const okStats = statsFrom(baseGray, baseGray, rows)
+  const shifted = Buffer.from(baseGray)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    // 整个非文字区提亮 60（远超"非文字区 ≤4"的阈值）
+    const inBand = y < rows.topEnd || y >= rows.botStart
+    if (inBand) shifted[y * W + x] = Math.min(255, shifted[y * W + x] + 60)
+  }
+  const badStats = statsFrom(baseGray, shifted, rows)
+  const okPass = judge(okStats).pass
+  const badPass = judge(badStats).pass
+  console.log(`  原样（自己比自己）→ pass=${okPass}（应为 true）`)
+  console.log(`  非文字区提亮 60   → pass=${badPass}（应为 false）；非文字区均值 ${badStats.nonTextMean.toFixed(2)}`)
+  const good = okPass && !badPass
+  console.log(good ? '\n✅ 变异自证通过：判据能红也能绿'
+    : '\n❌ 变异自证失败：判据区分不出好坏')
+  process.exit(good ? 0 : 1)
+}
+
 const EXE = opt('exe', 'F:\\para\\Code\\V-Trim\\target\\cl\\debug\\vtrim.exe')
 const FONT = opt('font', 'C:\\Windows\\Fonts\\msyh.ttc')
 const WORK = opt('work', path.join(process.env.TEMP || '.', 'vtrim-cover-gate'))
@@ -144,6 +197,11 @@ const linkTree = (src, dst) => {
     else if (e.isFile()) { try { fs.linkSync(s, d) } catch { fs.copyFileSync(s, d) } }
   }
 }
+// ⚠️ **两条腿都必须显式给 `VTEDIT_COVER_RENDERER`**，一个都不能靠"默认值"。
+// 2026-10-01 踩过：默认通道由 chrome 改成 takumi 之后，chrome 那条传的是 `{}`（吃默认）
+// ⇒ `chrome` 腿其实又渲染了一遍 takumi ⇒ 冻结出来的"参照帧"是 takumi 的，
+// 而门禁显示 0.32/255（自比自当然几乎为 0，看着像"完美通过"，实为假绿）。
+// 判据：PSNR(ref, chrome)=20.7dB vs PSNR(ref, takumi)=50.2dB。
 const run = (dir, tag, env) => {
   for (const f of fs.readdirSync(dir)) if (/^cover(_\d+)?\.jpg$/.test(f)) fs.rmSync(path.join(dir, f))
   const log = fs.openSync(path.join(WORK, tag + '.log'), 'w') // fd，不用管道
@@ -163,16 +221,76 @@ const gray = (img, out) => {
   return fs.readFileSync(out)
 }
 
-const A = path.join(WORK, 'chrome'), B = path.join(WORK, 'takumi')
-linkTree(PROJECT, A); linkTree(PROJECT, B)
-const a = run(A, 'chrome', {})
-const b = run(B, 'takumi', { VTEDIT_COVER_RENDERER: 'takumi' })
+const CAPTURE = opt('capture-golden', '')
+// ⚠️ `--golden` 不给目录时用**入库的参照帧**（`scripts/fixtures/cover-golden/`）——
+// 那正是"chrome 删掉之后还能跑"的全部意义所在。给目录 = 换一套参照（比如新工程）。
+const GOLDEN = has('golden') ? (opt('golden', '') || path.join(__dirname, 'fixtures', 'cover-golden')) : ''
+if (CAPTURE && GOLDEN) { console.log('❌ --capture-golden 与 --golden 只能用一种'); process.exit(2) }
+
 const rows = textRows(PROJECT)
-const s = statsFrom(gray(a.cover, path.join(WORK, 'a.gray')), gray(b.cover, path.join(WORK, 'b.gray')), rows)
 if (rows) console.log('判据口径：' + rows.note + ' —— 非文字区取矩形之外')
 else console.log('判据口径：读不到 polish.toml，退回"上下 20%"')
-
 console.log(`工程 ${PROJECT}`)
+
+const B = path.join(WORK, 'takumi')
+linkTree(PROJECT, B)
+const b = run(B, 'takumi', { VTEDIT_COVER_RENDERER: 'takumi' })
+const bGray = gray(b.cover, path.join(WORK, 'b.gray'))
+
+// ---------------------------------------------------------------------------
+// **冻结参照帧**（--capture-golden）：跑一次 chrome，把产物存成参照帧 + golden.json。
+// ⚠️ 必须在 chrome 还被删之前做 —— 删完之后这道门禁的参照就没了。
+// ---------------------------------------------------------------------------
+if (CAPTURE) {
+  const A = path.join(WORK, 'chrome')
+  linkTree(PROJECT, A)
+  const a = run(A, 'chrome', { VTEDIT_COVER_RENDERER: 'chrome' })
+  // 经 PNG 中转一次再存 JPEG（chrome 那份本身就是 q=85 JPEG，直接再存等于二次编码叠噪声）
+  const srcPng = path.join(WORK, 'ref-src.png')
+  let rr = spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', a.cover, srcPng], { stdio: 'ignore' })
+  if (rr.status !== 0) { console.log('❌ 转 PNG 失败（冻结不出干净的参照帧）'); process.exit(1) }
+  fs.mkdirSync(CAPTURE, { recursive: true })
+  const dst = path.join(CAPTURE, 'ref-cover.jpg')
+  rr = spawnSync('ffmpeg', ['-v', 'error', '-y', '-i', srcPng, '-q:v', '2', dst], { stdio: 'ignore' })
+  if (rr.status !== 0) { console.log('❌ 写参照帧失败: ' + dst); process.exit(1) }
+  fs.writeFileSync(path.join(CAPTURE, 'golden.json'), JSON.stringify({
+    fixture: path.basename(PROJECT),
+    captured_at: new Date().toISOString(),
+    frozen_from: 'vtrim polish cover --renderer chrome（Chrome 链路删除前最后一次渲染）',
+    width: W, height: H,
+    ref_file: path.basename(dst),
+    rows: rows || null,
+    note: '参照帧是 chrome 通道的产物（q=2 JPEG）。--golden 模式拿它当基线，不再渲染 chrome。',
+  }, null, 2) + '\n', 'utf8')
+  console.log(`\n✔ 已冻结参照帧 -> ${dst}（chrome ${a.ms}ms / ${a.size}B）`)
+  console.log('  之后用 `--golden <该目录>` 复跑，**不再需要 chrome**。')
+  process.exit(0)
+}
+
+// ---------------------------------------------------------------------------
+// **对冻结帧**（--golden）：完全不渲染 chrome —— 它已被删除。
+// ---------------------------------------------------------------------------
+if (GOLDEN) {
+  const ref = path.join(GOLDEN, 'ref-cover.jpg')
+  if (!fs.existsSync(ref)) { console.log(`❌ 找不到参照帧: ${ref}（先用 --capture-golden 冻结）`); process.exit(2) }
+  const meta = (() => { try { return JSON.parse(fs.readFileSync(path.join(GOLDEN, 'golden.json'), 'utf8')) } catch { return null } })()
+  const refRows = (meta && meta.rows) || rows
+  const sg = statsFrom(gray(ref, path.join(WORK, 'ref.gray')), bGray, refRows)
+  console.log(`参照 ${ref}${meta && meta.captured_at ? '（冻结于 ' + meta.captured_at + '）' : ''}`)
+  console.log(`takumi ${b.ms}ms / ${b.size}B`)
+  console.log(`非文字区(上下 ${NON_TEXT_BAND * 100}%)：均值 ${sg.nonTextMean.toFixed(2)}  >32 ${sg.nonTextOver32.toFixed(2)}%`)
+  console.log(`整图：                  均值 ${sg.fullMean.toFixed(2)}  >32 ${sg.fullOver32.toFixed(2)}%`)
+  const rg = judge(sg)
+  if (!rg.pass) { for (const x of rg.bad) console.log('  ❌ ' + x); console.log(`\n❌ 超阈值（非文字区 ≤${THRESHOLDS.nonTextMean}、整图 ≤${THRESHOLDS.fullMean}）`); process.exit(1) }
+  console.log('\n✅ 在阈值内（与冻结参照帧比）')
+  process.exit(0)
+}
+
+// 默认：活的双通道对拍（chrome 还在时才有意义；chrome 删除后请用 --golden）
+const A = path.join(WORK, 'chrome')
+linkTree(PROJECT, A)
+const a = run(A, 'chrome', { VTEDIT_COVER_RENDERER: 'chrome' })
+const s = statsFrom(gray(a.cover, path.join(WORK, 'a.gray')), bGray, rows)
 console.log(`chrome ${a.ms}ms / ${a.size}B    takumi ${b.ms}ms / ${b.size}B`)
 console.log(`非文字区(上下 ${NON_TEXT_BAND * 100}%)：均值 ${s.nonTextMean.toFixed(2)}  >32 ${s.nonTextOver32.toFixed(2)}%`)
 console.log(`整图：                  均值 ${s.fullMean.toFixed(2)}  >32 ${s.fullOver32.toFixed(2)}%`)

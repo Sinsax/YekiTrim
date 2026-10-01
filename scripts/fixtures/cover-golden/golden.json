@@ -1,0 +1,15 @@
+{
+  "fixture": "clip-14",
+  "captured_at": "2026-10-01T11:41:55.664Z",
+  "frozen_from": "vtrim polish cover --renderer chrome（Chrome 链路删除前的最后一次渲染；2026-10-01）",
+  "width": 1920,
+  "height": 1080,
+  "ref_file": "ref-cover.jpg",
+  "rows": {
+    "topEnd": 0,
+    "botStart": 979,
+    "note": "标题矩形 y[-41,979]（5 行 × 120 × 1.7）"
+  },
+  "note": "参照帧 = chrome 通道产物（PNG 中转后 q=2 JPEG）。`--golden` 模式拿它当基线，不再渲染 chrome。⚠️ 冻它的那一刻起，chrome 就没被这道门禁依赖过了 —— 这正是删 chrome 链路（P3）的前提。",
+  "verified": "PSNR(ref, chrome)=45.97dB vs PSNR(ref, takumi)=20.67dB ⇒ 参照帧确为 chrome 产物"
+}
