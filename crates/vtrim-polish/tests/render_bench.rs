@@ -12,15 +12,13 @@
 //! VTEDIT_BENCH_FRAMES=120 \
 //! cargo test -p vtrim-polish --test render_bench -- --ignored --nocapture
 //! ```
-//! 换后端（wgpu 要先带 feature 编译）：
-//! ```text
-//! VTEDIT_RENDERER=wgpu cargo test -p vtrim-polish --features wgpu-render --test render_bench -- --ignored --nocapture
-//! ```
+//! 换后端：**只有 chrome 了** —— `wgpu` 那条 GPU 链路已删除（用户拍板：GPU 出片交给独立的
+//! Dhampir 底座），`VTEDIT_RENDERER=wgpu` 现在会带一句 warn 回退到 chrome。
 //! 环境变量：
 //! - `VTEDIT_BENCH_DIR`（必填）工程目录
 //! - `VTEDIT_BENCH_FRAMES`（默认 120）渲染多少帧
 //! - `VTEDIT_BENCH_T0`（默认 0.5）从第几秒开始取帧
-//! - `VTEDIT_RENDERER`（默认 chrome）`chrome` | `wgpu`
+//! - `VTEDIT_RENDERER`（默认 chrome）现在只认 `chrome`
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -134,7 +132,8 @@ async fn render_throughput() {
     println!("后端 {} · 帧数 {frames_wanted} · 起点 {t0:.2}s · fps 30", kind.as_str());
 
     let fps = 30usize;
-    let need_rgba = kind == RenderBackendKind::Wgpu;
+    // 抽帧只要 MJPEG（RGBA 那条路是给已删除的 wgpu 后端用的）
+    let need_rgba = false;
     let end = t0 + frames_wanted as f64 / fps as f64;
 
     // ① 抽帧（与出片同一条路径：ffmpeg → 管道）

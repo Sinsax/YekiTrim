@@ -25,7 +25,5 @@ indicatif = "0.18"
 anyhow = "1"
 
 [features]
-# ⚠️ **转发，不是自己启用**：`#[cfg(feature = "wgpu-render")]` 全在 `vtrim-server`（8 处）。
-# 这里必须把 feature 递下去，否则 `cargo build --features wgpu-render` 照样构建成功，
-# 但 GPU 后端不会被编译进 server —— `/api/health` 的 `wgpu_render` 报 false、静默退回。
-wgpu-render = ["vtrim-server/wgpu-render"]
+# ⚠️ 这里曾经是 `wgpu-render = ["vtrim-server/wgpu-render"]` 的**转发**（feature 随 crate 走）。
+# 那条 GPU 链路已删除（GPU 出片交给独立的 Dhampir 底座），所以这里不再有 feature。

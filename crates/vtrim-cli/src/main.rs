@@ -393,17 +393,24 @@ Command::Polish(action) => {
                 cli::PolishAction::Process { input } => {
                     process::cmd_process(input).await?;
                 }
-                cli::PolishAction::Render { input, renderer } => {
+                cli::PolishAction::Render {
+                    input,
+                    renderer,
+                    strict,
+                } => {
                     std::env::set_var("VTEDIT_RENDERER", renderer);
+                    // `--strict` 走环境变量：出片的判据在 `pipeline.rs` / `dhampir.rs` 里，
+                    // 而那条链路是**库**（WebUI 与 CLI 共用），不给它塞 CLI 类型的参数。
+                    std::env::set_var("VTEDIT_STRICT", if *strict { "1" } else { "0" });
                     render::cmd_render(input).await?;
                 }
-                cli::PolishAction::Cover { input, template } => {
+                cli::PolishAction::Cover { input, template, renderer } => {
                     if let Some(t) = template {
                         if !t.is_empty() {
                             cover::cmd_cover_template(input, t).await?;
                         }
                     }
-                    cover::cmd_cover(input, None).await?;
+                    cover::cmd_cover(input, None, renderer.as_deref()).await?;
                 }
                 cli::PolishAction::Preview { input, mode } => {
                     run_polish_preview(input, mode.as_deref()).await?;

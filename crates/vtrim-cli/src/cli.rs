@@ -292,9 +292,12 @@ pub enum PolishAction {
         /// clip 目录（默认当前目录）
         #[arg(default_value = ".")]
         input: PathBuf,
-        /// 渲染后端: chrome | wgpu (默认 chrome)
-        #[arg(long, default_value = "chrome")]
+        /// 渲染后端: dhampir | chrome（默认 dhampir = 底座出片；chrome = 本仓兜底）
+        #[arg(long, default_value = "dhampir")]
         renderer: String,
+        /// 严格模式：转译报告里出现 DROP（参照有、底座表达不了的）就**拒绝出片**
+        #[arg(long)]
+        strict: bool,
     },
     /// 生成封面图
     Cover {
@@ -304,6 +307,11 @@ pub enum PolishAction {
         /// 封面模板预设 (left-text/center-text/right-text/minimal)
         #[arg(long)]
         template: Option<String>,
+        /// 封面渲染通道：`chrome`（默认，headless Chrome 截图）或 `takumi`（静态渲染，
+        /// 需要编 `cover-takumi` feature）。**不传** = 用 `cover.rs` 的默认（读
+        /// `VTEDIT_COVER_RENDERER`，空则 chrome）—— 默认值只有那一处，这里不抄第二份。
+        #[arg(long)]
+        renderer: Option<String>,
     },
     /// 浏览器预览（自动先跑 process）
     Preview {

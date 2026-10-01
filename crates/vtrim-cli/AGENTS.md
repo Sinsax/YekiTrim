@@ -22,6 +22,15 @@
   `polish init|llm|process|render|cover|preview|doctor|test` / `polish stickers list|test|scan|build`。
   `stage_name(num)`（1..4 → AudioExtractor/Transcriber/EventDetector/Cutter）在 `cli.rs`。
   所有 stage 命令的 `-i` 可选，默认从 `vtrim.toml` 的 `input_file` 读取。
+  **各命令是什么**（原先记在根卡里 —— 模块内容归模块卡，这次迁 `tools/` 时为最坏指令链预算把它挪回来）：
+  `init` 建 `vtrim.toml`；`extract`/`transcribe`/`detect`/`cut` = Stage 1~4
+  （`detect`/`cut` 的自动发现顺序：参数 > config > `output_dir` 里的 json > `*.srt`）；
+  `process` 全自动管线（`--dry-run` = 只到 Stage 3）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
+  `download` 把全部 ASR 模型下到 `<程序>/.vtrim/models/`；`status` 看当前进度；
+  `usage` LLM 用量（token/缓存命中/耗时，账本 `llm_usage`）；`doctor` 安全与运行状况摘要；
+  `ingest` 录播姬 webhook / 采集配置概览；`user invite|invites|invite-revoke` = 邀请码
+  （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；
+  `polish stickers list|test|scan` 本地贴纸（列出 / 测 keyword 匹配 / 生成清单）。
 - **服务端转发**：`Command::Server(args) => vtrim_server::run(args.clone()).await`；
   `ServerArgs` 就是 `vtrim_server::ServerArgs`（clap 直接 derive 在它上面）。
 - **tracing 装配**（`setup_tracing()`）：`registry + EnvFilter + fmt::layer + vtrim_service::logbus::LogBusLayer::new(bus())`。
@@ -35,14 +44,16 @@
 
 ## 边界
 
+- `polish cover` 有 **`--renderer chrome|takumi`**（不传 = `cover.rs` 的默认：显式参数 > `VTEDIT_COVER_RENDERER` > chrome）。⚠️ **封面与视频的出片通道互相独立**：视频走底座时封面仍可走静态截图/浏览器，别把两者绑一起。
+
 - ⚠️ **CLI 只用 server 的入口**：`vtrim_server::` 只许出现 `run` / `ServerArgs`，不许直接调 server 内部模块。
   这是机器门禁（`cli 只用 server 的入口`）：`python3 scripts/check_module_boundaries.py`。
   `vtrim-cli` 本来就依赖 `vtrim-core` / `vtrim-polish`（入口装配要用），但**服务端能力**只能经
   `vtrim_server::run()` / `ServerArgs` 进。
-- ⚠️ **`wgpu-render` 是转发，不是自己启用**：`#[cfg(feature = "wgpu-render")]` 全在 `vtrim-server`（8 处）。
-  这里必须把 feature 递下去，否则 `cargo build --features wgpu-render` 照样构建成功，
-  但 GPU 后端不会被编译进 server —— `/api/health` 的 `wgpu_render` 报 false、静默退回。
-  声明只有一行：`wgpu-render = ["vtrim-server/wgpu-render"]`。
+- ⚠️ **`wgpu-render` 转发链已删除**：那条 GPU 出片链路（`vtrim-server` 的 `api/` ×3 与 `model.rs` ×5、
+  `vtrim-polish/wgpu-render`、`vtrim-render-core/wgpu`）整条没了 —— GPU 那侧交给独立的 Dhampir 底座。
+  所以 `[features]` 里**不再有任何 feature**，`/api/health` 也不再回 `wgpu_render`。
+  **别为了"留个口子"把它加回来**（加了不报错，只会让人以为还有 GPU 出片）。
 - ⚠️ **端口/默认地址一律引用 `vtrim_service::doctor::{DEFAULT_PORT, DEFAULT_URL}`，别写字面量**：
   `Command::Doctor` 的 `#[arg(long, default_value = vtrim_service::doctor::DEFAULT_URL)]`，
   `run_polish_preview` 回退起服务时也用 `port: vtrim_service::doctor::DEFAULT_PORT`
@@ -56,7 +67,13 @@
   路径经 `percent_encode_component` 拼 `/#/project/.../polish?dir=`）；找不到才回退旧的独立
   `vtrim_polish::commands::cmd_preview`，保证命令仍然可用。
 - `polish llm` 在 CLI 保留**断点续传**（`cmd_llm(input, false)`）——长片重跑很贵；编辑器那颗按钮走的是 `full=true`。
-- `polish render` 用 `std::env::set_var("VTEDIT_RENDERER", renderer)` 传后端（`--renderer chrome|wgpu`，默认 `chrome`）。
+- `polish render` 用 `std::env::set_var("VTEDIT_RENDERER", renderer)` 传后端。⚠️ **默认 `dhampir`**
+  （底座出片，2026-09-30 用户拍板切换），`chrome` 是本仓兜底；老写法 `wgpu` / `native` 视作 dhampir
+  （它们本来就是"用 GPU 出片"，而 GPU 出片现在只有底座那一条路）。**认不出的值由 `pipeline.rs`
+  一处报错**（不静默换路）—— 校验别在 `cli.rs` 里再抄一份。
+  ⚠️ `--strict` 走 `VTEDIT_STRICT=1`：转译报告里 `DROP > 0` 就拒绝出片（判据在
+  `dhampir.rs`，CLI 只是传个开关）。`polish doctor` 里也有 `[dhampir]` 块（读
+  `dhampir::readiness()` 的同一份判断）。
 - `Command::Status` 自己组装输出：`vtrim_service::Workspace::load` + `project_snapshot`（`current_stage` 由
   输出文件存在性推导），再读 `output/transcript.json` 的 `asr_metadata` 打印模型/锚点覆盖率/降级原因。
 
@@ -69,4 +86,4 @@ cargo check -p vtrim-cli
 ```
 
 只做入口装配，所以没有单测、只要求编译通过（0 warnings）。改了命令面或 `ServerArgs` 的字段，
-顺手跑一次 `cargo run -- --help`；动了 build feature 要实测 `/api/health` 的 `wgpu_render` 那一条。
+顺手跑一次 `cargo run -- --help`。

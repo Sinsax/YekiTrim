@@ -78,13 +78,9 @@ pub struct FrameState {
     pub shake: ShakeState,
     pub flash: FlashState,
     pub blur: f64,
-    pub zoom_bounce: f64,
     pub pulse: f64,
     pub hue_shift: Option<FlashState>,
-    pub stutter: Option<(f64, f64)>,
-    pub split: Option<SplitState>,
     pub noise: f64,
-    pub color_shift: String,
     pub overlay: Option<OverlayState>,
     pub vignette: VignetteState,
     pub captions: Vec<CaptionState>,
@@ -92,12 +88,6 @@ pub struct FrameState {
     pub stickers: Vec<StickerState>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SplitState {
-    pub scale: f64,
-    pub skew_x: f64,
-    pub x: f64,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayState {
@@ -108,6 +98,8 @@ pub enum OverlayState {
     Gradient {
         colors: Vec<String>,
         shape: String,
+        /// 线性渐变方向（CSS 约定；`None` = 参照缺省 `to bottom right`）。
+        angle: Option<f64>,
         opacity: f64,
     },
 }
@@ -127,14 +119,10 @@ pub struct EventIndex {
     pub flash: Vec<IndexedEvent>,
     pub blur: Vec<IndexedEvent>,
     pub overlay: Vec<IndexedEvent>,
-    pub stutter: Vec<IndexedEvent>,
-    pub split: Vec<IndexedEvent>,
-    pub zoom_bounce: Vec<IndexedEvent>,
     pub vignette: Vec<IndexedEvent>,
     pub hue_shift: Vec<IndexedEvent>,
     pub noise: Vec<IndexedEvent>,
     pub pulse: Vec<IndexedEvent>,
-    pub color_shift: Vec<IndexedEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,21 +184,6 @@ pub fn build_index(segments: &[Segment]) -> EventIndex {
                     duration,
                     ev: ev.clone(),
                 }),
-                Event::Stutter { .. } => idx.stutter.push(IndexedEvent {
-                    time,
-                    duration,
-                    ev: ev.clone(),
-                }),
-                Event::Split { .. } => idx.split.push(IndexedEvent {
-                    time,
-                    duration,
-                    ev: ev.clone(),
-                }),
-                Event::ZoomBounce { .. } => idx.zoom_bounce.push(IndexedEvent {
-                    time,
-                    duration,
-                    ev: ev.clone(),
-                }),
                 Event::Vignette { .. } => idx.vignette.push(IndexedEvent {
                     time,
                     duration,
@@ -227,11 +200,6 @@ pub fn build_index(segments: &[Segment]) -> EventIndex {
                     ev: ev.clone(),
                 }),
                 Event::Pulse { .. } => idx.pulse.push(IndexedEvent {
-                    time,
-                    duration,
-                    ev: ev.clone(),
-                }),
-                Event::ColorShift { .. } => idx.color_shift.push(IndexedEvent {
                     time,
                     duration,
                     ev: ev.clone(),
@@ -269,13 +237,9 @@ pub fn evaluate_frame(
     let flash = get_flash(t, &idx.flash);
     let blur = get_blur(t, &idx.blur);
     let cur_zoom = camera.zoom;
-    let zoom_bounce = get_zoom_bounce(t, &idx.zoom_bounce, cur_zoom);
     let pulse = get_pulse(t, &idx.pulse, cur_zoom);
     let hue_shift = get_hue_shift_flash(t, &idx.hue_shift);
-    let stutter = get_stutter_video(t, &idx.stutter);
-    let split = get_split_video(t, &idx.split);
     let noise = get_noise_opacity(t, &idx.noise);
-    let color_shift = get_color_shift(t, &idx.color_shift);
     let overlay = get_overlay_state(t, &idx.overlay);
     let vignette = get_vignette(t, &idx.vignette);
     let captions = get_active_subs(t, subs);
@@ -287,13 +251,9 @@ pub fn evaluate_frame(
         shake,
         flash,
         blur,
-        zoom_bounce,
         pulse,
         hue_shift,
-        stutter,
-        split,
         noise,
-        color_shift,
         overlay,
         vignette,
         captions,
@@ -514,9 +474,9 @@ pub fn get_active_dms(
 /// 已随 `[sticker] position_mode` 落地而删除（该行为由 `manual` 模式正式替代，
 /// `auto` 一律走安全区算法）。见 `docs/plan/polish-vertical-canvas.md` §A4。
 ///
-/// `vertical` / `vertical_position` **保留形参**：GPU 路径（`vtrim-wasm` 的
-/// `init_renderer` JS 绑定 + `vtrim-polish/wgpu-render`）仍在传，改签名要重生成
-/// wasm-bindgen 胶水，本阶段不动。落点已与这两个参数无关。
+/// `vertical` / `vertical_position` **保留形参**：落点已与这两个参数无关，而当年传它们的
+/// GPU 路径（`vtrim-wasm` 的 `init_renderer` + `vtrim-polish/wgpu-render`）已整条删除；
+/// 形参留着只是为了不再改一次签名（本文件现在只有 CPU 参考与单测在用）。
 pub fn get_active_sticker(
     t: f64,
     items: &[IndexedSticker],
@@ -527,12 +487,23 @@ pub fn get_active_sticker(
     for (i, e) in items.iter().enumerate() {
         let et = e.time;
         let dur = e.duration;
-        if t < et || t > et + dur + 0.65 {
+        // 窗口 = **事件时长 `dur`**（不溢出到事件之外）：淡出在窗口**内部**消化
+        // （`dur - 0.3 -> dur` 渐隐）⇒ 出点 = 最后一帧。
+        // 旧判据 `dur + (0.35 + 0.4 + 0.3)` = `dur + 1.05` 多显示 0.4 秒 ✗
+        // （与 `templates/index.html` 的 `getActiveSticker`、`engine.js::stickersAt` 同形）。
+        if t < et || t > et + dur {
             continue;
         }
-        let pop_in = 0.35;
-        let float_up = 0.4;
-        let fade_out = 0.3;
+        // 装不下 `pop_in 0.35 + float_up 0.4 + fade_out 0.3` 时**优先保淡出**：
+        // 前两段按可用时长等比压缩（淡出起点不得早于 0）；退化时长没有可见窗口。
+        let fade_out = dur.min(0.3);
+        if fade_out <= 0.0 {
+            continue;
+        }
+        let k = ((dur - fade_out).max(0.0) / (0.35 + 0.4)).min(1.0);
+        let pop_in = 0.35 * k;
+        let float_up = 0.4 * k;
+        let fade_start = dur - fade_out;
         let opacity;
         let mut scale = 1.0;
         let mut rot = 0.0;
@@ -550,12 +521,13 @@ pub fn get_active_sticker(
             scale = 1.0;
             rot = 0.0;
             y_off = -18.0 * p;
-        } else if t < et + pop_in + float_up + dur {
+        } else if t < et + fade_start {
             opacity = 1.0;
             y_off = -18.0;
         } else {
-            let p = (t - et - pop_in - float_up - dur) / fade_out;
-            opacity = 1.0 - p;
+            let p = (t - et - fade_start) / fade_out;
+            // `.max(0.0)` 只吃掉上界那一帧的浮点尾数：出点必须**恰好 0**。
+            opacity = (1.0 - p).max(0.0);
             scale = 1.0 - 0.6 * p;
             y_off = -18.0;
         }
@@ -800,6 +772,7 @@ pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState>
             color,
             colors,
             shape,
+            angle,
             ..
         } = &o.ev
         else {
@@ -856,6 +829,7 @@ pub fn get_overlay_state(t: f64, items: &[IndexedEvent]) -> Option<OverlayState>
                 return Some(OverlayState::Gradient {
                     colors: stops,
                     shape: shape.clone().unwrap_or_else(|| "linear".into()),
+                    angle: *angle,
                     opacity,
                 });
             }
@@ -884,66 +858,7 @@ pub fn get_vignette(t: f64, items: &[IndexedEvent]) -> VignetteState {
     VignetteState { opacity: 0.0 }
 }
 
-/// 与 JS `getStutterVideo` 一致。
-pub fn get_stutter_video(t: f64, items: &[IndexedEvent]) -> Option<(f64, f64)> {
-    for st in items {
-        let et = st.time;
-        let off = match &st.ev {
-            Event::Stutter { intensity, .. } => intensity.unwrap_or(12.0),
-            _ => 12.0,
-        };
-        if t >= et && t < et + 0.12 {
-            let dt = t - et;
-            if dt < 0.06 {
-                return Some((-off, off));
-            }
-            return Some((off, -off));
-        }
-    }
-    None
-}
 
-/// 与 JS `getSplitVideo` 一致。
-pub fn get_split_video(t: f64, items: &[IndexedEvent]) -> Option<SplitState> {
-    for sp in items {
-        let et = sp.time;
-        let inten = match &sp.ev {
-            Event::Split { intensity, .. } => intensity.unwrap_or(30.0),
-            _ => 30.0,
-        };
-        if t >= et && t < et + 0.12 {
-            let dt = t - et;
-            if dt < 0.06 {
-                return Some(SplitState {
-                    scale: 0.95,
-                    skew_x: -inten,
-                    x: -inten * 0.3,
-                });
-            }
-            return Some(SplitState {
-                scale: 1.0,
-                skew_x: 0.0,
-                x: 0.0,
-            });
-        }
-    }
-    None
-}
-
-/// 与 JS `getZoomBounce` 一致。
-pub fn get_zoom_bounce(t: f64, items: &[IndexedEvent], cur_zoom: f64) -> f64 {
-    for zb in items {
-        let et = zb.time;
-        if t >= et && t < et + 0.30 {
-            let dt = t - et;
-            if dt < 0.08 {
-                return cur_zoom * 1.10;
-            }
-            return cur_zoom;
-        }
-    }
-    cur_zoom
-}
 
 /// 与 JS `getPulse` 一致。
 pub fn get_pulse(t: f64, items: &[IndexedEvent], cur_zoom: f64) -> f64 {
@@ -1003,23 +918,6 @@ pub fn get_noise_opacity(t: f64, items: &[IndexedEvent]) -> f64 {
     0.0
 }
 
-/// 与 JS `getColorShift` 一致。
-pub fn get_color_shift(t: f64, items: &[IndexedEvent]) -> String {
-    for c in items {
-        let et = c.time;
-        if t >= et && t < et + 1.0 {
-            let dt = t - et;
-            if dt < 0.1 {
-                return "sepia(0.6) saturate(1.4)".into();
-            }
-            let p = (dt - 0.1) / 0.6;
-            let sepia = 0.6 * (1.0 - p);
-            let saturate = 1.4 - 0.4 * p;
-            return format!("sepia({}) saturate({})", sepia, saturate);
-        }
-    }
-    String::new()
-}
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
@@ -1308,6 +1206,7 @@ mod tests {
             opacity: Some(1.0),
             colors: colors.map(|v| v.into_iter().map(|c| c.into()).collect()),
             shape: None,
+            angle: None,
             sfx: None,
             sfx_volume: None,
             anchor: None,

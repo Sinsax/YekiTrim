@@ -1,33 +1,15 @@
-//! V-Trim 渲染核心：时间线数学 + wgpu 合成管线。
+//! V-Trim 渲染核心：事件/时间线**类型**与时间线数学。
 //!
-//! 桌面 native 渲染与 WASM 浏览器预览共用此 crate，保证预览与出片效果一致。
-//! 不依赖 vtrim-core / vtrim-polish / tokio——设备创建与资源加载由调用方完成。
+//! 被 `vtrim-polish` 用（`Event` / `Segment` / `CameraStyle` 是 `polish.toml` 的字段类型）。
+//! 不依赖 vtrim-core / vtrim-polish / tokio。
+//!
+//! ⚠️ **这里曾经有一套 wgpu 合成管线（`draw` / `effects` / `composite` / `sprite` / `gpu` /
+//! `render` / `shaders` / `gif`，由 `wgpu` feature 门控），与一个浏览器真渲染预览（`vtrim-wasm`）——
+//! 整条已删除**（用户拍板：GPU 出片与本仓无关，预览/出片走 `templates/index.html` 的 canvas 路径，
+//! wgpu 那侧交给独立的 Dhampir 底座）。**别再往这里加回任何 GPU 管线**：
+//! 需要 GPU 的东西进底座，本 crate 只留类型与数学。
 
 pub mod easing;
 pub mod legacy;
 pub mod types;
 pub mod timeline;
-
-#[cfg(feature = "wgpu")]
-pub mod gif;
-#[cfg(feature = "wgpu")]
-pub mod composite;
-#[cfg(feature = "wgpu")]
-pub mod draw;
-#[cfg(feature = "wgpu")]
-pub mod effects;
-#[cfg(feature = "wgpu")]
-pub mod gpu;
-#[cfg(feature = "wgpu")]
-pub mod render;
-#[cfg(feature = "wgpu")]
-pub mod shaders;
-#[cfg(feature = "wgpu")]
-pub mod sprite;
-
-#[cfg(feature = "wgpu")]
-/// 贴纸资源：多帧 GIF（每帧 RGBA + delay）或单帧 PNG。
-pub struct StickerAsset {
-    pub frames: Vec<Vec<u8>>,
-    pub delays: Vec<u16>,
-}

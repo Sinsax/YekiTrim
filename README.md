@@ -6,6 +6,13 @@
 
 - **ffmpeg** + **ffprobe** — 需在 PATH 中，用于音频提取和视频剪切
 - **Rust** 工具链 (构建用)
+- **Node.js 18+**（可选但**默认出片通道需要**）：精修出片默认走独立的 **Dhampir 底座**
+  （本机 GPU + ffmpeg），而"把 `polish.toml` 转译成底座工程"那一步是
+  `tools/polish-to-dhampir.mjs`（node 脚本）。没装 Node 也能用 ——
+  用 `vtrim polish render --renderer chrome` 走本仓的 Chrome 出片；
+  `vtrim polish doctor` 的 `[dhampir]` 块会告诉你缺什么。
+  （底座二进制放在同层 `Dhampir/target/{debug,release}/` 或 `<程序目录>/dhampir/bin/`，
+  也可用 `VTEDIT_DHAMPIR` / `VTEDIT_DHAMPIR_CLI` 指定。）
 
 ## 项目结构
 
@@ -14,11 +21,10 @@
 ├── crates/
 │   ├── vtrim-core/        # 管线编排 + ASR / 事件检测 / 剪切
 │   ├── vtrim-polish/      # GSAP 精修引擎（时间轴 / 贴纸 / 音效 / 封面 / 出片）
-│   ├── vtrim-render-core/ # GPU 绘制原语（被 polish / wasm 使用）
+│   ├── vtrim-render-core/ # 事件/时间线类型与时间线数学（不含 GPU；被 polish 使用）
 │   ├── vtrim-service/     # CLI 与 WebUI 共用的领域逻辑（账号 / 项目 / 录播姬 / 用量）
 │   ├── vtrim-server/      # axum HTTP API + WebUI 宿主 + 任务队列（api/ 按领域分模块）
 │   ├── vtrim-cli/         # 入口（clap 命令 + tracing 装配），二进制名 vtrim
-│   ├── vtrim-wasm/        # 浏览器内真渲染预览（独立 target，不在 workspace members 里）
 │   └── xtask/             # 构建 / 打包 / 产物门禁（cargo xtask scan|package）
 ├── webui/                 # WebUI 源码（Vue 3 + Vite）；webui/dist 是服务端唯一界面来源，已入库
 ├── docs/                  # 设计稿 / 计划 / 发行说明；docs/archived 是历史设计文档
