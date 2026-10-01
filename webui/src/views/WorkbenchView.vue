@@ -291,14 +291,25 @@
     </div>
 
     <!-- 字体库：程序级全局资产，写操作仅管理员 —— 与上一块同规矩，普通用户整块不显示。
-         页面在 #/fonts（不占侧栏：侧栏全局入口只有 首页 / 设置）。 -->
+         页面在 #/fonts（不占侧栏：侧栏全局入口只有 首页 / 设置）。
+         首页这张卡只做「看得见 + 缺自带字体一键下载」，导入/删除/设默认在管理页。 -->
     <section v-if="isAdmin" class="wb-fonts">
       <div class="hf">
         <div>
           <div class="hf-t">字体库</div>
-          <div class="hf-s">字幕与封面用的字体都在这里管：导入 / 删除 / 设为默认。<b>程序自带的那支不可删除。</b></div>
+          <div class="hf-s">{{ fontHomeLine }}</div>
         </div>
-        <button class="btn" @click="router.push({ name: 'fonts' })">管理字体</button>
+        <div style="display:flex; gap:6px; flex:none">
+          <button v-if="homeFontsMissing.length" class="btn" :disabled="homeFontsBusy" @click="downloadBuiltinFontsHere">
+            {{ homeFontsBusy ? '下载中…' : '下载自带字体' }}
+          </button>
+          <button class="btn" @click="router.push({ name: 'fonts' })">管理字体</button>
+        </div>
+      </div>
+      <!-- 读失败可见 + 可重试（不伪装成"库是空的"；下载失败原话显示 —— 网络/校验和/上游变更处置不同） -->
+      <div v-if="homeFontsError" class="hint mt-6">
+        {{ homeFontsError }}
+        <button class="mini-btn" @click="loadHomeFonts">重试</button>
       </div>
     </section>
 
@@ -324,6 +335,7 @@ import { fmtBytes, fmtTime, ingestState, setReady } from '../stores/ingest'
 import { fmtClock, fmtCount } from '../utils'
 import { loadProjects, wb } from '../stores/workbench'
 import { api } from '../api/client'
+import { fetchFonts, downloadBuiltinFonts } from '../api/polish'
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
 
@@ -671,6 +683,43 @@ async function refresh() {
   await loadProjects()
 }
 
+// ---- 字体库（首页这张卡只做「看得见 + 缺自带一键下载」，导入/删除/设默认在 #/fonts）----
+// 与表情包同规矩：仅 admin 整块显示；读失败可见（不伪装成"库是空的"），轻量只读接口不拦首屏。
+const homeFonts = ref([])
+const homeFontsError = ref('')
+const homeFontsBusy = ref(false)
+/** 还没下载的自带字体（清单与状态都来自服务端，前端不自己维护）。 */
+const homeFontsMissing = computed(() => homeFonts.value.filter((f) => f.builtin && f.installed === false))
+const fontHomeLine = computed(() => {
+  if (homeFontsError.value) return '字体库状态没读到（见下方报错）。'
+  if (!homeFonts.value.length) return '字体库还是空的：去「管理字体」导入，或下载程序自带的两支（OFL，可商用）。'
+  const installed = homeFonts.value.filter((f) => f.installed !== false).length
+  const miss = homeFontsMissing.value.length
+  return `已装 ${installed} 支${miss ? ` · 自带还缺 ${miss} 支` : ''}。导入 / 下载 / 删除 / 设为默认在「管理字体」；程序自带的两支不可删除。`
+})
+async function loadHomeFonts() {
+  try {
+    const r = await fetchFonts('首页字体库')
+    homeFonts.value = r.fonts || []
+    homeFontsError.value = ''
+  } catch (e) {
+    homeFontsError.value = '字体库读取失败：' + (e && e.message ? e.message : e)
+  }
+}
+/** 一键下载还缺的自带字体（幂等：已装的服务端跳过；约 38 MB，接口自带宽松超时）。 */
+async function downloadBuiltinFontsHere() {
+  homeFontsBusy.value = true
+  try {
+    await downloadBuiltinFonts('')
+    await loadHomeFonts()
+  } catch (e) {
+    // 失败原话显示：网络不通 / 校验和不符 / 上游改了内容 —— 三种处置不同，别吞
+    homeFontsError.value = '下载失败：' + (e && e.message ? e.message : e)
+  } finally {
+    homeFontsBusy.value = false
+  }
+}
+
 onMounted(async () => {
   await loadProjects()
   try {
@@ -688,15 +737,19 @@ onMounted(async () => {
       rootConfigured.value = !!(d?.storage?.projects_root || '').trim()
     } catch {}
   }
+  // 字体库状态（仅 admin 卡片用；读失败可见不拦首屏）
+  if (isAdmin.value) loadHomeFonts()
 })
 
-// 从设置页配置完回来要重查（组件被 keep-alive / 复用时 onMounted 不会重跑）
+// 从设置页/字体库管理页回来要重查（组件被 keep-alive / 复用时 onMounted 不会重跑）
 const route = useRoute()
 watch(() => route.fullPath, (to, from) => {
   if (isAdmin.value && to !== from && String(to).startsWith('/workbench')) {
     ingestApi.config()
       .then((d) => { rootConfigured.value = !!(d?.storage?.projects_root || '').trim() })
       .catch(() => {})
+    // 字体库状态同一条重查路（在管理页下载/删除/设默认之后回来，卡片要跟上）
+    loadHomeFonts()
   }
 })
 </script>

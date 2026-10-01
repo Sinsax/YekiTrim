@@ -160,7 +160,7 @@ export const STEPS = [
 // 设置页的子页（与路由 / 页内标签条 / 面包屑共用）：key 既是路径段也是路由名后缀（settings-<key>）。
 // 顺序 = 标签条顺序；`/settings` 落到第一项。
 export const SETTINGS_SECTIONS = [
-  { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切 / Chrome，写入 .vtrim/config.toml' },
+  { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切，写入 .vtrim/config.toml' },
   { key: 'llm', label: 'LLM 配置', sub: '接口地址、密钥、模型与并发，写入 .vtrim/llm.toml' },
   { key: 'account', label: '账号与模型', sub: '注册邀请码 与 ASR 模型管理' },
   { key: 'integrations', label: '系统集成', sub: '录播姬采集 与 B 站链接下载' },

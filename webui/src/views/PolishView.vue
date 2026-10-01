@@ -554,13 +554,15 @@ const fontsError = ref('')
 const fontSaving = ref(false)
 const subtitleFont = computed(() => cfg.value?.style?.subtitle?.font || '')
 /** 下拉选项：`（系统默认）` + 库内字体；当前值不在库里时补一条，免得 select 落到空态。
- *  ⚠️ `.ttc`（字体集合）浏览器 @font-face 认不出 ⇒ 不能当可选值（选了就是"预览回退系统字体、
- *  出片却用了它"）—— 只在字体库里挂着展示。 */
+ *  ⚠️ 只列**真能用**的：`.ttc`（浏览器 @font-face 不认）与没下载的自带字体都不进下拉，
+ *  否则就是"选得出来、用不了"。默认字体带 `[默认]` 标记 —— 与字体库管理页 / 首页卡
+ *  同一份 `is_default`（服务端唯一权威），三处联动。 */
 const fontOptions = computed(() => {
   const opts = [{ value: '', label: '（系统默认）' }]
   for (const f of fonts.value) {
-    if (/\.ttc$/i.test(f.file || '')) continue
-    opts.push({ value: f.id, label: f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id })
+    if (f.installed === false || /\.ttc$/i.test(f.file || '')) continue
+    const base = f.family && f.family !== f.id ? `${f.family}（${f.id}）` : f.id
+    opts.push({ value: f.id, label: f.is_default ? `${base}[默认]` : base })
   }
   const cur = subtitleFont.value
   if (cur && !fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
