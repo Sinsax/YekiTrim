@@ -301,6 +301,32 @@ JS 侧一个算术都不做（这正是 §1.3b 那条"别拿 seconds 推帧"的�
 > `target/debug/dhampir/preview/pkg/`（本仓 `xtask` 打包时会同步这一份）。
 > 排查口诀：**报版本不匹配时先量两边 wasm 的字节数**，别先怀疑源码。
 
+### 出片对拍（parity）与「两条腿共用一份解码」
+
+**对拍实跑（`--golden` 冻结参照）**：
+
+| 样本 | 中位像素差 | 阈值 | 时长差 | 位移 | 判定 |
+|---|---|---|---|---|---|
+| `demo` | **15.07** | ≤20 | 0.000s | 0px | ✓ |
+| `portrait` | **9.90** | ≤20 | 0.000s | 0px | ✓ |
+| `real` | — | — | — | — | 样本缺源，明确跳过 |
+
+两个可用样本都**与冻结基线逐位一致**（demo 15.07 / portrait 9.90，正是
+`docs/golden/dhampir-parity` 记的那两个数），说明这次改造**没有动到画面**。
+
+**"共用一份解码"的核查结论**：出片腿（`dhampir`）走
+`render::dhampir::render_video_only`，**完全不经手贴纸解码** —— 底座按工程 JSON 自己解；
+而本仓那份 GIF 解码器（`render/gif.rs::decode_sticker_frames_png`）现在**只剩一个消费者**：
+**预览端点** `polish_sticker_frame`（单帧图用；动图已不走它）。
+也就是说动图这条路上**已经只有底座一份解码实现** ✓；残留的那份服务的是
+**静态图**（底座明确拒收单帧图 `AnimError::NotAnimation`），两条路并存是设计要求，不是遗留。
+
+**非匀速动图实测**（验收 §4-① 的后半条）：用 PIL 造了一张
+`duration=[30,100,30,200,30]` ms 的五帧 GIF，过转译器得到
+`frame_count:5 / timebase 30/1 / frame_delays_ms [30,100,30,200,30]` ——
+**与 ffprobe 逐值相同**，底座 `project_open` 接受且无 issue。
+底座自己的解码器单测（`animation.rs`）也已有非匀速用例（`vec![100,200,30]`）。
+
 ### 未做（诚实的边界）
 
 - 无头 Chrome 里 `<video>` 解不动（`paused:true, currentTime:0`），
