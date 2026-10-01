@@ -60,7 +60,7 @@ html.export #toolbar { display:none; }
   white-space:nowrap;
   -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:var(--text-shadow);
   opacity:0; transform:translateY(24px); animation:fadeUp 0.6s 0.3s ease both; }
-.hl { color:var(--hlc); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
+.hl { color:var(--hlc); font-size:var(--hl-fs, 1em); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
 @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
 </style>
 <!-- 图层栈（[cover] layers）的 z-index / display：`cover.rs::cover_layer_css()` 注入，
@@ -73,7 +73,7 @@ html.export #toolbar { display:none; }
      （实测整图平均差 38.44/255；补上这里之后 3.03/255，残差只剩字形边缘）。
      值取自同一批 `__PLACEHOLDER__`，与 Script 那份**完全一致**，所以 Chrome 那条通道像素不变
      （内联 style 优先级更高、值又相同）。 -->
-<style>:root{--bg-color:__BG_COLOR__;--bg-blur:__BG_BLUR__;--bg-blur-scale:__BG_BLUR_SCALE__;--liver-x:__LIVER_X__;--liver-y:__LIVER_Y__;--bg-transform:__BG_TRANSFORM__;--grad-bg:__GRAD_BG__;--vignette-op:__VIGNETTE_OP__;--fs:__FONT_SIZE__;--sk:__STROKE__;--hlc:__HL_COLOR__;--tw:__TEXT_WIDTH__;--text-x:__TEXT_X__;--text-y:__TEXT_Y__;--ls:__LS__;--lh:__LH__;--text-align:__TEXT_ALIGN__;--align-items:__TEXT_ALIGN_ITEMS__;--text-shadow:__SHADOW__;}</style>
+<style>:root{--bg-color:__BG_COLOR__;--bg-blur:__BG_BLUR__;--bg-blur-scale:__BG_BLUR_SCALE__;--liver-x:__LIVER_X__;--liver-y:__LIVER_Y__;--bg-transform:__BG_TRANSFORM__;--grad-bg:__GRAD_BG__;--vignette-op:__VIGNETTE_OP__;--fs:__FONT_SIZE__;--sk:__STROKE__;--hlc:__HL_COLOR__;--hl-fs:__HL_FS__;--tw:__TEXT_WIDTH__;--text-x:__TEXT_X__;--text-y:__TEXT_Y__;--ls:__LS__;--lh:__LH__;--text-align:__TEXT_ALIGN__;--align-items:__TEXT_ALIGN_ITEMS__;--text-shadow:__SHADOW__;}</style>
 <!-- 出片/截图模式追加的静态规则（`cover.rs::COVER_EXPORT_CSS`；预览模式为空串）：
      **截图这条路径不跑时间** ⇒ 入场动画必须在这里关掉 —— `animation: … both` 在"动画时间 0"下会让元素
      停在起始帧（`opacity:0`），静态渲染出来的标题整块不可见。动画跑完的终态就是

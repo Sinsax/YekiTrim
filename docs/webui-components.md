@@ -470,6 +470,13 @@ seek 行为，Dhampir 那条腿要真浏览器 + WebGPU 才跑得起来 —— �
   `.title-text` 上、span 继承），只有**高亮色**静默退成继承来的 `#f0e6d3`。**必须写 `.title-text :deep(.hl)`**
   （编译成 `.title-text[data-v-xxx] .hl`，属性落在父级、`.hl` 不受限）。出片侧没这问题：`cover.rs` 把
   同一串 HTML 注入 `cover.html` 的**全局** `<style>`，没有 scope。钉子在 `check-cover-stage.mjs` ⑥b。
+  ⚠️ **高亮字号（2026-10 用户要求「给高亮区域增加一个字号设置，输出和前端要统一」）**：只作用于
+  高亮词那一段，**不动字体、也不动整块标题的字号** —— 就是 `cover.hl_font_scale`（默认 `1.0` = 与标题
+  同号，老工程零迁移）。两端读**同一个 CSS 变量** `--hl-fs`：设计器由 `titleStyle` 写进行内 style，
+  出片模板从 `__HL_FS__` 填进 `:root{}`（**静态渲染器不跑 JS，变量只能从那儿来** —— 缺了它整条
+  `var(--hl-fs)` 声明会被丢掉，同 `:root` 里其它变量那条教训）。改成写死 px/em 就会出现"预览调了、
+  成片没变"。钉子在 `check-cover-stage.mjs` ⑥b（含两处变异自证），Rust 侧是
+  `cover::tests::hl_font_scale_reaches_both_builders` 与 `cover_config_persists_…` 的夹取往返。
 - **文字面板分三区**（位置大小 / 排版 / 高亮 tag）：小标题走 `.lyr-sec`（小字 + 一条发丝线）。
   ⚠️ 它**不能**叫 `pane-sec`：`check-cover-stage.mjs` ⑥ 的 `\bpane\b` 钉子会把它判成"复用了全局
   `.pane{display:none}`"（2026-09 就这么红了一次）。

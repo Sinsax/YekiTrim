@@ -722,6 +722,8 @@ pub(super) async fn polish_cover_config(State(_state): State<Arc<AppState>>, Jso
         if let Some(v) = cover.get("font_size").and_then(|v| v.as_u64()) { cfg.cover.font_size = v as u32; }
         if let Some(v) = cover.get("stroke").and_then(|v| v.as_u64()) { cfg.cover.stroke = v as u32; }
         if let Some(v) = cover.get("hl_color").and_then(|v| v.as_str()) { cfg.cover.hl_color = v.to_string(); }
+        // 高亮词相对字号：夹到 [0.5, 2.0]（超出这个区间不是排版、是事故）
+        if let Some(v) = cover.get("hl_font_scale").and_then(|v| v.as_f64()) { cfg.cover.hl_font_scale = v.clamp(0.5, 2.0); }
         if let Some(v) = cover.get("text_width").and_then(|v| v.as_f64()) { cfg.cover.text_width = v; }
         if let Some(v) = cover.get("text_x").and_then(|v| v.as_str()) { cfg.cover.text_x = v.to_string(); }
         if let Some(v) = cover.get("text_y").and_then(|v| v.as_str()) { cfg.cover.text_y = v.to_string(); }
@@ -2523,6 +2525,29 @@ async fn cover_config_persists_background_mode_and_sanitizes_color() {
     // 保存后仍能在配置文件里看到这些键（注释模板会带上说明）
     let raw = std::fs::read_to_string(clip.join("polish.toml")).unwrap();
     assert!(raw.contains("bg_mode") && raw.contains("blur_scale"), "polish.toml 缺键：{raw}");
+
+    // 高亮词字号：白名单必须收这个键，且夹到 [0.5, 2.0]。
+    // 漏收 = 用户在设计器里调完、重开又变回默认（"改了没反应"），而这条链上没有别的报错点。
+    for (sent, want) in [(1.4_f64, 1.4_f64), (9.0, 2.0), (0.1, 0.5)] {
+        let body = serde_json::json!({ "dir": dir, "cover": { "hl_font_scale": sent } }).to_string();
+        let res = t
+            .call(
+                t.req("POST", "/polish/cover-config")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let cfg = vtrim_polish::project::load_project(&clip).unwrap();
+        assert!(
+            (cfg.cover.hl_font_scale - want).abs() < 1e-9,
+            "hl_font_scale 传 {sent} 应落成 {want}，实际 {}",
+            cfg.cover.hl_font_scale
+        );
+    }
+    let raw = std::fs::read_to_string(clip.join("polish.toml")).unwrap();
+    assert!(raw.contains("hl_font_scale"), "polish.toml 缺 hl_font_scale 键：{raw}");
 }
 
 /// 图层栈（`[cover] layers`）与特效 id 也必须真的落进 `polish.toml`：设计器保存走的是

@@ -865,6 +865,8 @@ fn build_cover_page_ex(
         .replace("__FONT_SIZE__", &format!("{}px", cc.font_size))
         .replace("__STROKE__", &format!("{}px", cc.stroke))
         .replace("__HL_COLOR__", &cc.hl_color)
+        // 高亮词相对字号：与设计器的 --hl-fs 同源（镜像清单里的一条）
+        .replace("__HL_FS__", &format!("{}em", cc.hl_font_scale))
         .replace("__TEXT_WIDTH__", &format!("{}%", (cc.text_width * 100.0) as u32))
         .replace("__TEXT_X__", &cc.text_x)
         .replace("__TEXT_Y__", &cc.text_y)
@@ -1176,6 +1178,31 @@ mod tests {
         }
     }
 
+    /// 高亮词字号（用户要求「给高亮区域增加一个字号设置，输出和前端要统一」）：
+    /// ① 值必须真的流进 `--hl-fs`（不是只写了个占位符）；
+    /// ② 老工程（toml 里没这个键）必须退成 `1em` = 与标题同号，逐像素零回归；
+    /// ③ 两条链（预览 / 静态出片）读的是**同一个**变量。
+    #[test]
+    fn hl_font_scale_reaches_both_builders() {
+        let mut c = cfg_with("color", "#000000", 1.0);
+        c.cover.title_lines = vec!["标题".into()];
+
+        // ② 默认值：没设过就是 1.0
+        assert_eq!(c.cover.hl_font_scale, 1.0, "CoverConfig::default() 的高亮字号必须是 1.0");
+        let html = build_cover_page(&c, false, &c.cover.title_lines, false);
+        assert!(html.contains("--hl-fs:1em"), "默认没退成 1em：{html}");
+        assert!(html.contains("font-size:var(--hl-fs"), "模板 .hl 没读 --hl-fs：{html}");
+
+        // ① 改了值要跟着走
+        c.cover.hl_font_scale = 1.4;
+        let html = build_cover_page(&c, false, &c.cover.title_lines, false);
+        assert!(html.contains("--hl-fs:1.4em"), "改值没流进 --hl-fs：{html}");
+
+        // ③ 静态出片那条链同样
+        let static_html = build_cover_page_static(&c, false, &c.cover.title_lines);
+        assert!(static_html.contains("--hl-fs:1.4em"), "静态出片那条链没带上高亮字号：{static_html}");
+    }
+
     /// 静态渲染通道（Takumi）与**预览那条**必须是两个入口，且模板里的两个新占位符都被替换掉。
     ///
     /// 1. 预览那条：**不含** `#title{animation:none…}`（当年实测它会改变 headless Chrome 的像素 ——
@@ -1190,7 +1217,7 @@ mod tests {
         let placeholders = [
             "__BG_COLOR__", "__BG_BLUR__", "__BG_BLUR_SCALE__", "__BG_TRANSFORM__", "__BG_CLASS__", "__BG_SRC__",
             "__LIVER_X__", "__LIVER_Y__", "__GRAD_BG__", "__VIGNETTE_OP__", "__FONT_SIZE__", "__STROKE__",
-            "__HL_COLOR__", "__TEXT_WIDTH__", "__TEXT_X__", "__TEXT_Y__", "__LS__", "__LH__", "__TEXT_ALIGN__",
+            "__HL_COLOR__", "__HL_FS__", "__TEXT_WIDTH__", "__TEXT_X__", "__TEXT_Y__", "__LS__", "__LH__", "__TEXT_ALIGN__",
             "__TEXT_ALIGN_ITEMS__", "__SHADOW__", "__TITLE__", "__LAYER_CSS__", "__EXPORT_CSS__",
         ];
         let no_leak = |html: &str| {

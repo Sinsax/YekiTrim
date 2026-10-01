@@ -50,7 +50,7 @@
   半成品被当成品处理（数量抽稀直接把它删掉）。**落盘 ≠ 编辑完成**：后处理只在 `done` 之后跑（而 `done` 本身等落盘成功）——
   控件 `change`（`input` 每敲一键**不算**）/取消选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；**三处吸附与 `cap_events` 数量抽稀全部跳过**。
-- **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中状态与编辑逻辑留在组件里）。
+- **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中/编辑逻辑留在组件里）。
   **⚠️ 必须门控 Teleport**：目标是**挂载时**解析的，而那时子树还没进 document ⇒ 直接 `:to="propsTarget"` 会
   解析到 null、**面板整块不渲染**（做法与踩坑：`docs/webui-components.md` ①.5）。
 - ⚠️ **别用裸 `<template>` 包裹要无条件渲染的内容**：Vue 会把它渲染成真正的 `<template>` 元素，
@@ -83,7 +83,7 @@
 - **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「上：属性 · 下：图层列表 · 底：工具条」（用户要求换位）。
   ⚠️ 面板是**定高**的（`syncControlsBound` 给 `height`，不是 `max-height`；预览矮到放不下时还有
   `CONTROLS_MIN_H` 380px 下限，否则 `overflow:hidden` 会裁掉最底下的工具条），`.lyr-list` 用 `flex:0 0 50%`
-  **钉在面板下半部**（⚠️ shrink 必须是 0）—— 属性面板内容长短不再让列表上下跳（改回 `auto` 高度就会跳）。
+  **钉在面板下半部**（⚠️ shrink 必须是 0）—— 属性内容长短不再让列表上下跳（改回 `auto` 就会跳）。
   列宽 = `minmax(0,1fr) minmax(440px, 40%)`（用户要求：预览小、右栏宽；改前定宽 372px）。
   列表**上 = 更靠前** = `[cover] layers` 的**倒序**（栈从下到上）。顺序与可见性都落盘，出片由
   `cover.rs::resolve_cover_stack`/`plan_cover_layers` 注入 z-index；前端 `resolveStack`/`blockZ`/`layerVisible`/
@@ -96,25 +96,26 @@
   `.controls`（**别挂 window**）：`Ctrl/Cmd+[ ]` 上下移、加 `Shift` 置顶底、`Delete` 删层。
 - **画布拖动跟选中层走**（`dragTarget` 是唯一判据）：视频预览→`bg_x/bg_y`（滚轮 `bg_zoom`）· 文字→`text_x/text_y` ·
   特效/表情→`x/y`（滚轮 `amount`）· 滤镜/背景/安全区→**不可拖**（`not-allowed`）。`Shift` 约束单轴。
-- **文字面板**（用户样稿）：左文本框 / 右控件列**各占 50%**（LLM 生成标题 · X · Y · 字体 · 字号），下面两列一行
+- **文字面板**：左文本框 / 右控件列**各占 50%**（LLM 生成标题 · X · Y · 字体 · 字号），下面两列一行
   （对齐·行距 / 描边·字距）→ 高亮色·文字阴影 → 高亮关键词。**每个数值都是「滑块 + 行尾可填数字」**
-  （`.rv-input`：手填可越 step 栅格；夹 `[min,max]`、**不吸附 step**、清空/非数字不写模型；
+  （`.rv-input`：手填可越 step 栅格；夹 `[min,max]`、**不吸附 step**、清空/非数字不写；
   不用 `SliderField.vue` —— `@container` 会把标签挤到第二行）。
 - ⚠️ **高亮词要显示"出片真正在用的那串"**：`cover.highlight_keywords` 为空时出片**回退** `[filter] highlight`
-  （`cover.rs::cover_highlight_words`）—— 面板必须照实显示它并写明来源（`hlFromFilter`/`hlSourceHint`），
-  用户一增删就写进封面那份（以前只读 `cover.*` → "面板空、标题却高亮"）。
-  ⚠️ 高亮串走 `v-html`，CSS **必须 `:deep()`**（否则匹配不上 → 高亮色失效；钉子 ⑥b）。
+  （`cover.rs::cover_highlight_words`）—— 面板照实显示它并写明来源（`hlSourceHint`），
+  用户一改就固化到封面（以前只读 `cover.*` → "面板空、标题却高亮"）。
+  ⚠️ 高亮串走 `v-html`，CSS **必须 `:deep()`**（否则匹配不上 → 高亮色失效；⑥b）。
+  ⚠️ **高亮字号 `hl_font_scale` 同读 `--hl-fs`**（③.7；⑥b）。
 - **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
   `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**＝选中/打开）。
-  视频预览与安全区不在菜单里。**文字预设已删**：`presets`/`applyPreset`/`.preset-row` 一起没了，
+  视频预览与安全区不在菜单里。**文字预设已删**（`presets`/`applyPreset`/`.preset-row`）；
   ⚠️ CLI 侧 `polish cover --template` 还在。
 - ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许再写 `.stage-bg/.stage-media/.vignette-layer/
-  .gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面（拖拽层 900 / 线框 950）。
+  .gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面（900 / 950）。
 - ⚠️ **特效要有槽位结构**：`.fx-slot`（承载 z-index）> `.fx-item`，与出片 HTML 同构；`overlay` 的槽位必须带
   `isolation:isolate`（改造前它没真混合，省了老封面变色），`blur` 的槽位**不能**加；`.fx-layer` 也不许有 z-index。
 - **三层各有各的图源，谁也不许覆盖谁**（文字 / 关键帧 `_cover_frame.jpg` / 背景 `_cover_bg.jpg`）。
 - ⚠️ **属性面板类名不能叫 `.pane`**：`app.css` 有全局 `.pane{display:none}`，改回去整块隐身且**不报错**
-  （同 `video{}` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0 高）。
+  （同 `video{}` 黑边机制）；⚠️ **`.lyr-props` 的 `min-height` 不能省**（flex 收缩会压成 0）。
   两条钉子 = `check-cover-stage.mjs` ⑥。删掉选中的层后要自动落到文字/栈顶，别让面板空着。
 - ⚠️ **导入背景图片写 `_cover_bg.jpg`**（同时置 `bg_mode=image`），**别再写回 `_cover_frame.jpg`**；
   `cover.image` 导入时不要清空；⚠️ **出片不再删 `_cover_frame.jpg`**（它就是关键帧层的图源）。
@@ -122,7 +123,7 @@
   `/api/polish/cover-frame`，只补一次（`bgFrameTried`），再失败提示手动「导出关键帧」。
 - **安全区线框**：`.guide-169` = `width:95%; height:95%`（1824×1026）· `.guide-43` = `height:100%` +
   `aspect-ratio:4/3`（1440×1080）；⚠️ **别写 `inset:5%`**（百分比横竖不同基准，会得到 1728×972）；
-  显隐 = 列表里那两行的眼睛，偏好 `localStorage['vtrim.ui.coverGuides']`；⚠️ **只画在设计器里**。
+  显隐 = 列表里那两行的眼睛，偏好 `localStorage['vtrim.ui.coverGuides']`；⚠️ **只画在设计器**。
 - **标题首次自动排版 `fitTitleIntoSafeArea()`**：只在两处触发（磁盘 `title_lines` 为空；LLM 拿到新标题），
   手动操作一律不触发（**别在 watch 里接**）；已有封面不碰（判据 = 磁盘上有无 `title_lines`），只动字号/位置。
 - ⚠️ **默认对齐 `left`**、`text_x = "35%"`：老工程字段存在就不走默认；**别改 `cover.rs::cover_text_align` 的
@@ -131,7 +132,7 @@
   （×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index 走同一个栈** ·
   特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
-  `bg_zoom` 0.5~3。
+  `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
 - ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**
   （曾这么干 → 切层没法拖进度条、选好的帧跳回去）；前端不是帧源（后端 ffmpeg 截帧），同帧靠 `seekToFramePos`（钉子 ②）。
 - **四处必须同步**：`CoverConfig`（含 `layers`）/ `cover-config` 白名单 / `templates/cover.html` / **设计器镜像**；
