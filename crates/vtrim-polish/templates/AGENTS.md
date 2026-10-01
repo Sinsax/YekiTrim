@@ -26,9 +26,18 @@
 
 - ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进 `vtrim-polish`，
   运行中的 `vtrim server` 端出的仍是旧页面 —— 「改完没反应」十有八九是没重建/没重启，不是代码没生效。
+- ⚠️ **`cover.html` 同样经 `include_str!` 进 `cover.rs::COVER_HTML`**（改它也要重建二进制）。
+  它有两个**给静态渲染通道**（Takumi，见 polish 卡末段）准备的占位：
+  ① `:root{--fs:__FONT_SIZE__;…}` 那个**静态变量块** —— 变量的唯一来源曾是页面脚本的 `setProperty`，
+  静态渲染器不跑 JS；② `__EXPORT_CSS__`（只填给静态那条，= 关掉入场动画）。
+  对 Chrome 两条都**逐字节中性**（同值 / 留空）。**删任何一个都会静默削弱静态通道**。
 - ⚠️ **模板里的工具函数必须放在脚本顶层**：canvas 出片那一段是独立的 IIFE，看不到 `init()` 内部的东西。
   `evDur` 曾放在 `init()` 里、被 IIFE 的 `buildIndex()` 调用 → 每次出片都抛 `evDur is not defined`
   （GSAP 预览路径却完全正常，所以**只在出片时炸**）。新增给两条路径共用的函数时，放顶层并留注释。
+  ⚠️ **2026-10-01 又踩了一次同款**：顶层新增的 `getVignette` 调了 `init()` 里的 `transientDur`
+  → `Chunk: Render error: transientDur is not defined`，整块 chunk 全废。**顶层函数要用 `init()` 里的东西，
+  就把那几行自包含地算一遍**（`getVignette` 现在自己算 `evDuration` + cap）。这正是"改完模板必须真跑一次出片"
+  的第二条证据：静态检查没抓住，是对拍/真出片抓住的。
 - ⚠️ **出片逐帧路径里任何 `ReferenceError` 都是"整块 chunk 失败 → 整个 render job 失败"**
   （实测：A5 折行改造留下的一句 `ctx.font = '700 ' + fs + ' ' + ff`，`fs` 在 `renderFrame` 作用域里
   没声明 → 日志 `Chunk: Render error: fs is not defined`，表现是**所有带字幕的片段都导不出来、
@@ -62,8 +71,8 @@
 - ⚠️ **竖素材屏蔽运镜与画布方向无关**：判据是**源视频**竖（注入的 `CFG.vertical`，`render/server.rs`
   按 `h > w` 给），不是画布方向。只在循环末尾归零 `handheld` 不够 —— `zoom` 照旧把画面拖走，
   而预览侧（`engine.js::cameraAt:310`）早就整条返回了：**预览不动、成片在缩放**，同样不报错。
-  另注：`vtrim-render-core::evaluate_frame` 只归零 handheld（wgpu 路径的既有实现，不在 Chrome
-  出片链路上），两边口径差异记在这里，改之前先确认动的是哪条路径。
+  另注：`vtrim-render-core::evaluate_frame` 只归零 handheld —— 那是**已删除**的 wgpu 路径留下的
+  平行实现，现在没有生产消费者；两边口径差异记在这里，改之前先确认动的是哪条路径。
 - ⚠️ **字幕折行同样是两份实现**（本模板 `wrapCaptionParts` ↔ `engine.js::wrapCaptionParts`），
   必须逐字一致。曾经 `append` 先读 `cur.length` 再判溢出，而溢出分支的 `pushLine()` 会把 `cur` 置空
   → **任何一次折行都抛 `TypeError: can't access property "length", cur is null`**

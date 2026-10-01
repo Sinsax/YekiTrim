@@ -147,14 +147,10 @@ body.editor-open #page { height:calc(100vh - var(--editor-h, 0px)); }
 .ed-block.type-shake { background:#dc2626; }
 .ed-block.type-flash { background:#d97706; }
 .ed-block.type-blur { background:#0891b2; }
-.ed-block.type-zoom_bounce { background:#059669; }
 .ed-block.type-vignette { background:#4d7c0f; }
 .ed-block.type-hue_shift { background:#db2777; }
-.ed-block.type-stutter { background:#9333ea; }
-.ed-block.type-split { background:#ea580c; }
 .ed-block.type-noise { background:#64748b; }
 .ed-block.type-pulse { background:#0d9488; }
-.ed-block.type-color_shift { background:#c026d3; }
 .ed-block.type-overlay { background:#ca8a04; }
 .ed-block.type-sfx { background:#6d28d9; }
 .ed-block.selected { outline:2px solid #fff; z-index:3; }
@@ -659,13 +655,16 @@ function overlayStops(ev){
 //    表现就是「设了色档但预览里什么都没有」。
 // 径向：canvas 是 createRadialGradient(960,540,0,…,960)，即中心该色、边缘淡出；
 //      CSS 圆的默认半径是 farthest-corner（16:9 下比 960 大约 15%），预览近似、出片为准。
-function overlayGradientCss(colors, shape){
+// 线性档的**方向**（D5）：不写 `angle` 就是参照缺省的方向 `to bottom right`（**与改造前逐字一致**）；
+// 写了就用 CSS 角度（0 = 向上、顺时针）。⚠️ 与 `engine.js::gradientCss` **必须同口径**
+// （`node webui/scripts/check-overlay.mjs` 对拍的就是这两处）。
+function overlayGradientCss(colors, shape, angle){
   var stops = colors.map(function(c, i){
     return c + ' ' + (i / (colors.length - 1) * 100).toFixed(1) + '%';
   }).join(',');
-  return shape === 'radial'
-    ? 'radial-gradient(circle at center, ' + stops + ')'
-    : 'linear-gradient(to bottom right, ' + stops + ')';
+  if (shape === 'radial') return 'radial-gradient(circle at center, ' + stops + ')';
+  if (typeof angle !== 'number' || !isFinite(angle)) return 'linear-gradient(to bottom right, ' + stops + ')';
+  return 'linear-gradient(' + (((angle % 360) + 360) % 360) + 'deg, ' + stops + ')';
 }
 function init(){
   var dur=META.duration||CFG.duration||239.8;
@@ -906,8 +905,8 @@ function init(){
 
   // 特效时长归一: 瞬时特效由系统 clamp，模板再兜底 cap；音效只播放规则引擎指定的 sfx (无引用则静音)
   var TRANSIENT_CAP = {
-    shake:0.5, flash:0.3, blur:0.4, zoom_bounce:0.6, stutter:0.35,
-    split:0.35, noise:0.4, pulse:0.5, hue_shift:0.5, color_shift:0.5,
+    shake:0.5, flash:0.3, blur:0.4,
+    noise:0.4, pulse:0.5, hue_shift:0.5,
     vignette:0.6
   };
   function transientDur(ev, def){
@@ -974,9 +973,17 @@ function init(){
     fxSfx(ev);
     tl.fromTo('#'+el.id,{scale:0.3,rotation:-15,autoAlpha:0},{scale:1,rotation:0,autoAlpha:1,duration:0.35,ease:'back.out(3)'},et);
     tl.to('#'+el.id,{y:-18*SK,duration:0.4,ease:'power2.out'},et+0.25);
-    var fadeStart=et+0.35+dur;
-    tl.to('#'+el.id,{autoAlpha:0,duration:0.3,ease:'power2.in'},fadeStart);
-    tl.set('#'+el.id,{visibility:'hidden'},fadeStart+0.3);
+    // 淡出**贴着出点向内**：窗口 = 事件时长 `dur`，起点 = `dur - fadeOut` ⇒ 出点 = 最后一帧。
+    // 与 `getActiveSticker` / `engine.js::stickersAt` / `timeline.rs` / 转译器**同口径**
+    //（`fadeOut = min(0.3, dur)`、`fadeStart = et + dur - fadeOut`、隐藏于 `et + dur`）。
+    // 旧值 `et+0.35+dur` 把淡出挂到事件**之后**（可见跨度 `dur + 0.65`）✗。
+    // ⚠️ 上浮起点 `et+0.25` 是这条腿**自己的既有偏差**（其余处是 `popIn 0.35`）—— 刻意不动。
+    // 缓动也用**线性**（`ease:'none'`）= `opacity = max(0, 1 - (t - fadeStart)/fadeOut)`，
+    // 与其余四处逐值同形 —— 这一支原来是 `power2.in`（二次），末帧停在 0.108 而非 0.056。
+    var fadeOut=Math.min(0.3,dur);
+    var fadeStart=et+dur-fadeOut;
+    tl.to('#'+el.id,{autoAlpha:0,duration:fadeOut,ease:'none'},fadeStart);
+    tl.set('#'+el.id,{visibility:'hidden'},et+dur);
   };
 
   handlers.shake = function(ev, et) {
@@ -998,12 +1005,7 @@ function init(){
     fxSfx(ev);
   };
 
-  handlers.zoom_bounce = function(ev, et) {
-    var dur=transientDur(ev,0.4);
-    tl.to(SEL_SRC,{scale:curZoom*1.10,duration:dur*0.3,ease:'none'},et);
-    tl.to(SEL_SRC,{scale:curZoom,duration:dur*0.7,ease:'power2.out'},et+dur*0.3);
-    fxSfx(ev);
-  };
+;
 
   handlers.vignette = function(ev, et) {
     var dur=transientDur(ev,0.4);
@@ -1019,38 +1021,11 @@ function init(){
     fxSfx(ev);
   };
 
-  handlers.stutter = function(ev, et) {
-    var dur=transientDur(ev,0.25);
-    var off=ev.intensity||12;
-    var n=Math.max(1,Math.round(dur/0.08));
-    for(var i=0;i<n;i++){
-      var t=et+i*0.08;
-      tl.set(SEL_SRC,{x:-off,y:off},t);
-      tl.set(SEL_SRC,{x:off,y:-off},t+0.04);
-    }
-    tl.set(SEL_SRC,{x:0,y:0},et+dur);
-    fxSfx(ev);
-  };
+;
 
-  handlers.split = function(ev, et) {
-    var dur=transientDur(ev,0.25);
-    var sp=ev.intensity||30;
-    var n=Math.max(1,Math.round(dur/0.12));
-    for(var i=0;i<n;i++){
-      var t=et+i*0.12;
-      tl.to(SEL_SRC,{scale:curZoom*0.95,skewX:sp*(-1),x:-sp*0.3,duration:0.06,ease:'none'},t);
-      tl.to(SEL_SRC,{skewX:sp,x:sp*0.3,duration:0.06,ease:'none'},t+0.06);
-    }
-    tl.to(SEL_SRC,{scale:curZoom,skewX:0,x:0,duration:0.12,ease:'power2.out'},et+dur);
-    fxSfx(ev);
-  };
+  ;
 
-  handlers.color_shift = function(ev, et) {
-    var dur=transientDur(ev,0.35);
-    tl.set('#video-wrap',{filter:'sepia(0.6)saturate(1.4)',duration:0.1},et);
-    tl.to('#video-wrap',{filter:'sepia(0)saturate(1)',duration:Math.min(0.4,dur*0.6),ease:'sine.out'},et+dur*0.4);
-    fxSfx(ev);
-  };
+  ;
 
   handlers.noise = function(ev, et) {
     var dur=transientDur(ev,0.3);
@@ -1086,7 +1061,7 @@ function init(){
       tl.to('#color-overlay',{opacity:ovOp,duration:0.4,ease:'sine.out'},et);
       tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+evDur(ev,1.5)-0.4);
     }else if(ot==='gradient'&&stops){
-      tl.set('#color-overlay',{background:overlayGradientCss(stops,ev.shape),opacity:0},et);
+      tl.set('#color-overlay',{background:overlayGradientCss(stops,ev.shape,ev.angle),opacity:0},et);
       tl.to('#color-overlay',{opacity:ovOp,duration:0.4,ease:'sine.out'},et);
       tl.to('#color-overlay',{opacity:0,duration:0.4,ease:'sine.in'},et+evDur(ev,1.5)-0.4);
     }else if(ot==='fade_in'||ot==='fade_out'){
@@ -1360,8 +1335,8 @@ function init(){
     var idx = {
       camera: [], sticker: [], shake: [],
       flash: [], blur: [], overlay: [], sfx: [],
-      stutter: [], split: [], zoom_bounce: [], vignette: [],
-      hue_shift: [], noise: [], pulse: [], color_shift: [],
+      vignette: [],
+      hue_shift: [], noise: [], pulse: [],
     };
     var eLayer = document.getElementById('emoji-layer');
     var ei = 0; // 全局 sticker 序号, 匹配 DOM ID (sticker_N)
@@ -1379,7 +1354,7 @@ function init(){
       });
     });
     // sort by time (sticker keep DOM creation order)
-    ['camera','shake','flash','blur','overlay','stutter','split','zoom_bounce','vignette','hue_shift','noise','pulse','color_shift','sfx'].forEach(function(k) {
+    ['camera','shake','flash','blur','overlay','vignette','hue_shift','noise','pulse','sfx'].forEach(function(k) {
       idx[k].sort(function(a,b) { return a.time - b.time; });
     });
     idx.subs = SUB || [];
@@ -1521,8 +1496,16 @@ function init(){
       var imgEl = e._img;
       if (!imgEl || imgEl.tagName !== 'IMG') continue;
       var et = e.time, dur = e.duration || 2.5;
-      if (t < et || t > et + dur + 0.65) continue;
-      var popIn = 0.35, floatUp = 0.4, fadeOut = 0.3;
+      // 窗口 = **事件时长 `dur`**（不溢出到事件之外）：淡出在窗口**内部**消化
+      // （`dur - 0.3 -> dur` 渐隐）⇒ 出点 = 最后一帧。
+      // 旧值 `dur + (0.35 + 0.4 + 0.3)` = `dur + 1.05` 让贴纸比事件多显示 0.4 秒 ✗。
+      if (t < et || t > et + dur) continue;
+      var fadeOut = Math.min(0.3, dur);
+      if (!(fadeOut > 0)) continue;   // 退化时长（<= 0）没有可见窗口
+      // 装不下 `popIn 0.35 + floatUp 0.4 + fadeOut 0.3` 时**优先保淡出**：
+      // 前两段按可用时长等比压缩，淡出起点不得早于 0。
+      var k = Math.min(1, Math.max(0, dur - fadeOut) / (0.35 + 0.4));
+      var popIn = 0.35 * k, floatUp = 0.4 * k, fadeStart = dur - fadeOut;
       var opacity = 0, scale = 1, rot = 0, yOff = 0;
 
       if (t - et < popIn) {
@@ -1535,11 +1518,12 @@ function init(){
         var p = (t - et - popIn) / floatUp;
         opacity = 1; scale = 1; rot = 0;
         yOff = -18 * SK * p;
-      } else if (t < et + popIn + floatUp + dur) {
+      } else if (t < et + fadeStart) {
         opacity = 1; yOff = -18 * SK;
       } else {
-        var p = (t - et - popIn - floatUp - dur) / fadeOut;
-        opacity = 1 - p;
+        var p = (t - et - fadeStart) / fadeOut;
+        // `Math.max(0, …)` 只吃掉上界那一帧的浮点尾数：出点必须**恰好 0**。
+        opacity = Math.max(0, 1 - p);
         scale = 1 - 0.6 * p;
         yOff = -18 * SK;
       }
@@ -1648,7 +1632,7 @@ function init(){
           continue;
         }
         if (ot === 'gradient' && stops) {
-          return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', opacity: opacity };
+          return { type: 'gradient', colors: stops, shape: ev.shape || 'linear', angle: ev.angle, opacity: opacity };
         }
         // 类型不认识 / 值不全：继续看窗口里的下一条，别把整窗吃掉
       }
@@ -1656,41 +1640,8 @@ function init(){
     return null;
   }
 
-  function getStutterVideo(t, items) {
-    for (var i = 0; i < items.length; i++) {
-      var st = items[i], et = st.time, off = st.ev.intensity || 12;
-      if (t >= et && t < et + 0.12) {
-        var dt = t - et;
-        if (dt < 0.06) return { x: -off, y: off };
-        return { x: off, y: -off };
-      }
-    }
-    return null;
-  }
 
-  function getSplitVideo(t, items) {
-    for (var i = 0; i < items.length; i++) {
-      var sp = items[i], et = sp.time, inten = sp.ev.intensity || 30;
-      if (t >= et && t < et + 0.12) {
-        var dt = t - et;
-        if (dt < 0.06) return { scale: 0.95, skewX: -inten, x: -inten * 0.3 };
-        return { scale: 1, skewX: 0, x: 0 };
-      }
-    }
-    return null;
-  }
-
-  function getZoomBounce(t, items, curZoom) {
-    for (var i = 0; i < items.length; i++) {
-      var zb = items[i], et = zb.time;
-      if (t >= et && t < et + 0.30) {
-        var dt = t - et;
-        if (dt < 0.08) return curZoom * 1.10;
-        return curZoom;
-      }
-    }
-    return curZoom;
-  }
+  
 
   function getPulse(t, items, curZoom) {
     for (var i = 0; i < items.length; i++) {
@@ -1717,6 +1668,32 @@ function init(){
     return null;
   }
 
+  // 暗角的**强度包络**（与 `engine.js::getVignette` / DOM 预览逐值一致）：
+  // `dur = transientDur(ev, 0.4)`（cap 0.6，见 `TRANSIENT_CAP`）；`dt < dur×0.4` 时恒 1，
+  // 之后线性落到 `min(0.3, dur×0.6)` 秒内归零。
+  //
+  // ⚠️ 以前**只有 GSAP 预览有 `handlers.vignette`，canvas 出片路径没有它** ——
+  // 也就是"预览有、成片没有"，而报告里只有底座那条腿的一行 DROP。2026-10-01（D4）补上。
+  //
+  // ⚠️⚠️ **这里绝不能调 `transientDur()`**：它定义在 `init()` 作用域里，而本函数在**脚本顶层**
+  // （canvas IIFE 要用它）。踩过一次：出片时抛 `Chunk: Render error: transientDur is not defined`，
+  // **整块 chunk 全废**（与当年 `evDur` 那条坑一模一样，见 templates/AGENTS.md）。
+  // 所以把 `transientDur(ev, 0.4)`（cap 0.6）**自包含**地算出来。
+  function getVignette(t, items) {
+    for (var i = 0; i < items.length; i++) {
+      var v = items[i], et = v.time;
+      var span = (v.ev.end != null) ? Math.max(0.05, v.ev.end - et)
+               : (v.ev.duration != null ? Math.max(0.1, v.ev.duration) : 0.4);
+      var dur = Math.max(0.1, Math.min(span, 0.6));
+      if (t >= et && t < et + dur) {
+        var dt = t - et;
+        if (dt < dur * 0.4) return 1;
+        return Math.max(0, 1 - (dt - dur * 0.4) / Math.min(0.3, dur * 0.6));
+      }
+    }
+    return 0;
+  }
+
   function getNoiseOpacity(t, items) {
     for (var i = 0; i < items.length; i++) {
       var n = items[i], et = n.time;
@@ -1729,19 +1706,7 @@ function init(){
     return 0;
   }
 
-  function getColorShift(t, items) {
-    for (var i = 0; i < items.length; i++) {
-      var c = items[i], et = c.time;
-      if (t >= et && t < et + 1.0) {
-        var dt = t - et;
-        if (dt < 0.1) return 'sepia(0.6) saturate(1.4)';
-        var p = (dt - 0.1) / 0.6;
-        return 'sepia(' + (0.6 * (1 - p)) + ') saturate(' + (1.4 - 0.4 * p) + ')';
-      }
-    }
-    return '';
-  }
-
+  
   // ---- 绘图函数 ----
 
   function ensureCanvas() {
@@ -1849,13 +1814,8 @@ function init(){
     var cam = getActiveCamera(t, idx.camera);
     var shake = getShake(t, idx.shake);
     var blurAmt = getBlur(t, idx.blur);
-    var stutter = getStutterVideo(t, idx.stutter);
-    var split = getSplitVideo(t, idx.split);
     var curZoom = cam.zoom;
-    var zbZoom = getZoomBounce(t, idx.zoom_bounce, curZoom);
     var plZoom = getPulse(t, idx.pulse, curZoom);
-    var finalZoom = Math.max(zbZoom, plZoom);
-    var colorShift = getColorShift(t, idx.color_shift);
 
     // ---- video layer ----
     // 主画面的摆放矩形（源比例 ≠ 画布比例时不再硬铺满：竖素材进横画布 = 等比缩进 + 衬底补边）。
@@ -1864,17 +1824,14 @@ function init(){
     ctx.save();
     if (shake.x || shake.y) ctx.translate(shake.x, shake.y);
     if (blurAmt > 0) ctx.filter = 'blur(' + blurAmt + 'px)';
-    if (colorShift) ctx.filter = (ctx.filter ? ctx.filter + ' ' : '') + colorShift;
-    // stutter / split / zoom on video
-    if (stutter) ctx.translate(stutter.x, stutter.y);
-    else if (split) { ctx.translate(split.x, 0); ctx.transform(1, split.skewX/100, 0, 1, 0, 0); ctx.scale(split.scale, split.scale); }
+    // zoom on video（运动层状态）
     // camera zoom + 手持摇摆
     // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜。
     // 手持摇摆（运镜的附加变种）叠在运镜之上：位移在屏幕空间、倾斜与呼吸缩放绕同一个不动点。
     // canvas 的 CTM 是后乘（先调用的 transform 后作用于画面），所以位移排在最外层，
     // 顺序与 WebUI 预览的 transform 列表（translate → rotate → scale）等价。
     var sway = handheldSway(t, cam.handheld);
-    var camScale = finalZoom * sway.scale;
+    var camScale = plZoom * sway.scale;
     // 不动点：DOM 预览把它挂在主画面（`#fit-box`）自己的百分比上，所以这里也要把 cam.ox/oy
     // （画布百分比的像素形式）映射进画面矩形 —— 铺满时 sr=(0,0,CW,CH)，与改造前逐值一致。
     var anchorX = sr.x + cam.ox / CW * sr.w;
@@ -1890,6 +1847,28 @@ function init(){
     ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);
     ctx.drawImage(videoBitmap, 0, 0, CW, CH);
     ctx.restore();
+
+    // ---- vignette（暗角）----
+    //
+    // 参照（DOM 预览）那条是 `radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.5) 100%)`
+    // 乘 `getVignette(t)` 的包络，层序在 `.fx` 里**排在 noise 之前**（见模板 L36-39 的 DOM 层序）。
+    //
+    // ⚠️ canvas 的径向渐变是**圆**、CSS 的是 **ellipse** ⇒ 在**归一化空间**里画：
+    // 先把 CTM 缩到 1×1（中心为原点），圆在归一化空间就等于 CSS 在 16:9 里的 ellipse
+    // （`farthest-corner` 在归一化空间是 √0.5 ≈ 0.7071，55% 档 = 0.55 × 0.7071）。
+    // 两个色档都是黑（内 `rgba(0,0,0,0)` → 外 `rgba(0,0,0,0.5×包络)`），**不涉及"非同色透明"那个坑**。
+    var vig = getVignette(t, idx.vignette);
+    if (vig > 0.002) {
+      ctx.save();
+      ctx.translate(CW / 2, CH / 2);
+      ctx.scale(CW, CH);
+      var vigGrad = ctx.createRadialGradient(0, 0, 0.55 * Math.SQRT1_2, 0, 0, Math.SQRT1_2);
+      vigGrad.addColorStop(0, 'rgba(0,0,0,0)');
+      vigGrad.addColorStop(1, 'rgba(0,0,0,' + (0.5 * vig).toFixed(4) + ')');
+      ctx.fillStyle = vigGrad;
+      ctx.fillRect(-0.5, -0.5, 1, 1);
+      ctx.restore();
+    }
 
     // ---- noise overlay ----
     var noiseOp = getNoiseOpacity(t, idx.noise);
@@ -1931,9 +1910,24 @@ function init(){
         ctx.fillRect(0, 0, CW, CH);
       } else if (ov.type === 'gradient' && ov.colors.length >= 2) {
         // 长度守卫：overlayStops 已保证 ≥2 档，这里是唯一会打断整个 chunk 的地方，再兜一道
-        var grad = ov.shape === 'radial'
-          ? ctx.createRadialGradient(CW/2, CH/2, 0, CW/2, CH/2, CW/2)
-          : ctx.createLinearGradient(0, 0, CW, CH);
+        var grad;
+        if (ov.shape === 'radial') {
+          grad = ctx.createRadialGradient(CW/2, CH/2, 0, CW/2, CH/2, CW/2);
+        } else if (typeof ov.angle === 'number' && isFinite(ov.angle)) {
+          // **CSS 角度 → canvas 端点**（D5）：CSS θ 的方向向量是 (sinθ, −cosθ)（0 = 向上、顺时针），
+          // 梯度线长度按 CSS 的 "magic corners" = |W·sinθ| + |H·cosθ|（两端正好盖住对角）。
+          // canvas 只认端点，所以角度要在这里换算（径向档居中，方向无意义）。
+          var ovTh = ((ov.angle % 360) + 360) % 360 * Math.PI / 180;
+          var ovDx = Math.sin(ovTh), ovDy = -Math.cos(ovTh);
+          var ovLen = Math.abs(CW * ovDx) + Math.abs(CH * ovDy);
+          grad = ctx.createLinearGradient(
+            CW / 2 - ovDx * ovLen / 2, CH / 2 - ovDy * ovLen / 2,
+            CW / 2 + ovDx * ovLen / 2, CH / 2 + ovDy * ovLen / 2
+          );
+        } else {
+          // 没写 angle ⇒ 参照缺省方向（CSS `to bottom right`）——**与改造前逐像素一致**。
+          grad = ctx.createLinearGradient(0, 0, CW, CH);
+        }
         for (var gi = 0; gi < ov.colors.length; gi++) {
           grad.addColorStop(gi / (ov.colors.length - 1), ov.colors[gi]);
         }
@@ -1987,6 +1981,23 @@ function init(){
           var ly = y0 + li * lh;
           line.forEach(function(p) {
             var pw = ctx.measureText(p.text).width;
+            // **文字阴影（B5，2026-10-01）**：与 `.cap` 的 CSS `text-shadow:0 2px 12px rgba(0,0,0,0.4)`
+            // 对齐 —— 以前只有 DOM 预览有阴影、**canvas 出片没有**，于是"成片比预览少一层柔光"。
+            // 口径与转译器那四键**必须一致**（`tools/polish-to-dhampir.mjs` 写
+            // `[0,0,0,102] / 0 / 2 / 12÷文档高`；守卫按源码文本对拍这两处常量）。
+            //
+            // ⚠️ **只画一遍阴影**（这一次 fillText），再关掉阴影画描边+填充：
+            // strokeText 与 fillText 各投一次会让阴影比 CSS 深一倍；而 canvas 的 `shadow*`
+            // 是**持久状态**，不清掉会连后面的弹幕一起染上（弹幕的阴影底座没有对应字段，
+            // 见 `tools/AGENTS.md` 的已知差异）。
+            ctx.save();
+            ctx.shadowColor = 'rgba(0,0,0,0.4)';
+            ctx.shadowBlur = 12;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 2;
+            ctx.fillStyle = p.hl ? hlColor : color;
+            ctx.fillText(p.text, sx, ly);
+            ctx.restore();
             ctx.strokeStyle = sc; ctx.lineWidth = swEff;
             ctx.strokeText(p.text, sx, ly);
             ctx.fillStyle = p.hl ? hlColor : color;
@@ -2152,7 +2163,7 @@ function init(){
     { type:'segments', label:'分段', duration:true },
     { type:'camera', label:'运镜', duration:true },
     { type:'sticker', label:'贴纸', duration:true },
-    { type:'fx', label:'视觉特效', types:['shake','flash','blur','zoom_bounce','vignette','hue_shift','stutter','split','noise','pulse','color_shift'] },
+    { type:'fx', label:'视觉特效', types:['shake','flash','blur','vignette','hue_shift','split','noise','pulse','color_shift'] },
     { type:'overlay', label:'覆盖层', duration:true },
     { type:'sfx', label:'音效' }
   ];
@@ -2628,15 +2639,11 @@ function init(){
     else if(type==='shake'){ addDur.d=0.3; ev.intensity=10; }
     else if(type==='flash'){ addDur.d=0.5; ev.color='#ffffff'; }
     else if(type==='blur'){ addDur.d=0.8; }
-    else if(type==='zoom_bounce'){ addDur.d=0.3; }
-    else if(type==='vignette'){ addDur.d=0.9; }
+        else if(type==='vignette'){ addDur.d=0.9; }
     else if(type==='hue_shift'){ addDur.d=1.0; ev.color='#ff0040'; }
-    else if(type==='stutter'){ addDur.d=0.3; ev.intensity=12; }
-    else if(type==='split'){ addDur.d=0.4; ev.intensity=30; }
-    else if(type==='noise'){ addDur.d=1.0; }
+            else if(type==='noise'){ addDur.d=1.0; }
     else if(type==='pulse'){ addDur.d=0.6; }
-    else if(type==='color_shift'){ addDur.d=0.8; ev.color='#ff0040'; }
-    ev.end = round2(t + (addDur.d || defaultDuration(type)));
+        ev.end = round2(t + (addDur.d || defaultDuration(type)));
 
     var target=null;
     for(var i=0;i<segs.length;i++){

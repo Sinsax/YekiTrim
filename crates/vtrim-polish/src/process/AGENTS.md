@@ -5,7 +5,10 @@
 ## 职责
 
 `process` 是"LLM 写完事件之后、出片之前"的全部确定性后处理：无 LLM、幂等，跑一次是秒级。
-`mod.rs` 的 `cmd_process` 按固定 Step 序执行 —— Step 0 归一化事件时间、0a 运镜倍率迁移、1/1b/1c/1d
+`mod.rs` 的 `cmd_process` 按固定 Step 序执行 —— Step 0 **之前**先有一道**弹幕在屏窗口归一化**
+（`normalize_danmaku_windows`：把 `data/danmaku.json` 的 `end` 抬到"至少够它滚完"，
+`polish.toml` 已存在的工程没有别的入口能重跑 parse，老工程靠这一步自愈），
+随后 Step 0 归一化事件时间、0a 运镜倍率迁移、1/1b/1c/1d
 补默认运镜 + 预算抽稀 + 画中画三件事 + 手持摇摆守卫、2/2b1/2b/2c/2d 贴纸来源与落点与运镜锚点、
 3/3b 音效规则引擎与补位、3c 片头 fade_in 补位、4 下载贴纸与 SFX。
 `sfx.rs` = 音效规则引擎 + 解析/屏蔽；`fx.rs` = 缺 `end` 补默认 + 瞬时特效跨度 clamp + 画中画/手持/贴纸对齐守卫；
@@ -37,6 +40,11 @@
 
 ## 边界
 
+- ⚠️ **弹幕窗口归一化只在"真的变了"时写回**（`normalize_danmaku_windows`）：首页「切片总览」按片段目录里
+  最新文件的 mtime 排序（`vtrim_service::project_data::last_touched_secs`），无条件重写
+  `data/danmaku.json` 会把老片段一直顶到最前面。归一化本身是幂等的，**但比较必须带容差** ——
+  `serde_json` 读 f64 会差 1 ulp（见 `vtrim_core::danmaku::WINDOW_EPS_SECS`），写严格相等就变成
+  "每次 process 都重写一次"。回归：`clamp_display_windows_is_idempotent_across_json_roundtrip`。
 - **Step 顺序是硬约束**：2b1（贴纸对齐字幕）**必须排在 2b（落点）之前** —— 落点是按贴纸的时间窗口
   算相机/字幕/其它贴纸障碍，时间挪了就得重算；2d（锚点解析）**必须排在 2b 与 2c 之后** ——
   `anchor="sticker"` 要读最终位置。1c 的配额守卫必须排在 Step 1 补默认运镜之后。
@@ -118,7 +126,12 @@
     （`VT_CAM_JSON=1` 多打一行 `CAM_JSON={...}`：处理后运镜轨道，可喂给 `templates/index.html` 的
     `getActiveCamera` 与 `webui/src/polish/engine.js` 的 `cameraAt` 对拍）。
 - **手工屏蔽区间内的字幕不参与后续预算/位置计算**：`cmd_process` 读 `data/subtitles.json` 后先按
-  `config.mute_ranges` 过滤，再用屏蔽区间切段/砍超时长段，后续 position/budget 全基于清理后的 segments。
+  `config.mute_ranges` 过滤（`MuteRange::overlaps`），后续 position/budget 全基于清理后的字幕。
+  ⚠️ **但屏蔽区间不再切段、也不再删事件**（用户要求：屏蔽只做标记）：段表与事件原样留着，
+  出片合流后由 `Ffmpeg::cut_ranges` 剪掉、预览跳过。以前这里还会
+  `split_segments_by_mute_ranges` 把屏蔽区内的事件从 `polish.toml` 删掉（而 process 会被预览/出片
+  隐式触发）—— 已删除，**别再加回来**。回归：`cargo test -p vtrim-polish --lib mute_range_keeps_events`
+  （`process::tests`，临时工程真跑 `cmd_process`，把删事件钉红）。
 - `resolve_event_sfx` 未命中规则的事件按"宁缺毋滥"清空音效；`Step 3b` 对"字幕命中规则但 LLM 没放事件"
   的时刻在预算内补建 sfx 事件。屏蔽列表条目的语义见 `assets/sfx_catalog.rs::is_blacklisted`。
 - 真实工程诊断：`VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture`

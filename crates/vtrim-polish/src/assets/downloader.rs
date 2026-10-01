@@ -85,7 +85,9 @@ impl AssetDownloader {
                             }
                             // 非 emoji/irasu 的来源 = 贴纸包名（如 ysyk），只复制该事件实际选中的文件
                             _ => {
-                                let copied = self.copy_sticker_from_local(source, name.as_deref(), &sticker_dir);
+                                let copied = self.copy_sticker_from_local(
+                                    source, name.as_deref(), &sticker_dir, &mut report,
+                                );
                                 report.sticker_downloaded += copied;
                             }
                         }
@@ -95,52 +97,90 @@ impl AssetDownloader {
     }
 
     /// 从程序目录的 stickers/ 复制当前事件实际使用的贴纸文件。
-    /// 新结构：优先按 event.name 精确复制包内对应文件；找不到时最多复制包内第一个，避免全量复制。
-    /// 旧结构：同样只复制匹配到的具体文件，不再复制整组。
-    fn copy_sticker_from_local(&self, keyword: &str, name: Option<&str>, dest_dir: &Path) -> usize {
+    /// 优先按 `name` 精确复制包内对应文件；**找不到就把原因写进 `report.errors`，不再静默返回 0**
+    /// ——"项目里没有这张图"以前是一条看不见的失败：日志一个字都没有，出片时贴纸凭空消失。
+    ///
+    /// ⚠️ `name` 缺失或为 `auto`（Step 2 没解析出文件）时**不复制**：以前会退化成"复制包内第一个"，
+    /// 而渲染侧一律按 `name` 找文件（`prepare_sticker_data` / `build_sticker_map`），
+    /// 复制那个文件没有任何用处，只会让项目里多一份用不到的图。
+    fn copy_sticker_from_local(
+        &self,
+        source: &str,
+        name: Option<&str>,
+        dest_dir: &Path,
+        report: &mut DownloadReport,
+    ) -> usize {
+        let Some(name) = name.map(str::trim).filter(|n| !n.is_empty() && *n != "auto") else {
+            report.errors.push(format!(
+                "贴纸「{source}」: 事件还没解析出文件名（name 缺失或 auto）—— 先跑一次 polish process，\
+                 否则这张贴纸不会进项目、出片会缺"
+            ));
+            return 0;
+        };
         let sticker_dir = vtrim_core::path::sticker_dir();
         if !sticker_dir.exists() {
+            report.errors.push(format!(
+                "贴纸「{source}」: 程序目录贴纸库不存在（{}），复制不进项目",
+                sticker_dir.display()
+            ));
             return 0;
         }
 
-        let copy_file = |path: &PathBuf| -> usize {
+        let copy_file = |path: &PathBuf, report: &mut DownloadReport| -> usize {
             let Some(fname) = path.file_name() else {
                 return 0;
             };
             let dest = dest_dir.join(fname);
             if dest.exists() {
-                return 0;
+                return 0; // 幂等：已经在项目里了
             }
-            if std::fs::copy(path, &dest).is_ok() { 1 } else { 0 }
+            match std::fs::copy(path, &dest) {
+                Ok(_) => 1,
+                Err(e) => {
+                    report.errors.push(format!("贴纸「{source}」: 复制 {} 进项目失败: {e}", path.display()));
+                    0
+                }
+            }
         };
 
         // 新结构：贴纸包目录按 event.name 精确复制
         let packages = super::sticker_index::scan_packages(&sticker_dir);
-        if let Some(pkg) = packages.iter().find(|p| p.name == keyword) {
-            let chosen = match name {
-                Some(n) if !n.is_empty() => pkg
-                    .files
-                    .iter()
-                    .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(n)),
-                _ => pkg.files.first(),
+        if let Some(pkg) = packages.iter().find(|p| p.name == source) {
+            return match pkg
+                .files
+                .iter()
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(name))
+            {
+                Some(found) => copy_file(found, report),
+                None => {
+                    report.errors.push(format!(
+                        "贴纸包「{source}」里没有「{name}」这个文件（包内共 {} 张）—— 事件引用的名字与库对不上",
+                        pkg.files.len()
+                    ));
+                    0
+                }
             };
-            return chosen.map(copy_file).unwrap_or(0);
         }
 
         // 旧结构兜底：按文件名/tags 匹配后只复制匹配到的具体文件
         let idx = super::sticker_index::StickerIndex::scan(&sticker_dir);
-        let Some(m) = idx.match_keyword(keyword) else {
+        let Some(m) = idx.match_keyword(source) else {
+            report.errors.push(format!(
+                "贴纸「{source}」: 程序目录贴纸库里没有这个包/分组，复制不进项目"
+            ));
             return 0;
         };
         let files = idx.groups()[m.group_index].all_files();
-        let chosen = match name {
-            Some(n) if !n.is_empty() => files
-                .iter()
-                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(n))
-                .copied(),
-            _ => files.first().copied(),
-        };
-        chosen.map(copy_file).unwrap_or(0)
+        match files
+            .iter()
+            .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(name))
+        {
+            Some(found) => copy_file(found, report),
+            None => {
+                report.errors.push(format!("贴纸「{source}」: 同名分组里没有「{name}」这个文件"));
+                0
+            }
+        }
     }
 
     /// 按需下载 segments 中引用的 SFX (blacklist 中的跳过)
@@ -297,14 +337,10 @@ fn extract_sfx_field(event: &Event) -> Option<&String> {
         Event::Shake { sfx: Some(s), .. } => Some(s),
         Event::Flash { sfx: Some(s), .. } => Some(s),
         Event::Blur { sfx: Some(s), .. } => Some(s),
-        Event::ZoomBounce { sfx: Some(s), .. } => Some(s),
         Event::Vignette { sfx: Some(s), .. } => Some(s),
         Event::HueShift { sfx: Some(s), .. } => Some(s),
-        Event::Stutter { sfx: Some(s), .. } => Some(s),
-        Event::Split { sfx: Some(s), .. } => Some(s),
         Event::Noise { sfx: Some(s), .. } => Some(s),
         Event::Pulse { sfx: Some(s), .. } => Some(s),
-        Event::ColorShift { sfx: Some(s), .. } => Some(s),
         Event::Overlay { sfx: Some(s), .. } => Some(s),
         _ => None,
     }

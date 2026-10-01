@@ -11,10 +11,15 @@ name = "vtrim_polish"
 path = "src/lib.rs"
 
 [features]
+# 出片路径只有 chrome（headless Chrome 逐帧 canvas；事实来源是 `templates/index.html` 的 canvas 那条腿）。
+# ⚠️ 曾经还有 `wgpu-render = ["vtrim-render-core/wgpu", …]`（wgpu 原生出片 + 单帧真渲染预览）——
+# **整条已删除**（用户拍板：GPU 那侧交给独立的 Dhampir 底座）。别再加回来。
 default = ["chrome-render"]
-# wgpu 原生渲染（实验性）；chrome-render 为默认出片路径，wgpu 需显式启用
 chrome-render = ["dep:headless_chrome"]
-wgpu-render = ["vtrim-render-core/wgpu", "dep:wgpu", "dep:headless_chrome"]
+# **静态封面渲染**（Takumi 底座）：不跑浏览器、不跑 JS/时间，进程内出图。
+# **默认关**，只影响封面这一条路：`VTEDIT_COVER_RENDERER=takumi` 且编了这个 feature 才走它；
+# 没编时传 takumi 会**明确报错**（不静默回退 chrome）。chrome 仍是默认与兜底。
+cover-takumi = ["dep:takumi"]
 
 [dependencies]
 # vtrim-core (用于 .vtrim/llm.toml 路径)
@@ -43,13 +48,19 @@ tracing = "0.1"
 # Chrome CDP 控制 (渲染层, feature=chrome-render)
 headless_chrome = { version = "1", optional = true }
 
+# 静态封面渲染 (feature=cover-takumi)：吃 HTML/CSS 直接出图，不依赖浏览器。
+# MIT OR Apache-2.0（与 GPL 零容忍那条不冲突）；**默认不编**，只由那个 feature 拉起来。
+# ⚠️ 已知（仅当这个 feature 打开时）：链接期会冒一条
+# `LNK4098: 默认库"LIBCMT"与其他库的使用冲突` —— 来自传递依赖里的 C `-sys` crate
+# （takumi 的 `image-decoding` 拉进 `libwebp-sys`，它用静态 CRT）。试过
+# `default-features = false` 去掉 webp：**takumi-raster 自己编不过**
+# （`RenderedImage` 挂在 `image-decoding` 后面），所以只能整包默认 feature 全要。
+# 默认构建（不带这个 feature）**没有**这条警告。
+takumi = { version = "2.14", features = ["from-html"], optional = true }
+
 # HTTP 服务 (为 Chrome 提供静态文件)
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
-
-# wgpu 原生渲染 (feature=wgpu-render)
-wgpu = { version = "27", optional = true }
-bytemuck = { version = "1", features = ["derive"], optional = true }
 
 # 正则
 regex-lite = "0.1"

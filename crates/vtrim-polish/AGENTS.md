@@ -25,12 +25,17 @@
   `build_package_tags(...)`（WebUI「LLM 压缩构建」的同一份实现）/ `cmd_stickers_scan(llm)`。
 
 `crates/vtrim-polish/src/cover.rs`：`cmd_cover_template` / `cmd_preview_cover` / `cmd_cover(project_path, existing_video)` /
-`build_cover_html` / `cover_bg_vars` / `cover_frame_vars` / `sanitize_hex_color` / `cover_blur_css` / `cover_bg_mode`；
+`build_cover_page`（**HTML 替换链只此一份**，预览与出片都走它）/ `build_cover_html`（预览用的薄包装）/
+`resolve_cover_stack` / `plan_cover_layers` / `cover_layer_css` / `is_default_stack`（图层栈，见边界）/
+`cover_bg_vars` / `cover_frame_vars` / `sanitize_hex_color` / `cover_blur_css` / `cover_bg_mode`；
 常量 `COVER_FRAME_IMG = "_cover_frame.jpg"` / `COVER_BG_IMG = "_cover_bg.jpg"` /
 `COVER_CAPTURE_W|H = 1920|1080` / `COVER_EMOJI_{DEFAULT,MAX_CHARS,MIN_PX,MAX_PX}`。
 
 `crates/vtrim-polish/src/parse/`：`srt::{parse, parse_file, Subtitle}`；
-`text::{correct_text, apply_highlights, detect_hook, assign_danmaku_tracks}`。
+`text::{correct_text, apply_highlights, detect_hook, assign_danmaku_tracks}` ——
+⚠️ `assign_danmaku_tracks` 分完泳道后**必须把在屏窗口抬到"至少够它滚完"**
+（`vtrim_core::danmaku::clamp_display_windows`）：渲染侧的渐隐钉在窗口末尾、滚动由 `travel` 决定，
+不抬就是"弹幕没到左边缘就消失"（录播姬 XML 的 8 秒窗口对中文弹幕普遍不够）。明细见 core/`danmaku` 卡。
 
 `process::cmd_process`（process/ 卡）、`render::{cmd_render, render_chunk_sync}`（render/ 卡）。
 
@@ -57,9 +62,9 @@
   （用户 2026-09-21 报的原文），预览里全程正常、不报错。两条消费点：`stageDrawRect`
   （`axis/position/scale/padding` → 画面矩形；`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍
   **精确等于整块画布** = 横屏存量零回归）与 `getActiveCamera` 开头的 `CFG.vertical` 早退
-  （`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径；`vtrim-render-core::evaluate_frame`
-  只归零 handheld —— 那是 wgpu 路径，不在 Chrome 出片链路上）。细节见 `templates/AGENTS.md`、
-  `src/project/AGENTS.md`。
+  （`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径；⚠️ `vtrim-render-core::evaluate_frame`
+  是**已删除**的 wgpu 路径留下的平行实现，只归零 handheld、且早已没有生产消费者 —— 别拿它对口径）。
+  细节见 `templates/AGENTS.md`、`src/project/AGENTS.md`。
 - ⚠️ **消费侧纵深防御**：渲染封面时对 `cover.image` 再做一次 `tenant::ensure_within`
   （`vtrim-polish/src/cover.rs`）。handler 层的校验只覆盖"走 API 的那些入口"，别删这道。
 - 公式与净化都在 `cover.rs` 且**只此一份**：`cover_blur_css(scale)`（基准 28px、
@@ -72,13 +77,26 @@
   「又把关键帧那一层给我删了」）。`cover.image` 也**不要**在导入时清空（它是关键帧的来源之一）。
 - ⚠️ **出片不再删 `_cover_frame.jpg`**（`cmd_cover` 末尾那句 `remove_file` 已删）：它就是关键帧层的
   图源，删了等于①用户导出的那一帧白导、②下次出片又按 `frame_pos` 重新截、同一份封面每次换脸。
-- **封面三层：文字 / 关键帧 / 背景**（用户原话：「封面分三层：文字，关键帧，背景」）：
-  `#title`（文字）在最上、`#frame`（**关键帧层**：当前帧清晰图 `_cover_frame.jpg`）居中、
-  `#bg`（**背景层**）在最下，再往上才是渐变/暗角/特效。**三层各有各的图源，谁也不许覆盖谁**。
+- **图层栈（`[cover] layers`，2026-09 起）**：封面从"三层写死"变成**真图层栈**（顺序 + 可见性都落盘）。
+  `resolve_cover_stack(&CoverConfig)` 是**唯一推导**：id = `bg` / `frame`（关键帧层 `_cover_frame.jpg`）/
+  `filter`（渐变+暗角，一层两块）/ `title` / `fx:<CoverEffect::id>`；`plan_cover_layers()` 把它折成每块的
+  `z-index`，`cover_layer_css()` + `cover_fx_html()` 负责注入。**三层各有各的图源，谁也不许覆盖谁**。
+  - ⚠️ **老工程零迁移靠"默认栈走改造前的渲染形式"**（`is_default_stack`）：默认栈时**一个 z-index 都不注入**
+    （只把模板里那条 `#fx-extra{z-index:1}` 补回来）、特效还是一个 div —— 实测给五块都写上 z-index 之后
+    Chrome 会换一条合成路径，缩放中的帧层重采样差 ~9/255，**SHA-256 会变**，而"存量逐字节零回归"是本仓的硬判据。
+    判据：`.workbuddy/cover-layer/` 里三个样本（含六种特效全上的 rich 工程）改前改后 **SHA-256 相同**。
+  - ⚠️ **自定义栈时 `#fx-extra` 必须退回 `z-index:auto`**：它一带 z-index 就是个 stacking context，
+    所有特效的 z-index 会被锁死在同一层（拖动排序看着生效、出片不动，**而且不报错**）。
+  - ⚠️ **`overlay` 特效额外加 `isolation:isolate`**（只加它、`blur` 加不得）：改造前 `#fx-extra` 是 stacking
+    context，`mix-blend-mode:overlay` **没有背景可混**（实测"绿底叠 #ff3366"是橄榄绿）；拆开后它会真混合 →
+    **老封面会变色**。想要真混合走 P2 的「每层混合模式」（显式选择才有观感预期）。
+  - ⚠️ **`COVER_HTML` 只允许在 `build_cover_page` 里替换一次**：以前预览（`build_cover_html`）与出片
+    （`cmd_cover` 内联那段）各写一份，漏改一边就是"预览有层序、出片没有"。新增模板变量只加这一处；
+    `check-cover-stage.mjs` ⑦ 钉住"只有一条替换链"。
 - ⚠️ **`text` 是用户输入，进模板前必须 `escape_html`**（不转义＝往封面 HTML 里注模板，有单测）
   —— `[[cover.effects]]` 的 `kind = "emoji"` 那一支。
-- ⚠️ **默认对齐是 `left`**（`default_cover_text_align()`，2026-09 由 `center` 改来）：默认预设
-  就叫「左文」、默认 `text_x = "35%"`，三处以前是"预设左文、配置居中"，自相矛盾。
+- ⚠️ **默认对齐是 `left`**（`default_cover_text_align()`，2026-09 由 `center` 改来）：默认 `text_x = "35%"`，
+  老工程里显式写过的 `text_align` 一律照旧（字段存在就不走默认）。
   改这个默认值**不要顺手改 `cover.rs::cover_text_align` 的 `_ => ("center","center")` 兜底** ——
   那个 `_` 同时兜着合法值 `"center"` 本身，改了会把显式居中的老封面一起翻成左对齐。
 - **导出产物同名不覆盖：加 `_1` / `_2`**（用户要求"如果已经存在导出文件，就加 _n，类似封面的操作"）：
@@ -89,6 +107,27 @@
   `clip: (0,0,1920,1080)`。**别再退回 `clip: None`**：headless 实测视口只有 1904×929，
   16:9 页面被居中 → 成片变 1904×929 且左右两条黑边（老 bug，已修）；`#toolbar`（右下角 ↻ 预览按钮）
   在 `html.export` 下 `display:none`，否则会被连按钮一起抓进成片。
+- ⚠️ **封面不接 Dhampir**（2026-09-30 探索结论；三种"接入"的含义、逐条利弊与"什么时候才该重开"见
+  **`docs/plan/cover-dhampir-tradeoff.md`**）：封面是"静态单帧 + HTML/CSS 排版"，而**设计器 = 同一份
+  HTML/CSS** 是它唯一的不变式 —— 换渲染器就是第三份实现。且 Dhampir 今天缺的正好是封面全在用的
+  （字距/行高/文字阴影/描边宽度与颜色/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），
+  速度上也没有收益（实测一张封面 ≈3.0–3.3s，Dhampir 单帧冷启动就要 1.5–3.2s）。
+- **封面有两条渲染通道**（2026-10-01 起）：默认仍是 headless Chrome（**兜底**），
+  可选 `VTEDIT_COVER_RENDERER=takumi` 走**静态渲染**（`src/render/takumi.rs`，`cover-takumi` feature **默认关**）。
+  - `build_cover_page_static` 是静态那条的构建入口（= 原替换链 + 填 `__EXPORT_CSS__`）；
+    **Chrome 那条一个字都不改** —— 零回归由构造保证：实测把那三条"关动画"规则挂上去会**改变 Chrome 的像素**
+    （动画把元素提升成合成层，关掉就换光栅化路径，存量 SHA 立刻变）。
+  - ⚠️ 模板里 `:root{}` 那个变量块**必须留**：静态渲染器不跑 JS，而变量的唯一来源曾是页面脚本的
+    `setProperty` —— 缺了它所有 `var(--…)` 声明**整条被丢**（标题没字号没描边、背景没模糊，实测 38.44/255）。
+    它对 Chrome 是**逐字节中性**的（同值、内联优先）。
+  - ⚠️ **字体**：Takumi 不读系统字体，靠 `cover_font_files()` 把字体库全量注册；一个字体都没有时**明确报错**
+    （静默出豆腐块是最坏形态）。`VTEDIT_COVER_RENDERER` 认不出的值也**当场报错、不静默回退**。
+  - 验收口径、四个引擎差异（`@font-face` 不支持 / 无资源解析器要内联 / 复合选择器 `#id.class` 不匹配 /
+    忽略 `paint-order`）与残差（标题字形 ~15/255 是栅格化固有差，**适配层修不了**）见
+    **`docs/plan/takumi-cover-capability.md`**。
+  - **怎么用**：CLI `vtrim polish cover <目录> --renderer takumi`；WebUI 在封面设计器点「生成封面」，
+    弹窗选 Chrome / Takumi（`CoverDesigner.vue` → `POST /api/polish/cover {renderer}`）。
+    两条路都**只透传**，取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > chrome，认不出就报错）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出（编了 feature + 字体库非空），经 `/api/health.cover_static` 给前端置灰用。
 - 封面特效 emoji：`text` 最多 `COVER_EMOJI_MAX_CHARS`(12) 个字符（带 ZWJ/肤色修饰符的一个 emoji
   就要 7~8 个码点），`x/y` 是**字符中心**，`amount` 当大小用（`COVER_EMOJI_MIN_PX`(48) ~
   `COVER_EMOJI_MAX_PX`(288)px，公式只在 `cover.rs::cover_fx_html` 里一份，前端 `fxStyle` 是镜像）。

@@ -70,6 +70,9 @@ pub(crate) fn build_events_system_prompt(
     } else {
         format!("\n{}", local_sticker_text)
     };
+    // 两份类型清单**从效果词汇表算**（见下面的 `fx_type_list` / `durable_type_list`）。
+    let fx_list = fx_type_list();
+    let durable_list = durable_type_list();
     format!(r##"你是一个直播切片事件助手。为指定时间段生成视觉特效/贴纸/音效事件。
 
 事件时间一律写成 **time(开始秒) + end(结束秒)** 两个绝对时间, 不要写"时长";
@@ -89,7 +92,7 @@ pub(crate) fn build_events_system_prompt(
     {{"type":"camera","time":9.0,"end":12.0,"zoom":"中","anchor":"danmaku","anchor_to":"liver"}}
 - sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
-- 视觉特效: shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift
+- 视觉特效: {}
   {{"type":"shake","time":8.0,"end":8.3,"intensity":0.5,"sfx":"tag:爆発"}}
 - overlay: 覆盖层(氛围色). 渐变写 colors(两档起步色/终色), 纯色写 color
   {{"type":"overlay","time":0.0,"end":5.0,"overlay_type":"gradient","colors":["#ff0000","#000000"],"shape":"linear","opacity":0.3}}
@@ -105,7 +108,7 @@ pub(crate) fn build_events_system_prompt(
 - 贴纸在情绪点使用; 起止时间会被系统对齐到**最近的一条字幕**（头尾都落在字幕边界上），
   你只要挑对是"哪句话"的情绪点即可; **如果提供了"可用本地贴纸包", keyword 必须从这些包名中选择**, 且必须从该包列的 tags 里选一个写进 sticker_tag; 候选外的 keyword/tag 无效
 - 特效分两类:
-  * 瞬时特效 shake/flash/blur/zoom_bounce/vignette/hue_shift/stutter/split/noise/pulse/color_shift:
+  * 瞬时特效 {}:
     它们的 end-time 由系统接管, 你写不写都会被 clamp 到 0.1~0.6s; 只表现"爆发瞬间", 不要长时间驻留
   * 持续效果 camera/overlay/sticker: end 才有意义, overlay end-time 0.5~5s, sticker end-time 1.5~2.5s
 - blur 只用于瞬间失焦/眩晕/被击中/闪回, 严禁长时间氛围模糊
@@ -123,7 +126,38 @@ pub(crate) fn build_events_system_prompt(
   仅当候选清单确实没有合适音效时才留空
 {}
 {}
-"##, sticker_desc, local_line, blacklist_line)
+"##, sticker_desc, fx_list, durable_list, local_line, blacklist_line)
+}
+
+/// **视觉特效的类型清单** —— 从效果词汇表（`spec/effects.json`）算出来，**不许在这里手写第二份**。
+///
+/// 权威是 `spec/effects.json`：`scripts/check-effect-registry.mjs` 会断言它与此处、前端四张表、
+/// 转译器、模板、`engine.js`、事件参考文档全部一致。加/删一个效果只改词汇表。
+///
+/// 解析失败时退化成"空串"而不是 panic：提示词少一行清单，比整条 LLM 链路挂掉好；
+/// 而 `include_str!` 是编译期内嵌 ⇒ 真漏了在构建/门禁阶段就会暴露。
+fn fx_type_list() -> String {
+    effect_ids(|e| e.get("kind").and_then(|v| v.as_str()) == Some("fx"))
+}
+fn durable_type_list() -> String {
+    effect_ids(|e| e.get("kind").and_then(|v| v.as_str()) == Some("durable"))
+}
+
+fn effect_ids(pick: impl Fn(&serde_json::Value) -> bool) -> String {
+    let raw = include_str!("../../../../spec/effects.json");
+    let Ok(spec) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return String::new();
+    };
+    spec.get("effects")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter(|e| pick(e))
+                .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
 }
 
 /// Step2 user prompt: 段信息 + 候选清单 + 段内字幕

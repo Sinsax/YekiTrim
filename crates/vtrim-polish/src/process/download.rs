@@ -82,24 +82,49 @@ pub async fn download_keyword_assets(
     let has_stickers = config.segments.iter().any(|seg| {
         seg.events.iter().any(|ev| matches!(ev, project::Event::Sticker { keyword: kw, .. } if !kw.is_empty()))
     });
-    if has_stickers && !config.sticker_source.is_empty() {
-        // 按 (segment_idx, event_idx, source) 精确到事件级分配:
-        // 优先用 process Step 2 已持久化的 source, 旧工程无 source 字段时回退轮询
+    // ⚠️ **不再用「`sticker_source` 非空」当门控**：只要事件引用了贴纸，就要把它**实际用的那个文件**
+    // 复制进 `<项目>/assets/stickers/` —— 出片与预览只读项目内那份（`prepare_sticker_data` /
+    // `build_sticker_map` 都只扫项目目录），这是"单个 polish 项目能独立复现"的唯一保证。
+    //
+    // 判据取**事件自己的 `source`**（process Step 2 解析并落过盘的那个）；`sticker_source`
+    // 只用来给"没有 `source` 字段"的老工程兜底轮询。以前这里是 `&& !config.sticker_source.is_empty()`：
+    // 用户把来源列表清空之后**一个文件都不复制**，项目就悄悄不再自包含。
+    if has_stickers {
         let mut assignments: Vec<(usize, usize, String)> = vec![];
         let sources = &config.sticker_source;
+        let mut no_source = 0usize;
         for (si, seg) in config.segments.iter().enumerate() {
             for (ei, event) in seg.events.iter().enumerate() {
-                if let project::Event::Sticker { source: Some(src), .. } = event {
-                    assignments.push((si, ei, src.clone()));
-                } else if matches!(event, project::Event::Sticker { .. }) {
-                    let source = sources[assignments.len() % sources.len()].clone();
-                    assignments.push((si, ei, source));
+                let project::Event::Sticker { source, keyword, .. } = event else {
+                    continue;
+                };
+                if keyword.trim().is_empty() {
+                    continue;
+                }
+                match source {
+                    Some(src) if !src.is_empty() => assignments.push((si, ei, src.clone())),
+                    // 老工程没写 source：只能按来源列表轮询
+                    _ if !sources.is_empty() => {
+                        let src = sources[assignments.len() % sources.len()].clone();
+                        assignments.push((si, ei, src));
+                    }
+                    _ => no_source += 1,
                 }
             }
+        }
+        if no_source > 0 {
+            tracing::warn!(
+                "  ⚠ {no_source} 条贴纸事件既没有 source、来源列表也为空 —— 无法把贴纸复制进项目，\
+                 这几条在出片时会缺（先在编辑器里选一次贴纸来源，重跑 process）"
+            );
         }
         let r = downloader.download_stickers(&config.segments, &assignments).await;
         if r.sticker_downloaded > 0 || r.sticker_existing > 0 {
             tracing::info!("  ✓ stickers: {} new, {} existing", r.sticker_downloaded, r.sticker_existing);
+        }
+        // 复制失败会让项目**不再自包含**（出片缺图），所以逐条报出来，不并进"下载失败"里混着看
+        for e in &r.errors {
+            tracing::warn!("  ⚠ 贴纸没进项目: {e}");
         }
         total_errors += r.errors.len();
     }

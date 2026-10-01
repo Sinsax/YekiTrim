@@ -1,6 +1,6 @@
 //! polish::project::config：`polish.toml` 的类型真源（`ProjectFile` 与各 section）与画面构成推导、时间轴工具函数。
 //!
-//! 入口：`ProjectFile`、`MuteRange`、`CoverConfig`、`CoverEffect`、`FilterConfig`、`SourceRef`、`CanvasConfig`、`StageConfig`、`StickerConfig`、`StageFit`；`resolve_stage`、`to_toml_commented`、`split_segments_by_mute_ranges`、`clamp_segments_to_duration`。
+//! 入口：`ProjectFile`、`MuteRange`、`CoverConfig`、`CoverEffect`、`FilterConfig`、`SourceRef`、`CanvasConfig`、`StageConfig`、`StickerConfig`、`StageFit`；`resolve_stage`、`to_toml_commented`、`clamp_segments_to_duration`。
 //! 边界：`resolve_stage` 是画面构成的**唯一推导**（模板/编辑器只读注入结果）；`CANVAS_*` / `CAPTION_*` / `STICKER_SAFE_MARGIN` 等常量与前端 JS 是镜像，改一边要改另一边 —— 见 `crates/vtrim-polish/src/project/AGENTS.md`
 
 use serde::{Deserialize, Serialize};
@@ -337,6 +337,31 @@ pub struct CoverConfig {
     /// 模糊平铺的模糊倍率（bg_mode = blur，1.0 = 基准 28px）
     #[serde(default = "default_cover_blur_scale")]
     pub blur_scale: f64,
+    /// **图层栈**（从下到上）：顺序 + 可见性。空 = 老工程 → `cover::default_cover_stack()`（零迁移）。
+    /// id：`bg` / `frame` / `filter`（渐变+暗角，一层两块）/ `title` / `fx:<CoverEffect::id>`。
+    ///
+    /// ⚠️ **声明在最后**：`to_toml_commented` 的行扫描碰到 `[[cover.layers]]` 就会停止给 `[cover]`
+    /// 标注释，放最后才不会让前面的字段一起掉注释（`effects` 那条老问题同理）。
+    #[serde(default)]
+    pub layers: Vec<CoverLayer>,
+}
+
+/// 图层栈的一项（`[[cover.layers]]`）。
+///
+/// **顺序 = 数组顺序，从下到上**；`visible = false` = 这一层还在（属性一个字节都不动），只是不画。
+/// 解析（补齐/忽略未知 id/默认可见）只在 `cover::resolve_cover_stack()` 一处做，前端是镜像。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CoverLayer {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+}
+
+impl Default for CoverLayer {
+    fn default() -> Self {
+        Self { id: String::new(), visible: true }
+    }
 }
 
 fn default_cover_bg_zoom() -> f64 { 1.0 }
@@ -347,6 +372,10 @@ fn default_cover_effect_color() -> String { "#000000".into() }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoverEffect {
+    /// 稳定 id：`[cover] layers` 用 `fx:<id>` 指向它，也是设计器图层列表的 key。
+    /// 老数据为空 → `cover::resolve_cover_stack` 按数组序合成槽位（**不回写**，老工程零迁移）。
+    #[serde(default)]
+    pub id: String,
     pub kind: String,
     #[serde(default = "default_cover_effect_amount")]
     pub amount: f64,
@@ -411,6 +440,7 @@ impl Default for CoverConfig {
             bg_mode: default_cover_bg_mode(),
             bg_color: default_cover_bg_color(),
             blur_scale: default_cover_blur_scale(),
+            layers: Vec::new(),
         }
     }
 }
@@ -834,6 +864,7 @@ impl ProjectFile {
                         "bg_mode" => "# 背景模式(在帧之下): color(纯色,默认黑)/blur(当前帧模糊平铺)",
                         "bg_color" => "# 纯色背景颜色, 默认 #000000 (bg_mode=color；blur 漏边时的兜底色)",
                         "blur_scale" => "# 模糊倍率 (bg_mode=blur，1.0 = 基准 28px)",
+                        "layers" => "# 图层栈(从下到上): id = bg/frame/filter/title/fx:<特效id>；visible=false 只隐藏不删除",
                         _ => "",
                     };
                     if !comment.is_empty() {
@@ -1061,7 +1092,7 @@ impl ProjectFile {
 
 /// 把运镜的结束时间夹到「从它起点到所属分段结束」为止。
 ///
-/// 分段被屏蔽区间切开、或被截断到视频长度之后，事件自带的 `end` 还停在切分前的值。
+/// 分段被截断到视频长度之后，事件自带的 `end` 还停在截断前的值。
 /// 对瞬时特效无所谓（窗口是固定常数、由 `normalize_event_ends` 接管），但运镜的
 /// `end - time` 决定过渡窗口、位移事件还靠它决定「移到那里」的时机，不夹就会移到段外。
 fn clamp_camera_end(seg: &mut Segment) {
@@ -1075,54 +1106,11 @@ fn clamp_camera_end(seg: &mut Segment) {
     }
 }
 
-/// 将分段按屏蔽区间切开：被屏蔽的部分从 segments 中移除，剩下的部分保留原时间坐标。
-pub fn split_segments_by_mute_ranges(segments: &mut Vec<Segment>, ranges: &[MuteRange]) {
-    let ranges: Vec<(f64, f64)> = ranges.iter().filter_map(|r| r.normalized()).collect();
-    if ranges.is_empty() || segments.is_empty() {
-        return;
-    }
-    let mut out: Vec<Segment> = Vec::new();
-    for seg in segments.drain(..) {
-        let mut kept: Vec<(f64, f64)> = vec![(seg.start, seg.end)];
-        for (ms, me) in &ranges {
-            let mut next: Vec<(f64, f64)> = Vec::new();
-            for (s, e) in kept {
-                if *me <= s || *ms >= e {
-                    next.push((s, e));
-                    continue;
-                }
-                if s < *ms {
-                    next.push((s, ms.min(e)));
-                }
-                if *me < e {
-                    next.push((me.max(s), e));
-                }
-            }
-            kept = next;
-        }
-        for (s, e) in kept {
-            if e - s < 0.05 {
-                continue;
-            }
-            let mut ns = seg.clone();
-            ns.start = s;
-            ns.end = e;
-            let kept_events: Vec<Event> = seg
-                .events
-                .iter()
-                .filter(|ev| {
-                    let t = ev.get_time();
-                    t >= s - 0.001 && t < e + 0.001
-                })
-                .cloned()
-                .collect();
-            ns.events = kept_events;
-            clamp_camera_end(&mut ns);
-            out.push(ns);
-        }
-    }
-    *segments = out;
-}
+// 这里曾经有个 `split_segments_by_mute_ranges`（按屏蔽区间切开分段、丢掉屏蔽区内的事件）。
+// ⚠️ **已删除**（用户要求：屏蔽只做标记，不删事件）：它以前由 `cmd_process` / `cmd_llm` 调用并落盘，
+// 于是"屏蔽一段"等于把那一段里的事件**永久删掉**（`cmd_process` 还会被预览/出片隐式触发），
+// 撤销屏蔽也回不来。现在 `mute_ranges` 只由消费侧生效：出片合流后 `Ffmpeg::cut_ranges` 剪掉、
+// 预览跳过、字幕在 `cmd_process` 里按 `MuteRange::overlaps` 过滤。**别再把它加回来。**
 
 /// 将 segments/events 截断到指定时长 (防止 LLM 生成的 segment 超出视频长度)
 pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
@@ -1419,38 +1407,6 @@ mod camera_clamp_tests {
             events,
             extra: Default::default(),
         }
-    }
-
-    /// 被屏蔽区间切开后，运镜跨度要跟着段一起缩，否则过渡窗口会跑到段外
-    #[test]
-    fn mute_split_clamps_camera_end() {
-        let mut segs = vec![seg(0.0, 10.0, vec![cam(0.0, 10.0)])];
-        let ranges = vec![MuteRange {
-            start: 4.0,
-            end: 6.0,
-        }];
-        split_segments_by_mute_ranges(&mut segs, &ranges);
-        assert_eq!(segs.len(), 2, "{segs:?}");
-
-        // 左半段留着事件：终点从 10 缩到段尾 4
-        let (start, end) = (segs[0].start, segs[0].end);
-        let Event::Camera { time, end: cam_end, .. } = &segs[0].events[0] else {
-            panic!("左半段丢了运镜事件: {:?}", segs[0])
-        };
-        let span = cam_end.unwrap() - *time;
-        assert!(
-            span <= end - start + 1e-9,
-            "跨度 {span} 超出段长 {}",
-            end - start
-        );
-
-        // 右半段的事件起点落在被切掉的区间里 → 整条事件随切掉的部分一起没了。
-        // 这是既有行为，由 process 的 Step 1（给没有运镜的段补默认运镜）兜底，不是缺陷。
-        assert!(
-            segs[1].events.is_empty(),
-            "事件起点在屏蔽区内的应被丢弃: {:?}",
-            segs[1]
-        );
     }
 
     /// 截断到视频长度之后同理

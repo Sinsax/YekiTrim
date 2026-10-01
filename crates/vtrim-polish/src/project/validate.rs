@@ -68,10 +68,54 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
     // 老工程的 `duration` → `end` 在反序列化前升级（见 project/legacy.rs）
     let toml_value: toml::Value = toml::from_str(&raw)?;
     let json = super::legacy::upgrade_toml_value(&toml_value)?;
-    let mut config: ProjectFile = serde_json::from_value(json)?;
+    let mut config: ProjectFile = serde_json::from_value(json)
+        .map_err(|e| retired_effect_hint(e, &config_path))?;
     strip_blocked_sticker_sources(&mut config.sticker_source);
     fill_default_local_packages(&mut config.sticker_source);
     Ok(config)
+}
+
+/// **已下线特效类型**的人话报错（2026-10-01，为 `docs/plan/fx-type-consolidation.md` 的 D1/D2 铺路）。
+///
+/// 类型收敛（删 `split` / `stutter` / `zoom_bounce` / `color_shift`）之后，老工程会以
+/// serde 的 `unknown variant \`stutter\`, expected one of …` 读不出来 —— **那句话对人没用**：
+/// 它既不说"这是本版本删掉的效果"，也不说怎么办。
+///
+/// 这里把它包成人话（并保留原始 serde 文本供排查）。⚠️ 这份名单是**历史清单**，
+/// **不要**拿效果词汇表（`spec/effects.json`）去校验它 —— 那几个类型正是要在词汇表里消失的。
+fn retired_effect_hint(err: serde_json::Error, config_path: &Path) -> anyhow::Error {
+    match retired_effect_message(&err.to_string(), config_path) {
+        Some(msg) => anyhow::anyhow!(msg),
+        None => anyhow::Error::new(err),
+    }
+}
+
+/// 纯函数：serde 的报错文本 → 人话（认不出那四类就 `None` = 原样透传）。
+///
+/// 抽成纯函数是为了**可测**：那四个类型在收敛落地前仍然合法，构造不出真实的 serde 报错，
+/// 所以测试用**合成文本**（`unknown variant \`stutter\`, expected one of …`）来钉这段逻辑。
+fn retired_effect_message(raw: &str, config_path: &Path) -> Option<String> {
+    const RETIRED: [&str; 4] = ["split", "stutter", "zoom_bounce", "color_shift"];
+    // 只在 serde 明确说"unknown variant `X`"时才算 —— 别拿类型名裸匹配（`expected one of …` 会把
+    // 当前仍合法的名字都列出来，裸匹配必然误判）。
+    let hit: Vec<&str> = RETIRED
+        .iter()
+        .copied()
+        .filter(|t| raw.contains(&format!("unknown variant `{t}`")))
+        .collect();
+    if hit.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "该工程含**已下线的特效事件**（{}）—— 本版本不兼容这类工程。\n  \
+         两条路：① 用旧版本打开、把这几条事件删掉；\
+         ② 直接编辑 {}：删掉对应 `[[segments.events]]` 里 `type = \"{}\"` 的那一段。\n  \
+         原始报错：{}",
+        hit.join(" / "),
+        config_path.display(),
+        hit[0],
+        raw
+    ))
 }
 
 /// 默认自动载入已 build 的贴纸包（从 stickers/sticker.toml 索引读取）。
@@ -159,7 +203,10 @@ pub fn validate_project(config: &ProjectFile, project_path: &Path) -> Vec<String
 
 #[cfg(test)]
 mod tests {
-    use super::{strip_blocked_sticker_sources, update_polish_toml, load_project, write_atomic};
+    use super::{
+        load_config_from, load_project, retired_effect_hint, retired_effect_message,
+        strip_blocked_sticker_sources, update_polish_toml, write_atomic,
+    };
     use crate::project::{MuteRange, ProjectFile};
     use vtrim_render_core::types::Point;
 
@@ -252,5 +299,50 @@ mod tests {
         let mut src = vec!["irasu".to_string()];
         strip_blocked_sticker_sources(&mut src);
         assert!(src.is_empty());
+    }
+
+    /// **已下线特效的人话报错**（类型收敛铺路）：含 `stutter` 这类已删类型的工程，
+    /// 报错要说清"这是本版本删掉的"并给出两条路，同时**保留原始 serde 文本**。
+    ///
+    /// ⚠️ 这条测试用**合成**的 serde 错误来跑（那四种类型现在还合法，读得出来）——
+    /// 类型收敛（`docs/plan/fx-type-consolidation.md`）落地后，它测的正是真实路径。
+    #[test]
+    fn retired_effect_error_is_human_readable() {
+        let project = std::path::Path::new("X:/clips/clip-01/polish.toml");
+        // ① serde 真实报错的形状（收敛落地后就是这样）⇒ 必须给人话
+        let raw = "unknown variant `stutter`, expected one of `camera`, `shake`, `flash`";
+        let msg = retired_effect_message(raw, project).expect("含已下线类型时必须给人话");
+        assert!(msg.contains("已下线"), "要说清是本版本删掉的：{msg}");
+        assert!(msg.contains("stutter"), "要点名是哪个类型：{msg}");
+        assert!(msg.contains("X:/clips/clip-01/polish.toml"), "要点名是哪个文件：{msg}");
+        assert!(msg.contains(raw), "原始 serde 文本要保留（排查用）：{msg}");
+        // ② 普通解析错误 ⇒ **原样透传**（不许都包装成"已下线"）
+        let other = "invalid type: string \"不是数组\", expected a sequence";
+        assert!(retired_effect_message(other, project).is_none(), "普通错误不该被包装：{other}");
+        // ③ 只是**提到**这些名字（`expected one of` 列表里）不算 —— 裸匹配会误判
+        let listed = "unknown variant `nonexistent`, expected one of `shake`, `stutter`, `split`";
+        assert!(
+            retired_effect_message(listed, project).is_none(),
+            "只是列在 expected one of 里、真正错的是别的类型 ⇒ 不该包装：{listed}"
+        );
+        // ④ 包装函数对真实 serde 错误的行为（普通错误透传）
+        let json = serde_json::json!({"source": {"video": "clip.mp4"}, "segments": "不是数组"});
+        let err = serde_json::from_value::<ProjectFile>(json).expect_err("类型不对必须报错");
+        let raw2 = err.to_string();
+        assert_eq!(retired_effect_hint(err, project).to_string(), raw2, "普通错误要原样透传");
+    }
+
+    /// 真工程里读一遍（含 `[[segments.events]]`）—— 走的就是被包装过的那条路。
+    #[test]
+    fn load_config_from_reads_events_and_wraps_errors() {
+        let dir = tmp_project("load-config");
+        let mut cfg = ProjectFile::example();
+        cfg.segments[0].events.push(
+            serde_json::from_value(serde_json::json!({"type": "flash", "time": 0.0, "end": 0.3})).unwrap(),
+        );
+        // `update_polish_toml` 是 async ⇒ 这里直接用同步的 `write_atomic` 落盘（测的是**读**那条路）
+        write_atomic(&dir.join("polish.toml"), &cfg.to_toml_commented().unwrap()).unwrap();
+        let loaded = load_config_from(&dir, "polish.toml").expect("正常工程必须读得出来");
+        assert_eq!(loaded.segments[0].events.len(), 1);
     }
 }

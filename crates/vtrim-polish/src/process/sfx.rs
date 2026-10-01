@@ -55,14 +55,10 @@ pub fn event_sfx_ref(event: &crate::project::Event) -> Option<&str> {
         | Event::Shake { sfx, .. }
         | Event::Flash { sfx, .. }
         | Event::Blur { sfx, .. }
-        | Event::ZoomBounce { sfx, .. }
         | Event::Vignette { sfx, .. }
         | Event::HueShift { sfx, .. }
-        | Event::Stutter { sfx, .. }
-        | Event::Split { sfx, .. }
         | Event::Noise { sfx, .. }
         | Event::Pulse { sfx, .. }
-        | Event::ColorShift { sfx, .. }
         | Event::Overlay { sfx, .. } => sfx.as_deref(),
         _ => None,
     }
@@ -75,14 +71,10 @@ pub fn event_has_sfx_ref(event: &crate::project::Event) -> bool {
         | crate::project::Event::Shake { sfx, .. }
         | crate::project::Event::Flash { sfx, .. }
         | crate::project::Event::Blur { sfx, .. }
-        | crate::project::Event::ZoomBounce { sfx, .. }
         | crate::project::Event::Vignette { sfx, .. }
         | crate::project::Event::HueShift { sfx, .. }
-        | crate::project::Event::Stutter { sfx, .. }
-        | crate::project::Event::Split { sfx, .. }
         | crate::project::Event::Noise { sfx, .. }
         | crate::project::Event::Pulse { sfx, .. }
-        | crate::project::Event::ColorShift { sfx, .. }
         | crate::project::Event::Overlay { sfx, .. } => sfx.is_some(),
         _ => false,
     }
@@ -96,14 +88,10 @@ pub fn event_has_sound(event: &crate::project::Event) -> bool {
         | crate::project::Event::Shake { sfx, .. }
         | crate::project::Event::Flash { sfx, .. }
         | crate::project::Event::Blur { sfx, .. }
-        | crate::project::Event::ZoomBounce { sfx, .. }
         | crate::project::Event::Vignette { sfx, .. }
         | crate::project::Event::HueShift { sfx, .. }
-        | crate::project::Event::Stutter { sfx, .. }
-        | crate::project::Event::Split { sfx, .. }
         | crate::project::Event::Noise { sfx, .. }
         | crate::project::Event::Pulse { sfx, .. }
-        | crate::project::Event::ColorShift { sfx, .. }
         | crate::project::Event::Overlay { sfx, .. } => sfx.is_some(),
         _ => false,
     }
@@ -174,14 +162,10 @@ pub(super) fn set_sfx_field(event: &mut crate::project::Event, value: Option<Str
         | Event::Shake { sfx, .. }
         | Event::Flash { sfx, .. }
         | Event::Blur { sfx, .. }
-        | Event::ZoomBounce { sfx, .. }
         | Event::Vignette { sfx, .. }
         | Event::HueShift { sfx, .. }
-        | Event::Stutter { sfx, .. }
-        | Event::Split { sfx, .. }
         | Event::Noise { sfx, .. }
         | Event::Pulse { sfx, .. }
-        | Event::ColorShift { sfx, .. }
         | Event::Overlay { sfx, .. } => *sfx = value,
         _ => {}
     }
@@ -198,14 +182,10 @@ pub fn resolve_event_sfx(event: &mut crate::project::Event, blacklist: &[String]
         | Event::Shake { sfx, .. }
         | Event::Flash { sfx, .. }
         | Event::Blur { sfx, .. }
-        | Event::ZoomBounce { sfx, .. }
         | Event::Vignette { sfx, .. }
         | Event::HueShift { sfx, .. }
-        | Event::Stutter { sfx, .. }
-        | Event::Split { sfx, .. }
         | Event::Noise { sfx, .. }
         | Event::Pulse { sfx, .. }
-        | Event::ColorShift { sfx, .. }
         | Event::Overlay { sfx, .. } => Some(sfx),
         _ => None,
     };
