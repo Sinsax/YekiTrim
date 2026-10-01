@@ -106,18 +106,28 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/render", post(polish_render))
         .route("/polish/cover", post(polish_cover))
         .route("/polish/preview", post(polish_preview))
+    // Dhampir **浏览器端**预览：渲染跑在页面（wasm + WebGPU），后端只发资源与工程 JSON。
+    // 与上面那条 DOM 预览**并列**（按钮切换保留）：一个看 CSS/DOM 复刻、一个看真底座。
+    .route("/polish/dhampir-project", post(polish_dhampir_project))
+    // 底座**出片**通道的就绪位（M3）：二进制/转译器/字体/node/版本契约各查一次文件，
+    // 让"底座不可用"在点渲染之前就可见（前端挂在渲染弹窗上，`vtrim doctor` 用同一份判断）。
+    .route("/polish/dhampir-status", post(polish_dhampir_status))
+    .route("/polish/dhampir-wasm/*path", get(polish_dhampir_wasm))
         .route("/polish/cover-preview", post(polish_cover_preview))
         .route("/polish/cover-background", post(polish_cover_background))
         .route("/polish/cover-frame", post(polish_cover_frame))
         .route("/polish/project", get(polish_project_get).put(polish_project_put))
         .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
+        // 贴纸的**第 k 帧**（浏览器侧没有可用的多帧图解码，见那个函数的说明）
+        .route("/polish/sticker-frame", post(polish_sticker_frame))
         .route("/polish/sticker-sources", get(polish_sticker_sources))
         // 贴纸库只读浏览（编辑器里 keyword→贴纸 的两级选择）；写操作仍只在 admin
         .route("/polish/sticker-library", get(polish_sticker_library))
         .route("/polish/sticker-file", get(polish_sticker_file))
         // 音效目录（编辑器里音效事件的列表选择）
         .route("/polish/sfx-catalog", get(polish_sfx_catalog))
-        .route("/polish/render-frame", post(polish_render_frame))
+        // ⚠️ 这里曾经有 `POST /polish/render-frame`（wgpu 单帧真渲染预览）—— 那条 GPU 链路已删除
+        // （GPU 那侧交给独立的 Dhampir 底座）。别把它加回来。
         .route("/polish/font", get(polish_font))
         // 字体库只读浏览（exe 同级 resources/fonts/）：字幕/封面字体的下拉数据源。
         // 与贴纸库同规矩 —— 只管读，**不放上传**（字体由管理员自己丢进目录）
@@ -375,6 +385,16 @@ async fn unauthenticated_requests_are_401_except_whitelist() {
         ("GET", "/project/list"),
         ("GET", "/project-data/status?config=vtrim.toml"),
         ("POST", "/polish/init"),
+        // ---- Dhampir 预览（B1/B2/产物转发）----
+        //
+        // 这三条**必须**在这张表里：
+        // * 前两条会**起进程**（调 Dhampir 二进制），未登录就能触发等于给了一个
+        //   "匿名让人帮你渲片子"的入口；
+        // * 第三条**把文件内容读出来**给请求方 —— 它要匿名可读，就等于片段目录里的
+        //   产物对全网开放。前端那边是用 `fetch`(带 cookie) 取、再转 blob 的，
+        //   所以它**不需要**在白名单里。
+        ("POST", "/polish/dhampir-project"),
+        ("GET", "/polish/dhampir-wasm/engine.js"),
     ] {
         let res = t
             .call(

@@ -24,31 +24,6 @@ pub struct AppState {
     /// `RenderServer` 起的监听**无法关闭**，旧实现每次点击预览都新起一个，
     /// 端口与任务会无限泄漏；这里按目录复用（HTML 每次请求重建，不会过期）。
     pub preview_servers: Arc<std::sync::Mutex<std::collections::HashMap<String, u16>>>,
-
-    /// wgpu 单帧真渲染预览的常驻后端槽（feature 门控）。
-    #[cfg(feature = "wgpu-render")]
-    pub preview: PreviewSlot,
-}
-
-#[cfg(feature = "wgpu-render")]
-#[derive(Clone, Default)]
-pub struct PreviewSlot(pub Arc<std::sync::Mutex<Option<PreviewBackend>>>);
-
-#[cfg(feature = "wgpu-render")]
-impl std::fmt::Debug for PreviewSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PreviewSlot")
-    }
-}
-
-#[cfg(feature = "wgpu-render")]
-pub struct PreviewBackend {
-    pub dir: PathBuf,
-    pub backend: vtrim_polish::render::native::WgpuBackend,
-    pub last_t: f64,
-    pub last_jpeg: Option<Vec<u8>>,
-    /// ffprobe 结果缓存（同 dir 的视频尺寸不变）
-    pub video_size: Option<(u32, u32)>,
 }
 
 impl AppState {
@@ -67,8 +42,6 @@ impl AppState {
             jobs: Arc::new(JobManager::new()),
             auth,
             preview_servers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            #[cfg(feature = "wgpu-render")]
-            preview: PreviewSlot::default(),
         }
     }
 

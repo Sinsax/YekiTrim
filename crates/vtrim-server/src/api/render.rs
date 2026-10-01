@@ -14,6 +14,7 @@ pub(super) const RENDER_MILESTONES: &[&str] = &[
     "-- Server --",
     "-- Sound data --",
     "-- Sticker GIF --",
+    "-- Dhampir",   // 底座那条腿（只出画面，音轨仍归本仓）
     "-- Render chunks",
     "-- Concat --",
     "-- Audio --",
@@ -233,6 +234,10 @@ pub(super) fn cleanup_render_leftovers(dir: &Path) {
 /// （实测挂过两次，每次都留下 3 个 headless Chrome 空转两小时）。落文件 + `wait()`
 /// 判定退出就没有这个问题。
 ///
+/// `extra` 是**透传给子命令的额外参数**（现在只有 `render` 用：`["--renderer", "chrome"]`）。
+/// 不放宽成任意参数的入口 —— 这个函数是"服务端起自己的一个 polish 子命令"，
+/// 参数面越窄越好；白名单在 handler 那一侧（`polish_render`）。
+///
 /// 取消：子进程是**另一个进程**，看不到我们的进程内标志 —— 由 `cancel_watch`
 /// 按 pid 杀掉整棵树（含 Chrome / ffmpeg）。
 pub(super) async fn run_polish_child(
@@ -241,6 +246,7 @@ pub(super) async fn run_polish_child(
     job_id: &str,
     sub: &str,
     dir: &Path,
+    extra: &[String],
 ) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -260,8 +266,10 @@ pub(super) async fn run_polish_child(
 
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vtrim"));
     let dir_str = dir.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec!["polish".into(), sub.into(), dir_str];
+    args.extend(extra.iter().cloned());
     let mut child = tokio::process::Command::new(&exe)
-        .args(["polish", sub, &dir_str])
+        .args(&args)
         .env("NO_COLOR", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(file))

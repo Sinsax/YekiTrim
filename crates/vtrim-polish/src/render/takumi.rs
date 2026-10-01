@@ -1,0 +1,617 @@
+//! **静态封面渲染（Takumi 底座）** —— 不跑浏览器、不跑 JS、不推进时间。
+//!
+//! # 它解决什么
+//!
+//! 现在出封面要起一个 headless Chrome：实测一张封面 **3.18s / 11 个进程 / 峰值 520MB**
+//! （其中 1.5s 还是模板自己 `setTimeout(1500)` 的白等）。Takumi 是 MIT/Apache 的 Rust 光栅化器，
+//! 吃 HTML+CSS 直接出图：实测同一张真封面 **render 250ms / 单进程 / 峰值 54MB**，
+//! 与 Chrome 的像素差 **3.03/255**（残差只在字形边缘 —— 两个栅格化器的固有差异）。
+//!
+//! # 为什么是"薄桥"
+//!
+//! 这一层**只做三件事**：调 `from_html` + `StyleSheet::parse` + `render`；
+//! **不碰**模板拼接（归 `cover.rs::build_cover_page_static`）、**不碰**配置（归 `project`）、
+//! **不碰**产物命名（归 `render::unique_output_path`）。要加引擎差异也**只加在这里**。
+//!
+//! # 三条实测踩出来的规矩
+//!
+//! 1. **CSS 必须由调用方给**（`build_cover_page_static` 回传，或本模块的
+//!    [`extract_style_blocks`]）—— Takumi 的 HTML 前端 **`from_html` 会丢掉 `<style>` 块**，
+//!    它只认 `style=` 内联属性；而引擎本身有完整的样式表（`StyleSheet::parse` + `RenderOptions`）。
+//! 2. **`paint-order` 必须删**：写了它描边会盖住填充（8px 描边 / 56px 字 → 一片黑）。
+//!    实测删掉后 18.24/255 → **0.47/255**。
+//! 3. **`repeating-linear-gradient` 的角度语义与 CSS 相反**（`0deg` ≡ Chrome 的 `180deg`）。
+//!    实测 30.50/255 → **0.04/255**。封面"扫描线"特效就是它。
+//!
+//! # 字体：**必须显式给**
+//!
+//! Takumi **不读系统字体**（内置只有 Geist，拉丁）。中文/emoji 都要注册字体文件，
+//! 否则出的是豆腐块 —— 所以这条路要求"字体库里有字体"，一个都没有时**明确报错**，不静默降级。
+#![cfg(feature = "cover-takumi")]
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use base64::Engine as _;
+// 入口函数在 crate 根，**不在 prelude 里**（prelude 只有数据类型）
+use takumi::prelude::*;
+use takumi::{from_html, render, write_image};
+use std::hash::{Hash, Hasher};
+
+/// 短 hash（非加密，只为"输入/输出变没变"一眼可见）。
+fn short_hash(bytes: &[u8]) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    format!("{:08x}", h.finish() as u32)
+}
+
+/// 从封面 HTML 里按**文档序**取出所有 `<style>…</style>` 的内容。
+///
+/// ⚠️ **先剥 HTML 注释**：模板里那句「单独一个 `<style>` 放在主样式之后…」的注释**提到了 `<style>`**，
+/// 不剥注释就会把注释文字当成 CSS → Takumi 报 `StyleSheetParseError { kind: DanglingCombinator }`
+/// （实测踩到过）。这条有单测钉着（`extract_ignores_the_comment_trap`）。
+///
+/// ⚠️ 优先用 `cover.rs::build_cover_page_static` 回传的 CSS；这个函数是给"手上只有 HTML"的
+/// 场景兜底的（例如已经落盘的预览页）。
+pub fn extract_style_blocks(html: &str) -> String {
+    let mut cleaned = String::with_capacity(html.len());
+    let mut parts = html.split("<!--");
+    if let Some(first) = parts.next() {
+        cleaned.push_str(first);
+    }
+    for p in parts {
+        // 没闭合的注释：整段丢掉（宁可少 CSS，也不要把注释当样式表喂进去）
+        if let Some(k) = p.find("-->") {
+            cleaned.push_str(&p[k + 3..]);
+        }
+    }
+
+    let mut out = String::new();
+    let mut rest = cleaned.as_str();
+    while let Some(i) = rest.find("<style") {
+        let Some(gt) = rest[i..].find('>') else { break };
+        let body = &rest[i + gt + 1..];
+        let Some(end) = body.find("</style>") else { break };
+        out.push_str(&body[..end]);
+        out.push('\n');
+        rest = &body[end + "</style>".len()..];
+    }
+    out
+}
+
+/// 只改**喂给 Takumi 的那一份** CSS，修三处引擎差异（见模块头 2、3 条 + 这条）：
+///
+/// 4. **删掉 `@font-face` 整块**：项目的 `[cover] font` 选了库内字体时，`cover.rs` 会往模板里注入
+///    `@font-face`；而 Takumi 的样式表解析器**不认这个 at-rule**（实测
+///    `AtRuleInvalid("font-face")` 直接让整张封面失败）。这条路本来也不靠 CSS 声明字体 ——
+///    字体是 [`render_cover_png`] 用 `Fonts::register` 注册进去的。
+///
+/// ⚠️ 千万别把这几条改进模板：模板那份是 Chrome 的输入，
+/// 改了 `paint-order` 会**改掉 Chrome 自己的出图**（存量零回归 SHA 立刻变）。
+pub fn adapt_css_for_takumi(css: &str) -> String {
+    let css = strip_at_rule_blocks(css, "@font-face");
+    // 标定开关：Takumi 的 `filter:blur(Npx)` 与 CSS 的 blur 口径（σ vs 半径）可能不同 ——
+    // 在**真照片**上量得出来（铺满全图的小幅差），在纯色测试图案上量不出来。
+    // `VTEDIT_TAKUMI_BLUR_SCALE=0.5` 把所有 blur(N) 换成 blur(N×0.5)。
+    let blur_scale: f64 = std::env::var("VTEDIT_TAKUMI_BLUR_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.0);
+    let css = if (blur_scale - 1.0).abs() > f64::EPSILON {
+        scale_blur(&css, blur_scale)
+    } else {
+        css
+    };
+    let mut out = String::with_capacity(css.len());
+    for line in css.lines() {
+        // `paint-order:stroke fill;` → 整条删掉（Takumi 里有它就会把描边画在填充之上）
+        // ⚠️ 注意：Takumi **完全忽略 `paint-order`**，所以"删掉它"并不能让画序变成 CSS 的默认
+        //（`normal` = 描边在上）—— 它永远描边在上。粗描边（本工程 20px/120px）会把字形糊死。
+        // 这里的描边剥离是**诊断开关**：用来量"问题全在描边上"这个判断的上限。
+        let stripped = strip_declaration(line, "paint-order");
+        let stripped = if std::env::var("VTEDIT_TAKUMI_NO_STROKE").is_ok() {
+            strip_declaration(&stripped, "-webkit-text-stroke")
+        } else {
+            stripped
+        };
+        // 扫描线：Takumi 的 0deg 与 CSS 相反
+        // ⚠️ Takumi 的**无前缀** `text-stroke` 是"填充在上"（实验台 10e：观感正常），
+        // 而 `-webkit-text-stroke` 会把描边画在填充之上（10_stroke：糊成黑块）⇒ 就地换写法，别做双层。
+        out.push_str(&stripped.replace("repeating-linear-gradient(0deg", "repeating-linear-gradient(180deg"));
+        out.push('\n');
+    }
+    out
+}
+
+/// 把 `blur(Npx)` 里的 N 乘一个系数（标定模糊口径用；见 [`adapt_css_for_takumi`]）。
+/// 把 `var(--x)` **就地换成值**（只认 CSS 里定义过的那些，含 `var(--x, fallback)`）。
+///
+/// **为什么必须**：实测两个真实的失效点 —— `#frame img{transform:var(--bg-transform)}` 在 Takumi 里
+/// 不生效（帧不缩放 ⇒ 上下露黑边），`filter:blur(var(--bg-blur))` 同理。变量在 `:root{}` 里是有定义的，
+/// 所以这是**取值解析**的差异，不是"没有定义"。
+pub fn inline_css_vars(css: &str) -> String {
+    let Ok(def_re) = regex_lite::Regex::new(r"--([A-Za-z0-9-]+)\s*:\s*([^;}]+)") else { return css.to_string() };
+    let Ok(use_re) = regex_lite::Regex::new(r"var\(\s*--([A-Za-z0-9-]+)\s*(?:,\s*([^)]*))?\)") else { return css.to_string() };
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for cap in def_re.captures_iter(css) {
+        vars.insert(cap[1].to_string(), cap[2].trim().to_string());
+    }
+    if vars.is_empty() { return css.to_string(); }
+    let mut out = css.to_string();
+    // 两轮：值里还可能引用别的变量（如 `--grad-bg` 引用 `--bg-color`）
+    for _ in 0..2 {
+        let mut next = String::with_capacity(out.len());
+        let mut last = 0;
+        for cap in use_re.captures_iter(&out) {
+            let whole = cap.get(0).expect("group 0");
+            next.push_str(&out[last..whole.start()]);
+            let name = cap[1].to_string();
+            match vars.get(&name) {
+                Some(v) => next.push_str(v),
+                None => next.push_str(cap.get(2).map(|m| m.as_str()).unwrap_or("")),
+            }
+            last = whole.end();
+        }
+        next.push_str(&out[last..]);
+        if next == out { break; }
+        out = next;
+    }
+    out
+}
+
+/// 给 `font-family` 里的通用族（`sans-serif` 等）**前面补上 emoji 家族**。
+/// 把 `#frame img` 上的 `transform` / `transform-origin` **搬到父 `#frame`**，并显式去掉 img 上那两条。
+///
+/// **为什么必须**：实测 Takumi **不认 `<img>` 上的 `transform`** —— 关键帧层不缩放/不位移，画面缩在中间、
+/// 上下露黑边（真工程实测整图差 35/255）；同一个 transform 作用在**普通 div** 上是生效的
+///（实验台 case 17：`#w{transform:translate(-50%,-50%)}` 定位正确）。
+pub fn hoist_frame_transform(css: &str) -> String {
+    let Ok(rule_re) = regex_lite::Regex::new(r"#frame img\s*\{[^}]*\}") else { return css.to_string() };
+    let Some(rule) = rule_re.find(css) else { return css.to_string() };
+    let body = rule.as_str();
+    let grab = |key: &str| -> Option<String> {
+        regex_lite::Regex::new(&format!(r"{key}\s*:\s*([^;}}]+)"))
+            .ok()
+            .and_then(|re| re.captures(body))
+            .map(|c| c[1].trim().to_string())
+    };
+    let (Some(t), Some(o)) = (grab("transform"), grab("transform-origin")) else { return css.to_string() };
+    let stripped = match regex_lite::Regex::new(r"transform(-origin)?\s*:\s*[^;}}]+;?") {
+        Ok(re) => re.replace_all(body, "").to_string(),
+        Err(_) => body.to_string(),
+    };
+    let mut out = css.replacen(body, &stripped, 1);
+    out.push_str(&format!("\n#frame{{transform:{t};transform-origin:{o};}}\n#frame img{{transform:none;}}"));
+    out
+}
+
+///
+/// **为什么必须**：封面的字体栈是 `'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif` ——
+/// 浏览器会退回**系统** emoji 字体，而 Takumi 只在**注册过**的字体里找 ⇒ 标题里的 🩸 变成黑块。
+pub fn ensure_emoji_fallback(css: &str) -> String {
+    let Ok(re) = regex_lite::Regex::new(r"(font-family\s*:[^;}]*?)(sans-serif|serif|monospace)") else {
+        return css.to_string();
+    };
+    re.replace_all(css, "${1}'Segoe UI Emoji','Noto Color Emoji',${2}").to_string()
+}
+
+fn scale_blur(css: &str, factor: f64) -> String {
+    let Ok(re) = regex_lite::Regex::new(r"blur\((\d+(?:\.\d+)?)px\)") else { return css.to_string() };
+    let mut out = String::with_capacity(css.len());
+    let mut last = 0;
+    for cap in re.captures_iter(css) {
+        let whole = cap.get(0).expect("group 0");
+        let n: f64 = cap[1].parse().unwrap_or(0.0);
+        out.push_str(&css[last..whole.start()]);
+        out.push_str(&format!("blur({:.2}px)", n * factor));
+        last = whole.end();
+    }
+    out.push_str(&css[last..]);
+    out
+}
+
+/// 与 [`split_title_layers`] 配套的三条规则。
+///
+/// ⚠️ **全部写成"类 + 后代"形式**（`.vt-outer #title`），**不用 `#title.vt-fill` 这种复合选择器** ——
+/// 实测 Takumi 不匹配 `#id.class`（`selector-probe`：Chrome A−B = 104.11 / Takumi 2.01）。
+const TAKUMI_TITLE_LAYER_CSS: &str = "\
+.vt-outer{z-index:2}\
+.vt-inner-fill{position:absolute;left:0;top:0;width:100%}\
+.vt-inner-fill #title{-webkit-text-stroke:0}\
+.vt-outer #title{color:transparent}\
+.vt-outer .hl{color:transparent}";
+
+/// 让"描边在下、填充在上"在 Takumi 里成立：把 `#title-wrap` **整块复制一份放在它前面**当描边层。
+///
+/// **为什么不能靠 `paint-order`**：Takumi 完全忽略它，永远把描边画在填充之上
+/// （模板给 Chrome 写的是 `paint-order:stroke fill`，即填充在上）。20px 描边 / 120px 字时，
+/// 描边会吃掉整个字腔 —— 真工程上标题糊成黑块（区域分解：非标题区 ≤1.6/255，标题那两行 43~49/255）。
+///
+/// **为什么复制整块 wrap 而不是复制里面的 `#title`**：`#title-wrap` 带
+/// `transform:translate(-50%,-50%)` + `width:var(--tw)` + `display:flex`，两层各自的盒心由它决定；
+/// 复制 wrap 则两层的几何**天然完全相同**（同一套 CSS、同一个 `left/top/transform`）。
+/// 两个绝对定位元素同 z-index 时按 DOM 序绘制，所以描边层放在前面就在下面。
+///
+/// 找不到那块就原样返回（宁可标题观感差，也不要动坏 HTML）。
+pub fn split_title_layers(html: &str, stroke: &str, css: &str) -> String {
+    // 目的：等价 Chrome 的 `paint-order:stroke fill`（填充在上）—— Takumi 忽略 paint-order，
+    // 只能画两层：描边层（透明填充 + 描边）在下，填充层（纯填充）在上。
+    // ⚠️ 两层的**盒子必须完全一致**（实测：一层 flex 子项 max-content、另一层 width:100% 时，
+    // 两层错位/放大，整图差从 21 掉到 25）。所以两层都 absolute + 同 left/top/width，
+    // 并由 wrap 的**内联 height**（= 行数 × --fs × --lh）兜住 translate(-50%,-50%) 的居中。
+    let Ok(re) = regex_lite::Regex::new(r#"<div id="title-wrap">([\s\S]*?</div>)</div>"#) else {
+        return html.to_string();
+    };
+    let Some(cap) = re.captures(html) else { return html.to_string() };
+    let whole = cap.get(0).expect("group 0").as_str();
+    let inner = &cap[1];
+    let num = |pat: &str, dflt: f64| -> f64 {
+        regex_lite::Regex::new(pat)
+            .ok()
+            .and_then(|r| r.captures(css))
+            .and_then(|c| c[1].parse().ok())
+            .unwrap_or(dflt)
+    };
+    let fs = num(r"--fs\s*:\s*([\d.]+)px", 120.0);
+    let lh = num(r"--lh\s*:\s*([\d.]+)", 1.7);
+    // ⚠️ **结尾那个 `<br>` 不算一行**：模板的 title_html 每行后都跟 `<br>`（末尾也有），
+    // 而 Chrome 的块高只算**可见行**（实测：按 5 行算高度 → 多 204px → translate(-50%,-50%) 整体下移 ~102px）。
+    let text_end = inner.rfind("</div>").unwrap_or(inner.len());
+    let mut body = inner[..text_end].trim_end();
+    if let Some(t) = body.strip_suffix("<br>") {
+        body = t.trim_end();
+    }
+    let lines = regex_lite::Regex::new(r"<br\s*/?>")
+        .map(|r| r.find_iter(body).count())
+        .unwrap_or(0) + 1;
+    let h = (fs * lh * lines as f64).round();
+    let box_style = "position:absolute;left:0;top:0;width:100%;";
+    let inner_stroke = inner.replacen(
+        "<div id=\"title\"",
+        &format!("<div id=\"title\" style=\"{box_style}color:transparent;{stroke}\""),
+        1,
+    );
+    // ⚠️ `.hl` 高亮词**自己是 span**，带 `color:#ffcc00` —— 从 `#title` 继承的 `transparent` 压不过它，
+    // 于是描边层里的高亮词还是"黄填充 + 描边"（实测：只有含 .hl 的词变肥）。所以**逐个内联**改透明。
+    let mut hl_transparent = inner_stroke.clone();
+    // Rust 的 `replace` 替换**全部**出现 ⇒ 一次调用即可（循环会加出重复 style 属性，实测 4 个）
+    hl_transparent = hl_transparent.replace("<span class=\"hl\"", "<span class=\"hl\" style=\"color:transparent\"");
+    let inner_fill = inner.replacen(
+        "<div id=\"title\"",
+        &format!("<div id=\"title\" style=\"{box_style}-webkit-text-stroke:0\""),
+        1,
+    );
+    // ⚠️ **模板的 `.hl` 规则自带 `-webkit-text-stroke:var(--sk)`** —— 填充层的 `#title` 去了描边，
+    // 但 `.hl` 是**子元素、自己有描边** ⇒ 高亮词依旧是"描边压填充"的实心黑块（看图实锤）。
+    // 所以填充层的高亮词也要**逐个内联**去掉描边。
+    let hl_fill = inner_fill.replace("<span class=\"hl\"", "<span class=\"hl\" style=\"-webkit-text-stroke:0\"");
+    let block = format!(r#"<div id="title-wrap" style="height:{h}px">{hl_transparent}{hl_fill}</div>"#);
+    html.replacen(whole, &block, 1)
+}
+
+/// 把 **复合选择器** `#id.class` 扁平化成 `#id`（仅当那份 HTML 里该元素确实带着这个 class）。
+///
+/// **为什么必须**：实测 Takumi 2.14 **不匹配 `#a.k img`**（最小单点：Chrome A−B = 104.11、
+/// Takumi A−B = 2.01）。而真封面的背景层可见性**正是靠这条**：
+///
+/// ```css
+/// #bg img { display:none }
+/// #bg.bg-blur img  { display:block; filter:blur(var(--bg-blur)); transform:scale(var(--bg-blur-scale)) }
+/// #bg.bg-image img { display:block; … }
+/// ```
+///
+/// ⇒ 复合选择器不匹配时，`display:none` 一直生效、**背景层整块不画**（`bg_mode=blur|image` 全中，
+/// 真工程上这一条值 ~15/255）。
+///
+/// 扁平化是安全的：基规则在前、被扁平的规则在后，同特异度时按文档序覆盖，结果等价。
+/// 只在"HTML 里真有这个 class"时替换 —— 没出现的 class 一律不碰（免得把 `#x.only-js` 这类
+/// 只给别的通道用的规则也拉进来）。
+pub fn flatten_compound_selectors(css: &str, html: &str) -> String {
+    let Ok(re_id_first) = regex_lite::Regex::new(r#"id="([A-Za-z0-9_-]+)"[^>]*?class="([^"]*)""#) else {
+        return css.to_string();
+    };
+    let Ok(re_class_first) = regex_lite::Regex::new(r#"class="([^"]*)"[^>]*?id="([A-Za-z0-9_-]+)""#) else {
+        return css.to_string();
+    };
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for c in re_id_first.captures_iter(html) {
+        for cls in c[2].split_whitespace() {
+            pairs.push((c[1].to_string(), cls.to_string()));
+        }
+    }
+    for c in re_class_first.captures_iter(html) {
+        for cls in c[1].split_whitespace() {
+            pairs.push((c[2].to_string(), cls.to_string()));
+        }
+    }
+    let mut out = css.to_string();
+    for (id, cls) in pairs {
+        let from = format!("#{id}.{cls}");
+        if out.contains(&from) {
+            out = out.replace(&from, &format!("#{id}"));
+        }
+    }
+    out
+}
+
+/// 删掉某个 at-rule 的**整块**（`@name … { … }`）。字体声明块里没有嵌套花括号，所以
+/// "从 `@name` 找到第一个 `{`、再找到下一个 `}`" 就够；认不出来（缺花括号）时**原样留着** ——
+/// 宁可让 Takumi 报错，也不要静默吞掉内容。
+fn strip_at_rule_blocks(css: &str, name: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(i) = rest.find(name) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i..];
+        match (after.find('{'), after.find('}')) {
+            (Some(open), Some(close)) if close > open => rest = &after[close + 1..],
+            _ => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 去掉某一条声明（`name: value;`），同一行里其它声明原样保留。
+fn strip_declaration(line: &str, name: &str) -> String {
+    if !line.contains(name) {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    for piece in line.split_inclusive(';') {
+        if piece.trim_start().starts_with(name) {
+            continue;
+        }
+        out.push_str(piece);
+    }
+    out
+}
+
+/// 把 HTML 里的**相对路径图片**（`src="xxx.jpg"`）内联成 data URI。
+///
+/// **为什么必须**：Takumi 没有资源解析器（既不读文件也不发请求），`src="_cover_frame.jpg"` 这种
+/// 相对路径它一张都拿不到 —— 实测真封面走完整条产品链路时：图片层整块缺失、平均差 **146.44/255**。
+/// （它的 `RenderOptions.images` 是 `pub(crate)`，外部塞不进去，所以只能内联。）
+///
+/// `data:` / `http(s):` / `/` 开头的一律不碰（那些要么已经内联、要么由调用方保证可达）。
+pub fn inline_local_images(html: &str, asset_root: &Path) -> String {
+    let re = match regex_lite::Regex::new(r#"src="([^"]+)""#) {
+        Ok(re) => re,
+        Err(_) => return html.to_string(),
+    };
+    let mut out = html.to_string();
+    for cap in re.captures_iter(html) {
+        let Some(m) = cap.get(1) else { continue };
+        let src = m.as_str();
+        if src.starts_with("data:") || src.starts_with("http") || src.starts_with('/') || src.is_empty() {
+            continue;
+        }
+        let path = asset_root.join(src);
+        let Ok(bytes) = fs::read(&path) else { continue }; // 读不到就原样留着，让引擎自己报/自己空
+        let mime = match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("png") => "image/png",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => "image/jpeg",
+        };
+        let uri = format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
+        out = out.replace(&format!("src=\"{src}\""), &format!("src=\"{uri}\""));
+    }
+    out
+}
+
+/// 渲染一张封面 PNG。`fonts` 是字体文件（**至少一个**，否则中文/emoji 是豆腐块）；
+/// `asset_root` 是工程目录（相对路径图片从它下面读）。
+pub fn render_cover_png(
+    html: &str,
+    css: &str,
+    asset_root: &Path,
+    out: &Path,
+    width: u32,
+    height: u32,
+    fonts: &[PathBuf],
+) -> Result<()> {
+    if fonts.is_empty() {
+        anyhow::bail!(
+            "静态渲染（Takumi）需要至少一个字体文件：Takumi **不读系统字体**（内置只有拉丁的 Geist），\
+             中文标题与 emoji 都会是豆腐块。请在 <程序目录>/resources/fonts/ 里放字体，\
+             或在封面面板里选一个库内字体。"
+        );
+    }
+
+    let mut font_ctx = Fonts::default();
+    for path in fonts {
+        let bytes = fs::read(path).with_context(|| format!("读字体失败: {}", path.display()))?;
+        font_ctx
+            .register(FontResource::new(bytes))
+            .with_context(|| format!("注册字体失败: {}", path.display()))?;
+    }
+
+    // 图片内联 + 标题双层（描边在下、填充在上）—— 都在交给 HTML 前端之前做完
+    let inlined = inline_local_images(html, asset_root);
+    // 描边宽度/颜色先从 CSS 里取（值已在 `:root{}` 里有定义，直接读字面量），交给双层拆分做内联 style
+    // 描边取**变量展开之后**的字面量：内联 style 里不能留 `var()` ——
+    // Takumi 遇到不可解析的值会**丢掉整条内联样式**（连带 `color:transparent` 一起没，标题就还是黑块）。
+    let css_inlined = inline_css_vars(css);
+    let stroke = regex_lite::Regex::new(r"-webkit-text-stroke\s*:\s*([^;}]+)")
+        .ok()
+        .and_then(|re| re.captures(&css_inlined))
+        .map(|c| format!("-webkit-text-stroke:{}", c[1].trim()))
+        .unwrap_or_default();
+    let html = split_title_layers(&inlined, &stroke, &css_inlined);
+    // ⚠️ **遥测**：这条路上的每一步都是"静默不生效"的高危形态（正则没命中、选择器没匹配、属性没覆盖），
+    // 日志里不写清楚，改没改就只能靠像素去猜（实测踩过：双层标题改完数字几乎不动，
+    // 分不清是"没命中"还是"命中了但没用"）。
+    let title_split = html != inlined;
+    let images = html.matches("src=\"data:").count();
+    tracing::info!(
+        "封面(takumi) 适配：标题双层={} 内联图片={} 张 HTML={}B CSS={}B",
+        title_split, images, html.len(), css.len()
+    );
+    if let Ok(dir) = std::env::var("VTEDIT_TAKUMI_DUMP") {
+        let dir = PathBuf::from(dir);
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("takumi-input.html"), &html);
+        let _ = fs::write(dir.join("takumi-input.css"), &css);
+    }
+    let node = from_html(&html, FromHtmlOptions::default())
+        .map_err(|e| anyhow::anyhow!("封面 HTML 解析失败: {e:?}"))?;
+    // 复合选择器扁平化要**看着 HTML**（只扁平化真的出现的 class），所以放在这里而不是
+    // `adapt_css_for_takumi` 里。标题双层那三条规则跟在最后（同特异度按文档序覆盖）。
+    let css = flatten_compound_selectors(&adapt_css_for_takumi(css), &html);
+    // 变量就地展开 + emoji 兜底后再喂给 Takumi（见两个函数上方的实测理由）
+    let css = ensure_emoji_fallback(&inline_css_vars(&css));
+    let before = css.len();
+    let css = hoist_frame_transform(&css);
+    let hoisted = css.len() != before;
+    if let Ok(dir) = std::env::var("VTEDIT_TAKUMI_DUMP") {
+        let _ = fs::write(std::path::PathBuf::from(dir).join("takumi-final.css"), &css);
+    }
+    let css = format!("{css}\n{TAKUMI_TITLE_LAYER_CSS}");
+    // ⚠️ **这一行是定位"输入变了但输出没变"的关键**：三个 hash 一起看 ——
+    // HTML/CSS 变了而出图没变 = 渲染器没吃这份输入；三个都没变 = 没走到这段代码。
+    // 诊断开关（CSS-only 探针）：往**适配后的 CSS** 里注入一条必然看得见的规则。
+    // 产物 hash 变了 = CSS 链路通；没变 = 追加的 CSS 没进 StyleSheet::parse。
+    let css = if std::env::var("VTEDIT_TAKUMI_CSS_PROBE").is_ok() {
+        format!("{css}\n#title-wrap{{background:#00ffff;}}")
+    } else {
+        css
+    };
+    tracing::info!(
+        "封面(takumi) 生效：标题双层={} 内联图片={} frame搬移={} stroke={:?} HTML={} CSS={}",
+        title_split, images, hoisted, stroke, short_hash(html.as_bytes()), short_hash(css.as_bytes())
+    );
+    let sheet = StyleSheet::parse(&css)
+        .map_err(|e| anyhow::anyhow!("封面 CSS 解析失败: {e:?}"))?;
+
+    let bitmap = render(
+        RenderOptions::builder()
+            .viewport(Viewport::new((width, height)))
+            .node(node)
+            .fonts(&font_ctx)
+            .stylesheet(sheet.into())
+            .build(),
+    )
+    .with_context(|| format!("静态渲染失败（{width}×{height}）"))?;
+
+    let mut file = fs::File::create(out).with_context(|| format!("写封面失败: {}", out.display()))?;
+    // ⚠️ 必须是 **JPEG q85**：产物就叫 `cover.jpg`，而 Chrome 那条通道用的正是
+    // `CaptureScreenshotFormatOption::Jpeg` + `quality: 85`。写成 PNG 会同时踩两件事 ——
+    // 扩展名与内容不符，以及"对拍里混进 PNG vs JPEG 的格式差"（实测能占十几/255）。
+    write_image(&bitmap, &mut file, OutputFormat::Jpeg { quality: Quality::new(85) })
+        .with_context(|| format!("编码封面失败: {}", out.display()))?;
+    // 产物侧的 hash：与上面两个一起就能判定"是输入没变、还是渲染没响应输入"
+    if let Ok(bytes) = fs::read(out) {
+        tracing::info!("封面(takumi) 产物：{} bytes hash {}", bytes.len(), short_hash(&bytes));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠️ 这条钉的是**真实模板**：它的注释里提到了 `<style>`，naive 抽取会把注释当 CSS
+    /// （Takumi 报 `DanglingCombinator`）。实测踩到过，所以判据按真模板来。
+    #[test]
+    fn extract_ignores_the_comment_trap() {
+        let html = crate::cover::COVER_HTML;
+        let css = extract_style_blocks(html);
+        assert!(!css.contains("-->"), "注释文字漏进 CSS 了：{css}");
+        assert!(!css.contains("单独一个"), "注释文字漏进 CSS 了：{css}");
+        assert!(css.contains("#bg"), "没抽到主样式：{css}");
+        assert!(css.contains(":root{"), "没抽到静态变量块：{css}");
+
+        // 直接对真模板断言一句注释确实存在（免得以后有人删了注释、这条测试变成空转）
+        assert!(html.contains("单独一个 <style>"), "模板里的那句注释没了，这条判据要重写");
+    }
+
+    /// 两处引擎差异只改给 Takumi 的那一份。
+    #[test]
+    fn adapt_fixes_paint_order_and_repeating_angle() {
+        let css = "#t{color:#fff;paint-order:stroke fill;font-size:56px}\n\
+                   #s{background:repeating-linear-gradient(0deg,rgba(255,255,255,.2) 0 1px,transparent 1px 4px)}";
+        let out = adapt_css_for_takumi(css);
+        assert!(!out.contains("paint-order"), "paint-order 没删掉：{out}");
+        assert!(out.contains("color:#fff"), "顺手把别的声明删了：{out}");
+        assert!(out.contains("font-size:56px"), "顺手把别的声明删了：{out}");
+        assert!(!out.contains("(0deg"), "扫描线角度没改（`180deg` 里含 `0deg` 子串，所以判据要带括号）：{out}");
+        assert!(out.contains("repeating-linear-gradient(180deg"), "扫描线角度没改：{out}");
+    }
+
+    /// E2E 抓到的第 5 条：项目选了库内字体后模板会注入 `@font-face`，而 Takumi 的样式表解析器
+    /// **不认这个 at-rule**（`AtRuleInvalid("font-face")` → 整张封面直接失败）。
+    #[test]
+    fn adapt_drops_font_face_blocks() {
+        let css = "@font-face { font-family:'SimHeiTest'; src:url('/vt-fonts/SimHeiTest'); }\n\
+                   #title{color:#fff;font-size:56px}\n\
+                   @font-face{font-family:'X';src:url(/vt-fonts/X)}";
+        let out = adapt_css_for_takumi(css);
+        assert!(!out.contains("@font-face"), "`@font-face` 没删掉：{out}");
+        assert!(!out.contains("vt-fonts"), "字体块的内容漏出来了：{out}");
+        assert!(out.contains("#title{color:#fff;font-size:56px}"), "顺手删掉了别的规则：{out}");
+    }
+
+    /// 标题双层：描边层插在**前面**（同 z-index 时 DOM 序决定上下），填充层是原块。
+    #[test]
+    /// 标题双层：**钉住我踩过的三个真 bug** ——
+    /// ① 发出去的 HTML 必须配平（第一版正则少吃了 `</div>` ⇒ `<div>12 vs </div>11`，两层关系全乱）；
+    /// ② 两层必须**同一个盒子**（一层 flex 子项 max-content、另一层 width:100% 时错位，整图差反而变大）；
+    /// ③ 模板的 `.hl` **自带描边** ⇒ 两层都要各自处理（描边层透明、填充层去描边），漏了就是实心黑块；
+    /// ④ wrap 高度按**可见行**算（结尾那个 `<br>` 不算 —— 算成 5 行会整体下移 ~102px，实测整图差 27→3.5）。
+    #[test]
+    fn title_layers_are_balanced_positioned_and_use_visible_lines() {
+        let html = r#"<div id="page"><div id="fx-extra"></div><div id="title-wrap"><div id="title"><span class="hl">幼儿园</span>印象<br>小红马和<span class="hl">跷跷板</span><br>玩上头<br>直接飞出去流鼻血<br></div></div></div>"#;
+        let out = split_title_layers(html, "-webkit-text-stroke:20px #2a2522", ":root{--fs:120px;--lh:1.7}");
+        assert_eq!(
+            out.matches("<div").count(),
+            out.matches("</div>").count(),
+            "发出的 HTML 必须配平：{out}"
+        );
+        assert_eq!(
+            out.matches("position:absolute;left:0;top:0;width:100%;").count(),
+            2,
+            "两层必须同盒：{out}"
+        );
+        assert_eq!(
+            out.matches(r#"<span class="hl" style="color:transparent">"#).count(),
+            2,
+            "描边层的高亮词要透明：{out}"
+        );
+        assert_eq!(
+            out.matches(r#"<span class="hl" style="-webkit-text-stroke:0">"#).count(),
+            2,
+            "填充层的高亮词要去描边：{out}"
+        );
+        assert!(
+            out.contains(r#"<div id="title-wrap" style="height:816px">"#),
+            "高度要按可见行算（4×120×1.7=816，不是 1020）：{out}"
+        );
+        assert_eq!(split_title_layers(r#"<div id="x"></div>"#, "", ""), r#"<div id="x"></div>"#);
+    }
+
+    /// 复合选择器：**只扁平化 HTML 里真出现的 class**（`#bg.bg-blur` → `#bg`）。
+    /// 最小单点证据：Chrome `#a.k img` 的 A−B = 104.11，Takumi 只有 2.01（= 没匹配）。
+    #[test]
+    fn flatten_only_the_classes_that_are_really_there() {
+        let html = r#"<div id="bg" class="bg-blur"><img src="x"></div><div class="other" id="v"></div>"#;
+        let css = "#bg img{display:none}#bg.bg-blur img{display:block}#bg.bg-image img{display:block}\
+                   #v.other{opacity:0}#v.missing{opacity:1}";
+        let out = flatten_compound_selectors(css, html);
+        assert!(out.contains("#bg img{display:block}"), "`#bg.bg-blur` 没扁平化：{out}");
+        assert!(out.contains("#bg.bg-image img"), "HTML 里没有 bg-image 这个 class，不该动：{out}");
+        assert!(out.contains("#v{opacity:0}"), "class 写在 id 前面也要认：{out}");
+        assert!(out.contains("#v.missing{opacity:1}"), "没出现的 class 不该动：{out}");
+    }
+
+    /// 没有字体时必须**明确报错**（Takumi 不读系统字体，静默出豆腐块是最坏的形态）。
+    #[test]
+    fn no_fonts_is_an_error_not_tofu() {
+        let e = render_cover_png("<div>x</div>", "", Path::new("."), Path::new("nope.png"), 32, 32, &[]).unwrap_err();
+        assert!(format!("{e}").contains("字体"), "{e}");
+    }
+}

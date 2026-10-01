@@ -1,0 +1,305 @@
+{
+  "schema": 1,
+  "_note": [
+    "效果词汇表的**唯一权威**（2026-10-01 立，见 docs/plan/effect-pipeline-unification.md）。",
+    "在此之前，同一份类型清单散在 15 处代码里各自维护（类型真源 / 后处理 / LLM 提示词 / 模板 canvas / engine.js /",
+    "Vue 三张表 / 转译器 / 守卫 / 文档），没有一处是权威 —— 增删一个效果要人肉同步 11+ 处，漏一处**不报错**。",
+    "改这里的规矩：① 增删效果先改本文件；② 跑 node scripts/check-effect-registry.mjs，它会点名**还剩哪几处没跟**；",
+    "③ 能派生的地方尽量派生（前端三张表与转译器白名单是下一批），不能派生的地方由那条门禁强制对齐。",
+    "status=retiring 的四个是 docs/plan/fx-type-consolidation.md 已定稿要删的（底座无原语：split 无 shear、",
+    "另两个与 shake/运镜重叠）—— 其中 split/color_shift 已于 2026-10-01 删除；zoom_bounce/stutter 待删。",
+    "`lane` = 它落在时间轴的哪条轨道上（D3：overlay 并入「视觉特效」泳道，`overlay` 槽位已删）。",
+    "前端 `LANE_DEFS` 的成员由它派生 —— 加效果时只改这里，泳道自动收进正确的轨道。",
+    "`overlay.angle`（D5）：本仓只补字段与四处求值（面板暂时没有控件，由 LLM/手工写在 `polish.toml`）。"
+  ],
+  "channels": {
+    "_note": "dhampir=底座工程里的原语（null = 底座没有，只能 CLAMP/DROP）；canvas=本仓 canvas 出片（兜底通道）；dom_preview=WebUI 自绘预览（engine.js）",
+    "dhampir": "tools/polish-to-dhampir.mjs 的 case",
+    "canvas": "crates/vtrim-polish/templates/index.html 的 handlers.<id>",
+    "dom_preview": "webui/src/polish/engine.js 的 get<Camel>(id)"
+  },
+  "_anchors_note": [
+    "每一处实现的**精确锚点**（函数名 / 处理器名 / case 名）。加效果时把锚点也填上 ——",
+    "门禁会依次断言：① 非 null 的锚点在对应文件里**真的存在**；② 那些文件里**不许有没人认领的实现**",
+    "（`handlers.*` / `get*` / `case '…'` / fx.rs 的时长表键）。于是'接了但没登记'与'登记了但没接'都会红。",
+    "null = 该通道**明确不支持**（例如 split/color_shift 底座无原语）——这是有意的显式事实，不是缺省。"
+  ],
+  "anchors": {
+    "canvas": {
+      "camera": "getActiveCamera",
+      "sticker": "handlers.sticker",
+      "overlay": "handlers.overlay",
+      "sfx": "handlers.sfx",
+      "shake": "handlers.shake",
+      "flash": "handlers.flash",
+      "blur": "handlers.blur",
+      "vignette": "handlers.vignette",
+      "hue_shift": "handlers.hue_shift",
+      "noise": "handlers.noise",
+      "pulse": "handlers.pulse"
+    },
+    "dom_preview": {
+      "camera": "cameraAt",
+      "sticker": "stickersAt",
+      "overlay": "getOverlayState",
+      "sfx": "sfxVolume",
+      "shake": "getShake",
+      "flash": "getFlash",
+      "blur": "getBlur",
+      "vignette": "getVignette",
+      "hue_shift": "getHueShiftFlash",
+      "noise": "getNoiseOpacity",
+      "pulse": "getPulse"
+    },
+    "dhampir_case": {
+      "camera": "camera",
+      "sticker": "sticker",
+      "overlay": "overlay",
+      "sfx": "sfx",
+      "shake": "shake",
+      "flash": "flash",
+      "blur": "blur",
+      "vignette": "vignette",
+      "hue_shift": "hue_shift",
+      "noise": "noise",
+      "pulse": "pulse"
+    },
+    "post_span": {
+      "camera": null,
+      "sticker": null,
+      "overlay": null,
+      "sfx": null,
+      "shake": "shake",
+      "flash": "flash",
+      "blur": "blur",
+      "vignette": "vignette",
+      "hue_shift": "hue_shift",
+      "noise": "noise",
+      "pulse": "pulse"
+    }
+  },
+  "effects": [
+    {
+      "id": "camera",
+      "label": "运镜",
+      "kind": "durable",
+      "params": [
+        "zoom",
+        "origin",
+        "to_origin",
+        "anchor",
+        "anchor_to",
+        "cut",
+        "handheld"
+      ],
+      "dhampir": "TransformV2（关键帧）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": null,
+      "default_span": 1,
+      "sfx_capable": false,
+      "status": "active",
+      "lane": "camera"
+    },
+    {
+      "id": "sticker",
+      "label": "贴纸",
+      "kind": "durable",
+      "params": [
+        "sticker_tag",
+        "keyword",
+        "name",
+        "source",
+        "x",
+        "y"
+      ],
+      "dhampir": "AssetKind::ImageSequence + Transform（逐帧采样）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": null,
+      "default_span": 2,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "sticker"
+    },
+    {
+      "id": "overlay",
+      "label": "覆盖层",
+      "kind": "durable",
+      "params": [
+        "overlay_type",
+        "colors",
+        "color",
+        "shape",
+        "opacity",
+        "angle"
+      ],
+      "dhampir": "ColorMask::overlay（Solid/Linear/Radial + angle） ｜ `angle`（D5 补）：V-Trim/CSS 约定（0 = 向上、顺时针；缺省 = `to bottom right` = 135°），底座是 `(cos, sin)` 方向（0 = 向右）⇒ 转译器按 `base = css − 90` 换算（`overlayBaseAngle`）。",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": null,
+      "default_span": 1.5,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx",
+      "ui": []
+    },
+    {
+      "id": "sfx",
+      "label": "音效",
+      "kind": "durable",
+      "params": [
+        "keyword",
+        "name",
+        "volume"
+      ],
+      "dhampir": "音轨层（本仓混音，不走底座）",
+      "canvas": true,
+      "dom_preview": false,
+      "llm": true,
+      "duration_cap": null,
+      "default_span": 1,
+      "sfx_capable": false,
+      "status": "active",
+      "lane": "sfx"
+    },
+    {
+      "id": "shake",
+      "ui": [
+        "intensity"
+      ],
+      "label": "抖动",
+      "kind": "fx",
+      "params": [
+        "intensity",
+        "sfx"
+      ],
+      "dhampir": "视频层关键帧（四级阶梯，逐帧采样）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.5,
+      "default_span": 0.3,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "flash",
+      "ui": [
+        "color"
+      ],
+      "label": "闪白",
+      "kind": "fx",
+      "params": [
+        "color",
+        "sfx"
+      ],
+      "dhampir": "ColorMask::flash（逐帧包络）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.3,
+      "default_span": 0.25,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "blur",
+      "label": "模糊",
+      "kind": "fx",
+      "params": [
+        "intensity",
+        "sfx"
+      ],
+      "dhampir": "Blur 调整图层",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.4,
+      "default_span": 0.3,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "vignette",
+      "label": "暗角",
+      "kind": "fx",
+      "params": [
+        "intensity",
+        "sfx"
+      ],
+      "dhampir": "ColorMask::vignette",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.6,
+      "default_span": 0.4,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "hue_shift",
+      "ui": [
+        "color"
+      ],
+      "label": "色相偏移",
+      "kind": "fx",
+      "params": [
+        "color",
+        "sfx"
+      ],
+      "dhampir": "ColorMask::hue（逐帧包络）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.5,
+      "default_span": 0.35,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "noise",
+      "label": "噪点",
+      "kind": "fx",
+      "params": [
+        "intensity",
+        "sfx"
+      ],
+      "dhampir": "ColorMask::flash（参照出片画的是纯白薄纱，不是噪声）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.4,
+      "default_span": 0.3,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    },
+    {
+      "id": "pulse",
+      "label": "脉冲",
+      "kind": "fx",
+      "params": [
+        "intensity",
+        "sfx"
+      ],
+      "dhampir": "视频层关键帧（逐帧采样）",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": 0.5,
+      "default_span": 0.4,
+      "sfx_capable": true,
+      "status": "active",
+      "lane": "fx"
+    }
+  ]
+}

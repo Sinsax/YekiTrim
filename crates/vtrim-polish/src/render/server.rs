@@ -196,7 +196,13 @@ fn quote_css(s: &str) -> String {
 }
 
 /// 没选库内字体时的字体栈（index.html / cover.html / webui 的 `--font` 同一套）。
-pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif";
+///
+/// ⚠️ **顺序有意义，且必须与 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈同序**
+/// （那里是 `"<项目字体>","Microsoft YaHei","Noto Sans SC",sans-serif`）：项目选的那支没装时，
+/// **谁排前面谁就是用户在预览里看到的字体**。这里曾经把 `Noto Sans SC` 排在 `Microsoft YaHei`
+/// 前、而预览是雅黑在前 —— 同一个工程：预览是雅黑、成片是 Noto（用户报的"字体不对"）。
+/// 底座那条腿（`render/dhampir.rs::find_font`）直接读这个常量，所以改这一处三处一起变。
+pub const SYSTEM_FONT_STACK: &str = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif";
 
 /// 页面用的 CSS `font-family` 串：选中的字体排在最前，后面跟系统栈兜底。
 pub fn font_family_with_stack(id: &str) -> String {
@@ -435,7 +441,10 @@ mod tests {
         assert_eq!(quote_css("a\"b\\c"), expected);
         assert_eq!(
             font_family_with_stack("LXGW WenKai"),
-            "\"LXGW WenKai\",'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif"
+            // ⚠️ 顺序**不是随手写的**：它必须等于 `webui/src/components/PolishPreview.vue` 的 `.cap` 栈
+            // （雅黑在 Noto 前）—— 项目选的那支没装时，这里的第一支就是用户在预览里看到的字体。
+            // 改这条断言之前先确认另一边也跟着改了（`dhampir.rs::font_search_order` 有对应钉子）。
+            "\"LXGW WenKai\",'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif"
         );
     }
 

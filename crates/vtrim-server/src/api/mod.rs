@@ -184,6 +184,8 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
     // ⚠️ 只查一次，别在 json! 里连着调两遍：`find_ytdlp` 会做 sha256 校验（17.8MB），
     // 而 health 是前端反复轮询的接口（registry 侧另有 (path,len,mtime) 缓存兜底，但两次调用仍多余）。
     let dl = vtrim_service::downloader::registry::find_ytdlp(&cfg);
+    // 同一条纪律：能力位只算一次（`cfg!(feature)` + 一次字体库目录扫描）
+    let cover_static = vtrim_polish::cover::cover_static_capability();
     ok(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
@@ -191,8 +193,9 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         "ffprobe": command_available("ffprobe", FFMPEG_VERSION_ARG).await,
         "chrome": chrome_available(Some(&cfg)).await,
         "llm": llm,
-        // 单帧真渲染（/api/polish/render-frame）只在启用该 feature 的构建里可用
-        "wgpu_render": cfg!(feature = "wgpu-render"),
+        // ⚠️ 这里曾经有 `"wgpu_render"` 能力位（单帧真渲染 /api/polish/render-frame 的开关）。
+        // 那条 GPU 链路已删除（用户拍板：GPU 那侧交给独立的 Dhampir 底座），能力位一并去掉 ——
+        // 前端也不再按它隐藏任何入口。**别把这一位加回来当"预留能力位"**：它会让人以为还有 GPU 出片。
         // 采集就绪位（P3）：webhook 已启用 + 录播姬目录已配置，前端据此决定是否显示引导卡
         "ingest_ready": cfg.ingest.webhook_enabled && !cfg.ingest.recorder.root.trim().is_empty(),
         // B站下载就绪位（P4）：只回"能不能用"，**不回路径**（与 ffmpeg 那些字段一个口径）。
@@ -204,6 +207,19 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         },
         // 注册开关（登录页据此决定要不要显示「用邀请码注册」入口）
         "registration_enabled": cfg.auth.registration_enabled,
+        // 底座出片通道的就绪位（M3）：**只回布尔**，不回任何路径 —— health 是公开接口
+        // （路径、Node 版本与"有没有粗体那一支"走已登录的 `POST /api/polish/dhampir-status`）。
+        // `deep = false`：这条被前端反复轮询，不起进程（也不跑 `node --version`）。
+        "dhampir_ready": vtrim_polish::render::dhampir::readiness("", false).ready,
+        // 封面静态渲染通道（Takumi）的能力位（2026-10-01）：前端据此决定弹窗里那个选项
+        // 是能点还是置灰 + 为什么。**回字体库路径**是因为"库为空 → 用不了"是本机配置问题，
+        // 而字体库路径不是账号/工程信息（与上面 downloader 不回路径的口径不同，理由在此）。
+        "cover_static": {
+            "compiled": cover_static.0,
+            "fonts": cover_static.1,
+            "fonts_dir": cover_static.2.display().to_string(),
+            "ready": cover_static.0 && cover_static.1 > 0,
+        },
         // 本机/远端与是否走 HTTPS 反代：只影响本地排查提示，不含任何账号信息
         "listening": state.auth.listening().as_str(),
         "tls_terminated": crate::auth::tls_terminated(&headers),
