@@ -469,13 +469,24 @@ pub fn render_cover_png(
     }
 
     let mut font_ctx = Fonts::default();
-    // ⚠️ 每支字体注册**两次**：
-    //   ① 内嵌族名 —— Takumi 默认行为（CSS 里写真实族名时用它）；
-    //   ② **字体库 id（别名）** —— 模板里的字体栈写的是**配置里存的那串 id**
-    //      （`.cap{font-family:"<id>"}`、封面的 `__FONT_FAMILY__` / `[cover] font`），
-    //      而 Takumi **只按内嵌族名匹配**；两者不等时（很常见：id 是文件名
-    //      `LXGWWenKaiLite-Regular`、内嵌族名 `LXGW WenKai Lite`）它**静默回退**到内置 Geist
-    //      —— 中文标题变豆腐块，而预览与 Chrome 出片都是对的（"预览和实际对不上"的 Takumi 版）。
+    // 每支字体注册**两次**：
+    //   ① 内嵌族名 —— Takumi 默认行为；
+    //   ② **字体库 id（别名）** —— CSS 里存的是配置那串 id（`.cap{font-family:"<id>"}`、
+    //      封面 `__FONT_FAMILY__`），与内嵌族名常常不同（id `LXGWWenKaiLite-Regular`
+    //      vs 内嵌 `霞鹜文楷 轻便版`）。
+    //
+    // ⚠️ **但别名不是"让它用上字体"的必要条件**（2026-10-01 实测，纠正原先写在这里的说法）：
+    // Takumi 的 fallback 桶 = **已注册字体按注册序的全集**（`fonts.rs` 的
+    // `order` + `last_resort_order`），所以**认不出的族名**不是回退到内置 Geist，
+    // 而是回退到**整个字体库**——它会挑第一支"有该字形"的字体来画。
+    // 实测（`glyph` = 中文）：注册 [Emoji, LXGW] 时，请求 `__nope__` /
+    // `NotoColorEmoji` / `LXGWWenKaiLite-Regular` 三者输出**逐字节相同**，
+    // 中文都正常渲染（落到 LXGW）。⇒ 多支字体时"选哪支"实际由**注册顺序**决定，
+    // 而不是由 CSS 的族名决定。
+    //
+    // 保留别名注册的理由：①注册序里 id 与实际字体仍一一对应、不改变现状；
+    // ②未来 Takumi 若收紧 fallback（只认精确族名），别名能让 CSS 立刻对上，**属于前瞻保险**。
+    // 真正的"用哪支"控制点是 `cover_font_files()` 给出的**顺序**（见 `cover.rs`）。
     // 字节用 `Arc` 共享：`FontSource::from_shared` 只克隆指针，不复制整支字体。
     for path in fonts {
         let bytes: Arc<Vec<u8>> =
