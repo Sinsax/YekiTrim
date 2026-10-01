@@ -46,20 +46,26 @@ const COVER_EXPORT_CSS: &str = "#title{animation:none}#title{opacity:1}#title{tr
 /// 封面渲染通道名（`VTEDIT_COVER_RENDERER`）——静态渲染那条。
 const RENDERER_TAKUMI: &str = "takumi";
 
-/// 读封面渲染通道：空 / `chrome` = headless Chrome（**默认、兜底**）；`takumi` = 静态渲染（Takumi）。
+/// 读封面渲染通道：空 / `chrome` = headless Chrome（兜底）；`takumi` = 静态渲染（Takumi，**默认**）。
 /// ⚠️ 认不出的值**当场报错**，不静默回退 —— 与 `render/dhampir.rs` 同一条口径（静默回退会让人
 /// 以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来）。
 fn resolve_cover_renderer(explicit: Option<&str>) -> anyhow::Result<String> {
-    // 优先级：**显式参数（CLI/WebUI）> 环境变量 > chrome**。认不出的值一律当场报错 ——
+    // 优先级：**显式参数（CLI/WebUI）> 环境变量 > takumi**。认不出的值一律当场报错 ——
     // 静默回退会让人以为"我在用静态渲染"，而那种错只有对比两版成片才看得出来。
     // ⚠️ 取值口径只此一份：服务端与 CLI 都不抄第二份（同 `--renderer` 默认值那条纪律）。
+    //
+    // 2026-10-01 切换：默认通道由 chrome 改为 **takumi**（用户拍板）。
+    // 依据：字体三处来源收敛之后重跑封面门禁（`scripts/check-cover-takumi.mjs`，clip-14 真工程）
+    // 非文字区 **1.17/255**、整图 **11.44/255**，都在阈值内 —— 而且现在是**同库同字体**的对比，
+    // 不再有"预览与实际对不上"那层偏差。chrome 仍保留为兜底（`--renderer chrome` /
+    // `VTEDIT_COVER_RENDERER=chrome`），但它需要外部 Chrome 且已被判定要删（见 P3）。
     if let Some(v) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
         return normalize_cover_renderer(v, "--renderer");
     }
     let raw = std::env::var("VTEDIT_COVER_RENDERER").unwrap_or_default();
     let raw = raw.trim();
     if raw.is_empty() {
-        return Ok("chrome".to_string());
+        return Ok(RENDERER_TAKUMI.to_string());
     }
     normalize_cover_renderer(raw, "VTEDIT_COVER_RENDERER")
 }

@@ -311,9 +311,9 @@ pub enum PolishAction {
         /// 封面模板预设 (left-text/center-text/right-text/minimal)
         #[arg(long)]
         template: Option<String>,
-        /// 封面渲染通道：`chrome`（默认，headless Chrome 截图）或 `takumi`（静态渲染，
-        /// 需要编 `cover-takumi` feature）。**不传** = 用 `cover.rs` 的默认（读
-        /// `VTEDIT_COVER_RENDERER`，空则 chrome）—— 默认值只有那一处，这里不抄第二份。
+        /// 封面渲染通道：`takumi`（默认，静态渲染，需要编 `cover-takumi` feature）
+        /// 或 `chrome`（headless Chrome 截图，兜底）。**不传** = 用 `cover.rs` 的默认（读
+        /// `VTEDIT_COVER_RENDERER`，空则 takumi）—— 默认值只有那一处，这里不抄第二份。
         #[arg(long)]
         renderer: Option<String>,
     },
