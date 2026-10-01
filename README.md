@@ -631,30 +631,34 @@ cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espea
 
 ## 字体
 
-发行包**不内置字体文件**，默认走系统字体栈
-（`LXGW WenKai` → `Microsoft YaHei` → `Noto Sans SC`，最后兜底 `C:/Windows/Fonts/msyh.ttc`）。
+有两支**自带字体**，都是 **SIL OFL-1.1**（可商用 / **可嵌入** / 可再分发）。
+它们的**字节直接内嵌在 `vtrim.exe` 里**（源在 `crates/vtrim-core/assets/fonts/`），
+**首次启动自动落盘**到字体库 —— 不需要联网、也不需要手动下载。
+运行时的兜底栈 = 库里那支 → `Microsoft YaHei` → `Noto Sans SC` → `sans-serif`。
 
-### 自带字体（首次使用时按需下载）
-
-有两支**自带字体**，都是 **SIL OFL-1.1**（可商用 / 可嵌入 / 可再分发）。它们**不随仓库或发行包分发**
-（加起来约 38 MB），需要时从上游下载到程序目录：
+### 自带字体（**已内嵌，首次启动自动装好**）
 
 | 字体 | 用途 | 体积 |
 |---|---|---|
-| **霞鹜文楷 Lite**（LXGW WenKai Lite） | 中文正文（字幕/封面） | 13.5 MB |
-| **Noto Color Emoji** | 彩色 emoji | 24.7 MB |
+| **Noto Sans SC** | 中文正文（字幕/封面） | 10.0 MB |
+| **Noto Color Emoji** | 彩色 emoji（**CBDT** 位图，非 COLRv1） | 9.9 MB |
 
-两种下法（都会**校验 sha256**、随字体落盘上游 `OFL.txt` 原文；已装好的会跳过）：
+> ⚠️ 中文正文那支 **2026-10-02 由「霞鹜文楷 Lite」换成「Noto Sans SC」**（体积更小、观感更中性）。
+> 老工程不受影响：它们配置里显式写着的旧字体名照旧按原名解析。
+> 关于「为什么不找 CC0 字体」：**CJK 领域基本没有 CC0 的正文字体**（CC0 不含 OFL 那种
+> 保留字体名与许可声明的保护，中文项目普遍不采用）。实际可用上限就是 OFL。
+
+所以装完打开就能选字。许可原文（OFL 全文）也一并内嵌、随字体落盘。
+万一库里那两支被删了，可以装回来（幂等、仍然不联网）：
 
 ```bash
-vtrim fonts list                # 看库里有什么、自带那两支装没装
-vtrim fonts download            # 下载全部还缺的
-vtrim fonts download --id NotoColorEmoji   # 只下某一支
+vtrim fonts list                # 看库里有什么
+vtrim fonts install             # 重新装上还缺的自带字体
+vtrim fonts install --id NotoColorEmoji   # 只装某一支
 ```
-
-也可以登录 WebUI（admin）→ 首页「字体库」→ 点「下载自带字体」。
-装好之后，**没选字体的工程**会优先用霞鹜文楷 Lite（栈里写的是它的内部族名，见
-`docs/plan/font-library.md` §15）。
+**没选字体的工程**会优先用霞鹜文楷 Lite（栈里写的是它的内部族名，见
+`docs/plan/font-library.md` §15）——这个"默认位"只作**初始化设定**：界面上的字体下拉只列库内字体，
+不会再给一个「（系统默认）」的选项（自带字体就在库里，回到系统栈必然是更差的选择）。
 
 **想用别的字体：把字体文件丢进程序目录的 `resources/fonts/`**
 （与 `vtrim.exe`、`.vtrim/`、`stickers/` 同级），或在「字体库」页导入：
