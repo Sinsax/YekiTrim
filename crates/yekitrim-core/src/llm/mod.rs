@@ -323,28 +323,44 @@ mod tests {
         }
     }
 
-    /// 极简假 OpenAI 服务：第 n 个请求回 `script[n]`（用完后不再受理）。
+    /// 极简假 OpenAI 服务：第 n 个请求回 `script[n]`（用完后回 500，见下）。
     /// 只为验证"发出去 → 记账"，不解析请求体。
     ///
-    /// ⚠️ **返回的 listener 必须被调用方持有到测试结束**（`let (_srv, base) = …`）：
-    /// 只把 port 拿出来、把 listener 丢进 `spawn` 的写法有个**偶发**缺陷 ——
-    /// 客户端重试前要退避 2s（`send_retries_then_records_attempts`），而重试期间
-    /// 那条 listen socket 若已被回收，系统的临时端口就可能被**同期另一个测试**的
-    /// listener 拿去 ⇒ 第 2 次尝试连到别人的假服务上，回一个不属于本用例的状态码。
-    /// 症状是 `send_records_usage_on_success` 偶发报 `502 Bad Gateway`
-    /// （本机实测：单跑 6/6 绿，`cargo test --workspace` 并行下约 1/3 概率红）。
-    /// 持有 listener 保证**测试活着时这个端口不被复用**。
+    /// ⚠️ **两个坑，都会让这条链上的用例偶发红**（`cargo test --workspace` 并行下约 1/7，
+    /// 实测 14 轮 2 红）。两个都要防，只防一个不行：
+    ///
+    /// ① **serve 循环不能在 script 用完后直接 `break`**。退出后 listener 仍在 listen
+    ///    （调用方拿 `Arc` 持着），内核会把新连接放进 accept 队列、**但没人 accept** ⇒
+    ///    客户端**连得上、永远收不到响应**。而 `LlmClient` 对 `is_connect() || is_timeout()`
+    ///    **会重试**（`attempt < 2`）⇒ 每次尝试各挂一个超时，症状是
+    ///    `send_records_usage_on_success` **卡 60+ 秒**才报 `error sending request`。
+    ///    ⚠️ 那**不是** 502 —— 502 才是"连到了别人的服务"。看到 `sending request`
+    ///    就该往"连上了但没人应答"这条线上想。
+    ///    ⇒ **script 耗尽后继续 accept，回一个明确的 500**，让重试立刻收敛。
+    ///
+    /// ② **listener 不能被回收**：只把 port 拿出来、把 listener 丢进 `spawn` 的写法，
+    ///    在重试退避的 2s 窗口里端口可能被**同期另一个测试**的 listener 拿去。
+    ///    ⇒ 把 `Arc<TcpListener>` 还给调用方，由它持到测试结束。
+    ///
+    /// ⚠️ **新增用它的用例时，让 script 长度 ≥ 客户端最大尝试次数（3）**：
+    /// 否则第 3 次尝试会吃到 ①补的那个 500，用例可能"绿得很偶然"。
+    /// 只验证记账的用例给 3 个同样的响应最省心。
     async fn fake_server(script: Vec<(u16, String)>) -> (Arc<TcpListener>, String) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // ⚠️ `tokio::net::TcpListener` 没有 `try_clone`（那个在 std 上）：这里靠
-        // **把一个 listener 按值移进 spawn、再把它还回去**做不到，所以改用
-        // `Arc<TcpListener>` 共享 —— 两边都拿到同一个 fd，端口在测试全程被占住。
+        // ⚠️ `tokio::net::TcpListener` 没有 `try_clone`（那个在 std 上）⇒ 用 `Arc` 共享，
+        // 两边拿同一个 fd，端口在测试全程被占住（见上面 ②）。
         let listener = std::sync::Arc::new(listener);
         let serve = listener.clone();
         tokio::spawn(async move {
-            for (code, body) in script {
+            let mut script = script.into_iter();
+            loop {
                 let Ok((mut sock, _)) = serve.accept().await else { break };
+                // script 用完后**继续接受连接**、回一个明确的 500（见上面 ①）：
+                // 直接 `break` 会让"连得上但没人应答"变成超时挂死。
+                let (code, body) = script
+                    .next()
+                    .unwrap_or((500, r#"{"error":"fake_server script exhausted"}"#.to_string()));
                 let mut buf = [0u8; 8192];
                 let _ = sock.read(&mut buf).await;
                 let reason = if code == 200 { "OK" } else { "ERR" };
@@ -371,8 +387,9 @@ mod tests {
             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "prompt_cache_hit_tokens": 64}
         })
         .to_string();
-        // listener 必须活到测试结束（见 fake_server 的 ⚠️）
-        let (_srv, base) = fake_server(vec![(200, body)]).await;
+        // listener 活到测试结束 + script 备足 3 份（= 客户端最大尝试次数）：
+        // 这两条缺一都会偶发红，见 fake_server 的 ⚠️
+        let (_srv, base) = fake_server(vec![(200, body.clone()), (200, body.clone()), (200, body)]).await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1")
             .with_usage_sink(rec.clone())
@@ -395,8 +412,12 @@ mod tests {
     /// 硬失败（400 不重试）：也记一行，带状态码与错误串。
     #[tokio::test]
     async fn send_records_usage_on_hard_failure() {
+        // 同上：备足 3 份（客户端最大尝试次数）。400 本身不可重试，
+        // 但**给足 3 份**能让"万一真重试了"也拿到同样的 400，
+        // `attempts` 断言不会因为吃到兜底 500 而偶发变化。
+        let bad = r#"{"error":"bad key"}"#.to_string();
         let (_srv, base) =
-            fake_server(vec![(400, r#"{"error":"bad key"}"#.to_string())]).await;
+            fake_server(vec![(400, bad.clone()), (400, bad.clone()), (400, bad)]).await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
 
