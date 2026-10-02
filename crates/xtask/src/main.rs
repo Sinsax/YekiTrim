@@ -757,6 +757,35 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // ⚠️ **内嵌字体也会被这次启动解包进包目录，必须一并清掉**（2026-10-02 实际踩到）。
+    //
+    // 机制：`fonts::ensure_dir_in` 在**取不到用户主目录**时退回 `<exe目录>/resources/fonts`，
+    // 而烟测起的 exe 就在包目录里 —— 于是两个自带字体（合计 **约 21 MB**）被解包进
+    // `resources/fonts/<slug>/`，接着被原样压进 zip：**包从 37.2 MB 涨到 52.4 MB**。
+    //
+    // 这是**纯重复**：同样的字节已经通过 `include_bytes!` 编在 `vtrim.exe` 里了
+    // （exe 67.5 MB 里就含它们），包再带一份没有任何意义，还与发行说明
+    // 「发行包仍然只带一个空目录」自相矛盾。
+    //
+    // 只删**字体目录里的子项**，保留 `放这里.txt` —— 那份说明是组装阶段写进去的、
+    // 属于包的一部分（有判据要求它在），不能一起删掉。
+    let fonts_dir = package_dir.join("resources").join("fonts");
+    if fonts_dir.is_dir() {
+        for entry in fs::read_dir(&fonts_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name == "放这里.txt" {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                fs::remove_dir_all(&path)?;
+            } else {
+                fs::remove_file(&path)?;
+            }
+        }
+    }
+
     if !ok {
         return Err("smoke test failed: the server did not return /api/health and the WebUI in \
                     time"
