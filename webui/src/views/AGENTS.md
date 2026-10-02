@@ -73,7 +73,7 @@
    分段属性面板显示失败原因 + 「只重做本段事件」。
    ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会砍掉超出视频时长的段，
    窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
-   （屏蔽区间**不再**改段的构成 —— 它只做标记、不许删事件，见 `crates/vtrim-polish/src/project/AGENTS.md`。）
+   （屏蔽区间**不再**改段的构成 —— 它只做标记、不许删事件，见 `crates/yekitrim-polish/src/project/AGENTS.md`。）
    成败**不看最终事件数** —— 空事件段会被 process 补上默认运镜，用 `events.is_empty()` 当判据
    会让失败永远显示成成功。
 4. **入口语义**：`POST /api/polish/llm {full}` 的 `full` **默认 true = 全部重做**（先清 checkpoint；
@@ -130,7 +130,7 @@
 - **改完不自动跑任务**：只把提示切成「素材已切换 —— 点下面的按钮重新检测才会生效」（LLM 有成本，
   **别改成保存即起任务**）。⚠️ `assetDirty` 只在**检测真的跑了**之后才清（`chained || kind === 'stage_detect'`）：
   单独跑一次「跑 ASR」不消费切过的弹幕/字幕，那句提示要留着。
-- ⚠️ `slots`（`{hybrid, single}`）**由服务端算**（遍历 `vtrim_core::config::ASR_MODES` 调
+- ⚠️ `slots`（`{hybrid, single}`）**由服务端算**（遍历 `yekitrim_core::config::ASR_MODES` 调
   `slot_bound`），前端**不自己从 `items` 推** —— 判槽还要看盘上那些没登记的老产物，抄一份就会漂。
 - ⚠️ **清单写入必须单次 `patch_config_file`**（生效值 + 整份清单走同一个 patch，
   见 `assets.rs::write_state` 的注释）：拆两次会连撞两次它内部的路径锁
@@ -150,7 +150,7 @@
 - ⚠️ 而「产物」栏以前显示的名字是写死的（`renderedName`/`coverName` 两个 ref 从没被赋过值，
   恒为 `export.mp4` / `cover.jpg`），用户根本看不出产物其实叫 `vtuber-clip_1.mp4`，会以为被覆盖了 ——
   现在直接取 `clipEntry.rendered_file` / `cover_file`，**别再退回写死的名字**（harness 有 8 项断言）。
-- ⚠️ **剪切完成 ⇒ 精修工程已就绪**（服务端在剪切收尾里 init，见 `crates/vtrim-service/AGENTS.md`）：
+- ⚠️ **剪切完成 ⇒ 精修工程已就绪**（服务端在剪切收尾里 init，见 `crates/yekitrim-service/AGENTS.md`）：
   卡片的「精修」按钮正常情况下直接进页面；只有**老片段**（这次改动前剪出来的）才需要补一次 init，
   那条路**必须等任务跑完再跳**（发完就跳会先撞 `polish.toml not found` → 精修页显示「片段配置读取失败」）。
 - ⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：`ProjectClipsSection` 的数据是父页面
@@ -210,7 +210,7 @@
   几何：`max-content + minmax(0,300px)×2 + max-content` + `justify-content:start`（1fr 会把滑块拉到格子
   中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏经 900px 媒体查询拆成一列。
 - **模型管理（别再各写一套）**：模型管理页的「已安装」与运行时**同源** ——
-  `vtrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.vtrim/models`，
+  `yekitrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.vtrim/models`，
   默认即程序目录）是唯一真源，`download::model_install()` 在其之上再校验注册表
   marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）。
   接口 `/api/models` 回 `{name, installed, dir, source, source_label}`，界面显示实际路径与来源。

@@ -1,8 +1,8 @@
 // 手持摇摆（`Event::Camera::handheld`）的漂移对拍。
 //
 // 同一条摇摆算法有三份实现（同一张固定参数表）：
-//   1. `crates/vtrim-render-core/src/types.rs::handheld_sway`（Rust 权威 + 状态机幅度）
-//   2. `crates/vtrim-polish/templates/index.html::handheldSway`（Chrome 出片权威 + DOM 预览）
+//   1. `crates/yekitrim-render-core/src/types.rs::handheld_sway`（Rust 权威 + 状态机幅度）
+//   2. `crates/yekitrim-polish/templates/index.html::handheldSway`（Chrome 出片权威 + DOM 预览）
 //   3. `webui/src/polish/engine.js::handheldSway`（WebUI 预览，经 PolishPreview.vue）
 // 谁漂了，表现就是「WebUI 预览 / 模板预览 / 成片 三者摇摆不一致」——
 // 而且摇摆量很小（±9.5px / ±0.5°），对拍是唯一能在肉眼发现前抓住它的手段。
@@ -62,7 +62,7 @@ function extractFunction(src, name) {
   throw new Error(`function ${name} 的括号没配平`)
 }
 
-const htmlPath = join(root, 'crates', 'vtrim-polish', 'templates', 'index.html')
+const htmlPath = join(root, 'crates', 'yekitrim-polish', 'templates', 'index.html')
 const html = await readFile(htmlPath, 'utf8')
 const enginePath = join(root, 'webui', 'src', 'polish', 'engine.js')
 const engineSrc = await readFile(enginePath, 'utf8')

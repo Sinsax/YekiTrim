@@ -70,195 +70,195 @@
     },
     {
       "id": "core",
-      "title": "vtrim-core 管线与基础能力",
-      "dir": "crates/vtrim-core",
-      "card": "crates/vtrim-core/AGENTS.md",
+      "title": "yekitrim-core 管线与基础能力",
+      "dir": "crates/yekitrim-core",
+      "card": "crates/yekitrim-core/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo check -p vtrim-core"]
+      "verify": ["cargo check -p yekitrim-core"]
     },
     {
       "id": "core-config",
       "title": "配置：两层合并 / patch / Default",
-      "dir": "crates/vtrim-core/src/config",
-      "card": "crates/vtrim-core/src/config/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/config",
+      "card": "crates/yekitrim-core/src/config/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib config"]
+      "verify": ["cargo test -p yekitrim-core --lib config"]
     },
     {
       "id": "core-pipeline",
       "title": "Stage 与 PipelineRunner",
-      "dir": "crates/vtrim-core/src/pipeline",
-      "card": "crates/vtrim-core/src/pipeline/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/pipeline",
+      "card": "crates/yekitrim-core/src/pipeline/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib pipeline"]
+      "verify": ["cargo test -p yekitrim-core --lib pipeline"]
     },
     {
       "id": "core-asr",
       "title": "ASR 转写链路（断句 / VAD / qwen3）",
-      "dir": "crates/vtrim-core/src/asr",
-      "card": "crates/vtrim-core/src/asr/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/asr",
+      "card": "crates/yekitrim-core/src/asr/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib asr"]
+      "verify": ["cargo test -p yekitrim-core --lib asr"]
     },
     {
       "id": "core-detection",
       "title": "事件检测与热度评分",
-      "dir": "crates/vtrim-core/src/detection",
-      "card": "crates/vtrim-core/src/detection/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/detection",
+      "card": "crates/yekitrim-core/src/detection/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib detection"]
+      "verify": ["cargo test -p yekitrim-core --lib detection"]
     },
     {
       "id": "core-danmaku",
       "title": "弹幕解析与密度",
-      "dir": "crates/vtrim-core/src/danmaku",
-      "card": "crates/vtrim-core/src/danmaku/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/danmaku",
+      "card": "crates/yekitrim-core/src/danmaku/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib danmaku"]
+      "verify": ["cargo test -p yekitrim-core --lib danmaku"]
     },
     {
       "id": "core-cutting",
       "title": "Cutter：切片与片段元数据",
-      "dir": "crates/vtrim-core/src/cutting",
-      "card": "crates/vtrim-core/src/cutting/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/cutting",
+      "card": "crates/yekitrim-core/src/cutting/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib cutting"]
+      "verify": ["cargo test -p yekitrim-core --lib cutting"]
     },
     {
       "id": "core-llm",
       "title": "统一 LLM 客户端与用量记账",
-      "dir": "crates/vtrim-core/src/llm",
-      "card": "crates/vtrim-core/src/llm/AGENTS.md",
+      "dir": "crates/yekitrim-core/src/llm",
+      "card": "crates/yekitrim-core/src/llm/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-core --lib llm"]
+      "verify": ["cargo test -p yekitrim-core --lib llm"]
     },
     {
       "id": "render-core",
-      "title": "vtrim-render-core 绘制原语",
-      "dir": "crates/vtrim-render-core",
-      "card": "crates/vtrim-render-core/AGENTS.md",
+      "title": "yekitrim-render-core 绘制原语",
+      "dir": "crates/yekitrim-render-core",
+      "card": "crates/yekitrim-render-core/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo check -p vtrim-render-core"]
+      "verify": ["cargo check -p yekitrim-render-core"]
     },
     {
       "id": "polish",
-      "title": "vtrim-polish 精修引擎",
-      "dir": "crates/vtrim-polish",
-      "card": "crates/vtrim-polish/AGENTS.md",
+      "title": "yekitrim-polish 精修引擎",
+      "dir": "crates/yekitrim-polish",
+      "card": "crates/yekitrim-polish/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo check -p vtrim-polish"]
+      "verify": ["cargo check -p yekitrim-polish"]
     },
     {
       "id": "polish-process",
       "title": "精修后处理：字幕 / 段 / 贴纸 / 音效",
-      "dir": "crates/vtrim-polish/src/process",
-      "card": "crates/vtrim-polish/src/process/AGENTS.md",
+      "dir": "crates/yekitrim-polish/src/process",
+      "card": "crates/yekitrim-polish/src/process/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-polish --lib process"]
+      "verify": ["cargo test -p yekitrim-polish --lib process"]
     },
     {
       "id": "polish-render",
       "title": "渲染导出与封面（子进程链路）",
-      "dir": "crates/vtrim-polish/src/render",
-      "card": "crates/vtrim-polish/src/render/AGENTS.md",
+      "dir": "crates/yekitrim-polish/src/render",
+      "card": "crates/yekitrim-polish/src/render/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-polish --lib render"]
+      "verify": ["cargo test -p yekitrim-polish --lib render"]
     },
     {
       "id": "polish-templates",
       "title": "出片模板（真实渲染路径）",
-      "dir": "crates/vtrim-polish/templates",
-      "card": "crates/vtrim-polish/templates/AGENTS.md",
+      "dir": "crates/yekitrim-polish/templates",
+      "card": "crates/yekitrim-polish/templates/AGENTS.md",
       "kind": "module",
       "verify": ["node webui/scripts/check-overlay.mjs"]
     },
     {
       "id": "polish-project",
       "title": "精修项目配置与去静音",
-      "dir": "crates/vtrim-polish/src/project",
-      "card": "crates/vtrim-polish/src/project/AGENTS.md",
+      "dir": "crates/yekitrim-polish/src/project",
+      "card": "crates/yekitrim-polish/src/project/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-polish --lib project"]
+      "verify": ["cargo test -p yekitrim-polish --lib project"]
     },
     {
       "id": "polish-assets",
       "title": "贴纸库 / 音效目录 / 资产下载",
-      "dir": "crates/vtrim-polish/src/assets",
-      "card": "crates/vtrim-polish/src/assets/AGENTS.md",
+      "dir": "crates/yekitrim-polish/src/assets",
+      "card": "crates/yekitrim-polish/src/assets/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-polish --lib assets"]
+      "verify": ["cargo test -p yekitrim-polish --lib assets"]
     },
     {
       "id": "polish-llm",
       "title": "精修侧 LLM：分段 / 事件生成 / 关键词",
-      "dir": "crates/vtrim-polish/src/llm",
-      "card": "crates/vtrim-polish/src/llm/AGENTS.md",
+      "dir": "crates/yekitrim-polish/src/llm",
+      "card": "crates/yekitrim-polish/src/llm/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-polish --lib llm"]
+      "verify": ["cargo test -p yekitrim-polish --lib llm"]
     },
     {
       "id": "service",
-      "title": "vtrim-service 领域逻辑",
-      "dir": "crates/vtrim-service",
-      "card": "crates/vtrim-service/AGENTS.md",
+      "title": "yekitrim-service 领域逻辑",
+      "dir": "crates/yekitrim-service",
+      "card": "crates/yekitrim-service/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo test -p vtrim-service"]
+      "verify": ["cargo test -p yekitrim-service"]
     },
     {
       "id": "service-ingest",
       "title": "采集入库：容量预检 / 项目落地",
-      "dir": "crates/vtrim-service/src/ingest",
-      "card": "crates/vtrim-service/src/ingest/AGENTS.md",
+      "dir": "crates/yekitrim-service/src/ingest",
+      "card": "crates/yekitrim-service/src/ingest/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-service ingest"]
+      "verify": ["cargo test -p yekitrim-service ingest"]
     },
     {
       "id": "service-downloader",
       "title": "下载器端口与 yt-dlp 适配器",
-      "dir": "crates/vtrim-service/src/downloader",
-      "card": "crates/vtrim-service/src/downloader/AGENTS.md",
+      "dir": "crates/yekitrim-service/src/downloader",
+      "card": "crates/yekitrim-service/src/downloader/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-service downloader"]
+      "verify": ["cargo test -p yekitrim-service downloader"]
     },
     {
       "id": "service-bilibili",
       "title": "B站链接通道（bvid / cid / 弹幕）",
-      "dir": "crates/vtrim-service/src/bilibili",
-      "card": "crates/vtrim-service/src/bilibili/AGENTS.md",
+      "dir": "crates/yekitrim-service/src/bilibili",
+      "card": "crates/yekitrim-service/src/bilibili/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-service bilibili"]
+      "verify": ["cargo test -p yekitrim-service bilibili"]
     },
     {
       "id": "service-net",
       "title": "HTTP 小工具（解压 / UA）",
-      "dir": "crates/vtrim-service/src/net",
-      "card": "crates/vtrim-service/src/net/AGENTS.md",
+      "dir": "crates/yekitrim-service/src/net",
+      "card": "crates/yekitrim-service/src/net/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-service net"]
+      "verify": ["cargo test -p yekitrim-service net"]
     },
     {
       "id": "server",
-      "title": "vtrim-server：HTTP / 任务队列 / 宿主",
-      "dir": "crates/vtrim-server",
-      "card": "crates/vtrim-server/AGENTS.md",
+      "title": "yekitrim-server：HTTP / 任务队列 / 宿主",
+      "dir": "crates/yekitrim-server",
+      "card": "crates/yekitrim-server/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo test -p vtrim-server"]
+      "verify": ["cargo test -p yekitrim-server"]
     },
     {
       "id": "server-api",
       "title": "HTTP 领域模块与共享底座",
-      "dir": "crates/vtrim-server/src/api",
-      "card": "crates/vtrim-server/src/api/AGENTS.md",
+      "dir": "crates/yekitrim-server/src/api",
+      "card": "crates/yekitrim-server/src/api/AGENTS.md",
       "kind": "module",
-      "verify": ["cargo test -p vtrim-server"]
+      "verify": ["cargo test -p yekitrim-server"]
     },
     {
       "id": "cli",
-      "title": "vtrim CLI 入口",
-      "dir": "crates/vtrim-cli",
-      "card": "crates/vtrim-cli/AGENTS.md",
+      "title": "yekitrim CLI 入口",
+      "dir": "crates/yekitrim-cli",
+      "card": "crates/yekitrim-cli/AGENTS.md",
       "kind": "crate",
-      "verify": ["cargo check -p vtrim-cli"]
+      "verify": ["cargo check -p yekitrim-cli"]
     },
     {
       "id": "xtask",

@@ -1,4 +1,4 @@
-# V-Trim
+# YekiTrim
 
 直播录像自动切片工具。输入录播视频 + 弹幕文件，输出按事件分割的片段 + 字幕 + `publish_config.json`。
 
@@ -18,27 +18,27 @@
 ### 六个 crate 与依赖方向（单向，硬规矩）
 
 ```
-vtrim-render-core ←── vtrim-polish ──┐
-                                     ├──→ vtrim-service ──→ vtrim-server ──→ vtrim-cli
-        vtrim-core ──────────────────┘
+yekitrim-render-core ←── yekitrim-polish ──┐
+                                     ├──→ yekitrim-service ──→ yekitrim-server ──→ yekitrim-cli
+        yekitrim-core ──────────────────┘
 ```
 
 | crate | 干什么 |
 |---|---|
-| `crates/vtrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / LLM 客户端 / 弹幕 |
-| `crates/vtrim-polish` | GSAP 精修引擎（从 vtedit 合并）：字幕/贴纸/音效/特效 → 出片与封面 |
-| `crates/vtrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
-| `crates/vtrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
-| `crates/vtrim-server` | axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块 |
-| `crates/vtrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim` |
+| `crates/yekitrim-core` | 管线编排 + ASR / 事件检测 / 剪切 + 配置 / LLM 客户端 / 弹幕 |
+| `crates/yekitrim-polish` | GSAP 精修引擎（从 vtedit 合并）：字幕/贴纸/音效/特效 → 出片与封面 |
+| `crates/yekitrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
+| `crates/yekitrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
+| `crates/yekitrim-server` | axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块 |
+| `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim` |
 | `crates/xtask` | 构建/打包/产物门禁（`cargo xtask scan|package`） |
 
 硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，15 条规则）：
 
-- `vtrim-service` **绝不能** `use vtrim_server::*`（它能被抽出来的全部理由）；
-- `vtrim-server` 只依赖 `vtrim-service`，不碰 `vtrim_cli`；
+- `yekitrim-service` **绝不能** `use yekitrim_server::*`（它能被抽出来的全部理由）；
+- `yekitrim-server` 只依赖 `yekitrim-service`，不碰 `yekitrim_cli`；
 - `core` / `polish` / `render-core` 不许认识上层；
-- CLI 侧要用**服务端能力**，只能经 `vtrim-server` 暴露的 `run()` / `ServerArgs` 进入；
+- CLI 侧要用**服务端能力**，只能经 `yekitrim-server` 暴露的 `run()` / `ServerArgs` 进入；
 - 前端 `components/` 不许 import `views/`；作用域查询串只许在 `webui/src/api/` 里拼。
 
 README 的「架构」一节有同一张图的展开版；分层决策的来龙去脉见 `docs/plan/service-direction-review.md`。
@@ -46,7 +46,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 ### 管线：Stage 编号与运行模式
 
 `AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)`，**连续无跳过**。
-所有 stage 用 `#[async_trait]` 实现 `Stage` trait（`crates/vtrim-core/src/pipeline/stage.rs`）。
+所有 stage 用 `#[async_trait]` 实现 `Stage` trait（`crates/yekitrim-core/src/pipeline/stage.rs`）。
 
 `PipelineRunner` 三种模式（`pipeline/runner.rs`）：`run()`（受文件存在性约束，单 stage 命令用）、
 `run_all()`（无视文件检查从头跑，`process` 用）、`run_until(max)`（`process --dry-run` 用）。
@@ -64,7 +64,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 ### CLI（命令表面）
 
-**命令面归 `crates/vtrim-cli/AGENTS.md`** —— 那张表曾在本文件里与它重复，占用最坏指令链预算，
+**命令面归 `crates/yekitrim-cli/AGENTS.md`** —— 那张表曾在本文件里与它重复，占用最坏指令链预算，
 已挪回它该在的卡。**别再往这里抄第二份。**
 
 ## 入口
@@ -76,38 +76,38 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 |---|---|---|---|
 | `root` | `.` | `AGENTS.md` | 每次会话都会加载（本文件） |
 | `scripts` | `scripts` | `scripts/AGENTS.md` | 改门禁/加规则时 |
-| `tools` | `tools` | `tools/AGENTS.md` | 动转译器（`polish.toml` → 底座工程）之前 |
-| `core` | `crates/vtrim-core` | `crates/vtrim-core/AGENTS.md` | 动 `crates/vtrim-core/` 下的东西之前 |
-| `core-config` | `crates/vtrim-core/src/config` | `crates/vtrim-core/src/config/AGENTS.md` | 动 `crates/vtrim-core/src/config/` 下的东西之前 |
-| `core-pipeline` | `crates/vtrim-core/src/pipeline` | `crates/vtrim-core/src/pipeline/AGENTS.md` | 动 `crates/vtrim-core/src/pipeline/` 下的东西之前 |
-| `core-asr` | `crates/vtrim-core/src/asr` | `crates/vtrim-core/src/asr/AGENTS.md` | 动 `crates/vtrim-core/src/asr/` 下的东西之前 |
-| `core-detection` | `crates/vtrim-core/src/detection` | `crates/vtrim-core/src/detection/AGENTS.md` | 动 `crates/vtrim-core/src/detection/` 下的东西之前 |
-| `core-danmaku` | `crates/vtrim-core/src/danmaku` | `crates/vtrim-core/src/danmaku/AGENTS.md` | 动 `crates/vtrim-core/src/danmaku/` 下的东西之前 |
-| `core-cutting` | `crates/vtrim-core/src/cutting` | `crates/vtrim-core/src/cutting/AGENTS.md` | 动 `crates/vtrim-core/src/cutting/` 下的东西之前 |
-| `core-llm` | `crates/vtrim-core/src/llm` | `crates/vtrim-core/src/llm/AGENTS.md` | 动 `crates/vtrim-core/src/llm/` 下的东西之前 |
-| `render-core` | `crates/vtrim-render-core` | `crates/vtrim-render-core/AGENTS.md` | 动绘制原语之前 |
-| `polish` | `crates/vtrim-polish` | `crates/vtrim-polish/AGENTS.md` | 动 `crates/vtrim-polish/` 下的东西之前 |
-| `polish-process` | `crates/vtrim-polish/src/process` | `crates/vtrim-polish/src/process/AGENTS.md` | 动后处理（字幕/段/贴纸/音效）之前 |
-| `polish-render` | `crates/vtrim-polish/src/render` | `crates/vtrim-polish/src/render/AGENTS.md` | 动渲染导出/封面之前（子进程链路，出过事故） |
-| `polish-templates` | `crates/vtrim-polish/templates` | `crates/vtrim-polish/templates/AGENTS.md` | 改出片模板之前 |
-| `polish-project` | `crates/vtrim-polish/src/project` | `crates/vtrim-polish/src/project/AGENTS.md` | 动精修项目配置/去静音之前 |
-| `polish-assets` | `crates/vtrim-polish/src/assets` | `crates/vtrim-polish/src/assets/AGENTS.md` | 动贴纸库/音效目录/资产下载之前 |
-| `polish-llm` | `crates/vtrim-polish/src/llm` | `crates/vtrim-polish/src/llm/AGENTS.md` | 动精修侧 LLM 之前 |
-| `service` | `crates/vtrim-service` | `crates/vtrim-service/AGENTS.md` | 动领域逻辑（账本/项目/账号/用量）之前 |
-| `service-ingest` | `crates/vtrim-service/src/ingest` | `crates/vtrim-service/src/ingest/AGENTS.md` | 动采集入库之前 |
-| `service-downloader` | `crates/vtrim-service/src/downloader` | `crates/vtrim-service/src/downloader/AGENTS.md` | 动下载器端口/适配器之前 |
-| `service-bilibili` | `crates/vtrim-service/src/bilibili` | `crates/vtrim-service/src/bilibili/AGENTS.md` | 动 B站链接通道之前 |
-| `service-net` | `crates/vtrim-service/src/net` | `crates/vtrim-service/src/net/AGENTS.md` | 动 HTTP 小工具之前 |
-| `server` | `crates/vtrim-server` | `crates/vtrim-server/AGENTS.md` | 动 HTTP/任务队列/宿主之前 |
-| `server-api` | `crates/vtrim-server/src/api` | `crates/vtrim-server/src/api/AGENTS.md` | 加接口/改路由之前（含同步 IO 纪律） |
-| `cli` | `crates/vtrim-cli` | `crates/vtrim-cli/AGENTS.md` | 加命令/改入口之前 |
+| `tools` | `tools` | `tools/AGENTS.md` | 动转译器之前 |
+| `core` | `crates/yekitrim-core` | `crates/yekitrim-core/AGENTS.md` | 动该目录之前 |
+| `core-config` | `crates/yekitrim-core/src/config` | `crates/yekitrim-core/src/config/AGENTS.md` | 改配置之前 |
+| `core-pipeline` | `crates/yekitrim-core/src/pipeline` | `crates/yekitrim-core/src/pipeline/AGENTS.md` | 改管线之前 |
+| `core-asr` | `crates/yekitrim-core/src/asr` | `crates/yekitrim-core/src/asr/AGENTS.md` | 改 ASR 之前 |
+| `core-detection` | `crates/yekitrim-core/src/detection` | `crates/yekitrim-core/src/detection/AGENTS.md` | 改事件检测之前 |
+| `core-danmaku` | `crates/yekitrim-core/src/danmaku` | `crates/yekitrim-core/src/danmaku/AGENTS.md` | 改弹幕之前 |
+| `core-cutting` | `crates/yekitrim-core/src/cutting` | `crates/yekitrim-core/src/cutting/AGENTS.md` | 改剪切之前 |
+| `core-llm` | `crates/yekitrim-core/src/llm` | `crates/yekitrim-core/src/llm/AGENTS.md` | 改 LLM 之前 |
+| `render-core` | `crates/yekitrim-render-core` | `crates/yekitrim-render-core/AGENTS.md` | 动绘制原语之前 |
+| `polish` | `crates/yekitrim-polish` | `crates/yekitrim-polish/AGENTS.md` | 动该目录之前 |
+| `polish-process` | `crates/yekitrim-polish/src/process` | `crates/yekitrim-polish/src/process/AGENTS.md` | 动后处理之前 |
+| `polish-render` | `crates/yekitrim-polish/src/render` | `crates/yekitrim-polish/src/render/AGENTS.md` | 动渲染导出/封面之前 |
+| `polish-templates` | `crates/yekitrim-polish/templates` | `crates/yekitrim-polish/templates/AGENTS.md` | 改出片模板之前 |
+| `polish-project` | `crates/yekitrim-polish/src/project` | `crates/yekitrim-polish/src/project/AGENTS.md` | 动精修配置/去静音之前 |
+| `polish-assets` | `crates/yekitrim-polish/src/assets` | `crates/yekitrim-polish/src/assets/AGENTS.md` | 动贴纸库/音效库之前 |
+| `polish-llm` | `crates/yekitrim-polish/src/llm` | `crates/yekitrim-polish/src/llm/AGENTS.md` | 动精修侧 LLM 之前 |
+| `service` | `crates/yekitrim-service` | `crates/yekitrim-service/AGENTS.md` | 动领域逻辑之前 |
+| `service-ingest` | `crates/yekitrim-service/src/ingest` | `crates/yekitrim-service/src/ingest/AGENTS.md` | 动采集入库之前 |
+| `service-downloader` | `crates/yekitrim-service/src/downloader` | `crates/yekitrim-service/src/downloader/AGENTS.md` | 动下载器端口/适配器之前 |
+| `service-bilibili` | `crates/yekitrim-service/src/bilibili` | `crates/yekitrim-service/src/bilibili/AGENTS.md` | 动 B站链接通道之前 |
+| `service-net` | `crates/yekitrim-service/src/net` | `crates/yekitrim-service/src/net/AGENTS.md` | 动 HTTP 小工具之前 |
+| `server` | `crates/yekitrim-server` | `crates/yekitrim-server/AGENTS.md` | 动 HTTP/任务队列/宿主之前 |
+| `server-api` | `crates/yekitrim-server/src/api` | `crates/yekitrim-server/src/api/AGENTS.md` | 加接口/改路由之前 |
+| `cli` | `crates/yekitrim-cli` | `crates/yekitrim-cli/AGENTS.md` | 加命令/改入口之前 |
 | `xtask` | `crates/xtask` | `crates/xtask/AGENTS.md` | 动构建/打包/产物门禁之前 |
-| `webui` | `webui` | `webui/AGENTS.md` | 改构建、`dist`、契约脚本时 |
-| `webui-src` | `webui/src` | `webui/src/AGENTS.md` | 动前端源码之前（路由/重挂/缓存纪律） |
-| `webui-api` | `webui/src/api` | `webui/src/api/AGENTS.md` | 动接口层/作用域之前 |
-| `webui-views` | `webui/src/views` | `webui/src/views/AGENTS.md` | 改页面（预处理/切片/精修/设置）之前 |
-| `webui-components` | `webui/src/components` | `webui/src/components/AGENTS.md` | 改组件（时间轴/预览/封面设计器）之前 |
-| `webui-styles` | `webui/src/styles` | `webui/src/styles/AGENTS.md` | 改样式之前（唯一设计标准） |
+| `webui` | `webui` | `webui/AGENTS.md` | 改构建/dist/契约脚本时 |
+| `webui-src` | `webui/src` | `webui/src/AGENTS.md` | 动前端源码之前 |
+| `webui-api` | `webui/src/api` | `webui/src/api/AGENTS.md` | 动接口层之前 |
+| `webui-views` | `webui/src/views` | `webui/src/views/AGENTS.md` | 改页面之前 |
+| `webui-components` | `webui/src/components` | `webui/src/components/AGENTS.md` | 改组件之前 |
+| `webui-styles` | `webui/src/styles` | `webui/src/styles/AGENTS.md` | 改样式之前 |
 | `webui-polish` | `webui/src/polish` | `webui/src/polish/AGENTS.md` | 动精修预览共享模块之前 |
 <!-- module-index:end -->
 
@@ -131,27 +131,27 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   —— 两个可能的位置就必然有地方只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
 - ⚠️ **同步 IO 绝不能留在 async 线程上**（剪切时"整个服务器连不上"的根因）：handler 里的
   同步文件访问走 `api::blocking(f)`，任务体走 `api::spawn_job`。完整纪律（已覆盖清单、panic 兜底、
-  路径锁）在 `crates/vtrim-server/src/api/AGENTS.md`。
+  路径锁）在 `crates/yekitrim-server/src/api/AGENTS.md`。
 - ⚠️ **「取消」必须在批次/窗口边界真正生效**：判据只有 `ProgressReporter::cancelled()`（server 侧由
   `JobManager::cancel_token` 的 `AtomicBool` 供给）。阶段边界由 `PipelineRunner` 查；**批量 LLM 调用
   要自己把探针交给 `llm::Agent::with_cancel(probe)`**（派发每个窗口前 + 每收一个窗口后查，命中即
   `abort_all` 并报「任务已取消」）。只在阶段边界查过一次的批量循环 = 用户点了停止、后台仍把十几个
   窗口跑完（实测 18 窗、十几分钟）；新增批量循环照这里来。
 - ⚠️ **产物落盘 = 一次绑定**：`transcript_file` 的登记只有一条路 ——
-  `vtrim_service::assets::bind_asr_artifact`（订正稿走 `bind_derived_material`）。
-  别再在别处手写 `transcript_file`，见 `crates/vtrim-service/AGENTS.md`。
+  `yekitrim_service::assets::bind_asr_artifact`（订正稿走 `bind_derived_material`）。
+  别再在别处手写 `transcript_file`，见 `crates/yekitrim-service/AGENTS.md`。
 - ⚠️ **配置改动的四步**（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）见
-  `crates/vtrim-core/src/config/AGENTS.md`；`patch_config_file` 是递归深合并，别退回"一层 section"。
+  `crates/yekitrim-core/src/config/AGENTS.md`；`patch_config_file` 是递归深合并，别退回"一层 section"。
 - ⚠️ **许可：别把 espeak-ng 或任何 GPL 组件弄回二进制** —— 那会让整个产物重新变成 GPL 组合作品。
   两道防线：`vendor/sherpa-onnx-sys/build.rs` 的占位断言与 `cargo xtask scan`。
   改依赖前先看 `THIRD-PARTY-NOTICES.md`。部署相关的正文（路径面三防线、认证授权、限流配额、
   端口选择、公网清单）在 **`docs/deploy.md`**，改多租户面之前先读它。
 - ⚠️ **路径面三防线**（普通用户能读服务器任意文件的历史事故，三处缺一不可）：
-  ① `vtrim-server/src/scope.rs::enforce_scope` 的 `EXTRA_PATH_FIELDS`；
+  ① `yekitrim-server/src/scope.rs::enforce_scope` 的 `EXTRA_PATH_FIELDS`；
   ② `api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` / `check_material_paths`；
-  ③ 消费侧纵深防御（`vtrim-polish/src/cover.rs` 的 `tenant::ensure_within`）。
-  细节与"新增路径字段要做什么"在 `crates/vtrim-server/src/api/AGENTS.md`。
-- ⚠️ **`webui/dist` 先找 exe 附近、构建期常量垫底**（`vtrim-server/src/web.rs`，2026-10-02 改）：
+  ③ 消费侧纵深防御（`yekitrim-polish/src/cover.rs` 的 `tenant::ensure_within`）。
+  细节与"新增路径字段要做什么"在 `crates/yekitrim-server/src/api/AGENTS.md`。
+- ⚠️ **`webui/dist` 先找 exe 附近、构建期常量垫底**（`yekitrim-server/src/web.rs`，2026-10-02 改）：
   `exe同级 → exe上两级 → CARGO_MANIFEST_DIR/../.. → cwd`。两条由 `current_exe()` 派生的
   **必须**排在构建期常量前面 —— 那常量是编译期烧死的绝对路径，排前面会让「换台机器/换个 cwd」
   静默端出**开发机源码树里**的界面（有测试钉住次序）。`webui/dist` **已入库**，改了 `webui/src`
@@ -159,7 +159,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 - ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `vtrim-wasm` / `render-frame` 接口
   **整条已删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），
   画面归底座、音轨归本仓。**别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
-- ⚠️ **默认端口 26320 只有一份定义**：`vtrim-service/src/doctor.rs::DEFAULT_PORT`。
+- ⚠️ **默认端口 26320 只有一份定义**：`yekitrim-service/src/doctor.rs::DEFAULT_PORT`。
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
   `--trust-proxy` 是 `X-Forwarded-*` 的唯一开关（决定限流键与 cookie 的 `Secure`）。
@@ -179,9 +179,9 @@ python3 scripts/check_module_boundaries.py
 
 # 改任何 crate 之后
 cargo check --workspace --all-targets          # 0 warnings
-cargo test -p vtrim-server                     # HTTP 侧（JobManager / Range / 路由 / 配置 patch）
-cargo test -p vtrim-service                    # 领域逻辑（db / 项目 / 容量 / 下载器 / B站）
-cargo test -p vtrim-core --lib danmaku         # ASS + XML 解析 + 密度
+cargo test -p yekitrim-server                   # HTTP 侧（JobManager / Range / 路由 / 配置 patch）
+cargo test -p yekitrim-service                  # 领域逻辑（db / 项目 / 容量 / 下载器 / B站）
+cargo test -p yekitrim-core --lib danmaku       # ASS + XML 解析 + 密度
 
 # 改了前端（webui/src）之后：必须重建 dist
 npm --prefix webui run build

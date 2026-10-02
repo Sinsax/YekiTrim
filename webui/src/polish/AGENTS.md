@@ -6,7 +6,7 @@
 
 本目录**已有一份 `README.md`**（`api.js` / `engine.js` / `audio.js` 的三行说明 + 那条移植纪律）
 —— **动手前先读它**。与 Rust 侧的对应关系：`engine.js` 是出片模板
-`crates/vtrim-polish/templates/index.html` 的 Canvas 渲染器**移植**（纯函数特效状态机 + 各 `*At(idx, t)`
+`crates/yekitrim-polish/templates/index.html` 的 Canvas 渲染器**移植**（纯函数特效状态机 + 各 `*At(idx, t)`
 预览求值器）。⚠️ **真实出片路径**由**底座 Dhampir** 走（`tools/polish-to-dhampir.mjs` 把 `polish.toml`
 转译成底座工程）；`templates/index.html` 是**参照实现**（它当年是 canvas 那条腿的模板，那条腿已删除），
 转译器是它的平行重写 —— 两边仍然必须同口径，但"改模板 = 改出片"这句话**不再成立**。
@@ -35,7 +35,7 @@
 
 ## 边界
 
-- ⚠ **改特效表现先改 `crates/vtrim-polish/templates/index.html`，再同步移植到这里**：预览与出片
+- ⚠ **改特效表现先改 `crates/yekitrim-polish/templates/index.html`，再同步移植到这里**：预览与出片
   必须一致（漂移的表现就是"面板里设了、预览/成片里没有"或"预览与成片断行/落点不一致"）。
 - **覆盖层（overlay）的契约 = 一条规则，四处实现**（`timeline.rs::overlay_stops` 的文档注释里有全文）：
   `overlay_type == "gradient"` 的有效色档是 —— `colors` 滤掉空串后 ≥2 档就用它 / 恰好 1 档则用它 +

@@ -9,7 +9,7 @@
 //   ② 出片是 canvas `renderFrame` **逐帧绘制**，DOM 的 `#bg-video-wrap` **完全不参与导出**：
 //      `clearRect` 之后的透明区落进 JPEG 就是纯黑。只把 `stage.bg` 消费在 DOM 上，表现就是
 //      「预览里有模糊底、成片被 shake 挪开露纯黑」—— 不报错、不崩溃，只有逐帧像素能发现。
-//      本脚本钉住出片侧的消费面与行为（真实像素实证见 `crates/vtrim-polish/tests/portrait_backdrop.rs`）。
+//      本脚本钉住出片侧的消费面与行为（真实像素实证见 `crates/yekitrim-polish/tests/portrait_backdrop.rs`）。
 //   ③ 视频层（主画面）在出片路径里**被硬铺满整块画布**（`ctx.drawImage(videoBitmap, 0, 0, CW, CH)`），
 //      `_canvas.stage` 只被背景层消费 —— 源比例 ≠ 画布比例时整帧被拉伸。
 //      用户报的现象（2026-09-21）：**竖素材进横画布，导出里被拉成宽屏**（要的是"竖素材 + 模糊关键帧"）。
@@ -30,7 +30,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
 
 const read = async (...parts) => readFile(join(root, ...parts), 'utf8')
-const html = await read('crates', 'vtrim-polish', 'templates', 'index.html')
+const html = await read('crates', 'yekitrim-polish', 'templates', 'index.html')
 const previewVue = await read('webui', 'src', 'components', 'PolishPreview.vue')
 const engineJs = await read('webui', 'src', 'polish', 'engine.js')
 const translator = await read('tools', 'polish-to-dhampir.mjs')

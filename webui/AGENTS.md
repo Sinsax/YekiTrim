@@ -29,7 +29,7 @@
 
 - ⚠️ **`webui/dist` 已入库**（`webui/.gitignore` 不再忽略它）：改了 `webui/src` 必须重建并一起提交，
   否则 `vtrim server` 端出旧界面。
-- ⚠️ **改了 `crates/vtrim-polish/templates/index.html` 必须重建二进制**：它经 `include_str!` 进
+- ⚠️ **改了 `crates/yekitrim-polish/templates/index.html` 必须重建二进制**：它经 `include_str!` 进
   `vtrim-polish`（`render/server.rs::INDEX_HTML`），运行中的 `vtrim server` 端出的仍是旧页面 ——
   「改完没反应」十有八九是没重建/没重启，不是代码没生效。
 - 改样式同样要重建 `webui/dist`（本目录只写前端；样式纪律见 `src/styles/AGENTS.md`）。

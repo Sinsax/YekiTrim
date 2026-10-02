@@ -165,7 +165,7 @@ function checkCurves(curves) {
   // 4. `handheldSway` —— 2 个正弦分量 × 4 个通道
   // -------------------------------------------------------------------------
   //
-  // 系数逐个钉（`crates/vtrim-polish/templates/index.html:593`）：
+  // 系数逐个钉（`crates/yekitrim-polish/templates/index.html:593`）：
   //   dx = (6.5*sin(TAU*0.47*t) + 3.0*sin(TAU*0.83*t+1.7)) * a
   //   dy = (5.0*sin(TAU*0.59*t+0.9) + 2.4*sin(TAU*1.13*t+2.4)) * a
   //   rot= (0.32*sin(TAU*0.37*t+0.4) + 0.16*sin(TAU*0.91*t+2.9)) * a
@@ -393,7 +393,7 @@ function checkCurves(curves) {
   }
 
   // -------------------------------------------------------------------------
-  // 6. **参照守卫本身**（`crates/vtrim-polish/templates/index.html:getActiveSticker`）
+  // 6. **参照守卫本身**（`crates/yekitrim-polish/templates/index.html:getActiveSticker`）
   // -------------------------------------------------------------------------
   //
   // 上面 5 钉的是"曲线值"，不是"窗口判据"。而这条窗口恰恰两次出问题：
@@ -403,7 +403,7 @@ function checkCurves(curves) {
   // 所以参照那侧的判据必须**一并**钉住：只测转译器，改了模板也没人拦。
   // 这里读模板源码（不是模块）算出窗口值：新口径是 **`t > et + dur`**（上界就是事件时长），
   // 旧形状 `dur + 1.05` / `dur + (0.35 + 0.4 + 0.3)` 必须被抓。
-  const TEMPLATE = join(HERE, '..', 'crates', 'vtrim-polish', 'templates', 'index.html');
+  const TEMPLATE = join(HERE, '..', 'crates', 'yekitrim-polish', 'templates', 'index.html');
   // 判据形状：`t > et + dur`（新口径，不追加时长）或 `t > et + dur + <offset>`（旧口径）。
   // `offset` 允许带括号、允许写成"数 + 数 + …"；**注释行要滤掉**（历史数字会写在注释里）。
   const codeLines = (source) => source
@@ -509,7 +509,7 @@ function checkCurves(curves) {
   {
     const SAME_SHAPE = [
       ['参照模板 index.html', TEMPLATE, /fadeStart\s*=\s*dur\s*-\s*fadeOut/],
-      ['CPU 参考 timeline.rs', join(HERE, '..', 'crates', 'vtrim-render-core', 'src', 'timeline.rs'),
+      ['CPU 参考 timeline.rs', join(HERE, '..', 'crates', 'yekitrim-render-core', 'src', 'timeline.rs'),
         /fade_start\s*=\s*dur\s*-\s*fade_out/],
       ['WebUI 预览 engine.js', join(HERE, '..', 'webui', 'src', 'polish', 'engine.js'),
         /fadeStart\s*=\s*dur\s*-\s*fadeOut/],
@@ -683,7 +683,7 @@ function checkCurves(curves) {
   // 337px 处开始渐隐、39 字节那条在屏幕中段 728px 处就没了）。
   //
   // 这里钉两件事：① 转译器把 ASS 的 `End` 抬到 `max(End, start + fadeIn + travel)`、
-  // **只抬不压**；② 这条规则的两份实现（转译器 ↔ `vtrim_core::danmaku::clamp_display_windows`）
+  // **只抬不压**；② 这条规则的两份实现（转译器 ↔ `yekitrim_core::danmaku::clamp_display_windows`）
   // 的常数与形状一致 —— 它们是两份代码，漂了就是"底座与参照又不一样"。
   {
     // ① 逐值：5 个汉字（15 字节）= 10.4s travel，8 秒窗口必须被抬到 0.3 + 10.4 = 10.7s。
@@ -735,12 +735,12 @@ checks += 5;
 
     // ② 同一条规则的另一份实现（Rust）—— 常数同值、形状同向（`>` 才改、= 不改）。
     const rust = readFileSync(
-      join(HERE, '..', 'crates', 'vtrim-core', 'src', 'danmaku', 'mod.rs'),
+      join(HERE, '..', 'crates', 'yekitrim-core', 'src', 'danmaku', 'mod.rs'),
       'utf8',
     );
     assert.ok(
       /pub const DANMAKU_FADE_IN_SECS: f64 = 0\.3;/.test(rust),
-      'Rust 那份的 fadeIn 不是 0.3 —— 两份实现漂了（vtrim_core::danmaku）',
+      'Rust 那份的 fadeIn 不是 0.3 —— 两份实现漂了（yekitrim_core::danmaku）',
     );
     assert.ok(
       /let need = entry\.start \+ DANMAKU_FADE_IN_SECS \+ travel;/.test(rust),

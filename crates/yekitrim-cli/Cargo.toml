@@ -1,0 +1,41 @@
+[package]
+name = "yekitrim-cli"
+version.workspace = true
+edition = "2021"
+description = "YekiTrim CLI 入口（clap 命令；服务端在 yekitrim-server crate，二进制名 yekitrim）"
+authors = ["Sinsax"]
+license = "Apache-2.0"
+
+[[bin]]
+name = "yekitrim"
+path = "src/main.rs"
+
+[dependencies]
+yekitrim-core = { path = "../yekitrim-core" }
+yekitrim-polish = { path = "../yekitrim-polish" }
+yekitrim-service = { path = "../yekitrim-service" }
+yekitrim-server = { path = "../yekitrim-server" }
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.18"
+anyhow = "1"
+
+[features]
+# ⚠️ 这里曾经是 `wgpu-render = ["vtrim-server/wgpu-render"]` 的**转发**（feature 随 crate 走）。
+# 那条 GPU 链路已删除（GPU 出片交给独立的 Dhampir 底座）。**别为了"留个口子"把它加回来** ——
+# 加了不报错，只会让人以为还有 GPU 出片。
+#
+# 现在这里只有一条**封面**的转发：`cover-takumi`（静态封面渲染 / Takumi）。
+#   · 它在 `vtrim-polish` 里**仍是可选、默认关**：那一套依赖会拉长每次构建，Windows 上还会带出
+#     libwebp-sys 的 `LNK4098` 链接器警告，发行产物的许可面也要跟着复核（见 `THIRD-PARTY-NOTICES.md`）。
+#   · 但 **CLI 默认带上它** —— 这样 `cargo run --bin vtrim server` 开箱就能在封面设计器弹窗里选 Takumi，
+#     不必每次手打 `--features vtrim-polish/cover-takumi`；而 `cargo build -p vtrim-polish`
+#     这类**库**构建依旧精简（这正是"默认关"那条理由要保住的部分）。
+#   · 想临时回到精简构建：`cargo run --bin vtrim --no-default-features server`
+#     （此时封面设计器里 Takumi 那个选项会自己置灰并写明原因，见 `/api/health.cover_static`）。
+cover-takumi = ["yekitrim-polish/cover-takumi"]
+default = ["cover-takumi"]

@@ -56,7 +56,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - 录播姬录制：用户**只看到「配置直播间」**；「全部记录与导入规则」「扫描录制目录」与待分配池
   全在 `<template v-if="isAdmin">` 里。不可用时整块**置灰** + 输入禁用，只给一句"录播姬未接入，
   暂时不能添加"；`roomsAvailable` 初值 **`null`** = 还没问到（避免先闪一下"未接入"）。
-- 表情包区块（**仅 admin；非 admin 整块不渲染**，细节在 `crates/vtrim-polish/src/assets/AGENTS.md`）：
+- 表情包区块（**仅 admin；非 admin 整块不渲染**，细节在 `crates/yekitrim-polish/src/assets/AGENTS.md`）：
   卡片墙（`.stk-grid` = `minmax(112px,1fr)`）+ 点卡片 `AppModal wide` 大图预览
   （`.stk-preview` `max-height:60vh`）；⚠ **`preview` 只存 `{pack, name}`**，文件对象由
   `previewFile` 从 `detail` 现取 —— 别存快照；`.pack-files` 框内滚动、上限 **420px**；

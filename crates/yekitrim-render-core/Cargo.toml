@@ -1,0 +1,16 @@
+[package]
+name = "yekitrim-render-core"
+version.workspace = true
+edition = "2024"
+description = "YekiTrim 渲染核心：事件/时间线类型与时间线数学（被 yekitrim-polish 用，不依赖 yekitrim-core/yekitrim-polish/tokio）"
+authors = ["Sinsax"]
+license = "Apache-2.0"
+
+[lib]
+name = "yekitrim_render_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"

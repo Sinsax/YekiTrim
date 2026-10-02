@@ -2,7 +2,7 @@
 //
 // 同一条规则有多份实现，任何一份漂移都表现为「预览里点哪儿、成片里贴到别处」或
 // 「竖屏贴纸小一圈」：
-//   1. 出片权威路径 `crates/vtrim-polish/templates/index.html`
+//   1. 出片权威路径 `crates/yekitrim-polish/templates/index.html`
 //      画布倍率 `CK/CKH/SK` → `stickerAnchor` → `stickerBox` → `handlers.sticker`
 //      （DOM 落点）+ `getActiveSticker`（canvas 出片取中心）
 //   2. 预览求值器 `webui/src/polish/engine.js`
@@ -84,7 +84,7 @@ function extractObjectAfter(src, marker) {
   return src.slice(s, braceEnd(src, s) + 1)
 }
 
-const html = await readFile(join(root, 'crates', 'vtrim-polish', 'templates', 'index.html'), 'utf8')
+const html = await readFile(join(root, 'crates', 'yekitrim-polish', 'templates', 'index.html'), 'utf8')
 const engineSrc = await readFile(join(root, 'webui', 'src', 'polish', 'engine.js'), 'utf8')
 const canvasSrc = await readFile(join(root, 'webui', 'src', 'polish', 'canvas.js'), 'utf8')
 const previewSrc = await readFile(join(root, 'webui', 'src', 'components', 'PolishPreview.vue'), 'utf8')

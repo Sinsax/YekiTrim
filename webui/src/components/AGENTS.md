@@ -61,7 +61,7 @@
 - ⚠️ **跳手动屏蔽区间 = A/B 预滚（首选）+ 定格遮罩（兜底），不许退回"直接 seek"**：`videoRef` 是
   **computed**（换台靠 `activeStage`；Dhampir 那条腿靠 `engine.bindSource` 换绑 + 源没就绪不画），
   改回模板 ref、删掉备用源/那道闸门 = A/B **静默失效**。详见 `docs/webui-components.md` ②。
-- 自绘层与出片模板 `crates/vtrim-polish/templates/index.html` **必须同口径**（覆盖层色档 `gradientCss`
+- 自绘层与出片模板 `crates/yekitrim-polish/templates/index.html` **必须同口径**（覆盖层色档 `gradientCss`
   等纯函数从 `polish/engine.js` 来）；
   ⚠️ **只有自绘这一层**：原来还有两条真渲染通道（wasm 实时 + `POST /api/polish/render-frame` 单帧回退），
   随「作废 wgpu」一起删掉了 —— **别再把它接回来**，要真渲染就走 Dhampir 底座那条链路。
@@ -189,7 +189,7 @@
     **每个任务结束都跑一次**（用户报的"剪切完界面卡住、按钮变灰"）。这类刷新还要**单飞 + 尾随重刷**
     （`ProjectSlicesView.load` 的 `inflight`/`queuedReload`）。
   - ⚠ **按钮按作用域门控**：`api/jobs.js` 的 `clipKey/outKey/idxKey/MODELS_KEY/STICKERS_KEY` 必须与
-    `crates/vtrim-server/src/scope_key.rs` 一致，`busyOn(jobs, keys)` 求交集 —— 只在自己片段/项目被占用时
+    `crates/yekitrim-server/src/scope_key.rs` 一致，`busyOn(jobs, keys)` 求交集 —— 只在自己片段/项目被占用时
     才禁用，「别处有任务在跑」不再让按钮变灰。**同步保存类操作（选框/封面参数/字幕/去静音）不受门控。**
   - **任务行的"卡住"提示**：`JobSummary.updated_at`（epoch 秒，`Job::push` 每次事件都更新）—— 运行中但
     `IDLE_WARN_SECS`(120s) 没有新事件，就在行上写"可能卡在外部进程或网络盘上"。
