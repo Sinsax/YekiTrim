@@ -127,7 +127,7 @@ impl InstanceLock {
                     .map(|h| h.label())
                     .unwrap_or_else(|| "无法读取持有者信息（锁被独占）".to_string());
                 bail!(
-                    "已有 vtrim server 在使用同一个数据目录：{}（{}）。\n\
+                    "已有 yekitrim server 在使用同一个数据目录：{}（{}）。\n\
                      同一 data_dir 不允许两个实例同时运行（会抢项目、端口与 SQLite）。\n\
                      确认那个进程已停止后重试；若要用另一份账号账本，请用 --data-dir <其它目录>。\n\
                      底层错误: {e}",
@@ -242,7 +242,7 @@ mod tests {
         let second = InstanceLock::acquire(dir.path(), false);
         assert!(second.is_err(), "同一 data_dir 的第二个实例必须被拒绝");
         assert!(
-            format!("{:#}", second.err().unwrap()).contains("已有 vtrim server"),
+            format!("{:#}", second.err().unwrap()).contains("已有 yekitrim server"),
             "错误文案要能指导用户"
         );
     }

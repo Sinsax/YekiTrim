@@ -1,6 +1,6 @@
 # tools — 对底座出片的转译器（本仓方言 → Dhampir 契约）
 
-> 范围：`tools`/** ｜ 上游：`polish.toml` / `clip.srt` / `clip.dm.srt`（**只读**）｜ 验证：`node scripts/check-vtrim-translator.mjs`
+> 范围：`tools`/** ｜ 上游：`polish.toml` / `clip.srt` / `clip.dm.srt`（**只读**）｜ 验证：`node scripts/check-yekitrim-translator.mjs`
 
 ## 职责
 
@@ -36,7 +36,7 @@
   以及"参照侧这一处本来是什么形状"。**要读懂本模块，先读这个 `switch`。**
 - 顶层 `export` 的 6 个纯函数（`backOut3` / `pow2Out` / `shakeOffsetAt` / `handheldSway` /
   `stickerStateAt` / `hexColor`）：前五条是从**出片模板逐行抄来的曲线**，被
-  `scripts/check-vtrim-translator.mjs` import 来逐值测；`hexColor` 是**颜色**那条
+  `scripts/check-yekitrim-translator.mjs` import 来逐值测；`hexColor` 是**颜色**那条
   （四种写法，见「边界」）。`isEntryPoint` 那道门是为了"可 import 也可直接跑"。
 - 规格与词表：`docs/vtrim-integration.md`（第一~八节）—— 每条行为的参照行号、已知差异清单、
   "怎么加一个新事件类型"的五步。**改这个文件之前先读它。**
@@ -69,7 +69,7 @@
   那一点、**忽略事件的 `x/y`**、含义是 **盒子中心**。两份参照都写着这条（`templates/index.html::stickerAnchor`
   与 `engine.js::stickerAnchor`）。⚠️ **本条曾经整条缺失**：转译器只读 `event.x/y`，于是"设计器里把落点
   改成固定、点保存"在那条腿上**完全丢失** —— 而 DOM 预览（有 `manual` 分支）当场就对，
-  **报告里一行差异都没有**，症状极具迷惑性。判据在 `check-vtrim-translator.mjs` 的 6c-bis
+  **报告里一行差异都没有**，症状极具迷惑性。判据在 `check-yekitrim-translator.mjs` 的 6c-bis
   （**行为**判据：两种模式必须算出不同落点 + 各自符合自己那份基准）+ 两处变异自证。
   ⚠️ 那条"没有 x/y 就拒转"的不变量，判据必须是 `ratio()` 的结果，**不能写 `event.x !== undefined`** ——
   没跑过后处理的工程里那个键**存在**、值恰好是字符串 `"auto"`。
@@ -132,8 +132,8 @@
 ## 验证
 
 ```bash
-node scripts/check-vtrim-translator.mjs            # 339 曲线 + 13 颜色 + 40 映射（含弹幕窗口逐值检查、字幕阴影四键）
-node scripts/check-vtrim-translator.mjs --mutate   # 22 处变异必须**全部打红**
+node scripts/check-yekitrim-translator.mjs            # 339 曲线 + 13 颜色 + 40 映射（含弹幕窗口逐值检查、字幕阴影四键）
+node scripts/check-yekitrim-translator.mjs --mutate   # 22 处变异必须**全部打红**
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）

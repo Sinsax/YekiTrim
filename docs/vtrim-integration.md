@@ -4,7 +4,7 @@
 它只讲两件事：**怎么接**、**接了之后哪里会不一样**。
 
 > **位置**：转译器在本仓 `tools/polish-to-dhampir.mjs`（零依赖 ESM，一个文件）；
-> 它的守卫是 `scripts/check-vtrim-translator.mjs`（334 项逐值检查 + 12 处变异自证）。
+> 它的守卫是 `scripts/check-yekitrim-translator.mjs`（334 项逐值检查 + 12 处变异自证）。
 > 事件类型 → 效果参数的映射表就在转译器的逐事件 `switch` 里（每条 `case` 的注释）。
 >
 > **它不在 `vtrim` 二进制的编译/运行路径上**：产品自己出片走 `vtrim polish render`（headless Chrome）。
@@ -19,8 +19,8 @@
 > —— canvas 那条腿的 `renderFrame` / `getActiveXxx`。正文里的 `index.html:NNN` 都指这个文件
 > （行号已按本仓核过）。
 >
-> **范围**：本文是**第一~八节**。第九节（对比回路 `scripts/vtrim-compare.mjs`）与第十节（底座侧边界声明）
-> 原本在 Dhampir 仓，**2026-09-30 已迁到本仓**：`docs/dhampir/compare-loop.md`、脚本 `scripts/vtrim-compare.mjs`。
+> **范围**：本文是**第一~八节**。第九节（对比回路 `scripts/yekitrim-compare.mjs`）与第十节（底座侧边界声明）
+> 原本在 Dhampir 仓，**2026-09-30 已迁到本仓**：`docs/dhampir/compare-loop.md`、脚本 `scripts/yekitrim-compare.mjs`。
 
 ---
 
@@ -47,8 +47,8 @@ polish.toml  ──[tools/polish-to-dhampir.mjs]──▶  timeline JSON  ──
 
 ```bash
 # 0. 改过转译器之后先跑守卫（不需要网络、不需要 GPU、不需要 ffmpeg）
-node scripts/check-vtrim-translator.mjs            # 334 项：几条曲线的逐值检查
-node scripts/check-vtrim-translator.mjs --mutate   # 12 处变异必须**全部打红**（自证不是空转）
+node scripts/check-yekitrim-translator.mjs            # 334 项：几条曲线的逐值检查
+node scripts/check-yekitrim-translator.mjs --mutate   # 12 处变异必须**全部打红**（自证不是空转）
 
 # 1. 转译。第一个参数是**片段目录**（里面要有 polish.toml），不是 toml 文件本身。
 node tools/polish-to-dhampir.mjs \
@@ -291,7 +291,7 @@ dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.m
   （剩下两条：`cover` 与 `style.subtitle` 的文字阴影；`entrance`/`cycle-5` 已于 2026-10-01 **从契约移除**）。
 - **`overlay` 并入「视觉特效」泳道**，泳道成员由词汇表 `lane` 派生；
   渐变的**方向**参数见 §4.8。
-- **对拍判据加了"位移可识别性"闸门**（`scripts/vtrim-compare.mjs`）：残差曲线平坦时不许下
+- **对拍判据加了"位移可识别性"闸门**（`scripts/yekitrim-compare.mjs`）：残差曲线平坦时不许下
   "几何差"的结论（竖屏样本上就误报过 −10px；自己逐点量过：最佳位移与 0 位移只差 0.00~0.05dB）。
   修好后三样本：`demo` 15.07 / `portrait` 9.87 / `real` 9.77，**位移全 0**、时长差全 0.000。
   ⚠️ 竖屏的历史读数（本表第 5 条）里 `−24px` / `+2px` 是**另一个口径**（那时还没这道闸门），
@@ -584,7 +584,7 @@ if (t >= sh.time && t < sh.time + 0.2) {
 在 video 那段 `ctx.save()` 之内 —— 字幕/弹幕/贴纸**不跟着抖**）。
 
 **教训**：同一个名字在两条腿上可能是两种东西。**认的是出片那条腿。**
-`scripts/check-vtrim-translator.mjs` 现在把阶梯逐档钉住了（含每一档的边界两侧），
+`scripts/check-yekitrim-translator.mjs` 现在把阶梯逐档钉住了（含每一档的边界两侧），
 并且把这处"抄错版本"做成了**变异自证**的一条（`--mutate` 的第 2 条）。
 
 ## 七、怎么扩：加一个新的本仓事件类型
@@ -601,7 +601,7 @@ if (t >= sh.time && t < sh.time + 0.2) {
    本项目有 4 个 bug 在 13 个时刻的平均差里完全看不出来（−0.08/−0.02/−0.82/0.00），
    只有把两边并排看才发现。
 5. 有新的常量/口径，补一条**会被变异打红**的用例（"一条不会红的用例不算用例"）：
-   纯函数提到模块顶层 `export`，然后在 `scripts/check-vtrim-translator.mjs` 里
+   纯函数提到模块顶层 `export`，然后在 `scripts/check-yekitrim-translator.mjs` 里
    逐值断言 + 往 `MUTATIONS` 加一条（`--mutate` 会强制它打红）。
 
 ---
@@ -1316,7 +1316,7 @@ in   = floor(et × 工程fps)
 | WebUI 预览 `webui/src/polish/engine.js`（`stickersAt`） | `if (t < et \|\| t > et + dur) continue` + `fadeStart = dur - fadeOut` |
 | DOM/GSAP 预览腿 `handlers.sticker`（`index.html:955`） | `fadeOut = min(0.3, dur)` + `fadeStart = et + dur - fadeOut` + **线性**淡出（`ease:'none'`）+ 隐藏在 `et + dur`（**上浮起点 `et + 0.25` 不动** —— 这条腿自己的既有偏差） |
 
-由守卫钉住：`scripts/check-vtrim-translator.mjs` 第 5 节按**逐值**采样四段相位，并断言
+由守卫钉住：`scripts/check-yekitrim-translator.mjs` 第 5 节按**逐值**采样四段相位，并断言
 "`dur = 1.0s` / `fps = 60` 时**最后一帧**（第 59 帧，`t = 59/60`）opacity ≤ 0.1、第 60 帧（`t = 1.0`）已不可见"；
 第 6 节**读模板源码**算出窗口值（必须是 `dur`，**自证**：换成 `dur + 1.05` 必翻面）；
 第 6b 节把四处源码一起钉（不许再出现 `dur` 之后追加时长，且四处的淡出起点都必须是 `dur - fadeOut`）；

@@ -91,7 +91,7 @@ pub fn create_invites(db: &Db, note: Option<&str>, days: Option<u32>, count: u32
 pub fn cmd_invite(note: Option<String>, days: Option<u32>, count: u32, disable: bool) -> Result<()> {
     if disable {
         set_registration_enabled(false)?;
-        println!("已关闭注册（已有的邀请码仍可用，重新开启：vtrim user invite）");
+        println!("已关闭注册（已有的邀请码仍可用，重新开启：yekitrim user invite）");
         return Ok(());
     }
     let db = Db::open_default()?;
@@ -100,13 +100,13 @@ pub fn cmd_invite(note: Option<String>, days: Option<u32>, count: u32, disable: 
     db.audit(None, "invite_create", &format!("count={count}"))?;
 
     println!();
-    println!("  注册邀请码（随时可用 `vtrim user invites` 再查看 / 复制）");
+    println!("  注册邀请码（随时可用 `yekitrim user invites` 再查看 / 复制）");
     for c in &codes {
         println!("    {c}");
     }
     println!();
     println!("  被邀请人访问 <服务地址>/#/register 填 用户名 / 密码 / 邀请码 即可注册（角色固定 user）。");
-    println!("  注册开关已开启（[auth] registration_enabled = true）；关闭：vtrim user invite --disable");
+    println!("  注册开关已开启（[auth] registration_enabled = true）；关闭：yekitrim user invite --disable");
     if let Some(d) = days {
         println!("  有效期：{d} 天");
     }
@@ -126,7 +126,7 @@ pub fn cmd_invites() -> Result<()> {
     println!("账号账本: {}", yekitrim_core::path::display(&db::data_dir()));
     if rows.is_empty() {
         println!();
-        println!("暂无邀请码。生成：vtrim user invite [--note 给谁] [--days 7]");
+        println!("暂无邀请码。生成：yekitrim user invite [--note 给谁] [--days 7]");
         return Ok(());
     }
     println!();
@@ -140,7 +140,7 @@ pub fn cmd_invites() -> Result<()> {
         );
     }
     println!();
-    println!("撤销：vtrim user invite-revoke <id 或完整邀请码>");
+    println!("撤销：yekitrim user invite-revoke <id 或完整邀请码>");
     Ok(())
 }
 
@@ -155,7 +155,7 @@ pub fn cmd_invite_revoke(target: &str) -> Result<()> {
         db.find_invite_by_token(t)?
     };
     let Some(row) = row else {
-        bail!("找不到邀请码: {t}（用 vtrim user invites 看 id / 完整码）");
+        bail!("找不到邀请码: {t}（用 yekitrim user invites 看 id / 完整码）");
     };
     if row.revoked {
         println!("#{} 已经是撤销状态", row.id);
@@ -165,9 +165,9 @@ pub fn cmd_invite_revoke(target: &str) -> Result<()> {
     db.audit(None, "invite_revoke", &format!("id={}", row.id))?;
     println!("已撤销 #{} {}", row.id, row.token);
     if row.used_at.is_some() {
-        println!("提示：这个码已经被使用过，撤销不影响已注册的账号（要停用账号用 vtrim user disable）。");
+        println!("提示：这个码已经被使用过，撤销不影响已注册的账号（要停用账号用 yekitrim user disable）。");
     } else if !db.list_invites()?.iter().any(|r| r.is_open(db::now_secs())) {
-        println!("提示：已没有可用的邀请码；注册开关仍开着，需要时用 vtrim user invite --disable 关闭。");
+        println!("提示：已没有可用的邀请码；注册开关仍开着，需要时用 yekitrim user invite --disable 关闭。");
     }
     Ok(())
 }

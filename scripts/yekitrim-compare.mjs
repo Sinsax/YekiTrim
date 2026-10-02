@@ -20,9 +20,9 @@
 // 另外它还有一条纪律：**用户工程必须恢复**。整个流程包在 try/finally 里，
 // 无论中途哪一步失败（V-Trim 崩了、渲染失败、Ctrl-C），`polish.toml` 都还原。
 //
-// # 用法（本脚本住在 **V-Trim 仓**：`scripts/vtrim-compare.mjs`）
+// # 用法（本脚本住在 **V-Trim 仓**：`scripts/yekitrim-compare.mjs`）
 //
-//     node scripts/vtrim-compare.mjs \
+//     node scripts/yekitrim-compare.mjs \
 //       --clip "E:/media/<项目>/output/clips/<片段>" \
 //       --events target/fx-events.json \
 //       --out target/vtrim-run
@@ -53,8 +53,8 @@
 //
 // * `ffmpeg` / `ffprobe` 在 PATH 上
 // * Dhampir 的可执行（`--dhampir` / `VTEDIT_DHAMPIR`，默认找同层 `Dhampir/target/{debug,release}`）
-// * `yekitrim.exe`（`--vtrim` / `VTRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
-// * 转译器（`--translator` / `VTRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）——
+// * `yekitrim.exe`（`--vtrim` / `YEKITRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
+// * 转译器（`--translator` / `YEKITRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）——
 //   它就在**本仓**，见下面"转译器住在哪"
 //
 // **底座（Dhampir）是另一个仓库**：只调二进制、不链库，契约见 `docs/dhampir/compare-loop.md`
@@ -112,8 +112,8 @@ function parseArgs(argv) {
   return out;
 }
 
-const USAGE = `用法：node scripts/vtrim-compare.mjs --clip <clip 目录> [选项]
-       node scripts/vtrim-compare.mjs --fixture <名字> | --all-fixtures
+const USAGE = `用法：node scripts/yekitrim-compare.mjs --clip <clip 目录> [选项]
+       node scripts/yekitrim-compare.mjs --fixture <名字> | --all-fixtures
 
   --clip <目录>         V-Trim 的片段目录（里面有 polish.toml / clip.mp4）
   --fixture <名字>      用固定样本（demo / portrait / real）——**会先复制到运行目录**，
@@ -122,7 +122,7 @@ const USAGE = `用法：node scripts/vtrim-compare.mjs --clip <clip 目录> [选
   --events <json>       要插进去的测试事件（JSON 数组，源时间）。不给 = 只比现有工程
   --out <目录>          运行目录（默认 target/vtrim-compare）
   --translator <路径>   转译器（默认 tools/polish-to-dhampir.mjs；
-                        也可用环境变量 VTRIM_TRANSLATOR）
+                        也可用环境变量 YEKITRIM_TRANSLATOR）
   --dhampir <路径>      Dhampir 可执行（默认找同层 Dhampir/target/{debug,release}；
                         也可用环境变量 VTEDIT_DHAMPIR）
   --vtrim <路径>        vtrim 可执行（默认自动找）
@@ -577,7 +577,7 @@ print(json.dumps(out))
   // 仓库自己的规矩就是"跑法用 `python3`"（根卡「验证」那节写着）。第一版写死 `python`，
   // 于是两边都出完片了、在最后一步度量上报 `Command failed: python …`（看着像渲染失败，其实是解释器没找到）。
   // 依次试 `python3` → `python`，全都不行就把"要 numpy 的 python3"说清楚。
-  const pyCandidates = [process.env.VTRIM_PYTHON, 'python3', 'python'].filter(Boolean);
+  const pyCandidates = [process.env.YEKITRIM_PYTHON, 'python3', 'python'].filter(Boolean);
   let text = null;
   const pyErrors = [];
   for (const bin of pyCandidates) {
@@ -591,7 +591,7 @@ print(json.dumps(out))
   if (text === null) {
     throw new Error(
       `度量脚本跑不起来（它要一个带 numpy 的 python）——\n  ${pyErrors.join('\n  ')}\n` +
-        '  （本机没有 `python` 只有 `python3`，或用 VTRIM_PYTHON=<解释器路径> 指定）',
+        '  （本机没有 `python` 只有 `python3`，或用 YEKITRIM_PYTHON=<解释器路径> 指定）',
     );
   }
   return JSON.parse(text.trim().split('\n').pop());
@@ -848,7 +848,7 @@ function main() {
   // 它可能在同层，也可能被 `VTEDIT_DHAMPIR` 指到别处。
   const translatorCandidates = [
     args.translator,
-    process.env.VTRIM_TRANSLATOR,
+    process.env.YEKITRIM_TRANSLATOR,
     join(REPO_ROOT, 'tools', 'polish-to-dhampir.mjs'),
   ].filter(Boolean).map((p) => resolve(p));
   const translator = translatorCandidates.find((p) => existsSync(p));
@@ -869,7 +869,7 @@ function main() {
   // 都列出来，全找不到才退到 PATH，并在报错里**说清找过哪些地方**。
   const vtrimCandidates = [
     args.vtrim,
-    process.env.VTRIM_EXE,
+    process.env.YEKITRIM_EXE,
     join(REPO_ROOT, '.workbuddy', 'perf', 'bin', `vtrim${EXE}`),
     join(REPO_ROOT, 'target', 'release', `vtrim${EXE}`),
     join(REPO_ROOT, 'target', 'debug', `vtrim${EXE}`),
@@ -879,7 +879,7 @@ function main() {
   if (!translator) {
     throw new Error(
       '找不到转译器（`polish-to-dhampir.mjs`）。它在本仓 `tools/` 下，\n' +
-      '  用 `--translator <路径>` 或环境变量 `VTRIM_TRANSLATOR` 显式指一个。找过：\n' +
+      '  用 `--translator <路径>` 或环境变量 `YEKITRIM_TRANSLATOR` 显式指一个。找过：\n' +
       translatorCandidates.map((p) => `    ${p}`).join('\n'),
     );
   }
@@ -973,7 +973,7 @@ function main() {
       if (!existsSync(metaPath)) {
         throw new Error(
           `黄金帧模式缺 ${metaPath} —— 先在**还有兜底腿**的时候跑一次：\n` +
-            `  node scripts/vtrim-compare.mjs --fixture ${goldenName} --capture-golden <目录>`,
+            `  node scripts/yekitrim-compare.mjs --fixture ${goldenName} --capture-golden <目录>`,
         );
       }
       // ⚠️ **process 是"尽力而为"** —— 与出片那条路同口径：`cmd_render` 里是
@@ -1008,7 +1008,7 @@ function main() {
       throw new Error(
         '活参照模式已作废：它渲染的是本仓那条 headless Chrome 兜底腿，而那条腿 2026-10-01 已整条删除。' +
           '改用冻结参照帧：\n' +
-          `    node scripts/vtrim-compare.mjs --fixture ${goldenName} --golden docs/golden/dhampir-parity\n` +
+          `    node scripts/yekitrim-compare.mjs --fixture ${goldenName} --golden docs/golden/dhampir-parity\n` +
           '  （冻结帧在 docs/golden/dhampir-parity/<样本>/，2026-10-01 删除前用那条腿冻的；\n' +
           '   `--capture-golden` 一并作废 —— 它同样要跑那条腿，不再重冻。）',
       );

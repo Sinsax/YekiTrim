@@ -29,7 +29,7 @@ fn setup_tracing() {
     use tracing_subscriber::util::SubscriberInitExt;
 
     // 全局过滤器（RUST_LOG，默认 info）：三个层都受它约束，
-    // 想看高频接口的逐条访问日志用 `RUST_LOG=vtrim=debug`
+    // 想看高频接口的逐条访问日志用 `RUST_LOG=yekitrim=debug`
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)

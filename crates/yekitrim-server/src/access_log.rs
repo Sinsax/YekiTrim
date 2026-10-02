@@ -28,7 +28,7 @@ const SLOW_MS: u128 = 1000;
 
 /// 高频接口（3 秒轮询 / 视频 Range / SSE）：成功路径降到 debug，免得把日志冲掉；
 /// 出错时照常 warn/error，慢过 [`SLOW_MS`] 也照常 info —— 排障关心的正是那些。
-/// 想看逐条访问日志：`RUST_LOG=vtrim=debug`。
+/// 想看逐条访问日志：`RUST_LOG=yekitrim=debug`。
 fn is_noisy(path: &str) -> bool {
     path.starts_with("/api/media/")
         || path == "/api/health"

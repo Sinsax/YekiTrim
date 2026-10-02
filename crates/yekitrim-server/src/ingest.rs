@@ -293,7 +293,7 @@ pub async fn webhook(
     if !cfg.ingest.webhook_enabled || cfg.ingest.token_hash.trim().is_empty() {
         return Err(err(
             StatusCode::FORBIDDEN,
-            "录播姬 webhook 未启用（`vtrim ingest token` 生成 token 并开启 [ingest] webhook_enabled）",
+            "录播姬 webhook 未启用（`yekitrim ingest token` 生成 token 并开启 [ingest] webhook_enabled）",
         ));
     }
     if !cfg.ingest.allow_ips.is_empty() {

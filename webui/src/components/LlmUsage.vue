@@ -73,12 +73,12 @@
         </table>
       </div>
       <div class="muted small mt-6">
-        统计最近 {{ days }} 天 · 数据在服务端账本（<span class="mono">llm_usage</span> 表），命令行同样可看：<span class="mono">vtrim usage --days {{ days }}</span>
+        统计最近 {{ days }} 天 · 数据在服务端账本（<span class="mono">llm_usage</span> 表），命令行同样可看：<span class="mono">yekitrim usage --days {{ days }}</span>
       </div>
     </template>
 
     <div v-else-if="!busy" class="empty">
-      还没有记录。跑一次事件检测或精修 LLM（<span class="mono">vtrim detect</span> / 精修页「LLM 剪辑」）就会有的。
+      还没有记录。跑一次事件检测或精修 LLM（<span class="mono">yekitrim detect</span> / 精修页「LLM 剪辑」）就会有的。
     </div>
   </div>
 </template>

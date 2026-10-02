@@ -28,7 +28,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 读取字幕数据 (用于后续处理)
     let mut subtitles: Vec<parse::srt::Subtitle> = {
         let p = data_dir.join("subtitles.json");
-        if !p.exists() { anyhow::bail!("Run 'vtrim polish init' first — missing {}", p.display()); }
+        if !p.exists() { anyhow::bail!("Run 'yekitrim polish init' first — missing {}", p.display()); }
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
 

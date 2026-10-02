@@ -103,7 +103,7 @@ max_new_tokens = 256
 # LLM 订正转录文本（需配置 [llm]）
 llm_correct = false
 # single 模式先用 VAD(silero) 只挑语音段解码：静音/BGM 不解，快 2~3 倍。
-# hybrid 不受影响（它的时间几乎全在 qwen3 上）。模型随 `vtrim download` 一起下（约 209KB）。
+# hybrid 不受影响（它的时间几乎全在 qwen3 上）。模型随 `yekitrim download` 一起下（约 209KB）。
 vad = true
 # silero 语音概率阈值(0~1)：调高=更保守（多解码、少省时间）
 vad_threshold = 0.5
@@ -154,7 +154,7 @@ overwrite = false
 silence_noise_db = -30
 
 [sfx]
-# 音效屏蔽列表 (vtrim polish 使用, 全局共享)
+# 音效屏蔽列表 (yekitrim polish 使用, 全局共享)
 # 精确 id 屏蔽单个音效; "tag:xxx" 屏蔽整个标签族 (如 "tag:surprise" 屏蔽所有恐怖系)
 # 项目 polish.toml 的 [sfx] blacklist 可再追加
 blacklist = []
@@ -180,7 +180,7 @@ local_roots = []
 
 [ingest]
 # 录播姬 webhook：启用后 POST /api/ingest/bililive/<token> 才会被接受
-# token 用 `vtrim ingest token` 生成（只显示一次明文，这里只存哈希）
+# token 用 `yekitrim ingest token` 生成（只显示一次明文，这里只存哈希）
 webhook_enabled = false
 token_hash = ""
 # 来源 IP 白名单（空 = 不限制；同机部署建议 ["127.0.0.1", "::1"]）
@@ -205,7 +205,7 @@ cookie_file = ""
 download_idle_timeout_secs = 120
 
 [ingest.recorder]
-# 录播姬输出目录（必须与 vtrim server 同机或同可读盘）
+# 录播姬输出目录（必须与 yekitrim server 同机或同可读盘）
 root = ""
 # 录播姬 HTTP API（用户端「配置直播间」靠它加房间）：
 #   api_base 例 "http://127.0.0.1:2356"（桌面版/容器默认端口），**留空 = 未对接**
@@ -229,7 +229,7 @@ auto_pipeline = "detect"
 [auth]
 # 自助注册（邀请码）：开启后 /api/auth/register 才受理注册请求，
 # 但**必须**有可用邀请码才能注册成功 —— 码本身才是凭证，这里只是总闸。
-# 邀请码用 `vtrim user invite` 生成（只显示一次明文，库里只存 selector + 哈希）
+# 邀请码用 `yekitrim user invite` 生成（只显示一次明文，库里只存 selector + 哈希）
 registration_enabled = false
 "#;
 

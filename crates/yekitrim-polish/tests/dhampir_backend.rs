@@ -10,7 +10,7 @@
 //!
 //! # 这个测试在守什么
 //!
-//! 守**接口**，不守**像素**：像素那条由 `F:\para\Code\Dhampir\scripts\vtrim-compare.mjs`
+//! 守**接口**，不守**像素**：像素那条由 `F:\para\Code\Dhampir\scripts\yekitrim-compare.mjs`
 //! 负责（它比的就是"Dhampir 这条路 vs 参照 chrome"，基线 7.01）。这里守的是
 //! **"V-Trim 调二进制"这条缝**：
 //!

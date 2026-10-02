@@ -64,8 +64,8 @@
       "card": "tools/AGENTS.md",
       "kind": "area",
       "verify": [
-        "node scripts/check-vtrim-translator.mjs",
-        "node scripts/check-vtrim-translator.mjs --mutate"
+        "node scripts/check-yekitrim-translator.mjs",
+        "node scripts/check-yekitrim-translator.mjs --mutate"
       ]
     },
     {
