@@ -157,7 +157,7 @@ pub fn show_config(config_file: Option<&Path>) -> anyhow::Result<String> {
         yekitrim_core::config::load_config()?
     };
     let llm = yekitrim_core::config::load_llm_config();
-    Ok(format!("{}\n\n# LLM 配置 (.vtrim/llm.toml)\n{}", toml::to_string_pretty(&cfg)?, toml::to_string_pretty(&llm)?))
+    Ok(format!("{}\n\n# LLM 配置 (.yekitrim/llm.toml)\n{}", toml::to_string_pretty(&cfg)?, toml::to_string_pretty(&llm)?))
 }
 
 fn toml_val(s: &str) -> String {

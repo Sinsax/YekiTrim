@@ -80,7 +80,7 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     tracing::info!("");
     tracing::info!("Next steps:");
-    tracing::info!("  1. Edit .vtrim/llm.toml — add your LLM API key");
+    tracing::info!("  1. Edit .yekitrim/llm.toml — add your LLM API key");
     tracing::info!("  2. Run: vtrim polish (full pipeline)");
     tracing::info!("  3. Run: vtrim polish --preview  (or vtrim polish -i <dir>)");
     Ok(())
@@ -276,10 +276,10 @@ pub async fn cmd_llm(
         }
     }
 
-    // 从 .vtrim/llm.toml 读取 LLM 配置（与 vtrim 自身一致）
+    // 从 .yekitrim/llm.toml 读取 LLM 配置（与 vtrim 自身一致）
     let llm_cfg = yekitrim_core::config::load_llm_config();
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        tracing::info!("  ⚠ No LLM API key configured. Edit .vtrim/llm.toml");
+        tracing::info!("  ⚠ No LLM API key configured. Edit .yekitrim/llm.toml");
         return Ok(());
     }
     tracing::info!("  Model: {}", llm_cfg.model);
@@ -412,7 +412,7 @@ pub async fn cmd_llm_segment(
     let llm_cfg = yekitrim_core::config::load_llm_config();
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
         // 单段重做是用户明确点的动作：不做就报错，别静默返回"成功"
-        anyhow::bail!("未配置 LLM API key（设置页「LLM 配置」或 .vtrim/llm.toml）");
+        anyhow::bail!("未配置 LLM API key（设置页「LLM 配置」或 .yekitrim/llm.toml）");
     }
 
     let event_type: String = std::fs::read_to_string(data_dir.join("clip-meta.json"))
@@ -781,7 +781,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     if !llm_cfg.api_key.is_empty() && llm_cfg.api_key != "sk-your-api-key-here" {
         tracing::info!("  ✓ LLM: model={}, base={}", llm_cfg.model, llm_cfg.base_url);
     } else {
-        tracing::info!("  ⚠ LLM: no API key in .vtrim/llm.toml");
+        tracing::info!("  ⚠ LLM: no API key in .yekitrim/llm.toml");
     }
 
     // ---- Dhampir 出片通道（默认通道）----
@@ -925,7 +925,7 @@ pub async fn build_package_tags(
 
     let llm_cfg = yekitrim_core::config::load_llm_config();
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        anyhow::bail!("未配置 LLM API key，无法 build 贴纸包 tags (编辑 .vtrim/llm.toml)");
+        anyhow::bail!("未配置 LLM API key，无法 build 贴纸包 tags (编辑 .yekitrim/llm.toml)");
     }
 
     tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
@@ -1036,7 +1036,7 @@ pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
     if llm {
         let llm_cfg = yekitrim_core::config::load_llm_config();
         if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-            tracing::info!("  ⚠ 未配置 LLM API key (编辑 .vtrim/llm.toml), tags 留空");
+            tracing::info!("  ⚠ 未配置 LLM API key (编辑 .yekitrim/llm.toml), tags 留空");
         } else {
             tracing::info!("  🤖 用 LLM 生成 tags ({})...", llm_cfg.model);
             if let Err(e) = llm_generate_tags(&llm_cfg, &mut metas, None).await {

@@ -174,7 +174,7 @@ const WORK = opt('work', path.join(process.env.TEMP || '.', 'vtrim-cover-gate'))
 const PROJECT = opt('project', process.env.VTEDIT_COVER_FIXTURE || '')
 const skip = (why) => {
   console.log(`SKIP：${why}`)
-  console.log('  · 需要：带 `cover-takumi` feature 的 yekitrim.exe（cargo build -p yekitrim-cli --features vtrim-polish/cover-takumi）')
+  console.log('  · 需要：带 `cover-takumi` feature 的 yekitrim.exe（cargo build -p yekitrim-cli --features yekitrim-polish/cover-takumi）')
   console.log('  · 需要：一个真精修工程（--project 或 VTEDIT_COVER_FIXTURE 指向含 polish.toml 的目录）')
   console.log('  · 需要：字体库里至少一个字体（Takumi 不读系统字体）与 ffmpeg 在 PATH')
   process.exit(has('require') ? 1 : 0)
