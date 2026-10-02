@@ -759,8 +759,8 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
     // ⚠️ **内嵌字体也会被这次启动解包进包目录，必须一并清掉**（2026-10-02 实际踩到）。
     //
-    // 机制：`fonts::ensure_dir_in` 在**取不到用户主目录**时退回 `<exe目录>/resources/fonts`，
-    // 而烟测起的 exe 就在包目录里 —— 于是两个自带字体（合计 **约 21 MB**）被解包进
+    // 机制：`fonts::ensure_dir` 写的**就是** `<数据目录>/resources/fonts`，而烟测起的 exe
+    // 就在包目录里（`exe_dir()` = 包目录）—— 于是两个自带字体（合计 **约 21 MB**）被解包进
     // `resources/fonts/<slug>/`，接着被原样压进 zip：**包从 37.2 MB 涨到 52.4 MB**。
     //
     // 这是**纯重复**：同样的字节已经通过 `include_bytes!` 编在 `vtrim.exe` 里了
