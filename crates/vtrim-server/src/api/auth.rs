@@ -187,8 +187,7 @@ pub(super) async fn auth_password(
     }
 }
 
-pub(super) async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
+pub(super) async fn doctor(State(_state): State<Arc<AppState>>) -> ApiResult {
     let home = vtrim_core::path::vtrim_home();
     let models_dir = home.join("models");
     // 与 /api/models 同源：按运行时查找顺序（配置 → 用户目录 → 程序目录）判"能不能用"。
@@ -211,7 +210,6 @@ pub(super) async fn doctor(State(state): State<Arc<AppState>>) -> ApiResult {
         "ffprobe": command_available("ffprobe", "-version").await,
         "models_dir": models_dir.to_string_lossy(),
         "models": model_status,
-        "workspace": vtrim_core::path::display(&ws.config_file),
     }))
 }
 
@@ -315,8 +313,7 @@ async fn login_me_change_password_flow() {
     let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
     let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
     auth.db().create_user("admin", &hash, "admin", true, 0).unwrap();
-    let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
-    let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth.clone())));
+    let app = router(Arc::new(AppState::with_auth(auth.clone())));
 
     // 初始密码：错的 401、对的 200 + Set-Cookie
     let bad = app
@@ -491,8 +488,7 @@ async fn login_is_rate_limited_after_five_failures() {
     let auth = AuthService::open(dir.path().to_path_buf(), Listening::Loopback).unwrap();
     let hash = vtrim_service::auth::hash_password("initial-pass-1234").unwrap();
     auth.db().create_user("admin", &hash, "admin", false, 0).unwrap();
-    let ws = Workspace::load(Some(Path::new("vtrim.toml"))).expect("workspace");
-    let app = router(Arc::new(AppState::with_auth(ws, std::env::temp_dir(), auth)));
+    let app = router(Arc::new(AppState::with_auth(auth)));
 
     let attempt = |pw: &'static str| {
         let app = app.clone();

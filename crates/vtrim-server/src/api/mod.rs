@@ -2,7 +2,11 @@
 //!
 //! - `AppError` / `ApiResult` / `err` / `ok`：全部 handler 的返回约定
 //! - `blocking` / `block_on_here` / `spawn_job`：同步 IO 与任务的落点（见 AGENTS「同步 IO 绝不能留在 async 线程上」）
-//! - `workspace_from_state`：被多个领域模块复用
+//!
+//! ⚠️ 这里曾经还有 `workspace_from_state(state)`（从 `AppState` 取那份"全局当前工程"）。
+//! **2026-10-03 随全局工程一起删掉了**：项目的 `Workspace` 现在**只能**从 `scope::Scope`
+//! 提取器拿（它按 `?project=<id>` 校验归属后现场解析）。要工程就接一个 `Scope`；
+//! 需要"跟具体项目无关"的那几个值，直接读 `path::vtrim_home()` / `load_global_config()`。
 //!
 //! 外部命令探测（原 `probe_cache` / `command_available`）已搬去 `crate::tool_probe` —— 见该模块说明。
 //!
@@ -10,19 +14,11 @@
 
 use std::sync::Arc;
 
-// ⚠️ `Path` 只有**测试**用得到（`mod.rs` 自己的 `#[cfg(test)]` 与子模块的测试都从
-// 这里的 `super::*` 拿它）。放 `#[cfg(test)]` 里，别为了"看着整齐"提到顶层 ——
-// 顶层那会是一条 `unused_imports` 警告（本仓 0 warnings 是硬门禁）。
-#[cfg(test)]
-use std::path::Path;
-
 use axum::{
     extract::State,
     http::StatusCode,
     Json,
 };
-use vtrim_service::Workspace;
-
 use crate::model::AppState;
 use crate::tool_probe::command_available;
 
@@ -121,10 +117,6 @@ pub(crate) fn spawn_job<JobBody, Fut>(
             fail_jobs.fail(&fail_id, format!("启动任务线程失败: {e}")).await;
         });
     }
-}
-
-pub(crate) async fn workspace_from_state(state: &AppState) -> Workspace {
-    state.workspace().await
 }
 
 // 外部命令探测（`command_available` / `command_available_blocking` / 30s 缓存）

@@ -1,6 +1,10 @@
-//! Server 状态持久化：记住上次打开的工程与工作区根。
+//! Server 状态持久化：记住上次打开的工程。
 //!
-//! 文件位置：与全局配置同目录 `.vtrim/server.toml`（跟随可执行文件旁的 `.vtrim/`）。
+//! 文件位置：与全局配置同目录 `.vtrim/server.toml`（跟随数据目录的 `.vtrim/`）。
+//!
+//! ⚠️ 这里只放**记忆**（"上次用了哪个工程"），不放**状态**。"当前工程"这个状态
+//! 2026-10-03 已删 —— 每个请求由 `scope::Scope` 按 `?project=<id>` 现场解析。
+//! 记忆允许过期（条目文件没了就当没有），状态不允许。
 
 use std::path::{Path, PathBuf};
 
@@ -11,10 +15,10 @@ pub struct ServerState {
     /// 上次 WebUI / server 使用的 vtrim.toml 绝对路径
     #[serde(default)]
     pub last_config_file: Option<String>,
-    /// 工作区扫描根目录（保留兼容，项目列表不再依赖它）
-    #[serde(default)]
-    pub workspace_root: Option<String>,
     /// 已知项目 vtrim.toml 路径列表（多项目直接加载）
+    ///
+    /// ⚠️ 这是 **P1 时代**的项目清单，现在只用于"启动时只读导入"那条一次性迁移路径
+    /// （`lib.rs::import_legacy_projects`）。P2 起归属以 `projects` 表为准，别在这里加新用途。
     #[serde(default)]
     pub projects: Vec<String>,
 }
@@ -57,15 +61,13 @@ pub fn update_state<F: FnOnce(&mut ServerState)>(f: F) {
     save_state(&state);
 }
 
-/// 工程切换 / 工作区修改后调用，更新记忆。
-pub fn remember_last(config_file: &Path, workspace_root: Option<&Path>) {
+/// 工程切换后调用，更新"上次用的是哪个工程"这条记忆。
+///
+/// `vtrim server` 不带 `--config` 启动时靠它恢复上次的工程（见 `lib.rs`）。
+pub fn remember_last(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
-    let root = workspace_root.map(|r| r.to_string_lossy().into_owned());
     update_state(move |state| {
         state.last_config_file = Some(cfg);
-        if let Some(root) = root {
-            state.workspace_root = Some(root);
-        }
     });
 }
 
@@ -137,7 +139,6 @@ mod tests {
     fn state(projects: &[&str], last: Option<&str>) -> ServerState {
         ServerState {
             last_config_file: last.map(|s| s.to_string()),
-            workspace_root: None,
             projects: projects.iter().map(|s| s.to_string()).collect(),
         }
     }

@@ -748,6 +748,27 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
     Ok(config)
 }
 
+/// 校验 `.vtrim/config.toml` / `.vtrim/llm.toml` 能否解析，报出**第一个**出错的文件与原因。
+///
+/// 为什么需要它：`load_global_config` / `load_llm_config` 都把解析失败**吞掉**换成默认值
+/// （它们不能因为一份坏配置就让整个进程起不来）。但界面必须知道"你看到的这些值是默认值，
+/// 不是文件里的" —— 否则设置页**一旦保存就把内建默认值覆盖到真实配置文件上**。
+///
+/// 所以设置页的写入门闸（`SettingsView.vue::configError`）读的就是它，
+/// 而这条错误**必须指向真实文件**（以前报的是 merged 配置的错误，指向不明）。
+/// 两份都不存在 = 正常（`ensure_global_config` 会补齐），不算错。
+pub fn global_config_parse_error() -> Option<String> {
+    let home = crate::path::vtrim_home();
+    for (name, what) in [("config.toml", "程序配置"), ("llm.toml", "LLM 配置")] {
+        let path = home.join(name);
+        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
+        if let Err(e) = toml::from_str::<toml::Value>(&raw) {
+            return Some(format!("{}（{}）解析失败，本次使用的是内建默认值: {e}", what, path.display()));
+        }
+    }
+    None
+}
+
 /// 只读全局配置 (.vtrim/config.toml), 不合并 vtrim.toml。
 /// 供不依赖项目 vtrim.toml 的模块 (如 vtrim-polish) 读取全局共享配置。
 pub fn load_global_config() -> Config {
@@ -1334,4 +1355,46 @@ max_tokens = 32768
             Some("disabled")
         );
     }
+
+/// `global_config_parse_error` 是设置页的**写入门闸**，必须指向真实文件、且只在真坏时报。
+///
+/// 它替代的是"读 merged 配置报错"那条路（2026-10-03 拆 `/api/config` 时发现：
+/// `load_global_config` / `load_llm_config` 都把解析失败**吞掉**换成默认值，
+/// 所以设置页原本拿不到原因 —— 那份配置被整体忽略、表单只剩内建默认值，用户不改也不知道；
+/// 一旦点了保存，内建默认值就覆盖到真实文件上）。
+#[test]
+fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
+    // 这份 helper 读的是 `vtrim_home()`，而它跟着 `VTRIM_DATA_DIR` 走 ——
+    // 测试里指到一个临时目录，避免碰开发机上那份真实配置。
+    let dir = std::env::temp_dir().join(format!("vtrim-parse-err-{}", std::process::id()));
+    let home = dir.join(".vtrim");
+    std::fs::create_dir_all(&home).unwrap();
+    let old = std::env::var_os("VTRIM_DATA_DIR");
+    std::env::set_var("VTRIM_DATA_DIR", &dir);
+
+    // ① 文件都不在 = 正常（`ensure_global_config` 会补齐），不是错
+    assert_eq!(super::global_config_parse_error(), None, "缺失不该报错");
+
+    // ② 合法 TOML = 不报错
+    std::fs::write(home.join("config.toml"), "[asr]\nmode = \"single\"\n").unwrap();
+    assert_eq!(super::global_config_parse_error(), None, "合法配置不该报错");
+
+    // ③ 坏 TOML = 报错，且**文案里必须能看出是哪个文件**
+    std::fs::write(home.join("config.toml"), "这不是 TOML [[[\n").unwrap();
+    let msg = super::global_config_parse_error().expect("坏配置必须报出来");
+    assert!(msg.contains("config.toml"), "要指出是哪个文件: {msg}");
+    assert!(msg.contains("程序配置"), "要说清是哪一类配置: {msg}");
+
+    // ④ llm.toml 坏了同样要报（它含 api_key，打回默认值同样是静默失效）
+    std::fs::write(home.join("config.toml"), "[asr]\nmode = \"single\"\n").unwrap();
+    std::fs::write(home.join("llm.toml"), "也坏 [[[\n").unwrap();
+    let msg = super::global_config_parse_error().expect("坏 llm.toml 必须报出来");
+    assert!(msg.contains("llm.toml"), "要指出是哪个文件: {msg}");
+
+    match old {
+        Some(v) => std::env::set_var("VTRIM_DATA_DIR", v),
+        None => std::env::remove_var("VTRIM_DATA_DIR"),
+    }
+}
+
 }

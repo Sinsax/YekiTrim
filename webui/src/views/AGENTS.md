@@ -210,17 +210,19 @@
   几何：`max-content + minmax(0,300px)×2 + max-content` + `justify-content:start`（1fr 会把滑块拉到格子
   中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏经 900px 媒体查询拆成一列。
 - **模型管理（别再各写一套）**：模型管理页的「已安装」与运行时**同源** ——
-  `vtrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → 用户目录 `~/.vtrim/models`
-  → 程序目录 `<exe>/.vtrim/models`）是唯一真源，`download::model_install()` 在其之上再校验注册表
+  `vtrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.vtrim/models`，
+  默认即程序目录）是唯一真源，`download::model_install()` 在其之上再校验注册表
   marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）。
   接口 `/api/models` 回 `{name, installed, dir, source, source_label}`，界面显示实际路径与来源。
-- ⚠️ 曾经 `/api/models` 只查程序目录 `dir.exists()`，而 qwen3-asr 放在用户目录 →
+- ⚠️ 曾经 `/api/models` 只查程序目录 `dir.exists()`，而 qwen3-asr 放在**另一处** →
   界面显示"未下载"却一直在用它（用户报过）；列表也改成由注册表 `download::model_names()` 给出，
-  别再手写模型数组。`vtrim download` / `POST /api/models/download` 仍然装到**程序目录**（用户显式指定）。
+  别再手写模型数组。`vtrim download` / `POST /api/models/download` 装到 `resolve_model_dir` 的落点。
+  ⚠️ 2026-10-02 资产收回程序目录之前还有"用户目录优先"那一档，**已删除** —— 现在只有两档：
+  配置覆盖、数据目录。
 - ⚠️ **`download::ensure_one_model`（转写前的自动守卫）也必须走 `model_install`**，
-  不要再拼 `vtrim_home()`：曾经它写程序目录、而运行时读用户目录，后果有两个 ——
-  ① 同一份模型被下载两次（程序目录那份永远不会被读）；
-  ② **同音纠错的 `lexicon.txt` + `replace.fst` 下到程序目录，而 `create_recognizer` 读的是用户目录那份
+  不要再拼 `vtrim_home()`：曾经它写一处、而运行时读的是**另一处**，后果有两个 ——
+  ① 同一份模型被下载两次（其中一份永远不会被读）；
+  ② **同音纠错的 `lexicon.txt` + `replace.fst` 下到一处，而 `create_recognizer` 读的是另一处那份
   → 同音纠错从未生效**（日志一直是"未启用"）。
 - **登录 / 注册页**（`LoginView` / `RegisterView`，壳外样式）：能力位只来自 `/api/health`
   （`registration_enabled` / `accounts` / `must_change_password`，**不含任何路径**，它无鉴权）——

@@ -41,41 +41,48 @@ fn models_impl() -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-pub(super) fn config_get_impl(ws: &Workspace) -> ApiResult {
-    let vtrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
+/// `GET /api/config`：**程序配置**（`.vtrim/config.toml` + `.vtrim/llm.toml`）的读取。
+///
+/// ⚠️ **这条路是"项目无关"的**（2026-10-03 随全局工程一起收拾干净）：设置页五块内容改的都是
+/// **程序级**配置，编辑的是 global-only 的值 —— merged config 会被某个工程的 `vtrim.toml`
+/// 覆盖，直接用就会出现「表单值和源文件对不上」。
+///
+/// 于是原来那三样项目相关的东西一并去掉，它们**没有任何消费方**：
+///   - `config_file` / `root_dir`：前端从没读过（项目设置页走的是 `/api/project-data/config`，
+///     它有自己那份 `vtrim_raw`）；留着只会让人以为"这里能看当前工程"；
+///   - `vtrim_raw`：同上，那是项目设置页的字段，属于 `/api/project-data/config`；
+///   - `config`：那份 **merged** 配置本来就是"当前工程"的概念，与"读程序配置"自相矛盾
+///     （前端注释自己都写了 `global_config || config` —— 即 `config` 只是老响应缺字段时的兜底）。
+///
+/// 要读某个工程的配置：`GET /api/project-data/config?project=<id>`。
+/// 要读合并后的生效配置：也走那条（它按项目解析）。
+pub(super) fn config_get_impl() -> ApiResult {
     let home = vtrim_core::path::vtrim_home();
-    let global_path = home.join("config.toml");
-    let global_raw = std::fs::read_to_string(&global_path).unwrap_or_default();
-    let llm_path = home.join("llm.toml");
-    let llm_raw = std::fs::read_to_string(&llm_path).unwrap_or_default();
-    let cfg = ws.load_config();
-    // 设置页表单编辑的是**程序配置**，必须用 global-only 的值：
-    // merged config 会被当前工程的 vtrim.toml 覆盖，直接用会出现「表单值和源文件对不上」
+    // ⚠️ 同步 IO：读 config.toml / llm.toml 两份（含 API key），调用方必须下 blocking 池。
+    let global_raw = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let llm_raw = std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default();
     let global_cfg = vtrim_core::config::load_global_config();
     let llm_cfg = vtrim_core::config::load_llm_config();
-    let (cfg_value, config_error) = match cfg {
-        Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
-        // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
-        Err(e) => (serde_json::Value::Null, format!("{e:#}")),
-    };
+    // ⚠️ **`config_error` 必须留着**：设置页表单的写入门闸就是它
+    // （`SettingsView.vue::loadConfig` 把它存进 `configError`）—— 程序配置解析失败时那份配置会被
+    // **整体忽略**、表单只剩内建默认值，用户不改也不知道；这时若还允许保存，
+    // 一次「保存」就把内建默认值覆盖到真实配置文件上。所以这里如实报出原因。
+    // 2026-10-03 把这条路改成"纯程序配置"时差点把它一起删掉 —— 它的语义跟着从
+    // "merged 配置的解析错误"变成"程序配置的解析错误"，比原来更准确。
+    let config_error = vtrim_core::config::global_config_parse_error().unwrap_or_default();
     ok(serde_json::json!({
-        "config_file": vtrim_core::path::display(&ws.config_file),
-        "root_dir": vtrim_core::path::display(&ws.root_dir),
-        "vtrim_raw": vtrim_raw,
         "global_raw": global_raw,
         "llm_raw": llm_raw,
-        "config": cfg_value,
-        "config_error": config_error,
         "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
         "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
+        "config_error": config_error,
     }))
 }
 
-pub(super) async fn config_get(State(state): State<Arc<AppState>>) -> ApiResult {
-    let ws = workspace_from_state(&state).await;
-    // ⚠️ 同步 IO：读 vtrim.toml / config.toml / llm.toml 三份 + 解析合并（含 llm.toml 的 API key）。
+pub(super) async fn config_get(State(_state): State<Arc<AppState>>) -> ApiResult {
+    // ⚠️ 同步 IO：读 config.toml / llm.toml 两份 + 解析（含 llm.toml 的 API key）。
     // `project_data.rs` 里同一个 impl 早就这么包了，这条 `/api/config` 路由漏了。
-    blocking(move || config_get_impl(&ws)).await
+    blocking(config_get_impl).await
 }
 
 /// 项目配置里会被当作**路径**的键：`(section, key)`。
@@ -176,6 +183,29 @@ fn check_material_paths(ws: &Workspace, value: &serde_json::Value) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// `GET /api/project-data/config`：**某个工程**的配置读取（项目设置页 / 预处理页）。
+///
+/// 与 `config_get_impl`（程序配置，项目无关）**故意分开**：这里返回的是这个工程的 `vtrim.toml`
+/// 原文与**合并后**的生效配置（全局 + 工程 + llm），那才是"这个工程实际会用的值"。
+/// 两者曾经共用一份实现，于是项目相关字段（`config_file`/`root_dir`/`vtrim_raw`/`config`）
+/// 被一并挂在项目无关的 `/api/config` 上 —— 2026-10-03 拆开。
+pub(super) fn config_vtrim_get_impl(ws: &Workspace) -> ApiResult {
+    // ⚠️ 同步 IO：读 vtrim.toml + 解析合并，调用方下 blocking 池。
+    let vtrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
+    let (config, config_error) = match ws.load_config() {
+        Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
+        // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
+        Err(e) => (serde_json::Value::Null, format!("{e:#}")),
+    };
+    ok(serde_json::json!({
+        "config_file": vtrim_core::path::display(&ws.config_file),
+        "root_dir": vtrim_core::path::display(&ws.root_dir),
+        "vtrim_raw": vtrim_raw,
+        "config": config,
+        "config_error": config_error,
+    }))
 }
 
 pub(super) fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
