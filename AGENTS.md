@@ -64,9 +64,8 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 ### CLI（命令表面）
 
-**命令面归 `crates/vtrim-cli/AGENTS.md`**（那里有完整清单与"各命令是什么"）。根文件只放全局不变式、模块索引、
-改代码协议与验证命令 —— 这张表原先在根文件里与那张卡重复，这次迁 `tools/` 时因**最坏指令链预算**
-（`root + webui + webui/src + webui/src/views`）只剩 8 B 余量，把它挪回了它该在的卡。**别再往这里抄第二份。**
+**命令面归 `crates/vtrim-cli/AGENTS.md`** —— 那张表曾在本文件里与它重复，占用最坏指令链预算，
+已挪回它该在的卡。**别再往这里抄第二份。**
 
 ## 入口
 
@@ -114,9 +113,8 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 ### 改代码协议（每一条都对应一次踩坑）
 
-1. **先读卡**：改哪个目录，先 `read` 那个目录的 `AGENTS.md`（读一次就会触发注入）。
-2. **只改卡声明的范围**：卡里写着"改动只允许落在本目录"。跨模块改动 = 先读对方卡，
-   并**在提交说明里写明理由**（"顺带改了 X" 是这类项目最容易出事的地方）。
+1. **先读卡**：改哪个目录先 `read` 它的 `AGENTS.md`（读一次就会触发注入）。
+2. **只改卡声明的范围**：跨模块改动 = 先读对方卡，**并在提交说明里写明理由**。
 3. **跑该卡的「验证」命令**，再跑两条门禁：
    `python3 scripts/check_module_map.py`（结构/覆盖率/预算）与
    `python3 scripts/check_module_boundaries.py`（分层与前端边界）。
@@ -128,6 +126,9 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 以下是**全局**不变式（模块内的规矩在各自卡里）：
 
+- ⚠️ **程序资产只挂一个根**（2026-10-02 口径：*不要用户目录*）：`path::data_dir()` =
+  `VTRIM_DATA_DIR` ?? `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.vtrim/`**
+  —— 两个可能的位置就必然有地方只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
 - ⚠️ **同步 IO 绝不能留在 async 线程上**（剪切时"整个服务器连不上"的根因）：handler 里的
   同步文件访问走 `api::blocking(f)`，任务体走 `api::spawn_job`。完整纪律（已覆盖清单、panic 兜底、
   路径锁）在 `crates/vtrim-server/src/api/AGENTS.md`。
@@ -163,7 +164,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
   `--trust-proxy` 是 `X-Forwarded-*` 的唯一开关（决定限流键与 cookie 的 `Secure`）。
 - ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` 里的检测 prompt 是 `config init`
-  填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**（debug / release 互不相干）。
+  填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**。
 - ⚠️ **不许手改生成物**：`webui/dist/`（vite 构建产物，**已入库**）—— 改了 `webui/src` 必须
   `npm --prefix webui run build` 重建，再一起提交；别直接编辑 dist 里的 js/css。
   （曾经还有 `webui/src/wasm/` 与 `crates/vtrim-wasm/src/wasm/` 两份 wasm-bindgen 生成物 ——
