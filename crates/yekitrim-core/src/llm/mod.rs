@@ -460,7 +460,18 @@ mod tests {
         })
         .to_string();
         // 重试要退避 2s ⇒ 这条尤其依赖 listener 不被回收（见 fake_server 的 ⚠️）
-        let (_srv, base) = fake_server(vec![(500, "{}".to_string()), (200, ok_body)]).await;
+        // ⚠️ **script 备 3 份**（= 客户端最大尝试次数），见 fake_server 的 ⚠️。
+        // 这份多余的第 3 项正是为了兜住"首连失败"那条路径：
+        //   干净路径   attempt0 拿 500 → 重试 → attempt1 拿 200 ⇒ attempts == 2
+        //   首连失败   attempt0 落 `Err(is_connect())` → attempt1 拿 500 → attempt2 拿 200
+        //                                                          ⇒ attempts == 3
+        // 只给 2 份时，首连失败的第 3 次会吃到兜底 500 ⇒ 用例以"脚本耗尽"形态报错（且要等退避）。
+        let (_srv, base) = fake_server(vec![
+            (500, "{}".to_string()),
+            (200, ok_body.clone()),
+            (200, ok_body),
+        ])
+        .await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
 
@@ -468,7 +479,16 @@ mod tests {
 
         let rows = rec.0.lock().unwrap();
         assert_eq!(rows.len(), 1, "重试不另起一行");
-        assert_eq!(rows[0].attempts, 2);
+        // ⚠️ **不要断言 ` == 2`**：本用例的真实契约是"**重试后成功仍只记一行、
+        // 且 attempts 记实际尝试次数**"，不是"恰好重试一次"。首连失败（`is_connect()`）
+        // 会让 attempts 合法地变成 3 —— 复核已用**确定性注入**（attempt0 指向死端口）
+        // 复现出 `left: 3, right: 2`，证明这条断言同样暴露在传输层偶发下。
+        // 契约仍被钉住：**下界 2 证明它确实重试了**（这正是"重试用例"的意义）。
+        assert!(
+            (2..=3).contains(&rows[0].attempts),
+            "重试后 attempts 应在 2..=3，实际 {}",
+            rows[0].attempts
+        );
         assert!(rows[0].ok);
         assert_eq!(rows[0].prompt_tokens, 5);
     }
