@@ -53,7 +53,7 @@
 //
 // * `ffmpeg` / `ffprobe` 在 PATH 上
 // * Dhampir 的可执行（`--dhampir` / `VTEDIT_DHAMPIR`，默认找同层 `Dhampir/target/{debug,release}`）
-// * `vtrim.exe`（`--vtrim` / `VTRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
+// * `yekitrim.exe`（`--vtrim` / `VTRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
 // * 转译器（`--translator` / `VTRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）——
 //   它就在**本仓**，见下面"转译器住在哪"
 //

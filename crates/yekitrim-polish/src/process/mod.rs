@@ -142,7 +142,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         if !sources.is_empty() {
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
-                .user_agent("vtrim-polish/0.1")
+                .user_agent("yekitrim-polish/0.1")
                 .build()
                 .unwrap_or_default();
             let catalog = crate::assets::emoji_search::EmojiCatalog::fetch(&client).await.ok();
@@ -1664,7 +1664,7 @@ mod tests {
 
     /// 只读诊断：扫描真实工程，打印按新规则推导出的贴纸落点（不写任何文件）。
     ///
-    /// `VT_PROBE_ROOT=<media 目录> cargo test -p vtrim-polish --lib diagnose_sticker_placement -- --ignored --nocapture`
+    /// `VT_PROBE_ROOT=<media 目录> cargo test -p yekitrim-polish --lib diagnose_sticker_placement -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn diagnose_sticker_placement() {
@@ -1841,7 +1841,7 @@ mod tests {
 ///
 /// ```bash
 /// VT_POLISH_DIR=<片段目录(含 polish.toml 与 data/)> \
-///   cargo test -p vtrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture
+///   cargo test -p yekitrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture
 /// ```
 #[cfg(test)]
 mod diagnose_manual_events_survive_process {
@@ -1859,7 +1859,7 @@ mod diagnose_manual_events_survive_process {
     #[ignore]
     async fn diagnose_manual_events_survive_process() {
         let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
-            eprintln!("用法: VT_POLISH_DIR=<片段目录> cargo test -p vtrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture");
+            eprintln!("用法: VT_POLISH_DIR=<片段目录> cargo test -p yekitrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture");
             return;
         };
         let path = std::path::PathBuf::from(&dir);
@@ -1886,7 +1886,7 @@ mod diagnose_manual_events_survive_process {
 ///
 /// ```bash
 /// VT_POLISH_DIR=<项目目录(含 polish.toml 与 data/)> \
-///   cargo test -p vtrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture
+///   cargo test -p yekitrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture
 /// ```
 #[cfg(test)]
 mod diagnose_camera_anchors {
@@ -1894,7 +1894,7 @@ mod diagnose_camera_anchors {
     #[ignore]
     fn diagnose_camera_anchors() {
         let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
-            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture");
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture");
             return;
         };
         let path = std::path::PathBuf::from(&dir);
@@ -1943,7 +1943,7 @@ mod diagnose_camera_anchors {
 ///
 /// ```bash
 /// VT_POLISH_DIR=<项目目录(含 polish.toml 与 data/)> \
-///   cargo test -p vtrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture
+///   cargo test -p yekitrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture
 /// ```
 #[cfg(test)]
 mod diagnose_pip_and_silence {
@@ -1951,7 +1951,7 @@ mod diagnose_pip_and_silence {
     #[ignore]
     fn diagnose_pip_and_silence() {
         let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
-            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture");
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture");
             return;
         };
         let path = std::path::PathBuf::from(&dir);
@@ -2124,7 +2124,7 @@ mod diagnose_pip_and_silence {
 /// 修复后单色按「该色 → 透明」兜底，**不需要重跑 LLM**。
 ///
 /// ```text
-/// VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib \
+/// VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib \
 ///   diagnose_overlay_stops -- --ignored --nocapture
 /// ```
 ///
@@ -2138,7 +2138,7 @@ mod diagnose_overlay_stops {
     #[ignore]
     fn diagnose_overlay_stops() {
         let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
-            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_overlay_stops -- --ignored --nocapture");
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_overlay_stops -- --ignored --nocapture");
             return;
         };
         let path = std::path::PathBuf::from(&dir);

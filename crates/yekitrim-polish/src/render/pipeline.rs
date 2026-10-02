@@ -927,7 +927,7 @@ mod tests {
 
     /// 只读诊断：贴纸帧解码的耗时（未命中 vs 命中缓存）。会写/删该工程的缓存文件。
     ///
-    /// `VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
+    /// `VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn diagnose_sticker_cache() {

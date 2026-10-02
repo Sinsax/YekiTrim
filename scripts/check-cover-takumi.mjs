@@ -11,7 +11,7 @@
 // 拿全图均值一刀切只会让这道门永远红或永远松，所以按区判、阈值各自标定。
 //
 // 用法：
-//   node scripts/check-cover-takumi.mjs [--project <精修工程目录>] [--exe <vtrim.exe>]
+//   node scripts/check-cover-takumi.mjs [--project <精修工程目录>] [--exe <yekitrim.exe>]
 //        [--work <临时目录>] [--font <字体文件>] [--require] [--self-test]
 //        [--capture-golden <目录>] [--golden <目录>]
 //   · 缺工程/缺二进制（没编 cover-takumi）/缺字体 → **SKIP** 并打印要准备什么（`--require` 时算失败）。
@@ -168,19 +168,19 @@ if (has('mutate')) {
   process.exit(good ? 0 : 1)
 }
 
-const EXE = opt('exe', 'F:\\para\\Code\\V-Trim\\target\\cl\\debug\\vtrim.exe')
+const EXE = opt('exe', 'F:\\para\\Code\\V-Trim\\target\\cl\\debug\\yekitrim.exe')
 const FONT = opt('font', 'C:\\Windows\\Fonts\\msyh.ttc')
 const WORK = opt('work', path.join(process.env.TEMP || '.', 'vtrim-cover-gate'))
 const PROJECT = opt('project', process.env.VTEDIT_COVER_FIXTURE || '')
 const skip = (why) => {
   console.log(`SKIP：${why}`)
-  console.log('  · 需要：带 `cover-takumi` feature 的 vtrim.exe（cargo build -p vtrim-cli --features vtrim-polish/cover-takumi）')
+  console.log('  · 需要：带 `cover-takumi` feature 的 yekitrim.exe（cargo build -p yekitrim-cli --features vtrim-polish/cover-takumi）')
   console.log('  · 需要：一个真精修工程（--project 或 VTEDIT_COVER_FIXTURE 指向含 polish.toml 的目录）')
   console.log('  · 需要：字体库里至少一个字体（Takumi 不读系统字体）与 ffmpeg 在 PATH')
   process.exit(has('require') ? 1 : 0)
 }
 
-if (!fs.existsSync(EXE)) skip(`找不到 vtrim.exe: ${EXE}`)
+if (!fs.existsSync(EXE)) skip(`找不到 yekitrim.exe: ${EXE}`)
 if (!PROJECT || !fs.existsSync(path.join(PROJECT, 'polish.toml'))) skip(`找不到精修工程: ${PROJECT || '(未指定)'}`)
 const fontDir = path.join(path.dirname(EXE), 'resources', 'fonts')
 if (!fs.existsSync(fontDir) || fs.readdirSync(fontDir).length === 0) skip(`字体库是空的: ${fontDir}`)

@@ -36,7 +36,7 @@
 //! ```text
 //! VTEDIT_FIT_DIR="F:/para/Code/V-Trim/.workbuddy/perf/vertical/vert-land" \
 //! VTEDIT_FIT_OUT="F:/para/Code/V-Trim/target/tmp-stagefit/out" \
-//! cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture
+//! cargo test -p yekitrim-polish --test portrait_stage_fit -- --ignored --nocapture
 //! ```
 //! - `VTEDIT_FIT_T`（秒，默认 `2.0`）= 探针时刻；
 //! - `VTEDIT_FIT_SPAN`（秒，默认 `0.6`）= 以 T 为中心渲染多长一段（30fps → 帧数）。

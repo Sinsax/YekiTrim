@@ -208,7 +208,7 @@ mod tests {
 
     /// 在**真实转写**上看规范化效果（不需要重跑 ASR）。
     ///
-    /// `VT_TRANSCRIPT=<transcript.json> cargo test -p vtrim-core --lib diagnose_text_normalize -- --ignored --nocapture`
+    /// `VT_TRANSCRIPT=<transcript.json> cargo test -p yekitrim-core --lib diagnose_text_normalize -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实 transcript.json（VT_TRANSCRIPT）"]
     fn diagnose_text_normalize() {

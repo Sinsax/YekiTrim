@@ -1,4 +1,4 @@
-# yekitrim-cli — 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim`
+# yekitrim-cli — 只剩入口（clap 命令 + tracing 装配），二进制名 `yekitrim`
 
 > 范围：`crates/yekitrim-cli`/** ｜ 上游：用户与脚本（无 crate 依赖它）｜ 验证：`cargo check -p yekitrim-cli`
 
@@ -6,12 +6,12 @@
 
 命令行入口：把 clap 解析出来的命令**转发**给 `yekitrim_service` / `yekitrim_polish` / `yekitrim_server`，
 并把 `tracing` 订阅者（终端 + 进程内日志总线）与进度条装上。**这里不实现任何领域逻辑** ——
-`vtrim user *` / `vtrim usage` / `vtrim doctor` / `vtrim ingest *` 的实现都在 `yekitrim-service`，
+`yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在 `yekitrim-service`，
 精修命令在 `yekitrim-polish`，HTTP 服务端在 `yekitrim-server`。
 
 ## 入口
 
-- **二进制**：`[[bin]] name = "vtrim"`，`src/main.rs`（`src/cli.rs` = clap 定义，`src/progress.rs` = 进度条）。
+- **二进制**：`[[bin]] name = "yekitrim"`，`src/main.rs`（`src/cli.rs` = clap 定义，`src/progress.rs` = 进度条）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：
   `init <video> [--danmaku <file>]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
   `transcribe [-i]` / `detect [-t <transcript>]` / `cut [-i] [-e <events>] [-o]` /
@@ -34,9 +34,9 @@
 - **服务端转发**：`Command::Server(args) => yekitrim_server::run(args.clone()).await`；
   `ServerArgs` 就是 `yekitrim_server::ServerArgs`（clap 直接 derive 在它上面）。
 - **tracing 装配**（`setup_tracing()`）：`registry + EnvFilter + fmt::layer + yekitrim_service::logbus::LogBusLayer::new(bus())`。
-  `LogBusLayer` **必须挂上**：`vtrim server` 的访问日志、任务日志、错误文案都靠它进设置页「运行日志」与日志文件；
+  `LogBusLayer` **必须挂上**：`yekitrim server` 的访问日志、任务日志、错误文案都靠它进设置页「运行日志」与日志文件；
   对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。全局过滤器来自 `RUST_LOG`（**默认 `info`**），
-  想看高频接口的逐条访问日志用 `RUST_LOG=vtrim=debug`。
+  想看高频接口的逐条访问日志用 `RUST_LOG=yekitrim=debug`。
 - **进度**：`progress::IndicatifProgress`（实现 `yekitrim_core::progress::ProgressReporter`），
   在 `main` 里建一份 `Arc<dyn ProgressReporter>`，转发给 `run_stages_with[_ext]`。
 - **CLI 侧用量记账**：`yekitrim_service::usage::try_install_cli_sink()` 的安装点在**四类分支**——
@@ -54,7 +54,7 @@
   `yekitrim-polish/wgpu-render`、`yekitrim-render-core/wgpu`）整条没了 —— GPU 那侧交给独立的 Dhampir 底座。
   所以 `[features]` 里**不再有 GPU 那条**，`/api/health` 也不再回 `wgpu_render`。
   现在只有一条**封面**转发 `cover-takumi = ["yekitrim-polish/cover-takumi"]`，且 **CLI `default` 带上它**
-  （`cargo run --bin vtrim server` 开箱可选 Takumi；库构建仍精简）。代价：Windows 默认构建会多一条
+  （`cargo run --bin yekitrim server` 开箱可选 Takumi；库构建仍精简）。代价：Windows 默认构建会多一条
   `LNK4098` 链接器警告（libwebp-sys 静态 CRT）—— `cargo check` 不链接所以仍是 0 warning。
   **别为了"留个口子"把它加回来**（加了不报错，只会让人以为还有 GPU 出片）。
 - ⚠️ **端口/默认地址一律引用 `yekitrim_service::doctor::{DEFAULT_PORT, DEFAULT_URL}`，别写字面量**：
@@ -63,7 +63,7 @@
   （唯一一份定义在 service 侧，见 `crates/yekitrim-service/AGENTS.md`）。
 - ⚠️ **新增会走 LLM 的 CLI 分支要记得挂 `try_install_cli_sink()`**，否则用量统计里没有它
   （写库失败只 warn，**绝不影响调用结果**）。
-- `vtrim init` 走的是**命令自带的 `--config`**（`Command::Init.config` = `vtrim.toml` 的**写出路径**，
+- `yekitrim init` 走的是**命令自带的 `--config`**（`Command::Init.config` = `vtrim.toml` 的**写出路径**，
   缺省取输入视频的同级目录），**不读**全局 `-c/--config`；其余分支才用全局 `cli.config` 当配置路径。
 - `polish preview` 是**两条路**：先在输入目录向上找 `vtrim.toml` —— 找到就起 `yekitrim_server::run()`
   打开同一 WebUI 精修页（`ServerArgs { host: "127.0.0.1", port: DEFAULT_PORT, open: true, config: Some(cfg), … }`，

@@ -999,7 +999,7 @@ mod tests {
     ///
     /// 用法（cargo test 的 CWD 是 crate 根，路径写绝对路径）：
     /// `VT_ASR_WAV=<wav> VT_ASR_START=700 VT_ASR_SECS=60 \
-    ///  cargo test -p vtrim-core --lib diagnose_sensevoice_tokens -- --ignored --nocapture`
+    ///  cargo test -p yekitrim-core --lib diagnose_sensevoice_tokens -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实模型与音频（VT_ASR_WAV）"]
     fn diagnose_sensevoice_tokens() {
@@ -1389,7 +1389,7 @@ mod tests {
     /// VAD 自检（合成音频）：**绝对时间戳**与"静音不判语音"这两件事一起验。
     ///
     /// 用法：`VT_VAD_MODEL_DIR=<models 根> VT_VAD_SPEECH_WAV=<一段真实语音 wav> \
-    ///        cargo test -p vtrim-core --lib diagnose_vad_synthetic -- --ignored --nocapture`
+    ///        cargo test -p yekitrim-core --lib diagnose_vad_synthetic -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实 VAD 模型与一段语音 wav"]
     fn diagnose_vad_synthetic() {
@@ -1556,7 +1556,7 @@ mod tests {
     /// VAD 分段诊断（**只跑 VAD，不跑 ASR**）：在真实素材上看"跳过多少、兜底捞回多少"。
     ///
     /// 用法（路径写绝对路径；模型走 `VT_VAD_MODEL_DIR` 或默认查找顺序）：
-    /// `VT_ASR_WAV=<wav> cargo test -p vtrim-core --lib diagnose_vad_regions -- --ignored --nocapture`
+    /// `VT_ASR_WAV=<wav> cargo test -p yekitrim-core --lib diagnose_vad_regions -- --ignored --nocapture`
     /// 可选：`VT_VAD_THRESHOLD` / `VT_VAD_RESCUE_DB` / `VT_VAD_MODEL_DIR`
     #[test]
     #[ignore = "需要真实 VAD 模型与音频（VT_ASR_WAV）"]

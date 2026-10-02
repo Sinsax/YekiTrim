@@ -771,7 +771,7 @@ mod tests {
     }
 
     /// 只读诊断：本机系统字体能不能读出字族名。
-    /// `cargo test -p vtrim-core --lib diagnose_font_family -- --ignored --nocapture`
+    /// `cargo test -p yekitrim-core --lib diagnose_font_family -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn diagnose_font_family() {
@@ -1852,7 +1852,7 @@ mod tests_v2 {
     /// 手工探针：对**任意目录**跑一次 ASCII 迁移并列出结果（默认不跑）。
     ///
     /// ```bash
-    /// VT_FONT_MIGRATE_DIR=<库目录> cargo test -p vtrim-core --lib migrate_probe -- --ignored --nocapture
+    /// VT_FONT_MIGRATE_DIR=<库目录> cargo test -p yekitrim-core --lib migrate_probe -- --ignored --nocapture
     /// ```
     ///
     /// 为什么不干脆给个 CLI：迁移是 `ensure_dir` 的副作用，正常用户不需要手动触发；
