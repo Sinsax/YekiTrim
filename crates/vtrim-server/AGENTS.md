@@ -13,6 +13,7 @@
   `ServerArgs { host, port, open, config, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService` / `JobManager` / 日志总线）。
+  ⚠️ **里面没有"当前工程"** —— 见下面那条不变式。
 - `jobs.rs`：`JobManager`（`create` / `wait_start` / `cancel` / `complete` / `fail` / `busy_with` / `spawn_housekeeping`）、
   `JobSpec`、`JobHandle`、`JobSummary`、`JobEvent`、`JobClass`、`JobPriority`。
 - 其余模块见「边界」。`docs/job-queue.md` = 任务队列说明书，**改档位或上限要一起改**。
@@ -21,6 +22,19 @@
 
 - **依赖方向（第一条）**：**只依赖 `vtrim-service`**，绝不反向；**不碰 `vtrim_cli`**。两条都已是机器门禁
   `scripts/check_module_boundaries.py`（见根卡）。
+- ⚠️ **没有"全局当前工程"这回事**（2026-10-03 删除）：`AppState` 里曾有一份 `workspace` /
+  `workspace_root`，是**单工程时代**的遗留。P2 起归属由 DB 的 `projects` 表决定，每个请求经
+  `scope.rs::Scope` 提取器按 `?project=<id>` **现场解析**出自己那份 `Workspace`。
+  那份全局状态于是成了一条**没人查的旁路**（删它时全仓只剩两个消费者，且都已改掉）：
+  ① 过渡期 `/api/media/<绝对路径>` —— **已删**，媒体路径现在**必须**带项目 id；
+  ② `/api/project/list` 回显的 `workspace_root` —— **已删**（那个接口自己就标着 deprecated）。
+  **要工程就接一个 `Scope`**；要"项目无关"的值就直接读 `path::vtrim_home()` /
+  `load_global_config()`。`server.toml` 里**只留记忆**（`last_config_file`，供启动恢复上次工程），
+  **不再留状态** —— 记忆允许过期，状态不允许。
+  ⚠️ 同一次还把 `/api/config` 与 `/api/project-data/config` 拆开：前者是**纯程序配置**
+  （`config.toml` / `llm.toml`，只回 `global_raw` / `llm_raw` / `global_config` / `llm_config`），
+  后者才是"这个工程"的（`vtrim_raw` / `config` / `config_file` / `root_dir`）。
+  两者曾共用一份实现，于是项目相关字段被挂在项目无关的接口上。
 - ⚠️ **`wgpu-render` feature 已整条删除**：`api/` ×3 与 `model.rs` ×5 那些 `#[cfg(feature = "wgpu-render")]`
   分支（单帧真渲染预览 `POST /api/polish/render-frame`、常驻后端槽、`/api/health` 的 `wgpu_render` 能力位）
   连同 `vtrim-polish/wgpu-render`、`vtrim-render-core/wgpu`、`vtrim-wasm` 一起没了 ——

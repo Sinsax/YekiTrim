@@ -14,11 +14,17 @@ use crate::model::AppState;
 use crate::persist;
 use super::*;
 
-/// 打开/新建项目后把"当前工程"切到它：`/api/health`、`/api/fs/list` 的默认目录与
-/// `/api/media` 的相对路径解析都依赖这份状态。
-pub(super) async fn activate_workspace(state: &AppState, ws: &Workspace) {
-    state.set_workspace(ws.clone()).await;
-    persist::remember_last(&ws.config_file, Some(&state.workspace_root().await));
+/// 打开/新建项目后**只记一笔"上次用的是哪个工程"**（`server.toml` 的 `last_config_file`）。
+///
+/// ⚠️ **这里曾经还往 `AppState` 里塞一份"全局当前工程"**（`set_workspace`），2026-10-03 连同
+/// 那份状态一起删了：每个请求本来就会经 `scope::Scope` 按 `?project=<id>` 现场解析出
+/// 自己那份 `Workspace`，全局那份**没有任何读取方**，只会跟着"上次打开的工程"漂。
+///
+/// 留下的这一笔**还有用**：`vtrim server` 不带 `--config` 启动时靠它恢复上次的工程
+/// （`lib.rs` 的启动流程 + `persist::last_config_file`）。它**只是记忆、不是状态** ——
+/// 记忆允许过期（文件没了 `last_config_file()` 自己会过滤掉），状态不行。
+pub(super) fn remember_last_project(ws: &Workspace) {
+    persist::remember_last(&ws.config_file);
 }
 
 /// 旧版项目摘要（`server.toml` 时代的列表形态）。
@@ -253,7 +259,7 @@ pub(super) async fn create_local_project(
         let _ = vtrim_service::projects::refresh_bytes(db, &p);
     }
     let _ = db.audit(Some(user.id), "project_create", &format!("id={id} kind=local"));
-    activate_workspace(state, &ws).await;
+    remember_last_project(&ws);
     match db.project_by_id(id) {
         Ok(Some(p)) => ok(serde_json::json!({
             "ok": true,
@@ -435,11 +441,13 @@ pub(super) async fn project_delete(
 
 /// **过渡期别名**：旧前端的项目列表（`/api/projects` 的早期形态）。
 /// 现在直接读 DB 里**自己的**项目，不再扫描磁盘或读取 `server.toml`。
+///
+/// ⚠️ 响应里的 `workspace_root` 字段 2026-10-03 删了 —— 它就来自那份已删掉的全局工程状态，
+/// 前端没有任何消费方（`/api/project/list` 全仓只剩这个 deprecated 别名在用）。
 pub(super) async fn project_list(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
 ) -> ApiResult {
-    let root = state.workspace_root().await;
     let db = state.auth.db();
     let rows = db
         .list_projects(Some(user.id))
@@ -454,7 +462,6 @@ pub(super) async fn project_list(
     })
     .await?;
     ok(serde_json::json!({
-        "workspace_root": root.to_string_lossy(),
         "projects": out,
         "deprecated": "请改用 GET /api/projects（本项目列表只回本人项目）",
     }))
@@ -545,7 +552,7 @@ pub(super) async fn project_open(
     };
     let ws = Workspace::load(Some(&project.config_file))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("加载失败: {e:#}")))?;
-    activate_workspace(&state, &ws).await;
+    remember_last_project(&ws);
     ok(project_snapshot(&ws))
 }
 

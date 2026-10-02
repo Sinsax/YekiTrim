@@ -13,7 +13,7 @@
 - `api::router(state: Arc<AppState>) -> Router` —— **唯一入口**（`mod.rs` 里 `pub use routes::router`；路由表本身在
   `routes.rs`，`lib.rs` 与路由单测都走它）。
 - 共享底座（`mod.rs`，只放被两个以上子模块用到的东西）：`AppError` / `ApiResult` / `err(status, msg)` /
-  `ok(v)` / `blocking(f)` / `block_on_here(fut)` / `spawn_job(jobs, job_id, body)` / `workspace_from_state(state)` /
+  `ok(v)` / `blocking(f)` / `block_on_here(fut)` / `spawn_job(jobs, job_id, body)` /
   `health`（`GET /api/health`）。
 - 领域模块（每个只服务一个领域，括号内是代表端点）：
 

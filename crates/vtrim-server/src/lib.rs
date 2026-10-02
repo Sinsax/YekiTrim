@@ -55,7 +55,6 @@ use tracing::info;
 use vtrim_service::instancelock::InstanceLock;
 use vtrim_service::logbus;
 use vtrim_service::{self, db};
-use vtrim_service::Workspace;
 
 use self::auth::Listening;
 
@@ -312,44 +311,21 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         Err(e) => info!("⚠ 自动生成程序配置失败（将使用内建默认值）: {e:#}"),
     }
 
-    let saved = persist::load_state();
-    let workspace = if args.config.is_none() {
-        // 未显式指定工程时，优先恢复上次记忆的工程
-        match persist::last_config_file() {
-            Some(cfg) => {
-                info!("恢复上次工程: {}", cfg.display());
-                Workspace::load(Some(&cfg))?
+    // 启动工程（2026-10-03 起**只是"上次用的是哪个"这条记忆**，不再是全局状态）：
+    // 显式 `--config` 优先，否则恢复上次记忆的那份；都没有就什么都不做。
+    // 它**不进 `AppState`** —— 每个请求由 `scope::Scope` 按 `?project=<id>` 现解析出自己那份。
+    if let Some(cfg) = args.config.as_deref().map(Path::to_path_buf).or_else(persist::last_config_file) {
+        if cfg.exists() {
+            // 老工程里可能还是绝对路径，启动时顺手相对化（幂等）
+            if let Err(e) = vtrim_core::config::normalize_project_paths_in(&cfg) {
+                tracing::debug!("工程路径相对化跳过（{}）: {e:#}", cfg.display());
             }
-            None => Workspace::load(args.config.as_deref())?,
+            info!("启动工程: {}", cfg.display());
+            persist::remember_last(&cfg);
         }
-    } else {
-        Workspace::load(args.config.as_deref())?
-    };
-    info!("Workspace: {}", workspace.config_file.display());
-    if workspace.config_file.exists() {
-        let _ = vtrim_core::config::normalize_project_paths_in(&workspace.config_file);
     }
 
-    // 若工作区根未持久化或目录失效，退回工程父目录
-    let workspace_root: PathBuf = match saved.as_ref().and_then(|s| s.workspace_root.clone()) {
-        Some(root) if Path::new(&root).is_dir() => PathBuf::from(root),
-        _ => workspace
-            .root_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| workspace.root_dir.clone()),
-    };
-    let mut server_state = persist::load_state().unwrap_or_default();
-    server_state.last_config_file = Some(workspace.config_file.to_string_lossy().into_owned());
-    server_state.workspace_root = Some(workspace_root.to_string_lossy().into_owned());
-    let cfg_str = workspace.config_file.to_string_lossy().into_owned();
-    if !server_state.projects.contains(&cfg_str) {
-        server_state.projects.push(cfg_str);
-    }
-    persist::save_state(&server_state);
-    info!("Workspace root: {}", workspace_root.display());
-
-    let state = Arc::new(model::AppState::with_auth(workspace, workspace_root, auth));
+    let state = Arc::new(model::AppState::with_auth(auth));
 
     // 清扫上次运行遗留的渲染子进程：服务器重启不会带走 `polish render` 及它的
     // ffmpeg / 底座孙进程（实测空转两小时，把后续渲染拖到跑不完）。

@@ -87,8 +87,7 @@ pub(crate) async fn test_app_with_must_change(must_change: bool) -> TestApp {
     let bundle = auth
         .login("admin", "initial-pass-1234", None, None)
         .expect("测试账号应能登录");
-    let ws = Workspace::load(Some(&cfg_path)).expect("workspace");
-    let state = Arc::new(AppState::with_auth(ws, root.clone(), auth.clone()));
+    let state = Arc::new(AppState::with_auth(auth.clone()));
     TestApp {
         app: router(state.clone()),
         auth,

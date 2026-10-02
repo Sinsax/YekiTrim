@@ -242,9 +242,14 @@ pub(super) async fn project_data_pipeline(
     }
 }
 
+/// `GET /api/project-data/config?project=<id>`：**某个工程**的配置。
+///
+/// 与 `GET /api/config`（纯程序配置）分开是本目录的既有一刀：那道接口编辑的是
+/// `.vtrim/config.toml` / `llm.toml`，这道回的是**这个工程的** `vtrim.toml` 原文 + 合并后的生效配置。
+/// 项目设置页的源码编辑器读 `vtrim_raw`（`ProjectSettingsView.vue`），预处理页读 `config.asr.mode`。
 pub(super) async fn project_data_config(scope: Scope) -> ApiResult {
     let ws = scope.ws;
-    blocking(move || config_get_impl(&ws)).await
+    blocking(move || config_vtrim_get_impl(&ws)).await
 }
 
 /// `GET /api/project-data/assets`：当前弹幕/字幕 + **素材清单** + 项目内的候选 + ASR 槽位。
@@ -1337,9 +1342,8 @@ pub(super) async fn media_get(
     // 归属校验 + `jail_existing`/`canonicalize` 都是对项目目录的同步 IO（可能网络盘），
     // 而播放视频会打出一连串 Range 请求 —— 整段下 blocking 池，别让播放把 worker 占满。
     let (project, rel) = media::split_project_media(&path);
-    let ws = state.workspace().await;
     let st = state.clone();
-    let resolved = blocking(move || resolve_media_path(st.auth.db(), &user, project, &rel, &ws)).await;
+    let resolved = blocking(move || resolve_media_path(st.auth.db(), &user, project, &rel)).await;
     let path = match resolved {
         Ok(p) => p,
         Err(e) => return e.into_response(),
@@ -1384,47 +1388,36 @@ pub(super) async fn media_get(
 
 /// `/api/media/*` 的归属校验 + 路径解析（同步：DB 查询 + 项目目录上的 canonicalize/jail）。
 /// 抽出来是为了整体丢进 blocking 池 —— 见 `media_get` 的调用点。
+///
+/// ⚠️ **过渡期那条 `/api/media/<绝对路径>` 已于 2026-10-03 删除**。它当年靠一份"全局当前工程"
+/// （`AppState.workspace`）把相对路径解析成绝对路径、再用 `find_project_for_dir` 反查归属 ——
+/// 那份全局状态已经删掉（见 `model.rs` 头部）。而且**前端早就明确不认这条路**：
+/// `webui/src/utils.js::mediaUrl` 的注释写着"不接受绝对路径，也不做旧 `/api/media/<绝对路径>` 的兼容"，
+/// 所有调用点都走 `mediaUrl` / `clipMediaUrl`。
+///
+/// 判据是**路径形状**而不是"全局状态在不在"：要服务媒体就必须带项目 id —— 这样归属校验
+/// 永远只看 `find_owned_project` 一处，不再有第二条反查旁路。
 pub(super) fn resolve_media_path(
     db: &vtrim_service::db::Db,
     user: &crate::auth::CurrentUser,
     project: Option<i64>,
     rel: &str,
-    ws: &Workspace,
 ) -> Result<PathBuf, AppError> {
-    match project {
-        Some(id) => {
-            let proj = match crate::scope::find_owned_project(db, user, id) {
-                Ok(Some(p)) => p,
-                Ok(None) => return Err(err(StatusCode::NOT_FOUND, "项目不存在或无权访问")),
-                Err(e) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))),
-            };
-            vtrim_core::tenant::jail_existing(&proj.root_dir, rel)
-                .map_err(|e| err(StatusCode::NOT_FOUND, format!("文件不可用: {e:#}")))
-        }
-        None => {
-            let abs = if Path::new(rel).is_absolute() {
-                PathBuf::from(rel)
-            } else {
-                // 相对路径必须配合项目 id（新契约）；这里用当前工作区解析后仍要过归属校验
-                ws.resolve(rel)
-            };
-            match crate::scope::find_project_for_dir(db, user, &abs) {
-                Ok(Some(proj)) => {
-                    let root = proj.root_dir.canonicalize().unwrap_or_else(|_| proj.root_dir.clone());
-                    let real = abs.canonicalize().unwrap_or_else(|_| abs.clone());
-                    if !real.starts_with(&root) {
-                        return Err(err(StatusCode::FORBIDDEN, "文件不在你的项目内"));
-                    }
-                    Ok(real)
-                }
-                Ok(None) => Err(err(
-                    StatusCode::FORBIDDEN,
-                    "文件不在你的任何项目内（新契约：/api/media/<项目id>/<相对路径>）",
-                )),
-                Err(e) => Err(e),
-            }
-        }
-    }
+    // `None` = 路径第一段不是正整数 id（旧契约，或手敲的 URL）。
+    // 回 404 而不是 403：与"项目不存在"同口径，不给"这个路径存在但你没权限"的区分度。
+    let Some(id) = project else {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "媒体路径必须带项目 id（/api/media/<项目id>/<项目内相对路径>）",
+        ));
+    };
+    let proj = match crate::scope::find_owned_project(db, user, id) {
+        Ok(Some(p)) => p,
+        Ok(None) => return Err(err(StatusCode::NOT_FOUND, "项目不存在或无权访问")),
+        Err(e) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))),
+    };
+    vtrim_core::tenant::jail_existing(&proj.root_dir, rel)
+        .map_err(|e| err(StatusCode::NOT_FOUND, format!("文件不可用: {e:#}")))
 }
 
 
@@ -2164,4 +2157,64 @@ async fn clips_list_is_sorted_by_numeric_rank() {
         .collect();
     assert_eq!(names, vec!["clip-02", "clip-10", "clip-100"], "{v}");
 }
+
+/// `/api/media/<绝对路径>` 那条**过渡期契约**必须已经关掉（2026-10-03 随全局工程状态一起删）。
+///
+/// 它当年是拿"全局当前工程"把相对路径解析成绝对路径、再用 `find_project_for_dir` 反查归属的 ——
+/// 那条反查是**第二套归属判据**，与 `find_owned_project` 并存。现在只剩后者一条路。
+/// 钉住两件事：① 不带项目 id 一律 404；② 带项目 id 时仍然只能拿自己项目内的文件。
+#[tokio::test]
+async fn media_requires_project_id_and_stays_inside_the_project() {
+    let t = test_app().await;
+    let clip = t.root.join("output").join("clips").join("clip-01");
+    std::fs::create_dir_all(&clip).unwrap();
+    std::fs::write(clip.join("clip.mp4"), b"fake-mp4").unwrap();
+
+    // ① 项目内相对路径 + 合法项目 id → 能取到
+    let ok = t.call(t.req("GET", "/media/1/output/clips/clip-01/clip.mp4").body(Body::empty()).unwrap()).await;
+    assert_eq!(ok.status(), StatusCode::OK, "带项目 id 的项目内文件应当可取");
+
+    // ② 不带项目 id（旧契约形状）→ 404，且**不许**被解析成"当前工程"下的文件
+    for legacy in ["/media/output/clips/clip-01/clip.mp4", "/media/C:/Windows/win.ini"] {
+        let res = t.call(t.req("GET", legacy).body(Body::empty()).unwrap()).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "旧契约必须已关闭: {legacy}");
+    }
+
+    // ③ 带项目 id 但跳出项目根 → 不放行
+    let esc = t.call(t.req("GET", "/media/1/../vtrim.toml").body(Body::empty()).unwrap()).await;
+    assert_ne!(esc.status(), StatusCode::OK, "越出项目根不许放行");
+}
+
+/// 全局工程状态删掉之后，`/api/config` 必须是**纯程序配置**：不再回项目相关字段。
+///
+/// 这几个字段（`config_file` / `root_dir` / `vtrim_raw` / `config`）曾是"当前工程"的投影，
+/// 前端**一个都没消费**（项目设置页读的是 `/api/project-data/config` 的 `vtrim_raw`）。
+/// 留着它们等于在项目无关的接口上继续暴露"当前工程"这个概念。
+#[tokio::test]
+async fn global_config_endpoint_no_longer_exposes_a_project() {
+    let t = test_app().await;
+    let res = t.call(t.req("GET", "/config").body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    for gone in ["config_file", "root_dir", "vtrim_raw", "config"] {
+        assert!(v.get(gone).is_none(), "/api/config 不该再有 {gone}: {v}");
+    }
+    // 程序配置那几样必须还在（设置页靠它们）
+    for kept in ["global_raw", "llm_raw", "global_config", "llm_config"] {
+        assert!(v.get(kept).is_some(), "/api/config 少了 {kept}: {v}");
+    }
+}
+
+/// 项目级的配置读取必须仍然给全"这个工程"的四样（项目设置页 / 预处理页靠它）。
+#[tokio::test]
+async fn project_scoped_config_still_returns_the_project() {
+    let t = test_app().await;
+    let res = t.call(t.req("GET", "/project-data/config?project=1").body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v = body_json(res).await;
+    for kept in ["config_file", "root_dir", "vtrim_raw", "config"] {
+        assert!(v.get(kept).is_some(), "项目配置少了 {kept}: {v}");
+    }
+}
+
 }
