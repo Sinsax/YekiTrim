@@ -1,4 +1,4 @@
-//! 单实例保护：`<data_dir>/vtrim.lock`（设计稿 §3.5.8）。
+//! 单实例保护：`<data_dir>/yekitrim.lock`（设计稿 §3.5.8）。
 //!
 //! 两个 server 指向同一 `data_dir` 会抢同一批项目、同一个 SQLite（WAL 也挡不住
 //! "两个进程各写一批"）与同一个监听端口，因此启动时必须互斥。
@@ -39,7 +39,7 @@ impl LockInfo {
 }
 
 pub fn lock_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("vtrim.lock")
+    data_dir.join("yekitrim.lock")
 }
 
 fn parse_lock(raw: &str) -> Option<LockInfo> {
@@ -153,11 +153,11 @@ impl InstanceLock {
             );
         }
         if prev_alive {
-            tracing::warn!("⚠ 已用 --force 接管 vtrim.lock（原持有者 {who} 仍存活）",
+            tracing::warn!("⚠ 已用 --force 接管 yekitrim.lock（原持有者 {who} 仍存活）",
                 who = prev.as_ref().map(|p| p.label()).unwrap_or_default());
         } else if let Some(p) = &prev {
             if p.pid != 0 {
-                tracing::warn!("检测到上次运行残留的 vtrim.lock（{}，进程已不存在），已接管",
+                tracing::warn!("检测到上次运行残留的 yekitrim.lock（{}，进程已不存在），已接管",
                     p.label());
             }
         }

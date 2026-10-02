@@ -2338,6 +2338,13 @@ mod tests_v2 {
         // ⚠️ 数据根之外的任何位置都不该被建出来 —— 特别是用户目录那条老路
         let stray = data.parent().unwrap().join(".vtrim");
         assert!(!stray.exists(), "不该在数据根旁边另建 .vtrim/：{}", stray.display());
+        // 同一条判据也钉住**新**状态目录名：字体库不该在数据根旁边开状态目录
+        let stray_new = data.parent().unwrap().join(crate::path::STATE_DIR_NAME);
+        assert!(
+            !stray_new.exists(),
+            "不该在数据根旁边另建状态目录：{}",
+            stray_new.display()
+        );
     }
 
     /// 老平铺布局的条目要带上 `flat: true`（界面打「老布局」标签的依据），

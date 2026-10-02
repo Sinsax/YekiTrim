@@ -25,7 +25,7 @@
 
     <div v-else-if="!loaded && err" class="empty">
       读取失败：{{ err }}<br>
-      <span class="muted small">如果这是刚更新的版本，重启一次服务端（<span class="mono">vtrim server</span>）即可。</span>
+      <span class="muted small">如果这是刚更新的版本，重启一次服务端（<span class="mono">yekitrim server</span>）即可。</span>
     </div>
 
     <template v-else-if="totals.calls">

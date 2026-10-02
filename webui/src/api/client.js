@@ -67,7 +67,7 @@ export async function api(path, opts = {}) {
 
   // CSRF：cookie 会话 + 自定义头双提交（服务端只对写请求校验）
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    const token = readCookie('vtrim_csrf')
+    const token = readCookie('yekitrim_csrf')
     if (token) headers['X-CSRF-Token'] = token
   }
 
@@ -157,7 +157,7 @@ export function readCookie(name) {
 
 /** 写请求需要带的 CSRF 头（裸 `fetch` 调用的场景，如渲染单帧的 PNG 响应）。 */
 export function csrfHeaders() {
-  const token = readCookie('vtrim_csrf')
+  const token = readCookie('yekitrim_csrf')
   return token ? { 'X-CSRF-Token': token } : {}
 }
 

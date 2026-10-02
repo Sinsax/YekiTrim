@@ -32,7 +32,7 @@ use yekitrim_core::config::{Config, MaterialEntry, ASR_MODES, MATERIAL_SOURCE_AS
 use super::Workspace;
 
 /// 扫描候选时跳过的目录名（产物 / 内部状态 / 素材库，都不是可选输入）。
-const SKIP_DIRS: [&str; 5] = ["output", "clips", ".vtrim", "stickers", "assets"];
+const SKIP_DIRS: [&str; 5] = ["output", "clips", ".yekitrim", "stickers", "assets"];
 
 /// 可选择的素材类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -833,7 +833,7 @@ mod tests {
 
     fn ws_at(root: &Path) -> Workspace {
         Workspace {
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join("yekitrim.toml"),
             root_dir: root.to_path_buf(),
         }
     }
@@ -873,7 +873,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("output")).unwrap();
-        fs::create_dir_all(root.join(".vtrim")).unwrap();
+        fs::create_dir_all(root.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)).unwrap();
         fs::create_dir_all(root.join("videos")).unwrap();
         fs::write(root.join("a.mp4"), b"x").unwrap();
         fs::write(root.join("a.xml"), b"<i/>").unwrap();
@@ -1079,7 +1079,7 @@ mod tests {
         let output = root.join("output");
         fs::create_dir_all(&output).unwrap();
         let ws = ws_at(root);
-        fs::write(root.join("vtrim.toml"), "input_file = \"a.mp4\"\n").unwrap();
+        fs::write(root.join("yekitrim.toml"), "input_file = \"a.mp4\"\n").unwrap();
 
         // 产物还没落盘 → 不绑（`transcript_file` 指到不存在的文件会让检测直接失败）
         assert_eq!(bind_asr_artifact(&ws, &output, "hybrid"), None);
@@ -1166,7 +1166,7 @@ mod tests {
         let root = dir.path();
         // 项目字段在 `[project]` 段下（`save_*_path_in` / `patch_config_file` 都写这里）
         fs::write(
-            root.join("vtrim.toml"),
+            root.join("yekitrim.toml"),
             "[project]\ninput_file = \"a.mp4\"\ndanmaku_file = \"dm.xml\"\n",
         )
         .unwrap();
@@ -1240,14 +1240,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::write(
-            root.join("vtrim.toml"),
+            root.join("yekitrim.toml"),
             "# 顶注\n[project]\ninput_file = \"a.mp4\"   # 行内注释\ndanmaku_file = \"dm.xml\"\n\n[detection]\nvtuber_name = \"主播\"\n",
         )
         .unwrap();
         let ws = ws_at(root);
         bind_material(&ws, AssetKind::Transcript, "sub.srt", None, None).unwrap();
 
-        let raw = fs::read_to_string(root.join("vtrim.toml")).unwrap();
+        let raw = fs::read_to_string(root.join("yekitrim.toml")).unwrap();
         assert!(raw.contains("# 顶注"), "{raw}");
         assert!(raw.contains("# 行内注释"), "{raw}");
         assert!(raw.contains("danmaku_file = \"dm.xml\""), "{raw}");

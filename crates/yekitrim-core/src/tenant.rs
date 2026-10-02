@@ -165,7 +165,7 @@ mod tests {
         let dir = TmpDir::new("proj");
         let root = dir.path().join("proj");
         std::fs::create_dir_all(root.join("output/clips")).unwrap();
-        std::fs::write(root.join("vtrim.toml"), "input_file = \"a.mp4\"\n").unwrap();
+        std::fs::write(root.join("yekitrim.toml"), "input_file = \"a.mp4\"\n").unwrap();
         (dir, root)
     }
 
@@ -174,7 +174,7 @@ mod tests {
         let (_d, root) = setup();
         let p = jail_join(&root, "output/clips").unwrap();
         assert!(p.ends_with("clips"));
-        assert!(jail_existing(&root, "vtrim.toml").is_ok());
+        assert!(jail_existing(&root, "yekitrim.toml").is_ok());
         // 尾部斜杠 / 前导 ./ 都是正常写法
         assert!(jail_join(&root, "output/").is_ok());
         assert!(jail_join(&root, "./output/clips").is_ok());
@@ -189,7 +189,7 @@ mod tests {
             "",
             "   ",
             "..",
-            "../vtrim.toml",
+            "../yekitrim.toml",
             "output/../../etc/passwd",
             "./../x",
             "/etc/passwd",

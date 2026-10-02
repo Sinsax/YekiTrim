@@ -1,5 +1,5 @@
 # webui/src/components — 精修组件层：时间轴编辑器 / 预览 / 封面设计器 / 运镜 UI
-> 范围：`webui/src/components`/** ｜ 上游：`webui/src/views/*`（传 `pid`/`dir`/配置，接 `preview`/`done`/`changed`）｜ 验证：`npm --prefix webui run build`
+> 范围：`webui/src/components`/** ｜ 上游：`webui/src/views/*`｜ 验证：`npm --prefix webui run build`
 ## 职责
 
 精修页与设置页的全部子组件。壳/侧栏/路由/缓存纪律见 `webui/src/AGENTS.md`，页面纪律见
@@ -125,7 +125,7 @@
   `/api/polish/cover-frame`，只补一次（`bgFrameTried`），再失败提示手动「导出关键帧」。
 - **安全区线框**：`.guide-169` = `width:95%; height:95%`（1824×1026）· `.guide-43` = `height:100%` +
   `aspect-ratio:4/3`（1440×1080）；⚠️ **别写 `inset:5%`**（百分比横竖不同基准，会得到 1728×972）；
-  显隐 = 列表里那两行的眼睛，偏好 `localStorage['vtrim.ui.coverGuides']`；⚠️ **只画在设计器**。
+  显隐 = 列表里那两行的眼睛，偏好 `localStorage['yekitrim.ui.coverGuides']`；⚠️ **只画在设计器**。
 - **标题首次自动排版 `fitTitleIntoSafeArea()`**：只在两处触发（磁盘 `title_lines` 为空；LLM 拿到新标题），
   手动操作一律不触发（**别在 watch 里接**）；已有封面不碰（判据 = 磁盘上有无 `title_lines`），只动字号/位置。
 - ⚠️ **默认对齐 `left`**、`text_x = "35%"`：老工程字段存在就不走默认；**别改 `cover.rs::cover_text_align` 的

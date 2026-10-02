@@ -197,7 +197,7 @@ async fn register_flow_consumes_invite_and_respects_switch() {
         "码不能复用"
     );
     assert!(
-        t.auth.register("other", "pass-12345678", "vtrim_inv_aaaaaaaaaaaaaaaa", Some("10.0.0.3"), None).is_err(),
+        t.auth.register("other", "pass-12345678", "yekitrim_inv_aaaaaaaaaaaaaaaa", Some("10.0.0.3"), None).is_err(),
         "假码必须拒"
     );
     assert!(
@@ -214,7 +214,7 @@ async fn register_flow_consumes_invite_and_respects_switch() {
     let mut limited = false;
     for _ in 0..6 {
         if let Err(crate::auth::LoginError::RateLimited(_)) =
-            t.auth.register("bruteforce", "pass-12345678", "vtrim_inv_bbbbbbbbbbbb", Some("10.9.9.9"), None)
+            t.auth.register("bruteforce", "pass-12345678", "yekitrim_inv_bbbbbbbbbbbb", Some("10.9.9.9"), None)
         {
             limited = true;
             break;
@@ -280,7 +280,7 @@ async fn admin_invites_expose_plaintext_and_usage() {
         .map(|c| c.as_str().unwrap_or("").to_string())
         .collect();
     assert_eq!(codes.len(), 2, "{j}");
-    assert!(codes.iter().all(|c| c.starts_with("vtrim_inv_")), "{j}");
+    assert!(codes.iter().all(|c| c.starts_with("yekitrim_inv_")), "{j}");
     assert_eq!(j["registration_enabled"], true);
 
     // 列表里能再看到同样的明文，且都是「未使用」

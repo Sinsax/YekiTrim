@@ -444,7 +444,7 @@ const clipName = computed(() => route.params.clip || '')
 /** 当前已经加载完成的片段名：用于跳过 `load()` 自己 `router.replace` 触发的 watch。 */
 const loadedClip = ref('')
 // 记住最后操作过的片段：下次从侧栏进精修页自动回到它（每项目一个键）
-const LAST_CLIP_KEY = computed(() => 'vtrim.polish.last.' + pid.value)
+const LAST_CLIP_KEY = computed(() => 'yekitrim.polish.last.' + pid.value)
 watch(clipName, (name) => {
   if (name) { try { localStorage.setItem(LAST_CLIP_KEY.value, name) } catch {} }
   // 片段切换只改路由，必须在这里触发加载；但 `load()` 自己 replace 路由时不要再触发一次。

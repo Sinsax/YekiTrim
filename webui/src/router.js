@@ -100,7 +100,7 @@ export default router
 //
 // sessionStorage 做一次性闸门：刷新后仍失败就不再刷（避免死循环）；
 // 任意一次导航成功即清除，这样下一次发版还能再自动刷。
-const RELOAD_KEY = 'vtrim.chunkReload'
+const RELOAD_KEY = 'yekitrim.chunkReload'
 const CHUNK_ERR = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload|NOT_FOUND/i
 
 router.onError((err) => {

@@ -225,11 +225,11 @@ pub(super) fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is
         return Err(err(StatusCode::BAD_REQUEST, "内容为空，未保存"));
     }
     yekitrim_service::validate_toml(raw)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 不是合法 TOML，未保存: {e}")))?;
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("yekitrim.toml 不是合法 TOML，未保存: {e}")))?;
     // 源文件模式同样要过路径校验：TOML 解析出来的结构与 JSON 一致，直接复用上面那张键表
     if !is_admin {
         let parsed: toml::Value = toml::from_str(raw)
-            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("vtrim.toml 解析失败，未保存: {e}")))?;
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("yekitrim.toml 解析失败，未保存: {e}")))?;
         let as_json = serde_json::to_value(&parsed).unwrap_or(serde_json::Value::Null);
         check_project_paths(ws, &as_json, is_admin)?;
     }
@@ -396,7 +396,7 @@ async fn models_endpoint_reports_runtime_resolved_dir_and_source() {
 fn project_config_paths_are_jailed_for_non_admin() {
     let root = std::env::temp_dir().join(format!("vtrim-cfg-paths-{}", std::process::id()));
     std::fs::create_dir_all(root.join("output")).unwrap();
-    let ws = Workspace { config_file: root.join("vtrim.toml"), root_dir: root.clone() };
+    let ws = Workspace { config_file: root.join("yekitrim.toml"), root_dir: root.clone() };
 
     // 正常形态放行：相对路径、空串、缺键
     let ok = serde_json::json!({

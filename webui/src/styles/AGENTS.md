@@ -43,7 +43,7 @@
   它会落到哪些组件上**。
 - 页面专属的新态（`.proj.on`、`.snode.viewing`、`.rail-*`、`.side-toggle`、`.rdot`）写在各自组件的
   scoped 里，**不要**塞回 app.css。
-- **改样式后必须重建 `webui/dist`**（`webui/dist` 已入库）：不重建，`vtrim server` 端出的还是旧界面。
+- **改样式后必须重建 `webui/dist`**（`webui/dist` 已入库）：不重建，`yekitrim server` 端出的还是旧界面。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

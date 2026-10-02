@@ -143,7 +143,7 @@ pub fn remap_to_segments(
 
 /// `<project>/.vtrim/polish_events.status.json`
 pub fn status_path(project: &Path) -> PathBuf {
-    project.join(".vtrim").join(STATUS_FILE)
+    project.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME).join(STATUS_FILE)
 }
 
 /// 原子写快照（`.vtrim/` 不存在就建）。

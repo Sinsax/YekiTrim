@@ -146,7 +146,7 @@ pub enum Command {
     #[command(subcommand)]
     User(UserAction),
 
-    /// LLM 用量（每次调用的 token / 缓存命中 / 耗时；落 <data_dir>/vtrim.db）
+    /// LLM 用量（每次调用的 token / 缓存命中 / 耗时；落 <data_dir>/yekitrim.db）
     Usage {
         /// 统计最近多少天
         #[arg(long, default_value_t = 30)]

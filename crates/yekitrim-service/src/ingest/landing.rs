@@ -74,14 +74,14 @@ pub struct LandedProject {
 /// 而不是会自动发现同名 `.ass` 的那个：这里两侧的来源**都已经自己探测过弹幕**了
 /// （录播姬 `find_danmaku` / B站下载），再让配置层去猜一遍只会多一层看不见的副作用。
 pub fn land_project(db: &Db, l: &ProjectLanding<'_>) -> Result<LandedProject> {
-    let config_path = l.project_root.join("vtrim.toml");
+    let config_path = l.project_root.join("yekitrim.toml");
     yekitrim_core::config::write_project_config_exact(
         &config_path,
         Path::new(l.input_file),
         l.danmaku_file.map(Path::new),
         None,
     )
-    .context("写 vtrim.toml 失败")?;
+    .context("写 yekitrim.toml 失败")?;
 
     let project_id = match db.project_by_config(&config_path)? {
         // 同一个 vtrim.toml 已登记（重试 / 重投）→ 复用，不建第二个项目
@@ -193,7 +193,7 @@ mod tests {
         // 再落一次：复用同一个项目，不重复登记
         l.name = "改个名字".into();
         let again = land_project(&db, &l).unwrap();
-        assert!(!again.created, "同一个 vtrim.toml 不该建第二个项目");
+        assert!(!again.created, "同一个 yekitrim.toml 不该建第二个项目");
         assert_eq!(again.project_id, first.project_id);
         assert_eq!(db.list_projects(Some(1)).unwrap().len(), 1);
 

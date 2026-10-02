@@ -26,7 +26,7 @@ pub(crate) fn tmp_workspace(tag: &str) -> (Workspace, PathBuf) {
     let root = std::env::temp_dir().join(format!("vtrim-api-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(root.join("output")).unwrap();
     let ws = Workspace {
-        config_file: root.join("vtrim.toml"),
+        config_file: root.join("yekitrim.toml"),
         root_dir: root.clone(),
     };
     (ws, root)
@@ -50,7 +50,7 @@ pub(crate) fn now_stamp() -> String {
 
 /// 带一套独立账号账本 + 已登录会话的测试服务。
 ///
-/// 账号库放在临时目录里（不经 `VTRIM_DATA_DIR` 环境变量：测试是并行跑的，
+/// 账号库放在临时目录里（不经 `YEKITRIM_DATA_DIR` 环境变量：测试是并行跑的，
 /// 改全局环境变量会互相踩）。登录本身也走真实 KDF 与真实会话表。
 pub(crate) struct TestApp {
     pub(crate) app: Router,
@@ -77,7 +77,7 @@ pub(crate) async fn test_app_with_must_change(must_change: bool) -> TestApp {
     let root = dir.path().join("proj");
     std::fs::create_dir_all(root.join("output/clips")).unwrap();
     std::fs::write(root.join("a.mp4"), b"fake").unwrap();
-    let cfg_path = root.join("vtrim.toml");
+    let cfg_path = root.join("yekitrim.toml");
     std::fs::write(&cfg_path, "input_file = \"a.mp4\"\n").unwrap();
     let project_id = auth
         .db()

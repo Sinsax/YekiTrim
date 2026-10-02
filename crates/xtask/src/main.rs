@@ -749,8 +749,8 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let _ = child.kill();
     let _ = child.wait();
 
-    // First run creates .vtrim / stickers next to the exe; runtime state must not ship.
-    for generated in [".vtrim", "stickers"] {
+    // First run creates .yekitrim / stickers next to the exe; runtime state must not ship.
+    for generated in [".yekitrim", "stickers"] {
         let path = package_dir.join(generated);
         if path.exists() {
             fs::remove_dir_all(&path)?;

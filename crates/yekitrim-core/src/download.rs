@@ -2,7 +2,7 @@
 //!
 //! 入口：`model_names`、`model_install`、`download_all`、`download_vad_model`、`ensure_models`；
 //! 另有两个**通用**下载件给别处复用：`fetch_url_to` / `fetch_text_to`（自带字体下载用，见 `fonts::BUILTIN_FONTS`）。
-//! 边界：模型落在 `<数据目录>/.vtrim/models/`（默认 = 程序目录，`VTRIM_DATA_DIR` 可改指；debug / release
+//! 边界：模型落在 `<数据目录>/.vtrim/models/`（默认 = 程序目录，`YEKITRIM_DATA_DIR` 可改指；debug / release
 //! 默认各一份，互不相干）；许可上别把 espeak-ng 等 GPL 组件带回来 —— 见 `crates/vtrim-core/AGENTS.md`
 
 use std::path::{Path, PathBuf};

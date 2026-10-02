@@ -75,7 +75,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
         println!("  ⚠ 身份数据不可缺省：目录不可写时 `vtrim server` 会拒绝启动（用 --data-dir 指到可写路径）");
     }
     if !db_path.exists() {
-        println!("  账号账本: 尚未初始化（首次 `vtrim server` 启动会自动创建 admin）");
+        println!("  账号账本: 尚未初始化（首次 `yekitrim server` 启动会自动创建 admin）");
     } else {
         match Db::open(&db_path) {
             Ok(db) => {
@@ -136,7 +136,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
         .and_then(|rd| {
             rd.flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("vtrim-") && n.ends_with(".log"))
+                .filter(|n| n.starts_with("yekitrim-") && n.ends_with(".log"))
                 .max()
         });
     match latest_log {
@@ -201,7 +201,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     }
     if !writable {
         advice.push(format!(
-            "数据目录不可写 → 用 `--data-dir <可写路径>` 或环境变量 VTRIM_DATA_DIR 指定别处"
+            "数据目录不可写 → 用 `--data-dir <可写路径>` 或环境变量 YEKITRIM_DATA_DIR 指定别处"
         ));
     }
     if remote_without_tls {

@@ -318,7 +318,7 @@ fn json_set_str(v: &mut serde_json::Value, path: &str, val: &str) {
 /// 已存在的文件"：`cover-background` 会 `fs::copy` 它，`cover` 渲染也会先断言存在）。
 ///
 /// 这是 `/api/polish/*` 的路径面收口点：没有它，`source` 就能把服务器上任意文件
-/// （例如 `<exe同级>/.vtrim/llm.toml`，里面有 LLM API key；或账号账本 `vtrim.db`）
+/// （例如 `<exe同级>/.vtrim/llm.toml`，里面有 LLM API key；或账号账本 `yekitrim.db`）
 /// 复制进调用者自己的项目，再用 `/api/media/<自己的项目>/…` 读回来。
 fn resolve_file_in_project(project: &ProjectRow, raw: &str, field: &str) -> Result<PathBuf, AppError> {
     let raw = raw.trim();
@@ -662,9 +662,9 @@ mod tests {
 
     #[test]
     fn parses_and_decodes_query() {
-        let q = parse_query("project=3&config=F%3A%5Cmedia%5C3d%5Cvtrim.toml&dir=a%2Fb+c");
+        let q = parse_query("project=3&config=F%3A%5Cmedia%5C3d%5Cyekitrim.toml&dir=a%2Fb+c");
         assert_eq!(q.get("project").map(|s| s.as_str()), Some("3"));
-        assert_eq!(q.get("config").map(|s| s.as_str()), Some(r"F:\media\3d\vtrim.toml"));
+        assert_eq!(q.get("config").map(|s| s.as_str()), Some(r"F:\media\3d\yekitrim.toml"));
         assert_eq!(q.get("dir").map(|s| s.as_str()), Some("a/b c"));
         assert!(parse_query("").is_empty());
     }
@@ -719,7 +719,7 @@ mod tests {
             source_kind: "local".into(),
             source_label: None,
             root_dir: root.clone(),
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join("yekitrim.toml"),
             session_id: None,
             created_at: 0,
             last_active_at: None,
@@ -750,7 +750,7 @@ mod tests {
             source_kind: "local".into(),
             source_label: None,
             root_dir: root.to_path_buf(),
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join("yekitrim.toml"),
             session_id: None,
             created_at: 0,
             last_active_at: None,

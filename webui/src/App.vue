@@ -142,7 +142,7 @@ async function openProject({ pid, step }) {
 async function removeProject(p) {
   // 非破坏性（目录里一个文件都不动）→ 普通样式确认；但仍要确认，误点就从列表里没了
   const ok = await confirmDialog(
-    '只把登记从服务器列表里去掉，不会动目录里的任何文件（vtrim.toml、媒体、产物全部保留），随时可以重新导入。',
+    '只把登记从服务器列表里去掉，不会动目录里的任何文件（yekitrim.toml、媒体、产物全部保留），随时可以重新导入。',
     { title: `移除项目「${p.name}」？` }
   )
   if (!ok) return

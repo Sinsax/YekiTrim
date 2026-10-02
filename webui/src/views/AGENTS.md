@@ -1,6 +1,6 @@
 # webui/src/views — 页面文件自身的纪律
 
-> 范围：`webui/src/views`/** ｜ 上游：`webui/src/router.js`（懒加载本目录的页面组件）｜ 验证：`npm --prefix webui run build`
+> 范围：`webui/src/views`/** ｜ 上游：`webui/src/router.js`｜ 验证：`npm --prefix webui run build`
 
 ## 职责
 
@@ -67,7 +67,7 @@
 2. **checkpoint 的窗口 id 必须带时间段**（`seg_{i}_{start}-{end}@fingerprint`）：命中条件只有
    `id && items`，而重新分段后「新的 seg_1」与「旧的 seg_1」的 ±3s 字幕窗口**可能一字不差**
    → 会把别的时间段的事件套过来（"续传之后显示不正常"）。带区间后重新分段必然失配。
-3. **逐段状态快照** `<project>/.vtrim/polish_events.status.json`（`llm/status.rs`）：
+3. **逐段状态快照** `<project>/.yekitrim/polish_events.status.json`（`llm/status.rs`）：
    `cmd_llm` 落盘、`polish_project_get?preview=1` 注入 `_llm_status`、
    `TimelineEditor` 给**没产出事件的段**上琥珀色（成功 = 当前颜色，用户要求），
    分段属性面板显示失败原因 + 「只重做本段事件」。
@@ -171,7 +171,7 @@
   `polish_ready` → 那个判据恒为真，旧两档退化成"恒空 / 恒满"。
   默认（`applyDefaultFilter`）：有已剪切则选「已剪切」，否则「未剪切」，**不写盘**；二级默认 `SUB_FILTERS[0]`。
   读数分母 = 一级档位涉及的片段数（`poolTotal`）；空态文案随二级变（`emptyText`）。
-- ⚠️ localStorage 迁移（存 key：`vtrim.slices.filter` / `.subfilter`）：`LEGACY_FILTERS` 把上一版
+- ⚠️ localStorage 迁移（存 key：`yekitrim.slices.filter` / `.subfilter`）：`LEGACY_FILTERS` 把上一版
   `polish` → 已剪切 + 已导出；二级旧值走 `LEGACY_SUB_FILTERS`（`unpolished`→`polishing`、
   `polished`→`exported`）。后一对**有损且有意**（旧 `polished` 含"进过精修但没出片"那批，
   新口径只有"已导出"能表达；旧两档本身已退化，继续认只会让用户看到一排筛不出东西的按钮）。认不出回落默认档。
@@ -193,14 +193,14 @@
   **「移除项目」**（只注销登记、零文件改动）。两个入口——设置页按钮与侧栏项目行的 `×`
   （`ProjectNode` → `SideNav` → `App.vue::removeProject`）——文案与行为必须一致：
   **都不再是 `danger` 红色**（移除已不是破坏性操作），但仍然二次确认（误点一下项目就从列表里没了）。
-  移除后前端要调 `stores/workbench.js::forgetProject(pid)` 清本地痕迹（per-pid 缓存 / `vtrim.wb.expanded`
-  / `vtrim.wb.last` / `vtrim.polish.last.<pid>`）—— id 是 `AUTOINCREMENT` 不复用，但会永远躺在本地存储里。
-- ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`vtrim.toml`、媒体、`output/` 产物全留着，
-  重新导入同一个目录即可再绑回来（`create_local_project` 见到已有 `vtrim.toml`
+  移除后前端要调 `stores/workbench.js::forgetProject(pid)` 清本地痕迹（per-pid 缓存 / `yekitrim.wb.expanded`
+  / `yekitrim.wb.last` / `yekitrim.polish.last.<pid>`）—— id 是 `AUTOINCREMENT` 不复用，但会永远躺在本地存储里。
+- ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`yekitrim.toml`、媒体、`output/` 产物全留着，
+  重新导入同一个目录即可再绑回来（`create_local_project` 见到已有 `yekitrim.toml`
   **只登记、不覆盖**，所以手改过的工程设置不会丢；新登记会拿到**新 id**，
   项目目录内的产物都不含服务器侧 id，换 id 安全）。
   两个入口共用 `api::unregister_project`（`DELETE /api/projects/:id` 与过渡别名
-  `POST /project/delete`）—— 以前是两份拷贝、各删一次 `vtrim.toml`，别再写回两份。
+  `POST /project/delete`）—— 以前是两份拷贝、各删一次 `yekitrim.toml`，别再写回两份。
 - 设置页 `SettingsView.vue` 五块内容仍在**同一个文件**（`defineProps({section})` + `v-if` 切），
   不拆子组件；`account` = 注册与邀请码 + **模型管理**（`components/ModelList.vue`）。
 - ⚠️ **LLM 配置块的「按链路覆盖」= 一行一条链路：勾选框 + 两个 `SliderField` + thinking 下拉**。
@@ -210,7 +210,7 @@
   几何：`max-content + minmax(0,300px)×2 + max-content` + `justify-content:start`（1fr 会把滑块拉到格子
   中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏经 900px 媒体查询拆成一列。
 - **模型管理（别再各写一套）**：模型管理页的「已安装」与运行时**同源** ——
-  `yekitrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.vtrim/models`，
+  `yekitrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.yekitrim/models`，
   默认即程序目录）是唯一真源，`download::model_install()` 在其之上再校验注册表
   marker（`tokens.txt` / `tokenizer/tokenizer_config.json`，**不是** `dir.exists()`）。
   接口 `/api/models` 回 `{name, installed, dir, source, source_label}`，界面显示实际路径与来源。

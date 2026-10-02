@@ -1,8 +1,8 @@
 //! 账号账本（SQLite）。
 //!
 //! P1 最小切片只落 `users` + `audit`（供 `vtrim user` 使用）；`sessions` 表一并建好，
-//! HTTP 登录/会话在下一步接入。库位置：`$VTRIM_DATA_DIR/vtrim.db`，
-//! 未设置时取 `<exe_dir>/.vtrim/cloud/vtrim.db`（与设计稿 §3.5.7 一致）。
+//! HTTP 登录/会话在下一步接入。库位置：`$YEKITRIM_DATA_DIR/yekitrim.db`，
+//! 未设置时取 `<exe_dir>/.yekitrim/cloud/yekitrim.db`（与设计稿 §3.5.7 一致）。
 //!
 //! 身份数据不可缺省：打不开/写不了库一律返回错误，由调用方升级为"启动失败 + 修复指引"。
 
@@ -29,8 +29,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 ///   两条流程的语义完全不同，混在一起会互相踩（见 `docs/plan/p4-implementation-plan.md` §2）。
 pub const SCHEMA_VERSION: i64 = 8;
 
+/// 账号账本 / 会话 / 初始密码所在目录（`<数据目录>/.yekitrim/cloud`）。
+///
+/// ⚠️ **这是 [`yekitrim_core::path::data_dir`] 的第二个实现，不是它的调用者** ——
+/// 它多一级 `cloud`，且**在有覆盖时返回覆盖值本身**（不是覆盖值 + `/cloud`）。
+/// 这个"两种拼接规则"是刻意的（`--data-dir` 指的就是账本目录），但**改环境变量名时
+/// 必须与 `yekitrim-core/src/path.rs` 的 `DATA_DIR_ENV` 和 `server/src/lib.rs` 的
+/// `set_var` 三端成对改** —— 只改一端 = `--data-dir` 静默失效、CLI 与 server 读**两个不同的库**，
+/// 而且只有传了 `--data-dir` 才暴露。
 pub fn data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("VTRIM_DATA_DIR") {
+    if let Ok(dir) = std::env::var(yekitrim_core::path::DATA_DIR_ENV) {
         if !dir.trim().is_empty() {
             return PathBuf::from(dir);
         }
@@ -39,7 +47,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn db_path() -> PathBuf {
-    data_dir().join("vtrim.db")
+    data_dir().join("yekitrim.db")
 }
 
 pub fn now_secs() -> i64 {
@@ -109,7 +117,7 @@ pub struct SessionRow {
 #[derive(Debug, Clone)]
 pub struct InviteRow {
     pub id: i64,
-    /// `vtrim_inv_<43 字符 base64url>`
+    /// `yekitrim_inv_<43 字符 base64url>`
     pub token: String,
     pub note: Option<String>,
     pub created_by: Option<i64>,
@@ -255,7 +263,7 @@ pub struct Db {
         if current > 0 {
             let backup = self.path.with_file_name(format!(
                 "{}.bak-{current}",
-                self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "vtrim.db".into())
+                self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "yekitrim.db".into())
             ));
             // WAL 下用 VACUUM INTO 拿到一致快照；失败退回文件拷贝
             let vac = self.with(|conn| {
@@ -668,7 +676,7 @@ pub struct Db {
                     now_secs(),
                 ],
             )
-            .with_context(|| format!("登记项目 {name} 失败（同一 vtrim.toml 是否已登记？）"))?;
+            .with_context(|| format!("登记项目 {name} 失败（同一 yekitrim.toml 是否已登记？）"))?;
             Ok(conn.last_insert_rowid())
         })
     }
@@ -1767,7 +1775,7 @@ mod tests {
         let (_d, db) = tmp_db();
         let admin = db.create_user("admin", "h", "admin", false, 0).unwrap();
         let now = now_secs();
-        let code = "vtrim_inv_TESTCODE0000000000000000000000000000";
+        let code = "yekitrim_inv_TESTCODE0000000000000000000000000000";
         let id = db.create_invite(code, Some("给小明"), Some(admin), Some(now + 86400)).unwrap();
 
         // 明文能原样读回来 —— 这正是"管理员可以重复查看"
@@ -1787,11 +1795,11 @@ mod tests {
         assert!(used.used_at.is_some());
         assert!(!used.is_open(now_secs()), "已使用即不可再用");
 
-        let id2 = db.create_invite("vtrim_inv_REVOKE_ME", None, None, None).unwrap();
+        let id2 = db.create_invite("yekitrim_inv_REVOKE_ME", None, None, None).unwrap();
         assert_eq!(db.revoke_invite(id2).unwrap(), 1);
         assert_eq!(db.revoke_invite(id2).unwrap(), 0, "重复撤销幂等");
         assert!(!db.find_invite_by_id(id2).unwrap().unwrap().is_open(now));
-        assert!(db.find_invite_by_token("vtrim_inv_nope").unwrap().is_none(), "不存在的码查不到");
+        assert!(db.find_invite_by_token("yekitrim_inv_nope").unwrap().is_none(), "不存在的码查不到");
     }
 
     /// 用户自助登记直播间：写/覆盖、按人查、按归属删（别人删不动）。
@@ -1829,7 +1837,7 @@ mod tests {
     #[test]
     fn register_with_invite_consumes_once_and_binds_user() {
         let (_d, db) = tmp_db();
-        let code = "vtrim_inv_ONCE0000000000000000000000000000";
+        let code = "yekitrim_inv_ONCE0000000000000000000000000000";
         let inv = db.create_invite(code, None, None, None).unwrap();
         let uid = db.register_with_invite(inv, "newbie", "scrypt$y").unwrap();
         let user = db.find_user("newbie").unwrap().unwrap();
@@ -1847,10 +1855,10 @@ mod tests {
         assert!(db.find_user_ci("nobody").unwrap().is_none());
 
         // 撤销的 / 过期的码不能注册
-        let inv2 = db.create_invite("vtrim_inv_REVOKED", None, None, None).unwrap();
+        let inv2 = db.create_invite("yekitrim_inv_REVOKED", None, None, None).unwrap();
         db.revoke_invite(inv2).unwrap();
         assert!(db.register_with_invite(inv2, "revoked-try", "scrypt$w").is_err(), "撤销的码不能注册");
-        let inv3 = db.create_invite("vtrim_inv_EXPIRED", None, None, Some(now_secs() - 1)).unwrap();
+        let inv3 = db.create_invite("yekitrim_inv_EXPIRED", None, None, Some(now_secs() - 1)).unwrap();
         assert!(db.register_with_invite(inv3, "expired-try", "scrypt$w").is_err(), "过期的码不能注册");
     }
 
@@ -1866,5 +1874,50 @@ mod tests {
         assert!(!u.disabled);
         assert!(db.set_disabled("admin", true).unwrap());
         assert!(db.find_user("admin").unwrap().unwrap().disabled);
+    }
+
+    /// ⚠️ **数据目录环境变量的回归钉子**（同时钉住 `path.rs` / `db.rs` / `server/lib.rs` 三处）。
+    ///
+    /// 这条测的是"改名时最容易静默坏"的那条链：`--data-dir` 是通过
+    /// `set_var(DATA_DIR_ENV)` 传给 service 侧的，而 `db::data_dir()` 是**独立第二实现**。
+    /// 只改一端 ⇒ `--data-dir` 静默失效：server 用一个库、CLI 侧命令读另一个库，
+    /// **不报错**，而且只有传了 `--data-dir` 才暴露。
+    ///
+    /// ⚠️ 测试**必须串行**：它改的是进程级环境变量。用一把专用锁把读-改-写包起来，
+    /// 并在结束时**无论如何都还原**（`user.rs` 明写"测试不能靠环境变量隔离，会互相踩"）。
+    #[test]
+    fn data_dir_env_var_is_the_only_override_and_points_the_ledger_at_it() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let old = std::env::var_os(yekitrim_core::path::DATA_DIR_ENV);
+        let tmp = std::env::temp_dir().join(format!("yekitrim-dd-{}", std::process::id()));
+
+        // ① 名字必须是新名（旧名不再被认）
+        assert_eq!(yekitrim_core::path::DATA_DIR_ENV, "YEKITRIM_DATA_DIR");
+
+        // ② 设了覆盖 ⇒ 账本落在**覆盖目录本身**（不是它下面的 .yekitrim/cloud）
+        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &tmp);
+        assert_eq!(data_dir(), tmp, "覆盖值就是账本目录");
+        assert_eq!(db_path(), tmp.join("yekitrim.db"));
+
+        // ③ 覆盖为空串 ⇒ 等同没设（别把账本写到根目录去）
+        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, "");
+        assert_eq!(data_dir(), yekitrim_core::path::vtrim_home().join("cloud"));
+
+        // ④ 没设 ⇒ 落到 `<数据目录>/.yekitrim/cloud`，且**状态目录名是新名**
+        std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV);
+        let expected = yekitrim_core::path::vtrim_home().join("cloud");
+        assert_eq!(data_dir(), expected);
+        assert!(
+            expected.to_string_lossy().contains(".yekitrim"),
+            "状态目录必须是新名: {}",
+            expected.display()
+        );
+
+        match old {
+            Some(v) => std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, v),
+            None => std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV),
+        }
     }
 }

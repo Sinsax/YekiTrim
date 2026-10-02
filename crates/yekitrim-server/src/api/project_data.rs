@@ -1789,7 +1789,7 @@ async fn path_face_is_closed_for_project_data() {
     let t = test_app().await;
     // 未登记的 config 路径
     let res = t
-        .call(t.req("GET", "/project-data/status?config=C%3A%5CWindows%5Cvtrim.toml").body(Body::empty()).unwrap())
+        .call(t.req("GET", "/project-data/status?config=C%3A%5CWindows%5Cyekitrim.toml").body(Body::empty()).unwrap())
         .await;
     assert_eq!(res.status(), StatusCode::NOT_FOUND, "未登记路径必须 404");
     // 他人的项目 id
@@ -1863,7 +1863,7 @@ async fn clip_danmaku_count_falls_back_to_source_and_delete_prunes_index() {
     }
     std::fs::write(root.join("dm.ass"), ass).unwrap();
     // `danmaku_file` 是 `[project]` 表里的字段（顶层写不进去，会被忽略）
-    std::fs::write(root.join("vtrim.toml"), "[project]\ninput_file = \"a.mp4\"\ndanmaku_file = \"dm.ass\"\n").unwrap();
+    std::fs::write(root.join("yekitrim.toml"), "[project]\ninput_file = \"a.mp4\"\ndanmaku_file = \"dm.ass\"\n").unwrap();
 
     let clips = root.join("output").join("clips");
     std::fs::create_dir_all(&clips).unwrap();
@@ -2181,7 +2181,7 @@ async fn media_requires_project_id_and_stays_inside_the_project() {
     }
 
     // ③ 带项目 id 但跳出项目根 → 不放行
-    let esc = t.call(t.req("GET", "/media/1/../vtrim.toml").body(Body::empty()).unwrap()).await;
+    let esc = t.call(t.req("GET", "/media/1/../yekitrim.toml").body(Body::empty()).unwrap()).await;
     assert_ne!(esc.status(), StatusCode::OK, "越出项目根不许放行");
 }
 

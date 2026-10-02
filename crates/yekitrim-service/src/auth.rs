@@ -27,8 +27,8 @@ pub const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 /// 距离过期不足这个时长时才写库续期，避免每个 GET 都做一次 UPDATE。
 pub const SESSION_RENEW_AFTER_SECS: i64 = 60 * 60;
 
-pub const COOKIE_SID: &str = "vtrim_sid";
-pub const COOKIE_CSRF: &str = "vtrim_csrf";
+pub const COOKIE_SID: &str = "yekitrim_sid";
+pub const COOKIE_CSRF: &str = "yekitrim_csrf";
 /// CSRF 令牌自定义头（写请求必带）。
 pub const CSRF_HEADER: &str = "x-csrf-token";
 /// 设置页/文档里显示的静态资源 cookie 路径。
@@ -48,9 +48,9 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
 
 /// 邀请码前缀。码是**一次性 token**：明文落库（管理员要能重复查看、复制再发 —— 用户要求），
 /// 一次性由 `used_at/used_by` 保证：一个码只能绑一个账号。
-pub const INVITE_PREFIX: &str = "vtrim_inv_";
+pub const INVITE_PREFIX: &str = "yekitrim_inv_";
 
-/// 生成邀请码：`vtrim_inv_<43 字符 base64url>`（32 字节 CSPRNG）。
+/// 生成邀请码：`yekitrim_inv_<43 字符 base64url>`（32 字节 CSPRNG）。
 pub fn new_invite_code() -> String {
     format!("{INVITE_PREFIX}{}", new_token())
 }
@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn invite_code_shape_and_uniqueness() {
         let code = new_invite_code();
-        assert!(code.starts_with("vtrim_inv_"), "{code}");
-        assert_eq!(code.len(), "vtrim_inv_".len() + 43, "{code}");
+        assert!(code.starts_with("yekitrim_inv_"), "{code}");
+        assert_eq!(code.len(), "yekitrim_inv_".len() + 43, "{code}");
         assert!(code.chars().all(|c| c.is_ascii()), "可安全放进 URL/表单: {code}");
         assert_ne!(code, new_invite_code());
     }

@@ -7,7 +7,7 @@
 //! - [`AuthService`]：账号账本句柄 + 登录限流 + 会话读写（滑动续期 / 登出 / 改密）；
 //! - [`require_user`]：axum 中间件，校验 cookie 会话、写请求校验 CSRF、把
 //!   [`CurrentUser`] 塞进请求扩展供 handler 取用；
-//! - cookie 构造与解析：`vtrim_sid`（HttpOnly）+ `vtrim_csrf`（JS 可读，供 `X-CSRF-Token`）。
+//! - cookie 构造与解析：`yekitrim_sid`（HttpOnly）+ `yekitrim_csrf`（JS 可读，供 `X-CSRF-Token`）。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -130,7 +130,7 @@ impl AuthService {
     pub fn open(data_dir: PathBuf, listening: Listening) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("无法创建数据目录 {}", data_dir.display()))?;
-        let db_path = data_dir.join("vtrim.db");
+        let db_path = data_dir.join("yekitrim.db");
         let db = Db::open(&db_path)
             .with_context(|| format!("无法打开账号账本 {}", db_path.display()))?;
         let svc = Arc::new(Self {
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn parses_cookie_header() {
-        let h = headers_with(&[("cookie", "a=1; vtrim_sid=abc; vtrim_csrf=xyz")]);
+        let h = headers_with(&[("cookie", "a=1; yekitrim_sid=abc; yekitrim_csrf=xyz")]);
         assert_eq!(cookie_value(&h, kdf::COOKIE_SID).as_deref(), Some("abc"));
         assert_eq!(cookie_value(&h, kdf::COOKIE_CSRF).as_deref(), Some("xyz"));
         assert_eq!(cookie_value(&h, "missing"), None);
@@ -777,7 +777,7 @@ mod tests {
             },
         };
         let cookies = session_cookies(&b, false);
-        assert!(cookies[0].starts_with("vtrim_sid=sid;"), "{}", cookies[0]);
+        assert!(cookies[0].starts_with("yekitrim_sid=sid;"), "{}", cookies[0]);
         assert!(cookies[0].contains("HttpOnly"), "会话 cookie 必须 HttpOnly");
         assert!(!cookies[1].contains("HttpOnly"), "CSRF cookie 需 JS 可读");
         assert!(session_cookies(&b, true).iter().all(|c| c.contains("Secure")));

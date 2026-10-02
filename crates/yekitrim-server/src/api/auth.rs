@@ -349,21 +349,21 @@ async fn login_me_change_password_flow() {
         .iter()
         .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
         .collect();
-    assert_eq!(set_cookie.len(), 2, "应同时下发 vtrim_sid 与 vtrim_csrf: {set_cookie:?}");
+    assert_eq!(set_cookie.len(), 2, "应同时下发 yekitrim_sid 与 yekitrim_csrf: {set_cookie:?}");
     assert!(set_cookie[0].contains("HttpOnly"));
     let sid = set_cookie[0]
         .split(';')
         .next()
         .unwrap()
-        .trim_start_matches("vtrim_sid=")
+        .trim_start_matches("yekitrim_sid=")
         .to_string();
     let csrf = set_cookie[1]
         .split(';')
         .next()
         .unwrap()
-        .trim_start_matches("vtrim_csrf=")
+        .trim_start_matches("yekitrim_csrf=")
         .to_string();
-    let cookie = format!("vtrim_sid={sid}; vtrim_csrf={csrf}");
+    let cookie = format!("yekitrim_sid={sid}; yekitrim_csrf={csrf}");
 
     // /api/me：仍在使用初始密码
     let me = app

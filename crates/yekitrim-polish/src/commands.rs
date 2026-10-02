@@ -239,7 +239,7 @@ pub async fn cmd_llm(
 
     // 全部重做：先把 checkpoint 拿掉，之后每个窗口都会真问模型一次
     if full {
-        let cp = project_path.join(".vtrim").join("polish_events.checkpoint.json");
+        let cp = project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME).join("polish_events.checkpoint.json");
         match std::fs::remove_file(&cp) {
             Ok(()) => tracing::info!("  ♻ 全部重做：已清空断点续传缓存 {}", cp.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -323,7 +323,7 @@ pub async fn cmd_llm(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
-        Some(&project_path.join(".vtrim")),
+        Some(&project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)),
         cancel,
     ).await?;
 

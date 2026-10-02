@@ -1256,7 +1256,7 @@ pub(super) async fn polish_project_get_impl(
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
 /// 库位置就是 `yekitrim_core::path::font_dir()`：**`<数据目录>/resources/fonts/`** 一处
-/// （默认程序目录；`VTRIM_DATA_DIR` 可覆盖）。读写同一个位置，见 `fonts::ensure_dir`。
+/// （默认程序目录；`YEKITRIM_DATA_DIR` 可覆盖）。读写同一个位置，见 `fonts::ensure_dir`。
 /// **以磁盘为准**：往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
 /// `id` = 目录名（v2 布局）或文件名去扩展名（老布局）—— **配置里存的就是它**；
 /// `family` = **内部族名**（`FONT.toml` 的 `family`，唯一权威：预览 / 出片 `@font-face` / Takumi 三处都认它）。
@@ -2525,7 +2525,7 @@ async fn subtitle_save_normalizes_time_order() {
 /// 没做归属校验（`scope.rs` 只归一化 `dir` / `output_file`，而模块注释却声称覆盖了
 /// `source`）。后果不是"多读一个文件"：`source` 指向 `<数据目录>/.vtrim/llm.toml`
 /// 就能把**全局 LLM API key** 复制进自己的项目，再用 `/api/media/<自己的项目>/…` 读回来；
-/// 同样能拿到账号账本 `cloud/vtrim.db`（明文邀请码 + 全部项目真实路径）。
+/// 同样能拿到账号账本 `cloud/yekitrim.db`（明文邀请码 + 全部项目真实路径）。
 #[tokio::test]
 async fn polish_path_fields_cannot_read_outside_files() {
     let t = test_app().await;
@@ -2547,7 +2547,7 @@ async fn polish_path_fields_cannot_read_outside_files() {
     .unwrap();
     let my_own_bg = my_root.join("bg.jpg");
     std::fs::write(&my_own_bg, b"not a secret").unwrap();
-    let my_cfg = my_root.join("vtrim.toml");
+    let my_cfg = my_root.join("yekitrim.toml");
     std::fs::write(&my_cfg, "input_file = \"a.mp4\"\n").unwrap();
     let my_pid = t
         .auth
@@ -2978,7 +2978,7 @@ pub(super) async fn polish_dhampir_project(
     if !path.join("polish.toml").is_file() {
         return Err(err(StatusCode::BAD_REQUEST, "目录未初始化 polish"));
     }
-    let scratch = path.join(".vtrim");
+    let scratch = path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME);
     std::fs::create_dir_all(&scratch)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("建缓存目录失败: {e}")))?;
     let clip = path.clone();
