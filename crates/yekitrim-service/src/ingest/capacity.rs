@@ -215,7 +215,7 @@ mod tests {
     }
 
     /// 真实盘体检（人工触发，CI 不跑）：
-    /// `cargo test -p vtrim-service --lib real_volume_probe -- --ignored --nocapture`
+    /// `cargo test -p yekitrim-service --lib real_volume_probe -- --ignored --nocapture`
     ///
     /// 用来复现"明明还有几十 GB 却拒绝入库"的现场 —— 逐行打出
     /// 可用 / 总量 / 各百分比下的保留底线 / 本次 8.8 MB 的判定结果。

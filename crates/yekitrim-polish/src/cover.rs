@@ -201,7 +201,7 @@ fn cover_render_static(
 ) -> anyhow::Result<()> {
     anyhow::bail!(
         "`VTEDIT_COVER_RENDERER=takumi` 但这个二进制没编 `cover-takumi` feature。\
-         重编：cargo build -p vtrim-cli --features vtrim-polish/cover-takumi"
+         重编：cargo build -p yekitrim-cli --features yekitrim-polish/cover-takumi"
     )
 }
 
@@ -1664,7 +1664,7 @@ mod tests {
     /// 供人眼验收「中文描边 / emoji 字体 / emoji 描边」三件事（复刻 clip-14 黄金封面的形状）。
     ///
     /// 跑法：
-    /// `VTEDIT_COVER_PROBE_DIR=<目录> VTEDIT_TAKUMI_DUMP=<目录> cargo test -p vtrim-polish --lib \
+    /// `VTEDIT_COVER_PROBE_DIR=<目录> VTEDIT_TAKUMI_DUMP=<目录> cargo test -p yekitrim-polish --lib \
     ///   --features cover-takumi probe_real_cover_pixels -- --ignored --nocapture`
     #[cfg(feature = "cover-takumi")]
     #[test]
@@ -1849,7 +1849,7 @@ subtitles=\"a.srt\"
 
     /// 视觉验收用：把三种模式的真实 HTML 落到 `target/tmp-cover/`，
     /// 配一张 `_cover_frame.jpg` 就能用浏览器 1:1 看效果（预览就是这份 HTML）。
-    /// 跑法：`cargo test -p vtrim-polish --lib dump_cover_variants -- --ignored --nocapture`
+    /// 跑法：`cargo test -p yekitrim-polish --lib dump_cover_variants -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn dump_cover_variants_for_visual_check() {

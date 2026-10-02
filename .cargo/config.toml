@@ -23,8 +23,8 @@ xtask = "run -p xtask --"
 # ② 带出 libwebp-sys 的 `LNK4098` 链接器警告（默认构建没有）③ 发行产物的许可面要跟着复核。
 # 用这个别名就不必每次手打长串（**分隔符由你输入的 `--` 提供**，别名里不能再带一个 ——
 # 带了会被当成 exe 的第一个参数，实测 `cargo cover -- polish cover --help` 会变成
-# `vtrim.exe -- polish cover --help` 并报 `unexpected argument 'polish'`）：
+# `yekitrim.exe -- polish cover --help` 并报 `unexpected argument 'polish'`）：
 #
 #     cargo cover -- server                                  # 带 Takumi 通道起服务（封面设计器弹窗里可选）
 #     cargo cover -- polish cover <工程目录> --renderer takumi
-cover = "run --bin vtrim --features yekitrim-polish/cover-takumi"
+cover = "run --bin yekitrim --features yekitrim-polish/cover-takumi"

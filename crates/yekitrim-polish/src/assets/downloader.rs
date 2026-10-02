@@ -30,7 +30,7 @@ impl AssetDownloader {
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("vtrim-polish/0.1")
+            .user_agent("yekitrim-polish/0.1")
             .build()
             .unwrap_or_default();
         Self {

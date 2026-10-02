@@ -12,7 +12,7 @@
 //! 这些数字就是它的预算参考。**它不起浏览器、不依赖外部二进制，所以谁都能跑。**
 //!
 //! ```text
-//! cargo test -p vtrim-polish --test render_bench -- --ignored plumbing --nocapture
+//! cargo test -p yekitrim-polish --test render_bench -- --ignored plumbing --nocapture
 //! cargo test --release -p vtrim-polish --test render_bench -- --ignored plumbing --nocapture
 //! ```
 //! `VTEDIT_BENCH_FRAMES`（默认 300，与出片日志里的分块帧数同量级）、

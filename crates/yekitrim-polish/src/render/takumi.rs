@@ -807,7 +807,7 @@ mod tests {
     /// ① 新加的 emoji 描边环 filter 链能被消化（不 panic / 不静默丢层）；
     /// ② 描边层 + stroke-linejoin:round 的内联不会让 CSS 解析失败。
     /// 本机跑法（要真实字体库；缺中文/emoji 字体时探针 panic 提示，不算功能回归）：
-    /// `VTEDIT_TAKUMI_PROBE=1 cargo test -p vtrim-polish --lib --features cover-takumi probe_renders_ring_and_join -- --ignored --nocapture`
+    /// `VTEDIT_TAKUMI_PROBE=1 cargo test -p yekitrim-polish --lib --features cover-takumi probe_renders_ring_and_join -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn probe_renders_ring_and_join() {
@@ -858,7 +858,7 @@ mod tests {
     /// ① `font-family` 族名能否定向选中已注册字体（Takumi 的 fallback 是按注册序，族名到底认不认）；
     /// ② 联排 emoji 外面套一个带 `filter:drop-shadow` 的 inline span，能不能出描边环；
     /// ③ 带 `display:inline-block` 时环是否照旧。
-    /// 跑法：`VTEDIT_PROBE_FONT_ROOT=<字体库> VTEDIT_PROBE_OUT=<目录> cargo test -p vtrim-polish --lib \
+    /// 跑法：`VTEDIT_PROBE_FONT_ROOT=<字体库> VTEDIT_PROBE_OUT=<目录> cargo test -p yekitrim-polish --lib \
     ///   --features cover-takumi probe_title_emoji_variants -- --ignored --nocapture`
     #[cfg(feature = "cover-takumi")]
     #[test]

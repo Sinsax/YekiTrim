@@ -1328,7 +1328,7 @@ mod tests {
     ///
     /// ```bash
     /// VT_EVENTS_JSON=<项目>/output/events.json \
-    ///   cargo test -p vtrim-core --lib diagnose_merge_splits -- --ignored --nocapture
+    ///   cargo test -p yekitrim-core --lib diagnose_merge_splits -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]

@@ -5,7 +5,7 @@
 //! VTEDIT_TEST_CLIP="<片段目录>" \
 //! VTEDIT_DHAMPIR="<Dhampir>/target/release/dhampir.exe" \
 //! VTEDIT_DHAMPIR_FONT="C:/Windows/Fonts/msyh.ttc" \
-//! cargo test -p vtrim-polish --test dhampir_backend -- --ignored --nocapture
+//! cargo test -p yekitrim-polish --test dhampir_backend -- --ignored --nocapture
 //! ```
 //!
 //! # 这个测试在守什么

@@ -608,7 +608,7 @@ mod tests {
     /// 剪切收尾对新片段**真的量出一条带 key 的响度曲线**，二次收尾命中缓存一动不动。
     ///
     /// ```text
-    /// cargo test -p vtrim-service --lib warm_loudness_cache_with_real_ffmpeg -- --ignored --nocapture
+    /// cargo test -p yekitrim-service --lib warm_loudness_cache_with_real_ffmpeg -- --ignored --nocapture
     /// ```
     #[tokio::test]
     #[ignore]

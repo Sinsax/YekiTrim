@@ -549,7 +549,7 @@ mod tests {
     /// 判据：①有多少窗口文本发生变化 ②变化里有多少是"pad 让句首更完整"（pad 版更长/多出字）
     /// ③有没有"pad 版多出上一条的尾巴"（那说明余量吃进了语音，是我们要避免的）。
     ///
-    /// `VT_ASR_WAV=<wav> [VT_ASR_START=730] [VT_ASR_SECS=30] cargo test -p vtrim-core --lib diagnose_head_padding -- --ignored --nocapture`
+    /// `VT_ASR_WAV=<wav> [VT_ASR_START=730] [VT_ASR_SECS=30] cargo test -p yekitrim-core --lib diagnose_head_padding -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实模型与音频（VT_ASR_WAV）"]
     fn diagnose_head_padding() {
@@ -668,7 +668,7 @@ mod tests {
     /// 现在同时对 SenseVoice 与 qwen3 生效 —— 但它到底改了多少、改好还是改坏，必须实测。
     /// 判据参照检查 `segment_padding` 时那套：对齐命中率当客观参照。
     ///
-    /// `VT_ASR_WAV=<wav> [VT_ASR_START=700] [VT_ASR_SECS=180] cargo test -p vtrim-core --lib diagnose_hr_effect -- --ignored --nocapture`
+    /// `VT_ASR_WAV=<wav> [VT_ASR_START=700] [VT_ASR_SECS=180] cargo test -p yekitrim-core --lib diagnose_hr_effect -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实模型与音频（VT_ASR_WAV）"]
     fn diagnose_hr_effect() {
@@ -726,7 +726,7 @@ mod tests {
     /// ③hybrid 一个窗口无脑 push 一条。三条现在都改了 —— 这条测试把结果钉住。
     ///
     /// 跑真实双模型，不做任何写盘：
-    /// `VT_ASR_WAV=<wav 绝对路径> cargo test -p vtrim-core --lib diagnose_hybrid_three_questions -- --ignored --nocapture`
+    /// `VT_ASR_WAV=<wav 绝对路径> cargo test -p yekitrim-core --lib diagnose_hybrid_three_questions -- --ignored --nocapture`
     #[test]
     #[ignore = "需要真实模型与音频（VT_ASR_WAV）"]
     fn diagnose_hybrid_three_questions() {

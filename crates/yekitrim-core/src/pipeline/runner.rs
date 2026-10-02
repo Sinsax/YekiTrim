@@ -237,13 +237,13 @@ mod tests {
     /// 与热力图概况（**不写任何文件**）。用来核对"检测到底读到没读到弹幕"。
     ///
     /// ```text
-    /// VT_PROJECT_DIR=<项目目录> cargo test -p vtrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture
+    /// VT_PROJECT_DIR=<项目目录> cargo test -p yekitrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]
     fn diagnose_danmaku_resolution() {
         let Ok(dir) = std::env::var("VT_PROJECT_DIR") else {
-            eprintln!("用法: VT_PROJECT_DIR=<项目目录> cargo test -p vtrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture");
+            eprintln!("用法: VT_PROJECT_DIR=<项目目录> cargo test -p yekitrim-core --lib diagnose_danmaku_resolution -- --ignored --nocapture");
             return;
         };
         let dir = PathBuf::from(dir);

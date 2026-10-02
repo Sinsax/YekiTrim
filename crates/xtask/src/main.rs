@@ -226,7 +226,7 @@ fn collect_artifacts(path: &Path) -> io::Result<Artifacts> {
 /// Both profiles build this crate, so the scanner meets its own binary whenever it walks
 /// `target/<profile>`. That binary is a dev tool, not release payload, and it carries MARKERS
 /// verbatim as string literals -- scanning it is a guaranteed false positive. Skipping by name
-/// cannot hide a real offender: the package gate scans `target/release/vtrim.exe` explicitly.
+/// cannot hide a real offender: the package gate scans `target/release/yekitrim.exe` explicitly.
 ///
 /// An explicit single-file argument is always scanned as given; this only filters directory walks.
 fn is_self_artifact(path: &Path) -> bool {
@@ -417,7 +417,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         }
     }
 
-    let exe = root.join("target").join("release").join("vtrim.exe");
+    let exe = root.join("target").join("release").join("yekitrim.exe");
     if !exe.is_file() {
         return Err(format!("missing {}", exe.display()).into());
     }
@@ -432,7 +432,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         .status()?;
     if !scan.success() {
         return Err(
-            "the product gate rejected target/release/vtrim.exe. Refusing to package a binary \
+            "the product gate rejected target/release/yekitrim.exe. Refusing to package a binary \
              that links espeak-ng."
                 .into(),
         );
@@ -461,7 +461,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     fs::create_dir_all(package_dir.join("webui"))?;
     fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
 
-    fs::copy(&exe, package_dir.join("vtrim.exe"))?;
+    fs::copy(&exe, package_dir.join("yekitrim.exe"))?;
     copy_dir_all(&dist, &package_dir.join("webui").join("dist"))?;
 
     // ---- 默认出片通道的随身件（2026-10-01）----
@@ -596,7 +596,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     }
 
     for required in [
-        "vtrim.exe",
+        "yekitrim.exe",
         "webui/dist/index.html",
         "LICENSE",
         "THIRD-PARTY-NOTICES.md",
@@ -715,7 +715,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("==> smoke test: boot the packaged exe and verify");
-    let exe = package_dir.join("vtrim.exe");
+    let exe = package_dir.join("yekitrim.exe");
     let port = 18_000 + (SystemTime::now().duration_since(UNIX_EPOCH)?.subsec_nanos() % 1000) as u16;
 
     let mut command = Command::new(&exe);
@@ -763,7 +763,7 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // 就在包目录里（`exe_dir()` = 包目录）—— 于是两个自带字体（合计 **约 21 MB**）被解包进
     // `resources/fonts/<slug>/`，接着被原样压进 zip：**包从 37.2 MB 涨到 52.4 MB**。
     //
-    // 这是**纯重复**：同样的字节已经通过 `include_bytes!` 编在 `vtrim.exe` 里了
+    // 这是**纯重复**：同样的字节已经通过 `include_bytes!` 编在 `yekitrim.exe` 里了
     // （exe 67.5 MB 里就含它们），包再带一份没有任何意义，还与发行说明
     // 「发行包仍然只带一个空目录」自相矛盾。
     //

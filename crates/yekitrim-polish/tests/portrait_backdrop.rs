@@ -23,7 +23,7 @@
 //! ```text
 //! VTEDIT_BACKDROP_DIR="F:/para/Code/V-Trim/target/probe-backdrop" \
 //! VTEDIT_BACKDROP_OUT="F:/para/Code/V-Trim/target/tmp-vertprobe/out" \
-//! cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture
+//! cargo test -p yekitrim-polish --test portrait_backdrop -- --ignored --nocapture
 //! ```
 //! - `VTEDIT_BACKDROP_T`（秒，默认 `1.5`）= 探针时刻，要落在**主画面被挪开**的那一段里；
 //! - `VTEDIT_BACKDROP_SPAN`（秒，默认 `1.0`）= 以 T 为中心渲染多长一段（30fps → 帧数）；
