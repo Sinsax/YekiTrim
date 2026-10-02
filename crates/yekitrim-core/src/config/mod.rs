@@ -1374,7 +1374,20 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     // 同 `yekitrim-service/src/user.rs` 的专门警告，锁形态同 `service/src/db.rs`。
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = std::env::temp_dir().join(format!("yekitrim-parse-err-{}", std::process::id()));
+    // ⚠️ **目录名必须每轮唯一，不能只用 pid**：pid 会被系统回收，而本目录是**留在盘上的**
+    // ⇒ 复用同一个 pid 的下一次运行会**继承上一轮写坏的 `llm.toml`**，
+    // 于是"② 合法 TOML = 不报错"这一步会读到上一轮的残留、**偶发**报错
+    // （实测：`left: Some("llm.toml 解析失败…也坏 [[[")` / `right: None`）。
+    // 加上进程内自增序号 + 起始时清一次目录，保证每轮都是干净起点。
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "yekitrim-parse-err-{}-{}",
+        std::process::id(),
+        seq
+    ));
+    // 起点干净（同 pid 同 seq 理论上不会撞，这里是纵深防御）
+    let _ = std::fs::remove_dir_all(&dir);
     let home = dir.join(".yekitrim");
     std::fs::create_dir_all(&home).unwrap();
     let old = std::env::var_os("YEKITRIM_DATA_DIR");
@@ -1403,6 +1416,8 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
         Some(v) => std::env::set_var("YEKITRIM_DATA_DIR", v),
         None => std::env::remove_var("YEKITRIM_DATA_DIR"),
     }
+    // 收尾清干净：不清的话每跑一轮就往 temp 里留一个目录（实测攒到过 68 个）
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 }
