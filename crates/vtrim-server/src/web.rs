@@ -13,25 +13,40 @@ use axum::http::{Request, Response, StatusCode, header};
 use axum::response::IntoResponse;
 
 /// `dist` 候选目录，按优先级：
-/// 1. 仓库内 `webui/dist`（开发/源码运行）
-/// 2. 可执行文件同级 `webui/dist`（发行包）
-/// 3. 当前工作目录下 `webui/dist`
+/// 1. 可执行文件同级 `webui/dist` —— **发布包**的形状（`xtask package` 把 dist 放在 exe 旁边）
+/// 2. 可执行文件上两级 `webui/dist` —— **开发树**（`target/debug/vtrim.exe` 往上两级是仓库根）
+/// 3. 仓库内 `webui/dist`（构建期常量）—— **只当最后的保险**
+/// 4. 当前工作目录下 `webui/dist`
 ///
-/// ⚠️ 第 1 条的 `../..` 是**按 crate 深度**算的：`crates/vtrim-server` → 仓库根。
+/// ⚠️ **次序是 2026-10-02 改的：构建期常量从前排挪到了保险位**（和 `render::dhampir::find_translator`
+/// 同一个形状）。原先它排第一，而 `CARGO_MANIFEST_DIR` 是**编译期烧进去的绝对路径** ——
+/// 于是「exe 同级」那条**永远轮不到**：在开发机上把 exe 拷走、或从别的 cwd 起服务，
+/// 它照旧端出**这台机器源码树里**的 `webui/dist`，看不出任何异常（实测：
+/// `target/debug/webui/dist` 不存在，命中的是构建期那条）。
+/// 现在 exe 附近的两条排在前面，构建期那条退居保险 —— 它的价值是
+/// 「`cargo run` 时 exe 在 `target/debug/`、dist 在仓库根」这个开发常态。
+///
+/// ⚠️ 第 3 条的 `../..` 是**按 crate 深度**算的：`crates/vtrim-server` → 仓库根。
 /// 本 crate 从 `crates/vtrim-cli/src/server/` 搬出来时深度没变（都是 `crates/<crate>`），
 /// 所以路径照旧。**别把本 crate 挪到更深的目录**（如 `crates/server/vtrim-server`）——
 /// 那时 `../..` 指到 `crates/`，WebUI 会静默 404（构建与测试都不报错）。
 fn candidates() -> Vec<PathBuf> {
-    let mut out = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("webui")
-        .join("dist")];
+    let mut out: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             out.push(dir.join("webui").join("dist"));
+            if let Some(up2) = dir.parent().and_then(Path::parent) {
+                out.push(up2.join("webui").join("dist"));
+            }
         }
     }
+    out.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("webui")
+            .join("dist"),
+    );
     out.push(PathBuf::from("webui").join("dist"));
     out
 }
@@ -160,4 +175,73 @@ pub async fn webui_fallback(req: Request<Body>) -> Response<Body> {
 
     // SPA 回退：hash 路由下通常不会请求深层路径，但保留 index 回退更稳妥
     index_html(&dist)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// exe 附近那两条候选**必须排在构建期常量前面**。
+    ///
+    /// 这是 2026-10-02 修掉的那条：构建期常量（`CARGO_MANIFEST_DIR` → 仓库根）原是**第一条**，
+    /// 而它是编译期烧进去的绝对路径 ⇒ 「exe 同级」那条**永远轮不到**。症状很隐蔽 ——
+    /// 在开发机上把 exe 拷走、或从别的 cwd 起服务，它照旧端出**这台机器源码树里**的 dist，
+    /// 一切看起来都正常。判据落在**次序**上，不是"能不能找到"（后者在本机永远为真）。
+    #[test]
+    fn exe_adjacent_candidates_come_before_the_build_time_constant() {
+        let cands = candidates();
+        let build_time = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("webui")
+            .join("dist");
+        let bt = cands
+            .iter()
+            .position(|c| *c == build_time)
+            .expect("构建期那条候选必须还在（它是 `cargo run` 形态的保险）");
+
+        // 至少有一条由 current_exe() 派生、且排在构建期常量之前。
+        let exe = std::env::current_exe().expect("测试进程有自己的 exe");
+        let exe_dir = exe.parent().expect("exe 必有父目录");
+        let anchored: Vec<usize> = cands
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.starts_with(exe_dir))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !anchored.is_empty(),
+            "必须有一条候选锚在 exe 附近（否则换个 cwd/搬走 exe 就找不到 dist）：{cands:?}"
+        );
+        assert!(
+            anchored.iter().all(|i| *i < bt),
+            "exe 附近的候选（{anchored:?}）必须排在构建期常量（#{bt}）之前：{cands:?}"
+        );
+    }
+
+    /// 兜底那条（cwd 相对路径）必须在最后：它是唯一会被**运行时 cwd** 影响的候选，
+    /// 排前面会让"在哪个目录启动"决定端出哪份界面。
+    #[test]
+    fn cwd_relative_candidate_is_last() {
+        let cands = candidates();
+        assert_eq!(
+            cands.last(),
+            Some(&PathBuf::from("webui").join("dist")),
+            "cwd 相对候选必须垫底：{cands:?}"
+        );
+    }
+
+    /// dist 就绪时 `dist_dir` 必须命中一个**真含 index.html** 的候选（不是第一个候选）。
+    /// 仓库里 dist 已入库 ⇒ 这条在源码树上恒成立；缺失时跳过（发布包解压后跑不到这条）。
+    #[test]
+    fn dist_dir_picks_a_candidate_that_really_has_index_html() {
+        let cands = candidates();
+        let hit = cands.iter().find(|c| c.join("index.html").is_file());
+        let Some(hit) = hit else {
+            eprintln!("跳过：本机没有任何含 index.html 的候选（dist 未构建）");
+            return;
+        };
+        assert_eq!(&dist_dir(), hit);
+        assert!(dist_ready());
+    }
 }
