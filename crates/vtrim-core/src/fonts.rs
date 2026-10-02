@@ -288,6 +288,9 @@ pub struct FontEntry {
     #[serde(default)]
     pub emoji: bool,
     /// 程序自带 ⇒ **不可删除**（删除返回"程序自带字体不可删除"）
+    ///
+    /// ⚠️ 判据是**动态的**：元数据写了 `builtin = true` **且** id 仍在 `BUILTIN_FONTS` 清单里
+    /// 才算 —— 只认元数据会让**换下来的旧自带字体**永远标着「程序自带」且删不掉（见 `scan_dirs`）。
     #[serde(default)]
     pub builtin: bool,
     #[serde(default)]
@@ -957,6 +960,8 @@ pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
             meta.family.clone()
         };
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // ⚠️ 在 struct 字面量**之前**算：`id` 会被 `display_name` 那行 move 走，之后不能再借。
+        let builtin = meta.builtin && is_builtin_id(&id);
         out.push(FontEntry {
             id: id.clone(),
             file: path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
@@ -969,7 +974,17 @@ pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
             license: meta.license,
             scripts: meta.scripts,
             emoji: meta.emoji,
-            builtin: meta.builtin,
+            // ⚠️ **"自带"必须同时满足两件事：元数据这么写 + id 仍在当前清单里**（2026-10-02）。
+            //
+            // 只看 `meta.builtin` 会留下**孤儿**：自带字体换掉之后，用户在旧版下载到盘上的那支
+            // 元数据照样写着 `builtin = true`，于是界面永远标它「程序自带」、`remove_font` 又
+            // 永远拒删 —— 用户**删不掉一支已经不是自带的字体**（实测：霞鹜文楷 Lite 被
+            // Noto Sans SC 换下之后，13.23 MB 留在库里且删不掉）。
+            //
+            // 判据必须是**动态的**：清单是唯一权威（`is_builtin_id`），元数据只是它的副本。
+            // 副本一旦与清单脱节就以清单为准 —— 这样下次再换自带字体，旧那支会**自动降级**
+            // 成普通条目，不需要谁记得去清理。
+            builtin,
             // ⚠️ **emoji 字体强制 `is_default = false`**（字体职责分离，2026-10-02）。
             // 这是 A4 的**第三处、也是最关键的一处**拦截：`FONT.toml` 是文本文件，
             // 用户能手改成 `emoji = true` + `is_default = true`；而 `is_default` 有两个真消费者——
@@ -1592,7 +1607,10 @@ pub fn remove_font(root: &Path, id: &str) -> anyhow::Result<()> {
     }
     // ⚠️ 目录名不再等于 id（ASCII slug / 老目录都可能），所以必须走 `dir_for_id`
     if let Some(dir) = dir_for_id(root, id) {
-        if read_meta(&dir).map(|m| m.builtin).unwrap_or(false) {
+        // ⚠️ **与 `scan_dirs` 同一条判据**：元数据说自带 **且** id 还在清单里才拒删。
+        // 只看 `meta.builtin` 会让**换下来的旧自带字体永远删不掉**（界面标着「程序自带」+
+        // 这里拒删 = 用户既删不掉也看不懂为什么）—— 见 `scan_dirs` 里那段长注释。
+        if read_meta(&dir).map(|m| m.builtin).unwrap_or(false) && is_builtin_id(id) {
             anyhow::bail!("程序自带字体不可删除");
         }
         std::fs::remove_dir_all(&dir)?;
@@ -1689,10 +1707,13 @@ mod tests_v2 {
     #[test]
     fn dir_layout_scan_and_resolve() {
         let root = tmp("dir");
-        let slug = root.join("my-font");
+        // ⚠️ 用**真清单里的 id**：`builtin` 现在是"元数据 + 清单"两件事（见 `stale_builtin_flag_no_longer_blocks_removal`），
+        // 随手编一个 id 再写 `builtin: true` 已经不再等于自带 —— 那是**有意的**新语义。
+        let slug = root.join(BUILTIN_FONTS[0].id);
         std::fs::create_dir_all(&slug).unwrap();
         std::fs::write(slug.join("font.ttf"), b"not-a-real-font").unwrap();
         write_meta(&slug, &FontMeta {
+            id: BUILTIN_FONTS[0].id.into(),
             display_name: "我的字体".into(),
             family: "Real Internal Family".into(),
             builtin: true,
@@ -1703,11 +1724,11 @@ mod tests_v2 {
         // 所以判据要**挑出自己造的那一支**，不能拿 `list.len() == 1` 当"目录布局正常"的证据。
         let mine: Vec<_> = list.iter().filter(|e| e.installed).collect();
         assert_eq!(mine.len(), 1, "{list:?}");
-        assert_eq!(mine[0].id, "my-font");
+        assert_eq!(mine[0].id, BUILTIN_FONTS[0].id);
         assert_eq!(mine[0].display_name, "我的字体");
         assert_eq!(mine[0].family_internal, "Real Internal Family");
-        assert!(mine[0].builtin);
-        assert!(resolve_all(&root, "my-font").is_some());
+        assert!(mine[0].builtin, "清单里的 id + 元数据 builtin=true ⇒ 自带");
+        assert!(resolve_all(&root, BUILTIN_FONTS[0].id).is_some());
     }
 
     /// 老布局（平铺文件）继续能扫到、能解析
@@ -1743,17 +1764,43 @@ mod tests_v2 {
         assert!(err.contains("族名"), "{err}");
     }
 
-    /// 自带字体不可删除（判据在元数据的 builtin）
+    /// 换下来的**旧自带字体**必须能删：「自带」判据是**元数据 + 当前清单**两件事。
+    ///
+    /// 回归的是实测踩到的形态：自带中文那支由霞鹜文楷 Lite 换成 Noto Sans SC 之后，
+    /// 用户在旧版下载到盘上的那份 `FONT.toml` 仍写着 `builtin = true`，于是界面标它
+    /// 「程序自带」、`remove_font` 又拒删 —— **13.23 MB 卡在库里，用户删不掉也看不懂为什么**。
+    #[test]
+    fn stale_builtin_flag_no_longer_blocks_removal() {
+        let root = tmp("stale-builtin");
+        let slug = root.join("gone-font");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"x").unwrap();
+        // 元数据说它是自带的，但 id 不在清单里（= 曾经自带、现在被换下来了）
+        write_meta(&slug, &FontMeta { id: "gone-font".into(), builtin: true, ..Default::default() }).unwrap();
+        assert!(slug.exists());
+
+        // ① 列表侧：不能再标「程序自带」（否则界面把删除键置灰）
+        let e = scan_dirs(&root).into_iter().find(|e| e.id == "gone-font").expect("应当扫得到");
+        assert!(!e.builtin, "脱离清单的旧自带字体不该再标 builtin");
+
+        // ② 删除侧：必须放行
+        assert!(remove_font(&root, "gone-font").is_ok(), "脱离清单的旧自带字体应当可删");
+        assert!(!slug.exists());
+    }
+
+    /// 自带字体不可删除（判据 = 元数据的 `builtin` **且** id 在清单里）
     #[test]
     fn builtin_cannot_be_removed() {
         let root = tmp("builtin");
-        let slug = root.join("builtin-font");
+        // 同上：id 必须是**清单里的**，`builtin: true` 单独出现已不再构成"自带"
+        let id = BUILTIN_FONTS[0].id;
+        let slug = root.join(id);
         std::fs::create_dir_all(&slug).unwrap();
         std::fs::write(slug.join("font.ttf"), b"x").unwrap();
-        write_meta(&slug, &FontMeta { builtin: true, ..Default::default() }).unwrap();
-        let err = remove_font(&root, "builtin-font").unwrap_err().to_string();
+        write_meta(&slug, &FontMeta { id: id.into(), builtin: true, ..Default::default() }).unwrap();
+        let err = remove_font(&root, id).unwrap_err().to_string();
         assert!(err.contains("程序自带字体不可删除"), "{err}");
-        assert!(root.join("builtin-font").exists());
+        assert!(root.join(id).exists());
         // 非自带的能删
         let other = root.join("other");
         std::fs::create_dir_all(&other).unwrap();
