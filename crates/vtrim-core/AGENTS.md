@@ -62,11 +62,14 @@
 - **弹幕路径解析在 `pipeline/runner.rs::resolve_danmaku`**（`inject_config` 调它）：相对路径按
   **工程根（`output_dir` 的父目录）→ 视频父目录**的顺序试，两个基准都试一遍，否则
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
-- **字体库**：`vtrim_core::fonts` + `path::font_dir()`，**用户固定目录 `~/.vtrim/fonts` 优先**
-  （存在即用；写路径一律落它，`fonts::ensure_dir` 首次调用时把程序目录老库**整体复制一次**并落
-  `.migrated-from-program-dir` 记号，之后"换构建目录字体全没"不再发生）；用户目录不存在才回落
-  `<程序目录>/resources/fonts/`（老安装兼容，手工丢进去的字体继续可见）。`config init` 与 `server`
-  启动都会 `ensure_dir`。
+- **字体库**：`vtrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**。
+  ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
+  默认 = `exe_dir()`，可用 `VTRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
+  这条路径**曾经**是"用户固定目录 `~/.vtrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
+  代价是同一个库有两个可能的位置，实测 CLI 与 WebUI 各看一份、字体列表完全不同。
+  现在读=写同一个目录，`fonts::ensure_dir` 只做 `create_dir_all`。`user_home()` 只剩一个
+  用途：`fonts::legacy_user_dir_report`（**只报不删**，让用户知道旧目录还在、可以自己删）。
+  `config init` 与 `server` 启动都会 `ensure_dir`。
   **两种布局都支持**：① v2「每支一个目录」`<slug>/font.ttf|otf` + `FONT.toml`
   —— ⚠️ **`id` 是 `FONT.toml` 里的字段，不再等于目录名**（2026-10-02）：目录名与字体文件名一律是
   **ASCII slug**（`ascii_slug` = `<hint>-<sha256(id)[..12]>`），给人看的那串汉字只住 `id` / `display_name`。
@@ -82,7 +85,8 @@
   与导入/下载进来的库字体不是一回事（当年手工拷进来的系统字体常是这种）。
   ⚠️ **`.ttc`/`.otc` 导入一律拒收**（要收得先拆包）：浏览器
   `@font-face` **不认字体集合** ⇒ 收进来会“预览回退系统字体、出片却用了它”。`import_font` 还要求
-  “读得出内部族名”；`remove_font` 对 `builtin=true` 直接拒绝（“程序自带字体不可删除”）。
+  “读得出内部族名”；`remove_font` 拒删自带字体（判据 = `meta.builtin` **且** id 仍在
+  `BUILTIN_FONTS` 清单里 —— 只看元数据会让**换下来的旧自带字体永远删不掉**）。
   **自带字体（P1-f）**：`BUILTIN_FONTS` 里两支（**Noto Sans SC** + Noto Color Emoji，均 SIL OFL-1.1）——
   ⚠️ **2026-10-02 中文那支由「霞鹜文楷 Lite」换成 Noto Sans SC**（体积 13.2→10.0 MB、观感更中性；
   族名恰好就是 `Noto Sans SC`，与 `fallback_chain()` 里那项**天然对上**，不像旧的英文/中文族名对不上）。
@@ -96,7 +100,7 @@
   ⚠️ **别改成“把字体拷进项目”**：预览页面由渲染服务器（ServeDir 根 = 项目目录）端给浏览器，
   所以库里字体必须有一条自己的路由 `/vt-fonts/:name`（在 `vtrim-polish`，见其卡）。
   回归钉子：`fonts::tests`（扫描/解析/越权）+ `fonts::tests_v2`（布局/导入/自带/默认/搬家）。
-  发行包**不带字体文件**，只建空目录 + `放这里.txt`（文案写明正式位置在用户固定目录，见 README「字体」）。
+  发行包**不带字体文件**，只建空目录 + `放这里.txt`（文案就写"本目录就是字体库"，见 README「字体」）。
 - `filelock` 的两种锁别混用：异步 `with_path_lock` / `lock_path` 给 handler，
   **同步** `with_path_lock_sync` 只给同步上下文的 read-modify-write（core 管线的 `edit_toml_at` 用）
   —— ⚠️ 只在**微秒级**的文件读改写里用，别拿它包 ffmpeg / 网络请求；它**非重入**。

@@ -13,44 +13,73 @@ pub(crate) fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 用户主目录（`USERPROFILE` → `HOME`；取不到 = None）。模型与字体库的用户目录都挂它下面。
+/// **程序资产的根目录**（用户口径 2026-10-02：*所有内容围绕程序目录来，不要用户目录*）。
+///
+/// 默认 = [`exe_dir`]，即 `target/debug/`（debug 构建）或安装目录（发行版）——
+/// 字体库、ASR 模型、配置全都挂它下面。
+///
+/// ⚠️ **`VTRIM_DATA_DIR` 是唯一的口子**，留着它是为了应付一个具体的痛点：
+/// `target/debug` 与 `target/release`（以及换 `CARGO_TARGET_DIR`）各是一份程序目录，
+/// 那样 **1.1 GB 的 ASR 模型会被复制两份**。想共用就把这个变量指到同一处。
+///
+/// ⚠️ 别再退回"用户目录优先"：那条路是 2026-10 之前的设计（当年为了躲开构建目录漂移
+/// 才把资产挂到 `~/.vtrim/`），代价是**同一个东西有了两个可能的位置**，于是界面上出过
+/// "模型管理说没下载、实际转写一直在用"（`api/config.rs` 记着那次错位）。
+/// 资产只有一个位置，就没有"只查了一处"的 bug。
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("VTRIM_DATA_DIR")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(exe_dir)
+}
+
+/// [`data_dir`] 的可注入版本（单测用：不碰环境变量，edition 2024 下 `set_var` 是 unsafe）。
+pub fn data_dir_in(override_dir: Option<&Path>, exe_home: &Path) -> PathBuf {
+    match override_dir {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => exe_home.to_path_buf(),
+    }
+}
+
+/// 用户主目录（`USERPROFILE` → `HOME`；取不到 = None）。
+///
+/// ⚠️ **程序资产不再挂它下面**（2026-10-02 起，见 [`data_dir`]）。仅存两个用途：
+/// ① 识别用户目录里**遗留**的老资产（`fonts::legacy_user_dir_report`）；
+/// ② 老库巡检的报数。**别拿它当资产的落点**。
 pub fn user_home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
 }
 
+/// 程序状态目录（配置、模型、server.toml）—— 挂在 [`data_dir`] 下的 `.vtrim/`。
 pub fn vtrim_home() -> PathBuf {
-    exe_dir().join(".vtrim")
+    data_dir().join(".vtrim")
 }
 
-/// 预设贴纸文件夹路径 (程序目录下的 stickers/ 目录)
+/// 预设贴纸文件夹路径（程序目录下的 `stickers/` 目录）。
 pub fn sticker_dir() -> PathBuf {
     exe_dir().join("stickers")
 }
 
-/// 字体库路径 —— **用户固定目录优先**：`~/.vtrim/fonts` 存在就用它；否则回落程序目录的
-/// `resources/fonts/`（兼容老安装：手工丢进去的字体继续可见）。
+/// 字体库路径 —— **程序目录下**：`<数据目录>/resources/fonts/`。
 ///
-/// ⚠️ 为什么要固定目录：字体这类程序级资产若只挂在 exe 旁，`target/debug` 与
-/// `target/cl/debug`（换 `CARGO_TARGET_DIR`）就各有一份字体库 —— 下载过一次、
-/// 换个构建目录就全部「未下载」（2026-10 实际发生过）。与 ASR 模型
-/// （`asr::local::resolve_model_dir`）同一套思路；写路径一律落用户目录
-/// （[`crate::fonts::ensure_dir`]，含老库的一次性搬家）。
+/// ⚠️ **2026-10-02 由"用户固定目录优先"改成程序目录**（用户口径：*不要用户目录*）。
+/// 历史：这条路径曾经优先取 `~/.vtrim/fonts`（为了躲开 `target/debug` 与
+/// `target/cl/debug` 各存一份的问题），再用 `resources/fonts/` 当老安装的回落态。
+/// 代价是**同一个库有两个可能的位置**，而"用户目录那份"与"程序目录那份"内容一旦分叉，
+/// CLI 与 WebUI 就各看各的（实测：CLI 报 `target/debug/resources/fonts`、
+/// 网页用 `~/.vtrim/fonts`，两边字体列表完全不同）。
+///
+/// 现在只有一处：`<数据目录>/resources/fonts/`。
 /// 相关读写见 [`crate::fonts`]。
 pub fn font_dir() -> PathBuf {
-    font_dir_in(user_home().as_deref(), &exe_dir())
+    font_dir_at(&data_dir())
 }
 
-/// [`font_dir`] 的可注入版本（单测用，不碰环境变量与真实 exe 路径）。
-pub fn font_dir_in(user_home: Option<&Path>, exe_home: &Path) -> PathBuf {
-    if let Some(home) = user_home {
-        let user = home.join(".vtrim").join("fonts");
-        if user.is_dir() {
-            return user;
-        }
-    }
-    exe_home.join("resources").join("fonts")
+/// [`font_dir`] 的可注入版本（单测用）。
+pub fn font_dir_at(data_home: &Path) -> PathBuf {
+    data_home.join("resources").join("fonts")
 }
 
 /// 给"人要看的/前端要回传的"路径用的显示形式：去掉 Windows 的 `\\?\` 逐字前缀
@@ -82,21 +111,24 @@ mod tests {
         assert_eq!(display(Path::new("/tmp/a")), "/tmp/a");
     }
 
+    /// **资产只有一个位置**：默认在程序目录，`VTRIM_DATA_DIR` 是唯一的口子。
+    ///
+    /// 回归的是 2026-10-02 的口径切换（*所有内容围绕程序目录来，不要用户目录*）：
+    /// 字体库曾经优先取 `~/.vtrim/fonts`，导致 CLI 与 WebUI 各看一份库（实测两边
+    /// 列出的字体完全不同）。现在 `font_dir` 里**不再有任何用户目录**参与。
     #[test]
-    fn font_dir_prefers_user_dir_but_falls_back_to_exe_dir() {
+    fn font_dir_lives_under_data_dir_no_user_home_involved() {
         let exe = Path::new("/install");
-        // 用户目录不存在 → 程序目录（老安装继续可见）
-        assert_eq!(
-            font_dir_in(Some(Path::new("/no-such-home")), exe),
-            Path::new("/install/resources/fonts")
-        );
-        // 取不到主目录 → 程序目录
-        assert_eq!(font_dir_in(None, exe), Path::new("/install/resources/fonts"));
-        // 用户目录存在 → 固定目录（不再随构建/安装目录漂移）
-        let home = std::env::temp_dir().join(format!("vtrim-fontdir-{}", std::process::id()));
-        let user = home.join(".vtrim").join("fonts");
-        std::fs::create_dir_all(&user).unwrap();
-        assert_eq!(font_dir_in(Some(&home), exe), user);
-        std::fs::remove_dir_all(&home).ok();
+        // 没有覆盖 ⇒ 程序目录
+        assert_eq!(data_dir_in(None, exe), Path::new("/install"));
+        assert_eq!(font_dir_at(&data_dir_in(None, exe)), Path::new("/install/resources/fonts"));
+        // 空串等同没设（环境变量为空时别把资产写到根目录去）
+        assert_eq!(data_dir_in(Some(Path::new("")), exe), Path::new("/install"));
+        // 显式覆盖 ⇒ 用覆盖值（debug/release 共用一份 1.1 GB 模型靠它）
+        let shared = Path::new("/shared/vtrim-data");
+        assert_eq!(data_dir_in(Some(shared), exe), shared);
+        assert_eq!(font_dir_at(shared), Path::new("/shared/vtrim-data/resources/fonts"));
+        // ⚠️ 判据是"路径里没有用户目录" —— 主目录取不到/取得到都不该改变结果
+        assert!(!font_dir_at(&data_dir_in(None, exe)).to_string_lossy().contains(".vtrim/fonts"));
     }
 }
