@@ -2,7 +2,8 @@
 //!
 //! 入口：`model_names`、`model_install`、`download_all`、`download_vad_model`、`ensure_models`；
 //! 另有两个**通用**下载件给别处复用：`fetch_url_to` / `fetch_text_to`（自带字体下载用，见 `fonts::BUILTIN_FONTS`）。
-//! 边界：模型落在 `<程序目录>/.vtrim/models/`（debug / release 各一份，互不相干）；许可上别把 espeak-ng 等 GPL 组件带回来 —— 见 `crates/vtrim-core/AGENTS.md`
+//! 边界：模型落在 `<数据目录>/.vtrim/models/`（默认 = 程序目录，`VTRIM_DATA_DIR` 可改指；debug / release
+//! 默认各一份，互不相干）；许可上别把 espeak-ng 等 GPL 组件带回来 —— 见 `crates/vtrim-core/AGENTS.md`
 
 use std::path::{Path, PathBuf};
 
@@ -396,12 +397,13 @@ fn required_models<'a>(asr: &AsrConfig, model: &'a str) -> Vec<&'a str> {
 
 /// 确保**运行时真正会读的那一份**模型目录存在且完整。
 ///
-/// ⚠️ 目录一律走 `model_install`（= 运行时的 `asr::resolve_model_dir`），
-/// **不要**用 `vtrim_home()`。曾经这里直接拼程序目录，而运行时优先用户目录，后果有两个：
+/// ⚠️ 目录一律走 `model_install`（= 运行时的 `asr::resolve_model_dir`），**别自己拼目录**。
+/// 这条纪律来自一次真实事故：当年这里直接拼程序目录，而运行时优先用户目录，后果有两个 ——
 ///   ① 同一份模型被下载两次（程序目录那份永远不会被读）；
 ///   ② 同音纠错文件（`lexicon.txt` + `replace.fst`）下到程序目录，而识别器读的是用户目录
 ///      那份 → **同音纠错从未生效**（`create_recognizer` 只看到"没有这两个文件"）。
-/// 这正是上面 `model_install` 注释里要求"与运行时同一套查找顺序"的那条。
+/// 2026-10-02 资产收回程序目录之后，两边**恰好**落在同一个地方了，但这条纪律**照样成立**：
+/// `resolve_model_dir` 还多认一层 `local_model_dir`（用户可指向自备模型），自己拼就会漏掉它。
 async fn ensure_one_model(asr: &AsrConfig, model: &str) -> Result<()> {
     if model_marker(model).is_none() {
         anyhow::bail!(

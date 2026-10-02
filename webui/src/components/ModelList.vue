@@ -7,7 +7,7 @@
           <span v-if="m.source_label" class="chip" :class="m.installed ? 'g' : 'n'">{{ m.source_label }}</span>
         </div>
         <div class="muted small">{{ m.size_label }} · {{ m.note }}</div>
-        <!-- 实际路径：判"装没装"跟运行时同一套查找顺序（配置 → 用户目录 → 程序目录），
+        <!-- 实际路径：判"装没装"跟运行时同一套查找顺序（local_model_dir → 数据目录），
              所以这里要如实显示**用到的那一份**在哪，不然会出现"界面说没下、其实在用"的错位 -->
         <div class="muted small mono model-path" :title="m.dir">{{ m.dir }}</div>
       </div>

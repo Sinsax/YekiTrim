@@ -230,7 +230,7 @@ pub fn create_qwen3_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
         apply_homophone_replacer(&mut config, &sv_dir, "Qwen3");
     }
     OfflineRecognizer::create(&config).with_context(|| {
-        // 报清楚"在哪找的"：用户目录/程序目录各有一份时，看日志就知道用的是哪一份
+        // 报清楚"在哪找的"：`local_model_dir` 指到别处时，看日志就知道用的是哪一份
         format!(
             "创建 Qwen3-ASR recognizer 失败（模型目录: {}）——hybrid 需要 qwen3-asr，\
              在设置页「模型管理」里下载，或跑 vtrim download",
@@ -1098,8 +1098,9 @@ mod tests {
         }
     }
 
-    /// 「模型在哪」的唯一真源：配置目录 → 用户目录 → 程序目录，用户目录优先于程序目录
-    /// （界面曾只看程序目录，于是"模型管理说没下载、转写其实一直在用用户目录那份"）。
+    /// 「模型在哪」的唯一真源：`local_model_dir`（配置）→ `<数据目录>/.vtrim/models`（程序目录）。
+    /// ⚠️ 界面与转写**必须**都走它 —— 曾经界面只看程序目录、转写优先用户目录，
+    /// 于是"模型管理说没下载、转写其实一直在用另一份"（那条并列在 2026-10-02 收掉了）。
     #[test]
     fn resolve_model_dir_order_and_source() {
         use super::{resolve_model_dir_in, ModelDirSource};
