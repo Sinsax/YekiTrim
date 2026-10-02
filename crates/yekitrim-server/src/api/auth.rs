@@ -99,7 +99,7 @@ pub(super) async fn auth_register(
 ) -> Response {
     // 总闸：关着就直接 403（不透露有没有可用的码）
     if !yekitrim_core::config::load_global_config().auth.registration_enabled {
-        return err(StatusCode::FORBIDDEN, "注册未开放（管理员可用 vtrim user invite 生成邀请码并开启）").into_response();
+        return err(StatusCode::FORBIDDEN, "注册未开放（管理员可用 yekitrim user invite 生成邀请码并开启）").into_response();
     }
     let username = body.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let password = body.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();

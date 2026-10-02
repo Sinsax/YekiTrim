@@ -28,7 +28,7 @@
 //             正文里的 `index.html:NNN` / `templates/index.html` 都指这个文件（行号对着本仓的它）
 //
 // 规格（行为对照表 / DROP·CLAMP·NOTE 三级记录 / 怎么加一个新事件类型）见
-// `docs/vtrim-integration.md`；曲线那部分的守卫在 `scripts/check-vtrim-translator.mjs`。
+// `docs/vtrim-integration.md`；曲线那部分的守卫在 `scripts/check-yekitrim-translator.mjs`。
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -1052,7 +1052,7 @@ export const shakeOffsetAt = (localSec, off) => {
 /// 出片那份 `getShake` 的窗口长度是**写死的 0.2 秒**。
 export const SHAKE_SECONDS = 0.2;
 
-// **导出给守卫**（`scripts/check-vtrim-translator.mjs` 的 `checkMappings`）：它拿一份**合成工程**
+// **导出给守卫**（`scripts/check-yekitrim-translator.mjs` 的 `checkMappings`）：它拿一份**合成工程**
 // 过一遍 `translate`，断言"某一档真的转出来了"。只有 `isEntryPoint` 那道门保证直接跑仍然是 CLI。
 export function translate(config, clipDir, outPath, options = {}) {
   /// **出片那条腿传 `true`**：时间线保持整条（屏蔽区间留给出片尾部的整段重编码去剪，
@@ -3841,7 +3841,7 @@ export function translate(config, clipDir, outPath, options = {}) {
 //
 // **只有被当成入口跑时才执行这一段。**
 //
-// 上面的纯函数是要被 `scripts/check-vtrim-translator.mjs` import 来测的 ——
+// 上面的纯函数是要被 `scripts/check-yekitrim-translator.mjs` import 来测的 ——
 // 不设这个门的话，一 import 就会 attempt 去读 `process.argv[2]` 的工程目录、
 // 然后退 2。这是"可测"与"可跑"之间的最小代价。
 

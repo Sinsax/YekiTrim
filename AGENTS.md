@@ -188,8 +188,8 @@ npm --prefix webui run build
 node webui/scripts/check-overlay.mjs           # 覆盖层色档（另有 5 个 check-*.mjs，见 webui/AGENTS.md）
 
 # 改了转译器（tools/polish-to-dhampir.mjs）之后：曲线守卫 + 变异自证（见 tools/AGENTS.md）
-node scripts/check-vtrim-translator.mjs
-node scripts/check-vtrim-translator.mjs --mutate
+node scripts/check-yekitrim-translator.mjs
+node scripts/check-yekitrim-translator.mjs --mutate
 
 cargo run -- status                            # 查看当前进度
 ```

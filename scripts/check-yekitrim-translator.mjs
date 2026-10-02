@@ -23,8 +23,8 @@
 //
 // # 两种跑法
 //
-//     node scripts/check-vtrim-translator.mjs            # 逐值检查（项数见运行输出）
-//     node scripts/check-vtrim-translator.mjs --mutate   # 全部变异必须**打红**（自证不是空转）
+//     node scripts/check-yekitrim-translator.mjs            # 逐值检查（项数见运行输出）
+//     node scripts/check-yekitrim-translator.mjs --mutate   # 全部变异必须**打红**（自证不是空转）
 //
 // ⚠️ **--mutate 那一趟必须真改源码文本，并先断言替换确实命中了**：
 //    我第一轮跑变异时"没红"的 4 条是**变异台写错了** —— 把函数提到顶层时缩进从 4 空格

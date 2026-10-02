@@ -183,7 +183,7 @@ pub fn ensure_admin_bootstrap(explicit: Option<String>) -> Result<Bootstrap> {
     let must_change = match db.find_user("admin")? {
         Some(u) => u.must_change_password,
         None => {
-            tracing::warn!("账号账本里没有 admin（可能只建了普通账号）：请用 `vtrim user init-admin` 或管理页确认");
+            tracing::warn!("账号账本里没有 admin（可能只建了普通账号）：请用 `yekitrim user init-admin` 或管理页确认");
             false
         }
     };
@@ -207,7 +207,7 @@ pub fn cmd_list() -> Result<()> {
     let db = Db::open_default()?;
     let users = db.list_users()?;
     if users.is_empty() {
-        println!("暂无账号。首次部署请运行: vtrim user init-admin");
+        println!("暂无账号。首次部署请运行: yekitrim user init-admin");
         return Ok(());
     }
     println!("{:<16} {:<6} {:<8} {:<10} {:<18} {}", "用户名", "角色", "状态", "配额", "创建时间", "最后登录");
@@ -304,7 +304,7 @@ pub fn cmd_check(username: &str, source: PasswordSource) -> Result<()> {
 pub fn cmd_init_admin(source: PasswordSource) -> Result<()> {
     let db = Db::open_default()?;
     if db.count_users()? > 0 {
-        println!("账号账本已存在，未做任何改动（如需重置管理员密码: vtrim user reset-admin-password）");
+        println!("账号账本已存在，未做任何改动（如需重置管理员密码: yekitrim user reset-admin-password）");
         return Ok(());
     }
     let (password, generated) = match source {
@@ -335,7 +335,7 @@ pub fn cmd_reset_admin_password(source: PasswordSource) -> Result<()> {
     let db = Db::open_default()?;
     let user = db
         .find_user("admin")?
-        .context("账号账本里没有 admin（先运行 vtrim user init-admin）")?;
+        .context("账号账本里没有 admin（先运行 yekitrim user init-admin）")?;
     if user.role != "admin" {
         bail!("账号 admin 不是管理员角色");
     }
@@ -377,7 +377,7 @@ pub fn cmd_info() -> Result<()> {
     println!("账本文件:     {}", db::db_path().display());
     println!("初始密码文件: {}", initial_password_path().display());
     if !Path::new(&dir).exists() {
-        println!("（尚未创建；运行 `vtrim user init-admin` 或启动 `vtrim server` 时生成）");
+        println!("（尚未创建；运行 `yekitrim user init-admin` 或启动 `yekitrim server` 时生成）");
     }
     Ok(())
 }

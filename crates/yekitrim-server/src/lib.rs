@@ -253,7 +253,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     } else {
         info!("账号账本: {} 个账号（{}）", bootstrap.accounts, auth.data_dir().display());
         if bootstrap.must_change_password {
-            tracing::warn!("⚠ 管理员仍在使用初始密码，请尽快登录并修改（或 `vtrim user passwd admin`）");
+            tracing::warn!("⚠ 管理员仍在使用初始密码，请尽快登录并修改（或 `yekitrim user passwd admin`）");
         }
     }
     // 对外监听 + 仍用初始密码 = 把密码写在服务器上 → 拒绝启动（§3.5.4）
@@ -277,7 +277,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     if must_refuse_initial_password(is_loopback, args.allow_remote, bootstrap.must_change_password) {
         anyhow::bail!(
             "拒绝在 {addr} 上对外监听：管理员仍在使用初始密码（初始密码会出现在日志与 {} 里，等同把密码写在服务器上）。\n\
-             请先修改密码：vtrim user passwd admin（非交互：--stdin / --password-file），\
+             请先修改密码：yekitrim user passwd admin（非交互：--stdin / --password-file），\
              或在部署时用 --admin-password-file 显式设定初始密码。",
             yekitrim_service::initial_password_path().display()
         );

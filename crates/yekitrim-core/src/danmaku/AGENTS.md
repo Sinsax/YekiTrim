@@ -44,7 +44,7 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
   39 字节那条在屏幕中段 728px 处没了）。录播姬 XML 给的窗口是固定 8 秒，中文弹幕几乎全部命中。
   调用点：精修 `cmd_parse`（`assign_danmaku_tracks`）与 `process`（`normalize_danmaku_windows`，
   老工程自愈）；底座那条腿是 `tools/polish-to-dhampir.mjs::danmakuExitMs`（同一规则的另一份实现，
-  由 `scripts/check-vtrim-translator.mjs` 对拍常数）。
+  由 `scripts/check-yekitrim-translator.mjs` 对拍常数）。
 - ⚠️ **窗口比较带 1 ns 容差，别写回严格相等**：`serde_json` 读 f64 会**差 1 ulp**
   （`"10.700000000000001".parse::<f64>()` 与 `serde_json::from_str::<f64>()` 的位不同），
   严格相等会让每次 `process` 都重写一遍 `data/danmaku.json` —— 内容不变、mtime 一直翻新，

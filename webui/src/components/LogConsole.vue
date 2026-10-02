@@ -33,10 +33,10 @@
     </div>
 
     <p class="hint mt-6">
-      服务端日志同时写到 <span class="mono">&lt;data_dir&gt;/logs/vtrim-YYYYMMDD.log</span>
-      （可用 <span class="mono">vtrim doctor</span> 查路径）。面板默认显示「信息」以上；
+      服务端日志同时写到 <span class="mono">&lt;data_dir&gt;/logs/yekitrim-YYYYMMDD.log</span>
+      （可用 <span class="mono">yekitrim doctor</span> 查路径）。面板默认显示「信息」以上；
       想看逐条访问日志点「调试」——高频接口（视频 / 轮询）的成功记录要
-      <span class="mono">RUST_LOG=vtrim=debug</span> 启动服务端才会有。
+      <span class="mono">RUST_LOG=yekitrim=debug</span> 启动服务端才会有。
     </p>
   </div>
 </template>

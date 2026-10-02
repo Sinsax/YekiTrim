@@ -72,7 +72,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
         if writable { "✓" } else { "✗" }
     );
     if !writable {
-        println!("  ⚠ 身份数据不可缺省：目录不可写时 `vtrim server` 会拒绝启动（用 --data-dir 指到可写路径）");
+        println!("  ⚠ 身份数据不可缺省：目录不可写时 `yekitrim server` 会拒绝启动（用 --data-dir 指到可写路径）");
     }
     if !db_path.exists() {
         println!("  账号账本: 尚未初始化（首次 `yekitrim server` 启动会自动创建 admin）");
@@ -107,7 +107,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
                 match admin_must_change {
                     Some(true) => println!("  初始密码: 仍在使用 ⚠（对外监听会被拒绝启动）"),
                     Some(false) => println!("  初始密码: 已修改 ✓"),
-                    None => println!("  初始密码: 没有 admin 账号 ⚠（`vtrim user init-admin`）"),
+                    None => println!("  初始密码: 没有 admin 账号 ⚠（`yekitrim user init-admin`）"),
                 }
                 println!(
                     "  会话: {} 条未过期",
@@ -142,7 +142,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     match latest_log {
         Some(name) => println!("  运行日志: {}（最新 {name}）", log_dir.display()),
         None => println!(
-            "  运行日志: {}（暂无；`vtrim server` 运行时会按天写在这里）",
+            "  运行日志: {}（暂无；`yekitrim server` 运行时会按天写在这里）",
             log_dir.display()
         ),
     }
@@ -191,7 +191,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     line("建议");
     let mut advice: Vec<String> = Vec::new();
     if admin_must_change == Some(true) {
-        advice.push("仍在使用初始密码 → `vtrim user passwd admin`（非交互：--stdin / --password-file）".into());
+        advice.push("仍在使用初始密码 → `yekitrim user passwd admin`（非交互：--stdin / --password-file）".into());
     }
     if pw_file.exists() {
         advice.push(format!(
@@ -225,7 +225,7 @@ fn print_lock(info: &LockInfo) {
         println!("  {} → 进程仍在运行（服务在跑，第二个实例会被拒绝）", lock_label(info));
     } else {
         println!(
-            "  {} → 进程已不存在（崩溃残留；下次启动会自动接管，或 `vtrim server --force`）",
+            "  {} → 进程已不存在（崩溃残留；下次启动会自动接管，或 `yekitrim server --force`）",
             lock_label(info)
         );
     }

@@ -233,7 +233,7 @@ pub fn create_qwen3_recognizer(cfg: &AsrConfig) -> Result<OfflineRecognizer> {
         // 报清楚"在哪找的"：`local_model_dir` 指到别处时，看日志就知道用的是哪一份
         format!(
             "创建 Qwen3-ASR recognizer 失败（模型目录: {}）——hybrid 需要 qwen3-asr，\
-             在设置页「模型管理」里下载，或跑 vtrim download",
+             在设置页「模型管理」里下载，或跑 yekitrim download",
             mdir.display()
         )
     })

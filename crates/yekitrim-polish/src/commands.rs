@@ -81,8 +81,8 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
     tracing::info!("");
     tracing::info!("Next steps:");
     tracing::info!("  1. Edit .yekitrim/llm.toml — add your LLM API key");
-    tracing::info!("  2. Run: vtrim polish (full pipeline)");
-    tracing::info!("  3. Run: vtrim polish --preview  (or vtrim polish -i <dir>)");
+    tracing::info!("  2. Run: yekitrim polish (full pipeline)");
+    tracing::info!("  3. Run: yekitrim polish --preview  (or yekitrim polish -i <dir>)");
     Ok(())
 }
 
@@ -253,7 +253,7 @@ pub async fn cmd_llm(
     // 读取解析数据
     let mut subtitles: Vec<parse::srt::Subtitle> = {
         let p = data_dir.join("subtitles.json");
-        if !p.exists() { anyhow::bail!("Run 'vtrim polish init' first — missing {}", p.display()); }
+        if !p.exists() { anyhow::bail!("Run 'yekitrim polish init' first — missing {}", p.display()); }
         serde_json::from_str(&std::fs::read_to_string(&p)?)?
     };
 
@@ -482,7 +482,7 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
     let config = project::load_project(project_path)?;
     let data_dir = project_path.join("data");
     if !data_dir.join("subtitles.json").exists() {
-        tracing::info!("  ⚠ No parsed data found. Run `vtrim polish init` first.");
+        tracing::info!("  ⚠ No parsed data found. Run `yekitrim polish init` first.");
     }
 
     let show_video = mode.is_empty() || mode == "video";
@@ -1160,7 +1160,7 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
         );
     }
     if installed == 0 {
-        tracing::info!("  💡 一支都没有？跑 `vtrim fonts install` 装上自带字体（已内嵌在程序里，不需要联网）");
+        tracing::info!("  💡 一支都没有？跑 `yekitrim fonts install` 装上自带字体（已内嵌在程序里，不需要联网）");
     }
     Ok(())
 }

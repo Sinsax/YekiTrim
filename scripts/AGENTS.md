@@ -34,7 +34,7 @@
   `coverage_roots`（`crates/*/src`、`webui/src`、`scripts` …）下**每个源文件都必须落在某张卡的目录内**，
   否则报"无主文件"；**任何没登记进注册表的 `AGENTS.md` 也算失败**（卡片会漂移）。
   用法：`python3 scripts/check_module_map.py [-v|--json]`。
-- **`check-vtrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），三段：
+- **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），三段：
   **339 项曲线 + 13 项颜色 + 40 项映射**。
   曲线那 339 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
   `handheldSway` 的 2×4 正弦与"线性于 amp"、`stickerStateAt` 的四段相位与那条**够不到的**淡出、
@@ -48,7 +48,7 @@
   每处变异先断言"替换命中一次"（少了这一条，没匹配上的变异体会原样跑绿、看着像"守卫抓不住"）。
   ⚠️ **新加的检查要抽成函数并在 `mutate` 里一起调** —— 只写在顶层的检查变异台根本不会跑，
   于是那条变异"没被打红"（颜色那条第一版就是这么漏的）。
-  用法：`node scripts/check-vtrim-translator.mjs [--mutate]`。改了 `tools/` 必须跑它。
+  用法：`node scripts/check-yekitrim-translator.mjs [--mutate]`。改了 `tools/` 必须跑它。
 - **`check-effect-registry.mjs`** —— **效果词汇表门禁**（2026-10-01，见 `docs/plan/effect-pipeline-unification.md`）：
   权威是 **`spec/effects.json`**（**11** 个事件类型 × 每通道实现锚点 + 数值 + 生命周期）。两向判据：
   **登记的锚点必须真的存在**、**那些文件里不许有没人认领的实现**（`handlers.*` / `get*` / `case` / `fx.rs` 两张表），
@@ -84,7 +84,7 @@
   ⚠️ 2026-10-01（B5 文字阴影接入）后基线是 **1 DROP（只剩 `cover`）/ 0 CLAMP** —— 少了的那条
   是**真修好了**（转译器按底座契约写阴影四键），不是报告被削弱。
   用法：`node scripts/check-dhampir-drop-list.mjs [--self-test]`（改了转译器/报告措辞就看它）。
-- **`vtrim-compare.mjs`** —— **两条出片通道的逐步对拍**（node，零依赖 ESM；本模块里最大的一件）：
+- **`yekitrim-compare.mjs`** —— **两条出片通道的逐步对拍**（node，零依赖 ESM；本模块里最大的一件）：
   一条命令跑完整条回路（**取固定样本 → 插测试事件 → 两边出片 → 先算映射再抽帧 → 逐窗口度量 → 判据**），
   对每个窗口量三样：**像素差**、**高频比**（拉普拉斯能量，把"糊"和"锯齿"分开）、
   **最佳纵向位移**（非 0 基本就是"位置不对"而不是"效果不对"）。
@@ -105,7 +105,7 @@
     超了 `exit 1` 且**报告照留**。
   - **自检扩到 28 项**（`--self-test`）：映射 / 插事件 / 屏蔽带 4 项 / 阈值判定 5 项
     （含"超阈值必须报"的三条 —— 判据写错的表现是"永远绿"，比报错难发现）。
-  用法：`node scripts/vtrim-compare.mjs --clip <片段目录|--fixture demo> [--events <json>]
+  用法：`node scripts/yekitrim-compare.mjs --clip <片段目录|--fixture demo> [--events <json>]
   [--out 目录] [--vtrim <exe>] [--dhampir <exe>] [--translator <路径>] [--clean] [--self-test]`；
   本机跑它的实操包装在 `.workbuddy/run-parity.mjs`（它只管"带 numpy 的 python 在哪、exe 在哪"；
   `demo|portrait|real|all`，`metric <样本>` 用 node 读报告）。
@@ -174,9 +174,9 @@
 
 - ⚠️ **跑法用 `python3`**：本机（以及不少 Windows 环境）`python` **不在 PATH**（文档里的旧写法
   `python scripts/...` 跑不起来）。
-- ⚠️ **本目录不只有 python**：`check-vtrim-translator.mjs` 是 **node**（零依赖 ESM）。
+- ⚠️ **本目录不只有 python**：`check-yekitrim-translator.mjs` 是 **node**（零依赖 ESM）。
   它的"被测对象"是 `tools/polish-to-dhampir.mjs`，两者是一起搬过来的 ——
-  **改了转译器就要跑它**（`node scripts/check-vtrim-translator.mjs [--mutate]`）；
+  **改了转译器就要跑它**（`node scripts/check-yekitrim-translator.mjs [--mutate]`）；
   两条 python 门禁**看不到**那几条曲线，别以为跑完它们就没事了。
 - ⚠️ **为什么不把它们放进 `crates/xtask`**：`xtask` **刻意不依赖 python / PowerShell**（整个 crate 只用
   std + `sha2` + `zip`，为的就是把"先跑个包装脚本"那一层去掉）。所以仓库任务**不许往 xtask 里塞脚本调用**，

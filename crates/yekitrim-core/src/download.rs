@@ -134,7 +134,7 @@ pub async fn download_all(target_dir: Option<&Path>) -> Result<()> {
 
     tracing::info!("下载完成！");
     tracing::info!("模型目录: {}", home.join("models").display());
-    tracing::info!("运行 `vtrim transcribe` 开始语音识别");
+    tracing::info!("运行 `yekitrim transcribe` 开始语音识别");
 
     Ok(())
 }

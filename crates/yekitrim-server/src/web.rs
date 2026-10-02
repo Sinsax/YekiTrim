@@ -112,7 +112,7 @@ fn build_hint_page() -> Response<Body> {
 <pre><code>cd webui
 npm install
 npm run build</code></pre>
-<p>发行包请把 <code>webui/dist</code> 放到可执行文件同级目录；源码运行时直接在仓库根目录执行 <code>vtrim server</code> 即可。</p>
+<p>发行包请把 <code>webui/dist</code> 放到可执行文件同级目录；源码运行时直接在仓库根目录执行 <code>yekitrim server</code> 即可。</p>
 </body></html>"#
     );
     Response::builder()

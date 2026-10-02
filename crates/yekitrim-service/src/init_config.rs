@@ -9,7 +9,7 @@ pub fn init_project(
     cfg_path: &Path,
 ) -> anyhow::Result<()> {
     if input.is_dir() {
-        anyhow::bail!("'{}' 是目录路径。vtrim init 需要视频文件路径", input.display());
+        anyhow::bail!("'{}' 是目录路径。yekitrim init 需要视频文件路径", input.display());
     }
     let valid_ext = ["mp4", "mkv", "mov", "avi", "flv", "webm", "mts", "m2ts"];
     let ext = input.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();

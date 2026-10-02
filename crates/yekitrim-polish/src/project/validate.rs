@@ -59,7 +59,7 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
     let config_path = project_path.join(filename);
     if !config_path.exists() {
         anyhow::bail!(
-            "{} not found at {}. Run 'vtrim polish init' first.",
+            "{} not found at {}. Run 'yekitrim polish init' first.",
             filename,
             config_path.display()
         );
