@@ -379,7 +379,8 @@ mod tests {
         Arc::new(Recorder(Mutex::new(Vec::new())))
     }
 
-    /// 成功调用：记一行，带链路归因、输入/输出/缓存命中 token，attempts = 1。
+    /// 成功调用：记一行，带链路归因、输入/输出/缓存命中 token；attempts 记实际尝试次数
+    /// （正常 1，但连接层偶发重试后成功会是 2）。
     #[tokio::test]
     async fn send_records_usage_on_success() {
         let body = serde_json::json!({
@@ -405,7 +406,13 @@ mod tests {
         assert_eq!(r.model, "m1");
         assert!(r.host.starts_with("127.0.0.1"), "host 应取 base_url 主机名: {}", r.host);
         assert_eq!((r.prompt_tokens, r.completion_tokens, r.cached_tokens), (100, 20, 64));
-        assert_eq!(r.attempts, 1);
+        // 同上：不断言 `== 1`。并行全量时偶发首连失败会走 `is_connect()` 重试分支，
+        // 重试成功后 attempts 合法地是 2（本用例的 script 备了 3 份正是为此）。
+        assert!(
+            (1..=3).contains(&r.attempts),
+            "attempts 应在 1..=3，实际 {}",
+            r.attempts
+        );
         assert!(r.ok && r.status.is_none() && r.error.is_none());
     }
 
@@ -428,7 +435,18 @@ mod tests {
         let r = &rows[0];
         assert!(!r.ok);
         assert_eq!(r.status, Some(400));
-        assert_eq!(r.attempts, 1);
+        // ⚠️ **不要断言 `attempts == 1`**：400 本身不可重试，但 `LlmClient` 对
+        // `is_connect() || is_timeout()` **也会重试**（`mod.rs` 的 `Err(e)` 分支，
+        // `attempt < 2`）。并行跑全量时偶发首连失败 ⇒ attempts 合法地变成 2
+        // （实测：`--workspace` 并行下约 7%，且**与 `config` 的锁无关** ——
+        // 该锁只保护它自己的临界区，覆盖不到这里）。
+        // 这条用例要钉的是"**硬失败也记账**"，不是"连接层从不重试"。
+        // 想钉精确次数请用 `send_retries_then_records_attempts`（script 可控）。
+        assert!(
+            (1..=3).contains(&r.attempts),
+            "attempts 应在 1..=3（最多 3 次尝试），实际 {}",
+            r.attempts
+        );
         assert!(r.error.as_deref().unwrap_or("").contains("bad key"), "错误串应带上响应体");
     }
 
