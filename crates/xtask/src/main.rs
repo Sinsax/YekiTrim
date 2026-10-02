@@ -402,7 +402,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         .out_dir
         .clone()
         .unwrap_or_else(|| root.join("release"));
-    let package_name = format!("vtrim-v{version}-win-x64");
+    let package_name = format!("yekitrim-v{version}-win-x64");
     let package_dir = out_dir.join(&package_name);
     let zip_path = out_dir.join(format!("{package_name}.zip"));
 
@@ -561,8 +561,8 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             "\n",
             "自带字体（Noto Sans SC + Noto Color Emoji，均 OFL-1.1，可商用/可嵌入/可再分发）\n",
             "已内嵌在程序里，首次启动会自动装进字体库 —— 不需要联网、也不需要手动下载。\n",
-            "  vtrim fonts list       看看库里有什么\n",
-            "  vtrim fonts install    万一被删了，重新装回来（幂等）\n",
+            "  yekitrim fonts list       看看库里有什么\n",
+            "  yekitrim fonts install    万一被删了，重新装回来（幂等）\n",
             "\n",
             "其余字体请自行获取并遵守其许可（见 README「字体」）。\n",
         ),
@@ -626,7 +626,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
 
     // ⚠️ **校验和文件也必须每次重新生成**（2026-10-01 修）。
     //
-    // 这个旁路文件以前只在手工发版时写：于是 `release/vtrim-v0.2.1-win64.zip.sha256.txt`
+    // 这个旁路文件以前只在手工发版时写：于是 `release/yekitrim-v0.2.1-win64.zip.sha256.txt`
     // 从 2026-09-22 起就没再更新过，而 zip 早换过好几版 —— **一个撒谎的校验和比没有更糟**
     // （用户会照它校验，然后以为下载坏了）。现在它在 `package` 里跟着 zip 一起写。
     let sidecar = write_checksum_sidecar(&zip_path, &digest, size_bytes, options.smoke_test)?;
@@ -876,7 +876,7 @@ fn cargo() -> String {
 /// Why root-first: the crates now say `version.workspace = true`, so the old per-crate
 /// scan (`crates/yekitrim-cli/Cargo.toml` `[package] version`) finds nothing and packaging
 /// would fail with "no version found". Keeping that scan as a fallback preserves old
-/// checkouts. The version here is what names the release archive (`vtrim-v<版本>-win-x64`),
+/// checkouts. The version here is what names the release archive (`yekitrim-v<版本>-win-x64`),
 /// so it must be read from the same place the binary's `CARGO_PKG_VERSION` comes from.
 fn cli_version(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let root_manifest = root.join("Cargo.toml");
