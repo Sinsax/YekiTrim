@@ -25,7 +25,7 @@
 - `package`：版本 → `cargo build --release -p yekitrim-cli --locked` → `vtrim.exe` → 调 `scan` 门禁 →
   查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256 →
   **写 `<zip>.sha256.txt` 校验文件**（2026-10-01 起自动生成，见「边界」最后一条）。
-- 打包内容：`vtrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、
+- 打包内容：`yekitrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、
   `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷）；
   **外加默认出片通道的随身件（2026-10-01）**：`tools/polish-to-dhampir.mjs`（转译器，它按**同层**
   `../spec/effects.json` 读效果词汇表）、`spec/effects.json`，以及底座三样
@@ -35,10 +35,10 @@
   底座来源 = 同层 `../Dhampir`（产物默认 `../Dhampir/out`、二进制默认 `../Dhampir/target/release/dhampir.exe`）；
   可用 `--dhampir-artifact <dir>` / `--dhampir-exe <path>` 覆盖。**找不到就拒绝打包** ——
   确实要打"没有底座"的包得显式 `--no-dhampir`（那台机器上默认通道会不可用）。
-  输出到 `<repo>/release/`（gitignored），包名 `vtrim-v<版本>-win-x64`，zip 用 Deflated level 9。
+  输出到 `<repo>/release/`（gitignored），包名 `yekitrim-v<版本>-win-x64`，zip 用 Deflated level 9。
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），
-  然后 kill 并**清掉 `package_dir` 里的 `.vtrim` 与 `stickers`**（首次运行会生成它们，运行态不许进发布包）。
+  然后 kill 并**清掉 `package_dir` 里的 `.yekitrim` 与 `stickers`**（首次运行会生成它们，运行态不许进发布包）。
 
 ## 边界
 
@@ -62,12 +62,12 @@
 - ⚠️ **版本同源**：版本只从**一处**读 —— 根 `Cargo.toml` 的 `[workspace.package] version`；
   找不到才回退 `crates/yekitrim-cli/Cargo.toml` 的 `[package]`（保住老 checkout）。
   为什么 root-first：各 crate 现在写 `version.workspace = true`，旧的逐 crate 扫描找不到任何东西，
-  打包会以 "no version found" 失败。这个版本同时决定发行包名 `vtrim-v<版本>-win-x64` 与二进制的
+  打包会以 "no version found" 失败。这个版本同时决定发行包名 `yekitrim-v<版本>-win-x64` 与二进制的
   `CARGO_PKG_VERSION`，**必须同源**。
   `table_version` 刻意**不认** `version.workspace = true`：继承来的不是字面量，
   静默把 `"true"` 当版本号比继续往下找更糟。
 - ⚠️ **`webui/dist` 缺失即拒绝打包**（`webui/dist/index.html` 不是文件 → Err "run 'npm --prefix webui run build' first"）：
-  `vtrim server` 只服务 `webui/dist`，陈旧的 dist 会端出陈旧界面。`webui/src` 比 `dist` 新**只 warn**
+  `yekitrim server` 只服务 `webui/dist`，陈旧的 dist 会端出陈旧界面。`webui/src` 比 `dist` 新**只 warn**
   （时间戳不可靠，不拿它当门禁）。
 - ⚠️ **`LICENSE` 与 `THIRD-PARTY-NOTICES.md` 是硬要求，不是 best-effort**：缺任一个直接 Err。
   二进制静态链接的第三方代码几乎全是 MIT / Apache-2.0 / BSD / ISC / Zlib，每一种都要求版权声明与许可文本
@@ -81,13 +81,13 @@
   而"不依赖外部工具"正是这个 helper 存在的全部理由。`time` 保留真实 mtime。
 - `repo_root()` 靠 `CARGO_MANIFEST_DIR` 往上两级（`crates/xtask` 必须在仓库根下两层），
   **挪动这个 crate 的深度会直接 panic**。`cargo()` 优先用 `CARGO` 环境变量。
-- ⚠️ 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下 `.vtrim/`
+- ⚠️ 分发前检查 `release/` 里那份**解包目录**（不是 zip）：跑过的实例会在里面留下 `.yekitrim/`
   （`server.toml` 含真实绝对路径）。`cargo xtask package --smoke-test` 会清掉它 —— 这是这条开关的主要用途之一。
 - ⚠️ **验证发行行为要拿 `release/` 里的 exe，别拿 `cargo build --release`（工作区级）的那份**：
   `package` 建的是 `-p yekitrim-cli`（feature 统一域更窄），两者**字节不同**（实测 sha256 不一样），
   拿错等于验证了一个不发的二进制。`--skip-build` 复跑只重组装与 zip，不会换掉这一份。
 - ⚠️ **`<zip>.sha256.txt` 由 `package` 每次重新生成**（2026-10-01 修）：以前它只手工写，
-  于是 `vtrim-v0.2.1-win-x64.zip.sha256.txt` 从 2026-09-22 起就没更新过、而 zip 换过好几版 ——
+  于是 `yekitrim-v0.2.1-win-x64.zip.sha256.txt` 从 2026-09-22 起就没更新过、而 zip 换过好几版 ——
   **一个撒谎的校验和比没有更糟**（用户照它校验会以为下载坏了）。现在 `write_checksum_sidecar`
   跟着 zip 一起写（`built` 那行用 `fmt_utc_date` 打 UTC 日期：本 crate 刻意不带 chrono，
   用 Howard Hinnant 的 `civil_from_days`）。⚠️ 手工改了 zip 就必须重跑 `package`（或删掉侧车文件）。

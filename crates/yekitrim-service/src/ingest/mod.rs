@@ -28,13 +28,23 @@ fn global_config_path() -> PathBuf {
     yekitrim_core::path::vtrim_home().join("config.toml")
 }
 
-/// 生成不可猜测的 token（URL 安全、人可复制：`vtrim_` + 40 位 base64url）。
+/// 录播姬 webhook token 的前缀。
+///
+/// ⚠️ **唯一权威，生成端与校验端必须同源**。校验端在 `yekitrim-server/src/ingest.rs`
+/// 的 `token_shape_ok`（它是 webhook 鉴权的**快速否决闸**，形状不对直接 401）。
+/// 这两处**曾经各写一个字面量**：改名时只改了生成端 ⇒ `generate_token()` 产出的每个 token
+/// 都通不过自己的校验 ⇒ **用户在设置页点「生成/轮换」拿到的 token 100% 401**，
+/// 录播姬采集整条链**完全不可用且不报错**（只回 401）。
+/// 现在两端都引用本常量，不可能再分叉。
+pub const TOKEN_PREFIX: &str = "yekitrim_";
+
+/// 生成不可猜测的 token（URL 安全、人可复制：`yekitrim_` + 40 位 base64url）。
 pub fn generate_token() -> String {
     let mut raw = String::new();
     for _ in 0..3 {
         raw.push_str(&auth::new_token());
     }
-    format!("yekitrim_{}", &raw[..40])
+    format!("{TOKEN_PREFIX}{}", &raw[..40])
 }
 
 /// 把 `[ingest]` 的若干键合并写进全局配置（保留注释与其他 section）。

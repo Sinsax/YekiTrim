@@ -32,7 +32,7 @@ use yekitrim_core::config::{Config, MaterialEntry, ASR_MODES, MATERIAL_SOURCE_AS
 use super::Workspace;
 
 /// 扫描候选时跳过的目录名（产物 / 内部状态 / 素材库，都不是可选输入）。
-const SKIP_DIRS: [&str; 5] = ["output", "clips", ".yekitrim", "stickers", "assets"];
+const SKIP_DIRS: [&str; 5] = ["output", "clips", yekitrim_core::path::PROJECT_STATE_DIR_NAME, "stickers", "assets"];
 
 /// 可选择的素材类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

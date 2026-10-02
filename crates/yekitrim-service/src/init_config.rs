@@ -33,7 +33,7 @@ fn llm_config_path(config_path: &Path) -> PathBuf {
     config_path
         .parent()
         .map(|p| p.join("llm.toml"))
-        .unwrap_or_else(|| PathBuf::from(".vtrim/llm.toml"))
+        .unwrap_or_else(|| PathBuf::from(".yekitrim/llm.toml"))
 }
 
 /// 默认程序配置内容（内建 prompt 注入）。

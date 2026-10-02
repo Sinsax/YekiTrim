@@ -262,13 +262,17 @@ pub fn handle_event(
     })
 }
 
-/// token 的形状检查：`vtrim_` + 40 位 base64url（与 `yekitrim_service::ingest::generate_token` 一致）。
+/// token 的形状检查：`yekitrim_` + 40 位 base64url。
+///
+/// ⚠️ **前缀必须与生成端同源**：`yekitrim_service::ingest::TOKEN_PREFIX`。
+/// 这里曾经是**另一个字面量**，改名时只改了生成端 ⇒ 产出的每个 token 都通不过本闸 ⇒
+/// **用户在设置页拿到的 token 100% 401**（采集整条链不可用，且只回 401、无其他线索）。
+/// 现在两端共用同一个常量，不可能再分叉。
 ///
 /// 放在 scrypt **之前**当快速否掉用：形状不对的输入根本没可能是 token，为它付一次
 /// N=2^15（约 32MiB 内存 + 几十毫秒 CPU）的代价是白送对方的放大器。
 fn token_shape_ok(token: &str) -> bool {
-    const PREFIX: &str = "vtrim_";
-    let Some(body) = token.strip_prefix(PREFIX) else {
+    let Some(body) = token.strip_prefix(yekitrim_service::ingest::TOKEN_PREFIX) else {
         return false;
     };
     body.len() == 40
@@ -1706,24 +1710,40 @@ mod tests {
         assert_eq!(db.unassigned_ingest_sessions(10).unwrap().len(), 0);
     }
 
-    /// webhook token 的形状检查：只有"`vtrim_` + 40 位 base64url"才值得跑 scrypt。
+    /// webhook token 的形状检查：只有"`<TOKEN_PREFIX>` + 40 位 base64url"才值得跑 scrypt。
     ///
     /// 这是未认证入口上的成本闸门 —— 形状检查失败时直接 401，不碰 KDF。
+    ///
+    /// ⚠️ **本测试故意不写字面量前缀**，一律从 `TOKEN_PREFIX` 拼：
+    /// 以前它把 `vtrim_` 写死，于是改名时"生成端改了、校验端没改"这件事
+    /// **测不出来**（断言保护的就是旧名字）。现在前缀只有一个来源。
     #[test]
     fn token_shape_gate_rejects_junk_before_kdf() {
+        use yekitrim_service::ingest::TOKEN_PREFIX as P;
         // 真实生成器的产物必须过
         assert!(token_shape_ok(&yekitrim_service::ingest::generate_token()));
+        // ⚠️ **回归钉子**：生成端与校验端必须同前缀（改名时只改一端 ⇒ 每个 token 都 401）
+        let generated = yekitrim_service::ingest::generate_token();
+        assert!(
+            generated.starts_with(P),
+            "生成器产物 {generated} 必须带前缀 {P}"
+        );
         // 前缀 / 长度 / 字符集 任一不对就否掉
         assert!(!token_shape_ok(""));
-        assert!(!token_shape_ok("vtrim_"));
-        assert!(!token_shape_ok("vtrim_short"));
-        assert!(!token_shape_ok(&format!("vtrim_{}", "a".repeat(39))));
-        assert!(!token_shape_ok(&format!("vtrim_{}", "a".repeat(41))));
-        assert!(!token_shape_ok(&format!("vtrim_{}", "a".repeat(39) + "!")));
-        assert!(!token_shape_ok(&format!("{}", "a".repeat(40))));
-        assert!(!token_shape_ok(&format!("VTRIM_{}", "a".repeat(40))));
+        assert!(!token_shape_ok(P));
+        assert!(!token_shape_ok(&format!("{P}short")));
+        assert!(!token_shape_ok(&format!("{P}{}", "a".repeat(39))));
+        assert!(!token_shape_ok(&format!("{P}{}", "a".repeat(41))));
+        assert!(!token_shape_ok(&format!("{P}{}", "a".repeat(39) + "!")));
+        assert!(!token_shape_ok(&"a".repeat(40)));
+        assert!(!token_shape_ok(&format!("{}", P.to_uppercase() + &"a".repeat(40))));
+        // 旧前缀（`vtrim_`）**不再被认** —— 不兼容口径：存量 token 一律失效
+        assert!(
+            !token_shape_ok(&format!("vtrim_{}", "a".repeat(40))),
+            "旧前缀必须被拒（不兼容口径）"
+        );
         // `-` / `_` 是 base64url 的合法字符，不能误伤
-        assert!(token_shape_ok(&format!("vtrim_{}", "-_A0".repeat(10))));
+        assert!(token_shape_ok(&format!("{P}{}", "-_A0".repeat(10))));
     }
 
     // ---- 采集配置表单（PUT /api/admin/ingest）----
@@ -2056,7 +2076,7 @@ vtuber_name = \"主播\"
         assert!(token_shape_ok(&token), "生成器产物必须过形状检查：{token}");
         let hash = yekitrim_service::auth::hash_password(&token).unwrap();
         assert!(yekitrim_service::auth::verify_password(&hash, &token).unwrap_or(false));
-        assert!(!yekitrim_service::auth::verify_password(&hash, "vtrim_wrong").unwrap_or(false));
+        assert!(!yekitrim_service::auth::verify_password(&hash, "yekitrim_wrong").unwrap_or(false));
         assert!(hash.starts_with("scrypt$"), "配置里只该存哈希：{hash}");
     }
 
