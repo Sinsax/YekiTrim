@@ -59,7 +59,7 @@
             <span class="chip" :class="chipClass('detect')">事件检测 {{ chipText('detect') }}</span>
           </div>
 
-          <!-- ASR 模式：写进本工程 `vtrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
+          <!-- ASR 模式：写进本工程 `yekitrim.toml` 的 `[asr] mode`（merge 时覆盖全局配置，
                接口走 `PUT /api/project-data/config {patch}` —— 保留注释与其他 section）。
                **两种模式各只能出一次产物**（用户要求"输出一次绑定一次、只能两次"）：
                跑过的模式槽就占了（`assets.slots`，与后端 `assets::slot_bound` 同口径），
@@ -335,13 +335,13 @@ const hasEvents = computed(() => hasFile('事件'))
 /** 转写成功后自动接着跑检测（两段之间不留手动步骤） */
 const chainDetect = ref(false)
 
-// ---- 输入素材（弹幕 / 字幕）：清单式，生效值写进 `vtrim.toml`，随时可换 ----
+// ---- 输入素材（弹幕 / 字幕）：清单式，生效值写进 `yekitrim.toml`，随时可换 ----
 // 声明放在 ASR 块之前：ASR 槽位来自同一份 `assets`（下面 `asrSlots` 要读它）。
 const assets = ref(null)
 const assetDirty = ref(false)
 const assetsRoot = computed(() => assets.value?.root_dir || '')
 
-// ---- ASR 模式（本工程 `vtrim.toml` 的 `[asr] mode`）----
+// ---- ASR 模式（本工程 `yekitrim.toml` 的 `[asr] mode`）----
 // 显示的是 **merged 配置** 的值（项目覆盖全局）：`single` = 只用 SenseVoice 直出，
 // `hybrid` = SenseVoice 打轴 + qwen3-asr 填词（默认）。fallback 与
 // `config/types.rs::default_asr_mode()` 一致，读失败时别显示成 single。
@@ -475,7 +475,7 @@ async function load() {
   } catch (e) {
     loadError.value = '项目状态读取失败：' + (e?.message || '')
   }
-  // ASR 模式：读 **merged** 配置（项目 `vtrim.toml` 覆盖全局）—— 这页要显示的是
+  // ASR 模式：读 **merged** 配置（项目 `yekitrim.toml` 覆盖全局）—— 这页要显示的是
   // 「这个工程实际会用的」那个值，所以不能用 `/api/config` 的 global-only
   try {
     const d = await projectData.config(pid.value, '读取项目配置')
@@ -641,7 +641,7 @@ async function saveSubs() {
   }
 }
 
-/** 改 ASR 模式 = 立刻写进项目 `vtrim.toml`（patch 模式：保留注释与其他 section）。
+/** 改 ASR 模式 = 立刻写进项目 `yekitrim.toml`（patch 模式：保留注释与其他 section）。
  *  只影响**还没跑**的转写 —— 两格槽都占满时才置灰（`canPickAsr`：那种情况下
  *  跑不了任何新模式，改它只是空转）。单格占满时仍可切到另一个模式去跑。 */
 async function saveAsrMode() {

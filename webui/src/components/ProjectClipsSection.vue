@@ -398,7 +398,7 @@ const SORT_OPTIONS = [
   { key: 'danmaku', label: '弹幕量', dir: 'desc', hint: '按弹幕条数排序' },
   { key: 'subtitle', label: '字幕量', dir: 'desc', hint: '按字幕条数排序' }
 ]
-const SORT_STORE = 'vtrim.slices.sort'
+const SORT_STORE = 'yekitrim.slices.sort'
 
 function readSort() {
   try {
@@ -514,8 +514,8 @@ const SUB_FILTERS = [
   { key: 'polishing', label: '精修中', hint: '已剪但还没有导出成片或封面' },
   { key: 'exported', label: '已导出', hint: '已经出过片或出过封面（与卡片上的 chip 同口径）' }
 ]
-const FILTER_STORE = 'vtrim.slices.filter'
-const SUB_FILTER_STORE = 'vtrim.slices.subfilter'
+const FILTER_STORE = 'yekitrim.slices.filter'
+const SUB_FILTER_STORE = 'yekitrim.slices.subfilter'
 // 两级化之前存的 key 要**翻译成"一级 + 二级"**再回填，否则老用户打开切片页会退到默认档、
 // 以为筛选坏了：上一版的 `polish`（一级「精修中」）→ 已剪切 + 已导出。
 const LEGACY_FILTERS = {

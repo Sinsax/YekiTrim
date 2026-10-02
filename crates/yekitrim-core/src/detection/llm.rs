@@ -1164,7 +1164,7 @@ async fn attempt_call(
         .unwrap_or_default()
         .as_secs();
     // 转储落到程序目录的 `.vtrim/llm_debug/`：以前写的是**相对进程 CWD** 的路径，
-    // server 的 CWD 是仓库根 —— 一轮重跑就在仓库里堆 70+ 个 vtrim_llm_debug_*.log。
+    // server 的 CWD 是仓库根 —— 一轮重跑就在仓库里堆 70+ 个 yekitrim_llm_debug_*.log。
     //
     // ⚠️ 这个目录**不在任何租户囚笼里**，而内容是**用户的直播转录原文** + 模型推理。
     // 所以三条一起做：① 不再退回进程 CWD；② 有保留期（只留最新若干份）；③ 单份有体积上限。
@@ -1176,7 +1176,7 @@ async fn attempt_call(
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("vtrim_llm_debug_") && n.ends_with(".log"))
+                    .is_some_and(|n| n.starts_with("yekitrim_llm_debug_") && n.ends_with(".log"))
             })
             .collect();
         if files.len() <= keep {
@@ -1212,7 +1212,7 @@ async fn attempt_call(
     let dir = crate::path::vtrim_home().join("llm_debug");
     let _ = std::fs::create_dir_all(&dir);
     prune_debug_dir(&dir, 50);
-    let log_path = dir.join(format!("vtrim_llm_debug_{ts}.log"));
+    let log_path = dir.join(format!("yekitrim_llm_debug_{ts}.log"));
     let full = format!(
         "--- 截断: {} ---\n--- content ---\n{}\n\n--- reasoning ---\n{}\n\n--- full response ---\n{}",
         truncated

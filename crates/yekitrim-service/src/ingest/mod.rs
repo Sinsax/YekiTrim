@@ -34,7 +34,7 @@ pub fn generate_token() -> String {
     for _ in 0..3 {
         raw.push_str(&auth::new_token());
     }
-    format!("vtrim_{}", &raw[..40])
+    format!("yekitrim_{}", &raw[..40])
 }
 
 /// 把 `[ingest]` 的若干键合并写进全局配置（保留注释与其他 section）。

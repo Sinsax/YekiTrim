@@ -11,8 +11,8 @@
 //!
 //! ## 三条实测出来的硬约束（改参数前先读）
 //!
-//! 1. **哨兵前缀必须在 `WHEN` 段之后**：`--print "after_move:VTRIM_PATH:%(filepath)s"`。
-//!    写成 `"VTRIM_PATH:after_move:filepath"` 会输出 **`NA`**（`VTRIM_PATH` 被当成模板名）。
+//! 1. **哨兵前缀必须在 `WHEN` 段之后**：`--print "after_move:YEKITRIM_PATH:%(filepath)s"`。
+//!    写成 `"YEKITRIM_PATH:after_move:filepath"` 会输出 **`NA`**（`YEKITRIM_PATH` 被当成模板名）。
 //! 2. **非 TTY 下一行进度都没有**，必须显式 `--progress`；而且 `--progress-template`
 //!    与 `--print` 的输出**都落在 stdout**，只能靠前缀分流（不能假设"最后一行是路径"）。
 //! 3. **格式串必须带兜底**：`-f "b[height<=360]/b"` 在"该视频没有这个档位"时
@@ -29,11 +29,11 @@ use super::{
 };
 
 /// 进度行的哨兵前缀。
-pub const SENTINEL_PROGRESS: &str = "VTRIM_PROG:";
+pub const SENTINEL_PROGRESS: &str = "YEKITRIM_PROG:";
 /// 最终产物路径行的哨兵前缀。
-pub const SENTINEL_PATH: &str = "VTRIM_PATH:";
+pub const SENTINEL_PATH: &str = "YEKITRIM_PATH:";
 /// 产物编码信息行的哨兵前缀。
-pub const SENTINEL_META: &str = "VTRIM_META:";
+pub const SENTINEL_META: &str = "YEKITRIM_META:";
 
 /// 进度模板的字段顺序（解析时按 `|` 切，与构造处必须一致）。
 const PROGRESS_TEMPLATE: &str = "%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s";
@@ -378,7 +378,7 @@ mod tests {
     /// 每一条都有实测依据（T6）：
     /// - `-S vcodec:h264`：不加会默认选到 **HEVC**，WebUI 预览播不了；
     /// - `--progress`：不加，非 TTY 下**一行进度都没有**；
-    /// - `after_move:VTRIM_PATH:%(filepath)s`：前缀写反会输出字面量 `NA`（实测）；
+    /// - `after_move:YEKITRIM_PATH:%(filepath)s`：前缀写反会输出字面量 `NA`（实测）；
     /// - `--no-playlist`：不加，一个多P 链接会把整季下下来。
     #[test]
     fn download_args_snapshot() {
@@ -400,11 +400,11 @@ mod tests {
                 "--newline",
                 "--progress",
                 "--progress-template",
-                "VTRIM_PROG:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
+                "YEKITRIM_PROG:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
                 "--print",
-                "after_move:VTRIM_PATH:%(filepath)s",
+                "after_move:YEKITRIM_PATH:%(filepath)s",
                 "--print",
-                "VTRIM_META:%(resolution)s|%(vcodec)s|%(acodec)s",
+                "YEKITRIM_META:%(resolution)s|%(vcodec)s|%(acodec)s",
                 "--no-warnings",
                 "-o",
                 out_arg.as_str(),
@@ -418,7 +418,7 @@ mod tests {
         let print_idx = spec
             .args
             .iter()
-            .position(|a| a == "after_move:VTRIM_PATH:%(filepath)s")
+            .position(|a| a == "after_move:YEKITRIM_PATH:%(filepath)s")
             .expect("--print 的形态必须带 after_move 前缀");
         assert!(spec.args[print_idx].starts_with("after_move:"));
     }
@@ -467,20 +467,20 @@ mod tests {
         let d = dl();
         // 真实形态：`--percent_str` 带前导空格
         assert_eq!(
-            d.parse_stream_line("VTRIM_PROG:  0.0%|  13.37KiB/s|00:12"),
+            d.parse_stream_line("YEKITRIM_PROG:  0.0%|  13.37KiB/s|00:12"),
             Some(StreamEvent::Progress { percent: 0.0, speed: "13.37KiB/s".into(), eta: "00:12".into() })
         );
         assert_eq!(
-            d.parse_stream_line("VTRIM_PROG:100.0%|   2.00MiB/s|00:00"),
+            d.parse_stream_line("YEKITRIM_PROG:100.0%|   2.00MiB/s|00:00"),
             Some(StreamEvent::Progress { percent: 100.0, speed: "2.00MiB/s".into(), eta: "00:00".into() })
         );
         // 真实形态：after_move 回报的是**绝对路径**
         assert_eq!(
-            d.parse_stream_line(r"VTRIM_PATH:F:\para\Code\V-Trim\proj\source.mp4"),
+            d.parse_stream_line(r"YEKITRIM_PATH:F:\para\Code\V-Trim\proj\source.mp4"),
             Some(StreamEvent::FinalPath(PathBuf::from(r"F:\para\Code\V-Trim\proj\source.mp4")))
         );
         assert_eq!(
-            d.parse_stream_line("VTRIM_META:640x360|avc1.64001E|mp4a.40.2"),
+            d.parse_stream_line("YEKITRIM_META:640x360|avc1.64001E|mp4a.40.2"),
             Some(StreamEvent::Meta {
                 resolution: "640x360".into(),
                 vcodec: "avc1.64001E".into(),
@@ -491,11 +491,11 @@ mod tests {
         assert_eq!(d.parse_stream_line("[download] Destination: x.mp4"), None);
         assert_eq!(d.parse_stream_line(""), None);
         // 新的哨兵行也自动忽略（前向兼容）
-        assert_eq!(d.parse_stream_line("VTRIM_FUTURE:whatever"), None);
+        assert_eq!(d.parse_stream_line("YEKITRIM_FUTURE:whatever"), None);
         // 进度载荷解析不出来时**跳过**这一行，而不是当成 0%
-        assert_eq!(d.parse_stream_line("VTRIM_PROG:NA|NA|NA"), None);
+        assert_eq!(d.parse_stream_line("YEKITRIM_PROG:NA|NA|NA"), None);
         // 空路径不算产物
-        assert_eq!(d.parse_stream_line("VTRIM_PATH:"), None);
+        assert_eq!(d.parse_stream_line("YEKITRIM_PATH:"), None);
     }
 
     /// 错误分类：关键字全部来自实测输出。

@@ -50,7 +50,7 @@ fn load_cfg(
 }
 
 fn config_path(cli_config: &Option<PathBuf>) -> PathBuf {
-    cli_config.clone().unwrap_or_else(|| PathBuf::from("vtrim.toml"))
+    cli_config.clone().unwrap_or_else(|| PathBuf::from(yekitrim_core::path::PROJECT_CONFIG_FILE))
 }
 
 fn percent_encode_component(s: &str) -> String {
@@ -82,7 +82,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
     let mut cursor = Some(abs.as_path());
     let mut cfg_file = None;
     while let Some(dir) = cursor {
-        let cand = dir.join("vtrim.toml");
+        let cand = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
         if cand.exists() {
             cfg_file = Some(cand);
             break;
@@ -90,7 +90,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         cursor = dir.parent();
     }
     let Some(cfg) = cfg_file else {
-        tracing::info!("未找到 clip 所属的 vtrim.toml，回退到旧版独立 polish preview");
+        tracing::info!("未找到 clip 所属的 yekitrim.toml，回退到旧版独立 polish preview");
         yekitrim_polish::commands::cmd_preview(input, mode.unwrap_or("")).await?;
         return Ok(());
     };
@@ -130,8 +130,8 @@ async fn main() -> anyhow::Result<()> {
             config: cfg_path,
         } => {
             let out = cfg_path.clone().or_else(|| {
-                input.parent().map(|p| p.join("vtrim.toml"))
-            }).unwrap_or_else(|| PathBuf::from("vtrim.toml"));
+                input.parent().map(|p| p.join(yekitrim_core::path::PROJECT_CONFIG_FILE))
+            }).unwrap_or_else(|| PathBuf::from(yekitrim_core::path::PROJECT_CONFIG_FILE));
             yekitrim_service::init_project(
                 input,
                 danmaku.as_deref(),
@@ -177,7 +177,7 @@ Command::Process {
             let output_override = output_dir.clone().map(|p| {
                 if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
             });
-            let config_file = global_config.clone().unwrap_or_else(|| PathBuf::from("vtrim.toml"));
+            let config_file = global_config.clone().unwrap_or_else(|| PathBuf::from(yekitrim_core::path::PROJECT_CONFIG_FILE));
             let stages = vec!["process".to_string()];
             yekitrim_service::run_stages_with(
                 &config_file,

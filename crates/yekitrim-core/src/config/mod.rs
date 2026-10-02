@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::path::PROJECT_CONFIG_FILE;
+
 /// 解析参考标题：优先使用 `detection.reference_titles`；
 /// 其次从 `prompt_template` 的“参考标题：”段落中兼容解析（旧配置）；
 /// 都为空时回退到内建示例 `detection::DEFAULT_REFERENCE_TITLES`。
@@ -69,11 +71,11 @@ fn default_reference_titles() -> Vec<String> {
 /// 全局默认配置模板（`vtrim config init` 生成 .vtrim/config.toml 用，`vtrim init` 的基底）
 /// 包含 {{CORRECT_SYSTEM_PROMPT}} 等占位符，由生成方替换为内建默认 prompt。
 pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
-# 相同参数会被 vtrim.toml 覆盖
+# 相同参数会被 yekitrim.toml 覆盖
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
-# 默认 hybrid；预处理页有下拉可直接改（写进项目 vtrim.toml），设置页表单/源码也能改
+# 默认 hybrid；预处理页有下拉可直接改（写进项目 yekitrim.toml），设置页表单/源码也能改
 mode = "hybrid"
 # 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
 num_workers = 0
@@ -315,12 +317,12 @@ fn write_project_config_inner(
     let mut body = if global_path.exists() {
         tracing::info!("从全局配置复制: {}", global_path.display());
         std::fs::read_to_string(&global_path)?.replace(
-            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖",
+            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
             "",
         )
     } else {
         GLOBAL_CONFIG_TOML.replace(
-            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 vtrim.toml 覆盖",
+            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
             "",
         )
     };
@@ -720,7 +722,7 @@ struct LlmFile {
 }
 
 pub fn load_config() -> Result<Config> {
-    load_config_at(Path::new("vtrim.toml"))
+    load_config_at(Path::new(PROJECT_CONFIG_FILE))
 }
 
 /// 从指定项目配置文件加载合并配置。
@@ -782,17 +784,17 @@ pub fn load_global_config() -> Config {
 
 /// 用 toml_edit 将 events_file 写入当前目录的 vtrim.toml
 pub fn save_events_path(path: &str) -> Result<()> {
-    save_events_path_in(&PathBuf::from("vtrim.toml"), path)
+    save_events_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
 
 /// 用 toml_edit 将 audio_file 写入当前目录的 vtrim.toml
 pub fn save_audio_path(path: &str) -> Result<()> {
-    save_audio_path_in(&PathBuf::from("vtrim.toml"), path)
+    save_audio_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
 
 /// 用 toml_edit 将 transcript_file 写入当前目录的 vtrim.toml
 pub fn save_transcript_path(path: &str) -> Result<()> {
-    save_transcript_path_in(&PathBuf::from("vtrim.toml"), path)
+    save_transcript_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
 
 /// 用 toml_edit 将 events_file 写入指定项目配置文件
@@ -1364,13 +1366,13 @@ max_tokens = 32768
 /// 一旦点了保存，内建默认值就覆盖到真实文件上）。
 #[test]
 fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
-    // 这份 helper 读的是 `vtrim_home()`，而它跟着 `VTRIM_DATA_DIR` 走 ——
+    // 这份 helper 读的是 `vtrim_home()`，而它跟着 `YEKITRIM_DATA_DIR` 走 ——
     // 测试里指到一个临时目录，避免碰开发机上那份真实配置。
     let dir = std::env::temp_dir().join(format!("vtrim-parse-err-{}", std::process::id()));
-    let home = dir.join(".vtrim");
+    let home = dir.join(".yekitrim");
     std::fs::create_dir_all(&home).unwrap();
-    let old = std::env::var_os("VTRIM_DATA_DIR");
-    std::env::set_var("VTRIM_DATA_DIR", &dir);
+    let old = std::env::var_os("YEKITRIM_DATA_DIR");
+    std::env::set_var("YEKITRIM_DATA_DIR", &dir);
 
     // ① 文件都不在 = 正常（`ensure_global_config` 会补齐），不是错
     assert_eq!(super::global_config_parse_error(), None, "缺失不该报错");
@@ -1392,8 +1394,8 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     assert!(msg.contains("llm.toml"), "要指出是哪个文件: {msg}");
 
     match old {
-        Some(v) => std::env::set_var("VTRIM_DATA_DIR", v),
-        None => std::env::remove_var("VTRIM_DATA_DIR"),
+        Some(v) => std::env::set_var("YEKITRIM_DATA_DIR", v),
+        None => std::env::remove_var("YEKITRIM_DATA_DIR"),
     }
 }
 

@@ -1602,7 +1602,7 @@ mod tests {
 
     fn db() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
+        let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         (dir, db)
     }
 

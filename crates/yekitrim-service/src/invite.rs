@@ -224,7 +224,7 @@ mod tests {
         let now = 1_700_000_000;
         let base = InviteRow {
             id: 1,
-            token: "vtrim_inv_abcd1234".into(),
+            token: "yekitrim_inv_abcd1234".into(),
             note: None,
             created_by: None,
             created_at: now,

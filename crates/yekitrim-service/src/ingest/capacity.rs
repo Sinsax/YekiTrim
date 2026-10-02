@@ -139,7 +139,7 @@ mod tests {
             "local",
             None,
             dir.path(),
-            &dir.path().join("vtrim.toml"),
+            &dir.path().join("yekitrim.toml"),
             None,
         )
         .unwrap();

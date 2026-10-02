@@ -1,8 +1,8 @@
 // 全局 UI 开关（弹层这类"跨组件触发"的状态放这里，避免 router-view 事件透传）。
 import { reactive } from 'vue'
 
-const LS_SIDE = 'vtrim.ui.sideCollapsed'
-const LS_FRAG = 'vtrim.ui.fragRows'
+const LS_SIDE = 'yekitrim.ui.sideCollapsed'
+const LS_FRAG = 'yekitrim.ui.fragRows'
 
 // 启动时同步读取：侧栏折叠态必须在首帧就生效（否则会先展开再收起来，闪一下）
 function readSideCollapsed() {

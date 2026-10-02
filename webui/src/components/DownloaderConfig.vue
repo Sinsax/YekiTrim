@@ -68,7 +68,7 @@
           <input
             v-model.trim="form.projects_root"
             class="flex-1 mono"
-            placeholder="留空 = 程序目录下的 .vtrim/projects"
+            placeholder="留空 = 程序目录下的 .yekitrim/projects"
           >
           <button class="mini-btn" @click="pickTarget = 'dir'; showPicker = true">浏览…</button>
           <button v-if="form.projects_root" class="mini-btn" @click="form.projects_root = ''">恢复默认</button>
@@ -188,7 +188,7 @@ const pickDir = ref('')
 /// 下载器就绪位（独立端点，**响应里不含路径**）
 const status = ref({ ready: null, verified: false, kind: '', pinned_version: '', license: '', source: '' })
 
-/// 项目存放位置**解析后**的真实落点（服务端算好回传；留空时是程序目录下的 .vtrim/projects）。
+/// 项目存放位置**解析后**的真实落点（服务端算好回传；留空时是程序目录下的 .yekitrim/projects）。
 /// 前端不自己拼这个路径 —— 它会随程序目录变化，拼出来必然和实际不一致。
 const effectiveRoot = ref('')
 

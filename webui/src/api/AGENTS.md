@@ -39,7 +39,7 @@
     调用方会拿到 `null` 当成功。
   - **可传 `File` 覆盖 `Content-Type`**（`api(path, {method:'POST', body: file, headers:{'Content-Type':'application/octet-stream'}})`）——
     上传 zip 压缩包走的就是这条（不是 multipart）。
-  - **CSRF**：写请求自动注入 `X-CSRF-Token`（= `vtrim_csrf` cookie，双提交），调用方不关心。
+  - **CSRF**：写请求自动注入 `X-CSRF-Token`（= `yekitrim_csrf` cookie，双提交），调用方不关心。
   - **留痕**：失败（网络错误 / 非 2xx / `ok:false`）→ `console.warn` + 设置页「运行日志」；
     成功只写 `console.debug`；高频只读接口（`/api/media`、`/api/health`、`/api/jobs`、`/api/stream`、
     `/api/admin/logs`）成功时连面板都不写（否则 3 秒一次的轮询会冲干净 2000 条缓冲）。

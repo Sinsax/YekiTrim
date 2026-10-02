@@ -44,7 +44,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - ⚠ `viewing` **必须再 `&& current`**：`SideNav` 对**每个** ProjectNode 都传同一个 `viewingStep`
   （只从 `route.name` 来，不带项目），不门控时多个项目同时展开会让同名阶段一起高亮。
 - 侧栏可折叠：`.side.mini`（`width:64px`）+ `stores/ui.js` 的 `ui.sideCollapsed`/`toggleSide()`、
-  localStorage `vtrim.ui.sideCollapsed`；⚠ **模块初始化时同步读取**（放 computed 里读会首帧闪
+  localStorage `yekitrim.ui.sideCollapsed`；⚠ **模块初始化时同步读取**（放 computed 里读会首帧闪
   一下展开态）。折叠轨类（`.rail-*`/`.side-toggle`/`.rdot`）写在 SideNav 的 scoped 里。
 - 侧栏底部**用户块只做展示**（点它不再登出），登出是块内「退出」按钮，`doLogout()` 先
   `confirmDialog` 二次确认。**全局入口只剩 首页 / 设置**（「入库」入口已删；`#/ingest` 仍可从

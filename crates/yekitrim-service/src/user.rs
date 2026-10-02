@@ -87,7 +87,7 @@ pub fn retire_initial_password_file(generated: Option<&str>) {
 
 /// [`retire_initial_password_file`] 的可注入版本（单测用，不碰真实数据目录）。
 ///
-/// ⚠️ 测试**不能**靠 `VTRIM_DATA_DIR` 做隔离 —— 测试是并行跑的，改全局环境变量会互相踩
+/// ⚠️ 测试**不能**靠 `YEKITRIM_DATA_DIR` 做隔离 —— 测试是并行跑的，改全局环境变量会互相踩
 /// （同 `vtrim-server` 的 `test_support` 那条注释）。
 pub fn retire_initial_password_file_in(dir: &Path, generated: Option<&str>) {
     match generated {
@@ -143,7 +143,7 @@ pub struct Bootstrap {
 
 /// 服务启动引导：无账号时创建 `admin`（幂等——已有账号绝不重置，§3.5.2）。
 ///
-/// `explicit` = `--admin-password-file` / `VTRIM_ADMIN_PASSWORD` 提供的密码：
+/// `explicit` = `--admin-password-file` / `YEKITRIM_ADMIN_PASSWORD` 提供的密码：
 /// 显式指定时**不生成随机密码、不写初始密码文件**，且视为"已改密"（可直接对外监听）。
 pub fn ensure_admin_bootstrap(explicit: Option<String>) -> Result<Bootstrap> {
     let db = Db::open_default()?;
@@ -153,7 +153,7 @@ pub fn ensure_admin_bootstrap(explicit: Option<String>) -> Result<Bootstrap> {
         let (password, generated) = match explicit {
             Some(pw) => {
                 auth::validate_password(&pw)
-                    .context("--admin-password-file / VTRIM_ADMIN_PASSWORD 提供的密码不合法")?;
+                    .context("--admin-password-file / YEKITRIM_ADMIN_PASSWORD 提供的密码不合法")?;
                 (pw, false)
             }
             None => (auth::generate_initial_password(), true),

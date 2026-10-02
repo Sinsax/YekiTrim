@@ -382,7 +382,7 @@ async function loadCoverCap() {
     const why = c.ready
       ? ""
       : (!c.compiled
-        ? "这个二进制没编 `cover-takumi` feature（重编：cargo build -p vtrim-cli --features vtrim-polish/cover-takumi）"
+        ? "这个二进制没编 `cover-takumi` feature（重编：cargo build -p yekitrim-cli --features yekitrim-polish/cover-takumi）"
         : `字体库是空的：把字体放进 ${c.fonts_dir}`)
     coverCap.value = { loaded: true, ready: !!c.ready, why }
   } catch (e) {
@@ -583,7 +583,7 @@ const fxList = ref([])
 /** 安全区线框的开关（纯设计器辅助线，不进出片模板、不进 cover.toml）。
  *  偏好**在 setup 里同步读** —— 放进 computed 或 onMounted 会先画一帧再切，闪一下
  *  （与 `stores/ui.js::readSideCollapsed` 同一个教训）。两个开关各自独立，可以只看 4:3。 */
-const LS_GUIDES = 'vtrim.ui.coverGuides'
+const LS_GUIDES = 'yekitrim.ui.coverGuides'
 const showGuide169 = ref(readGuides().includes('169'))
 const showGuide43 = ref(readGuides().includes('43'))
 

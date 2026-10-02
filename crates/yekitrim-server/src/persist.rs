@@ -149,18 +149,18 @@ mod tests {
     /// 注销**不删任何文件**，所以那个配置一定还在，项目就会在第二次重启时自己回来。
     #[test]
     fn forget_project_clears_the_remembered_last_project() {
-        let mut s = state(&["/a/vtrim.toml", "/b/vtrim.toml"], Some("/a/vtrim.toml"));
-        forget_project_in(&mut s, "/a/vtrim.toml");
-        assert_eq!(s.projects, vec!["/b/vtrim.toml".to_string()]);
+        let mut s = state(&["/a/yekitrim.toml", "/b/yekitrim.toml"], Some("/a/yekitrim.toml"));
+        forget_project_in(&mut s, "/a/yekitrim.toml");
+        assert_eq!(s.projects, vec!["/b/yekitrim.toml".to_string()]);
         assert_eq!(s.last_config_file, None, "指向被注销工程的记忆要一起清掉");
     }
 
     /// 注销**别的**项目时不能顺手清掉当前记忆（否则下次启动白白丢掉"恢复上次工程"）。
     #[test]
     fn forget_project_keeps_an_unrelated_remembered_project() {
-        let mut s = state(&["/a/vtrim.toml", "/b/vtrim.toml"], Some("/a/vtrim.toml"));
-        forget_project_in(&mut s, "/b/vtrim.toml");
-        assert_eq!(s.projects, vec!["/a/vtrim.toml".to_string()]);
-        assert_eq!(s.last_config_file.as_deref(), Some("/a/vtrim.toml"));
+        let mut s = state(&["/a/yekitrim.toml", "/b/yekitrim.toml"], Some("/a/yekitrim.toml"));
+        forget_project_in(&mut s, "/b/yekitrim.toml");
+        assert_eq!(s.projects, vec!["/a/yekitrim.toml".to_string()]);
+        assert_eq!(s.last_config_file.as_deref(), Some("/a/yekitrim.toml"));
     }
 }

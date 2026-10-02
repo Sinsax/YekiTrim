@@ -480,7 +480,7 @@ async fn unauthenticated_requests_are_401_except_whitelist() {
         ("GET", "/config"),
         ("GET", "/models"),
         ("GET", "/project/list"),
-        ("GET", "/project-data/status?config=vtrim.toml"),
+        ("GET", "/project-data/status?config=yekitrim.toml"),
         ("POST", "/polish/init"),
         // ---- Dhampir 预览（B1/B2/产物转发）----
         //

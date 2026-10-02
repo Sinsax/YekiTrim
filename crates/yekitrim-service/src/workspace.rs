@@ -28,7 +28,7 @@ impl Workspace {
             Some(p) => absolute(p)?,
             None => std::env::current_dir()
                 .context("无法获取当前目录")?
-                .join("vtrim.toml"),
+                .join(yekitrim_core::path::PROJECT_CONFIG_FILE),
         };
         let root_dir = config_file
             .parent()
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn load_creates_absolute_config_path() {
         let cwd = std::env::current_dir().unwrap();
-        let ws = Workspace::load(Some(Path::new("vtrim.toml"))).unwrap();
+        let ws = Workspace::load(Some(Path::new("yekitrim.toml"))).unwrap();
         assert!(ws.config_file.is_absolute());
         assert_eq!(ws.root_dir, cwd);
     }
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn resolve_joins_root_for_relative() {
         let ws = Workspace {
-            config_file: PathBuf::from("C:/projects/demo/vtrim.toml"),
+            config_file: PathBuf::from("C:/projects/demo/yekitrim.toml"),
             root_dir: PathBuf::from("C:/projects/demo"),
         };
         assert_eq!(
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn rel_strips_root_prefix() {
         let ws = Workspace {
-            config_file: PathBuf::from("C:/projects/demo/vtrim.toml"),
+            config_file: PathBuf::from("C:/projects/demo/yekitrim.toml"),
             root_dir: PathBuf::from("C:/projects/demo"),
         };
         assert_eq!(
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn config_file_missing_still_loads() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vtrim.toml");
+        let path = dir.path().join(yekitrim_core::path::PROJECT_CONFIG_FILE);
         let ws = Workspace {
             config_file: path.clone(),
             root_dir: dir.path().to_path_buf(),
@@ -221,7 +221,7 @@ mod tests {
         fs::write(root.join("sub.srt"), "1\n00:00:01,000 --> 00:00:02,000\nhi\n").unwrap();
         fs::write(root.join("output/transcript.json"), "{\"segments\":[]}").unwrap();
         let ws = Workspace {
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join(yekitrim_core::path::PROJECT_CONFIG_FILE),
             root_dir: root.to_path_buf(),
         };
         let mut cfg = yekitrim_core::config::Config::default();
@@ -236,7 +236,7 @@ mod tests {
         let root = dir.path();
         fs::create_dir_all(root.join("output")).unwrap();
         let ws = Workspace {
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join(yekitrim_core::path::PROJECT_CONFIG_FILE),
             root_dir: root.to_path_buf(),
         };
         let cfg = yekitrim_core::config::Config::default();
@@ -255,7 +255,7 @@ mod tests {
         fs::create_dir_all(root.join("videos")).unwrap();
         fs::write(root.join("videos/a.mp4"), b"x").unwrap();
         let ws = Workspace {
-            config_file: root.join("vtrim.toml"),
+            config_file: root.join(yekitrim_core::path::PROJECT_CONFIG_FILE),
             root_dir: root.to_path_buf(),
         };
         let mut cfg = yekitrim_core::config::Config::default();

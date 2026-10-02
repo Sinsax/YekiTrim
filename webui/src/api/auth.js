@@ -1,6 +1,6 @@
 // 认证 API（M1）：登录 / 登出 / 当前用户 / 改密。
 //
-// 会话走 cookie（`vtrim_sid`，HttpOnly）；写请求的 CSRF 注入由 `api/client.js` 统一完成，
+// 会话走 cookie（`yekitrim_sid`，HttpOnly）；写请求的 CSRF 注入由 `api/client.js` 统一完成，
 // 调用方不需要关心。
 import { api } from './client'
 

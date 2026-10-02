@@ -247,7 +247,7 @@ mod tests {
             return;
         };
         let dir = PathBuf::from(dir);
-        let config = crate::config::load_config_at(&dir.join("vtrim.toml")).expect("读取 vtrim.toml");
+        let config = crate::config::load_config_at(&dir.join(crate::path::PROJECT_CONFIG_FILE)).expect("读取 vtrim.toml");
         let input = config
             .project
             .input_file

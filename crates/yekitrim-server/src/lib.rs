@@ -94,7 +94,7 @@ pub struct ServerArgs {
     #[arg(long)]
     pub trust_proxy: bool,
 
-    /// 账号账本 / 会话 / 初始密码文件所在目录（默认 `<exe_dir>/.vtrim/cloud`，也可用 `VTRIM_DATA_DIR`）
+    /// 账号账本 / 会话 / 初始密码文件所在目录（默认 `<exe_dir>/.yekitrim/cloud`，也可用 `YEKITRIM_DATA_DIR`）
     #[arg(long)]
     pub data_dir: Option<PathBuf>,
 
@@ -102,7 +102,7 @@ pub struct ServerArgs {
     #[arg(long)]
     pub admin_password_file: Option<PathBuf>,
 
-    /// 强制接管 vtrim.lock（仅在确认上一个实例已崩溃残留时使用）
+    /// 强制接管 yekitrim.lock（仅在确认上一个实例已崩溃残留时使用）
     #[arg(long)]
     pub force: bool,
 
@@ -150,7 +150,7 @@ fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
         format!(
             "无法创建账号数据目录 {}。\n\
              身份数据不可缺省（配置可缺省，账号不能）：请用 --data-dir <可写路径> 指定别处，\
-             或用环境变量 VTRIM_DATA_DIR",
+             或用环境变量 YEKITRIM_DATA_DIR",
             dir.display()
         )
     })?;
@@ -166,7 +166,7 @@ fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 解析显式初始密码（`--admin-password-file` > `VTRIM_ADMIN_PASSWORD`）。
+/// 解析显式初始密码（`--admin-password-file` > `YEKITRIM_ADMIN_PASSWORD`）。
 fn explicit_admin_password(args: &ServerArgs) -> anyhow::Result<Option<String>> {
     if let Some(path) = &args.admin_password_file {
         let raw = std::fs::read_to_string(path)
@@ -177,10 +177,10 @@ fn explicit_admin_password(args: &ServerArgs) -> anyhow::Result<Option<String>> 
         }
         return Ok(Some(pw));
     }
-    if let Ok(pw) = std::env::var("VTRIM_ADMIN_PASSWORD") {
+    if let Ok(pw) = std::env::var("YEKITRIM_ADMIN_PASSWORD") {
         if !pw.trim().is_empty() {
             tracing::warn!(
-                "⚠ 正在使用环境变量 VTRIM_ADMIN_PASSWORD 作为初始密码：它会出现在 /proc/<pid>/environ、\
+                "⚠ 正在使用环境变量 YEKITRIM_ADMIN_PASSWORD 作为初始密码：它会出现在 /proc/<pid>/environ、\
                  `docker inspect` 等位置。生产部署请改用 --admin-password-file"
             );
             return Ok(Some(pw));
@@ -218,11 +218,15 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     // ---- 账号数据（身份不可缺省）----
     let data_dir = args.data_dir.clone().unwrap_or_else(db::data_dir);
     if args.data_dir.is_some() {
-        // 统一来源：CLI 其它入口 / 初始密码文件路径都读同一个变量
-        std::env::set_var("VTRIM_DATA_DIR", &data_dir);
+        // ⚠️ **写端**：把 `--data-dir` 经环境变量传给 service 侧（`db::data_dir` / `logbus` /
+        // 初始密码文件路径都读它）。**必须与 `yekitrim_core::path::DATA_DIR_ENV` 同源** ——
+        // 写成字面量时，改名只改读端漏改写端 ⇒ `--data-dir` **静默失效**：
+        // server 用一个目录、CLI 侧命令读另一个，症状是"命令行说没这个用户、网页里明明有"，
+        // 而且**只有传了 `--data-dir` 才暴露**。
+        std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, &data_dir);
     }
     prepare_data_dir(&data_dir)?;
-    // 日志落盘（<data_dir>/logs/vtrim-YYYYMMDD.log）。要在启动横幅**之前**开，
+    // 日志落盘（<data_dir>/logs/yekitrim-YYYYMMDD.log）。要在启动横幅**之前**开，
     // 否则"监听地址 / 初始密码"这些只有一次的信息进不了文件。
     let log_dir = logbus::enable_file_log();
     info!("日志文件: {}", logbus::file_log_path(&log_dir).display());

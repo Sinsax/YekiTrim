@@ -1111,7 +1111,7 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&base);
-        let exe_home = base.join("exe").join(".vtrim");
+        let exe_home = base.join("exe").join(".yekitrim");
         // 程序目录里有一份 sensevoice
         std::fs::create_dir_all(exe_home.join("models").join("sensevoice")).unwrap();
 

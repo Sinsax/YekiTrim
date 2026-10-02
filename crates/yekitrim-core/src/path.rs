@@ -1,6 +1,31 @@
 use std::path::{Path, PathBuf};
 
-/// 程序所在目录：`.vtrim/`（配置、模型、server.toml）与 `stickers/` 的父目录。
+/// 工程配置文件名（`<工程目录>/yekitrim.toml`）。
+///
+/// ⚠️ **唯一权威**：这个字面量以前散在 ~35 处（跨 core / service / server / cli，含
+/// `yekitrim-server/src/api/projects.rs` 那条安全守卫），改名时只要漏一处就**静默**坏：
+/// 写侧写 `yekitrim.toml`、读侧找 `vtrim.toml` ⇒ 工程"打不开"或守卫误判 400。
+/// **新增/修改任何读写工程配置的地方，一律引用本常量**，别再写字面量。
+pub const PROJECT_CONFIG_FILE: &str = "yekitrim.toml";
+
+/// 程序状态目录名（`<data_dir>/.yekitrim/`：全局配置、模型、server.toml、账本…）。
+///
+/// ⚠️ **与 [`PROJECT_STATE_DIR_NAME`] 是两个不同的东西**，别混：
+/// 这个是**全局**的（一处），那个是**每工程一份**的（`<工程目录>/.yekitrim/`）。
+/// 两者刻意同名同改，但**拼接点不同**（一个挂 `data_dir()`、一个挂工程根）。
+pub const STATE_DIR_NAME: &str = ".yekitrim";
+
+/// 工程内状态目录名（`<工程目录>/.yekitrim/`：断点续传 checkpoint、LLM 状态…）。
+///
+/// ⚠️ 它**不是**全局状态目录（见 [`STATE_DIR_NAME`]）。改这个名会让**已有工程的
+/// checkpoint / status 文件找不到** —— 按不兼容口径这是可接受的（不会迁移、不会告警），
+/// 但**写侧与读侧必须同时改**，否则每次精修都白跑一遍 LLM。
+pub const PROJECT_STATE_DIR_NAME: &str = ".yekitrim";
+
+/// 数据目录覆盖用的环境变量名（见 [`data_dir`]）。
+pub const DATA_DIR_ENV: &str = "YEKITRIM_DATA_DIR";
+
+/// 程序所在目录：`.yekitrim/`（配置、模型、server.toml）与 `stickers/` 的父目录。
 ///
 /// 取不到可执行文件路径时回退当前工作目录。这两个函数在 HTTP handler 里被频繁调用，
 /// 一旦 panic 会连累整条调用链（任务体的 panic 由 `spawn_job` 兜住、但那次任务就失败了），
@@ -18,7 +43,7 @@ pub(crate) fn exe_dir() -> PathBuf {
 /// 默认 = [`exe_dir`]，即 `target/debug/`（debug 构建）或安装目录（发行版）——
 /// 字体库、ASR 模型、配置全都挂它下面。
 ///
-/// ⚠️ **`VTRIM_DATA_DIR` 是唯一的口子**，留着它是为了应付一个具体的痛点：
+/// ⚠️ **`YEKITRIM_DATA_DIR` 是唯一的口子**，留着它是为了应付一个具体的痛点：
 /// `target/debug` 与 `target/release`（以及换 `CARGO_TARGET_DIR`）各是一份程序目录，
 /// 那样 **1.1 GB 的 ASR 模型会被复制两份**。想共用就把这个变量指到同一处。
 ///
@@ -27,7 +52,7 @@ pub(crate) fn exe_dir() -> PathBuf {
 /// "模型管理说没下载、实际转写一直在用"（`api/config.rs` 记着那次错位）。
 /// 资产只有一个位置，就没有"只查了一处"的 bug。
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("VTRIM_DATA_DIR")
+    std::env::var_os(DATA_DIR_ENV)
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(exe_dir)
@@ -52,9 +77,15 @@ pub fn user_home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 程序状态目录（配置、模型、server.toml）—— 挂在 [`data_dir`] 下的 `.vtrim/`。
+/// 程序状态目录（配置、模型、server.toml）—— 挂在 [`data_dir`] 下的 `.yekitrim/`。
 pub fn vtrim_home() -> PathBuf {
-    data_dir().join(".vtrim")
+    data_dir().join(STATE_DIR_NAME)
+}
+
+/// [`vtrim_home`] 的可注入版本（单测用：不碰环境变量）。
+/// 与 [`data_dir_in`] 同一形状 —— 拼规则只有这一处，测试直接验它。
+pub fn vtrim_home_at(data_dir: &Path) -> PathBuf {
+    data_dir.join(STATE_DIR_NAME)
 }
 
 /// 预设贴纸文件夹路径（程序目录下的 `stickers/` 目录）。
@@ -111,7 +142,7 @@ mod tests {
         assert_eq!(display(Path::new("/tmp/a")), "/tmp/a");
     }
 
-    /// **资产只有一个位置**：默认在程序目录，`VTRIM_DATA_DIR` 是唯一的口子。
+    /// **资产只有一个位置**：默认在程序目录，`YEKITRIM_DATA_DIR` 是唯一的口子。
     ///
     /// 回归的是 2026-10-02 的口径切换（*所有内容围绕程序目录来，不要用户目录*）：
     /// 字体库曾经优先取 `~/.vtrim/fonts`，导致 CLI 与 WebUI 各看一份库（实测两边
@@ -125,10 +156,20 @@ mod tests {
         // 空串等同没设（环境变量为空时别把资产写到根目录去）
         assert_eq!(data_dir_in(Some(Path::new("")), exe), Path::new("/install"));
         // 显式覆盖 ⇒ 用覆盖值（debug/release 共用一份 1.1 GB 模型靠它）
-        let shared = Path::new("/shared/vtrim-data");
+        let shared = Path::new("/shared/yekitrim-data");
         assert_eq!(data_dir_in(Some(shared), exe), shared);
-        assert_eq!(font_dir_at(shared), Path::new("/shared/vtrim-data/resources/fonts"));
+        assert_eq!(font_dir_at(shared), Path::new("/shared/yekitrim-data/resources/fonts"));
         // ⚠️ 判据是"路径里没有用户目录" —— 主目录取不到/取得到都不该改变结果
         assert!(!font_dir_at(&data_dir_in(None, exe)).to_string_lossy().contains(".vtrim/fonts"));
+    }
+
+    /// ⚠️ 状态目录改名后**磁盘上的路径必须是新名字**（旧 `.vtrim` 不再被创建）。
+    #[test]
+    fn state_dir_uses_the_new_name() {
+        assert_eq!(STATE_DIR_NAME, ".yekitrim");
+        let exe = Path::new("/install");
+        assert_eq!(vtrim_home_at(exe), Path::new("/install/.yekitrim"));
+        // 判据是"不再写旧目录"，不是"路径里出现过 vtrim 这个子串"
+        assert!(!vtrim_home_at(exe).to_string_lossy().contains("/.vtrim"));
     }
 }

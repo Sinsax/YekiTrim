@@ -7,7 +7,7 @@
 //! [`LogBusLayer`] 挂在 `main.rs` 的 subscriber 上，把每条事件同时写进：
 //! - 2000 条环形缓冲（`GET /api/admin/logs` 拉历史 / 断线补齐）
 //! - broadcast（`GET /api/admin/logs/events` 的 SSE 实时流）
-//! - 文件 `<data_dir>/logs/vtrim-YYYYMMDD.log`（[`enable_file_log`] 之后；按天分文件）
+//! - 文件 `<data_dir>/logs/yekitrim-YYYYMMDD.log`（[`enable_file_log`] 之后；按天分文件）
 //!
 //! **纪律**：日志层自身绝不 panic、绝不阻塞调用方 —— 任何 IO 失败静默忽略，
 //! 否则"记日志"会把被记录的那件事一起弄挂。
@@ -135,9 +135,9 @@ fn file_log_dir() -> Option<PathBuf> {
     FILE_DIR.get().cloned()
 }
 
-/// 当前（或最近的）日志文件路径：`<dir>/vtrim-YYYYMMDD.log`。
+/// 当前（或最近的）日志文件路径：`<dir>/yekitrim-YYYYMMDD.log`。
 pub fn file_log_path(dir: &std::path::Path) -> PathBuf {
-    dir.join(format!("vtrim-{}.log", chrono::Local::now().format("%Y%m%d")))
+    dir.join(format!("yekitrim-{}.log", chrono::Local::now().format("%Y%m%d")))
 }
 
 #[derive(Default)]
@@ -186,7 +186,7 @@ impl LogBusLayer {
             match std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(dir.join(format!("vtrim-{date}.log")))
+                .open(dir.join(format!("yekitrim-{date}.log")))
             {
                 Ok(f) => {
                     st.file = Some(f);

@@ -9,8 +9,8 @@ import { computed, reactive } from 'vue'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
 
-const LS_LAST = 'vtrim.wb.last'
-const LS_EXPANDED = 'vtrim.wb.expanded'
+const LS_LAST = 'yekitrim.wb.last'
+const LS_EXPANDED = 'yekitrim.wb.expanded'
 
 function readLast() {
   try {
@@ -42,7 +42,7 @@ export const wb = reactive({
 })
 
 /** 正在飞的那次请求。**单飞（single-flight）**：这个接口对每个项目都要读
- *  `vtrim.toml` + 扫一遍产物目录，项目在网络盘上时一次要几百毫秒到几秒；
+ *  `yekitrim.toml` + 扫一遍产物目录，项目在网络盘上时一次要几百毫秒到几秒；
  *  而任务结束、页面挂载、各视图初始化都会同时来一发 —— 不去重就会成串地打
  *  （实测服务器日志里 1 秒内 52 次），把服务端的线程全占住。
  *  并发的调用共享同一个请求，完成后再放行下一次。 */
@@ -207,9 +207,9 @@ export async function removeProjectSource(pid) {
  *
  * 服务器那边只删了一行登记，而前端有三处按 pid 存的东西会永远留着：
  * ① `wb.cache[pid]` —— per-pid 数据缓存（`loadProjectData` 命中非空 `status` 就直接返回，
- *    是个不会自己过期的快照）；② `vtrim.wb.expanded`；③ `vtrim.wb.last`（`/` 的回落目标）。
+ *    是个不会自己过期的快照）；② `yekitrim.wb.expanded`；③ `yekitrim.wb.last`（`/` 的回落目标）。
  * ③ 目前靠 `lastPath()` 里的 `projectById` 守卫兜住才没炸，但那只是"看不见的错"，
- * 本地存储里一直躺着指向已移除项目的 pid。精修页还有一份 `vtrim.polish.last.<pid>`。
+ * 本地存储里一直躺着指向已移除项目的 pid。精修页还有一份 `yekitrim.polish.last.<pid>`。
  *
  * ⚠️ 项目 id 是 `INTEGER PRIMARY KEY AUTOINCREMENT`，SQLite 保证不会复用，
  * 所以这些残留不会"串到别的项目上"—— 清掉是为了不留垃圾，不是为了防串号。
@@ -227,5 +227,5 @@ export function forgetProject(pid) {
     wb.last = { pid: '', step: wb.last?.step || 'prepare' }
     localStorage.setItem(LS_LAST, JSON.stringify(wb.last))
   }
-  try { localStorage.removeItem('vtrim.polish.last.' + key) } catch (e) { /* 隐私模式下会抛，忽略 */ }
+  try { localStorage.removeItem('yekitrim.polish.last.' + key) } catch (e) { /* 隐私模式下会抛，忽略 */ }
 }

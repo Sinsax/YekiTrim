@@ -174,7 +174,7 @@ pub(super) async fn create_local_project(
     if !dir.is_dir() {
         return Err(err(StatusCode::BAD_REQUEST, "只能选择目录"));
     }
-    let config_path = dir.join("vtrim.toml");
+    let config_path = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
     let is_existing_project = config_path.is_file();
 
     // 已有 vtrim.toml：只登记/打开，不重写（否则会覆盖用户手改过的工程设置）
@@ -425,10 +425,10 @@ pub(super) async fn project_delete(
     let is_project_file = path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.eq_ignore_ascii_case("vtrim.toml"))
+        .map(|n| n.eq_ignore_ascii_case(yekitrim_core::path::PROJECT_CONFIG_FILE))
         .unwrap_or(false);
     if !is_project_file {
-        return Err(err(StatusCode::BAD_REQUEST, "只允许操作 vtrim.toml"));
+        return Err(err(StatusCode::BAD_REQUEST, "只允许操作 yekitrim.toml"));
     }
     let db = state.auth.db();
     let project = db
@@ -582,7 +582,7 @@ mod tests {
 #[tokio::test]
 async fn unregister_keeps_every_file_and_can_rebind() {
     let t = test_app().await;
-    let cfg = t.root.join("vtrim.toml");
+    let cfg = t.root.join("yekitrim.toml");
     let cfg_before = std::fs::read_to_string(&cfg).unwrap();
     // 造一个"产物"：移除后它必须还在
     let clip = t.root.join("output").join("clips").join("clip-01").join("clip.mp4");
@@ -599,7 +599,7 @@ async fn unregister_keeps_every_file_and_can_rebind() {
     assert_eq!(res.status(), StatusCode::OK);
 
     // ① 零文件改动：配置 / 源媒体 / 产物全部原样
-    assert!(cfg.exists(), "vtrim.toml 必须留着（移除 ≠ 删目录）");
+    assert!(cfg.exists(), "yekitrim.toml 必须留着（移除 ≠ 删目录）");
     assert_eq!(std::fs::read_to_string(&cfg).unwrap(), cfg_before, "内容也不该变");
     assert!(t.root.join("a.mp4").exists(), "源媒体必须留着");
     assert!(clip.exists(), "产物必须留着");
