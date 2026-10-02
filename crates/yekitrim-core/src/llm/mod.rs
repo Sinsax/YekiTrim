@@ -325,12 +325,26 @@ mod tests {
 
     /// 极简假 OpenAI 服务：第 n 个请求回 `script[n]`（用完后不再受理）。
     /// 只为验证"发出去 → 记账"，不解析请求体。
-    async fn fake_server(script: Vec<(u16, String)>) -> String {
+    ///
+    /// ⚠️ **返回的 listener 必须被调用方持有到测试结束**（`let (_srv, base) = …`）：
+    /// 只把 port 拿出来、把 listener 丢进 `spawn` 的写法有个**偶发**缺陷 ——
+    /// 客户端重试前要退避 2s（`send_retries_then_records_attempts`），而重试期间
+    /// 那条 listen socket 若已被回收，系统的临时端口就可能被**同期另一个测试**的
+    /// listener 拿去 ⇒ 第 2 次尝试连到别人的假服务上，回一个不属于本用例的状态码。
+    /// 症状是 `send_records_usage_on_success` 偶发报 `502 Bad Gateway`
+    /// （本机实测：单跑 6/6 绿，`cargo test --workspace` 并行下约 1/3 概率红）。
+    /// 持有 listener 保证**测试活着时这个端口不被复用**。
+    async fn fake_server(script: Vec<(u16, String)>) -> (Arc<TcpListener>, String) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // ⚠️ `tokio::net::TcpListener` 没有 `try_clone`（那个在 std 上）：这里靠
+        // **把一个 listener 按值移进 spawn、再把它还回去**做不到，所以改用
+        // `Arc<TcpListener>` 共享 —— 两边都拿到同一个 fd，端口在测试全程被占住。
+        let listener = std::sync::Arc::new(listener);
+        let serve = listener.clone();
         tokio::spawn(async move {
             for (code, body) in script {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = serve.accept().await else { break };
                 let mut buf = [0u8; 8192];
                 let _ = sock.read(&mut buf).await;
                 let reason = if code == 200 { "OK" } else { "ERR" };
@@ -342,7 +356,7 @@ mod tests {
                 let _ = sock.shutdown().await;
             }
         });
-        format!("http://{addr}/v1")
+        (listener, format!("http://{addr}/v1"))
     }
 
     fn recorder() -> Arc<Recorder> {
@@ -357,7 +371,8 @@ mod tests {
             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "prompt_cache_hit_tokens": 64}
         })
         .to_string();
-        let base = fake_server(vec![(200, body)]).await;
+        // listener 必须活到测试结束（见 fake_server 的 ⚠️）
+        let (_srv, base) = fake_server(vec![(200, body)]).await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1")
             .with_usage_sink(rec.clone())
@@ -380,7 +395,8 @@ mod tests {
     /// 硬失败（400 不重试）：也记一行，带状态码与错误串。
     #[tokio::test]
     async fn send_records_usage_on_hard_failure() {
-        let base = fake_server(vec![(400, r#"{"error":"bad key"}"#.to_string())]).await;
+        let (_srv, base) =
+            fake_server(vec![(400, r#"{"error":"bad key"}"#.to_string())]).await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
 
@@ -404,7 +420,8 @@ mod tests {
             "usage": {"prompt_tokens": 5, "completion_tokens": 1}
         })
         .to_string();
-        let base = fake_server(vec![(500, "{}".to_string()), (200, ok_body)]).await;
+        // 重试要退避 2s ⇒ 这条尤其依赖 listener 不被回收（见 fake_server 的 ⚠️）
+        let (_srv, base) = fake_server(vec![(500, "{}".to_string()), (200, ok_body)]).await;
         let rec = recorder();
         let client = LlmClient::new("k", &base, "m1").with_usage_sink(rec.clone());
 

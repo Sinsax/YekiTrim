@@ -9,7 +9,7 @@
 
       <!-- 总闸关着就别给表单：直接说清楚（服务端也会 403，这里只是别让人白填） -->
       <template v-if="enabled === false">
-        <div class="empty small">当前未开放注册。请联系管理员生成邀请码（<span class="mono">vtrim user invite</span>），
+        <div class="empty small">当前未开放注册。请联系管理员生成邀请码（<span class="mono">yekitrim user invite</span>），
           或直接在设置页「注册与邀请码」里开启。</div>
         <router-link class="btn" style="width:100%;justify-content:center;margin-top:12px" to="/login">去登录</router-link>
       </template>
@@ -33,7 +33,7 @@
           </div>
           <div class="fld">
             <label for="reg-invite">邀请码</label>
-            <input id="reg-invite" v-model="invite" class="mono" :disabled="busy" placeholder="vtrim_inv_…">
+            <input id="reg-invite" v-model="invite" class="mono" :disabled="busy" placeholder="yekitrim_inv_…">
           </div>
           <button class="btn btn-primary" style="width:100%;justify-content:center" type="submit" :disabled="busy || !canSubmit">
             <span v-if="busy" class="spinner"></span>
