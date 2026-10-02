@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "yekitrim", version, about = "直播录像自动切片工具")]
 pub struct Cli {
-    /// 配置文件路径 (默认 ./vtrim.toml)
+    /// 配置文件路径 (默认 ./yekitrim.toml)
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -20,7 +20,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// 初始化视频工程 (创建 vtrim.toml)
+    /// 初始化视频工程 (创建 yekitrim.toml)
     Init {
         /// 输入视频文件
         input: PathBuf,
@@ -33,12 +33,12 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// 配置文件路径 (默认 ./vtrim.toml)
+        /// 配置文件路径 (默认 ./yekitrim.toml)
         #[arg(long)]
         config: Option<PathBuf>,
     },
 
-    /// 下载 sherpa-onnx binary + 模型到 .vtrim/
+    /// 下载 sherpa-onnx binary + 模型到 .yekitrim/
     Download,
 
     /// 配置管理
@@ -47,7 +47,7 @@ pub enum Command {
 
     /// 提取音频 (Stage 1)
     Extract {
-        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        /// 输入视频文件 (默认使用 yekitrim.toml 中记录的 input_file)
         #[arg(short, long)]
         input: Option<PathBuf>,
 
@@ -58,7 +58,7 @@ pub enum Command {
 
     /// 语音转文字 (Stage 2)
     Transcribe {
-        /// 输入音频/视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        /// 输入音频/视频文件 (默认使用 yekitrim.toml 中记录的 input_file)
         #[arg(short, long)]
         input: Option<PathBuf>,
 
@@ -68,7 +68,7 @@ pub enum Command {
 
     },
 
-    /// LLM 订正转录文本（需先运行 vtrim transcribe）
+    /// LLM 订正转录文本（需先运行 yekitrim transcribe）
     #[command(name = "correct")]
     Correct {
         /// 转录 JSON 文件路径（默认自动发现）
@@ -85,7 +85,7 @@ pub enum Command {
 
     /// 剪切片段 (Stage 4)
     Cut {
-        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        /// 输入视频文件 (默认使用 yekitrim.toml 中记录的 input_file)
         #[arg(short, long)]
         input: Option<PathBuf>,
 
@@ -100,7 +100,7 @@ pub enum Command {
 
     /// 全自动管线处理（无视 state，从头跑到尾）
     Process {
-        /// 输入视频文件 (默认使用 vtrim.toml 中记录的 input_file)
+        /// 输入视频文件 (默认使用 yekitrim.toml 中记录的 input_file)
         #[arg(short, long)]
         input: Option<PathBuf>,
 
@@ -128,7 +128,7 @@ pub enum Command {
         threshold: Option<f64>,
     },
 
-    /// 视频精修（GSAP 特效 + 字幕 + 弹幕 + 封面，需先 vtrim cut）
+    /// 视频精修（GSAP 特效 + 字幕 + 弹幕 + 封面，需先 yekitrim cut）
     #[command(subcommand)]
     Polish(PolishAction),
 
@@ -137,7 +137,7 @@ pub enum Command {
 
     /// 安全与运行状况摘要（账号/初始密码/单实例锁/数据目录磁盘/服务可达性）
     Doctor {
-        /// 探测地址（默认 http://127.0.0.1:26320，与 `vtrim server` 默认监听一致）
+        /// 探测地址（默认 http://127.0.0.1:26320，与 `yekitrim server` 默认监听一致）
         #[arg(long, default_value = yekitrim_service::doctor::DEFAULT_URL)]
         url: String,
     },
@@ -262,7 +262,7 @@ pub enum UserAction {
 pub enum ConfigAction {
     /// 生成默认配置文件 (不带视频路径)
     Init {
-        /// 输出路径 (默认 ./vtrim.toml)
+        /// 输出路径 (默认 ./yekitrim.toml)
         #[arg(long)]
         path: Option<PathBuf>,
     },
@@ -279,7 +279,7 @@ pub enum PolishAction {
         #[arg(default_value = ".")]
         input: PathBuf,
     },
-    /// LLM 分析生成 segments 和关键词（使用 .vtrim/llm.toml）
+    /// LLM 分析生成 segments 和关键词（使用 .yekitrim/llm.toml）
     Llm {
         /// clip 目录（默认当前目录）
         #[arg(default_value = ".")]
