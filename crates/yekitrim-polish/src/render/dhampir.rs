@@ -89,7 +89,7 @@ fn verify_artifact_dir(preview: &Path) -> Result<()> {
             tracing_like_log(&format!("Dhampir 产物：{}（project_schema={}）", v.display(), schema));
         }
         _ => bail!(
-            "Dhampir 产物缺 VERSION（{}）—— 它是产物与 V-Trim 之间的契约版本，不能没有。",
+            "Dhampir 产物缺 VERSION（{}）—— 它是产物与 YekiTrim 之间的契约版本，不能没有。",
             version.map(|v| v.display().to_string()).unwrap_or_else(|| "<未知>".into())
         ),
     }
@@ -203,7 +203,7 @@ fn find_binary() -> Result<PathBuf> {
     tried.push(format!("PATH 上的 {exe}"));
 
     bail!(
-        "找不到 Dhampir 二进制（{exe}）。设 VTEDIT_DHAMPIR=<路径>，或把 Dhampir 与 V-Trim 放在同一层目录。\n  找过：\n    {}\n  \
+        "找不到 Dhampir 二进制（{exe}）。设 VTEDIT_DHAMPIR=<路径>，或把 Dhampir 与 YekiTrim 放在同一层目录。\n  找过：\n    {}\n  \
          （出片只有这一条腿 —— 本仓那条 headless Chrome 兜底腿已于 2026-10-01 整条删除，别去找它）",
         tried.join("\n    ")
     )

@@ -81,7 +81,7 @@ const stageText = computed(() => {
 async function load() {
   try {
     const d = await projectData.config(pid, '读取项目配置')
-    raw.value = d.vtrim_raw || ''
+    raw.value = d.yekitrim_raw || ''
     loaded.value = true
   } catch (e) {
     loaded.value = false
