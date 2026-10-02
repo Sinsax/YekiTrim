@@ -151,14 +151,14 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   ② `api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` / `check_material_paths`；
   ③ 消费侧纵深防御（`vtrim-polish/src/cover.rs` 的 `tenant::ensure_within`）。
   细节与"新增路径字段要做什么"在 `crates/vtrim-server/src/api/AGENTS.md`。
-- ⚠️ **`webui/dist` 的位置靠 `CARGO_MANIFEST_DIR/../..`**（`vtrim-server/src/web.rs`），按 crate 深度算：
-  别把 `vtrim-server` 挪到更深的目录，否则 WebUI 静默 404。`webui/dist` **已入库**，改了
-  `webui/src` 必须重建并一起提交。
-- ⚠️ **本仓不再自带任何 GPU 渲染**：`vtrim-render-core` 的 wgpu 管线、`polish/src/render/native/`、
-  `vtrim-wasm` + `webui/src/wasm/`、`/api/health` 的 `wgpu_render` 与 `POST /api/polish/render-frame`
-  **整条已删除**；GPU 那侧交给独立的 **Dhampir 底座**。出片/预览的事实来源只有 `templates/index.html`
-  的 canvas 路径，**别再往本仓加回 GPU 管线**。⚠️ **出片默认就是底座**（`dhampir`，2026-09-30 拍板；
-  `chrome` 兜底、认不出的值直接报错），画面归底座、音轨仍归本仓 —— 细节见 `polish-render` 卡。
+- ⚠️ **`webui/dist` 先找 exe 附近、构建期常量垫底**（`vtrim-server/src/web.rs`，2026-10-02 改）：
+  `exe同级 → exe上两级 → CARGO_MANIFEST_DIR/../.. → cwd`。两条由 `current_exe()` 派生的
+  **必须**排在构建期常量前面 —— 那常量是编译期烧死的绝对路径，排前面会让「换台机器/换个 cwd」
+  静默端出**开发机源码树里**的界面（有测试钉住次序）。`webui/dist` **已入库**，改了 `webui/src`
+  必须重建并一起提交。
+- ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `vtrim-wasm` / `render-frame` 接口
+  **整条已删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），
+  画面归底座、音轨归本仓。**别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
 - ⚠️ **默认端口 26320 只有一份定义**：`vtrim-service/src/doctor.rs::DEFAULT_PORT`。
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
@@ -167,8 +167,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**。
 - ⚠️ **不许手改生成物**：`webui/dist/`（vite 构建产物，**已入库**）—— 改了 `webui/src` 必须
   `npm --prefix webui run build` 重建，再一起提交；别直接编辑 dist 里的 js/css。
-  （曾经还有 `webui/src/wasm/` 与 `crates/vtrim-wasm/src/wasm/` 两份 wasm-bindgen 生成物 ——
-  随「作废 wgpu」一起删掉了。）
+
 
 ## 验证
 

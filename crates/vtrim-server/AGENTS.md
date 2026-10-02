@@ -26,8 +26,11 @@
   连同 `vtrim-polish/wgpu-render`、`vtrim-render-core/wgpu`、`vtrim-wasm` 一起没了 ——
   GPU 那侧交给独立的 Dhampir 底座。所以本 crate **没有任何 feature**。
   **别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
-- ⚠️ `webui/dist` 的位置靠 `CARGO_MANIFEST_DIR/../..`（`vtrim-server/src/web.rs`），
-  按 crate 深度算。**别把 `vtrim-server` 挪到更深的目录**，否则 WebUI 静默 404。
+- ⚠️ `webui/dist` 的**候选次序是契约**（`src/web.rs::candidates`，2026-10-02 改）：
+  `exe同级 → exe上两级 → 构建期 CARGO_MANIFEST_DIR/../.. → cwd`。前两条由 `current_exe()` 派生，
+  **必须**排在编译期常量前面 —— 否则换台机器 / 换个 cwd 会静默端出**开发机源码树里**那份
+  （三条测试钉住次序，见 `web.rs::tests`）。构建期那条仍按 crate 深度算：别把本 crate 挪到更深
+  的目录，否则它指到 `crates/`。
 - `src/web.rs` 只服务 `webui/dist`：缺 `index.html` 时 `/` 回 **503 + 构建指引**，启动日志也告警。
 
 ### 任务队列（`src/jobs.rs` / `src/scope_key.rs`）
