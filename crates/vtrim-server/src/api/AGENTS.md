@@ -40,10 +40,10 @@
   `DELETE /api/polish/fonts?id=`（`builtin=true` → **403「程序自带字体不可删除」**）。
   读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default`
   /`flat`（老平铺布局标签）/`fallback_stack`（**动态兜底字体栈**，预览 `.cap` 栈与成片同源的收口））。
-  ⚠️ **写路径（导入/下载自带）必须走 `fonts::ensure_dir()`**（用户固定目录 `~/.vtrim/fonts`，
-  含老库一次性搬家）——拿 `font_dir()` 当写目标会退回"读侧解析"，把字体写进程序目录，
-  换个构建/安装目录就全部「未下载」（2026-10 实际发生过）。`set_default`/`remove` 操作的是
-  **当前可见的那份库**（`font_dir()`），这是有意的。
+  ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir()`** —— 它负责 `create_dir_all`。
+  读写现在解析到**同一个目录**（`<数据目录>/resources/fonts`，2026-10-02 资产收回程序目录之后），
+  但仍别自己拼路径：目录不存在时要建出来。`set_default`/`remove` 操作的是**当前可见的那份库**
+  （`font_dir()`），这是有意的。
   ⚠️ 这三条**有意不挂 `enforce_scope`**：字体库是**程序级全局资产**、不在任何项目内，
   与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。

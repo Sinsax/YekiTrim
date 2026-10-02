@@ -29,9 +29,7 @@ fn model_dir(cfg: &AsrConfig) -> PathBuf {
 pub enum ModelDirSource {
     /// 配置里的 `local_model_dir`
     Config,
-    /// 用户目录 `~/.vtrim/models/<model>`
-    UserHome,
-    /// 程序目录 `<exe>/.vtrim/models/<model>`
+    /// 程序目录 `<数据目录>/.vtrim/models/<model>`
     ExeDir,
 }
 
@@ -39,7 +37,6 @@ impl ModelDirSource {
     pub fn as_str(self) -> &'static str {
         match self {
             ModelDirSource::Config => "config",
-            ModelDirSource::UserHome => "user",
             ModelDirSource::ExeDir => "exe",
         }
     }
@@ -48,7 +45,6 @@ impl ModelDirSource {
     pub fn label(self) -> &'static str {
         match self {
             ModelDirSource::Config => "配置目录",
-            ModelDirSource::UserHome => "用户目录",
             ModelDirSource::ExeDir => "程序目录",
         }
     }
@@ -58,24 +54,24 @@ impl ModelDirSource {
 ///
 /// 查找优先级：
 /// 1. 配置的 `local_model_dir`（直接目录或 models 根目录）
-/// 2. 用户目录 `~/.vtrim/models/<model>`
-/// 3. 程序目录 `.vtrim/models/<model>`
+/// 2. 程序目录 `<数据目录>/.vtrim/models/<model>`
 ///
 /// ⚠️ 这里是"模型在哪"的**唯一真源**：运行时（`model_dir_for`）与界面/诊断
 /// （`download::model_install`）都走它 —— 曾出过"模型管理说没下载、实际转写一直在用"
 /// 的错位，就是界面那边自己写了另一套路径（只看程序目录）。
+///
+/// ⚠️ **2026-10-02 去掉了"用户目录优先"那一档**（用户口径：*不要用户目录*）。
+/// 那一档是"开发时模型常放这里"留下的，代价是**模型有了两个可能的位置** ——
+/// 上面记的那次错位（界面只看程序目录、模型实际在 `~/.vtrim/models`）正是它造成的。
+/// 现在位置只有一个，"只查了一处"这类 bug 从根上没有了。
 pub fn resolve_model_dir(cfg: &AsrConfig, model: &str) -> (PathBuf, ModelDirSource) {
-    let user_home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    resolve_model_dir_in(cfg, model, user_home.as_deref(), &crate::path::vtrim_home())
+    resolve_model_dir_in(cfg, model, &crate::path::vtrim_home())
 }
 
 /// `resolve_model_dir` 的可注入版本（单测用：不碰环境变量，edition 2024 下 `set_var` 是 unsafe）。
 pub fn resolve_model_dir_in(
     cfg: &AsrConfig,
     model: &str,
-    user_home: Option<&Path>,
     exe_home: &Path,
 ) -> (PathBuf, ModelDirSource) {
     if !cfg.local_model_dir.is_empty() {
@@ -89,14 +85,6 @@ pub fn resolve_model_dir_in(
             return (direct, ModelDirSource::Config);
         }
         return (base, ModelDirSource::Config);
-    }
-
-    // 用户目录优先（开发时模型常放这里）
-    if let Some(home) = user_home {
-        let user_dir = home.join(".vtrim").join("models").join(model);
-        if user_dir.exists() {
-            return (user_dir, ModelDirSource::UserHome);
-        }
     }
 
     (exe_home.join("models").join(model), ModelDirSource::ExeDir)
@@ -1123,28 +1111,26 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         let exe_home = base.join("exe").join(".vtrim");
-        let user_home = base.join("user");
         // 程序目录里有一份 sensevoice
         std::fs::create_dir_all(exe_home.join("models").join("sensevoice")).unwrap();
 
         let mut cfg = AsrConfig::default();
-        // ① 配置为空 + 用户目录没有 → 程序目录
-        let (dir, src) = resolve_model_dir_in(&cfg, "sensevoice", Some(&user_home), &exe_home);
+        // ① 配置为空 → 程序目录（**唯一的位置**）
+        let (dir, src) = resolve_model_dir_in(&cfg, "sensevoice", &exe_home);
         assert_eq!(src, ModelDirSource::ExeDir);
         assert!(dir.ends_with(Path::new("models").join("sensevoice")));
 
-        // ② 用户目录里有 → 用户目录优先（即便程序目录也有）
-        let user_models = user_home.join(".vtrim").join("models");
-        std::fs::create_dir_all(user_models.join("qwen3-asr")).unwrap();
-        let (dir, src) = resolve_model_dir_in(&cfg, "qwen3-asr", Some(&user_home), &exe_home);
-        assert_eq!(src, ModelDirSource::UserHome, "{}", dir.display());
-        assert!(dir.starts_with(&user_models));
+        // ② 没落地过的模型名也照旧给程序目录下的目标路径（下载要往这儿写）
+        let (dir, src) = resolve_model_dir_in(&cfg, "qwen3-asr", &exe_home);
+        assert_eq!(src, ModelDirSource::ExeDir);
+        assert!(dir.starts_with(&exe_home), "{}", dir.display());
+        assert!(dir.ends_with(Path::new("models").join("qwen3-asr")));
 
-        // ③ 配了 local_model_dir（models 根目录写法）→ 配置目录，且不再看用户/程序目录
+        // ③ 配了 local_model_dir（models 根目录写法）→ 配置目录，且不再看程序目录
         let cfg_dir = base.join("cfg").join("models");
         std::fs::create_dir_all(cfg_dir.join("qwen3-asr")).unwrap();
         cfg.local_model_dir = cfg_dir.to_string_lossy().into_owned();
-        let (dir, src) = resolve_model_dir_in(&cfg, "qwen3-asr", Some(&user_home), &exe_home);
+        let (dir, src) = resolve_model_dir_in(&cfg, "qwen3-asr", &exe_home);
         assert_eq!(src, ModelDirSource::Config);
         assert_eq!(dir, cfg_dir.join("qwen3-asr"));
 
@@ -1153,7 +1139,7 @@ mod tests {
         std::fs::create_dir_all(&direct).unwrap();
         std::fs::write(direct.join("model.int8.onnx"), b"x").unwrap();
         cfg.local_model_dir = direct.to_string_lossy().into_owned();
-        let (dir, src) = resolve_model_dir_in(&cfg, "sensevoice", Some(&user_home), &exe_home);
+        let (dir, src) = resolve_model_dir_in(&cfg, "sensevoice", &exe_home);
         assert_eq!(src, ModelDirSource::Config);
         assert_eq!(dir, direct);
 

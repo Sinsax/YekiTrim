@@ -1255,8 +1255,8 @@ pub(super) async fn polish_project_get_impl(
 
 /// 字体库全量（**只读**，非 admin 也能看）：字幕字体 / 封面字体的下拉数据源。
 ///
-/// 库位置走 `vtrim_core::path::font_dir` 的解析（**用户固定目录 `~/.vtrim/fonts` 优先**，
-/// 不存在才回落 `<程序目录>/resources/fonts/`；写路径一律落用户目录，见 `fonts::ensure_dir`）。
+/// 库位置就是 `vtrim_core::path::font_dir()`：**`<数据目录>/resources/fonts/`** 一处
+/// （默认程序目录；`VTRIM_DATA_DIR` 可覆盖）。读写同一个位置，见 `fonts::ensure_dir`。
 /// **以磁盘为准**：往里丢一个 `.ttf` / `.otf` / `.ttc` 就会出现在列表里，没有索引文件要维护。
 /// `id` = 目录名（v2 布局）或文件名去扩展名（老布局）—— **配置里存的就是它**；
 /// `family` = **内部族名**（`FONT.toml` 的 `family`，唯一权威：预览 / 出片 `@font-face` / Takumi 三处都认它）。
@@ -1384,8 +1384,8 @@ pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> 
         // 目录布局写入 + 读字体表都碰磁盘（可能是网络盘），一律留在 blocking 池上。
         // ⚠️ 字体库的错都是 `anyhow`（"只收 .ttf/.otf"、"程序自带字体不可删除"…），
         // 转成 400 + 原话：用户要看到"为什么这支不行"，不是笼统的 500。
-        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录 `~/.vtrim/fonts`，含老库一次性搬家），
-        // 不能拿 `font_dir()`（读侧解析：用户目录还没建出来时会回落程序目录，字体就导歪了）。
+        // ⚠️ 写路径走 `ensure_dir()`（它会 `create_dir_all`），别自己拼 `font_dir()`。
+        // 两者现在解析到**同一个目录**（读=写），但仍要走它 —— 目录不存在时要建出来。
         let root = vtrim_core::fonts::ensure_dir()
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         vtrim_core::fonts::import_font(&root, &path, display.as_deref())
@@ -1433,8 +1433,7 @@ pub(super) async fn polish_fonts_upload(
     }
     let display = q.get("display").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let entry = blocking(move || {
-        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录 `~/.vtrim/fonts`，含老库一次性搬家），
-        // 拿 `font_dir()` 会写进程序目录 —— 换个构建目录就全部「未装上」。
+        // ⚠️ 写路径走 `ensure_dir()`（它会 `create_dir_all`），别自己拼 `font_dir()`。
         let root = vtrim_core::fonts::ensure_dir()
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         vtrim_core::fonts::import_font_bytes(&root, &base, &body, display.as_deref())
@@ -1459,7 +1458,7 @@ pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) ->
         .to_string();
     blocking(move || {
         // set_default / remove 操作的是**当前可见的那份库**（`font_dir()` 读侧解析），
-        // 不是写路径 —— 用户目录还没建出来时，可见的库就在程序目录，改的应当是它。
+        // 不是写路径 —— `set_default` / `remove` 改的是**当前可见的那份库**（`font_dir()`）。
         vtrim_core::fonts::set_default(&vtrim_core::path::font_dir(), &id)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
     })
@@ -1515,7 +1514,7 @@ pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) ->
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let report = blocking(move || {
-        // ⚠️ 写路径必须走 `ensure_dir()`（用户固定目录，含老库一次性搬家）——
+        // ⚠️ 写路径走 `ensure_dir()`（它负责 `create_dir_all`）——
         // 否则字体会写进程序目录，换个构建/安装目录就全部「未安装」。
         let root = vtrim_core::fonts::ensure_dir()
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;

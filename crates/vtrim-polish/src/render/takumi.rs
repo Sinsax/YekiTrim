@@ -820,7 +820,8 @@ mod tests {
             }
         };
         let mut fonts: Vec<std::path::PathBuf> = Vec::new();
-        // 字体目录：用户的库（`~/.vtrim/fonts`）优先，再落程序目录的回落态（缺了探针直接跳过）
+        // 字体目录：`font_dir()` 是现在唯一的位置（`<数据目录>/resources/fonts`）；
+        // 后两项是**探针专用**的回落态（人肉验收时也许还没跑过 server，库是空的）
         // cargo test 的 cwd = crate 目录 ⇒ 用 CARGO_MANIFEST_DIR 的父目录锚 repo 根
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).map(Path::to_path_buf).unwrap_or_default();
         let candidates = [
