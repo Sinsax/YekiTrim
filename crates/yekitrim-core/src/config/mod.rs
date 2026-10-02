@@ -1,7 +1,7 @@
 //! config：全站配置类型（`types.rs`）与两层合并 / 安全写入（本文件）。
 //!
 //! 入口：`load_config` / `load_config_at` / `load_global_config` / `load_llm_config`、`patch_config_file`（设置页唯一保存通道）、`write_project_config`、`save_*_path_in`、`resolve_reference_titles`。
-//! 边界：改字段必须走四步（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）；`patch_config_file` 是递归深合并，别退回"一层 section" —— 见 `crates/vtrim-core/src/config/AGENTS.md`
+//! 边界：改字段必须走四步（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）；`patch_config_file` 是递归深合并，别退回"一层 section" —— 见 `crates/yekitrim-core/src/config/AGENTS.md`
 
 mod types;
 pub use types::*;
@@ -68,7 +68,7 @@ fn default_reference_titles() -> Vec<String> {
         .collect()
 }
 
-/// 全局默认配置模板（`vtrim config init` 生成 .vtrim/config.toml 用，`vtrim init` 的基底）
+/// 全局默认配置模板（`yekitrim config init` 生成 .yekitrim/config.toml 用，`yekitrim init` 的基底）
 /// 包含 {{CORRECT_SYSTEM_PROMPT}} 等占位符，由生成方替换为内建默认 prompt。
 pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有工程共享
 # 相同参数会被 yekitrim.toml 覆盖
@@ -160,7 +160,7 @@ silence_noise_db = -30
 blacklist = []
 
 [storage]
-# 服务端托管项目根目录（多用户；留空 = <exe_dir>/.vtrim/projects）
+# 服务端托管项目根目录（多用户；留空 = <exe_dir>/.yekitrim/projects）
 # 结构: <projects_root>/users/<uid>/<room>/<session>-<pid>/
 projects_root = ""
 # 全局磁盘上限（字节，0 = 不限）。只用于"入库/下载/渲染前预检"，
@@ -190,7 +190,7 @@ allow_ips = []
 # 下载器引擎。"yt-dlp" = 内置（版本 + sha256 钉死，随包分发）；
 # 其它值 = 逃生舱，写「yt-dlp 兼容可执行文件的绝对路径」（用户自备，不随包分发）。
 downloader = "yt-dlp"
-# yt-dlp 可执行文件位置覆盖（留空 = 自动发现：配置目录 → <程序目录>/.vtrim/bin/ → PATH）
+# yt-dlp 可执行文件位置覆盖（留空 = 自动发现：配置目录 → <程序目录>/.yekitrim/bin/ → PATH）
 ytdlp_path = ""
 # 最大清晰度："1080p" | "720p" | "480p" | "best"（best = 不限高）
 max_quality = "1080p"
@@ -233,7 +233,7 @@ auto_pipeline = "detect"
 registration_enabled = false
 "#;
 
-/// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
+/// LLM 配置模板（`yekitrim config init` 生成 .yekitrim/llm.toml 用）
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
 
@@ -275,7 +275,7 @@ max_tokens = 8192
 # max_tokens = 8192
 "#;
 
-/// 生成 vtrim.toml 项目配置文件（`vtrim init`）。
+/// 生成 yekitrim.toml 项目配置文件（`yekitrim init`）。
 ///
 /// * `cfg_path` — 输出配置文件路径
 /// * `input` — 输入视频路径（相对 cfg_path 目录时写相对路径）
@@ -294,7 +294,7 @@ pub fn write_project_config(
 ///
 /// 给"按来源类型预载"的调用方用 —— 服务器本机文件来源（`local`）按用户要求不预载弹幕，
 /// 由预处理页列候选让用户自己选（`service::assets::preload_policy`）。
-/// ⚠️ 别把这条规则塞回 `write_project_config`：CLI 的 `vtrim init` 语义是"顺手带上同名 .ass"，
+/// ⚠️ 别把这条规则塞回 `write_project_config`：CLI 的 `yekitrim init` 语义是"顺手带上同名 .ass"，
 /// 两条路要分开。
 pub fn write_project_config_exact(
     cfg_path: &Path,
@@ -403,7 +403,7 @@ fn write_project_config_inner(
     }
 
     let full = format!(
-        "# YekiTrim 项目配置 — 优先级高于 .vtrim/config.toml\n# 相同的参数以本文件为准\n\n{}",
+        "# YekiTrim 项目配置 — 优先级高于 .yekitrim/config.toml\n# 相同的参数以本文件为准\n\n{}",
         project_str.trim()
     ) + "\n\n"
         + body.trim();
@@ -608,7 +608,7 @@ fn merge(base: &mut Config, overlay: Config) {
 
 
     // [storage] 是服务端专用段（项目配置里不写），但仍按"非默认值覆盖"合并，
-    // 以免有人在 vtrim.toml 里试写时行为诡异
+    // 以免有人在 yekitrim.toml 里试写时行为诡异
     if !overlay.storage.projects_root.is_empty() {
         base.storage.projects_root = overlay.storage.projects_root;
     }
@@ -695,7 +695,7 @@ fn merge(base: &mut Config, overlay: Config) {
     }
 }
 
-/// 从 .vtrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
+/// 从 .yekitrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
 pub fn load_llm_config() -> LlmConfig {
     let path = crate::path::vtrim_home().join("llm.toml");
     if !path.exists() {
@@ -728,9 +728,9 @@ pub fn load_config() -> Result<Config> {
 /// 从指定项目配置文件加载合并配置。
 ///
 /// 与 `load_config()` 语义一致：
-/// - 先加载全局 `.vtrim/config.toml`
+/// - 先加载全局 `.yekitrim/config.toml`
 /// - 再用指定项目文件覆盖（项目文件不存在时按空项目处理，不报错）
-/// - 最后独立加载 `.vtrim/llm.toml`
+/// - 最后独立加载 `.yekitrim/llm.toml`
 pub fn load_config_at(project_file: &Path) -> Result<Config> {
     let mut config = Config::default();
 
@@ -750,7 +750,7 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// 校验 `.vtrim/config.toml` / `.vtrim/llm.toml` 能否解析，报出**第一个**出错的文件与原因。
+/// 校验 `.yekitrim/config.toml` / `.yekitrim/llm.toml` 能否解析，报出**第一个**出错的文件与原因。
 ///
 /// 为什么需要它：`load_global_config` / `load_llm_config` 都把解析失败**吞掉**换成默认值
 /// （它们不能因为一份坏配置就让整个进程起不来）。但界面必须知道"你看到的这些值是默认值，
@@ -771,8 +771,8 @@ pub fn global_config_parse_error() -> Option<String> {
     None
 }
 
-/// 只读全局配置 (.vtrim/config.toml), 不合并 vtrim.toml。
-/// 供不依赖项目 vtrim.toml 的模块 (如 vtrim-polish) 读取全局共享配置。
+/// 只读全局配置 (.vtrim/config.toml), 不合并 yekitrim.toml。
+/// 供不依赖项目 yekitrim.toml 的模块 (如 vtrim-polish) 读取全局共享配置。
 pub fn load_global_config() -> Config {
     let mut config = Config::default();
     let global = crate::path::vtrim_home().join("config.toml");
@@ -782,17 +782,17 @@ pub fn load_global_config() -> Config {
     config
 }
 
-/// 用 toml_edit 将 events_file 写入当前目录的 vtrim.toml
+/// 用 toml_edit 将 events_file 写入当前目录的 yekitrim.toml
 pub fn save_events_path(path: &str) -> Result<()> {
     save_events_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
 
-/// 用 toml_edit 将 audio_file 写入当前目录的 vtrim.toml
+/// 用 toml_edit 将 audio_file 写入当前目录的 yekitrim.toml
 pub fn save_audio_path(path: &str) -> Result<()> {
     save_audio_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
 
-/// 用 toml_edit 将 transcript_file 写入当前目录的 vtrim.toml
+/// 用 toml_edit 将 transcript_file 写入当前目录的 yekitrim.toml
 pub fn save_transcript_path(path: &str) -> Result<()> {
     save_transcript_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)
 }
@@ -972,7 +972,7 @@ fn rel_path_for(project_file: &Path, value: &str) -> String {
 
 /// 将项目配置文件里已记录的绝对产物路径统一改写为相对路径。
 ///
-/// 项目目录整体移动后仍可继续使用；`vtrim init` / server 切换 / 保存阶段产物时调用。
+/// 项目目录整体移动后仍可继续使用；`yekitrim init` / server 切换 / 保存阶段产物时调用。
 pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
     edit_toml_at(project_file, |doc| {
         let project = doc.get_mut("project").and_then(|p| p.as_table_mut());
@@ -993,7 +993,7 @@ pub fn normalize_project_paths_in(project_file: &Path) -> Result<()> {
                     }
                 }
             }
-            // 素材清单里的路径同样要相对化：清单是写进 `vtrim.toml` 的候选项，
+            // 素材清单里的路径同样要相对化：清单是写进 `yekitrim.toml` 的候选项，
             // 项目目录搬走后得跟着走（同样是「新增路径键要同步加」的那张表）。
             if let Some(materials) = project
                 .get_mut("materials")
@@ -1133,7 +1133,7 @@ mod patch_config_tests {
     use super::*;
 
     fn write_tmp(tag: &str, body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("vtrim-patch-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-patch-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.toml");
         std::fs::write(&p, body).unwrap();
@@ -1368,7 +1368,13 @@ max_tokens = 32768
 fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     // 这份 helper 读的是 `vtrim_home()`，而它跟着 `YEKITRIM_DATA_DIR` 走 ——
     // 测试里指到一个临时目录，避免碰开发机上那份真实配置。
-    let dir = std::env::temp_dir().join(format!("vtrim-parse-err-{}", std::process::id()));
+    //
+    // ⚠️ **改全局环境变量必须持锁**：测试是并行跑的，`set_var` 是进程级的 ——
+    // 不持锁就会踩到同期读配置的用例（`llm::tests` 那两条就是这么被偶发打红的）。
+    // 同 `yekitrim-service/src/user.rs` 的专门警告，锁形态同 `service/src/db.rs`。
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("yekitrim-parse-err-{}", std::process::id()));
     let home = dir.join(".yekitrim");
     std::fs::create_dir_all(&home).unwrap();
     let old = std::env::var_os("YEKITRIM_DATA_DIR");

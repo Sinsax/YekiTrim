@@ -56,7 +56,7 @@
           </button>
         </div>
         <p class="muted small mt-8">
-          只读服务器上已存在的文件，**不接受上传**；目录里已有 <span class="mono">vtrim.toml</span>
+          只读服务器上已存在的文件，**不接受上传**；目录里已有 <span class="mono">yekitrim.toml</span>
           时只登记/打开、不覆盖。
         </p>
       </div>
@@ -149,7 +149,7 @@
           <div v-if="recorderInfo" class="hint mt-6">{{ recorderInfo }}</div>
           <div v-if="ingestReady === false" class="hint mt-6">
             录播姬尚未接入：在 <b>设置页 →「录播姬（采集）」</b> 里填录像目录与 API 地址、生成 webhook token
-            （命令行等价：<span class="mono">vtrim ingest token</span> +
+            （命令行等价：<span class="mono">yekitrim ingest token</span> +
             <span class="mono">[ingest.recorder] root</span>）。
             未归属或入库失败的录像在 <router-link to="/ingest">全部记录与导入规则</router-link> 里处理。
           </div>

@@ -18,7 +18,7 @@
       <div>录播姬接入尚未就绪（需要 <span class="mono">[ingest] webhook_enabled = true</span>
         与 <span class="mono">[ingest.recorder] root</span>）。</div>
       <div class="small muted mt-8">
-        本机执行 <span class="mono">vtrim ingest token</span> 生成 webhook token，并把录播姬的录制目录填进配置。
+        本机执行 <span class="mono">yekitrim ingest token</span> 生成 webhook token，并把录播姬的录制目录填进配置。
       </div>
     </div>
 

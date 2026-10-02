@@ -278,6 +278,3 @@ mod tests {
         }
     }
 }
-
-// probe
-const _P: &str = "YEKITRIM_PATH:";

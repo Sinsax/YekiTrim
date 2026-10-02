@@ -49,12 +49,10 @@
   - **误删要有退路**：删除是"双击即生效 → 700ms 落盘 → 随后自动后处理"，点完就不可逆 ——
     `TimelineEditor` 保留**最近一次删除**（`lastDeleted`，15 秒）给头部一枚「撤销删除」，
     事件按**分段对象本身**认位（后处理会整体改写 segments，下标会漂）；只有**分段**保留删除确认。
-- **任务完成后的刷新必须静默**（别让页面看起来像浏览器刷新）：`PolishView.load({silent:true})`
-  不置 `loading`、不卸载编辑器 —— 非静默时 `v-if="loading"` 会把整个编辑器换成骨架屏，
-  编辑器一卸载，预览视频、`selectRegion` 与滚动位置全丢。需要重新从磁盘取数的子组件
-  各自用 `:key` 计数重挂载：`TimelineEditor`=`segKey`（LLM 剪辑/初始化/去静音）、
-  `CoverDesigner`=`coverKey`（封面任务完成 —— 渲染与封面已解耦，render 钩子不碰它）、
-  `PolishPreview`=`previewKey`（任何任务完成）。
+- **任务完成后的刷新必须静默**：`PolishView.load({silent:true})` 不置 `loading`、不卸载编辑器
+  （非静默会把编辑器换成骨架屏，预览与滚动位置全丢）。需重新取数的子组件各用 `:key` 重挂：
+  `TimelineEditor`=`segKey`（LLM 剪辑/初始化/去静音）、`CoverDesigner`=`coverKey`（封面完成 ——
+  渲染与封面已解耦，render 钩子不碰它）、`PolishPreview`=`previewKey`（任何任务完成）。
 
 **精修页 `PolishView`：LLM 剪辑四条硬规矩**
 
@@ -80,7 +78,7 @@
    编辑器按钮再带一次二次确认，因为它会重写当前全部段与事件，含手工加的）；
    `POST /api/polish/llm-segment {index}` = **只重做这一段**（不重跑分段、不走 checkpoint、
    失败保留原事件并让任务失败可见），跑完照常自动 `process`。
-   CLI `vtrim polish llm` 仍走 `full=false`（长片重跑贵，续传留给命令行）。
+   CLI `yekitrim polish llm` 仍走 `full=false`（长片重跑贵，续传留给命令行）。
 
 **精修页 `PolishView`：右栏按钮行有宽度预算**
 
@@ -105,7 +103,7 @@
   **两格都占满才**一起置灰（`canPickAsr = slotFree` + 任务运行中）—— 单格占满仍可切到另一个模式去跑，
   那正是"两种模式各出一次"的正常路径，别写成"有产物就灰"；要再出一份就换另一个模式。
   服务端同口径在 `project_data_pipeline` 里守着（`stage == "transcribe"` 且 `slot_bound(模式)` → **409**），
-  但**只拦 HTTP 这一侧**：CLI `vtrim transcribe` 不受影响，是转写崩在中途时的逃生口。
+  但**只拦 HTTP 这一侧**：CLI `yekitrim transcribe` 不受影响，是转写崩在中途时的逃生口。
 - ⚠️ 行内还有一颗 **「跑 ASR」**（2026-09）：**只转写、不接检测**（`chainDetect = false`），
   是"换模式再出一份"的入口；`canRunAsr = !slotUsed(当前模式)`，两模式都跑过时文案变「已跑过」。
   跑完产物进字幕列表并自动成为生效值，要不要接着检测由用户点主按钮决定。
@@ -123,8 +121,8 @@
   （清 `*_file` + 摘清单，正好是生效值才连带清），**不删磁盘文件**，走 `confirmDialog` 二次确认。
   **「切换」= 置为生效值**（清单里没登记过也认，选中即补登记），切完整页 `load()`（字幕轨读生效值）。
 - ⚠️ 条目 `exists=false` 时**照实报「文件不存在」**（置灰 + 删除线、切换按钮也灰），
-  不要静默飘到 `output/` 兜底上 —— 管线确实会退到 `output/`，但用户选的这份没了必须让他知道，
-  否则"选了不生效"会以最难看的方式复现（`api/config.rs::check_project_paths` 同一条口径）。
+  不要静默飘到 `output/` 兜底上 —— 管线确实会退到 `output/`，但用户选的这份没了必须让他知道
+  （`api/config.rs::check_project_paths` 同一条口径）。
 - ⚠️ 清单读失败（`assets` 为 null）时**不要**碰 `assetDirty`（`activate` 在接口成功后才设），
   否则一句"素材已切换"会凭空冒出来。
 - **改完不自动跑任务**：只把提示切成「素材已切换 —— 点下面的按钮重新检测才会生效」（LLM 有成本，
@@ -144,7 +142,7 @@
 
 - ⚠️ 两个踩过的坑：①**顺序必须按数字序号**（`clip-100` 在 `clip-02` 之后）——
   服务端 `data_clips_impl` 与 `PolishView.loadClips` 都按 `rankOfName()` 排过，别退回字符串排序
-  （会得到 clip-01, clip-02, clip-100, clip-101, …, clip-11，卡片上的序号也跟着错）；②`.frag-cards`
+  （会得到 clip-01, clip-02, clip-100, …, clip-11，卡片序号也跟着错）；②`.frag-cards`
   是 `grid-auto-flow:column`，**必须写 `justify-content:start` + `grid-auto-columns:max-content`** ——
   缺省 `normal`(=stretch) 会把 auto 宽的列撑满整行，只有两张卡时它们被推到两端。
 - ⚠️ 而「产物」栏以前显示的名字是写死的（`renderedName`/`coverName` 两个 ref 从没被赋过值，
@@ -174,7 +172,7 @@
 - ⚠️ localStorage 迁移（存 key：`yekitrim.slices.filter` / `.subfilter`）：`LEGACY_FILTERS` 把上一版
   `polish` → 已剪切 + 已导出；二级旧值走 `LEGACY_SUB_FILTERS`（`unpolished`→`polishing`、
   `polished`→`exported`）。后一对**有损且有意**（旧 `polished` 含"进过精修但没出片"那批，
-  新口径只有"已导出"能表达；旧两档本身已退化，继续认只会让用户看到一排筛不出东西的按钮）。认不出回落默认档。
+  新口径只有"已导出"能表达；旧两档已退化，继续认只会让用户看到筛不出东西的按钮）。认不出回落默认档。
 - 卡片状态只有一枚 chip **`已导出`**（`isExported`）、没导出**不挂 chip**，与筛选栏**同一判据**（不会"某档高亮、
   卡片挂另一个词"）。⚠️ 历史上这里写着「别把它统一回已导出」——**已被用户推翻**。
 - 操作条 = 重新检测 / 添加片段 / **一键全切（N）**（`ProjectSlicesView` 调 `cutAll`）。
@@ -208,7 +206,7 @@
   SliderField 的清空会拒绝写模型，"没有值"它表达不出来；发空串更糟（`max_tokens = ""` 会让整份
   llm.toml 被打回默认）。行由 `llm_config.overrides` 的键自动生成，后端加链路前端不用改。
   几何：`max-content + minmax(0,300px)×2 + max-content` + `justify-content:start`（1fr 会把滑块拉到格子
-  中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏经 900px 媒体查询拆成一列。
+  中央、一行散开），实测 1600/1280/1000/860 四档都无横向溢出、控件同行；窄屏 900px 媒体查询拆成一列。
 - **模型管理（别再各写一套）**：模型管理页的「已安装」与运行时**同源** ——
   `yekitrim_core::asr::local::resolve_model_dir`（配置 `local_model_dir` → `<数据目录>/.yekitrim/models`，
   默认即程序目录）是唯一真源，`download::model_install()` 在其之上再校验注册表
@@ -216,7 +214,7 @@
   接口 `/api/models` 回 `{name, installed, dir, source, source_label}`，界面显示实际路径与来源。
 - ⚠️ 曾经 `/api/models` 只查程序目录 `dir.exists()`，而 qwen3-asr 放在**另一处** →
   界面显示"未下载"却一直在用它（用户报过）；列表也改成由注册表 `download::model_names()` 给出，
-  别再手写模型数组。`vtrim download` / `POST /api/models/download` 装到 `resolve_model_dir` 的落点。
+  别再手写模型数组。`yekitrim download` / `POST /api/models/download` 装到 `resolve_model_dir` 的落点。
   ⚠️ 2026-10-02 资产收回程序目录之前还有"用户目录优先"那一档，**已删除** —— 现在只有两档：
   配置覆盖、数据目录。
 - ⚠️ **`download::ensure_one_model`（转写前的自动守卫）也必须走 `model_install`**，

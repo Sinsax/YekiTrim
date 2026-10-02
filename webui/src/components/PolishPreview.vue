@@ -1073,7 +1073,7 @@ async function startDhampir() {
     throw new Error(
       "底座 wasm API 版本不匹配：期望 " + DHAMPIR_HOST_API + "，实得 " +
         (hostApi === null ? "(没有 dhampir_host_api_version 这个导出)" : hostApi) +
-        " —— 这是**形状变更**（字段增减），请换一个匹配的底座产物（`vtrim polish doctor` 会打印当前用的那份）",
+        " —— 这是**形状变更**（字段增减），请换一个匹配的底座产物（`yekitrim polish doctor` 会打印当前用的那份）",
     )
   }
   // **打开底座的细粒度计时**：`prepareMs` 含「seek 视频 + 文字栅格化」，

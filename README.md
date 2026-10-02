@@ -10,7 +10,7 @@
   而"把 `polish.toml` 转译成底座工程"那一步是 `tools/polish-to-dhampir.mjs`（node 脚本）。
   ⚠️ **出片只有底座这一条腿** —— 本仓当年那条逐帧 Chrome 兜底腿已于 2026-10-01 整条删除，
   所以没装 Node / 底座不可用时是**明确报错**，没有第二条路可退。
-  `vtrim polish doctor` 的 `[dhampir]` 块会告诉你缺什么。
+  `yekitrim polish doctor` 的 `[dhampir]` 块会告诉你缺什么。
   （底座二进制放在同层 `Dhampir/target/{debug,release}/` 或 `<程序目录>/dhampir/bin/`，
   也可用 `VTEDIT_DHAMPIR` / `VTEDIT_DHAMPIR_CLI` 指定。）
 
@@ -19,12 +19,12 @@
 ```
 .
 ├── crates/
-│   ├── vtrim-core/        # 管线编排 + ASR / 事件检测 / 剪切
-│   ├── vtrim-polish/      # GSAP 精修引擎（时间轴 / 贴纸 / 音效 / 封面 / 出片）
-│   ├── vtrim-render-core/ # 事件/时间线类型与时间线数学（不含 GPU；被 polish 使用）
-│   ├── vtrim-service/     # CLI 与 WebUI 共用的领域逻辑（账号 / 项目 / 录播姬 / 用量）
-│   ├── vtrim-server/      # axum HTTP API + WebUI 宿主 + 任务队列（api/ 按领域分模块）
-│   ├── vtrim-cli/         # 入口（clap 命令 + tracing 装配），二进制名 vtrim
+│   ├── yekitrim-core/        # 管线编排 + ASR / 事件检测 / 剪切
+│   ├── yekitrim-polish/      # GSAP 精修引擎（时间轴 / 贴纸 / 音效 / 封面 / 出片）
+│   ├── yekitrim-render-core/ # 事件/时间线类型与时间线数学（不含 GPU；被 polish 使用）
+│   ├── yekitrim-service/     # CLI 与 WebUI 共用的领域逻辑（账号 / 项目 / 录播姬 / 用量）
+│   ├── yekitrim-server/      # axum HTTP API + WebUI 宿主 + 任务队列（api/ 按领域分模块）
+│   ├── yekitrim-cli/         # 入口（clap 命令 + tracing 装配），二进制名 yekitrim
 │   └── xtask/             # 构建 / 打包 / 产物门禁（cargo xtask scan|package）
 ├── webui/                 # WebUI 源码（Vue 3 + Vite）；webui/dist 是服务端唯一界面来源，已入库
 ├── docs/                  # 设计稿 / 计划 / 发行说明；docs/archived 是历史设计文档
@@ -32,7 +32,7 @@
 ├── docs/module-map.json   # 模块结构注册表：模块 → 目录 → 模块卡 → 验证命令
 ├── ROADMAP.md             # 待排期功能
 ├── Cargo.toml / Cargo.lock
-└── vtrim.toml             # 项目配置 (gitignored)
+└── yekitrim.toml             # 项目配置 (gitignored)
 ```
 
 > **改代码前先读对应模块目录的 `AGENTS.md`**：全局规矩在根 `AGENTS.md`（路由页），
@@ -48,13 +48,13 @@
 cargo build
 
 # 创建项目 (--danmaku 可选，自动搜索同目录 .ass)
-vtrim init input.mp4
+yekitrim init input.mp4
 
 # 下载 ASR 模型 (本地转写需要)
-vtrim download
+yekitrim download
 
 # 全自动管线
-vtrim process
+yekitrim process
 ```
 
 ## CLI 命令
@@ -63,29 +63,29 @@ vtrim process
 
 | 选项 | 作用 |
 |------|------|
-| `-c, --config <path>` | 指定配置文件路径 (默认 `./vtrim.toml`)，对所有子命令生效 |
+| `-c, --config <path>` | 指定配置文件路径 (默认 `./yekitrim.toml`)，对所有子命令生效 |
 
-### `vtrim init <video>`
+### `yekitrim init <video>`
 
-创建 `vtrim.toml` 项目配置文件。
+创建 `yekitrim.toml` 项目配置文件。
 
 | 参数 | 作用 |
 |------|------|
 | `<video>` | 输入视频文件路径 **(必填)** |
 | `--danmaku <file>` | 弹幕文件 (ASS 格式)。不传则自动寻找 `<video>.ass` |
 | `-o, --output <dir>` | 默认 `./output` |
-| `--config <path>` | `vtrim.toml` 输出路径 (默认 `./vtrim.toml`) |
+| `--config <path>` | `yekitrim.toml` 输出路径 (默认 `./yekitrim.toml`) |
 
 自动发现：`--danmaku` 不传时，自动检查视频同名 `.ass` 文件，存在则写入配置。
 
-### `vtrim process`
+### `yekitrim process`
 
 全自动管线处理。无视 `current_stage` 状态机，从头跑到尾，完成后设 `current_stage=4`。
 
 | 参数 | 作用 |
 |------|------|
-| `-i, --input <file>` | 输入视频 (默认 `vtrim.toml` 中 `input_file`) |
-| `-o, --output <dir>` | 输出目录 (默认 `vtrim.toml` 中 `output_dir`) |
+| `-i, --input <file>` | 输入视频 (默认 `yekitrim.toml` 中 `input_file`) |
+| `-o, --output <dir>` | 输出目录 (默认 `yekitrim.toml` 中 `output_dir`) |
 | `--dry-run` | 仅分析不剪切，跑到 EventDetector 为止 |
 | `--stages <stages>` | 逗号分隔指定阶段，默认 `audio,transcribe,detect,cut` |
 
@@ -96,37 +96,37 @@ vtrim process
 4. 事件检测 (如未完成)
 5. 视频剪切 (如未完成，`--dry-run` 跳过)
 
-### `vtrim extract`
+### `yekitrim extract`
 
 Stage 1 — 从视频提取 16kHz mono WAV。
 
 | 参数 | 作用 |
 |------|------|
-| `-i, --input <file>` | 输入视频 (默认 `vtrim.toml` 中 `input_file`) |
-| `-o, --output <dir>` | 输出目录 (默认 `vtrim.toml` 中 `output_dir`) |
+| `-i, --input <file>` | 输入视频 (默认 `yekitrim.toml` 中 `input_file`) |
+| `-o, --output <dir>` | 输出目录 (默认 `yekitrim.toml` 中 `output_dir`) |
 
-输出：`<output_dir>/video.wav`，自动写入 `vtrim.toml` 的 `audio_file`。
+输出：`<output_dir>/video.wav`，自动写入 `yekitrim.toml` 的 `audio_file`。
 
 **状态机约束**：`current_stage >= 0` 即可运行。
 
-### `vtrim transcribe`
+### `yekitrim transcribe`
 
 Stage 2 — 语音转文字 (local sherpa-onnx SenseVoice)。
 
 | 参数 | 作用 |
 |------|------|
-| `-i, --input <file>` | 输入音视频 (默认 `vtrim.toml` 中 `input_file`，自动回退 `audio_file`) |
-| `-o, --output <dir>` | 输出目录 (默认 `vtrim.toml` 中 `output_dir`) |
+| `-i, --input <file>` | 输入音视频 (默认 `yekitrim.toml` 中 `input_file`，自动回退 `audio_file`) |
+| `-o, --output <dir>` | 输出目录 (默认 `yekitrim.toml` 中 `output_dir`) |
 
 输出：
 - `<output_dir>/video.srt` — 字幕 (UTF-8 BOM)
 - `<output_dir>/transcript.json` — 结构化 JSON
 
-自动写入 `vtrim.toml` 的 `transcript_file`。
+自动写入 `yekitrim.toml` 的 `transcript_file`。
 
 并行策略：CPU 核数 / 4 (上限 4)，每 chunk 的 ONNX intra-op threads=2。
 
-配置参数 (`.vtrim/config.toml`)：
+配置参数 (`.yekitrim/config.toml`)：
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
@@ -138,7 +138,7 @@ Stage 2 — 语音转文字 (local sherpa-onnx SenseVoice)。
 
 **状态机约束**：需先完成 `extract` (current >= 1)。
 
-### `vtrim correct`
+### `yekitrim correct`
 
 LLM 订正转录文本。
 
@@ -146,13 +146,13 @@ LLM 订正转录文本。
 |------|------|
 | `-t, --transcript <file>` | 转录 JSON/SRT 文件 |
 
-自动发现优先级：`--transcript` 参数 > `vtrim.toml` 中 `transcript_file` > `<output_dir>/transcript.json`。
+自动发现优先级：`--transcript` 参数 > `yekitrim.toml` 中 `transcript_file` > `<output_dir>/transcript.json`。
 
 输出：`<output_dir>/video_llm.srt`，自动更新 `transcript_file` 指向此文件。
 
-需要 `.vtrim/llm.toml` 已配置 API key。无状态机约束 (可独立运行)。
+需要 `.yekitrim/llm.toml` 已配置 API key。无状态机约束 (可独立运行)。
 
-### `vtrim detect`
+### `yekitrim detect`
 
 Stage 3 — LLM 分析转写结果，检测高价值事件。
 
@@ -160,11 +160,11 @@ Stage 3 — LLM 分析转写结果，检测高价值事件。
 |------|------|
 | `-t, --transcript <file>` | 转录 JSON/SRT 文件 |
 
-自动发现优先级：`--transcript` 参数 > `vtrim.toml` 中 `transcript_file` > `<output_dir>/transcript.json` > `<output_dir>/video.srt`。
+自动发现优先级：`--transcript` 参数 > `yekitrim.toml` 中 `transcript_file` > `<output_dir>/transcript.json` > `<output_dir>/video.srt`。
 
 输出：`<output_dir>/events.json` (EventStore 格式)。
 
-自动写入 `vtrim.toml` 的 `events_file`。
+自动写入 `yekitrim.toml` 的 `events_file`。
 
 检测逻辑：
 - LLM API key 非空 → 调用 LLM 分析全部转录段 (单次调用，64k+ 上下文)
@@ -176,17 +176,17 @@ Stage 3 — LLM 分析转写结果，检测高价值事件。
 
 **状态机约束**：需先完成 `transcribe` (current >= 2)。
 
-### `vtrim cut`
+### `yekitrim cut`
 
 Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 | 参数 | 作用 |
 |------|------|
-| `-i, --input <file>` | 输入视频 (默认 `vtrim.toml` 中 `input_file`) |
+| `-i, --input <file>` | 输入视频 (默认 `yekitrim.toml` 中 `input_file`) |
 | `-e, --events <file>` | 事件 JSON 文件 |
-| `-o, --output <dir>` | 输出目录 (默认 `vtrim.toml` 中 `output_dir`) |
+| `-o, --output <dir>` | 输出目录 (默认 `yekitrim.toml` 中 `output_dir`) |
 
-自动发现优先级：`--events` 参数 > `vtrim.toml` 中 `events_file` > `<output_dir>/events.json`。
+自动发现优先级：`--events` 参数 > `yekitrim.toml` 中 `events_file` > `<output_dir>/events.json`。
 
 剪切输出结构：
 
@@ -209,7 +209,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 **状态机约束**：需先完成 `detect` (current >= 3)。
 
-### `vtrim silence`（编辑器里的「去静音」）
+### `yekitrim silence`（编辑器里的「去静音」）
 
 把已输出切片中的长停顿映射为**屏蔽轨道**（写入 `polish.toml` 的 `mute_ranges`），
 不生成新视频文件，原始 `clip.mp4` / `clip.srt` 保持不变；导出时由 process/render 剪掉。
@@ -229,14 +229,14 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 静音检测策略：如有同名 `.srt` 文件，优先分析 SRT 字幕间隔；否则用 ffmpeg silencedetect filter。
 
-### `vtrim download`
+### `yekitrim download`
 
-下载全部 ASR 模型到 `<程序>/.vtrim/models/<model>/`：`sensevoice`（~165MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
-运行时找模型的顺序是 **配置 `local_model_dir` → 用户目录 `~/.vtrim/models` → 程序目录 `.vtrim/models`**（模型管理页显示的就是实际用到的那一份）。
+下载全部 ASR 模型到 `<程序>/.yekitrim/models/<model>/`：`sensevoice`（~165MB，single 模式 + hybrid 打轴）、`qwen3-asr`（~879MB，hybrid 填词）。转写时按 `[asr] model` / `[asr] mode` 自动懒加载，缺失才提示下载。
+运行时找模型的顺序是 **配置 `local_model_dir` → 用户目录 `~/.yekitrim/models` → 程序目录 `.yekitrim/models`**（模型管理页显示的就是实际用到的那一份）。
 
-返回 LLM 完整 API response body。需要 `.vtrim/llm.toml` 已配置。
+返回 LLM 完整 API response body。需要 `.yekitrim/llm.toml` 已配置。
 
-### `vtrim status`
+### `yekitrim status`
 
 显示当前处理进度。
 
@@ -250,33 +250,33 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
   [·] Cutter
 ```
 
-### `vtrim config init`
+### `yekitrim config init`
 
 生成全局配置文件（覆盖写，已有配置会被替换）。
 
 | 参数 | 作用 |
 |------|------|
-| `--path <path>` | 输出路径 (默认 `.vtrim/config.toml`) |
+| `--path <path>` | 输出路径 (默认 `.yekitrim/config.toml`) |
 
 生成文件：
-- `.vtrim/config.toml` — ASR、检测等全局参数，含内建 prompt 模板
-- `.vtrim/llm.toml` — LLM 独立配置 (API key、model 等)
+- `.yekitrim/config.toml` — ASR、检测等全局参数，含内建 prompt 模板
+- `.yekitrim/llm.toml` — LLM 独立配置 (API key、model 等)
 
-> `vtrim server` 首次启动时若发现程序配置缺失，会自动补齐这两个文件（只创建缺失的，
+> `yekitrim server` 首次启动时若发现程序配置缺失，会自动补齐这两个文件（只创建缺失的，
 > 已存在的配置不会被覆盖）；若已存在的文件 TOML 语法错误（整份配置都会被忽略），
 > 会先备份为 `config.toml.broken` 再重建，并在启动日志里给出原因。
 
-### `vtrim config show`
+### `yekitrim config show`
 
-显示合并后的完整配置 (vtrim.toml + .vtrim/config.toml)。
+显示合并后的完整配置 (yekitrim.toml + .yekitrim/config.toml)。
 
-### `vtrim version`
+### `yekitrim version`
 
 显示版本号。
 
 ---
 
-### `vtrim server` — WebUI 服务（需要登录）
+### `yekitrim server` — WebUI 服务（需要登录）
 
 启动浏览器可视化服务，服务 `webui/dist` 构建产物。
 
@@ -292,9 +292,9 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 | `--config <file>` | 打开指定工程（默认恢复上次工程） |
 | `--allow-remote` | 允许监听非 loopback 地址（默认拒绝） |
 | `--trust-proxy` | 采信反代转发的 `X-Forwarded-For` / `X-Forwarded-Proto`（默认**关**，见下） |
-| `--data-dir <dir>` | 账号账本目录，默认 `<exe_dir>/.vtrim/cloud`（也可用 `VTRIM_DATA_DIR`） |
+| `--data-dir <dir>` | 账号账本目录，默认 `<exe_dir>/.yekitrim/cloud`（也可用 `YEKITRIM_DATA_DIR`） |
 | `--admin-password-file <file>` | 无人值守部署：用该文件里的密码作为初始管理员密码 |
-| `--force` | 接管残留的 `vtrim.lock`（确认上一个实例已崩溃时使用） |
+| `--force` | 接管残留的 `yekitrim.lock`（确认上一个实例已崩溃时使用） |
 
 > **端口为什么是 26320**：老默认 7788 在部分 Windows 上落进了 Hyper-V/WSL 的**保留端口段**
 > （实测 7635–7834），表现是 `10013 WSAEACCES` 绑不上，而 `netstat` 里一个监听者都没有
@@ -314,7 +314,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
   其余接口一律 403；`--host 0.0.0.0 --allow-remote` 在改密前还会**拒绝启动**
   （初始密码会出现在日志与文件里）。
 - `data_dir` 不可写 → 直接启动失败（身份数据不可缺省，不会退化成"内存模式"）。
-- 同一 `data_dir` 只允许一个实例（`vtrim.lock`），第二个实例明确报错。
+- 同一 `data_dir` 只允许一个实例（`yekitrim.lock`），第二个实例明确报错。
 - 登录失败 5 次（同用户名 + 同 IP）后限流 15 分钟。
 - **`--trust-proxy` 是 `X-Forwarded-*` 的唯一开关，默认关**：这两个头请求方可以随意伪造，
   关着的时候服务只认 socket 对端 —— 否则伪造 `X-Forwarded-For` 就能绕过按 IP 的限流，
@@ -327,7 +327,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 ### 管理员：从"服务器上的已有文件"新建项目
 
 服务**不接受上传**。管理员（`role=admin`）在**首页的「新增项目 → 服务器文件」**区块里
-**可以填任意绝对路径、浏览整台机器**（和以前的单用户 `vtrim init <video>` 一样）：
+**可以填任意绝对路径、浏览整台机器**（和以前的单用户 `yekitrim init <video>` 一样）：
 
 ```
 目录：F:/media/2025-09-12      ← 直接填，或从目录树逐级点进去
@@ -337,7 +337,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ```toml
 [storage]
-projects_root = "D:/vtrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.vtrim/projects）
+projects_root = "D:/vtrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.yekitrim/projects）
 local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 ```
 
@@ -345,12 +345,12 @@ local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
   （没有单独的"下载目录"）。这一项也能在设置页「B站链接下载 → 项目存放位置」里改，
   改动**只影响新建项目**，已有项目仍在原位置，且改完立即生效、不用重启。
 
-- 目标目录里**已有 `vtrim.toml`** 时只登记/打开，**不会覆盖**（保护手改过的工程设置）；
+- 目标目录里**已有 `yekitrim.toml`** 时只登记/打开，**不会覆盖**（保护手改过的工程设置）；
 - 普通用户**只能用**自己的 `<projects_root>/users/<uid>`，`/api/fs/list` 与 `kind="local"`
   对非管理员一律 **403**；
 - 仍然只读服务器已有文件：**永不接受上传**。
 
-### `vtrim user` — 账号管理
+### `yekitrim user` — 账号管理
 | 子命令 | 作用 |
 |--------|------|
 | `list` | 列出账号（用户名/角色/状态/配额/最后登录） |
@@ -366,7 +366,7 @@ local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 都不给则生成随机密码并打印一次。口令用 **scrypt**（`scrypt$log_n$r$p$salt$hash`
 自描述哈希串）存储，将来可无损升级到 argon2id。
 
-### `vtrim ingest` — 录播姬采集
+### `yekitrim ingest` — 录播姬采集
 
 录播姬（BililiveRecorder）录完一场直播就推送 webhook，服务端自动把录像变成项目并按策略跑管线。
 
@@ -375,17 +375,17 @@ local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 > （保存即生效，不用重启）。命令行入口保留，两者改的是同一份配置。
 
 ```
-vtrim ingest token            # 生成 webhook token（只显示一次），写入 [ingest] 并启用 webhook
-vtrim ingest token --disable  # 只关闭 webhook（保留 token）
-vtrim ingest status           # 采集配置概览（不打印秘密）
+yekitrim ingest token            # 生成 webhook token（只显示一次），写入 [ingest] 并启用 webhook
+yekitrim ingest token --disable  # 只关闭 webhook（保留 token）
+yekitrim ingest status           # 采集配置概览（不打印秘密）
 ```
 
-配置（`.vtrim/config.toml`）：
+配置（`.yekitrim/config.toml`）：
 
 ```toml
 [ingest]
 webhook_enabled = true
-token_hash = "scrypt$…"          # 由 `vtrim ingest token` 写入；只存哈希
+token_hash = "scrypt$…"          # 由 `yekitrim ingest token` 写入；只存哈希
 allow_ips = ["127.0.0.1"]        # 可选来源白名单（同机部署建议只放行本机）
 
 [ingest.recorder]
@@ -409,22 +409,22 @@ http://<本机IP>:26320/api/ingest/bililive/<token>
 - 未映射的房间进「待分配池」，由管理员在 `#/ingest` 指派；指派后自动继续入库。
 - 入库前做磁盘水位/配额预检，不足会明确拒绝（文案含"本次需要/磁盘可用/需保留底线"），**绝不自动删数据**。
   水位换算出的保留量被钳在 512 MiB ~ 8 GiB，所以"大容量但已用掉大半"的数据盘不会连几 MB 的入库都拒。
-- 弹幕：录播姬写的 `.xml` 会被直接解析（无需 DanmakuFactory），随片搬进项目并写进 `vtrim.toml`。
+- 弹幕：录播姬写的 `.xml` 会被直接解析（无需 DanmakuFactory），随片搬进项目并写进 `yekitrim.toml`。
 
 ---
 只读诊断（不会创建账号库、不改配置）：
 
 ```
-$ vtrim doctor [--url http://127.0.0.1:26320]
+$ yekitrim doctor [--url http://127.0.0.1:26320]
 账号数据
   数据目录: …\cloud（剩余 24.3 GB / 共 251.2 GB · 可写 ✓）
-  账号账本: …\vtrim.db（1 个账号）
+  账号账本: …\yekitrim.db（1 个账号）
     - admin（初始密码 · 管理员，从未登录）
   初始密码: 仍在使用 ⚠（对外监听会被拒绝启动）
   会话: 0 条未过期
   初始密码文件: 存在 ⚠ …
 单实例锁
-  …\vtrim.lock → 读不到内容（独占持有 = 有实例正在运行）
+  …\yekitrim.lock → 读不到内容（独占持有 = 有实例正在运行）
 服务探测
   http://127.0.0.1:26320/api/health → 200（… listening=loopback，accounts=1 …）
 建议 …
@@ -437,7 +437,7 @@ $ vtrim doctor [--url http://127.0.0.1:26320]
 
 ---
 
-### 视频精修 (`vtrim polish`)
+### 视频精修 (`yekitrim polish`)
 
 精修引擎，基于 GSAP 为已剪切 clip 添加特效字幕、弹幕渲染、封面生成、预览。
 
@@ -446,7 +446,7 @@ $ vtrim doctor [--url http://127.0.0.1:26320]
 | 子命令 | 作用 |
 |--------|------|
 | `init [<dir>]` | 初始化精修项目，创建 `config.toml` + `llm.toml` + `data/` + `sfx/`，自动解析素材 |
-| `llm [<dir>]` | LLM 分析生成 segments 和关键词 (使用 `.vtrim/llm.toml`) |
+| `llm [<dir>]` | LLM 分析生成 segments 和关键词 (使用 `.yekitrim/llm.toml`) |
 | `process [<dir>]` | 后处理：解析 emoji/irasu keyword、下载资源、计算位置 |
 | `render [<dir>]` | 渲染视频，自动先跑 process |
 | `cover [<dir>] [--template <t>]` | 生成封面，可选模板: `left-text` / `center-text` / `right-text` / `minimal` |
@@ -467,7 +467,7 @@ Stage 编号连续无跳过。所有 stage 通过 `#[async_trait]` 实现 `Stage
 
 ### 状态机规则
 
-`vtrim.toml` 中 `current_stage` 控制单 stage 命令：
+`yekitrim.toml` 中 `current_stage` 控制单 stage 命令：
 
 | 规则 | 示例 (current=2) |
 |------|-----------------|
@@ -484,11 +484,11 @@ Stage 编号连续无跳过。所有 stage 通过 `#[async_trait]` 实现 `Stage
 
 ## 配置
 
-双层配置合并：`vtrim.toml` (项目) → `.vtrim/config.toml` (全局，后加载覆盖前者)。无环境变量。
+双层配置合并：`yekitrim.toml` (项目) → `.yekitrim/config.toml` (全局，后加载覆盖前者)。无环境变量。
 
 合并规则：String 字段 `!is_empty()` 时覆盖，数值字段 != 默认值时覆盖。
 
-### `vtrim.toml` — 项目配置
+### `yekitrim.toml` — 项目配置
 
 ```toml
 [project]
@@ -514,7 +514,7 @@ output_dir = "./output"
 overwrite = false
 ```
 
-### `.vtrim/config.toml` — 全局配置
+### `.yekitrim/config.toml` — 全局配置
 
 ```toml
 [asr]
@@ -535,7 +535,7 @@ output_dir = "./output"
 overwrite = false
 ```
 
-### `.vtrim/llm.toml` — LLM 独立配置
+### `.yekitrim/llm.toml` — LLM 独立配置
 
 ```toml
 base_url = ""                # 留空=OpenAI
@@ -570,9 +570,9 @@ extra_params = { seed = 42, thinking = { type = "disabled" } }
 
 ```bash
 cargo build                              # 0 warnings
-cargo check -p vtrim-cli --all-targets   # 改 vtrim-server 后必跑（0 warnings）
-cargo test -p vtrim-cli                  # vtrim-server 单测（JobManager / Range / 路由 404 …）
-cargo test -p vtrim-core --lib           # 管线与配置单测
+cargo check -p yekitrim-cli --all-targets   # 改 yekitrim-server 后必跑（0 warnings）
+cargo test -p yekitrim-cli                  # yekitrim-server 单测（JobManager / Range / 路由 404 …）
+cargo test -p yekitrim-core --lib           # 管线与配置单测
 cargo run -- status                      # 查看当前进度
 node webui/scripts/check-overlay.mjs     # 覆盖层色档契约：templates/index.html ↔ engine.js 对拍
 node webui/scripts/check-caption-wrap.mjs    # 竖屏折行契约（wrapCaptionParts 两份实现）
@@ -582,8 +582,8 @@ cd webui && npm install && npm run build # 改 webui/src 后必须重建（dist 
 cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
 ```
 
-> 依赖方向是**单向**的：`vtrim-service` 绝不 `use vtrim_server::*`；`vtrim-server` 只依赖
-> `vtrim-service`。细节与踩坑记录见各模块目录的 `AGENTS.md`（清单见
+> 依赖方向是**单向**的：`yekitrim-service` 绝不 `use vtrim_server::*`；`yekitrim-server` 只依赖
+> `yekitrim-service`。细节与踩坑记录见各模块目录的 `AGENTS.md`（清单见
 > [docs/module-map.json](docs/module-map.json) 与 [AGENTS.md](AGENTS.md) 的模块索引表）。
 
 ## 许可
@@ -632,7 +632,7 @@ cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espea
 ## 字体
 
 有两支**自带字体**，都是 **SIL OFL-1.1**（可商用 / **可嵌入** / 可再分发）。
-它们的**字节直接内嵌在 `vtrim.exe` 里**（源在 `crates/vtrim-core/assets/fonts/`），
+它们的**字节直接内嵌在 `yekitrim.exe` 里**（源在 `crates/yekitrim-core/assets/fonts/`），
 **首次启动自动落盘**到字体库 —— 不需要联网、也不需要手动下载。
 运行时的兜底栈 = 库里那支 → `Microsoft YaHei` → `Noto Sans SC` → `sans-serif`。
 
@@ -652,21 +652,21 @@ cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espea
 万一库里那两支被删了，可以装回来（幂等、仍然不联网）：
 
 ```bash
-vtrim fonts list                # 看库里有什么
-vtrim fonts install             # 重新装上还缺的自带字体
-vtrim fonts install --id NotoColorEmoji   # 只装某一支
+yekitrim fonts list                # 看库里有什么
+yekitrim fonts install             # 重新装上还缺的自带字体
+yekitrim fonts install --id NotoColorEmoji   # 只装某一支
 ```
 **没选字体的工程**会优先用 Noto Sans SC（栈里写的是它的内部族名，见
 `docs/plan/font-library.md` §15）——这个"默认位"只作**初始化设定**：界面上的字体下拉只列库内字体，
 不会再给一个「（系统默认）」的选项（自带字体就在库里，回到系统栈必然是更差的选择）。
 
 **想用别的字体：把字体文件丢进程序目录的 `resources/fonts/`**
-（与 `vtrim.exe`、`.vtrim/`、`stickers/` 同级），或在「字体库」页导入：
+（与 `yekitrim.exe`、`.yekitrim/`、`stickers/` 同级），或在「字体库」页导入：
 
 ```
 <程序目录>/
-  vtrim.exe
-  .vtrim/
+  yekitrim.exe
+  .yekitrim/
   stickers/
   resources/fonts/          ← 放 .ttf / .otf；丢进去就会出现
     <字体名>/               ← 导入的字体按「一支一个目录」存
