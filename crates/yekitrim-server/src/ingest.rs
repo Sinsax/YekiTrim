@@ -981,7 +981,7 @@ fn build_ingest_patch(
         if let Some(root) = out.get("root").and_then(|v| v.as_str()) {
             if !root.is_empty() && !std::path::Path::new(root).is_dir() {
                 warnings.push(format!(
-                    "录像目录当前不可访问（{root}）：兜底扫描会跳过它。若在网络盘/另一台机器上，请确认 V-Trim 进程也读得到这个路径。"
+                    "录像目录当前不可访问（{root}）：兜底扫描会跳过它。若在网络盘/另一台机器上，请确认 YekiTrim 进程也读得到这个路径。"
                 ));
             }
         }

@@ -96,7 +96,7 @@ fn build_hint_page() -> Response<Body> {
         .collect::<String>();
     let body = format!(
         r#"<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>V-Trim WebUI 未构建</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>YekiTrim WebUI 未构建</title>
 <style>
  body{{font-family:system-ui,"Microsoft YaHei",sans-serif;max-width:760px;margin:64px auto;padding:0 20px;line-height:1.8;color:#1f2937}}
  code,pre{{background:#f3f4f6;border-radius:6px}}

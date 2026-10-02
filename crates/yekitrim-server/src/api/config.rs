@@ -49,8 +49,8 @@ fn models_impl() -> ApiResult {
 ///
 /// 于是原来那三样项目相关的东西一并去掉，它们**没有任何消费方**：
 ///   - `config_file` / `root_dir`：前端从没读过（项目设置页走的是 `/api/project-data/config`，
-///     它有自己那份 `vtrim_raw`）；留着只会让人以为"这里能看当前工程"；
-///   - `vtrim_raw`：同上，那是项目设置页的字段，属于 `/api/project-data/config`；
+///     它有自己那份 `yekitrim_raw`）；留着只会让人以为"这里能看当前工程"；
+///   - `yekitrim_raw`：同上，那是项目设置页的字段，属于 `/api/project-data/config`；
 ///   - `config`：那份 **merged** 配置本来就是"当前工程"的概念，与"读程序配置"自相矛盾
 ///     （前端注释自己都写了 `global_config || config` —— 即 `config` 只是老响应缺字段时的兜底）。
 ///
@@ -189,11 +189,11 @@ fn check_material_paths(ws: &Workspace, value: &serde_json::Value) -> Result<(),
 ///
 /// 与 `config_get_impl`（程序配置，项目无关）**故意分开**：这里返回的是这个工程的 `vtrim.toml`
 /// 原文与**合并后**的生效配置（全局 + 工程 + llm），那才是"这个工程实际会用的值"。
-/// 两者曾经共用一份实现，于是项目相关字段（`config_file`/`root_dir`/`vtrim_raw`/`config`）
+/// 两者曾经共用一份实现，于是项目相关字段（`config_file`/`root_dir`/`yekitrim_raw`/`config`）
 /// 被一并挂在项目无关的 `/api/config` 上 —— 2026-10-03 拆开。
 pub(super) fn config_vtrim_get_impl(ws: &Workspace) -> ApiResult {
     // ⚠️ 同步 IO：读 vtrim.toml + 解析合并，调用方下 blocking 池。
-    let vtrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
+    let yekitrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
     let (config, config_error) = match ws.load_config() {
         Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
         // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
@@ -202,7 +202,7 @@ pub(super) fn config_vtrim_get_impl(ws: &Workspace) -> ApiResult {
     ok(serde_json::json!({
         "config_file": yekitrim_core::path::display(&ws.config_file),
         "root_dir": yekitrim_core::path::display(&ws.root_dir),
-        "vtrim_raw": vtrim_raw,
+        "yekitrim_raw": yekitrim_raw,
         "config": config,
         "config_error": config_error,
     }))

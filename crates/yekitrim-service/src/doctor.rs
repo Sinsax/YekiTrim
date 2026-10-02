@@ -44,7 +44,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     let mut admin_must_change: Option<bool> = None;
     let mut remote_without_tls = false;
 
-    println!("V-Trim 安全与运行状况摘要（版本 {}）", env!("CARGO_PKG_VERSION"));
+    println!("YekiTrim 安全与运行状况摘要（版本 {}）", env!("CARGO_PKG_VERSION"));
 
     // ---- 账号数据 ----
     line("账号数据");

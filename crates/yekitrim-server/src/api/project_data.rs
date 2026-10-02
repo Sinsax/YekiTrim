@@ -246,7 +246,7 @@ pub(super) async fn project_data_pipeline(
 ///
 /// 与 `GET /api/config`（纯程序配置）分开是本目录的既有一刀：那道接口编辑的是
 /// `.vtrim/config.toml` / `llm.toml`，这道回的是**这个工程的** `vtrim.toml` 原文 + 合并后的生效配置。
-/// 项目设置页的源码编辑器读 `vtrim_raw`（`ProjectSettingsView.vue`），预处理页读 `config.asr.mode`。
+/// 项目设置页的源码编辑器读 `yekitrim_raw`（`ProjectSettingsView.vue`），预处理页读 `config.asr.mode`。
 pub(super) async fn project_data_config(scope: Scope) -> ApiResult {
     let ws = scope.ws;
     blocking(move || config_vtrim_get_impl(&ws)).await
@@ -2187,8 +2187,8 @@ async fn media_requires_project_id_and_stays_inside_the_project() {
 
 /// 全局工程状态删掉之后，`/api/config` 必须是**纯程序配置**：不再回项目相关字段。
 ///
-/// 这几个字段（`config_file` / `root_dir` / `vtrim_raw` / `config`）曾是"当前工程"的投影，
-/// 前端**一个都没消费**（项目设置页读的是 `/api/project-data/config` 的 `vtrim_raw`）。
+/// 这几个字段（`config_file` / `root_dir` / `yekitrim_raw` / `config`）曾是"当前工程"的投影，
+/// 前端**一个都没消费**（项目设置页读的是 `/api/project-data/config` 的 `yekitrim_raw`）。
 /// 留着它们等于在项目无关的接口上继续暴露"当前工程"这个概念。
 #[tokio::test]
 async fn global_config_endpoint_no_longer_exposes_a_project() {
@@ -2196,7 +2196,7 @@ async fn global_config_endpoint_no_longer_exposes_a_project() {
     let res = t.call(t.req("GET", "/config").body(Body::empty()).unwrap()).await;
     assert_eq!(res.status(), StatusCode::OK);
     let v = body_json(res).await;
-    for gone in ["config_file", "root_dir", "vtrim_raw", "config"] {
+    for gone in ["config_file", "root_dir", "yekitrim_raw", "config"] {
         assert!(v.get(gone).is_none(), "/api/config 不该再有 {gone}: {v}");
     }
     // 程序配置那几样必须还在（设置页靠它们）
@@ -2212,7 +2212,7 @@ async fn project_scoped_config_still_returns_the_project() {
     let res = t.call(t.req("GET", "/project-data/config?project=1").body(Body::empty()).unwrap()).await;
     assert_eq!(res.status(), StatusCode::OK);
     let v = body_json(res).await;
-    for kept in ["config_file", "root_dir", "vtrim_raw", "config"] {
+    for kept in ["config_file", "root_dir", "yekitrim_raw", "config"] {
         assert!(v.get(kept).is_some(), "项目配置少了 {kept}: {v}");
     }
 }

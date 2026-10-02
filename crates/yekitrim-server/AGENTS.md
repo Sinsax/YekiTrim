@@ -33,7 +33,7 @@
   **不再留状态** —— 记忆允许过期，状态不允许。
   ⚠️ 同一次还把 `/api/config` 与 `/api/project-data/config` 拆开：前者是**纯程序配置**
   （`config.toml` / `llm.toml`，只回 `global_raw` / `llm_raw` / `global_config` / `llm_config`），
-  后者才是"这个工程"的（`vtrim_raw` / `config` / `config_file` / `root_dir`）。
+  后者才是"这个工程"的（`yekitrim_raw` / `config` / `config_file` / `root_dir`）。
   两者曾共用一份实现，于是项目相关字段被挂在项目无关的接口上。
 - ⚠️ **`wgpu-render` feature 已整条删除**：`api/` ×3 与 `model.rs` ×5 那些 `#[cfg(feature = "wgpu-render")]`
   分支（单帧真渲染预览 `POST /api/polish/render-frame`、常驻后端槽、`/api/health` 的 `wgpu_render` 能力位）

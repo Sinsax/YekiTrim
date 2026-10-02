@@ -387,7 +387,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
             tracing::error!("{hint}");
             // `--open` + 对端就是 V-Trim：合理解释是"再开一次"，直接把已有的界面打开
             if args.open && peer.is_some() {
-                info!("已有一个 V-Trim 在 {addr}，直接打开它");
+                info!("已有一个 YekiTrim 在 {addr}，直接打开它");
                 open_browser(&url);
                 return Ok(());
             }
@@ -518,7 +518,7 @@ fn bind_conflict_hint(
     };
     if let Some(p) = peer {
         return format!(
-            "端口 {addr} 上已经有一个 V-Trim 在跑（版本 {}，listening={}）—— 不用再起一个，\
+            "端口 {addr} 上已经有一个 YekiTrim 在跑（版本 {}，listening={}）—— 不用再起一个，\
              直接用浏览器打开 http://{addr}/ 即可。\n\
              确实要再跑一个实例就换端口：{port_cmd}（两份实例的 .vtrim 数据目录各自独立，互不相干）。\n{me}",
             p.version, p.listening
@@ -545,7 +545,7 @@ fn bind_conflict_hint(
             ),
         ),
         _ => (
-            "绑不上（既没认出对端是 V-Trim，也不像常见的端口冲突）",
+            "绑不上（既没认出对端是 YekiTrim，也不像常见的端口冲突）",
             format!(
                 "两种常见成因，依次排除：\n\
                  \x20  1) 被别的程序占用：netstat -ano | findstr :{p} → tasklist /FI \"PID eq <PID>\"\n\
@@ -608,7 +608,7 @@ mod tests {
             Some(10048),
             Some(18088),
         );
-        assert!(h.contains("已经有一个 V-Trim 在跑"), "{h}");
+        assert!(h.contains("已经有一个 YekiTrim 在跑"), "{h}");
         assert!(h.contains("0.1.0"), "{h}");
         assert!(h.contains("http://127.0.0.1:7788/"), "{h}");
         // 给的是**实测过**的端口，不是 port+1（同段里可能一起被拒）
@@ -638,7 +638,7 @@ mod tests {
         assert!(h.contains("excludedportrange"), "{h}");
         assert!(h.contains("net stop winnat"), "{h}");
         assert!(h.contains("--port 18088"), "{h}");
-        assert!(!h.contains("已经有一个 V-Trim"), "{h}");
+        assert!(!h.contains("已经有一个 YekiTrim"), "{h}");
     }
 
     /// 10048（真被占用）：给 netstat + tasklist。

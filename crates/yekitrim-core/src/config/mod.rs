@@ -70,7 +70,7 @@ fn default_reference_titles() -> Vec<String> {
 
 /// 全局默认配置模板（`vtrim config init` 生成 .vtrim/config.toml 用，`vtrim init` 的基底）
 /// 包含 {{CORRECT_SYSTEM_PROMPT}} 等占位符，由生成方替换为内建默认 prompt。
-pub const GLOBAL_CONFIG_TOML: &str = r#"# V-Trim 全局默认配置 — 所有工程共享
+pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有工程共享
 # 相同参数会被 yekitrim.toml 覆盖
 
 [asr]
@@ -234,7 +234,7 @@ registration_enabled = false
 "#;
 
 /// LLM 配置模板（`vtrim config init` 生成 .vtrim/llm.toml 用）
-pub const LLM_CONFIG_TOML: &str = r#"# V-Trim LLM 配置 — 独立于工程配置
+pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
 
 [llm]
@@ -317,12 +317,12 @@ fn write_project_config_inner(
     let mut body = if global_path.exists() {
         tracing::info!("从全局配置复制: {}", global_path.display());
         std::fs::read_to_string(&global_path)?.replace(
-            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
+            "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
             "",
         )
     } else {
         GLOBAL_CONFIG_TOML.replace(
-            "# V-Trim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
+            "# YekiTrim 全局默认配置 — 所有工程共享\n# 相同参数会被 yekitrim.toml 覆盖",
             "",
         )
     };
@@ -403,7 +403,7 @@ fn write_project_config_inner(
     }
 
     let full = format!(
-        "# V-Trim 项目配置 — 优先级高于 .vtrim/config.toml\n# 相同的参数以本文件为准\n\n{}",
+        "# YekiTrim 项目配置 — 优先级高于 .vtrim/config.toml\n# 相同的参数以本文件为准\n\n{}",
         project_str.trim()
     ) + "\n\n"
         + body.trim();
