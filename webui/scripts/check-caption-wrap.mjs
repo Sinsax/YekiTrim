@@ -1,6 +1,6 @@
 // 字幕折行（`wrapCaptionParts`）的漂移 + 回归检查。
 //
-// 同一条算法有两份实现：出片权威路径 `crates/vtrim-polish/templates/index.html`
+// 同一条算法有两份实现：出片权威路径 `crates/yekitrim-polish/templates/index.html`
 // （DOM 预览与 canvas 出片都调它）与编辑器预览 `webui/src/polish/engine.js`
 // （经 `PolishPreview.vue` 的 `capRowsWrapped`）。两份一旦漂移，表现就是
 // 「预览与成片断行位置不一致」。
@@ -64,7 +64,7 @@ function extractFunction(src, name) {
   throw new Error(`function ${name} 的括号没配平`)
 }
 
-const htmlPath = join(root, 'crates', 'vtrim-polish', 'templates', 'index.html')
+const htmlPath = join(root, 'crates', 'yekitrim-polish', 'templates', 'index.html')
 const html = await readFile(htmlPath, 'utf8')
 const tplWrap = new Function(
   `${extractFunction(html, 'wrapCaptionParts')}

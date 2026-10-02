@@ -6,7 +6,7 @@
 // 靠注释互相提醒"要同序"。漂移的症状是「预览和成片不一样」，**而且不报错** ——
 // 正是本仓反复吃亏的那一类（同 check-effect-registry / check-dhampir-wiring 的动机）。
 //
-// 现在唯一权威是 vtrim_core::fonts::resolve_font_plan / emoji_font / fallback_chain。
+// 现在唯一权威是 yekitrim_core::fonts::resolve_font_plan / emoji_font / fallback_chain。
 // 这条门禁做**两向判据**：
 //   ① **登记的来源必须真的存在**（防止清单腐坏：代码改了、清单没改）；
 //   ② **那些文件里不许有没人认领的字体栈字面量**（防止"第 8 份写死又长出来"）。
@@ -33,9 +33,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 
-/** 唯一权威（改这里之前先确认 crates/vtrim-core/src/fonts.rs 真的有这些函数）。 */
+/** 唯一权威（改这里之前先确认 crates/yekitrim-core/src/fonts.rs 真的有这些函数）。 */
 const AUTHORITY = {
-  file: 'crates/vtrim-core/src/fonts.rs',
+  file: 'crates/yekitrim-core/src/fonts.rs',
   symbols: ['resolve_font_plan', 'emoji_font', 'fallback_chain'],
 }
 
@@ -46,18 +46,18 @@ const AUTHORITY = {
  * 能改就该改代码，而不是加白名单 —— 白名单是给"确实不该收敛"的地方用的。
  */
 const ALLOWED = [
-  // ⚠️ `crates/vtrim-core/src/fonts.rs` **不在白名单里** —— 它是唯一权威本体，但
+  // ⚠️ `crates/yekitrim-core/src/fonts.rs` **不在白名单里** —— 它是唯一权威本体，但
   // `fallback_chain()` 的字面量是**逐项 vec!**（不是"引号族名 + 通用族"那种栈形状），
   // 只有 `#[cfg(test)]` 里那条零回归断言才是栈形状（测试区已被跳过）。
   // 所以它天然干净 —— **别再把它加回来**：加回来就等于给权威本体开后门。
-  { file: 'crates/vtrim-polish/src/render/server.rs', why: 'SYSTEM_FONT_STACK 常量：空库回落态的文档锚点 + 单测钉子（收敛后由 fallback_chain 供给）' },
-  { file: 'crates/vtrim-polish/src/cover.rs', why: 'EMOJI_FONT：封面 emoji 特效层（inline style，CSS 扫不到，必须就地给）' },
-  { file: 'crates/vtrim-polish/templates/index.html', why: '出片模板：canvas 出片路径的权威实现，量宽/绘制串必须自带字面量（不读 DOM、不跑 JS）' },
+  { file: 'crates/yekitrim-polish/src/render/server.rs', why: 'SYSTEM_FONT_STACK 常量：空库回落态的文档锚点 + 单测钉子（收敛后由 fallback_chain 供给）' },
+  { file: 'crates/yekitrim-polish/src/cover.rs', why: 'EMOJI_FONT：封面 emoji 特效层（inline style，CSS 扫不到，必须就地给）' },
+  { file: 'crates/yekitrim-polish/templates/index.html', why: '出片模板：canvas 出片路径的权威实现，量宽/绘制串必须自带字面量（不读 DOM、不跑 JS）' },
   { file: 'webui/src/components/PolishPreview.vue', why: '预览：旧 server 兼容用的字面量兜底（新 server 永远给非空 fallback_stack）' },
   { file: 'webui/src/components/CoverDesigner.vue', why: '设计器镜像：与 cover.rs 的特效层同源（镜像清单要求两处一起改）' },
   { file: 'webui/src/components/FontLibrary.vue', why: '字体库卡片预览栈：每支字体现场注册后的展示用（不是出片字体选择）' },
   { file: 'webui/src/styles/tokens.css', why: '全站 UI 字体 token（--font），与出片无关' },
-  { file: 'crates/vtrim-server/src/web.rs', why: '503 构建指引页内联样式，与出片无关' },
+  { file: 'crates/yekitrim-server/src/web.rs', why: '503 构建指引页内联样式，与出片无关' },
 ]
 
 /** 字体栈字面量的两种形态（见文件头说明）。 */

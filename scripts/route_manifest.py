@@ -126,7 +126,7 @@ def normalise_handler(name: str) -> str:
     is written depends only on where the `router()` fn happens to live. Without this the
     route diff would show dozens of false changes during the module split.
     """
-    for prefix in ("super::", "crate::", "vtrim_server::", "vtrim_cli::", "vtrim_service::"):
+    for prefix in ("super::", "crate::", "yekitrim_server::", "yekitrim_cli::", "yekitrim_service::"):
         while name.startswith(prefix):
             name = name[len(prefix) :]
     return name
@@ -187,9 +187,9 @@ def main() -> int:
     # `candidates` that exists wins; when it is a directory module, every
     # sibling `.rs` is folded in below.
     candidates = [
-        "crates/vtrim-server/src/api/mod.rs",
-        "crates/vtrim-server/src/api.rs",
-        "crates/vtrim-cli/src/server/api.rs",
+        "crates/yekitrim-server/src/api/mod.rs",
+        "crates/yekitrim-server/src/api.rs",
+        "crates/yekitrim-cli/src/server/api.rs",
     ]
     sources: list[str] = []
     for candidate in candidates:

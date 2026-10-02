@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs';
 
 const ENGINE = 'webui/src/polish/engine.js';
-const TEMPLATE = 'crates/vtrim-polish/templates/index.html';
+const TEMPLATE = 'crates/yekitrim-polish/templates/index.html';
 
 /** 预览真正会调的那一族（签名都是 `(idx, t)`）。 */
 const IDX_T_FAMILY = [

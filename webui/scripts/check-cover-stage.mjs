@@ -37,8 +37,8 @@ const appCss = await read('webui', 'src', 'styles', 'app.css')
 // ⚠️ 通配规则在 app.css 与 tokens.css **各有一份**（历史遗留），两边都要查 —— 只查一处会漏。
 const tokensCss = await read('webui', 'src', 'styles', 'tokens.css')
 const designer = await read('webui', 'src', 'components', 'CoverDesigner.vue')
-const coverHtml = await read('crates', 'vtrim-polish', 'templates', 'cover.html')
-const coverRs = await read('crates', 'vtrim-polish', 'src', 'cover.rs')
+const coverHtml = await read('crates', 'yekitrim-polish', 'templates', 'cover.html')
+const coverRs = await read('crates', 'yekitrim-polish', 'src', 'cover.rs')
 
 // ── 断言脚手架 ────────────────────────────────────────────────────────────
 let failed = 0

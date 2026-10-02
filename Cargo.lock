@@ -3157,139 +3157,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vtrim-cli"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "clap",
- "indicatif",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "vtrim-core",
- "vtrim-polish",
- "vtrim-server",
- "vtrim-service",
-]
-
-[[package]]
-name = "vtrim-core"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bzip2 0.5.2",
- "chrono",
- "indicatif",
- "memmap2",
- "regex-lite",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sherpa-onnx",
- "sherpa-onnx-sys",
- "tar",
- "tokio",
- "toml",
- "toml_edit",
- "tracing",
- "which",
-]
-
-[[package]]
-name = "vtrim-polish"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "image",
- "rand",
- "regex-lite",
- "reqwest",
- "serde",
- "serde_json",
- "takumi",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tower-http 0.5.2",
- "tracing",
- "urlencoding",
- "vtrim-core",
- "vtrim-render-core",
- "zip",
-]
-
-[[package]]
-name = "vtrim-render-core"
-version = "0.3.1"
-dependencies = [
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "vtrim-server"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "chrono",
- "clap",
- "flate2",
- "futures-util",
- "mime_guess",
- "serde",
- "serde_json",
- "subtle",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml",
- "tower",
- "tracing",
- "tracing-subscriber",
- "vtrim-core",
- "vtrim-polish",
- "vtrim-service",
-]
-
-[[package]]
-name = "vtrim-service"
-version = "0.3.1"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "chrono",
- "flate2",
- "rand",
- "reqwest",
- "rusqlite",
- "scrypt",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "vtrim-core",
- "vtrim-polish",
-]
-
-[[package]]
 name = "want"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3644,6 +3511,139 @@ name = "xxhash-rust"
 version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
+
+[[package]]
+name = "yekitrim-cli"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "indicatif",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "yekitrim-core",
+ "yekitrim-polish",
+ "yekitrim-server",
+ "yekitrim-service",
+]
+
+[[package]]
+name = "yekitrim-core"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bzip2 0.5.2",
+ "chrono",
+ "indicatif",
+ "memmap2",
+ "regex-lite",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sherpa-onnx",
+ "sherpa-onnx-sys",
+ "tar",
+ "tokio",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "which",
+]
+
+[[package]]
+name = "yekitrim-polish"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "image",
+ "rand",
+ "regex-lite",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "takumi",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tower-http 0.5.2",
+ "tracing",
+ "urlencoding",
+ "yekitrim-core",
+ "yekitrim-render-core",
+ "zip",
+]
+
+[[package]]
+name = "yekitrim-render-core"
+version = "0.3.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "yekitrim-server"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "clap",
+ "flate2",
+ "futures-util",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "yekitrim-core",
+ "yekitrim-polish",
+ "yekitrim-service",
+]
+
+[[package]]
+name = "yekitrim-service"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "flate2",
+ "rand",
+ "reqwest",
+ "rusqlite",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "yekitrim-core",
+ "yekitrim-polish",
+]
 
 [[package]]
 name = "yoke"

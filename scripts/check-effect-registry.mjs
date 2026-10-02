@@ -113,7 +113,7 @@ function loadRegistry() {
 const CONSUMERS = [
   {
     name: '类型真源（vtrim-render-core::Event 枚举）',
-    file: 'crates/vtrim-render-core/src/types.rs',
+    file: 'crates/yekitrim-render-core/src/types.rs',
     lang: 'rs',
     kind: 'rust-enum',
     anchor: 'pub enum Event',
@@ -144,7 +144,7 @@ const CONSUMERS = [
   },
   {
     name: 'LLM 提示词（**必须派生自词汇表**）',
-    file: 'crates/vtrim-polish/src/llm/segment.rs',
+    file: 'crates/yekitrim-polish/src/llm/segment.rs',
     lang: 'rs',
     kind: 'derives',
     // 提示词里两份类型清单（system 与 user）以前是手写的；现在都从词汇表算。
@@ -169,10 +169,10 @@ const allIds = (registry) => registry.effects.map((e) => e.id);
 // 锚点检查：① 登记的锚点必须真的存在；② 那些文件里不许有"没人认领"的实现
 // ---------------------------------------------------------------------------
 const ANCHOR_SITES = {
-  canvas: { file: 'crates/vtrim-polish/templates/index.html', lang: 'html' },
+  canvas: { file: 'crates/yekitrim-polish/templates/index.html', lang: 'html' },
   dom_preview: { file: 'webui/src/polish/engine.js', lang: 'js' },
   dhampir_case: { file: 'tools/polish-to-dhampir.mjs', lang: 'js' },
-  post_span: { file: 'crates/vtrim-polish/src/process/fx.rs', lang: 'rs' },
+  post_span: { file: 'crates/yekitrim-polish/src/process/fx.rs', lang: 'rs' },
 };
 
 /** 某个文件里"看起来像效果实现"的名字（用于孤儿检测）。 */
@@ -270,7 +270,7 @@ function checkAnchors(registry) {
 function checkValues(registry) {
   const failures = [];
   let checks = 0;
-  const fx = read('crates/vtrim-polish/src/process/fx.rs');
+  const fx = read('crates/yekitrim-polish/src/process/fx.rs');
   const timeline = read('webui/src/components/TimelineEditor.vue');
 
   /** 从 `fn(…) { "id" => v, … }` 里取一张表（⚠️ fx.rs 有**两张**表，必须按函数名分锚，不能一把抓）。 */
@@ -290,7 +290,7 @@ function checkValues(registry) {
   void uiSpans; // 已派生（见上面 `derives` 那条），不再有字面量可对
 
   // **Rust 侧的默认时长**（`Event::default_end` 的 match 表）：这是原先第三份拷贝。
-  const rustTypes = read('crates/vtrim-render-core/src/types.rs');
+  const rustTypes = read('crates/yekitrim-render-core/src/types.rs');
   const rustAt = rustTypes.indexOf('pub fn default_end');
   assert.ok(rustAt >= 0, 'types.rs 里找不到 default_end');
   const rustBody = rustTypes.slice(rustAt, rustTypes.indexOf('\n    }', rustAt));

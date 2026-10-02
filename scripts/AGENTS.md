@@ -27,7 +27,7 @@
   ⚠️ **"用了 X 就必须同时有 Y"这类文件级约束加进 `PAIRED_RULES`**（`(规则名, 路径, trigger, need, why)`）：
   行级正则表达不了跨行成对关系（`Agent::new(` 与 `with_cancel(` 本来就在不同行）。现有那条是
   「批量 LLM 循环必须交出取消探针」。判据刻意做粗（文件级）—— 目的是别漏掉新的批量循环，不是精确到语句；
-  自证方法：临时放一个只含 `Agent::new(` 的文件进 `crates/vtrim-polish/src/llm/`，门禁应当 exit 1。
+  自证方法：临时放一个只含 `Agent::new(` 的文件进 `crates/yekitrim-polish/src/llm/`，门禁应当 exit 1。
   用法：`python3 scripts/check_module_boundaries.py [-v]`。
 - **`check_module_map.py`** —— 模块卡门禁：读 `docs/module-map.json`（模块 id → 目录 → 卡 → verify），
   校验**覆盖率 / 预算 / 四节骨架 / 索引表一致 / ⚠️ 行数下限**，违规非零退出。
@@ -188,8 +188,8 @@
   就因此产出 **8 条假阳性**，等于没用；`(?<!:)//` 是为了不把 `https://…` 里的 `//` 当注释起点）；
   ② **`std::process::id()` 不算"开子进程"**（它只取 PID 给临时目录命名，`downloader/ytdlp.rs`、
   `bilibili/danmaku.rs` 都用了，没有任何进程被创建）—— 规则认的是 `Command` / `.spawn(`。
-  分层规则用 `(?<!["\w])vtrim_server::`（`logbus.rs` 有一段测试专门断言"三个 crate 前缀都要剥掉"，
-  里面写着字符串字面量 `"vtrim_server::"` —— 那是数据不是依赖，裸匹配会误报）。
+  分层规则用 `(?<!["\w])yekitrim_server::`（`logbus.rs` 有一段测试专门断言"三个 crate 前缀都要剥掉"，
+  里面写着字符串字面量 `"yekitrim_server::"` —— 那是数据不是依赖，裸匹配会误报）。
 - ⚠️ **加规则前先确认现状是通过的**：**两条刻意没加的**是「`views/` 里不许出现 `/api/` 字面量或 `fetch(`」与
   「`views/` 里不许用 `scopeQ(`」—— 现状大量不满足，加了就是红门禁，**别盲加**；真要收紧得先改代码
   （那是行为改动，不属于"结构标注"这一批）。

@@ -52,14 +52,14 @@
   反模式。精修时间轴的读路径（`TimelineEditor::loadData`）**必须直接调 `api()`**，失败置
   `loadError` 并**暂停写入**（详见 `webui/src/AGENTS.md` 的读失败纪律）。
 - ⚠ **上传上限是双份常量**：`stickers.js::UPLOAD_MAX_BYTES` 与 Rust
-  `crates/vtrim-server/src/stickers.rs::UPLOAD_MAX_BYTES` 是**同一个数**（**改一处要改两处**，
+  `crates/yekitrim-server/src/stickers.rs::UPLOAD_MAX_BYTES` 是**同一个数**（**改一处要改两处**，
   Rust 侧有单测把它钉在 64 MiB）。**前端必须先挡**：axum 超限回的是 **413 + 纯文本**，而
   `client.js` 只认 JSON，会把"文件太大"报成"接口不存在或返回格式错误"。
 - **`jobs.js` 的资源键必须与后端 `vtrim-server/src/server/scope_key.rs` 一致**（`clipKey`/`outKey`/
   `idxKey`）：前端用同一套键判断"我这个片段/项目忙不忙"，只在自己作用域被占用时才禁用按钮。
   `busyOn` 只是提前提示、**不是正确性保证**（正确性由服务端排队兜），所以 `snapshotStale` 超时后
   各视图要把它的结果降级成 `null`，宁可放行也不要把按钮永远灰着。
-- ⚠️ **`watchJob` 拿到 404 必须收订阅**：任务表在内存里（`crates/vtrim-server/src/jobs.rs`），
+- ⚠️ **`watchJob` 拿到 404 必须收订阅**：任务表在内存里（`crates/yekitrim-server/src/jobs.rs`），
   服务重启会清空全部历史，而浏览器标签页可以开一整夜 —— 旧口径只写一条 debug 就接着 2 秒一次地
   轮询，服务端日志被 `GET /api/jobs/<旧 id> → 404` 刷满（实测一晚几百条），页面还永远停在「运行中」。
   现在 404 = 终态 `lost`（`STATUS_ZH.lost`「记录已失效」）+ 一条 warn + 收订阅；

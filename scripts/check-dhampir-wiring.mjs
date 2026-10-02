@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
 
-const ROUTES = join(repo, 'crates/vtrim-server/src/api/routes.rs');
+const ROUTES = join(repo, 'crates/yekitrim-server/src/api/routes.rs');
 const WEBUI_SRC = join(repo, 'webui/src');
 // 与 Rust 侧 `wasm_dirs()` 同一套"同层目录"规则：Dhampir 与 V-Trim 并排。
 const DHAMPIR = resolve(repo, '..', 'Dhampir');
@@ -309,8 +309,8 @@ if (artifactCli) {
 // 两边都剪的后果实测过：12s 的片子带 3s 屏蔽，出片只有 **6.0s**（应 9.0s），
 // 而且音轨是从整条源视频抽的、没跟着压缩 —— 第一刀之后全错位。
 // 两边都不剪的后果更安静：屏蔽区间**照常播出来**、报告里一句都不说。
-const DHAMPIR_RS = join(repo, 'crates/vtrim-polish/src/render/dhampir.rs');
-const POLISH_API = join(repo, 'crates/vtrim-server/src/api/polish.rs');
+const DHAMPIR_RS = join(repo, 'crates/yekitrim-polish/src/render/dhampir.rs');
+const POLISH_API = join(repo, 'crates/yekitrim-server/src/api/polish.rs');
 const dhampirSrc = readFileSync(DHAMPIR_RS, 'utf8');
 const polishApiSrc = readFileSync(POLISH_API, 'utf8');
 

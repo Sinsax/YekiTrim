@@ -1,7 +1,7 @@
 // 覆盖层（overlay）色档契约的漂移检查。
 //
 // 同一条规则有四份实现：Rust `vtrim-render-core/src/timeline.rs::overlay_stops`、
-// 出片权威路径 `crates/vtrim-polish/templates/index.html`、预览求值器
+// 出片权威路径 `crates/yekitrim-polish/templates/index.html`、预览求值器
 // `webui/src/polish/engine.js`、以及经 engine 的 `PolishPreview.vue`。
 // 这几份一旦漂移，表现就是"面板里设了颜色、画面上什么都没有"——正是这次要修的 bug。
 //
@@ -61,7 +61,7 @@ function extractFunction(src, name) {
   throw new Error(`function ${name} 的括号没配平`)
 }
 
-const htmlPath = join(root, 'crates', 'vtrim-polish', 'templates', 'index.html')
+const htmlPath = join(root, 'crates', 'yekitrim-polish', 'templates', 'index.html')
 const html = await readFile(htmlPath, 'utf8')
 const tpl = new Function(
   `${extractFunction(html, 'overlayFadeStop')}

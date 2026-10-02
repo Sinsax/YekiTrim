@@ -45,7 +45,7 @@
 
 ## 边界
 
-- ⚠️ **权威在出片模板，不在这里**：`crates/vtrim-polish/templates/index.html` 的 canvas 那条腿
+- ⚠️ **权威在出片模板，不在这里**：`crates/yekitrim-polish/templates/index.html` 的 canvas 那条腿
   （`renderFrame` / `getActiveXxx`）才是"事实来源"，本文件只是它的**复刻副本**。改模板里的曲线与常量
   必须同步这里 + 守卫。**认的是出片那条腿，不是 GSAP 预览** —— `shake` 就抄错过一次：
   预览是 0.025s 连续交替（`index.html:532`），出片是固定 0.2s 的四级阶梯（`:1575`）。

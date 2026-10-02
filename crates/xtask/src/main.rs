@@ -407,10 +407,10 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     let zip_path = out_dir.join(format!("{package_name}.zip"));
 
     if !options.skip_build {
-        println!("==> cargo build --release -p vtrim-cli --locked");
+        println!("==> cargo build --release -p yekitrim-cli --locked");
         let status = Command::new(cargo())
             .current_dir(&root)
-            .args(["build", "--release", "-p", "vtrim-cli", "--locked"])
+            .args(["build", "--release", "-p", "yekitrim-cli", "--locked"])
             .status()?;
         if !status.success() {
             return Err(format!("cargo build failed ({status})").into());
@@ -470,7 +470,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     //   ① 转译器 `tools/polish-to-dhampir.mjs`（它按**同层** `../spec/effects.json` 读效果词汇表）
     //   ② 效果词汇表 `spec/effects.json`
     //   ③ 底座自己：`dhampir/bin/<exe>`（出片）+ `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
-    //      —— 包内形状由 `vtrim_polish::render::dhampir::{find_binary, wasm_dirs, preview_dir}` 定义
+    //      —— 包内形状由 `yekitrim_polish::render::dhampir::{find_binary, wasm_dirs, preview_dir}` 定义
     //      （`<程序目录>/dhampir/…`），底座侧的产出来自它自己的 `node scripts/package.mjs`。
     fs::create_dir_all(package_dir.join("tools"))?;
     fs::create_dir_all(package_dir.join("spec"))?;
@@ -537,11 +537,11 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     }
     println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
 
-    // ⚠️ 2026-10-02 起：自带字体**内嵌在 vtrim.exe 里**（`crates/vtrim-core/assets/fonts/`，
+    // ⚠️ 2026-10-02 起：自带字体**内嵌在 vtrim.exe 里**（`crates/yekitrim-core/assets/fonts/`，
     // 经 include_bytes! 进二进制），首次启动自动落盘到字体库 —— 所以**发行包仍然只带一个空目录**，
     // 但用户侧已经不需要任何"下载"动作。内嵌的授权依据 = 两支都是 SIL OFL-1.1（正文明确允许
     // bundled/embedded）；许可原文也一并内嵌、随字体落盘。
-    // 用户自己导入的字体放这里（`vtrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
+    // 用户自己导入的字体放这里（`yekitrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
     // ⚠️ **本目录就是字体库本体**（2026-10-02 资产收回程序目录之后）。
     // 曾经它只是"老安装的回落态"，正式位置在 `%USERPROFILE%\.vtrim\fonts` ——
     // 那条已经作废：现在读写都走这里，**别再改回用户目录**。
@@ -874,7 +874,7 @@ fn cargo() -> String {
 /// in the root manifest.
 ///
 /// Why root-first: the crates now say `version.workspace = true`, so the old per-crate
-/// scan (`crates/vtrim-cli/Cargo.toml` `[package] version`) finds nothing and packaging
+/// scan (`crates/yekitrim-cli/Cargo.toml` `[package] version`) finds nothing and packaging
 /// would fail with "no version found". Keeping that scan as a fallback preserves old
 /// checkouts. The version here is what names the release archive (`vtrim-v<版本>-win-x64`),
 /// so it must be read from the same place the binary's `CARGO_PKG_VERSION` comes from.
@@ -883,7 +883,7 @@ fn cli_version(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(version) = table_version(&root_manifest, "[workspace.package]") {
         return Ok(version);
     }
-    let manifest = root.join("crates").join("vtrim-cli").join("Cargo.toml");
+    let manifest = root.join("crates").join("yekitrim-cli").join("Cargo.toml");
     if let Some(version) = table_version(&manifest, "[package]") {
         return Ok(version);
     }

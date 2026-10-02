@@ -19,7 +19,7 @@ xtask = "run -p xtask --"
 # [alias] cover
 # -------------
 # 带**静态封面渲染**（Takumi）的构建/运行。`cover-takumi` 是**可选 feature、默认关**，理由写在
-# `crates/vtrim-polish/Cargo.toml`：① 拉长每次构建（takumi + parley/harfrust/ICU4X 一大串）
+# `crates/yekitrim-polish/Cargo.toml`：① 拉长每次构建（takumi + parley/harfrust/ICU4X 一大串）
 # ② 带出 libwebp-sys 的 `LNK4098` 链接器警告（默认构建没有）③ 发行产物的许可面要跟着复核。
 # 用这个别名就不必每次手打长串（**分隔符由你输入的 `--` 提供**，别名里不能再带一个 ——
 # 带了会被当成 exe 的第一个参数，实测 `cargo cover -- polish cover --help` 会变成
@@ -27,4 +27,4 @@ xtask = "run -p xtask --"
 #
 #     cargo cover -- server                                  # 带 Takumi 通道起服务（封面设计器弹窗里可选）
 #     cargo cover -- polish cover <工程目录> --renderer takumi
-cover = "run --bin vtrim --features vtrim-polish/cover-takumi"
+cover = "run --bin vtrim --features yekitrim-polish/cover-takumi"

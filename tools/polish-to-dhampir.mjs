@@ -488,7 +488,7 @@ export const DANMAKU_FADE_IN_MS = 300;
 /// `travelMs` 读不出来（手写素材没写 6 参数 `\move`）时按 0 处理 —— 那时底座会回退到
 /// 轨道级的 `duration_ms`，这里不猜它的值。
 ///
-/// ⚠️ 与 `vtrim_core::danmaku::clamp_display_windows` 是同一条规则的两份实现
+/// ⚠️ 与 `yekitrim_core::danmaku::clamp_display_windows` 是同一条规则的两份实现
 /// （Rust 那份管 V-Trim 自己的 `data/danmaku.json`）；改一边要改另一边。
 export function danmakuExitMs(startMs, endMs, travelMs) {
   const travel = Number.isFinite(travelMs) && travelMs > 0 ? travelMs : 0;
