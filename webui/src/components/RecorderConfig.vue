@@ -16,7 +16,7 @@
     </div>
 
     <div class="hint mb-8">
-      录播姬（BililiveRecorder）录完一场推 webhook 给 V-Trim，V-Trim 按房间归属自动入库成项目。
+      录播姬（BililiveRecorder）录完一场推 webhook 给 YekiTrim，YekiTrim 按房间归属自动入库成项目。
       「启用」= 打开接收入口 <span class="mono">/api/ingest/bililive/&lt;token&gt;</span>；
       <b>保存/切换立即生效，不需要重启</b>。
     </div>
@@ -32,7 +32,7 @@
       <template v-else>
         <div class="rc-grid">
           <div class="span-2">
-            <label>录像目录 root（录播姬的输出目录，V-Trim 进程要读得到）</label>
+            <label>录像目录 root（录播姬的输出目录，YekiTrim 进程要读得到）</label>
             <div class="row" style="gap:8px">
               <input v-model.trim="form.root" class="flex-1" placeholder="例如 D:/rec 或 \\NAS\rec">
               <button class="mini-btn" @click="showPicker = true">浏览…</button>
@@ -100,7 +100,7 @@
             <input class="mono" :value="newToken" readonly @focus="$event.target.select()">
           </div>
           <div class="hint mt-6">
-            录播姬不在本机时，把地址里的主机名换成 V-Trim 主机的 <b>局域网 IP</b>（录播姬要能访问到）。
+            录播姬不在本机时，把地址里的主机名换成 YekiTrim 主机的 <b>局域网 IP</b>（录播姬要能访问到）。
             关掉上面的开关会<b>保留</b> token；重新生成才会让旧的立刻失效。
           </div>
         </div>

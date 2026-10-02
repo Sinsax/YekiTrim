@@ -1,9 +1,9 @@
 <template>
   <aside class="side" :class="{ mini: collapsed }">
     <div class="side-brand" @click="go('/workbench')">
-      <div class="brand-logo">V</div>
+      <div class="brand-logo">Y</div>
       <div v-if="!collapsed">
-        <div class="brand-name">V-TRIM</div>
+        <div class="brand-name">YekiTrim</div>
         <div class="brand-sub">切片工作台</div>
       </div>
       <button class="side-toggle" :title="collapsed ? '展开侧栏' : '折叠侧栏'"

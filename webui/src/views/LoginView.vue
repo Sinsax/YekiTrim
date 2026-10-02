@@ -1,8 +1,8 @@
 <template>
   <div class="login">
     <div class="login-card">
-      <div class="logo">V</div>
-      <h1>V-TRIM</h1>
+      <div class="logo">Y</div>
+      <h1>YekiTrim</h1>
       <div class="sub">切片工作台 · 账号登录</div>
 
       <div class="error-banner" v-if="error">{{ error }}</div>

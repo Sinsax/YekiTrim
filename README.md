@@ -1,4 +1,4 @@
-# V-Trim
+# YekiTrim
 
 直播录像自动切片工具。输入录播视频 + 弹幕文件，输出按事件分割的片段 + 字幕 + `publish_config.json`。
 
