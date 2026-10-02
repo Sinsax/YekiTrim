@@ -30,7 +30,7 @@ yekitrim-render-core ←── yekitrim-polish ──┐
 | `crates/yekitrim-render-core` | 事件/时间线**类型**与时间线数学（被 polish 用），不认识业务；**不含任何 GPU 管线** |
 | `crates/yekitrim-service` | CLI 与 WebUI 共用的领域逻辑（账号账本 / 项目 / 录播姬 / B站 / 用量） |
 | `crates/yekitrim-server` | axum HTTP API + WebUI 宿主 + 任务队列，`api/` 按领域分模块 |
-| `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `vtrim` |
+| `crates/yekitrim-cli` | 只剩入口（clap 命令 + tracing 装配），二进制名 `yekitrim` |
 | `crates/xtask` | 构建/打包/产物门禁（`cargo xtask scan|package`） |
 
 硬规矩（`scripts/check_module_boundaries.py` 逐条机器检查，15 条规则）：
@@ -127,7 +127,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 以下是**全局**不变式（模块内的规矩在各自卡里）：
 
 - ⚠️ **程序资产只挂一个根**（2026-10-02 口径：*不要用户目录*）：`path::data_dir()` =
-  `VTRIM_DATA_DIR` ?? `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.vtrim/`**
+  `YEKITRIM_DATA_DIR` ?? `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.yekitrim/`**
   —— 两个可能的位置就必然有地方只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
 - ⚠️ **同步 IO 绝不能留在 async 线程上**（剪切时"整个服务器连不上"的根因）：handler 里的
   同步文件访问走 `api::blocking(f)`，任务体走 `api::spawn_job`。完整纪律（已覆盖清单、panic 兜底、
@@ -156,14 +156,14 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   **必须**排在构建期常量前面 —— 那常量是编译期烧死的绝对路径，排前面会让「换台机器/换个 cwd」
   静默端出**开发机源码树里**的界面（有测试钉住次序）。`webui/dist` **已入库**，改了 `webui/src`
   必须重建并一起提交。
-- ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `vtrim-wasm` / `render-frame` 接口
+- ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `yekitrim-wasm` / `render-frame` 接口
   **整条已删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），
   画面归底座、音轨归本仓。**别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
 - ⚠️ **默认端口 26320 只有一份定义**：`yekitrim-service/src/doctor.rs::DEFAULT_PORT`。
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。
   `--trust-proxy` 是 `X-Forwarded-*` 的唯一开关（决定限流键与 cookie 的 `Secure`）。
-- ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` 里的检测 prompt 是 `config init`
+- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` 里的检测 prompt 是 `config init`
   填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**。
 - ⚠️ **不许手改生成物**：`webui/dist/`（vite 构建产物，**已入库**）—— 改了 `webui/src` 必须
   `npm --prefix webui run build` 重建，再一起提交；别直接编辑 dist 里的 js/css。

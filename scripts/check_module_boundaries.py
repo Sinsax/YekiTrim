@@ -66,7 +66,12 @@ RULES: list[tuple[str, list[str], str, str]] = [
     (
         "bilibili 不许知道下载器",
         ["crates/yekitrim-service/src/bilibili"],
-        r"yt-?dlp|VTRIM_PROG|VTRIM_PATH|VTRIM_META|process::Command|\.spawn\(",
+        # ⚠️ 哨兵名 2026-10-03 由 `VTRIM_*` 改成 `YEKITRIM_*`（改名 vtrim → yekitrim）。
+        # **两个名字都留在正则里**：这个规则是"判据本身"，改名时若只改代码不改这里，
+        # 规则会**静默匹配不到任何东西**（门禁还在跑、还报 0 违规，但其实已经是空转）。
+        # 实测过：注入 `YEKITRIM_PATH` 旧正则会漏（exit 0），注入 `VTRIM_PATH` 才抓得到（exit 1）。
+        r"yt-?dlp|VTRIM_PROG|VTRIM_PATH|VTRIM_META"
+        r"|YEKITRIM_PROG|YEKITRIM_PATH|YEKITRIM_META|process::Command|\.spawn\(",
         "弹幕走旁路（自己 GET），与引擎完全无关；混在一起就没法单测",
     ),
     (
