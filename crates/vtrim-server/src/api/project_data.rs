@@ -1352,7 +1352,34 @@ pub(super) async fn media_get(
         _ => mime_guess::from_path(&path).first_or_octet_stream().to_string(),
     };
     let range_header = headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok());
-    media::serve_file(&path, &mime, range_header).await
+
+    // **ETag/304：没变就不重传。**
+    //
+    // 为什么加（2026-10-02）：精修页进 Dhampir 时会把该工程引用的**全部动图**整份取一遍
+    // —— 实测一组 5 张贴纸合计 **15.72 MB**（单张最大 4.95 MB），而这条路此前**没有任何
+    // 校验符、也没有 `Cache-Control`** ⇒ 浏览器每次进页面都得原样重收一遍。
+    // 用户看到的是"动图加载要 6.5 秒"，而其中大头其实是**这 15.7 MB 的搬运**，
+    // 不是解码（解码/上传实测只要几百毫秒 —— 见 `docs` 里那次误判的复盘）。
+    //
+    // ⚠️ **绝不能对带 Range 的请求开压缩**（会破坏播放，见 `media.rs::serve_file_cond`
+    // 的模块注释）。ETag 与 Range **可以共存**：304 只是"别传了，你那份还有效"，
+    // 206 仍然按原字节发。所以这里 `compress=false`、`etag=Some`。
+    //
+    // 校验符用「长度 + mtime」（`media::file_etag`），**不是内容摘要**：
+    // 对一份 4.95 MB 的贴纸每次请求都算一遍哈希，比省下的传输还贵。
+    // `Cache-Control: no-cache` = "用之前回来校验"，配合 ETag 正合适
+    // （不是"不许缓存"）。文件一变 mtime 就变 ⇒ ETag 自然失效。
+    let mut etag = None;
+    if range_header.is_none() {
+        etag = tokio::fs::metadata(&path)
+            .await
+            .ok()
+            .map(|m| media::file_etag(&m));
+    }
+    let if_none_match = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    media::serve_file_cond(&path, &mime, range_header, etag.as_deref(), if_none_match, None).await
 }
 
 /// `/api/media/*` 的归属校验 + 路径解析（同步：DB 查询 + 项目目录上的 canonicalize/jail）。
@@ -1408,6 +1435,150 @@ pub(super) fn resolve_media_path(
 
 #[cfg(test)]
 mod tests {
+    /// **`/api/media/*` 必须带 ETag，并且命中 `If-None-Match` 时回 304。**
+    ///
+    /// # 为什么这条判据要有（2026-10-02）
+    ///
+    /// 精修页进 Dhampir 时会把该工程引用的**全部动图**原样取一遍 —— 实测一组 5 张贴纸
+    /// 合计 **15.72 MB**（单张最大 4.95 MB）。这条路此前**没有任何校验符、也没有
+    /// `Cache-Control`** ⇒ 每次进页面都得重新搬一遍这 15.7 MB。
+    ///
+    /// 用户当时看到的症状是「动图加载要 6.5 秒」，而那条日志里的"解码"其实把
+    /// `fetch` + `arrayBuffer` 也算进去了（宿主侧计时区间打错，
+    /// 见 `PolishPreview.vue` 里那段注释）—— 于是"解码很慢"这个结论是被错计时喂出来的，
+    /// 真正的大头是这 15.7 MB 的搬运。
+    ///
+    /// ⚠️ 与 wasm 那条的差别：这里**不能开压缩**（`/api/media/*` 要服务视频的 Range，
+    /// 压缩后字节不再一一对应，会破坏播放）。所以本用例只验 ETag/304 与 Range 的共存。
+    #[tokio::test]
+    async fn media_带_etag_且命中时回_304() {
+        let t = test_app().await;
+        let pid = project_ids(&t).await[0];
+        let rel = "output/clips/media-etag/sticker.gif";
+        let dir = t.root.join("output/clips/media-etag");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 用纯 ASCII 文件名：URI 里带 CJK 要走百分号编码，那是另一条判据，别混进来。
+        // 造一份"看起来像视频"的字节：内容无所谓，判据只看长度/mtime 算出的校验符。
+        let bytes: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(t.root.join(rel), &bytes).unwrap();
+
+        let uri = format!("/media/{pid}/{rel}");
+        let req = |extra: Vec<(&str, &str)>| {
+            let mut b = t.req("GET", &uri);
+            for (k, v) in extra {
+                b = b.header(k, v);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+
+        // ① 首次：200 + **必须有 ETag**（没有它浏览器就无从校验，只能整份重收）
+        let res = t.call(req(vec![])).await;
+        assert_eq!(res.status(), StatusCode::OK, "首次取媒体应当成功");
+        let etag = res
+            .headers()
+            .get(axum::http::header::ETAG)
+            .expect("`/api/media/*` 必须带 ETag —— 否则 15.7 MB 的贴纸每次进页面都重传")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'), "ETag 要带引号：{etag}");
+        assert!(
+            res.headers().get(axum::http::header::CONTENT_ENCODING).is_none(),
+            "媒体路由**不许压缩**（要服务 Range，压缩会破坏播放）"
+        );
+        let len = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+        assert_eq!(len, bytes.len());
+
+        // ② 回带同一个 ETag ⇒ 304 且**空体**（省下的正是那 15.7 MB）
+        let res = t.call(req(vec![("if-none-match", etag.as_str())])).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "ETag 没变就该 304");
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty(), "304 不许带 body，实际 {} 字节", body.len());
+
+        // ③ 文件变了（长度变）⇒ ETag 必须变，刷新不能拿到旧贴纸
+        let mut bigger = bytes.clone();
+        bigger.extend_from_slice(b"tail");
+        std::fs::write(t.root.join(rel), &bigger).unwrap();
+        let res = t.call(req(vec![("if-none-match", etag.as_str())])).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "文件变了却仍回 304 —— 用户刷新会拿到旧贴纸（比慢更糟）"
+        );
+        let res = t.call(req(vec![])).await;
+        let new_etag = res
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(new_etag, etag, "长度变了 ETag 必须变");
+
+        // ④ Range 与 ETag 共存：**206 仍然按原字节发**（ETag 不许把播放搞坏）
+        let res = t.call(req(vec![("range", "bytes=0-99")])).await;
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT, "带 Range 必须还是 206");
+        let part = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(part.len(), 100, "Range 的字节数不对：{}", part.len());
+        assert_eq!(&part[..], &bigger[..100], "206 的字节必须与原始文件一一对应");
+    }
+
+    /// **复现真实场景的省流量**：5 张动图贴纸（合计约 15.7 MB）第二次进页面时**一字节都不传**。
+    ///
+    /// 上一条验的是"304 的机制对不对"，这条验的是"**省下的量级**对不对" ——
+    /// 用户报的是"动图加载 6.5 秒"，而那 6.5 秒里的大头是这 15.7 MB 的搬运。
+    /// 判据用**实际读出的字节数**，不用 header：只有真少传了才算数。
+    #[tokio::test]
+    async fn media_第二次进页面时贴纸一字节都不重传() {
+        let t = test_app().await;
+        let pid = project_ids(&t).await[0];
+        let dir = t.root.join("output/clips/sticker-vol");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 五个文件，尺寸取真实贴纸的量级（这里按 1/100 缩放造：够验机制，又不拖慢用例）。
+        let sizes = [495, 426, 247, 217, 187];
+        let mut names = Vec::new();
+        for (n, size) in sizes.iter().enumerate() {
+            let name = format!("sticker-{n}.gif");
+            std::fs::write(dir.join(&name), vec![0xA5u8; size * 1024]).unwrap();
+            names.push(name);
+        }
+
+        // 第一次：全量取，同时记下每个文件的 ETag 与字节数
+        let mut total_first = 0usize;
+        let mut etags = Vec::new();
+        for name in &names {
+            let uri = format!("/media/{pid}/output/clips/sticker-vol/{name}");
+            let res = t.call(t.req("GET", &uri).body(Body::empty()).unwrap()).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            etags.push(
+                res.headers()
+                    .get(axum::http::header::ETAG)
+                    .expect("每个贴纸都要有 ETag")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+            total_first += axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+        }
+        assert!(total_first > 1_000_000, "这组素材应当有 MB 级体量，实际 {total_first}");
+
+        // 第二次（模拟用户再进一次精修页）：带 ETag ⇒ **全部 304、零字节**
+        let mut total_second = 0usize;
+        for (name, tag) in names.iter().zip(&etags) {
+            let uri = format!("/media/{pid}/output/clips/sticker-vol/{name}");
+            let res = t
+                .call(t.req("GET", &uri).header("if-none-match", tag.as_str()).body(Body::empty()).unwrap())
+                .await;
+            assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "{name} 没有命中 304");
+            total_second += axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+        }
+        assert_eq!(
+            total_second, 0,
+            "第二次进页面仍然搬了 {total_second} 字节 —— 贴纸应当一字节都不重传"
+        );
+    }
+
     use super::*;
     use crate::api::test_support::*;
     use crate::jobs::{JobClass, JobSpec};

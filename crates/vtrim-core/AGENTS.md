@@ -67,8 +67,13 @@
   `.migrated-from-program-dir` 记号，之后"换构建目录字体全没"不再发生）；用户目录不存在才回落
   `<程序目录>/resources/fonts/`（老安装兼容，手工丢进去的字体继续可见）。`config init` 与 `server`
   启动都会 `ensure_dir`。
-  **两种布局都支持**：① v2「每支一个目录」`<slug>/font.ttf|otf` + `FONT.toml`（**id = 目录名**，
-  元数据含 `family`（**内部族名，唯一权威**）/ `display_name` / `builtin` / `is_default` / `license` / `scripts`）；
+  **两种布局都支持**：① v2「每支一个目录」`<slug>/font.ttf|otf` + `FONT.toml`
+  —— ⚠️ **`id` 是 `FONT.toml` 里的字段，不再等于目录名**（2026-10-02）：目录名与字体文件名一律是
+  **ASCII slug**（`ascii_slug` = `<hint>-<sha256(id)[..12]>`），给人看的那串汉字只住 `id` / `display_name`。
+  因为底座把字体路径塞进 ffmpeg 的 `drawtext=fontfile=…`：**路径里一个非 ASCII 字符就让 ffmpeg
+  每条字幕访问违例一次**（240 帧 4.0s → 37s，且 0 行字幕/0 条弹幕画得出来）。缺 `id` 的老库回落
+  "目录名就是 id"（零迁移），`ensure_dir` 顺手跑 `migrate_ascii_layouts`（幂等）把非 ASCII 条目搬成 ASCII。
+  元数据含 `id` / `family`（**内部族名，唯一权威**）/ `display_name` / `builtin` / `is_default` / `license` / `scripts`；
   ② 老布局（`.ttf` 直接丢在库里，id = 文件名去扩展名）—— **继续支持**，`scan_all`/`resolve_all` **目录优先**，
   `scan()`/`resolve_file()` 已改走 `*_all`。`family` 仍是内部族名（手写最小 `name` 表解析，按
   `(路径, mtime, 体积)` 缓存，别每次请求重读几十 MB）；**空串 = 系统字体栈**（首项由

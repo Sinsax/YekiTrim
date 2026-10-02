@@ -251,12 +251,23 @@ fn scale_blur(css: &str, factor: f64) -> String {
 ///
 /// ⚠️ **全部写成"类 + 后代"形式**（`.vt-outer #title`），**不用 `#title.vt-fill` 这种复合选择器** ——
 /// 实测 Takumi 不匹配 `#id.class`（`selector-probe`：Chrome A−B = 104.11 / Takumi 2.01）。
+/// ⚠️ 最后一条 `#title{font-weight:400}` 是 **2026-10-02 的实测修正**（用户报「中文描边不够准确」）：
+/// 模板给标题写的是 `font-weight:900`，而 **Chrome 对库里那支单字面字体不做合成加粗**
+/// （受控实测：同一字体同一字号，Chrome 的 400 与 900 **逐像素相同**，填充 bbox 154×180、
+/// 描边外扩 9px）；**Takumi 会合成加粗**（`synthesis_embolden_strength` = font_size/32，
+/// 走 `draw_text_embolden` 的 `Stroke::new(e)`）⇒ 填充向外撑 `e/2`（200px 字实测 166×192 →
+/// 172×198），而描边层是按**未加粗**的原始轮廓描的 ⇒ 填充盖掉描边内缘，**可见描边从 10px 掉到 7px**。
+/// 两处一起失真就是"描边不准确 + 字比预览粗"。库里每支字体只有一个字面（`font.ttf`），
+/// Takumi 永远拿不到真粗体 ⇒ 合成加粗必然是**两边不一致**的来源，所以在这一层明确关掉。
+/// 同特异度按文档序覆盖：这条排在模板那条 `#title{…font-weight:900…}` 之后 ⇒ 生效。
 const TAKUMI_TITLE_LAYER_CSS: &str = "\
 .vt-outer{z-index:2}\
 .vt-inner-fill{position:absolute;left:0;top:0;width:100%}\
 .vt-inner-fill #title{-webkit-text-stroke:0}\
 .vt-outer #title{color:transparent}\
-.vt-outer .hl{color:transparent}";
+.vt-outer .hl{color:transparent}\
+\
+#title{font-weight:400}";
 
 /// 让"描边在下、填充在上"在 Takumi 里成立：把 `#title-wrap` **整块复制一份放在它前面**当描边层。
 ///
@@ -303,9 +314,18 @@ pub fn split_title_layers(html: &str, stroke: &str, css: &str) -> String {
         .unwrap_or(0) + 1;
     let h = (fs * lh * lines as f64).round();
     let box_style = "position:absolute;left:0;top:0;width:100%;";
+    // ⚠️ 描边默认 **Miter join**（Takumi `Stroke::new` 默认 + CJK 尖笔画放大地）⇒ 20px 描边在
+    // "幼/马/跷"这类字上出尖刺。Takumi 认 `stroke-linejoin`（stylesheets.rs:1275 →
+    // `draw_text_stroke` 的 `stroke.join`），但模板从没写过它 ⇒ 这里**逐层内联补** `round`。
+    // 只补**描边层**：填充层没有描边，写了也是死代码（还误导读者）。
+    let stroke_inline = if stroke.is_empty() {
+        stroke.to_string()
+    } else {
+        format!("{stroke};stroke-linejoin:round")
+    };
     let inner_stroke = inner.replacen(
         "<div id=\"title\"",
-        &format!("<div id=\"title\" style=\"{box_style}color:transparent;{stroke}\""),
+        &format!("<div id=\"title\" style=\"{box_style}color:transparent;{stroke_inline}\""),
         1,
     );
     // ⚠️ `.hl` 高亮词**自己是 span**，带 `color:#ffcc00` —— 从 `#title` 继承的 `transparent` 压不过它，
@@ -324,6 +344,35 @@ pub fn split_title_layers(html: &str, stroke: &str, css: &str) -> String {
     let hl_fill = inner_fill.replace("<span class=\"hl\"", "<span class=\"hl\" style=\"-webkit-text-stroke:0\"");
     let block = format!(r#"<div id="title-wrap" style="height:{h}px">{hl_transparent}{hl_fill}</div>"#);
     html.replacen(whole, &block, 1)
+}
+
+/// 往 `#fx-extra` 开标签后插一个**只带权威 emoji 字族**的空 div。
+///
+/// **为什么必须**：Takumi 对 `font-family` 的解析是**全局命名空间**（`FontContext::families`），
+/// 不存在"这一层用 A、那一层用 B"的局部作用域；而 cover 的 emoji 特效层是 **inline style**
+/// （`ensure_emoji_fallback` 只扫 `<style>` 块，扫不到它）。字族的**唯一权威** =
+/// `crate::cover::emoji_font_stack()`（库里那支 emoji 字体的内部族名打头）——把同一份栈
+/// 以**空 div** 的形式放进 `#fx-extra`（所有特效的父容器），字体解析器就会先在这一层
+/// 建立"族名 → 字体"的映射；emoji 特效层那份 inline 栈请求的是**同名族**，于是两端
+/// （设计器预览注册的 FontFace / 出片注册的字节）收敛到同一支字体。
+///
+/// 空盒（`font-size:0`）**零布局影响**：所有特效都是 absolute，DOM 序里它又排在最前，
+/// 画的时候永远在其他特效之下。带 `data-vt-emoji-font` 标记 ⇒ 幂等（重复调用不再插）。
+pub fn inject_emoji_layer_font(html: &str) -> String {
+    const MARKER: &str = "data-vt-emoji-font";
+    // emoji 特效层的 inline style 独有签名（glow/blur/… 都是 background/backdrop-filter，没有 font-family）
+    if !html.contains(";line-height:1;font-family:") || html.contains(MARKER) {
+        return html.to_string();
+    }
+    let open = "<div id=\"fx-extra\"";
+    let Some(start) = html.find(open) else { return html.to_string() };
+    let Some(gt) = html[start..].find('>') else { return html.to_string() };
+    let at = start + gt + 1;
+    let stack = crate::cover::emoji_font_stack();
+    let layer = format!(
+        "<div style=\"font-family:{stack};font-size:0;line-height:1;\" {MARKER}></div>"
+    );
+    format!("{}{}{}", &html[..at], layer, &html[at..])
 }
 
 /// 把 **复合选择器** `#id.class` 扁平化成 `#id`（仅当那份 HTML 里该元素确实带着这个 class）。
@@ -393,12 +442,18 @@ fn strip_at_rule_blocks(css: &str, name: &str) -> String {
 }
 
 /// 去掉某一条声明（`name: value;`），同一行里其它声明原样保留。
-fn strip_declaration(line: &str, name: &str) -> String {
-    if !line.contains(name) {
-        return line.to_string();
+///
+/// ⚠️ 按 **`;` / `}` / `{`** 三类边界切（不止 `;`）：适配层生成的内联 style 常把多条声明挤在一行里
+/// —— `split_title_layers` 发出的描边层就是 `style="position:…;color:transparent;-webkit-text-stroke:20px #2a2522"`，
+/// 行尾那条声明**不带分号**（到 `}` 或行尾为止）。只按 `;` 切会把它整条漏掉不删，
+/// `-webkit-text-stroke` 残留 ⇒ Takumi 把描边画在填充之上，透明层只剩描边、填充层黑块。
+/// （`{` 也算边界：`-webkit-text-stroke:20px #2a2522{…}` 这种坏输入宁可整体跳过，也别把选择器当声明留下。）
+fn strip_declaration(css: &str, name: &str) -> String {
+    if !css.contains(name) {
+        return css.to_string();
     }
-    let mut out = String::with_capacity(line.len());
-    for piece in line.split_inclusive(';') {
+    let mut out = String::with_capacity(css.len());
+    for piece in css.split_inclusive(|c| c == ';' || c == '}' || c == '{') {
         if piece.trim_start().starts_with(name) {
             continue;
         }
@@ -467,7 +522,20 @@ fn font_aliases(path: &Path) -> Vec<String> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").trim();
     // v2 目录布局的判据：文件名就是约定的 `font.<ext>`
     if stem.eq_ignore_ascii_case("font") {
-        if let Some(slug) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+        let dir = path.parent();
+        // ① **权威：同目录 `FONT.toml` 里的 `id`**（2026-10-02 起）。
+        //    目录名现在是 ASCII slug（`font-<hash>`，因为 ffmpeg 打不开非 ASCII 字体路径），
+        //    配置/模板里请求的那串 id（可能就是汉字）只住在元数据里 —— 不认它，
+        //    封面就会静默落到“注册序第一支”（§13 P1-e 那次的症状原样复发）。
+        let meta_id = dir
+            .and_then(vtrim_core::fonts::read_meta)
+            .map(|m| m.id.trim().to_string())
+            .filter(|id| !id.is_empty() && vtrim_core::fonts::is_safe_id(id));
+        if let Some(id) = meta_id {
+            return vec![id];
+        }
+        // ② 老库 / 手建目录没有元数据（或没写 id）⇒ 沿用“id = 目录名”，改造前的行为一字不变
+        if let Some(slug) = dir.and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
             let slug = slug.trim();
             if !slug.is_empty() && vtrim_core::fonts::is_safe_id(slug) {
                 return vec![slug.to_string()];
@@ -508,18 +576,18 @@ pub fn render_cover_png(
     //      封面 `__FONT_FAMILY__`），与内嵌族名常常不同（id `LXGWWenKaiLite-Regular`
     //      vs 内嵌 `霞鹜文楷 轻便版`）。
     //
-    // ⚠️ **但别名不是"让它用上字体"的必要条件**（2026-10-01 实测，纠正原先写在这里的说法）：
-    // Takumi 的 fallback 桶 = **已注册字体按注册序的全集**（`fonts.rs` 的
-    // `order` + `last_resort_order`），所以**认不出的族名**不是回退到内置 Geist，
-    // 而是回退到**整个字体库**——它会挑第一支"有该字形"的字体来画。
-    // 实测（`glyph` = 中文）：注册 [Emoji, LXGW] 时，请求 `__nope__` /
-    // `NotoColorEmoji` / `LXGWWenKaiLite-Regular` 三者输出**逐字节相同**，
-    // 中文都正常渲染（落到 LXGW）。⇒ 多支字体时"选哪支"实际由**注册顺序**决定，
-    // 而不是由 CSS 的族名决定。
+    // ⚠️ **族名是认的**（2026-10-02 受控实测，**纠正**先前写在这里的"由注册顺序决定、族名无用"）：
+    // 注册 [乐米波波体, LXGW, NotoSansSC, NotoColorEmoji-CBDT] 后，某行请求
+    // `font-family:'NotoColorEmoji-CBDT'` ⇒ 连**数字**都换成 emoji 字体那套字形（逐像素可辨），
+    // 而请求正文族名时数字落在正文字体上。先前那条"三者输出逐字节相同"的实测只说明
+    // **认不出的族名**会落进"已注册字体按注册序"的兜底桶（`fonts.rs` 的 `order` +
+    // `last_resort_order`，不是内置 Geist）——**不是**族名不起作用。
     //
-    // 保留别名注册的理由：①注册序里 id 与实际字体仍一一对应、不改变现状；
-    // ②未来 Takumi 若收紧 fallback（只认精确族名），别名能让 CSS 立刻对上，**属于前瞻保险**。
-    // 真正的"用哪支"控制点是 `cover_font_files()` 给出的**顺序**（见 `cover.rs`）。
+    // ⇒ 两条控制点都有效，且必须**一起**看：
+    //   ① `cover_font_files()` 的顺序（见 `cover.rs`）决定"认不出的族名"落哪一支；
+    //   ② CSS 的族名（库 id）决定"指定了族名"时用哪一支 —— 标题里的 emoji 段就靠它
+    //      （`cover.rs::emoji_run_span` 写库 id；浏览器那条路同 id 注册 FontFace ⇒ 两边同一支）。
+    // 所以别名注册**不是前瞻保险，是当前就在用的机制**（别删）。
     // 字节用 `Arc` 共享：`FontSource::from_shared` 只克隆指针，不复制整支字体。
     for path in fonts {
         let bytes: Arc<Vec<u8>> =
@@ -538,8 +606,12 @@ pub fn render_cover_png(
         }
     }
 
-    // 图片内联 + 标题双层（描边在下、填充在上）—— 都在交给 HTML 前端之前做完
+    // 图片内联 + emoji 字族权威层 + 标题双层（描边在下、填充在上）—— 都在交给 HTML 前端之前做完
     let inlined = inline_local_images(html, asset_root);
+    // ⚠️ **必须赶在 `split_title_layers` 之前**：那一层包上 wrapper 后，"找 `<div id="fx-extra">`
+    // 的 `>` 插一个子节点"的判据虽然不变，但"emoji 层的 inline 签名"会不会被标题层的
+    // 复制带乱，谁也不想赌 —— 趁 HTML 还是 `build_cover_page` 的原始形状时先插。
+    let inlined = inject_emoji_layer_font(&inlined);
     // 描边宽度/颜色先从 CSS 里取（值已在 `:root{}` 里有定义，直接读字面量），交给双层拆分做内联 style
     // 描边取**变量展开之后**的字面量：内联 style 里不能留 `var()` ——
     // Takumi 遇到不可解析的值会**丢掉整条内联样式**（连带 `color:transparent` 一起没，标题就还是黑块）。
@@ -554,10 +626,11 @@ pub fn render_cover_png(
     // 日志里不写清楚，改没改就只能靠像素去猜（实测踩过：双层标题改完数字几乎不动，
     // 分不清是"没命中"还是"命中了但没用"）。
     let title_split = html != inlined;
+    let emoji_font_layer = html.contains("data-vt-emoji-font");
     let images = html.matches("src=\"data:").count();
     tracing::info!(
-        "封面(takumi) 适配：标题双层={} 内联图片={} 张 HTML={}B CSS={}B",
-        title_split, images, html.len(), css.len()
+        "封面(takumi) 适配：标题双层={} emoji字族层={} 内联图片={} 张 HTML={}B CSS={}B",
+        title_split, emoji_font_layer, images, html.len(), css.len()
     );
     if let Ok(dir) = std::env::var("VTEDIT_TAKUMI_DUMP") {
         let dir = PathBuf::from(dir);
@@ -660,6 +733,190 @@ mod tests {
         );
     }
 
+    /// ⚠️ **id 住在 `FONT.toml` 里时以元数据为准**（2026-10-02：目录名改成 ASCII slug）。
+    ///
+    /// 落盘是 `font-<hash>/font.ttf` + `FONT.toml{id="乐米波波体"}`，而封面 CSS 请求的是
+    /// 那串汉字 id —— 别名必须认它，否则中文标题会落到“注册序第一支”（静默换字体）。
+    #[test]
+    fn font_aliases_prefer_meta_id_over_slug_dir() {
+        let dir = std::env::temp_dir().join(format!("vtrim-takumi-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let slug = dir.join("font-9c1d2e3f4a5b");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"x").unwrap();
+        std::fs::write(slug.join("FONT.toml"), "id = \"乐米波波体\"\ndisplay_name = \"乐米波波体\"\n").unwrap();
+        let out = font_aliases(&slug.join("font.ttf"));
+        assert_eq!(out, vec!["乐米波波体".to_string()], "必须以元数据里的 id 为准");
+        assert!(!out.iter().any(|a| a.contains("9c1d2e3f4a5b")), "slug 不该当别名：{out:?}");
+        // 元数据在、但 id 是空的 ⇒ 回落目录名（老库形状，行为不变）
+        std::fs::write(slug.join("FONT.toml"), "display_name = \"x\"\n").unwrap();
+        assert_eq!(font_aliases(&slug.join("font.ttf")), vec!["font-9c1d2e3f4a5b".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠️ **内联 style 是多条声明挤一行**（`split_title_layers` 发的描边层就是）——
+    /// `strip_declaration` 必须按 分号 / 花括号切，不能只按分号切（行尾那条没有分号）。
+    #[test]
+    fn strip_declaration_handles_multi_declaration_lines() {
+        let line = r#"<div id="title" style="position:absolute;color:transparent;-webkit-text-stroke:20px #2a2522">"#;
+        // 情况 1：行尾那条不带分号（到行尾为止）—— 必须能删
+        let out = strip_declaration(line, "-webkit-text-stroke");
+        assert!(!out.contains("-webkit-text-stroke"), "行尾无分号的声明没删掊：{out}");
+        assert!(out.contains("color:transparent"), "顺手把别的声明删了：{out}");
+        // 情况 2：后面还有别的声明（带分号）—— 原行为保持
+        let line2 = "-webkit-text-stroke:20px #2a2522;color:red;}";
+        let out2 = strip_declaration(line2, "-webkit-text-stroke");
+        assert_eq!(out2, "color:red;}", "带分号那条照旧删：{out2}");
+        // 情况 3：paint-order 照旧整条删
+        assert_eq!(strip_declaration("paint-order:stroke fill;}", "paint-order"), "}", "paint-order 照旧整条删");
+    }
+
+    /// emoji 字族权威层：签名命中才插、幂等、零布局影响。
+    #[test]
+    fn inject_emoji_layer_font_is_targeted_and_idempotent() {
+        let fx = r#"<div id="fx-extra"><div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:120px;line-height:1;font-family:'Segoe UI Emoji','Noto Color Emoji',sans-serif;filter:drop-shadow(0 6px 14px rgba(0,0,0,0.45));">🙂</div></div>"#;
+        let once = inject_emoji_layer_font(fx);
+        assert!(once.contains("data-vt-emoji-font"), "没插上：{once}");
+        // 权威栈打头的是库里那支（测试环境下库里是内置 Noto Color Emoji CBDT）
+        assert!(once.contains("font-family:'"), "栈必须是引号包住的族名列表：{once}");
+        // 插在 #fx-extra 开标签**之后**（子节点，不是兄弟节点）
+        let i_extra = once.find(r#"<div id="fx-extra">"#).expect("#fx-extra 还在");
+        let i_layer = once.find("data-vt-emoji-font").expect("标记还在");
+        assert!(i_layer > i_extra, "权威层必须在 #fx-extra 之内");
+        // 幂等
+        assert_eq!(inject_emoji_layer_font(&once), once);
+        // 没有 emoji 特效（无 inline font-family 签名）就不动
+        let no_fx = r#"<div id="fx-extra"></div>"#;
+        assert_eq!(inject_emoji_layer_font(no_fx), no_fx);
+    }
+
+    /// 标题双层：描边层必须带 stroke-linejoin:round（Miter 出尖刺，见函数上方注释），
+    /// 填充层不带（它没有描边）。
+    #[test]
+    fn title_stroke_layer_gets_round_join() {
+        let html = r#"<div id="page"><div id="fx-extra"></div><div id="title-wrap"><div id="title">测试<br>标题</div></div></div>"#;
+        let out = split_title_layers(html, "-webkit-text-stroke:20px #2a2522", ":root{--fs:120px;--lh:1.7}");
+        let n = out.matches("stroke-linejoin:round").count();
+        assert_eq!(n, 1, "只有描边层带 round join：{out}");
+        assert!(out.contains(r#"style="position:absolute;left:0;top:0;width:100%;color:transparent;-webkit-text-stroke:20px #2a2522;stroke-linejoin:round""#), "内联形状不对：{out}");
+        // 空描边（诊断开关剥光）时不多出一个分号
+        let out0 = split_title_layers(html, "", "");
+        assert!(!out0.contains("stroke-linejoin"), "空描边不该注入 join：{out0}");
+    }
+    /// **真渲染探针**（ignored，默认不进门禁）：跑一次微型 Takumi 光栅化，验证
+    /// ① 新加的 emoji 描边环 filter 链能被消化（不 panic / 不静默丢层）；
+    /// ② 描边层 + stroke-linejoin:round 的内联不会让 CSS 解析失败。
+    /// 本机跑法（要真实字体库；缺中文/emoji 字体时探针 panic 提示，不算功能回归）：
+    /// `VTEDIT_TAKUMI_PROBE=1 cargo test -p vtrim-polish --lib --features cover-takumi probe_renders_ring_and_join -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_renders_ring_and_join() {
+        let dir = match std::env::var("VTEDIT_TAKUMI_PROBE") {
+            Ok(v) if v.is_empty() => std::env::temp_dir().join("vtrim-takumi-probe"),
+            Ok(_) => std::env::temp_dir().join("vtrim-takumi-probe"),
+            Err(_) => {
+                eprintln!("VTEDIT_TAKUMI_PROBE 未设，跳过（探针只做人肉验收）");
+                return;
+            }
+        };
+        let mut fonts: Vec<std::path::PathBuf> = Vec::new();
+        // 字体目录：用户的库（`~/.vtrim/fonts`）优先，再落程序目录的回落态（缺了探针直接跳过）
+        // cargo test 的 cwd = crate 目录 ⇒ 用 CARGO_MANIFEST_DIR 的父目录锚 repo 根
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).map(Path::to_path_buf).unwrap_or_default();
+        let candidates = [
+            vtrim_core::path::font_dir(),
+            repo.join("target/debug/resources/fonts"),
+            repo.join("resources/fonts"),
+        ];
+        for root in candidates.iter() {
+            if !root.is_dir() { continue; }
+            if let Ok(entries) = fs::read_dir(root) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let emoji = p.file_stem().and_then(|s| s.to_str()).map(|s| s.contains("emj")).unwrap_or(false);
+                    if emoji { fonts.push(p); } else { fonts.insert(0, p); }
+                }
+            }
+        }
+        assert!(!fonts.is_empty(), "探针需要字体：target/debug/resources/fonts（缺了不算功能回归）");
+        let html = format!(
+            r#"<div style="width:100%;height:100%;position:relative"><div id="fx-extra"><div style="font-family:{};font-size:0;line-height:1;" data-vt-emoji-font></div><div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:48px;line-height:1;font-family:{};filter:drop-shadow(3px 0 0 #2a2522) drop-shadow(-3px 0 0 #2a2522) drop-shadow(0 3px 0 #2a2522) drop-shadow(0 -3px 0 #2a2522) drop-shadow(0 6px 14px rgba(0,0,0,0.45));">🙂</div></div><div id="title-wrap"><div id="title" style="position:absolute;left:0;top:0;width:100%;color:transparent;-webkit-text-stroke:6px #2a2522;stroke-linejoin:round">测试</div><div id="title" style="position:absolute;left:0;top:0;width:100%;-webkit-text-stroke:0">测试</div></div></div>"#,
+            crate::cover::emoji_font_stack(),
+            crate::cover::emoji_font_stack(),
+        );
+        let css = "#page{width:256px;height:128px}#title{font-size:24px;font-weight:900;stroke-linejoin:round}";
+        let _ = fs::create_dir_all(&dir);
+        let out = dir.join("probe.png");
+        render_cover_png(&html, css, Path::new("."), &out, 256, 128, &fonts)
+            .expect("探针渲染失败：新适配让 Takumi 消化不了");
+        let bytes = fs::read(&out).expect("产物没写出");
+        tracing::info!("探针产物 {} bytes hash {}", bytes.len(), short_hash(&bytes));
+    }
+
+    /// **引擎能力探针**（ignored）：拿**真实字体库**验三件事 ——
+    /// ① `font-family` 族名能否定向选中已注册字体（Takumi 的 fallback 是按注册序，族名到底认不认）；
+    /// ② 联排 emoji 外面套一个带 `filter:drop-shadow` 的 inline span，能不能出描边环；
+    /// ③ 带 `display:inline-block` 时环是否照旧。
+    /// 跑法：`VTEDIT_PROBE_FONT_ROOT=<字体库> VTEDIT_PROBE_OUT=<目录> cargo test -p vtrim-polish --lib \
+    ///   --features cover-takumi probe_title_emoji_variants -- --ignored --nocapture`
+    #[cfg(feature = "cover-takumi")]
+    #[test]
+    #[ignore]
+    fn probe_title_emoji_variants() {
+        let root = PathBuf::from(
+            std::env::var("VTEDIT_PROBE_FONT_ROOT")
+                .unwrap_or_else(|_| vtrim_core::path::font_dir().display().to_string()),
+        );
+        let ids = [
+            "乐米波波体",
+            "LXGWWenKaiLite-Regular",
+            "NotoSansSC-Regular",
+            "NotoColorEmoji-CBDT",
+        ];
+        let fonts: Vec<PathBuf> = ids
+            .iter()
+            .filter_map(|id| vtrim_core::fonts::resolve_all(&root, id))
+            .filter(|p| p.is_file())
+            .collect();
+        eprintln!("探针：字体注册序 = {:?}", fonts);
+        assert!(!fonts.is_empty(), "字体库为空：{}", root.display());
+        let out_dir = PathBuf::from(
+            std::env::var("VTEDIT_PROBE_OUT")
+                .unwrap_or_else(|_| std::env::temp_dir().join("vtrim-cover-variants").display().to_string()),
+        );
+        let _ = fs::create_dir_all(&out_dir);
+        let base = "position:absolute;left:40px;font-size:70px;line-height:1;color:#f0e6d3;\
+                    -webkit-text-stroke:14px #2a2522;stroke-linejoin:round;font-weight:900;";
+        // text-shadow 链：每条阴影都是**字形副本**（不累积），与 drop-shadow 链对照
+        let ts4 = "text-shadow:5px 0 0 #2a2522,-5px 0 0 #2a2522,0 5px 0 #2a2522,0 -5px 0 #2a2522;";
+        let ts8 = "text-shadow:5px 0 0 #2a2522,-5px 0 0 #2a2522,0 5px 0 #2a2522,0 -5px 0 #2a2522,3.5px 3.5px 0 #2a2522,3.5px -3.5px 0 #2a2522,-3.5px 3.5px 0 #2a2522,-3.5px -3.5px 0 #2a2522;";
+        let html = format!(
+            r#"<div id="page" style="position:absolute;inset:0;background:#808080">
+<div style="{base}top:10px;font-family:'乐米波波体'">幼儿园🩸 12</div>
+<div style="{base}top:100px;font-family:'乐米波波体'">幼儿园<span style="font-family:'NotoColorEmoji-CBDT'">🩸</span> 12</div>
+<div style="{base}top:190px;font-family:'乐米波波体'">幼儿园<span style="font-family:'NotoColorEmoji-CBDT';filter:drop-shadow(5px 0 0 #2a2522) drop-shadow(-5px 0 0 #2a2522) drop-shadow(0 5px 0 #2a2522) drop-shadow(0 -5px 0 #2a2522)">🩸</span> 12</div>
+<div style="{base}top:280px;font-family:'乐米波波体'">幼儿园<span style="font-family:'NotoColorEmoji-CBDT';display:inline-block;filter:drop-shadow(5px 0 0 #2a2522) drop-shadow(-5px 0 0 #2a2522) drop-shadow(0 5px 0 #2a2522) drop-shadow(0 -5px 0 #2a2522)">🩸</span> 12</div>
+<div style="{base}top:450px;font-family:'乐米波波体'">幼儿园<span style="font-family:'NotoColorEmoji-CBDT';{ts4}">🩸</span> 12</div>
+<div style="{base}top:530px;font-family:'乐米波波体'">幼儿园<span style="font-family:'NotoColorEmoji-CBDT';display:inline-block;{ts8}">🩸</span> 12</div>
+<div style="{base}top:370px;font-family:'NotoColorEmoji-CBDT'">12 幼儿园🩸</div>
+</div>"#
+        );
+        let css = "#page{width:1920px;height:620px}";
+        let out = out_dir.join("variants.jpg");
+        render_cover_png(&html, css, &out_dir, &out, 1920, 620, &fonts).expect("探针渲染失败");
+        eprintln!("探针：产物 = {}", out.display());
+    }
+
+    /// 标题层必须**关掉 Takumi 的合成加粗**（用户报「中文描边不够准确」的根因）：
+    /// 模板写 `font-weight:900`，Chrome 对库里那支单字面字体**不加粗**（实测 400/900 逐像素相同），
+    /// 而 Takumi 会合成加粗（填充向外撑 `font_size/32`）⇒ 填充盖掉描边内缘、可见描边变细 3px。
+    #[test]
+    fn title_layer_disables_synthetic_bold() {
+        assert!(
+            TAKUMI_TITLE_LAYER_CSS.contains("#title{font-weight:400}"),
+            "标题层必须显式关掉合成加粗：{TAKUMI_TITLE_LAYER_CSS}"
+        );
+    }
     /// ⚠️ **emoji 兜底注入必须幂等**（2026-10-02 修掉的既有 bug）。
     ///
     /// 原来的实现**无条件**往通用族前插前缀：对已经带 emoji 的栈会插第二遍，
@@ -672,10 +929,12 @@ mod tests {
         assert!(once.contains("Emoji"), "第一遍该插进去：{once}");
         let twice = ensure_emoji_fallback(&once);
         assert_eq!(once, twice, "第二遍不许再插一次（幂等）");
-        // 幂等的实质判据：通用族前那段只出现一次 emoji 家族
+        // 幂等的实质判据：通用族前那段只出现**一套** emoji 族名
+        // （权威栈形状 = 权威首项（'Noto Color Emoji' 之类）+ 系统尾部 3 个 ⇒ 上限 4；
+        //  旧判据 n<=2 是权威栈改形（emoji_font_stack 打头带库内族名）之前的口径）
         let head = twice.split("sans-serif").next().unwrap_or("");
         let n = head.matches("Emoji").count();
-        assert!(n <= 2, "emoji 族名重复注入（{n} 处）：{twice}");
+        assert!(n <= 4, "emoji 族名重复注入（{n} 处）：{twice}");
     }
 
     /// emoji 兜底注入要覆盖三种通用族，且不动别处。

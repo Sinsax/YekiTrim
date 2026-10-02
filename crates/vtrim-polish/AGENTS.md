@@ -140,6 +140,18 @@
   就要 7~8 个码点），`x/y` 是**字符中心**，`amount` 当大小用（`COVER_EMOJI_MIN_PX`(48) ~
   `COVER_EMOJI_MAX_PX`(288)px，公式只在 `cover.rs::cover_fx_html` 里一份，前端 `fxStyle` 是镜像）。
   字体栈要带 `Segoe UI Emoji / Apple Color Emoji / Noto Color Emoji`，否则出片是豆腐块。
+  ⚠️ **标题文本里的 emoji 是另一条路**（用户报的「前后端 emoji 字体不一致」+「渲染的 emoji 没有描边」都
+  在它身上）：它是 `title_lines` 里的**联排字符**（clip-14 真实配置 `直接飞出去流鼻血🩸`、`effects = []`），
+  特效层那套**一行都不落在它身上**。收口 = `cover.rs::wrap_emoji_runs` + `emoji_run_span`：把 emoji 段包成
+  `<span class="cov-emoji">`，族名用**库 id**（浏览器 FontFace/`@font-face` 与 Takumi 的 id 别名都按 id），
+  描边环用 4 向 `drop-shadow`（别加对角：链式累积会让外缘≈2.4k）（位图字形在 Takumi 里没有描边路径）+ **必须 `display:inline-block`**。
+  前端 `CoverDesigner.vue::wrapEmojiRuns` 是镜像，**改一边要改另一边**；📖 证据链见
+  **`docs/plan/takumi-cover-capability.md` §15**。
+
+- ⚠️ **两条真像素探针**（`tests/portrait_*.rs`，`#[ignore]`，2026-10-02 修好并真跑过）：
+  `portrait_stage_fit`（竖素材进横画布必须 contain + 运镜被吃掉）与 `portrait_backdrop`
+  （挪开处必须是模糊衬底、不是黑）。**harness 的三条口径与被修掉的坑**（抽帧要抽成片、变异锚点要落在
+  语义位置、衬底判据按开关决定断或明说跳过）见 `docs/plan/polish-vertical-canvas.md` §十。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 

@@ -71,9 +71,16 @@
   "该工程含**已下线的特效事件**（…）" + 两条路（旧版本删事件 / 直接编辑 `polish.toml`），
   **普通解析错误原样透传**（判据只在 serde 明说 `unknown variant \`X\`` 时命中，`expected one of` 列表不算 ——
   裸匹配类型名必然误判）。那份名单是**历史清单**，别拿效果词汇表去校验它（那几个类型正是要消失的）。
-- **画面构成（`[canvas] orientation` + `[stage] position / bg_mode / scale / padding`）与"衬底"**：
+- **画面构成（`[canvas] orientation` + `[stage] position_pct / bg_mode / scale / padding / portrait_*`）与「衬底」**：
   摆放与背景由 `ProjectFile::resolve_stage(src)` **唯一推导**，模板与编辑器只读注入的 `_canvas.stage`，
-  两边不各算一份。
+  两边不各算一份。⚠️ **2026-10-02 改版**（用户拍板）：① **位置 = `position_pct`（0–100，界面五档吸附**
+  0/25/50/75/100**）**，老枚举 `position` **只读兼容、不再写出**（`auto` → 50 居中）；② **轴只看比例**
+  （同比 → `fill`，否则 x/y）—— **`auto` 特例已删**，不匹配的源改成**适配留边**（老 `auto` 是裁切）；
+  ③ 缺省背景 = `blur`（UI 删掉「自动」，老值按 blur 处理）；④ `padding` **字段保留、UI 不再出现**
+  （与 `scale` 不同量、且 `deny_unknown_fields` 删不得）；⑤ 竖屏画布三个 `portrait_effects/camera/sfx`
+  **bool、缺字段 = false = 关**（整类事件只在渲染侧跳过，**事件本身不动**）。
+  ⚠️ **别拿 `StageFit.position` 算几何**（那是过渡期的兼容输出，25/75 会被压成 center）——
+  消费侧一律读 `StageFit::position_pct`。
   ⚠️ **竖屏出片露黑边**（用户报「精修竖屏时特效如震动会显示出背景的黑色，要在视频底下垫一层模糊」）
   两道闸缺一不可：
   ① `resolve_stage` 的背景门控是**画布方向**、不是 `axis` —— `axis=="fill" && !portrait` 才 `none`

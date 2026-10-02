@@ -53,7 +53,8 @@
   不置 `loading`、不卸载编辑器 —— 非静默时 `v-if="loading"` 会把整个编辑器换成骨架屏，
   编辑器一卸载，预览视频、`selectRegion` 与滚动位置全丢。需要重新从磁盘取数的子组件
   各自用 `:key` 计数重挂载：`TimelineEditor`=`segKey`（LLM 剪辑/初始化/去静音）、
-  `CoverDesigner`=`coverKey`（渲染导出）、`PolishPreview`=`previewKey`（任何任务完成）。
+  `CoverDesigner`=`coverKey`（封面任务完成 —— 渲染与封面已解耦，render 钩子不碰它）、
+  `PolishPreview`=`previewKey`（任何任务完成）。
 
 **精修页 `PolishView`：LLM 剪辑四条硬规矩**
 

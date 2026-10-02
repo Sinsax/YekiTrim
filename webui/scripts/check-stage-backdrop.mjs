@@ -32,6 +32,8 @@ const root = join(here, '..', '..')
 const read = async (...parts) => readFile(join(root, ...parts), 'utf8')
 const html = await read('crates', 'vtrim-polish', 'templates', 'index.html')
 const previewVue = await read('webui', 'src', 'components', 'PolishPreview.vue')
+const engineJs = await read('webui', 'src', 'polish', 'engine.js')
+const translator = await read('tools', 'polish-to-dhampir.mjs')
 
 /** 去掉 `//` 行注释与块注释（字符串字面量原样保留）。
  *  ⚠️ **源码断言必须先过它**：注释里出现的 `fs` / `drawStageBackdrop(...)` 会让判据假阳性 ——
@@ -292,19 +294,23 @@ console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
     rect(1920, 1080, 1920, 1080, { axis: 'fill' }), { x: 0, y: 0, w: 1920, h: 1080 })
 
   // ② 竖素材进横画布（axis=x）：按高度铺满 + 等比（用户报的"被拉成宽屏"就是这条判据翻面）
-  for (const [pos, wantX] of [['left', 0], ['center', 656.25], ['right', 1312.5]]) {
-    const r = rect(SW, SH, 1920, 1080, { axis: 'x', position: pos })
-    check(`竖素材进横画布 axis=x ${pos}：等比（720×1280 → 607.5×1080）`, approx(ratio(r, SW, SH), 1, 1e-9), true, JSON.stringify(r))
-    check(`竖素材进横画布 axis=x ${pos}：高度铺满、交叉轴居中`, approx(r.h, 1080, 1e-6) && approx(r.y, 0, 1e-6), true, JSON.stringify(r))
-    check(`竖素材进横画布 axis=x ${pos}：水平摆位 x=${wantX}`, approx(r.x, wantX, 1e-6), true, `x=${r.x}`)
+  // `position` 只是**过渡期的兼容枚举**（只保证两端），几何权威是 `position_pct` —— 用例两个都给，
+  // 并额外钉两档中间值（25/75）：那是枚举表达不了、只有百分比能算对的地方。
+  for (const [pos, pct, wantX] of [['left', 0, 0], ['center', 50, 656.25], ['right', 100, 1312.5],
+                                    ['center', 25, 328.125], ['center', 75, 984.375]]) {
+    const r = rect(SW, SH, 1920, 1080, { axis: 'x', position: pos, position_pct: pct })
+    check(`竖素材进横画布 axis=x ${pos}@${pct}：等比（720×1280 → 607.5×1080）`, approx(ratio(r, SW, SH), 1, 1e-9), true, JSON.stringify(r))
+    check(`竖素材进横画布 axis=x ${pos}@${pct}：高度铺满、交叉轴居中`, approx(r.h, 1080, 1e-6) && approx(r.y, 0, 1e-6), true, JSON.stringify(r))
+    check(`竖素材进横画布 axis=x ${pos}@${pct}：水平摆位 x=${wantX}`, approx(r.x, wantX, 1e-6), true, `x=${r.x}`)
   }
 
   // ③ 横素材进竖画布（axis=y）：按宽度铺满 + 上下三档
-  for (const [pos, wantY] of [['top', 0], ['center', 656.25], ['bottom', 1312.5]]) {
-    const r = rect(WIDE_W, WIDE_H, 1080, 1920, { axis: 'y', position: pos })
-    check(`横素材进竖画布 axis=y ${pos}：等比（1280×720 → 1080×607.5）`, approx(ratio(r, WIDE_W, WIDE_H), 1, 1e-9), true, JSON.stringify(r))
-    check(`横素材进竖画布 axis=y ${pos}：宽度铺满、交叉轴居中`, approx(r.w, 1080, 1e-6) && approx(r.x, 0, 1e-6), true, JSON.stringify(r))
-    check(`横素材进竖画布 axis=y ${pos}：垂直摆位 y=${wantY}`, approx(r.y, wantY, 1e-6), true, `y=${r.y}`)
+  for (const [pos, pct, wantY] of [['top', 0, 0], ['center', 50, 656.25], ['bottom', 100, 1312.5],
+                                    ['center', 25, 328.125], ['center', 75, 984.375]]) {
+    const r = rect(WIDE_W, WIDE_H, 1080, 1920, { axis: 'y', position: pos, position_pct: pct })
+    check(`横素材进竖画布 axis=y ${pos}@${pct}：等比（1280×720 → 1080×607.5）`, approx(ratio(r, WIDE_W, WIDE_H), 1, 1e-9), true, JSON.stringify(r))
+    check(`横素材进竖画布 axis=y ${pos}@${pct}：宽度铺满、交叉轴居中`, approx(r.w, 1080, 1e-6) && approx(r.x, 0, 1e-6), true, JSON.stringify(r))
+    check(`横素材进竖画布 axis=y ${pos}@${pct}：垂直摆位 y=${wantY}`, approx(r.y, wantY, 1e-6), true, `y=${r.y}`)
   }
 
   // ④ fill 分支 = cover（4:3 源进 16:9 画布：裁切而不是拉伸）
@@ -313,13 +319,13 @@ console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
   check('axis=fill 的裁切仍然盖满画布（与 stageCoverRect 同一语义）', coversCanvas(cover, 1920, 1080), true, JSON.stringify(cover))
 
   // ⑤ padding：只改布局盒（内容框 = 画布 − 四周 padding），不裁剪
-  const padded = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'left', padding: 100 })
+  const padded = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'left', position_pct: 0, padding: 100 })
   check('padding=100 时内容框 = (100,100,1720,880) 内的等比摆放',
     approx(padded.x, 100, 1e-6) && approx(padded.y, 100, 1e-6) && approx(padded.h, 880, 1e-6) && approx(padded.w, 495, 1e-6),
     true, JSON.stringify(padded))
 
   // ⑥ scale 绕盒心放大（与 #fit-box 的 transform-origin:center 一义）
-  const scaled = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'center', scale: 1.25 })
+  const scaled = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'center', position_pct: 50, scale: 1.25 })
   check('scale=1.25 绕盒心：中心不动、宽高 ×1.25',
     approx(scaled.w, 759.375, 1e-6) && approx(scaled.h, 1350, 1e-6)
     && approx(scaled.x + scaled.w / 2, 960, 1e-6) && approx(scaled.y + scaled.h / 2, 540, 1e-6),
@@ -328,6 +334,23 @@ console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
   // ⑦ 源尺寸拿不到（0×0）时退回整块画布：不许 NaN 画出空白帧
   check('源尺寸缺失 → 退回整块画布（无 NaN）',
     rect(0, 0, 1920, 1080, { axis: 'x' }), { x: 0, y: 0, w: 1920, h: 1080 })
+
+  // ⑨ 竖屏画布的三道整类门：**三份表必须同集合**（转译器 / engine.js / 模板）。
+  //    少一处 = 「预览里有这一类、成片里没有」（或反过来），而且**不报错** —— 2026-10-02 加。
+  const tableOf = (src) => {
+    const m = src.match(/PORTRAIT_SWITCH\s*=\s*\{([\s\S]*?)\}/)
+    if (!m) return null
+    return [...m[1].matchAll(/([a-z_]+)\s*:\s*'([a-z_]+)'/g)].map((x) => x[1] + '=' + x[2]).sort().join(',')
+  }
+  const tTrans = tableOf(translator)
+  const tEngine = tableOf(engineJs)
+  const tHtml = tableOf(html)
+  check('竖屏三开关的表：三份同集合（转译器 / engine.js / 模板）',
+    !!tTrans && tTrans === tEngine && tTrans === tHtml, true,
+    JSON.stringify({ 转译器: tTrans, engine: tEngine, 模板: tHtml }))
+  check('竖屏三开关的表：8 类特效 + 运镜 + 音效，且不把贴纸算进去',
+    /shake=effects/.test(tTrans) && /overlay=effects/.test(tTrans) && /camera=camera/.test(tTrans)
+      && /sfx=sfx/.test(tTrans) && !/sticker/.test(tTrans), true, tTrans)
 
   // ⑧ 源码消费面：算了要用（不是算完还硬铺满）
   const srDecl = code.indexOf('var sr = stageDrawRect(')
@@ -363,6 +386,18 @@ console.log('\n④ 预览 DOM 路径（模板 + WebUI 编辑器）')
     /props\.config\?\._canvas\?\.stage/.test(previewVue) && previewVue.includes("bg: 'blur'"), true)
   check('PolishPreview：--bg-blur 接的是契约里的 blur_px',
     /'--bg-blur': \(s\.blur_px \|\| 28\) \+ 'px'/.test(previewVue), true)
+
+  // ⚠️ **连续位置（`position_pct`）的 DOM 修正**：CSS 的 `stage-*` 只有三档，两处 DOM 层都必须是
+  //    「实测余量 × (pct/100 − class 基线)」这同一条式子 —— 少一处就是「Preview 里 25 档不动、成片动了」
+  //    这种不报错的漂移（与 ③c 的 canvas 公式是同一条线性插值的 DOM 版）。
+  const vueShift = /function measureStageShift[\s\S]{0,2000}?pct \/ 100 - basel/
+  check('PolishPreview：连续位置的 DOM 修正在（实测余量 × (pct/100 − 基线)）', vueShift.test(previewVue), true)
+  check('PolishPreview：.fit-box 挂上了修正后的 transform',
+    previewVue.includes('ref="fitBoxRef" :style="fitBoxStyle"'), true)
+  const tplShift = /function stageShiftPx[\s\S]{0,2000}?pct \/ 100 - basel/
+  check('模板 DOM 层：同一条修正公式（与 WebUI 预览同口径）', tplShift.test(html), true)
+  check('PolishPreview：位置修正读的是契约的 position_pct（不是老枚举）',
+    /typeof s\.position_pct === 'number'/.test(previewVue), true)
 }
 
 // ── ⑤ 自证有效：把源码改回修复前，上面的判据必须翻面 ────────────────────────
@@ -406,7 +441,7 @@ console.log('\n⑤ 自证有效：变异后判据必须翻面（否则本脚本�
   const stretch = html.replace('h=bhgt; w=bw*h/bh;', 'w=bwid; h=bhgt;')
   check('[变异] 拉伸替换确实命中源码', stretch !== html, true)
   if (stretch !== html) {
-    const r = loadRect(stretch)(720, 1280, 1920, 1080, { axis: 'x', position: 'left' })
+    const r = loadRect(stretch)(720, 1280, 1920, 1080, { axis: 'x', position: 'left', position_pct: 0 })
     check('[变异] 改回拉伸 → 等比判据翻面（w/h 不再等于 9:16）',
       approx(r.w / r.h / (720 / 1280), 1, 1e-9), false, JSON.stringify(r))
   }

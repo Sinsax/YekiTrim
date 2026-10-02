@@ -559,7 +559,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             "⚠️ .ttc / .otc（字体集合）用不了：浏览器的 @font-face 不认集合，\n",
             "   收进来会出现「预览回退系统字体、出片却用了它」。请先拆包成单个 .ttf/.otf。\n",
             "\n",
-            "自带字体（霞鹜文楷 Lite + Noto Color Emoji，均 OFL-1.1，可商用/可嵌入/可再分发）\n",
+            "自带字体（Noto Sans SC + Noto Color Emoji，均 OFL-1.1，可商用/可嵌入/可再分发）\n",
             "已内嵌在程序里，首次启动会自动装进字体库 —— 不需要联网、也不需要手动下载。\n",
             "  vtrim fonts list       看看库里有什么\n",
             "  vtrim fonts install    万一被删了，重新装回来（幂等）\n",

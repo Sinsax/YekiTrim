@@ -27,8 +27,16 @@ pub struct SoundEvent {
 /// 规则与 JS 一致：
 /// - `Sfx` 事件直接输出；
 /// - 带 `sfx` 引用的事件（sticker/特效）也输出；
-/// - 事件跨度不足 1s 时按 1s 兜底。
+/// - 事件跨度不足 1s 时按 1s 兜底；
+/// - ⚠️ **竖屏画布 + `[stage] portrait_sfx = false`（缺字段就是 false）→ 一条都不收**。
 pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
+    // **竖屏画布的音效门**（2026-10-02 用户口径：竖屏默认全关、缺字段 = 关）。
+    // 语义 = **按整类事件屏蔽**：只影响混音，`polish.toml` 里的事件**一个字都不动**
+    // （与「屏蔽只做标记」同一条纪律：界面把开关打开即完全恢复）。
+    // ⚠️ 判据是**画布方向**（`[canvas] orientation`），横画布下这个字段不生效。
+    if config.canvas.is_portrait() && !config.stage.portrait_sfx {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for seg in &config.segments {
         for ev in &seg.events {
@@ -191,5 +199,24 @@ mod tests {
         assert_eq!(events[0].volume, Some(0.5));
         // JS 中 `Math.max(transientDur, 1.0)` 最少 1s
         assert!(events[0].duration.unwrap() >= 1.0);
+    }
+
+    /// **竖屏画布的音效门**（2026-10-02）：缺字段 = 关 ⇒ 一条都不收；打开 `portrait_sfx` 才收。
+    /// ⚠️ 横画布不受这个字段影响（同样写 false 也照收）。
+    #[test]
+    fn portrait_canvas_gates_sfx() {
+        let mut config = base_config();
+        config.segments[0].events = vec![Event::Sfx {
+            time: 1.0,
+            name: "pop-notice".into(),
+            volume: None,
+            end: Some(2.0),
+        }];
+        assert!(!config.stage.portrait_sfx, "缺省就是关");
+        assert_eq!(collect_sound_events(&config).len(), 1, "横画布不受门控");
+        config.canvas.orientation = "portrait".into();
+        assert!(collect_sound_events(&config).is_empty(), "竖屏缺字段 = 关");
+        config.stage.portrait_sfx = true;
+        assert_eq!(collect_sound_events(&config).len(), 1, "打开开关即恢复");
     }
 }

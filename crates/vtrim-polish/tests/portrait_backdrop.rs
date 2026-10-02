@@ -21,7 +21,7 @@
 //!
 //! 运行（需要底座二进制 + Node 转译器）：
 //! ```text
-//! VTEDIT_BACKDROP_DIR="F:/para/Code/V-Trim/target/tmp-vertprobe/proj" \
+//! VTEDIT_BACKDROP_DIR="F:/para/Code/V-Trim/target/probe-backdrop" \
 //! VTEDIT_BACKDROP_OUT="F:/para/Code/V-Trim/target/tmp-vertprobe/out" \
 //! cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture
 //! ```
@@ -34,14 +34,34 @@
 //! 衬底压根没露出来，A/B 比的是同一份像素，什么都看不出来）。
 //! ⚠️ 探针工程请用**副本**：渲染产物（`_temp_video.mp4` / `_dhampir_project.json`）会落在工程里。
 //!
-//! 探针工程可以用 `target/tmp-vertprobe/proj`（内置生成脚本没有，是手里那个竖屏工程的最小复刻：
-//! 720×1280 源 + 画中画 + 全特效 + 一条 30 字必折行的字幕 + 两条弹幕），也可以指向真实工程
-//! —— 但真实工程得挑一个主画面真被挪开的时刻，否则四角本来就是画面本身。
-//!
 //! ⚠️ 这个"画中画"**不许**再用 `[[segments.events]] type="camera"` 做（探针工程最初是那样写的）：
 //! 竖素材的运镜已被门控成 `zoom=1.0 / handheld=0`，运镜再也挪不开主画面 —— 靠它露底
 //! 就是靠在一个**刚被修掉的缺陷**上（实测：门控落地后 30 帧里只剩 1 帧真露底，探针近乎空转）。
-//! 现在改由 `[stage] scale` 结构性露底，运镜事件留着只为跑那条被门控的代码路径。
+//! 现在改由 `[stage] scale` **结构性露底**，运镜事件留着只为跑那条被门控的代码路径。
+//!
+//! ## 探针工程（最小复刻，2026-10-02 复跑时重建）
+//!
+//! 当年那个 `target/tmp-vertprobe/proj` **没有内置生成脚本**、会随 `target/` 一起消失
+//! （本轮复跑就撞上了：探针在空转 —— 变异体四角最暗 194.4，全是被主画面盖住的像素）。
+//! 现在照下面重建即可（`target/` 已 gitignore，别入库）：
+//!
+//! ```text
+//! target/probe-backdrop/
+//!   clip.mp4      720×1280 竖屏 8s：整帧品红 #ff00ff + 最外圈 6px 白描边 +
+//!                 正中央 360×640 亮绿块 + 静音轨
+//!                 ffmpeg -y -f lavfi -i "color=c=magenta:s=720x1280:d=8:r=30" \
+//!                   -f lavfi -i "anullsrc=r=48000:cl=mono" \
+//!                   -vf "drawbox=x=0:y=0:w=720:h=1280:color=white:t=6,drawbox=x=180:y=320:w=360:h=640:color=lime:t=fill" \
+//!                   -c:v libx264 -pix_fmt yuv420p -crf 18 -g 30 -t 8 -c:a aac -shortest clip.mp4
+//!   clip.srt      随便一条字幕（可空文件）
+//!   polish.toml   duration=8.0 / [canvas] orientation="portrait" /
+//!                 [stage] bg_mode="blur" **scale=0.85** ← 结构性露底的关键那一行 /
+//!                 一条整段 camera 事件（只为跑被门控的那条代码路径）
+//! ```
+//!
+//! **`scale` 那一行是必须的**：竖素材 + 竖画布解析出 `axis=fill`（正好铺满），
+//! 没有它四角永远是主画面本身、衬底压根不露 —— 实测 30/30 帧"真露底"就是把 `scale` 设成
+//! 0.85 之后才拿到的（画中画让出的那一圈全是衬底）。
 
 mod common;
 

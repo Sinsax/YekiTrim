@@ -490,14 +490,39 @@ const fontOptions = computed(() => {
 /** 选中的即浏览器里要用的字族名；未选时交给全站 `--font`（不写 fontFamily，保持继承） */
 const coverFontFamily = computed(() => (coverFont.value ? `"${coverFont.value}"` : ''))
 
+/** 库内 emoji 字体的 **id**（出片 `emoji_font_stack()` 打头的也是它；库里没有 = 空串）。
+ *  ⚠️ **必须是 id、不是内部族名**：`/api/polish/font` 路由与 `@font-face` 都按 **id** 解析/声明，
+ *  用内部族名请求会落空（服务器按 id 找不到 → 兜底回 msyh；浏览器解析不到 → 落回系统 Segoe），
+ *  而出片 Takumi 用的是库里那支 ⇒ 用户报的"前后端 emoji 字体不一致"。 */
+const emojiFontId = ref('')
+
 async function loadFonts() {
   try {
     const r = await fetchFonts('读取字体库')
     fonts.value = r.fonts || []
+    // ⚠️ **emoji 字体一致性的收口**（用户报「设计器 emoji 与渲染 emoji 字体不一致」）：
+    // 出片 Takumi 用**库里那支** emoji 字体（`emoji_font_stack()` / 标题 emoji 段的族名 = 库 id），
+    // 而浏览器只认系统字体 + 注册过的 FontFace ⇒ 不注册就是"预览 Segoe、出片 Noto"。
+    // 这里把**同一份字节**（同一个 `/api/polish/font?name=<id>` 路由）注册进浏览器，栈里也用同一个 id。
+    // 选哪一支**以服务端 `emoji_family` 为准**（它带着"两支 emoji 都装过时优先 CBDT"的取舍），
+    // 列表里按 id / 内部族名反查回那一条；查不到再退回"第一条 emoji"。
+    const fam = String(r.emoji_family || '')
+    const list = r.fonts || []
+    const entry = (fam ? list.find((f) => f.id === fam || f.family === fam) : null)
+      || list.find((f) => f.emoji && f.installed !== false)
+    emojiFontId.value = entry ? entry.id : ''
+    if (emojiFontId.value) {
+      ensureFontFace(props.pid, props.dir, emojiFontId.value, { onDebug: (m) => addClient('debug', m, 'cover') })
+    } else {
+      addClient('debug', '字体库没有 emoji 字体，封面表情用系统字体兜底', 'cover')
+    }
   } catch (e) {
     addClient('warn', '字体库读取失败，封面字体只能手填：' + (e.message || e), 'cover')
   }
 }
+/** emoji 字体栈：库里那支（按 id 注册的 FontFace）打头，系统名只做兜底 ——
+ *  与 Rust `emoji_font_stack()` 同一形状（权威打头 + 系统名收尾）。 */
+const emojiFontStack = computed(() => (emojiFontId.value ? `'${emojiFontId.value}',` : '') + `'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif`)
 
 /** 换封面字体：改的是 ref，落盘交给下面那条防抖保存（与其它封面参数同一条路） */
 function onCoverFontChange(e) {
@@ -925,8 +950,50 @@ function splitTitleFallback(raw) {
     .filter((s) => s.length > 0)
 }
 
+/** emoji 基字符 / 延伸字符判定 —— 与 Rust `cover.rs::is_emoji_base / is_emoji_extend` **同一套范围**
+ *  （改一边必须改另一边：判据漂了就是"预览包了环、出片没包"或反之）。 */
+function isEmojiBase(cp) {
+  return (cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) || (cp >= 0x2B00 && cp <= 0x2BFF)
+}
+function isEmojiExtend(cp) {
+  return cp === 0xFE0F || cp === 0xFE0E || cp === 0x200D || cp === 0x20E3
+    || (cp >= 0x1F3FB && cp <= 0x1F3FF) || (cp >= 0xE0020 && cp <= 0xE007F)
+}
+
+/** 把标题里的 emoji 段包成 span：**库内 emoji 字体族名 + 描边环**，与出片 `cover.rs::emoji_run_span`
+ *  同口径（那是权威）：① 位图 emoji 在 Takumi 里没有描边路径，`-webkit-text-stroke` 对它无效，
+ *  所以环用 8 向 `drop-shadow` 平移叠加（Chrome 同一条链同语义）；
+ *  ② `display:inline-block` 是 **Takumi 侧 filter 生效的前提**（实测行内 span 的 filter 不出环）；
+ *  ③ 环宽 = 描边/4 × 舞台缩放（= 文字描边外扩量的一半，用户口径）。 */
+function wrapEmojiRuns(escaped) {
+  const s = stageScale.value || 1
+  const id = emojiFontId.value
+  // 环宽 = 描边/4（文字描边外扩量的一半）—— 2026-10-02 用户口径「emoji 的描边太厚了，削弱一半」。
+  // ⚠️ 不留 1px 下限：描边 0 ⇒ 环消失；⚠️ 只发 **4 向**（`filter: drop-shadow` 是链式的，
+  // 加对角后每条方向被推两次 ⇒ 外缘 ≈ 2.4k，实测 k=5 时暗带 13px。见 cover.rs 的注释）
+  const ring = Math.round(((Number(stroke.value) || 0) / 4) * s * 10) / 10
+  const dirs = [[ring, 0], [-ring, 0], [0, ring], [0, -ring]]
+  const filter = ring > 0 ? dirs.map(([dx, dy]) => `drop-shadow(${dx}px ${dy}px 0 #2a2522)`).join(' ') : ''
+  const style = `${id ? `font-family:'${id}';` : ''}display:inline-block;${filter ? `filter:${filter}` : ''}`
+  let out = '', run = '', prevZwj = false
+  for (const ch of Array.from(escaped)) {
+    const cp = ch.codePointAt(0)
+    if (isEmojiBase(cp) || (run && (isEmojiExtend(cp) || prevZwj))) {
+      run += ch
+    } else {
+      if (run) { out += `<span class="cov-emoji" style="${style}">${run}</span>`; run = '' }
+      out += ch
+    }
+    prevZwj = cp === 0x200D
+  }
+  if (run) out += `<span class="cov-emoji" style="${style}">${run}</span>`
+  return out
+}
+
 function highlightTitleLine(line, kws) {
-  let html = escapeHtml(line)
+  // ⚠️ 顺序与 Rust 一致：**先 escape、再包 emoji 段、最后套高亮**（高亮词是中文关键词，
+  // 不可能出现在"只有 emoji 字符"的那段里；顺序反了会把 span 标签当正文匹配）。
+  let html = wrapEmojiRuns(escapeHtml(line))
   for (const kw of kws) {
     const target = escapeHtml(kw).toLowerCase()
     if (!target) continue
@@ -974,11 +1041,19 @@ function fxStyle(fx) {
   if (fx.type === 'emoji') {
     // x/y 是字符中心（定位/居中靠 .fx-emoji 的 CSS），字号按舞台缩放；
     // 阴影同样按舞台缩放（出片是 1920 画布上的 px，模板写的是 0 6px 14px）
+    const size = Math.round((COVER_EMOJI_MIN_PX + amount * (COVER_EMOJI_MAX_PX - COVER_EMOJI_MIN_PX)) * s)
+    // ⚠️ **描边环镜像**（与 cover.rs 的 emoji 分支同公式）：出片侧 CBDT 位图字形没有描边路径，
+    // 靠 drop-shadow 链补一圈 —— 浏览器对位图 emoji 同样画不出 text-stroke，
+    // 所以预览也用同一条链（偏移 = 字号 × 6%，颜色 = 标题描边色），两端观感一致。
+    // 与标题 emoji 环同口径削弱一半（0.06 → 0.03）
+  const d = Math.max(1, Math.round(size * 0.03))
+    const c = '#2a2522'
+    const ring = `drop-shadow(${d}px 0 0 ${c}) drop-shadow(-${d}px 0 0 ${c}) drop-shadow(0 ${d}px 0 ${c}) drop-shadow(0 -${d}px 0 ${c})`
     return {
       left: `${x}%`,
       top: `${y}%`,
-      fontSize: `${Math.round((COVER_EMOJI_MIN_PX + amount * (COVER_EMOJI_MAX_PX - COVER_EMOJI_MIN_PX)) * s)}px`,
-      filter: `drop-shadow(0 ${(6 * s).toFixed(1)}px ${(14 * s).toFixed(1)}px rgba(0,0,0,0.45))`
+      fontSize: `${size}px`,
+      filter: `${ring} drop-shadow(0 ${(6 * s).toFixed(1)}px ${(14 * s).toFixed(1)}px rgba(0,0,0,0.45))`
     }
   }
   if (fx.type === 'glow') return {
@@ -1024,7 +1099,9 @@ const titleStyle = computed(() => {
     fontFamily: coverFontFamily.value || undefined,
     letterSpacing: (ls * s).toFixed(1) + 'px',
     lineHeight: Number(lineHeight.value) || 1.7,
-    // 描边色与模板一致（`#2a2522`，不是半透明黑）
+    // 描边色与模板一致（`#2a2522`，不是半透明黑）；stroke-linejoin 与模板同口径
+    // （缺省 Miter 在 CJK 尖笔画上出尖刺，用户报的「描边不准确」，两边都要 round）
+    strokeLinejoin: 'round',
     WebkitTextStroke: ((stroke.value || 20) * s).toFixed(1) + 'px #2a2522',
     textShadow: coverShadowCss(s),
     '--hlc': hlColor.value,
@@ -1903,11 +1980,12 @@ onUnmounted(() => {
    改前是 372px，一格只有 ~170px、标签会折行）；宽屏按 40% 跟着长（1920 窗口 ≈ 630px）。
    左栏是 `1fr`，右栏一变宽预览就自动缩小 —— 预览高度 = 宽度 × 9/16，所以它同时决定右栏的高度基准
    （`syncControlsBound`，还带一个 `CONTROLS_MIN_H` 下限），别只改一边。
-   ⚠️ **2026-10 用户要求右栏宽度减半**（`minmax(440px,40%)` → `minmax(220px,20%)`）：
-   面板内部已改成「左设置 / 右列表」的左右排布，横向不再需要那么多地方，省下来的都还给预览
-   （左栏是 `1fr`，右栏一窄预览就变大）。改这一条**要连着** `syncControlsBound` 的高度基准一起看：
-   预览高度 = 宽度 × 9/16，所以预览变大会把右栏的定高也顶上去。 */
-.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px, 20%); gap:16px; align-items:start; }
+   ⚠️ 2026-10 上半月曾减半到 `minmax(220px,20%)`，**2026-10-02 用户改口**：左右排布后每栏只有
+   ~107px（外层 1146px 实测），「标签+滑块+数字框」一行塞进 39px 的格子必然碎掉 ——
+   要求**图层组与设置两块面板各宽一倍** ⇒ 回到 `minmax(440px,40%)`（1146px 下右栏 ≈458px、每栏 ~222px）。
+   改这一条**要连着** `syncControlsBound` 的高度基准一起看：
+   预览高度 = 宽度 × 9/16，右栏一宽预览就变矮，右栏定高跟着矮。 */
+.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(440px, 40%); gap:16px; align-items:start; }
 /* 右栏 = 图层组列表 + 选中层的属性面板（PS 式）：两块**各自滚动**，
    整列高度由 JS（`syncControlsBound`）限到与左侧预览等高（预览矮到放不下时给 `CONTROLS_MIN_H` 下限）
    —— 所以这里是 overflow:hidden，滚动交给里面的 .lyr-list / .lyr-props，
@@ -1935,7 +2013,7 @@ onUnmounted(() => {
 .txt-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; align-items:center; }
 /* 行尾的**可填**读数（紧凑版 `SliderField`）：常态与只读的 `.rv` 同貌，hover/focus 才现出输入框。
    为什么不用 `SliderField.vue`：那边 `@container (max-width:220px)` 会把标签挤到第二行，
-   而这里的格子只有 ~170px（一行两列）—— 一样的"滑块 + 可填数字"，只是更紧凑。 */
+   而这里的格子只有 ~170~222px（一行两列）—— 一样的"滑块 + 可填数字"，只是更紧凑。 */
 .rv-input { flex:none; width:46px; padding:1px 3px; text-align:right; font-size:10.5px; font-family:monospace;
   color:var(--ink); background:transparent; border:1px solid transparent; border-radius:var(--r-sm); }
 .rv-input:hover { border-color:var(--line); background:var(--card); }
@@ -1996,9 +2074,11 @@ onUnmounted(() => {
 .fx-slot-iso { isolation:isolate; }
 .fx-item { position:absolute; inset:0; }
 /* 表情特效：不是铺满的图层，而是一个点 —— 位置/字号/阴影走行内样式，居中在这。
-   字体栈与出片模板（cover.rs 的 EMOJI_FONT）保持一致，别落到中文字体上。 */
+   ⚠️ 字体栈 = **库内 emoji 字体打头**（`loadFonts` 里以 FontFace 注册的**同一份字节**，
+   出片 Takumi 用的就是它）+ 系统名兜底（v-bind 动态注入，见 emojiFontStack）。
+   写死 Segoe 的话，预览与出片就是两支完全不同的字体（用户报过）。 */
 .fx-item.fx-emoji { inset:auto; transform:translate(-50%,-50%); line-height:1;
-  font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif; }
+  font-family:v-bind(emojiFontStack); }
 .emoji-picks { display:flex; flex-wrap:wrap; gap:4px; }
 .emoji-pick { background:var(--bg-soft); border:1px solid var(--line); border-radius:6px;
   font-size:15px; line-height:1; padding:3px 6px; cursor:pointer; }
@@ -2038,7 +2118,7 @@ onUnmounted(() => {
    症状很具迷惑性：字体照旧会变（`fontFamily` 在父级 `.title-text` 上，span 继承），只有**高亮色**
    静默失效、退成继承来的 `#f0e6d3` —— 用户报的「关键词字体被改了、高亮色没显示」。
    出片侧没这个问题：`cover.rs` 注入 <span class="hl"> 到模板的**全局** <style> 里。 */
-.title-text :deep(.hl) { font-family:inherit; color:var(--hlc, #ffcc00); font-size:var(--hl-fs, 1em); -webkit-text-stroke:inherit; paint-order:stroke fill; }
+.title-text :deep(.hl) { font-family:inherit; color:var(--hlc, #ffcc00); font-size:var(--hl-fs, 1em); stroke-linejoin:round; -webkit-text-stroke:inherit; paint-order:stroke fill; }
 .seek-row { display:flex; align-items:center; gap:8px; }.seek-range { flex:1; min-width:0; padding:0; }
 .seek-time { flex:none; min-width:120px; text-align:right; }
 .w-time { width:90px; flex:none; }
@@ -2072,7 +2152,7 @@ onUnmounted(() => {
 .add-flag { margin-left:auto; font-size:9.5px; color:var(--ink-faint); }
 .add-gl { flex:none; width:17px; height:17px; border-radius:5px; display:inline-flex; align-items:center; justify-content:center;
   font-size:11px; line-height:1; background:var(--card); border:1px solid var(--line); }
-.add-gl.gl-emoji { font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif; }
+.add-gl.gl-emoji { font-family:v-bind(emojiFontStack); }
 .gl-glow { color:var(--amber-deep); } .gl-blur { color:var(--blue-deep); }
 .gl-vignette { color:var(--ink-dim); } .gl-overlay { color:var(--pink-text); }
 .gl-scanline { color:var(--ink-faint); } .gl-bg { color:var(--blue-deep); }
@@ -2082,7 +2162,8 @@ onUnmounted(() => {
 .save-line { margin-left:auto; flex:none; font-size:11px; color:var(--ink-faint); }
 .save-line.err { color:var(--red-deep); }
 
-/* 面板主体 = **左「设置」/ 右「列表」左右排布**（用户要求：原来是上下结构，改成左右）。
+/* 面板主体 = **左「设置」/ 右「列表」左右排布**（用户要求：原来是上下结构，改成左右；
+   2026-10-02 再改口：每栏 ~107px 塞不下「标签+滑块+数字框」，两块面板各宽一倍 ⇒ 右栏回 40%）。
    两栏各自内部滚动（`min-height:0` 是 flex 子项能滚的前提，别删），面板总高仍由 JS 给定
    （`syncControlsBound`）—— 所以外层 `overflow:hidden` + 两栏 `overflow-y:auto` 就是全部滚动面。
    ⚠️ 用 grid 而不是两个 flex 子项：`grid-template-columns` 让两栏**宽度按比例**确定，
@@ -2123,7 +2204,7 @@ onUnmounted(() => {
 .th-video { color:var(--blue-deep); } .th-bg { color:var(--ink-dim); } .th-filter { color:var(--green-deep); }
 .th-text { color:var(--pink-text); }
 /* 特效/表情的缩略：emoji 那一支直接显示用户贴的字符，所以字体栈要带 emoji */
-.th-fx { color:var(--amber-deep); font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif; }
+.th-fx { color:var(--amber-deep); font-family:v-bind(emojiFontStack); }
 .th-guide { border-style:dashed; background:transparent; }
 .lyr-nm { flex:1 1 auto; min-width:0; font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lyr-lk { flex:none; font-size:10px; color:var(--ink-faint); border:1px solid var(--line); border-radius:999px; padding:0 5px; }

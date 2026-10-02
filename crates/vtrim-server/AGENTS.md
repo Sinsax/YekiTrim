@@ -124,6 +124,11 @@
 - `src/stickers.rs`：admin-only 路由（贴纸库是**全局资产**）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
   **批次边界**生效）；64 MiB `DefaultBodyLimit` **只给上传那一条**放开（axum 默认 2 MB）；`.../:pack/files/:name` 与
   `/api/media/*` 共用 `media::serve_file` 的 Range 实现；包名过 `sanitize_pack_name`、文件名过 `is_safe_component`。
+- `src/media.rs::serve_file` 是**唯一**的文件出口（`/api/media/*`、贴纸文件、Dhampir wasm 资源）。
+  ⚠️ **压缩与 ETag 只在 `serve_file_cond` 上开、只给 `/polish/dhampir-wasm/*` 用**（2026-10-02 首屏提速，
+  7.66 MB wasm → 1.49 MB）：视频走 `Range`，压缩后字节与「原始文件第 start..end 字节」不再一一对应，
+  对 206 压缩会破坏播放 ⇒ **有 `Range` 头一律退回 identity**，且白名单里只有文本类（`compressible_mime`）。
+  别把压缩挪进 `serve_file` 让所有调用点都吃到。细节见 `src/api/AGENTS.md`。
   ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust 的是同一个数。
 - `src/auth.rs`：`require_user` / `require_admin` / `require_password_changed`（**服务端强制**）/ `resolve_client_ip` /
   `trust_proxy` / `tls_terminated`；登录失败计数表（`auth.rs::rate_fail`）必须按 `MAX_LOGIN_KEYS`(4096) 清理。

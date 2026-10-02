@@ -22,6 +22,7 @@
   - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖屏归零。
   - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
+  - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`，已进 `gates.mjs`）。
 - 子目录细则看各自卡：`src/AGENTS.md`、`src/api/AGENTS.md`、`src/styles/AGENTS.md`、`src/polish/AGENTS.md`。
 
 ## 边界
@@ -50,6 +51,7 @@ node webui/scripts/check-cover-stage.mjs
 node webui/scripts/check-handheld.mjs
 node webui/scripts/check-stage-backdrop.mjs
 node webui/scripts/check-preview-ab.mjs
+node scripts/check-preview-audio.mjs
 ```
 
 `npm run build` 成功 = `webui/dist/` 重新生成（`emptyOutDir` 会清空旧 hash 名）；**dist 入库，

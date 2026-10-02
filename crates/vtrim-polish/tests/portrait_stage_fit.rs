@@ -310,6 +310,13 @@ async fn portrait_source_is_contained_and_motion_locked() {
     );
 
     let inside = if keep_outside { Some(&expect) } else { None };
+    let backdrop_on = common::backdrop_enabled();
+    if keep_outside && !backdrop_on {
+        println!(
+            "· 框外衬底那两条判据**跳过**：转译器里 `BACKDROP_ENABLED = false`（已知限制：底座长片 OOM）\
+             —— 补的是黑边；衬底由 `portrait_backdrop` 探针专门量（它把开关打开）"
+        );
+    }
     let shots = |jpegs: &[Vec<u8>]| -> Vec<Shot> {
         jpegs.iter().map(|j| stats(j, cw as u32, ch as u32, inside)).collect()
     };
@@ -370,16 +377,22 @@ async fn portrait_source_is_contained_and_motion_locked() {
                 "第 {i} 帧内容框之外还有 {} 个画面像素 —— 视频层越界（硬铺满）",
                 s.outside_lime
             );
-            assert!(
-                s.outside_black <= OUTSIDE_MAX_BLACK,
-                "第 {i} 帧内容框外纯黑 {:.1}% > {OUTSIDE_MAX_BLACK}% —— 补的是黑边，不是模糊关键帧当底",
-                s.outside_black
-            );
-            assert!(
-                s.outside_luma >= OUTSIDE_MIN_LUMA,
-                "第 {i} 帧内容框外平均亮度 {:.1} < {OUTSIDE_MIN_LUMA} —— 衬底没画上去",
-                s.outside_luma
-            );
+            // ⚠️ **这两条只在衬底那条路开着时才断**：`BACKDROP_ENABLED = false` 是**已知限制**
+            // （底座侧长片 OOM，见转译器那段长注释），那时补的就是黑边 —— 那不是本探针的缺陷。
+            // 衬底由 `tests/portrait_backdrop.rs` 专门量（它自己把开关打开再 A/B）。
+            // 关着的时候**明说跳过**，不静默（静默 = 让整段判据的可信度归零）。
+            if backdrop_on {
+                assert!(
+                    s.outside_black <= OUTSIDE_MAX_BLACK,
+                    "第 {i} 帧内容框外纯黑 {:.1}% > {OUTSIDE_MAX_BLACK}% —— 补的是黑边，不是模糊关键帧当底",
+                    s.outside_black
+                );
+                assert!(
+                    s.outside_luma >= OUTSIDE_MIN_LUMA,
+                    "第 {i} 帧内容框外平均亮度 {:.1} < {OUTSIDE_MIN_LUMA} —— 衬底没画上去",
+                    s.outside_luma
+                );
+            }
         }
     }
     let (lime_min, lime_max) = real_shots.iter().fold((f64::MAX, f64::MIN), |(lo, hi), s| {
@@ -410,36 +423,59 @@ async fn portrait_source_is_contained_and_motion_locked() {
         real_shots[0].outside_black
     );
 
-    // ---------- B①：硬铺满（等价改造前的 `drawImage(videoBitmap,0,0,CW,CH)` 语义）----------
+    // ---------- B①：摆放几何失效（不按画布适配）----------
     //
-    // ⚠️ 变异打在**转译器**上（不是模板）：底座那条腿的摆放几何由转译器算
-    // （`stageDrawRect` 的复刻）。锚点是它 `axis === 'x'` 分支里的等比那两行 ——
-    // 改成"直接铺满内容区"就是改造前的 `drawImage(…,0,0,CW,CH)`。
-    // 锚点没命中会 **panic**（不是静默比同一份产物）。
+    // ⚠️ 变异打在**转译器**上（底座那条腿的摆放几何由它算）。
+    //
+    // **2026-10-02 换过形态与判据**（旧形态已不可表达、旧数字来自已删除的 chrome 腿）：
+    // ① 旧形态是「`w = bwid` 硬铺满内容区」，它等价于旧参照的 `drawImage(…,0,0,CW,CH)` ——
+    //    但**底座的 `transform.scale` 是单值**（等比），**做不出各轴不等比的硬拉**；
+    //    实测那样改会把画面**整体推出画布**（`offset.x = -1600`），绿块与描边一起消失，
+    //    于是旧判据「绿块必须更大」不成立（实测 0.00%）—— 判据量的已经不是它想量的东西。
+    // ② 现在把它改成 **cover（裁切铺满）** —— 也就是本次改版**之前的 `auto` 语义**
+    //    （`resolve_stage` 的 auto 特例：非竖素材一律裁切铺满），而且它是底座**能**表达的那个形态
+    //    （单值等比 `scale`，绕画布中心）。形态与判据都很清楚：源被放大 2.67× ⇒ 白描边被推出画布、
+    //    绿块面积从 ~7.9% 涨到 ~50%。
     let stretched = translator_with("stretch", |code| {
-        let out = replace_first_after(
-            code,
-            "if (axis === 'x') {\n      h = bhgt;",
-            "w = (bw * h) / bh;",
-            "w = bwid;",
+        let out = code.replacen(
+            "const FIT = SR.w / srcW;",
+            "const FIT = Math.max(width / srcW, height / srcH);",
+            1,
         );
         assert!(
-            !out.contains("if (axis === 'x') {\n      h = bhgt;\n      w = (bw * h) / bh;"),
-            "变异①没生效（等比那行还在）"
+            out.contains("const FIT = Math.max(width / srcW, height / srcH);")
+                && !out.contains("const FIT = SR.w / srcW;"),
+            "变异①没生效（FIT 锚点没命中）"
         );
         out
     });
     let m1 = render_range(&dir, Some(&stretched), start, end, None, "mut_stretch").unwrap();
     let m1_shots = shots(&m1);
     {
-        // 铺满之后再套运镜（真模板的运镜门只挡竖素材，这里没变异它），白描边会被整个推出画布 ——
-        // 这正是改造前那颗二进制实测到的形态：`无白像素 + 绿块 52%`。所以"看不见描边"同样算翻面。
+        // 判据 = **几何明显不是期望那一个**：内容框找不到（描边被推出画布），
+        // 或者 x/y/w/h 任一项偏离期望 > 3×容差。A 段是逐帧**严格等于**期望（±`RECT_TOL`），
+        // 所以这两条一起构成"探针看得见摆放几何失效"的自证。
         let r = m1_shots[0].rect;
-        let widened = r.map(|r| r.w > expect.w * 1.5).unwrap_or(true);
+        let off = |got: f64, want: f64| (got - want).abs() > RECT_TOL * 3.0;
+        let differs = match r {
+            None => true,
+            Some(r) => {
+                off(r.x, expect.x) || off(r.y, expect.y) || off(r.w, expect.w) || off(r.h, expect.h)
+            }
+        };
+        // ⚠️ **判据只断几何**：绿块面积在这个形态下**不是**可靠判据 —— 裁切铺满把源放大 2.67× 后，
+        // 四边白描边里只剩左/上两条还在画布内，bbox 变成「左描边 → 画布右沿」的退化矩形，
+        // 而绿块面积实测 8.53% ≈ 期望 7.91%（巧合地接近）。
+        // A 段是逐帧**严格等于**期望（±`RECT_TOL`），这里只要求"明显不是那一个" —— 成对即自证。
         assert!(
-            widened && m1_shots[0].lime_frac > expect_lime * 1.5,
-            "变异①（硬铺满）后内容框 {:?}、绿块 {:.2}% —— 判据没翻面，说明它看不见「拉伸」",
+            differs,
+            "变异①（摆放几何失效）后内容框 {:?} 与期望 x{:.0} y{:.0} {:.0}×{:.0} 没有区别 —— \
+             判据没翻面，说明它看不见「几何失效」（绿块 {:.2}%）",
             r.map(|r| format!("{:.0}×{:.0}", r.w, r.h)),
+            expect.x,
+            expect.y,
+            expect.w,
+            expect.h,
             m1_shots[0].lime_frac * 100.0
         );
         if keep_outside {
@@ -463,17 +499,23 @@ async fn portrait_source_is_contained_and_motion_locked() {
 
     // ---------- B②：去掉竖屏运镜门（等价改造前：竖素材照样套 zoom_close=1.5）----------
     //
-    // 转译器里那道门是 `if (sourceIsVertical === true) { …整条运镜不生效… }` ——
-    // 把它改成恒假，竖素材就会照旧套运镜（判据看绿块面积）。
+    // 转译器里那道门是 `case 'camera'` 里的 `if (sourceIsVertical === true) { …整条不生效… }`。
+    //
+    // ⚠️ **必须用 `replace_first_after` 定位到 `case 'camera':` 之后那一个**（2026-10-02 修）：
+    // 转译器里 `if (sourceIsVertical === true) {` **出现过两次** —— 先一处是给报告用的 NOTE，
+    // 再一处才是运镜门。直接 `replacen(..., 1)` 会改掉**前面那一处 NOTE**：
+    // 变异体仍然把运镜整条关着（实测 `运镜 0 条`，成片与真转译器逐帧相同），
+    // 于是 B② 的判据必然"没翻面"。锚点必须落在语义位置上，不是第一个长得像的地方。
     let no_gate = translator_with("camera", |code| {
-        let mut out = code.replacen(
+        let out = replace_first_after(
+            code,
+            "case 'camera': {",
             "if (sourceIsVertical === true) {",
             "if (false) {",
-            1,
         );
         // `sourceIsVertical === null`（探不到媒体）那条分支也要关掉：探针工程探得到，
         // 留着它不影响；但万一本机 ffprobe 探不到，两条分支都成了"不关运镜"，变异照样成立。
-        out = out.replacen("if (sourceIsVertical === null) {", "if (false) {", 1);
+        let out = out.replacen("if (sourceIsVertical === null) {", "if (false) {", 1);
         assert_ne!(out, code, "变异②没生效（竖屏门锚点没命中）");
         out
     });

@@ -1492,6 +1492,34 @@ export function translate(config, clipDir, outPath, options = {}) {
     );
   }
 
+  // ---- 竖屏画布的**三道整类门**（2026-10-02 用户口径）----
+  // 语义 = **按整类事件屏蔽**：只在转译侧跳过（成片与底座预览里都没有这一类），
+  // **事件本身一个字都不动** —— 与「屏蔽只做标记」同一条纪律，界面打开开关即完全恢复。
+  // ⚠️ 判据是**画布方向**（`[canvas] orientation = "portrait"`），与上面 `sourceIsVertical`
+  //    （**源素材**方向、关运镜）是两条**独立**的闸：任一条要求禁就禁。
+  // ⚠️ **缺字段 = false = 关**（老竖屏工程也一并关）；横画布不带这三道门（字段在横画布下不生效）。
+  const CANVAS_PORTRAIT = (config.canvas?.orientation ?? 'landscape') === 'portrait';
+  /// 事件类型 → 开关名（不在表里 = 不受门控）。
+  /// 「特效」口径 = 视频层那 8 类 + `overlay`（含片头 `fade_in` 那条覆盖层）。
+  const PORTRAIT_SWITCH = {
+    camera: 'camera',
+    shake: 'effects',
+    blur: 'effects',
+    flash: 'effects',
+    hue_shift: 'effects',
+    noise: 'effects',
+    vignette: 'effects',
+    overlay: 'effects',
+    pulse: 'effects',
+    sfx: 'sfx',
+  };
+  /** 这一类在**当前画布**下允许渲染吗（横画布恒 true；竖画布看 `[stage] portrait_<x>`，缺字段 = false）。 */
+  const portraitAllows = (type) => {
+    const key = PORTRAIT_SWITCH[type];
+    if (!key || !CANVAS_PORTRAIT) return true;
+    return config.stage?.[`portrait_${key}`] === true;
+  };
+
   // ---- 逐事件转译 ----
   const sfxClips = [];
   // 覆盖层事件数（进 `extensions.vtrim.polish_toml` 的元数据 + CLI 摘要）。
@@ -1546,6 +1574,17 @@ export function translate(config, clipDir, outPath, options = {}) {
       // 落在被掐掉的段里的输出帧号是 null —— 那一段在成片里不存在。
       const srcStart = frameAt(at);
       const srcEnd = frameAt(typeof event.end === 'number' ? event.end : at);
+
+      // **竖屏画布的整类门**（见上面 `portraitAllows`）：只跳过这一类事件的转译，
+      // 事件本身保留（开关打开即恢复）。⚠️ `continue` —— `break` 会跳出整个事件循环。
+      if (!portraitAllows(event.type)) {
+        note(
+          where,
+          `竖屏画布 + \`[stage] portrait_${PORTRAIT_SWITCH[event.type]} = false\`（默认）：这一类整条不渲染` +
+            '（事件保留，界面打开开关即恢复）',
+        );
+        continue;
+      }
 
       switch (event.type) {
         case 'camera': {
@@ -2425,29 +2464,36 @@ export function translate(config, clipDir, outPath, options = {}) {
   const fitSrc = probeSize(join(clipDir, config.source?.video ?? 'clip.mp4'));
   const srcW = fitSrc ? fitSrc.width : width;
   const srcH = fitSrc ? fitSrc.height : height;
-  const srcPortrait = srcH > srcW;
-  const stagePositionRaw = config.stage?.position ?? 'auto';
-  const axis = (() => {
-    if (stagePositionRaw !== 'auto') {
-      // 显式位置：按比例定轴（交叉相乘，与参照同一条判据）
-      if (!fitSrc) return 'fill';
-      const lhs = BigInt(srcH) * BigInt(width);
-      const rhs = BigInt(srcW) * BigInt(height);
-      if (lhs > rhs) return 'x';
-      if (lhs < rhs) return 'y';
-      return 'fill';
-    }
-    return srcPortrait ? 'x' : 'fill';
-  })();
-  // 方向不跨用：横画布写 top、竖画布写 left 一律当 center（与参照的净化一致）
-  const stagePosition = (() => {
-    if (stagePositionRaw === 'auto') return 'center';
+  // **位置 = 百分比**（2026-10-02）：新字段 `position_pct` 优先；缺它（老工程）= 按老枚举换算
+  // （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100；方向不跨用 ⇒ 居中）。
+  // 与 `ProjectFile::resolve_stage` 的 `stage_position_pct` 逐值同义（含 `[0,100]` 夹取）。
+  const stagePct = (() => {
+    const raw = config.stage?.position_pct;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.min(100, raw));
+    const p = String(config.stage?.position ?? 'auto').trim().toLowerCase();
     const landscape = config.canvas?.orientation !== 'portrait';
-    const ok = landscape
-      ? ['left', 'center', 'right'].includes(stagePositionRaw)
-      : ['top', 'center', 'bottom'].includes(stagePositionRaw);
-    return ok ? stagePositionRaw : 'center';
+    if (p === 'left' && landscape) return 0;
+    if (p === 'right' && landscape) return 100;
+    if (p === 'top' && !landscape) return 0;
+    if (p === 'bottom' && !landscape) return 100;
+    return 50; // center / auto / 方向不跨用 / 认不出
   })();
+  // 轴**只看比例**（2026-10-02 起没有 auto 特例：不匹配的源一律**适配留边**）——
+  // 与参照 `stageDrawRect` 的调用方同一条判据（交叉相乘，避免浮点除法）。
+  const axis = (() => {
+    if (!fitSrc) return 'fill';
+    const lhs = BigInt(srcH) * BigInt(width);
+    const rhs = BigInt(srcW) * BigInt(height);
+    if (lhs > rhs) return 'x';
+    if (lhs < rhs) return 'y';
+    return 'fill';
+  })();
+  // 枚举只是**过渡期兼容输出**（报告那行摘要用）；几何一律走 `stagePct`。
+  const stagePosition = stagePct <= 0
+    ? (CANVAS_PORTRAIT ? 'top' : 'left')
+    : stagePct >= 100
+      ? (CANVAS_PORTRAIT ? 'bottom' : 'right')
+      : 'center';
   const stagePadding = Number(config.stage?.padding ?? 0) || 0;
   const stageScale = Number(config.stage?.scale ?? 1) || 1;
 
@@ -2472,7 +2518,8 @@ export function translate(config, clipDir, outPath, options = {}) {
         w = bwid;
         h = (bh * w) / bw;
       }
-      x = stagePosition === 'left' ? bx : stagePosition === 'right' ? bx + bwid - w : bx + (bwid - w) / 2;
+      // 沿留边轴在两端之间线性插值（0 = 贴左、100 = 贴右）—— 与参照 `stageDrawRect` 逐值同义
+      x = bx + (bwid - w) * (stagePct / 100);
       y = by + (bhgt - h) / 2;
     } else if (axis === 'y') {
       w = bwid;
@@ -2481,7 +2528,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         h = bhgt;
         w = (bw * h) / bh;
       }
-      y = stagePosition === 'top' ? by : stagePosition === 'bottom' ? by + bhgt - h : by + (bhgt - h) / 2;
+      y = by + (bhgt - h) * (stagePct / 100);
       x = bx + (bwid - w) / 2;
     } else {
       const s = Math.max(bwid / bw, bhgt / bh);
@@ -3655,6 +3702,23 @@ export function translate(config, clipDir, outPath, options = {}) {
     // 关键帧必须 **严格小于** 本层时长（校验判据 `>= duration` 就报错）。
     const limit = layer.end - layer.start;
     layer.keyframes = layer.keyframes.filter((key) => key.frame < limit);
+
+    // ⚠️ **一个键都没有的层，也要把画面构成的几何落到基准 transform 上**（2026-10-02 修）。
+    //
+    // `SR`/`FIT` 是画面构成（`axis`/`position_pct`/`scale`/`padding`）的唯一几何，
+    // 而它以前**只**通过相机关键帧写进去（`placeKeyframe(..., 'scale', camScale * FIT)`）。
+    // 竖素材（**运镜被整条门控掉**，见上面的 `sourceIsVertical`——它自己那段注释就写着
+    // 「竖素材整条关掉运镜就是这种」）⇒ 这一层一个键都没有 ⇒ 主层停在 `scale=1 / offset=0`，
+    // 底座便按「源 1:1 居中」画：**竖素材进竖画布 = 画面缩在中间、四周一圈黑**（用户最常见的组合）。
+    // 基准值取「中性相机」（`zoom = 1`、不动点=中心）算出的那一组 —— 与有键时的同一式子。
+    // ⚠️ **第一个实参必须是 `1.0`，不是 `FIT`**：`cameraOffset` 内部已经 `scale = zoom * FIT`
+    // （它的注释专门写着「不要预乘 FIT，否则变成 FIT²」），传 `FIT` 会让位移按 `FIT²` 算、
+    // 与这里写下的 `scale: FIT` 不一致 —— 居中时那个点恰好归零（所以只看中心看不出来）。
+    // ⚠️ **只对 0 键的层做**：有键的层逐字节不动（存量零回归靠这条）。
+    if (layer.keyframes.length === 0) {
+      const zero = cameraOffset(1.0, { x: 0.5, y: 0.5 });
+      layer.transform = { x: zero.x, y: zero.y, scale: FIT, rotation: 0 };
+    }
   }
 
   // ---- 封面 / 弹幕：明确说明没转 ----

@@ -12,7 +12,7 @@
       <div v-show="dhampirMode" ref="dhampirHostRef" class="dhampir-hosts"></div>
       <video v-if="bgOn && videoSrc" ref="bgRef" class="bg-video" :src="videoSrc" muted playsinline preload="auto"></video>
       <div class="video-wrap" :class="stageClass">
-        <div class="fit-box">
+        <div class="fit-box" ref="fitBoxRef" :style="fitBoxStyle">
           <!-- **A/B 双缓冲**（DOM 预览，2026-09-30）：两块 `<video>` 同一个 `src`，一块在台上、一块当备用。
                跳手动屏蔽区间时**不再对"正在显示的那块"改 `currentTime`** —— 备用那块在进入区间前
                `PREROLL_SECS` 就把区间终点 seek 好了（那一帧已经在解码器里），到点**换元素**即可：
@@ -69,6 +69,17 @@
            按新时刻画，那正是剪辑点的样子），Dhampir 模式的画面是那块 canvas（连字一起画），
            所以必须盖在它上面。 -->
       <canvas v-show="freezeOn" ref="freezeRef" class="freeze-frame" :style="{ zIndex: freezeZ }"></canvas>
+      <!-- **Dhampir 首次加载的门帘**（2026-10-02）：引擎 / 贴纸动图 / 字幕都是**异步**到位的，
+           半途播出来的是「缺效果」甚至空白的画面 —— 而它长得就像「这一版就是这样」。所以加载期间：
+           ① 掀这块门帘（说清在等什么）② 播放按钮置灰 ③ `togglePlay` 里再挡一道（父级/快捷键也走它）。
+           只在**首次加载**这一趟挂（`dhampirLoading`）；热重载不挂 —— 那时画面仍是上一版、引擎还在画。 -->
+      <!-- ⚠️ 还要 `&& dhampirMode`：引擎加载卡住时用户仍能再点一次「Dhampir」退出模式，
+           那时门帘必须跟着消失 —— 只认 `dhampirLoading` 的话它会一直留在台上。 -->
+      <div v-if="dhampirLoading && dhampirMode" class="dhampir-loading">
+        <span class="dl-spin"></span>
+        <span class="dl-text">{{ dhampirStatus || '正在加载 Dhampir 预览…' }}</span>
+        <span class="muted small">加载完成前不可播放（避免特效/贴纸还没就绪）</span>
+      </div>
       <!-- 框选布局：在此模式下视频运镜暂停（缩放复位），直接在整帧上拖出精确矩形 -->
       <div v-if="selectMode" class="sel-layer" @pointerdown.prevent="startSel('new', $event)">
         <div class="sel-box" :style="selBoxStyle" @pointerdown.prevent.stop="startSel('move', $event)">
@@ -106,7 +117,8 @@
       </span>
     </div>
     <div class="preview-controls">
-      <button class="mini-btn" @click="togglePlay">
+      <button class="mini-btn" :disabled="dhampirLoading" @click="togglePlay"
+              :title="dhampirLoading ? 'Dhampir 正在加载，加载完成前不能播放' : '播放 / 暂停'">
         <Icon :name="playing ? 'pause' : 'play'" :size="12" /> {{ playing ? '暂停' : '播放' }}
       </button>
       <input class="flex-1" type="range" :min="0" :max="1000" :value="progress" @input="onSeekInput">
@@ -189,6 +201,18 @@ const emit = defineEmits(['time', 'update:selectRect', 'update:point', 'playing'
 // （都读 `videoRef.currentTime`），所以"两边对不上"本身就是有用的信息。
 const dhampirMode = ref(false)
 const dhampirStatus = ref('')
+/**
+ * **首次加载 Dhampir 的门帘**（2026-10-02）——`startDhampir` 跑着的那段就是 `true`。
+ *
+ * 为什么要有它：引擎起来、贴纸动图 `dhampirLoadAnimations`、字幕 `dhampirApplySubtitles`
+ * 三件事都是**异步**的，而 `dhampirMode` 在 `await` **之前**就翻了真 —— 于是加载期间用户能按播放，
+ * 看到的是「缺效果 / 空白」的画面；加载**失败**时更容易被当成「这一版就是这样」（实际只是近似预览）。
+ * 所以：加载期间**不许播**（模板按钮置灰 + `togglePlay` 里挡一道），并盖一层门帘说清在等什么。
+ *
+ * ⚠️ **只盖首次加载**，不盖 `reloadDhampirProject`（热重载）：那时引擎已经起来、画面仍是上一版，
+ * 挂着门帘反而会**每次编辑都闪一下**（热重载是 300ms 防抖后自动跑的）。
+ */
+const dhampirLoading = ref(false)
 const dhampirError = ref('')
 const dhampirFrame = ref(0)
 // **上面那个 ref 是给模板看的**（`#{{ dhampirFrame }}`）⇒ 每写一次就重渲染整棵模板 ✗。
@@ -265,6 +289,21 @@ const DHAMPIR_ALIGN_HARD = 0.5     // ③ 500ms 以上：才 hard seek
 const DHAMPIR_HOST_API = 6
 const DHAMPIR_ALIGN_RATE_LO = 0.98 // ② 超前 → 放慢一点
 const DHAMPIR_ALIGN_RATE_HI = 1.02 // ② 落后 → 追一点
+/**
+ * **出声时**纠偏速率的收窄幅度（见 `dhampirSourceAudible`）。
+ *
+ * 为什么要有这一对：纠偏靠 `playbackRate ±2%`，而**速率一动音高就跟着动**。
+ * 无声时无所谓（那些元素只是帧的来源），一旦出声就是"预览跑调"。
+ * 所以出声时把幅度收到 ±0.5%（约 1/12 个半音，听不出来），
+ * 偏差自然会大一点 —— 超过 `DHAMPIR_ALIGN_HARD` 仍旧走 hard seek，
+ * 周期性的源切换也会把它归零，不会一路漂下去。
+ *
+ * ⚠ 别把这两条删掉改回直接用 ±2%：±2% 是 ±35 音分，人耳对持续音的
+ * 十几音分就能听出来（浏览器只有 `preservesPitch` 时才会替我们盖住，
+ * 而它不是所有实现都有 —— 下面 `dhampirPreservePitch` 就是给它兜底的）。
+ */
+const DHAMPIR_ALIGN_RATE_AUDIBLE_LO = 0.995
+const DHAMPIR_ALIGN_RATE_AUDIBLE_HI = 1.005
 /** `source` -> `<video>`：与 `dhampirEngine.bindSource` 同一批元素（纠偏要按 source 找元素）。 */
 let dhampirSourceVideos = new Map()
 /**
@@ -470,6 +509,11 @@ function dhampirSwapSources() {
     const i = dhampirVideos.indexOf(old)
     if (i >= 0) dhampirVideos[i] = tw.el
     else dhampirVideos.push(tw.el)
+    // ⚠️ 换绑 = **声源也跟着换**（2026-10-02）。
+    // 新上台的那块必须立刻拿到用户的音量/静音状态 + 音高保持，否则换台之后
+    // 这一路要么没声音、要么带着上一轮预滚留下的旧速率（跑调）。
+    // 旧的那块随后变"备用"，由下面的 `applyAudio` 一并压回静音。
+    dhampirPreservePitch(tw.el)
     try { tw.el.play() } catch (e) { /* 忽略：下一帧镜像循环会再试 */ }
     if (old) {
       old.pause()
@@ -478,6 +522,9 @@ function dhampirSwapSources() {
     dhampirTwins.set(assetId, { el: old, id: old ? old.id : '', want: 0, ready: false })
   }
   dhampirArmedIds = []
+  // 换完整体重铺一次：台上的拿到音量、旧的（已变备用）压回静音，
+  // 免得"两路同时出声"或"换过去那路没声音"——只在这里做一次，别在循环里逐元素加。
+  applyAudio()
   return true
 }
 
@@ -529,7 +576,7 @@ async function reloadDhampirProject() {
   if (dhampirBusy) { dhampirReloadPending = true; return }
   dhampirReloading = true
   try {
-    const res = await api('/api/polish/dhampir-project', {
+  const res = await api('/api/polish/dhampir-project', {
       method: 'POST',
       label: 'Dhampir 工程（重载）',
       body: JSON.stringify({ dir: props.dir }),
@@ -564,7 +611,7 @@ async function reloadDhampirProject() {
     dhampirStickers = dhampirStickersFrom(project)
     dhampirStickerDiag = null
     Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
-    const opened = dhampirEngine.open(project)
+  const opened = dhampirEngine.open(project)
     if (opened && opened.ok !== true) {
       // 旧工程还在（底座口径）⇒ 画面不会崩，但要说清这次改动没生效。
       console.warn('Dhampir 热重载被拒（保留上一份工程）：' + JSON.stringify((opened && opened.issues) || []).slice(0, 200))
@@ -580,12 +627,12 @@ async function reloadDhampirProject() {
     // **动图重新交给引擎**（在 open() 之后：`open()` 会清掉引擎里已加载的动图，
     // 所以顺序不能反 —— 反了就是"热重载后贴纸不动了"）。
     // 素材没换（uri 相同）的会被 `animLoaded` 跳过，不重传字节。
-    await dhampirLoadAnimations(project)
+  await dhampirLoadAnimations(project)
     // 静态图的预热保留（它们仍走宿主位图那条路）。
     callPrewarmStickers()
     // **字幕/弹幕必须重喂**：loadSubtitles 是替换语义（resetTextMemos + 逐条 set），
     // 新工程改过的字幕内容只有重喂才进引擎 —— 原先漏了这步，改字幕热重载不生效。
-    await dhampirApplySubtitles(project, res.subtitles)
+  await dhampirApplySubtitles(project, res.subtitles)
 
     // **强制下一帧重画**：帧号没变的话 `tick()` 会以为"还是这一帧"直接 return
     // （那是 30fps 内容在 60Hz rAF 上的正常优化）。播放位置**不动** ✓
@@ -609,12 +656,18 @@ async function toggleDhampir() {
   if (dhampirMode.value) {
     dhampirMode.value = false
     stopDhampir()
+    // 退出 Dhampir：`dhampirVideos` 已经清空，声音交回 DOM 那条腿
+    // （`stopDhampir` 把宿主 `innerHTML=''` 清掉、源元素随之销毁）。
+    // ⚠️ 必须重铺一次，否则回来时台上那块还带着上一次进 Dhampir 之前的状态。
+    applyAudio()
     return
   }
   dhampirError.value = ''
   // 两个都在播会同时出声，也看不清在比哪一个。
   const el = videoRef.value
   if (el) el.pause()
+  // ⚠️ 门帘要在**翻 `dhampirMode` 之前**掀：加载期间不许播（见 `dhampirLoading` 的说明）。
+  dhampirLoading.value = true
   dhampirMode.value = true
   dhampirStatus.value = '正在加载 Dhampir…'
   try {
@@ -623,12 +676,18 @@ async function toggleDhampir() {
     dhampirStatus.value = ''
     dhampirFrame.value = dhampirFrameAt(el ? el.currentTime : current.value) ?? 0
     scheduleDhampir()
+    // 进 Dhampir：出来的那条腿（DOM 那块 video）让位，声音归引擎那批源。
+    // `startDhampir` 里已经铺过一次，这里再铺一次是为了盖住"加载期间用户动了滑块"那一段。
+    applyAudio()
   } catch (e) {
     // **绝不白屏**：说清原因、退回 DOM、把按钮禁掉（`dhampirError` 有值时按钮 disabled）。
     dhampirError.value = String((e && e.message) || e)
     dhampirStatus.value = ''
     dhampirMode.value = false
     stopDhampir()
+  } finally {
+    // 成功与失败都要放下门帘（失败时 `dhampirMode` 已翻回 false，门帘更不该留着）。
+    dhampirLoading.value = false
   }
 }
 
@@ -732,6 +791,15 @@ async function dhampirLoadAnimations(project) {
     return
   }
   const byId = new Map((project.assets || []).map((a) => [a.id, a]))
+  // 打印一次引擎身份：把这个应用的适配器与我基准里的对比（13x 差距的第一嫌疑）。
+  if (!window.__dhampirAnimLogged) {
+    window.__dhampirAnimLogged = true
+    console.log('[dhampir] 动图加载环境 ' + JSON.stringify({
+      canvas: dhampirCanvasRef.value ? dhampirCanvasRef.value.width + 'x' + dhampirCanvasRef.value.height : '?',
+      dpr: window.devicePixelRatio,
+      stickers: dhampirStickers.length,
+    }))
+  }
   for (const st of dhampirStickers) {
     const a = byId.get(st.assetId)
     if (!a || !a.uri) continue
@@ -743,12 +811,24 @@ async function dhampirLoadAnimations(project) {
     if (st.animError && !st.animPendingAttach) continue
     try {
       // 地址口径与视频源一致（`clipMediaUrl` 把 dir 归一成片段名 + 拼 output/clips/…）
+      //
+      // ⚠️ **计时区间必须把 `fetch` 包进来**（2026-10-02 修）：原来 `tFetched` 打在
+      // `fetch` **之前**，于是"取字节"量的只是 `clipMediaUrl()` 的字符串拼接（恒为 0ms），
+      // 而 `await fetch` + `arrayBuffer()` 被算进了"解码"里 —— 一份 5 MB 的 GIF
+      // 在本地也要几百毫秒，"解码很慢"这个结论就是被这条错计时喂出来的。
+      // 三段分开：**取字节**（网络/盘） / **解码**（wasm） / **上传**（已在 wasm 内部）。
       const url = clipMediaUrl(props.pid, props.dir, a.uri)
+      const tFetch0 = performance.now()
       const resp = await fetch(url)
       if (!resp.ok) throw new Error('HTTP ' + resp.status)
       const bytes = new Uint8Array(await resp.arrayBuffer())
+      const tFetched = performance.now()
       const raw = dhampirPkgNs.dhampir_asset_load_animation(st.assetId, bytes)
+      const tDecoded = performance.now()
       const res = JSON.parse(raw)
+      const mib = (bytes.byteLength / 1048576).toFixed(1)
+      console.log('[dhampir] 动图 ' + st.assetId + ' 取字节 ' + Math.round(tFetched - tFetch0)
+        + 'ms (' + mib + ' MB) / 解码 ' + Math.round(tDecoded - tFetched) + 'ms')
       if (res && res.ok === true) {
         st.animLoaded = true
         st.animUri = a.uri
@@ -880,6 +960,7 @@ async function dhampirApplySubtitles(project, subtitles) {
 }
 
 async function startDhampir() {
+  dhampirMark('开始')
   if (dhampirEngine) return
   if (!navigator.gpu) throw new Error('这个浏览器没有 WebGPU（Dhampir 实时预览需要它）')
   const host = dhampirHostRef.value
@@ -928,6 +1009,7 @@ async function startDhampir() {
     bindings.push([a.id, v.id, v])
   })
   // 等能解码；**某一个源挂了不拖死整块**（限时后照常往下走，画面缺那一层而已）
+  dhampirMark('工程 JSON 到手')
   await Promise.all(
     bindings.map(([, , v]) =>
       new Promise((done) => {
@@ -966,6 +1048,7 @@ async function startDhampir() {
       + " —— 请把这条原文连同控制台一起反馈（服务端日志里没有这条请求就说明是浏览器侧拦的）")
   }
   const { loadEngine } = await loadEngineWithRetry(ENGINE_URL)
+  dhampirMark('视频源就绪')
   dhampirEngine = await loadEngine(PKG_URL)
   // ---------------------------------------------------------------------------
   // **形状断言：底座 wasm API 版本**（底座回执 2026-10-01 点名要我们加的）
@@ -981,6 +1064,7 @@ async function startDhampir() {
   // （用户看到的就是「当前是近似预览」）。正确做法：自己 import 同一个 URL 拿命名空间
   // （ESM 缓存 ⇒ 与 `loadEngine` 内部同一份、不重复下载；它已经 `await mod.default()` 初始化过了 ⇒ 安全）。
   // ---------------------------------------------------------------------------
+  dhampirMark('engine.js + wasm 载入')
   const pkgNs = await import(/* @vite-ignore */ PKG_URL)
   dhampirPkgNs = pkgNs          // 动图加载要用它（包装对象上没有那两条导出）
   const hostApi =
@@ -994,6 +1078,18 @@ async function startDhampir() {
   }
   // **打开底座的细粒度计时**：`prepareMs` 含「seek 视频 + 文字栅格化」，
   // `drawMs` 是 GPU 提交。底座说得很对 ——「只知道一帧要 200ms，该改哪里只能靠猜」。
+  // **自报"这份 wasm 是哪一次构建"**。
+  //
+  // 为什么必须有它：`HOST_API_VERSION` 只在**导出面/形状**变化时才 +1，
+  // 一次纯实现修复（例如 2026-10-02 把动图上传从逐帧改成一张数组纹理）不改版本号 ——
+  // 于是"浏览器里跑的是修好的那份还是旧的"从版本号上**看不出来**。
+  // 那次排查就卡在这：宿主侧改了 `crates/dhampir-wasm/www/pkg`，而预览其实是服务端
+  // 从 `<程序目录>/dhampir/preview/pkg` 发的，**是两份不同的文件**，两者 api 都是 6。
+  //
+  // 打在控制台而不是日志面板：这是排查用的判据，要能直接与另一份产物对比。
+  // 拿不到就不打（老产物没这条导出）——**不要**因此报错，它不是契约的一部分。
+  const buildId = typeof pkgNs.dhampir_build_id === 'function' ? pkgNs.dhampir_build_id() : '(老产物没有 dhampir_build_id)'
+  console.log('[dhampir] 预览 wasm ' + buildId + '  host_api=' + hostApi + '  ' + PKG_URL)
   dhampirEngine.timing = true
   // ⚠️ **不要再 JSON.parse 一次**：`Engine.open()` 内部已经
   // `JSON.parse(mod.dhampir_project_open(json))` 了，返回的是**对象**。
@@ -1004,6 +1100,7 @@ async function startDhampir() {
   if (opened.ok !== true) {
     throw new Error('工程没通过 Dhampir 校验：' + JSON.stringify(opened.issues || []).slice(0, 200))
   }
+  dhampirMark('工程 open + pkg 命名空间')
   await dhampirEngine.attach(canvas.id)
   // 源模式**交给引擎的探针** —— 实测引擎判 bitmap 是对的：
   // WebGPU 的 copyExternalImageToTexture **不接受 <video>**（只认
@@ -1020,10 +1117,27 @@ async function startDhampir() {
   dhampirEngine.followPlayback = true
   dhampirSourceMode.value = dhampirEngine.sourceMode || ''
 
+  dhampirMark('attach canvas')
   dhampirEngine.resize(canvas.width, canvas.height)
   for (const [assetId, videoId] of bindings) dhampirEngine.bindSource(assetId, videoId)
+  dhampirMark('尺寸/绑源')
   // **让源视频播起来** —— followPlayback 只在视频自己正在走时才跳过 seek。
-  // 静音：预览不带声音（口径如此）；它们只是「帧的来源」。
+  // **声音：源就是预览的声源。**（2026-10-02 改）
+  //
+  // 原先这里写死 `v.muted = true`，口径是「预览不带声音；它们只是帧的来源」——
+  // 那时 Dhampir 是**可选**模式，与 DOM 预览并列，用户按需切过去看画面，不出声还能接受。
+  // 后来 `onMounted` 改成**默认进 Dhampir**（见文件尾那段），于是：
+  //   · 台上那块 `<video>` 被静音 ⇒ 说话声/音乐**一点都没有**；
+  //   · `tick()` 的 Dhampir 分支在 `player.sync(...)` **之前就 return** ⇒ 音效也没有。
+  // 两条一起断的结果就是"预览完全没有声音"，而音量/静音控件还照常显示（它只写台上那块
+  // DOM video `applyAudio`，写的是一个已经被静音的元素）—— 症状正是"音量控制不好使"。
+  //
+  // 现在源按**用户声明的那一份**状态出声，且这两件事是分开的：
+  //   · 底座的画面**不看** `muted`（它只取"正在显示的那一帧"，跟播条件只有 `paused`）
+  //     ⇒ 出声不影响画面；
+  //   · 出片那条腿（`vtrim polish render` → 转译器）**根本不经过页面**，
+  //     音轨由本仓 ffmpeg 混入（`render/sound.rs`）⇒ 这里怎么改都动不到成片。
+  // ⚠ 别把 `muted` 写回 `true`：那等于把这条刚修好的路再掐断一次。
   // `dhampirSourceVideos` 与 `dhampirVideos` 是**同一批元素**：前者的键是引擎的
   // `source`（= 素材 id，`sources_for` 给的就是它），纠偏按 source 找元素要用它。
   dhampirSourceVideos = new Map()
@@ -1033,6 +1147,7 @@ async function startDhampir() {
   // **备用那套源**（A/B）：每个源再多一块同 `src` 的 `<video>`，1px、暂停、静音，
   // 平时什么都不做；进屏蔽区前把"下一段起点"seek 好，到点 `bindSource` 换绑即成。
   // 放在同一个 1px 宿主里（`stopDhampir` 一句 `innerHTML=''` 就一起收掉）。
+  dhampirMark('建源表')
   dhampirTwins = new Map()
   for (const [assetId, , v] of bindings) {
     const twin = document.createElement('video')
@@ -1048,6 +1163,12 @@ async function startDhampir() {
     dhampirWatchTwin(assetId, twin)
     dhampirTwins.set(assetId, { el: twin, id: twin.id, want: 0, ready: false })
   }
+  // 备用那套**永远不出声**（换台瞬间两套同源若都在轨，音量会叠成两倍）。
+  // 建完立刻压一次：`applyAudio` 也会认它们（按 `dhampirIsTwin`），这里是入队前的双保险。
+  for (const tw of dhampirTwins.values()) {
+    try { tw.el.muted = true } catch (e) { /* 忽略 */ }
+  }
+  dhampirMark('备用源(twin)')
 
   // 贴纸：**动图整段交给引擎**（引擎自己解码、按 `source_frame` 取帧），
   // 静态图仍走宿主位图那条路。层描述（活跃区间）从新工程重建 ——
@@ -1061,13 +1182,20 @@ async function startDhampir() {
   // host 还没接上时它只记账时间真值并返回 ok:false（实测错误文案 = "还没 attach 上 canvas"）。
   // 本函数在 startDhampir 里正好位于 attach 之后 —— 顺序别动。
   await dhampirLoadAnimations(project)
+  dhampirMark('动图解码')
 
   // **静态图的预热保留**（2026-10-01 那套）：它们仍走服务端逐帧 PNG，
   // 第一次被要时得整段解码，预热把这件事挪到"用户还没播到那里"的时候。
   // fire-and-forget：不 await、不挡任何东西。
   // ⚠️ 服务端逐张串行解，所以这里**不要**按贴纸并发发多个请求。
   callPrewarmStickers()
-  for (const v of dhampirVideos) { v.muted = true; v.play().catch(() => {}) }
+  // 同上：**出声**由用户声明决定（`applyAudio` 才是唯一权威，这里只是建源时的初值）。
+  // 音高保持也在这里装一次：纠偏会改 `playbackRate`，装晚了会先跑调一小段。
+  for (const v of dhampirVideos) {
+    dhampirPreservePitch(v)
+    v.play().catch(() => {})
+  }
+  applyAudio()
 
   // ④ **字幕 / 弹幕**。
   //
@@ -1085,6 +1213,8 @@ async function startDhampir() {
   // `ensureFontFace`，这里复用同一个入口 —— 它取的是 `/api/polish/font`，
   // 与出片侧注入的 @font-face 是同一份字节。
   await ensureProjectFonts(project)
+  dhampirMark('字体')
+  dhampirMarkReport()
 }
 
 function stopDhampir() {
@@ -1117,6 +1247,116 @@ function stopDhampir() {
   dhampirFpsWindow = { t0: 0, frames: 0 }
   for (const url of dhampirBlobUrls) URL.revokeObjectURL(url)
   dhampirBlobUrls = []
+}
+
+/**
+ * Dhampir 首屏的**分步计时**。
+ *
+ * 为什么要有它：加载慢的时候只能靠猜（"是不是 wasm 太大""是不是转译慢"）。
+ * 2026-10-02 实测过一次 —— wasm 走 304 之后只要 **1 ms**，而 `dhampir-project` 那条
+ * 要 **1290 ms**：**大头根本不在 wasm 上**。没有这份数据就只能凭感觉优化。
+ *
+ * 口径：`mark()` 每调一次就往浏览器控制台打一行；`report()` 收尾给一条汇总 + `console.table`。
+ * ⚠️ **走控制台，不走日志面板**：面板默认级别是「信息」，而 debug 级会被滤掉（等于没装）。
+ * ⚠️ **不要用 `Date.now()` 之间的差值堆**：这里只用 `performance.now()` 的单调时钟。
+ */
+const dhampirLoadMarks = []
+let dhampirLoadT0 = 0
+function dhampirMark(label) {
+  if (!dhampirLoadT0) { dhampirLoadT0 = performance.now(); dhampirLoadMarks.length = 0 }
+  const at = performance.now() - dhampirLoadT0
+  const prev = dhampirLoadMarks.length ? dhampirLoadMarks[dhampirLoadMarks.length - 1].at : 0
+  dhampirLoadMarks.push({ label, at })
+  // 每一步**当场**打一行：长的那一步你会在控制台里"看着它卡住"，
+  // 比等整条链跑完再回头算差值直观得多。
+  console.log('[dhampir] ' + label + '  ' + Math.round(at) + 'ms  (+' + Math.round(at - prev) + 'ms)')
+  // 顺带把当前那一步写进门帘文案：加载久的时候用户至少知道卡在哪一段
+  dhampirStatus.value = '正在加载 Dhampir…（' + label + '）'
+}
+function dhampirMarkReport() {
+  if (!dhampirLoadMarks.length) return
+  const total = Math.round(dhampirLoadMarks[dhampirLoadMarks.length - 1].at)
+  // ⚠️ **打浏览器控制台，不打日志面板**：面板默认级别是「信息」而这条是 debug ⇒
+  // 看不见（等于没装）。控制台不需要切任何过滤，F12 就有。
+  const rows = dhampirLoadMarks.map((m, i) => {
+    const prev = i > 0 ? dhampirLoadMarks[i - 1].at : 0
+    return {
+      步骤: m.label,
+      累计ms: Math.round(m.at),
+      本步ms: Math.round(m.at - prev),
+    }
+  })
+  // 单行摘要（一眼看总账 + 最慢那步），表格（逐步拆开）
+  let worst = rows[0]
+  for (const r of rows) if (r.本步ms > worst.本步ms) worst = r
+  console.log(
+    '[dhampir] 首屏 ' + total + 'ms，最慢一步：' + worst.步骤 + ' +' + worst.本步ms + 'ms',
+  )
+  console.table(rows)
+  dhampirLoadMarks.length = 0
+  dhampirLoadT0 = 0
+}
+
+/**
+ * 这一批源现在**是不是在出声**。
+ *
+ * 判据只有两条（与 `applyAudio` 落到元素上的那两个属性同源）：
+ * 没被静音、且音量大于 0。`startDhampir` 建源时把 `muted` 设成**用户声明的那一份**，
+ * 之后 `applyAudio` 持续维持，所以这里读到的就是"用户按了静音没有"。
+ */
+function dhampirSourceAudible() {
+  if (muted.value) return false
+  const n = Number(volume.value)
+  return Number.isFinite(n) && n > 0
+}
+
+/**
+ * **音高保持**：`playbackRate` 非 1 时让浏览器替我们保住音高。
+ *
+ * 浏览器实现的时间关系是「以渲染管线为准」的 —— 也就是说 `preservesPitch` 打开后
+ * 音轨会被重采样回自然音高，纠偏的 ±% 不再跑调。缺失该属性的实现（老 Safari / 部分
+ * WebView）拿不到这个保护，那就只能靠 `DHAMPIR_ALIGN_RATE_AUDIBLE_*` 收窄幅度兜底
+ * —— **两道防线都要有**，别只留一道。
+ *
+ * 返回是否拿到了这个属性（诊断用；拿不到不算错）。
+ */
+function dhampirPreservePitch(v) {
+  let ok = false
+  for (const key of ['preservesPitch', 'mozPreservesPitch', 'webkitPreservesPitch']) {
+    if (key in v) {
+      try { v[key] = true; ok = true } catch (e) { /* 只读实现：忽略 */ }
+    }
+  }
+  return ok
+}
+
+/**
+ * **纠偏里能用的速率区间**：出声时收窄，无声时用满 ±2%。
+ *
+ * 为什么不能一刀切用 ±0.5%：无声时源就是"帧的来源"，追得越紧画面越跟手，
+ * 而 ±2% 能在不走 hard seek 的前提下把偏差压回去（实测硬 seek 是 307ms/帧）。
+ * 出声之后速率连着音高，才需要让位给音质。
+ *
+ * ⚠ 这个函数与 `dhampirAlignSources` 里的用法必须成对出现 —— 那里是唯一的调用点。
+ */
+function dhampirAlignRateRange() {
+  if (!dhampirSourceAudible()) return { lo: DHAMPIR_ALIGN_RATE_LO, hi: DHAMPIR_ALIGN_RATE_HI }
+  if (dhampirSourcesPitchLocked()) return { lo: DHAMPIR_ALIGN_RATE_LO, hi: DHAMPIR_ALIGN_RATE_HI }
+  return { lo: DHAMPIR_ALIGN_RATE_AUDIBLE_LO, hi: DHAMPIR_ALIGN_RATE_AUDIBLE_HI }
+}
+
+/**
+ * 这一批源是不是**都**拿到了 `preservesPitch`。
+ *
+ * 全都拿到 ⇒ 速率随便动都不跑调，用满 ±2%；
+ * 有一个没拿到 ⇒ 整批收窄（宁可漂一点，也不要一路跑调）。
+ */
+function dhampirSourcesPitchLocked() {
+  if (!dhampirVideos.length) return false
+  for (const v of dhampirVideos) {
+    if (!(('preservesPitch' in v) || ('mozPreservesPitch' in v) || ('webkitPreservesPitch' in v))) return false
+  }
+  return true
 }
 
 /**
@@ -1165,7 +1405,9 @@ function syncDhampirTime(t) {
  *
  * 三档（`err = 实际 - 目标`，>0 = 超前；`base` = 时钟速率，见 `dhampirClockRate`）：
  *   ① |err| < 40ms  → 什么都不做（速率收回 `base`，让它自然播 ✓ 这一档是绝大多数帧）
- *   ② |err| < 500ms → **只改 `playbackRate`**（超前 `base×0.98` / 落后 `base×1.02`），
+ *   ② |err| < 500ms → **只改 `playbackRate`**（超前 `base×lo` / 落后 `base×hi`，
+ *      由 `dhampirAlignRateRange()` 取：**无声时** ±2%（追得紧、画面跟手），
+ *      **出声时**收窄到 ±0.5%、且源都拿到 `preservesPitch` 时仍可用满 ±2% —— 详见那里的说明），
  *      **不 seek** ✓ —— 这正是"躲开每帧 hard seek"的那一档
  *   ③ |err| ≥ 500ms → 速率复位 + 硬 seek（时钟在走时由这里做；暂停时交给引擎 ——
  *      它那边的 `seekVideo` 会**等 `seeked` 事件**，比这里"设了就走"更靠谱，
@@ -1185,6 +1427,9 @@ function dhampirAlignSources(f) {
   const el = videoRef.value
   const clockRunning = !!(el && !el.paused && !el.ended)
   const base = dhampirClockRate()
+  // ⚠️ 速率区间**按"出不出声"取**（2026-10-02）：出声时 ±2% 会跑调，见
+  // `dhampirAlignRateRange` 的说明。整批一次取定，不在循环里逐元素问。
+  const { lo, hi } = dhampirAlignRateRange()
   for (const e of entries) {
     const v = dhampirSourceVideos.get(e && e.source)
     if (!v) continue
@@ -1212,7 +1457,7 @@ function dhampirAlignSources(f) {
       continue
     }
     // ② 中偏差：**只改速率，不 seek**
-    const rate = err > 0 ? base * DHAMPIR_ALIGN_RATE_LO : base * DHAMPIR_ALIGN_RATE_HI
+    const rate = err > 0 ? base * lo : base * hi
     if (Math.abs(v.playbackRate - rate) > 1e-9) {
       try { v.playbackRate = rate } catch (e2) { /* 忽略 */ }
     }
@@ -1563,6 +1808,42 @@ const stageStyle = computed(() => {
     '--cap-w': (v.W - 240 * v.k) + 'px'
   }
 })
+
+// ---- 连续位置的 DOM 修正（`[stage] position_pct`，2026-10-02）----
+// CSS 的 `stage-*` 只有三档（左/中/右），而契约里的位置是 **0–100 的百分比**（五档吸附）。
+// 这里按**实测**余量把 `.fit-box` 挪到那一档：`basel` = 当前 class 已经放到的位置（0/0.5/1），
+// 所以只需要补差值 —— 两端（0/100）差值为 0，天然精确。
+// ⚠️ 与出片那条腿（模板 `stageDrawRect` 的 `bx+(bwid-w)*pct`）是**同一条线性插值**：两处一起改。
+// ⚠️ 减掉 `getComputedStyle` 的 padding：`--stage-pad` 是百分比、浏览器已解析成 px，
+//   而 `clientWidth` 含 padding（不减掉会整体偏一个 padding）。
+const fitBoxRef = ref(null)
+const stageShift = ref({ dx: 0, dy: 0 })
+function measureStageShift() {
+  const box = fitBoxRef.value
+  const wrap = box ? box.parentElement : null
+  if (!box || !wrap) return
+  const s = stageFit.value
+  const axis = s.axis || 'fill'
+  if (axis === 'fill') { stageShift.value = { dx: 0, dy: 0 }; return }
+  const pct = typeof s.position_pct === 'number' ? s.position_pct : 50
+  const pos = s.position || 'center'
+  const basel = (pos === 'left' || pos === 'top') ? 0 : (pos === 'right' || pos === 'bottom') ? 1 : 0.5
+  const pad = parseFloat(getComputedStyle(wrap).paddingLeft) || 0
+  const free = axis === 'x'
+    ? (wrap.clientWidth - 2 * pad - box.clientWidth)
+    : (wrap.clientHeight - 2 * pad - box.clientHeight)
+  const d = free * (pct / 100 - basel)
+  stageShift.value = axis === 'x' ? { dx: d, dy: 0 } : { dx: 0, dy: d }
+}
+const fitBoxStyle = computed(() => ({
+  transform: 'translate(' + stageShift.value.dx + 'px,' + stageShift.value.dy + 'px) scale('
+    + (Number(stageFit.value.scale) || 1) + ')'
+}))
+// 测量时机：契约任一影响几何的字段变化后（下一帧再量，等布局落定）
+watch(() => {
+  const s = stageFit.value
+  return [s.axis, s.position, s.position_pct, s.padding, s.scale, props.config?._canvas?.width, props.config?._canvas?.src?.width].join('|')
+}, async () => { await nextTick(); measureStageShift() })
 
 const stickerMap = computed(() => props.config?._assets?.sticker_map || {})
 function stickerSrc(name) {
@@ -2025,6 +2306,10 @@ function tick() {
           v.currentTime = target
           syncDhampirTime(target)
           current.value = v.currentTime
+          // ⚠️ **换台会一次跳过整段，换完必须补一次 sync**（2026-10-02 实测：
+          // "有些音效播了、有些没有"）。这条路径上 `v.currentTime` 从旧位置**直接跳到
+          // 目标位置**，中间那一段的音效没有任何一帧能覆盖 —— 少了这一句就永久丢失。
+          player.sync(idx.value.soundEvents, v.currentTime)
           emit('time', v.currentTime)
           if (bgOn.value && bgRef.value) bgRef.value.currentTime = target
           rafId = requestAnimationFrame(tick)
@@ -2047,6 +2332,12 @@ function tick() {
     // 定格期间：画面与时钟一起停（`endSkipFreeze` 里推）
     if (freezeOn.value) { rafId = requestAnimationFrame(tick); return }
     current.value = v.currentTime
+    // ⚠️ **音效不能跟着"让位"一起让掉**（2026-10-02 修）。
+    // 上面"让出重活"让的是 DOM/CSS 复刻那套**渲染**（字幕/弹幕/贴纸被 canvas 盖住，
+    // 继续跑只是白烧 CPU）；而 `player.sync` 是**出声**，与画面无关。
+    // 原先它在下面那行（非 Dhampir 路径），Dhampir 分支提前 return ⇒ 音效整条不触发，
+    // 症状是"预览一点声音都没有"（连音效都没有）。
+    player.sync(idx.value.soundEvents, v.currentTime)
     emit('time', v.currentTime)
     if (!v.paused && !v.ended) rafId = requestAnimationFrame(tick)
     return
@@ -2090,6 +2381,10 @@ function tick() {
 }
 
 function togglePlay() {
+  // ⚠️ **Dhampir 加载期间不许播**（第二道闸；第一道是模板上那颗按钮置灰）：
+  // `togglePlay` 还经 `defineExpose` 给父级（PolishView 的快捷键 / 时间轴的 toggle）用 ——
+  // 只禁按钮挡不住它们。半途播出来的是缺效果/空白的画面，而加载失败时它会被当成「这一版就这样」。
+  if (dhampirLoading.value) return
   const v = videoRef.value
   if (!v) return
   if (v.paused) {
@@ -2166,16 +2461,91 @@ function onSeeked() {
 }
 
 /**
- * 音量/静音同时作用在**视频本身**和 SFX 层。
+ * 音量/静音同时作用在**所有真正在响的 <video>** 和 SFX 层。
  * 之前只调 SFX 播放器，视频里的说话声/音乐丝毫不受影响 —— 用户反馈的「音量控制不好使」就是这个：
  * 点静音、拉滑块都对真正在响的那一路没作用。
+ *
+ * ⚠️ **Dhampir 模式下"台上那块"不是唯一在响的元素**（2026-10-02 修）：
+ * `dhampirVideos` 是**另一批** `<video>`（引擎的帧来源，同时就是声源），
+ * `videoRef` 指向的那块只是时钟/DOM 预览那一路。只写 `videoRef` 时，
+ * 用户拖滑块 → Dhampir 那批源音量纹丝不动 ⇒ 控件的表现就是"不好使"。
+ * 所以这里两批一起写：`videoRef`（DOM 预览 / 时钟）+ `dhampirVideos`（引擎那一路的声）。
+ *
+ * 备用/预滚那批（`dhampirTwins`）**刻意不出声**（它们永远 `muted`）——
+ * 换绑瞬间两套源同时在轨，不压住会叠成两倍音量。
  */
 function applyAudio() {
-  const v = videoRef.value
-  if (!v) return
   const n = Number(volume.value)
-  v.volume = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0
-  v.muted = !!muted.value
+  const vol = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0
+  const m = !!muted.value
+  const v = videoRef.value
+  if (v) {
+    v.volume = vol
+    // ⚠️ **Dhampir 模式下台上那块必须闭麦**（2026-10-02 实测：声音播了两遍）。
+    //
+    // DOM 那条腿与引擎那条腿**指向同一段素材**：
+    //   · DOM 腿  = `stage0Ref`/`stage1Ref` 这对 A/B `<video>`（模板里**没有** `muted` 属性，
+    //                它就是自绘预览的声源）
+    //   · 引擎腿 = `dhampirVideos` 那批（同时是引擎的帧来源与声源）
+    // 两条腿都出声 = 同一句话听两遍（还带一点相位差，听着像"回声/糊"）。
+    //
+    // 进 Dhampir 时 `toggleDhampir` 只 `pause()` 了台上那块**一次**，但
+    // `scheduleDhampir` 的镜像循环每帧把引擎源对齐到台上那块的状态
+    // （`v.paused !== el.paused` ⇒ play/pause）—— 只要台上那块被任何路径重新 play 起来
+    // （快捷键 / 时间轴 toggle / 预滚换台），它就又出声了。**光靠 pause 挡不住，必须闭麦。**
+    v.muted = m || dhampirMode.value
+  }
+  // 引擎那一路：**台上那批 + 备用那批，一个都不能漏**。
+  //
+  // ⚠️ 不能只遍历 `dhampirVideos`（2026-10-02 实测踩到，由 `audiotest` 钉住）：
+  // `dhampirSwapSources` 换绑时把旧元素**从 `dhampirVideos` 里换出去**
+  // （`dhampirVideos[i] = tw.el`），同时把它记成新的备用（`dhampirTwins.set(assetId, {el: old})`）。
+  // 于是那一刻旧元素**不在** `dhampirVideos` 里 —— 只遍历台上一批的话，
+  // 它既不会被压回静音、也不会被写音量，而它**还在播**（`pause()` 之后下一帧镜像循环
+  // 又会按时钟把它 play 起来）⇒ 换台之后**两路同源同时在轨、声音叠成两倍**。
+  // 所以这里按 `dhampirSourceVideos`（引擎当前认的那批）+ `dhampirTwins`（备用那批）
+  // 合并遍历，用 **Set 去重**（`dhampirVideos` 是它们的并集视图，不再单独遍历）。
+  // 音效播放器（SFX）**也是出声的一条腿**，必须一起铺。
+  //
+  // ⚠️ 以前它只由 `toggleMute` / `onVolume` 两处直接调 `setMuted`/`setMasterVolume` 管，
+  // 而 `applyAudio()` 完全不碰它 —— 于是**任何不经过那两个控件的路径**（进/出 Dhampir、
+  // 建源、换绑、恢复播放）都不会把音量铺到它身上：音量滑块看着有效，实际只对
+  // 两条视频腿生效，音效仍按上一次的值出声。
+  player.setMasterVolume(vol)
+  player.setMuted(m)
+  const seen = new Set()
+  for (const dv of dhampirAllSourceVideos()) {
+    if (!dv || seen.has(dv)) continue
+    seen.add(dv)
+    dv.volume = vol
+    // ⚠️ **备用那套不给它解除静音** —— 换台前后两套源指向同一段素材，
+    //    备用那块若出声就会与台上那块叠成两声。判据用"是不是 twin"，不用下标。
+    dv.muted = m || dhampirIsTwin(dv)
+  }
+}
+
+/**
+ * 引擎侧**全部** `<video>` 源：当前绑定那批 + 备用（预滚）那批。
+ *
+ * `dhampirVideos` 只是"台上那批"的数组视图，换绑的**中间态**里旧元素会掉出它
+ * —— 而那个瞬间它仍然在播（见 `applyAudio` 里那段）。要覆盖"所有可能出声的元素"，
+ * 就得从这两个 Map 取并集。
+ */
+function dhampirAllSourceVideos() {
+  const out = []
+  for (const v of dhampirSourceVideos.values()) out.push(v)
+  for (const tw of dhampirTwins.values()) { if (tw && tw.el) out.push(tw.el) }
+  // 兜底：换绑/初始化的中间态里，数组视图可能已经拿到而 Map 还没跟上
+  for (const v of dhampirVideos) out.push(v)
+  return out
+}
+
+/** 这块元素是不是 A/B 里**备用那套**（预滚用，永远不出声）。 */
+function dhampirIsTwin(el) {
+  for (const tw of dhampirTwins.values()) {
+    if (tw && tw.el === el) return true
+  }
+  return false
 }
 
 function toggleMute() {
@@ -2393,8 +2763,10 @@ onMounted(() => {
   ro = new ResizeObserver(() => {
     const w = stageRef.value ? stageRef.value.clientWidth : 0
     if (w) overlayScale.value = w / cv.value.W
+    measureStageShift()
   })
   if (stageRef.value) ro.observe(stageRef.value)
+  measureStageShift()
 })
 onUnmounted(() => {
   cancelAnimationFrame(rafId)
@@ -2460,6 +2832,24 @@ function pause() {
   position: fixed; right: 0; bottom: 0; width: 1px; height: 1px;
   opacity: 1; pointer-events: none;
 }
+/* Dhampir 加载门帘：铺满舞台、压在**定格遮罩（60）之上**。
+   ⚠️ `pointer-events:none` —— 门帘只负责「说清在等什么」，「不许播」由按钮置灰 + `togglePlay` 那道闸负责
+   （否则框选 / 点选那两层会被它挡掉）。
+   ⚠️ 颜色写死在这里是**有意的**：它盖在视频上，必须与主题无关（浅色主题下也不能变成白底黑字）——
+   与 `.dhampir-canvas{background:#000}` / `.stage{background:#000}` 同一条口径。 */
+.dhampir-loading {
+  position: absolute; inset: 0; z-index: 70;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  background: rgba(0, 0, 0, .62); color: #fff; font-size: 13px; text-align: center;
+  pointer-events: none;
+}
+.dhampir-loading .dl-text { font-weight: 600; }
+.dhampir-loading .dl-spin {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .28); border-top-color: #fff;
+  animation: dl-spin .8s linear infinite;
+}
+@keyframes dl-spin { to { transform: rotate(360deg); } }
 .dhampir-bar {
   display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap;
 }

@@ -3245,6 +3245,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "flate2",
  "futures-util",
  "mime_guess",
  "serde",

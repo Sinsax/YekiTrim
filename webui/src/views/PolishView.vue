@@ -257,57 +257,71 @@
             </div>
             </template>
 
-            <!-- 画面构成页签：画面尺寸 / 主画面位置 / 背景。值存 polish.toml 的 [canvas] / [stage]，
-                 出片与预览共用同一份推导（Rust `resolve_stage` → `_canvas`），
-                 所以这里改完预览当场就变，且与成片一致 -->
+            <!-- 画面构成页签：画面尺寸 / 主画面位置（五档吸附）/ 缩放比例 / 背景（+ 竖屏三开关）。
+                 值存 polish.toml 的 [canvas] / [stage]；出片与预览共用同一份推导
+                 （Rust `resolve_stage` → `_canvas`），这里只做提交 + 重取，不在前端重算。 -->
             <template v-else>
-              <div class="small muted mb-4">画面尺寸<span class="hint"> · 画布方向，立即保存</span></div>
+              <div class="small muted mb-4"
+                   title="源与画布同比例时主画面正好铺满：位置 / 缩放 / 背景都没有可见效果，故整组隐藏">画面尺寸</div>
               <div class="row mb-6" style="gap:6px">
                 <button v-for="o in orientationOptions" :key="o.value" class="mini-btn" style="flex:1;justify-content:center"
                         :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
                         @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
               </div>
-              <div class="hint mb-8" title="切方向后位置选项跟着换（左中右 ↔ 上中下），预览与出片画布立即跟随">{{ canvasSummary }} · 改方向或位置后需重跑后处理</div>
 
-              <div class="small muted mb-4">主画面位置<span class="hint"> · 比例一致时铺满，位置看不出效果</span></div>
-              <div class="row mb-8" style="gap:6px">
-                <button v-for="p in positionOptions" :key="p.value" class="mini-btn" style="flex:1;justify-content:center"
-                        :class="{ selected: stageCfg.position === p.value }" :disabled="stageBusy || !ready"
-                        @click="patchStage({ position: p.value })">{{ p.label }}</button>
-              </div>
+              <template v-if="showStageGeom">
+                <div class="small muted mb-4">主画面位置</div>
+                <div class="row mb-6" style="gap:8px;align-items:center">
+                  <input type="range" class="flex-1" min="0" max="100" step="25" :value="stagePct"
+                         :disabled="stageBusy || !ready"
+                         @change="patchStage({ position_pct: Number($event.target.value) })">
+                  <span class="mono small" style="flex:none;width:3.2em">{{ positionLabel }}</span>
+                </div>
 
-              <div class="small muted mb-4" title="竖屏一直生效（特效位移会露边），横屏仅在留边时生效">背景<span class="hint"> · 主画面让出来的边补什么</span></div>
-              <div class="row mb-6" style="gap:6px">
-                <button v-for="b in bgOptions" :key="b.value" class="mini-btn" style="flex:1;justify-content:center"
-                        :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
-                        @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
-              </div>
-              <div v-if="stageBgDisplay === 'color'" class="row mb-6" style="gap:8px;align-items:center">
-                <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
-                       :value="stageBgColor" :disabled="stageBusy || !ready"
-                       @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
-                <span class="mono small">{{ stageBgColor }}</span>
-              </div>
-              <div v-if="stageCfg.bg_mode === 'blur'" class="row mb-6" style="gap:8px;align-items:center">
-                <span class="small muted" style="flex:none">模糊强度</span>
-                <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
-                       :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
-                <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
-              </div>
+                <div class="row mb-6" style="gap:8px;align-items:center">
+                  <span class="small muted" style="flex:none">缩放比例</span>
+                  <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
+                         :disabled="stageBusy || !ready"
+                         @change="patchStage({ scale: Number($event.target.value) })">
+                  <input type="number" class="mono small" style="width:4.4em" min="0.1" max="4" step="0.01"
+                         :value="stageScaleNum" :disabled="stageBusy || !ready"
+                         @change="patchStage({ scale: clampScale($event.target.value) })">
+                </div>
+              </template>
 
-              <div class="row mb-6" style="gap:8px;align-items:center">
-                <span class="small muted" style="flex:none">主画面缩放</span>
-                <input type="range" class="flex-1" min="0.5" max="2" step="0.05" :value="stageCfg.scale ?? 1"
-                       :disabled="stageBusy || !ready" @change="patchStage({ scale: Number($event.target.value) })">
-                <span class="mono small">{{ Number(stageCfg.scale ?? 1).toFixed(2) }}×</span>
-              </div>
-              <div class="row mb-8" style="gap:8px;align-items:center">
-                <span class="small muted" style="flex:none">额外留白</span>
-                <input type="range" class="flex-1" min="0" max="200" step="2" :value="stageCfg.padding ?? 0"
-                       :disabled="stageBusy || !ready" @change="patchStage({ padding: Number($event.target.value) })">
-                <span class="mono small">{{ Number(stageCfg.padding ?? 0) }}px</span>
-              </div>
-              <div class="hint">{{ stageHint }}</div>
+              <template v-if="showStageGeom || bgOnlyAfterSwitch">
+                <div class="small muted mb-4">背景</div>
+                <div class="row mb-6" style="gap:6px">
+                  <button v-for="b in bgOptions" :key="b.value" class="mini-btn" style="flex:1;justify-content:center"
+                          :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
+                          @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
+                </div>
+                <div v-if="stageBgDisplay === 'color'" class="row mb-6" style="gap:8px;align-items:center">
+                  <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
+                         :value="stageBgColor" :disabled="stageBusy || !ready"
+                         @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
+                  <span class="mono small">{{ stageBgColor }}</span>
+                </div>
+                <div v-else class="row mb-6" style="gap:8px;align-items:center">
+                  <span class="small muted" style="flex:none">模糊强度</span>
+                  <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
+                         :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
+                  <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
+                </div>
+              </template>
+
+              <template v-if="isPortraitCanvas">
+                <div class="small muted mb-4"
+                     title="竖屏画布下这三类默认全关（事件保留在时间轴上，勾上即恢复）">竖屏启用</div>
+                <div class="row mb-6" style="gap:14px;align-items:center">
+                  <label v-for="s in portraitSwitches" :key="s.key" class="row small"
+                         style="gap:5px;align-items:center;cursor:pointer">
+                    <input type="checkbox" :checked="stageCfg[s.key] === true" :disabled="stageBusy || !ready"
+                           @change="patchStage({ [s.key]: $event.target.checked })">
+                    {{ s.label }}
+                  </label>
+                </div>
+              </template>
             </template>
             <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
                  同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
@@ -457,7 +471,7 @@ const previewKey = ref(0)
 /** 时间轴重挂载计数（仅当磁盘上的 segments/屏蔽轨道被服务端改写：LLM 剪辑 / 初始化 / 去静音）。
  *  静默刷新不再卸载编辑器，所以需要重挂载的组件自己带 key。 */
 const segKey = ref(0)
-/** 封面设计器重挂载计数（渲染导出会重新生成封面文件） */
+/** 封面设计器重挂载计数（封面任务完成后重挂拉新图） */
 const coverKey = ref(0)
 const renderModal = ref(false)
 const renderOutput = ref('')
@@ -1253,8 +1267,9 @@ async function copyOutDir() {
 function doRender() {
   renderModal.value = false
   // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
-  // 渲染会重新生成封面文件 → 封面设计器重挂载拉新图
-  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { coverKey.value++; load({ silent: true }) } })
+  // ⚠️ 渲染与封面已解耦（2026-10-02）：导出只出成片，不再自动重生成封面 ——
+  // 所以这里**不碰 coverKey**（封面设计器/产物图保持用户上一版封面，要更新去点「生成封面」）
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { load({ silent: true }) } })
 }
 
 // 时间轴的保存与后处理见上面「时间轴编辑 → 预览 → 落盘 → 后处理」（编辑器自己防抖落盘）
@@ -1387,54 +1402,74 @@ function toggleStickerSource(name) {
 const genTab = ref('export')
 const stageBusy = ref(false)
 const stageCfg = computed(() => cfg.value?.stage || {
-  bg_mode: 'auto', bg_color: '#000000', blur_scale: 1, position: 'auto', scale: 1, padding: 0
+  bg_mode: 'blur', bg_color: '#000000', blur_scale: 1, position_pct: null, scale: 1, padding: 0,
+  portrait_effects: false, portrait_camera: false, portrait_sfx: false,
 })
 const isPortraitCanvas = computed(() => (cfg.value?.canvas?.orientation || 'landscape') === 'portrait')
-// 位置的方向不跨用（与 Rust `stage_position` 同规矩）：横画布只给 左/中/右，竖画布只给 上/中/下
-const positionOptions = computed(() => (isPortraitCanvas.value
-  ? [{ value: 'auto', label: '自动' }, { value: 'top', label: '靠上' }, { value: 'center', label: '居中' }, { value: 'bottom', label: '靠下' }]
-  : [{ value: 'auto', label: '自动' }, { value: 'left', label: '靠左' }, { value: 'center', label: '居中' }, { value: 'right', label: '靠右' }]))
-const bgOptions = [
-  { value: 'auto', label: '自动' },
-  { value: 'color', label: '纯色' },
-  { value: 'blur', label: '模糊' }
-]
-/** 「纯黑」已并入纯色：bg_mode='black' 与 无背景 渲染结果一样（预览露出 #player 黑底；
- *  出片 canvas 路径上 none = 不画，透明落进 JPEG 也是黑），按钮组不再单列；
- *  存量 black 在界面上显示为 纯色 + #000000，选中纯色时才落成 color。 */
-const stageBgDisplay = computed(() => (stageCfg.value.bg_mode === 'black' ? 'color' : (stageCfg.value.bg_mode || 'auto')))
-const stageBgColor = computed(() => stageCfg.value.bg_color || '#000000')
-const canvasSummary = computed(() => {
-  const c = cfg.value?._canvas
-  if (!c) return ''
-  const s = c.src || {}
-  return (c.orientation === 'portrait' ? '竖屏 1080×1920' : '横屏 1920×1080')
-    + (s.width ? ` · 源 ${s.width}×${s.height}` : '')
-})
-/** 源与画布同比时位置没有可见效果；但背景层仍会生效（竖屏铺满 + 特效位移会露边）——
- *  直接说明，别让人白调半天，也别让人以为背景没接线。 */
-const stageHint = computed(() => {
-  const c = cfg.value?._canvas
-  if (!c) return '保存后即可在预览里看到效果。'
-  const s = c.src || {}
-  if (!s.width || !s.height) return '读不到源尺寸（文件可能缺失）→ 按铺满处理'
-  const f = c.stage || {}
-  const bgLabel = { none: '无背景', black: '纯黑', color: '纯色', blur: '当前帧模糊' }[f.bg] || ''
-  const srcAr = s.width / s.height
-  const canvasAr = c.width / c.height
-  if (Math.abs(srcAr - canvasAr) / canvasAr <= 0.005) {
-    return `源与画布同比（${s.width}×${s.height}）→ 铺满，位置不生效；背景仅在画面挪开时露出`
-  }
-  const posLabel = { left: '靠左', right: '靠右', center: '居中', top: '靠上', bottom: '靠下' }[f.position] || '居中'
-  return srcAr < canvasAr
-    ? `源更窄 → 主画面${posLabel}，左右留边（${bgLabel}）`
-    : `源更扁 → 主画面${posLabel}，上下留边（${bgLabel}）`
-})
 
+// ---- 主画面位置：**五档吸附**（0/25/50/75/100），唯一权威是契约里的 `position_pct` ----
+// 老工程的 `[stage] position` 枚举由 Rust `stage_position_pct` 一次性折算（`auto` → 50 居中），
+// 所以这里只读 `_canvas.stage.position_pct`，**不再有「自动」这一档**。
+const stagePct = computed(() => {
+  const p = Number(cfg.value?._canvas?.stage?.position_pct)
+  return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : 50
+})
+const positionLabel = computed(() => {
+  const i = Math.max(0, Math.min(4, Math.round(stagePct.value / 25)))
+  return (isPortraitCanvas.value
+    ? ['靠上', '偏上', '居中', '偏下', '靠下']
+    : ['靠左', '偏左', '居中', '偏右', '靠右'])[i]
+})
+/** 源与画布**同比**（交叉相乘；与 Rust 推 axis 同一条判据）。读不到源尺寸 ⇒ 不算同比（照常显示）。 */
+const sameRatio = computed(() => {
+  const c = cfg.value?._canvas
+  const s = c?.src
+  if (!c || !s?.width || !s?.height) return false
+  return s.width * c.height === s.height * c.width
+})
+const anyPortraitSwitchOn = computed(() =>
+  ['portrait_effects', 'portrait_camera', 'portrait_sfx'].some((k) => stageCfg.value[k] === true))
+/** 位置 / 缩放：**同比时整组隐藏**（用户 2026-10-02 口径：铺满时调它们看不出效果） */
+const showStageGeom = computed(() => !sameRatio.value)
+/** 背景：同比时也藏；**例外** = 竖屏且开了任一开关（画面会被挪开 ⇒ 会露边，衬底才有意义） */
+const bgOnlyAfterSwitch = computed(() =>
+  sameRatio.value && isPortraitCanvas.value && anyPortraitSwitchOn.value)
+/** 竖屏画布专属三开关（缺字段 = 关；Rust 侧同样按缺字段 = false 处理） */
+const portraitSwitches = [
+  { key: 'portrait_effects', label: '特效' },
+  { key: 'portrait_camera', label: '运镜' },
+  { key: 'portrait_sfx', label: '音效' },
+]
+const bgOptions = [
+  { value: 'color', label: '纯色' },
+  { value: 'blur', label: '模糊' },
+]
+/** 背景按钮的高亮态：'black' 并入纯色（渲染结果一样），`auto`/认不出的值都当**模糊**
+ *  —— 与 Rust `stage_bg_mode` 的等价关系一致（2026-10-02 删掉「自动」档之后）。 */
+const stageBgDisplay = computed(() => {
+  const m = String(stageCfg.value.bg_mode || '').toLowerCase()
+  return m === 'color' || m === 'black' ? 'color' : 'blur'
+})
+const stageBgColor = computed(() => stageCfg.value.bg_color || '#000000')
+/** 缩放：滑块与数字框同源；手填的值夹 `[0.1, 4]`、非数字不写（与 `resolve_stage` 的夹取一致） */
+const stageScaleNum = computed(() => {
+  const v = Number(stageCfg.value.scale)
+  return Number.isFinite(v) && v > 0 ? Math.max(0.1, Math.min(4, v)) : 1
+})
+function clampScale(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return stageScaleNum.value
+  return Math.max(0.1, Math.min(4, n))
+}
 /** 保存 [stage]：与「字幕字体」同一套 —— 先乐观改本地配置（控件当场响应），再静默重取拿到新的 `_canvas` */
 async function patchStage(patch) {
   if (!ready.value || stageBusy.value) return
   const next = { ...stageCfg.value, ...patch }
+  // ⚠️ `null`/`undefined` 必须在提交前摘掉：老工程没有 `position_pct`，直接透传会把 `null`
+  // 塞进深合并（服务端 `patch_config_file` 是按值合并的），而 TOML 没有 null 这种值。
+  for (const k of Object.keys(next)) {
+    if (next[k] === null || next[k] === undefined) delete next[k]
+  }
   stageBusy.value = true
   try {
     await saveProjectPatch(pid.value, dir.value, { stage: next })

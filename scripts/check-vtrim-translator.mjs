@@ -758,7 +758,80 @@ checks += 5;
 //
 // 每一条都对应上面**某一条**断言。变异体跑的是同一份 `checkCurves`，
 // 所以"打红"就是"这份守卫真的能抓住这一类错误"。
+// ---------------------------------------------------------------------------
+// 画面构成（`[canvas]` / `[stage]`）：**位置百分比 + 竖屏三道整类门**（2026-10-02）
+// ---------------------------------------------------------------------------
+//
+// 失败形态：竖屏「默认全关」与「转译器压根没读这个键」在报告里**长得一模一样**（都是一行没有），
+// 而两者差着整类事件。所以拿**同一份合成工程、只改 `[stage]` 那几行**，看产物扩展元数据
+// （`extensions['vtrim.polish_toml']` 的 `shake_events` / `sfx_clips`）跟不跟着变。
+//
+// ⚠️ **`camera` 不在这组行为判据里**：运镜那条要先探到源尺寸（`probeSize`），合成工程里没有真视频
+// ⇒ 它会走「判不了源方向」的 CLAMP 分支、恒为 0 —— 那种断言是**空转**的。
+// 运镜落在同一张表、同一个 `continue` 上；表本身由 `webui/scripts/check-stage-backdrop.mjs` 三方对拍钉住。
+function checkStage(curves) {
+  const SYNTH = (canvasLines, stageLines) => [
+    'duration = 4.0',
+    '[project]',
+    'name = "stage-probe"',
+    'output = "o.mp4"',
+    '[source]',
+    'video = "clip.mp4"',
+    '[canvas]',
+    ...canvasLines,
+    '[stage]',
+    ...stageLines,
+    '[[segments]]',
+    'start = 0.0',
+    'end = 4.0',
+    '[[segments.events]]',
+    'type = "shake"',
+    'time = 1.0',
+    'end = 1.4',
+    '[[segments.events]]',
+    'type = "sfx"',
+    'time = 2.0',
+    'end = 3.0',
+    'name = "pop-notice"',
+    '',
+  ].join('\n');
+  const probe = (canvasLines, stageLines) => {
+    const dir = mkdtempSync(join(tmpdir(), 'vtrim-stage-'));
+    try {
+      mkdirSync(join(dir, 'sfx'), { recursive: true });
+      writeFileSync(join(dir, 'sfx', 'pop-notice.mp3'), 'ID3(fake)', 'utf8');
+      const doc = curves.translate(curves.parseToml(SYNTH(canvasLines, stageLines)), dir, join(dir, 'p.doc.json'));
+      return (doc.extensions || {})['vtrim.polish_toml'] || {};
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const PORTRAIT = ['orientation = "portrait"'];
+  const LANDSCAPE = ['orientation = "landscape"'];
+  const SWITCHES_ON = ['portrait_effects = true', 'portrait_sfx = true'];
+  // ① 横画布（对照组）：这两个字段**不生效** —— 特效与音效照转
+  const land = probe(LANDSCAPE, ['scale = 1.0']);
+  assert.ok(land.shake_events > 0, '横画布不该被竖屏开关影响：shake 必须照转');
+  assert.ok(land.sfx_clips > 0, '横画布不该被竖屏开关影响：sfx 必须照转');
+  checks += 2;
+  // ② 竖画布 + 缺字段 ⇒ 整类不转（用户口径：竖屏默认全关、缺字段 = 关）
+  const off = probe(PORTRAIT, ['scale = 1.0']);
+  assert.equal(off.shake_events, 0, '竖屏缺字段：特效一条都不该转');
+  assert.equal(off.sfx_clips, 0, '竖屏缺字段：音效一条都不该转');
+  checks += 2;
+  // ③ 打开开关 ⇒ 全回来（判据不许是「关掉之后永久关掉」）
+  const on = probe(PORTRAIT, SWITCHES_ON);
+  assert.ok(on.shake_events > 0, '打开开关后特效应当转出来');
+  assert.ok(on.sfx_clips > 0, '打开开关后音效应当转出来');
+  checks += 2;
+  return 6;
+}
 const MUTATIONS = [
+  {
+    name: '竖屏画布的整类门被摘掉（`portraitAllows` 恒放行）',
+    from: '    return config.stage?.[`portrait_${key}`] === true;',
+    to: '    return true;',
+  },
   {
     name: 'backOut3 的 `s = 3` 改成经典 1.70158（过冲 1.25 -> 1.10）',
     from: 'export const backOut3 = (t) => {\n  const s = 3;',
@@ -947,6 +1020,8 @@ async function mutate() {
         checkColors(curves);
         // 映射那一段同理（M2 加的三条）。
         checkMappings(curves);
+        // 画面构成那一段同理（2026-10-02 的三道整类门）。
+        checkStage(curves);
       });
     } catch (error) {
       reason = String(error && error.message ? error.message : error).split('\n')[0];
@@ -1339,6 +1414,11 @@ console.log('  并读四处源码（转译器 / 模板 / timeline.rs / engine.js
 
 const mappingChecks = checkMappings(translatorModule);
 console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全绿`);
+
+const stageChecks = checkStage(translatorModule);
+console.log(`✓ 画面构成（合成工程过 translate）：${stageChecks} 项全绿`);
+console.log('  钉住的是 2026-10-02：竖屏画布默认全关（缺字段 = 关）的**特效 / 音效**整类门 ——');
+console.log('  横画布不受它影响、打开开关必须全回来（否则就是「关掉之后永久关掉」）');
 console.log('  钉住的是 M2 三条"报告里一行、成片里没有"：覆盖层 color/fade_in 两档、贴纸只有 name、');
 console.log('  以及 `style.camera` 没配时的**按档位默认倍率**（远 0.55 / 近 1.5 / 中 1.3，照抄模板）');
 

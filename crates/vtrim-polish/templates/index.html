@@ -888,11 +888,36 @@ function init(){
   // （#source-video 归运镜缩放与瞬时特效、#video-wrap 归 shake/blur/color_shift）。
   // 幅度与不动点由 canvas IIFE 的 `window.__CAM_STATE` 给出（同一条求值路径，竖屏已在它里面归零）。
   var fitBox = document.getElementById('fit-box');
+
+  /** **连续位置的 DOM 修正（px）**：CSS 的 `stage-*` 只有三档（左/中/右），
+   *  这里按**实测**余量把盒子挪到 `position_pct` 那一档；`basel` = 当前 class 已经放到的位置
+   *  （0/0.5/1），所以只需要补差值 —— 两端（0/100）差值为 0，天然精确。
+   *  ⚠️ 与出片那条腿（`stageDrawRect` 的 `bx+(bwid-w)*pct`）是**同一条线性插值**：两处一起改。
+   *  ⚠️ 减的是 `getComputedStyle` 的 padding：`--stage-pad` 是百分比、浏览器已解析成 px，
+   *  而 `clientWidth` 含 padding（不减掉会整体偏一个 padding）。 */
+  function stageShiftPx() {
+    var zero = { dx: 0, dy: 0 };
+    var wrap = document.getElementById('video-wrap');
+    if (!fitBox || !wrap) return zero;
+    var axis = STAGE.axis || 'fill';
+    if (axis === 'fill') return zero;
+    var pct = (typeof STAGE.position_pct === 'number') ? STAGE.position_pct : 50;
+    var pos = STAGE.position || 'center';
+    var basel = (pos === 'left' || pos === 'top') ? 0 : (pos === 'right' || pos === 'bottom') ? 1 : 0.5;
+    var pad = parseFloat(getComputedStyle(wrap).paddingLeft) || 0;
+    var free = (axis === 'x')
+      ? (wrap.clientWidth - 2 * pad - fitBox.clientWidth)
+      : (wrap.clientHeight - 2 * pad - fitBox.clientHeight);
+    var d = free * (pct / 100 - basel);
+    return (axis === 'x') ? { dx: d, dy: 0 } : { dx: 0, dy: d };
+  }
+
   function applyHandheldDOM(t) {
     if (!fitBox || !window.__CAM_STATE) return;
     var cam = window.__CAM_STATE(t);
     var sw = handheldSway(t, cam.handheld);
-    if (!sw.dx && !sw.dy && !sw.rot && sw.scale === 1) {
+    var sh = stageShiftPx();
+    if (!sw.dx && !sw.dy && !sw.rot && sw.scale === 1 && !sh.dx && !sh.dy) {
       if (fitBox.style.transform) { fitBox.style.transform = ''; fitBox.style.transformOrigin = ''; }
       return;
     }
@@ -901,7 +926,8 @@ function init(){
     var k = (fitBox.clientWidth || CW) / CW;
     var sc = (STAGE.scale || 1) * sw.scale;
     fitBox.style.transformOrigin = (cam.ox / CW * 100) + '% ' + (cam.oy / CH * 100) + '%';
-    fitBox.style.transform = 'translate(' + (sw.dx * k) + 'px,' + (sw.dy * k) + 'px) rotate(' + sw.rot + 'deg) scale(' + sc + ')';
+    fitBox.style.transform = 'translate(' + (sh.dx + sw.dx * k) + 'px,' + (sh.dy + sw.dy * k)
+      + 'px) rotate(' + sw.rot + 'deg) scale(' + sc + ')';
   }
 
   // ---- 事件处理器注册表 ----
@@ -1345,9 +1371,25 @@ function init(){
     };
     var eLayer = document.getElementById('emoji-layer');
     var ei = 0; // 全局 sticker 序号, 匹配 DOM ID (sticker_N)
+    // **竖屏画布的三道整类门**（2026-10-02 用户口径）：竖屏默认全关、缺字段 = 关。
+    // 表必须与 `webui/src/polish/engine.js::PORTRAIT_SWITCH`、`tools/polish-to-dhampir.mjs` 同集合。
+    // 只过滤**建索引**这一步，事件本身不动（开关打开重新建索引即恢复）。
+    var PORTRAIT = ((CFG._canvas && CFG._canvas.orientation) || 'landscape') === 'portrait';
+    var PORTRAIT_SWITCH = {
+      camera: 'camera', shake: 'effects', blur: 'effects', flash: 'effects',
+      hue_shift: 'effects', noise: 'effects', vignette: 'effects', overlay: 'effects',
+      pulse: 'effects', sfx: 'sfx',
+    };
+    function portraitAllows(type) {
+      if (!PORTRAIT) return true;
+      var key = PORTRAIT_SWITCH[type];
+      if (!key) return true;
+      return !!(CFG.stage && CFG.stage['portrait_' + key] === true);
+    }
     (CFG.segments || []).forEach(function(seg) {
       (seg.events || []).forEach(function(ev) {
         var type = ev.type || '';
+        if (!portraitAllows(type)) return; // 竖屏画布：这一类整条不进索引
         var entry = { time: ev.time || 0, duration: evDur(ev, 0), ev: ev };
         if (type === 'sticker') {
           entry._img = document.getElementById('sticker_' + ei) || null;
@@ -1767,17 +1809,21 @@ function init(){
     if(pad>cap)pad=cap>0?cap:0;
     var bx=pad,by=pad,bwid=cw-pad*2,bhgt=ch-pad*2;
     var axis=st.axis||'fill';
-    var pos=st.position||'center';
+    // 位置 = **百分比**（0 贴左/贴上 … 100 贴右/贴下）：沿留边轴在两端之间线性插值。
+    // ⚠️ 权威是 `st.position_pct`（五档吸附：0/25/50/75/100）；`st.position` 那个枚举只保证
+    // 两端精确（25/75 会被压成 center）—— **别拿它算几何**，那是「预览与成片不一样」的老套路。
+    var pct=(typeof st.position_pct==='number')?st.position_pct:50;
+    pct=Math.max(0,Math.min(100,pct))/100;
     var x,y,w,h;
     if(axis==='x'){
       h=bhgt; w=bw*h/bh;
       if(w>bwid){w=bwid; h=bh*w/bw;}     // CSS max-width:100% 截住时按 contain 落（等比留边）
-      x=(pos==='left')?bx:(pos==='right')?(bx+bwid-w):bx+(bwid-w)/2;
+      x=bx+(bwid-w)*pct;
       y=by+(bhgt-h)/2;
     }else if(axis==='y'){
       w=bwid; h=bh*w/bw;
       if(h>bhgt){h=bhgt; w=bw*h/bh;}     // CSS max-height:100% 同理
-      y=(pos==='top')?by:(pos==='bottom')?(by+bhgt-h):by+(bhgt-h)/2;
+      y=by+(bhgt-h)*pct;
       x=bx+(bwid-w)/2;
     }else{
       var s=Math.max(bwid/bw,bhgt/bh);

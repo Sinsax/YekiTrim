@@ -474,15 +474,15 @@ fn main_frame_geometry(
     };
     let (bw, bh) = (bw * s, bh * s);
 
-    let x0 = match stage.position.as_str() {
-        "left" => p,
-        "right" => cw - p - bw,
-        _ => (cw - bw) / 2.0,
-    };
-    let y0 = match stage.position.as_str() {
-        "top" => p,
-        "bottom" => ch - p - bh,
-        _ => (ch - bh) / 2.0,
+    // 位置 = **百分比**（0 = 贴左/贴上，100 = 贴右/贴下）：沿**留边轴**在两端之间线性插值，
+    // 另一轴居中 —— 与模板 `stageDrawRect` 同一公式。
+    // ⚠️ 权威是 `stage.position_pct`：`position` 枚举表达不了五档里的 25/75（会被压成 center），
+    // 拿它算几何会让贴纸避让算错位置。
+    let t = (stage.position_pct / 100.0).clamp(0.0, 1.0);
+    let (x0, y0) = if stage.axis == "x" {
+        (p * (1.0 - t) + (cw - p - bw) * t, (ch - bh) / 2.0)
+    } else {
+        ((cw - bw) / 2.0, p * (1.0 - t) + (ch - p - bh) * t)
     };
     Some(Rect::new(x0, y0, x0 + bw, y0 + bh))
 }
@@ -1024,12 +1024,20 @@ mod tests {
 
     // ===== 主画面障碍 =====
 
-    /// 测试用 `StageFit`：只关心 axis / position / scale / padding 四项。
+    /// 测试用 `StageFit`：只关心 axis / position_pct / scale / padding 四项。
+    /// `position` 字符串只当**旧三档**用（left/top → 0、right/bottom → 100、其余居中），
+    /// 与 `stage_position_pct` 同口径，方便老用例原样迁移。
     fn stage(axis: &str, position: &str, scale: f64, padding: f64) -> crate::project::StageFit {
+        let pct = match position {
+            "left" | "top" => 0.0,
+            "right" | "bottom" => 100.0,
+            _ => 50.0,
+        };
         crate::project::StageFit {
             axis: axis.into(),
             object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
             position: position.into(),
+            position_pct: pct,
             bg: if axis == "fill" { "none" } else { "blur" }.into(),
             bg_color: "#000000".into(),
             blur_px: 28,
