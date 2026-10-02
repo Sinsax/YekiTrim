@@ -25,18 +25,14 @@
 > ① 时间轴编辑器 ② 精修预览 ③ 封面设计器 ④ 运镜 ⑤ 贴纸落点与区域编辑 ⑥ 其他组件逐个。
 > 各节内部自带子目录（布局几何 / 安全区几何 / 两种「隐身」根因等）。
 ### 时间轴编辑器
-- **布局必须保持紧凑**（用户要求精简；它是竖高大户，且**独占一整行**：v6.4 起横向空间 = 整个内容宽度，
-  别再把它塞回左列）：泳道 **26px（原 34）×7 条 + 标尺 20px = 202px**；卡片头取消 —— 标题/提示经 `<slot name="head">` 进 `.tl-head`，与「去静音/撤销去静音」「重新后处理」同排。
-- ⚠️ **遮挡**：曲线画在**字幕泳道**上，而那条泳道的字幕块是 `laneBlocks` 里写死的不透明 `#3b82f6`
-  （`top:3px; height:20px`），原来波形 `z-index:1`、块 `z-index:2` —— **说话时段（最该看电平的时候）整段被盖住**；
-  现在 `.wave-layer` 是 **`z-index:4`**（压过字幕块(2)与选中块(3)、仍在播放头(5)之下），`pointer-events:none` 不能去掉。
-- ⚠️ **刻度**：原来是 `h = ((db+60)/60) × 22`，即窗口 [-60, 0]；而实测
-  （`media/…/clip-08/data/loudness.json`，**1330 点**，0.1s 一点）语音落在 **-12 ~ -32 LUFS**、静音 -33 ~ -56 ——
-  旧窗口下动态范围只有 6.6px；现在窗口是 **[-40, -8]（`WAVE_DB_TOP`/`WAVE_DB_BOTTOM`）**，动态范围 12.9px（约两倍），且不削顶。
-  **这两个常量就是"看不出高低差"的旋钮。**
-- ⚠️ **形态**：原来是「一个 0.1s 采样点一根 rect、宽 `max(1, scale*0.02)`」—— 两头都看不出"位置"。
-- 用户明确**不要**电平参考线/刻度，**不要**新增泳道（保持 7 条 202px），也**不要**把字幕块改半透明 ——
-  这三条都是当时一起评估过、被否掉的方案，别再提。
+- **布局必须保持紧凑**（它**独占一整行** = 整个内容宽度）：泳道 **26px ×7 条 + 标尺 20px = 202px**；
+  标题/提示经 `<slot name="head">` 进 `.tl-head`（见 `docs/webui-components.md` ①）。
+- ⚠️ **遮挡**：曲线画在**字幕泳道**上，而那条泳道的字幕块是不透明的（`laneBlocks`）——
+  波形 `.wave-layer` 必须是 **`z-index:4`**（压过字幕块与选中块、在播放头之下），否则**说话时段整段被盖住**；
+  `pointer-events:none` 不能去掉。
+- ⚠️ **刻度**：窗口是 **[-40, -8]**（`WAVE_DB_TOP`/`WAVE_DB_BOTTOM`）。
+  **这两个常量就是"看不出高低差"的旋钮**（改回 [-60,0] 动态范围只剩 6.6px）。
+- 用户明确**不要**电平参考线/刻度、**不要**新增泳道（保持 7 条 202px）、**不要**把字幕块改半透明。
 - 事件字段是 `time` + `end`，**没有 `duration` 了**；老工程的 `duration` 由 `legacy.rs::upgrade_event_times`
   在**反序列化前**换算；三处求值器统一走各自的 `evDur()` / `evDuration()`，别再直接读 `.duration`。
 - **控件统一**：**体拖移动 / 左缘改开始 / 右缘改结束 / 双击删除**，字幕与屏蔽块也能拖；唯一例外是
@@ -44,9 +40,9 @@
 - ⚠ **字幕/屏蔽轨道必须保持按时间有序**：`splitSelected` 拆出来的后半段要
   `splice(i+1, 0, …)` 插在原块**后面**，**不能 `push` 到数组末尾** —— 追加会让落盘的 `clip.srt` /
   `data/subtitles.json` 乱序（去静音按相邻间隔曾判出 13 段/121s 的假静音、预览按时间二分取当前字幕）。
-- ⚠️ **别再改回"落盘后 1.2s 自动跑"**：你还在面板里给新建的贴纸填 keyword 时它就会插进来，
-  半成品被当成品处理（数量抽稀直接把它删掉）。**落盘 ≠ 编辑完成**：后处理只在 `done` 之后跑（而 `done` 本身等落盘成功）——
-  控件 `change`（`input` 每敲一键**不算**）/取消选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
+- ⚠️ **别再改回"落盘后 1.2s 自动跑"**（你还在填 keyword 时它就会插进来，半成品被当成品处理）。
+  **落盘 ≠ 编辑完成**：后处理只在 `done` 之后跑（`done` 本身等落盘成功）——控件 `change`（`input` 每敲一键**不算**）/
+  取消选中/切片段（带**旧 dir**）/卸载前 `flushSave()`。
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；**三处吸附与 `cap_events` 数量抽稀全部跳过**。
 - **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中/编辑逻辑留在组件里）。
   **⚠️ 必须门控 Teleport**：目标是**挂载时**解析的，而那时子树还没进 document ⇒ 直接 `:to="propsTarget"` 会
@@ -70,14 +66,21 @@
   ⚠️ **只有自绘这一层**：原来还有两条真渲染通道（wasm 实时 + `POST /api/polish/render-frame` 单帧回退），
   随「作废 wgpu」一起删掉了 —— **别再把它接回来**，要真渲染就走 Dhampir 底座那条链路。
 - 媒体地址一律走 `utils.js::clipMediaUrl(pid, dir, 相对路径)`，别自己拼 `/api/media/...`。
-- 音量/静音 = **总音量，必须同时落到 `<video>` 元素**（**只调 SFX 播放器就是 bug**）；读回用 `isFinite` + clamp，
+- 音量/静音 = **总音量，必须同时落到所有会出声的 `<video>` 元素**（**只调 SFX 播放器就是 bug**）；读回用 `isFinite` + clamp，
   **不能写 `parseFloat(...) || 1`**。**别再写死 `66vh`**。
+  ⚠️ **Dhampir 模式下"台上那块"不是唯一在响的元素**：`applyAudio()` 必须覆盖
+  `dhampirSourceVideos` ∪ `dhampirTwins`（**不能只遍历 `dhampirVideos`** —— 换绑中间态里旧元素会掉出
+  数组却仍在播 ⇒ **声音翻倍**）；备用那批永远 `muted`（判据 `dhampirIsTwin`）；**`tick()` 的 Dhampir
+  分支不许漏 `player.sync(...)`**（"让出重活"让的是**渲染**，音效是**出声**）；出声时纠偏速率要收窄。
+  详见 **`docs/webui-components.md` ②.6**；判据 = `node scripts/check-preview-audio.mjs`。
 - ⚠️ **字体栈顺序 / 字重必须与出片侧同源**（`.cap` ↔ 服务端 `fallback_stack`：页面透传
   `fetchFonts().fallback_stack`，**不许前端写死字体名** —— 写死则「设为默认」对预览永远无效；
   另有 `--font-bold-file`）：漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
 - ⚠ 动图（GIF/动画 WebP）由底座自己解码（v6）：四条硬规矩与调用顺序陷阱见 **`docs/webui-components.md` ②.4**。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
   （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
+- ⚠️ **Dhampir 加载期间不许播**（门帘 + 播放键置灰 + `togglePlay` 三道闸；热重载不挂）：见
+  `docs/webui-components.md` §2.5。
 ### 封面设计器（`CoverDesigner.vue`）
 - **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「**左：属性 · 右：图层列表** · 底：工具条」。
   ⚠️ 2026-10 用户要求：**列表与设置改左右排布**，右栏宽度**减半**（→ `minmax(220px,20%)`，省下的给预览）。
@@ -130,6 +133,7 @@
 - ⚠️ **镜像清单**（用户报过"设计器与成片不一致"）：字体栈 · 描边 `#2a2522` · 阴影 `0 5px 22px rgba(0,0,0,.78)`
   （×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index 走同一个栈** ·
   特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
+  emoji **描边环**（4 向 `drop-shadow`、**别加对角**；宽 = 标题联排 `描边/4`、特效层 `size×0.03`；描边 0 ⇒ 无环）·
   `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
   `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
 - ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**
@@ -151,7 +155,8 @@
 ### 贴纸落点（Step 2b）与区域编辑
 - `align_stickers_to_subtitles` 起点吸到**最近那条字幕**的开始、终点吸到它的结束（> `STICKER_SNAP_MAX_SECS`(2.0s) 的不动）。
   **必须排在 2b 落点之前**。⚠️ **手工放的事件不受后处理改写**（用户报过「调整贴纸的结束时间没有成功」）：
-- ⚠ **别再写回"保存不触发任务 / 人物框只影响运镜聚焦中心（渲染时读取）/ 弹幕区域仅作参考"**——那是加锚点解析（Step 2d）之前的旧说法：人物框现在同时喂 Step 2b 与 2d，弹幕区域也既当贴纸障碍、又是 `anchor="danmaku"` 在那一刻没有真实弹幕时的兜底。
+- ⚠ **人物框同时喂 Step 2b 与 2d；弹幕区域既是贴纸障碍，也是 `anchor="danmaku"` 没真实弹幕时的兜底**
+  —— 别退回"人物框只影响运镜中心 / 弹幕区域仅作参考"那套加 Step 2d 之前的旧说法。
 - 读取优先级：`free_rect()` → `region_rects()`/`region_origin()` 一律**自由选框 > grid > `origin_grid`/`origin`**；
   **固定落点的 UI 是"草稿态"**：必须按「保存落点」才落盘；**保存成功才退出编辑态**。
 ### 其他组件

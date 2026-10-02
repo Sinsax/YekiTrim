@@ -2240,6 +2240,85 @@ mod tests {
         }
     }
 
+    /// **wasm 响应的压缩与 ETag/304**（2026-10-02 首屏提速）。
+    ///
+    /// 这条钉的是「7.66 MB 被原样搬走」的回归：
+    /// * 声明 `Accept-Encoding: gzip` ⇒ 必须回 `Content-Encoding: gzip` 且**明显更小**；
+    /// * 不带该头 ⇒ **不许压**（否则发给解不开的客户端 = 直接白屏）；
+    /// * 带 `If-None-Match: <etag>` ⇒ **304 且空体**（省掉没变时那 7.66 MB）；
+    /// * 带 `Range` ⇒ **不许压**（压缩后与原始字节不再一一对应，会破坏播放）。
+    ///
+    /// `#[ignore]`：同 `dhampir_wasm_资源可转发且_mime_正确`，要同层的 Dhampir 仓。
+    #[tokio::test]
+    #[ignore = "手动：要同层的 Dhampir 仓（含已构建的 wasm 包）"]
+    async fn dhampir_wasm_压缩与_etag_304() {
+        let t = test_app().await;
+        let req = |uri: &str, extra: Vec<(&str, &str)>| {
+            let mut b = t.req("GET", uri);
+            for (k, v) in extra {
+                b = b.header(k, v);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let uri = "/polish/dhampir-wasm/pkg/dhampir_wasm_bg.wasm";
+
+        // ① 不带 Accept-Encoding ⇒ 原始字节、无 Content-Encoding
+        let res = t.call(req(uri, vec![])).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers().get(axum::http::header::CONTENT_ENCODING).is_none(),
+            "客户端没声明 gzip 却发了压缩体 —— 对方解不开"
+        );
+        assert!(
+            res.headers().get(axum::http::header::ETAG).is_some(),
+            "wasm 响应必须带 ETag（否则每次刷新都重下 7.66 MB）"
+        );
+        let etag = res
+            .headers()
+            .get(axum::http::header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let raw_len = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+
+        // ② 声明 gzip ⇒ 更小 + 正确的 Content-Encoding + Vary
+        let res = t.call(req(uri, vec![("accept-encoding", "gzip, deflate, br")])).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let enc = res
+            .headers()
+            .get(axum::http::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(enc, "gzip", "声明了 gzip 却没压：{}", enc);
+        assert_eq!(
+            res.headers().get(axum::http::header::VARY).and_then(|v| v.to_str().ok()),
+            Some("Accept-Encoding"),
+            "少了 Vary：中间缓存会把压缩版喂给不支持 gzip 的客户端"
+        );
+        let gz_len = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+        assert!(
+            gz_len < raw_len / 2,
+            "压缩没明显生效：{raw_len} -> {gz_len}（期望至少减半）"
+        );
+
+        // ③ 命中 If-None-Match ⇒ 304 且空体
+        let res = t.call(req(uri, vec![("if-none-match", etag.as_str())])).await;
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "ETag 没变就该 304");
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty(), "304 不许带 body，实际 {} 字节", body.len());
+
+        // ④ 带 Range ⇒ 不许压（206 的字节必须与原始文件一一对应）
+        let res = t.call(req(uri, vec![("range", "bytes=0-1023"), ("accept-encoding", "gzip")])).await;
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+        assert!(
+            res.headers().get(axum::http::header::CONTENT_ENCODING).is_none(),
+            "对 Range 响应做了压缩 —— 字节与原始文件错位，播放会花屏/解码失败"
+        );
+        let n = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().len();
+        assert_eq!(n, 1024, "Range 字节数不对：{n}");
+    }
+
 
 /// 画布方向 / 画面构成 / 贴纸落点要能真写进 `polish.toml`，且**不碰**没提到的段。
 ///
@@ -2260,19 +2339,28 @@ fn polish_project_put_writes_canvas_stage_sticker() {
     let after = vtrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.canvas.size(), (1080, 1920));
     assert_eq!(after.mute_ranges.len(), 1, "没提到的字段必须原样保留");
-    assert_eq!(after.stage.position, "auto", "没提交的段走默认，不能被顺手重置");
+    // ⚠️ 2026-10-02 起位置的权威是 `position_pct`（老枚举 `position` 已 `skip_serializing`、
+    // 只读兼容）——默认 = 没有新字段 ⇒ 走老枚举换算，`auto` → 50 居中。
+    assert_eq!(after.stage.position_pct, None, "没提交的段走默认（None），不能被顺手重置");
+    assert_eq!(
+        after.resolve_stage(Some((1920, 1080))).position_pct,
+        50.0,
+        "缺 position_pct 的老工程按老枚举换算：auto → 50 居中"
+    );
 
     // 2) 画面构成
     let body = serde_json::json!({ "stage": {
         "bg_mode": "color", "bg_color": "#112233", "blur_scale": 2.0,
-        "position": "bottom", "scale": 1.25, "padding": 30,
+        "position_pct": 100.0, "scale": 1.25, "padding": 30,
     }});
     let _ = polish_project_put_locked(&dir, &body).expect("保存画面构成");
     let after = vtrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.canvas.size(), (1080, 1920), "没提交 canvas 就不能被重置");
     let fit = after.resolve_stage(Some((1920, 1080)));
     assert_eq!(fit.axis, "y", "竖画布 × 横素材 = 上下留边");
-    assert_eq!(fit.position, "bottom");
+    // 位置 = **百分比**（五档之一 100 = 贴下）；老枚举只是过渡期兼容输出。
+    assert_eq!(fit.position_pct, 100.0);
+    assert_eq!(fit.position, "bottom", "竖画布 + pct=100 ⇒ 兼容枚举给 bottom");
     assert_eq!(fit.bg, "color");
     assert_eq!(fit.bg_color, "#112233");
     assert!((fit.padding - 16.875).abs() < 1e-9, "30px × k(0.5625)");
@@ -2283,7 +2371,7 @@ fn polish_project_put_writes_canvas_stage_sticker() {
     let after = vtrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.sticker.position_mode, "manual");
     assert_eq!(after.sticker.position, "20% 80%");
-    assert_eq!(after.stage.position, "bottom", "上一段必须还在");
+    assert_eq!(after.stage.position_pct, Some(100.0), "上一段必须还在");
 
     // 4) 落到 toml 文本上：段在、段注释在、根级 sticker_source 没被 [sticker] 顶掉
     let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
@@ -2293,6 +2381,9 @@ fn polish_project_put_writes_canvas_stage_sticker() {
         "[sticker]",
         "orientation = \"portrait\"",
         "position_mode = \"manual\"",
+        // ⚠️ 位置写的是新字段；老枚举 `position` 已 `skip_serializing`、**不该再出现在 [stage] 段里**
+        // （判据只在 [stage] 段内断：贴纸与事件也各有一个同名的 `position` 键）。
+        "position_pct = 100.0",
         "# ===== 画面构成",
         "# ===== 贴纸落点",
         "sticker_source",
@@ -2302,11 +2393,12 @@ fn polish_project_put_writes_canvas_stage_sticker() {
 
     // 5) 非法值：文件照存（不篡改用户输入），但渲染侧取到的是安全值
     let body = serde_json::json!({ "stage": {
-        "bg_mode": "frame", "bg_color": "url(evil)", "position": "top"
+        "bg_mode": "frame", "bg_color": "url(evil)", "position_pct": 0.0
     }});
     let _ = polish_project_put_locked(&dir, &body).expect("保存非法值也不应报错");
     let after = vtrim_polish::project::load_project(&dir).unwrap();
     let fit = after.resolve_stage(Some((1920, 1080)));
+    assert_eq!(fit.position_pct, 0.0);
     assert_eq!(fit.position, "top");
     assert_eq!(fit.bg, "blur", "未知 bg_mode 回落 auto → 补边时按模糊处理");
     assert_eq!(fit.bg_color, "#000000", "颜色必须净化，不能把 url(...) 带进模板 CSS");
@@ -2746,7 +2838,8 @@ where
 /// `GET /polish/dhampir-wasm/*path` —— 静态转发 Dhampir 的预览资源。
 ///
 /// 两份根：`pkg/` 前缀走 wasm 包，其余走 `<Dhampir>/web`（`engine.js` 在那）。
-/// **不缓存、不复制**：Dhampir 那边重新构建 wasm 之后，刷新页面就是新的。
+/// **不复制**：Dhampir 那边重新构建 wasm 之后，刷新页面就是新的（靠 ETag 的
+/// mtime 校验自然失效，不是靠禁缓存）。
 pub(super) async fn polish_dhampir_wasm(
     axum::extract::Path(path): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
@@ -2808,7 +2901,30 @@ pub(super) async fn polish_dhampir_wasm(
     let range = headers
         .get(axum::http::header::RANGE)
         .and_then(|v| v.to_str().ok());
-    crate::media::serve_file(&real, &mime, range).await
+    // **压缩 + ETag/304**（2026-10-02，Dhampir 首屏提速）。
+    //
+    // 这里的 `pkg/dhampir_wasm_bg.wasm` 是 **7.66 MB**，而它以前是原样发出的
+    // ⇒ 每次进精修页都搬 7.66 MB。实测同一份字节 gzip -6 → 1.43 MB（19%）。
+    // ETag 则让「文件没变」的那次刷新直接 304（几乎零字节）。
+    //
+    // ⚠️ 压缩与 ETag 都**只在这条路由上开**，没动 `serve_file` 的既有调用点：
+    // `/api/media/*`（视频）走的是老签名，保持「Range + 不压缩」不变 ——
+    // 对 Range 响应做压缩会破坏播放（见 `media.rs::serve_file_cond` 的说明）。
+    //
+    // ⚠️ **ETag 不能改成「永不变」**：这条路由的既有意图是「Dhampir 重建 wasm 后
+    // 刷新即新」。`file_etag` 取的是 len+mtime ⇒ 重建必然改 mtime ⇒ 自然失效。
+    let etag = tokio::fs::metadata(&real)
+        .await
+        .ok()
+        .map(|m| crate::media::file_etag(&m));
+    let if_none_match = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    let accept_encoding = headers
+        .get(axum::http::header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok());
+    crate::media::serve_file_cond(&real, &mime, range, etag.as_deref(), if_none_match, accept_encoding)
+        .await
 }
 
 /// `GET /polish/dhampir-status` —— **底座出片通道的就绪位**（M3）。

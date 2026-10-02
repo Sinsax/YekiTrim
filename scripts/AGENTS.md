@@ -66,6 +66,17 @@
   19 项；`--self-test` 故意删桶，要求那两族**必须抛**（判据不许空转）。
   **它存在的理由**：这类崩溃的症状是"预览整块消失、服务端日志全是 200"，静态读源码抓不住。
   用法：`node scripts/check-preview-engine.mjs [--self-test]`（已进 `.workbuddy/gates.mjs`）。
+- **`check-preview-audio.mjs`** —— **精修预览的「出声」契约**（2026-10-02）：
+  `55f2f16` 让 **Dhampir 默认开启**，而声音那条链上三处仍按"它是可选模式、预览不带声音"写 ⇒
+  **预览完全没有声音**（画面完全正常，所以极难归因）。三处 = ① `startDhampir` 建源时
+  `v.muted = true`（那批 `<video>` 同时是引擎的帧来源）② `tick()` 的 Dhampir 分支在
+  `player.sync(...)` **之前就 return**（"让出重活"让的是**渲染**，音效是**出声**，两件事被混成一件）
+  ③ `applyAudio()` 只写 `videoRef.value`（Dhampir 那批源完全打空 ⇒ "音量控制不好使"）。
+  ④ 还有一条是修①时**由行为测试实测抓出来的**：`applyAudio` 只遍历 `dhampirVideos` 不够 ——
+  换绑中间态里旧元素会**掉出**那个数组却**仍在播** ⇒ **两路同源同时在轨、声音翻倍**；
+  判据必须覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`。
+  **20 项 + 10 处变异自证**；已进 `.workbuddy/gates.mjs`。
+  用法：`node scripts/check-preview-audio.mjs`（改了 `PolishPreview.vue` 的播放/音量面就跑它）。
 - **`check-dhampir-drop-list.mjs`** —— **转译报告清单的门禁**（M2，2026-09-30）：把演示工程的
   **DROP/CLAMP 清单钉成基线**（基线里每条都写着"为什么它还在"）。清单变一条就红：
   多了 = 某次改动把一档转丢了；少了 = 修好了（改基线）或**报告被削弱**（更要查）。

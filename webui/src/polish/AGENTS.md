@@ -102,6 +102,10 @@
   成片被 shake / 画中画 / 手持摇摆挪开露纯黑」（不报错、不崩溃，只有逐帧像素能发现）。
   钉子：`node webui/scripts/check-stage-backdrop.mjs`（34 项 + 5 处变异自证）。模糊半径/倍率一律取
   契约里的值，**别写死 28px**。
+  ⚠️ **2026-10-02**：主画面位置读契约的 `position_pct`（0–100，界面五档吸附），**不要再读 `position`**
+  那个过渡枚举（25/75 被压成 center）；`stage-*` 只有三档，所以 `.fit-box` 上那**实测余量 ×
+  (pct/100 − class 基线)** 的修正是 DOM 版，与模板 canvas 的 `bx+(bwid-w)*pct` 是同一条插值的两处实现
+  （都由上面那条门禁钉）。竖屏画布的整类门 = `engine.js::PORTRAIT_SWITCH`（与转译器 / 模板**同集合**）。
 - ⚠ **区域读取优先级（`engine.js regionRect/regionOrigin`，须与 Rust 一致）**：`free_rect()` →
   `region_rects()`/`region_origin()` 一律**自由选框 > grid > `origin_grid`/`origin`**；
   `GRID_RECTS` 表须与 Rust `grid_rect` 对齐。

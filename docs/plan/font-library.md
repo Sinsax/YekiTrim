@@ -92,7 +92,11 @@
 
 ## 5. 字体库管理设计（数据 + API + UI + 统一来源）
 
-### 5.1 数据布局（**每支一个目录**，id = 目录名 = 稳定标识）
+### 5.1 数据布局（每支一个目录；**目录名 = ASCII slug，id 住 `FONT.toml`**）
+
+> ⚠️ **2026-10-02 修订**：本节原文是「id = 目录名 = 稳定标识」。那条规则**已被 §24 取代** ——
+> 目录名/文件名一律 ASCII slug，`id` 变成 `FONT.toml` 里的字段（原因：ffmpeg 打不开非 ASCII 字体路径）。
+> 下面这段保留作历史形状；现行契约看 §24。
 
 ```
 resources/fonts/
@@ -423,8 +427,8 @@ node webui/scripts/check-*.mjs              # 7 个契约脚本全 exit 0
   —— Takumi 官方 API，注释原文 *"Family name to register the font under, instead of its embedded name."*
 - 每支字体注册**两次**：① 内嵌族名（原生行为）② 库 id 别名。
   字节走 `FontSource::from_shared(Arc<Vec<u8>>)` **共享**，只克隆指针、不翻倍内存。
-- 别名怎么算（`font_aliases`）：约定文件名 `font.<ext>` ⇒ id = **目录名**（v2 布局）；
-  否则 ⇒ id = **文件名去扩展名**（老平铺）。与 `fonts::scan_all` 同一条规则。
+- 别名怎么算（`font_aliases`）：约定文件名 `font.<ext>` ⇒ **读同目录 `FONT.toml` 的 `id`**（§24 起；
+  没有元数据 / `id` 为空才回落目录名）；否则 ⇒ id = **文件名去扩展名**（老平铺）。
 
 同时修掉这条路上**两个真 bug**（都是"v2 布局下静默失效"）：
 
@@ -1182,3 +1186,66 @@ crates/vtrim-core/assets/fonts/
 - **真机全过程**：把 `~/.vtrim/fonts` 整个移走（模拟全新机器）→ 跑一次 `vtrim config init`
   → 日志 `自带字体已就绪（本次安装 2 支）` → 库里出现两支（`FONT.toml` 完整、`LICENSE.txt` 是**真 OFL 全文**）
   → `vtrim polish cover --renderer takumi` 出图：**中文 + emoji 全彩**。
+
+---
+
+## 24. P1-h 落地记录：库内路径 ASCII 化（2026-10-02，用户拍板「方案 B」）
+
+### 24.1 症状与根因（一次线上事故，不是设计洁癖）
+
+用户报「出片速度基本卡死、字幕像是没有」。实测（同一份 `clip-14` 工程、同一台机器、同一个
+`dhampir.exe`、同样 240 帧 `0..239`，**只换 `--font-file`**）：
+
+| `--font-file` | 240 帧墙钟 | 画出的字幕 / 弹幕 | 栅格失败 | exit |
+|---|---|---|---|---|
+| `C:/Windows/Fonts/msyh.ttc`（ASCII） | **4.25s** | 216 行 + 239 条 | 0 | 0 |
+| 同一支字体**复制到 ASCII 路径** | **3.96s** | 216 行 + 239 条 | 0 | 0 |
+| `…\.vtrim\fonts\乐米波波体\乐米波波体.ttf` | **37–80s** | **0 + 0** | 455 | 1 |
+
+**根因**：底座出片把字体路径塞进 `ffmpeg` 的 `drawtext=fontfile='…'`。ffmpeg 那条路**打不开含
+非 ASCII 字符的路径**（`textfile=` 与 `-i` 都不怕中文，只有交给 FreeType 的 `fontfile` 怕），
+而且打不开时**不报错、直接访问违例**（`0xC0000005`；`%LOCALAPPDATA%\CrashDumps\ffmpeg.exe.*.dmp`
+就是它）。失败**不进光栅缓存** ⇒ 每条字幕/弹幕都重起一个必崩的 ffmpeg（~150ms/次）。
+裸 ffmpeg 即可复现（不经底座、不经 V-Trim）：
+
+```bash
+ffmpeg -v error -nostdin -f lavfi -i color=c=black@0.0:s=400x120,format=rgba \
+  -vf "drawtext=fontfile='<字体>':textfile='<任意 txt>':fontsize=48:fontcolor=white:expansion=none:x=(w-text_w)/2:y=(h-text_h)/2" \
+  -frames:v 1 -f rawvideo -pix_fmt rgba -
+# ASCII 路径 → 0；中文路径 → 0xC0000005；**路径不存在** → 同一个 0xC0000005
+```
+
+（那句 `Fontconfig error: Cannot load default config file` 是**红鲱鱼**：成功的调用里也有它，
+只是失败时才会被底座的错误消息带出来。）
+
+ffmpeg 与底座都不在本仓手里 ⇒ **只能保证库内落盘的路径是纯 ASCII**。
+
+### 24.2 改法（= §5.1 / §10.2 ① 的修订）
+
+- `FontMeta` 新增 **`id`**（= 配置/界面里那串，可含汉字）。**空 = 老库，回落「目录名就是 id」**⇒ 存量零迁移。
+- 目录名与字体文件名一律 `ascii_slug(id, hint)` = `<hint>-<sha256(id)[..12]>`，字体文件统一叫 `font.<ext>`。
+  只由 **id** 派生 ⇒ 重复导入不换目录、改显示名不换目录、两个 id 绝不撞同一个目录。
+- `scan_dirs` / `resolve_dir_file` / `dir_for_id` / `remove_font` / `set_default` 全走 **id 索引**
+  （先试“目录名就是 id”那条老路，再按元数据扫一遍）。
+- `import_font_bytes`：**同 id 已存在就写回同一个目录**（否则老库里会出现两条同 id 的条目），
+  并继承槽位角色（`license` / `source_url` / `emoji` / `is_default`；`builtin` 有意不继承）。
+- `migrate_ascii_layouts`（在 `ensure_dir` 里跑；幂等、失败只跳过那一条）：补 `id` → 字体文件改名
+  `font.<ext>` → 目录改名成 slug；**老平铺的「中文名 .ttf」也一并搬成目录布局**（它同样是非 ASCII 路径）。
+  幂等判据就是“名字还是不是 ASCII / 有没有 id”，跑第二遍是空转；**ASCII 条目一个都不动**。
+- `/vt-fonts/:name` 从“按文件名 join 库根”改成 **按 id 走 `resolve_all`**，`@font-face` 的 URL 也改用 id：
+  ① 老写法在 v2 目录布局下**本来就会 404**（文件在子目录里）；② 每支都叫 `font.ttf` 之后，文件名根本不足以定位一支字体。
+- Takumi 的 `font_aliases(path)` 改为**读同目录 `FONT.toml` 的 `id`**（没有元数据才回落目录名）——
+  否则目录名变成 slug 之后，封面会认不出用户选的那支（§13 那次的症状原样复发）。
+
+### 24.3 验收（都真跑过）
+
+- 单测：`cjk_id_never_reaches_disk_as_a_path`、`legacy_non_ascii_dir_migrates_to_ascii_and_keeps_id`（含幂等）、
+  `import_font_bytes_shares_the_same_rules_as_import_font`（新形状）、
+  `font_aliases_prefer_meta_id_over_slug_dir`、`injects_font_face_for_id_indexed_slug_dir`。
+- 真库迁移：把 `~/.vtrim/fonts` 复制一份跑探针
+  （`VT_FONT_MIGRATE_DIR=<库> cargo test -p vtrim-core --lib migrate_probe -- --ignored --nocapture`）——
+  `乐米波波体/乐米波波体.ttf` → `font-c0ac1d948217/font.ttf`，`resolve_all(root, "乐米波波体")` 仍命中；
+  三支 ASCII 目录只补了 `id`，**没有被改名**。
+- 端到端：迁移后的 ASCII 路径跑同一段 240 帧 = **3.96s、216 行 + 239 条全画上、exit 0**；
+  原始中文路径做对照 = 37.1s、0 行 0 条、exit 1。
+- 手工探针留在 `fonts::tests_v2::migrate_probe`（`#[ignore]`，与 `diagnose_sticker_cache` 同规矩）。

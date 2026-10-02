@@ -47,6 +47,18 @@ pub fn translator_path() -> PathBuf {
     repo.join("tools").join("polish-to-dhampir.mjs")
 }
 
+/// 转译器里衬底那条路**当前**是不是开的（`BACKDROP_ENABLED`）。
+///
+/// 它默认 **false**：底座侧模糊中间纹理逐帧累积，**长片必 OOM**（实测阈值 1100~1500 帧，
+/// 转译器里那段长注释有原话），所以「留边处补的是黑边」是**已知限制**、不是探针的缺陷。
+/// 探针照它决定要不要断衬底那两条判据，并**明说跳过** —— 静默跳过一条判据等于让整段可信度归零。
+/// （衬底本身由 `tests/portrait_backdrop.rs` 专门量：它自己把开关打开再 A/B。）
+pub fn backdrop_enabled() -> bool {
+    std::fs::read_to_string(translator_path())
+        .map(|s| s.contains("const BACKDROP_ENABLED = true;"))
+        .unwrap_or(false)
+}
+
 /// 把转译器复制一份、应用 `replacements`（`(原文, 替换文)`，每处必须**恰好命中一次**）。
 ///
 /// 返回副本路径。每处替换都做"命中次数必须恰好 1"的断言 —— 转译器改了措辞时，
@@ -103,25 +115,24 @@ pub fn render_project(dir: &Path, translator: Option<&Path>) -> anyhow::Result<P
     Ok(out)
 }
 
-/// 渲染整个工程，再按 30fps 抽出 `[start, end)` 的每一帧（JPEG + 时刻）。
+/// 渲染整个工程，再从**成片**按 30fps 抽出 `[start, end)` 的每一帧（JPEG + 时刻）。
 ///
-/// ⚠️ 从**源素材**抽帧、而不是从成片抽：这个工程的成片与源素材同一时间基（模板把画面原样
-/// 铺进画布、没有变速），源素材抽帧的时间戳更准、也省一次成片解码。
-/// 成片本身仍要真的跑出来 —— 探针验的是"出片这条路没坏"，不是"源素材长什么样"。
+/// ⚠️ **必须抽成片**（`_temp_video.mp4`，画布尺寸），不是源素材：探针验的是「画面摆放 / 衬底
+/// 在出片这条路上对不对」，而**源素材上根本没有 stage 几何**（摆位是出片时才画的）。
+/// 2026-10-02 修：这里以前抽源素材，于是两条探针里那句「成片帧尺寸必须等于画布尺寸」
+/// **必然失败**（探针源 720×1280 vs 画布 1920×1080）—— chrome 那条腿删掉之后没人再跑过它们。
 pub fn render_range(
     dir: &Path,
     translator: Option<&Path>,
     start: f64,
     end: f64,
 ) -> anyhow::Result<Vec<(Vec<u8>, f64)>> {
-    render_project(dir, translator)?;
-    let cfg = load_project(dir)?;
-    let src = dir.join(&cfg.source.video);
-    let frames = extract_chunk_frames(&src.to_string_lossy(), start, end, 30, false)?;
+    let movie = render_project(dir, translator)?;
+    let frames = extract_chunk_frames(&movie.to_string_lossy(), start, end, 30, false)?;
     anyhow::ensure!(
         !frames.is_empty(),
-        "[{start},{end}) 抽帧为空 —— 探针工程里 {} 不存在？",
-        src.display()
+        "[{start},{end}) 抽帧为空 —— {} 里那一段没有帧？",
+        movie.display()
     );
     Ok(frames
         .into_iter()

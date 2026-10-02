@@ -351,13 +351,14 @@ check('[变异] .hl 去掉 font-family:inherit → 判据翻面',
   hlInheritsFont(designer.replace('font-family:inherit; ', '')) === false, true)
 
 
-// ── ⑥c 右栏内部：**左设置 / 右列表** 左右排布 + 右栏宽度减半 ─────────────────
-// 用户 2026-10 要求：① 图层列表与图层设置从"上下结构"改成左右；② 右栏宽度减到原来一半，
-// 省下的横向空间还给左侧预览（左栏是 `1fr`，右栏一窄预览就变大）。
+// ── ⑥c 右栏内部：**左设置 / 右列表** 左右排布 + 右栏 40% ─────────────────
+// 用户 2026-10 要求：图层列表与图层设置从"上下结构"改成左右。当时顺手把右栏减半到
+// minmax(220px,20%)（每栏 ~107px）；**2026-10-02 用户改口**：两块面板各宽一倍 ——
+// 每栏 107px 塞不下「标签+滑块+数字框」（实测 mini-field 只剩 39px） ⇒ 右栏回 minmax(440px,40%)。
 // ⚠️ 两栏用 **grid** 而不是两个 flex 子项：flex-basis 会被"文字那一屏 ~800px 内容高度"顶开，
 // 两栏宽度就不按比例了（这正是旧注释里记的那次踩坑）。
-// 几何实证（本机 headless，外层 1146px）：改前右栏 458px、两栏上下叠；
-// 改后右栏 229px、设置 x=937 / 列表 x=1055 同一 y、各 111px 宽，舞台涨到 901px。
+// 几何实证（本机 headless，外层 1146px）：229px 时每栏 107px、mini-field 39px；
+// 458px 时每栏 ~222px、mini-field ~135px，「对齐/行距」两列一行放得下。
 const layerBodyIsSideBySide = (src) => {
   const r = rule(src, '.lyr-body') || ''
   return /display\s*:\s*grid/.test(r) && /grid-template-columns\s*:\s*minmax\(0,1fr\)\s+minmax\(0,1fr\)/.test(r)
@@ -367,23 +368,25 @@ const propsBeforeList = (src) => {
   const iProps = src.indexOf('class="lyr-props"'), iList = src.indexOf('class="lyr-list"')
   return iProps > 0 && iList > 0 && iProps < iList
 }
-/** 右栏宽度：从 `minmax(440px, 40%)` 收到 `minmax(220px, 20%)`（≠ 就是被改回去了） */
+/** 右栏宽度：`minmax(440px, 40%)`（2026-10-02 用户改口：每栏 107px 塞不下表单行，各宽一倍回 40%） */
 const gridRightColumn = (src) => (rule(src, '.designer-grid') || '').match(/minmax\([^)]*\)\s*$/)
 check('右栏内部两栏并排（.lyr-body 是两列 grid）', layerBodyIsSideBySide(designer), true,
   '退回上下结构 → 用户要的左右排布没了')
 check('设置栏在左、列表在右（DOM 顺序）', propsBeforeList(designer), true,
   '顺序反了就是"左列表 / 右设置"，与用户要求相反')
-check('右栏宽度已减半（minmax(220px, 20%)）',
-  /minmax\(220px,\s*20%\)/.test(rule(designer, '.designer-grid') || ''), true,
-  '改回 440px/40% → 右栏又占走一半横向空间、预览变小')
+check('右栏宽度 40%（minmax(440px, 40%)）',
+  /minmax\(440px,\s*40%\)/.test(rule(designer, '.designer-grid') || ''), true,
+  '改回 220px/20% → 每栏 ~107px，「标签+滑块+数字框」塞不下（用户 2026-10-02 报排版混乱）')
 check('两栏各有 min-width:0（长设置项不会把 grid 撑破）',
   /min-width\s*:\s*0/.test(rule(designer, '.lyr-props') || '') || /min-width\s*:\s*0/.test(rule(designer, '.lyr-col') || ''), true)
 // ⚠️ 变异必须只打 `.lyr-body` 那条：那个 minmax 串在源码里出现**两次**（`.txt-top` 也有一份），
 // 裸的 `replace` 只换第一处（= `.txt-top`），变异就白做了 —— 这里先切出 `.lyr-body` 那一段再改。
 check('[变异] .lyr-body 退回单列 → 判据翻面',
   layerBodyIsSideBySide(designer.replace(/\.lyr-body \{[^}]*\}/, '.lyr-body { display:flex; }')) === false, true)
-check('[变异] 右栏宽度改回 440px/40% → 判据翻面',
-  /minmax\(220px,\s*20%\)/.test(rule(designer.replace('minmax(220px, 20%)', 'minmax(440px, 40%)'), '.designer-grid') || '') === false, true)
+check('[变异] 右栏宽度改回 220px/20% → 判据翻面',
+  // ⚠️ 只打**规则行**：注释里也写着 220px/20%（历史记录），全文件 replace 会连注释一起换，
+  // 变异后主断言照样通过 → 判据不翻面（本仓变异纪律：from 串必须恰好命中目标）。
+  (() => { const m = rule(designer.replace(/\.designer-grid \{[^}]*\}/, '.designer-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px, 20%); gap:16px; align-items:start; }'), '.designer-grid') || ''; return !/minmax\(440px,\s*40%\)/.test(m); })(), true)
 
 // ── ⑦ 图层栈在两端都不许被"两处实现"拆开 ─────────────────────────────────────
 // 图层栈的 z-index 注入必须**只有一条替换链**（`build_cover_page`）：以前预览与出片各写一份，

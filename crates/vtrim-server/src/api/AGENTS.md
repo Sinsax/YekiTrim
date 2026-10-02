@@ -48,6 +48,16 @@
   与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/vtrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
 
+- ⚠️ **`/polish/dhampir-wasm/*` 的响应压缩与 ETag/304**（2026-10-02 首屏提速，只在这条路由上开）：
+  那份 `pkg/dhampir_wasm_bg.wasm` 是 **7.66 MB**，以前原样发出 ⇒ 每次进精修页都搬 7.66 MB。
+  现在走 `media::serve_file_cond`：实测 **8,036,021 → 1,492,985 字节（18%）**，配合 ETag 让
+  「文件没变」的刷新直接 304（几乎零字节）。三条**硬规矩**：
+  ① **只压文本类**（`media::compressible_mime` 白名单：wasm / js / css / html / json）；
+  ② **有 `Range` 头一律不压** —— 压缩后与「原始文件第 start..end 字节」不再一一对应，
+     对 206 做压缩会直接破坏播放；`/api/media/*`（视频）仍走老签名 `serve_file`，行为不变；
+  ③ **ETag 取 `len+mtime`**（`media::file_etag`），**不是**「永不变」的常量 —— 这条路由的既有
+     意图是「Dhampir 重建 wasm 后刷新即新」，靠 mtime 自然失效；写成 max-age 长缓存会破坏它。
+  `Cache-Control: no-cache` 是「用前先校验」，不是「不许缓存」。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。
   axum 里"后加的 layer 在外层"，所以 `routes.rs` 里那两行**看起来是倒着写的**（有注释，别"顺手改正"）。

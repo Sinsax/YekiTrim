@@ -91,25 +91,35 @@ pub struct RenderServer {
 // ⚠️ 只在这里挂路由还不够：**两条建 router 的路都得挂** ——
 // `start_file_server`（chunk 抓帧 / 封面截图）与 `start_with`（预览 / CLI `polish render`）。
 
-/// 字体库路由：`/vt-fonts/<文件名>`（只认库目录下的单段文件名，别的都 404）。
+/// 字体库路由：`/vt-fonts/<id>`（**按库 id 解析**，只认单段名字，别的都 404）。
+///
+/// ⚠️ 以前这里认的是**文件名**（`<库根>/<name>` 直接 join）—— 那只在老平铺布局下成立：
+/// v2 目录布局（`<slug>/font.ttf`）下注入的 URL 会 **404**（文件在子目录里），
+/// 而且库里每支字体都叫 `font.ttf` 之后，文件名**根本不足以定位一支字体**。
+/// 所以改成按 id 走 `fonts::resolve_all`：两种布局 + “id 住在 FONT.toml 里”那条新形状都认。
 fn font_routes(app: Router) -> Router {
     app.route("/vt-fonts/:name", get(serve_library_font))
 }
 
 async fn serve_library_font(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
-    // 只认"纯文件名 + 字体扩展名"：`../x.ttf`、`a/b.ttf`、`..` 都在这里被挡掉
+    // 只认单段名字（`../x`、`a/b` 在这里被挡掉），再让 `is_safe_id` 挡一次穿越/控制字符
     let bare = Path::new(&name).file_name().and_then(|s| s.to_str()) == Some(name.as_str());
-    if !bare || !vtrim_core::fonts::is_font_file_name(&name) {
+    if !bare || !vtrim_core::fonts::is_safe_id(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = vtrim_core::path::font_dir().join(&name);
     // 字体动辄几十 MB，读盘别占着 async worker（这条服务器也要抓帧/截图）
-    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
-        Ok(Ok(b)) => b,
-        _ => return StatusCode::NOT_FOUND.into_response(),
+    let loaded = tokio::task::spawn_blocking(move || {
+        let root = vtrim_core::path::font_dir();
+        let path = vtrim_core::fonts::resolve_all(&root, &name)?;
+        let file = path.file_name()?.to_str()?.to_string();
+        std::fs::read(&path).ok().map(|b| (b, file))
+    })
+    .await;
+    let Ok(Some((bytes, file))) = loaded else {
+        return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
-        .header("Content-Type", font_content_type(&name))
+        .header("Content-Type", font_content_type(&file))
         .body(Body::from(bytes))
         .unwrap()
 }
@@ -152,9 +162,6 @@ pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
             // 行为与从前一致（当系统字体族名用）。
             continue;
         };
-        let Some(file) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let format = match ext.as_str() {
             "otf" => " format(\"opentype\")",
@@ -166,10 +173,12 @@ pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
         // `webui/src/polish/fonts.js` 的 `new FontFace(id, …)` 都按 **id** 请求，
         // 声明成别的名字就会"注入了 @font-face 但页面请求的是另一个名字"——浏览器静默回退系统字体。
         // Takumi 那条腿走**别名注册**（`render/takumi.rs`）来对齐，而不是靠改这里。
+        // ⚠️ URL 里放的是 **id**（不是文件名）：路由按 id 解析，而且库里每支的字体文件
+        // 都叫 `font.ttf` —— 用文件名既 404（v2 在子目录里）又互相撞。
         css.push_str(&format!(
             "@font-face{{font-family:{};src:url(\"/vt-fonts/{}\"){};font-display:block}}\n",
             quote_css(id),
-            urlencoding::encode(file),
+            urlencoding::encode(id),
             format
         ));
     }
@@ -519,7 +528,8 @@ mod tests {
         let css = font_face_css_in(&root, &["My Font"]);
         assert!(css.contains("@font-face"), "{css}");
         assert!(css.contains("font-family:\"My Font\""), "{css}");
-        assert!(css.contains("url(\"/vt-fonts/My%20Font.ttf\")"), "空格要转义: {css}");
+        // ⚠️ URL 里是 **id**（不是文件名）：路由按 id 解析，文件名在 v2 布局里既 404 又会撞
+        assert!(css.contains("url(\"/vt-fonts/My%20Font\")"), "空格要转义: {css}");
         assert!(css.contains("format(\"truetype\")"), "{css}");
         // 同名字体在多处出现（字幕 + 封面）只注入一条
         let once = font_face_css_in(&root, &["My Font", "My Font"]);
@@ -542,7 +552,34 @@ mod tests {
         assert!(css.contains("@font-face"), "v2 目录布局没注入：{css}");
         // 声明的族名 = 配置里那串 id（与模板 / 预览同源）
         assert!(css.contains("font-family:\"my-font\""), "{css}");
-        assert!(css.contains("url(\"/vt-fonts/font.ttf\")"), "{css}");
+        assert!(css.contains("url(\"/vt-fonts/my-font\")"), "{css}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// ⚠️ **id 住在 `FONT.toml` 里、目录名是 ASCII slug 的形状也要注入**（2026-10-02）。
+    ///
+    /// 落盘：`font-<hash>/font.ttf` + `FONT.toml{id="乐米波波体"}`；配置里存的是那串汉字。
+    /// 解析与 URL 都必须按 **id** 走 —— 拿目录名或文件名都会得到一条 404 的 @font-face。
+    #[test]
+    fn injects_font_face_for_id_indexed_slug_dir() {
+        let root = temp_root("inject-slug");
+        let slug = root.join("font-9c1d2e3f4a5b");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("font.ttf"), b"x").unwrap();
+        std::fs::write(
+            slug.join("FONT.toml"),
+            "id = \"乐米波波体\"\ndisplay_name = \"乐米波波体\"\n",
+        )
+        .unwrap();
+        let css = font_face_css_in(&root, &["乐米波波体"]);
+        assert!(css.contains("@font-face"), "{css}");
+        assert!(css.contains("font-family:\"乐米波波体\""), "{css}");
+        assert!(
+            css.contains("url(\"/vt-fonts/%E4%B9%90%E7%B1%B3%E6%B3%A2%E6%B3%A2%E4%BD%93\")"),
+            "URL 里必须是 id（百分号编码）：{css}"
+        );
+        // 目录名（内部 slug）不该出现在 URL 里 —— 它是落盘形状，不是配置值
+        assert!(!css.contains("9c1d2e3f4a5b"), "{css}");
         std::fs::remove_dir_all(&root).ok();
     }
 

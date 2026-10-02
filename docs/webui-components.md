@@ -339,7 +339,77 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
 - 计划与执行记录：`docs/plan/dhampir-gif-landing-plan.md`（§1.3b 调用顺序契约 / §7 执行记录）
 - 底座方案与实测：`../Dhampir/plan/dhampir-gif-native-decode-proposal.md`（§8 复核 / §10 执行）
 
+### 2.5 Dhampir 加载门帘：加载期间不许播（2026-10-02）
+
+**症状**：进 Dhampir（含刷新后自动进）时引擎还没起来，用户按播放能播 —— 看到的是**缺效果**
+（贴纸 / 动图 / 字幕还没喂进去）甚至空白的画面；**加载失败**时更容易被当成「这一版就是这样」，
+而它其实只是未就绪 / 近似状态。
+
+**根因**：`toggleDhampir()` 在 `await startDhampir()` **之前**就把 `dhampirMode` 翻成真，而三件事
+都是异步的：① `loadEngine` + `open/attach/resize/bindSource` ② `dhampirLoadAnimations`（贴纸 GIF/WebP）
+③ `dhampirApplySubtitles`。也就是「模式已开」≠「效果已就绪」，而播放按钮只看前者。
+
+**做法（三道闸，缺一条都漏）**：
+
+| 闸 | 位置 | 作用 |
+|---|---|---|
+| `dhampirLoading` 门帘 | 模板 `.dhampir-loading` | 说清在等什么；`v-if` 必须带 **`&& dhampirMode`** —— 加载卡住时用户仍能再点一次「Dhampir」退出模式，门帘要跟着消失 |
+| 播放按钮置灰 | `:disabled="dhampirLoading"` | 一开始就看得见「现在不能播」 |
+| `togglePlay` 首行 `if (dhampirLoading.value) return` | 函数体 | `togglePlay` 经 `defineExpose` 给父级（PolishView 快捷键 / 时间轴 `toggle`）—— **只禁按钮挡不住它们** |
+
+**只在首次加载挂，热重载（`reloadDhampirProject`）不挂**：热重载时引擎已经起来、画面仍是上一版
+（失败也只 warn 并保留上一份工程），挂门帘会变成「每次编辑闪一下」（它是 300ms 防抖后自动跑的）。
+
+**门帘样式三条**：`.dhampir-loading` = `position:absolute; inset:0; z-index:70`（压过定格遮罩 60）；
+`pointer-events:none`（它只负责告知，挡了框选 / 点选那两层得不偿失）；**颜色写死**（`rgba(0,0,0,.62)` + `#fff`）
+—— 它盖在视频上，必须与主题无关，与 `.stage{background:#000}` / `.dhampir-canvas{background:#000}` 同一条口径。
 ---
+
+### ②.6 预览的**声音**（2026-10-02 修：Dhampir 默认开启之后"完全没声音"）
+
+**症状**：精修页一进来就**一点声音都没有**（说话声、音乐、音效全无），而**画面完全正常**、
+控制台不报错、服务端日志全 200 —— 唯一的异常是**音量/静音控件看着是接线的、拖了没反应**。
+
+**根因**：`55f2f16` 同时做了两件事 —— **新增 Dhampir 模式** + **让它默认开启**
+（`onMounted` 里 300ms 后自动 `toggleDhampir()`）。而声音那条链上有三处仍按"Dhampir 是**可选**模式、
+与 DOM 预览并列、预览不带声音"来写，于是三条一起断：
+
+| # | 位置 | 原来的写法 | 为什么是错的 |
+|---|---|---|---|
+| ① | `startDhampir` 建源 | `for (const v of dhampirVideos) { v.muted = true; … }` | 那批 `<video>` **同时是引擎的帧来源与声源**（`dhampirSourceVideos` 与 `dhampirVideos` 是**同一批元素**）⇒ 说话声/音乐全没了 |
+| ② | `tick()` 的 Dhampir 分支 | 在 `player.sync(...)` **之前** `return` | 那里"让出重活"让的是 DOM/CSS **渲染**（字幕/弹幕/贴纸被 canvas 盖住，继续跑只是白烧 CPU），而 **SFX 是出声** —— 两件事被混成一件 |
+| ③ | `applyAudio()` | 只写 `videoRef.value` | `videoRef` 是**时钟/DOM 预览那一路**；Dhampir 那批源是**另一批**元素 ⇒ 控件对真正在响的那路完全打空 |
+
+**修法**（四条，缺一条都会留下一个"听不见"或"听着不对"的口子）：
+
+1. **源按用户声明的状态出声**：`startDhampir` 里不再写死 `muted`，只调 `dhampirPreservePitch(v)` +
+   `v.play()`，末尾 `applyAudio()` 铺一次。⚠️ 底座的**画面不看 `muted`**（跟播条件只有 `paused`，
+   它只取"正在显示的那一帧"）⇒ 出声不影响画面；⚠️ 出片那条腿**根本不经过页面**（音轨由本仓 ffmpeg
+   经 `render/sound.rs` 混入）⇒ 这里怎么改都动不到成片。
+2. **Dhampir 分支补 `player.sync(idx.value.soundEvents, v.currentTime)`**：位置在"时钟照发"那段
+   （与**最后**一个 `emit('time')` 挨着）。⚠️ 该分支本来就有两处**合法**的提前 `return`
+   （A/B 换绑命中、定格遮罩兜底）—— 它们只是"这一帧先不画/先跳"，不是"以后都不出声"，
+   所以判据不能写成"sync 排在第一个 return 之前"。
+3. **`applyAudio()` 覆盖 `dhampirSourceVideos` ∪ `dhampirTwins`**（经 `dhampirAllSourceVideos()` + Set 去重），
+   **不能只遍历 `dhampirVideos`**。
+   ⚠️ 这一条是**由行为测试实测抓出来的**，不是读代码想出来的：`dhampirSwapSources` 换绑时把旧元素
+   **换出** `dhampirVideos`（`dhampirVideos[i] = tw.el`）同时把它记成新备用，那一瞬间它**不在**数组里
+   **却仍在播**（`pause()` 之后下一帧镜像循环又按时钟把它 play 起来）⇒ **两路同源同时在轨、声音翻倍**。
+   ⚠️ **备用那批必须永远 `muted`**（判据 = `dhampirIsTwin(dv)` 的**身份**比较，**不是下标**）——
+   换台瞬间两套源指向同一段素材，不压住就叠成两声。
+4. **出声时纠偏速率收窄**（`dhampirAlignRateRange()`）：`dhampirAlignSources` 的第二档靠
+   `playbackRate ±2%`，而**速率连着音高** ⇒ 出声时把幅度收到 ±0.5%（约 1/12 个半音）。
+   **两道防线**：① 给源装 `preservesPitch`（含 `moz-`/`webkit-` 前缀，装在"建源"与"换绑"**两条路**上 ——
+   换绑那条漏了，换过去那一路就会带着上一轮预滚留下的旧速率跑调）；② 源**都**拿到该属性时才允许用满 ±2%
+   （`dhampirSourcesPitchLocked()`，有一个没有就整批收窄 —— 宁可漂一点，也不要一路跑调）。
+   ⚠️ 无声时仍用满 ±2%（那时源只是"帧的来源"，追得越紧画面越跟手；硬 seek 实测 307ms/帧）。
+
+**回归判据** = `node scripts/check-preview-audio.mjs`（**20 项 + 10 处变异自证**，已进 `.workbuddy/gates.mjs`）：
+① 源不写死静音 ② `startDhampir` 末尾调 `applyAudio` ③ Dhampir 分支真的调了 `player.sync`
+④ `applyAudio` 走并集而非只遍历台上那批 ⑤ 并集真的含两批 ⑥ 备用恒静音 ⑦ 收窄区间 + 三前缀
+⑧ 纠偏**真的调用**那个区间（函数写了不调用 = 空转）⑨ 建源与换绑**都**装音高保持。
+⚠️ 还另有一份**行为测试**证明过它（临时脚本，未入库）：12 项覆盖"音量落到所有在响的元素 / 静音按钮 /
+音量 0 是合法值 / **换绑后旧元素立刻静音** / 收窄三态 / 三前缀"——④ 就是它抓出来的。
 
 ## ③ 封面设计器（`CoverDesigner.vue`）
 

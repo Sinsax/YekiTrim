@@ -109,6 +109,20 @@
   `polish doctor` 多一行 `Node: vX.Y.Z`、无 Node 时用 `--renderer chrome` 出片。
   **重开的判据与如果真做的路线**（A/B 逐字段对拍 + 基线不动才算过）写在
   `docs/plan/dhampir-parity-register.md` §五 M5。
+- ⚠️ **竖屏画布的三道整类门 + 位置百分比（2026-10-02）**：`[canvas] orientation = "portrait"` 时，
+  `PORTRAIT_SWITCH` 表里的类型（运镜 / 8 类特效 + `overlay` / `sfx`）**缺字段 = false = 整类不转**；
+  表必须与 `webui/src/polish/engine.js`、`templates/index.html` **同集合**
+  （`webui/scripts/check-stage-backdrop.mjs` 三方对拍）。事件本身**一个字都不动** —— 与「屏蔽只做标记」同纪律。
+  位置读 `config.stage.position_pct`（0–100 插值，老枚举 `auto` → 50 居中）；`camera` 那条**不在**
+  行为判据里（`probeSize` 探不到源时会走 CLAMP，断言会空转），覆盖靠「表 + 同一个 `continue`」。
+- ⚠️⚠️ **画面构成的几何必须落到「0 键层」的基准 `transform` 上**（2026-10-02 修的真缺陷）：
+  `SR`/`FIT`（`axis`/`position_pct`/`scale`/`padding` 的唯一几何）以前**只**由相机关键帧写进去，
+  而竖素材的运镜被整条门控掉 ⇒ 那一层**一个键都没有** ⇒ 主层停在 `scale=1/offset=0`，
+  底座按「源 1:1 居中」画：**竖素材进竖画布（用户最常见的组合）画面缩在中间、四周一圈黑**。
+  现在 0 键层会写一组「中性相机」基准值（`cameraOffset(1.0, {0.5,0.5})` + `scale: FIT`）。
+  ⚠️ **第一实参必须是 `1.0`、不是 `FIT`** —— `cameraOffset` 内部已经 `scale = zoom * FIT`
+  （它自己的注释就写着「不要预乘 FIT」），传 `FIT` 会变成 `FIT²`，而**居中那一点恰好归零**、看不出来
+  （`position_pct=0` 才暴露：正确是 `x = -656.25` 贴左）。有键的层逐字节不动（存量零回归）。
 - ⚠️ **别让它变成产品依赖**：不 import `crates/` 里的任何东西、不往 `webui/` 里引；
   它是"边上的一次性通道"，产品要出片走 `vtrim polish render`。
 - ⚠️ **不落中间态到仓库里**：`--out` 指哪写哪，别往固定路径写缓存。

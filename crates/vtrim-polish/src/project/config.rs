@@ -527,9 +527,18 @@ pub struct StageConfig {
     #[serde(default = "default_cover_blur_scale")]
     pub blur_scale: f64,
 
-    /// 主画面位置：`auto`（默认）/ `left|center|right`（横画布）/ `top|center|bottom`（竖画布）。
-    /// **方向不跨用**：横画布写 `top`、竖画布写 `left` 都会被净化成 `auto`（不做猜测性翻译）。
-    #[serde(default = "default_stage_position")]
+    /// **主画面位置 = 画布内的对齐百分比**（0 = 贴左 / 贴上，50 = 居中，100 = 贴右 / 贴下）。
+    ///
+    /// UI 是**五档吸附**（0/25/50/75/100）；数据模型留 0–100 连续，是为了以后加档位不必再动 schema。
+    /// 缺省 `None` = **老工程**：按 [`stage_position_pct`] 从老枚举 [`StageConfig::position`] 换算 ——
+    /// **`auto` 一律掉档为 50 居中**（2026-10-02 用户口径），`left`/`top` → 0、`right`/`bottom` → 100。
+    #[serde(default)]
+    pub position_pct: Option<f64>,
+
+    /// ⚠️ **老字段（只读兼容，不再写出）**：2026-10-02 起位置的权威是 [`StageConfig::position_pct`]。
+    /// 保留它只为读得懂老 `polish.toml`；`skip_serializing` 保证新工程/再次保存的工程不再写这一行。
+    /// 老语义映射见 [`stage_position_pct`]（`auto` = 居中，不再是「竖素材靠左」）。
+    #[serde(default = "default_stage_position", skip_serializing)]
     pub position: String,
 
     /// 主画面缩放倍率（1.0 = contain，完整可见不裁切）。
@@ -537,15 +546,41 @@ pub struct StageConfig {
     pub scale: f64,
 
     /// 主画面额外留白（px，横画布基准，按 `k` 缩放）。
+    ///
+    /// ⚠️ **字段保留、UI 不再出现**（2026-10-02）：它与 [`StageConfig::scale`] 不是同一个量
+    /// （留白改的是「可用空间」、scale 是绕中心缩放，非居中位置下位移轨迹不同，**无法无损折算**）——
+    /// 所以老工程继续按原值渲染，界面只留「缩放比例」。而 `[stage]` 是 `deny_unknown_fields`，
+    /// 删字段会让带 `padding` 的老 toml **解析失败**，这也是它必须留着的硬理由。
     #[serde(default)]
     pub padding: u32,
+
+    /// **竖屏画布**下是否渲染**特效**事件（`flash/blur/hue_shift/noise/vignette/overlay/pulse/shake`）。
+    ///
+    /// ⚠️ **缺字段 = false = 关**（2026-10-02 用户口径：竖屏默认全关，**老工程也一并关**）。
+    /// 语义 = **按整类事件屏蔽**（整轨），只影响渲染与预览求值，**绝不改事件** ——
+    /// 与「屏蔽只做标记」同一条纪律（打开即完全恢复）。字幕 / 弹幕 / 贴纸**不受它影响**。
+    #[serde(default)]
+    pub portrait_effects: bool,
+
+    /// **竖屏画布**下是否渲染**运镜**（`Event::Camera`）。缺字段 = 关。
+    /// ⚠️ 与「竖素材早退」（`CFG.vertical`，按源 `h > w`）是**两条独立的闸**，任一要求禁就禁。
+    #[serde(default)]
+    pub portrait_camera: bool,
+
+    /// **竖屏画布**下是否混入**音效**（`Event::Sfx`，含事件引用的 `sfx` / `sfx_volume`）。缺字段 = 关。
+    /// 收口在 `crate::render::sound::collect_sound_events`（cmd_render 的唯一 SFX 入口）。
+    #[serde(default)]
+    pub portrait_sfx: bool,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+/// ⚠️ 2026-10-02 起缺省是 **`blur`**（UI 删掉了「自动」按钮 —— 在 `resolve_stage` 里
+/// `auto` 与 `blur` **完全等价**：需要背景时都是当前帧模糊，不需要时都是 `none`）。
+/// 老工程显式写的 `bg_mode = "auto"` 读进来仍按 blur 处理（[`stage_bg_mode`]），零迁移。
 fn default_stage_bg_mode() -> String {
-    "auto".into()
+    "blur".into()
 }
 fn default_stage_position() -> String {
     "auto".into()
@@ -560,9 +595,13 @@ impl Default for StageConfig {
             bg_mode: default_stage_bg_mode(),
             bg_color: default_cover_bg_color(),
             blur_scale: default_cover_blur_scale(),
+            position_pct: None,
             position: default_stage_position(),
             scale: default_stage_scale(),
             padding: 0,
+            portrait_effects: false,
+            portrait_camera: false,
+            portrait_sfx: false,
             extra: HashMap::new(),
         }
     }
@@ -601,14 +640,16 @@ impl Default for StickerConfig {
     }
 }
 
-/// 背景模式规范化：`auto`（默认）/ `black` / `color` / `blur`。
+/// 背景模式规范化：`blur`（**缺省**）/ `black` / `color`。
 /// 写法照抄 [`crate::cover::cover_bg_mode`]：未知值一律回落，绝不原样吃用户字符串。
+///
+/// ⚠️ 2026-10-02：「自动」按钮删掉了 —— 老值 `auto`（以及任何认不出的值）**一律当 `blur`**，
+/// 与 `resolve_stage` 里的等价关系一致（需要背景时 auto 就是当前帧模糊）⇒ 老工程零迁移。
 pub fn stage_bg_mode(raw: &str) -> &'static str {
     match raw.trim().to_ascii_lowercase().as_str() {
         "black" => "black",
         "color" => "color",
-        "blur" => "blur",
-        _ => "auto",
+        _ => "blur",
     }
 }
 
@@ -623,6 +664,32 @@ pub fn stage_position(raw: &str, portrait: bool) -> &'static str {
         ("center", _) => "center",
         _ => "auto",
     }
+}
+
+/// 老 `[stage] position` 枚举 → **百分比**（只给没有 `position_pct` 的老工程读）。
+///
+/// - `left` / `top` → 0（贴左 / 贴上）；`right` / `bottom` → 100（贴右 / 贴下）；
+/// - `center` → 50；
+/// - **`auto` → 50 居中**（2026-10-02 用户口径：默认与老工程的 `auto` 一律掉档为居中 ——
+///   改造前竖素材的 auto 是「靠左」，现在统一居中）；
+/// - 方向写错的（横画布写 `top` 等）→ 50（[`stage_position`] 已经把它们净化成 `auto`）。
+pub fn stage_position_pct(raw: &str, portrait: bool) -> f64 {
+    match stage_position(raw, portrait) {
+        "left" | "top" => 0.0,
+        "right" | "bottom" => 100.0,
+        _ => 50.0,
+    }
+}
+
+/// `[stage] position_pct` 规范化：NaN / 无穷 → 50 居中，其余夹到 `[0, 100]`。
+///
+/// **不吸附到五档**：五档是 UI 的交互（[`crate::project`] 这层只保证数值合法），
+/// 数据模型留连续是给以后加档位用的（例：0/10/…/90/100）。
+pub fn normalize_stage_pct(raw: f64) -> f64 {
+    if !raw.is_finite() {
+        return 50.0;
+    }
+    raw.clamp(0.0, 100.0)
 }
 
 /// 贴纸落点模式规范化：只认 `manual`，其余一律 `auto`。
@@ -641,7 +708,13 @@ pub struct StageFit {
     /// 内容层（`#source-video` 与 `#video-canvas`）的 `object-fit`。
     pub object_fit: String,
     /// 主画面位置：`left|center|right`（axis=x）或 `top|center|bottom`（axis=y）。恒为具体值。
+    ///
+    /// ⚠️ **过渡期兼容输出**：五档里的 25/75 这个枚举表达不了（会被压成 `center`），
+    /// **消费侧一律改用 [`StageFit::position_pct`]**；这一项等三处消费侧全改完就删。
     pub position: String,
+    /// **主画面位置（0–100，权威）**：0 = 贴左 / 贴上，50 = 居中，100 = 贴右 / 贴下。
+    /// 模板 `stageDrawRect`、`canvas.js`/`engine.js`、转译器都按它算偏移。
+    pub position_pct: f64,
     /// 背景：`none` | `black` | `color` | `blur`。只有**横画布铺满**才是 `none`；
     /// 竖画布铺满也给底色（特效会把主画面挪出画布，没有底色就露透明）。
     pub bg: String,
@@ -678,40 +751,33 @@ impl ProjectFile {
         self.canvas.size()
     }
 
-    /// 兼容读取：位置原本写在 `layout.vertical_position`（`[layout]` 的 flatten extra 里）。
-    /// 提升成 `[stage] position` 之后仍读它做一次性映射，否则老项目的位置会悄悄回默认。
-    fn legacy_vertical_position(&self) -> Option<&str> {
-        self.layout
-            .extra
-            .get("vertical_position")
-            .and_then(|v| v.as_str())
-    }
 
     /// 解析主画面摆放。`src` = 源视频尺寸（ffprobe；拿不到给 `None`）。
     ///
-    /// `position = "auto"` 时**逐字段等价于改造前**（存量项目出片不变）：
-    /// - 源是竖素材（`h > w`，沿用既有判据）→ 按高度铺满 + 靠左（`layout.vertical_position` 兼容读取）
-    ///   + 当前帧模糊背景；
-    /// - 否则 → 直接铺满（`object-fit: cover`，与改造前的 `.source-video` 一致）+ 无背景层
-    ///   —— **包括 4:3 这类"不匹配但非竖素材"的源，改造前就是裁切**，auto 必须照抄。
+    /// # 2026-10-02 起的语义（「画面构成」改版）
+    ///
+    /// - **轴只看比例**：源与画布同比 → `fill`（铺满）；源更高 → `x`（左右留边）；源更扁 → `y`（上下留边）。
+    ///   ⚠️ **`auto` 特例已删**：改造前 `auto` 对「不匹配但非竖素材」的源（4:3 / 2.35:1）是**裁切铺满**，
+    ///   现在是**按比例适配 + 留边 + 背景**（用户 2026-10-02 拍板「适配留边」；想要裁切就把缩放调到所需比值）。
+    /// - **位置 = `position_pct`（0–100，权威）**：新字段优先；老工程按 [`stage_position_pct`] 从老枚举换算
+    ///   （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100；方向不跨用）。
+    /// - **背景**：只有**横画布铺满**是 `none`；竖画布铺满仍按 `bg_mode` 给底色（见下）。
     ///
     /// ⚠️ 铺满**不等于**不要背景层：竖画布（1080×1920）下竖素材正好铺满画布，而特效
-    /// （`shake` / `stutter` / `split` / 运镜）会把主画面挪出画布，让出来的那条边在出片里
-    /// 是**透明**的（JPEG 里就是纯黑）—— 所以**竖画布**铺满时仍按 `bg_mode` 给一层底色
-    /// （见 `resolve_stage` 的 `bg` 推导）。横画布铺满保持 `none`，存量横画布项目逐帧零回归。
-    ///
-    /// `position` 显式指定时才按比例算留边轴（源比画布高 → 左右留边；比画布扁 → 上下留边）。
+    /// （`shake` / `blur` / 运镜）会把主画面挪出画布，让出来的那条边在出片里
+    /// 是**透明**的（JPEG 里就是纯黑）—— 所以**竖画布**铺满时仍给一层底色。
+    /// 横画布铺满保持 `none`，存量横画布项目逐帧零回归。
     pub fn resolve_stage(&self, src: Option<(u32, u32)>) -> StageFit {
         let (cw, ch) = self.canvas.size();
         let portrait = self.canvas.is_portrait();
         let k = cw as f64 / CANVAS_LANDSCAPE_WH.0 as f64;
 
-        // 显式位置：方向不匹配的值在净化阶段就成 auto，不做跨方向翻译
-        let explicit = stage_position(&self.stage.position, portrait);
-        let auto_pos = explicit == "auto";
-
-        // 源是不是竖的：这是**既有的唯一判据**（`render/server.rs` 的竖屏检测），auto 必须照抄
-        let src_portrait = src.map(|(sw, sh)| sh > sw).unwrap_or(false);
+        // 位置：新字段优先；缺它（老工程）= 按老枚举换算（`auto` → 50 居中）
+        let pct = self
+            .stage
+            .position_pct
+            .map(normalize_stage_pct)
+            .unwrap_or_else(|| stage_position_pct(&self.stage.position, portrait));
 
         // 比例比较用交叉相乘，避免浮点除法
         let aspect = src
@@ -720,28 +786,20 @@ impl ProjectFile {
                 ((sh as u128) * (cw as u128)).cmp(&((sw as u128) * (ch as u128)))
             });
 
-        let axis = if auto_pos {
-            if src_portrait { "x" } else { "fill" }
-        } else {
-            match aspect {
-                Some(std::cmp::Ordering::Greater) => "x", // 源比画布"高" → 左右留边
-                Some(std::cmp::Ordering::Less) => "y",    // 源比画布"扁" → 上下留边
-                _ => "fill",
-            }
+        // 轴**只看比例**（不再有 auto 特例）
+        let axis = match aspect {
+            Some(std::cmp::Ordering::Greater) => "x", // 源比画布"高" → 左右留边
+            Some(std::cmp::Ordering::Less) => "y",    // 源比画布"扁" → 上下留边
+            _ => "fill",                              // 同比（或拿不到源尺寸）→ 铺满
         };
 
-        let position = if auto_pos {
-            if src_portrait {
-                // 老工程把位置写在 `layout.vertical_position`（默认 left）
-                match stage_position(self.legacy_vertical_position().unwrap_or("left"), portrait) {
-                    "auto" => "center",
-                    p => p,
-                }
-            } else {
-                "center"
-            }
+        // 位置枚举只作**过渡期兼容输出**（五档里的 25/75 它表达不了 ⇒ 只有两端精确，其余给 center）
+        let position = if pct <= 0.0 {
+            if portrait { "top" } else { "left" }
+        } else if pct >= 100.0 {
+            if portrait { "bottom" } else { "right" }
         } else {
-            explicit
+            "center"
         };
 
         // 背景：**横画布**铺满才不需要背景层（改造前就是不匹配才补边，存量零回归）；
@@ -764,6 +822,7 @@ impl ProjectFile {
             axis: axis.into(),
             object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
             position: position.into(),
+            position_pct: pct,
             bg: bg.into(),
             bg_color: crate::cover::sanitize_hex_color(&self.stage.bg_color, "#000000"),
             blur_px,
@@ -907,12 +966,16 @@ impl ProjectFile {
                     }
                     "[stage]" => {
                         result.push_str("\n# ===== 画面构成（源比例 ≠ 画布比例时才有可见效果） =====\n");
-                        result.push_str("# bg_mode: auto(默认, 等同改造前) / black / color / blur(当前帧模糊铺满)\n");
+                        result.push_str("# 源与画布同比例时位置/缩放/背景都没有可见效果（界面会整组隐藏）\n");
+                        result.push_str("# bg_mode: blur(默认, 当前帧模糊铺满) / black / color；老值 auto 等同 blur\n");
                         result.push_str("# bg_color: bg_mode=color 的颜色(#rrggbb)\n");
                         result.push_str("# blur_scale: 模糊倍率, 1.0 = 基准 28px\n");
-                        result.push_str("# position: auto(默认) / left|center|right(横画布) / top|center|bottom(竖画布)\n");
-                        result.push_str("# scale: 主画面缩放, 1.0 = 完整可见不裁切\n");
-                        result.push_str("# padding: 主画面额外留白(px, 横画布基准)\n");
+                        result.push_str("# position_pct: 主画面位置 0~100（0 贴左/贴上, 50 居中(默认), 100 贴右/贴下）\n");
+                        result.push_str("#   界面是五档吸附 0/25/50/75/100；老字段 position 只读兼容(auto = 居中)\n");
+                        result.push_str("# scale: 主画面缩放, 1.0 = 按当前轴适配到位（<1 再缩, >1 放大裁切）\n");
+                        result.push_str("# padding: 老字段(px, 横画布基准)，界面已不再提供；留着仅为老工程照旧生效\n");
+                        result.push_str("# portrait_effects / portrait_camera / portrait_sfx: 竖屏画布是否启用\n");
+                        result.push_str("#   特效/运镜/音效，缺字段 = false = 关（整类事件不渲染，事件本身不动）\n");
                     }
                     _ => {
                         result.push_str("\n# ===== 贴纸落点 =====\n");
@@ -1480,33 +1543,45 @@ mod canvas_stage_tests {
         assert!((c2["kh"].as_f64().unwrap() - 1920.0 / 1080.0).abs() < 1e-9);
     }
 
-    /// auto + 竖素材 = 改造前的竖屏行为（按高度铺满 + 靠左 + 模糊背景）
+    /// 老 `position = "auto"` + 竖素材：轴照比例走 `x`（竖源 vs 横画布 → 左右留边），
+    /// **位置掉档为居中**（2026-10-02 用户口径：默认与老工程的 auto 一律居中，不再「靠左」）。
     #[test]
-    fn auto_with_portrait_source_reproduces_legacy() {
+    fn auto_position_centers_and_keeps_letterbox() {
         let cfg = ProjectFile::example();
         let f = cfg.resolve_stage(src_portrait());
         assert_eq!(f.axis, "x");
         assert_eq!(f.object_fit, "contain");
-        assert_eq!(f.position, "left", "改造前默认靠左");
+        assert_eq!(f.position, "center", "auto → 50 居中");
+        assert!((f.position_pct - 50.0).abs() < 1e-9, "{}", f.position_pct);
         assert_eq!(f.bg, "blur");
         assert_eq!(f.bg_color, "#000000");
         assert_eq!(f.blur_px, 28, "blur_scale=1.0 → 基准 28px");
     }
 
-    /// auto + 横素材 = 改造前的直接铺满（cover），没有背景层。
-    /// ⚠️ 4:3 这类"不匹配但非竖素材"的源改造前也是**裁切**，auto 必须保持一致。
-    /// ⚠️ 这里断言的是**横画布**（`ProjectFile::example` 的默认方向）。竖画布铺满仍给底色，
-    /// 见 `portrait_canvas_fill_still_paints_backdrop`。
+    /// **适配留边**（2026-10-02 用户拍板）：只有**同比**才铺满；不匹配的源一律按比例适配 + 留边 + 背景。
+    /// ⚠️ 这与改造前**不同** —— 老 `auto` 对 4:3 这类「不匹配但非竖素材」的源是**裁切铺满**。
+    /// 想要裁切观感就把缩放往上调（`scale ≥ 所需比值`）。
     #[test]
-    fn auto_with_landscape_source_stays_fill() {
+    fn non_matching_source_gets_letterbox() {
         let cfg = ProjectFile::example();
         assert_eq!(cfg.canvas_size(), (1920, 1080), "前提：默认横画布");
-        for src in [src_landscape(), Some((1440, 1080)), None] {
+        // 同比（含拿不到源尺寸）→ 铺满、无背景层
+        for src in [src_landscape(), None] {
             let f = cfg.resolve_stage(src);
             assert_eq!(f.axis, "fill", "{src:?}");
             assert_eq!(f.object_fit, "cover", "{src:?}");
             assert_eq!(f.bg, "none", "{src:?}");
         }
+        // 4:3 源比画布「高」→ 左右留边（改造前是裁切）
+        let f = cfg.resolve_stage(Some((1440, 1080)));
+        assert_eq!(f.axis, "x");
+        assert_eq!(f.object_fit, "contain");
+        assert_eq!(f.bg, "blur");
+        // 21:9 源比画布「扁」→ 上下留边
+        let f = cfg.resolve_stage(Some((2560, 1080)));
+        assert_eq!(f.axis, "y");
+        assert_eq!(f.object_fit, "contain");
+        assert_eq!(f.bg, "blur");
     }
 
     /// **铺满 ≠ 不要背景层**：竖画布铺满时仍按 `bg_mode` 给底色。
@@ -1514,8 +1589,8 @@ mod canvas_stage_tests {
     /// 没有底色时让出来的那条边是**透明**的 —— 落进 JPEG 就是纯黑（用户报的"震动露出黑边"）。
     /// 门控是**画布方向**，不是 `bg_mode`：横画布铺满照旧 `none`（存量逐帧零回归）。
     ///
-    /// 用例照抄用户实际项目（`[stage] position = "center"` + 源 720×1280 / 画布 1080×1920）：
-    /// `position = "auto"` 时竖素材走 `x`（对比态），**显式位置**才按比例推轴 —— 同比例 → `fill`。
+    /// 用例照抄用户实际项目（源 720×1280 / 画布 1080×1920）：同比例 ⇒ 轴 `fill`（铺满），
+    /// 而竖画布铺满**仍要给底色**（这条闸与位置、与 `bg_mode` 都无关，只看画布方向）。
     #[test]
     fn portrait_canvas_fill_still_paints_backdrop() {
         let mut cfg = ProjectFile::example();
@@ -1538,11 +1613,12 @@ mod canvas_stage_tests {
         cfg.stage.bg_mode = "garbage".into(); // 未知值 → auto → blur
         assert_eq!(cfg.resolve_stage(same_ratio).bg, "blur");
 
-        // auto 位置的竖素材走对比态（axis=x）—— 底色照旧由 bg_mode 给，不受本次门控影响
+        // auto 位置 + **同比**源（720×1280 = 9:16 = 画布比例）⇒ 铺满：
+        // 轴自 2026-10-02 起**只看比例**，与位置是不是 auto、源是不是竖的无关。
         let mut auto_cfg = ProjectFile::example();
         auto_cfg.canvas.orientation = "portrait".into();
         let f = auto_cfg.resolve_stage(same_ratio);
-        assert_eq!(f.axis, "x", "auto 位置：竖素材 = 按高度铺满");
+        assert_eq!(f.axis, "fill", "同比 ⇒ 铺满");
         assert_eq!(f.bg, "blur");
 
         // 反证：同一份 `bg_mode` 换回横画布同比源 → 又回到 none（门控只跟画布方向有关）
@@ -1603,9 +1679,12 @@ mod canvas_stage_tests {
     /// 背景模式与颜色的净化（颜色直接进模板 CSS，绝不能原样吃字符串）
     #[test]
     fn bg_mode_and_color_sanitized() {
-        assert_eq!(stage_bg_mode("frame"), "auto", "老配置里的 frame 回落 auto");
+        // 2026-10-02：「自动」并入「模糊」—— 老值 `auto` 与任何认不出的值都当 `blur`
+        // （两者在 `resolve_stage` 里本来就等价：需要背景时都是当前帧模糊）⇒ 老工程零迁移。
+        assert_eq!(stage_bg_mode("frame"), "blur", "老配置里的 frame 回落 blur");
+        assert_eq!(stage_bg_mode("auto"), "blur", "老 auto 与 blur 等价");
         assert_eq!(stage_bg_mode(" BLUR "), "blur");
-        assert_eq!(stage_bg_mode(""), "auto");
+        assert_eq!(stage_bg_mode(""), "blur");
 
         let mut cfg = ProjectFile::example();
         cfg.canvas.orientation = "portrait".into();
@@ -1639,21 +1718,46 @@ mod canvas_stage_tests {
         );
     }
 
-    /// `vertical_position` 提升后的兼容读取 + 显式 `[stage] position` 优先
+    /// 老 `[stage] position` 枚举 → 百分比：**`auto` 掉档为 50 居中**（2026-10-02 口径），
+    /// 方向不跨用的值同样居中；新字段 `position_pct` 压过老枚举。
     #[test]
-    fn legacy_vertical_position_still_applies() {
+    fn legacy_position_enum_maps_to_pct() {
+        assert_eq!(stage_position_pct("auto", false), 50.0);
+        assert_eq!(stage_position_pct("auto", true), 50.0, "auto 一律居中，不再「竖素材靠左」");
+        assert_eq!(stage_position_pct("left", false), 0.0);
+        assert_eq!(stage_position_pct("right", false), 100.0);
+        assert_eq!(stage_position_pct("top", true), 0.0);
+        assert_eq!(stage_position_pct("bottom", true), 100.0);
+        assert_eq!(stage_position_pct("center", false), 50.0);
+        assert_eq!(stage_position_pct("top", false), 50.0, "方向不跨用 ⇒ 居中");
+
         let mut cfg = ProjectFile::example();
-        assert_eq!(cfg.resolve_stage(src_portrait()).position, "left", "缺省 = 老的 left");
-        cfg.layout
-            .extra
-            .insert("vertical_position".into(), serde_json::json!("center"));
-        assert_eq!(cfg.resolve_stage(src_portrait()).position, "center");
         cfg.stage.position = "right".into();
-        assert_eq!(
-            cfg.resolve_stage(src_portrait()).position,
-            "right",
-            "显式位置必须压过老字段"
-        );
+        assert_eq!(cfg.resolve_stage(src_portrait()).position_pct, 100.0);
+        cfg.stage.position_pct = Some(25.0);
+        assert_eq!(cfg.resolve_stage(src_portrait()).position_pct, 25.0, "新字段优先");
+    }
+
+    /// `position_pct` 规范化：NaN → 50，越界夹到 `[0,100]`；五档都能落进契约
+    /// （`position` 枚举只保证两端精确，中间三档一律 `center` —— 消费侧改看 `position_pct`）。
+    #[test]
+    fn position_pct_is_normalized_and_mapped() {
+        assert_eq!(normalize_stage_pct(f64::NAN), 50.0);
+        assert_eq!(normalize_stage_pct(-5.0), 0.0);
+        assert_eq!(normalize_stage_pct(250.0), 100.0);
+        let mut cfg = ProjectFile::example();
+        for (pct, pos) in [
+            (0.0, "left"),
+            (25.0, "center"),
+            (50.0, "center"),
+            (75.0, "center"),
+            (100.0, "right"),
+        ] {
+            cfg.stage.position_pct = Some(pct);
+            let f = cfg.resolve_stage(Some((1440, 1080))); // 4:3 → axis x，位置可见
+            assert_eq!(f.position, pos, "pct {pct}");
+            assert!((f.position_pct - pct).abs() < 1e-9, "pct {pct}");
+        }
     }
 
     /// 三张新表要能进 `to_toml_commented` 再读回来（含段注释）
@@ -1664,7 +1768,7 @@ mod canvas_stage_tests {
         cfg.stage.bg_mode = "color".into();
         cfg.stage.bg_color = "#123456".into();
         cfg.stage.blur_scale = 2.0;
-        cfg.stage.position = "bottom".into();
+        cfg.stage.position_pct = Some(75.0);
         cfg.stage.scale = 1.2;
         cfg.stage.padding = 24;
         cfg.sticker.position_mode = "manual".into();
@@ -1677,9 +1781,15 @@ mod canvas_stage_tests {
         assert!(raw.contains("# ===== 输出画布 ====="), "段注释要在:\n{raw}");
         assert!(raw.contains("# ===== 画面构成"), "{raw}");
 
+        // ⚠️ 老 `position` 字段**只读不写**（`skip_serializing`）：`[stage]` 段里不该再有它。
+        // 判据必须**只截 [stage] 段** —— 贴纸与事件也各有一个 `position` 键（同名不同义）。
+        let stage_sec = raw.split("[stage]").nth(1).expect("要有 [stage] 段");
+        let stage_sec = stage_sec.split("\n[").next().unwrap_or("");
+        assert!(!stage_sec.contains("position ="), "老 stage.position 不该再写出:\n{stage_sec}");
+        assert!(stage_sec.contains("position_pct"), "新字段要在:\n{stage_sec}");
         let back: ProjectFile = toml::from_str(&raw).expect("新表应可回读");
         assert_eq!(back.canvas.size(), (1080, 1920));
-        assert_eq!(back.stage.position, "bottom");
+        assert_eq!(back.stage.position_pct, Some(75.0));
         assert_eq!(back.stage.bg_mode, "color");
         assert_eq!(back.stage.bg_color, "#123456");
         assert!((back.stage.blur_scale - 2.0).abs() < 1e-9);
@@ -1695,17 +1805,22 @@ mod canvas_stage_tests {
         let raw = "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n";
         let cfg: ProjectFile = toml::from_str(raw).expect("老工程应可解析");
         assert_eq!(cfg.canvas.size(), (1920, 1080));
-        assert_eq!(cfg.stage.position, "auto");
-        assert_eq!(cfg.stage.bg_mode, "auto");
+        assert_eq!(cfg.stage.position, "auto", "老枚举仍在（只读兼容）");
+        assert_eq!(cfg.stage.position_pct, None, "没写过 ⇒ None，按老枚举换算");
+        // 缺省背景 2026-10-02 起是 blur（老值 auto 与它等价，解析结果一致）
+        assert_eq!(cfg.stage.bg_mode, "blur");
         assert_eq!(cfg.stage.scale, 1.0);
-        assert_eq!(cfg.stage.padding, 0);
+        assert_eq!(cfg.stage.padding, 0, "padding 字段保留（老工程照旧生效）");
         assert_eq!(cfg.sticker.position_mode, "auto");
+        // 竖屏三开关：**缺字段 = 关**（用户口径：老工程也一并关）
+        assert!(!cfg.stage.portrait_effects && !cfg.stage.portrait_camera && !cfg.stage.portrait_sfx);
         let f = cfg.resolve_stage(Some((1080, 1920)));
         assert_eq!(
             (f.axis.as_str(), f.position.as_str(), f.bg.as_str()),
-            ("x", "left", "blur"),
-            "竖素材 + 全 auto 必须等价于改造前"
+            ("x", "center", "blur"),
+            "竖素材 + auto 位置 ⇒ 左右留边 + 居中 + 模糊底"
         );
+        assert!((f.position_pct - 50.0).abs() < 1e-9);
     }
 
     /// **模板消费面的一致性钉子**：`_canvas.stage` 的每个字段、JS 里拼出的每个 class、
@@ -1718,8 +1833,8 @@ mod canvas_stage_tests {
         let stage = contract["stage"].as_object().expect("stage 必须是对象");
         // 契约字段 ↔ 模板 JS 读的字段名（同名，缺一个就是"注入了却没人消费"）
         for key in [
-            "axis", "object_fit", "position", "bg", "bg_color", "blur_px", "blur_img_scale",
-            "scale", "padding",
+            "axis", "object_fit", "position", "position_pct", "bg", "bg_color", "blur_px",
+            "blur_img_scale", "scale", "padding",
         ] {
             assert!(stage.contains_key(key), "契约缺 stage.{key}");
             assert!(html.contains(key), "模板没消费 stage.{key}");
@@ -1764,8 +1879,11 @@ mod canvas_stage_tests {
         let stage_rect = html.find("var sr = stageDrawRect(").unwrap();
         assert!(backdrop < stage_rect && stage_rect < video_layer, "摆放矩形要在衬底之后、视频层之前算");
         assert!(html.find("ctx.translate(sr.x, sr.y)").unwrap() < video_layer, "CTM 摆位必须在视频层 drawImage 之前");
-        // 改造前的竖屏布局（`.portrait` + `left/center`）必须彻底退场，
-        // 留着就会和新的 `axis-x` + `stage-*` 规则打架
-        assert!(!html.contains("portrait"), "模板里还有老的 portrait 布局残留");
+        // 改造前的竖屏布局（`.portrait` 类 + `left/center`）必须彻底退场，
+        // 留着就会和新的 `axis-x` + `stage-*` 规则打架。
+        // ⚠️ 判据只能是**类选择器**（`.portrait`）：裸 `portrait` 会把合法用法一起打红 ——
+        // 2026-10-02 竖屏三开关落地后，模板里就有 `orientation === 'portrait'`（枚举值）与
+        // `PORTRAIT` / `portraitAllows`（标识符），它们**都不是**布局残留。
+        assert!(!html.contains(".portrait"), "模板里还有老的 .portrait 布局残留");
     }
 }

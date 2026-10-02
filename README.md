@@ -656,7 +656,7 @@ vtrim fonts list                # 看库里有什么
 vtrim fonts install             # 重新装上还缺的自带字体
 vtrim fonts install --id NotoColorEmoji   # 只装某一支
 ```
-**没选字体的工程**会优先用霞鹜文楷 Lite（栈里写的是它的内部族名，见
+**没选字体的工程**会优先用 Noto Sans SC（栈里写的是它的内部族名，见
 `docs/plan/font-library.md` §15）——这个"默认位"只作**初始化设定**：界面上的字体下拉只列库内字体，
 不会再给一个「（系统默认）」的选项（自带字体就在库里，回到系统栈必然是更差的选择）。
 

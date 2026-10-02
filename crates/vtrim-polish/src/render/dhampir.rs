@@ -433,6 +433,12 @@ fn font_search_order(project_font: &str) -> Vec<String> {
 ///   * 不区分粗细地挑文件 ⇒ `msyh` 会先匹配到 `msyhbd`（粗体）当常规用 ✗ —— 所以挑的时候
 ///     **优先非粗非斜**，粗体另走 [`pick_bold_from_listing`]。
 fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
+    // ⚠️ **先让字体库就绪**：`ensure_dir` 里带着那次幂等的“把非 ASCII 条目搬成 ASCII”迁移
+    // （`vtrim_core::fonts::migrate_ascii_layouts`）。CLI 也可能在没跑过 server / `config init`
+    // 的机器上出片 —— 那时库里还是 `<中文目录>/<中文名>.ttf`，解析出来的路径直接交给 ffmpeg
+    // 就是**每条字幕访问违例一次**（240 帧 4s → 37s，且一个字都画不出来）。
+    // 失败不拦：库不可用时后面的解析会给它自己的错误。
+    let _ = vtrim_core::fonts::ensure_dir();
     if let Ok(explicit) = std::env::var("VTEDIT_DHAMPIR_FONT") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {

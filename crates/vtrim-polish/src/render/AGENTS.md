@@ -80,7 +80,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     （实测：12s 的片子带 3s 屏蔽，修复前出 6.0s、修复后 9.0s = 与 chrome 逐毫秒一致）。
   - ⚠️ **字体：栈的顺序 + 粗体，两件都不能漏**（2026-10-01 修完"字体不对"）：
     `find_font(style.subtitle.font) -> (常规, Option<粗体>)`，逐支按
-    **① 字体库（`vtrim_core::fonts::resolve_file`，id = 文件名去扩展名）
+    **① 字体库（`vtrim_core::fonts::resolve_file`，id 就是配置里那串；目录/文件名是 ASCII slug —— 路径必纯 ASCII）
     → ② 系统字体目录（族名归一化包含 + 别名表：`Microsoft YaHei` → `msyh.ttc`）** 解析；
     要按的顺序 = 项目选的那支 + **`render::server::fallback_stack()`（动态兜底栈，唯一权威）** ——
     首项随**库里"设为默认"那支**的内部族名走，库里没有可用中文时才回落到 `SYSTEM_FONT_STACK`
@@ -121,8 +121,13 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
 - **分阶段打点**：`cmd_render` 每段一条 `⏱ 阶段 {:.1}s`，`render_chunk_sync` 把每块的
   **抽帧 / 渲染 / 编码**分开报（`chunk#N: done N frames（抽帧 …s / 渲染 …s / 编码 …s）`）。
   实测 clip-35（262s 片段，debug 构建）294s 里：起服务 16.1s、贴纸 GIF 40.8s、分块 210.7s
-  （每块 抽帧 ~30s + 渲染 145~171s + 编码 8s）、音效混音 9.3s、合流 2.7s、屏蔽重编码 9.2s、封面 1.1s。
+  （每块 抽帧 ~30s + 渲染 145~171s + 编码 8s）、音效混音 9.3s、合流 2.7s、屏蔽重编码 9.2s。
   出片慢先看这几条，别再猜。
+- ⚠️ **封面不搭渲染的便车**（2026-10-02 用户拍板"视频导出就只导出"）：`cmd_render` 尾部原来串的
+  `cover::cmd_cover(project_path, Some(&op), None)` 已删 —— 渲染任务只出成片；封面走自己的入口
+  （CLI `vtrim polish cover` / `POST /api/polish/cover` 独立任务，关键帧回落 `resolved.video`）。
+  WebUI 的 render 任务完成钩子不再重挂封面设计器（`coverKey` 只归封面任务）。
+  `Cover saved:` 里程碑与 `latest_numbered_file("cover")` 产物统计**保持不动** —— 封面子进程照样打它。
 - **带磁盘缓存的预计算**（都在 `<工程>/data/`，按「文件名 + mtime + 大小」失效）：
   - `loudness.json`（`render::measure_loudness_curve_cached`，出片页与混音共用一份）——
     预览服务的 HTML 是**每个请求**重建的，不缓存等于每刷一次页面烧一遍整段 ebur128；
@@ -165,13 +170,22 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
 - **Takumi（`takumi.rs`）的字体口径 = 每支注册两次**：① 内嵌族名（原生）② **库 id 别名**
   （`FontResource::override_info(FontOverride{family_name})`）。Takumi **只按内嵌族名建族**，
   id ≠ 内嵌族名时（id 是文件名、内嵌族名带空格那种）它会**静默回退**内置 Geist ⇒ 中文标题变豆腐块。
-  别名由 `font_aliases(path)` 算：文件名是约定的 `font.<ext>` ⇒ id = 目录名，否则 = 文件名去扩展名
-  （与 `fonts::scan_all` 同规则）；字节用 `FontSource::from_shared` 共享，不翻倍内存。
+  别名由 `font_aliases(path)` 算：文件名是约定的 `font.<ext>` ⇒ **读同目录 `FONT.toml` 的 `id`**
+  （没有元数据 / `id` 为空才回落“目录名”—— 老库行为不变）；否则 = 文件名去扩展名。
+  ⚠️ 目录名现在是 ASCII slug，**不能拿它当别名**（否则封面认不出用户选的那支，静默换字体）；
+  字节用 `FontSource::from_shared` 共享，不翻倍内存。
   ⚠️ `cover_font_files()` **必须走 `fonts::scan_all`**：曾只手写"列顶层文件"⇒ v2 布局零字体，
   而零字体那条路是**明确报错**的（"静态封面直接出不来"）。⚠️ **顺序 = 默认字体第一、其余按 id
   稳定序**（`cover_font_files_in`）：Takumi 对认不出的族名回退到"注册序第一支"，裸 `out.sort()`
   的字典序运气会让「设为默认」对封面完全无效。真渲染验收与变异自证见
   `tests/takumi_font_id.rs` 与 `docs/plan/font-library.md` §13。
+  ⚠️⚠️ **标题必须关掉 Takumi 的合成加粗**（`TAKUMI_TITLE_LAYER_CSS` 末尾 `#title{font-weight:400}`）：
+  模板写 `900`，而 **Chrome 对库里那支单字面字体不合成加粗**（受控实测 400/900 逐像素相同），
+  **Takumi 会**（`font_size/32` 经 `draw_text_embolden`）⇒ 填充外撑 `e/2`、盖掉描边内缘
+  （20px 描边实测外扩 **10px → 7px**）。⚠️ **Takumi 认 `font-family`**（纠正旧结论：旧说法是把
+  「认不出的族名落进兜底桶」当成了「族名无用」）。⚠️ 标题里的 **emoji**（`title_lines` 联排、
+  非特效层）：族名走库 id + 4 向 `drop-shadow` 环（**别加对角**：链式累积会翻倍）（位图字形没有描边路径）+ 必须 `display:inline-block`。
+  📖 证据链 / A-B 数字 / 复跑命令：**`docs/plan/takumi-cover-capability.md` §15**。
 - **模板里两条"四处/两份实现"的契约**（改 `templates/index.html` 或 `webui/src/polish/engine.js` 前必读）：
   - **覆盖层色档**：`overlay_type == "gradient"` 的有效色档规则见 `vtrim-render-core/src/timeline.rs::overlay_stops`；
   四处实现为 `timeline.rs`、`templates/index.html`（**出片权威路径**）、`engine.js`、`PolishPreview.vue`。

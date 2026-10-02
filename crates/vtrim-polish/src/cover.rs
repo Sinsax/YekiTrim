@@ -217,14 +217,25 @@ struct CoverFont {
 
 fn cover_font_css(cc: &crate::project::CoverConfig) -> CoverFont {
     let id = cc.font.trim();
+    // ⚠️ **emoji 那支也要注入 @font-face**：标题里的 emoji 段（`emoji_run_span`）按库 id 请求它，
+    // 不注入就是"浏览器解析不到 → 静默落回系统 Segoe"，而出片（Takumi）用库里的 Noto ——
+    // 正是用户报的"前端与出片的 emoji 字体不一致"。
+    let emoji = cover_emoji_font_id();
+    let face_ids: Vec<&str> = std::iter::once(id)
+        .chain(std::iter::once(emoji.as_str()))
+        .filter(|s| !s.trim().is_empty())
+        .collect();
     if id.is_empty() {
         // 老工程 / 没选：字体栈 = **动态兜底栈**（`fallback_stack`：首项 = 库里默认那支的
         // 内部族名；库里没有可用中文时与老的 `SYSTEM_FONT_STACK` 常量同族名同序 —— 单测钉着）。
         // ⚠️ 不能写死常量：「设为默认」对封面要真的生效。
-        return CoverFont { family: server::fallback_stack(), face: String::new() };
+        return CoverFont { family: server::fallback_stack(), face: server::font_face_css(&face_ids) };
     }
     // 值不在字体库里时也照写（当系统字体族名用），与字幕字体同一条规矩
-    CoverFont { family: server::font_family_with_stack(id), face: server::font_face_css(&[id]) }
+    CoverFont {
+        family: server::font_family_with_stack(id),
+        face: server::font_face_css(&face_ids),
+    }
 }
 
 fn cover_highlight_words(config: &crate::project::ProjectFile) -> Vec<String> {
@@ -591,6 +602,8 @@ pub const COVER_EMOJI_MAX_CHARS: usize = 12;
 /// emoji 尺寸区间（px，1920×1080 画布）：amount 0 → 48px，1 → 288px。
 pub const COVER_EMOJI_MIN_PX: f64 = 48.0;
 pub const COVER_EMOJI_MAX_PX: f64 = 288.0;
+/// emoji 描边环的颜色 = 标题描边色（同一契约 `#2a2522`；设计器 fxStyle 是镜像）。
+pub const EMOJI_STROKE_COLOR: &str = "#2a2522";
 
 /// emoji 的字体栈：**先问库里那支（`vtrim_core::fonts::emoji_font`），没有才回落到系统族名**。
 ///
@@ -608,13 +621,108 @@ pub fn emoji_font_stack() -> String {
     let tail = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
     match vtrim_core::fonts::emoji_font(&root) {
         Some(e) => {
-            // ⚠️ 用**内部族名** —— 封面模板按族名请求（`__FONT_FAMILY__` / inline style），
-            // 而 Takumi 注册时同时注册了内嵌族名与库 id 别名，两个都认；用内嵌族名更稳。
-            let fam = if e.family_internal.trim().is_empty() { e.id } else { e.family_internal };
+            // ⚠️ **用库 id，不用内部族名**（2026-10-02 纠正）：浏览器那条路（设计器 `FontFace` /
+            // `@font-face`）与服务器路由 `/api/polish/font?name=` **都按 id 解析**，声明成内部族名
+            // 会两头落空 —— 服务器按 id 找不到就用 msyh 兜底，浏览器于是静默落回系统 Segoe，
+            // 而出片（Takumi）用库里的 Noto ⇒ 用户报的"前后端 emoji 字体不一致"。
+            // Takumi 侧照旧两个都注册（`font_aliases` 读 FONT.toml 的 id），所以 id 一样管用。
+            let fam = e.id.clone();
             format!("{},{}", quote_family(&fam), tail)
         }
         None => tail.to_string(),
     }
+}
+
+/// 标题里的 emoji 段：包一层 span —— ① 指明**库里那支 emoji 字体**；② 用 8 向 `drop-shadow`
+/// 叠出一圈**描边环**。
+///
+/// ⚠️ **为什么不能用 `-webkit-text-stroke`**（用户报的「渲染的 emoji 没有描边」）：
+/// CBDT/COLR **位图字形**走 Takumi 的 `ResolvedGlyph::Bitmap` 分支，**没有描边路径**
+/// （`draw_text_stroke` 只在 `Outline` 上调用）—— 标题里的 emoji 因此永远不吃描边。
+/// `drop-shadow` 是对**整层位图**做几何平移叠加（与字形格式无关），Chrome 侧同一条链
+/// 同语义（都是"位移副本叠一圈"）⇒ 两端观感一致。环宽取 `stroke/4` = 文字描边外扩量的**一半**
+/// （2026-10-02 用户口径：`stroke/2` 太厚）。
+///
+/// ⚠️ **必须 `display:inline-block`**：实测 Takumi 对**行内** span 的 `filter` 不生效（不出环，
+/// 逐像素与无 filter 版相同），改成 inline-block 才走离屏子画布；同时实测 emoji 的尺寸与位置
+/// 两版**逐像素一致**（红滴掩膜 w=50 / h=74 三行相同）⇒ 不会把它画大或挪位。
+///
+/// ⚠️ **族名用库 id**（不是内部族名）：浏览器那条路 `/api/polish/font` 按 **id** 解析字节、
+/// `@font-face` 也按 id 声明；Takumi 注册时**内嵌族名与库 id 别名都注册**（`font_aliases`）。
+/// 两边因此指向**同一支字体文件** —— 这正是"预览与出片的 emoji 必须同一支"的收口。
+fn emoji_run_span(text: &str, family: &str, ring: f64) -> String {
+    let fam = if family.trim().is_empty() {
+        String::new()
+    } else {
+        format!("font-family:{};", quote_family(family))
+    };
+    let filter = if ring > 0.0 {
+        let mut f = String::new();
+        // ⚠️ **只发 4 向（正上/下/左/右），别加对角**（2026-10-02 实测纠正）：
+        // `filter: drop-shadow` 是**链式**的 —— 每条阴影吃的是"已叠加的整层"（takumi-raster
+        // `apply_drop_shadow_filter` 的 `composite_pixel_under` / 浏览器同规范）。
+        // 8 向时对角那两条会继续沿 -x/-y 推已叠加的层 ⇒ 最外缘 = k + 2k·0.707 ≈ **2.4k**：
+        // 真封面实测 k=5px 时暗带 13px、k=10px 时 25px（用户："还是太厚"）。
+        // 4 向的每条方向只被推一次 ⇒ 外缘**精确等于 k**（受控实测 k=5 → 4~6px）。
+        for (dx, dy) in [(ring, 0.0), (-ring, 0.0), (0.0, ring), (0.0, -ring)] {
+            f.push_str(&format!("drop-shadow({dx:.1}px {dy:.1}px 0 {EMOJI_STROKE_COLOR}) "));
+        }
+        format!("filter:{};", f.trim_end())
+    } else {
+        String::new()
+    };
+    format!(
+        "<span class=\"cov-emoji\" style=\"{fam}display:inline-block;{filter}\">{}</span>",
+        escape_html(text)
+    )
+}
+
+/// emoji 基字符（可否**开启**一个 emoji 段）：绘文字/表情/杂项符号/补充符号常用块。
+fn is_emoji_base(cp: u32) -> bool {
+    matches!(cp, 0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF)
+}
+
+/// emoji **延伸**字符：变体选择符 / ZWJ / 结合用键帽 / 肤色修饰符 / 标签序列。
+fn is_emoji_extend(cp: u32) -> bool {
+    matches!(cp, 0xFE0F | 0xFE0E | 0x200D | 0x20E3 | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F)
+}
+
+/// 把一行标题按 "emoji 段 / 其余文本" 切开，emoji 段交给 [`emoji_run_span`] 包起来。
+///
+/// 段规则：**基字符开启**，随后**紧邻的延伸字符**（VS16/ZWJ/肤色/键帽）与 ZWJ 之后的下一个基
+/// 字符都算同一段（ZWJ 家族序列因此不会被切碎）。孤立的 VS16（前面不是 emoji）不进段。
+fn wrap_emoji_runs(line: &str, family: &str, ring: f64) -> String {
+    if family.trim().is_empty() && ring <= 0.0 {
+        return line.to_string();
+    }
+    let mut out = String::new();
+    let mut run = String::new();
+    let mut prev_zwj = false;
+    for ch in line.chars() {
+        let cp = ch as u32;
+        let join = is_emoji_base(cp) || (!run.is_empty() && (is_emoji_extend(cp) || prev_zwj));
+        if join {
+            run.push(ch);
+        } else {
+            if !run.is_empty() {
+                out.push_str(&emoji_run_span(&run, family, ring));
+                run.clear();
+            }
+            out.push(ch);
+        }
+        prev_zwj = cp == 0x200D;
+    }
+    if !run.is_empty() {
+        out.push_str(&emoji_run_span(&run, family, ring));
+    }
+    out
+}
+
+/// 库里**那支 emoji 字体**的 id（没有 = 空串）。
+fn cover_emoji_font_id() -> String {
+    vtrim_core::fonts::emoji_font(&vtrim_core::path::font_dir())
+        .map(|e| e.id)
+        .unwrap_or_default()
 }
 
 /// CSS 族名字面量：包单引号并转义（族名来自用户字体文件的 `name` 表，可能带引号）。
@@ -695,9 +803,23 @@ fn cover_fx_html(cc: &crate::project::CoverConfig, plan: &CoverLayerPlan, legacy
                 // 这里是 **inline style** —— `takumi.rs::ensure_emoji_fallback` 只扫 `<style>` 块，
                 // **永远扫不到这一处**，所以它必须自带完整栈（不能指望事后补）。
                 let emoji_stack = emoji_font_stack();
+                // ⚠️ **emoji 描边环**（用户报「渲染的 emoji 没有描边」）：
+                // CBDT/CBLC 位图字形走 Takumi 的 `ResolvedGlyph::Bitmap` 分支，
+                // **没有描边路径**（`draw_text_stroke` 只吃 `Outline`）——`-webkit-text-stroke`
+                // 对 emoji 物理无效。唯一等价手法 = `filter: drop-shadow(±d 0 0 color)` 链：
+                // Takumi 把每条 drop-shadow **顺序**应用在整层位图上（blur 0 = 干净平移、
+                // `composite_pixel_under` 合到内容之下），四条链 ≈ 一圈描边。
+                // 偏移随字号走（em 的 ~6%，与 20px 描边/320px 字的观感对齐）；颜色 =
+                // 标题描边色 #2a2522（同一契约，前端 fxStyle 是镜像）。
+                // 同口径削弱一半（0.06 → 0.03）：两条 emoji 路（标题联排 / 特效层）的环宽要一致
+                let d = ((size as f64) * 0.03).round().max(1.0) as i32;
+                let ring = format!(
+                    "drop-shadow({d}px 0 0 {EMOJI_STROKE_COLOR}) drop-shadow(-{d}px 0 0 {EMOJI_STROKE_COLOR}) \
+                     drop-shadow(0 {d}px 0 {EMOJI_STROKE_COLOR}) drop-shadow(0 -{d}px 0 {EMOJI_STROKE_COLOR})"
+                );
                 (
                     format!(
-                        "position:absolute;left:{x:.1}%;top:{y:.1}%;transform:translate(-50%,-50%);font-size:{size}px;line-height:1;font-family:{emoji_stack};filter:drop-shadow(0 6px 14px rgba(0,0,0,0.45));"
+                        "position:absolute;left:{x:.1}%;top:{y:.1}%;transform:translate(-50%,-50%);font-size:{size}px;line-height:1;font-family:{emoji_stack};filter:{ring} drop-shadow(0 6px 14px rgba(0,0,0,0.45));"
                     ),
                     escape_html(&text),
                 )
@@ -884,9 +1006,18 @@ fn build_cover_page_ex(
 
     // 标题 + 关键词高亮
     let hl_words = cover_highlight_words(config);
+    // emoji 段：单独包 span（指定库里那支 emoji 字体 + 描边环）。**先切 emoji 再套高亮** ——
+    // 高亮词是中文/日文关键词，不可能出现在"只有 emoji 字符"的那段里，顺序反了反而会把
+    // span 标签当正文匹配。
+    let emoji_id = cover_emoji_font_id();
+    // 环宽 = 描边/4（= 文字描边外扩量的一半）：2026-10-02 用户口径「emoji 的描边太厚了，削弱一半」。
+    // ⚠️ **不留 1px 下限**（原写法 `.max(1.0)`）：描边拖到 0 时 emoji 的环必须**一起消失** ——
+    // 否则文字没描边、emoji 却挂着一圈，用户看到的就是"描边改了但它没跟着变"。
+    let ring = (cc.stroke as f64 / 4.0).round();
     let title_html = title_lines.iter().map(|line| {
-        if hl_words.is_empty() { return line.to_string(); }
-        let mut r = line.to_string();
+        let line = wrap_emoji_runs(line, &emoji_id, ring);
+        if hl_words.is_empty() { return line; }
+        let mut r = line;
         for w in &hl_words { if !w.is_empty() && r.contains(w.as_str()) { r = r.replace(w.as_str(), &format!("<span class=\"hl\">{}</span>", w)); } }
         r
     }).collect::<Vec<_>>().join("<br>");
@@ -1038,13 +1169,84 @@ mod tests {
             "尾部系统栈兜底必须在: {}",
             off.family
         );
-        assert_eq!(off.face, "");
+        // ⚠️ **emoji 那支照旧要注入**（2026-10-02 起）：标题里的 emoji 段（`emoji_run_span`）按库 id
+        // 请求它；不注入 = 浏览器静默落回系统 Segoe，而出片用库里那支（用户报的"字体不一致"）。
+        let emoji = cover_emoji_font_id();
+        if emoji.is_empty() {
+            assert_eq!(off.face, "", "库里没有 emoji 字体时不该注入任何 @font-face");
+        } else {
+            assert!(
+                off.face.contains(&emoji),
+                "emoji 那支必须注入（标题 emoji 段按它请求）：{}",
+                off.face
+            );
+        }
 
         cc.font = "not-in-library-xyz".into();
         let miss = cover_font_css(&cc);
         assert!(miss.family.starts_with("\"not-in-library-xyz\","), "{}", miss.family);
         assert!(miss.family.contains("Microsoft YaHei"), "后面必须还有系统栈兜底: {}", miss.family);
-        assert_eq!(miss.face, "");
+        // 库外的字体**什么都不注入**（注入了就是一条 404 的 @font-face，老工程行为必须保持原样）；
+        // 但 emoji 那支仍然在（它来自字体库，与用户选没选无关）。
+        assert!(
+            !miss.face.contains("not-in-library-xyz"),
+            "库外字体不许注入 @font-face：{}",
+            miss.face
+        );
+    }
+
+    /// 标题里的 emoji 段切分：**基字符开段、延伸字符并入、ZWJ 序列不切碎、非 emoji 原样**。
+    /// 判据与前端 `CoverDesigner.vue::wrapEmojiRuns` 同口径（**两份实现，改一边要改另一边**）。
+    #[test]
+    fn emoji_runs_are_wrapped_without_splitting_zwj_sequences() {
+        let id = "NotoColorEmoji-CBDT";
+        let s = wrap_emoji_runs("流鼻血🩸", id, 10.0);
+        assert!(s.contains("cov-emoji"), "emoji 段要包 span：{s}");
+        assert!(s.contains("font-family:'NotoColorEmoji-CBDT'"), "族名必须是库 id：{s}");
+        assert!(s.contains("display:inline-block"), "必须 inline-block（Takumi 的 filter 才生效）：{s}");
+        assert!(s.contains("drop-shadow(10.0px 0.0px 0 #2a2522)"), "描边环缺失：{s}");
+        assert!(s.starts_with("流鼻血<span"), "非 emoji 必须原样留在外面：{s}");
+        // ZWJ 家族序列整段（不许被切成三段）
+        let zwj = wrap_emoji_runs("👨\u{200D}👩\u{200D}👧", id, 10.0);
+        assert_eq!(zwj.matches("cov-emoji").count(), 1, "ZWJ 序列不许切碎：{zwj}");
+        // VS16 跟着基字符（❤️ = U+2764 U+FE0F），后面那个「好」不进段
+        let vs = wrap_emoji_runs("❤\u{FE0F}好", id, 10.0);
+        assert!(vs.contains("cov-emoji") && vs.ends_with("好"), "{vs}");
+        assert!(vs.contains("❤\u{FE0F}</span>"), "变体选择符要在段内：{vs}");
+        // 没有 emoji 段时逐字不变
+        assert_eq!(wrap_emoji_runs("幼儿园印象", id, 10.0), "幼儿园印象");
+        // 没有 emoji 字体也没环 ⇒ 整条不动（老工程零变化）
+        assert_eq!(wrap_emoji_runs("🩸", "", 0.0), "🩸");
+    }
+
+    /// emoji 段**内部的文本要转义**（标题是用户输入；虽然段里理论上只有 emoji，这层防御别删）。
+    #[test]
+    fn emoji_run_span_escapes_its_text() {
+        let html = emoji_run_span("<b>&</b>", "id", 5.0);
+        assert!(html.contains("&lt;b&gt;&amp;&lt;/b&gt;"), "段内文本必须转义：{html}");
+        assert!(!html.contains("<b>"), "{html}");
+    }
+
+    /// 标题 emoji 段的**族名与 @font-face 同源**：两者都用库 id（浏览器按 id 解析字节，
+    /// 服务器路由也按 id）。用内部族名会两头落空 —— 那正是「前后端 emoji 字体不一致」的根因。
+    #[test]
+    fn title_emoji_face_and_run_family_share_the_library_id() {
+        let emoji = cover_emoji_font_id();
+        if emoji.is_empty() {
+            eprintln!("本机字体库没有 emoji 字体，跳过（CI 常态）");
+            return;
+        }
+        let cc = crate::project::CoverConfig::default();
+        let font = cover_font_css(&cc);
+        assert!(
+            font.face.contains(&format!("font-family:\"{emoji}\"")),
+            "@font-face 必须按 id 声明：{}",
+            font.face
+        );
+        assert!(
+            wrap_emoji_runs("🩸", &emoji, 10.0).contains(&format!("font-family:'{emoji}'")),
+            "emoji 段的族名必须与 @font-face 同一个 id"
+        );
     }
 
     /// ⚠️ 「设为默认」必须真的决定 Takumi 的兜底（注册序第一支）：
@@ -1455,6 +1657,100 @@ mod tests {
         );
         assert!(!html.contains("alert(1)"), "恶意颜色串进了模板：{html}");
         assert!(html.contains("'--bg-color', '#000000'"), "非法颜色应退回默认色：{html}");
+    }
+
+    /// **真实像素探针**（ignored，默认不进门禁）：走完整封面生产链
+    /// （`build_cover_page_static` → `extract_style_blocks` → `render_cover_png`）出 1920×1080 真图，
+    /// 供人眼验收「中文描边 / emoji 字体 / emoji 描边」三件事（复刻 clip-14 黄金封面的形状）。
+    ///
+    /// 跑法：
+    /// `VTEDIT_COVER_PROBE_DIR=<目录> VTEDIT_TAKUMI_DUMP=<目录> cargo test -p vtrim-polish --lib \
+    ///   --features cover-takumi probe_real_cover_pixels -- --ignored --nocapture`
+    #[cfg(feature = "cover-takumi")]
+    #[test]
+    #[ignore]
+    fn probe_real_cover_pixels() {
+        let out_dir = std::path::PathBuf::from(
+            std::env::var("VTEDIT_COVER_PROBE_DIR")
+                .unwrap_or_else(|_| std::env::temp_dir().join("vtrim-cover-probe").display().to_string()),
+        );
+        let _ = std::fs::create_dir_all(&out_dir);
+        let mut c = cfg_with(
+            "color",
+            &std::env::var("VTEDIT_COVER_PROBE_BG").unwrap_or_else(|_| "#20242c".to_string()),
+            2.0,
+        );
+        c.cover.title_lines = if let Ok(t) = std::env::var("VTEDIT_COVER_PROBE_TEXT") {
+            t.split('|').map(|s| s.to_string()).collect()
+        } else {
+            vec![
+                "幼儿园印象".into(),
+                "小红马和跷跷板".into(),
+                "玩上头".into(),
+                "直接飞出去流鼻血".into(),
+            ]
+        };
+        if let Ok(fs) = std::env::var("VTEDIT_COVER_PROBE_FS") {
+            c.cover.font_size = fs.parse().unwrap_or(120);
+        }
+        c.cover.stroke = std::env::var("VTEDIT_COVER_PROBE_SK")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
+        c.cover.text_align = "left".into();
+        if std::env::var("VTEDIT_COVER_PROBE_NOSHADOW").is_ok() {
+            c.cover.text_shadow = false;
+        }
+        c.cover.highlight_keywords = vec!["跷跷板".into()];
+        c.cover.effects = vec![crate::project::CoverEffect {
+            id: "fx1".into(),
+            kind: "emoji".into(),
+            amount: 0.35,
+            x: 78.0,
+            y: 72.0,
+            color: "#000000".into(),
+            text: "🩸".into(),
+        }];
+        // 真实工程模式：直接吃用户的 polish.toml（字体/标题/描边/图层全是真值）
+        if let Ok(dir) = std::env::var("VTEDIT_COVER_PROBE_PROJECT") {
+            let dir = std::path::PathBuf::from(dir);
+            let mut cfg = crate::project::load_project(&dir).expect("读工程失败");
+            // 探针可覆盖描边宽度（量"描边滑块 → 环宽"这条链）
+            if let Ok(sk) = std::env::var("VTEDIT_COVER_PROBE_SK") {
+                cfg.cover.stroke = sk.parse().unwrap_or(cfg.cover.stroke);
+            }
+            let title_lines = cfg.cover.title_lines.clone();
+            let bg = dir.join(COVER_BG_IMG).is_file();
+            let html = build_cover_page_static(&cfg, bg, &title_lines);
+            let css = crate::render::takumi::extract_style_blocks(&html);
+            let fonts = cover_font_files();
+            eprintln!("探针：真实工程 {} 字体 {} 支", dir.display(), fonts.len());
+            let _ = std::fs::write(out_dir.join("cover.html"), &html);
+            let out = out_dir.join("takumi.jpg");
+            crate::render::takumi::render_cover_png(&html, &css, &dir, &out, 1920, 1080, &fonts)
+                .expect("真实工程探针渲染失败");
+            eprintln!("探针：产物 = {}；HTML 已写到 cover.html", out.display());
+            return;
+        }
+        let title_lines = c.cover.title_lines.clone();
+        let html = build_cover_page_static(&c, false, &title_lines);
+        let css = crate::render::takumi::extract_style_blocks(&html);
+        let css = match std::env::var("VTEDIT_COVER_PROBE_CSS") {
+            Ok(extra) => format!("{css}\n{extra}"),
+            Err(_) => css,
+        };
+        // 字体注册序与生产完全一致（defaults 先、emoji 最后）—— 本机是平铺布局那两支
+        let root = std::path::PathBuf::from(
+            std::env::var("VTEDIT_COVER_PROBE_FONTS")
+                .unwrap_or_else(|_| vtrim_core::path::font_dir().display().to_string()),
+        );
+        let fonts = cover_font_files_in(&root);
+        eprintln!("探针：字体注册序 = {:?}", fonts);
+        eprintln!("探针：HTML {}B / CSS {}B", html.len(), css.len());
+        let out = out_dir.join("probe-cover.jpg");
+        crate::render::takumi::render_cover_png(&html, &css, &out_dir, &out, 1920, 1080, &fonts)
+            .expect("探针渲染失败");
+        eprintln!("探针：产物 = {}", out.display());
     }
 
     /// emoji 特效：字符进模板、x/y 是字符中心、amount 映射字号；

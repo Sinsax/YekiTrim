@@ -793,3 +793,64 @@ release 二进制的 `before` / `after` 各跑一遍）：
 
 ⚠️ 过程纪律：验证用 `target/release` + 沙箱副本（用户 dev 实例占着 `target/debug`），
 探针素材/工程/脚本一律在 `.workbuddy/perf/vertical/`（已 gitignore），**不碰线上数据目录**。
+
+---
+
+## 十、2026-10-02：画面构成改版 + 两条真像素探针复跑（本轮）
+
+### 10.1 改了什么（口径）
+
+「画面构成」按用户 2026-10-02 的拍板重做：**位置 = `position_pct`（0–100，界面五档吸附**
+0/25/50/75/100**，默认 50 居中**，老枚举 `position` 只读兼容、`auto` 掉档为居中）、**轴只看比例**
+（同比 → `fill`，否则 x/y ⇒ 不匹配的源从「裁切铺满」改成**适配留边**）、**背景删「自动」、缺省 = 模糊**、
+**`padding` 字段保留但 UI 不再出现**、**竖屏画布三个开关 `portrait_{effects,camera,sfx}`（缺字段 = false = 关，
+按整类事件屏蔽、事件本身不动）**。`resolve_stage` 仍是唯一推导，三处消费侧同批：
+`templates/index.html::stageDrawRect`、`PolishPreview.vue` 的 `.fit-box` 修正、`tools/polish-to-dhampir.mjs`；
+`process/placement.rs::main_frame_geometry`（贴纸避让）也跟着换到 `position_pct`。
+
+### 10.2 复跑探针挖出来的**真缺陷**（转译器，已修）
+
+`SR`/`FIT`（画面构成的唯一几何）**以前只由相机关键帧写进去**。而竖素材的运镜被整条门控掉
+（`sourceIsVertical`）⇒ 那一层**一个关键帧都没有** ⇒ 主层停在 `scale=1 / offset=0`，
+底座按「源 1:1 居中」画：**竖素材进竖画布（用户最常见的组合，源 720×1280 → 画布 1080×1920，同比！）
+画面缩在中间、四周一圈黑**。实测：转译产物的 `transform = {x:0,y:0,scale:1}` 且 `keyframes = 0`。
+
+修法：**0 键层写一组「中性相机」基准值** —— `cameraOffset(1.0, {x:0.5,y:0.5})` + `scale: FIT`
+（只对 0 键的层做，有键的层逐字节不动 = 存量零回归）。修后实测：竖画布同比 → `{x:0,y:0,scale:1.5}`
+（720×1280 × 1.5 = 1080×1920 正好铺满）；横画布 + 竖素材 → `{x:0,y:0,scale:0.84375}`（contain 居中，
+内容框 607.5×1080 @ x=656.25）；`position_pct=0` → `x=-656.25` 贴左（位置真的跟着走了）。
+
+⚠️ **修的时候自己踩了一次 `FIT²`**：`cameraOffset(zoom, origin)` 内部已经是 `scale = zoom * FIT`，
+第一实参传 `FIT` 就等于把 `FIT` 预乘两次 —— 而**居中那一点恰好归零**（它自己的注释也记着这个坑），
+所以只看中心看不出来；是 `position_pct=0` 的实测把它逼出来的（正确 `-656.25`）。
+
+### 10.3 探针 harness 的两处过期（都修了）
+
+1. **抽帧抽错了源**：`tests/common/mod.rs::render_range` 抽的是**源素材**，于是探针里那句
+   「成片帧尺寸必须等于画布尺寸」**必然失败**（探针源 720×1280 vs 画布 1920×1080）。
+   chrome 逐帧腿删掉之后没人再跑过这两条探针，所以一直没暴露。现在抽**成片** `_temp_video.mp4`。
+2. **变异锚点落在语义位置之外**：B②「去掉竖素材运镜门」用 `replacen(..., 1)` 改的是转译器里
+   **第一次**出现的 `if (sourceIsVertical === true) {` —— 那是**报告用的 NOTE**，运镜门在后面一处。
+   于是变异体与真转译器**逐帧相同**、判据静默空转（实测 `运镜 0 条`）。改成
+   `replace_first_after(code, "case 'camera': {", …)`。
+3. **变异形态要在当前后端可表达**：B① 原来是「`w = bwid` 硬铺满」，等价于旧参照的
+   `drawImage(…,0,0,CW,CH)`；但**底座的 `transform.scale` 是单值（等比）**，做不出各轴不等比的硬拉 ——
+   那个变异会把画面整体推出画布（`offset.x=-1600`），绿块与描边一起消失。现在改成 **cover**
+   （`FIT = max(width/srcW, height/srcH)`，= 本次改版之前的 `auto` 语义，底座可表达），判据只断几何。
+
+### 10.4 复跑结果（2026-10-02，本机）
+
+探针工程（自造，`.workbuddy/probe/stagefit/`，已 gitignore）：720×1280 品红 + 外圈 6px 白描边 +
+中央 360×640 亮绿块，8s；`[canvas] orientation="landscape"` + `[stage] bg_mode="blur"` + 一条整段运镜。
+（⚠️ 工程必须写顶层 `duration`，否则转译出的层 `end=0`、底座算不出帧数；`[source] subtitles` 是必填键。）
+
+- `--test portrait_stage_fit`：**全部通过** —— 内容框 `x656 y0 608×1080`、纵横比 0.5630（源 0.5625）、
+  绿块 7.89%（期望 7.91%）且逐帧恒定；三段变异全部翻面（几何失效 1264×1080 / 去运镜门 17.73% ≈ 2.25× /
+  不画衬底 框外纯黑 99.5%）。
+- `--test portrait_backdrop`：**全部通过** —— A（衬底开）四角亮度 86.0、B（衬底关）四角 0.0，
+  **30/30 帧真露底**、A/B 差 86.0。
+
+⚠️ 衬底那两条判据在 `portrait_stage_fit` 里**只在 `BACKDROP_ENABLED` 打开时才断**：转译器里它默认
+`false`（底座侧长片 OOM 的已知限制，补的就是黑边），关着时**明说跳过**；衬底本身由 backdrop 探针专门量
+（它自己把开关打开再 A/B）。
+

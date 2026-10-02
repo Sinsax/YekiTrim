@@ -4,16 +4,17 @@
 //! 用户把 `.ttf` / `.otf` 丢进这个目录，界面就能把它们列出来当字幕/封面字体用。
 //! 解析规则见 [`crate::path::font_dir`]。
 //!
-//! # 自带字体（[\`BUILTIN_FONTS\`]）走**首次使用下载**，不随发行包分发
+//! # 自带字体（\`BUILTIN_FONTS\`）**字节内嵌在二进制里**（2026-10-02 起，不再依赖下载）
 //!
-//! 实测两支自带字体加起来约 **38 MB**（霞鹜文楷 Lite 13.5 MB + Noto Color Emoji 24.7 MB），
-//! 提交进 git 会让仓库体积与克隆时间明显变差，所以**仓库只放清单**（URL + 校验和 + 许可），
-//! 字体由 [\`download_builtin_fonts\`] 首次要用时落到库里。两支都是 **OFL-1.1**（可商用/可嵌入/可再分发），
+//! 实测两支自带字体加起来约 **34 MB**（Noto Sans SC 10.0 MB + Noto Color Emoji 24.7 MB）。
+//! 字节走 \`include_bytes!\`（源在 `assets/fonts/`），**首次启动自动落盘、不联网** ——
+//! 下载路径（`url` 字段 + `download_builtin_fonts`）仅作内嵌字节不可用时的兜底，
+//! `sha256` 仍是那条路径的最终防线。两支都是 **OFL-1.1**（可商用/可嵌入/可再分发），
 //! 原样附 `LICENSE.txt`。
 //!
-//! ⚠️ **没下载 ≠ 看不见**：[\`scan_all\`] 会把"还没装的自带字体"也列出来（`installed: false`），
-//! 界面据此给"下载"按钮。所以别把自带字体当成"库里必然存在"，
-//! [\`is_builtin_id\`] 才是"这个 id 是不是自带的"的判据。
+//! ⚠️ **没落盘 ≠ 看不见**：`scan_all` 会把"还没装的自带字体"也列出来（`installed: false`），
+//! 界面据此给"安装"按钮。所以别把自带字体当成"库里必然存在"，
+//! `is_builtin_id` 才是"这个 id 是不是自带的"的判据。
 //!
 //! 规矩与贴纸库一致：**以磁盘为准**（扫目录，没有索引文件）、id 取文件名去扩展名，
 //! 所以"丢一个文件进去"就是全部操作。显示名从字体的 `name` 表里读（解析失败退回 id）——
@@ -35,6 +36,14 @@ pub fn dir() -> PathBuf {
 /// 一次性搬家记号：老库（程序目录 `resources/fonts/`）的内容复制进用户目录之后落下的。
 /// 有了它就**不再搬第二次** —— 用户之后在库里删了哪支，下次启动也不会从老库又长回来。
 const MIGRATED_MARKER: &str = ".migrated-from-program-dir";
+
+/// “这次进程里已经跑过 ASCII 迁移了” —— 见 [`migrate_ascii_layouts`]，**每个进程只跑一次**。
+///
+/// 两个理由：① `ensure_dir` 会被每个导入/上传的 handler 调用，不设闸就是每次请求都扫一遍库；
+/// ② 迁移要**改名**，窗口里正好有读请求就会看到“这一支不见了”（自愈，但没必要制造）。
+/// 进程里的第一个调用者通常是 **server 启动 / `config init` / 出片前** —— 那正是希望它跑的时刻。
+/// ⚠️ 磁盘上仍然是幂等的（判据是“名字还不是 ASCII / 有没有 id”），这个闸只是省重复扫描。
+static ASCII_MIGRATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 建好字体库目录并返回**写路径**（`config init` / `server` 启动 / 下载导入前用）。
 ///
@@ -60,6 +69,15 @@ pub fn ensure_dir_in(user_home: Option<&Path>, exe_home: &Path) -> std::io::Resu
         migrate_program_library(&user, &legacy)?;
     }
     std::fs::create_dir_all(&user)?;
+    // 老库里“路径含非 ASCII”的条目在这里一次性搬成 ASCII 形状（幂等；失败只 warn）。
+    // 放在 ensure_dir 里是有意的：它是**写路径**（server 启动 / config init 都会走），
+    // 读路径（scan/resolve）保持只读 —— 别让一次 GET 去改用户磁盘。
+    if !ASCII_MIGRATED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let moved = migrate_ascii_layouts(&user);
+        if !moved.is_empty() {
+            tracing::info!("字体库：{} 支字体的路径搬成 ASCII（{})", moved.len(), moved.join(", "));
+        }
+    }
     Ok(user)
 }
 
@@ -85,6 +103,128 @@ fn migrate_program_library(user: &Path, legacy: &Path) -> std::io::Result<()> {
     }
     std::fs::write(user.join(MIGRATED_MARKER), "")?;
     Ok(())
+}
+
+/// 把库里**路径含非 ASCII 字符**的条目搬成 ASCII 形状（幂等；失败只跳过那一条）。
+///
+/// 做三件事，**只在需要时动**（能不动就不动，绝不半途删/覆盖任何文件）：
+///   ① `FONT.toml` 补 `id = <旧目录名>`（顺手补 `family` / `display_name` / `sha256`）；
+///   ② 目录里的字体文件若不是 ASCII 名 ⇒ 改名成 `font.<ext>`；
+///   ③ 目录名若不是 ASCII ⇒ 改名成 [`ascii_slug`]（重名时加 `-2` / `-3` …）。
+///
+/// # 为什么值得跑这一趟
+///
+/// 底座那条出片腿把字体路径塞进 ffmpeg 的 `drawtext`，**非 ASCII 路径**会让 ffmpeg
+/// 每条字幕访问违例一次（见 [`ascii_slug`] 的长注释）。一次性迁移比“每次出片拷一份别名”
+/// 更稳：库里从此没有非 ASCII 路径，任何宿主都不会再踩。
+///
+/// 幂等判据就是“名字还是不是 ASCII / `FONT.toml` 里有没有 id” —— 跑第二遍是空转。
+/// 返回改过的条目（`旧名 → 新名`）给人看；空 = 什么都不用做。
+pub fn migrate_ascii_layouts(root: &Path) -> Vec<String> {
+    let mut moved = Vec::new();
+    for (slug, dir, path, meta) in dir_entries(root) {
+        let id = entry_id(&slug, &meta);
+        let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
+        let need_meta = meta.id.trim().is_empty();
+        let need_file = !file_name.is_ascii();
+        let need_dir = !slug.is_ascii();
+        if !(need_meta || need_file || need_dir) {
+            continue;
+        }
+        // ① 先把 id 落进元数据：**即便后面改名失败，这一支也不会失联**（解析走元数据那条路）
+        if need_meta {
+            let mut m = meta.clone();
+            m.id = id.clone();
+            if m.display_name.trim().is_empty() {
+                m.display_name = id.clone();
+            }
+            if m.family.trim().is_empty() {
+                m.family = cached_family(&path).unwrap_or_else(|| id.clone());
+            }
+            if m.sha256.is_empty() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    m.sha256 = sha256_hex(&bytes);
+                }
+            }
+            if write_meta(&dir, &m).is_err() {
+                continue;
+            }
+        }
+        // ② 字体文件名也必须是 ASCII（老目录里那支可能就叫中文名）
+        if need_file {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("ttf").to_ascii_lowercase();
+            let to = dir.join(format!("font.{ext}"));
+            if to.exists() || std::fs::rename(&path, &to).is_err() {
+                continue;
+            }
+        }
+        // ③ 目录名 → ASCII slug
+        if need_dir {
+            let base = ascii_slug(&id, &id);
+            let mut to = root.join(&base);
+            let mut n = 2;
+            while to.exists() && n < 100 {
+                to = root.join(format!("{base}-{n}"));
+                n += 1;
+            }
+            match std::fs::rename(&dir, &to) {
+                Ok(()) => {
+                    let new_name = to.file_name().and_then(|f| f.to_str()).unwrap_or("?").to_string();
+                    moved.push(format!("{slug} → {new_name}"));
+                }
+                // 文件被占用（Windows 常见：预览正读着它）⇒ 放过这一条，下次启动再试
+                Err(e) => tracing::warn!("字体库迁移：{} 改名失败（下次启动再试）：{e}", dir.display()),
+            }
+        } else if need_file || need_meta {
+            moved.push(format!(
+                "{slug}（就地{}）",
+                if need_file { "改字体文件名" } else { "补元数据" }
+            ));
+        }
+    }
+    // 老平铺布局：文件名含非 ASCII 的散文件**也是**非 ASCII 路径，搬成目录布局
+    let mut flat: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let p = e.path();
+            if name.starts_with('.') || !p.is_file() || !is_font_file_name(&name) || name.is_ascii() {
+                continue;
+            }
+            flat.push(p);
+        }
+    }
+    for p in flat {
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").trim().to_string();
+        if !is_safe_id(&stem) {
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("ttf").to_ascii_lowercase();
+        let dest = root.join(ascii_slug(&stem, &stem));
+        if dest.exists() || std::fs::create_dir_all(&dest).is_err() {
+            continue;
+        }
+        let target = dest.join(format!("font.{ext}"));
+        if std::fs::rename(&p, &target).is_err() {
+            let _ = std::fs::remove_dir(&dest);
+            continue;
+        }
+        let family = cached_family(&target).unwrap_or_else(|| stem.clone());
+        let sha = std::fs::read(&target).map(|b| sha256_hex(&b)).unwrap_or_default();
+        let meta = FontMeta {
+            id: stem.clone(),
+            display_name: stem.clone(),
+            family,
+            sha256: sha,
+            added_at: chrono::Utc::now().to_rfc3339(),
+            ..Default::default()
+        };
+        if write_meta(&dest, &meta).is_ok() {
+            let new_name = dest.file_name().and_then(|f| f.to_str()).unwrap_or("?").to_string();
+            moved.push(format!("{stem}.{ext} → {new_name}"));
+        }
+    }
+    moved
 }
 
 /// 递归复制目录（字体库搬家用：字体目录里是 `font.ttf` + `FONT.toml` + `LICENSE.txt`，很浅）。
@@ -654,6 +794,20 @@ pub const META_FILE: &str = "FONT.toml";
 /// 一支字体的元数据。`family` 是**字体内部族名**（权威），`display_name` 只是给人看的标签。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct FontMeta {
+    /// **配置/界面里存的那串 id**（= 导入时给的名字，可含汉字/空格）。
+    ///
+    /// ⚠️ **2026-10-02 起 id 不再等于目录名**（见 [`ascii_slug`] 与 `docs/plan/font-library.md` §24）：
+    /// 目录名与字体文件名一律落 **ASCII**，给人看的那串只住在这里（`display_name` 是它的兄弟，
+    /// 可以再改；**id 是配置里存的值，不许变**）。
+    ///
+    /// 为什么必须 ASCII：底座出片那条腿把字体路径塞进 ffmpeg 的
+    /// `drawtext=fontfile=…`，路径里**任何一个非 ASCII 字符**都会让 ffmpeg 访问违例
+    /// （`0xC0000005`）—— 实测 240 帧 4.2s → 80.3s，且**一个字都画不出来**。
+    /// ffmpeg 我们改不了，所以只能在"落盘形状"这一层保证纯 ASCII。
+    ///
+    /// **空 = 老库还没迁移** ⇒ 回落"目录名就是 id"（存量零迁移）。
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
@@ -673,8 +827,9 @@ pub struct FontMeta {
     pub builtin: bool,
     #[serde(default)]
     pub is_default: bool,
-    /// ⚠️ **当前恒为空串**：`vtrim-core` 没有 hasher 依赖（加依赖要单独评估），
-    /// 字段先留着，等接上再加（见 `docs/plan/font-library.md` §10.2 的影响面）。
+    /// ⚠️ 这条注释原来是"当前恒为空串（本仓没有 hasher 依赖）"—— **已过时**：
+    /// `sha256_hex` 就在本文件里，导入与自带字体安装都会写它。它是"盘上这支到底是不是
+    /// 当初那支"的唯一凭据（用户手动替换过字体时也一样）。
     #[serde(default)]
     pub sha256: String,
     #[serde(default)]
@@ -711,29 +866,105 @@ pub fn write_meta(slug_dir: &Path, meta: &FontMeta) -> std::io::Result<()> {
     std::fs::write(slug_dir.join(META_FILE), text)
 }
 
-/// 目录布局（v2）的扫描。
-pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
-    let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
+/// 库根下的**目录布局（v2）条目**：`(目录名, 目录, 字体文件, 元数据)`。
+///
+/// 缺 `FONT.toml` 的目录**也算**一条（老库 / 手工拷进来的），元数据给默认值 ——
+/// 那时 id 回落目录名（见 [`entry_id`]），与改造前的行为一字不差。
+fn dir_entries(root: &Path) -> Vec<(String, PathBuf, PathBuf, FontMeta)> {
     let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else { return out };
     for entry in rd.flatten() {
         let slug = entry.file_name().to_string_lossy().to_string();
-        if slug.starts_with('.') || !entry.path().is_dir() || !is_safe_id(&slug) {
+        let dir = entry.path();
+        if slug.starts_with('.') || !dir.is_dir() || !is_safe_id(&slug) {
             continue;
         }
-        let Some(path) = font_file_in(&entry.path()) else { continue };
-        let meta = read_meta(&entry.path()).unwrap_or_default();
+        let Some(path) = font_file_in(&dir) else { continue };
+        let meta = read_meta(&dir).unwrap_or_default();
+        out.push((slug, dir, path, meta));
+    }
+    out
+}
+
+/// 一个目录条目的**有效 id**：`FONT.toml.id` 优先，缺省回落目录名（老库零迁移）。
+fn entry_id(slug: &str, meta: &FontMeta) -> String {
+    let id = meta.id.trim();
+    if !id.is_empty() && is_safe_id(id) {
+        id.to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// id → **目录**（目录布局）。先试“目录名就是 id”（老库 / 自带字体 / 手建目录那条路），
+/// 再按 `FONT.toml.id` 扫一遍 —— 迁移成 ASCII slug 之后，id 只住在元数据里。
+fn dir_for_id(root: &Path, id: &str) -> Option<PathBuf> {
+    let id = id.trim();
+    if !is_safe_id(id) {
+        return None;
+    }
+    let direct = root.join(id);
+    if direct.is_dir() && font_file_in(&direct).is_some() {
+        return Some(direct);
+    }
+    dir_entries(root)
+        .into_iter()
+        .find(|(slug, _, _, meta)| entry_id(slug, meta).eq_ignore_ascii_case(id))
+        .map(|(_, dir, _, _)| dir)
+}
+
+/// 库内**目录名与字体文件名**的 ASCII slug —— 只由 id 派生，1:1 且稳定。
+///
+/// # 为什么必须 ASCII（一次线上事故的收口）
+///
+/// 底座出片那条腿把字体路径塞进 ffmpeg 的 `drawtext=fontfile='…'`。ffmpeg 那条路
+/// **打不开含非 ASCII 字符的路径**（FreeType 拿 UTF-8 字节按 ANSI 打开），而且打不开时
+/// **不报错、直接访问违例**（`0xC0000005`）—— 表现是**每条字幕崩一次**：实测 240 帧
+/// 4.2s → 80.3s，且 0 行字幕 / 0 条弹幕画出来。裸 ffmpeg 可复现：同一支字体拷到中文路径就崩，
+/// 路径不存在也崩出同一个退出码。ffmpeg 与底座都不在本仓手里，所以
+/// **只能保证库内落盘路径是纯 ASCII**；给人看的那串住 `FONT.toml`（`id` / `display_name`）。
+///
+/// 形状：`<hint>-<sha256(id) 前 12 位>`。hint 取 id/显示名里能用的 ASCII 片段
+/// （纯 ASCII 名保持可读，全中文退化成 `font-`），**只是给人排查用的前缀**。
+/// 由 id 派生（不是内容）⇒ 重复导入不换目录、改显示名不换目录、两个 id 绝不撞同一个目录。
+pub fn ascii_slug(id: &str, hint: &str) -> String {
+    const MAX_HINT: usize = 32;
+    let mut h = String::new();
+    for ch in hint.chars() {
+        if h.len() >= MAX_HINT {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() {
+            h.push(ch.to_ascii_lowercase());
+        } else if !h.is_empty() && !h.ends_with('-') {
+            h.push('-');
+        }
+    }
+    let h = h.trim_matches('-');
+    let hint = if h.is_empty() { "font" } else { h };
+    let digest = sha256_hex(id.as_bytes());
+    format!("{hint}-{}", &digest[..12])
+}
+
+/// 目录布局（v2）的扫描。
+pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
+    let mut out = Vec::new();
+    for (slug, _dir, path, meta) in dir_entries(root) {
+        let id = entry_id(&slug, &meta);
         let internal = if meta.family.trim().is_empty() {
-            cached_family(&path).unwrap_or_else(|| slug.clone())
+            cached_family(&path).unwrap_or_else(|| id.clone())
         } else {
             meta.family.clone()
         };
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         out.push(FontEntry {
-            id: slug.clone(),
+            id: id.clone(),
             file: path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
             family: internal.clone(),
             bytes,
-            display_name: if meta.display_name.trim().is_empty() { slug } else { meta.display_name },
+            // ⚠️ 兜底是 **id**（不是目录名）：迁移之后目录名是 ASCII slug，拿它显示等于
+            // 把 `乐米波波体` 变成 `font-9c1d…`，用户就再也对不上自己选的那支了。
+            display_name: if meta.display_name.trim().is_empty() { id } else { meta.display_name },
             family_internal: internal,
             license: meta.license,
             scripts: meta.scripts,
@@ -804,12 +1035,12 @@ pub fn scan_all(root: &Path) -> Vec<FontEntry> {
 }
 
 /// 目录布局下把 id 解析成文件。
+///
+/// ⚠️ **不再是 `root.join(id)`**（2026-10-02）：目录名现在是 ASCII slug，id 住在
+/// `FONT.toml` 里。先走“目录名就是 id”那条老路（老库 / 自带字体 / 手建目录），
+/// 再按元数据里的 id 扫一遍 —— 两条都对，且**老库不需要先迁移就能解析**。
 pub fn resolve_dir_file(root: &Path, id: &str) -> Option<PathBuf> {
-    let id = id.trim();
-    if !is_safe_id(id) {
-        return None;
-    }
-    font_file_in(&root.join(id))
+    dir_for_id(root, id).and_then(|d| font_file_in(&d))
 }
 
 /// 两种布局都能解析（目录优先）。
@@ -1191,6 +1422,8 @@ pub fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> 
         .with_context(|| format!("写字体失败: {}", dest.display()))?;
 
     write_meta(&dest_dir, &FontMeta {
+        // id = 清单里那串（配置/界面里存的就是它）；目录名恰好也是它，但**别再依赖这个巧合**
+        id: b.id.to_string(),
         display_name: b.display_name.to_string(),
         family,
         license: b.license.to_string(),
@@ -1296,23 +1529,51 @@ pub fn import_font_bytes(
     if !is_safe_id(&id) {
         anyhow::bail!("文件名不能当 id 用（含路径分隔符或控制字符）：{file}");
     }
-    let dest_dir = root.join(&id);
+    let display = display_name.map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
+        .unwrap_or_else(|| family.clone());
+    // ⚠️ **落盘名是 ASCII slug，给人看的那串（id）住 `FONT.toml`**（见 [`ascii_slug`]）：
+    // 底座那条腿把路径塞进 ffmpeg 的滤镜串，非 ASCII 路径会让它**每条字幕崩一次**。
+    //
+    // 已经存在同 id 的那一支 ⇒ **写回同一个目录**（不是再建一个）：
+    // 老库的目录名恰好等于 id（自带字体、手工目录都是这样），而新 slug 与它不同 ——
+    // 不复用就会出现“两条同 id 的条目”（`scan_all` 列两条、`resolve_all` 看目录顺序返回其一）。
+    let dest_dir = match dir_for_id(root, &id) {
+        Some(d) => d,
+        None => root.join(ascii_slug(&id, &display)),
+    };
+    let old = read_meta(&dest_dir).unwrap_or_default();
     std::fs::create_dir_all(&dest_dir)?;
-    std::fs::write(dest_dir.join(&file), bytes)?;
+    // 字体文件名也必须是 ASCII：统一落 `font.<ext>`（老目录里那支可能叫中文名）。
+    let font_file = format!("font.{ext}");
+    // 换扩展名/换名字时把旧的那支收掉：`font_file_in` 只取一支，留两份会成谜
+    if let Some(prev) = font_file_in(&dest_dir) {
+        if prev.file_name().and_then(|f| f.to_str()) != Some(font_file.as_str()) {
+            let _ = std::fs::remove_file(&prev);
+        }
+    }
+    std::fs::write(dest_dir.join(&font_file), bytes)?;
     let meta = FontMeta {
-        display_name: display_name.map(|d| d.trim().to_string()).filter(|d| !d.is_empty())
-            .unwrap_or_else(|| family.clone()),
+        id: id.clone(),
+        display_name: display,
         family,
-        license: String::new(),
+        style: old.style,
+        scripts: old.scripts,
+        // ⚠️ 这几个是**这个槽位的角色**（自带 / 默认 / emoji / 许可），不是这支字节的属性：
+        // 覆盖同一支字体时不该把它们悄悄清掉（清掉 = 自带变得可删、默认位跑掉、emoji 槽失效）。
+        license: old.license,
+        source_url: old.source_url,
+        emoji: old.emoji,
+        is_default: old.is_default,
         added_at: chrono::Utc::now().to_rfc3339(),
         // 导入时也记一份校验和：与自带字体那条路同口径，"盘上这支是什么"永远有据可查
         sha256: sha256_hex(bytes),
+        // `builtin` **有意不继承**：用户导入进来的就是用户字体，删得掉（与改造前一致）
         ..Default::default()
     };
     write_meta(&dest_dir, &meta)?;
     Ok(FontEntry {
         id,
-        file,
+        file: font_file,
         family: meta.family.clone(),
         bytes: bytes.len() as u64,
         display_name: meta.display_name,
@@ -1329,8 +1590,8 @@ pub fn remove_font(root: &Path, id: &str) -> anyhow::Result<()> {
     if !is_safe_id(id) {
         anyhow::bail!("非法 id");
     }
-    let dir = root.join(id);
-    if dir.is_dir() {
+    // ⚠️ 目录名不再等于 id（ASCII slug / 老目录都可能），所以必须走 `dir_for_id`
+    if let Some(dir) = dir_for_id(root, id) {
         if read_meta(&dir).map(|m| m.builtin).unwrap_or(false) {
             anyhow::bail!("程序自带字体不可删除");
         }
@@ -1356,10 +1617,9 @@ pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
     if !is_safe_id(id) {
         anyhow::bail!("非法 id");
     }
-    let dir = root.join(id);
-    if !dir.is_dir() {
+    let Some(dir) = dir_for_id(root, id) else {
         anyhow::bail!("这支字体不在目录布局里（老布局没有元数据），先重新导入一次：{id}");
-    }
+    };
     let mut meta = read_meta(&dir).unwrap_or_default();
     // ⚠️ 判据用**元数据 + id 兜底**：老库/手写的 `FONT.toml` 可能没写 `emoji` 字段，
     // 那时按 id 里含 "emoji" 判（与 `scan_all` 给未下载自带字体打标的口径同源）。
@@ -1373,17 +1633,14 @@ pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
             meta.family = if e.family_internal.is_empty() { e.family.clone() } else { e.family_internal.clone() };
         }
     }
-    // 先把其它支的 is_default 清掉（唯一默认）
-    for e in scan_dirs(root) {
-        if e.id.eq_ignore_ascii_case(id) {
+    // 先把其它支的 is_default 清掉（唯一默认）。⚠️ 目录名不再等于 id ⇒ 用 `dir_entries` 拿真实目录。
+    for (slug, other, _file, mut m) in dir_entries(root) {
+        if entry_id(&slug, &m).eq_ignore_ascii_case(id) {
             continue;
         }
-        let d = root.join(&e.id);
-        if let Some(mut m) = read_meta(&d) {
-            if m.is_default {
-                m.is_default = false;
-                let _ = write_meta(&d, &m);
-            }
+        if m.is_default {
+            m.is_default = false;
+            let _ = write_meta(&other, &m);
         }
     }
     meta.is_default = true;
@@ -1502,6 +1759,105 @@ mod tests_v2 {
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("font.ttf"), b"x").unwrap();
         assert!(remove_font(&root, "other").is_ok());
+    }
+
+    /// ⚠️ **本次事故的钉子（2026-10-02）**：id 含汉字时，**落盘路径必须纯 ASCII**。
+    ///
+    /// 底座出片那条腿把字体路径塞进 ffmpeg 的 `drawtext`，非 ASCII 路径会让 ffmpeg
+    /// **每条字幕访问违例一次**（`0xC0000005`，240 帧 4.2s → 80.3s，且一个字都画不出来）。
+    /// 这里钉三件事：① `ascii_slug` 纯函数（稳定/纯 ASCII/不撞）② 导入落盘形状
+    /// ③ 同 id 重复导入**不会**多出一条（否则 `scan_all` 列两条、`resolve_all` 看目录顺序返回其一）。
+    #[test]
+    fn cjk_id_never_reaches_disk_as_a_path() {
+        // ① 纯函数：同一 id 稳定、纯 ASCII、不同 id 不撞、ASCII 名保持可读
+        let a = ascii_slug("乐米波波体", "乐米波波体");
+        assert_eq!(a, ascii_slug("乐米波波体", "乐米波波体"), "同一 id 的 slug 必须稳定");
+        assert!(a.is_ascii(), "{a}");
+        assert!(a.starts_with("font-"), "全中文 hint 退化成 font- 前缀：{a}");
+        assert_ne!(ascii_slug("NotoSansSC-Regular", "Noto Sans SC"), a);
+        assert!(ascii_slug("Noto", "Noto Sans SC").starts_with("noto-sans-sc-"));
+
+        // ② 导入：目录 ASCII、文件名 font.ttf、id 仍在元数据里、解析/扫描都不退化成 slug
+        let root = tmp("cjk-id");
+        let bytes = builtin_fonts()[0].bytes;
+        let e = import_font_bytes(&root, "乐米波波体.ttf", bytes, Some("乐米波波体")).unwrap();
+        assert_eq!(e.id, "乐米波波体", "配置里那串不变");
+        assert!(e.file.is_ascii() && e.file == "font.ttf", "{}", e.file);
+        let dir = dir_for_id(&root, "乐米波波体").expect("按 id 要能找到目录");
+        let dir_name = dir.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(dir_name.is_ascii(), "目录名必须 ASCII：{dir_name}");
+        assert!(dir.join("font.ttf").is_file());
+        assert!(resolve_all(&root, "乐米波波体").is_some());
+        let listed = scan_all(&root).into_iter().find(|x| x.id == "乐米波波体").expect("列表里要有它");
+        assert_eq!(listed.display_name, "乐米波波体", "显示名不能变成 slug");
+        assert!(listed.installed);
+
+        // ③ 同 id 再导入一次：写回同一个目录，不新增条目
+        let before = dir_entries(&root).len();
+        import_font_bytes(&root, "乐米波波体.ttf", bytes, Some("乐米波波体")).unwrap();
+        assert_eq!(dir_entries(&root).len(), before, "同 id 重复导入不该多出一条");
+    }
+
+    /// 手工探针：对**任意目录**跑一次 ASCII 迁移并列出结果（默认不跑）。
+    ///
+    /// ```bash
+    /// VT_FONT_MIGRATE_DIR=<库目录> cargo test -p vtrim-core --lib migrate_probe -- --ignored --nocapture
+    /// ```
+    ///
+    /// 为什么不干脆给个 CLI：迁移是 `ensure_dir` 的副作用，正常用户不需要手动触发；
+    /// 而**验证**它只需要一个可注入目录的入口（与 `diagnose_sticker_cache` 同规矩）。
+    #[test]
+    #[ignore]
+    fn migrate_probe() {
+        let Ok(dir) = std::env::var("VT_FONT_MIGRATE_DIR") else {
+            eprintln!("设 VT_FONT_MIGRATE_DIR=<库目录> 再跑（--ignored）");
+            return;
+        };
+        let root = PathBuf::from(dir);
+        let moved = migrate_ascii_layouts(&root);
+        println!("迁移 {} 条：{moved:?}", moved.len());
+        for e in scan_all(&root).iter().filter(|e| e.installed) {
+            let p = resolve_all(&root, &e.id).map(|p| p.display().to_string()).unwrap_or_default();
+            println!("  id={:?} file={:?} flat={} path={}", e.id, e.file, e.flat, p);
+        }
+    }
+
+    /// 老库迁移：`<中文目录>/<中文名>.ttf`（可以连 `FONT.toml` 都没有）
+    /// ⇒ 目录 ASCII + `font.ttf` + `id` 回落旧目录名；**幂等**，且 ASCII 条目一个都不动。
+    #[test]
+    fn legacy_non_ascii_dir_migrates_to_ascii_and_keeps_id() {
+        let root = tmp("migrate");
+        let old = root.join("乐米波波体");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("乐米波波体.ttf"), b"not-a-real-font").unwrap();
+        // 迁移前：id = 目录名，解析照旧（老行为一字不变 —— 迁移失败也不能让存量失联）
+        assert!(resolve_all(&root, "乐米波波体").is_some());
+
+        let moved = migrate_ascii_layouts(&root);
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert!(!old.exists(), "中文目录应当搬走");
+        let new_dir = dir_for_id(&root, "乐米波波体").expect("迁移后仍要按老 id 找得到");
+        let new_name = new_dir.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(new_name.is_ascii(), "{new_name}");
+        assert!(new_dir.join("font.ttf").is_file(), "文件也要 ASCII 名");
+        assert!(read_meta(&new_dir).unwrap().id == "乐米波波体", "旧目录名要落成 id");
+        assert!(scan_all(&root).iter().any(|e| e.id == "乐米波波体" && e.installed));
+        // 目录里不该再有任何非 ASCII 名字
+        for f in std::fs::read_dir(&new_dir).unwrap().flatten() {
+            assert!(f.file_name().to_string_lossy().is_ascii(), "{:?}", f.file_name());
+        }
+        // 幂等 + ASCII 条目不动
+        assert!(migrate_ascii_layouts(&root).is_empty(), "迁移必须幂等");
+        let keep = root.join("NotoSansSC-Regular");
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(keep.join("font.ttf"), b"x").unwrap();
+        write_meta(&keep, &FontMeta {
+            id: "NotoSansSC-Regular".into(),
+            display_name: "Noto Sans SC".into(),
+            ..Default::default()
+        }).unwrap();
+        assert!(migrate_ascii_layouts(&root).is_empty(), "ASCII 条目不该被碰");
+        assert!(keep.is_dir(), "ASCII 目录不该被改名");
     }
 
     /// ⚠️ **P1-f 的钉子**：自带字体的清单形状 + "没下载也要看得见" + "下载过就不重复装"。
@@ -1742,9 +2098,15 @@ mod tests_v2 {
         let bytes = &builtin_fonts()[0].bytes;
         let e = import_font_bytes(root, "Dropped.ttf", bytes, Some("拖进来的")).unwrap();
         assert_eq!(e.id, "Dropped");
-        assert!(root.join("Dropped").join("Dropped.ttf").is_file());
-        // 元数据也照写（显示名 / 校验和 / 族名都该在）
-        let meta = read_meta(&root.join("Dropped")).unwrap();
+        // ⚠️ 2026-10-02 起落盘形状是「ASCII slug 目录 + `font.<ext>`」，id 只住元数据里
+        // （见 `ascii_slug`：ffmpeg 那条 drawtext 打不开含非 ASCII 的路径）。
+        let dir = dir_for_id(root, "Dropped").expect("按 id 要能找回目录");
+        assert_eq!(dir, root.join(ascii_slug("Dropped", "拖进来的")));
+        assert!(!dir.join("Dropped.ttf").exists(), "老形状（原名）不该再出现");
+        assert!(dir.join("font.ttf").is_file());
+        // 元数据也照写（id / 显示名 / 校验和 / 族名都该在）
+        let meta = read_meta(&dir).unwrap();
+        assert_eq!(meta.id, "Dropped");
         assert_eq!(meta.display_name, "拖进来的");
         assert_eq!(meta.sha256, sha256_hex(bytes), "校验和必须与字节一致");
         assert!(!meta.family.is_empty(), "族名必须读出来");

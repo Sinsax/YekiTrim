@@ -189,9 +189,38 @@ export const INDEXED_TYPES = [
   'vignette', 'hue_shift', 'noise', 'pulse', 'sfx',
 ]
 
+/// **竖屏画布的三道整类门**（2026-10-02 用户口径）：事件类型 → `[stage] portrait_<x>` 开关名。
+/// 不在表里 = 不受门控（贴纸 / 字幕 / 弹幕都在这一类里）。
+/// ⚠️ 这张表必须与 `tools/polish-to-dhampir.mjs::PORTRAIT_SWITCH`、`index.html` 里那份**同集合**
+///    —— 少一处就是「预览里有这一类、成片里没有」（或反过来），而且**不报错**。
+export const PORTRAIT_SWITCH = {
+  camera: 'camera',
+  shake: 'effects',
+  blur: 'effects',
+  flash: 'effects',
+  hue_shift: 'effects',
+  noise: 'effects',
+  vignette: 'effects',
+  overlay: 'effects',
+  pulse: 'effects',
+  sfx: 'sfx',
+}
+
 export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
+
+  // **竖屏画布的整类门**：竖屏默认全关、**缺字段 = 关**（与转译器同口径）。
+  // 只过滤**建索引**这一步，事件本身一个字都不动 —— 开关打开、重新建索引即完全恢复。
+  // ⚠️ 判据是**画布方向**（`[canvas] orientation`），与 `cameraAt` 里那条「源素材竖」的门
+  //    （`cfg.vertical`）是两条独立的闸：任一条要求禁就禁。
+  const portrait = (cfg._canvas?.orientation || cfg.canvas?.orientation || 'landscape') === 'portrait'
+  const portraitAllows = (type) => {
+    if (!portrait) return true
+    const key = PORTRAIT_SWITCH[type]
+    if (!key) return true
+    return cfg.stage?.['portrait_' + key] === true
+  }
 
   // segments 截断到视频时长（与模板一致，防 LLM 生成的超出）
   const segs = (cfg.segments || []).map((s) => ({ ...s, events: [...(s.events || [])] }))
@@ -222,6 +251,8 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
     const segLabel = seg.note || ''
     ;(seg.events || []).forEach((ev) => {
       const type = ev.type || ''
+      // 竖屏画布的整类门（见上面 `portraitAllows`）：这一类整条不进索引
+      if (!portraitAllows(type)) return
       const entry = { time: ev.time || 0, duration: evDuration(ev, 0), ev }
       if (idx[type]) idx[type].push(entry)
       else idx[type] = [entry]

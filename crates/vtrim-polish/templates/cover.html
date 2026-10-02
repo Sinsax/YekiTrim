@@ -58,9 +58,11 @@ html.export #toolbar { display:none; }
    预览侧（`CoverDesigner.vue` 的 `.title-text`）是镜像：`white-space:pre-line` + `width:max-content`。 */
 #title { font-size:var(--fs); font-weight:900; color:#f0e6d3; line-height:var(--lh); letter-spacing:var(--ls); text-align:var(--text-align);
   white-space:nowrap;
-  -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:var(--text-shadow);
+  /* stroke-linejoin:round —— Takumi 的文本描边吃这条（stylesheets.rs:1275 → text_drawing.rs 的 stroke.join），
+     缺省 Miter join 在 CJK 尖笔画上出尖刺（用户报的「描边不准确」）；浏览器侧写同一份保证预览同观感。 */
+  stroke-linejoin:round; -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; text-shadow:var(--text-shadow);
   opacity:0; transform:translateY(24px); animation:fadeUp 0.6s 0.3s ease both; }
-.hl { color:var(--hlc); font-size:var(--hl-fs, 1em); -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
+.hl { color:var(--hlc); font-size:var(--hl-fs, 1em); stroke-linejoin:round; -webkit-text-stroke:var(--sk) #2a2522; paint-order:stroke fill; }
 @keyframes fadeUp { to { opacity:1; transform:translateY(0); } }
 </style>
 <!-- 图层栈（[cover] layers）的 z-index / display：`cover.rs::cover_layer_css()` 注入，

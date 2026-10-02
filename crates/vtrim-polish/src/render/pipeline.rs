@@ -12,7 +12,7 @@ use crate::project::ProjectFile;
 use crate::render::backend::RenderBackendKind;
 use crate::render::ffmpeg::Ffmpeg;
 use crate::render::sound::collect_sound_events;
-use crate::{assets, cover, process, project, render};
+use crate::{assets, process, project, render};
 
 /// 跨磁盘移动文件：rename 失败且为跨盘错误时回退为 copy + remove。
 fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -416,14 +416,13 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     }
 
     cleanup(project_path, &tv, &ta);
-    // 自动生成封面
-    let t_cover = std::time::Instant::now();
-// 出片末尾的封面：**不指定通道**（None）—— 用 cover.rs 的解析（显式 > VTEDIT_COVER_RENDERER > takumi），
-    // 与视频那条通道解耦（视频走底座，封面是自己的 HTML/CSS 静态渲染）。
-    if let Err(e) = cover::cmd_cover(project_path, Some(&op), None).await {
-        tracing::info!("  ⚠ Cover generation skipped: {}", e);
-    }
-    tracing::info!("  ⏱ 封面 {:.1}s", t_cover.elapsed().as_secs_f64());
+    // ⚠️ **封面不再搭渲染的便车**（2026-10-02 用户拍板"视频导出就只导出"）：
+    // 原来这里串 `cover::cmd_cover(project_path, Some(&op), None)`，导致
+    // ① 每次导出强制重截关键帧/重写封面（用户手导的 `_cover_frame.jpg` 被覆盖的心智负担）；
+    // ② 渲染任务时长被封面通道（字体库非空检查/光栅化）拖长；
+    // ③ 封面失败把"成片已导出"的任务尾行搅成 warning。
+    // 封面走自己的入口：CLI `vtrim polish cover` / WebUI 封面设计器「生成封面」
+    // （`POST /api/polish/cover`，独立任务）。截图帧来源那里本来就会回落 `resolved.video`。
     print_final_stats(&op, start_time);
     Ok(())
 }

@@ -498,3 +498,89 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
 
 复跑：`node .workbuddy/cover-e2e/sweep-effects.mjs` · `node scripts/check-cover-takumi.mjs --project <clip-14>` ·
 `node .workbuddy/cover-e2e/fix-height.mjs`（③ 那条修复 + 裁剪图）· `fix-balance2.mjs` / `fix-hl-fill.mjs`（①②与 `.hl`）。
+
+## 15. 标题描边不准 / emoji 字体不一致 / emoji 没描边（2026-10-02 三个问题的收口）
+
+三个问题都是**同一条根**：用户的 emoji 在 **`title_lines` 的联排文本里**（clip-14 的真实配置就是
+`直接飞出去流鼻血🩸`、`effects = []`），**不在** `[[cover.effects]]` 特效层 —— 所以特效层那套
+（`cover_fx_html` 的描边环、`#fx-extra` 的权威字族层）一行都不落在它身上。上一轮据「特效层」推的
+修法因此**全部无效**（用户复报「三个问题都没解决」）。教训：**先确认用户的东西在哪条路上，再动手。**
+
+### 15.1 「中文描边不够准确」= Takumi 的**合成加粗**，不是 join
+
+受控实验（同一字体文件 乐米波波体、同 200px 字号、同 20px 描边、无阴影、平底）：
+
+| | 描边外扩 | 填充 bbox | 说明 |
+|---|---|---|---|
+| Chrome `font-weight:400` | 9px | 154×180 | 浏览器基准 |
+| Chrome `font-weight:900` | **9px** | **154×180** | **逐像素与 400 相同** ⇒ Chrome 对这支单字面字体**不合成加粗** |
+| Takumi `font-weight:400` | 10px | 166×192 | （166/154 的差是当时两边**用了不同字体**的乌龙，不是引擎差） |
+| Takumi `font-weight:900` | **7px** | **172×198** | Takumi **合成加粗**：填充向外撑 6px、吃掉描边 3px |
+
+机制：`takumi-core/resources/glyph.rs::synthesis_embolden_strength(font_size)` = `font_size × skia_fake_bold_factor`
+（≥36px 时 = `1/32`；200px ⇒ e = 6.25px），由 `draw_text_embolden` 用 `Stroke::new(e)` 把**填充**撑开 `e/2`；
+而 `draw_text_stroke` 是按**未加粗**的原始轮廓描的 ⇒ 填充盖掉描边内缘。线性验证：stroke 20/40/60 ⇒
+外扩 7/17/27 = `w/2 − 3`（**恒定少 3px**，与宽度无关 —— 正是 `e/2`）。
+
+修法：`TAKUMI_TITLE_LAYER_CSS` 末尾加 `#title{font-weight:400}`（同特异度按文档序压过模板那条
+`#title{…font-weight:900…}`）。库里**每支字体只有一个字面**（`font.ttf`），Takumi 永远拿不到真粗体 ⇒
+合成加粗必然是「预览与出片不一致」的来源。真工程 A/B（clip-14、同一份 HTML、Chrome vs Takumi）：
+第 4 行区域「暗/亮像素比」**修正前 0.24 vs 0.41 → 修正后 0.48 vs 0.51**。
+
+> `stroke-linejoin:round`（先前那轮加的）**仍然要留**：Miter 在 CJK 尖笔画上会出尖刺，那条是真问题，
+> 只是**不是**「描边不准」的主因。
+
+### 15.2 「前后端 emoji 字体不一致」= 浏览器根本没拿到库里那支
+
+- 出片侧：Takumi 注册全库（emoji 收尾），🩸 落在 **NotoColorEmoji-CBDT**（彩色 CBDT 位图）。
+- 浏览器侧：标题栈 = `乐米波波体` + fallback —— **一个 emoji 族都没有**；本机又没装 `Noto Color Emoji`
+  ⇒ 落到系统 **Segoe UI Emoji**。**两支完全不同的字体**（字形/配色都不同）。
+  ⚠️ 而且 `/api/polish/font?name=` 与 `@font-face` 都**按 id 解析**，用**内部族名**（`Noto Color Emoji`）
+  注册 FontFace / 请求字节会两头落空（服务器兜底回 `msyh.ttc`）—— 先前那轮就是这么写的，所以是空操作。
+
+修法（两边都用**库 id**）：
+
+1. `cover.rs::cover_font_css` 把 emoji 那支也注进 `@font-face`（`font_face_css(&[title_id, emoji_id])`）；
+2. 标题里的 emoji 段（`wrap_emoji_runs` / `emoji_run_span`）写 `font-family:'<库 id>'`；
+3. 设计器 `loadFonts` 按 **id** 注册 FontFace（选哪支以服务端 `emoji_family` 为准），`wrapEmojiRuns` 是镜像。
+
+**Takumi 认族名**（纠正 §13 时代的旧结论）：受控实测 —— 注册四支字体后把某行的族名写成库 id，
+**连数字都换成该字体的字形**；旧结论「族名无用、只由注册序决定」是把「**认不出的**族名会落进
+『已注册字体按注册序』的兜底桶」当成了「族名不起作用」。⇒ 两条控制点都有效：注册序决定「认不出的族名」落哪支，
+族名决定「指定了族名」时用哪支。
+
+### 15.3 「渲染的 emoji 没有描边」= 位图字形没有描边路径，只能用环
+
+`takumi-raster/text_drawing.rs`：描边只走 `ResolvedGlyph::Outline`；CBDT/COLR **位图**分支没有描边代码 ⇒
+`-webkit-text-stroke` 对 emoji **物理无效**（Chrome 侧同样不描彩色 emoji，所以预览里也没有 —— 用户要的是
+「和标题一样的描边」）。修法：**4 向**（只发正上/下/左/右）`drop-shadow(±k 0 0 #2a2522)` 环，`k = stroke/4`（= 文字描边外扩量的**一半** ——
+首版用 `stroke/2`，用户 2026-10-02 反馈「emoji 的描边太厚了，削弱一半」。特效层那条 emoji 环
+（`cover_fx_html`）同口径：`size × 0.06 → size × 0.03`）。
+
+⚠️ **只许 4 向，别加对角**（2026-10-02 实测纠正）：`filter: drop-shadow` 是**链式**的 —— 每条阴影吃的是
+「已叠加的整层」（takumi-raster `apply_drop_shadow_filter` 的 `composite_pixel_under`；浏览器同规范）。
+8 向时对角那两条继续沿 -x/-y 推已叠加的层 ⇒ 最外缘 = `k + 2k·0.707 ≈ 2.4k`（真封面实测：`k=5` 时暗带
+**13px**、`k=10` 时 **25px** —— 用户「还是太厚」的由来）。4 向每条方向只被推一次 ⇒ 外缘**精确等于 k**。
+
+⚠️ **环宽不留 1px 下限**（原写法 `.max(1.0)`）：描边拖到 0 时环必须一起消失，否则「文字没描边、emoji 却挂一圈」
+——用户口径「描边无法更改」的另一半原因。修后实测（clip-14 真工程）：描边 0 → 环 0px、20 → 5px、40 → 10px。
+
+两个实测钉子（都在 `probe_title_emoji_variants` 里，`--ignored`）：
+
+- **必须 `display:inline-block`**：Takumi 对**行内** span 的 `filter` **不生效**（逐像素与无 filter 版相同）；
+- **inline-block + filter 不改变 emoji 的尺寸/位置**：红滴掩膜在「无环 / 行内环 / inline-block 环」三版里
+  都是 `w=50 h=74`、同一个左上角 ⇒ 环是**加法**，不会把 emoji 画大或挪位。
+
+### 15.4 复跑命令（真实工程 + 真实浏览器基准）
+
+```bash
+# ① 出片侧（真实工程、真实字体库、真 1920×1080）
+VTEDIT_COVER_PROBE_DIR=<目录> cargo test -p vtrim-polish --lib --features cover-takumi \
+  probe_real_cover_pixels -- --ignored --nocapture        # 可加 VTEDIT_COVER_PROBE_PROJECT=<clip 目录>
+# ② 浏览器基准：把 ① 落下的 cover.html 里的 @font-face 指到文件路径，再用 headless Chrome 截图
+chrome --headless=new --disable-gpu --window-size=1920,1080 --screenshot=chrome.png \
+  --allow-file-access-from-files file:///<目录>/page.html
+# ③ 引擎能力（族名定向 / 环要不要 inline-block）
+VTEDIT_PROBE_FONT_ROOT=<字体库> cargo test -p vtrim-polish --lib --features cover-takumi \
+  probe_title_emoji_variants -- --ignored --nocapture
+```
