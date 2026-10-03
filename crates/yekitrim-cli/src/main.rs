@@ -91,6 +91,9 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         data_dir: None,
         admin_password_file: None,
         force: false,
+        // `polish preview` 仍是**要登录**的（与 `yekitrim server` 一致）。
+        // 免登录只给托盘那条"双击就用"的桌面形态 —— 它是显式的、且只限 loopback。
+        local_no_auth: false,
         open_path,
     };
     yekitrim_server::run(args).await

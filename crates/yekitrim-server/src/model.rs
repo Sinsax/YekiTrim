@@ -15,6 +15,16 @@ use std::sync::Arc;
 use super::auth::AuthService;
 use super::jobs::JobManager;
 
+/// 本地免登录模式下的固定身份（只有 loopback + 显式开关才会是 `Some`）。
+///
+/// 见 `ServerArgs::local_no_auth`：开的时候不校验会话，所有请求都当作本机管理员。
+#[derive(Debug, Clone)]
+pub struct LocalAdmin {
+    pub id: i64,
+    pub username: String,
+    pub role: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub jobs: Arc<JobManager>,
@@ -27,6 +37,9 @@ pub struct AppState {
     /// `RenderServer` 起的监听**无法关闭**，旧实现每次点击预览都新起一个，
     /// 端口与任务会无限泄漏；这里按目录复用（HTML 每次请求重建，不会过期）。
     pub preview_servers: Arc<std::sync::Mutex<std::collections::HashMap<String, u16>>>,
+
+    /// `Some` = 本地免登录（**只可能是 loopback + 显式开关**）。由 `auth::authenticate` 读。
+    pub local_admin: Option<LocalAdmin>,
 }
 
 impl AppState {
@@ -39,6 +52,14 @@ impl AppState {
             jobs: Arc::new(JobManager::new()),
             auth,
             preview_servers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            local_admin: None,
         }
+    }
+
+    /// 打开本地免登录（`yekitrim-tray` 用）。⚠️ 调用方必须已经确认**监听的是 loopback** ——
+    /// 这条不变式由 `run_with` 的开机守卫保证，别在别处随手打开。
+    pub fn with_local_admin(mut self, la: LocalAdmin) -> Self {
+        self.local_admin = Some(la);
+        self
     }
 }

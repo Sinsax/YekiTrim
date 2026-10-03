@@ -5,6 +5,7 @@
   <div v-else class="shell">
     <SideNav
       ref="sideRef"
+      :local-no-auth="localNoAuth"
       @open="openProject"
       @remove="removeProject"
       @logout="doLogout"
@@ -75,6 +76,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
 import SideNav from './components/side/SideNav.vue'
+import { api } from './api/client'
 import JobDrawer from './components/jobs/JobDrawer.vue'
 import AppModal from './components/AppModal.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -190,8 +192,20 @@ async function doLogout() {
   router.replace({ name: 'login' })
 }
 
-onMounted(() => {
+/**
+ * 本地免登录位（`GET /api/health.local_no_auth`）：由 `--local-no-auth` 打开
+ * （`yekitrim-tray` 双击起服务时就是它）。拿来收起「退出登录」——本地模式下没有会话可退，
+ * 那个入口只会把人带到不再需要的登录页。
+ * ⚠️ 读失败就当作 false（照旧显示退出）——**别默认 true**，否则一次请求抖动就把入口藏了。
+ */
+const localNoAuth = ref(false)
+
+onMounted(async () => {
   if (!isLogin.value) loadProjects().catch(() => {})
+  try {
+    const h = await api('/api/health')
+    localNoAuth.value = h?.local_no_auth === true
+  } catch {}
 })
 </script>
 

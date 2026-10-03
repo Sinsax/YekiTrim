@@ -59,6 +59,18 @@
      意图是「Dhampir 重建 wasm 后刷新即新」，靠 mtime 自然失效；写成 max-age 长缓存会破坏它。
   `Cache-Control: no-cache` 是「用前先校验」，不是「不许缓存」。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
+  ⚠️ **本地免登录（`--local-no-auth`，2026-10）**：`auth::authenticate` 开头有一条分支 ——
+  `AppState::local_admin` 是 `Some` 就**跳过会话与 CSRF**、直接注入本机管理员。
+  开启条件（缺一条就是"谁都能免密进来的后台"）：**只允许 loopback**、且与 `--allow-remote` 互斥
+  （由 `run_with` 开机守卫拒绝）。另加**两道闸**（`auth::guard_local_request`，任何一条不过是 403）：
+  ① `Host` 必须是 loopback 主机名 —— 防 DNS rebinding（恶意域名解析到 127.0.0.1）；
+  ② 写请求的 `Origin` / `Sec-Fetch-Site` 必须同源 —— 防别的网页跨站打进来。
+  ⚠️ 这两条是这次便利的**唯一**赔偿，别为了"让某个客户端好接"松掉；判据 =
+  `auth::tests::local_no_auth_guards_reject_foreign_host_and_cross_site`（含 `localhost.evil.com` 这类变体）。
+  哨兵会话 id 是 `LOCAL_SESSION_ID = "local-no-auth"`（**不在 sessions 表里**）⇒ 依赖真实会话的功能
+  在本地模式下不可用（最典型是改密码）。`/api/health` 会回 `local_no_auth` 布尔（前端据此收起「退出登录」）。
+  默认（不带该 flag）**一个字节都没变**，`unauthenticated_requests_are_401_except_whitelist` 仍钉着这一点。
+
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。
   axum 里"后加的 layer 在外层"，所以 `routes.rs` 里那两行**看起来是倒着写的**（有注释，别"顺手改正"）。
 - ⚠️ 子模块里的 `super::` 是 `api`、**不是 crate 根**；`api/auth.rs` 与 `crate::auth` 同名不同物，

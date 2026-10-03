@@ -169,6 +169,10 @@ pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::ht
         },
         // 注册开关（登录页据此决定要不要显示「用邀请码注册」入口）
         "registration_enabled": cfg.auth.registration_enabled,
+        // 本地免登录位（`--local-no-auth`，托盘那种"双击就用"的桌面形态）。
+        // 前端据此隐藏「退出登录」这种在没有会话时毫无意义的入口。
+        // ⚠️ 只回布尔，不回任何身份信息 —— health 是**公开**接口。
+        "local_no_auth": state.local_admin.is_some(),
         // 底座出片通道的就绪位（M3）：**只回布尔**，不回任何路径 —— health 是公开接口
         // （路径、Node 版本与"有没有粗体那一支"走已登录的 `POST /api/polish/dhampir-status`）。
         // `deep = false`：这条被前端反复轮询，不起进程（也不跑 `node --version`）。
