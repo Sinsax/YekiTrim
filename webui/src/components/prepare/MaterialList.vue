@@ -58,7 +58,7 @@ const props = defineProps({
   items: { type: Array, default: () => [] },
   /** `'danmaku'` | `'transcript'`（只影响"外部字幕"那个徽标与文案） */
   kind: { type: String, default: 'transcript' },
-  /** 项目作用域有任务在跑：切换/删除都别动（会和管线抢同一份 vtrim.toml） */
+  /** 项目作用域有任务在跑：切换/删除都别动（会和管线抢同一份 yekitrim.toml） */
   busy: { type: Boolean, default: false },
   emptyText: { type: String, default: '' }
 })

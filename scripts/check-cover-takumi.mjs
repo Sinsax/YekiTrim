@@ -139,7 +139,7 @@ if (has('self-test')) selfTest()
 if (has('mutate')) {
   const refPath = path.join(__dirname, 'fixtures', 'cover-golden', 'ref-cover.jpg')
   if (!fs.existsSync(refPath)) { console.log(`❌ 找不到参照帧: ${refPath}`); process.exit(2) }
-  const tmp = path.join(process.env.TEMP || '.', 'vtrim-cover-mutate')
+  const tmp = path.join(process.env.TEMP || '.', 'yekitrim-cover-mutate')
   fs.mkdirSync(tmp, { recursive: true })
   // ⚠️ 不能调 `gray()`：它定义在下面（`const` 的 TDZ），`--mutate` 在模块顶层跑到这儿就炸。
   // 自己用 ffmpeg 转一次 rawvideo —— 几行代码换掉一个"顺序耦合"，值。
@@ -170,7 +170,7 @@ if (has('mutate')) {
 
 const EXE = opt('exe', 'F:\\para\\Code\\V-Trim\\target\\cl\\debug\\yekitrim.exe')
 const FONT = opt('font', 'C:\\Windows\\Fonts\\msyh.ttc')
-const WORK = opt('work', path.join(process.env.TEMP || '.', 'vtrim-cover-gate'))
+const WORK = opt('work', path.join(process.env.TEMP || '.', 'yekitrim-cover-gate'))
 const PROJECT = opt('project', process.env.VTEDIT_COVER_FIXTURE || '')
 const skip = (why) => {
   console.log(`SKIP：${why}`)

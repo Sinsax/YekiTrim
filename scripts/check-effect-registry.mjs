@@ -112,7 +112,7 @@ function loadRegistry() {
 
 const CONSUMERS = [
   {
-    name: '类型真源（vtrim-render-core::Event 枚举）',
+    name: '类型真源（yekitrim-render-core::Event 枚举）',
     file: 'crates/yekitrim-render-core/src/types.rs',
     lang: 'rs',
     kind: 'rust-enum',

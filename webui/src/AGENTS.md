@@ -1,6 +1,6 @@
 # webui/src — v5 工作台前端：壳 / 路由 / 四个视图 / stores
 
-> 范围：`webui/src`/** ｜ 上游：`webui`（构建成 `webui/dist`，由 `vtrim-server` 服务）｜ 验证：`npm --prefix webui run build`
+> 范围：`webui/src`/** ｜ 上游：`webui`（构建成 `webui/dist`，由 `yekitrim-server` 服务）｜ 验证：`npm --prefix webui run build`
 
 ## 职责
 

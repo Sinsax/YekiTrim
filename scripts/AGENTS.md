@@ -113,7 +113,7 @@
     并把 5 个基线采样帧冻结成小图（`<目录>/<样本>/ref-<t>.jpg` + `golden.json`，约 0.7 MB/样本）；
     `--golden <目录>` 之后**完全不渲染兜底腿** —— 参照只读冻结帧，只做**基线对照**（不许配 `--events`，
     也不做 ±1 帧时间对齐：冻的就是那一帧）。**为什么要它**：这条工具的参照原本就是兜底腿自己
-    （`ref.mp4` = `vtrim render --renderer chrome` 的产物），删掉兜底腿会同时失去参照；冻结之后
+    （`ref.mp4` = `yekitrim render --renderer chrome` 的产物），删掉兜底腿会同时失去参照；冻结之后
     删了也能验回归。实测（`demo`）：判据全过、基线中位 **15.07**（与冻结点一致，JPEG 只把均值抬了 0.33）、
     27.8s（比带兜底腿的 ~90s 快），日志里不再有"V-Trim（chrome 后端…）"。
     ⚠️ **2026-10-01 起 `--capture-golden` 与"活参照"两条路都已作废**（它们都要跑那条已删除的兜底腿）：
@@ -142,7 +142,7 @@
   `.route_layer(...)` 的挂载语义（那些靠 router 单测）。用法：`python3 scripts/route_manifest.py [--root .] [--out manifest.txt]`。
 - **`render_phase_report.py`** —— 出片日志的**阶段报告**（只读）：把 `render-*.log` 拆成
   「墙钟 / 分块渲染 / 抽帧 / 编码 / 固定开销」与「发帧 / 启动 / 页面循环 / 回读」两张表
-  （配套文档 `docs/plan/polish-render-speed.md`）。默认目录 `<仓库>/target/debug/.vtrim/cloud/logs`。零依赖、只读。
+  （配套文档 `docs/plan/polish-render-speed.md`）。默认目录 `<仓库>/target/debug/.yekitrim/cloud/logs`。零依赖、只读。
   用法：`python3 scripts/render_phase_report.py [日志目录]`。
 
 ### 贴纸 / 音效目录生成（一次性工程）
@@ -156,7 +156,7 @@
   `experiments/komori_subtagged_catalog.json`（7 大类 → 细分 tag）；`subtag_komori_cn.py` →
   `experiments/komori_cn_tagged.json`。
 - `translate_sfx_zh.py` —— 给无官方中文的条目**用 LLM 批量生成中文释义**（输入 `experiments/komori_raw.json`，
-  输出 `experiments/komori_raw_labeled.json`）；它读的 LLM 配置是 **`target/debug/.vtrim/llm.toml`**。
+  输出 `experiments/komori_raw_labeled.json`）；它读的 LLM 配置是 **`target/debug/.yekitrim/llm.toml`**。
 - `rename_emotelab_stickers.py` —— EmoteLab 贴纸**批量改名**：① 先把匹配的原件复制到 `<src>/backup/`
   （已存在则跳过、不覆盖）② 原地改名（去 `ysyk_` 前缀与时间戳、内容名空格转 `_`）③ 目标名已存在则追加 `_2`/`_3`。
   用法：`python3 scripts/rename_emotelab_stickers.py [--src <目录>] [--dry-run] [--no-backup]`。
@@ -164,7 +164,7 @@
 ### `asrtest/`（原型资产，不是产品代码）
 
 - `align_srt.py` —— "qwen3 文本 + sensevoice 时间轴"双模型对齐的 Python 原型（LCS 锚点 + 锚点间局部 DP + SRT 断句）。
-  跑它需要本地模型 `~/.vtrim/models/{qwen3-asr,sensevoice}/`。
+  跑它需要本地模型 `~/.yekitrim/models/{qwen3-asr,sensevoice}/`。
 - `results.json` —— 5 模型 × 7 音频的 CER/RTF 回归基准；`rust_validation.md` —— Rust 实施后的**历史验证记录**
   （68.8s 片段，锚点覆盖率 74.8%）；`README.md` 描述资产来源与使用方式。
   ⚠️ `rust_validation.md` 里那份 `[asr]` 配置是**当时**的写法（例如 `timestamp_alignment`），

@@ -543,14 +543,14 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // bundled/embedded）；许可原文也一并内嵌、随字体落盘。
     // 用户自己导入的字体放这里（`yekitrim_core::fonts`，v2 = 一支一个目录 + FONT.toml）。
     // ⚠️ **本目录就是字体库本体**（2026-10-02 资产收回程序目录之后）。
-    // 曾经它只是"老安装的回落态"，正式位置在 `%USERPROFILE%\.vtrim\fonts` ——
+    // 曾经它只是"老安装的回落态"，正式位置在 `%USERPROFILE%\.yekitrim\fonts` ——
     // 那条已经作废：现在读写都走这里，**别再改回用户目录**。
     fs::write(
         package_dir.join("resources").join("fonts").join("放这里.txt"),
         concat!(
             "【本目录就是字体库本体 —— 把 .ttf / .otf 直接放进这里即可。\n",
             "（2026-10-02 起：资产全部围绕程序目录。以前正式位置在\n",
-            "  %USERPROFILE%\\.vtrim\\fonts，那条已作废，程序不再读它。）】\n",
+            "  %USERPROFILE%\\.yekitrim\\fonts，那条已作废，程序不再读它。）】\n",
             "把字体文件（.ttf / .otf）放进字体库，精修页里就会多出对应的字体可选：\n",
             "\n",
             "  - 字幕字体 =「生成与导出」卡 → LLM 剪辑参数块 → 字幕字体\n",

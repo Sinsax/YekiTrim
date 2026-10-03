@@ -46,7 +46,7 @@ const BASELINE = {
 
 /// 抓转译器的三方清单（解析 stdout；与 `.workbuddy/dhampir-report.mjs` 同一套规则）。
 function collectIssues() {
-  const dir = mkdtempSync(join(tmpdir(), 'vtrim-drop-'));
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-drop-'));
   try {
     const out = execFileSync(
       process.execPath,

@@ -36,13 +36,13 @@
       </div>
       <p class="muted small mt-8">
         「删除源录播」释放空间但保留产物（唯一的手动释放手段）；「移除项目」只把登记从服务器列表里去掉 ——
-        <b>目录、vtrim.toml、媒体与产物一个文件都不动</b>，随时可以从首页「服务器文件」重新导入同一个目录。
+        <b>目录、yekitrim.toml、媒体与产物一个文件都不动</b>，随时可以从首页「服务器文件」重新导入同一个目录。
         服务端永不自动删除任何数据。
       </p>
     </div>
 
     <div class="card">
-      <h2>项目配置 vtrim.toml</h2>
+      <h2>项目配置 yekitrim.toml</h2>
       <p class="muted small">保存后阶段推导会立即刷新。</p>
       <textarea v-model="raw" rows="18" class="mono"></textarea>
       <div class="row" style="margin-top:10px">
@@ -66,7 +66,7 @@ const route = useRoute()
 const router = useRouter()
 const pid = route.params.pid || ''
 const raw = ref('')
-// 只有成功读到 vtrim.toml 原文才允许保存：否则会把空文件写回去
+// 只有成功读到 yekitrim.toml 原文才允许保存：否则会把空文件写回去
 const loaded = ref(false)
 const busy = ref(false)
 /** 项目列表已经取过一次（用来把"还在读"与"读到了但没有这个项目"分开）。 */

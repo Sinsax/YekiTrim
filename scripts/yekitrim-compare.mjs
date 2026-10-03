@@ -998,7 +998,7 @@ function main() {
     } else {
       // ⚠️ **活参照那条路已随兜底腿一起作废**（2026-10-01）。
       //
-      // 这里原本是 `vtrim polish render --renderer chrome`：拿本仓那条 headless Chrome 逐帧腿
+      // 这里原本是 `yekitrim polish render --renderer chrome`：拿本仓那条 headless Chrome 逐帧腿
       // 当**活的参照**。那条腿已被用户拍板整条删除，所以这条路现在**必然失败** ——
       // 而且失败的样子很难看：`render --renderer chrome` 会报"认不出的出片通道"，
       // 与"参照渲染坏了"看起来一模一样，很容易被当成工具坏了去查。

@@ -9,7 +9,7 @@ import wave as w
 import numpy as np
 from sherpa_onnx import OfflineRecognizer
 
-HOME = pathlib.Path.home() / ".vtrim" / "models"
+HOME = pathlib.Path.home() / ".yekitrim" / "models"
 PUNCT = "\u3002\uFF01\uFF1F\uFF1B\uFF0C\u3001,.!?;:"
 
 

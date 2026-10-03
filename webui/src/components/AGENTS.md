@@ -78,7 +78,7 @@
   另有 `--font-bold-file`）：漂了就是"预览雅黑、成片 Noto" —— 见 `docs/webui-components.md` ②.3。
 - ⚠ 动图（GIF/动画 WebP）由底座自己解码（v6）：四条硬规矩与调用顺序陷阱见 **`docs/webui-components.md` ②.4**。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
-  （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
+  （`yekitrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。"改完没反应"先怀疑没重建/没重启。
 - ⚠️ **Dhampir 加载期间不许播**（门帘 + 播放键置灰 + `togglePlay` 三道闸；热重载不挂）：见
   `docs/webui-components.md` §2.5。
 ### 封面设计器（`CoverDesigner.vue`）

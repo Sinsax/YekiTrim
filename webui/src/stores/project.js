@@ -57,7 +57,7 @@ export async function listTenantFiles(dir = '', enter = '') {
   return api('/api/fs/list', { method: 'POST', body: JSON.stringify({ dir, enter }) })
 }
 
-/** 用服务器本机文件建项目（仅 admin，永不接受上传）。已有 vtrim.toml 时只登记不覆盖。 */
+/** 用服务器本机文件建项目（仅 admin，永不接受上传）。已有 yekitrim.toml 时只登记不覆盖。 */
 export async function createLocalProject({ dir, input = '', danmaku = '', output_dir = '' }) {
   return api('/api/projects', {
     method: 'POST',

@@ -55,7 +55,7 @@
   `crates/yekitrim-server/src/stickers.rs::UPLOAD_MAX_BYTES` 是**同一个数**（**改一处要改两处**，
   Rust 侧有单测把它钉在 64 MiB）。**前端必须先挡**：axum 超限回的是 **413 + 纯文本**，而
   `client.js` 只认 JSON，会把"文件太大"报成"接口不存在或返回格式错误"。
-- **`jobs.js` 的资源键必须与后端 `vtrim-server/src/server/scope_key.rs` 一致**（`clipKey`/`outKey`/
+- **`jobs.js` 的资源键必须与后端 `yekitrim-server/src/server/scope_key.rs` 一致**（`clipKey`/`outKey`/
   `idxKey`）：前端用同一套键判断"我这个片段/项目忙不忙"，只在自己作用域被占用时才禁用按钮。
   `busyOn` 只是提前提示、**不是正确性保证**（正确性由服务端排队兜），所以 `snapshotStale` 超时后
   各视图要把它的结果降级成 `null`，宁可放行也不要把按钮永远灰着。

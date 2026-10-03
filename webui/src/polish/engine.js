@@ -1,4 +1,4 @@
-// engine.js — 从 crates/vtrim-polish/templates/index.html 的 Canvas 渲染器
+// engine.js — 从 crates/yekitrim-polish/templates/index.html 的 Canvas 渲染器
 // （真实出片路径 renderFrame）忠实移植的纯函数特效状态机。
 // buildIndex() 一次性预处理 → 各 *At(idx, t) 逐帧查询覆盖层状态。不读 DOM、不持有组件状态。
 // 修改特效表现时先改 templates/index.html，再同步移植到这里，保持预览与出片一致。
@@ -328,7 +328,7 @@ export function camFactor(label, camStyle) {
 }
 
 // ---- 手持摇摆（运镜的附加变种，`Event::Camera::handheld`） ----
-// 与 vtrim-render-core 的 `types::handheld_sway`、模板 `handheldSway` **逐值同源**
+// 与 yekitrim-render-core 的 `types::handheld_sway`、模板 `handheldSway` **逐值同源**
 // （Rust↔JS 由 `timeline.rs::handheld_sway_matches_js_reference` 钉住，
 // 模板/engine 两个 JS 副本由 `webui/scripts/check-handheld.mjs` 对拍）。
 // 位移单位 = 1920×1080 输出像素（预览里画布 px 与 CSS px 同构，直接当 px 用）；
@@ -473,7 +473,7 @@ export function overlayFadeStop(color) {
 }
 
 // 覆盖层「渐变」的有效色档 —— 与 Rust `timeline.rs::overlay_stops` 逐条对齐。
-// 四处实现必须同改：本文件、timeline.rs、crates/vtrim-polish/templates/index.html（出片权威路径）、
+// 四处实现必须同改：本文件、timeline.rs、crates/yekitrim-polish/templates/index.html（出片权威路径）、
 // webui/src/components/PolishPreview.vue（用本文件的 gradientCss）。
 //
 // **保证 ≥2 档且无空串**：canvas 按 i/(n-1) 铺档，n==1 是 0/0=NaN（抛 IndexSizeError，

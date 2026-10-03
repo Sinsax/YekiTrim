@@ -11,7 +11,7 @@
                    class="tab" :class="{ on: s.key === section }">{{ s.label }}</router-link>
     </nav>
 
-    <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .vtrim/config.toml） -->
+    <!-- 程序配置：ASR / 检测 / 剪切 / Chrome（写入 .yekitrim/config.toml） -->
     <template v-if="section === 'config'">
     <div class="section-title row spread">
       <span>程序配置 config.toml</span>
@@ -140,7 +140,7 @@
     </div>
     </template>
 
-    <!-- LLM 配置：写入 .vtrim/llm.toml -->
+    <!-- LLM 配置：写入 .yekitrim/llm.toml -->
     <template v-else-if="section === 'llm'">
     <div class="section-title row spread">
       <span>LLM 配置 llm.toml</span>
@@ -441,8 +441,8 @@ async function loadConfig() {
     llmRaw.value = d.llm_raw || ''
     // config 解析失败时后端会给出原因，必须显式提示，否则表单只是静默显示默认值
     configError.value = d.config_error || ''
-    // 用 global_config（只含 .vtrim/config.toml）：这块表单编辑的就是**程序配置**，
-    // merged 配置会被某个工程的 vtrim.toml 覆盖，表单就会和源文件对不上。
+    // 用 global_config（只含 .yekitrim/config.toml）：这块表单编辑的就是**程序配置**，
+    // merged 配置会被某个工程的 yekitrim.toml 覆盖，表单就会和源文件对不上。
     // （2026-10-03 起 /api/config 不再回 merged 的 `config`，那个兜底随之删掉。）
     const c = d.global_config || {}
     if (c.asr) Object.assign(form.asr, {

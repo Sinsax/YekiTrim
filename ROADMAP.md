@@ -6,13 +6,13 @@
 
 ⚠️ **不是"远期目标"** —— 本节 P1 / P2 / P3 + 邀请码自助注册**已全部落地**，
 **P4（B站链接通道）也已落地**（2026-09-19；选型/实测/计划见 `docs/plan/p4-*.md`，
-硬规矩见 `crates/vtrim-service/src/bilibili/AGENTS.md`、`.../downloader/AGENTS.md` 与
-`crates/vtrim-server/AGENTS.md`（`download_worker`））。
+硬规矩见 `crates/yekitrim-service/src/bilibili/AGENTS.md`、`.../downloader/AGENTS.md` 与
+`crates/yekitrim-server/AGENTS.md`（`download_worker`））。
 只剩 **P5（容量与运维）**。
-2026-09-18 的结构前置（`server/` → `vtrim-service` + `vtrim-server` 两个 crate，
+2026-09-18 的结构前置（`server/` → 拆成 service + server 两个 crate（现 `yekitrim-service` + `yekitrim-server`），
 `api.rs` 按领域拆成 `api/` 模块树）已完成，见 `docs/plan/service-direction-review.md`。
 
-把 `vtrim server` 从"单机单用户"改造为"单机多账号"（≤10 人）：**部署即生成管理员账号与初始密码**，
+把 `yekitrim server` 从"单机单用户"改造为"单机多账号"（≤10 人）：**部署即生成管理员账号与初始密码**，
 **单人/多人共用同一套认证逻辑（无免登录，本机也要登录）**，唯一门槛是"对外监听要求已改初始密码"；
 项目按账户隔离、平台统一 LLM key/模型与全局并发上限、**对接录播姬**（录制完成 webhook 自动
 入库并跑管线，多分片会话自动聚合、XML 弹幕直解）、B站链接转项目（粘贴链接 →
@@ -24,13 +24,13 @@
 - 地基已完成（2026-09-12 提交 `ba1dafb`、`5e9d4c0`）：JSON 404 兜底、单活动任务与协作式取消、
   SSE 历史回放、Range/路径校验、`filelock` 串行化、`webui/dist` 入库——见设计稿 §13。
   （「单活动任务」后来先放宽成"资源域互斥 + 单一并发上限 3"，再细化为**三档闸门 + 前后台优先级**
-  ——轻活不排队、略重/重活各有名额，见 `crates/vtrim-server/AGENTS.md`（任务队列）与 `vtrim-server/src/jobs.rs`。）
+  ——轻活不排队、略重/重活各有名额，见 `crates/yekitrim-server/AGENTS.md`（任务队列）与 `yekitrim-server/src/jobs.rs`。）
 
 ## 高优先级
 
-### A. `vtrim validate` / `vtrim doctor` 增强
+### A. `yekitrim validate` / `yekitrim doctor` 增强
 
-验证 vtrim.toml + 运行环境：
+验证 yekitrim.toml + 运行环境：
 
 - 检查 ffmpeg/ffprobe 在 PATH 中
 - 验证模型文件完整性和版本兼容性
@@ -41,20 +41,20 @@
 
 ### B. ✅ 已解决（ASR 部分）— 断点续传 / 进度持久化
 
-ASR 分块转写时，每完成一批写 `.vtrim/progress.json`（含音频路径/总块数校验，避免脏缓存），重启时跳过已完成块。
+ASR 分块转写时，每完成一批写 `.yekitrim/progress.json`（含音频路径/总块数校验，避免脏缓存），重启时跳过已完成块。
 LLM 订正流程已重新设计：小批次（25 段）、只返回修正项（JSON 对象）、失败自动重试一次；LLM 订正批次断点续传（`--resume` 或自动检测）尚未实现。
 
 ### C. ✅ 已解决 — 静音检测参数暴露到配置
 
-`[asr.vad]`（threshold / min_silence_duration / min_speech_duration / max_speech_duration）已在 `Config` 中定义并写入 `vtrim.toml`。
+`[asr.vad]`（threshold / min_silence_duration / min_speech_duration / max_speech_duration）已在 `Config` 中定义并写入 `yekitrim.toml`。
 **注：2026-08 已删除**——VAD 配置无任何模块使用（死代码），连同 `VadConfig` 结构体一并移除（`config/types.rs`、`config/mod.rs`）。
 
-### D. `vtrim process --from-stage`
+### D. `yekitrim process --from-stage`
 
 当前 `process` 内部硬编码阶段路由（检测已完成的跳过）。
 提供 `--from-stage 2` 让用户指定从某个阶段开始重跑，灵活调试。
 
-### E. `vtrim detect --preview` / 事件时间线预览
+### E. `yekitrim detect --preview` / 事件时间线预览
 
 对检测到的事件输出文本/JSON 时间线预览（`start - end | label | popularity`），
 让用户确认后再执行剪切。可结合 `less` 或输出到文件。
@@ -72,7 +72,7 @@ LLM 订正流程已重新设计：小批次（25 段）、只返回修正项（J
 
 ### G. 事件人工标注/编辑
 
-- `vtrim events edit`：读取 `events.json` → 打开 `$EDITOR` → 保存覆盖
+- `yekitrim events edit`：读取 `events.json` → 打开 `$EDITOR` → 保存覆盖
 - 或支持 `events.edit.json` 作为用户覆盖文件，merge 到最终输出
 
 ### H. 多语言 ASR 支持
@@ -86,7 +86,7 @@ LLM 订正流程已重新设计：小批次（25 段）、只返回修正项（J
 
 ### I. `--json` 输出模式
 
-`vtrim status --json`、`vtrim detect --json` 等输出 JSON 格式，
+`yekitrim status --json`、`yekitrim detect --json` 等输出 JSON 格式，
 便于 CI/脚本集成。
 
 ## 素材正确率问题清单（polish LLM 生成链）
@@ -145,18 +145,18 @@ LLM 订正流程已重新设计：小批次（25 段）、只返回修正项（J
 
 ### K. 自动 GPU 检测报告
 
-`vtrim doctor` 输出 GPU 编码器可用性：
+`yekitrim doctor` 输出 GPU 编码器可用性：
 - NVENC / QSV / AMF / libx264
 - 推荐最优编码参数
 
 ### L. 弹幕密度热力图输出
 
-`vtrim detect --heatmap` 生成 JSON 格式的弹幕密度热力图数据，
+`yekitrim detect --heatmap` 生成 JSON 格式的弹幕密度热力图数据，
 可导入外部可视化工具。
 
 ### M. 配置文件 Schema 导出
 
-`vtrim config schema` 输出 JSON Schema，便于编辑器补全。
+`yekitrim config schema` 输出 JSON Schema，便于编辑器补全。
 
 ## ASR 时间戳对齐（qwen3 + sensevoice，进行中）
 
@@ -190,12 +190,12 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 
 原计划：句末标点强制切 / 逗号软切（>6s 或 >20 字）/ 单段 ≤8s / 短段 <1.5s 并入前段。
 
-**实测推翻了这个前提**（`cargo test -p vtrim-core --lib diagnose_sensevoice_tokens -- --ignored`，
+**实测推翻了这个前提**（`cargo test -p yekitrim-core --lib diagnose_sensevoice_tokens -- --ignored`，
 真实音频一块 60s）：**SenseVoice 根本不吐标点**（全文一个 `。！？` 都没有），token 还是单字的（89/89）。
 所以"句末标点强制切"在真实数据上**永远没有信号可用** —— 不是判断写得不对，是没有标点可判。
 同时"短段并入前段"正好把切好的短问句重新粘起来。
 
-改为（`crates/vtrim-core/src/asr/align.rs`）：
+改为（`crates/yekitrim-core/src/asr/align.rs`）：
 
 | 作用 | 信号 | 来源 |
 |------|------|------|
@@ -208,7 +208,7 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 
 ### Rust 实施计划（✅ 主体已实现，待对照 68.8s 验收）
 
-1. ✅ 新建 `crates/vtrim-core/src/asr/align.rs`：
+1. ✅ 新建 `crates/yekitrim-core/src/asr/align.rs`：
    - `align_text_to_timeline(qtext, schars, stimes) -> AlignedText`（LCS 锚点 +
      锚点间局部 DP + 插值 + 单调强制）
    - `build_srt_segments()`（v5 断句规则）
@@ -225,7 +225,7 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 
 - 原型脚本：`scripts/asrtest/align_srt.py`
   （`uv run --with sherpa-onnx==1.13.3 --with numpy python align_srt.py <wav> <out.srt>`）
-- 模型：`~/.vtrim/models/`（sensevoice/firered-zh/qwen3-asr）
+- 模型：`~/.yekitrim/models/`（sensevoice/firered-zh/qwen3-asr）
 - 测试音频：`scripts/asrtest/wavs/`（含用户片段 clip_full.wav / clip30.wav）
 - 对比数据：`scripts/asrtest/results.json`（5 模型 × 7 音频 CER/RTF）作为回归基准
 
@@ -261,7 +261,7 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 ### 4. 质量指标（✅ 已实现 `AsrMetadata`，写入 transcript.json，`#[serde(default)]` 向后兼容）
 
 锚点数 / 锚点覆盖率 / 最大插值跨度 / 降级原因 / 模型版本。
-`vtrim status` 可展示，用户据此调 segment_gap 与 v5 阈值。
+`yekitrim status` 可展示，用户据此调 segment_gap 与 v5 阈值。
 
 ### 5. 验收基准（量化"句子级"）
 
@@ -276,7 +276,7 @@ qwen3 文本 + sensevoice 时间轴，双模型同音频解码：
 2. **n-gram 锚点优先**：先做 2~4 字精确 n-gram 锚点，间隙再做局部 DP（字符级 LCS 在长文本上碎片化，n-gram 更稳）
 3. **同音字容错锚点**：qwen3 与 sensevoice 错字高度同音（法环/发还），匹配引入拼音相似度（pinyin crate），显著提升锚点密度
 4. **hotwords**：`local.rs` 的 qwen3/sensevoice 已支持 hotwords 字段（当前传 None）——注入主播名/游戏名/专有名词直降 CER；`vtuber_name` 自动加入
-5. **订正后重映射**：`vtrim correct` 改文本不改时间戳，字数变化导致句级时间戳漂移——订正后按 (新文本, 原时间轴) 重对齐或比例重映射
+5. **订正后重映射**：`yekitrim correct` 改文本不改时间戳，字数变化导致句级时间戳漂移——订正后按 (新文本, 原时间轴) 重对齐或比例重映射
 6. **VAD 辅助边界**（sensevoice 缺失时兜底增强）：sherpa SileroVAD 静音边界作为句子边界候选，优于纯比例法
 7. **展示层换行解耦**：句子级时间戳保持，超长句在 SRT 展示层拆行（≤2 行/条），不影响事件边界
 

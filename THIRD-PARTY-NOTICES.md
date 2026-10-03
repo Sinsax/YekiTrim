@@ -9,7 +9,7 @@
 
 ## 一、链接进发行二进制（静态）
 
-发行包里的 `vtrim.exe` 是静态链接产物，以下组件因此**随二进制一起被分发**：
+发行包里的 `yekitrim.exe` 是静态链接产物，以下组件因此**随二进制一起被分发**：
 
 | 组件 | 版本 | 授权 | 说明 |
 |---|---|---|---|
@@ -25,10 +25,10 @@
 本项目已把本文档与 `LICENSE` 列为 `cargo xtask package` 的**强制**产物（缺任一个直接报错），
 随包分发即完成署名。
 
-### 可选 feature `cover-takumi`（静态封面渲染，**vtrim-polish 默认关 / vtrim-cli 默认开**）
+### 可选 feature `cover-takumi`（静态封面渲染，**yekitrim-polish 默认关 / yekitrim-cli 默认开**）
 
 该 feature **默认不编**，所以**不在默认发行产物里**（`cargo xtask scan` 扫的就是默认产物，因此看不到这一路）。
-一旦用它构建（`--features vtrim-polish/cover-takumi`），以下组件会随二进制静态分发，
+一旦用它构建（`--features yekitrim-polish/cover-takumi`），以下组件会随二进制静态分发，
 声明义务与上表同样由分发方履行：
 
 | 组件 | 版本 | 授权 | 说明 |
@@ -45,10 +45,10 @@
 ⚠️ **本条曾经的最大一项已随功能删除**：`headless_chrome`（MIT）以及它那个
 **GPL-3.0 的构建期依赖 `auto_generate_cdp`** —— 2026-10-01 用户拍板把本仓那条
 headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删除**，`headless_chrome`
-依赖随之从 `vtrim-polish` 的 `Cargo.toml` 摘掉。所以：
+依赖随之从 `yekitrim-polish` 的 `Cargo.toml` 摘掉。所以：
 
-- `headless_chrome` / `auto_generate_cdp` **已不在依赖图里**（`cargo tree -p vtrim-cli`
-  与 `-p vtrim-polish` 都搜不到 `chrome`）；
+- `headless_chrome` / `auto_generate_cdp` **已不在依赖图里**（`cargo tree -p yekitrim-cli`
+  与 `-p yekitrim-polish` 都搜不到 `chrome`）；
 - 那份 **GPL-3.0 的构建期组件不再随本仓构建出现**，下面那条"唯一需要法律确认的一点"
   随之作废（留在这里只是为了让审计的来龙去脉有据可查，**它已不适用于当前代码**）。
 
@@ -57,7 +57,7 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 **教训留着**：新增依赖后要按同样的方式重跑审计（看 `Cargo.lock` 里每个包的
 `license` **与 `license-file`**，再按 build-dep 子树单独过一遍）。
 
-2026-10-01 复核（`cargo tree -p vtrim-cli`，默认 feature）：
+2026-10-01 复核（`cargo tree -p yekitrim-cli`，默认 feature）：
 
 - 全树 **317 个包**（`--prefix none` 去重后；含 build 依赖）。
 - 随二进制分发的**运行时闭包共 298 个包**，**没有任何 GPL / LGPL / AGPL**；逐条统计为
@@ -84,11 +84,11 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 
 | 组件 | 授权 | 说明 |
 |---|---|---|
-| SenseVoice ASR 模型 | 随上游（FunAudioLLM） | 首次转写时下载到 `<exe同级>/.vtrim/models/`。 |
+| SenseVoice ASR 模型 | 随上游（FunAudioLLM） | 首次转写时下载到 `<exe同级>/.yekitrim/models/`。 |
 | Qwen3-ASR 模型 | 随上游（Qwen） | 同上，`hybrid` 模式的填词模型。 |
 | 模型/VAD 文件来源 | — | `github.com/k2-fsa/sherpa-onnx` 的 `asr-models` / `hr-files` release 产物。当前**未做校验和/签名校验**。 |
 | Noto Emoji | Apache-2.0（部分 CC-BY 4.0） | 封面 emoji 特效按需从 `fonts.gstatic.com` 拉取。 |
-| **yt-dlp** | **Unlicense**（公有领域） | B站链接通道的下载引擎。由管理员在设置页一键触发，从 `github.com/yt-dlp/yt-dlp` 官方 release 下载 **`yt-dlp.exe`** 到 `<exe同级>/.vtrim/bin/` —— **不随仓库、不随发行包分发**，所以不产生再分发义务（`cargo xtask scan` 也扫不到它）。内置引擎**钉死版本与 sha256**（`vtrim_service::downloader::registry`，当前 `2026.08.19`；实测与官方 `SHA2-256SUMS` 逐字节一致）。⚠️ 目前**只有 Windows 那份带 sha256**，其它平台禁止自动下载、需管理员用 `[ingest] ytdlp_path` 指定自备副本。 |
+| **yt-dlp** | **Unlicense**（公有领域） | B站链接通道的下载引擎。由管理员在设置页一键触发，从 `github.com/yt-dlp/yt-dlp` 官方 release 下载 **`yt-dlp.exe`** 到 `<exe同级>/.yekitrim/bin/` —— **不随仓库、不随发行包分发**，所以不产生再分发义务（`cargo xtask scan` 也扫不到它）。内置引擎**钉死版本与 sha256**（`vtrim_service::downloader::registry`，当前 `2026.08.19`；实测与官方 `SHA2-256SUMS` 逐字节一致）。⚠️ 目前**只有 Windows 那份带 sha256**，其它平台禁止自动下载、需管理员用 `[ingest] ytdlp_path` 指定自备副本。 |
 
 > ⚠️ **`[ingest] downloader` 的逃生舱**：把它填成其它值时，V-Trim 会用用户自备的「yt-dlp 兼容」
 > 可执行文件（绝对路径）。那份东西**与本项目无关、也不由本项目分发**，因此不在本文档的声明范围内；
@@ -100,20 +100,20 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 |---|---|---|
 | Vue 3 / Vue Router | MIT | `webui/` 运行时依赖。 |
 | Vite / @vitejs/plugin-vue | MIT | 构建工具。 |
-| **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/vtrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5，失败时按顺序回退 unpkg / cdnjs。因为不随包分发，这里只作说明。副作用：**出片时需能访问这些 CDN 之一**。许可原文：<https://gsap.com/standard-license> |
+| **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/yekitrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5，失败时按顺序回退 unpkg / cdnjs。因为不随包分发，这里只作说明。副作用：**出片时需能访问这些 CDN 之一**。许可原文：<https://gsap.com/standard-license> |
 | Lucide | ISC | `webui/src/components/Icon.vue` 内联了其图标路径数据，属再分发，**需保留版权与许可声明**。上游：<https://lucide.dev> |
-| **Noto Sans SC** | **SIL OFL-1.1** | **自带字体**（2026-10-02 起替代 LXGW WenKai Lite）：字节内嵌在 `vtrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoSansSC-Regular.ttf`），首次启动自动落盘到字体库；OFL 全文随字节一并内嵌。上游：<https://github.com/notofonts/noto-cjk>（取自 Google Fonts 的**单字重 TTF**：<https://fonts.gstatic.com/s/notosanssc/v40/>） |
-| **Noto Color Emoji** | **SIL OFL-1.1** | **自带字体**：字节内嵌在 `vtrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoColorEmoji-CBDT.ttf`，取自上游 `v2020-09-16-unicode13_1`），首次启动自动落盘；OFL 全文随字节一并内嵌。上游：<https://github.com/googlefonts/noto-emoji> |
+| **Noto Sans SC** | **SIL OFL-1.1** | **自带字体**（2026-10-02 起替代 LXGW WenKai Lite）：字节内嵌在 `yekitrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoSansSC-Regular.ttf`），首次启动自动落盘到字体库；OFL 全文随字节一并内嵌。上游：<https://github.com/notofonts/noto-cjk>（取自 Google Fonts 的**单字重 TTF**：<https://fonts.gstatic.com/s/notosanssc/v40/>） |
+| **Noto Color Emoji** | **SIL OFL-1.1** | **自带字体**：字节内嵌在 `yekitrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoColorEmoji-CBDT.ttf`，取自上游 `v2020-09-16-unicode13_1`），首次启动自动落盘；OFL 全文随字节一并内嵌。上游：<https://github.com/googlefonts/noto-emoji> |
 
 ## 五、素材来源（请自行核对条款后再对外使用）
 
 | 素材 | 说明 |
 |---|---|
-| `crates/vtrim-polish/assets/sfx_catalog.json` | 音效目录，由 **効果音ラボ / 小森平**（<https://taira-komori.net/>）的音效清单构建（构建脚本 `scripts/build_komori_catalog.py`）。该站声明音效**免费可商用**，但**要求不要直接转载音效 URL** —— 本仓库随源码分发的这份目录是 URL 清单，再分发前请自行评估或改为按需构建。 |
+| `crates/yekitrim-polish/assets/sfx_catalog.json` | 音效目录，由 **効果音ラボ / 小森平**（<https://taira-komori.net/>）的音效清单构建（构建脚本 `scripts/build_komori_catalog.py`）。该站声明音效**免费可商用**，但**要求不要直接转载音效 URL** —— 本仓库随源码分发的这份目录是 URL 清单，再分发前请自行评估或改为按需构建。 |
 | 音效文件本体 | 运行时下载到工程的 `sfx/` 目录，**不随仓库分发**。备选下载源为 `sounddictionary.info`。 |
-| **いらすとや** 插画 | `vtrim-polish` 可按需从 <https://www.irasutoya.com/> 检索并下载插画。该站**免费额度有限且条款较严**（例如单次使用有数量限制、禁止转售素材本身），请使用前自行确认。 |
+| **いらすとや** 插画 | `yekitrim-polish` 可按需从 <https://www.irasutoya.com/> 检索并下载插画。该站**免费额度有限且条款较严**（例如单次使用有数量限制、禁止转售素材本身），请使用前自行确认。 |
 | EmoteLab 贴纸包 | 本地贴纸库（`<exe同级>/stickers/`）由用户自行导入的贴纸包构成，**不随仓库分发**。 |
-| 内置字体 | **随二进制分发**（内嵌）。两支**自带字体**（**Noto Sans SC**、Noto Color Emoji，均 SIL OFL-1.1）的字节编译进 `vtrim.exe`，首次启动自动落盘到字体库，OFL 全文一并内嵌落盘。OFL-1.1 正文明确允许 `bundled, embedded, redistributed`，故随包分发合规。见上表与 `docs/plan/font-library.md`。 |
+| 内置字体 | **随二进制分发**（内嵌）。两支**自带字体**（**Noto Sans SC**、Noto Color Emoji，均 SIL OFL-1.1）的字节编译进 `yekitrim.exe`，首次启动自动落盘到字体库，OFL 全文一并内嵌落盘。OFL-1.1 正文明确允许 `bundled, embedded, redistributed`，故随包分发合规。见上表与 `docs/plan/font-library.md`。 |
 
 ## 六、平台名称
 

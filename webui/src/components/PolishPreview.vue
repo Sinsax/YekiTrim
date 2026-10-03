@@ -1135,7 +1135,7 @@ async function startDhampir() {
   // 现在源按**用户声明的那一份**状态出声，且这两件事是分开的：
   //   · 底座的画面**不看** `muted`（它只取"正在显示的那一帧"，跟播条件只有 `paused`）
   //     ⇒ 出声不影响画面；
-  //   · 出片那条腿（`vtrim polish render` → 转译器）**根本不经过页面**，
+  //   · 出片那条腿（`yekitrim polish render` → 转译器）**根本不经过页面**，
   //     音轨由本仓 ffmpeg 混入（`render/sound.rs`）⇒ 这里怎么改都动不到成片。
   // ⚠ 别把 `muted` 写回 `true`：那等于把这条刚修好的路再掐断一次。
   // `dhampirSourceVideos` 与 `dhampirVideos` 是**同一批元素**：前者的键是引擎的
@@ -2705,7 +2705,7 @@ function pickPoint(e) {
 // ---- 真渲染预览：**整条已删除** ----
 // 这里曾经有两条真渲染通道：
 //   ① wasm 实时模式（`webui/src/wasm/` 的 wasm-bindgen 产物 + `init_renderer()`，
-//      浏览器 WebGPU 里跑 `vtrim-render-core` 的合成管线，逐帧 `render_frame`）；
+//      浏览器 WebGPU 里跑 `yekitrim-render-core` 的合成管线，逐帧 `render_frame`）；
 //   ② 回退的 server 单帧（`POST /api/polish/render-frame`，桌面 wgpu 后端渲染一帧）。
 // 两条都随「作废 wgpu」一起删除（用户拍板：GPU 那侧交给独立的 Dhampir 底座）。
 // 预览的事实来源始终是 `polish/engine.js` 的自绘 DOM/GSAP 层 —— 与出片模板
@@ -2733,7 +2733,7 @@ watch(idx, (v) => {
 watch(() => props.persistedConfig, (cfg) => {
   // 只认"能进 Dhampir 工程"的那几棵子树（= 转译器真正读的那些，见
   // `tools/polish-to-dhampir.mjs`）：别让无关字段触发重载，也别漏掉真正相关的。
-  // 字段名对着 `ProjectFile`（`vtrim-polish/src/project/config.rs`）抄，别自己编。
+  // 字段名对着 `ProjectFile`（`yekitrim-polish/src/project/config.rs`）抄，别自己编。
   const key = JSON.stringify([
     cfg && cfg.segments, cfg && cfg.mute_ranges, cfg && cfg.silence_ranges,
     cfg && cfg.layout, cfg && cfg.canvas, cfg && cfg.stage, cfg && cfg.sticker,

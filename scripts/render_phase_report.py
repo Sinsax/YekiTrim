@@ -7,7 +7,7 @@
 用法::
 
     python scripts/render_phase_report.py [日志目录]
-    # 默认目录：<仓库>/target/debug/.vtrim/cloud/logs
+    # 默认目录：<仓库>/target/debug/.yekitrim/cloud/logs
 
 为什么需要它：出片日志里只有分块级的「抽帧 Xs / 渲染 Ys / 编码 Zs」，
 而**「渲染」那一段把浏览器里的逐帧耗时和两端的 base64/JSON 搬运混在一起**
@@ -133,7 +133,7 @@ def parse(path: pathlib.Path) -> dict | None:
 def main() -> int:
     root = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else (
         pathlib.Path(__file__).resolve().parent.parent
-        / "target" / "debug" / ".vtrim" / "cloud" / "logs"
+        / "target" / "debug" / ".yekitrim" / "cloud" / "logs"
     )
     if not root.is_dir():
         print(f"没有这个目录: {root}")
