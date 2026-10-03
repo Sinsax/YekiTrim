@@ -38,46 +38,62 @@
       </div>
 
       <!-- ① 服务器文件（仅管理员可见；非管理员连来源按钮都没有）
-           ⚠️ 浏览走**弹出式**选择器（`AppModal` + `ServerDirPicker`），不在页面里铺开列表 ——
-              内联那份占掉半屏、且"边浏览边决定"会把未确认的目录当成已选。
-              弹出层里用的是**草稿**状态，只有点「选定」才写回页面。 -->
+           两种选法**都要**（用户口径："能输入选择 + 弹出文件浏览器选择"，是**增加**不是替代）：
+             · **输入选择** = 下面这份内联 ServerDirPicker（可直接填/粘贴服务器绝对路径，
+               就地列目录、点文件、用快捷入口）—— 与字体库那份同一套。
+             · **弹出浏览** = 上面那颗按钮开大窗（`AppModal wide`），深目录导航时视野更宽。
+           两者写同一个已选状态；弹出层额外用**草稿态**，只有点「选定」才写回（否则
+           "进去逛一圈又关掉"会把中途路过的目录当成选定）。 -->
       <div v-if="source === 'local' && isAdmin" class="src-body">
-        <div class="pick-row">
-          <Icon name="folder" :size="15" />
+        <ServerDirPicker
+          mode="file"
+          :start-dir="localDir"
+          :selected="localInput"
+          :exts="VIDEO_EXTS"
+          dir-label="项目目录（服务器上的绝对路径，可直接填或粘贴）"
+          dir-placeholder="例如 F:/media/2025-09-12"
+          @update:dir="onLocalDir"
+          @update:listing="localListing = $event"
+          @pick-file="pickLocalFile"
+        />
+
+        <p class="muted small mt-8">
+          点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
+          只读<b>服务器上</b>已有的文件（不是你这台电脑），<b>不接受上传</b>；
+          目录里已有 <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
+        </p>
+
+        <div v-if="localDir" class="create-bar mt-8">
           <div class="flex-1 pick-main">
-            <template v-if="localDir">
-              <div class="small mono ellip" :title="localDir">{{ localDir }}</div>
-              <div v-if="localEffectiveVideo" class="small mt-4">
-                输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
-                <span v-if="!localInput" class="muted">（自动选取目录里第一个视频）</span>
-              </div>
-              <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
-                这个目录里没有可用的视频（mp4 / mkv / flv / ts…）
-              </div>
-            </template>
-            <div v-else class="small muted">还没选目录 —— 点右边去服务器上挑一个</div>
+            <div class="small mono ellip" :title="localDir">项目将建在 {{ localDir }}</div>
+            <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
+                 不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
+            <div v-if="localEffectiveVideo" class="small mt-4">
+              输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
+              <span v-if="!localInput" class="muted">（自动选取目录里第一个视频）</span>
+            </div>
+            <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
+              这个目录里没有可用的视频（mp4 / mkv / flv / ts…），换一个目录或进子目录看看
+            </div>
           </div>
           <button class="btn" style="flex:none" @click="openLocalPicker">
-            {{ localDir ? '重新选择' : '浏览服务器…' }}
+            <Icon name="folder" :size="14" /> 弹出浏览…
           </button>
           <button class="btn btn-primary" style="flex:none"
                   :disabled="creating || !canCreateLocal" @click="createFromLocal">
             <span v-if="creating" class="spinner"></span> 新建项目
           </button>
         </div>
-        <p class="muted small mt-8">
-          浏览的是<b>服务器上</b>已有的录像，不是你这台电脑 —— 所以只会看到服务器磁盘上的目录。
-          <b>不接受上传</b>；目录里已有 <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
-        </p>
 
-        <AppModal v-if="pickerOpen" :show="true" wide title="选择服务器上的录像目录"
+        <!-- 弹出浏览：草稿态，点「选定」才写回 -->
+        <AppModal v-if="pickerOpen" :show="true" wide title="浏览服务器上的录像目录"
                   @close="cancelLocalPick">
           <ServerDirPicker
             mode="file"
             :start-dir="localDir"
             :selected="draftInput"
             :exts="VIDEO_EXTS"
-            dir-label="目录（服务器上的绝对路径）"
+            dir-label="目录（服务器上的绝对路径，可直接填或粘贴）"
             dir-placeholder="例如 F:/media/2025-09-12"
             @update:dir="onDraftDir"
             @update:listing="draftListing = $event"
@@ -556,9 +572,11 @@ async function testRecorder() {
 
 // ---- ① 服务器文件（浏览逻辑在 ServerDirPicker，与「表情包 → 添加」共用一份）----
 //
-// 分两层状态：**已选**（`local*`，页面用它建项目）与**草稿**（`draft*`，弹出层里改）。
-// ⚠️ 弹出层必须用草稿：直接改已选的话，"浏览了一圈又关掉"会把中途路过的目录当成选定，
-//    用户点「新建项目」建的就不是他最后确认的那个。
+// **两种选法并存**（用户口径：输入选择 + 弹出浏览，是增加不是替代）：
+//   · 内联 ServerDirPicker = 可直接填/粘贴服务器绝对路径 + 就地列目录，写的是**已选**状态。
+//   · 弹出层 AppModal    = 深目录导航视野更宽；它用**草稿**状态，点「选定」才写回已选。
+// ⚠️ 弹出层必须是草稿：直接改已选的话，"进去逛一圈又关掉"会把**中途路过的目录**当成选定，
+//    用户随后点「新建项目」建的就不是他最后确认的那个。
 const localDir = ref('')
 const localInput = ref('')
 const creating = ref(false)
@@ -609,6 +627,17 @@ function confirmLocalPick() {
  * 莫名其妙的「视频不可用」，要么**在新目录里撞上同名文件而静默绑错**。
  * （`PrepareView.vue::onPickerDir` 是同一条规矩，两处别只改一处。）
  */
+function onLocalDir(dir) {
+  localDir.value = dir
+  localInput.value = ''
+  localListing.value = { dir, files: [], dirs: [] }
+}
+
+function pickLocalFile(name) {
+  localInput.value = localInput.value === name ? '' : name
+}
+
+/** 弹出层里换目录同理（只是改草稿，不动已选） */
 function onDraftDir(dir) {
   draftDir.value = dir
   draftInput.value = ''
