@@ -14,7 +14,7 @@
 > 以及桌面 `yekitrim-polish/src/render/native/` 的 `WgpuBackend`。**整条已删除**（用户拍板：
 > GPU 出片与本仓无关，那侧交给独立的 **Dhampir 底座**，见根卡「本仓不再自带任何 GPU 渲染」）。
 > 依赖也一并收干净（`wgpu` / `bytemuck` / `swash` / `image` / `futures` 都没了，只剩 `serde` /
-> `serde_json` / `tracing`）。**别再往这里加回任何 GPU 管线、feature 或可选依赖。**
+> `serde_json`）。**别再往这里加回任何 GPU 管线、feature 或可选依赖。**
 
 ## 入口
 
@@ -49,7 +49,7 @@
 - `cargo test -p yekitrim-render-core --lib` **只跑 `timeline.rs` + `easing.rs` 的单测** ——
   **别把它当成成片行为的回归网**（成片行为的守卫在 `cargo test -p yekitrim-polish` 与
   `webui/scripts/check-*.mjs` 那几条漂移对拍上）。
-- 本 crate 的依赖只有 `serde` / `serde_json` / `tracing`。要加依赖先问一句"这是不是业务"——
+- 本 crate 的依赖只有 `serde` / `serde_json`。要加依赖先问一句"这是不是业务"——
   业务属于 `yekitrim-polish`。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
