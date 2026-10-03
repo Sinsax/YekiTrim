@@ -892,6 +892,20 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
     列服务器目录。用户明确要求"只能选服务器的内容，不是本机内容"，加一个原生文件框就会破这条。
     （全站唯一两个接受上传的入口是封面背景图与 `StickerPacks`，与本链路无关。）
   - 与「表情包 → 添加」（`mode="dir"`）共用：那条链路不传 `exts`、也不关心 `update:listing`，新增的 emit 是可选的。
+- **品牌标（正式 logo，2026-10）**：用户提供的 `logo.png`（1024²，69% 透明）——
+  去透明边后内容 **857×890 且贴着左上角**（右侧留 167 / 下侧 134），所以必须先 `getbbox()` 裁切再
+  **居中补成方形**，否则进 UI 会偏。
+  - 两处资源分开放：界面用 `webui/src/assets/logo.png`（Vite 打包带 hash，`<img :src="logoUrl">`）；
+    favicon 用 `webui/public/{favicon-16,favicon-32,logo,icon-192,apple-touch-icon}.png`
+    （**新建了 `public/` 目录**，Vite 原样拷到 dist 根，`index.html` 用 `./xxx.png` 相对引）。
+    ⚠️ `apple-touch-icon` 垫了主题暖白底 —— iOS 不吃透明。
+  - ⚠️ **容器不再垫渐变圆底**：`.login-card .logo` / `.brand-logo` 原来画着 `--main→--tan` 的渐变圆
+    再叠内联 SVG；正式 logo 自带底色与留白，再垫一层会把它压成一圈色边。现在容器只留尺寸
+    （56 / 34px）+ `object-fit:contain`。**别再改回内联 SVG**（那是正式 logo 到位前的临时占位）。
+  - ⚠️ 该 logo 是**暖米/棕/红的插画**，与当前主题的砖橙 `#E86838` **不是同一套色**
+    （实测仅 5.5% 像素落在砖橙附近，53.7% 是米白）。要"图标与界面同源"就得反过来调主题色，
+    这一条留待用户决定，别擅自改主题。
+
 - `ServerFileBrowser`（2026-10，弹窗里的**双栏大浏览器**）：左 = 可展开目录树，右 = 当前目录的文件，
   顶 = 面包屑 + 快捷入口。emits `update:dir` / `update:listing`（`{dir,files,dirs}`）/ `pick-file`。
   - ⚠️ **树根不能用响应里的 `roots` 直接当**：服务端会把**当前目录**追加进 `roots`（本意是给下拉框

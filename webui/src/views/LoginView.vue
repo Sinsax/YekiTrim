@@ -2,13 +2,10 @@
   <div class="login">
     <div class="login-card">
       <div class="logo">
-        <!-- 与 favicon（webui/index.html）同一套几何：砖红 Y + 沙色下竖。
-             这里描边用白色 / 浅沙，因为底色是 --main 渐变圆。 -->
-        <svg viewBox="0 0 64 64" aria-hidden="true">
-          <path d="M18 18 L32 34 L46 18" fill="none" stroke="var(--on-main)" stroke-width="7"
-                stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M32 34 L32 47" stroke="rgba(255,255,255,.55)" stroke-width="7" stroke-linecap="round" />
-        </svg>
+        <!-- 品牌标：用户提供的正式 logo（1024² 去透明边后居中方形）。
+             资源在 src/assets/logo.png，由 Vite 打包（带 hash）；favicon 那份在 public/。
+             ⚠️ 不要再改回内联 SVG —— 那是正式 logo 到位前的临时占位。 -->
+        <img :src="logoUrl" alt="YekiTrim" />
       </div>
       <h1>YekiTrim</h1>
       <div class="sub">切片工作台 · 账号登录</div>
@@ -50,6 +47,7 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import logoUrl from '../assets/logo.png'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { login } from '../stores/auth'

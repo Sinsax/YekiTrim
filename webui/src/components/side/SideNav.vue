@@ -2,13 +2,8 @@
   <aside class="side" :class="{ mini: collapsed }">
     <div class="side-brand" @click="go('/workbench')">
       <div class="brand-logo">
-        <!-- 与 favicon（webui/index.html）同一套几何：砖红 Y + 沙色下竖。
-             白/浅沙描边因为底色是 --main → --tan 渐变圆。 -->
-        <svg viewBox="0 0 64 64" aria-hidden="true">
-          <path d="M18 18 L32 34 L46 18" fill="none" stroke="var(--on-main)" stroke-width="7"
-                stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M32 34 L32 47" stroke="rgba(255,255,255,.55)" stroke-width="7" stroke-linecap="round" />
-        </svg>
+        <!-- 品牌标：与登录页同一份正式 logo（src/assets/logo.png）。不要再改回内联 SVG。 -->
+        <img :src="logoUrl" alt="YekiTrim" />
       </div>
       <div v-if="!collapsed">
         <div class="brand-name">YekiTrim</div>
@@ -106,6 +101,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import logoUrl from '../../assets/logo.png'
 import ProjectNode from './ProjectNode.vue'
 import Icon from '../Icon.vue'
 import { authState } from '../../stores/auth'
