@@ -12,6 +12,22 @@
 ## 入口
 
 - **二进制**：`[[bin]] name = "yekitrim"`，`src/main.rs`（`src/cli.rs` = clap 定义，`src/progress.rs` = 进度条）。
+- **两个 bin，同一个 crate**：
+  · `yekitrim`（`src/main.rs`）= 控制台 CLI；
+  · **`yekitrim-tray`（`src/tray.rs`）= Windows 托盘外壳**（2026-10）：双击即后台起 server + 自动开界面，
+    托盘左键开网页、右键菜单「实际地址（灰显）/ 打开网页 / 退出」。
+    ⚠️ `#![cfg_attr(windows, windows_subsystem = "windows")]` 是 **crate 根**属性 ——
+    正因为托盘是**独立 bin**（Cargo 每个 bin 各自成 crate），`yekitrim.exe` 那个控制台程序才没被一起变成无控制台。
+    ⚠️ 托盘**必须先 `tracing_setup::setup(false)`**：它没有 stdout，但日志文件与 WebUI 的「运行日志」
+    都靠 `LogBusLayer`。**漏了它托盘就一个订阅者都没有**（实测：`logs/` 目录建了但是空的，出问题完全瞎）。
+    ⚠️ 托盘的服务线程结束时**不能 `PostQuitMessage`**（那只投给当前线程的队列，主线程收不到 ⇒
+    服务没了进程还挂着）。做法：`PostMessageW(hwnd, WM_CLOSE)` → 主线程收 `WM_DESTROY` 才 PostQuitMessage。
+    ⚠️ 起服务前先 `doctor::probe_health` 探一下该端口：**已有 YekiTrim 就直接开它并退出** ——
+    双击第二次的合理反应是"打开它"，不是报"端口被占"。
+    ⚠️ 端口用 `YEKITRIM_PORT` 覆盖（缺省 `doctor::DEFAULT_PORT`，**别写第二个字面量**）：给开发时并存/自动化测试用。
+    ⚠️ windows-sys **钉 0.52**（那个版本句柄是 `isize`；0.59+ 改指针包装，代码对不上）。
+- **`src/tracing_setup.rs` 两个 bin 共用**（各自 `mod tracing_setup;` 引同一份文件）：
+  `setup(true)` = CLI（终端 + 日志总线），`setup(false)` = 托盘（只挂日志总线）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：
   `init <video> [--danmaku <file>]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
   `transcribe [-i]` / `detect [-t <transcript>]` / `cut [-i] [-e <events>] [-o]` /
@@ -32,8 +48,12 @@
   （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；
   `polish stickers list|test|scan` 本地贴纸（列出 / 测 keyword 匹配 / 生成清单）。
 - **服务端转发**：`Command::Server(args) => yekitrim_server::run(args.clone()).await`；
+  托盘走 `yekitrim_server::run_with(args, shutdown, on_listening)` —— `shutdown` 一到就**优雅关停**
+  （`run()` 自己也用它接 Ctrl+C，所以 Ctrl+C 不再让 `InstanceLock` 的 Drop 跑不到、下次启动少一条"残留锁"WARN）；
+  `on_listening(url)` 回调给的是**实际**监听地址（端口被占时服务端会自己换一个，别假定就是请求的那个）。
+  ⚠️ 门禁 `cli 只用 server 的入口` 放行的是 `yekitrim_server::{run*, ServerArgs}`；
   `ServerArgs` 就是 `yekitrim_server::ServerArgs`（clap 直接 derive 在它上面）。
-- **tracing 装配**（`setup_tracing()`）：`registry + EnvFilter + fmt::layer + yekitrim_service::logbus::LogBusLayer::new(bus())`。
+- **tracing 装配**：`tracing_setup::setup(terminal)`（`registry + EnvFilter + [fmt::layer] + LogBusLayer`）。
   `LogBusLayer` **必须挂上**：`yekitrim server` 的访问日志、任务日志、错误文案都靠它进设置页「运行日志」与日志文件；
   对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。全局过滤器来自 `RUST_LOG`（**默认 `info`**），
   想看高频接口的逐条访问日志用 `RUST_LOG=yekitrim=debug`。
@@ -46,7 +66,8 @@
 
 - `polish cover` 有 **`--renderer takumi`**（**唯一一个值**；不传 = `cover.rs` 的默认链：显式参数 > `VTEDIT_COVER_RENDERER` > takumi）。⚠️ 老脚本里的 `--renderer chrome` 现在会由 `cover.rs` **明确报错**（那条 headless Chrome 截图腿 2026-10-01 整条删除）。⚠️ **封面与视频的出片通道互相独立**：视频走底座时封面仍走 Takumi（静态光栅化），两者是不同的引擎，别把它们绑一起。
 
-- ⚠️ **CLI 只用 server 的入口**：`yekitrim_server::` 只许出现 `run` / `ServerArgs`，不许直接调 server 内部模块。
+- ⚠️ **CLI 只用 server 的入口**：`yekitrim_server::` 只许出现 `run` / `run_with` / `ServerArgs`
+  （门禁正则是 `(?!(run|ServerArgs))`，`run*` 一族都放行），不许直接调 server 内部模块。
   这是机器门禁（`cli 只用 server 的入口`）：`python3 scripts/check_module_boundaries.py`。
   `yekitrim-cli` 本来就依赖 `yekitrim-core` / `yekitrim-polish`（入口装配要用），但**服务端能力**只能经
   `yekitrim_server::run()` / `ServerArgs` 进。

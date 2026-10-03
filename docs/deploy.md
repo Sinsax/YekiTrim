@@ -28,6 +28,23 @@ yekitrim server --open          # 默认 127.0.0.1:26320
 26320 在跨平台安全带 15001–32767 内（躲开 Windows 动态段/保留段，也在 Linux 动态段 32768–60999 之外）。
 换端口用 `--port`；绑不上时程序会打印一个**实测可绑**的替代端口。
 
+### 双击就用：`yekitrim-tray.exe`（Windows）
+
+不想开终端的话，发行包里另有一个 **`yekitrim-tray.exe`**（同目录还有它要的 `yekitrim.ico`）：
+
+- **双击即后台起服务**（无控制台窗口），并**自动打开浏览器**到 WebUI。
+- 通知区图标：**左键 = 打开网页**；**右键**菜单 = 当前地址（灰显只读）/ 打开网页 / **退出**。
+- 「退出」走的是**优雅关停**：服务收尾后 `yekitrim.lock` 会被写成 `pid=0`，下次启动不会报"残留锁"。
+- **已经在跑时再双击**：它会先探测该端口上是不是已有 YekiTrim —— 是就**直接把已有界面打开**再退出，
+  不会报"端口被占"，也不会起第二个服务。
+- 端口默认 `26320`；要给开发中的实例让路可用环境变量 **`YEKITRIM_PORT`** 覆盖（例：`set YEKITRIM_PORT=26399`）。
+- ⚠️ **没有控制台 ⇒ 出错只能靠弹窗与日志**：起不来时会弹一个说明框，细节在
+  `<数据目录>/logs/yekitrim-YYYYMMDD.log`。首次运行的管理员初始密码在
+  `<数据目录>/initial-admin-password.txt`。
+- 想让开机自启：把 `yekitrim-tray.exe` 的快捷方式放进
+  `shell:startup`（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`）即可 ——
+  不用装服务、不用管理员权限。
+
 ## B. 内网 / 可信小圈子
 
 ```bash

@@ -3500,6 +3500,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.52.0",
  "yekitrim-core",
  "yekitrim-polish",
  "yekitrim-server",
