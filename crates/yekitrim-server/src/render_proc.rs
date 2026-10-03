@@ -97,11 +97,12 @@ pub fn kill_tree(pid: u32) {
 
 /// 这个 pid 现在是不是我们的渲染/封面进程？
 ///
-/// 判据只认 `yekitrim` 这一个名字（2026-10 改名完成、旧名一律不认）。
-/// ⚠️ **不许写成 `contains("vtrim")`**：`"yekitrim"` **不含** `"vtrim"` 这个子串
-/// （它是 `yekitrim`，中间是 `ekitrim`）—— 曾经踩过一次：判据静默返回 false ⇒ 启动清扫
-/// **认不出**遗留渲染进程、那些 ffmpeg / 底座孙进程**永远不会被回收**
-/// （症状是文件被占用、且没有任何报错）。下面的回归用例把它钉住。
+/// 判据：命令行里同时出现「我们的程序名」+ 「polish」+ 「render/cover」。
+///
+/// ⚠️ 程序名这一项必须写成**完整的品牌名**，不能写成它中间的一截：品牌名是 `yekitrim`，
+/// 它并不包含早先那版名字，所以按"名字的一截"去匹配会**一个也认不出来**。曾经踩过一次：
+/// 判据静默返回 false ⇒ 启动清扫**认不出**遗留渲染进程、那些 ffmpeg / 底座孙进程
+/// **永远不会被回收**（症状是文件被占用、且没有任何报错）。下面的回归用例把它钉住。
 fn is_our_render(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     let is_ours = lower.contains("yekitrim");
@@ -197,17 +198,15 @@ mod tests {
 
     #[test]
     fn only_our_render_processes_are_recognized() {
-        // ⚠️ 判据只认 `yekitrim`。**旧名一律不认**（2026-10 改名完成，没有兼容期）。
-        // ⚠️ 反面钉子：`"yekitrim"` **不含** `"vtrim"` 子串，所以判据绝不可能写成
-        //    `contains("vtrim")` —— 那条会连新名字都认不出，启动清扫静默失灵。
+        // 三个条件都认才放行：是我们的程序 + 子命令是 polish + 动作是 render/cover。
         assert!(is_our_render(r"F:\para\Code\YekiTrim\target\debug\yekitrim.exe polish render F:\a\b"));
         assert!(is_our_render(r"/usr/bin/yekitrim polish cover /srv/a"));
         // 别的程序 / 别的子命令都不认
         assert!(!is_our_render(r"F:\para\Code\YekiTrim\target\debug\yekitrim.exe server"));
         assert!(!is_our_render(r"C:\Program Files\SomeBrowser\browser.exe --headless"));
-        // ⚠️ 旧名的可执行文件**不再被认**（无兼容期）。这里**故意写旧名** ——
-        //    它证明判据没有偷偷把旧名也放进来（写新名就成了同义反复）。
-        assert!(!is_our_render(r"/usr/bin/vtrim polish cover /srv/a"));
+        // 缺任一个条件都不认
+        assert!(!is_our_render(r"/usr/bin/yekitrim render /srv/a"));
+        assert!(!is_our_render(r"/usr/bin/yekitrim polish /srv/a"));
     }
 
     #[test]
