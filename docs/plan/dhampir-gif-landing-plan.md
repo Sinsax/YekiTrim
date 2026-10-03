@@ -10,9 +10,9 @@
 
 ## 0. 一句话现状
 
-提案是 V-Trim 提的；**底座已经做完了，而且比提案要求的多**（GIF + 动画 WebP）。
+提案是 YekiTrim 提的；**底座已经做完了，而且比提案要求的多**（GIF + 动画 WebP）。
 本仓还停在 v5：`DHAMPIR_HOST_API = 5`，预览仍走逐帧 HTTP + base64 PNG。
-所以现在的任务不是"推动底座"，而是**把 V-Trim 这一侧接上去**。
+所以现在的任务不是"推动底座"，而是**把 YekiTrim 这一侧接上去**。
 
 ---
 
@@ -64,7 +64,7 @@
 | 电风扇2.gif | 1.8 MiB | 500x500 | 32 | 960 ms | 30.5 MiB |
 | 笑.gif | 1.9 MiB | 500x500 | 32 | 960 ms | 30.5 MiB |
 
-- 解码器读出的延迟表与 V-Trim 探测的那份**逐值相同**（全 30ms）——"时间真值归一"有实测依据。
+- 解码器读出的延迟表与 YekiTrim 探测的那份**逐值相同**（全 30ms）——"时间真值归一"有实测依据。
 - 传输量 **46.2 MiB → 8.4 MiB**（4.1x 膨胀消失）。
 - 四张贴纸解码+上传 218ms（Vulkan 真机）。
 
@@ -108,7 +108,7 @@ load 在 attach 之后  →  {parsed:true, ok:true, info:{format, width, height,
 
 ---
 
-## 2. V-Trim 侧改动清单
+## 2. YekiTrim 侧改动清单
 
 ### T1 — 版本门禁（**第一个做，也是最简单的一步**）
 
@@ -157,7 +157,7 @@ load 在 attach 之后  →  {parsed:true, ok:true, info:{format, width, height,
 
 - `check-dhampir-wiring`：**位图探针换成 GIF 探针**（现在探 `setSourceBitmap`，接线后它不该再出现
   在动图路径上）。
-- parity 对拍 `scripts/vtrim-compare.mjs --golden` 重跑三样本。
+- parity 对拍 `scripts/yekitrim-compare.mjs --golden` 重跑三样本。
 - 新增：断言动图路径上不再有 `sticker-frame` 调用（防止回退）。
 
 ---
@@ -176,7 +176,7 @@ load 在 attach 之后  →  {parsed:true, ok:true, info:{format, width, height,
 
 ---
 
-## 4. 验收判据（V-Trim 侧要跑的）
+## 4. 验收判据（YekiTrim 侧要跑的）
 
 底座侧已给的（§8.5 + §10）：
 
@@ -186,7 +186,7 @@ load 在 attach 之后  →  {parsed:true, ok:true, info:{format, width, height,
 4. `begin_frame` 内容标识含 GIF 帧（换帧不被缓存去重盖掉）；
 5. 延迟表真值冲突（解码 vs 工程 JSON）报 warning，以解码为准。
 
-V-Trim 侧新增的：
+YekiTrim 侧新增的：
 
 6. **播放期零贴纸请求**（网络面板断言，这是本提案最大的收益点）；
 7. **seek 到任意时刻贴纸首帧即时**（<1 帧间隔）；
@@ -239,7 +239,7 @@ wasm 接线只编译过、没喂过真 GIF。这一步的风险最高。
 
 ---
 
-## 7. 执行记录（V-Trim 侧，2026-10-02）
+## 7. 执行记录（YekiTrim 侧，2026-10-02）
 
 ### 已完成
 
@@ -267,7 +267,7 @@ wasm 接线只编译过、没喂过真 GIF。这一步的风险最高。
 ### 验证
 
 - `node scripts/check-dhampir-wiring.mjs` —— **84 项全绿**（含跨仓版本 6 == 6）。
-- 7 个 `webui/scripts/check-*.mjs` + `check-font-inputs` + `check-vtrim-translator`
+- 7 个 `webui/scripts/check-*.mjs` + `check-font-inputs` + `check-yekitrim-translator`
   + 两条模块门禁 —— 全绿。
 - `npm --prefix webui run build` —— 通过，`dist` 已重建。
 - **直打底座 wasm 量出调用顺序契约**（node + 真 GIF 非问号.gif，2.6MB）—— 见 §1.3b。
@@ -276,7 +276,7 @@ wasm 接线只编译过、没喂过真 GIF。这一步的风险最高。
 
 没有 `clip-18` 那批素材（`media/` 是空的），改用本机真材料自建工程
 （`.workbuddy/anim-verify/clip/`：真 `clip.mp4` + 真 `问号.gif` 2.6 MB / 38 帧 / 500×500），
-**真 `vtrim.exe` 起服务 + 真 Chrome（154，CDP 驱动）开精修页**跑通，证据链：
+**真 `yekitrim.exe` 起服务 + 真 Chrome（154，CDP 驱动）开精修页**跑通，证据链：
 
 | # | 观测量 | 结果 |
 |---|---|---|

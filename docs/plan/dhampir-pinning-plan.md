@@ -1,4 +1,4 @@
-# V-Trim 侧：Dhampir 依赖钉固 —— 实施计划
+# YekiTrim 侧：Dhampir 依赖钉固 —— 实施计划
 
 > 前置已就绪：底座已开源于 <https://github.com/Sinsax/Dhampir>，首个 Release **v0.1.0** 已发。
 > 本文是**执行清单**（可逐条勾），背景与取舍见 [dhampir-dependency-pinning.md](dhampir-dependency-pinning.md)。
@@ -16,7 +16,7 @@ sha256 已由**下载回来重算**验证（与侧车、与本地构建三方逐
 
 ## 1. 为什么要做（一句话）
 
-V-Trim 现在**指着同层 `../Dhampir` 的源码树**拿底座。要改成「从 Release 拿定版产物」，
+YekiTrim 现在**指着同层 `../Dhampir` 的源码树**拿底座。要改成「从 Release 拿定版产物」，
 必须先有一个**可判定的版本契约** —— 否则错版底座不会在启动/打包时被拦，
 只会在出片时由底座自己报 `unsupported_project_schema`：**报得清楚，但报得晚**。
 
@@ -56,10 +56,10 @@ min_host_api       = 6
 因为包内形状已经**逐文件验过完全对齐**（`VERSION` / `bin/<exe>` / `preview/{engine.js,pkg/*}`）。
 下游一行不用改 —— 只多一层「拿到 zip → 解包 → 校验」。
 
-### 提交 2：`vtrim-polish` 侧的契约下界
+### 提交 2：`yekitrim-polish` 侧的契约下界
 
-`crates/vtrim-polish/src/render/dhampir.rs:59-62` 现在**只读不比对** `project_schema`，
-理由是「在 V-Trim 里再抄一份期望值 = 给同一条规矩留第二处实现」—— **这个理由成立，不动它**。
+`crates/yekitrim-polish/src/render/dhampir.rs:59-62` 现在**只读不比对** `project_schema`，
+理由是「在 YekiTrim 里再抄一份期望值 = 给同一条规矩留第二处实现」—— **这个理由成立，不动它**。
 
 要补的是**下界**（`!=` 换成 `<`）：
 
@@ -71,16 +71,16 @@ pub const MIN_HOST_API: u32 = 6;
 ```
 
 读 `VERSION` 时：`schema < MIN` → **进 `problems`**（现在只是 `tracing_like_log` 一行）。
-这样它会出现在 `/api/health.dhampir_ready`、`vtrim polish doctor`、前端提示**同一处**
+这样它会出现在 `/api/health.dhampir_ready`、`yekitrim polish doctor`、前端提示**同一处**
 （`readiness()` 是唯一判断 —— 卡里强调过「别各写一份」）。
 
 ⚠️ **下界值必须与 `dhampir.lock.toml` 同源**，否则又是一份会漂的手抄。
-做法：`vtrim-polish` 是库、**不能读 `crates/xtask/` 的运行时文件**（依赖方向），
+做法：`yekitrim-polish` 是库、**不能读 `crates/xtask/` 的运行时文件**（依赖方向），
 所以常量写在 `dhampir.rs`，由 **`xtask` 侧的守卫反向核对 lock 文件**（见提交 4）。
 
 ### 提交 3：`VERSION` 加 `version=` 的消费
 
-底座 v0.1.0 起 `VERSION` 第一行是 `version=0.1.0`。V-Trim 侧：
+底座 v0.1.0 起 `VERSION` 第一行是 `version=0.1.0`。YekiTrim 侧：
 
 - `readiness()` 的 `contract_version` 字段**保持原语义**（`project_schema`），另加一个
   `dhampir_version` 显示用；

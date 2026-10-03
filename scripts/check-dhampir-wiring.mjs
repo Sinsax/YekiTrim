@@ -24,7 +24,7 @@ const repo = resolve(here, '..');
 
 const ROUTES = join(repo, 'crates/yekitrim-server/src/api/routes.rs');
 const WEBUI_SRC = join(repo, 'webui/src');
-// 与 Rust 侧 `wasm_dirs()` 同一套"同层目录"规则：Dhampir 与 V-Trim 并排。
+// 与 Rust 侧 `wasm_dirs()` 同一套"同层目录"规则：Dhampir 与 YekiTrim 并排。
 const DHAMPIR = resolve(repo, '..', 'Dhampir');
 const ENGINE_JS = join(DHAMPIR, 'web/engine.js');
 // ---- 底座 wasm API 版本（形状变更的哨兵；2026-10-01 底座回执 §1 点名要断言）----
@@ -257,7 +257,7 @@ if (existsSync(ENGINE_JS)) {
 }
 
 // ---- 汇总 ----
-// ---- 定版产物（见 docs/vtrim-integration.md §8）----
+// ---- 定版产物（见 docs/yekitrim-integration.md §8）----
 //
 // 设了 `VTEDIT_DHAMPIR_PREVIEW` / `VTEDIT_DHAMPIR_CLI` 就按**产物**的标准查。
 //

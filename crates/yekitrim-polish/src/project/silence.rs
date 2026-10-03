@@ -245,7 +245,7 @@ mod tests {
     impl TmpProject {
         fn new(tag: &str, srt: &str, mutes: &[(f64, f64)]) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "vtrim-silence-{tag}-{}-{:?}",
+                "yekitrim-silence-{tag}-{}-{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));

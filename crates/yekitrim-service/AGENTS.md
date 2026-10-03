@@ -39,7 +39,7 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
 - **采集**：`ingest::{cmd_token, cmd_status, generate_token}`；`recorder::{RecorderClient, RecorderRoom,
   room_id_from_dir_name, room_id_from_rel_path}`。
 - **配置**：`init_config::{init_project, init_global_config, ensure_global_config, validate_toml, show_config,
-  download_models}`。CLI 侧 `vtrim user *` / `vtrim usage` / `vtrim doctor` / `vtrim ingest *` 的实现都在本 crate。
+  download_models}`。CLI 侧 `yekitrim user *` / `yekitrim usage` / `yekitrim doctor` / `yekitrim ingest *` 的实现都在本 crate。
 
 ## 边界
 
@@ -51,12 +51,12 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   `yekitrim-server` 暴露的 `run()` / `ServerArgs` 进入。以上三条都已是机器门禁（`python3 scripts/check_module_boundaries.py` 的
   `service 不许认识 server` / `server 不许认识 cli` / `cli 只用 server 的入口`）。
 - ⚠️ **默认端口（26320）的唯一一份定义**在 `doctor.rs::DEFAULT_PORT`：`ServerArgs.port`（clap 默认值）、
-  `DEFAULT_URL`（`vtrim doctor --url` 默认 + `vtrim ingest token` 打印的 webhook 地址）都引用它。
+  `DEFAULT_URL`（`yekitrim doctor --url` 默认 + `yekitrim ingest token` 打印的 webhook 地址）都引用它。
   **别在任何地方再写端口字面量**（前端 webhook 地址用 `location.origin`，不用管）。
   26320 落在跨平台安全带 15001–32767 内，躲开 Windows 保留段（老默认 7788 掉在 7635–7834 里 →
   `10013 WSAEACCES` 而 `netstat` 里一个监听者都没有）与 Linux 动态段。
   ⚠️ 两个候选段**都会动态重排**，`mod.rs::first_bindable_port` 绑失败时实测试绑再报；
-  `doctor` 有单测锁住 `DEFAULT_URL` 与 `DEFAULT_PORT` 一致（改一个忘另一个 = `vtrim doctor` 探测不到自己）。
+  `doctor` 有单测锁住 `DEFAULT_URL` 与 `DEFAULT_PORT` 一致（改一个忘另一个 = `yekitrim doctor` 探测不到自己）。
 - ⚠️ **产物落盘 = 一次绑定**：登记清单与生效值这件事**只有一条路** ——
   `assets::bind_asr_artifact`（管线经 `core_pipeline::save_transcript_after_asr` 调它；LLM 订正那份走
   `bind_derived_material`，订正稿是**普通条目**、不占 ASR 槽）。绑不上（产物没落盘等）才退回裸写
@@ -73,7 +73,7 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   就零成本跳过、**一个字节都不动**，旧格式（无 `key`，永远 miss）与没缓存的才当场补一次；
   重剪后 mtime 变了自然按新片段重算。⚠️ 它挂在**共用的**收尾路径上（CLI `cut`/`process` 一样预热），
   **别再开第二条只服务 webui 的路径**；失败不影响剪切结果。
-- ⚠️ **邀请码明文直接落库**（用户要求：管理员要能重复查看、复制再发 —— 与 `vtrim ingest token`"只见一次"
+- ⚠️ **邀请码明文直接落库**（用户要求：管理员要能重复查看、复制再发 —— 与 `yekitrim ingest token`"只见一次"
   的规矩**不同**）：库里没有 selector/哈希那一套，注册校验就是一次明文查表。
   **别再退回"只存哈希"**，那会让管理员看不到码。**一个码只能绑一个账号**：消费走
   `Db::register_with_invite`（同一把锁里 `UPDATE ... WHERE used_at IS NULL AND revoked=0 AND 未过期` 再 INSERT），
@@ -122,8 +122,8 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   `Path::new("").join(x) == x`，所以 CLI 的 `./output` 相对口径行为不变。
   两条都有回归测试（`current_stage_tests` / `runner::tests::danmaku_in_project_root_resolves_when_video_is_nested`）。
 - ⚠️ **按来源类型预载**（`assets::preload_policy`）：`recorder` → 弹幕（入库时 `find_danmaku` 已搬入并写进
-  `vtrim.toml`）；`local`（服务器文件）→ **不预载**，只列候选让用户点 —— 为此 `create_local_project` 改调
-  `write_project_config_exact`（不做"同目录同名 .ass 自动发现"，那条是 `vtrim init` 的语义，两条路要分开）；
+  `yekitrim.toml`）；`local`（服务器文件）→ **不预载**，只列候选让用户点 —— 为此 `create_local_project` 改调
+  `write_project_config_exact`（不做"同目录同名 .ass 自动发现"，那条是 `yekitrim init` 的语义，两条路要分开）；
   `bilibili` → **弹幕**（价值就在弹幕，`popularity` 排序靠它）。
   ⚠️ `Preload::Subtitle` 这个变体**当前没有任何来源映射到它** —— "B站预载字幕"是错的（前几版文档这么写过），
   别改回去。
@@ -146,7 +146,7 @@ LLM 用量账本（`usage`）、运行日志总线（`logbus`）、单实例锁�
   OpenAI `prompt_tokens_details.cached_tokens`、缺省 0 ——**前缀缓存省了多少，看这一列**。
   `latency_ms` 是从第一次尝试到拿到结果的总墙钟（含退避等待）。
 - **读出来**：`GET /api/admin/usage?days=N`（**仅 admin**，记录含他人项目路径，与 `/api/admin/logs` 同一个理由）
-  → 总量 + 按天/链路/项目/模型分组；CLI `vtrim usage [--days N]`。聚合全走 SQL `GROUP BY`，不在 Rust 里扫表。
+  → 总量 + 按天/链路/项目/模型分组；CLI `yekitrim usage [--days N]`。聚合全走 SQL `GROUP BY`，不在 Rust 里扫表。
   **缓存率 = Σcached ÷ Σprompt**（只算输入侧、先求和再相除，不是每次调用比率的平均；分母不掺 completion
   —— 缓存只作用于输入）。`prompt_tokens == 0` 显示 `—`（老中转没报 usage / 失败行 token 全 0，不是"没命中"）。
   实现只此一份：`usage::cache_rate`（CLI 侧，私有），前端 `LlmUsage.vue` 的 `cacheRate` 是镜像。

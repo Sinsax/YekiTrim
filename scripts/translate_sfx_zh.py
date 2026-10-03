@@ -35,7 +35,7 @@ def chat(system, user):
     req = urllib.request.Request(BASE, data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {KEY}",
                                           "Content-Type": "application/json",
-                                          "User-Agent": "vtrim-catalog-builder/1.0"})
+                                          "User-Agent": "yekitrim-catalog-builder/1.0"})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=120) as r:

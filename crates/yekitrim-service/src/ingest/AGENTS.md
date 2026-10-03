@@ -1,12 +1,12 @@
 # ingest — 采集入库：容量预检 / 项目落地 / 录播姬 CLI
 
-> 范围：`crates/yekitrim-service/src/ingest`/** ｜ 上游：`yekitrim-server` 的 `ingest_worker` 与 `download_worker`、`vtrim ingest` CLI ｜ 验证：`cargo test -p yekitrim-service ingest`
+> 范围：`crates/yekitrim-service/src/ingest`/** ｜ 上游：`yekitrim-server` 的 `ingest_worker` 与 `download_worker`、`yekitrim ingest` CLI ｜ 验证：`cargo test -p yekitrim-service ingest`
 
 ## 职责
 
 录播姬采集（P3）与 B站下载（P4）**共用的入库前半段**：容量预检与"把一份素材落成一个项目"。
 这两件历史上长在 `server::ingest_worker` 里，但它们**与录播姬无关**，所以下沉到这里
-（见 `docs/plan/p4-implementation-plan.md` §2）。`mod.rs` 还是 `vtrim ingest token` / `ingest status`
+（见 `docs/plan/p4-implementation-plan.md` §2）。`mod.rs` 还是 `yekitrim ingest token` / `ingest status`
 两条 CLI 的落点。
 
 ## 入口
@@ -37,7 +37,7 @@
   ❌ 搬文件 / 合并分片（录播姬的多分片合并是它自己的事）❌ 容量预检（那是 `capacity`）
   ❌ 起管线（起管线要 `jobs` + `run_stages`，在 `yekitrim_server::pipeline_boot`）。
   顺序上调用方应当是：**容量预检 → 素材就位 → `land_project` → 起管线**。
-- ⚠️ **幂等**：同一个 `vtrim.toml` 重复落位**不会建出第二个项目**（先按 `config_file` 查，命中就复用）。
+- ⚠️ **幂等**：同一个 `yekitrim.toml` 重复落位**不会建出第二个项目**（先按 `config_file` 查，命中就复用）。
   这一条是"重试"能安全使用的前提：下载重试 / 录播姬重投都靠它。
 - ⚠️ `ProjectLanding.source_kind` 同时是**预载策略的键**（`yekitrim_service::assets::preload_policy`），
   写错不会报错 —— 只会让弹幕悄悄不预载、热度排序变差。
@@ -65,9 +65,9 @@
   - 扫描（`register_scan_session`）每两轮就会重走一遍，**不能把已有归属的会话打回 `unassigned`**
     （那会和 assign 来回震荡，手动指派过的会话被反复踢回待分配池）→ 改状态前先看 `owner_id`。
 
-### `vtrim ingest` CLI
+### `yekitrim ingest` CLI
 
-- `cmd_token`：生成不可猜测的 token（`vtrim_` + 40 位 base64url），**明文只显示这一次**，
+- `cmd_token`：生成不可猜测的 token（`yekitrim_` + 40 位 base64url），**明文只显示这一次**，
   配置里只存 scrypt 哈希（`[ingest] token_hash`）并开启 `webhook_enabled`；
   `--disable` 只关开关、**保留 token**。打印的 webhook 地址用 `crate::doctor::DEFAULT_PORT`
   （**别写端口字面量**）。

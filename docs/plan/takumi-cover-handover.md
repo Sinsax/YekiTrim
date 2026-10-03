@@ -38,12 +38,12 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
 
 | 位置 | 内容 |
 |---|---|
-| `crates/vtrim-polish/src/render/takumi.rs` | **薄桥 + 全部引擎适配**：`render_cover_png`（唯一入口）、`split_title_layers`（两层同盒 + 可见行高度）、`hoist_frame_transform`、`inline_css_vars`、`ensure_emoji_fallback`、`flatten_compound_selectors`、`adapt_css_for_takumi`（删 `@font-face` / 删 `paint-order`）、`extract_style_blocks`（先剥 HTML 注释）、遥测（HTML/CSS/产物三个短 hash）+ 测试 |
-| `crates/vtrim-polish/src/cover.rs` | `build_cover_page_static`（静态那条的构建入口，填 `__EXPORT_CSS__`）、`resolve_cover_renderer`（显式 > `VTEDIT_COVER_RENDERER` > chrome，认不出**报错**）、`cover_font_files`（读 `<exe目录>/resources/fonts`）、`cover_static_capability`（能力判据，只此一份）、`COVER_EXPORT_CSS` |
-| `crates/vtrim-polish/templates/cover.html` | 两个静态占位：`:root{…}` 变量块、`__EXPORT_CSS__`（对 Chrome 逐字节中性） |
-| `crates/vtrim-polish/Cargo.toml` | `cover-takumi = ["dep:takumi"]`，**默认关**；`takumi 2.14`（`features = ["from-html"]`） |
-| `crates/vtrim-cli` | `polish cover --renderer chrome\|takumi` |
-| `crates/vtrim-server/src/api/polish.rs` | `POST /api/polish/cover { renderer }`（只透传）；`/api/health.cover_static = {compiled, fonts, fonts_dir, ready}` |
+| `crates/yekitrim-polish/src/render/takumi.rs` | **薄桥 + 全部引擎适配**：`render_cover_png`（唯一入口）、`split_title_layers`（两层同盒 + 可见行高度）、`hoist_frame_transform`、`inline_css_vars`、`ensure_emoji_fallback`、`flatten_compound_selectors`、`adapt_css_for_takumi`（删 `@font-face` / 删 `paint-order`）、`extract_style_blocks`（先剥 HTML 注释）、遥测（HTML/CSS/产物三个短 hash）+ 测试 |
+| `crates/yekitrim-polish/src/cover.rs` | `build_cover_page_static`（静态那条的构建入口，填 `__EXPORT_CSS__`）、`resolve_cover_renderer`（显式 > `VTEDIT_COVER_RENDERER` > chrome，认不出**报错**）、`cover_font_files`（读 `<exe目录>/resources/fonts`）、`cover_static_capability`（能力判据，只此一份）、`COVER_EXPORT_CSS` |
+| `crates/yekitrim-polish/templates/cover.html` | 两个静态占位：`:root{…}` 变量块、`__EXPORT_CSS__`（对 Chrome 逐字节中性） |
+| `crates/yekitrim-polish/Cargo.toml` | `cover-takumi = ["dep:takumi"]`，**默认关**；`takumi 2.14`（`features = ["from-html"]`） |
+| `crates/yekitrim-cli` | `polish cover --renderer chrome\|takumi` |
+| `crates/yekitrim-server/src/api/polish.rs` | `POST /api/polish/cover { renderer }`（只透传）；`/api/health.cover_static = {compiled, fonts, fonts_dir, ready}` |
 | `webui/src/components/CoverDesigner.vue` | 「生成封面」弹窗选通道；不 ready 时置灰 + 写明原因 |
 | `.cargo/config.toml` | `cargo cover` 别名（见 §6） |
 | `scripts/check-cover-takumi.mjs` | 双通道门禁；`textRows()` 从 `polish.toml` 算标题矩形（口径修正） |
@@ -65,13 +65,13 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
    Windows 上我放的是 `msyh.ttc` / `SimHeiTest.ttf` / `seguiemj.ttf`；Linux 上要换成
    **Noto Sans CJK**（中文）+ **Noto Color Emoji**（彩色 emoji）。实验台脚本里凡出现 `C:\Windows\Fonts\...`
    的都要改（`run.mjs` 的默认 `--font`、各 `probe-*.mjs`、`title-single.mjs`、`calibrate-stroke.mjs`）。
-2. **路径**：实验台脚本硬编码了 `E:\media\...`（样本）与 `F:\para\Code\V-Trim\...`（仓库/二进制）。
+2. **路径**：实验台脚本硬编码了 `E:\media\...`（样本）与 `F:\para\Code\YekiTrim\...`（仓库/二进制）。
    Linux 上要么改成参数，要么改环境变量。**样本本身**（clip-14）在 Windows 的 E 盘 —— 需要在 Linux 侧准备等价样本
    （一个带 `polish.toml` + 视频 + 关键帧的精修工程）。
 3. **`cargo cover` 别名**：会读 `.cargo/config.toml`，但里面的说明文字提到 Windows 专属警告，无功能影响。用法一样：`cargo cover -- <exe 参数…>`（`--` 必须由你输入，别名里不能再带一个）。
 4. **`LNK4098` 不存在**：那是 MSVC 链接器 + libwebp-sys 静态 CRT 的警告；Linux 上不会出现，
    所以 §4-b 里"默认开 feature 会多出警告"这条**只对 Windows**成立，Linux 侧只剩构建时长与许可面两条。
-5. **行尾**：`crates/vtrim-polish/src/*.rs` 在 Windows 上是 **CRLF**，Linux 检出通常是 LF；
+5. **行尾**：`crates/yekitrim-polish/src/*.rs` 在 Windows 上是 **CRLF**，Linux 检出通常是 LF；
    我写的补丁脚本都按 `\r\n` 判过（会自适应），但**手工 diff 时注意别整文件重排**。
 6. **工具链**：仓库门禁是 `python3 scripts/check_*.py`（文档明确要求 `python3`）；node 脚本零依赖；
    `cargo` 需 ≥ 1.91（Takumi 的 MSRV；Windows 上是 1.97）。`cargo xtask scan` 扫 **release 产物**。
@@ -86,14 +86,14 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
   clip-14 的帧层 `object-fit:contain + scale(1.386)` **盖满画布**，背景层根本没有露出的地方，
   所以 `bg=blur/image` 与 base 数值相同是**符合预期**的，不是一个有效样本。
   要压真实差距：准备一个**帧层不铺满**（竖素材或带留边）的工程，再跑 `sweep-effects.mjs`。
-- **b. 【已定】`cover-takumi` 对 **CLI** 默认开（2026-10-01 用户拍板）。** 落地：`crates/vtrim-cli/Cargo.toml`
-  的 `[features]` 加了转发 `cover-takumi = ["vtrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`；
-  已验证：不带任何 feature 的 `cargo build --bin vtrim` 能出 takumi 封面（`✓ Cover saved … 3.6s（takumi / 2 个字体）`）。
+- **b. 【已定】`cover-takumi` 对 **CLI** 默认开（2026-10-01 用户拍板）。** 落地：`crates/yekitrim-cli/Cargo.toml`
+  的 `[features]` 加了转发 `cover-takumi = ["yekitrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`；
+  已验证：不带任何 feature 的 `cargo build --bin yekitrim` 能出 takumi 封面（`✓ Cover saved … 3.6s（takumi / 2 个字体）`）。
   **仍需你做**：在新 release 产物上重跑 `cargo xtask scan`（发行面变了）；Windows 上默认构建会多一条
   `LNK4098`（Linux 无）。以下几行的两种粒度**保留**作参考，前半段历史状态：） 两种粒度：
-  ① 只影响 CLI：`crates/vtrim-cli/Cargo.toml` 加 `cover-takumi = ["vtrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`
-  （你的 `cargo run --bin vtrim server` 直接带上，而**库**构建仍精简）；
-  ② 全局：`crates/vtrim-polish/Cargo.toml` 的 `default` 里加 `cover-takumi`。
+  ① 只影响 CLI：`crates/yekitrim-cli/Cargo.toml` 加 `cover-takumi = ["yekitrim-polish/cover-takumi"]` + `default = ["cover-takumi"]`
+  （你的 `cargo run --bin yekitrim server` 直接带上，而**库**构建仍精简）；
+  ② 全局：`crates/yekitrim-polish/Cargo.toml` 的 `default` 里加 `cover-takumi`。
   **选了要配套三件**：改 `THIRD-PARTY-NOTICES` 那节的"默认关"措辞 → 在新 release 产物上重跑 `cargo xtask scan` →
   把"默认构建会多一条 `LNK4098`（仅 Windows）"记进文档。**都未做。**
 - **c. 门禁的自包含 fixture —— 未做。** `scripts/check-cover-takumi.mjs` 现在必须 `--project <真工程>`；
@@ -138,10 +138,10 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
 cargo cover -- server
 cargo cover -- polish cover <工程目录> --renderer takumi
 # 等价的长写法（不用别名时）
-cargo run --bin vtrim --features vtrim-polish/cover-takumi -- server
+cargo run --bin yekitrim --features yekitrim-polish/cover-takumi -- server
 
 # 双通道对拍 / 逐效果扫描（全 node、零依赖；脚本里的样本与二进制路径需要按 Linux 改）
-node .workbuddy/cover-e2e/run.mjs    --src <工程> --work <临时目录> --exe <vtrim>
+node .workbuddy/cover-e2e/run.mjs    --src <工程> --work <临时目录> --exe <yekitrim>
 node .workbuddy/cover-e2e/sweep-effects.mjs      # 依赖 run 同样的路径常量
 # 官方门禁
 node scripts/check-cover-takumi.mjs --project <工程目录>      # 缺样本/字体/带 feature 的二进制时 SKIP
@@ -161,6 +161,6 @@ VTEDIT_TAKUMI_CSS_PROBE=1 …                      # 往适配后的 CSS 注入�
 - **有数字的**：§1 全部读数、§5 每条坑的判据、四条门禁的绿、桥测试 7 passed、`cargo cover` 别名展开正确。
 - **没做 / 没验的**：§4 全部（a–h）。特别地：**我只在 Windows 上跑过**，Linux 上第一次跑请预期
   字体路径、样本路径、行尾这三类问题（都在 §3 点名了）。
-- **共享工作区注意**：本会话期间还有别的改动在同一仓库里进行（`vtrim-render-core` 的 `entrance` 下线、
+- **共享工作区注意**：本会话期间还有别的改动在同一仓库里进行（`yekitrim-render-core` 的 `entrance` 下线、
   出片 chrome 通道冻结 S4、效果词汇表 `spec/effects.json` + `check-effect-registry.mjs`、dhampir 字体粗体修复等）——
   那些**不是本会话改的**；我改动的文件清单见 §2，冲突时以仓库现状为准。

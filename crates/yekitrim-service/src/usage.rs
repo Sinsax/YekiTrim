@@ -4,7 +4,7 @@
 //! 所以这里只需要实现一个 [`UsageSink`] 并装上去，不用碰任何调用方。
 //!
 //! - 服务端：`server::run` 启动时 [`install`]（复用 `AuthService` 手上的同一个 Db）
-//! - CLI：`vtrim process / detect / correct / polish *` 之前 [`try_install_cli_sink`]
+//! - CLI：`yekitrim process / detect / correct / polish *` 之前 [`try_install_cli_sink`]
 //!
 //! 写库失败**绝不影响调用**：sink 里自己 warn 掉。
 
@@ -41,7 +41,7 @@ pub fn install(db: Arc<Db>) {
     yekitrim_core::llm::usage::set_default_sink(Arc::new(DbSink::new(db)));
 }
 
-/// CLI 入口用：开账本并装上 sink。失败只 warn（没有账本不该拦住 `vtrim correct` 这类命令）。
+/// CLI 入口用：开账本并装上 sink。失败只 warn（没有账本不该拦住 `yekitrim correct` 这类命令）。
 pub fn try_install_cli_sink() {
     match Db::open_default() {
         Ok(db) => install(Arc::new(db)),
@@ -130,7 +130,7 @@ pub fn summarize(db: &Db, days: i64) -> Result<UsageSummary> {
     Ok(summary)
 }
 
-/// `vtrim usage`：把汇总打成三张小表（按天 / 按链路 / 按项目）。
+/// `yekitrim usage`：把汇总打成三张小表（按天 / 按链路 / 按项目）。
 pub fn cmd_usage(days: i64) -> Result<()> {
     let db = Db::open_default()?;
     let s = summarize(&db, days)?;

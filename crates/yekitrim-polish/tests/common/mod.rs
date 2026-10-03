@@ -79,7 +79,7 @@ pub fn mutated_translator(
         );
         out = out.replace(from, to);
     }
-    let dir = std::env::temp_dir().join(format!("vtrim-probe-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yekitrim-probe-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let dst = dir.join(format!("polish-to-dhampir-{tag}.mjs"));
     std::fs::write(&dst, out)?;

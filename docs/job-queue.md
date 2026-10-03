@@ -1,6 +1,6 @@
 # 任务队列与三档并发闸门
 
-服务端所有后台任务都过 `JobManager`（`crates/vtrim-server/src/jobs.rs`）。
+服务端所有后台任务都过 `JobManager`（`crates/yekitrim-server/src/jobs.rs`）。
 这份文档解释**为什么要分三档、每一档装了什么、为什么这么装、什么时候会排队**。
 代码实现只此一份，本文是它的说明书 —— 改档位/上限时请一起改这里。
 
@@ -234,7 +234,7 @@ tick 保证其它任务不会因此永远不动（见 §7）：
 `catch_unwind` 现在能接住任务体的 panic 并替它 `fail`。在此之前的 release 构建里它是失效的
 （abort 不 unwind），真正兜住的只有 2/3/4。
 **别把 `panic = "abort"` 加回去**：server 是单进程，那等于"任何一个人的一次 panic 带走所有用户"。回归见
-`vtrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。
+`yekitrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。
 
 **tick 还会点名**：有任务排队超过 `BLOCKED_WARN`(120s) 时打一条 warn，说明**谁被谁挡住、因为什么**
 （`blocked_report`：先按资源冲突找，找不到才是本档名额满 —— 两者的处置完全不同）。
@@ -286,8 +286,8 @@ webui 任务行在排队时显示：
    典型：同一片段上的另一个精修任务、同一项目的另一个管线任务（都持 `p{pid}:out`）。
 3. **同档前面排着后台任务**（或反过来）—— 看 `priority`。
 
-对应源码：`vtrim-server/src/jobs.rs`（`JobClass` / `JobPriority` / `JobSpec` / `schedule_locked`）、
-`vtrim-server/src/scope_key.rs`（资源键）。单测在 `vtrim-server/src/jobs.rs::tests`。
+对应源码：`yekitrim-server/src/jobs.rs`（`JobClass` / `JobPriority` / `JobSpec` / `schedule_locked`）、
+`yekitrim-server/src/scope_key.rs`（资源键）。单测在 `yekitrim-server/src/jobs.rs::tests`。
 
 ### 10.1 界面看起来"卡住"时先分清是哪一种
 
@@ -311,7 +311,7 @@ webui 任务行在排队时显示：
 机器名，前端 `webui/src/api/jobs.js::KIND_ZH` 把它翻成中文给人看。它们**不是档位名**，
 一条动作用哪个 kind 与它属于哪一档是两个独立的决定（见 §5）。
 
-管线里的**阶段名只有四个**（`vtrim-core/src/pipeline/stage.rs`）：
+管线里的**阶段名只有四个**（`yekitrim-core/src/pipeline/stage.rs`）：
 `extract`（抽音频）、`transcribe`（转写）、`detect`（检测事件）、`cut`（剪切）；
 `process` 是"这四步全跑"的别名。`stage_{阶段名}` 是单个阶段，`pipeline` 是显式给一串阶段。
 
@@ -327,13 +327,13 @@ webui 任务行在排队时显示：
 | `pipeline` | 同一套阶段，但阶段列表由请求显式给出（默认也是四步） | `POST /api/project-data/pipeline` 不带 `stage` | 按阶段算 |
 
 `job.kind` 里的 `stage_*` 由 `POST /api/project-data/pipeline` 的 `stage` 字段决定
-（`vtrim-server/src/api/pipeline.rs` 里拼成 `format!("stage_{}", stage)`），所以前端给「预处理」按钮分两次调用时
+（`yekitrim-server/src/api/pipeline.rs` 里拼成 `format!("stage_{}", stage)`），所以前端给「预处理」按钮分两次调用时
 拿到的是两个独立任务：先 `stage_transcribe`、成功后自动接 `stage_detect`。
 
 ### 入库自动管线
 
 `ingest_*` 是上面同一批阶段的**前缀版**，由录播姬录制完成的 webhook 经 ingest worker
-**自动**发起（`Pipeline::stages()`，`vtrim-server/src/ingest_worker.rs`）。前缀的语义就是"跑到哪一步为止"：
+**自动**发起（`Pipeline::stages()`，`yekitrim-server/src/ingest_worker.rs`）。前缀的语义就是"跑到哪一步为止"：
 
 | kind | 阶段 | 档位 |
 |---|---|---|
@@ -356,22 +356,22 @@ webui 任务行在排队时显示：
 
 | kind | 实际做什么 | 触发入口 | 档位 |
 |---|---|---|---|
-| `correct` | LLM 订正转录文本，写 `video_llm.srt` + checkpoint | 前端入口已撤，只剩 CLI `vtrim correct` | 略重 |
+| `correct` | LLM 订正转录文本，写 `video_llm.srt` + checkpoint | 前端入口已撤，只剩 CLI `yekitrim correct` | 略重 |
 | `polish_llm` | 精修 LLM 生成剪辑方案（分段 / 运镜 / 贴纸 / 覆盖层…），跑完在**同一个任务内自动接一次 process 后处理** | 精修页「LLM 剪辑」 | 略重 |
 | `sticker_build` | 读一个贴纸包的文件名，LLM 压出 10~20 个语义 tag，写 `<包名>.toml` 并注册进 `sticker.toml` | 首页「表情包」区块 | 略重 + 后台 |
-| `download_models` | 下载全套 ASR 模型（sensevoice + qwen3-asr，约 1.1GB）到 `<程序目录>/.vtrim/models/`，sensevoice 还补 hr-files，再解包 | 设置页「模型」 | 略重 + 后台 |
+| `download_models` | 下载全套 ASR 模型（sensevoice + qwen3-asr，约 1.1GB）到 `<程序目录>/.yekitrim/models/`，sensevoice 还补 hr-files，再解包 | 设置页「模型」 | 略重 + 后台 |
 
 ### 精修类
 
-kind = `polish_{sub}`，`sub` 就是 CLI 子命令名（`vtrim polish <sub> <dir>`）。
+kind = `polish_{sub}`，`sub` 就是 CLI 子命令名（`yekitrim polish <sub> <dir>`）。
 
 | kind | 实际做什么 | 档位 |
 |---|---|---|
 | `polish_init` | 初始化精修工程：建 `polish.toml` + `data/` + `sfx/`，从 `clip.json` 自动认标题/时长/素材路径，探测弹幕文件，最后 `cmd_parse` 解析素材。已存在则报错（不覆盖） | 轻活 |
 | `polish_llm` | 见上（LLM 生成 segments，随后接 process） | 略重 |
 | `polish_process` | 后处理：按当前 polish.toml 与 layout 重算每个事件的位置/锚点/时长吸附。**无 LLM、幂等**，每次都全量重算 | 轻活 |
-| `polish_render` | 渲染导出：走**独立 CLI 子进程**（`vtrim polish render <dir>`，会先跑一次 process），进程里 headless Chrome 抽帧 + ffmpeg 分块编码 | 重活 |
-| `polish_cover` | 出封面：同样走独立子进程（`vtrim polish cover <dir>`），headless Chrome 截 1920×1080 | 轻活 |
+| `polish_render` | 渲染导出：走**独立 CLI 子进程**（`yekitrim polish render <dir>`，会先跑一次 process），进程里 headless Chrome 抽帧 + ffmpeg 分块编码 | 重活 |
+| `polish_cover` | 出封面：同样走独立子进程（`yekitrim polish cover <dir>`），headless Chrome 截 1920×1080 | 轻活 |
 
 `render` / `cover` 之所以走子进程而不是进程内调用，是因为 headless Chrome 在 WebUI 服务进程内
 启动会超时；代价是取消要按 pid 杀进程树（`render_proc.rs`）。

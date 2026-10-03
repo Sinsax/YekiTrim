@@ -25,7 +25,7 @@ core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用
 
 ### 并发与加速（2026-09）
 
-- **一个旋钮**：`.vtrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
+- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
   字幕订正共用**，解析统一走 `LlmConfig::concurrency(section_override)`（`config/types.rs`）。
   `[detection] max_concurrent` / `[correct] max_concurrent` 是**可选覆盖**（`Option<usize>`，
   留空即跟随全局）——别再在代码里写死 `3`，也别让某条链路偷偷用自己的。设置页「LLM 配置」块有输入框。
@@ -84,7 +84,7 @@ core 与 polish 共用的 LLM 出入口：`LlmClient` 负责 HTTP + 重试 + 用
   ——**前缀缓存省了多少，看这一列**。`latency_ms` 是从第一次尝试到拿到结果的总墙钟（含退避等待）。
 - **读出来**：`GET /api/admin/usage?days=N`（**仅 admin**，记录含他人项目路径，与 `/api/admin/logs`
   同一个理由）→ 总量 + 按天/链路/项目/模型分组；设置页「LLM 用量」卡（`components/LlmUsage.vue`）；
-  CLI `vtrim usage [--days N]`。聚合全走 SQL `GROUP BY`，不在 Rust 里扫表。
+  CLI `yekitrim usage [--days N]`。聚合全走 SQL `GROUP BY`，不在 Rust 里扫表。
   **缓存率 = Σcached ÷ Σprompt**（只算输入侧、先求和再相除，不是每次调用比率的平均；
   分母不掺 completion —— 缓存只作用于输入）。`prompt_tokens == 0` 显示 `—`（老中转没报 usage /
   失败行 token 全 0，不是"没命中"）。单发链路（封面文案等）天然 0%、每次任务的第一个窗口必然 0%，

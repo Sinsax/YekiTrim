@@ -1,7 +1,7 @@
 //! asr：Stage 2 转写链路（sherpa-onnx 本地识别 → 逐字时间轴 / 断句 → 文本后处理）。
 //!
 //! 入口：`Transcriber`；子模块 `align` / `artifacts` / `correct` / `local` / `text` / `vad`。
-//! 边界：产物固定名 `output/video.srt` + `output/transcript.json` 被 `status.rs` / `current_stage()` 认死，不许改成按模式命名；登记生效值只有 `assets::bind_asr_artifact` 一条路 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+//! 边界：产物固定名 `output/video.srt` + `output/transcript.json` 被 `status.rs` / `current_stage()` 认死，不许改成按模式命名；登记生效值只有 `assets::bind_asr_artifact` 一条路 —— 见 `crates/yekitrim-core/src/asr/AGENTS.md`
 
 use std::path::Path;
 use std::process::Command;

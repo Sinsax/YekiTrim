@@ -1,7 +1,7 @@
 //! polish::cover：封面生成（图层栈 文字/关键帧/背景 → HTML 构建 + Takumi 静态渲染）。
 //!
 //! 入口：`cmd_cover`、`cmd_cover_template`、`cmd_preview_cover`、`build_cover_html`、`cover_bg_vars`、`cover_frame_vars`、`cover_blur_css`、`sanitize_hex_color`、`cover_bg_mode`。
-//! 边界：`cover.image` 在消费侧要再做一次 `tenant::ensure_within`（纵深防御第③道，别删）；颜色进 HTML/CSS 前必须 `sanitize_hex_color`，公式只此一份（前端是镜像） —— 见 `crates/vtrim-polish/AGENTS.md`
+//! 边界：`cover.image` 在消费侧要再做一次 `tenant::ensure_within`（纵深防御第③道，别删）；颜色进 HTML/CSS 前必须 `sanitize_hex_color`，公式只此一份（前端是镜像） —— 见 `crates/yekitrim-polish/AGENTS.md`
 
 use std::path::Path;
 
@@ -495,7 +495,7 @@ pub fn resolve_cover_stack(cc: &crate::project::CoverConfig) -> Vec<ResolvedCove
 /// 这种情况下**沿用改造前的渲染形式**（不注入逐层 z-index、特效不套 wrapper），让存量工程的成片与
 /// 改造前**逐像素相同**。为什么必须这么做：实测给固定的五块都写上 z-index 之后，浏览器会换一条合成
 /// 路径，缩放中的帧层重采样差 ~9/255 —— 肉眼看不出来，但 SHA-256 会变，而"横屏存量逐字节零回归"
-/// 是本仓真出片对拍过的硬判据（见 `crates/vtrim-polish/AGENTS.md`）。
+/// 是本仓真出片对拍过的硬判据（见 `crates/yekitrim-polish/AGENTS.md`）。
 pub fn is_default_stack(cc: &crate::project::CoverConfig) -> bool {
     let stack = resolve_cover_stack(cc);
     let defaults = default_cover_stack(cc);
@@ -1672,7 +1672,7 @@ mod tests {
     fn probe_real_cover_pixels() {
         let out_dir = std::path::PathBuf::from(
             std::env::var("VTEDIT_COVER_PROBE_DIR")
-                .unwrap_or_else(|_| std::env::temp_dir().join("vtrim-cover-probe").display().to_string()),
+                .unwrap_or_else(|_| std::env::temp_dir().join("yekitrim-cover-probe").display().to_string()),
         );
         let _ = std::fs::create_dir_all(&out_dir);
         let mut c = cfg_with(
@@ -1819,7 +1819,7 @@ subtitles=\"a.srt\"
     /// 背景层三种模式 + **背景图与关键帧是两个文件**（导入背景不能盖掉「关键帧层」）。
     #[test]
     fn cover_bg_image_mode_uses_its_own_file() {
-        let dir = std::env::temp_dir().join(format!("vtrim-cover-bg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-cover-bg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // 没有 _cover_bg.jpg 时：image 模式退回纯色，免得模板里挂个死图

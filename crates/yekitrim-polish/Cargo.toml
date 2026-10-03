@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 # ⚠️ 曾经有两条 feature，**都别再加回来**：
-#   · `wgpu-render = ["vtrim-render-core/wgpu", …]` —— wgpu 原生出片 + 单帧真渲染预览，整条已删除
+#   · `wgpu-render = ["yekitrim-render-core/wgpu", …]` —— wgpu 原生出片 + 单帧真渲染预览，整条已删除
 #     （用户拍板：GPU 那侧交给独立的 Dhampir 底座）。
 #   · `chrome-render = ["dep:headless_chrome"]` —— 本仓 headless Chrome 逐帧 canvas 出片腿，
 #     2026-10-01 整条删除（用户拍板：出片只有底座一条腿，不再要求用户装浏览器）。
@@ -25,7 +25,7 @@ default = []
 cover-takumi = ["dep:takumi"]
 
 [dependencies]
-# vtrim-core (用于 .vtrim/llm.toml 路径)
+# yekitrim-core (用于 .yekitrim/llm.toml 路径)
 yekitrim-core = { path = "../yekitrim-core" }
 yekitrim-render-core = { path = "../yekitrim-render-core" }
 

@@ -1,4 +1,4 @@
-//! `vtrim doctor`：安全与运行状况摘要（设计稿 §3.5.9）。
+//! `yekitrim doctor`：安全与运行状况摘要（设计稿 §3.5.9）。
 //!
 //! 只读诊断：**绝不创建**账号库、不改任何配置；库里没有账号就如实说"尚未初始化"。
 //! 内容：数据目录可写性与剩余磁盘、账号与初始密码状态、会话/审计计数、单实例锁持有者、
@@ -16,7 +16,7 @@ use super::disk;
 use super::instancelock::{self, LockInfo};
 use super::user;
 
-/// `vtrim server` 默认监听端口（唯一一份，其余位置一律引用它）。
+/// `yekitrim server` 默认监听端口（唯一一份，其余位置一律引用它）。
 ///
 /// 挑 26320 是为了躲开 Windows 的动态端口段与保留段：本机 `netsh int ipv4 show dynamicport tcp`
 /// 从 1024 起（13977 个），保留段实测有 1029–1937 / 5357 / 6633–6862 / 7635–7834 /
@@ -27,7 +27,7 @@ use super::user;
 /// `10013 WSAEACCES`，而 `netstat` 里**一个监听者都没有**（因为根本不是"被占用"）。
 pub const DEFAULT_PORT: u16 = 26320;
 
-/// 默认探测地址（与 `vtrim server` 默认监听一致）。
+/// 默认探测地址（与 `yekitrim server` 默认监听一致）。
 pub const DEFAULT_URL: &str = "http://127.0.0.1:26320";
 
 fn line(title: &str) {
@@ -35,7 +35,7 @@ fn line(title: &str) {
     println!("{title}");
 }
 
-/// `vtrim doctor [--url ...]`
+/// `yekitrim doctor [--url ...]`
 pub fn cmd_doctor(url: &str) -> Result<()> {
     let data_dir = db::data_dir();
     let db_path = db::db_path();
@@ -129,7 +129,7 @@ pub fn cmd_doctor(url: &str) -> Result<()> {
     } else {
         println!("  初始密码文件: 不存在 ✓");
     }
-    // 运行日志（`vtrim server` 每进程一份当天的文件；顺带说清"日志在哪"）
+    // 运行日志（`yekitrim server` 每进程一份当天的文件；顺带说清"日志在哪"）
     let log_dir = data_dir.join("logs");
     let latest_log = std::fs::read_dir(&log_dir)
         .ok()
@@ -311,7 +311,7 @@ mod tests {
         assert!(probe_health("not-a-url").is_none());
     }
 
-    /// 默认端口与默认探测地址必须指向同一个端口（改一个忘另一个 = `vtrim doctor` 探测不到自己）。
+    /// 默认端口与默认探测地址必须指向同一个端口（改一个忘另一个 = `yekitrim doctor` 探测不到自己）。
     #[test]
     fn default_url_matches_default_port() {
         assert!(

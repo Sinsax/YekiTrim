@@ -1,20 +1,20 @@
 //! Service Layer：CLI 与 WebUI 共用的领域逻辑。
 //!
-//! 独立 crate（原 `vtrim-cli/src/service/`）。分层是**单向**的：
+//! 独立 crate（原 `yekitrim-cli/src/service/`）。分层是**单向**的：
 //!
 //! ```text
-//! vtrim-core ─┐
-//! vtrim-polish ┼─→ vtrim-service ──→ vtrim-server ──→ vtrim-cli（只剩入口）
+//! yekitrim-core ─┐
+//! yekitrim-polish ┼─→ yekitrim-service ──→ yekitrim-server ──→ yekitrim-cli（只剩入口）
 //!             └──────────────────────────────────────┘
 //! ```
 //!
 //! **不变式：本 crate 绝不能 `use yekitrim_server::*`。** 这是它能被抽出来的全部理由 ——
-//! 一旦出现反向边，两层就又粘回去，`vtrim-server` 也没法再独立。
+//! 一旦出现反向边，两层就又粘回去，`yekitrim-server` 也没法再独立。
 //! 搬进来之前实测过这条边是 0（`server → service` 是重依赖，反方向没有），
 //! 唯一的渗漏点 `logbus` 已经下沉到本 crate（见 `logbus` 模块头的说明）。
 //!
 //! 本 crate **不依赖 axum**（`recorder.rs` 的测试除外，那是 dev-dependency）：
-//! 它是纯应用层，HTTP 与否由 `vtrim-server` 决定。
+//! 它是纯应用层，HTTP 与否由 `yekitrim-server` 决定。
 
 mod core_pipeline;
 mod correct;
@@ -22,8 +22,8 @@ mod silence;
 mod status;
 mod init_config;
 mod workspace;
-// 多用户服务 P1：账号账本 / 口令 KDF / 单实例锁 / `vtrim user` CLI
-// 这几个模块同时被 `vtrim-server`（HTTP 会话、启动预检）与 `user` CLI 使用，
+// 多用户服务 P1：账号账本 / 口令 KDF / 单实例锁 / `yekitrim user` CLI
+// 这几个模块同时被 `yekitrim-server`（HTTP 会话、启动预检）与 `user` CLI 使用，
 // 因此显式 pub，不再层层转发。
 pub mod assets;
 pub mod auth;

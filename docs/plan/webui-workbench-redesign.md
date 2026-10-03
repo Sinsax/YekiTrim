@@ -71,7 +71,7 @@ z-index 层级（统一现有散落值）：
 **折叠（v6.1，用户要求）**：常驻侧栏可向左折叠成 **64px 图标轨**（`.side.mini`，`transition:width .18s`），折叠态 =
 品牌 V + 折叠按钮（竖向排列）+ 项目**首字圆头像**（悬停看 `名称 · 当前阶段`，点击直达该项目当前阶段，
 运行中带红点）+ 底部三个图标入口（首页/入库/设置，`title` 给文字）+ 用户头像（点击登出）。
-状态在 `stores/ui.js` 的 `ui.sideCollapsed` / `toggleSide()`，持久化 `vtrim.ui.sideCollapsed`，
+状态在 `stores/ui.js` 的 `ui.sideCollapsed` / `toggleSide()`，持久化 `yekitrim.ui.sideCollapsed`，
 **模块初始化时同步读取**（否则首帧会先展开再收起，闪一下）。展开态保留过滤框与完整项目树。
 
 项目行：`名称` + `徽标`（当前阶段名；有任务运行时附百分比，如 `预处理 42%`）。行右侧 hover 出现操作：删除（走现有 confirmDialog + `POST /api/project/delete`）。
@@ -84,7 +84,7 @@ z-index 层级（统一现有散落值）：
 | 切片 | `clips.length > 0 && uncutEvents.length === 0` | 有 cut/cut_all 任务运行中 | `已切 N · 待切 M` |
 | 精修 | `polishMap 中已渲染数 === clips 数 > 0` | 有 polish_* 任务运行中 | `精修 R/C` |
 
-节点点击 → `#/p/:pid/<step>`；`.cur` = 进度位（上表第一个满足非 done 的节点），`.viewing` = 当前路由位。展开状态持久化 localStorage（`vtrim.wb.expanded`）。
+节点点击 → `#/p/:pid/<step>`；`.cur` = 进度位（上表第一个满足非 done 的节点），`.viewing` = 当前路由位。展开状态持久化 localStorage（`yekitrim.wb.expanded`）。
 
 空态：项目树为空时显示引导卡（「＋ 新建项目」开始）。
 
@@ -124,13 +124,13 @@ z-index 层级（统一现有散落值）：
 
 不显示字幕列表，也不显示流水线状态/项目文件/环境卡。
 
-**未来可隐藏（仅预留，不实现）**：`vtrim init` 自动跑预处理后，本页入口可收起（侧栏节点按条件跳过，配置位 `[webui] auto_prepare`，默认关，本期不读取）；运行中/未完成的预处理节点必须保留（进度可见性）。本期预处理页始终显示。
+**未来可隐藏（仅预留，不实现）**：`yekitrim init` 自动跑预处理后，本页入口可收起（侧栏节点按条件跳过，配置位 `[webui] auto_prepare`，默认关，本期不读取）；运行中/未完成的预处理节点必须保留（进度可见性）。本期预处理页始终显示。
 
 ### 2.5 切片页（ProjectSlicesView + ProjectClipsSection）
 
 布局：顶操作条 + 左切片卡片墙 + 右未剪切事件面板。
 
-**操作条**：排序（现有四键保留：热度 rank/asc、开始时间 start/asc、弹幕量 danmaku/desc、字幕量 subtitle/desc，点击切换升降序，持久化 `vtrim.slices.sort`）、重新检测（`defineExpose` 转发保留）、添加片段、一键全切。
+**操作条**：排序（现有四键保留：热度 rank/asc、开始时间 start/asc、弹幕量 danmaku/desc、字幕量 subtitle/desc，点击切换升降序，持久化 `yekitrim.slices.sort`）、重新检测（`defineExpose` 转发保留）、添加片段、一键全切。
 
 **切片卡**：缩略图（`/project-data/clips/:rank/thumb`）+ 标题 + 时长/开始时间 + 类型 chip + 弹幕量 + 操作行：预览（媒体弹层）、渲染（promptDialog 输出路径 → `POST /api/polish/render` job）、静音（`POST :rank/silence`）、精修（→ `polish/:clip`）。
 
@@ -156,7 +156,7 @@ z-index 层级（统一现有散落值）：
 
 **布局**（三层）：
 
-1. **顶部（片段卡条）**：`FragmentList` **108px 小卡**（缩略图 + 状态 chip 贴角 + 一行标题，未初始化带行内「初始化」），点击 = 路由 `polish/:clip`；默认 **1 行横向滚**，右侧「展开」按钮切 **2 行**（`ui.fragRows`，持久化 `vtrim.ui.fragRows`）；精修页页头压成紧凑一行（chip + 19px 标题）
+1. **顶部（片段卡条）**：`FragmentList` **108px 小卡**（缩略图 + 状态 chip 贴角 + 一行标题，未初始化带行内「初始化」），点击 = 路由 `polish/:clip`；默认 **1 行横向滚**，右侧「展开」按钮切 **2 行**（`ui.fragRows`，持久化 `yekitrim.ui.fragRows`）；精修页页头压成紧凑一行（chip + 19px 标题）
 2. **中部**：`grid cols-main edit-grid`（`align-items:start`，两栏各取自然高度）+ **时间轴整行**
    - **左列** = 预览卡（**左：属性面板挂载点 `#tl-props-host` —— 面板由 TimelineEditor 用 Teleport 投进来**；右：播放器 PolishPreview，右上角「人物 / 弹幕区域」框选按钮）
    - **右栏** = **生成与导出**卡片，从上到下：**LLM 剪辑块**（标题「LLM 剪辑 · 下列为参数」，参数 = **区域编辑**〔人物 / 弹幕区域两键 + 读数 + 保存/清除选框〕+ **贴纸来源**，块内动作 = `[LLM 剪辑]`）→ **`[渲染导出]`**（整宽主按钮）→ 任务框
@@ -204,7 +204,7 @@ z-index 层级（统一现有散落值）：
 ## 3. 路由
 
 ```
-#/                → redirect：localStorage vtrim.wb.last 有记录 → 上次 项目+阶段；否则 /workbench
+#/                → redirect：localStorage yekitrim.wb.last 有记录 → 上次 项目+阶段；否则 /workbench
 #/workbench       → WorkbenchView（项目列表：进度/下一步/预览/打开/删除源录播 + 导入引导）
 #/p/:pid/prepare  → PrepareView
 #/p/:pid/slices   → ProjectSlicesView
@@ -224,8 +224,8 @@ z-index 层级（统一现有散落值）：
 | `#/project/:cfg/{slices/:clip,polish}` | `#/p/:pid/polish(/:clip)` |
 | `#/polish`、`#/jobs`、`#/models` | 删除，404 → `/workbench` |
 
-- **`:pid` 是不透明项目标识**：本期 = encodeURIComponent(vtrim.toml 绝对路径)（兼容现服务），多用户期 = `projects` 表 id。**组件与路由永不解释其内容**，也不拼接查询串——作用域解析只在 `api/projectData.js` 的 `scopeQ(pid)` 单点发生（本期拼 `?config=`，多用户期改 `?project=`，见 §4/§11）。
-- 切换项目/阶段时写 `vtrim.wb.last`（store 订阅路由统一写，值为 pid）。
+- **`:pid` 是不透明项目标识**：本期 = encodeURIComponent(yekitrim.toml 绝对路径)（兼容现服务），多用户期 = `projects` 表 id。**组件与路由永不解释其内容**，也不拼接查询串——作用域解析只在 `api/projectData.js` 的 `scopeQ(pid)` 单点发生（本期拼 `?config=`，多用户期改 `?project=`，见 §4/§11）。
+- 切换项目/阶段时写 `yekitrim.wb.last`（store 订阅路由统一写，值为 pid）。
 - ProjectLayout 挂载时若 pid 不在 server.toml 列表：仍按 status API 加载（沿用现 fallback 逻辑），不强制注册。
 
 ## 4. 状态层
@@ -237,7 +237,7 @@ z-index 层级（统一现有散落值）：
 loadProjects()            // GET /api/project/list；任务 completed 后自动重载刷徽标
 pathOf(pid)               // pid → 项目记录（含 config_file 绝对路径）——唯一的 id↔路径映射点
 removeProject(cfg)        // confirm → POST /api/project/delete → reload
-expanded: Set<pid>        // vtrim.wb.expanded
+expanded: Set<pid>        // yekitrim.wb.expanded
 toggleExpand(pid) / isExpanded(pid)
 
 // stores/project.js —— per-pid 缓存（Map<pid, store>）
@@ -265,7 +265,7 @@ scopeQ(pid) → `config=${encodeURIComponent(workbench.pathOf(pid).config_file)}
 | `polish_render|cover` | polishMap | 产物卡、侧栏徽标 |
 | `download_models` | workbench 环境区 | 设置模型区、侧栏环境点 |
 
-localStorage 收编（旧 key 原样兼容，不迁移）：`vtrim.wb.last`（新）、`vtrim.wb.expanded`（新）、`vtrim.slices.sort`（沿用）、音量 key（polish/audio.js 内部，不动）。
+localStorage 收编（旧 key 原样兼容，不迁移）：`yekitrim.wb.last`（新）、`yekitrim.wb.expanded`（新）、`yekitrim.slices.sort`（沿用）、音量 key（polish/audio.js 内部，不动）。
 
 ## 5. API 层
 
@@ -359,7 +359,7 @@ webui/src/
 | SSE 断连 | useJobs 已有 3s 轮询兜底，不动 |
 | 大转写文件渲染卡顿 | 字幕列表已移出预处理；**预处理轨道与精修时间轴的字幕块都按可见区渲染**（只挂视口内的块/刻度），3 小时几千条实测（Chrome headless：1080 条 → 14 个块 DOM）不卡 |
 | 多标签页同开 | 无锁；沿用现状（单用户本地工具），不处理 |
-| 旧 localStorage key | `vtrim.slices.sort` 原样沿用，无迁移 |
+| 旧 localStorage key | `yekitrim.slices.sort` 原样沿用，无迁移 |
 | engine.js 双维护 | 不在本次范围，保持「先改 Rust 模板再移植」约定 |
 | wgpu 真渲染 | 功能暂歇：界面无入口，后端 render-frame 接口与 feature 保留 |
 | 多用户迁移（远期 P1–P5） | 已按 §11 预留：不透明 pid、scopeQ 单点、入口列表化、来源抽象、渲染输出默认收敛；本期不实现任何多用户行为 |

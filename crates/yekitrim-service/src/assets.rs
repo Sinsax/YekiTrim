@@ -1,6 +1,6 @@
 //! 项目素材（弹幕 / 字幕）的选择与**清单**。
 //!
-//! 预处理页允许用户**随时切换**这两份素材，值就存在 `vtrim.toml` 的
+//! 预处理页允许用户**随时切换**这两份素材，值就存在 `yekitrim.toml` 的
 //! `[project] danmaku_file` / `transcript_file`（相对工程根；工程外的绝对路径仅 admin）。
 //! 本模块负责：列候选、按类别校验、写值、维护清单。
 //!
@@ -17,7 +17,7 @@
 //! [`Workspace::resolve`]（两处都相对**工程根**）。别在这里另起一套。
 //! 清单只回答"列表里有哪些候选"，**下游一律只认当前生效值**（那两个 `*_file` 键）。
 //!
-//! ⚠️ 写 `vtrim.toml` 一律走 [`yekitrim_core::config::patch_config_file`]，而且**一次写完**
+//! ⚠️ 写 `yekitrim.toml` 一律走 [`yekitrim_core::config::patch_config_file`]，而且**一次写完**
 //! （生效值 + 整份清单在同一个 patch 里）：它内部是 `with_path_lock_sync`，而那个锁
 //! **非重入**（std Mutex，外层已持锁时再调就自锁）—— 分两次写既会自锁、又会留下
 //! "值写了清单没写"的中间态。
@@ -52,7 +52,7 @@ impl AssetKind {
         }
     }
 
-    /// `vtrim.toml` 里对应的键名（`[project]` 段）。
+    /// `yekitrim.toml` 里对应的键名（`[project]` 段）。
     pub fn config_key(self) -> &'static str {
         match self {
             Self::Danmaku => "danmaku_file",
@@ -102,7 +102,7 @@ pub fn classify(name: &str) -> Vec<AssetKind> {
 /// `active` 表示"当前生效的就是它"。
 #[derive(Debug, Clone, Serialize)]
 pub struct AssetItem {
-    /// 写进/读自 `vtrim.toml` 的路径（相对工程根；工程外只可能是 admin，那时是绝对路径）。
+    /// 写进/读自 `yekitrim.toml` 的路径（相对工程根；工程外只可能是 admin，那时是绝对路径）。
     pub path: String,
     /// 绝对路径（展示用；已去掉 Windows 的 `\\?\` 逐字前缀）。
     pub abs: String,
@@ -133,7 +133,7 @@ pub struct AssetItem {
 /// 是不可接受的（解析只发生在真正选定一个文件时，见 [`set_asset`]）。
 #[derive(Debug, Clone, Serialize)]
 pub struct AssetStatus {
-    /// `vtrim.toml` 里配置的值（空 = 未配置）。弹幕只有这一条来源。
+    /// `yekitrim.toml` 里配置的值（空 = 未配置）。弹幕只有这一条来源。
     pub value: String,
     /// 实际生效的绝对路径（未生效时为空）。
     pub abs: String,
@@ -350,7 +350,7 @@ fn build_item(
 
 /// 某个模式的分模式产物**文件名**：`transcript.<mode>.json`。
 ///
-/// 与 `vtrim-core/src/asr/mod.rs::mode_slug` 的规则**必须一致**（那边写、这边读）：
+/// 与 `yekitrim-core/src/asr/mod.rs::mode_slug` 的规则**必须一致**（那边写、这边读）：
 /// 小写、长度 ≤ 32、只允许 ASCII 字母数字与 `-` / `_`。模式串来自配置，手改成
 /// 乱七八糟的值那边根本不落盘，所以这里也只认这一套（拼不出名字就当没有）。
 fn asr_artifact_name(mode: &str) -> Option<String> {
@@ -446,11 +446,11 @@ fn asr_slot_of_path(ws: &Workspace, kind: AssetKind, abs: &Path) -> Option<Strin
         .map(|m| m.to_string())
 }
 
-/// 绝对路径 → 写进 `vtrim.toml` 的形态（工程根内用相对路径，可移植；根外原样绝对路径）。
+/// 绝对路径 → 写进 `yekitrim.toml` 的形态（工程根内用相对路径，可移植；根外原样绝对路径）。
 ///
 /// ⚠️ 用**规范化后**的根做前缀比较：`canonicalize` 在 Windows 上会加 `\\?\` 前缀，
 /// 拿它跟 `root_dir`（未规范化、可能还经过 junction）比一定对不上，
-/// 于是"工程内的文件"会被当成外部路径、原样存绝对路径进 vtrim.toml。
+/// 于是"工程内的文件"会被当成外部路径、原样存绝对路径进 yekitrim.toml。
 ///
 /// 管线侧（`core_pipeline` / `correct`）往清单里登记产物时也走这里，
 /// 别各自再拼一份 `strip_prefix`（分隔符与 `\\?\` 两种口径都要一致）。
@@ -551,7 +551,7 @@ pub fn scan_candidates(ws: &Workspace, cfg: &Config, kind: AssetKind) -> Vec<Can
 
 /// 选定一类素材：置为**生效值**，并登记进清单，方便以后一键切回来。
 ///
-/// 返回 `(写入 vtrim.toml 的路径, 解析出的条数)`。条数让前端立刻给出
+/// 返回 `(写入 yekitrim.toml 的路径, 解析出的条数)`。条数让前端立刻给出
 /// 「弹幕 12,345 条」这种确认，同时也是**写前校验**：解析失败一律不落盘 ——
 /// 存进去一个坏文件只会让后面的检测静默退化成"没有弹幕/没有字幕"。
 ///
@@ -582,7 +582,7 @@ pub fn set_asset(
         bail!("{}不是文件: {}", kind.label(), abs.display());
     }
     if !is_admin {
-        // 与 `config_vtrim_put_impl` 的 `check_project_paths` 同一口径：
+        // 与 `config_yekitrim_put_impl` 的 `check_project_paths` 同一口径：
         // 非 admin 只允许工程内相对路径（绝对路径 / `..` / 盘符在这一步就被拒）。
         yekitrim_core::tenant::jail_join(&ws.root_dir, trimmed)
             .with_context(|| format!("{}必须是项目内相对路径", kind.label()))?;
@@ -812,12 +812,12 @@ pub enum Preload {
 
 /// 来源类型 → 预载策略。
 ///
-/// - `recorder`：录播姬的弹幕在入库时就被搬到项目根并写进 `vtrim.toml`
+/// - `recorder`：录播姬的弹幕在入库时就被搬到项目根并写进 `yekitrim.toml`
 ///   （`server::ingest_worker::find_danmaku`），这里把这条既定行为登记进策略表；
 /// - `local`（服务器本机文件）：**不预载** —— 用户要求"自由选择"，建项目时不做同名探测，
 ///   由预处理页列候选供一键点选（`create_local_project` 按本策略决定要不要 `.ass` 自动发现）；
 /// - `bilibili`（链接下载，P4）：**预载弹幕**。与录播姬同构 —— 下载完落到
-///   `<项目根>/danmaku.xml` 并写进 `vtrim.toml`。B站的字幕是 CC 字幕且不是输入，
+///   `<项目根>/danmaku.xml` 并写进 `yekitrim.toml`。B站的字幕是 CC 字幕且不是输入，
 ///   预载成字幕只会让热度排序静默变差（见 `Preload::Subtitle` 的说明）。
 pub fn preload_policy(source_kind: &str) -> Preload {
     match source_kind {

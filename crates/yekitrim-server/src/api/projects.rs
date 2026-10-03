@@ -20,7 +20,7 @@ use super::*;
 /// 那份状态一起删了：每个请求本来就会经 `scope::Scope` 按 `?project=<id>` 现场解析出
 /// 自己那份 `Workspace`，全局那份**没有任何读取方**，只会跟着"上次打开的工程"漂。
 ///
-/// 留下的这一笔**还有用**：`vtrim server` 不带 `--config` 启动时靠它恢复上次的工程
+/// 留下的这一笔**还有用**：`yekitrim server` 不带 `--config` 启动时靠它恢复上次的工程
 /// （`lib.rs` 的启动流程 + `persist::last_config_file`）。它**只是记忆、不是状态** ——
 /// 记忆允许过期（文件没了 `last_config_file()` 自己会过滤掉），状态不行。
 pub(super) fn remember_last_project(ws: &Workspace) {
@@ -30,7 +30,7 @@ pub(super) fn remember_last_project(ws: &Workspace) {
 /// 旧版项目摘要（`server.toml` 时代的列表形态）。
 ///
 /// P2 起项目列表走 DB（`/api/projects`），这个函数只在过渡期别名的 stub 里出现，
-/// 保留是为了让 `vtrim status` 与旧前端 JSON 结构继续可用。
+/// 保留是为了让 `yekitrim status` 与旧前端 JSON 结构继续可用。
 #[allow(dead_code)]
 pub(super) fn project_summary(ws: &Workspace) -> serde_json::Value {
     yekitrim_service::project_summary(ws)
@@ -70,7 +70,7 @@ pub(super) async fn projects_list(
         .list_projects(Some(user.id))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取项目列表失败: {e:#}")))?;
 
-    // 每个项目的摘要都要读它的 `vtrim.toml` + 对产物目录做十几次 `exists()`
+    // 每个项目的摘要都要读它的 `yekitrim.toml` + 对产物目录做十几次 `exists()`
     // （`summary_json` → `project_snapshot`）。项目在网络盘上时这就是十几秒级的往返，
     // 而前端一次页面加载会成串地打这个接口 —— 整段算在 blocking 池里，别占 worker。
     let st = state.clone();
@@ -80,7 +80,7 @@ pub(super) async fn projects_list(
             .iter()
             .map(|p| {
                 let json = yekitrim_service::projects::summary_json(p, owner_name(db, p.owner_id).as_deref());
-                // 项目目录/vtrim.toml 被外部删掉时落库标记，列表里显示"缺失"而不是静默消失
+                // 项目目录/yekitrim.toml 被外部删掉时落库标记，列表里显示"缺失"而不是静默消失
                 if json["missing"].as_bool() == Some(true) && !p.missing {
                     let _ = db.set_project_missing(p.id, true);
                 }
@@ -151,7 +151,7 @@ pub(super) async fn projects_create(
 /// `POST /api/project/init` 共用）。
 ///
 /// 管理员可以给**任意绝对目录**（与单用户时代一致），非管理员只能是租户根内的相对路径；
-/// 目录里已经存在 `vtrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
+/// 目录里已经存在 `yekitrim.toml` 时**只登记/打开，不覆盖**（避免把已有工程的设置冲掉）。
 pub(super) async fn create_local_project(
     state: &Arc<AppState>,
     user: &crate::auth::CurrentUser,
@@ -177,7 +177,7 @@ pub(super) async fn create_local_project(
     let config_path = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
     let is_existing_project = config_path.is_file();
 
-    // 已有 vtrim.toml：只登记/打开，不重写（否则会覆盖用户手改过的工程设置）
+    // 已有 yekitrim.toml：只登记/打开，不重写（否则会覆盖用户手改过的工程设置）
     if !is_existing_project {
         let hint = input_hint.trim();
         let input = if hint.is_empty() {
@@ -204,7 +204,7 @@ pub(super) async fn create_local_project(
         }
         // `local` 来源按策略**不预载弹幕**（用户要求"自由选择"）：没显式给弹幕就留空，
         // 由预处理页列候选让用户自己挑（`yekitrim_service::assets::preload_policy`）。
-        // 所以这里用 `_exact`，不做"同目录同名 .ass"自动发现 —— 那条是 `vtrim init` 的语义。
+        // 所以这里用 `_exact`，不做"同目录同名 .ass"自动发现 —— 那条是 `yekitrim init` 的语义。
         let auto_danmaku = matches!(
             yekitrim_service::assets::preload_policy("local"),
             yekitrim_service::assets::Preload::Danmaku
@@ -291,7 +291,7 @@ pub(super) fn find_first_video(dir: &Path) -> Option<PathBuf> {
 /// 注销项目绑定：**只动服务器的账本与状态文件，项目目录里一个文件都不碰**。
 ///
 /// 两个入口（`DELETE /api/projects/:id` 与过渡别名 `POST /project/delete`）都走这里 ——
-/// 这段逻辑以前是两份拷贝，两边各删一次 `vtrim.toml`；要改就一起改，否则会各处半对。
+/// 这段逻辑以前是两份拷贝，两边各删一次 `yekitrim.toml`；要改就一起改，否则会各处半对。
 ///
 /// ⚠️ `forget_project` 会**同时清掉 `last_config_file`**，这一步不是顺手做的：
 /// 启动流程每次都会把"当前工程"重新写回 `projects[]`（`lib.rs`），
@@ -311,9 +311,9 @@ pub(super) fn unregister_project(
     ok(serde_json::json!({ "ok": true, "deleted": project.id }))
 }
 
-/// `DELETE /api/projects/:id`：**只注销登记**，项目目录里零文件改动（媒体/产物/`vtrim.toml` 全保留）。
+/// `DELETE /api/projects/:id`：**只注销登记**，项目目录里零文件改动（媒体/产物/`yekitrim.toml` 全保留）。
 ///
-/// 想再挂回来就重新导入同一个目录（`POST /api/projects`）—— 目录里已有 `vtrim.toml` 时
+/// 想再挂回来就重新导入同一个目录（`POST /api/projects`）—— 目录里已有 `yekitrim.toml` 时
 /// 只登记、不覆盖（见 `create_local_project`），所以手改过的工程设置不会丢。
 pub(super) async fn projects_delete(
     State(state): State<Arc<AppState>>,
@@ -408,10 +408,10 @@ pub(super) async fn projects_source_delete(
 }
 
 /// **过渡期别名**：旧前端按 `config_path` 注销项目；只允许操作**已登记且属于自己**的
-/// `vtrim.toml`（P2 之后前端改用 `DELETE /api/projects/:id`）。
+/// `yekitrim.toml`（P2 之后前端改用 `DELETE /api/projects/:id`）。
 ///
 /// 与 `DELETE /api/projects/:id` **是同一件事**，共用 `unregister_project`
-/// —— 别再在这里单独写一份"删除"（以前两份拷贝各删一次 `vtrim.toml`）。
+/// —— 别再在这里单独写一份"删除"（以前两份拷贝各删一次 `yekitrim.toml`）。
 pub(super) async fn project_delete(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
@@ -572,13 +572,13 @@ mod tests {
 
 /// 移除项目 = **只注销绑定**：目录里一个文件都不动，而且能重新导入同一个目录。
 ///
-/// 回归：这条路以前会 `remove_file(vtrim.toml)`（`projects_delete` 与过渡别名各删一次）。
-/// 留着 `vtrim.toml` 也正是重新绑定的前提 —— `create_local_project` 见到已有
-/// `vtrim.toml` 只登记、不覆盖，所以手改过的工程设置不会丢。
+/// 回归：这条路以前会 `remove_file(yekitrim.toml)`（`projects_delete` 与过渡别名各删一次）。
+/// 留着 `yekitrim.toml` 也正是重新绑定的前提 —— `create_local_project` 见到已有
+/// `yekitrim.toml` 只登记、不覆盖，所以手改过的工程设置不会丢。
 ///
 /// ⚠️ 本用例会经 `forget_project` 写一份 `server.toml`，路径是
-/// `<测试可执行文件旁>/.vtrim/`（即 `target/debug/deps/.vtrim/`）——
-/// 与开发实例的 `target/debug/.vtrim/` 不在一处，不会干扰本机跑着的服务。
+/// `<测试可执行文件旁>/.yekitrim/`（即 `target/debug/deps/.yekitrim/`）——
+/// 与开发实例的 `target/debug/.yekitrim/` 不在一处，不会干扰本机跑着的服务。
 #[tokio::test]
 async fn unregister_keeps_every_file_and_can_rebind() {
     let t = test_app().await;

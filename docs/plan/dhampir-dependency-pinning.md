@@ -6,7 +6,7 @@
 ## 0. 为什么不是「拉最新」
 
 底座现在是 `0.0.1`，产物版本串 `dhampir-1+<sha>` 里**只有 git sha，没有语义化版本**。
-V-Trim 侧**只读** `project_schema` 不比对（`render/dhampir.rs:59-62` 明确写了「不抄第二份期望值」——
+YekiTrim 侧**只读** `project_schema` 不比对（`render/dhampir.rs:59-62` 明确写了「不抄第二份期望值」——
 这个决定本身是对的，避免双实现）。两条合起来的效果是：
 
 **错版底座不会在启动/打包时被拦，只会在出片时由底座自己报 `unsupported_project_schema`。**
@@ -38,7 +38,7 @@ platform=win32-x64
 
 ⚠️ `zip_sha256` 只能**先打包再回填**（自指），所以 `package.mjs` 要写成：生成 zip → 算 sha →
 把 sha 写进 `VERSION` → 重新生成 zip。或者干脆**把 sha 放在 release 页面与侧车文件里**
-（`dhampir-<ver>.zip.sha256.txt`），`VERSION` 只留 `version` —— 后者更简单，也跟 V-Trim 自己的
+（`dhampir-<ver>.zip.sha256.txt`），`VERSION` 只留 `version` —— 后者更简单，也跟 YekiTrim 自己的
 `<zip>.sha256.txt` 约定一致。**推荐后者。**
 
 ### 1.2 打 tag 并发 Release
@@ -50,9 +50,9 @@ git push origin main --tags
 ```
 
 ⚠️ **改名**：现在是 `dhampir-1+<sha>`（`1` 是 schema 版本，不是产品版本）。
-Release 资产建议叫 `dhampir-<semver>-<platform>.zip`，与 V-Trim 的 `vtrim-v<semver>-win-x64.zip` 对齐。
+Release 资产建议叫 `dhampir-<semver>-<platform>.zip`，与 YekiTrim 的 `yekitrim-v<semver>-win-x64.zip` 对齐。
 
-## 2. V-Trim 侧（三处改动）
+## 2. YekiTrim 侧（三处改动）
 
 ### 2.1 `xtask`：新增 `--dhampir-from <url|zip>`
 
@@ -72,13 +72,13 @@ Release 资产建议叫 `dhampir-<semver>-<platform>.zip`，与 V-Trim 的 `vtri
 必带校验（缺一不可）：
 1. `zip` 的 sha256 == 期望值（来自侧车或 `--dhampir-sha256 <hex>` 参数）；
 2. 解包后 `verify_artifact_dir` 那四项必需文件齐（已有逻辑，复用）；
-3. `VERSION` 里的 `project_schema` **在 V-Trim 支持范围内**（见 2.2）。
+3. `VERSION` 里的 `project_schema` **在 YekiTrim 支持范围内**（见 2.2）。
 
 ### 2.2 把「不比对」改成「声明下界」
 
-现在 V-Trim 完全不比对 `project_schema`。**这个不改，但补一条下界声明**：
+现在 YekiTrim 完全不比对 `project_schema`。**这个不改，但补一条下界声明**：
 
-`crates/vtrim-polish/src/render/dhampir.rs` 加一个常量，语义是「**至少**要这么新」：
+`crates/yekitrim-polish/src/render/dhampir.rs` 加一个常量，语义是「**至少**要这么新」：
 
 ```rust
 /// 本仓调用的底座契约下限。**不是**期望值 —— 底座可以更新，但不能更旧。
@@ -94,7 +94,7 @@ const MIN_PROJECT_SCHEMA: u32 = 1;
 
 ### 2.3 钉固写在哪
 
-新增 `crates/vtrim-polish/src/render/AGENTS.md` 之外的一处**唯一真相**，例如
+新增 `crates/yekitrim-polish/src/render/AGENTS.md` 之外的一处**唯一真相**，例如
 `crates/xtask/dhampir.lock.toml`：
 
 ```toml
@@ -137,6 +137,6 @@ cargo xtask package --skip-build --dhampir-from <url> --dhampir-sha256 0000...
 考虑过，不选：
 
 - 底座产物里有 **wasm 与 exe**，都要 `wasm-pack` + Rust release 构建；submodule 只会拿到源码，
-  **拿不到产物** —— 每个用 V-Trim 的人都要装整套 Rust wasm 工具链才能出片，与「解压即用」冲突。
+  **拿不到产物** —— 每个用 YekiTrim 的人都要装整套 Rust wasm 工具链才能出片，与「解压即用」冲突。
 - `dist.zip` 是**已验收的定版产物**（`VERSION` 带 git sha），submodule 拿到的是移动的 `main`。
 - 钉 sha256 + 语义化 tag 的 Release，比 submodule 的「某个 commit」**更可验证**。

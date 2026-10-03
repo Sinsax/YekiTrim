@@ -1,7 +1,7 @@
 # Dhampir 底座：待修问题交接单（可直接在 Dhampir 仓独立处理）
 
-> **这份文档是自包含的**：不需要 V-Trim 仓、不需要它的工程，第 1～2 节的复现都能在 Dhampir 仓里做完。
-> 来源：V-Trim 侧在"精修效果链路统一 + 类型收敛"（2026-10-01）期间整理；V-Trim 默认出片通道就是本底座。
+> **这份文档是自包含的**：不需要 YekiTrim 仓、不需要它的工程，第 1～2 节的复现都能在 Dhampir 仓里做完。
+> 来源：YekiTrim 侧在"精修效果链路统一 + 类型收敛"（2026-10-01）期间整理；YekiTrim 默认出片通道就是本底座。
 > 每条都给了 **症状 / 影响 / 最小复现 / 已排除项 / 可疑点（带 file:line）/ 验收判据**。
 > 行号按本次整理时读到的代码，若已变动请按函数名搜。
 
@@ -26,10 +26,10 @@
 ### 症状与影响
 
 任何 `{"kind":"overlay", …}` 的调整层在出片里**整层消失**（片头渐入、色罩、氛围层都属于这一类）。
-不报错、不崩溃、退出码 0 —— V-Trim 的默认出片通道就是本底座 ⇒ 用户看到的是"这块效果没了"。
-**连带影响**：V-Trim 侧 D5 新做的 `overlay.angle`（渐变方向换算）在底座出片里**无法目视验证**。
+不报错、不崩溃、退出码 0 —— YekiTrim 的默认出片通道就是本底座 ⇒ 用户看到的是"这块效果没了"。
+**连带影响**：YekiTrim 侧 D5 新做的 `overlay.angle`（渐变方向换算）在底座出片里**无法目视验证**。
 
-### 最小复现（自包含，不依赖 V-Trim）
+### 最小复现（自包含，不依赖 YekiTrim）
 
 **第 1 步**：把下面这段存成 `/tmp/ov.doc.json`（`clip.mp4` 换成你们自己的测试片段：1920×1080、timebase 60/1、**480 帧**）。
 结构 = 一条视频层 + 一条**调整层**（无 `source`、只有 `overlay` 特效，窗口帧 30..126）：
@@ -112,7 +112,7 @@ dhampir frame --project /tmp/ov.doc.json --frame 60 --out /tmp/f60/ --asset-root
    而 `space.target` 是按 pass 传进来的 —— 确认 **Document 那一趟有没有跑到这条层**。
    （`vignette` 也是 Document，所以第 1 条那个"换个 kind 对比"同样能验证这一支。）
 
-### 验收判据（不需要 V-Trim）
+### 验收判据（不需要 YekiTrim）
 
 ```bash
 # 出同一帧两次：带 overlay 层 / 把它删掉，然后比"平均绝对差"
@@ -122,7 +122,7 @@ ffmpeg -v info -i /tmp/f60/with.png -i /tmp/f60/without.png \
 #       窗口外（例如帧 10）两次出图应当**逐字节相同**
 ```
 
-**请不要这样修**：不要在 V-Trim 的转译器里"用别的效果凑一个色罩" —— 那会掩盖问题，
+**请不要这样修**：不要在 YekiTrim 的转译器里"用别的效果凑一个色罩" —— 那会掩盖问题，
 底座修好后还会变成第二份实现。转译侧现在已经把它**正确发出**（报告里没有 DROP）。
 
 ---
@@ -146,7 +146,7 @@ let to = args.to.unwrap_or(from);   // ← 只给 --from 10 时 to = 10 ⇒ 只�
 ```
 
 **影响**：信注释的调用方会拿到"一帧"而不是"到结尾"，**退出码还是 0**（静默出错）。
-（V-Trim 两头都给 `--from 0 --to N-1`，所以没踩到。）
+（YekiTrim 两头都给 `--from 0 --to N-1`，所以没踩到。）
 
 **⚠️ 修之前注意**：`frame_range(args)` 只拿得到 `args`，而 `cmd_frame` 是**先调它、后 load 工程**
 ⇒ 想让 `to` 缺省成"工程结尾"，要么把工程加载提前、要么把返回值改成 `Option<Frame>` 由调用点补。
@@ -165,45 +165,45 @@ let to = args.to.unwrap_or(from);   // ← 只给 --from 10 时 to = 10 ⇒ 只�
 
 ---
 
-## 4. B 组：量化出来的不足（这几条来自 V-Trim 侧的历史读数，需底座侧自测确认）
+## 4. B 组：量化出来的不足（这几条来自 YekiTrim 侧的历史读数，需底座侧自测确认）
 
 > 这几条**没有**像 D1 那样的最小复现，因为它们是"观感/精度"类差异。
-> 每条给了：现象、V-Trim 侧读数、底座侧建议的自测方法。
+> 每条给了：现象、YekiTrim 侧读数、底座侧建议的自测方法。
 
-| # | 现象 | V-Trim 侧读数（历史） | 底座侧建议自测 |
+| # | 现象 | YekiTrim 侧读数（历史） | 底座侧建议自测 |
 |---|---|---|---|
-| **B1** | `stage` fit 的 **contain（摆位）+ 背景层（模糊底）** 没做 | 竖屏画布：只改 `orientation` 一行，基线像素差 **87.98**、位移 −24px；V-Trim 转译器补了 cover 的 `f` 之后 → **44.20** / **+2px** | 用 1920×1080 源导出 1080×1920：主画面是否被 **cover 裁切铺满**（无黑边）；底座侧是否已有 `stage`/背景层概念（本次**没查**，只是记成"没做"） |
+| **B1** | `stage` fit 的 **contain（摆位）+ 背景层（模糊底）** 没做 | 竖屏画布：只改 `orientation` 一行，基线像素差 **87.98**、位移 −24px；YekiTrim 转译器补了 cover 的 `f` 之后 → **44.20** / **+2px** | 用 1920×1080 源导出 1080×1920：主画面是否被 **cover 裁切铺满**（无黑边）；底座侧是否已有 `stage`/背景层概念（本次**没查**，只是记成"没做"） |
 | **B2** | 放大**重采样偏软** | 手写双线性放大 1.7778x，比浏览器 `drawImage` **软 2.5 倍**（同一帧逐像素比） | 造一张高频细节图，放大 1.7778 倍后比高频能量（拉普拉斯方差）或直接与浏览器 `drawImage` 比 |
 | **B3** | 高亮词**段间水平推进量**不同源 | 残差：段间推进量两端不同 —— 浏览器 `measureText` 与画字同引擎（准），`drawtext` 拿不到别段宽（用布局逻辑字宽，中英混排差几像素） | 造一条含 `<span class="hl">` 的 srt，量"高亮段之后那一段"的起始 x |
 | **B4** | 弹幕 **`\pos` 静态 cue** 仍走轨道级 travel | 参照是**逐条** travel；底座在 cue 有 `\move` 时已能逐条（6 参数 `\move` 那条路已通），**静态 cue 没有 `\move` 可读** ⇒ 回退轨道级平均 | 造一条只有 `\pos` 没有 `\move` 的 cue，看它在屏时长是"逐条"还是"轨道级平均" |
-| **B5** | 字幕**文字阴影**在契约里没有字段 | V-Trim 侧对应的是 DROP 之一（`style.subtitle` 的文字阴影 + 入场动画 `cycle-5`） | 纯契约问题：要不要给字幕轨加阴影字段由底座定；不扩我们就一直如实报 DROP（**不是 bug**） |
+| **B5** | 字幕**文字阴影**在契约里没有字段 | YekiTrim 侧对应的是 DROP 之一（`style.subtitle` 的文字阴影 + 入场动画 `cycle-5`） | 纯契约问题：要不要给字幕轨加阴影字段由底座定；不扩我们就一直如实报 DROP（**不是 bug**） |
 
 ---
 
-## 5. 修好之后 V-Trim 侧会做什么（联动约定）
+## 5. 修好之后 YekiTrim 侧会做什么（联动约定）
 
-1. **D1 修好后**：先跑 V-Trim 的对拍三样本复测（`demo` / `portrait` / `real`）——
+1. **D1 修好后**：先跑 YekiTrim 的对拍三样本复测（`demo` / `portrait` / `real`）——
    overlay 色罩会真的出现 ⇒ **基线数字必然变化，那是期望的变化**，我们会重新标定；
-   然后划掉台账里的 D1，并把 `docs/vtrim-integration.md` §4.8 的对应行改成"已接"。
-2. **D1 修好后顺带能验的**：V-Trim 的 `overlay.angle`（D5）—— 我们已按底座约定
+   然后划掉台账里的 D1，并把 `docs/yekitrim-integration.md` §4.8 的对应行改成"已接"。
+2. **D1 修好后顺带能验的**：YekiTrim 的 `overlay.angle`（D5）—— 我们已按底座约定
    `base = css − 90`（CSS 0° = 向上、顺时针；底座 `dir=(cos,sin)` 0° = 向右），缺省 `135°`（= 参照的 `to bottom right`）。
    请顺手确认一条：**`angle=45` 时渐变应当是"从左上到右下"**（我们按这个换算）。
-3. **D2 修好后**：V-Trim **不改代码**（我们两头都给参数），只会核对一下文档措辞。
-4. **B1/B2 若修**：竖屏类工程的观感会整体变好；V-Trim 侧会把"重采样软 2.5 倍"那条从台账划掉。
+3. **D2 修好后**：YekiTrim **不改代码**（我们两头都给参数），只会核对一下文档措辞。
+4. **B1/B2 若修**：竖屏类工程的观感会整体变好；YekiTrim 侧会把"重采样软 2.5 倍"那条从台账划掉。
 
-## 6. 溯源（只想追证据时才看；不需要读 V-Trim 仓）
+## 6. 溯源（只想追证据时才看；不需要读 YekiTrim 仓）
 
-- 本交接单的原始版：V-Trim 仓 `docs/dhampir-base-issues.md`（D1–D3 的初版复现）；
-- 状态表：V-Trim 仓 `docs/plan/dhampir-parity-register.md` §四；
-- B 组的读数出处：V-Trim 仓 `docs/vtrim-integration.md` §六（第 3/4/5 条）与 §4.8；
-- D1 的最小 doc 原始文件（含 `keyframes` 包络那一版）：V-Trim 仓 `.workbuddy/dhampir-unify-out/mini-overlay.doc.json`。
+- 本交接单的原始版：YekiTrim 仓 `docs/dhampir-base-issues.md`（D1–D3 的初版复现）；
+- 状态表：YekiTrim 仓 `docs/plan/dhampir-parity-register.md` §四；
+- B 组的读数出处：YekiTrim 仓 `docs/yekitrim-integration.md` §六（第 3/4/5 条）与 §4.8；
+- D1 的最小 doc 原始文件（含 `keyframes` 包络那一版）：YekiTrim 仓 `.workbuddy/dhampir-unify-out/mini-overlay.doc.json`。
 
 ---
 
 ## 7. 本仓侧的核对结果（2026-10-01，Dhampir 仓内独立完成）
 
 > 全部读数都在本仓、用本仓的 `target/s3/proxy1080p.mp4`（1920×1080 / 60fps / 480 帧 /
-> 关键帧每 60 帧，`node scripts/make-test-media.mjs` 生成）量出来的，**不依赖 V-Trim 仓**。
+> 关键帧每 60 帧，`node scripts/make-test-media.mjs` 生成）量出来的，**不依赖 YekiTrim 仓**。
 >
 > **一条命令重跑**（已经是仓库里的正式工具，不再是草稿）：
 >
@@ -306,7 +306,7 @@ cargo test -p dhampir-worker --test timeline -- --ignored
 **自相矛盾 ⇒ 它不能当"软/锐"的判据**，只能是诊断量。现在 `handoff-probe.mjs` 里它**只打印、不计入判据**，
 能站住的判据只有上面那条（中间值占比 ⇒ 双线性 vs 最近邻）。
 
-结论不变：V-Trim 侧那条"比 `drawImage` 软 2.5 倍"**在今天的底座上不成立**（要么来自旧版本，
+结论不变：YekiTrim 侧那条"比 `drawImage` 软 2.5 倍"**在今天的底座上不成立**（要么来自旧版本，
 要么量的是预览 canvas 那条路）。**若下游仍见"软"，请给一条能复现的最小 case（源、输出尺寸、比对对象）** ——
 按现在这条判据，底座放大就是双线性。
 
@@ -354,7 +354,7 @@ let overlay_color = mix(color_a, color_b, clamp(grad_t, 0.0, 1.0));    // ⇒ �
 | 改文档（未采用） | 把 `OVERLAY` 的文档改成"纯色取 `r2/g2/b2`（`r2` 缺省 = `r`）" | 零行为变更，但契约从此多一条"看第二组颜色"的怪规矩 |
 
 **定案（2026-10-01）**：走"改实现"。**判据是证据，不是偏好** ——
-读下游转译器 `F:\para\Code\V-Trim\tools\polish-to-dhampir.mjs` 的 `solidEffect`（约 1990 行）：
+读下游转译器 `F:\para\Code\YekiTrim\tools\polish-to-dhampir.mjs` 的 `solidEffect`（约 1990 行）：
 
 ```js
 r: col.r, g: col.g, b: col.b,

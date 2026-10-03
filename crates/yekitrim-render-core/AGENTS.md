@@ -10,7 +10,7 @@
 本 crate **不认识业务**：不读 `polish.toml`、不做 LLM、不碰网络，**也不含任何 GPU 代码**。
 
 > ⚠️ **这里曾经有一整套 wgpu 合成管线**（`draw` / `effects` / `render` / `composite` / `sprite` / `gpu` /
-> `shaders` / `gif`，由 `wgpu` feature 门控）、一个浏览器真渲染预览 `vtrim-wasm`（独立 target）、
+> `shaders` / `gif`，由 `wgpu` feature 门控）、一个浏览器真渲染预览 `yekitrim-wasm`（独立 target）、
 > 以及桌面 `yekitrim-polish/src/render/native/` 的 `WgpuBackend`。**整条已删除**（用户拍板：
 > GPU 出片与本仓无关，那侧交给独立的 **Dhampir 底座**，见根卡「本仓不再自带任何 GPU 渲染」）。
 > 依赖也一并收干净（`wgpu` / `bytemuck` / `swash` / `image` / `futures` 都没了，只剩 `serde` /

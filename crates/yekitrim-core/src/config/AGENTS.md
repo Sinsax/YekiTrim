@@ -5,7 +5,7 @@
 ## 职责
 
 定义全站配置类型（`types.rs`）与读写合并（`mod.rs`）。两层合并:
-`.vtrim/config.toml` (程序) → `vtrim.toml` (项目, 后加载覆盖前者)。无环境变量。
+`.yekitrim/config.toml` (程序) → `yekitrim.toml` (项目, 后加载覆盖前者)。无环境变量。
 实现见 `yekitrim-core/src/config/mod.rs::load_config_at`（先 global 后 project）。
 此外提供 `patch_config_file`（设置页表单保存通道）、`write_project_config` 与几个
 `save_*_path_in`（stage 落盘后回写生效值）。
@@ -33,7 +33,7 @@
 ### 新增配置字段步骤
 
 1. `config/types.rs` 加字段 + serde default
-2. `config/mod.rs` 的 `merge()` 加对应条件（注意 `.vtrim/config.toml` 在 `vtrim.toml` 之后 merge）
+2. `config/mod.rs` 的 `merge()` 加对应条件（注意 `.yekitrim/config.toml` 在 `yekitrim.toml` 之后 merge）
    —— ⚠️ **`[llm]` 是例外：它不参与 merge**，`load_config_at` 最后一句 `config.llm = load_llm_config()`
    无条件覆盖，所以 LLM 相关字段只改 types/mod 的模板，不用碰 `merge()`
 3. 结构体手动 `Default` impl (有字段级 serde default 时必须)
@@ -42,7 +42,7 @@
 
 ### 两层样例（逐字保留）
 
-**`vtrim.toml`** — 项目配置:
+**`yekitrim.toml`** — 项目配置:
 ```toml
 input_file = ""
 danmaku_file = ""            # 唯一生效值（清单里「使用中」那条）
@@ -65,10 +65,10 @@ overwrite = false
 silence_noise_db = -30
 ```
 
-**`.vtrim/config.toml`** — 全局程序配置:
+**`.yekitrim/config.toml`** — 全局程序配置:
 ```toml
 [asr]
-mode = "hybrid"              # 默认 hybrid（预处理页有下拉；也能改这里/项目 vtrim.toml）
+mode = "hybrid"              # 默认 hybrid（预处理页有下拉；也能改这里/项目 yekitrim.toml）
 model = "sensevoice"         # ASR 模型: sensevoice(快) | qwen3-asr(最准,慢)（hybrid 填词固定 qwen3-asr）
 num_workers = 0              # 0=auto(CPU/4,上限4), N=指定并行数(不超过CPU核数)
 chunk_duration = 60.0        # 每块秒数
@@ -105,11 +105,11 @@ overwrite = false
 silence_noise_db = -30
 
 [sfx]
-# 音效屏蔽列表 (vtrim polish 使用): 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
+# 音效屏蔽列表 (yekitrim polish 使用): 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
 blacklist = []
 ```
 
-**`.vtrim/llm.toml`** — LLM 配置（独立文件）:
+**`.yekitrim/llm.toml`** — LLM 配置（独立文件）:
 ```toml
 [llm]
 base_url = ""              # OpenAI 兼容 API 地址
@@ -128,9 +128,9 @@ max_tokens = 32768
 
 ### 写入纪律
 
-`vtrim init` 生成 `vtrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
-`vtrim config init` 生成 `.vtrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.vtrim/llm.toml`（`[llm]`，覆盖写）。
-`vtrim server` 启动时若程序配置缺失会自动补齐（`yekitrim_service::ensure_global_config`）：只创建缺失文件；
+`yekitrim init` 生成 `yekitrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
+`yekitrim config init` 生成 `.yekitrim/config.toml`（`[asr]` + `[detection]` + `[correct]` + `[sfx]`）和 `.yekitrim/llm.toml`（`[llm]`，覆盖写）。
+`yekitrim server` 启动时若程序配置缺失会自动补齐（`yekitrim_service::ensure_global_config`）：只创建缺失文件；
 已存在但 TOML 语法错误的会备份为 `*.toml.broken` 后重建（坏文件会让整份配置被忽略）。
 设置页表单只覆盖常用项，保存走 `config::patch_config_file`（toml_edit 合并，保留其他 section 与注释），
 表单数据源用 `/api/config` 的 `global_config`（global-only），不能用 merged 的 `config`。
@@ -161,7 +161,7 @@ max_tokens = 32768
 
 ### LLM 并发与加速（2026-09）
 
-- **一个旋钮**：`.vtrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
+- **一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），**事件检测 / 精修事件生成 /
   字幕订正共用**，解析统一走 `LlmConfig::concurrency(section_override)`（`config/types.rs`）。
   `[detection] max_concurrent` / `[correct] max_concurrent` 是**可选覆盖**（`Option<usize>`，
   留空即跟随全局）——别再在代码里写死 `3`，也别让某条链路偷偷用自己的。设置页「LLM 配置」块有输入框。
@@ -184,7 +184,7 @@ max_tokens = 32768
 `width:100%` 会被 flex-basis 盖掉，别再改回 100%）——三样东西因此能在**一行**里读完，行高从「标签行 + 整宽滑块」
 两行压成一行。窄格（LLM 那几列，格子 ≤220px）由 `@container` 把标签挤到独占一行，**别改成媒体查询**
 （量的是格子宽而不是视口宽）。实测（1600 宽 + 真实 Chrome）：格宽 400 → 滑块 133，数字框右缘与格子右缘齐平（spill 0），
-820/980/1100/1280 各档都没有横向溢出。改完要么重建 `webui/dist`，否则 `vtrim server` 端出的还是旧界面。
+820/980/1100/1280 各档都没有横向溢出。改完要么重建 `webui/dist`，否则 `yekitrim server` 端出的还是旧界面。
 ⚠️ **ASR 的 `Mode` 与它的说明挤成一行**（`.mode-field`）：说明原本另起一行，把那一格撑到 **81px**，而同一行的
 数值行只有 23px —— 那一行右侧空出 58px 竖向留白（实测）。改成「标签 · 下拉（`width:auto`）· 说明」后那一行 31px。
 其他页（PolishView / CoverDesigner / DownloaderConfig）仍是旧写法，要用就自己换。

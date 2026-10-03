@@ -1,7 +1,7 @@
 //! asr::local：sherpa-onnx 识别器构建与分块解码（SenseVoice 打轴 / qwen3-asr 填词）。
 //!
 //! 入口：`create_recognizer`、`create_qwen3_recognizer`、`transcribe_sensevoice`、`transcribe_qwen3_samples`、`resolve_model_dir`、`read_wav_range`、`ensure_ready`。
-//! 边界：模型选择与解码线程数（`decode_threads`）只在这里；sherpa-onnx 一律 CPU only，改并行方式要连带看 qwen3 全局锁 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+//! 边界：模型选择与解码线程数（`decode_threads`）只在这里；sherpa-onnx 一律 CPU only，改并行方式要连带看 qwen3 全局锁 —— 见 `crates/yekitrim-core/src/asr/AGENTS.md`
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ fn model_dir(cfg: &AsrConfig) -> PathBuf {
 pub enum ModelDirSource {
     /// 配置里的 `local_model_dir`
     Config,
-    /// 程序目录 `<数据目录>/.vtrim/models/<model>`
+    /// 程序目录 `<数据目录>/.yekitrim/models/<model>`
     ExeDir,
 }
 
@@ -54,7 +54,7 @@ impl ModelDirSource {
 ///
 /// 查找优先级：
 /// 1. 配置的 `local_model_dir`（直接目录或 models 根目录）
-/// 2. 程序目录 `<数据目录>/.vtrim/models/<model>`
+/// 2. 程序目录 `<数据目录>/.yekitrim/models/<model>`
 ///
 /// ⚠️ 这里是"模型在哪"的**唯一真源**：运行时（`model_dir_for`）与界面/诊断
 /// （`download::model_install`）都走它 —— 曾出过"模型管理说没下载、实际转写一直在用"
@@ -62,10 +62,10 @@ impl ModelDirSource {
 ///
 /// ⚠️ **2026-10-02 去掉了"用户目录优先"那一档**（用户口径：*不要用户目录*）。
 /// 那一档是"开发时模型常放这里"留下的，代价是**模型有了两个可能的位置** ——
-/// 上面记的那次错位（界面只看程序目录、模型实际在 `~/.vtrim/models`）正是它造成的。
+/// 上面记的那次错位（界面只看程序目录、模型实际在 `~/.yekitrim/models`）正是它造成的。
 /// 现在位置只有一个，"只查了一处"这类 bug 从根上没有了。
 pub fn resolve_model_dir(cfg: &AsrConfig, model: &str) -> (PathBuf, ModelDirSource) {
-    resolve_model_dir_in(cfg, model, &crate::path::vtrim_home())
+    resolve_model_dir_in(cfg, model, &crate::path::yekitrim_home())
 }
 
 /// `resolve_model_dir` 的可注入版本（单测用：不碰环境变量，edition 2024 下 `set_var` 是 unsafe）。
@@ -1098,7 +1098,7 @@ mod tests {
         }
     }
 
-    /// 「模型在哪」的唯一真源：`local_model_dir`（配置）→ `<数据目录>/.vtrim/models`（程序目录）。
+    /// 「模型在哪」的唯一真源：`local_model_dir`（配置）→ `<数据目录>/.yekitrim/models`（程序目录）。
     /// ⚠️ 界面与转写**必须**都走它 —— 曾经界面只看程序目录、转写优先用户目录，
     /// 于是"模型管理说没下载、转写其实一直在用另一份"（那条并列在 2026-10-02 收掉了）。
     #[test]
@@ -1106,7 +1106,7 @@ mod tests {
         use super::{resolve_model_dir_in, ModelDirSource};
 
         let base = std::env::temp_dir().join(format!(
-            "vtrim-resolve-{}-{:?}",
+            "yekitrim-resolve-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1417,7 +1417,7 @@ mod tests {
         // 测试进程的 CWD 是 crate 根，默认样本用 CARGO_MANIFEST_DIR 拼绝对路径
         let speech_wav = std::env::var("VT_VAD_SPEECH_WAV").unwrap_or_else(|_| {
             format!(
-                "{}/../../target/debug/.vtrim/models/sensevoice/test_wavs/zh.wav",
+                "{}/../../target/debug/.yekitrim/models/sensevoice/test_wavs/zh.wav",
                 env!("CARGO_MANIFEST_DIR")
             )
         });

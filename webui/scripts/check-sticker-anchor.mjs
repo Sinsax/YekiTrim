@@ -8,8 +8,8 @@
 //   2. 预览求值器 `webui/src/polish/engine.js`
 //      `stickerAnchor` → `clampSticker` → `stickersAt`
 //   3. 画布参数 SSOT `webui/src/polish/canvas.js`（`stickerScale/Size/Margin/FloatUp`）
-//   4. Rust GPU 路径 `vtrim-render-core/src/timeline.rs::parse_sticker`（先钳中心再叠 y_off）
-//      —— 那份由 `cargo test -p vtrim-render-core --lib` 覆盖，本脚本只管前三份 JS。
+//   4. Rust GPU 路径 `yekitrim-render-core/src/timeline.rs::parse_sticker`（先钳中心再叠 y_off）
+//      —— 那份由 `cargo test -p yekitrim-render-core --lib` 覆盖，本脚本只管前三份 JS。
 //   5. 编辑入口 `webui/src/views/PolishView.vue`（落点是**草稿态**：进编辑 → 点选 → 保存/取消。
 //      点选回调一旦直接落盘，"看一眼预览"就会改坏配置 —— 见 ⑧ 段）
 //

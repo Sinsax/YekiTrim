@@ -1,7 +1,7 @@
 //! polish::process::fx：事件默认值补齐与守卫（瞬时特效跨度 / 画中画配额与对齐 / 手持摇摆 / 贴纸对齐字幕）。
 //!
 //! 入口：`transient_duration_cap`、`transient_default_duration`、`normalize_event_ends`、`cap_pip_shots`、`align_pip_shots`、`close_pip_shots`、`cap_handheld_sway`、`align_stickers_to_subtitles`。
-//! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+//! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
 use crate::project::{Event, Segment};

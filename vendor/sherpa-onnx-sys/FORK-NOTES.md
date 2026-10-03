@@ -1,4 +1,4 @@
-# vendor/sherpa-onnx-sys — V-Trim fork
+# vendor/sherpa-onnx-sys — YekiTrim fork
 
 A verbatim copy of **sherpa-onnx-sys 1.13.3** from crates.io, with **`build.rs` modified only**.
 `src/**`, `LICENSE` are byte-for-byte upstream. 63 KB of text, no binaries.
@@ -23,7 +23,7 @@ SHERPA_ONNX_LIB_DIR
 
 Three problems, all of them silent:
 
-1. The official prebuilt archive links **espeak-ng (GPL-3.0-or-later)** unconditionally. V-Trim is
+1. The official prebuilt archive links **espeak-ng (GPL-3.0-or-later)** unconditionally. YekiTrim is
    ASR-only and never calls TTS, so it is a dead dependency that still turns the shipped binary into
    a GPL combined work.
 2. The **cache outranks the archive you point at**. On any machine that has ever built with the
@@ -68,7 +68,7 @@ diff vendor/sherpa-onnx-sys/build.rs <new-crate>/build.rs
 # 3. update the pinned name/hash and, if the archive was rebuilt,
 #    https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts Release v<version>
 # 4. cargo metadata --format-version 1 > /dev/null   # refresh Cargo.lock
-# 5. cargo build --release -p vtrim-cli --locked
+# 5. cargo build --release -p yekitrim-cli --locked
 ```
 
 `build.rs` is 13 KB and the deltas are confined to the constants block and
@@ -85,7 +85,7 @@ diff vendor/sherpa-onnx-sys/build.rs <new-crate>/build.rs
 ```bash
 cargo xtask scan                                  # product scan: the exe must carry no espeak-ng
 rm -rf target/sherpa-onnx-prebuilt                # force a re-acquire + re-extract
-cargo build --release -p vtrim-cli --locked       # must download, verify, extract, then build
+cargo build --release -p yekitrim-cli --locked       # must download, verify, extract, then build
 ```
 
 Manual bypass, for a deliberate reason only: `SHERPA_ONNX_LIB_DIR` is still honoured first and is

@@ -8,7 +8,7 @@
 //! 那正是计划 §2 禁止的"两个 worker 互相调用"（录播姬那套待分配池 / 空闲窗口语义会顺着
 //! 调用链渗进 B站通道，改一边还容易碰坏另一边）。
 //!
-//! 所以：**共享的东西要么下沉到 `vtrim-service`，要么上提到 crate 根**。这个文件是后者。
+//! 所以：**共享的东西要么下沉到 `yekitrim-service`，要么上提到 crate 根**。这个文件是后者。
 
 use std::path::PathBuf;
 use std::sync::Arc;

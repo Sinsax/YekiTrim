@@ -5,11 +5,11 @@
 ## 职责
 
 把本仓的 `polish.toml` 转译成 Dhampir（**底座**，wgpu 预览 + 渲染底座）的工程文件 `*.doc.json`，
-供**第二条出片通道**使用。产品自己的出片是 `vtrim polish render`（headless Chrome）；
+供**第二条出片通道**使用。产品自己的出片是 `yekitrim polish render`（headless Chrome）；
 这条路是"把本仓的精修工程喂给底座出片"，所以它**宁可报错也不猜**：转不了 / 有歧义的都进
 三级清单（`DROP` / `CLAMP` / `NOTE`），打到 stdout。
 
-- **不是产品代码**：`vtrim` 二进制不 import 它、编译不依赖它；产品代码也不许 import 它。
+- **不是产品代码**：`yekitrim` 二进制不 import 它、编译不依赖它；产品代码也不许 import 它。
 - **只读本仓的工程**（`polish.toml` / `clip.srt` / `clip.dm.srt`）：**不回写 `polish.toml`**；
   旁写文件（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`）放在**工程文件旁边**。
 - **不探测媒体**：`frame_count` 留空，交给底座自己处理（⚠️ 2026-10-01 更正：这句原写"由底座的
@@ -38,7 +38,7 @@
   `stickerStateAt` / `hexColor`）：前五条是从**出片模板逐行抄来的曲线**，被
   `scripts/check-yekitrim-translator.mjs` import 来逐值测；`hexColor` 是**颜色**那条
   （四种写法，见「边界」）。`isEntryPoint` 那道门是为了"可 import 也可直接跑"。
-- 规格与词表：`docs/vtrim-integration.md`（第一~八节）—— 每条行为的参照行号、已知差异清单、
+- 规格与词表：`docs/yekitrim-integration.md`（第一~八节）—— 每条行为的参照行号、已知差异清单、
   "怎么加一个新事件类型"的五步。**改这个文件之前先读它。**
 - 贴纸探图：`probeImage()` 调 `ffprobe` 取 GIF 的帧数与尺寸 —— 探不到就返回 `null` 并进 CLAMP，
   **不给默认值假装成功**（`ffprobe` 不在 PATH 上时整条工具仍能跑完）。
@@ -82,12 +82,12 @@
   （`近 1.5` / `远 0.55` / 其余 `1.3`）、认不出的档位按**中景**、`isFinite` 也要看。
   曾经统一退回 `1.0` ⇒ **"远景"档整段不拉远**（成片里看不出来，报告里只有一行 CLAMP）。
 - ⚠️ **颜色要收四种写法**（`hexColor`：`#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA`，可省 `#`）：
-  V-Trim 的 `polish.toml` 里**四种都出现过**（演示工程三条 overlay 全是 8 位带不透明度）。
+  YekiTrim 的 `polish.toml` 里**四种都出现过**（演示工程三条 overlay 全是 8 位带不透明度）。
   以前只认 6 位，后果**不是"少了个透明度"** —— overlay 那处是 `if (!first) drop(...)`，
   **整条覆盖层事件不进成片**（成片少了整块渐变色罩，而报告里只有一行 DROP）。
   认不出的值仍然必须返回 `null`（不许猜），由调用点兜底或报 DROP。
 - ⚠️ **报告里的字符串是接口产物，不是日志文案**：`DROP` / `CLAMP` / `NOTE` 的语义见
-  `docs/vtrim-integration.md` 第五节，给下游的用法是"CI 断言 `DROP == 0` / 把 `CLAMP` 逐条挂台账"。
+  `docs/yekitrim-integration.md` 第五节，给下游的用法是"CI 断言 `DROP == 0` / 把 `CLAMP` 逐条挂台账"。
   **别为了让流程通过而把某条差异从报告里删掉。**
 - ⚠️ **已知差异照实报，别静默近似**：**2026-10-01 起 DROP 只剩 `cover` 一条**（`vignette` 已在
   D4 接上：canvas 画 + 映射写；`style.subtitle` 的文字阴影也在 B5 接上了）。谁再引入"报告里没有、
@@ -124,7 +124,7 @@
   （它自己的注释就写着「不要预乘 FIT」），传 `FIT` 会变成 `FIT²`，而**居中那一点恰好归零**、看不出来
   （`position_pct=0` 才暴露：正确是 `x = -656.25` 贴左）。有键的层逐字节不动（存量零回归）。
 - ⚠️ **别让它变成产品依赖**：不 import `crates/` 里的任何东西、不往 `webui/` 里引；
-  它是"边上的一次性通道"，产品要出片走 `vtrim polish render`。
+  它是"边上的一次性通道"，产品要出片走 `yekitrim polish render`。
 - ⚠️ **不落中间态到仓库里**：`--out` 指哪写哪，别往固定路径写缓存。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
@@ -137,14 +137,14 @@ node scripts/check-yekitrim-translator.mjs --mutate   # 22 处变异必须**全�
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）
-node tools/polish-to-dhampir.mjs docs/wgpu-effect-reference/demo --out target/vtrim-demo/t.json
+node tools/polish-to-dhampir.mjs docs/wgpu-effect-reference/demo --out target/yekitrim-demo/t.json
 ```
 
 改了本目录之后另跑两条结构门禁：
 `python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py`。
 
 **沿革**：这份转译器与它的守卫原先住在 Dhampir 仓（`tools/` 与 `scripts/`），本次交接迁到本仓。
-迁移时**只改了注释与报告字符串的视角**（正文里的"本仓"→"底座"，几处"值得回给 V-Trim"改成
+迁移时**只改了注释与报告字符串的视角**（正文里的"本仓"→"底座"，几处"值得回给 YekiTrim"改成
 "本仓自己修"），并用演示工程验过**产物逐字节不变**（同一条命令、同一个输出目录下 sha256 相同）。
 ⚠️ 那次校验需要 `clip.srt`，而它是被 `.gitignore` 忽略的**本地文件** —— 所以这个"整份产物指纹"
 只能手工复现，**不进守卫**（否则干净检出里它是空转的）。

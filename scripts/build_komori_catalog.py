@@ -23,7 +23,7 @@ import urllib.request
 import ssl
 
 BASE = "https://taira-komori.net"
-UA = {"User-Agent": "Mozilla/5.0 (vtrim-catalog-builder; contact: local tool)"}
+UA = {"User-Agent": "Mozilla/5.0 (yekitrim-catalog-builder; contact: local tool)"}
 CTX = ssl.create_default_context()
 
 # 页面清单: (页面, 日文分类名) — 来自 experiments/komori_categories.json

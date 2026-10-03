@@ -1,13 +1,13 @@
-//! `vtrim user invite*`：自助注册用的邀请码（一次性 token）。
+//! `yekitrim user invite*`：自助注册用的邀请码（一次性 token）。
 //!
-//! - `vtrim user invite [--note 给谁] [--days N] [--count N]`：生成邀请码，
-//!   **明文落库**（管理员可随时 `vtrim user invites` 再看一次、复制再发），并开启
+//! - `yekitrim user invite [--note 给谁] [--days N] [--count N]`：生成邀请码，
+//!   **明文落库**（管理员可随时 `yekitrim user invites` 再看一次、复制再发），并开启
 //!   `[auth] registration_enabled`；一个码只能绑一个账号（用过即失效）；
-//! - `vtrim user invite --disable`：关闭注册（已生成的码保留，恢复只需再生成一个）；
-//! - `vtrim user invites`：列出邀请码（只见脱敏 hint）与注册开关状态；
-//! - `vtrim user invite-revoke <id|selector>`：撤销一个码。
+//! - `yekitrim user invite --disable`：关闭注册（已生成的码保留，恢复只需再生成一个）；
+//! - `yekitrim user invites`：列出邀请码（只见脱敏 hint）与注册开关状态；
+//! - `yekitrim user invite-revoke <id|selector>`：撤销一个码。
 //!
-//! 与 `vtrim ingest token` 不同：邀请码要能重复查看再发（用户要求），所以明文直接入库。
+//! 与 `yekitrim ingest token` 不同：邀请码要能重复查看再发（用户要求），所以明文直接入库。
 
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ use super::db::{self, Db, InviteRow};
 use super::user::fmt_time;
 
 fn global_config_path() -> PathBuf {
-    yekitrim_core::path::vtrim_home().join("config.toml")
+    yekitrim_core::path::yekitrim_home().join("config.toml")
 }
 
 /// 把 `[auth]` 的若干键合并写进全局配置（保留注释与其他 section）。
@@ -87,7 +87,7 @@ pub fn create_invites(db: &Db, note: Option<&str>, days: Option<u32>, count: u32
     Ok(codes)
 }
 
-/// `vtrim user invite [--note ...] [--days N] [--count N] [--disable]`
+/// `yekitrim user invite [--note ...] [--days N] [--count N] [--disable]`
 pub fn cmd_invite(note: Option<String>, days: Option<u32>, count: u32, disable: bool) -> Result<()> {
     if disable {
         set_registration_enabled(false)?;
@@ -117,7 +117,7 @@ pub fn cmd_invite(note: Option<String>, days: Option<u32>, count: u32, disable: 
     Ok(())
 }
 
-/// `vtrim user invites`：列出邀请码（不打印明文）与注册开关状态。
+/// `yekitrim user invites`：列出邀请码（不打印明文）与注册开关状态。
 pub fn cmd_invites() -> Result<()> {
     let db = Db::open_default()?;
     let rows = db.list_invites()?;
@@ -144,7 +144,7 @@ pub fn cmd_invites() -> Result<()> {
     Ok(())
 }
 
-/// `vtrim user invite-revoke <id|selector|hint>`
+/// `yekitrim user invite-revoke <id|selector|hint>`
 pub fn cmd_invite_revoke(target: &str) -> Result<()> {
     let db = Db::open_default()?;
     let t = target.trim();
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn created_codes_are_readable_and_single_use() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
+        let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         let codes = create_invites(&db, Some("给小明"), Some(7), 2).unwrap();
         assert_eq!(codes.len(), 2);
         assert_ne!(codes[0], codes[1]);

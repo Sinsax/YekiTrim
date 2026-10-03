@@ -10,7 +10,7 @@
 //!    `move_into_managed=false` 时项目目录＝录制目录。
 //! 5. 多分片：默认 `ffmpeg -f concat -c copy` 合并为 `source.mp4`（失败回退重编码）；
 //!    原始分片保留（源不删策略）。
-//! 6. 弹幕：同目录同名 `.xml`（录播姬）/`.ass` 一并搬入项目并写进 `vtrim.toml`。
+//! 6. 弹幕：同目录同名 `.xml`（录播姬）/`.ass` 一并搬入项目并写进 `yekitrim.toml`。
 //! 7. 建项目 + 按 `auto_pipeline`（none|transcribe|detect|cut）自动跑管线。
 //!
 //! 任何一步失败都回滚刚建的托管目录并把会话标为 `failed`（错误文案直接给用户看）。
@@ -208,7 +208,7 @@ pub fn scan_recorder(state: &Arc<AppState>, cfg: &yekitrim_core::config::Config)
     Ok(registered)
 }
 
-/// 递归收集录像文件（限制深度，避免误扫巨树）；跳过 `.vtrim`/隐藏目录。
+/// 递归收集录像文件（限制深度，避免误扫巨树）；跳过 `.yekitrim`/隐藏目录。
 fn collect_recordings(
     root: &Path,
     dir: &Path,

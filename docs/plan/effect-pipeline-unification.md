@@ -3,7 +3,7 @@
 > 立档：2026-10-01。范围：`spec/effects.json`（新）、`scripts/check-effect-registry.mjs`（新）、
 > 前端三张表、`tools/polish-to-dhampir.mjs`、兜底通道（canvas + DOM 预览）、打包（`crates/xtask`）。
 > 相关：`docs/plan/fx-type-consolidation.md`（**类型收敛的定稿计划**，本方案的 P1 就是它）、
-> `docs/plan/dhampir-parity-register.md`（对拍台账）、`crates/vtrim-polish/src/render/AGENTS.md`。
+> `docs/plan/dhampir-parity-register.md`（对拍台账）、`crates/yekitrim-polish/src/render/AGENTS.md`。
 
 ## 1. 问题的形状（实测，不是感觉）
 
@@ -11,16 +11,16 @@
 
 | # | 消费点 | 现在怎么表达 |
 |---|---|---|
-| 1 | 类型真源 `vtrim-render-core/src/types.rs` | `enum Event` 的变体 |
-| 2 | 后处理 `vtrim-polish/src/process/fx.rs` | **两张表**：时长上限 + 默认时长 |
-| 3 | LLM 提示词 `vtrim-polish/src/llm/segment.rs` | 提示词里的类型清单（**两份**：system 与 user） |
+| 1 | 类型真源 `yekitrim-render-core/src/types.rs` | `enum Event` 的变体 |
+| 2 | 后处理 `yekitrim-polish/src/process/fx.rs` | **两张表**：时长上限 + 默认时长 |
+| 3 | LLM 提示词 `yekitrim-polish/src/llm/segment.rs` | 提示词里的类型清单（**两份**：system 与 user） |
 | 4 | 出片模板 `templates/index.html` | `handlers.<id> = function(…)` |
 | 5 | 预览引擎 `webui/src/polish/engine.js` | `get<Camel>(idx, t)`（5 个历史命名不规则） |
 | 6-9 | 前端四张表 `TimelineEditor.vue` | `FX_TYPES` / `TYPE_LABELS` / `DEFAULT_SPAN` / `SFX_CAPABLE`（+ `INTENSITY_TYPES` / `COLOR_TYPES`） |
 | 10 | 转译器 `tools/polish-to-dhampir.mjs` | `case '<id>':`（15 个） |
-| 11 | 求值器 `vtrim-render-core/src/timeline.rs` | 平行实现（无生产消费者） |
-| 12 | 服务端 `vtrim-server/src/api/polish.rs` | 6 处白名单/区域校验 |
-| 13 | 音效 `vtrim-polish/src/render/sound.rs` | 按类型挂音效 |
+| 11 | 求值器 `yekitrim-render-core/src/timeline.rs` | 平行实现（无生产消费者） |
+| 12 | 服务端 `yekitrim-server/src/api/polish.rs` | 6 处白名单/区域校验 |
+| 13 | 音效 `yekitrim-polish/src/render/sound.rs` | 按类型挂音效 |
 | 14 | 守卫（4 个脚本） | 测试事件、DROP 基线、变异表 |
 | 15 | 文档（`polish-events-reference.md` 等 13 份） | 人肉清单 |
 
@@ -88,7 +88,7 @@
 | 1 | **底座随包分发**，绝大多数用户开箱就是默认通道（S2 已把 `dhampir/` 打进去） | ✅ 已具备 |
 | 2 | 装底座失败时有**明确的分诊**（`polish doctor` 的 `[dhampir]` 块 + `/api/polish/dhampir-status` + 前端红字） | ✅ 已具备（M3） |
 | 3 | 关掉兜底之后**没有"只能靠它出片"的存量工程**（即：没人还在用 canvas 实现而底座不实现的效果） | ✅ **已程序化为不变量**（2026-10-01）：`check-effect-registry.mjs::checkDhampirCoverage` 要求**每个效果**都有 `anchors.dhampir_case`，缺了就红并点名（自检也加了这条用例，且自检本身已接进 `.workbuddy/gates.mjs`）。实测：11 个效果全部有底座映射 |
-| 4 | 对拍三样本在"只走底座"下全绿（兜底腿删掉不影响基线） | ✅ **参照已能脱离兜底腿**（2026-10-01）：对拍新增**黄金帧模式** —— `--capture-golden <目录>` 在还有兜底腿时把 5 个基线采样帧冻结成小图（`docs/golden/dhampir-parity/<样本>/`，约 0.7 MB/样本，随仓交付），`--golden <目录>` 之后**完全不渲染兜底腿**（参照只读冻结帧）。实测三样本：`demo` 基线中位 **15.07** / `portrait` **9.87** / `real` **9.77**，判据全过；日志里不再出现"V-Trim（chrome 后端…）"，`demo` 耗时从 ~90s 降到 **27.8s**。⚠️ **口径**：黄金帧模式只做**基线对照**（5 个窗口外采样点），**不量事件窗口** —— 事件窗口的逐窗口判据仍需要兜底腿、或一个能出参照的旧二进制（要连窗口一起冻，成本与收益不成比例） |
+| 4 | 对拍三样本在"只走底座"下全绿（兜底腿删掉不影响基线） | ✅ **参照已能脱离兜底腿**（2026-10-01）：对拍新增**黄金帧模式** —— `--capture-golden <目录>` 在还有兜底腿时把 5 个基线采样帧冻结成小图（`docs/golden/dhampir-parity/<样本>/`，约 0.7 MB/样本，随仓交付），`--golden <目录>` 之后**完全不渲染兜底腿**（参照只读冻结帧）。实测三样本：`demo` 基线中位 **15.07** / `portrait` **9.87** / `real` **9.77**，判据全过；日志里不再出现"YekiTrim（chrome 后端…）"，`demo` 耗时从 ~90s 降到 **27.8s**。⚠️ **口径**：黄金帧模式只做**基线对照**（5 个窗口外采样点），**不量事件窗口** —— 事件窗口的逐窗口判据仍需要兜底腿、或一个能出参照的旧二进制（要连窗口一起冻，成本与收益不成比例） |
 | **0（新增，硬前提）** | **底座 D1（overlay 渐变色罩不出图）必须先修好** | ⛔ 未满足。现在 overlay / 片头渐入是**靠兜底腿画对的**；删掉兜底腿而 D1 未修 ⇒ 这些效果从"兜底画对"变成**成片里彻底没有**（本仓明确不做近似补偿）。证据与复现在 \`docs/dhampir-base-handoff.md\` §1 |
 
 **删的步骤**（条件齐了再执行，一次一件事）：
@@ -108,7 +108,7 @@
 `unknown variant \`stutter\`, expected one of …` 失败 —— 那句话对人没用。现在
 `project/validate.rs` 的 `retired_effect_message()` 把它包成"该工程含**已下线的特效事件**（…）"
 并给出两条路（旧版本删事件 / 直接编辑 `polish.toml`），**普通解析错误原样透传**（不误包装）。
-于是 ④ 的动作变成纯机械：删类型 + 删各消费点，报错体验已经就位（`cargo test -p vtrim-polish --lib project::`）。
+于是 ④ 的动作变成纯机械：删类型 + 删各消费点，报错体验已经就位（`cargo test -p yekitrim-polish --lib project::`）。
 
 
 ## 4. 增删一个效果的新流程（S1+S3 之后）
@@ -130,7 +130,7 @@
 
 ## 5. 已知风险与"不做"的事
 
-- **不重写求值器**：`vtrim-render-core/src/timeline.rs` 是已删 wgpu 路径留下的平行实现、**没有生产消费者**。
+- **不重写求值器**：`yekitrim-render-core/src/timeline.rs` 是已删 wgpu 路径留下的平行实现、**没有生产消费者**。
   收敛的目标不是"三份实现合一"，而是**删掉没有消费者的那份**（S4 顺带做）。
 - **不把底座的渲染搬进本仓**：底座是独立仓、有 GPU 出片与 wasm 预览；本仓要的是"**一份效果定义**"，
   不是"把它的实现复制过来"（那正是今天 canvas/engine.js 两份实现的老路）。

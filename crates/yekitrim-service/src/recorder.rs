@@ -7,7 +7,7 @@
 //! - `GET  {base}/api/version`         版本（对接自检用，路径按 `/swagger/` 校准）
 //!
 //! 认证是 HTTP Basic（容器里设 `BREC_HTTP_BASIC_USER/PASS` 时）；录播姬 2.11 起在没设密码时
-//! 只接受看起来来自局域网的请求，所以**推荐与 V-Trim 同机/同内网部署**。
+//! 只接受看起来来自局域网的请求，所以**推荐与 YekiTrim 同机/同内网部署**。
 
 use std::time::Duration;
 

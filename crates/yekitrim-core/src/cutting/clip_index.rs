@@ -525,7 +525,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let p = std::env::temp_dir().join(format!(
-                "vtrim-clip-index-{tag}-{}-{nanos}",
+                "yekitrim-clip-index-{tag}-{}-{nanos}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&p).unwrap();

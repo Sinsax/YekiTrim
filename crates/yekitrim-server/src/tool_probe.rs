@@ -1,6 +1,6 @@
 //! 外部命令探测（进程级 30s TTL 缓存）。
 //!
-//! **为什么是独立模块**：`/api/health`、`vtrim doctor` 与**任务 worker** 都要探外部工具
+//! **为什么是独立模块**：`/api/health`、`yekitrim doctor` 与**任务 worker** 都要探外部工具
 //! （ffmpeg / ffprobe / yt-dlp；chrome 那个探针随 headless Chrome 链路一起删除了）。
 //! 这几个函数原先住在 `api/mod.rs` 里，
 //! 于是 worker 想探一个命令就得 `use crate::api`（web 层）—— 那是**反向依赖**。
@@ -82,7 +82,7 @@ mod tests {
     /// 不存在的命令 → `None`，且不 panic。
     #[test]
     fn missing_command_is_none() {
-        assert!(command_available_blocking("vtrim-no-such-cmd-xyz", "--version").is_none());
+        assert!(command_available_blocking("yekitrim-no-such-cmd-xyz", "--version").is_none());
     }
 
     /// ⚠️ 回归钉子：**版本参数传错必须返回 `None`**。

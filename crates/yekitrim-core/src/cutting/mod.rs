@@ -1,7 +1,7 @@
 //! cutting：Stage 4 切片（按事件剪视频，写片段元数据与片段弹幕字幕）。
 //!
 //! 入口：`Cutter`；子模块 `silence`（静音检测，整体重导出）、`clip_index`（片段目录命名与索引刷新）。
-//! 边界：产物 `clips/clips_order.txt` 是 Stage 4 的推导依据，别改目录布局；取弹幕一律走 `danmaku::load_danmaku_auto` —— 见 `crates/vtrim-core/src/cutting/AGENTS.md`
+//! 边界：产物 `clips/clips_order.txt` 是 Stage 4 的推导依据，别改目录布局；取弹幕一律走 `danmaku::load_danmaku_auto` —— 见 `crates/yekitrim-core/src/cutting/AGENTS.md`
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -593,7 +593,7 @@ impl PublishConfig {
 mod tests {
     use super::*;
 
-    /// 自建临时目录（vtrim-core 不依赖 tempfile；pid + 纳秒避免并发测试撞名）。
+    /// 自建临时目录（yekitrim-core 不依赖 tempfile；pid + 纳秒避免并发测试撞名）。
     struct TmpDir(PathBuf);
 
     impl TmpDir {
@@ -603,7 +603,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let p = std::env::temp_dir().join(format!(
-                "vtrim-cut-{tag}-{}-{nanos}",
+                "yekitrim-cut-{tag}-{}-{nanos}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&p).unwrap();

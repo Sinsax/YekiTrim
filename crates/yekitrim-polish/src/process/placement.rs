@@ -8,7 +8,7 @@
 //!   （`project/config.rs` 的 `StickerConfig::position` 注释），两条渲染路径的
 //!   `stickerAnchor` 在 manual 分支里减去半个盒子换成左上角，本模块不参与 manual。
 //!   两者是**不同的键**、不同的基准 —— 别顺手"统一"成一种（GPU 路径
-//!   `vtrim-render-core/src/timeline.rs` 曾按中心读事件 x/y，与 DOM 差半个盒子）。
+//!   `yekitrim-render-core/src/timeline.rs` 曾按中心读事件 x/y，与 DOM 差半个盒子）。
 //! - 渲染端把 left/top 钳制在 `[margin, W-margin-sticker] × [margin, H-margin-sticker]`，
 //!   本模块的候选网格限制在同一范围内（`STICKER_MARGIN`）。
 //!

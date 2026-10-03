@@ -1,14 +1,14 @@
-# 承接 V-Trim polish：缺口清单与分阶段计划
+# 承接 YekiTrim polish：缺口清单与分阶段计划
 
 > **视角（迁移后加）**：文中「本仓」= **Dhampir（底座）** —— 这是迁移前在 Dhampir 仓写下的视角；
-> 「V-Trim」= 本仓。读数与命令原样保留，**未改一字**。
+> 「YekiTrim」= 本仓。读数与命令原样保留，**未改一字**。
 
-> **转译器已搬到 V-Trim 那一侧。** 这份文档里出现的 `tools/polish-to-dhampir.mjs`
+> **转译器已搬到 YekiTrim 那一侧。** 这份文档里出现的 `tools/polish-to-dhampir.mjs`
 > 指的是**当时**它在 Dhampir 里的位置；现在它在：
 >
->     <V-Trim>/tools/polish-to-dhampir.mjs
->     <V-Trim>/scripts/check-vtrim-translator.mjs
->     <V-Trim>/docs/vtrim-integration.md   （转译接口正文）
+>     <YekiTrim>/tools/polish-to-dhampir.mjs
+>     <YekiTrim>/scripts/check-yekitrim-translator.mjs
+>     <YekiTrim>/docs/yekitrim-integration.md   （转译接口正文）
 >
 > 下面的命令与读数**保持原样不动** —— 它们是当时的实测记录，改掉就不是记录了。
 
@@ -16,7 +16,7 @@
 汇总成一张表，并给出分阶段的落地计划。数字全部来自实测
 （样本 A = `海市蜃楼之馆`，样本 B = `最鱿鱼之人`）。
 
-**读数基线**：两个样本都能出片，与 V-Trim 成片的平均逐像素差 **10.5 / 255**
+**读数基线**：两个样本都能出片，与 YekiTrim 成片的平均逐像素差 **10.5 / 255**
 （JPEG q=0.6 的底噪约 6）。剩下的差异基本都来自下面这些缺口。
 
 ---
@@ -27,7 +27,7 @@
 
 ### A. 文本样式（最直接对应「字幕样式」「弹幕样式」两条反馈）
 
-| # | 项 | V-Trim 的实际值 | 本仓现状 | 优先级 |
+| # | 项 | YekiTrim 的实际值 | 本仓现状 | 优先级 |
 |---|---|---|---|---|
 | **A1** | 字幕淡入/淡出 + 入场上浮 | `fadeIn 0.35s`、`fadeOut 0.18s`、入场 `+20px` 浮上来、退场 `-8px` | **无字段** | **高** |
 | **A2** | 弹幕淡入/淡出 | `0.3s` / `0.2s` | **无字段** | **高** |
@@ -65,8 +65,8 @@
 
 | # | 项 | 现状 | 优先级 |
 |---|---|---|---|
-| D1 | `stage.bg_mode`（模糊/纯色铺底） | 本仓没有"背景层"。远景（`zoom=0.55`）四周露黑边 —— 与 V-Trim 一致（它也是黑底），但它还能铺模糊底 | 中 |
-| D2 | `handheld` 的真实摆动波形 | 用整层 `shake` 近似（V-Trim 有自己的 `handheldSway`） | 低 |
+| D1 | `stage.bg_mode`（模糊/纯色铺底） | 本仓没有"背景层"。远景（`zoom=0.55`）四周露黑边 —— 与 YekiTrim 一致（它也是黑底），但它还能铺模糊底 | 中 |
+| D2 | `handheld` 的真实摆动波形 | 用整层 `shake` 近似（YekiTrim 有自己的 `handheldSway`） | 低 |
 | D3 | 分区变换（只放大 `layout.liver` 那一块） | 整帧缩放 —— **这条已经不必做了**：运镜公式对齐之后平均差降到 10.5，分区变换只是"更理论正确"，不是可见错的来源 | 低 |
 
 ### E. 边缘
@@ -74,11 +74,11 @@
 | # | 项 | 现状 |
 |---|---|---|
 | E1 | 贴纸安全区推导（`position_mode = "auto"`） | 本仓没有障碍物求解；落点直接取 `polish.toml` 里的百分比 |
-| E2 | 封面产出 | 另一条路（静态图），V-Trim 自己也是另开一条 |
+| E2 | 封面产出 | 另一条路（静态图），YekiTrim 自己也是另开一条 |
 | E3 | `filter.danmaku` 过滤词 | 本仓弹幕没有过滤功能 |
 | E4 | `pow2_out` / `back_out` 缓动 | 本仓只有 `linear/ease_in/ease_out/ease_in_out`。运镜与贴纸都只能近似 |
 | E5 | 字体名（`LXGW WenKai`） | 本仓用 `--font-file`，没有"字体名"概念（**这是有意的**：不猜系统字体） |
-| E6 | `entrance = "cycle-5"` | **不是缺口**：V-Trim 自己也没实现 —— 全仓只有 `polish.toml` 提到它，没有任何代码读 |
+| E6 | `entrance = "cycle-5"` | **不是缺口**：YekiTrim 自己也没实现 —— 全仓只有 `polish.toml` 提到它，没有任何代码读 |
 
 ---
 
@@ -167,7 +167,7 @@ pub struct DanmakuSpec {
     // ... 既有 ...
     #[serde(default = "danmaku_color")]
     pub color: [u8; 4],
-    /// 基础不透明度。V-Trim 用 0.9 —— 弹幕压在画面上，全不透明会太抢。
+    /// 基础不透明度。YekiTrim 用 0.9 —— 弹幕压在画面上，全不透明会太抢。
     #[serde(default = "danmaku_opacity")]
     pub opacity: f32,
     #[serde(default = "danmaku_fade_in")]
@@ -328,7 +328,7 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 ### 7.2 弹幕泳道带（§2-B1）
 
 缺口是**量出来的**：逐行差在 40-60 行出现低谷（6.81），两边各有一条文字带 ——
-本仓在 0-40、V-Trim 在 60-100。
+本仓在 0-40、YekiTrim 在 60-100。
 
 契约加 `lane_top_ratio` / `lane_spacing_ratio`（**默认都是 0 = 复现老行为**）。
 转译器写 `300/3840` 与 `200/3840`（这个换算是与画布尺寸无关的）。
@@ -340,7 +340,7 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 | `cargo test --workspace` | **651 passed**（阶段 1 是 645） |
 | wasm32 / 0 warning / 守卫 | exit 0 / 0 / **20 / 20** |
 | `check-dual-end` SSIM | **1.000000** |
-| 弹幕带位置 | `rect.y = 0.0781`（V-Trim 期望 0.0781） |
+| 弹幕带位置 | `rect.y = 0.0781`（YekiTrim 期望 0.0781） |
 | 单帧（30s）逐像素差 | 8.18 → **6.20**（JPEG 底噪约 6） |
 | 全片 13 个时刻平均 | 10.52 → **10.30**；最差 22.68 → 21.69 |
 
@@ -358,10 +358,10 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 
 平均 10.3 里，**大于底噪的那部分主要来自两处，都不是底座缺陷**：
 
-1. **字体**：本仓只能用 `--font-file` 给替代字体，V-Trim 的 `LXGW WenKai`
+1. **字体**：本仓只能用 `--font-file` 给替代字体，YekiTrim 的 `LXGW WenKai`
    这台机器上没有。字形不同 → 字幕/弹幕所在的**那几行**逐像素差必然大
    （实测 60-140 行的差是 11~24，而 0-60 行只有 3~5）。
-2. **`shake` 的幅度标定**：V-Trim 的 `intensity` 是观感档位，本仓是像素位移比例，
+2. **`shake` 的幅度标定**：YekiTrim 的 `intensity` 是观感档位，本仓是像素位移比例，
    我按 0.05 缩（§1-C 那一条），过冲与衰减曲线不同。20s 那一帧（正好在
    `shake` 窗口里）差 21.69 就是它。
 
@@ -376,9 +376,9 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 
 ### 8.1 先纠正两处**我搞错了的**
 
-1. **V-Trim 的默认字体不是 `LXGW WenKai`。**
+1. **YekiTrim 的默认字体不是 `LXGW WenKai`。**
    那是个**老工程写进 toml 的值**，而 `font_dir()` 里没有这个字模 ——
-   V-Trim 自己的注释写着（`render/server.rs:148`）：
+   YekiTrim 自己的注释写着（`render/server.rs:148`）：
    > 解析不到就**什么都不注入**：老工程的 `font = "LXGW WenKai"` 走到这里，
    > 行为与从前一致（**当系统字体族名用**）。
 
@@ -396,12 +396,12 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 | # | 项 | 实测 |
 |---|---|---|
 | 1 | **贴纸动画帧率**：GIF 是 `100/3`（33.3fps），转译器写死 10fps → **慢 3.33×** | 48.8s −2.45、75s −2.66 |
-| 2 | **字幕落点换算**：V-Trim 的 `cy = CH-120` 是**文字中心**，本仓 `bottom_margin` 是**行盒底边** —— 直接搬 120 会让字幕**高 54px** | 55s 字幕带 34.16 → 26.42 |
+| 2 | **字幕落点换算**：YekiTrim 的 `cy = CH-120` 是**文字中心**，本仓 `bottom_margin` 是**行盒底边** —— 直接搬 120 会让字幕**高 54px** | 55s 字幕带 34.16 → 26.42 |
 | 3 | **描边口径**：CSS `text-stroke:12px` 居中（外侧 6px），ffmpeg `borderw` 全在外侧 —— 契约定**外侧宽度**，转译器折半 | 55s −0.98 |
-| 4 | **字重**：V-Trim 700（字幕）/ 600（弹幕），本仓**完全不设** | −0.3 |
+| 4 | **字重**：YekiTrim 700（字幕）/ 600（弹幕），本仓**完全不设** | −0.3 |
 | 5 | 行高 `1.5`（本仓常量 1.2）、字体族如实带进契约 | 随 #2 一起 |
 | 6 | `Easing::BackOut`（贴纸弹入的**过冲**） | 小窗口 |
-| 7 | `TrackV2.gain`（音效母线；V-Trim 是 `ev.volume \|\| bus`） | 音频正确性 |
+| 7 | `TrackV2.gain`（音效母线；YekiTrim 是 `ev.volume \|\| bus`） | 音频正确性 |
 
 ### 8.3 一个**又犯了**的错（同一类，第三次）
 
@@ -434,12 +434,12 @@ cargo build -p dhampir-wasm --target wasm32-unknown-unknown   # 必须 exit 0
 
 **不是契约缺口**，三件事：
 
-1. **文字栅格化器不同**：V-Trim 的成片走 headless Chrome 的 **Canvas2D/Skia**，
+1. **文字栅格化器不同**：YekiTrim 的成片走 headless Chrome 的 **Canvas2D/Skia**，
    本仓的成片走 **ffmpeg drawtext/FreeType**。同一个字体、同一个字号、
    同一个位置，两种引擎画出来的字形边缘逐像素不同 ——
    实测字幕带是一个**连续的**高差区域（不是两条），说明"位置对、字形不同"。
    要抹掉它得把出片那一路也换成 canvas，那是另一件事。
-2. **贴纸 GIF 的逐帧延时不均匀**：V-Trim 用 `sticker_frames.json` 里的
+2. **贴纸 GIF 的逐帧延时不均匀**：YekiTrim 用 `sticker_frames.json` 里的
    `delays` 数组逐帧推进；本仓的 `timebase` 是一个有理数，只能表达**均匀**间隔。
    这批 GIF 恰好是均匀的（全 30ms），所以对齐了；不均匀的会对不上。
 3. **`shake` 的幅度标定**：`intensity` 是观感档位、本仓 `amount` 是像素位移比例，

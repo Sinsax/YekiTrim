@@ -19,14 +19,14 @@
 
 ⚠️ 用户口径里的"只是截帧的话浏览器也够用"把 **B** 和 **A** 混在一起了 —— 这两件事的成本/收益完全不同，
 下面分开算。另外 **A 不是"接一条已经存在的线"**：Dhampir 侧今天没有封面这条通道，
-`docs/vtrim-integration.md:259` 的原话是「封面（`polish cover`）｜另一条输出通道（静态图），底座不做｜**有意不做**」，
+`docs/yekitrim-integration.md:259` 的原话是「封面（`polish cover`）｜另一条输出通道（静态图），底座不做｜**有意不做**」，
 `docs/dhampir/gap-plan.md:77` E2 同口径。
 
 ## 2. 现状（都是实测/代码，不是估算）
 
 **链路（A）**：设计器 `CoverDesigner.vue`（纯 DOM：`<video class="stage-video">` + `<img>` + CSS，**无 canvas**）
 → `POST /api/polish/cover-config`（写 `polish.toml`，手写白名单 `polish.rs:660-737`）
-→ `POST /api/polish/cover` → **子进程** `vtrim polish cover`（`polish.rs:253`、`api/render.rs:247-268`）
+→ `POST /api/polish/cover` → **子进程** `yekitrim polish cover`（`polish.rs:253`、`api/render.rs:247-268`）
 → `cmd_cover`（`cover.rs:707`）→ 本地 server（`server.rs:208-233`）→ Chrome `--headless=new`
 → `Emulation 1920×1080` → 等 `window.__COVER_READY`（模板写死 1.5s）→ `CaptureScreenshot(Jpeg,q85,clip 1920×1080)`
 → `cover.jpg` / `cover_1.jpg`（不覆盖）。
@@ -39,9 +39,9 @@
 | 六特效 rich 工程同上 | **3.0s** | `.workbuddy/cover-layer/rich.log` |
 | 出片流程内封面 | **2.7–3.4s** | `docs/plan/polish-render-speed.md:50-64` |
 | 文档口径 | 「十几秒」（`docs/job-queue.md:64`）/「1.1s」（`render/AGENTS.md`） | 两个都偏，**该按实测改成 ≈3s** |
-| Dhampir 单帧 PNG 出口 | **1250 ms/帧** | `docs/vtrim-integration.md:454` |
+| Dhampir 单帧 PNG 出口 | **1250 ms/帧** | `docs/yekitrim-integration.md:454` |
 | Dhampir 冷启动一个进程 | **1.5–3.2 s** | 同上 `:456` |
-| 转译（node） | **0.2–1.1s**（真日志 `POST /dhampir-project → 200 (212~1176ms)`） | `target/debug/.vtrim/cloud/logs/vtrim-20260930.log:1153,2338` |
+| 转译（node） | **0.2–1.1s**（真日志 `POST /dhampir-project → 200 (212~1176ms)`） | `target/debug/.yekitrim/cloud/logs/yekitrim-20260930.log:1153,2338` |
 
 ## 3. A：封面合成换 Dhampir
 
@@ -97,7 +97,7 @@ Rust 侧用的是**手写 JSON**（`polish.rs:2032` 那条单测），**两边�
 | 3 | **一条真 E2E**：设计器 payload → 真 `POST /api/polish/cover-config` → 真 `polish cover` → 与基线比 SHA（或与 DOM 预览比） | 这才是"前端到后端到出片"的端到端；`.workbuddy/cover-layer/` 那套 SHA 零回归（rich `F608702D96C0D7BC`）**是手工跑的、没有脚本入口** | 一条 `#[ignore]` 的 Rust 集成测试（照 `dhampir_backend.rs` 的样子）或 `.workbuddy` 脚本 + 固定 fixture 工程 |
 
 另外两条**顺带**（与本议题无关但同族）：`check-dhampir-wiring.mjs` 的 `engine.<方法>` 只查 7 个白名单
-（`loadSubtitles` / `sourcesFor` / `setSourceBitmap` 这些真在用的都不查）；`scripts/vtrim-compare.mjs`
+（`loadSubtitles` / `sourcesFor` / `setSourceBitmap` 这些真在用的都不查）；`scripts/yekitrim-compare.mjs`
 （Dhampir 对拍）**没进任何守卫清单、没人定期跑**（`docs/dhampir/README.md:56-57` 自己写着）。
 
 ## 6. 什么条件下重新开这个决策
@@ -121,11 +121,11 @@ grep -n "⏱ 封面" <data_dir>/logs/render-*.log
 # 封面零回归基线（手工，rich/横/竖三个样本）
 node .workbuddy/cover-layer/make-variants.js && <逐个出片比 SHA-256>
 # Dhampir 那一侧的数字出处
-grep -n "PNG 出口\|冷启动\|逐帧调 CLI" docs/vtrim-integration.md
+grep -n "PNG 出口\|冷启动\|逐帧调 CLI" docs/yekitrim-integration.md
 grep -n "^| A[0-9]" docs/dhampir/gap-plan.md        # 文字能力缺口表
 ```
 
-> 引文状态提醒：`docs/dhampir/gap-plan.md` 的差异表**比 `docs/vtrim-integration.md` 旧** ——
+> 引文状态提醒：`docs/dhampir/gap-plan.md` 的差异表**比 `docs/yekitrim-integration.md` 旧** ——
 > 例如"高亮词"在 gap-plan 里写"无"（A7），而 integration 记"已做（两端）"（`:254`）。
 > 引用时以较新的实测为准；本文只引用了两边不冲突的条目（A6/A8/栅格化器）。
 
@@ -154,7 +154,7 @@ grep -n "^| A[0-9]" docs/dhampir/gap-plan.md        # 文字能力缺口表
 
 | # | 封面生成的 CSS | Dhampir 现状 | 判定 |
 |---|---|---|---|
-| 7 | **渐变遮罩** linear（4 方向）/ radial，色取 `[style.subtitle].highlight_color` | linear/radial 都有；角度参数底座已有（`polish-to-dhampir.mjs:1828` 注释"底座已有参数，V-Trim 配置里没写，取 0"） | ✅（4 方向 → 角度） |
+| 7 | **渐变遮罩** linear（4 方向）/ radial，色取 `[style.subtitle].highlight_color` | linear/radial 都有；角度参数底座已有（`polish-to-dhampir.mjs:1828` 注释"底座已有参数，YekiTrim 配置里没写，取 0"） | ✅（4 方向 → 角度） |
 | 8 | **暗角**（滤镜层那块）同 #3 | 同 #3 | ⚠️ |
 | 9 | **图层栈**：任意 z 序 + `visible:false → display:none` | track/layer 顺序 + `start/end` 可见窗口（用单帧区间表达） | ✅（语义要映射） |
 
@@ -167,7 +167,7 @@ grep -n "^| A[0-9]" docs/dhampir/gap-plan.md        # 文字能力缺口表
 | 12 | **字距** `letter-spacing:Npx`（−10~60，可为负） | 同上（`drawtext` 无 letter-spacing） | ❌ |
 | 13 | **行高** `line-height` 0.8~2.6（倍数） | A8 无；`drawtext` 的 `line_spacing` 是**绝对像素**，不是倍数 | ❌（且口径不同） |
 | 14 | **对齐** `text-align` left/center/right | 字幕轨的对齐能力未逐行确认 | ⚠️ 待确认 |
-| 15 | **逐词高亮** `.hl{color:#hlc}`（正文里挑词上色） | 字幕/弹幕那支**已做两端**（`vtrim-integration.md:254`），但**封面标题不是字幕轨** | ⚠️ 能力在，映射要新做 |
+| 15 | **逐词高亮** `.hl{color:#hlc}`（正文里挑词上色） | 字幕/弹幕那支**已做两端**（`yekitrim-integration.md:254`），但**封面标题不是字幕轨** | ⚠️ 能力在，映射要新做 |
 | 16 | **自定义字体**：库内字体（`/vt-fonts` + `@font-face`）；**空 = 系统字体栈** | 底座**故意不猜系统字体**，必须显式 `--font-file` | ❌（默认行为冲突：封面默认系统栈） |
 | 17 | **手动分行**：你敲的每一行就是一行、`white-space:nowrap` + `<br>` | 底座 subtitle 会**主动折行 + 缩字**（`shrink_min_scale`/`keep_all_lines`） | ❌（语义冲突：要关掉自动折行） |
 | 18 | 入场动画 `fadeUp 0.6s` | 截图时已结束（`__COVER_READY` 1.5s） | ✅ 不需要覆盖 |
@@ -176,7 +176,7 @@ grep -n "^| A[0-9]" docs/dhampir/gap-plan.md        # 文字能力缺口表
 
 | # | 封面生成的 CSS | Dhampir 现状 | 判定 |
 |---|---|---|---|
-| 19 | **帧层** `object-fit:contain` + `transform`（`bg_x/bg_y/bg_zoom` 0.5~3） | transform/scale 有；`contain` 摆位**未做**（`vtrim-integration.md:256` 只做了 cover 那一半） | ⚠️ |
+| 19 | **帧层** `object-fit:contain` + `transform`（`bg_x/bg_y/bg_zoom` 0.5~3） | transform/scale 有；`contain` 摆位**未做**（`yekitrim-integration.md:256` 只做了 cover 那一半） | ⚠️ |
 | 20 | **背景纯色** `bg_mode=color` | 纯色/黑底有 | ✅ |
 | 21 | **背景图片** `_cover_bg.jpg` + `object-fit:cover` | 位图/图片 asset 有 | ✅ |
 | 22 | **背景模糊** `filter:blur(σ)` + `scale(1+px/150)`，**σ = 28 × blur_scale（0.2~4，最大 σ112）** | `gaussian_blur` **radius ≤ 16（= σ8）**，且 `blur_radius()` 取最大值**不叠加**（`polish-to-dhampir.mjs:2765,2794` 的注释就是它） | ❌（差 3.5×~14×） |
@@ -207,7 +207,7 @@ grep -n "^| A[0-9]" docs/dhampir/gap-plan.md        # 文字能力缺口表
 | # | 选择 | 解决什么 | 代价 | 建议 |
 |---|---|---|---|---|
 | ① | **设计器显示那份真 HTML**（接上 `coverPreview`，`polish.js:104` 现成的死接口） | 把"统一"从**约定**升级成**物理**（预览与出片共用 `build_cover_page`）；顺带设计器预览不再需要服务端 Chrome | 跨源（`127.0.0.1` 只在同机可用）/远程部署（要 `srcdoc` + 同源资源）/缓存 bust；设计器 DOM 退化成**交互层**（选框、拖动、安全区线框） | **做**（结构性收益最大） |
-| ② | **像素对拍门禁**：设计器舞台截图 vs 出片 JPEG（SSIM + 中位差，口径照 `vtrim-compare.mjs`） | "像不像"从人眼变成数字；也是①的验收线 | 需要 Chrome + 真工程的环境（`.workbuddy/cover-layer/` 已有手工先例，可脚本化） | **做**（没有它①只是"感觉一致"） |
+| ② | **像素对拍门禁**：设计器舞台截图 vs 出片 JPEG（SSIM + 中位差，口径照 `yekitrim-compare.mjs`） | "像不像"从人眼变成数字；也是①的验收线 | 需要 Chrome + 真工程的环境（`.workbuddy/cover-layer/` 已有手工先例，可脚本化） | **做**（没有它①只是"感觉一致"） |
 | ③ | **能力增强走纯 CSS**：每层不透明度 / 混合模式 / 新特效（P2 清单） | 设计器能表达的表现力 | 每加一条要同步四处（`CoverConfig` / 白名单 / `cover.html` / 设计器镜像）—— 但**两端天然一致**；①之后镜像那两处会自然收窄 | **按需做**（想加效果时只走这条路） |
 | ④ | **性能与健壮性三小件**：a. 干掉 `cover.html:112` 那 **1.5s 白等**（占整次封面 3.18s 的 47%）· b. 出片末尾的封面失败**要可见**（`pipeline.rs:371-373` 现在只落一条 warn、任务仍成功）· c. Chrome 探测：`[chrome] path` 指 Edge（本机已有 154）+ 把 Edge 加进探测名单 + `doctor` 报一句 | a 立刻快近一倍；b 消除"成片有、封面没有"的静默；c 少装一个浏览器 | 都很小（a 在模板 + `cover.rs`；b 在 `pipeline.rs` + 产物标记；c 在 `commands.rs` / `api/mod.rs` / `docs/deploy.md`） | **做**（性价比最高） |
 

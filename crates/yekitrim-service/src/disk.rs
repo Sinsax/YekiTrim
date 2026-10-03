@@ -1,4 +1,4 @@
-//! 磁盘空间与可写性探测（`vtrim doctor` 用）。
+//! 磁盘空间与可写性探测（`yekitrim doctor` 用）。
 //!
 //! 不引入额外依赖：Windows 直接调 `GetDiskFreeSpaceExW`，其它平台退回 `df -k`。
 //! 探测失败一律返回 `None`（诊断命令不该因为拿不到空间而失败）。
@@ -55,7 +55,7 @@ pub fn writable(dir: &Path) -> bool {
     if std::fs::create_dir_all(dir).is_err() {
         return false;
     }
-    let probe = dir.join(".vtrim-write-probe");
+    let probe = dir.join(".yekitrim-write-probe");
     match std::fs::write(&probe, b"ok") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);
@@ -102,7 +102,7 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         assert!(!writable(&file));
         // 探针文件不会残留
-        assert!(!dir.path().join(".vtrim-write-probe").exists());
+        assert!(!dir.path().join(".yekitrim-write-probe").exists());
     }
 
     #[test]

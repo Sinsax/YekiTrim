@@ -850,7 +850,7 @@ fn config_view_json() -> serde_json::Value {
             "cookie_file": cfg.ingest.cookie_file,
             "idle_timeout_secs": cfg.ingest.download_idle_timeout_secs,
         },
-        // 前端拿 `location.origin` 拼完整地址；录播姬不在本机时把主机名换成 V-Trim 的局域网 IP
+        // 前端拿 `location.origin` 拼完整地址；录播姬不在本机时把主机名换成 YekiTrim 的局域网 IP
         "webhook_path": "/api/ingest/bililive/<token>",
         // 项目存放位置（`[storage] projects_root`）。**这是"下载/入库落到哪"的唯一开关**，
         // 与 B站通道无关（录播姬入库、本机导入同一个根），但设置页把它放在下载器卡里 ——
@@ -1084,10 +1084,10 @@ fn build_ingest_patch(
 /// 等到下载跑完才发现目录建不了，用户已经白等了。
 ///
 /// 判定顺序（先便宜后昂贵）：
-/// 1. 空 → 回默认（程序目录下的 `.vtrim/projects`）；
+/// 1. 空 → 回默认（程序目录下的 `.yekitrim/projects`）；
 /// 2. 必须是**绝对路径** —— 相对路径的基准是进程 cwd，服务重启后可能换目录，落点会漂；
 /// 3. 已存在但不是目录 → 拒（填成了某个文件）；
-/// 4. `create_dir_all` + 真实写一个探针文件再删（`disk::writable`，与 `vtrim doctor` 同一套判据）
+/// 4. `create_dir_all` + 真实写一个探针文件再删（`disk::writable`，与 `yekitrim doctor` 同一套判据）
 ///    → 建不出来或写不进去就拒。
 fn check_projects_root(raw: &str) -> Result<String, AppError> {
     let s = raw.trim();
@@ -1098,7 +1098,7 @@ fn check_projects_root(raw: &str) -> Result<String, AppError> {
     if !p.is_absolute() {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            format!("项目存放位置必须是绝对路径（例如 F:/vtrim-projects，不要用相对路径）：{s}"),
+            format!("项目存放位置必须是绝对路径（例如 F:/yekitrim-projects，不要用相对路径）：{s}"),
         ));
     }
     if p.exists() && !p.is_dir() {
@@ -1171,13 +1171,13 @@ fn config_patch(
     serde_json::Value::Object(patch)
 }
 
-/// 把 `[ingest]` / `[storage]` 的字段合并进**全局配置**（默认 `<程序目录>/.vtrim/config.toml`）。
+/// 把 `[ingest]` / `[storage]` 的字段合并进**全局配置**（默认 `<程序目录>/.yekitrim/config.toml`）。
 async fn write_global_config(
     ingest: serde_json::Map<String, serde_json::Value>,
     storage: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), AppError> {
     write_global_config_at(
-        &yekitrim_core::path::vtrim_home().join("config.toml"),
+        &yekitrim_core::path::yekitrim_home().join("config.toml"),
         config_patch(ingest, storage),
     )
     .await
@@ -1216,7 +1216,7 @@ fn audit_keys(section: &str, map: &serde_json::Map<String, serde_json::Value>) -
 
 /// `POST /api/admin/ingest/token {action:"generate"|"disable"}`：生成/轮换/关闭 webhook token。
 ///
-/// 明文**只在这一个响应里回一次**（与 CLI `vtrim ingest token` 同一语义），
+/// 明文**只在这一个响应里回一次**（与 CLI `yekitrim ingest token` 同一语义），
 /// 配置里只留 scrypt 哈希；`token_hash` 永远不回给前端。
 pub async fn rotate_token(
     State(state): State<Arc<AppState>>,
@@ -1643,7 +1643,7 @@ mod tests {
         // 空白串（用户存了 " "）也算未配置
         assert!(projects_root_gate("admin", "   ").is_some());
         // 已配置：放行
-        assert!(projects_root_gate("admin", "F:/media/vtrim").is_none());
+        assert!(projects_root_gate("admin", "F:/media/yekitrim").is_none());
         assert!(projects_root_gate("user", "D:\\x").is_none());
     }
 
@@ -1715,7 +1715,7 @@ mod tests {
     /// 这是未认证入口上的成本闸门 —— 形状检查失败时直接 401，不碰 KDF。
     ///
     /// ⚠️ **本测试故意不写字面量前缀**，一律从 `TOKEN_PREFIX` 拼：
-    /// 以前它把 `vtrim_` 写死，于是改名时"生成端改了、校验端没改"这件事
+    /// 以前它把 `yekitrim_` 写死，于是改名时"生成端改了、校验端没改"这件事
     /// **测不出来**（断言保护的就是旧名字）。现在前缀只有一个来源。
     #[test]
     fn token_shape_gate_rejects_junk_before_kdf() {
@@ -1737,7 +1737,8 @@ mod tests {
         assert!(!token_shape_ok(&format!("{P}{}", "a".repeat(39) + "!")));
         assert!(!token_shape_ok(&"a".repeat(40)));
         assert!(!token_shape_ok(&format!("{}", P.to_uppercase() + &"a".repeat(40))));
-        // 旧前缀（`vtrim_`）**不再被认** —— 不兼容口径：存量 token 一律失效
+        // ⚠️ 旧前缀（`vtrim_`）**不再被认** —— 不兼容口径：存量 token 一律失效。
+        //    这里**故意写旧名字面量**：写成 `P` 就成了同义反复，什么也证明不了。
         assert!(
             !token_shape_ok(&format!("vtrim_{}", "a".repeat(40))),
             "旧前缀必须被拒（不兼容口径）"
@@ -1793,13 +1794,13 @@ mod tests {
         let (_, st, _) = build_ingest_patch(&serde_json::json!({"webhook_enabled": true})).unwrap();
         assert!(st.is_empty(), "没提 storage 就不该动它：{st:?}");
 
-        // ② 空串 = 显式回默认（程序目录下的 .vtrim/projects）
+        // ② 空串 = 显式回默认（程序目录下的 .yekitrim/projects）
         let (_, st, _) =
             build_ingest_patch(&serde_json::json!({"storage": {"projects_root": ""}})).unwrap();
         assert_eq!(st["projects_root"], serde_json::json!(""));
 
         // ③ 相对路径：拒
-        for bad in ["vtrim-projects", "./out", "../out"] {
+        for bad in ["yekitrim-projects", "./out", "../out"] {
             let e = build_ingest_patch(&serde_json::json!({"storage": {"projects_root": bad}}))
                 .unwrap_err();
             assert_eq!(e.0, StatusCode::BAD_REQUEST, "{bad}");
@@ -1819,7 +1820,7 @@ mod tests {
         assert!(msg.contains("不是目录"), "{msg}");
 
         // ⑤ 全新目录：放行，且**保存时就真的建出来**（等下载跑完才发现建不了就太晚了）
-        let fresh = dir.path().join("projects").join("vtrim");
+        let fresh = dir.path().join("projects").join("yekitrim");
         let (_, st, _) = build_ingest_patch(
             &serde_json::json!({"storage": {"projects_root": fresh.to_string_lossy()}}),
         )
@@ -1962,11 +1963,11 @@ vtuber_name = \"主播\"
 
         // 目录不可达只给 warning，不拒绝（网络盘可能只是暂时没挂上）
         let (_, _, w) = build_ingest_patch(&serde_json::json!({
-            "recorder": {"root": "Z:/definitely-not-here-vtrim"}
+            "recorder": {"root": "Z:/definitely-not-here-yekitrim"}
         }))
         .unwrap();
         assert_eq!(w.len(), 1, "该有一条 warning：{w:?}");
-        assert!(w[0].contains("Z:/definitely-not-here-vtrim"), "{w:?}");
+        assert!(w[0].contains("Z:/definitely-not-here-yekitrim"), "{w:?}");
     }
 
     /// 写盘：只动 `[ingest]` / `[ingest.recorder]` 命中的键，**同表兄弟键与注释一个不能少**。
@@ -1976,7 +1977,7 @@ vtuber_name = \"主播\"
     /// （文件仍是合法 TOML，不报错，下次读配置才发现）。
     #[tokio::test]
     async fn save_ingest_config_keeps_siblings_and_comments() {
-        let dir = std::env::temp_dir().join(format!("vtrim-ingest-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-ingest-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(

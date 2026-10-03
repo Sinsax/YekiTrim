@@ -1,4 +1,4 @@
-//! V-Trim repo tasks. Run through the cargo alias in `.cargo/config.toml`:
+//! YekiTrim repo tasks. Run through the cargo alias in `.cargo/config.toml`:
 //!
 //! ```text
 //! cargo xtask scan                     # product gate: the exe must carry no espeak-ng
@@ -489,7 +489,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         println!("warning: --no-dhampir：包里**不带底座** —— 目标机器上默认出片通道不可用");
         println!("         （用户需自行放置 <程序目录>/dhampir/…；出片只有这一条腿，没有可退的第二条）");
     } else {
-        // 同层目录规则与 `find_binary` 一致：`V-Trim` 与 `Dhampir` 并排时才好找。
+        // 同层目录规则与 `find_binary` 一致：`YekiTrim` 与 `Dhampir` 并排时才好找。
         let sibling = root.parent().map(|p| p.join("Dhampir"));
         let artifact = options
             .dhampir_artifact
@@ -537,7 +537,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     }
     println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
 
-    // ⚠️ 2026-10-02 起：自带字体**内嵌在 vtrim.exe 里**（`crates/yekitrim-core/assets/fonts/`，
+    // ⚠️ 2026-10-02 起：自带字体**内嵌在 yekitrim.exe 里**（`crates/yekitrim-core/assets/fonts/`，
     // 经 include_bytes! 进二进制），首次启动自动落盘到字体库 —— 所以**发行包仍然只带一个空目录**，
     // 但用户侧已经不需要任何"下载"动作。内嵌的授权依据 = 两支都是 SIL OFL-1.1（正文明确允许
     // bundled/embedded）；许可原文也一并内嵌、随字体落盘。
@@ -583,7 +583,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // licence text to travel with the binary; Apache-2.0 additionally requires the licence text and
     // any NOTICE file. Shipping *no* licence material is the one option that is certainly wrong, so
     // these are hard requirements rather than best-effort copies -- and note this is independent of
-    // what V-Trim's own licence ends up being.
+    // what YekiTrim's own licence ends up being.
     for asset in ["LICENSE", "THIRD-PARTY-NOTICES.md"] {
         let source = root.join(asset);
         if !source.is_file() {

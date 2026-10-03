@@ -1,0 +1,128 @@
+# YekiTrim 项目配置 — 优先级高于 .yekitrim/config.toml
+# 相同的参数以本文件为准
+
+[project]
+# 输入视频文件路径
+input_file = "clip.mp4"
+# 弹幕文件路径
+danmaku_file = ""
+# 转写文件路径 (由 transcribe 写入)
+transcript_file = ""
+# 音频文件路径 (由 extract 写入)
+audio_file = ""
+# 事件文件路径 (由 detect 写入)
+events_file = ""
+
+[asr]
+# ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
+# 默认 hybrid；准备页不给切换，要改就改这里或项目 yekitrim.toml（设置页表单/源码）
+mode = "hybrid"
+# 并行转写块数 (0=auto, 手动值不超过 CPU 核数)
+num_workers = 0
+# 音频分块长度(秒)
+chunk_duration = 60
+# 块间重叠(秒，仅固定分块模式有效)
+chunk_overlap = 10.0
+# 强停顿阈值(秒)：相邻字停顿超过它就直接切一条（与标点无关）
+segment_gap = 1.0
+# 气口阈值(秒)：相邻字停顿达到它算一个「气口」。断句时只用它来定位切点
+# （标点决定"在哪切"，气口决定"切在哪一刻"），它本身不单独切分
+breath_gap = 0.25
+# 句中标点（，、；：）软切的时间阈值(秒)：距上一条边界超过它才在这些标点处切
+soft_cut_secs = 6.0
+# 单条字幕字数硬上限（只在没有标点/气口可用时兜底）
+max_segment_chars = 30
+# 标点边界吸附到气口的半径(秒)
+snap_window = 0.3
+# 切给识别器的音频前后余量(秒)。**默认 0 = 关** —— 实测 0.3s 会扰动识别文本、
+# 对齐命中率反而下降（净效果不明），所以不默认开。想试就设 0.1~0.3。
+segment_padding = 0.0
+# qwen3 全局输出上限(token)，固定值。上游默认 128；本项目取 256 作为稳定折中。
+# 如果以后调大 max_segment_chars，需要同步调大这个值。
+max_new_tokens = 256
+# LLM 订正转录文本（需配置 [llm]）
+llm_correct = false
+
+[detection]
+# 主播名称 (非空时自动追加到切片标题末尾)
+vtuber_name = ""
+# 弹幕密度统计窗口(秒)
+danmaku_window_secs = 10
+# 参考标题示例（检测和封面标题生成共用；每项一条，可含 emoji）
+# 留空 = 使用内建示例标题（或旧版 prompt_template「参考标题：」段落）
+reference_titles = [
+]
+# LLM 最大并发窗口数（默认 3；可根据 API 限流调大/调小）
+max_concurrent = 3
+
+[cutting]
+# 输出目录
+output_dir = "./output"
+# 是否覆盖已有文件
+overwrite = false
+# 静音检测噪声门限 (dB)，越低越敏感
+silence_noise_db = -30
+
+[sfx]
+# 音效屏蔽列表 (yekitrim polish 使用, 全局共享)
+# 精确 id 屏蔽单个音效; "tag:xxx" 屏蔽整个标签族 (如 "tag:surprise" 屏蔽所有恐怖系)
+# 项目 polish.toml 的 [sfx] blacklist 可再追加
+blacklist = []
+
+[chrome]
+# 自定义 Chrome/Chromium 可执行文件路径（留空自动检测）
+path = ""
+
+[storage]
+# 服务端托管项目根目录（多用户；留空 = <exe_dir>/.yekitrim/projects）
+# 结构: <projects_root>/users/<uid>/<room>/<session>-<pid>/
+projects_root = ""
+# 全局磁盘上限（字节，0 = 不限）。只用于"入库/下载/渲染前预检"，
+# 绝不自动删除用户数据（源录播默认保留）。
+max_disk_bytes = 0
+# 磁盘水位百分比：写完这一份后剩余空间低于该比例才拒绝新的入库/下载/渲染
+# 保留量被钳在 512 MiB ~ 8 GiB（0 = 关闭水位检查）
+disk_watermark_pct = 10
+# 单用户默认配额（字节，0 = 不限；users.quota_bytes 优先）
+default_quota_bytes = 0
+# 管理员"从服务器本机文件新建项目"的**快捷入口**目录（绝对路径）
+# 管理员可以直接浏览/选择任意位置（与单用户时代一致），这里只是给前端下拉预置常用根
+# 例: local_roots = ["F:/media", "D:/BililiveRecorder"]
+# 该功能只读取服务器上已存在的文件，永不接受上传；普通用户仍只能用 <projects_root>/users/<uid>
+local_roots = []
+
+[ingest]
+# 录播姬 webhook：启用后 POST /api/ingest/bililive/<token> 才会被接受
+# token 用 `yekitrim ingest token` 生成（只显示一次明文，这里只存哈希）
+webhook_enabled = false
+token_hash = ""
+# 来源 IP 白名单（空 = 不限制；同机部署建议 ["127.0.0.1", "::1"]）
+allow_ips = []
+
+[ingest.recorder]
+# 录播姬输出目录（必须与 yekitrim server 同机或同可读盘）
+root = ""
+# 录播姬 HTTP API（用户端「配置直播间」靠它加房间）：
+#   api_base 例 "http://127.0.0.1:2356"（桌面版/容器默认端口），**留空 = 未对接**
+#   api_user/api_pass = 录播姬容器的 BREC_HTTP_BASIC_USER / BREC_HTTP_BASIC_PASS（没设就都留空）
+api_base = ""
+api_user = ""
+api_pass = ""
+# 兜底扫描间隔（分钟，0 = 关闭）：覆盖漏推送 / 录播姬重启 / 历史录播导入
+watch_interval_mins = 10
+# SessionEnded 之后再等多久没有新 FileClosed 就认为本场结束
+finalize_idle_mins = 5
+# 落位策略：true = 移入托管项目目录（同盘 rename，跨盘 copy+校验+删源）
+move_into_managed = true
+# 多分片会话合并为单个 source.mp4（ffmpeg -f concat -c copy）
+concat_files = true
+# 认定为录像的扩展名
+extensions = ["flv", "mkv", "mp4", "ts"]
+# 入库后自动执行到哪一步：none | transcribe | detect | cut
+auto_pipeline = "detect"
+
+[auth]
+# 自助注册（邀请码）：开启后 /api/auth/register 才受理注册请求，
+# 但**必须**有可用邀请码才能注册成功 —— 码本身才是凭证，这里只是总闸。
+# 邀请码用 `yekitrim user invite` 生成（只显示一次明文，库里只存 selector + 哈希）
+registration_enabled = false

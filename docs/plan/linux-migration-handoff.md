@@ -7,13 +7,13 @@
 
 ```bash
 # ① 两个仓并排（本仓的工具按"同层目录"找底座：../Dhampir）
-#    V-Trim/ 与 Dhampir/ 必须是兄弟目录
+#    YekiTrim/ 与 Dhampir/ 必须是兄弟目录
 # ② 底座：构建 + 打包它自己的产物（我们只跑它的脚本，不改它源码）
 cd ../Dhampir && cargo build --release && node scripts/package.mjs      # 产物默认落在 dist/dhampir-<版本>+<sha>/
 #    需要 wasm-pack（wasm32-unknown-unknown target）与 node —— 它会自己报缺什么
 # ③ 本仓
-cd ../V-Trim
-cargo build -p vtrim-cli            # 二进制名在 Linux 上是 target/debug/vtrim（**没有 .exe**）
+cd ../YekiTrim
+cargo build -p yekitrim-cli            # 二进制名在 Linux 上是 target/debug/yekitrim（**没有 .exe**）
 python3 scripts/check_module_map.py  # 本仓一律 python3（`python` 常常不在 PATH）
 node --version && ffmpeg -version | head -1
 # ④ 字体：底座**不内嵌字体**，出片/取帧要显式给 `--font-file`
@@ -31,29 +31,29 @@ node --version && ffmpeg -version | head -1
 # ① 聚合门禁（替代 Windows 上的 .workbuddy/gates.mjs —— 它没入库，这是等价清单）
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py
 node scripts/check-dhampir-wiring.mjs          # 期望 48 项全绿（含跨仓 HOST_API_VERSION == 5）
-node scripts/check-vtrim-translator.mjs        # 期望 339 曲线 + 13 颜色 + 40 映射
-node scripts/check-vtrim-translator.mjs --mutate   # 期望 20 处变异**全部打红**
+node scripts/check-yekitrim-translator.mjs        # 期望 339 曲线 + 13 颜色 + 40 映射
+node scripts/check-yekitrim-translator.mjs --mutate   # 期望 20 处变异**全部打红**
 node scripts/check-effect-registry.mjs && node scripts/check-effect-registry.mjs --self-test   # 82 + 8
 node scripts/check-preview-engine.mjs && node scripts/check-preview-engine.mjs --self-test     # 19 + 自证
 node scripts/check-dhampir-drop-list.mjs       # 期望 1 DROP / 0 CLAMP
-node scripts/vtrim-compare.mjs --self-test     # 期望 24 项 + 屏蔽带/阈值自证
+node scripts/yekitrim-compare.mjs --self-test     # 期望 24 项 + 屏蔽带/阈值自证
 
 # ② 三样本对拍（**黄金帧模式不需要 Chrome** —— 参照是随仓交付的冻结帧）
-node scripts/vtrim-compare.mjs --fixture demo     --golden docs/golden/dhampir-parity
-node scripts/vtrim-compare.mjs --fixture portrait --golden docs/golden/dhampir-parity
-node scripts/vtrim-compare.mjs --fixture real     --golden docs/golden/dhampir-parity   # 本机才有这个样本，缺了会跳过
+node scripts/yekitrim-compare.mjs --fixture demo     --golden docs/golden/dhampir-parity
+node scripts/yekitrim-compare.mjs --fixture portrait --golden docs/golden/dhampir-parity
+node scripts/yekitrim-compare.mjs --fixture real     --golden docs/golden/dhampir-parity   # 本机才有这个样本，缺了会跳过
 #    期望：判据全过，基线中位 15.07 / 9.90 / 11.80（位移 0、时长差 0.000）
 #    ⚠️ 别用 `--all-fixtures --golden`（历史坑已修，但单跑更好定位）
 #    ⚠️ `--fixture` 需要一个真实片段目录或仓库自带样本；`real` 是本机本地目录，Linux 上大概会跳过
 
 # ③ 测试
-cargo test -p vtrim-polish --lib    # 期望 212 passed
-cargo test -p vtrim-render-core --lib
-cargo test -p vtrim-server
+cargo test -p yekitrim-polish --lib    # 期望 212 passed
+cargo test -p yekitrim-render-core --lib
+cargo test -p yekitrim-server
 cargo check --workspace --all-targets   # 期望 0 warnings
 
 # ④ 产品路径出片（底座那条腿）：拿一个真实片段目录
-target/debug/vtrim polish render <clip 目录> --renderer dhampir
+target/debug/yekitrim polish render <clip 目录> --renderer dhampir
 #    ⚠️ 底座 CLI 的 `render` 若要自己混音轨，会去找它自己的 target/s3 媒体 ⇒ **必须由产品路径调用**
 #       （我们的 Rust 只让底座出画面、音轨归自己）。直调底座时记得加 `--no-audio`。
 
@@ -88,7 +88,7 @@ node tools/polish-to-dhampir.mjs <clip 目录> --out /tmp/p.doc.json    # 转译
 - **B3**：高亮词段间水平推进量不同源（残差几像素，中英混排可见）。
 - **弹幕阴影**：底座契约里没有弹幕的 `shadow_*`（只有字幕）；我们 canvas 也没画 ⇒ 只有 DOM 预览有那层 `.dm` 阴影。
 - **弹幕逐条颜色 `\c`**：底座**能**显示了，但**我们故意不发** —— 参照（本仓 canvas）只读轨道色，
-  发了会让成片比参照更花（历史上真踩过：48.8s 那帧 V-Trim 白 / 底座品红）。理由写在 `tools/polish-to-dhampir.mjs` 的 `stripColorTags` 上方，**别顺手打开**。
+  发了会让成片比参照更花（历史上真踩过：48.8s 那帧 YekiTrim 白 / 底座品红）。理由写在 `tools/polish-to-dhampir.mjs` 的 `stripColorTags` 上方，**别顺手打开**。
 
 ## 4. 交接给底座会话（照发，材料都在这两个文件里）
 
@@ -121,7 +121,7 @@ node tools/polish-to-dhampir.mjs <clip 目录> --out /tmp/p.doc.json    # 转译
 
 | 项 | Windows（现状） | Linux 上要改成 |
 |---|---|---|
-| 二进制名 | `target/debug/vtrim.exe` | `target/debug/vtrim`（**没有扩展名**）—— 我留在 `.workbuddy/` 里的临时脚本都硬编码了 `.exe`（那些脚本不入库，直接丢掉/改掉即可） |
+| 二进制名 | `target/debug/yekitrim.exe` | `target/debug/yekitrim`（**没有扩展名**）—— 我留在 `.workbuddy/` 里的临时脚本都硬编码了 `.exe`（那些脚本不入库，直接丢掉/改掉即可） |
 | python | `.workbuddy/gates.mjs` 里写了 `C:/Users/para/.dsh/.../python.exe` | 用 `python3`（§2 ① 的清单就是等价物） |
 | 字体 | 脚本里写死 `C:/Windows/Fonts/msyh.ttc` | 换 Noto/思源等中文字体路径；**产品路径不用管**（我们的 Rust 自己解析，`polish doctor` 打印它选的那份） |
 | Chrome | `check-*.mjs` 里按 `where chrome` 找 | 找 `google-chrome` / `chromium`（代码里已有 Linux 分支；**黄金帧模式不需要 Chrome** ✓） |
@@ -148,13 +148,13 @@ node tools/polish-to-dhampir.mjs <clip 目录> --out /tmp/p.doc.json    # 转译
 python3 scripts/check_module_map.py                 # 结构：覆盖率/预算/骨架/索引一致/⚠️ 下限
 python3 scripts/check_module_boundaries.py          # 边界：15 条（分层 + P4 隔离 + 前端 + 成对判据）
 node scripts/check-dhampir-wiring.mjs               # 接线（含跨仓 HOST_API_VERSION）
-node scripts/check-vtrim-translator.mjs [--mutate]  # 转译器曲线/颜色/映射 + 变异自证
+node scripts/check-yekitrim-translator.mjs [--mutate]  # 转译器曲线/颜色/映射 + 变异自证
 node scripts/check-effect-registry.mjs [--self-test]# 效果词汇表 + 自检
 node scripts/check-preview-engine.mjs  [--self-test]# 预览引擎（真跑一遍，抓"预览整块消失"那类）
 node scripts/check-dhampir-drop-list.mjs [--self-test]  # DROP/CLAMP 基线
-node scripts/vtrim-compare.mjs --self-test          # 对拍工具自证
+node scripts/yekitrim-compare.mjs --self-test          # 对拍工具自证
 node webui/scripts/check-overlay.mjs                # 出片模板 ↔ engine.js 的漂移对拍（另有 4 个 check-*.mjs）
-cargo check --workspace --all-targets && cargo test -p vtrim-polish --lib -p vtrim-render-core --lib -p vtrim-server
+cargo check --workspace --all-targets && cargo test -p yekitrim-polish --lib -p yekitrim-render-core --lib -p yekitrim-server
 ```
 
 > ⚠️ Windows 上我用的聚合脚本 `.workbuddy/gates.mjs` **不入库**；上面这份清单就是它的全部内容（外加两条 python 门禁）。
@@ -165,5 +165,5 @@ cargo check --workspace --all-targets && cargo test -p vtrim-polish --lib -p vtr
 - 工作树**未提交**，且跨了多个目标（效果链路统一收尾、类型收敛、S4 决策书、B5/B4、P6 立档、Linux 这份）。
   建议按主题分几个 commit：① 底座新版本对齐 + 版本断言 + xtask 产物发现；② D1 撤回 + S4 决策书更新；
   ③ B5 文字阴影（转译器 + canvas + 守卫 + 基线重冻）；④ B4 防御 + P5 台账；⑤ P6 与 §0b 立档；⑥ 本文件。
-- `webui/dist/`（已重建）、`crates/vtrim-polish/templates/index.html`（加了阴影）都要一起进。
+- `webui/dist/`（已重建）、`crates/yekitrim-polish/templates/index.html`（加了阴影）都要一起进。
 - `.workbuddy/` 与 `target/`、`release/` 都不入库（Linux 上自然没有）。

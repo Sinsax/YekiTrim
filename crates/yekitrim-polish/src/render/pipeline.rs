@@ -1,7 +1,7 @@
 //! polish::render::pipeline：出片主链路（转译成底座工程 → `dhampir.exe` 整段出片 → ffmpeg 编码混流 → 统计）。
 //!
 //! 入口：`cmd_render`、`resolve_paths` / `ResolvedPaths`、`inject_assets`、`prepare_sticker_data`、`unique_output_path`、`measure_loudness_curve_cached`、`cleanup`。
-//! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+//! 边界：子进程链路 —— 输出必须落文件、绝不能用管道（ffmpeg 是孙进程，管道永不 EOF）；`<工程>/data/` 的磁盘缓存别去掉；同名产物加 `_1` / `_2` —— 见 `crates/yekitrim-polish/src/render/AGENTS.md`
 
 use base64::Engine;
 use std::collections::HashMap;
@@ -165,7 +165,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // `project.output` 归一成 `<工程目录>/export.mp4` —— 工程目录是**相对**的时候，
     // 后面"不是绝对路径就再 join 一次工程目录"那一步会把目录名**拼两遍**
     // （`<dir>\<dir>\export.mp4`，合流那一步报 No such file or directory）。
-    // CLI 的默认输入就是 `.`（`vtrim polish render` 在片段目录里直接跑），所以这条一定会被踩到。
+    // CLI 的默认输入就是 `.`（`yekitrim polish render` 在片段目录里直接跑），所以这条一定会被踩到。
     let project_path = &std::path::absolute(project_path).unwrap_or_else(|_| project_path.to_path_buf());
     tracing::info!(
         "  Rendering pipeline...（{} 构建{})",
@@ -421,7 +421,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // ① 每次导出强制重截关键帧/重写封面（用户手导的 `_cover_frame.jpg` 被覆盖的心智负担）；
     // ② 渲染任务时长被封面通道（字体库非空检查/光栅化）拖长；
     // ③ 封面失败把"成片已导出"的任务尾行搅成 warning。
-    // 封面走自己的入口：CLI `vtrim polish cover` / WebUI 封面设计器「生成封面」
+    // 封面走自己的入口：CLI `yekitrim polish cover` / WebUI 封面设计器「生成封面」
     // （`POST /api/polish/cover`，独立任务）。截图帧来源那里本来就会回落 `resolved.video`。
     print_final_stats(&op, start_time);
     Ok(())
@@ -668,7 +668,7 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
 /// ⚠ **`-vn` 不能省**：这条只关心音频。不带它 ffmpeg 会把整段**视频**也解码一遍再丢掉
 /// （实测同一片段 5.6s → 0.4s；曲线逐点一致，1330 个采样点全等）—— 它只是不往输出写视频流，
 /// 音频滤镜链一分不变。剪切收尾会给每个新片段预热这条曲线
-/// （`vtrim-service` 的 `core_pipeline::warm_loudness_cache`），热路径上一次剪切要跑 N 遍。
+/// （`yekitrim-service` 的 `core_pipeline::warm_loudness_cache`），热路径上一次剪切要跑 N 遍。
 pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
     let output = Command::new("ffmpeg")
         .args([
@@ -818,7 +818,7 @@ mod tests {
     impl TmpDir {
         fn new(tag: &str) -> Self {
             let base = std::env::temp_dir().join(format!(
-                "vtrim-unique-{tag}-{}-{:?}",
+                "yekitrim-unique-{tag}-{}-{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));

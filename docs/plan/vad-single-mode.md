@@ -25,7 +25,7 @@
 
 ## 怎么做的
 
-`crates/vtrim-core/src/asr/vad.rs` + `local.rs::plan_vad_windows`：
+`crates/yekitrim-core/src/asr/vad.rs` + `local.rs::plan_vad_windows`：
 
 1. **silero VAD**（`silero_vad.int8.onnx`，209KB，k2-fsa 导出）扫一遍音频，拿语音区间；
 2. **合并近邻**（≤0.8s）→ **两侧各放 0.2s 保护余量** → **动态电平兜底**；
@@ -68,7 +68,7 @@ vad_threshold = 0.5     # silero 概率阈值：调高 = 更保守（多解码�
 vad_rescue_db = 16.0    # 动态电平兜底，0 = 关掉兜底
 ```
 
-模型随 `vtrim download` 一起下（`<模型根>/silero-vad/silero_vad.int8.onnx`，209KB），
+模型随 `yekitrim download` 一起下（`<模型根>/silero-vad/silero_vad.int8.onnx`，209KB），
 转写前 `ensure_models` 也会确保它在位（失败只告警，回退固定分块）。
 
 ## 诊断/复测
@@ -76,15 +76,15 @@ vad_rescue_db = 16.0    # 动态电平兜底，0 = 关掉兜底
 ```bash
 # 只跑 VAD（不跑 ASR）：覆盖多少、兜底捞回多少、各档阈值对比、VAD 用时
 VT_ASR_WAV=<wav> VT_VAD_MODEL_DIR=<models 根> \
-  cargo test -p vtrim-core --lib diagnose_vad_regions -- --ignored --nocapture
+  cargo test -p yekitrim-core --lib diagnose_vad_regions -- --ignored --nocapture
 # 还能 VT_VAD_DUMP=<json> 把区间倒出来，跟已知正确的字幕时间戳对齐核对
 
 # VAD 自身正确性（合成音频：20s 静音 + 真语音 + 20s 静音）
 VT_VAD_MODEL_DIR=<models 根> \
-  cargo test -p vtrim-core --lib diagnose_vad_synthetic -- --ignored --nocapture
+  cargo test -p yekitrim-core --lib diagnose_vad_synthetic -- --ignored --nocapture
 
-# 端到端 A/B（跑真转写）：工程 vtrim.toml 里改 `[asr] vad = false/true`，各跑一遍对比
-vtrim -c <工程>/vtrim.toml transcribe
+# 端到端 A/B（跑真转写）：工程 yekitrim.toml 里改 `[asr] vad = false/true`，各跑一遍对比
+yekitrim -c <工程>/yekitrim.toml transcribe
 ```
 
 ## 没做的事

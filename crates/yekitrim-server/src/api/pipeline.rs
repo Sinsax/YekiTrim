@@ -399,7 +399,7 @@ async fn pipeline_job_queues_behind_conflicting_task() {
 /// （同名不覆盖），只好从 `FINISHED:` / `Cover saved:` 那行里把实际路径捞出来记进任务日志。
 #[test]
 fn subprocess_note_extracts_written_path() {
-    let render = "\u{1b}[32m2026-09-14T17:44:03\u{1b}[0m \u{1b}[32mINFO\u{1b}[0m vtrim: \
+    let render = "\u{1b}[32m2026-09-14T17:44:03\u{1b}[0m \u{1b}[32mINFO\u{1b}[0m yekitrim: \
          FINISHED: F:\\video\\clip-23\\vtuber-clip_1.mp4 (96.2MB, 143s)";
     assert_eq!(
         subprocess_note(render, "FINISHED:").as_deref(),

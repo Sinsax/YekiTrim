@@ -168,7 +168,7 @@ if (has('mutate')) {
   process.exit(good ? 0 : 1)
 }
 
-const EXE = opt('exe', 'F:\\para\\Code\\V-Trim\\target\\cl\\debug\\yekitrim.exe')
+const EXE = opt('exe', 'F:\\para\\Code\\YekiTrim\\target\\cl\\debug\\yekitrim.exe')
 const FONT = opt('font', 'C:\\Windows\\Fonts\\msyh.ttc')
 const WORK = opt('work', path.join(process.env.TEMP || '.', 'yekitrim-cover-gate'))
 const PROJECT = opt('project', process.env.VTEDIT_COVER_FIXTURE || '')
@@ -256,7 +256,7 @@ if (CAPTURE) {
   fs.writeFileSync(path.join(CAPTURE, 'golden.json'), JSON.stringify({
     fixture: path.basename(PROJECT),
     captured_at: new Date().toISOString(),
-    frozen_from: 'vtrim polish cover --renderer chrome（Chrome 链路删除前最后一次渲染）',
+    frozen_from: 'yekitrim polish cover --renderer chrome（Chrome 链路删除前最后一次渲染）',
     width: W, height: H,
     ref_file: path.basename(dst),
     rows: rows || null,

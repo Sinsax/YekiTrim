@@ -6,7 +6,7 @@
 //! ⚠️ 这里曾经还有 `workspace_from_state(state)`（从 `AppState` 取那份"全局当前工程"）。
 //! **2026-10-03 随全局工程一起删掉了**：项目的 `Workspace` 现在**只能**从 `scope::Scope`
 //! 提取器拿（它按 `?project=<id>` 校验归属后现场解析）。要工程就接一个 `Scope`；
-//! 需要"跟具体项目无关"的那几个值，直接读 `path::vtrim_home()` / `load_global_config()`。
+//! 需要"跟具体项目无关"的那几个值，直接读 `path::yekitrim_home()` / `load_global_config()`。
 //!
 //! 外部命令探测（原 `probe_cache` / `command_available`）已搬去 `crate::tool_probe` —— 见该模块说明。
 //!
@@ -44,7 +44,7 @@ pub(crate) fn ok<T: serde::Serialize>(v: T) -> ApiResult<T> {
 /// 把**同步文件访问**挪出 async worker。
 ///
 /// 项目目录经常在网络盘上（RaiDrive/WebDAV 挂载的录播目录）：盘被剪切/渲染的整段读取占满时，
-/// 一次 `exists()`、一次读 `vtrim.toml` 就要几百毫秒到几秒。这类调用留在 worker 上做，
+/// 一次 `exists()`、一次读 `yekitrim.toml` 就要几百毫秒到几秒。这类调用留在 worker 上做，
 /// 十几个并发（前端一次页面加载就会打出一串）就能把 runtime 的 worker 全占住 ——
 /// 表现是"任务在跑的时候整个服务器连新连接都建立不了"（用户实测）。
 /// 同步 IO 一律走 blocking 线程池，worker 留给 accept 与轻量接口。
@@ -92,7 +92,7 @@ pub(crate) fn spawn_job<JobBody, Fut>(
     // 线程起不来时也要给任务收尾（见下），所以失败分支得留着这两个句柄
     let fail_jobs = jobs.clone();
     let fail_id = job_id.clone();
-    let spawned = std::thread::Builder::new().name("vtrim-job".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("yekitrim-job".into()).spawn(move || {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| block_on_here(body())));
         let Err(payload) = caught else { return };
         let msg = payload
@@ -135,7 +135,7 @@ pub(crate) fn spawn_job<JobBody, Fut>(
 /// ⚠️ **账号数量与"是否仍在使用初始密码"不在这里**（曾经有过）——这是**未认证**接口，
 /// 对远端说出来等于直接告诉对方"这台机器还在用初始密码，来打它"。
 /// 两者都有各自的出口：账号列表 `/api/admin/users`（admin）、自己的改密状态 `/api/me`（已登录）、
-/// 本地排查 `vtrim doctor`（直接读本机账本，信息更全）。
+/// 本地排查 `yekitrim doctor`（直接读本机账本，信息更全）。
 /// 顺带一个好处：`/api/health` 会被前端反复轮询，去掉这里两次同步 SQLite 查询后它不再碰磁盘。
 pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
     // 能力位只看平台级配置（global-only）：health 是公开接口，不该泄露任何工程信息

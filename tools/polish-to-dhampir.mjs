@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// 把本仓（V-Trim）的 `polish.toml` 转译成 Dhampir 的工程文件（`*.doc.json`）。
+// 把本仓（YekiTrim）的 `polish.toml` 转译成 Dhampir 的工程文件（`*.doc.json`）。
 //
 // # 这份转译器是本仓的**出口**，不是产品代码
 //
 // 它活在 `tools/` 下（不在 `yekitrim` 二进制的编译/运行路径上），用来回答一个具体问题：
-// **「V-Trim 决定画什么、底座决定怎么画」这个分工，落到一份真工程上到底缺什么。**
+// **「YekiTrim 决定画什么、底座决定怎么画」这个分工，落到一份真工程上到底缺什么。**
 // 所以它宁可**报出转不了的东西**，也不猜 —— 猜出来的部分看着像成功了，
 // 而那正是最难归因的一类问题。
 //
@@ -28,7 +28,7 @@
 //             正文里的 `index.html:NNN` / `templates/index.html` 都指这个文件（行号对着本仓的它）
 //
 // 规格（行为对照表 / DROP·CLAMP·NOTE 三级记录 / 怎么加一个新事件类型）见
-// `docs/vtrim-integration.md`；曲线那部分的守卫在 `scripts/check-yekitrim-translator.mjs`。
+// `docs/yekitrim-integration.md`；曲线那部分的守卫在 `scripts/check-yekitrim-translator.mjs`。
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -248,7 +248,7 @@ function point(raw) {
 }
 
 /// `"#ffaa00"` -> `{r, g, b, a}`（0..1）。四种写法都收：`#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA`
-/// —— V-Trim 的配置里**四种都出现过**（CSS 本来就认这四种）。
+/// —— YekiTrim 的配置里**四种都出现过**（CSS 本来就认这四种）。
 ///
 /// ⚠️ 以前只认 6 位，`#140A28CC` 这种直接返回 `null`。后果**不是"少了个透明度"**：
 /// 调用点是 `hexColor(...) ?? 兜底`，而 overlay 那处是 `if (!first) { drop(...) }` ——
@@ -275,11 +275,11 @@ export function hexColor(raw) {
 // 贴纸包
 // ---------------------------------------------------------------------------
 //
-// **V-Trim 的 `sticker_tag` 是一个"意图词"，不是文件名。**
+// **YekiTrim 的 `sticker_tag` 是一个"意图词"，不是文件名。**
 //
 // 流程是两段的：LLM 先按语义挑一个 tag（`搞笑` / `震惊` / `看热闹`……），
 // 再由 `Step2b` 拿这个 tag 去**贴纸包**里查出候选文件、挑一个、写回
-// `event.name` + `event.source`（见 V-Trim `llm/mod.rs:280`）。
+// `event.name` + `event.source`（见 YekiTrim `llm/mod.rs:280`）。
 //
 // 而这份切片的 `polish.toml` 里 **`name`/`source` 都是空的** ——
 // 就是说 **Step2b 从没跑过**（checkpoint 里也是 `name: None, source: None`）。
@@ -413,14 +413,14 @@ function assTime(ms) {
 ///
 /// 底座的弹幕轨吃的是 `AssetKind::Subtitle` + 内容是 **ASS** 的文件
 /// （一条 `Dialogue` 一行弹幕，见 `crate::danmaku::parse_ass_danmaku`）。
-/// 而 V-Trim 这边给的是 **`clip.dm.srt`** —— 一个"SRT 外壳 + 里面塞了
+/// 而 YekiTrim 这边给的是 **`clip.dm.srt`** —— 一个"SRT 外壳 + 里面塞了
 /// ASS 覆盖标签"（`{\move(...)}`、`{\pos(...)}`、`{\c&H...}`）的混合体。
 /// 格式不是底座要的那个，所以要转一道。
 ///
 /// **覆盖标签原样留着**：底座解析时本来就会把它们剥掉
 /// （`ass_text_to_plain`），而且 `\move` 的坐标**故意不参与布局** ——
 /// 落点由 `DanmakuSpec` 与目标尺寸统一算，两端拿同一份。留着的好处是
-/// "这份 ASS 就是 V-Trim 那份的直译"，下一个人对着两边能看懂。
+/// "这份 ASS 就是 YekiTrim 那份的直译"，下一个人对着两边能看懂。
 /// 把 `\move(x1,y1,x2,y2)` 补成 **6 参数** `\move(x1,y1,x2,y2,0,travelMs)`。
 ///
 /// # 为什么要补
@@ -430,7 +430,7 @@ function assTime(ms) {
 /// * 4 个参数 —— 跨的是 **cue 窗口**（起点到终点由 cue 的 `Start`/`End` 定）
 /// * 6 个参数 —— **显式**给出移动的起止时刻（毫秒，相对 cue 起点）
 ///
-/// "滚动时长"是后者那个 `t2 - t1`。V-Trim 的 `progress = (el - fadeIn) / travel`
+/// "滚动时长"是后者那个 `t2 - t1`。YekiTrim 的 `progress = (el - fadeIn) / travel`
 /// 用的就是**逐条的** travel（它按文本字节数算，四条实测 15.52/10.40/12.11/9.76 秒），
 /// 而底座契约里的 `DanmakuSpec::duration_ms` 是**轨道级**的一个值 —— 只能取平均。
 ///
@@ -489,7 +489,7 @@ export const DANMAKU_FADE_IN_MS = 300;
 /// 轨道级的 `duration_ms`，这里不猜它的值。
 ///
 /// ⚠️ 与 `yekitrim_core::danmaku::clamp_display_windows` 是同一条规则的两份实现
-/// （Rust 那份管 V-Trim 自己的 `data/danmaku.json`）；改一边要改另一边。
+/// （Rust 那份管 YekiTrim 自己的 `data/danmaku.json`）；改一边要改另一边。
 export function danmakuExitMs(startMs, endMs, travelMs) {
   const travel = Number.isFinite(travelMs) && travelMs > 0 ? travelMs : 0;
   const need = startMs + DANMAKU_FADE_IN_MS + travel;
@@ -526,16 +526,16 @@ function cuesToAss(cues, { font = 'Sans', fontSize = 42 } = {}) {
   return out.join('\n');
 }
 
-/// V-Trim 的贴纸盒子边长基准，**短边 1080 时为 280px**。
+/// YekiTrim 的贴纸盒子边长基准，**短边 1080 时为 280px**。
 ///
-/// 抄自 V-Trim `process/placement.rs:36`：`STICKER_SIZE = 280.0`，
+/// 抄自 YekiTrim `process/placement.rs:36`：`STICKER_SIZE = 280.0`，
 /// 而 `sticker_size() = STICKER_SIZE * min(W,H)/1080`。
 /// 落点 `x`/`y` 是**这个盒子的左上角**（同文件 276 行的注释）。
 ///
-/// 我第一版猜 220px，实测 V-Trim 成片里量出来约 290px —— 猜的和真的是两回事。
+/// 我第一版猜 220px，实测 YekiTrim 成片里量出来约 290px —— 猜的和真的是两回事。
 const STICKER_BOX_BASE = 280.0;
 
-/// 解析 V-Trim 的描边串，形如 `"12px #403c3b"` —— **一个字段里两个值**。
+/// 解析 YekiTrim 的描边串，形如 `"12px #403c3b"` —— **一个字段里两个值**。
 ///
 /// 解析不出就退回给的那对兜底值，并**不静默**（调用方看不到返回值里的这一层，
 /// 所以这里只负责"尽快给出一个合理的默认"，准确性由转译器的 DROP/CLAMP 清单负责）。
@@ -621,7 +621,7 @@ function probeSize(path) {
 ///
 /// 底座的循环素材帧号是按**素材单一时间基**匀速换算的。GIF 允许逐帧不同的 delay，
 /// 那种动图在匀速换算下**误差随时间线性长出来**。底座已经加了 `frame_delays_ms`
-/// 这个字段（见 `docs/vtrim-integration.md` 第六节第 6 条），这里就是喂它的地方。
+/// 这个字段（见 `docs/yekitrim-integration.md` 第六节第 6 条），这里就是喂它的地方。
 function probeFrameDelays(path) {
   try {
     const out = execFileSync(
@@ -691,7 +691,7 @@ function probeImage(path) {
 /// 贴纸包的 tag 表（`ysyk_0.9.0`，34 个 tag）。
 ///
 /// **这份切片目录里没有 `ysyk.toml`** —— 只有 210 个 GIF。
-/// V-Trim 的 `release/` 里也没带（它只带 `ysyk_0.9.0/` 目录）。
+/// YekiTrim 的 `release/` 里也没带（它只带 `ysyk_0.9.0/` 目录）。
 /// 而**别的切片目录里有**（`E:\media\...\clip-12\assets\stickers\ysyk.toml`），
 /// 实测那份引用 163 个文件，本切片目录里 161 个都在 —— 是同一套贴纸包。
 ///
@@ -879,7 +879,7 @@ function pickSticker(pkg, tag) {
 /// `overlay` 线性渐变的方向：**CSS 角度 → 底座角度**（D5）。
 ///
 /// 两边约定**不同**，这是本函数的全部理由：
-///   - **V-Trim / CSS**：度，`0` = **向上**、顺时针增大（`linear-gradient(0deg, …)` 是从下往上）。
+///   - **YekiTrim / CSS**：度，`0` = **向上**、顺时针增大（`linear-gradient(0deg, …)` 是从下往上）。
 ///     不写 = 参照的缺省方向 `linear-gradient(to bottom right, …)` = **135°**。
 ///   - **底座**：度，在 shader 里当方向向量用 —— `dir = vec2(cos φ, sin φ)`（屏幕 y 向下），
 ///     所以 `0` = 向右、`90` = 向下。
@@ -915,13 +915,13 @@ export function zoomFactor(name, camera, where) {
 }
 
 // ---------------------------------------------------------------------------
-// 纯函数：V-Trim 的三条曲线（**从参照逐行抄的**）
+// 纯函数：YekiTrim 的三条曲线（**从参照逐行抄的**）
 // ---------------------------------------------------------------------------
 //
 // 这些提到模块顶层并导出，是为了**能被测试直接调用**。
 // 它们都只依赖参数、不依赖某一份工程配置。
 
-/// `back_out(t, s)` —— V-Trim 的 `E.back_out(p, 3)`。
+/// `back_out(t, s)` —— YekiTrim 的 `E.back_out(p, 3)`。
 ///
 ///     function(t, s) { s = s || 1.70158; return --t * t * ((s + 1) * t + s) + 1; }
 ///
@@ -954,7 +954,7 @@ export const stickerWindowFrames = (durSec, fps) =>
 
 /// 本仓出片模板的贴纸逐帧状态（`crates/yekitrim-polish/templates/index.html:1517 getActiveSticker`）。
 ///
-/// # 窗口 = **事件时长本身**（口径见 `docs/vtrim-integration.md` §14：出点 = 最后一个显示帧）
+/// # 窗口 = **事件时长本身**（口径见 `docs/yekitrim-integration.md` §14：出点 = 最后一个显示帧）
 ///
 /// ```js
 /// if (t < et || t > et + dur) continue;   // 窗口不溢出到事件之外 ✓
@@ -1175,7 +1175,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // ---- 轨道 ----
   //
   // 一个**必须讲清楚的约束**：同一轨的图层不许重叠（`layer_overlap`）。
-  // 而 V-Trim 的运镜事件是**首尾相接**地铺满整段的，正好一条轨放得下；
+  // 而 YekiTrim 的运镜事件是**首尾相接**地铺满整段的，正好一条轨放得下；
   // 运镜要驱动 Transform，所以它就是**视频层自己的关键帧**，
   // 不需要另开一条轨 —— 这也是设计文档 §4.3 说的"运镜就是 Transform 上的关键帧"。
   const videoLayers = [];
@@ -1187,7 +1187,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 这一条害我找了好几轮。实测证据：
   //
   //     源 clip.mp4      114.383s
-  //     V-Trim 成片       96.900s      <- 短了 17.49s
+  //     YekiTrim 成片       96.900s      <- 短了 17.49s
   //     三段 mute_ranges  5.30 + 2.36 + 9.83 = 17.49s   <- 正好对上
   //
   // 也就是说 `mute_ranges` 里那些段**在成片里根本不存在**，
@@ -1196,9 +1196,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   // 实测对账（按"输出时间 = 源时间 - 之前掐掉的总长"换算之后）：
   //
-  //     V-Trim 65s  <-> 源 70.30s   逐像素差 9.17（错位时是 28.18）
-  //     V-Trim 79s  <-> 源 84.30s   逐像素差 6.72（错位时是 **93.74**）
-  //     V-Trim 90s  <-> 源 97.66s   逐像素差 8.39
+  //     YekiTrim 65s  <-> 源 70.30s   逐像素差 9.17（错位时是 28.18）
+  //     YekiTrim 79s  <-> 源 84.30s   逐像素差 6.72（错位时是 **93.74**）
+  //     YekiTrim 90s  <-> 源 97.66s   逐像素差 8.39
   //
   // 所以这里做三件事：
   //   1. 算出**保留区间**（mute 的补集）；
@@ -1307,7 +1307,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///
   /// 特效的 `window` 是按**该层内的 local frame** 求值的，所以挂到裁剪后的
   /// 某一层上时，`fade_in`/`transient` 那些数字仍然是"这一段内部的秒数" ——
-  /// 与 V-Trim 的语义一致（它的 shake 也是相对事件起点算的）。
+  /// 与 YekiTrim 的语义一致（它的 shake 也是相对事件起点算的）。
   /// **把缓动从"段落起点"挪到"段落终点"。**
   ///
   /// 契约的求值用的是相邻对 `[a, b]` 里 **`b` 的缓动** —— 也就是"怎么**到达** b"
@@ -1395,7 +1395,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///
   /// # 为什么非要逐帧
   ///
-  /// V-Trim 的 `flash` / `hue_shift` / `noise` 都是**先升到峰值再线性落回**的
+  /// YekiTrim 的 `flash` / `hue_shift` / `noise` 都是**先升到峰值再线性落回**的
   /// 短包络（0.04~0.15 秒的攻击段）。用契约里现成的 `window`（attack/hold/release
   /// 的帧数）去凑是凑不出来的：那几条曲线**各有各的分段点**，而 attack 段
   /// 只有 2~9 帧。所以与手持/贴纸同一个办法 —— **按帧采样**。
@@ -1468,7 +1468,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   // 也就是**整个运镜状态机被跳过**（`zoom=1`、`handheld=0`、不动点仍按 layout 给）。
   //
-  // 不处理它的症状是"**竖素材进横画布导出还在缩放**" —— 这正是 V-Trim 修过的
+  // 不处理它的症状是"**竖素材进横画布导出还在缩放**" —— 这正是 YekiTrim 修过的
   // 那一类失败（`docs/plan/polish-vertical-canvas.md`）。
   //
   // # 为什么这里要探媒体（与"不探测媒体"那条纪律的关系）
@@ -1522,7 +1522,7 @@ export function translate(config, clipDir, outPath, options = {}) {
 
   // ---- 逐事件转译 ----
   const sfxClips = [];
-  // 覆盖层事件数（进 `extensions.vtrim.polish_toml` 的元数据 + CLI 摘要）。
+  // 覆盖层事件数（进 `extensions.yekitrim.polish_toml` 的元数据 + CLI 摘要）。
   //
   // ⚠️ 以前这里是个 `overlayLayers` **数组**：只有 `gradient` 那档往它里面推，
   // 于是"四档里接了几档"从计数上根本看不出来（M2 补齐 `color` / `fade_in|fade_out` 时，
@@ -1570,7 +1570,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       const where = `segments[${segmentIndex}].events(${event.type})`;
       const at = typeof event.time === 'number' ? event.time : offset;
 
-      // 事件的**源帧号**（V-Trim 的时间）与**输出帧号**（裁剪后的时间线）。
+      // 事件的**源帧号**（YekiTrim 的时间）与**输出帧号**（裁剪后的时间线）。
       // 落在被掐掉的段里的输出帧号是 null —— 那一段在成片里不存在。
       const srcStart = frameAt(at);
       const srcEnd = frameAt(typeof event.end === 'number' ? event.end : at);
@@ -1607,10 +1607,10 @@ export function translate(config, clipDir, outPath, options = {}) {
           // 所以这一条是"转过去"而不是"丢掉"。
           const factor = zoomFactor(event.zoom, config.style?.camera, where);
 
-          // 起点的**不动点**（focus）。V-Trim 的运镜是「以不动点为中心缩放」，
+          // 起点的**不动点**（focus）。YekiTrim 的运镜是「以不动点为中心缩放」，
           // **不是**「把不动点搬到画面中心」—— 这两个完全不一样，见下面的推导。
           //
-          // **优先用事件自己的 `origin`**：V-Trim 每条 camera 都带这个字段，
+          // **优先用事件自己的 `origin`**：YekiTrim 每条 camera 都带这个字段，
           // 而且它不一定等于 `layout.liver` 的中心 —— 实测样本 B 里就有一条
           // `origin = "50.00% 50.00%" anchor="center"`（画中画拉远那一档），
           // 用 liver 中心会算错。只用"事件没给 origin"时才退回 liver 中心。
@@ -1636,9 +1636,9 @@ export function translate(config, clipDir, outPath, options = {}) {
             );
           }
 
-          // # 偏移公式（**从 V-Trim 源码推出来的**，不是猜的）
+          // # 偏移公式（**从 YekiTrim 源码推出来的**，不是猜的）
           //
-          // V-Trim `render-core/draw.rs:274 camera_transform()` 里写死了：
+          // YekiTrim `render-core/draw.rs:274 camera_transform()` 里写死了：
           //
           //     cam_off_x = s * (1.0 - z) * camera.ox
           //     offx      = ... + cam_off_x
@@ -1671,9 +1671,9 @@ export function translate(config, clipDir, outPath, options = {}) {
           //
           // **不需要夹。** `z > 1` 时以任何内点为中心放大，画面都仍然铺满
           // （四边各向外扩 `(z-1)` 倍）；`z < 1` 时四周留黑边 ——
-          // 而那正是 V-Trim 的行为（source pass 清屏为黑，见它的
+          // 而那正是 YekiTrim 的行为（source pass 清屏为黑，见它的
           // `wide_zoom_shrinks_around_origin`，z=0.55 时四下各 432px 黑边）。
-          // **只收集，不落关键帧**：过渡要按 V-Trim 的状态机算
+          // **只收集，不落关键帧**：过渡要按 YekiTrim 的状态机算
           // （`td = min(duration*0.5, 0.6)`、远景硬切），见循环之后那一段。
           cameraEvents.push({
             srcStart,
@@ -1691,7 +1691,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         }
 
         case 'shake': {
-          // V-Trim 的 `shake` 是一个**短促的画面抖动**（爆点那一刻），
+          // YekiTrim 的 `shake` 是一个**短促的画面抖动**（爆点那一刻），
           // 形状是 `{ time, end, intensity, sfx? }` —— 注意
           // **跟 `camera` 里的 `handheld=true` 不是一回事**：
           //   - `handheld` 是"整段镜头轻微晃"（持续、幅度小）
@@ -1704,7 +1704,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           }
           const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
           const length = Math.max(1, endFrame - startFrame);
-          // **`intensity` 是像素。** V-Trim 的 `shake()` 把它**直接**当 CSS 位移用：
+          // **`intensity` 是像素。** YekiTrim 的 `shake()` 把它**直接**当 CSS 位移用：
           //
           //     tl.to('#video-wrap', { x: off, y: -off, duration: 0.025 }, t);
           //     tl.to('#video-wrap', { x: -off, y:  off, duration: 0.025 }, t + 0.025);
@@ -1720,7 +1720,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           //
           // # 我先前抄错了哪一份
           //
-          // V-Trim 有**两份** `shake`，形状完全不同：
+          // YekiTrim 有**两份** `shake`，形状完全不同：
           //
           //   `index.html:532`  `shake(tl,…)`        —— **GSAP DOM 预览**用的：
           //       `n = dur/0.05` 个 0.025s 的交替偏移，幅度渐变
@@ -1741,7 +1741,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           shakeWindows.push({ outStart: startFrame, intensity, where });
           note(
             where,
-            `shake intensity=${intensity}（**像素**，V-Trim 直接当 CSS 平移用）-> ` +
+            `shake intensity=${intensity}（**像素**，YekiTrim 直接当 CSS 平移用）-> ` +
               '按出片那份 `getShake` 的四级阶梯逐帧写进**视频层**的 x/y',
           );
           shakeCount += 1;
@@ -1757,7 +1757,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           stickerCount += 1;
           const tag = event.sticker_tag ?? '';
 
-          // **优先用 `name`** —— V-Trim 的 `Step2b` 跑过之后，
+          // **优先用 `name`** —— YekiTrim 的 `Step2b` 跑过之后，
           // `name`/`source` 就已经是**选定好的文件名**了，那是最准的信息。
           // 只有它是空的（`Step2b` 没跑）才退回按 tag 猜。
           //
@@ -1769,7 +1769,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           let how = '';
           if (event.name) {
             fileName = `${event.name}.gif`;
-            how = `V-Trim 选定的 name（source=${event.source ?? '?'}）`;
+            how = `YekiTrim 选定的 name（source=${event.source ?? '?'}）`;
           } else if (tag) {
             const picked = pickSticker(stickerPkg, tag);
             if (picked) {
@@ -1868,7 +1868,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           // （与 `templates/index.html::stickerAnchor`、`engine.js::stickerAnchor` 逐字同口径）：
           //
           //   `auto`   = 用事件自带的 `x`/`y`（`process/placement.rs` 安全区算法算好写进 segments），
-          //                含义是**贴纸盒子的左上角**（V-Trim `process/mod.rs:276`）
+          //                含义是**贴纸盒子的左上角**（YekiTrim `process/mod.rs:276`）
           //   `manual` = 全部固定到 `[sticker] position` 那一点，**忽略事件的 `x`/`y`**，
           //                含义是**盒子中心**（`config.rs` 的 `StickerConfig.position` / 设置页口径）
           //
@@ -1879,7 +1879,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           // 只有底座出的片子里贴纸还在老位置，报告里一行差异都没有。
           // 而 `process` 每次都把 `ev.x/y` 重算一遍，所以那个旧值还会一直"看起来很新"。
           //
-          // 盒子边长按 V-Trim 的规则算：`280 * min(W,H)/1080`。
+          // 盒子边长按 YekiTrim 的规则算：`280 * min(W,H)/1080`。
           // 素材是 500×500 的原图，要塞进这个盒子，所以 `scale = 盒子/素材`。
           const stickerMode = config.sticker?.position_mode === 'manual' ? 'manual' : 'auto';
           let anchor; // { x, y, center } —— center = 这个点是盒子中心（manual）还是左上角（auto）
@@ -2168,7 +2168,7 @@ export function translate(config, clipDir, outPath, options = {}) {
                   amount: baseOpacity * stopAlpha,
                   r: first.r, g: first.g, b: first.b,
                   r2: second.r, g2: second.g, b2: second.b,
-                  // V-Trim 的 `shape = "linear"` 对应底座 OverlayShape::Linear = 1。
+                  // YekiTrim 的 `shape = "linear"` 对应底座 OverlayShape::Linear = 1。
                   shape: event.shape === 'radial' ? 2 : 1,
                   // 角度换算见 `overlayBaseAngle` 的注释（两边的 0° 方向不一样）。
                   angle: overlayBaseAngle(event.angle),
@@ -2362,7 +2362,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   }
 
   // ---------------------------------------------------------------------
-  // 运镜：照抄 V-Trim 的**状态机**，不是"每条事件画两个端点"
+  // 运镜：照抄 YekiTrim 的**状态机**，不是"每条事件画两个端点"
   // ---------------------------------------------------------------------
   //
   // 权威实现在 `yekitrim-polish/templates/index.html:1398 getActiveCamera()`：
@@ -2381,7 +2381,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 1. **过渡发生在事件的「开头」，只占 `td`（≤0.6s）**，不是横跨整条事件。
   //    我先前在事件起点写"目标值"、在终点再写一次同值，于是相邻两条之间
   //    是「从上一段一直插值到下一段」—— 实测 45s 处 zoom 变成 1.3→1.5 的
-  //    中间值，而 V-Trim 是稳稳的 1.3（那 0.6s 的过渡早就结束了）。
+  //    中间值，而 YekiTrim 是稳稳的 1.3（那 0.6s 的过渡早就结束了）。
   //    差 42.46/255。
   //
   // 2. **远景（`远`）进出是硬切**（`td` 当 0），因为"缓动缩过去看着像镜头在拉远"。
@@ -2393,7 +2393,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // `pow2_out` 插值 —— 于是 `offset` 也是同样一条缓动曲线上的线性量，
   // 用同一个 easing 给 `x`/`y`/`scale` 写关键帧就是**逐值等价**的。
   //
-  // **这不是近似**：V-Trim 的 `pow2_out` 与底座的 `EaseOut` **逐值相同**
+  // **这不是近似**：YekiTrim 的 `pow2_out` 与底座的 `EaseOut` **逐值相同**
   // （`pow2_in` 同理对上 `EaseIn`，`schema.rs` 有用例钉着）—— 我先前把它报成
   // "同族不同参"并进 CLAMP，那是错的；见下面 `逐帧重放 getActiveCamera` 那一趟的说明。
   const WIDE_ZOOM = zoomFactor('远', config.style?.camera, 'style.camera');
@@ -2623,7 +2623,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     const tdFrames = hardCut ? 0 : Math.max(1, Math.round(Math.min(durationSec * 0.5, 0.6) * fps));
 
     // 过渡的**起点**：zoom 还是上一个状态，但不动点已经是**本事件自己的** origin
-    // （V-Trim 里 `ox = lerp(ax, bx, p)`，p=0 时就是 ax）。
+    // （YekiTrim 里 `ox = lerp(ax, bx, p)`，p=0 时就是 ax）。
     const from = shot.origin ?? focus ?? { x: 0.5, y: 0.5 };
     const to = shot.originTo ?? from;
     const off1 = cameraOffset(z, to);
@@ -2676,19 +2676,19 @@ export function translate(config, clipDir, outPath, options = {}) {
     }
 
     if (hardCut && !shot.cut && tdFrames === 0) {
-      note(shot.where, `远景（${shot.zoom}）进出按 V-Trim 的规则**硬切**，没有过渡`);
+      note(shot.where, `远景（${shot.zoom}）进出按 YekiTrim 的规则**硬切**，没有过渡`);
     }
     if (shot.z < 1) {
       clamp(
         shot.where,
         `zoom=${shot.zoom}（${shot.z}）是**画中画档**：四周会留黑边 —— ` +
-          '这与 V-Trim 一致（它也是黑底），但 V-Trim 的 `stage.bg_mode` 还能铺模糊底，底座没有那一层',
+          '这与 YekiTrim 一致（它也是黑底），但 YekiTrim 的 `stage.bg_mode` 还能铺模糊底，底座没有那一层',
       );
     }
     // `handheld` 不在这里处理 —— 它是**视频层的纯位移/旋转/呼吸缩放**，
     // 与独立 `shake` 一起在循环之后按帧采样（见 `cameraStateAt` 那一段）。
     if (shot.zoom === '近' && !shot.handheld) {
-      note(shot.where, '近景未加即时抖 —— V-Trim 的近景自带轻微推拉，底座只做缩放');
+      note(shot.where, '近景未加即时抖 —— YekiTrim 的近景自带轻微推拉，底座只做缩放');
     }
     prevZoom = z;
     prevOffset = off1;
@@ -2709,7 +2709,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // shake 是 0.04s 一档的四级阶梯 —— 60fps 下一档只有 2~3 帧，
   // **手写关键帧根本落不到那些帧上**。
 
-  /// 逐帧重放 V-Trim 的 `getActiveCamera`（`index.html:1398`）。
+  /// 逐帧重放 YekiTrim 的 `getActiveCamera`（`index.html:1398`）。
   ///
   /// 运镜那段循环写的是**稀疏关键帧**（每条事件起点/过渡终点），
   /// 而 `handheld` 与它共用同一套状态机、同一个 `td`、同一条缓动 ——
@@ -2843,7 +2843,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     // 实测症状：在 stutter 的窗口（输出帧 940 处，layer-local）插了密集键之后，
     // **它之前 234 帧**的画面被平移（x 差 4.6px、y 差 3.8px），
     // 整帧平均差 14.35、30% 的像素超阈值 —— 而那个区间**没有任何特效**。
-    // 拿 V-Trim 的成片对拍时，参照两次渲染**完全相同**（差 0.00），
+    // 拿 YekiTrim 的成片对拍时，参照两次渲染**完全相同**（差 0.00），
     // 只有本仓这边变了，所以不是渲染不确定，也不是编码器。
     //
     // 修法：密集键**从上一个稀疏键的下一帧开始写**，一路写到窗口末尾。
@@ -2955,7 +2955,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     }
   }
 
-  // **不再报「pow2_out 只能近似」** —— V-Trim 的 `pow2_out(t) = 1-(1-t)^2`
+  // **不再报「pow2_out 只能近似」** —— YekiTrim 的 `pow2_out(t) = 1-(1-t)^2`
   // 与底座的 `EaseOut` **逐值相同**（`pow2_in` 同理对上 `EaseIn`）。
   // 我先前把它报成"同族不同参"，那是错的；`schema.rs` 有逐值用例钉着。
 
@@ -3009,7 +3009,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         continue;
       }
       const previous = layers[layers.length - 1];
-      // **音量**：V-Trim 的三处调用点都是
+      // **音量**：YekiTrim 的三处调用点都是
       //     `var vol = ev.volume || CFG.sfx.volume || 0.1;`
       // （模板 920 / 1108 / 1167 行）—— 是**覆盖**不是相乘：
       // 事件自己的 `volume` 优先，没有才用 `[sfx] volume` 那个总线值。
@@ -3239,7 +3239,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 调整图层作用于「**已经画上去的东西**」（`plan_steps` 里它会把累计的
   // `Draw` 冲掉再 `Adjust`），所以**位置就是它的作用域**。
   //
-  // 为什么紧跟主画面：**V-Trim 的出片顺序是**
+  // 为什么紧跟主画面：**YekiTrim 的出片顺序是**
   //
   //     视频 -> noise -> flash -> hue_shift -> overlay -> 字幕 -> 弹幕 -> 贴纸
   //
@@ -3272,7 +3272,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     });
   }
 
-  // 字幕与弹幕轨 —— 用底座自己的子系统，把 V-Trim 的素材接进来。
+  // 字幕与弹幕轨 —— 用底座自己的子系统，把 YekiTrim 的素材接进来。
   const subtitleTracks = [];  if (config.source?.subtitles && existsSync(join(clipDir, config.source.subtitles))) {
     const id = config.source.subtitles;
     // **剪过的字幕要另写一份。**
@@ -3312,9 +3312,9 @@ export function translate(config, clipDir, outPath, options = {}) {
       tags: {},
       note: `由 ${id} 重映射到裁剪后的时间线`,
     });
-    // 字幕样式：**从 V-Trim 的模板抄实际值**，不能用缺省。
+    // 字幕样式：**从 YekiTrim 的模板抄实际值**，不能用缺省。
     //
-    // V-Trim 的 CSS（`templates/index.html:747`）：
+    // YekiTrim 的 CSS（`templates/index.html:747`）：
     //   font-size: 72px            -> font_ratio = 72/1080 = 0.0667
     //   color: #dcbda0             -> [220,189,160,255]
     //   -webkit-text-stroke: 12px #403c3b  -> 底座只有 `outline: bool`
@@ -3323,13 +3323,13 @@ export function translate(config, clipDir, outPath, options = {}) {
     const subStyle = config.style?.subtitle ?? {};
     const subSizePx = typeof subStyle.size === 'number' ? subStyle.size : 72;
     const subColor = hexColor(subStyle.color) ?? { r: 1, g: 1, b: 1 };
-    // 描边 V-Trim 写的是 `"12px #403c3b"` —— 一个字符串里两个值。
+    // 描边 YekiTrim 写的是 `"12px #403c3b"` —— 一个字符串里两个值。
     const subStroke = parseStroke(subStyle.stroke, 12, '#403c3b');
-    // 行高：V-Trim 的字幕 CSS 是 `line-height:1.5`。
+    // 行高：YekiTrim 的字幕 CSS 是 `line-height:1.5`。
     const subLineHeight = 1.5;
     // **落点要换算，不能直接搬 120。**
     //
-    // V-Trim 画的时候用的是 `cy = CH - 120` —— 那是**文字的中心**；
+    // YekiTrim 画的时候用的是 `cy = CH - 120` —— 那是**文字的中心**；
     // 而底座的 `bottom_margin` 是**行盒底边**到底边的距离。两者差半个行盒。
     //
     // 直接填 `120/1080` 会让字幕整体**高约 54px**（行盒 = 72*1.5 = 108，一半是 54）。
@@ -3356,19 +3356,19 @@ export function translate(config, clipDir, outPath, options = {}) {
         outline: true,
         // **描边口径：CSS 居中 -> 底座的外侧宽度，要折半。**
         //
-        // V-Trim 写 `12px`，那是 CSS `-webkit-text-stroke` 的值 —— 判据在字的
+        // YekiTrim 写 `12px`，那是 CSS `-webkit-text-stroke` 的值 —— 判据在字的
         // 轮廓上、**里外各一半**；而 ffmpeg 的 `borderw` 是全在外侧。
         // 直接填 12 会让成片的描边粗一倍（实测 55s 那一帧差 +0.98，
         // 而 4px 跟 6px 几乎一样好，说明 6px 附近就是对的）。
         stroke_ratio: subStroke.widthPx / 2 / height,
         stroke_color: subStroke.color,
-        // **淡入淡出**（V-Trim `getActiveSubs`：fadeIn 0.35 / fadeOut 0.18、
+        // **淡入淡出**（YekiTrim `getActiveSubs`：fadeIn 0.35 / fadeOut 0.18、
         // 入场从下方 +20px 浮上来、退场向上 -8px）。
         fade_in_ms: Math.round(0.35 * 1000),
         fade_out_ms: Math.round(0.18 * 1000),
         rise_in_px: 20,
         rise_out_px: 8,
-        // **字重与行高**：V-Trim 的 CSS 写死了
+        // **字重与行高**：YekiTrim 的 CSS 写死了
         //   `.cap { font-weight:700; line-height:1.5; }`
         // 底座先前两样都不设（400 / 1.2）—— 笔画比它细一圈，两行字幕的行距也窄。
         font_weight: 700,
@@ -3387,7 +3387,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         shadow_dx_px: 0,
         shadow_dy_px: 2,
         shadow_blur_ratio: 12 / height,
-        // **换行安全宽 87.5%**：V-Trim 写死 `wrapCaptionParts(parts, CW * 0.875, …)`。
+        // **换行安全宽 87.5%**：YekiTrim 写死 `wrapCaptionParts(parts, CW * 0.875, …)`。
         // 底座先前的默认是"复用 bottom_margin"，凑出来 88% —— 碰巧接近，
         // 于是在刚好卡边界的行上断点会不同。
         safe_width_ratio: 0.875,
@@ -3434,7 +3434,7 @@ export function translate(config, clipDir, outPath, options = {}) {
 
   // ---- 弹幕轨 ----
   //
-  // V-Trim 的弹幕是 `clip.dm.srt`（SRT 外壳 + ASS 覆盖标签）。
+  // YekiTrim 的弹幕是 `clip.dm.srt`（SRT 外壳 + ASS 覆盖标签）。
   // 底座要的是**真 ASS**，所以转一道写成 `dhampir-danmaku.ass`。
   //
   // 转出来的文件放在**工程文件旁边**，不是 clip 目录里 ——
@@ -3516,9 +3516,9 @@ export function translate(config, clipDir, outPath, options = {}) {
         const dmStyle = config.style?.danmaku ?? {};
         const dmSizePx = typeof dmStyle.font_size === 'number' ? dmStyle.font_size : 42;
 
-        // **去掉逐条的 `\c` 颜色标签 —— V-Trim 不认它。**
+        // **去掉逐条的 `\c` 颜色标签 —— YekiTrim 不认它。**
         //
-        // 素材里确实有：`{\pos(960,1040)}{\c&HFF3FE3}还能续约吗`。但 V-Trim 的
+        // 素材里确实有：`{\pos(960,1040)}{\c&HFF3FE3}还能续约吗`。但 YekiTrim 的
         // 渲染那一侧**只读轨道级颜色**（`templates/index.html:2006`）：
         //
         //     var color_dm = dmS.color || '#ffffff';      // 一份，给所有弹幕用
@@ -3527,12 +3527,12 @@ export function translate(config, clipDir, outPath, options = {}) {
         // `getActiveDms` 的返回值只有 `{text, opacity, x, y}` —— **没有颜色**。
         // `\pos` 与 `\c` 在这个渲染器里都是残留（前者我早就记下了）。
         //
-        // 我先前把 `\c` 当成了"V-Trim 需要逐条颜色"的证据（那份 `danmaku.json`
+        // 我先前把 `\c` 当成了"YekiTrim 需要逐条颜色"的证据（那份 `danmaku.json`
         // 里确实有 `color` 字段），于是**接了个看着对、其实与参照相反的东西**：
-        // 出片一对比 —— 48.8s 那一帧 V-Trim 是白的、底座是品红的。
+        // 出片一对比 —— 48.8s 那一帧 YekiTrim 是白的、底座是品红的。
         //
         // 契约里的逐条颜色是**对的通用原语**（ASS 的 `\c` 就是这个意思），
-        // 所以保留；**转译器不写它**才是"复现 V-Trim 的行为"。
+        // 所以保留；**转译器不写它**才是"复现 YekiTrim 的行为"。
         // ⚠️ **2026-10-01 补充**：底座现在**能**显示逐条颜色了（回执 §5：wasm 的条目清单补齐了
         // `color`/`font_ratio`/`scale`/`parts`，预览侧也收得到）——**更不许顺手打开**：
         // 我们这条链的参照是**本仓 canvas**，它不读逐条颜色（`getActiveDms` 的返回值只有
@@ -3548,7 +3548,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         if (stripped > 0) {
           note(
             'style.danmaku',
-            `逐条颜色 \\c：素材里 ${stripped} 条带颜色标签，V-Trim 的渲染器**不读它**` +
+            `逐条颜色 \\c：素材里 ${stripped} 条带颜色标签，YekiTrim 的渲染器**不读它**` +
               '（只读轨道级 color）—— 已去掉，与参照保持一致',
           );
           for (const cue of cues) cue.text = stripColorTags(cue.text);
@@ -3583,7 +3583,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           kind: 'danmaku',
           danmaku: {
             asset_id: assName,
-            // V-Trim 的弹幕：`font-size: 42px`（模板 760 行）
+            // YekiTrim 的弹幕：`font-size: 42px`（模板 760 行）
             //   -> font_ratio = 42/1080 = 0.0389
             //
             // `duration_ms` 是**每条自己算**的（见下面 travels 的推导），
@@ -3594,10 +3594,10 @@ export function translate(config, clipDir, outPath, options = {}) {
             lanes: 8,
             duration_ms: dmDurationMs,
             font_ratio: dmSizePx / height,
-            // **颜色**：V-Trim 弹幕是 `#ffffff`。以前底座没有这个字段，
+            // **颜色**：YekiTrim 弹幕是 `#ffffff`。以前底座没有这个字段，
             // 只能与字幕**共用**一份 —— 而字幕是暖色 `#dcbda0`，必然错一个。
             color: rgbaBytes(hexColor(dmStyle.color) ?? { r: 1, g: 1, b: 1 }),
-            // **基础不透明度 0.9**（V-Trim 模板 1503 行 `var opacity = 0.9`）。
+            // **基础不透明度 0.9**（YekiTrim 模板 1503 行 `var opacity = 0.9`）。
             opacity: 0.9,
             // **淡入淡出**（同模板 1495 行：fadeIn 0.3 / fadeOut 0.2）。
             fade_in_ms: DANMAKU_FADE_IN_MS,
@@ -3606,16 +3606,16 @@ export function translate(config, clipDir, outPath, options = {}) {
             // 同字幕：CSS 的居中描边折半成"外侧宽度"。
             stroke_ratio: parseStroke(dmStyle.stroke, 2, '#000000').widthPx / 2 / height,
             stroke_color: parseStroke(dmStyle.stroke, 2, '#000000').color,
-            // **泳道带的几何**。V-Trim 的 `assign_danmaku_tracks` 用
+            // **泳道带的几何**。YekiTrim 的 `assign_danmaku_tracks` 用
             // `TRACK_YS = [300, 500, 700, …]`，那是 **1920 宽的日志坐标**；
             // 模板里 `y = (d.y/1920) * (540*CK)` 再除以画布高，归一化之后
             // 就是 `d.y / 3840` —— 与画布尺寸无关，所以直接写这两个数。
             //
             // 底座老规则是"0 号泳道贴顶、间距取行盒高"（0 起、0.048），
-            // 而 V-Trim 是 0.0781 起、间距 0.0521 —— 差值是肉眼可见的一整条。
+            // 而 YekiTrim 是 0.0781 起、间距 0.0521 —— 差值是肉眼可见的一整条。
             lane_top_ratio: 300 / 3840,
             lane_spacing_ratio: 200 / 3840,
-            // V-Trim 的弹幕 CSS：`font-weight:600`。
+            // YekiTrim 的弹幕 CSS：`font-weight:600`。
             font_weight: 600,
             line_height: 1.5,
             font_family: dmStyle.font || null,
@@ -3666,7 +3666,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 轨道顺序 = 绘制顺序（`plan_steps` 按数组顺序走）
   // ---------------------------------------------------------------------
   //
-  // 对齐 V-Trim **出片**那条腿（`renderFrame`）：
+  // 对齐 YekiTrim **出片**那条腿（`renderFrame`）：
   //
   //     v1(主画面) -> 调整图层 -> 字幕 -> 弹幕 -> 贴纸
   //
@@ -3781,7 +3781,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     // ⚠️ 2026-10-01（Phase ③）修正：这条以前写"这三项没接：高亮色（素材里的 `\c` 标签**底座会剥掉**）、
     // 显示区域、逐条滚动时长（**已接**）" —— 一句话里三处毛病：
     //   ① 说"三项没接"，第三项自己又写着"已接"；
-    //   ② 把摘 `\c` 甩给底座 —— **是本仓自己摘的**（V-Trim 的 canvas 渲染器只读轨道色），
+    //   ② 把摘 `\c` 甩给底座 —— **是本仓自己摘的**（YekiTrim 的 canvas 渲染器只读轨道色），
     //      而底座其实**支持**逐条颜色（`dhampir-timeline/src/subtitle.rs` 把行内 `\c` 抽进 `CueStyle.color`，
     //      还带 BGR→RGB 单测）⇒ 发了反而会让成片**比参照更花**，所以故意不发（见上面 `stripColorTags`）；
     //   ③ `highlight_color` 不是"没接"：**本仓渲染器也不消费它**（`highlight_color` 只用于字幕的 `.hl`，
@@ -3811,7 +3811,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     render_hints: { width, height, format: 'mp4' },
     extensions: {
       // **转译的来龙去脉留在这里**：工程文件本身要说清它是从哪来的。
-      'vtrim.polish_toml': {
+      'yekitrim.polish_toml': {
         translated_at_frame_rate: timebase.num / timebase.den,
         camera_events: cameraCount,
         shake_events: shakeCount,
@@ -3881,7 +3881,7 @@ function runCli() {
 
   console.log(`转译完成 -> ${outPath}`);
   console.log(`  轨道 ${doc.timeline.tracks.length} 条 / 素材 ${doc.assets.length} 个`);
-  const stats = doc.extensions['vtrim.polish_toml'];
+  const stats = doc.extensions['yekitrim.polish_toml'];
   console.log(
     `  运镜 ${stats.camera_events} 条、贴纸 ${stats.sticker_layers} 张、` +
       `音效 ${stats.sfx_clips} 条、overlay ${stats.overlay_events} 条、` +

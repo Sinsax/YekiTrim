@@ -1,7 +1,7 @@
 # 封面设计器：图层栈重设计（PS 口径）
 
-> 状态：**已实现（P0 + P1，2026-09）** ｜ 范围：`crates/vtrim-polish`（`cover.rs` / `project/config.rs` /
-> `templates/cover.html`）、`crates/vtrim-server/src/api/polish.rs`、`webui/src/components/CoverDesigner.vue`
+> 状态：**已实现（P0 + P1，2026-09）** ｜ 范围：`crates/yekitrim-polish`（`cover.rs` / `project/config.rs` /
+> `templates/cover.html`）、`crates/yekitrim-server/src/api/polish.rs`、`webui/src/components/CoverDesigner.vue`
 >
 > **实现结果与本文档的三处偏差**（以代码与模块卡为准，本文档保留决策过程）：
 > 1. **`CoverEffect` 只加了 `id`，没加 `visible`** —— 可见性**只住 `[[cover.layers]]` 一项**，
@@ -86,7 +86,7 @@ text = "😆"
 - **`filter` 是一层、内部两个 DOM 块**（`#overlay` 渐变 + `#vignette` 暗角，永远相邻）。
   理由：v1 就把它们当一层编辑（`gradient_dir + vignette` 在同一个属性面板里），拆成两层对用户没有收益，
   却要在栈里维护两条必须相邻的项。**（开放问题 1：要不要拆成两层？）**
-- **安全区两条不进栈**：它们是设计器辅助线（`localStorage['vtrim.ui.coverGuides']`），不进出片，也不在 `layers` 里。
+- **安全区两条不进栈**：它们是设计器辅助线（`localStorage['yekitrim.ui.coverGuides']`），不进出片，也不在 `layers` 里。
 - **`opacity` / `blend`（PS 面板顶部那两行）**：字段上很便宜（`[[cover.layers]] opacity = 1.0` +
   `blend = "normal"`，出片就是给该层 CSS 加 `opacity` / `mix-blend-mode`，两端都是 Chrome DOM，天然同口径），
   但属于**本期可选**（见 §7 的 P2 与开放问题 2）。
@@ -94,7 +94,7 @@ text = "😆"
 ### 3.2 唯一推导：`resolve_cover_stack()`
 
 ```rust
-// crates/vtrim-polish/src/project/config.rs（或 cover.rs，与 cover_bg_vars 同级）
+// crates/yekitrim-polish/src/project/config.rs（或 cover.rs，与 cover_bg_vars 同级）
 pub struct ResolvedLayer { pub id: String, pub block: LayerBlock, pub visible: bool, pub effect: Option<usize> }
 pub enum LayerBlock { Bg, Frame, Gradient, Vignette, Effect, Title }
 
@@ -177,7 +177,7 @@ fn cover_layer_css(stack: &[ResolvedLayer]) -> String
    候选样本（`.workbuddy/perf/` 下都已带 `_cover_frame.jpg` + `clip.mp4`，可直接跑）：
    `fadecheck/seed/proj`、`vertical/vert-land`、`renderproj/clip-01` —— 建议前两个各跑一次
    （横屏 + 竖屏素材，竖屏能顺带验证 `#frame` 的 `contain` 与背景层）。
-   命令：`cargo run -p vtrim-cli -- polish cover <工程目录>`（改前先在 `.workbuddy/` 留一份成片）。
+   命令：`cargo run -p yekitrim-cli -- polish cover <工程目录>`（改前先在 `.workbuddy/` 留一份成片）。
    这是"老工程逐像素零回归"的唯一硬证据，结论写进 `docs/webui-components.md` ③。
    顺便看一眼 `blur` 特效（`kind="blur"` 用 `backdrop-filter`）：它的"背景采样范围"按规范由 backdrop root
    决定、不受 z-index 影响，所以拆不拆 stacking context 都不该变 —— 但只信像素对拍，别信推理。
@@ -330,14 +330,14 @@ fn cover_layer_css(stack: &[ResolvedLayer]) -> String
 
 | 文件 | 改动 |
 |---|---|
-| `crates/vtrim-polish/src/project/config.rs` | `CoverLayer{id,visible}` + `CoverConfig.layers`；`CoverEffect{id,visible}`；`Default` 补项；`to_toml_commented` 的 `[cover]` 注释表加 `layers` |
+| `crates/yekitrim-polish/src/project/config.rs` | `CoverLayer{id,visible}` + `CoverConfig.layers`；`CoverEffect{id,visible}`；`Default` 补项；`to_toml_commented` 的 `[cover]` 注释表加 `layers` |
 | 同上 / `cover.rs` | `default_cover_stack()` / `resolve_cover_stack()`（纯函数 + 表驱动单测） |
-| `crates/vtrim-polish/templates/cover.html` | `#fx-extra` 去掉内联 `z-index:1`；加 `__LAYER_CSS__` 占位 |
-| `crates/vtrim-polish/src/cover.rs` | `cover_layer_css()`；`cover_fx_html()` 加 `z-index/display`；抽 `apply_cover_vars()` 并让两个构建器都走它 |
-| `crates/vtrim-server/src/api/polish.rs` | `cover-config` 白名单：`layers`（整数组替换）、`effects[].id/visible` |
-| `crates/vtrim-polish/AGENTS.md`、`src/project/AGENTS.md` | "封面三层"那段改写成"图层栈" |
+| `crates/yekitrim-polish/templates/cover.html` | `#fx-extra` 去掉内联 `z-index:1`；加 `__LAYER_CSS__` 占位 |
+| `crates/yekitrim-polish/src/cover.rs` | `cover_layer_css()`；`cover_fx_html()` 加 `z-index/display`；抽 `apply_cover_vars()` 并让两个构建器都走它 |
+| `crates/yekitrim-server/src/api/polish.rs` | `cover-config` 白名单：`layers`（整数组替换）、`effects[].id/visible` |
+| `crates/yekitrim-polish/AGENTS.md`、`src/project/AGENTS.md` | "封面三层"那段改写成"图层栈" |
 
-验证：`cargo test -p vtrim-polish`（新单测）、`cargo test -p vtrim-server`（patch 用例）、
+验证：`cargo test -p yekitrim-polish`（新单测）、`cargo test -p yekitrim-server`（patch 用例）、
 **真跑一次封面出片对拍 SHA-256**（§4.3）。
 
 ### P1 —— 设计器（本次用户要的四件事）
@@ -380,7 +380,7 @@ payload 的 `layers`/几何），再对拍一次出片（设计器看到的序 =
 1. **滤镜拆不拆**：保持"渐变+暗角 = 一层"（推荐），还是拆成两层各自排序/隐藏？
 2. **不透明度 / 混合模式**：进 P1 还是 P2（或不做）？
 3. **图层重命名**：要不要（`name` 字段，成本很低）？
-4. **CLI 预设**：设计器删掉 4 个预设后，`vtrim polish cover --template <t>`（`cover.rs::cmd_cover_template`）
+4. **CLI 预设**：设计器删掉 4 个预设后，`yekitrim polish cover --template <t>`（`cover.rs::cmd_cover_template`）
    是否也一起删？（现在它只剩 CLI 一个入口）
 5. **P2 的取舍**：多选 / 锁定 / 复制 / 命中即拖，哪些进本期？
 
@@ -390,9 +390,9 @@ payload 的 `layers`/几何），再对拍一次出片（设计器看到的序 =
 
 - 长任务写 `polish.toml` 一律 `project::update_polish_toml`（锁内重载 + 只覆盖自己负责的字段）；
   设计器保存走 `/api/polish/cover-config`（已有路径锁）。**配置改动的四步**（字段 + merge 条件 +
-  手动 `Default` + 注释/模板）在 `crates/vtrim-core/src/config/AGENTS.md`，polish 侧对应"字段 + serde default +
+  手动 `Default` + 注释/模板）在 `crates/yekitrim-core/src/config/AGENTS.md`，polish 侧对应"字段 + serde default +
   `Default` + `to_toml_commented` 注释 + server 白名单"。
-- 改了 `templates/cover.html` **必须重建二进制并真跑一次出片**（`include_str!` 进 `vtrim-polish`）。
+- 改了 `templates/cover.html` **必须重建二进制并真跑一次出片**（`include_str!` 进 `yekitrim-polish`）。
 - 前端布局类改动**必须做几何断言**（`getBoundingClientRect()` 宽高 > 0）——
   本仓没有 jsdom/vitest，可行做法是 `.workbuddy/` 下的 headless harness（真挂载组件 + Chrome `--dump-dom`）。
 - 类别名先查 `styles/app.css`：它是**全局**的（`.pane{display:none}` 那次踩过），

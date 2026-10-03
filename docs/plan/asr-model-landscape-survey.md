@@ -24,12 +24,12 @@ FireRedASR2-CTC 是**唯一**同时满足 C1~C5 五条硬约束的候选：
 | C1 逐字时间戳 | ✅ | 官方 fixture：**19 token / 19 时间戳**，中文 token 是单字 |
 | C2 单字粒度 | ✅ | `from_tokens` 已能处理多字符英文子词（`align.rs:77-91`） |
 | C3 抗幽灵戳 | ⚠️ **未验证** | 纯 CTC，与 SenseVoice 同类机制 —— **正是 v1 翻车的那一类** |
-| C4 CPU 线性代价 | ✅ | 272s 长音频 **RTF 0.058**（3 线程 + VAD，与 V-Trim 同架构） |
+| C4 CPU 线性代价 | ✅ | 272s 长音频 **RTF 0.058**（3 线程 + VAD，与 YekiTrim 同架构） |
 | C5 许可 | ✅ | **Apache-2.0** |
 | 额外 | ✅ | **非自回归、代价线性**；20+ 中文方言；唱歌 CER 1.17% |
 
 ⚠️ **但它不是"已被证明的替代品"**：决定性未知量（C3）**无法从公开资料判定**，
-只能在 V-Trim 自己的素材上实测。且 740 MB vs SenseVoice 的 165 MB ≈ **4.5×**。
+只能在 YekiTrim 自己的素材上实测。且 740 MB vs SenseVoice 的 165 MB ≈ **4.5×**。
 
 ## 2. 中文精度对照（各来源自报 CER，越低越好）
 
@@ -60,7 +60,7 @@ FireRedASR2-CTC 是**唯一**同时满足 C1~C5 五条硬约束的候选：
 对比 Doubao-ASR 15.39% / Qwen3-ASR 11.85% / Fun-ASR 12.76% —— **领先**。覆盖 20+ 种中文方言。
 
 **唱歌**（opencpop）：FireRedASR2-AED **1.17%**。
-⭐ 这一条对 V-Trim **特别有价值**：本项目实测 VAD 版本"多出来的内容是唱段/歌词"
+⭐ 这一条对 YekiTrim **特别有价值**：本项目实测 VAD 版本"多出来的内容是唱段/歌词"
 （`vad-single-mode.md:22-24`），而 SenseVoice 在唱段上的表现没有公开数据。
 
 ## 3. ⭐ 关键：时间戳机制变了（这是它和"已下线的 firered-zh"的根本区别）
@@ -114,8 +114,8 @@ sherpa-onnx 官方文档也把这件事写明了 —— 那段 CTC 转换的原�
 
 ⚠️ **另外必须诚实标注**：论文**没有**提供"BGM/音乐段时间戳鲁棒性"的定量评测。
 **"强制对齐比自由解码更稳"是机制推理，不是实测证据。**
-这两条都**必须在 V-Trim 自己的素材上复测**（项目已有现成手段：
-`VT_ASR_WAV=... diagnose_vad_regions` 与 `vtrim.toml` 的 A/B 流程）。
+这两条都**必须在 YekiTrim 自己的素材上复测**（项目已有现成手段：
+`VT_ASR_WAV=... diagnose_vad_regions` 与 `yekitrim.toml` 的 A/B 流程）。
 
 ## 4. 部署现实（不受运行时约束，但仍值得看）
 
@@ -207,6 +207,6 @@ sherpa-onnx **已经收录 v2**（[官方文档](https://k2-fsa.github.io/sherpa
 - FunASR 2026 选型指南（SenseVoice 仍是 CPU 首选）：<https://www.funasr.com/en/blog/which-funasr-model.html>
 - Qwen3-ForcedAligner-0.6B（独立的对齐模型，非 ASR 自带）：<https://github.com/QwenLM/Qwen3-ASR>
 - FireRedASR v1 论文（v1 与 SenseVoice/Whisper/Paraformer 的 CER 对照）：<https://arxiv.org/pdf/2501.14350>
-- 本项目 firered-zh 下线原因（CTC 幽灵时间戳）：`crates/vtrim-core/src/asr/AGENTS.md:25`
+- 本项目 firered-zh 下线原因（CTC 幽灵时间戳）：`crates/yekitrim-core/src/asr/AGENTS.md:25`
 - 本项目唱段/歌词现象：`docs/plan/vad-single-mode.md:22-24`
-- 打轴链路的硬约束：`crates/vtrim-core/src/asr/align.rs:107-123`
+- 打轴链路的硬约束：`crates/yekitrim-core/src/asr/align.rs:107-123`

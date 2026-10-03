@@ -1,9 +1,9 @@
-//! `vtrim ingest`：录播姬采集相关的 CLI（P3）。
+//! `yekitrim ingest`：录播姬采集相关的 CLI（P3）。
 //!
-//! - `vtrim ingest token`：生成 webhook token（明文只显示一次），把哈希写进全局配置
+//! - `yekitrim ingest token`：生成 webhook token（明文只显示一次），把哈希写进全局配置
 //!   `[ingest] token_hash` 并开启 `webhook_enabled`；
-//! - `vtrim ingest token --disable`：只关闭 webhook（保留 token）；
-//! - `vtrim ingest status`：显示当前采集配置（不打印任何秘密）。
+//! - `yekitrim ingest token --disable`：只关闭 webhook（保留 token）；
+//! - `yekitrim ingest status`：显示当前采集配置（不打印任何秘密）。
 //!
 //! ## 这里同时是"入库共享逻辑"的落点
 //!
@@ -11,7 +11,7 @@
 //! 只是历史上长在 `server::ingest_worker` 里。B站下载通道要复用同一套规则，
 //! 所以它们被下沉到这里 —— 见 `docs/plan/p4-implementation-plan.md` §2。
 //!
-//! ⚠️ 它们的**消费者**是 `vtrim-server` 的两个 worker（`ingest_worker` / `download_worker`）。
+//! ⚠️ 它们的**消费者**是 `yekitrim-server` 的两个 worker（`ingest_worker` / `download_worker`）。
 //! **两个 worker 之间不许互相调用**：共享的东西一律下沉到本模块，否则录播姬那套
 //! 「待分配池 / is_finalized 空闲窗口」的语义会顺着调用链渗进 B站通道。
 
@@ -25,7 +25,7 @@ pub mod capacity;
 pub mod landing;
 
 fn global_config_path() -> PathBuf {
-    yekitrim_core::path::vtrim_home().join("config.toml")
+    yekitrim_core::path::yekitrim_home().join("config.toml")
 }
 
 /// 录播姬 webhook token 的前缀。
@@ -55,7 +55,7 @@ fn patch_ingest(pairs: serde_json::Value) -> Result<()> {
             .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
     }
     if !path.exists() {
-        // 与 `vtrim server` 一致的补齐行为
+        // 与 `yekitrim server` 一致的补齐行为
         let _ = crate::ensure_global_config();
     }
     yekitrim_core::config::patch_config_file(&path, &serde_json::json!({ "ingest": pairs }))
@@ -63,7 +63,7 @@ fn patch_ingest(pairs: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-/// `vtrim ingest token [--disable]`
+/// `yekitrim ingest token [--disable]`
 pub fn cmd_token(disable: bool) -> Result<()> {
     if disable {
         patch_ingest(serde_json::json!({ "webhook_enabled": false }))?;
@@ -98,7 +98,7 @@ pub fn cmd_token(disable: bool) -> Result<()> {
     Ok(())
 }
 
-/// `vtrim ingest status`
+/// `yekitrim ingest status`
 pub fn cmd_status() -> Result<()> {
     let cfg = yekitrim_core::config::load_global_config();
     let ing = &cfg.ingest;

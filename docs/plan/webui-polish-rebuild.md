@@ -6,10 +6,10 @@
 ## 设计原则
 - **process 隐式**：服务端在 LLM job 内自动链式执行 process；TimelineEditor 保存后前端自动补一个 process job；`cmd_render`/预览本就自动 process。前端不再出现任何 process 按钮。
 - **显式动作只有两个**：「LLM 生成」和「渲染导出」（外加未初始化时的「初始化」）。
-- **视觉与逻辑基准**：以 `crates/vtrim-polish/templates/index.html`（GSAP 时间线 preview）为基准，忠实移植到 Vue 自绘预览（用户已确认保留 Vue 自绘方案，不用 iframe 内嵌）；保留九宫格布局、字幕编辑、封面定制三个编辑面板；`/polish` 列表页精简为入口+状态。
+- **视觉与逻辑基准**：以 `crates/yekitrim-polish/templates/index.html`（GSAP 时间线 preview）为基准，忠实移植到 Vue 自绘预览（用户已确认保留 Vue 自绘方案，不用 iframe 内嵌）；保留九宫格布局、字幕编辑、封面定制三个编辑面板；`/polish` 列表页精简为入口+状态。
 - **消灭石山**：特效数学收敛到纯函数模块，API/job 逻辑收敛到一个共享模块，两页面不再复制代码。
 
-## 一、后端改动（crates/vtrim-cli/src/server/api.rs，vtrim-polish 小改）
+## 一、后端改动（crates/yekitrim-cli/src/server/api.rs，yekitrim-polish 小改）
 
 1. **隐式 process 服务端链式**（`api.rs` polish_spawn）：`"llm"` 分支改为同一个 job 内先 `cmd_llm` 再 `cmd_process`，用 `jobs.log()` 输出阶段消息（"LLM 生成中…" / "自动执行 process 后处理…"），任一步失败即 fail。前端 `setTimeout(1500)` 猜测链彻底删除。
 2. **GET /api/polish/project 增强**：`?preview=1` 时响应附加预览所需计算字段——`_assets.sticker_map`（复用 `render/server.rs` 的 `build_sticker_map`）、`vertical`/`vertical_position`（`get_video_size` 竖屏检测）、`loudness_curve`（`measure_loudness_curve`，缓存到 `data/loudness.json`，按源视频文件名失效）。一次请求满足 PolishPreview 全部数据需求。
@@ -35,7 +35,7 @@
 
 - **`PolishPreview.vue`**（500 行 → 目标约 250 行）：瘦播放器——props 改为父级下发数据（`config/subtitles/danmaku/metaDuration`，父组件只做一次请求）；舞台 16:9 + 1920×1080 虚拟 overlay 缩放；图层 z 序（bg 竖屏模糊背景 < corner-glow < flash < overlay[贴纸/弹幕/字幕] < intro-black）；rAF 读 `video.currentTime` 作为主时钟驱动 engine + 音效；播放/seek/音量/全屏控制 + 事件 ticker（playtest）。修复：`stickerStateMap` 在 computed 里改非响应式 Map 的副作用（错误回退改用事件回调 + Map 替换）、九宫格命名 bug、贴纸资源改用 sticker_map（不再盲猜扩展名）、显式覆盖全局 `video{max-height:170px}`。
 - **`PolishView.vue`**：重组为——无 `?dir` 时显示可精修片段选择器；未初始化卡 / 左列（新 PolishPreview + TimelineEditor）/ 右栏（动作卡：LLM 生成 + 渲染导出，内联 job 进度条与日志；状态卡：processed/已渲染/封面 chips + 原版/消音版本切换；九宫格布局；字幕编辑；产物卡：cover.jpg + 渲染成片 `.video-lg` 预览/下载）。CoverDesigner 保留底部。`window.prompt`/`confirm` 换成应用内 modal（`.modal-backdrop/.modal`），渲染路径留空默认用 polish.toml 的 `project.output`。TimelineEditor 保存 segments 后自动隐式触发 process job（完成后刷新预览）。job 成功后重载 project + 预览。
-- **`PolishProjectsView.vue`**：精简为入口+状态——卡片（标题/状态 chips/版本）+「打开精修」（未初始化则显示「初始化」）；openEditor 改为通过 `/api/project/list` + 路径启发式（`/output/clips/` 前缀 → 项目目录 `vtrim.toml`）定位归属项目，**不再** POST `/api/project/switch` 改全局状态；订阅 `/api/stream`，收到 completed/failed 事件自动刷新列表。
+- **`PolishProjectsView.vue`**：精简为入口+状态——卡片（标题/状态 chips/版本）+「打开精修」（未初始化则显示「初始化」）；openEditor 改为通过 `/api/project/list` + 路径启发式（`/output/clips/` 前缀 → 项目目录 `yekitrim.toml`）定位归属项目，**不再** POST `/api/project/switch` 改全局状态；订阅 `/api/stream`，收到 completed/failed 事件自动刷新列表。
 - **`ProjectLayout.vue`**：项目 tab 栏加「精修」入口（router.js 路由已存在无需改动）。
 
 ## 四、删除/清理
@@ -47,16 +47,16 @@
 `TimelineEditor.vue`、`CoverDesigner.vue`、后端其余全部端点、webui 其他页面、整体架构（Vue3 + 现有 axum server）。
 
 ## 验证
-1. `cargo build` 0 warnings（含 vtrim-cli、vtrim-polish）——已通过 `cargo check` + `clippy`（无新警告）。
+1. `cargo build` 0 warnings（含 yekitrim-cli、yekitrim-polish）——已通过 `cargo check` + `clippy`（无新警告）。
 2. `cd webui && npm run build` 通过。
 3. `cargo run -- server` 冒烟：/polish 列表加载 → 编辑器加载、预览播放（字幕高亮/贴纸/运镜/弹幕/音效）→ LLM job 进度与自动 process → 渲染进度 → 产物显示。
 
 ## 关键参考文件
 | 文件 | 用途 |
 |------|------|
-| `crates/vtrim-polish/templates/index.html` | 特效唯一基准（1004-1695 行 Canvas 纯数学版 = 出片行为；344-1002 行 GSAP DOM 版） |
-| `crates/vtrim-polish/src/render/pipeline.rs` | cmd_render 阶段顺序 + 响度混音逻辑 |
-| `crates/vtrim-polish/src/render/server.rs` | build_sticker_map / 竖屏检测 / loudness 注入 |
-| `crates/vtrim-cli/src/server/api.rs` | polish 端点 + polish_spawn + JobManager 桥接 |
-| `crates/vtrim-cli/src/server/jobs.rs` | JobEvent 种类 / progress 事件 |
-| `crates/vtrim-polish/src/project/config.rs:283` | 九宫格权威命名 grid_rect |
+| `crates/yekitrim-polish/templates/index.html` | 特效唯一基准（1004-1695 行 Canvas 纯数学版 = 出片行为；344-1002 行 GSAP DOM 版） |
+| `crates/yekitrim-polish/src/render/pipeline.rs` | cmd_render 阶段顺序 + 响度混音逻辑 |
+| `crates/yekitrim-polish/src/render/server.rs` | build_sticker_map / 竖屏检测 / loudness 注入 |
+| `crates/yekitrim-cli/src/server/api.rs` | polish 端点 + polish_spawn + JobManager 桥接 |
+| `crates/yekitrim-cli/src/server/jobs.rs` | JobEvent 种类 / progress 事件 |
+| `crates/yekitrim-polish/src/project/config.rs:283` | 九宫格权威命名 grid_rect |

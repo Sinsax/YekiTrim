@@ -1,7 +1,7 @@
 //! polish::process::sfx：音效规则引擎（字幕关键词 → 音效 tag）与解析 / 屏蔽。
 //!
 //! 入口：`match_sfx_rule`、`resolve_event_sfx`、`resolve_sfx_value`、`resolve_sfx_tag`、`load_sfx_blacklist`、`find_uncovered_sfx_moments`、`subtitle_context`。
-//! 边界：规则未命中的事件按"宁缺毋滥"清空音效；屏蔽语义（精确 id 屏蔽单个、`tag:xxx` 屏蔽整个标签族）在 `assets/sfx_catalog.rs::is_blacklisted` —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+//! 边界：规则未命中的事件按"宁缺毋滥"清空音效；屏蔽语义（精确 id 屏蔽单个、`tag:xxx` 屏蔽整个标签族）在 `assets/sfx_catalog.rs::is_blacklisted` —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use crate::parse;
 use crate::project;
@@ -290,7 +290,7 @@ pub fn resolve_sfx_tag(tag: &str, blacklist: &[String], used: &mut std::collecti
 // download
 // ============================================================
 
-/// 加载音效屏蔽列表: 全局 (.vtrim/config.toml [sfx] blacklist) ∪ 项目 (polish.toml [sfx] blacklist)
+/// 加载音效屏蔽列表: 全局 (.yekitrim/config.toml [sfx] blacklist) ∪ 项目 (polish.toml [sfx] blacklist)
 pub fn load_sfx_blacklist(config: &project::ProjectFile) -> Vec<String> {
     let mut list = yekitrim_core::config::load_global_config().sfx.blacklist.clone();
     for id in &config.sfx.blacklist {

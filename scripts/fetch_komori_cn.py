@@ -7,7 +7,7 @@ fetch_komori_cn.py — 爬取小森平中文版页面(xxxcn.html)，为 catalog 
 import json, re, time, urllib.request, ssl
 
 BASE = "https://taira-komori.net"
-UA = {"User-Agent": "Mozilla/5.0 (vtrim-catalog-builder)"}
+UA = {"User-Agent": "Mozilla/5.0 (yekitrim-catalog-builder)"}
 CTX = ssl.create_default_context()
 
 CN_PAGES = [

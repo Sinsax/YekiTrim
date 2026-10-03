@@ -21,8 +21,8 @@
 //!
 //! 运行（需要底座二进制 + Node 转译器）：
 //! ```text
-//! VTEDIT_BACKDROP_DIR="F:/para/Code/V-Trim/target/probe-backdrop" \
-//! VTEDIT_BACKDROP_OUT="F:/para/Code/V-Trim/target/tmp-vertprobe/out" \
+//! VTEDIT_BACKDROP_DIR="F:/para/Code/YekiTrim/target/probe-backdrop" \
+//! VTEDIT_BACKDROP_OUT="F:/para/Code/YekiTrim/target/tmp-vertprobe/out" \
 //! cargo test -p yekitrim-polish --test portrait_backdrop -- --ignored --nocapture
 //! ```
 //! - `VTEDIT_BACKDROP_T`（秒，默认 `1.5`）= 探针时刻，要落在**主画面被挪开**的那一段里；

@@ -3,7 +3,7 @@
 > 日期：2026-09-19（末次更新 **2026-09-21**）· 状态：**P0–P3 已落地并验证，P4 部分落地**（阶段表见第六节）
 > 本轮变更：竖素材出片的**画面摆放 + 运镜门控**修复 —— 用户报告「横屏导出时竖屏素材被拉伸成宽屏，
 > 而不是竖屏素材 + 模糊的关键帧」「竖屏素材没有禁用运镜，横屏竖屏导出都一样」（见文末 2026-09-21 节）
-> 范围：`vtrim-polish` + `vtrim-server` + `webui`（**仅 Chrome 出片路径**，wgpu 不修）
+> 范围：`yekitrim-polish` + `yekitrim-server` + `webui`（**仅 Chrome 出片路径**，wgpu 不修）
 
 ## 需求（两部分）
 
@@ -216,7 +216,7 @@ position = "50% 50%"
 → 把 `StageFit` 解析出的主画面 dst-rect 作为 `placement` 的**额外障碍**传入，auto 才是真的"自动避让主画面"。
 
 **竖屏原有的贴纸强制覆盖删除**：`index.html:916-920`（left → 强制 50%，否则 15%/85% 交替）
-与 `vtrim-render-core/src/timeline.rs:541-548` 同款逻辑一并删除 —— 该行为由 `manual` 模式正式替代，
+与 `yekitrim-render-core/src/timeline.rs:541-548` 同款逻辑一并删除 —— 该行为由 `manual` 模式正式替代，
 `auto` 则走安全区算法（含上面的主画面避让）。
 
 **UI**（`PolishView.vue:156-176` 的「贴纸来源」分组内）
@@ -427,7 +427,7 @@ position = "50% 50%"
   - 顺带把「事件缺 x/y」从 `NaN`（写进 CSS 就成了 `left: NaNpx`）改成回落 50%。
 - **删掉竖屏强制覆盖（三处）**：模板的 `ev.x='50%'` / 15%-85% 交替、`engine.js` 的
   `entry.xOverride`（连带 `sideToggle`、`idx.verticalPosition` 一起变死代码，已删）、
-  `vtrim-render-core/src/timeline.rs` 的 `if vertical { ... }`。
+  `yekitrim-render-core/src/timeline.rs` 的 `if vertical { ... }`。
 - **UI**：`PolishView.vue` 贴纸来源分组下新增「贴纸落点」——`自动避让`/`固定落点` 二选一，
   手动时出现九宫格快选（`.grid9`）+ X/Y 数字输入，值即 `"x% y%"`。拖拽放置仍列为后续增强。
 
@@ -508,8 +508,8 @@ position = "50% 50%"
   字号/描边宽按 fontScale 缩）。`.cap` 水平 padding 44px → 0（行宽即盒宽，nowrap 溢出才对称）。
 
 **P3 验证记录**：`cargo check --workspace --all-targets` 0 错误；
-`cargo test -p vtrim-polish -p vtrim-render-core --lib` 162+22 全绿；
-`cargo test -p vtrim-server --lib` 132 全绿；模板 3 段内联 JS `node --check` 通过；vite build 通过。
+`cargo test -p yekitrim-polish -p yekitrim-render-core --lib` 162+22 全绿；
+`cargo test -p yekitrim-server --lib` 132 全绿；模板 3 段内联 JS `node --check` 通过；vite build 通过。
 
 ---
 
@@ -523,7 +523,7 @@ position = "50% 50%"
   字幕只做**限宽折行**（A5：`W*0.875` + 最多 3 行），不做"避开主画面"的位置重排。
 - 不做分辨率档位、不做自定义宽高（只给画布方向）。
 - 不改 fps（30）与编码器探测策略、不改 `concat`/`mux` 的 `-c copy`。
-- 不动 `vtrim-core` 切片管线与 `publish_config.json`。
+- 不动 `yekitrim-core` 切片管线与 `publish_config.json`。
 - 不做"竖素材下运镜放开"（若将来要，改判据一行，见 A3）。
 
 ---
@@ -548,7 +548,7 @@ position = "50% 50%"
 12. **折行在两条路径上的测量差异**：canvas 的 `lineWidth` 描边**占宽**、DOM 的 `-webkit-text-stroke` **不占宽**；
     另外 `.cap` 在模板里是 `absolute`（多条 active 字幕叠在同一处）、在 `PolishPreview.vue` 里是 `relative`（按流堆叠）。
     统一**以 canvas 侧语义为准**（A5 规格表）。
-13. **背景层是"两套渲染路径"的字段**（2026-09-20 踩过）：DOM 的 `#bg-video-wrap` 只服务预览/`vtrim polish preview`，
+13. **背景层是"两套渲染路径"的字段**（2026-09-20 踩过）：DOM 的 `#bg-video-wrap` 只服务预览/`yekitrim polish preview`，
     **出片（`?capture=1` + `__CAPTURE_CHUNK` → `renderFrame`）是纯 canvas**。
     只把 `stage.bg` 消费在 DOM 上，表现就是"预览里有模糊底、成片被 shake 挪开露纯黑"——
     这类错**不报错、不崩溃**，只有逐帧像素能发现。新增任何"底色/衬底"类字段都要问一句：
@@ -565,7 +565,7 @@ position = "50% 50%"
 
 ## 九、验证
 
-1. `cargo check` / `clippy`（0 新警告）+ `cargo test`（`vtrim-polish`、`vtrim-server`）。
+1. `cargo check` / `clippy`（0 新警告）+ `cargo test`（`yekitrim-polish`、`yekitrim-server`）。
 2. 新增单测：
    - `CanvasConfig::resolve()` 两个方向；
    - `[canvas]`/`[stage]`/`[sticker]` 缺键时 `Default`（= 现状行为）+ 非法值净化；
@@ -597,7 +597,7 @@ position = "50% 50%"
      **「`axis=fill` + 无 padding + 比例相同 → 必须精确等于整块画布」是存量零回归的判据**；
      外加「改回拉伸」「去掉 CTM 摆位」两处变异自证。`check-handheld.mjs` 钉竖素材
      `zoom=1 / handheld=0`（与 `engine.js::cameraAt` 同口径）。
-   - 像素实证：`VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`
+   - 像素实证：`VTEDIT_FIT_DIR=<竖素材工程> cargo test -p yekitrim-polish --test portrait_stage_fit -- --ignored --nocapture`
      —— 真模板 + **三段变异**（硬铺满 / `if(false)` 去运镜门 / `STAGE_BG='none'`），逐帧读白描边 bbox
      （= 内容框）、亮绿块 bbox 与占比、框外亮度与纯黑占比、逐帧占比稳定性。
    - 真出片 A/B（release 二进制，各 3 个探针工程）：**横素材×横画布 前后 SHA-256 完全相同**
@@ -624,13 +624,13 @@ position = "50% 50%"
 | 11 | 固定落点的交互（2026-09-20 用户要求） | **草稿态**：进「固定」= 进编辑态，点预览只写草稿，必须「保存落点」才落盘（「取消」丢弃；保存**成功**才退出编辑态）；切回「自动」丢草稿；与框选互斥；切片段清草稿。**不再是**常驻点选态、也不再只有数字输入 + 九宫格 |
 | 12 | 设计器素材左右黑边（2026-09-20 用户报告） | **不是 contain、不是出片几何问题**：`app.css` 的全局 `video { background:#000; border-radius:var(--r-sm) }` 穿透到 `.stage-video`，填满 contain 让出的留白并盖住 `.stage-bg`。修法 = `.stage-video` 显式 `background:transparent; border-radius:0`（**必需覆盖**，见 §B4），钉子 `check-cover-stage.mjs` |
 | 13 | 竖屏出片露黑边（2026-09-20 用户报告：震动等特效露出黑色） | 两个叠加成因：① `resolve_stage` 在 `axis=fill` 时**强制 `bg=none`**，把用户选的"模糊"吞掉 → 门控改为**画布方向**（`axis=="fill" && !portrait`），横画布铺满保持 `none`（零回归）；② 出片是 canvas `renderFrame` 逐帧绘制，**DOM 的 `#bg-video-wrap` 完全不参与导出**，`clearRect` 之后的透明区落进 JPEG 就是纯黑 → 在 `renderFrame` 里补 canvas 侧背景层（`black`/`color` 铺色；`blur` 用同一帧 bitmap 按 cover 铺满 + 模糊 + 放大 `blur_img_scale`），并断言它**画在视频层之前**。`bg_mode=auto` 语义不变；`bg=none` 保持"不画"（透明 = 黑，与改造前逐字节一致） |
-| 14 | 竖素材出片被拉伸 + 运镜没禁（2026-09-21 用户报告） | **同一类成因的第三次**（出片走 canvas、不读 DOM），两条修法：① 视频层摆位搬进 canvas 路径 —— 新增顶层 `stageDrawRect(bw,bh,cw,ch,st)` 求画面矩形，`axis/position/scale/padding` 逐值对齐 CSS（`scale` 绕内容框盒心、`padding` 只改布局盒不裁剪），经 CTM 送入矩形，`drawImage` 的 dst **保持 `(0,0,CW,CH)` 字面量**（既有顺序钉子与两处变异锚在它上面）；`axis=fill` + 无 padding + 比例相同 → 精确 `(0,0,CW,CH)` = 横屏存量零回归。② 运镜门提到 `getActiveCamera` 开头（`CFG.vertical` 整条返回 `zoom=1/handheld=0`），**判据是源视频竖、与画布方向无关**；`vtrim-render-core::evaluate_frame` 只归零 handheld（wgpu 路径，不在 Chrome 出片链路上），**不跟着改**。`contain` + 模糊关键帧当底的观感由 `bg_mode` 决定，本修法不动 `resolve_stage` |
+| 14 | 竖素材出片被拉伸 + 运镜没禁（2026-09-21 用户报告） | **同一类成因的第三次**（出片走 canvas、不读 DOM），两条修法：① 视频层摆位搬进 canvas 路径 —— 新增顶层 `stageDrawRect(bw,bh,cw,ch,st)` 求画面矩形，`axis/position/scale/padding` 逐值对齐 CSS（`scale` 绕内容框盒心、`padding` 只改布局盒不裁剪），经 CTM 送入矩形，`drawImage` 的 dst **保持 `(0,0,CW,CH)` 字面量**（既有顺序钉子与两处变异锚在它上面）；`axis=fill` + 无 padding + 比例相同 → 精确 `(0,0,CW,CH)` = 横屏存量零回归。② 运镜门提到 `getActiveCamera` 开头（`CFG.vertical` 整条返回 `zoom=1/handheld=0`），**判据是源视频竖、与画布方向无关**；`yekitrim-render-core::evaluate_frame` 只归零 handheld（wgpu 路径，不在 Chrome 出片链路上），**不跟着改**。`contain` + 模糊关键帧当底的观感由 `bg_mode` 决定，本修法不动 `resolve_stage` |
 
 **剩余开放项**（不阻塞 P0–P2，可实施中再定）
 - ~~`manual` 点在编辑器里的交互形态：先数字输入 + 九宫格快选，**拖拽放置列为后续增强**。~~
   → 2026-09-20 定稿为**预览点选 + 草稿态**（决策表 11）；数字输入仍保留，九宫格快选已删。
 - 竖素材下 `camera` 之外是否还有需要裁掉的个别特效：P2 目视确认后再定（当前按"一律通过"实现）。
-- 封面设计器剩余项：GPU 路径（`vtrim-render-core/src/timeline.rs`）**仍未接 `manual` 中心锚点**
+- 封面设计器剩余项：GPU 路径（`yekitrim-render-core/src/timeline.rs`）**仍未接 `manual` 中心锚点**
   （需改函数签名 + 重生成 wasm 胶水）；WebUI 里的素材留白问题已修（决策表 12）。
 
 ---
@@ -639,14 +639,14 @@ position = "50% 50%"
 
 | 文件 | 用途 |
 |---|---|
-| `crates/vtrim-polish/templates/index.html` | **Chrome 出片唯一真相**。`:26-35` 竖屏背景/位置 CSS、`:45-54` 图层绝对尺寸、`:352-353` `pctX/pctY`、`:447-463` `shake()/flash()`、`:583-593` 竖屏接线、`:707-734` `curZoom`+运镜、`:714,718` 竖屏禁运镜、**`:759-781` 贴纸 handler（`:773` clamp，`:776-780` 动画）**、`:793-896` 各特效 handler（作用对象见 §1.3）、**`:911-921` `VIS` 一刀切 + 贴纸强制覆盖（待删）**、`:1518-1531` canvas 尺寸、`:1541-1717` 逐帧绘制、**`:1635-1676` 字幕绘制（单行连排、无任何折行，A5 待改）**、`:1668-1676` `cap.yOffset`、`:618-629` 字幕样式注入、`:46-48` `#captions`/`.cap` CSS |
-| `crates/vtrim-polish/src/project/config.rs` | `ProjectFile`（`:5-64`）、`[cover] bg_mode/bg_color/blur_scale` 先例（`:303-321`）、`to_toml_commented`（`:413`）、`example`（`:630`） |
-| `crates/vtrim-polish/src/render/server.rs` | `build_html` 注入 cfg（`:235-300`）、竖屏检测（`:243-254`）、`save_config_handler` |
-| `crates/vtrim-server/src/api/polish.rs` | PUT 白名单（`:1260-1289`）、cover 背景白名单先例（`:616-627`）、落盘测试先例（`:1662-1713`）、竖屏注入（`:1007-1024`）、`render-frame`（`:1034`） |
-| `crates/vtrim-polish/src/render/context.rs` / `pipeline.rs` | `RenderContext`（`:9-43`）、ctx 构造（`:394-401`）、fps（`:88`）、ffmpeg 编码（`:415-432`） |
-| `crates/vtrim-polish/src/process/placement.rs` | 贴纸落点算法 + `FRAME_W/H`（`:28-29`）、`STICKER_SIZE`/`MARGIN`/`FLOAT_UP`/`GRID_STEP`（`:31-38`） |
-| `crates/vtrim-render-core/src/timeline.rs` | 竖屏贴纸覆盖/左右交替（`:488-565`，待删） |
-| `crates/vtrim-polish/src/cover.rs` + `templates/cover.html` | 封面尺寸（`__COVER_W__/__COVER_H__` 注入点、`cover.html:20,96`）—— **恒横版 1920×1080**（2026-09-20 起，不跟随画布方向；常量 `COVER_CAPTURE_W/H` 仍在） |
+| `crates/yekitrim-polish/templates/index.html` | **Chrome 出片唯一真相**。`:26-35` 竖屏背景/位置 CSS、`:45-54` 图层绝对尺寸、`:352-353` `pctX/pctY`、`:447-463` `shake()/flash()`、`:583-593` 竖屏接线、`:707-734` `curZoom`+运镜、`:714,718` 竖屏禁运镜、**`:759-781` 贴纸 handler（`:773` clamp，`:776-780` 动画）**、`:793-896` 各特效 handler（作用对象见 §1.3）、**`:911-921` `VIS` 一刀切 + 贴纸强制覆盖（待删）**、`:1518-1531` canvas 尺寸、`:1541-1717` 逐帧绘制、**`:1635-1676` 字幕绘制（单行连排、无任何折行，A5 待改）**、`:1668-1676` `cap.yOffset`、`:618-629` 字幕样式注入、`:46-48` `#captions`/`.cap` CSS |
+| `crates/yekitrim-polish/src/project/config.rs` | `ProjectFile`（`:5-64`）、`[cover] bg_mode/bg_color/blur_scale` 先例（`:303-321`）、`to_toml_commented`（`:413`）、`example`（`:630`） |
+| `crates/yekitrim-polish/src/render/server.rs` | `build_html` 注入 cfg（`:235-300`）、竖屏检测（`:243-254`）、`save_config_handler` |
+| `crates/yekitrim-server/src/api/polish.rs` | PUT 白名单（`:1260-1289`）、cover 背景白名单先例（`:616-627`）、落盘测试先例（`:1662-1713`）、竖屏注入（`:1007-1024`）、`render-frame`（`:1034`） |
+| `crates/yekitrim-polish/src/render/context.rs` / `pipeline.rs` | `RenderContext`（`:9-43`）、ctx 构造（`:394-401`）、fps（`:88`）、ffmpeg 编码（`:415-432`） |
+| `crates/yekitrim-polish/src/process/placement.rs` | 贴纸落点算法 + `FRAME_W/H`（`:28-29`）、`STICKER_SIZE`/`MARGIN`/`FLOAT_UP`/`GRID_STEP`（`:31-38`） |
+| `crates/yekitrim-render-core/src/timeline.rs` | 竖屏贴纸覆盖/左右交替（`:488-565`，待删） |
+| `crates/yekitrim-polish/src/cover.rs` + `templates/cover.html` | 封面尺寸（`__COVER_W__/__COVER_H__` 注入点、`cover.html:20,96`）—— **恒横版 1920×1080**（2026-09-20 起，不跟随画布方向；常量 `COVER_CAPTURE_W/H` 仍在） |
 | `webui/src/components/PolishPreview.vue` | 舞台比例（`:719-721`）、overlay-space（`:737`）、danmaku-layer（`:742`）、`captions`/`.cap`（`:744-746`，A5 折行同步点，注意这里是 `position:relative` 与模板不同）、`overlayScale`（`:653`）、竖屏 class（`:129`）、`bgRef`（`:4`） |
 | `webui/src/polish/engine.js` | 贴纸常量/clamp（`:140-148`）、弹幕 y（`:583-585`）、贴纸 pct→px（`:627-640`）、`subsAt` 只产出 `parts` 且**无折行**（`:522-549`，A5 要挂断行计算）、离屏测量先例（`:115-130`）、`VIS` 屏蔽分支（待删） |
 | `webui/src/views/PolishView.vue` | `.gen-block` 分组挂载点（`:121-197`，贴纸来源 `:156-176`）、导出弹窗与 `doRender`（`:261-273, 1020-1025`） |
@@ -670,7 +670,7 @@ position = "50% 50%"
 | 项 | 命令 | 结果 |
 |---|---|---|
 | 契约 + 变异自证 | `node webui/scripts/check-stage-backdrop.mjs` | 40 项全过；6 处变异（cover→contain、去 `none` 守卫、图层反序、模糊半径写死、去 save/restore、塞回裸 `fs`）**全部翻面** |
-| 真实像素 A/B | `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p vtrim-polish --test portrait_backdrop -- --ignored --nocapture` | 同帧同角、A/B 各 30 帧：**真模板最暗角 73.9**（模糊衬底）/ 变异体（`STAGE_BG` 变异常量成 `none`）**最暗角 0.0**；逐帧差最小 67.8、平均 72.2。探针工程每帧都带字幕 + 弹幕 + 一串瞬时特效（见下条 `fs` 崩溃） |
+| 真实像素 A/B | `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p yekitrim-polish --test portrait_backdrop -- --ignored --nocapture` | 同帧同角、A/B 各 30 帧：**真模板最暗角 73.9**（模糊衬底）/ 变异体（`STAGE_BG` 变异常量成 `none`）**最暗角 0.0**；逐帧差最小 67.8、平均 72.2。探针工程每帧都带字幕 + 弹幕 + 一串瞬时特效（见下条 `fs` 崩溃） |
 | 工程形态 | — | 画布 1080×1920（portrait）× 源 720×1280、`axis=x / position=center / bg=blur / 28px×1.187`（= 用户那个竖屏工程） |
 
 > 注：上表是**当轮**计数。脚本此后有扩充（③b 裸变量 / ③c 视频层摆位 + 更多变异），
@@ -681,8 +681,8 @@ runtime 上 —— 直接在 `await` 里同步跑会把 runtime 线程占死、s
 `The event waited for never came`。必须 `spawn_blocking`（生产路径同理，见 AGENTS.md 的
 "同步 IO 绝不能留在 async 线程上"）。
 
-⚠️ **改了 `templates/index.html` 必须重建二进制再重启 `vtrim server`**：模板经 `include_str!`
-进 `vtrim-polish`（`render/server.rs::INDEX_HTML`），运行中的服务端出的仍是旧页面。
+⚠️ **改了 `templates/index.html` 必须重建二进制再重启 `yekitrim server`**：模板经 `include_str!`
+进 `yekitrim-polish`（`render/server.rs::INDEX_HTML`），运行中的服务端出的仍是旧页面。
 本轮用户报"还是黑的"就属于这种情况（当时跑的是 13:04 的构建，模板 14:22 才加上的衬底消费点）。
 
 ### 出片崩溃：`fs is not defined`（2026-09-20 用户日志）
@@ -690,7 +690,7 @@ runtime 上 —— 直接在 `await` 里同步跑会把 runtime 线程占死、s
 用户贴出的失败日志：
 
 ```
-ERROR vtrim_cli::job: 任务失败: render 进程退出码: Some(1)
+ERROR yekitrim_cli::job: 任务失败: render 进程退出码: Some(1)
 Error: Chunk: Render error: fs is not defined   job=0000-150630 kind=polish_render
 ```
 
@@ -703,7 +703,7 @@ Error: Chunk: Render error: fs is not defined   job=0000-150630 kind=polish_rend
 **修法**：删掉那句（基准字号 / 缩放后的字号在 forEach 里设，就在量宽之前）；
 `ctx.textBaseline` / `lineJoin` / `cx` / `cy` 保持原位不动。
 钉子：`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段（`renderFrame` 里不许出现裸 `fs`
-+ 变异自证），以及像素探针 `crates/vtrim-polish/tests/portrait_backdrop.rs` ——
++ 变异自证），以及像素探针 `crates/yekitrim-polish/tests/portrait_backdrop.rs` ——
 它的探针工程现在**每一帧都有字幕**（含一条 30 字必折行的）+ 两条弹幕 + 一串瞬时特效，
 所以这一段 30 帧全部渲染成功本身就是逐帧绘制路径的冒烟测试。
 
@@ -735,7 +735,7 @@ Error: Chunk: Render error: fs is not defined   job=0000-150630 kind=polish_rend
 
 两条都**不报错、不崩溃**（与决策 13 的衬底同一类），只有逐帧像素能发现。
 
-**实现**（`crates/vtrim-polish/templates/index.html`，CRLF 保持；模板内仍不许出现子串 `portrait`）：
+**实现**（`crates/yekitrim-polish/templates/index.html`，CRLF 保持；模板内仍不许出现子串 `portrait`）：
 
 | 改动 | 内容 |
 |---|---|
@@ -757,8 +757,8 @@ release 二进制的 `before` / `after` 各跑一遍）：
 | 竖素材 × 竖画布 | 修复前 **52.6%**；修复后内容框铺满 1080×1920、绿块 **24.91%**（= 1.34² 等比） |
 | 字幕出片 | 成片在下半屏取字幕色像素：修复后 `t=1.5 / 4.5 / 7.0` = 25856 / 35925 / 33963（`t=0.2` 无字幕时 = 1）—— 折行 + 绘制没被摆位改动打破 |
 | 契约钉子 | `check-stage-backdrop.mjs` **73 项**（新增 ③c 段几何 + 「改回拉伸」「去掉 CTM 摆位」两处变异）/ `check-handheld.mjs` **63 项**（竖素材 `zoom` + `handheld` 归零 + 变异自证）/ `check-overlay` · `check-caption-wrap` · `check-sticker-anchor` 全过 |
-| Rust 钉子 | `project::config::template_stage_hooks_match_contract` 新增三条消费面 needle + 两条顺序断言（摆放矩形在衬底之后、`drawImage` 之前）；`cargo test -p vtrim-polish --lib` 179 全绿，`cargo check --workspace --all-targets` 0 warning |
-| 像素探针（新） | `VTEDIT_FIT_DIR=<竖素材工程> cargo test -p vtrim-polish --test portrait_stage_fit -- --ignored --nocapture`：真模板 18 帧全过（内容框 608×1080、纵横比 0.5630、绿块 7.87%、框外亮度 74.5 / 纯黑 0.00%），**三段变异全部翻面** —— 硬铺满 → 内容框 1920×1080 + 绿块 24.90%；`if(false)` 去运镜门 → 绿块 16.76%；`STAGE_BG='none'` → 框外纯黑 96.0% |
+| Rust 钉子 | `project::config::template_stage_hooks_match_contract` 新增三条消费面 needle + 两条顺序断言（摆放矩形在衬底之后、`drawImage` 之前）；`cargo test -p yekitrim-polish --lib` 179 全绿，`cargo check --workspace --all-targets` 0 warning |
+| 像素探针（新） | `VTEDIT_FIT_DIR=<竖素材工程> cargo test -p yekitrim-polish --test portrait_stage_fit -- --ignored --nocapture`：真模板 18 帧全过（内容框 608×1080、纵横比 0.5630、绿块 7.87%、框外亮度 74.5 / 纯黑 0.00%），**三段变异全部翻面** —— 硬铺满 → 内容框 1920×1080 + 绿块 24.90%；`if(false)` 去运镜门 → 绿块 16.76%；`STAGE_BG='none'` → 框外纯黑 96.0% |
 
 ⚠️ 「硬铺满」变异体在真模板的运镜门加持下会把画面整个推出画布（白描边不可见），所以判据写成
 「内容框变宽 **或** 白描边消失」+ 绿块 > 1.5× 期望 —— 这正是改造前那版二进制的实测形态
@@ -767,7 +767,7 @@ release 二进制的 `before` / `after` 各跑一遍）：
 
 #### 连带发现：既有的 `portrait_backdrop` 探针原来靠"被修掉的缺陷"在露底
 
-同一轮把决策 13 的像素探针 `crates/vtrim-polish/tests/portrait_backdrop.rs` 重跑，**发现它几乎哑了**：
+同一轮把决策 13 的像素探针 `crates/yekitrim-polish/tests/portrait_backdrop.rs` 重跑，**发现它几乎哑了**：
 30 帧里只剩 1 帧（`t=1.13s`）真让出衬底，其余帧四角都是主画面自己盖住的 —— A/B 比的是同一份像素，
 差值天然 ≈ 0，判据 `AB_DELTA_MIN_LUMA=40` 于是在 `t=1.00s`（差 36.7）报红。
 

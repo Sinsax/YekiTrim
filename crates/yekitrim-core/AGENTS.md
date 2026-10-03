@@ -27,7 +27,7 @@
 - `config::{load_config, load_config_at, load_global_config, load_llm_config, patch_config_file,
   write_project_config, save_transcript_path_in, normalize_project_paths_in}`；
   `config::types::Config` / `ProjectConfig::current_stage(&output_dir)`。
-- `path::{vtrim_home, sticker_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
+- `path::{yekitrim_home, sticker_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
   resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
 - `progress::ProgressReporter`（trait）+ `NoopProgress`；`filelock::{with_path_lock, lock_path,
   with_path_lock_sync}`；`tenant::{jail_join, jail_existing, ensure_within}`。
@@ -47,7 +47,7 @@
   并把 `video_info` / `audio_path` 写回 `PipelineContext`。改名或改路径会连带炸
   `status.rs` / `current_stage()` 的推导（见下表）。
 - **Stage 编号**：AudioExtractor(1) → Transcriber(2) → EventDetector(3) → Cutter(4)，连续无跳过。
-- `current_stage` 不再持久化到 `vtrim.toml`，改为从输出文件存在性自动推导
+- `current_stage` 不再持久化到 `yekitrim.toml`，改为从输出文件存在性自动推导
   （`config/types.rs::current_stage`）：
 
   | 文件存在 | 推导阶段 |
@@ -64,8 +64,8 @@
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
 - **字体库**：`yekitrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**。
   ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
-  默认 = `exe_dir()`，可用 `VTRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
-  这条路径**曾经**是"用户固定目录 `~/.vtrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
+  默认 = `exe_dir()`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
+  这条路径**曾经**是"用户固定目录 `~/.yekitrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
   代价是同一个库有两个可能的位置，实测 CLI 与 WebUI 各看一份、字体列表完全不同。
   现在读=写同一个目录，`fonts::ensure_dir` 只做 `create_dir_all`。`user_home()` 只剩一个
   用途：`fonts::legacy_user_dir_report`（**只报不删**，让用户知道旧目录还在、可以自己删）。

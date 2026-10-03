@@ -155,7 +155,7 @@ impl AuthService {
         Arc::clone(&self.db)
     }
 
-    /// 账号数据目录（启动日志与 `vtrim doctor` 用）。
+    /// 账号数据目录（启动日志与 `yekitrim doctor` 用）。
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
     }
@@ -435,7 +435,7 @@ impl AuthService {
     }
 }
 
-/// 是否信任反向代理转发的 `X-Forwarded-*` 头（`vtrim server --trust-proxy` 打开）。
+/// 是否信任反向代理转发的 `X-Forwarded-*` 头（`yekitrim server --trust-proxy` 打开）。
 ///
 /// **默认关，因为这两个头是客户端可以随意伪造的**：
 /// - 伪造 `X-Forwarded-Proto: https` 会让会话 cookie 被标成 `Secure`（于是反代后反而存不下 cookie）；
@@ -528,7 +528,7 @@ pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-/// 自助注册的用户名校验（`vtrim user add` 由管理员建号，不受此限）。
+/// 自助注册的用户名校验（`yekitrim user add` 由管理员建号，不受此限）。
 /// 只挡明显有问题的：空白/控制字符、过长。
 pub fn validate_username(username: &str) -> Result<()> {
     let n = username.chars().count();

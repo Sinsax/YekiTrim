@@ -46,7 +46,7 @@ stores/auth.js     { me, user, mustChangePassword, ready, loadMe(), login(u,p), 
 api/auth.js        login / logout / me
 views/LoginView.vue
 ```
-client.js：启用 CSRF 注入（读 `vtrim_csrf` cookie → `X-CSRF-Token`，仅写请求）与 401 分支（工作台方案 §5 已留位）。
+client.js：启用 CSRF 注入（读 `yekitrim_csrf` cookie → `X-CSRF-Token`，仅写请求）与 401 分支（工作台方案 §5 已留位）。
 
 ## 2. 项目作用域切换（M2）
 

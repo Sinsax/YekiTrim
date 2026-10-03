@@ -2,7 +2,7 @@
 
 > 对应计划：[sherpa-onnx-prebuilt-no-tts.md](sherpa-onnx-prebuilt-no-tts.md)（§10 任务清单已全部完成）
 > 产物仓库：<https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts>
-> 本文是给 V-Trim 侧的参考与操作指导。
+> 本文是给 YekiTrim 侧的参考与操作指导。
 
 ---
 
@@ -11,12 +11,12 @@
 > **状态更新（2026-09-18）**：本节描述的"切换"已落地，且用户已裁定以 **Apache-2.0** 发布
 > （原为 GPL-3.0-or-later）。实现方式见 §12，许可变更的逐项清单见 §9.5。
 
-上游官方预编译静态包**无条件链接 espeak-ng（GPL-3.0-or-later）**，而 V-Trim 只做 ASR、
+上游官方预编译静态包**无条件链接 espeak-ng（GPL-3.0-or-later）**，而 YekiTrim 只做 ASR、
 从不调用 TTS —— 这就是本项目**当时**必须以 GPL-3.0-or-later 发布的**唯一原因**
 （见 [THIRD-PARTY-NOTICES.md](../../THIRD-PARTY-NOTICES.md) 第一节）。
 
 替换用的 TTS-off 归档**已经构建、验证并发布**，文件名与官方**完全一致**，属于 drop-in
-顶替，`sherpa-onnx-sys` 一行代码都不用改。**切换之后，把 V-Trim 拉进 GPL 的那个动因消失。**
+顶替，`sherpa-onnx-sys` 一行代码都不用改。**切换之后，把 YekiTrim 拉进 GPL 的那个动因消失。**
 
 | | 官方归档 | 本项目归档 |
 |---|---|---|
@@ -127,7 +127,7 @@ cargo build --release
   ```
 
   这个报错很清晰、不会静默用错库。届时的处置：要么在
-  `crates/vtrim-core/Cargo.toml` 里显式钉 `sherpa-onnx-sys = "=1.13.3"`，
+  `crates/yekitrim-core/Cargo.toml` 里显式钉 `sherpa-onnx-sys = "=1.13.3"`，
   要么等本项目发布对应 sys 版本的归档。
 
 ---
@@ -137,7 +137,7 @@ cargo build --release
 ### 4.1 用现成扫描器扫产物
 
 本项目自带扫描器（`crates/xtask/`，经 `.cargo/config.toml` 的 cargo alias 调用），
-直接对 V-Trim 的产物跑 —— **不再需要任何脚本文件**：
+直接对 YekiTrim 的产物跑 —— **不再需要任何脚本文件**：
 
 ```bash
 cargo xtask scan                 # 默认扫 target/release
@@ -166,18 +166,18 @@ cargo xtask scan target/debug    # 指定目录
 
 ---
 
-## 五、许可影响（切换后 V-Trim 侧要改什么）
+## 五、许可影响（切换后 YekiTrim 侧要改什么）
 
 ### 5.1 动因消失
 
-espeak-ng 不再被链接后，**把 V-Trim 拉进 GPL-3.0-or-later 的那个组件就不存在了**。
+espeak-ng 不再被链接后，**把 YekiTrim 拉进 GPL-3.0-or-later 的那个组件就不存在了**。
 理论上可以把 `LICENSE` 与各 crate 的 `Cargo.toml` 换成宽松许可。
 
 ### 5.2 但有三件事必须先处理
 
 1. **已发布的 GPL 版本收不回来。** GPL 授予接收者的权利是永久、不可撤销的；旧版本对已获得
    它的人仍然有效。换许可只对**新版本**生效。
-   → **本项目不适用**：V-Trim 从未向第三方分发过二进制（`v0.1.0` 仅为内部测试版），
+   → **本项目不适用**：YekiTrim 从未向第三方分发过二进制（`v0.1.0` 仅为内部测试版），
    GPL 义务从未触发，所以本次是一次性彻底切换。
 2. **有外部贡献者的话需要全体版权人同意。** 纯自己作品则无此问题。
 3. **先做一次完整依赖审计，别只信手写的 THIRD-PARTY-NOTICES。** 跑
@@ -205,7 +205,7 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 1. **ONNX Runtime 的预编译包里没有许可文件**（只有 `include/` 和 `lib/`），它的 MIT 声明
    必须由分发方自行补上 —— 本项目 `THIRD-PARTY-NOTICES.md` 已转载，可直接引用。
 2. **Eigen 是这条链上唯一带「提供源码」义务的组件（MPL-2.0）**。要点是：这项义务的对象是
-   **Eigen 自己的源码**（公开可得，<https://gitlab.com/libeigen/eigen>），**不是 V-Trim 的源码**；
+   **Eigen 自己的源码**（公开可得，<https://gitlab.com/libeigen/eigen>），**不是 YekiTrim 的源码**；
    MPL-2.0 §3.3 也明确允许把它作为 Larger Work 以不同条款分发。**所以它不妨碍闭源分发**。
 
 > 以上是基于许可证原文与实测依赖清单的分析，不构成法律意见。
@@ -234,13 +234,13 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 ## 八、遗留
 
 - 本项目仓的 **CI 工作流**（`workflow_dispatch`）在计划里标为可选，**尚未实现**。
-  在实现之前，版本升级需要本机跑 `cargo build --release -p vtrim-cli --locked` →
+  在实现之前，版本升级需要本机跑 `cargo build --release -p yekitrim-cli --locked` →
   `cargo xtask package`（原 `scripts/build.ps1` / `scripts/publish.ps1` 写法见 §12）。
 - 上游升版本时的流程见本项目 README 第 6 节。
 
 ---
 
-## 九、V-Trim 侧执行记录（2026-09-18）
+## 九、YekiTrim 侧执行记录（2026-09-18）
 
 已按本文档完成切换。本节只记录**实际落盘的东西与实测数字**，供后续改文档/许可时直接引用。
 
@@ -273,7 +273,7 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 
 | 项 | 官方归档 | TTS-off 归档 |
 |---|---|---|
-| `vtrim.exe` 里 espeak-ng 特有标记 | `espeak-ng`=7, `espeak ng`=2, `espeak_`=51（合计 **60**） | **0** |
+| `yekitrim.exe` 里 espeak-ng 特有标记 | `espeak-ng`=7, `espeak ng`=2, `espeak_`=51（合计 **60**） | **0** |
 | 裸 `espeak` 命中 | 65 | **2** |
 | `espeak-ng.lib` / `piper_phonemize.lib` / `ucd.lib` | 823,674 / 800,124 / 243,106 B | **896 / 896 / 896 B（零符号占位）** |
 | `sherpa-onnx-core.lib` | 66,036,138 B | 51,009,458 B |
@@ -281,14 +281,14 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 | `onnxruntime.lib` | 816,663,584 B | 816,663,584 B（未变） |
 
 裸 `espeak` 那 2 处正是 §4.2 说的假阳性：都落在 `discreteSpeaker`（说话人分离标识符）里。
-⚠️ 注意指导举的例子是 `OfflineSpeaker`；在 V-Trim 这份二进制里实际残留的是
+⚠️ 注意指导举的例子是 `OfflineSpeaker`；在 YekiTrim 这份二进制里实际残留的是
 **`discreteSpeaker`** —— 同类问题、判据不变，但排查时别照着 `OfflineSpeaker` 去找。
 
 `scan-artifact.ps1` 默认排除 `build/` 与 `deps/`，这不是图省事：
 `target/release/build/sherpa-onnx-sys-*/build-script-build.exe` 里嵌着该 crate 自己的
 库名清单（`espeak-ng`、`piper_phonemize` 字面量各 1 处），但那是**源码字符串**、
 不是链接进来的代码；`deps/` 则是 proc-macro dylib 与二进制的一份副本。
-两者都不进发布包（`package-release.ps1` 只发 `target/release/vtrim.exe`），留在门禁里
+两者都不进发布包（`package-release.ps1` 只发 `target/release/yekitrim.exe`），留在门禁里
 只会制造噪声。要全量扫用 `-SkipDirectory @()`。
 
 ### 9.4 验证
@@ -296,9 +296,9 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 | 验证项 | 结果 |
 |---|---|
 | 归档 sha256 | 与 §2 记录一致（`94d733a9…e23b1f`，111,446,628 B） |
-| 删缓存后重建 | `cargo build --release -p vtrim-cli --locked` 成功，4m36s；缓存内三个占位库均为 896 B |
+| 删缓存后重建 | `cargo build --release -p yekitrim-cli --locked` 成功，4m36s；缓存内三个占位库均为 896 B |
 | 产物扫描（门禁） | 退出码 0，0 命中 |
-| 真实 ASR | `vtrim transcribe`（SenseVoice 单模型，30s 音频）退出码 0、2.3s，出 7 段带时间戳的中文 |
+| 真实 ASR | `yekitrim transcribe`（SenseVoice 单模型，30s 音频）退出码 0、2.3s，出 7 段带时间戳的中文 |
 | 打包 + 烟测 | `package-release.ps1 -SkipBuild -SmokeTest` 全绿：门禁 PASS → 打包 → `/api/health ok` 且 `/` 正常返回 WebUI → zip 14.3 MB |
 
 阳性对照也做了：切换**前**同一脚本对旧的（官方库）二进制报 `espeak-ng`=7 / `espeak ng`=2 /
@@ -320,16 +320,16 @@ websocketpp）、BSD-2-Clause（fastcluster）、Boost-1.0（Asio）、MPL-2.0�
 | `docs/deploy.md:129`、`AGENTS.md:1796` 与 `:1804-1805` | ✅ 已更新 |
 | `cargo deny check licenses` 依赖审计 | ✅ 等价完成：用 `cargo metadata --locked` 对全树 335 包逐条统计，结论见 `THIRD-PARTY-NOTICES.md` 第一节 |
 
-✅ **§5.2 的第 1、2 件事对本项目都不构成约束**：GPL 义务只在**分发**时触发，而 V-Trim 从未向
+✅ **§5.2 的第 1、2 件事对本项目都不构成约束**：GPL 义务只在**分发**时触发，而 YekiTrim 从未向
 第三方分发过二进制（`v0.1.0` 仅为内部测试版、未对外发布）；且 116 个 commit 全部单人作者、
 无外部贡献者。因此本次是**一次性彻底切换**，无需追溯、无需他人同意。
 （若将来重新许可，届时的外部贡献者才需要 CLA/DCO 前置——见 §9.5 讨论。）
 
-### 9.6 顺带发现：`AGENTS.md` 的 `vtrim.toml` 示例是错的
+### 9.6 顺带发现：`AGENTS.md` 的 `yekitrim.toml` 示例是错的
 
 `AGENTS.md` 把 `input_file` / `danmaku_file` / `audio_file` 等写成**顶层键**，但
 `Config.project` 没有 `#[serde(flatten)]`，真实布局是 **`[project]` 段**
-（`vtrim init` 生成的也是 `[project]`）。照 AGENTS.md 的示例手写会**静默丢配置**，
+（`yekitrim init` 生成的也是 `[project]`）。照 AGENTS.md 的示例手写会**静默丢配置**，
 现象是 `Error: 未初始化工程 input_file` —— 而错误信息完全不指向配置格式。
 这条留到"文档"那一步一起改。
 
@@ -439,7 +439,7 @@ git add .cargo scripts/build.ps1 scripts/fetch-sherpa-libs.ps1 scripts/scan-arti
 
 ### 11.1 本仓不构建 sherpa-onnx，也不含它的源码
 
-`crates/vtrim-core/Cargo.toml`：
+`crates/yekitrim-core/Cargo.toml`：
 
 ```toml
 sherpa-onnx = "1.13.3"      # crates.io 依赖
@@ -466,7 +466,7 @@ sherpa-onnx = "1.13.3"      # crates.io 依赖
 ```
 thread 'main' panicked at sherpa-onnx-sys-1.13.3\build.rs:40:9:
 SHERPA_ONNX_ARCHIVE_DIR does not contain expected archive:
-  F:\para\Code\V-Trim\.sherpa-libs\sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2
+  F:\para\Code\YekiTrim\.sherpa-libs\sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2
 ```
 
 **9 秒**失败、退出码 101、**没有发起任何官方归档下载**。这正是想要的行为：**宁可响亮失败，
@@ -554,13 +554,13 @@ GPL。这条由 `build.ps1` 的构建前预检兜住（§10.4）；**裸 `cargo 
 
 | 验证项 | 结果 |
 |---|---|
-| `cargo build --release -p vtrim-cli --locked` | **EXIT=0**，9m32s（含 106 MB 下载 + 全量重链） |
+| `cargo build --release -p yekitrim-cli --locked` | **EXIT=0**，9m32s（含 106 MB 下载 + 全量重链） |
 | 归档来源 | 缓存内 `…lib.tar.bz2` = **111,446,628 B**，sha256 `94d733a9…e23b1f` 与 §10.1 钉死值一致；**无 `.part` 残留** |
 | 为什么能断定是"下载"来的 | 构建前后 `SHERPA_ONNX_ARCHIVE_DIR` 与 `SHERPA_ONNX_LIB_DIR` **均为空**，项目 `.cargo/config.toml` **已无 `[env]`**，用户级 `~/.cargo/config.toml` **不存在**，`.sherpa-libs/` 当时仍在但已无人引用 → 缓存里那份归档只可能来自 fork 的下载 |
 | 解压出的占位库 | `espeak-ng.lib` = **896**、`piper_phonemize.lib` = **896**、`ucd.lib` = **896**；`sherpa-onnx-core.lib` = **51,009,458**（TTS-off 尺寸，非官方的 66,036,138）；`onnxruntime.lib` = **816,663,584** |
 | 产物门禁 `cargo xtask scan` | 1 个文件 / 33 MB，5 个标记全 0 → `PASS` |
 | 打包 `cargo xtask package --smoke-test` | 门禁 PASS → 组装 → 烟测（随机端口启 exe，`/api/health` + `/` 返回 WebUI）→ zip **14.3 MB**，sha256 `c63b2f8e…` |
-| 包内不含运行时状态 | `.vtrim/`、`stickers/`、`*.db`、`initial-admin-password.txt` **均不存在**（烟测生成的被 xtask 自动清掉） |
+| 包内不含运行时状态 | `.yekitrim/`、`stickers/`、`*.db`、`initial-admin-password.txt` **均不存在**（烟测生成的被 xtask 自动清掉） |
 
 **第一次尝试是失败的，值得记下来**：下载在 20 分钟里只爬到 **66.6 MB / 111.4 MB**，随后 **20 秒零增长**
 且**没有任何报错** —— 上游 ureq 没设任何超时，于是"卡住"表现为"构建永远不结束"。
@@ -577,7 +577,7 @@ GPL。这条由 `build.ps1` 的构建前预检兜住（§10.4）；**裸 `cargo 
 cargo 内建只负责 build，**打包（组装 `webui/dist` + zip + 烟测）它做不了**，所以这部分是独立
 Rust 二进制：`cargo xtask scan` / `cargo xtask package [--smoke-test] [--skip-build] [--version V] [--out-dir D]`，
 别名写在 `.cargo/config.toml` 的 `[alias]`。它等值复刻了被删掉的 `package-release.ps1`
-（含"只发 `target/release/vtrim.exe`"、"构建后门禁不可跳过"、"烟测后清 `.vtrim`/`stickers`"）。
+（含"只发 `target/release/yekitrim.exe`"、"构建后门禁不可跳过"、"烟测后清 `.yekitrim`/`stickers`"）。
 
 两个实现细节：
 

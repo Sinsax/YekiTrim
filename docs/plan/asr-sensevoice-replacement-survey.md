@@ -6,8 +6,8 @@
 
 ## 0. 先确定"替代"的判据
 
-SenseVoice 在 V-Trim 里**不是"转写器"**，是**打轴器**。它是 `CharTimeline` 的唯一数据源，
-而整条断句链路都建在这条**逐字时间轴**上（见 `crates/vtrim-core/src/asr/AGENTS.md`）。
+SenseVoice 在 YekiTrim 里**不是"转写器"**，是**打轴器**。它是 `CharTimeline` 的唯一数据源，
+而整条断句链路都建在这条**逐字时间轴**上（见 `crates/yekitrim-core/src/asr/AGENTS.md`）。
 所以替代品必须同时满足**五条硬约束**，缺一条就不是"替代"：
 
 | # | 硬约束 | 依据 |
@@ -31,7 +31,7 @@ FunASR 团队 2026-07 的官方选型指南【[来源](https://www.funasr.com/en
 > | CPU / edge / 要最快 | **SenseVoice** | 非自回归、极快、CPU 实时，多语言+情绪，CER **7.81%** |
 > | CPU + 纯中文 + 要时间戳/热词 | Paraformer | 最轻、**字符级时间戳**、热词，CER **10.18%** |
 
-注意 CER：**SenseVoice 7.81% 优于 Paraformer 10.18%**，而 Paraformer 唯一"赢"的地方（字符级时间戳+热词）**V-Trim 已经用 SenseVoice 拿到了**。
+注意 CER：**SenseVoice 7.81% 优于 Paraformer 10.18%**，而 Paraformer 唯一"赢"的地方（字符级时间戳+热词）**YekiTrim 已经用 SenseVoice 拿到了**。
 
 ## 2. 逐个候选的评估
 
@@ -103,7 +103,7 @@ FunASR 团队 2026-07 的官方选型指南【[来源](https://www.funasr.com/en
 1. **SenseVoice 保持不动。** CPU/中文/逐字时间戳这三个条件同时成立时，它**就是当前最优解**，
    连 FunASR 官方选型指南都这么写。**没有替换动机。**
 2. **如果目标是"更准"，不要换打轴模型 —— 换填词模型。**
-   V-Trim 的架构已经把这两件事分开了（hybrid = SenseVoice 打轴 + qwen3 填词）。
+   YekiTrim 的架构已经把这两件事分开了（hybrid = SenseVoice 打轴 + qwen3 填词）。
    要提升文本质量，动的是 qwen3 那一层（`local.rs::create_qwen3_recognizer`），
    打轴层不该动 —— 这正是现有设计的价值。
 3. **Paraformer 可作为可选兜底**（同一套 sherpa-onnx 入口，改 `MODEL_REGISTRY` 一行 + 一个模式分支）。
@@ -119,6 +119,6 @@ FunASR 团队 2026-07 的官方选型指南【[来源](https://www.funasr.com/en
 - Dolphin sherpa-onnx 预训练模型与真实输出示例（多字 token + 逐 token 时间戳）：<https://k2-fsa.github.io/sherpa/onnx/Dolphin/pretrained.html>
 - SenseVoice sherpa-onnx Python API（**逐字时间戳**示例：14 字 14 个时间戳）：<https://k2-fsa.github.io/sherpa/onnx/sense-voice/python-api.html>
 - sherpa-onnx 全部离线模型清单（含 Dolphin / FunASR Nano / Paraformer / FireRedAsr）：<https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/index.html>
-- 本项目打轴链路与踩坑：`crates/vtrim-core/src/asr/AGENTS.md`、`crates/vtrim-core/src/asr/align.rs`
+- 本项目打轴链路与踩坑：`crates/yekitrim-core/src/asr/AGENTS.md`、`crates/yekitrim-core/src/asr/align.rs`
 - 本项目 CPU 基线（184 分钟 → 83.7 s）：`docs/plan/vad-single-mode.md`
 - 同批 MOSS 调研：`docs/plan/asr-moss-transcribe-diarize-survey.md`

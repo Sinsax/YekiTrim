@@ -10,7 +10,7 @@
 | 项 | 决定 |
 |---|---|
 | 默认下载器 | **yt-dlp**（sidecar 单文件 exe，sha256 钉死） |
-| 弹幕（本项目最关键） | **不由下载器产出**，V-Trim 自己按 `cid` 拉 `comment.bilibili.com/{cid}.xml` |
+| 弹幕（本项目最关键） | **不由下载器产出**，YekiTrim 自己按 `cid` 拉 `comment.bilibili.com/{cid}.xml` |
 | BBDown | 降级为 `downloader = "<绝对路径>"` 的可选逃生舱，**不随 release 分发** |
 | 元数据 / resolve 卡 | 自研，数据源 = `yt-dlp -J`（不手写 WBI 签名） |
 
@@ -53,7 +53,7 @@ pushed_at:       2026-05-14
 
 - **lux**（31.7k stars，看着最体面）：B站支持是本项目最弱的一环 —— **拿不到弹幕**，也拿不到大会员清晰度。
   stars 高不代表能用，它是"多站点通用"的宽度路线。
-- **downkyi / Bili23-Downloader**：都是 **GUI 优先**（WPF / PySide6）。V-Trim 是 `vtrim server` 无人值守场景，
+- **downkyi / Bili23-Downloader**：都是 **GUI 优先**（WPF / PySide6）。YekiTrim 是 `yekitrim server` 无人值守场景，
   需要的是稳定 CLI 契约与可解析错误，不是窗口。Bili23 是这条赛道里唯一还在日更的（2026-09-18），
   留作"某个视频 yt-dlp 失败"时的第二引擎候选，但 GPL-3.0 的分发义务比 Unlicense 麻烦。
 - **bilix**：2024-09 之后零推送，B站风控一变即失效。
@@ -86,7 +86,7 @@ subtitles = {
 
 即 **yt-dlp 把弹幕当成一个字幕轨道**，语言键 `danmaku`，扩展名 `xml`，直连 B站官方 XML 接口。
 
-再看本项目 `crates/vtrim-core/src/danmaku/mod.rs`（`parse_bililive_xml` 的文档注释）：
+再看本项目 `crates/yekitrim-core/src/danmaku/mod.rs`（`parse_bililive_xml` 的文档注释）：
 
 ```
 /// 结构：`<i><d p="时间,模式,字号,颜色,时间戳,弹幕池,用户,行号">文本</d>…</i>`
@@ -104,7 +104,7 @@ subtitles = {
 社区实测反馈：`--sub-langs danmaku --write-subs` 在**部分视频上日志显示匹配了 danmaku 却不写文件**
 （字幕轨存在但下载器静默跳过）。所以别把弹幕绑在 yt-dlp 的写文件行为上：
 
-**推荐做法**：用 `yt-dlp -J` 拿到 `cid`，然后 V-Trim 用已有的 `reqwest` 自己 GET
+**推荐做法**：用 `yt-dlp -J` 拿到 `cid`，然后 YekiTrim 用已有的 `reqwest` 自己 GET
 `https://comment.bilibili.com/{cid}.xml` 落成 `<项目>/danmaku.xml`。
 
 好处：确定性高（纯 GET、无签名、无风控头）、不依赖 yt-dlp 的字幕写出、不给进程加 GPL 插件依赖
@@ -120,7 +120,7 @@ SHA2-256SUMS        ← 官方哈希清单，可直接钉 sha256
 yt-dlp_linux / yt-dlp_macos / yt-dlp_arm64.exe …
 ```
 
-与 `vtrim-core/src/download.rs` 的 `MODEL_REGISTRY`（模型归档 + marker 判定）是同一个套路，
+与 `yekitrim-core/src/download.rs` 的 `MODEL_REGISTRY`（模型归档 + marker 判定）是同一个套路，
 `release/*.zip.sha256.txt` 也已经有了 —— **照抄即可，不必新发明机制**。
 
 **不要**从第三方镜像站（gitcode / 各类"软件站"）取 BBDown 之类的二进制：主仓已归档，
@@ -141,7 +141,7 @@ B站 URL
   │
   └─ 弹幕  ← 不经过下载器
         └── GET https://comment.bilibili.com/{cid}.xml
-              └── 写入 <项目>/danmaku.xml + vtrim.toml 的 danmaku_file
+              └── 写入 <项目>/danmaku.xml + yekitrim.toml 的 danmaku_file
                     └── parse_bililive_xml（现有，零改动）
 ```
 
@@ -190,12 +190,12 @@ B站标题里的 `/ \ : * ? " < >` 会被 yt-dlp 消毒，中文与 emoji 也可
 
 ### 4.5 工具发现与安装
 
-照 `vtrim-server/src/api/mod.rs` 里的 `chrome_available_blocking` 现成模式：
+照 `yekitrim-server/src/api/mod.rs` 里的 `chrome_available_blocking` 现成模式：
 配置路径优先 → 候选列表探测 → 30s 缓存。
 
 - 探测命令：`yt-dlp --version`（注意：**不是** `-version`，`command_available_blocking` 现在写死了 `-version`，通用化时要参数化）
-- 安装位置：`<程序目录>/.vtrim/bin/yt-dlp.exe`
-- 版本 + sha256 写死在注册表里（照 `MODEL_REGISTRY`），`vtrim doctor` 的 `downloader` 就绪位顺带报出来
+- 安装位置：`<程序目录>/.yekitrim/bin/yt-dlp.exe`
+- 版本 + sha256 写死在注册表里（照 `MODEL_REGISTRY`），`yekitrim doctor` 的 `downloader` 就绪位顺带报出来
 - `/api/health` 只回就绪位，不回路径（§5.3 已定）
 
 ### 4.6 许可与合规
@@ -252,7 +252,7 @@ B站标题里的 `/ \ : * ? " < >` 会被 yt-dlp 消毒，中文与 emoji 也可
 
 ## 7. 落地清单（按依赖顺序）
 
-1. `vtrim-service/src/downloader/`（新）：`DownloaderKind` + `resolve()` / `download()` trait
+1. `yekitrim-service/src/downloader/`（新）：`DownloaderKind` + `resolve()` / `download()` trait
 2. `yt-dlp` 注册表 + sha256 钉死 + `ensure_ytdlp()`（照 `download.rs::ensure_one_model`）
 3. 弹幕抓取：`cid` → `comment.bilibili.com/{cid}.xml` → `<项目>/danmaku.xml`
 4. `POST /api/ingest/resolve`（薄壳）+ 错误分类枚举
@@ -283,12 +283,12 @@ B站标题里的 `/ \ : * ? " < >` 会被 yt-dlp 消毒，中文与 emoji 也可
 
 | # | 阶段 | 动作 | 落点（复用 / 新增） |
 |---|---|---|---|
-| 0 | 工具发现 | 配置路径 → `<程序目录>/.vtrim/bin/yt-dlp.exe` → PATH，30s 缓存 | **复用** `api::probe_cache` / `probe_mode`；⚠️ `command_available_blocking` 写死了 `-version`，yt-dlp 要 `--version`，**必须参数化** |
+| 0 | 工具发现 | 配置路径 → `<程序目录>/.yekitrim/bin/yt-dlp.exe` → PATH，30s 缓存 | **复用** `api::probe_cache` / `probe_mode`；⚠️ `command_available_blocking` 写死了 `-version`，yt-dlp 要 `--version`，**必须参数化** |
 | 1 | resolve | `yt-dlp -J --skip-download --no-warnings <url>` → 标题/UP主/时长/封面/分P `entries[].cid` | **新增** `POST /api/ingest/resolve`（薄壳，无状态、不落库） |
 | 2 | 排队 | 建会话（`state=downloading`）+ 配额/水位预检 | **复用** `ingest_worker::check_capacity`；**新增** 会话的 `kind` 判别（见 §8.4） |
-| 3 | 下载 | `yt-dlp -f "bv*[height<=N]+ba/b" --cookies --merge-output-format mp4 --limit-rate --print after_move:filepath -o <项目>/source.%(ext)s` | **新增** `vtrim-service/src/downloader/`；目录用 **复用** `projects::new_project_dir` |
+| 3 | 下载 | `yt-dlp -f "bv*[height<=N]+ba/b" --cookies --merge-output-format mp4 --limit-rate --print after_move:filepath -o <项目>/source.%(ext)s` | **新增** `yekitrim-service/src/downloader/`；目录用 **复用** `projects::new_project_dir` |
 | 4 | 弹幕 | `cid` → GET `comment.bilibili.com/{cid}.xml` → `<项目>/danmaku.xml` | **新增**（纯 reqwest，十来行） |
-| 5 | 建项目 | 写 `vtrim.toml` + 登记项目 + 计量 + 起管线 | **复用** `write_project_config` / `db.create_project` / `projects::refresh_bytes` / `ingest_worker::spawn_pipeline` |
+| 5 | 建项目 | 写 `yekitrim.toml` + 登记项目 + 计量 + 起管线 | **复用** `write_project_config` / `db.create_project` / `projects::refresh_bytes` / `ingest_worker::spawn_pipeline` |
 
 进度上报：读 yt-dlp **stderr** 的 `[download] 12.3% of …`，转发到已有的 `/api/stream`（SSE）。
 
@@ -312,7 +312,7 @@ B站标题里的 `/ \ : * ? " < >` 会被 yt-dlp 消毒，中文与 emoji 也可
    建议：加一列 `kind TEXT NOT NULL DEFAULT 'recorder'`（`recorder` | `bilibili`），复用整张表 ——
    重试（`/api/ingest/retry`）、记录页（`/api/ingest/records`）、容量预检、SSE 全挂在它上面，新建表等于把这些再抄一遍。
 2. **`assets::preload_policy("bilibili")` 现在是 `Subtitle`，要改成 `Danmaku`。**
-   见 `crates/vtrim-service/src/assets.rs:386` 与本文档 §5 的警告：不改的话 B站项目会稳定丢掉 popularity 排序。
+   见 `crates/yekitrim-service/src/assets.rs:386` 与本文档 §5 的警告：不改的话 B站项目会稳定丢掉 popularity 排序。
 3. **分P 展开策略**（本文档 §6.5）：设计稿定"每个 P 一个项目"，会成倍放大磁盘占用，与 P5（容量）冲突。
    倾向改为"resolve 预览里让用户勾选要哪几 P"，而不是无条件全展开。
 

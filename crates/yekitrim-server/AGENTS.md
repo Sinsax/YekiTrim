@@ -4,12 +4,12 @@
 
 ## 职责
 
-`vtrim server` 的落点：axum HTTP API（`/api/*`）+ WebUI 宿主（只服务 `webui/dist`）+ 任务队列，并经 SSE 推送任务日志与
+`yekitrim server` 的落点：axum HTTP API（`/api/*`）+ WebUI 宿主（只服务 `webui/dist`）+ 任务队列，并经 SSE 推送任务日志与
 进度。领域逻辑一律取自 `yekitrim-service`；本 crate 只做 HTTP 装配、任务调度与文件系统边界，handler 全在 `src/api/`。
 
 ## 入口
 
-- `src/lib.rs`：`pub async fn run(args: ServerArgs)` —— 唯一启动入口（`vtrim server` 与 `polish preview` 回退都走它）；
+- `src/lib.rs`：`pub async fn run(args: ServerArgs)` —— 唯一启动入口（`yekitrim server` 与 `polish preview` 回退都走它）；
   `ServerArgs { host, port, open, config, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService` / `JobManager` / 日志总线）。
@@ -28,7 +28,7 @@
   那份全局状态于是成了一条**没人查的旁路**（删它时全仓只剩两个消费者，且都已改掉）：
   ① 过渡期 `/api/media/<绝对路径>` —— **已删**，媒体路径现在**必须**带项目 id；
   ② `/api/project/list` 回显的 `workspace_root` —— **已删**（那个接口自己就标着 deprecated）。
-  **要工程就接一个 `Scope`**；要"项目无关"的值就直接读 `path::vtrim_home()` /
+  **要工程就接一个 `Scope`**；要"项目无关"的值就直接读 `path::yekitrim_home()` /
   `load_global_config()`。`server.toml` 里**只留记忆**（`last_config_file`，供启动恢复上次工程），
   **不再留状态** —— 记忆允许过期，状态不允许。
   ⚠️ 同一次还把 `/api/config` 与 `/api/project-data/config` 拆开：前者是**纯程序配置**
@@ -37,7 +37,7 @@
   两者曾共用一份实现，于是项目相关字段被挂在项目无关的接口上。
 - ⚠️ **`wgpu-render` feature 已整条删除**：`api/` ×3 与 `model.rs` ×5 那些 `#[cfg(feature = "wgpu-render")]`
   分支（单帧真渲染预览 `POST /api/polish/render-frame`、常驻后端槽、`/api/health` 的 `wgpu_render` 能力位）
-  连同 `yekitrim-polish/wgpu-render`、`yekitrim-render-core/wgpu`、`vtrim-wasm` 一起没了 ——
+  连同 `yekitrim-polish/wgpu-render`、`yekitrim-render-core/wgpu`、`yekitrim-wasm` 一起没了 ——
   GPU 那侧交给独立的 Dhampir 底座。所以本 crate **没有任何 feature**。
   **别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
 - ⚠️ `webui/dist` 的**候选次序是契约**（`src/web.rs::candidates`，2026-10-02 改）：
@@ -98,8 +98,8 @@
 - ⚠️ 相关的两个既有约定也别松：`every /api/media` 走 `jail_existing`；`is_safe_component`
   挡路径拼接（删除片段/贴纸文件名）。
 - 任务带 `owner_id`：`/api/jobs*`、cancel、`/api/stream` 全部按归属过滤，他人任务 404。
-- ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`vtrim.toml`、媒体、`output/` 产物全留着，重新导入同一目录即可再绑
-  （`create_local_project` 见到已有 `vtrim.toml` **只登记、不覆盖**），新登记拿**新 id**。两个入口共用
+- ⚠️ **「移除项目」不碰任何文件**（用户拍板）：`yekitrim.toml`、媒体、`output/` 产物全留着，重新导入同一目录即可再绑
+  （`create_local_project` 见到已有 `yekitrim.toml` **只登记、不覆盖**），新登记拿**新 id**。两个入口共用
   `api::unregister_project`（`DELETE /api/projects/:id` 与过渡别名 `POST /project/delete`）。
 - ⚠️ **`persist::forget_project` 必须同时清 `last_config_file`**，少了这一步"移除"会被静默撤销：`lib.rs` 每次启动
   都把"当前工程"写回 `server.toml` 的 `projects[]`，而 `import_legacy_projects` 会把 `projects[]` 里**"配置文件还在、

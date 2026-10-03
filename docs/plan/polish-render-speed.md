@@ -1,8 +1,8 @@
 # 精修出片的速度：现状实测 + 可选加速路线（技术探索）
 
 > 日期：2026-09-20 · 状态：**探索，不改代码**（结论可直接作为下一轮实施依据）
-> 数据来源：本机 `target/debug/.vtrim/cloud/logs/render-*.log`（2026-09-15 ~ 09-20，**全部是 debug 构建**）
-> + 代码走查（`render/pipeline.rs` / `render/chrome.rs` / `templates/index.html` / `render/native/*` / `vtrim-render-core`）
+> 数据来源：本机 `target/debug/.yekitrim/cloud/logs/render-*.log`（2026-09-15 ~ 09-20，**全部是 debug 构建**）
+> + 代码走查（`render/pipeline.rs` / `render/chrome.rs` / `templates/index.html` / `render/native/*` / `yekitrim-render-core`）
 > 机器：RTX 4070（NVENC）/ 16 逻辑核 / 素材在网络盘（RaiDrive-WebDAV）
 
 **结论先行**
@@ -108,7 +108,7 @@
 
 （竖屏那次偏心：22.9 + 45.8 + 10.7 里页面占 58%，因为衬底模糊把 ② 抬到了 45.8ms —— 见 §1.3。）
 
-这也解释了为什么单纯优化 Rust 侧没用：微基准（`cargo test -p vtrim-polish --test render_bench
+这也解释了为什么单纯优化 Rust 侧没用：微基准（`cargo test -p yekitrim-polish --test render_bench
 -- --ignored plumbing`）实测 **debug 下 base64+serde 只有 9.5 ms/帧**（300 帧 × 200KB：发送 4.1 + 接收 5.4），
 剩下那 30~40ms 在 **CDP/WebSocket 传输 + V8 解析 13MB 表达式 + 每块几百 MB 的 JS 字符串分配/GC** 上。
 外部调研独立得到同一个结论（`docs/plan/export-pipeline-web-survey.md`：26ms 是画布、其余是 round trip）。
@@ -175,12 +175,12 @@ JPEG ②（q0.6）还直接决定了成片的画质上限——现在**没有**�
 **排序即优先级**：A0/A1/A2 是「不换引擎就能拿到 2.5~4×」的一组，B/D 是保 Chrome 的第二波，C 是质变但要付对拍成本。
 
 方案 C 的现有基础（决定了它的工作量比想象中小）：
-- `vtrim-render-core/src/timeline.rs`（53KB）**已经把 JS 的时间轴数学整段搬过来了**（相机/震动/手持/弹幕/字幕/贴纸/overlay）；
+- `yekitrim-render-core/src/timeline.rs`（53KB）**已经把 JS 的时间轴数学整段搬过来了**（相机/震动/手持/弹幕/字幕/贴纸/overlay）；
 - `composite.rs` 用 **swash** 做 CJK 文字整形 + 描边光栅化（`render_text_rgba`），`sprite.rs` 有纹理缓存（同一段文字只光栅化一次）；
 - `effects.rs` / `shaders.rs` 是 blur / color_shift 等效果 shader；`render.rs` 是 source pass；
 - `native/mod.rs` 已能整块渲染并给 `eval_ms` / `read_ms` 分相计时（`wgpu chunk progress: ... eval=Xms read=Yms`）；
 - WebUI 的「真渲染」按钮走的就是服务端 `/api/polish/render-frame` → `WgpuBackend`（`PolishPreview.vue`），
-  另有把同一套 `vtrim-render-core` 编到 wasm 的浏览器预览路径 —— **这条路不是从零开始，也不是没人用**。
+  另有把同一套 `yekitrim-render-core` 编到 wasm 的浏览器预览路径 —— **这条路不是从零开始，也不是没人用**。
 
 它现在的两处明显低效（也正好是最好下手的点）：
 1. `extract_chunk_frames(need_rgba=true)` 用 `image` crate 在 **CPU** 上解 JPEG → 再上传 GPU（应该直接 `-f rawvideo` 让 ffmpeg 出 RGBA，省掉 JPEG 编解码）；
@@ -203,7 +203,7 @@ JPEG ②（q0.6）还直接决定了成片的画质上限——现在**没有**�
    判定：聚合 fps 是否近似线性上升；**RTX 4070 只有 1 个 NVENC 引擎**，SDK 13.0 应用笔记写的
    消费级上限是 **8 路并发会话**（NVIDIA 支持矩阵那份写 12，两个来源不一致）——所以 8 块正好卡在边上，
    要看有没有会话超限报错；编码本身余量巨大（Ada 1080p H.264 P5 CBR 单引擎 **291 fps**）。
-3. 新基准跑一版留档：`cargo test -p vtrim-polish --test render_bench -- --ignored --nocapture`
+3. 新基准跑一版留档：`cargo test -p yekitrim-polish --test render_bench -- --ignored --nocapture`
    （只跑渲染、不写 mp4，输出「抽帧 / 渲染 / ms每帧 / 有效 fps」）。
    `VTEDIT_RENDERER=wgpu` + `--features wgpu-render` 再跑一版**只看耗时**（画面暂不对齐），
    拿 `eval=` / `read=` 分相数字 —— 这决定 C 的天花板。
@@ -228,7 +228,7 @@ JPEG ②（q0.6）还直接决定了成片的画质上限——现在**没有**�
   `manual` 贴纸锚点；
 - 输入改 raw RGBA（别在 CPU 解 JPEG）、输出改 rawvideo→NVENC（别把 GPU 读回的 RGBA 又编成 JPEG）；
 - **必配护栏**：逐帧 golden diff（同工程同时刻，Chrome 与 native 各出一帧逐像素比）——
-  `crates/vtrim-polish/tests/portrait_backdrop.rs` 已经是这个模式（同帧 A/B + 断言），扩成全画面即可。
+  `crates/yekitrim-polish/tests/portrait_backdrop.rs` 已经是这个模式（同帧 A/B + 断言），扩成全画面即可。
   没有它，native 路径一定会重演「预览 ≠ 成片」。
 
 **P4 · 可选**：原生渲染常驻 worker 进程池（复用 wgpu device，省掉每块一次的初始化）。

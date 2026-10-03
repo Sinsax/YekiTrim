@@ -2,7 +2,7 @@
 
 > **状态：纯调研，未改任何代码。** 结论先行，证据在后。
 > 调研对象：<https://github.com/OpenMOSS/MOSS-Transcribe-Diarize>
-> 日期：2026-07 ｜ 对照基线：本项目当前 `vtrim-core/src/asr`（sherpa-onnx，CPU only）
+> 日期：2026-07 ｜ 对照基线：本项目当前 `yekitrim-core/src/asr`（sherpa-onnx，CPU only）
 > 姊妹篇（SenseVoice 可替代性）：`asr-sensevoice-replacement-survey.md`
 
 ## 一句话结论
@@ -77,7 +77,7 @@ RTF **随长度单调上升**（解码是自回归的，上下文随音频变长
 
 ### 2.3 与本项目架构的三处正面冲突
 
-1. **多租户 server**：`vtrim-server` 是任务队列 + 多用户。MOSS 单请求要吃掉一个核群几十分钟，
+1. **多租户 server**：`yekitrim-server` 是任务队列 + 多用户。MOSS 单请求要吃掉一个核群几十分钟，
    而当前 sherpa-onnx 是 CPU/4 路并行（`asr/local.rs` 的 `num_workers`，上限 4）+ 每 chunk intra-op 2 线程。
    一个 MOSS 请求会把整个 CPU 池占死，**队列里其他人的任务全部饿死**。
 2. **GPU 也不是解药**：官方 GPU 数据（Blackwell）132 s → ~46 s（RTF 0.35），**只比 CPU 快一倍多**，
@@ -90,7 +90,7 @@ RTF **随长度单调上升**（解码是自回归的，上下文随音频变长
 ## 3. 但它有一个真本事：Diarization（说话人分离）
 
 这是 MOSS 唯一对本项目有**结构性**价值的地方。
-V-Trim 现在**完全没有说话人概念** —— `TranscriptSegment` 只有 `start`/`end`/`text`。
+YekiTrim 现在**完全没有说话人概念** —— `TranscriptSegment` 只有 `start`/`end`/`text`。
 多人联动（几个主播 / 连麦 / 嘉宾）的录播，现在只能切成一堆无主的字幕，
 **事件检测和字幕排版都拿不到"谁在说"**。
 
@@ -114,7 +114,7 @@ V-Trim 现在**完全没有说话人概念** —— `TranscriptSegment` 只有 `
 - 两个额外 ONNX 模型的体积/下载链路（接进 `download.rs` 的 `MODEL_REGISTRY`）；
 - 额外的推理耗时（segmentation + 声纹嵌入，**非自回归，代价与音频长度线性**，和 MOSS 完全不是一个量级）；
 - `TranscriptSegment` 加 `speaker: Option<String>` 字段（**要动 `types.rs`，属于跨模块改动**）；
-- 下游消费方：字幕排版（`vtrim-polish`）、事件检测 prompt（`vtrim-core/src/detection`）是否要用 `[S01]`。
+- 下游消费方：字幕排版（`yekitrim-polish`）、事件检测 prompt（`yekitrim-core/src/detection`）是否要用 `[S01]`。
 
 ### 3.2 顺带一提：声学事件（acoustic event）
 
@@ -149,22 +149,22 @@ MOSS 是自回归生成时间戳，**理论上不会有 CTC 那种幽灵戳**，
 做完代码面清点后发现三处**现存**结构问题。它们今天不出事只是因为**恰好只有两个模式**，
 一旦加第三个后端（不论是不是 MOSS）就会变成真 bug：
 
-1. **Hybrid 是 `else` 兜底分支**（`crates/vtrim-core/src/asr/mod.rs:149`）：
+1. **Hybrid 是 `else` 兜底分支**（`crates/yekitrim-core/src/asr/mod.rs:149`）：
    `mode` 是**自由字符串、没有任何校验**（`config/types.rs:530`，默认 `"hybrid"`），
    而分派是 `if mode == "single" { … } else { …qwen3 hybrid… }`。
    **拼错或新增的第三个模式会静默跑 qwen3 hybrid 路径**，不报错、不提示 ——
    用户以为在用新后端，实际跑的是旧链路。
 2. **`ASR_MODES` 是定长 `[&str; 2]`**（`config/types.rs:82`，注释自己写着"加模式要同步改这里"），
-   它驱动 `vtrim-service/src/assets.rs:276-291` 的**素材槽位**计算
+   它驱动 `yekitrim-service/src/assets.rs:276-291` 的**素材槽位**计算
    （用户口径的"输出一次绑定一次、只能两次"里的那个 2）。
    加模式必须同步改长度，否则第三个模式的产物**绑不上槽**。
-3. **`mode_slug` 在两处重复实现**（`asr/mod.rs:401-413` 与 `vtrim-service/src/assets.rs:356-368`
+3. **`mode_slug` 在两处重复实现**（`asr/mod.rs:401-413` 与 `yekitrim-service/src/assets.rs:356-368`
    的 `asr_artifact_name`），后者注释明确要求两者保持一致 —— 改一处忘另一处，
    产物文件名对不上，就是"槽明明占了却看不见"。
 
 另外几处静默兜底（`asr/local.rs:112-115` 的 `find_model`、
 `download.rs:287-298` 对未知 `[asr] model` **静默替换成 sensevoice**、
-`vtrim-server/src/api/config.rs:37-38` 的第三个按模型名 `match`、未知模型显示成"879 MB / 最准最慢"）
+`yekitrim-server/src/api/config.rs:37-38` 的第三个按模型名 `match`、未知模型显示成"879 MB / 最准最慢"）
 都指向同一个结论：**新增 ASR 后端在这个仓库不是加一个分支，而是横跨
 core / service / server / webui 四层的 39 处改动**（清单见附录 A）。
 
@@ -194,7 +194,7 @@ core / service / server / webui 四层的 39 处改动**（清单见附录 A）�
 - ONNX INT8 版（CPU，第三方导出，Apache-2.0）：<https://huggingface.co/soniqo/MOSS-Transcribe-Diarize-0.9B-ONNX-INT8-ENC>
 - sherpa-onnx 自带离线说话人分离（替代路线）：<https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/index.html>
 - 本项目当前 RTF 基线：`docs/plan/vad-single-mode.md`（184 分钟 → 83.7 s）
-- 本项目 ASR 现状与踩坑：`crates/vtrim-core/src/asr/AGENTS.md`
+- 本项目 ASR 现状与踩坑：`crates/yekitrim-core/src/asr/AGENTS.md`
 
 ## 附录 A：新增第三个 ASR 后端的改动清单（代码面清点结果）
 
@@ -205,7 +205,7 @@ core / service / server / webui 四层的 39 处改动**（清单见附录 A）�
   `:649`（手动 `Default` impl）、`:78-82`（`ASR_MODES` 定长数组）、`:96`（文档）
 - `config/mod.rs:521-522`（merge 条件）+ `GLOBAL_CONFIG_TOML` 模板
 
-**B. Stage 2 分派**（`crates/vtrim-core/src/asr/mod.rs`，813 行）
+**B. Stage 2 分派**（`crates/yekitrim-core/src/asr/mod.rs`，813 行）
 - `:131`（`mode` 局部量）、`:149`（`if single … else hybrid` 兜底）
 - `:142-147`（**两个模式共用**的无条件 SenseVoice 打轴 + `ensure_ready`；无 SenseVoice 的后端要绕开它）
 - `:325-332` / `local.rs:412-419`（`AsrMetadata` 硬编码 model/mode）、`:364-368`（`language: "zh"` 硬编码）
@@ -217,9 +217,9 @@ core / service / server / webui 四层的 39 处改动**（清单见附录 A）�
 - `:22-35`（`MODEL_REGISTRY` 四元组）、`:339-344`（`required_models`，测试在 `:462-478` 钉住 `hybrid`）
 - `:287-298`（未知 `[asr] model` **静默退回 sensevoice**）、`:86-115`（裸 ONNX 走另一条下载路）
 - `local.rs:112-115`（`find_model` 的模型名 `match`）、`:982-992`（`ensure_ready` 只认 SenseVoice）
-- `vtrim-server/src/api/config.rs:37-38`（第三个按模型名 `match`）、`:350`（测试钉死 `["sensevoice","qwen3-asr"]`）
+- `yekitrim-server/src/api/config.rs:37-38`（第三个按模型名 `match`）、`:350`（测试钉死 `["sensevoice","qwen3-asr"]`）
 
-**D. 产物与绑定**（`vtrim-service`）
+**D. 产物与绑定**（`yekitrim-service`）
 - `assets.rs:276-291`（`ASR_MODES` 槽位循环）、`:351-368`（**与 `mode_slug` 重复的** `asr_artifact_name`）、
   `:392-398`（`bind_asr_artifact`，唯一登记通道）、`:703-718`（`slot_bound`）
 - `core_pipeline.rs:40-46`（`save_transcript_after_asr`）、`:279-282` / `:368-370` / `:381-383`
@@ -242,6 +242,6 @@ core / service / server / webui 四层的 39 处改动**（清单见附录 A）�
 - `vendor/sherpa-onnx-sys/build.rs:337-366`（stub 断言，**不约束**新的非 sherpa 依赖）、
   `:153-163`（目标三元组守卫）、`:159-161`（删 `[patch.crates-io]` 的警告）
 - 第二道闸 `cargo xtask scan` + `THIRD-PARTY-NOTICES.md`
-- ⚠️ 分层：`crates/vtrim-core/AGENTS.md` 禁止 core `use` 上层；
-  外部引擎的编排若需要 service 级设施，**只能注入（sink/回调/参数）或放在 `vtrim-service`**，
+- ⚠️ 分层：`crates/yekitrim-core/AGENTS.md` 禁止 core `use` 上层；
+  外部引擎的编排若需要 service 级设施，**只能注入（sink/回调/参数）或放在 `yekitrim-service`**，
   由 `scripts/check_module_boundaries.py` 机器检查

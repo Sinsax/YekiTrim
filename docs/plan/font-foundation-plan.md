@@ -42,7 +42,7 @@
 
 ### B1 单一字体解析入口（目标①）
 
-在 `vtrim-core::fonts` 增加**角色化解析**，成为"用哪支字体"的唯一答案：
+在 `yekitrim-core::fonts` 增加**角色化解析**，成为"用哪支字体"的唯一答案：
 
 ```rust
 /// 字体解析的唯一入口：给定用户选择，返回角色化的字体组合。
@@ -161,7 +161,7 @@ emoji 也只会是**单色剪影**。所以：
 - ⇒ 栈尾插 emoji **零效果**；若成了首个可解析项反而**整轨变豆腐**。
 
 ### 事实 2：自带 emoji 字体 **COLRv1** × Takumi **只认 COLRv0** ⇒ 单色剪影 ❌
-**实测字节**（`~/.vtrim/fonts/NotoColorEmoji/font.ttf`，25,332,736 B，16 表）：
+**实测字节**（`~/.yekitrim/fonts/NotoColorEmoji/font.ttf`，25,332,736 B，16 表）：
 ```
 HAS CBDT: false   HAS CBLC: false   HAS sbix: false
 COLR version = 1        ← COLRv1（另带 20 MB SVG 表、3.4 MB glyf）
@@ -247,13 +247,13 @@ C5  字幕成片：**确认不可修并记档**  → 出口：证据写进 dhamp
 
 ```bash
 # 地基
-cargo test -p vtrim-core --lib fonts
+cargo test -p yekitrim-core --lib fonts
 node scripts/check-font-inputs.mjs            # 新增（B4）
 
 # 每个消费点接完
-cargo test -p vtrim-polish --lib render       # server.rs 字体单测
-cargo test -p vtrim-polish                    # takumi_font_id.rs（C2 改序后必跑）
-cargo test -p vtrim-server                    # /api/polish/fonts 响应
+cargo test -p yekitrim-polish --lib render       # server.rs 字体单测
+cargo test -p yekitrim-polish                    # takumi_font_id.rs（C2 改序后必跑）
+cargo test -p yekitrim-server                    # /api/polish/fonts 响应
 
 # 封面真渲染（C2/C3）
 node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden
@@ -269,7 +269,7 @@ python3 scripts/check_module_boundaries.py
 ```
 
 ⚠️ 本机 **bash 坏了**（`couldn't create signal pipe, Win32 error 5`），用 `pwsh` 或直接调工具；
-`python3` 别写 `python`（`gates.mjs` 里用的是绝对路径 `VTRIM_PYTHON`）。
+`python3` 别写 `python`（`gates.mjs` 里用的是绝对路径 `YEKITRIM_PYTHON`）。
 
 ---
 
@@ -295,9 +295,9 @@ python3 scripts/check_module_boundaries.py
 
 ```
 cargo check --workspace --all-targets     → 0 warnings
-cargo test -p vtrim-core --lib fonts      → 22 passed（含 6 条新增）
-cargo test -p vtrim-polish --lib render   → 29 passed（含 5 条新增）
-cargo test -p vtrim-server                → 151 passed
+cargo test -p yekitrim-core --lib fonts      → 22 passed（含 6 条新增）
+cargo test -p yekitrim-polish --lib render   → 29 passed（含 5 条新增）
+cargo test -p yekitrim-server                → 151 passed
 node .workbuddy/gates.mjs                 → 全部门禁通过（14 项，含新增的字体输入面 + 自检）
 node webui/scripts/check-*.mjs            → 7 条全过
 ```

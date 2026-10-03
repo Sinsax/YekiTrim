@@ -30,7 +30,7 @@ B站链接通道（P4）的**平台侧**：从用户粘的任意形态里抠出 
 
 ## 边界
 
-- ⚠️ **本目录不许出现 `yt-dlp` / `VTRIM_PROG` / `VTRIM_PATH` / `VTRIM_META` / `process::Command` / `.spawn(`**
+- ⚠️ **本目录不许出现 `yt-dlp` / `YEKITRIM_PROG` / `YEKITRIM_PATH` / `YEKITRIM_META` / `process::Command` / `.spawn(`**
   （门禁 `bilibili 不许知道下载器`）：弹幕走旁路（自己 GET），与引擎完全无关；混在一起就没法单测。
   改了本目录就顺手跑 `python3 scripts/check_module_boundaries.py`。
 - ⚠️ **B站侧与下载器的错误类刻意分开**（`BiliError` vs `DownloadErrorKind` 那一套）：这两条通道是独立的

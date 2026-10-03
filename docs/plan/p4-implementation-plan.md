@@ -52,9 +52,9 @@
 三条硬边界：
 
 1. **P4 的适配器不碰进程**（⚠️ 这是**路径级**规矩，不是整个 crate 的）：
-   `vtrim-service/src/downloader/` 与 `bilibili/` 里的代码只产出 `CommandSpec`
+   `yekitrim-service/src/downloader/` 与 `bilibili/` 里的代码只产出 `CommandSpec`
    （程序 + 参数 + 要清的 env）与"解析一行 stdout"的结果，**不出现 `use std::process` / `use tokio::process`**。
-   执行只在 `vtrim-server/download_worker.rs`。
+   执行只在 `yekitrim-server/download_worker.rs`。
    → 收益：命令构造与输出解析**完全离线可测**（§5 的快照测试靠这条）。
    > 别把这条误读成"service 不许开进程"：`disk.rs:40` 调 `df`、`instancelock.rs:72/85` 调 `tasklist`/`kill`
    > 都是既有的、合理的（进程自省类操作）。本规矩只要求**新增的下载器适配层**别把执行混进来。
@@ -72,9 +72,9 @@
 
 | 要共享的 | 现状 | 去向 | 依据 |
 |---|---|---|---|
-| 容量预检（配额 / 总上限 / 磁盘水位） | `ingest_worker::check_capacity` | **下沉 `vtrim-service/src/ingest/capacity.rs`**（纯函数，离线可测） | 它是"还能不能再收一个任务"的通用判断，与录播姬无关 |
-| 项目落地（`new_project_dir` → `write_project_config` → `create_project` → `refresh_bytes`） | 散在 `ingest_worker` | **下沉 `vtrim-service/src/ingest/landing.rs`** | 两个来源的产物同构（§8 的既定目标），落地四步本就该一致 |
-| 起管线 | `ingest_worker` 私有 | **上提 `vtrim-server/src/pipeline_boot.rs`** | 需要 server 的 state/jobs，放 service 不合适；独立模块两边都能用 |
+| 容量预检（配额 / 总上限 / 磁盘水位） | `ingest_worker::check_capacity` | **下沉 `yekitrim-service/src/ingest/capacity.rs`**（纯函数，离线可测） | 它是"还能不能再收一个任务"的通用判断，与录播姬无关 |
+| 项目落地（`new_project_dir` → `write_project_config` → `create_project` → `refresh_bytes`） | 散在 `ingest_worker` | **下沉 `yekitrim-service/src/ingest/landing.rs`** | 两个来源的产物同构（§8 的既定目标），落地四步本就该一致 |
+| 起管线 | `ingest_worker` 私有 | **上提 `yekitrim-server/src/pipeline_boot.rs`** | 需要 server 的 state/jobs，放 service 不合适；独立模块两边都能用 |
 | **不共享**：`is_finalized` 空闲窗口、待分配池、`move_file` / `concat_fragments` | 录播姬专属 | **留在 `ingest_worker` 不动** | B站是"进程退出即完结"。抄过来既是无用复杂度，也会把两套语义缠死 |
 
 `ingest_worker` 自己改为调用下沉后的 `ingest::capacity` / `ingest::landing` / `pipeline_boot` ——
@@ -82,10 +82,10 @@
 
 ### 2.3 新增/改动文件清单
 
-严格遵守现有单向依赖（`vtrim-service` 绝不 `use vtrim_server`）：
+严格遵守现有单向依赖（`yekitrim-service` 绝不 `use yekitrim_server`）：
 
 ```
-vtrim-service/src/                     ← 纯逻辑，无 axum
+yekitrim-service/src/                     ← 纯逻辑，无 axum
   net/deflate.rs        （新） 裸 deflate 解压（flate2，zlib 兜底）
   bilibili/api.rs       （新） view API 客户端：BvInfo{ pages[], title, uploader, stat }
   bilibili/danmaku.rs   （新） cid → XML（浏览器 UA + 解压）→ 落 danmaku.xml
@@ -96,8 +96,8 @@ vtrim-service/src/                     ← 纯逻辑，无 axum
   ingest/landing.rs     （新） 项目落地四步（**从 ingest_worker 下沉**）
   assets.rs             （改） preload_policy("bilibili") → Preload::Danmaku
 
-vtrim-core/src/danmaku/mod.rs          （改） parse_bililive_xml 的 y 取值 + 固件
-vtrim-server/src/
+yekitrim-core/src/danmaku/mod.rs          （改） parse_bililive_xml 的 y 取值 + 固件
+yekitrim-server/src/
   tool_probe.rs         （新） 外部命令探测 + 30s 缓存（**从 api/mod.rs 搬出**，worker 侧不再 use api）
   api/mod.rs            （改） 改用 crate::tool_probe；版本参数不再写死
   api/routes.rs         （改） 挂两个新端点
@@ -128,12 +128,12 @@ vtrim-server/src/
 | 检查项 | 期望 |
 |---|---|
 | `downloader/` / `bilibili/` 里开子进程（`Command::new` / `.spawn(`） | **0 命中**（执行只在 `download_worker.rs`；⚠️ 路径级——crate 别处有合法的 `df`/`tasklist`/`kill`，`::id()` 也不算） |
-| `crates/vtrim-service` 里出现 `use vtrim_server` | 0（既有硬规矩，别破） |
+| `crates/yekitrim-service` 里出现 `use yekitrim_server` | 0（既有硬规矩，别破） |
 | `downloader/` 里出现 `bvid` / `cid` / `bilibili.com` | 0 命中（引擎不认识 B站） |
-| `bilibili/` 里出现 `yt-dlp` / `VTRIM_PROG` / `VTRIM_PATH` / `spawn` | 0 命中（B站模块不认识引擎） |
+| `bilibili/` 里出现 `yt-dlp` / `YEKITRIM_PROG` / `YEKITRIM_PATH` / `spawn` | 0 命中（B站模块不认识引擎） |
 | `net/` 里出现 `bvid` / `cid` / `bilibili.com` | 0 命中（通用解压工具） |
 | `download_worker.rs` 里出现 `ingest_worker` / `is_finalized` / `move_file(` | 0 命中 |
-| `vtrim-core` 的**逻辑**里出现 `bvid` / `cid` / `view-interface` | 0（注释里说明来源可以 —— core 只认识"弹幕 XML"） |
+| `yekitrim-core` 的**逻辑**里出现 `bvid` / `cid` / `view-interface` | 0（注释里说明来源可以 —— core 只认识"弹幕 XML"） |
 | 适配器单测 | **全部离线**（录制的 stdout / XML fixture），不打外部网络 |
 | 新增配置项 | 只允许 `[ingest] downloader` 与 `[ingest] ytdlp_path`；引擎私有常量（哨兵前缀、超时、浏览器 UA）**不进配置**，避免组合爆炸 |
 
@@ -149,9 +149,9 @@ vtrim-server/src/
 
 **跨进程的边界只有一处**，模块分工按此切开：
 
-- `vtrim-service/src/downloader/ytdlp.rs` —— **纯函数**：构造 argv、按哨兵前缀分流 stdout、错误分类。**不 spawn**。这样 §5 的"命令构造快照测试"可以完全离线跑。
-- `vtrim-server/src/download_worker.rs` —— 真正 `tokio::process::Command` spawn + 逐行读 stdout 的地方，照 `ingest_worker.rs:639` 既有写法。
-- `vtrim-service/src/bilibili/danmaku.rs` —— **进程内** `reqwest` + `flate2`，不开子进程。
+- `yekitrim-service/src/downloader/ytdlp.rs` —— **纯函数**：构造 argv、按哨兵前缀分流 stdout、错误分类。**不 spawn**。这样 §5 的"命令构造快照测试"可以完全离线跑。
+- `yekitrim-server/src/download_worker.rs` —— 真正 `tokio::process::Command` spawn + 逐行读 stdout 的地方，照 `ingest_worker.rs:639` 既有写法。
+- `yekitrim-service/src/bilibili/danmaku.rs` —— **进程内** `reqwest` + `flate2`，不开子进程。
 
 ⚠️ 子进程语义自带的三条硬约束（参数对应 §4.1）：
 
@@ -185,12 +185,12 @@ S0 的判据是"独立可合、且每一条自身完备"，这条不满足 —�
 
 ### S1 下载器适配层 + 工具发现
 
-1. `downloader/registry.rs`：照 `vtrim-core/src/download.rs::MODEL_REGISTRY` 写
+1. `downloader/registry.rs`：照 `yekitrim-core/src/download.rs::MODEL_REGISTRY` 写
    ```
    ("yt-dlp", "yt-dlp.exe", "2026.08.19",
     "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a", 17840399)
    ```
-   `ensure_ytdlp()` 的查找顺序与 `asr::resolve_model_dir` 同构：配置路径 → `<程序目录>/.vtrim/bin/` → PATH。
+   `ensure_ytdlp()` 的查找顺序与 `asr::resolve_model_dir` 同构：配置路径 → `<程序目录>/.yekitrim/bin/` → PATH。
    下载后**必须校验 sha256**，不匹配就删掉并报错（别用半下载的文件）。
    ⚠️ 别照抄 `ensure_one_model` 里的 `marker` 判定——exe 的 marker 就是"文件存在且 sha256 对"。
 2. `downloader/mod.rs`：`enum DownloaderKind { YtDlp, Bbdown(PathBuf) }`，
@@ -198,7 +198,7 @@ S0 的判据是"独立可合、且每一条自身完备"，这条不满足 —�
 3. ⚠️ **拉起子进程时必须清掉 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`**（含小写）。
    构建 `Command` 时 `.env_remove(...)`，不要靠"继承用户 shell"。
 
-### S2 B站 API 客户端（`vtrim-service/src/bilibili/`）
+### S2 B站 API 客户端（`yekitrim-service/src/bilibili/`）
 
 1. **`api.rs` — view 端点**
    ```
@@ -225,7 +225,7 @@ S0 的判据是"独立可合、且每一条自身完备"，这条不满足 —�
    - 落 `<项目根>/danmaku.xml`，然后 `write_project_config(..., Some(Path::new("danmaku.xml")), ...)`
    - **解压后必须校验** `content.contains("<d p=")`，否则报错而不是静默传空给解析器
 
-### S3 解析器修复（`vtrim-core/src/danmaku/mod.rs`）
+### S3 解析器修复（`yekitrim-core/src/danmaku/mod.rs`）
 
 1. **y 取值**：`parts[7]` 在主站语义下是 dmid，不是行号。改法二选一（推荐 a）：
    - **(a) 不再从 `[7]` 取 y**，一律走 `default_y_for_mode(mode)`。
@@ -238,7 +238,7 @@ S0 的判据是"独立可合、且每一条自身完备"，这条不满足 —�
    - 主站：9 段、`[7]` 为 17–19 位 dmid、`[8]` ∈ 4..10（从 `.workbuddy/p4-verify/dm_122300483.xml` 截取）
    - 录播姬：8 段、`[7]` 恒为 `0`（按 rec.danmuji.org 的官方字段说明构造）
    - 断言：两者都能解析出正确的 `start`/`mode`/`color`，且 **`y` 不塌成同一个值**
-4. ⚠️ 顺手确认 `assign_danmaku_tracks`（`vtrim-polish/src/parse/text.rs:64`）与
+4. ⚠️ 顺手确认 `assign_danmaku_tracks`（`yekitrim-polish/src/parse/text.rs:64`）与
    `process/placement.rs` 的调用顺序（实测报告「仍未验证 #2」）。它只写不读，预计能掩盖 y 的影响，
    但 `placement.rs` 里 `y = (d.y/1920)*540` 的弹幕带计算依赖 y —— **确认后再决定要不要额外兜底**。
 
@@ -295,9 +295,9 @@ yt-dlp \
   --merge-output-format mp4 \
   --limit-rate <k>K                     # 可选
   --newline --progress \
-  --progress-template "VTRIM_PROG:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s" \
-  --print "VTRIM_PATH:after_move:filepath" \
-  --print "VTRIM_META:%(resolution)s|%(vcodec)s|%(acodec)s" \
+  --progress-template "YEKITRIM_PROG:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s" \
+  --print "YEKITRIM_PATH:after_move:filepath" \
+  --print "YEKITRIM_META:%(resolution)s|%(vcodec)s|%(acodec)s" \
   --no-warnings --no-playlist \
   -o "<项目目录>/source.%(ext)s" \
   --playlist-items <N>                  # 多P 时指定
@@ -367,7 +367,7 @@ yt-dlp 2026.08.19  yt-dlp.exe  17,840,399B
 - [x] 🧪 S2：解析真实 BV → 预览卡字段（`extract_bvid` 单测覆盖 8 种真实 URL 形态；view API 的字段映射在 T3 实测过）
 - [x] ✅ S2：多P（23P）解析出全部 23 个 cid，且与 `yt-dlp --list-subs` 抠出的 cid 一致（**T3 实测**）
 - [x] 🧪 S3：主站 9 段 XML 解析后 `y` **不全相等**；录播姬 8 段行为不变（两套真实方言固件）
-- [x] ✅ S4：产物路径只认 `VTRIM_PATH:`（哨兵位置在 `after_move:` **之后**；T8 实测 `--print` 回报绝对路径且 fs 命中）
+- [x] ✅ S4：产物路径只认 `YEKITRIM_PATH:`（哨兵位置在 `after_move:` **之后**；T8 实测 `--print` 回报绝对路径且 fs 命中）
 - [x] ✅ S4：产物是 **H.264**（T8 实测 `-S vcodec:h264` 生效，拿到 avc1 1920x1080；不带时默认选到 HEVC）
 - [x] 🧪 S4：`danmaku.xml` 落盘 + 能被现有解析器读出（`save_danmaku` / `parse_session_ref` 单测；真实 XML 在 T5/T6 验过）
 - [x] 🧪 S4：失败时 `state=failed` 且 `error` 是人话（`DownloadErrorKind → user_message` 单测，关键字取自 T7 实测的 stderr）
@@ -388,9 +388,9 @@ yt-dlp 2026.08.19  yt-dlp.exe  17,840,399B
 | 阶段 | 落点 |
 |---|---|
 | S0 | 三条既有缺陷：`tool_probe.rs`（版本参数化 + 从 `api` 搬到叶子模块）、`assets.rs` 预载策略、`danmaku/mod.rs` 解析器 y + 换真实固件 |
-| S1 | `vtrim-service/src/downloader/{mod,ytdlp,registry}.rs` —— `Downloader` 端口 + yt-dlp 适配器 + sha256 注册表 |
-| S2 | `vtrim-service/src/{net/deflate.rs, bilibili/{mod,api,danmaku}.rs}` —— view API、弹幕旁路、双风味解压 |
-| S3 | 调用点修复：`vtrim-polish/src/commands.rs` 原来用**不认 XML** 的 `parse_srt_file`（4 个真实 XML 样本全产出 0 条），改走 `load_danmaku_auto`；`parse_srt_file` 加"拿到 XML 就吵"的护栏 |
+| S1 | `yekitrim-service/src/downloader/{mod,ytdlp,registry}.rs` —— `Downloader` 端口 + yt-dlp 适配器 + sha256 注册表 |
+| S2 | `yekitrim-service/src/{net/deflate.rs, bilibili/{mod,api,danmaku}.rs}` —— view API、弹幕旁路、双风味解压 |
+| S3 | 调用点修复：`yekitrim-polish/src/commands.rs` 原来用**不认 XML** 的 `parse_srt_file`（4 个真实 XML 样本全产出 0 条），改走 `load_danmaku_auto`；`parse_srt_file` 加"拿到 XML 就吵"的护栏 |
 | S4 | `ingest_sessions` v8 加 `kind`/`source_ref`；下沉 `ingest/{capacity,landing}.rs`；上提 `pipeline_boot.rs`；新增 `download_worker.rs` |
 | S5 | `POST /api/ingest/resolve` + `POST /api/ingest/bilibili` + `POST /api/admin/downloader/{install,status}`；routes 挂载；`ingest_ready` 拆出 `downloader_ready` |
 | S6 | `WorkbenchView.vue` 的 B站分支（向导）+ `DownloaderConfig.vue`（设置页卡）+ `api/ingest.js` + `utils.js::fmtClock` |
@@ -399,8 +399,8 @@ yt-dlp 2026.08.19  yt-dlp.exe  17,840,399B
 
 **过程中发现并修掉的额外缺陷（原计划没有）**
 
-1. **精修侧静默丢弹幕**：`vtrim-polish/src/commands.rs` 的 `cmd_init → cmd_parse` 用
-   `vtrim_core::danmaku::parse_srt_file` 读弹幕，而它**只认 SRT 时间轴**——
+1. **精修侧静默丢弹幕**：`yekitrim-polish/src/commands.rs` 的 `cmd_init → cmd_parse` 用
+   `yekitrim_core::danmaku::parse_srt_file` 读弹幕，而它**只认 SRT 时间轴**——
    录播姬与 B站写的都是 **XML**。用 4 个真实 XML 样本实测：**全部产出 0 条**。
    也就是说**录播姬通路上的精修弹幕此前一直是空的，且不报错**（`Err` 分支只 `tracing::info`）。
    改走 `load_danmaku_auto`（按扩展名分派），并给 `parse_srt_file` 加护栏：
@@ -437,8 +437,8 @@ yt-dlp 2026.08.19  yt-dlp.exe  17,840,399B
    共用的校验，却把「未知清晰度」写成终态文案 → 表单侧报错不带字段名，用户不知道哪个框错了。
    改成返回**原因**、字段前缀由调用方补。这条是被我自己的回归钉子
    （`patch_download_keys_are_flat_not_nested`）抓出来的。
-4. **计划里 `--print "VTRIM_PATH:after_move:filepath"` 是错的** → 会打出 `NA`。
-   哨兵必须在 `WHEN:` **之后**：`after_move:VTRIM_PATH:%(filepath)s`（T8 实测）。
+4. **计划里 `--print "YEKITRIM_PATH:after_move:filepath"` 是错的** → 会打出 `NA`。
+   哨兵必须在 `WHEN:` **之后**：`after_move:YEKITRIM_PATH:%(filepath)s`（T8 实测）。
 
 ### 还没做的（放量前必须补）
 

@@ -739,7 +739,7 @@ mod tests {
     /// 那串汉字 id —— 别名必须认它，否则中文标题会落到“注册序第一支”（静默换字体）。
     #[test]
     fn font_aliases_prefer_meta_id_over_slug_dir() {
-        let dir = std::env::temp_dir().join(format!("vtrim-takumi-alias-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-takumi-alias-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let slug = dir.join("font-9c1d2e3f4a5b");
         std::fs::create_dir_all(&slug).unwrap();
@@ -812,8 +812,8 @@ mod tests {
     #[ignore]
     fn probe_renders_ring_and_join() {
         let dir = match std::env::var("VTEDIT_TAKUMI_PROBE") {
-            Ok(v) if v.is_empty() => std::env::temp_dir().join("vtrim-takumi-probe"),
-            Ok(_) => std::env::temp_dir().join("vtrim-takumi-probe"),
+            Ok(v) if v.is_empty() => std::env::temp_dir().join("yekitrim-takumi-probe"),
+            Ok(_) => std::env::temp_dir().join("yekitrim-takumi-probe"),
             Err(_) => {
                 eprintln!("VTEDIT_TAKUMI_PROBE 未设，跳过（探针只做人肉验收）");
                 return;
@@ -883,7 +883,7 @@ mod tests {
         assert!(!fonts.is_empty(), "字体库为空：{}", root.display());
         let out_dir = PathBuf::from(
             std::env::var("VTEDIT_PROBE_OUT")
-                .unwrap_or_else(|_| std::env::temp_dir().join("vtrim-cover-variants").display().to_string()),
+                .unwrap_or_else(|_| std::env::temp_dir().join("yekitrim-cover-variants").display().to_string()),
         );
         let _ = fs::create_dir_all(&out_dir);
         let base = "position:absolute;left:40px;font-size:70px;line-height:1;color:#f0e6d3;\

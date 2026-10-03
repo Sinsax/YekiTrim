@@ -386,16 +386,16 @@ y3    0.7   0.8   0.8   1.6
 
 ### 12.3 三张卡已补
 
-`crates/vtrim-polish/AGENTS.md`（两条通道 / 静态构建入口 / 变量块 / 字体 / 口径）、
+`crates/yekitrim-polish/AGENTS.md`（两条通道 / 静态构建入口 / 变量块 / 字体 / 口径）、
 `src/render/AGENTS.md`（`takumi.rs` 是封面第三条后端 + feature 门）、
 `templates/AGENTS.md`（`cover.html` 的两个静态占位：`:root{}` 与 `__EXPORT_CSS__`）。
 
 ### 12.4 怎么用
 
 ```bash
-cargo build -p vtrim-cli --features vtrim-polish/cover-takumi   # 默认不编
-VTEDIT_COVER_RENDERER=takumi vtrim polish cover <工程目录>       # 默认仍是 chrome（兜底）
-vtrim polish cover <工程目录> --renderer takumi                # 显式参数优先（WebUI 弹窗走的就是这条）
+cargo build -p yekitrim-cli --features yekitrim-polish/cover-takumi   # 默认不编
+VTEDIT_COVER_RENDERER=takumi yekitrim polish cover <工程目录>       # 默认仍是 chrome（兜底）
+yekitrim polish cover <工程目录> --renderer takumi                # 显式参数优先（WebUI 弹窗走的就是这条）
 node scripts/check-cover-takumi.mjs --project <工程目录>          # 双通道对拍
 ```
 
@@ -416,7 +416,7 @@ node scripts/check-cover-takumi.mjs --project <工程目录>          # 双通�
 - **能力位**：`/api/health.cover_static = { compiled, fonts, fonts_dir, ready }`。`ready = 编了
   `cover-takumi` feature 且字体库非空`；不 ready 时弹窗里那个按钮**置灰并写明原因**（去哪个目录放字体、
   或者重编的命令），而不是点了才在任务日志里失败。
-- 判据只有一处：`vtrim-polish::cover::cover_static_capability()`（服务端与 CLI 都读它）。
+- 判据只有一处：`yekitrim-polish::cover::cover_static_capability()`（服务端与 CLI 都读它）。
 ---
 
 ## 13. 第九轮起：标题专章（真工程 clip-14）
@@ -575,12 +575,12 @@ chrome 3142ms / 263185B    takumi 4038ms / 323655B
 
 ```bash
 # ① 出片侧（真实工程、真实字体库、真 1920×1080）
-VTEDIT_COVER_PROBE_DIR=<目录> cargo test -p vtrim-polish --lib --features cover-takumi \
+VTEDIT_COVER_PROBE_DIR=<目录> cargo test -p yekitrim-polish --lib --features cover-takumi \
   probe_real_cover_pixels -- --ignored --nocapture        # 可加 VTEDIT_COVER_PROBE_PROJECT=<clip 目录>
 # ② 浏览器基准：把 ① 落下的 cover.html 里的 @font-face 指到文件路径，再用 headless Chrome 截图
 chrome --headless=new --disable-gpu --window-size=1920,1080 --screenshot=chrome.png \
   --allow-file-access-from-files file:///<目录>/page.html
 # ③ 引擎能力（族名定向 / 环要不要 inline-block）
-VTEDIT_PROBE_FONT_ROOT=<字体库> cargo test -p vtrim-polish --lib --features cover-takumi \
+VTEDIT_PROBE_FONT_ROOT=<字体库> cargo test -p yekitrim-polish --lib --features cover-takumi \
   probe_title_emoji_variants -- --ignored --nocapture
 ```

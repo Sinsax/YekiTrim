@@ -1,4 +1,4 @@
-//! V-Trim fork of sherpa-onnx-sys. Everything except this file is verbatim upstream.
+//! YekiTrim fork of sherpa-onnx-sys. Everything except this file is verbatim upstream.
 //! See FORK-NOTES.md next to this file for the deltas and how to resync on a bump.
 //!
 //! The deltas exist because upstream (a) links GPL-3.0-or-later espeak-ng unconditionally,
@@ -20,12 +20,12 @@ use bzip2::read::BzDecoder;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-// V-Trim delta 1: upstream points at github.com/k2-fsa/sherpa-onnx, whose prebuilt archive
+// YekiTrim delta 1: upstream points at github.com/k2-fsa/sherpa-onnx, whose prebuilt archive
 // links espeak-ng. This points at the TTS-off rebuild of the same version instead.
 const RELEASE_BASE_URL: &str =
     "https://github.com/Sinsax/sherpa-onnx-prebuilt-no-tts/releases/download";
 
-// V-Trim delta 2: the only archive this fork will accept. Same file name as upstream so it is a
+// YekiTrim delta 2: the only archive this fork will accept. Same file name as upstream so it is a
 // drop-in replacement, different bytes. Bump the name and the hash together.
 const PINNED_ARCHIVE_NAME: &str = "sherpa-onnx-v1.13.3-win-x64-static-MT-Release-lib.tar.bz2";
 const PINNED_ARCHIVE_SHA256: &str =
@@ -146,13 +146,13 @@ fn download_prebuilt_libs(
 ) -> Result<PathBuf, DynError> {
     let archive_name = archive_name(link_mode, target_os, target_arch)?;
 
-    // V-Trim delta 2. Our release only carries the pinned Windows x64 static archive. Any other
+    // YekiTrim delta 2. Our release only carries the pinned Windows x64 static archive. Any other
     // target or link mode would have to come from the official upstream release, which links
     // GPL-3.0-or-later espeak-ng unconditionally -- so fail loudly rather than quietly ship a
     // GPL binary. SHERPA_ONNX_LIB_DIR (checked first, below) remains the escape hatch.
     if archive_name != PINNED_ARCHIVE_NAME {
         return Err(format!(
-            "V-Trim's vendored sherpa-onnx-sys only ships the TTS-off archive\n  \
+            "YekiTrim's vendored sherpa-onnx-sys only ships the TTS-off archive\n  \
              {PINNED_ARCHIVE_NAME}\nbut this build resolves to\n  {archive_name}\n\
              Build for windows/x86_64 with the default (static) feature set, or set \
              SHERPA_ONNX_LIB_DIR to a lib directory you built yourself. Removing the \
@@ -170,7 +170,7 @@ fn download_prebuilt_libs(
     let lib_dir = extracted_dir.join("lib");
 
     if lib_dir.is_dir() {
-        // V-Trim delta 4, and the important half of it: the cache outranks every archive source
+        // YekiTrim delta 4, and the important half of it: the cache outranks every archive source
         // below, so an extracted dir left behind by an official-archive build would win and
         // nothing downstream would notice. Check the contents instead of trusting the path.
         // This is what makes a bare `cargo build` (and an IDE build) safe.
@@ -221,7 +221,7 @@ fn download_prebuilt_libs(
             let url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
             eprintln!("Downloading TTS-off sherpa-onnx libs from {url}");
 
-            // V-Trim delta 5: upstream sets no timeouts at all, so a stalled transfer hangs the
+            // YekiTrim delta 5: upstream sets no timeouts at all, so a stalled transfer hangs the
             // build forever without printing anything. Measured here behind a local proxy: the
             // 106 MiB transfer crawled to 66 MiB and then stopped growing -- 0 bytes in 20 s, no
             // error, no progress. `timeout_read` bounds the gap between reads (not the whole
@@ -249,7 +249,7 @@ fn download_prebuilt_libs(
                 return Err(err);
             }
 
-            // V-Trim delta 3. Never leave an unverified 106 MiB file in the cache: the next
+            // YekiTrim delta 3. Never leave an unverified 106 MiB file in the cache: the next
             // build would find it, skip the download, and unpack it without looking.
             if let Err(err) = verify_pinned_sha256(&archive_path) {
                 let _ = fs::remove_file(&archive_path);
@@ -287,7 +287,7 @@ fn download_prebuilt_libs(
         .into());
     }
 
-    // V-Trim delta 4, fresh-extraction half. The archive's hash was checked just above, so this
+    // YekiTrim delta 4, fresh-extraction half. The archive's hash was checked just above, so this
     // cannot realistically fail -- which is why it is worth having: it is the one check that also
     // covers a cache that was populated by hand.
     assert_placeholders_are_placeholders(&lib_dir)?;
@@ -297,7 +297,7 @@ fn download_prebuilt_libs(
     Ok(lib_dir)
 }
 
-// ---- V-Trim additions: pinned-hash verification and the placeholder assertion ----------------
+// ---- YekiTrim additions: pinned-hash verification and the placeholder assertion ----------------
 
 /// Lowercase hex SHA-256 of a file, streamed so a 106 MiB archive does not land in memory.
 fn sha256_of_file(path: &Path) -> Result<String, DynError> {

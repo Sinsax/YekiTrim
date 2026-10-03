@@ -7,7 +7,7 @@
 > （`#/ingest` 降级 + 入口搬迁）待做 —— 目前 `api_base` 等键走设置页的
 > 「源码模式」或直接改 `config.toml`。
 >
-> 现状（P3）是"录播姬把录像推给 V-Trim → 管理员在待分配池里指派给某个用户"。
+> 现状（P3）是"录播姬把录像推给 YekiTrim → 管理员在待分配池里指派给某个用户"。
 > 目标是把这条链路反过来：**用户自己填目标直播间，录完自动进他自己的项目**；
 > 管理员只做一次"对接录播姬"的部署与配置。本文是这一版的规格（尚未实现）。
 
@@ -15,14 +15,14 @@
 
 | 角色 | 做什么 | 频率 |
 |---|---|---|
-| 管理员 | 部署录播姬 + 在 V-Trim 填「录播姬地址 / 账号密码 / webhook token」→ 之后不用管 | 一次 |
+| 管理员 | 部署录播姬 + 在 YekiTrim 填「录播姬地址 / 账号密码 / webhook token」→ 之后不用管 | 一次 |
 | 用户 | 在首页「录播姬录制」里粘贴直播间（房间号或链接）→ 等录像自动出现在项目里 | 每次想录时 |
 | 系统 | 往录播姬加房间 → 收 webhook → 按房间归属自动入库 + 建项目 + 跑管线 | 自动 |
 
 ## 2. 为什么是录播姬（BililiveRecorder），怎么部署最省事
 
 **选它**：活跃维护（最近提交 2026-09）、有 Windows 桌面版和 Docker 镜像、**自带 REST API**
-（WebUI 用的就是它）、**webhook**（V-Trim 现在解析的就是它的 payload）、弹幕一并录制（V-Trim 的检测/切片要用弹幕）。
+（WebUI 用的就是它）、**webhook**（YekiTrim 现在解析的就是它的 payload）、弹幕一并录制（YekiTrim 的检测/切片要用弹幕）。
 备选 blrec **已于 2025-10 归档停维护**，不建议新部署。自己用 ffmpeg/streamlink 拉流则要重造
 "断线重连 + 弹幕抓取 + 分片修复"，不划算。
 
@@ -42,13 +42,13 @@ docker run -d --name bililive-recorder \
 要点：
 
 - 配置与录像都在容器内的 **`/rec`**（所以只挂这一个卷）；`-p 2356:2356` 第一个端口可改，第二个别改。
-- **`/rec` 必须让 V-Trim 也读得到**：V-Trim 的 `[ingest.recorder] root` 指向**宿主机**那个目录
-  （同机部署 = 同一个路径；V-Trim 也跑容器就用同一个卷）。
+- **`/rec` 必须让 YekiTrim 也读得到**：YekiTrim 的 `[ingest.recorder] root` 指向**宿主机**那个目录
+  （同机部署 = 同一个路径；YekiTrim 也跑容器就用同一个卷）。
 - 设了 `BREC_HTTP_BASIC_USER/PASS` 后管理页面走 HTTP Basic，**REST API 也在同一个 HTTP 服务下**
-  （即 V-Trim 调 API 要带同一组 Basic 凭据）——集成时以 `/swagger/` 为准核一次。
+  （即 YekiTrim 调 API 要带同一组 Basic 凭据）——集成时以 `/swagger/` 为准核一次。
 - 2.11.0 起**没设密码时会拒绝看起来不是局域网来源的请求**；不要把 2356 直接开到公网。
-- 录播姬里把 webhook 指向 V-Trim：`WebHookUrlsV2 = http://<V-Trim>:26320/api/ingest/bililive/<token>`
-  （token 用 `vtrim ingest token` 生成，明文只显示一次）。
+- 录播姬里把 webhook 指向 YekiTrim：`WebHookUrlsV2 = http://<YekiTrim>:26320/api/ingest/bililive/<token>`
+  （token 用 `yekitrim ingest token` 生成，明文只显示一次）。
 - 只想单机用、懒得装 Docker：用**桌面版**（Windows 双击即用），API/端口/webhook 配置项一致。
 
 ## 3. 录播姬的 REST API（来自其源码 `BililiveRecorder.Web/Api/RoomController.cs`）
@@ -73,7 +73,7 @@ docker run -d --name bililive-recorder \
 - `title`（缓存的房间标题，列表里好看）
 - `source`（`user` / `admin`，区分"用户自己加的"和"管理员兜底指派的"）
 
-**配置**（`[ingest.recorder]` 增补，`vtrim config`/设置页可改）：
+**配置**（`[ingest.recorder]` 增补，`yekitrim config`/设置页可改）：
 
 ```toml
 [ingest.recorder]
@@ -128,7 +128,7 @@ api_pass = ""
 
 - 老数据（`channel_map` 里 admin 指派的房间）原样保留，`source='admin'` 回填。
 - `unassigned` 兜底池、`/api/admin/ingest/assign`、扫描目录**都不删**：它们是"录播姬里先有房间、
-  V-Trim 后知道"的补录路径，也是录播姬挂掉/换机时的恢复手段。
+  YekiTrim 后知道"的补录路径，也是录播姬挂掉/换机时的恢复手段。
 - `[ingest.recorder] api_base` 为空时，功能整体退回现在的行为（不会把界面弄成半坏状态）。
 
 ## 7. 实施顺序（每步都能单独用）

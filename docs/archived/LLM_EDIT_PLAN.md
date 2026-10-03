@@ -1,4 +1,4 @@
-# V-Trim Enhance — LLM 分镜 + 模块化精修
+# YekiTrim Enhance — LLM 分镜 + 模块化精修
 
 ## 能力分层
 
@@ -21,7 +21,7 @@
 ## 架构
 
 ```
-crates/vtrim-core/src/enhance/
+crates/yekitrim-core/src/enhance/
 ├── mod.rs           ← 编排器
 ├── config.rs        ← 配置 (全局 + 项目 merge)
 ├── ass.rs           ← 字幕/弹幕 ASS 文件生成
@@ -60,7 +60,7 @@ enum EffectCategory {
 
 ## 配置
 
-**`.vtrim/config.toml`（全局默认）：**
+**`.yekitrim/config.toml`（全局默认）：**
 
 ```toml
 [enhance.intro]
@@ -158,13 +158,13 @@ LLM 的 `type` 只能从可用特效名中选，不能发明新效果。
 ## CLI
 
 ```bash
-vtrim enhance                           # 全部 (按 config + LLM)
-vtrim enhance --only subtitle           # 只烧字幕
-vtrim enhance --only danmaku            # 只烧弹幕
-vtrim enhance --only subtitle,danmaku   # 只烧字幕+弹幕
-vtrim enhance --skip shake              # 跳过震动
-vtrim enhance --dry-run                 # 只输出 ffmpeg 命令
-vtrim enhance --no-llm                  # 跳过 LLM 特效
+yekitrim enhance                           # 全部 (按 config + LLM)
+yekitrim enhance --only subtitle           # 只烧字幕
+yekitrim enhance --only danmaku            # 只烧弹幕
+yekitrim enhance --only subtitle,danmaku   # 只烧字幕+弹幕
+yekitrim enhance --skip shake              # 跳过震动
+yekitrim enhance --dry-run                 # 只输出 ffmpeg 命令
+yekitrim enhance --no-llm                  # 跳过 LLM 特效
 ```
 
 `--only` / `--skip` 对 effect name 做过滤，支持逗号分隔。

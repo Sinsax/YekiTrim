@@ -1,25 +1,25 @@
-# V-Trim → Dhampir：对比回路与边界
+# YekiTrim → Dhampir：对比回路与边界
 
-> **视角（迁移后加）**：本文 2026-09-30 从 Dhampir 仓的 `docs/vtrim-integration.md` 迁来
+> **视角（迁移后加）**：本文 2026-09-30 从 Dhampir 仓的 `docs/yekitrim-integration.md` 迁来
 > （在那边它是"Dhampir 这一侧的部分"）。原文里的「本仓」指 **Dhampir**；现在这份文件住在
-> **V-Trim 仓**，所以凡是要区分两个仓的地方都改成了显式的 **Dhampir** / **V-Trim**。
+> **YekiTrim 仓**，所以凡是要区分两个仓的地方都改成了显式的 **Dhampir** / **YekiTrim**。
 > **读数、表格、命令的参数与结论一字未改。**
 
 > **转译接口的正文**（形状 / 快速开始 / 契约要点 / 行为对照表 / 三级记录 / 已知差异 / 怎么扩）
-> 在本仓 `docs/vtrim-integration.md`（一 ~ 八节）。
-> 转译器本体 `tools/polish-to-dhampir.mjs`、它的守卫 `scripts/check-vtrim-translator.mjs` 也在本仓。
+> 在本仓 `docs/yekitrim-integration.md`（一 ~ 八节）。
+> 转译器本体 `tools/polish-to-dhampir.mjs`、它的守卫 `scripts/check-yekitrim-translator.mjs` 也在本仓。
 
 ---
 
 ## 转译器住在哪、怎么用
 
 **转译器就在本仓**：`tools/polish-to-dhampir.mjs`（零依赖 ESM，一个文件）。
-`scripts/vtrim-compare.mjs` 找它的顺序是：
+`scripts/yekitrim-compare.mjs` 找它的顺序是：
 
 | 优先级 | 来源 |
 |---|---|
 | 1 | `--translator <路径>` |
-| 2 | 环境变量 `VTRIM_TRANSLATOR` |
+| 2 | 环境变量 `YEKITRIM_TRANSLATOR` |
 | 3 | `<本仓>/tools/polish-to-dhampir.mjs` |
 
 三个都找不到就**报错并列出找过哪些地方**（不静默退成"没有转译器"）。
@@ -35,12 +35,12 @@ Dhampir 也**不 import 它**。两个方向都没有代码依赖，只有"约�
 
 ---
 
-## 九、对比回路：`scripts/vtrim-compare.mjs`
+## 九、对比回路：`scripts/yekitrim-compare.mjs`
 
 一条命令跑完"改 toml -> 两边渲 -> 按窗口出表 -> 恢复工程"：
 
 ```bash
-node scripts/vtrim-compare.mjs --clip "<片段目录>" --events target/fx-events.json --out target/vtrim-run
+node scripts/yekitrim-compare.mjs --clip "<片段目录>" --events target/fx-events.json --out target/yekitrim-run
 ```
 
 `--events` 是一个 JSON 数组，描述**要插进 `polish.toml` 的测试事件**（**源时间**）：
@@ -86,7 +86,7 @@ node scripts/vtrim-compare.mjs --clip "<片段目录>" --events target/fx-events
 另外整个流程包在 `try/finally` 里：**无论中途哪一步崩，`polish.toml` 都还原**
 （已实测：跑完与跑前**逐字节相同**）。
 
-自检：`node scripts/vtrim-compare.mjs --self-test`
+自检：`node scripts/yekitrim-compare.mjs --self-test`
 —— 19 项，按**逐值**钉住上面甲/乙两个坑（映射要对多段 `mute_ranges` 逐点精确；
 多个事件落到不同 segment 时行号不能串）。4 个变异里 3 个打红
 （第 4 个是**无操作变异**，两个正则对那份输入行为相同 —— 不是自检的漏洞）。
@@ -95,9 +95,9 @@ node scripts/vtrim-compare.mjs --clip "<片段目录>" --events target/fx-events
 
 `ffmpeg` / `ffprobe` 在 PATH 上、**Dhampir 的可执行**
 （`--dhampir` 或环境变量 `VTEDIT_DHAMPIR`，默认找同层 `Dhampir/target/{debug,release}/`）、
-**本仓的 `vtrim.exe`**（`--vtrim` 或 `VTRIM_EXE`，默认找 `.workbuddy/perf/bin/`，
+**本仓的 `yekitrim.exe`**（`--yekitrim` 或 `YEKITRIM_EXE`，默认找 `.workbuddy/perf/bin/`，
 再退 `target/{release,debug}/`，最后 PATH）、
-以及**转译器**（`--translator` 或环境变量 `VTRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）。
+以及**转译器**（`--translator` 或环境变量 `YEKITRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）。
 
 **两边路径都可配**是有意的：底座（Dhampir）是**另一个仓库**，只调二进制、不链库，
 两个仓各自演化；契约见 `docs/dhampir/README.md`。
@@ -106,10 +106,10 @@ node scripts/vtrim-compare.mjs --clip "<片段目录>" --events target/fx-events
 
 ## 十、这条接口的边界
 
-**转译器只读不写 V-Trim 的东西**：它读 `polish.toml` / `clip.srt` / `clip.dm.srt`，
+**转译器只读不写 YekiTrim 的东西**：它读 `polish.toml` / `clip.srt` / `clip.dm.srt`，
 把旁写文件放在**输出目录**里。
 
-**它不承诺兼容**：它不是 `dhampir-core` 底座的一部分，形状可以随 V-Trim 演化而改。
+**它不承诺兼容**：它不是 `dhampir-core` 底座的一部分，形状可以随 YekiTrim 演化而改。
 底座承诺兼容的只有 `docs/api-surface.md` 里"底座 API"那一栏。
 
 **它不做媒体探测**：`frame_count` 留空由 `dhampir probe` 回填 ——

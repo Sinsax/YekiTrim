@@ -1,8 +1,8 @@
 # Dhampir 出片通道 · 问题台账与长线目标
 
 > 立档：2026-09-30（用户拍板：默认通道已切到底座，接下来按台账逐项修）。
-> 配套：`docs/plan/dhampir-cli-server.md`（接口与阶段计划）、`docs/vtrim-integration.md`（转译器的规格与已知差异）、
-> `crates/vtrim-polish/src/render/AGENTS.md`（出片链路的硬规矩）。
+> 配套：`docs/plan/dhampir-cli-server.md`（接口与阶段计划）、`docs/yekitrim-integration.md`（转译器的规格与已知差异）、
+> `crates/yekitrim-polish/src/render/AGENTS.md`（出片链路的硬规矩）。
 
 
 ### ✅ 已定性并修好判据：`portrait` 的"基线位移 −10px"**不是几何差**（2026-10-01）
@@ -28,7 +28,7 @@
 4. 判定性实验：往被摘掉的 `color_shift@4.8` 窗注入 dummy 事件让采样点挪开，位移**仍是 −12px**
    ⇒ 也不是"参照里留着已下线效果"造成的。
 
-**判据的修法**（`scripts/vtrim-compare.mjs`）：
+**判据的修法**（`scripts/yekitrim-compare.mjs`）：
 
 - `best_dy` 现在**连 dy=0 的残差一起回传**（`residual0`）；新增纯函数 `identifiableDy(residual0, residualBest)`：
   要求**相对改善 ≥ 1% 且绝对改善 ≥ 0.02**，够不上就判 **dy = 0**（原始值留在 `dyRaw`）。
@@ -43,7 +43,7 @@
 
 1. **看转译器报告**：`node tools/polish-to-dhampir.mjs <片段> --out x.json --keep-muted`
    → `DROP` = 我们没转（本仓）；`CLAMP` = 转了个近似（本仓要写清近似了什么）。
-2. **报告说转了、成片却没有** → **绕开 V-Trim**，直接让底座渲染同一份 doc：
+2. **报告说转了、成片却没有** → **绕开 YekiTrim**，直接让底座渲染同一份 doc：
 
    ```bash
    <Dhampir>/target/release/dhampir.exe frame --project x.json --frame <N> --out out/ \
@@ -51,7 +51,7 @@
    ```
 
    仍然不对 ⇒ **底座侧**（这时最小复现就是证据，见 §四）；对了 ⇒ 我们驱动/参数的问题。
-3. **参照永远是 `crates/vtrim-polish/templates/index.html` 的 canvas 出片路径** ——
+3. **参照永远是 `crates/yekitrim-polish/templates/index.html` 的 canvas 出片路径** ——
    不是 DOM/GSAP 预览，也不是底座的预览。
 
 ## 二、已修（本仓，2026-09-30，全部有实测数字）
@@ -66,7 +66,7 @@
 | V6 | 成片**少了整块渐变色罩** | 转译器只认 6 位色，`#140A28CC` 解析失败 ⇒ `drop` 掉整条 overlay | 报告 `丢失 11` → **6**；overlay 层 0 → **1** |
 | V7 | 构图/取景与 chrome 不一致 | camera 算不出锚点就整条丢；参照模板有写死的 `65% 50%` 兜底（`origin = "center"` 经 `parseFloat` 也落这里） | 运镜 **0 → 3 条**；t=1.0s/5.0s 抽帧构图一致 |
 | V8 | WebUI 出片进度条全程不动 | 底座的 NDJSON 没翻成上游认的 `frames A..B: NN%` | 实测 0→20→42→61→80→100%，每 ~1.5s 一条 |
-| V9 | （承上）默认通道接线 | `--renderer` 默认、服务端白名单透传、前端下拉、不可用时报错而不是静默换路 | `cargo test -p vtrim-server` 143 passed（含"通道认不出 → 400"） |
+| V9 | （承上）默认通道接线 | `--renderer` 默认、服务端白名单透传、前端下拉、不可用时报错而不是静默换路 | `cargo test -p yekitrim-server` 143 passed（含"通道认不出 → 400"） |
 
 ## 三、按设计不修（写在这里，免得以后被当 bug 反复查）
 
@@ -74,7 +74,7 @@
 |---|---|
 | **弹幕排布**（底座那套：头像 + 用户名列表） | **用户 2026-09-30 拍板：按当前设计**。不再往 chrome 的滚动弹幕上对 |
 | 成片帧率 60（chrome 那条腿 30） | 底座按**素材时间基**出片，时长一致；60 更贴源 |
-| ~~`vignette` 不进成片~~ | ✅ **2026-10-01 口径反转（D4）**：参照 canvas **补画**了暗角 + 转译器**映射**（见 `vtrim-integration.md` §4.8），报告 DROP 3 → 2 —— 上面"参照没有就不补"的旧口径作废 |
+| ~~`vignette` 不进成片~~ | ✅ **2026-10-01 口径反转（D4）**：参照 canvas **补画**了暗角 + 转译器**映射**（见 `yekitrim-integration.md` §4.8），报告 DROP 3 → 2 —— 上面"参照没有就不补"的旧口径作废 |
 | 画面归底座、音轨归本仓（`--no-audio`） | 通道分工，两版成片的音轨都出自本仓 |
 | 字体必须显式给文件 | 底座不猜系统字体；本仓负责解析出文件（V3 已接） |
 | 封面不接底座 | 已决策，见 `docs/plan/cover-dhampir-tradeoff.md` |
@@ -96,7 +96,7 @@
 - **对比历史数字前先确认跑的是哪种口径**：命令里带 `--golden` 就是冻结帧那一列。
 - ⚠️ **坑（已修）**：`--all-fixtures` 是"再起一个自己"，只转**白名单**里的参数；`--golden` 当初不在名单里
   ⇒ `all --golden` 会**静默换回活参照**（portrait 报 9.87 而不是 9.84，两边都在阈值内 ⇒ 不报红，只会让人拿错基线比）。
-  现在 `golden` / `captureGolden` 都在白名单里（`scripts/vtrim-compare.mjs`）。
+  现在 `golden` / `captureGolden` 都在白名单里（`scripts/yekitrim-compare.mjs`）。
 
 ## 四、底座侧（本仓只交接 + 跟进，不在本仓改）
 
@@ -105,7 +105,7 @@
 | ~~D1~~ | ~~**overlay 渐变色罩不生效**~~ → ✅ **2026-10-01 已撤回**（复核见下"§四 D1 撤回"）| 缩到"只有视频层 + 一条 overlay 层"的工程，用底座自己的 `frame` 出第 60 帧（窗口 30–126 之内）**仍无色罩**：`.workbuddy/dhampir-unify-out/mini-overlay.doc.json` + 上面的命令。发出去的字段正是底座映射代码读的那套（`timeline.rs:362` 读 `amount/r/g/b/r2/g2/b2`），`Effect.opacity` 缺省 1.0，层在视频轨之后、窗口覆盖该帧 |
 | D2 | `--from` 单独给时**文档与代码不一致** | 注释说"到工程结尾"，代码 `to = args.to.unwrap_or(from)` = 只出一帧（`dhampir.rs::frame_range`）。我们两头都给所以没踩到。✅ **2026-10-01 底座已改实现**（`frame_spec` + 纯函数 `resolve_frames`：只给一头就按工程补全；互斥用法报用法错），并加了第 33 条 CLI 判据 + 变异验证（旧行为下 32/33 红）|
 | D3 | `DanmakuSpec.duration_ms` 模块头注释与 `layout` 实现相反 | ✅ **2026-10-01 底座已按实现补全注释**（逐条 `travel_ms` 优先 → 回退轨道级 `duration_ms`；素材 `End` 不参与；静态 `\pos` 也走回退）。原复核笔记：看起来已在底座侧自行修正 —— `crates/dhampir-timeline/src/danmaku.rs` 里有多处"这条先前写错了"的更正注释，实现是 `cue.travel_ms.unwrap_or(spec.duration_ms)`（151 行）⇒ 只需确认模块头那句是否同步 |
-| **D4** | **底座自己发现**的一致性问题：`overlay.shape = 0`（纯色）取的是 `r2/g2/b2` 而不是 `r/g/b` | ✅ **底座已改实现**（改成取 `color_a`，并补了"故意 `r2≠r`"的真机判据）；对**我们零影响**（`solidEffect` 写的本来就是 `r2: col.r`）。⚠️ 底座提醒：将来若在 `shape=0` 时写 `r2≠r`，画面会与从前不同 ⇒ **本仓补了不变量**：`scripts/check-vtrim-translator.mjs` 的映射段断言纯色档 `r2==r && g2==g && b2==b`（+1 处变异）| — |
+| **D4** | **底座自己发现**的一致性问题：`overlay.shape = 0`（纯色）取的是 `r2/g2/b2` 而不是 `r/g/b` | ✅ **底座已改实现**（改成取 `color_a`，并补了"故意 `r2≠r`"的真机判据）；对**我们零影响**（`solidEffect` 写的本来就是 `r2: col.r`）。⚠️ 底座提醒：将来若在 `shape=0` 时写 `r2≠r`，画面会与从前不同 ⇒ **本仓补了不变量**：`scripts/check-yekitrim-translator.mjs` 的映射段断言纯色档 `r2==r && g2==g && b2==b`（+1 处变异）| — |
 
 > **交接材料已成文（M4，2026-09-30）**：三条的"自包含最小复现 + 证据 + 影响 + 可能方向 + 跟进约定"
 > 全在 **`docs/dhampir-base-issues.md`**（用仓库自带的演示工程就能复现，不依赖本机那些 `.workbuddy` 产物）。
@@ -114,13 +114,13 @@
 > ✅ **D1 已撤回（2026-10-01）**：底座 `c7f29b9` 复现不出来，我们复核也是"正常出图"
 > （`.workbuddy/p2-d1-verify.mjs`：窗口内平均差 39.33 / 窗口外逐字节相同 / angle=45 左上=color_a 右下=color_b）。
 > 原复现 JSON 无效（缺 `timeline.schema`；`end` 超素材帧数）⇒ 台账里那条"底座不出色罩"的说法**作废**，
-> `docs/vtrim-integration.md` §4.8 与 S4 决策书的硬前提 A 都已同步改过。
+> `docs/yekitrim-integration.md` §4.8 与 S4 决策书的硬前提 A 都已同步改过。
 >
 > ⚠️ 下面那段"**D1 修好后的**跟进项"保留作历史（① 复测 / ② 重标定 / ③④⑤ 文档已在本次做完）：
 > ① 先用 `node .workbuddy/run-parity.mjs demo` 复测
 > （overlay 窗口的像素差应**下降**）；② 因为色罩从"兜底腿画对、底座不画"变成"两条腿都画"，**基线会变**
 > ⇒ 按本台账的约定**重标定三样本**（活参照与黄金帧两套数字都要重取：`--capture-golden` 重冻一次）；
-> ③ 划掉本节 D1 与 `docs/dhampir-base-handoff.md` §1；④ 把 `docs/vtrim-integration.md` §4.8 的 overlay 行
+> ③ 划掉本节 D1 与 `docs/dhampir-base-handoff.md` §1；④ 把 `docs/yekitrim-integration.md` §4.8 的 overlay 行
 > 从"底座当前不出这个色罩（D1）"改成"已接并可见"；⑤ **之后**才谈 S4 删除（`s4-second-chain-removal-decision.md`）。
 >
 > ⚠️ **2026-10-01 新增自包含交接单**：`docs/dhampir-base-handoff.md`（D1 的最小 doc 内联成 JSON，
@@ -133,7 +133,7 @@
 
 ### M1 对拍基线（**先做这个**：没有它，后面每一步"像不像"都是嘴上说）
 
-- **工具已经有了**：`scripts/vtrim-compare.mjs`（零依赖 node，2026-09-30 随转译器一起迁进本仓）。
+- **工具已经有了**：`scripts/yekitrim-compare.mjs`（零依赖 node，2026-09-30 随转译器一起迁进本仓）。
   它一条命令跑完整条回路：**取固定样本（复制到运行目录，绝不动样本本体）** → 插测试事件 → 两边出片 →
   **先算源时间→输出时间映射再抽帧**（`mute_ranges` 会让"按源时间取帧"量到完全不相干的时刻）→
   每个窗口量三样：**像素差**（与窗口外基线比）、**高频比**（分"糊"与"锯齿"）、
@@ -143,12 +143,12 @@
 - 用法（本仓跑，别用底座仓的路径）：
 
   ```bash
-  node scripts/vtrim-compare.mjs --clip <片段目录> \
-    --vtrim <vtrim.exe> --out .workbuddy/vtrim-compare-<样本>
+  node scripts/yekitrim-compare.mjs --clip <片段目录> \
+    --yekitrim <yekitrim.exe> --out .workbuddy/yekitrim-compare-<样本>
   ```
 
   ⚠️ 它最后一步用 `python3`（要 **numpy**）算度量。本机 `python3` 是商店桩、`python` 不在 PATH ——
-  用 `VTRIM_PYTHON=<真解释器>` 指定（DSH 里就是 `load_workspace_dependencies` 给的那个
+  用 `YEKITRIM_PYTHON=<真解释器>` 指定（DSH 里就是 `load_workspace_dependencies` 给的那个
   `…\dependencies\python\python.exe`）。
 - M1 的三个交付（按顺序）：
   1. **产物名不再写死**（✅ 2026-09-30 已修）：原来硬编码 `vtuber-clip_1.mp4`，演示工程
@@ -156,7 +156,7 @@
      "有旧成片 ⇒ `_1`" 两种名字。
   2. **python 不写死**（✅ 2026-09-30 已修）：原来 `run('python', …)`，本机没有 ⇒ 两边都出完片、
      最后一步报 `Command failed: python …`（看着像渲染失败）。现在按
-     `VTRIM_PYTHON` → `python3` → `python` 依次试，全不行就把"要带 numpy 的 python"说清楚。
+     `YEKITRIM_PYTHON` → `python3` → `python` 依次试，全不行就把"要带 numpy 的 python"说清楚。
   3. **阈值断言 + 固定样本**（⏳）：把"像素差 / 高频比 / 位移"的判定写进脚本（阈值常量放头部 + 写清怎么定的），
      超了 `exit 1`；固定样本 ≥3 个（`docs/wgpu-effect-reference/demo` 最快、
      `.workbuddy/perf/realproj/output/clips/clip-08` 长片、一个**竖屏 + 带屏蔽区间**的），
@@ -167,7 +167,7 @@
 #### 第二次实测（2026-09-30 本轮，M1 三件套落地之后）
 
 命令：`node .workbuddy/run-parity.mjs demo|portrait|real|all`（node 包装在 `.workbuddy/`，把
-"带 numpy 的 python 在哪 / `vtrim.exe` 在哪 / 参数怎么拼"收在一处；`metric <样本>` 用 node 读报告）。
+"带 numpy 的 python 在哪 / `yekitrim.exe` 在哪 / 参数怎么拼"收在一处；`metric <样本>` 用 node 读报告）。
 
 | 样本 | 参照 vs 本仓 | 基线（**中位**像素差） | 逐点（窗口外 5 处） | 位移 | 判据 |
 |---|---|---|---|---|---|
@@ -190,7 +190,7 @@
    `real` 屏蔽后反而略高（8.04 → 9.77，屏蔽掉的区域本来恰好比较像）。
    两个数都照实打印 —— 屏蔽是判据口径，不是"看不见"的许可。
 
-**阈值 M1 定稿**（`scripts/vtrim-compare.mjs` 头部 `THRESHOLDS`，标定依据写在常量旁边）：
+**阈值 M1 定稿**（`scripts/yekitrim-compare.mjs` 头部 `THRESHOLDS`，标定依据写在常量旁边）：
 `baselinePixel 20`（中位口径；三样本 9.8~15.1，留 ~1.3–2 倍余量）、`maxDy 4`（实测全是 0）、
 `durationDeltaSec 0.2`（实测 0.000 —— **这条是拿"剪两次"那次事故换来的**）、窗口判据 `邻居 × 1.5 + 2`。
 `--baseline-pixel-max <n>` 可覆盖 —— **它就是"让断言红"的开关**，自证：
@@ -202,7 +202,7 @@
 验收对照：
 - **≥3 个真实工程** → `demo`（12s）/`portrait`（1080×1920）/`real`（133s 真实长片），全部跑通、判据全过；
 - **两条通道逐帧差异阈值** → 三条硬判据 + 窗口判据（上面「阈值 M1 定稿」）；
-- **可重复脚本** → `node scripts/vtrim-compare.mjs --fixture <名字|--all-fixtures>`（一条命令给出表 + 红/绿）；
+- **可重复脚本** → `node scripts/yekitrim-compare.mjs --fixture <名字|--all-fixtures>`（一条命令给出表 + 红/绿）；
   样本一律复制到运行目录，绝不动样本本体；缺样本：点名 = 报错并说清要准备什么、`--all-fixtures` = 跳过；
 - **CI 门禁** → 与 `render_bench.rs` 同规（要底座二进制 / ffmpeg / Chrome / GPU / numpy ⇒ **默认测试里不跑**），
   本机实操入口是 `.workbuddy/run-parity.mjs`（`demo|portrait|real|all`、`metric <样本>` 用 node 读报告）；
@@ -210,7 +210,7 @@
 
 **下一轮（M2）**：清 `DROP/CLAMP` 清单 —— 先做转译器报告里剩下那几条
 （`overlay_type = "fade_in" / "color"`、贴纸 `auto` 落点、弹幕高亮 `\c`、竖素材运镜门），
-每条要么修、要么把"为什么不修"写进报告与 `docs/vtrim-integration.md`。
+每条要么修、要么把"为什么不修"写进报告与 `docs/yekitrim-integration.md`。
 
 ### M2 报告清单清零（**进行中：2026-09-30 第一轮**）
 
@@ -223,7 +223,7 @@
 | `overlay_type = "fade_in" / "fade_out"` | ✅ **已修**：整窗线性斜坡、**不叠** 0.4s 包络（参照 `:1652-1658`）。**片头渐入就是这一档** —— 以前"开头渐入没生效"有一条是转译侧丢的 |
 | `gradient` 的包络 | ✅ **已修**：改走 `placeEnvelope`（以前整窗恒定 `amount`，头尾硬起硬落） |
 | 贴纸"没有 `sticker_tag`" | ✅ **已修**：`name` 才是后处理选定的文件名（旧写法**提前 return** ⇒ 选好的贴纸不进成片）。顺带修"只试 `.gif`"（PNG 贴纸会找不到） |
-| 贴纸落点 `auto` | ✅ **改成可操作**：落点是 `process` 的产物 ⇒ 报错里直接说"先跑一次 `vtrim polish process`"，**不猜位置**（底座没有安全区推导） |
+| 贴纸落点 `auto` | ✅ **改成可操作**：落点是 `process` 的产物 ⇒ 报错里直接说"先跑一次 `yekitrim polish process`"，**不猜位置**（底座没有安全区推导） |
 | `zoom="远"` 找不到倍率 | ✅ **已修**：兜底照抄模板 `camFactor`（**按档位**：远 0.55 / 近 1.5 / 其余 1.3、认不出按中景、`isFinite`）。以前统一退 1.0 ⇒ **远景档整段不拉远** |
 | 竖素材运镜门 | ✅ **本来就是实现的**（探源尺寸；探不到进 CLAMP）—— 卡与本文档那句"还没复刻"是**过期文案**，已改 |
 | `overlay_events` 元数据 | ✅ 顺手修：以前数的是一个**已经没人写入的数组**（永远 0）；现在改成诚实的计数器 |
@@ -234,7 +234,7 @@
 | `split`（shear） | ✅ **已随类型下线消失**（2026-10-01 D1）：底座没有 shear，本仓也就不再提供这一类 |
 
 **本轮加的守卫**（都在常规门禁里，不要 GPU）：
-- `scripts/check-vtrim-translator.mjs` 的第三段 **27 项映射检查**（含 `overlayBaseAngle` 的 8 项角度换算）（合成工程过一遍 `translate`：
+- `scripts/check-yekitrim-translator.mjs` 的第三段 **27 项映射检查**（含 `overlayBaseAngle` 的 8 项角度换算）（合成工程过一遍 `translate`：
   四档覆盖层的图层/形状/包络、只有 `name` 的贴纸、`zoomFactor` 六个取值）+ 两处新变异（15/15 打红）；
 - **`scripts/check-dhampir-drop-list.mjs`（新）**：把演示工程的 DROP/CLAMP 清单钉成**基线**，
   每条都写着"为什么它还在"；清单**多一条/少一条都红**，`--self-test` 自证这两个方向都会红。
@@ -275,14 +275,14 @@
 逐字相同，存量工程像素不变，有单测钉着）。另：封面出图的注册序改为**默认字体第一**
 （`cover_font_files_in`），Takumi 对认不出的族名回退到注册序第一支，不再按文件名字典序碰运气。
 
-**M2 剩下**：`real` 样本重新跑一次确认清单没反弹（本轮只跑了 `demo`）；以及把 `docs/vtrim-integration.md`
+**M2 剩下**：`real` 样本重新跑一次确认清单没反弹（本轮只跑了 `demo`）；以及把 `docs/yekitrim-integration.md`
 的第六节"已知差异"表与这里的清单对齐（本轮已改 §4.8 与 §5 的口径，§6 的逐条还没逐行核）。
 
 ✅ **2026-10-02 复跑（黄金帧口径）**：`demo` / `portrait` 判据全过 —— portrait 基线中位 **9.90** 与冻结值
 逐位一致、位移 0、时长差 0.000（进了几处与渲染无关的改动后无反弹）；⚠️ **`real` 样本本机不存在**
 （`.workbuddy/perf/realproj/…` 已不在），按约定明确跳过 —— 要再跑得先恢复那份工程。§6 逐条核对本轮做完：
 与 M2 清单唯一对不上的是 vignette 两行（§三 / M2 表还写着"不修"），已按 §4.8 的 2026-10-01 反转改齐；
-另把 `scripts/vtrim-compare.mjs` 活参照报错里的黄金帧路径从 `scripts/fixtures/compare-golden`（那是封面的）
+另把 `scripts/yekitrim-compare.mjs` 活参照报错里的黄金帧路径从 `scripts/fixtures/compare-golden`（那是封面的）
 改成实际的 `docs/golden/dhampir-parity` —— 旧提示会让人第一次就跑进坑里。守卫四件套本轮全绿：
 转译器（20 处变异全红）/ DROP 清单 6 项 / 接线 50 项 / 词汇表 104 消费点。
 
@@ -326,7 +326,7 @@
    —— 这本身就是半个项目，而且期间会有**两份实现并存**（模板改了要同步三处：模板、JS、Rust）。
 3. **依赖成本很低**：它**不是产品代码**（不 import `crates/`、不进二进制），node 只落在"出片机器"这一侧；
    而那台机器本来就要 **ffmpeg + ffprobe**（README 前置条件）与（chrome 那条腿要）**Chrome** —— 多一个 Node 安装
-   不是质变。反过来，本仓的对拍/守卫**本来就是 node**（`vtrim-compare.mjs` / `check-*.mjs`），
+   不是质变。反过来，本仓的对拍/守卫**本来就是 node**（`yekitrim-compare.mjs` / `check-*.mjs`），
    所以"CI 里没有 Node"这条理由不成立。
 4. **收益有限**：省掉一个安装 vs 一次大重写 + 永久两份实现风险。
 
@@ -338,7 +338,7 @@
 
 **如果真做，路线与验收**（先写在这里，省得下次重新想）：
 
-1. 新模块 `vtrim-polish/src/render/translate/` + `vtrim polish translate <dir> --out <doc>` 子命令；
+1. 新模块 `yekitrim-polish/src/render/translate/` + `yekitrim polish translate <dir> --out <doc>` 子命令；
 2. **A/B 对拍**：同一份 `polish.toml` 两条实现各出一份 doc，**逐字段比对**（结构与数值；先允许浮点误差），
    跑遍 M1 的三个样本 + 合成工程；
 3. 验收线：所有样本 doc **结构等价** + M1 对拍基线**不动**（像素差不变）；
@@ -348,9 +348,9 @@
 
 ```bash
 cargo check --workspace --all-targets          # 0 warnings
-cargo test -p vtrim-polish --lib               # 198+
-cargo test -p vtrim-server                     # 143+
-node scripts/check-vtrim-translator.mjs --mutate   # 334 曲线 + 13 颜色；13 处变异全红
+cargo test -p yekitrim-polish --lib               # 198+
+cargo test -p yekitrim-server                     # 143+
+node scripts/check-yekitrim-translator.mjs --mutate   # 334 曲线 + 13 颜色；13 处变异全红
 node scripts/check-dhampir-wiring.mjs          # 接线（含"出片腿带 --keep-muted / 预览腿不带"）
 node webui/scripts/check-preview-ab.mjs        # 预览 A/B（跳屏蔽区间）
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py

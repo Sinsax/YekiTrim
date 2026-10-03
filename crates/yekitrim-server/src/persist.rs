@@ -1,6 +1,6 @@
 //! Server 状态持久化：记住上次打开的工程。
 //!
-//! 文件位置：与全局配置同目录 `.vtrim/server.toml`（跟随数据目录的 `.vtrim/`）。
+//! 文件位置：与全局配置同目录 `.yekitrim/server.toml`（跟随数据目录的 `.yekitrim/`）。
 //!
 //! ⚠️ 这里只放**记忆**（"上次用了哪个工程"），不放**状态**。"当前工程"这个状态
 //! 2026-10-03 已删 —— 每个请求由 `scope::Scope` 按 `?project=<id>` 现场解析。
@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerState {
-    /// 上次 WebUI / server 使用的 vtrim.toml 绝对路径
+    /// 上次 WebUI / server 使用的 yekitrim.toml 绝对路径
     #[serde(default)]
     pub last_config_file: Option<String>,
-    /// 已知项目 vtrim.toml 路径列表（多项目直接加载）
+    /// 已知项目 yekitrim.toml 路径列表（多项目直接加载）
     ///
     /// ⚠️ 这是 **P1 时代**的项目清单，现在只用于"启动时只读导入"那条一次性迁移路径
     /// （`lib.rs::import_legacy_projects`）。P2 起归属以 `projects` 表为准，别在这里加新用途。
@@ -24,7 +24,7 @@ pub struct ServerState {
 }
 
 pub fn state_path() -> PathBuf {
-    yekitrim_core::path::vtrim_home().join("server.toml")
+    yekitrim_core::path::yekitrim_home().join("server.toml")
 }
 
 pub fn load_state() -> Option<ServerState> {
@@ -63,7 +63,7 @@ pub fn update_state<F: FnOnce(&mut ServerState)>(f: F) {
 
 /// 工程切换后调用，更新"上次用的是哪个工程"这条记忆。
 ///
-/// `vtrim server` 不带 `--config` 启动时靠它恢复上次的工程（见 `lib.rs`）。
+/// `yekitrim server` 不带 `--config` 启动时靠它恢复上次的工程（见 `lib.rs`）。
 pub fn remember_last(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
     update_state(move |state| {
@@ -71,7 +71,7 @@ pub fn remember_last(config_file: &Path) {
     });
 }
 
-/// 将项目 vtrim.toml 加入已知项目列表（不重复）。
+/// 将项目 yekitrim.toml 加入已知项目列表（不重复）。
 ///
 /// P2 起项目列表以 `projects` 表为准，这个函数只在过渡期别名写 `server.toml` 时用，
 /// 保留是为了让"启动时只读导入"这条迁移路径有对应的写入方。
@@ -85,17 +85,17 @@ pub fn remember_project(config_file: &Path) {
     });
 }
 
-/// 从已知项目列表移除一个 vtrim.toml（注销项目绑定用）。
+/// 从已知项目列表移除一个 yekitrim.toml（注销项目绑定用）。
 ///
 /// **同时清掉 `last_config_file`** —— 这一步不是顺手做的，少了它注销会被静默撤销：
 /// ① 启动流程每次都会把"当前工程"重新写回 `projects[]`（`lib.rs` 的
 ///    `server_state.projects.push(cfg_str)`）；② `import_legacy_projects` 会把 `projects[]` 里
 /// **"配置文件还在、DB 里没行"** 的路径重新登记到 admin 名下。
-/// 而注销项目**不删任何文件**（用户要求：只注销绑定），所以 `vtrim.toml` 一定还在 ——
+/// 而注销项目**不删任何文件**（用户要求：只注销绑定），所以 `yekitrim.toml` 一定还在 ——
 /// 于是"移除了当前正在看的项目 → 重启一次路径回到列表 → 再重启一次项目自己回来"。
 ///
 /// 清掉 `last_config_file` 之后，下次启动不再恢复那个工程，上面那条链就断了
-/// （`Workspace::load(None)` 回退到 `CWD/vtrim.toml` 且容忍文件缺失，不会因此启动失败）。
+/// （`Workspace::load(None)` 回退到 `CWD/yekitrim.toml` 且容忍文件缺失，不会因此启动失败）。
 pub fn forget_project(config_file: &Path) {
     let cfg = config_file.to_string_lossy().into_owned();
     update_state(|state| forget_project_in(state, &cfg));
@@ -111,7 +111,7 @@ fn forget_project_in(state: &mut ServerState, cfg: &str) {
 
 /// 旧版（P1 之前）的全局项目列表：`projects` 表接管后由启动流程**只读导入**一次。
 ///
-/// 返回仍然存在的 `vtrim.toml` 绝对路径；缺失的条目会被忽略（不导入、不报错）。
+/// 返回仍然存在的 `yekitrim.toml` 绝对路径；缺失的条目会被忽略（不导入、不报错）。
 pub fn legacy_projects() -> Vec<PathBuf> {
     load_state()
         .map(|s| {

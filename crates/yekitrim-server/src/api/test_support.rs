@@ -23,7 +23,7 @@ pub(crate) fn tmp_workspace(tag: &str) -> (Workspace, PathBuf) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let root = std::env::temp_dir().join(format!("vtrim-api-{tag}-{}-{nanos}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("yekitrim-api-{tag}-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(root.join("output")).unwrap();
     let ws = Workspace {
         config_file: root.join("yekitrim.toml"),
@@ -73,7 +73,7 @@ pub(crate) async fn test_app_with_must_change(must_change: bool) -> TestApp {
         .db()
         .create_user("admin", &hash, "admin", must_change, 0)
         .unwrap();
-    // 真项目目录 + 真 vtrim.toml：P2 之后所有接口都要经过项目作用域
+    // 真项目目录 + 真 yekitrim.toml：P2 之后所有接口都要经过项目作用域
     let root = dir.path().join("proj");
     std::fs::create_dir_all(root.join("output/clips")).unwrap();
     std::fs::write(root.join("a.mp4"), b"fake").unwrap();

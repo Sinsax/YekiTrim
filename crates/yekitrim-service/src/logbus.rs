@@ -121,7 +121,7 @@ pub fn bus() -> Arc<LogBus> {
 
 static FILE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 打开文件落盘，返回目录。**`vtrim server` 在解析完 `--data-dir` 后第一时间调用**
+/// 打开文件落盘，返回目录。**`yekitrim server` 在解析完 `--data-dir` 后第一时间调用**
 /// （之后的日志才进文件，所以要在启动横幅之前）。目录 = `<data_dir>/logs`。
 pub fn enable_file_log() -> PathBuf {
     let dir = FILE_DIR

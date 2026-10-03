@@ -1,6 +1,6 @@
 //! 账号账本（SQLite）。
 //!
-//! P1 最小切片只落 `users` + `audit`（供 `vtrim user` 使用）；`sessions` 表一并建好，
+//! P1 最小切片只落 `users` + `audit`（供 `yekitrim user` 使用）；`sessions` 表一并建好，
 //! HTTP 登录/会话在下一步接入。库位置：`$YEKITRIM_DATA_DIR/yekitrim.db`，
 //! 未设置时取 `<exe_dir>/.yekitrim/cloud/yekitrim.db`（与设计稿 §3.5.7 一致）。
 //!
@@ -43,7 +43,7 @@ pub fn data_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    yekitrim_core::path::vtrim_home().join("cloud")
+    yekitrim_core::path::yekitrim_home().join("cloud")
 }
 
 pub fn db_path() -> PathBuf {
@@ -156,7 +156,7 @@ pub struct ProjectRow {
     pub last_active_at: Option<i64>,
     pub source_bytes: u64,
     pub output_bytes: u64,
-    /// 目录/vtrim.toml 已不存在（列表里显示"缺失"而不是直接消失）
+    /// 目录/yekitrim.toml 已不存在（列表里显示"缺失"而不是直接消失）
     pub missing: bool,
 }
 
@@ -622,7 +622,7 @@ pub struct Db {
         })
     }
 
-    /// 统计某动作的审计条数（`vtrim doctor` 的安全摘要用）。
+    /// 统计某动作的审计条数（`yekitrim doctor` 的安全摘要用）。
     pub fn count_audit(&self, action: &str) -> Result<i64> {
         self.with(|conn| {
             Ok(conn.query_row(
@@ -1614,7 +1614,7 @@ mod tests {
 
     fn tmp_db() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
+        let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         (dir, db)
     }
 
@@ -1903,11 +1903,11 @@ mod tests {
 
         // ③ 覆盖为空串 ⇒ 等同没设（别把账本写到根目录去）
         std::env::set_var(yekitrim_core::path::DATA_DIR_ENV, "");
-        assert_eq!(data_dir(), yekitrim_core::path::vtrim_home().join("cloud"));
+        assert_eq!(data_dir(), yekitrim_core::path::yekitrim_home().join("cloud"));
 
         // ④ 没设 ⇒ 落到 `<数据目录>/.yekitrim/cloud`，且**状态目录名是新名**
         std::env::remove_var(yekitrim_core::path::DATA_DIR_ENV);
-        let expected = yekitrim_core::path::vtrim_home().join("cloud");
+        let expected = yekitrim_core::path::yekitrim_home().join("cloud");
         assert_eq!(data_dir(), expected);
         assert!(
             expected.to_string_lossy().contains(".yekitrim"),

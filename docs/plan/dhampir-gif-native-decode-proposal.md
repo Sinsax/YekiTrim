@@ -1,18 +1,18 @@
 # 提案：底座原生解码 GIF（贴纸动图直通）
 
-> 来源：V-Trim 仓库（精修预览 + 出片宿主）。目的：把贴纸动图从「宿主逐帧喂位图」改成
+> 来源：YekiTrim 仓库（精修预览 + 出片宿主）。目的：把贴纸动图从「宿主逐帧喂位图」改成
 > 「底座引擎自己解码、自己按时间取帧」，消灭逐帧 HTTP 与宿主侧整条取帧管线。
 > 状态：**讨论稿** —— API 命名与内部实现由底座定，本文只钉契约语义与验收判据。
 
 ---
 
-## 1. 现状（V-Trim 侧，2026-10 实测数字）
+## 1. 现状（YekiTrim 侧，2026-10 实测数字）
 
 贴纸是全链路**唯一**还在逐帧走网络的资产：视频是宿主侧 `<video>` 直供，字幕/弹幕在 wasm 里解析。
 贴纸现状：
 
 ```
-进页面     V-Trim 服务端预热：整段解码 GIF → PNG 帧表（进程内缓存，键 = mtime+len）
+进页面     YekiTrim 服务端预热：整段解码 GIF → PNG 帧表（进程内缓存，键 = mtime+len）
            冷解码单张 3~9s（66 帧 GIF，debug 构建）
 播放中     宿主按帧调 POST /api/polish/sticker-frame → 服务端缓存取帧 → base64 PNG（~390KB/帧）
            回程 14~25ms/帧；宿主 createImageBitmap → 常驻 canvas → setSourceBitmap
@@ -24,7 +24,7 @@
 痛点：① 逐帧 HTTP（seek 后首帧晚 ~20ms、偶发一帧抖动）；② base64 膨胀 1.33×；
 ③ 宿主自己换算帧号 —— 相位/延迟语义两处实现（服务端出片 vs 前端预览），一致性靠纪律守。
 
-## 2. V-Trim 已经提供给底座的数据（工程 JSON 里，无需新增）
+## 2. YekiTrim 已经提供给底座的数据（工程 JSON 里，无需新增）
 
 转译器（`tools/polish-to-dhampir.mjs`）为每个贴纸资产写的字段，**底座可以直接消费**：
 
@@ -61,13 +61,13 @@ dhampir_asset_gif_info(asset_id: &str) -> Option<GifInfo>
 
 兼容策略建议：版本号硬门禁（现有机制：宿主 `DHAMPIR_HOST_API` 与底座
 `dhampir_host_api_version()` 不等就当场报错），**两边同一次提交里一起 bump**。
-V-Trim 侧有跨仓门禁 `scripts/check-dhampir-wiring.mjs` 把这个数钉住（现在 = 5）。
+YekiTrim 侧有跨仓门禁 `scripts/check-dhampir-wiring.mjs` 把这个数钉住（现在 = 5）。
 
 ## 4. 底座实现要点（已知坑，全部实测过）
 
 1. **GIF 解码器**：纯 Rust `gif` crate（MIT/Apache，无 GPL 传染）即可；
    disposal method（restore-to-bg / restore-to-previous）、局部调色板、交错存储都要走对 ——
-   V-Trim 服务端解码器（`decode_sticker_frames_png`）是出片权威，两边语义对齐。
+   YekiTrim 服务端解码器（`decode_sticker_frames_png`）是出片权威，两边语义对齐。
 2. **内存预算（最要紧）**：解码 RGBA 帧很大 —— 500×500×4B ≈ 1MB/帧，66 帧 ≈ **66MB/张**，
    四张贴纸就是 264MB，不能全量常驻。建议二选一：
    - **按目标尺寸解码**：渲染目标尺寸 = 工程缩放后的盒子（`280 × min(W,H)/1080` 那套），
@@ -82,21 +82,21 @@ V-Trim 侧有跨仓门禁 `scripts/check-dhampir-wiring.mjs` 把这个数钉住�
 6. **原生/浏览器同源**：出片（native）与预览（wasm）必须用**同一个解码实现** ——
    这是本提案的核心收益：贴纸帧的一致性从「两份实现对齐」变成「同一份实现」。
 
-## 5. V-Trim 侧将配套做的事（底座就绪后一次落地）
+## 5. YekiTrim 侧将配套做的事（底座就绪后一次落地）
 
 - `DHAMPIR_HOST_API` 5 → 6（含 `scripts/check-dhampir-wiring.mjs` 的跨仓钉子）。
 - 宿主删整条逐帧管线：`/polish/sticker-frame`、`/polish/sticker-prewarm` 的**预览消费**、
   `dhampirStickersFrom` 的帧号/相位/在飞去重逻辑（保留层区间重建，供诊断条）。
-  服务端解码器保留 —— 出片腿（V-Trim 服务端 PNG 帧）在底座出片也切 GIF 前仍是权威。
+  服务端解码器保留 —— 出片腿（YekiTrim 服务端 PNG 帧）在底座出片也切 GIF 前仍是权威。
 - 帧循环里改为：每贴纸 fetch 一次 GIF（`clipMediaUrl`，带缓存）→
   `dhampir_asset_load_gif(assetId, bytes)` → 完事。
 - 门禁更新：`check-dhampir-wiring` 的位图探针换成 GIF 探针；parity 对拍
-  （`scripts/vtrim-compare.mjs --golden`）重跑三样本。
+  （`scripts/yekitrim-compare.mjs --golden`）重跑三样本。
 
 ## 6. 验收判据（两边共用）
 
 1. **逐帧一致**：同一工程、同一帧号，预览贴纸像素与出片一致
-   （V-Trim 侧黄金帧对拍：基线中位像素差 ≤ 现行阈值 20/255，贴纸窗口重点抽查）。
+   （YekiTrim 侧黄金帧对拍：基线中位像素差 ≤ 现行阈值 20/255，贴纸窗口重点抽查）。
 2. **相位正确**：GIF 从层起点起播、`source_in` 偏移生效；非匀速表按延迟走
    （构造一个 [30,30,…,200,…] 的测试 GIF 钉住）。
 3. **性能**：页面加载每贴纸一次传输（GIF 原文件，通常 0.1~2MB）；播放期**零**贴纸请求；

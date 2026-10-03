@@ -482,7 +482,7 @@ function curveAdjust(t){
 // 总音量 (预览 UI 控制, localStorage 记忆; 渲染不受影响)
 var MASTER_VOL=1,MASTER_MUTED=false;
 // 注意: 不能写成 `parseFloat(...)||1` —— 音量 0 是合法值, falsy 判定会把它读回 1
-try{var _sv=parseFloat(localStorage.getItem('vtrim_master_vol'));MASTER_VOL=isFinite(_sv)?Math.min(1,Math.max(0,_sv)):1;MASTER_MUTED=localStorage.getItem('vtrim_muted')==='1';}catch(e){}
+try{var _sv=parseFloat(localStorage.getItem('yekitrim_master_vol'));MASTER_VOL=isFinite(_sv)?Math.min(1,Math.max(0,_sv)):1;MASTER_MUTED=localStorage.getItem('yekitrim_muted')==='1';}catch(e){}
 var audioCtx=null,sfxCache={};
 function sfxPlay(name,vol,dur){
   if(!name)return;
@@ -1271,12 +1271,12 @@ function init(){
   }
   volBtn.addEventListener('click',function(){
     MASTER_MUTED=!MASTER_MUTED;
-    try{localStorage.setItem('vtrim_muted',MASTER_MUTED?'1':'0');}catch(e){}
+    try{localStorage.setItem('yekitrim_muted',MASTER_MUTED?'1':'0');}catch(e){}
     applyMasterVol();
   });
   volBar.addEventListener('input',function(){
     MASTER_VOL=this.value/100;MASTER_MUTED=false;
-    try{localStorage.setItem('vtrim_master_vol',MASTER_VOL);localStorage.setItem('vtrim_muted','0');}catch(e){}
+    try{localStorage.setItem('yekitrim_master_vol',MASTER_VOL);localStorage.setItem('yekitrim_muted','0');}catch(e){}
     applyMasterVol();
   });
   applyMasterVol();
@@ -1430,7 +1430,7 @@ function init(){
     // 竖视频素材不做运镜 —— **与画布方向无关**（用户报的就是"竖素材进横画布导出还在缩放"）。
     // 与 engine.js `cameraAt` 逐值同口径：zoom 一并归零，不只是 handheld；不动点仍按
     // `layout.liver` 的 origin 给（zoom=1 时用不到，纯为三条 JS 路径同值）。
-    // ⚠️ vtrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
+    // ⚠️ yekitrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
     // 既有实现（不在 Chrome 出片链路上），两边口径的差异记在这里，别照抄回去。
     if (CFG.vertical) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
 

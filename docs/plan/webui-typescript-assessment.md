@@ -16,7 +16,7 @@
 |---|---|---|
 | `webui/src/**/*.js`（手写，已排除 `src/wasm/` 的生成物） | 22 个文件 | **2,727** |
 | `webui/src/**/*.vue`（其中 `<script setup>` 约占 6,500 行） | 36 个文件 | **10,989** |
-| `crates/vtrim-polish/templates/index.html` 内联 JS（两段 `<script>`） | — | **≈2,315**（全文 2,562） |
+| `crates/yekitrim-polish/templates/index.html` 内联 JS（两段 `<script>`） | — | **≈2,315**（全文 2,562） |
 | **真实迁移目标** | | **≈9,000 行** |
 
 单文件热点（`<script setup>` 行数）：
@@ -38,7 +38,7 @@
 - **无测试、无 CI**：没有 `*.test.js` / `*.spec.js` / vitest / jest 配置，**没有 `.github/` 目录**。
 - **类型标注近乎为零**：`webui/src` 全文只有 **`@param` ×1、`@returns` ×1**（都在 `api/client.js`），`@typedef` / `@type` / `@ts-check` 均为 0。
 - **无运行时 schema 校验**（没有 zod / io-ts / ajv 之类）：`api()` 只做 content-type 嗅探 + `JSON.parse` try/catch + `ok === false` 判断，之后所有 payload 都当裸对象用。
-- **权威形状只在 Rust 侧**（`crates/vtrim-render-core/src/types.rs`、`crates/vtrim-polish/...` 的 serde 结构），前端没有镜像、也没有生成器 —— 前端改错字段名在编译期没有任何提示。
+- **权威形状只在 Rust 侧**（`crates/yekitrim-render-core/src/types.rs`、`crates/yekitrim-polish/...` 的 serde 结构），前端没有镜像、也没有生成器 —— 前端改错字段名在编译期没有任何提示。
 - ⚠️ **唯一的漂移防线没有纳入版本控制**：`git ls-files webui/scripts/` **返回空**，即 `check-overlay.mjs`（覆盖层色档契约的对拍脚本）**未被 git 跟踪**，也没有挂进任何 npm script（`scripts` 只有 `dev`/`build`/`preview`/`build:wasm`）或 CI。它随时可能悄悄消失。
 
 ## 3. 历史缺陷分类（判断"TS 值不值"的关键）

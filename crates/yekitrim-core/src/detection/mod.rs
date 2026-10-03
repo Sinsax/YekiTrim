@@ -1,7 +1,7 @@
 //! detection：Stage 3 事件检测（LLM 分批窗口 + 弹幕/字幕热度 + LLM 传播潜力评分 + 后处理）。
 //!
 //! 入口：`EventDetector`、`load_events`、`merge_split_events`；`llm` 子模块的 prompt 常量与 `test_llm` 在此重导出。
-//! 边界：**不做最长时长等分切分**（曾把连续事件切成 `xxx（1/2）`，用户明确反对）；后处理顺序（丢非法 → 排序 → 合并 → 吸附到段边界 → 最短 30s）是硬约束 —— 见 `crates/vtrim-core/src/detection/AGENTS.md`
+//! 边界：**不做最长时长等分切分**（曾把连续事件切成 `xxx（1/2）`，用户明确反对）；后处理顺序（丢非法 → 排序 → 合并 → 吸附到段边界 → 最短 30s）是硬约束 —— 见 `crates/yekitrim-core/src/detection/AGENTS.md`
 
 use std::collections::BTreeMap;
 

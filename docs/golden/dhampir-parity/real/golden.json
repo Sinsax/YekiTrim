@@ -1,7 +1,7 @@
 {
   "fixture": "real",
   "captured_at": "2026-10-01T09:06:51.964Z",
-  "frozen_from": "vtrim polish render --renderer chrome（兜底腿最后一次渲染）",
+  "frozen_from": "yekitrim polish render --renderer chrome（兜底腿最后一次渲染）",
   "frames": 4000,
   "duration": 133.333333,
   "fps": 30,

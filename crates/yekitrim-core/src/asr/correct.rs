@@ -1,7 +1,7 @@
 //! asr::correct：LLM 订正转写文本（分窗走 `Agent`，带 checkpoint 续传）。
 //!
 //! 入口：`correct_transcript`、`correct_transcript_with_checkpoint`、`DEFAULT_SYSTEM_PROMPT`、`DEFAULT_USER_PROMPT`。
-//! 边界：订正稿是**普通素材**，走 `bind_derived_material`、不占 ASR 槽；改内建 prompt 对 `.vtrim/config.toml` 里的副本无效 —— 见 `crates/vtrim-core/src/asr/AGENTS.md`
+//! 边界：订正稿是**普通素材**，走 `bind_derived_material`、不占 ASR 槽；改内建 prompt 对 `.yekitrim/config.toml` 里的副本无效 —— 见 `crates/yekitrim-core/src/asr/AGENTS.md`
 
 use std::path::Path;
 

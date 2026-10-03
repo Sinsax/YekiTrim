@@ -14,7 +14,7 @@ use axum::response::IntoResponse;
 
 /// `dist` 候选目录，按优先级：
 /// 1. 可执行文件同级 `webui/dist` —— **发布包**的形状（`xtask package` 把 dist 放在 exe 旁边）
-/// 2. 可执行文件上两级 `webui/dist` —— **开发树**（`target/debug/vtrim.exe` 往上两级是仓库根）
+/// 2. 可执行文件上两级 `webui/dist` —— **开发树**（`target/debug/yekitrim.exe` 往上两级是仓库根）
 /// 3. 仓库内 `webui/dist`（构建期常量）—— **只当最后的保险**
 /// 4. 当前工作目录下 `webui/dist`
 ///
@@ -26,9 +26,9 @@ use axum::response::IntoResponse;
 /// 现在 exe 附近的两条排在前面，构建期那条退居保险 —— 它的价值是
 /// 「`cargo run` 时 exe 在 `target/debug/`、dist 在仓库根」这个开发常态。
 ///
-/// ⚠️ 第 3 条的 `../..` 是**按 crate 深度**算的：`crates/vtrim-server` → 仓库根。
-/// 本 crate 从 `crates/vtrim-cli/src/server/` 搬出来时深度没变（都是 `crates/<crate>`），
-/// 所以路径照旧。**别把本 crate 挪到更深的目录**（如 `crates/server/vtrim-server`）——
+/// ⚠️ 第 3 条的 `../..` 是**按 crate 深度**算的：`crates/yekitrim-server` → 仓库根。
+/// 本 crate 从 `crates/yekitrim-cli/src/server/` 搬出来时深度没变（都是 `crates/<crate>`），
+/// 所以路径照旧。**别把本 crate 挪到更深的目录**（如 `crates/server/yekitrim-server`）——
 /// 那时 `../..` 指到 `crates/`，WebUI 会静默 404（构建与测试都不报错）。
 fn candidates() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();

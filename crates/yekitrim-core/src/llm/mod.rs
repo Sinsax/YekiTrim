@@ -1,7 +1,7 @@
 //! llm：统一 LLM 客户端（OpenAI 兼容）与用量记账出口。
 //!
 //! 入口：`LlmClient`（`new` / `from_config` / `chat` / `send` / `with_usage_context`）；子模块 `agent`（批量窗口编排）、`usage`（用量记录与 sink）。
-//! 边界：core 只 `emit` 用量记录，写库由 CLI / server 侧装的 sink 负责；各链路别自己写 `reqwest` —— 见 `crates/vtrim-core/src/llm/AGENTS.md`
+//! 边界：core 只 `emit` 用量记录，写库由 CLI / server 侧装的 sink 负责；各链路别自己写 `reqwest` —— 见 `crates/yekitrim-core/src/llm/AGENTS.md`
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use usage::{UsageRecord, UsageSink};
 /// - 429 / 5xx / 超时 / 连接错误自动重试（指数退避，最多 3 次）
 ///
 /// 两条构造路径：
-/// - [`LlmClient::from_config`] — 从 `LlmConfig`（vtrim.toml / .vtrim/config.toml）构造，
+/// - [`LlmClient::from_config`] — 从 `LlmConfig`（yekitrim.toml / .yekitrim/config.toml）构造，
 ///   携带 temperature / max_tokens / extra_params（含 thinking 等透传参数）
 /// - [`LlmClient::new`] — 从裸参数构造（polish 用），默认 temperature 0.3、不发送 max_tokens
 /// 浏览器 UA：部分网关/反爬会按 UA 放行，缺了容易被拒。

@@ -76,7 +76,7 @@
   **不含口令哈希**，供"待分配池指派给谁"下拉使用。
 - **邀请码与注册**（`POST /auth/register`）：三重条件 = `[auth] registration_enabled` 开着 + 邀请码有效 +
   未过期；失败**一律 403**（不区分"码不对/码用过"，防被拿来枚举），限流按 IP（key `register|<ip>`，
-  与登录**分开**）；账本 v5 的邀请码**明文落库、可重复查看**（与 `vtrim ingest token`"明文只见一次"
+  与登录**分开**）；账本 v5 的邀请码**明文落库、可重复查看**（与 `yekitrim ingest token`"明文只见一次"
   是**两条相反的规矩**）。口径正文与消费实现都在 `crates/yekitrim-service/AGENTS.md`，本卡不重复搬运。
 - **素材清单端点 `GET/POST /api/project-data/assets`**：`POST` 三种形态 ——
   `{kind, path}` 与 `{kind, dir, name}`（写前先解析一遍，解析失败一律不落盘；`{dir, name}` 这条
@@ -86,7 +86,7 @@
   （遍历 `yekitrim_core::config::ASR_MODES` 调 `slot_bound`，前端**不自己从 `items` 推**）、
   ⚠️ **清单写入必须单次 `patch_config_file`**（生效值 + 整份清单走同一个 patch）—— 这两条以及
   清单落地形态 `[project.materials]` 的正文在 `webui/src/views/AGENTS.md`，本卡不重复搬运。
-- `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` / `vtrim.toml` / 全局配置的读-改-写
+- `/api/polish/*` 的 `dir` 必须是非空且存在的目录；`polish.toml` / `events.json` / `yekitrim.toml` / 全局配置的读-改-写
   走 `yekitrim_core::filelock::with_path_lock` 串行化；**写 `polish.toml` 一律走路径锁**（编辑器保存、去静音、封面配置、
   `cmd_parse` 全在改同一份文件 —— 无锁的 read-modify-write 会静默丢改动）。
 - ⚠️ **渲染 / 封面任务的收尾日志只报状态、不带路径**（2026-09-21 用户要求）：成功行就是
@@ -102,14 +102,14 @@
   「剪切完成 ⇒ `polish_ready`」是切片页「精修」按钮不再撞 `polish.toml not found` 的前提，
   **别在 handler 里另开一条 init（或预热）路径**（两份实现必然漂移）。
 - `/api/health` 是**未认证**接口：不含账号数量、不含"是否仍用初始密码"（那等于告诉远端"这台机器还在用初始密码"），
-  也不含任何路径；要看这些走 `/api/admin/users`、`/api/me` 或 `vtrim doctor`。`GET /api/admin/usage` 与
+  也不含任何路径；要看这些走 `/api/admin/users`、`/api/me` 或 `yekitrim doctor`。`GET /api/admin/usage` 与
   `/api/admin/logs` **仅 admin**：记录含**其他用户的工程路径**与任务输出（两者同一个理由）。
 
 ### 同步 IO 纪律（剪切时"整个服务器连不上"的根因，2026-09）
 
 - ⚠️ **同步 IO 绝不能留在 async 线程上（剪切时"整个服务器连不上"的根因，2026-09）**：
   项目目录经常在网络盘上（RaiDrive/WebDAV 挂载的录播目录），剪切/渲染把盘占满时，
-  一次 `exists()`、一次读 `vtrim.toml` 就要几百毫秒到几秒。这类调用留在 tokio worker 上做，
+  一次 `exists()`、一次读 `yekitrim.toml` 就要几百毫秒到几秒。这类调用留在 tokio worker 上做，
   十几个并发（前端一次页面加载就会打出一串）就能把 worker 全占住 —— runtime 连 accept
   都排不上，浏览器表现就是"服务器无法建立连接"，而日志里一行都没有（请求根本没处理完）。
   实测样本：`GET /api/projects` 有 2288ms 的记录，日志里 1 秒内 52 次连发。
@@ -147,8 +147,8 @@
 ### 路径面三防线（多租户的头号风险，改动前先读）
 
 **服务端能读写的文件范围 = 请求里出现的每一个路径字段，而不是"项目目录"这个概念。**
-曾经有三处漏了归属校验，普通登录用户就能把服务器上任意文件（`<数据目录>/.vtrim/llm.toml`
-里的 **LLM API key**、账号账本 `cloud/vtrim.db` 里的明文邀请码与全部真实路径）复制/读进
+曾经有三处漏了归属校验，普通登录用户就能把服务器上任意文件（`<数据目录>/.yekitrim/llm.toml`
+里的 **LLM API key**、账号账本 `cloud/yekitrim.db` 里的明文邀请码与全部真实路径）复制/读进
 自己的项目，再用 `/api/media` 取回。三道防线，缺一不可：
 
 | 防线 | 位置 | 规矩 |

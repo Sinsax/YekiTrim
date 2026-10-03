@@ -44,7 +44,7 @@ python     3.13.14
 | `api.bilibili.com/.../view?bvid=` | 200 / 113ms | 200 / 114ms |
 
 ⚠️ **本机环境带 `HTTP_PROXY`/`HTTPS_PROXY`，子进程会继承**。实测中所有 yt-dlp 调用都**显式清掉**了这 4 个变量。
-`vtrim server` 拉起 yt-dlp 时也必须这么做 —— 否则用户的代理会作用到 B站流量上（境外出口既慢又更容易触发风控）。
+`yekitrim server` 拉起 yt-dlp 时也必须这么做 —— 否则用户的代理会作用到 B站流量上（境外出口既慢又更容易触发风控）。
 
 ## T1 供应链可钉死（选型文档 §3.3 ✅ 成立）
 
@@ -63,7 +63,7 @@ python     3.13.14
 判定        MATCH ✅          下载耗时 1.8s
 ```
 
-> 与 `vtrim-core/src/download.rs::MODEL_REGISTRY` 是同一个套路，机制不必新发明。
+> 与 `yekitrim-core/src/download.rs::MODEL_REGISTRY` 是同一个套路，机制不必新发明。
 > ⚠️ 但 `yt-dlp.exe` 是 PyInstaller 打的自带解释器的 PE，`cargo xtask scan` 那套 espeak 门禁**覆盖不到它的内部依赖**，
 > 许可声明要单独写（yt-dlp 本体 Unlicense，随包 Python 运行时另计）。
 
@@ -74,7 +74,7 @@ yt-dlp.exe --version   exit=0   out=['2026.08.19']
 yt-dlp.exe -version    exit=2   无有效输出
 ```
 
-`crates/vtrim-server/src/api/mod.rs:143`：
+`crates/yekitrim-server/src/api/mod.rs:143`：
 
 ```rust
 pub(crate) fn command_available_blocking(cmd: &str) -> Option<String> {
@@ -228,13 +228,13 @@ exit=0
 ### 6.1 `--print after_move:filepath` ✅ 成立
 
 ```
-stdout 回报：F:\para\Code\V-Trim\.workbuddy\p4-verify\dl\BV12N4y1M7rh.mp4
+stdout 回报：F:\para\Code\YekiTrim\.workbuddy\p4-verify\dl\BV12N4y1M7rh.mp4
 fs 命中    ：存在=True   大小=19,447,680B
 耗时 6.8s，附产物封面 BV12N4y1M7rh.jpg (204,833B)
 ffprobe    ：mov,mp4, duration=313.557  stream: hevc 640x360 / aac
 ```
 
-**回报的是绝对路径**，可以直接写进 `vtrim.toml`，不需要拼路径。
+**回报的是绝对路径**，可以直接写进 `yekitrim.toml`，不需要拼路径。
 
 ### 6.2 ⚠️ 约束 1：默认会选到 **HEVC（H.265）**
 
@@ -271,7 +271,7 @@ stdout:
   F:\...\dl\prog2.mp4              ← --print 的输出，和进度混在同一流
 ```
 
-→ 必须用**哨兵前缀**分流（`--progress-template "VTRIM_PROG:..."` 与 `--print "VTRIM_PATH:..."`），
+→ 必须用**哨兵前缀**分流（`--progress-template "YEKITRIM_PROG:..."` 与 `--print "YEKITRIM_PATH:..."`），
 按行前缀解析，别按"最后一行是路径"这种脆弱约定。
 
 ### 6.5 ⚠️ 约束 4：`--cookies` 只认 Netscape 格式
@@ -298,7 +298,7 @@ Netscape 格式（不是浏览器扩展默认的 JSON）。JSON 传进去**静�
 yt-dlp issue **#14793**：legacy 老视频（av 号时代）**页面里没有 `__INITIAL_STATE__`**，
 而提取器依赖它。维护者给的绕过方式是**重定向到 bvid 形式**。
 
-对 V-Trim 的意义：**直播录像都是新视频，这类失败基本不会遇到**。
+对 YekiTrim 的意义：**直播录像都是新视频，这类失败基本不会遇到**。
 但要作为独立错误类映射出去（不是用户的错，重试也没用）。
 
 ### 实测到的 stderr 关键字（喂给 §错误分类表）
@@ -358,7 +358,7 @@ p="0.60100,4,25,15138834,1604742895,0,9e5adeaa,40685126698926083,10"
 
 ### 后果：现有代码在主站 XML 上**全部 y=1500**
 
-`crates/vtrim-core/src/danmaku/mod.rs:164-168`：
+`crates/yekitrim-core/src/danmaku/mod.rs:164-168`：
 
 ```rust
 let row: f64 = parts.get(7).and_then(parse).filter(|v: &f64| *v > 0.0)
@@ -386,7 +386,7 @@ y: row.clamp(0.0, 1500.0),
 
 ### 项目固件本身也是错的
 
-`crates/vtrim-core/src/danmaku/mod.rs:414` 的测试固件注释写着「录播姬写出的 B站标准弹幕 XML（官方样例结构）」，
+`crates/yekitrim-core/src/danmaku/mod.rs:414` 的测试固件注释写着「录播姬写出的 B站标准弹幕 XML（官方样例结构）」，
 但内容是**手编的 8 段、第 8 段是小行号**：
 
 ```

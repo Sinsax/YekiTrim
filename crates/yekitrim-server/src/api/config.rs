@@ -23,8 +23,8 @@ pub(super) async fn models_get() -> ApiResult {
 fn models_impl() -> ApiResult {
     // 判定与运行时同源（`download::model_install`：配置目录 → 用户目录 → 程序目录 + marker），
     // 列表也来自注册表 `model_names()` —— 别再手写模型数组，也别只看程序目录：
-    // 曾经界面按"<exe>/.vtrim/models 有没有这个目录"判，而 qwen3-asr 放在用户目录
-    // `~/.vtrim/models/qwen3-asr`，于是显示"未下载"、实际转写一直在用它。
+    // 曾经界面按"<exe>/.yekitrim/models 有没有这个目录"判，而 qwen3-asr 放在用户目录
+    // `~/.yekitrim/models/qwen3-asr`，于是显示"未下载"、实际转写一直在用它。
     let asr = yekitrim_core::config::load_global_config().asr;
     let out: Vec<serde_json::Value> = yekitrim_core::download::model_names().iter().map(|name| {
         let st = yekitrim_core::download::model_install(&asr, name);
@@ -41,10 +41,10 @@ fn models_impl() -> ApiResult {
     ok(serde_json::json!(out))
 }
 
-/// `GET /api/config`：**程序配置**（`.vtrim/config.toml` + `.vtrim/llm.toml`）的读取。
+/// `GET /api/config`：**程序配置**（`.yekitrim/config.toml` + `.yekitrim/llm.toml`）的读取。
 ///
 /// ⚠️ **这条路是"项目无关"的**（2026-10-03 随全局工程一起收拾干净）：设置页五块内容改的都是
-/// **程序级**配置，编辑的是 global-only 的值 —— merged config 会被某个工程的 `vtrim.toml`
+/// **程序级**配置，编辑的是 global-only 的值 —— merged config 会被某个工程的 `yekitrim.toml`
 /// 覆盖，直接用就会出现「表单值和源文件对不上」。
 ///
 /// 于是原来那三样项目相关的东西一并去掉，它们**没有任何消费方**：
@@ -57,7 +57,7 @@ fn models_impl() -> ApiResult {
 /// 要读某个工程的配置：`GET /api/project-data/config?project=<id>`。
 /// 要读合并后的生效配置：也走那条（它按项目解析）。
 pub(super) fn config_get_impl() -> ApiResult {
-    let home = yekitrim_core::path::vtrim_home();
+    let home = yekitrim_core::path::yekitrim_home();
     // ⚠️ 同步 IO：读 config.toml / llm.toml 两份（含 API key），调用方必须下 blocking 池。
     let global_raw = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
     let llm_raw = std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default();
@@ -99,7 +99,7 @@ pub(super) const PROJECT_PATH_KEYS: [(&str, &str); 9] = [
     ("project", "audio_file"),
     ("project", "events_file"),
     ("cutting", "output_dir"),
-    // ⚠️ `[ingest]` 这几个是**后补的**：它们由 `config/mod.rs` 的 merge 从**项目** `vtrim.toml`
+    // ⚠️ `[ingest]` 这几个是**后补的**：它们由 `config/mod.rs` 的 merge 从**项目** `yekitrim.toml`
     // 并进生效配置（`ingest.ytdlp_path` / `cookie_file` / `recorder.root`），
     // 于是非 admin 可以经 `PUT /api/project-data/config` 写进去。
     // 今天没有实弹：消费侧（`download_worker` / `ingest`）读的是**全局**配置，而全局只有 admin 能写。
@@ -187,12 +187,12 @@ fn check_material_paths(ws: &Workspace, value: &serde_json::Value) -> Result<(),
 
 /// `GET /api/project-data/config`：**某个工程**的配置读取（项目设置页 / 预处理页）。
 ///
-/// 与 `config_get_impl`（程序配置，项目无关）**故意分开**：这里返回的是这个工程的 `vtrim.toml`
+/// 与 `config_get_impl`（程序配置，项目无关）**故意分开**：这里返回的是这个工程的 `yekitrim.toml`
 /// 原文与**合并后**的生效配置（全局 + 工程 + llm），那才是"这个工程实际会用的值"。
 /// 两者曾经共用一份实现，于是项目相关字段（`config_file`/`root_dir`/`yekitrim_raw`/`config`）
 /// 被一并挂在项目无关的 `/api/config` 上 —— 2026-10-03 拆开。
-pub(super) fn config_vtrim_get_impl(ws: &Workspace) -> ApiResult {
-    // ⚠️ 同步 IO：读 vtrim.toml + 解析合并，调用方下 blocking 池。
+pub(super) fn config_yekitrim_get_impl(ws: &Workspace) -> ApiResult {
+    // ⚠️ 同步 IO：读 yekitrim.toml + 解析合并，调用方下 blocking 池。
     let yekitrim_raw = std::fs::read_to_string(&ws.config_file).unwrap_or_default();
     let (config, config_error) = match ws.load_config() {
         Ok(c) => (serde_json::to_value(c).unwrap_or_default(), String::new()),
@@ -208,7 +208,7 @@ pub(super) fn config_vtrim_get_impl(ws: &Workspace) -> ApiResult {
     }))
 }
 
-pub(super) fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
+pub(super) fn config_yekitrim_put_impl(ws: &Workspace, body: &serde_json::Value, is_admin: bool) -> ApiResult {
     // patch 模式：`{ section: { key: value } }` 合并写（保留注释与其他 section），
     // 前端设置表单用它，避免"读整份 TOML → 正则替换 → 写回"这种易碎做法。
     if let Some(patch) = body.get("patch") {
@@ -243,7 +243,7 @@ pub(super) fn config_vtrim_put_impl(ws: &Workspace, body: &serde_json::Value, is
 /// - `raw`：源文件模式，整份覆盖写；
 /// - `patch`：表单模式，`{ section: { key: value } }` 合并写，未涉及的 section/注释原样保留。
 pub(super) async fn config_global_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let path = yekitrim_core::path::vtrim_home().join("config.toml");
+    let path = yekitrim_core::path::yekitrim_home().join("config.toml");
     // patch / 源文件两种写法都会读改写整份配置，加锁避免并发提交互相覆盖；
     // 锁在 await 里持有，读改写下 blocking 池（`with_path_lock` 的闭包跑在当前线程）
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
@@ -268,7 +268,7 @@ pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) ->
 
 /// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
 pub(super) async fn config_llm_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let path = yekitrim_core::path::vtrim_home().join("llm.toml");
+    let path = yekitrim_core::path::yekitrim_home().join("llm.toml");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
     blocking(move || config_llm_put_locked(&path, &body)).await
 }
@@ -390,11 +390,11 @@ async fn models_endpoint_reports_runtime_resolved_dir_and_source() {
 
 /// 项目配置里的路径键必须落在本项目内（非 admin）。
 ///
-/// 回归钉子：`config_vtrim_put_impl` 以前只校验"是合法 TOML"，于是普通用户能把
+/// 回归钉子：`config_yekitrim_put_impl` 以前只校验"是合法 TOML"，于是普通用户能把
 /// `input_file` 改成别人的录像（转写完把字幕读出来）或把 `output_dir` 指到任意目录。
 #[test]
 fn project_config_paths_are_jailed_for_non_admin() {
-    let root = std::env::temp_dir().join(format!("vtrim-cfg-paths-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("yekitrim-cfg-paths-{}", std::process::id()));
     std::fs::create_dir_all(root.join("output")).unwrap();
     let ws = Workspace { config_file: root.join("yekitrim.toml"), root_dir: root.clone() };
 
@@ -490,7 +490,7 @@ fn project_config_paths_are_jailed_for_non_admin() {
 /// 下次 `load_llm_config` 解析 u32 失败，整份 LLM 配置（含 api_key）被打回默认值。
 #[test]
 fn llm_put_null_patch_removes_override_key() {
-    let dir = std::env::temp_dir().join(format!("vtrim-llm-put-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yekitrim-llm-put-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("llm.toml");
     std::fs::write(

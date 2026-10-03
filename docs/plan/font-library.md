@@ -18,9 +18,9 @@
 | 位置 | 内容 |
 |---|---|
 | `THIRD-PARTY-NOTICES.md:94` | `LXGW WenKai（霞鹜文楷）｜ SIL OFL-1.1 ｜ 封面/预览模板的字体栈**按名称引用**，不内嵌、不分发字体文件` |
-| `crates/vtrim-polish/src/render/server.rs:205` | `SYSTEM_FONT_STACK = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif"` |
-| `crates/vtrim-render-core/src/types.rs:539` | 缺省字幕字体 = `"LXGW WenKai"` |
-| `templates/index.html:19,746,772,1944`、`PolishPreview.vue:1303,1367` | 同一串栈（预览与出片必须同序 —— 顺序反过一次，见 `docs/vtrim-integration.md:233`） |
+| `crates/yekitrim-polish/src/render/server.rs:205` | `SYSTEM_FONT_STACK = "'LXGW WenKai','Microsoft YaHei','Noto Sans SC',sans-serif"` |
+| `crates/yekitrim-render-core/src/types.rs:539` | 缺省字幕字体 = `"LXGW WenKai"` |
+| `templates/index.html:19,746,772,1944`、`PolishPreview.vue:1303,1367` | 同一串栈（预览与出片必须同序 —— 顺序反过一次，见 `docs/yekitrim-integration.md:233`） |
 
 **许可结论：是 OFL-1.1，不是你问的 CC0，但你要的三条它都满足**（见 §2）。
 ⚠️ 它**从未被内嵌**进发行包，只是"按名字引用" —— 本机没装就回退系统字体。这正是"预览与出片对不上"的一个来源。
@@ -64,8 +64,8 @@
 
 | 能力 | 位置 | 现状 |
 |---|---|---|
-| 字体库目录 | `vtrim_core::path::font_dir()` → `<程序目录>/resources/fonts` | ✅ 有 |
-| 扫描/解析/名称校验 | `vtrim_core::fonts::{scan, resolve_file, is_font_file_name, is_safe_id}`（`crates/vtrim-core/src/fonts.rs`） | ✅ 有（含单测：`LXGWWenKai-Regular.ttf` ✓、`思源宋体.OTF` ✓、`is_safe_id("LXGW WenKai (v1.0)")` ✓） |
+| 字体库目录 | `yekitrim_core::path::font_dir()` → `<程序目录>/resources/fonts` | ✅ 有 |
+| 扫描/解析/名称校验 | `yekitrim_core::fonts::{scan, resolve_file, is_font_file_name, is_safe_id}`（`crates/yekitrim-core/src/fonts.rs`） | ✅ 有（含单测：`LXGWWenKai-Regular.ttf` ✓、`思源宋体.OTF` ✓、`is_safe_id("LXGW WenKai (v1.0)")` ✓） |
 | 只读浏览 API | `GET /api/polish/fonts`（`api/polish.rs:1253` + `routes.rs:134`），**以磁盘为准** | ✅ 有 |
 | 字体字节 API | `GET /api/polish/font?name=<id>`（`api/polish.rs:1281`；候选链含 工程 `assets/fonts`、程序字体库；`font_content_type` 按扩展名给 MIME，**已含 `ttc`→`font/collection`**） | ✅ 有 |
 | 出片注入 | `font_face_css` / `font_family_with_stack`（`render/server.rs:130,208`） | ✅ 有 |
@@ -79,7 +79,7 @@
 
 | 用途 | 候选 | 声明许可 | 备注 |
 |---|---|---|---|
-| 中文正文字体 | **Noto Sans SC** / **Noto Serif SC**、**思源黑体/宋体**（Source Han） | OFL-1.1 | 覆盖全、体积大（10–16MB ⇒ 考虑**子集**或**按需下载**，与 ASR 模型 `vtrim download` 同套路） |
+| 中文正文字体 | **Noto Sans SC** / **Noto Serif SC**、**思源黑体/宋体**（Source Han） | OFL-1.1 | 覆盖全、体积大（10–16MB ⇒ 考虑**子集**或**按需下载**，与 ASR 模型 `yekitrim download` 同套路） |
 | 中文手写/标题 | **LXGW WenKai（霞鹜文楷）** | OFL-1.1（仓库已声明，`THIRD-PARTY-NOTICES.md:94`） | 就是现在默认栈第一位；自带它 = "预览与出片终于同源" |
 | 中文无衬线（更窄） | **Sarasa Gothic（更纱黑体）** | OFL-1.1 | 需核对"保留名"与子集 |
 | Emoji | **Noto Color Emoji** | OFL-1.1 | ⚠️ 彩色 emoji 的**嵌入**是另一层问题（CBDT 表），Takumi 单点里能画 ✓；浏览器 `@font-face` 也能 ✓ |
@@ -114,7 +114,7 @@ license(spdx) / source_url / sha256 / builtin(bool) / is_default(bool) / added_a
 - 兼容老库：`scan()` 现在按**平铺文件名**扫；迁移时对"没有 `FONT.toml` 的散文件"按
   "文件名去扩展名 = id / display_name" 兜底（老工程 `font = "SimHeiTest"` 这类必须继续能解析）。
 
-### 5.2 API（都加在 `crates/vtrim-server/src/api/polish.rs` + `routes.rs`）
+### 5.2 API（都加在 `crates/yekitrim-server/src/api/polish.rs` + `routes.rs`）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -124,7 +124,7 @@ license(spdx) / source_url / sha256 / builtin(bool) / is_default(bool) / added_a
 | DELETE | `/api/polish/fonts/:id` | 删除；`builtin=true` → **403**，理由写清"程序自带字体不可删除" |
 | GET | `/api/polish/font?name=<id>` | 已有（预览取字节） |
 
-⚠️ **路径安全**：`id` 一律过 `vtrim_core::fonts::is_safe_id` + 只允许**单段**、只允许库目录下；
+⚠️ **路径安全**：`id` 一律过 `yekitrim_core::fonts::is_safe_id` + 只允许**单段**、只允许库目录下；
 **别信前端**。这条与根卡「路径面三防线」同源（历史上出过"普通用户能读服务器任意文件"的事故）。
 
 ### 5.3 UI：首页新增「字体库」
@@ -146,7 +146,7 @@ license(spdx) / source_url / sha256 / builtin(bool) / is_default(bool) / added_a
 
 另外"设为默认字体"的语义要定死（**待你拍板**）：只影响 ① 字体库 UI 的推荐位 ② **新工程**的
 `[cover] font` / `style.subtitle.font` 默认值？**老工程不动**（避免静默改变已出片的工程）——
-建议这样，且把"默认"存成**程序级配置**（`<程序目录>/.vtrim/config.toml` 或字体库 `FONT.toml` 的 `is_default`）。
+建议这样，且把"默认"存成**程序级配置**（`<程序目录>/.yekitrim/config.toml` 或字体库 `FONT.toml` 的 `is_default`）。
 
 ---
 
@@ -154,7 +154,7 @@ license(spdx) / source_url / sha256 / builtin(bool) / is_default(bool) / added_a
 
 1. **决定自带哪支、怎么带**（§4 + §7）；下载 → 放 `resources/fonts/<slug>/` + `FONT.toml` + `LICENSE.txt`；
    同步 `THIRD-PARTY-NOTICES.md`。
-2. `vtrim_core::fonts` 加元数据层（读/写 `FONT.toml`、`builtin`/`is_default`、导入校验、`ttc` 处理），
+2. `yekitrim_core::fonts` 加元数据层（读/写 `FONT.toml`、`builtin`/`is_default`、导入校验、`ttc` 处理），
    `scan()` 兼容"平铺老文件"。
 3. 后端四个端点 + 路径安全（照 `api/AGENTS.md` 的"同步 IO 走 `api::blocking`"纪律）。
 4. 前端 `FontsView.vue` + 路由/侧栏 + 复用 `fonts.js`；跑 `npm --prefix webui run build`（**dist 入库**）。
@@ -259,9 +259,9 @@ Copyright 2021-2026 LXGW (https://github.com/lxgw/LxgwWenKai),
 
 ### 9.3 当场判定的方法（**别再靠文件名**）
 
-1. **仓库里现成有诊断用例**：`crates/vtrim-core/src/fonts.rs:367` 的 `diagnose_font_family` ——
+1. **仓库里现成有诊断用例**：`crates/yekitrim-core/src/fonts.rs:367` 的 `diagnose_font_family` ——
    ```bash
-   cargo test -p vtrim-core --lib diagnose_font_family -- --ignored --nocapture
+   cargo test -p yekitrim-core --lib diagnose_font_family -- --ignored --nocapture
    ```
 2. Windows 图形界面：右键 `.ttf` → **属性 → 详细信息** → "标题/字体名称" 就是**内部族名**；
 3. 长期解药 = 字体库页（§5.3）**同时显示"内部族名"与"我们给的显示名"**；导入时若两者不一致，
@@ -303,8 +303,8 @@ Copyright 2021-2026 LXGW (https://github.com/lxgw/LxgwWenKai),
 ### 11.3 复跑（全绿）
 
 ```bash
-cargo check -p vtrim-server --all-targets   # exit 0
-cargo test  -p vtrim-server                 # 144 passed / 0 failed
+cargo check -p yekitrim-server --all-targets   # exit 0
+cargo test  -p yekitrim-server                 # 144 passed / 0 failed
 python3 scripts/check_module_map.py         # exit 0（35 模块 / 7 项）
 python3 scripts/check_module_boundaries.py  # exit 0（15 规则 / 243 文件 / 0 违规）
 python3 scripts/route_manifest.py           # exit 0
@@ -318,7 +318,7 @@ python3 scripts/route_manifest.py           # exit 0
 
 ---
 
-## 10. 落地契约（P1-a 结论：读完 `crates/vtrim-core/AGENTS.md` + `src/fonts.rs` 后定）
+## 10. 落地契约（P1-a 结论：读完 `crates/yekitrim-core/AGENTS.md` + `src/fonts.rs` 后定）
 
 ### 10.1 现状（要保住的部分）
 
@@ -333,7 +333,7 @@ python3 scripts/route_manifest.py           # exit 0
 
 | # | 改动 | 连带的文档改动（**别漏**） |
 |---|---|---|
-| ① | **id：文件名去扩展名 → 目录名**（`resources/fonts/<slug>/`） | `crates/vtrim-core/AGENTS.md` 第 67 行"**id = 文件名去扩展名**"必须改；`resolve_file*` 要**同时支持两种布局**（老平铺文件继续可解析） |
+| ① | **id：文件名去扩展名 → 目录名**（`resources/fonts/<slug>/`） | `crates/yekitrim-core/AGENTS.md` 第 67 行"**id = 文件名去扩展名**"必须改；`resolve_file*` 要**同时支持两种布局**（老平铺文件继续可解析） |
 | ② | `FontEntry` 扩元数据；**`family` 语义变严** = **字体内部族名**（唯一权威），另立 `display_name` 给人看 | 卡里"`family` 只是展示名"这句要改；§5.4 的三处来源只认 `family` |
 | ③ | **自带字体**（LXGW WenKai Lite + Noto Color Emoji） | ⚠️ **与卡第 72 行「发行包不带任何字体（授权原因）」+ README「字体」一节直接冲突** ⇒ 同批改这两处，并写明依据：OFL-1.1 **允许嵌入/再分发**（§2/§8.3）+ 随附**发行包自带的 `OFL.txt` 原文** + `THIRD-PARTY-NOTICES.md` 登记 + **`cargo xtask scan` 断言"字体目录里每一支都在 notices 里"**。⚠️ **"Windows 系统字体不可分发"那条仍然成立** —— 那正是过去"不带任何字体"的原因 |
 | ④ | `.ttc` 策略 | 卡里只论证了"Chrome 与 swash 读得动"，**漏了"浏览器 `@font-face` 不认字体集合"** —— 而"预览与实际对不上"很可能就是它。**第一版：导入时拒收 `.ttc/.otc` 并明确提示**（拆包留后续）；`FONT_EXTS` 是否收窄到 `ttf/otf` 要与此一致 |
@@ -341,8 +341,8 @@ python3 scripts/route_manifest.py           # exit 0
 ### 10.3 分层纪律（别越界）
 
 - **core 只做文件层**（读/写 `FONT.toml`、扫描、解析、导入落盘、删除、设默认），**不碰 HTTP**；
-  四个端点全在 `vtrim-server`（`api/polish.rs` + `routes.rs`），同步 IO 走 `api::blocking`。
-- `vtrim-core` **不得出现** `vtrim_polish`/`vtrim_service`/`vtrim_server`/`vtrim_cli`（门禁会红）。
+  四个端点全在 `yekitrim-server`（`api/polish.rs` + `routes.rs`），同步 IO 走 `api::blocking`。
+- `yekitrim-core` **不得出现** `yekitrim_polish`/`yekitrim_service`/`yekitrim_server`/`yekitrim_cli`（门禁会红）。
 - 老行为必须保住：老工程 `font = "LXGW WenKai"`（系统族名）**解析不到就不注入 `@font-face`**（有意为之）；
   `font = "SimHeiTest"`（库内 id）继续解析得到文件。
 
@@ -363,7 +363,7 @@ python3 scripts/route_manifest.py           # exit 0
 | `webui/src/router.js` | `#/fonts`（`meta:{admin:true, title:'字体库'}`） |
 | `webui/src/views/WorkbenchView.vue` | 首页 admin 区块（与 `StickerPacks v-if="isAdmin"` 同款位置）挂入口 |
 | `webui/src/api/polish.js` | 新 `importFont` / `setDefaultFont` / `deleteFont` |
-| `crates/vtrim-server/src/api/polish.rs` | 导入**同时接受 `{dir,name}`**（服务端拼路径） |
+| `crates/yekitrim-server/src/api/polish.rs` | 导入**同时接受 `{dir,name}`**（服务端拼路径） |
 
 ### 12.2 三条要点
 
@@ -381,8 +381,8 @@ python3 scripts/route_manifest.py           # exit 0
 ### 12.3 复跑（全绿）
 
 ```bash
-cargo check -p vtrim-server --all-targets   # exit 0
-cargo test  -p vtrim-server                 # 144 passed / 0 failed
+cargo check -p yekitrim-server --all-targets   # exit 0
+cargo test  -p yekitrim-server                 # 144 passed / 0 failed
 python3 scripts/check_module_map.py         # exit 0（35 模块 / 7 项）
 python3 scripts/check_module_boundaries.py  # exit 0（15 规则 / 244 文件 / 0 违规）
 node node_modules/vite/bin/vite.js build    # webui/dist 重建（含 FontsView-*.js/.css）
@@ -441,22 +441,22 @@ node webui/scripts/check-*.mjs              # 7 个契约脚本全 exit 0
 
 ### 13.3 新增能力（给后续阶段用）
 
-`vtrim_core::fonts::family_for(id)` / `family_for_at(root, id)`：**id → 该用的 CSS 族名**。
+`yekitrim_core::fonts::family_for(id)` / `family_for_at(root, id)`：**id → 该用的 CSS 族名**。
 库里认这个 id ⇒ 返回 `FONT.toml` 的 `family`（内部族名，唯一权威）；**库外原样返回**
 （老工程 `font = "LXGW WenKai"` 的系统族名行为一字不变）。三处消费方要"按族名做事"时都该走它。
 
 ### 13.4 验收（可复跑）
 
 ```bash
-cargo test -p vtrim-core --lib fonts                                   # 12 passed
-cargo test -p vtrim-polish --lib                                       # 213 passed
-cargo test -p vtrim-polish --features cover-takumi                     # 含 takumi 单测 + e2e
+cargo test -p yekitrim-core --lib fonts                                   # 12 passed
+cargo test -p yekitrim-polish --lib                                       # 213 passed
+cargo test -p yekitrim-polish --features cover-takumi                     # 含 takumi 单测 + e2e
 cargo check --workspace --all-targets                                  # 0 warnings
-cargo check -p vtrim-polish --features cover-takumi --all-targets      # 0 warnings
+cargo check -p yekitrim-polish --features cover-takumi --all-targets      # 0 warnings
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py
 ```
 
-**E2E 钉子** `crates/vtrim-polish/tests/takumi_font_id.rs`（真渲染、真 Takumi）：
+**E2E 钉子** `crates/yekitrim-polish/tests/takumi_font_id.rs`（真渲染、真 Takumi）：
 同一份 HTML 三次渲染只换请求的族名，**逐像素比较**：
 
 ```
@@ -512,7 +512,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 ### 14.2 `GET /polish/fonts` 回的 `family` 是"从文件读的"而不是权威值
 
 P1-d 的文档说 `family` 是内部族名，但实现回的是 `f.family`（`family_of` 从字体 `name` 表读的，
-可能与 `FONT.toml` 不一致）。现在改走 `vtrim_core::fonts::family_for_at(&root, &f.id)`，
+可能与 `FONT.toml` 不一致）。现在改走 `yekitrim_core::fonts::family_for_at(&root, &f.id)`，
 并补齐 v2 字段（`display_name` / `builtin` / `is_default` / `license` / `scripts` / `emoji`）。
 
 顺带把 `scan()` 换成 `scan_all(&root)`：前者不认 v2 目录布局。
@@ -521,11 +521,11 @@ P1-d 的文档说 `family` 是内部族名，但实现回的是 `f.family`（`fa
 
 ```bash
 cargo check --workspace --all-targets                              # 0 warnings（这次就是它抓到的）
-cargo check -p vtrim-polish --features cover-takumi --all-targets  # 0 warnings
-cargo test -p vtrim-server                                         # 145 passed
-cargo test -p vtrim-polish --lib                                   # 213 passed
-cargo test -p vtrim-core --lib fonts                               # 12 passed
-cargo test -p vtrim-service                                        # 125 passed
+cargo check -p yekitrim-polish --features cover-takumi --all-targets  # 0 warnings
+cargo test -p yekitrim-server                                         # 145 passed
+cargo test -p yekitrim-polish --lib                                   # 213 passed
+cargo test -p yekitrim-core --lib fonts                               # 12 passed
+cargo test -p yekitrim-service                                        # 125 passed
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py
 ```
 
@@ -545,7 +545,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 
 ### 15.2 复用既有两类基础设施（不新造轮子）
 
-- **注册表 + marker 的"装好没有"判定**：抄 `vtrim-core/src/download.rs` 的 `MODEL_REGISTRY`
+- **注册表 + marker 的"装好没有"判定**：抄 `yekitrim-core/src/download.rs` 的 `MODEL_REGISTRY`
   形状（`(键, 目录名, 文件名, marker)`）与 `installed` 语义 —— **半下载的目录不算装好**。
 - **下载本身**：同文件的 `download_file(url, part_path)`（先落 `.part` 再改名）与
   进度/失败口径。
@@ -554,10 +554,10 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 
 | 要做的 | 落点 |
 |---|---|
-| 字体注册表（上游 URL + 校验和 + 许可 + 显示名） | `vtrim-core/src/fonts.rs`（与 `scan_all` 同一模块，字体的事只在这里） |
+| 字体注册表（上游 URL + 校验和 + 许可 + 显示名） | `yekitrim-core/src/fonts.rs`（与 `scan_all` 同一模块，字体的事只在这里） |
 | `ensure_builtin_fonts()` / `download_builtin_fonts()` | 同上；幂等，已装好就跳过 |
 | 下载进度与日志 | 走调用方（CLI 打印 / 任务日志），本模块只回结构化结果 |
-| CLI 入口 | `vtrim fonts list` / `vtrim fonts download`（`crates/vtrim-cli`） |
+| CLI 入口 | `yekitrim fonts list` / `yekitrim fonts download`（`crates/yekitrim-cli`） |
 | 界面入口 | 字体库页（`#/fonts`）加一条"下载自带字体"按钮 + 状态；API `POST /api/polish/fonts/builtin`（**仅 admin**） |
 | 许可 | `LICENSE.txt` 随字体一起落盘（原样 OFL）；`THIRD-PARTY-NOTICES.md` 登记 |
 | 发行包说明 | `resources/fonts/放这里.txt` 与 README「字体」改为"自带字体首次使用时下载" |
@@ -571,7 +571,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 
 ### 15.5 验收
 
-- `cargo test -p vtrim-core --lib fonts`：注册表形状、marker 判定、幂等（已装好的目录不重复下载）。
+- `cargo test -p yekitrim-core --lib fonts`：注册表形状、marker 判定、幂等（已装好的目录不重复下载）。
 - 真下载一次（**联网**）验证 URL 可用 + 落盘布局 + `family` 能读出来；校验和必须对得上。
 - 两条门禁 + `cargo check --workspace --all-targets`（0 warnings）。
 - ⚠️ **不把字体二进制提交进 git**（这是本条决策的重点），只提交清单。
@@ -583,7 +583,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 
 §15 是方案，这里是**做完了的账**：做了什么、踩到什么、怎么验的。
 
-### 16.1 清单（唯一真源：`vtrim_core::fonts::BUILTIN_FONTS`）
+### 16.1 清单（唯一真源：`yekitrim_core::fonts::BUILTIN_FONTS`）
 
 | id（= 目录名） | 显示名 | 内部族名（实测读出） | 体积 | 许可 |
 |---|---|---|---|---|
@@ -614,7 +614,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 
 | 面 | 形态 | 权限 |
 |---|---|---|
-| CLI | `vtrim fonts list` / `vtrim fonts download [--id X]` | 本机 |
+| CLI | `yekitrim fonts list` / `yekitrim fonts download [--id X]` | 本机 |
 | HTTP | `POST /api/polish/fonts/builtin`（body `{}` 或 `{id}`） | **仅 admin** |
 | 界面 | 首页「字体库」→ 顶部「下载自带字体」条 + 每张未下载卡上的「下载」 | 仅 admin |
 
@@ -653,19 +653,19 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 ### 16.6 验收（全部真跑过）
 
 ```bash
-cargo test -p vtrim-core --lib fonts          # 14 passed
-cargo test -p vtrim-polish --lib              # 214 passed
-cargo test -p vtrim-server                    # 145 passed（含新增 builtin 路由的 admin 门禁）
+cargo test -p yekitrim-core --lib fonts          # 14 passed
+cargo test -p yekitrim-polish --lib              # 214 passed
+cargo test -p yekitrim-server                    # 145 passed（含新增 builtin 路由的 admin 门禁）
 cargo check --workspace --all-targets         # 0 warnings
-cargo check -p vtrim-polish --features cover-takumi --all-targets   # 0 warnings
+cargo check -p yekitrim-polish --features cover-takumi --all-targets   # 0 warnings
 python3 scripts/check_module_map.py           # 35 模块 / 7 项
 python3 scripts/check_module_boundaries.py    # 15 规则 / 244 文件 / 0 违规
 ```
 
 **联网真跑**（不是 mock）：
-1. `vtrim fonts list` → 4 支（2 支自带未安装 + 2 支老布局），未安装的标「未安装（可下载）」。
-2. `vtrim fonts download --id NotoColorEmoji` → 3.6 秒装好，落盘形状与 §16.2 一致。
-3. `vtrim fonts download --id LXGWWenKaiLite-Regular` → 3.0 秒装好。
+1. `yekitrim fonts list` → 4 支（2 支自带未安装 + 2 支老布局），未安装的标「未安装（可下载）」。
+2. `yekitrim fonts download --id NotoColorEmoji` → 3.6 秒装好，落盘形状与 §16.2 一致。
+3. `yekitrim fonts download --id LXGWWenKaiLite-Regular` → 3.0 秒装好。
 4. 再跑一次 `download` → **`downloaded = []`，271.9µs**（幂等成立，没重复下 25 MB）。
 5. 校验和复核：`FONT.toml` 里的 sha256 **与清单逐字相同**；`LICENSE.txt` 大小
    5176 / 4386 B，与上游 `OFL.txt` 一致。
@@ -673,8 +673,8 @@ python3 scripts/check_module_boundaries.py    # 15 规则 / 244 文件 / 0 违�
 
 ### 16.7 ⚠️ 测试环境陷阱（下次别踩）
 
-`vtrim_core::path::font_dir()` 按**可执行文件所在目录**算，而 cargo 的集成测试二进制跑在
-`target/<profile>/deps/` 下 ⇒ 测试看到的库是 **`deps/resources/fonts/`**，与 `vtrim` 主程序
+`yekitrim_core::path::font_dir()` 按**可执行文件所在目录**算，而 cargo 的集成测试二进制跑在
+`target/<profile>/deps/` 下 ⇒ 测试看到的库是 **`deps/resources/fonts/`**，与 `yekitrim` 主程序
 （`target/<profile>/resources/fonts/`）**不是同一个目录**。第一次实测时"装了字体栈却没变"
 就是这条 —— **代码是对的，探针看错了目录**。要在测试里验"装了之后栈变不变"，
 得往 `deps/resources/fonts/` 里放（或直接用单测构造，不要靠机器上恰好装了什么）。
@@ -741,7 +741,7 @@ python3 scripts/check_module_boundaries.py    # 15 规则 / 244 文件 / 0 违�
 
 这道门禁原本的参照是**活的 chrome 渲染**（`run(A,'chrome',{})`）。chrome 一删，参照就没了 ——
 门禁会退化成 SKIP，也就**再也没有东西保证 takumi 没坏**。
-做法抄 `scripts/vtrim-compare.mjs` 的 `--capture-golden/--golden` 先例（同类问题已有解法）。
+做法抄 `scripts/yekitrim-compare.mjs` 的 `--capture-golden/--golden` 先例（同类问题已有解法）。
 
 ### 18.2 新增的三个开关
 
@@ -786,7 +786,7 @@ scripts/fixtures/cover-golden/
 
 | 位置 | 内容 |
 |---|---|
-| `crates/vtrim-polish/src/render/chrome.rs` | **整文件**（328 行，`headless_chrome::{Browser,LaunchOptions,Tab}`） |
+| `crates/yekitrim-polish/src/render/chrome.rs` | **整文件**（328 行，`headless_chrome::{Browser,LaunchOptions,Tab}`） |
 | `render/mod.rs` | `pub mod chrome;` |
 | `render/backend.rs` | `RenderBackendKind::Chrome` 变体 + `as_str` + `from_str`（含老的 `"chome"` 错拼别名）+ `create_backend` 那一臂 |
 | `render/pipeline.rs` | 全部 `renderer == Chrome` 分支（逐帧 canvas 那条 + `start_file_server` + `RenderServer::build_html`） |
@@ -809,7 +809,7 @@ scripts/fixtures/cover-golden/
 
 ### 19.3 收尾时额外发现的死配置：`[chrome] path`
 
-`vtrim-core` 的 `Config.chrome: ChromeConfig`（+ `[chrome]` 模板段 + `merge()` 分支 +
+`yekitrim-core` 的 `Config.chrome: ChromeConfig`（+ `[chrome]` 模板段 + `merge()` 分支 +
 `SettingsView.vue` 的「Chrome 渲染」输入框）在删掉出片/封面两条链路之后**已经没人读了** ——
 `tool_probe.rs` 里那个 Chrome 探测函数也随任务一起没了，只剩它自己跟自己的 `merge()`。
 留一个"Chrome 可执行文件路径"输入框会让人以为**装了 Chrome 就能用上**，实际它什么也不影响。
@@ -819,13 +819,13 @@ scripts/fixtures/cover-golden/
 
 ```
 cargo check --workspace --all-targets   → 0 warnings
-cargo test -p vtrim-polish --lib        → 214 passed; 0 failed
-cargo test -p vtrim-server              → 145 passed; 0 failed
-cargo test -p vtrim-core --lib          → 177 passed; 0 failed
-cargo test -p vtrim-service             → 125 passed; 0 failed
+cargo test -p yekitrim-polish --lib        → 214 passed; 0 failed
+cargo test -p yekitrim-server              → 145 passed; 0 failed
+cargo test -p yekitrim-core --lib          → 177 passed; 0 failed
+cargo test -p yekitrim-service             → 125 passed; 0 failed
 check-cover-takumi --self-test / --mutate → 3 项通过 / 判据能红也能绿
 check_module_map.py / check_module_boundaries.py → 35 模块 / 15 规则 0 违规
-cargo tree -p vtrim-polish | grep -i chrome → 空
+cargo tree -p yekitrim-polish | grep -i chrome → 空
 webui/dist 里 chrome 字样                      → 空（重建后）
 ```
 
@@ -850,7 +850,7 @@ webui/dist 里 chrome 字样                      → 空（重建后）
    只变异一侧的话两边都不画衬底，**还是**自己比自己。
 2. **环境问题（非代码）**：探针要在一个进程里**渲染两遍**，第二遍 `wgpu error: Out of Memory`
    （显存不够，**不是**磁盘 —— C 盘还有 34 GB）。Dhampir 退出 101。
-   同一台机器上 `vtrim polish render` **单遍**跑得好好的。⇒ 与本次改动无关。
+   同一台机器上 `yekitrim polish render` **单遍**跑得好好的。⇒ 与本次改动无关。
 
 > 教训：**探针失败先看它的锚点命中几次**。"0 次"是静默空转，"1 次"才是真在比；
 > 而"看起来像回归"的失败，也可能只是这台机器的显存不够。
@@ -902,7 +902,7 @@ Takumi 的 fallback 桶 = **已注册字体按注册序的全集**
 只是被 `#![cfg(feature = "cover-takumi")]` + 默认不带该 feature 的运行方式**藏住了**。
 
 > ⚠️ 教训：**带 feature gate 的集成测试，必须用"实际出片时的那套 feature"跑一遍**。
-> `cargo test -p vtrim-polish`（默认不带 `cover-takumi`）会把这个文件整个编译掉、
+> `cargo test -p yekitrim-polish`（默认不带 `cover-takumi`）会把这个文件整个编译掉、
 > 报 `0 passed` —— 看着像"没有测试"，实际是"测试被跳过了"。
 
 ---
@@ -936,7 +936,7 @@ Takumi 的 fallback 桶 = **已注册字体按注册序的全集**
 | `webui/src/router.js` | 删 `#/fonts` 路由 |
 | `webui/src/views/WorkbenchView.vue` | 字体卡换成 `<FontLibrary v-if="isAdmin" />`；`homeFonts*` 状态、route watch 里的字体重查、`.wb-fonts` 样式一并删除 |
 | `webui/src/api/polish.js` | §21.1 的三处 `JSON.stringify` |
-| `crates/vtrim-server/src/api/polish.rs` | 仅注释：`FontsView.vue` 指针改指 `FontLibrary.vue`（跨模块纯注释改动，理由在此） |
+| `crates/yekitrim-server/src/api/polish.rs` | 仅注释：`FontsView.vue` 指针改指 `FontLibrary.vue`（跨模块纯注释改动，理由在此） |
 
 - 保留口径：写操作仅 admin（整块 `v-if="isAdmin"`）、读失败可见可重试、下载失败原话显示、
   预览注册出片同源字节、认不出的格式挂「预览不可用」—— 全部原样随组件迁移。
@@ -950,12 +950,12 @@ npm --prefix webui run build                  # dist 重建（FontsView-*.js/.cs
 node webui/scripts/check-*.mjs                # 7 个契约脚本
 python3 scripts/check_module_map.py           # 结构门禁（views 卡替换段落净缩短）
 python3 scripts/check_module_boundaries.py    # 边界门禁
-cargo check -p vtrim-server                   # polish.rs 注释改动
+cargo check -p yekitrim-server                   # polish.rs 注释改动
 ```
 
 ### 21.4 复验记录（2026-10-02，真机浏览器）
 
-- **下载自带字体**：真实下载落盘 `~/.vtrim/fonts/{LXGWWenKaiLite-Regular, NotoColorEmoji}/`（14 + 25 MB，
+- **下载自带字体**：真实下载落盘 `~/.yekitrim/fonts/{LXGWWenKaiLite-Regular, NotoColorEmoji}/`（14 + 25 MB，
   各含 `font.ttf + FONT.toml + LICENSE.txt`），首页状态行变「已装 2 支」。
 - **设为默认**：浏览器点按钮 → `is_default` 服务端翻转 + 卡片 chip 实时跟移，往返各一次均正常。
 - **顺带修掉一个从 FontsView 一路继承的响应式 bug**：`registerAll(list)` 遍历的是 load() 里的**原始数组**，
@@ -983,7 +983,7 @@ cargo check -p vtrim-server                   # polish.rs 注释改动
 
 同一份知识写 7 遍、靠注释互相提醒"要同序"。漂移的症状是**预览和成片不一样，而且不报错**。
 
-### 22.3 收敛后：`vtrim_core::fonts` 是唯一权威
+### 22.3 收敛后：`yekitrim_core::fonts` 是唯一权威
 
 ```rust
 pub struct FontPlan {
@@ -1095,9 +1095,9 @@ takumi-core-0.25.0/src/resources/glyph.rs:440-443
 ### 22.9 验证
 
 ```bash
-cargo test -p vtrim-core --lib fonts        # 22 项（含 emoji 槽位/拦截/优先序 6 条）
-cargo test -p vtrim-polish --lib render     # 29 项（含零回归钉子/幂等/emoji 不入搜索序）
-cargo test -p vtrim-server                  # 151 项
+cargo test -p yekitrim-core --lib fonts        # 22 项（含 emoji 槽位/拦截/优先序 6 条）
+cargo test -p yekitrim-polish --lib render     # 29 项（含零回归钉子/幂等/emoji 不入搜索序）
+cargo test -p yekitrim-server                  # 151 项
 node scripts/check-font-inputs.mjs          # 字体输入面（+ --self-test 7 项）
 node .workbuddy/gates.mjs                   # 全部门禁
 ```
@@ -1111,7 +1111,7 @@ node .workbuddy/gates.mjs                   # 全部门禁
 
 ### 23.1 为什么改
 
-原来的方案是「首次使用时按需下载」（`vtrim fonts download` / WebUI「下载自带字体」）。两个问题：
+原来的方案是「首次使用时按需下载」（`yekitrim fonts download` / WebUI「下载自带字体」）。两个问题：
 
 1. **多了一个莫名其妙的操作** —— 用户要先「下载字体」才能「选字体」。这不是用户的心智模型。
 2. **离线/内网环境下静默降级** —— 没网就装不上，而症状是「字体回落到系统栈」，
@@ -1122,10 +1122,10 @@ node .workbuddy/gates.mjs                   # 全部门禁
 
 ### 23.2 做法：`include_bytes!` 进二进制
 
-字体字节入库到 `crates/vtrim-core/assets/fonts/`，经 `include_bytes!` 编进 `vtrim.exe`：
+字体字节入库到 `crates/yekitrim-core/assets/fonts/`，经 `include_bytes!` 编进 `yekitrim.exe`：
 
 ```
-crates/vtrim-core/assets/fonts/
+crates/yekitrim-core/assets/fonts/
   LXGWWenKaiLite-Regular.ttf    13.2 MB
   LXGWWenKaiLite-Regular.OFL     5.1 KB
   NotoColorEmoji-CBDT.ttf        9.9 MB
@@ -1165,7 +1165,7 @@ crates/vtrim-core/assets/fonts/
 
 | | 改前 | 改后 |
 |---|---|---|
-| debug `vtrim.exe` | 81 MB | **104 MB** |
+| debug `yekitrim.exe` | 81 MB | **104 MB** |
 | 仓库新增 | 0 | **+23.2 MB**（4 个文件入库） |
 | 首次启动 | 需联网下载 ~38 MB | **不联网**，本地写 23.2 MB |
 
@@ -1183,9 +1183,9 @@ crates/vtrim-core/assets/fonts/
 
 - 单测：`embedded_bytes_match_their_pinned_sha256`（内嵌字节 vs 源码常量）、
   `embedded_bytes_are_parseable_fonts`（不是空壳/HTML）。
-- **真机全过程**：把 `~/.vtrim/fonts` 整个移走（模拟全新机器）→ 跑一次 `vtrim config init`
+- **真机全过程**：把 `~/.yekitrim/fonts` 整个移走（模拟全新机器）→ 跑一次 `yekitrim config init`
   → 日志 `自带字体已就绪（本次安装 2 支）` → 库里出现两支（`FONT.toml` 完整、`LICENSE.txt` 是**真 OFL 全文**）
-  → `vtrim polish cover --renderer takumi` 出图：**中文 + emoji 全彩**。
+  → `yekitrim polish cover --renderer takumi` 出图：**中文 + emoji 全彩**。
 
 ---
 
@@ -1200,13 +1200,13 @@ crates/vtrim-core/assets/fonts/
 |---|---|---|---|---|
 | `C:/Windows/Fonts/msyh.ttc`（ASCII） | **4.25s** | 216 行 + 239 条 | 0 | 0 |
 | 同一支字体**复制到 ASCII 路径** | **3.96s** | 216 行 + 239 条 | 0 | 0 |
-| `…\.vtrim\fonts\乐米波波体\乐米波波体.ttf` | **37–80s** | **0 + 0** | 455 | 1 |
+| `…\.yekitrim\fonts\乐米波波体\乐米波波体.ttf` | **37–80s** | **0 + 0** | 455 | 1 |
 
 **根因**：底座出片把字体路径塞进 `ffmpeg` 的 `drawtext=fontfile='…'`。ffmpeg 那条路**打不开含
 非 ASCII 字符的路径**（`textfile=` 与 `-i` 都不怕中文，只有交给 FreeType 的 `fontfile` 怕），
 而且打不开时**不报错、直接访问违例**（`0xC0000005`；`%LOCALAPPDATA%\CrashDumps\ffmpeg.exe.*.dmp`
 就是它）。失败**不进光栅缓存** ⇒ 每条字幕/弹幕都重起一个必崩的 ffmpeg（~150ms/次）。
-裸 ffmpeg 即可复现（不经底座、不经 V-Trim）：
+裸 ffmpeg 即可复现（不经底座、不经 YekiTrim）：
 
 ```bash
 ffmpeg -v error -nostdin -f lavfi -i color=c=black@0.0:s=400x120,format=rgba \
@@ -1242,8 +1242,8 @@ ffmpeg 与底座都不在本仓手里 ⇒ **只能保证库内落盘的路径是
 - 单测：`cjk_id_never_reaches_disk_as_a_path`、`legacy_non_ascii_dir_migrates_to_ascii_and_keeps_id`（含幂等）、
   `import_font_bytes_shares_the_same_rules_as_import_font`（新形状）、
   `font_aliases_prefer_meta_id_over_slug_dir`、`injects_font_face_for_id_indexed_slug_dir`。
-- 真库迁移：把 `~/.vtrim/fonts` 复制一份跑探针
-  （`VT_FONT_MIGRATE_DIR=<库> cargo test -p vtrim-core --lib migrate_probe -- --ignored --nocapture`）——
+- 真库迁移：把 `~/.yekitrim/fonts` 复制一份跑探针
+  （`VT_FONT_MIGRATE_DIR=<库> cargo test -p yekitrim-core --lib migrate_probe -- --ignored --nocapture`）——
   `乐米波波体/乐米波波体.ttf` → `font-c0ac1d948217/font.ttf`，`resolve_all(root, "乐米波波体")` 仍命中；
   三支 ASCII 目录只补了 `id`，**没有被改名**。
 - 端到端：迁移后的 ASCII 路径跑同一段 240 帧 = **3.96s、216 行 + 239 条全画上、exit 0**；

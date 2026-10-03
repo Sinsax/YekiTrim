@@ -12,7 +12,7 @@
 //!
 //! 守**接口**，不守**像素**：像素那条由 `F:\para\Code\Dhampir\scripts\yekitrim-compare.mjs`
 //! 负责（它比的就是"Dhampir 这条路 vs 参照 chrome"，基线 7.01）。这里守的是
-//! **"V-Trim 调二进制"这条缝**：
+//! **"YekiTrim 调二进制"这条缝**：
 //!
 //! 1. 三个东西（二进制 / 转译器 / 字体）**都能定位**，且 `describe()` 把路径说清楚
 //! 2. **出一条只含画面的片子**：有视频、**没有音轨**（`--no-audio` 是这条缝的核心约定 ——
@@ -81,7 +81,7 @@ fn 出片是只含画面的视频且帧数对得上() {
     };
 
     // 用一个自己的临时目录当"工程目录"（中间文件落在那里），**不碰真片段**。
-    let work = std::env::temp_dir().join(format!("vtrim-dhampir-it-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!("yekitrim-dhampir-it-{}", std::process::id()));
     std::fs::create_dir_all(&work).expect("建临时工作目录");
 
     // **帧数的权威是转译产物**（工程的时基 = 素材自己的，60；上层那个 30 是写死的估算）。
@@ -170,7 +170,7 @@ fn 出片是只含画面的视频且帧数对得上() {
 #[test]
 #[ignore = "手动：要真二进制"]
 fn 空工程要报错而不是产空文件() {
-    let work = std::env::temp_dir().join(format!("vtrim-dhampir-zero-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!("yekitrim-dhampir-zero-{}", std::process::id()));
     std::fs::create_dir_all(&work).ok();
     let err = dhampir::render_video_only(&work, &work, "", false)
         .expect_err("空工程必须报错（宁可报错，也不产一个空文件）");

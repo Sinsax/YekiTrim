@@ -1,7 +1,7 @@
 //! polish::llm：精修侧 LLM 流水线的串联（全局分段 → 逐段事件 → 关键词 → 逐段状态快照）。
 //!
 //! 入口：`run_llm_pipeline`、`regenerate_segment_events`；子模块 `segment` / `events` / `keywords` / `status`。
-//! 边界：一律走 `yekitrim_core::llm::LlmClient::from_config` 并挂 `with_usage_context`（不挂就是空 label）；空结果/失败一律不覆盖已有事件；落盘前的运镜与守卫与 `process` 是两份重复实现，要一起改 —— 见 `crates/vtrim-polish/src/llm/AGENTS.md`
+//! 边界：一律走 `yekitrim_core::llm::LlmClient::from_config` 并挂 `with_usage_context`（不挂就是空 label）；空结果/失败一律不覆盖已有事件；落盘前的运镜与守卫与 `process` 是两份重复实现，要一起改 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
 
 pub mod segment;
 pub mod keywords;

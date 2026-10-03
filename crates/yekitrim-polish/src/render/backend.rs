@@ -1,6 +1,6 @@
 /// 可选后端类型：`--renderer` / `VTEDIT_RENDERER` 的取值口径（**只此一份**）。
 ///
-/// ⚠️ **曾经有 `Wgpu`**（`vtrim-render-core` 的 wgpu 合成管线 + `render/native/`）——
+/// ⚠️ **曾经有 `Wgpu`**（`yekitrim-render-core` 的 wgpu 合成管线 + `render/native/`）——
 /// 整条已删除（用户拍板：GPU 出片交给独立的 Dhampir 底座）。
 /// ⚠️ **曾经有 `Chrome`**（本仓 headless Chrome 逐帧 canvas，`render/chrome.rs` + `headless_chrome`
 /// 依赖）—— 2026-10-01 整条删除（用户拍板：出片只有底座一条腿，不再要求用户装浏览器）。

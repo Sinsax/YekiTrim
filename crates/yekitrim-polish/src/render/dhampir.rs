@@ -59,7 +59,7 @@ use anyhow::{bail, Context, Result};
 /// 关于契约版本：产物 `VERSION` 里的 `project_schema` 必须**存在且可读**；
 /// "与本仓期望是否一致"的**权威判定在 Dhampir 那一侧**（`project.rs` 里
 /// `doc.project_schema != PROJECT_SCHEMA_VERSION` 就拒绝），这里只报出读到的那一个 ——
-/// 在 V-Trim 里再抄一份期望值，就等于给同一条规矩留了第二处实现。
+/// 在 YekiTrim 里再抄一份期望值，就等于给同一条规矩留了第二处实现。
 fn verify_artifact_dir(preview: &Path) -> Result<()> {
     let engine = preview.join("engine.js");
     let wasm_js = preview.join("pkg").join("dhampir_wasm.js");
@@ -96,7 +96,7 @@ fn verify_artifact_dir(preview: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 这一层不想引日志依赖（`vtrim-polish` 是库）—— 只在 `VTEDIT_DHAMPIR_VERBOSE` 时打印。
+/// 这一层不想引日志依赖（`yekitrim-polish` 是库）—— 只在 `VTEDIT_DHAMPIR_VERBOSE` 时打印。
 fn tracing_like_log(msg: &str) {
     if std::env::var("VTEDIT_DHAMPIR_VERBOSE").is_ok() {
         eprintln!("[dhampir] {msg}");
@@ -164,7 +164,7 @@ fn find_binary() -> Result<PathBuf> {
         tried.push(format!("VTEDIT_DHAMPIR={explicit}（不是文件）"));
     }
 
-    // 本仓 exe 的位置：`<V-Trim>/target/<profile>/vtrim[.exe]`
+    // 本仓 exe 的位置：`<YekiTrim>/target/<profile>/yekitrim[.exe]`
     if let Ok(current) = std::env::current_exe() {
         if let Some(dir) = current.parent() {
             for up in [2usize, 3] {
@@ -183,7 +183,7 @@ fn find_binary() -> Result<PathBuf> {
         }
     }
 
-    // 本仓源码根（编译期常量）：`<V-Trim>/crates/vtrim-polish`
+    // 本仓源码根（编译期常量）：`<YekiTrim>/crates/yekitrim-polish`
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if let Some(repo) = manifest.parent().and_then(Path::parent) {
         if let Some(parent) = repo.parent() {
@@ -228,7 +228,7 @@ fn which(name: &str) -> Option<PathBuf> {
 /// 1. `VTEDIT_TRANSLATOR`（显式；指错 = **当场报错**，与 `find_binary` 同一口径）
 /// 2. **`<程序目录>/tools/polish-to-dhampir.mjs`** —— 打包后的位置（`xtask package` 会把
 ///    `tools/` 与 `spec/effects.json` 一起放进去；转译器自己按**同层** `../spec/effects.json` 读词汇表）
-/// 3. `<程序目录>/../../tools/…` —— 开发树（`target/debug/vtrim.exe` 往上两级就是仓库根）
+/// 3. `<程序目录>/../../tools/…` —— 开发树（`target/debug/yekitrim.exe` 往上两级就是仓库根）
 /// 4. `CARGO_MANIFEST_DIR/../..` —— **构建期**路径，只当最后的保险
 ///
 /// ⚠️ 第 4 条以前是唯一回退 ⇒ 装到别的机器上它指向一个**不存在的构建目录**，
@@ -611,7 +611,7 @@ impl TranslateReport {
     }
 }
 
-/// 就绪位：**这一台机器能不能用底座出片**（`/api/polish/dhampir`、`vtrim doctor`、
+/// 就绪位：**这一台机器能不能用底座出片**（`/api/polish/dhampir`、`yekitrim doctor`、
 /// 前端"通道不可用"提示共用同一份判断）。
 ///
 /// ⚠️ **只做定位，不渲染、不跑转译器**（一次请求里不能顺带跑一次 node）：
@@ -981,8 +981,8 @@ pub fn sequence_frames(translated: &Path) -> Result<usize> {
 /// # 为什么把底座的 stdout **落文件**、再边等边 tail
 ///
 /// 底座的进度是 NDJSON（`start` / `progress` / `done`）。**不翻译的话外面那层收不到任何进度**：
-/// `vtrim server` 的 `follow_render_output` 认的是当年那条 chrome 腿留下的 `frames A..B: NN%` 形状 ——
-/// 分钟级的出片在 WebUI 上就是"卡在 0%"。契约留在本仓（不让底座为 V-Trim 定制输出）。
+/// `yekitrim server` 的 `follow_render_output` 认的是当年那条 chrome 腿留下的 `frames A..B: NN%` 形状 ——
+/// 分钟级的出片在 WebUI 上就是"卡在 0%"。契约留在本仓（不让底座为 YekiTrim 定制输出）。
 ///
 /// 但**不能用管道**收（本仓踩过两次：Chrome/ffmpeg 是孙进程，它们继承 stdout 句柄，
 /// 只要还有一个活着管道就永不 EOF；`api/AGENTS.md` 那条纪律同样适用于这里，只是深了一层）。
@@ -1167,7 +1167,7 @@ mod artifact_tests {
 
     /// 造一个**最小但齐全**的产物目录（`<root>/preview/...` + `<root>/VERSION`）。
     fn make_artifact(tag: &str, with_pkg: bool) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("vtrim_dhampir_artifact_{tag}"));
+        let root = std::env::temp_dir().join(format!("yekitrim_dhampir_artifact_{tag}"));
         let preview = root.join("preview");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(preview.join("pkg")).unwrap();
@@ -1207,7 +1207,7 @@ mod artifact_tests {
         );
     }
 
-    /// 缺 `VERSION` → 也要报错（它是产物与 V-Trim 之间的契约版本）。
+    /// 缺 `VERSION` → 也要报错（它是产物与 YekiTrim 之间的契约版本）。
     #[test]
     fn missing_version_is_an_explicit_error() {
         let preview = make_artifact("noversion", true);
@@ -1220,13 +1220,13 @@ mod artifact_tests {
 
     /// **指到不存在的二进制 ⇒ 就绪位必须是 false，且问题里说清是哪一个。**
     ///
-    /// 这条是"底座不可用要在渲染前可见"的钉子：`/api/polish/dhampir-status`、`vtrim doctor`、
+    /// 这条是"底座不可用要在渲染前可见"的钉子：`/api/polish/dhampir-status`、`yekitrim doctor`、
     /// 前端提示都读同一个 `readiness()` —— 它要是永远返回 true，那三处就全是装饰。
     #[test]
     fn readiness_reports_missing_binary() {
         let key = "VTEDIT_DHAMPIR_CLI";
         let old = std::env::var_os(key);
-        let bogus = std::env::temp_dir().join("vtrim-no-such-dhampir.exe");
+        let bogus = std::env::temp_dir().join("yekitrim-no-such-dhampir.exe");
         let _ = std::fs::remove_file(&bogus);
         // ⚠️ `set_var` 在 Rust 2024 是 unsafe（进程级环境变量与线程共享）。
         // 这个测试是**唯一**动 `VTEDIT_DHAMPIR_CLI` 的地方，且只读它一次、立刻还原 ——
@@ -1269,7 +1269,7 @@ mod artifact_tests {
     /// "PATH 里有没有 node" 这条便宜判断：给一个**临时目录**当 PATH 来测（不动真 PATH）。
     #[test]
     fn node_lookup_is_a_path_scan() {
-        let dir = std::env::temp_dir().join(format!("vtrim-node-scan-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-node-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let name = if cfg!(windows) { "node.exe" } else { "node" };
@@ -1281,7 +1281,7 @@ mod artifact_tests {
         std::fs::write(&fake, b"stub").unwrap();
         assert_eq!(node_in_path_var(Some(dir.clone().into_os_string())), Some(fake.clone()));
         // 多个目录：按 PATH 顺序取第一个命中的
-        let empty = std::env::temp_dir().join(format!("vtrim-node-scan2-{}", std::process::id()));
+        let empty = std::env::temp_dir().join(format!("yekitrim-node-scan2-{}", std::process::id()));
         let joined = std::env::join_paths([empty, dir.clone()]).unwrap();
         assert_eq!(node_in_path_var(Some(joined)), Some(fake));
         let _ = std::fs::remove_dir_all(&dir);

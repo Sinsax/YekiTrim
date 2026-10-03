@@ -34,7 +34,7 @@
 - **无人持有"emoji 该由谁补"的知识**：`emoji: bool` 元数据在 `fonts.rs:149` 躺着，
   `/api/polish/fonts` 也回了（`polish.rs:1287`），**但没有一个消费点读它**（全仓 grep 实读确认）。
 
-⇒ **收敛的正确落点 = 在 `vtrim-core::fonts` 造一个"字体解析唯一入口"**，
+⇒ **收敛的正确落点 = 在 `yekitrim-core::fonts` 造一个"字体解析唯一入口"**，
 把上面 7 个口全部改成"问它要"：给定 `id | 空`，返回**该用哪些字体 + 各自角色（正文 / emoji 补充 / 兜底）**。
 这样"选了库里没有的字体""emoji 由谁补""成片和预览是不是同一套"这三个问题，都只有一处答案。
 
@@ -82,7 +82,7 @@
 
 ### 事实 1：Dhampir 字幕**没有**字体回退 —— A2「栈尾插 emoji 喂饱 #1」不成立 ❌
 
-1. `crates/vtrim-polish/src/render/dhampir.rs:445-456` —— `find_font` 是**优先级列表挑一个赢家**，命中即 `return`。
+1. `crates/yekitrim-polish/src/render/dhampir.rs:445-456` —— `find_font` 是**优先级列表挑一个赢家**，命中即 `return`。
    `font_search_order`（`:398-411`）只是把 `fallback_stack()` 按 `,` 拆成这张优先级表。
 2. CLI 只传**一个**字体文件：`--font-file` + `--font-bold-file`（`:1003-1034`）。
 3. 每轨族名来自转译器，**只有一个**：`tools/polish-to-dhampir.mjs:3325`（字幕）、`:3517`（弹幕）。
@@ -95,7 +95,7 @@
 
 ### 事实 2：自带 emoji 字体是 **COLRv1**，Takumi 只认 **COLRv0** ⇒ 出**单色剪影** ❌⚠️
 
-**2a. 实测字节** —— 我解析了 `~/.vtrim/fonts/NotoColorEmoji/font.ttf`（25,332,736 B，16 表）：
+**2a. 实测字节** —— 我解析了 `~/.yekitrim/fonts/NotoColorEmoji/font.ttf`（25,332,736 B，16 表）：
 ```
 COLR off=3808684 (len 1094045)   CPAL off=4902732   SVG off=4959708 (len 20288281)   glyf off=348532
 HAS CBDT: false   HAS CBLC: false   HAS sbix: false
@@ -127,7 +127,7 @@ NotoColorEmoji **带 3.4 MB `glyf`**，所以出的是**实心剪影**——不�
 ### 事实 3：Takumi fallback 桶 = **注册序全集**，CSS 族名几乎不起作用 ✅
 
 - `takumi-raster-0.5.1/src/render.rs:167,431`：`snapshot_with_fallbacks(font_families.as_ref())`；
-- `crates/vtrim-polish/src/render/takumi.rs:565-572`：本仓**没设 `font_families`**（全仓 grep = 0）⇒ `None`；
+- `crates/yekitrim-polish/src/render/takumi.rs:565-572`：本仓**没设 `font_families`**（全仓 grep = 0）⇒ `None`；
 - `takumi-core-0.25.0/src/resources/font.rs:468-475`：`None` ⇒ 桶 = `self.order` = **全部已注册字体按注册序**。
 
 ⇒ **"挑哪支"由 `cover_font_files()` 的注册顺序决定，不是 CSS 族名。**
@@ -179,14 +179,14 @@ S0.5 emoji 字体选型（取决于 S0）
     └─ 首选 CBDT 版 Noto Color Emoji v1.x（可分发 + Takumi 支持）
        ⚠️ 必须**换新 id**：下载三入口幂等、"已装好的跳过"，复用同 id 老机器不会重下
 
-S1  输入层收敛（目标①的核心）—— 在 vtrim-core::fonts 造"字体解析唯一入口"
+S1  输入层收敛（目标①的核心）—— 在 yekitrim-core::fonts 造"字体解析唯一入口"
     ├─ 一个函数吃 (id 或空) → 返回 {正文族, emoji 补充族, 兜底链}（角色化的单一来源）
     ├─ A1 emoji 槽位（至多一支、id 稳定序、只取已装）
     ├─ A3 /api/polish/fonts 暴露它；A4 is_default 双向拦截 emoji
     └─ 现有 4 份写死兜底（SYSTEM_FONT_STACK / EMOJI_FONT / 预览字面量 / ensure_emoji_fallback）
        全部改为问这个入口
-    写范围：crates/vtrim-core/src/fonts.rs, crates/vtrim-server/src/api/polish.rs,
-            crates/vtrim-polish/src/render/server.rs
+    写范围：crates/yekitrim-core/src/fonts.rs, crates/yekitrim-server/src/api/polish.rs,
+            crates/yekitrim-polish/src/render/server.rs
 
 S2  前端职责分离（目标②的核心）—— C9 + C10
     ├─ 两个下拉过滤 f.emoji（emoji 退出正文候选）
@@ -196,7 +196,7 @@ S2  前端职责分离（目标②的核心）—— C9 + C10
     ⚠️ 必须 npm --prefix webui run build 重建 dist（dist 已入库）
 
 S3  封面收口（B8 为主，B6/B7 顺带）—— 注册序 emoji 收尾
-    写范围：crates/vtrim-polish/src/cover.rs, src/render/takumi.rs
+    写范围：crates/yekitrim-polish/src/cover.rs, src/render/takumi.rs
 
 S4  栈尾 emoji（A2）—— 取决于 R1 的裁定
     若做：改 server.rs + 更新两条单测 + 真跑封面 golden 对拍
@@ -212,10 +212,10 @@ S5  验收 + 文档（font-library.md 新增 §22；dhampir-parity-register.md �
 
 ```bash
 cargo check --workspace --all-targets                       # 0 warnings
-cargo test -p vtrim-polish --lib render                     # server.rs 那两条单测在这
-cargo test -p vtrim-polish                                  # takumi_font_id.rs 在 tests/
-cargo test -p vtrim-core --lib fonts                        # fonts.rs tests / tests_v2
-cargo test -p vtrim-server                                  # /api/polish/fonts 响应形状
+cargo test -p yekitrim-polish --lib render                     # server.rs 那两条单测在这
+cargo test -p yekitrim-polish                                  # takumi_font_id.rs 在 tests/
+cargo test -p yekitrim-core --lib fonts                        # fonts.rs tests / tests_v2
+cargo test -p yekitrim-server                                  # /api/polish/fonts 响应形状
 
 node scripts/check-cover-takumi.mjs --golden scripts/fixtures/cover-golden   # 封面真渲染
 

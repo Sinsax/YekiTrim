@@ -114,11 +114,11 @@ hybrid 的 8 成时间在 qwen3 的**串行自回归解码**上，那是一个**
 
 ## 5. 附：引用
 
-- qwen3 占 hybrid 八成时间（12.4 min vs 打轴 2.5 min）：`crates/vtrim-core/src/asr/local.rs:458`、`:214`
+- qwen3 占 hybrid 八成时间（12.4 min vs 打轴 2.5 min）：`crates/yekitrim-core/src/asr/local.rs:458`、`:214`
 - VAD 实测（184 分钟 195.6→83.7 s；VAD 自身 22.0 s）：`docs/plan/vad-single-mode.md:11-13`
-- `max_new_tokens` 默认 256 及"上游默认 128"的说明：`crates/vtrim-core/src/config/types.rs:517-525`
-- qwen3 串行 Mutex 与 `decode_threads` 的耦合警告：`crates/vtrim-core/src/asr/local.rs:196-216`
-- 模型体积 165 MB / 879 MB：`crates/vtrim-server/src/api/config.rs:37-38`
-- 按 mode 决定要下哪些模型：`crates/vtrim-core/src/download.rs:339-344`
+- `max_new_tokens` 默认 256 及"上游默认 128"的说明：`crates/yekitrim-core/src/config/types.rs:517-525`
+- qwen3 串行 Mutex 与 `decode_threads` 的耦合警告：`crates/yekitrim-core/src/asr/local.rs:196-216`
+- 模型体积 165 MB / 879 MB：`crates/yekitrim-server/src/api/config.rs:37-38`
+- 按 mode 决定要下哪些模型：`crates/yekitrim-core/src/download.rs:339-344`
 - 打轴层无可替代（CER/Paraformer/Whisper/Dolphin 对照）：`asr-sensevoice-replacement-survey.md`
 - MOSS 评估：`asr-moss-transcribe-diarize-survey.md`

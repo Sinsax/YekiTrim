@@ -2,7 +2,7 @@
 
 > 配套：`docs/plan/dhampir-integration.md`（接口面与分期；D1–D4 已定）。
 > 前置事实（已核对代码）：**server 不直接调底座** —— `api::render::run_polish_child` 起的是
-> **自己的二进制** `vtrim polish render <dir>`（stdout/stderr 落 `<data_dir>/logs/render-<job_id>.log`，
+> **自己的二进制** `yekitrim polish render <dir>`（stdout/stderr 落 `<data_dir>/logs/render-<job_id>.log`，
 > `follow_render_output` 边跑边读，取消时 `render_proc::kill_tree` 杀整棵树）。
 > 所以"加一条通道"= ①CLI 多一个取值 ②server 把它透传下去 ③里程碑表认它的输出。
 >
@@ -15,12 +15,12 @@
 
 | 文件 | 改动 |
 |---|---|
-| `crates/vtrim-cli/src/cli.rs` | `PolishAction::Render { input, renderer }` 的 `--renderer` 帮助文案改成 `chrome\|dhampir`（**保持 `String`**：老命令里的 `wgpu` 要能**带 warn 回退**，`ValueEnum` 会直接判非法）；新增 `PolishAction::Translate { input }`；`--strict` 加到 `render`（D4：只有它会拒绝 `DROP > 0`） |
-| `crates/vtrim-cli/src/main.rs` | `set_var("VTEDIT_RENDERER", …)` 保留（`cmd_render` 从 env 读），但**校验集中在 `pipeline.rs` 一处**（`wgpu`/`native` → warn + 回退 chrome），别写第二份 |
-| `crates/vtrim-polish/src/render/backend.rs` | 新增 `RenderChannel { Chrome, Dhampir }`（**与 `FrameRenderer` 分开**：底座不属于"给帧出帧"） |
-| `crates/vtrim-polish/src/render/dhampir.rs`（新） | `run_dhampir(project_path, opts) -> Result<PathBuf>` —— **唯一调用点**，内部见 1.2 |
-| `crates/vtrim-polish/src/render/pipeline.rs` | `cmd_render` 按通道分支（底座走 `run_dhampir`，不进 chunk 循环） |
-| `crates/vtrim-polish/src/commands.rs` | `cmd_doctor` 输出加 `[dhampir]` 块（1.3）；新增 `cmd_translate` |
+| `crates/yekitrim-cli/src/cli.rs` | `PolishAction::Render { input, renderer }` 的 `--renderer` 帮助文案改成 `chrome\|dhampir`（**保持 `String`**：老命令里的 `wgpu` 要能**带 warn 回退**，`ValueEnum` 会直接判非法）；新增 `PolishAction::Translate { input }`；`--strict` 加到 `render`（D4：只有它会拒绝 `DROP > 0`） |
+| `crates/yekitrim-cli/src/main.rs` | `set_var("VTEDIT_RENDERER", …)` 保留（`cmd_render` 从 env 读），但**校验集中在 `pipeline.rs` 一处**（`wgpu`/`native` → warn + 回退 chrome），别写第二份 |
+| `crates/yekitrim-polish/src/render/backend.rs` | 新增 `RenderChannel { Chrome, Dhampir }`（**与 `FrameRenderer` 分开**：底座不属于"给帧出帧"） |
+| `crates/yekitrim-polish/src/render/dhampir.rs`（新） | `run_dhampir(project_path, opts) -> Result<PathBuf>` —— **唯一调用点**，内部见 1.2 |
+| `crates/yekitrim-polish/src/render/pipeline.rs` | `cmd_render` 按通道分支（底座走 `run_dhampir`，不进 chunk 循环） |
+| `crates/yekitrim-polish/src/commands.rs` | `cmd_doctor` 输出加 `[dhampir]` 块（1.3）；新增 `cmd_translate` |
 
 ### 1.2 `run_dhampir` 内部（顺序不可换；**D1 换实现时只动这里**）
 
@@ -29,7 +29,7 @@
             ← 远期(P4, D1): 换成 **Rust 原生实现**（直接吃已加载的 ProjectFile，省掉手写 TOML 那整块）；
                `tools/…mjs` **不删**（底座侧测试要用 + Rust 的 parity oracle）；调用点与其余步骤一个字不改
 2. probe    dhampir probe --project <doc.json>          # 校验 schema/素材；回填帧数
-3. 字体     style.subtitle.font → vtrim_core::fonts::resolve_file → --font-file <真实路径>
+3. 字体     style.subtitle.font → yekitrim_core::fonts::resolve_file → --font-file <真实路径>
             拿不到 → 退系统字体 + warn（底座没字体会判失败，别让它炸在深处）
 4. render   dhampir render --project <doc.json> --asset-root <项目目录> --from/--to <本仓时间基算>
 5. 产物     unique_output_path（同名 _1/_2）+ 登记成"渲染产物" + **记下通道**（D2）
@@ -40,13 +40,13 @@
 - **D5（竖屏）不在这里处理**：源视频方向由**上层配置**给（`polish.toml` 的 `[source] width/height`，
   `polish process` 那次已有的 ffprobe 顺手写入），**转译器读配置、按它过滤运镜**。
   `run_dhampir` 只负责把片段目录交给转译器。⚠️ 老工程缺这个字段时转译器进 NOTE 且**不过滤** ——
-  CLI 可以在那一步补一句提示（"跑一次 `vtrim polish process` 补上源尺寸"），**别自己探媒体**。
+  CLI 可以在那一步补一句提示（"跑一次 `yekitrim polish process` 补上源尺寸"），**别自己探媒体**。
 - **JS 保留 ⇒ 需要常驻 parity 守卫**：`scripts/check-dhampir-parity.mjs`（同一输入下 Rust 产物与 JS 产物
   **逐字节相同**）。P4 之后这条必须绿，否则"两边都留"就变成了漂移源。
 - 缺 Node / 缺底座 / 版本不符：**三种错分开报**，每条给可操作出路（装 Node、指 `--dhampir`、或改用 `--renderer chrome`）。
   ⚠️ **不许静默回退 chrome**：用户显式点了底座通道。
 
-### 1.3 `vtrim polish doctor` 加一块（不新增命令）
+### 1.3 `yekitrim polish doctor` 加一块（不新增命令）
 
 ```
 [dhampir]                      （实验通道；默认出片仍是 chrome）
@@ -63,7 +63,7 @@
 ```bash
 cargo run -- polish doctor                       # 4 行状态，缺什么一目了然
 cargo run -- polish translate <片段目录>          # 只转译 + 打报告（把"底座没装"与"转译有差异"分开）
-node scripts/check-vtrim-translator.mjs --mutate  # 转译器本身没退化
+node scripts/check-yekitrim-translator.mjs --mutate  # 转译器本身没退化
 cargo run -- polish render <片段目录> --renderer dhampir
 # 要求：
 #  ① 同一条命令跑两次，产物 sha256 相同（可复现）
@@ -81,10 +81,10 @@ cargo run -- polish render <片段目录> --renderer dhampir
 
 | 文件 | 改动 |
 |---|---|
-| `crates/vtrim-server/src/api/polish.rs` | `polish_render` 读 `body.renderer`（白名单 `chrome`/`dhampir`，缺省 `chrome`；非法 → **400**），透传给 `run_polish_child` |
-| `crates/vtrim-server/src/api/render.rs` | `run_polish_child(..., sub, dir, extra: &[String])`：拼 `["--renderer", r]`；`RENDER_MILESTONES` 加底座那几行（2.2） |
-| `crates/vtrim-server/src/api/mod.rs` | `/api/health` 加 `"dhampir": {"available", "exe", "version", "schema_ok"}` —— **这是"就绪位"，不是构建能力位**（与已删除的 `wgpu_render` 不同：那个是编译开关，这个是"装没装/版本对不对"） |
-| `crates/vtrim-server/src/api/polish.rs`（只读端点） | `GET /api/polish/dhampir` → 同一块（精修页打开时拉一次，不必每次 health） |
+| `crates/yekitrim-server/src/api/polish.rs` | `polish_render` 读 `body.renderer`（白名单 `chrome`/`dhampir`，缺省 `chrome`；非法 → **400**），透传给 `run_polish_child` |
+| `crates/yekitrim-server/src/api/render.rs` | `run_polish_child(..., sub, dir, extra: &[String])`：拼 `["--renderer", r]`；`RENDER_MILESTONES` 加底座那几行（2.2） |
+| `crates/yekitrim-server/src/api/mod.rs` | `/api/health` 加 `"dhampir": {"available", "exe", "version", "schema_ok"}` —— **这是"就绪位"，不是构建能力位**（与已删除的 `wgpu_render` 不同：那个是编译开关，这个是"装没装/版本对不对"） |
+| `crates/yekitrim-server/src/api/polish.rs`（只读端点） | `GET /api/polish/dhampir` → 同一块（精修页打开时拉一次，不必每次 health） |
 | `webui/src/api/polish.js` | `runRender(pid, dir, renderer)`；`fetchDhampirStatus()` |
 | `webui/src/views/PolishView.vue` | 渲染入口加通道选择（**含"实验"标注**），按就绪位置灰 |
 | 产物卡 | 显示"这条产物是哪条通道出的"（D2 要求；否则用户分不清 `xxx.mp4` 与 `_1`） |
@@ -102,7 +102,7 @@ cargo run -- polish render <片段目录> --renderer dhampir
   ✂ DROP 9 / CLAMP 3 / NOTE 16       # 三级清单摘要（info 级）
   FINISHED: <产物路径>                # 终态
   ```
-  **这条契约留给本仓**：在 `run_dhampir` 里把底座的输出**翻译**成上面的形状，别要求底座为 V-Trim 定制输出。
+  **这条契约留给本仓**：在 `run_dhampir` 里把底座的输出**翻译**成上面的形状，别要求底座为 YekiTrim 定制输出。
 - 完整清单落 `<项目>/data/dhampir/report.json`（机器可读，D4 的"当构建产物接进流程"就靠它）。
 - 失败文案带 `RenderOutput::tail` 最近 30 行 + **三种前置缺失分开报**（缺 node / 缺底座 / schema 不符）。
 
@@ -127,8 +127,8 @@ cargo run -- polish render <片段目录> --renderer dhampir
 ### 2.5 server 验收
 
 ```bash
-cargo test -p vtrim-polish --lib render     # run_dhampir 单测（用假底座脚本注入，不依赖真底座）
-cargo test -p vtrim-server                  # 白名单：非法 renderer → 400（不是静默 chrome）
+cargo test -p yekitrim-polish --lib render     # run_dhampir 单测（用假底座脚本注入，不依赖真底座）
+cargo test -p yekitrim-server                  # 白名单：非法 renderer → 400（不是静默 chrome）
 npm --prefix webui run build && node webui/scripts/check-overlay.mjs
 python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.py
 ```
@@ -139,7 +139,7 @@ python3 scripts/check_module_map.py && python3 scripts/check_module_boundaries.p
 ## 三、落地顺序（每步独立验收；D2 允许把它排在主线功能之后）
 
 1. **P1-a**：`RenderChannel` + `run_dhampir`（只做转译 + probe，render 先返回"未实现"）+ 单测。
-   → `cargo test -p vtrim-polish --lib render` 绿；缺 Node 的文案可操作。
+   → `cargo test -p yekitrim-polish --lib render` 绿；缺 Node 的文案可操作。
 2. **P1-b**：接 `dhampir render` + 产物登记（带通道）+ `polish translate` + `doctor` 的 `[dhampir]` 块 + `--strict`。
    → §1.4 四条。
 3. **P2-a**：`run_polish_child` 透传 `--renderer` + 里程碑 + 输出翻译层 + `report.json`。

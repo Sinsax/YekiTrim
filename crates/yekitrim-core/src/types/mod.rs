@@ -1,7 +1,7 @@
 //! types：跨 stage 共享的数据类型（时间戳 / 转写 / 事件 / 管线上下文）。
 //!
 //! 入口：`PipelineContext`、`Timestamp`、`VideoInfo`、`Transcript`、`TranscriptSegment`、`Event`、`EventType`、`EventSource`、`EventStore`。
-//! 边界：全管线的公共数据面，改字段会连带四个 stage 与落盘的 `transcript.json` / `events.json`；`types/` 无专卡，规矩在其上层卡 —— 见 `crates/vtrim-core/AGENTS.md`
+//! 边界：全管线的公共数据面，改字段会连带四个 stage 与落盘的 `transcript.json` / `events.json`；`types/` 无专卡，规矩在其上层卡 —— 见 `crates/yekitrim-core/AGENTS.md`
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub struct Transcript {
     pub asr_metadata: Option<AsrMetadata>,
 }
 
-/// ASR 转写质量元数据，写入 `transcript.json` 供 `vtrim status` / 回归分析使用。
+/// ASR 转写质量元数据，写入 `transcript.json` 供 `yekitrim status` / 回归分析使用。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AsrMetadata {
     #[serde(default)]

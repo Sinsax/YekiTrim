@@ -2,7 +2,7 @@
 //!
 //! 两条入口：
 //! 1. [`Scope`] 提取器 —— `/api/project-data/*` 用：从 `?project=<id>`（**仅本人**）
-//!    解析出项目与它的 `Workspace`；过渡期额外接受 `?config=<已登记的本人项目 vtrim.toml>`
+//!    解析出项目与它的 `Workspace`；过渡期额外接受 `?config=<已登记的本人项目 yekitrim.toml>`
 //!    （只作为"路径→项目"的反查，**未登记的路径一律 404**，因此路径面已经关闭）。
 //! 2. [`enforce_scope`] 中间件 —— `/api/polish/*` 用：先读请求里的 `dir`/`project`
 //!    （query 或 JSON body），确认它落在**调用者自己的**某个项目根之内；不通过直接
@@ -13,7 +13,7 @@
 //! （它们相对的是 **`dir`** 而不是项目根，走 [`is_safe_project_relative`] 单独收口）。
 //! 漏一个就是一条任意文件读取：
 //! 曾经 `source`（`polish_cover_background`）与 `cover.image`（`polish_cover_config`）
-//! 就因为不在收口名单里，普通用户能把服务器上任意文件（例如 `.vtrim/llm.toml`，
+//! 就因为不在收口名单里，普通用户能把服务器上任意文件（例如 `.yekitrim/llm.toml`，
 //! 里面有 LLM API key）复制进自己的项目、再用 `/api/media` 读回来。
 
 use std::path::{Path, PathBuf};
@@ -318,7 +318,7 @@ fn json_set_str(v: &mut serde_json::Value, path: &str, val: &str) {
 /// 已存在的文件"：`cover-background` 会 `fs::copy` 它，`cover` 渲染也会先断言存在）。
 ///
 /// 这是 `/api/polish/*` 的路径面收口点：没有它，`source` 就能把服务器上任意文件
-/// （例如 `<exe同级>/.vtrim/llm.toml`，里面有 LLM API key；或账号账本 `yekitrim.db`）
+/// （例如 `<exe同级>/.yekitrim/llm.toml`，里面有 LLM API key；或账号账本 `yekitrim.db`）
 /// 复制进调用者自己的项目，再用 `/api/media/<自己的项目>/…` 读回来。
 fn resolve_file_in_project(project: &ProjectRow, raw: &str, field: &str) -> Result<PathBuf, AppError> {
     let raw = raw.trim();
@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn resolve_dir_rejects_outside_absolute_paths() {
-        let base = std::env::temp_dir().join(format!("vtrim-scope-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("yekitrim-scope-{}", std::process::id()));
         let root = base.join("proj");
         std::fs::create_dir_all(root.join("output")).unwrap();
         let other = base.join("other");
@@ -764,10 +764,10 @@ mod tests {
     ///
     /// 这条是"普通用户能读服务器上任意文件"那个洞的回归钉子：`source` 曾被
     /// `polish_cover_background` 直接 `PathBuf::from` + `fs::copy`，指向
-    /// `<exe同级>/.vtrim/llm.toml` 就能把 LLM key 复制进自己的项目再读回来。
+    /// `<exe同级>/.yekitrim/llm.toml` 就能把 LLM key 复制进自己的项目再读回来。
     #[test]
     fn resolve_file_in_project_jails_outside_paths() {
-        let base = std::env::temp_dir().join(format!("vtrim-scope-file-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("yekitrim-scope-file-{}", std::process::id()));
         let root = base.join("proj");
         std::fs::create_dir_all(&root).unwrap();
         let inside = root.join("bg.jpg");

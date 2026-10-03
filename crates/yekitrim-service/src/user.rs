@@ -1,4 +1,4 @@
-//! `vtrim user`：账号账本管理（多用户服务 P1 的 CLI 侧）。
+//! `yekitrim user`：账号账本管理（多用户服务 P1 的 CLI 侧）。
 //!
 //! 与 HTTP 侧共用 `service::db` / `service::auth`；本文件不引入任何 HTTP 依赖。
 //! 口令来源三选一：`--stdin`（管道）、`--password-file <f>`（推荐，不进进程列表）、
@@ -70,8 +70,8 @@ pub fn initial_password_path() -> PathBuf {
 /// ⚠️ 为什么要单独有这个函数、而不是各处手写 remove_initial_password_file()：
 /// 这个文件的**唯一语义**是「这里躺着的就是当前有效密码」。一旦密码变了它就必须被处置，
 /// 否则它**会撒谎** —— 用户照着 initial-admin-password.txt 里的串输入却登不进去。
-/// 实测踩到：target/debug/.vtrim/cloud/ 里那份是早已失效的旧密码，
-/// vtrim user check 报「❌ 口令不匹配」，而 CLI 当初的提示还写着「已同步写入 …」。
+/// 实测踩到：target/debug/.yekitrim/cloud/ 里那份是早已失效的旧密码，
+/// yekitrim user check 报「❌ 口令不匹配」，而 CLI 当初的提示还写着「已同步写入 …」。
 ///
 /// 处置方式两种，取决于新密码**是怎么来的**：
 /// - 新密码是**这次现场生成**的（generated）⇒ **覆写**成它：文件继续有效，
@@ -88,7 +88,7 @@ pub fn retire_initial_password_file(generated: Option<&str>) {
 /// [`retire_initial_password_file`] 的可注入版本（单测用，不碰真实数据目录）。
 ///
 /// ⚠️ 测试**不能**靠 `YEKITRIM_DATA_DIR` 做隔离 —— 测试是并行跑的，改全局环境变量会互相踩
-/// （同 `vtrim-server` 的 `test_support` 那条注释）。
+/// （同 `yekitrim-server` 的 `test_support` 那条注释）。
 pub fn retire_initial_password_file_in(dir: &Path, generated: Option<&str>) {
     match generated {
         Some(pw) => {
@@ -126,7 +126,7 @@ pub fn remove_initial_password_file() {
     }
 }
 
-/// `vtrim server` 启动时的管理员引导结果。
+/// `yekitrim server` 启动时的管理员引导结果。
 #[derive(Debug, Clone)]
 pub struct Bootstrap {
     /// 本次启动是否新建了 admin（重启不会重建，见 §3.5.2）
