@@ -269,7 +269,7 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
   box-shadow:var(--shadow-hover); padding:34px 32px; text-align:center; }
 /* 品牌标容器：**不再是渐变圆底** —— 正式 logo 自带底色与留白，
    再垫一层渐变会把它压成一圈色边。只留尺寸。 */
-.login-card .logo, .login-brand { width:56px; height:56px; display:inline-flex; align-items:center;
+.login-card .logo, .login-brand { width:88px; height:88px; display:inline-flex; align-items:center;
   justify-content:center; margin-bottom:12px; }
 .login-card .logo > img { width:100%; height:100%; object-fit:contain; display:block; }
 .login-card h1 { font-size:19px; color:var(--main-deep); margin-bottom:2px; }
@@ -337,7 +337,8 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .side.mini { width:64px; }
 .side-brand { display:flex; align-items:center; gap:10px; padding:14px 16px 8px; cursor:pointer; }
 /* 品牌标容器：与登录页同理 —— 去掉渐变圆底，只留尺寸（正式 logo 自带留白）。 */
-.brand-logo { width:34px; height:34px; display:flex; align-items:center; justify-content:center; flex:none; }
+/* 46px：折叠轨宽 64px，左右各留 9px；展开态 268px 更宽松。 */
+.brand-logo { width:46px; height:46px; display:flex; align-items:center; justify-content:center; flex:none; }
 .brand-logo > img { width:100%; height:100%; object-fit:contain; display:block; }
 .brand-name { font-size:14px; font-weight:700; color:var(--main-deep); line-height:1.2; }
 .brand-sub { font-size:10px; color:var(--ink-faint); letter-spacing:.14em; }
