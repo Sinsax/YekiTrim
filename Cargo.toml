@@ -6,8 +6,8 @@ resolver = "2"
 # 版本只有这一处来源。各 crate 写 `version.workspace = true`。
 #
 # 为什么必须同源：`/api/health` 的 version 来自 `CARGO_PKG_VERSION`（server crate），
-# `vtrim doctor` 的版本来自 service crate，而 `cargo xtask package` 的产物名
-# `vtrim-v<版本>-win-x64` 来自这里 —— 三处分别取各自 crate 的版本。一旦版本分叉，
+# `yekitrim doctor` 的版本来自 service crate，而 `cargo xtask package` 的产物名
+# `yekitrim-v<版本>-win-x64` 来自这里 —— 三处分别取各自 crate 的版本。一旦版本分叉，
 # 发行包名和 exe 自报版本会悄悄对不上，而且**不会报错**。
 [workspace.package]
 version = "0.3.1"
@@ -34,4 +34,4 @@ strip = true
 # 改成 unwind 之后，`api::spawn_job` 的 `catch_unwind` 兜底才**真正生效**：任务体的 panic
 # 被接住、替它调 `fail()`，Job 走到终态、资源键释放 —— 同项目/同片段的后续任务不会被饿死。
 # 代价是二进制略大，以及 panic 从"响亮的进程崩溃"变成"一个任务失败"；对服务端后者才是对的。
-# 回归：`vtrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。
+# 回归：`yekitrim-server` 的 `api::tests::spawn_job_marks_job_failed_on_panic`。
