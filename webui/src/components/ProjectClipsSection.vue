@@ -505,7 +505,7 @@ const FILTERS = [
 //
 // ⚠️ 判据是**是否已经导出**（`isExported` = `rendered || cover`），与卡片上那枚 chip 是**同一套口径**。
 // 不再用"进没进过精修"（旧的 `isInPolish` = `polish_ready || rendered || cover`）：
-// **剪切收尾本身就会 `polish init`**（见 `crates/vtrim-service/AGENTS.md`「剪切收尾 = 补精修工程」），
+// **剪切收尾本身就会 `polish init`**（见 `crates/yekitrim-service/AGENTS.md`「剪切收尾 = 补精修工程」），
 // 于是每个已剪片段都 `polish_ready` → 旧判据对已剪片段**恒为真** → 「未精修」那一档永远是空的。
 // 两档互斥互补：精修中 = 已剪但还没出片/出封面；已导出 = 出过其中任意一个。
 // 保留「全部」在前：一级「已剪切」的老行为（所有已剪片段）由此一键回到，不用再点回一级。
@@ -1304,7 +1304,7 @@ async function saveEdit() {
 }
 
 /**
- * 去精修页。切片本身已经在**剪切收尾**里建好精修工程（`vtrim-service::init_polish_for_events`），
+ * 去精修页。切片本身已经在**剪切收尾**里建好精修工程（`yekitrim-service::init_polish_for_events`），
  * 所以正常情况下这儿是"直接进"；只有在**老片段**（这次改动之前剪的）上才需要补一次 init。
  *
  * ⚠️ 补 init 必须**等任务跑完再跳**（与首页「切片总览」的 `openClip` 同一手感）：

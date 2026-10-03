@@ -18,8 +18,8 @@
 
 运行 Python 原型需要本地模型：
 
-- `~/.vtrim/models/qwen3-asr/`
-- `~/.vtrim/models/sensevoice/`
+- `~/.yekitrim/models/qwen3-asr/`
+- `~/.yekitrim/models/sensevoice/`
 
 ## 回归基准
 

@@ -3,7 +3,7 @@
 //
 // # 这份转译器是本仓的**出口**，不是产品代码
 //
-// 它活在 `tools/` 下（不在 `vtrim` 二进制的编译/运行路径上），用来回答一个具体问题：
+// 它活在 `tools/` 下（不在 `yekitrim` 二进制的编译/运行路径上），用来回答一个具体问题：
 // **「V-Trim 决定画什么、底座决定怎么画」这个分工，落到一份真工程上到底缺什么。**
 // 所以它宁可**报出转不了的东西**，也不猜 —— 猜出来的部分看着像成功了，
 // 而那正是最难归因的一类问题。
@@ -22,7 +22,7 @@
 // # 词表（正文里通篇出现这两个词；这份文件写于底座侧，搬进本仓时换过一次视角）
 //
 //   「底座」= Dhampir —— wgpu 预览 + 渲染底座，也就是这份转译器的**下游**
-//   「参照」= **本仓自己的出片模板** `crates/vtrim-polish/templates/index.html`
+//   「参照」= **本仓自己的出片模板** `crates/yekitrim-polish/templates/index.html`
 //             （canvas 那条腿：`renderFrame` / `getActiveXxx`）—— 它是本转译的**复刻对象**，
 //             所以"参照侧的不一致"就是**本仓可以修的不一致**
 //             正文里的 `index.html:NNN` / `templates/index.html` 都指这个文件（行号对着本仓的它）
@@ -461,7 +461,7 @@ export function withMoveTravel(text, travelMs) {
 }
 
 /// 弹幕淡入时长（毫秒）—— 与参照 `getActiveDms` 的 `fadeIn = 0.3` 逐值一致
-/// （`crates/vtrim-polish/templates/index.html`，同一份也在 `webui/src/polish/engine.js`）。
+/// （`crates/yekitrim-polish/templates/index.html`，同一份也在 `webui/src/polish/engine.js`）。
 export const DANMAKU_FADE_IN_MS = 300;
 
 /// 弹幕在屏窗口的**终点**（毫秒）：至少要让这条滚到左边出画，才允许它消失。
@@ -475,7 +475,7 @@ export const DANMAKU_FADE_IN_MS = 300;
 /// 的 `exit = cue.end_ms`），于是两边都会"**还没走到左边缘就渐隐**"，
 /// 唯一的"已出屏"判据（`x < -textW - 50`）永远轮不到执行。
 ///
-/// 录播姬 XML 给的窗口是**固定 8 秒**（`vtrim-core/src/danmaku/mod.rs::parse_bililive_xml`），
+/// 录播姬 XML 给的窗口是**固定 8 秒**（`yekitrim-core/src/danmaku/mod.rs::parse_bililive_xml`），
 /// 而中文弹幕的 travel 普遍 8.5~16 秒（`(1080 + 字节数×32)/150`）—— 实测
 /// 「还能续约吗」（15 字节、travel 10.40s）在距左边缘 **337px** 处开始渐隐，
 /// 13 个汉字那条（39 字节、travel 15.52s）在**屏幕中段 728px** 处就没了。
@@ -952,7 +952,7 @@ export const STICKER_WINDOW_SEC = 0;
 export const stickerWindowFrames = (durSec, fps) =>
   Math.max(1, Math.round((durSec + STICKER_WINDOW_SEC) * fps));
 
-/// 本仓出片模板的贴纸逐帧状态（`crates/vtrim-polish/templates/index.html:1517 getActiveSticker`）。
+/// 本仓出片模板的贴纸逐帧状态（`crates/yekitrim-polish/templates/index.html:1517 getActiveSticker`）。
 ///
 /// # 窗口 = **事件时长本身**（口径见 `docs/vtrim-integration.md` §14：出点 = 最后一个显示帧）
 ///
@@ -977,8 +977,8 @@ export const stickerWindowFrames = (durSec, fps) =>
 ///
 /// 四处同形（窗口上界 = `dur`，淡出起点 = `dur - fadeOut`）：
 ///   * 本文件的 `STICKER_WINDOW_SEC = 0` + `stickerWindowFrames`；
-///   * `crates/vtrim-polish/templates/index.html:1527`（`getActiveSticker` 的守卫）；
-///   * `crates/vtrim-render-core/src/timeline.rs:530` 与
+///   * `crates/yekitrim-polish/templates/index.html:1527`（`getActiveSticker` 的守卫）；
+///   * `crates/yekitrim-render-core/src/timeline.rs:530` 与
 ///     `webui/src/polish/engine.js:705`（两处同形判据 + 同形相位）。
 export const stickerStateAt = (localSec, durSec, sk) => {
   // 退化时长（<= 0）没有可见窗口 —— 直接返回不可见，**不留除零**。
@@ -1021,7 +1021,7 @@ export const stickerStateAt = (localSec, durSec, sk) => {
   return { opacity, scale, rot, yOff };
 };
 
-/// 本仓出片模板的手持波形（`crates/vtrim-polish/templates/index.html:593 handheldSway`）。
+/// 本仓出片模板的手持波形（`crates/yekitrim-polish/templates/index.html:593 handheldSway`）。
 ///
 ///     单位：dx/dy 是 **1920x1080 输出像素**，rot 是**度**，scale 是无量纲乘数
 ///
@@ -1038,7 +1038,7 @@ export const handheldSway = (t, amp) => {
   };
 };
 
-/// 本仓出片模板那份 `shake`（`crates/vtrim-polish/templates/index.html:1575 getShake`）：**固定 0.2s 的四级阶梯**。
+/// 本仓出片模板那份 `shake`（`crates/yekitrim-polish/templates/index.html:1575 getShake`）：**固定 0.2s 的四级阶梯**。
 ///
 /// 与事件自己的 `duration` **无关**，也与预览那份 GSAP `shake()` 无关。
 export const shakeOffsetAt = (localSec, off) => {
@@ -1124,7 +1124,7 @@ export function translate(config, clipDir, outPath, options = {}) {
 
   // ---- 布局：liver 的聚焦点（= 运镜的**不动点**）----
   //
-  // ⚠️ **口径以出片模板为准**（`crates/vtrim-polish/templates/index.html:1413-1414`，权威是它）：
+  // ⚠️ **口径以出片模板为准**（`crates/yekitrim-polish/templates/index.html:1413-1414`，权威是它）：
   //
   //     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid)
   //                                       : (liver.origin || '65% 50%');
@@ -1458,7 +1458,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // **源是不是竖素材**（`CFG.vertical`）—— 它整条关掉运镜
   // ---------------------------------------------------------------------
   //
-  // 参照的判据在 `crates/vtrim-polish/src/project/config.rs`：
+  // 参照的判据在 `crates/yekitrim-polish/src/project/config.rs`：
   //
   //     源是竖素材（`h > w`，沿用既有判据）
   //
@@ -1911,14 +1911,14 @@ export function translate(config, clipDir, outPath, options = {}) {
           const hasPos = stickerMode === 'manual' || (ratio(event.x) !== null && ratio(event.y) !== null);
           if (!hasPos) {
             // ⚠️ 这句要给**下一步怎么做**（2026-09-30 M2 改）：落点是 `process` 的产物
-            // （`vtrim-polish/src/process/mod.rs:276` 按 人物/字幕/弹幕 推导安全区后写死百分比），
+            // （`yekitrim-polish/src/process/mod.rs:276` 按 人物/字幕/弹幕 推导安全区后写死百分比），
             // 所以"没有落点"的正确处理是**先跑一次后处理**，而不是在这里猜一个位置。
             // 底座确实没有安全区推导 —— 这句话要留着，但要说清"不是底座的缺陷，是这一步没跑"。
             drop(
               where,
               `贴纸落点 "${event.x ?? '(无)'}","${event.y ?? '(无)'}" 解析不了 —— ` +
                 '落点是**后处理的产物**（`process` 按人物/字幕/弹幕推导安全区后写死百分比）：' +
-                '先跑一次 `vtrim polish process`（编辑器里随便改一下自动跑、或点「渲染」时也会先跑），' +
+                '先跑一次 `yekitrim polish process`（编辑器里随便改一下自动跑、或点「渲染」时也会先跑），' +
                 '再转译。底座没有安全区推导，这里**不猜**一个位置。',
             );
             break;
@@ -1943,7 +1943,7 @@ export function translate(config, clipDir, outPath, options = {}) {
 
           // ---- 贴纸动效：逐帧采样 `stickerStateAt`（不再是手写关键帧）----
           //
-          // 见 `vtrim-polish/templates/index.html:1517 getActiveSticker()`。
+          // 见 `yekitrim-polish/templates/index.html:1517 getActiveSticker()`。
           // 相位（含第四段淡出）都写在 `stickerStateAt` 的文档里。
           //
           // `SK = min(CW,CH)/1080`（参照模板 305 行）—— 贴纸的盒子、上浮量
@@ -1986,7 +1986,7 @@ export function translate(config, clipDir, outPath, options = {}) {
               '相位 `0→0.35` 弹入、`0.35→0.75` 上浮、`0.75→dur-0.3` 保持、`dur-0.3→dur` 渐隐' +
               ' ⇒ **出点即淡出终点**（最后一帧 opacity 已趋 0，既不硬切、也不再晚 0.4 秒）。' +
               '四处同口径：本文件的 `STICKER_WINDOW_SEC = 0`、`templates/index.html` 的 `getActiveSticker`、' +
-              '以及 `vtrim-render-core/src/timeline.rs` 与 `webui/src/polish/engine.js`' +
+              '以及 `yekitrim-render-core/src/timeline.rs` 与 `webui/src/polish/engine.js`' +
               '（窗口上界 = `dur`，淡出起点 = `dur - fadeOut`）。',
           );
           const durSec = Math.max(1 / fps, (srcEnd - srcStart) / fps);
@@ -2365,7 +2365,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 运镜：照抄 V-Trim 的**状态机**，不是"每条事件画两个端点"
   // ---------------------------------------------------------------------
   //
-  // 权威实现在 `vtrim-polish/templates/index.html:1398 getActiveCamera()`：
+  // 权威实现在 `yekitrim-polish/templates/index.html:1398 getActiveCamera()`：
   //
   //     var zoom = 1.0                        // 初值，不是第一个事件的值
   //     for each camera 事件 c:
@@ -3087,7 +3087,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   //     与 `gaussian_blur(radius=16)`）：**200 / 1100 / 1500 帧全部渲完，没有 OOM**。
   //     ⇒ 那条泄漏在**新版上复现不出来**（交接单 §0 已按这个读数下调）。
   //
-  //   那为什么还关着：**还没做产品路径的验收**（走 `vtrim polish render --renderer dhampir`
+  //   那为什么还关着：**还没做产品路径的验收**（走 `yekitrim polish render --renderer dhampir`
   //     完整链路 + 黄金帧对拍重标定）。打开就一行：把下面这个 `if (false && ...)` 的开关改掉。
   //   另有一条**改不掉**的：底座 `gaussian_blur.radius` 上限 16（σ8），参照模糊底要 σ28 ⇒ 只能一半。
   //
@@ -3113,7 +3113,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   //   · **能跑**：新底座 `c7f29b9` 上带 `bg1/bg2` 渲 200/1100/1500 帧全部通过、**无 OOM**（旧版本那条
   //     "常驻第二层长片必 OOM"复现不出来，见交接单 §0）；产品路径
-  //     `vtrim polish render --renderer dhampir` 也成功（12s / 1080x1920 / 3.2MB）。
+  //     `yekitrim polish render --renderer dhampir` 也成功（12s / 1080x1920 / 3.2MB）。
   //   · **但"看得见"没验成**：拿一个竖画布 + `bg_mode=blur` 的工程开/关各渲一次，成片**逐像素相同** ——
   //     因为那个工程的 `axis` 走 **cover**（默认档），主画面铺满画布，**底被完全盖住** ⇒ 开关对画面无影响。
   //   · **下一步（一行夹具就能定论）**：造一个 `axis = "x"` 或 `"y"`（**contain**）+ 竖画布 + `bg_mode=blur`
@@ -3137,7 +3137,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         //     · 渲全片 5818 帧 -> 保留这一层 **OOM**（`wgpu error: Out of Memory`），
         //                          去掉它 -> 通过；只去掉调整层（留这一层）-> 仍 OOM
         // 所以触发者是**这一层**，而且**只在长跑时**出现 —— 是逐帧累积。
-        // 症状在 `vtrim-compare` 里表现为 `*rawvideo* muxer: Invalid argument`，
+        // 症状在 `yekitrim-compare` 里表现为 `*rawvideo* muxer: Invalid argument`，
         // 那是本仓 panic 之后管道断掉的下游症状，**不是参照的问题**（参照渲得好好的）。
         //
         // 底座侧要查的是模糊中间纹理有没有复用。**在那之前，带背景层的长片渲不出来。**
@@ -3455,7 +3455,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         // 弹幕时刻整体错位（最大 17.49 秒），不重映射就"弹幕对不上话"。
         // ---- 逐条的滚动时长（**先算，后面要挂到每条 cue 上**）----
         //
-        // `vtrim-polish/src/parse/text.rs:74`：
+        // `yekitrim-polish/src/parse/text.rs:74`：
         //
         //     let travel = (1080.0 + entry.text.len() as f64 * 32.0) / 150.0;
         //

@@ -76,16 +76,16 @@ set VTRIM_DATA_DIR=F:\vtrim-data
    显示"未下载"、转写却一直在用它。
 
 现在位置只有一个，这类 bug 从根上没有发生的条件。**别再退回用户目录**：
-"躲开构建目录漂移"这个诉求已经由 `VTRIM_DATA_DIR` 正面解决，不需要第二份资产。
+"躲开构建目录漂移"这个诉求已经由 `YEKITRIM_DATA_DIR` 正面解决，不需要第二份资产。
 
 ### 用户目录里还剩什么
 
-`~/.vtrim/` **已不再被读取**。老机器上可能还留着 `fonts/` / `models/` / `config.toml`，
+`~/.yekitrim/` **已不再被读取**。老机器上可能还留着 `fonts/` / `models/` / `config.toml`，
 程序启动时会**如实报出**旧字体库的路径与体积（`fonts::legacy_user_dir_report`），
 但**不自动删也不搬** —— 那是用户的磁盘，里面可能有他手工放进去的字体。
 
 确认没问题后手动删即可：
 
 ```powershell
-Remove-Item -Recurse -Force "$env:USERPROFILE\.vtrim"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.yekitrim"
 ```

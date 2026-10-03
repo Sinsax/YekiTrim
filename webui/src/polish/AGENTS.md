@@ -10,7 +10,7 @@
 预览求值器）。⚠️ **真实出片路径**由**底座 Dhampir** 走（`tools/polish-to-dhampir.mjs` 把 `polish.toml`
 转译成底座工程）；`templates/index.html` 是**参照实现**（它当年是 canvas 那条腿的模板，那条腿已删除），
 转译器是它的平行重写 —— 两边仍然必须同口径，但"改模板 = 改出片"这句话**不再成立**。
-⚠️ 曾经还有第三条 `vtrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `vtrim-wasm` 已整体删除
+⚠️ 曾经还有第三条 `yekitrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `vtrim-wasm` 已整体删除
 （GPU 那侧交给独立的 Dhampir 底座）；`timeline.rs` 还在，但只剩 CPU 参考与覆盖层契约的正文，**不是预览的参照**。
 `canvas.js` 是画布参数 SSOT，
 `audio.js` 是 SFX 播放器与全应用共用的音量读写，`fonts.js` 按需加载项目字体。
@@ -25,7 +25,7 @@
 - `canvas.js`：`BASE_W` / `BASE_H` / `canvasOf(cfg)` / `stickerScale` / `stickerSize` / `stickerMargin` /
   `stickerFloatUp`（**画布参数 SSOT**，别在组件里另算一份）。
 - `audio.js`：`readMasterVolume` / `readMuted` / `saveMasterVolume` / `saveMuted` /
-  `createSfxPlayer({resolveUrl, onError})`（localStorage `vtrim_master_vol` / `vtrim_muted`；
+  `createSfxPlayer({resolveUrl, onError})`（localStorage `yekitrim_master_vol` / `yekitrim_muted`；
   ⚠️ 音效**加载失败**经 `onError` 每个 name 只上报一次 —— 以前是纯静默，"预览没有音效"无从查起；
   组件侧记 debug 不刷 warn）。
 - `fonts.js`：`ensureFontFace(pid, dir, id, {onDebug})`；`api.js`：polish 端点 + `watchJob`。
@@ -50,7 +50,7 @@
   空串色档抛 `SyntaxError`，两者都会**打断整个 chunk 的渲染**）；⚠ 兜底出来的第二档必须是
   **同色零透明**（`overlayFadeStop`），**不能用 CSS 的 `transparent`** —— canvas 渐变在非预乘空间
   插值会插出暗红，而 CSS 那边两者等价，写 `transparent` 恰好让**浏览器预览与出片观感不一致**。
-  四处实现：`vtrim-render-core/src/timeline.rs`、`templates/index.html`（**出片权威路径**）、
+  四处实现：`yekitrim-render-core/src/timeline.rs`、`templates/index.html`（**出片权威路径**）、
   `engine.js`、`PolishPreview.vue`（经 engine 的 `gradientCss`）。漂移检查跑
   `node webui/scripts/check-overlay.mjs`。
 - ⚠ 两处 DOM/GSAP 预览的渐变 CSS **结尾那个 `)` 不能省** —— 少了它整条 `background` 非法被浏览器
@@ -110,7 +110,7 @@
   `region_rects()`/`region_origin()` 一律**自由选框 > grid > `origin_grid`/`origin`**；
   `GRID_RECTS` 表须与 Rust `grid_rect` 对齐。
 - ⚠ **音量 0 是合法值**：读回音量用 `isFinite` + clamp，**不能写 `parseFloat(...) || 1`**（falsy
-  判定会把它变成 1）；音量/静音走**全应用共用**的 `vtrim_master_vol` / `vtrim_muted`，读写只走
+  判定会把它变成 1）；音量/静音走**全应用共用**的 `yekitrim_master_vol` / `yekitrim_muted`，读写只走
   `audio.js` 导出的 `readMasterVolume/readMuted/saveMasterVolume/saveMuted`（别各写一份），
   且必须同时落到 `<video>` 元素（只调 SFX 播放器就是 bug）。
 - ⚠ **出片逐帧路径里任何 `ReferenceError` 都是"整块 chunk 失败 → 整个 render job 失败"**：

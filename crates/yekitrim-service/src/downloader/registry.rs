@@ -1,6 +1,6 @@
 //! yt-dlp 的**供应链**：版本 + sha256 钉死的注册表，以及"确保有一份可用"的查找/下载。
 //!
-//! 结构照 `vtrim-core/src/download.rs::MODEL_REGISTRY`，但有一条关键差异：
+//! 结构照 `yekitrim-core/src/download.rs::MODEL_REGISTRY`，但有一条关键差异：
 //! 模型的 marker 是"某个文件存在"，而这里的 marker **就是 sha256 本身** ——
 //! 半下载的 exe / 被替换过的 exe 都不算"就绪"。别照抄 `ensure_one_model` 的 marker 判定。
 //!
@@ -76,7 +76,7 @@ pub const VERSION: &str = "2026.08.19";
 /// yt-dlp 的 license：Unlicense（公有领域）→ 随 release 打包**无附加义务**。
 pub const LICENSE: &str = "Unlicense";
 
-/// 托管副本所在目录：`<程序目录>/.vtrim/bin/`。
+/// 托管副本所在目录：`<程序目录>/.yekitrim/bin/`（= `path::vtrim_home()/bin`）。
 pub fn managed_dir() -> PathBuf {
     yekitrim_core::path::vtrim_home().join("bin")
 }
@@ -98,7 +98,7 @@ fn release_url() -> String {
 pub enum YtDlpSource {
     /// `[ingest] ytdlp_path`
     Config,
-    /// 托管目录 `<程序目录>/.vtrim/bin/`
+    /// 托管目录 `<程序目录>/.yekitrim/bin/`
     Managed,
     /// PATH
     PathEnv,
@@ -270,7 +270,7 @@ pub fn find_ytdlp(cfg: &Config) -> Option<YtDlpInstall> {
     None
 }
 
-/// 就绪位（`/api/health` 与 `vtrim doctor` 共用）。**只回布尔 + 来源标签，不回路径。**
+/// 就绪位（`/api/health` 与 `yekitrim doctor` 共用）。**只回布尔 + 来源标签，不回路径。**
 pub fn ready(cfg: &Config) -> (bool, &'static str) {
     match find_ytdlp(cfg) {
         Some(i) => (true, i.source.label()),
@@ -382,7 +382,7 @@ mod tests {
     impl Tmp {
         fn new(tag: &str) -> Self {
             let d = std::env::temp_dir().join(format!(
-                "vtrim-ytdlp-{tag}-{}-{:?}",
+                "yekitrim-ytdlp-{tag}-{}-{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));

@@ -85,7 +85,7 @@
           </div>
           <div class="hint asr-hint">{{ asrHint }}</div>
 
-          <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 vtrim.toml），不是产物。
+          <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
                清单式（两块的显示与交互完全一致）：
                - ASR 链路产物带 `ASR·<mode>` 标记、**不可删** —— 它就是那个模式用掉的转写名额；
                - 用户自己选的（含 admin 浏览服务器选的）可删，选中即加入列表；
@@ -182,7 +182,7 @@
     <AppModal :show="picker.show" :title="pickerTitle" wide @close="closePicker">
       <div class="muted small mb-6">
         项目目录里的候选（同名 = 与视频文件名相同）。选中后写进
-        <span class="mono">vtrim.toml</span> 并加进列表，随时能切回来。
+        <span class="mono">yekitrim.toml</span> 并加进列表，随时能切回来。
       </div>
       <div class="file-box">
         <div v-if="!candidateList.length" class="empty small">项目目录里没有找到匹配的文件（admin 可以在下面换目录找）</div>
@@ -761,7 +761,7 @@ async function saveClip() {
 }
 
 /** 建事件（**标题是唯一必填**，纯展示元数据）→ 立刻剪切 → 进切片页。
- *  目录/文件名固定 `clips/clip-NN/clip.mp4`（见 vtrim-core cutting），标题只写进
+ *  目录/文件名固定 `clips/clip-NN/clip.mp4`（见 yekitrim-core cutting），标题只写进
  *  `events.json` / `clip.json(labels)` / `publish_config.json` 与界面展示。 */
 async function doCreate({ start: s, end: e, label: lb, summary: sm, type: ty }) {
   if (!lb) { toast('请填写标题'); return }

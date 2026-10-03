@@ -2,11 +2,11 @@
 
 ## 验证方式
 
-使用 `vtrim transcribe` 直接对 `scripts/asrtest/wavs/clip_full.wav` 转写：
+使用 `yekitrim transcribe` 直接对 `scripts/asrtest/wavs/clip_full.wav` 转写：
 
 ```bash
 # 在含 vtrim.toml 的项目目录中
-vtrim transcribe -i <path>/clip_full.wav -o output
+yekitrim transcribe -i <path>/clip_full.wav -o output
 ```
 
 关键配置：

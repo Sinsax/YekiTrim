@@ -7,7 +7,7 @@ translate_sfx_zh.py — 为无官方中文的 catalog 条目生成中文声音�
 """
 import json, re, sys, time, urllib.request
 
-CFG = "target/debug/.vtrim/llm.toml"
+CFG = "target/debug/.yekitrim/llm.toml"
 try:
     cfg = {}
     for line in open(CFG, encoding="utf-8"):

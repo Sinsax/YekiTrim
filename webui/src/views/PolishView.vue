@@ -568,7 +568,7 @@ const allStickerOptions = computed(() => {
   return [...stickerSources.value, ...extra]
 })
 
-// ---- 字幕字体（字体库：用户固定目录 ~/.vtrim/fonts，读侧另有老安装回落）----
+// ---- 字幕字体（字体库 = <数据目录>/resources/fonts）----
 // 值存 polish.toml 的 `[style.subtitle] font`，**逐片段**生效（每个片段一份 polish.toml）。
 // 空串 = 回兜底字体栈；非空 = 字体库里的 id（文件名去扩展名）。
 // 字体只影响预览与出片渲染 —— 不进任务、不触发 process（贴纸/运镜那些重算不读它）。

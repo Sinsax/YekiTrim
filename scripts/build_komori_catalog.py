@@ -166,7 +166,7 @@ def main() -> None:
 
     if download:
         import os
-        dest = ".vtrim/sfx-komori"
+        dest = ".yekitrim/sfx-komori"
         os.makedirs(dest, exist_ok=True)
         print(f"下载到 {dest}/ ...")
         ok, fail = 0, 0

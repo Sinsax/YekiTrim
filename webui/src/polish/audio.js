@@ -2,8 +2,8 @@
 // 音量跟随视频响度曲线（与渲染混音同思路）：视频吵 → 压低音效，安静 → 正常。
 // 主音量 localStorage 记忆（渲染不受影响，仅预览）。
 
-const MASTER_VOL_KEY = 'vtrim_master_vol'
-const MUTED_KEY = 'vtrim_muted'
+const MASTER_VOL_KEY = 'yekitrim_master_vol'
+const MUTED_KEY = 'yekitrim_muted'
 
 /**
  * 全应用共用的主音量读写（精修预览与切片页的原片预览都用这一份，别各写一套）。

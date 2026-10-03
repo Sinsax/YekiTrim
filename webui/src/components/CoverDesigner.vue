@@ -461,7 +461,7 @@ function numBind(cur, set, e, lo, hi) {
   e.target.value = String(c)
 }
 
-// ---- 封面字体（字体库：用户固定目录 ~/.vtrim/fonts，读侧另有老安装回落）----
+// ---- 封面字体（字体库 = <数据目录>/resources/fonts）----
 // 值存 polish.toml 的 `[cover] font`：空 = 兜底字体栈（首项随库里默认走，老工程就是这个状态），
 // 非空 = 库里的字体 id。出片由 cover.rs 注入 @font-face，这里负责**让设计器预览也认得它**。
 const fonts = ref([])
@@ -1385,7 +1385,7 @@ const GRID_CENTERS = {
 }
 
 /**
- * 主播（`layout.liver`）在画面里的百分比中心。优先序与 `vtrim-render-core::region_origin`、
+ * 主播（`layout.liver`）在画面里的百分比中心。优先序与 `yekitrim-render-core::region_origin`、
  * `webui/src/polish/engine.js::regionOrigin` **完全一致**：
  * **自由选框（画过框 → 框中心）> origin_grid > origin > grid[0]**，都没有 → `65% 50%`。
  * 帧层拿它当聚焦原点；**emoji 默认就贴在这个点上**（那个点是帧层变换的不动点，缩放帧也不跑偏）。

@@ -143,7 +143,7 @@ export const fontUrl = (pid, dir, name) =>
  * ⚠️ `flat` = 老平铺布局（散文件直接在库根目录）；`.ttc` 条目（`file` 以 `.ttc` 结尾）
  * 浏览器 @font-face 认不出，**只展示、不进字体下拉**。
  *
- * 库是**程序级**的（用户固定目录 `~/.vtrim/fonts`，读侧另有老安装回落），与项目无关 ——
+ * 库是**程序级**的（`<数据目录>/resources/fonts`），与项目无关 ——
  * 所以这里不带 `{project, dir}`；读不需要 admin（写才要）。
  */
 export const fetchFonts = (label = '') => api('/api/polish/fonts', { label })
@@ -168,7 +168,7 @@ export const importFont = ({ path = '', dir = '', fileName = '', name = '' }) =>
     label: '导入字体',
   })
 
-/** 字体上传上限（字节）：与 Rust vtrim_server::api::polish::FONT_UPLOAD_MAX_BYTES
+/** 字体上传上限（字节）：与 Rust yekitrim_server::api::polish::FONT_UPLOAD_MAX_BYTES
  *  是**同一个数**（改一处要改两处，同贴纸那条规矩）。
  *  ⚠️ 前端必须先挡：axum 超限回的是 **413 + 纯文本**，而 client.js 只认 JSON，
  *  会把「文件太大」报成「接口不存在或返回格式错误」（与贴纸上传同一个坑）。 */
@@ -216,7 +216,7 @@ export const deleteFont = (id) =>
  * ⚠️ 2026-10-02 起字体是**内嵌在二进制里**的：这条请求**不联网**，只是把内嵌字节写进字体库。
  * 正常路径下**走不到这里**（`ensure_global_config` 在 server 启动时已自动装好），
  * 它是**修复入口** —— 用户手删了库里那支之后补回来。
- * `id` 缺省 = 装全部还缺的。清单与校验和都在服务端（`vtrim_core::fonts::BUILTIN_FONTS`），
+ * `id` 缺省 = 装全部还缺的。清单与校验和都在服务端（`yekitrim_core::fonts::BUILTIN_FONTS`），
  * 前端**不自己维护这份清单**。
  */
 export const downloadBuiltinFonts = (id = '') =>
