@@ -287,9 +287,11 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .wiz-src.on { border-color:var(--main); background:var(--main-soft); color:var(--main-deep); }
 .wiz-src.off { opacity:.5; cursor:not-allowed; }
 
-/* 「服务器文件」的来源体：一行"已选摘要 + 两个按钮"。
-   ⚠️ 路径要能截断（`.ellip` + title），别让它把按钮挤出去；`.pick-main` 的 `min-width:0` 是 flex 子项能收缩的前提。 */
-.src-body .pick-row { display:flex; align-items:center; gap:12px;
+/* 「服务器文件」的确认条：左边两句说明（建在哪 / 用哪个视频）+ 右边「弹出浏览…」「新建项目」。
+   ⚠️ 底色不能再用 --bg-soft：它跟选中态的 --main-soft 太接近，这一条要用户**确认后再点**，
+   必须比卡片本体更"跳"一点。路径要能截断（`.ellip` + title），别把按钮挤出去 ——
+   `.pick-main` 的 `min-width:0` 是 flex 子项能收缩的前提。 */
+.src-body .create-bar { display:flex; align-items:center; gap:12px;
   background:var(--main-soft); border:1px solid var(--main-glow);
   border-radius:var(--r-sm); padding:10px 12px; }
 .src-body .pick-main { min-width:0; }
