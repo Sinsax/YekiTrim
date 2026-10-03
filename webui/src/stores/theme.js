@@ -73,14 +73,18 @@ export function toggleTheme() {
   setTheme(ui.theme === 'dark' ? 'light' : 'dark')
 }
 
-/** 交还给系统偏好（清掉手动选择） */
+/** 交还给系统偏好（清掉手动选择）
+ *  ⚠️ 不能走 setTheme()：它会把值**写回** localStorage，键又存在了 ⇒ 下次启动
+ *  readTheme() 返回非 null、themeIsManual 变 true，用户明明选了"跟随系统"却被锁在手动档。
+ *  这里必须直接 apply() + 只在内存里改状态。 */
 export function followSystemTheme() {
-  ui.themeIsManual = false
   try {
     localStorage.removeItem(LS_THEME)
   } catch {}
-  setTheme(resolve())
-  ui.themeIsManual = false   // setTheme 会置 true，这里改回来
+  const m = mq && mq.matches ? 'dark' : 'light'
+  ui.theme = m
+  ui.themeIsManual = false
+  apply(m)
 }
 
 // 系统偏好变化：仅在用户没手动选过时跟随
