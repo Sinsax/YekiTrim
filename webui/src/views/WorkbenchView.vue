@@ -85,31 +85,25 @@
           </button>
         </div>
 
-        <!-- 弹出浏览：草稿态，点「选定」才写回 -->
-        <AppModal v-if="pickerOpen" :show="true" wide title="浏览服务器上的录像目录"
+        <!-- 弹出浏览：**双栏文件浏览器**（左目录树 / 右文件列表 + 面包屑），不是内联那份的复制品。
+             草稿态 —— 点「选定」才写回已选。 -->
+        <AppModal v-if="pickerOpen" :show="true" wide title="浏览服务器上的录像"
                   @close="cancelLocalPick">
-          <ServerDirPicker
-            mode="file"
+          <ServerFileBrowser
             :start-dir="localDir"
             :selected="draftInput"
             :exts="VIDEO_EXTS"
-            dir-label="目录（服务器上的绝对路径，可直接填或粘贴）"
-            dir-placeholder="例如 F:/media/2025-09-12"
             @update:dir="onDraftDir"
             @update:listing="draftListing = $event"
             @pick-file="pickDraftFile"
           />
-          <div class="hint mt-8">
-            点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
-            进子目录用列表里的文件夹（路径由服务端拼，前端不拼字符串）。
-          </div>
           <template #footer>
             <div class="flex-1 small">
               <template v-if="draftDir">
                 <span class="mono">{{ draftDir }}</span>
                 <template v-if="draftEffectiveVideo">
                   <br>输入视频 <span class="mono">{{ draftEffectiveVideo }}</span>
-                  <span v-if="!draftInput" class="muted">（自动选取）</span>
+                  <span v-if="!draftInput" class="muted">（自动选取目录里第一个视频）</span>
                 </template>
                 <template v-else>
                   <br><span class="warn-text">这个目录里没有可用的视频，选一个别的</span>
@@ -368,6 +362,7 @@ import { useRoute } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import ServerDirPicker, { VIDEO_EXTS } from '../components/ServerDirPicker.vue'
 import AppModal from '../components/AppModal.vue'
+import ServerFileBrowser from '../components/ServerFileBrowser.vue'
 import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import { authState } from '../stores/auth'
