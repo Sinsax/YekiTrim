@@ -68,7 +68,7 @@ export const IMAGE_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp']
  * **进入下一级用 `{dir, enter}` 由服务端拼路径** —— 前端自己拼会把服务端回传的
  * `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows ERROR_INVALID_NAME 123）。
  */
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import { listTenantFiles } from '../stores/project'
 
@@ -152,4 +152,15 @@ function goUp() {
 }
 
 onMounted(() => browse(props.startDir))
+
+/**
+ * ⚠️ **外部改了 `startDir` 必须跟着走**：本组件的目录框显示的是自己的 `dir`，
+ * `startDir` 只在 `onMounted` 读一次 —— 于是"弹出浏览"里选定并写回后，外面那个
+ * 目录框还停在原地，用户看到的是**选了但外面没显示**（真机报过）。
+ * `v !== dir.value` 这道闸同时挡住回环：自己 browse 时 emit 出去的 `update:dir`
+ * 会让父组件把 `startDir` 设成同一个值，那时两者相等、不再触发。
+ */
+watch(() => props.startDir, (v) => {
+  if (v && v !== dir.value) browse(v)
+})
 </script>
