@@ -1743,7 +1743,7 @@ async function loadData() {
 /* 没有分段时的提示行：整条时间轴照常渲染，这里只给一句提示（按钮已删，见模板注释） */
 .tl-no-seg { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 2px; }
 .timeline-body { flex:1; min-width:0; display:flex; overflow-x:auto; align-items:stretch; }
-.timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(87,74,64,.10); }
+.timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(32,32,32,.10); }
 .timeline-tracks { flex:none; min-width:0; }
 /* 泳道 34 → 26px（7 条泳道省 ~56px）；块 24 → 20px */
 .lane { height:26px; border-bottom:1px solid var(--line-soft); position:relative;
@@ -1799,7 +1799,7 @@ async function loadData() {
 .ck-row:has(input:disabled) { color:var(--ink-faint); cursor:not-allowed; }
 /* 视觉特效轨道 ＋ 的细分类型菜单（fixed：不随时间轴滚动、不被卡片裁切） */
 .fx-menu { position:fixed; z-index:40; min-width:132px; padding:4px; background:var(--card);
-  border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 22px rgba(87,74,64,.18); }
+  border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 22px var(--scrim-soft); }
 .fx-menu-t { padding:2px 8px 4px; }
 .fx-menu-item { display:flex; justify-content:space-between; gap:8px; width:100%; padding:3px 8px;
   border:none; border-radius:6px; background:none; color:var(--ink); font-size:12px; cursor:pointer; text-align:left; }

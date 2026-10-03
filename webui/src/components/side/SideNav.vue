@@ -5,9 +5,9 @@
         <!-- 与 favicon（webui/index.html）同一套几何：砖红 Y + 沙色下竖。
              白/浅沙描边因为底色是 --main → --tan 渐变圆。 -->
         <svg viewBox="0 0 64 64" aria-hidden="true">
-          <path d="M18 18 L32 34 L46 18" fill="none" stroke="#fff" stroke-width="7"
+          <path d="M18 18 L32 34 L46 18" fill="none" stroke="var(--on-main)" stroke-width="7"
                 stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M32 34 L32 47" stroke="#F6D9C4" stroke-width="7" stroke-linecap="round" />
+          <path d="M32 34 L32 47" stroke="rgba(255,255,255,.55)" stroke-width="7" stroke-linecap="round" />
         </svg>
       </div>
       <div v-if="!collapsed">
@@ -82,12 +82,21 @@
           {{ e.label }}
           <span v-if="e.key === 'home' && hasRunning" class="dot"></span>
         </div>
+        <!-- 主题切换：浅色（哥特浅色）/ 暗色（哥特暗色） -->
+        <button class="foot-item theme-toggle" :title="themeTitle" @click="toggleTheme()">
+          <Icon :name="ui.theme === 'dark' ? 'moon' : 'sun'" :size="13" />
+          {{ ui.theme === 'dark' ? '暗色' : '浅色' }}
+          <span v-if="!ui.themeIsManual" class="muted small">跟随系统</span>
+        </button>
       </template>
       <template v-else>
         <button v-for="e in entries" :key="e.key" class="rail-item" :class="{ on: current === e.key }"
                 :title="e.label" @click="go(e.path)">
           <Icon :name="e.icon" :size="16" />
           <span v-if="e.key === 'home' && hasRunning" class="rdot"></span>
+        </button>
+        <button class="rail-item" :title="themeTitle" @click="toggleTheme()">
+          <Icon :name="ui.theme === 'dark' ? 'moon' : 'sun'" :size="16" />
         </button>
       </template>
     </div>
@@ -102,6 +111,7 @@ import Icon from '../Icon.vue'
 import { authState } from '../../stores/auth'
 import { useJobs } from '../../composables/useJobs'
 import { ui, toggleSide } from '../../stores/ui'
+import { toggleTheme } from '../../stores/theme'
 import { STEPS, stageInfo, hashIndex } from '../../utils'
 import { filteredProjects, isExpanded, toggleExpand, wb } from '../../stores/workbench'
 
@@ -116,6 +126,13 @@ const { jobs, hasRunning } = useJobs()
 
 /** 折叠态：只留品牌 / 项目标识 / 全局入口图标（状态在 stores/ui.js，localStorage 持久化） */
 const collapsed = computed(() => ui.sideCollapsed)
+
+/** 主题切换按钮的提示：明说当前档位与"是否跟随系统" */
+const themeTitle = computed(() => {
+  const cur = ui.theme === 'dark' ? '暗色' : '浅色'
+  const tail = ui.themeIsManual ? '点这里切换' : '当前跟随系统，点这里固定'
+  return `主题：${cur}（${tail}）`
+})
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
 const current = computed(() => {
@@ -261,7 +278,7 @@ defineExpose({ openJobs: () => emit('open-jobs') })
   background:var(--bg-soft); color:var(--ink-dim); font-size:13px; font-weight:700;
   display:flex; align-items:center; justify-content:center; transition:.15s; }
 .rail-proj:hover { background:var(--main-soft); color:var(--pink-text); }
-.rail-proj.on { background:linear-gradient(135deg,var(--main),var(--main-deep)); color:#fff; box-shadow:var(--shadow-pink); }
+.rail-proj.on { background:var(--grad-main); color:var(--on-main); box-shadow:var(--shadow-pink); }
 .rail-hint { padding:4px 0; }
 
 .side.mini .side-foot { align-items:center; padding:8px 0; }
@@ -277,7 +294,7 @@ defineExpose({ openJobs: () => emit('open-jobs') })
   display:flex; align-items:center; justify-content:center; color:var(--ink-dim); }
 .rail-item:hover { background:var(--bg-soft); color:var(--ink); }
 .rail-item.on { background:var(--main-soft); color:var(--pink-text); }
-.rail-user .av { width:26px; height:26px; border-radius:50%; font-size:12px; color:#fff;
+.rail-user .av { width:26px; height:26px; border-radius:50%; font-size:12px; color:var(--on-main);
   background:linear-gradient(135deg,var(--main),var(--tan));
   display:flex; align-items:center; justify-content:center; }
 .rdot { position:absolute; top:2px; right:2px; width:8px; height:8px; border-radius:50%;

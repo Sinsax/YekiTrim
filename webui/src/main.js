@@ -3,6 +3,7 @@ import App from './App.vue'
 import router from './router'
 import { setUnauthorizedHandler, redirectToLogin } from './api/client'
 import { clearAuth } from './stores/auth'
+import './stores/theme'   // ⚠️ 必须在挂载前 import：它在模块初始化时同步写 <html data-theme>
 import './styles/tokens.css'
 import './styles/app.css'
 

@@ -36,6 +36,6 @@ function close() {
 </script>
 
 <style scoped>
-.drawer-mask { position:fixed; inset:0; background:rgba(87,74,64,.18); z-index:60; }
+.drawer-mask { position:fixed; inset:0; background:var(--scrim-soft); z-index:60; }
 .drawer { position:fixed; top:0; right:0; bottom:0; width:min(92vw,380px); background:var(--card); border-left:1px solid var(--line); box-shadow:var(--shadow-hover); padding:16px; overflow:auto; z-index:61; }
 </style>
