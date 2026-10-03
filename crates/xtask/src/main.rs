@@ -421,6 +421,12 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     if !exe.is_file() {
         return Err(format!("missing {}", exe.display()).into());
     }
+    // Windows 托盘外壳（双击即后台起 server）。非 Windows 上这个 bin 也会编出来（占位 main），
+    // 所以这里不 cfg 分支：有就带上，没有就只是少了托盘这个入口。
+    let tray_exe = root
+        .join("target")
+        .join("release")
+        .join("yekitrim-tray.exe");
 
     // Gate. Mandatory and unskippable, for the same reason it was unskippable in the script it
     // replaced: linking espeak-ng turns the shipped binary into a GPL combined work, and the
@@ -436,6 +442,19 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
              that links espeak-ng."
                 .into(),
         );
+    }
+    // 托盘是**另一个 bin**，但依赖图与主程序基本同源 ⇒ 同一道门禁照样要过。
+    if tray_exe.is_file() {
+        let scan = Command::new(env::current_exe()?)
+            .args(["scan", tray_exe.to_string_lossy().as_ref()])
+            .status()?;
+        if !scan.success() {
+            return Err(
+                "the product gate rejected target/release/yekitrim-tray.exe. Refusing to package \
+                 a binary that links espeak-ng."
+                    .into(),
+            );
+        }
     }
 
     // The WebUI ships only from webui/dist, so a stale dist ships a stale UI.
@@ -462,6 +481,19 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
 
     fs::copy(&exe, package_dir.join("yekitrim.exe"))?;
+    if tray_exe.is_file() {
+        fs::copy(&tray_exe, package_dir.join("yekitrim-tray.exe"))?;
+    }
+    // 托盘图标：`yekitrim-tray` 运行时从 **exe 同级** 读 `yekitrim.ico`（见 tray.rs::load_icon），
+    // 缺了也能跑（退回系统图标），但那样托盘里就是个通用图标。
+    let ico = root
+        .join("crates")
+        .join("yekitrim-cli")
+        .join("assets")
+        .join("yekitrim.ico");
+    if ico.is_file() {
+        fs::copy(&ico, package_dir.join("yekitrim.ico"))?;
+    }
     copy_dir_all(&dist, &package_dir.join("webui").join("dist"))?;
 
     // ---- 默认出片通道的随身件（2026-10-01）----
@@ -478,7 +510,10 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     if !translator.is_file() {
         return Err(format!("missing translator at {}", translator.display()).into());
     }
-    fs::copy(&translator, package_dir.join("tools").join("polish-to-dhampir.mjs"))?;
+    fs::copy(
+        &translator,
+        package_dir.join("tools").join("polish-to-dhampir.mjs"),
+    )?;
     let vocab = root.join("spec").join("effects.json");
     if !vocab.is_file() {
         return Err(format!("missing effect vocabulary at {}", vocab.display()).into());
@@ -487,7 +522,9 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
 
     if options.no_dhampir {
         println!("warning: --no-dhampir：包里**不带底座** —— 目标机器上默认出片通道不可用");
-        println!("         （用户需自行放置 <程序目录>/dhampir/…；出片只有这一条腿，没有可退的第二条）");
+        println!(
+            "         （用户需自行放置 <程序目录>/dhampir/…；出片只有这一条腿，没有可退的第二条）"
+        );
     } else {
         // 同层目录规则与 `find_binary` 一致：`YekiTrim` 与 `Dhampir` 并排时才好找。
         let sibling = root.parent().map(|p| p.join("Dhampir"));
@@ -497,7 +534,11 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             // ⚠️ 2026-10-01：底座 `scripts/package.mjs` 的默认输出是 **`dist/dhampir-<版本>+<sha>`**，
             // 不是 `out/` —— 我们一直按 `out/` 找，于是"底座明明打好了"却报"产物不齐"。
             // 现在：先取 `dist/dhampir-*` 里**最新**的一份，再退回 `out/`（老布局）。
-            .or_else(|| sibling.as_ref().and_then(|d| newest_dhampir_dist(d).or_else(|| Some(d.join("out")))))
+            .or_else(|| {
+                sibling
+                    .as_ref()
+                    .and_then(|d| newest_dhampir_dist(d).or_else(|| Some(d.join("out"))))
+            })
             .ok_or("no sibling Dhampir checkout: pass --dhampir-artifact <dir> or --no-dhampir")?;
         let base_exe = options.dhampir_exe.clone().unwrap_or_else(|| {
             sibling
@@ -508,7 +549,10 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         for required in [
             artifact.join("preview").join("engine.js"),
             artifact.join("preview").join("pkg").join("dhampir_wasm.js"),
-            artifact.join("preview").join("pkg").join("dhampir_wasm_bg.wasm"),
+            artifact
+                .join("preview")
+                .join("pkg")
+                .join("dhampir_wasm_bg.wasm"),
             artifact.join("VERSION"),
         ] {
             if !required.is_file() {
@@ -528,11 +572,24 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
             )
             .into());
         }
-        copy_dir_all(&artifact.join("preview"), &package_dir.join("dhampir").join("preview"))?;
-        fs::copy(&artifact.join("VERSION"), package_dir.join("dhampir").join("VERSION"))?;
+        copy_dir_all(
+            &artifact.join("preview"),
+            &package_dir.join("dhampir").join("preview"),
+        )?;
+        fs::copy(
+            &artifact.join("VERSION"),
+            package_dir.join("dhampir").join("VERSION"),
+        )?;
         fs::create_dir_all(package_dir.join("dhampir").join("bin"))?;
-        let base_name = if cfg!(windows) { "dhampir.exe" } else { "dhampir" };
-        fs::copy(&base_exe, package_dir.join("dhampir").join("bin").join(base_name))?;
+        let base_name = if cfg!(windows) {
+            "dhampir.exe"
+        } else {
+            "dhampir"
+        };
+        fs::copy(
+            &base_exe,
+            package_dir.join("dhampir").join("bin").join(base_name),
+        )?;
         println!("    + dhampir/（出片二进制 + 预览产物 + VERSION）");
     }
     println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
@@ -546,7 +603,10 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     // 曾经它只是"老安装的回落态"，正式位置在 `%USERPROFILE%\.yekitrim\fonts` ——
     // 那条已经作废：现在读写都走这里，**别再改回用户目录**。
     fs::write(
-        package_dir.join("resources").join("fonts").join("放这里.txt"),
+        package_dir
+            .join("resources")
+            .join("fonts")
+            .join("放这里.txt"),
         concat!(
             "【本目录就是字体库本体 —— 把 .ttf / .otf 直接放进这里即可。\n",
             "（2026-10-02 起：资产全部围绕程序目录。以前正式位置在\n",
@@ -695,7 +755,10 @@ fn write_checksum_sidecar(
 /// UTC 日期（YYYY-MM-DD）。xtask 刻意不带 chrono（依赖只有 std + sha2 + zip），
 /// 这里用 Howard Hinnant 的 civil_from_days（纯整数运算）。
 fn fmt_utc_date(t: SystemTime) -> String {
-    let secs = t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
     let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
     format!("{y:04}-{m:02}-{d:02}")
 }
@@ -716,7 +779,8 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("==> smoke test: boot the packaged exe and verify");
     let exe = package_dir.join("yekitrim.exe");
-    let port = 18_000 + (SystemTime::now().duration_since(UNIX_EPOCH)?.subsec_nanos() % 1000) as u16;
+    let port =
+        18_000 + (SystemTime::now().duration_since(UNIX_EPOCH)?.subsec_nanos() % 1000) as u16;
 
     let mut command = Command::new(&exe);
     command.args(["server", "--port", &port.to_string()]);
@@ -787,9 +851,11 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !ok {
-        return Err("smoke test failed: the server did not return /api/health and the WebUI in \
+        return Err(
+            "smoke test failed: the server did not return /api/health and the WebUI in \
                     time"
-            .into());
+                .into(),
+        );
     }
     Ok(())
 }

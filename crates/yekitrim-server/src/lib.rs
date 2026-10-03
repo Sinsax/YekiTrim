@@ -202,8 +202,25 @@ fn must_refuse_initial_password(
     (!is_loopback || allow_remote) && must_change_password
 }
 
-/// 启动 HTTP server（阻塞直至监听关闭）。
+/// 启动 HTTP server（阻塞直至监听关闭或收到关停信号）。
+///
+/// ⚠️ 走的是**优雅关停**：Ctrl+C 不再让进程被直接终止 —— 那样 `InstanceLock` 的 Drop 不跑，
+/// 下次启动会多一条"残留锁"WARN（能自愈，但没必要留噪音）。
+/// 托盘的"退出"就是靠给 `run_with` 传一个 future 实现的。
 pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
+    run_with(args, async {
+        // Ctrl+C 拿不到就算了（headless/服务场景下可能没有控制台）
+        let _ = tokio::signal::ctrl_c().await;
+    }, |_| {}).await
+}
+
+/// `run` 的可控版本：`shutdown` 一旦就绪就优雅关停；`on_listening` 在监听就绪后**回调一次**
+/// （托盘靠它拿到**实际**监听地址 —— 端口被占时服务端会自己换一个，不能假定就是请求的那个）。
+pub async fn run_with<S, F>(args: ServerArgs, shutdown: S, on_listening: F) -> anyhow::Result<()>
+where
+    S: std::future::Future<Output = ()> + Send + 'static,
+    F: FnOnce(&str) + Send + 'static,
+{
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
         .with_context(|| format!("无法解析监听地址: {}:{}", args.host, args.port))?;
@@ -397,6 +414,8 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     let actual = listener.local_addr()?;
     info!("WebUI: http://{actual}/");
     info!("API:   http://{actual}/api/health");
+    // 先告诉调用方**实际**地址（端口可能被换过），再决定要不要自动开浏览器
+    on_listening(&format!("http://{actual}"));
     if bootstrap.must_change_password {
         info!("登录账号: admin（密码见上方初始密码 / 初始密码文件）");
     }
@@ -419,6 +438,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown)
     .await?;
     Ok(())
 }

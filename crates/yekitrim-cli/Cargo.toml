@@ -10,6 +10,13 @@ license = "Apache-2.0"
 name = "yekitrim"
 path = "src/main.rs"
 
+# Windows 托盘外壳（双击即后台起 server + 托盘菜单）。⚠️ 单独一个 bin 才有意义：
+# `src/tray.rs` 顶上那句 `#![cfg_attr(windows, windows_subsystem = "windows")]` 是**crate 根**属性，
+# 只有独立 bin 才能保证 `yekitrim.exe` 那个控制台程序不被一起变成无控制台。
+[[bin]]
+name = "yekitrim-tray"
+path = "src/tray.rs"
+
 [dependencies]
 yekitrim-core = { path = "../yekitrim-core" }
 yekitrim-polish = { path = "../yekitrim-polish" }
@@ -23,6 +30,19 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.18"
 anyhow = "1"
+
+# 托盘用的 Win32 API。
+# ⚠️ 钉 0.52：那个版本的句柄类型是 `isize`（0.59+ 改成了指针包装），托盘代码按 0.52 写的。
+# 只用最小 feature 集，别开 `Win32_UI_*` 全家桶。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    # WNDCLASSW 挂在 Graphics_Gdi 后面（windows-sys 的 feature 归属就是这么分的）
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 # ⚠️ 这里曾经是 `wgpu-render = ["yekitrim-server/wgpu-render"]` 的**转发**（feature 随 crate 走）。

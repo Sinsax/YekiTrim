@@ -1,6 +1,6 @@
 //! yekitrim-cli 入口：装配 tracing 订阅者，把 clap 命令分发到各实现（二进制名 `yekitrim`）。
 //!
-//! 入口：`#[tokio::main] async fn main()`、`setup_tracing`、`load_cfg`；子模块 `cli`（命令定义）、`progress`（终端进度条）。
+//! 入口：`#[tokio::main] async fn main()`、`tracing_setup::setup`、`load_cfg`；子模块 `cli`（命令定义）、`progress`（终端进度条）。
 //! 边界：这里只剩入口装配 —— CLI 要用服务端能力只能经 `yekitrim-server` 暴露的 `run()` / `ServerArgs` 进入，别在本地重实现领域逻辑 —— 见 `crates/yekitrim-cli/AGENTS.md`
 
 use std::path::PathBuf;
@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use clap::Parser;
 use cli::{stage_name, Cli, Command, ConfigAction};
-use tracing_subscriber::EnvFilter;
 use yekitrim_core::config::{self, Config};
 use yekitrim_core::pipeline::STAGE_CUT;
 
@@ -19,24 +18,8 @@ use crate::progress::IndicatifProgress;
 
 mod cli;
 mod progress;
-
-/// 订阅者 = 终端 + 进程内日志总线（设置页「运行日志」/ 日志文件）。
-///
-/// `LogBusLayer` 必须挂上：`yekitrim server` 的访问日志、任务日志、错误文案都靠它
-/// 进面板与文件；对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。
-fn setup_tracing() {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
-    // 全局过滤器（RUST_LOG，默认 info）：三个层都受它约束，
-    // 想看高频接口的逐条访问日志用 `RUST_LOG=yekitrim=debug`
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .with(yekitrim_service::logbus::LogBusLayer::new(yekitrim_service::logbus::bus()))
-        .init();
-}
+// 与 tray.rs 共用同一份 tracing 装配（各 bin 各自 `mod` 引同一个文件）
+mod tracing_setup;
 
 fn load_cfg(
     cli_config: &Option<PathBuf>,
@@ -115,7 +98,7 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    setup_tracing();
+    tracing_setup::setup(true);
 
     let cli = Cli::parse();
     let global_config = &cli.config;
