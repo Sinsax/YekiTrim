@@ -319,6 +319,28 @@ vtrim  -> yekitrim
 - `git remote` 是服务端地址（`…/sinsa/V-Trim.git`），**不受本地目录名影响**，无需改。✅
 - 两条门禁 exit 0；`cargo test -p yekitrim-server --lib render_proc` 5 passed / 0 failed。✅
 
+### 工程完整性核查（2026-10-03 收尾，逐项实测）
+
+| 维度 | 结果 |
+|---|---|
+| `cargo check --workspace --all-targets` | exit 0，**0 warning** |
+| `cargo test --workspace` | **759 passed / 0 failed / 0 ignored**（与改名验收基线同数） |
+| 两条 python 门禁 | 各 exit 0（35 模块 / 7 卡全覆盖；15 条边界 / 243 文件 / 0 违规） |
+| workspace 成员 vs `crates/` 目录 | **7 : 7 完全对应**（无孤儿目录、无指向不存在的成员） |
+| 真命令实跑 | `yekitrim --version` → `yekitrim 0.3.1`；`--help` 正文全为新名（`yekitrim.toml` / `.yekitrim/`） |
+| `webui/dist` 与 src 一致 | `index.html` 引用的 2 个 asset 均存在；dist 内旧名 **0** |
+| 发行产物 | `yekitrim-v0.3.1-win-x64.zip` 实测 sha256 **与 `.sha256.txt` 记录逐字相同**；包内文件名旧名 **0**；包内 exe 自报 `yekitrim 0.3.1` |
+| 未跟踪 / 漏提交文件 | **0** |
+| `.gitignore` | 仍正确忽略 `target` 与 `/.workbuddy/` |
+
+### ⚠️ 两处需要用户处置的遗留（非"残留"，但与完整性有关）
+
+1. **本地领先远端 72 个提交未推送**（`origin/main` 停在 `4488426`，2026-10-01）。
+   改名整批（含本计划书）**只在本地**。⚠️ 这些提交丢了就没了 —— 是否推送由用户定。
+2. **一个孤立的 stale stash**：`stash@{0}`（`pre-sticker-feature`，2026-07-23）。
+   其基线 `2dfd777` **从任何 ref 都不可达**，12 个文件路径**全部已不存在**
+   （都是旧的 `crates/vtrim-*`）。它含 51 处旧名，是**改名前的化石**，已无 apply 价值。
+   **未擅自删除**（属于他人 WIP 的处置权）；建议 drop。
 
 ### 🟡 登记但有意未改（与品牌无关，各自单独一批）
 
