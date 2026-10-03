@@ -18,12 +18,12 @@ use super::Workspace;
 const VIDEO_EXT: [&str; 4] = ["mp4", "flv", "mkv", "ts"];
 const DANMAKU_EXT: [&str; 4] = ["xml", "ass", "srt", "json"];
 
-/// 托管项目根：`[storage] projects_root`；留空 → `<exe_dir>/.vtrim/projects`。
+/// 托管项目根：`[storage] projects_root`；留空 → `<exe_dir>/.yekitrim/projects`。
 pub fn projects_root() -> PathBuf {
     let cfg = yekitrim_core::config::load_global_config();
     let raw = cfg.storage.projects_root.trim();
     if raw.is_empty() {
-        yekitrim_core::path::vtrim_home().join("projects")
+        yekitrim_core::path::yekitrim_home().join("projects")
     } else {
         PathBuf::from(raw)
     }
@@ -37,7 +37,7 @@ pub fn tenant_root(uid: i64) -> PathBuf {
 /// 允许作为"本机文件"来源的根目录列表：**租户根** + `[storage] local_roots`（只保留存在的）。
 ///
 /// 这份列表在管理员场景下只是**快捷入口**（前端下拉预置）；管理员可以直接用任意绝对路径
-/// （与改造前的单用户 `vtrim init <video>` 体验一致）。非管理员一律只能用租户根。
+/// （与改造前的单用户 `yekitrim init <video>` 体验一致）。非管理员一律只能用租户根。
 pub fn local_roots(uid: i64) -> Vec<PathBuf> {
     let cfg = yekitrim_core::config::load_global_config();
     let mut out = vec![tenant_root(uid)];
@@ -213,7 +213,7 @@ pub fn measure_project(project: &ProjectRow) -> (u64, u64) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                continue; // output/、.vtrim/、data/ 等都不是源录播
+                continue; // output/、.yekitrim/、data/ 等都不是源录播
             }
             let ext = path
                 .extension()
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn dir_size_sums_recursively() {
-        let base = std::env::temp_dir().join(format!("vtrim-measure-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("yekitrim-measure-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("output/clips/a")).unwrap();
         std::fs::write(base.join("output/clips/a/clip.mp4"), vec![0u8; 100]).unwrap();

@@ -11,7 +11,7 @@ name = "yekitrim_server"
 path = "src/lib.rs"
 
 [features]
-# ⚠️ 这里曾经有 `wgpu-render = ["vtrim-polish/wgpu-render"]`（wgpu 单帧真渲染预览 + GPU 出片）。
+# ⚠️ 这里曾经有 `wgpu-render = ["yekitrim-polish/wgpu-render"]`（wgpu 单帧真渲染预览 + GPU 出片）。
 # **整条已删除**（用户拍板：GPU 那侧交给独立的 Dhampir 底座，见根卡）。`/api/health` 不再有
 # `wgpu_render` 这一位。别再把 feature 加回来。
 

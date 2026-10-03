@@ -23,9 +23,9 @@ pub fn init_project(
     Ok(())
 }
 
-/// 程序配置 `config.toml` 的标准路径（可执行文件旁的 `.vtrim/`）。
+/// 程序配置 `config.toml` 的标准路径（可执行文件旁的 `.yekitrim/`）。
 pub fn global_config_path() -> PathBuf {
-    yekitrim_core::path::vtrim_home().join("config.toml")
+    yekitrim_core::path::yekitrim_home().join("config.toml")
 }
 
 /// 程序配置同目录的 `llm.toml` 路径。
@@ -45,7 +45,7 @@ fn global_config_body() -> String {
         .replace(r#""{{DETECT_USER_PROMPT}}""#, &toml_val(yekitrim_core::detection::DEFAULT_PROMPT))
 }
 
-/// 生成程序配置（覆盖写）— `vtrim config init`。
+/// 生成程序配置（覆盖写）— `yekitrim config init`。
 pub fn init_global_config(path: Option<&Path>) -> anyhow::Result<()> {
     let out = path.map(PathBuf::from).unwrap_or_else(global_config_path);
     if let Some(parent) = out.parent() { std::fs::create_dir_all(parent)?; }
@@ -68,7 +68,7 @@ pub struct EnsureConfigResult {
     pub repaired: Vec<(PathBuf, PathBuf, String)>,
 }
 
-/// 程序配置缺失时补齐（`vtrim server` 启动时调用）。
+/// 程序配置缺失时补齐（`yekitrim server` 启动时调用）。
 ///
 /// - 文件不存在 → 写入默认配置；
 /// - 文件存在但**解析失败**（整个配置都会被忽略，等同于没有配置）→ 备份为
@@ -117,7 +117,7 @@ pub fn ensure_global_config() -> anyhow::Result<EnsureConfigResult> {
         );
     }
     // ⚠️ **老用户目录只报一次、不删也不搬**（2026-10-02 资产收回程序目录之后）：
-    // 那份 `~/.vtrim/fonts` 已经不在读取路径上了，但用户会疑惑"我导入的字体去哪了"。
+    // 那份 `~/.yekitrim/fonts` 已经不在读取路径上了，但用户会疑惑"我导入的字体去哪了"。
     // 如实报出路径 + 体积，让用户自己决定要不要删 —— 那是用户的磁盘，
     // 里面可能还有他手工放进去的字体，**程序不替他做主**。
     if let Some((dir, count, bytes)) = yekitrim_core::fonts::legacy_user_dir_report() {

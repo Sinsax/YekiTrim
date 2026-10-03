@@ -1,15 +1,15 @@
-# V-Trim WebUI + `vtrim server` 设计
+# YekiTrim WebUI + `yekitrim server` 设计
 
 日期: 2026-09-03
 状态: 已批准（2026-09-03），M1 进行中
 
 ## 1. 背景与目标
 
-V-Trim 目前是纯 CLI 工具，流程跨多个阶段（extract → transcribe → correct(可选) → detect → cut）和多个精修步骤（polish init/llm/process/render/preview/cover）。用户希望在本地通过浏览器可视化地驱动整个流程。
+YekiTrim 目前是纯 CLI 工具，流程跨多个阶段（extract → transcribe → correct(可选) → detect → cut）和多个精修步骤（polish init/llm/process/render/preview/cover）。用户希望在本地通过浏览器可视化地驱动整个流程。
 
 目标：
 
-- 给 CLI 增加 `vtrim server` 子命令，启动一个本机 HTTP 服务。
+- 给 CLI 增加 `yekitrim server` 子命令，启动一个本机 HTTP 服务。
 - 制作零构建原生 WebUI（单个 HTML/CSS/JS，嵌入 Rust 二进制），覆盖：
   - 核心切片流程：工程创建、4 个 Stage、进度/日志、断点续传、事件时间线。
   - 精修流程：clip 选择、polish init/llm/process/render/preview/cover。
@@ -32,12 +32,12 @@ V-Trim 目前是纯 CLI 工具，流程跨多个阶段（extract → transcribe 
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ vtrim (crates/vtrim-cli)                                      │
+│ yekitrim (crates/yekitrim-cli)                                      │
 │                                                              │
 │  CLI 入口 (clap)                                              │
 │   ├─ 原有命令 ──────────────────────────────────────────────┐ │
 │   │  init/process/extract/transcribe/detect/cut/status/... │ │
-│   └─ vtrim server ─────────────────────────────────────────┼ │
+│   └─ yekitrim server ─────────────────────────────────────────┼ │
 │      ┌───────────────────────────────────────────────────┐ │ │
 │      │ Axum HTTP Server (127.0.0.1:26320)                 │ │ │
 │      │  /webui (index.html) + /api + SSE                 │ │ │
@@ -50,7 +50,7 @@ V-Trim 目前是纯 CLI 工具，流程跨多个阶段（extract → transcribe 
 │      └──────────────────────┬────────────────────────────┘ │ │
 │                             │ 复用                            │ │
 │      ┌──────────────────────▼────────────────────────────┐ │ │
-│      │ vtrim-core / vtrim-polish 现有模块                 │ │ │
+│      │ yekitrim-core / yekitrim-polish 现有模块                 │ │ │
 │      │ PipelineRunner, Stage, polish commands, render... │ │ │
 │      └───────────────────────────────────────────────────┘ │ │
 └──────────────────────────────────────────────────────────────┘
@@ -61,11 +61,11 @@ CLI 命令与 HTTP API 共用 Service Layer，避免同一逻辑存在两份。
 ## 4. CLI 接口变化
 
 ```text
-vtrim server [--host 127.0.0.1] [--port 26320] [--open]
-             [--config <vtrim.toml>] [--no-open]
+yekitrim server [--host 127.0.0.1] [--port 26320] [--open]
+             [--config <yekitrim.toml>] [--no-open]
 ```
 
-- `--config` 复用/兼容全局 `-c` 语义，未传时自动探测 `./vtrim.toml`。
+- `--config` 复用/兼容全局 `-c` 语义，未传时自动探测 `./yekitrim.toml`。
 - 默认只监听 `127.0.0.1`（本机工具，避免暴露到局域网）。
 - `--open` 启动成功后自动打开默认浏览器。
 - `Ctrl+C` 优雅停止：停止接收新 Job，已运行 Job 发取消请求，然后退出。
@@ -73,7 +73,7 @@ vtrim server [--host 127.0.0.1] [--port 26320] [--open]
 ## 5. 代码结构规划
 
 ```text
-crates/vtrim-cli/src/
+crates/yekitrim-cli/src/
 ├── cli.rs                  # 增加 Server 子命令
 ├── main.rs                 # Server 分支 -> server::run()
 ├── progress.rs             # 保留现有终端进度
@@ -83,7 +83,7 @@ crates/vtrim-cli/src/
 │   ├── snapshot.rs         # ProjectSnapshot / Status / clip 列表
 │   ├── core_pipeline.rs    # 从 main.rs 抽出的核心流程函数
 │   ├── polish_pipeline.rs  # polish 流程包装 + preview 拆分
-│   ├── config_edit.rs      # vtrim.toml / .vtrim/llm.toml 读取与保存
+│   ├── config_edit.rs      # yekitrim.toml / .yekitrim/llm.toml 读取与保存
 │   ├── doctor.rs           # 系统/环境检查，返回结构化 JSON
 │   └── jobs.rs             # JobManager、JobState、取消、SSE 事件
 ├── server/
@@ -97,17 +97,17 @@ crates/vtrim-cli/src/
 └── webui_assets.rs         # include_str! 静态资源注入
 ```
 
-vtrim-cli 保持 binary crate；Service 模块先作为 `mod service` 放在 binary 内，配合 `cargo test --bin vtrim` 做单元测试。若后续需要集成测试，再拆 `[lib]`。
+yekitrim-cli 保持 binary crate；Service 模块先作为 `mod service` 放在 binary 内，配合 `cargo test --bin yekitrim` 做单元测试。若后续需要集成测试，再拆 `[lib]`。
 
 ## 6. Workspace 路径语义重构（必须先做）
 
-现状：CLI 大量依赖“当前进程 CWD = 工程目录”，例如 `config::save_audio_path()` 写死 `./vtrim.toml`、`resolve_input()` 直接使用相对路径。Server 是长驻进程，不能靠反复 `set_current_dir` 切换工程。
+现状：CLI 大量依赖“当前进程 CWD = 工程目录”，例如 `config::save_audio_path()` 写死 `./yekitrim.toml`、`resolve_input()` 直接使用相对路径。Server 是长驻进程，不能靠反复 `set_current_dir` 切换工程。
 
 设计引入：
 
 ```rust
 pub struct Workspace {
-    pub config_file: PathBuf,   // vtrim.toml 的绝对路径
+    pub config_file: PathBuf,   // yekitrim.toml 的绝对路径
     pub root_dir: PathBuf,      // config_file 所在目录
     pub output_dir: PathBuf,    // 绝对化后的输出目录
 }
@@ -121,16 +121,16 @@ impl Workspace {
 
 配套改动：
 
-- `vtrim-core::config` 增加路径参数化保存函数：
+- `yekitrim-core::config` 增加路径参数化保存函数：
   - `save_audio_path_in(&config_file, &path)`
   - `save_transcript_path_in(&config_file, &path)`
   - `save_events_path_in(&config_file, &path)`
   - 保留现有无参函数作为“当前目录快捷方式”，CLI 行为不变。
 - Service Layer 所有函数签名接收 `&Workspace`，传入 `PipelineContext` 的 input/output 统一为绝对路径。
-- 读取配置文件从 `Workspace.config_file` 而非 CWD 的 `vtrim.toml`。
-- 全局配置 `.vtrim/config.toml`、`.vtrim/llm.toml` 仍使用 `vtrim-core::path::vtrim_home()`，与工程目录无关。
+- 读取配置文件从 `Workspace.config_file` 而非 CWD 的 `yekitrim.toml`。
+- 全局配置 `.yekitrim/config.toml`、`.yekitrim/llm.toml` 仍使用 `yekitrim-core::path::yekitrim_home()`，与工程目录无关。
 
-这样 `vtrim server` 可通过 `POST /api/project/switch` 在同一个长驻进程中切换不同工程，而不会污染全局 CWD。
+这样 `yekitrim server` 可通过 `POST /api/project/switch` 在同一个长驻进程中切换不同工程，而不会污染全局 CWD。
 
 ## 7. JobManager 与可视化进度
 
@@ -222,9 +222,9 @@ pub enum ResumePolicy {
 |---|---|---|
 | GET | `/api/health` | `{ ok, version }` |
 | GET | `/api/doctor` | ffmpeg/ffprobe/Chrome/LLK/models 结构化结果 |
-| GET | `/api/config` | 当前 Workspace、vtrim.toml/global/llm 的摘要与 raw |
-| PUT | `/api/config/vtrim` | 保存 vtrim.toml（支持整篇 raw 或结构化 patch） |
-| PUT | `/api/config/llm` | 保存 `.vtrim/llm.toml` |
+| GET | `/api/config` | 当前 Workspace、yekitrim.toml/global/llm 的摘要与 raw |
+| PUT | `/api/config/yekitrim` | 保存 yekitrim.toml（支持整篇 raw 或结构化 patch） |
+| PUT | `/api/config/llm` | 保存 `.yekitrim/llm.toml` |
 | POST | `/api/models/download` | 下载全部 ASR 模型，返回 Job |
 
 ### 8.2 工程
@@ -289,7 +289,7 @@ pub enum ResumePolicy {
 | 事件时间线 | 时间轴展示：字幕段、弹幕热力、事件块；点击事件查看详情；支持启用/停用事件、编辑 label/时间并保存 |
 | 素材/预览 | `<video>` 播放输入视频或某个 clip；服务端 range 支持拖动进度 |
 | 精修 | 左侧 clip 列表；选中后执行 init/llm/process/render/cover；`preview` 以 iframe 嵌入现有 polish 页面；可查看/编辑 polish.toml segments |
-| 设置 | vtrim.toml / .vtrim/llm.toml 编辑（文本 + 常用字段表单）；系统 Doctor；下载模型 |
+| 设置 | yekitrim.toml / .yekitrim/llm.toml 编辑（文本 + 常用字段表单）；系统 Doctor；下载模型 |
 
 ### 9.2 时间线实现
 
@@ -311,10 +311,10 @@ pub enum ResumePolicy {
 ### M1：基础重构
 - Workspace 模型 + 路径参数化 config 保存。
 - 将 main.rs 中核心流程逻辑抽到 `service/core_pipeline.rs`。
-- CLI 回归测试：现有 `vtrim process/status/detect/cut` 行为不变。
+- CLI 回归测试：现有 `yekitrim process/status/detect/cut` 行为不变。
 
 ### M2：Server 骨架
-- `vtrim server` 子命令 + axum 启动 + 静态 index.html。
+- `yekitrim server` 子命令 + axum 启动 + 静态 index.html。
 - `/api/health`、`/api/doctor`、`/api/project/status`。
 - 前端总览页可展示当前工程与 Stage 状态。
 
@@ -347,12 +347,12 @@ pub enum ResumePolicy {
 - 事件时间线 API 的 events.json 读改写（enabled 过滤与 `load_events` 一致）。
 
 ### 手动验收
-1. 在含 `vtrim.toml` 的工程目录运行 `vtrim server --open`，浏览器看到总览。
+1. 在含 `yekitrim.toml` 的工程目录运行 `yekitrim server --open`，浏览器看到总览。
 2. 从 WebUI 执行 `extract -> transcribe -> detect -> cut`，全程能看到 stage/progress/日志。
 3. 中途手动放置 `events.checkpoint.json`，WebUI 出现续传/重来弹窗，选择后可继续。
 4. 事件时间线显示字幕与弹幕热力，能停用一个事件并让 `cut` 跳过。
 5. 选择一个 clip 目录执行 polish init/process/render/preview，页面能嵌入预览。
-6. `vtrim process` 等 CLI 原命令仍可正常使用。
+6. `yekitrim process` 等 CLI 原命令仍可正常使用。
 
 ## 12. 开放问题 / 后续增强
 
@@ -360,4 +360,4 @@ pub enum ResumePolicy {
 - 取消精确度：迁移 ffmpeg 到 `tokio::process` 后可实现强取消。
 - 文件浏览器安全模型：先仅限工程根与输出目录，后续可加“信任目录”配置。
 - 配置结构化编辑：第一版以 raw TOML + 常用字段表单为主，后续可做完整 JSON Schema 表单。
-- 多工程并行窗口：`vtrim server` 支持一个 Workspace，多工程可通过切换实现；若需要同屏多工程，可让用户启动多个 server 实例。
+- 多工程并行窗口：`yekitrim server` 支持一个 Workspace，多工程可通过切换实现；若需要同屏多工程，可让用户启动多个 server 实例。

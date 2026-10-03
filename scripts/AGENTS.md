@@ -106,7 +106,7 @@
   - **自检扩到 28 项**（`--self-test`）：映射 / 插事件 / 屏蔽带 4 项 / 阈值判定 5 项
     （含"超阈值必须报"的三条 —— 判据写错的表现是"永远绿"，比报错难发现）。
   用法：`node scripts/yekitrim-compare.mjs --clip <片段目录|--fixture demo> [--events <json>]
-  [--out 目录] [--vtrim <exe>] [--dhampir <exe>] [--translator <路径>] [--clean] [--self-test]`；
+  [--out 目录] [--yekitrim <exe>] [--dhampir <exe>] [--translator <路径>] [--clean] [--self-test]`；
   本机跑它的实操包装在 `.workbuddy/run-parity.mjs`（它只管"带 numpy 的 python 在哪、exe 在哪"；
   `demo|portrait|real|all`，`metric <样本>` 用 node 读报告）。
   - **黄金帧模式**（2026-10-01，S4 条件④）：`--capture-golden <目录>` 跑常规回路（用**兜底腿**当参照）
@@ -115,7 +115,7 @@
     也不做 ±1 帧时间对齐：冻的就是那一帧）。**为什么要它**：这条工具的参照原本就是兜底腿自己
     （`ref.mp4` = `yekitrim render --renderer chrome` 的产物），删掉兜底腿会同时失去参照；冻结之后
     删了也能验回归。实测（`demo`）：判据全过、基线中位 **15.07**（与冻结点一致，JPEG 只把均值抬了 0.33）、
-    27.8s（比带兜底腿的 ~90s 快），日志里不再有"V-Trim（chrome 后端…）"。
+    27.8s（比带兜底腿的 ~90s 快），日志里不再有"YekiTrim（chrome 后端…）"。
     ⚠️ **2026-10-01 起 `--capture-golden` 与"活参照"两条路都已作废**（它们都要跑那条已删除的兜底腿）：
     现在**只有 `--golden`**，脚本对活参照那条路**当场报错并指路 `--golden`**（不静默换口径）。
     ⚠️ **两套基线数字别混**（同一份代码、两种参照口径）：**活参照**（现渲染兜底腿，基线采样点开 ±1 帧

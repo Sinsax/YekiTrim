@@ -8,14 +8,14 @@
 //! 现在每次 LLM 生成都会把逐段结果写成一份快照（成功/失败 + 原因 + 条数 + 时间区间），
 //! 编辑器读它给分段上色（成功 = 当前颜色，失败 = 警示色 + tooltip 写原因）。
 //!
-//! 落点：`<project>/.vtrim/polish_events.status.json`（与 `polish_events.checkpoint.json` 同处）。
+//! 落点：`<project>/.yekitrim/polish_events.status.json`（与 `polish_events.checkpoint.json` 同处）。
 //! 它只是"最近一次生成的结果"，**不是**渲染/后处理的输入 —— 读失败一律当没有。
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 快照文件名（放在工程的 `.vtrim/` 下）。
+/// 快照文件名（放在工程的 `.yekitrim/` 下）。
 pub const STATUS_FILE: &str = "polish_events.status.json";
 
 /// 单段的结果。
@@ -141,12 +141,12 @@ pub fn remap_to_segments(
         .collect()
 }
 
-/// `<project>/.vtrim/polish_events.status.json`
+/// `<project>/.yekitrim/polish_events.status.json`
 pub fn status_path(project: &Path) -> PathBuf {
     project.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME).join(STATUS_FILE)
 }
 
-/// 原子写快照（`.vtrim/` 不存在就建）。
+/// 原子写快照（`.yekitrim/` 不存在就建）。
 pub fn save(project: &Path, status: &LlmRunStatus) -> anyhow::Result<()> {
     let path = status_path(project);
     if let Some(dir) = path.parent() {
@@ -248,7 +248,7 @@ mod tests {
         assert!(load(p).is_none(), "还没有快照时应当是 None");
         let s = LlmRunStatus::from_full(vec![SegmentGenStatus::failed(0, 0.0, 9.0, "调用失败", 0)]);
         save(p, &s).unwrap();
-        assert!(status_path(p).exists(), "要落在 .vtrim/ 下（目录不存在时要自动建）");
+        assert!(status_path(p).exists(), "要落在 .yekitrim/ 下（目录不存在时要自动建）");
         assert_eq!(load(p).as_ref(), Some(&s));
         clear(p);
         assert!(load(p).is_none());

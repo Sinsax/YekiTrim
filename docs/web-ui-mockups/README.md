@@ -1,6 +1,6 @@
-# V-Trim Web UI 风格样稿
+# YekiTrim Web UI 风格样稿
 
-**[`sakura-cream.html`](sakura-cream.html)（樱花奶油 · 浅色）是 V-Trim Web UI 的正式设计标准** —— 正式 UI 直接采用该浅色主题与组件语言（顶部 pill 导航 + 手账贴纸卡片 + 大圆角），不再映射为暗色。设计规范见主设计文档 [`docs/web-ui-design.md`](../web-ui-design.md) v0.2（第 4 章 Design Tokens 全量取自该样稿）。
+**[`sakura-cream.html`](sakura-cream.html)（樱花奶油 · 浅色）是 YekiTrim Web UI 的正式设计标准** —— 正式 UI 直接采用该浅色主题与组件语言（顶部 pill 导航 + 手账贴纸卡片 + 大圆角），不再映射为暗色。设计规范见主设计文档 [`docs/web-ui-design.md`](../web-ui-design.md) v0.2（第 4 章 Design Tokens 全量取自该样稿）。
 
 | 目录 | 定位 | 演示页面 | 布局特征 | 预览 PNG |
 |------|------|----------|----------|----------|

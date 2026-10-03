@@ -24,9 +24,9 @@ B站链接通道（P4）的**引擎侧**：引擎无关的端口（trait + 纯�
   `DownloadErrorKind::{as_str, user_message}` 与 `DownloadError::{new, user_facing}`。
   这个字符串会直接落进 `ingest_sessions.error` 并显示在界面上，**不能是原始 stderr**。
 - **yt-dlp 适配器**（`ytdlp.rs`）：`YtDlp::{new, format_selector}`；哨兵常量
-  `SENTINEL_PROGRESS`(`VTRIM_PROG:`) / `SENTINEL_PATH`(`VTRIM_PATH:`) / `SENTINEL_META`(`VTRIM_META:`)；
-  `relative_input_path(project_dir, final_path)`（真实产物路径 → 写 `vtrim.toml` 的项目相对名）。
-- **供应链**（`registry.rs`）：`pin()` / `VERSION` / `LICENSE` / `managed_dir()`（`<程序目录>/.vtrim/bin/`）/
+  `SENTINEL_PROGRESS`(`YEKITRIM_PROG:`) / `SENTINEL_PATH`(`YEKITRIM_PATH:`) / `SENTINEL_META`(`YEKITRIM_META:`)；
+  `relative_input_path(project_dir, final_path)`（真实产物路径 → 写 `yekitrim.toml` 的项目相对名）。
+- **供应链**（`registry.rs`）：`pin()` / `VERSION` / `LICENSE` / `managed_dir()`（`<程序目录>/.yekitrim/bin/`）/
   `managed_path()` / `YtDlpSource` / `YtDlpInstall { path, source, verified }` / `verify_sha256` /
   `find_ytdlp(cfg)` / `ready(cfg)` / `download_managed()` / `ensure_ytdlp(cfg)`。
 
@@ -47,8 +47,8 @@ B站链接通道（P4）的**引擎侧**：引擎无关的端口（trait + 纯�
 
 ### yt-dlp 命令构造（三条实测出来的硬约束，改参数前先读）
 
-- ⚠️ **哨兵前缀必须在 `WHEN` 段之后**：`--print "after_move:VTRIM_PATH:%(filepath)s"`。
-  写成 `"VTRIM_PATH:after_move:filepath"` 会输出 **`NA`**（`VTRIM_PATH` 被当成模板名）。
+- ⚠️ **哨兵前缀必须在 `WHEN` 段之后**：`--print "after_move:YEKITRIM_PATH:%(filepath)s"`。
+  写成 `"YEKITRIM_PATH:after_move:filepath"` 会输出 **`NA`**（`YEKITRIM_PATH` 被当成模板名）。
 - ⚠️ **非 TTY 下一行进度都没有**，必须显式 `--progress`；而且 `--progress-template`
   与 `--print` 的输出**都落在 stdout**，只能靠前缀分流（不能假设"最后一行是路径"）。
 - ⚠️ **格式串必须带兜底**：`-f "b[height<=360]/b"` 在"该视频没有这个档位"时 yt-dlp 直接 exit 1
@@ -104,6 +104,6 @@ B站链接通道（P4）的**引擎侧**：引擎无关的端口（trait + 纯�
 cargo test -p yekitrim-service downloader
 ```
 
-适配层的单测**全部离线可跑**：不打真实网络、不 spawn 进程 —— argv 构造、哨兵分流（含"`VTRIM_PATH` 写在
+适配层的单测**全部离线可跑**：不打真实网络、不 spawn 进程 —— argv 构造、哨兵分流（含"`YEKITRIM_PATH` 写在
 `WHEN` 之前会得到 `NA`"）、`classify` 的实测关键字、注册表校验。改了本目录必须再跑
 `python3 scripts/check_module_boundaries.py`（两条路径级禁则）。

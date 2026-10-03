@@ -1,7 +1,7 @@
-# 报告：与 V-Trim 的差异 · 性能 · 基座性质
+# 报告：与 YekiTrim 的差异 · 性能 · 基座性质
 
 > **视角（迁移后加）**：文中「本仓」= **Dhampir（底座）** —— 这是迁移前在 Dhampir 仓写下的视角；
-> 「V-Trim」= 本仓。读数与命令原样保留，**未改一字**。
+> 「YekiTrim」= 本仓。读数与命令原样保留，**未改一字**。
 
 > 这一份是**下阶段计划的前置展开**：先把事实量清楚，再谈要做什么。
 > 所有数字都是这一轮实测的，出处写在每一项后面。
@@ -10,11 +10,11 @@
 
 ## 0. 先纠正一个词
 
-「gasp」= **GSAP**。V-Trim 的精修引擎就是它（`vtrim-polish/src/lib.rs:1`：
+「gasp」= **GSAP**。YekiTrim 的精修引擎就是它（`yekitrim-polish/src/lib.rs:1`：
 「GSAP 精修引擎」），从 CDN 加载、跑在 headless Chrome 里。
 它的 `polish --help` 也写着「GSAP 特效 + 字幕 + 弹幕 + 封面」。
 
-我按**「性能还没赶上 V-Trim」**理解并做了实测。**结论与直觉相反**（见 §1）。
+我按**「性能还没赶上 YekiTrim」**理解并做了实测。**结论与直觉相反**（见 §1）。
 
 ---
 
@@ -22,7 +22,7 @@
 
 ### 1.1 头对头
 
-| | V-Trim 0.2.1 | 本仓 |
+| | YekiTrim 0.2.1 | 本仓 |
 |---|---|---|
 | 墙钟 | **70.2 s** | **134.6 s** |
 | 输出帧率 | **30 fps** | **60 fps** |
@@ -33,7 +33,7 @@
 | 中间产物 | **每帧 JPEG q=0.6** | 无（直接 h264） |
 | 时间基 | 源码 `timebase` | 同 |
 
-出处：`vtrim.exe polish render --renderer chrome`（默认后端，跑在工程副本上）；
+出处：`yekitrim.exe polish render --renderer chrome`（默认后端，跑在工程副本上）；
 本仓 `dhampir render` 的 `elapsed_ms` + 墙钟。
 
 ### 1.2 结论
@@ -42,9 +42,9 @@
 > 每帧成本我其实略快（43.2 vs 41.4 帧/秒）。**
 
 也就是说「性能没赶上」的主因**不是**架构劣于它，而是**输出帧率这个策略差异**：
-V-Trim 把 60fps 的源**降到 30fps** 出片，我保留 60fps。
+YekiTrim 把 60fps 的源**降到 30fps** 出片，我保留 60fps。
 
-代价对比要说清楚：**V-Trim 的 1.92× 速度是用两项质量换来的** ——
+代价对比要说清楚：**YekiTrim 的 1.92× 速度是用两项质量换来的** ——
 ① 一半的时间分辨率；② 每帧一道 JPEG q=0.6 的**代际损失**（这正是我一直在测的
 「底噪约 6/255」的来源，它不是我测量的误差，**是它的真实管线**）。
 
@@ -59,7 +59,7 @@ V-Trim 把 60fps 的源**降到 30fps** 出片，我保留 60fps。
 
 ### 1.4 架构上真正的差距：**只有一条**
 
-`vtrim-polish/src/render/pipeline.rs:173`：把时间轴劈成 `parallelism`（这里 4）块，
+`yekitrim-polish/src/render/pipeline.rs:173`：把时间轴劈成 `parallelism`（这里 4）块，
 **每块一个 `std::thread::spawn`**，各自渲染 + 编码，最后 concat。
 
 本仓是**单线程**：`for frame in from..=to { …submit… readback… write stdin }`，
@@ -129,10 +129,10 @@ for (index, layer) in layers.iter().enumerate() {
   不再需要 `transient` 窗口去模拟绝对时间。
 
 顺带：本轮为了这个问题查出来的 `shake` 幅度口径 **也是错的**，
-但**现在无所谓**（它根本不跑）：V-Trim 的 `intensity` 是**像素**
+但**现在无所谓**（它根本不跑）：YekiTrim 的 `intensity` 是**像素**
 （`templates/index.html:983,2596` 的 `off` 直接进 `tl.to({x:off,y:-off})`），
 本仓 `amount` 是**归一化位移比例** —— 我按 `intensity * 0.05` 写，
-在 1080p 下是 **21.6 px，比 V-Trim 的 0.4 px 大 54 倍**。
+在 1080p 下是 **21.6 px，比 YekiTrim 的 0.4 px 大 54 倍**。
 修 Warp 那一层的时候要一起改成 `intensity / target_h`。
 
 ---
@@ -145,13 +145,13 @@ for (index, layer) in layers.iter().enumerate() {
 | **`shake` 完全没做** | 见 §2 | —— |
 | 运镜过渡中的缩放 | **差 1.5%** | 20s 那一帧把图放大 1.015 差就 **20.79 → 13.51** |
 | 文字栅格化器 | 不可消除 | 字幕带是**连续**高差区（位置对、字形不同）；Chrome/Skia vs ffmpeg/FreeType |
-| 贴纸 GIF 逐帧延时 | 只能表达均匀间隔 | V-Trim 用 `sticker_frames.json` 的 `delays` 数组 |
+| 贴纸 GIF 逐帧延时 | 只能表达均匀间隔 | YekiTrim 用 `sticker_frames.json` 的 `delays` 数组 |
 | 高亮词 | 未实现 | `filter.highlight` + `.cap .hl` |
-| 封面 | 未实现 | V-Trim 有 `polish cover`（另一条产物通道） |
+| 封面 | 未实现 | YekiTrim 有 `polish cover`（另一条产物通道） |
 | 输出帧率 | 60 vs 30 | 见 §1 |
 
 **20s 那一帧的 1.5% 缩放**是最值得修的一处：它把最差时刻从 20.79 拉到可能的 13.5。
-疑似过渡的**起算/缓动**与 V-Trim 差 ~2 帧（`td = min(duration*0.5, 0.6)`，
+疑似过渡的**起算/缓动**与 YekiTrim 差 ~2 帧（`td = min(duration*0.5, 0.6)`，
 `pow2_out(0.167) = 0.306` → `zoom = 1.3 + 0.2*0.306 = 1.361`）。
 
 ---

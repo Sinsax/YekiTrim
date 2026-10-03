@@ -22,7 +22,7 @@
   `event_sfx_ref` / `event_has_sfx_ref` / `event_has_sound` / `find_uncovered_sfx_moments` /
   `subtitle_context(subtitles, t)`；`resolve_event_sfx(event, blacklist, used)` /
   `resolve_sfx_value` / `resolve_sfx_tag`（tag → 具体文件名，`used` 去重）；`load_sfx_blacklist(config)`
-  （全局 `.vtrim/config.toml [sfx] blacklist` ∪ 项目 `polish.toml [sfx] blacklist`）。
+  （全局 `.yekitrim/config.toml [sfx] blacklist` ∪ 项目 `polish.toml [sfx] blacklist`）。
 - `fx`：`transient_duration_cap(event_type)` / `transient_default_duration(event_type)` /
   `normalize_event_ends(segments)`；`cap_pip_shots` / `align_pip_shots(segments, subtitles)` /
   `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles)`；

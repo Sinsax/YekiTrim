@@ -1,4 +1,4 @@
-# V-Trim 设计文档
+# YekiTrim 设计文档
 
 直播录像自动切片工具。输入录播视频，输出按事件分割的片段 + 字幕 + 发布配置。
 
@@ -51,12 +51,12 @@
 ## 二、目录结构
 
 ```
-vtrim/
+yekitrim/
 ├── Cargo.toml
 ├── config/
 │   └── default.toml
 ├── crates/
-│   ├── vtrim-core/
+│   ├── yekitrim-core/
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -91,7 +91,7 @@ vtrim/
 │   │       │   └── publisher.rs
 │   │       └── progress/
 │   │           └── mod.rs
-│   └── vtrim-cli/
+│   └── yekitrim-cli/
 │       ├── Cargo.toml
 │       └── src/
 │           ├── main.rs
@@ -254,7 +254,7 @@ struct SeparateOutput {
 ```toml
 [asr]
 provider = "openai"
-api_key = "${VTRIM_ASR_KEY}"
+api_key = "${YEKITRIM_ASR_KEY}"
 model = "whisper-1"
 language = "zh"
 prompt = "直播,游戏,解说"
@@ -436,9 +436,9 @@ output/
 
 ### 查找顺序
 
-1. `./vtrim.toml`（项目级）
-2. `~/.config/vtrim/config.toml`（用户级）
-3. 环境变量覆盖（`VTRIM_ASR_KEY`、`VTRIM_LLM_KEY` 等）
+1. `./yekitrim.toml`（项目级）
+2. `~/.config/yekitrim/config.toml`（用户级）
+3. 环境变量覆盖（`YEKITRIM_ASR_KEY`、`YEKITRIM_LLM_KEY` 等）
 
 ### 完整配置
 
@@ -484,17 +484,17 @@ overwrite = false
 ## 六、CLI 接口
 
 ```
-vtrim process <input> [--config <path>] [--output <dir>]
+yekitrim process <input> [--config <path>] [--output <dir>]
                      [--stages audio,separate,transcribe,detect,cut]
                      [--separation]
                      [--dry-run]
 
-vtrim transcribe <input> [--language <lang>] [--prompt <text>]
-vtrim detect-events <transcript.json>
-vtrim cut <input> <events.json> [--output <dir>]
-vtrim config init
-vtrim config show
-vtrim version
+yekitrim transcribe <input> [--language <lang>] [--prompt <text>]
+yekitrim detect-events <transcript.json>
+yekitrim cut <input> <events.json> [--output <dir>]
+yekitrim config init
+yekitrim config show
+yekitrim version
 ```
 
 ---
@@ -504,9 +504,9 @@ vtrim version
 ```toml
 # 工作区
 [workspace]
-members = ["crates/vtrim-core", "crates/vtrim-cli"]
+members = ["crates/yekitrim-core", "crates/yekitrim-cli"]
 
-# vtrim-core
+# yekitrim-core
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 thiserror = "2"
@@ -520,7 +520,7 @@ chrono = { version = "0.4", features = ["serde"] }
 symphonia = "0.6"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 
-# vtrim-cli
+# yekitrim-cli
 clap = { version = "4", features = ["derive", "env"] }
 indicatif = "0.18"
 ```

@@ -200,7 +200,7 @@ pub(super) async fn project_data_pipeline(
         // 转写**每个模式只跑一次**：ASR 产物按模式占槽（`[asr] mode` 只有 hybrid / single
         // 两种，见 `yekitrim_service::assets`），该模式已经出过产物就不再提供重跑入口。
         // 想换字幕走素材列表（`POST /api/project-data/assets`）里已有的那份。
-        // ⚠️ 只拦 HTTP 这一侧：CLI `vtrim transcribe` 直接调 `core_pipeline::run_stage`，
+        // ⚠️ 只拦 HTTP 这一侧：CLI `yekitrim transcribe` 直接调 `core_pipeline::run_stage`，
         // 仍然可以强制重跑（转写中途崩掉、只留了半份产物时它是逃生口）。
         if stage == "transcribe" {
             let cfg = ws.load_config().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
@@ -245,11 +245,11 @@ pub(super) async fn project_data_pipeline(
 /// `GET /api/project-data/config?project=<id>`：**某个工程**的配置。
 ///
 /// 与 `GET /api/config`（纯程序配置）分开是本目录的既有一刀：那道接口编辑的是
-/// `.vtrim/config.toml` / `llm.toml`，这道回的是**这个工程的** `vtrim.toml` 原文 + 合并后的生效配置。
+/// `.yekitrim/config.toml` / `llm.toml`，这道回的是**这个工程的** `yekitrim.toml` 原文 + 合并后的生效配置。
 /// 项目设置页的源码编辑器读 `yekitrim_raw`（`ProjectSettingsView.vue`），预处理页读 `config.asr.mode`。
 pub(super) async fn project_data_config(scope: Scope) -> ApiResult {
     let ws = scope.ws;
-    blocking(move || config_vtrim_get_impl(&ws)).await
+    blocking(move || config_yekitrim_get_impl(&ws)).await
 }
 
 /// `GET /api/project-data/assets`：当前弹幕/字幕 + **素材清单** + 项目内的候选 + ASR 槽位。
@@ -282,7 +282,7 @@ pub(super) async fn project_data_assets_put(
 ) -> ApiResult {
     let ws = scope.ws;
     let is_admin = user.is_admin();
-    // 与设置页、去静音等写同一份 vtrim.toml：读改写必须上路径锁
+    // 与设置页、去静音等写同一份 yekitrim.toml：读改写必须上路径锁
     let path = ws.config_file.clone();
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
     blocking(move || assets_put_impl(&ws, &body, is_admin)).await
@@ -381,7 +381,7 @@ pub(super) async fn project_data_config_put(
     // 读改写加锁：设置页可能同时提交源文件与其它字段
     let path = ws.config_file.clone();
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
-    blocking(move || config_vtrim_put_impl(&ws, &body, is_admin)).await
+    blocking(move || config_yekitrim_put_impl(&ws, &body, is_admin)).await
 }
 
 pub(super) fn data_transcript_impl(ws: &Workspace) -> ApiResult {

@@ -78,7 +78,7 @@
   上传时勾了「上传后立刻构建」就顺带起它；**导入成功与构建任务是两件事** ——
   构建起不来只回一句 `job_error`，上传照样算成功。
 - `sfx_catalog` 的屏蔽语义：精确 id（如 `fear-1`）屏蔽单个音效；`tag:xxx`（如 `tag:surprise`）
-  屏蔽整个标签族。项目级 `polish.toml [sfx] blacklist` 与全局 `.vtrim/config.toml [sfx] blacklist`
+  屏蔽整个标签族。项目级 `polish.toml [sfx] blacklist` 与全局 `.yekitrim/config.toml [sfx] blacklist`
   由 `process::load_sfx_blacklist` 求并集。
 - 只读接口（非 admin 可读）：`GET /api/polish/sticker-library`（磁盘为准）与
   `GET /api/polish/sticker-file`（缩略图）；音效列表来自 `GET /api/polish/sfx-catalog`。
@@ -104,4 +104,4 @@ cargo test -p yekitrim-polish --lib assets
 ```
 
 含 zip 闸门 / zip-slip / 暂存目录 / 摊平重名 / 非图片过滤的回归。动了贴纸库后
-CLI 侧再手验一次：`vtrim polish stickers list` 与 `vtrim polish stickers test <kw...>`。
+CLI 侧再手验一次：`yekitrim polish stickers list` 与 `yekitrim polish stickers test <kw...>`。

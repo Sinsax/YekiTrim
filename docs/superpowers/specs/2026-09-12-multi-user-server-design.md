@@ -1,12 +1,12 @@
-# V-Trim 多用户服务（远期目标，暂不排期）
+# YekiTrim 多用户服务（远期目标，暂不排期）
 
 | 项 | 值 |
 |---|---|
-| 状态 | **远期目标 / 未开工**——先把基础功能（当前单用户 `vtrim server` + CLI 工作流）做完再回到这里 |
+| 状态 | **远期目标 / 未开工**——先把基础功能（当前单用户 `yekitrim server` + CLI 工作流）做完再回到这里 |
 | 性质 | 设计稿（改造方案 + 决策记录 + 里程碑），不是排期承诺 |
 | 日期 | 2026-09-12 |
-| 目标部署 | 单机自托管，≤10 人，一个 `vtrim server` 进程 |
-| 相关 | `docs/superpowers/specs/2026-09-03-vtrim-webui-design.md`、`AGENTS.md`（WebUI / Server 一节） |
+| 目标部署 | 单机自托管，≤10 人，一个 `yekitrim server` 进程 |
+| 相关 | `docs/superpowers/specs/2026-09-03-yekitrim-webui-design.md`、`AGENTS.md`（WebUI / Server 一节） |
 
 > 阅读方式：§0 是已经拍板的决策与仍待拍板的默认值；§1–§12 是完整方案；
 > §13 说明它与当前已实现加固的衔接。开工前只需把 §0 的 6 个默认过一遍。
@@ -18,7 +18,7 @@
 ### 0.1 已确认（用户）
 | 项 | 决策 |
 |---|---|
-| 部署/形态 | 单机自托管；**直接改造 `vtrim server`**（本机模式＝只有 1 个账号的部署），不新增并行的服务实现 |
+| 部署/形态 | 单机自托管；**直接改造 `yekitrim server`**（本机模式＝只有 1 个账号的部署），不新增并行的服务实现 |
 | 算力/密钥 | 平台统一：共享 LLM key、共享 ASR 模型缓存、全局并发上限；用户只管用 |
 | 认证 | 账号 + 密码；**项目必须按账户隔离** |
 | 部署体验 | **部署即生成管理员账号与初始密码**（首次启动输出到日志 + `<data_dir>/initial-admin-password.txt`，首次登录后删除）；**单人/多人共用同一套认证逻辑，无免登录**；对外监听要求已改初始密码 |
@@ -28,7 +28,7 @@
 | 源录播生命周期 | **切片完成后不释放**；只靠"最大硬盘空间"约束，不做自动删源 |
 
 ### 0.2 按最小设计锁定的默认（已生效；实现期如无异议不再变更）
-1. **前提假设**：录播姬与 `vtrim server` 同机（或录播姬输出目录位于服务器可读的盘/共享盘）——因为其 webhook 只给 `RelativePath`，不推送文件字节。
+1. **前提假设**：录播姬与 `yekitrim server` 同机（或录播姬输出目录位于服务器可读的盘/共享盘）——因为其 webhook 只给 `RelativePath`，不推送文件字节。
 2. **多分片会话默认合并**为单个 `source.mp4`（`ffmpeg -f concat -c copy`，失败回退重编码），原始分片保留；因管线 `input_path` 只支持单文件。
 3. **默认移入托管项目目录**（同盘 `rename` 瞬时；跨盘才 `copy+校验+删源`，先做水位预检）；`projects_root` 默认与 `recorder_root` **同盘**。保留录播姬文件管理功能可设 `move_into_managed=false`。
 4. **弹幕由服务端解析录播姬 XML**（仓库现在只吃 ASS/SRT），部署方零额外配置，不依赖 DanmakuFactory。
@@ -38,10 +38,10 @@
    - **2026-09-13 补充（实现期修订，最终形态）**：只囚笼到租户根时，管理员无法指向 `F:/media` 这类
      **存量录播目录**（租户根默认是空的），单机工作流实际不可用。因此收敛为：
      - **管理员**：`/api/fs/list` 接受**任意绝对目录**、`POST /api/projects {kind:"local", dir:"<绝对路径>"}`
-       接受任意已存在目录 —— 即回到改造前 `vtrim init <video>` 的"随便选位置"体验；
+       接受任意已存在目录 —— 即回到改造前 `yekitrim init <video>` 的"随便选位置"体验；
      - **非管理员**：仍只能用 `<projects_root>/users/<uid>`；`/api/fs/list` 与 `kind:"local"` 一律 **403**；
      - `[storage] local_roots` 降级为前端下拉的**快捷入口**（不是硬限制），留空即无快捷入口；
-     - 全程**只读服务器已有文件、永不接受上传**；目标目录已有 `vtrim.toml` 时只登记/打开、**不覆盖**。
+     - 全程**只读服务器已有文件、永不接受上传**；目标目录已有 `yekitrim.toml` 时只登记/打开、**不覆盖**。
 
 ---
 
@@ -50,7 +50,7 @@
 1. **零文件搬运**：用户只做"配一次 webhook + 填房间映射"，之后每场直播录完自动出现项目、自动跑管线。
 2. **严格租户隔离**：A 无法读写 B 的项目/产物/任务/事件/配置；用户只提供 id 与项目内相对路径。
 3. **容量可控**：全局 + 每用户磁盘上限、入库/下载前水位预检、超限明确拒绝；不自动删用户数据。
-4. **一次登录、长期可用**：部署时即生成管理员与初始密码，登录后会话长期有效（7 天滑动 / 可记住 30 天）；CLI（`vtrim extract/process/polish ...`）行为不变。
+4. **一次登录、长期可用**：部署时即生成管理员与初始密码，登录后会话长期有效（7 天滑动 / 可记住 30 天）；CLI（`yekitrim extract/process/polish ...`）行为不变。
 5. **平台密钥不外泄**、**任意路径面归零**。
 6. 验收可执行：§9 清单全部可跑（webhook / 下载器均用 fixture + mock，不打真实网络）。
 
@@ -62,7 +62,7 @@
 | `AppState.workspace` | 进程内唯一"当前工程" | 删除；按 `project_id` 每请求解析 |
 | `JobManager` | 全局单队列 + 有活动任务即 409；无归属 | 任务加 `owner_id`；**入库/下载槽**与**重活槽**分离；每用户串行 + 全局并发 + FIFO 排队 |
 | `/api/stream`、`/api/jobs` | 全局广播/列表 | 按 owner 过滤；他人资源一律 404 |
-| 工程列表 | `.vtrim/server.toml` 全局 `projects[]` | 迁入 `projects` 表；旧文件只读导入 admin |
+| 工程列表 | `.yekitrim/server.toml` 全局 `projects[]` | 迁入 `projects` 表；旧文件只读导入 admin |
 | 任意路径入口 | `?config=<路径>`、`dir`、`input`、`config_path`、`output_dir`、`output_file`、`source`、`/api/fs/list` | **整套删除**，改为 `?project=<id>` + 项目内相对路径（§5.2） |
 | 媒体流出 | `/api/media/*` 白名单来自全局工程列表（跨租户） | 只服务"本人项目的产物 + 该项目源录播" |
 | 弹幕解析 | 只支持 **ASS**（`parse_ass`）与 **SRT**（`parse_srt_danmaku`），`load_danmaku_auto` 按扩展名分派；**无 XML** | 新增录播姬 XML 弹幕解析（§4.4） |
@@ -72,18 +72,18 @@
 
 - 表：`users(id, username UNIQUE, password_hash TEXT NOT NULL（KDF 哈希串，见 §3.6）, must_change_password, role admin|user, quota_bytes, disabled, created_at, last_login_at)`；`sessions(id 32B, user_id, csrf, expires_at, user_agent)`。
 - **账号始终有密码**（`NOT NULL`）：不存在"无密码账号"，也不存在任何形式的免登录。
-- Cookie `vtrim_sid`：`HttpOnly; SameSite=Lax; Path=/`（TLS 下 `Secure`），TTL 7 天滑动续期，登出删行；可选"记住此设备"（30 天）；支持"登出全部设备"。
-- CSRF：非 HttpOnly 的 `vtrim_csrf` cookie + 所有写操作必带 `X-CSRF-Token`（前端 `api()` 统一注入一处）。
+- Cookie `yekitrim_sid`：`HttpOnly; SameSite=Lax; Path=/`（TLS 下 `Secure`），TTL 7 天滑动续期，登出删行；可选"记住此设备"（30 天）；支持"登出全部设备"。
+- CSRF：非 HttpOnly 的 `yekitrim_csrf` cookie + 所有写操作必带 `X-CSRF-Token`（前端 `api()` 统一注入一处）。
 - 中间件 `require_user` / `require_admin`；白名单仅 `/api/auth/login`、`/api/health`、`/api/ingest/bililive/<token>`（自带 token 鉴权）、静态资源。**没有"本机例外"分支**。
 - 登录限流（username+IP 滑窗 5 次/15 分钟）+ 可选弱密码拦截；校验失败一律拒绝，绝不接受空密码/未设置密码。
-- CLI 管理入口：`vtrim user list|info|add|passwd|check|disable|init-admin|reset-admin-password`（救援见 §3.5.5）。
+- CLI 管理入口：`yekitrim user list|info|add|passwd|check|disable|init-admin|reset-admin-password`（救援见 §3.5.5）。
 
 ### 3.6 口令 KDF 的实现偏差与升级路径（2026-09-13 记录）
 - 设计原定 **argon2id**。实现 P1 step-1 时本机 **crates.io 不可达**，本地 cargo 缓存里**没有 argon2**（`rusqlite 0.32.1`、`libsqlite3-sys 0.30.1`、`scrypt 0.11`、`subtle` 都有），因此采用 **scrypt**（内存硬，OWASP 认可的密码存储 KDF）。
 - 参数：`N = 2^15`（约 32 MiB/次）、`r = 8`、`p = 1`、16 字节随机盐、32 字节输出；哈希串**自描述**：`scrypt$log_n$r$p$<salt_b64>$<hash_b64>`。
 - **升级路径（不需要迁移数据库）**：将来引入 argon2 后，登录校验按前缀分派；若校验成功且前缀是 `scrypt$`，则用 argon2id 重新哈希并写回。`verify_password` 对未知前缀一律拒绝，绝不接受明文/空哈希。
-- 代码位置：`crates/vtrim-cli/src/service/{db,auth,user}.rs`（**放 `service/` 而非 `server/`**：CLI 与 HTTP 共用，保持 `server → service` 单向依赖；step-2 接入 HTTP 时分层不变）。
-- 账本位置：`VTRIM_DATA_DIR` 环境变量优先（便于测试/容器），默认 `<exe_dir>/.vtrim/cloud/vtrim.db`；`PRAGMA user_version=1`、WAL、`foreign_keys=ON`。
+- 代码位置：`crates/yekitrim-cli/src/service/{db,auth,user}.rs`（**放 `service/` 而非 `server/`**：CLI 与 HTTP 共用，保持 `server → service` 单向依赖；step-2 接入 HTTP 时分层不变）。
+- 账本位置：`YEKITRIM_DATA_DIR` 环境变量优先（便于测试/容器），默认 `<exe_dir>/.yekitrim/cloud/yekitrim.db`；`PRAGMA user_version=1`、WAL、`foreign_keys=ON`。
 - 初始密码文件：`<data_dir>/initial-admin-password.txt`（首次登录成功后由 HTTP 侧删除）。
 
 ## 3.5 部署即生成管理员账号：单人/多人同一套认证逻辑
@@ -105,8 +105,8 @@
   1. **stdout/日志**一次性打印：`首次启动管理员账号: admin ｜ 初始密码: ABCD-EFGH-JKMN-PQRS ｜ 已同时写入 <data_dir>/initial-admin-password.txt，首次登录成功后该文件自动删除`
   2. **文件** `<data_dir>/initial-admin-password.txt`（Windows 上尽力设置仅当前用户可读的 ACL）——解决"控制台滚动丢失 / 无控制台（服务、nohup、容器）"场景。
 - **重启不重新生成**：密码只在"无账号"时生成一次；重启沿用同一密码，避免"每次重启密码都变"的惊吓。
-- **显式指定初始密码**（无人值守，推荐）：`--admin-password-file <path>`（不进进程列表）；`VTRIM_ADMIN_PASSWORD`（会出现在 `docker inspect` / `/proc/<pid>/environ`，日志给出该风险提示）；`echo 'pw' | vtrim user passwd admin --stdin`。指定后不再生成随机密码。
-- 文件生命周期：**首次成功登录后删除**（删除失败只记 warning 不阻塞）；`vtrim user passwd` 改密后也删除。
+- **显式指定初始密码**（无人值守，推荐）：`--admin-password-file <path>`（不进进程列表）；`YEKITRIM_ADMIN_PASSWORD`（会出现在 `docker inspect` / `/proc/<pid>/environ`，日志给出该风险提示）；`echo 'pw' | yekitrim user passwd admin --stdin`。指定后不再生成随机密码。
+- 文件生命周期：**首次成功登录后删除**（删除失败只记 warning 不阻塞）；`yekitrim user passwd` 改密后也删除。
 - 因为部署时密码已就绪，**不需要** `setup` 初始化页、不需要 `setup token`、不需要"未初始化"状态。
 
 ### 3.5.3 单人 / 多人只差这三件事
@@ -121,36 +121,36 @@
 
 ### 3.5.4 唯一的暴露面硬门槛：不得仍用初始密码
 - 本机（loopback）监听：初始密码可登录；UI 顶部常驻横幅 + 每次启动日志 warning 提示尽快改密。
-- **对外监听（非 loopback）时必须 `must_change_password = false`**（即已改密，或在部署时用 `--admin-password-file` 显式设定），否则**拒绝启动**并给出修复命令（`vtrim user passwd admin`）。理由：初始密码会出现在日志与初始密码文件里，等同于"把密码写在服务器上"，不应对外。
+- **对外监听（非 loopback）时必须 `must_change_password = false`**（即已改密，或在部署时用 `--admin-password-file` 显式设定），否则**拒绝启动**并给出修复命令（`yekitrim user passwd admin`）。理由：初始密码会出现在日志与初始密码文件里，等同于"把密码写在服务器上"，不应对外。
 - 其余保持不变：对外强制登录 + 建议 TLS 反代（文档给 Caddy/nginx 示例）+ 启动告警。
 
 ### 3.5.5 忘记密码：确定性救援路径
-- `vtrim user passwd <name> [--stdin]` / `vtrim user reset-admin-password`：**能在这台机器上执行 CLI 的人本就等价于拥有主机权限**，因此直接允许，不引入任何后门；写审计。
+- `yekitrim user passwd <name> [--stdin]` / `yekitrim user reset-admin-password`：**能在这台机器上执行 CLI 的人本就等价于拥有主机权限**，因此直接允许，不引入任何后门；写审计。
 - 无 CLI 的场景（容器/托管）：可选增强——启动时若存在 `<data_dir>/.admin-reset`（0600），则把 admin 密码重置为该文件内容并立即删除，日志记审计。
 - 明确不做：邮箱找回、安全问题、"密保"。
 
 ### 3.5.6 代价与缓解（诚实记录）
 - 代价：连"打开本机浏览器"都需要登录一次（这是去掉免登录的直接结果）。
-- 缓解：会话 7 天滑动续期 + 可选"记住此设备 30 天"（本机浏览器基本只登录一次）；`vtrim server --open` 启动日志直接给出用户名与初始密码文件路径。
+- 缓解：会话 7 天滑动续期 + 可选"记住此设备 30 天"（本机浏览器基本只登录一次）；`yekitrim server --open` 启动日志直接给出用户名与初始密码文件路径。
 - 明确不做：把初始密码预填到登录页、把密码放进 URL/二维码（都会造成泄露面）。
 
 ### 3.5.7 身份数据不可缺省（与现有容错的差异）
-- 现有策略：程序配置目录不可写时，`vtrim server` 用内建默认值继续跑（只读安装位置仍能用）。
-- 身份/账号数据**不能这样**：`data_dir` 或 `vtrim.db` 不可写 → **启动失败**并给出修复指引（`--data-dir <可写路径>`），绝不做"静默内存模式"——否则会出现"以为改了密码/建了号，重启后全没了"。
+- 现有策略：程序配置目录不可写时，`yekitrim server` 用内建默认值继续跑（只读安装位置仍能用）。
+- 身份/账号数据**不能这样**：`data_dir` 或 `yekitrim.db` 不可写 → **启动失败**并给出修复指引（`--data-dir <可写路径>`），绝不做"静默内存模式"——否则会出现"以为改了密码/建了号，重启后全没了"。
 - 一句话原则：**配置可缺省，身份不可缺省。**
 
 ### 3.5.8 单实例保护与 schema 演进
-- `<data_dir>/vtrim.lock`（pid + 启动时间，进程退出释放）：第二个实例指向同一 `data_dir` 时明确报错（避免两个 server 抢同一批项目/端口/SQLite 写）。仅当确认是崩溃残留（pid 不存在）才允许 `--force`。
-- `PRAGMA user_version` + 启动自动迁移；迁移前自动备份 `vtrim.db.bak-<old_ver>`；迁移失败则拒绝启动（不半迁移）。
+- `<data_dir>/yekitrim.lock`（pid + 启动时间，进程退出释放）：第二个实例指向同一 `data_dir` 时明确报错（避免两个 server 抢同一批项目/端口/SQLite 写）。仅当确认是崩溃残留（pid 不存在）才允许 `--force`。
+- `PRAGMA user_version` + 启动自动迁移；迁移前自动备份 `yekitrim.db.bak-<old_ver>`；迁移失败则拒绝启动（不半迁移）。
 
 ### 3.5.9 可观测性
 - `/api/health`：`version`、能力位（`ffmpeg` / `chrome` / `llm` / `ingest_ready` / `wgpu_render`）、`accounts`（账号数）、`must_change_password`、`listening: loopback|remote`、`tls_terminated`（由可信代理头判定，仅作提示）。**不暴露路径，也没有 `mode/auto_login/setup_required` 这些分支字段。**
   注：`ingest_ready` 同时覆盖"录播姬 webhook 已启用 + B站下载器可用"，前端据此决定首页/入库区块显示引导卡还是内容。
-- `vtrim doctor` 增"安全摘要"：监听地址与可达性、账号数、是否仍在使用初始密码、初始密码文件是否仍存在、TLS 终止探测、`data_dir` 可写性与剩余磁盘、备份建议。
+- `yekitrim doctor` 增"安全摘要"：监听地址与可达性、账号数、是否仍在使用初始密码、初始密码文件是否仍存在、TLS 终止探测、`data_dir` 可写性与剩余磁盘、备份建议。
 - 前端：`must_change_password` 时顶部横幅（一键去改密）；对外且未 TLS 时一次性提示。
 
 ### 3.5.10 验收清单（"单人即开即用 + 多人原生"如何算成立）
-1. 全新解压 → `vtrim.exe server --open` → 日志打印用户名/初始密码/文件路径；`<data_dir>/initial-admin-password.txt` 存在。
+1. 全新解压 → `yekitrim.exe server --open` → 日志打印用户名/初始密码/文件路径；`<data_dir>/initial-admin-password.txt` 存在。
 2. 浏览器打开 → **登录页** → 用初始密码登录成功 → 进入项目页；未登录访问任意接口（含 loopback）一律 401。
 3. 首次登录成功后 `initial-admin-password.txt` **被自动删除**；横幅提示"仍在使用初始密码"。
 4. 重启服务 → **密码不变**（不重新生成）；未过期的会话仍然有效。
@@ -158,8 +158,8 @@
 6. 建项目并跑 extract/transcribe/detect → 项目 `owner_id` = admin（`/api/projects`、`/api/storage` 正常）。
 7. 仍在使用初始密码时 `--host 0.0.0.0` → **拒绝启动** + 一条修复命令；改密后同一命令可正常启动并远程登录。
 8. `--admin-password-file pw.txt` 全新部署 → 不生成随机密码，直接用该密码登录。
-9. `vtrim user add alice` + 各自登录 → 逐接口验证互不可见（项目/任务/SSE/media 全 404）。
-10. 忘记密码 → `vtrim user reset-admin-password`（或 `passwd admin --stdin`）本机恢复，写审计。
+9. `yekitrim user add alice` + 各自登录 → 逐接口验证互不可见（项目/任务/SSE/media 全 404）。
+10. 忘记密码 → `yekitrim user reset-admin-password`（或 `passwd admin --stdin`）本机恢复，写审计。
 11. `data_dir` 只读 → 启动失败 + `--data-dir` 指引（不会表面可用实际不保存）；两个实例指向同一 `data_dir` → 第二个明确报错。
 
 
@@ -190,12 +190,12 @@
 ### 4.3 多文件会话 → 单项目（`input_path` 是单文件）
 - 同 `SessionId` 的多个文件（录播姬按大小/时长切分）→ 默认**合并**为一个 `source.mp4`：`ffmpeg -f concat` + `-c copy`（同编码无损、秒级），失败回退重编码；原始分片**保留**（源不删策略）。
 - 可选 `concat_files=false`：只把第一个文件作为项目源，其余登记为附加片段（前端只读提示）。
-- 项目目录：`<projects_root>/users/<uid>/<room>/<session 起始时间>-<pid>/`，`vtrim.toml` 的 `input_file`/`danmaku_file` 均为项目内相对路径。
-- **落位策略**：`move_into_managed=true`（默认）——同盘 `fs::rename`（瞬时）；跨盘则 `copy + 校验 + 删源`，开始前做**水位预检**。`projects_root` 默认与 `recorder_root` 同盘（如 `D:\vtrim-projects`）。若要保留录播姬的文件管理/播放功能，设 `false`（项目目录＝录制目录，代价：同一目录只能有一个项目）。
+- 项目目录：`<projects_root>/users/<uid>/<room>/<session 起始时间>-<pid>/`，`yekitrim.toml` 的 `input_file`/`danmaku_file` 均为项目内相对路径。
+- **落位策略**：`move_into_managed=true`（默认）——同盘 `fs::rename`（瞬时）；跨盘则 `copy + 校验 + 删源`，开始前做**水位预检**。`projects_root` 默认与 `recorder_root` 同盘（如 `D:\yekitrim-projects`）。若要保留录播姬的文件管理/播放功能，设 `false`（项目目录＝录制目录，代价：同一目录只能有一个项目）。
 
 ### 4.4 弹幕（本项目价值最高的输入）
 - 录播姬会在录制目录写同场次弹幕文件（通常 `*.xml`）。仓库当前**只解析 ASS/SRT** → 决策：**服务端新增 `danmaku::parse_bililive_xml`**，把 XML 直接映射为 `DanmakuEntry{start, text, color, y}`（语义一一对应，约 100 行 + 单测），`load_danmaku_auto` 增加 `.xml` 分支 —— 部署方零额外配置。
-- 关联规则：与视频**同 session / 同目录同前缀**的 `.xml`/`.ass`；写进项目 `vtrim.toml` 的 `danmaku_file`；缺失时项目仍可跑（只是失去 popularity 排序，前端明确提示）。
+- 关联规则：与视频**同 session / 同目录同前缀**的 `.xml`/`.ass`；写进项目 `yekitrim.toml` 的 `danmaku_file`；缺失时项目仍可跑（只是失去 popularity 排序，前端明确提示）。
 
 ### 4.5 次要通道：B站链接转项目
 
@@ -228,24 +228,24 @@
 
 ### 5.1 目录布局
 ```
-exe_dir/.vtrim/            # 平台资源：config.toml / llm.toml / models / stickers（仅 admin）
-  cloud/vtrim.db           # users / sessions / projects / ingest_* / channel_map / audit
+exe_dir/.yekitrim/            # 平台资源：config.toml / llm.toml / models / stickers（仅 admin）
+  cloud/yekitrim.db           # users / sessions / projects / ingest_* / channel_map / audit
 <projects_root>/users/<uid>/<room>/<session>-<pid>/
   source.mp4 | 源分片       # 源录播（不自动释放）
   danmaku.xml / danmaku.ass
-  vtrim.toml
+  yekitrim.toml
   output/                  # video.wav video.srt transcript.json events.json clips/ publish_config.json
-D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim 所有）
+D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 yekitrim 所有）
 ```
 - **归属由 DB 决定**：用户可见范围 = 他拥有的 `projects` 行；囚笼以**项目根**为单位（不再有"每用户一个 root"）。
-- CLI 兼容：`vtrim polish render <项目目录>`、`vtrim extract -i <目录内视频>` 仍可手工执行。
+- CLI 兼容：`yekitrim polish render <项目目录>`、`yekitrim extract -i <目录内视频>` 仍可手工执行。
 
 ### 5.2 路径面归零
 - 所有 `/api/project-data/*`、`/api/polish/*` 统一 `?project=<id>` + **项目内相对路径**（如 `{project:7, dir:"output/clips/clip-01"}`）；服务端查 `projects` 得项目根 → `canonicalize` → 必须 `starts_with(project_root)` → 拒绝绝对路径 / `..` / 符号链接逃逸。
 - 删除：`/api/fs/list`、`project_init`/`project_open` 的 `input|config_path|output_dir`、`polish render` 的任意 `output_file`（改项目内固定 `export.mp4`）、`cover-background` 的任意 `source`。
 - **webhook 路径囚笼**（新增，必须）：`EventData.RelativePath` 与 `[ingest.recorder] root` 拼接后必须仍在 `root` 内；否则持有 token 者可让服务把任意文件登记为项目、再经 `/api/media/*` 读出。
 - 纵深防御：`polish render/preview` 前，对 `resolve_paths` 解析出的 `video/subtitles/danmaku` 再校验"必须在该项目目录内"。
-- 新增 `vtrim-core/src/tenant.rs`：`jail_join(root, rel)` / `jail_existing(root, rel)`；单测覆盖 `..`、绝对路径、UNC、`C:foo`、符号链接、空串、末尾分隔符。
+- 新增 `yekitrim-core/src/tenant.rs`：`jail_join(root, rel)` / `jail_existing(root, rel)`；单测覆盖 `..`、绝对路径、UNC、`C:foo`、符号链接、空串、末尾分隔符。
 
 ### 5.3 仅管理员可访问
 `/api/admin/{config,models,doctor,llm/test,users,jobs,ingest}`（含录播姬 token、`recorder_root`、channel_map、下载器与 cookie）。`/api/health` 只回版本 + ffmpeg/chrome/llm/downloader 就绪位 + `wgpu_render` + 是否需登录，不回任何路径。
@@ -264,7 +264,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 - 超限：入库前（webhook 触发时也要）与下载/渲染前统一预检 → 不足则 `ingest_sessions.state=failed` 或 HTTP `409`，文案含"预计需要/可用/建议删除哪些项目的源录播"，**绝不自动删**。
 - 源录播按决策**保留**；项目页提供手动"删除源录播（保留切片/字幕/事件/封面）"动作 `DELETE /api/projects/:id/source`（唯一的手动释放手段）。
 - 只清理**临时态**：`.partial/`、`*_thumb.jpg`、`*.partial.json`、`*.checkpoint.json` 超 7 天。
-- 备份＝拷贝 `.vtrim/cloud/vtrim.db` + `projects_root`（WAL，`PRAGMA foreign_keys=ON`）。
+- 备份＝拷贝 `.yekitrim/cloud/yekitrim.db` + `projects_root`（WAL，`PRAGMA foreign_keys=ON`）。
 
 ## 8. API 与前端变更
 
@@ -296,7 +296,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 **认证（M1）**
 - `GET /api/me`：已登录 → `{ user: {id, username, role}, must_change_password }`；未登录 → **401**。
   **没有 `auto_login` / `requires_login` 字段，也没有免登录分支**（单人部署＝只有一个 admin 账号的部署）。
-- `POST /api/auth/login {username, password}` → `{ user, must_change_password }`（`Set-Cookie: vtrim_sid`；同时下发 `vtrim_csrf`）。
+- `POST /api/auth/login {username, password}` → `{ user, must_change_password }`（`Set-Cookie: yekitrim_sid`；同时下发 `yekitrim_csrf`）。
   失败：401（密码错/账号禁用文案直出）、429（限流，前端文案「尝试过多，15 分钟后再试」）。
 - `POST /api/auth/logout` → 200（删会话行）。
 - `PUT /api/auth/password {old_password, new_password}` → 改自己的密码；成功后 `must_change_password=false`（横幅消失、初始密码文件已删）。
@@ -338,16 +338,16 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 - **调度**：2 用户 × 3 重活 + 1 入库 + 1 下载 → 重活 ≤2、入库 ≤1、下载 ≤1、同用户串行、FIFO；取消排队即出队；在跑任务在阶段边界停止。
 - **认证**：错误密码/禁用/过期会话/缺 CSRF/普通用户访问 admin 接口 403。
 
-手工验收：全新 `.vtrim` + `vtrim server`（loopback）→ 日志打印初始密码与密码文件路径 → 登录页用初始密码进入 → 首次登录成功后密码文件被删除、横幅提示改密；用 `curl` 模拟录播姬推 `FileClosed+SessionEnded`（指向测试 flv）→ 项目自动出现 → 自动转写/检测 → 切片 → 精修预览/渲染；第二账号验证完全隔离；把 `max_disk_bytes` 压到接近已用 → 新入库被明确拒绝；项目页删除源录播 → 占用回落。
+手工验收：全新 `.yekitrim` + `yekitrim server`（loopback）→ 日志打印初始密码与密码文件路径 → 登录页用初始密码进入 → 首次登录成功后密码文件被删除、横幅提示改密；用 `curl` 模拟录播姬推 `FileClosed+SessionEnded`（指向测试 flv）→ 项目自动出现 → 自动转写/检测 → 切片 → 精修预览/渲染；第二账号验证完全隔离；把 `max_disk_bytes` 压到接近已用 → 新入库被明确拒绝；项目页删除源录播 → 占用回落。
 
-命令：`cargo check -p vtrim-cli --all-targets`（0 warning）、`cargo test -p vtrim-cli`、`cargo test -p vtrim-core --lib`、`npm --prefix webui run build`，加上面的手工脚本。
+命令：`cargo check -p yekitrim-cli --all-targets`（0 warning）、`cargo test -p yekitrim-cli`、`cargo test -p yekitrim-core --lib`、`npm --prefix webui run build`，加上面的手工脚本。
 
 ## 10. 实施顺序（每阶段可独立交付/回滚）
 
-- **P1 账号与账本**：SQLite + users/sessions/audit + 口令 KDF（见 §3.6）+ `/api/auth/*` + `/api/me` + 中间件 + `vtrim user *` + **首次启动生成 admin 与初始密码**（日志 + `<data_dir>/initial-admin-password.txt` + `must_change_password`）+ **全部接口统一要求会话（含 loopback，无免登录分支）**。此阶段仍只有 1 个账号，行为上就是"要登录的单人版"。
+- **P1 账号与账本**：SQLite + users/sessions/audit + 口令 KDF（见 §3.6）+ `/api/auth/*` + `/api/me` + 中间件 + `yekitrim user *` + **首次启动生成 admin 与初始密码**（日志 + `<data_dir>/initial-admin-password.txt` + `must_change_password`）+ **全部接口统一要求会话（含 loopback，无免登录分支）**。此阶段仍只有 1 个账号，行为上就是"要登录的单人版"。
 - **P2 项目托管与隔离**：`projects` 表 + 项目目录布局 + `?config=`→`?project=` + `tenant.rs` 囚笼 + 删除全部本地路径入口 + admin-only 接口迁移 + 前端作用域改造。
   - **✅ 已落地**（提交 `2e58644` / `8765ad9` / `deff292`）：schema v2（projects/storage，迁移前 VACUUM INTO 备份）、
-    `vtrim-core/src/tenant.rs`（词法拒绝 + 最深已存在祖先 canonicalize，符号链接逃逸实测拦下）、
+    `yekitrim-core/src/tenant.rs`（词法拒绝 + 最深已存在祖先 canonicalize，符号链接逃逸实测拦下）、
     `service/projects.rs`（租户布局 `users/<uid>/<room>/<时间戳>-<pid>`、占用计量、归属校验、
     旧 `server.toml` 项目只读导入 admin）；
     路由：`GET/POST /api/projects`、`DELETE /api/projects/:id`、`DELETE /api/projects/:id/source`；
@@ -366,7 +366,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
     `POST /api/ingest/bililive/<token>`（token 存 scrypt 哈希、`allow_ips` 白名单、`EventId` 去重、
     未知事件忽略、**落库后立即 2xx**）、`GET /api/ingest/records`（`?failed=1` 本人 / admin `?all=1`/`?unassigned=1`）、
     `GET/PUT /api/channel-map`、`POST /api/ingest/retry`、`POST /api/admin/ingest/{assign,scan}`、`GET /api/admin/ingest`、
-    `vtrim ingest token|status`；
+    `yekitrim ingest token|status`；
     入库 worker（串行＝入库槽 1）：完结判定（`SessionEnded` + 全部分片闭环 或 `finalize_idle_mins` 空闲窗口）→
     水位/配额预检（全局 `max_disk_bytes` / `users.quota_bytes` / `disk_watermark_pct`，**绝不自动删**）→
     落位（同盘 rename、跨盘 copy+校验+删源；`move_into_managed=false` 时项目目录＝录制目录）→
@@ -377,32 +377,32 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
   - **已知简化**：`concat_files=false` 的"其余分片登记为附加片段"目前只是把分片留在项目目录里（前端可见但无专门只读列表）；
     入库与下载槽的排队/上限（`max_concurrent_ingest` 之外的全局并发与每用户配额队列）留到 P5。
 - **P4 B站链接通道**：`resolve` + 下载器适配层 + 下载槽 + 新建项目弹窗（次要入口）。
-- **P5 容量与运维**：`storage` 计量与上限、管理员页、审计、临时清理、反代/TLS 文档、`vtrim doctor` 多用户自检、备份/恢复说明、`AGENTS.md`/`README.md` 更新。
+- **P5 容量与运维**：`storage` 计量与上限、管理员页、审计、临时清理、反代/TLS 文档、`yekitrim doctor` 多用户自检、备份/恢复说明、`AGENTS.md`/`README.md` 更新。
 
 ### 10.1 P1 最小切片实施规格（开工基准）
 
-**step-1 ✅ 已完成（提交 `7fbf999`）——不接入 HTTP，`vtrim server` 行为与 v0.1.0 一致**
+**step-1 ✅ 已完成（提交 `7fbf999`）——不接入 HTTP，`yekitrim server` 行为与 v0.1.0 一致**
 - 依赖：`rusqlite 0.32 (bundled)`、`scrypt 0.11 (default-features=false)`、`subtle 2`、`rand 0.8`（全部离线可用）。
 - `service/db.rs`：`Db::open/open_default`、`migrate()`（v1 建 users/sessions/audit + `user_version`）、`count_users/create_user/list_users/find_user/user_password_hash/set_password/set_disabled/audit`；`data_dir()/db_path()`；**含 3 个单测**。
 - `service/auth.rs`：`hash_password/verify_password/validate_password(MIN=8)/generate_initial_password(16 位、排除 0O1lI、XXXX-XXXX-XXXX-XXXX)`；**含 4 个单测**。
-- `service/user.rs` + `vtrim user` 子命令：`list|info|add|passwd|check|disable|init-admin|reset-admin-password`；不给密码则生成随机密码并只打印一次；`init-admin` **幂等**（已有账号绝不重置）、生成时写 `<data_dir>/initial-admin-password.txt`；所有动作写 audit。
-- 验收（已实测）：`cargo check -p vtrim-cli --all-targets` 0 warning；`cargo test -p vtrim-cli` 22 passed；CLI 端到端全通过。
+- `service/user.rs` + `yekitrim user` 子命令：`list|info|add|passwd|check|disable|init-admin|reset-admin-password`；不给密码则生成随机密码并只打印一次；`init-admin` **幂等**（已有账号绝不重置）、生成时写 `<data_dir>/initial-admin-password.txt`；所有动作写 audit。
+- 验收（已实测）：`cargo check -p yekitrim-cli --all-targets` 0 warning；`cargo test -p yekitrim-cli` 22 passed；CLI 端到端全通过。
 
 **step-2 ✅ 已完成（"浏览器开始要求登录"）**
 1. `server/auth.rs`（HTTP 侧）：`require_user` 中间件 + 白名单（`/api/auth/login`、`/api/health`；静态资源不在 `/api` 下天然公开）+ 内存限流（username+IP，5 次/15 分钟，IP 取 `ConnectInfo` 对端地址）。
-2. 端点：`GET /api/me`（200 `{user,must_change_password}` / 401）、`POST /api/auth/login`（`Set-Cookie: vtrim_sid`(HttpOnly) + `vtrim_csrf`；401/429）、`POST /api/auth/logout`、`PUT /api/auth/password`。
+2. 端点：`GET /api/me`（200 `{user,must_change_password}` / 401）、`POST /api/auth/login`（`Set-Cookie: yekitrim_sid`(HttpOnly) + `yekitrim_csrf`；401/429）、`POST /api/auth/logout`、`PUT /api/auth/password`。
 3. 会话：`sessions` 表读写 + TTL 7 天滑动续期（剩余不足 1h 才写库）+ 登出删行 + 首次登录成功后删除 `initial-admin-password.txt`；改密顺带吊销本人其它会话。
-4. 启动：`ensure_admin_bootstrap`（无账号则生成 admin+初始密码并打印/落盘，有账号则只报告 `must_change_password`）；`data_dir` 不可写 → 启动失败 + `--data-dir` 指引；`vtrim.lock` 单实例保护；非 loopback 且 `must_change_password=1` → 拒绝启动。新增参数 `--data-dir`、`--admin-password-file`、`--force`。
+4. 启动：`ensure_admin_bootstrap`（无账号则生成 admin+初始密码并打印/落盘，有账号则只报告 `must_change_password`）；`data_dir` 不可写 → 启动失败 + `--data-dir` 指引；`yekitrim.lock` 单实例保护；非 loopback 且 `must_change_password=1` → 拒绝启动。新增参数 `--data-dir`、`--admin-password-file`、`--force`。
 5. `server/api.rs` 拆成 public（`/health`、`/auth/login`）+ protected（其余全部挂 `require_user`）；`/api/health` 增 `accounts/must_change_password/listening/tls_terminated`，**去掉 `workspace` 路径字段**；`/api/fs/list` 收敛为 admin-only。
 6. 前端 M1（`stores/auth.js`、`api/auth.js`、`views/LoginView.vue`、路由守卫、`client.js` CSRF 注入 + 401 分支、顶栏用户区 + 改密横幅 + 改密弹窗，未登录不再轮询/开 SSE）。
-7. 测试：新增 9 个（`server/auth.rs` 6 个 + `api.rs` 4 个 oneshot 鉴权/流程 + `service/db.rs` 2 个会话 + `service/instancelock.rs` 4 个）；实测 `cargo check -p vtrim-cli --all-targets` 0 warning、`cargo test -p vtrim-cli` 40 passed、`npm run build` 通过，并按 §3.5.10 第 1–5、10–11 条手工走通（首次启动打印+落盘、401/CSRF 403、首次登录删文件、重启密码不变且会话仍有效、`0.0.0.0` 未改密拒绝启动、第二个实例报错、`--admin-password-file` 不写初始密码文件、坏 data_dir 报错并给指引）。
+7. 测试：新增 9 个（`server/auth.rs` 6 个 + `api.rs` 4 个 oneshot 鉴权/流程 + `service/db.rs` 2 个会话 + `service/instancelock.rs` 4 个）；实测 `cargo check -p yekitrim-cli --all-targets` 0 warning、`cargo test -p yekitrim-cli` 40 passed、`npm run build` 通过，并按 §3.5.10 第 1–5、10–11 条手工走通（首次启动打印+落盘、401/CSRF 403、首次登录删文件、重启密码不变且会话仍有效、`0.0.0.0` 未改密拒绝启动、第二个实例报错、`--admin-password-file` 不写初始密码文件、坏 data_dir 报错并给指引）。
 
-**step-3 ✅ 已完成（P1 收尾）**：新增 `vtrim doctor [--url <base>]`（`service/doctor.rs` + `service/disk.rs`）——只读诊断，**不创建账号库、不改配置**：
+**step-3 ✅ 已完成（P1 收尾）**：新增 `yekitrim doctor [--url <base>]`（`service/doctor.rs` + `service/disk.rs`）——只读诊断，**不创建账号库、不改配置**：
 - 账号数据：数据目录可写性与剩余/总磁盘（Windows 走 `GetDiskFreeSpaceExW`，其它平台退回 `df -k`）、账号列表（角色/禁用/初始密码/最后登录）、`must_change_password`、未过期会话数、历史登录失败次数、初始密码文件是否存在；
 - 单实例锁：`pid=0`（上次正常退出）/ pid 存活（服务在运行）/ pid 不存在（崩溃残留，下次启动自动接管）/ 读不到内容（正被独占持有）；
 - 服务探测：裸 TCP 读 `/api/health`（不引入 HTTP 客户端依赖），报出 `listening` 与 `tls_terminated`，并对"对外监听但无 TLS"给警告；
 - 建议：只打印当前真正适用的项（改密 / 删初始密码文件 / `--data-dir` / 反代 + HTTPS / 停服后备份）。
-`vtrim.lock` 的 pid 存活判定与 `--force` 已在 step-2 一并实现（见 `service/instancelock.rs`）。
+`yekitrim.lock` 的 pid 存活判定与 `--force` 已在 step-2 一并实现（见 `service/instancelock.rs`）。
 
 > **实现偏差记录（step-2）**：单实例锁在 Windows 上用 `share_mode(0)` 独占句柄（进程崩溃即由系统释放，且外部无法抢占，`--force` 在 Windows 上抢不到活着的实例）；正常退出时把锁文件写成 `pid=0` 作为"已正常退出"标记（Windows 持独占句柄时无法删文件），下次启动看到 `pid=0` 即安静接管，只有真正的崩溃残留（pid 已不存在）才 warn。
 
@@ -415,7 +415,7 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 ## 12. 风险与回滚
 
 1. **动到刚稳定的单机 server** → P1 只加"身份 + 登录门槛"（账号仅 admin，功能面与今天一致，但浏览器开始要求登录一次）；P2 才切换数据选择器（`?config=` → `?project=`），切换期保留 `?config=` 只读兼容一版并标 deprecated。每阶段可独立回滚。
-2. **新增 SQLite / 口令 KDF 的构建风险**（bundled sqlite 需 cc；仓库已有 `bzip2` 同类构建；**本机离线且无 argon2 缓存** → 见 §3.6 的 scrypt 决策）→ 退路是文件账本（`users.toml`+`sessions.json`+复用已实现的 `vtrim_core::filelock`），隔离/调度设计不变。
+2. **新增 SQLite / 口令 KDF 的构建风险**（bundled sqlite 需 cc；仓库已有 `bzip2` 同类构建；**本机离线且无 argon2 缓存** → 见 §3.6 的 scrypt 决策）→ 退路是文件账本（`users.toml`+`sessions.json`+复用已实现的 `yekitrim_core::filelock`），隔离/调度设计不变。
 3. **录播姬 webhook 契约变化**（v1 弃用、未来新增事件类型、不保证顺序）→ 只依赖 `SessionId/RelativePath/FileSize/RoomId` 这些稳定字段；未知事件忽略并记审计；兜底扫描保证"webhook 全挂也能入库"。
 4. **跨盘移动慢/写满** → `projects_root` 默认与 `recorder_root` 同盘（rename 瞬时）；跨盘必带水位预检与半成品清理；可切 `move_into_managed=false`。
 5. **源文件不释放 ⇒ 磁盘单调增长** → 靠全局/每用户上限 + 水位预检 + 手动删源 + 占用明细提示；这是既定策略，不做自动删除。
@@ -438,8 +438,8 @@ D:\BililiveRecorder\       # 录播姬工作目录（配置项，不归 vtrim �
 | **协作式取消令牌**（`ProgressReporter::cancelled()`，阶段/批次边界） | 多用户取消语义直接复用；排队任务的取消＝出队 |
 | SSE **先回放历史**、`Lagged` 不再误报失败 | 用户级 `/api/stream` 过滤时不会出现"任务假失败" |
 | `/api/media/*` Range **416/206** 修复、文件不存在 404 | 多用户播放源/产物的出入参校验已可靠 |
-| `dir` 校验（非空 + 存在 + 是目录）、`project_delete` 只允许 `vtrim.toml`、字体名/`rank` 收敛 | P2 的"路径面归零 + 囚笼"可以在这些校验上直接收紧 |
-| `vtrim_core::filelock`（按路径串行读改写）+ `persist` 原子读改写 | P1 若走"文件账本"退路可直接复用；即使走 SQLite，`polish.toml`/`events.json` 并发写也已被保护 |
-| `vtrim_home()` 去 `panic`、环境探测缓存/`spawn_blocking` | 多用户下 handler 不 panic、不阻塞 worker 的前提 |
+| `dir` 校验（非空 + 存在 + 是目录）、`project_delete` 只允许 `yekitrim.toml`、字体名/`rank` 收敛 | P2 的"路径面归零 + 囚笼"可以在这些校验上直接收紧 |
+| `yekitrim_core::filelock`（按路径串行读改写）+ `persist` 原子读改写 | P1 若走"文件账本"退路可直接复用；即使走 SQLite，`polish.toml`/`events.json` 并发写也已被保护 |
+| `yekitrim_home()` 去 `panic`、环境探测缓存/`spawn_blocking` | 多用户下 handler 不 panic、不阻塞 worker 的前提 |
 | `webui/dist` 入库 + 非 loopback 需 `--allow-remote` | P1 之后 `--allow-remote` 语义改为"强制登录"，dist 已有版本管理流程 |
-| 账号账本 + `vtrim user` CLI（提交 `7fbf999`） | **P1 step-1 已落地**：SQLite 建表、口令 KDF、幂等 `init-admin`（初始密码只打印一次 + 落盘）、审计、7 个 CLI 动作；step-2 只需接 HTTP 中间件/端点与前端登录页（§10.1） |
+| 账号账本 + `yekitrim user` CLI（提交 `7fbf999`） | **P1 step-1 已落地**：SQLite 建表、口令 KDF、幂等 `init-admin`（初始密码只打印一次 + 落盘）、审计、7 个 CLI 动作；step-2 只需接 HTTP 中间件/端点与前端登录页（§10.1） |

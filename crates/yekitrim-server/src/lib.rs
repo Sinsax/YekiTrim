@@ -1,14 +1,14 @@
 //! Server 支持：axum HTTP + WebUI + JobManager。
 //!
-//! 独立 crate（原 `vtrim-cli/src/server/`）。分层是**单向**的：
+//! 独立 crate（原 `yekitrim-cli/src/server/`）。分层是**单向**的：
 //!
 //! ```text
-//! vtrim-core ─┐
-//! vtrim-polish ┼─→ vtrim-service ──→ vtrim-server ──→ vtrim-cli（只剩入口）
+//! yekitrim-core ─┐
+//! yekitrim-polish ┼─→ yekitrim-service ──→ yekitrim-server ──→ yekitrim-cli（只剩入口）
 //!             └──────────────────────────────────────┘
 //! ```
 //!
-//! - `vtrim server` 子命令启动
+//! - `yekitrim server` 子命令启动
 //! - REST API 覆盖项目/状态/配置/数据/管线/精修
 //! - SSE 推送任务日志与进度
 //! - **账号与会话**：启动即引导 admin 账号；除 `/api/health`、`/api/auth/login`
@@ -16,10 +16,10 @@
 //! - WebUI = `webui/dist`（Vue3 构建产物）；**不再内嵌单文件页面**，
 //!   缺失时由 `web::webui_fallback` 返回 503 + 构建指引
 //!
-//! **不变式：本 crate 只依赖 `vtrim-service`，绝不反向。** 服务端要用的领域逻辑
-//! 一律通过 `vtrim-service` 暴露（`vtrim-service` 也因此不能 `use yekitrim_server::*`）。
+//! **不变式：本 crate 只依赖 `yekitrim-service`，绝不反向。** 服务端要用的领域逻辑
+//! 一律通过 `yekitrim-service` 暴露（`yekitrim-service` 也因此不能 `use yekitrim_server::*`）。
 //!
-//! 设计文档: docs/superpowers/specs/2026-09-03-vtrim-webui-design.md
+//! 设计文档: docs/superpowers/specs/2026-09-03-yekitrim-webui-design.md
 //!           docs/superpowers/specs/2026-09-12-multi-user-server-design.md（§3.5 / §10.1）
 
 pub mod access_log;
@@ -58,7 +58,7 @@ use yekitrim_service::{self, db};
 
 use self::auth::Listening;
 
-/// `vtrim server` CLI 参数（由 main.rs 转发）。
+/// `yekitrim server` CLI 参数（由 main.rs 转发）。
 #[derive(Debug, Clone, Parser)]
 pub struct ServerArgs {
     /// 监听地址
@@ -111,7 +111,7 @@ pub struct ServerArgs {
     pub open_path: String,
 }
 
-/// 旧版项目列表（`.vtrim/server.toml` 的 `projects[]`）一次性导入 admin 名下。
+/// 旧版项目列表（`.yekitrim/server.toml` 的 `projects[]`）一次性导入 admin 名下。
 ///
 /// P2 起**归属由 DB 决定**；老用户升级后原来的项目不能凭空消失，因此在这里只读导入：
 /// 已登记过的路径会跳过（幂等），缺失的条目忽略。
@@ -154,7 +154,7 @@ fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
             dir.display()
         )
     })?;
-    let probe = dir.join(".vtrim-write-probe");
+    let probe = dir.join(".yekitrim-write-probe");
     std::fs::write(&probe, b"ok").with_context(|| {
         format!(
             "账号数据目录不可写: {}。\n\
@@ -358,7 +358,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
         Ok(l) => l,
         Err(e) => {
             // 绑不上别只丢一句"已被占用？"（用户既不知道谁占的、也不知道怎么办）。
-            // 先下 blocking 池做两件事：探测对端是不是**另一个 V-Trim**、探一个真能用的端口。
+            // 先下 blocking 池做两件事：探测对端是不是**另一个 YekiTrim**、探一个真能用的端口。
             // 关键是别瞎猜端口：`port+1` 很可能落在同一个 Windows 保留段里（实测 7788 绑不上时
             // 7789/7834 也一样 EACCES）—— 所以这里实际试绑一次再报。
             let url = format!("http://{addr}/");
@@ -385,7 +385,7 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
             );
             // 也落日志：窗口化/双击启动时 stderr 会丢，日志里只剩半截启动 banner
             tracing::error!("{hint}");
-            // `--open` + 对端就是 V-Trim：合理解释是"再开一次"，直接把已有的界面打开
+            // `--open` + 对端就是 YekiTrim：合理解释是"再开一次"，直接把已有的界面打开
             if args.open && peer.is_some() {
                 info!("已有一个 YekiTrim 在 {addr}，直接打开它");
                 open_browser(&url);
@@ -439,7 +439,7 @@ pub(crate) fn open_browser(url: &str) {
     }
 }
 
-/// 本次实例的程序目录（绑定失败时要说清"你起的是哪一份" —— 两份实例各有一套 `.vtrim`）。
+/// 本次实例的程序目录（绑定失败时要说清"你起的是哪一份" —— 两份实例各有一套 `.yekitrim`）。
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -447,14 +447,14 @@ fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 从 `/api/health` 的响应体里认出"对端是另一个 V-Trim 实例"。
+/// 从 `/api/health` 的响应体里认出"对端是另一个 YekiTrim 实例"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HealthPeer {
     version: String,
     listening: String,
 }
 
-/// 解析健康检查响应。**要求 `ok:true` + 有 `version`**：别的程序碰巧回 JSON 不该被误认成 V-Trim。
+/// 解析健康检查响应。**要求 `ok:true` + 有 `version`**：别的程序碰巧回 JSON 不该被误认成 YekiTrim。
 fn parse_health_peer(body: &str) -> Option<HealthPeer> {
     let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
@@ -497,7 +497,7 @@ fn first_bindable_port(ip: std::net::IpAddr, port: u16) -> Option<u16> {
 
 /// 绑端口失败时给用户看的话（纯函数，便于单测）。
 ///
-/// 三种情形分开说：**对端是 V-Trim**（别起了，打开它 / 换端口）、**系统拒绝**（10013 =
+/// 三种情形分开说：**对端是 YekiTrim**（别起了，打开它 / 换端口）、**系统拒绝**（10013 =
 /// WSAEACCES，多半是落在 Windows 保留端口段里，netstat 看不到监听者）、**真被占用**（10048）。
 fn bind_conflict_hint(
     addr: &SocketAddr,
@@ -520,7 +520,7 @@ fn bind_conflict_hint(
         return format!(
             "端口 {addr} 上已经有一个 YekiTrim 在跑（版本 {}，listening={}）—— 不用再起一个，\
              直接用浏览器打开 http://{addr}/ 即可。\n\
-             确实要再跑一个实例就换端口：{port_cmd}（两份实例的 .vtrim 数据目录各自独立，互不相干）。\n{me}",
+             确实要再跑一个实例就换端口：{port_cmd}（两份实例的 .yekitrim 数据目录各自独立，互不相干）。\n{me}",
             p.version, p.listening
         );
     }
@@ -582,8 +582,8 @@ mod tests {
     }
 
     #[test]
-    fn health_peer_requires_vtrim_shape() {
-        // 真 V-Trim 的响应
+    fn health_peer_requires_yekitrim_shape() {
+        // 真 YekiTrim 的响应
         let ok = parse_health_peer(r#"{"ok":true,"version":"0.1.0","listening":"loopback"}"#).unwrap();
         assert_eq!(ok.version, "0.1.0");
         assert_eq!(ok.listening, "loopback");
@@ -592,19 +592,19 @@ mod tests {
         assert!(parse_health_peer(r#"{"ok":false,"version":"0.1.0"}"#).is_none());
         assert!(parse_health_peer("<html>hi</html>").is_none());
         assert!(parse_health_peer("").is_none());
-        // 缺 listening 也算 V-Trim（只有它是可选展示项）
+        // 缺 listening 也算 YekiTrim（只有它是可选展示项）
         assert!(parse_health_peer(r#"{"ok":true,"version":"1"}"#).is_some());
     }
 
-    /// 对端是 V-Trim：别让人以为"起不来"，要给"打开它 / 换端口"。
+    /// 对端是 YekiTrim：别让人以为"起不来"，要给"打开它 / 换端口"。
     #[test]
-    fn hint_for_existing_vtrim_says_open_it() {
+    fn hint_for_existing_yekitrim_says_open_it() {
         let peer = HealthPeer { version: "0.1.0".into(), listening: "loopback".into() };
         let h = bind_conflict_hint(
             &addr(),
             Some(&peer),
             Path::new("F:/app"),
-            Path::new("F:/app/.vtrim/cloud"),
+            Path::new("F:/app/.yekitrim/cloud"),
             Some(10048),
             Some(18088),
         );
@@ -614,7 +614,7 @@ mod tests {
         // 给的是**实测过**的端口，不是 port+1（同段里可能一起被拒）
         assert!(h.contains("--port 18088（刚实测可绑定）"), "{h}");
         // 身份两件套：不说清楚就分不出"我起的是哪一份"
-        assert!(h.contains("F:/app") && h.contains("F:/app/.vtrim/cloud"), "{h}");
+        assert!(h.contains("F:/app") && h.contains("F:/app/.yekitrim/cloud"), "{h}");
         // 这条分支不该出现排查命令（会误导）
         assert!(!h.contains("netstat"), "{h}");
     }
@@ -629,7 +629,7 @@ mod tests {
             &addr(),
             None,
             Path::new("F:/app"),
-            Path::new("F:/app/.vtrim/cloud"),
+            Path::new("F:/app/.yekitrim/cloud"),
             Some(10013),
             Some(18088),
         );

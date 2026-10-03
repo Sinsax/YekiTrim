@@ -1,7 +1,7 @@
 //! polish::project::config：`polish.toml` 的类型真源（`ProjectFile` 与各 section）与画面构成推导、时间轴工具函数。
 //!
 //! 入口：`ProjectFile`、`MuteRange`、`CoverConfig`、`CoverEffect`、`FilterConfig`、`SourceRef`、`CanvasConfig`、`StageConfig`、`StickerConfig`、`StageFit`；`resolve_stage`、`to_toml_commented`、`clamp_segments_to_duration`。
-//! 边界：`resolve_stage` 是画面构成的**唯一推导**（模板/编辑器只读注入结果）；`CANVAS_*` / `CAPTION_*` / `STICKER_SAFE_MARGIN` 等常量与前端 JS 是镜像，改一边要改另一边 —— 见 `crates/vtrim-polish/src/project/AGENTS.md`
+//! 边界：`resolve_stage` 是画面构成的**唯一推导**（模板/编辑器只读注入结果）；`CANVAS_*` / `CAPTION_*` / `STICKER_SAFE_MARGIN` 等常量与前端 JS 是镜像，改一边要改另一边 —— 见 `crates/yekitrim-polish/src/project/AGENTS.md`
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ pub struct ProjectFile {
     pub cover: CoverConfig,
 
     /// 4. 关键词过滤 (从 polish.toml 读取)
-    ///    LLM API 配置使用 .vtrim/llm.toml（与 vtrim 自身一致）
+    ///    LLM API 配置使用 .yekitrim/llm.toml（与 yekitrim 自身一致）
     #[serde(default)]
     pub filter: FilterConfig,
 
@@ -184,7 +184,7 @@ pub struct SourceRef {
 }
 
 // ===== 布局 =====
-// （类型定义已迁入 vtrim-render-core/types.rs，此处重导出保持兼容）
+// （类型定义已迁入 yekitrim-render-core/types.rs，此处重导出保持兼容）
 pub use yekitrim_render_core::types::{
     free_rect, grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Event,
     Layout,
@@ -240,7 +240,7 @@ pub struct SfxConfig {
     pub shake_enabled: bool,
 
     /// 音效屏蔽列表: 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
-    /// (与全局 .vtrim/config.toml [sfx] blacklist 合并, 此处追加)
+    /// (与全局 .yekitrim/config.toml [sfx] blacklist 合并, 此处追加)
     #[serde(default)]
     pub blacklist: Vec<String>,
 

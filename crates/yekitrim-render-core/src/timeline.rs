@@ -475,7 +475,7 @@ pub fn get_active_dms(
 /// `auto` 一律走安全区算法）。见 `docs/plan/polish-vertical-canvas.md` §A4。
 ///
 /// `vertical` / `vertical_position` **保留形参**：落点已与这两个参数无关，而当年传它们的
-/// GPU 路径（`vtrim-wasm` 的 `init_renderer` + `vtrim-polish/wgpu-render`）已整条删除；
+/// GPU 路径（`yekitrim-wasm` 的 `init_renderer` + `yekitrim-polish/wgpu-render`）已整条删除；
 /// 形参留着只是为了不再改一次签名（本文件现在只有 CPU 参考与单测在用）。
 pub fn get_active_sticker(
     t: f64,
@@ -712,7 +712,7 @@ fn rgb_triplet(s: &str) -> Option<(u8, u8, u8)> {
 
 /// 覆盖层「渐变」的有效色档 —— 与 JS `overlayStops(ev)` 逐条对齐。
 ///
-/// 四处实现必须同改：本文件、`crates/vtrim-polish/templates/index.html`（出片权威路径）、
+/// 四处实现必须同改：本文件、`crates/yekitrim-polish/templates/index.html`（出片权威路径）、
 /// `webui/src/polish/engine.js`、`webui/src/components/PolishPreview.vue`（经 engine）。
 ///
 /// **返回的色档保证 ≥2 档且无空串**，这不是美观问题：

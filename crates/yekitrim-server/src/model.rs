@@ -1,7 +1,7 @@
 //! AppState：HTTP handler 共享的进程级状态与任务管理。
 //!
 //! ⚠️ **这里曾经存着一个"全局当前工程"（`workspace` / `workspace_root`），2026-10-03 删掉了。**
-//! 它是**单工程时代**的遗留：那时一个 `vtrim.toml` 就是一切。P2 起归属由 SQLite 的
+//! 它是**单工程时代**的遗留：那时一个 `yekitrim.toml` 就是一切。P2 起归属由 SQLite 的
 //! `projects` 表决定，每个请求由 `scope.rs` 的 `Scope` 提取器**按 `?project=<id>` 现解析**
 //! 出自己那份 `Workspace` —— 全局那份于是成了一条**没人查的旁路**：
 //! 它只会跟着"上次打开的工程"漂，谁读谁就拿到别人的工程。

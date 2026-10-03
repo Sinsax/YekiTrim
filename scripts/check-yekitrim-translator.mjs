@@ -208,7 +208,7 @@ function checkCurves(curves) {
   // 5. `stickerStateAt` —— 四段相位在**窗口内部**消化（窗口 = 事件时长 `dur`）
   // -------------------------------------------------------------------------
   //
-  // 口径（`docs/vtrim-integration.md` §14）：**出点 = 最后一个显示帧**，窗口 `[et, et + dur]`。
+  // 口径（`docs/yekitrim-integration.md` §14）：**出点 = 最后一个显示帧**，窗口 `[et, et + dur]`。
   // 上一刀的形状是「窗口 = 四段之和 `dur + 1.05`、淡出接在事件**之后**」——
   // 贴纸比事件多显示 0.4 秒 ✗（用户实测：出点晚了）。现在淡出**贴在窗口末尾**
   // （`dur - FADE_OUT -> dur`），于是：
@@ -639,7 +639,7 @@ function checkCurves(curves) {
       '',
     ].join('\n');
     const anchorOf = (extra, evX, evY) => {
-      const dir = mkdtempSync(join(tmpdir(), 'vtrim-manual-'));
+      const dir = mkdtempSync(join(tmpdir(), 'yekitrim-manual-'));
       try {
         mkdirSync(join(dir, 'assets', 'stickers'), { recursive: true });
         writeFileSync(join(dir, 'assets', 'stickers', '生气.gif'), 'GIF89a(fake)', 'utf8');
@@ -764,7 +764,7 @@ checks += 5;
 //
 // 失败形态：竖屏「默认全关」与「转译器压根没读这个键」在报告里**长得一模一样**（都是一行没有），
 // 而两者差着整类事件。所以拿**同一份合成工程、只改 `[stage]` 那几行**，看产物扩展元数据
-// （`extensions['vtrim.polish_toml']` 的 `shake_events` / `sfx_clips`）跟不跟着变。
+// （`extensions['yekitrim.polish_toml']` 的 `shake_events` / `sfx_clips`）跟不跟着变。
 //
 // ⚠️ **`camera` 不在这组行为判据里**：运镜那条要先探到源尺寸（`probeSize`），合成工程里没有真视频
 // ⇒ 它会走「判不了源方向」的 CLAMP 分支、恒为 0 —— 那种断言是**空转**的。
@@ -796,12 +796,12 @@ function checkStage(curves) {
     '',
   ].join('\n');
   const probe = (canvasLines, stageLines) => {
-    const dir = mkdtempSync(join(tmpdir(), 'vtrim-stage-'));
+    const dir = mkdtempSync(join(tmpdir(), 'yekitrim-stage-'));
     try {
       mkdirSync(join(dir, 'sfx'), { recursive: true });
       writeFileSync(join(dir, 'sfx', 'pop-notice.mp3'), 'ID3(fake)', 'utf8');
       const doc = curves.translate(curves.parseToml(SYNTH(canvasLines, stageLines)), dir, join(dir, 'p.doc.json'));
-      return (doc.extensions || {})['vtrim.polish_toml'] || {};
+      return (doc.extensions || {})['yekitrim.polish_toml'] || {};
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -982,7 +982,7 @@ const MUTATIONS = [
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
 async function loadVariant(source, run) {
-  const dir = mkdtempSync(join(tmpdir(), 'vtrim-translator-'));
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-translator-'));
   try {
     const file = join(dir, 'polish-to-dhampir.mjs');
     writeFileSync(file, source, 'utf8');
@@ -1102,7 +1102,7 @@ console.log(
 //
 // ⚠️ 这条守的是一个**"静默丢事件"的形状**（2026-09-30 修）：`#RRGGBBAA` 曾经解析不出来，
 // 而 overlay 那处是 `if (!first) drop(...)` —— 于是**整条覆盖层事件不进成片**，
-// 报告里只剩一行 DROP。V-Trim 自己的配置就写过 8 位（演示工程三条 overlay 全是）。
+// 报告里只剩一行 DROP。YekiTrim 自己的配置就写过 8 位（演示工程三条 overlay 全是）。
 //
 // 抽成函数是因为**变异自证也要跑它**：只把检查写在顶层的话，`--mutate` 那边只跑 `checkCurves`，
 // 这一条变异就会"没被打红"（实测踩过 —— 变异台没报红不等于守卫抓住了）。
@@ -1176,7 +1176,7 @@ function checkMappings(mod) {
   eq(mod.overlayBaseAngle(495), 45, '超过一圈也归一化');
 
   // ---- 2. 合成工程 -> 产物 ----
-  const dir = mkdtempSync(join(tmpdir(), 'vtrim-map-'));
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-map-'));
   try {
     // 贴纸必须**真的有个文件**才走得到那一步（`name` 不带扩展名，找的是图片）
     mkdirSync(join(dir, 'assets', 'stickers'), { recursive: true });
@@ -1314,7 +1314,7 @@ function checkMappings(mod) {
 
     const autoToml = toml.replace('x = "30%"', 'x = "auto"').replace('y = "40%"', 'y = "auto"');
     if (autoToml === toml) throw new Error('合成工程里没找到贴纸落点那两行 —— 判据写法要跟着改');
-    const autoDir = mkdtempSync(join(tmpdir(), 'vtrim-map-auto-'));
+    const autoDir = mkdtempSync(join(tmpdir(), 'yekitrim-map-auto-'));
     try {
       mkdirSync(join(autoDir, 'assets', 'stickers'), { recursive: true });
       writeFileSync(join(autoDir, 'assets', 'stickers', '生气.gif'), 'GIF89a(fake)', 'utf8');
@@ -1351,7 +1351,7 @@ function checkMappings(mod) {
   // `assTime` 对负数产出的 `h:m:s` 全是负数段 —— 任何 `0:00:xx` 判据都接不住它。
   // 判据落在 `dhampir-danmaku.ass` 的 `Dialogue` 行上；fps 固定 60、取整值，无取整噪声。
   {
-    const dir = mkdtempSync(join(tmpdir(), 'vtrim-map-dmoff-'));
+    const dir = mkdtempSync(join(tmpdir(), 'yekitrim-map-dmoff-'));
     try {
       // 字幕与弹幕：1 条 cue，2.5~4.5s（默认偏移 -3 ⇒ 源轴 [-0.5,1.5]，
       // 起点落在 0 帧之前的那半段被重映射裁掉 —— 与模板腿对负窗口的取舍同口径）

@@ -1,6 +1,6 @@
 # 第三方组件与素材
 
-本项目（V-Trim）以 **Apache-2.0** 发布（见 [LICENSE](LICENSE)）。下面列出它会用到、链接、
+本项目（YekiTrim）以 **Apache-2.0** 发布（见 [LICENSE](LICENSE)）。下面列出它会用到、链接、
 下载或引用的第三方内容及其授权，供自建与再分发时参考。
 
 > 本文档按"事实性说明"编写，不构成法律意见。各组件条款以各自上游的许可原文为准。
@@ -88,9 +88,9 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 | Qwen3-ASR 模型 | 随上游（Qwen） | 同上，`hybrid` 模式的填词模型。 |
 | 模型/VAD 文件来源 | — | `github.com/k2-fsa/sherpa-onnx` 的 `asr-models` / `hr-files` release 产物。当前**未做校验和/签名校验**。 |
 | Noto Emoji | Apache-2.0（部分 CC-BY 4.0） | 封面 emoji 特效按需从 `fonts.gstatic.com` 拉取。 |
-| **yt-dlp** | **Unlicense**（公有领域） | B站链接通道的下载引擎。由管理员在设置页一键触发，从 `github.com/yt-dlp/yt-dlp` 官方 release 下载 **`yt-dlp.exe`** 到 `<exe同级>/.yekitrim/bin/` —— **不随仓库、不随发行包分发**，所以不产生再分发义务（`cargo xtask scan` 也扫不到它）。内置引擎**钉死版本与 sha256**（`vtrim_service::downloader::registry`，当前 `2026.08.19`；实测与官方 `SHA2-256SUMS` 逐字节一致）。⚠️ 目前**只有 Windows 那份带 sha256**，其它平台禁止自动下载、需管理员用 `[ingest] ytdlp_path` 指定自备副本。 |
+| **yt-dlp** | **Unlicense**（公有领域） | B站链接通道的下载引擎。由管理员在设置页一键触发，从 `github.com/yt-dlp/yt-dlp` 官方 release 下载 **`yt-dlp.exe`** 到 `<exe同级>/.yekitrim/bin/` —— **不随仓库、不随发行包分发**，所以不产生再分发义务（`cargo xtask scan` 也扫不到它）。内置引擎**钉死版本与 sha256**（`yekitrim_service::downloader::registry`，当前 `2026.08.19`；实测与官方 `SHA2-256SUMS` 逐字节一致）。⚠️ 目前**只有 Windows 那份带 sha256**，其它平台禁止自动下载、需管理员用 `[ingest] ytdlp_path` 指定自备副本。 |
 
-> ⚠️ **`[ingest] downloader` 的逃生舱**：把它填成其它值时，V-Trim 会用用户自备的「yt-dlp 兼容」
+> ⚠️ **`[ingest] downloader` 的逃生舱**：把它填成其它值时，YekiTrim 会用用户自备的「yt-dlp 兼容」
 > 可执行文件（绝对路径）。那份东西**与本项目无关、也不由本项目分发**，因此不在本文档的声明范围内；
 > 使用者需自行确认其授权与合规性。
 
@@ -102,8 +102,8 @@ headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删�
 | Vite / @vitejs/plugin-vue | MIT | 构建工具。 |
 | **GSAP** | GreenSock 标准"免费使用"许可（**非开源许可**） | `crates/yekitrim-polish/templates/index.html` 与独立预览页从 jsDelivr CDN **动态加载** 3.12.5，失败时按顺序回退 unpkg / cdnjs。因为不随包分发，这里只作说明。副作用：**出片时需能访问这些 CDN 之一**。许可原文：<https://gsap.com/standard-license> |
 | Lucide | ISC | `webui/src/components/Icon.vue` 内联了其图标路径数据，属再分发，**需保留版权与许可声明**。上游：<https://lucide.dev> |
-| **Noto Sans SC** | **SIL OFL-1.1** | **自带字体**（2026-10-02 起替代 LXGW WenKai Lite）：字节内嵌在 `yekitrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoSansSC-Regular.ttf`），首次启动自动落盘到字体库；OFL 全文随字节一并内嵌。上游：<https://github.com/notofonts/noto-cjk>（取自 Google Fonts 的**单字重 TTF**：<https://fonts.gstatic.com/s/notosanssc/v40/>） |
-| **Noto Color Emoji** | **SIL OFL-1.1** | **自带字体**：字节内嵌在 `yekitrim.exe` 里（源在 `crates/vtrim-core/assets/fonts/NotoColorEmoji-CBDT.ttf`，取自上游 `v2020-09-16-unicode13_1`），首次启动自动落盘；OFL 全文随字节一并内嵌。上游：<https://github.com/googlefonts/noto-emoji> |
+| **Noto Sans SC** | **SIL OFL-1.1** | **自带字体**（2026-10-02 起替代 LXGW WenKai Lite）：字节内嵌在 `yekitrim.exe` 里（源在 `crates/yekitrim-core/assets/fonts/NotoSansSC-Regular.ttf`），首次启动自动落盘到字体库；OFL 全文随字节一并内嵌。上游：<https://github.com/notofonts/noto-cjk>（取自 Google Fonts 的**单字重 TTF**：<https://fonts.gstatic.com/s/notosanssc/v40/>） |
+| **Noto Color Emoji** | **SIL OFL-1.1** | **自带字体**：字节内嵌在 `yekitrim.exe` 里（源在 `crates/yekitrim-core/assets/fonts/NotoColorEmoji-CBDT.ttf`，取自上游 `v2020-09-16-unicode13_1`），首次启动自动落盘；OFL 全文随字节一并内嵌。上游：<https://github.com/googlefonts/noto-emoji> |
 
 ## 五、素材来源（请自行核对条款后再对外使用）
 

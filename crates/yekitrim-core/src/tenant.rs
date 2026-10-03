@@ -133,7 +133,7 @@ pub fn ensure_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// 自建临时目录（vtrim-core 不依赖 tempfile；用 pid + 纳秒保证并发测试不撞名）。
+    /// 自建临时目录（yekitrim-core 不依赖 tempfile；用 pid + 纳秒保证并发测试不撞名）。
     struct TmpDir(PathBuf);
 
     impl TmpDir {
@@ -143,7 +143,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let p = std::env::temp_dir().join(format!(
-                "vtrim-tenant-{tag}-{}-{nanos}",
+                "yekitrim-tenant-{tag}-{}-{nanos}",
                 std::process::id()
             ));
             std::fs::create_dir_all(&p).unwrap();

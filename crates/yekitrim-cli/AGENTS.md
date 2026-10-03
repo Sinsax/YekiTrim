@@ -21,12 +21,12 @@
   `config init [--path]` / `config show` / `correct [-t <transcript>]` / `server <ServerArgs>` /
   `polish init|llm|process|render|cover|preview|doctor|test` / `polish stickers list|test|scan|build`。
   `stage_name(num)`（1..4 → AudioExtractor/Transcriber/EventDetector/Cutter）在 `cli.rs`。
-  所有 stage 命令的 `-i` 可选，默认从 `vtrim.toml` 的 `input_file` 读取。
+  所有 stage 命令的 `-i` 可选，默认从 `yekitrim.toml` 的 `input_file` 读取。
   **各命令是什么**（原先记在根卡里 —— 模块内容归模块卡，这次迁 `tools/` 时为最坏指令链预算把它挪回来）：
-  `init` 建 `vtrim.toml`；`extract`/`transcribe`/`detect`/`cut` = Stage 1~4
+  `init` 建 `yekitrim.toml`；`extract`/`transcribe`/`detect`/`cut` = Stage 1~4
   （`detect`/`cut` 的自动发现顺序：参数 > config > `output_dir` 里的 json > `*.srt`）；
   `process` 全自动管线（`--dry-run` = 只到 Stage 3）；`silence`「去静音」**只写 `polish.toml`、不改视频**；
-  `download` 把全部 ASR 模型下到 `<程序>/.vtrim/models/`；`status` 看当前进度；
+  `download` 把全部 ASR 模型下到 `<程序>/.yekitrim/models/`；`status` 看当前进度；
   `usage` LLM 用量（token/缓存命中/耗时，账本 `llm_usage`）；`doctor` 安全与运行状况摘要；
   `ingest` 录播姬 webhook / 采集配置概览；`user invite|invites|invite-revoke` = 邀请码
   （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；
@@ -63,9 +63,9 @@
   （唯一一份定义在 service 侧，见 `crates/yekitrim-service/AGENTS.md`）。
 - ⚠️ **新增会走 LLM 的 CLI 分支要记得挂 `try_install_cli_sink()`**，否则用量统计里没有它
   （写库失败只 warn，**绝不影响调用结果**）。
-- `yekitrim init` 走的是**命令自带的 `--config`**（`Command::Init.config` = `vtrim.toml` 的**写出路径**，
+- `yekitrim init` 走的是**命令自带的 `--config`**（`Command::Init.config` = `yekitrim.toml` 的**写出路径**，
   缺省取输入视频的同级目录），**不读**全局 `-c/--config`；其余分支才用全局 `cli.config` 当配置路径。
-- `polish preview` 是**两条路**：先在输入目录向上找 `vtrim.toml` —— 找到就起 `yekitrim_server::run()`
+- `polish preview` 是**两条路**：先在输入目录向上找 `yekitrim.toml` —— 找到就起 `yekitrim_server::run()`
   打开同一 WebUI 精修页（`ServerArgs { host: "127.0.0.1", port: DEFAULT_PORT, open: true, config: Some(cfg), … }`，
   路径经 `percent_encode_component` 拼 `/#/project/.../polish?dir=`）；找不到才回退旧的独立
   `yekitrim_polish::commands::cmd_preview`，保证命令仍然可用。

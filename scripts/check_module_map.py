@@ -347,7 +347,7 @@ def check_warning_floor(data: dict, rep: Report) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="V-Trim 模块卡门禁")
+    parser = argparse.ArgumentParser(description="YekiTrim 模块卡门禁")
     parser.add_argument("-v", "--verbose", action="store_true", help="同时列出通过项")
     parser.add_argument("--json", action="store_true", help="输出机器可读报告")
     args = parser.parse_args()

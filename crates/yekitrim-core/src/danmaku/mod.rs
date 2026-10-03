@@ -1,7 +1,7 @@
 //! danmaku：弹幕解析（ASS / 录播姬 XML / SRT）与时间窗密度（热力图）。
 //!
 //! 入口：`load_danmaku_auto`（唯一该用的格式自适应入口）、`analyze`、`average_density`、`peak_density`、`parse_bililive_xml`、`parse_srt_file`；`parser` 是私有子模块。
-//! 边界：**别用 `parse_ass` 直读用户的 `danmaku_file`**（真实弹幕是 XML，会静默吐 0 条还不报错），格式判据只在 `load_danmaku_auto` 里有一份 —— 见 `crates/vtrim-core/src/danmaku/AGENTS.md`
+//! 边界：**别用 `parse_ass` 直读用户的 `danmaku_file`**（真实弹幕是 XML，会静默吐 0 条还不报错），格式判据只在 `load_danmaku_auto` 里有一份 —— 见 `crates/yekitrim-core/src/danmaku/AGENTS.md`
 
 mod parser;
 pub use parser::*;
@@ -261,7 +261,7 @@ fn unescape_xml(raw: &str) -> String {
 }
 
 /// 弹幕淡入的时长（秒）—— 渲染侧 `getActiveDms` 的 `fadeIn`
-/// （`crates/vtrim-polish/templates/index.html`，同一份也在 `webui/src/polish/engine.js`）。
+/// （`crates/yekitrim-polish/templates/index.html`，同一份也在 `webui/src/polish/engine.js`）。
 pub const DANMAKU_FADE_IN_SECS: f64 = 0.3;
 
 /// 窗口比较的容差（秒）：**1 ns**。
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_load_danmaku_auto_detects_xml_by_extension() {
-        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-xml-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-danmaku-xml-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("danmaku.xml");
         std::fs::write(&path, BILILIVE_RECORDER_XML).unwrap();
@@ -690,7 +690,7 @@ mod tests {
     /// SRT 分支解析成 0 条且没有任何报错，表现只是"精修页没有弹幕"。
     #[test]
     fn test_parse_srt_file_refuses_xml_loudly() {
-        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-guard-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-danmaku-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // 带 XML 声明的主站形态

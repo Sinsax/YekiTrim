@@ -76,7 +76,7 @@
     喂入起点的时间）；忘了加，第 2 块之后的段全落在 `[0, feed_len]` 里与第 1 块重叠，一合并整片消失
     （实测 1410 段塌成 79 段）。块首要留 1s 余量把 LSTM 状态喂热，接缝重叠交给 `merge_regions` 收口
     —— **宁可重叠也不能留缝**（留缝就是丢字幕）。
-  - VAD 失败一律**回退固定分块**（模型没下、判定异常），绝不把转写打死；模型随 `vtrim download`
+  - VAD 失败一律**回退固定分块**（模型没下、判定异常），绝不把转写打死；模型随 `yekitrim download`
     下到 `<模型根>/silero-vad/`，转写前 `ensure_models` 也会确保它在位（失败只告警）。
   - 开关：`[asr] vad`（`Option<bool>`，**显式写了才覆盖** —— bool 会掉进"≠默认才覆盖"的坑，
     "全局关、单工程开"就表达不出来）、`vad_threshold`（silero 概率阈值）、`vad_rescue_db`（兜底 dB，0=关）。
@@ -106,7 +106,7 @@
   是死旋钮**（全仓库没有任何读取方，只有配置 merge 逻辑）：改它们不会有效果，
   字段只为老 toml 不炸而保留，别再往界面加。（`segment_padding` 已从这份名单里**移出** —— 它现在真的在用。）
 - SRT 使用 UTF-8 BOM 写入 (Windows 字幕兼容)
-- 输出: `video.srt` + `transcript.json`，并把生效值写进 `transcript_file`（vtrim.toml）
+- 输出: `video.srt` + `transcript.json`，并把生效值写进 `transcript_file`（yekitrim.toml）
 - ⚠️ **固定名不改、按模式另存一份**（2026-09）：`output/video.srt` 与 `output/transcript.json` 这两个
   名字被 `status.rs` / `ProjectConfig::current_stage()` / 老 CLI 认死，**别改成按模式命名**；
   另存的那份是 `output/transcript.<mode>.json`（`asr/mod.rs::mode_slug`：小写、≤32、只允许 ASCII

@@ -79,7 +79,7 @@ pub(super) async fn admin_invite_create(
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("写入邀请码失败: {e:#}")))?;
         codes.push(code);
     }
-    // 有可用码就顺手把总闸打开（与 CLI `vtrim user invite` 一致）
+    // 有可用码就顺手把总闸打开（与 CLI `yekitrim user invite` 一致）
     if let Err(e) = yekitrim_service::invite::set_registration_enabled(true) {
         tracing::warn!("开启注册开关失败: {e:#}");
     }

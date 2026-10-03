@@ -21,13 +21,13 @@
 ## 边界
 
 - **分批窗口调用**：每窗口 30 条字幕段、窗口间重叠 5 条（`DETECT_WINDOW_SIZE`/`DETECT_WINDOW_OVERLAP`），
-  并发取 `.vtrim/llm.toml` 的 `[llm] max_concurrent`（默认 3，见上「LLM 并发与加速」）；
+  并发取 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3，见上「LLM 并发与加速」）；
   每窗口完成即写 `events.checkpoint.json`（断点续传）、
   累计结果写 `events.partial.json`。单窗口失败重试 2 次；**被 max_tokens 截断（`finish_reason=length`）
   时不重试**（参数不变必然再截断，白烧一次调用），直接走拆半递归：`≥ 8 段`且层数 `< 2` 才拆，
   两半各自成败、**一半成功也保留那一半**（曾经的判据是 `len > 30`，而窗口大小就是 30，这条兜底
   从未触发过，被截断的窗口整段丢失 —— 实测事件覆盖率掉到 46%）。截断前已完整的 JSON 元素由
-  `llm::parse_json` 抢救回来；解析失败的现场转储在**程序目录** `.vtrim/llm_debug/`（别再写进程 CWD）。
+  `llm::parse_json` 抢救回来；解析失败的现场转储在**程序目录** `.yekitrim/llm_debug/`（别再写进程 CWD）。
   ⚠️ **取消**：`EventDetector::run` 把 `ctx.progress` 包成 `CancelProbe` 交给
   `call_with_progress` → `Agent::with_cancel`（窗口边界生效）；检测跑完后、**热度评分之前**再查一次，
   用户在评分阶段点停止就不会再发那批调用。
@@ -36,7 +36,7 @@
   不进 checkpoint 指纹（提示词没变，续传照常命中）。
 - 弹幕: ASS/SRT 解析 → `danmaku_window_secs`（默认 10s）窗口归一化密度 → 每个 event 的 `popularity` 0~1；
   密度 ≥ 0.5 的窗口按密度降序取 top 20、相邻合并成「弹幕爆发时刻」区间**注入 prompt**（名场面位置）。
-- ⚠️ **`danmaku_file` 是相对工程目录存的，读它必须解析**：`vtrim init` 用 `path_to_rel` 写成相对名，
+- ⚠️ **`danmaku_file` 是相对工程目录存的，读它必须解析**：`yekitrim init` 用 `path_to_rel` 写成相对名，
   读取侧一律 `Workspace::resolve`（卡片上的弹幕量、订正用的弹幕都是；Web 侧统一入口是
   `Workspace::danmaku_path`）。管线侧入口是 `PipelineRunner::inject_config`（`pipeline/runner.rs`），
   它按**工程根（`output_dir` 的父目录）→ 视频父目录**的顺序拼绝对路径（两个基准都试一遍，
@@ -69,10 +69,10 @@
   切片页那颗按钮撤掉了）—— 留着是给**已有**的老 events.json 兜底，用 curl/后续再说：
   合并后事件序号会变，旧片段要用户自己删掉重切。
   只读诊断：`VT_EVENTS_JSON=<项目>/output/events.json cargo test -p yekitrim-core --lib diagnose_merge_splits -- --ignored --nocapture`
-- ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` 的 `[detection] system_prompt` /
+- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` 的 `[detection] system_prompt` /
   `prompt_template` 是**写死的副本**（`config init` 时把内建文本填进去了），代码里改默认值对它无效；
   要么在设置页改，要么把两个字段留空（留空才走内建默认）。
-  **每个程序目录各有一份**（`target/debug/.vtrim/`、`release/<包名>/.vtrim/` 互不相干）——
+  **每个程序目录各有一份**（`target/debug/.yekitrim/`、`release/<包名>/.yekitrim/` 互不相干）——
   改 prompt 时别只改一个；`'''…'''` 是三引号**字面量**（免转义），正文里没有单引号时可用。
 - **前缀缓存**：`DEFAULT_PROMPT` 里 `{segments}` 必须留在**最后**（`{hot_windows}` 排在它之前），
   改 prompt 时别把变化的部分塞到中间 —— 细节见 `src/llm/AGENTS.md` 与 `src/config/AGENTS.md`。

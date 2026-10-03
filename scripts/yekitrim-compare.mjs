@@ -1,11 +1,11 @@
-// V-Trim ↔ Dhampir 逐步对比：**一步**跑完整条回路，并按窗口出表。
+// YekiTrim ↔ Dhampir 逐步对比：**一步**跑完整条回路，并按窗口出表。
 //
 // # 这个脚本存在的理由：它把两个已经踩过的坑堵死了
 //
 // 我在手工搭这条回路时犯了两个错，**两次都产出了"看起来有据"的假结论**：
 //
 //   甲、**把源时间当输出时间取样。**
-//       V-Trim 的 `polish.toml` 里事件时间是**源时间**，而 `mute_ranges` 会把中间
+//       YekiTrim 的 `polish.toml` 里事件时间是**源时间**，而 `mute_ranges` 会把中间
 //       几段**掐掉**（本样例共 17.50 秒）。所以同一个事件在成片里出现的位置是
 //       `源时间 - 被掐掉的长度`。我按源时间直接去 `-ss` 取帧，
 //       于是量的是**完全不相干的时刻** —— 第一批结论（"blur 很好、flash 很差"）
@@ -18,14 +18,14 @@
 //          不传 `--clean` 就不动它。
 //
 // 另外它还有一条纪律：**用户工程必须恢复**。整个流程包在 try/finally 里，
-// 无论中途哪一步失败（V-Trim 崩了、渲染失败、Ctrl-C），`polish.toml` 都还原。
+// 无论中途哪一步失败（YekiTrim 崩了、渲染失败、Ctrl-C），`polish.toml` 都还原。
 //
-// # 用法（本脚本住在 **V-Trim 仓**：`scripts/yekitrim-compare.mjs`）
+// # 用法（本脚本住在 **YekiTrim 仓**：`scripts/yekitrim-compare.mjs`）
 //
 //     node scripts/yekitrim-compare.mjs \
 //       --clip "E:/media/<项目>/output/clips/<片段>" \
 //       --events target/fx-events.json \
-//       --out target/vtrim-run
+//       --out target/yekitrim-run
 //
 // `--events` 是一个 JSON 数组，描述**要插进 polish.toml 的测试事件**（源时间）：
 //
@@ -49,11 +49,11 @@
 //   * **最佳纵向位移**：能让差异最小的那个像素位移。`+0` 之外的值
 //     基本都指向"位置不对"而不是"效果不对"。
 //
-// # 环境（本脚本住在 V-Trim 仓，`REPO_ROOT` = V-Trim 仓根）
+// # 环境（本脚本住在 YekiTrim 仓，`REPO_ROOT` = YekiTrim 仓根）
 //
 // * `ffmpeg` / `ffprobe` 在 PATH 上
 // * Dhampir 的可执行（`--dhampir` / `VTEDIT_DHAMPIR`，默认找同层 `Dhampir/target/{debug,release}`）
-// * `yekitrim.exe`（`--vtrim` / `YEKITRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
+// * `yekitrim.exe`（`--yekitrim` / `YEKITRIM_EXE`，默认 `.workbuddy/perf/bin/`，再退 `target/`，最后 PATH）
 // * 转译器（`--translator` / `YEKITRIM_TRANSLATOR`，默认 `tools/polish-to-dhampir.mjs`）——
 //   它就在**本仓**，见下面"转译器住在哪"
 //
@@ -89,7 +89,7 @@ function parseArgs(argv) {
     else if (a === '--events') out.events = argv[++i];
     else if (a === '--out') out.out = argv[++i];
     else if (a === '--dhampir') out.dhampir = argv[++i];
-    else if (a === '--vtrim') out.vtrim = argv[++i];
+    else if (a === '--yekitrim') out.yekitrim = argv[++i];
     else if (a === '--translator') out.translator = argv[++i];
     else if (a === '--font-file') out.fontFile = argv[++i];
     else if (a === '--fixture') out.fixture = argv[++i];
@@ -115,17 +115,17 @@ function parseArgs(argv) {
 const USAGE = `用法：node scripts/yekitrim-compare.mjs --clip <clip 目录> [选项]
        node scripts/yekitrim-compare.mjs --fixture <名字> | --all-fixtures
 
-  --clip <目录>         V-Trim 的片段目录（里面有 polish.toml / clip.mp4）
+  --clip <目录>         YekiTrim 的片段目录（里面有 polish.toml / clip.mp4）
   --fixture <名字>      用固定样本（demo / portrait / real）——**会先复制到运行目录**，
                         绝不动样本本体；缺样本时明确跳过并说清要准备什么
   --all-fixtures        依次跑全部固定样本
   --events <json>       要插进去的测试事件（JSON 数组，源时间）。不给 = 只比现有工程
-  --out <目录>          运行目录（默认 target/vtrim-compare）
+  --out <目录>          运行目录（默认 target/yekitrim-compare）
   --translator <路径>   转译器（默认 tools/polish-to-dhampir.mjs；
                         也可用环境变量 YEKITRIM_TRANSLATOR）
   --dhampir <路径>      Dhampir 可执行（默认找同层 Dhampir/target/{debug,release}；
                         也可用环境变量 VTEDIT_DHAMPIR）
-  --vtrim <路径>        vtrim 可执行（默认自动找）
+  --yekitrim <路径>        yekitrim 可执行（默认自动找）
   --font-file <路径>    字幕字体（默认 C:/Windows/Fonts/msyh.ttc）
   --baseline-pixel-max <n>  覆盖"基线像素差"阈值（调参 / 自证断言会红）
   --no-mask-danmaku     不屏蔽弹幕带（默认屏蔽左带 + 上带，理由见文件头"弹幕按设计"）
@@ -149,7 +149,7 @@ const USAGE = `用法：node scripts/yekitrim-compare.mjs --clip <clip 目录> [
 /// 给样本注入的两段屏蔽区间（源时间）。
 ///
 /// ⚠️ **必须写成 `[[mute_ranges]]` 数组表**，不能写成行内表
-/// （`mute_ranges = [{ start = 2.0, … }]`）：V-Trim 自己序列化出来就是数组表，
+/// （`mute_ranges = [{ start = 2.0, … }]`）：YekiTrim 自己序列化出来就是数组表，
 /// 而转译器的 TOML 解析器**不支持行内表**（它先按逗号切数组元素 → 拿到 `{ start = 2.0` 就抛
 /// "不认识的 TOML 值"）。第一版就是行内表：工具先报 `mute_ranges（无）`、随后转译直接崩。
 const FIXTURE_MUTE_PAIRS = [
@@ -712,7 +712,7 @@ function selfTest() {
   }
   if (!threw) throw new Error('事件落在所有 segment 之外时应当抛，实得静默通过');
 
-  console.log(`✓ vtrim-compare 自检：${checks} 项全绿`);
+  console.log(`✓ yekitrim-compare 自检：${checks} 项全绿`);
   console.log('  钉住的是「源->输出映射」与「多事件插入不串行号」——这一轮我犯的两个错');
 
   // ---- 3. 屏蔽带（弹幕区）与阈值判定 ----
@@ -778,7 +778,7 @@ function main() {
     // 2026-10-01：`golden` / `captureGolden` 就是这么漏的（跑了 `all --golden`，
     // portrait 报 9.87 = 活参照口径，而黄金帧是 9.84）。
     for (const key of [
-      'vtrim', 'dhampir', 'fontFile', 'events', 'translator', 'baselinePixelMax', 'golden', 'captureGolden',
+      'yekitrim', 'dhampir', 'fontFile', 'events', 'translator', 'baselinePixelMax', 'golden', 'captureGolden',
     ]) {
       if (args[key] !== undefined && args[key] !== null && args[key] !== false) {
         const flag =
@@ -793,7 +793,7 @@ function main() {
     let bad = 0;
     let skipped = 0;
     for (const name of Object.keys(FIXTURES)) {
-      const out = join(resolve(args.out || join(REPO_ROOT, 'target', 'vtrim-compare')), name);
+      const out = join(resolve(args.out || join(REPO_ROOT, 'target', 'yekitrim-compare')), name);
       step(`样本 ${name} —— ${FIXTURES[name].note}`);
       if (!existsSync(join(resolve(FIXTURES[name].source), 'polish.toml'))) {
         skipped += 1;
@@ -817,7 +817,7 @@ function main() {
   if (args.fixture) {
     const fx = FIXTURES[args.fixture];
     if (!fx) throw new Error(`不认识的样本 ${args.fixture}（可用：${Object.keys(FIXTURES).join(' / ')}）`);
-    const outRoot = resolve(args.out || join(REPO_ROOT, 'target', 'vtrim-compare'));
+    const outRoot = resolve(args.out || join(REPO_ROOT, 'target', 'yekitrim-compare'));
     args.clip = prepareFixture(fx, join(outRoot, `${args.fixture}-clip`));
     log(`  样本 ${args.fixture}：${fx.note}\n    -> ${args.clip}`);
   }
@@ -838,12 +838,12 @@ function main() {
   const tomlPath = join(clip, 'polish.toml');
   if (!existsSync(tomlPath)) throw new Error(`找不到 ${tomlPath}`);
 
-  const runDir = resolve(args.out || join(REPO_ROOT, 'target', 'vtrim-compare'));
+  const runDir = resolve(args.out || join(REPO_ROOT, 'target', 'yekitrim-compare'));
   // 可执行后缀：主要在 Windows 上用，但路径拼接不写死 `.exe`。
   const EXE = process.platform === 'win32' ? '.exe' : '';
   // 转译器**就在本仓**（`tools/polish-to-dhampir.mjs`），见 docs/dhampir/compare-loop.md。
   //
-  // 与 `vtrim` 同一个办法：候选列表 + 环境变量，全找不到就**大声报错并列出找过哪里**。
+  // 与 `yekitrim` 同一个办法：候选列表 + 环境变量，全找不到就**大声报错并列出找过哪里**。
   // 「指一个相对路径」在这里是错的 —— 底座是**另一个仓库**，
   // 它可能在同层，也可能被 `VTEDIT_DHAMPIR` 指到别处。
   const translatorCandidates = [
@@ -853,7 +853,7 @@ function main() {
   ].filter(Boolean).map((p) => resolve(p));
   const translator = translatorCandidates.find((p) => existsSync(p));
   // 底座可执行：`--dhampir` / `VTEDIT_DHAMPIR` / 同层 `Dhampir/target/{debug,release}`。
-  // **不猜版本目录** —— 找不到就报错并列出找过的地方（与 `vtrim` 同一套纪律）。
+  // **不猜版本目录** —— 找不到就报错并列出找过的地方（与 `yekitrim` 同一套纪律）。
   const dhampirCandidates = [
     args.dhampir,
     process.env.VTEDIT_DHAMPIR,
@@ -862,19 +862,19 @@ function main() {
   ].filter(Boolean).map((p) => resolve(p));
   const dhampir = dhampirCandidates.find((p) => existsSync(p));
   const fontFile = args.fontFile || 'C:/Windows/Fonts/msyh.ttc';
-  // vtrim 可执行：按**候选列表**找，而不是猜一个相对路径。
+  // yekitrim 可执行：按**候选列表**找，而不是猜一个相对路径。
   //
   // 我第一版按 `clip/../../../../..` 往上找五层 —— 那依赖片段在磁盘上的深度，
   // 换个项目就找不到（第一次真跑就是这么失败的）。候选列表把常见位置与环境变量
   // 都列出来，全找不到才退到 PATH，并在报错里**说清找过哪些地方**。
-  const vtrimCandidates = [
-    args.vtrim,
+  const yekitrimCandidates = [
+    args.yekitrim,
     process.env.YEKITRIM_EXE,
-    join(REPO_ROOT, '.workbuddy', 'perf', 'bin', `vtrim${EXE}`),
-    join(REPO_ROOT, 'target', 'release', `vtrim${EXE}`),
-    join(REPO_ROOT, 'target', 'debug', `vtrim${EXE}`),
+    join(REPO_ROOT, '.workbuddy', 'perf', 'bin', `yekitrim${EXE}`),
+    join(REPO_ROOT, 'target', 'release', `yekitrim${EXE}`),
+    join(REPO_ROOT, 'target', 'debug', `yekitrim${EXE}`),
   ].filter(Boolean).map((p) => resolve(p));
-  const vtrim = vtrimCandidates.find((p) => existsSync(p)) || 'vtrim';
+  const yekitrim = yekitrimCandidates.find((p) => existsSync(p)) || 'yekitrim';
 
   if (!translator) {
     throw new Error(
@@ -891,10 +891,10 @@ function main() {
     );
   }
   log(`转译器：${translator}`);
-  // `vtrim` 落回 PATH 时这里不报错（让它自己 spawn 失败），但**列清楚找过什么**。
-  log(`vtrim：${existsSync(vtrim) ? vtrim : `${vtrim}（不在候选里，试 PATH）`}`);
-  if (!existsSync(vtrim)) {
-    log(`  找过：\n${vtrimCandidates.map((p) => `    ${p}`).join('\n')}`);
+  // `yekitrim` 落回 PATH 时这里不报错（让它自己 spawn 失败），但**列清楚找过什么**。
+  log(`yekitrim：${existsSync(yekitrim) ? yekitrim : `${yekitrim}（不在候选里，试 PATH）`}`);
+  if (!existsSync(yekitrim)) {
+    log(`  找过：\n${yekitrimCandidates.map((p) => `    ${p}`).join('\n')}`);
   }
 
   mkdirSync(runDir, { recursive: true });
@@ -979,13 +979,13 @@ function main() {
       // ⚠️ **process 是"尽力而为"** —— 与出片那条路同口径：`cmd_render` 里是
       // `if let Err(e) = process::cmd_process(..) { ⚠ Process before render: .. }`，失败照样出片。
       // 对拍样本是**刚复制到运行目录**的，缺 `data/subtitles.json` 时 process 必然失败
-      // （"Run 'vtrim polish init' first"）—— 那不影响出片，别把它变成硬失败（我第一版就写成硬失败，
+      // （"Run 'yekitrim polish init' first"）—— 那不影响出片，别把它变成硬失败（我第一版就写成硬失败，
       // 于是黄金帧模式在样本上根本跑不起来）。
       try {
         if (!existsSync(join(clip, 'data', 'subtitles.json'))) {
-          run(vtrim, ['polish', 'init', clip]);
+          run(yekitrim, ['polish', 'init', clip]);
         }
-        run(vtrim, ['polish', 'process', clip]);
+        run(yekitrim, ['polish', 'process', clip]);
       } catch (e) {
         log(`    ⚠ process 没跑成（与出片同口径：尽力而为）—— ${String(e.message).split('\n')[0].slice(0, 110)}`);
       }
@@ -1013,13 +1013,13 @@ function main() {
           '   `--capture-golden` 一并作废 —— 它同样要跑那条腿，不再重冻。）',
       );
       // eslint-disable-next-line no-unreachable
-      log('  V-Trim（chrome 后端，会自动先跑 process）…');
-      run(vtrim, ['polish', 'render', clip, '--renderer', 'chrome']);
-      const vtrimOut = [outSuffixed, outPlain].find((p) => existsSync(p));
-      if (!vtrimOut) throw new Error(`V-Trim 跑完了却没产出 ${outPlain}（也没产出 ${stem}_1.mp4）`);
+      log('  YekiTrim（chrome 后端，会自动先跑 process）…');
+      run(yekitrim, ['polish', 'render', clip, '--renderer', 'chrome']);
+      const yekitrimOut = [outSuffixed, outPlain].find((p) => existsSync(p));
+      if (!yekitrimOut) throw new Error(`YekiTrim 跑完了却没产出 ${outPlain}（也没产出 ${stem}_1.mp4）`);
       refPath = join(runDir, 'ref.mp4');
-      copyFileSync(vtrimOut, refPath);
-      rmSync(vtrimOut); // 工程目录立刻恢复干净
+      copyFileSync(yekitrimOut, refPath);
+      rmSync(yekitrimOut); // 工程目录立刻恢复干净
       refInfo = probeVideo(refPath);
       log(`    参照 ${refInfo.frames} 帧 / ${refInfo.duration.toFixed(3)}s / ${refInfo.fps}fps  -> ${refPath}`);
     }
@@ -1156,7 +1156,7 @@ function main() {
           {
             fixture: goldenName,
             captured_at: new Date().toISOString(),
-            frozen_from: 'vtrim polish render --renderer chrome（兜底腿最后一次渲染；那条腿 2026-10-01 已删除）',
+            frozen_from: 'yekitrim polish render --renderer chrome（兜底腿最后一次渲染；那条腿 2026-10-01 已删除）',
             frames: refInfo.frames,
             duration: refInfo.duration,
             fps: refInfo.fps,
@@ -1441,7 +1441,7 @@ function main() {
     // 本仓自己的产物不要留在用户的片段目录里
     for (const stray of ['vtuber-clip_1.mp4']) {
       const p = join(clip, stray);
-      if (existsSync(p)) { rmSync(p); log(`  已删 ${stray}（V-Trim 的产物，工程目录要干净）`); }
+      if (existsSync(p)) { rmSync(p); log(`  已删 ${stray}（YekiTrim 的产物，工程目录要干净）`); }
     }
   }
 

@@ -1,6 +1,6 @@
 # yekitrim-polish — GSAP 精修引擎（从 vtedit 合并）
 
-> 范围：`crates/yekitrim-polish`/** ｜ 上游：`yekitrim-cli`（`vtrim polish *`）、`yekitrim-server`（`api/polish.rs`、`api/render.rs`、`stickers.rs`）、`yekitrim-service`（`silence.rs`）—— 三者都直接调本 crate ｜ 验证：`cargo check -p yekitrim-polish`
+> 范围：`crates/yekitrim-polish`/** ｜ 上游：`yekitrim-cli`（`yekitrim polish *`）、`yekitrim-server`（`api/polish.rs`、`api/render.rs`、`stickers.rs`）、`yekitrim-service`（`silence.rs`）—— 三者都直接调本 crate ｜ 验证：`cargo check -p yekitrim-polish`
 
 ## 职责
 
@@ -15,7 +15,7 @@
 
 ## 入口
 
-`crates/yekitrim-polish/src/commands.rs`（`vtrim polish *` 的实现，CLI 与 WebUI 共用同一份）：
+`crates/yekitrim-polish/src/commands.rs`（`yekitrim polish *` 的实现，CLI 与 WebUI 共用同一份）：
 - `cmd_init(path)` / `cmd_parse(project_path)`：初始化工程；SRT + 文本解析。
 - `cmd_llm(project_path, full)`（快照索引写作 `commands.rs:200`；`full` 默认 true = 全部重做）与
   `cmd_llm_segment(project_path, index)`（只重做这一段事件）。
@@ -48,7 +48,7 @@
   cmd_cover 只写 cover.*。**不许再"开头 load、结尾整份写回"**：那样 LLM 跑两分钟期间用户存的
   选框/封面/屏蔽会被结尾那次覆写静默吞掉（这正是"LLM 剪辑时不能调区域"的根因）。
 - ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进 `yekitrim-polish`
-  （`render/server.rs::INDEX_HTML`），运行中的 `vtrim server` 端出的仍是旧页面 ——
+  （`render/server.rs::INDEX_HTML`），运行中的 `yekitrim server` 端出的仍是旧页面 ——
   「改完没反应」十有八九是没重建/没重启，不是代码没生效。
 - ⚠️ **出片逐帧路径里任何 `ReferenceError` 都是"整块 chunk 失败 → 整个 render job 失败"**
   （实测：A5 折行改造留下的一句 `ctx.font = '700 ' + fs + ' ' + ff`，
@@ -131,7 +131,7 @@
   - 验收口径、四个引擎差异（`@font-face` 不支持 / 无资源解析器要内联 / 复合选择器 `#id.class` 不匹配 /
     忽略 `paint-order`）与残差（标题字形 ~15/255 是栅格化固有差，**适配层修不了**）见
     **`docs/plan/takumi-cover-capability.md`**。
-  - **怎么用**：CLI `vtrim polish cover <目录> --renderer takumi`（不传 = 默认链）；WebUI 封面设计器点
+  - **怎么用**：CLI `yekitrim polish cover <目录> --renderer takumi`（不传 = 默认链）；WebUI 封面设计器点
     「生成封面」直接出图 —— **通道弹窗已删**（只剩一个按钮的弹窗不再是"选择"），前端不传 `renderer`。
     取值口径仍只在 `cover.rs`（显式参数 > `VTEDIT_COVER_RENDERER` > **takumi**，认不出就报错，
     `chrome` 给"已删除"的专门错误）。静态通道**能不能用**由 `cover::cover_static_capability()` 给出

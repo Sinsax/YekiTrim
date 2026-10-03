@@ -1,7 +1,7 @@
 //! polish::assets::downloader：统一的资产下载管理器（贴纸图 + SFX 落盘）。
 //!
 //! 入口：`AssetDownloader::{new, download_stickers, download_sfx_for_segments, asset_map}`、`DownloadReport`、`collect_sfx_ids`。
-//! 边界：贴纸库固定在 `<程序目录>/stickers/`（不是项目里那份拷贝），debug / release 各一份、互不相干；文件名一律过 `sticker_index::is_image_file_name` —— 见 `crates/vtrim-polish/src/assets/AGENTS.md`
+//! 边界：贴纸库固定在 `<程序目录>/stickers/`（不是项目里那份拷贝），debug / release 各一份、互不相干；文件名一律过 `sticker_index::is_image_file_name` —— 见 `crates/yekitrim-polish/src/assets/AGENTS.md`
 
 use std::path::{Path, PathBuf};
 use crate::project::Segment;

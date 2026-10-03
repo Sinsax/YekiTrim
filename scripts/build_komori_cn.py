@@ -8,7 +8,7 @@ build_komori_cn.py — 用小森平中文版页面重建 catalog（中文标题 
 import json, re, time, urllib.request, ssl
 
 BASE = "https://taira-komori.net"
-UA = {"User-Agent": "Mozilla/5.0 (vtrim-catalog-builder)"}
+UA = {"User-Agent": "Mozilla/5.0 (yekitrim-catalog-builder)"}
 CTX = ssl.create_default_context()
 
 # 中文版页面 (page, 页面, 中文名)

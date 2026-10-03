@@ -1,7 +1,7 @@
 //! polish::llm::events：Step 2 逐段事件生成（走 `yekitrim_core::llm::agent::Agent` + checkpoint 续传 + 贴纸批量精挑）。
 //!
 //! 入口：`EventGenTask::{new, with_project, build_windows, apply_outputs}`、`run_event_agent`、`choose_sticker_files_batch`、`StickerChoiceContext`。
-//! 边界：窗口 id 必须带时间段，否则重新分段后会命中旧窗口；`output == None`（失败）与 `Some([])`（空结果）都跳过硬、保留原有事件 —— 见 `crates/vtrim-polish/src/llm/AGENTS.md`
+//! 边界：窗口 id 必须带时间段，否则重新分段后会命中旧窗口；`output == None`（失败）与 `Some([])`（空结果）都跳过硬、保留原有事件 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
 
 use std::path::Path;
 
@@ -260,7 +260,7 @@ pub async fn run_event_agent(
     )
     .with_project(project);
     let windows = task.build_windows::<Vec<Event>>();
-    // 并发跟 .vtrim/llm.toml 的 [llm] max_concurrent（精修没有自己的并发配置项）
+    // 并发跟 .yekitrim/llm.toml 的 [llm] max_concurrent（精修没有自己的并发配置项）
     let agent = yekitrim_core::llm::agent::Agent::new(llm_cfg.clone())
         .with_max_concurrent(llm_cfg.concurrency(None));
     // ⚠️ 取消探针必须真的交给 Agent（窗口边界生效）。精修 llm 是分钟级链路：

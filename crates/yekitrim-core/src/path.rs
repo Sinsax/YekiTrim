@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 ///
 /// ⚠️ **唯一权威**：这个字面量以前散在 ~35 处（跨 core / service / server / cli，含
 /// `yekitrim-server/src/api/projects.rs` 那条安全守卫），改名时只要漏一处就**静默**坏：
-/// 写侧写 `yekitrim.toml`、读侧找 `vtrim.toml` ⇒ 工程"打不开"或守卫误判 400。
+/// 写侧写 `yekitrim.toml`、读侧找 `yekitrim.toml` ⇒ 工程"打不开"或守卫误判 400。
 /// **新增/修改任何读写工程配置的地方，一律引用本常量**，别再写字面量。
 pub const PROJECT_CONFIG_FILE: &str = "yekitrim.toml";
 
@@ -48,7 +48,7 @@ pub(crate) fn exe_dir() -> PathBuf {
 /// 那样 **1.1 GB 的 ASR 模型会被复制两份**。想共用就把这个变量指到同一处。
 ///
 /// ⚠️ 别再退回"用户目录优先"：那条路是 2026-10 之前的设计（当年为了躲开构建目录漂移
-/// 才把资产挂到 `~/.vtrim/`），代价是**同一个东西有了两个可能的位置**，于是界面上出过
+/// 才把资产挂到 `~/.yekitrim/`），代价是**同一个东西有了两个可能的位置**，于是界面上出过
 /// "模型管理说没下载、实际转写一直在用"（`api/config.rs` 记着那次错位）。
 /// 资产只有一个位置，就没有"只查了一处"的 bug。
 pub fn data_dir() -> PathBuf {
@@ -78,13 +78,13 @@ pub fn user_home() -> Option<PathBuf> {
 }
 
 /// 程序状态目录（配置、模型、server.toml）—— 挂在 [`data_dir`] 下的 `.yekitrim/`。
-pub fn vtrim_home() -> PathBuf {
+pub fn yekitrim_home() -> PathBuf {
     data_dir().join(STATE_DIR_NAME)
 }
 
-/// [`vtrim_home`] 的可注入版本（单测用：不碰环境变量）。
+/// [`yekitrim_home`] 的可注入版本（单测用：不碰环境变量）。
 /// 与 [`data_dir_in`] 同一形状 —— 拼规则只有这一处，测试直接验它。
-pub fn vtrim_home_at(data_dir: &Path) -> PathBuf {
+pub fn yekitrim_home_at(data_dir: &Path) -> PathBuf {
     data_dir.join(STATE_DIR_NAME)
 }
 
@@ -96,11 +96,11 @@ pub fn sticker_dir() -> PathBuf {
 /// 字体库路径 —— **程序目录下**：`<数据目录>/resources/fonts/`。
 ///
 /// ⚠️ **2026-10-02 由"用户固定目录优先"改成程序目录**（用户口径：*不要用户目录*）。
-/// 历史：这条路径曾经优先取 `~/.vtrim/fonts`（为了躲开 `target/debug` 与
+/// 历史：这条路径曾经优先取 `~/.yekitrim/fonts`（为了躲开 `target/debug` 与
 /// `target/cl/debug` 各存一份的问题），再用 `resources/fonts/` 当老安装的回落态。
 /// 代价是**同一个库有两个可能的位置**，而"用户目录那份"与"程序目录那份"内容一旦分叉，
 /// CLI 与 WebUI 就各看各的（实测：CLI 报 `target/debug/resources/fonts`、
-/// 网页用 `~/.vtrim/fonts`，两边字体列表完全不同）。
+/// 网页用 `~/.yekitrim/fonts`，两边字体列表完全不同）。
 ///
 /// 现在只有一处：`<数据目录>/resources/fonts/`。
 /// 相关读写见 [`crate::fonts`]。
@@ -145,7 +145,7 @@ mod tests {
     /// **资产只有一个位置**：默认在程序目录，`YEKITRIM_DATA_DIR` 是唯一的口子。
     ///
     /// 回归的是 2026-10-02 的口径切换（*所有内容围绕程序目录来，不要用户目录*）：
-    /// 字体库曾经优先取 `~/.vtrim/fonts`，导致 CLI 与 WebUI 各看一份库（实测两边
+    /// 字体库曾经优先取 `~/.yekitrim/fonts`，导致 CLI 与 WebUI 各看一份库（实测两边
     /// 列出的字体完全不同）。现在 `font_dir` 里**不再有任何用户目录**参与。
     #[test]
     fn font_dir_lives_under_data_dir_no_user_home_involved() {
@@ -159,17 +159,21 @@ mod tests {
         let shared = Path::new("/shared/yekitrim-data");
         assert_eq!(data_dir_in(Some(shared), exe), shared);
         assert_eq!(font_dir_at(shared), Path::new("/shared/yekitrim-data/resources/fonts"));
-        // ⚠️ 判据是"路径里没有用户目录" —— 主目录取不到/取得到都不该改变结果
-        assert!(!font_dir_at(&data_dir_in(None, exe)).to_string_lossy().contains(".vtrim/fonts"));
+        // ⚠️ 判据是"字体库在**程序目录**下、不掺用户目录"。要断言的是**正向**那条 ——
+        //    当年出事的是"字体库优先取 ~/.yekitrim/fonts"，程序目录与用户目录各看一份库。
+        //    改写名时这里曾被机械替换成"不包含 `.yekitrim/fonts`"，那句话恒真、等于没断言。
+        let d = font_dir_at(&data_dir_in(None, exe));
+        assert_eq!(d, Path::new("/install/resources/fonts"));
+        assert!(!d.to_string_lossy().contains("/.yekitrim"));
     }
 
-    /// ⚠️ 状态目录改名后**磁盘上的路径必须是新名字**（旧 `.vtrim` 不再被创建）。
+    /// ⚠️ 状态目录就一个名字：`.yekitrim`。**旧 `.yekitrim` 一律不再被创建**（无兼容期）。
     #[test]
     fn state_dir_uses_the_new_name() {
         assert_eq!(STATE_DIR_NAME, ".yekitrim");
         let exe = Path::new("/install");
-        assert_eq!(vtrim_home_at(exe), Path::new("/install/.yekitrim"));
-        // 判据是"不再写旧目录"，不是"路径里出现过 vtrim 这个子串"
-        assert!(!vtrim_home_at(exe).to_string_lossy().contains("/.vtrim"));
+        assert_eq!(yekitrim_home_at(exe), Path::new("/install/.yekitrim"));
+        // 判据是"不再写旧目录"（不是"路径里出现过 `yekitrim` 这个子串" —— 新名里本来就没有它）
+        assert!(!yekitrim_home_at(exe).to_string_lossy().contains("/.yekitrim"));
     }
 }

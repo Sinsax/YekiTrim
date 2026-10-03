@@ -334,7 +334,7 @@ impl Downloader for YtDlp {
     }
 }
 
-/// 用一个真实产物路径取它的"项目相对名"（写进 `vtrim.toml` 的 `input_file`）。
+/// 用一个真实产物路径取它的"项目相对名"（写进 `yekitrim.toml` 的 `input_file`）。
 ///
 /// 单独拆出来是为了**可离线测试**：`--print` 回报的是绝对路径，而 `write_project_config`
 /// 需要相对项目根的路径。
@@ -426,7 +426,7 @@ mod tests {
     /// 限速 / cookie / 分P 是可选项：给了才出现，且分P 与 `--no-playlist` **互斥**。
     #[test]
     fn optional_args_are_mutually_exclusive_where_it_matters() {
-        let dir = std::env::temp_dir().join(format!("vtrim-cookie-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-cookie-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cookie = dir.join("cookies.txt");
         std::fs::write(&cookie, b"# Netscape HTTP Cookie File\n").unwrap();
@@ -476,8 +476,8 @@ mod tests {
         );
         // 真实形态：after_move 回报的是**绝对路径**
         assert_eq!(
-            d.parse_stream_line(r"YEKITRIM_PATH:F:\para\Code\V-Trim\proj\source.mp4"),
-            Some(StreamEvent::FinalPath(PathBuf::from(r"F:\para\Code\V-Trim\proj\source.mp4")))
+            d.parse_stream_line(r"YEKITRIM_PATH:F:\para\Code\YekiTrim\proj\source.mp4"),
+            Some(StreamEvent::FinalPath(PathBuf::from(r"F:\para\Code\YekiTrim\proj\source.mp4")))
         );
         assert_eq!(
             d.parse_stream_line("YEKITRIM_META:640x360|avc1.64001E|mp4a.40.2"),
@@ -604,7 +604,7 @@ mod tests {
             "一条可下载的分P 都没有要报错");
     }
 
-    /// 产物相对路径：`--print` 给的是绝对路径，写进 `vtrim.toml` 要相对项目根。
+    /// 产物相对路径：`--print` 给的是绝对路径，写进 `yekitrim.toml` 要相对项目根。
     #[test]
     fn final_path_must_live_inside_project_dir() {
         let dir = PathBuf::from(r"F:\proj\bili-BV1-p1");

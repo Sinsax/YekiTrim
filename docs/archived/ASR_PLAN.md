@@ -48,7 +48,7 @@
   |     chunk 2: [100s, 170s]
   |     ...
   |     chunk N: [..., 3448.8s]
-  |     约 69 个 chunk，写入 $TEMP/vtrim_asr/
+  |     约 69 个 chunk，写入 $TEMP/yekitrim_asr/
   |
   +- 2. 逐 chunk 调 sherpa-onnx-offline + SenseVoice
   |     命令: sherpa-onnx-offline
@@ -101,21 +101,21 @@ Chunk 2:                               [======================]
 | 覆盖 | 0:00 ~ 57:30 全程 |
 | 精度 | 逐字符时间戳 + ITN |
 | 耗时 | ~2.5 分钟 (69 chunk x ~2s) |
-| 临时文件 | $TEMP/vtrim_asr/ (处理后自动清理) |
+| 临时文件 | $TEMP/yekitrim_asr/ (处理后自动清理) |
 
 ### 涉及文件
 
 | 文件 | 改动 |
 |------|------|
-| `crates/vtrim-core/src/asr/mod.rs` | 替换 VAD 路径为 chunk + local 路径 |
-| `crates/vtrim-core/src/asr/chunk.rs` | 临时目录改用 `std::env::temp_dir()` |
-| `crates/vtrim-core/src/asr/local.rs` | 已就绪 (build_segments_from_timestamps) |
-| `crates/vtrim-core/src/asr/vad.rs` | 保留备用，暂不调用 |
+| `crates/yekitrim-core/src/asr/mod.rs` | 替换 VAD 路径为 chunk + local 路径 |
+| `crates/yekitrim-core/src/asr/chunk.rs` | 临时目录改用 `std::env::temp_dir()` |
+| `crates/yekitrim-core/src/asr/local.rs` | 已就绪 (build_segments_from_timestamps) |
+| `crates/yekitrim-core/src/asr/vad.rs` | 保留备用，暂不调用 |
 
 ### 依赖
 
 - ffmpeg + ffprobe (在 PATH 中)
-- sherpa-onnx-offline binary + SenseVoice int8 model (~/.vtrim/)
+- sherpa-onnx-offline binary + SenseVoice int8 model (~/.yekitrim/)
 - sherpa-onnx-vad-with-offline-asr binary (备用)
 
 ## 备选探索

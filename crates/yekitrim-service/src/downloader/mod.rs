@@ -5,7 +5,7 @@
 //! - **不认识 B站**：这里只出现 "URL"、"清晰度上限"、"cookie 文件" 这类通用概念。
 //!   出现 `bvid` / `cid` / `comment.bilibili` 就是嵌合（§2.4 有 grep 判据）。
 //! - **不开进程**：只产出 [`CommandSpec`]（纯数据）与"解析一行输出"的结果。
-//!   真正的 `tokio::process::Command` 只在 `vtrim-server/download_worker.rs`。
+//!   真正的 `tokio::process::Command` 只在 `yekitrim-server/download_worker.rs`。
 //!   收益：命令构造与输出解析**完全离线可测**，不需要真跑一个下载器。
 //!
 //! ## 加第二个引擎怎么做
@@ -45,7 +45,7 @@ impl DownloaderKind {
         }
     }
 
-    /// 诊断/文案用（`vtrim doctor`、`/api/health` 的就绪位）。
+    /// 诊断/文案用（`yekitrim doctor`、`/api/health` 的就绪位）。
     pub fn label(&self) -> &'static str {
         match self {
             DownloaderKind::YtDlp => "yt-dlp",

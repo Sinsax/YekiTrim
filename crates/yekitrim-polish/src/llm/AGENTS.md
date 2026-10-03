@@ -28,7 +28,7 @@
   精修侧现有五处挂点（四个文件）：`精修分段` / `精修关键词`（`llm/mod.rs`）、贴纸批量精挑（`events.rs`）、
   `贴纸包标签` / `贴纸扫描标签`（`commands.rs`）。Agent 系任务走 `AgentTask::usage_context()`。
   **不挂 context，统计里就是空 label —— 别让用量静默消失。**
-- **并发只有一个旋钮**：`.vtrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），事件检测 / 精修事件生成 /
+- **并发只有一个旋钮**：`.yekitrim/llm.toml` 的 `[llm] max_concurrent`（默认 3），事件检测 / 精修事件生成 /
   字幕订正共用，解析统一走 `LlmConfig::concurrency(section_override)`。精修**没有自己的并发配置项**，
   `Agent::new(llm_cfg).with_max_concurrent(llm_cfg.concurrency(None))`。别再在代码里写死 `3`。
 - ⚠️ **精修的 `max_tokens` / `temperature` / `thinking` 走 `[llm.overrides.polish]`**：
@@ -48,7 +48,7 @@
   与 `Some([])`（模型返回空）都**跳过硬**，保留原有事件 —— 空结果是"这一次没生成"，
   不是"这一段应该有 0 条事件"。回归钉子：`events.rs::tests`（空/失败/正常三条）。
   旧行为是用 LLM 输出**无条件覆盖** `seg.events`，一次限流就把整段已有事件抹成 0。
-- **逐段状态快照** `<project>/.vtrim/polish_events.status.json`：`cmd_llm` 落盘、
+- **逐段状态快照** `<project>/.yekitrim/polish_events.status.json`：`cmd_llm` 落盘、
   `polish_project_get?preview=1` 注入 `_llm_status`、`TimelineEditor` 给**没产出事件的段**上琥珀色
   （成功 = 当前颜色，用户要求），分段属性面板显示失败原因 + 「只重做本段事件」。
   ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会砍掉超出视频时长的段，
@@ -59,7 +59,7 @@
   编辑器按钮再带一次二次确认，因为它会重写当前全部段与事件，含手工加的）；
   `POST /api/polish/llm-segment {index}` = **只重做这一段**（不重跑分段、不走 checkpoint、
   失败保留原事件并让任务失败可见），跑完照常自动 `process`。
-  CLI `vtrim polish llm` 仍走 `full=false`（长片重跑贵，续传留给命令行）。
+  CLI `yekitrim polish llm` 仍走 `full=false`（长片重跑贵，续传留给命令行）。
   新增任务 kind `llm_segment` 的档位见 `JobClass::for_polish`（与 `llm` 同档 Medium）。
   `regenerate_segment_events` 的三条有意差异：不重跑 Step1 分段、不走 checkpoint、只换该段事件；
   仍跑 Step2b（贴纸精挑）与段级对齐。
@@ -78,7 +78,7 @@
   一句「系统只在初次后处理时在片头补、不要重复写」，片头那份见 `process/AGENTS.md` Step 3c（用户可手动改/删）。
 - **老 checkpoint 必须过时间迁移**：里面的事件还是 `duration` 字段 → `EventGenTask::load_windows` 会先
   走 `crate::project::upgrade_event_times` 再解析，别绕过它。
-- ⚠️ **改内建 prompt 要同步用户配置**：`.vtrim/config.toml` / `.vtrim/llm.toml` 里的是
+- ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` / `.yekitrim/llm.toml` 里的是
   `config init` 填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**（debug / release 互不相干）。
 - 用了贴纸包来源时 `run_llm_pipeline` 才拼 `local_sticker_candidates_text`（**只列已构建的包**，
   见 `assets/` 卡）；`has_local` 为假就整段不注入 —— 贴纸来源改了要重跑，别指望旧 checkpoint。
@@ -92,5 +92,5 @@ cargo test -p yekitrim-polish --lib llm
 ```
 
 含 `events.rs::tests`（空/失败/正常三条不覆盖回归）与 `status` 的 remap 断言。改了 prompt 或
-守卫调用点后，必须在真实工程上重跑一次 `vtrim polish llm`，确认日志里
+守卫调用点后，必须在真实工程上重跑一次 `yekitrim polish llm`，确认日志里
 「实际跳过 0 个窗口（内容匹配）」（说明指纹失效生效、没有拿回上一版结果）。

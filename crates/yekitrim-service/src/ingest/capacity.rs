@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn capacity_precheck_reports_quota_shortage() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
+        let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         let uid = db.create_user("alice", "h", "user", false, 1000).unwrap();
         db.create_project(
             uid,
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn capacity_precheck_enforces_global_max_and_watermark() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(&dir.path().join("vtrim.db")).unwrap();
+        let db = Db::open(&dir.path().join("yekitrim.db")).unwrap();
         let uid = db.create_user("bob", "h", "user", false, 0).unwrap();
 
         // 全局上限 100 字节 → 入库 200 字节被拒

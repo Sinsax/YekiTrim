@@ -1,7 +1,7 @@
-//! vtrim-cli 入口：装配 tracing 订阅者，把 clap 命令分发到各实现（二进制名 `vtrim`）。
+//! yekitrim-cli 入口：装配 tracing 订阅者，把 clap 命令分发到各实现（二进制名 `yekitrim`）。
 //!
 //! 入口：`#[tokio::main] async fn main()`、`setup_tracing`、`load_cfg`；子模块 `cli`（命令定义）、`progress`（终端进度条）。
-//! 边界：这里只剩入口装配 —— CLI 要用服务端能力只能经 `vtrim-server` 暴露的 `run()` / `ServerArgs` 进入，别在本地重实现领域逻辑 —— 见 `crates/vtrim-cli/AGENTS.md`
+//! 边界：这里只剩入口装配 —— CLI 要用服务端能力只能经 `yekitrim-server` 暴露的 `run()` / `ServerArgs` 进入，别在本地重实现领域逻辑 —— 见 `crates/yekitrim-cli/AGENTS.md`
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ mod progress;
 
 /// 订阅者 = 终端 + 进程内日志总线（设置页「运行日志」/ 日志文件）。
 ///
-/// `LogBusLayer` 必须挂上：`vtrim server` 的访问日志、任务日志、错误文案都靠它
+/// `LogBusLayer` 必须挂上：`yekitrim server` 的访问日志、任务日志、错误文案都靠它
 /// 进面板与文件；对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。
 fn setup_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
@@ -69,7 +69,7 @@ fn percent_encode_component(s: &str) -> String {
     out
 }
 
-/// 尝试把 polish clip 目录定位到所属 vtrim 工程，并启动/打开同一 WebUI 精修页。
+/// 尝试把 polish clip 目录定位到所属 yekitrim 工程，并启动/打开同一 WebUI 精修页。
 /// 找不到工程时回退旧的独立 preview，保证命令仍然可用。
 async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyhow::Result<()> {
     use yekitrim_server::ServerArgs;

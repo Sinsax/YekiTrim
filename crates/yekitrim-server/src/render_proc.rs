@@ -1,6 +1,6 @@
 //! 渲染/封面子进程的登记、取消与孤儿清扫。
 //!
-//! `vtrim polish render` 自己会再拉起 ffmpeg / 底座二进制一堆**孙进程**：
+//! `yekitrim polish render` 自己会再拉起 ffmpeg / 底座二进制一堆**孙进程**：
 //!
 //! - 服务器重启不会带走它们（父进程死了，它们照样活着）；
 //! - 取消任务原本只置一个进程内标志，子进程根本不看 —— 停不下来；
@@ -97,14 +97,14 @@ pub fn kill_tree(pid: u32) {
 
 /// 这个 pid 现在是不是我们的渲染/封面进程？
 ///
-/// ⚠️ **`vtrim` / `yekitrim` 两个名字都要认**，而且**不能只 `contains("vtrim")`**：
-/// `"yekitrim"` **不含** `"vtrim"` 这个子串（它是 `yekitrim`，中间是 `ekitrim`）——
-/// 改名时踩过一次：判据静默返回 false ⇒ 启动清扫**认不出**遗留渲染进程、
-/// 那些 ffmpeg / 底座孙进程**永远不会被回收**（症状是文件被占用、且没有任何报错）。
-/// 下面的回归用例把两个名字都钉住了。
+/// 判据只认 `yekitrim` 这一个名字（2026-10 改名完成、旧名一律不认）。
+/// ⚠️ **不许写成 `contains("vtrim")`**：`"yekitrim"` **不含** `"vtrim"` 这个子串
+/// （它是 `yekitrim`，中间是 `ekitrim`）—— 曾经踩过一次：判据静默返回 false ⇒ 启动清扫
+/// **认不出**遗留渲染进程、那些 ffmpeg / 底座孙进程**永远不会被回收**
+/// （症状是文件被占用、且没有任何报错）。下面的回归用例把它钉住。
 fn is_our_render(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
-    let is_ours = lower.contains("vtrim") || lower.contains("yekitrim");
+    let is_ours = lower.contains("yekitrim");
     let is_polish = lower.contains("polish");
     let is_sub = lower.contains("render") || lower.contains("cover");
     is_ours && is_polish && is_sub
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn log_file_lives_under_data_dir() {
-        let p = log_file(Path::new("/tmp/vtrim"), "0018-125829");
+        let p = log_file(Path::new("/tmp/yekitrim"), "0018-125829");
         assert!(p.to_string_lossy().contains("logs"));
         assert!(p.to_string_lossy().ends_with("render-0018-125829.log"));
     }
@@ -197,21 +197,22 @@ mod tests {
 
     #[test]
     fn only_our_render_processes_are_recognized() {
-        // ⚠️ 两个名字都必须认：改名期间旧 exe 可能还在跑，新 exe 已经在跑。
-        // `"yekitrim"` **不含** `"vtrim"` 子串 —— 只判 `contains("vtrim")` 会漏掉新名字。
-        assert!(is_our_render(r"F:\para\Code\V-Trim\target\debug\vtrim.exe polish render F:\a\b"));
-        assert!(is_our_render(r"/usr/bin/vtrim polish cover /srv/a"));
-        assert!(is_our_render(r"F:\para\Code\V-Trim\target\debug\yekitrim.exe polish render F:\a\b"));
+        // ⚠️ 判据只认 `yekitrim`。**旧名一律不认**（2026-10 改名完成，没有兼容期）。
+        // ⚠️ 反面钉子：`"yekitrim"` **不含** `"vtrim"` 子串，所以判据绝不可能写成
+        //    `contains("vtrim")` —— 那条会连新名字都认不出，启动清扫静默失灵。
+        assert!(is_our_render(r"F:\para\Code\YekiTrim\target\debug\yekitrim.exe polish render F:\a\b"));
         assert!(is_our_render(r"/usr/bin/yekitrim polish cover /srv/a"));
         // 别的程序 / 别的子命令都不认
-        assert!(!is_our_render(r"F:\para\Code\V-Trim\target\debug\vtrim.exe server"));
-        assert!(!is_our_render(r"F:\para\Code\V-Trim\target\debug\yekitrim.exe server"));
+        assert!(!is_our_render(r"F:\para\Code\YekiTrim\target\debug\yekitrim.exe server"));
         assert!(!is_our_render(r"C:\Program Files\SomeBrowser\browser.exe --headless"));
+        // ⚠️ 旧名的可执行文件**不再被认**（无兼容期）。这里**故意写旧名** ——
+        //    它证明判据没有偷偷把旧名也放进来（写新名就成了同义反复）。
+        assert!(!is_our_render(r"/usr/bin/vtrim polish cover /srv/a"));
     }
 
     #[test]
     fn register_and_unregister_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("vtrim-renderproc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-renderproc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -228,11 +229,11 @@ mod tests {
     /// 陈旧的 pid 指向别的进程时不能乱杀：登记一个一定存在、且不是我们的 pid。
     #[test]
     fn sweep_skips_foreign_pid() {
-        let dir = std::env::temp_dir().join(format!("vtrim-renderproc-sweep-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-renderproc-sweep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 用当前进程自己的 pid：命令行是测试二进制，不是 vtrim … polish render
+        // 用当前进程自己的 pid：命令行是测试二进制，不是 yekitrim … polish render
         register(&dir, "0002-000002", std::process::id());
         let killed = sweep_orphans(&dir);
         assert!(killed.is_empty(), "不该杀掉不是渲染进程的 pid");

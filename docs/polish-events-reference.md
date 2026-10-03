@@ -1,10 +1,10 @@
 # 精修事件参考（种类 / 参数 / 编辑器覆盖范围）
 
-> 依据代码：事件定义 `crates/vtrim-render-core/src/types.rs`（时间统一为 **`time`(开始) + `end`(结束)**，
-> 老工程的 `duration` 由 `crates/vtrim-render-core/src/legacy.rs` 在反序列化前换算，见 §2.6）；
-> LLM 出参 `crates/vtrim-polish/src/llm/{segment,events}.rs`；后处理
-> `crates/vtrim-polish/src/process/{mod,fx,sfx,download}.rs`；预览求值 `webui/src/polish/engine.js`；
-> 出片求值 `crates/vtrim-render-core/src/timeline.rs`（Chrome/GSAP 路径见 `crates/vtrim-polish/templates/index.html`）。
+> 依据代码：事件定义 `crates/yekitrim-render-core/src/types.rs`（时间统一为 **`time`(开始) + `end`(结束)**，
+> 老工程的 `duration` 由 `crates/yekitrim-render-core/src/legacy.rs` 在反序列化前换算，见 §2.6）；
+> LLM 出参 `crates/yekitrim-polish/src/llm/{segment,events}.rs`；后处理
+> `crates/yekitrim-polish/src/process/{mod,fx,sfx,download}.rs`；预览求值 `webui/src/polish/engine.js`；
+> 出片求值 `crates/yekitrim-render-core/src/timeline.rs`（Chrome/GSAP 路径见 `crates/yekitrim-polish/templates/index.html`）。
 
 ## 0. 一个事件的一生（四层）
 
@@ -76,7 +76,7 @@ handheld = true      # 可省；手持摇摆（附加变种）—— 只在 zoom
 - `zoom` 只是**档位名**，实际倍率来自 `polish.toml [style.camera]`：
   `zoom_mid = 1.3`（中）、`zoom_close = 1.5`（近）、`zoom_wide = 0.55`（远，小于 1 = 画面缩小）。
   **四条路径共用 `CameraStyle::factor` 这一张表**（模板 canvas = 出片权威 / 模板 GSAP / `engine.js`，
-  外加 wgpu 的 `timeline.rs` —— 那条未启用，见 `crates/vtrim-render-core/AGENTS.md`（wgpu 真渲染））；
+  外加 wgpu 的 `timeline.rs` —— 那条未启用，见 `crates/yekitrim-render-core/AGENTS.md`（wgpu 真渲染））；
   这里曾经只有模板 canvas 硬编码 1.5/1.8，导致配置对成片无效、预览与成片不是一回事。
   **放大档位不会「推出框」**：运镜是绕不动点做 `scale`，`s ≥ 1` 时画面四周一律向外扩张
   （`overflow:hidden` 裁掉多出来的部分），任何倍率都盖满整个画面，不可能露出背景色/背景层；
@@ -218,7 +218,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 1. **独立音效事件**：`{"type":"sfx","time":3.0,"end":4.0,"name":"<音效 id>","volume":0.5}`（`end` 可省 = 用文件原始长度）
 2. **挂在任何视觉事件上**：`sticker/shake/flash/blur/vignette/hue_shift/noise/pulse/overlay` 都有 `sfx` + `sfx_volume` 两个字段（`sfx = false/null` 表示不响，`sfx = true` 会解析成 `pop-notice`）。
 
-**可用音效目录**：`crates/vtrim-polish/assets/sfx_catalog.json`（小森平音效库，编译期内嵌）
+**可用音效目录**：`crates/yekitrim-polish/assets/sfx_catalog.json`（小森平音效库，编译期内嵌）
 
 | 项 | 数量 |
 |---|---|
@@ -243,7 +243,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 **音量**：事件级 `volume` / `sfx_volume` > `polish.toml [sfx].volume`（默认 **0.1**）。
 预览由 `webui/src/polish/audio.js` 播放 `sfx/<name>.mp3`（主音量可调、静音按钮）；出片由 `render/ffmpeg.rs` 混音。
 
-**屏蔽**：`[sfx].blacklist`（项目）与全局 `.vtrim/config.toml [sfx].blacklist` 合并，写精确 id 屏蔽单个，写 `tag:xxx` 屏蔽整族。
+**屏蔽**：`[sfx].blacklist`（项目）与全局 `.yekitrim/config.toml [sfx].blacklist` 合并，写精确 id 屏蔽单个，写 `tag:xxx` 屏蔽整族。
 
 **编辑器**：时间轴「音效」泳道（点事件，可拖/缩放）；属性面板的 `name` 是**音效列表**（`GET /api/polish/sfx-catalog`，
 搜索 + 分类提示，不再手打 id），`volume` / `end` 都可改。
@@ -274,7 +274,7 @@ shape = "radial"            # "linear"(默认) | "radial"，仅 gradient
 - `Segment.fx`（`low|med|high`）：只进 Step2 的 user prompt（「段情绪密度」），**不参与任何渲染**。
 - `sticker_tag`：生成期用它选贴纸；出片不读，但**编辑器的手工选择会写它**（一级筛选就是它）。
 - **时间字段（2026-09 起）**：`time`(开始) + `end`(结束) 两个绝对秒，**没有 `duration` 了**。
-  老工程的 `duration` 由 `vtrim-render-core/src/legacy.rs::upgrade_event_times` 在反序列化前换算成 `end`
+  老工程的 `duration` 由 `yekitrim-render-core/src/legacy.rs::upgrade_event_times` 在反序列化前换算成 `end`
   （`end = time + duration`，渲染结果 1:1 不变；下一次保存即完成迁移），跑的入口有四处：
   `polish.toml` 加载、`PUT /api/polish/project`、LLM 事件输出（含老 checkpoint）、wasm 预览配置。
   缺 `end` 的事件由 `process` Step 0 按类型补默认（`Event::default_end`），`sfx` 例外 —— 缺省 = 用文件原始长度。
@@ -323,7 +323,7 @@ Step 2b 按它们反选安全区、**重写每个贴纸的 `x/y`**，Step 2d 把
 （**每次运行都覆盖**）；渲染侧只认这些结果坐标（`templates/index.html` 的 `ce.origin || liverOrigin`
 里，读 layout 的只是"事件没写 origin"时的兜底）。所以保存选框后编辑器与预览里显示的旧坐标会骗人
 —— 渲染虽然内部会先跑一次 process 兜底，但界面上看起来像"没生效"。UI 里「保存选框 / 清除选框」
-现在会自动起一次 `process`（与时间轴保存同一条路）；命令行手动跑 `vtrim polish process <目录>` 同理。
+现在会自动起一次 `process`（与时间轴保存同一条路）；命令行手动跑 `yekitrim polish process <目录>` 同理。
 
 ---
 

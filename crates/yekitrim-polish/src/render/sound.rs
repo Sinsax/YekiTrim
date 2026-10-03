@@ -3,7 +3,7 @@
 //! 入口：`SoundEvent`、`collect_sound_events`、`sound_file_exists`。
 //! ⚠️ 消费者是 `cmd_render`（`pipeline.rs`）：底座那条腿不带页面，SFX 事件由这里在
 //! Rust 侧直收集、混音/合流阶段混入（"画面归底座、声音归本仓"）。字段与序列化曾与
-//! 出片模板的 `__SOUND_DATA` 对齐，改字段仍要两边一起看 —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+//! 出片模板的 `__SOUND_DATA` 对齐，改字段仍要两边一起看 —— 见 `crates/yekitrim-polish/src/render/AGENTS.md`
 
 use std::path::Path;
 

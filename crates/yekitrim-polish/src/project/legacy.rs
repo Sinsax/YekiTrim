@@ -19,7 +19,7 @@ pub fn upgrade_toml_value(value: &toml::Value) -> anyhow::Result<Value> {
 /// 把**已经下线的配置键**在读的时候吞掉（2026-10-01，Phase ③）。
 ///
 /// ⚠️ **为什么不能直接删字段**：`SubtitleStyle` 上有 `#[serde(deny_unknown_fields)]`
-/// （`vtrim-render-core/src/types.rs`）—— 老工程里留着 `entrance = "cycle-5"` 的话，
+/// （`yekitrim-render-core/src/types.rs`）—— 老工程里留着 `entrance = "cycle-5"` 的话，
 /// 删掉字段就等于让那些工程**直接读不出来**。所以先在这里吞掉，schema 才敢删。
 ///
 /// ⚠️ **为什么该下线**：`entrance` 是 vtedit 时代的"字幕入场动画"，默认值就是 `"cycle-5"`，

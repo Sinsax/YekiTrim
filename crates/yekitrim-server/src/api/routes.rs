@@ -47,7 +47,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/ingest/token", post(crate::ingest::rotate_token))
         .route("/admin/ingest/assign", post(crate::ingest::assign))
         .route("/admin/ingest/scan", post(crate::ingest::scan_now))
-        // 内置下载器（yt-dlp）安装：全局资产（下到 <程序目录>/.vtrim/bin/），仅 admin
+        // 内置下载器（yt-dlp）安装：全局资产（下到 <程序目录>/.yekitrim/bin/），仅 admin
         .route("/admin/downloader/install", post(crate::ingest::downloader_install))
         .route("/admin/users", get(admin_users))
         .route("/admin/recorder/test", post(admin_recorder_test))
@@ -132,7 +132,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 与上面那条 DOM 预览**并列**（按钮切换保留）：一个看 CSS/DOM 复刻、一个看真底座。
     .route("/polish/dhampir-project", post(polish_dhampir_project))
     // 底座**出片**通道的就绪位（M3）：二进制/转译器/字体/node/版本契约各查一次文件，
-    // 让"底座不可用"在点渲染之前就可见（前端挂在渲染弹窗上，`vtrim doctor` 用同一份判断）。
+    // 让"底座不可用"在点渲染之前就可见（前端挂在渲染弹窗上，`yekitrim doctor` 用同一份判断）。
     .route("/polish/dhampir-status", post(polish_dhampir_status))
     .route("/polish/dhampir-wasm/*path", get(polish_dhampir_wasm))
         .route("/polish/cover-preview", post(polish_cover_preview))
@@ -285,7 +285,7 @@ mod tests {
 /// ② `DefaultBodyLimit` 必须挂在**这一条**路由上 —— axum 默认只收 2 MB，
 ///    用一个 3 MiB 的体试探：被 413 掉就说明那层丢了（改回默认值/漏挂 layer 都会挂在这条）；
 /// ③ 内容不是 zip 时给 400 与原因（不是 500，也不能当成成功）。
-/// 正常解压的路径在 `vtrim-polish::assets::sticker_zip` 的 13 条单测里（它们用临时目录，
+/// 正常解压的路径在 `yekitrim-polish::assets::sticker_zip` 的 13 条单测里（它们用临时目录，
 /// 不碰真实的贴纸库）；这里刻意只喂垃圾字节，免得往 `<exe_dir>/stickers/` 写真文件。
 #[tokio::test]
 async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
@@ -358,7 +358,7 @@ async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
 ///
 /// 与贴纸那条同规矩：字体库是**程序级全局资产**（`<程序目录>/resources/fonts/`），
 /// 非 admin 能动它就是"普通用户往服务器写文件"。这里刻意只走**失败路径**，
-/// 不往真实字体库里写东西（成功路径用临时目录，在 `vtrim-core::fonts` 的 11 条单测里）。
+/// 不往真实字体库里写东西（成功路径用临时目录，在 `yekitrim-core::fonts` 的 11 条单测里）。
 #[tokio::test]
 async fn font_write_routes_are_admin_only() {
     let t = test_app().await;

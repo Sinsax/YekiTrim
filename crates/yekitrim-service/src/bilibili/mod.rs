@@ -1,7 +1,7 @@
 //! B站专属知识（**不认识下载器**）。
 //!
 //! §2.4 的边界判据：本目录里**不许出现** `yt-dlp` / `--print` / `spawn`。
-//! 引擎与 B站只在一处装配（`vtrim-server/download_worker.rs`）。
+//! 引擎与 B站只在一处装配（`yekitrim-server/download_worker.rs`）。
 //!
 //! ## 为什么元数据走 view API 而不是 `yt-dlp -J`
 //!

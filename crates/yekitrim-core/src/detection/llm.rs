@@ -1,7 +1,7 @@
 //! detection::llm：检测侧 prompt 与 LLM 调用（单窗口请求 / 重试 / 传播潜力评分）。
 //!
 //! 入口：`score_events_with_llm`、`call_with_progress`、`test_llm`、`create_default_event`、`parse_json`、`DEFAULT_PROMPT` / `DEFAULT_SYSTEM_PROMPT` / `TITLE_RULES`。
-//! 边界：`DEFAULT_PROMPT` 里 `{segments}` 必须留在最后（provider 前缀缓存）；改内建 prompt 对 `.vtrim/config.toml` 里的副本无效 —— 见 `crates/vtrim-core/src/detection/AGENTS.md`
+//! 边界：`DEFAULT_PROMPT` 里 `{segments}` 必须留在最后（provider 前缀缓存）；改内建 prompt 对 `.yekitrim/config.toml` 里的副本无效 —— 见 `crates/yekitrim-core/src/detection/AGENTS.md`
 
 use std::path::Path;
 use std::sync::Arc;
@@ -1163,7 +1163,7 @@ async fn attempt_call(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // 转储落到程序目录的 `.vtrim/llm_debug/`：以前写的是**相对进程 CWD** 的路径，
+    // 转储落到程序目录的 `.yekitrim/llm_debug/`：以前写的是**相对进程 CWD** 的路径，
     // server 的 CWD 是仓库根 —— 一轮重跑就在仓库里堆 70+ 个 yekitrim_llm_debug_*.log。
     //
     // ⚠️ 这个目录**不在任何租户囚笼里**，而内容是**用户的直播转录原文** + 模型推理。
@@ -1209,7 +1209,7 @@ async fn attempt_call(
         std::borrow::Cow::Owned(out)
     }
 
-    let dir = crate::path::vtrim_home().join("llm_debug");
+    let dir = crate::path::yekitrim_home().join("llm_debug");
     let _ = std::fs::create_dir_all(&dir);
     prune_debug_dir(&dir, 50);
     let log_path = dir.join(format!("yekitrim_llm_debug_{ts}.log"));

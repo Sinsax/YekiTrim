@@ -10,7 +10,7 @@
 预览求值器）。⚠️ **真实出片路径**由**底座 Dhampir** 走（`tools/polish-to-dhampir.mjs` 把 `polish.toml`
 转译成底座工程）；`templates/index.html` 是**参照实现**（它当年是 canvas 那条腿的模板，那条腿已删除），
 转译器是它的平行重写 —— 两边仍然必须同口径，但"改模板 = 改出片"这句话**不再成立**。
-⚠️ 曾经还有第三条 `yekitrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `vtrim-wasm` 已整体删除
+⚠️ 曾经还有第三条 `yekitrim-render-core/src/timeline.rs`（wgpu 路径）—— 那条链连同 `yekitrim-wasm` 已整体删除
 （GPU 那侧交给独立的 Dhampir 底座）；`timeline.rs` 还在，但只剩 CPU 参考与覆盖层契约的正文，**不是预览的参照**。
 `canvas.js` 是画布参数 SSOT，
 `audio.js` 是 SFX 播放器与全应用共用的音量读写，`fonts.js` 按需加载项目字体。

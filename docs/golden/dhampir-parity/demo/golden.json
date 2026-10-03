@@ -1,7 +1,7 @@
 {
   "fixture": "demo",
   "captured_at": "2026-10-01T08:59:16.982Z",
-  "frozen_from": "vtrim polish render --renderer chrome（兜底腿最后一次渲染）",
+  "frozen_from": "yekitrim polish render --renderer chrome（兜底腿最后一次渲染）",
   "frames": 268,
   "duration": 8.933333,
   "fps": 30,

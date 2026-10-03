@@ -1,7 +1,7 @@
 //! polish::process：`polish process` 后处理主流程（LLM 写完事件之后、出片之前的全部确定性处理）。
 //!
 //! 入口：`cmd_process`、`content_budget`、`cap_events`；子模块 `sfx`（音效规则）、`fx`（守卫与对齐）、`download`（贴纸/SFX 下载，重导出）、`placement`（落点几何，私有）。
-//! 边界：Step 顺序是硬约束（2b1 先于 2b、2d 后于 2b/2c、1c 的配额守卫后于 Step 1）；带 `manual` 的手工事件不被后处理改写，抽稀也要跳过 —— 见 `crates/vtrim-polish/src/process/AGENTS.md`
+//! 边界：Step 顺序是硬约束（2b1 先于 2b、2d 后于 2b/2c、1c 的配额守卫后于 Step 1）；带 `manual` 的手工事件不被后处理改写，抽稀也要跳过 —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     let mut config = project::load_project(project_path)?;
     let data_dir = project_path.join("data");
 
-    // 音效屏蔽列表: 全局 (.vtrim/config.toml) ∪ 项目 (polish.toml [sfx])
+    // 音效屏蔽列表: 全局 (.yekitrim/config.toml) ∪ 项目 (polish.toml [sfx])
     let sfx_blacklist = load_sfx_blacklist(&config);
 
     // 读取字幕数据 (用于后续处理)
@@ -960,7 +960,7 @@ fn migrate_camera_zoom(camera: &mut project::CameraStyle) -> Vec<(&'static str, 
 
 /// 片头淡入的默认时长（秒）。原内建片头黑场（`intro_black`，固定 0.5s 正弦淡出）退役成普通
 /// overlay 事件后，这个默认观感由 [`ensure_intro_fade_in`] 在**初次** `process` 时补出来；
-/// 渲染侧的语义见 `vtrim-render-core/src/timeline.rs::get_overlay_state`。
+/// 渲染侧的语义见 `yekitrim-render-core/src/timeline.rs::get_overlay_state`。
 pub const INTRO_FADE_SECS: f64 = 0.5;
 
 /// 首段补一条片头淡入覆盖事件（`overlay_type = "fade_in"`、纯黑、满不透明度）。
@@ -2129,7 +2129,7 @@ mod diagnose_pip_and_silence {
 /// ```
 ///
 /// ⚠ 路径要写**绝对路径**：cargo test 把测试进程的 CWD 设在 **crate 根**
-/// （`crates/vtrim-polish`），不是 workspace 根，写相对路径会找不到 `polish.toml`。
+/// （`crates/yekitrim-polish`），不是 workspace 根，写相对路径会找不到 `polish.toml`。
 #[cfg(test)]
 mod diagnose_overlay_stops {
     use crate::project::Event;

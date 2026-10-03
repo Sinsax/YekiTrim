@@ -75,7 +75,7 @@ emits `seek`/`toggle`/`preview`/`done`/`reprocess`/`retried`/`redo-segment`。
 
 事件字段是 `time`（开始秒）+ `end`（结束秒），**没有 `duration` 了**；
 分段/字幕/屏蔽本来就是 `start`/`end`，四类块因此共用同一套控件。老工程的 `duration` 由
-`vtrim-render-core/src/legacy.rs::upgrade_event_times` 在**反序列化前**换算（`end = time + duration`），
+`yekitrim-render-core/src/legacy.rs::upgrade_event_times` 在**反序列化前**换算（`end = time + duration`），
 入口四处：`polish.toml` 加载、`PUT /api/polish/project` 的 segments、LLM 事件输出 + 老 checkpoint、
 wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`，别再直接读 `.duration`。
 
@@ -154,7 +154,7 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
 `danmaku`/`metaDuration`/`wgpuRender`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`；
 emits `time`/`playing`/`update:selectRect`/`update:point`。
 
-- **预览与出片的一致性**是它的第一职责：自绘层与出片模板 `crates/vtrim-polish/templates/index.html`
+- **预览与出片的一致性**是它的第一职责：自绘层与出片模板 `crates/yekitrim-polish/templates/index.html`
   必须同口径 —— 覆盖层色档走 `engine.js::gradientCss`、字幕折行走 `engine.js::wrapCaptionParts`
   （经 `capRowsWrapped`）、贴纸尺寸走 `polish/canvas.js::stickerScale`、运镜/手持摇摆走 `engine.js`。
   改这些函数前先读 `webui/src/polish/AGENTS.md`（漂移对拍脚本在那儿）。
@@ -170,7 +170,7 @@ emits `time`/`playing`/`update:selectRect`/`update:point`。
 - 预览尺寸随视口收缩：`.stage` 宽度 = `min(100%, calc(clamp(170px, 100vh - 540px, 620px) * 16/9))`；
   **别再写死 `66vh`**（那样只有预览自己能进首屏）。
 - ⚠ **预览看着正常 ≠ 出片正常**：出片的事实来源是 `templates/index.html` 的 canvas 路径
-  （`vtrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。任何"改完没反应"先怀疑没重建/没重启。
+  （`yekitrim-render-core/src/timeline.rs` 是平行实现、不是事实来源）。任何"改完没反应"先怀疑没重建/没重启。
 
 ### 2.1 跳手动屏蔽区间为什么要有"定格遮罩"（2026-09）
 
@@ -308,7 +308,7 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
 #### 时间真值归一
 
 **解码器读出的 `frame_delays_ms` 是事实**（存进 `st.delays`），工程 JSON 里那份退为诊断。
-底座实测：clip-18 四张动图全是均匀 30 ms，**与 V-Trim 探测的那份逐值相同**。
+底座实测：clip-18 四张动图全是均匀 30 ms，**与 YekiTrim 探测的那份逐值相同**。
 ⚠ 不一致时必须报出来——否则「映射用一张表、像素用另一张表」会把漂移请回来
 （症状是动图越播越偏）。**当前只做了"存下来"，冲突警告待补。**
 
@@ -443,7 +443,7 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
   补齐、未知 id 忽略、重复只认第一次、没列出的特效仍然渲染）。**两边必须一起改。**
 - **图层行**：`[拖柄 ⠿] [眼睛] [缩略] [名字] [锁定/辅助线徽标] [垃圾桶]`。
   - **眼睛 = 非破坏性隐藏**（`visible:false` → 出片 `display:none`）：属性一个字节不动，行留着（淡化）。
-    两条安全区走 `localStorage['vtrim.ui.coverGuides']`（不在 `layers` 里），交互一样、含义不同。
+    两条安全区走 `localStorage['yekitrim.ui.coverGuides']`（不在 `layers` 里），交互一样、含义不同。
   - **删除 = 从栈里摘掉**：固定层（背景/滤镜/文字）属性全留，`+ 新建图层` 加回来就恢复；
     **特效/表情例外** —— 它的"属性"就是 `[[cover.effects]]` 那一条，删除连它一起删。
   - **视频预览 `locked`**：可隐藏，**不给删也不给拖**（它就是封面那一帧）。
@@ -532,9 +532,9 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
   看着像等比其实不是（这么写会得到 1728×972，连 16:9 都不是）。等比缩放只能写 width/height。
   两条框**故意互相交叠**，别为了"好看"改成嵌套。线是**白线 + 1px 深色外圈**（封面素材亮暗不定）；
   线宽与字号用**预览 px**（**不乘 `stageScale`**）。显隐 = **图层列表里那两行上的眼睛**（各自独立、默认都开，
-  舞台下**不再放 chip**：同一件事不说两遍），偏好落 `localStorage['vtrim.ui.coverGuides']`，
+  舞台下**不再放 chip**：同一件事不说两遍），偏好落 `localStorage['yekitrim.ui.coverGuides']`，
   **在 setup 里同步读**（放 computed / onMounted 会先画一帧展开态再切，闪一下）；**不写 `polish.toml`、不加后端接口**。
-- ⚠️ **只画在设计器里**：`crates/vtrim-polish/templates/cover.html` 与 `cover.rs` 一个字都没改，
+- ⚠️ **只画在设计器里**：`crates/yekitrim-polish/templates/cover.html` 与 `cover.rs` 一个字都没改，
   所以线框**不可能**进入成片。将来若要往 CLI 那个独立预览页加，必须同时补 `html.export .guide-layer{display:none}`
   （与 `#toolbar` 同一机制），否则进成片。
 
@@ -648,7 +648,7 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
 ### 3.9 四处同步与写入门闸
 
 - **四处必须同步**（漏一处的表现都是"点了没反应 / 两边不一样"）：
-  ① `CoverConfig`（`vtrim-polish/src/project/config.rs`，含 `layers` / `CoverLayer` / `CoverEffect.id`）；
+  ① `CoverConfig`（`yekitrim-polish/src/project/config.rs`，含 `layers` / `CoverLayer` / `CoverEffect.id`）；
   ② `/api/polish/cover-config` 的白名单 patch（`layers` 整数组替换、`effects[].id`）；
   ③ `templates/cover.html`（`__LAYER_CSS__` 占位 + `#fx-extra` 不许有 z-index）；
   ④ **设计器的镜像**（`resolveStack` 的容错、`blockZ` 的编号、`layerStyle()` 的行内 z-index/display）。
@@ -656,7 +656,7 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
   （**颜色直接进 HTML/CSS，必须净化**，非法值退 `#000000`）、`cover_bg_mode`（只有 `blur` 走模糊，其余一律 `color`）。
 - **写入门闸**：`CoverDesigner` 的 `configLoaded`（读失败时拿默认值写回会把磁盘配置清成默认），
   读失败必须出错误条 + 「重试」，保存失败用面板头那一行常驻的 `.save-line.err`（**不再用 toast**：600ms 防抖会刷屏）。
-- **服务端钉子**：`crates/vtrim-server/src/api/polish.rs` 的
+- **服务端钉子**：`crates/yekitrim-server/src/api/polish.rs` 的
   `cover_config_persists_layer_stack_and_effect_ids`（空 id 丢掉、`visible` 落盘、未知 id 只在解析侧忽略）。
 
 ### 3.10 右栏内部：左「设置」/ 右「列表」左右排布 + 宽度减半（2026-10）
@@ -699,9 +699,9 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 
 ### 4.1 倍率只有一张表
 
-- **倍率只有一张表**：`CameraStyle::factor`（`vtrim-render-core/src/types.rs`），模板 canvas / 模板 GSAP /
+- **倍率只有一张表**：`CameraStyle::factor`（`yekitrim-render-core/src/types.rs`），模板 canvas / 模板 GSAP /
   `engine.js` / `timeline.rs` 四处都走它。⚠ 模板 canvas 路径曾硬编码 `1.8/1.5` 且完全不读 `[style.camera]`，而它才是出片路径
-  （`vtrim-polish/Cargo.toml`：「chrome-render 为默认出片路径」）——别再把倍率写回去。
+  （`yekitrim-polish/Cargo.toml`：「chrome-render 为默认出片路径」）——别再把倍率写回去。
 - **三档倍率的当前值：中 1.3 / 近 1.5 / 画中画 0.55**。**放大档位不存在「推出框露背景」的风险**（运镜是绕不动点
   做 `scale`，`s ≥ 1` 时四周一律向外扩张；露底只发生在画中画 `zoom_wide < 1`，刻意留黑边
   `(1-factor)/2×1920 = 432px`），别拿"怕露出背景底色"当理由往下压。**旧内建默认按值迁移**：
@@ -759,14 +759,14 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 - `process` 给每个 ≥1s 且没有运镜的段补 `zoom="中", anchor="liver"`（整段）—— 所以运镜是**全程开着**的；
   改默认档位/默认锚点就在这一处（`process/mod.rs` Step 1 与 `llm/mod.rs` Step 4 是两个重复实现，要一起改）。
   **老工程迁移**：`origin = "50% 50%"` 且无锚点的事件补成 `anchor="liver"`（有日志计条数）。
-  只读诊断：`VT_POLISH_DIR=<项目目录> cargo test -p vtrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture`；
+  只读诊断：`VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_camera_anchors -- --ignored --nocapture`；
   配额/对齐/收工 + 去静音阈值 + 贴纸对齐实测：`diagnose_pip_and_silence`（加 `VT_CAM_JSON=1` 多打一行 `CAM_JSON={...}`）。
 
 ---
 
 ## ⑤ 贴纸落点（Step 2b）与区域编辑
 
-- **贴纸落点推导**（`crates/vtrim-polish/src/process/placement.rs`）：帧坐标固定 1920×1080，贴纸固定 280×280，
+- **贴纸落点推导**（`crates/yekitrim-polish/src/process/placement.rs`）：帧坐标固定 1920×1080，贴纸固定 280×280，
   `ev.x/ev.y` 是**盒子左上角**百分比（模板再钳制到 `[32,1608]×[32,768]`）。障碍 = ① 人物 `layout.liver`、
   ② 弹幕区域 `layout.danmaku_area`（都在**源帧**坐标里框选，出片时视频整体被运镜缩放 → 先按该贴纸可见窗口的
   相机状态投到输出帧，zoom 取模板 Canvas 路径的 1.5/1.8 × 瞬时特效预留 1.10）、③ 字幕带（两条路径取并集）、
@@ -774,7 +774,7 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
   各障碍边缘的「临界位」；先取 clearance 最高的一档（×0.9），在该档里按「盒心到帧心距离」排序取前 8 个，
   再用 seed 伪随机挑一个 —— 即**安全区中心而不是边缘**。没有安全位时退化为「重叠代价最小」并告警。
   **`layout.sticker_area` 已降级**：`grid` 完全不参与落点；手写的自由选框只作**偏好**。
-  只读诊断：`VT_PROBE_ROOT=<media 目录> cargo test -p vtrim-polish --lib diagnose_sticker_placement -- --ignored --nocapture`。
+  只读诊断：`VT_PROBE_ROOT=<media 目录> cargo test -p yekitrim-polish --lib diagnose_sticker_placement -- --ignored --nocapture`。
 - **贴纸也要对齐最近的字幕（Step 2b1）**：`align_stickers_to_subtitles` —— 起点吸到**最近那条字幕**的开始、
   终点吸到它的结束（离最近字幕 > `STICKER_SNAP_MAX_SECS`(2.0s) 的不动）。**必须排在 2b 落点之前**。
   ⚠️ **手工放的事件不受后处理改写**（用户报过「调整贴纸的结束时间没有成功」）：事件带
@@ -826,7 +826,7 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 - `prepare/MaterialList`：弹幕/字幕共用清单，props `items/kind/busy/emptyText`、emits `pick/activate/remove`
   —— **改一边等于改两边**（ASR 产物不可删、`exists=false` 照实报，见 `webui/src/AGENTS.md`）。
 - `StickerPacks`：首页表情包区块（**仅 admin**）：上传 zip / LLM 压缩构建 / 卡片墙 + 大图预览。
-  库与 zip 安全细节指向 `crates/vtrim-polish/src/assets/AGENTS.md`。⚠️ **这是全站第二处有意接收用户上传的入口**
+  库与 zip 安全细节指向 `crates/yekitrim-polish/src/assets/AGENTS.md`。⚠️ **这是全站第二处有意接收用户上传的入口**
   （第一处是封面背景图 base64）；「服务器文件建项目」那条仍然**永不接受上传**。别按旧规矩把它删掉 —— 它是有意做的。
   ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust `UPLOAD_MAX_BYTES`
   是同一个数（改一处要改两处），前端必须先挡。**`preview` 只存 `{pack, name}`**，文件对象由 `previewFile`

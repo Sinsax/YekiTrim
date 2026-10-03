@@ -1,14 +1,14 @@
 # polish.toml → Dhampir 工程：一次真实的转译
 
 > **视角（迁移后加）**：文中「本仓」= **Dhampir（底座）** —— 这是迁移前在 Dhampir 仓写下的视角；
-> 「V-Trim」= 本仓。读数与命令原样保留，**未改一字**。
+> 「YekiTrim」= 本仓。读数与命令原样保留，**未改一字**。
 
-> **转译器已搬到 V-Trim 那一侧。** 这份文档里出现的 `tools/polish-to-dhampir.mjs`
+> **转译器已搬到 YekiTrim 那一侧。** 这份文档里出现的 `tools/polish-to-dhampir.mjs`
 > 指的是**当时**它在 Dhampir 里的位置；现在它在：
 >
->     <V-Trim>/tools/polish-to-dhampir.mjs
->     <V-Trim>/scripts/check-vtrim-translator.mjs
->     <V-Trim>/docs/vtrim-integration.md   （转译接口正文）
+>     <YekiTrim>/tools/polish-to-dhampir.mjs
+>     <YekiTrim>/scripts/check-yekitrim-translator.mjs
+>     <YekiTrim>/docs/yekitrim-integration.md   （转译接口正文）
 >
 > 下面的命令与读数**保持原样不动** —— 它们是当时的实测记录，改掉就不是记录了。
 
@@ -21,7 +21,7 @@
 
 转译器在 `tools/polish-to-dhampir.mjs`。**这份文档记的是实测，不是设计推演。**
 
-**读数总表**（与 V-Trim 成片逐像素比，越低越像；V-Trim 走 JPEG q=0.6 有底噪）：
+**读数总表**（与 YekiTrim 成片逐像素比，越低越像；YekiTrim 走 JPEG q=0.6 有底噪）：
 
 | | 第一轮 | 第二轮 | 第三轮（当前） |
 |---|---|---|---|
@@ -42,18 +42,18 @@
 | | 时长 |
 |---|---|
 | 源 `clip.mp4` | 114.383s |
-| **V-Trim 成片** | **96.900s** ← 短了 17.49s |
+| **YekiTrim 成片** | **96.900s** ← 短了 17.49s |
 | 三段 `mute_ranges` | 5.30 + 2.36 + 9.83 = **17.49s** ← 正好对上 |
 
 也就是说 `mute_ranges` 里那些段**在成片里根本不存在**，后面所有内容
 **整体前移**。按"只静音、不裁剪"转出来的东西从第一刀（56.14s）之后
 **全部错位**，最大偏 17.49 秒。
 
-实测对账（把 V-Trim 的时刻换算成"源时刻"之后）：
+实测对账（把 YekiTrim 的时刻换算成"源时刻"之后）：
 
-    V-Trim 65s  <-> 源 70.30s   逐像素差  9.17（错位时是 28.18）
-    V-Trim 79s  <-> 源 84.30s   逐像素差  6.72（错位时是 93.74）
-    V-Trim 90s  <-> 源 97.66s   逐像素差  8.39
+    YekiTrim 65s  <-> 源 70.30s   逐像素差  9.17（错位时是 28.18）
+    YekiTrim 79s  <-> 源 84.30s   逐像素差  6.72（错位时是 93.74）
+    YekiTrim 90s  <-> 源 97.66s   逐像素差  8.39
 
 **修法**（三件事一起做）：
 
@@ -64,11 +64,11 @@
    字幕与弹幕要另写一份文件（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`），
    跨剪辑点的 cue **切成两段**（只按起点重映射会让整条错位）。
 
-改完成片 96.867s，与 V-Trim 的 96.900s 只差 33ms（2 帧取整）。
+改完成片 96.867s，与 YekiTrim 的 96.900s 只差 33ms（2 帧取整）。
 
-### 2. 运镜：V-Trim 是**状态机**，不是"每条事件画两个端点"
+### 2. 运镜：YekiTrim 是**状态机**，不是"每条事件画两个端点"
 
-权威实现在 `vtrim-polish/templates/index.html:1398 getActiveCamera()`：
+权威实现在 `yekitrim-polish/templates/index.html:1398 getActiveCamera()`：
 
 ```js
 var zoom = 1.0                        // 初值，不是第一个事件的值
@@ -83,7 +83,7 @@ for each camera 事件 c:
 **我先前三条都做错了**：
 
 - **过渡只占事件开头 `td`（≤0.6s）**，我却让它在相邻两条事件之间
-  一路插值 —— 实测 45s 处 zoom 是 1.3→1.5 的中间值，而 V-Trim 稳稳的 1.3
+  一路插值 —— 实测 45s 处 zoom 是 1.3→1.5 的中间值，而 YekiTrim 稳稳的 1.3
   （**差 42.46/255**）。
 - **远景（`远`）进出是硬切**（`td` 当 0），我按普通过渡算。
 - **初值是 1.0**，我直接用了第一个事件的值。
@@ -93,7 +93,7 @@ for each camera 事件 c:
 插值 —— 于是 `offset` 也是同一条缓动曲线上的线性量，
 `x`/`y`/`scale` 用同一个 easing 写关键帧就是**逐值等价**的。
 
-唯一的近似：V-Trim 用 `pow2_out`、本仓只有 `ease_out`（同族不同参）。
+唯一的近似：YekiTrim 用 `pow2_out`、本仓只有 `ease_out`（同族不同参）。
 
 **硬切要"钉前一帧"**：两个关键帧落在同一帧上会互相覆盖，
 曲线仍会从**上一个关键帧**插值过来。所以硬切要在 `t-1` 帧把
@@ -128,11 +128,11 @@ popIn = 0.35, floatUp = 0.4, fadeOut = 0.3
 **抽帧也看不出来**（`opacity` 的 fallback 是 `layer.opacity = 1.0`，
 等于"一直满不透明"）。只有对比"有贴纸 vs 无贴纸"才看得出来。
 
-### 4. 字幕/弹幕样式：抄 V-Trim 模板里的**实际值**
+### 4. 字幕/弹幕样式：抄 YekiTrim 模板里的**实际值**
 
-V-Trim 的字幕/弹幕样式写在 `templates/index.html:747` 的 CSS 里：
+YekiTrim 的字幕/弹幕样式写在 `templates/index.html:747` 的 CSS 里：
 
-| | V-Trim | 我先前（缺省） |
+| | YekiTrim | 我先前（缺省） |
 |---|---|---|
 | 字幕字号 | `72px` → `font_ratio = 72/1080` | `0.055`（≈59px） |
 | 字幕颜色 | `#dcbda0` | 纯白 |
@@ -140,9 +140,9 @@ V-Trim 的字幕/弹幕样式写在 `templates/index.html:747` 的 CSS 里：
 | 弹幕字号 | `42px` → `font_ratio = 42/1080` | `0.04`（≈43px，碰巧接近） |
 | 弹幕颜色 | `#ffffff` | 纯白（碰巧一致） |
 
-实测字幕字色：本仓 `(211,183,159)` / V-Trim `(213,185,162)` / 目标 `(220,189,160)` ✓
+实测字幕字色：本仓 `(211,183,159)` / YekiTrim `(213,185,162)` / 目标 `(220,189,160)` ✓
 
-**弹幕滚动时长**从 V-Trim 源码推出（`parse/text.rs:74`）：
+**弹幕滚动时长**从 YekiTrim 源码推出（`parse/text.rs:74`）：
 
 ```rust
 let travel = (1080.0 + entry.text.len() as f64 * 32.0) / 150.0;
@@ -153,7 +153,7 @@ let travel = (1080.0 + entry.text.len() as f64 * 32.0) / 150.0;
 
 ### 5. 顺带：每条 camera 自己的 `origin` 要用
 
-V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` 的中心**
+YekiTrim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` 的中心**
 —— 样本 B 里就有一条 `origin = "50.00% 50.00%" anchor="center"`
 （画中画拉远那一档）。我先前一律用 liver 中心。
 
@@ -163,8 +163,8 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 |---|---|
 | 字幕淡入淡出 | `SubtitleStyle` 只有 `font_ratio/bottom_margin/max_lines/color/outline`，**没有动画字段** |
 | 弹幕 color / opacity / 淡入淡出 | `DanmakuSpec` 只有 `asset_id/lanes/duration_ms/font_ratio` |
-| 字幕描边色与宽度 | 只有 `outline: bool`（V-Trim 是 `12px #403c3b`） |
-| 弹幕逐条滚动时长 | 本仓在**轨道级**一个值；V-Trim 每条按文本字节数算 |
+| 字幕描边色与宽度 | 只有 `outline: bool`（YekiTrim 是 `12px #403c3b`） |
+| 弹幕逐条滚动时长 | 本仓在**轨道级**一个值；YekiTrim 每条按文本字节数算 |
 
 实测的对应公式（要实现时照这个抄）：
 
@@ -202,11 +202,11 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 |---|---|
 | 源 `clip.mp4` | **-24.2 dB** |
 | 我的产物（第一版） | **-91.0 dB**（数字静音） |
-| V-Trim 自己的成片 | **-24.3 dB** |
+| YekiTrim 自己的成片 | **-24.3 dB** |
 | 我的产物（修好后） | **-24.2 dB** ✅ |
 
 **根因**：本仓的音轨是**显式**的 —— 不写一条引用视频素材的音频层，
-就真的没有原声。而 V-Trim 那边原声是**默认就有的底**
+就真的没有原声。而 YekiTrim 那边原声是**默认就有的底**
 （`mute_ranges` 正说明它把原声当成一条可静音的基线）。
 
 **修法**：补一条原声轨，并把 `mute_ranges` 表达成**把原声切段**。
@@ -217,9 +217,9 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 `assets/stickers/` 下有 `ysyk_0.9.0/`（样本 A，210 个 GIF），
 或者**平铺**（样本 B，6 个 GIF）。两种布局都要认。
 
-**更麻烦的一层**：V-Trim 的 `sticker_tag` 是 LLM 的**意图词**
+**更麻烦的一层**：YekiTrim 的 `sticker_tag` 是 LLM 的**意图词**
 （`搞笑`/`震惊`/`看热闹`），不是贴纸包里的 tag（`笑`/`惊讶`/`害怕`）——
-这是两段流程：LLM 挑 tag，`Step2b` 再按 tag 查文件（V-Trim `llm/mod.rs:280`）。
+这是两段流程：LLM 挑 tag，`Step2b` 再按 tag 查文件（YekiTrim `llm/mod.rs:280`）。
 
 - **样本 A**：`name`/`source` 都是空的（Step2b 没跑）→ 只能同义映射 + 借贴纸包；
 - **样本 B**：`name`/`source` **填好了** → 直接用 `name`，最准。
@@ -245,12 +245,12 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 
 **样本 B 的弹幕要转格式**：本仓的弹幕轨吃的是 **ASS**
 （一条 `Dialogue` 一行，`danmaku::parse_ass_danmaku`），
-而 V-Trim 给的是 `clip.dm.srt` —— 一个"SRT 外壳 + 里面塞了 ASS 覆盖标签"
+而 YekiTrim 给的是 `clip.dm.srt` —— 一个"SRT 外壳 + 里面塞了 ASS 覆盖标签"
 （`{\move(...)}`、`{\pos(...)}`、`{\c&H...}`）的混合体。所以转一道写成 ASS。
 
 **覆盖标签原样留着**：本仓解析时本来就会剥掉，而且 `\move` 的坐标
 **故意不参与布局**（落点由 `DanmakuSpec` 与目标尺寸统一算，两端拿同一份）。
-留着的好处是"这份 ASS 就是 V-Trim 那份的直译"。
+留着的好处是"这份 ASS 就是 YekiTrim 那份的直译"。
 
 转出来的 ASS 用**绝对路径**登记 —— 它住在工程文件旁边，
 而 `--asset-root` 通常指向 clip 目录，用相对 uri 会找不到（实测报 `os error 2`）。
@@ -270,7 +270,7 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 - 独立 `shake` 事件是"这一下猛地一晃"（短、幅度大）。
 
 本仓两者都落在 `shake` 特效上，区别只在**时间窗**与**幅度**。
-`intensity`（0.4/0.6）是 V-Trim 的观感档位，本仓 `amount` 是像素位移比例 ——
+`intensity`（0.4/0.6）是 YekiTrim 的观感档位，本仓 `amount` 是像素位移比例 ——
 **不是同一把尺子**，所以按 0.05 缩放并报 `CLAMP`。
 
 另外一个坑：`seed` 参数有范围（**0..=4096**，校验会拦）。
@@ -279,8 +279,8 @@ V-Trim 每条 camera 都带 `origin`，而且**不一定等于 `layout.liver` �
 
 ### 贴纸尺寸：猜的和真的是两回事
 
-我第一版猜 `STICKER_SIZE = 220`，实测 V-Trim 成片里量出来约 **290px**。
-去 V-Trim 源码里找到了确切规则（`process/placement.rs:36-92`）：
+我第一版猜 `STICKER_SIZE = 220`，实测 YekiTrim 成片里量出来约 **290px**。
+去 YekiTrim 源码里找到了确切规则（`process/placement.rs:36-92`）：
 
 ```rust
 pub const STICKER_SIZE: f64 = 280.0;           // 盒子边长基准
@@ -292,7 +292,7 @@ pub fn sticker_size(&self) -> f64 { STICKER_SIZE * self.sticker_scale() }
 我的"左上角"理解是对的，但**尺寸猜错了**，于是"挪半个盒子"也挪错了。
 
 修法：盒子 = `280 * min(W,H)/1080`；素材是 500×500 原图，所以
-`scale = 盒子 / max(素材宽, 素材高)`。改完实测与 V-Trim 对齐。
+`scale = 盒子 / max(素材宽, 素材高)`。改完实测与 YekiTrim 对齐。
 
 `280/1080 = 25.9%` —— 记这个比例比记"280px"更通用（竖屏短边也是 1080）。
 
@@ -377,7 +377,7 @@ table.insert(asset.id.clone(), timebase);   // frame_count 默认 None
 **契约里没有"循环"这个概念**，于是只有两条歪路：
 
 1. **谎报 `frame_count`** —— 校验过，但渲染时读不存在的帧；
-2. **缩短贴纸层** —— 动图放完就消失，与 V-Trim 行为不同。
+2. **缩短贴纸层** —— 动图放完就消失，与 YekiTrim 行为不同。
 
 两条都是**用错的形状去套**。所以加了 `Layer.loop_source: bool`（默认 `false`）：
 
@@ -396,7 +396,7 @@ table.insert(asset.id.clone(), timebase);   // frame_count 默认 None
 
 ## 6. 最终转译结果
 
-    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim/translated.doc.json
+    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim/translated.doc.json
 
 | | 样本 A | 样本 B |
 |---|---|---|
@@ -430,17 +430,17 @@ overlaps: ["a0[voice-0] 与 a1[sfx-0-suspicion1] 在第 222 帧叠上，相加�
 |---|---|
 | 我的产物 | **-25.7 dB** |
 | 源 `clip.mp4` | **-25.7 dB** |
-| V-Trim 成片 | **-25.8 dB** |
+| YekiTrim 成片 | **-25.8 dB** |
 
 
 ---
 
 ## 7. `camera` 是**两种不同的运镜**（第一轮就发现，仍然成立）
 
-### V-Trim 的 camera
+### YekiTrim 的 camera
 
 `layout.liver` 定义主播区域（自由选框）。`camera` 放大的是**那一块**，
-四周（游戏画面、弹幕面板）留在原地。所以 V-Trim 的成片**永远铺满**。
+四周（游戏画面、弹幕面板）留在原地。所以 YekiTrim 的成片**永远铺满**。
 
 ### 本仓的 `Transform.scale`
 
@@ -456,9 +456,9 @@ overlaps: ["a0[voice-0] 与 a1[sfx-0-suspicion1] 在第 222 帧叠上，相加�
 
 代价是"聚焦"弱一些，换**画面完整**。报成 `CLAMP` 而不是假装没差。
 
-**一个实测出来的副作用**：夹住之后画面比 V-Trim 更"推进" ——
+**一个实测出来的副作用**：夹住之后画面比 YekiTrim 更"推进" ——
 所以**源素材像素里烧着的东西会被裁掉**（样本 B 的日文歌词字幕在左下角，
-V-Trim 的成片保留着，我这里裁出去了）。这不是 bug，是"整帧缩放 vs 分区缩放"
+YekiTrim 的成片保留着，我这里裁出去了）。这不是 bug，是"整帧缩放 vs 分区缩放"
 这个语义差的直接后果，也是为什么补"分区变换"最有价值。
 
 ---
@@ -468,25 +468,25 @@ V-Trim 的成片保留着，我这里裁出去了）。这不是 bug，是"整�
 | 项 | 为什么 |
 |---|---|
 | `cover` | 封面是**静态图产出**（标题 4~6 行 + 26 个参数），与逐帧合成不是同一条路 |
-| `style.subtitle` | V-Trim 的字幕样式（字体/颜色/描边/入场动画 `cycle-5`），本仓字幕有独立样式契约 |
+| `style.subtitle` | YekiTrim 的字幕样式（字体/颜色/描边/入场动画 `cycle-5`），本仓字幕有独立样式契约 |
 | `style.danmaku` | 本仓弹幕只渲染成统一颜色与缺省泳道（素材里的 `\c` 高亮标签会被剥掉） |
 | `sfx/poka02.mp3`（样本 A） | 文件不存在 |
 
 ### 仍需注意的 CLAMP（观感差异是真的）
 
 - **运镜偏移被夹**：见 §7（样本 A 24 条、样本 B 12 条）。
-- **`shake intensity` 缩放**：V-Trim 的档位 vs 本仓的像素位移比例。
+- **`shake intensity` 缩放**：YekiTrim 的档位 vs 本仓的像素位移比例。
 - **`sfx` 单条音量**：本仓契约**还没有每层增益字段**（T13 的 `gain` 固定 1.0）。
   样本 B 三条音效的音量（0.4/0.5/0.45）都会丢。
 - **`handheld=true`**（样本 A）：转成整层 `shake` 特效。
 
 以及两条 NOTE：`[sfx] volume = 0.1` 是**混音总线音量**（本仓没有总线增益，
-转译后音效满音量播放）；`shake_enabled = true` 在 V-Trim 里是
+转译后音效满音量播放）；`shake_enabled = true` 在 YekiTrim 里是
 "按音效强弱触发画面抖动"，本仓没有这条链路。
 
 ---
 
-## 9. 对"这个底座能不能对接 V-Trim"的回答
+## 9. 对"这个底座能不能对接 YekiTrim"的回答
 
 **能。两轮下来缺的四块里，三块是转译器的问题（已修），一块是契约缺口（已补）。**
 
@@ -500,14 +500,14 @@ V-Trim 的成片保留着，我这里裁出去了）。这不是 bug，是"整�
 
 **分区变换** —— 只对某个矩形应用缩放。这是唯一一处"语义差"而非"没有"，
 也是差距最大的一处，需要 `Composite` 层支持。
-补上它，`camera` 才能与 V-Trim 完全等价，源像素里的内容也不会被误裁。
+补上它，`camera` 才能与 YekiTrim 完全等价，源像素里的内容也不会被误裁。
 
 ### 两个仍然没定的判断
 
 1. **每层音频增益**：契约里 `gain` 字段 T13 已经有了，但没接进序列化，
    转译器只能丢掉音量。这是个小改动。
 2. **`mute_ranges`**：现在表达成"切出 N 段不连续原声"，语义等价、时长一致。
-   但它到底是"底座该会的表达"还是"V-Trim 该在写工程前就裁好"，
+   但它到底是"底座该会的表达"还是"YekiTrim 该在写工程前就裁好"，
    按设计文档 §7 的边界仍可争议。
 
 ---
@@ -515,17 +515,17 @@ V-Trim 的成片保留着，我这里裁出去了）。这不是 bug，是"整�
 ## 10. 复现
 
 ```bash
-node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim2/translated.doc.json
+node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim2/translated.doc.json
 
-target/debug/dhampir.exe probe --project out/vtrim2/translated.doc.json
+target/debug/dhampir.exe probe --project out/yekitrim2/translated.doc.json
 
 # 出帧：--asset-root 指向 clip 目录；有字幕轨时 --font-file 是必填的
-target/debug/dhampir.exe frame --project out/vtrim2/translated.doc.json \
-    --frame 2928 --out out/vtrim2/f --asset-root "<clip 目录>" \
+target/debug/dhampir.exe frame --project out/yekitrim2/translated.doc.json \
+    --frame 2928 --out out/yekitrim2/f --asset-root "<clip 目录>" \
     --font-file C:\Windows\Fonts\Deng.ttf
 
-target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
-    --from 0 --to 6862 --out out/vtrim2/full.mp4 --asset-root "<clip 目录>" \
+target/debug/dhampir.exe render --project out/yekitrim2/translated.doc.json \
+    --from 0 --to 6862 --out out/yekitrim2/full.mp4 --asset-root "<clip 目录>" \
     --font-file C:\Windows\Fonts\Deng.ttf
 ```
 
@@ -555,14 +555,14 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 |---|---|
 | 源 `clip.mp4` | **-24.2 dB** |
 | 我的产物（第一版） | **-91.0 dB**（数字静音） |
-| V-Trim 自己的成片 | **-24.3 dB** |
+| YekiTrim 自己的成片 | **-24.3 dB** |
 
 **根因**：本仓的音轨是**显式**的 —— 不写一条引用视频素材的音频层，
-就真的没有原声。而 V-Trim 那边原声是**默认就有的底**
+就真的没有原声。而 YekiTrim 那边原声是**默认就有的底**
 （`mute_ranges` 正说明它把原声当成一条可静音的基线）。
 
 **修法**：补一条原声轨，并把 `mute_ranges` 表达成**把原声切段**
-（V-Trim 是"掐掉不要"，本仓没有"静音区间"，但"N 段不连续的原声"语义等价）。
+（YekiTrim 是"掐掉不要"，本仓没有"静音区间"，但"N 段不连续的原声"语义等价）。
 实测这份工程的 2 段静音产生 3 段原声层。
 
 ### 2. 贴纸：我查错了目录
@@ -573,8 +573,8 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 但这里还有个真问题：**没有 `ysyk.toml`**（tag → 文件的映射表），
 而 `polish.toml` 里的 `sticker_tag`（`搞笑`/`震惊`/`看热闹`）
 是 LLM 的**意图词**，不是贴纸包里的 tag（`笑`/`惊讶`/`害怕`）——
-这是 V-Trim 的两段流程：LLM 挑 tag，`Step2b` 再按 tag 查文件
-（见 V-Trim `llm/mod.rs:280`）。这份工程的 `name`/`source` 都是空的，
+这是 YekiTrim 的两段流程：LLM 挑 tag，`Step2b` 再按 tag 查文件
+（见 YekiTrim `llm/mod.rs:280`）。这份工程的 `name`/`source` 都是空的，
 说明 **Step2b 从没跑过**。
 
 **修法**：
@@ -610,7 +610,7 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 **契约里没有"循环"这个概念**，于是只有两条歪路：
 
 1. **谎报 `frame_count`** —— 校验过，但渲染时读不存在的帧；
-2. **缩短贴纸层** —— 动图放完就消失，与 V-Trim 行为不同。
+2. **缩短贴纸层** —— 动图放完就消失，与 YekiTrim 行为不同。
 
 两条都是**用错的形状去套**。所以加了 `Layer.loop_source: bool`（默认 `false`）：
 
@@ -629,7 +629,7 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 
 ## 6. 最终转译结果（第二轮）
 
-    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim/translated.doc.json
+    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim/translated.doc.json
 
 **10 条轨 / 6 个素材 / 丢失 4 / 降级 24 / 注意 18**（第一版是 3 轨 / 12 丢）。
 
@@ -649,11 +649,11 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 
 ## 7. `camera` 是**两种不同的运镜**（第一轮就发现，仍然成立）
 
-### V-Trim 的 camera
+### YekiTrim 的 camera
 
 `layout.liver` 定义主播区域（自由选框 `78.78%~94.15%` × `46.37%~77.51%`）。
 `camera` 放大的是**那一块**，四周（游戏画面、弹幕面板）留在原地。
-所以 V-Trim 的成片**永远铺满**。
+所以 YekiTrim 的成片**永远铺满**。
 
 ### 本仓的 `Transform.scale`
 
@@ -709,22 +709,22 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 |---|---|
 | `sfx/poka02.mp3` | 文件不存在（同目录里没有） |
 | `cover`（4 行标题 + 26 参数） | 封面是**静态图产出**，与逐帧合成不是同一条路 |
-| `style.subtitle` | V-Trim 的字幕样式参数，本仓字幕有独立样式契约，没逐项对应 |
+| `style.subtitle` | YekiTrim 的字幕样式参数，本仓字幕有独立样式契约，没逐项对应 |
 | `style.danmaku` | 本切片没有弹幕数据，样式无从应用 |
 
 ### 仍需注意的 CLAMP（观感差异是真的）
 
 - **运镜偏移被夹**（多条）：见 §7。
-- **`handheld=true` ×3**：V-Trim 是"镜头手持感"，本仓转成整层 `shake` 特效。
+- **`handheld=true` ×3**：YekiTrim 是"镜头手持感"，本仓转成整层 `shake` 特效。
 - **`sfx` 单条音量 ×2**：本仓契约**还没有每层增益字段**（T13 的 `gain` 固定 1.0）。
 
 以及两条 NOTE：`[sfx] volume = 0.1` 是**混音总线音量**（本仓没有总线增益，
-转译后音效满音量播放）；`shake_enabled = true` 在 V-Trim 里是
+转译后音效满音量播放）；`shake_enabled = true` 在 YekiTrim 里是
 "按音效强弱触发画面抖动"，本仓没有这条链路。
 
 ---
 
-## 10. 对"这个底座能不能对接 V-Trim"的回答
+## 10. 对"这个底座能不能对接 YekiTrim"的回答
 
 **能。第一轮缺的四块里，三块是转译器的问题（已修），一块是契约缺口（已补）。**
 
@@ -739,12 +739,12 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 
 **分区变换** —— 只对某个矩形应用缩放。这是唯一一处"语义差"而非"没有"，
 也是差距最大的一处，需要 `Composite` 层支持。
-补上它，`camera` 才能与 V-Trim 完全等价。
+补上它，`camera` 才能与 YekiTrim 完全等价。
 
 ### 一个仍然没定的判断
 
 `mute_ranges` 现在表达成"切出 N 段不连续原声"，语义等价、时长一致。
-但它到底是"底座该会的表达"还是"V-Trim 该在写工程前就裁好"，
+但它到底是"底座该会的表达"还是"YekiTrim 该在写工程前就裁好"，
 按设计文档 §7 的边界仍可争议 —— 我倾向后者，但这轮先按前者做通了。
 
 ---
@@ -752,12 +752,12 @@ target/debug/dhampir.exe render --project out/vtrim2/translated.doc.json \
 ## 11. 复现
 
 ```bash
-node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim/translated.doc.json
-target/debug/dhampir.exe probe --project out/vtrim/translated.doc.json
-target/debug/dhampir.exe frame  --project out/vtrim/translated.doc.json \
-    --frame 900 --out out/vtrim/frame900 --asset-root "<clip 目录>"
-target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
-    --from 0 --to 6495 --out out/vtrim/full.mp4 --asset-root "<clip 目录>"
+node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim/translated.doc.json
+target/debug/dhampir.exe probe --project out/yekitrim/translated.doc.json
+target/debug/dhampir.exe frame  --project out/yekitrim/translated.doc.json \
+    --frame 900 --out out/yekitrim/frame900 --asset-root "<clip 目录>"
+target/debug/dhampir.exe render --project out/yekitrim/translated.doc.json \
+    --from 0 --to 6495 --out out/yekitrim/full.mp4 --asset-root "<clip 目录>"
 ```
 
 `--asset-root` 必须指向 clip 目录（素材路径都相对它）。
@@ -782,7 +782,7 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 ## 2. 转译结果
 
-    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim/translated.doc.json
+    node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim/translated.doc.json
 
 产出：3 条轨（1 视频 + 1 调整图层 + 1 音轨）、3 个素材、
 19 条运镜（展开成 90 个关键帧）、1 条 overlay。
@@ -792,7 +792,7 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 ### 逐类事件的去向
 
-| V-Trim 事件 | 数量 | 转译成 | 结论 |
+| YekiTrim 事件 | 数量 | 转译成 | 结论 |
 |---|---|---|---|
 | `camera` | 19 | `Layer.keyframes` 驱动 `scale`/`x`/`y` | ✅ 语义**接近**，见 §3 |
 | `overlay`（gradient） | 1 | `Effect{kind:overlay}` 挂在调整图层 | ✅ 干净 |
@@ -806,12 +806,12 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 这一条值得单独写，因为第一版我把它当成"转过去了"，而**出帧一看不是**。
 
-### V-Trim 的 camera
+### YekiTrim 的 camera
 
 `layout.liver` 定义主播区域（自由选框 `78.78%~94.15%` × `46.37%~77.51%`）。
 `camera` 放大的是**那一块**，四周（游戏画面、弹幕面板）留在原地。
 
-所以 V-Trim 的成片**永远铺满** —— 抽它的第 10/15/20 秒核对过，
+所以 YekiTrim 的成片**永远铺满** —— 抽它的第 10/15/20 秒核对过，
 游戏画面始终完整，人物始终在右侧。
 
 ### 本仓的 `Transform.scale`
@@ -830,7 +830,7 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 代价是"聚焦"弱一些，换**画面完整**。报成 `CLAMP` 而不是假装没差。
 
-**这是设计文档 §10 那条边界的具体体现**：V-Trim 的 camera 里混着
+**这是设计文档 §10 那条边界的具体体现**：YekiTrim 的 camera 里混着
 "这个直播间怎么排版"（liver 区域的定义），而本仓只管"像素怎么算出来"。
 要**完全**对齐，本仓需要"分区缩放"（只对某个矩形应用变换），
 那是 `Composite` 管线里的事 —— 现在没有。
@@ -886,7 +886,7 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 ### CLAMP —— 有概念但表达力不够
 
-- **`handheld=true` ×3**：V-Trim 是"镜头手持感"，本仓转成整层 `shake` 特效
+- **`handheld=true` ×3**：YekiTrim 是"镜头手持感"，本仓转成整层 `shake` 特效
 - **`sfx` 单条音量 ×2**：本仓契约**还没有每层增益字段**（T13 的 `gain` 固定 1.0）
 - **运镜偏移被夹**（多条）：见 §3
 
@@ -895,15 +895,15 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 最值得注意的三条：
 
 1. **`[sfx] volume = 0.1`** 是**混音总线音量**，本仓没有总线增益概念。
-   转译后音效将以满音量播放 —— 比 V-Trim 响约 10 倍。
-2. **`shake_enabled = true`**：V-Trim 会**按音效强弱触发画面抖动**，
+   转译后音效将以满音量播放 —— 比 YekiTrim 响约 10 倍。
+2. **`shake_enabled = true`**：YekiTrim 会**按音效强弱触发画面抖动**，
    本仓没有"音效驱动画面"这条链路（两个子系统之间没有连线）。
 3. **`source.subtitles = clip.srt`** 存在且本仓有字幕子系统，
    只是转译器这一版没接 —— 这是**最容易补上的一块**。
 
 ---
 
-## 6. 对"这个底座能不能对接 V-Trim"的回答
+## 6. 对"这个底座能不能对接 YekiTrim"的回答
 
 **能，但缺三块，且缺的位置很明确。**
 
@@ -917,7 +917,7 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 ### 缺的三块（按"补起来值不值"排序）
 
 1. **分层/分区变换**（对应 `camera` 的完全等价）。
-   现在只有整层 `Transform`。要做 V-Trim 那种"只放大 liver 那块"，
+   现在只有整层 `Transform`。要做 YekiTrim 那种"只放大 liver 那块"，
    需要 `Composite` 层支持"对矩形区域应用变换"。
    **这是唯一一处"语义差"而非"没有"的地方**，也是差距最大的一处。
 
@@ -927,14 +927,14 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 3. **"压掉某段原声"**（`mute_ranges`）。
    16.9 秒的内容差异，是**成片长度级别**的影响，不是观感级别。
-   V-Trim 的做法是"在时间轴上掐掉"，本仓的音轨只有"播什么"。
+   YekiTrim 的做法是"在时间轴上掐掉"，本仓的音轨只有"播什么"。
 
 ### 一个必须说清的判断
 
-上面三块里，**第 3 块最可能是"归 V-Trim"而不是"归底座"**。
+上面三块里，**第 3 块最可能是"归 YekiTrim"而不是"归底座"**。
 理由：`mute_ranges` 是**时间轴的裁剪决策**（"这段不要"），
-与"像素怎么算"无关 —— 按设计文档 §7 的边界（"凡是这个直播间怎么排版归 V-Trim"），
-它更像"V-Trim 应该在写工程文件之前就把区间裁好"，
+与"像素怎么算"无关 —— 按设计文档 §7 的边界（"凡是这个直播间怎么排版归 YekiTrim"），
+它更像"YekiTrim 应该在写工程文件之前就把区间裁好"，
 而不是"底座要学会压原声"。
 
 **第 1 块则相反，明确归本仓**：怎么把一个矩形区域的像素放大，是纯渲染问题。
@@ -945,18 +945,18 @@ target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
 
 ```bash
 # 转译（会打印完整的丢弃/降级/注意清单）
-node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/vtrim/translated.doc.json
+node tools/polish-to-dhampir.mjs "<clip 目录>" --out out/yekitrim/translated.doc.json
 
 # 校验
-target/debug/dhampir.exe probe --project out/vtrim/translated.doc.json
+target/debug/dhampir.exe probe --project out/yekitrim/translated.doc.json
 
 # 出一帧看（--asset-root 指向素材目录）
-target/debug/dhampir.exe frame --project out/vtrim/translated.doc.json \
-    --frame 900 --out out/vtrim/frame900 --asset-root "<clip 目录>"
+target/debug/dhampir.exe frame --project out/yekitrim/translated.doc.json \
+    --frame 900 --out out/yekitrim/frame900 --asset-root "<clip 目录>"
 
 # 出片
-target/debug/dhampir.exe render --project out/vtrim/translated.doc.json \
-    --from 0 --to 6495 --out out/vtrim/full.mp4 --asset-root "<clip 目录>"
+target/debug/dhampir.exe render --project out/yekitrim/translated.doc.json \
+    --from 0 --to 6495 --out out/yekitrim/full.mp4 --asset-root "<clip 目录>"
 ```
 
 `--asset-root` 必须指向 clip 目录，因为 `polish.toml` 里的素材路径

@@ -22,7 +22,7 @@
   跳过 `SKIP_DIRS`（`build` / `deps`）与**本工具自己的二进制**（见「边界」），逐文件计数 `MARKERS`（5 个：
   `espeak-ng` / `espeak ng` / `espeak_` / `libespeak` / `piper_phonemize`，**不区分大小写**）。
   显式传单个文件时按原样扫、不做自我过滤（`package` 的门禁走的正是这条）。
-- `package`：版本 → `cargo build --release -p yekitrim-cli --locked` → `vtrim.exe` → 调 `scan` 门禁 →
+- `package`：版本 → `cargo build --release -p yekitrim-cli --locked` → `yekitrim.exe` → 调 `scan` 门禁 →
   查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256 →
   **写 `<zip>.sha256.txt` 校验文件**（2026-10-01 起自动生成，见「边界」最后一条）。
 - 打包内容：`yekitrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、

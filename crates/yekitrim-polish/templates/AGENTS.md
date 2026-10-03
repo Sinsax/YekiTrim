@@ -25,7 +25,7 @@
 ## 边界
 
 - ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进 `yekitrim-polish`，
-  运行中的 `vtrim server` 端出的仍是旧页面 —— 「改完没反应」十有八九是没重建/没重启，不是代码没生效。
+  运行中的 `yekitrim server` 端出的仍是旧页面 —— 「改完没反应」十有八九是没重建/没重启，不是代码没生效。
 - ⚠️ **`cover.html` 同样经 `include_str!` 进 `cover.rs::COVER_HTML`**（改它也要重建二进制）。
   它有两个**给静态渲染通道**（Takumi，见 polish 卡末段）准备的占位：
   ① `:root{--fs:__FONT_SIZE__;…}` 那个**静态变量块** —— 变量的唯一来源曾是页面脚本的 `setProperty`，

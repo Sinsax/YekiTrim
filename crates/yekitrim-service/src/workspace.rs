@@ -1,26 +1,26 @@
-//! Workspace：一个 V-Trim 工程在磁盘上的固定根。
+//! Workspace：一个 YekiTrim 工程在磁盘上的固定根。
 //!
-//! CLI 历史上依赖进程当前工作目录（CWD）定位 `vtrim.toml` 与输出目录。
-//! `vtrim server` 是长驻进程，需要在同一个进程内切换多个工程，因此服务层统一使用
+//! CLI 历史上依赖进程当前工作目录（CWD）定位 `yekitrim.toml` 与输出目录。
+//! `yekitrim server` 是长驻进程，需要在同一个进程内切换多个工程，因此服务层统一使用
 //! 基于配置文件绝对路径的 `Workspace` 来解析所有相对路径。
 //!
-//! CLI 原有命令仍走 `./vtrim.toml` + CWD 语义；Service 层使用本类型。
+//! CLI 原有命令仍走 `./yekitrim.toml` + CWD 语义；Service 层使用本类型。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// 表示一个 V-Trim 工程及其文件根。
+/// 表示一个 YekiTrim 工程及其文件根。
 #[derive(Debug, Clone)]
 pub struct Workspace {
-    /// `vtrim.toml` 的绝对路径。
+    /// `yekitrim.toml` 的绝对路径。
     pub config_file: PathBuf,
     /// 工程根目录：`config_file` 所在目录。
     pub root_dir: PathBuf,
 }
 
 impl Workspace {
-    /// 从显式 `--config` 参数或默认 `./vtrim.toml` 创建 Workspace。
+    /// 从显式 `--config` 参数或默认 `./yekitrim.toml` 创建 Workspace。
     ///
     /// 不会因为项目文件不存在而报错；项目文件可以在稍后 `init` 时创建。
     pub fn load(config_flag: Option<&Path>) -> Result<Self> {
@@ -55,7 +55,7 @@ impl Workspace {
         }
     }
 
-    /// 将任意路径解析为相对工程根的路径（供写入 vtrim.toml 时保持可移植性）。
+    /// 将任意路径解析为相对工程根的路径（供写入 yekitrim.toml 时保持可移植性）。
     #[allow(dead_code)]
     pub fn rel(&self, path: &Path) -> PathBuf {
         match path.strip_prefix(&self.root_dir) {

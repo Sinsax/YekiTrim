@@ -31,7 +31,7 @@
 - `run_all()` — 无视文件检查从头跑到底，`process` 命令用
 - `run_until(max)` — 跑到指定 stage 为止，`process --dry-run` 用
 
-`current_stage` 不再持久化到 `vtrim.toml`，改为从输出文件存在性自动推导：
+`current_stage` 不再持久化到 `yekitrim.toml`，改为从输出文件存在性自动推导：
 
 | 文件存在 | 推导阶段 |
 |---------|---------|
@@ -53,7 +53,7 @@
 - **编号连续是硬要求**：`Stage::stage_number()` 与 `STAGE_*` 一一对应，跳号会让 `run_until`
   与状态机推导一起错位；新增阶段要同时改 `stage.rs` 常量、`current_stage()` 表与上表。
 - **弹幕解析必须在 `resolve_danmaku` 里做**：`danmaku_file` 是相对工程目录存的
-  （`vtrim init` 用 `path_to_rel` 写），读取侧按**工程根（`output_dir` 的父目录）→ 视频父目录**
+  （`yekitrim init` 用 `path_to_rel` 写），读取侧按**工程根（`output_dir` 的父目录）→ 视频父目录**
   的顺序拼绝对路径，两个基准都试一遍。
   ⚠️ 少了这一步，相对路径会被当成"相对进程 CWD"：弹幕永远找不到，热度静默退化成纯字幕密度、
   切片也不会生成 `clip.dm.srt`。反过来，**别在 stage 里再各写一份路径拼接**。

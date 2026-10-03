@@ -1,9 +1,9 @@
 //! 进程内「同一文件路径串行化」。
 //!
-//! Server 的多个 handler 会对 `polish.toml` / `events.json` / `vtrim.toml` /
+//! Server 的多个 handler 会对 `polish.toml` / `events.json` / `yekitrim.toml` /
 //! 全局 `config.toml` 做 read-modify-write；前端确实会并发发 PUT（例如时间轴保存
 //! 与贴纸配置同时提交），无锁时后写的会覆盖先写的。这里按 canonical path 串行化
-//! 同一文件的整段读改写，跨 crate（vtrim-cli / vtrim-polish）共用。
+//! 同一文件的整段读改写，跨 crate（yekitrim-cli / yekitrim-polish）共用。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,7 +64,7 @@ fn sync_lock_for(path: &Path) -> Arc<Mutex<()>> {
 
 /// **同步**版路径锁：给跑在同步上下文里的 read-modify-write 用。
 ///
-/// 为什么不让异步版统一：core 管线的 `edit_toml_at`（写 `vtrim.toml`）是同步函数，
+/// 为什么不让异步版统一：core 管线的 `edit_toml_at`（写 `yekitrim.toml`）是同步函数，
 /// 它在阻塞线程上执行，拿不到 tokio 的异步锁；而设置页保存项目配置走的是
 /// `with_path_lock` + 同一个 `edit_toml_at`。两边写的是同一份文件，无锁时后写的会把
 /// 先写的键覆盖掉（管线刚写 `transcript_file`，设置页同时保存别的字段 → 丢一个）。
@@ -87,7 +87,7 @@ mod tests {
     /// 20 个并发 read-modify-write 必须全部生效（无锁时会丢更新）。
     #[tokio::test]
     async fn serializes_read_modify_write() {
-        let path = std::env::temp_dir().join("vtrim-filelock-test.txt");
+        let path = std::env::temp_dir().join("yekitrim-filelock-test.txt");
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "0").unwrap();
 
@@ -114,8 +114,8 @@ mod tests {
     /// 不同路径不互相阻塞（按 canonical path 建锁）。
     #[tokio::test]
     async fn distinct_paths_use_distinct_locks() {
-        let a = std::env::temp_dir().join("vtrim-filelock-a.txt");
-        let b = std::env::temp_dir().join("vtrim-filelock-b.txt");
+        let a = std::env::temp_dir().join("yekitrim-filelock-a.txt");
+        let b = std::env::temp_dir().join("yekitrim-filelock-b.txt");
         std::fs::write(&a, "a").unwrap();
         std::fs::write(&b, "b").unwrap();
         let (ra, rb) = tokio::join!(

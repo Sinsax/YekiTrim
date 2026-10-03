@@ -1,6 +1,6 @@
 // 覆盖层（overlay）色档契约的漂移检查。
 //
-// 同一条规则有四份实现：Rust `vtrim-render-core/src/timeline.rs::overlay_stops`、
+// 同一条规则有四份实现：Rust `yekitrim-render-core/src/timeline.rs::overlay_stops`、
 // 出片权威路径 `crates/yekitrim-polish/templates/index.html`、预览求值器
 // `webui/src/polish/engine.js`、以及经 engine 的 `PolishPreview.vue`。
 // 这几份一旦漂移，表现就是"面板里设了颜色、画面上什么都没有"——正是这次要修的 bug。
@@ -15,7 +15,7 @@
 // 改成**从源码文本里抠函数**（与 check-caption-wrap.mjs 同一套配对括号提取），
 // 不加载模块、零依赖、也不动模块类型。
 //
-// Rust 侧那份由 `cargo test -p vtrim-render-core --lib` 覆盖，本脚本只管两份 JS。
+// Rust 侧那份由 `cargo test -p yekitrim-render-core --lib` 覆盖，本脚本只管两份 JS。
 
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'

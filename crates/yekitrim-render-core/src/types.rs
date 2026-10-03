@@ -1,7 +1,7 @@
 //! 渲染核心的输入类型定义。
 //!
-//! 这些类型从 vtrim-polish 的 project/config.rs 迁入，现在是 `vtrim-polish` 的字段类型
-//! （`polish.toml` 的序列化格式就是它们）；vtrim-polish 通过 `pub use` 重导出保持既有代码路径兼容。
+//! 这些类型从 yekitrim-polish 的 project/config.rs 迁入，现在是 `yekitrim-polish` 的字段类型
+//! （`polish.toml` 的序列化格式就是它们）；yekitrim-polish 通过 `pub use` 重导出保持既有代码路径兼容。
 
 use std::collections::HashMap;
 
@@ -843,7 +843,7 @@ pub fn region_origin(region: &LayoutRegion) -> Option<String> {
     None
 }
 
-// ===== 文本输入（渲染核心的最小字幕/弹幕结构，与 vtrim-core 解耦）=====
+// ===== 文本输入（渲染核心的最小字幕/弹幕结构，与 yekitrim-core 解耦）=====
 
 /// 字幕输入：与 data/subtitles.json 的条目结构一致。
 #[derive(Debug, Clone, serde::Deserialize)]

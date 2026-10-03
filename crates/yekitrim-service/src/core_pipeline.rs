@@ -147,7 +147,7 @@ fn warm_loudness_cache(clip_dir: &Path) {
 /// 上面那条的批量版：按 `cutting::Cutter` 的同一套目录命名算出每个事件的目标目录，
 /// 逐个补精修工程 + 预热响度曲线（[`warm_loudness_cache`]，只补缺失、命中零成本）。
 /// **只 warn 不失败** —— 剪切本身已经成功，前端进精修时还有一次兜底
-/// init（`vtrim-server` 的 `ensure_polish_project`）。返回新建条数。
+/// init（`yekitrim-server` 的 `ensure_polish_project`）。返回新建条数。
 pub async fn init_polish_for_events(
     output_dir: &Path,
     events: &[yekitrim_core::types::Event],

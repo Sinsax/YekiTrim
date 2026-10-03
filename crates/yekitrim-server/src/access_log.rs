@@ -132,12 +132,12 @@ mod tests {
     #[test]
     fn webhook_token_is_redacted_in_logs() {
         assert_eq!(
-            redact_path("/api/ingest/bililive/vtrim_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"),
+            redact_path("/api/ingest/bililive/yekitrim_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"),
             "/api/ingest/bililive/***"
         );
         // 带 query / 多段路径同样只吃掉 token 段
         assert_eq!(
-            redact_path("/api/ingest/bililive/vtrim_secret123?x=1"),
+            redact_path("/api/ingest/bililive/yekitrim_secret123?x=1"),
             "/api/ingest/bililive/***?x=1"
         );
         // 其它路径一个字符都不动

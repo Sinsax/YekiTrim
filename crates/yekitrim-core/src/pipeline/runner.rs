@@ -1,7 +1,7 @@
 //! pipeline::runner：管线编排器（顺序驱动 stage，按文件存在性决定跑不跑、从哪跑）。
 //!
 //! 入口：`PipelineRunner::{new, add_stage, config, set_progress, run, run_all, run_until}`。
-//! 边界：三种运行模式各对应一类命令，别各写一套；弹幕相对路径解析只在这里的 `resolve_danmaku`（工程根 → 视频父目录，两个基准都试） —— 见 `crates/vtrim-core/src/pipeline/AGENTS.md`
+//! 边界：三种运行模式各对应一类命令，别各写一套；弹幕相对路径解析只在这里的 `resolve_danmaku`（工程根 → 视频父目录，两个基准都试） —— 见 `crates/yekitrim-core/src/pipeline/AGENTS.md`
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::types::PipelineContext;
 /// 解析 `danmaku_file`：相对路径按**工程根**（= `output_dir` 的父目录）解析，
 /// 找不到再退回视频同目录。
 ///
-/// `danmaku_file` 是相对工程目录写进 vtrim.toml 的（`vtrim init` 的 `path_to_rel`，
+/// `danmaku_file` 是相对工程目录写进 yekitrim.toml 的（`yekitrim init` 的 `path_to_rel`，
 /// 写入侧一律按工程根），所以**工程根是权威基准**；视频同目录只是老习惯的兜底
 /// （项目里的素材通常和视频放在一起）。只按视频目录解析会在
 /// 「视频在 `root/videos/`、弹幕在 `root/dm.xml`」这类布局下静默失效。
@@ -190,12 +190,12 @@ mod tests {
 
     #[test]
     fn relative_danmaku_file_resolves_against_video_dir() {
-        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-danmaku-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("video.mp4"), b"x").unwrap();
         std::fs::write(dir.join("dm.ass"), b"[Events]\n").unwrap();
 
-        // 相对路径 = 相对工程目录（vtrim.toml 就是这么存的）→ 必须解析成绝对路径且找得到
+        // 相对路径 = 相对工程目录（yekitrim.toml 就是这么存的）→ 必须解析成绝对路径且找得到
         let mut ctx = ctx_in(&dir);
         inject_config(&mut ctx, &config_with_danmaku("dm.ass"));
         let resolved = ctx.danmaku_path.clone().unwrap();
@@ -220,7 +220,7 @@ mod tests {
     /// 只按视频目录解析会静默失效（热度退化成纯字幕密度、`clip.dm.srt` 也没有）。
     #[test]
     fn danmaku_in_project_root_resolves_when_video_is_nested() {
-        let dir = std::env::temp_dir().join(format!("vtrim-danmaku-nested-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-danmaku-nested-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("videos")).unwrap();
         std::fs::write(dir.join("videos/video.mp4"), b"x").unwrap();
@@ -233,7 +233,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 真实工程只读诊断：把 `vtrim.toml` + 视频目录喂进解析逻辑，打印解析出的弹幕路径
+    /// 真实工程只读诊断：把 `yekitrim.toml` + 视频目录喂进解析逻辑，打印解析出的弹幕路径
     /// 与热力图概况（**不写任何文件**）。用来核对"检测到底读到没读到弹幕"。
     ///
     /// ```text
@@ -247,7 +247,7 @@ mod tests {
             return;
         };
         let dir = PathBuf::from(dir);
-        let config = crate::config::load_config_at(&dir.join(crate::path::PROJECT_CONFIG_FILE)).expect("读取 vtrim.toml");
+        let config = crate::config::load_config_at(&dir.join(crate::path::PROJECT_CONFIG_FILE)).expect("读取 yekitrim.toml");
         let input = config
             .project
             .input_file

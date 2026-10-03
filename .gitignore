@@ -36,16 +36,16 @@ __pycache__/
 # ---- 运行时数据（绝不能进公开仓库）----
 #
 # ⚠️ 在仓库根目录直接跑发行版 exe，会在**当前目录**生成这些：
-# `.vtrim/`（含带真 key 的 `llm.toml` 与账号账本 `vtrim.db`，后者存明文邀请码与
+# `.yekitrim/`（含带真 key 的 `llm.toml` 与账号账本 `yekitrim.db`，后者存明文邀请码与
 # 全部项目的真实绝对路径）、`output/`、`stickers/`、`resources/fonts/`（用户自己丢进去的
 # 字体，多半是有版权/授权的商业字体，绝不能进公开仓库）。
 # 一次 `git add -A` 就会把它们带进公开仓库 —— 这几条就是拦它的。
-.vtrim/
+.yekitrim/
 /stickers/
 /output/
 /data/
 /resources/
-vtrim.toml
+yekitrim.toml
 
 # 账号账本 / 会话 / 审计（SQLite）
 *.db
@@ -65,7 +65,7 @@ vtrim.toml
 # 配置被写坏时的备份（`ensure_global_config` 生成）、以及各种手改残留
 *.bak
 *.toml.broken
-vtrim.lock
+yekitrim.lock
 
 # ---- 工程产物 ----
 # 媒体文件已按扩展名忽略（见上），这里补上同目录的文本产物。

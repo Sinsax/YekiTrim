@@ -28,7 +28,7 @@ use crate::net::{browser_client, deflate};
 
 /// 弹幕接口前缀。
 pub const DANMAKU_API: &str = "https://comment.bilibili.com";
-/// 落盘文件名（写进 `vtrim.toml` 的 `danmaku_file`）。
+/// 落盘文件名（写进 `yekitrim.toml` 的 `danmaku_file`）。
 pub const DANMAKU_FILE: &str = "danmaku.xml";
 
 /// 一次弹幕抓取的结果。
@@ -234,10 +234,10 @@ mod tests {
         assert_eq!(got.entries, 2);
     }
 
-    /// 落盘：文件名固定、内容逐字节一致（`vtrim.toml` 里写的就是这个名字）。
+    /// 落盘：文件名固定、内容逐字节一致（`yekitrim.toml` 里写的就是这个名字）。
     #[test]
     fn save_writes_danmaku_xml_into_project_root() {
-        let dir = std::env::temp_dir().join(format!("vtrim-dm-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-dm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let fetch = parse_danmaku_response(1, MAINSITE_XML.as_bytes(), None).unwrap();
         let name = save_danmaku(&dir, &fetch).unwrap();

@@ -1,7 +1,7 @@
 //! llm::agent：把条目切成窗口、并发跑 LLM 任务的通用编排器（含 checkpoint 续传）。
 //!
 //! 入口：`Agent`（`new` / `with_window_size` / `with_max_concurrent` / `with_cancel` / `run` / `run_with_checkpoint` / `run_windows`）、`AgentTask`、`AgentItem`、`AgentWindow`、`CancelProbe`、`extract_json_array` / `extract_json_object`、`windows_from_checkpoint`。
-//! 边界：checkpoint 按提示词指纹失效（`prompt_fingerprint`），别绕过；并发只由 `LlmConfig::concurrency` 决定，别写死数字 —— 见 `crates/vtrim-core/src/llm/AGENTS.md`
+//! 边界：checkpoint 按提示词指纹失效（`prompt_fingerprint`），别绕过；并发只由 `LlmConfig::concurrency` 决定，别写死数字 —— 见 `crates/yekitrim-core/src/llm/AGENTS.md`
 
 use std::path::Path;
 use std::sync::Arc;
@@ -872,7 +872,7 @@ mod tests {
             AgentItem { index: 1, start: 0.0, end: 1.0, text: "a".into() },
             AgentItem { index: 2, start: 1.0, end: 2.0, text: "b".into() },
         ];
-        let dir = std::env::temp_dir().join(format!("vtrim_agent_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim_agent_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cp = dir.join("checkpoint.json");
 

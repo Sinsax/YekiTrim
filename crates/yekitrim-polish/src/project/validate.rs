@@ -1,7 +1,7 @@
 //! polish::project::validate：`polish.toml` 的加载 / 原子写 / 校验，以及读-改-写的唯一通道。
 //!
 //! 入口：`load_project`、`load_config_from`、`update_polish_toml`、`write_atomic`、`validate_project`。
-//! 边界：长任务落盘只能走 `update_polish_toml`（锁内重新 load + 只覆盖自己负责的字段），不许"开头 load、结尾整份写回" —— 见 `crates/vtrim-polish/src/project/AGENTS.md`
+//! 边界：长任务落盘只能走 `update_polish_toml`（锁内重新 load + 只覆盖自己负责的字段），不许"开头 load、结尾整份写回" —— 见 `crates/yekitrim-polish/src/project/AGENTS.md`
 
 use std::path::Path;
 use super::ProjectFile;
@@ -213,7 +213,7 @@ mod tests {
     /// 临时精修工程：只放一份 polish.toml（`example()` 起手）。
     fn tmp_project(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "vtrim-rmw-{tag}-{}-{:?}",
+            "yekitrim-rmw-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

@@ -873,7 +873,7 @@ pub(super) async fn preview_port_for(state: &AppState, dir: &Path, kind: &str) -
         return Ok(port);
     }
     // 同目录串行：并发首访不要同时起两个监听
-    let _guard = yekitrim_core::filelock::lock_path(&dir.join(format!(".vtrim-preview-{kind}"))).await;
+    let _guard = yekitrim_core::filelock::lock_path(&dir.join(format!(".yekitrim-preview-{kind}"))).await;
     if let Some(port) = cached(&key) {
         return Ok(port);
     }
@@ -1263,7 +1263,7 @@ pub(super) async fn polish_project_get_impl(
 /// `display_name` 只是给人看的标签，别拿它当族名用（详见 `docs/plan/font-library.md` §13）。
 /// 扫描要读字体文件解析字族名，所以整段走 `blocking`（同步 IO 不能留在 worker 上）。
 ///
-/// `fallback_stack` = 出片侧的**动态兜底字体栈**（`vtrim-polish` 的 `server::fallback_stack`：
+/// `fallback_stack` = 出片侧的**动态兜底字体栈**（`yekitrim-polish` 的 `server::fallback_stack`：
 /// 首项随库里默认那支走）—— 预览（`PolishPreview.vue` 的 `.cap` 栈）据它与成片保持同源，
 /// 这是三处字体来源里"预览那一腿"的收口。
 ///
@@ -1503,7 +1503,7 @@ pub(super) async fn polish_fonts_delete(
 ///
 /// ⚠️ 2026-10-02 从"下载"改成"内嵌"：正常路径下**前端不该再调它** ——
 /// `ensure_global_config`（server 启动）已经自动装好。留这条接口是**修复入口**
-/// （用户手删了库里那支之后想补回来），语义与 CLI 的 `vtrim fonts install` 完全一致。
+/// （用户手删了库里那支之后想补回来），语义与 CLI 的 `yekitrim fonts install` 完全一致。
 ///
 /// 仍然走 `blocking`：写 ~23 MB 到（可能很慢的）磁盘上，不该占住 tokio worker。
 pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -1858,7 +1858,7 @@ mod tests {
         });
         let stack = payload["fallback_stack"].as_str().expect("fallback_stack 必须在");
         assert!(!stack.is_empty(), "兜底栈不能是空的");
-        // 兜底栈**永远不含 emoji**（vtrim-core 有单测钉着；这里从 HTTP 载荷再确认一次）
+        // 兜底栈**永远不含 emoji**（yekitrim-core 有单测钉着；这里从 HTTP 载荷再确认一次）
         assert!(
             !stack.to_ascii_lowercase().contains("emoji"),
             "emoji 不许混进兜底栈（它走独立字段）: {stack}"
@@ -1934,7 +1934,7 @@ mod tests {
         // 找一张真的贴纸 GIF（贴纸库或某个真工程的产物）。
         let gif = [
             yekitrim_core::path::sticker_dir(),
-            std::path::PathBuf::from(r"E:\media\.vtrim-cover-e2e\clip14\proj\assets\stickers"),
+            std::path::PathBuf::from(r"E:\media\.yekitrim-cover-e2e\clip14\proj\assets\stickers"),
         ]
         .into_iter()
         .map(|d| d.join("思考(认真地).gif"))
@@ -2089,7 +2089,7 @@ mod tests {
     /// 那会让人以为"选了别的通道却在跑底座"，而两版成片的差别只有对着看才发现。
     ///
     /// ⚠️ 只打 **400 那条路**：合法值会真的起一个渲染任务（几分钟 + 要底座 + 要 ffmpeg），
-    /// 那不是接口级单测该干的事（真跑一次出片的验收见 `crates/vtrim-polish/src/render/AGENTS.md`）。
+    /// 那不是接口级单测该干的事（真跑一次出片的验收见 `crates/yekitrim-polish/src/render/AGENTS.md`）。
     #[tokio::test]
     async fn 出片通道认不出就_400_不静默当默认() {
         let t = test_app().await;
@@ -2325,7 +2325,7 @@ mod tests {
 /// "保存不报错、但值静默丢掉"，前端还会以为存上了。
 #[test]
 fn polish_project_put_writes_canvas_stage_sticker() {
-    let dir = std::env::temp_dir().join(format!("vtrim-stage-put-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yekitrim-stage-put-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = yekitrim_polish::project::ProjectFile::example();
@@ -2414,7 +2414,7 @@ fn polish_project_put_writes_canvas_stage_sticker() {
 /// 没开摇摆的事件在 toml 里不该多出 `handheld = false` 这行噪音。
 #[test]
 fn polish_project_put_roundtrips_handheld_sway() {
-    let dir = std::env::temp_dir().join(format!("vtrim-handheld-put-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yekitrim-handheld-put-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2456,7 +2456,7 @@ fn polish_project_put_roundtrips_handheld_sway() {
 fn project_dir_validation_rejects_empty_and_missing() {
     assert!(validated_project_dir("").is_err());
     assert!(validated_project_dir("   ").is_err());
-    let missing = std::env::temp_dir().join("vtrim-dir-does-not-exist-xyz");
+    let missing = std::env::temp_dir().join("yekitrim-dir-does-not-exist-xyz");
     assert!(validated_project_dir(&missing).is_err());
     assert!(validated_project_dir(std::env::temp_dir()).is_ok());
     assert!(validated_project_dir(std::env::temp_dir().to_string_lossy().to_string()).is_ok());
@@ -2523,7 +2523,7 @@ async fn subtitle_save_normalizes_time_order() {
 ///
 /// 回归钉子：`cover-background` 的 `source` 与 `cover-config` 的 `cover.image` 此前完全
 /// 没做归属校验（`scope.rs` 只归一化 `dir` / `output_file`，而模块注释却声称覆盖了
-/// `source`）。后果不是"多读一个文件"：`source` 指向 `<数据目录>/.vtrim/llm.toml`
+/// `source`）。后果不是"多读一个文件"：`source` 指向 `<数据目录>/.yekitrim/llm.toml`
 /// 就能把**全局 LLM API key** 复制进自己的项目，再用 `/api/media/<自己的项目>/…` 读回来；
 /// 同样能拿到账号账本 `cloud/yekitrim.db`（明文邀请码 + 全部项目真实路径）。
 #[tokio::test]
@@ -2652,7 +2652,7 @@ async fn polish_path_fields_cannot_read_outside_files() {
 #[tokio::test]
 async fn polish_dir_must_be_inside_own_project() {
     let t = test_app().await;
-    let outside = std::env::temp_dir().join("vtrim-not-my-project");
+    let outside = std::env::temp_dir().join("yekitrim-not-my-project");
     std::fs::create_dir_all(&outside).unwrap();
     let body = serde_json::json!({ "dir": outside.to_string_lossy() }).to_string();
     let res = t
@@ -2932,7 +2932,7 @@ pub(super) async fn polish_dhampir_wasm(
 /// contract_version, problems[] }`。
 ///
 /// 为什么要它：默认出片通道就是底座，而"底座不可用"以前**只在渲染时报错**（几分钟的任务跑到一半才失败）。
-/// 这条让前端在**点渲染之前**就能看见 —— 前端那颗通道下拉旁边会挂提示，`vtrim doctor` 用同一份判断。
+/// 这条让前端在**点渲染之前**就能看见 —— 前端那颗通道下拉旁边会挂提示，`yekitrim doctor` 用同一份判断。
 ///
 /// ⚠️ 只做**定位**（六项各查一次文件），不渲染、不跑转译器 —— 它会在打开渲染弹窗时被调，
 /// 也可能被反复调。⚠️ 路径**只回给已登录用户**（这条路由在 `require_user` 层内），
@@ -3230,7 +3230,7 @@ fn safe_sticker_assets(assets: Vec<String>, base: &std::path::Path) -> Vec<std::
 ///   真有问题会在用户播到那帧时由 `sticker-frame` 照常报错。
 /// * 返回 `{ok, decoded, failed, skipped}`，前端只用来打日志。
 /// * 走 `blocking` 池：解码是纯 CPU 的同步活，占满一个核数秒，绝不能留在 async worker 上
-///   （见 `crates/vtrim-server/src/api/AGENTS.md` 的同步 IO 纪律）。
+///   （见 `crates/yekitrim-server/src/api/AGENTS.md` 的同步 IO 纪律）。
 pub(super) async fn polish_sticker_prewarm(
     State(_state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,

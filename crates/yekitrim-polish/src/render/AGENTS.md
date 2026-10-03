@@ -97,7 +97,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     `NotoSansSC-VF.ttf` 没有独立粗体 ⇒ `None`，此时 `describe()` 与就绪位会明说"没有粗体那一支"）。
   - **就绪位与严格模式**（2026-09-30 M3）：`dhampir::readiness(font)` 是**唯一的**"这台机器能不能出片"
     判断（六项各查一次文件：二进制/转译器/字体/node/预览产物/版本契约，**不渲染、不跑 node**）——
-    `/api/polish/dhampir-status`、`/api/health` 的 `dhampir_ready`、`vtrim polish doctor`、前端提示
+    `/api/polish/dhampir-status`、`/api/health` 的 `dhampir_ready`、`yekitrim polish doctor`、前端提示
     都读它。**别各写一份**（症状会是"医生说好、渲染却失败"）。
     `render_video_only(..., strict)` = `polish render --strict`：转译报告里 `DROP > 0` 就**拒绝出片**
     并逐条列出（报告由 `prepare_project_reporting` 带回来；`TranslateReport::parse` 只认报告那几行的形状，
@@ -125,7 +125,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   出片慢先看这几条，别再猜。
 - ⚠️ **封面不搭渲染的便车**（2026-10-02 用户拍板"视频导出就只导出"）：`cmd_render` 尾部原来串的
   `cover::cmd_cover(project_path, Some(&op), None)` 已删 —— 渲染任务只出成片；封面走自己的入口
-  （CLI `vtrim polish cover` / `POST /api/polish/cover` 独立任务，关键帧回落 `resolved.video`）。
+  （CLI `yekitrim polish cover` / `POST /api/polish/cover` 独立任务，关键帧回落 `resolved.video`）。
   WebUI 的 render 任务完成钩子不再重挂封面设计器（`coverKey` 只归封面任务）。
   `Cover saved:` 里程碑与 `latest_numbered_file("cover")` 产物统计**保持不动** —— 封面子进程照样打它。
 - **带磁盘缓存的预计算**（都在 `<工程>/data/`，按「文件名 + mtime + 大小」失效）：
@@ -150,7 +150,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   所以只在出片时炸）。新增给两条路径共用的函数时，放顶层并留注释。
   **模板改完必须真跑一次出片验证**（预览看着正常 ≠ 出片正常）。
   ⚠️ **改了 `templates/index.html` 必须重建二进制**：它经 `include_str!` 进
-  `render/server.rs::INDEX_HTML`，运行中的 `vtrim server` 端出的仍是旧页面。
+  `render/server.rs::INDEX_HTML`，运行中的 `yekitrim server` 端出的仍是旧页面。
 - **字体库的渲染侧**：`/vt-fonts/:name` 是给**浏览器里那两个模板**（DOM/GSAP 预览 + 封面模板）用的
   —— 底座那条腿**不走这个 server**，它的字体走 `dhampir.rs` 的 `--font-dir` / `--font-bold-file`。
   库里字体必须有**自己的一条路由**（只认库目录下的单段文件名）。**两条建 router 的路都要挂**

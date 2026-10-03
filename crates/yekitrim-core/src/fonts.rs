@@ -1,7 +1,7 @@
 //! 程序级字体库：**`<数据目录>/resources/fonts/`**（默认就是程序目录，见
 //! [`crate::path::data_dir`]）。读写同一个位置，[`ensure_dir`] 建的就是它。
 //!
-//! ⚠️ **2026-10-02 之前是"用户固定目录 `~/.vtrim/fonts` 优先"**，已整条改掉
+//! ⚠️ **2026-10-02 之前是"用户固定目录 `~/.yekitrim/fonts` 优先"**，已整条改掉
 //! （用户口径：*所有内容围绕程序目录来，不要用户目录*）。老那份用户目录不再被读，
 //! 留 [`legacy_user_dir_report`] 只做"报路径和体积"，**不自动删也不搬**。
 //!
@@ -72,7 +72,7 @@ pub fn ensure_dir_at(data_home: &Path) -> std::io::Result<PathBuf> {
     Ok(root)
 }
 
-/// 老用户目录 `~/.vtrim/fonts` 的**只报不删**巡检（2026-10-02 资产收回程序目录之后）。
+/// 老用户目录 `~/.yekitrim/fonts` 的**只报不删**巡检（2026-10-02 资产收回程序目录之后）。
 ///
 /// 为什么要留这一条：口径切换之后，老机器上那份用户目录**不会再被读**（[`dir`] 已经
 /// 只认 `<数据目录>/resources/fonts/`）。但它占着盘、而且用户会在里面找不到"我刚导入的
@@ -81,7 +81,7 @@ pub fn ensure_dir_at(data_home: &Path) -> std::io::Result<PathBuf> {
 /// ⚠️ **绝不自动删**：那是用户的磁盘，里面可能有他手工放进去的字体。
 /// ⚠️ 也别把它"搬"进程序目录：两个库并存正是这次要收掉的问题，搬家只是把它换个地方复发。
 pub fn legacy_user_dir_report() -> Option<(PathBuf, usize, u64)> {
-    let dir = crate::path::user_home()?.join(".vtrim").join("fonts");
+    let dir = crate::path::user_home()?.join(".yekitrim").join("fonts");
     if !dir.is_dir() {
         return None;
     }
@@ -723,7 +723,7 @@ mod tests {
     }
 
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vtrim-fonts-test-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-fonts-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn scan_missing_dir_is_empty_not_error() {
-        let missing = std::env::temp_dir().join("vtrim-fonts-does-not-exist-xyz");
+        let missing = std::env::temp_dir().join("yekitrim-fonts-does-not-exist-xyz");
         assert!(scan_at(&missing).is_empty());
     }
 
@@ -1471,7 +1471,7 @@ pub fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> 
 ///
 /// 这是 2026-10-02 内嵌化的**落地点**：调用方（`ensure_dir` 之后）不再需要用户做任何操作，
 /// 字体库一建出来就是"能选字"的状态。**失败只 warn、不返回 Err** —— 字体装不上不该拦住
-/// `vtrim server` 启动或一条 CLI 命令（没有它顶多是回落到系统字体栈，功能降级不是故障）。
+/// `yekitrim server` 启动或一条 CLI 命令（没有它顶多是回落到系统字体栈，功能降级不是故障）。
 ///
 /// ⚠️ 要 `ensure_dir()` 已经跑过（写路径 = 用户固定目录）。
 pub fn ensure_builtin_fonts() {
@@ -2336,8 +2336,8 @@ mod tests_v2 {
         assert!(root.join("Keep.ttf").is_file(), "已装的不该被动过");
 
         // ⚠️ 数据根之外的任何位置都不该被建出来 —— 特别是用户目录那条老路
-        let stray = data.parent().unwrap().join(".vtrim");
-        assert!(!stray.exists(), "不该在数据根旁边另建 .vtrim/：{}", stray.display());
+        let stray = data.parent().unwrap().join(".yekitrim");
+        assert!(!stray.exists(), "不该在数据根旁边另建 .yekitrim/：{}", stray.display());
         // 同一条判据也钉住**新**状态目录名：字体库不该在数据根旁边开状态目录
         let stray_new = data.parent().unwrap().join(crate::path::STATE_DIR_NAME);
         assert!(

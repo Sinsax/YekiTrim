@@ -1,7 +1,7 @@
 //! config::types：全站配置类型定义（`Config` / `ProjectConfig` 与各 section）。
 //!
 //! 入口：`Config`、`ProjectConfig`（`current_stage`）、`AsrConfig`、`DetectionConfig`、`LlmConfig`（`concurrency`）、`CuttingConfig`、`MaterialEntry`、`Materials`。
-//! 边界：所有类型必须**手动**实现 `Default`（不能 derive），新增字段要同时改 `merge()` 与 `config/default.toml` —— 见 `crates/vtrim-core/src/config/AGENTS.md`
+//! 边界：所有类型必须**手动**实现 `Default`（不能 derive），新增字段要同时改 `merge()` 与 `config/default.toml` —— 见 `crates/yekitrim-core/src/config/AGENTS.md`
 
 use serde::{Deserialize, Serialize};
 
@@ -139,9 +139,9 @@ impl MaterialEntry {
 impl ProjectConfig {
     /// 根据实际输出文件存在性推导当前进度
     pub fn current_stage(&self, output_dir: &std::path::Path) -> u32 {
-        // `*_file` 是**相对工程根**写进 vtrim.toml 的（`vtrim init` 的 `path_to_rel`），
+        // `*_file` 是**相对工程根**写进 yekitrim.toml 的（`yekitrim init` 的 `path_to_rel`），
         // 所以相对路径要先按 output_dir 的父目录（= 工程根）拼一次再判存在性。
-        // ⚠ 直接 `PathBuf::from(p).exists()` 是"相对进程 CWD"：`vtrim server` 是长驻进程，
+        // ⚠ 直接 `PathBuf::from(p).exists()` 是"相对进程 CWD"：`yekitrim server` 是长驻进程，
         // CWD 与具体项目无关 —— 用户上传了外部字幕、又没跑过 ASR 时这个工程会被判成 stage 0
         // （重跑/门槛判断全跟着错）。
         // `Path::new("").join(x) == x`，所以 output_dir 本身是相对路径时（CLI 老口径）
@@ -217,8 +217,8 @@ pub struct Config {
 /// `[auth]` — 账号与自助注册。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// 是否开放邀请码注册。默认关；`vtrim user invite` 生成码时置 true，
-    /// `vtrim user invite --disable` 关闭。**开关打开也必须有可用邀请码**才能注册成功
+    /// 是否开放邀请码注册。默认关；`yekitrim user invite` 生成码时置 true，
+    /// `yekitrim user invite --disable` 关闭。**开关打开也必须有可用邀请码**才能注册成功
     /// —— 码本身才是凭证，开关只是总闸。
     #[serde(default)]
     pub registration_enabled: bool,
@@ -238,7 +238,7 @@ pub struct IngestConfig {
     /// 是否启用 `POST /api/ingest/bililive/<token>`
     #[serde(default)]
     pub webhook_enabled: bool,
-    /// webhook token 的 KDF 哈希串（明文只在 `vtrim ingest token` 生成时显示一次）
+    /// webhook token 的 KDF 哈希串（明文只在 `yekitrim ingest token` 生成时显示一次）
     #[serde(default)]
     pub token_hash: String,
     /// 来源 IP 白名单（空 = 不限制；录播姬与 server 同机时填 127.0.0.1）
@@ -249,14 +249,14 @@ pub struct IngestConfig {
     /// **B站链接通道（P4）**：下载器引擎。
     ///
     /// `"yt-dlp"` = 内置引擎（版本 + sha256 钉死在 `yekitrim_service::downloader::registry`，
-    /// **运行时**由设置页/`ensure_ytdlp` 下到 `<程序目录>/.vtrim/bin/` —— 和 ASR 模型一样，
+    /// **运行时**由设置页/`ensure_ytdlp` 下到 `<程序目录>/.yekitrim/bin/` —— 和 ASR 模型一样，
     /// **不进发行包**，所以许可声明走 `THIRD-PARTY-NOTICES.md` 的"运行时下载"那一节）；
     /// 其它值 = **逃生舱**：用户自备的「yt-dlp 兼容」可执行文件**绝对路径**
     /// （同样不随包分发，`cargo xtask scan` 扫不到）。
     /// 加第二个引擎 = 加一个适配器，server 侧不改（见 `yekitrim_service::downloader`）。
     #[serde(default = "default_downloader")]
     pub downloader: String,
-    /// yt-dlp 可执行文件路径覆盖（留空 = 自动发现：配置目录 → `<程序目录>/.vtrim/bin/` → PATH）。
+    /// yt-dlp 可执行文件路径覆盖（留空 = 自动发现：配置目录 → `<程序目录>/.yekitrim/bin/` → PATH）。
     ///
     /// ⚠️ 与 `downloader` 的分工：`downloader` 选**引擎**，这里只覆盖**二进制位置**
     /// （例如想让内置引擎用你自己更新的那份 yt-dlp）。
@@ -332,7 +332,7 @@ pub fn quality_height(raw: &str) -> Option<u32> {
 /// `[ingest.recorder]` — 录播姬工作目录与入库策略。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecorderConfig {
-    /// 录播姬输出目录（必须与 `vtrim server` 同机/同可读盘）
+    /// 录播姬输出目录（必须与 `yekitrim server` 同机/同可读盘）
     #[serde(default)]
     pub root: String,
     /// 录播姬 HTTP API 地址（例 `http://127.0.0.1:2356`；桌面版默认 `http://127.0.0.1:2356`）。
@@ -401,7 +401,7 @@ impl Default for RecorderConfig {
 /// `[storage]` — 项目托管目录与磁盘上限（只在服务端生效，CLI 单机路径不受影响）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
-    /// 托管项目根目录；空 = `<exe_dir>/.vtrim/projects`
+    /// 托管项目根目录；空 = `<exe_dir>/.yekitrim/projects`
     #[serde(default)]
     pub projects_root: String,
     /// 全局磁盘上限（0 = 不限）；由服务端统一预检，绝不自动删用户数据
@@ -622,7 +622,7 @@ fn default_vad_rescue_db() -> f64 {
     16.0
 }
 /// ASR 模式**默认 hybrid**（用户要求默认双模型）。预处理页有下拉可改（写项目
-/// `vtrim.toml`），设置页/项目配置也能改；读不到配置时按这个默认值显示。
+/// `yekitrim.toml`），设置页/项目配置也能改；读不到配置时按这个默认值显示。
 fn default_asr_mode() -> String {
     "hybrid".into()
 }
@@ -677,7 +677,7 @@ pub struct DetectionConfig {
     /// `0` = 关闭该标准（也不再发这次 LLM 请求）。
     #[serde(default = "default_llm_score_weight")]
     pub llm_score_weight: f64,
-    /// 事件检测并发窗口数。**留空 = 跟随 `.vtrim/llm.toml` 的 `[llm] max_concurrent`**；
+    /// 事件检测并发窗口数。**留空 = 跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`**；
     /// 填了才以本段为准（一般是排查限流时才需要单独压这里）。
     #[serde(default)]
     pub max_concurrent: Option<usize>,
@@ -704,7 +704,7 @@ impl Default for DetectionConfig {
     }
 }
 
-/// 链路标识：决定 `.vtrim/llm.toml` 的 `[llm.overrides.*]` 里哪一组覆盖生效，
+/// 链路标识：决定 `.yekitrim/llm.toml` 的 `[llm.overrides.*]` 里哪一组覆盖生效，
 /// 也是设置页「按链路覆盖」小表的行、日志与用量统计里能对上的那条链路。
 ///
 /// `key()` 是 TOML 键名（英文，写进配置文件）；`label_zh()` 只给界面看。
@@ -935,7 +935,7 @@ impl Default for CuttingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SfxConfig {
     /// 音效屏蔽列表: 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
-    /// (vtrim-polish 使用, 全局层定义于此供跨工程共享)
+    /// (yekitrim-polish 使用, 全局层定义于此供跨工程共享)
     #[serde(default)]
     pub blacklist: Vec<String>,
 }
@@ -960,7 +960,7 @@ pub struct CorrectConfig {
     /// Agent 窗口大小（每次处理条数），默认 25
     #[serde(default = "default_correct_window_size")]
     pub window_size: usize,
-    /// 订正并发数。**留空 = 跟随 `.vtrim/llm.toml` 的 `[llm] max_concurrent`**。
+    /// 订正并发数。**留空 = 跟随 `.yekitrim/llm.toml` 的 `[llm] max_concurrent`**。
     #[serde(default)]
     pub max_concurrent: Option<usize>,
     /// 自定义热词（主播名/游戏/歌曲/梗等），优先修正为这些词
@@ -1103,7 +1103,7 @@ mod current_stage_tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// 自建临时目录（vtrim-core 不依赖 tempfile；pid + 纳秒保证并发测试不撞名）。
+    /// 自建临时目录（yekitrim-core 不依赖 tempfile；pid + 纳秒保证并发测试不撞名）。
     struct TmpDir(PathBuf);
 
     impl TmpDir {
@@ -1113,7 +1113,7 @@ mod current_stage_tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let p = std::env::temp_dir()
-                .join(format!("vtrim-stage-{tag}-{}-{nanos}", std::process::id()));
+                .join(format!("yekitrim-stage-{tag}-{}-{nanos}", std::process::id()));
             std::fs::create_dir_all(&p).unwrap();
             TmpDir(p)
         }

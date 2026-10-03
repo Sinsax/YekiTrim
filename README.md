@@ -337,7 +337,7 @@ Stage 4 — 按事件片段剪切视频 + 生成字幕。
 
 ```toml
 [storage]
-projects_root = "D:/vtrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.yekitrim/projects）
+projects_root = "D:/yekitrim-projects"        # 项目托管目录 = 下载/入库的共同落点（默认 <exe_dir>/.yekitrim/projects）
 local_roots = ["F:/media", "D:/BililiveRecorder"]   # 可选：快捷入口
 ```
 
@@ -582,7 +582,7 @@ cd webui && npm install && npm run build # 改 webui/src 后必须重建（dist 
 cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
 ```
 
-> 依赖方向是**单向**的：`yekitrim-service` 绝不 `use vtrim_server::*`；`yekitrim-server` 只依赖
+> 依赖方向是**单向**的：`yekitrim-service` 绝不 `use yekitrim_server::*`；`yekitrim-server` 只依赖
 > `yekitrim-service`。细节与踩坑记录见各模块目录的 `AGENTS.md`（清单见
 > [docs/module-map.json](docs/module-map.json) 与 [AGENTS.md](AGENTS.md) 的模块索引表）。
 

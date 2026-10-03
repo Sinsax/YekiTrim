@@ -181,7 +181,7 @@ pub(super) async fn emit_render_line(
 }
 
 /// 底座带 `--no-audio` 出画面时，它会对着自己工程里登记的音轨（a0/a1）发一条
-/// 「本次出片是无声的」—— 那句话在 V-Trim 的管线里是**误导**：底座只负责画面，
+/// 「本次出片是无声的」—— 那句话在 YekiTrim 的管线里是**误导**：底座只负责画面，
 /// 原声与音效由本仓 ffmpeg 在混音/合流阶段混入，**最终成片有声**。
 /// 这里把原文拦下换成准确说法（匹配放宽到"两个特征同时命中"，措辞变了也能接住）。
 fn is_base_no_audio_notice(msg: &str) -> bool {
@@ -243,7 +243,7 @@ pub(super) fn cleanup_render_leftovers(dir: &Path) {
     }
 }
 
-/// 跑一个 `vtrim polish <sub>` 子进程：输出**落文件**并流式回灌任务日志。
+/// 跑一个 `yekitrim polish <sub>` 子进程：输出**落文件**并流式回灌任务日志。
 ///
 /// 为什么不是 `.output()`：子进程拉起的 ffmpeg（以及底座）会继承 stdout 句柄，只要还有一个
 /// 活着，管道就永远不 EOF —— 子进程早就失败退出了，任务却永远停在"运行中"，连错误都看不到
@@ -280,7 +280,7 @@ pub(super) async fn run_polish_child(
         .try_clone()
         .map_err(|e| anyhow::anyhow!("复制日志句柄失败: {e}"))?;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("vtrim"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yekitrim"));
     let dir_str = dir.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec!["polish".into(), sub.into(), dir_str];
     args.extend(extra.iter().cloned());
@@ -401,7 +401,7 @@ fn render_progress_lines_are_parsed() {
 /// 子进程日志的增量读取：半行要留在缓冲区，不能读一半就当一条日志发出去。
 #[test]
 fn render_output_drains_complete_lines_only() {
-    let path = std::env::temp_dir().join(format!("vtrim-render-out-{}.log", std::process::id()));
+    let path = std::env::temp_dir().join(format!("yekitrim-render-out-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let mut out = RenderOutput::new(path.clone());
 
@@ -435,7 +435,7 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
     let id = handle.id.clone();
     handle.wait_start().await.expect("资源不相干，应该直接开跑");
 
-    let path = std::env::temp_dir().join(format!("vtrim-follow-{}.log", std::process::id()));
+    let path = std::env::temp_dir().join(format!("yekitrim-follow-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
     std::fs::write(
         &path,
@@ -486,7 +486,7 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
     let _ = std::fs::remove_file(&path);
 }
 
-    /// 底座对着自己工程音轨发的那句「--no-audio 无声」在 V-Trim 管线里是误导
+    /// 底座对着自己工程音轨发的那句「--no-audio 无声」在 YekiTrim 管线里是误导
     /// （声音由本仓 ffmpeg 混入，**成片有声**）—— 必须被换成准确说法，原文不许进日志。
     #[tokio::test]
     async fn base_no_audio_notice_is_replaced_not_passed_through() {
@@ -497,7 +497,7 @@ async fn follow_render_output_emits_logs_and_progress_before_exit() {
         let id = handle.id.clone();
         handle.wait_start().await.expect("资源不相干，应该直接开跑");
         let mut out = RenderOutput::new(
-            std::env::temp_dir().join(format!("vtrim-noaudio-{}.log", std::process::id())),
+            std::env::temp_dir().join(format!("yekitrim-noaudio-{}.log", std::process::id())),
         );
         emit_render_line(
             &jobs,

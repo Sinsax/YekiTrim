@@ -1,8 +1,8 @@
-# V-Trim Web UI 设计文档
+# YekiTrim Web UI 设计文档
 
 > 版本: v0.2（设计稿·修订） · 日期: 2026-09-03 · 状态: 待评审
 > 范围: 全流程管理台（项目 / 模型 / 管线监控 / 事件与切片 / 配置），polish 精修仅保留跳转入口。
-> 技术: 零构建 vanilla JS + axum 0.7，代码位于 `crates/vtrim-cli/src/server/`。
+> 技术: 零构建 vanilla JS + axum 0.7，代码位于 `crates/yekitrim-cli/src/server/`。
 > **设计标准: [`docs/web-ui-mockups/sakura-cream.html`](web-ui-mockups/sakura-cream.html)（樱花奶油 · 浅色）** —— 全站视觉、布局、组件语言以该样稿为唯一基准，第 4 章 Design Tokens 全量取自其 `:root` 定义。
 
 ---
@@ -11,17 +11,17 @@
 
 - **主题反转**：正式 UI 由「暗色（与 polish 编辑器一致）」改为**纯浅色樱花奶油**，以 sakura-cream.html 为设计标准（原 4.4 节「浅色→暗色映射」作废，暗色主题移出范围）。
 - **信息架构变更**：左侧导航 → **顶部 pill 导航**（总览 / 项目 / 模型 / 精修 / 设置），运行监控降级为 topbar 铃铛唤起的全局抽屉。
-- **架构对齐现状**：子命令 `vtrim server`、代码位于 `crates/vtrim-cli/src/server/`、默认端口 26320（v0.1 规划的 `vtrim serve` + 新 crate `vtrim-web` + 端口 3927 作废，M1 已按 spec 落地）。
+- **架构对齐现状**：子命令 `yekitrim server`、代码位于 `crates/yekitrim-cli/src/server/`、默认端口 26320（v0.1 规划的 `yekitrim serve` + 新 crate `yekitrim-web` + 端口 3927 作废，M1 已按 spec 落地）。
 - **保持不变**：功能范围、多项目工作区扫描模型、API 契约、状态机、checkpoint 决策机制、17 事件类型色相。
 
 ### 与 spec 的差异与对齐
 
-spec（`docs/superpowers/specs/2026-09-03-vtrim-webui-design.md`，已批准、M1 进行中）与本设计的差异点：
+spec（`docs/superpowers/specs/2026-09-03-yekitrim-webui-design.md`，已批准、M1 进行中）与本设计的差异点：
 
 | # | 差异点 | 本设计（v0.2） | spec 现状 | 对齐方向 |
 |---|--------|----------------|-----------|----------|
 | 1 | 项目模型 | **工作区扫描多项目**（P2 卡片网格 + `#/projects/:id` 详情） | 单活动 Workspace + `POST /api/project/switch` | spec 需后续修订：补工作区扫描 → 多项目端点（M1 范围，见 11 章） |
-| 2 | 代码位置 / 命令 / 端口 | `vtrim server` · `crates/vtrim-cli/src/server/` · 26320（跟随已落地实现） | 同 | 已一致 |
+| 2 | 代码位置 / 命令 / 端口 | `yekitrim server` · `crates/yekitrim-cli/src/server/` · 26320（跟随已落地实现） | 同 | 已一致 |
 | 3 | 视觉主题 | 浅色 sakura-cream（本文档第 4 章为视觉权威） | spec 未定义视觉 | 一致（spec 无冲突） |
 | 4 | polish 深度 | UI 层仅跳转入口；API 层支持 process/render/cover job | spec 含完整 polish API | 已落地 API 按 spec 保留，UI 呈现按本文档 |
 
@@ -31,19 +31,19 @@ spec（`docs/superpowers/specs/2026-09-03-vtrim-webui-design.md`，已批准、M
 
 ### 1.1 现状
 
-V-Trim 目前只有 CLI（`vtrim`）。用户完成一轮录播切片时，需要在进程间来回切换：查看 `events.json`、`publish_config.json`、翻 `output/clips/` 目录、运行 `vtrim status`、手动重跑某个阶段。polish 编辑器（`vtrim polish preview`）提供了浏览器内的精修体验，但只针对**单个 clip 的编辑**，不覆盖管线管理和多项目工作流。
+YekiTrim 目前只有 CLI（`yekitrim`）。用户完成一轮录播切片时，需要在进程间来回切换：查看 `events.json`、`publish_config.json`、翻 `output/clips/` 目录、运行 `yekitrim status`、手动重跑某个阶段。polish 编辑器（`yekitrim polish preview`）提供了浏览器内的精修体验，但只针对**单个 clip 的编辑**，不覆盖管线管理和多项目工作流。
 
 ### 1.2 目标
 
 1. **管理台**: 一个浏览器页面管理全部项目（工作区扫描）、全部模型、全部管线任务。
 2. **可视化进度**: 管线运行时按阶段显示进度（ASR 块数、剪切条数）、实时日志、checkpoint 断点续传决策，从"黑盒 CLI 输出"变为可跟踪的任务队列。
 3. **结果审阅**: 事件表格、切片卡片、海报帧、字幕预览、视频播放，全部在浏览器内完成。
-4. **配置零手写**: `vtrim.toml` / `.vtrim/config.toml` / `.vtrim/llm.toml` 表单化，不再手写 TOML。
+4. **配置零手写**: `yekitrim.toml` / `.yekitrim/config.toml` / `.yekitrim/llm.toml` 表单化，不再手写 TOML。
 5. **零构建**: 纯 vanilla JS（ES modules + hash router），静态资产编译期内嵌。
 
 ### 1.3 非目标
 
-- ❌ 不做 polish 精修的编辑器化（时间轴/特效编辑）——只提供跳转 `vtrim polish preview` 的入口。
+- ❌ 不做 polish 精修的编辑器化（时间轴/特效编辑）——只提供跳转 `yekitrim polish preview` 的入口。
 - ❌ 不做多用户 / 鉴权——服务绑定 `127.0.0.1` 本机使用。
 - ❌ 不做云端 / 远程渲染。
 - ❌ 不做事件手工拖拽时间轴编辑（本期只做 enabled 开关、重新检测；时间轴编辑留给 polish）。
@@ -53,7 +53,7 @@ V-Trim 目前只有 CLI（`vtrim`）。用户完成一轮录播切片时，需�
 
 - 范围: 全流程管理台，polish 精修只留跳转入口。
 - 交付: 本设计文档（页面清单 + 每页 ASCII 线框 + 组件交互说明 + API 契约）。
-- 技术: 零构建 vanilla JS + axum，代码位于 `crates/vtrim-cli/src/server/`。
+- 技术: 零构建 vanilla JS + axum，代码位于 `crates/yekitrim-cli/src/server/`。
 - 主题: **浅色樱花奶油（sakura-cream 标准）**，中文界面。
 - 设计标准: `docs/web-ui-mockups/sakura-cream.html`（token 行号引用见第 4 章来源列）。
 
@@ -63,9 +63,9 @@ V-Trim 目前只有 CLI（`vtrim`）。用户完成一轮录播切片时，需�
 
 | # | 决策 | 理由 | 替代方案（未选） |
 |---|------|------|------------------|
-| D1 | `vtrim server` 子命令，代码位于 `crates/vtrim-cli/src/server/` | M1 已按 spec 落地（`service/` + `server/` 模块已存在），CLI 与 HTTP 共用 Service 层避免逻辑双份 | 独立 crate `vtrim-web`（v0.1 规划，作废——CLI binary 内模块够用，避免 workspace 膨胀） |
+| D1 | `yekitrim server` 子命令，代码位于 `crates/yekitrim-cli/src/server/` | M1 已按 spec 落地（`service/` + `server/` 模块已存在），CLI 与 HTTP 共用 Service 层避免逻辑双份 | 独立 crate `yekitrim-web`（v0.1 规划，作废——CLI binary 内模块够用，避免 workspace 膨胀） |
 | D2 | axum 0.7（与 polish 版本一致） | 复用同一 toolchain 与 `tower-http ServeDir`；保持全仓 dep 版本单一 | axum 0.8（polish 未升级，不引入第二个 axum 版本） |
-| D3 | 静态资产编译期内嵌（`include_str!`） | `vtrim_home()` 依赖 exe 父目录定位，内嵌最稳，无需运行时找资源路径 | 磁盘资源目录（exe 位置决定路径，易坏） |
+| D3 | 静态资产编译期内嵌（`include_str!`） | `yekitrim_home()` 依赖 exe 父目录定位，内嵌最稳，无需运行时找资源路径 | 磁盘资源目录（exe 位置决定路径，易坏） |
 | D4 | 工作区根目录扫描 = 项目发现 | 单项目场景自然退化（workspace = 项目父目录）；多项目零注册表 | 显式项目注册文件（多一个状态源，用户维护负担） |
 | D5 | 项目运行 = 进程内 JobManager（每项目互斥 + tokio::spawn），进度经 `ProgressReporter` 实现 → tokio broadcast → SSE | 复用进程内状态、可取消；`ProgressReporter` 是 core 已定义的同步 trait，桥接成本最低 | 子进程方式（stdout 解析、进程管理、跨平台信号，成本高） |
 | D6 | 阶段状态完全复用 `ProjectConfig::current_stage()` 文件存在性推导 | 与 CLI 状态机 100% 一致，杜绝"UI 认为完成但 CLI 拒绝"的分叉 | UI 自维护阶段状态（必然漂移） |
@@ -76,19 +76,19 @@ V-Trim 目前只有 CLI（`vtrim`）。用户完成一轮录播切片时，需�
 
 **关键代码对接点**（实现时直接引用）:
 
-- `ProgressReporter` trait — `crates/vtrim-core/src/progress/mod.rs:1-6`（4 个同步方法: `stage_started` / `stage_progress` / `stage_completed` / `error`）
-- `PipelineContext.detect_resume` — `crates/vtrim-core/src/types/mod.rs:163`（`Some(true)`=继续，`Some(false)`=重来，`None`=自动）
-- `ProjectConfig::current_stage()` — `crates/vtrim-core/src/config/types.rs:35-68`
-- Runner 构造模式 — `crates/vtrim-cli/src/main.rs:278-282`（`PipelineRunner::new(cfg)` + `set_progress` + `add_stage` + `run`）
-- `process` 全流程编排 — `crates/vtrim-cli/src/main.rs:289-454`（extract → transcribe → llm_correct → detect → cut，web 端 Job 需镜像）
-- Stage 常量 — `crates/vtrim-core/src/pipeline/stage.rs:5-8`（`STAGE_AUDIO=1` / `STAGE_TRANSCRIBE=2` / `STAGE_DETECT=3` / `STAGE_CUT=4`）
+- `ProgressReporter` trait — `crates/yekitrim-core/src/progress/mod.rs:1-6`（4 个同步方法: `stage_started` / `stage_progress` / `stage_completed` / `error`）
+- `PipelineContext.detect_resume` — `crates/yekitrim-core/src/types/mod.rs:163`（`Some(true)`=继续，`Some(false)`=重来，`None`=自动）
+- `ProjectConfig::current_stage()` — `crates/yekitrim-core/src/config/types.rs:35-68`
+- Runner 构造模式 — `crates/yekitrim-cli/src/main.rs:278-282`（`PipelineRunner::new(cfg)` + `set_progress` + `add_stage` + `run`）
+- `process` 全流程编排 — `crates/yekitrim-cli/src/main.rs:289-454`（extract → transcribe → llm_correct → detect → cut，web 端 Job 需镜像）
+- Stage 常量 — `crates/yekitrim-core/src/pipeline/stage.rs:5-8`（`STAGE_AUDIO=1` / `STAGE_TRANSCRIBE=2` / `STAGE_DETECT=3` / `STAGE_CUT=4`）
 
 ---
 
 ## 3. 信息架构与导航
 
 ```
-V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
+YekiTrim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 ├ 总览      #/overview                   P1
 ├ 项目      #/projects                   P2（多项目卡片网格）
 │            └ 项目详情 #/projects/:id    P3（核心页 · 5 Tab）
@@ -261,7 +261,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 │ │ 2h14m33s · 1080p            │ │ 1h22m08s · 4.4GB             │ │
 │ │ [👁 mini打开] [▶ mini运行▾]│ │ [👁 mini打开] [▶ mini继续]   │ │
 │ └────────────────────────────┘ └─────────────────────────────┘ │
-│ (最多 4 张，按 vtrim.toml mtime 排序；点击卡片 → P3)            │
+│ (最多 4 张，按 yekitrim.toml mtime 排序；点击卡片 → P3)            │
 │ ■ 快速操作: [btn 新建项目] [btn 下载缺失模型] [btn 修正全部转写] │
 └───────────────────────────────────────────────────────────────┘
 ```
@@ -271,7 +271,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 **交互**（与 v0.1 一致）:
 
 - 环境卡来自 `GET /api/health`（ffmpeg/ffprobe 版本探测、三模型 marker 检查、LLM 连通探测、Chrome/Polish 可用性）。点击 chip 跳 P6 / P5-LLM。
-- 最近项目按 `vtrim.toml` 最后修改时间排序；`Steps` 显示 `current_stage()` 推导阶段，点击进入 P3。
+- 最近项目按 `yekitrim.toml` 最后修改时间排序；`Steps` 显示 `current_stage()` 推导阶段，点击进入 P3。
 - 快捷操作: 「下载缺失模型」批量 POST 模型下载（复用 P6）；「修正全部转写」= 对每个 stage≥2 的项目 POST correct job（确认框）。
 - 「运行 ▾」下拉: 单阶段 / 全流程（对应 CLI `extract|transcribe|detect|cut|process`）。
 
@@ -287,7 +287,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 ┌───────────────────────────────────────────────────────────────┐
 │ 项目 (12)                        [🔄 扫描工作区] [＋ 新建项目]  │
 │ 工作区: D:\media                                              │
-│ 💡 删除项目只移除 vtrim.toml，不会触碰媒体文件                   │
+│ 💡 删除项目只移除 yekitrim.toml，不会触碰媒体文件                   │
 ├───────────────────────────────────────────────────────────────┤
 │ ┌─[C pcard]───────────┐ ┌─[C pcard]──────────┐ ┌─[C pcard]──┐ │
 │ │      ┌已完成┐ 丝带  │ │ [sticker 🎮]        │ │ [sticker🍜]│ │
@@ -335,7 +335,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 
 **交互**:
 
-- 项目卡片: 阶段 badges + 片段数 + 弹幕/字幕/LLM 状态（文件存在性推导）；「重跑」→ 确认框选阶段；「删除」仅删 `vtrim.toml`（**明确提示不会删除媒体文件**）。
+- 项目卡片: 阶段 badges + 片段数 + 弹幕/字幕/LLM 状态（文件存在性推导）；「重跑」→ 确认框选阶段；「删除」仅删 `yekitrim.toml`（**明确提示不会删除媒体文件**）。
 - 工作区路径变化 → 自动重扫（`GET /api/projects`）。
 - 空态: `EmptyState`（虚线卡风）+ [新建项目] + [设置工作区]。
 
@@ -376,7 +376,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 
 **交互**（与 v0.1 一致）:
 
-- Steps（大号）: 点击某阶段 → 改配置并重跑；每阶段卡 tooltip 显示等价 CLI（如 `vtrim extract -i …`）。
+- Steps（大号）: 点击某阶段 → 改配置并重跑；每阶段卡 tooltip 显示等价 CLI（如 `yekitrim extract -i …`）。
 - 「dry-run」: 触发 `run_until(max)` 预览 → 监控抽屉显示将执行的阶段与产物预估。
 - 产物文件清单: 点开 → 侧边预览（SRT/JSON 原文，JSON 格式化）。
 - ASR 元数据来自 `transcript.json` 的 `asr_metadata`，无字段显示「未记录」。
@@ -455,7 +455,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 **交互**（与 v0.1 一致）:
 
 - 海报帧: 首次打开调 `GET /projects/:id/clips/:rank/thumb`（服务端 ffmpeg 抽帧缓存到 clip 目录 `_thumb.jpg`）。
-- 「静音压缩」= `vtrim silence` 单文件等价: `POST /projects/:id/clips/:rank/silence`（job）→ 产出 `clip.silent.mp4` 同目录，完成后卡片标注「已压缩 · 体积 -32%」。
+- 「静音压缩」= `yekitrim silence` 单文件等价: `POST /projects/:id/clips/:rank/silence`（job）→ 产出 `clip.silent.mp4` 同目录，完成后卡片标注「已压缩 · 体积 -32%」。
 - 发布顺序 ↑↓ = 修改 `clips_order.txt` + `publish_config.json` 顺序（PUT `projects/:id/order`）。
 - 「▶ 预览」: 抽屉内 `<video>` 播放 `/api/media/…`（8.11）。
 - 抽屉内字幕/弹幕预览: 拉 `clip.srt` / `clip.dm.srt` 文本渲染为时间轴列表（点击跳转视频时间）。
@@ -492,7 +492,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 #### Tab 5 项目设置 `(#settings)`
 
 ```
-┌─ [C] vtrim.toml 表单化 (保存后写文件, 保留注释) ─────────────────┐
+┌─ [C] yekitrim.toml 表单化 (保存后写文件, 保留注释) ─────────────────┐
 │ [I 📄 输入视频] [I 📄 弹幕] [I 📄 转写] [I 📄 音频] [I 📄 事件]  │
 │ ──── 手动路径输入 (带 FileBrowser 下拉) ──────────────────────── │
 │ [detection] danmaku_window_secs: [I 10.0]                        │
@@ -500,7 +500,7 @@ V-Trim WebUI（顶部 pill 导航 · topbar 常驻 · 浅色樱花奶油）
 │             silence_noise_db: [I -30.0]                          │
 │ ─────────────────────────────────────────────────────────────── │
 │ » 错误提示: input_file 为空 (--red 文字, 保存前校验) ──────────── │
-│ [保存 btn主] [重置为默认] [打开 vtrim.toml 原文]                  │
+│ [保存 btn主] [重置为默认] [打开 yekitrim.toml 原文]                  │
 ├──────────────────────────────────────────────────────────────────┤
 │ 注意: [asr] 等全局配置在「设置」页 P5 编辑（此处只显示项目级字段） │
 └──────────────────────────────────────────────────────────────────┘
@@ -550,7 +550,7 @@ running 中若 stage 触发 checkpoint → waiting_resume → (UI 决策) → ru
 - 每项目**互斥**: 同项目同时只允许 1 个 job；新请求入队或拒绝（默认入队，用户可"插队"）。
 - 取消: `Stage::run` 不接收取消信号（core 现状），因此取消形态为 **丢弃整个 tokio 任务**（任务按项目互斥，安全；后续重跑按文件存在性幂等推进）。
 - checkpoint 决策: `detect` 与 `correct` 会写 `*.checkpoint.json`；job 启动时若存在 → 状态 `waiting_resume`，暂停在队列头等待 UI 决策（POST `/jobs/:id/resume`）。
-- 日志: `tracing` 全局 Layer/Subscriber 桥接 → 每 job 一个 `mpsc::UnboundedSender`；同时保留文件日志 `.vtrim/logs/web-YYYYMMDD.log`。
+- 日志: `tracing` 全局 Layer/Subscriber 桥接 → 每 job 一个 `mpsc::UnboundedSender`；同时保留文件日志 `.yekitrim/logs/web-YYYYMMDD.log`。
 - 断线处理: SSE 断开 job 不取消（服务端继续）；重连后 `GET /api/jobs?since=` 增量补拉。
 
 **API**: `jobs` GET · `jobs/start` POST · `jobs/:id/cancel` POST · `jobs/:id/resume` POST · `stream` SSE
@@ -574,12 +574,12 @@ running 中若 stage 触发 checkpoint → waiting_resume → (UI 决策) → ru
 ├────────────────────────────────────────────────────────────────┤
 │ ■ 工作区 ───────────────────────────────────────────────────── │
 │ 根目录: [I D:\media]  [更改 ▸ FileBrowser]    │
-│ 扫描结果: [chip b 12 项目] · 示例: media/3d/vtrim.toml (mono)   │
+│ 扫描结果: [chip b 12 项目] · 示例: media/3d/yekitrim.toml (mono)   │
 │ [立即重扫]                                                       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**规则**（与 v0.1 一致）: 合并显示 `.vtrim/config.toml`（全局）+ `.vtrim/llm.toml`；保存分两写。`extra_params` 为 JSON 文本编辑保存前 parse 校验。路径字段均可用 FileBrowser。表单均以白底圆角卡分组（`FormField`: label `--ink-dim` + 白底圆角输入 + mono 数值字段）。
+**规则**（与 v0.1 一致）: 合并显示 `.yekitrim/config.toml`（全局）+ `.yekitrim/llm.toml`；保存分两写。`extra_params` 为 JSON 文本编辑保存前 parse 校验。路径字段均可用 FileBrowser。表单均以白底圆角卡分组（`FormField`: label `--ink-dim` + 白底圆角输入 + mono 数值字段）。
 
 **API**: `settings/global` GET+PUT · `settings/llm` GET+PUT · `settings/workspace` GET+PUT · `llm/test` POST · `fs/list`
 
@@ -588,7 +588,7 @@ running 中若 stage 触发 checkpoint → waiting_resume → (UI 决策) → ru
 ### P6 模型管理 `#/models`
 
 ```
-┌─ 模型 (自动从 .vtrim/models/ 扫描 + registry 对照) ─────────────┐
+┌─ 模型 (自动从 .yekitrim/models/ 扫描 + registry 对照) ─────────────┐
 │ ┌─[C pcard] sensevoice ──────────────────────────────────────┐ │
 │ │ [sticker 粉 🔉] sensevoice  [chip g ✅ 已安装]              │ │
 │ │ 165 MB · 模型: sense-voice-int8-2025-09-09 (mono)           │ │
@@ -636,13 +636,13 @@ running 中若 stage 触发 checkpoint → waiting_resume → (UI 决策) → ru
 │ │ [👁 预览 mini] [🎬 打开编辑器 mini主]                        │ │
 │ └─────────────────────────────────────────────────────────────┘ │
 │ 注: 「处理/渲染」为长任务 → P4 监控; 「预览/编辑器」跳转现有        │
-│     vtrim polish preview (新端口打开)                             │
+│     yekitrim polish preview (新端口打开)                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **组件**: `PolishCard`（pcard 风）、`StatusChip`（processed/rendered/cover 三态）。
 
-**交互**（与 v0.1 一致）: 扫描 = 递归查找 `polish.toml`（限工作区）。状态推导: `processed` 字段 + 输出文件存在性（`project.output` 存在 → 已渲染；`cover.jpg` 存在 → 封面完成）。操作按钮映射 polish 命令（`cmd_process` / `cmd_render` / `cmd_cover` 的 web 封装，以 job 运行）。「打开编辑器」→ 调用 `vtrim polish preview` 启动逻辑（内部 server 新端口）并新开 tab。
+**交互**（与 v0.1 一致）: 扫描 = 递归查找 `polish.toml`（限工作区）。状态推导: `processed` 字段 + 输出文件存在性（`project.output` 存在 → 已渲染；`cover.jpg` 存在 → 封面完成）。操作按钮映射 polish 命令（`cmd_process` / `cmd_render` / `cmd_cover` 的 web 封装，以 job 运行）。「打开编辑器」→ 调用 `yekitrim polish preview` 启动逻辑（内部 server 新端口）并新开 tab。
 
 **API**: `polish/projects` GET · `polish/:id/process|render|cover` POST · `polish/:id/preview` POST（返回 URL）
 
@@ -709,7 +709,7 @@ GET /api/health
   "llm": { "ok": false, "error": "api_key 为空", "model": "…" },
   "chrome": { "ok": true },
   "polish": { "ok": true },
-  "vtrim_home": "F:\\…\\target\\debug\\.vtrim"
+  "yekitrim_home": "F:\\…\\target\\debug\\.yekitrim"
 }
 ```
 
@@ -729,7 +729,7 @@ POST /api/projects           → 新建（init: video_path, danmaku_path?, outpu
 {
   "id": "3d",
   "dir": "media/3d",
-  "path": "media/3d/vtrim.toml",
+  "path": "media/3d/yekitrim.toml",
   "name": "3d 录播",
   "stage": 4,
   "stage_names": ["", "AudioExtractor", "Transcriber", "EventDetector", "Cutter"],
@@ -765,7 +765,7 @@ POST /api/projects           → 新建（init: video_path, danmaku_path?, outpu
 }
 ```
 
-> `video_info` 字段与 `core VideoInfo`（`types/mod.rs:42-50`）一致（ffprobe 结果内存态，无文件时 `video_info: null`——服务端按需重新 ffprobe 或读取缓存）。`outputs` 各项 `path/size/mtime` 为该阶段产物文件的实际元数据（无文件时 `size: null, mtime: null`），与 `vtrim status` 展示一致。
+> `video_info` 字段与 `core VideoInfo`（`types/mod.rs:42-50`）一致（ffprobe 结果内存态，无文件时 `video_info: null`——服务端按需重新 ffprobe 或读取缓存）。`outputs` 各项 `path/size/mtime` 为该阶段产物文件的实际元数据（无文件时 `size: null, mtime: null`），与 `yekitrim status` 展示一致。
 
 ### 8.3 事件
 
@@ -853,11 +853,11 @@ POST /api/projects/:id/correct             → job（LLM 订正，带 checkpoint
 ### 8.6 配置
 
 ```
-GET /api/projects/:id/config      → ProjectConfig（vtrim.toml 现值）
-PUT /api/projects/:id/config      { projectConfig } → 写 vtrim.toml（toml_edit 保留注释）
-GET /api/settings/global          → Config（.vtrim/config.toml）
+GET /api/projects/:id/config      → ProjectConfig（yekitrim.toml 现值）
+PUT /api/projects/:id/config      { projectConfig } → 写 yekitrim.toml（toml_edit 保留注释）
+GET /api/settings/global          → Config（.yekitrim/config.toml）
 PUT /api/settings/global          { config }
-GET /api/settings/llm             → LlmConfig（.vtrim/llm.toml；api_key 打码返回，留空=不修改）
+GET /api/settings/llm             → LlmConfig（.yekitrim/llm.toml；api_key 打码返回，留空=不修改）
 PUT /api/settings/llm             { llmConfig }
 GET /api/settings/workspace       → { "root": "F:\\…\\media" }
 PUT /api/settings/workspace       { "root": "…" }
@@ -1037,7 +1037,7 @@ Stage 0 ──①提取──▶ Stage 1 ──②转写──▶ Stage 2 ──
 ## 10. 目录结构（对齐现状）
 
 ```
-crates/vtrim-cli/src/
+crates/yekitrim-cli/src/
 ├── main.rs                       # Command::Server(args) → server::run()
 ├── cli.rs                        # Server(ServerArgs): --host 127.0.0.1 --port 26320 --open --config
 ├── service/                      # Service 层（CLI 与 HTTP 共用，避免逻辑双份）
@@ -1078,10 +1078,10 @@ webui/app.js  (单一 ES module, 依赖注入顺序)
 
 | 里程碑 | 内容 | 验收 |
 |--------|------|------|
-| **M1 骨架+只读（修订）** | `vtrim server`（已落地）+ 内嵌资产（已落地）+ **工作区扫描 → 多项目端点 `GET /api/projects`（新增）** + **主题切换为 sakura-cream 浅色** + P1/P2 只读渲染（P2 = sakura 项目卡网格） | `vtrim server` 打开 `#/projects` 看到本机真实项目的樱花奶油卡片 |
-| **M2 任务+监控** | JobManager 收敛（见下「已知问题」修正）+ ProgressReporter→broadcast 桥 + SSE 前端接入 + P4 抽屉（铃铛唤起）+ P3 概览/事件 + checkpoint 决策 | 全流程 job 可跑、可取消、断点决策（kill 后继续）；`vtrim status` 与 UI 阶段一致 |
+| **M1 骨架+只读（修订）** | `yekitrim server`（已落地）+ 内嵌资产（已落地）+ **工作区扫描 → 多项目端点 `GET /api/projects`（新增）** + **主题切换为 sakura-cream 浅色** + P1/P2 只读渲染（P2 = sakura 项目卡网格） | `yekitrim server` 打开 `#/projects` 看到本机真实项目的樱花奶油卡片 |
+| **M2 任务+监控** | JobManager 收敛（见下「已知问题」修正）+ ProgressReporter→broadcast 桥 + SSE 前端接入 + P4 抽屉（铃铛唤起）+ P3 概览/事件 + checkpoint 决策 | 全流程 job 可跑、可取消、断点决策（kill 后继续）；`yekitrim status` 与 UI 阶段一致 |
 | **M3 结果审阅** | P3 片段库（缩略图/抽屉/静音压缩/顺序）+ 字幕 Tab（diff/导出）+ polish 扫描 P7（process/render/cover 触发） | 切片在 UI 内预览播放、静音压缩连锁可用 |
-| **M4 配置闭环** | P3-设置 + P5 全局设置表单（含 LLM 测试、extra_params 校验）+ P6 模型管理 + polish 跳转 preview | `vtrim config show` 与表单一致；模型下载断点续传可验证 |
+| **M4 配置闭环** | P3-设置 + P5 全局设置表单（含 LLM 测试、extra_params 校验）+ P6 模型管理 + polish 跳转 preview | `yekitrim config show` 与表单一致；模型下载断点续传可验证 |
 
 **已知问题（现状骨架，归入 M1/M2 修正）**:
 
@@ -1114,15 +1114,15 @@ webui/app.js  (单一 ES module, 依赖注入顺序)
 
 | UI 操作 | 等价 CLI |
 |---------|----------|
-| 新建项目 | `vtrim init <video> [--danmaku]` |
-| 全流程运行 | `vtrim process` |
-| 单阶段重跑（①–④） | `vtrim extract/transcribe/detect/cut` |
-| dry-run | `vtrim process --dry-run` |
-| 重新检测 | `vtrim detect`（checkpoint 决策同 CLI 交互） |
-| LLM 订正 | `vtrim correct` |
-| 静音压缩 | `vtrim silence <file>` |
-| 模型下载 | `vtrim download` |
-| polish 处理/渲染/封面 | `vtrim polish process/render/cover` |
-| polish 预览/编辑器 | `vtrim polish preview` |
-| 全局配置 | `vtrim config show / config init` |
-| 阶段推导 | `vtrim status` |
+| 新建项目 | `yekitrim init <video> [--danmaku]` |
+| 全流程运行 | `yekitrim process` |
+| 单阶段重跑（①–④） | `yekitrim extract/transcribe/detect/cut` |
+| dry-run | `yekitrim process --dry-run` |
+| 重新检测 | `yekitrim detect`（checkpoint 决策同 CLI 交互） |
+| LLM 订正 | `yekitrim correct` |
+| 静音压缩 | `yekitrim silence <file>` |
+| 模型下载 | `yekitrim download` |
+| polish 处理/渲染/封面 | `yekitrim polish process/render/cover` |
+| polish 预览/编辑器 | `yekitrim polish preview` |
+| 全局配置 | `yekitrim config show / config init` |
+| 阶段推导 | `yekitrim status` |

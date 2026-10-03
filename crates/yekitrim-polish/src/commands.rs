@@ -1,7 +1,7 @@
-//! polish::commands：`vtrim polish *` 各子命令的实现（CLI 与 WebUI 共用同一份）。
+//! polish::commands：`yekitrim polish *` 各子命令的实现（CLI 与 WebUI 共用同一份）。
 //!
 //! 入口：`cmd_init`、`cmd_parse`、`cmd_llm`、`cmd_llm_segment`、`cmd_preview`、`cmd_test`、`cmd_doctor`、`cmd_stickers_list` / `cmd_stickers_test` / `cmd_stickers_build` / `cmd_stickers_scan`、`build_package_tags`。
-//! 边界：长任务写 `polish.toml` 一律走 `project::update_polish_toml`（锁内重新 load + 只覆盖自己负责的字段），不许"开头 load、结尾整份写回" —— 见 `crates/vtrim-polish/AGENTS.md`
+//! 边界：长任务写 `polish.toml` 一律走 `project::update_polish_toml`（锁内重新 load + 只覆盖自己负责的字段），不许"开头 load、结尾整份写回" —— 见 `crates/yekitrim-polish/AGENTS.md`
 
 use crate::{cover, process, render};
 
@@ -26,7 +26,7 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     let mut example = ProjectFile::example();
 
-    // 自动检测 clip.json (来自 vtrim cut)
+    // 自动检测 clip.json (来自 yekitrim cut)
     let clip_json = path.join("clip.json");
     if clip_json.exists()
         && let Ok(raw) = std::fs::read_to_string(&clip_json)
@@ -276,7 +276,7 @@ pub async fn cmd_llm(
         }
     }
 
-    // 从 .yekitrim/llm.toml 读取 LLM 配置（与 vtrim 自身一致）
+    // 从 .yekitrim/llm.toml 读取 LLM 配置（与 yekitrim 自身一致）
     let llm_cfg = yekitrim_core::config::load_llm_config();
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
         tracing::info!("  ⚠ No LLM API key configured. Edit .yekitrim/llm.toml");
@@ -825,7 +825,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         );
     }
 
-    tracing::info!("\n  vtrim-polish v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("\n  yekitrim-polish v{}", env!("CARGO_PKG_VERSION"));
     Ok(())
 }
 
@@ -1121,7 +1121,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `vtrim fonts list`：列出字体库（含**没下载的自带字体**）。
+/// `yekitrim fonts list`：列出字体库（含**没下载的自带字体**）。
 ///
 /// ⚠️ 判据全走 `yekitrim_core::fonts`（`scan_all` / `family_for_at` / `builtin_status`），
 /// 本层只负责排版 —— 库的形状只有一份，别在这里重新解释一遍。
@@ -1165,7 +1165,7 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `vtrim fonts install [--id X]`：装上自带字体（把**内嵌字节**写进字体库，幂等、不联网）。
+/// `yekitrim fonts install [--id X]`：装上自带字体（把**内嵌字节**写进字体库，幂等、不联网）。
 ///
 /// ⚠️ 根目录走 `ensure_dir()`（它负责 `create_dir_all`）。
 /// 现在读写解析到**同一个目录**（`<数据目录>/resources/fonts`），但仍别自己拼路径 ——

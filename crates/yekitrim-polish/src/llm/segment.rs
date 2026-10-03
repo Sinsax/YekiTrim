@@ -1,7 +1,7 @@
 //! polish::llm::segment：Step 1 全局分段（一窗一段，产出 `Segment`）与分段/事件的提示词拼装。
 //!
 //! 入口：`generate_segments`、`build_segmentation_system_prompt`、`build_segmentation_user_prompt`、`build_events_system_prompt`、`build_events_user_prompt`、`normalize_segments_json`。
-//! 边界：覆盖层示例必须给 `colors` 数组（四处求值器只认 `colors`，只写 `color` 会导致覆盖层全画不出来）；改内建 prompt 要同步用户配置里的副本 —— 见 `crates/vtrim-polish/src/llm/AGENTS.md`
+//! 边界：覆盖层示例必须给 `colors` 数组（四处求值器只认 `colors`，只写 `color` 会导致覆盖层全画不出来）；改内建 prompt 要同步用户配置里的副本 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
 use crate::project::Segment;

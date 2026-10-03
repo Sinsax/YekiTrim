@@ -2,7 +2,7 @@
 
 ## Problem
 
-Three issues in the vtrim-polish rendering pipeline:
+Three issues in the yekitrim-polish rendering pipeline:
 
 1. **SFX jarring** — `sfxPlay()` fade-in is only ~30ms (6ms×5 steps); `fireSounds()` fires all same-time SFX in a 0.12s window, causing cacophony when emoji/irasu/shake/etc. trigger simultaneously.
 2. **Emoji GIF loops** — `getActiveEmoji()` uses `elapsedMs % total` (modulo), causing GIF animation to loop forever instead of playing once.
@@ -67,11 +67,11 @@ if let Some(ns) = subtitles.iter()
 }
 ```
 
-**Scope:** `crates/vtrim-polish/src/process.rs`.
+**Scope:** `crates/yekitrim-polish/src/process.rs`.
 
 ## Files Changed
 
 | File | Changes |
 |------|---------|
-| `crates/vtrim-polish/templates/index.html` | SFX priority + fade-in; GIF single-play |
-| `crates/vtrim-polish/src/process.rs` | Irasu duration capped adaptive logic |
+| `crates/yekitrim-polish/templates/index.html` | SFX priority + fade-in; GIF single-play |
+| `crates/yekitrim-polish/src/process.rs` | Irasu duration capped adaptive logic |

@@ -34,8 +34,8 @@
 //!
 //! 运行（需要底座二进制 + Node 转译器）：
 //! ```text
-//! VTEDIT_FIT_DIR="F:/para/Code/V-Trim/.workbuddy/perf/vertical/vert-land" \
-//! VTEDIT_FIT_OUT="F:/para/Code/V-Trim/target/tmp-stagefit/out" \
+//! VTEDIT_FIT_DIR="F:/para/Code/YekiTrim/.workbuddy/perf/vertical/vert-land" \
+//! VTEDIT_FIT_OUT="F:/para/Code/YekiTrim/target/tmp-stagefit/out" \
 //! cargo test -p yekitrim-polish --test portrait_stage_fit -- --ignored --nocapture
 //! ```
 //! - `VTEDIT_FIT_T`（秒，默认 `2.0`）= 探针时刻；
@@ -234,7 +234,7 @@ fn translator_with(tag: &str, mutate: impl FnOnce(&str) -> String) -> PathBuf {
     let src = common::translator_path();
     let code = std::fs::read_to_string(&src).expect("读转译器");
     let out = mutate(&code);
-    let dir = std::env::temp_dir().join(format!("vtrim-stagefit-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("yekitrim-stagefit-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dst = dir.join(format!("polish-to-dhampir-{tag}.mjs"));
     std::fs::write(&dst, out).unwrap();

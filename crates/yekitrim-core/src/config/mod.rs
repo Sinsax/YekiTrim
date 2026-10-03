@@ -313,7 +313,7 @@ fn write_project_config_inner(
     auto_discover_danmaku: bool,
 ) -> Result<()> {
     // 优先从全局配置复制，不存在则使用内建默认
-    let global_path = crate::path::vtrim_home().join("config.toml");
+    let global_path = crate::path::yekitrim_home().join("config.toml");
     let mut body = if global_path.exists() {
         tracing::info!("从全局配置复制: {}", global_path.display());
         std::fs::read_to_string(&global_path)?.replace(
@@ -697,7 +697,7 @@ fn merge(base: &mut Config, overlay: Config) {
 
 /// 从 .yekitrim/llm.toml 加载 LLM 配置（独立于工程配置和全局配置）
 pub fn load_llm_config() -> LlmConfig {
-    let path = crate::path::vtrim_home().join("llm.toml");
+    let path = crate::path::yekitrim_home().join("llm.toml");
     if !path.exists() {
         return LlmConfig::default();
     }
@@ -734,7 +734,7 @@ pub fn load_config() -> Result<Config> {
 pub fn load_config_at(project_file: &Path) -> Result<Config> {
     let mut config = Config::default();
 
-    let global = crate::path::vtrim_home().join("config.toml");
+    let global = crate::path::yekitrim_home().join("config.toml");
     if let Some(overlay) = load_from_file(&global)? {
         merge(&mut config, overlay);
     }
@@ -760,7 +760,7 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
 /// 而这条错误**必须指向真实文件**（以前报的是 merged 配置的错误，指向不明）。
 /// 两份都不存在 = 正常（`ensure_global_config` 会补齐），不算错。
 pub fn global_config_parse_error() -> Option<String> {
-    let home = crate::path::vtrim_home();
+    let home = crate::path::yekitrim_home();
     for (name, what) in [("config.toml", "程序配置"), ("llm.toml", "LLM 配置")] {
         let path = home.join(name);
         let Ok(raw) = std::fs::read_to_string(&path) else { continue };
@@ -771,11 +771,11 @@ pub fn global_config_parse_error() -> Option<String> {
     None
 }
 
-/// 只读全局配置 (.vtrim/config.toml), 不合并 yekitrim.toml。
-/// 供不依赖项目 yekitrim.toml 的模块 (如 vtrim-polish) 读取全局共享配置。
+/// 只读全局配置 (.yekitrim/config.toml), 不合并 yekitrim.toml。
+/// 供不依赖项目 yekitrim.toml 的模块 (如 yekitrim-polish) 读取全局共享配置。
 pub fn load_global_config() -> Config {
     let mut config = Config::default();
-    let global = crate::path::vtrim_home().join("config.toml");
+    let global = crate::path::yekitrim_home().join("config.toml");
     if let Ok(Some(overlay)) = load_from_file(&global) {
         merge(&mut config, overlay);
     }
@@ -1366,7 +1366,7 @@ max_tokens = 32768
 /// 一旦点了保存，内建默认值就覆盖到真实文件上）。
 #[test]
 fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
-    // 这份 helper 读的是 `vtrim_home()`，而它跟着 `YEKITRIM_DATA_DIR` 走 ——
+    // 这份 helper 读的是 `yekitrim_home()`，而它跟着 `YEKITRIM_DATA_DIR` 走 ——
     // 测试里指到一个临时目录，避免碰开发机上那份真实配置。
     //
     // ⚠️ **改全局环境变量必须持锁**：测试是并行跑的，`set_var` 是进程级的 ——

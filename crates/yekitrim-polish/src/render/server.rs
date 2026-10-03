@@ -1,7 +1,7 @@
 //! polish::render::server：预览/出片用的本地 HTTP server（`ServeDir` 根 = 项目目录）。
 //!
 //! 入口：`RenderServer::{new, build_html, start_with, start, start_cover}`、`start_file_server`、`build_sticker_map`、`font_face_css(_in)`、`font_family_with_stack`、`SYSTEM_FONT_STACK`。
-//! 边界：`/vt-fonts/:name` 两条建 router 的路都要挂（漏一条 = 预览有、成片没有）；`INDEX_HTML` 走 `include_str!`，改 `templates/index.html` 必须重建二进制 —— 见 `crates/vtrim-polish/src/render/AGENTS.md`
+//! 边界：`/vt-fonts/:name` 两条建 router 的路都要挂（漏一条 = 预览有、成片没有）；`INDEX_HTML` 走 `include_str!`，改 `templates/index.html` 必须重建二进制 —— 见 `crates/yekitrim-polish/src/render/AGENTS.md`
 
 use axum::{
     Router,
@@ -238,7 +238,7 @@ pub const SYSTEM_FONT_STACK: &str = "'Noto Sans SC','Microsoft YaHei','Noto Sans
 /// 否则回落到原来的字面量（系统里真装了 `LXGW WenKai` 的人照旧命中）。
 /// ⚠️ 顺序不能变（仍然排在 `Microsoft YaHei` 前），否则就是上面那条老 bug 的翻版。
 ///
-/// ⚠️ **emoji 字体进不了这里**（2026-10-02 职责分离）：两处拦截都在 `vtrim-core::fonts` ——
+/// ⚠️ **emoji 字体进不了这里**（2026-10-02 职责分离）：两处拦截都在 `yekitrim-core::fonts` ——
 /// `scan_dirs` 对 `emoji==true` 强制 `is_default=false`（所以上面的 `.find(|e| e.is_default)` 选不到它），
 /// `builtin_fonts` 那条也显式滤掉了 id 含 emoji 的。**别再在这里补判据**（那就又是"各处各写一份"）。
 pub fn preferred_fallback_family() -> String {
@@ -513,7 +513,7 @@ mod tests {
     use super::*;
 
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("vtrim-fontface-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("yekitrim-fontface-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

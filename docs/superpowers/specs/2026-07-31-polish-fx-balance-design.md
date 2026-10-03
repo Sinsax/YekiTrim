@@ -5,7 +5,7 @@
 
 ## 背景
 
-`vtrim polish preview` 在 clip-01 工程（141s, 62 条字幕, 9 segments）上暴露三个问题：
+`yekitrim polish preview` 在 clip-01 工程（141s, 62 条字幕, 9 segments）上暴露三个问题：
 
 1. **SFX 大量失效**：LLM 为独立 `sfx` 事件编造了 18 个自由描述名（`night_ambient`、`heartbeat`…），既非 catalog id 也非 `tag:` 引用，全部被下载器丢弃（"未在 catalog 中找到"）。
 2. **贴纸全部是 emoji**：`sticker_source` 默认 `["emoji"]`，轮询只有一种来源；且 emoji 匹配有错配（`fall`→枫叶 1f342）和漏配（`anxiety` 无结果）。
@@ -62,4 +62,4 @@ clip-01 参考值：sticker 5（现状 5），sfx 4（现状 18）。
 ## 测试
 
 - 单测：`content_budget`（含无 seg_cap 分支）、`fuzzy_search`（"night_ambient" 等实际失败样例）、`cap_events` 均匀保留。
-- 手动：clip-01 重跑 `vtrim polish preview`，验证贴纸分布、SFX 全部有声、运镜观感。
+- 手动：clip-01 重跑 `yekitrim polish preview`，验证贴纸分布、SFX 全部有声、运镜观感。

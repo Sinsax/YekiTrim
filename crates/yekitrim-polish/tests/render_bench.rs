@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! cargo test -p yekitrim-polish --test render_bench -- --ignored plumbing --nocapture
-//! cargo test --release -p vtrim-polish --test render_bench -- --ignored plumbing --nocapture
+//! cargo test --release -p yekitrim-polish --test render_bench -- --ignored plumbing --nocapture
 //! ```
 //! `VTEDIT_BENCH_FRAMES`（默认 300，与出片日志里的分块帧数同量级）、
 //! `VTEDIT_BENCH_FRAME_KB`（默认 200 = 1080p JPEG q0.6 的典型体积）。

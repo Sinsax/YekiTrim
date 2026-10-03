@@ -1,4 +1,4 @@
-# V-Trim → Dhampir 接入指导
+# YekiTrim → Dhampir 接入指导
 
 这份文档写给**要把本仓的 `polish.toml` 喂给 Dhampir 出片的人**。
 它只讲两件事：**怎么接**、**接了之后哪里会不一样**。
@@ -7,7 +7,7 @@
 > 它的守卫是 `scripts/check-yekitrim-translator.mjs`（334 项逐值检查 + 12 处变异自证）。
 > 事件类型 → 效果参数的映射表就在转译器的逐事件 `switch` 里（每条 `case` 的注释）。
 >
-> **它不在 `vtrim` 二进制的编译/运行路径上**：产品自己出片走 `vtrim polish render`（headless Chrome）。
+> **它不在 `yekitrim` 二进制的编译/运行路径上**：产品自己出片走 `yekitrim polish render`（headless Chrome）。
 > 这条路是给**底座出片**用的第二条通道，所以它宁可报错也不猜。
 >
 > **边界**：转译器**只读**本仓的 `polish.toml` / `clip.srt` / `clip.dm.srt`，旁写文件放在工程文件旁边；
@@ -15,7 +15,7 @@
 > 它**不承诺兼容**：形状可以随本仓演化而改 —— 底座承诺的只有**底座仓**的 `docs/api-surface.md` 里那一栏。
 >
 > **词表**（正文里通篇出现这两个词）：「**底座**」= Dhampir（wgpu 预览 + 渲染底座，转译器的下游）；
-> 「**参照**」= **本仓自己的出片模板** `crates/vtrim-polish/templates/index.html`
+> 「**参照**」= **本仓自己的出片模板** `crates/yekitrim-polish/templates/index.html`
 > —— canvas 那条腿的 `renderFrame` / `getActiveXxx`。正文里的 `index.html:NNN` 都指这个文件
 > （行号已按本仓核过）。
 >
@@ -53,23 +53,23 @@ node scripts/check-yekitrim-translator.mjs --mutate   # 12 处变异必须**全�
 # 1. 转译。第一个参数是**片段目录**（里面要有 polish.toml），不是 toml 文件本身。
 node tools/polish-to-dhampir.mjs \
   "E:/media/<项目>/output/clips/<片段名>" \
-  --out out/vtrim/t.json
+  --out out/yekitrim/t.json
 
 # 输出：
-#   转译完成 -> out/vtrim/t.json
+#   转译完成 -> out/yekitrim/t.json
 #     轨道 12 条 / 素材 10 个
 #     运镜 14 条、贴纸 4 张、音效 3 条、overlay 0 条、原声 3 段、字幕 ✓、弹幕 4 条 ✓
 #     丢失 3 / 降级 2 / 注意 43
 #     ---- DROP (3) ----   ...（详见第五节）
 
 # 2. 校验（**不需要 GPU、不需要 ffmpeg**）
-dhampir probe --project out/vtrim/t.json
+dhampir probe --project out/yekitrim/t.json
 
 # 3. 回填素材帧数（转译器故意不探测）
-dhampir probe --project out/vtrim/t.json --write   # 或按 --help
+dhampir probe --project out/yekitrim/t.json --write   # 或按 --help
 
 # 4. 出片
-dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.mp4 \
+dhampir render --project out/yekitrim/t.json --from 0 --to 5811 --out out/dhampir.mp4 \
   --asset-root "E:/media/<项目>/output/clips/<片段名>" \
   --font-file C:/Windows/Fonts/msyh.ttc \
   --font-bold-file C:/Windows/Fonts/msyhbd.ttc
@@ -151,7 +151,7 @@ dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.m
 > - 第二轮：窗口放宽到 `dur + 1.05` ⇒ 贴纸比事件**多显示 0.4 秒**（用户实测：出点晚了）✗。
 > 现在**五处**同一条口径：参照 `getActiveSticker`（`index.html:1527`）、
 > 产生端 `tools/polish-to-dhampir.mjs`（`STICKER_WINDOW_SEC = 0`）、
-> `crates/vtrim-render-core/src/timeline.rs:530`、`webui/src/polish/engine.js:705`，
+> `crates/yekitrim-render-core/src/timeline.rs:530`、`webui/src/polish/engine.js:705`，
 > 以及 **DOM/GSAP 预览腿** `handlers.sticker`（`index.html:955`：`fadeStart = et + dur - fadeOut`、
 > 隐藏在 `et + dur`；它的**上浮起点** `et + 0.25` 是这条腿自己的既有偏差，刻意不动）。
 
@@ -167,7 +167,7 @@ dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.m
 | CSS（`index.html:747`）：`font-size:72px`、`color:#dcbda0`、`stroke:12px #403c3b`、`font-weight:700`、`line-height:1.5` | `font_ratio` / `color` / `stroke_ratio` / `stroke_color` / `font_weight` / `line_height` |
 
 **`entrance` 曾是死配置（2026-10-01 已从 schema 移除 + 读时吞掉，见本节第 2 条）**：`"cycle-5"` / `"fade-up"` 全仓（JS、Rust、webui）
-**没有一个读者** —— 只被写进 toml、只在 `crates/vtrim-render-core/src/types.rs:570` 里有定义。
+**没有一个读者** —— 只被写进 toml、只在 `crates/yekitrim-render-core/src/types.rs:570` 里有定义。
 动效是写死的。转译器把它记进 DROP 并说明。
 
 ### 4.5 弹幕（danmaku）
@@ -176,7 +176,7 @@ dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.m
 |---|---|
 | `if (t < d.start \|\| t >= d.end) continue` —— **在屏窗口 = 素材自己的 `[start,end)`** | `exit = frame_at_ms(cue.end_ms) - 1` |
 | `travel` **只管滚动速度**，不管在屏时长 | `scroll_start = enter + fade_frames`，`travel_frames` 独立 |
-| ⚠️ **`End` 短于"滚完时刻"时，渐隐会在弹幕还没到左边缘时发生**（录播姬 XML 的窗口是固定 8 秒，中文弹幕的 travel 普遍 8.5~16 秒：实测 5 字弹幕在距左边缘 337px 处渐隐、39 字节那条在屏幕中段 728px 处就没了） | 转译器把 ASS 的 `End` 抬到 `max(End, start + fadeIn + travel)`（`danmakuExitMs`；**只抬不压**）。Rust 侧同一条规则是 `vtrim_core::danmaku::clamp_display_windows`，由守卫对拍常数 |
+| ⚠️ **`End` 短于"滚完时刻"时，渐隐会在弹幕还没到左边缘时发生**（录播姬 XML 的窗口是固定 8 秒，中文弹幕的 travel 普遍 8.5~16 秒：实测 5 字弹幕在距左边缘 337px 处渐隐、39 字节那条在屏幕中段 728px 处就没了） | 转译器把 ASS 的 `End` 抬到 `max(End, start + fadeIn + travel)`（`danmakuExitMs`；**只抬不压**）。Rust 侧同一条规则是 `yekitrim_core::danmaku::clamp_display_windows`，由守卫对拍常数 |
 | `travel = (1080 + utf8_字节数*32)/150` 秒 | 同上（**按字节，不是字符**） |
 | `x = CW - min(progress,1)·(CW + textW)` | 同上 |
 | `y = (d.y/1920)·(540·CK)` → 归一化 `d.y/3840` | `lane_top_ratio` / `lane_spacing_ratio` |
@@ -316,7 +316,7 @@ dhampir render --project out/vtrim/t.json --from 0 --to 5811 --out out/dhampir.m
 orientation = "portrait"      # 只改这一行，源 1920x1080 就铺不满 1080x1920
 ```
 
-量出来的读数（`vtrim-compare`，无事件，纯基线）：
+量出来的读数（`yekitrim-compare`，无事件，纯基线）：
 
 ```text
 横画布（原样）      基线 像素差 7.01    高频比 0.98    位移 0
@@ -334,7 +334,7 @@ orientation = "portrait"      # 只改这一行，源 1920x1080 就铺不满 108
 模糊底只是它的一个附属。要动的是**转译器的相机几何**（`cameraOffset` 现在
 **假设源铺满画布** —— zoom=1 时 offset=0；比例不匹配时这个假设不成立）。
 
-**验收用的测试台已经有了**：把 `orientation` 改成 `portrait`，`vtrim-compare` 直接给读数
+**验收用的测试台已经有了**：把 `orientation` 改成 `portrait`，`yekitrim-compare` 直接给读数
 （87.98 vs 7.01）。**这是"只改配置、不用重跑 `process`"就拿到读数的路子。**
 
 #### 第 5 条的进展：**cover 那一半做了，但比例过冲**
@@ -520,8 +520,8 @@ WebUI 的 Dhampir 预览走**浏览器端渲染**（Dhampir 的 wasm + WebGPU）
 
 - 阈值落在 1100~1500 帧之间 -> **逐帧增长**（每帧 ~16-33 MB，1500 帧就是 25-50 GB，12 GB 卡上爆）
 - 症状：`thread 'main' panicked: wgpu error: Out of Memory`
-  —— 在 `vtrim-compare` 里还会看到 `*rawvideo* muxer: Invalid argument`，
-  那是本仓 panic 之后管道断掉的**下游症状**，**不是 V-Trim 的问题**（参照渲得好好的）
+  —— 在 `yekitrim-compare` 里还会看到 `*rawvideo* muxer: Invalid argument`，
+  那是本仓 panic 之后管道断掉的**下游症状**，**不是 YekiTrim 的问题**（参照渲得好好的）
 - **怀疑位置**：单层走**非分段路径**（不分配中间纹理）；一旦有第二层就走
   `render_segmented`（`timeline.rs:696`），它每个 stage 都 `alloc_texture` 中间纹理
   （`alloc_texture` 每次都 `create_texture` 新建，见 `timeline.rs:487`）——
@@ -591,7 +591,7 @@ if (t >= sh.time && t < sh.time + 0.2) {
 
 1. 在 `tools/polish-to-dhampir.mjs` 的逐事件 `switch` 里加一个 `case`。
 2. **先在本仓出片模板里找出片那条腿的实现**（`getActiveXxx` 或 `renderFrame` 里那一段，
-   都在 `crates/vtrim-polish/templates/index.html`），
+   都在 `crates/yekitrim-polish/templates/index.html`），
    不要看 GSAP 时间轴 —— 那是预览（第六节第 `shake` 条就是这么踩的）。
 3. 判断它能不能用**现有契约**表达：
    - 能 → 用关键帧 / 调整图层 / 音频层表达
@@ -606,14 +606,14 @@ if (t >= sh.time && t < sh.time + 0.2) {
 
 ---
 
-## 八、本仓自己可以修的问题（原「要给回 V-Trim 的清单」）
+## 八、本仓自己可以修的问题（原「要给回 YekiTrim 的清单」）
 
 转译过程中发现的、**参照侧本身可以修**的问题 —— 现在这份清单的主人是**本仓自己**：
 
 | # | 问题 | 出处 | 建议 |
 |---|---|---|---|
 | 1 | ~~贴纸的 `fadeOut` 相位**永远够不到**（窗口 `dur+0.65` vs 相位要 `dur+0.75`），贴纸硬切~~ **已修 ✓**；随后又修掉"窗口溢出到 `dur + 1.05` ⇒ 出点晚 0.4 秒"（见 §14.3） | `getActiveSticker`（`index.html:1527`） | 已落地：窗口 = **事件时长 `dur`**、淡出移进窗口内部（`dur - 0.3 → dur`）；四处同形判据（模板 / 转译器 / `timeline.rs` / `engine.js`）已统一 |
-| 2 | 配置项 `entrance`（`"cycle-5"` / `"fade-up"`）**没有任何读者** | `crates/vtrim-render-core/src/types.rs` 的 `SubtitleStyle` | ✅ **已从契约移除**（2026-10-01 Phase ③）：schema 里的字段与默认值删掉，`project/legacy.rs::strip_retired_keys` **读时吞掉**（`deny_unknown_fields` 决定了不能直接删），`polish init` 模板也不再写它；回归 `cargo test -p vtrim-polish --lib retired_entrance_key_is_swallowed` |
+| 2 | 配置项 `entrance`（`"cycle-5"` / `"fade-up"`）**没有任何读者** | `crates/yekitrim-render-core/src/types.rs` 的 `SubtitleStyle` | ✅ **已从契约移除**（2026-10-01 Phase ③）：schema 里的字段与默认值删掉，`project/legacy.rs::strip_retired_keys` **读时吞掉**（`deny_unknown_fields` 决定了不能直接删），`polish init` 模板也不再写它；回归 `cargo test -p yekitrim-polish --lib retired_entrance_key_is_swallowed` |
 | 3 | 同一个名字 `shake` 在**预览**与**出片**是两套完全不同的实现 | `index.html:532` vs `:1575` | 统一，或改名区分 |
 | 4 | 字幕动效只在**预览**有"事件联动脉冲"，**出片没有** | `index.html:1134`（GSAP）vs `getActiveSubs` | 明确哪一端是想要的 |
 | 5 | 出片的 `noise` **名不副实**：画的是一层纯白薄纱，不是噪声（真噪声只在 DOM 预览的 `handlers.noise`） | `getNoiseOpacity` / `renderFrame` | 改名，或做出真噪声 |
@@ -733,7 +733,7 @@ exit=0 ✓   耗时 2.1s（30 帧 ≈ 70ms/帧，debug 构建）
                       画不出来就判失败（问题码 subtitle_font_missing）
 ```
 
-**"也不猜系统字体"是设计，不是缺陷** —— 宁可判失败也不猜。V-Trim 那侧两条都给
+**"也不猜系统字体"是设计，不是缺陷** —— 宁可判失败也不猜。YekiTrim 那侧两条都给
 （`prepare_project(clip_dir, …)` + `find_font()`），所以真集成里本来就是对的。
 
 ### 三次失败的报告质量（这才是能自己修错的原因）
@@ -810,7 +810,7 @@ ImageBitmap, HTMLImageElement, HTMLCanvasElement, OffscreenCanvas
 ### 7.2 `clip-04` 的 `danmaku = 0` —— 那一段**本来就没有弹幕**
 
 预览里"没有弹幕"是**对的**，不是缺口。要看弹幕请用 `clip-25`（`danmaku = 12`）。
-两个片段的计数器实测（用 `tools/polish-to-dhampir.mjs` 转译后读 `extensions.vtrim.polish_toml`）：
+两个片段的计数器实测（用 `tools/polish-to-dhampir.mjs` 转译后读 `extensions.yekitrim.polish_toml`）：
 
 | 片段 | `danmaku` | `dm` 轨 |
 |---|---|---|
@@ -835,7 +835,7 @@ uri     = "assets/stickers/问号.gif"     ← **工程内相对路径**（服�
 以前是"**指着 Dhampir 的源码树**"跑：`VTEDIT_DHAMPIR_WASM=<仓根>`，然后去读
 `<根>/web/engine.js` 与 `<根>/crates/dhampir-wasm/www/pkg/`。代价有两条：
 
-1. **V-Trim 得知道 Dhampir 的内部目录结构** —— 那边一挪目录，这边就断；
+1. **YekiTrim 得知道 Dhampir 的内部目录结构** —— 那边一挪目录，这边就断；
 2. **它读的是活的源码树** —— "改了没生效 / 生效了又说不清是哪一版"。
    实测症状就是 **§7.1 那条：改完必须强刷新**，而且排查时连"我加载的是哪份 bundle"
    都要靠哈希去比。
@@ -860,13 +860,13 @@ node scripts/package.mjs [--out <目录>] [--clean-wasm] [--no-zip]
 **清不掉 wasm 目标的依赖**，`wasm-pack build` 会报 `Finished in 0.13s` **装作没事**；
 真清要 `cargo clean --target wasm32-unknown-unknown`（实测 41283 文件 / 20 GiB / 重建 29s）。
 
-### 8.3 V-Trim 认的一个目录 + 两个变量
+### 8.3 YekiTrim 认的一个目录 + 两个变量
 
 ```
-<程序目录>/                      ← vtrim(.exe) 所在（既有约定：stickers/、.vtrim/ 也在这层）
+<程序目录>/                      ← yekitrim(.exe) 所在（既有约定：stickers/、.yekitrim/ 也在这层）
   dhampir/                       ← 把上面那个产物目录**整体拷进来**
     preview/  bin/  VERSION
-  dist/  stickers/  tools/  .vtrim/ …
+  dist/  stickers/  tools/  .yekitrim/ …
 ```
 
 | 变量 | 默认值 | 作用 |
@@ -885,11 +885,11 @@ node scripts/package.mjs [--out <目录>] [--clean-wasm] [--no-zip]
 | 检查 | 失败时的行为 |
 |---|---|
 | `preview/engine.js` + `preview/pkg/dhampir_wasm.js` + `…_bg.wasm` **三件齐全** | 报错并**列出实际找过的路径**，告诉你去跑 `node scripts/package.mjs` |
-| `VERSION` **存在** | 报错（"它是产物与 V-Trim 之间的契约版本，不能没有"）；存在时把 `project_schema=` 读出来 |
+| `VERSION` **存在** | 报错（"它是产物与 YekiTrim 之间的契约版本，不能没有"）；存在时把 `project_schema=` 读出来 |
 | 出片 CLI **在** | 报错（"设 `VTEDIT_DHAMPIR_CLI=`，或放到 `<程序目录>/dhampir/bin/`"）|
 
 **"契约版本是否一致"的权威判定仍在 Dhampir 那一侧**（`project.rs` 里
-`doc.project_schema != PROJECT_SCHEMA_VERSION` 就拒绝）—— V-Trim 只**报出读到的值**，
+`doc.project_schema != PROJECT_SCHEMA_VERSION` 就拒绝）—— YekiTrim 只**报出读到的值**，
 不在自己这边再抄一份期望值：同一条规矩不留第二处实现。
 
 ### 8.5 实测读数（2026-09-29）
@@ -1061,20 +1061,20 @@ out/drive-real-page.mjs 新增（都在 gitignore 的 scratch 里 ✓，产品�
 **⚠️ 关键判读**：日志行是**响应写完之后**才打印的 ⇒
 **"日志里没有该请求" ≠ "请求没发出"** ✓，而是**"请求被受理了，但响应迟迟产不出来"** ✓✓。
 这一条曾经把我引向三个错误方向（浏览器缓存 ✗ / 扩展 ✗ / 媒体整文件读 ✗ —— 媒体端点本来就
-是**流式 + 206 Range** ✓，见 `crates/vtrim-server/src/media.rs` 的 `serve_file`）。
+是**流式 + 206 Range** ✓，见 `crates/yekitrim-server/src/media.rs` 的 `serve_file`）。
 
 ### 12.2 根因（代码行级）
 
 ```
-crates/vtrim-server/src/api/polish.rs  polish_dhampir_wasm（我加的那条转发路由）
+crates/yekitrim-server/src/api/polish.rs  polish_dhampir_wasm（我加的那条转发路由）
   wasm_dirs()                    ← 内部是一串同步 `is_file()`
   file.canonicalize()            ← **同步 FS**
   root.canonicalize()            ← **同步 FS**
   real.is_file()                 ← **同步 FS**
 ⇒ 全部在 **async worker** 上执行 ✗
 
-而这条纪律就写在本仓 `crates/vtrim-server/src/api/mod.rs:44-51`：
-  「项目目录经常在网络盘上（RaiDrive/WebDAV）……一次 `exists()`、一次读 `vtrim.toml`
+而这条纪律就写在本仓 `crates/yekitrim-server/src/api/mod.rs:44-51`：
+  「项目目录经常在网络盘上（RaiDrive/WebDAV）……一次 `exists()`、一次读 `yekitrim.toml`
     就要几百毫秒到几秒……十几个并发就能把 runtime 的 worker 全占住 ——
     表现是**"任务在跑的时候整个服务器连新连接都建立不了"（用户实测）**。
     同步 IO 一律走 blocking 线程池，worker 留给 accept 与轻量接口。」
@@ -1086,7 +1086,7 @@ crates/vtrim-server/src/api/polish.rs  polish_dhampir_wasm（我加的那条转�
 ```
 把 `wasm_dirs()` 与 `canonicalize()/is_file()` 全部挪进 `spawn_blocking` ✓
 （`serve_file` 本来就是异步流式 ✓），**404 / 400 的语义原样保留** ✓（那两条有测试盯着）。
-`cargo check -p vtrim-server` → exit=0 ✓；新二进制已在跑 ✓
+`cargo check -p yekitrim-server` → exit=0 ✓；新二进制已在跑 ✓
 ```
 
 ### 12.4 顺带查出的第二个问题：**服务端一直在发旧产物**
@@ -1127,12 +1127,12 @@ crates/vtrim-server/src/api/polish.rs  polish_dhampir_wasm（我加的那条转�
 | `/api/polish/sticker-file` | 两次 `canonicalize()` ✗（**播放一开始前端就连打贴纸 PNG** ⇒ 顺序上最先动手 ✗）| 同上 ✓ | 路由 404/正常响应 13.8ms ✓（不挂 ✓）|
 | `/api/polish/font` | **`std::fs::read` 一个 19.7 MB 字体** ✗（字幕首次用到字体就打它 ✗）| 读文件挪进 `spawn_blocking` ✓（`c.clone()` 保住借用 ✓）| `?name=msyh` → **200 / 19704352 B / 44.2ms** ✓ |
 
-三处 `cargo check -p vtrim-server` 均 **exit=0** ✓；404/400/200 语义原样保留 ✓（那两条有测试盯着）。
+三处 `cargo check -p yekitrim-server` 均 **exit=0** ✓；404/400/200 语义原样保留 ✓（那两条有测试盯着）。
 
 ### 13.2 精确清单（后续按需清理；判据：**只看 async 函数体内、且排除 `#[cfg(test)]` 段**）
 
 ```
-`crates/vtrim-server/src/api/*.rs`：async 处理器体内的同步 FS 共 **64 处**，
+`crates/yekitrim-server/src/api/*.rs`：async 处理器体内的同步 FS 共 **64 处**，
 其中上下 25 行内找不到 `run_blocking/spawn_blocking/tokio::fs` 护栏的 **45 处** ✗。
 **在预览页热路径上**的（优先）：`polish_project_get_impl`（`video_path.exists()`）、
 `polish_subtitles_get_impl`（`srt_path.exists()` + `read_to_string`）、
@@ -1199,7 +1199,7 @@ Uncaptured 0 / is invalid 0 ✓ · 画布 1920x1080 **纯黑 0.3%** ✓ · `chec
 ③ `/api/polish/font`              **19.7 MB 整文件读**（实测 200 / 19704352 B / 44.2ms ✓）
 ④ **8 处** `path.join("polish.toml").exists()`（页面加载热路径）
 ⑤ **5 处** `read_to_string` / `exists()`（async 体内、且不在已 blocking 的闭包里）
-⇒ 五次 `cargo check -p vtrim-server` **全部 exit=0** ✓；404/400/200 语义原样保留 ✓
+⇒ 五次 `cargo check -p yekitrim-server` **全部 exit=0** ✓；404/400/200 语义原样保留 ✓
 ```
 
 ### 13.6 媒体端点（目标 A/C 项）：**实测结案，不用改** ✓
@@ -1214,7 +1214,7 @@ Uncaptured 0 / is invalid 0 ✓ · 画布 1920x1080 **纯黑 0.3%** ✓ · `chec
 
 ⇒ 流式 + 正确 Range 全部到位 ✓ ⇒ **播放器按需取片段，不会整文件读** ✓
 ⇒ **"媒体整文件读"这条怀疑被实测否掉** ✗ —— 黑屏不是媒体这条路造成的 ✓
-   （`serve_file` 本来就是 `Body::from_stream` ✓，见 `crates/vtrim-server/src/media.rs`）
+   （`serve_file` 本来就是 `Body::from_stream` ✓，见 `crates/yekitrim-server/src/media.rs`）
 ```
 
 ### 13.7 建议的下一步：`video` 直传的**自适应开关**（未实现，设计留档）
@@ -1255,7 +1255,7 @@ Uncaptured 0 / is invalid 0 ✓ · 画布 1920x1080 **纯黑 0.3%** ✓ · `chec
 2. **出点** = 该层**最后一个被显示的帧**（含）。
    两个都是**闭**的：入点那一帧要画，出点那一帧也要画。
 3. **时基一律工程帧号**。
-   - 不用源帧、不用秒 —— 秒只出现在 `polish.toml` / `vtrim.toml` 的输入侧，以及给人看的报告里。
+   - 不用源帧、不用秒 —— 秒只出现在 `polish.toml` / `yekitrim.toml` 的输入侧，以及给人看的报告里。
    - 秒 → 帧：`floor(秒 × 工程fps)`。
      用 `floor` 而不是四舍五入：`2.37s @ 24fps = 56.88` → **56**，取的是"这一秒里已经走完的整帧"。
    - `工程fps` 是**工程自己的**帧率，不是素材帧率（见第 5 条）。
@@ -1311,8 +1311,8 @@ in   = floor(et × 工程fps)
 | 位置 | 形状 |
 |---|---|
 | 产生端 `tools/polish-to-dhampir.mjs` | `STICKER_WINDOW_SEC = 0` + `stickerWindowFrames(durSec, fps)`；`stickerStateAt` 的 `fadeStart = durSec - fadeOut` |
-| 参照守卫 `crates/vtrim-polish/templates/index.html` 的 `getActiveSticker()` | `if (t < et \|\| t > et + dur) continue;` + `fadeStart = dur - fadeOut` |
-| CPU 参考 `crates/vtrim-render-core/src/timeline.rs`（`get_active_sticker`） | `if t < et \|\| t > et + dur {` + `fade_start = dur - fade_out` |
+| 参照守卫 `crates/yekitrim-polish/templates/index.html` 的 `getActiveSticker()` | `if (t < et \|\| t > et + dur) continue;` + `fadeStart = dur - fadeOut` |
+| CPU 参考 `crates/yekitrim-render-core/src/timeline.rs`（`get_active_sticker`） | `if t < et \|\| t > et + dur {` + `fade_start = dur - fade_out` |
 | WebUI 预览 `webui/src/polish/engine.js`（`stickersAt`） | `if (t < et \|\| t > et + dur) continue` + `fadeStart = dur - fadeOut` |
 | DOM/GSAP 预览腿 `handlers.sticker`（`index.html:955`） | `fadeOut = min(0.3, dur)` + `fadeStart = et + dur - fadeOut` + **线性**淡出（`ease:'none'`）+ 隐藏在 `et + dur`（**上浮起点 `et + 0.25` 不动** —— 这条腿自己的既有偏差） |
 
@@ -1326,6 +1326,6 @@ in   = floor(et × 工程fps)
 
 ### 14.4 明确**不动**的东西
 
-- `polish.toml` / `vtrim.toml` 的**字段名**、**结构**、**注释化序列化**（`to_toml_commented` 的输出）
+- `polish.toml` / `yekitrim.toml` 的**字段名**、**结构**、**注释化序列化**（`to_toml_commented` 的输出）
   **一律不动**。本节只是解释与折算：秒还是秒、字段还是那些字段，帧语义只在读取/比较侧解释。
 - 不新增字段、不改键名、不改注释文本 ⇒ 已有工程文件**照旧逐字节可读**，模板不回写。
