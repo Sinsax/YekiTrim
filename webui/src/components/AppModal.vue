@@ -37,6 +37,9 @@ function onKey(e) {
   if (e.key === 'Escape') requestClose()
 }
 
+// ⚠️ 必须 `immediate`：调用方普遍写成 `<AppModal v-if="open" :show="true">`，组件**出生时
+// `show` 已经是 true**，非 immediate 的 watcher 永远不会触发 ⇒ Esc 监听没装上、`body` 滚动也没锁，
+// 用户会发现"Esc 关不掉弹窗、背后的页面跟着滚"。`immediate` 让首次挂载也走一遍装配。
 watch(() => props.show, (v) => {
   if (v) {
     window.addEventListener('keydown', onKey)
@@ -45,7 +48,7 @@ watch(() => props.show, (v) => {
     window.removeEventListener('keydown', onKey)
     document.body.style.overflow = ''
   }
-})
+}, { immediate: true })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
