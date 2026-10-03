@@ -51,6 +51,14 @@
   </div>
 </template>
 
+<script>
+/** 媒体扩展名白名单。**导出**是因为调用方要判"这个目录里还有没有可用的视频"
+ *  （首页「服务器文件」建项目要据此决定「新建项目」能不能点、以及会拿哪个文件）。
+ *  消费方自己再抄一份迟早会漂。 */
+export const VIDEO_EXTS = ['mp4', 'mkv', 'flv', 'mov', 'm4v', 'webm', 'avi', 'ts']
+export const IMAGE_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp']
+</script>
+
 <script setup>
 /**
  * 服务器目录浏览（仅 admin 的数据源）。
@@ -77,7 +85,7 @@ const props = defineProps({
    *  不匹配的文件置灰 + 点击无效 —— 「选弹幕/字幕」的场景里点中一个 mp4 毫无意义。 */
   exts: { type: Array, default: () => [] }
 })
-const emit = defineEmits(['update:dir', 'pick-file', 'pick-dir'])
+const emit = defineEmits(['update:dir', 'pick-file', 'pick-dir', 'update:listing'])
 
 const dir = ref('')
 const parent = ref('')
@@ -86,9 +94,6 @@ const dirs = ref([])
 const files = ref([])
 const loading = ref(false)
 const error = ref('')
-
-const VIDEO_EXTS = ['mp4', 'mkv', 'flv', 'mov', 'm4v', 'webm', 'avi', 'ts']
-const IMAGE_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp']
 
 function extOf(name) {
   return String(name).split('.').pop().toLowerCase()
@@ -119,10 +124,13 @@ async function browse(target = dir.value, enter = '') {
     roots.value = d.roots || []
     dirs.value = d.dirs || []
     files.value = d.files || []
+    // 调用方要据此判"这个目录里还有没有可用视频"（决定建项目按钮的可用性）
+    emit('update:listing', { dir: dir.value, files: files.value, dirs: dirs.value })
     return d
   } catch (e) {
     dirs.value = []
     files.value = []
+    emit('update:listing', { dir: dir.value, files: [], dirs: [], failed: true })
     error.value = '目录读取失败：' + e.message
     return null
   } finally {
