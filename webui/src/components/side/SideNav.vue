@@ -1,7 +1,15 @@
 <template>
   <aside class="side" :class="{ mini: collapsed }">
     <div class="side-brand" @click="go('/workbench')">
-      <div class="brand-logo">Y</div>
+      <div class="brand-logo">
+        <!-- 与 favicon（webui/index.html）同一套几何：砖红 Y + 沙色下竖。
+             白/浅沙描边因为底色是 --main → --tan 渐变圆。 -->
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <path d="M18 18 L32 34 L46 18" fill="none" stroke="#fff" stroke-width="7"
+                stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M32 34 L32 47" stroke="#F6D9C4" stroke-width="7" stroke-linecap="round" />
+        </svg>
+      </div>
       <div v-if="!collapsed">
         <div class="brand-name">YekiTrim</div>
         <div class="brand-sub">切片工作台</div>
@@ -270,7 +278,7 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 .rail-item:hover { background:var(--bg-soft); color:var(--ink); }
 .rail-item.on { background:var(--main-soft); color:var(--pink-text); }
 .rail-user .av { width:26px; height:26px; border-radius:50%; font-size:12px; color:#fff;
-  background:linear-gradient(135deg,var(--main),var(--pink-light));
+  background:linear-gradient(135deg,var(--main),var(--tan));
   display:flex; align-items:center; justify-content:center; }
 .rdot { position:absolute; top:2px; right:2px; width:8px; height:8px; border-radius:50%;
   background:var(--red); border:1.5px solid var(--card); }

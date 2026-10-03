@@ -541,7 +541,7 @@ onUnmounted(() => {
 .sub-body::-webkit-scrollbar { height:9px; }
 .sub-body::-webkit-scrollbar-thumb { background:var(--line); border-radius:999px; }
 .sub-body::-webkit-scrollbar-track { background:transparent; }
-.sub-labels { flex:none; position:sticky; left:0; z-index:6; background:var(--card); box-shadow:2px 0 8px rgba(90,60,70,.10); }
+.sub-labels { flex:none; position:sticky; left:0; z-index:6; background:var(--card); box-shadow:2px 0 8px rgba(87,74,64,.10); }
 .sub-label { width:74px; height:26px; box-sizing:border-box; display:flex; align-items:center; justify-content:space-between;
   padding:0 8px; font-size:11.5px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
 .sub-tracks { flex:none; min-width:0; }
@@ -562,7 +562,7 @@ onUnmounted(() => {
 .rz.r { right:0; border-radius:0 4px 4px 0; }
 .rz:hover { background:rgba(255,255,255,.45); }
 .playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--red); z-index:5; pointer-events:none; }
-.mark-band { position:absolute; top:0; bottom:0; background:rgba(246,130,184,.30);
+.mark-band { position:absolute; top:0; bottom:0; background:rgba(216,99,83,.30);
   border-left:1px solid var(--main); border-right:1px solid var(--main); z-index:1; pointer-events:none; }
 .lane-add { background:none; border:none; color:var(--ink-faint); cursor:pointer; line-height:1; padding:2px 4px; display:flex; }
 .lane-add:hover { color:var(--main-deep); }
