@@ -9,6 +9,9 @@
 //!   · 左键点图标 / 右键菜单「打开网页」= 开浏览器（地址取回调回来的**实际**地址）
 //!   · 右键菜单「退出」= 触发关停 → server 收尾（`InstanceLock` 的 Drop 写 `pid=0`）→ 消息循环退出
 //!
+//! 它按**本地免登录**起服务（`ServerArgs::local_no_auth`）：桌面单机形态不该先让人登录一遍。
+//! 服务端那边有两道闸兜着（Host 必须 loopback、写请求必须同源），见 `auth::guard_local_request`。
+//!
 //! ⚠️ `windows_subsystem = "windows"` **只在这个 bin 上**（Cargo 的每个 bin 各自成一个 crate），
 //! 所以 `yekitrim.exe` 那个控制台程序不受影响。
 //!
@@ -254,6 +257,9 @@ mod win {
             force: false,
             allow_remote: false,
             trust_proxy: false,
+            // ⭐ 托盘就是"双击就用的桌面形态"：免登录、按本机管理员处理。
+            //    服务端还有两道闸（Host 必须 loopback / 写请求必须同源），见 auth::guard_local_request。
+            local_no_auth: true,
         };
 
         let shared = Arc::new(Shared {

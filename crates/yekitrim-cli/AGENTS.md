@@ -16,6 +16,9 @@
   · `yekitrim`（`src/main.rs`）= 控制台 CLI；
   · **`yekitrim-tray`（`src/tray.rs`）= Windows 托盘外壳**（2026-10）：双击即后台起 server + 自动开界面，
     托盘左键开网页、右键菜单「实际地址（灰显）/ 打开网页 / 退出」。
+    ⚠️ 它按**本地免登录**起服务（`ServerArgs::local_no_auth = true`）：桌面单机形态不该先让人登录一遍。
+    服务端那边有两道闸兜着（Host 必须 loopback、写请求必须同源），见 `crates/yekitrim-server/src/api/AGENTS.md`。
+    ⚠️ `yekitrim server` 与 `polish preview` **仍然要登录** —— 别顺手把它们也改成免登录。
     ⚠️ `#![cfg_attr(windows, windows_subsystem = "windows")]` 是 **crate 根**属性 ——
     正因为托盘是**独立 bin**（Cargo 每个 bin 各自成 crate），`yekitrim.exe` 那个控制台程序才没被一起变成无控制台。
     ⚠️ 托盘**必须先 `tracing_setup::setup(false)`**：它没有 stdout，但日志文件与 WebUI 的「运行日志」

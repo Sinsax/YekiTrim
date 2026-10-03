@@ -102,6 +102,17 @@ pub struct ServerArgs {
     #[arg(long)]
     pub admin_password_file: Option<PathBuf>,
 
+    /// 本地免登录（**仅 loopback**）：不校验会话，所有请求都当作本机管理员。
+    ///
+    /// 这是给"双击就用的桌面形态"（`yekitrim-tray`）用的 —— 省掉登录这步，
+    /// 代价是**同机上任何进程**都能调这套 API（它本来就是个本机工具，不是多租户服务）。
+    /// 因此只允许绑 loopback，且另加两道闸：
+    ///   · `Host` 必须是 loopback 主机名 —— 防 DNS rebinding（恶意网页把域名解析到 127.0.0.1）
+    ///   · 写请求的 `Origin` / `Sec-Fetch-Site` 必须是同源 —— 防跨站表单把请求打进来
+    /// ⚠️ 对外服务（`--allow-remote` / 非 loopback）一律拒绝启动，别拿它当"免密后台"。
+    #[arg(long)]
+    pub local_no_auth: bool,
+
     /// 强制接管 yekitrim.lock（仅在确认上一个实例已崩溃残留时使用）
     #[arg(long)]
     pub force: bool,
@@ -229,6 +240,17 @@ where
         std::net::IpAddr::V6(v6) => v6.is_loopback(),
     };
     let listening = if is_loopback { Listening::Loopback } else { Listening::Remote };
+    // 本地免登录的两条不变量 —— 缺一条就退化成"谁都能免密进来的后台"。
+    if args.local_no_auth {
+        if !is_loopback {
+            anyhow::bail!(
+                "--local-no-auth 只允许监听 loopback（当前 {addr}）。对外服务请去掉它、用账号登录。"
+            );
+        }
+        if args.allow_remote {
+            anyhow::bail!("--local-no-auth 与 --allow-remote 互斥（免登录不能对外）。");
+        }
+    }
     // 代理信任开关要在建路由**之前**落定：限流键、cookie 的 Secure 判定都读它（见 auth）
     auth::set_trust_proxy(args.trust_proxy);
 
@@ -346,7 +368,25 @@ where
         }
     }
 
-    let state = Arc::new(model::AppState::with_auth(auth));
+    // 本地免登录：开机就把"本机管理员"定下来，之后每个请求直接注入它（见 auth::authenticate）。
+    let local_admin = if args.local_no_auth {
+        let admin = auth
+            .db()
+            .list_users()?
+            .into_iter()
+            .find(|u| u.role == "admin" && !u.disabled)
+            .ok_or_else(|| anyhow::anyhow!(
+                "本地免登录需要一个启用中的管理员账号，但账号账本里没有"
+            ))?;
+        info!("本地免登录已开启：所有请求按管理员 {} 处理（仅 loopback）", admin.username);
+        Some(model::LocalAdmin { id: admin.id, username: admin.username, role: admin.role })
+    } else {
+        None
+    };
+    let state = Arc::new(match local_admin {
+        Some(la) => model::AppState::with_auth(auth).with_local_admin(la),
+        None => model::AppState::with_auth(auth),
+    });
 
     // 清扫上次运行遗留的渲染子进程：服务器重启不会带走 `polish render` 及它的
     // ffmpeg / 底座孙进程（实测空转两小时，把后续渲染拖到跑不完）。

@@ -686,7 +686,83 @@ fn actor_of(req: &Request) -> Option<Actor> {
 }
 
 /// 共用认证：校验会话与 CSRF，并把 [`CurrentUser`] 注入请求扩展。
+/// 主机名是不是本机。接受 `127.0.0.1` / `localhost` / `[::1]`（可带端口）。
+fn is_loopback_host(hostport: &str) -> bool {
+    let host = hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    matches!(host, "127.0.0.1" | "localhost" | "::1") || host == "0:0:0:0:0:0:0:1"
+}
+
+/// 本地免登录的两道闸（见 `authenticate` 里的说明）。任何一条不过就 403。
+fn guard_local_request(req: &Request) -> Result<(), Response> {
+    let h = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !is_loopback_host(h) {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "本地免登录只接受通过本机地址访问（Host 非 loopback）",
+        ));
+    }
+    if !is_safe_method(req.method()) {
+        if let Some(site) = req
+            .headers()
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+        {
+            if site.eq_ignore_ascii_case("cross-site") {
+                return Err(json_error(
+                    StatusCode::FORBIDDEN,
+                    "本地免登录拒绝跨站请求（Sec-Fetch-Site: cross-site）",
+                ));
+            }
+        }
+        if let Some(origin) = req
+            .headers()
+            .get(axum::http::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+        {
+            // `Origin: null`（file://、沙箱 iframe）一律拒 —— 那是拿不到 host 的
+            let hostpart = origin
+                .strip_prefix("http://")
+                .or_else(|| origin.strip_prefix("https://"))
+                .unwrap_or("");
+            if hostpart.is_empty() || !is_loopback_host(hostpart) {
+                return Err(json_error(
+                    StatusCode::FORBIDDEN,
+                    "本地免登录拒绝非同源来源（Origin 非 loopback）",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 本地免登录的**哨兵**会话 id：它不在 `sessions` 表里。
+///
+/// ⚠️ 因此依赖"真实会话"的功能在本地模式下不可用（最典型是改密码 —— `change_password`
+/// 会拿它去查会话）。本地模式本来就没有"登录"这件事，这个取舍是有意的。
+pub const LOCAL_SESSION_ID: &str = "local-no-auth";
+
 fn authenticate(state: &Arc<AppState>, req: &mut Request) -> Result<(), Response> {
+    // ---- 本地免登录（`--local-no-auth`，只有 loopback 才可能开启）----
+    // 注入本机管理员，不查会话、不查 CSRF；但**必须先过两道闸**：
+    //   ① Host 是 loopback 主机名 ⇒ 防 DNS rebinding
+    //   ② 写请求的 Origin / Sec-Fetch-Site 同源 ⇒ 防别的网页跨站打进来
+    // 少了任何一道，"免登录"就等于"任何网页都能指挥这台机器上的 YekiTrim"。
+    if let Some(la) = &state.local_admin {
+        guard_local_request(req)?;
+        req.extensions_mut().insert(CurrentUser {
+            id: la.id,
+            username: la.username.clone(),
+            role: la.role.clone(),
+            must_change_password: false,
+            session_id: LOCAL_SESSION_ID.to_string(),
+        });
+        return Ok(());
+    }
     let auth = state.auth.clone();
     let Some(sid) = cookie_value(req.headers(), kdf::COOKIE_SID) else {
         return Err(json_error(StatusCode::UNAUTHORIZED, "未登录，请先登录"));
@@ -847,5 +923,70 @@ mod tests {
         assert_eq!(resolve_client_ip(connect, &HeaderMap::new(), true).as_deref(), Some("10.0.0.9"));
         // 没有 ConnectInfo（单测的 oneshot）→ None
         assert_eq!(resolve_client_ip(None, &HeaderMap::new(), false), None);
+    }
+
+    /// 本地免登录的两道闸：`Host` 必须 loopback（防 DNS rebinding），
+    /// 写请求的 `Origin` / `Sec-Fetch-Site` 必须同源（防跨站）。
+    ///
+    /// ⚠️ 这条判据是"免登录"这个便利的**唯一**代价赔偿 —— 它一旦松掉，
+    /// 本机上任何一个网页都能指挥这个服务（`is_loopback_host` 的 `localhost.` 之类变体尤其别放）。
+    #[test]
+    fn local_no_auth_guards_reject_foreign_host_and_cross_site() {
+        use axum::body::Body;
+        use axum::http::{Method, Request};
+
+        let mk = |method: Method, hdrs: &[(&str, &str)]| {
+            let mut b = Request::builder().method(method).uri("/api/projects");
+            for (k, v) in hdrs {
+                b = b.header(*k, *v);
+            }
+            b.body(Body::empty()).unwrap()
+        };
+
+        // ---- ① Host 防线 ----
+        assert!(guard_local_request(&mk(Method::GET, &[("host", "127.0.0.1:26320")])).is_ok());
+        assert!(guard_local_request(&mk(Method::GET, &[("host", "localhost:26320")])).is_ok());
+        assert!(guard_local_request(&mk(Method::GET, &[("host", "[::1]:26320")])).is_ok());
+        // 恶意域名（含"看起来像 localhost"的变体）一律拒
+        for bad in ["evil.com", "evil.com:26320", "localhost.evil.com", "127.0.0.1.evil.com", ""] {
+            assert!(
+                guard_local_request(&mk(Method::GET, &[("host", bad)])).is_err(),
+                "Host={bad:?} 不该放行"
+            );
+        }
+
+        // ---- ② 跨站写请求 ----
+        assert!(guard_local_request(&mk(
+            Method::POST,
+            &[("host", "127.0.0.1:26320"), ("origin", "http://127.0.0.1:26320")]
+        ))
+        .is_ok());
+        assert!(guard_local_request(&mk(
+            Method::POST,
+            &[("host", "127.0.0.1:26320"), ("origin", "http://evil.com")]
+        ))
+        .is_err());
+        // `Origin: null`（file:// / 沙箱 iframe）拿不到 host，一律拒
+        assert!(guard_local_request(&mk(
+            Method::POST,
+            &[("host", "127.0.0.1:26320"), ("origin", "null")]
+        ))
+        .is_err());
+        assert!(guard_local_request(&mk(
+            Method::POST,
+            &[("host", "127.0.0.1:26320"), ("sec-fetch-site", "cross-site")]
+        ))
+        .is_err());
+        assert!(guard_local_request(&mk(
+            Method::POST,
+            &[("host", "127.0.0.1:26320"), ("sec-fetch-site", "same-origin")]
+        ))
+        .is_ok());
+        // 读请求不看 Origin（同源 GET 本来就不带）—— 只靠 Host 兜
+        assert!(guard_local_request(&mk(
+            Method::GET,
+            &[("host", "127.0.0.1:26320"), ("origin", "http://evil.com")]
+        ))
+        .is_ok());
     }
 }

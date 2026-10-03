@@ -62,14 +62,22 @@
           <b>{{ authState.user?.username }}</b>
           <span class="muted small">{{ isAdmin ? '管理员' : '用户' }}</span>
         </span>
-        <button class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
+        <!-- ⚠️ 本地免登录（`--local-no-auth`）下**没有会话可退**：登录页也不再需要，
+             留一颗「退出」只会把用户带到一个莫名其妙的登录页。换成一句状态说明。 -->
+        <span v-if="localNoAuth" class="mini-btn side-logout local-badge" title="本地模式：免登录，仅本机可访问">
+          本地模式
+        </span>
+        <button v-else class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
           <Icon name="logout" :size="12" /> 退出
         </button>
       </div>
-      <button v-else class="rail-item rail-user" :title="`${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 退出登录`"
-              @click="emit('logout')">
+      <button v-else class="rail-item rail-user"
+              :title="localNoAuth
+                ? `${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 本地模式（免登录）`
+                : `${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 退出登录`"
+              @click="!localNoAuth && emit('logout')">
         <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
-        <Icon name="logout" :size="14" class="rail-out" />
+        <Icon v-if="!localNoAuth" name="logout" :size="14" class="rail-out" />
       </button>
 
       <template v-if="!collapsed">
@@ -112,7 +120,9 @@ import { STEPS, stageInfo, hashIndex } from '../../utils'
 import { filteredProjects, isExpanded, toggleExpand, wb } from '../../stores/workbench'
 
 defineProps({
-  projectCount: { type: Number, default: 0 }
+  projectCount: { type: Number, default: 0 },
+  /** 本地免登录（`/api/health.local_no_auth`）：没有会话可退，收起「退出」入口 */
+  localNoAuth: { type: Boolean, default: false }
 })
 const emit = defineEmits(['open', 'remove', 'logout', 'open-jobs'])
 
@@ -281,6 +291,8 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 /* 用户块只做展示（登出改成了右侧按钮 + 二次确认），光标别留成可点的手型 */
 .user-chip { cursor:default; }
 .side-logout { margin-left:auto; flex:none; padding:3px 8px; font-size:11.5px; }
+/* 本地模式的"退出"位置改成只读状态标记：样式沿用按钮形，但不给点（没有 cursor:pointer） */
+.local-badge { cursor:default; color:var(--ink-faint); border-color:var(--line); background:var(--bg-soft); }
 /* 折叠轨的用户块：头像 + 退出图标上下两行（原来只有头像）。
    选择器必须比 `.rail-item`（同为 scoped (0,2,0) 且写在后面）更特指，否则 height:34px 会赢 */
 .side-foot .rail-user { flex-direction:column; height:auto; padding:4px 0; gap:2px; }
