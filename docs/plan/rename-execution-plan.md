@@ -189,32 +189,54 @@ sha256 `b303601a…`，冒烟通过，**包内旧名 0**）。
 
 ### 全仓旧名字面量 = **0**（改名完成）
 
-本计划书成文时的「6 行 / 2 文件」承重负断言，**已在本轮被改写**：旧名字面量从源码中**全部移除**，
+本计划书成文时记的「6 行 / 2 文件」负断言，**已从源码中全部移除**，
 全仓（排除 `.git` / `target` / `release`）已无任何 `vtrim` / `V-Trim` 字面量。
 
-改写方式与得失（用户裁决：「只更新计划书，不动那两条断言」）：
+⚠️ **订正：原文把这两条并称为「旧名必须被拒」的承重负断言，这个归类是错的。**
+翻提交史后，两者来由完全不同 —— 其中一条根本不是"旧名必须被拒"，另一条也不是安全防线：
 
-| 位置 | 原名 | 现名 | 判据强度 |
+| 位置 | 引入提交 | 它**真正**在防什么 | 改写损失 |
 |---|---|---|---|
-| `crates/yekitrim-server/src/ingest.rs:1742` | `!token_shape_ok("vtrim_…")` | `!token_shape_ok("notatoken_…")` | 🟡 **降级** |
-| `crates/yekitrim-server/src/render_proc.rs:207` | `!is_our_render("/usr/bin/vtrim polish cover …")` | `!is_our_render("/usr/bin/yekitrim render …")` + `… polish …`（拆成两条「缺一个条件」） | 🟢 等价偏强 |
+| `render_proc.rs::is_our_render` | `95ee2fd` | 判据**退化成认不出程序**（不是"旧名被拒"） | **无** |
+| `ingest.rs::token_shape_ok` | `3303d27` | 无（见下：是"不兼容口径"的一次性声明） | 仅声明本身 |
 
-⚠️ **`ingest.rs` 那条是强度降级，不是等价替换**：旧写法钉的是「**存档的旧前缀**被拒」；
-新写法钉的是「**任意非当前前缀**被拒」。后者仍覆盖 `strip_prefix` 分支（`token_shape_ok` 的第一行），
-但没有再钉住那个具体的旧值 —— 若将来有人把 `TOKEN_PREFIX` 改回旧名，这条用例**不会红**。
-`render_proc.rs` 那条反而更清楚：拆开后直接覆盖「子命令不是 polish」与「动作不是 render/cover」两个分支。
+**① `render_proc` —— 原文理解反了。** `95ee2fd` 引入时判据是
+**`contains("vtrim") || contains("yekitrim")`**，注释写着「**两个名字都要认**、不能只 `contains("vtrim")`」，
+因为旧 exe 在改名期间可能还在跑。踩的坑是：`"yekitrim"` **不含** `"vtrim"` 子串（中间是 `ekitrim`），
+只判旧名 ⇒ 改名后判据恒 false ⇒ `sweep_orphans` 认不出遗留渲染进程、
+ffmpeg / 底座孙进程**永不被回收**（文件被占用且无任何报错）。
+所以它测的是**「判据不能认不出自己的程序」**。`3c0dd5f` 全仓清扫删掉旧名半边时旧 exe 早已不存在，
+是合理收尾。⇒ **当前改写为「缺 polish / 缺 render·cover」两条，语义无损、覆盖反而更全。**
 
-**为什么原书写「不能替换」**：当时的判据是「旧名必须被拒」这一条**不兼容口径的承诺**。
-换成新名确实会让语义反转（变成「新名必须被拒」、测试失败）—— 所以那两条**只能删或留**，不能改字面量。
-本轮选择了「删旧值、改测一般性判据」，于是承诺本身不再有测试钉住。**这是一笔明账，不是疏漏。**
+**② `ingest` —— 真正的防线从来不是这一条。** `3303d27` 修的 P0 是生成端/校验端前缀不一致
+（`"yekitrim_…".strip_prefix("vtrim_")` → `None` ⇒ 每个 token 恒 401 ⇒ 录播姬采集整条链不可用）。
+修法是「**消灭第二个真源**」，因此真正的防线是这三条，且**全部完好**：
+（a）两端共用 `TOKEN_PREFIX`（`service/src/ingest/mod.rs:39`）；
+（b）断言 `generate_token()` 产物以 `TOKEN_PREFIX` 开头（`ingest.rs:1724-1730`）；
+（c）测试**一律用常量拼**、不写字面量前缀（老测试写死旧值 ⇒ 它"保护的就是那个坏行为"）。
+至于「旧前缀 `vtrim_` 必须被拒」那一条，按当时的 commit 说明只是**顺带记录"不兼容口径"**，
+**不是安全防线**。
 
-> 若日后要恢复这条承诺的钉子：在 `token_shape_ok` 的用例里加回
-> `assert!(!token_shape_ok(&format!("vtrim_{}", "a".repeat(40))))` 即可（一个词，无副作用）。
+### 用户裁决：不保留任何"旧名被拒"的钉子（2026-10-03）
 
-**反证实验（本轮实测，坐实上面的"降级"判断）**：把
-`yekitrim-service/src/ingest/mod.rs:39` 的 `TOKEN_PREFIX` **临时改回 `"vtrim_"`**，
-重跑 `cargo test -p yekitrim-server --lib token_shape` ⇒ **仍然 ok**。
-即：前缀被改回旧名时，这条用例**不会红**（改前它会红）。已还原，`git diff` 对本 crate 为空。
+> 「不需要兼容过去和服务端在运行的考虑，当前是开发环境，总之不需要考虑任何过去内容的兼容。」
+
+⇒ **那两条断言无需恢复**，且**不应**恢复：
+- 旧 exe 不存在 ⇒ `is_our_render` 无理由再认旧名（认了反而放宽判据）；
+- 旧 prefix 不会再出现 ⇒ 钉住它是**过期的声明**，不是防线。
+
+**反证实验（坐实②的"非防线"判断）**：把 `service/src/ingest/mod.rs:39` 的 `TOKEN_PREFIX`
+**临时改回 `"vtrim_"`**，重跑 `cargo test -p yekitrim-server --lib token_shape` ⇒ **仍然 ok**。
+即该断言改前钉的也只是那个具体旧值，与 P0 的真实防线（a/b/c）无关。已还原，本 crate `git diff` 为空。
+
+**反向对照（同批实测，证明防线仍然有效）**：把校验端 `token_shape_ok` 的
+`strip_prefix(TOKEN_PREFIX)` **临时退回 `strip_prefix("vtrim_")`**（= 复现 P0 那个原始 bug），
+重跑同一用例 ⇒ **FAILED，panicked at `ingest.rs:1724`**（正是防线 (b) 那条钉子）。
+两实验对照说明：**P0 仍被牢牢钉住，被删掉的只是那条过期的"旧前缀声明"。** 已还原。
+
+> **口径一致性**：这与 `path.rs:170` 的既有表述同调 ——
+> 「状态目录就一个名字：`.yekitrim`。**旧名一律不再被创建**（无兼容期）」。无兼容期 ⇒ 无需为旧值留念。
+
 
 ### 全仓计数（`--exclude-dir=.git --exclude-dir=target`）
 
