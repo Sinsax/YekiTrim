@@ -198,7 +198,7 @@
     （带片段名），该片段空闲时自动补跑一次 —— 一次编辑风暴不该塞十几条任务。
 - `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。
   `AppModal`/`AppDialog`/`ToastHost`（`stores/toast`）—— **别再手搓弹窗/确认**。
-- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ 收到 `update:dir`（onMounted 也发）就要**清已选文件**，否则提交"新目录+旧文件名"；`update:listing` 报目录内容供判有无可用视频。
+- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ 收到 `update:dir`（onMounted 也发）就要**清已选文件**，否则提交"新目录+旧文件名"；`update:listing` 报目录内容供判有无可用视频。首页把它放**弹出层 + 草稿态**（取消不写回已选）。
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
   `api_base` 非空要带 scheme。
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()` 后按
