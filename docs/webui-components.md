@@ -865,6 +865,11 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
     调用方收到它就得把 `selected` 清空。不清会提交"新目录 + 旧文件名"：后端 `jail_existing(新目录, 旧名)`
     要么回一句莫名其妙的「视频不可用」，要么**在新目录里撞上同名文件而静默绑错**。
     （`PrepareView.vue::onPickerDir` 与 `WorkbenchView.vue::onLocalDir` 都守这条，别只改一处。）
+  - ⚠️ **外部改了 `startDir` 必须跟着走**（2026-10）：本组件目录框显示的是自己的内部 `dir`，
+    而 `startDir` **只在 `onMounted` 读一次** —— 于是"弹出浏览"里选定并写回 `localDir` 之后，
+    外面那个目录框**还停在原地**，用户看到的是「选了但外面没显示」（真机报过）。
+    修法是 `watch(() => props.startDir)`，`v !== dir.value` 才 `browse(v)`：这道闸同时挡住回环 ——
+    自己 browse 时 emit 出去的 `update:dir` 会让父组件把 `startDir` 设成同一个值，那时两者相等。
   - **`update:listing`**（2026-10 新增）：每次读完目录 emit `{dir, files, dirs, failed?}`。它存在的理由是
     「新增项目 → 服务器文件」要判**这个目录里有没有可用视频** —— 后端在 `input` 为空时**自动挑第一个视频**
     （`projects.rs::find_first_video`），目录里没有就回 400「目录里没有可用的视频文件」。前端拿到 listing 才能：
