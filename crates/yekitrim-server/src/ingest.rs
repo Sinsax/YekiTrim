@@ -1714,9 +1714,9 @@ mod tests {
     ///
     /// 这是未认证入口上的成本闸门 —— 形状检查失败时直接 401，不碰 KDF。
     ///
-    /// ⚠️ **本测试故意不写字面量前缀**，一律从 `TOKEN_PREFIX` 拼：
-    /// 以前它把 `yekitrim_` 写死，于是改名时"生成端改了、校验端没改"这件事
-    /// **测不出来**（断言保护的就是旧名字）。现在前缀只有一个来源。
+    /// ⚠️ **本测试一律从 `TOKEN_PREFIX` 拼，不写字面量前缀**：
+    /// 曾经它把前缀写死，而生成端另有一份字面量——两端各写一个字面量时，
+    /// 只改一端就**测不出来**（断言保护的是被写死的那份）。现在前缀只有一个来源。
     #[test]
     fn token_shape_gate_rejects_junk_before_kdf() {
         use yekitrim_service::ingest::TOKEN_PREFIX as P;
@@ -1737,12 +1737,8 @@ mod tests {
         assert!(!token_shape_ok(&format!("{P}{}", "a".repeat(39) + "!")));
         assert!(!token_shape_ok(&"a".repeat(40)));
         assert!(!token_shape_ok(&format!("{}", P.to_uppercase() + &"a".repeat(40))));
-        // ⚠️ 旧前缀（`vtrim_`）**不再被认** —— 不兼容口径：存量 token 一律失效。
-        //    这里**故意写旧名字面量**：写成 `P` 就成了同义反复，什么也证明不了。
-        assert!(
-            !token_shape_ok(&format!("vtrim_{}", "a".repeat(40))),
-            "旧前缀必须被拒（不兼容口径）"
-        );
+        // 前缀不对就不是 token：换一个别的词打头，形状必须不过
+        assert!(!token_shape_ok(&format!("notatoken_{}", "a".repeat(40))));
         // `-` / `_` 是 base64url 的合法字符，不能误伤
         assert!(token_shape_ok(&format!("{P}{}", "-_A0".repeat(10))));
     }
