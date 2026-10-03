@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>YekiTrim · 哥特双方案预览</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Noto Sans SC','Microsoft YaHei',sans-serif}
+body{background:#EDEDE6;padding:26px;color:#202020;font-size:13px;line-height:1.6}
+h1{font-size:23px;font-weight:700;margin-bottom:3px}
+.h1sub{color:#6B6B62;font-size:12.5px;margin-bottom:22px}
+h2{font-size:15px;font-weight:700;margin:26px 0 12px;padding-left:9px;border-left:3px solid #E86838}
+h3{font-size:13px;font-weight:700;margin:16px 0 9px;color:#4A4A44}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+.box{border-radius:16px;padding:18px;border:1px solid #DCDCD2;background:#fff}
+.lbl{font-size:11px;color:#8A8A80;margin-top:7px;text-align:center}
+
+/* ---- 三个 logo：几何一致，仅配色不同 ---- */
+.lg{width:72px;height:72px;display:block}
+.lgrid{display:flex;gap:26px;flex-wrap:wrap}
+.lgcell{text-align:center}
+.lgcell .cap{font-size:11.5px;font-weight:700;margin-top:6px}
+.lgcell .sub{font-size:10.5px;color:#8A8A80}
+
+/* 尺寸阶梯 */
+.sizes{display:flex;align-items:flex-end;gap:16px;margin-top:10px}
+
+/* ---- 方案 A / B 面板 ---- */
+.pane{border-radius:16px;padding:18px;border:1px solid #DCDCD2;flex:1;min-width:390px}
+.paneA{background:#F8F8F0;color:#202020;border-color:#EFE5D7}
+.paneB{background:#202020;color:#F0F0E0;border-color:#3A3A3A}
+
+.A{--bg:#F8F8F0;--bg-soft:#F4F4E8;--card:#fff;--line:#EFE5D7;--line-soft:#F4EEE6;
+   --ink:#202020;--ink-dim:#5C5C54;--ink-faint:#A7A79D;
+   --main:#E86838;--main-deep:#904028;--main-soft:#FCEDE7;--main-glow:#F9D5C7;
+   --tan:#D8C0A0;--tan-soft:#F0E8DA;--tan-deep:#8C7455;--red:#D8544C;--red-deep:#B34B45;--red-soft:#FBE7E4;
+   --green:#4FBF9C;--green-deep:#2FA07E;--green-soft:#DEF2EA;--amber:#E0A93C;--amber-deep:#8A6210;--amber-soft:#FBF0D9;
+   --blue:#7FA8F0;--blue-deep:#5E7FD8;--blue-soft:#E8EEFC;
+   --shadow:0 8px 26px rgba(32,32,32,.05), 0 2px 6px rgba(32,32,32,.04);
+   --shadow-hover:0 12px 34px rgba(32,32,32,.09);}
+.B{--bg:#202020;--bg-soft:#262626;--card:#2B2B2B;--line:#3A3A3A;--line-soft:#2E2E2E;
+   --ink:#F0F0E0;--ink-dim:#B0B0A6;--ink-faint:#8A8A80;
+   --main:#E86838;--main-deep:#F5B89E;--main-soft:rgba(232,104,56,.16);--main-glow:rgba(232,104,56,.30);
+   --tan:#D8C0A0;--tan-soft:rgba(216,192,160,.14);--tan-deep:#E0CBAE;
+   --red:#F86860;--red-deep:#FF9089;--red-soft:rgba(248,104,96,.16);
+   --green:#7AD9C0;--green-deep:#9CE8D4;--green-soft:rgba(122,217,192,.16);
+   --amber:#F2C14E;--amber-deep:#F7D580;--amber-soft:rgba(242,193,78,.16);
+   --blue:#8FB4F5;--blue-deep:#AECBF9;--blue-soft:rgba(143,180,245,.16);
+   --shadow:0 8px 26px rgba(0,0,0,.35);--shadow-hover:0 12px 34px rgba(0,0,0,.45),0 0 0 1px rgba(232,104,56,.35);}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:999px;
+     border:1px solid var(--line);background:var(--card);color:var(--ink-dim);font-size:12.5px;cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--main);color:var(--main-deep)}
+.btnP{border:none;color:#fff;font-weight:600;background:linear-gradient(135deg,#E86838,#904028);box-shadow:0 4px 14px rgba(232,104,56,.4)}
+.B .btnP{color:#202020;background:linear-gradient(135deg,#E86838,#F88858)}
+.chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;font-size:11px}
+.meter{height:6px;border-radius:999px;background:var(--bg-soft);overflow:hidden}
+.meter>i{display:block;height:100%;width:64%;border-radius:999px;background:linear-gradient(90deg,var(--main),var(--main-deep))}
+.sel{display:flex;align-items:center;gap:9px;padding:9px;border-radius:10px;background:var(--main-soft);
+     border-left:3px solid var(--main);margin:9px 0}
+.sel b{color:var(--main-deep);font-size:12.5px}
+.sws{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
+.sws div{flex:1;min-width:52px;border-radius:7px;overflow:hidden;border:1px solid rgba(128,128,128,.25)}
+.sws i{display:block;height:30px}
+.sws span{display:block;font-size:9px;padding:3px 4px;text-align:center;font-family:Consolas,monospace}
+table{border-collapse:collapse;font-size:11.5px;width:100%;margin-top:8px}
+th,td{padding:5px 7px;text-align:left;border-bottom:1px solid rgba(128,128,128,.16)}
+th{opacity:.7;font-weight:600}
+td.n{font-family:Consolas,monospace;text-align:right}
+</style></head><body>
+
+<h1>YekiTrim · 哥特双方案预览</h1>
+<div class="h1sub">特征色取自角色立绘实测 · Logo 三稿 × 浅底/暗底 · 2026-10-03</div>
+
+<!-- ================= LOGO ================= -->
+<h2>一、Logo 三稿</h2>
+
+<h3>① 瞳 — Y 交点嵌橙瞳（虹膜 #E86838 · 纯黑瞳孔 · 左上高光）</h3>
+<div class="lgrid">
+  <div class="lgcell">
+    <svg class="lg" viewBox="0 0 64 64">
+      <path d="M16 16 L32 36 L48 16" fill="none" stroke="#202020" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M32 36 L32 50" stroke="#202020" stroke-width="6.5" stroke-linecap="round"/>
+      <circle cx="32" cy="36" r="9" fill="#E86838"/>
+      <circle cx="32" cy="36" r="4.2" fill="#101010"/>
+      <circle cx="28.8" cy="32.6" r="2.6" fill="#fff" opacity=".92"/>
+    </svg>
+    <div class="cap">① 瞳 · 浅底</div><div class="sub">Y 裙黑</div>
+  </div>
+  <div class="lgcell" style="background:#202020;padding:12px;border-radius:12px">
+    <svg class="lg" viewBox="0 0 64 64">
+      <path d="M16 16 L32 36 L48 16" fill="none" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M32 36 L32 50" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round"/>
+      <circle cx="32" cy="36" r="9" fill="#E86838"/>
+      <circle cx="32" cy="36" r="4.2" fill="#101010"/>
+      <circle cx="28.8" cy="32.6" r="2.6" fill="#fff" opacity=".92"/>
+    </svg>
+    <div class="cap" style="color:#F0F0E0">① 瞳 · 暗底</div><div class="sub" style="color:#8A8A80">Y 裙白</div>
+  </div>
+</div>
+
+<h3>② 蝠 — Y 两臂展成翼（尖耳 + 三道鳞波凹口，嵌两颗红瞳 #F86860）</h3>
+<div class="lgrid">
+  <div class="lgcell">
+    <svg class="lg" viewBox="0 0 64 64">
+      <!-- 左翼 -->
+      <path d="M31 30 C24 18 14 12 5 14 C11 18 12 22 10 26 C15 24 19 25 21 29 C24 26 28 27 31 30 Z" fill="#202020"/>
+      <!-- 右翼 -->
+      <path d="M33 30 C40 18 50 12 59 14 C53 18 52 22 54 26 C49 24 45 25 43 29 C40 26 36 27 33 30 Z" fill="#202020"/>
+      <!-- 身体 -->
+      <path d="M32 27 L32 50" stroke="#202020" stroke-width="6.5" stroke-linecap="round"/>
+      <!-- 两瞳 -->
+      <circle cx="24.5" cy="24" r="2.6" fill="#F86860"/>
+      <circle cx="39.5" cy="24" r="2.6" fill="#F86860"/>
+    </svg>
+    <div class="cap">② 蝠 · 浅底</div><div class="sub">翼裙黑</div>
+  </div>
+  <div class="lgcell" style="background:#202020;padding:12px;border-radius:12px">
+    <svg class="lg" viewBox="0 0 64 64">
+      <path d="M31 30 C24 18 14 12 5 14 C11 18 12 22 10 26 C15 24 19 25 21 29 C24 26 28 27 31 30 Z" fill="#F0F0E0"/>
+      <path d="M33 30 C40 18 50 12 59 14 C53 18 52 22 54 26 C49 24 45 25 43 29 C40 26 36 27 33 30 Z" fill="#F0F0E0"/>
+      <path d="M32 27 L32 50" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round"/>
+      <circle cx="24.5" cy="24" r="2.6" fill="#F86860"/>
+      <circle cx="39.5" cy="24" r="2.6" fill="#F86860"/>
+    </svg>
+    <div class="cap" style="color:#F0F0E0">② 蝠 · 暗底</div><div class="sub" style="color:#8A8A80">剪影最成立</div>
+  </div>
+</div>
+
+<h3>③ 结 — 哥特蝴蝶结（双环 + 两条燕尾飘带，结心橙珠 #E86838）</h3>
+<div class="lgrid">
+  <div class="lgcell">
+    <svg class="lg" viewBox="0 0 64 64">
+      <!-- 左环 -->
+      <path d="M30 32 C22 22 10 20 7 26 C4 33 14 39 30 36 Z" fill="#202020"/>
+      <!-- 右环 -->
+      <path d="M34 32 C42 22 54 20 57 26 C60 33 50 39 34 36 Z" fill="#202020"/>
+      <!-- 左燕尾 -->
+      <path d="M29 38 L17 54 L21 44 L14 47 Z" fill="#202020"/>
+      <!-- 右燕尾 -->
+      <path d="M35 38 L47 54 L43 44 L50 47 Z" fill="#202020"/>
+      <!-- 结心橙珠 -->
+      <circle cx="32" cy="33" r="5" fill="#E86838"/>
+      <circle cx="30.2" cy="31.2" r="1.6" fill="#fff" opacity=".85"/>
+    </svg>
+    <div class="cap">③ 结 · 浅底</div><div class="sub">不依赖 Y</div>
+  </div>
+  <div class="lgcell" style="background:#202020;padding:12px;border-radius:12px">
+    <svg class="lg" viewBox="0 0 64 64">
+      <path d="M29.5 32 C24 18 12 12 7 18 C2 25 8 36 29.5 34 Z" fill="#F0F0E0"/>
+      <path d="M34.5 32 C40 18 52 12 57 18 C62 25 56 36 34.5 34 Z" fill="#F0F0E0"/>
+      <path d="M28 36 C24 44 20 50 15 57 L21 50 L19 58 L27 45 Z" fill="#F0F0E0"/>
+      <path d="M36 36 C40 44 44 50 49 57 L43 50 L45 58 L37 45 Z" fill="#F0F0E0"/>
+      <circle cx="32" cy="33" r="5.2" fill="#E86838"/>
+    </svg>
+    <div class="cap" style="color:#F0F0E0">③ 结 · 暗底</div><div class="sub" style="color:#8A8A80">哥特结</div>
+  </div>
+</div>
+
+<h3>16px 实测（favicon 尺寸）</h3>
+<div class="sizes">
+  <div class="lgcell"><svg viewBox="0 0 64 64" width="16" height="16"><path d="M16 16 L32 36 L48 16" fill="none" stroke="#202020" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 36 L32 50" stroke="#202020" stroke-width="6.5" stroke-linecap="round"/><circle cx="32" cy="36" r="9" fill="#E86838"/><circle cx="32" cy="36" r="4.2" fill="#101010"/></svg><div class="lbl">①瞳</div></div>
+  <div class="lgcell"><svg viewBox="0 0 64 64" width="16" height="16"><path d="M31 30 C24 18 14 12 5 14 C11 18 12 22 10 26 C15 24 19 25 21 29 C24 26 28 27 31 30 Z" fill="#202020"/><path d="M33 30 C40 18 50 12 59 14 C53 18 52 22 54 26 C49 24 45 25 43 29 C40 26 36 27 33 30 Z" fill="#202020"/><path d="M32 27 L32 50" stroke="#202020" stroke-width="6.5" stroke-linecap="round"/></svg><div class="lbl">②蝠</div></div>
+  <div class="lgcell"><svg viewBox="0 0 64 64" width="16" height="16"><path d="M29.5 32 C24 18 12 12 7 18 C2 25 8 36 29.5 34 Z" fill="#202020"/><path d="M34.5 32 C40 18 52 12 57 18 C62 25 56 36 34.5 34 Z" fill="#202020"/><path d="M28 36 C24 44 20 50 15 57 L21 50 L19 58 L27 45 Z" fill="#202020"/><path d="M36 36 C40 44 44 50 49 57 L43 50 L45 58 L37 45 Z" fill="#202020"/><circle cx="32" cy="33" r="5.2" fill="#E86838"/></svg><div class="lbl">③结</div></div>
+  <div class="lgcell" style="background:#202020;padding:6px;border-radius:6px"><svg viewBox="0 0 64 64" width="16" height="16"><path d="M31 30 C24 18 14 12 5 14 C11 18 12 22 10 26 C15 24 19 25 21 29 C24 26 28 27 31 30 Z" fill="#F0F0E0"/><path d="M33 30 C40 18 50 12 59 14 C53 18 52 22 54 26 C49 24 45 25 43 29 C40 26 36 27 33 30 Z" fill="#F0F0E0"/><path d="M32 27 L32 50" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round"/><circle cx="24.5" cy="24" r="2.6" fill="#F86860"/><circle cx="39.5" cy="24" r="2.6" fill="#F86860"/></svg><div class="lbl">②蝠暗</div></div>
+  <div class="lgcell" style="background:#202020;padding:6px;border-radius:6px"><svg viewBox="0 0 64 64" width="16" height="16"><path d="M16 16 L32 36 L48 16" fill="none" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 36 L32 50" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round"/><circle cx="32" cy="36" r="9" fill="#E86838"/></svg><div class="lbl" style="color:#B0B0A6">①瞳暗</div></div>
+</div>
+
+<!-- ================= 方案 A ================= -->
+<h2>二、方案 A · 哥特浅色</h2>
+<div class="pane paneA A">
+  <div class="row">
+    <div style="flex:1;min-width:180px">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:11px;margin-bottom:13px">
+          <svg width="38" height="38" viewBox="0 0 64 64">
+            <path d="M16 16 L32 36 L48 16" fill="none" stroke="var(--ink)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M32 36 L32 50" stroke="var(--ink)" stroke-width="6.5" stroke-linecap="round"/>
+            <circle cx="32" cy="36" r="9" fill="#E86838"/><circle cx="32" cy="36" r="4.2" fill="#101010"/>
+          </svg>
+          <div><div style="font-size:15px;font-weight:700;color:var(--main-deep)">YekiTrim</div>
+          <div style="font-size:10px;color:var(--ink-faint);letter-spacing:.14em">切片工作台</div></div>
+        </div>
+        <div class="sel"><div style="width:26px;height:26px;border-radius:50%;background:var(--main-glow)"></div>
+          <div><b>当前项目</b><div style="font-size:11px;color:var(--ink-dim)">选中态：soft 底 + 3px 主色条</div></div></div>
+        <div style="display:flex;gap:7px;margin:11px 0">
+          <button class="btn btnP">精修</button><button class="btn">取消</button>
+          <button class="btn" style="border-color:var(--main);color:var(--main-deep)">悬停</button>
+        </div>
+        <div class="meter"><i></i></div>
+        <div style="display:flex;gap:5px;margin-top:9px">
+          <span class="chip" style="background:var(--main-soft);color:var(--main-deep)">已导出</span>
+          <span class="chip" style="background:var(--green-soft);color:var(--green-deep)">完成</span>
+          <span class="chip" style="background:var(--amber-soft);color:var(--amber-deep)">待处理</span>
+          <span class="chip" style="background:var(--bg-soft);color:var(--ink-dim)">中性</span>
+        </div>
+      </div>
+      <div class="card" style="margin-top:11px;background:var(--bg)">
+        <div style="font-size:12px;font-weight:700;margin-bottom:5px">蜘蛛网底纹（首页/登录）</div>
+        <div style="height:74px;border-radius:9px;border:1px solid var(--line);
+             background-image:linear-gradient(45deg,rgba(32,32,32,.05) 1px,transparent 1px),
+                              linear-gradient(-45deg,rgba(32,32,32,.05) 1px,transparent 1px);
+             background-size:18px 18px"></div>
+        <div style="font-size:11px;color:var(--ink-dim);margin-top:6px">45° 双线交叉 · 透明度 .05</div>
+      </div>
+    </div>
+    <div style="flex:1;min-width:230px">
+      <div class="sws">
+        <div><i style="background:#F8F8F0"></i><span>bg</span></div>
+        <div><i style="background:#F4F4E8"></i><span>soft</span></div>
+        <div><i style="background:#EFE5D7"></i><span>line</span></div>
+        <div><i style="background:#202020"></i><span>ink</span></div>
+        <div><i style="background:#5C5C54"></i><span>dim</span></div>
+        <div><i style="background:#E86838"></i><span>main</span></div>
+        <div><i style="background:#904028"></i><span>deep</span></div>
+        <div><i style="background:#FCEDE7"></i><span>soft</span></div>
+        <div><i style="background:#D8C0A0"></i><span>tan</span></div>
+        <div><i style="background:#D8544C"></i><span>red</span></div>
+      </div>
+      <table>
+        <tr><th>用途</th><th>对比度</th><th>判定</th></tr>
+        <tr><td>正文 ink / bg</td><td class="n">15.27</td><td>AAA</td></tr>
+        <tr><td>次要 ink-dim / bg</td><td class="n">6.32</td><td>AA+</td></tr>
+        <tr><td>白字 / main（按钮）</td><td class="n">3.25</td><td>大字/图形</td></tr>
+        <tr><td>deep 文字 / bg</td><td class="n">6.67</td><td>AAA</td></tr>
+        <tr><td>red-deep / bg</td><td class="n">4.91</td><td>AA</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 方案 B ================= -->
+<h2>三、方案 B · 哥特暗色</h2>
+<div class="pane paneB B">
+  <div class="row">
+    <div style="flex:1;min-width:180px">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:11px;margin-bottom:13px">
+          <svg width="38" height="38" viewBox="0 0 64 64">
+            <path d="M31 30 C24 18 14 12 5 14 C11 18 12 22 10 26 C15 24 19 25 21 29 C24 26 28 27 31 30 Z" fill="#F0F0E0"/>
+            <path d="M33 30 C40 18 50 12 59 14 C53 18 52 22 54 26 C49 24 45 25 43 29 C40 26 36 27 33 30 Z" fill="#F0F0E0"/>
+            <path d="M32 27 L32 50" stroke="#F0F0E0" stroke-width="6.5" stroke-linecap="round"/>
+            <circle cx="24.5" cy="24" r="2.6" fill="#F86860"/><circle cx="39.5" cy="24" r="2.6" fill="#F86860"/>
+          </svg>
+          <div><div style="font-size:15px;font-weight:700;color:var(--main-deep)">YekiTrim</div>
+          <div style="font-size:10px;color:var(--ink-faint);letter-spacing:.14em">切片工作台</div></div>
+        </div>
+        <div class="sel"><div style="width:26px;height:26px;border-radius:50%;background:var(--main-glow)"></div>
+          <div><b>当前项目</b><div style="font-size:11px;color:var(--ink-dim)">soft = 透明叠加，非实色</div></div></div>
+        <div style="display:flex;gap:7px;margin:11px 0">
+          <button class="btn btnP">精修</button><button class="btn">取消</button>
+          <button class="btn" style="border-color:var(--main);color:var(--main-deep)">悬停</button>
+        </div>
+        <div class="meter"><i></i></div>
+        <div style="display:flex;gap:5px;margin-top:9px">
+          <span class="chip" style="background:var(--main-soft);color:var(--main-deep)">已导出</span>
+          <span class="chip" style="background:var(--green-soft);color:var(--green-deep)">完成</span>
+          <span class="chip" style="background:var(--amber-soft);color:var(--amber-deep)">待处理</span>
+          <span class="chip" style="background:var(--bg-soft);color:var(--ink-dim)">中性</span>
+        </div>
+      </div>
+      <div class="card" style="margin-top:11px;background:var(--bg)">
+        <div style="font-size:12px;font-weight:700;margin-bottom:5px">暗底靠描边 + 内发光，不靠投影</div>
+        <div style="height:52px;border-radius:9px;border:1px solid var(--line);box-shadow:0 0 0 1px rgba(232,104,56,.35) inset"></div>
+        <div style="font-size:11px;color:var(--ink-dim);margin-top:6px">hover: inset 主色描边</div>
+      </div>
+    </div>
+    <div style="flex:1;min-width:230px">
+      <div class="sws">
+        <div><i style="background:#202020"></i><span>bg</span></div>
+        <div><i style="background:#262626"></i><span>soft</span></div>
+        <div><i style="background:#2B2B2B"></i><span>card</span></div>
+        <div><i style="background:#3A3A3A"></i><span>line</span></div>
+        <div><i style="background:#F0F0E0"></i><span>ink</span></div>
+        <div><i style="background:#B0B0A6"></i><span>dim</span></div>
+        <div><i style="background:#E86838"></i><span>main</span></div>
+        <div><i style="background:#F5B89E"></i><span>deep</span></div>
+        <div><i style="background:#F86860"></i><span>red</span></div>
+        <div><i style="background:#7AD9C0"></i><span>green</span></div>
+        <div><i style="background:#F2C14E"></i><span>amber</span></div>
+      </div>
+      <table>
+        <tr><th>用途</th><th>对比度</th><th>判定</th></tr>
+        <tr><td>正文 ink / bg</td><td class="n">14.16</td><td>AAA</td></tr>
+        <tr><td>次要 ink-dim / bg</td><td class="n">7.45</td><td>AAA</td></tr>
+        <tr><td>深色字 / main（按钮）</td><td class="n">5.02</td><td>AA</td></tr>
+        <tr><td>deep 提亮 / bg</td><td class="n">9.49</td><td>AAA</td></tr>
+      </table>
+      <div style="font-size:11px;color:var(--ink-dim);margin-top:9px">
+        ⚠️ 三处结构性差异：按钮文字反色 · soft 改透明叠加 · 阴影改描边内发光
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 结构性差异 ================= -->
+<h2>四、B 的三处结构性差异（工作量所在）</h2>
+<div class="row">
+  <div class="box" style="flex:1;min-width:270px">
+    <h3>① 主按钮文字反色</h3>
+    <div style="display:flex;gap:16px;align-items:center;margin-top:8px">
+      <div style="text-align:center">
+        <div style="padding:7px 16px;border-radius:999px;background:linear-gradient(135deg,#E86838,#904028);color:#fff;font-weight:600;font-size:12.5px">精修</div>
+        <div style="font-size:10.5px;color:#8A8A80;margin-top:5px">A：白字</div>
+      </div>
+      <div style="text-align:center">
+        <div style="padding:7px 16px;border-radius:999px;background:linear-gradient(135deg,#E86838,#F88858);color:#202020;font-weight:600;font-size:12.5px">精修</div>
+        <div style="font-size:10.5px;color:#8A8A80;margin-top:5px">B：深字（亮端朝右上）</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:#6B6B62;margin-top:9px">
+      波及所有 <code>linear-gradient(135deg,var(--main),var(--main-deep))</code> 用法。
+    </div>
+  </div>
+  <div class="box" style="flex:1;min-width:270px">
+    <h3>② main-soft 由实色改透明叠加</h3>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <div style="flex:1;padding:11px;border-radius:9px;background:#FCEDE7;border-left:3px solid #E86838;font-size:11.5px;color:#904028">A: #FCEDE7 实色</div>
+      <div style="flex:1;padding:11px;border-radius:9px;background:rgba(232,104,56,.16);border-left:3px solid #E86838;font-size:11.5px;color:#F5B89E">B: rgba(.16)</div>
+    </div>
+    <div style="font-size:11px;color:#6B6B62;margin-top:9px">
+      选中态、focus 环这类「底 + 描边对比」都要重新核对。
+    </div>
+  </div>
+  <div class="box" style="flex:1;min-width:270px">
+    <h3>③ 阴影 → 描边 + 内发光</h3>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <div style="flex:1;height:56px;border-radius:9px;background:#fff;box-shadow:0 8px 26px rgba(32,32,32,.14)"></div>
+      <div style="flex:1;height:56px;border-radius:9px;background:#2B2B2B;box-shadow:0 8px 26px rgba(0,0,0,.5),0 0 0 1px rgba(232,104,56,.35) inset"></div>
+    </div>
+    <div style="font-size:11px;color:#6B6B62;margin-top:9px">
+      亮底靠投影，暗底靠描边。
+    </div>
+  </div>
+</div>
+
+</body></html>
