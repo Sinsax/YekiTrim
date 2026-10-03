@@ -14,12 +14,19 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - `utils.js`：`SETTINGS_SECTIONS`（设置页标签/副标题/路由唯一来源）、`redetectWarning()`、
   `clipMatchesEvent`、`stageInfo`、`projectEntryPath`、`STEPS`。
 - `stores/`：`project.js::sourceBadge/sourceLabel`、`workbench.js`（项目列表 + per-pid 缓存 +
-  `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragRows`/`toggleSide`）。
+  `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragRows`/`toggleSide`）、
+  `theme.js`（**哥特浅色/暗色**，见下方「主题」）。
 - `composables/useJobs.js`：`load()`（单飞 + SSE 合帧）/ `onJobDone(fn)` → 返回退订函数。
 - 关键组件：`MaterialList.vue`（弹幕/字幕共用清单）、`side/ProjectNode.vue`、`HomeClipsOverview.vue`、
   `StickerPacks.vue`、`SliderField.vue`、`SettingsView.vue`。
 
 ## 边界
+
+**主题**
+- `stores/theme.js` 是唯一写 `<html data-theme>` 的地方，localStorage `yekitrim.ui.theme`
+  （缺省 = 跟随系统）。⚠ **模块初始化时同步写 DOM**，`main.js` 在任何 import **之前**引入
+  —— 放 `onMounted` 会先闪一帧亮色。入口在 `SideNav` 底部。
+- ⚠ 色值一律走 tokens 两套变量（见 `styles/AGENTS.md` 双主题纪律）。
 
 **壳与侧栏**
 - 当前项目整行高亮判据 `String(p.id) === String(route.params.pid)`（与折叠轨同一个）：
