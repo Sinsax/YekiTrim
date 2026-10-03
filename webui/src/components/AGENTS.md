@@ -162,8 +162,7 @@
 - `ProjectClipsSection`（切片页卡片墙）：⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：它拿的是父页面
   （`saveEdit`/`addClip` 同理）。`silent` 必须真的静默；**「剪切」按钮不禁用，忙时只改文案**（占用本来就排队）。
   ⚠️ 卡片的「精修」按钮（`goPolish`）：剪切收尾已经把工程建好了，正常直接跳；**只有老片段**才补 init，
-  且**必须 `await waitJobDone(id)` 再跳**（发完 init 就跳会先撞 `polish.toml not found` → 精修页报「片段配置读取失败」，
-  与首页 `HomeClipsOverview::openClip` 同一手感）。`polishOpening` 防连点，`jobClosers` 在 `onUnmounted` 里关订阅。
+  且**必须 `await waitJobDone(id)` 再跳**（发完就跳会先撞 `polish.toml not found`；细节见 ⑥）。`polishOpening` 防连点，`jobClosers` 在 `onUnmounted` 里关订阅。
 - `StickerPacks`（首页表情包区块，**仅 admin**）：⚠️ **全站第二处刻意接收上传的入口**（第一处=封面背景图）；「服务器文件建项目」那条仍**永不接受上传**，别按旧规矩删掉。
   `UPLOAD_MAX_BYTES` 前后端同数（改一处要改两处），前端先挡。
 - `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 标签行右端可直填的数字框，16 处）。
@@ -198,7 +197,7 @@
     （带片段名），该片段空闲时自动补跑一次 —— 一次编辑风暴不该塞十几条任务。
 - `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。
   `AppModal`/`AppDialog`/`ToastHost`（`stores/toast`）—— **别再手搓弹窗/确认**。
-- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ 收到 `update:dir`（onMounted 也发）就要**清已选文件**，否则提交"新目录+旧文件名"；`update:listing` 报目录内容供判有无可用视频。首页内联用它；弹出用 **`ServerFileBrowser`**（双栏树+列表，草稿态不写回）。
+- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ 收到 `update:dir`（onMounted 也发）就要**清已选文件**；`update:listing` 供判有无可用视频。首页内联用它；弹出用 **`ServerFileBrowser`**（双栏树+列表，草稿态不写回；树顶铺服务端 `volumes` 盘符，否则换不了盘），另见 `docs/webui-components.md` ⑥。
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
   `api_base` 非空要带 scheme。
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()` 后按
