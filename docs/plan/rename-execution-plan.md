@@ -337,10 +337,35 @@ vtrim  -> yekitrim
 
 1. **本地领先远端 72 个提交未推送**（`origin/main` 停在 `4488426`，2026-10-01）。
    改名整批（含本计划书）**只在本地**。⚠️ 这些提交丢了就没了 —— 是否推送由用户定。
+   ✅ **已解决（2026-10-03）**：用户拍板推送，`main` 76 个提交 + 6 个 tag 已推到 Gitea
+   （`sinsa/V-Trim` → 用户随后改名为 `sinsa/YekiTrim`）。
 2. **一个孤立的 stale stash**：`stash@{0}`（`pre-sticker-feature`，2026-07-23）。
    其基线 `2dfd777` **从任何 ref 都不可达**，12 个文件路径**全部已不存在**
    （都是旧的 `crates/vtrim-*`）。它含 51 处旧名，是**改名前的化石**，已无 apply 价值。
-   **未擅自删除**（属于他人 WIP 的处置权）；建议 drop。
+   ✅ **已 drop（2026-10-03）**（用户拍板）。若要找回：`git stash apply 2dfd777b`
+   （对象仍在库中，`git gc` 后失效）。
+
+### 📌 Gitea 发布纪律（本次踩到，记下来）
+
+**Gitea 的 Release 列表按 tag 的「tagger 时间」排序，不是按版本号、也不是按创建时刻。**
+实测：6 个 Release 的 `created_at` 与各自 annotated tag 的 `tagger` 时间戳**逐秒相同**。
+
+- ⚠️ **`PATCH /releases/{id}` 改不动时间**：`created_at` / `published_at` 都是**只读**的
+  （传了返回 200 但值不变）。**唯一有效的修法**是重建 tag（`GIT_COMMITTER_DATE=…` 指定
+  tagger 日期）再重建 Release。
+- ⚠️ **补打 tag 会污染顺序**：`v0.2.1` 当年漏打 tag，本轮补打时 tagger 取了**补打当天**，
+  于是它被顶到 `v0.4.0` 之上。修法是重建 tag 并把 tagger 日期写成**该发行提交的日期**：
+
+  ```bash
+  GIT_COMMITTER_DATE="2026-09-25T11:47:16+0800" git tag -a -f v0.2.1 b01be9c -F <msg>
+  git push --force origin v0.2.1          # tag 重写必须 force
+  # 再删掉并重建该 Release（PATCH 改不了时间）
+  ```
+
+- **补记**：`v0.2.1` 的 tag 原本**从未存在过**（`b01be9c` 是当时的发行提交，
+  版本号也确实提到了 0.2.1，但漏打 tag）—— 本轮补上了。
+- **v0.1.0 ~ v0.3.0 的 Release 没有安装包附件**：那批产物在改名清扫时按"旧名垃圾"删掉了
+  （`release/vtrim-v0.*`，~430 MB），本地**无备份**。Release 说明仍在，历史可读。
 
 ### 🟡 登记但有意未改（与品牌无关，各自单独一批）
 
