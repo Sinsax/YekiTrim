@@ -37,51 +37,74 @@
         </div>
       </div>
 
-      <!-- ① 服务器文件（仅管理员可见；非管理员连来源按钮都没有） -->
+      <!-- ① 服务器文件（仅管理员可见；非管理员连来源按钮都没有）
+           ⚠️ 浏览走**弹出式**选择器（`AppModal` + `ServerDirPicker`），不在页面里铺开列表 ——
+              内联那份占掉半屏、且"边浏览边决定"会把未确认的目录当成已选。
+              弹出层里用的是**草稿**状态，只有点「选定」才写回页面。 -->
       <div v-if="source === 'local' && isAdmin" class="src-body">
-        <ServerDirPicker
-          mode="file"
-          :start-dir="localDir"
-          :selected="localInput"
-          :exts="VIDEO_EXTS"
-          dir-label="项目目录（服务器上的绝对路径；项目就建在这一层）"
-          dir-placeholder="例如 F:/media/2025-09-12"
-          @update:dir="onLocalDir"
-          @update:listing="localListing = $event"
-          @pick-file="pickLocalFile"
-        />
-
-        <!-- 说明放在列表上方：先讲清"点文件是干什么的"，再让用户点 -->
-        <p class="muted small mt-8">
-          点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
-          只读服务器上已存在的文件，<b>不接受上传</b>；目录里已有
-          <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
-        </p>
-
-        <div v-if="localDir" class="create-bar mt-8">
-          <div class="flex-1">
-            <div class="small">
-              项目将建在 <span class="mono">{{ localDir }}</span>
-            </div>
-            <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
-                 不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
-            <div v-if="localEffectiveVideo" class="small mt-4">
-              <template v-if="localInput">
-                输入视频 <span class="mono">{{ localInput }}</span>
-              </template>
-              <template v-else>
+        <div class="pick-row">
+          <Icon name="folder" :size="15" />
+          <div class="flex-1 pick-main">
+            <template v-if="localDir">
+              <div class="small mono ellip" :title="localDir">{{ localDir }}</div>
+              <div v-if="localEffectiveVideo" class="small mt-4">
                 输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
-                <span class="muted">（自动选取目录里第一个视频）</span>
-              </template>
-            </div>
-            <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
-              这个目录里没有可用的视频（mp4 / mkv / flv / ts…），换一个目录或进子目录看看
-            </div>
+                <span v-if="!localInput" class="muted">（自动选取目录里第一个视频）</span>
+              </div>
+              <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
+                这个目录里没有可用的视频（mp4 / mkv / flv / ts…）
+              </div>
+            </template>
+            <div v-else class="small muted">还没选目录 —— 点右边去服务器上挑一个</div>
           </div>
-          <button class="btn btn-primary" :disabled="creating || !canCreateLocal" @click="createFromLocal">
+          <button class="btn" style="flex:none" @click="openLocalPicker">
+            {{ localDir ? '重新选择' : '浏览服务器…' }}
+          </button>
+          <button class="btn btn-primary" style="flex:none"
+                  :disabled="creating || !canCreateLocal" @click="createFromLocal">
             <span v-if="creating" class="spinner"></span> 新建项目
           </button>
         </div>
+        <p class="muted small mt-8">
+          浏览的是<b>服务器上</b>已有的录像，不是你这台电脑 —— 所以只会看到服务器磁盘上的目录。
+          <b>不接受上传</b>；目录里已有 <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
+        </p>
+
+        <AppModal v-if="pickerOpen" :show="true" wide title="选择服务器上的录像目录"
+                  @close="cancelLocalPick">
+          <ServerDirPicker
+            mode="file"
+            :start-dir="localDir"
+            :selected="draftInput"
+            :exts="VIDEO_EXTS"
+            dir-label="目录（服务器上的绝对路径）"
+            dir-placeholder="例如 F:/media/2025-09-12"
+            @update:dir="onDraftDir"
+            @update:listing="draftListing = $event"
+            @pick-file="pickDraftFile"
+          />
+          <div class="hint mt-8">
+            点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
+            进子目录用列表里的文件夹（路径由服务端拼，前端不拼字符串）。
+          </div>
+          <template #footer>
+            <div class="flex-1 small">
+              <template v-if="draftDir">
+                <span class="mono">{{ draftDir }}</span>
+                <template v-if="draftEffectiveVideo">
+                  <br>输入视频 <span class="mono">{{ draftEffectiveVideo }}</span>
+                  <span v-if="!draftInput" class="muted">（自动选取）</span>
+                </template>
+                <template v-else>
+                  <br><span class="warn-text">这个目录里没有可用的视频，选一个别的</span>
+                </template>
+              </template>
+              <span v-else class="muted">还没选目录</span>
+            </div>
+            <button class="btn" @click="cancelLocalPick">取消</button>
+            <button class="btn btn-primary" :disabled="!draftCanConfirm" @click="confirmLocalPick">选定</button>
+          </template>
+        </AppModal>
       </div>
 
       <!-- ② 录播姬录制：待处理的会话 + 扫描 -->
@@ -328,6 +351,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import ServerDirPicker, { VIDEO_EXTS } from '../components/ServerDirPicker.vue'
+import AppModal from '../components/AppModal.vue'
 import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import { authState } from '../stores/auth'
@@ -531,20 +555,53 @@ async function testRecorder() {
 }
 
 // ---- ① 服务器文件（浏览逻辑在 ServerDirPicker，与「表情包 → 添加」共用一份）----
+//
+// 分两层状态：**已选**（`local*`，页面用它建项目）与**草稿**（`draft*`，弹出层里改）。
+// ⚠️ 弹出层必须用草稿：直接改已选的话，"浏览了一圈又关掉"会把中途路过的目录当成选定，
+//    用户点「新建项目」建的就不是他最后确认的那个。
 const localDir = ref('')
 const localInput = ref('')
 const creating = ref(false)
-/** 当前目录的列表快照（由 picker 的 update:listing 给）：判"这个目录有没有可用视频" */
+/** 已选目录的列表快照（由 picker 的 update:listing 给）：判"这个目录有没有可用视频" */
 const localListing = ref({ dir: '', files: [], dirs: [] })
 
+const pickerOpen = ref(false)
+const draftDir = ref('')
+const draftInput = ref('')
+const draftListing = ref({ dir: '', files: [], dirs: [] })
+
 /** 目录里第一个可用视频 —— 与后端 `find_first_video` 同口径（input 为空时后端就取它） */
-const localFirstVideo = computed(() =>
-  (localListing.value.files || []).find((f) => VIDEO_EXTS.includes(String(f).split('.').pop().toLowerCase())) || ''
-)
+const firstVideoIn = (l) =>
+  (l.files || []).find((f) => VIDEO_EXTS.includes(String(f).split('.').pop().toLowerCase())) || ''
+
+const localFirstVideo = computed(() => firstVideoIn(localListing.value))
 /** 实际会用的视频：用户点选的优先，否则后端会自动兜第一个 */
 const localEffectiveVideo = computed(() => localInput.value || localFirstVideo.value)
 /** 能建项目 = 有目录 + 有可用视频（否则后端必然 400「目录里没有可用的视频文件」） */
 const canCreateLocal = computed(() => !!localDir.value && !!localEffectiveVideo.value)
+
+const draftFirstVideo = computed(() => firstVideoIn(draftListing.value))
+const draftEffectiveVideo = computed(() => draftInput.value || draftFirstVideo.value)
+const draftCanConfirm = computed(() => !!draftDir.value && !!draftEffectiveVideo.value)
+
+function openLocalPicker() {
+  draftDir.value = localDir.value
+  draftInput.value = ''
+  draftListing.value = { dir: localDir.value, files: [], dirs: [] }
+  pickerOpen.value = true
+}
+
+function cancelLocalPick() {
+  pickerOpen.value = false
+}
+
+/** 选定：草稿写回已选。⚠️ listing 必须一起带过来 —— 页面判"有无可用视频"靠它。 */
+function confirmLocalPick() {
+  localDir.value = draftDir.value
+  localInput.value = draftInput.value
+  localListing.value = { ...draftListing.value, dir: draftDir.value }
+  pickerOpen.value = false
+}
 
 /**
  * 换了浏览目录就把已点的文件清掉。
@@ -552,14 +609,14 @@ const canCreateLocal = computed(() => !!localDir.value && !!localEffectiveVideo.
  * 莫名其妙的「视频不可用」，要么**在新目录里撞上同名文件而静默绑错**。
  * （`PrepareView.vue::onPickerDir` 是同一条规矩，两处别只改一处。）
  */
-function onLocalDir(dir) {
-  localDir.value = dir
-  localInput.value = ''
-  localListing.value = { dir, files: [], dirs: [] }
+function onDraftDir(dir) {
+  draftDir.value = dir
+  draftInput.value = ''
+  draftListing.value = { dir, files: [], dirs: [] }
 }
 
-function pickLocalFile(name) {
-  localInput.value = localInput.value === name ? '' : name
+function pickDraftFile(name) {
+  draftInput.value = draftInput.value === name ? '' : name
 }
 
 async function createFromLocal() {
