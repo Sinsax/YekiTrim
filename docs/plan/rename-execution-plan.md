@@ -16,7 +16,11 @@
 
 ---
 
-## 一、执行结果（✅ 全部完成）
+## 一、执行结果（内容 ✅ 全部完成 ／ 目录改名 ⏳ 待会话外执行）
+
+> 分两轮：先做「用户可见面」（步 1~7c，逐个提交、逐步验收），
+> 再做「全仓彻底清扫」（步 8，一次 244 文件 / 2590 处）。
+> **唯一的未完成项是仓库目录名**，原因见第七节末。
 
 | 步 | 内容 | 提交 |
 |---|---|---|
@@ -35,10 +39,16 @@
 | — | 测试偶发三处（既有缺陷） | `39a8500` |
 | — | 断言钉错契约（复核对照实验揪出） | `3b606d5` |
 | — | `attempts == 2` 的理由错（复核确定性注入推翻） | `33001ed` |
+| — | 包内文案/前端串/scripts 扫尾 | `8b88a07` |
+| — | 根 `Cargo.toml` 三处旧名 | `b88765e` |
+| **8** | **全仓彻底改名**（244 文件 / 2590 处 + 4 个文件改名） | `3c0dd5f` |
+| 8b | 发行说明包名/hash 跟改 | `7eedded` |
 
-**验收线实测**：两门禁 exit 0 · `cargo check --workspace --all-targets` 0 warning ·
-`cargo test --workspace` **759 passed / 0 failed** · 路由 **124 条逐行一致** ·
-`.workbuddy/gates.mjs` 全部门禁通过 · 打包 `release/yekitrim-v0.3.1-win-x64.zip`（37.1 MB）。
+**验收线实测**（改完后重跑，全绿）：两门禁 exit 0 · `cargo check --workspace --all-targets`
+**0 warning** · `cargo test --workspace` **759 passed / 0 failed** · 路由 **124 条逐行一致** ·
+`.workbuddy/gates.mjs` 全部门禁通过 · 转译器变异自证 **24/24 打红** ·
+打包 `release/yekitrim-v0.3.1-win-x64.zip`（37.1 MB，
+sha256 `b303601a…`，冒烟通过，**包内旧名 0**）。
 
 ---
 
@@ -175,19 +185,70 @@
 
 ---
 
-## 七、已知且有意的残留
+## 七、最终状态（2026-10-03 全量清扫后）
 
-- ⚠️ `docs/dhampir/**` 15 处旧脚本名（冻结件，用户裁决不碰）。
-- ⚠️ `release/yekitrim-v0.{2.1,3.0,3.1}-win-x64/**` 历史产物。
-- ⚠️ 注释与历史说明里的旧名（记的正是改名史）。
-- 🟡 **已登记未修**：`server/api/polish.rs:876` 的 `.yekitrim-preview-{kind}` 锁文件名
-  （改它会改锁文件路径 ⇒ 要改就单独一批）；
-  `server/access_log.rs:46` 的 `/api/ingest/bililive/` 路由前缀**双写**
-  （与 P0 同型，但属路由非品牌，改路由时优先检查）。
-- 🟡 **`check_module_map.py -v` 在 GBK 控制台崩 `UnicodeEncodeError`**（⚠️ 字符）—— 既有缺陷，单独提交。
-- 🟡 **`docs/` 里仍有约 1560 处 `yekitrim` 残留**（210 个跟踪文件），多数是历史；
-  `docs/releases/v0.3.1.md` 与 `ROADMAP.md` 可能面向未来，需单独决定。
-- ⚠️ **跨仓待协调**：`extensions['yekitrim.polish_toml']`（底座 Dhampir 读它）。
+### 残留 = 6 行 / 2 个文件，**全部是承重的负断言**
+
+```
+crates/yekitrim-server/src/ingest.rs:1743   !token_shape_ok(&format!("vtrim_{}", ...))
+crates/yekitrim-server/src/render_proc.rs:210  !is_our_render(r"/usr/bin/vtrim polish cover /srv/a")
++ 各自 4 行解释性注释
+```
+
+**为什么不能替换**：这两条断言测的就是「旧名不再被认」。改成新名会变成
+「新名必须被拒绝」——语义反转、测试失败。已做**反证实验**确认它们承重：
+把 `render_proc` 那条字面量换成 `yekitrim` ⇒ 该用例立刻 panicked at `:210`；换回即绿。
+
+### 全仓计数（`--exclude-dir=.git --exclude-dir=target`）
+
+| 范围 | 旧名文件数 |
+|---|---|
+| `crates/`（除上述 2 文件） | 0 |
+| `AGENTS.md` 各卡 | 0 |
+| `docs/`（含历史档案） | 0 |
+| `scripts/` `tools/` `webui/src` `webui/scripts` | 0 |
+| `.gitignore` + `webui/.gitignore` | 0 |
+| `.workbuddy/`（gitignored 草稿） | 0 |
+| `release/`（产物与包名） | 0 |
+| **文件名/目录名带旧名（全仓）** | **0** |
+| **合计** | **2（见上）** |
+
+### 本轮额外清掉的（都是可再生的垃圾，不是源码）
+
+- `.workbuddy/target-dhampir/**` —— 1.8 GB 陈旧 cargo 缓存（每个 `.d` 记着旧 crate 路径）。
+- `.workbuddy/anim-verify/chrome-profile{,-2}` —— 391 MB 一次性 Chrome 配置缓存。
+- `.workbuddy/**` 里 197 个文本草稿 + 51 个带旧名的 fixture 路径（已改名）。
+- `release/vtrim-v0.{1.0,2.0,2.1,3.0,3.1}-win-x64*` —— 14 个历史产物（~430 MB）。
+
+### 冻结项：两条都按用户裁决**改掉了**
+
+- `extensions['yekitrim.polish_toml']`（跨仓协议键，`tools/polish-to-dhampir.mjs` 4 处）—— 用户拍板「也改」。
+  ⚠️ **底座 Dhampir 若按老键读会接不上**，这条要在跨仓对接时同步。
+- `docs/vtrim-integration.md` → `docs/yekitrim-integration.md`（文件已 `git mv`，全仓引用已跟改）。
+
+### 🟡 唯一未完成项：仓库**目录名**
+
+`F:\para\Code\V-Trim` → `YekiTrim` **没有做成**。Windows 报
+`另一个程序正在使用此文件，进程无法访问`。
+
+排查结论（已排除的可能）：
+- 不是我的 shell —— 用**完全脱离会话的计划任务**跑，一样失败（同机制写探针文件成功，证明任务确实在跑）。
+- 不是整棵树锁住 —— 子目录 `ren` 成功（`scripts` 改名后已还原）。
+- 是**仓库根目录本身**被持有，持有者 = **当前 DSH 会话**（工作区根 = 会话 CWD，进程活着就占着）。
+  **在会话内部无法释放**。
+
+**待用户在会话外执行**（一行）：
+```
+move F:\para\Code\V-Trim F:\para\Code\YekiTrim
+```
+安全前提已核查：仓库内**无任何硬编码 `Code/V-Trim` 绝对路径**；`git remote` 是服务端地址
+（`.../sinsa/V-Trim.git`），不受本地目录名影响。
+
+### 🟡 登记但有意未改（与品牌无关，各自单独一批）
+
+- `server/api/polish.rs` 的 `.yekitrim-preview-{kind}` 锁文件名（改它=改锁路径）。
+- `server/access_log.rs` 的 `/api/ingest/bililive/` 路由前缀双写（与 P0 同型，但属**路由**非品牌）。
+- `check_module_map.py -v` 在 GBK 控制台崩 `UnicodeEncodeError`（既有缺陷）。
 
 ## 八、⚠️ 不兼容口径下**用户可见的代价**（必须让用户知道）
 
