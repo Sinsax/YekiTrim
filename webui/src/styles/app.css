@@ -286,6 +286,15 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .wiz-src b { font-size:12.5px; color:inherit; }
 .wiz-src.on { border-color:var(--main); background:var(--main-soft); color:var(--main-deep); }
 .wiz-src.off { opacity:.5; cursor:not-allowed; }
+
+/* 「服务器文件」建项目的确认条：左边两句说明（建在哪 / 用哪个视频）+ 右边按钮。
+   ⚠️ 底色不能再用 --bg-soft：它跟选中态的 --main-soft 太接近，这一条是要用户**确认后再点**的，
+   必须比卡片本体更"跳"一点。用主色浅底 + 主色描边。 */
+.src-body .create-bar { display:flex; align-items:center; gap:12px;
+  background:var(--main-soft); border:1px solid var(--main-glow);
+  border-radius:var(--r-sm); padding:10px 12px; }
+.src-body .create-bar .mono { word-break:break-all; }
+.src-body .warn-text { color:var(--amber-deep); }
 .preview-card { display:flex; gap:14px; background:var(--bg-soft); border:1px solid var(--line-soft);
   border-radius:var(--r-sm); padding:14px; margin:12px 0; }
 .preview-card .cover { width:120px; height:74px; border-radius:8px; background:linear-gradient(135deg,var(--blue),var(--blue-deep));

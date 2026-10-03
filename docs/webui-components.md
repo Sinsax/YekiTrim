@@ -860,6 +860,18 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 - `ServerDirPicker`：admin 服务器目录浏览（任意绝对路径 + 快捷入口 + 上一级）。**进入下一级用 `{dir, enter:"子目录名"}`，
   路径由服务端拼** —— 前端自己拼 `dir + '/' + name` 会把 canonicalize 的 `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows
   ERROR_INVALID_NAME 123）。`mode: 'dir'` 一步选中子目录，`mode: 'file'` 用 `exts` 把不相干的文件置灰标「不适用」。
+  - ⚠️ **换目录必须让调用方清掉"已选文件"**：`browse()` 每次都 `emit('update:dir')`，而 `onMounted` 也会
+    browse 一次（`startDir` 为空时服务端回**快捷根**）—— 所以 `update:dir` **不代表用户换了目录**，
+    调用方收到它就得把 `selected` 清空。不清会提交"新目录 + 旧文件名"：后端 `jail_existing(新目录, 旧名)`
+    要么回一句莫名其妙的「视频不可用」，要么**在新目录里撞上同名文件而静默绑错**。
+    （`PrepareView.vue::onPickerDir` 与 `WorkbenchView.vue::onLocalDir` 都守这条，别只改一处。）
+  - **`update:listing`**（2026-10 新增）：每次读完目录 emit `{dir, files, dirs, failed?}`。它存在的理由是
+    「新增项目 → 服务器文件」要判**这个目录里有没有可用视频** —— 后端在 `input` 为空时**自动挑第一个视频**
+    （`projects.rs::find_first_video`），目录里没有就回 400「目录里没有可用的视频文件」。前端拿到 listing 才能：
+    ① 把"实际会用的那个视频"**显示出来**（否则用户点下去才知道用了哪个）；② 没有视频时**直接把「新建项目」置灰**
+    并说明原因，而不是让用户点出一句后端错误。`VIDEO_EXTS` / `IMAGE_EXTS` 也从本组件**具名导出**，
+    消费方别再抄一份（抄了必漂）。
+  - 与「表情包 → 添加」（`mode="dir"`）共用：那条链路不传 `exts`、也不关心 `update:listing`，新增的 emit 是可选的。
 - `RecorderConfig`：设置页「录播姬（采集）」卡：开关（`webhook_enabled`）+ `root`/`api_base`/`api_user`/`api_pass`/
   `allow_ips`/`auto_pipeline` 表单 + 一键生成/轮换 token + 「测试连接」。开关关闭时**只留开关与一句说明**。
   `GET /api/admin/ingest` **只回 `api_pass_set` 布尔，绝不回 `api_pass` 明文或 `token_hash`**；

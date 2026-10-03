@@ -43,22 +43,45 @@
           mode="file"
           :start-dir="localDir"
           :selected="localInput"
-          @update:dir="localDir = $event"
+          :exts="VIDEO_EXTS"
+          dir-label="项目目录（服务器上的绝对路径；项目就建在这一层）"
+          dir-placeholder="例如 F:/media/2025-09-12"
+          @update:dir="onLocalDir"
+          @update:listing="localListing = $event"
           @pick-file="pickLocalFile"
         />
-        <div v-if="localDir" class="row mt-8" style="gap:8px">
-          <span class="muted small flex-1">
-            项目将建在 <span class="mono">{{ localDir }}</span>
-            <template v-if="localInput">，输入文件 <span class="mono">{{ localInput }}</span></template>
-          </span>
-          <button class="btn btn-primary" :disabled="creating || !localDir" @click="createFromLocal">
+
+        <!-- 说明放在列表上方：先讲清"点文件是干什么的"，再让用户点 -->
+        <p class="muted small mt-8">
+          点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
+          只读服务器上已存在的文件，<b>不接受上传</b>；目录里已有
+          <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
+        </p>
+
+        <div v-if="localDir" class="create-bar mt-8">
+          <div class="flex-1">
+            <div class="small">
+              项目将建在 <span class="mono">{{ localDir }}</span>
+            </div>
+            <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
+                 不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
+            <div v-if="localEffectiveVideo" class="small mt-4">
+              <template v-if="localInput">
+                输入视频 <span class="mono">{{ localInput }}</span>
+              </template>
+              <template v-else>
+                输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
+                <span class="muted">（自动选取目录里第一个视频）</span>
+              </template>
+            </div>
+            <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
+              这个目录里没有可用的视频（mp4 / mkv / flv / ts…），换一个目录或进子目录看看
+            </div>
+          </div>
+          <button class="btn btn-primary" :disabled="creating || !canCreateLocal" @click="createFromLocal">
             <span v-if="creating" class="spinner"></span> 新建项目
           </button>
         </div>
-        <p class="muted small mt-8">
-          只读服务器上已存在的文件，**不接受上传**；目录里已有 <span class="mono">yekitrim.toml</span>
-          时只登记/打开、不覆盖。
-        </p>
       </div>
 
       <!-- ② 录播姬录制：待处理的会话 + 扫描 -->
@@ -304,7 +327,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Icon from '../components/Icon.vue'
-import ServerDirPicker from '../components/ServerDirPicker.vue'
+import ServerDirPicker, { VIDEO_EXTS } from '../components/ServerDirPicker.vue'
 import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import { authState } from '../stores/auth'
@@ -511,6 +534,29 @@ async function testRecorder() {
 const localDir = ref('')
 const localInput = ref('')
 const creating = ref(false)
+/** 当前目录的列表快照（由 picker 的 update:listing 给）：判"这个目录有没有可用视频" */
+const localListing = ref({ dir: '', files: [], dirs: [] })
+
+/** 目录里第一个可用视频 —— 与后端 `find_first_video` 同口径（input 为空时后端就取它） */
+const localFirstVideo = computed(() =>
+  (localListing.value.files || []).find((f) => VIDEO_EXTS.includes(String(f).split('.').pop().toLowerCase())) || ''
+)
+/** 实际会用的视频：用户点选的优先，否则后端会自动兜第一个 */
+const localEffectiveVideo = computed(() => localInput.value || localFirstVideo.value)
+/** 能建项目 = 有目录 + 有可用视频（否则后端必然 400「目录里没有可用的视频文件」） */
+const canCreateLocal = computed(() => !!localDir.value && !!localEffectiveVideo.value)
+
+/**
+ * 换了浏览目录就把已点的文件清掉。
+ * ⚠️ 不清会提交"新目录 + 旧文件名"：后端 `jail_existing(新目录, 旧名)` 要么报一句
+ * 莫名其妙的「视频不可用」，要么**在新目录里撞上同名文件而静默绑错**。
+ * （`PrepareView.vue::onPickerDir` 是同一条规矩，两处别只改一处。）
+ */
+function onLocalDir(dir) {
+  localDir.value = dir
+  localInput.value = ''
+  localListing.value = { dir, files: [], dirs: [] }
+}
 
 function pickLocalFile(name) {
   localInput.value = localInput.value === name ? '' : name
@@ -519,8 +565,13 @@ function pickLocalFile(name) {
 async function createFromLocal() {
   creating.value = true
   try {
-    const r = await createLocalProject({ dir: localDir.value, input: localInput.value })
+    // 选中的文件若已不在当前目录（列表刷新/换目录），回退成"让后端自动挑"——
+    // 直接提交旧名字只会换来 400
+    const picked = (localListing.value.files || []).includes(localInput.value) ? localInput.value : ''
+    const r = await createLocalProject({ dir: localDir.value, input: picked })
     toast('项目已创建')
+    // 建成之后清空选择：否则留在原地的旧目录+旧文件会被误当成"下一次要建的"
+    localInput.value = ''
     await loadProjects()
     if (r?.id) window.location.hash = `#/p/${r.id}/prepare`
   } catch (e) {
