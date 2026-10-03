@@ -1438,7 +1438,7 @@ onUnmounted(() => {
   white-space:nowrap; cursor:pointer; transition:.15s; }
 .subfilters .sub-btn:hover { color:var(--pink-text); }
 .subfilters .sub-btn.selected { background:var(--card); color:var(--main-deep); font-weight:600;
-  box-shadow:0 1px 3px rgba(238,111,166,.18); }
+  box-shadow:0 1px 3px rgba(216,99,83,.18); }
 /* ---- 卡片固定分区：标题 / 媒体 / 标签 / 时间热度 / 摘要 / 工具栏 ----
    卡片撑满 grid 行高，工具栏用 margin-top:auto 钉底；各分区给固定高度，
    这样混排时「编辑 / 预览 / 剪切」与「编辑 / 精修 / 删除」始终落在同一条底线上。 */

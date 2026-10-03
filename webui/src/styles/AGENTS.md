@@ -21,6 +21,13 @@
 - **样式纪律（前端改样式前必读）**：唯一设计标准是
   `docs/web-ui-mockups/sakura-cream.html`（配色/圆角/阴影/字体，v0.2 §4 全量取自它），
   v5 壳与数据型组件的布局数值取自交互基准 `docs/web-ui-mockups/ia-demos/multiuser.html`。
+  - ⚠️ **色板已于 2026-10-03 换肤**（品牌粉 → **砖红 + 沙/驼**，用户给定参考色
+    `#cab5a0` / `#cba98e` / `#d86353`）：`--main` = `#d86353`，`--main-deep` = `#B15144`
+    （**文字色专用**，压暖白 4.81 过 AA），底色家族由沙色 `#cab5a0` 派生，新增
+    `--tan` / `--tan-soft` / `--tan-deep` 辅助档。**样稿与 tokens 必须同源改**，
+    别只改一边（样稿是"唯一设计标准"，它说谎就会把下一个人带偏）。
+    ⚠️ `--pink-light` / `--pink-text` / `--shadow-pink` **名字保留但语义已变**
+    （分别是砖红浅调 / 砖红文字 / 砖红投影），改名会牵动 27+ 处引用。
   - `webui/src/styles/tokens.css` = 色板/圆角/阴影/字体变量（**不得另取色**）；
     `webui/src/styles/app.css` = 两份样稿组件类的**并集**（`.shell/.side/.proj/.snode/.foot-item/`
     `.user-chip/.card/.card-blk/.btn/.mini-btn/.chip/.state-badge/.src-badge/.tb/.tabs/.wiz-src/`

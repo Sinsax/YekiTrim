@@ -24,7 +24,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 **壳与侧栏**
 - 当前项目整行高亮判据 `String(p.id) === String(route.params.pid)`（与折叠轨同一个）：
   `.proj.on .proj-head` = `--main-soft` 底色 + 左侧 3px `--main` 强调条 + 名字 `--pink-text`
-  （`--main-soft` #FDE3EC 与悬停底 `--bg-soft` #FFEFE7 太接近）。
+  （`--main-soft` #FAECEA 与悬停底 `--bg-soft` #F0EAE4 太接近）。
 - ⚠ 选择器**必须比 `.proj-head:hover` 更特指**，否则鼠标一放上去高亮就被悬停底色盖掉；
   样式写在 `ProjectNode.vue` 的 scoped 里（样稿没有这个态），别塞回 app.css。
 - 来源徽标只显示类型（`sourceBadge`）：本地来源回 **`本机`**，**不要拼路径**（服务端

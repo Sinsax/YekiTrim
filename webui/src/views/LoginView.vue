@@ -1,7 +1,15 @@
 <template>
   <div class="login">
     <div class="login-card">
-      <div class="logo">Y</div>
+      <div class="logo">
+        <!-- 与 favicon（webui/index.html）同一套几何：砖红 Y + 沙色下竖。
+             这里描边用白色 / 浅沙，因为底色是 --main 渐变圆。 -->
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <path d="M18 18 L32 34 L46 18" fill="none" stroke="#fff" stroke-width="7"
+                stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M32 34 L32 47" stroke="#F6D9C4" stroke-width="7" stroke-linecap="round" />
+        </svg>
+      </div>
       <h1>YekiTrim</h1>
       <div class="sub">切片工作台 · 账号登录</div>
 

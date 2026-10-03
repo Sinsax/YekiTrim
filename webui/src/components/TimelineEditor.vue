@@ -301,7 +301,7 @@
         <div class="lane-track" :style="{ width: trackWidth + 'px' }">
           <svg v-if="lane.type === 'subtitles' && wavePath" class="wave-layer" :width="trackWidth" :height="WAVE_H">
             <!-- 双层描边：这条线要同时压在不透明的字幕块（`#3b82f6`）**和**近白背景
-                 （`--bg` #FFF7F3）上，单色必然在一边糊掉 —— 深色 halo 负责近白底上的边，
+                 （`--bg` #F7F3F0）上，单色必然在一边糊掉 —— 深色 halo 负责近白底上的边，
                  亮色芯负责蓝块上的对比。改颜色前先想清楚落在哪两种底上。 -->
             <path :d="wavePath" fill="none" stroke="rgba(15,23,42,.55)" :stroke-width="WAVE_HALO_W" stroke-linejoin="round" stroke-linecap="round" />
             <path :d="wavePath" fill="none" stroke="#ffffff" :stroke-width="WAVE_CORE_W" stroke-linejoin="round" stroke-linecap="round" />
@@ -1743,7 +1743,7 @@ async function loadData() {
 /* 没有分段时的提示行：整条时间轴照常渲染，这里只给一句提示（按钮已删，见模板注释） */
 .tl-no-seg { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 2px; }
 .timeline-body { flex:1; min-width:0; display:flex; overflow-x:auto; align-items:stretch; }
-.timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(90,60,70,.10); }
+.timeline-labels { flex:none; position:sticky; left:0; z-index:6; display:flex; flex-direction:column; background:var(--card); box-shadow:2px 0 8px rgba(87,74,64,.10); }
 .timeline-tracks { flex:none; min-width:0; }
 /* 泳道 34 → 26px（7 条泳道省 ~56px）；块 24 → 20px */
 .lane { height:26px; border-bottom:1px solid var(--line-soft); position:relative;
@@ -1799,7 +1799,7 @@ async function loadData() {
 .ck-row:has(input:disabled) { color:var(--ink-faint); cursor:not-allowed; }
 /* 视觉特效轨道 ＋ 的细分类型菜单（fixed：不随时间轴滚动、不被卡片裁切） */
 .fx-menu { position:fixed; z-index:40; min-width:132px; padding:4px; background:var(--card);
-  border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 22px rgba(90,60,70,.18); }
+  border:1px solid var(--line); border-radius:10px; box-shadow:0 8px 22px rgba(87,74,64,.18); }
 .fx-menu-t { padding:2px 8px 4px; }
 .fx-menu-item { display:flex; justify-content:space-between; gap:8px; width:100%; padding:3px 8px;
   border:none; border-radius:6px; background:none; color:var(--ink); font-size:12px; cursor:pointer; text-align:left; }

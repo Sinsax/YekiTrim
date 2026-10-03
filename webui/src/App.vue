@@ -198,7 +198,7 @@ onMounted(() => {
 <style scoped>
 /* 壳：布局数值取自 multiuser.html（.shell/.side/.main/.crumbs），这里只补 sticky 吸顶 */
 .crumbs { position:sticky; top:0; z-index:9; padding:12px 22px; margin:0 0 14px;
-  background:rgba(255,247,243,.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+  background:rgba(247,243,240,.85); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
 .crumbs b { color:var(--main-deep); font-size:15px; }
 .crumbs .sep { color:var(--ink-faint); }
 /* 长项目名截断，别把「任务」按钮顶走 */

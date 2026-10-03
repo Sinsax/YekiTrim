@@ -11,16 +11,20 @@
    布局特征: 顶部 pill 导航 + 卡片网格 + 贴纸/丝带点缀 + 手绘感
    ============================================================ */
 :root{
-  --bg:#FFF7F3;  --bg-soft:#FFEFE7;  --card:#FFFFFF;
-  --line:#F2E1D9;  --line-soft:#FAEEE7;
-  --ink:#4A3F45;  --ink-dim:#9C8B92;  --ink-faint:#C9B8BE;
-  --main:#F682B8;  --main-deep:#EE6FA6;  --main-soft:#FDE3EC;
-  --main-glow:#FFD3E1;  --blue:#7FA8F0;  --blue-soft:#E8EEFC;
+  /* 2026-10-03 换肤：品牌粉 → 砖红 + 沙/驼（参考色 #cab5a0 / #cba98e / #d86353）。
+     与 webui/src/styles/tokens.css 同源；改色两边一起改。 */
+  --bg:#F7F3F0;  --bg-soft:#F0EAE4;  --card:#FFFFFF;
+  --line:#E7DED4;  --line-soft:#EFE9E2;
+  --ink:#574A40;  --ink-dim:#77685B;  --ink-faint:#A79483;
+  --main:#d86353;  --main-deep:#B15144;  --main-soft:#FAECEA;
+  --main-glow:#F5D6D2;
+  --tan:#cba98e;  --tan-soft:#F6EFE8;  --tan-deep:#8C6F57;
+  --blue:#7FA8F0;  --blue-soft:#E8EEFC;
   --mint:#59C0AC;  --mint-soft:#E2F6F1;  --amber:#F2B23E;  --amber-soft:#FCF0D9;
   --green:#4FBF9C;  --green-soft:#DEF2EA;  --red:#E8727E;  --red-soft:#FBE3E5;
   --r:16px; --r-s:10px;
-  --shadow:0 8px 26px rgba(238,111,166,.10), 0 2px 6px rgba(90,60,70,.04);
-  --shadow-hover:0 12px 34px rgba(238,111,166,.18), 0 3px 8px rgba(90,60,70,.05);
+  --shadow:0 8px 26px rgba(216,99,83,.10), 0 2px 6px rgba(87,74,64,.04);
+  --shadow-hover:0 12px 34px rgba(216,99,83,.18), 0 3px 8px rgba(87,74,64,.05);
   --font:'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif;
   --mono:'Consolas','Courier New',monospace;
 }
@@ -28,23 +32,23 @@
 body{background:var(--bg);color:var(--ink);min-height:100vh;}
 /* 背景手绘圆点纹理 */
 body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
-  background-image:radial-gradient(rgba(246,130,184,.10) 1.5px, transparent 1.6px);
+  background-image:radial-gradient(rgba(216,99,83,.10) 1.5px, transparent 1.6px);
   background-size:26px 26px;}
 
 /* ---------- 顶部导航 ---------- */
 .topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:20px;
   padding:14px 28px;background:rgba(255,247,243,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
 .brand{display:flex;align-items:center;gap:10px;}
-.brand-logo{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--main),#FBB9D4);
-  display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;box-shadow:0 6px 16px rgba(238,111,166,.40);}
+.brand-logo{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--main),var(--tan));
+  display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;box-shadow:0 6px 16px rgba(216,99,83,.40);}
 .brand-name{font-size:17px;font-weight:700;letter-spacing:.4px;color:#E86FA5;}
 .brand-sub{font-size:10px;color:var(--ink-faint);letter-spacing:.14em;}
 .nav-pills{display:flex;gap:6px;margin:0 auto;background:var(--card);border:1px solid var(--line);
-  border-radius:999px;padding:5px;box-shadow:0 3px 12px rgba(90,60,70,.05);}
+  border-radius:999px;padding:5px;box-shadow:0 3px 12px rgba(87,74,64,.05);}
 .nav-pill{padding:8px 20px;border-radius:999px;font-size:13px;color:var(--ink-dim);cursor:pointer;}
 .nav-pill:hover{background:var(--bg-soft);}
 .nav-pill.active{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;font-weight:600;
-  box-shadow:0 4px 12px rgba(238,111,166,.35);}
+  box-shadow:0 4px 12px rgba(216,99,83,.35);}
 .top-actions{display:flex;gap:10px;align-items:center;}
 .bell{position:relative;width:38px;height:38px;border-radius:50%;background:var(--card);border:1px solid var(--line);
   display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;}
@@ -59,11 +63,11 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .page-head .sub{font-size:13px;color:var(--ink-dim);margin-bottom:6px;}
 .page-head-actions{margin-left:auto;display:flex;gap:10px;}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:10px 18px;border-radius:999px;border:1px solid var(--line);
-  background:var(--card);color:var(--ink);font-size:13px;cursor:pointer;transition:all .15s;box-shadow:0 2px 8px rgba(90,60,70,.05);}
+  background:var(--card);color:var(--ink);font-size:13px;cursor:pointer;transition:all .15s;box-shadow:0 2px 8px rgba(87,74,64,.05);}
 .btn:hover{box-shadow:var(--shadow-hover);transform:translateY(-1px);}
 .btn-primary{background:linear-gradient(135deg,var(--main),var(--main-deep));color:#fff;border:none;
-  box-shadow:0 6px 18px rgba(238,111,166,.40);}
-.btn-primary:hover{box-shadow:0 8px 22px rgba(238,111,166,.5);}
+  box-shadow:0 6px 18px rgba(216,99,83,.40);}
+.btn-primary:hover{box-shadow:0 8px 22px rgba(216,99,83,.5);}
 .warn-line{font-size:12px;color:var(--ink-faint);margin-bottom:20px;}
 
 /* 项目卡片网格 */
@@ -94,7 +98,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 .steps .dot.wait{background:var(--card);border:2px dashed var(--ink-faint);color:var(--ink-faint);}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px;}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;font-size:11px;}
-.chip.g{background:var(--green-soft);color:#2FA07E;} .chip.p{background:var(--main-soft);color:#D8669B;}
+.chip.g{background:var(--green-soft);color:#2FA07E;} .chip.p{background:var(--main-soft);color:var(--main-deep);}
 .chip.b{background:var(--blue-soft);color:#5E7FD8;} .chip.n{background:var(--bg-soft);color:var(--ink-dim);}
 .pcard-foot{display:flex;align-items:center;gap:8px;border-top:1px dashed var(--line-soft);padding-top:13px;}
 .pcard-foot .name{font-size:11px;color:var(--ink-faint);margin-right:auto;}
@@ -261,8 +265,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
 
   <div class="mock-tip">
     <b>→ 暗色 Web UI 映射（节选）</b><br>
-    <span class="sw" style="background:#FFF7F3"></span>#FFF7F3 → <span class="sw" style="background:#2a2a2a"></span>#2a2a2a 页面底 ·
-    <span class="sw" style="background:#F682B8"></span>#F682B8 → <span class="sw" style="background:#ff6bcb"></span>#ff6bcb 主强调 ·
+    <span class="sw" style="background:#F7F3F0"></span>#F7F3F0 → <span class="sw" style="background:#2a2a2a"></span>#2a2a2a 页面底 ·
+    <span class="sw" style="background:#d86353"></span>#d86353 → <span class="sw" style="background:#ff6bcb"></span>#ff6bcb 主强调 ·
     <span class="sw" style="background:#7FA8F0"></span>#7FA8F0 → <span class="sw" style="background:#2563eb"></span>#2563eb 辅强调<br>
     本样稿: 手账贴纸风 · 顶部 pill 导航 · 大圆角卡片网格 · 对应设计文档 P2 项目列表。
   </div>

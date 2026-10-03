@@ -45,7 +45,7 @@ const emit = defineEmits(['goto', 'init'])
 .frag-card { position:relative; width:108px; border:1.5px solid var(--line); border-radius:10px;
   padding:5px; background:var(--card); cursor:pointer; transition:.15s; }
 .frag-card:hover { border-color:var(--main); transform:translateY(-1px); }
-.frag-card.on { border-color:var(--main); background:var(--main-soft); box-shadow:0 4px 14px rgba(238,111,166,.25); }
+.frag-card.on { border-color:var(--main); background:var(--main-soft); box-shadow:0 4px 14px rgba(216,99,83,.25); }
 .frag-thumb { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:6px;
   background:var(--bg-soft); display:block; }
 .frag-thumb-empty { display:flex; align-items:center; justify-content:center;

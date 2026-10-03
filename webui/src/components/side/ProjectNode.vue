@@ -163,7 +163,7 @@ function toggle() {
   transform:translateX(0); transition:transform var(--nm-duration,.4s) linear; }
 .nm-text.marquee { overflow:visible; transform:translateX(var(--nm-shift,0px)); will-change:transform; }
 .snode.viewing { background:var(--main-soft); color:var(--pink-text); font-weight:600; }
-/* 当前项目整行高亮。光靠底色不够：`--main-soft`(#FDE3EC) 与悬停底色 `--bg-soft`(#FFEFE7)
+/* 当前项目整行高亮。光靠底色不够：`--main-soft`(#FAECEA) 与悬停底色 `--bg-soft`(#F0EAE4)
    太接近，所以左边再加一条 `--main` 强调条、名字走 `--pink-text`。
    选择器必须比 `.proj-head:hover`（同为 scoped (0,2,0)）更特指，否则鼠标一放上去就被 hover 底色盖掉 */
 .proj.on .proj-head { position:relative; background:var(--main-soft); }
