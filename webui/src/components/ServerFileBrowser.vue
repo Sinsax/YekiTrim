@@ -115,6 +115,12 @@ const treeLoading = ref(false)
 const error = ref('')
 
 const treeRoots = ref([])
+/**
+ * 盘符/卷节点（服务端 `fs/list` 的 `volumes`）。
+ * ⚠️ 没有它的话只能从"当前路径所在那个盘"往上展开（`parent` 到盘根就断了）—— **换不了盘**。
+ * 这些是**展示候选**，不是访问限制（`/api/fs/list` 本来就允许 admin 浏览任意绝对路径）。
+ */
+const volumeNodes = ref([])
 const childMap = ref({})
 const expanded = ref(new Set())
 const loadingKeys = ref(new Set())
@@ -305,6 +311,14 @@ onMounted(async () => {
     //    "当前目录不在根列表里就追加"那条分支不会触发 ⇒ 拿到的是**纯配置根**。
     const base = await listTenantFiles('')
     roots.value = base?.roots || []
+    volumeNodes.value = (base?.volumes || []).map((v) => ({
+      name: v.label,
+      parent: '',
+      path: v.path,
+      key: v.path
+    }))
+    // 盘符先铺在树顶；祖先链顶端若正好是某个盘（`F:\`）会自动复用，不会出现两个 F:
+    treeRoots.value = [...volumeNodes.value]
     await go(props.startDir || base?.dir || '')
     treeRoots.value = [
       ...treeRoots.value,

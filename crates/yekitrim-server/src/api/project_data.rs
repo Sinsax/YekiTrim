@@ -1185,6 +1185,32 @@ pub(super) async fn event_cut_impl(
 /// - 只做目录列举，**永不接受上传**；
 /// - 响应回传 `roots`（租户根 + `[storage] local_roots`，作为快捷入口）、`dir` 与 `parent`
 ///   （绝对父目录，供"上一级"一路走到盘符根）。
+/// 可供浏览的**卷/盘符**（给"服务器文件"浏览器顶部的盘符入口）。
+///
+/// ⚠️ 这只是**展示用的候选**，**不构成访问限制** —— `/api/fs/list` 仍然允许 admin 浏览任意绝对路径，
+/// `[storage] local_roots` 也仍然只是快捷入口。没有它的话，浏览器的目录树只能从"当前路径所在那个盘"
+/// 往上展开（`parent` 到盘根就断了），用户**换不了盘**。
+///
+/// Windows 枚举 `A:`–`Z:` 里真实存在的；其它平台只给文件系统根 `/`。
+fn available_volumes() -> Vec<serde_json::Value> {
+    #[cfg(windows)]
+    {
+        let mut out = Vec::new();
+        for c in b'A'..=b'Z' {
+            let letter = c as char;
+            let root = format!("{letter}:\\");
+            if std::path::Path::new(&root).is_dir() {
+                out.push(serde_json::json!({ "path": root, "label": format!("{letter}:") }));
+            }
+        }
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        vec![serde_json::json!({ "path": "/", "label": "/" })]
+    }
+}
+
 pub(super) async fn fs_list(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
@@ -1269,7 +1295,7 @@ pub(super) async fn fs_list(
         .unwrap_or_default();
     // 目录列举是阻塞 IO（网络盘/大目录会明显卡顿），放 spawn_blocking
     let scan_dir = target.clone();
-    let (dirs, files) = tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<String>, Vec<String>)> {
+    let (dirs, files, volumes) = tokio::task::spawn_blocking(move || -> std::io::Result<(Vec<String>, Vec<String>, Vec<serde_json::Value>)> {
         let mut files = vec![]; let mut dirs = vec![];
         for e in std::fs::read_dir(&scan_dir)? {
             let e = e?;
@@ -1277,7 +1303,8 @@ pub(super) async fn fs_list(
             else { files.push(e.file_name().to_string_lossy().to_string()); }
         }
         dirs.sort(); files.sort();
-        Ok((dirs, files))
+        // 盘符探测也是阻塞 IO（每个候选要 stat 一次），跟目录列举一起放这里
+        Ok((dirs, files, available_volumes()))
     })
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?
@@ -1321,6 +1348,8 @@ pub(super) async fn fs_list(
         "root": cur_str,
         "root_label": yekitrim_service::projects::root_label(user.id, &cur),
         "roots": root_list,
+        // 盘符候选：前端把它铺在目录树顶部，否则用户换不了盘（见 available_volumes 注释）
+        "volumes": volumes,
         "tenant_root": yekitrim_core::path::display(&tenant),
         "path": rel,
         "parent": parent,

@@ -72,6 +72,13 @@
   `dir + '/' + name` 会把 canonicalize 的 `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows ERROR_INVALID_NAME 123）。
   因此所有出 JSON 的路径都过 `yekitrim_core::path::display()`（剥掉 `\\?\`/`\\?\UNC\`），前端拿到的永远是
   `F:\a\b` 这种可回传、可拼 URL 的形式。
+  响应里的 **`volumes`**（2026-10）= 可浏览的盘符/卷候选，给“服务器文件”浏览器铺在目录树顶部。
+  ⚠️ 加它的原因：目录树只能靠 `parent` 往上展开，**到盘根就断了**（盘根的 parent 是空），
+  用户**换不了盘**；而配置根默认只有租户目录，管理员真要去的 `F:/media/...` 不在它下面。
+  ⚠️ `volumes` 只是**展示候选、不构成访问限制**（本接口本来就允许 admin 浏览任意绝对路径）。
+  ⚠️ 探测要跟目录列举一起放 `spawn_blocking`（每个候选一次 `is_dir()`，是阻塞 IO）。
+  ⚠️ 前端**别把 `roots` 当树根**：服务端会把**当前目录**追加进 `roots`（本意是给下拉框显示“当前位置”），
+  拿它当根的话根会随用户走到哪而变。
 - `GET /api/admin/users` 只回展示字段（id / username / role / disabled / quota_bytes / created_at），
   **不含口令哈希**，供"待分配池指派给谁"下拉使用。
 - **邀请码与注册**（`POST /auth/register`）：三重条件 = `[auth] registration_enabled` 开着 + 邀请码有效 +

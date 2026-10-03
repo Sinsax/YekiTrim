@@ -901,6 +901,11 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
     结果只剩 `/` 当分隔符，Windows 路径永远切不开；本组件用 `String.fromCharCode(92)` 取。
   - 懒加载：展开节点时才 `listTenantFiles`，子节点**先只存名字**，真正展开/选中时才向服务端换回
     真实路径（`pathOf` / `rememberPath`）—— 与 `ServerDirPicker` 同一条"路径由服务端拼"铁律。
+  - ⚠️ **树顶要铺服务端的 `volumes`（盘符/卷）**：目录树只能靠 `parent` 往上展开，**到盘根就断了**
+    （盘根的 parent 是空串），所以只靠祖先链的话**换不了盘** —— 用户实测报过"弹出浏览只有一个盘？"。
+    `fs/list` 的 `volumes` 是 2026-10 为此加的（Windows 枚举真实存在的 `A:`–`Z:`，其它平台给 `/`）。
+    它是**展示候选、不是访问限制**（该接口本来就允许 admin 浏览任意绝对路径）。
+    祖先链顶端若正好是某个盘，会自动复用该盘节点，不会出现两个 `F:`。
 - `RecorderConfig`：设置页「录播姬（采集）」卡：开关（`webhook_enabled`）+ `root`/`api_base`/`api_user`/`api_pass`/
   `allow_ips`/`auto_pipeline` 表单 + 一键生成/轮换 token + 「测试连接」。开关关闭时**只留开关与一句说明**。
   `GET /api/admin/ingest` **只回 `api_pass_set` 布尔，绝不回 `api_pass` 明文或 `token_hash`**；
