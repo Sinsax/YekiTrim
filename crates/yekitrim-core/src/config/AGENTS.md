@@ -126,6 +126,22 @@ max_tokens = 8192
 max_tokens = 32768
 ```
 
+### 死字段（2026-10 审查：**定义了但全仓没人读**）
+
+| 字段 | 现状 |
+|---|---|
+| `asr.align_model` | 没人读 |
+| `asr.max_segment_duration` | 没人读 |
+| `asr.segment_merge_gap` | 没人读 |
+| `cutting.silence_noise_db` | 没人读 —— 静音阈值实际走 `cutting::DEFAULT_NOISE_DB` 常量或 CLI `--threshold`（`service::silence::run_silence`），**从来不看配置里这个值** |
+
+判据（复现）：对每个字段在 `crates/` 里找 `.<字段名>` 的读取点，**排除 `config/` 自身**
+（那里只有定义 / `merge` / 模板文本，会把"死"伪装成"在用"）。上面 4 个结果是 0。
+
+⚠️ 它们**已经从设置页表单里摘掉**（表单不再写回，字段本身留在文件里、仍可用「编辑源文件」改）。
+真正的清理（从 `Config` 结构体里删）要走「新增配置字段步骤」的反向流程，且要确认旧文件里的
+多余键不会让反序列化失败（serde 默认忽略未知字段）—— **本次没做，留给你拍板**。
+
 ### 写入纪律
 
 `yekitrim init` 生成 `yekitrim.toml`（项目字段：input/danmaku/转写/剪切参数）。
