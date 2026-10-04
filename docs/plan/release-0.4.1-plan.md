@@ -96,13 +96,38 @@ favicon 与登录页/侧栏用同一套 SVG 几何；圆形容器渐变 `--main 
    本仓要求 0 warning ⇒ 在 Windows 上跑第 3 步才是"0 warning"的判定环境。
 4. ✅ 两条门禁 + `npm --prefix webui run build`（确认 dist 是最新）+ 8 个前端契约脚本 —— Linux 上全过
 5. `cargo xtask package --smoke-test`（含 espeak-ng 产物门禁 + 冒烟）—— **Windows 侧执行**
-   （本机 Linux：`package` 写死 `.exe`/`win-x64`/`.zip`，且 `scan` 在 Linux 上会因扫不到 ELF 而 exit 3）
+   （本机 Linux：`package` 写死 `.exe`/`win-x64`/`.zip`，且 `scan` 在 Linux 上会因扫不到 ELF 而 exit 3；
+   本机也没有 Windows target / mingw / wine，**造不出这个 zip**）
 6. ⚠️ **核对包内界面确实是新皮肤**（v0.4.0 的教训：包是换肤前打的）
 7. `git tag -a v0.4.1` → push tag → 在 Gitea 建 Release 并传 zip + `.sha256.txt` —— **Windows 侧执行**
+
+### 📌 Linux 侧完成的进度与交接（2026-10-05）
+
+Linux 侧**已推到 Gitea**：commit `c0f7c20`（`origin/main` 头部），含版本号提到 0.4.1 +
+`docs/plan/linux-adaptation-test-report.md`。**但 Linux 侧刻意没建 tag、没建 Release** —— 理由：
+
+- **产物出不来**：`cargo xtask package` 是 Windows 专用形态，且本机无 Windows 工具链；
+- **tag 时间戳不可逆**（见下方纪律）：抢先把 tag 打了，之后补产物只能 force-push 重写 tag。
+
+**Windows 侧接手步骤**（产物齐了再动 tag）：
+
+```bash
+git pull                                  # 拿到 c0f7c20（版本号已是 0.4.1）
+cargo xtask package --smoke-test          # → release/yekitrim-v0.4.1-win-x64.zip (+ .sha256.txt)
+# ⚠️ 开包核对界面是新皮肤（哥特橙瞳），别发换肤前的
+git tag -a v0.4.1 -m 'YekiTrim v0.4.1' && git push origin v0.4.1
+# Gitea 建 Release：body 直接贴 docs/releases/v0.4.1.md 的内容，附件传 zip + .sha256.txt
+```
+
+> ✅ **发行说明不用另写**：`package` 会把 `docs/releases/v<版本>.md` 自动拷成包内
+> `RELEASE-NOTES.md`（`xtask/src/main.rs:619-624`）。已核对版本号同源链条完整：
+> 根 `Cargo.toml` = `0.4.1` ⇒ 查到 `docs/releases/v0.4.1.md`（文件自身也声明 v0.4.1）。
+> 包内另含 `webui/dist` 已**不含**（前端已编进 exe，见发行说明第 2 条）。
 
 > ⚠️ **Gitea 发布纪律**（见 `rename-execution-plan.md`「Gitea 发布纪律」）：
 > Release 列表按 **tag 的 tagger 时间**排序；`PATCH /releases/{id}` **改不动时间**，
 > 唯一有效修法是重建 tag（`GIT_COMMITTER_DATE`）再重建 Release。
+> 这正是不建议"先建空 Release 再补附件"的原因 —— 补的时候 tag 时间已经定死了。
 
 
 ---
