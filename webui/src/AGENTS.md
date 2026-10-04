@@ -79,10 +79,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `location.reload()`；刷新后仍失败则不再刷（防死循环），任意一次导航成功即清闸门。
   **这是发版/重建 dist 后的正常现象，不是死锁。**
 - ⚠ **换项目必须让视图重挂**：`App.vue` 的主 `<router-view :key="route.params.pid || route.name" />`。
-  四个视图都在 `setup`/`onMounted` 抓一次 pid，同一步骤下换项目只有 `:pid` 变 → vue-router 会
-  **复用组件实例**、`setup` 不再执行（用户实测线索：**跨步骤切换正常、同步骤不正常**）；
-  预处理页最危险 —— 显示旧数据而 `saveTranscript(pid.value, …)` 用新 pid，**把 A 的字幕写进 B**。
-  key 用 **pid** 而不是 `fullPath`（后者会让精修页换片段也整块重挂，丢掉原地切换）。
+  四个视图都在 `setup` 抓一次 pid，复用了实例就不会重跑 —— 预处理页最危险（**把 A 的字幕写进 B**）。
+  key 必须用 **pid**，不是 `fullPath`。来龙去脉见 `docs/web-ui-design.md` 附录 F。
 - ⚠ 路由参数 `:clip` **一律用目录名（`c.name`），绝不用绝对路径（`c.dir`）**：精修页拿它去匹配
   `clips[].name`（`GET /api/project-data/clips` 的 `name` = 目录名、`dir` = 绝对路径），传绝对
   路径永远匹配不上；跳转写 `router.push({name:'project-polish-clip', params:{pid, clip}})`（别拼
@@ -112,18 +110,12 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `config.asr.mode`，读失败回退 `hybrid`），写走 `PUT /api/project-data/config {patch:{asr:{mode}}}`。
 - 素材清单：**弹幕与字幕的显示/交互完全一致**（共用 `MaterialList.vue`，**改一边等于改两边**）；
   `*_file` 仍是**唯一生效值**。
-- ⚠ **ASR 产物不可删**（它就是那个模式用掉的转写名额），唯一例外是**文件已不存在**
-  （`removable = !is_asr || !exists`）。**「删除」只从选择里移除**（清 `*_file` + 摘清单），
-  **不删磁盘文件**，走 `confirmDialog` 二次确认；**「切换」= 置为生效值**，切完整页 `load()`。
-  ⚠ 条目 `exists=false` 时**照实报「文件不存在」**（置灰 + 删除线），不要静默飘到 `output/`
-  兜底上。⚠ 清单读失败（`assets` 为 null）时**不要**碰 `assetDirty`。**改完不自动跑任务**；
-  ⚠ `assetDirty` 只在**检测真的跑了**之后才清。
-- 切片与事件的对应关系：`rank` 是检测按热度排的，**重新检测会整体重排** —— 只看目录名会让新
-  事件"继承"老片段的标题。判据 `utils.js::clipMatchesEvent`（= Rust
-  `cutting::foreign_clip_conflict`）：目录名相同 **且（标题相同 或 原片区间 IoU ≥ 0.5）**。
-  已剪卡片**先认自己的 `clip.json`**，只有认得出事件时才跟着事件走；认不出挂 **「独立」** chip。
-  未剪切事件 = 没有任何"属于自己的"片段的事件，序号被别人的旧片段占着也算未剪切
-  （挂 **「序号被占用」** chip）。
+- ⚠ **ASR 产物不可删**（`removable = !is_asr || !exists`）；**「删除」只从选择里移除，不删磁盘**；
+  **「切换」= 置为生效值 + 整页 `load()`**；`exists=false` 要**照实报**（别静默飘到 `output/`）；
+  清单读失败时**别碰** `assetDirty`；**改完不自动跑任务**。细节见附录 F。
+- 切片与事件的对应关系：判据 `utils.js::clipMatchesEvent`（= Rust `cutting::foreign_clip_conflict`）。
+  已剪卡片**先认自己的 `clip.json`**，认不出挂 **「独立」**；序号被占的挂 **「序号被占用」**。
+  `rank` 是检测排的、**重新检测会整体重排** —— 只看目录名会让新事件继承老标题。细节见附录 F。
 
 **缓存与单飞**
 - ⚠ **前端取数要单飞**：`stores/workbench.js::loadProjects()`（`inflight` 去重）与
@@ -131,12 +123,9 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   **必须用返回的退订函数在 `onUnmounted` 里退订** —— 不退订会随反复挂载攒出一串陈旧回调，
   任务结束时同时各打一整套 project-data 请求（1 秒 52 连发的放大源）。`loadProjectData` 的
   `stale` 标记也别删：任务结束撞上在飞请求时，旧响应会盖掉新数据。
-- 首页「切片总览」（`HomeClipsOverview.vue`）：全部项目的切片摊平成一份总排序（未导出/已完成
-  导出两个可折叠区块），**按各片段「最后一次改动」从新到旧**（`clips[].mtime`，服务端
-  `project_data.rs::last_touched_secs` = 片段目录里最新的文件时间，含 `data/` 一层；同秒回落
-  项目 id 降序 + rank 升序）—— 刚剪完 / 刚精修过的浮到最前。点卡片 = 去该片段的精修页，
-  没初始化就自动 `polish init`
-  （`initPolish(pid, dir)` 传**绝对目录**，scope 守卫按它反查归属）。
+- 首页「切片总览」（`HomeClipsOverview.vue`）：全部项目的切片混排成一份总排序，**按各片段最后一次
+  改动从新到旧**（`clips[].mtime`）—— 刚剪完/刚精修过的浮到最前。点卡片 = 去精修页，
+  没初始化就自动 `polish init`（`initPolish(pid, dir)` 传**绝对目录**）。排序细节见附录 F。
 - **任务完成后的刷新必须静默**：`load({silent:true})` 不置 `loading`、不卸载编辑器（非静默会把
   编辑器换成骨架屏，预览与滚动位置全丢）。
 - 会话类前端纪律：未登录 → **401**，`api/client.js` 统一跳登录并记回跳。
@@ -146,10 +135,9 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   坐标基准、切换规则）挪进 `title` 悬停可见，行内只留"是什么 / 点什么"。右栏卡片行内容宽仅
   **266px**（`.hint`=11px、`.small`=12px）⇒ 40 字已达 480px、必然折行。别在 UI 字符串里用 `**`
   当强调（会原样显示成星号 —— 弹窗上出现过）。
-- ⚠ **同一件事不说三遍**：任务名 + 状态 chip + 进度条已说清状态，别再挂「任务完成」/「运行中…」
-  回显（用户要求删掉的）；**状态栏常驻**、不按任务有无出现/消失（`PolishView` 空闲态 = 「任务」+
-  chip `空闲`，`jobStatusText` 里 `if (!job.id) return '空闲'` 为它加的，别删）。唯一例外是
-  **失败原因必须显示**，不许静默吞错。
+- ⚠ **同一件事不说三遍**：任务名 + 状态 chip + 进度条已说清状态，别再挂「任务完成」/「运行中…」回显。
+  **状态栏常驻**（`jobStatusText` 里 `if (!job.id) return '空闲'` 就是为它加的，别删）；
+  唯一例外：**失败原因必须显示**，不许静默吞错。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
