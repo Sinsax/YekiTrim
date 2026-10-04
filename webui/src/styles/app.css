@@ -405,6 +405,9 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .user-chip .av { width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg,var(--main),var(--pink-light));
   color:var(--on-main); display:flex; align-items:center; justify-content:center; font-size:12px; flex:none; }
 .user-chip .nm { flex:1; font-size:12px; line-height:1.3; min-width:0; }
+/* ⚠️ 本地模式（免登录）下这块只剩一句状态：没有头像、没有用户名/角色、也没有可退的会话。
+   容器也别留成可点的样子。真正的标记样式在 SideNav 的 scoped 块里。 */
+.user-chip.local { cursor:default; }
 .user-chip .nm b { display:block; font-size:12.5px; }
 .main { flex:1; min-width:0; overflow-y:auto; display:flex; flex-direction:column; }
 .crumbs { display:flex; align-items:center; gap:8px; font-size:13px; }
