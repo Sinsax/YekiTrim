@@ -135,6 +135,13 @@ pub(super) async fn projects_create(
     if !user.is_admin() {
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可指定服务器本机文件"));
     }
+    // ⚠️ 重建（覆盖已有 `yekitrim.toml`）必须由调用方**显式**要求：
+    // 前端在"目录已有工程、但用户又手动挑了视频"时弹二次确认，确认后才带这个位。
+    // 默认 false —— 不带它的调用（含老前端、CLI 别名）行为与以前**一模一样**。
+    let overwrite = source
+        .get("overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     create_local_project(
         &state,
         &user,
@@ -143,6 +150,7 @@ pub(super) async fn projects_create(
         source.get("input").and_then(|v| v.as_str()).unwrap_or(""),
         source.get("danmaku").and_then(|v| v.as_str()),
         source.get("output_dir").and_then(|v| v.as_str()),
+        overwrite,
     )
     .await
 }
@@ -160,6 +168,7 @@ pub(super) async fn create_local_project(
     input_hint: &str,
     danmaku_hint: Option<&str>,
     output_dir: Option<&str>,
+    overwrite: bool,
 ) -> ApiResult {
     let tenant = yekitrim_service::projects::tenant_root(user.id);
     std::fs::create_dir_all(&tenant)
@@ -177,8 +186,16 @@ pub(super) async fn create_local_project(
     let config_path = dir.join(yekitrim_core::path::PROJECT_CONFIG_FILE);
     let is_existing_project = config_path.is_file();
 
-    // 已有 yekitrim.toml：只登记/打开，不重写（否则会覆盖用户手改过的工程设置）
-    if !is_existing_project {
+    // 已有 yekitrim.toml：**默认只登记/打开、不重写**（否则会覆盖用户手改过的工程设置）。
+    // ⚠️ 只有调用方**显式**给了 `overwrite`（前端"目录已有工程 + 用户又手动挑了视频"那条路，
+    // 弹窗二次确认后才带）才重写。别把它改成默认 true —— 那等于把用户手改的配置随手冲掉。
+    if !is_existing_project || overwrite {
+        if overwrite && is_existing_project {
+            tracing::warn!(
+                "按调用方显式要求重建工程配置: {}（原内容将被覆盖）",
+                config_path.display()
+            );
+        }
         let hint = input_hint.trim();
         let input = if hint.is_empty() {
             // 未指定文件时自动挑目录里第一个视频
@@ -258,7 +275,11 @@ pub(super) async fn create_local_project(
     if let Ok(Some(p)) = db.project_by_id(id) {
         let _ = yekitrim_service::projects::refresh_bytes(db, &p);
     }
-    let _ = db.audit(Some(user.id), "project_create", &format!("id={id} kind=local"));
+    let _ = db.audit(
+        Some(user.id),
+        "project_create",
+        &format!("id={id} kind=local overwrite={overwrite}"),
+    );
     remember_last_project(&ws);
     match db.project_by_id(id) {
         Ok(Some(p)) => ok(serde_json::json!({
@@ -314,7 +335,8 @@ pub(super) fn unregister_project(
 /// `DELETE /api/projects/:id`：**只注销登记**，项目目录里零文件改动（媒体/产物/`yekitrim.toml` 全保留）。
 ///
 /// 想再挂回来就重新导入同一个目录（`POST /api/projects`）—— 目录里已有 `yekitrim.toml` 时
-/// 只登记、不覆盖（见 `create_local_project`），所以手改过的工程设置不会丢。
+/// 只登记、不覆盖（见 `create_local_project`；**除非调用方显式 `overwrite`**），
+/// 所以手改过的工程设置不会丢。
 pub(super) async fn projects_delete(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<crate::auth::CurrentUser>,
@@ -515,7 +537,8 @@ pub(super) async fn project_init(
     };
     let danmaku = body.get("danmaku").and_then(|v| v.as_str());
     let output = body.get("output_dir").and_then(|v| v.as_str());
-    let created = create_local_project(&state, &user, "", &rel_dir, "", danmaku, output).await?;
+    // 过渡期别名**不重建**：它以前就不覆盖，行为保持不变
+    let created = create_local_project(&state, &user, "", &rel_dir, "", danmaku, output, false).await?;
     // 旧前端期待项目快照（含 current_stage / files）
     let ws = match created.0.get("id").and_then(|v| v.as_i64()).and_then(|id| state.auth.db().project_by_id(id).ok().flatten()) {
         Some(p) => Workspace::load(Some(&p.config_file))
@@ -629,4 +652,56 @@ async fn unregister_keeps_every_file_and_can_rebind() {
         "重新导入不能改已有配置（只登记、不覆盖）"
     );
 }
+
+/// `source.overwrite`：**只有显式带这个位**才重建已有工程的配置；不带就一个字节都不动。
+///
+/// 这条不变式是"用户手改过的工程设置不能被随手冲掉"的唯一防线
+/// （前端在"目录已有工程 + 用户又手动挑了视频"时弹二次确认，确认后才带这个位）。
+#[tokio::test]
+async fn overwrite_rebuilds_config_only_when_explicitly_asked() {
+    let t = test_app().await;
+    let cfg = t.root.join("yekitrim.toml");
+    let cfg_before = std::fs::read_to_string(&cfg).unwrap();
+    let dir = yekitrim_core::path::display(&t.root);
+
+    let post = |source: serde_json::Value| {
+        let t = &t;
+        let source = source.clone();
+        async move {
+            t.call(
+                t.req("POST", "/projects")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "source": source }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+
+    // ① 不带 overwrite（老前端 / 默认）→ 配置原样
+    std::fs::write(t.root.join("b.mp4"), b"x").unwrap();
+    let res = post(serde_json::json!({
+        "kind": "local", "dir": dir, "input": "b.mp4"
+    }))
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read_to_string(&cfg).unwrap(),
+        cfg_before,
+        "没带 overwrite 时**绝不能**改已有配置"
+    );
+
+    // ② 显式 overwrite + 指定另一个视频 → 配置被重写成新输入
+    let res = post(serde_json::json!({
+        "kind": "local", "dir": dir, "input": "b.mp4", "overwrite": true
+    }))
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "显式 overwrite 应当成功");
+    let after = std::fs::read_to_string(&cfg).unwrap();
+    assert_ne!(after, cfg_before, "显式 overwrite 必须真的重写");
+    assert!(after.contains("b.mp4"), "重写后的输入应当是刚选的那个视频: {after}");
+}
+
 }
