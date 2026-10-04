@@ -15,7 +15,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `clipMatchesEvent`、`stageInfo`、`projectEntryPath`、`STEPS`。
 - `stores/`：`project.js::sourceBadge/sourceLabel`、`workbench.js`（项目列表 + per-pid 缓存 +
   `invalidate`/`forgetProject`）、`ui.js`（`sideCollapsed`/`fragRows`/`toggleSide`）、
-  `theme.js`（**哥特浅色/暗色**，见下方「主题」）。
+  `theme.js`（**哥特浅色/暗色**，见下方「主题」）、`health.js`（`localNoAuth()` —— 见「本地模式」）。
 - `composables/useJobs.js`：`load()`（单飞 + SSE 合帧）/ `onJobDone(fn)` → 返回退订函数。
 - 关键组件：`MaterialList.vue`（弹幕/字幕共用清单）、`side/ProjectNode.vue`、`HomeClipsOverview.vue`、
   `StickerPacks.vue`、`SliderField.vue`、`SettingsView.vue`。
@@ -58,6 +58,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   首页「录播姬录制」块进）。
 
 **首页 `#/workbench`**
+- ⚠️ `localNoAuth`（`stores/health.js`）· 运行状况面板（doctor）：见 `docs/web-ui-design.md` 附录 E。
 - 服务器文件（**仅 admin；非 admin 整条不显示** —— 不给点不动、只写"仅管理员"的入口）：
   `sources` 按角色过滤，`source` 用 watch 保证始终落在"看得见且可用"的那一项。
 - 录播姬录制：用户**只看到「配置直播间」**；「全部记录与导入规则」「扫描录制目录」与待分配池

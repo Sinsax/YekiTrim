@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { projectData } from './api/projectData'
 import { setScope } from './api/scope'
 import { SETTINGS_SECTIONS, STAGE_EVENTS_READY } from './utils'
+import { localNoAuth } from './stores/health'
 import { authState, isAuthed, loadMe } from './stores/auth'
 import { addClient } from './stores/log'
 import { lastPath } from './stores/workbench'
@@ -86,6 +87,11 @@ router.beforeEach(async (to) => {
   }
   if (to.meta?.admin && authState.user?.role !== 'admin') {
     return { path: '/workbench' }
+  }
+  // 本地免登录模式没有"注册/邀请"这回事：直接输网址也要挡回程序配置页
+  // （标签条里也过滤掉了那一项，见 SettingsView —— 两处都读同一个 health store）。
+  if (to.name === 'settings-account' && (await localNoAuth())) {
+    return { path: '/settings/config' }
   }
   return true
 })

@@ -7,7 +7,7 @@
     <!-- 子页标签：每项是一条路由（settings-<key>），切页即换 URL，可直接刷新/分享。
          标签与路由同源（utils.js 的 SETTINGS_SECTIONS），别在别处再抄一份。 -->
     <nav class="tabs">
-      <router-link v-for="s in SETTINGS_SECTIONS" :key="s.key" :to="{ name: 'settings-' + s.key }"
+      <router-link v-for="s in visibleSections" :key="s.key" :to="{ name: 'settings-' + s.key }"
                    class="tab" :class="{ on: s.key === section }">{{ s.label }}</router-link>
     </nav>
 
@@ -257,12 +257,6 @@
           <InviteManager />
         </div>
       </div>
-      <div>
-        <div class="section-title">模型管理</div>
-        <div class="card">
-          <ModelList :models="models" @changed="loadModels" />
-        </div>
-      </div>
     </div>
     </template>
 
@@ -300,13 +294,13 @@ import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
-import ModelList from '../components/ModelList.vue'
 import InviteManager from '../components/InviteManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
 import DownloaderConfig from '../components/DownloaderConfig.vue'
 import LlmUsage from '../components/LlmUsage.vue'
 import LogConsole from '../components/LogConsole.vue'
 import { SETTINGS_SECTIONS, settingsSection } from '../utils'
+import { localNoAuth as localNoAuthFromServer, localNoAuthKnown } from '../stores/health'
 
 // 子页 key 由路由的 props 传进来（config / llm / account / integrations / monitor）。
 // 五块内容都留在这一个组件里：表单状态、/api/config 的加载与保存、源码编辑器都在这一处，
@@ -319,7 +313,6 @@ const active = computed(() => settingsSection(props.section))
 const globalRaw = ref('')
 const llmRaw = ref('')
 const configError = ref('')
-const models = ref([])
 const llmResult = ref('')
 const referenceTitlesText = ref('')
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
@@ -328,7 +321,11 @@ const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打�
  * 本地模式下没有"注册/邀请"这回事，收起「注册与邀请码」那张卡。
  * ⚠️ 读失败就当 `false`（照旧显示）—— 别默认 true，否则一次请求抖动就把整块藏了。
  */
-const localNoAuth = ref(false)
+const localNoAuth = ref(localNoAuthKnown())
+/** 本地模式下整页不显示的那些设置子页（见 utils.js 的 `localHidden`，与路由守卫同一判据） */
+const visibleSections = computed(() =>
+  SETTINGS_SECTIONS.filter((s) => !(s.localHidden && localNoAuth.value))
+)
 const editSource = ref(false)
 const editLlmSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
@@ -550,13 +547,6 @@ async function loadConfig() {
   } catch (e) { loaded.value = false }
 }
 
-async function loadModels() {
-  try {
-    const list = await api('/api/models', { label: '读取模型列表' })
-    // 列表由后端给（注册表 model_names()）：装没装、装在哪一份都由它判（与运行时同源）
-    models.value = list || []
-  } catch (e) {}
-}
 
 async function toggleSource() {
   if (!editSource.value) {
@@ -620,17 +610,13 @@ async function testLlm() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
-  if (props.section === 'account') {
-    loadModels()
-    // 只有这个子页需要知道是不是本地免登录（决定要不要显示邀请码那张卡）
-    api('/api/health')
-      .then((h) => { localNoAuth.value = h?.local_no_auth === true })
-      .catch(() => {})
-  }
+  // 每个子页都要：标签条靠它过滤掉本地模式下不显示的项（store 有缓存，只有首次真发请求）。
+  // ⚠️ 别挪回 `account` 分支里 —— 那样只有进账号页时标签才收缩，别处照旧显示 5 个。
+  localNoAuth.value = await localNoAuthFromServer()
 })
 </script>
 
