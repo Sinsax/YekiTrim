@@ -64,7 +64,7 @@
           <b>{{ panelTitle }}</b>
           <button v-if="selected" class="mini-btn" @click="selected = null">关闭</button>
         </div>
-        <div v-if="!selected" class="props-empty muted small">点击时间轴上的分段 / 字幕 / 屏蔽 / 事件块，在这里编辑属性</div>
+        <div v-if="!selected" class="props-empty muted small">点时间轴上的块，在这里改属性</div>
         <template v-else-if="selItem">
           <!-- ── 标配：开始 / 结束 / 入点 / 出点 / 定位（所有类型都有） ── -->
           <div class="row">

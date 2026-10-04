@@ -27,22 +27,22 @@
     <div v-if="configError" class="error-banner">
       <Icon name="alert" :size="15" />
       <div>
-        <b>config.toml 解析失败，整份程序配置被忽略，表单显示的是内建默认值。</b>
+        <b>config.toml 解析失败，配置已忽略</b>
         <div class="muted small mt-4">{{ configError }}</div>
-        <div class="muted small mt-4">用「编辑源文件」按上面的行号修好后保存即可；保存时会校验语法，坏文件不会被写入。</div>
+        <div class="muted small mt-4">按上面的行号改好再保存（会校验语法）</div>
       </div>
     </div>
     <div v-if="!loaded" class="error-banner">
       <Icon name="alert" :size="15" />
       <div>
-        <b>程序配置未加载成功，表单显示的是内建默认值。</b>
-        <div class="muted small mt-4">为避免把默认值写回配置文件，保存已禁用；请确认服务端可用后刷新页面重试。</div>
+        <b>配置未加载，显示的是默认值</b>
+        <div class="muted small mt-4">保存已禁用，避免写回默认值；刷新重试</div>
       </div>
     </div>
     <div class="card">
       <template v-if="!editSource">
         <div class="muted small mb-8">
-          表单只覆盖常用项，保存时按字段合并进 config.toml，不会动到未列出的配置（如 <code>[correct]</code> 订正 prompt、<code>[sfx]</code> blacklist；<code>[detection]</code>/<code>[correct]</code> 的 <code>max_concurrent</code> 留空即跟随上方的全局并发）；要改这些请点「编辑源文件」。
+          只覆盖常用项，其余请点「编辑源文件」
         </div>
         <div class="form-section">
           <div class="form-section-title">ASR 转写</div>
@@ -82,7 +82,7 @@
                          hint="兜底只做加法：VAD 判非语音但电平够响的段落照样解码，宁可多花时间也不漏字幕；0=关掉兜底" />
             <div class="check-field">
               <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
-              <label for="vadEnabled">VAD 只解码语音段（single 模式快 2~3 倍，hybrid 不受影响）</label>
+              <label for="vadEnabled" title="single 模式快 2~3 倍，hybrid 不受影响">VAD 只解码语音段</label>
             </div>
             <div class="check-field">
               <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
@@ -103,7 +103,7 @@
           </div>
           <div class="prompt-pair">
             <div>
-              <label>参考标题 reference_titles（每行一条，可含 emoji；留空使用内建示例；检测和封面标题生成都会参考）</label>
+              <label title="每行一条，可含 emoji；留空用内建示例；检测与封面标题生成都会参考">参考标题 reference_titles</label>
               <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
             </div>
             <div>

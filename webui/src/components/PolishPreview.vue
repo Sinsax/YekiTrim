@@ -78,7 +78,7 @@
       <div v-if="dhampirLoading && dhampirMode" class="dhampir-loading">
         <span class="dl-spin"></span>
         <span class="dl-text">{{ dhampirStatus || '正在加载 Dhampir 预览…' }}</span>
-        <span class="muted small">加载完成前不可播放（避免特效/贴纸还没就绪）</span>
+        <span class="muted small" title="特效/贴纸还没就绪">加载完成前不可播放</span>
       </div>
       <!-- 框选布局：在此模式下视频运镜暂停（缩放复位），直接在整帧上拖出精确矩形 -->
       <div v-if="selectMode" class="sel-layer" @pointerdown.prevent="startSel('new', $event)">

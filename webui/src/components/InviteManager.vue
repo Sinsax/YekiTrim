@@ -16,10 +16,8 @@
       </div>
     </div>
 
-    <div class="hint mb-8">
-      邀请码是<b>一次性 token</b>（明文存在服务端，管理员可随时复制重发）：<b>一个码只能绑一个账号</b>，
-      用过即标「已使用」并显示绑给了谁；被邀请人在登录页点「用邀请码注册」，填 用户名 / 密码 /
-      邀请码 即注册成功（角色固定普通用户）。
+    <div class="hint mb-8" title="一次性 token，一个码只能绑一个账号；明文存在服务端，管理员可随时复制重发。用过即标「已使用」并显示绑给了谁。被邀请人在登录页点「用邀请码注册」，填用户名/密码/邀请码即可（角色固定普通用户）。">
+      邀请码一次性，一码绑一个账号
     </div>
 
     <div v-if="rows.length" class="invite-list">
@@ -35,7 +33,7 @@
                 @click="revoke(c)">撤销</button>
       </div>
     </div>
-    <div v-else-if="!busy" class="muted small">还没有邀请码。点「生成邀请码」，明文会一直留在下面这张表里，随时可复制。</div>
+    <div v-else-if="!busy" class="muted small">还没有邀请码</div>
 
     <!-- 生成：备注 / 有效期 / 数量 -->
     <AppModal :show="showCreate" title="生成邀请码" @close="showCreate = false">
@@ -44,7 +42,7 @@
         <div class="minw-90"><label>有效天数</label><input v-model.number="days" type="number" min="0" placeholder="留空=永久"></div>
         <div class="minw-90"><label>数量</label><input v-model.number="count" type="number" min="1" max="50"></div>
       </div>
-      <p class="hint mt-6">生成后会自动开启注册开关；明文保存在服务端，随时能在下面列表里复制（一个码只能绑一个账号）。</p>
+      <p class="hint mt-6" title="生成后会自动开启注册开关；一个码只能绑一个账号">明文保存在服务端，可随时复制</p>
       <template #footer>
         <button class="btn" @click="showCreate = false">取消</button>
         <button class="btn btn-primary" :disabled="busy" @click="create">生成</button>

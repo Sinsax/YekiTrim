@@ -15,24 +15,22 @@
       </div>
     </div>
 
-    <div class="hint mb-8">
-      录播姬（BililiveRecorder）录完一场推 webhook 给 YekiTrim，YekiTrim 按房间归属自动入库成项目。
-      「启用」= 打开接收入口 <span class="mono">/api/ingest/bililive/&lt;token&gt;</span>；
-      <b>保存/切换立即生效，不需要重启</b>。
+    <div class="hint mb-8" title="录播姬（BililiveRecorder）录完一场推 webhook，YekiTrim 按房间归属自动入库成项目。接收入口 /api/ingest/bililive/<token>。保存/切换立即生效，不需要重启。">
+      录播姬录完自动入库；改动立即生效
     </div>
 
     <div v-if="!loaded" class="muted small">配置读取中…</div>
 
     <template v-else>
       <!-- 关闭时只留开关与一句说明（用户要求：开启后才展开表单） -->
-      <div v-if="!enabled" class="hint">
-        当前已关闭：webhook 一律拒收，兜底扫描也不跑。打开上面的开关即可填入连接信息。
+      <div v-if="!enabled" class="hint" title="兜底扫描也不跑；打开上面的开关即可填入连接信息">
+        已关闭：webhook 一律拒收
       </div>
 
       <template v-else>
         <div class="rc-grid">
           <div class="span-2">
-            <label>录像目录 root（录播姬的输出目录，YekiTrim 进程要读得到）</label>
+            <label title="录播姬的输出目录，YekiTrim 进程要读得到">录像目录 root</label>
             <div class="row" style="gap:8px">
               <input v-model.trim="form.root" class="flex-1" placeholder="例如 D:/rec 或 \\NAS\rec">
               <button class="mini-btn" @click="showPicker = true">浏览…</button>
@@ -42,7 +40,7 @@
           <div>
             <label>API 地址 api_base</label>
             <input v-model.trim="form.api_base" placeholder="http://127.0.0.1:2356">
-            <div class="hint">录播姬 WebUI 的地址；留空 = 未对接（用户不能自助加直播间）</div>
+            <div class="hint" title="留空 = 未对接，用户不能自助加直播间">录播姬 WebUI 的地址</div>
           </div>
           <div>
             <label>用户名 api_user</label>
@@ -94,14 +92,13 @@
           </div>
           <div v-if="newToken" class="rc-token mt-8">
             <div class="row spread" style="gap:8px">
-              <span class="small"><b>只显示这一次</b>：请立刻填进录播姬的 Webhook 设置，离开本页就看不到了</span>
+              <span class="small" title="请立刻填进录播姬的 Webhook 设置"><b>只显示这一次</b>，离开本页就看不到</span>
               <button class="mini-btn" @click="copy(webhookUrlNewToken)">复制完整地址</button>
             </div>
             <input class="mono" :value="newToken" readonly @focus="$event.target.select()">
           </div>
-          <div class="hint mt-6">
-            录播姬不在本机时，把地址里的主机名换成 YekiTrim 主机的 <b>局域网 IP</b>（录播姬要能访问到）。
-            关掉上面的开关会<b>保留</b> token；重新生成才会让旧的立刻失效。
+          <div class="hint mt-6" title="把地址里的主机名换成 YekiTrim 主机的局域网 IP（录播姬要能访问到）。关开关保留 token；重新生成才会让旧的立刻失效。">
+            不在本机时用<b>局域网 IP</b>；关开关保留 token
           </div>
         </div>
 
@@ -110,7 +107,7 @@
           测试连接读的是<b>已保存</b>的配置（改完先保存再测）。
           <span class="mono">finalize_idle_mins</span>／<span class="mono">move_into_managed</span>／
           <span class="mono">concat_files</span>／<span class="mono">extensions</span>
-          不在表单里，需要时用上面的「编辑源文件」改。
+          不在表单里，用「编辑源文件」改。
         </div>
       </template>
     </template>

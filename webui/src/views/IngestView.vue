@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h1>入库</h1>
-        <div class="sub">录播姬录完自动变项目 · 房间映射决定归谁与自动跑到哪一步</div>
+        <div class="sub">录播姬录完自动变项目</div>
       </div>
       <div class="actions">
         <button class="btn" @click="reload"><Icon name="refresh" :size="14" /> 刷新</button>
