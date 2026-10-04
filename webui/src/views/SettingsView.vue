@@ -41,96 +41,121 @@
     </div>
     <div class="card">
       <template v-if="!editSource">
-        <div class="muted small mb-8">
-          只覆盖常用项，其余请点「编辑源文件」
-        </div>
+        <div class="muted small mb-8">只放常用项，其余在「高级参数」里</div>
+
+        <!-- ① 转写 -->
         <div class="form-section">
-          <div class="form-section-title">ASR 转写</div>
+          <div class="form-section-title">转写</div>
           <div class="form-grid">
             <div class="mode-field span-2">
-              <label for="asrMode">Mode</label>
+              <label for="asrMode">模式</label>
               <select id="asrMode" v-model="form.asr.mode">
                 <option value="single">单模型</option>
                 <option value="hybrid">双模型</option>
               </select>
               <span class="muted small mode-hint">{{ asrModeHint }}</span>
             </div>
-            <SliderField v-model="form.asr.num_workers" class="span-2" label="并行数 num_workers（0=自动）"
-                         :min="0" :max="32" :step="1" />
-            <SliderField v-model="form.asr.chunk_duration" class="span-2" label="分块时长 chunk_duration"
-                         unit="s" :min="10" :max="300" :step="5" />
-            <SliderField v-model="form.asr.chunk_overlap" class="span-2" label="重叠时长 chunk_overlap"
-                         unit="s" :min="0" :max="60" :step="1" />
-            <SliderField v-model="form.asr.segment_gap" class="span-2" label="段间隔 segment_gap（强停顿，秒）"
-                         unit="s" :min="0.1" :max="5" :step="0.1" />
-            <SliderField v-model="form.asr.breath_gap" class="span-2" label="气口 breath_gap（标点切点吸附到停顿，秒）"
-                         unit="s" :min="0.1" :max="1.5" :step="0.05" />
-            <SliderField v-model="form.asr.soft_cut_secs" class="span-2" label="软切 soft_cut_secs（，、；： 超过这么久才切，秒）"
-                         unit="s" :min="1" :max="20" :step="0.5" />
-            <SliderField v-model="form.asr.max_segment_chars" class="span-2" label="字数硬上限 max_segment_chars"
-                         unit="字" :min="10" :max="60" :step="1" />
-            <SliderField v-model="form.asr.snap_window" class="span-2" label="吸附半径 snap_window（秒）"
-                         unit="s" :min="0" :max="1" :step="0.05" />
-            <SliderField v-model="form.asr.segment_padding" class="span-2" label="解码余量 segment_padding（前后留白，0=关；实测会扰动文本）"
-                         unit="s" :min="0" :max="1" :step="0.05" />
-            <SliderField v-model="form.asr.max_new_tokens" class="span-2" label="输出上限 max_new_tokens（qwen3 单次解码）"
-                         :min="128" :max="2048" :step="128" />
-            <SliderField v-model="form.asr.vad_threshold" class="span-2" label="VAD 阈值 vad_threshold（调高=多解码、少省时间）"
-                         :min="0.05" :max="0.95" :step="0.05" />
-            <SliderField v-model="form.asr.vad_rescue_db" class="span-2" label="VAD 电平兜底 vad_rescue_db（本片语音电平 − 此值以下的空档才跳过）"
-                         unit="dB" :min="0" :max="24" :step="1"
-                         hint="兜底只做加法：VAD 判非语音但电平够响的段落照样解码，宁可多花时间也不漏字幕；0=关掉兜底" />
-            <div class="check-field">
+            <div class="check-field span-2">
               <input id="vadEnabled" v-model="form.asr.vad" type="checkbox">
               <label for="vadEnabled" title="single 模式快 2~3 倍，hybrid 不受影响">VAD 只解码语音段</label>
             </div>
-            <div class="check-field">
+            <div class="check-field span-2">
               <input id="llmCorrect" v-model="form.asr.llm_correct" type="checkbox">
-              <label for="llmCorrect">LLM 订正转录文本（需配置 LLM）</label>
+              <label for="llmCorrect">LLM 订正转录</label>
             </div>
           </div>
         </div>
 
+        <!-- ② 检测 -->
         <div class="form-section">
-          <div class="form-section-title">检测 Detection</div>
-          <div class="form-grid det-top">
-            <SliderField v-model="form.detection.danmaku_window_secs" class="span-2"
-                         label="弹幕窗口 danmaku_window_secs" unit="s" :min="1" :max="60" :step="1" />
-            <SliderField v-model="form.detection.llm_score_weight" class="span-2"
-                         label="LLM 标题+摘要评分权重 llm_score_weight" :min="0" :max="1" :step="0.05"
-                         hint="0=关闭；最终热度 = (1-w)×弹幕/字幕热度 + w×LLM评分" />
-            <div class="span-2"><label>主播名 vtuber_name</label><input v-model="form.detection.vtuber_name" type="text" placeholder="非空时追加到切片标题"></div>
+          <div class="form-section-title">检测</div>
+          <div class="form-grid">
+            <div class="span-2">
+              <label>主播名</label>
+              <input v-model="form.detection.vtuber_name" type="text" placeholder="追加到切片标题">
+            </div>
+            <SliderField v-model="form.detection.llm_score_weight" class="span-4"
+                         label="LLM 评分权重" :min="0" :max="1" :step="0.05"
+                         hint="0 = 只用弹幕/字幕热度" />
           </div>
-          <div class="prompt-pair">
-            <div>
-              <label title="每行一条，可含 emoji；留空用内建示例；检测与封面标题生成都会参考">参考标题 reference_titles</label>
-              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
+        </div>
+
+        <!-- ③ 输出 -->
+        <div class="form-section">
+          <div class="form-section-title">输出</div>
+          <div class="form-grid">
+            <div class="span-4">
+              <label>输出目录</label>
+              <input v-model="form.cutting.output_dir" type="text">
             </div>
-            <div>
-              <label>检测 system_prompt（留空使用内建默认）</label>
-              <textarea v-model="form.detection.system_prompt" rows="8"></textarea>
-            </div>
-          </div>
-          <div class="prompt-with-side">
-            <div>
-              <label>检测 prompt_template（{segments} 会被替换；留空使用内建默认）</label>
-              <textarea v-model="form.detection.prompt_template" rows="12"></textarea>
-            </div>
-            <div class="side-col">
-              <div>
-                <div class="side-title">剪切 Cutting</div>
-                <label>输出目录 output_dir</label>
-                <input v-model="form.cutting.output_dir" type="text">
-                <SliderField v-model="form.cutting.silence_noise_db" class="side-gap"
-                             label="静音阈值 silence_noise_db" unit="dB" :min="-60" :max="0" :step="1" />
-                <div class="check-field side-check">
-                  <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
-                  <label for="overwrite">覆盖已有文件 overwrite</label>
-                </div>
-              </div>
+            <div class="check-field span-2">
+              <input id="overwrite" v-model="form.cutting.overwrite" type="checkbox">
+              <label for="overwrite">覆盖已有文件</label>
             </div>
           </div>
         </div>
+
+        <!-- ④ 高级：提示词 + 全部调参。默认收起 —— 这些是"默认值就是最佳实践"的旋钮，
+             摊开只会把常用项淹掉（用户口径："死配置或者最佳配置就隐藏吧"）。 -->
+        <details class="form-adv">
+          <summary>高级参数<span class="muted small">提示词 / 断句 / 调参</span></summary>
+
+          <div class="form-section">
+            <div class="form-section-title">提示词</div>
+            <div class="prompt-pair">
+              <div>
+                <label title="每行一条，可含 emoji；留空用内建示例">参考标题</label>
+                <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
+              </div>
+              <div>
+                <label>检测 system_prompt</label>
+                <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
+              </div>
+            </div>
+            <div class="mt-8">
+              <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
+              <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">断句与分块<span class="muted small">默认值已按实测调好</span></div>
+            <div class="form-grid">
+              <SliderField v-model="form.asr.chunk_duration" class="span-2" label="分块时长" unit="s"
+                           :min="20" :max="300" :step="10" />
+              <SliderField v-model="form.asr.chunk_overlap" class="span-2" label="块间重叠" unit="s"
+                           :min="0" :max="60" :step="1" />
+              <SliderField v-model="form.asr.segment_gap" class="span-2" label="强停顿阈值" unit="s"
+                           :min="0.3" :max="5" :step="0.1" />
+              <SliderField v-model="form.asr.breath_gap" class="span-2" label="气口" unit="s"
+                           :min="0.1" :max="1" :step="0.05" />
+              <SliderField v-model="form.asr.soft_cut_secs" class="span-2" label="标点软切" unit="s"
+                           :min="1" :max="20" :step="0.5" />
+              <SliderField v-model="form.asr.max_segment_chars" class="span-2" label="字数硬上限"
+                           :min="10" :max="80" :step="1" />
+              <SliderField v-model="form.asr.snap_window" class="span-2" label="吸附半径" unit="s"
+                           :min="0" :max="2" :step="0.05" />
+              <SliderField v-model="form.asr.num_workers" class="span-2" label="并行数" hint="0 = 自动"
+                           :min="0" :max="32" :step="1" />
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">VAD 与解码<span class="muted small">默认值已按实测调好</span></div>
+            <div class="form-grid">
+              <SliderField v-model="form.asr.vad_threshold" class="span-2" label="VAD 阈值"
+                           :min="0" :max="1" :step="0.05" hint="调高 = 多解码、少省时间" />
+              <SliderField v-model="form.asr.vad_rescue_db" class="span-2" label="电平兜底" unit="dB"
+                           :min="0" :max="40" :step="1" hint="0 = 关" />
+              <SliderField v-model="form.asr.max_new_tokens" class="span-2" label="解码上限" hint="token"
+                           :min="128" :max="2048" :step="64" />
+              <SliderField v-model="form.asr.segment_padding" class="span-2" label="解码余量" unit="s"
+                           :min="0" :max="1" :step="0.05" hint="实测非 0 会扰动文本" />
+              <SliderField v-model="form.detection.danmaku_window_secs" class="span-2" label="弹幕窗口" unit="s"
+                           :min="1" :max="60" :step="1" />
+            </div>
+          </div>
+        </details>
       </template>
 
       <template v-else>
@@ -323,7 +348,6 @@ const form = reactive({
   cutting: {
     output_dir: './output',
     overwrite: false,
-    silence_noise_db: -30
   },
   llm: {
     api_key: '',
@@ -394,8 +418,7 @@ function buildGlobalPatch() {
     },
     cutting: {
       output_dir: f.cutting.output_dir || './output',
-      overwrite: !!f.cutting.overwrite,
-      silence_noise_db: Number(f.cutting.silence_noise_db ?? -30)
+      overwrite: !!f.cutting.overwrite
     },
   }
 }
@@ -482,7 +505,6 @@ async function loadConfig() {
     if (c.cutting) Object.assign(form.cutting, {
       output_dir: c.cutting.output_dir || './output',
       overwrite: !!c.cutting.overwrite,
-      silence_noise_db: c.cutting.silence_noise_db ?? -30
     })
     const l = d.llm_config || {}
     const gMax = l.max_tokens ?? 65536
@@ -624,6 +646,16 @@ onMounted(() => {
 /* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
 .two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
 .span-2 { grid-column:span 2; }
+.span-4 { grid-column:span 4; }
+/* 「高级参数」：默认收起。里面是"默认值就是最佳实践"的调参与提示词 ——
+   摊开会把常用项淹掉（用户口径："死配置或者最佳配置就隐藏吧"）。 */
+.form-adv { margin-top:10px; border-top:1px dashed var(--line-soft); padding-top:6px; }
+.form-adv > summary { cursor:pointer; font-weight:700; font-size:13px; color:var(--ink-dim);
+  display:flex; align-items:center; gap:8px; padding:4px 0; list-style:none; }
+.form-adv > summary::-webkit-details-marker { display:none; }
+.form-adv > summary::before { content:"▸"; color:var(--ink-faint); flex:none; }
+.form-adv[open] > summary::before { content:"▾"; }
+.form-adv > summary:hover { color:var(--ink); }
 /* Mode = 一行「标签 · 下拉 · 说明」：说明原本另起一行，把这一格撑到 81px，
    而同一行的数值行只有 23px —— 那一行右侧因此空出 58px 的竖向留白（量过）。
    下拉给 auto 宽 + 收窄内边距，一行放得下（窄屏自动折行）。 */
