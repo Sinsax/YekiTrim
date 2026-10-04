@@ -181,53 +181,65 @@
     </div>
     <div class="card">
       <template v-if="!editLlmSource">
-        <div class="llm-grid">
-          <div class="llm-fields">
-            <div><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
-            <div><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
-            <div><label>model</label><input v-model="form.llm.model" type="text"></div>
-            <SliderField v-model="form.llm.temperature" label="temperature" :min="0" :max="2" :step="0.1" />
-            <SliderField v-model="form.llm.max_tokens" label="max_tokens" :min="256" :max="65536" :step="256" />
-            <SliderField v-model="form.llm.max_concurrent" label="并发请求数" :min="1" :max="32" :step="1" />
-          </div>
-          <div class="llm-extra">
-            <label>extra_params（JSON 文本）</label>
-            <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false"></textarea>
+        <div class="form-section">
+          <div class="form-section-title">接口</div>
+          <div class="form-grid">
+            <div class="span-2"><label>base_url</label><input v-model="form.llm.base_url" type="text" placeholder="https://api.openai.com/v1"></div>
+            <div class="span-2"><label>api_key</label><input v-model="form.llm.api_key" type="text" placeholder="sk-..."></div>
+            <div class="span-2"><label>model</label><input v-model="form.llm.model" type="text"></div>
           </div>
         </div>
-        <div class="muted small mt-8" title="对事件检测 / 精修事件生成 / 字幕订正都生效；提高能近线性缩短批处理时间，触发限流就调小。">
-          并发对<b>所有 LLM 调用</b>生效
+
+        <div class="form-section">
+          <div class="form-section-title">生成</div>
+          <div class="form-grid">
+            <SliderField v-model="form.llm.temperature" class="span-2" label="temperature" :min="0" :max="2" :step="0.1" />
+            <SliderField v-model="form.llm.max_tokens" class="span-2" label="max_tokens" :min="256" :max="65536" :step="256" />
+            <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数" :min="1" :max="32" :step="1"
+                         hint="对所有 LLM 调用生效" />
+          </div>
         </div>
+
+        <details class="form-adv">
+          <summary>高级参数<span class="muted small">按链路覆盖 / extra_params</span></summary>
+          <div class="form-section">
+            <div class="form-section-title">按链路覆盖</div>
         <!-- 按链路覆盖：各链路要的输出长度天差地别，别用同一个上限互相迁就。
              一行一条链路：勾上「单独设置」才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
-        <div class="llm-links">
-          <div class="llm-links-head">
+              <div class="llm-links">
+            <div class="llm-links-head">
             <span>按链路覆盖</span>
             <span class="muted small">不勾 = 跟随全局</span>
           </div>
-          <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
-            <label class="ln-name">
+            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
+              <label class="ln-name">
               <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
             </label>
-            <template v-if="form.llm.overrides[l.key].on">
+              <template v-if="form.llm.overrides[l.key].on">
               <SliderField v-model="form.llm.overrides[l.key].max_tokens"
                            label="max_tokens" :min="256" :max="65536" :step="256" />
               <SliderField v-model="form.llm.overrides[l.key].temperature"
                            label="temperature" :min="0" :max="2" :step="0.1" />
-              <select v-model="form.llm.overrides[l.key].thinking" aria-label="thinking">
+                <select v-model="form.llm.overrides[l.key].thinking" aria-label="thinking">
                 <option value="">默认 thinking</option>
                 <option value="disabled">关思考</option>
                 <option value="enabled">开思考</option>
               </select>
-            </template>
-            <span v-else class="muted small ln-inherit">
+              </template>
+              <span v-else class="muted small ln-inherit">
               跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
             </span>
           </div>
-          <div class="muted small mt-8" title="勾上 = 把该链路的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；取消勾选会删掉这三项、回到跟随全局。">
+            <div class="muted small mt-8" title="勾上 = 把该链路的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；取消勾选会删掉这三项、回到跟随全局。">
             不勾 = 跟随全局
           </div>
         </div>
+          </div>
+          <div class="form-section">
+            <div class="form-section-title">extra_params（JSON）</div>
+            <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false" rows="5"></textarea>
+          </div>
+        </details>
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
