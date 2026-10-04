@@ -416,6 +416,13 @@ function buildLlmPatch() {
     } catch (e) {
       throw new Error('extra_params 不是合法 JSON，请检查格式')
     }
+  } else {
+    // ⚠️ 清空输入框 = **要删掉这个键**，必须显式发 null。
+    // 省略它是不行的：patch 是**合并**语义（本次没提到的键保持原值），
+    // 于是模板里那条 `extra_params = { seed = 42, thinking = ... }` 永远在那儿 ——
+    // 用户清空后保存、页面重新加载，看到的又是"预设内容"（真机报的就是这个）。
+    // 同一个机制在下面的 overrides 已经用了：null = 删键。
+    llm.extra_params = null
   }
   // 按链路覆盖：勾上的写值，没勾的**发 null** —— `patch_config_file` 把 null 当「删键」，
   // 这样"取消勾选 = 回到跟随全局"才表达得出来（发空串会写出 max_tokens = ""，
