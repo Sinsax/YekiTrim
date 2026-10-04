@@ -1,7 +1,7 @@
 <template>
   <!-- 首页「切片总览」：**不按项目分组**，全部项目的切片卡片混排成一份总排序 ——
        卡片下方一行彩色项目名区分归属（每个项目的颜色由 id 稳定散列，永不串色）。
-       两个区块：① 未导出（还没出过片/封面的切片）② 已完成导出（rendered||cover）。
+       两个区块左右并排：① 未导出（还没出过片/封面的切片）② 已导出（rendered||cover）。
        两个区块功能/样式统一：标题行即折叠开关（localStorage 持久化），
        卡片墙固定三行高、超出在墙内滚动（滚轮直翻，不截断）。
        排序：按**最后一次改动**从新到旧（`clips[].mtime` = 片段目录里最新的文件时间，
@@ -10,19 +10,25 @@
   <div class="card card-blk mb-12">
     <div class="row spread mb-8">
       <b class="t m-0"><Icon name="film" :size="15" /> 切片总览</b>
-      <span class="muted small">未导出 {{ unexported.length }} · 已完成导出 {{ exported.length }}</span>
+      <span class="muted small">未导出 {{ unexported.length }} · 已导出 {{ exported.length }}</span>
     </div>
 
     <div v-if="wb.error" class="error-banner"><Icon name="alert" :size="15" /> {{ wb.error }}</div>
 
     <!-- ─────────────── ① 未导出 ─────────────── -->
-    <div class="ov-sec">
-      <button class="ov-sec-head ov-fold" :aria-expanded="!unexportFold" @click="toggleUnexportFold">
-        <span class="ov-caret" :class="{ closed: unexportFold }">▾</span>
-        <span class="chip a">未导出</span>
-        <span class="muted small" title="没初始化过的会先自动初始化">点卡片进入精修</span>
-        <span class="muted small ov-fold-count">{{ unexported.length }}</span>
-      </button>
+    <div class="ov-cols" :class="{ single: ovCols !== 'both' }">
+    <div v-show="showUnexported" class="ov-sec">
+      <div class="ov-sec-head">
+        <button class="ov-fold" :aria-expanded="!unexportFold" @click="toggleUnexportFold">
+          <span class="ov-caret" :class="{ closed: unexportFold }">▾</span>
+          <span class="chip a">未导出</span>
+          <span class="muted small" title="没初始化过的会先自动初始化">点卡片进入精修</span>
+          <span class="muted small ov-fold-count">{{ unexported.length }}</span>
+        </button>
+        <button class="mini-btn ov-focus" title="只看这一栏 / 显示两栏" @click="focusCol('unexported')">
+          {{ ovCols === 'unexported' ? '显示两栏' : '只看这边' }}
+        </button>
+      </div>
       <template v-if="!unexportFold">
         <div v-if="!unexported.length && !loading" class="muted small ov-empty">没有未导出的切片。</div>
         <div v-if="unexported.length" ref="uWall" class="ov-wall" :class="{ noscroll: uNoScroll }">
@@ -61,14 +67,19 @@
       </template>
     </div>
 
-    <!-- ─────────────── ② 已完成导出（与未导出同一套折叠/三行/展开功能） ─────────────── -->
-    <div class="ov-sec ov-sec-done">
-      <button class="ov-sec-head ov-fold" :aria-expanded="!exportedFold" @click="toggleExportedFold">
-        <span class="ov-caret" :class="{ closed: exportedFold }">▾</span>
-        <span class="chip g">已完成导出</span>
-        <span class="muted small">出过片或封面的切片，点击直接进入精修编辑</span>
-        <span class="muted small ov-fold-count">{{ exported.length }}</span>
-      </button>
+    <!-- ─────────────── ② 已导出（与未导出同一套折叠/三行/展开功能） ─────────────── -->
+    <div v-show="showExported" class="ov-sec ov-sec-done">
+      <div class="ov-sec-head">
+        <button class="ov-fold" :aria-expanded="!exportedFold" @click="toggleExportedFold">
+          <span class="ov-caret" :class="{ closed: exportedFold }">▾</span>
+          <span class="chip g">已导出</span>
+          <span class="muted small">出过片或封面，点击直接精修</span>
+          <span class="muted small ov-fold-count">{{ exported.length }}</span>
+        </button>
+        <button class="mini-btn ov-focus" title="只看这一栏 / 显示两栏" @click="focusCol('exported')">
+          {{ ovCols === 'exported' ? '显示两栏' : '只看这边' }}
+        </button>
+      </div>
       <template v-if="!exportedFold">
         <div v-if="!exported.length && !loading" class="muted small ov-empty">还没有已导出的切片。</div>
         <div v-if="exported.length" ref="eWall" class="ov-wall" :class="{ noscroll: eNoScroll }">
@@ -102,6 +113,8 @@
           卡片较多，只渲染前 {{ RENDER_CAP }} 张（共 {{ exported.length }} 个）。
         </div>
       </template>
+    </div>
+
     </div>
 
     <div v-if="loading && !allClips.length" class="row muted small">
@@ -145,6 +158,22 @@ function useFold(key) {
   }
   return [v, toggle]
 }
+/**
+ * 两栏能不能"只看一边"（用户要求：缩小展开，只看左栏或只看右栏）。
+ *
+ * `both` = 两栏并排；`unexported` / `exported` = 另一栏整块 v-show 掉、这一栏占满整行。
+ * 用 `v-show` 而不是 `v-if`：卡片墙的滚动位置与缩略图不该因为切一下布局就全部重来。
+ */
+const ovCols = ref((() => {
+  try { return localStorage.getItem('yekitrim.overview.cols') || 'both' } catch { return 'both' }
+})())
+function focusCol(which) {
+  ovCols.value = ovCols.value === which ? 'both' : which
+  try { localStorage.setItem('yekitrim.overview.cols', ovCols.value) } catch { /* 隐私模式忽略 */ }
+}
+const showUnexported = computed(() => ovCols.value !== 'exported')
+const showExported = computed(() => ovCols.value !== 'unexported')
+
 const [unexportFold, toggleUnexportFold] = useFold('yekitrim.overview.unexportFold')
 const [exportedFold, toggleExportedFold] = useFold('yekitrim.overview.exportedFold')
 
@@ -320,15 +349,25 @@ onUnmounted(() => {
 
 <style scoped>
 /* 两个分区之间用虚线隔开 */
-.ov-sec { margin-top:6px; }
-.ov-sec-done { margin-top:14px; padding-top:12px; border-top:1px dashed var(--line-soft); }
-.ov-sec-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+/* 两栏并排（用户要求左右结构）；`.single` = 只看一边，另一栏 v-show 掉、这栏占满 */
+.ov-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 18px; align-items:start; }
+.ov-cols.single { grid-template-columns:minmax(0,1fr); }
+.ov-sec { margin-top:6px; min-width:0; }
+/* 右栏靠一条竖虚线跟左栏分开；单栏（或窄屏）时这条线要去掉 */
+.ov-sec-done { border-left:1px dashed var(--line-soft); padding-left:18px; }
+.ov-cols.single .ov-sec-done { border-left:none; padding-left:0; }
+@media (max-width:1100px) {
+  .ov-cols { grid-template-columns:minmax(0,1fr); }
+  .ov-sec-done { border-left:none; padding-left:0; }
+}
+.ov-sec-head { display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+.ov-focus { flex:none; padding:2px 8px; font-size:11.5px; }
 .ov-empty { padding:2px 0 4px; }
 
 /* 折叠开关：整行就是按钮，hover 高亮提示可点；折叠时计数还在标题上（内容藏起来但规模可见） */
 .ov-fold {
   border:none; background:transparent; padding:2px 4px; margin-left:-4px;
-  width:100%; font:inherit; text-align:left; border-radius:var(--r-sm);
+  flex:1; min-width:0; font:inherit; text-align:left; border-radius:var(--r-sm);
 }
 .ov-fold:hover { background:var(--bg-soft); }
 .ov-fold .muted { text-align:left; }

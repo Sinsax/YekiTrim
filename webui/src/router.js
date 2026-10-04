@@ -2,7 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { projectData } from './api/projectData'
 import { setScope } from './api/scope'
 import { SETTINGS_SECTIONS, STAGE_EVENTS_READY } from './utils'
-import { localNoAuth } from './stores/health'
+import { localNoAuth, localNoAuthKnown } from './stores/health'
 import { authState, isAuthed, loadMe } from './stores/auth'
 import { addClient } from './stores/log'
 import { lastPath } from './stores/workbench'
@@ -88,9 +88,13 @@ router.beforeEach(async (to) => {
   if (to.meta?.admin && authState.user?.role !== 'admin') {
     return { path: '/workbench' }
   }
+  // 服务端能力位（本地免登录）**必须在任何视图挂载之前**就位：视图要靠它做**首帧**决策
+  // （首页默认来源、设置页标签条收缩…），晚一步就会先闪一下另一种布局。
+  // 它有缓存（store 内 pending），所以这里 await 不会每次导航都发请求。
+  await localNoAuth()
   // 本地免登录模式没有"注册/邀请"这回事：直接输网址也要挡回程序配置页
   // （标签条里也过滤掉了那一项，见 SettingsView —— 两处都读同一个 health store）。
-  if (to.name === 'settings-account' && (await localNoAuth())) {
+  if (to.name === 'settings-account' && localNoAuthKnown()) {
     return { path: '/settings/config' }
   }
   return true

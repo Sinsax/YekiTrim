@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="wb-root">
     <div class="page-head">
       <div>
         <h1>工作台</h1>
@@ -44,84 +44,86 @@
              · **弹出浏览** = 上面那颗按钮开大窗（`AppModal wide`），深目录导航时视野更宽。
            两者写同一个已选状态；弹出层额外用**草稿态**，只有点「选定」才写回（否则
            "进去逛一圈又关掉"会把中途路过的目录当成选定）。 -->
-      <div v-if="source === 'local' && isAdmin" class="src-body">
-        <ServerDirPicker
-          mode="file"
-          :start-dir="localDir"
-          :selected="localInput"
-          :exts="LOCAL_EXTS"
-          :project-file="PROJECT_FILE"
-          dir-label="项目目录（服务器上的绝对路径，可直接填或粘贴）"
-          dir-placeholder="例如 F:/media/2025-09-12"
-          @update:dir="onLocalDir"
-          @update:listing="localListing = $event"
-          @pick-file="pickLocalFile"
-        />
+      <!-- 服务器文件：**左 = 目录操作（浏览 / 选文件）· 右 = 按钮与注意事项**。
+           用户口径："左边是目录操作，右边是各种按钮和注意事项"。 -->
+      <div v-if="source === 'local' && isAdmin" class="src-body src-split">
+        <div class="src-col">
+          <ServerDirPicker
+            mode="file"
+            :start-dir="localDir"
+            :selected="localInput"
+            :exts="LOCAL_EXTS"
+            :project-file="PROJECT_FILE"
+            dir-label="项目目录（服务器上的绝对路径，可直接填或粘贴）"
+            dir-placeholder="例如 F:/media/2025-09-12"
+            @update:dir="onLocalDir"
+            @update:listing="localListing = $event"
+            @pick-file="pickLocalFile"
+          />
+        </div>
 
-        <p class="muted small mt-8">只读服务器上的文件，不接受上传</p>
-
-        <div v-if="localDir" class="create-bar mt-8">
-          <div class="flex-1 pick-main">
+        <!-- 右栏：说明 + 当前状态 + 两个动作按钮，竖排 -->
+        <div class="src-col src-side">
+          <p class="muted small">只读服务器上的文件，不接受上传</p>
+          <template v-if="localDir">
             <div class="small mono ellip" :title="localDir">项目将建在 {{ localDir }}</div>
-            <!-- 已有工程：这里也标一次（关掉选择器之后仍然看得见这个状态） -->
-            <div v-if="localHasConfig" class="small mt-4 ok-text">
-              检测到已有工程（<span class="mono">{{ PROJECT_FILE }}</span>）—— 将<b>直接添加</b>，不需要视频文件
+            <!-- 已有工程：关掉选择器之后仍然看得见这个状态 -->
+            <div v-if="localHasConfig" class="small ok-text">
+              检测到已有工程（<span class="mono">{{ PROJECT_FILE }}</span>）—— 将<b>直接添加</b>
             </div>
-            <!-- ⚠️ "重建"警告**必须排在前面**：它的条件（已有工程 + 手动选了视频）与
-                 "显示输入视频"是**同时成立**的，写成 v-else-if 挂在后面就永远轮不到它。 -->
-            <div v-if="localHasConfig && localManualVideo" class="small mt-4 warn-text">
+            <!-- ⚠️ "重建"警告**必须排在"显示输入视频"前面**：两者条件同时成立，
+                 写成 v-else-if 挂在后面就永远轮不到它。 -->
+            <div v-if="localHasConfig && localManualVideo" class="small warn-text">
               已有工程，将<b>重新初始化</b>（要确认）
             </div>
-            <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
-                 不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
-            <div v-if="localEffectiveVideo" class="small mt-4">
+            <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时自动挑第一个 -->
+            <div v-if="localEffectiveVideo" class="small">
               输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
               <span v-if="!localManualVideo" class="muted">（自动选取目录里第一个视频）</span>
             </div>
-            <div v-else-if="!localHasConfig && !localListing.failed" class="small mt-4 warn-text">
+            <div v-else-if="!localHasConfig && !localListing.failed" class="small warn-text">
               这个目录没有可用视频
             </div>
-          </div>
-          <button class="btn flex-none" @click="openLocalPicker">
+          </template>
+          <button class="btn" @click="openLocalPicker">
             <Icon name="folder" :size="14" /> 弹出浏览…
           </button>
-          <button class="btn btn-primary flex-none"
+          <button class="btn btn-primary"
                   :disabled="creating || !canCreateLocal" @click="createFromLocal">
             <span v-if="creating" class="spinner"></span> {{ localAddMode ? '添加项目' : '新建项目' }}
           </button>
         </div>
 
-        <!-- 弹出浏览：**双栏文件浏览器**（左目录树 / 右文件列表 + 面包屑），不是内联那份的复制品。
-             草稿态 —— 点「选定」才写回已选。 -->
+        <!-- 弹出浏览：**双栏文件浏览器**，草稿态 —— 点「选定」才写回已选。 -->
         <AppModal v-if="pickerOpen" :show="true" wide title="浏览服务器上的录像"
-                  @close="cancelLocalPick">
-          <ServerFileBrowser
-            :start-dir="localDir"
-            :selected="draftInput"
-            :exts="LOCAL_EXTS"
-            :project-file="PROJECT_FILE"
-            @update:dir="onDraftDir"
-            @update:listing="draftListing = $event"
-            @pick-file="pickDraftFile"
-          />
-          <template #footer>
-            <div class="flex-1 small">
-              <template v-if="draftDir">
-                <span class="mono">{{ draftDir }}</span>
-                <template v-if="draftEffectiveVideo">
-                  <br>输入视频 <span class="mono">{{ draftEffectiveVideo }}</span>
-                  <span v-if="!draftInput" class="muted">（自动选取目录里第一个视频）</span>
-                </template>
-                <template v-else>
-                  <br><span class="warn-text">这个目录里没有可用的视频，选一个别的</span>
-                </template>
-              </template>
-              <span v-else class="muted">还没选目录</span>
-            </div>
-            <button class="btn" @click="cancelLocalPick">取消</button>
-            <button class="btn btn-primary" :disabled="!draftCanConfirm" @click="confirmLocalPick">选定</button>
-          </template>
-        </AppModal>
+                          @close="cancelLocalPick">
+                  <ServerFileBrowser
+                    :start-dir="localDir"
+                    :selected="draftInput"
+                    :exts="LOCAL_EXTS"
+                    :project-file="PROJECT_FILE"
+                    @update:dir="onDraftDir"
+                    @update:listing="draftListing = $event"
+                    @pick-file="pickDraftFile"
+                  />
+                  <template #footer>
+                    <div class="flex-1 small">
+                      <template v-if="draftDir">
+                        <span class="mono">{{ draftDir }}</span>
+                        <template v-if="draftEffectiveVideo">
+                          <br>输入视频 <span class="mono">{{ draftEffectiveVideo }}</span>
+                          <span v-if="!draftInput" class="muted">（自动选取目录里第一个视频）</span>
+                        </template>
+                        <template v-else>
+                          <br><span class="warn-text">这个目录里没有可用的视频，选一个别的</span>
+                        </template>
+                      </template>
+                      <span v-else class="muted">还没选目录</span>
+                    </div>
+                    <button class="btn" @click="cancelLocalPick">取消</button>
+                    <button class="btn btn-primary" :disabled="!draftCanConfirm" @click="confirmLocalPick">选定</button>
+                  </template>
+                </AppModal>
       </div>
 
       <!-- ② 录播姬录制：待处理的会话 + 扫描 -->
@@ -353,12 +355,14 @@
       </div>
     </div>
 
+    <!-- ⚠️ 位置由 `doctorProblem` 决定：**正常排最底部、有问题排最上面**（用户口径）——
+         靠 flex `order` 换位，而不是把这段 markup 抄两份。 ═════ -->
     <!-- ═════ 运行状况：这台机器上「干活要用的东西」齐不齐 ═════
          ffmpeg / ffprobe 是剪切与出片的外部依赖，ASR 模型是转写的前提，两者都是
          **全机共享的程序级资产**（跟"谁在登录"无关）—— 所以它们不该住在账号页。
          数据来自 `GET /api/doctor`（外部命令是否可用 + 模型清单）与 `GET /api/models`
          （装在哪一份、多大、怎么下）。写操作（下载）仅管理员，由 ModelList 自己门控。 -->
-    <div class="card card-blk mb-12">
+    <div class="card card-blk mb-12" :style="{ order: doctorProblem ? -1 : 99 }">
       <div class="row spread mb-8">
         <b class="t" style="margin:0">运行状况</b>
         <span class="muted small" title="由服务端在当前进程里实测，不是缓存的旧值">
@@ -395,6 +399,7 @@ import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import ModelList from '../components/ModelList.vue'
 import { authState } from '../stores/auth'
+import { localNoAuthKnown } from '../stores/health'
 import { createLocalProject } from '../stores/project'
 
 /** 工程标志文件（与后端 `path::PROJECT_CONFIG_FILE` 同名） */
@@ -421,7 +426,13 @@ const isAdmin = computed(() => authState.user?.role === 'admin')
 // 来源选择：不同来源 → 不同导入方式（本地浏览 / 录播姬待处理 / B站链接）
 // 「服务器文件」是 admin-only 来源（`/api/fs/list`、`kind:"local"` 都对非管理员 403），
 // 所以非管理员**整条不显示** —— 不给一个点不动、只写着"仅管理员"的入口。
-const source = ref('recorder')
+/**
+ * 默认来源。本地模式（`--local-no-auth` 单机形态）默认落在**服务器文件** ——
+ * 那才是"把盘上已有的录像变成项目"的主路径；录播姬是给接了采集的人用的。
+ * ⚠️ `localNoAuthKnown()` 能同步拿到，是因为路由守卫在**任何视图挂载之前**已经 await 过它
+ * （见 router.js）—— 否则这里只能等异步，会先闪一下录播姬再跳过来。
+ */
+const source = ref(localNoAuthKnown() ? 'local' : 'recorder')
 const sources = computed(() => {
   const list = []
   if (isAdmin.value) {
@@ -900,6 +911,20 @@ const doctor = ref(null)
 const models = ref([])
 const doctorError = ref('')
 
+/**
+ * 运行状况"有没有问题"—— 决定它在首页的位置（用户口径：**正常沉底、有问题冒头**）。
+ *
+ * 判据 = 外部命令缺失 · 读取失败 · **有模型没装**。三者都会让"跑一遍管线"走不通，
+ * 所以都算问题。⚠️ 还没读到时**不算问题**（`doctor` 为 null）—— 否则首帧会先冒头再沉下去。
+ */
+const doctorProblem = computed(() => {
+  if (doctorError.value) return true
+  const d = doctor.value
+  if (!d) return false
+  if (!d.ffmpeg || !d.ffprobe) return true
+  return models.value.some((m) => !m.installed)
+})
+
 async function loadDoctor() {
   try {
     const [d, list] = await Promise.all([
@@ -948,6 +973,16 @@ watch(() => route.fullPath, (to, from) => {
 <style scoped>
 /* 来源选择已改紧凑一行，说明走 title 悬停 */
 .src-body { margin-top:14px; border-top:1px dashed var(--line-soft); padding-top:14px; }
+/* 服务器文件：左目录操作 / 右按钮与注意事项（用户口径）。窄屏收成单列。 */
+.src-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,300px); gap:0 20px; align-items:start; }
+@media (max-width:1100px) { .src-split { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
+.src-col { min-width:0; }
+/* 右栏：竖排；按钮占满一列宽（横排时会挤成两行） */
+.src-side { display:flex; flex-direction:column; gap:8px; }
+.src-side .btn { width:100%; justify-content:center; }
+.src-side .create-bar { display:block; }
+/* 首页根：flex 列只为让「运行状况」用 order 换位（正常沉底、有问题冒头） */
+.wb-root { display:flex; flex-direction:column; }
 /* 「配置直播间」：录播姬不可用时整块置灰（用户只看到"暂时不能添加"，看不到管理配置） */
 .room-add.off { opacity:.55; }
 .room-list { margin-top:10px; }
