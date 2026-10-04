@@ -284,7 +284,10 @@ pub(super) async fn run_polish_child(
     let dir_str = dir.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec!["polish".into(), sub.into(), dir_str];
     args.extend(extra.iter().cloned());
-    let mut child = tokio::process::Command::new(&exe)
+    let mut tcmd = tokio::process::Command::new(&exe);
+    // tokio 的 Command 借 as_std_mut 复用同一条"没有控制台就别新开窗口"的逻辑
+    yekitrim_core::process::hide_console_window(tcmd.as_std_mut());
+    let mut child = tcmd
         .args(&args)
         .env("NO_COLOR", "1")
         .stdin(std::process::Stdio::null())

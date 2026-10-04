@@ -37,7 +37,7 @@ pub fn space_bytes(path: &Path) -> Option<(u64, u64)> {
 /// 非 Windows：解析 `df -k <path>` 的第 2 行（可用 KB / 总 KB）。
 #[cfg(not(windows))]
 pub fn space_bytes(path: &Path) -> Option<(u64, u64)> {
-    let out = std::process::Command::new("df").arg("-k").arg(path).output().ok()?;
+    let out = yekitrim_core::process::cmd("df").arg("-k").arg(path).output().ok()?;
     if !out.status.success() {
         return None;
     }

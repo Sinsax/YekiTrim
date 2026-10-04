@@ -543,7 +543,9 @@ async fn concat_fragments(fragments: &[PathBuf], out: &Path) -> Result<()> {
             .chain(std::iter::once(out.to_string_lossy().into_owned()))
             .collect();
         async move {
-            let output = tokio::process::Command::new("ffmpeg")
+            let mut c = tokio::process::Command::new("ffmpeg");
+            yekitrim_core::process::hide_console_window(c.as_std_mut());
+            let output = c
                 .args(&args)
                 .output()
                 .await

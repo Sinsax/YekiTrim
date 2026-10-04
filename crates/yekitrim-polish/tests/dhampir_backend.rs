@@ -111,7 +111,7 @@ fn 出片是只含画面的视频且帧数对得上() {
     // 用 ffprobe 核对：**有视频、没有音轨**，帧数对得上。
     // 断言 ffprobe 真的在（它出片链路的依赖，不是本测试新引入的）。
     let probe = |args: &[&str]| -> String {
-        let o = std::process::Command::new("ffprobe")
+        let o = yekitrim_core::process::cmd("ffprobe")
             .args(args)
             .output()
             .expect("要 ffprobe（出片链路本来就依赖它）");

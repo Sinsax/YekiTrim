@@ -94,6 +94,13 @@ mod win {
                 return;
             }
             *stopping = true;
+            // 先把图标摘掉，再等 server 收尾。
+            // ⚠️ server 那边有 3 秒关停时限（页面的 SSE 要等），进程不会立刻消失 ——
+            // 图标还杵在通知区里的话，用户看到的就是"点了退出没反应"。先摘图标 = 立刻有反馈。
+            let hwnd = *self.hwnd.lock().unwrap();
+            if hwnd != 0 {
+                tray_icon(hwnd, 0, "", false);
+            }
             if let Some(tx) = self.shutdown.lock().unwrap().take() {
                 let _ = tx.send(());
             }

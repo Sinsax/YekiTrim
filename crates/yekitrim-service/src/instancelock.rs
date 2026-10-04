@@ -69,7 +69,7 @@ pub fn process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         // 不引入 windows-sys：tasklist 是系统自带命令，且只在启动/诊断时调用一次。
-        let out = std::process::Command::new("tasklist")
+        let out = yekitrim_core::process::cmd("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output();
         match out {
@@ -82,7 +82,7 @@ pub fn process_alive(pid: u32) -> bool {
         if Path::new("/proc").join(pid.to_string()).exists() {
             return true;
         }
-        std::process::Command::new("kill")
+        yekitrim_core::process::cmd("kill")
             .args(["-0", &pid.to_string()])
             .status()
             .map(|s| s.success())

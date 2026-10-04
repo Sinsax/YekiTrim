@@ -907,7 +907,7 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
         let video_path = &resolved.video;
         let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
         let frame_time = (duration * config.cover.frame_pos).max(0.1);
-        let data = std::process::Command::new("ffmpeg")
+        let data = yekitrim_core::process::cmd("ffmpeg")
             .args(["-ss", &frame_time.to_string(), "-i", video_path,
                    "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
@@ -919,7 +919,7 @@ pub async fn cmd_preview_cover(project_path: &Path) -> anyhow::Result<()> {
     let port = server::start_file_server(project_path.to_path_buf(), Some(html)).await?;
     let url = format!("http://127.0.0.1:{}", port);
     tracing::info!("  Cover URL: {}", url);
-    std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn().ok();
+    yekitrim_core::process::cmd("cmd").args(["/c", "start", "", &url]).spawn().ok();
     loop { tokio::time::sleep(std::time::Duration::from_secs(3600)).await; }
 }
 
@@ -1097,7 +1097,7 @@ pub async fn cmd_cover(project_path: &Path, existing_video: Option<&str>, render
         if !manual_frame.exists() {
             let video_path = existing_video.unwrap_or(&resolved.video);
             let frame_time = (duration * cc.frame_pos).max(0.1);
-            let frame_data = std::process::Command::new("ffmpeg")
+            let frame_data = yekitrim_core::process::cmd("ffmpeg")
                 .args(["-ss", &frame_time.to_string(), "-i", video_path,
                        "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
                 .stdout(std::process::Stdio::piped())

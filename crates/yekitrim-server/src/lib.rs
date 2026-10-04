@@ -512,13 +512,13 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(crate) fn open_browser(url: &str) {
     let opened = if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd")
+        yekitrim_core::process::cmd("cmd")
             .args(["/c", "start", "", url])
             .spawn()
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
+        yekitrim_core::process::cmd("open").arg(url).spawn()
     } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
+        yekitrim_core::process::cmd("xdg-open").arg(url).spawn()
     };
     match opened {
         Ok(_) => info!("已打开浏览器: {url}"),

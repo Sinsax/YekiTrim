@@ -311,7 +311,7 @@ fn coverage_ratio(events: &[Event], max_end: f64) -> f64 {
 
 /// 用 ffprobe 探测视频时长（detect 独立命令时 video_info 不可用）
 fn probe_duration(path: &std::path::Path) -> Result<f64> {
-    let output = std::process::Command::new("ffprobe")
+    let output = crate::process::cmd("ffprobe")
         .args([
             "-v",
             "error",

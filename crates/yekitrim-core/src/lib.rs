@@ -17,5 +17,6 @@ pub mod detection;
 pub mod danmaku;
 pub mod cutting;
 pub mod progress;
+pub mod process;
 pub mod filelock;
 pub mod tenant;

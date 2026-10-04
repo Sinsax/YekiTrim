@@ -617,7 +617,7 @@ mod tests {
         let dir = tmp.path().join("clips").join("clip-01");
         std::fs::create_dir_all(&dir).unwrap();
         let clip = dir.join("clip.mp4");
-        let status = std::process::Command::new("ffmpeg")
+        let status = yekitrim_core::process::cmd("ffmpeg")
             .args([
                 "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15",

@@ -4,7 +4,6 @@
 //! 边界：默认阈值 3.5s 是用户定的，别下调；乱序/重叠字幕必须先排序合并再取相邻间隔，否则会造出几十秒假静音 —— 见 `crates/yekitrim-core/src/cutting/AGENTS.md`
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -75,7 +74,7 @@ pub fn silence_gaps_from_segments(segs: &[(f64, f64)], threshold: f64) -> Vec<(f
 }
 
 pub fn detect_silence(input: &Path, duration: f64, noise_db: f64) -> Result<Vec<(f64, f64)>> {
-    let result = Command::new("ffmpeg")
+    let result = crate::process::cmd("ffmpeg")
         .arg("-y")
         .arg("-i")
         .arg(input)

@@ -42,7 +42,7 @@ pub(crate) fn cache_put(key: String, value: Option<String>) {
 /// 判据：对不存在的命令返回 `None`；对存在但参数不对的命令同样返回 `None`
 /// （`-version` 在 yt-dlp 上是硬错误，退出码非 0）。
 pub(crate) fn command_available_blocking(cmd: &str, version_arg: &str) -> Option<String> {
-    let output = std::process::Command::new(cmd)
+    let output = yekitrim_core::process::cmd(cmd)
         .arg(version_arg)
         .output()
         .ok()?;

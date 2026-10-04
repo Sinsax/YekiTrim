@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -7,7 +6,7 @@ use crate::types::VideoInfo;
 
 /// 用 ffmpeg 从视频提取 16kHz mono WAV
 pub fn extract_audio(input: &Path, output_path: &Path) -> Result<()> {
-    let result = Command::new("ffmpeg")
+    let result = crate::process::cmd("ffmpeg")
         .arg("-y")
         .arg("-loglevel")
         .arg("error")
@@ -33,7 +32,7 @@ pub fn extract_audio(input: &Path, output_path: &Path) -> Result<()> {
 
 /// 用 ffprobe 获取视频信息
 pub fn get_video_info(input: &Path) -> Result<VideoInfo> {
-    let output = Command::new("ffprobe")
+    let output = crate::process::cmd("ffprobe")
         .arg("-v")
         .arg("quiet")
         .arg("-print_format")

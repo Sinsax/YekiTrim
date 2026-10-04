@@ -1,6 +1,6 @@
 use anyhow::Context;
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Stdio};
 
 /// 已解码的 RGBA 视频帧。
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub fn extract_chunk_frames(
     }
 
     let chunk_dur = end_sec - start_sec;
-    let ff_extract = Command::new("ffmpeg")
+    let ff_extract = yekitrim_core::process::cmd("ffmpeg")
         .args([
             "-ss",
             &start_sec.to_string(),
