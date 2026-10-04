@@ -12,15 +12,14 @@
     </div>
 
     <div v-if="root" class="hint">
-      贴纸库：<span class="mono">{{ root }}</span> —— 一个子文件夹 = 一个包；
-      「LLM 压缩构建」读文件名产出 10~20 个语义 tag（<span class="mono">&lt;包名&gt;.toml</span>），
-      精修时 LLM 就按这些 tag 选贴纸。<span v-if="!packs.length">直接把文件夹丢进这个目录也可以，刷新就能看到。</span>
+      贴纸库：<span class="mono">{{ root }}</span>
+      <span class="muted">一个子文件夹 = 一个包；精修时 LLM 按 tag 选贴纸</span>
     </div>
 
     <div v-if="error" class="error-banner mt-8"><Icon name="alert" :size="15" /> {{ error }}</div>
 
     <div v-if="!packs.length && !loading" class="empty small mt-8">
-      还没有表情包。点右上角「添加表情包」，上传一个 zip 压缩包（里面的 gif / png / jpg / jpeg / webp 会解压成一个包）。
+      还没有表情包，点右上角「添加表情包」上传 zip
     </div>
 
     <!-- 一个包 = 一条可折叠行；展开才拉包内文件（167 张也不拖累首屏），
@@ -51,7 +50,7 @@
           <span v-for="t in p.tags" :key="t.tag" class="chip">{{ t.tag }}({{ t.count }})</span>
         </div>
         <div v-else class="hint mb-8">
-          未构建：图片能用，但每个文件还没有语义 tag（LLM 生成事件时读不到这个包）。
+          未构建：图片能用，但还没有语义 tag
         </div>
 
         <div class="pack-files">
@@ -108,7 +107,7 @@
         </label>
       </div>
       <div v-if="addName && !nameOk" class="hint mt-4">
-        包名只能用字母 / 数字 / 下划线 / 短横线 / 汉字，1~32 个字符。
+        包名限字母/数字/_/-/汉字，1~32 字
       </div>
 
       <!-- 上传区：整块可点（走隐藏的 file input），也接拖拽。没有进度条（fetch 拿不到上传进度） -->
@@ -137,9 +136,8 @@
       <div v-if="importing" class="row muted small mt-6"><span class="spinner"></span> 上传中…（大包要等一会儿，没有进度条）</div>
 
       <div class="hint mt-6">
-        压缩包里的 gif / png / jpg / jpeg / webp 会解压进
-        <span class="mono">stickers/&lt;包名&gt;/</span>；子文件夹会摊平、重名只留第一个，
-        其它条目跳过并计数。已存在的包不会被合并（换个包名或先删掉那一个）。
+        图片解压进 <span class="mono">stickers/&lt;包名&gt;/</span>
+        <span class="muted">子文件夹摊平、同名包不合并</span>
       </div>
 
       <template #footer>
@@ -170,7 +168,7 @@
         <span v-if="previewFile.tags.length" class="chips">
           <span v-for="t in previewFile.tags" :key="t" class="chip n">{{ t }}</span>
         </span>
-        <span v-else class="muted small">这个文件还没有 tag（未构建，或构建时没给它打上）。</span>
+        <span v-else class="muted small">这个文件还没有 tag</span>
       </div>
       <template #footer>
         <button class="btn" @click="preview = null">关闭</button>

@@ -141,7 +141,7 @@
             </button>
           </div>
           <div v-if="roomsAvailable !== null" class="hint mt-4">
-            <template v-if="roomsAvailable">开播自动录制，录完入库到你的项目；一个直播间只能由一个人登记。</template>
+            <template v-if="roomsAvailable">开播自动录制并入库到你的项目</template>
             <template v-else>录播姬未接入，暂时不能添加</template>
           </div>
         </div>
@@ -171,7 +171,7 @@
               <div v-else-if="roomFiles[r.room_id]?.error" class="error-banner">{{ roomFiles[r.room_id].error }}</div>
               <template v-else>
                 <div v-if="!roomFiles[r.room_id]?.files.length" class="muted small">
-                  录像目录里没有这个房间的文件（还没录过，或已导入后被搬走）。
+                  录像目录里没有这个房间的文件
                 </div>
                 <div v-else class="row spread file-list-head">
                   <span class="muted small">共 {{ roomFiles[r.room_id].total }} 个录像</span>
@@ -195,7 +195,7 @@
           </div>
         </div>
         <div v-else-if="!roomsLoading" class="muted small mt-8">
-          还没有登记直播间。填一个房间号，开播时会自动录制并入库到你的项目。
+          还没有登记直播间，填一个房间号即可
         </div>
 
         <!-- 管理员：待分配兜底 + 扫描 + 接入状态；普通用户完全不显示这一块 -->
@@ -231,7 +231,7 @@
                 B 站下载需要 <span class="mono">yt-dlp</span>（{{ dl.license || 'Unlicense' }}，
                 {{ dl.pinned_version ? '版本 ' + dl.pinned_version : '内置' }}）。
                 <template v-if="isAdmin">点右边按钮下载并校验（约 17 MB，只下一次）。</template>
-                <template v-else>请联系管理员在「设置 → 系统」里安装后再试。</template>
+                <template v-else>请让管理员在「设置 → 系统」里安装</template>
               </div>
               <div v-if="dlError" class="error-banner mt-6">{{ dlError }}</div>
             </div>
@@ -295,7 +295,7 @@
           <div v-if="biliInfo?.pages?.length" class="bili-pages">
             <div class="row spread bili-pages-head">
               <span class="muted small">
-                <template v-if="biliInfo.pages.length > 1">选择要下载的分P（各建一个项目，可随时再下别的）</template>
+                <template v-if="biliInfo.pages.length > 1">选择要下载的分P</template>
                 <template v-else>单 P 视频</template>
               </span>
               <div v-if="biliInfo.pages.length > 1" class="row" style="gap:6px">
@@ -346,8 +346,8 @@
             </div>
           </div>
 
-          <p class="muted small mt-8">
-            当前只支持单个视频链接与它的分P。番剧 / 课程 / UP 主空间 / 收藏夹批量**不支持** —— 链接认不出来会明确报错。
+          <p class="muted small mt-8" title="番剧 / 课程 / UP 主空间 / 收藏夹等批量链接不支持，认不出来会明确报错">
+            只支持单个视频与它的分P
           </p>
         </template>
       </div>

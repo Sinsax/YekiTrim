@@ -209,7 +209,7 @@
           @pick-file="pickServerFile"
         />
       </template>
-      <div v-else class="hint mt-8">只能选项目目录内的文件 —— 上面列的就是项目里的全部候选。</div>
+      <div v-else class="hint mt-8">只能选项目目录内的文件</div>
 
       <div v-if="pickerPicked" class="hint mt-8">已选：<span class="mono">{{ pickerLabel }}</span></div>
 

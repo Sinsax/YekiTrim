@@ -60,9 +60,9 @@
       </div>
       <div class="card">
         <div class="muted small mb-8">
-          房间号见录播姬的目录名（通常是 RoomId）。录完自动归到你的账号，并按策略继续跑管线。
+          房间号见录播姬目录名（通常是 RoomId）
         </div>
-        <div v-if="!draft.length" class="muted small">还没有规则：未映射的房间会进「待分配」，由管理员指派。</div>
+        <div v-if="!draft.length" class="muted small" title="未映射的房间会进「待分配」，由管理员指派">还没有规则</div>
         <table v-else class="rules">
           <thead>
             <tr><th>房间号</th><th>完成后自动执行</th><th>启用</th><th></th></tr>

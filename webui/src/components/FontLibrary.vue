@@ -76,7 +76,7 @@
 
     <div v-if="loading" class="hint mt-8">载入中…</div>
     <div v-else-if="!fonts.length && !error" class="empty small mt-8">
-      字体库是空的 —— 点右上角「导入字体」从服务器挑一支，或下载程序自带的两支。
+      字体库是空的，点右上角「导入字体」
     </div>
 
     <!-- 自带字体没下载时给一条「下载」入口（清单在服务端，前端不自己维护） -->

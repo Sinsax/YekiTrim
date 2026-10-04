@@ -384,7 +384,7 @@
       <label>输出文件（项目内相对路径，留空用默认）</label>
       <input v-model="renderOutput" placeholder="output/clips/clip-01/export.mp4">
       <p class="hint mt-6">
-        只接受项目内相对路径；同名不覆盖，自动写成 <span class="mono">名字_1.mp4</span>。
+        只接受项目内相对路径<span class="muted">（同名自动改名）</span> <span class="mono">名字_1.mp4</span>。
       </p>
       <!-- 出片通道下拉已删：出片只有底座一条腿（本仓那条 headless Chrome 兜底腿 2026-10-01
            整条删除），留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。 -->
@@ -396,9 +396,8 @@
       <p v-else-if="dhampirStatus && dhampirStatus.ready" class="hint mt-6" :title="dhampirDetail">
         底座就绪 ✓（画面归它、音轨仍由本仓混）
       </p>
-      <p v-else class="hint mt-6">
-        出片走独立的 Dhampir 底座（本机 GPU + ffmpeg，画面归它、音轨仍由本仓混）。
-        底座不可用时**明确报错**、不会静默换路。
+      <p v-else class="hint mt-6" title="出片走独立的 Dhampir 底座（本机 GPU + ffmpeg，画面归它、音轨仍由本仓混）；底座不可用会明确报错，不静默换路">
+        底座未就绪
       </p>
       <template #footer>
         <button class="btn btn-primary" :disabled="scopeBusy" @click="doRender">开始渲染</button>
