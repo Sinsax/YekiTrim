@@ -14,6 +14,8 @@ release 内嵌 WebUI，GPL 红线（无 espeak-ng）实测守住。剩下 **3 �
 非产品缺陷）与 **4 个移植缺口**（`xtask` 门禁在 Linux 上失效、`kill_tree` 杀不掉孙进程、
 对拍脚本写死 Windows 字体路径、一处用户可见的 `D:/rec` 文案）。
 **ASR 一跑推理就崩**（§4）—— 根因在上游预编译 onnxruntime，不在本仓。
+> ✅ **2026-10-05 已修复**：上游仓换用 `glibc2_28` 变体后，下游 `yekitrim transcribe`
+> 端到端跑通并出字幕。**§4 的「阻塞」结论已作废**，详见 §4.3/§4.5。
 
 > **关于桌面**：本机**没有** X/Wayland 会话，但**不需要** —— 本轮所有结论（含界面核查）
 > 都已在**无桌面**环境下取得（§8 用 headless Chromium + CDP 跑通了界面并定位到文案缺陷）。
@@ -68,9 +70,10 @@ release 内嵌 WebUI，GPL 红线（无 espeak-ng）实测守住。剩下 **3 �
 | `CREATE_NO_WINDOW` 死代码（§3.1） | ⛔ 原样：`cargo check --workspace --all-targets` 仍 **1 条真 warning** |
 | `kill_tree` 传正 pid（§3.2） | ⛔ 原样：`render_proc.rs:91` 仍是 `args(["-9", &pid.to_string()])` |
 | 对拍写死 `C:/Windows/Fonts/msyh.ttc`（§3.3） | ⛔ 原样（未复核改动） |
-| **ASR 崩溃（§4）** | ⛔ **原样复现**：`free(): invalid pointer` / SIGABRT / exit 134 |
+| **ASR 崩溃（§4）** | ✅ **已修复**（2026-10-05，上游换 `glibc2_28`）；原为 `free(): invalid pointer` / SIGABRT / exit 134 |
 
 > ASR 这条**预期之内**：崩点在**上游预编译 onnxruntime**里，本轮的配置/构建改动不可能影响它。
+> ✅ 后续已由上游仓修复（§4.5）。
 
 ### 0.5 第二轮其他读数（均通过）
 
@@ -105,7 +108,7 @@ release 内嵌 WebUI，GPL 红线（无 espeak-ng）实测守住。剩下 **3 �
 | webui 的 8 个 `check-*.mjs` | ✅ 全过 | 全部 `exit=0` |
 | `xtask scan`（GPL 门禁） | ⛔ **在 Linux 上是空转** | `nothing to scan` + `exit 3`，见 §3.1 |
 | 出片管线（转译 + 底座渲染） | ✅ 通过 | 1920×1080 / 536 帧 / 8.933s，与黄金帧**时长差 0.000000s** |
-| ASR（sherpa-onnx 推理） | ⛔ **启动即崩** | `free(): invalid pointer` / SIGABRT，见 §4 |
+| ASR（sherpa-onnx 推理） | ✅ **已修复**（原为启动即崩） | 曾 `free(): invalid pointer` / SIGABRT；现跑通出字幕，见 §4.3–4.5 |
 | 数据目录 `--data-dir` / `YEKITRIM_DATA_DIR` | ✅ | 只读安装目录下失败信息可指导，逃生口有效 |
 
 ---
@@ -283,7 +286,9 @@ webui/src/components/RecorderConfig.vue:37
 
 ---
 
-## 4. ⛔ ASR：sherpa-onnx 在 Linux 上**链接通过、运行即崩**
+## 4. ✅ ASR：曾「链接通过、运行即崩」——**已修复**（2026-10-05）
+
+> 本章保留完整诊断过程；**结论已由 §4.5 的修复取代**。
 
 这是本次最重的发现。**链接面完全正常**（见 §4.1），但**一跑推理就 SIGABRT**。
 
@@ -324,44 +329,82 @@ timeout: the monitored command dumped core      ← raw exit=134 (SIGABRT)
 
 崩点在 **onnxruntime 环境初始化**（还没碰模型）里的 `std::regex` 构造。
 
-### 4.3 根因：预编译 onnxruntime 把旧 libstdc++ 的 `std::regex` 静态编了进去
+### 4.3 根因（**§4.3 于 2026-10-05 订正**）
 
-| 事实 | 值 |
-|---|---|
-| 宿主 libstdc++ | GCC **16.2.1** / glibc **2.44**（Arch 滚动） |
-| 预编译 onnxruntime | **1.24.4**，文件名 `onnxruntime-linux-x64-static_lib-1.24.4-glibc2_17.zip` |
-| 该包的构建基线 | 上游 `csukuangfj/onnxruntime-libs`，**glibc 2.17** 时代工具链 |
-| sherpa 侧 `libonnxruntime.a` 里**静态内嵌的 `std::` 弱符号** | **12,626 个**（含 `std::basic_regex`、`std::_Compiler`） |
-| `libsherpa-onnx-core.a` 同项 | 1,644 个 |
+> ⚠️ **本节初版把根因写成「上游 glibc2_17 预编译包的旧 libstdc++ 与宿主 GCC 16 失配」。**
+> **该归因不完整、且方向偏了 —— 已订正。**
+>
+> **否证实验**：把**同一份归档**放进 **`sherpa-onnx-prebuilt-no-tts` 自己的
+> `ubuntu:22.04` 构建容器**（GCC 11.4 / libstdc++ 6.0.30，与归档**同龄**）里跑真实模型——
+> **照样崩**。既然是"同龄"环境也崩，就**不是"宿主太新"**。
+>
+> **订正后的根因**：问题出在**归档内部混了两批不同编译器产的目标文件**：
+>
+> | 组件 | 编译器（`.comment` 实测） | 来源 |
+> |---|---|---|
+> | `libonnxruntime.a` | **GCC 11.2.1 (Red Hat)** | 上游预编译包 `...-glibc2_17.zip` |
+> | `libsherpa-onnx-*.a` | **GCC 11.4.0 (Ubuntu 22.04)** | 本仓在 ubuntu:22.04 容器里编 |
+>
+> `_Compiler<std::regex_traits<char>>` 在 `libonnxruntime.a` 里有 **6 处重复弱定义**，
+> 而共享 libstdc++ **并不提供**这些模板符号（纯头文件模板）⇒ 链接器**静默合并**弱符号
+> （零错误、零警告）⇒ 运行期跨边界堆操作错乱 ⇒ `free(): invalid pointer`。
+>
+> ⚠️ 排查中途还曾认定判据是「**厂商族不同**（Red Hat vs Ubuntu）」，**该假设同样被推翻**：
+> 新旧两个 onnxruntime 变体**都是 Red Hat**（11.2.1 vs 14.2.1），一个崩一个不崩。
+> **有效信号是上面那个弱符号重复数（6 → 0），不是厂商、也不是主版本差。**
 
-`nm` 显示 `_Compiler` 是**归档里定义的弱符号（`W`）**，即 GCC 11 那代的 `std::regex` 实现被**整份编进了
-静态库**，与宿主 GCC 16 的 libstdc++ 实现/分配器在运行期混用 ⇒ 堆被写坏 ⇒ `free(): invalid pointer`。
+**已排除的替代解释**（这些仍然成立）：
 
-**这解释了为什么"链接通过但一跑就崩"**：`std::regex` 的实现体在归档里，链接期谁也发现不了；
-只有运行到 `DeviceDiscovery` 才炸。
-
-**已排除的替代解释**：
 - ❌ 不是宿主 `std::regex` 坏 —— 原生编译同一段 regex 代码运行正常（`regex ok: 1 -> CPU`）；
 - ❌ 不是 ffprobe 缺失 —— `ffprobe` 在 Linux 上实测正常（对真实文件返回 `320,240`）；
 - ❌ 不是库顺序/重复符号 —— 链接零错误；
-- ❌ 不是环境变量能绕过的 —— `ORT_DISABLE_ALL_PROVIDERS=1` 照样崩。
+- ❌ 不是环境变量能绕过的 —— `ORT_DISABLE_ALL_PROVIDERS=1` 照样崩；
+- ❌ **不是"宿主太新"** —— 见上方否证实验（同龄容器内同样崩）。
 
-### 4.4 与交接单的关系
+### 4.5 ✅ 修法（**已于 2026-10-05 由上游仓修复并验证**）
 
-交接单 §1 把 ASR 列为"最大阻塞"，并给三条路。**实测结论要更新**：
+**实际采用的修法**：`sherpa-onnx-prebuilt-no-tts` 把 onnxruntime 从 `glibc2_17`
+换成上游的 **`glibc2_28` 变体（GCC 14.2.1）** —— 该弱符号重复数 **6 → 0**，
+只替换一个 `.a`，未重编 sherpa。
 
-- 方案 ②（`SHERPA_ONNX_LIB_DIR`）**链接面验证通过**，但**被预编译 onnxruntime 的 ABI 问题挡住**；
-- 也就是说 Linux 阻塞点**不在本仓的 `build.rs`**（它是对的），而在**上游预编译二进制与滚更发行版的
-  libstdc++ ABI 失配**；
-- `sherpa-onnx-prebuilt-no-tts/README.md:206-213` **已经写明**必须在 `ubuntu:22.04 + GCC 11.4` 容器里编，
-  理由是 glibc 符号版本（`__isoc23_strtol`）。**本次实测补上了第二条、README 尚未写的理由**：
-  预编译 `onnxruntime-linux-*-glibc2_17.zip` 自带的 `std::regex` 实现与新版 libstdc++ **在运行期冲突**。
+**验证结果（下游侧实测）**：
 
-### 4.5 建议修法（未实施，属上游/构建基线决策）
+```
+$ YEKITRIM_DATA_DIR=/tmp/e2e/.yekitrim yekitrim transcribe -c /tmp/e2e/yekitrim.toml
+INFO  字幕已生成: output/video.srt
+INFO  转录 JSON 已保存: output/transcript.json
+exit=0
+```
 
-1. **首选**：用 **同一套 glibc/libstdc++ 基线**重建 onnxruntime（或整份 sherpa-onnx），
-   即照 README 的容器口径、别直接消费 upstream 的 `glibc2_17` zip；
-2. 或把 onnxruntime 换成**动态链接 libstdc++** 的构建（避免 12,626 个 `std::` 弱符号内嵌）；
+`video.srt` 实际内容（真实时间轴 + 文本）：
+
+```
+1
+00:00:00,853 --> 00:00:03,873
+呢几个字都表达唔到我想讲嘅意思
+```
+
+⇒ **Linux 上 ASR 已可用**，本报告 §1 的"⛔ 阻塞"结论**作废**。
+
+**代价（下游需要知道的新下限）**：`glibc2_28` 引用 `__cxa_call_terminate`
+（属 **CXXABI_1.3.15**）⇒ 需 **libstdc++ ≥ GCC 12**。
+`ubuntu:22.04`（libstdc++ 6.0.30 / CXXABI_1.3.13）**链不了**该变体；
+Arch / Ubuntu 24.04+ / Debian 13+ 可以。
+
+**上游仓同时补了两条门禁**（都对旧归档翻面验证过）：
+
+- `scripts/check-toolchain-consistency.sh` —— 静态、秒级、无需模型；
+- `scripts/smoke-real-model.sh` —— 运行期，⚠️ **必须真实模型**
+  （实测"不存在的模型路径"会被 `Validate` 拦下**不崩**，假模型覆盖不了）。
+
+详见 `sherpa-onnx-prebuilt-no-tts/linux-adaptation-plan.md` 与
+`asr-runtime-crash-linux-x64.md`。
+
+### 4.6 原建议（留档，已被上面的实际修法取代）
+
+1. ~~首选：用同一套 glibc/libstdc++ 基线重建 onnxruntime~~ —— 实际用了更省的
+   "换上游另一变体"，未重编；
+2. 或把 onnxruntime 换成动态链接 libstdc++ 的构建（避免弱符号内嵌）—— 未采用；
 3. 在 README 的 Linux 小节**补上这条 ABI 注意事项**（目前只写了 glibc 符号版本）；
 4. 短期：`doctor` / 启动时**探测 ASR 可用性**，失败给出可操作提示，而不是留一个一跑就 SIGABRT 的入口。
 
@@ -378,10 +421,10 @@ timeout: the monitored command dumped core      ← raw exit=134 (SIGABRT)
 | 5 | `crates/yekitrim-service/src/instancelock.rs:244` | 断言放宽为"两条文案其一即可指导用户" | 极低 |
 | 6 | `scripts/yekitrim-compare.mjs:864` | 按平台给默认字体（Linux 用本仓自带 `NotoSansSC-Regular/font.ttf`） | 低 |
 | 7 | `webui/src/components/RecorderConfig.vue:37` | 占位符 `D:/rec 或 \\NAS\rec` 换成平台友好写法（**唯一用户可见的一处**，见 §3.4）；改完要 `npm --prefix webui run build` 重建 dist | 极低 |
-| 8 | ASR | 见 §4.5；**属上游基线决策，需先拍板** | 高 |
+| 8 | ASR | ✅ **已解决**：上游仓换 `glibc2_28` 版 onnxruntime（见 §4.5） | 已闭合 |
 
 > 1–7 都是**小改动、无行为风险**（含 3 处测试断言、2 处门禁/工具、1 处文案），可以一轮做完；
-> 8 需要用户就"ASR 基线"拍板。
+> ~~8 需要用户就「ASR 基线」拍板。~~ ✅ 已按「换上游另一变体」落地，无需再拍板。
 
 > ✅ **明确不要动的**：`crates/yekitrim-server/src/api/polish.rs:1578-1581` 的 `C:/Windows/Fonts` 兜底
 > —— Linux 上实测走不到内置字体之前就命中了（§3.5），留着对 Windows 用户有用。
@@ -416,7 +459,7 @@ cargo build --release -p yekitrim-cli
 YEKITRIM_DATA_DIR=/tmp/yt-rel ./target/release/yekitrim server --local-no-auth --port 26400
 # 启动日志应出现：静态资源：内嵌（30 个文件）
 
-# ⑥ ASR（会崩，§4）
+# ⑥ ASR（曾会崩，§4；上游换 glibc2_28 后已修复 —— 应产出 output/video.srt）
 YEKITRIM_DATA_DIR=/tmp/yt ./target/debug/yekitrim transcribe -c <工程>/yekitrim.toml
 ```
 
