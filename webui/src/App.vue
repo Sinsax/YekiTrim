@@ -76,7 +76,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from './components/Icon.vue'
 import SideNav from './components/side/SideNav.vue'
-import { api } from './api/client'
+import { localNoAuth as localNoAuthFromServer } from './stores/health'
 import JobDrawer from './components/jobs/JobDrawer.vue'
 import AppModal from './components/AppModal.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -202,10 +202,7 @@ const localNoAuth = ref(false)
 
 onMounted(async () => {
   if (!isLogin.value) loadProjects().catch(() => {})
-  try {
-    const h = await api('/api/health')
-    localNoAuth.value = h?.local_no_auth === true
-  } catch {}
+  localNoAuth.value = await localNoAuthFromServer()
 })
 </script>
 

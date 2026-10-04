@@ -353,6 +353,27 @@
       </div>
     </div>
 
+    <!-- ═════ 运行状况：这台机器上「干活要用的东西」齐不齐 ═════
+         ffmpeg / ffprobe 是剪切与出片的外部依赖，ASR 模型是转写的前提，两者都是
+         **全机共享的程序级资产**（跟"谁在登录"无关）—— 所以它们不该住在账号页。
+         数据来自 `GET /api/doctor`（外部命令是否可用 + 模型清单）与 `GET /api/models`
+         （装在哪一份、多大、怎么下）。写操作（下载）仅管理员，由 ModelList 自己门控。 -->
+    <div class="card card-blk mb-12">
+      <div class="row spread mb-8">
+        <b class="t" style="margin:0">运行状况</b>
+        <span class="muted small" title="由服务端在当前进程里实测，不是缓存的旧值">
+          {{ doctor ? '已实测' : '读取中…' }}
+        </span>
+      </div>
+      <div v-if="doctor" class="row mb-8">
+        <span class="chip" :class="doctor.ffmpeg ? 'g' : 'n'">ffmpeg {{ doctor.ffmpeg ? '就绪' : '缺失' }}</span>
+        <span class="chip" :class="doctor.ffprobe ? 'g' : 'n'">ffprobe {{ doctor.ffprobe ? '就绪' : '缺失' }}</span>
+        <span class="muted small" :title="doctor.models_dir">模型目录</span>
+      </div>
+      <div v-if="doctorError" class="error-banner mb-8">{{ doctorError }}</div>
+      <ModelList :models="models" @changed="loadDoctor" />
+    </div>
+
     <!-- 字体库（管理就内嵌在这一块，没有单独页面）：程序级全局资产，写操作仅管理员 ——
          与下面的表情包同规矩，普通用户整块不显示。细节见 components/FontLibrary.vue。 -->
     <FontLibrary v-if="isAdmin" />
@@ -372,6 +393,7 @@ import AppModal from '../components/AppModal.vue'
 import ServerFileBrowser from '../components/ServerFileBrowser.vue'
 import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
+import ModelList from '../components/ModelList.vue'
 import { authState } from '../stores/auth'
 import { createLocalProject } from '../stores/project'
 
@@ -866,8 +888,35 @@ async function refresh() {
   await loadProjects()
 }
 
+/**
+ * 运行状况（doctor）：`GET /api/doctor` 的 `{ffmpeg, ffprobe, models_dir, models}` +
+ * `GET /api/models` 的富列表（`size_label` / `note` / `source_label`，ModelList 要靠它渲染）。
+ *
+ * ⚠️ 两个请求**一起发、一起刷**：doctor 里的 `models[].installed` 是"装没装"的权威判据，
+ * 而 ModelList 要的是富列表 —— 只刷一个会出现"点了下载、按钮没变"的错位。
+ * ⚠️ 读失败**照实报**（`doctorError`），不要静默留空 —— 这整块的存在意义就是"告诉你缺什么"。
+ */
+const doctor = ref(null)
+const models = ref([])
+const doctorError = ref('')
+
+async function loadDoctor() {
+  try {
+    const [d, list] = await Promise.all([
+      api('/api/doctor', { label: '读取运行状况' }),
+      api('/api/models', { label: '读取模型列表' })
+    ])
+    doctor.value = d || null
+    models.value = list || []
+    doctorError.value = ''
+  } catch (e) {
+    doctorError.value = '运行状况读取失败：' + (e?.message || '')
+  }
+}
+
 onMounted(async () => {
   await loadProjects()
+  loadDoctor()
   try {
     const h = await api('/api/health')
     setReady(h?.ingest_ready !== false)

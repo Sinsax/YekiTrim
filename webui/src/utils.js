@@ -162,7 +162,11 @@ export const STEPS = [
 export const SETTINGS_SECTIONS = [
   { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切，写入 .yekitrim/config.toml' },
   { key: 'llm', label: 'LLM 配置', sub: '接口地址、密钥、模型与并发，写入 .yekitrim/llm.toml' },
-  { key: 'account', label: '账号与模型', sub: '注册邀请码 与 ASR 模型管理' },
+  // 本地免登录模式下整页不显示（没有注册/邀请这回事）—— `localHidden` 由
+  // SettingsView 的标签过滤与 router 的守卫共同执行，两处都读 `stores/health.js`。
+  // ⚠️ ASR 模型管理**不在这里**：它搬去首页当「运行状况」面板了（那是全机共享的资源，
+  //    跟"谁在登录"无关，摆在账号页只会让人以为它是按用户分的）。
+  { key: 'account', label: '账号', sub: '注册与邀请码', localHidden: true },
   { key: 'integrations', label: '系统集成', sub: '录播姬采集 与 B 站链接下载' },
   { key: 'monitor', label: '用量与日志', sub: 'LLM 用量账本 与 运行日志' }
 ]

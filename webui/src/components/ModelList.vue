@@ -12,11 +12,14 @@
         <div class="muted small mono model-path" :title="m.dir">{{ m.dir }}</div>
       </div>
       <div class="model-action">
-        <button v-if="!m.installed" class="btn btn-primary" :disabled="!!dlBusy"
+        <!-- ⚠️ 下载是 **admin-only**（服务端 `models_download`：403「仅管理员可下载平台模型」）。
+             这个组件现在挂在**所有人都能看的首页**上，所以必须门控 —— 非管理员只看到状态。 -->
+        <button v-if="!m.installed && canDownload" class="btn btn-primary" :disabled="!!dlBusy"
                 :title="dlBusy ? '正在' + kindText(dlBusy.kind) + '：模型目录被占用（转写也会写它）' : ''"
                 @click="download(m)">
           <Icon name="download" :size="13" /> 下载
         </button>
+        <span v-else-if="!m.installed" class="chip n" title="请让管理员下载">未安装</span>
         <span v-else class="chip g"><Icon name="check" :size="11" /> 已安装</span>
       </div>
     </div>
@@ -30,6 +33,7 @@ import { api } from '../api/client'
 import { toast } from '../stores/toast'
 import Icon from './Icon.vue'
 import { busyOn, MODELS_KEY, kindText, QUEUED_HINT } from '../api/jobs'
+import { isAdmin } from '../stores/auth'
 import { useJobs } from '../composables/useJobs'
 
 defineProps({ models: { type: Array, default: () => [] } })
@@ -38,6 +42,8 @@ const emit = defineEmits(['changed'])
 // 模型目录是全局共享资源（`models` 键）：下载与任何会 ensure_models 的转写互斥（排队）。
 const { jobs: allJobs } = useJobs()
 const dlBusy = computed(() => busyOn(allJobs.value, [MODELS_KEY]))
+/** 只有管理员能下载（服务端 403）；非管理员看得到状态就够了 */
+const canDownload = computed(() => isAdmin())
 
 async function download(m) {
   if (dlBusy.value) { toast('模型目录正被' + kindText(dlBusy.value.kind) + '占用，请稍候', 'err'); return }
