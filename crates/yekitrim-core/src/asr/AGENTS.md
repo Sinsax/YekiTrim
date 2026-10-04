@@ -102,9 +102,9 @@
   如果以后调大 `max_segment_chars`，需要同步调大 `max_new_tokens`。
   ⚠️ 截断时 C++ 会打 `Result is truncated. max_new_tokens ... too small` 到 stderr。
   `max_total_len`（**输入**上限，写 2048）**不要动**：60 秒窗口确实需要它，历史上"踩过的坑"多半是它。
-- ⚠️ **`[asr]` 里 `align_model` / `max_segment_duration` / `segment_merge_gap`
-  是死旋钮**（全仓库没有任何读取方，只有配置 merge 逻辑）：改它们不会有效果，
-  字段只为老 toml 不炸而保留，别再往界面加。（`segment_padding` 已从这份名单里**移出** —— 它现在真的在用。）
+- ⚠️ **`[asr]` 的 `align_model` / `max_segment_duration` / `segment_merge_gap` 已删除**
+  （全仓从来没有读取方）—— 别再往界面或结构体加回来。审计口径与兼容性钉子见
+  `crates/yekitrim-core/src/config/AGENTS.md` 的「死字段」一节。
 - SRT 使用 UTF-8 BOM 写入 (Windows 字幕兼容)
 - 输出: `video.srt` + `transcript.json`，并把生效值写进 `transcript_file`（yekitrim.toml）
 - ⚠️ **固定名不改、按模式另存一份**（2026-09）：`output/video.srt` 与 `output/transcript.json` 这两个

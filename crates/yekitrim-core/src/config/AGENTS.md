@@ -82,7 +82,6 @@ llm_correct = false          # LLM 订正转录文本（需配置 [llm]）
 vad = true                   # 仅 single 模式：先 VAD 只解码语音段（快 2.3×）；hybrid 不受影响
 vad_threshold = 0.5          # silero 概率阈值：调高 = 更保守（多解码、少省时间）
 vad_rescue_db = 16.0         # 动态电平兜底(dB)：只多解码不少解码，0=关
-# ⚠️ align_model / max_segment_duration / segment_merge_gap 已废弃（无人读取）
 
 [correct]
 system_prompt = "..."       # 订正 prompt（覆盖内建默认）
@@ -126,17 +125,26 @@ max_tokens = 8192
 max_tokens = 32768
 ```
 
-### 死字段（2026-10 审查：**定义了但全仓没人读**）
+### 死字段（2026-10：**已删除**，别再捡回来）
 
-| 字段 | 现状 |
+下面 4 个字段**曾经定义了但全仓没有任何读取方**，已按「新增配置字段步骤」的反向流程从
+`types.rs`（结构体 + `Default` + 两个 `default_*` 函数）、`mod.rs`（`merge()` 条件 + 模板行）
+一并删除：
+
+| 字段 | 为什么没人读 |
 |---|---|
-| `asr.align_model` | 没人读 |
-| `asr.max_segment_duration` | 没人读 |
-| `asr.segment_merge_gap` | 没人读 |
-| `cutting.silence_noise_db` | 没人读 —— 静音阈值实际走 `cutting::DEFAULT_NOISE_DB` 常量或 CLI `--threshold`（`service::silence::run_silence`），**从来不看配置里这个值** |
+| `asr.align_model` | 打轴模型已固定为 SenseVoice |
+| `asr.max_segment_duration` | 单段时长上限从未生效（最长时长交给 LLM 按话题完整性决定） |
+| `asr.segment_merge_gap` | 短段合并从未接上 |
+| `cutting.silence_noise_db` | 静音阈值实际走 `cutting::DEFAULT_NOISE_DB` 常量或 CLI `--threshold`（`service::silence::run_silence`），**从来不看配置里这个值** |
 
-判据（复现）：对每个字段在 `crates/` 里找 `.<字段名>` 的读取点，**排除 `config/` 自身**
-（那里只有定义 / `merge` / 模板文本，会把"死"伪装成"在用"）。上面 4 个结果是 0。
+审计口径（复现用）：对每个字段在 `crates/` 里找 `.<字段名>` 的读取点，**必须排除 `config/` 自身**
+—— 那里只有定义 / `merge` / 模板文本，会把"死的"伪装成"在用的"（我第一次没排除，得出"全是在用"）。
+
+⚠️ **老 toml 里还留着这几行不会炸**：`Config` / `AsrConfig` / `CuttingConfig` **都没有**
+`deny_unknown_fields`（只有 polish 的 `polish.toml` 有）。这条由
+`config::removed_fields_tests::legacy_toml_with_removed_keys_still_loads` 钉住 ——
+给这三处**任何一处**加 `deny_unknown_fields` 都会让判据翻面（变异自证跑过）。
 
 ⚠️ 它们**已经从设置页表单里摘掉**（表单不再写回，字段本身留在文件里、仍可用「编辑源文件」改）。
 真正的清理（从 `Config` 结构体里删）要走「新增配置字段步骤」的反向流程，且要确认旧文件里的
@@ -185,9 +193,8 @@ max_tokens = 32768
 
 ### 死旋钮（别再加回界面）
 
-⚠️ **`[asr]` 里 `align_model` / `max_segment_duration` / `segment_merge_gap`
-是死旋钮**（全仓库没有任何读取方，只有配置 merge 逻辑）：改它们不会有效果，
-字段只为老 toml 不炸而保留，别再往界面加。（`segment_padding` 已从这份名单里**移出** —— 它现在真的在用。）
+⚠️ **`[asr]` 的 `align_model` / `max_segment_duration` / `segment_merge_gap` 已整条删除**
+（从来没有读取方），别再往结构体或界面加回来；老 toml 里的残留行会被忽略（见「死字段」一节）。
 
 ### ⚠️ 设置页数值项（配置字段的前端出口）
 
