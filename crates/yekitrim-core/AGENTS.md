@@ -46,7 +46,7 @@
   ⚠️ 判据是「**当前进程有没有控制台**」而不是无条件加 `CREATE_NO_WINDOW`：
   CLI 有控制台，子进程继续继承它，终端里的输出/进度必须一个字节不变。
   ⚠️ **别加第二个 `creation_flags`**：它覆盖整个 dwCreationFlags（全仓只有这一处设过）。
-  机器判据 = `scripts/check_module_boundaries.py` 的「子进程不许绕过 core 的启动助手」（16 条规则之一）。
+  机器判据 = `scripts/check_module_boundaries.py` 的「子进程不许绕过 core 的启动助手」（17 条规则之一）。
 
 ⚠️ **core 不许认识上层**（门禁：`python3 scripts/check_module_boundaries.py`，扫 `crates/yekitrim-core/src`）：
 源码里**不得出现** `yekitrim_polish` / `yekitrim_service` / `yekitrim_server` / `yekitrim_cli`——
