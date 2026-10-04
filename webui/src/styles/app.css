@@ -255,7 +255,9 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .drawer { position:fixed; top:0; right:0; width:360px; height:100vh; background:var(--card); border-left:1px solid var(--line);
   box-shadow:-8px 0 30px rgba(32,32,32,.14); z-index:61; padding:18px; overflow-y:auto; }
 .drawer-mask { z-index:60; display:block; }
-.toast { position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:150; background:var(--ink); color:#fff;
+/* ⚠️ 文字色必须是 --bg，不能写死 #fff：--ink 在暗色下是 **浅色**(#F0F0E0)，
+   写死白字就成了"白底白字"（实测对比度 1.15，toast 完全读不出来）。--bg 是 --ink 的天然反色。 */
+.toast { position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:150; background:var(--ink); color:var(--bg);
   padding:8px 18px; border-radius:var(--r-full); font-size:13px; max-width:80vw; box-shadow:var(--shadow-hover); }
 .toast.err { background:var(--red-deep); }
 .dialog-modal { width:min(440px,92vw); background:var(--card); border:1px solid var(--line); border-radius:var(--r);
@@ -306,7 +308,11 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 
 /* ---------- 空态 / 加载 / 错误 ---------- */
 .empty { border:1.5px dashed var(--line); border-radius:var(--r); padding:26px 16px; text-align:center;
-  color:var(--ink-dim); background:rgba(255,255,255,.55); }
+  /* ⚠️ 这里曾经写死 `rgba(255,255,255,.55)`：浅色下它压在 #FFFFFF 卡片上等于没有，还看不出问题；
+     暗色下它压在 #2B2B2B 上变成一块 #A0A0A0 的灰白，而文字是 --ink-dim(#B0B0A6) ——
+     实测对比度 **1.20**，整块"空目录"看起来就是"背景颜色不对"。
+     要的是"比卡片略深一档的内嵌底"，那就直接用 --bg-soft（浅 #F4F4E8 / 暗 #262626，两套都成立）。 */
+  color:var(--ink-dim); background:var(--bg-soft); }
 .empty .empty-icon { display:block; margin-bottom:6px; opacity:.75; }
 .skeleton { min-height:64px; border-radius:var(--r-sm);
   background:linear-gradient(90deg,var(--line-soft) 25%,var(--bg-soft) 50%,var(--line-soft) 75%);
