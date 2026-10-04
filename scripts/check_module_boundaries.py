@@ -49,6 +49,7 @@ r"""模块边界门禁：把"是否嵌合"变成可执行的判断，而不是�
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -231,6 +232,42 @@ EXEMPT: dict[str, list[str]] = {
 }
 
 
+# ── 卫生判据 ───────────────────────────────────────────────────────────────
+# 为什么单独立一类：上面两类都是"某些行不许出现 X"，这一条是**整棵工作区**的属性。
+HYGIENE_RULES = ("工作副本不许有 CRLF",)
+
+
+def check_line_endings() -> list[str]:
+    """`git ls-files --eol` 里 **工作副本** 出现 `w/crlf` 即违规。
+
+    `.gitattributes` 承诺 `* text=auto eol=lf`（源码统一 LF 存储 + LF 检出），但 git 只在
+    检出时应用它，**不会重写已经在工作区里的文件** —— 任何会做换行翻译的写入方式
+    （Python `write_text` 默认就把 `
+` 翻成 `
+`）都能在不知不觉中把工作副本变成 CRLF。
+
+    为什么必须机器拦（实测连踩三轮）：**变异自证型契约脚本会静默失效** ——
+    它们在源码文本上做 `.replace('…
+…')`，CRLF 让锚点匹配不上 → 变异不生效 → 判据不翻面，
+    脚本**照旧打印通过**；同时 `webui/dist` 的 chunk hash 整体漂移（dist 与 src 失同步）。
+    这类失败没有任何报错，只有"门禁拦下来"能防住。
+    """
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--eol"], capture_output=True, text=True, encoding="utf-8"
+        )
+    except OSError:
+        return []  # 没有 git：跳过（别把环境问题当成违规）
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    bad: list[str] = []
+    for line in r.stdout.splitlines():
+        # 形如：`i/lf    w/crlf  attr/text=auto eol=lf	<path>`
+        if "w/crlf" in line:
+            bad.append(line.split("	")[-1])
+    return bad
+
+
 def main() -> int:
     verbose = "-v" in sys.argv
     total = 0
@@ -302,12 +339,26 @@ def main() -> int:
         ):
             print(f"[OK] {name}（{len(files)} 个文件，无一命中）")
 
+    # 卫生判据：整棵工作区的属性（见 check_line_endings 的说明）
+    crlf = check_line_endings()
+    if crlf:
+        total += len(crlf)
+        print(f"[!!] {HYGIENE_RULES[0]}  —— 工作副本是 CRLF 的文件 {len(crlf)} 个：")
+        for f in crlf[:10]:
+            print(f"       {f}")
+        if len(crlf) > 10:
+            print(f"       …还有 {len(crlf) - 10} 个")
+        print("       修法：把这些文件转回 LF（写入时别让工具做换行翻译），再重跑。")
+    elif verbose:
+        print(f"[OK] {HYGIENE_RULES[0]}（工作副本全是 LF）")
+
     print()
     if total:
         print(f">>> {total} 处违规，边界被破坏。别绕过这个检查 —— 破了要说明理由并同步改规则。")
         return 1
     print(
-        f">>> 边界完整：{len(RULES) + len(PAIRED_RULES)} 条规则 / {checked} 个文件，0 违规。"
+        f">>> 边界完整：{len(RULES) + len(PAIRED_RULES) + len(HYGIENE_RULES)} 条规则"
+        f" / {checked} 个文件，0 违规。"
     )
     return 0
 

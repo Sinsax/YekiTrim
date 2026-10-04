@@ -1020,6 +1020,54 @@ mod tests {
         .is_ok());
     }
 
+    /// ⚠️ **跨进程契约**：薄启动器（`yekitrim-tray`）**刻意不链接本 crate**（链接就会把
+    /// 静态的 ASR 引擎一起拉回来，托盘从 0.49 MB 涨回 57 MB），所以下面这几个名字在两边
+    /// **各写一份字面量**，过去只靠注释约定。改错的表现全是**静默降级**：
+    /// 令牌名不一致 → 托盘退不掉服务（只能 taskkill）；`WebUI: http://` 那行变了 → 抓不到
+    /// 实际地址，"打开网页"点不动。所以这里把它们读进来钉死。
+    ///
+    /// ⚠️ `include_str!` 在**编译期**只嵌一个字符串，**不引入依赖边**（`cli` 仍不许
+    /// `use yekitrim_server::*`，见 `scripts/check_module_boundaries.py` 的 `cli 只用 server 的入口`）。
+    #[test]
+    fn tray_and_server_agree_on_the_cross_process_contract() {
+        const TRAY: &str = include_str!("../../yekitrim-cli/src/tray.rs");
+        const SERVER_LIB: &str = include_str!("lib.rs");
+        const ROUTES: &str = include_str!("api/routes.rs");
+
+        /// 从源码文本里取出 `const NAME: &str = "…";` 的那个字面量。
+        fn lit(src: &str, name: &str) -> String {
+            let needle = format!("const {name}: &str = \"");
+            let i = src
+                .find(&needle)
+                .unwrap_or_else(|| panic!("在托盘源码里找不到 `{name}` —— 两边契约断了"));
+            let rest = &src[i + needle.len()..];
+            let j = rest.find('"').expect("字面量没有收尾引号");
+            rest[..j].to_string()
+        }
+
+        // ① 关停令牌：env 名与头名（`run_with` 与 `api::shutdown` 都靠这两个键对齐）
+        assert_eq!(lit(TRAY, "SHUTDOWN_TOKEN_ENV"), SHUTDOWN_TOKEN_ENV);
+        assert_eq!(lit(TRAY, "SHUTDOWN_TOKEN_HEADER"), SHUTDOWN_TOKEN_HEADER);
+
+        // ② 托盘抓"实际监听地址"的那行标记，必须是服务端**启动日志的前缀**
+        let marker = lit(TRAY, "URL_MARKER");
+        assert!(
+            SERVER_LIB.contains(&format!("info!(\"{marker}")),
+            "服务端启动日志不再以 `{marker}` 开头 —— 托盘会抓不到地址（'打开网页'点不动）"
+        );
+
+        // ③ 托盘 POST 的路径，必须就是路由里声明的那条
+        //    （路由挂在 `nest("/api", …)` 里，所以全路径 = `/api` + `/shutdown`）
+        assert!(
+            TRAY.contains("POST /api/shutdown "),
+            "托盘不再 POST 到 `/api/shutdown`"
+        );
+        assert!(
+            ROUTES.contains(".route(\"/shutdown\", post(shutdown))"),
+            "路由里没有 `/shutdown` —— 托盘敲的那个端点不存在了"
+        );
+    }
+
     /// 关停控制端点的令牌比较。⚠️ 这些是"跨进程优雅关停"唯一的门，闸门松一格就是
     /// 本机上任何进程都能把服务关掉。
     #[test]
