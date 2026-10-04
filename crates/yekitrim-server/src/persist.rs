@@ -10,8 +10,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerState {
+    /// 配置结构版本（见 `yekitrim_core::config::version`）。
+    ///
+    /// ⚠️ **这个字段必须存在**：本文件是 `serde` 序列化写出去的，结构体里没有它就等于
+    /// "每次保存都把版本行删掉" ⇒ 下次读又当成老文件再升一遍（来回横跳）。
+    /// 默认值取**当前版本**：老文件缺键时直接算作当前版本（这份文件是程序自己写的，
+    /// 没有"用户手工编辑"的语义，不需要为它保留一套迁移）。
+    #[serde(default = "current_config_version")]
+    pub config_version: u32,
     /// 上次 WebUI / server 使用的 yekitrim.toml 绝对路径
     #[serde(default)]
     pub last_config_file: Option<String>,
@@ -23,18 +31,48 @@ pub struct ServerState {
     pub projects: Vec<String>,
 }
 
+fn current_config_version() -> u32 {
+    yekitrim_core::config::CONFIG_VERSION
+}
+
+impl Default for ServerState {
+    fn default() -> Self {
+        Self {
+            config_version: yekitrim_core::config::CONFIG_VERSION,
+            last_config_file: None,
+            projects: Vec::new(),
+        }
+    }
+}
+
 pub fn state_path() -> PathBuf {
     yekitrim_core::path::yekitrim_home().join("server.toml")
 }
 
 pub fn load_state() -> Option<ServerState> {
     let path = state_path();
-    let content = std::fs::read_to_string(&path).ok()?;
+    // 读之前先跑版本迁移（老 server.toml 缺 `config_version` ⇒ 补上、写回并备份）。
+    // ⚠️ 迁移失败不能让状态读不出来（这份文件丢了只是"忘了上次开的工程"）——
+    // 退回原文本再试一次解析。
+    let content = match yekitrim_core::config::version::prepare(
+        &path,
+        yekitrim_core::config::ConfigKind::Server,
+    ) {
+        Ok(p) => p.text,
+        Err(e) => {
+            tracing::debug!("server.toml 版本迁移跳过（{e:#}），按原文读");
+            std::fs::read_to_string(&path).ok()?
+        }
+    };
     toml::from_str(&content).ok()
 }
 
 pub fn save_state(state: &ServerState) {
     let path = state_path();
+    // 始终按**当前**版本写（这份文件由程序拥有；比它更新的版本不是这份程序写的）
+    let mut state = state.clone();
+    state.config_version = yekitrim_core::config::CONFIG_VERSION;
+    let state = &state;
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             tracing::warn!("无法创建状态目录 {}: {e}", parent.display());
@@ -138,6 +176,7 @@ mod tests {
 
     fn state(projects: &[&str], last: Option<&str>) -> ServerState {
         ServerState {
+            config_version: yekitrim_core::config::CONFIG_VERSION,
             last_config_file: last.map(|s| s.to_string()),
             projects: projects.iter().map(|s| s.to_string()).collect(),
         }

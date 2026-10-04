@@ -4,7 +4,9 @@
 //! 边界：改字段必须走四步（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）；`patch_config_file` 是递归深合并，别退回"一层 section" —— 见 `crates/yekitrim-core/src/config/AGENTS.md`
 
 mod types;
+pub mod version;
 pub use types::*;
+pub use version::{ConfigKind, CONFIG_VERSION, VERSION_KEY};
 
 use std::path::{Path, PathBuf};
 
@@ -72,6 +74,9 @@ fn default_reference_titles() -> Vec<String> {
 /// 包含 {{CORRECT_SYSTEM_PROMPT}} 等占位符，由生成方替换为内建默认 prompt。
 pub const GLOBAL_CONFIG_TOML: &str = r#"# YekiTrim 全局默认配置 — 所有工程共享
 # 相同参数会被 yekitrim.toml 覆盖
+# ⚠️ config_version 是**配置结构版本**：程序读它决定要不要跑迁移。
+#    手工改配置时**别动这一行**（改了会让迁移跑错；见 config/version.rs）。
+config_version = 1
 
 [asr]
 # ASR 模式: "single"（SenseVoice 单模型）| "hybrid"（SenseVoice 打轴 + qwen3 填词）
@@ -235,6 +240,8 @@ registration_enabled = false
 /// LLM 配置模板（`yekitrim config init` 生成 .yekitrim/llm.toml 用）
 pub const LLM_CONFIG_TOML: &str = r#"# YekiTrim LLM 配置 — 独立于工程配置
 # 基于 OpenAI 兼容接口
+# ⚠️ 配置结构版本，别手改（见 config/version.rs）
+config_version = 1
 
 [llm]
 # API 基础地址
@@ -329,6 +336,8 @@ fn write_project_config_inner(
     let mut doc: toml_edit::DocumentMut = body.parse()?;
     doc.remove("llm");
     doc.remove("correct");
+    // 工程配置也带版本号（拷全局那份时通常已经带了；这里兜住"全局配置没构建过"的情形）
+    doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
 
     // 移除 [detection] 中的 prompt 字段，仅保留在 config.toml
     if let Some(detection) = doc.get_mut("detection") {
@@ -410,14 +419,16 @@ fn write_project_config_inner(
     Ok(())
 }
 
-fn load_from_file(path: &PathBuf) -> Result<Option<Config>> {
+/// 读一份配置并解析。**读之前先跑版本迁移**（`config::version`）：
+/// 老文件会在这里补上 `config_version` 并清掉已下线的键（程序级还会写回 + 备份）。
+fn load_from_file(path: &PathBuf, kind: ConfigKind) -> Result<Option<Config>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(path)
+    let prepared = version::prepare(path, kind)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let config: Config =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    let config: Config = toml::from_str(&prepared.text)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(config))
 }
 
@@ -688,8 +699,9 @@ pub fn load_llm_config() -> LlmConfig {
     if !path.exists() {
         return LlmConfig::default();
     }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
+    // 读之前先跑版本迁移（老 llm.toml 缺 config_version ⇒ 补上；程序级会写回 + 备份）
+    let content = match version::prepare(&path, ConfigKind::Llm) {
+        Ok(p) => p.text,
         Err(e) => {
             tracing::warn!("读取 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
             return LlmConfig::default();
@@ -722,12 +734,13 @@ pub fn load_config_at(project_file: &Path) -> Result<Config> {
     let mut config = Config::default();
 
     let global = crate::path::yekitrim_home().join("config.toml");
-    if let Some(overlay) = load_from_file(&global)? {
+    if let Some(overlay) = load_from_file(&global, ConfigKind::Global)? {
         merge(&mut config, overlay);
     }
 
+    // ⚠️ 工程文件**只在内存里升级**（每个工程一份、还可能在网络盘上）：见 config::version 的说明
     let project = project_file.to_path_buf();
-    if let Some(overlay) = load_from_file(&project)? {
+    if let Some(overlay) = load_from_file(&project, ConfigKind::Project)? {
         merge(&mut config, overlay);
     }
 
@@ -763,7 +776,7 @@ pub fn global_config_parse_error() -> Option<String> {
 pub fn load_global_config() -> Config {
     let mut config = Config::default();
     let global = crate::path::yekitrim_home().join("config.toml");
-    if let Ok(Some(overlay)) = load_from_file(&global) {
+    if let Ok(Some(overlay)) = load_from_file(&global, ConfigKind::Global) {
         merge(&mut config, overlay);
     }
     config
@@ -814,7 +827,22 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
         } else {
             String::new()
         };
-        let mut doc: toml_edit::DocumentMut = match content.parse() {
+        // ⚠️ **先跑版本迁移再改**：否则"改一个键"会把一份老配置原样留在老版本上 ——
+        // 那个文件永远升不上来，里面已下线的键也永远清不掉（patch 只合并不删）。
+        // 迁移失败（坏 TOML）时保持原样交给下面那段"备份 + 从空文档起"的既有处理。
+        let kind = ConfigKind::of_path(project_file);
+        let base = match version::migrate_text(kind, &content) {
+            Ok(prepared) => {
+                if prepared.changed && kind.persists() {
+                    if let Err(e) = version::backup_before_upgrade(project_file, prepared.from) {
+                        tracing::warn!("升级前备份 {} 失败（继续）：{e:#}", project_file.display());
+                    }
+                }
+                prepared.text
+            }
+            Err(_) => content.clone(),
+        };
+        let mut doc: toml_edit::DocumentMut = match base.parse() {
             Ok(doc) => doc,
             Err(e) => {
                 // 语法错误时**不能**静默从空文档开始：那样"改一个键"会把用户其余配置整段抹掉。
@@ -823,7 +851,7 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
                     let backup = project_file.with_extension("toml.broken");
                     let _ = std::fs::copy(project_file, &backup);
                     tracing::warn!(
-                        "配置 {} 不是合法 TOML（{e}），已备份为 {} 并只写入本次改动",
+                        "配置 {} 不是合法 TOML（e={e}），已备份为 {} 并只写入本次改动",
                         project_file.display(),
                         backup.display()
                     );
@@ -832,6 +860,10 @@ fn edit_toml_at(project_file: &Path, f: impl FnOnce(&mut toml_edit::DocumentMut)
             }
         };
         f(&mut doc);
+        // 空文件初次写入（新建工程）也要带上版本号
+        if version::version_of(&doc) < CONFIG_VERSION {
+            doc.insert(VERSION_KEY, toml_edit::value(CONFIG_VERSION as i64));
+        }
         if let Some(parent) = project_file.parent() {
             std::fs::create_dir_all(parent)?;
         }

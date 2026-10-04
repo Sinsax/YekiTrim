@@ -44,6 +44,7 @@
 
 **`yekitrim.toml`** — 项目配置:
 ```toml
+config_version = 1           # 配置结构版本，别手改（见「版本号与读时迁移」）
 input_file = ""
 danmaku_file = ""            # 唯一生效值（清单里「使用中」那条）
 transcript_file = ""
@@ -62,11 +63,12 @@ danmaku_window_secs = 10
 [cutting]
 output_dir = "./output"
 overwrite = false
-silence_noise_db = -30
 ```
 
 **`.yekitrim/config.toml`** — 全局程序配置:
 ```toml
+config_version = 1           # 配置结构版本，别手改
+
 [asr]
 mode = "hybrid"              # 默认 hybrid（预处理页有下拉；也能改这里/项目 yekitrim.toml）
 model = "sensevoice"         # ASR 模型: sensevoice(快) | qwen3-asr(最准,慢)（hybrid 填词固定 qwen3-asr）
@@ -101,7 +103,6 @@ prompt_template = "..."
 [cutting]
 output_dir = "./output"
 overwrite = false
-silence_noise_db = -30
 
 [sfx]
 # 音效屏蔽列表 (yekitrim polish 使用): 精确 id 屏蔽单个音效, "tag:xxx" 屏蔽整个标签族
@@ -110,6 +111,8 @@ blacklist = []
 
 **`.yekitrim/llm.toml`** — LLM 配置（独立文件）:
 ```toml
+config_version = 1
+
 [llm]
 base_url = ""              # OpenAI 兼容 API 地址
 api_key = ""
@@ -149,6 +152,37 @@ max_tokens = 32768
 ⚠️ 它们**已经从设置页表单里摘掉**（表单不再写回，字段本身留在文件里、仍可用「编辑源文件」改）。
 真正的清理（从 `Config` 结构体里删）要走「新增配置字段步骤」的反向流程，且要确认旧文件里的
 多余键不会让反序列化失败（serde 默认忽略未知字段）—— **本次没做，留给你拍板**。
+
+### 版本号与读时迁移（2026-10-05）
+
+**每个配置文件顶层都有一个 `config_version`**（`config/version.rs` 是唯一实现）：
+
+| 文件 | 位置 | 升级后写回？ |
+|---|---|---|
+| `config.toml` / `llm.toml` / `server.toml` | `<数据目录>/.yekitrim/` | ✅ 写回（先备份 `.bak-v<旧>`），一个目录各一份 |
+| `yekitrim.toml` / `polish.toml` | **每个工程一份** | ❌ **只在内存里升，不碰磁盘**（工程可能几百个、还可能在网络盘上） |
+
+读的时候三种情况：**版本相同 ⇒ 原样用** · **版本更低 ⇒ 先迁移再解析** · **版本更高 ⇒ 一个字节都不动**
+（那是更新的程序写的；没有这一条，用旧版 exe 打开新配置会把文件"升"回去 —— 直接损坏用户数据）。
+缺键 = **0**（加版本号之前的文件）。
+
+迁移是**纯函数 + 保注释**：用 `toml_edit`（`toml::to_string` 重序列化会**把注释全丢掉**，
+而模板里大段说明都写在注释里）。`v0 → v1` 清掉的就是上一节那 4 个从来没读取方的键。
+
+⚠️ **改配置键的规矩（第 5 步，比代码重要）** —— 删键 / 改名 / 改语义时必须做三件事：
+① `config/version.rs` 的 `CONFIG_VERSION` **+1**；② 在 `ConfigKind::retired_in` 里把那个键按
+`["section", "key"]` 登记成"新版本该清掉的"；③ 到 `config/mod.rs` 的 `GLOBAL_CONFIG_TOML` /
+`LLM_CONFIG_TOML` 模板里同步注释。**漏 ①** ⇒ 迁移永远不跑；**漏 ②** ⇒ 老文件里那个键**永远留着**
+（`patch_config_file` 只合并不删），下一个读配置的人又要问一遍"这键到底有没有用"。
+
+⚠️ **`polish.toml` 的版本键在文本层**（不在 `ProjectFile` 里）：那个结构体是
+`deny_unknown_fields`，而且还会出口给前端与出片底座 —— 把版本塞进 schema 会波及它们。
+所以写侧 `to_toml_commented()` 在文本里补一行、读侧 `validate.rs` 用
+`version::strip_version_key()` 摘掉再看结构体。
+
+判据：`config::version::tests`（11 条，含**文件版本更高时不动**、幂等、注释不丢、
+程序级写回+备份 / 工程级不碰磁盘）。**变异自证**跑过：`CONFIG_VERSION` 改回 0、
+或把 4 个死键从 `retired_in` 里去掉，都会让判据翻面（不是空转）。
 
 ### 写入纪律
 

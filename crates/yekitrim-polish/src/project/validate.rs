@@ -65,8 +65,22 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
         );
     }
     let raw = std::fs::read_to_string(&config_path)?;
+    // 配置**版本**：老工程缺 `config_version` ⇒ 在这里补上当前版本（只在内存里，磁盘不动）。
+    // ⚠️ 版本键随后要从值里**摘掉**再进 `ProjectFile` —— 它是 `deny_unknown_fields`，
+    //    多一个键就直接反序列化失败。版本是"文件的元数据"，不属于配置 schema（写侧同理，
+    //    见 `ProjectFile::to_toml_commented`）。
+    let migrated = yekitrim_core::config::version::migrate_text(
+        yekitrim_core::config::ConfigKind::Polish,
+        &raw,
+    )
+    .unwrap_or_else(|_| yekitrim_core::config::version::Prepared {
+        text: raw.clone(),
+        from: 0,
+        changed: false,
+    });
     // 老工程的 `duration` → `end` 在反序列化前升级（见 project/legacy.rs）
-    let toml_value: toml::Value = toml::from_str(&raw)?;
+    let text = yekitrim_core::config::version::strip_version_key(&migrated.text)?;
+    let toml_value: toml::Value = toml::from_str(&text)?;
     let json = super::legacy::upgrade_toml_value(&toml_value)?;
     let mut config: ProjectFile = serde_json::from_value(json)
         .map_err(|e| retired_effect_hint(e, &config_path))?;

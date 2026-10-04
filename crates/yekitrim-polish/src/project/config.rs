@@ -866,7 +866,11 @@ impl ProjectFile {
         })
     }
 
-    /// 序列化为 TOML 并注入注释
+    /// 序列化为 TOML 并注入注释。
+    ///
+    /// ⚠️ **配置版本在文本层注入**（末尾 `config_version`）而不是做字段：`ProjectFile` 是
+    /// `deny_unknown_fields`，而且它还会出口给前端与出片底座 —— 把版本塞进 schema 会波及它们。
+    /// 版本是"文件的元数据"。读侧对应地在 `validate.rs` 摘掉这个键再看结构体。
     pub fn to_toml_commented(&self) -> anyhow::Result<String> {
         let raw = toml::to_string_pretty(self)?;
         let lines: Vec<String> = raw.lines().map(|s| s.to_string()).collect();
@@ -1120,7 +1124,10 @@ impl ProjectFile {
             result.push_str(line); result.push('\n');
         }
 
-        Ok(result)
+        // 配置版本：**文本层**补在最前面（缺了才补；已有就原样留着 —— 别每次保存都改文件）。
+        // ⚠️ 不做成 `ProjectFile` 字段：那个结构体是 `deny_unknown_fields`，还会出口给前端
+        //    与出片底座；版本是"文件的元数据"，不属于配置 schema。读侧在 `validate.rs` 摘掉它。
+        Ok(yekitrim_core::config::version::ensure_version_line(&result))
     }
 
     // ===== 示例 =====
@@ -1405,7 +1412,12 @@ mod tests {
         let raw = cfg.to_toml_commented().unwrap();
         assert!(raw.contains("[layout.liver.top_left]"), "缺 top_left 子表:\n{raw}");
         assert!(raw.contains("[layout.liver.bottom_right]"), "缺 bottom_right 子表:\n{raw}");
-        let back: ProjectFile = toml::from_str(&raw).expect("框选布局 TOML 应可回读");
+        // ⚠️ `to_toml_commented()` 产出的文本**带一行 config_version**（文件的元数据），
+        //    而 `ProjectFile` 是 `deny_unknown_fields` ⇒ 回读前要摘掉，与正式读盘那条路同口径。
+        let back: ProjectFile = toml::from_str(
+            &yekitrim_core::config::version::strip_version_key(&raw).unwrap(),
+        )
+        .expect("框选布局 TOML 应可回读");
         assert_eq!(region_origin(&back.layout.liver).unwrap(), "75.00% 45.00%");
         assert_eq!(region_rects(&back.layout.sticker_area).len(), 2);
     }
@@ -1449,7 +1461,9 @@ mod tests {
         cfg.intro_fade_seeded = true;
         let raw = cfg.to_toml_commented().unwrap();
         assert!(raw.contains("intro_fade_seeded = true"), "{raw}");
-        let back: ProjectFile = toml::from_str(&raw).expect("置位后应可回读");
+        let back: ProjectFile =
+            toml::from_str(&yekitrim_core::config::version::strip_version_key(&raw).unwrap())
+                .expect("置位后应可回读");
         assert!(back.intro_fade_seeded);
 
         // 老工程（没有这一行）→ 默认 false，等于"还没补过片头"，下次 process 照常补
@@ -1787,7 +1801,9 @@ mod canvas_stage_tests {
         let stage_sec = stage_sec.split("\n[").next().unwrap_or("");
         assert!(!stage_sec.contains("position ="), "老 stage.position 不该再写出:\n{stage_sec}");
         assert!(stage_sec.contains("position_pct"), "新字段要在:\n{stage_sec}");
-        let back: ProjectFile = toml::from_str(&raw).expect("新表应可回读");
+        let back: ProjectFile =
+            toml::from_str(&yekitrim_core::config::version::strip_version_key(&raw).unwrap())
+                .expect("新表应可回读");
         assert_eq!(back.canvas.size(), (1080, 1920));
         assert_eq!(back.stage.position_pct, Some(75.0));
         assert_eq!(back.stage.bg_mode, "color");

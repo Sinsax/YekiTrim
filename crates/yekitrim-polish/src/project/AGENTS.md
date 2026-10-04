@@ -116,6 +116,13 @@
   同步上下文的写（`config::edit_toml_at` / `patch_config_file`）走 `with_path_lock_sync`（**非重入**的 std Mutex，
   只包微秒级读改写）—— 管线的写与设置页保存是同一份文件，无锁时后写的会把先写的键整段覆盖。
 
+- ⚠️ **`polish.toml` 顶层有一行 `config_version`，但它在文本层、不在 `ProjectFile` 里**：
+  那个结构体是 `deny_unknown_fields`、还会出口给前端与出片底座，所以写侧
+  `to_toml_commented()` 在文本里补这一行、读侧 `validate.rs` 用
+  `yekitrim_core::config::version::strip_version_key()` **摘掉之后**才交给结构体。
+  **所以任何"直接 `toml::from_str::<ProjectFile>` 解析 `to_toml_commented()` 产物"的地方**都要先摘
+  （单测里那几处就是这么做的）。版本与迁移的总规矩见 `crates/yekitrim-core/src/config/AGENTS.md`。
+
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
