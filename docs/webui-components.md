@@ -1008,6 +1008,26 @@ headless harness 就能真挂载组件、真量几何，`.workbuddy/`（已 giti
 `yekitrim.toml` 随手冲掉。判据 = `yekitrim-server` 的
 `overwrite_rebuilds_config_only_when_explicitly_asked`。
 
+### ⑥d 本地模式（`--local-no-auth`）下的侧栏用户块
+
+`localNoAuth` 来自 `GET /api/health.local_no_auth`（`App.vue` 挂载时取一次）。
+
+| 模式 | 展开态用户块 |
+|---|---|
+| 登录模式 | `[头像 A][admin / 管理员][退出]` |
+| **本地模式** | 只有一句「**本地模式**」 |
+
+⚠️ **本地模式不显示头像、不显示用户名/角色、也没有退出按钮**（用户明确要求）。理由不是省地方：
+那个 `admin` 只是**内部账号**，用户根本没"登录"进来；会话也不存在，所以没有可退的东西 ——
+显示一个具体人名反而在暗示"你正以某个身份登录"。
+
+⚠️ 折叠轨（64px）里同样不画头像，改用短标「**本地**」（`@click` 仍为空操作，tooltip 说明）。
+别退回"渲染一个没有内容的空按钮"：那个按钮既点不动、又看不出是什么。
+
+⚠️ **读 `/api/health` 失败必须当 `false`（照旧显示正常用户块）** —— 别默认 true，
+否则一次请求抖动就会把侧栏那块藏掉。这条与 `docs/web-ui-design.md` 附录 C 里的
+"合并语义"是两类问题：这里防的是"读不到"。
+
 ---
 
 > 改动只允许落在 `webui/src/components`；跨模块改动先读对方卡，并跑两条门禁

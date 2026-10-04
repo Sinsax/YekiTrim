@@ -55,29 +55,34 @@
     </div>
 
     <div class="side-foot">
-      <!-- 用户信息只做展示（点它不再登出，用户要求）；登出是右边那个按钮，且要二次确认 -->
-      <div v-if="!collapsed" class="user-chip">
-        <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
-        <span class="nm">
-          <b>{{ authState.user?.username }}</b>
-          <span class="muted small">{{ isAdmin ? '管理员' : '用户' }}</span>
-        </span>
-        <!-- ⚠️ 本地免登录（`--local-no-auth`）下**没有会话可退**：登录页也不再需要，
-             留一颗「退出」只会把用户带到一个莫名其妙的登录页。换成一句状态说明。 -->
-        <span v-if="localNoAuth" class="mini-btn side-logout local-badge" title="本地模式：免登录，仅本机可访问">
-          本地模式
-        </span>
-        <button v-else class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
-          <Icon name="logout" :size="12" /> 退出
-        </button>
+      <!-- 用户信息只做展示（点它不再登出，用户要求）；登出是右边那个按钮，且要二次确认。
+           ⚠️ **本地模式（`--local-no-auth`）下整块换掉**：那里没有"某个人"可显示 —— 那个 `admin`
+           只是内部账号，用户也根本没"登录"进来；会话也不存在，所以没有可退的东西。
+           用户口径：本地模式**不显示 admin、不显示图标**，只留一句状态。 -->
+      <div v-if="!collapsed" class="user-chip" :class="{ local: localNoAuth }">
+        <span v-if="localNoAuth" class="local-mark" title="本地模式：免登录，仅本机可访问">本地模式</span>
+        <template v-else>
+          <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
+          <span class="nm">
+            <b>{{ authState.user?.username }}</b>
+            <span class="muted small">{{ isAdmin ? '管理员' : '用户' }}</span>
+          </span>
+          <button class="mini-btn side-logout" title="退出登录（会再确认一次）" @click="emit('logout')">
+            <Icon name="logout" :size="12" /> 退出
+          </button>
+        </template>
       </div>
       <button v-else class="rail-item rail-user"
               :title="localNoAuth
-                ? `${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 本地模式（免登录）`
+                ? '本地模式（免登录，仅本机可访问）'
                 : `${authState.user?.username}（${isAdmin ? '管理员' : '用户'}）· 退出登录`"
               @click="!localNoAuth && emit('logout')">
-        <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
-        <Icon v-if="!localNoAuth" name="logout" :size="14" class="rail-out" />
+        <!-- 折叠轨里同样不画头像/图标，用一个短标代替（64px 轨放得下） -->
+        <span v-if="localNoAuth" class="local-mark">本地</span>
+        <template v-else>
+          <span class="av">{{ initialOf(authState.user?.username || '?') }}</span>
+          <Icon name="logout" :size="14" class="rail-out" />
+        </template>
       </button>
 
       <template v-if="!collapsed">
@@ -291,8 +296,11 @@ defineExpose({ openJobs: () => emit('open-jobs') })
 /* 用户块只做展示（登出改成了右侧按钮 + 二次确认），光标别留成可点的手型 */
 .user-chip { cursor:default; }
 .side-logout { margin-left:auto; flex:none; padding:3px 8px; font-size:11.5px; }
-/* 本地模式的"退出"位置改成只读状态标记：样式沿用按钮形，但不给点（没有 cursor:pointer） */
-.local-badge { cursor:default; color:var(--ink-faint); border-color:var(--line); background:var(--bg-soft); }
+/* 本地模式（免登录）：那块用户信息里**没有"某个人"也没有可退的会话** ——
+   不画头像、不写用户名/角色，只留这句状态标（用户口径）。 */
+.local-mark { flex:1; font-size:12px; font-weight:600; color:var(--green-deep); }
+/* 折叠轨（64px）里的短标 */
+.rail-user .local-mark { flex:none; font-size:10px; line-height:1.1; }
 /* 折叠轨的用户块：头像 + 退出图标上下两行（原来只有头像）。
    选择器必须比 `.rail-item`（同为 scoped (0,2,0) 且写在后面）更特指，否则 height:34px 会赢 */
 .side-foot .rail-user { flex-direction:column; height:auto; padding:4px 0; gap:2px; }
