@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "sha2",
  "zip",
@@ -3490,7 +3490,7 @@ checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yekitrim-cli"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "yekitrim-core"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "yekitrim-polish"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3560,7 +3560,7 @@ dependencies = [
 
 [[package]]
 name = "yekitrim-render-core"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3568,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "yekitrim-server"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3595,7 +3595,7 @@ dependencies = [
 
 [[package]]
 name = "yekitrim-service"
-version = "0.4.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
