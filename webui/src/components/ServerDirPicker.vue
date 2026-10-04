@@ -1,5 +1,7 @@
 <template>
-  <div>
+  <!-- `has-project` = 当前目录里已有工程标志文件 → 整块加一层绿框（用户口径：
+       「当选择的目录有 yekitrim.toml 时，给目录加一层绿色的线框」） -->
+  <div class="dir-picker" :class="{ 'has-project': hasProject }">
     <div class="row">
       <div class="flex-1 minw-240">
         <label>{{ dirLabel }}</label>
@@ -37,12 +39,14 @@
           v-for="f in files"
           :key="'f-' + f"
           class="file-row"
-          :class="{ video: isVideoFile(f), selected: selected === f, dim: !allowed(f) }"
+          :class="{ video: isVideoFile(f), selected: selected === f, dim: !allowed(f), project: isProjectFile(f) }"
           @click="mode === 'file' && allowed(f) && emit('pick-file', f)"
         >
           <span class="file-icon"><Icon :name="iconFor(f)" :size="15" /></span>
           <span class="mono">{{ f }}</span>
-          <span v-if="!allowed(f)" class="muted small">不适用</span>
+          <!-- 三种标签：工程配置（可选，点它就是"添加这个工程"）/ 视频（可选作输入）/ 不可选 -->
+          <span v-if="isProjectFile(f)" class="tag-project">工程配置</span>
+          <span v-else-if="!allowed(f)" class="muted small">不可选</span>
           <span v-else-if="isVideoFile(f)" class="muted small">视频</span>
         </div>
         <div v-if="!dirs.length && !files.length" class="empty small">空目录</div>
@@ -68,7 +72,7 @@ export const IMAGE_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp']
  * **进入下一级用 `{dir, enter}` 由服务端拼路径** —— 前端自己拼会把服务端回传的
  * `\\?\F:\a` 拼成 `\\?\F:\a/b`（Windows ERROR_INVALID_NAME 123）。
  */
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 import { listTenantFiles } from '../stores/project'
 
@@ -83,7 +87,15 @@ const props = defineProps({
   dirPlaceholder: { type: String, default: '例如 F:/media/2025-09-12' },
   /** 只允许选这些扩展名（小写、不带点）；空数组 = 不限制。
    *  不匹配的文件置灰 + 点击无效 —— 「选弹幕/字幕」的场景里点中一个 mp4 毫无意义。 */
-  exts: { type: Array, default: () => [] }
+  exts: { type: Array, default: () => [] },
+  /**
+   * "工程标志文件名"。**只有新增/添加项目那条路传它**（默认空 = 不启用）：
+   * 传了之后目录里存在这个文件时，这里会加一层绿框 + 「已有工程」标记 ——
+   * 让用户在**选之前**就看出"这是个已有工程、不是待初始化的录像目录"。
+   * ⚠️ 别给它默认值：字体库/弹幕/字幕那些选择器里 `yekitrim.toml` 没有任何含义，
+   * 默认上会让它们也莫名其妙地绿。
+   */
+  projectFile: { type: String, default: '' }
 })
 const emit = defineEmits(['update:dir', 'pick-file', 'pick-dir', 'update:listing'])
 
@@ -106,6 +118,13 @@ function iconFor(name) {
   if (isVideoFile(name)) return 'film'
   return IMAGE_EXTS.includes(extOf(name)) ? 'image' : 'file'
 }
+/** 文件名 → 它是不是"工程标志文件"（没传 `projectFile` 时恒 false） */
+function isProjectFile(name) {
+  return !!props.projectFile && String(name).toLowerCase() === props.projectFile.toLowerCase()
+}
+/** 当前列出的目录里有没有工程标志文件 = 这是一个**已有工程**目录 */
+const hasProject = computed(() => files.value.some(isProjectFile))
+
 /** 扩展名白名单（`props.exts` 非空时生效） */
 function allowed(name) {
   const list = props.exts || []

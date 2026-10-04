@@ -974,6 +974,40 @@ headless harness 就能真挂载组件、真量几何，`.workbuddy/`（已 giti
    `<script setup>` 的 setup 会给自己返回的对象打**不可枚举且不可配置**的 `__isScriptSetup`，Vue 见到它就不再让
    `_ctx.x` 解析 setup 绑定 —— 浅拷一份再交出去。
 
+### ⑥c 「服务器文件」这条来源：添加已有工程 vs 新建
+
+两个入口（内联 `ServerDirPicker` + 弹出 `ServerFileBrowser`）共用一套判断，**判据只有两条**：
+
+| 目录状态 | 按钮 | 需要视频吗 | 后端行为 |
+|---|---|---|---|
+| 有 `yekitrim.toml`、用户没点视频 | **添加项目** | **不需要** | 只登记/打开，**不覆盖**配置 |
+| 有 `yekitrim.toml`、用户点了视频 | **新建项目** | 需要 | **先弹二次确认**，确认后带 `overwrite` **重写**配置 |
+| 没有 `yekitrim.toml` | 新建项目 | 需要（不点则后端自动挑第一个视频） | 初始化新工程 |
+
+⚠️ **`canCreateLocal` 别再写回"一律必须有视频"**：那样"只有 `yekitrim.toml`、没有视频"的工程目录
+**按钮永远灰着**，而那种目录恰恰是"直接添加"最该走通的形态（真机踩到的原话：
+"yekitrim.toml 为什么没法用"）。
+
+⚠️ **"重建"警告必须排在"显示输入视频"之前**：两者的条件（已有工程 + 手动选了视频）**同时成立**，
+写成挂在后面的 `v-else-if` 就永远轮不到它。
+
+⚠️ **选中工程文件 ≠ 选中输入视频**：点 `yekitrim.toml` 的含义是"添加这个工程"，所以提交时
+`input` 传**空**（后端在"已有工程"分支里根本不看 `input`）。别把它当视频交上去。
+
+⚠️ **`exts` 必须同时含视频与 `toml`**（`LOCAL_EXTS = [...VIDEO_EXTS, 'toml']`）：只放视频的话
+`yekitrim.toml` 那行就是"看得见点不动"，而"选工程文件直接加载工程"正是这条路的一半语义。
+白名单之外的（`.txt` / `.srt` …）保持可见但标**「不可选」**、点击空操作。
+
+⚠️ **绿框（`.dir-picker.has-project` / `.sfb.has-project`）与「工程配置」标签都由 `projectFile` prop 驱动，
+默认空** —— 字体库/弹幕/字幕那些选择器里 `yekitrim.toml` 没有任何含义，默认开会让它们莫名其妙地绿。
+绿框配色走 `tokens.css` 的 `--green/--green-deep/--green-soft`（浅/暗两套都有，别再手写颜色）。
+
+⚠️ **覆盖是后端唯一由前端开关控制的破坏性动作**：`POST /api/projects` 的
+`source.overwrite`（默认 false）。`create_local_project` 的判断是
+`if !is_existing_project || overwrite` —— **别把默认改成 true**，那等于把用户手改过的
+`yekitrim.toml` 随手冲掉。判据 = `yekitrim-server` 的
+`overwrite_rebuilds_config_only_when_explicitly_asked`。
+
 ---
 
 > 改动只允许落在 `webui/src/components`；跨模块改动先读对方卡，并跑两条门禁

@@ -49,7 +49,8 @@
           mode="file"
           :start-dir="localDir"
           :selected="localInput"
-          :exts="VIDEO_EXTS"
+          :exts="LOCAL_EXTS"
+          :project-file="PROJECT_FILE"
           dir-label="项目目录（服务器上的绝对路径，可直接填或粘贴）"
           dir-placeholder="例如 F:/media/2025-09-12"
           @update:dir="onLocalDir"
@@ -58,21 +59,32 @@
         />
 
         <p class="muted small mt-8">
-          点一个录像文件即为「输入视频」；<b>不点也行</b> —— 默认取目录里第一个视频。
-          只读<b>服务器上</b>已有的文件（不是你这台电脑），<b>不接受上传</b>；
-          目录里已有 <span class="mono">yekitrim.toml</span> 时只登记/打开、不覆盖。
+          <b>两种用法</b>：目录里<b>已有</b> <span class="mono">yekitrim.toml</span> ⇒ 直接<b>添加</b>它（不用选文件）；
+          没有 ⇒ 这就是个待初始化的录像目录，点一个录像文件（<b>不点也行</b>，默认取第一个视频）后<b>新建</b>。
+          只读<b>服务器上</b>已有的文件（不是你这台电脑），<b>不接受上传</b>。
+          已有工程时<b>不会覆盖</b>它的配置 —— 除非你在这种目录里又手动挑了一个视频，
+          那会先弹一次确认。
         </p>
 
         <div v-if="localDir" class="create-bar mt-8">
           <div class="flex-1 pick-main">
             <div class="small mono ellip" :title="localDir">项目将建在 {{ localDir }}</div>
+            <!-- 已有工程：这里也标一次（关掉选择器之后仍然看得见这个状态） -->
+            <div v-if="localHasConfig" class="small mt-4 ok-text">
+              检测到已有工程（<span class="mono">{{ PROJECT_FILE }}</span>）—— 将<b>直接添加</b>，不需要视频文件
+            </div>
+            <!-- ⚠️ "重建"警告**必须排在前面**：它的条件（已有工程 + 手动选了视频）与
+                 "显示输入视频"是**同时成立**的，写成 v-else-if 挂在后面就永远轮不到它。 -->
+            <div v-if="localHasConfig && localManualVideo" class="small mt-4 warn-text">
+              这个目录已有工程，但你又选了视频 —— 点下去会<b>用它重新初始化</b>（需要再确认一次）
+            </div>
             <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
                  不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
             <div v-if="localEffectiveVideo" class="small mt-4">
               输入视频 <span class="mono">{{ localEffectiveVideo }}</span>
-              <span v-if="!localInput" class="muted">（自动选取目录里第一个视频）</span>
+              <span v-if="!localManualVideo" class="muted">（自动选取目录里第一个视频）</span>
             </div>
-            <div v-else-if="!localListing.failed" class="small mt-4 warn-text">
+            <div v-else-if="!localHasConfig && !localListing.failed" class="small mt-4 warn-text">
               这个目录里没有可用的视频（mp4 / mkv / flv / ts…），换一个目录或进子目录看看
             </div>
           </div>
@@ -81,7 +93,7 @@
           </button>
           <button class="btn btn-primary" style="flex:none"
                   :disabled="creating || !canCreateLocal" @click="createFromLocal">
-            <span v-if="creating" class="spinner"></span> 新建项目
+            <span v-if="creating" class="spinner"></span> {{ localAddMode ? '添加项目' : '新建项目' }}
           </button>
         </div>
 
@@ -92,7 +104,8 @@
           <ServerFileBrowser
             :start-dir="localDir"
             :selected="draftInput"
-            :exts="VIDEO_EXTS"
+            :exts="LOCAL_EXTS"
+            :project-file="PROJECT_FILE"
             @update:dir="onDraftDir"
             @update:listing="draftListing = $event"
             @pick-file="pickDraftFile"
@@ -367,6 +380,17 @@ import StickerPacks from '../components/StickerPacks.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import { authState } from '../stores/auth'
 import { createLocalProject } from '../stores/project'
+
+/** 工程标志文件（与后端 `path::PROJECT_CONFIG_FILE` 同名） */
+const PROJECT_FILE = 'yekitrim.toml'
+/**
+ * 「服务器文件」这条来源**只允许选两类**：工程文件（= 直接添加已有工程）与视频文件
+ * （= 当输入视频 / 重建）。其余一律非可选（选择器会标「不可选」）。
+ * ⚠️ 必须让 `toml` 也在白名单里：否则 `yekitrim.toml` 那行是"看得见点不动"，
+ * 而"选工程文件直接加载工程"正是这条路的一半语义。
+ */
+const LOCAL_EXTS = [...VIDEO_EXTS, 'toml']
+const isVideoName = (n) => VIDEO_EXTS.includes(String(n || '').split('.').pop().toLowerCase())
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { ingestApi } from '../api/ingest'
@@ -588,13 +612,42 @@ const firstVideoIn = (l) =>
   (l.files || []).find((f) => VIDEO_EXTS.includes(String(f).split('.').pop().toLowerCase())) || ''
 
 const localFirstVideo = computed(() => firstVideoIn(localListing.value))
-/** 实际会用的视频：用户点选的优先，否则后端会自动兜第一个 */
-const localEffectiveVideo = computed(() => localInput.value || localFirstVideo.value)
-/** 能建项目 = 有目录 + 有可用视频（否则后端必然 400「目录里没有可用的视频文件」） */
-const canCreateLocal = computed(() => !!localDir.value && !!localEffectiveVideo.value)
+
+/**
+ * ⚠️ 判据只认**用户手动点的那个视频**，不再 `|| localFirstVideo`。
+ *
+ * 因为"目录里第一个视频"在**已有工程**的目录里是个陷阱：那样会把「添加已有工程」
+ * 悄悄变成「拿第一个视频重建」。用户没点文件时，意图就是"添加这个工程"。
+ */
+const localManualVideo = computed(() => isVideoName(localInput.value))
+/** 选中的是不是那个工程文件本身（点它 = 添加这个工程） */
+const localPickedConfig = computed(() => String(localInput.value || '').toLowerCase() === PROJECT_FILE)
+/** 这个目录是不是**已有工程**（列表里有 `yekitrim.toml`）*/
+const localHasConfig = computed(() =>
+  (localListing.value.files || []).some((f) => String(f).toLowerCase() === PROJECT_FILE)
+)
+/**
+ * 按钮语义：
+ *  · 已有工程 + 没手动挑视频 ⇒ **添加项目**（后端只登记/打开，不覆盖）
+ *  · 其余（待初始化目录，或已有工程里又挑了视频 ⇒ 重建）⇒ **新建项目**
+ */
+const localAddMode = computed(() => localHasConfig.value && !localManualVideo.value)
+/** 展示用的"实际会用的视频"：只认手动选的；没有就显示自动兜底的那个（待初始化目录才有意义） */
+const localEffectiveVideo = computed(() =>
+  localManualVideo.value ? localInput.value : localHasConfig.value ? '' : localFirstVideo.value
+)
+/**
+ * 能提交 = 有目录 + （已有工程 ⇒ 不用视频 ｜ 否则 ⇒ 必须有可用视频）。
+ * ⚠️ 老实现是"一律必须有视频"，于是**只有 yekitrim.toml、没有视频的工程目录永远提交不了** ——
+ * 而那种目录恰恰是"直接添加"最该走通的形态。
+ */
+const canCreateLocal = computed(() =>
+  !!localDir.value && (localHasConfig.value || !!localEffectiveVideo.value)
+)
 
 const draftFirstVideo = computed(() => firstVideoIn(draftListing.value))
-const draftEffectiveVideo = computed(() => draftInput.value || draftFirstVideo.value)
+const draftManualVideo = computed(() => isVideoName(draftInput.value))
+const draftEffectiveVideo = computed(() => (draftManualVideo.value ? draftInput.value : draftFirstVideo.value))
 const draftCanConfirm = computed(() => !!draftDir.value && !!draftEffectiveVideo.value)
 
 function openLocalPicker() {
@@ -644,13 +697,36 @@ function pickDraftFile(name) {
 }
 
 async function createFromLocal() {
+  // 选中的文件若已不在当前目录（列表刷新/换目录），回退成"不指定"——直接提交旧名字只会换来 400
+  const stillThere = (localListing.value.files || []).includes(localInput.value) ? localInput.value : ''
+  // 点中的是工程文件本身 ⇒ 它的含义是"添加这个工程"，不是"拿它当输入视频"，
+  // 所以**不把它当 input 交上去**（后端在已有工程分支里也根本不看 input）
+  const picked = localPickedConfig.value ? '' : stillThere
+  const manualVideo = isVideoName(picked)
+
+  // ⚠️ 二次确认：目录里已有工程、用户又手动挑了一个视频 ——
+  // 这是唯一会**覆盖**已有工程配置的路径（"新建"会重写 yekitrim.toml）。
+  // 没有这道确认，用户手改过的工程设置会被一次误点冲掉。
+  let overwrite = false
+  if (localHasConfig.value && manualVideo) {
+    const yes = await confirmDialog(
+      `这个目录里已经有一个工程：${localDir.value}
+
+` +
+      `继续会用它「重新初始化」：现有的 yekitrim.toml 会被重写，输入视频换成你选的「${picked}」。
+
+` +
+      `只想添加这个已有工程的话，点「取消」，然后取消选中的那个视频文件。`,
+      { title: '这个目录已有工程', danger: true }
+    )
+    if (!yes) return
+    overwrite = true
+  }
+
   creating.value = true
   try {
-    // 选中的文件若已不在当前目录（列表刷新/换目录），回退成"让后端自动挑"——
-    // 直接提交旧名字只会换来 400
-    const picked = (localListing.value.files || []).includes(localInput.value) ? localInput.value : ''
-    const r = await createLocalProject({ dir: localDir.value, input: picked })
-    toast('项目已创建')
+    const r = await createLocalProject({ dir: localDir.value, input: picked, overwrite })
+    toast(overwrite ? '项目已重新初始化' : localAddMode.value ? '已添加工程' : '项目已创建')
     // 建成之后清空选择：否则留在原地的旧目录+旧文件会被误当成"下一次要建的"
     localInput.value = ''
     await loadProjects()

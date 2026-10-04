@@ -165,13 +165,13 @@
   且**必须 `await waitJobDone(id)` 再跳**（发完就跳会先撞 `polish.toml not found`；细节见 ⑥）。`polishOpening` 防连点，`jobClosers` 在 `onUnmounted` 里关订阅。
 - `StickerPacks`（首页表情包区块，**仅 admin**）：⚠️ **全站第二处刻意接收上传的入口**（第一处=封面背景图）；「服务器文件建项目」那条仍**永不接受上传**，别按旧规矩删掉。
   `UPLOAD_MAX_BYTES` 前后端同数（改一处要改两处），前端先挡。
-- `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 标签行右端可直填的数字框，16 处）。
+- `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 行尾可直填数字框，16 处）。
   ⚠ **滑块宽度 = 所在格子的 1/3**（`input[type=range]` 的 `width:100%` 会被 flex-basis 盖掉，**别再改回 100%**）；
 - `JobList`/`jobs/JobDrawer`（任务列表与按钮门控 —— "界面哑火"的来源，2026-09-16 一次补齐）：
   - ⚠ **请求必须有超时**：`api()` 默认兜 10 min，`jobsApi` 自己传 **10s** —— 没有超时的
     `fetch` 卡住就永不 settle，而 `useJobs` 的去重 `inflight` 只由 `.finally` 清，一次卡住的
     `/api/jobs` 会把任务列表与所有按作用域门控的按钮一起冻住（症状：**"队列加载不出来 +
-    剪切按钮一直灰"**，日志里一条 `/api/jobs` 都没有 —— noisy 名单只记 debug）。
+    剪切按钮一直灰"**）。
     新增轮询类接口自己给短超时；noisy 接口**慢过 `SLOW_MS`(1s) 照样记 info**。
   - ⚠ **读失败 ≠ 没有任务**：`useJobs.load()` 失败时**保留上一份快照**并置 `lastError`，`JobList` 把
     「读取中 / 读取失败（带重试按钮）/ 真的没有任务」**分三态**显示。以前失败写 `jobs.value = []`，
@@ -195,14 +195,14 @@
     抛错后**新任务永远订阅不上，界面从此停在「运行中」**。
   - 编辑器里被推迟的后处理（时间轴自动保存 / 选框保存触发的 process）：**不进队列**，只记 `pendingProcess`
     （带片段名），该片段空闲时自动补跑一次 —— 一次编辑风暴不该塞十几条任务。
-- `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。 品牌标 `src/assets/logo.png`（favicon 在 `public/`），别改回内联 SVG。
+- `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。品牌标 `src/assets/logo.png`（favicon 在 `public/`），别改回内联 SVG。
   `AppModal`/`AppDialog`/`ToastHost`（`stores/toast`）—— **别再手搓弹窗/确认**。
-- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ 收到 `update:dir`（onMounted 也发）要**清已选文件**；外部改 `startDir` 要跟着 browse（否则弹出选定后外层框不动）；`update:listing` 供判有无可用视频。首页内联用它，弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
+- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ `update:dir`（onMounted 也发）要**清已选文件**；外部改 `startDir` 要跟着 browse；`update:listing` 供判可用性。⚠ **`projectFile` prop 默认须空（opt-in）**：传了才有绿框与「工程配置」标签。首页内联用它，弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
   `api_base` 非空要带 scheme。
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()` 后按
   `start` 排序）· `prepare/SubtitleTrack`（常驻横排属性条，不要右侧竖面板）· `prepare/MaterialList`
-  （**改一边等于改两边**）· `polish/StickerPicker` + `polish/SfxPicker`（`name` 必须是**去扩展名的文件名**；库数据只读）·
+  （**改一边等于改两边**）· `polish/StickerPicker`/`SfxPicker`（`name` = **去扩展名的文件名**；库数据只读）·
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 ## 验证
 ```bash

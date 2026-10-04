@@ -58,9 +58,16 @@ export async function listTenantFiles(dir = '', enter = '') {
 }
 
 /** 用服务器本机文件建项目（仅 admin，永不接受上传）。已有 yekitrim.toml 时只登记不覆盖。 */
-export async function createLocalProject({ dir, input = '', danmaku = '', output_dir = '' }) {
+/**
+ * 用「服务器本机文件」建项目 / 添加已有工程。
+ *
+ * ⚠️ `overwrite` 默认 **false**：目录里已有 `yekitrim.toml` 时后端**只登记/打开、不重写**
+ * （保住用户手改过的工程设置）。只有"目录已有工程、用户又手动挑了另一个视频"那条路
+ * —— 界面弹二次确认、用户点了确认 —— 才传 true 让它重建。
+ */
+export async function createLocalProject({ dir, input = '', danmaku = '', output_dir = '', overwrite = false }) {
   return api('/api/projects', {
     method: 'POST',
-    body: JSON.stringify({ source: { kind: 'local', dir, input, danmaku, output_dir } })
+    body: JSON.stringify({ source: { kind: 'local', dir, input, danmaku, output_dir, overwrite } })
   })
 }

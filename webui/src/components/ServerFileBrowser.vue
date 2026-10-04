@@ -1,5 +1,6 @@
 <template>
-  <div class="sfb">
+  <!-- `has-project` = 当前目录已有工程标志文件 → 目录区加绿框（与内联那套同一个信号） -->
+  <div class="sfb" :class="{ 'has-project': hasProject }">
     <!-- 顶：面包屑（每一段可点回退）+ 快捷入口 -->
     <div class="sfb-top">
       <div class="sfb-crumbs">
@@ -48,11 +49,13 @@
               <Icon name="chevron-right" :size="12" class="fgo" />
             </div>
             <div v-for="f in files" :key="'f-' + f"
-                 class="frow" :class="{ on: selected === f, dim: !allowed(f), video: isVideo(f) }"
+                 class="frow" :class="{ on: selected === f, dim: !allowed(f), video: isVideo(f), project: isProjectFile(f) }"
                  @click="allowed(f) && emit('pick-file', f)">
               <Icon :name="iconFor(f)" :size="14" />
               <span class="mono fname">{{ f }}</span>
-              <span v-if="!allowed(f)" class="muted small" style="flex:none">不适用</span>
+              <!-- 三种标签：工程配置（可选，点它 = 添加这个工程）/ 视频 / 不可选 -->
+              <span v-if="isProjectFile(f)" class="tag-project">工程配置</span>
+              <span v-else-if="!allowed(f)" class="muted small" style="flex:none">不可选</span>
               <span v-else-if="isVideo(f)" class="muted small" style="flex:none">视频</span>
             </div>
             <div v-if="!dirs.length && !files.length" class="muted small sfb-pad">空目录</div>
@@ -100,7 +103,13 @@ const props = defineProps({
   /** 当前已选文件名（高亮用） */
   selected: { type: String, default: '' },
   /** 只允许选这些扩展名（小写、不带点）；空 = 不限制 */
-  exts: { type: Array, default: () => [] }
+  exts: { type: Array, default: () => [] },
+  /**
+   * "工程标志文件名"（`yekitrim.toml`）。**只有新增/添加项目那条路传它**（默认空 = 不启用）。
+   * 传了之后，当前目录存在该文件时给目录区加一层绿框 + 「已有工程」标记 —— 与内联那套同口径。
+   * ⚠️ 别给它默认值：别的选择器（字体/弹幕/字幕）里这个文件名没有含义。
+   */
+  projectFile: { type: String, default: '' }
 })
 const emit = defineEmits(['pick-file', 'update:dir', 'update:listing'])
 
@@ -138,6 +147,10 @@ const LAST = (p) => {
   return sep >= 0 ? s.slice(sep + 1) : s
 }
 const extOf = (n) => String(n).split('.').pop().toLowerCase()
+/** 是不是"工程标志文件"（没传 `projectFile` 时恒 false） */
+const isProjectFile = (n) => !!props.projectFile && String(n).toLowerCase() === props.projectFile.toLowerCase()
+/** 当前列出的目录里有没有工程标志文件 = 这是一个**已有工程**目录 */
+const hasProject = computed(() => files.value.some(isProjectFile))
 const isVideo = (n) => VIDEO_EXTS.includes(extOf(n))
 const iconFor = (n) => (isVideo(n) ? 'film' : IMAGE_EXTS.includes(extOf(n)) ? 'image' : 'file')
 const allowed = (n) => {
@@ -371,6 +384,15 @@ onMounted(async () => {
 .frow:hover { background:var(--bg-soft); }
 .frow .fname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow.video, .frow.dir { color:var(--ink); }
+/* `yekitrim.toml` 那行：可选，点它 = "添加这个已有工程"（不是当输入视频） */
+.frow.project { color:var(--green-deep); }
+.tag-project { flex:none; font-size:11px; padding:1px 6px; border-radius:999px;
+  color:var(--green-deep); background:var(--green-soft); border:1px solid var(--green); }
+/* ⚠️ 已有工程目录的绿框（与内联那套同一个信号，别挪到别的元素上） */
+.sfb.has-project { border:1px solid var(--green); border-radius:var(--r-sm);
+  padding:10px 12px; background:var(--green-soft); }
+.sfb.has-project::before { content:"已有工程 · 将直接添加（不覆盖现有配置）";
+  display:block; font-size:11.5px; color:var(--green-deep); margin-bottom:2px; }
 .frow.dir .fgo { color:var(--ink-faint); flex:none; }
 .frow.on { background:var(--main-soft); color:var(--main-deep); font-weight:600; }
 .frow.dim { opacity:.5; cursor:not-allowed; }
