@@ -25,8 +25,23 @@
 
 ## 边界
 
-- GPU 加速编码 (NVENC/QSV/AMF 自动检测, 降级 libx264)
+- GPU 加速编码 (NVENC/QSV/AMF **两级探测** + 降级 libx264)
+  ⚠️ **探测必须"真编一次"，不能只查 `ffmpeg -encoders`**（2026-10-05 修）：
+  列表里有 `h264_nvenc` 只说明**这份 ffmpeg 带它编译**，不说明**本机有硬件**。
+  只查列表 ⇒ 无卡机器（装了全功能 ffmpeg 的 **Windows 同样**）选中 nvenc ⇒
+  每条剪切 `Conversion failed!` ⇒ `所有剪切任务均失败`。
+  `encoder_config()` 现在对每个候选**真编 3 帧 testsrc 到 `-f null`** 验证后才采用；
+  `libx264` **不参与探测**、无条件兜底（探测失败连兜底都没有 = Stage 4 整个不可用）。
+  另：硬件编码器**选中时可用、跑到一半失效**（驱动崩溃/显存耗尽）由
+  `cut_segment` 的 `libx264` 重试兜住 —— 这才是"自动降级"的完整含义。
+  守门测试 `encoder_config_never_returns_an_unusable_hardware_encoder`（变异验证过）。
 - `ffmpeg -ss {start} -i {input} -t {duration} -c:v {auto_encoder} -preset {auto_preset} {qparam} 23 -pix_fmt yuv420p -c:a aac -movflags +faststart {output}`
+- ⚠️ **字幕/弹幕取用一律按"重叠"，不许用"完全包含"**（2026-10-05 修）：
+  `generate_clip_subtitle` 原判据 `s.start >= start && s.end <= end` 会因
+  **转写全精度 f64 vs 事件毫秒精度**的误差把边界字幕判掉（实测差 5.7e-8），
+  然后 `filtered.is_empty()` **静默返回 Ok** ⇒ 整条片段没有 `clip.srt`、无任何日志。
+  现为 `s.start < end + 1ms && s.end > start - 1ms`，与弹幕的
+  `e.start < end && e.end > start` 语义一致。回归钉子 5 条（含变异验证）。
 - 命名: `output/clips/<clip_dir>/clip.mp4`。`clip_dir` 来自 `events.json` 的 `clip_dir`：
   检测时先按标题/区间匹配旧片段（复用旧目录、保住精修产物），匹配不上再用标题 slug 生成
   唯一目录名；旧 events.json 没有 `clip_dir` 时回退 `clip-{rank:02}`。目录名不再等于 rank，
