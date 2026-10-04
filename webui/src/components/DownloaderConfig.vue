@@ -38,6 +38,8 @@
       </div>
 
       <!-- ═══ 引擎与路径（逃生舱） ═══ -->
+      <div class="form-section">
+      <div class="form-section-title">下载器</div>
       <div class="grid2 mt-12">
         <label class="fld">
           <span class="lbl">引擎</span>
@@ -61,7 +63,10 @@
         </label>
       </div>
 
-      <!-- ═══ 存放位置：下载与入库的**共同**落点（属于 [storage]，不是 B站专属） ═══ -->
+      </div>
+
+      <div class="form-section">
+      <div class="form-section-title">存放位置</div>：下载与入库的**共同**落点（属于 [storage]，不是 B站专属） ═══ -->
       <label class="fld mt-12">
         <span class="lbl">项目存放位置</span>
         <div class="row">
@@ -84,6 +89,10 @@
         </span>
       </label>
 
+      </div>
+
+      <div class="form-section">
+      <div class="form-section-title">下载参数</div>
       <!-- ═══ 下载参数 ═══ -->
       <div class="grid2 mt-12">
         <label class="fld">
@@ -119,8 +128,12 @@
         </label>
       </div>
 
+      </div>
+
+      <details class="form-adv">
+      <summary>高级<span class="muted small">B站 cookie</span></summary>
       <!-- ═══ cookie（清晰度/风控） ═══ -->
-      <div class="fld mt-12">
+      <div class="fld">
         <span class="lbl">B站 cookie 文件</span>
         <div class="row">
           <input v-model="form.cookie_file" class="flex-1 mono" placeholder="留空 = 不带 cookie（清晰度封顶 480/720p）">
@@ -132,6 +145,8 @@
           <span class="muted">（部分视频没有它直接下不了）</span>
         </span>
       </div>
+
+      </details>
 
       <div class="row mt-12">
         <button class="btn btn-primary" :disabled="busy" @click="save">

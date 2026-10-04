@@ -28,6 +28,8 @@
       </div>
 
       <template v-else>
+        <div class="form-section">
+        <div class="form-section-title">连接</div>
         <div class="rc-grid">
           <div class="span-2">
             <label title="录播姬的输出目录，YekiTrim 进程要读得到">录像目录 root</label>
@@ -56,6 +58,12 @@
             </div>
             <div class="hint">不回显已保存的密码；<b>留空 = 不改</b></div>
           </div>
+        </div>
+        </div>
+
+        <div class="form-section">
+        <div class="form-section-title">入库</div>
+        <div class="rc-grid">
           <div>
             <label>来源白名单 allow_ips</label>
             <input v-model.trim="allowIpsText" placeholder="留空 = 不限来源">
@@ -69,12 +77,16 @@
             </select>
           </div>
         </div>
+        </div>
+
+        <div class="form-section">
+        <div class="form-section-title">接收入口</div>
 
         <div v-if="warnings.length" class="hint mt-8">
           <div v-for="(w, i) in warnings" :key="i">⚠ {{ w }}</div>
         </div>
 
-        <div class="rc-webhook mt-12">
+        <div class="rc-webhook">
           <label>录播姬里填的 Webhook 地址</label>
           <div class="row">
             <input class="mono flex-1" :value="webhookUrl" readonly @focus="$event.target.select()">
@@ -108,6 +120,7 @@
           <span class="mono">finalize_idle_mins</span>／<span class="mono">move_into_managed</span>／
           <span class="mono">concat_files</span>／<span class="mono">extensions</span>
           不在表单里，用「编辑源文件」改。
+        </div>
         </div>
       </template>
     </template>
