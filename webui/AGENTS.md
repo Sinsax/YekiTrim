@@ -6,14 +6,14 @@
 
 `yekitrim server` **只服务 `webui/dist`**（Vue3 构建产物），**不再内嵌单文件页面**：找不到
 `webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
-`src/` 是工作台前端（壳 / 路由 / 视图 / stores / composables），`scripts/` 是 7 个与出片模板
-对拍的契约脚本（同一套算法有两份实现时的漂移防线）。
+`src/` 是工作台前端（壳 / 路由 / 视图 / stores / composables），`scripts/` 是 8 个静态判据脚本
+（既锁"同一套算法有两份实现"的漂移，也锁布局不变式）。
 
 ## 入口
 
 - 构建：`cd webui && npm install && npm run build`（`build` = `vite build`，`outDir: dist` + `emptyOutDir`）。
 - 起不了 npm 脚本时直接调 vite：`node webui/node_modules/vite/bin/vite.js build`（**在 `webui/` 下跑**）。
-- `webui/scripts/` 七个契约脚本，各锁一条"两份实现必须同口径"的契约：
+- `webui/scripts/` **八个**静态判据脚本（零依赖、不 import 应用模块、不需要起服务）：
   - `check-overlay.mjs` — 覆盖层色档：`templates/index.html` ↔ `src/polish/engine.js` 逐例对拍。
   - `check-caption-wrap.mjs` — 竖屏折行：`wrapCaptionParts` 两份实现。
   - `check-sticker-anchor.mjs` — 贴纸锚点/尺寸（事件左上角百分比 vs `[sticker] position` 中心百分比）。
@@ -22,7 +22,12 @@
   - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖屏归零。
   - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
-  - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`，已进 `gates.mjs`）。
+  - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块必须
+    跨满整行（否则滑条被压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` ·
+    `ModelList` 下载按 admin 门控 · 模板关键标识符必须有定义（Vue 对未定义变量**不报错**）。
+    ⚠️ 每条都带**变异自证**：改坏源码后判据必须翻面 —— 它抓的是"构建通过、门禁全绿、界面已经坏了"。
+  - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`）。
+    （卡里曾写"已进 `gates.mjs`"，但仓里**没有**这个聚合脚本 —— 逐个跑即可。）
 - 子目录细则看各自卡：`src/AGENTS.md`、`src/api/AGENTS.md`、`src/styles/AGENTS.md`、`src/polish/AGENTS.md`。
 
 ## 边界
@@ -51,9 +56,10 @@ node webui/scripts/check-cover-stage.mjs
 node webui/scripts/check-handheld.mjs
 node webui/scripts/check-stage-backdrop.mjs
 node webui/scripts/check-preview-ab.mjs
+node webui/scripts/check-layout-invariants.mjs
 node scripts/check-preview-audio.mjs
 ```
 
 `npm run build` 成功 = `webui/dist/` 重新生成（`emptyOutDir` 会清空旧 hash 名）；**dist 入库，
-必须和 `src/` 的改动一起提交**。七个 node 脚本各自打印对拍项数与通过情况，退出码非 0 即漂移；
+必须和 `src/` 的改动一起提交**。八个 node 脚本各自打印对拍项数与通过情况，退出码非 0 即失败；
 它们零依赖、不 import 应用模块（`webui/package.json` 没有 `"type": "module"`）。

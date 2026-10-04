@@ -185,7 +185,7 @@ cargo test -p yekitrim-core --lib danmaku       # ASS + XML 解析 + 密度
 
 # 改了前端（webui/src）之后：必须重建 dist
 npm --prefix webui run build
-node webui/scripts/check-overlay.mjs           # 覆盖层色档（另有 5 个 check-*.mjs，见 webui/AGENTS.md）
+node webui/scripts/check-overlay.mjs           # 覆盖层色档（另有 7 个 check-*.mjs，见 webui/AGENTS.md）
 
 # 改了转译器（tools/polish-to-dhampir.mjs）之后：曲线守卫 + 变异自证（见 tools/AGENTS.md）
 node scripts/check-yekitrim-translator.mjs
