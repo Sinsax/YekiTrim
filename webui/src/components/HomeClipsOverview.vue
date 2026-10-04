@@ -370,7 +370,8 @@ onUnmounted(() => {
 .ov-init {
   position:absolute; inset:0; display:flex; flex-direction:column; gap:6px;
   align-items:center; justify-content:center;
-  background:rgba(255,255,255,.72); color:var(--ink-dim); font-size:11px; font-weight:600;
+  /* ⚠️ 别写死白纱：暗色下白纱 + --ink-dim(浅灰) = 对比度 1.25。走 --veil（两套主题成对）。 */
+  background:var(--veil); color:var(--ink-dim); font-size:11px; font-weight:600;
 }
 .ov-media { position:relative; display:block; flex:none; }
 .ov-card img { display:block; width:100%; height:78px; object-fit:cover; background:var(--bg-soft); }
