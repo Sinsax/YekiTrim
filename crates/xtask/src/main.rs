@@ -457,27 +457,16 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         }
     }
 
-    // The WebUI ships only from webui/dist, so a stale dist ships a stale UI.
-    let dist = root.join("webui").join("dist");
-    if !dist.join("index.html").is_file() {
-        return Err("webui/dist is missing: run 'npm --prefix webui run build' first".into());
-    }
-    if let (Some(newest_src), Ok(dist_mtime)) = (
-        newest_mtime(&root.join("webui").join("src"))?,
-        fs::metadata(dist.join("index.html")).and_then(|m| m.modified()),
-    ) {
-        if newest_src > dist_mtime + Duration::from_secs(1) {
-            println!(
-                "warning: webui/src is newer than webui/dist -- run 'npm --prefix webui run build'"
-            );
-        }
-    }
+    // WebUI 现在**编在 exe 里**（`crates/yekitrim-server/build.rs` 把 `webui/dist` 用
+    // `include_bytes!` 嵌进去），所以包里**不再带** `webui/dist/`：
+    //   · "只换 exe 就能升级" —— 前端跟着 exe 一起换，不存在"新 exe + 旧界面"这种错配；
+    //   · 新鲜度检查也搬去了编译期（`dist` 比 `src` 旧会让**编译失败**），这里不必再查一遍。
+    // ⚠️ 字体是同一个套路，所以包里 `resources/fonts/` 只留说明文件（见下面那段"纯重复"）。
 
     println!("==> assembling {package_name}");
     if package_dir.exists() {
         fs::remove_dir_all(&package_dir)?;
     }
-    fs::create_dir_all(package_dir.join("webui"))?;
     fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
 
     fs::copy(&exe, package_dir.join("yekitrim.exe"))?;
@@ -494,7 +483,6 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     if ico.is_file() {
         fs::copy(&ico, package_dir.join("yekitrim.ico"))?;
     }
-    copy_dir_all(&dist, &package_dir.join("webui").join("dist"))?;
 
     // ---- 默认出片通道的随身件（2026-10-01）----
     //
@@ -655,12 +643,8 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         fs::copy(&source, package_dir.join(asset))?;
     }
 
-    for required in [
-        "yekitrim.exe",
-        "webui/dist/index.html",
-        "LICENSE",
-        "THIRD-PARTY-NOTICES.md",
-    ] {
+    // ⚠️ 这里**不该**再要求 `webui/dist`：它已编进 exe。要求它反而会让"正确的包"被判失败。
+    for required in ["yekitrim.exe", "LICENSE", "THIRD-PARTY-NOTICES.md"] {
         if !package_dir.join(required).exists() {
             return Err(format!("package is missing {required}").into());
         }
@@ -990,29 +974,6 @@ fn table_version(manifest: &Path, table: &str) -> Option<String> {
     }
 
     None
-}
-
-fn newest_mtime(dir: &Path) -> io::Result<Option<SystemTime>> {
-    if !dir.is_dir() {
-        return Ok(None);
-    }
-
-    let mut newest: Option<SystemTime> = None;
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let candidate = if path.is_dir() {
-            newest_mtime(&path)?
-        } else {
-            fs::metadata(&path).and_then(|meta| meta.modified()).ok()
-        };
-        if let Some(candidate) = candidate {
-            if newest.map(|current| candidate > current).unwrap_or(true) {
-                newest = Some(candidate);
-            }
-        }
-    }
-    Ok(newest)
 }
 
 fn copy_dir_all(source: &Path, destination: &Path) -> io::Result<()> {

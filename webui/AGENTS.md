@@ -4,8 +4,10 @@
 
 ## 职责
 
-`yekitrim server` **只服务 `webui/dist`**（Vue3 构建产物），**不再内嵌单文件页面**：找不到
-`webui/dist/index.html` 时 `/` 返回 **503 + 构建指引**，启动日志也会告警。
+`yekitrim server` 服务的界面**就是 `webui/dist`**（Vue3 构建产物）：**release 把它编在 exe 里**、
+debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在 `crates/yekitrim-server/src/web.rs`）。
+⚠️ **不是**"内嵌一份手写单文件页面"那套 —— 那份长期与 API 漂移、已删除；内嵌的是**构建产物本身**。
+因此 `dist` 是**编译期输入**（缺失或比 `webui/src` 旧会让编译失败），不是运行时依赖。
 `src/` 是工作台前端（壳 / 路由 / 视图 / stores / composables），`scripts/` 是 8 个静态判据脚本
 （既锁"同一套算法有两份实现"的漂移，也锁布局不变式）。
 

@@ -4,7 +4,7 @@
 
 ## 职责
 
-`yekitrim server` 的落点：axum HTTP API（`/api/*`）+ WebUI 宿主（只服务 `webui/dist`）+ 任务队列，并经 SSE 推送任务日志与
+`yekitrim server` 的落点：axum HTTP API（`/api/*`）+ WebUI 宿主（**release 内嵌 `webui/dist`**，见下）+ 任务队列，并经 SSE 推送任务日志与
 进度。领域逻辑一律取自 `yekitrim-service`；本 crate 只做 HTTP 装配、任务调度与文件系统边界，handler 全在 `src/api/`。
 
 ## 入口
@@ -19,7 +19,7 @@
   而 WebUI 有一条**长期挂着**的 SSE（`/api/stream` 任务事件流）—— 页面一开着就必然有，
   于是"退出/Ctrl+C"会**永远等不到返回**（实测：托盘点退出后图标还在、日志里连一条关停记录都没有）。
   现在信号之后再给 3 秒，到点停止监听（日志一条 WARN），锁照样正常释放。**别把这段时限去掉。**
-  `ServerArgs { host, port, open, config, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
+  `ServerArgs { host, port, open, config, webui_dir, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService` / `JobManager` / 日志总线）。
   ⚠️ **里面没有"当前工程"** —— 见下面那条不变式。
@@ -49,12 +49,17 @@
   连同 `yekitrim-polish/wgpu-render`、`yekitrim-render-core/wgpu`、`yekitrim-wasm` 一起没了 ——
   GPU 那侧交给独立的 Dhampir 底座。所以本 crate **没有任何 feature**。
   **别再把它加回来**：加了不报错，只会让前端以为还有 GPU 出片入口。
-- ⚠️ `webui/dist` 的**候选次序是契约**（`src/web.rs::candidates`，2026-10-02 改）：
-  `exe同级 → exe上两级 → 构建期 CARGO_MANIFEST_DIR/../.. → cwd`。前两条由 `current_exe()` 派生，
-  **必须**排在编译期常量前面 —— 否则换台机器 / 换个 cwd 会静默端出**开发机源码树里**那份
-  （三条测试钉住次序，见 `web.rs::tests`）。构建期那条仍按 crate 深度算：别把本 crate 挪到更深
-  的目录，否则它指到 `crates/`。
-- `src/web.rs` 只服务 `webui/dist`：缺 `index.html` 时 `/` 回 **503 + 构建指引**，启动日志也告警。
+- ⚠️ **WebUI 两个来源，按构建形态自动选**（2026-10-03）：**release 内嵌**（`build.rs` 把
+  `webui/dist` 用 `include_bytes!` 编进 exe）· **debug 读盘** · `--webui-dir`/`YEKITRIM_WEBUI_DIR`
+  两种形态都覆盖。规则 = `web.rs::choose()`（纯函数，四种组合都有判据）。
+  ⚠️ **release 即便磁盘上有 dist 也用内嵌那份** —— 否则在开发机上打 release 会"内嵌一份、跑的是
+  仓库里那份"，**测的与发的分家**（这是本次改动的全部意义）。⚠️ `dist` 缺失或比 `webui/src` 旧 ⇒
+  **编译失败**（原先只在 `cargo xtask package` 里查）。
+  ⚠️ **磁盘那条路的候选次序仍是契约**：`exe同级 → exe上两级 → 构建期常量 → cwd`，
+  `current_exe()` 那两条必须在编译期常量前 —— 否则换台机器/换 cwd 会静默端出**开发机源码树里**
+  那份（判据见 `web.rs::tests`）。别把本 crate 挪深，否则构建期那条指到 `crates/`。
+- `src/web.rs` 的 503 只在**显式覆盖指到空目录**时出现；启动日志打一行 `静态资源：内嵌（N）`。
+  ⚠️ 那行**不许以 `WebUI: http://` 开头** —— 托盘靠那个前缀抓地址（跨进程契约）。
 
 ### 任务队列（`src/jobs.rs` / `src/scope_key.rs`）
 

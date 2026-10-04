@@ -86,6 +86,8 @@ async fn run_polish_preview(input: &std::path::Path, mode: Option<&str>) -> anyh
         port: yekitrim_service::doctor::DEFAULT_PORT,
         open: true,
         config: Some(cfg),
+        // WebUI 来源按构建形态自动定（release 内嵌 / debug 读盘）；`polish preview` 不覆盖它。
+        webui_dir: None,
         allow_remote: false,
         trust_proxy: false,
         data_dir: None,
