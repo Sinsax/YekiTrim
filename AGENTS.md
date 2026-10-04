@@ -140,7 +140,7 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 - ⚠️ **产物落盘 = 一次绑定**：`transcript_file` 的登记只有一条路 ——
   `yekitrim_service::assets::bind_asr_artifact`（订正稿走 `bind_derived_material`）。
   别再在别处手写 `transcript_file`，见 `crates/yekitrim-service/AGENTS.md`。
-- ⚠️ **配置改动的四步**（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释）见
+- ⚠️ **配置改动的五步**（字段 + `merge()` 条件 + 手动 `Default` impl + 模板/注释 + **改键时升 `config_version` 并登记迁移**）见
   `crates/yekitrim-core/src/config/AGENTS.md`；`patch_config_file` 是递归深合并，别退回"一层 section"。
 - ⚠️ **许可：别把 espeak-ng 或任何 GPL 组件弄回二进制** —— 那会让整个产物重新变成 GPL 组合作品。
   两道防线：`vendor/sherpa-onnx-sys/build.rs` 的占位断言与 `cargo xtask scan`。
