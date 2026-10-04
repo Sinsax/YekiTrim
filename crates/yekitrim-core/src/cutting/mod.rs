@@ -195,28 +195,147 @@ impl Stage for Cutter {
     }
 }
 
-fn encoder_config() -> (&'static str, &'static str, &'static str) {
-    static CFG: OnceLock<(&'static str, &'static str, &'static str)> = OnceLock::new();
+/// 一个候选编码器：`(名称, preset, 质量参数名)`。
+type EncoderSpec = (&'static str, &'static str, &'static str);
+
+const SOFTWARE_ENCODER: EncoderSpec = ("libx264", "ultrafast", "-crf");
+
+/// 硬件编码器的候选表（**顺序即优先级**）。
+///
+/// ⚠️ 探测分两步，缺一不可（2026-10-05 修）：
+///   ① `ffmpeg -encoders` 里**有**这个名字 —— 只能说明这份 ffmpeg **带该编码器编译**；
+///   ② **真编一小段**能成功 —— 才说明**这台机器**确实能编。
+///
+/// 只做 ① 会踩的坑（实测）：本机 ffmpeg 列表里有 `h264_nvenc`，但没有 NVIDIA 设备，
+/// 于是选中 nvenc → 每条剪切都 `Conversion failed!` → `所有剪切任务均失败`。
+/// 判据是"ffmpeg 的编译选项"而不是"有无显卡"，所以**装了全功能 ffmpeg 的无卡机器
+/// （Windows 同样）都会中招**。
+fn hw_encoder_candidates() -> &'static [EncoderSpec] {
+    &[
+        ("h264_nvenc", "p1", "-cq"),
+        ("h264_qsv", "veryfast", "-global_quality"),
+        ("h264_amf", "speed", "-quality"),
+    ]
+}
+
+/// 真编一小段测试图，验证该编码器在本机可用。
+///
+/// 用 `testsrc` 合成源（不碰用户素材）+ `-f null`（不落盘），3 帧而已，代价可忽略；
+/// 探测结果由 `encoder_config()` 的 `OnceLock` 缓存，每个进程只跑一次。
+fn encoder_actually_works(spec: EncoderSpec) -> bool {
+    let out = crate::process::cmd("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=128x128:rate=5",
+            "-frames:v",
+            "3",
+            "-c:v",
+            spec.0,
+            "-preset",
+            spec.1,
+            spec.2,
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "null",
+            "-",
+        ])
+        .output();
+
+    match out {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
+}
+
+/// 选择本机可用的视频编码器（进程内缓存一次）。
+///
+/// 优先硬件编码（逐个真编验证），全不可用则回落 `libx264`。
+/// ⚠️ `libx264` 不参与探测：它是软件编码，`ffmpeg -encoders` 都没有它的情况极罕见，
+/// 而"探测失败连兜底都没有"会让整个 Stage 4 直接不可用 —— 保持它无条件兜底。
+fn encoder_config() -> EncoderSpec {
+    static CFG: OnceLock<EncoderSpec> = OnceLock::new();
     *CFG.get_or_init(|| {
         let output = crate::process::cmd("ffmpeg")
             .args(["-hide_banner", "-encoders"])
             .output();
         let stdout = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-            Err(_) => return ("libx264", "ultrafast", "-crf"),
+            Err(_) => return SOFTWARE_ENCODER,
         };
 
-        if stdout.contains("h264_nvenc") {
-            return ("h264_nvenc", "p1", "-cq");
+        for spec in hw_encoder_candidates() {
+            if !stdout.contains(spec.0) {
+                continue;
+            }
+            // 列表里有 ≠ 本机能用：必须真编一次才算数。
+            if encoder_actually_works(*spec) {
+                return *spec;
+            }
+            tracing::warn!(
+                "{} 已被编译进 ffmpeg，但本机实际编码失败（无对应硬件/驱动不可用），跳过",
+                spec.0
+            );
         }
-        if stdout.contains("h264_qsv") {
-            return ("h264_qsv", "veryfast", "-global_quality");
-        }
-        if stdout.contains("h264_amf") {
-            return ("h264_amf", "speed", "-quality");
-        }
-        ("libx264", "ultrafast", "-crf")
+
+        SOFTWARE_ENCODER
     })
+}
+
+/// 兜底：硬件编码器**选中时可用**、但**跑到一半失效**（驱动崩溃、显存耗尽、
+/// 并发切片段时句柄耗尽……）的情况。此时用 `libx264` 重试一次，别让整批剪切白跑。
+fn is_software_encoder(spec: EncoderSpec) -> bool {
+    spec.0 == SOFTWARE_ENCODER.0
+}
+
+fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> {
+    let enc = encoder_config();
+    match run_cut(video, start, end, output, enc) {
+        Ok(()) => Ok(()),
+        Err(e) if !is_software_encoder(enc) => {
+            // 硬件编码失败 → 用软件编码重试一次（AGENTS.md 承诺的"自动降级"）。
+            tracing::warn!("{} 编码失败，降级 libx264 重试: {}", enc.0, e);
+            run_cut(video, start, end, output, SOFTWARE_ENCODER).map_err(|e2| {
+                anyhow::anyhow!("{} 与 libx264 均失败；libx264 报: {}", enc.0, e2)
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn run_cut(video: &Path, start: f64, end: f64, output: &Path, enc: EncoderSpec) -> Result<()> {
+    let duration = (end - start).max(0.1);
+    let mut cmd = crate::process::cmd("ffmpeg");
+    cmd.arg("-y")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-ss")
+        .arg(format!("{:.3}", start))
+        .arg("-i")
+        .arg(video)
+        .arg("-t")
+        .arg(format!("{:.3}", duration))
+        .arg("-c:v")
+        .arg(enc.0)
+        .arg("-preset")
+        .arg(enc.1)
+        .arg(enc.2)
+        .arg("23")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output);
+    run_ffmpeg(&mut cmd, Duration::from_secs_f64(cut_timeout_secs(duration)), "ffmpeg 片段剪切")?;
+    Ok(())
 }
 
 /// 单条 ffmpeg 剪切的硬超时（秒）。
@@ -278,37 +397,25 @@ fn run_ffmpeg(cmd: &mut Command, timeout: Duration, what: &str) -> Result<String
     }
 }
 
-fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> {
-    let duration = (end - start).max(0.1);
-    let mut cmd = crate::process::cmd("ffmpeg");
-    cmd.arg("-y")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-ss")
-        .arg(format!("{:.3}", start))
-        .arg("-i")
-        .arg(video)
-        .arg("-t")
-        .arg(format!("{:.3}", duration))
-        .arg("-c:v")
-        .arg(encoder_config().0)
-        .arg("-preset")
-        .arg(encoder_config().1)
-        .arg(encoder_config().2)
-        .arg("23")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-movflags")
-        .arg("+faststart")
-        .arg(output);
-    run_ffmpeg(&mut cmd, Duration::from_secs_f64(cut_timeout_secs(duration)), "ffmpeg 片段剪切")?;
-    Ok(())
-}
-
 /// 对已输出的视频文件执行静音移除（重编码）。
 /// `duration` 为连续静音秒数阈值，超过此长度的静音段将被移除。
+/// 字幕按**重叠**取，并对边界容差 —— 别改回"完全包含"。
+///
+/// ⚠️ 2026-10-05：原判据是 `s.start >= start && s.end <= end`（要求**完全包含**），
+/// 结果是**边界贴合的字幕被静默丢掉**，整条片段的 `clip.srt` 直接不生成：
+///
+///   转写里 `segment.end = 3.8730000572204593`（f64 全精度）
+///   事件里 `end        = 3.873`（SRT 只存到毫秒，事件是从它派生的）
+///   ⇒ `3.8730000572204593 <= 3.873` 为 **false**，差 5.7e-8 就被判掉
+///
+/// 这是典型的"两个精度不一致的数直接比大小"。而且它**不报错**——
+/// `generate_clip_subtitle` 见 `filtered.is_empty()` 就静默 `Ok(())`，
+/// 用户只会发现"片段没字幕"，查不出为什么。
+///
+/// 修法：① 改成重叠语义（与下面的弹幕 `generate_clip_danmaku` 一致，
+/// 跨边界的字幕本来就该被算进来，出片时再裁剪）；② 再给一点浮点容差。
+const SUBTITLE_TIME_EPSILON: f64 = 1e-3; // 1ms：SRT 的最小时间单位
+
 fn generate_clip_subtitle(
     transcript: &crate::types::Transcript,
     start: f64,
@@ -318,7 +425,9 @@ fn generate_clip_subtitle(
     let filtered: Vec<crate::types::TranscriptSegment> = transcript
         .segments
         .iter()
-        .filter(|s| s.start >= start && s.end <= end)
+        .filter(|s| {
+            s.start < end + SUBTITLE_TIME_EPSILON && s.end > start - SUBTITLE_TIME_EPSILON
+        })
         .map(|s| crate::types::TranscriptSegment {
             start: (s.start - start).max(0.0),
             end: (s.end - start).max(0.0),
@@ -669,5 +778,110 @@ mod tests {
         write_meta(no_range.0.as_path(), serde_json::json!({ "title": "只有标题" }));
         assert!(foreign_clip_conflict(no_range.0.as_path(), "别的标题", ts(0.0), ts(10.0)).is_none(),
                 "缺区间字段 → 放行（老数据）");
+    }
+
+    // ---------------------------------------------------------------- 字幕取用
+    //
+    // 回归钉子（2026-10-05）：边界贴合的字幕曾被**静默丢掉**，导致整条片段
+    // 没有 clip.srt。根因是 `s.start >= start && s.end <= end` 的完全包含判据
+    // 撞上"转写全精度 f64 vs 事件毫秒精度"的误差（差 5.7e-8 即判掉）。
+
+    fn seg(start: f64, end: f64, text: &str) -> crate::types::TranscriptSegment {
+        crate::types::TranscriptSegment {
+            start,
+            end,
+            text: text.into(),
+            confidence: 1.0,
+        }
+    }
+
+    fn transcript_of(segs: Vec<crate::types::TranscriptSegment>) -> crate::types::Transcript {
+        crate::types::Transcript { segments: segs, language: "zh".into(), asr_metadata: None }
+    }
+
+    /// 真实踩到的形态：转写段 end 略大于事件 end（毫秒舍入误差）。
+    #[test]
+    fn clip_subtitle_keeps_segment_that_overhangs_end_by_rounding() {
+        let t = TmpDir::new("sub-round");
+        let out = t.0.join("clip.srt");
+        // 事件 0.853–3.873 来自 SRT；转写段保留 f64 全精度
+        let tr = transcript_of(vec![seg(0.852999997317791, 3.8730000572204593, "边界")]);
+        generate_clip_subtitle(&tr, 0.853, 3.873, &out).unwrap();
+
+        assert!(out.exists(), "边界贴合的字幕必须落盘 —— 这正是曾静默丢失的形态");
+        let body = std::fs::read_to_string(&out).unwrap();
+        assert!(body.contains("边界"), "字幕内容不能空: {body}");
+    }
+
+    /// 完全落在片段内的字幕当然要留。
+    #[test]
+    fn clip_subtitle_keeps_segment_fully_inside() {
+        let t = TmpDir::new("sub-inside");
+        let out = t.0.join("clip.srt");
+        let tr = transcript_of(vec![seg(2.0, 4.0, "里面")]);
+        generate_clip_subtitle(&tr, 1.0, 10.0, &out).unwrap();
+        assert!(std::fs::read_to_string(&out).unwrap().contains("里面"));
+    }
+
+    /// 跨片段边界的字幕要**算进来**（出片时再裁），与弹幕的重叠语义一致。
+    #[test]
+    fn clip_subtitle_keeps_segment_crossing_boundary() {
+        let t = TmpDir::new("sub-cross");
+        let out = t.0.join("clip.srt");
+        let tr = transcript_of(vec![seg(0.5, 5.0, "跨边界")]);
+        generate_clip_subtitle(&tr, 1.0, 3.0, &out).unwrap();
+        assert!(std::fs::read_to_string(&out).unwrap().contains("跨边界"),
+                "跨边界的字幕不能丢");
+    }
+
+    /// 但**真的**在片段之外的字幕不许被带进来（别把容差放大成"全都收"）。
+    #[test]
+    fn clip_subtitle_drops_segment_far_outside() {
+        let t = TmpDir::new("sub-outside");
+        let out = t.0.join("clip.srt");
+        let tr = transcript_of(vec![seg(50.0, 60.0, "远处")]);
+        generate_clip_subtitle(&tr, 1.0, 3.0, &out).unwrap();
+        assert!(!out.exists(), "完全不重叠的字幕不应产出 clip.srt");
+    }
+
+    /// 时间全部相对片段起点平移，不能出现负数。
+    #[test]
+    fn clip_subtitle_shifts_times_to_clip_origin() {
+        let t = TmpDir::new("sub-shift");
+        let out = t.0.join("clip.srt");
+        let tr = transcript_of(vec![seg(8.0, 12.0, "挪")]);
+        // 片段 10–20s：该段与片段重叠 10–12s ⇒ 平移后应是 0.000–2.000
+        generate_clip_subtitle(&tr, 10.0, 20.0, &out).unwrap();
+        let body = std::fs::read_to_string(&out).unwrap();
+        let time_line = body.lines().find(|l| l.contains("-->")).expect("应有时间行");
+        // ⚠️ 别拿 '-' 当"负数"判据：SRT 的时间行本身就含 '-->'。
+        assert_eq!(time_line.trim(), "00:00:00,000 --> 00:00:02,000",
+                   "时间应相对片段起点平移且不为负: {time_line}");
+    }
+
+    /// 编码器选择必须有可用的兜底，且 `libx264` 被判为"软件编码"。
+    #[test]
+    fn software_encoder_is_the_fallback() {
+        assert!(is_software_encoder(SOFTWARE_ENCODER));
+        assert_eq!(SOFTWARE_ENCODER.0, "libx264");
+        // 硬件候选不该把 libx264 重复列进去（否则兜底逻辑会绕圈）
+        assert!(
+            !hw_encoder_candidates().iter().any(|c| c.0 == "libx264"),
+            "libx264 不该出现在硬件候选表里"
+        );
+    }
+
+    /// 选出来的编码器必须是**真能编**的 —— 在无卡机器上应回落到 libx264。
+    /// 这条是"无 N 卡也能出片"的守门测试（测本机 ffmpeg 的真实能力）。
+    #[test]
+    fn encoder_config_never_returns_an_unusable_hardware_encoder() {
+        let picked = encoder_config();
+        if !is_software_encoder(picked) {
+            assert!(
+                encoder_actually_works(picked),
+                "选中了硬件编码器 {} 但实测编不了 —— 探测逻辑失效",
+                picked.0
+            );
+        }
     }
 }
