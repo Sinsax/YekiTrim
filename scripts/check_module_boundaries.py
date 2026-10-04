@@ -263,7 +263,9 @@ def check_line_endings() -> list[str]:
     bad: list[str] = []
     for line in r.stdout.splitlines():
         # 形如：`i/lf    w/crlf  attr/text=auto eol=lf	<path>`
-        if "w/crlf" in line:
+        # ⚠️ `w/mixed` 也要算 —— 只差一行 CR 同样是"这个文件不是纯 LF"，
+        #     而契约脚本按 `\n` 找锚点，一行 CR 就足以让某个锚点匹配不上（本脚本自己就中过）。
+        if "w/crlf" in line or "w/mixed" in line:
             bad.append(line.split("	")[-1])
     return bad
 
