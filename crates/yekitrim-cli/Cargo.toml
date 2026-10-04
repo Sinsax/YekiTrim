@@ -40,6 +40,12 @@ windows-sys = { version = "0.52", features = [
     # WNDCLASSW 挂在 Graphics_Gdi 后面（windows-sys 的 feature 归属就是这么分的）
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
+    # Job Object：把子进程放进"父死子死"的 job（托盘被强杀时不让服务变孤儿）。
+    # CreateJobObjectW 还额外要 Win32_Security —— 同一个 crate 的两个 feature，不新增包。
+    "Win32_System_JobObjects",
+    # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 的字段里有 Threading::IO_COUNTERS，所以还要它
+    "Win32_System_Threading",
+    "Win32_Security",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

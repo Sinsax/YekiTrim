@@ -31,6 +31,14 @@
     ⚠️ **`quit()` 收完子进程必须自己 `PostMessageW(WM_CLOSE)`** 打破消息循环 ——
       旧（同进程）设计里是 server 线程干的，现在托盘进程里没有 server 线程；"看门狗"也指望不上
       （`quit()` 已经把 child 从 `Shared` 里 `take()` 走了）。漏了的症状：**子进程已优雅退出、锁也干净，托盘进程却一直挂着**。
+    ⚠️ **子进程必须放进 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job**（`make_kill_on_close_job`）：
+      任务管理器"结束任务"是 `TerminateProcess`，父进程**没有任何机会收尾**（连 Drop 都不跑），
+      只能靠系统 —— job 句柄一关系统就把 job 里的进程全杀。**句柄故意不显式关**（存 `Mutex<isize>`，
+      没有 Drop）：进程退出时系统关它，那一刻才生效；正常退出时子进程早收尾了，这一刀砍空。
+      ⚠️ 它拉起的孙进程（ffmpeg/底座）也在同一 job 里 —— 这正是要的（别留孤儿 ffmpeg）。
+      ⚠️ 建 job / 放进程**失败只记日志、不拦启动**（外层可能已有不允许 breakaway 的 job）：
+      退化成"托盘被杀后服务会留着"，而不是托拉起不来。实测：强杀托盘后子进程**一起消失**，
+      残留锁在下次启动时被自动接管。
     ⚠️ **开浏览器用 `ShellExecuteW`**，别退回 `cmd /c start`：本进程无控制台，起 `cmd.exe` 会**闪黑框**。
     ⚠️ **托盘图标取 exe 自带的图标资源**（`LoadIconW(hinst, 1)`）→ 内嵌 `.ico` → exe 同级文件 → 系统默认。
       别退回"只读 exe 同级那个 .ico"：开发时 `target/release/` 下没有它，而**没图标是静默的**。
