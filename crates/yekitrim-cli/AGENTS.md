@@ -29,6 +29,20 @@
     双击第二次的合理反应是"打开它"，不是报"端口被占"。
     ⚠️ 端口用 `YEKITRIM_PORT` 覆盖（缺省 `doctor::DEFAULT_PORT`，**别写第二个字面量**）：给开发时并存/自动化测试用。
     ⚠️ windows-sys **钉 0.52**（那个版本句柄是 `isize`；0.59+ 改指针包装，代码对不上）。
+    ⚠️ **开浏览器用 `ShellExecuteW`，不要退回 `cmd /c start`**：托盘是无控制台子系统，
+    它一起去起 `cmd.exe` 会**闪一个黑框**（实测：启动自动开页闪一次、右键「打开网页」又闪一次）。
+    ⚠️ **托盘图标取 exe 自带的图标资源**（`LoadIconW(hinst, 1)`）；兜底两条是
+    `include_bytes!` 内嵌的 .ico（`CreateIconFromResourceEx`）与 exe 同级 `yekitrim.ico`。
+    ⚠️ 别退回"运行时只读 exe 同级那个 .ico"：开发时 exe 在 `target/release/`，那里**没有**它，
+    而**没图标是静默的**（`NIM_ADD` 照样返回成功，只是通知区空一块）—— 实测就这么踩过。
+- **`build.rs` = 把图标编进 exe**（`assets/yekitrim.rc` + `assets/yekitrim.ico`，资源 ID = 1，
+  资源管理器取"编号最小的图标"当 exe 图标，所以两个 exe 都就有了）。
+  ⚠️ 它**自己找 `rc.exe`**（PATH → Windows SDK 的 `bin/<版本>/<架构>/`，版本按数字段比大小）
+  而不是引 `embed-resource`：那个 crate 会给 `Cargo.lock` 带进 **10 个新包**，
+  而本仓对依赖是记账制的（`THIRD-PARTY-NOTICES.md` 写死包数 + 新增要重跑审计）——
+  为一个图标动那份账不划算。`rc.exe` 与本仓**本来就要求**的 MSVC 工具链同源。
+  ⚠️ 找不到 rc.exe 时**只发 `cargo:warning` 并跳过后继续构建**：图标是外观，
+  不该让"缺个 SDK 工具"变成别人 clone 下来编不过。
 - **`src/tracing_setup.rs` 两个 bin 共用**（各自 `mod tracing_setup;` 引同一份文件）：
   `setup(true)` = CLI（终端 + 日志总线），`setup(false)` = 托盘（只挂日志总线）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：

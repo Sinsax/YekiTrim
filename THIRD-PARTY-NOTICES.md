@@ -42,6 +42,10 @@
 
 ### 构建期使用，但**不随二进制分发**
 
+> 补充（2026-10-04）：构建期还会调用 **`rc.exe`**（Windows SDK 的资源编译器）来把品牌图标
+> 编进 exe（`crates/yekitrim-cli/build.rs`）。它是**微软 SDK 自带的外部命令，不是本仓的依赖包**，
+> 因此不改变下面那份包清单；找不到它时构建只发一条 `cargo:warning` 并跳过图标，仍然能编过。
+
 ⚠️ **本条曾经的最大一项已随功能删除**：`headless_chrome`（MIT）以及它那个
 **GPL-3.0 的构建期依赖 `auto_generate_cdp`** —— 2026-10-01 用户拍板把本仓那条
 headless Chrome 渲染腿（出片兜底腿 + 封面截图通道）**整条删除**，`headless_chrome`

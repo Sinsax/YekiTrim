@@ -10,6 +10,12 @@
 ## 入口
 
 - `src/lib.rs`：`pub async fn run(args: ServerArgs)` —— 唯一启动入口（`yekitrim server` 与 `polish preview` 回退都走它）；
+  `run()` 现在只是薄壳 = `run_with(args, ctrl_c(), |_| {})`；**`run_with(args, shutdown, on_listening)`** 是可控版
+  （托盘用它：`shutdown` 一到就优雅关停、`on_listening` 回**实际**监听地址 —— 端口被占时服务端会自己换一个）。
+  ⚠️ **优雅关停必须有时限**（`SHUTDOWN_GRACE = 3s`）：`axum` 的 `with_graceful_shutdown` 会等**所有连接**收尾，
+  而 WebUI 有一条**长期挂着**的 SSE（`/api/stream` 任务事件流）—— 页面一开着就必然有，
+  于是"退出/Ctrl+C"会**永远等不到返回**（实测：托盘点退出后图标还在、日志里连一条关停记录都没有）。
+  现在信号之后再给 3 秒，到点停止监听（日志一条 WARN），锁照样正常释放。**别把这段时限去掉。**
   `ServerArgs { host, port, open, config, allow_remote, trust_proxy, data_dir, admin_password_file, force, open_path }`；
   `first_bindable_port` / `bind_conflict_hint`（绑失败**实测试绑**再报；`10013`=系统拒绝，`10048`=真被占用）。
 - `AppState`（`src/model.rs`）：共享句柄（`AuthService` / `JobManager` / 日志总线）。

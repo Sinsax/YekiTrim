@@ -1,0 +1,8 @@
+// Windows 资源脚本：只做一件事 —— 把品牌图标编进 exe。
+//
+// ⚠️ ID 必须是 **1**：资源管理器/任务栏取"编号最小的图标资源"当 exe 图标；
+// 托盘那边也用同一个 ID（`LoadIconW(hinst, 1)`），所以两处天然一致。
+//
+// 图标本体来自 `tools/` 之外的品牌资产 `assets/yekitrim.ico`（多尺寸 16→256），
+// 由 `D:\Download\logo_fix2.png` 生成；换 logo 时重出这一份即可（`webui/public/*` 那套是给网页用的）。
+1 ICON "assets/yekitrim.ico"
