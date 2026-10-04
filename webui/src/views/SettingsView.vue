@@ -640,11 +640,20 @@ onMounted(async () => {
    滑块宽度仍是格子宽的 1/3（SliderField 自己的约定，不改）。 */
 /* 按链路覆盖 / extra_params 左右并排（用户要求"做成左右结构"）。
    右栏给固定上限宽度：JSON 正文不需要更宽，再宽也是换行看不清。 */
-.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,420px); gap:0 20px; align-items:start; }
+.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 20px; align-items:start; }
 @media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
-/* ⚠️ 半宽列里那一行放不下两个 300px 滑块（默认 grid-template-columns 是 max-content 300px 300px max-content）——
-   改成两列弹性宽度，滑块自己会收。 */
-.llm-cols .llm-link-row { grid-template-columns:max-content minmax(0,1fr) minmax(0,1fr) max-content; }
+/* ⚠️ 半宽列（各 50%）放不下「名字 + 两个滑块 + 下拉」一行 —— 硬塞的实测结果是：
+   链路行折成 45px、滑条被压到 **59px**（1280px 下只剩 41px），刻度根本看不见。
+   所以这里改成网格：**名字与下拉一行，两个滑块各占一整行**（滑条立刻回到整列的 1/3 ≈ 189px）。 */
+.llm-cols .llm-link-row {
+  display:grid; grid-template-columns:minmax(0,1fr) max-content;
+  gap:2px 10px; align-items:center;
+}
+.llm-cols .llm-link-row .ln-name { grid-column:1; }
+.llm-cols .llm-link-row > select { grid-column:2; }
+.llm-cols .llm-link-row :deep(.slf),
+.llm-cols .llm-link-row .ln-inherit { grid-column:1 / -1; }
+.llm-cols .llm-link-row + .llm-link-row { margin-top:8px; }
 .llm-links { margin-top:12px; }
 .llm-links-head { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; font-weight:700; font-size:12.5px; }
 .llm-link-row { display:grid; grid-template-columns:max-content minmax(0,300px) minmax(0,300px) max-content;
