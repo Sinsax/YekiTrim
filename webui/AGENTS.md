@@ -22,10 +22,9 @@
   - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖屏归零。
   - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
-  - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块必须
-    跨满整行（否则滑条被压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` ·
-    `ModelList` 下载按 admin 门控 · 模板关键标识符必须有定义（Vue 对未定义变量**不报错**）。
-    ⚠️ 每条都带**变异自证**：改坏源码后判据必须翻面 —— 它抓的是"构建通过、门禁全绿、界面已经坏了"。
+  - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块跨满
+    整行（否则滑条压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` · `ModelList` 下载按
+    admin 门控 · 模板标识符必须有定义（Vue 对未定义变量**不报错**）。⚠️ 每条带**变异自证**。
   - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`）。
     （卡里曾写"已进 `gates.mjs`"，但仓里**没有**这个聚合脚本 —— 逐个跑即可。）
 - 子目录细则看各自卡：`src/AGENTS.md`、`src/api/AGENTS.md`、`src/styles/AGENTS.md`、`src/polish/AGENTS.md`。
