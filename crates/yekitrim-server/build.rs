@@ -54,10 +54,10 @@ fn main() {
     //
     // ⚠️ 为什么不能用 mtime：全新 `git clone` 时所有文件的 mtime 都是检出那一刻、逐个差几毫秒，
     // 于是"dist 比 src 旧"会**随机误报** —— 别人的第一次构建直接被这条打死（Linux 拉取必踩）。
-    // 指纹由前端构建写进 `dist/.built-from.txt`（`webui/vite.config.js` 里那个插件），
+    // 指纹由前端构建写进 `dist/.built-from`（`webui/vite.config.js` 里那个插件），
     // 算法与下面的 `src_fingerprint` 必须逐字节一致；**不一致会立刻在这里报错**（也是交叉校验）。
     let want = src_fingerprint(&src);
-    let marker = dist.join(".built-from.txt");
+    let marker = dist.join(".built-from");
     match read_marker(&marker) {
         Some(got) if got != want => panic!(
             "webui/dist 不是从当前的 webui/src 构建出来的 —— 内嵌进去的会是**过期界面**。\n\
@@ -100,7 +100,7 @@ fn main() {
 fn collect(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        // 点文件不进内嵌表（`.built-from.txt` 是构建元数据，没有理由端给浏览器）
+        // 点文件不进内嵌表（`.built-from` 是构建元数据，没有理由端给浏览器）
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
@@ -153,7 +153,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// 读 `dist/.built-from.txt` 里的 `src_fnv1a64 = <16 hex>`；文件不在或没这行 = `None`。
+/// 读 `dist/.built-from` 里的 `src_fnv1a64 = <16 hex>`；文件不在或没这行 = `None`。
 fn read_marker(path: &Path) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     text.lines()
