@@ -474,14 +474,41 @@ where
     }
 
     // ConnectInfo 让登录限流拿到真实对端 IP（不信任 X-Forwarded-For，§3.5.1）
-    axum::serve(
+    //
+    // ⚠️ **优雅关停必须有时限**：`axum` 的 `with_graceful_shutdown` 会等**所有连接**收尾，
+    // 而 WebUI 有一条**长期挂着的 SSE**（`/api/stream`，任务事件流）—— 只要页面开着就一定有一条，
+    // 于是"退出"会**永远等不到返回**（实测：托盘点退出后图标还在，日志里连一条关停记录都没有）。
+    // 所以收到关停信号后再给 `SHUTDOWN_GRACE`，到点就不等了：监听停掉、锁照样正常释放。
+    // 这条对 CLI 的 Ctrl+C 同样成立（开着页面的 `yekitrim server` 按 Ctrl+C 也会卡住）。
+    let signalled = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signalled2 = std::sync::Arc::clone(&signalled);
+    let shutdown = async move {
+        shutdown.await;
+        // 用 notify_one（会存一个 permit）：万一信号在 select 之前就到了，也不会丢
+        signalled2.notify_one();
+    };
+    let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown)
-    .await?;
+    .with_graceful_shutdown(shutdown);
+    tokio::select! {
+        r = serve => r?,
+        _ = async {
+            signalled.notified().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => {
+            tracing::warn!(
+                "关停时限 {:?} 到，仍有连接未收尾（多半是页面的 SSE 事件流），直接停止监听",
+                SHUTDOWN_GRACE
+            );
+        }
+    }
     Ok(())
 }
+
+/// 收到关停信号后，最多再等这么久让在飞的请求收尾（见 `run_with` 里的说明）。
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub(crate) fn open_browser(url: &str) {
     let opened = if cfg!(target_os = "windows") {

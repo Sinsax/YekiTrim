@@ -106,14 +106,33 @@ mod win {
 
     /// 开浏览器。
     ///
+    /// ⚠️ 用 `ShellExecuteW`，**不要退回 `cmd /c start`**：托盘是无控制台子系统，
+    /// 它一起去起 `cmd.exe` 会**闪一个黑色控制台窗口**（实测：托盘启动自动开页时闪一次、
+    /// 右键「打开网页」时又闪一次）。`ShellExecuteW` 不建进程、不碰控制台。
+    ///
     /// ⚠️ 这里**故意不复用** `yekitrim_server` 里那个 `open_browser`：那条机器门禁
     /// （`scripts/check_module_boundaries.py` 的「cli 只用 server 的入口」）只放行
     /// `yekitrim_server::{run*, ServerArgs}`，而它同时被根 AGENTS.md 的架构段引用（预算只剩个位数）。
     /// 为 3 行 Windows 专属代码去松门禁、再动根文件，不划算。
     fn open_url(url: &str) {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .spawn();
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let op = wide("open");
+        let u = wide(url);
+        // 返回值 <= 32 才是失败（HINSTANCE 语义），> 32 表示成功
+        let r = unsafe {
+            ShellExecuteW(
+                0,
+                op.as_ptr(),
+                u.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if r <= 32 {
+            tracing::warn!("ShellExecuteW 打开 {url} 失败（返回值 {r}）");
+        }
     }
 
     fn message_box(title: &str, body: &str) {
@@ -140,7 +159,11 @@ mod win {
         let t = wide(tip);
         let n = t.len().min(nid.szTip.len());
         nid.szTip[..n].copy_from_slice(&t[..n]);
-        unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &nid) };
+        let ok = unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_DELETE }, &nid) };
+        if add && ok == 0 {
+            // 静默失败最坑：进程活着、菜单也能弹，就是通知区里没有它
+            tracing::error!("Shell_NotifyIconW(NIM_ADD) 失败：通知区不会有图标");
+        }
     }
 
     unsafe extern "system" fn wndproc(
@@ -384,9 +407,87 @@ mod win {
         }
     }
 
-    /// 随包 `yekitrim.ico` → 系统默认图标。
+    /// 图标数据**编进二进制**。
+    ///
+    /// ⚠️ 不要退回"运行时去 exe 同级读 `yekitrim.ico`"：开发时 exe 在 `target/release/`、
+    /// 发行时在安装目录，两处都容易没有那个文件 —— 而**托盘没图标是静默的**（`Shell_NotifyIconW`
+    /// 照样返回成功，只是通知区里空一块）。实测就是这样：我本地 `target/release/` 下没有 `.ico`，
+    /// 托盘里一直没有图标。编进二进制后，图标不再依赖任何外部文件。
+    const ICON_ICO: &[u8] = include_bytes!("../assets/yekitrim.ico");
+
+    /// 从 `.ico` 的目录里挑一张最接近 `want` 的图，返回 (偏移, 长度)。
+    ///
+    /// ⚠️ `CreateIconFromResourceEx` 要的是**单张图**（RT_ICON 那种 BITMAPINFOHEADER+掩码 / PNG），
+    /// **不是整个 .ico 文件**（.ico 外面还套着 6 字节 ICONDIR + 每张 16 字节的目录项）。
+    /// 直接把整个文件喂进去会失败。
+    fn pick_ico_image(want: u16) -> Option<(usize, usize)> {
+        let b = ICON_ICO;
+        if b.len() < 6 || b[0] != 0 || b[1] != 0 || b[2] != 1 || b[3] != 0 {
+            return None; // reserved=0 type=1(icon) count>0
+        }
+        let count = u16::from_le_bytes([b[4], b[5]]) as usize;
+        let rd16 = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
+        let rd32 = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
+        let mut best: Option<(usize, usize, usize)> = None; // (差距, 偏移, 长度)
+        for i in 0..count {
+            let e = 6 + i * 16;
+            if e + 16 > b.len() {
+                break;
+            }
+            // 宽高字段 0 表示 256
+            let w = match rd16(e) {
+                0 => 256usize,
+                v => v,
+            };
+            let size = rd32(e + 8);
+            let off = rd32(e + 12);
+            if off + size > b.len() {
+                continue;
+            }
+            let d = w.abs_diff(want as usize);
+            if best.map(|(bd, _, _)| d < bd).unwrap_or(true) {
+                best = Some((d, off, size));
+            }
+        }
+        best.map(|(_, off, size)| (off, size))
+    }
+
+    /// 托盘图标：**exe 自带资源** → 内嵌 .ico → exe 同级 `yekitrim.ico` → 系统默认图标。
+    ///
+    /// 为什么留前两条：① 是"与资源管理器同一份"，最正；② 不依赖链接期资源（万一 build.rs 没跑成，
+    /// 或是别的构建方式），实测就是它把"托盘没图标"这个静默故障先兜住的。
     fn load_icon(hinst: isize) -> isize {
-        use windows_sys::Win32::UI::WindowsAndMessaging::LR_LOADFROMFILE;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateIconFromResourceEx, GetSystemMetrics, LR_DEFAULTCOLOR, LR_LOADFROMFILE,
+            SM_CXSMICON, SM_CYSMICON,
+        };
+        let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)) };
+        // ① exe 资源（`build.rs` 把 assets/yekitrim.rc 编了进去，ID = 1）
+        let h = unsafe { LoadIconW(hinst, 1 as *const u16) };
+        if h != 0 {
+            tracing::info!("托盘图标：用 exe 自带的图标资源");
+            return h;
+        }
+        // ① 内嵌数据（首选，任何 cwd / 任何安装形状都成立）
+        if let Some((off, size)) = pick_ico_image(cx.max(16) as u16) {
+            let h = unsafe {
+                CreateIconFromResourceEx(
+                    ICON_ICO[off..].as_ptr(),
+                    size as u32,
+                    1, // fIcon = TRUE
+                    0x0003_0000,
+                    cx,
+                    cy,
+                    LR_DEFAULTCOLOR,
+                )
+            };
+            if h != 0 {
+                tracing::info!("托盘图标：用内嵌 .ico（{cx}x{cy}）");
+                return h;
+            }
+            tracing::warn!("内嵌 .ico 创建图标失败，退回文件/系统图标");
+        }
+        // ② exe 同级 yekitrim.ico（发行包里 xtask 会放一份）
         if let Some(dir) = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -394,13 +495,16 @@ mod win {
             let ico = dir.join("yekitrim.ico");
             if ico.is_file() {
                 let path = wide(&ico.to_string_lossy());
-                let h =
-                    unsafe { LoadImageW(hinst, path.as_ptr(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE) };
+                let h = unsafe {
+                    LoadImageW(hinst, path.as_ptr(), IMAGE_ICON, cx, cy, LR_LOADFROMFILE)
+                };
                 if h != 0 {
+                    tracing::info!("托盘图标：用 exe 同级的 yekitrim.ico");
                     return h;
                 }
             }
         }
+        tracing::warn!("托盘图标：退回系统默认图标（通知区里会是个通用图标）");
         unsafe { LoadIconW(0, IDI_APPLICATION) }
     }
 }
