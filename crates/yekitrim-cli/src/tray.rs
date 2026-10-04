@@ -33,8 +33,10 @@
 //! ## 已知取舍
 //!
 //! · 两个进程：托盘（几 MB）+ 真正干活的 `yekitrim.exe`。任务管理器里干活的是后者。
-//! · 托盘被强杀后服务会留着，此时再双击 ⇒ 新托盘只会"打开已有实例"然后退出，**没有图标可停它**
-//!   （要停就用任务管理器，或 `taskkill /IM yekitrim.exe`）。
+//! · 托盘被**强杀**（任务管理器"结束任务"）：服务**不会**变成孤儿 —— 子进程被放进了一个
+//!   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job，父进程一死系统就把它一起收走。
+//!   代价是那一刀是 `TerminateProcess`，锁会残留（下次启动看到"pid 不存在"会自动接管）。
+//!   见 `make_kill_on_close_job`。
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -53,13 +55,19 @@ mod win {
     use std::ffi::c_void;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
+    use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
@@ -103,6 +111,9 @@ mod win {
         token: String,
         stopping: Mutex<bool>,
         hwnd: Mutex<isize>,
+        /// "父死子死" Job 的句柄。**故意不显式关**（进程退出时由系统关掉，
+        /// 于是 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 生效、子进程被一起收走）。
+        job: Mutex<isize>,
     }
 
     impl Shared {
@@ -159,6 +170,54 @@ mod win {
             if hwnd != 0 {
                 unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
             }
+        }
+    }
+
+    /// 建一个 **`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`** 的 Job，并把子进程放进去。
+    ///
+    /// 这是"托盘无论怎么死，服务都不会变成孤儿"的正解：任务管理器**结束任务**是
+    /// `TerminateProcess`，父进程没有任何机会收尾（连 Drop 都不跑），只能靠系统 ——
+    /// 而 job 句柄一关，系统就会把 job 里的进程全杀掉。
+    ///
+    /// ⚠️ 句柄**故意不显式关**（存成 `isize`，没有 Drop）：进程退出时系统关它，
+    /// 那一刻才触发 KILL_ON_JOB_CLOSE。正常退出时子进程早已收尾，所以这一刀砍不到东西。
+    /// ⚠️ 放进 job 也意味着**它拉起的孙进程**（ffmpeg / 底座 / taskkill…）都在同一个 job 里 ——
+    /// 这正是我们要的（别留孤儿 ffmpeg）。
+    /// ⚠️ 失败（例如外层已有不允许 breakaway 的 job）**只记日志、不拦启动**：
+    /// 退化成"托盘被杀后服务会留着"，而不是托拉起不来。
+    fn make_kill_on_close_job(child: &Child) -> isize {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job == 0 {
+                log(format!(
+                    "CreateJobObjectW 失败（{}），托盘被杀时子进程会留下",
+                    std::io::Error::last_os_error()
+                ));
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                log("SetInformationJobObject 失败，放弃 job".to_string());
+                CloseHandle(job);
+                return 0;
+            }
+            if AssignProcessToJobObject(job, child.as_raw_handle() as isize) == 0 {
+                log(format!(
+                    "AssignProcessToJobObject 失败（{}）：托盘被杀时子进程会留下",
+                    std::io::Error::last_os_error()
+                ));
+                CloseHandle(job);
+                return 0;
+            }
+            log("已把子进程放进 Job：托盘一死，它会被系统一起收走");
+            job
         }
     }
 
@@ -534,6 +593,7 @@ mod win {
             token: token.clone(),
             stopping: Mutex::new(false),
             hwnd: Mutex::new(0),
+            job: Mutex::new(0),
         });
 
         let mut child = match spawn_server(&token) {
@@ -547,6 +607,8 @@ mod win {
             }
         };
         log(format!("已起子进程 pid={}", child.id()));
+        let job = make_kill_on_close_job(&child);
+        *shared.job.lock().unwrap() = job;
 
         // stdout：抓实际地址；两个流都**必须**持续排空（管道满了子进程会卡死）
         if let Some(out) = child.stdout.take() {
