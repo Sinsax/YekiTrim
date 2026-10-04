@@ -4,7 +4,7 @@
          这样页面不用再单独放一个卡片标题行 —— 时间轴本来就占竖高（用户要求精简）。 -->
     <div class="tl-head">
       <div class="tl-head-title"><slot name="head" /></div>
-      <div class="row" style="gap:8px">
+      <div class="row">
         <button
           class="mini-btn"
           :class="{ selected: silenceApplied }"
@@ -39,7 +39,7 @@
     <div v-if="loadError" class="error-banner">
       <Icon name="alert" :size="15" />
       <span>时间轴数据读取失败，<b>已暂停保存</b>：{{ loadError }}</span>
-      <button class="mini-btn" style="margin-left:auto" :disabled="loadRetrying" @click="retryLoad">
+      <button class="mini-btn ml-auto" :disabled="loadRetrying" @click="retryLoad">
         {{ loadRetrying ? '重试中…' : '重试' }}
       </button>
     </div>
@@ -73,7 +73,7 @@
             <div class="flex-1"><label>结束（秒）</label>
               <input v-model.number="selEnd" type="number" step="0.01" min="0"></div>
           </div>
-          <div class="row mt-6" style="flex-wrap:wrap;gap:4px">
+          <div class="row mt-6 gap-4">
             <button class="mini-btn" title="把「开始」设为当前播放时间" @click="setInPoint">设为入点</button>
             <button class="mini-btn" title="把「结束」设为当前播放时间" @click="setOutPoint">设为出点</button>
             <button class="mini-btn" title="预览跳到这个块的开始" @click="seekToStart">定位</button>
@@ -105,7 +105,7 @@
                  整片重做很贵（一次 LLM 调用一段），而且限流时总会有一两段落空；
                  以前失败**完全不可见**，用户只看到"这段 20 秒没事件"。 -->
             <div class="seg-gen mt-6">
-              <div class="row spread small" style="gap:6px;align-items:center">
+              <div class="row spread small">
                 <span class="muted">上次生成</span>
                 <span v-if="!segGen(selected.si)" class="chip n">无记录</span>
                 <span v-else-if="segGen(selected.si).ok" class="chip p">成功 · {{ segGen(selected.si).events }} 条</span>
@@ -117,7 +117,7 @@
               <div v-else-if="llmStatus && llmStatus.ts" class="muted small mt-4">
                 整片最近一次：{{ llmStatus.ok }}/{{ llmStatus.total }} 段成功 · {{ fmtTs(llmStatus.ts) }}
               </div>
-              <button class="mini-btn mt-6" style="width:100%;justify-content:center"
+              <button class="mini-btn mt-6 w-full jc-center"
                       :disabled="reprocessBusy"
                       title="只重新生成这一段的事件（其余分段、筛选词/高亮词都不动）；失败会保留该段原事件"
                       @click="emit('redo-segment', selected.si)">
@@ -270,7 +270,7 @@
 
           <div class="row mt-8">
             <button class="mini-btn danger" @click="deleteSelected">删除</button>
-            <span class="muted small" style="margin-left:auto">{{ saveText }}</span>
+            <span class="muted small ml-auto">{{ saveText }}</span>
           </div>
         </template>
       </div>

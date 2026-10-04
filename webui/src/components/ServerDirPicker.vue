@@ -20,7 +20,7 @@
     </div>
 
     <div v-if="roots.length" class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
-      <span class="muted small" style="flex:none">快捷入口</span>
+      <span class="muted small flex-none">快捷入口</span>
       <button v-for="r in roots" :key="r.path" class="mini-btn" @click="browse(r.path)">{{ r.label }}</button>
     </div>
 

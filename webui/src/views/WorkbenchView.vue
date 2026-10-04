@@ -18,7 +18,7 @@
     <!-- ═════ 新增项目：先选来源，再走对应导入方式 ═════ -->
     <div class="card card-blk mb-12">
       <div class="row spread mb-8">
-        <b class="t" style="margin:0"><Icon name="plus" :size="15" /> 新增项目</b>
+        <b class="t m-0"><Icon name="plus" :size="15" /> 新增项目</b>
         <span class="muted small">选一个来源，下面切换成对应的导入方式</span>
       </div>
 
@@ -82,10 +82,10 @@
               这个目录没有可用视频
             </div>
           </div>
-          <button class="btn" style="flex:none" @click="openLocalPicker">
+          <button class="btn flex-none" @click="openLocalPicker">
             <Icon name="folder" :size="14" /> 弹出浏览…
           </button>
-          <button class="btn btn-primary" style="flex:none"
+          <button class="btn btn-primary flex-none"
                   :disabled="creating || !canCreateLocal" @click="createFromLocal">
             <span v-if="creating" class="spinner"></span> {{ localAddMode ? '添加项目' : '新建项目' }}
           </button>
@@ -128,7 +128,7 @@
       <div v-if="source === 'recorder'" class="src-body">
         <!-- 用户唯一要做的：填直播间。未对接录播姬时整块置灰，且**不给管理员向的配置指引** -->
         <div class="room-add" :class="{ off: roomsAvailable === false }">
-          <div class="row" style="gap:8px">
+          <div class="row">
             <input
               v-model="roomInput"
               class="flex-1"
@@ -200,7 +200,7 @@
 
         <!-- 管理员：待分配兜底 + 扫描 + 接入状态；普通用户完全不显示这一块 -->
         <template v-if="isAdmin">
-          <div class="row mt-12" style="gap:8px">
+          <div class="row mt-12">
             <button class="btn" :disabled="scanning" @click="scanNow">
               <span v-if="scanning" class="spinner"></span> 扫描录制目录
             </button>
@@ -223,7 +223,7 @@
       <div v-if="source === 'bilibili'" class="src-body">
         <!-- 下载器没装：先解决这个（管理员一键装，普通用户只能等） -->
         <div v-if="dl.ready === false" class="bili-gate">
-          <div class="row" style="gap:8px; align-items:flex-start">
+          <div class="row items-start">
             <Icon name="alert" :size="15" />
             <div class="flex-1">
               <b>下载器未就绪</b>
@@ -244,7 +244,7 @@
       <template v-else>
         <!-- 存放位置没配置：管理员给去处（仅管理员可见这张卡）；普通用户提交时后端会拒绝并提示联系管理员 -->
         <div v-if="isAdmin && rootConfigured === false" class="bili-gate">
-          <div class="row" style="gap:8px; align-items:flex-start">
+          <div class="row items-start">
             <Icon name="alert" :size="15" />
             <div class="flex-1">
               <b>尚未配置项目存放位置</b>
@@ -257,7 +257,7 @@
             <router-link class="btn btn-primary" to="/settings/integrations">去配置</router-link>
           </div>
         </div>
-        <div class="row" style="gap:8px">
+        <div class="row">
             <input
               v-model="biliUrl"
               class="flex-1"
@@ -317,7 +317,7 @@
             </label>
           </div>
 
-          <div v-if="biliInfo" class="row mt-8" style="gap:8px">
+          <div v-if="biliInfo" class="row mt-8">
             <span class="muted small flex-1">
               下载完成后自动建项目；<b>弹幕会一并抓取</b>（事件检测的热度排序要用）。
               <template v-if="!pickedPages.length">请先勾选分P。</template>

@@ -7,7 +7,7 @@
       <div>
         <div class="card player-card">
           <div class="row spread mb-8">
-            <b class="t" style="margin:0">原视频</b>
+            <b class="t m-0">原视频</b>
             <span class="muted small mono">{{ inputName || '未记录输入文件' }}</span>
           </div>
           <div v-if="src" class="video-shell">
@@ -35,7 +35,7 @@
 
         <div class="card mt-12">
           <div class="row spread mb-6">
-            <b class="t" style="margin:0">字幕轨道</b>
+            <b class="t m-0">字幕轨道</b>
             <span class="muted small" :class="{ err: saveState === 'error' }">{{ saveHint }}</span>
           </div>
           <SubtitleTrack
@@ -76,8 +76,8 @@
               <option value="single">single · 更快（单模型）</option>
             </select>
             <button
-              class="mini-btn"
-              style="flex:none"
+              class="mini-btn flex-none"
+             
               :disabled="!canRunAsr || busy"
               :title="asrRunTitle"
               @click="runAsr"
@@ -149,11 +149,11 @@
         <div class="card card-blk mt-12">
           <b class="t">切片</b>
           <div class="row" style="gap:6px;margin:8px 0 6px">
-            <button class="mini-btn" style="flex:none" @click="mark('in')">标记入点</button>
+            <button class="mini-btn flex-none" @click="mark('in')">标记入点</button>
             <input class="fld-input slice-time" :value="fmtTime(markIn)" readonly title="入点（当前播放位置）">
           </div>
           <div class="row" style="gap:6px;margin-bottom:8px">
-            <button class="mini-btn" style="flex:none" @click="mark('out')">标记出点</button>
+            <button class="mini-btn flex-none" @click="mark('out')">标记出点</button>
             <input class="fld-input slice-time" :value="fmtTime(markOut)" readonly title="出点（当前播放位置）">
           </div>
           <input
@@ -164,7 +164,7 @@
             @keyup.enter="sliceNow"
           >
           <div class="row" style="gap:6px;margin-top:8px">
-            <button class="btn btn-primary" style="flex:1;justify-content:center"
+            <button class="btn btn-primary flex-1 jc-center"
                     :disabled="!canSlice || busy"
                     :title="canSlice ? '按标记的起止建事件并立即开始剪切' : '先标记入点和出点'"
                     @click="sliceNow">切片</button>
@@ -195,7 +195,7 @@
         >
           <span class="mono flex-1">{{ c.rel }}</span>
           <span v-if="c.same_stem" class="chip a">同名</span>
-          <span class="muted small" style="flex:none">{{ humanBytes(c.size) }}</span>
+          <span class="muted small flex-none">{{ humanBytes(c.size) }}</span>
         </div>
       </div>
 

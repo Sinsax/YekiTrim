@@ -35,7 +35,7 @@
             <label for="reg-invite">邀请码</label>
             <input id="reg-invite" v-model="invite" class="mono" :disabled="busy" placeholder="yekitrim_inv_…">
           </div>
-          <button class="btn btn-primary" style="width:100%;justify-content:center" type="submit" :disabled="busy || !canSubmit">
+          <button class="btn btn-primary w-full jc-center" type="submit" :disabled="busy || !canSubmit">
             <span v-if="busy" class="spinner"></span>
             {{ busy ? '注册中…' : '注 册' }}
           </button>

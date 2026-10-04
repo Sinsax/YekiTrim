@@ -11,14 +11,14 @@
         </template>
       </div>
       <div v-if="roots.length" class="sfb-roots">
-        <span class="muted small" style="flex:none">快捷入口</span>
+        <span class="muted small flex-none">快捷入口</span>
         <button v-for="r in roots" :key="r.path" class="mini-btn" @click="go(r.path)">{{ r.label }}</button>
       </div>
     </div>
 
     <div v-if="error" class="error-banner">
       <Icon name="alert" :size="15" /> {{ error }}
-      <button class="mini-btn" style="flex:none" @click="go(current || startDirOrRoot())">重试</button>
+      <button class="mini-btn flex-none" @click="go(current || startDirOrRoot())">重试</button>
     </div>
 
     <!-- 主体：左目录树 / 右文件列表 -->
@@ -55,8 +55,8 @@
               <span class="mono fname">{{ f }}</span>
               <!-- 三种标签：工程配置（可选，点它 = 添加这个工程）/ 视频 / 不可选 -->
               <span v-if="isProjectFile(f)" class="tag-project">工程配置</span>
-              <span v-else-if="!allowed(f)" class="muted small" style="flex:none">不可选</span>
-              <span v-else-if="isVideo(f)" class="muted small" style="flex:none">视频</span>
+              <span v-else-if="!allowed(f)" class="muted small flex-none">不可选</span>
+              <span v-else-if="isVideo(f)" class="muted small flex-none">视频</span>
             </div>
             <div v-if="!dirs.length && !files.length" class="muted small sfb-pad">空目录</div>
           </template>

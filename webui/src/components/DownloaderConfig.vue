@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="row spread mb-8">
-      <b class="t" style="margin:0"><Icon name="link" :size="15" /> B站链接下载（P4）</b>
+      <b class="t m-0"><Icon name="link" :size="15" /> B站链接下载（P4）</b>
       <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
     </div>
 
@@ -10,7 +10,7 @@
     <template v-else>
       <!-- ═══ 下载器本体：装没装 / 装哪儿 / 是不是钉死的那一份 ═══ -->
       <div class="dl-box">
-        <div class="row" style="gap:8px; align-items:flex-start">
+        <div class="row items-start">
           <Icon name="download" :size="15" />
           <div class="flex-1">
             <b class="small">{{ status.kind || 'yt-dlp' }}</b>
@@ -53,7 +53,7 @@
 
         <label v-if="form.engine === '__custom__'" class="fld">
           <span class="lbl">可执行文件路径</span>
-          <div class="row" style="gap:6px">
+          <div class="row">
             <input v-model="form.ytdlp_path" class="flex-1 mono" placeholder="例如 D:\tools\yt-dlp.exe">
             <button class="mini-btn" @click="pickTarget = 'exe'; showPicker = true">浏览…</button>
           </div>
@@ -64,7 +64,7 @@
       <!-- ═══ 存放位置：下载与入库的**共同**落点（属于 [storage]，不是 B站专属） ═══ -->
       <label class="fld mt-12">
         <span class="lbl">项目存放位置</span>
-        <div class="row" style="gap:6px">
+        <div class="row">
           <input
             v-model.trim="form.projects_root"
             class="flex-1 mono"
@@ -122,7 +122,7 @@
       <!-- ═══ cookie（清晰度/风控） ═══ -->
       <div class="fld mt-12">
         <span class="lbl">B站 cookie 文件</span>
-        <div class="row" style="gap:6px">
+        <div class="row">
           <input v-model="form.cookie_file" class="flex-1 mono" placeholder="留空 = 不带 cookie（清晰度封顶 480/720p）">
           <button class="mini-btn" @click="pickTarget = 'cookie'; showPicker = true">浏览…</button>
           <button v-if="form.cookie_file" class="mini-btn" @click="form.cookie_file = ''">清除</button>
@@ -133,7 +133,7 @@
         </span>
       </div>
 
-      <div class="row mt-12" style="gap:8px">
+      <div class="row mt-12">
         <button class="btn btn-primary" :disabled="busy" @click="save">
           <span v-if="busy" class="spinner"></span> 保存
         </button>

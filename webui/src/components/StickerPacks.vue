@@ -1,7 +1,7 @@
 <template>
   <div class="card card-blk mb-12">
     <div class="row spread mb-8">
-      <b class="t" style="margin:0"><Icon name="image" :size="15" /> 表情包</b>
+      <b class="t m-0"><Icon name="image" :size="15" /> 表情包</b>
       <span class="muted small">
         {{ packs.length }} 个包 · 已构建 {{ builtCount }} 个
         <template v-if="!packs.length">· 上传一个压缩包即可用</template>

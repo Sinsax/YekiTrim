@@ -116,7 +116,7 @@
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 生成与导出</h2>
-              <div class="row" style="gap:4px">
+              <div class="row">
                 <button class="mini-btn" :class="{ selected: genTab === 'export' }" @click="genTab = 'export'">导出</button>
                 <button class="mini-btn" :class="{ selected: genTab === 'stage' }" @click="genTab = 'stage'">画面构成</button>
               </div>
@@ -313,7 +313,7 @@
               <template v-if="isPortraitCanvas">
                 <div class="small muted mb-4"
                      title="竖屏画布下这三类默认全关（事件保留在时间轴上，勾上即恢复）">竖屏启用</div>
-                <div class="row mb-6" style="gap:14px;align-items:center">
+                <div class="row mb-6">
                   <label v-for="s in portraitSwitches" :key="s.key" class="row small"
                          style="gap:5px;align-items:center;cursor:pointer">
                     <input type="checkbox" :checked="stageCfg[s.key] === true" :disabled="stageBusy || !ready"
@@ -357,7 +357,7 @@
         <!-- 产物整行：成片 + 封面 + 输出目录 -->
         <div class="card mt-16 artifact-bar">
           <div class="row spread">
-            <div class="row" style="gap:10px">
+            <div class="row">
               <b class="t m-0">产物</b>
               <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download :title="renderedFile">
                 <Icon name="download" :size="12" /> 成片 {{ renderedFile }}
@@ -370,7 +370,7 @@
             </div>
             <button class="mini-btn" @click="copyOutDir">打开输出目录（复制路径）</button>
           </div>
-          <div class="row mt-8" style="gap:12px">
+          <div class="row mt-8">
             <img v-if="coverUrl && !coverFailed" :src="coverUrl" class="cover-thumb" alt="封面" @error="coverFailed = true">
             <video v-if="renderedUrl && !renderedFailed" :src="renderedUrl" controls playsinline class="video-bar" @error="renderedFailed = true"></video>
             <div v-if="!(coverUrl && !coverFailed) && !(renderedUrl && !renderedFailed)" class="muted small">渲染导出或生成封面后在这里查看</div>

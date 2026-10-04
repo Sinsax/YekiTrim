@@ -27,7 +27,7 @@
             :disabled="busy"
           />
         </div>
-        <button class="btn btn-primary" style="width:100%;justify-content:center" type="submit" :disabled="busy || !username || !password">
+        <button class="btn btn-primary w-full jc-center" type="submit" :disabled="busy || !username || !password">
           <span v-if="busy" class="spinner"></span>
           {{ busy ? '登录中…' : '登 录' }}
         </button>

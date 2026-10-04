@@ -31,7 +31,7 @@ function pick(id) {
 
 <template>
   <div class="sfxp">
-    <div class="row" style="gap:6px">
+    <div class="row gap-6">
       <input class="sfxp-cur mono flex-1" :value="value" readonly :placeholder="placeholder"
              @focus="open = true" @click="open = !open" @input.stop @change.stop>
       <button v-if="value" class="mini-btn" title="清空" @click="emit('pick', '')"><i>×</i></button>
