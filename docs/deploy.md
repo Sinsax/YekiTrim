@@ -33,6 +33,14 @@ yekitrim server --open          # 默认 127.0.0.1:26320
 不想开终端的话，发行包里另有一个 **`yekitrim-tray.exe`**（同目录还有它要的 `yekitrim.ico`）：
 
 - **双击即后台起服务**（无控制台窗口），并**自动打开浏览器**到 WebUI。
+- ⚠️ **它是个"薄启动器"（0.5 MB），必须和 `yekitrim.exe` 放在同一个目录**：
+  双击后由它去起 `yekitrim.exe server --local-no-auth --open`，真正干活的是后者。
+  所以任务管理器里看到的是**两个进程**：`yekitrim-tray.exe`（几 MB，只管托盘）+ `yekitrim.exe`（几十 MB）。
+  这么做是因为 Windows 的子系统（有没有控制台）**是每个 exe 链接期定死的**：一个 exe 没法既当 CLI
+  （终端里要看到输出、要被脚本等待）又当 GUI 托盘。让托盘重复整个服务曾让它涨到 57 MB，现在是反过来。
+- ⚠️ **关停是跨进程的**：点「退出」时托盘会 POST 一个带令牌的 `/api/shutdown`（令牌只经环境变量
+  传给子进程），服务按**和 Ctrl+C 一样**的方式优雅关停（锁写成 `pid=0`）。如果 LIMIT 内没停掉，
+  托盘会 `taskkill` 兜底。
 - **免登录**：它以 `--local-no-auth` 起服务，打开就是管理员，**不需要登录**。
   服务端为此加了两道闸（都只在免登录模式下生效）：
   · `Host` 必须是 loopback 主机名 —— 防 DNS rebinding；

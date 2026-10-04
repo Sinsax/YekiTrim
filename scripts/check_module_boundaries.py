@@ -30,8 +30,9 @@ r"""模块边界门禁：把"是否嵌合"变成可执行的判断，而不是�
    `ServerArgs` 进，不许直接调 server 的内部模块。
 5. **"子进程不许绕过 core 的启动助手"有一条例外机制**：规则里用定长后行断言
    `(?<!tokio::process::)` 放过 tokio 那份（它自己走 `as_std_mut`），另用 `EXEMPT`
-   表放过**规则实现本身**（`core/src/process.rs`）。`EXEMPT` 只给"规则定义者自己"开口子，
-   别拿来放业务代码 —— 那等于把不变式悄悄作废。
+   表放过**规则实现本身**（`core/src/process.rs`）与**薄启动器**（`cli/src/tray.rs`：
+   它连 core 都不能链接，否则 ASR 会被拉回来，所以只能自己设 `CREATE_NO_WINDOW`）。
+   `EXEMPT` 只给这两类开口子，别拿来放业务代码 —— 那等于把不变式悄悄作废。
 6. **前端刻意没加的两条**（现状不满足，加了就是红门禁，别盲加）：
    `views/` 里不许出现 `/api/` 字面量或 `fetch(` —— 现状大量直接 `api('/api/…')`；
    `views/` 里不许用 `scopeQ(` —— `ProjectSettingsView` / `PolishView` / `router.js` 都在用。
@@ -218,8 +219,15 @@ def source_files(rel: str) -> list[Path]:
 # 规则例外：按 `规则名 -> 允许命中的路径子串` 走。
 # ⚠️ 只给"规则定义者自己"开口子（例如那条不变式的**实现处**），别拿来放业务代码。
 EXEMPT: dict[str, list[str]] = {
-    # 这条规则的实现本身就是"唯一允许直接 Command::new 的地方"
-    "子进程不许绕过 core 的启动助手": ["crates/yekitrim-core/src/process.rs"],
+    "子进程不许绕过 core 的启动助手": [
+        # ① 这条规则的实现本身就是"唯一允许直接 Command::new 的地方"
+        "crates/yekitrim-core/src/process.rs",
+        # ② 托盘是**薄启动器**：它刻意不链接任何 `yekitrim-*` crate —— 只要引用 core 的
+        #    任何一个符号，链接器就会把静态链接的 ASR 引擎（sherpa-onnx）一起拉回来，
+        #    托盘从 0.49 MB 涨回 57 MB。所以它**用不了** `process::cmd()`，改为自己设
+        #    `CREATE_NO_WINDOW`（tray.rs 里两处：起 server / taskkill）。这是**刻意换体积**的取舍。
+        "crates/yekitrim-cli/src/tray.rs",
+    ],
 }
 
 

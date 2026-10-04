@@ -12,6 +12,9 @@
 - `src/lib.rs`：`pub async fn run(args: ServerArgs)` —— 唯一启动入口（`yekitrim server` 与 `polish preview` 回退都走它）；
   `run()` 现在只是薄壳 = `run_with(args, ctrl_c(), |_| {})`；**`run_with(args, shutdown, on_listening)`** 是可控版
   （托盘用它：`shutdown` 一到就优雅关停、`on_listening` 回**实际**监听地址 —— 端口被占时服务端会自己换一个）。
+  `request_shutdown()` 是**进程级**关停触发器（HTTP 控制端点用，见 api 卡 `/api/shutdown`）：
+  `run_with` 进来把它挂上、退出摘掉（存的是本次运行那个 `Notify`，不是 `OnceLock` —— 否则
+  上一次留下的 permit 会把下一次**立刻**关停）。`run_with` 把"调用方给的 future"与它 **select 成一个**。
   ⚠️ **优雅关停必须有时限**（`SHUTDOWN_GRACE = 3s`）：`axum` 的 `with_graceful_shutdown` 会等**所有连接**收尾，
   而 WebUI 有一条**长期挂着**的 SSE（`/api/stream` 任务事件流）—— 页面一开着就必然有，
   于是"退出/Ctrl+C"会**永远等不到返回**（实测：托盘点退出后图标还在、日志里连一条关停记录都没有）。

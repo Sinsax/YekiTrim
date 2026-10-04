@@ -225,6 +225,29 @@ pub async fn run(args: ServerArgs) -> anyhow::Result<()> {
     }, |_| {}).await
 }
 
+/// 进程级关停触发器 —— 给 **HTTP 控制端点**（`POST /api/shutdown`）用。
+///
+/// ⚠️ 存的是**当前这次运行**的 `Notify`（`run_with` 进来装、退出摘），不是 `OnceLock`：
+/// 进程里连着起两次服务（测试/复用进程）时，上一次留下的 permit 会把下一次**立刻**关停。
+static SHUTDOWN_TRIGGER: std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Notify>>> =
+    std::sync::Mutex::new(None);
+
+/// 请求关停当前正在跑的服务；返回 `false` = 现在没有在跑的服务。
+///
+/// 效果**等价于 Ctrl+C**：一样走优雅关停（限时 `SHUTDOWN_GRACE`）、一样让 `InstanceLock`
+/// 的 Drop 把锁写成 `pid=0`。跨进程的"托盘退出"就是靠它 —— 托盘那个 exe 不链接本 crate，
+/// 只能通过 HTTP 敲这一下。
+pub fn request_shutdown() -> bool {
+    match SHUTDOWN_TRIGGER.lock().unwrap().as_ref() {
+        Some(n) => {
+            // notify_one 会**存一个 permit**：万一此刻还没有等待者（信号早于 select），也不丢
+            n.notify_one();
+            true
+        }
+        None => false,
+    }
+}
+
 /// `run` 的可控版本：`shutdown` 一旦就绪就优雅关停；`on_listening` 在监听就绪后**回调一次**
 /// （托盘靠它拿到**实际**监听地址 —— 端口被占时服务端会自己换一个，不能假定就是请求的那个）。
 pub async fn run_with<S, F>(args: ServerArgs, shutdown: S, on_listening: F) -> anyhow::Result<()>
@@ -482,8 +505,16 @@ where
     // 这条对 CLI 的 Ctrl+C 同样成立（开着页面的 `yekitrim server` 按 Ctrl+C 也会卡住）。
     let signalled = std::sync::Arc::new(tokio::sync::Notify::new());
     let signalled2 = std::sync::Arc::clone(&signalled);
+    // 两个关停源：调用方给的 future（托盘的 oneshot / Ctrl+C）+ 进程级触发器（HTTP 控制端点）
+    let trigger = std::sync::Arc::new(tokio::sync::Notify::new());
+    *SHUTDOWN_TRIGGER.lock().unwrap() = Some(std::sync::Arc::clone(&trigger));
     let shutdown = async move {
-        shutdown.await;
+        tokio::select! {
+            _ = shutdown => {}
+            _ = trigger.notified() => {
+                tracing::info!("收到控制端点（POST /api/shutdown）的关停请求");
+            }
+        }
         // 用 notify_one（会存一个 permit）：万一信号在 select 之前就到了，也不会丢
         signalled2.notify_one();
     };
@@ -492,8 +523,8 @@ where
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown);
-    tokio::select! {
-        r = serve => r?,
+    let served = tokio::select! {
+        r = serve => r,
         _ = async {
             signalled.notified().await;
             tokio::time::sleep(SHUTDOWN_GRACE).await;
@@ -502,8 +533,12 @@ where
                 "关停时限 {:?} 到，仍有连接未收尾（多半是页面的 SSE 事件流），直接停止监听",
                 SHUTDOWN_GRACE
             );
+            Ok(())
         }
-    }
+    };
+    // 摘掉触发器：这个进程可能还会再跑一次服务（测试/复用），别让本次的 permit 漏过去
+    *SHUTDOWN_TRIGGER.lock().unwrap() = None;
+    served?;
     Ok(())
 }
 

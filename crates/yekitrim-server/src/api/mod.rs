@@ -135,6 +135,32 @@ pub(crate) fn spawn_job<JobBody, Fut>(
 /// ⚠️ **账号数量与"是否仍在使用初始密码"不在这里**（曾经有过）——这是**未认证**接口，
 /// 对远端说出来等于直接告诉对方"这台机器还在用初始密码，来打它"。
 /// 两者都有各自的出口：账号列表 `/api/admin/users`（admin）、自己的改密状态 `/api/me`（已登录）、
+/// `POST /api/shutdown` —— **跨进程的优雅关停**（托盘的"退出"走这里）。
+///
+/// 三道闸，缺一不可：
+/// ① env `YEKITRIM_SHUTDOWN_TOKEN` **没设 ⇒ 404**（端点当不存在，不给探测口）；
+/// ② 对端必须是 **loopback**（纵深防御：即便将来绑了非本机地址，也不接受远程关停）；
+/// ③ 自定义头里的令牌要**常量时间**匹配（自定义头还会先触发 CORS 预检，挡住网页侧乱敲）。
+///
+/// ⚠️ 效果**等价于 Ctrl+C**：优雅关停、限时 `SHUTDOWN_GRACE`、锁正常释放成 `pid=0`。
+/// 别把它改成直接 `process::exit` —— 那会让 `InstanceLock` 的 Drop 跑不到、下次启动多一条残留 WARN。
+pub(crate) async fn shutdown(headers: axum::http::HeaderMap, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>) -> ApiResult {
+    if std::env::var(crate::auth::SHUTDOWN_TOKEN_ENV).map(|v| v.trim().is_empty()).unwrap_or(true) {
+        // 没设令牌 = 这个部署没有控制通道，端点视为不存在
+        return Err(err(StatusCode::NOT_FOUND, "Not Found"));
+    }
+    let is_loopback = peer.map(|axum::extract::ConnectInfo(a)| a.ip().is_loopback()).unwrap_or(false);
+    if !is_loopback {
+        return Err(err(StatusCode::FORBIDDEN, "关停控制端点只接受 loopback 请求"));
+    }
+    if !crate::auth::shutdown_token_ok(&headers) {
+        return Err(err(StatusCode::FORBIDDEN, "关停令牌不匹配"));
+    }
+    // 先把响应发出去再关：handler 返回后 axum 才会写响应，而关停是异步的，顺序天然安全
+    let requested = crate::request_shutdown();
+    ok(serde_json::json!({ "ok": true, "shutdown": requested }))
+}
+
 /// 本地排查 `yekitrim doctor`（直接读本机账本，信息更全）。
 /// 顺带一个好处：`/api/health` 会被前端反复轮询，去掉这里两次同步 SQLite 查询后它不再碰磁盘。
 pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
