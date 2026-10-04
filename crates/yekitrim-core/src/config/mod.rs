@@ -151,7 +151,6 @@ output_dir = "./output"
 # 是否覆盖已有文件
 overwrite = false
 # 静音检测噪声门限 (dB)，越低越敏感
-silence_noise_db = -30
 
 [sfx]
 # 音效屏蔽列表 (yekitrim polish 使用, 全局共享)
@@ -499,15 +498,6 @@ fn merge(base: &mut Config, overlay: Config) {
     if !overlay.asr.model.is_empty() {
         base.asr.model = overlay.asr.model.clone();
     }
-    if !overlay.asr.align_model.is_empty() {
-        base.asr.align_model = overlay.asr.align_model.clone();
-    }
-    if overlay.asr.max_segment_duration != 15.0 {
-        base.asr.max_segment_duration = overlay.asr.max_segment_duration;
-    }
-    if overlay.asr.segment_merge_gap != 0.6 {
-        base.asr.segment_merge_gap = overlay.asr.segment_merge_gap;
-    }
     // `segment_padding` = 切给识别器的音频余量，**默认 0（关）**：
     // 实测 0.3s 会扰动文本、对齐命中率反而下降，净效果不明（见 types.rs 的字段注释）
     if overlay.asr.segment_padding != 0.0 {
@@ -594,9 +584,6 @@ fn merge(base: &mut Config, overlay: Config) {
     }
     if let Some(v) = overlay.cutting.overwrite {
         base.cutting.overwrite = Some(v);
-    }
-    if overlay.cutting.silence_noise_db != -30.0 {
-        base.cutting.silence_noise_db = overlay.cutting.silence_noise_db;
     }
 
     // 音效屏蔽列表: 追加合并 (全局 + 项目)
@@ -1420,4 +1407,41 @@ fn global_config_parse_error_points_at_the_real_file_and_needs_a_real_break() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+}
+
+/// 「删掉的配置字段」相关的判据单独放一节：它们不是 patch/合并的测试，而是**兼容性**钉子。
+#[cfg(test)]
+mod removed_fields_tests {
+    use super::*;
+
+    /// 删掉 4 个废弃字段之后，**老 toml 里还留着它们的行**必须照样能读。
+    ///
+    /// 这 4 个（`align_model` / `max_segment_duration` / `segment_merge_gap` /
+    /// `silence_noise_db`）从来没有读取方，删掉是为了别让后来人反复猜"这键到底有没有用"。
+    /// ⚠️ 兼容性靠的是**三处结构体都没有** `deny_unknown_fields`（只有 polish 的 `polish.toml` 有，
+    /// 那份确实不能多键）：顶层 `Config`、`AsrConfig`、`CuttingConfig`。**哪一处加上了，
+    /// 老工程目录一升级就直接读不出配置** —— 所以这条判据同时钉三处：
+    /// 顶层给一个野 section、`[asr]`/`[cutting]` 给已删的键。
+    #[test]
+    fn legacy_toml_with_removed_keys_still_loads() {
+        let raw = r#"
+# 顶级的未知键（老版本可能写过、后来整节被删）
+[bogus_section]
+whatever = 1
+
+[asr]
+align_model = "sensevoice"
+max_segment_duration = 20.0
+segment_merge_gap = 1.0
+mode = "single"
+
+[cutting]
+silence_noise_db = -42
+output_dir = "./out"
+"#;
+        let c: Config = toml::from_str(raw).expect("老 toml 里的已删键不能让整份配置解析失败");
+        assert_eq!(c.asr.mode, "single", "其余键照常生效");
+        assert_eq!(c.cutting.output_dir, "./out");
+    }
 }

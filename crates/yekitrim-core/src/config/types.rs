@@ -492,15 +492,6 @@ pub struct AsrConfig {
     pub language: String,
     #[serde(default = "default_asr_model")]
     pub model: String,
-    /// **已废弃**（没有任何读取方，留着只为老 toml 不炸）：打轴模型已固定为 SenseVoice。
-    #[serde(default)]
-    pub align_model: String,
-    /// **已废弃**（没有任何读取方）：单段时长上限从未生效，最长时长交给 LLM 按话题完整性决定。
-    #[serde(default = "default_max_segment_duration")]
-    pub max_segment_duration: f64,
-    /// **已废弃**（没有任何读取方）：短段合并从未接上。
-    #[serde(default = "default_segment_merge_gap")]
-    pub segment_merge_gap: f64,
     /// 切给识别器的音频**前后余量**(秒)。**默认 0（关）**。
     ///
     /// 机制：窗口边界取自 SenseVoice 的逐字时间戳，从那一帧硬切会削掉首音，所以解码时
@@ -584,12 +575,6 @@ fn default_chunk_overlap() -> f64 {
 fn default_segment_gap() -> f64 {
     1.0
 }
-fn default_max_segment_duration() -> f64 {
-    15.0
-}
-fn default_segment_merge_gap() -> f64 {
-    0.6
-}
 fn default_segment_padding() -> f64 {
     0.0
 }
@@ -639,9 +624,6 @@ impl Default for AsrConfig {
             llm_correct: None,
             language: default_asr_language(),
             model: default_asr_model(),
-            align_model: String::new(),
-            max_segment_duration: default_max_segment_duration(),
-            segment_merge_gap: default_segment_merge_gap(),
             segment_padding: default_segment_padding(),
             max_new_tokens: default_max_new_tokens(),
             mode: default_asr_mode(),
@@ -914,12 +896,6 @@ pub struct CuttingConfig {
     pub output_dir: String,
     #[serde(default)]
     pub overwrite: Option<bool>,
-    #[serde(default = "default_silence_noise_db")]
-    pub silence_noise_db: f64,
-}
-
-fn default_silence_noise_db() -> f64 {
-    -30.0
 }
 
 impl Default for CuttingConfig {
@@ -927,7 +903,6 @@ impl Default for CuttingConfig {
         Self {
             output_dir: default_output_dir(),
             overwrite: None,
-            silence_noise_db: default_silence_noise_db(),
         }
     }
 }
