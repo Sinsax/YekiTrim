@@ -200,43 +200,45 @@
           </div>
         </div>
 
-        <div class="form-section">
-            <div class="form-section-title">按链路覆盖</div>
-        <!-- 按链路覆盖：各链路要的输出长度天差地别，别用同一个上限互相迁就。
-             一行一条链路：勾上「单独设置」才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
-              <div class="llm-links">
-            <div class="llm-links-head">
-            <span>按链路覆盖</span>
-            <span class="muted small">不勾 = 跟随全局</span>
+        <!-- 按链路覆盖 / extra_params 左右并排（用户要求）：左边是覆盖项、右边是 JSON 正文。
+             ⚠️ 原来 .llm-link-row 的滑块列写死 300px，半宽列里会顶破 —— 见下方 CSS 的覆盖。 -->
+        <div class="llm-cols">
+          <div class="form-section">
+            <div class="form-section-title">按链路覆盖<span class="muted small">不勾 = 跟随全局</span></div>
+            <!-- 各链路要的输出长度天差地别，别用同一个上限互相迁就。
+                 一行一条链路：勾上才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
+            <div class="llm-links">
+              <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
+                <label class="ln-name">
+                  <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
+                </label>
+                <template v-if="form.llm.overrides[l.key].on">
+                  <SliderField v-model="form.llm.overrides[l.key].max_tokens"
+                               label="max_tokens" :min="256" :max="65536" :step="256" />
+                  <SliderField v-model="form.llm.overrides[l.key].temperature"
+                               label="temperature" :min="0" :max="2" :step="0.1" />
+                  <select v-model="form.llm.overrides[l.key].thinking"
+                          aria-label="thinking"
+                          title="勾选「单独设置」后会写进 llm.toml；选「默认 thinking」则不写这个键">
+                    <option value="">默认 thinking</option>
+                    <option value="disabled">关思考</option>
+                    <option value="enabled">开思考</option>
+                  </select>
+                </template>
+                <span v-else class="muted small ln-inherit">
+                  跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
+                </span>
+              </div>
+            </div>
           </div>
-            <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
-              <label class="ln-name">
-              <input type="checkbox" v-model="form.llm.overrides[l.key].on"> {{ l.label }}
-            </label>
-              <template v-if="form.llm.overrides[l.key].on">
-              <SliderField v-model="form.llm.overrides[l.key].max_tokens"
-                           label="max_tokens" :min="256" :max="65536" :step="256" />
-              <SliderField v-model="form.llm.overrides[l.key].temperature"
-                           label="temperature" :min="0" :max="2" :step="0.1" />
-                <select v-model="form.llm.overrides[l.key].thinking" aria-label="thinking">
-                <option value="">默认 thinking</option>
-                <option value="disabled">关思考</option>
-                <option value="enabled">开思考</option>
-              </select>
-              </template>
-              <span v-else class="muted small ln-inherit">
-              跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
-            </span>
-          </div>
-            <div class="muted small mt-8" title="勾上 = 把该链路的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；取消勾选会删掉这三项、回到跟随全局。">
-            不勾 = 跟随全局
-          </div>
-        </div>
-          </div>
+
           <div class="form-section">
             <div class="form-section-title">extra_params（JSON）</div>
-            <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false" rows="5"></textarea>
+            <textarea v-model="form.llm.extra_params" class="mono llm-extra" spellcheck="false"
+                      rows="10" placeholder="留空 = 不带额外参数"></textarea>
           </div>
+        </div>
+
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
@@ -636,6 +638,13 @@ onMounted(async () => {
    ⚠️ 两个数值格子给**上限 300px + justify-content:start**：默认的 1fr 会把滑块拉到格子中央，
    一行里三样东西散开、看着很空（实测过）。`:deep(.slf-name)` 改成不伸展，标签紧贴滑块；
    滑块宽度仍是格子宽的 1/3（SliderField 自己的约定，不改）。 */
+/* 按链路覆盖 / extra_params 左右并排（用户要求"做成左右结构"）。
+   右栏给固定上限宽度：JSON 正文不需要更宽，再宽也是换行看不清。 */
+.llm-cols { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,420px); gap:0 20px; align-items:start; }
+@media (max-width:1200px) { .llm-cols { grid-template-columns:minmax(0,1fr); gap:14px 0; } }
+/* ⚠️ 半宽列里那一行放不下两个 300px 滑块（默认 grid-template-columns 是 max-content 300px 300px max-content）——
+   改成两列弹性宽度，滑块自己会收。 */
+.llm-cols .llm-link-row { grid-template-columns:max-content minmax(0,1fr) minmax(0,1fr) max-content; }
 .llm-links { margin-top:12px; }
 .llm-links-head { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; font-weight:700; font-size:12.5px; }
 .llm-link-row { display:grid; grid-template-columns:max-content minmax(0,300px) minmax(0,300px) max-content;
