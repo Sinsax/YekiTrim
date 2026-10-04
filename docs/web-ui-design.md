@@ -1264,3 +1264,21 @@ key 必须用 **pid** 而不是 `fullPath`：后者会让精修页换片段也�
 = 片段目录里最新的文件时间（**含 `data/` 一层**）；同秒回落**项目 id 降序 + rank 升序**。
 效果：刚剪完 / 刚精修过的浮到最前。点卡片 = 去该片段的精修页，没初始化就自动 `polish init`
 （`initPolish(pid, dir)` 传**绝对目录**，scope 守卫按它反查归属）。
+
+**五、转写与素材槽（`PrepareView`）**
+
+产物落盘时 `assets::bind_asr_artifact` 把它登记进素材清单**并置为生效字幕**，那个 ASR 模式的
+"槽"就用掉了（`GET …/assets` 的 `slots` 与后端 `assets::slot_bound` **同口径**，前端别自己推）。
+
+- ⚠️ **两格槽都占满时才置灰**（`canPickAsr = slotFree` + 任务运行中）—— 单格占满仍可切到另一个
+  模式去跑；写成"有产物就灰"会让用户以为另一个模式也不能用了。
+- 模式值读 **merged** 配置（`GET /api/project-data/config` 的 `config.asr.mode`，读失败回退
+  `hybrid`），写走 `PUT /api/project-data/config {patch:{asr:{mode}}}`。
+- **状态回显**：任务名 + 状态 chip + 进度条已经把状态说清，别再挂「任务完成」/「运行中…」；
+  状态栏要**常驻**（`jobStatusText` 的 `if (!job.id) return '空闲'` 就是为它加的）。
+  唯一例外：**失败原因必须显示**，不许静默吞错。
+
+**六、表情包区块的布局数字**
+
+卡片墙 `.stk-grid` = `minmax(112px,1fr)`；点卡片开 `AppModal wide` 大图预览，
+`.stk-preview` 给 `max-height:60vh`；`.pack-files` **框内滚动、上限 420px**。

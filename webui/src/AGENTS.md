@@ -65,10 +65,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   全在 `<template v-if="isAdmin">` 里。不可用时整块**置灰** + 输入禁用，只给一句"录播姬未接入，
   暂时不能添加"；`roomsAvailable` 初值 **`null`** = 还没问到（避免先闪一下"未接入"）。
 - 表情包区块（**仅 admin；非 admin 整块不渲染**，细节在 `crates/yekitrim-polish/src/assets/AGENTS.md`）：
-  卡片墙（`.stk-grid` = `minmax(112px,1fr)`）+ 点卡片 `AppModal wide` 大图预览
-  （`.stk-preview` `max-height:60vh`）；⚠ **`preview` 只存 `{pack, name}`**，文件对象由
-  `previewFile` 从 `detail` 现取 —— 别存快照；`.pack-files` 框内滚动、上限 **420px**；
-  **上传要前端先挡 64 MiB**（`api/stickers.js::UPLOAD_MAX_BYTES`）。
+  ⚠ **`preview` 只存 `{pack, name}`**，文件对象由 `previewFile` 从 `detail` 现取 —— 别存快照；
+  **上传要前端先挡 64 MiB**（`api/stickers.js::UPLOAD_MAX_BYTES`）。布局数字见附录 F 第 6 节。
 
 **路由**
 - `#/workbench`、`#/p/:pid/{prepare,slices,polish,polish/:clip,settings}`、`#/ingest`、
@@ -103,11 +101,9 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   已有转写 → 直接起检测。⚠ 主按钮置灰 = `busy || (!hasTranscript && !canRunAsr)`；**已有字幕时
   它永不置灰**；两段都就绪时它变成 **「重新检测」**，走
   `confirmDialog(redetectWarning())` 二次确认，**只重跑事件检测**，**不做全流程重跑**。
-- ⚠ **转写按 ASR 模式各绑一次**：产物落盘时 `assets::bind_asr_artifact` 登记进素材清单并置为
-  生效字幕，那个模式的槽就用掉了（`GET …/assets` 的 `slots` 与后端同口径）；
-  ⚠ **两格槽都占满时才置灰**（`canPickAsr = slotFree` + 任务运行中）—— 单格占满仍可切到另一个
-  模式去跑，别写成"有产物就灰"。模式值读 merged 配置（`GET /api/project-data/config` 的
-  `config.asr.mode`，读失败回退 `hybrid`），写走 `PUT /api/project-data/config {patch:{asr:{mode}}}`。
+- ⚠ **转写按 ASR 模式各绑一次**：落盘即占掉那个模式的槽（`assets::bind_asr_artifact`）；
+  ⚠ **两格槽都占满时才置灰**，别写成"有产物就灰"。模式值读**merged** 配置、写走
+  `PUT /api/project-data/config {patch:{asr:{mode}}}` —— 细节见附录 F。
 - 素材清单：**弹幕与字幕的显示/交互完全一致**（共用 `MaterialList.vue`，**改一边等于改两边**）；
   `*_file` 仍是**唯一生效值**。
 - ⚠ **ASR 产物不可删**（`removable = !is_asr || !exists`）；**「删除」只从选择里移除，不删磁盘**；
@@ -135,9 +131,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   坐标基准、切换规则）挪进 `title` 悬停可见，行内只留"是什么 / 点什么"。右栏卡片行内容宽仅
   **266px**（`.hint`=11px、`.small`=12px）⇒ 40 字已达 480px、必然折行。别在 UI 字符串里用 `**`
   当强调（会原样显示成星号 —— 弹窗上出现过）。
-- ⚠ **同一件事不说三遍**：任务名 + 状态 chip + 进度条已说清状态，别再挂「任务完成」/「运行中…」回显。
-  **状态栏常驻**（`jobStatusText` 里 `if (!job.id) return '空闲'` 就是为它加的，别删）；
-  唯一例外：**失败原因必须显示**，不许静默吞错。
+- ⚠ **同一件事不说三遍**：状态已由任务名 + chip + 进度条说清，别再挂「任务完成」/「运行中…」回显。
+  **状态栏常驻**（`jobStatusText` 的 `if (!job.id) return '空闲'` 别删）；唯一例外：**失败原因必须显示**。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
