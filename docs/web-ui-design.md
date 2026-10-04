@@ -1110,6 +1110,38 @@ webui/app.js  (单一 ES module, 依赖注入顺序)
 
 其余样稿 `mint-soda.html`（数据表格布局）/ `sky-glow.html`（仪表盘布局）为**布局参考**，配色与组件不采用。
 
+## 附录 C: 设置页保存的**合并语义**（清空 ≠ 不发送）
+
+`/api/config/global` 与 `/api/config/llm` 的表单保存走的是 `patch_config_file` ——
+它是**递归深合并**（`{"llm": {"model": …}}` 只会动提到的键，`[ingest.recorder]` 这类子表也递归）。
+
+由此有一条**很容易踩的规约**：
+
+> **省略一个键 = 保持原值**；想清空/删除，必须**显式发 `null`**（`merge_into_table` 把 null 当 `remove`）。
+
+⚠️ 反过来过是有代价的：早期 `null` 会落到 `json_to_toml_value` 的 Null 分支被写成空串，
+于是 `max_tokens = ""` 下次读配置**直接解析失败**（整份 LLM 配置被打回默认值）。
+所以"删键"这条路是刻意用 null 表达的，别再发明第三种写法。
+
+### 实例：`extra_params` 清不掉（2026-10 真机报的）
+
+`LLM_CONFIG_TOML` 模板里那行是**活动行**：
+
+```toml
+extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = { type = "json_object" } }
+```
+
+用户把设置页那个 JSON 输入框清空后保存 —— 前端当时是
+`if (非空) patch.extra_params = JSON.parse(...)`，**空就不发这个键**。
+合并语义下"不发" = "保持原值" ⇒ 模板那行原样留着，页面重新加载又把"预设内容"读回来，
+看上去就是**"每次保存都被写回预设"**。
+
+修法：空分支显式 `llm.extra_params = null`（与下面 `overrides` 取消勾选用的是同一机制）。
+判据（真机验过）：清空 → 前端 PUT body 里 `extra_params: null` → `llm.toml` 里那行**消失**。
+
+⚠️ 模板注释本来就写着"（设置页把输入框清空也会删掉它）" —— 也就是说这是**实现没跟上文档**，
+不是"设计就是这样"。新增任何可选字段时照这条自检一遍：**它能不能被清空？**
+
 ## 附录 B: 与 CLI 命令映射速查
 
 | UI 操作 | 等价 CLI |
