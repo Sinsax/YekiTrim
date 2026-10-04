@@ -10,7 +10,7 @@ resolver = "2"
 # `yekitrim-v<版本>-win-x64` 来自这里 —— 三处分别取各自 crate 的版本。一旦版本分叉，
 # 发行包名和 exe 自报版本会悄悄对不上，而且**不会报错**。
 [workspace.package]
-version = "0.4.1"
+version = "0.4.0"
 
 # The one non-upstream crate in the build graph. It exists so that "which sherpa-onnx libs get
 # linked" is decided inside cargo rather than by whoever remembers to run a wrapper script first:

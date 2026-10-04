@@ -22,7 +22,6 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 fn main() {
@@ -51,16 +50,27 @@ fn main() {
         );
     }
 
-    let newest_src = newest_mtime(&src).unwrap_or(SystemTime::UNIX_EPOCH);
-    let dist_time = fs::metadata(&index)
-        .and_then(|m| m.modified())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    if dist_time < newest_src {
-        panic!(
-            "webui/dist 比 webui/src 旧 —— 内嵌进去的会是**过期界面**。\n\
-             先 `npm --prefix webui run build` 再编译。\n\
-             （这条检查原先只在 `cargo xtask package` 里，现在提前到编译期。）"
-        );
+    // 新鲜度：**比内容指纹，不比 mtime**。
+    //
+    // ⚠️ 为什么不能用 mtime：全新 `git clone` 时所有文件的 mtime 都是检出那一刻、逐个差几毫秒，
+    // 于是"dist 比 src 旧"会**随机误报** —— 别人的第一次构建直接被这条打死（Linux 拉取必踩）。
+    // 指纹由前端构建写进 `dist/.built-from.txt`（`webui/vite.config.js` 里那个插件），
+    // 算法与下面的 `src_fingerprint` 必须逐字节一致；**不一致会立刻在这里报错**（也是交叉校验）。
+    let want = src_fingerprint(&src);
+    let marker = dist.join(".built-from.txt");
+    match read_marker(&marker) {
+        Some(got) if got != want => panic!(
+            "webui/dist 不是从当前的 webui/src 构建出来的 —— 内嵌进去的会是**过期界面**。\n\
+             \x20 dist 记录的 src 指纹: {got}\n\
+             \x20 当前 src 的指纹:      {want}\n\
+             先 `npm --prefix webui run build` 再编译。"
+        ),
+        Some(_) => {} // 一致
+        None => println!(
+            "cargo:warning={} 里没有 src 指纹（旧版 dist？），无法判断界面是否过期 —— 继续编译。\n\
+             cargo:warning=要恢复这道检查：`npm --prefix webui run build` 重建一次 dist。",
+            marker.display()
+        ),
     }
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
@@ -90,6 +100,10 @@ fn main() {
 fn collect(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
+        // 点文件不进内嵌表（`.built-from.txt` 是构建元数据，没有理由端给浏览器）
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let path = entry.path();
         if path.is_dir() {
             collect(base, &path, out)?;
@@ -107,22 +121,45 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io
     Ok(())
 }
 
-/// `dir` 树下最新的修改时间（目录本身不算，只看文件）。
-fn newest_mtime(dir: &Path) -> Option<SystemTime> {
-    let mut newest: Option<SystemTime> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let p = entry.path();
-        let t = if p.is_dir() {
-            newest_mtime(&p)
-        } else {
-            fs::metadata(&p).and_then(|m| m.modified()).ok()
-        };
-        if let Some(t) = t {
-            newest = Some(match newest {
-                Some(n) if n >= t => n,
-                _ => t,
-            });
+/// `src/` 的内容指纹：FNV-1a 64，喂入的流 = 按 **UTF-8 字节序**排序的每个文件的
+/// `相对路径 + NUL + 内容 + NUL`（键用 `/` 分隔）。
+///
+/// ⚠️ 与 `webui/vite.config.js` 的 `srcFingerprint()` **必须逐字节一致**（含排序口径 ——
+/// JS 的 `localeCompare` 跟语言有关，那边刻意用了 `Buffer.compare`）。
+fn src_fingerprint(dir: &Path) -> String {
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect(dir, dir, &mut files).unwrap_or_else(|e| panic!("遍历 {} 失败：{e}", dir.display()));
+    // 逐字节排序（`String` 的比较就是字节序；`/` 是 ASCII，两种语言一致）
+    files.sort();
+    let mut stream: Vec<u8> = Vec::new();
+    for (rel, abs) in &files {
+        stream.extend_from_slice(rel.as_bytes());
+        stream.push(0);
+        match fs::read(abs) {
+            Ok(bytes) => stream.extend_from_slice(&bytes),
+            Err(e) => panic!("读 {} 失败：{e}", abs.display()),
         }
+        stream.push(0);
     }
-    newest
+    format!("{:016x}", fnv1a64(&stream))
 }
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// 读 `dist/.built-from.txt` 里的 `src_fnv1a64 = <16 hex>`；文件不在或没这行 = `None`。
+fn read_marker(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("src_fnv1a64"))
+        .and_then(|rest| rest.split('=').nth(1))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
