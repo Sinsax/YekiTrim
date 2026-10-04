@@ -26,7 +26,7 @@
             <!-- 字幕叠层：与精修预览同一套样式（72px@1920 缩放、同色同描边） -->
             <div v-if="activeSub" class="cap-overlay">{{ activeSub.text }}</div>
           </div>
-          <div v-else class="empty small">暂无输入视频（先在项目设置里填写 input_file，或跑一次音频提取）</div>
+          <div v-else class="empty small" title="先在项目设置里填写 input_file，或跑一次音频提取">暂无输入视频</div>
           <div class="row mt-8">
             <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}（空格）</button>
             <span class="muted small mono">{{ fmtTime(currentTime) }}</span>
@@ -170,8 +170,8 @@
                     @click="sliceNow">切片</button>
             <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
           </div>
-          <div class="hint mt-6">
-            标题只用于人工查看，不影响目录与文件名（固定 <span class="mono">clip-NN/clip.mp4</span>）；没填标题会打开表单。
+          <div class="hint mt-6" title="标题只用于人工查看，不影响目录与文件名；没填标题会打开表单">
+            标题只用于展示<span class="mono">（clip-NN/clip.mp4）</span>
           </div>
         </div>
       </div>
@@ -181,11 +181,11 @@
          选中的这份会**加入清单**并立即生效（清单里随时能切回来）。 -->
     <AppModal :show="picker.show" :title="pickerTitle" wide @close="closePicker">
       <div class="muted small mb-6">
-        项目目录里的候选（同名 = 与视频文件名相同）。选中后写进
-        <span class="mono">yekitrim.toml</span> 并加进列表，随时能切回来。
+        项目目录里的候选，选中后写进
+        <span class="mono">yekitrim.toml</span>。
       </div>
       <div class="file-box">
-        <div v-if="!candidateList.length" class="empty small">项目目录里没有找到匹配的文件（admin 可以在下面换目录找）</div>
+        <div v-if="!candidateList.length" class="empty small" title="管理员可以在下面换目录找">项目目录里没有匹配的文件</div>
         <div
           v-for="c in candidateList"
           :key="c.rel"

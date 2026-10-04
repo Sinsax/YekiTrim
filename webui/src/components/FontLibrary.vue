@@ -18,10 +18,8 @@
       </div>
     </div>
 
-    <div class="hint">
-      精修页的字幕与封面字体都从这里选；库里<b>程序自带的两支</b>不可删除（OFL 许可可商用）。
-      默认字体只作<b>初始化设定</b>（老工程没显式选过字体时用它），改动请直接在各工程里选字体。
-      <span v-if="root">库位置：<span class="mono">{{ root }}</span></span>
+    <div class="hint" title="程序自带的两支不可删除（OFL 许可可商用）；「默认」只作新工程的初始化设定，改动请直接在各工程里选字体">
+      字幕与封面字体都从这里选<span v-if="root">　<span class="mono">{{ root }}</span></span>
     </div>
 
     <!-- **拖拽导入**（2026-10-02 用户要求把导入改成拖字体文件）：
@@ -45,7 +43,7 @@
       </div>
     </div>
     <p class="hint">
-      <code>.ttc</code> / <code>.otc</code> 是字体集合，浏览器读不出，会被服务端拒绝。
+      <code>.ttc</code>/<code>.otc</code> 字体集合会被服务端拒绝
       <button class="mini-btn" style="margin-left:6px" @click="showPicker = !showPicker">
         {{ showPicker ? '收起' : '文件已在服务器上？' }}
       </button>

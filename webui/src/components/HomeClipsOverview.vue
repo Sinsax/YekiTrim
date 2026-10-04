@@ -20,7 +20,7 @@
       <button class="ov-sec-head ov-fold" :aria-expanded="!unexportFold" @click="toggleUnexportFold">
         <span class="ov-caret" :class="{ closed: unexportFold }">▾</span>
         <span class="chip a">未导出</span>
-        <span class="muted small">点击卡片进入该片段的精修（没初始化过会先自动初始化）</span>
+        <span class="muted small" title="没初始化过的会先自动初始化">点卡片进入精修</span>
         <span class="muted small ov-fold-count">{{ unexported.length }}</span>
       </button>
       <template v-if="!unexportFold">

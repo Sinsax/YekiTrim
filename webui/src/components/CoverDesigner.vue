@@ -97,7 +97,7 @@
 
           <template v-else-if="sel.kind === 'guide'">
             <div class="lyr-props-h">{{ sel.name }}</div>
-            <div class="lyr-props-note">只画在设计器里，不进成片。只能隐藏，不能删除或改尺寸。</div>
+            <div class="lyr-props-note" title="只画在设计器里，不进成片；不能删除或改尺寸">只画在设计器里</div>
             <div class="mini-row mt-4">
               <button class="mini-btn" :class="{ selected: sel.visible }" @click="toggleGuide(sel.guide)">
                 {{ sel.visible ? '隐藏线框' : '显示线框' }}

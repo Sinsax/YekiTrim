@@ -10,7 +10,7 @@
       <!-- 总闸关着就别给表单：直接说清楚（服务端也会 403，这里只是别让人白填） -->
       <template v-if="enabled === false">
         <div class="empty small">当前未开放注册。请联系管理员生成邀请码（<span class="mono">yekitrim user invite</span>），
-          或直接在设置页「注册与邀请码」里开启。</div>
+          或去设置页开启。</div>
         <router-link class="btn" style="width:100%;justify-content:center;margin-top:12px" to="/login">去登录</router-link>
       </template>
 

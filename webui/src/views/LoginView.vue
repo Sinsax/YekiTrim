@@ -34,8 +34,8 @@
       </form>
 
       <div class="hint mt-12">
-        账号由管理员创建。首次部署的管理员密码见服务启动日志，或数据目录下的
-        <span class="mono">initial-admin-password.txt</span>（首次登录成功后自动删除）。
+        账号由管理员创建；初始密码见数据目录下的
+        <span class="mono">initial-admin-password.txt</span>
       </div>
       <!-- 只在注册开放时露出入口（读 /api/health 的能力位；服务端仍是最终裁判） -->
       <div v-if="registrationEnabled" class="row mt-8">

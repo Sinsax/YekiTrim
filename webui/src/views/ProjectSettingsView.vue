@@ -18,7 +18,7 @@
       </div>
       <!-- 读到了列表但里面没有这个 id = 已被移除（或别人的项目）：给个明确结论，
            别一直停在"读取项目信息…"（以前这里只有读取中的文案，看起来像卡住了） -->
-      <div v-else-if="listLoaded" class="muted small">项目不存在或已被移除（目录与文件仍在原处，可从首页「服务器文件」重新导入）。</div>
+      <div v-else-if="listLoaded" class="muted small" title="目录与文件仍在原处，可从首页「服务器文件」重新导入">项目不存在或已被移除</div>
       <div v-else class="muted small">读取项目信息…</div>
 
       <div class="row mt-12" style="gap:8px;flex-wrap:wrap">
@@ -34,10 +34,8 @@
         >删除源录播</button>
         <button class="mini-btn" :disabled="busy || !project" @click="removeProject">移除项目</button>
       </div>
-      <p class="muted small mt-8">
-        「删除源录播」释放空间但保留产物（唯一的手动释放手段）；「移除项目」只把登记从服务器列表里去掉 ——
-        <b>目录、yekitrim.toml、媒体与产物一个文件都不动</b>，随时可以从首页「服务器文件」重新导入同一个目录。
-        服务端永不自动删除任何数据。
+      <p class="muted small mt-8" title="移除项目只注销登记：目录、yekitrim.toml、媒体与产物一个文件都不动，随时可从首页「服务器文件」重新导入。服务端永不自动删除任何数据。">
+        <b>移除只注销登记，不动任何文件</b>
       </p>
     </div>
 

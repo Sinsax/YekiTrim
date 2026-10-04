@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h1>工作台</h1>
-        <div class="sub">左侧项目树按「预处理 → 切片 → 精修」直达；这里负责把录像变成项目</div>
+        <div class="sub">把录像变成项目</div>
       </div>
       <div class="actions">
         <button class="btn" @click="refresh"><Icon name="refresh" :size="14" /> 刷新</button>
@@ -58,13 +58,7 @@
           @pick-file="pickLocalFile"
         />
 
-        <p class="muted small mt-8">
-          <b>两种用法</b>：目录里<b>已有</b> <span class="mono">yekitrim.toml</span> ⇒ 直接<b>添加</b>它（不用选文件）；
-          没有 ⇒ 这就是个待初始化的录像目录，点一个录像文件（<b>不点也行</b>，默认取第一个视频）后<b>新建</b>。
-          只读<b>服务器上</b>已有的文件（不是你这台电脑），<b>不接受上传</b>。
-          已有工程时<b>不会覆盖</b>它的配置 —— 除非你在这种目录里又手动挑了一个视频，
-          那会先弹一次确认。
-        </p>
+        <p class="muted small mt-8">只读服务器上的文件，不接受上传</p>
 
         <div v-if="localDir" class="create-bar mt-8">
           <div class="flex-1 pick-main">
@@ -76,7 +70,7 @@
             <!-- ⚠️ "重建"警告**必须排在前面**：它的条件（已有工程 + 手动选了视频）与
                  "显示输入视频"是**同时成立**的，写成 v-else-if 挂在后面就永远轮不到它。 -->
             <div v-if="localHasConfig && localManualVideo" class="small mt-4 warn-text">
-              这个目录已有工程，但你又选了视频 —— 点下去会<b>用它重新初始化</b>（需要再确认一次）
+              已有工程，将<b>重新初始化</b>（要确认）
             </div>
             <!-- ⚠️ 必须显示"实际会用的那个视频"：后端在 input 为空时**自动挑第一个视频**，
                  不显示的话用户点下去才知道用了哪个（或才发现目录里根本没视频） -->
@@ -85,7 +79,7 @@
               <span v-if="!localManualVideo" class="muted">（自动选取目录里第一个视频）</span>
             </div>
             <div v-else-if="!localHasConfig && !localListing.failed" class="small mt-4 warn-text">
-              这个目录里没有可用的视频（mp4 / mkv / flv / ts…），换一个目录或进子目录看看
+              这个目录没有可用视频
             </div>
           </div>
           <button class="btn" style="flex:none" @click="openLocalPicker">

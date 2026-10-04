@@ -32,11 +32,8 @@
       </div>
     </div>
 
-    <p class="hint mt-6">
-      服务端日志同时写到 <span class="mono">&lt;data_dir&gt;/logs/yekitrim-YYYYMMDD.log</span>
-      （可用 <span class="mono">yekitrim doctor</span> 查路径）。面板默认显示「信息」以上；
-      想看逐条访问日志点「调试」——高频接口（视频 / 轮询）的成功记录要
-      <span class="mono">RUST_LOG=yekitrim=debug</span> 启动服务端才会有。
+    <p class="hint mt-6" title="同时写到 <data_dir>/logs/yekitrim-YYYYMMDD.log（可用 yekitrim doctor 查路径）。面板默认显示「信息」以上；逐条访问日志点「调试」——高频接口（视频/轮询）的成功记录要 RUST_LOG=yekitrim=debug 启动服务端才会有。">
+      日志同时写到 <span class="mono">&lt;data_dir&gt;/logs/</span>
     </p>
   </div>
 </template>
