@@ -84,6 +84,20 @@
             >{{ canRunAsr ? '跑 ASR' : '已跑过' }}</button>
           </div>
           <div class="hint asr-hint">{{ asrHint }}</div>
+          <!-- 主播名：全局 `[detection] vtuber_name` 只是**默认值**，每个工程可以自己写一份
+               （写进 `yekitrim.toml` 的 `[detection] vtuber_name`，merge 时覆盖全局）。
+               ⚠️ `merge` 对**空串不覆盖** ⇒ 清空就是"恢复跟随全局"，不需要额外的开关。 -->
+          <div class="asr-row">
+            <span class="asr-name">主播名</span>
+            <input
+              v-model="vtuberName"
+              class="fld-input flex-1"
+              placeholder="留空 = 跟随全局"
+              :disabled="busy"
+              @change="saveVtuberName"
+            >
+            <span class="muted small" :title="vtuberHint">生效：{{ effectiveVtuber || '（未设）' }}</span>
+          </div>
 
           <!-- 输入素材：弹幕 / 字幕都是**随时可换的输入**（生效值写进 yekitrim.toml），不是产物。
                清单式（两块的显示与交互完全一致）：
@@ -346,6 +360,14 @@ const assetsRoot = computed(() => assets.value?.root_dir || '')
 // `hybrid` = SenseVoice 打轴 + qwen3-asr 填词（默认）。fallback 与
 // `config/types.rs::default_asr_mode()` 一致，读失败时别显示成 single。
 const asrMode = ref('hybrid')
+/** 本工程自己写的主播名（空 = 跟随全局）与其合并后的生效值 */
+const vtuberName = ref('')
+const effectiveVtuber = ref('')
+const vtuberHint = computed(() =>
+  vtuberName.value
+    ? '本工程自己设的值（写在 yekitrim.toml 的 [detection] vtuber_name）'
+    : '当前用的是全局默认值；填一个就只对本工程生效'
+)
 /** 每个 ASR 模式的槽是否已占 —— **服务端算的**（`assets::slot_bound`：清单里登记过该模式
  *  产物，或盘上已有 `output/transcript.<mode>.json`）。前端不从 `items` 自己推：
  *  判槽还要看盘上那些没登记过的老产物，抄一份到前端就会漂。 */
@@ -480,6 +502,9 @@ async function load() {
   try {
     const d = await projectData.config(pid.value, '读取项目配置')
     asrMode.value = d.config?.asr?.mode || 'hybrid'
+    // 本工程**自己**写的那份（空 = 跟随全局）与合并后的生效值，两个都要
+    vtuberName.value = d.project_config?.detection?.vtuber_name || ''
+    effectiveVtuber.value = d.config?.detection?.vtuber_name || ''
   } catch {}
   try {
     const d = await projectData.transcript(pid.value, '读取字幕')
@@ -644,6 +669,21 @@ async function saveSubs() {
 /** 改 ASR 模式 = 立刻写进项目 `yekitrim.toml`（patch 模式：保留注释与其他 section）。
  *  只影响**还没跑**的转写 —— 两格槽都占满时才置灰（`canPickAsr`：那种情况下
  *  跑不了任何新模式，改它只是空转）。单格占满时仍可切到另一个模式去跑。 */
+/** 主播名存进本工程 `yekitrim.toml` 的 `[detection] vtuber_name`（patch，保留注释）。
+ *
+ *  ⚠️ 清空 = 写空串 = **恢复跟随全局**（`merge` 对空串不覆盖），不是"设成空名字"。
+ */
+async function saveVtuberName() {
+  try {
+    const v = vtuberName.value.trim()
+    await projectData.patchConfig(pid.value, { detection: { vtuber_name: v } })
+    effectiveVtuber.value = v
+    toast(v ? '主播名已保存到本工程：' + v : '主播名已清空，恢复跟随全局')
+  } catch (e) {
+    toast('主播名保存失败：' + (e.message || ''), 'err')
+  }
+}
+
 async function saveAsrMode() {
   if (!canPickAsr.value) return
   try {

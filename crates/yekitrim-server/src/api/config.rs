@@ -199,11 +199,18 @@ pub(super) fn config_yekitrim_get_impl(ws: &Workspace) -> ApiResult {
         // 配置解析失败时配置会被整体忽略，必须让前端能显示原因，否则表单只会静默回退到默认值
         Err(e) => (serde_json::Value::Null, format!("{e:#}")),
     };
+    // `config` 是**合并后**的生效值（项目覆盖全局），看不出"这一项到底是项目写的还是继承来的"。
+    // 预处理页要区分这两者（界面上是"留空 = 跟随全局"），所以再回一份**项目文件自己**的解析结果。
+    let project_config = toml::from_str::<toml::Value>(&yekitrim_raw)
+        .ok()
+        .and_then(|v| serde_json::to_value(v).ok())
+        .unwrap_or(serde_json::Value::Null);
     ok(serde_json::json!({
         "config_file": yekitrim_core::path::display(&ws.config_file),
         "root_dir": yekitrim_core::path::display(&ws.root_dir),
         "yekitrim_raw": yekitrim_raw,
         "config": config,
+        "project_config": project_config,
         "config_error": config_error,
     }))
 }
