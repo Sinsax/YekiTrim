@@ -41,7 +41,7 @@
 
       <div v-if="authState.mustChangePassword" class="pwd-banner">
         <Icon name="alert" :size="14" />
-        <span class="flex-1">仍在使用初始密码，请尽快修改（初始密码会出现在服务日志与初始密码文件里）。</span>
+        <span class="flex-1">仍在使用初始密码，请尽快修改</span>
         <button class="mini-btn" @click="openChangePassword">立即修改</button>
       </div>
 

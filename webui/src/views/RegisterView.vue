@@ -42,7 +42,7 @@
         </form>
 
         <div class="hint mt-12">
-          邀请码由管理员生成，<b>一个码只能用一次</b>。注册成功即登录，角色为普通用户（不会成为管理员）。
+          邀请码由管理员生成，<b>一个码只能用一次</b>
         </div>
         <div class="row mt-8">
           <router-link class="muted small" to="/login">已有账号？去登录</router-link>

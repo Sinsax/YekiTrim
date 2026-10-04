@@ -98,7 +98,7 @@ function srcFor(file) { return stickerFileUrl(props.pid, props.dir, props.pack, 
           <Icon v-else name="image" :size="16" />
         </button>
         <div v-if="!files.length" class="muted small pad">
-          这个 keyword 下没有文件清单（未构建）—— 直接用「自动」，或先让管理员构建标签
+          这个 keyword 下没有清单，用「自动」
         </div>
       </div>
     </template>

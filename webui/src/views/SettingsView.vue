@@ -159,7 +159,7 @@
       </template>
 
       <template v-else>
-        <div class="muted small mb-8">直接编辑 config.toml 原文，保存后立即生效；「返回表单」将放弃未保存的修改。</div>
+        <div class="muted small mb-8" title="保存后立即生效；「返回表单」会放弃未保存的修改">直接编辑 config.toml 原文</div>
         <textarea v-model="globalRaw" rows="24" class="mono source-editor"></textarea>
       </template>
     </div>
@@ -195,16 +195,15 @@
             <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false"></textarea>
           </div>
         </div>
-        <div class="muted small mt-8">
-          并发请求数对<b>所有 LLM 调用</b>生效（事件检测 / 精修事件生成 / 字幕订正）；
-          实测中转站允许并发，提高它能近线性缩短批处理时间。触发限流时先调小这里。
+        <div class="muted small mt-8" title="对事件检测 / 精修事件生成 / 字幕订正都生效；提高能近线性缩短批处理时间，触发限流就调小。">
+          并发对<b>所有 LLM 调用</b>生效
         </div>
         <!-- 按链路覆盖：各链路要的输出长度天差地别，别用同一个上限互相迁就。
              一行一条链路：勾上「单独设置」才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
         <div class="llm-links">
           <div class="llm-links-head">
             <span>按链路覆盖</span>
-            <span class="muted small">勾上才单独设置；不勾 = 这一条跟随上面的全局值</span>
+            <span class="muted small">不勾 = 跟随全局</span>
           </div>
           <div class="llm-link-row" v-for="l in llmLinks" :key="l.key">
             <label class="ln-name">
@@ -225,15 +224,14 @@
               跟随全局（{{ form.llm.max_tokens }} · {{ form.llm.temperature }} · {{ defaultThinking(l.key) }}）
             </span>
           </div>
-          <div class="muted small mt-8">
-            勾上 = 这一条的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；
-            取消勾选会把这三项从 llm.toml 里删掉，回到跟随全局。
+          <div class="muted small mt-8" title="勾上 = 把该链路的 max_tokens / temperature 写进 llm.toml（thinking 只有选具体值才写）；取消勾选会删掉这三项、回到跟随全局。">
+            不勾 = 跟随全局
           </div>
         </div>
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
-        <div class="muted small mb-8">直接编辑 llm.toml 原文；「返回表单」将放弃未保存的修改。</div>
+        <div class="muted small mb-8" title="「返回表单」会放弃未保存的修改">直接编辑 llm.toml 原文</div>
         <textarea v-model="llmRaw" rows="14" class="mono source-editor"></textarea>
       </template>
     </div>

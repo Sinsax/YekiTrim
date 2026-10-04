@@ -188,8 +188,8 @@
                   </select>
                 </div>
               </div>
-              <div class="hint">锚点在「后处理」时解析成坐标；「移到」非空就是从聚焦点平移过去。<br>
-                手持摇摆：持续晃动到下一条不带它的运镜，只在近景生效（非近景会被后处理剔除）。</div>
+              <div class="hint" title="锚点在「后处理」时解析成坐标；「移到」非空就是从聚焦点平移过去。手持摇摆会持续晃动到下一条不带它的运镜，只在近景生效。">「移到」非空 = 从聚焦点平移<br>
+                手持摇摆只在近景生效</div>
             </template>
 
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
@@ -214,8 +214,8 @@
                   <div class="flex-1"><label>终色</label>
                     <input type="color" :value="gradientColor(selItem, 1)" @input="setGradientColor(selItem, 1, $event.target.value)"></div>
                 </div>
-                <p v-if="!(selItem.colors && selItem.colors.length >= 2)" class="mini-hint">
-                  未设色档：按「该色 → 透明」渲染。改动任一色档即成为两档渐变。
+                <p v-if="!(selItem.colors && selItem.colors.length >= 2)" class="mini-hint" title="按「该色 → 透明」渲染；改动任一色档即成为两档渐变">
+                  未设色档，按单色渐变渲染
                 </p>
                 <label>形状</label>
                 <select v-model="selItem.shape">
@@ -281,7 +281,7 @@
          以前是 `v-if` 把整块换成"暂无时间轴数据，请先运行 LLM 自动生成分段" —— 删掉最后一段后
          时间轴直接消失，连字幕/屏蔽都没法改（用户报过）。 -->
     <div v-if="!segments.length" class="tl-no-seg">
-      <span class="muted small">还没有分段：事件要挂在分段上（字幕 / 屏蔽不受影响）。跑一次「LLM 剪辑」即可生成分段。</span>
+      <span class="muted small">还没有分段，先跑一次「LLM 剪辑」</span>
     </div>
     <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
       <div class="timeline-labels">

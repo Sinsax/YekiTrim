@@ -107,7 +107,7 @@
 
           <template v-else-if="sel.kind === 'video'">
             <div class="lyr-props-h">视频预览</div>
-            <div class="lyr-props-note">基础层：封面用的那一帧。缩放 / 偏移都作用在这一层（不可删除）。</div>
+            <div class="lyr-props-note" title="缩放 / 偏移都作用在这一层；不可删除">封面用的那一帧</div>
             <div class="mini-row mt-4">
               <span class="mini-label">时间</span>
               <input v-model.number="time" type="number" step="0.1" class="w-time" title="填秒数回车，画面跳到那一帧" @change="seekToFramePos">
@@ -127,7 +127,7 @@
 
           <template v-else-if="sel.kind === 'bg'">
             <div class="lyr-props-h">背景</div>
-            <div class="lyr-props-note">垫在视频预览之下：帧缩小或拖开时才看得到。</div>
+            <div class="lyr-props-note" title="帧缩小或拖开时才看得到">垫在视频之下</div>
             <div class="mini-row mt-4">
               <button v-for="m in BG_MODES" :key="m.key" class="mini-btn seg-btn"
                       :class="{ selected: bgMode === m.key }" :title="m.hint"
@@ -149,14 +149,14 @@
             </div>
             <input ref="fileInput" type="file" accept="image/*" class="hidden-file" @change="importBg">
             <div v-if="bgMode === 'blur' && bgFrameTried && !bgImageOk" class="muted small mt-4">
-              背景截帧没生成出来（出片会自己截，这里先用手动「导出关键帧」补一张）
+              背景截帧没生成，可手动「导出关键帧」
             </div>
             <div class="lyr-props-note mt-4" title="导入的图写在 _cover_bg.jpg，不会覆盖视频预览那一层">导入的背景图不会覆盖视频预览层。</div>
           </template>
 
           <template v-else-if="sel.kind === 'filter'">
             <div class="lyr-props-h">滤镜</div>
-            <div class="lyr-props-note">渐变 + 暗角，压在视频预览之上、文字与特效之下。</div>
+            <div class="lyr-props-note" title="压在视频之上、文字与特效之下">渐变 + 暗角</div>
             <div class="mini-grid mt-4">
               <div class="mini-field"><label>渐变</label>
                 <select v-model="gradientDir" title="渐变底色取自「设置 · 字幕」的高亮色，这里只改方向">

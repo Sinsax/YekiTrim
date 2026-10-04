@@ -36,7 +36,7 @@
 
       <span class="pb-meta muted small">
         <template v-if="selSeg">{{ fmtSec(selStart) }} → {{ fmtSec(selEnd) }} · 时长 {{ fmtSec(Math.max(0, selEnd - selStart)) }}</template>
-        <template v-else>未选中：点轨道上的字幕块，在这里改文本与入点 / 出点</template>
+        <template v-else>点轨道上的字幕块来编辑</template>
       </span>
     </div>
 
@@ -88,7 +88,7 @@
 
     <div class="track-foot">
       <span class="muted small">{{ segments.length }} 段字幕 · 共 {{ fmtSec(span) }}</span>
-      <span class="muted small hide-narrow">点块在上面编辑 · 拖动平移 · 拖左右缘改起止 · 双击删除 · 点标尺跳转</span>
+      <span class="muted small hide-narrow" title="拖动平移 · 拖左右缘改起止 · 双击删除 · 点标尺跳转">拖块平移，双击删除</span>
       <span class="spacer"></span>
       <button class="mini-btn" :disabled="scaleIdx <= 0" title="缩小（同屏显示更长）" @click="zoom(-1)">－</button>
       <span class="muted small mono zoom-num">{{ scale }} px/s</span>

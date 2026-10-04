@@ -21,7 +21,7 @@
                 <template v-else> · <span class="warn-t">未走托管校验</span>（配置指定或 PATH 里的副本）</template>
               </template>
               <template v-else>
-                未安装。点右边按钮下载官方发布物（约 17 MB），落盘后**按 sha256 钉死校验**。
+                未安装。点右边按钮下载（约 17 MB，按 sha256 校验）
               </template>
             </div>
             <div class="muted small mt-4">
@@ -46,7 +46,7 @@
             <option value="__custom__">自备可执行文件…</option>
           </select>
           <span class="muted small">
-            选「自备」时下面的路径生效：可以指向你自己更新的 yt-dlp。
+            指向你自己更新的 yt-dlp
             <b>不随发行物分发</b>，因此不进 THIRD-PARTY-NOTICES。
           </span>
         </label>
@@ -57,7 +57,7 @@
             <input v-model="form.ytdlp_path" class="flex-1 mono" placeholder="例如 D:\tools\yt-dlp.exe">
             <button class="mini-btn" @click="pickTarget = 'exe'; showPicker = true">浏览…</button>
           </div>
-          <span class="muted small">必须兼容 yt-dlp 的命令行契约（本项目的下载参数按它写）。</span>
+          <span class="muted small" title="本项目的下载参数按 yt-dlp 的命令行契约写">需兼容 yt-dlp 命令行契约</span>
         </label>
       </div>
 
@@ -74,13 +74,13 @@
           <button v-if="form.projects_root" class="mini-btn" @click="form.projects_root = ''">恢复默认</button>
         </div>
         <span class="muted small">
-          <b>下载和入库的项目都落在这里</b>，布局是
+          <b>下载与入库都落在这里</b>，布局是
           <span class="mono">&lt;这里&gt;/users/&lt;账号&gt;/&lt;房间或 BV 号&gt;/&lt;时间戳&gt;-&lt;pid&gt;</span>。
-          录播姬入库、本机导入用的是同一个根 —— 它不是 B站专属设置。
+          录播姬入库与本机导入共用这个根
         </span>
         <span class="muted small">
-          当前生效：<span class="mono">{{ effectiveRoot }}</span>（留空 = 程序目录）。
-          目录还不存在也能直接填 —— 保存时服务端会建出来；改动<b>只影响新建的项目</b>，已有项目仍在原位置。
+          当前生效：<span class="mono">{{ effectiveRoot }}</span>
+          <span class="muted" title="不存在时保存会创建；只影响新建项目">（留空 = 程序目录）</span>
         </span>
       </label>
 
@@ -114,7 +114,7 @@
           <span class="lbl">卡死判定（秒）</span>
           <input v-model.number="form.idle_timeout_secs" type="number" min="30" step="30">
           <span class="muted small">
-            连续这么久**一行输出都没有**就判定卡死并 kill。这是子进程唯一的兜底超时。
+            连续这么久<b>没有任何输出</b>就判卡死并 kill
           </span>
         </label>
       </div>
@@ -128,9 +128,8 @@
           <button v-if="form.cookie_file" class="mini-btn" @click="form.cookie_file = ''">清除</button>
         </div>
         <span class="muted small">
-          必须是 <b>Netscape 格式</b>（浏览器导出的 <span class="mono">cookies.txt</span>）；
-          JSON 格式会被 yt-dlp **静默忽略**，表现为"配了还是 480p"。
-          部分视频没有它直接下不了。
+          必须是 <b>Netscape 格式</b>，JSON 会被静默忽略
+          <span class="muted">（部分视频没有它直接下不了）</span>
         </span>
       </div>
 
@@ -144,7 +143,7 @@
         <div v-for="(w, i) in warnings" :key="i">· {{ w }}</div>
       </div>
       <p class="muted small mt-8">
-        只支持单个视频链接与它的分P；番剧 / 课程 / UP 主空间 / 收藏夹批量**不支持**。
+        只支持单个视频与它的分P；选集/课程等不支持
       </p>
     </template>
 
