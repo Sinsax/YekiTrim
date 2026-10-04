@@ -13,7 +13,7 @@
     <div v-if="clipsError" class="error-banner">
       <Icon name="alert" :size="15" />
       <span>切片列表读取失败：{{ clipsError }}</span>
-      <button class="mini-btn" style="margin-left:auto" @click="load({ silent: true })">重试</button>
+      <button class="mini-btn ml-auto" @click="load({ silent: true })">重试</button>
     </div>
 
     <!-- 无切片：空态引导（不报错不白屏）。用 v-else-if 接在错误条后面：读取失败时**只**出错
@@ -36,7 +36,7 @@
         <div class="error-banner">
           <Icon name="alert" :size="15" />
           <span>片段配置读取失败：{{ cfgError }}</span>
-          <button class="mini-btn" style="margin-left:auto" @click="load()">重试</button>
+          <button class="mini-btn ml-auto" @click="load()">重试</button>
         </div>
         <p class="muted small m-0">工程文件可能还在，先重试，别点初始化。</p>
       </div>
@@ -77,7 +77,7 @@
         <div v-if="cfgError" class="error-banner">
           <Icon name="alert" :size="15" />
           <span>片段配置刷新失败，显示的是上一次的数据：{{ cfgError }}</span>
-          <button class="mini-btn" style="margin-left:auto" @click="load({ silent: true })">重试</button>
+          <button class="mini-btn ml-auto" @click="load({ silent: true })">重试</button>
         </div>
 
         <!-- 片段卡（小卡，只做跳转）：默认一行，可展开两行 -->
@@ -126,7 +126,7 @@
             <!-- LLM 剪辑（参数：区域编辑 / 贴纸来源）—— 整块在「渲染导出」上方 -->
             <div class="gen-block">
               <div class="row spread mb-6">
-                <b class="t" style="margin:0"><Icon name="sparkles" :size="12" /> LLM 剪辑</b>
+                <b class="t m-0"><Icon name="sparkles" :size="12" /> LLM 剪辑</b>
                 <span class="muted small">下列为参数</span>
               </div>
 
@@ -135,15 +135,15 @@
                    贴纸那格是"自动 / 固定"二选一，切到固定后再点预览取点。 -->
               <div class="small muted mb-4">区域与落点<span class="hint"> · 在预览上点选</span></div>
               <div class="row mb-6 region-row">
-                <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
                         title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
                   <Icon name="crop" :size="11" /> 人物
                 </button>
-                <button class="mini-btn" style="flex:1;justify-content:center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
                         title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
                   <Icon name="crop" :size="11" /> 弹幕
                 </button>
-                <button class="mini-btn" style="flex:1;justify-content:center"
+                <button class="mini-btn flex-1 jc-center"
                         :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
                         :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
                         @click="toggleStickerMode">
@@ -152,7 +152,7 @@
                 <!-- 「改落点」与上面三格同一行（用户要求：它原本单独占一行，白吃一行高度）。
                      只存在于「固定」模式；编辑态里它让位给下面那行的「保存落点 / 取消」。
                      点它会清掉框选态（`startPointEdit` 里），两者都是"在预览上取坐标"。 -->
-                <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn" style="flex:1;justify-content:center"
+                <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
                         :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
                         @click="startPointEdit">
                   <Icon name="pin" :size="11" /> 改落点
@@ -164,7 +164,7 @@
                   <span v-if="hasFreeRect" class="chip p">自由选框</span>
                   <span v-else class="chip n">九宫格默认</span>
                 </div>
-                <div class="row mb-6" style="gap:6px">
+                <div class="row mb-6 gap-6">
                   <!-- 选框保存是"同步加锁写 polish.toml"，与任务不冲突：任务在跑时照样能存，
                        随后的重算（process）会排到该片段空闲后自动补跑（reprocessLayout） -->
                   <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
@@ -180,7 +180,7 @@
                   <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
                 </div>
                 <!-- 保存/取消与说明只在编辑态出现：常态下「改落点」在上面那行，这里不留空行 -->
-                <div v-if="pointEdit" class="row mb-6" style="gap:6px">
+                <div v-if="pointEdit" class="row mb-6 gap-6">
                   <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
                   <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
                 </div>
@@ -208,7 +208,7 @@
                   <span v-else-if="src.builtin" class="ss-opt-meta">内置</span>
                 </button>
                 <!-- "读不到"与"库是空的"必须分开：前者不该让用户去翻 stickers/ 目录 -->
-                <div v-if="stickerSourcesError" class="row small" style="gap:6px;align-items:center">
+                <div v-if="stickerSourcesError" class="row small gap-6">
                   <span class="muted">贴纸来源读取失败：{{ stickerSourcesError }}</span>
                   <button class="mini-btn" @click="loadStickerSources">重试</button>
                 </div>
@@ -220,7 +220,7 @@
               <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
                 <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
-              <div v-if="fontsError" class="row small mt-4" style="gap:6px;align-items:center">
+              <div v-if="fontsError" class="row small mt-4 gap-6">
                 <span class="muted">字体库读取失败：{{ fontsError }}</span>
                 <button class="mini-btn" @click="loadFonts">重试</button>
               </div>
@@ -232,24 +232,24 @@
 
               <!-- 参数 4：弹幕时间偏移（默认 -3 = 整体提前 3 秒，直接热重载预览） -->
               <div class="row" style="margin-top:14px;gap:8px;align-items:center">
-                <span class="small muted" style="flex:none">弹幕时间偏移</span>
+                <span class="small muted flex-none">弹幕时间偏移</span>
                 <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
                        :disabled="dmOffsetSaving || !ready" :title="'当前 ' + dmOffset + 's，负 = 提前出现，正 = 推后；默认 -3（弹幕比直播晚约 3 秒）'"
                        @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
                 <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
                        :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
                        title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
-                <span class="mono small" style="flex:none">s</span>
+                <span class="mono small flex-none">s</span>
               </div>
               <div class="hint mt-4" title="弹幕显示普遍比画面晚几秒；调成 0 可完全关闭偏移">负 = 弹幕提前，正 = 推后</div>
 
               <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
-              <button class="btn mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
+              <button class="btn mt-12 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
               <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
             </div>
 
             <!-- 导出（在 LLM 参数块下方） -->
-            <button class="btn btn-primary mt-12" style="width:100%;justify-content:center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
+            <button class="btn btn-primary mt-12 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
@@ -263,23 +263,23 @@
             <template v-else>
               <div class="small muted mb-4"
                    title="源与画布同比例时主画面正好铺满：位置 / 缩放 / 背景都没有可见效果，故整组隐藏">画面尺寸</div>
-              <div class="row mb-6" style="gap:6px">
-                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn" style="flex:1;justify-content:center"
+              <div class="row mb-6 gap-6">
+                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
                         :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
                         @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
               </div>
 
               <template v-if="showStageGeom">
                 <div class="small muted mb-4">主画面位置</div>
-                <div class="row mb-6" style="gap:8px;align-items:center">
+                <div class="row mb-6">
                   <input type="range" class="flex-1" min="0" max="100" step="25" :value="stagePct"
                          :disabled="stageBusy || !ready"
                          @change="patchStage({ position_pct: Number($event.target.value) })">
                   <span class="mono small" style="flex:none;width:3.2em">{{ positionLabel }}</span>
                 </div>
 
-                <div class="row mb-6" style="gap:8px;align-items:center">
-                  <span class="small muted" style="flex:none">缩放比例</span>
+                <div class="row mb-6">
+                  <span class="small muted flex-none">缩放比例</span>
                   <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
                          :disabled="stageBusy || !ready"
                          @change="patchStage({ scale: Number($event.target.value) })">
@@ -291,19 +291,19 @@
 
               <template v-if="showStageGeom || bgOnlyAfterSwitch">
                 <div class="small muted mb-4">背景</div>
-                <div class="row mb-6" style="gap:6px">
-                  <button v-for="b in bgOptions" :key="b.value" class="mini-btn" style="flex:1;justify-content:center"
+                <div class="row mb-6 gap-6">
+                  <button v-for="b in bgOptions" :key="b.value" class="mini-btn flex-1 jc-center"
                           :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
                           @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
                 </div>
-                <div v-if="stageBgDisplay === 'color'" class="row mb-6" style="gap:8px;align-items:center">
+                <div v-if="stageBgDisplay === 'color'" class="row mb-6">
                   <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
                          :value="stageBgColor" :disabled="stageBusy || !ready"
                          @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
                   <span class="mono small">{{ stageBgColor }}</span>
                 </div>
-                <div v-else class="row mb-6" style="gap:8px;align-items:center">
-                  <span class="small muted" style="flex:none">模糊强度</span>
+                <div v-else class="row mb-6">
+                  <span class="small muted flex-none">模糊强度</span>
                   <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
                          :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
                   <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
@@ -358,7 +358,7 @@
         <div class="card mt-16 artifact-bar">
           <div class="row spread">
             <div class="row" style="gap:10px">
-              <b class="t" style="margin:0">产物</b>
+              <b class="t m-0">产物</b>
               <a v-if="renderedUrl && !renderedFailed" class="mini-btn" :href="renderedUrl" download :title="renderedFile">
                 <Icon name="download" :size="12" /> 成片 {{ renderedFile }}
               </a>
