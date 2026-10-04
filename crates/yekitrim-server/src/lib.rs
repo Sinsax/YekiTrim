@@ -78,6 +78,15 @@ pub struct ServerArgs {
     #[arg(long)]
     pub config: Option<PathBuf>,
 
+    /// 指定 WebUI 静态资源目录（**覆盖**默认来源）。
+    ///
+    /// 默认来源按构建形态定：**release = 内嵌**（`build.rs` 把 `webui/dist` 编进二进制，
+    /// 于是"只换 exe 就能升级"）、**debug = 读盘**（改前端不用重链接服务端）。
+    /// 这个开关给"生产上热修一份界面"与排障用；等价的环境变量是 `YEKITRIM_WEBUI_DIR`
+    /// （`web::WEBUI_DIR_ENV`，命令行参数优先）。
+    #[arg(long)]
+    pub webui_dir: Option<PathBuf>,
+
     /// 允许监听非 loopback 地址。
     ///
     /// 服务可读写本机工程目录并调用 ffmpeg，默认只允许 127.0.0.1 / ::1；
@@ -255,6 +264,8 @@ where
     S: std::future::Future<Output = ()> + Send + 'static,
     F: FnOnce(&str) + Send + 'static,
 {
+    // WebUI 来源要在**任何静态资源请求之前**定下来（也就早于下面那句启动日志）
+    web::set_webui_dir(args.webui_dir.clone());
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
         .with_context(|| format!("无法解析监听地址: {}:{}", args.host, args.port))?;
@@ -488,11 +499,18 @@ where
         let url = format!("http://{actual}{}", args.open_path);
         open_browser(&url);
     }
-    if !web::dist_ready() {
+    // WebUI 来源：release 内嵌、debug 读盘、显式覆盖优先。
+    // ⚠️ 这行**别以 `WebUI: http://` 开头** —— 薄启动器就是靠那个前缀抓实际监听地址的
+    // （跨进程契约，见 auth.rs 的 tray_and_server_agree_on_the_cross_process_contract）。
+    if web::dist_ready() {
+        tracing::info!("静态资源：{}", web::source_label());
+    } else {
         tracing::warn!(
-            "⚠ 未找到 WebUI 构建产物（webui/dist/index.html），页面将返回 503。\
-             请在仓库根目录执行 `cd webui && npm install && npm run build`，\
-             或把 webui/dist 放到可执行文件同级目录"
+            "⚠ WebUI 静态资源不可用（{}），页面将返回 503。release 二进制本该内嵌一份 —— \
+             看到这句通常说明 `--webui-dir` / `{}` 指到了一个空目录；\
+             开发时请 `npm --prefix webui run build`，或直接 `npm run dev`（那条路不经服务端）",
+            web::source_label(),
+            web::WEBUI_DIR_ENV
         );
     }
 

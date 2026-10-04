@@ -164,3 +164,38 @@ yekitrim server --host 127.0.0.1 --allow-remote \
 4. 许可：发行二进制是 **Apache-2.0**（宽松许可，**允许闭源再分发**）。打包时已**强制**随包
    附上 `LICENSE` 与 `THIRD-PARTY-NOTICES.md`，分发前确认二者在包内即可 —— 见仓库根
    [`LICENSE`](../LICENSE) 与 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)。
+
+### 升级：**换掉 exe 就够了**（2026-10-03 起）
+
+> 要往 Linux 上移植的话，先读 **[`docs/linux-port-handover.md`](linux-port-handover.md)** ——
+> 里面把"哪些已经平台无关、哪些是阻塞项（ASR vendor / 托盘 / 数据目录 / 打包）"逐条列了出处。
+
+包里现在只有这么几样：`yekitrim.exe`、`yekitrim-tray.exe`、`yekitrim.ico`、`LICENSE`、
+`THIRD-PARTY-NOTICES.md`、`resources/fonts/`（**空目录 + 说明**，字体已编在 exe 里）。
+**WebUI 也编在 exe 里**（`crates/yekitrim-server/build.rs` 把 `webui/dist` 用 `include_bytes!` 嵌进去），
+所以升级操作是：
+
+> **覆盖式解压**到原目录（把新的 `yekitrim.exe` / `yekitrim-tray.exe` 覆盖旧的），
+> 然后重启。**不要**先删整个文件夹。
+
+⚠️ **别删文件夹再解压**：`data_dir()` = `YEKITRIM_DATA_DIR` ?? **exe 所在目录**，
+所以 `.yekitrim/`（配置、账号库、**下载好的 ASR 模型**、日志、工程账本）就在 exe 旁边 ——
+删文件夹等于把配置、账号和几个 GB 的模型一起清掉。包里本来就没有 `.yekitrim/`，
+**覆盖式解压不会碰到它**。
+
+为什么"只换 exe"现在成立（以前**不**成立）：
+
+| | 以前 | 现在 |
+|---|---|---|
+| 前端 | 运行时读盘，包里带 `webui/dist/`（30 个文件 1.2 MB） | **编进 exe** |
+| 只换 exe 的后果 | **静默**端出旧界面（查找链会命中 exe 旁边那份旧 dist，看不出异常） | 前端跟着 exe 一起换，**不存在错配** |
+| dist 过期 | 只在 `cargo xtask package` 时告警 | **编译期直接失败**（`dist` 缺失或比 `webui/src` 旧） |
+
+⚠️ 两个例外仍要单独准备：
+- **`resources/fonts/`** 里的说明文件（空目录也在包里）；字体不用管，已编进 exe。
+- **程序目录以外的东西**：`ffmpeg` / `ffprobe`（`PATH` 里）与出片底座（Dhampir）按各自的方式升级 ——
+  它们不在本仓的发行物里。
+
+排查用的开关：`yekitrim server --webui-dir <目录>`（或环境变量 `YEKITRIM_WEBUI_DIR`）可以**临时**
+让服务端改读磁盘上的一份界面（生产热修 / 排障）。启动日志会写一行 `静态资源：内嵌（N 个文件）`
+或 `静态资源：磁盘 <目录>`，据此判断当前吃的是哪一份。
