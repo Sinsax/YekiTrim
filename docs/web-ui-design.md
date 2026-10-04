@@ -1158,3 +1158,20 @@ extra_params = { seed = 42, thinking = { type = "enabled" }, response_format = {
 | polish 预览/编辑器 | `yekitrim polish preview` |
 | 全局配置 | `yekitrim config show / config init` |
 | 阶段推导 | `yekitrim status` |
+### 附录 D 项目级「主播名」（2026-10）
+
+全局 `[detection] vtuber_name` 只是**默认值**；每个工程可以自己写一份，写在工程的
+`yekitrim.toml` 里（同样是 `[detection] vtuber_name`）。修改入口在**预处理页**（`/p/:pid/prepare`）。
+
+机制不需要新的配置字段 —— `load_config_at()` 本来就是
+`默认值 → 合并 .yekitrim/config.toml → 合并工程的 yekitrim.toml`，而工程文件**本来就能写 `[detection]`**。
+所以只差把它暴露到界面：
+
+| 读 | `GET /api/project-data/config` 的 `config`（合并后生效值）+ `project_config`（工程自己那份） |
+| 写 | `PUT /api/project-data/config` 的 `{patch:{detection:{vtuber_name}}}`（保留注释与其他 section） |
+
+⚠️ **清空 = 跟随全局，不是"设成空名字"**：`merge()` 对 `vtuber_name` 的**空串不覆盖**
+（`config/mod.rs` 的 `if !overlay.detection.vtuber_name.is_empty()`），所以写空串就恢复继承。
+界面据此把"留空 = 跟随全局"做成一个输入框就够，**不需要额外的"启用覆盖"开关**。
+
+⚠️ 界面上必须能区分"本工程写了"与"继承来的" —— 只看合并值分不出来，所以要 `project_config` 那一份。

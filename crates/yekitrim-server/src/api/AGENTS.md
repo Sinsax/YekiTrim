@@ -84,6 +84,10 @@
   ⚠️ 令牌名/头名与 `crates/yekitrim-cli/src/tray.rs` 里**各写一份字面量**（托盘链接不了本 crate），
   改一处必须改两处。
 
+  ⚠️ `GET /api/project-data/config` 同时回 `config`（**合并后**生效值）与 `project_config`
+  （**项目文件自己**那份）：预处理页靠后者区分"本工程写了"与"跟随全局"
+  （`merge` 对空串不覆盖 ⇒ 清空该键即恢复跟随全局）。只回合并值就分不出这两者。
+
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。
   axum 里"后加的 layer 在外层"，所以 `routes.rs` 里那两行**看起来是倒着写的**（有注释，别"顺手改正"）。
 - ⚠️ 子模块里的 `super::` 是 `api`、**不是 crate 根**；`api/auth.rs` 与 `crate::auth` 同名不同物，

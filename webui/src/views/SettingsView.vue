@@ -200,9 +200,7 @@
           </div>
         </div>
 
-        <details class="form-adv">
-          <summary>高级参数<span class="muted small">按链路覆盖 / extra_params</span></summary>
-          <div class="form-section">
+        <div class="form-section">
             <div class="form-section-title">按链路覆盖</div>
         <!-- 按链路覆盖：各链路要的输出长度天差地别，别用同一个上限互相迁就。
              一行一条链路：勾上「单独设置」才出现滑块，没勾的只占一行灰字（跟随全局）。 -->
@@ -239,7 +237,6 @@
             <div class="form-section-title">extra_params（JSON）</div>
             <textarea v-model="form.llm.extra_params" class="mono" spellcheck="false" rows="5"></textarea>
           </div>
-        </details>
         <div class="muted small mt-8">{{ llmResult }}</div>
       </template>
       <template v-else>
@@ -251,8 +248,10 @@
 
     <!-- 账号与模型：邀请码/注册 与 ASR 模型清单 -->
     <template v-else-if="section === 'account'">
-    <div class="two-up">
-      <div>
+    <div class="two-up" :class="{ 'one-up': localNoAuth }">
+      <!-- 本地模式（`--local-no-auth`）下**没有登录这回事**：邀请码与注册开关都是给
+           多用户部署用的，摆在这里只会让人以为需要它。 -->
+      <div v-if="!localNoAuth">
         <div class="section-title">注册与邀请码</div>
         <div class="card">
           <InviteManager />
@@ -324,6 +323,12 @@ const models = ref([])
 const llmResult = ref('')
 const referenceTitlesText = ref('')
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
+/**
+ * 本地免登录位（`GET /api/health.local_no_auth`）—— **与 `App.vue` 同一口径**：
+ * 本地模式下没有"注册/邀请"这回事，收起「注册与邀请码」那张卡。
+ * ⚠️ 读失败就当 `false`（照旧显示）—— 别默认 true，否则一次请求抖动就把整块藏了。
+ */
+const localNoAuth = ref(false)
 const editSource = ref(false)
 const editLlmSource = ref(false)
 // 只有成功读到 /api/config 才允许保存：否则表单里的内建默认值会覆盖真实配置
@@ -619,7 +624,13 @@ onMounted(() => {
   // /api/config 只有程序配置与 LLM 两个子页用（含源码编辑器）；模型列表只有「账号与模型」用。
   // 其余子页的组件自带接口，别白拉一遍。
   if (props.section === 'config' || props.section === 'llm') loadConfig()
-  if (props.section === 'account') loadModels()
+  if (props.section === 'account') {
+    loadModels()
+    // 只有这个子页需要知道是不是本地免登录（决定要不要显示邀请码那张卡）
+    api('/api/health')
+      .then((h) => { localNoAuth.value = h?.local_no_auth === true })
+      .catch(() => {})
+  }
 })
 </script>
 
@@ -655,6 +666,8 @@ onMounted(() => {
 .form-grid { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px 12px; align-items:start; }
 /* 注册与邀请码 / 模型管理：两张卡都短，并排省一屏竖高（窄屏回落成上下） */
 .two-up { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; align-items:start; }
+/* 本地模式只留一张卡（注册与邀请码被收起）—— 让它占满整行，别半宽留白 */
+.one-up { grid-template-columns:minmax(0,1fr); }
 .span-2 { grid-column:span 2; }
 .span-4 { grid-column:span 4; }
 /* 「高级参数」：默认收起。里面是"默认值就是最佳实践"的调参与提示词 ——
