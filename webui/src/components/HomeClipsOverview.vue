@@ -9,7 +9,7 @@
        数据全部来自 workbench store 的 per-project 缓存（loadProjectData，单飞 + 失效矩阵）。 -->
   <div class="card card-blk mb-12">
     <div class="row spread mb-8">
-      <b class="t" style="margin:0"><Icon name="film" :size="15" /> 切片总览</b>
+      <b class="t m-0"><Icon name="film" :size="15" /> 切片总览</b>
       <span class="muted small">未导出 {{ unexported.length }} · 已完成导出 {{ exported.length }}</span>
     </div>
 
@@ -104,7 +104,7 @@
       </template>
     </div>
 
-    <div v-if="loading && !allClips.length" class="row muted small" style="gap:8px">
+    <div v-if="loading && !allClips.length" class="row muted small">
       <span class="spinner"></span> 正在读取各项目的切片数据…
     </div>
   </div>

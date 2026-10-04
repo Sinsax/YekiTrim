@@ -1,12 +1,12 @@
 <template>
   <div>
     <!-- 总闸 + 生成入口 -->
-    <div class="row spread mb-8" style="gap:8px">
-      <div class="row" style="gap:8px">
+    <div class="row spread mb-8">
+      <div class="row">
         <span class="chip" :class="enabled ? 'g' : 'n'">注册{{ enabled ? '已开放' : '已关闭' }}</span>
         <span class="muted small">{{ openCount }} 个可用邀请码</span>
       </div>
-      <div class="row" style="gap:6px">
+      <div class="row">
         <button class="mini-btn" :disabled="busy" @click="toggleRegistration">
           {{ enabled ? '关闭注册' : '开启注册' }}
         </button>

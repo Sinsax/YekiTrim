@@ -11,7 +11,7 @@
     <div v-if="configLoadError" class="error-banner">
       <Icon name="alert" :size="15" />
       <span>封面配置读取失败，<b>改动不会被保存</b>：{{ configLoadError }}</span>
-      <button class="mini-btn" style="margin-left:auto" @click="reloadCoverConfig">重试</button>
+      <button class="mini-btn ml-auto" @click="reloadCoverConfig">重试</button>
     </div>
     <div class="designer-grid">
       <div class="stage-wrap" ref="stageWrapRef">
@@ -116,7 +116,7 @@
             </div>
             <div class="mini-grid mt-4">
               <div class="mini-field"><label>帧缩放</label><input type="range" min="0.5" max="3" step="0.05" v-model.number="coverZoom"><span class="rv">{{ Math.round(coverZoom * 100) }}%</span></div>
-              <div class="mini-field"><button class="mini-btn" style="width:100%;justify-content:center" @click="resetFrame">复位</button></div>
+              <div class="mini-field"><button class="mini-btn w-full jc-center" @click="resetFrame">复位</button></div>
             </div>
             <div class="mini-grid mt-4">
               <div class="mini-field"><label>偏移</label><span class="rv">X {{ Math.round(coverOffsetX) }} · Y {{ Math.round(coverOffsetY) }}</span></div>

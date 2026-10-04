@@ -1,7 +1,7 @@
 <template>
   <div class="card card-blk mb-12">
     <div class="row spread mb-8">
-      <b class="t" style="margin:0"><Icon name="type" :size="15" /> 字体库</b>
+      <b class="t m-0"><Icon name="type" :size="15" /> 字体库</b>
       <span class="muted small">
         {{ fonts.length ? `已装 ${installedCount} 支${missing.length ? ` · 自带缺 ${missing.length} 支` : ''}` : '还是空的' }}
       </span>
@@ -65,7 +65,7 @@
 
     <div v-if="error" class="error-banner mt-8">
       <Icon name="alert" :size="15" /> {{ error }}
-      <button class="mini-btn" style="flex:none" @click="load">重试</button>
+      <button class="mini-btn flex-none" @click="load">重试</button>
     </div>
 
     <!-- 测试文本：一段共享文本喂给所有卡片试渲染（中英混排 + 数字，够看出字形差异） -->

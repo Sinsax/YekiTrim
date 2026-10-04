@@ -1,14 +1,14 @@
 <template>
   <div>
     <!-- 工具条：级别档 + 过滤 + 自动滚动 + 清空 + 连接状态 -->
-    <div class="row spread mb-8" style="gap:8px">
-      <div class="row" style="gap:6px">
+    <div class="row spread mb-8">
+      <div class="row">
         <button v-for="f in LEVELS" :key="f.key" class="mini-btn"
                 :class="{ selected: logState.levelKey === f.key }"
                 :title="f.hint" @click="logState.levelKey = f.key">{{ f.label }}</button>
         <span class="muted small">{{ shown.length }} / {{ logState.records.length }} 条</span>
       </div>
-      <div class="row" style="gap:6px">
+      <div class="row">
         <input v-model="logState.keyword" class="log-filter" placeholder="过滤关键字…">
         <button class="mini-btn" :class="{ selected: logState.autoscroll }"
                 title="新日志自动滚到底部（手动往上翻会自动关掉）"

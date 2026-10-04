@@ -1,15 +1,15 @@
 <template>
   <div>
     <!-- 总闸 + 状态 + 动作 -->
-    <div class="row spread mb-8" style="gap:8px">
-      <div class="row" style="gap:10px">
+    <div class="row spread mb-8">
+      <div class="row">
         <span class="chip" :class="stateChip.cls">{{ stateChip.text }}</span>
         <label class="row" style="gap:6px;cursor:pointer;margin:0">
           <input v-model="enabled" type="checkbox" style="width:auto" :disabled="busy || !loaded" @change="toggleEnabled">
           <span>启用录播姬采集</span>
         </label>
       </div>
-      <div class="row" style="gap:6px">
+      <div class="row">
         <button class="mini-btn primary" :disabled="busy || !loaded" @click="save">保存</button>
         <button class="mini-btn" :disabled="busy || !loaded" @click="test">测试连接</button>
       </div>
@@ -31,7 +31,7 @@
         <div class="rc-grid">
           <div class="span-2">
             <label title="录播姬的输出目录，YekiTrim 进程要读得到">录像目录 root</label>
-            <div class="row" style="gap:8px">
+            <div class="row">
               <input v-model.trim="form.root" class="flex-1" placeholder="例如 D:/rec 或 \\NAS\rec">
               <button class="mini-btn" @click="showPicker = true">浏览…</button>
             </div>
@@ -50,7 +50,7 @@
 
           <div>
             <label>密码 api_pass</label>
-            <div class="row" style="gap:6px">
+            <div class="row">
               <input v-model="form.api_pass" class="flex-1" type="password" :placeholder="passPlaceholder">
               <button class="mini-btn" :disabled="!passSet || busy" @click="clearPass">清除</button>
             </div>
@@ -76,11 +76,11 @@
 
         <div class="rc-webhook mt-12">
           <label>录播姬里填的 Webhook 地址</label>
-          <div class="row" style="gap:8px">
+          <div class="row">
             <input class="mono flex-1" :value="webhookUrl" readonly @focus="$event.target.select()">
             <button class="mini-btn" @click="copy(webhookUrl)">复制</button>
           </div>
-          <div class="row mt-6" style="gap:8px">
+          <div class="row mt-6">
             <button class="mini-btn primary" :disabled="busy" @click="rotate">
               {{ tokenConfigured ? '重新生成 token' : '生成 token' }}
             </button>
@@ -91,7 +91,7 @@
             </span>
           </div>
           <div v-if="newToken" class="rc-token mt-8">
-            <div class="row spread" style="gap:8px">
+            <div class="row spread">
               <span class="small" title="请立刻填进录播姬的 Webhook 设置"><b>只显示这一次</b>，离开本页就看不到</span>
               <button class="mini-btn" @click="copy(webhookUrlNewToken)">复制完整地址</button>
             </div>

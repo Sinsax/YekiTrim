@@ -1,7 +1,7 @@
 <template>
   <div>
-    <div class="row spread mb-8" style="gap:8px">
-      <div class="row" style="gap:6px">
+    <div class="row spread mb-8">
+      <div class="row">
         <button v-for="d in RANGES" :key="d" class="mini-btn" :class="{ primary: days === d }"
                 :disabled="busy" @click="pick(d)">
           {{ d }} 天
@@ -34,7 +34,7 @@
         <div class="usage-num"><b :class="{ warn: totals.failed > 0 }">{{ totals.failed }}</b><span>失败</span></div>
       </div>
 
-      <div class="row mb-6" style="gap:6px">
+      <div class="row mb-6">
         <button v-for="g in GROUPS" :key="g.key" class="mini-btn" :class="{ primary: group === g.key }"
                 @click="group = g.key">{{ g.label }}</button>
       </div>
