@@ -1,10 +1,12 @@
-# v0.4.1 发行计划（待发）
+# v0.4.1 发行计划（✅ 已发布）
 
 | 项 | 值 |
 |---|---|
 | 目标版本 | **v0.4.1**（补丁版；上一版 v0.4.0，2026-10-03） |
-| 状态 | 🟢 **Linux 侧适配测试已通过**（2026-10-05）—— 阻塞本计划的"等 Linux 拉取测试"这一步已完成，见 `docs/plan/linux-adaptation-test-report.md`；**`Cargo.toml` 版本已提到 0.4.1**；发行说明见 **`docs/releases/v0.4.1.md`**。⚠️ 本机是 Linux，**Windows 产物由 Windows 侧补打**（`cargo xtask package` 仍是 Windows 专用形态：写死 `yekitrim.exe` / `win-x64` / `.zip`） |
-| 主题 | 当初只登记了「WebUI 换肤」；实际发布时 `v0.4.0..HEAD` 已累计 **50 个提交** |
+| 状态 | ✅ **已发布**（2026-10-05）—— Gitea Release `v0.4.1` 已建，附件 zip + `.sha256.txt` 已传，**详情与 Linux 侧复核见下方「发布结果」** |
+| 发行说明 | `docs/releases/v0.4.1.md`（`package` 会拷进包内成 `RELEASE-NOTES.md`） |
+| 适配测试 | `docs/plan/linux-adaptation-test-report.md`（Linux 侧实测报告） |
+| 主题 | 当初只登记了「WebUI 换肤」；实际发布时 `v0.4.0..HEAD` 已累计 **51 个提交** |
 | 平台 | Windows x64 |
 
 ## ⚠️ 实际范围远大于"补丁"（2026-10-05 补记）
@@ -95,34 +97,47 @@ favicon 与登录页/侧栏用同一套 SVG 几何；圆形容器渐变 `--main 
    ⚠️ **Linux 上 `cargo check` 有 1 条 warning**（`xtask` 的 `CREATE_NO_WINDOW` 只在 `#[cfg(windows)]` 用），
    本仓要求 0 warning ⇒ 在 Windows 上跑第 3 步才是"0 warning"的判定环境。
 4. ✅ 两条门禁 + `npm --prefix webui run build`（确认 dist 是最新）+ 8 个前端契约脚本 —— Linux 上全过
-5. `cargo xtask package --smoke-test`（含 espeak-ng 产物门禁 + 冒烟）—— **Windows 侧执行**
-   （本机 Linux：`package` 写死 `.exe`/`win-x64`/`.zip`，且 `scan` 在 Linux 上会因扫不到 ELF 而 exit 3；
-   本机也没有 Windows target / mingw / wine，**造不出这个 zip**）
-6. ⚠️ **核对包内界面确实是新皮肤**（v0.4.0 的教训：包是换肤前打的）
-7. `git tag -a v0.4.1` → push tag → 在 Gitea 建 Release 并传 zip + `.sha256.txt` —— **Windows 侧执行**
+5. ✅ `cargo xtask package --smoke-test` —— **已在 Windows 侧执行**（`eb66d1a`）
+   （Linux 侧无法代劳：`package` 写死 `.exe`/`win-x64`/`.zip`，`scan` 在 Linux 上因扫不到 ELF 而 exit 3，
+   且本机没有 Windows target / mingw / wine）
+6. ⚠️ **核对包内界面确实是新皮肤**（v0.4.0 的教训：包是换肤前打的）—— Windows 侧已核对
+7. ✅ `git tag -a v0.4.1` → push tag → Gitea 建 Release 并传 zip + `.sha256.txt` —— **已完成**
 
-### 📌 Linux 侧完成的进度与交接（2026-10-05）
+### ✅ 发布结果（2026-10-05，已在 Linux 侧独立复核）
 
-Linux 侧**已推到 Gitea**：commit `c0f7c20`（`origin/main` 头部），含版本号提到 0.4.1 +
-`docs/plan/linux-adaptation-test-report.md`。**但 Linux 侧刻意没建 tag、没建 Release** —— 理由：
+| 项 | 值 |
+|---|---|
+| 提交 | `eb66d1a`（Windows 产物补打）；tag `v0.4.1` 指向它 |
+| Release | Gitea `v0.4.1`「YekiTrim v0.4.1」，非 draft / 非 prerelease |
+| 附件 | `yekitrim-v0.4.1-win-x64.zip`（39,861,473 B）+ `.sha256.txt` |
+| sha256 | `5c3ea7d0…a9d39138` —— **下载实物复算一致**（与 sidecar、与提交声明三方吻合） |
+| 包内 | 27 项；`yekitrim.exe` 71.9 MB / `yekitrim-tray.exe` 520 KB / `dhampir/` 全套 / 许可三件齐 |
 
-- **产物出不来**：`cargo xtask package` 是 Windows 专用形态，且本机无 Windows 工具链；
-- **tag 时间戳不可逆**（见下方纪律）：抢先把 tag 打了，之后补产物只能 force-push 重写 tag。
+**Linux 侧下载实物独立复核**（不只信提交说明）：
 
-**Windows 侧接手步骤**（产物齐了再动 tag）：
+- ✅ **sha256 复算一致**（下载 zip 后 `sha256sum` 与 sidecar 逐字符相同）；
+- ✅ **GPL 红线**：拿 `xtask scan` 自己的 5 个 MARKERS 扫包内
+  `yekitrim.exe` / `yekitrim-tray.exe` / `dhampir.exe` —— **全部 0 命中**
+  （这正是 `cargo xtask scan` 在 Linux 上空转时**查不到**的那一步，此处补上了）；
+- ✅ **烟测产物未进包**：无 `.yekitrim/`、无 `stickers/`（配置/账号库/初始密码/真实绝对路径都没漏）；
+- ✅ **`webui/dist` 已从包中消失**（前端编进 exe，符合本版第 2 条变更）；
+- ✅ **不随包带字体**（仅 `resources/fonts/放这里.txt`，授权原因）；
+- ✅ `LICENSE` / `THIRD-PARTY-NOTICES.md` / `RELEASE-NOTES.md` 三件齐。
 
-```bash
-git pull                                  # 拿到 c0f7c20（版本号已是 0.4.1）
-cargo xtask package --smoke-test          # → release/yekitrim-v0.4.1-win-x64.zip (+ .sha256.txt)
-# ⚠️ 开包核对界面是新皮肤（哥特橙瞳），别发换肤前的
-git tag -a v0.4.1 -m 'YekiTrim v0.4.1' && git push origin v0.4.1
-# Gitea 建 Release：body 直接贴 docs/releases/v0.4.1.md 的内容，附件传 zip + .sha256.txt
-```
+> ⚠️ 包内 `RELEASE-NOTES.md`（sha256 `4f258107…`）与仓库 `docs/releases/v0.4.1.md`
+> **在 Windows 补打时同步更新过**（状态行、提交数 50→51、包内容清单改为 27 项）—— 属正常，
+> 包内那份才是随包交付的最终版。
 
-> ✅ **发行说明不用另写**：`package` 会把 `docs/releases/v<版本>.md` 自动拷成包内
-> `RELEASE-NOTES.md`（`xtask/src/main.rs:619-624`）。已核对版本号同源链条完整：
+### 📌 Linux 侧在这轮做了什么（供回溯）
+
+Linux 侧推了 `c0f7c20`（版本号提到 0.4.1 + `docs/plan/linux-adaptation-test-report.md`），
+并**刻意没有建 tag / Release** —— 因为产物在 Linux 上造不出来，而 tag 时间戳不可逆
+（见下方纪律）：先建空 Release 再补附件的话，tag 时间已经定死、只能 force-push 重写。
+Windows 侧随后按这个顺序补打，结果如上表。
+
+> ✅ **发行说明同源**：`package` 会把 `docs/releases/v<版本>.md` 自动拷成包内
+> `RELEASE-NOTES.md`（`xtask/src/main.rs:619-624`）。版本链条已核对完整：
 > 根 `Cargo.toml` = `0.4.1` ⇒ 查到 `docs/releases/v0.4.1.md`（文件自身也声明 v0.4.1）。
-> 包内另含 `webui/dist` 已**不含**（前端已编进 exe，见发行说明第 2 条）。
 
 > ⚠️ **Gitea 发布纪律**（见 `rename-execution-plan.md`「Gitea 发布纪律」）：
 > Release 列表按 **tag 的 tagger 时间**排序；`PATCH /releases/{id}` **改不动时间**，
