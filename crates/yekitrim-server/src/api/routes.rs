@@ -27,7 +27,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/register", post(auth_register))
         // 录播姬 webhook：自带 token 鉴权（录播姬只能填 URL，无法加自定义头），
         // 因此它**不能**挂在 require_user 下（§4.1）。
-        .route("/ingest/bililive/:token", post(crate::ingest::webhook));
+        .route("/ingest/bililive/:token", post(crate::ingest::webhook))
+        // 关停控制端点：**自带令牌鉴权**（和 webhook 同理不能挂 require_user ——
+        // 它要在"没有会话"的场景下被托盘敲响），另外自己再卡 loopback + 令牌，见 handler。
+        .route("/shutdown", post(shutdown));
 
     // 平台级资源（P2 起归入 /api/admin/*，仅 admin）：配置 / 模型 / doctor / LLM 测试
     // 旧路径作为过渡别名挂在**同一个 require_admin 层**下（否则普通账号能读到 LLM key）
@@ -580,4 +583,24 @@ async fn removed_decision_endpoint_falls_back_to_json_404() {
     let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
     assert!(String::from_utf8_lossy(&bytes).contains("未知接口"));
 }
+
+    /// 没设 `YEKITRIM_SHUTDOWN_TOKEN` 时，`POST /api/shutdown` 必须**像不存在一样**（404）——
+    /// 否则它就是一个"告诉你这里有控制通道"的探测口。
+    ///
+    /// ⚠️ 403（令牌不对）那条路走的是 `auth::token_ok_for` 的纯函数单测，不在这里设 env：
+    /// 本仓刻意不在测试里碰环境变量（`data_dir_in` 就是为这个存在的），**进程内并行**下
+    /// 设 env 会让别的用例跟着变。
+    #[tokio::test]
+    async fn shutdown_endpoint_is_404_without_token_env() {
+        let t = test_app().await;
+        let res = t
+            .call(
+                t.req("POST", "/shutdown")
+                    .header("x-yekitrim-shutdown-token", "whatever")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
 }

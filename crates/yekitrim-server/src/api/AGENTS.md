@@ -71,6 +71,19 @@
   在本地模式下不可用（最典型是改密码）。`/api/health` 会回 `local_no_auth` 布尔（前端据此收起「退出登录」）。
   默认（不带该 flag）**一个字节都没变**，`unauthenticated_requests_are_401_except_whitelist` 仍钉着这一点。
 
+  ⚠️ **`POST /api/shutdown`（控制通道，2026-10）**：跨进程的优雅关停 —— 托盘（薄启动器，
+  不链接本 crate）只能靠 HTTP 敲这一下。它挂在**公开白名单**里（和 webhook 同理：要在"没有会话"
+  的场景下被敲响），所以**自己带三道闸**（`api::shutdown`）：
+  ① env `YEKITRIM_SHUTDOWN_TOKEN` **没设 ⇒ 404**（端点当不存在，不给探测口）；
+  ② 对端必须 **loopback**（纵深防御：将来绑了非本机地址也不接受远程关停）；
+  ③ 头 `x-yekitrim-shutdown-token` 要**常量时间**匹配（`auth::shutdown_token_ok` /
+  `token_ok_for`，别退回 `==`）；自定义头还会先触发 CORS 预检，挡住网页侧乱敲。
+  效果**等价于 Ctrl+C**（走 `run_with` 的优雅关停、限时 `SHUTDOWN_GRACE`、锁写成 `pid=0`）——
+  **别改成直接 `process::exit`**。判据：`auth::tests::shutdown_token_gate_is_exact_and_empty_safe`
+  与 `routes::tests::shutdown_endpoint_is_404_without_token_env`。
+  ⚠️ 令牌名/头名与 `crates/yekitrim-cli/src/tray.rs` 里**各写一份字面量**（托盘链接不了本 crate），
+  改一处必须改两处。
+
   ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），改密强制门在内层才读得到用户。
   axum 里"后加的 layer 在外层"，所以 `routes.rs` 里那两行**看起来是倒着写的**（有注释，别"顺手改正"）。
 - ⚠️ 子模块里的 `super::` 是 `api`、**不是 crate 根**；`api/auth.rs` 与 `crate::auth` 同名不同物，

@@ -13,38 +13,34 @@
 
 - **二进制**：`[[bin]] name = "yekitrim"`，`src/main.rs`（`src/cli.rs` = clap 定义，`src/progress.rs` = 进度条）。
 - **两个 bin，同一个 crate**：
-  · `yekitrim`（`src/main.rs`）= 控制台 CLI；
-  · **`yekitrim-tray`（`src/tray.rs`）= Windows 托盘外壳**（2026-10）：双击即后台起 server + 自动开界面，
-    托盘左键开网页、右键菜单「实际地址（灰显）/ 打开网页 / 退出」。
-    ⚠️ 它按**本地免登录**起服务（`ServerArgs::local_no_auth = true`）：桌面单机形态不该先让人登录一遍。
-    服务端那边有两道闸兜着（Host 必须 loopback、写请求必须同源），见 `crates/yekitrim-server/src/api/AGENTS.md`。
-    ⚠️ `yekitrim server` 与 `polish preview` **仍然要登录** —— 别顺手把它们也改成免登录。
-    ⚠️ `#![cfg_attr(windows, windows_subsystem = "windows")]` 是 **crate 根**属性 ——
-    正因为托盘是**独立 bin**（Cargo 每个 bin 各自成 crate），`yekitrim.exe` 那个控制台程序才没被一起变成无控制台。
-    ⚠️ 托盘**必须先 `tracing_setup::setup(false)`**：它没有 stdout，但日志文件与 WebUI 的「运行日志」
-    都靠 `LogBusLayer`。**漏了它托盘就一个订阅者都没有**（实测：`logs/` 目录建了但是空的，出问题完全瞎）。
-    ⚠️ 托盘的服务线程结束时**不能 `PostQuitMessage`**（那只投给当前线程的队列，主线程收不到 ⇒
-    服务没了进程还挂着）。做法：`PostMessageW(hwnd, WM_CLOSE)` → 主线程收 `WM_DESTROY` 才 PostQuitMessage。
-    ⚠️ 起服务前先 `doctor::probe_health` 探一下该端口：**已有 YekiTrim 就直接开它并退出** ——
-    双击第二次的合理反应是"打开它"，不是报"端口被占"。
-    ⚠️ 端口用 `YEKITRIM_PORT` 覆盖（缺省 `doctor::DEFAULT_PORT`，**别写第二个字面量**）：给开发时并存/自动化测试用。
+  · `yekitrim`（`src/main.rs`）= 控制台 CLI（**唯一**用 `tracing_setup::setup(true)` 的地方）；
+  · **`yekitrim-tray`（`src/tray.rs`）= Windows 托盘「薄启动器」**（2026-10 改版）：
+    双击即后台起 `yekitrim.exe server --local-no-auth --open`，托盘左键开网页、右键「实际地址（灰显）/ 打开网页 / 退出」。
+    ⚠️ **它刻意不 `use` 任何 `yekitrim-*` crate**（连 `yekitrim-core::path` 都不碰）。这不是洁癖：
+    `yekitrim-core` → `sherpa-onnx`（静态链接的 C++ ASR）是整条依赖图的根，引用 core 的**任何一个符号**
+    都会把 ASR 一起链进来 —— 上一版就是这样：托盘 **57 MB**、和主程序一样重。现在 **0.49 MB**。
+    代价是两处**刻意抄的规则**，改一处要改两处：
+      ① 数据目录（`YEKITRIM_DATA_DIR` ?? exe 同级，只为放 `logs/tray.log`）—— 正文在 `docs/file-layout.md`；
+      ② `CREATE_NO_WINDOW`（它用不了 `process::cmd()`，见下面门禁的例外）。
+    ⚠️ **跨进程两条契约**（本文件与 `yekitrim-server` 各写一份字面量，改一处必须改两处）：
+      ① 关停令牌走 **环境变量 `YEKITRIM_SHUTDOWN_TOKEN`**（不用命令行参数：本仓"秘密不进进程列表"）；
+      ② 实际监听地址从子进程 **stdout 的 `WebUI: http://…`** 那行抓（端口被占时 server 会自己换端口，
+         所以**不能**假定就是请求的那个）。改那行日志文案会静默打断托盘 → 表现是"打开网页"点不动。
+    ⚠️ **端口不写字面量**：只有 `YEKITRIM_PORT` 设了才给子进程 `--port`，否则让 server 用自己的权威常量。
+    ⚠️ **两个管道都必须持续排空**（`pump()` 起线程读到 EOF）：管道满了子进程会**卡死**。
+    ⚠️ **`quit()` 收完子进程必须自己 `PostMessageW(WM_CLOSE)`** 打破消息循环 ——
+      旧（同进程）设计里是 server 线程干的，现在托盘进程里没有 server 线程；"看门狗"也指望不上
+      （`quit()` 已经把 child 从 `Shared` 里 `take()` 走了）。漏了的症状：**子进程已优雅退出、锁也干净，托盘进程却一直挂着**。
+    ⚠️ **开浏览器用 `ShellExecuteW`**，别退回 `cmd /c start`：本进程无控制台，起 `cmd.exe` 会**闪黑框**。
+    ⚠️ **托盘图标取 exe 自带的图标资源**（`LoadIconW(hinst, 1)`）→ 内嵌 `.ico` → exe 同级文件 → 系统默认。
+      别退回"只读 exe 同级那个 .ico"：开发时 `target/release/` 下没有它，而**没图标是静默的**。
+    ⚠️ `#![cfg_attr(windows, windows_subsystem = "windows")]` 是 **crate 根**属性；因为它是**独立 bin**，
+      `yekitrim.exe` 那个控制台程序才没被一起变成无控制台。
+    ⚠️ `yekitrim server` 与 `polish preview` **仍然要登录** —— 免登录只是托盘那条路。
     ⚠️ windows-sys **钉 0.52**（那个版本句柄是 `isize`；0.59+ 改指针包装，代码对不上）。
-    ⚠️ **开浏览器用 `ShellExecuteW`，不要退回 `cmd /c start`**：托盘是无控制台子系统，
-    它一起去起 `cmd.exe` 会**闪一个黑框**（实测：启动自动开页闪一次、右键「打开网页」又闪一次）。
-    ⚠️ **托盘图标取 exe 自带的图标资源**（`LoadIconW(hinst, 1)`）；兜底两条是
-    `include_bytes!` 内嵌的 .ico（`CreateIconFromResourceEx`）与 exe 同级 `yekitrim.ico`。
-    ⚠️ 别退回"运行时只读 exe 同级那个 .ico"：开发时 exe 在 `target/release/`，那里**没有**它，
-    而**没图标是静默的**（`NIM_ADD` 照样返回成功，只是通知区空一块）—— 实测就这么踩过。
-- **`build.rs` = 把图标编进 exe**（`assets/yekitrim.rc` + `assets/yekitrim.ico`，资源 ID = 1，
-  资源管理器取"编号最小的图标"当 exe 图标，所以两个 exe 都就有了）。
-  ⚠️ 它**自己找 `rc.exe`**（PATH → Windows SDK 的 `bin/<版本>/<架构>/`，版本按数字段比大小）
-  而不是引 `embed-resource`：那个 crate 会给 `Cargo.lock` 带进 **10 个新包**，
-  而本仓对依赖是记账制的（`THIRD-PARTY-NOTICES.md` 写死包数 + 新增要重跑审计）——
-  为一个图标动那份账不划算。`rc.exe` 与本仓**本来就要求**的 MSVC 工具链同源。
-  ⚠️ 找不到 rc.exe 时**只发 `cargo:warning` 并跳过后继续构建**：图标是外观，
-  不该让"缺个 SDK 工具"变成别人 clone 下来编不过。
-- **`src/tracing_setup.rs` 两个 bin 共用**（各自 `mod tracing_setup;` 引同一份文件）：
-  `setup(true)` = CLI（终端 + 日志总线），`setup(false)` = 托盘（只挂日志总线）。
+- **`src/tracing_setup.rs` 只给 `yekitrim` 这个 bin 用**（`setup(true)` = 终端 + 日志总线）。
+  ⚠️ **托盘不再用它**：薄启动器不能链接 `yekitrim-service`（`LogBusLayer` 在那儿），
+  否则 ASR 被一起拉回来。它自己往 `<数据目录>/logs/tray.log` 追加几行（`tray.rs::log`）。
 - **命令面**（`cli.rs` 的 `Cli` / `Command`，改命令先改这里）：
   `init <video> [--danmaku <file>]` / `extract [-i] [-o]` / `process [-i] [-o] [--dry-run]` /
   `transcribe [-i]` / `detect [-t <transcript>]` / `cut [-i] [-e <events>] [-o]` /
@@ -65,11 +61,12 @@
   （**明文落库、可重复查看**）+ 注册开关；`config` 全局配置生成 / 显示；`correct` LLM 订正转录文本；
   `polish stickers list|test|scan` 本地贴纸（列出 / 测 keyword 匹配 / 生成清单）。
 - **服务端转发**：`Command::Server(args) => yekitrim_server::run(args.clone()).await`；
-  托盘走 `yekitrim_server::run_with(args, shutdown, on_listening)` —— `shutdown` 一到就**优雅关停**
-  （`run()` 自己也用它接 Ctrl+C，所以 Ctrl+C 不再让 `InstanceLock` 的 Drop 跑不到、下次启动少一条"残留锁"WARN）；
-  `on_listening(url)` 回调给的是**实际**监听地址（端口被占时服务端会自己换一个，别假定就是请求的那个）。
+  `run()` = `run_with(args, ctrl_c(), |_| {})` —— `shutdown` 一到就**优雅关停**（限时 `SHUTDOWN_GRACE`），
+  于是 Ctrl+C 不再让 `InstanceLock` 的 Drop 跑不到、下次启动少一条"残留锁"WARN；
+  `on_listening(url)` 回调给的是**实际**监听地址（端口被占时服务端会自己换一个）。
   ⚠️ 门禁 `cli 只用 server 的入口` 放行的是 `yekitrim_server::{run*, ServerArgs}`；
   `ServerArgs` 就是 `yekitrim_server::ServerArgs`（clap 直接 derive 在它上面）。
+  ⚠️ **托盘一个 `yekitrim_server::` 都不用了**（它只 spawn `yekitrim.exe`）—— 门禁照样过（0 命中）。
 - **tracing 装配**：`tracing_setup::setup(terminal)`（`registry + EnvFilter + [fmt::layer] + LogBusLayer`）。
   `LogBusLayer` **必须挂上**：`yekitrim server` 的访问日志、任务日志、错误文案都靠它进设置页「运行日志」与日志文件；
   对纯 CLI 命令它只是多一份内存环形缓冲，没有副作用。全局过滤器来自 `RUST_LOG`（**默认 `info`**），

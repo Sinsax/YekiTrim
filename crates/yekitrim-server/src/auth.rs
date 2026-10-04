@@ -686,6 +686,36 @@ fn actor_of(req: &Request) -> Option<Actor> {
 }
 
 /// 共用认证：校验会话与 CSRF，并把 [`CurrentUser`] 注入请求扩展。
+/// **关停控制端点的令牌**（`YEKITRIM_SHUTDOWN_TOKEN`）。
+///
+/// ⚠️ 为什么是**环境变量**而不是命令行参数：本仓有一条现成的不变式 —— 秘密不进进程列表
+/// （`--admin-password-file` 就是为它存在的）。跨进程的"托盘退出"要一个只有托盘和子进程
+/// 知道的凭证，env 是这里最合适的载体（托盘 spawn 时 `Command::env(..)` 逐个设，不落盘、不进列表）。
+pub const SHUTDOWN_TOKEN_ENV: &str = "YEKITRIM_SHUTDOWN_TOKEN";
+
+/// 控制端点要的请求头（自定义头 ⇒ 跨站请求会先被 CORS 预检挡掉，多一层）。
+pub const SHUTDOWN_TOKEN_HEADER: &str = "x-yekitrim-shutdown-token";
+
+/// 这个请求能不能关停服务。**没设 env 就一律 false**（端点当不存在，不给探测口）。
+pub(crate) fn shutdown_token_ok(headers: &axum::http::HeaderMap) -> bool {
+    match std::env::var(SHUTDOWN_TOKEN_ENV) {
+        Ok(v) if !v.trim().is_empty() => token_ok_for(&v, headers),
+        _ => false,
+    }
+}
+
+/// 令牌比较的**纯函数**部分（把 env 摘出去，好在单测里直接打）。
+///
+/// ⚠️ 用 `constant_time_eq`，别退回 `==`：`==` 会在第一个不同的字节就返回，
+/// 时间差能被逐字节试出来。
+fn token_ok_for(want: &str, headers: &axum::http::HeaderMap) -> bool {
+    let got = headers
+        .get(SHUTDOWN_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    !got.is_empty() && !want.is_empty() && constant_time_eq(got.as_bytes(), want.as_bytes())
+}
+
 /// 主机名是不是本机。接受 `127.0.0.1` / `localhost` / `[::1]`（可带端口）。
 fn is_loopback_host(hostport: &str) -> bool {
     let host = hostport.rsplit_once(':').map(|(h, _)| h).unwrap_or(hostport);
@@ -988,5 +1018,30 @@ mod tests {
             &[("host", "127.0.0.1:26320"), ("origin", "http://evil.com")]
         ))
         .is_ok());
+    }
+
+    /// 关停控制端点的令牌比较。⚠️ 这些是"跨进程优雅关停"唯一的门，闸门松一格就是
+    /// 本机上任何进程都能把服务关掉。
+    #[test]
+    fn shutdown_token_gate_is_exact_and_empty_safe() {
+        let mk = |v: Option<&str>| {
+            let mut h = axum::http::HeaderMap::new();
+            if let Some(v) = v {
+                h.insert(SHUTDOWN_TOKEN_HEADER, v.parse().unwrap());
+            }
+            h
+        };
+        // 对上了
+        assert!(token_ok_for("s3cret", &mk(Some("s3cret"))));
+        // 差别一个字符 / 长度不同 / 大小写不同 → 都不行
+        assert!(!token_ok_for("s3cret", &mk(Some("s3cres"))));
+        assert!(!token_ok_for("s3cret", &mk(Some("s3cre"))));
+        assert!(!token_ok_for("s3cret", &mk(Some("S3CRET"))));
+        // 头缺失 / 空头
+        assert!(!token_ok_for("s3cret", &mk(None)));
+        assert!(!token_ok_for("s3cret", &mk(Some(""))));
+        // 令牌本身为空时**不能**被空头蒙过去
+        assert!(!token_ok_for("", &mk(Some(""))));
+        assert!(!token_ok_for("", &mk(Some("x"))));
     }
 }
