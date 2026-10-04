@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | 目标版本 | **v0.4.1**（补丁版；上一版 v0.4.0，2026-10-03） |
-| 状态 | 🟡 **已本地构建、未发布**（2026-10-05）—— 包在 `release/`，等 Linux 拉取测试后再定；发行说明见 **`docs/releases/v0.4.1.md`** |
+| 状态 | 🟢 **Linux 侧适配测试已通过**（2026-10-05）—— 阻塞本计划的"等 Linux 拉取测试"这一步已完成，见 `docs/plan/linux-adaptation-test-report.md`；**`Cargo.toml` 版本已提到 0.4.1**；发行说明见 **`docs/releases/v0.4.1.md`**。⚠️ 本机是 Linux，**Windows 产物由 Windows 侧补打**（`cargo xtask package` 仍是 Windows 专用形态：写死 `yekitrim.exe` / `win-x64` / `.zip`） |
 | 主题 | 当初只登记了「WebUI 换肤」；实际发布时 `v0.4.0..HEAD` 已累计 **50 个提交** |
 | 平台 | Windows x64 |
 
@@ -83,13 +83,22 @@ favicon 与登录页/侧栏用同一套 SVG 几何；圆形容器渐变 `--main 
 
 ## 发布时要做的事（检查清单）
 
-1. `Cargo.toml` 的 `[workspace.package] version` → `0.4.1`（7 个 crate 靠 `version.workspace = true` 继承）
-2. 写 `docs/releases/v0.4.1.md`（素材见上）
-3. `cargo check --workspace --all-targets`（0 warning）+ `cargo test --workspace`（基线 759 passed）
-4. 两条门禁 + `npm --prefix webui run build`（确认 dist 是最新）+ 8 个前端契约脚本
-5. `cargo xtask package --smoke-test`（含 espeak-ng 产物门禁 + 冒烟）
+1. ✅ `Cargo.toml` 的 `[workspace.package] version` → `0.4.1`（7 个 crate 靠 `version.workspace = true` 继承）
+   —— **已完成**（2026-10-05）。三处版本消费点已实测一致：CLI `--version` / `/api/health.version` /
+   打包名（xtask 从根 Cargo.toml 读）**全部为 0.4.1**。
+2. ✅ 写 `docs/releases/v0.4.1.md`（素材见上）—— 已完成
+3. `cargo check --workspace --all-targets` + `cargo test --workspace`
+   ⚠️ **基线按平台不同**：Windows 上调基线是 **759 passed**；**Linux 上实测 776 passed / 3 failed** ——
+   差的 3 条是**测试侧的 Windows 硬编码**（`path.rs` 一条被改名写反的判据、
+   `workspace.rs` 用 `C:/` 当绝对路径、`instancelock.rs` 只认 Windows 那条错误文案），
+   **非产品缺陷**，详见 Linux 报告的 §2。在 Linux 上跑第 3 步要按"776/3、失败项就是那 3 条"判读。
+   ⚠️ **Linux 上 `cargo check` 有 1 条 warning**（`xtask` 的 `CREATE_NO_WINDOW` 只在 `#[cfg(windows)]` 用），
+   本仓要求 0 warning ⇒ 在 Windows 上跑第 3 步才是"0 warning"的判定环境。
+4. ✅ 两条门禁 + `npm --prefix webui run build`（确认 dist 是最新）+ 8 个前端契约脚本 —— Linux 上全过
+5. `cargo xtask package --smoke-test`（含 espeak-ng 产物门禁 + 冒烟）—— **Windows 侧执行**
+   （本机 Linux：`package` 写死 `.exe`/`win-x64`/`.zip`，且 `scan` 在 Linux 上会因扫不到 ELF 而 exit 3）
 6. ⚠️ **核对包内界面确实是新皮肤**（v0.4.0 的教训：包是换肤前打的）
-7. `git tag -a v0.4.1` → push tag → 在 Gitea 建 Release 并传 zip + `.sha256.txt`
+7. `git tag -a v0.4.1` → push tag → 在 Gitea 建 Release 并传 zip + `.sha256.txt` —— **Windows 侧执行**
 
 > ⚠️ **Gitea 发布纪律**（见 `rename-execution-plan.md`「Gitea 发布纪律」）：
 > Release 列表按 **tag 的 tagger 时间**排序；`PATCH /releases/{id}` **改不动时间**，
