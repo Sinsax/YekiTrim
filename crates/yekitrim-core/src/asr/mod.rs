@@ -4,7 +4,6 @@
 //! 边界：产物固定名 `output/video.srt` + `output/transcript.json` 被 `status.rs` / `current_stage()` 认死，不许改成按模式命名；登记生效值只有 `assets::bind_asr_artifact` 一条路 —— 见 `crates/yekitrim-core/src/asr/AGENTS.md`
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
@@ -469,7 +468,7 @@ fn drop_contained(segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegment> {
 }
 
 pub(super) fn wav_duration_secs(path: &Path) -> Result<f64> {
-    let output = Command::new("ffprobe")
+    let output = crate::process::cmd("ffprobe")
         .arg("-v")
         .arg("error")
         .arg("-show_entries")

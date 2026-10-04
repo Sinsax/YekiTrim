@@ -80,7 +80,7 @@ pub(super) async fn project_data_clip_thumb(scope: Scope, AxumPath(rank): AxumPa
 
 /// 截取切片首帧为 `_thumb.jpg`（同步阻塞，调用方负责 spawn_blocking）。
 pub(super) fn generate_clip_thumb(video: &Path, thumb: &Path) -> std::io::Result<()> {
-    let status = std::process::Command::new("ffmpeg")
+    let status = yekitrim_core::process::cmd("ffmpeg")
         .args(["-ss","1","-i", &video.to_string_lossy(), "-vframes","1","-q:v","4","-y", &thumb.to_string_lossy()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

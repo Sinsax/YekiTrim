@@ -6,7 +6,6 @@
 use base64::Engine;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::project::ProjectFile;
 use crate::render::backend::RenderBackendKind;
@@ -556,7 +555,7 @@ pub fn prepare_sticker_data(project_path: &Path, config: &project::ProjectFile) 
 /// clip.json 的 duration 是 B站原始元数据含 padding，不可信
 /// 获取视频宽高 (ffprobe stream 信息), 竖屏检测用
 pub fn get_video_size(video_path: &str) -> Option<(u32, u32)> {
-    let out = std::process::Command::new("ffprobe")
+    let out = yekitrim_core::process::cmd("ffprobe")
         .args([
             "-v",
             "error",
@@ -584,7 +583,7 @@ pub fn get_video_size(video_path: &str) -> Option<(u32, u32)> {
 }
 
 pub fn get_video_duration(video_path: &str) -> Option<f64> {
-    let out = std::process::Command::new("ffprobe")
+    let out = yekitrim_core::process::cmd("ffprobe")
         .args([
             "-v",
             "error",
@@ -632,7 +631,7 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
     if dur <= 0.0 {
         return None;
     }
-    let output = Command::new("ffmpeg")
+    let output = yekitrim_core::process::cmd("ffmpeg")
         .args([
             "-ss",
             &format!("{:.2}", start),
@@ -670,7 +669,7 @@ pub fn measure_segment_loudness(audio_path: &str, start: f64, dur: f64) -> Optio
 /// 音频滤镜链一分不变。剪切收尾会给每个新片段预热这条曲线
 /// （`yekitrim-service` 的 `core_pipeline::warm_loudness_cache`），热路径上一次剪切要跑 N 遍。
 pub fn measure_loudness_curve(audio_path: &str) -> Vec<(f64, f64)> {
-    let output = Command::new("ffmpeg")
+    let output = yekitrim_core::process::cmd("ffmpeg")
         .args([
             "-i",
             audio_path,
@@ -780,7 +779,7 @@ fn media_key(path: &Path) -> Option<String> {
 
 /// 检测音频整体响度 (mean_volume dB)
 pub fn measure_audio_loudness(audio_path: &str) -> Option<f64> {
-    let output = Command::new("ffmpeg")
+    let output = yekitrim_core::process::cmd("ffmpeg")
         .args(["-i", audio_path, "-af", "volumedetect", "-f", "null", "-"])
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())

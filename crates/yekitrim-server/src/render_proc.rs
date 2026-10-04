@@ -78,7 +78,7 @@ pub fn sweep_orphans(data_dir: &Path) -> Vec<u32> {
 pub fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = yekitrim_core::process::cmd("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -87,7 +87,7 @@ pub fn kill_tree(pid: u32) {
     #[cfg(not(windows))]
     {
         // 负号 = 进程组；拿不到进程组时退回杀单个（孙进程由子进程退出时自行收尾）
-        let _ = std::process::Command::new("kill")
+        let _ = yekitrim_core::process::cmd("kill")
             .args(["-9", &pid.to_string()])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -115,7 +115,7 @@ fn is_our_render(cmd: &str) -> bool {
 fn command_line_of(pid: u32) -> Option<String> {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("wmic")
+        let out = yekitrim_core::process::cmd("wmic")
             .args([
                 "process",
                 "where",
@@ -133,7 +133,7 @@ fn command_line_of(pid: u32) -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        let out = std::process::Command::new("ps")
+        let out = yekitrim_core::process::cmd("ps")
             .args(["-p", &pid.to_string(), "-o", "args="])
             .output()
             .ok()?;

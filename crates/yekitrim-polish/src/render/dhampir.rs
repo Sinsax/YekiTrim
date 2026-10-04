@@ -34,7 +34,6 @@
 //! 以为"我在用 Dhampir 出片" —— 而那种错只有在对比两版成片时才看得出来。
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
@@ -760,7 +759,7 @@ pub fn parse_node_version(stdout: &str) -> Option<(u32, u32)> {
 /// `node --version` 跑一次（**只在"深探"里调**：`/api/polish/dhampir-status` 与 `polish doctor`；
 /// `/api/health` 是热路径 + 无鉴权，只走"PATH 里有没有"那条便宜判断）。
 fn node_version() -> Option<(u32, u32, String)> {
-    let out = Command::new("node").arg("--version").output().ok()?;
+    let out = yekitrim_core::process::cmd("node").arg("--version").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -789,7 +788,7 @@ pub fn prepare_project_reporting(
     let translator = find_translator()?;
     let translated = project_path.join("_dhampir_project.json");
     let t = std::time::Instant::now();
-    let mut cmd = Command::new("node");
+    let mut cmd = yekitrim_core::process::cmd("node");
     cmd.arg(&translator).arg(clip_dir).arg("--out").arg(&translated);
     if keep_muted {
         // **出片**那条腿：时间线保持整条，屏蔽区间交给尾部那一剪（见转译器里的说明）。
@@ -1006,7 +1005,7 @@ fn run_render(
     let progress_path = out.with_file_name("_temp_dhampir_progress.ndjson");
     let progress_file = std::fs::File::create(&progress_path)
         .with_context(|| format!("创建进度文件失败：{}", progress_path.display()))?;
-    let mut cmd = Command::new(&binary);
+    let mut cmd = yekitrim_core::process::cmd(&binary);
     cmd.arg("render")
         .arg("--project")
         .arg(translated)

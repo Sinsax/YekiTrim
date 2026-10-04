@@ -1019,7 +1019,7 @@ pub(super) async fn polish_cover_frame(State(_state): State<Arc<AppState>>, Json
         let resolved = yekitrim_polish::render::resolve_paths(&path, &config);
         let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
         let time = want_time.unwrap_or(duration * config.cover.frame_pos).max(0.1);
-        let frame_out = std::process::Command::new("ffmpeg")
+        let frame_out = yekitrim_core::process::cmd("ffmpeg")
             .args(["-ss", &time.to_string(), "-i", &resolved.video,
                    "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
@@ -1064,7 +1064,7 @@ pub(super) async fn polish_cover_preview(State(state): State<Arc<AppState>>, Jso
         if !cover_image.exists() {
             let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
             let frame_time = (duration * config.cover.frame_pos).max(0.1);
-            let frame_out = std::process::Command::new("ffmpeg")
+            let frame_out = yekitrim_core::process::cmd("ffmpeg")
                 .args(["-ss", &frame_time.to_string(), "-i", &resolved.video,
                        "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
                 .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())

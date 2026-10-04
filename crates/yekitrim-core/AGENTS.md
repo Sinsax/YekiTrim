@@ -27,6 +27,7 @@
 - `config::{load_config, load_config_at, load_global_config, load_llm_config, patch_config_file,
   write_project_config, save_transcript_path_in, normalize_project_paths_in}`；
   `config::types::Config` / `ProjectConfig::current_stage(&output_dir)`。
+- `process::{cmd, hide_console_window}`：起子进程的唯一入口（**全仓都用它**，理由见「边界」）。
 - `path::{yekitrim_home, sticker_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
   resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
 - `progress::ProgressReporter`（trait）+ `NoopProgress`；`filelock::{with_path_lock, lock_path,
@@ -34,6 +35,18 @@
 - `download::{model_names, model_install, download_all, download_vad_model, ensure_models}`。
 
 ## 边界
+
+- ⚠️ **全仓规矩：起子进程一律走 `process::cmd()`**（`src/process.rs`），别直接写 `Command::new`。
+  原因：`yekitrim-tray` 是 `windows_subsystem = "windows"`（**进程没有控制台**），
+  它拉起的每个控制台程序都会被 Windows **分配一个新控制台窗口** —— 用户看到的就是「启动时黑框一闪」。
+  实测：托盘启动时 WebUI `GET /api/health` 探 `ffmpeg -version` / `ffprobe -version`，
+  冒出**两个** `ConsoleWindowClass` 窗口；走 helper 后归零。
+  `process::hide_console_window(&mut cmd)` 给已建好的 std `Command` 补同一条；
+  tokio 那份用 `hide_console_window(tcmd.as_std_mut())`。
+  ⚠️ 判据是「**当前进程有没有控制台**」而不是无条件加 `CREATE_NO_WINDOW`：
+  CLI 有控制台，子进程继续继承它，终端里的输出/进度必须一个字节不变。
+  ⚠️ **别加第二个 `creation_flags`**：它覆盖整个 dwCreationFlags（全仓只有这一处设过）。
+  机器判据 = `scripts/check_module_boundaries.py` 的「子进程不许绕过 core 的启动助手」（16 条规则之一）。
 
 ⚠️ **core 不许认识上层**（门禁：`python3 scripts/check_module_boundaries.py`，扫 `crates/yekitrim-core/src`）：
 源码里**不得出现** `yekitrim_polish` / `yekitrim_service` / `yekitrim_server` / `yekitrim_cli`——

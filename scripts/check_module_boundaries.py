@@ -28,7 +28,11 @@ r"""模块边界门禁：把"是否嵌合"变成可执行的判断，而不是�
 4. **CLI 那条只放行 `run` / `ServerArgs`**：`yekitrim-cli` 本来就依赖 `yekitrim-core` /
    `yekitrim-polish`（入口装配要用），但**服务端能力**只能经 `yekitrim_server::run()` /
    `ServerArgs` 进，不许直接调 server 的内部模块。
-5. **前端刻意没加的两条**（现状不满足，加了就是红门禁，别盲加）：
+5. **"子进程不许绕过 core 的启动助手"有一条例外机制**：规则里用定长后行断言
+   `(?<!tokio::process::)` 放过 tokio 那份（它自己走 `as_std_mut`），另用 `EXEMPT`
+   表放过**规则实现本身**（`core/src/process.rs`）。`EXEMPT` 只给"规则定义者自己"开口子，
+   别拿来放业务代码 —— 那等于把不变式悄悄作废。
+6. **前端刻意没加的两条**（现状不满足，加了就是红门禁，别盲加）：
    `views/` 里不许出现 `/api/` 字面量或 `fetch(` —— 现状大量直接 `api('/api/…')`；
    `views/` 里不许用 `scopeQ(` —— `ProjectSettingsView` / `PolishView` / `router.js` 都在用。
    真要收紧得先改代码，那是行为改动，不属于"结构标注"这一批。
@@ -124,6 +128,22 @@ RULES: list[tuple[str, list[str], str, str]] = [
         "server 只依赖 service；入口在 cli 那一侧",
     ),
     (
+        # ⚠️ 判据要**排除 tokio 那份**（`tokio::process::Command::new`）：它自己另走
+        # `hide_console_window(cmd.as_std_mut())`。用定长后行断言排除，别把正则放宽成"全都放过"。
+        "子进程不许绕过 core 的启动助手",
+        [
+            "crates/yekitrim-core/src",
+            "crates/yekitrim-polish/src",
+            "crates/yekitrim-service/src",
+            "crates/yekitrim-server/src",
+            "crates/yekitrim-cli/src",
+        ],
+        r'(?<!tokio::process::)(?<!["\w])Command::new\(',
+        "托盘是无控制台子系统（windows_subsystem = windows），直接 Command::new 会让每个控制台子进程"
+        "自己新开一个控制台窗口 —— 用户看到的就是「启动时黑框一闪」（实测启动那两个 ffmpeg/ffprobe"
+        "探测就冒了两个 ConsoleWindowClass）。一律走 `yekitrim_core::process::cmd()`",
+    ),
+    (
         "cli 只用 server 的入口",
         ["crates/yekitrim-cli/src"],
         r'(?<!["\w])yekitrim_server::(?!(run|ServerArgs))',
@@ -195,6 +215,14 @@ def source_files(rel: str) -> list[Path]:
     )
 
 
+# 规则例外：按 `规则名 -> 允许命中的路径子串` 走。
+# ⚠️ 只给"规则定义者自己"开口子（例如那条不变式的**实现处**），别拿来放业务代码。
+EXEMPT: dict[str, list[str]] = {
+    # 这条规则的实现本身就是"唯一允许直接 Command::new 的地方"
+    "子进程不许绕过 core 的启动助手": ["crates/yekitrim-core/src/process.rs"],
+}
+
+
 def main() -> int:
     verbose = "-v" in sys.argv
     total = 0
@@ -213,7 +241,11 @@ def main() -> int:
             continue
         checked += len(files)
 
+        exempt = EXEMPT.get(name, [])
         for f in files:
+            rel_f = f.relative_to(REPO).as_posix()
+            if any(sub in rel_f for sub in exempt):
+                continue
             for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 code = strip_comments(line)
                 if rx.search(code):

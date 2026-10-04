@@ -198,7 +198,7 @@ impl Stage for Cutter {
 fn encoder_config() -> (&'static str, &'static str, &'static str) {
     static CFG: OnceLock<(&'static str, &'static str, &'static str)> = OnceLock::new();
     *CFG.get_or_init(|| {
-        let output = Command::new("ffmpeg")
+        let output = crate::process::cmd("ffmpeg")
             .args(["-hide_banner", "-encoders"])
             .output();
         let stdout = match output {
@@ -280,7 +280,7 @@ fn run_ffmpeg(cmd: &mut Command, timeout: Duration, what: &str) -> Result<String
 
 fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> {
     let duration = (end - start).max(0.1);
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = crate::process::cmd("ffmpeg");
     cmd.arg("-y")
         .arg("-loglevel")
         .arg("error")

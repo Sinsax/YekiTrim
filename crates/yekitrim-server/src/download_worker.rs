@@ -579,6 +579,7 @@ async fn run_download(
     use std::process::Stdio;
 
     let mut cmd = tokio::process::Command::new(&spec.program);
+    yekitrim_core::process::hide_console_window(cmd.as_std_mut());
     cmd.args(&spec.args);
     for v in &spec.env_remove {
         cmd.env_remove(v);

@@ -3,7 +3,7 @@
 //! 入口：`Ffmpeg::{detect_encoder, concat, extract_audio, apply_limiter, mix_sfx, cut_ranges, mux}`、`EncoderInfo`、`SfxEvent`。
 //! 边界：不许改回 `Command::output()` / 管道（Chrome/ffmpeg 是孙进程，会一直持有 stdout 句柄）；编码器一律用 `detect_encoder()` 的结果，别硬编码 —— 见 `crates/yekitrim-polish/src/render/AGENTS.md`
 
-use std::process::{Command, Stdio};
+use std::process::{Stdio};
 
 /// Concat 清单临时文件路径。
 ///
@@ -22,7 +22,7 @@ pub struct Ffmpeg;
 impl Ffmpeg {
     /// 检测可用编码器 (NVENC 优先)
     pub fn detect_encoder() -> EncoderInfo {
-        let output = Command::new("ffmpeg")
+        let output = yekitrim_core::process::cmd("ffmpeg")
             .args(["-hide_banner", "-encoders"])
             .output()
             .ok();
@@ -59,7 +59,7 @@ impl Ffmpeg {
         let concat_file = concat_temp_path();
         std::fs::write(&concat_file, &concat_content)?;
 
-        let status = Command::new("ffmpeg")
+        let status = yekitrim_core::process::cmd("ffmpeg")
             .args([
                 "-y", "-f", "concat", "-safe", "0",
                 "-i", &concat_file.to_string_lossy(),
@@ -80,7 +80,7 @@ impl Ffmpeg {
 
     /// 提取音频
     pub fn extract_audio(video_path: &str, audio_output: &str) -> anyhow::Result<()> {
-        let out = Command::new("ffmpeg")
+        let out = yekitrim_core::process::cmd("ffmpeg")
             .args([
                 "-y", "-i", video_path,
                 "-vn", "-acodec", "aac", "-b:a", "128k",
@@ -101,7 +101,7 @@ impl Ffmpeg {
     /// 混入音效
     /// 混音后限幅: 防止音效峰值爆音 (alimiter)
     pub fn apply_limiter(input: &str, output: &str) -> anyhow::Result<()> {
-        let out = Command::new("ffmpeg")
+        let out = yekitrim_core::process::cmd("ffmpeg")
             .args(["-y", "-i", input,
                    "-af", "alimiter=limit=0.95:level=false",
                    "-c:a", "aac", output])
@@ -166,7 +166,7 @@ impl Ffmpeg {
             output.into(),
         ]);
 
-        let status = Command::new("ffmpeg").args(&args).stderr(Stdio::null()).stdout(Stdio::null()).status()?;
+        let status = yekitrim_core::process::cmd("ffmpeg").args(&args).stderr(Stdio::null()).stdout(Stdio::null()).status()?;
         if !status.success() {
             anyhow::bail!("ffmpeg SFX mix failed");
         }
@@ -206,7 +206,7 @@ impl Ffmpeg {
             "-movflags".into(), "+faststart".into(),
             output.into(),
         ]);
-        let out = Command::new("ffmpeg")
+        let out = yekitrim_core::process::cmd("ffmpeg")
             .args(&args)
             .output()
             .map_err(|e| anyhow::anyhow!("ffmpeg cut ranges 启动失败: {}", e))?;
@@ -218,7 +218,7 @@ impl Ffmpeg {
 
     /// 视频 + 音频合流
     pub fn mux(video: &str, audio: &str, output: &str) -> anyhow::Result<()> {
-        let out = Command::new("ffmpeg")
+        let out = yekitrim_core::process::cmd("ffmpeg")
             .args([
                 "-y", "-i", video,
                 "-i", audio,

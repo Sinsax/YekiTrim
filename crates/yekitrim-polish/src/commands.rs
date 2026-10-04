@@ -6,7 +6,6 @@
 use crate::{cover, process, render};
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::project::ProjectFile;
 use crate::{llm, parse, project};
@@ -507,7 +506,7 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
             let video_path = &resolved.video;
             let duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
             let frame_time = (duration * config.cover.frame_pos).max(0.1);
-            if let Ok(frame_data) = std::process::Command::new("ffmpeg")
+            if let Ok(frame_data) = yekitrim_core::process::cmd("ffmpeg")
                 .args(["-ss", &frame_time.to_string(), "-i", video_path,
                        "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "3", "-"])
                 .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
@@ -526,13 +525,13 @@ pub async fn cmd_preview(project_path: &Path, mode: &str) -> anyhow::Result<()> 
     // 打开浏览器
     for url in video_url.iter().chain(cover_url.iter()) {
         let opened = if cfg!(target_os = "windows") {
-            std::process::Command::new("cmd")
+            yekitrim_core::process::cmd("cmd")
                 .args(["/c", "start", "", url])
                 .spawn()
         } else if cfg!(target_os = "macos") {
-            std::process::Command::new("open").arg(url).spawn()
+            yekitrim_core::process::cmd("open").arg(url).spawn()
         } else {
-            std::process::Command::new("xdg-open").arg(url).spawn()
+            yekitrim_core::process::cmd("xdg-open").arg(url).spawn()
         };
         match opened {
             Ok(_) => tracing::info!("  ✓ Opened: {}", url),
@@ -596,7 +595,7 @@ pub async fn cmd_test(project_path: &Path) -> anyhow::Result<()> {
             // ffmpeg 生成 15s 黑底测试视频
             tracing::info!("  🎬 生成测试视频 (ffmpeg)...");
             let out_vid = work.join("clip.mp4");
-            let ok = std::process::Command::new("ffmpeg")
+            let ok = yekitrim_core::process::cmd("ffmpeg")
                 .args(["-f", "lavfi", "-i", "color=c=black:s=1920x1080:d=15",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
                        &out_vid.to_string_lossy()])
@@ -763,7 +762,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("🔍  System check...\n");
 
     // Check ffmpeg
-    match Command::new("ffmpeg").arg("-version").output() {
+    match yekitrim_core::process::cmd("ffmpeg").arg("-version").output() {
         Ok(out) => {
             let ver = String::from_utf8_lossy(&out.stdout);
             let first = ver.lines().next().unwrap_or("unknown");
