@@ -86,7 +86,7 @@ fn 出片是只含画面的视频且帧数对得上() {
 
     // **帧数的权威是转译产物**（工程的时基 = 素材自己的，60；上层那个 30 是写死的估算）。
     // `true` = 出片那条腿：时间线保持整条（屏蔽区间交给尾部那一剪），与 `render_video_only` 一致。
-    let translated = match dhampir::prepare_project(&clip, &work, true) {
+    let translated = match dhampir::prepare_project(&clip, &work, true, None) {
         Ok(p) => p,
         Err(e) => panic!("转译失败：{}", dhampir::explain(&e)),
     };

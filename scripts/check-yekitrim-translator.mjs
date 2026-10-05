@@ -37,6 +37,7 @@
 
 import { strict as assert } from 'node:assert';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -350,7 +351,6 @@ function checkCurves(curves) {
       out.opacity < 0.005,
       `dur=${d}s 的出点那一帧 opacity = ${out.opacity} —— 必须已不可见`,
     );
-    checks += 2;
   }
   for (const d of [0.05, 0.15]) {
     const frames = stickerWindowFrames(d, FPS);
@@ -365,7 +365,6 @@ function checkCurves(curves) {
       out.opacity < 0.005,
       `dur=${d}s 的出点那一帧 opacity = ${out.opacity} —— 必须已不可见`,
     );
-    checks += 2;
   }
   // **单帧窗口**（`round(dur × fps) == 1`）：窗内只有一帧，它只能是不透明的 ——
   // 那不是"出点晚了"，而是"贴纸只活得了一帧"。这里只要求不出 NaN、且窗**外**立刻不可见。
@@ -525,8 +524,7 @@ function checkCurves(curves) {
         !/dur\s*\+\s*1\.05/.test(code),
         `${label} 里还有旧的溢出窗口 dur + 1.05：${file}`,
       );
-      checks += 2;
-    }
+      }
     for (const [label, file, fade] of SAME_SHAPE) {
       const src = readFileSync(file, 'utf8');
       const guard = windowGuardOf(src);
@@ -658,13 +656,11 @@ function checkCurves(curves) {
     assert.ok(auto, 'auto 模式应当转出贴纸图层');
     near(auto.x, 0.3 * W - W / 2 + BOX / 2, 1e-9, 'auto 落点必须按**盒子左上角**算');
     near(auto.y, 0.4 * H - H / 2 + BOX / 2, 1e-9, 'auto 落点 y 同上');
-    checks += 2;
     // manual：锚点是**盒子中心**，且**忽略事件的 x/y**（事件里仍写着 30%/40%）
     const man = anchorOf('[sticker]\nposition_mode = "manual"\nposition = "35% 50%"', '30%', '40%');
     assert.ok(man, 'manual 模式应当转出贴纸图层');
     near(man.x, 0.35 * W - BOX / 2 - W / 2 + BOX / 2, 1e-9, 'manual 落点必须按**盒子中心**算');
     near(man.y, 0.5 * H - BOX / 2 - H / 2 + BOX / 2, 1e-9, 'manual 落点 y 同上');
-    checks += 2;
     assert.notEqual(
       man.x,
       auto.x,
@@ -746,7 +742,6 @@ checks += 5;
       /let need = entry\.start \+ DANMAKU_FADE_IN_SECS \+ travel;/.test(rust),
       'Rust 那份的"需要多长"不是 `start + fadeIn + travel` —— 两份实现漂了',
     );
-    checks += 2;
   }
 
   return checks;
@@ -827,6 +822,21 @@ function checkStage(curves) {
   return 6;
 }
 const MUTATIONS = [
+  {
+    name: '时基退回写死 60fps（30fps 素材 ⇒ 帧号错 2×）',
+    from: '  const timebase = media?.fps ?? { num: 60, den: 1 };',
+    to: '  const timebase = { num: 60, den: 1 };',
+  },
+  {
+    name: '素材尺寸退回写死 1920x1080（代理/竖素材 ⇒ 缩放取景全错）',
+    from: '    width: mediaW ?? 1920,\n    height: mediaH ?? 1080,',
+    to: '    width: 1920,\n    height: 1080,',
+  },
+  {
+    name: '`--video` 覆盖被忽略（预览代理那条腿读的还是源）',
+    from: "  const videoRel = options.video ?? config.source?.video ?? 'clip.mp4';",
+    to: "  const videoRel = config.source?.video ?? 'clip.mp4';",
+  },
   {
     name: '密集键右端退回「窗口末尾」（③R3 的回归：两点直线弦把 pow2_out 拉直）',
     from: '    const right = Number.isFinite(next) ? next - 1 : lastOut;',
@@ -1039,6 +1049,8 @@ async function mutate() {
         checkDenseRanges(curves);
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
         checkStageGeom(mutatedSource);
+        // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
+        checkMediaProbe(curves);
       });
     } catch (error) {
       reason = String(error && error.message ? error.message : error).split('\n')[0];
@@ -1167,6 +1179,58 @@ const TOML_CASES = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// 媒体探测：时基与分辨率必须来自**实际媒体**（2026-10-05 修掉的写死 60fps/1920×1080）
+// ---------------------------------------------------------------------------
+//
+// 写死那两件事的后果：30fps 素材被声明成 60fps ⇒ **帧号整体错 2×**（画面放到一半就播完、
+// 定位全错）；预览改读 720p 代理后仍声明 1920×1080 ⇒ 层的 `scale`/`FIT` 按错的源尺寸算。
+// 判据要**真媒体**：拿 ffmpeg 造两段不同帧率/尺寸的片子，看工程里写的是什么。
+// 没有 ffmpeg 就跳过（打印原因，不让守卫红）—— 与 `takumi_font_id` 那条同一条纪律。
+function checkMediaProbe(mod) {
+  let ok = true;
+  try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); } catch { ok = false; }
+  try { execFileSync('ffprobe', ['-version'], { stdio: 'ignore' }); } catch { ok = false; }
+  if (!ok) { console.log('· 跳过媒体探测判据：这台机器没有 ffmpeg/ffprobe'); return 0; }
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-media-'));
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+  try {
+    const mk = (file, size, rate) => execFileSync('ffmpeg', [
+      '-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${size}:rate=${rate}`,
+      '-t', '1', '-pix_fmt', 'yuv420p', join(dir, file),
+    ]);
+    mk('clip.mp4', '640x360', 30);
+    mk('alt.mp4', '320x240', 24);
+    const toml = [
+      'duration = 4.0',
+      '[project]',
+      'name = "media-probe"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip.mp4"',
+      '',
+    ].join('\n');
+    const cfg = mod.parseToml(toml);
+    const videoOf = (doc) => (doc.assets ?? []).find((a) => a.kind === 'video') ?? {};
+    // ① 默认 = `[source] video` 那份媒体
+    const d1 = mod.translate(cfg, dir, join(dir, 'd1.json'));
+    eq(JSON.stringify(d1.timeline.timebase), JSON.stringify({ num: 30, den: 1 }),
+      '源是 30fps ⇒ 工程时基必须是 30/1（写死 60 ⇒ 帧号错 2×）');
+    eq(`${videoOf(d1).width}x${videoOf(d1).height}`, '640x360',
+      '视频素材的宽高必须是**实际媒体**的（写死 1920x1080 ⇒ 层 scale/FIT 全按错的算）');
+    // ② `--video` 覆盖 = 预览代理那条腿：时基与尺寸都要跟着**代理**走
+    const d2 = mod.translate(cfg, dir, join(dir, 'd2.json'), { video: 'alt.mp4' });
+    eq(JSON.stringify(d2.timeline.timebase), JSON.stringify({ num: 24, den: 1 }),
+      '`--video` 指向 24fps 的代理 ⇒ 时基必须跟着代理（否则预览帧号错）');
+    eq(`${videoOf(d2).width}x${videoOf(d2).height}`, '320x240',
+      '`--video` 指向 320x240 的代理 ⇒ 素材尺寸必须跟着代理');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  return checks;
+}
 const translatorModule = await import(pathToFileURL(TRANSLATOR).href);
 let tomlChecks = 0;
 for (const c of TOML_CASES) {
@@ -1182,6 +1246,10 @@ for (const c of TOML_CASES) {
   tomlChecks += 1;
 }
 console.log(`✓ TOML 解析：${tomlChecks} 项全绿（含"普通表里的数组表"那种合法但少见的写法）`);
+const mediaChecks = checkMediaProbe(translatorModule);
+if (mediaChecks > 0) {
+  console.log(`✓ 媒体探测：${mediaChecks} 项全绿（30fps/640x360 源与 24fps/320x240 代理各一对）`);
+}
 const colorChecks = checkColors(translatorModule);
 console.log(
   `✓ 颜色解析：${colorChecks} 项全绿（6 种写法 + 7 种垃圾输入；8 位那两种是"整条 overlay 丢不丢"的关键）`,

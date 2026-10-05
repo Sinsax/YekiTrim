@@ -775,8 +775,13 @@ fn node_version() -> Option<(u32, u32, String)> {
 ///
 /// 旁写文件（`dhampir-danmaku.ass` / `dhampir-subtitle.srt`）会落在工程文件旁边，
 /// 由 [`cleanup_project`] 收拾。
-pub fn prepare_project(clip_dir: &Path, project_path: &Path, keep_muted: bool) -> Result<PathBuf> {
-    Ok(prepare_project_reporting(clip_dir, project_path, keep_muted)?.0)
+pub fn prepare_project(
+    clip_dir: &Path,
+    project_path: &Path,
+    keep_muted: bool,
+    video: Option<&str>,
+) -> Result<PathBuf> {
+    Ok(prepare_project_reporting(clip_dir, project_path, keep_muted, video)?.0)
 }
 
 /// 与 [`prepare_project`] 同一条路，但**把转译报告也带回来**（`--strict` 要用它）。
@@ -784,6 +789,7 @@ pub fn prepare_project_reporting(
     clip_dir: &Path,
     project_path: &Path,
     keep_muted: bool,
+    video: Option<&str>,
 ) -> Result<(PathBuf, TranslateReport)> {
     let translator = find_translator()?;
     let translated = project_path.join("_dhampir_project.json");
@@ -794,6 +800,12 @@ pub fn prepare_project_reporting(
         // **出片**那条腿：时间线保持整条，屏蔽区间交给尾部那一剪（见转译器里的说明）。
         // 预览**不能**加这个 —— 客户端要靠压缩时间线跳屏蔽区间。
         cmd.arg("--keep-muted");
+    }
+    if let Some(v) = video {
+        // **只给预览**：把"实际媒体"换成 720p 代理。转译器会按**代理**探测时基/分辨率，
+        // 所以层的 scale/FIT 也是按代理算的（见 `render/proxy.rs` 模块头）。
+        // ⚠️ 出片那条腿必须传 `None` —— 成片永远用源。
+        cmd.arg("--video").arg(v);
     }
     let out = cmd.output().with_context(|| {
         format!(
@@ -1108,7 +1120,8 @@ pub fn render_video_only(
     let out = video_intermediate(project_path);
     // **出片：整条时间线**（`keep_muted = true`）—— 屏蔽区间由 `cmd_render` 尾部那一剪按源时间去掉，
     // 与当年 chrome 那条腿同一处、同一条口径。传 false 会**剪两次**（成片短一大截 + 音轨错位）。
-    let (translated, report) = prepare_project_reporting(clip_dir, project_path, true)?;
+    // 出片**永远用源**：`video = None`（代理只服务预览）
+    let (translated, report) = prepare_project_reporting(clip_dir, project_path, true, None)?;
     if strict && report.drop_count > 0 {
         cleanup_project(project_path);
         bail!(

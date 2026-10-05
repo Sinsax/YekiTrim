@@ -610,6 +610,74 @@ function probeSize(path) {
   }
 }
 
+/// 探一段**视频**的真实时基与尺寸：`{ fps: {num,den}, width, height }`。
+///
+/// ⚠️ **为什么必须是真探测**（2026-10-05 修）：这里原来写死 `{num:60, den:1}` +
+/// `width:1920, height:1080`（注释"素材实测 60fps"），而**时基决定帧号映射** ——
+/// 一份 30fps 的素材会被声明成 60fps，帧号整体错 2×（画面放到一半就播完 / 定位全错）；
+/// 分辨率同理：预览改用 720p 代理后若仍声明 1920×1080，层的 `scale`/`FIT` 会按错的源
+/// 尺寸算 ⇒ 缩放/取景全错。
+///
+/// `r_frame_rate` 是"最大帧率"（VFR 素材会骗人），所以**优先 `avg_frame_rate`** ——
+/// 它才反映"平均每帧多久"。两者都拿不到就返回 null，由调用方决定（当前回落 60fps）。
+///
+/// 探不到（ffprobe 不在 PATH / 文件读不了）返回 `null` —— 与 `probeSize`/`probeImage`
+/// 同一条纪律：**不给默认值假装成功**。
+function probeMedia(path) {
+  try {
+    const out = execFileSync(
+      'ffprobe',
+      ['-v', 'error', '-select_streams', 'v:0',
+       '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate',
+       '-of', 'default=nw=1', path],
+      { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const fields = new Map();
+    for (const line of out.split(/\r?\n/)) {
+      const at = line.indexOf('=');
+      if (at > 0) fields.set(line.slice(0, at).trim(), line.slice(at + 1).trim());
+    }
+    const width = parseInt(fields.get('width') ?? '', 10);
+    const height = parseInt(fields.get('height') ?? '', 10);
+    // 帧率是**分数**（`30000/1001` 这种必须原样保留：化成小数再乘回去会漂）
+    const parseRate = (raw) => {
+      const m = /^(\d+)\/(\d+)$/.exec(String(raw ?? '').trim());
+      if (!m) return null;
+      const num = parseInt(m[1], 10), den = parseInt(m[2], 10);
+      if (!(num > 0 && den > 0)) return null;
+      const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+      const k = gcd(num, den);
+      return { num: num / k, den: den / k };
+    };
+    // **标准帧率吸附**：`avg_frame_rate` 是实测值，长片会因为容器时长取整而给出
+    // `671400/11191`（≈59.9946）这种**不可用**的时间基 —— 拿它当 timebase，帧号会与
+    // "素材是 60fps"这个事实整体漂移，而且每帧号都是大整数。
+    // 所以：**先看实测值能否吸附到标准帧率**（含 NTSC 的 29.97/59.94），能就吸附；
+    // 不能再用容器声明的 `r_frame_rate`（标称值）；都没有才退回实测原始分数。
+    const STANDARD = [[24000, 1001], [24, 1], [25, 1], [30000, 1001], [30, 1], [50, 1], [60000, 1001], [60, 1]];
+    const nominal = parseRate(fields.get('r_frame_rate'));
+    const average = parseRate(fields.get('avg_frame_rate'));
+    const snapped = (() => {
+      if (!average) return null;
+      const f = average.num / average.den;
+      // **取最近的那一个**，不是"第一个落在容差里的"：59.9946 到 60/1 差 0.009%、
+      // 到 60000/1001 差 0.091% —— 按顺序命中会把 60fps 素材吸成 NTSC 的 59.94
+      // （实测踩过：timebase 变成 60000/1001，帧号整体漂）。
+      let best = null;
+      for (const [n, d] of STANDARD) {
+        const err = Math.abs(f - n / d) / (n / d);
+        if (err < 0.002 && (!best || err < best.err)) best = { num: n, den: d, err };
+      }
+      return best ? { num: best.num, den: best.den } : null;
+    })();
+    const fps = snapped ?? nominal ?? average;
+    if (!(width > 0 && height > 0) && fps === null) return null;
+    return { fps, width: width > 0 ? width : null, height: height > 0 ? height : null };
+  } catch {
+    return null;
+  }
+}
+
 /// 探一张动图的**逐帧时长**（毫秒）。
 ///
 /// 用 `frame=duration_time`（**不是** `pkt_duration_time` —— 那个对 GIF 是空的，
@@ -1122,9 +1190,24 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// 与成片那条口径一致）。预览必须留 `false`（客户端要靠压缩时间线跳屏蔽区间）——
   /// 详见下面 `keepRanges` 那段注释。
   const keepMuted = options.keepMuted === true;
-  const timebase = { num: 60, den: 1 }; // 素材实测 60fps
+  // **实际会被用到的那份媒体**：预览那条腿可以传 `--video _proxy_720.mp4`，于是时基与
+  // 分辨率都跟着**代理**走（层的 scale/FIT 也按它算），而不是源。渲染那条腿不传 ⇒ 源。
+  const videoRel = options.video ?? config.source?.video ?? 'clip.mp4';
+  const videoAbs = join(clipDir, videoRel);
+  const media = existsSync(videoAbs) ? probeMedia(videoAbs) : null;
+  // 探不到就维持改造前的值（60fps / 1920x1080）并**明确报一条 NOTE** —— 不静默假装探到了。
+  const timebase = media?.fps ?? { num: 60, den: 1 };
   const fps = timebase.num / timebase.den;
-  const frameAt = (seconds) => Math.round(seconds * 60);
+  const mediaW = media?.width ?? null;
+  const mediaH = media?.height ?? null;
+  if (media?.fps == null) {
+    note(
+      'assets',
+      '探不到源素材时基（ffprobe 不可用 / 文件读不了），按 60fps 处理 —— ' +
+        '素材若不是 60fps，帧号会整体错位（见 probeMedia 的说明）',
+    );
+  }
+  const frameAt = (seconds) => Math.round(seconds * fps);
 
   const assets = [];
   const videoAssetId = 'clip.mp4';
@@ -1132,11 +1215,11 @@ export function translate(config, clipDir, outPath, options = {}) {
     id: videoAssetId,
     kind: 'video',
     name: config.project?.name ?? 'clip',
-    uri: config.source?.video ?? 'clip.mp4',
+    uri: videoRel,
     frame_count: null,
     timebase,
-    width: 1920,
-    height: 1080,
+    width: mediaW ?? 1920,
+    height: mediaH ?? 1080,
     content_hash: null,
     tags: {},
     note: '来源：polish.toml [source].video',
@@ -2568,9 +2651,10 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 先前那版只乘了 `f = max(cw/sw, ch/sh)`，那**只在 cover 且 sr 铺满该轴时**成立：
   // 那时 `sr.h = CH`，上面通式正好化简成 `offset = (1-z)*(origin - c_out)`，
   // 也就是原本的 `cameraOffset`。换成通式之后 **cover 行为不变，contain 也对得上**。
-  const fitSrc = probeSize(join(clipDir, config.source?.video ?? 'clip.mp4'));
-  const srcW = fitSrc ? fitSrc.width : width;
-  const srcH = fitSrc ? fitSrc.height : height;
+  // 与上面**同一份**探测结果（别在这儿再探一次源：预览用代理时两边会打架）。
+  // 探不到时的回落与改造前逐字一致：按画布尺寸当源（CLAMP 文案见下面 stage 那段）。
+  const srcW = mediaW ?? width;
+  const srcH = mediaH ?? height;
   // **位置 = 两轴各自的百分比**（2026-10-05 x/y 改版）：`position_x_pct` / `position_y_pct`
   // 优先；**缺哪条轴**就回落到单值 `position_pct`（2026-10-02 的字段），再缺按老枚举换算
   // （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100；方向不跨用 ⇒ 居中）。
@@ -2594,7 +2678,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 轴**只看比例**（2026-10-02 起没有 auto 特例：不匹配的源一律**适配留边**）——
   // 与参照 `stageDrawRect` 的调用方同一条判据（交叉相乘，避免浮点除法）。
   const axis = (() => {
-    if (!fitSrc) return 'fill';
+    // 源尺寸探不到 ⇒ 不猜轴（与改造前 `!fitSrc` 同一条口径）
+    if (mediaW == null || mediaH == null) return 'fill';
     const lhs = BigInt(srcH) * BigInt(width);
     const rhs = BigInt(srcW) * BigInt(height);
     if (lhs > rhs) return 'x';
@@ -2666,7 +2751,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (mode === 'color') return 'color';
     return 'blur';
   })();
-  if (!fitSrc) {
+  if (mediaW == null || mediaH == null) {
     clamp('stage', '探不到源素材尺寸（ffprobe 不可用？），按画布尺寸当源 —— 比例不一致时画面会错位');
   }
   if (Math.abs(FIT - 1) > 1e-6 || SR.x !== 0 || SR.y !== 0 || STAGE_BG !== 'none') {
@@ -3388,7 +3473,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       // 绝对路径（与弹幕的 ASS 同理：文件在工程文件旁边，不在 clip 目录里）。
       uri: subPath,
       frame_count: null,
-      timebase: { num: 60, den: 1 },
+      timebase,
       width: null,
       height: null,
       content_hash: null,
@@ -3654,7 +3739,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           // （`build_sources`：`raw.is_absolute()` 就不挂 asset_root）。
           uri: assPath,
           frame_count: null,
-          timebase: { num: 60, den: 1 },
+          timebase,
           width: null,
           height: null,
           content_hash: null,
@@ -3889,7 +3974,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       modified_at: null,
     },
     assets,
-    timeline: { schema: 4, timebase: { num: 60, den: 1 }, markers: [], tracks },
+    timeline: { schema: 4, timebase, markers: [], tracks },
     view: { playhead: 0, selection: null, zoom: 1 },
     render_hints: { width, height, format: 'mp4' },
     extensions: {
@@ -3945,17 +4030,22 @@ function runCli() {
   if (args.length === 0) {
     console.error(
       '用法：node tools/polish-to-dhampir.mjs <clip 目录> [--out 工程文件] [--keep-muted]\n' +
-        '  --keep-muted  出片用：时间线保持整条，屏蔽区间交给尾部那一剪（预览**不能**用它）',
+        '  --keep-muted  出片用：时间线保持整条，屏蔽区间交给尾部那一剪（预览**不能**用它）\n' +
+        '  --video       预览用：把"实际媒体"换成代理（时基/分辨率随之；**出片不许传**）',
     );
     process.exit(2);
   }
   const clipDir = resolve(args[0]);
   const outIndex = args.indexOf('--out');
   const outPath = outIndex >= 0 ? resolve(args[outIndex + 1]) : join(clipDir, 'dhampir-project.doc.json');
+  // 预览那条腿用它把"实际媒体"换成 720p 代理（时基/分辨率随之，见 probeMedia）。
+  // **渲染那条腿不许传** —— 出片必须用源。
+  const videoIndex = args.indexOf('--video');
+  const videoRel = videoIndex >= 0 ? args[videoIndex + 1] : undefined;
 
   const tomlText = readFileSync(join(clipDir, 'polish.toml'), 'utf8');
   const config = parseToml(tomlText);
-  const doc = translate(config, clipDir, outPath, { keepMuted: args.includes('--keep-muted') });
+  const doc = translate(config, clipDir, outPath, { keepMuted: args.includes('--keep-muted'), video: videoRel });
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n', 'utf8');
 
