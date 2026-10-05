@@ -1109,6 +1109,31 @@ mod tests {
         assert_ne!(stage_region_rect(&tl, &br, sr).x0, whole_frame.x0);
     }
 
+    /// ⑤ 4a 的**实测量 47px**：`pick_sticker_position` 的候选里有一类是「贴着障碍右沿的临界位」
+    /// （`b.rect.x1 + TOUCH`）。按整帧读时那条临界位由**模型**障碍的右沿生成（`768+1 = 769`），
+    /// 它的盒子 `[769,1049]` 与**真**障碍 `[384,816]` 重叠 `816-769 = 47px` —— 即实测的
+    /// 「临界候选真压住主播 47px」。改走 `sr` 后临界位从真障碍右沿生成（`816+1 = 817`），不重叠。
+    ///
+    /// 两个矩形都由生产函数（[`stage_rect`] + [`stage_region_rect`]）算出，不是手抄常数。
+    #[test]
+    fn critical_candidate_at_the_model_edge_covers_the_star_by_47px() {
+        let s = stage("x", "center", 1.0, 0.0);
+        let sr = stage_rect(&s, Some((1440, 1080)), (1920, 1080));
+        let tl = crate::project::Point { x: "10%".into(), y: "10%".into() };
+        let br = crate::project::Point { x: "40%".into(), y: "40%".into() };
+        let real = stage_region_rect(&tl, &br, sr);
+        let model = stage_region_rect(&tl, &br, Rect::new(0.0, 0.0, F.w, F.h));
+        assert_eq!(real, Rect::new(384.0, 108.0, 816.0, 432.0));
+        assert_eq!(model, Rect::new(192.0, 108.0, 768.0, 432.0));
+
+        // 模型右沿的临界位 → 盒子左侧落在真障碍内部 47px（真能压住主播）
+        let at_model = sticker_box(model.x1 + TOUCH, model.y0, F);
+        assert_eq!(at_model.x0, real.x1 - 47.0, "实测 47px");
+        assert!(at_model.intersects(&real), "{at_model:?} vs {real:?}");
+        // 真障碍右沿的临界位 → 不重叠（修好之后候选集里是这一条）
+        assert!(!sticker_box(real.x1 + TOUCH, model.y0, F).intersects(&real));
+    }
+
     #[test]
     fn main_frame_needs_a_source_size() {
         let s = stage("x", "left", 1.0, 0.0);
