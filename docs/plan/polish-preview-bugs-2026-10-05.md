@@ -107,7 +107,7 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 | **4a 主因** | `process/placement.rs` 的贴纸避让模型**忽略 `stageDrawRect(sr)`**（`process/mod.rs:691-697`、`:585-592`、`placement.rs:163-170/300-318`；只有 `main_frame_geometry` 消费了 stage） | 4:3 源进 16:9、liver 框 10–40%、zoom=1：真障碍 `[384,816]` vs 模型 `[192,768]` ⇒ 临界候选**真压住主播 47px**；`[stage] scale=1.6` 时 **100% 落在真人身上**，`relaxed` 不触发、**零告警** |
 | **4b** | `main_frame_geometry` 的 `scale×position` 合成与模板不同（先缩放再插值 vs 先定位再绕盒心缩放） | `pct=0/scale=2` 差 **303.75px**；既有单测只用 `pct=50` ⇒ 测不出 |
 | **4c ✅ 已修** | **出片那条腿不钳安全区**（两条预览都钳） | manual `"98% 50%"`：不钳 **1741.6** → 钳后 **1608**（出框 101.6px）。修 `tools/polish-to-dhampir.mjs` + 把**转译器补进**贴纸落点契约（原是漏掉的第 6 份实现），带变异自证 |
-| **4d** | 贴纸/弹幕/字幕**三套叠放顺序**：出片=贴纸最上 / 模板 DOM=弹幕压贴纸 / WebUI 预览=字幕弹幕都压贴纸 | 三处：`index.html:1991/:2090`、`:62/69/66`+DOM 顺序 `:213-217`、`PolishPreview.vue:43-62` |
+| **4d（已降级）** | 贴纸/弹幕/字幕**三套叠放顺序**：出片=贴纸最上（转译器注释明写「**贴纸排在最后**是这一轮核出来的」，对齐 `renderFrame`）· 模板 DOM=弹幕压贴纸 · WebUI 预览=字幕弹幕都压贴纸 | ⚠️ **但默认预览里这条看不见**：承载那三层的 `.overlay-space` 是 `z-index:10`，而 Dhampir 画布是 **40**（`PolishPreview.vue:2812`）⇒ 画布把 DOM 那三层**整块盖住**，可见的叠放顺序来自**引擎**，而引擎按转译器轨道序 = **出片口径** ✓ 所以分歧只存在于**已禁用的旧 DOM 臂** ⇒ **降级为遗留问题，不是用户能看到的 bug**（别照着改 z-index —— 改了也看不见，还平添风险） |
 | 4e | 显示框 ≠ 生效区域（多格工程里 `regionRect` 是包围盒，生效的是 `grid[0]` 中心/逐格障碍） | 用户在框选模式**不动任何东西直接保存**就会把语义改掉 |
 | 4f | `_canvas.sticker.safe_margin` 是**死契约**（`config.rs:472`→`canvas_contract` 注入，全仓零消费者） | 真正的 32 在四处各写一份 |
 
