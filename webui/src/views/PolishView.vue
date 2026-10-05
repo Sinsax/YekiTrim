@@ -377,7 +377,9 @@
               </a>
               <span v-else class="muted small">无封面</span>
             </div>
-            <button class="mini-btn" @click="copyOutDir">打开输出目录（复制路径）</button>
+            <!-- 打开输出目录：**只在本机（本地免登录）**渲染 —— 服务端模式下这个端点也不存在
+                 （远端的人点一下、服务器上弹窗口是不可接受的）。 -->
+            <button v-if="isLocal" class="mini-btn" @click="openOutDir">打开输出目录</button>
           </div>
           <div class="row mt-8">
             <img v-if="coverUrl && !coverFailed" :src="coverUrl" class="cover-thumb" alt="封面" @error="coverFailed = true">
@@ -436,8 +438,9 @@ import {
   fetchProject, fetchSubtitles, saveProjectPatch,
   initPolish, runLlm, runLlmSegment, runProcess, runRender,
   fetchDhampirStatus, fetchStickerSources, fetchFonts,
-  REGION_LABELS,
+  openPath, REGION_LABELS,
 } from '../api/polish'
+import { localNoAuthKnown } from '../stores/health'
 import { ensureFontFace } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
 import { jobsApi, watchJob, busyOn, clipKey, kindText, QUEUED_HINT } from '../api/jobs'
@@ -1290,15 +1293,20 @@ function redoSegment(index) {
   })
 }
 
-/** 打开输出目录：浏览器无法打开本地目录，复制路径并提示。 */
-async function copyOutDir() {
+/** 是否**本机**（本地免登录模式）—— 路由守卫在任何视图挂载之前已经 await 过 `localNoAuth()`，
+ *  所以这里同步拿得到（与 `WorkbenchView` 的默认来源同一套口径）。 */
+const isLocal = localNoAuthKnown()
+
+/** 打开输出目录：浏览器打不开本地目录，交给**与本机同进程服务端**去弹文件管理器。
+ *  ⚠️ 服务端模式下这颗按钮不渲染（端点也 404）—— 这里不做"退化成复制路径"的分支，
+ *  留一个"点了没反应"的按钮比没有更糟；打开失败时把路径贴进提示，用户还能手动复制。 */
+async function openOutDir() {
   const p = dir.value || ''
   if (!p) return
   try {
-    await navigator.clipboard.writeText(p)
-    toast('输出目录路径已复制')
-  } catch {
-    toast(p)
+    await openPath(p)
+  } catch (e) {
+    toast('打开目录失败：' + e.message + '（' + p + '）', 'err')
   }
 }
 

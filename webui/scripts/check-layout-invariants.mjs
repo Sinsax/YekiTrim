@@ -232,5 +232,30 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('[变异] ⑧ 摘掉行内说明 → 源码确实被改了', m !== polishView, true)
   check('[变异] ⑧ 摘掉行内说明 → 判据翻面', inlineHint(m), false)
 }
+// ── ⑨ 「打开输出目录」= **只在本机渲染** + 交给服务端弹文件管理器（2026-10-05）──
+// 用户口径：local 模式点一下**直接弹出文件夹**；server 模式**不显示这个按钮**。
+// 两件事都必须钉：① `v-if="isLocal"`（服务端模式回 404，按钮露出来就是"点了没反应"）；
+// ② 点击走 `openPath(dir)`（服务端 spawn 文件管理器），**不许**退回"复制路径 + toast"。
+{
+  const gated = (s) => s.includes('v-if="isLocal"')
+  const wired = (s) => s.includes('await openPath(p)')
+  const noCopy = (s) => !s.includes('copyOutDir')
+  const health = (s) => s.includes("import { localNoAuthKnown } from '../stores/health'")
+    && s.includes('const isLocal = localNoAuthKnown()')
+  check('⑨ 按钮按 isLocal 门控（server 模式不渲染）', gated(polishView), true)
+  check('⑨ 点击走 openPath（不是复制路径）', wired(polishView) && noCopy(polishView), true)
+  check('⑨ isLocal 取自 health store（与路由守卫同一份缓存）', health(polishView), true)
+  const MUT9 = [
+    ['摘掉 isLocal 门控（server 模式也显示）', (s) => s.replace('v-if="isLocal"', 'v-if="true"')],
+    ['退回"复制路径"（不弹文件夹）', (s) => s.replace('await openPath(p)', 'await navigator.clipboard.writeText(p)')],
+    ['门控改成永远为真（自算 live 判定）', (s) => s.replace('const isLocal = localNoAuthKnown()', 'const isLocal = true')],
+  ]
+  for (const [what, mutate] of MUT9) {
+    const m = mutate(polishView)
+    check(`[变异] ⑨ ${what} → 源码确实被改了`, m !== polishView, true)
+    check(`[变异] ⑨ ${what} → 判据翻面`, gated(m) && wired(m) && noCopy(m) && health(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

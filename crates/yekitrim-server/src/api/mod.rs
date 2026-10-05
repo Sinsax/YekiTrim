@@ -161,6 +161,68 @@ pub(crate) async fn shutdown(headers: axum::http::HeaderMap, peer: Option<axum::
     ok(serde_json::json!({ "ok": true, "shutdown": requested }))
 }
 
+/// `POST /api/open-path`：在**本机**用系统文件管理器弹出这个目录（精修页「打开输出目录」）。
+///
+/// ⚠️ **只在本地免登录模式下存在**（托盘双击起的那份：绑 loopback + `--local-no-auth`）。
+/// 服务端模式一律 **404、当它不存在** —— 否则远端的人点一下，**服务器上**就弹一个窗口：
+/// 那是荒唐且有人身风险的能力，不该存在于"多人共用一个后台"的部署里。
+/// 判据 = `AppState::local_admin`，与 `auth::authenticate` 那条免登录分支**同一个开关**，
+/// 所以不可能出现"能免登录进后台、但这个端点说不通"的错位。
+///
+/// 只开**已存在的目录**：`canonicalize` 之后再 `is_dir()`，不把带 `..` 的路径丢给 OS 去解析。
+/// **不做 shell**（不像 `open_browser` 那样走 `cmd /c start`）：
+/// 路径当**单个参数**传给 `explorer` / `open` / `xdg-open`，含 `&`、`%`、空格的路径都不会被拆开。
+///
+/// ⚠️ 放在 `api/mod.rs` 而不是 `api/polish.rs`：它不是"精修"的语义（任何页面都能用），
+/// 而且**不能**挂进 `polish` 那组 —— 那组带 `enforce_scope` 的目录守卫，这条端点收的是
+/// 任意本机目录（它自己的闸是"只有本地模式"）。
+pub(crate) async fn open_path(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    if state.local_admin.is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "未知接口: /api/open-path"));
+    }
+    let raw = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if raw.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 path"));
+    }
+    let dir = blocking(move || {
+        let p = std::path::PathBuf::from(&raw);
+        Ok(std::fs::canonicalize(&p).ok().filter(|c| c.is_dir()))
+    })
+    .await?;
+    let Some(dir) = dir else {
+        return Err(err(StatusCode::BAD_REQUEST, "目录不存在"));
+    };
+    // `spawn` 是阻塞调用（要 fork/exec），搬去 blocking 池；结果只关心"进程起没起来"
+    let opened = blocking(move || Ok(open_in_file_manager(&dir))).await?;
+    match opened {
+        Ok(()) => ok(serde_json::json!({ "ok": true })),
+        Err(e) => Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("无法打开目录: {e}"),
+        )),
+    }
+}
+
+/// 用系统文件管理器打开一个**已经校验过**的目录。
+fn open_in_file_manager(path: &std::path::Path) -> std::io::Result<()> {
+    let program = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    yekitrim_core::process::cmd(program).arg(path).spawn().map(|_| ())
+}
+
 /// 本地排查 `yekitrim doctor`（直接读本机账本，信息更全）。
 /// 顺带一个好处：`/api/health` 会被前端反复轮询，去掉这里两次同步 SQLite 查询后它不再碰磁盘。
 pub(crate) async fn health(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult {
