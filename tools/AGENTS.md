@@ -127,6 +127,21 @@
   它是"边上的一次性通道"，产品要出片走 `yekitrim polish render`。
 - ⚠️ **不落中间态到仓库里**：`--out` 指哪写哪，别往固定路径写缓存。
 
+- ⚠️ **贴纸落点属于「一份规则多份实现」那一类，而本文件是第 6 份**（2026-10-05 才被
+  `webui/scripts/check-sticker-anchor.mjs` 纳入）：那份契约原先只列了模板 / `engine.js` /
+  `canvas.js` / `timeline.rs` / `PolishView` —— **别只看它列的清单**。实测缺口：manual
+  `[sticker] position = "98% 50%"` 在 1920 宽下参照钳到 **1608**，而这里原先**不钳**、给
+  **1741.6** ⇒ 预览看着在框内、成片甩到框外（101.6px）且不报错。现已按参照补上
+  `M = 32*min(W,H)/1080` 的 clamp。
+- ⚠️ **`shake.intensity` 是像素**（模板 `:1610`、`engine.js:416`、本文件 `:1718` 都这么用），
+  但 **LLM 提示词的唯一示例写的是 `0.5`**（`crates/yekitrim-polish/src/llm/segment.rs:96`）、
+  编辑器默认又是 `10` ⇒ LLM 生成的 shake 常是**亚像素**、看不见而报告仍写 `shake_events: 1`。
+  要动就"提示词 + 迁移 + 三处 `|| 14`"一起动，只改换算会让存量工程更乱
+  （详见 `docs/plan/polish-preview-bugs-2026-10-05.md` R1）。
+- ⚠️ **密集键的右端封在窗口末尾**（`denseRanges`）：**shake 窗口压在运镜过渡上**时，窗口之后到
+  下一个稀疏键那一段从"逐帧复刻 `pow2_out`"退化成**两点直线**（实测 zoom 偏 ~0.04 ≈ 3%）。
+  这是全仓唯一"有 shake 就改变运镜行为"的路径；改它必跑 `--mutate` 与 drop-list 两条守卫。
+
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
 ## 验证
