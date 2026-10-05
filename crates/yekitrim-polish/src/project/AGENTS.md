@@ -133,9 +133,16 @@
   `stage.scale≠1` / `padding≠0`）时与成片不一致。实测：4:3 源进 16:9、liver 框 10–40%、zoom=1 ⇒
   真障碍 `[384,816]` vs 旧模型 `[192,768]`，临界候选**压住主播 47px**；`scale=1.6` 时真障碍
   `(38.4,-151.2)–(729.6,367.2)` vs 旧模型 `(192,108)–(768,432)`。
-  ⚠️ **编辑端那半边还没改**（`PolishPreview.vue::pctAt` 仍按整帧 % 记录）：存量的 `origin`/选框
-  在「编辑端换算 + 点选落点仍用舞台坐标」落地前仍是整帧 %；两条改法见
-  `docs/plan/polish-preview-bugs-2026-10-05.md` §④。
+  ✅ **编辑端那半边也已落地**（`efc5e0e`，`webui/src/components/PolishPreview.vue`）：**存盘走
+  `stage→sr`**（`emitRect`）、**显示走 `sr→stage`**（`selBoxStyle`），而**点选落点仍用舞台坐标**
+  （`pctAt` 不参与换算 —— `[sticker] position` 是另一个键、另一套基准，合并就会把落点一起改错）。
+  判据 = `node webui/scripts/check-layout-invariants.mjs` 的 ⑥（7 项含 2 条变异自证）。
+  ⚠️ **两条尚未做真出片 A/B 的残余**（都是"与模板逐式一致"的必然结果，照实记下）：
+  ① 运镜**不动点** `origin`/`to_origin` 也改成按 `sr` 解析（模板 `:1888-1889` 就是
+  `sr.x + cam.ox/CW*sr.w`）⇒ `sr≠画布 && zoom≠1` 时避让算出的聚焦位置会变；
+  ② `src=None`（ffprobe 失败）时 `stage_rect` 用**画布自身**当源，`scale≠1` 的老工程口径随之变化。
+  另：`cover.rs::cover_frame_vars` 读的是**同一份** `layout.liver` origin，但封面画的是**原始帧整幅**、
+  不走 `[stage]` ⇒ 它按整帧 % 读是**自洽的，别跟着改**。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
