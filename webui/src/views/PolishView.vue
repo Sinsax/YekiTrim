@@ -106,7 +106,7 @@
             <div class="preview-row">
               <div id="tl-props-host" class="props-host"></div>
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
@@ -796,6 +796,18 @@ let loadQueued = null
  */
 const persistedCfg = ref(null)
 
+/**
+ * 「磁盘上那份**字幕**」——与 `persistedCfg` 同一个道理，但要单独有一个，因为
+ * **字幕根本不在 `polish.toml` 里**（它住 `data/subtitles.json`）：只改字幕时
+ * `persistedCfg` 的内容指纹**一个字节都不变**，Dhampir 热重载的判据于是认为"什么都没变"、
+ * 直接 `return` —— 用户看到的就是「改完字幕预览不刷新」。
+ *
+ * 两条更新时机与 `persistedCfg` 一致：① 编辑器落盘完成（`onEditSaved`）；
+ * ② 任务跑完从盘上读回（下面 `doLoad` 里同步）。拖动中的 `onTimelinePreview` 不碰它。
+ * 存的是**深拷贝**：镜像数组会被编辑器就地改，直接存引用等于"没落盘的内容也进了指纹"。
+ */
+const persistedSubs = ref(null)
+
 /** 单飞：并发调用合并成一次；完成后如果期间又有人请求，再按最后一次参数补跑一次。 */
 function load(opts = {}) {
   if (loadInflight) {
@@ -870,6 +882,8 @@ async function doLoad(opts = {}) {
         subs.value = (await fetchSubtitles(pid.value, dir.value, '读取字幕')).segments || []
       } catch { if (!silent) subs.value = [] }
       subs.value.sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+      // 刚从盘上读回来 ⇒ 这份字幕天然已落盘，交给预览当"磁盘版本"
+      persistedSubs.value = subs.value.map((s) => ({ ...s }))
       try {
         const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/danmaku.json'))
         if (r.ok) dm.value = await r.json()
@@ -975,6 +989,10 @@ function gotoClip(name) {
 /** 时间轴/面板「落盘完成」：把当前镜像当成磁盘版本交给预览。 */
 function onEditSaved() {
   persistedCfg.value = cfg.value
+  // 字幕走的是另一个文件（`data/subtitles.json`），所以要单独递一份 —— 不然
+  // "只改字幕"这种编辑在指纹里看不出来（见 `persistedSubs` 的说明）。
+  // 深拷贝：`subs` 是编辑器手里的镜像，不拷贝的话下一次未落盘的拖动会把它改掉。
+  persistedSubs.value = subs.value.map((s) => ({ ...s }))
 }
 
 function onTimelinePreview(patch) {
