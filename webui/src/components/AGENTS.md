@@ -205,10 +205,9 @@
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()` 后按
   `start` 排序）· `prepare/SubtitleTrack`（常驻横排属性条，不要右侧竖面板）· `prepare/MaterialList`
   （**改一边等于改两边**）· `polish/StickerPicker`/`SfxPicker`（`name` = **去扩展名的文件名**；库数据只读）·
-- ⚠️ **预览的 `<canvas id="dhampir-canvas">` 一被换掉就整块黑**（2026-10-05）：底座 attach
-  一页只接一次、**没有 detach** ⇒ 任何重挂都让新 canvas 从没被 `present` 过（fps 照涨、
-  无报错，只有 F5 才好）。**任务完成绝不许重挂预览**。细节见
-  `docs/plan/polish-preview-bugs-2026-10-05.md` §②。
+- ⚠️ **预览的 `<canvas id="dhampir-canvas">` 一被换掉就整块黑**：底座 attach 一页只接一次、
+  **没有 detach** ⇒ 任何重挂都让新 canvas 从没被 `present` 过（F5 才好）。
+  **任务完成绝不许重挂预览**（见 `docs/plan/polish-preview-bugs-2026-10-05.md` §②）。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 ## 验证
