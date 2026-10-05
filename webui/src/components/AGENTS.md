@@ -15,7 +15,7 @@
 - `PolishPreview.vue`（自绘 DOM/GSAP 层，**只有这一层**）：props `pid`/`dir`/`config`/`subtitles`/`danmaku`/
   `metaDuration`/`selectMode`/`selectRect`/`selectLabel`/`pointMode`/`point`/`pointLabel`/`fontFallback`；
   emits `time`/`playing`/`update:selectRect`/`update:point`。字体栈纪律见下节。
-- `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（只在该片段被占用时禁用「生成封面」）。
+- `CoverDesigner.vue`：props `dir`(必填)/`pid`，emit `changed`（「生成封面」按 `polish_cover` 门控）。
   **图层面板**（左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」，PS 口径）：见「边界 · 封面设计器」与
   `docs/webui-components.md` ③。
 - 其余组件逐个的职责与规则见「边界 · 其他组件」。
@@ -199,7 +199,7 @@
   按钮必须按 `isAdmin()` 门控。
 - `LogConsole`：**挂载连 SSE、卸载断**，只在设置页 `monitor` 挂；颜色一律走 tokens。品牌标 `src/assets/logo.png`（favicon 在 `public/`），别改回内联 SVG。
   `AppModal`/`AppDialog`/`ToastHost`（`stores/toast`）—— **别再手搓弹窗/确认**。
-- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ `update:dir`（onMounted 也发）要**清已选文件**；外部改 `startDir` 要跟着 browse；`update:listing` 供判可用性。⚠ **`projectFile` prop 默认须空（opt-in）**：传了才有绿框与「工程配置」标签。首页内联用它，弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
+- `ServerDirPicker`：进下一级用 `{dir, enter}`、**路径由服务端拼**。⚠ `update:dir`（onMounted 也发）要**清已选文件**；外部改 `startDir` 要跟着 browse；`update:listing` 供判可用性。⚠ **`projectFile` prop 默认须空（opt-in）**：传了才有绿框与「工程配置」标签。弹出用 **`ServerFileBrowser`**（双栏；细节见 ⑥）。
 - `RecorderConfig`：`GET /api/admin/ingest` **绝不回 `api_pass` 明文/token_hash**，只回 `api_pass_set` 布尔；
   `api_base` 非空要带 scheme。
 - 其余：`HomeClipsOverview`（自动 `polish init` 传**绝对目录**）· `SubtitlePanel`/`SubtitleEditor`（`addSub()` 后按
