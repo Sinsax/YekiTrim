@@ -611,17 +611,22 @@ fn sticker_obstacles(
 ) -> StickerObstacles {
     let (cw, ch) = config.canvas_size();
     let frame = placement::Frame::new(cw, ch);
-    let liver_source = source_rects(&config.layout.liver, frame);
+    // W1：`layout.<区域>` 的百分比是**主画面矩形 `sr`** 的百分比（不是整块画布）。
+    // 唯一真源是模板 `stageDrawRect` 的 Rust 镜像 `project::stage_draw_rect`
+    // （经 `placement::stage_rect`）—— 拿不到源尺寸时它退化成整块画布，与改造前同行为。
+    let stage = config.resolve_stage(video_size);
+    let sr = placement::stage_rect(&stage, video_size, (cw, ch));
+    let liver_source = placement::layout_region_rects(&config.layout.liver, sr);
     let liver_rects = if liver_source.is_empty() {
         // 没框过人物 → 用运镜聚焦中心兜一个保守盒子（宁可多让）
         match project::region_origin(&config.layout.liver)
-            .and_then(|o| placement::parse_origin(&o, frame))
+            .and_then(|o| placement::parse_origin_in_stage(&o, sr))
         {
             Some((ox, oy)) => {
                 tracing::info!("  ⚠ layout.liver 无区域, 按运镜中心 ({ox:.0},{oy:.0}) 估 35%×50% 盒子");
                 vec![placement::Rect::new(
-                    ox - 0.175 * frame.w, oy - 0.25 * frame.h,
-                    ox + 0.175 * frame.w, oy + 0.25 * frame.h,
+                    ox - 0.175 * sr.width(), oy - 0.25 * sr.height(),
+                    ox + 0.175 * sr.width(), oy + 0.25 * sr.height(),
                 )]
             }
             None => Vec::new(),
@@ -629,7 +634,7 @@ fn sticker_obstacles(
     } else {
         liver_source
     };
-    let panel_rects = source_rects(&config.layout.danmaku_area, frame);
+    let panel_rects = placement::layout_region_rects(&config.layout.danmaku_area, sr);
 
     let mut fixed = vec![placement::Blocked::new(
         placement::caption_band(
@@ -653,18 +658,16 @@ fn sticker_obstacles(
     // 铺满时整帧都是画面，拿它当障碍等于「处处不安全」，只会把贴纸全推进 relaxed 兜底。
     // 所以改造前的横素材项目（axis = fill）行为逐像素不变；受益的是
     // 「横画布 × 竖素材」这类主画面只占一侧的场景（原先把贴纸放到主视频身上）。
-    let main_rect = placement::main_frame_rect(
-        &config.resolve_stage(video_size),
-        video_size,
-        config.canvas_size(),
-    );
+    let main_rect = placement::main_frame_rect(&stage, video_size, (cw, ch));
     if let Some(rect) = main_rect {
         fixed.push(placement::Blocked::new(rect, placement::ObstacleKind::MainFrame));
     }
 
+    // 不动点也是 `sr` 的百分比（模板 `:1888-1889` 把它映射进 `sr`）；没框过人物时
+    // 模板的兜底是 `65% 50%`（同一坐标系），所以兜底值也要按 `sr` 算。
     let default_origin = project::region_origin(&config.layout.liver)
-        .and_then(|o| placement::parse_origin(&o, frame))
-        .unwrap_or((frame.w * 0.65, frame.h * 0.5));
+        .and_then(|o| placement::parse_origin_in_stage(&o, sr))
+        .unwrap_or((sr.x0 + sr.width() * 0.65, sr.y0 + sr.height() * 0.5));
 
     let mut source: Vec<(placement::Rect, placement::ObstacleKind)> = liver_rects
         .iter()
@@ -676,10 +679,12 @@ fn sticker_obstacles(
         frame,
         fixed,
         source,
-        shots: camera_shots(&config.segments, default_origin, &config.style.camera, frame),
+        shots: camera_shots(&config.segments, default_origin, &config.style.camera, sr),
         default_origin,
+        // `layout.sticker_area` 同样是**源帧**坐标（W1 覆盖全部 `layout.<区域>`），
+        // 只是它的 grid 不参与、自由选框只作偏好。
         allow: project::free_rect(&config.layout.sticker_area)
-            .map(|(tl, br)| vec![placement::Rect::from_points(&tl, &br, frame)])
+            .map(|(tl, br)| vec![placement::stage_region_rect(&tl, &br, sr)])
             .unwrap_or_default(),
         liver_count: liver_rects.len(),
         panel_count: panel_rects.len(),
@@ -688,21 +693,15 @@ fn sticker_obstacles(
     }
 }
 
-/// `layout.<区域>` → 画布矩形列表（**源帧**坐标，未做运镜变换）
-fn source_rects(region: &project::LayoutRegion, frame: placement::Frame) -> Vec<placement::Rect> {
-    project::region_rects(region)
-        .iter()
-        .map(|(tl, br)| placement::Rect::from_points(tl, br, frame))
-        .collect()
-}
-
 /// 收集运镜（Camera 事件）→ 贴纸避让用的「源帧 → 输出帧」变换表。
 /// zoom 系数取自 `[style.camera]`（与预览、出片同一张表）再乘瞬时特效预留。
+/// `sr` = 主画面矩形：**事件里的 origin 百分比是 `sr` 的百分比**（W1），由
+/// [`placement::parse_origin_in_stage`] 映射到画布坐标。
 fn camera_shots(
     segments: &[project::Segment],
     default_origin: (f64, f64),
     camera_style: &project::CameraStyle,
-    frame: placement::Frame,
+    sr: placement::Rect,
 ) -> Vec<placement::CameraShot> {
     // 档位名 + 是否硬切要留到最后才用得上：过渡长度取决于**相邻两段**的档位与本条自己的 cut
     let mut pairs: Vec<(bool, String, placement::CameraShot)> = segments
@@ -713,11 +712,13 @@ fn camera_shots(
                 let shot = placement::CameraShot {
                     time: *time,
                     end: end.unwrap_or(*time),
-                    origin: placement::parse_origin(origin, frame).unwrap_or(default_origin),
+                    origin: placement::parse_origin_in_stage(origin, sr).unwrap_or(default_origin),
                     origin_to: to_origin
                         .as_deref()
-                        .and_then(|o| placement::parse_origin(o, frame))
-                        .unwrap_or_else(|| placement::parse_origin(origin, frame).unwrap_or(default_origin)),
+                        .and_then(|o| placement::parse_origin_in_stage(o, sr))
+                        .unwrap_or_else(|| {
+                            placement::parse_origin_in_stage(origin, sr).unwrap_or(default_origin)
+                        }),
                     zoom: camera_style.factor(zoom) * placement::TRANSIENT_ZOOM,
                     transition: placement::TRANSITION_SECS,
                 };
@@ -1660,6 +1661,110 @@ mod tests {
         assert!(user_prompt.contains("主播情绪反应"));
         assert!(user_prompt.contains("fear-1"));
         assert!(user_prompt.contains("禁止使用"));
+    }
+
+    /// ⑤ 4a：`layout.liver` 是**源帧**框，出片时它先被画面矩形 `sr` 投到画布，再按相机变换缩放。
+    ///
+    /// 判据走**生产路径**（`sticker_obstacles`），所以漏掉 `sr` 这一步就会红：
+    /// 4:3 源（1440×1080）进 16:9 画布（1920×1080）→ `sr = (240,0,1440,1080)`，
+    /// liver 框 10–40% ⇒ 真障碍 **`[384,816]`×`[108,432]`**；
+    /// 按整帧读（改造前的模型值）是 **`[192,768]`×`[108,432]`** —— 差 192px，
+    /// 贴着模型右沿的临界候选会压住主播 `816-769 = 47px`。
+    #[test]
+    fn liver_obstacle_is_projected_through_the_main_frame_rect() {
+        let mut cfg = ProjectFile::example();
+        cfg.layout.liver = free_region("10%", "10%", "40%", "40%");
+        // 4:3 源：axis=x，sr = (240,0,1440,1080)
+        let ob = sticker_obstacles(&cfg, Path::new("yekitrim-no-such-dir"), Some((1440, 1080)));
+        let liver = obstacle_rects(&ob, placement::ObstacleKind::Liver);
+        assert_eq!(liver, vec![placement::Rect::new(384.0, 108.0, 816.0, 432.0)]);
+        // 旧口径（整帧）与真值的差——真值是 [384,816]
+        let model = placement::layout_region_rects(
+            &cfg.layout.liver,
+            placement::Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        );
+        assert_eq!(model, vec![placement::Rect::new(192.0, 108.0, 768.0, 432.0)]);
+        // 人物框必须**跟着画面走**：拿不到源尺寸时退化成整块画布（= 改造前行为）
+        let ob_none = sticker_obstacles(&cfg, Path::new("yekitrim-no-such-dir"), None);
+        assert_eq!(
+            obstacle_rects(&ob_none, placement::ObstacleKind::Liver),
+            vec![placement::Rect::new(192.0, 108.0, 768.0, 432.0)],
+        );
+    }
+
+    /// ⑤ 4a（`[stage] scale = 1.6` 那条）：`scale` 绕**盒心**放大 `sr` 之后，源帧框跟着放大 ——
+    /// 4:3 源进 16:9 画布、`scale=1.6`、`pct=50` ⇒ `sr = (-192,-324,2304,1728)`，
+    /// liver 框 10–40% 的真障碍是 `(38.4,-151.2)–(729.6,367.2)`（越出画布，由 `blocked_at` 钳）。
+    ///
+    /// 改造前的模型值 `(192,108)–(768,432)` 完全在画布内、且与真值只重叠一部分 ——
+    /// 这就是「真障碍比模型大一截，而 `relaxed` 不触发、零告警」的来源。
+    #[test]
+    fn stage_scale_moves_the_source_frame_obstacles() {
+        let mut cfg = ProjectFile::example();
+        cfg.stage.scale = 1.6;
+        cfg.layout.liver = free_region("10%", "10%", "40%", "40%");
+        let ob = sticker_obstacles(&cfg, Path::new("yekitrim-no-such-dir"), Some((1440, 1080)));
+        let liver = obstacle_rects(&ob, placement::ObstacleKind::Liver);
+        assert_eq!(liver.len(), 1);
+        let r = liver[0];
+        for (got, want) in [(r.x0, 38.4), (r.y0, -151.2), (r.x1, 729.6), (r.y1, 367.2)] {
+            assert!((got - want).abs() < 1e-9, "sr 放大后源帧框应同步放大: {r:?}");
+        }
+        // 钳进画布之后仍然是「上半部分一大块」——不再是模型值那个小盒子
+        // ⚠️ f64 精确相等在这里是脆的：`240 + 0.1*1440` 这类组合会差最后一位
+        // （实测 `38.400000000000006 != 38.4`），所以与上面那条一样走容差。
+        let hit = r.clamp_to_frame(ob.frame);
+        for (got, want) in [(hit.x0, 38.4), (hit.y0, 0.0), (hit.x1, 729.6), (hit.y1, 367.2)] {
+            assert!((got - want).abs() < 1e-6, "钳进画布后的真障碍: {hit:?}");
+        }
+        // 真障碍比「改造前按整帧算的模型值」明显宽 —— 这正是 ⑤ 4a 的实测量：
+        // 模型值 (192,108)–(768,432) = 576px 宽；真障碍钳进画布后 691.2px，x 方向差 192px。
+        let model = placement::Rect::new(192.0, 108.0, 768.0, 432.0);
+        assert!(
+            hit.width() > model.width(),
+            "真障碍（{hit:?}）必须比模型值（{model:?}）宽"
+        );
+        assert!((hit.width() - 691.2).abs() < 1e-6, "真障碍宽 = 691.2px: {hit:?}");
+    }
+
+    /// 生产路径的贴纸落点**不许**在零告警的情况下压住人物：4:3 源 + `scale=1.6`，
+    /// 真障碍挡住左上大半；候选真被挡光时必须走 `Pick::relaxed`（调用方会打警告）。
+    #[test]
+    fn scaled_stage_never_places_a_sticker_on_the_star_without_a_warning() {
+        let mut cfg = ProjectFile::example();
+        cfg.stage.scale = 1.6;
+        cfg.layout.liver = free_region("10%", "10%", "40%", "40%");
+        let ob = sticker_obstacles(&cfg, Path::new("yekitrim-no-such-dir"), Some((1440, 1080)));
+        let liver = obstacle_rects(&ob, placement::ObstacleKind::Liver)[0].clamp_to_frame(ob.frame);
+        for seed in [0.0, 0.13, 0.5, 0.77, 0.99] {
+            let blocked = ob.blocked_at(0.0, 3.0, &[]);
+            let p = placement::pick_sticker_position(&blocked, &ob.allow, seed, ob.frame);
+            let box_ = placement::sticker_box(p.x, p.y, ob.frame);
+            assert!(
+                p.relaxed || !box_.intersects(&liver),
+                "seed {seed}: 压住人物却 relaxed=false（= 生产里零告警）: {p:?} vs {liver:?}",
+            );
+        }
+    }
+
+    /// `layout.<区域>` 的自由选框（= `region_rects` 的输入）。
+    fn free_region(x0: &str, y0: &str, x1: &str, y1: &str) -> project::LayoutRegion {
+        project::LayoutRegion {
+            grid: Vec::new(),
+            origin_grid: None,
+            origin: None,
+            top_left: Some(project::Point { x: x0.into(), y: y0.into() }),
+            bottom_right: Some(project::Point { x: x1.into(), y: y1.into() }),
+            extra: Default::default(),
+        }
+    }
+
+    /// 某一类**源帧**障碍在构建期算出的矩形（未经相机变换）。
+    fn obstacle_rects(
+        ob: &StickerObstacles,
+        kind: placement::ObstacleKind,
+    ) -> Vec<placement::Rect> {
+        ob.source.iter().filter(|(_, k)| *k == kind).map(|(r, _)| *r).collect()
     }
 
     /// 只读诊断：扫描真实工程，打印按新规则推导出的贴纸落点（不写任何文件）。

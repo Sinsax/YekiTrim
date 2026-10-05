@@ -2603,8 +2603,64 @@ function selNorm(r) {
   return { x0, y0, x1, y1 }
 }
 
+// ---- 区域选框的坐标系（2026-10-05，④ 定案 W1）----------------------------------
+// `layout.<区域>.top_left/bottom_right` 的百分比基准是 **主画面矩形 `sr`**（源帧经画面构成摆到
+// 画布上的那一块），**不是整块画布** —— 模板（canvas 出片路径）、`engine.js`、转译器与 Rust
+// `process::placement` 都按 `sr` 读。而**拖拽是在舞台里进行的**（整块画布 = 100%×100%）。
+// 编辑端过去把舞台百分比**直接**写进 `layout`：只要 `sr ≠ 整块画布`（源比例≠画布 / `scale≠1` /
+// `padding≠0`），存下来的区域与预览/出片所指的位置就不是同一块 —— 这就是"区域与落点对不上"的
+// 根因之一。所以这里只做**两个换算**：存盘（`emit`）走 `stage→sr`，显示（`selBoxStyle`）走
+// `sr→stage`。
+// ⚠️ **点选落点不在此列**：`[sticker] position` 是另一个键、另一套基准（盒子中心百分比），
+// `pctAt` 仍然给舞台坐标 —— 别把这两个换算合并成一个（那会把落点一起改错）。
+// `sr` 直接量台上那块 `<video>` 的盒子：`.fit-box` 带 `--src-ar` 的 `aspect-ratio` 且
+// `object-fit:cover`，所以元素框 **就是**画面上画出来的那块；`axis=fill` 时它等于整块舞台，
+// 两个换算退化成恒等（横屏存量零变化）。
+const stageRectPx = () => {
+  const el = stageRef.value
+  if (!el) return null
+  const b = el.getBoundingClientRect()
+  return b.width && b.height ? b : null
+}
+/** `sr` 在舞台百分比坐标里的矩形；量不到（还没挂载/尺寸为 0）时返回 null，两个换算退化为恒等。 */
+const srInStage = () => {
+  const st = stageRectPx()
+  const v = videoRef.value
+  const vb = v && v.getBoundingClientRect ? v.getBoundingClientRect() : null
+  if (!st || !vb || !vb.width || !vb.height) return null
+  return {
+    x: ((vb.left - st.left) / st.width) * 100,
+    y: ((vb.top - st.top) / st.height) * 100,
+    w: (vb.width / st.width) * 100,
+    h: (vb.height / st.height) * 100
+  }
+}
+const clamp100 = (v) => Math.min(100, Math.max(0, v))
+/** 舞台百分比 → `sr` 百分比（**写盘**用）：`sr` 之外的部分夹回边界（区域语义定义在 `sr` 内）。 */
+function stageToSrRect(r) {
+  const s = srInStage()
+  if (!s || s.w <= 0 || s.h <= 0) return r
+  const a = { x: clamp100(((r.x0 - s.x) / s.w) * 100), y: clamp100(((r.y0 - s.y) / s.h) * 100) }
+  const b = { x: clamp100(((r.x1 - s.x) / s.w) * 100), y: clamp100(((r.y1 - s.y) / s.h) * 100) }
+  return {
+    x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y),
+    x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y)
+  }
+}
+/** `sr` 百分比 → 舞台百分比（**显示**用）：让用户看到自己画的那一块。 */
+function srToStageRect(r) {
+  const s = srInStage()
+  if (!s || s.w <= 0 || s.h <= 0) return r
+  const a = { x: s.x + (r.x0 / 100) * s.w, y: s.y + (r.y0 / 100) * s.h }
+  const b = { x: s.x + (r.x1 / 100) * s.w, y: s.y + (r.y1 / 100) * s.h }
+  return {
+    x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y),
+    x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y)
+  }
+}
+
 const selBoxStyle = computed(() => {
-  const r = selNorm(props.selectRect)
+  const r = selNorm(srToStageRect(props.selectRect))
   return {
     left: r.x0 + '%',
     top: r.y0 + '%',
@@ -2628,7 +2684,7 @@ function pctAt(e) {
 function startSel(handle, e) {
   const p = pctAt(e)
   if (!p) return
-  const r0 = handle === 'new' ? { x0: p.x, y0: p.y, x1: p.x, y1: p.y } : selNorm(props.selectRect)
+  const r0 = handle === 'new' ? { x0: p.x, y0: p.y, x1: p.x, y1: p.y } : selNorm(srToStageRect(props.selectRect))
   selDrag = { handle, sx: p.x, sy: p.y, r0 }
   if (handle === 'new') emitRect(r0)
   window.addEventListener('pointermove', onSelMove)
@@ -2637,7 +2693,9 @@ function startSel(handle, e) {
 }
 
 function emitRect(r) {
-  emit('update:selectRect', { x0: r2(r.x0), y0: r2(r.y0), x1: r2(r.x1), y1: r2(r.y1) })
+  // 对外（父级 → `layout`）一律是 `sr` 百分比；舞台坐标只活在本组件内部（见上方换算注释）。
+  const sr = stageToSrRect(r)
+  emit('update:selectRect', { x0: r2(sr.x0), y0: r2(sr.y0), x1: r2(sr.x1), y1: r2(sr.y1) })
 }
 
 function onSelMove(e) {

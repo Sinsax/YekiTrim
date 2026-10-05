@@ -728,6 +728,117 @@ pub struct StageFit {
     pub padding: f64,
 }
 
+/// 主画面矩形（画布 px，左上原点，**可以越出画布**）—— 见 [`stage_draw_rect`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StageDrawRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl StageDrawRect {
+    /// 退化（宽或高非正）—— `axis` 分支里的 contain 夹取在极小内容盒上会算出这种矩形。
+    pub fn is_degenerate(&self) -> bool {
+        !(self.w > 0.0) || !(self.h > 0.0)
+    }
+}
+
+/// **主画面矩形**（画布 px）：源帧经 `[stage]` 的 `axis/position_pct/scale/padding` 摆放后，
+/// 落在画布上的那块矩形 `sr`。
+///
+/// # 唯一真源是模板，这里是它的 Rust 镜像
+///
+/// 出片是 canvas 逐帧绘制、**不读 DOM**（`renderFrame` 里的 `ctx.drawImage`），所以成片里画面画在哪
+/// 完全由模板 `templates/index.html::stageDrawRect` 决定。本函数与它**逐式一致**
+/// （含夹取、绕盒心缩放、padding 只改布局盒不裁剪、退化兜底）—— 任何一行漂移都是
+/// 「贴纸避让算的位置与成片画的画面不一致」。逐行对照（模板 `templates/index.html:1805-1839`）：
+///
+/// | 模板行 | 这里 |
+/// |---|---|
+/// | `:1806` `if(!(bw>0)||!(bh>0)) return {0,0,cw,ch}` | 同名分支 |
+/// | `:1807` `var pad=st.padding||0` | `pad`（NaN/∞ → 0，与 JS 的 `\|\|0` 同义） |
+/// | `:1808-1809` `cap=min(cw,ch)/2-1; if(pad>cap)pad=cap>0?cap:0` | `cap` |
+/// | `:1810` `bx=by=pad; bwid=cw-2pad; bhgt=ch-2pad` | 同名四元组 |
+/// | `:1811` `var axis=st.axis\|\|'fill'` | `axis`（空串 → `fill`） |
+/// | `:1815-1816` `pct=clamp(0,100,pct)/100` | `pct` |
+/// | `:1818-1822` `axis==='x'` 支（含 `:1820` 的 contain 夹取） | `"x"` 支 |
+/// | `:1823-1827` `axis==='y'` 支（含 `:1825` 的 contain 夹取） | `"y"` 支 |
+/// | `:1828-1832` `else`（fill：cover 语义 + 居中） | `else` 支 |
+/// | `:1833` `var sc=st.scale\|\|1` | `sc`（0/NaN → 1） |
+/// | `:1834-1837` `if(\|sc-1\|>1e-9)` 绕盒心缩放 | 同名分支 |
+///
+/// # 它同时是 W1 的坐标系口径
+///
+/// `layout.<区域>` 的百分比（九宫格 / 自由选框）与运镜不动点百分比都是**这个矩形**的百分比：
+/// 源帧里的 `p` 落到画布上是 `sr.x + p*sr.w`。四个渲染端早就这么读了
+/// （模板 `:1888-1889` 把不动点映射进 `sr`、`:1898` 把画面 CTM 送进 `sr`），
+/// **`process/placement.rs` 也必须走这里** —— 按整块画布读就是「障碍算的位置与成片不一致」。
+///
+/// ⚠️ `axis=fill` + 无 padding + 源比例 == 画布比例 **必须精确等于 `(0,0,cw,ch)`**：
+/// 那是横屏存量的逐字节零回归钉子（有单测）。
+///
+/// `src` 拿不到尺寸（ffprobe 失败）时调用方可以传 `canvas` 自身当源 —— 那等价于
+/// 「按画布比例铺满」，在 `padding=0 / scale=1`（绝大多数工程）下与**整块画布**逐值相同。
+pub fn stage_draw_rect(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) -> StageDrawRect {
+    let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
+    let (bw, bh) = (src.0 as f64, src.1 as f64);
+    // 模板 `:1806`
+    if !(bw > 0.0) || !(bh > 0.0) {
+        return StageDrawRect { x: 0.0, y: 0.0, w: cw, h: ch };
+    }
+    // 模板 `:1807` `st.padding||0`：JS 里 NaN/undefined 都是 falsy → 0。
+    let pad = if stage.padding.is_finite() { stage.padding } else { 0.0 };
+    // 模板 `:1808-1809`
+    let cap = cw.min(ch) / 2.0 - 1.0;
+    let pad = if pad > cap { if cap > 0.0 { cap } else { 0.0 } } else { pad };
+    // 模板 `:1810`
+    let (bx, by, bwid, bhgt) = (pad, pad, cw - pad * 2.0, ch - pad * 2.0);
+    // 模板 `:1811`
+    let axis: &str = if stage.axis.is_empty() { "fill" } else { &stage.axis };
+    // 模板 `:1815-1816`（JS 里 `position_pct` 不是 number 才回落 50；这里只多一道 NaN/∞ 兜底，
+    // 生产值由 `normalize_stage_pct` 保证有限）
+    let pct = if stage.position_pct.is_finite() { stage.position_pct } else { 50.0 };
+    let pct = pct.clamp(0.0, 100.0) / 100.0;
+    // 模板 `:1817-1832`
+    let (mut x, mut y, mut w, mut h);
+    if axis == "x" {
+        h = bhgt;
+        w = bw * h / bh;
+        if w > bwid {
+            w = bwid;
+            h = bh * w / bw;
+        }
+        x = bx + (bwid - w) * pct;
+        y = by + (bhgt - h) / 2.0;
+    } else if axis == "y" {
+        w = bwid;
+        h = bh * w / bw;
+        if h > bhgt {
+            h = bhgt;
+            w = bw * h / bh;
+        }
+        y = by + (bhgt - h) * pct;
+        x = bx + (bwid - w) / 2.0;
+    } else {
+        let s = (bwid / bw).max(bhgt / bh);
+        w = bw * s;
+        h = bh * s;
+        x = bx + (bwid - w) / 2.0;
+        y = by + (bhgt - h) / 2.0;
+    }
+    // 模板 `:1833-1837`：**先按 position 插值、再绕盒心缩放**（顺序不能反 —— 见 4b 的实测 303.75px）
+    let sc = if !stage.scale.is_finite() || stage.scale == 0.0 { 1.0 } else { stage.scale };
+    if (sc - 1.0).abs() > 1e-9 {
+        let (mx, my) = (x + w / 2.0, y + h / 2.0);
+        w *= sc;
+        h *= sc;
+        x = mx - w / 2.0;
+        y = my - h / 2.0;
+    }
+    StageDrawRect { x, y, w, h }
+}
+
 // ===== 时间轴 =====
 
 // Segment 仅话题分组, 运镜由 Camera event 控制
@@ -1470,6 +1581,141 @@ mod tests {
         let legacy: ProjectFile =
             toml::from_str("[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n").unwrap();
         assert!(!legacy.intro_fade_seeded);
+    }
+
+    // ===== `stage_draw_rect`（主画面矩形 SSOT）=====
+    // 手算期望值的口径：模板 `templates/index.html:1805-1839` 的每一式。
+    // 判据是**能翻面的**：`stage_draw_rect` 里任一分支/顺序/夹取改一个字，下面的数字就对不上。
+
+    /// 测试用 `StageFit`：显式给四项几何（其余字段对几何无影响，取 `resolve_stage` 的典型值）。
+    fn stage(axis: &str, pct: f64, scale: f64, padding: f64) -> StageFit {
+        StageFit {
+            axis: axis.into(),
+            object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
+            position: "center".into(),
+            position_pct: pct,
+            bg: if axis == "fill" { "none" } else { "blur" }.into(),
+            bg_color: "#000000".into(),
+            blur_px: 28,
+            blur_img_scale: 1.187,
+            scale,
+            padding,
+        }
+    }
+
+    /// **横屏存量零回归钉子**：`axis=fill` + 无 padding + 源比例 == 画布比例 ⇒
+    /// **精确等于** `(0,0,W,H)`（一位小数都不能差）。
+    ///
+    /// 走的是**真实推导链**（`ProjectFile::resolve_stage` → `stage_draw_rect`），所以 `resolve_stage`
+    /// 里任何把 `pad/scale` 弄成非零的改动也会把这条顶红。四种常见 16:9 源逐像素钉死。
+    #[test]
+    fn fill_axis_equal_ratio_is_exactly_the_canvas() {
+        let cfg = ProjectFile::example();
+        assert_eq!(cfg.canvas_size(), (1920, 1080));
+        for src in [(1920u32, 1080u32), (1280, 720), (2560, 1440), (3840, 2160)] {
+            let fit = cfg.resolve_stage(Some(src));
+            assert_eq!(fit.axis, "fill", "{src:?} 同比源应铺满");
+            assert_eq!(fit.padding, 0.0);
+            let sr = stage_draw_rect(&fit, src, cfg.canvas_size());
+            assert_eq!(
+                (sr.x, sr.y, sr.w, sr.h),
+                (0.0, 0.0, 1920.0, 1080.0),
+                "{src:?} 铺满必须逐值等于整块画布"
+            );
+        }
+    }
+
+    /// 源比例 ≠ 画布比例：**4:3 源进 16:9 画布**（axis=x，左右留边）。
+    ///
+    /// 手算（模板 `:1819-1822`）：`h=1080, w=1440*1080/1080=1440`，`bwid=1920`；
+    /// `x = 0 + (1920-1440)*pct`，`y = (1080-1080)/2 = 0`。
+    /// 五档的三个取值：0 → x=0；50 → x=240；100 → x=480。
+    #[test]
+    fn four_three_source_gets_pillarboxes() {
+        let src = (1440u32, 1080u32);
+        let canvas = (1920u32, 1080u32);
+        let at = |pct: f64| stage_draw_rect(&stage("x", pct, 1.0, 0.0), src, canvas);
+        assert_eq!(at(0.0), StageDrawRect { x: 0.0, y: 0.0, w: 1440.0, h: 1080.0 });
+        assert_eq!(at(50.0), StageDrawRect { x: 240.0, y: 0.0, w: 1440.0, h: 1080.0 });
+        assert_eq!(at(100.0), StageDrawRect { x: 480.0, y: 0.0, w: 1440.0, h: 1080.0 });
+    }
+
+    /// 源比例 ≠ 画布比例 **且** `scale≠1` **且** `padding≠0`（三者叠加）：
+    /// 手算（模板 `:1807-1810` + `:1819-1822` + `:1833-1837`）
+    /// `pad=60`（`cap=539` 不夹）→ `bwid=1800, bhgt=960`；
+    /// `w=1440*960/1080=1280`（≤1800 不夹）→ `x=60+(1800-1280)/2=320, y=60`；
+    /// `scale=2` 绕盒心 `(960,540)` → `w=2560, h=1920, x=960-1280=-320, y=540-960=-420`（越出画布）。
+    #[test]
+    fn mismatched_ratio_with_scale_and_padding() {
+        let sr = stage_draw_rect(&stage("x", 50.0, 2.0, 60.0), (1440, 1080), (1920, 1080));
+        assert_eq!(sr, StageDrawRect { x: -320.0, y: -420.0, w: 2560.0, h: 1920.0 });
+        // padding 只改**布局盒**、不裁剪：未缩放宽 1280 = 内容盒高 960 × 4/3
+        assert_eq!(sr.w / 2.0, 1280.0, "未缩放宽 = 960×4/3");
+        // `[stage] scale = 1.6`（⑤ 4a 那条用例的值）：1.6 在二进制里不精确，按容差对
+        let s16 = stage_draw_rect(&stage("x", 50.0, 1.6, 60.0), (1440, 1080), (1920, 1080));
+        assert!((s16.x + 64.0).abs() < 1e-9, "{s16:?}");
+        assert!((s16.y + 228.0).abs() < 1e-9, "{s16:?}");
+        assert!((s16.w - 2048.0).abs() < 1e-9, "{s16:?}");
+        assert!((s16.h - 1536.0).abs() < 1e-9, "{s16:?}");
+    }
+
+    /// **4b 钉子**：`scale` 与 `position` 的**合成顺序** = 先按 position 插值、**再**绕盒心缩放
+    /// （模板 `:1821` 用的是**未缩放**的 `w`）。
+    ///
+    /// 竖素材 `1080×1920` 进横画布 → `w=607.5`；`pct=0` 时先插值 `x=0+(1920-607.5)*0=0`，
+    /// 再绕盒心 `(303.75,540)` 放大 2 倍 → `x=303.75-607.5=-303.75`。
+    /// **反过来做**（先缩放再插值，Rust 改造前的写法）会得到 `x=0` —— 差 **303.75px**。
+    #[test]
+    fn scale_is_applied_after_position_interpolation() {
+        let src = (1080u32, 1920u32);
+        let canvas = (1920u32, 1080u32);
+        let pct0 = stage_draw_rect(&stage("x", 0.0, 2.0, 0.0), src, canvas);
+        assert_eq!(pct0, StageDrawRect { x: -303.75, y: -540.0, w: 1215.0, h: 2160.0 });
+        // 先缩放再插值 = 旧写法，差 303.75px（把这条写死，改回旧顺序立刻红）
+        let w = 1080.0 * 1080.0 / 1920.0;
+        let old_x = 0.0 + (1920.0 - w * 2.0) * 0.0;
+        assert!(
+            ((pct0.x - old_x).abs() - 303.75).abs() < 1e-9,
+            "新旧顺序应差 303.75px: {} vs {old_x}",
+            pct0.x
+        );
+        // pct=100：先插值 `x=1920-607.5=1312.5`，绕盒心 `(1616.25,540)` 放大 2 倍
+        // → `x=1616.25-607.5=1008.75`（旧写法是 `1920-1215=705`，同样差 303.75px）
+        let pct100 = stage_draw_rect(&stage("x", 100.0, 2.0, 0.0), src, canvas);
+        assert_eq!(pct100, StageDrawRect { x: 1008.75, y: -540.0, w: 1215.0, h: 2160.0 });
+    }
+
+    /// 交叉轴：`axis=y`（比画布更扁的源）沿竖直方向按 `pct` 插值，横向居中。
+    /// 手算（模板 `:1824-1827`）：`w=1920, h=1080*1920/2560=810`；
+    /// `pct=25` → `y=0+(1080-810)*0.25=67.5`。
+    #[test]
+    fn wide_source_moves_along_the_vertical_axis() {
+        let sr = stage_draw_rect(&stage("y", 25.0, 1.0, 0.0), (2560, 1080), (1920, 1080));
+        assert_eq!(sr, StageDrawRect { x: 0.0, y: 67.5, w: 1920.0, h: 810.0 });
+        // 位置枚举缺席 / 非有限值 → 50 居中（`normalize_stage_pct` 的上游保证，这里只钉兜底）
+        let mut s = stage("y", 25.0, 1.0, 0.0);
+        s.position_pct = f64::NAN;
+        assert_eq!(stage_draw_rect(&s, (2560, 1080), (1920, 1080)).y, 135.0);
+    }
+
+    /// 退化与夹取（模板 `:1806` / `:1808-1809` / `:1820`）：
+    /// 源尺寸为 0 → 整块画布；`padding` 不许把内容框吃穿（夹到 `min(cw,ch)/2-1`）；
+    /// `scale=0`（JS `st.scale||1`）按 1 处理。
+    #[test]
+    fn degenerate_source_padding_cap_and_zero_scale() {
+        let canvas = (1920u32, 1080u32);
+        let zero = stage_draw_rect(&stage("x", 50.0, 1.0, 0.0), (0, 1080), canvas);
+        assert_eq!(zero, StageDrawRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
+
+        // pad=600 > cap=539 → 夹到 539（内容盒 842×2）—— 不夹就是 bx=600、bwid=720、bhgt=-120
+        let capped = stage_draw_rect(&stage("fill", 50.0, 1.0, 600.0), (1920, 1080), canvas);
+        assert!((capped.x - 539.0).abs() < 1e-9, "padding 应夹到 min(cw,ch)/2-1: {capped:?}");
+        // fill = cover：842/1920 的等比缩放让画面**溢出** 2px 高的内容盒（padding 不裁剪）
+        assert!((capped.w - 842.0).abs() < 1e-9, "{capped:?}");
+        assert!((capped.h - 473.625).abs() < 1e-9, "1080×842/1920: {capped:?}");
+
+        let zero_scale = stage_draw_rect(&stage("fill", 50.0, 0.0, 0.0), (1920, 1080), canvas);
+        assert_eq!(zero_scale, StageDrawRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
     }
 }
 

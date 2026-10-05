@@ -93,7 +93,8 @@ pub(crate) fn build_events_system_prompt(
 - sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
 - 视觉特效: {}
-  {{"type":"shake","time":8.0,"end":8.3,"intensity":0.5,"sfx":"tag:爆発"}}
+  {{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:爆発"}}
+  intensity 是**像素**位移(默认 14, 常用 10~30), 0 = 不抖; **别写 0.5 这种亚像素值 —— 那等于看不出来**
 - overlay: 覆盖层(氛围色). 渐变写 colors(两档起步色/终色), 纯色写 color
   {{"type":"overlay","time":0.0,"end":5.0,"overlay_type":"gradient","colors":["#ff0000","#000000"],"shape":"linear","opacity":0.3}}
   {{"type":"overlay","time":8.0,"end":10.0,"overlay_type":"color","color":"#ff0000","opacity":0.25}}
@@ -386,5 +387,38 @@ mod tests {
         let norm = normalize_segments_json(raw);
         let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
         assert!(matches!(segments[0].events[0], crate::project::Event::Shake { .. }));
+    }
+
+    /// 提示词里 shake 的 `intensity` 示例必须是**像素**量级。
+    ///
+    /// 回归（2026-10-05 用户报的「shake 没正常触发」的主力根因）：这段示例曾写
+    /// `"intensity":0.5`，而四个消费者（模板 `getShake`、`engine.js`、转译器、Rust 侧）
+    /// **一律把它当像素位移**用 ⇒ 0.5 是**亚像素**，预览与成片**都看不见**，
+    /// 而任务报告里照样写 `shake_events: 1` —— 全链路零报错、零可见效果。
+    ///
+    /// 判据故意只看"示例是不是像素量级"（>= 5px），不锁具体数字：改示例可以，
+    /// 改回亚像素不行。文档口径见 `docs/polish-events-reference.md`（默认 14px）。
+    #[test]
+    fn shake_prompt_example_is_pixel_scale() {
+        let prompt = build_events_system_prompt(&[], &[], "");
+        let example = prompt
+            .lines()
+            .find(|l| l.contains(r#""type":"shake""#))
+            .expect("提示词里必须有 shake 示例");
+        let value: f64 = example
+            .split(r#""intensity":"#)
+            .nth(1)
+            .and_then(|rest| rest.split([',', '}']).next())
+            .and_then(|v| v.trim().parse().ok())
+            .expect("shake 示例里必须有 intensity 数值");
+        assert!(
+            value >= 5.0,
+            "shake 示例的 intensity={value} 是亚像素量级（消费者按像素用 ⇒ 看不见）；\
+             示例行 = {example}"
+        );
+        assert!(
+            prompt.contains("像素"),
+            "提示词里必须写明 intensity 的单位是像素"
+        );
     }
 }
