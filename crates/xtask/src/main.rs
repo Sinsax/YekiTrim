@@ -19,7 +19,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,69 @@ const MARKERS: &[&str] = &[
 const SKIP_DIRS: &[&str] = &["build", "deps"];
 
 const SCAN_EXTENSIONS: &[&str] = &["exe", "dll"];
+
+/// ELF magic (`\x7fELF`)。
+///
+/// ⚠️ 2026-10-05：**Linux 产物没有扩展名**，所以旧的「按扩展名匹配」在 Linux 上
+/// 一个文件都收不到 —— `cargo xtask scan` 直接以「nothing to scan」退出（exit 3）。
+/// 那意味着**GPL 红线在 Linux 上根本没有被执行过**：一个链接了 espeak-ng 的 Linux
+/// 二进制会**静默通过**。而这正是我们准备发布的那个平台。
+///
+/// 现在按**内容**认：扩展名命中 **或** 文件头是 ELF 魔数，都收。
+/// 按内容判不会误伤 —— 它只决定"要不要扫"，扫到的标记才决定成败。
+const ELF_MAGIC: &[u8] = b"\x7fELF";
+
+/// 判断这个文件是不是"可能是可执行产物"，需要进 GPL 扫描。
+///
+/// 目录遍历时用。显式传单个文件时**不经过这里**（见 `run_scan`）—— 用户点名要扫的文件
+/// 一律照扫，不做自我过滤、也不要求它是 ELF。
+fn looks_like_artifact(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(|ext| ext.to_ascii_lowercase());
+    if SCAN_EXTENSIONS
+        .iter()
+        .any(|wanted| extension.as_deref() == Some(wanted))
+    {
+        return true;
+    }
+
+    // 无扩展名的 ELF（Linux 上的 `yekitrim`）。只读开头 4 字节，不整个读进来。
+    let mut head = [0u8; 4];
+    match fs::File::open(path).and_then(|mut f| io::Read::read_exact(&mut f, &mut head)) {
+        Ok(()) => head == ELF_MAGIC,
+        Err(_) => false,
+    }
+}
+
+fn collect_dir(dir: &Path, artifacts: &mut Artifacts) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            let skip = path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .map(|name| SKIP_DIRS.contains(&name))
+                .unwrap_or(false);
+            if !skip {
+                collect_dir(&path, artifacts)?;
+            }
+            continue;
+        }
+
+        if looks_like_artifact(&path) {
+            if is_self_artifact(&path) {
+                artifacts.skipped_self.push(path);
+            } else {
+                artifacts.found.push(path);
+            }
+        }
+    }
+    Ok(())
+}
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -73,10 +136,15 @@ commands:
       The scanner's own binary is a dev tool, not payload, and is skipped.
       Exit code 0 = clean, 1 = markers found, 3 = nothing was scanned.
 
-  package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR]
-      Build release, run the scan gate, assemble the Windows x64 package, zip it.
+  package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR] [--target windows|linux]
+      Build release, run the mandatory espeak-ng gate, assemble the package, archive it.
       Output goes to <repo>/release/ (gitignored).
-      --smoke-test also boots the packaged exe and checks /api/health and the WebUI."
+      --target defaults to the host OS.
+        windows -> yekitrim-v<VERSION>-win-x64.zip      (exe + tray + .ico)
+        linux   -> yekitrim-v<VERSION>-linux-x64.tar.gz (ELF; keeps the 0755 bit, which zip drops)
+      The Linux path additionally refuses to package a binary whose GLIBC_* requirement is
+      above the pinned ubuntu:24.04 baseline -- see docker/Dockerfile.linux-x64.
+      --smoke-test also boots the packaged binary and checks /api/health and the WebUI."
     );
 }
 
@@ -236,41 +304,6 @@ fn is_self_artifact(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_dir(dir: &Path, artifacts: &mut Artifacts) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            let skip = path
-                .file_name()
-                .and_then(OsStr::to_str)
-                .map(|name| SKIP_DIRS.contains(&name))
-                .unwrap_or(false);
-            if !skip {
-                collect_dir(&path, artifacts)?;
-            }
-            continue;
-        }
-
-        let extension = path
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(|ext| ext.to_ascii_lowercase());
-        if SCAN_EXTENSIONS
-            .iter()
-            .any(|wanted| extension.as_deref() == Some(wanted))
-        {
-            if is_self_artifact(&path) {
-                artifacts.skipped_self.push(path);
-            } else {
-                artifacts.found.push(path);
-            }
-        }
-    }
-    Ok(())
-}
-
 fn to_ascii_lowercase(bytes: &[u8]) -> Vec<u8> {
     bytes.iter().map(|b| b.to_ascii_lowercase()).collect()
 }
@@ -305,6 +338,9 @@ struct PackageOptions {
     out_dir: Option<PathBuf>,
     skip_build: bool,
     smoke_test: bool,
+    /// 目标平台：`windows`（zip / yekitrim.exe）或 `linux`（tar.gz / yekitrim）。
+    /// 不给就按**当前宿主**推断 —— 本机是 Linux 就打 Linux 包。
+    target: Option<String>,
     /// Dhampir 预览产物目录（含 `preview/` 与 `VERSION`）。默认找同层 `../Dhampir/out`。
     dhampir_artifact: Option<PathBuf>,
     /// Dhampir 出片二进制。默认找同层 `../Dhampir/target/release/dhampir.exe`。
@@ -320,6 +356,7 @@ fn cmd_package(args: &[String]) -> ExitCode {
         out_dir: None,
         skip_build: false,
         smoke_test: false,
+        target: None,
         dhampir_artifact: None,
         dhampir_exe: None,
         no_dhampir: false,
@@ -331,6 +368,16 @@ fn cmd_package(args: &[String]) -> ExitCode {
             "--skip-build" => options.skip_build = true,
             "--smoke-test" => options.smoke_test = true,
             "--no-dhampir" => options.no_dhampir = true,
+            "--target" => {
+                index += 1;
+                match args.get(index) {
+                    Some(value) => options.target = Some(value.clone()),
+                    None => {
+                        eprintln!("xtask package: --target needs a value (windows|linux)");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             "--dhampir-artifact" => {
                 index += 1;
                 match args.get(index) {
@@ -392,19 +439,51 @@ fn cmd_package(args: &[String]) -> ExitCode {
 fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error>> {
     let root = repo_root();
 
+    // ---------------------------------------------------------------- 目标平台
+    //
+    // 2026-10-05 加 Linux 通道。以前 `package` 只会打 Windows 包（包名硬编码 win-x64、
+    // 只找 `yekitrim.exe`、只产 zip）。Linux 侧要发就得有一条**同一套工具链**的路，
+    // 而不是另写一套脚本 —— 那正是这个 crate 当初取代 PowerShell 的理由。
+    //
+    // ⚠️ Linux 产物**必须**在固定基线的容器里编（见 `docker/Dockerfile.linux-x64`）：
+    // 在滚动发行版上直编会引用宿主才有的 glibc 符号，下游连启动都启动不了。
+    // 这里不强制（本地调试也可能要打），但会打印实际测得的 glibc 上限提醒。
+    let target_os = options.target.as_deref().unwrap_or(if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    });
+    let is_linux = match target_os {
+        "windows" => false,
+        "linux" => true,
+        other => {
+            return Err(format!(
+                "unknown --target '{other}' (expected 'windows' or 'linux')"
+            )
+            .into())
+        }
+    };
+
     let version = match &options.version {
         Some(version) => version.clone(),
         None => cli_version(&root)?,
     };
     println!("==> version: {version}");
+    println!("==> target:  {target_os}");
 
     let out_dir = options
         .out_dir
         .clone()
         .unwrap_or_else(|| root.join("release"));
-    let package_name = format!("yekitrim-v{version}-win-x64");
+    let package_name = format!(
+        "yekitrim-v{version}-{}",
+        if is_linux { "linux-x64" } else { "win-x64" }
+    );
     let package_dir = out_dir.join(&package_name);
-    let zip_path = out_dir.join(format!("{package_name}.zip"));
+    let zip_path = out_dir.join(format!(
+        "{package_name}.{}",
+        if is_linux { "tar.gz" } else { "zip" }
+    ));
 
     if !options.skip_build {
         println!("==> cargo build --release -p yekitrim-cli --locked");
@@ -415,6 +494,10 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         if !status.success() {
             return Err(format!("cargo build failed ({status})").into());
         }
+    }
+
+    if is_linux {
+        return run_package_linux(options, &root, &version, &package_name, &package_dir, &zip_path);
     }
 
     let exe = root.join("target").join("release").join("yekitrim.exe");
@@ -679,8 +762,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// 把 zip 的校验和写成**每次都重新生成**的旁路文件（放在发行包**之外**，避免自指）。
-/// 底座新的默认产物目录：`<dhampir>/dist/dhampir-<版本>+<sha>/`，取**最新**的一份。
+/// 把 zip 的校验和写成**每次都重新生成**的旁路文件（放在发行包**之外**，避免自指）。/// 底座新的默认产物目录：`<dhampir>/dist/dhampir-<版本>+<sha>/`，取**最新**的一份。
 ///
 /// 为什么要有它：底座 `scripts/package.mjs` 的默认输出改成了 `dist/`，而我们的打包器一直按 `out/` 找，
 /// 症状是"底座明明打好了，这边却报产物不齐"（2026-10-01 踩到）。两份都认：这里给 dist 里最新的那份，
@@ -701,6 +783,413 @@ fn newest_dhampir_dist(root: &Path) -> Option<PathBuf> {
     found.pop()
 }
 
+// ============================================================================
+// Linux x64 打包通道（2026-10-05）
+// ============================================================================
+//
+// 与 Windows 通道的差异，逐条都有理由：
+//
+//   · **归档用 tar.gz，不是 zip**。Linux 用户一律 `tar xzf`；zip 在这边不通用，
+//     且 zip 会丢掉 Unix 权限位 —— 那样解出来的 `yekitrim` **不是可执行文件**，
+//     用户得自己 `chmod +x`。tar 保留 0755。
+//   · **没有托盘外壳**（`yekitrim-tray` 是 Windows 专属概念，没有桌面常驻进程这回事）。
+//   · **没有 `.ico`**（图标归桌面环境的 .desktop 文件，不归二进制）。
+//   · **必须查 glibc 上限**：Linux 二进制会写死它需要的最高 `GLIBC_x.y` 符号版本，
+//     宿主低于它就**直接起不来**（`version 'GLIBC_2.39' not found`）。这不是能靠文档
+//     提醒的注意事项 —— Windows 通道没有这个维度，所以这里必须多一道检查。
+//   · **底座（Dhampir）**：Windows 是 `dhampir.exe`，Linux 是 `dhampir`（无扩展名）。
+//
+// 门禁与 Windows 完全同一套：`scan` 是 **mandatory and unskippable**。
+// ⚠️ 而 `scan` 在 2026-10-05 之前**扫不到 ELF**（按扩展名收文件，Linux 产物没有扩展名），
+// 所以 Linux 侧此前等于**没有 GPL 门禁**。已修（见 `looks_like_artifact`）。
+
+/// Linux 产物允许出现的最高 glibc 符号版本。
+///
+/// 基座是 `ubuntu:24.04`（glibc 2.39）。比这更高的符号说明**没在容器里编**
+/// （比如在滚动发行版上直编）—— 那种产物绝大多数用户跑不了，必须拦下。
+const MAX_GLIBC: (u32, u32) = (2, 39);
+
+fn run_package_linux(
+    options: &PackageOptions,
+    root: &Path,
+    version: &str,
+    package_name: &str,
+    package_dir: &Path,
+    tarball: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let exe = root.join("target").join("release").join("yekitrim");
+    if !exe.is_file() {
+        return Err(format!(
+            "missing {} -- run `cargo build --release -p yekitrim-cli` first",
+            exe.display()
+        )
+        .into());
+    }
+
+    // ---------------------------------------------------------------- GPL 门禁
+    // 与 Windows 同一条，不可跳过。对 ELF 一样有效（`scan` 已改成按内容认文件）。
+    println!("==> asserting the binary carries no espeak-ng");
+    let scan = Command::new(env::current_exe()?)
+        .args(["scan", exe.to_string_lossy().as_ref()])
+        .status()?;
+    if !scan.success() {
+        return Err("the product gate rejected target/release/yekitrim. Refusing to package a \
+                    binary that links espeak-ng."
+            .into());
+    }
+
+    // ---------------------------------------------------------------- glibc 上限
+    println!("==> checking the glibc baseline");
+    let glibc_max = max_glibc_symbol(&exe)?;
+    match glibc_max {
+        Some((major, minor)) => {
+            println!("    requires glibc <= {major}.{minor}");
+            if (major, minor) > MAX_GLIBC {
+                return Err(format!(
+                    "this binary needs GLIBC_{major}.{minor}, above the {}.{} baseline.\n\
+                     It was almost certainly built on a rolling-release host instead of the \
+                     pinned container.\n\
+                     Rebuild with:  docker/Dockerfile.linux-x64 (see README).\n\
+                     Shipping it would give users \"version `GLIBC_{major}.{minor}' not found\" \
+                     on every distro we target.",
+                    MAX_GLIBC.0, MAX_GLIBC.1
+                )
+                .into());
+            }
+        }
+        None => {
+            // 一个 GLIBC_x.y 都没有很奇怪（静态链接？）—— 不当失败，但要说出来。
+            println!("    WARNING: no GLIBC_* symbol versions found; cannot verify the baseline");
+        }
+    }
+
+    // ---------------------------------------------------------------- 组装
+    println!("==> assembling {package_name}");
+    if package_dir.exists() {
+        fs::remove_dir_all(package_dir)?;
+    }
+    fs::create_dir_all(package_dir.join("resources").join("fonts"))?;
+
+    fs::copy(&exe, package_dir.join("yekitrim"))?;
+    // WebUI / 字体与 Windows 一样是**编进二进制**的，包里不带 dist（见 AGENTS.md）。
+    // 但保留了 resources/fonts 空目录 + 说明：那是运行时的数据目录落点，用户会往里放字体。
+    fs::write(
+        package_dir.join("resources").join("fonts").join("放这里.txt"),
+        "本目录就是字体库。\n\n\
+         YekiTrim 首次启动会把自带字体落盘到 <数据目录>/resources/fonts/。\n\
+         数据目录默认是**本程序所在目录**，可用环境变量 YEKITRIM_DATA_DIR 覆盖。\n",
+    )?;
+
+    for name in ["LICENSE", "THIRD-PARTY-NOTICES.md"] {
+        let src = root.join(name);
+        if src.is_file() {
+            fs::copy(&src, package_dir.join(name))?;
+        } else {
+            return Err(format!("{name} is mandatory in the package but missing from the repo").into());
+        }
+    }
+
+    // 发行说明（有才带）
+    let notes = root.join("docs").join("releases").join(format!("v{version}.md"));
+    if notes.is_file() {
+        fs::copy(&notes, package_dir.join("RELEASE-NOTES.md"))?;
+    } else {
+        println!("    note: docs/releases/v{version}.md not found; packaging without RELEASE-NOTES.md");
+    }
+
+    // 默认出片通道（Dhampir 底座）。Linux 侧二进制不带扩展名。
+    //
+    // ⚠️ **2026-10-05：这里一开始漏了 `preview/` 与 `VERSION`。**
+    // 第一版 Linux 打包只拷了 `dhampir/bin/dhampir`，于是包内缺
+    // `<程序目录>/dhampir/preview/{engine.js,pkg/*}` 与 `dhampir/VERSION` ——
+    // 而 `yekitrim_polish::render::dhampir::preview_dir()` 正是按**这个形状**找预览产物的。
+    // 后果：Linux 用户**没有页面预览**（出片不受影响，因为那是另一条腿；
+    // 但"预览缺失"在 UI 上是静默的 —— 字段为 None，不进 problems，用户只会发现预览不好使）。
+    // Windows 通道一直带着它们，两个平台必须同形状。
+    let dhampir_artifact = if options.no_dhampir {
+        None
+    } else {
+        Some(
+            options
+                .dhampir_artifact
+                .clone()
+                .or_else(|| {
+                    let sibling = root.parent()?.join("Dhampir");
+                    newest_dhampir_dist(&sibling).or_else(|| Some(sibling.join("out")))
+                })
+                .ok_or("no sibling Dhampir checkout: pass --dhampir-artifact <dir> or --no-dhampir")?,
+        )
+    };
+
+    let dhampir_exe = options
+        .dhampir_exe
+        .clone()
+        .or_else(|| {
+            let sibling = root.parent()?.join("Dhampir").join("target").join("release").join("dhampir");
+            sibling.is_file().then_some(sibling)
+        })
+        .or_else(|| {
+            let sibling = root.parent()?.join("Dhampir").join("target").join("debug").join("dhampir");
+            sibling.is_file().then_some(sibling)
+        });
+
+    if options.no_dhampir {
+        println!("    note: --no-dhampir, packaging WITHOUT the renderer (default path will be unavailable)");
+    } else {
+        // 底座产物三样 + VERSION：缺一即拒绝（与 Windows 同一条判据）。
+        if let Some(artifact) = &dhampir_artifact {
+            for required in [
+                artifact.join("preview").join("engine.js"),
+                artifact.join("preview").join("pkg").join("dhampir_wasm.js"),
+                artifact.join("preview").join("pkg").join("dhampir_wasm_bg.wasm"),
+                artifact.join("VERSION"),
+            ] {
+                if !required.is_file() {
+                    return Err(format!(
+                        "Dhampir 产物不齐：{} 不存在。\n  \
+                         在 Dhampir 仓跑 `node scripts/package.mjs` 生成产物，或用 --dhampir-artifact <dir> 指定；\
+                         确实要打成「没有底座」的包就加 --no-dhampir",
+                        required.display()
+                    )
+                    .into());
+                }
+            }
+            copy_dir_all(
+                &artifact.join("preview"),
+                &package_dir.join("dhampir").join("preview"),
+            )?;
+            fs::copy(
+                &artifact.join("VERSION"),
+                package_dir.join("dhampir").join("VERSION"),
+            )?;
+            println!("    dhampir artifact: {}", artifact.display());
+        }
+        match &dhampir_exe {
+            Some(path) => {
+                let bin_dir = package_dir.join("dhampir").join("bin");
+                fs::create_dir_all(&bin_dir)?;
+                fs::copy(path, bin_dir.join("dhampir"))?;
+                println!("    dhampir: {}", path.display());
+            }
+            None => {
+                return Err(
+                    "no Dhampir renderer binary found.\n\
+                     The default render path is the product's main path, so packaging without it \
+                     is refused.\n\
+                     Build it first, or point at one with --dhampir-exe <path>, or pass \
+                     --no-dhampir to ship a package whose default path is unavailable."
+                        .into(),
+                );
+            }
+        }
+    }
+
+    // 转译器 + 效果词汇表（与 Windows 同源；`polish-to-dhampir.mjs` 按**同层** ../spec 读）
+    let tools_dir = package_dir.join("tools");
+    fs::create_dir_all(&tools_dir)?;
+    let translator = root.join("tools").join("polish-to-dhampir.mjs");
+    if translator.is_file() {
+        fs::copy(&translator, tools_dir.join("polish-to-dhampir.mjs"))?;
+    }
+    let spec = root.join("spec").join("effects.json");
+    if spec.is_file() {
+        let spec_dir = package_dir.join("spec");
+        fs::create_dir_all(&spec_dir)?;
+        fs::copy(&spec, spec_dir.join("effects.json"))?;
+    }
+
+    // ---------------------------------------------------------------- 可选冒烟
+    if options.smoke_test {
+        smoke_test_linux(package_dir)?;
+        // ⚠️ **烟测会把内嵌字体解包进包目录，必须清掉**（与 Windows 通道同一条，
+        // 2026-10-02 在 Windows 上实际踩到，2026-10-05 发现 Linux 通道漏了这一步）。
+        //
+        // 机制：`fonts::ensure_dir` 写的**就是** `<数据目录>/resources/fonts`，
+        // 而烟测起的进程就在包目录里（`exe_dir()` = 包目录）⇒ 两个自带字体
+        // （NotoSansSC-Regular + NotoColorEmoji-CBDT，合计约 **21 MB**）被解包进
+        // `resources/fonts/<slug>/`，随后原样进归档。
+        //
+        // 这是**纯重复**（同样字节已经 `include_bytes!` 编在 `yekitrim` 里了），
+        // 还直接违反发行说明「发行包只带一个空 fonts 目录 + 说明」那条。
+        // 实测未清理时包从 40.3 MB 涨到 56.2 MB —— 正好是那 21 MB 字体。
+        //
+        // 只删字体目录里的**子项**，保留 `放这里.txt`（组装阶段写的，属于包的一部分）。
+        let fonts_dir = package_dir.join("resources").join("fonts");
+        if fonts_dir.is_dir() {
+            for entry in fs::read_dir(&fonts_dir)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name == "放这里.txt" {
+                    continue;
+                }
+                let path = entry.path();
+                if path.is_dir() {
+                    fs::remove_dir_all(&path)?;
+                } else {
+                    fs::remove_file(&path)?;
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 打包
+    println!("==> compressing {}", tarball.display());
+    if tarball.exists() {
+        fs::remove_file(tarball)?;
+    }
+    tar_gz_dir(package_dir, tarball)?;
+
+    let size_bytes = fs::metadata(tarball)?.len();
+    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+    let digest = sha256_of_file(tarball)?;
+    println!();
+    println!("done: {}", tarball.display());
+    println!("  size:   {size_mb:.1} MB");
+    println!("  sha256: {digest}");
+
+    let sidecar = write_checksum_sidecar(tarball, &digest, size_bytes, options.smoke_test)?;
+    println!("  checksum: {}", sidecar.display());
+
+    Ok(())
+}
+
+/// 从 ELF 的动态符号表里取它需要的**最高** `GLIBC_x.y`。
+///
+/// 刻意不依赖外部工具（`objdump` / `readelf`）—— 那个 crate 只用 std + sha2 + zip，
+/// 塞一个外部依赖进来会破坏"不需要工具链之外的任何东西"这条（见 AGENTS.md）。
+/// 直接把文件读进来找 `GLIBC_` 字面量：这些版本串就在 `.dynstr` 里，纯字节匹配足够。
+fn max_glibc_symbol(path: &Path) -> io::Result<Option<(u32, u32)>> {
+    let bytes = fs::read(path)?;
+    let needle = b"GLIBC_";
+    let mut best: Option<(u32, u32)> = None;
+
+    let mut i = 0usize;
+    while i + needle.len() < bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            // 形如 GLIBC_2.39：解析紧跟其后的 "数字.数字"
+            let rest = &bytes[i + needle.len()..];
+            let end = rest
+                .iter()
+                .position(|b| !(b.is_ascii_digit() || *b == b'.'))
+                .unwrap_or(rest.len());
+            if let Ok(text) = std::str::from_utf8(&rest[..end]) {
+                if let Some((major, minor)) = text.split_once('.') {
+                    if let (Ok(major), Ok(minor)) =
+                        (major.parse::<u32>(), minor.parse::<u32>())
+                    {
+                        if best.is_none_or(|b| (major, minor) > b) {
+                            best = Some((major, minor));
+                        }
+                    }
+                }
+            }
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    Ok(best)
+}
+
+/// Linux 冒烟：起打包好的 `yekitrim server`，验 `/api/health` 与 WebUI，然后杀掉并清理运行态。
+///
+/// 与 Windows 版的差别：不设 `CREATE_NO_WINDOW`（那是 Windows 概念），
+/// 可执行文件名不带 `.exe`。其余判据一致（`"ok"` + `true`、`<div id="app">`）。
+fn smoke_test_linux(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let exe = package_dir.join("yekitrim");
+    if !exe.is_file() {
+        return Err(format!("smoke test: missing {}", exe.display()).into());
+    }
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let port: u16 = 18000 + (nanos % 1000) as u16;
+
+    println!("==> smoke testing the packaged binary on port {port}");
+    let mut child = Command::new(&exe)
+        .current_dir(package_dir)
+        .args([
+            "server",
+            "--local-no-auth",
+            "--port",
+            &port.to_string(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut health_ok = false;
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(500));
+            if let Ok(body) = http_get(port, "/api/health", Duration::from_secs(5)) {
+                if body.contains("ok") && body.contains("true") {
+                    health_ok = true;
+                    break;
+                }
+            }
+        }
+        if !health_ok {
+            return Err("smoke test: /api/health never became healthy".into());
+        }
+        println!("    /api/health ok");
+
+        match http_get(port, "/", Duration::from_secs(5)) {
+            Ok(body) if body.contains("<div id=\"app\">") => println!("    WebUI root ok"),
+            Ok(_) => return Err("smoke test: / did not serve the WebUI".into()),
+            Err(err) => return Err(format!("smoke test: / did not respond: {err}").into()),
+        }
+        Ok(())
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // 首次运行会生成运行态（数据目录、server.toml 含真实绝对路径）—— 一律不许进发布包。
+    for junk in [".yekitrim", "stickers"] {
+        let p = package_dir.join(junk);
+        if p.exists() {
+            let _ = fs::remove_dir_all(&p);
+        }
+    }
+    result
+}
+
+/// 用系统 `tar` 打 `.tar.gz`。
+///
+/// ⚠️ 这里**故意**破一次"不依赖外部工具"的规矩，理由要说清楚：
+/// 现有的 `zip` crate 只能写 zip，而 Linux 必须发 tar（见本节开头：zip 会丢权限位，
+/// 解出来不可执行）。为了写 tar.gz 去引一个 bzip2/gzip 的 Rust 依赖不划算 ——
+/// `tar` 是 Linux 上的**基线工具**（POSIX 规范的一部分，容器基座里必然有），
+/// 与 python / PowerShell（那个 crate 当初刻意摆脱的东西）不是一个量级。
+///
+/// ⚠️ **必须固定 mtime / 排序 / 属主**，否则同一份内容每次打包 sha256 都变，
+/// `checksums` 记录就永远校验不上（这一点在 sherpa 仓实测踩过）。
+fn tar_gz_dir(source: &Path, destination: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = source.parent().ok_or("tarball source has no parent")?;
+    let name = source.file_name().ok_or("tarball source has no name")?;
+
+    let status = Command::new("tar")
+        .current_dir(parent)
+        .args([
+            "-czf",
+            destination.to_string_lossy().as_ref(),
+            "--sort=name",
+            "--mtime=2026-01-01 00:00:00 UTC",
+            "--owner=0",
+            "--group=0",
+            "--numeric-owner",
+            name.to_string_lossy().as_ref(),
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(format!("tar failed ({status})").into());
+    }
+    Ok(())
+}
+
 fn write_checksum_sidecar(
     zip_path: &Path,
     digest: &str,
@@ -719,19 +1208,63 @@ fn write_checksum_sidecar(
     } else {
         "cargo xtask package"
     };
-    let text = format!(
-        "{name}\n\
-         sha256  {digest}\n\
-         size    {size_bytes} bytes ({mb:.1} MB)\n\
-         built   {built}（Windows x64；{how}）\n\
-         \n\
-         校验：\n  \
-         certutil -hashfile {name} SHA256\n  \
-         (Get-FileHash .\\{name} -Algorithm SHA256).Hash\n\
-         \n\
-         说明：本文件由 `cargo xtask package` **每次重新生成**（别手工改）；\n\
-         刻意放在发行包**之外** —— RELEASE-NOTES.md 在 zip 内，把校验和写进去会形成自指。\n"
-    );
+    // 校验行按平台给：Linux 用 sha256sum，Windows 保留 certutil / Get-FileHash。
+    // 写错平台等于给用户一条跑不通的命令 —— 那和没有校验和一样糟。
+    let is_linux_artifact = name.ends_with(".tar.gz");
+
+    // ⚠️ Linux 侧的**首行必须是 `sha256sum -c` 能直接吃的格式**：
+    //     `<64位hex>  <文件名>`（两个空格）。
+    //     2026-10-05 之前这里只放了个裸文件名 + `sha256  <digest>`，看着像校验和，
+    //     实际 `sha256sum -c` 会报 "no properly formatted checksum lines found"
+    //     —— 又是一个"撒谎的校验和"。注释里却写着它就是给 `-c` 用的。
+    let first_line = if is_linux_artifact {
+        format!("{digest}  {name}")
+    } else {
+        name.clone()
+    };
+
+    let verify = if is_linux_artifact {
+        format!(
+            "#   sha256sum -c {name}.sha256.txt      # 直接校验（本文件首行就是可解析格式）\n\
+             #   sha256sum {name}                    # 只想看实际值\n"
+        )
+    } else {
+        format!(
+            "  certutil -hashfile {name} SHA256\n  \
+             (Get-FileHash .\\{name} -Algorithm SHA256).Hash\n"
+        )
+    };
+    let platform = if is_linux_artifact {
+        "Linux x64"
+    } else {
+        "Windows x64"
+    };
+    // Linux 版把机器可解析那行放**最前**（`-c` 只认得了格式的行，其余按注释忽略；
+    // 但保守起见其余行一律 `#` 开头，免得被误解析）。
+    let text = if is_linux_artifact {
+        format!(
+            "{first_line}\n\
+             #\n\
+             # size    {size_bytes} bytes ({mb:.1} MB)\n\
+             # built   {built}（{platform}；{how}）\n\
+             #\n\
+             # 校验：\n{verify}\
+             # 说明：本文件由 `cargo xtask package` **每次重新生成**（别手工改）；\n\
+             # 刻意放在发行包**之外** —— RELEASE-NOTES.md 在包内，把校验和写进去会形成自指。\n"
+        )
+    } else {
+        format!(
+            "{first_line}\n\
+             sha256  {digest}\n\
+             size    {size_bytes} bytes ({mb:.1} MB)\n\
+             built   {built}（{platform}；{how}）\n\
+             \n\
+             校验：\n{verify}\
+             \n\
+             说明：本文件由 `cargo xtask package` **每次重新生成**（别手工改）；\n\
+             刻意放在发行包**之外** —— RELEASE-NOTES.md 在包内，把校验和写进去会形成自指。\n"
+        )
+    };
     fs::write(&path, text)?;
     Ok(path)
 }

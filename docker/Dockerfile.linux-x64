@@ -1,0 +1,76 @@
+# docker/Dockerfile.linux-x64 —— YekiTrim 的 **linux-x64 发布基座**
+#
+#   docker build -f docker/Dockerfile.linux-x64 -t yekitrim-linux-x64-builder .
+#
+# 为什么必须有这个文件（不是"建议"，是**发布产物的正确性前提**）：
+#
+#   在滚动发行版（Arch 等）上直编出来的 ELF，会写死它需要的最高 `GLIBC_x.y` 符号。
+#   实测在 Arch（glibc 2.44）上编出的 `yekitrim` 要求 **GLIBC_2.43** ——
+#   而 Ubuntu 22.04 是 2.35、Debian 12 是 2.36、Ubuntu 24.04 是 2.39。
+#   也就是说那份二进制**在我们要支持的所有发行版上都起不来**：
+#
+#       version `GLIBC_2.43' not found
+#
+#   这个失败在构建期**完全看不出来**（链接零错误），只有用户下载后才炸。
+#   所以发布口径必须固定在**一个明确的 glibc 基线**上，容器就是那条基线。
+#
+# 选 ubuntu:24.04（glibc 2.39）的理由：
+#   · sherpa-onnx 归档里的 onnxruntime 是 `glibc2_28` 变体，它引用 `__cxa_call_terminate`
+#     （属 **CXXABI_1.3.15**），需要 **GCC 12+**。
+#     ubuntu:22.04 带的是 libstdc++ 6.0.30 / CXXABI_1.3.13 —— **链不了**。
+#     ubuntu:24.04 带 GCC 14 / CXXABI_1.3.15 —— 实测可以。
+#   · 24.04 是当前 LTS，基线不算激进：产物要求 glibc ≤ 2.39，
+#     覆盖 Ubuntu 24.04+ / Debian 13+ / Fedora 40+ 等。
+#
+# ⚠️ 改了基座版本就**必须**同步改 `crates/xtask/src/main.rs` 的 `MAX_GLIBC`
+#    与 README 里的兼容表 —— 打包器会按 `MAX_GLIBC` 拒绝超标的产物。
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 构建期依赖：
+#   · build-essential / gcc / g++ —— sherpa-onnx 归档是 C++ 静态库，链接要 g++ 与 libstdc++
+#   · cmake / make / git —— 万一要走"自己编 sherpa"那条路
+#   · libssl-dev / pkg-config —— reqwest 等 crate 的原生依赖
+#   · ca-certificates / curl —— 装 rustup、以及构建期抓模型/依赖
+#   · bzip2 / xz-utils —— 解 sherpa 的 .tar.bz2 归档
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        curl \
+        ca-certificates \
+        git \
+        pkg-config \
+        libssl-dev \
+        bzip2 \
+        xz-utils \
+        file \
+        binutils \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust 固定版本：与仓库开发时一致，避免"同一天两次构建产出不同二进制"。
+# rustup 是唯一从网络装的东西。
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH \
+    RUST_VERSION=1.97.0
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --default-toolchain "${RUST_VERSION}" \
+    && rustc --version && cargo --version
+
+# 自检：这个基座必须能链 glibc2_28 版 onnxruntime。
+# 漏了这一步的话，症状会在构建进行到一半才出现（undefined reference to
+# `__cxa_call_terminate`），而且很容易被误判成归档坏了。
+RUN set -eux; \
+    printf 'int main(void){return 0;}\n' > /tmp/probe.c; \
+    g++ /tmp/probe.c -o /tmp/probe -static-libstdc++ 2>/dev/null || g++ /tmp/probe.c -o /tmp/probe; \
+    /tmp/probe; \
+    rm -f /tmp/probe /tmp/probe.c; \
+    echo "CXXABI_1.3.15: $(strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -c CXXABI_1.3.15)"; \
+    test "$(strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep -c CXXABI_1.3.15)" -ge 1; \
+    echo "glibc: $(ldd --version | head -1)"
+
+WORKDIR /src
