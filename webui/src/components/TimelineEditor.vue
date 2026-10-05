@@ -249,7 +249,7 @@
             <!-- 瞬时特效 -->
             <template v-else>
               <template v-if="INTENSITY_TYPES.includes(selItem.type)">
-                <label>强度（{{ selItem.intensity ?? 10 }}）</label>
+                <label>强度（{{ selItem.intensity ?? 14 }}）</label>
                 <input v-model.number="selItem.intensity" type="number" step="1" min="0">
               </template>
               <template v-if="COLOR_TYPES.includes(selItem.type)">
@@ -1285,7 +1285,7 @@ function defaultEvent(type, t) {
   else if (type === 'sticker') { ev.keyword = ''; ev.x = '50%'; ev.y = '50%' }
   else if (type === 'overlay') { ev.overlay_type = 'color'; ev.color = '#ff3232'; ev.opacity = 0.3 }
   else if (type === 'sfx') { ev.name = ''; ev.volume = 0.3 }
-  else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 10 : 30
+  else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 14 : 30
   else if (COLOR_TYPES.includes(type)) ev.color = '#ffffff'
   return ev
 }

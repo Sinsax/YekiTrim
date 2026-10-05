@@ -12,6 +12,11 @@
 //     （渲染成 undefined）：`doctorProblem` 就是这么漏掉的 —— `:style="{ order: doctorProblem ? -1 : 99 }"`
 //     恒取 `99`，"运行状况"永远沉底，界面上看不出任何异常。
 //
+//  ⑥ 区域选框的坐标系：`layout` 里的区域百分比是 **`sr`（主画面矩形）** 的百分比，而拖拽是在
+//     **舞台**里进行的 —— 编辑端必须"存盘走 `stageToSrRect`、显示走 `srToStageRect`"，
+//     且**点选落点不许跟着换算**（`[sticker] position` 是另一个键、另一套基准）。
+//     漏掉任一半，只要 `sr ≠ 整块画布` 存下来的区域就不是用户画的那一块，而且**不报错**。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -137,6 +142,41 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const mutated = script.replace(new RegExp(`(const|function)\\s+${n}\\b`), '$1 ' + n + 'X')
   const stillDefined = new RegExp(`(const|let|function)\\s+${n}\\b`).test(mutated)
   check(`[变异] ${file.split('/').pop()} · ${n} 改掉定义 → 判据翻面`, stillDefined, false)
+}
+
+// ── ⑥ 区域选框的坐标系：`layout` 是 **`sr`（主画面矩形）百分比**，编辑端必须做两次换算 ──
+// 判据缺口 #7（`docs/plan/polish-preview-bugs-2026-10-05.md` §④）：拖拽在**舞台**里进行，
+// 而 `layout.<区域>.top_left/bottom_right` 的基准是 **`sr`**（源帧经画面构成摆到画布上的那一块）
+// —— 两个渲染端（模板 canvas / engine）+ 转译器 + Rust `process::placement` 都按 `sr` 读。
+// 编辑端过去把舞台百分比**直接**写盘：只要 `sr ≠ 整块画布`（源比例≠画布 / `scale≠1` /
+// `padding≠0`），存下来的区域与画面所指的位置就不是同一块，**而且不报错**（用户报的
+// "区域与落点对不上"）。这里钉三件事：①存盘走 `stageToSrRect`；②显示走 `srToStageRect`；
+// ③**点选落点仍用舞台坐标** —— `[sticker] position` 是另一个键、另一套基准（盒子中心），
+// 所以 `pctAt` 里**不许**出现这两个换算（把两个换算合并就会把落点一起改错）。
+{
+  const preview = await read('webui/src/components/PolishPreview.vue')
+  const fnBody = (name) => {
+    const i = preview.indexOf(`function ${name}(`)
+    if (i < 0) return ''
+    let j = preview.indexOf('{', i)
+    let depth = 0
+    for (; j < preview.length; j++) {
+      if (preview[j] === '{') depth++
+      else if (preview[j] === '}') { depth--; if (!depth) return preview.slice(i, j + 1) }
+    }
+    return preview.slice(i)
+  }
+  const emitBody = fnBody('emitRect')
+  check('⑥ 能定位 emitRect', emitBody.length > 0, true)
+  check('⑥ 存盘走 stage→sr 换算', /stageToSrRect\(/.test(emitBody), true)
+  check('⑥ 存盘不再直接吐舞台百分比', /r2\(r\.x0\)/.test(emitBody), false)
+  check('⑥ 显示走 sr→stage 换算', /selNorm\(srToStageRect\(props\.selectRect\)\)/.test(preview), true)
+  const pctBody = fnBody('pctAt')
+  check('⑥ 点选落点仍用舞台坐标（pctAt 不参与换算）', /stageToSrRect|srToStageRect/.test(pctBody), false)
+  // 变异自证：摘掉 emitRect 里那次换算 → 上面两条必须翻面
+  const mutated = emitBody.replace('const sr = stageToSrRect(r)', 'const sr = r')
+  check('[变异] ⑥ 变异确实摘掉了换算', mutated !== emitBody, true)
+  check('[变异] ⑥ 摘掉换算后"存盘走换算"判据翻面', /stageToSrRect\(/.test(mutated), false)
 }
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

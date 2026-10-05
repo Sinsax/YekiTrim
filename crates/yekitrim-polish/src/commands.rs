@@ -710,7 +710,7 @@ y = "auto"
 [[segments.events]]
 type = "shake"
 time = 5.0
-intensity = 10
+intensity = 14
 sfx = "tag:surprise"
 
 [[segments.events]]

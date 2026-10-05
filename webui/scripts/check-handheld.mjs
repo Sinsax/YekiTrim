@@ -195,6 +195,46 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
   }
 }
 
+// ── 3c. 瞬时特效强度：三份实现的「缺省 / 0」口径必须一致 ──────────────────────
+// `intensity` 是**像素**位移，`0` 是合法值（= 不抖）。曾经两份预览都写 `ev.intensity || 14`
+// —— falsy 判定把 0 变成 14px ⇒ **预览抖、出片（转译器只认 number）不抖**；而 LLM 提示词的
+// 唯一示例还写着 `0.5`（亚像素 ⇒ 两边都看不见，任务报告却照写 `shake_events: 1`）。
+// 本段钉住：两份 JS 里取默认的那条表达式**逐字一致**、都是数值判定、缺省都是 14；
+// 出片那份（转译器）同样只认 number。亚像素示例由 Rust 单测
+// `llm::segment::tests::shake_prompt_example_is_pixel_scale` 钉住。
+console.log('\n瞬时特效强度：两份 JS + 转译器（出片）同口径')
+const INTENSITY_DEFAULT = 14
+const WANT_GUARD = `typeof sh.ev.intensity==='number'?sh.ev.intensity:${INTENSITY_DEFAULT}`
+const normGuard = (s) =>
+  s.replace(/\s*===\s*/g, '===').replace(/\s*\?\s*/g, '?').replace(/\s*:\s*/g, ':').trim()
+const guardOf = (src, label) => {
+  const body = extractFunction(src, 'getShake')
+  const m = body.match(/off\s*=\s*([^\n;]+)/)
+  check(`${label}：能在 getShake 里定位到 off 的取值`, Boolean(m), true)
+  return m ? normGuard(m[1]) : ''
+}
+const tplGuard = guardOf(html, 'index.html')
+const engGuard = guardOf(engineSrc, 'engine.js')
+check('两份 JS 的强度取值表达式逐字一致', tplGuard === engGuard, true)
+check(`表达式 = 数值判定 + 缺省 ${INTENSITY_DEFAULT}`, tplGuard, WANT_GUARD)
+check('表达式里没有 falsy 判定 `||`', /\|\|/.test(tplGuard), false)
+const translatorSrc = await readFile(join(root, 'tools', 'polish-to-dhampir.mjs'), 'utf8')
+check(
+  '转译器（出片）：intensity 只认 number、缺省 14',
+  /typeof event\.intensity === 'number' \? event\.intensity : 14/.test(translatorSrc),
+  true
+)
+// 自证有效：把模板那份改回 `|| 14` → 上面两条必须翻面
+const guardPat = /var off = typeof sh\.ev\.intensity==='number' \? sh\.ev\.intensity : 14;/
+check('能在模板源码里定位到那条取值表达式（变异前提）', guardPat.test(html), true)
+if (guardPat.test(html)) {
+  const mutated = html.replace(guardPat, 'var off = sh.ev.intensity || 14;')
+  check('[变异] 变异确实改到了模板源码', mutated !== html, true)
+  const mutatedGuard = guardOf(mutated, 'index.html(perturbed)')
+  check('[变异] 改回 `|| 14` → 同口径判据翻面', mutatedGuard === WANT_GUARD, false)
+  check('[变异] 改回 `|| 14` → falsy 判据翻面', /\|\|/.test(mutatedGuard), true)
+}
+
 // ── 4. 自证有效：改一个常数必须被抓到（否则本脚本是空转的）───────────────────
 console.log('\n自证有效：把模板里 6.5 改成 6.6，对拍必须失败')
 const PERTURB = /6\.5\*Math\.sin\(TAU\*0\.47\*t\)/

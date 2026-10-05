@@ -14,9 +14,13 @@
 //!
 //! 障碍来源（渲染顺序：视频 → 字幕 → 弹幕 → 贴纸，贴纸画在最上层，压住谁就是挡住谁）：
 //! - **人物** `layout.liver`：在**源帧**坐标里框选（选框模式下运镜暂停、缩放复位），
-//!   但输出里视频整体被相机缩放（`index.html:1439-1463` 以 origin 为中心 scale），
-//!   所以要先按相机变换投到输出帧。
-//! - **弹幕区域** `layout.danmaku_area`：同上，源帧坐标 → 相机变换。
+//!   输出里它要经**两步**变换才落到画布上（顺序与 `renderFrame` 的 CTM 一致）：
+//!   ① 源帧 → **主画面矩形 `sr`**（[`stage_rect`]；`layout.<区域>` 的百分比是 `sr` 的百分比，
+//!   **W1 口径** —— 见 [`crate::project::stage_draw_rect`]）；② 再按相机变换绕不动点缩放
+//!   （`index.html:1439-1463`；不动点同样是 `sr` 的百分比，模板 `:1888-1889` 把它映射进 `sr`）。
+//!   ⚠️ **漏掉 ①就是「障碍算的位置与成片不一致」**：4:3 源进 16:9 画布时真障碍 `[384,816]`、
+//!   按整帧读是 `[192,768]`（实测差 192px，临界候选会压住主播）。
+//! - **弹幕区域** `layout.danmaku_area`：同上，源帧坐标 → `sr` → 相机变换。
 //! - **字幕带**：输出帧固定（Canvas 以 `cy=960` 居中一行；DOM 容器 `bottom:80px`）。
 //! - **弹幕带**：只有 `data/danmaku.json` 真有弹幕时才是障碍，按模板的
 //!   `y = (d.y / 1920) * 540` + 字号/描边推出实际占位。
@@ -159,15 +163,9 @@ impl Rect {
         }
     }
 
-    /// 百分比角点（`region_rects` 的输出）→ 画布像素。
-    pub fn from_points(tl: &Point, br: &Point, f: Frame) -> Self {
-        Self::new(
-            parse_pct(&tl.x) / 100.0 * f.w,
-            parse_pct(&tl.y) / 100.0 * f.h,
-            parse_pct(&br.x) / 100.0 * f.w,
-            parse_pct(&br.y) / 100.0 * f.h,
-        )
-    }
+    // 这里曾有个 `Rect::from_points(tl, br, f)`（源帧百分比 → **整帧**像素）。
+    // W1 起 `.layout.<区域>` 的百分比是**主画面矩形 `sr`** 的百分比，整帧读就是那个
+    // 「障碍与成片不一致」的旧口径 —— 已删除，一律走 `stage_region_rect(tl, br, sr)`。
 
     pub fn width(&self) -> f64 {
         self.x1 - self.x0
@@ -296,13 +294,23 @@ pub struct CameraShot {
 /// 瞬时运镜（zoom_bounce ×1.10 / pulse ×1.06）的预留系数，避免贴纸被瞬时放大的人物压住。
 pub const TRANSIENT_ZOOM: f64 = 1.10;
 
-/// 解析 `"50% 50%"` 形式的运镜中心（`f` = 输出画布）。
-pub fn parse_origin(s: &str, f: Frame) -> Option<(f64, f64)> {
+/// 解析 `"50% 50%"` 形式的**源帧**百分比中心 → 画布坐标（`sr` = 主画面矩形，见 [`stage_rect`]）。
+///
+/// **W1 口径**：运镜不动点百分比是**主画面矩形 `sr`** 的百分比，与模板一致 ——
+/// `renderFrame` 里 `anchorX = sr.x + cam.ox/CW*sr.w`（`index.html:1888-1889`）。
+pub fn parse_origin_in_stage(s: &str, sr: Rect) -> Option<(f64, f64)> {
     let mut it = s.split_whitespace();
     let x = parse_pct(it.next()?);
     let y = parse_pct(it.next()?);
-    Some((x / 100.0 * f.w, y / 100.0 * f.h))
+    Some((
+        sr.x0 + x / 100.0 * sr.width(),
+        sr.y0 + y / 100.0 * sr.height(),
+    ))
 }
+
+// 这里曾有个 `parse_origin(s, f)`（`"50% 50%"` → **整帧**像素）。W1 起运镜不动点百分比是
+// 主画面矩形 `sr` 的百分比（模板 `index.html:1888-1889` 就是 `sr.x + pct/100*sr.w`），
+// 整帧读同样会算错位置 —— 已删除，一律走 `parse_origin_in_stage(s, sr)`。
 
 /// 以 `(ox, oy)` 为中心缩放 `rect`（与 `renderFrame` 的 translate/scale/translate 一致）。
 pub fn camera_expand(rect: Rect, ox: f64, oy: f64, zoom: f64) -> Rect {
@@ -436,10 +444,58 @@ pub fn danmaku_band(f: Frame, font_size: f64, stroke_px: f64, ys: &[f64]) -> Opt
 
 // ===== 主画面 =====
 
+/// **主画面矩形 `sr`**（画布 px，可越出画布）：源帧经 `[stage]` 摆放/缩放后落的那块。
+///
+/// 它是 **W1 坐标系的唯一入口** —— `layout.<区域>` 的百分比、运镜不动点百分比都是它的百分比。
+/// 几何本身**不在这里算**：唯一真源是模板 `stageDrawRect`，Rust 镜像 =
+/// [`crate::project::stage_draw_rect`]（逐式一致，含 padding 夹取与绕盒心缩放）。
+///
+/// `src` 拿不到（ffprobe 失败）时用**画布自身**当源 —— `resolve_stage(None)` 此时给 `axis=fill`，
+/// 而按画布比例铺满在 `padding=0 / scale=1`（绝大多数工程）下与**整块画布**逐值相同，
+/// 所以这是「拿不到源尺寸就退化成改造前行为」的那条降级路，不是新语义。
+pub fn stage_rect(
+    stage: &crate::project::StageFit,
+    src: Option<(u32, u32)>,
+    canvas: (u32, u32),
+) -> Rect {
+    let src = match src {
+        Some((w, h)) if w > 0 && h > 0 => (w, h),
+        _ => canvas,
+    };
+    let r = crate::project::stage_draw_rect(stage, src, canvas);
+    Rect::new(r.x, r.y, r.x + r.w, r.y + r.h)
+}
+
+/// `layout.<区域>`（**源帧**百分比矩形）→ 画布矩形：百分比是**主画面矩形 `sr`** 的百分比。
+///
+/// 与四个渲染端同口径（模板 `liverOrigin` / `regionOrigin` 的消费方式、`engine.js`、
+/// `PolishPreview.vue`、转译器都是 `sr.x + pct/100*sr.w`）。**W1 前这里按整帧读**，
+/// `sr ≠ 整块画布`（源比例≠画布 / `scale≠1` / `padding≠0`）时三方不一致。
+///
+/// 优先级不变，仍走 [`crate::project::region_rects`]：自由选框 > 九宫格格子。
+pub fn layout_region_rects(region: &crate::project::LayoutRegion, sr: Rect) -> Vec<Rect> {
+    crate::project::region_rects(region)
+        .iter()
+        .map(|(tl, br)| stage_region_rect(tl, br, sr))
+        .collect()
+}
+
+/// 源帧百分比角点 → 画布矩形（W1：百分比是 `sr` 的百分比）。见 [`layout_region_rects`]。
+pub fn stage_region_rect(tl: &Point, br: &Point, sr: Rect) -> Rect {
+    Rect::new(
+        sr.x0 + parse_pct(&tl.x) / 100.0 * sr.width(),
+        sr.y0 + parse_pct(&tl.y) / 100.0 * sr.height(),
+        sr.x0 + parse_pct(&br.x) / 100.0 * sr.width(),
+        sr.y0 + parse_pct(&br.y) / 100.0 * sr.height(),
+    )
+}
+
 /// 主画面矩形的**纯几何**（坐标系 = `canvas`，**未**做整帧钳制）。`axis = fill` 返回 `None`。
 ///
-/// 与 `main_frame_rect` 拆开是因为本模块的坐标系仍是硬编码的 1920×1080，
-/// 而这段几何要能算竖画布（P4）—— 拆开后几何本身可以脱开坐标系守卫单测。
+/// 直接委托 [`crate::project::stage_draw_rect`] —— **不再有第二份公式**。历史上这里自己算过一遍，
+/// 与模板有两处不一致：① `scale × position` 的合成顺序反了（先缩放再插值，`pct=0/scale=2` 差
+/// **303.75px**，见 ⑤ 4b）；② padding 走 `aw<=0 → None` 而不是模板的 `cap = min(cw,ch)/2-1` 夹取。
+/// 现在两个偏差都由 SSOT 一处决定。
 fn main_frame_geometry(
     stage: &crate::project::StageFit,
     src: Option<(u32, u32)>,
@@ -452,39 +508,8 @@ fn main_frame_geometry(
     if sw == 0 || sh == 0 || canvas.0 == 0 || canvas.1 == 0 {
         return None;
     }
-    let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
-    // 模板把 padding 写成 `padding: var(--stage-pad)`（百分比）。
-    // ⚠️ CSS 的百分比 padding **四个方向都按包含块的宽度解析**，所以四边等量。
-    let p = stage.padding.max(0.0);
-    let (aw, ah) = (cw - 2.0 * p, ch - 2.0 * p);
-    if aw <= 0.0 || ah <= 0.0 {
-        return None;
-    }
-
-    let (swf, shf) = (sw as f64, sh as f64);
-    let (bw, bh) = if stage.axis == "x" {
-        (ah * swf / shf, ah)
-    } else {
-        (aw, aw * shf / swf)
-    };
-    let s = if stage.scale.is_finite() && stage.scale > 0.0 {
-        stage.scale
-    } else {
-        1.0
-    };
-    let (bw, bh) = (bw * s, bh * s);
-
-    // 位置 = **百分比**（0 = 贴左/贴上，100 = 贴右/贴下）：沿**留边轴**在两端之间线性插值，
-    // 另一轴居中 —— 与模板 `stageDrawRect` 同一公式。
-    // ⚠️ 权威是 `stage.position_pct`：`position` 枚举表达不了五档里的 25/75（会被压成 center），
-    // 拿它算几何会让贴纸避让算错位置。
-    let t = (stage.position_pct / 100.0).clamp(0.0, 1.0);
-    let (x0, y0) = if stage.axis == "x" {
-        (p * (1.0 - t) + (cw - p - bw) * t, (ch - bh) / 2.0)
-    } else {
-        ((cw - bw) / 2.0, p * (1.0 - t) + (ch - p - bh) * t)
-    };
-    Some(Rect::new(x0, y0, x0 + bw, y0 + bh))
+    let r = crate::project::stage_draw_rect(stage, (sw, sh), canvas);
+    Some(Rect::new(r.x, r.y, r.x + r.w, r.y + r.h))
 }
 
 /// 把主画面当作贴纸障碍时的矩形；不需要避让时返回 `None`。
@@ -497,9 +522,9 @@ fn main_frame_geometry(
 /// 整帧都是画面，拿它当障碍等价于「处处不安全」，只会把所有贴纸推进 relaxed 兜底，
 /// 反而变差。那种情况下的避让本来就由 `layout.liver` 选框负责 → 行为与改造前一致。
 ///
-/// 几何口径与 `templates/index.html` 的 `#video-wrap` + `#fit-box` 一致：
-/// 内容盒 = 画布去掉四周留白，`axis=x` 按高度铺满/`axis=y` 按宽度铺满，
-/// `scale` 绕盒子中心放大，最后 `position` 决定靠哪一边（另一轴居中）。
+/// 几何口径 = **模板** `templates/index.html::stageDrawRect`（经 [`crate::project::stage_draw_rect`]）：
+/// 内容盒 = 画布去掉四周留白，`axis=x` 按高度铺满/`axis=y` 按宽度铺满，`position_pct` 沿留边轴定位，
+/// **最后**才由 `scale` 绕盒心放大（顺序不能反，见 [`crate::project::stage_draw_rect`]）。
 pub fn main_frame_rect(
     stage: &crate::project::StageFit,
     src: Option<(u32, u32)>,
@@ -1055,6 +1080,33 @@ mod tests {
         assert!(main_frame_rect(&s, Some((1920, 1080)), (1920, 1080)).is_none());
         // 4:3 源也是 fill（改造前就是裁切），同样不产生障碍
         assert!(main_frame_rect(&s, Some((1440, 1080)), (1920, 1080)).is_none());
+    }
+
+    /// **W1 判据**：`layout.<区域>` 的百分比是**主画面矩形 `sr`** 的百分比，不是整块画布。
+    ///
+    /// 4:3 源进 16:9 画布（`axis = x`，左右留边）：`sr = (240, 0, 1440, 1080)`。
+    /// 同一个「x 10%~40% / y 30%~70%」的选框：
+    /// - 按 `sr` 读（**W1，现在**）→ 画布 `[384, 324, 816, 756]`
+    /// - 按整帧读（**改造前的旧模型**）→ `[192, 324, 768, 756]`
+    ///
+    /// x 上差 **192px**：旧模型把"人物在框内"判成"框外"，临界候选**真的会压住主播**
+    /// （`docs/plan/polish-preview-bugs-2026-10-05.md` §⑤ 4a 实测 47px）。
+    #[test]
+    fn layout_region_percent_is_relative_to_the_main_frame_rect() {
+        let s = stage("x", "center", 1.0, 0.0);
+        let sr = stage_rect(&s, Some((1440, 1080)), (1920, 1080));
+        assert_eq!(sr, Rect::new(240.0, 0.0, 1680.0, 1080.0), "4:3 源 → 左右留边");
+
+        let tl = crate::project::Point { x: "10%".into(), y: "30%".into() };
+        let br = crate::project::Point { x: "40%".into(), y: "70%".into() };
+        assert_eq!(
+            stage_region_rect(&tl, &br, sr),
+            Rect::new(384.0, 324.0, 816.0, 756.0)
+        );
+        // 旧口径（整帧）就是那个会压住主播的模型 —— 钉住它**不再**是生产取值
+        let whole_frame = Rect::new(1920.0 * 0.10, 1080.0 * 0.30, 1920.0 * 0.40, 1080.0 * 0.70);
+        assert_eq!(whole_frame, Rect::new(192.0, 324.0, 768.0, 756.0));
+        assert_ne!(stage_region_rect(&tl, &br, sr).x0, whole_frame.x0);
     }
 
     #[test]

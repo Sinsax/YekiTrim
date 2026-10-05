@@ -1018,7 +1018,7 @@ function init(){
   };
 
   handlers.shake = function(ev, et) {
-    shake(tl,et,ev.intensity||14,transientDur(ev,0.3));
+    shake(tl,et,typeof ev.intensity==='number'?ev.intensity:14,transientDur(ev,0.3));
     fxSfx(ev);
   };
 
@@ -1607,7 +1607,7 @@ function init(){
     for (var i = 0; i < items.length; i++) {
       var sh = items[i];
       if (t >= sh.time && t < sh.time + 0.2) {
-        var off = sh.ev.intensity || 14;
+        var off = typeof sh.ev.intensity==='number' ? sh.ev.intensity : 14;
         var dt = t - sh.time;
         if (dt < 0.04) return { x: off, y: -off };
         if (dt < 0.08) return { x: -off, y: off };
@@ -2687,7 +2687,7 @@ function init(){
     else if(type==='camera'){ addDur.d=3.0; ev.zoom='中'; ev.anchor='liver'; }
     else if(type==='overlay'){ addDur.d=1.5; ev.overlay_type='color'; ev.color='#ff3232'; ev.opacity=0.3; }
     else if(type==='sfx'){ addDur.d=1.0; ev.name='pop-notice'; ev.volume=0.3; }
-    else if(type==='shake'){ addDur.d=0.3; ev.intensity=10; }
+    else if(type==='shake'){ addDur.d=0.3; ev.intensity=14; }
     else if(type==='flash'){ addDur.d=0.5; ev.color='#ffffff'; }
     else if(type==='blur'){ addDur.d=0.8; }
         else if(type==='vignette'){ addDur.d=0.9; }

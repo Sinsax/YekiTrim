@@ -418,7 +418,7 @@ export function videoFxAt(idx, t) {
 function getShake(idx, t) {
   for (const sh of idx.shake) {
     if (t >= sh.time && t < sh.time + 0.2) {
-      const off = sh.ev.intensity || 14
+      const off = typeof sh.ev.intensity === 'number' ? sh.ev.intensity : 14
       const dt = t - sh.time
       if (dt < 0.04) return { x: off, y: -off }
       if (dt < 0.08) return { x: -off, y: off }

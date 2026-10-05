@@ -46,7 +46,7 @@ F5 能好 = 新的 wasm 实例（`PROJECT_HOST = None`）。
 - **C（正缝，跨仓）**：给底座加 `dhampir_project_detach()`（`PROJECT_HOST = None`），
   `stopDhampir()` 里调它；加了要同步 `scripts/check-dhampir-wiring.mjs` 的跨仓对拍。
 
-## ③ shake 与运镜同时存在时 shake 没正常触发 —— **查清 4 条，未改**
+## ③ shake 与运镜同时存在时 shake 没正常触发 —— **R1 已修，R2/R3/R4 处置见下**
 
 ⚠️ **先证伪一条**：不是"竖素材运镜门（`CFG.vertical`）把 shake 吃掉"。
 `getShake`（模板 `index.html:1606-1620` / `engine.js:413-426`）**一个字段都不读 camera**；
@@ -68,8 +68,15 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 ```
 命中 R1 ⇒ 手改 `14` 试一次（立刻可见）；命中 R2 ⇒ 到「画面构成 → 竖屏启用」勾**特效**。
 
-**拟改法（等拍板）**：
-- R1：提示词示例改 `14` + 单位说明；加一条**按值迁移**（照 `process/mod.rs::migrate_camera_zoom` 先例）
+**R1 · 已修（2026-10-05 续）**：8 处落点一次改齐 —— 提示词示例 `0.5 → 14` 并写明「是**像素**、0 = 不抖、别写亚像素」
+（`llm/segment.rs:96`）· 编辑器/示例工程默认 `10 → 14`（`TimelineEditor.vue:252`/`:1288`、模板 `:2690`、
+`commands.rs:713`）· 两份 JS 取默认改成**数值判定**（模板 `:1021`/`:1610`、`engine.js:421`；房规同
+`webui/src/polish/AGENTS.md` 里那条"不透明度一律数值判定，别写 `|| 1`"）。**按用户"不兼容过去内容"的口径，
+不做按值迁移**。判据两条都能翻面：Rust 单测 `llm::segment::tests::shake_prompt_example_is_pixel_scale`
+（变异回 `0.5` ⇒ 失败，报错里带原样示例行）· `check-handheld.mjs` 新增「两份 JS + 转译器同口径」12 项
+（含 3 条变异自证：把模板那份改回 `|| 14` ⇒ 同口径与 falsy 两条判据一起翻面）。
+
+**拟改法（等拍板）**：- R1：提示词示例改 `14` + 单位说明；加一条**按值迁移**（照 `process/mod.rs::migrate_camera_zoom` 先例）
   进 `process/fx.rs` 的 Step 0：`0 < intensity < 2 ⇒ ×14`（幂等、让存量工程当场恢复）；
   三处 `|| 14` 改成**数值判定**（`0` 是合法值，现在 JS 三条副本把它变 14px、转译器是 0 ⇒ 预览抖、成片不抖）。
 - R2：**不改代码**（2026-10-02 用户口径）；可选把提示从 `title` 提到行内（"静默整类失效"值得明说）。
@@ -78,7 +85,7 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 - R4：`:3718` 条件放宽到"**首帧没有键**"并补一帧 0 的中性基准键 —— **先确认底座"首键之前"的语义**
   （若是"首键保持"，只写 `layer.transform` 无效，必须写真键）。
 
-## ④ 区域与落点 —— **查清，但必须先拍板语义，不能改一半**
+## ④ 区域与落点 —— **定案 W1（源帧/主画面矩形 `sr` 百分比），施工中**
 
 - 九宫格 **Rust `grid_rect`（`render-core/src/types.rs:752-770`）↔ JS `GRID_RECTS`
   （`engine.js:50-60`）9 格逐值一致** ✓ 这条排除。
