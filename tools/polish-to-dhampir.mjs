@@ -1054,6 +1054,69 @@ export const SHAKE_SECONDS = 0.2;
 
 // **导出给守卫**（`scripts/check-yekitrim-translator.mjs` 的 `checkMappings`）：它拿一份**合成工程**
 // 过一遍 `translate`，断言"某一档真的转出来了"。只有 `isEntryPoint` 那道门保证直接跑仍然是 CLI。
+/**
+ * 每个密集窗口的采样区间：`[上一个稀疏键 + 1, 下一个稀疏键 - 1]`。
+ *
+ * **没有"上一个稀疏键"时就别往前铺。**
+ *
+ * `prevSparse` 返回 -1 有两种情形：这一个通道上**一个稀疏键都没有**
+ * （竖素材整条关掉运镜就是这种），或者稀疏键都在窗口**之后**。
+ * 两种情形下窗口**之前**都没有段结构可保护 —— 往前铺到第 0 帧只是白写。
+ * 实测：竖素材那份工程因此写了 **16716** 个关键帧（每帧一个），
+ * 而它们全是常量 `x=0,y=0,scale=1`；只从窗口起点开始写就够。
+ *
+ * ⚠️ **右端不许封在窗口末尾**（2026-10-05 ③R3 修）：封在 `b + 1` 时，窗口之后到**下一个稀疏键**
+ * 那一段里只有两个稀疏键 ⇒ 曲线退化成**两点直线弦**，`pow2_out` 被拉直 —— 实测过渡后段
+ * zoom 偏 ~0.04（≈3%、画面边缘 ~29px）。触发条件正是用户报的"shake 与运镜同时存在"
+ * （shake 窗口压在运镜过渡上）。所以右端铺到**下一个稀疏键的前一帧**；
+ * 没有下一个稀疏键就铺到最后一个输出帧。左端保持不变（上面那条"16716 键"的教训仍在）。
+ *
+ * 判据：`node scripts/check-yekitrim-translator.mjs` 的 `checkDenseRanges`
+ * （逐值钉右端落点 + 两个边界），并且在 `--mutate` 里也调 —— 变异条目
+ * 「密集键右端退回窗口末尾」必须把它打红。
+ */
+export function denseRangesFor(spans, sparseSorted, lastOut) {
+  /// 严格小于 `out` 的最后一个稀疏键（没有就给 -1）。
+  const prevSparse = (out) => {
+    let lo = 0;
+    let hi = sparseSorted.length - 1;
+    let best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sparseSorted[mid] < out) {
+        best = sparseSorted[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return best;
+  };
+  /// 严格大于 `out` 的第一个稀疏键（没有就给 `Infinity`）。
+  const nextSparse = (out) => {
+    let lo = 0;
+    let hi = sparseSorted.length - 1;
+    let best = Infinity;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (sparseSorted[mid] > out) {
+        best = sparseSorted[mid];
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return best;
+  };
+  return spans.map(([a, b]) => {
+    const prev = prevSparse(a);
+    const next = nextSparse(b + 1);
+    const right = Number.isFinite(next) ? next - 1 : lastOut;
+    // `max` 只为兜住"下一个稀疏键恰好是 `b + 1`"（那时 `next - 1 = b`，不许把区间收短）
+    return [prev === -1 ? a : prev + 1, Math.max(b + 1, right)];
+  });
+}
+
 export function translate(config, clipDir, outPath, options = {}) {
   /// **出片那条腿传 `true`**：时间线保持整条（屏蔽区间留给出片尾部的整段重编码去剪，
   /// 与成片那条口径一致）。预览必须留 `false`（客户端要靠压缩时间线跳屏蔽区间）——
@@ -1744,6 +1807,26 @@ export function translate(config, clipDir, outPath, options = {}) {
             `shake intensity=${intensity}（**像素**，YekiTrim 直接当 CSS 平移用）-> ` +
               '按出片那份 `getShake` 的四级阶梯逐帧写进**视频层**的 x/y',
           );
+          // # 亚像素告警（2026-10-05 加，R1 的"让存量工程可见"那一半）
+          //
+          // `intensity` 的单位是**像素**（上面三段论证 + 本文件 `|| 14` 的兜底都是按像素），
+          // 但 **LLM 提示词的唯一示例写的是 `0.5`**（`crates/yekitrim-polish/src/llm/segment.rs:96`，
+          // 全篇没有单位），编辑器默认又是 `10`（`TimelineEditor.vue:1288`）
+          // ⇒ 存量工程里 LLM 生成的 shake 常落在 `0.3~0.9`：**亚像素、预览与成片都看不出来**，
+          // 而报告照样写 `shake_events: 1`（用户报的正是"shake 没正常触发"）。
+          //
+          // 这**不是**"转丢了"（那该报 DROP），所以只报一条 NOTE 让人自己去改数值：
+          // 转换本身没错、也没法在这里猜"他本来想要几个像素"。
+          // ⚠️ 判据用**开区间** `(0, 2)`：`0` 是合法值（"这一下不抖"）别报；
+          // 负数是坏数据，留给校验层，不在这儿替它编语义。
+          if (intensity > 0 && intensity < 2) {
+            note(
+              where,
+              `shake intensity=${intensity} 落在 (0, 2) —— **疑似单位错误**：` +
+                '这个字段是**像素**（默认 14），`0.3~0.9` 是照 LLM 提示词那个 `0.5` 的示例填出来的' +
+                '**亚像素**值，预览与成片都看不出来（见 `docs/plan/polish-preview-bugs-2026-10-05.md` R1）',
+            );
+          }
           shakeCount += 1;
           if (event.sfx) {
             note(where, `shake 自带的音效「${event.sfx}」：底座没有"音效驱动画面"，两个子系统之间没有连线`);
@@ -2861,60 +2944,10 @@ export function translate(config, clipDir, outPath, options = {}) {
     // 代价：每个窗口多几十到几百个键（实测这一份工程 12 个窗口共多约 2 千个）。
     // 换来的是"写密集键这件事**不再有副作用**"。
     const sparseSorted = [...sparseOutFrames].sort((a, b) => a - b);
-    /// 严格小于 `out` 的最后一个稀疏键（没有就给 -1）。
-    const prevSparse = (out) => {
-      let lo = 0;
-      let hi = sparseSorted.length - 1;
-      let best = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (sparseSorted[mid] < out) {
-          best = sparseSorted[mid];
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      return best;
-    };
-    /// 严格大于 `out` 的第一个稀疏键（没有就给 `Infinity`）。
-    const nextSparse = (out) => {
-      let lo = 0;
-      let hi = sparseSorted.length - 1;
-      let best = Infinity;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (sparseSorted[mid] > out) {
-          best = sparseSorted[mid];
-          hi = mid - 1;
-        } else {
-          lo = mid + 1;
-        }
-      }
-      return best;
-    };
-    /// 每个窗口的密集区间：`[上一个稀疏键 + 1, 下一个稀疏键 - 1]`。
-    ///
-    /// **没有"上一个稀疏键"时就别往前铺。**
-    ///
-    /// `prevSparse` 返回 -1 有两种情形：这一个通道上**一个稀疏键都没有**
-    /// （竖素材整条关掉运镜就是这种），或者稀疏键都在窗口**之后**。
-    /// 两种情形下窗口**之前**都没有段结构可保护 —— 往前铺到第 0 帧只是白写。
-    /// 实测：竖素材那份工程因此写了 **16716** 个关键帧（每帧一个），
-    /// 而它们全是常量 `x=0,y=0,scale=1`；只从窗口起点开始写就够。
-    ///
-    /// ⚠️ **右端不许封在窗口末尾**（2026-10-05 修）：封在 `b + 1` 时，窗口之后到**下一个稀疏键**
-    /// 那一段里只有两个稀疏键 ⇒ 曲线退化成**两点直线弦**，`pow2_out` 被拉直 —— 实测过渡后段
-    /// zoom 偏 ~0.04（≈3%、画面边缘 ~29px）。触发条件正是用户报的"shake 与运镜同时存在"
-    /// （shake 窗口压在运镜过渡上）。所以右端铺到**下一个稀疏键的前一帧**；
-    /// 没有下一个稀疏键就铺到最后一个输出帧。左端保持不变（上面那条"16716 键"的教训仍在）。
-    const denseRanges = spans.map(([a, b]) => {
-      const prev = prevSparse(a);
-      const next = nextSparse(b + 1);
-      const right = Number.isFinite(next) ? next - 1 : lastOut;
-      // `max` 只为兜住"下一个稀疏键恰好是 `b + 1`"（那时 `next - 1 = b`，不许把区间收短）
-      return [prev === -1 ? a : prev + 1, Math.max(b + 1, right)];
-    });
+    // 密集键往前铺的区间由**导出的纯函数**算 —— 见 `denseRangesFor` 顶层的长注释。
+    // 抽出去不是为了好看：`scripts/check-yekitrim-translator.mjs` 的 `checkDenseRanges`
+    // 要逐值钉"右端落在哪一帧"，而它是主流程里的内联计算时，任何守卫都看不见它。
+    const denseRanges = denseRangesFor(spans, sparseSorted, lastOut);
     const inDenseRange = (out) => denseRanges.some(([a, b]) => out >= a && out <= b);
 
     let handheldFrames = 0;
