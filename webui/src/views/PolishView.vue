@@ -1225,9 +1225,21 @@ function startJob(kind, call, { after, silent, keepPreview } = {}) {
         reloadJobs()
         if (s.status === 'succeeded') {
           if (!silent) toast(jobLabel(kind) + '完成')
-          // 重挂载预览会把播放位置打回 0：编辑触发的后处理（silent / keepPreview）不重挂，
-          // 靠 load({silent:true}) 换掉 cfg 让预览自己重算索引——位置与滚动都不丢。
-          if (!silent && !keepPreview) previewKey.value++
+          // ⚠️ **任务完成后绝不重挂预览**（2026-10-05 修「LLM 剪辑后黑屏」）。
+          //
+          // 底座的 `dhampir_project_attach()` 是**一页只接一次**的语义
+          //（`dhampir-wasm/src/timeline_host.rs`：`PROJECT_HOST` 已存在就直接返回
+          // `{"already":true}`，**没有 detach 导出**），而 wasm 实例是页面级单例
+          //（`mod.default()` 是 wasm-bindgen 的幂等 init）。所以只要 `#dhampir-canvas`
+          // 这个**元素被换掉**（`:key` 重挂），新 canvas 就再也没被 attach 过 ——
+          // 引擎继续把帧画在**已卸载的旧 canvas** 上，新 canvas 露出自己的 CSS
+          // `background:#000` ⇒ **整块黑**，而工具条 fps/帧号照涨、控制台无报错。
+          // 刷整页能好，是因为那样才有新的 wasm 实例（`PROJECT_HOST = None`）。
+          //
+          // 任务跑完要刷新的东西由**就地表驱动**：`after` 里的 `load({silent:true})`
+          // 换掉 `persistedCfg` ⇒ `PolishPreview` 就地热重载（`reloadDhampirProject`，
+          // 它存在就是为了"改效果/挪事件时间不用刷新页面"）。顺带白拿"播放位置不丢"。
+          // 需要重挂的只有"换片段/换工程"这种**媒体真的换了**的场合 —— 那条走路由/`ready`。
           after && after()
         } else if (s.status === 'failed') {
           toast(jobLabel(kind) + '失败：' + (job.error || s.message || '未知错误'), 'err')

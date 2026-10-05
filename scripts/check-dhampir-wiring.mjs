@@ -152,7 +152,9 @@ check(
 // ---- 4：前端调的 `engine.*` 方法，`Engine` 上必须真的有 ----
 // 4f/4g 的探针（2026-10-05）：与主检查共用一份，别在两处各写一个正则而漂移
 const PROBE_SUBS_SIGNAL = /props\.persistedSubtitles/
-const PROBE_ASSET_RESTART = /dhampirVideoAssetsKey\(project\) !== dhampirAssetsKey/
+// 形状探针：健康版里 `toast(...)` 后**紧跟**那条注释（中间只有空白）；
+// 变异版会在这中间塞一句 `previewKey.value++` ⇒ 探针不再命中（这才叫翻面）。
+const PROBE_PREVIEW_REMOUNT = /toast\(jobLabel\(kind\) \+ '完成'\)\s*\/\/ ⚠️ \*\*任务完成后绝不重挂预览\*\*/
 const PROBE_RELOAD_DEF = /async function reloadDhampirProject\s*\(\)\s*\{/
 const PROBE_RELOAD_WATCH = /watch\(\(\)\s*=>\s*props\.persistedConfig,/
 const PROBE_RELOAD_OPEN = /dhampirEngine\.open\(/
@@ -471,25 +473,20 @@ function fnBodyOf(src, name) {
     '镜像不算数：那时磁盘上还是旧字幕，重载只会把旧内容再喂一遍',
   )
 
-  // ---- 4g：**素材集合变了必须整条重启**（2026-10-05 修「LLM 剪辑后自动刷新黑屏」）----
+  // ---- 4g：**任务完成后绝不重挂预览**（2026-10-05 修「LLM 剪辑后自动刷新黑屏」）----
   //
-  // `<video>` 源元素只在 `startDhampir()` 里按当时的 `project.assets` 建一次；LLM 剪辑
-  // 会重切 clip、增删片段 ⇒ 增量重载只对**旧元素** bindSource ⇒ 新素材没有元素 ⇒
-  // 引擎没有像素来源 ⇒ 画布整块黑（RENDER_ATTACHMENT 读不回来，连长帧遮罩都救不了）。
+  // 底座 `dhampir_project_attach()` 是**一页只接一次**的语义
+  //（`dhampir-wasm/src/timeline_host.rs`：`PROJECT_HOST` 已存在就直接返回 `{"already":true}`，
+  // 且**没有 detach 导出**），而 wasm 实例是页面级单例（`mod.default()` 是幂等 init）。
+  // ⇒ 只要 `#dhampir-canvas` **元素**被换掉（`:key` 重挂），新 canvas 永远接不上，
+  // 引擎继续把帧画在**已卸载的旧 canvas** 上 ⇒ 整块黑（fps/帧号照涨、控制台无报错），
+  // 刷整页才有新的 wasm 实例 ⇒ 这就是用户看到的"自动刷新后黑屏、手动刷新才正常"。
+  // 所以任务完成那条路**不许** bump `previewKey`：刷新交给就地热重载
+  //（`after` 里的 `load({silent:true})` → `persistedCfg` → `reloadDhampirProject`）。
   check(
-    PROBE_ASSET_RESTART.test(reloadBody),
-    '重载必须先比对素材指纹（dhampirVideoAssetsKey）再决定走哪条路',
-    '不比对 = 素材变了仍走增量重载 = 黑屏（用户看到"手动刷整页才正常"）',
-  )
-  check(
-    reloadBody.includes('stopDhampir()') && reloadBody.includes('await startDhampir()'),
-    '素材变了要 stopDhampir() + await startDhampir()（等价整页刷新，但保住页面状态）',
-    '只 open() 不重建源元素 = 新素材永远没元素',
-  )
-  check(
-    /dhampirAssetsKey = dhampirVideoAssetsKey\(project\)/.test(startBody),
-    '建源后必须记录素材指纹（否则比对永远不成立、等于没做）',
-    '只比对不记录 = 第一次重载就把自己当成"素材变了"',
+    !PROBE_PREVIEW_REMOUNT.test(fnBodyOf(viewSrc, 'startJob')),
+    'startJob 里不许 bump previewKey（任务完成重挂预览 = 画布被换 ⇒ 底座单例宿主接不上 ⇒ 黑屏）',
+    '底座没有 detach、wasm 实例是页面级单例；重挂预览必黑，只有整页刷新才恢复',
   )
 
   // ---- 4e-2：**动图直通真的接上了没有**（2026-10-02，host_api v6）----
@@ -619,8 +616,8 @@ if (SELF_TEST) {
     ['[变异] 热重载不装字体', '    await ensureProjectFonts(project)' + "\n" + '    const tb = project.timeline.timebase', '    const tb = project.timeline.timebase', PROBE_RELOAD_FONT],
     // 4f：指纹里去掉字幕信号（退回"改字幕不刷新"那版）
     ['[变异] 指纹里去掉字幕信号', 'props.persistedSubtitles,', '', PROBE_SUBS_SIGNAL],
-    // 4g：素材变了不再重启（退回"素材换了还走增量重载" ⇒ 黑屏）
-    ['[变异] 素材变了不再重启', 'if (dhampirVideoAssetsKey(project) !== dhampirAssetsKey) {', 'if (false) {', PROBE_ASSET_RESTART],
+    // 4g：任务完成又去重挂预览（退回"LLM 剪辑后黑屏、F5 才好"那版）
+    ['[变异] 任务完成重挂预览', "toast(jobLabel(kind) + '完成')", "toast(jobLabel(kind) + '完成'); previewKey.value++", PROBE_PREVIEW_REMOUNT],
   ]
   const editorText = readFileSync(TIMELINE_EDITOR, 'utf8')
   let bad = 0
@@ -628,9 +625,11 @@ if (SELF_TEST) {
     // ⚠️ 变异必须落在**判据真正看的那段文本**里：`dhampirEngine.open(project)` 在
     // `startDhampir` 里也有一处，直接对全文 replace 会改到那一处 —— 判据看的是重载
     // 函数体，于是「变异没被抓住」。这里按变异类型挑它该落的那份源文本。
-    const target = label.includes('engine.open') || label.includes('热重载不装字体')
-      ? fnBodyOf(vueText, 'reloadDhampirProject')
-      : (label.includes('done') ? fnBodyOf(editorText, 'commitEdit') : vueText)
+    const target = label.includes('重挂预览')
+      ? readFileSync(POLISH_VIEW, 'utf8') // 4g 那条要改的是父组件
+      : label.includes('engine.open') || label.includes('热重载不装字体')
+        ? fnBodyOf(vueText, 'reloadDhampirProject')
+        : (label.includes('done') ? fnBodyOf(editorText, 'commitEdit') : vueText)
     if (target.split(from).length - 1 < 1) {
       console.error('  ✗ ' + label + '：源文本里找不到要改的片段（' + from + '）')
       bad += 1

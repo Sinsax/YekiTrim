@@ -270,24 +270,6 @@ let dhampirReloadTimer = 0
 /** 上一次喂给重载判据的配置指纹（见下面那个 `watch`） */
 let dhampirCfgKey = ''
 /**
- * 上一次建源用的**素材集合**指纹（id + uri）。
- *
- * 为什么要它：`<video>` 源元素**只在 `startDhampir()` 里建一次**（`host.innerHTML=''`
- * 之后按 `project.assets` 重建）。LLM 剪辑会**重切 clip、增删片段**，于是热重载之后
- * 新工程里的素材根本没有对应元素 ⇒ 引擎取不到像素 ⇒ **整块黑**（这块 WebGPU 画布
- * 是 `RENDER_ATTACHMENT`、读不回来，所以连长帧遮罩都救不了）—— 用户看到的就是
- * 「自动刷新后黑屏，手动刷整页才正常」。指纹一样就还走原来的增量重载（不动播放位置）。
- */
-let dhampirAssetsKey = ''
-
-/** 视频类素材的指纹（`project.assets` 里 `kind === 'video'` 的 id + uri，按顺序）。 */
-function dhampirVideoAssetsKey(project) {
-  return (project && project.assets ? project.assets : [])
-    .filter((a) => a && a.kind === 'video')
-    .map((a) => String(a.id) + '|' + String(a.uri))
-    .join('\n')
-}
-/**
  * **三档纠偏**（A 案）的阈值，单位**秒**。
  *
  * 为什么必须有这一档：引擎的「跟随播放」只要求源 `<video>` **自己在走**
@@ -610,30 +592,6 @@ async function reloadDhampirProject() {
     const project = res.project
     if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
 
-    // ⚠️ **素材集合变了就不能走增量重载**（2026-10-05 修「LLM 剪辑后自动刷新黑屏」）：
-    // 下面这套只对**旧**的 `<video>` 元素做 `bindSource`，而元素是 `startDhampir()` 里
-    // 按当时的 `project.assets` 建的。LLM 剪辑重切了 clip、增删了片段 ⇒ 新工程里那些素材
-    // 没有元素 ⇒ 引擎没有像素来源 ⇒ 画布整块黑（`RENDER_ATTACHMENT` 读不回来）。
-    // 用户看到的现象："自动刷新后黑屏，手动刷整页才正常"。
-    // 这里改成**整条重启**（`stopDhampir` + `startDhampir`）：与整页刷新等价，
-    // 但保住页面状态（项目、时间轴、当前片段都不用重来）。
-    if (dhampirVideoAssetsKey(project) !== dhampirAssetsKey) {
-      const at = (videoRef.value && videoRef.value.currentTime) || current.value || 0
-      dhampirHoldSince = 0
-      stopDhampir() // 引擎、源元素、A/B 备用源、blob URL 一起收掉（下次 attach 重新接上）
-      dhampirLoading.value = true
-      try {
-        await startDhampir()
-        dhampirFrameShown = -1
-        dhampirLastFrameDrawn = -1
-        syncDhampirTime(at) // 位置照旧：重载不该把用户弹回开头
-        scheduleDhampir()
-        dhampirStatus.value = ''
-      } finally {
-        dhampirLoading.value = false
-      }
-      return
-    }
     // ⚠️ **字体必须在 `open()` 之前装好**（2026-10-02 修）：canvas 栅格化用的是页面里
     // 已有的字体，没装好就静默回退 —— 换字体不生效、且字号/位置/颜色全对，最难查的那一类。
     // 这段原先只在 `startDhampir` 里跑，热重载从不执行 ⇒ "换字体不热重载"。
@@ -1192,8 +1150,6 @@ async function startDhampir() {
   dhampirSourceVideos = new Map()
   for (const [assetId, , v] of bindings) dhampirSourceVideos.set(assetId, v)
   dhampirVideos = [...dhampirSourceVideos.values()]
-  // 记住这次建源用的素材集合：热重载时比对，变了就不能走增量那条路（见 `dhampirAssetsKey`）。
-  dhampirAssetsKey = dhampirVideoAssetsKey(project)
 
   // **备用那套源**（A/B）：每个源再多一块同 `src` 的 `<video>`，1px、暂停、静音，
   // 平时什么都不做；进屏蔽区前把"下一段起点"seek 好，到点 `bindSource` 换绑即成。
