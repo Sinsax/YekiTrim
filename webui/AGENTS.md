@@ -24,11 +24,10 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖屏归零。
   - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
-  - `check-grid-parity.mjs` — **九宫格四方对拍**（2026-10-05）：`GRID_RECTS`（engine.js）与 Rust
-    `grid_rect` **逐值**一致 + **格子中心**四份实现（Rust 现算 / engine 现算 / 模板**手抄表** /
-    转译器 `1/6`·`5/6`）互差 ≤0.02%。⚠️ 这条规矩过去**只有人读、没有机器判据**，而中心点在四处各写
-    一遍（实测最大差 0.01%，无害；但改一处不改其余三处的症状是"预览选中的区域与出片锚住的位置差
-    一点点"且**不报错**）。带变异自证。
+  - `check-grid-parity.mjs` — **九宫格四方对拍**：`GRID_RECTS` 与 Rust `grid_rect` **逐值**一致、
+    **格子中心**四份实现互差 ≤0.02%（Rust / engine / 模板**手抄表** / 转译器 `1/6`）。
+    这条规矩过去**只有人读没有机器判据** —— 改一处不改其余三处的症状是「预览选中的区域与出片
+    锚住的位置差一点点」且**不报错**。带两条变异自证。
   - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块跨满
     整行（否则滑条压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` · `ModelList` 下载按
     admin 门控 · 模板标识符必须有定义（Vue 对未定义变量**不报错**）。⚠️ 每条带**变异自证**。
