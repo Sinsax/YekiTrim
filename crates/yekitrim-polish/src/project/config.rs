@@ -970,7 +970,13 @@ impl ProjectFile {
                 "min_font_ratio": CAPTION_MIN_FONT_RATIO,
             },
             "sticker": {
-                "safe_margin": STICKER_SAFE_MARGIN,
+                // ⚠️ 这里**不再**注入 `safe_margin`（2026-10-05 删）：它曾是零消费者的死契约 ——
+                // 全仓只有这一行出现过，`_canvas.sticker.safe_margin` 读不到任何效果，却长着
+                // "SSOT 的样子"，改它的人会以为改了行为。真正的 32px 安全边距住在
+                // `STICKER_SAFE_MARGIN` / `placement::STICKER_MARGIN` / 模板 `stickerAnchor` /
+                // `engine.js` / `tools/polish-to-dhampir.mjs` 五处，由
+                // `node webui/scripts/check-sticker-anchor.mjs` 逐值对拍钉住。
+                // 想让前端读这一份，就得真接线（`canvas.js` 从注入配置取），别把它写回去当摆设。
                 "position_mode": sticker_position_mode(&self.sticker.position_mode),
                 "position": self.sticker.position.trim(),
             },
