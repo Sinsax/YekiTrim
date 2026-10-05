@@ -306,7 +306,7 @@ import { toast } from '../stores/toast'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
-import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf, isEditableKeyEvent } from '../utils'
 import { readMasterVolume, readMuted, saveMasterVolume, saveMuted } from '../polish/audio'
 
 const props = defineProps({
@@ -929,8 +929,8 @@ function onRangePause() {
 /** 键盘：空格播放/暂停、←→ 各 5 秒（只在区间预览里生效；输入框内不抢键） */
 function onRangeKey(e) {
   if (!isRangeMode.value) return
-  const tag = (e.target && e.target.tagName) || ''
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.metaKey || e.ctrlKey) return
+  // 输入框/下拉/富文本/输入法合成 ⇒ 归控件；带 Ctrl/Cmd 的也别抢（那是浏览器/系统快捷键）
+  if (isEditableKeyEvent(e) || e.metaKey || e.ctrlKey) return
   if (e.code === 'Space' || e.key === ' ') {
     e.preventDefault()
     toggleRangePlay()
