@@ -127,6 +127,44 @@ function loadRect(src) {
   return new Function(`${extractFunction(src, 'stageDrawRect')}\n return stageDrawRect`)()
 }
 
+/** **模板 ↔ 转译器**：`stageDrawRect` 是同一套几何的**两份实现**（出片 canvas 与底座转译）。
+ *  只改一边 = 预览/成片对得上、底座那条腿对不上（或反过来），而且**不报错**。
+ *  转译器那份是闭包（读模块级 const），所以从源码文本抽出来、喂同一组输入逐值对拍。
+ *  ⚠️ 用 `indexOf` 切片而不是正则：那段函数体里自己带 `{`，正则非贪婪会切错地方。 */
+function stageParityDiff(transSrc, tplSrc) {
+  const src = String(transSrc)
+  const at = src.indexOf('const stageDrawRect = (bw, bh, cw, ch) => {')
+  if (at < 0) return { error: '转译器里找不到 `stageDrawRect` 闭包' }
+  const stop = src.indexOf('\n  };', at)
+  if (stop < 0) return { error: '转译器里 `stageDrawRect` 的收尾 `};` 找不到' }
+  const body = src.slice(at, stop + 6)
+  const rect = loadRect(tplSrc)
+  const makeT = new Function(
+    'axis', 'stagePctX', 'stagePctY', 'stagePadding', 'stageScale',
+    `${body}\nreturn stageDrawRect;`,
+  )
+  const cases = [
+    ['x', 0, 0, 1, 0], ['x', 25, 50, 1, 0], ['x', 75, 50, 1, 0], ['x', 100, 50, 1, 0],
+    ['x', 0, 0, 2, 0], ['x', 50, 50, 2, 0], ['x', 100, 100, 2, 0],
+    ['x', 50, 50, 1.6, 60], ['y', 50, 25, 1, 0], ['y', 50, 100, 2, 40],
+    ['fill', 50, 50, 1, 0], ['fill', 25, 75, 1.5, 0],
+  ]
+  const geoms = [
+    [720, 1280, 1920, 1080], [1280, 720, 1080, 1920],
+    [1440, 1080, 1920, 1080], [1080, 1920, 1080, 1920],
+  ]
+  let diff = 0
+  for (const [axis, px, py, scale, pad] of cases) {
+    for (const [bw, bh, cw, ch] of geoms) {
+      const st = { axis, position_x_pct: px, position_y_pct: py, scale, padding: pad }
+      const a = rect(bw, bh, cw, ch, st)
+      const b = makeT(axis, px, py, pad, scale)(bw, bh, cw, ch)
+      for (const k of ['x', 'y', 'w', 'h']) if (Math.abs(a[k] - b[k]) > 1e-9) diff += 1
+    }
+  }
+  return { diff }
+}
+
 // ── 假 2D 上下文：记录每个绘制调用（含当时的 filter / fillStyle） ─────────────
 function fakeCtx() {
   const calls = []
@@ -281,36 +319,42 @@ console.log('\n③b renderFrame 里的裸变量（ReferenceError = 整块 chunk 
 // 与 CSS 的对应关系（`applyStage` 写入的那几条规则）：
 //   `#video-wrap` 的 padding = `--stage-pad`；`#fit-box` 的 axis-*/stage-* = 布局盒；object-fit = cover/contain
 // 这里的判据全部是**几何**判据：等比（w/h == 源比例）+ 铺满的那条边贴齐 + position 三档 + padding / scale。
-console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
+console.log('\n③c 出片视频层的摆放矩形（stageDrawRect，两轴 xy）')
 {
   const rect = loadRect(html)
   const SW = 720, SH = 1280            // 9:16 竖素材
   const WIDE_W = 1280, WIDE_H = 720    // 16:9 横素材
   /** 与源比例一致 = 1（不拉伸）；≈1.78 就是被拉宽、≈0.32 就是被压扁 */
   const ratio = (r, sw, sh) => r.w / r.h / (sw / sh)
+  /** 只给某一轴的位置，另一轴保持居中（两轴独立 ⇒ 交叉轴不该动） */
+  const at = (axis, px, py, scale, pad, bw, bh, cw, ch) =>
+    rect(bw, bh, cw, ch, { axis, position_x_pct: px, position_y_pct: py, scale, padding: pad })
 
   // ① 存量零回归：铺满（axis=fill、无 padding、源比例 == 画布比例）必须精确是整块画布
   check('axis=fill + 同比例 → 精确 (0,0,CW,CH)（存量横画布逐像素零回归）',
     rect(1920, 1080, 1920, 1080, { axis: 'fill' }), { x: 0, y: 0, w: 1920, h: 1080 })
 
-  // ② 竖素材进横画布（axis=x）：按高度铺满 + 等比（用户报的"被拉成宽屏"就是这条判据翻面）
-  // `position` 只是**过渡期的兼容枚举**（只保证两端），几何权威是 `position_pct` —— 用例两个都给，
-  // 并额外钉两档中间值（25/75）：那是枚举表达不了、只有百分比能算对的地方。
-  for (const [pos, pct, wantX] of [['left', 0, 0], ['center', 50, 656.25], ['right', 100, 1312.5],
-                                    ['center', 25, 328.125], ['center', 75, 984.375]]) {
-    const r = rect(SW, SH, 1920, 1080, { axis: 'x', position: pos, position_pct: pct })
-    check(`竖素材进横画布 axis=x ${pos}@${pct}：等比（720×1280 → 607.5×1080）`, approx(ratio(r, SW, SH), 1, 1e-9), true, JSON.stringify(r))
-    check(`竖素材进横画布 axis=x ${pos}@${pct}：高度铺满、交叉轴居中`, approx(r.h, 1080, 1e-6) && approx(r.y, 0, 1e-6), true, JSON.stringify(r))
-    check(`竖素材进横画布 axis=x ${pos}@${pct}：水平摆位 x=${wantX}`, approx(r.x, wantX, 1e-6), true, `x=${r.x}`)
+  // ② 竖素材进横画布（axis=x）：按高度铺满 + 等比 + **X 五档**，Y 无余量 ⇒ 取什么都不动。
+  //    `position` 那个枚举已退场（基线恒居中），几何权威是两轴百分比。
+  for (const [pct, wantX] of [[0, 0], [25, 328.125], [50, 656.25], [75, 984.375], [100, 1312.5]]) {
+    const r = at('x', pct, 50, 1, 0, SW, SH, 1920, 1080)
+    check(`竖素材进横画布 axis=x X=${pct}：等比（720×1280 → 607.5×1080）`, approx(ratio(r, SW, SH), 1, 1e-9), true, JSON.stringify(r))
+    check(`竖素材进横画布 axis=x X=${pct}：高度铺满、水平摆位 x=${wantX}`,
+      approx(r.h, 1080, 1e-6) && approx(r.x, wantX, 1e-6) && approx(r.y, 0, 1e-6), true, JSON.stringify(r))
+    // 两轴独立：Y 给 0 / 100 都不动（该轴余量为 0 —— 界面据此把那条滑杆置灰）
+    const y0 = at('x', pct, 0, 1, 0, SW, SH, 1920, 1080)
+    const y100 = at('x', pct, 100, 1, 0, SW, SH, 1920, 1080)
+    check(`竖素材进横画布 axis=x X=${pct}：Y 无余量（0 与 100 同值、不越位）`,
+      JSON.stringify(y0) === JSON.stringify(y100) && JSON.stringify(y0) === JSON.stringify(r), true,
+      `y0=${JSON.stringify(y0)} y100=${JSON.stringify(y100)}`)
   }
 
-  // ③ 横素材进竖画布（axis=y）：按宽度铺满 + 上下三档
-  for (const [pos, pct, wantY] of [['top', 0, 0], ['center', 50, 656.25], ['bottom', 100, 1312.5],
-                                    ['center', 25, 328.125], ['center', 75, 984.375]]) {
-    const r = rect(WIDE_W, WIDE_H, 1080, 1920, { axis: 'y', position: pos, position_pct: pct })
-    check(`横素材进竖画布 axis=y ${pos}@${pct}：等比（1280×720 → 1080×607.5）`, approx(ratio(r, WIDE_W, WIDE_H), 1, 1e-9), true, JSON.stringify(r))
-    check(`横素材进竖画布 axis=y ${pos}@${pct}：宽度铺满、交叉轴居中`, approx(r.w, 1080, 1e-6) && approx(r.x, 0, 1e-6), true, JSON.stringify(r))
-    check(`横素材进竖画布 axis=y ${pos}@${pct}：垂直摆位 y=${wantY}`, approx(r.y, wantY, 1e-6), true, `y=${r.y}`)
+  // ③ 横素材进竖画布（axis=y）：按宽度铺满 + **Y 五档**（X 无余量）
+  for (const [pct, wantY] of [[0, 0], [25, 328.125], [50, 656.25], [75, 984.375], [100, 1312.5]]) {
+    const r = at('y', 50, pct, 1, 0, WIDE_W, WIDE_H, 1080, 1920)
+    check(`横素材进竖画布 axis=y Y=${pct}：等比（1280×720 → 1080×607.5）`, approx(ratio(r, WIDE_W, WIDE_H), 1, 1e-9), true, JSON.stringify(r))
+    check(`横素材进竖画布 axis=y Y=${pct}：宽度铺满、垂直摆位 y=${wantY}`,
+      approx(r.w, 1080, 1e-6) && approx(r.y, wantY, 1e-6) && approx(r.x, 0, 1e-6), true, JSON.stringify(r))
   }
 
   // ④ fill 分支 = cover（4:3 源进 16:9 画布：裁切而不是拉伸）
@@ -319,48 +363,36 @@ console.log('\n③c 出片视频层的摆放矩形（stageDrawRect）')
   check('axis=fill 的裁切仍然盖满画布（与 stageCoverRect 同一语义）', coversCanvas(cover, 1920, 1080), true, JSON.stringify(cover))
 
   // ⑤ padding：只改布局盒（内容框 = 画布 − 四周 padding），不裁剪
-  const padded = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'left', position_pct: 0, padding: 100 })
+  const padded = at('x', 0, 50, 1, 100, SW, SH, 1920, 1080)
   check('padding=100 时内容框 = (100,100,1720,880) 内的等比摆放',
     approx(padded.x, 100, 1e-6) && approx(padded.y, 100, 1e-6) && approx(padded.h, 880, 1e-6) && approx(padded.w, 495, 1e-6),
     true, JSON.stringify(padded))
 
-  // ⑥ scale 绕盒心放大（与 #fit-box 的 transform-origin:center 一义）
-  const scaled = rect(SW, SH, 1920, 1080, { axis: 'x', position: 'center', position_pct: 50, scale: 1.25 })
-  check('scale=1.25 绕盒心：中心不动、宽高 ×1.25',
+  // ⑥ `scale` 绕**布局盒中心**放大、**再**按余量插值（与旧顺序在 scale=1 或 pct=50 时逐值相同）。
+  const scaled = at('x', 50, 50, 1.25, 0, SW, SH, 1920, 1080)
+  check('scale=1.25 且两轴居中：中心不动、宽高 ×1.25',
     approx(scaled.w, 759.375, 1e-6) && approx(scaled.h, 1350, 1e-6)
     && approx(scaled.x + scaled.w / 2, 960, 1e-6) && approx(scaled.y + scaled.h / 2, 540, 1e-6),
     true, JSON.stringify(scaled))
+  // 旧顺序（先插值再绕插值后的盒心缩放）在 X=0 给 -303.75：画面被推出盒左、右边 1009px 永远是空的。
+  // 新顺序的余量 = 盒 − **缩放后**画面 = 1920 − 1215 = 705 ⇒ X=0 恰好贴左、100 恰好贴右。
+  const p0 = at('x', 0, 0, 2, 0, SW, SH, 1920, 1080)
+  const p100 = at('x', 100, 100, 2, 0, SW, SH, 1920, 1080)
+  check('scale=2 且 X=0：贴左 x=0（不是旧顺序的 -303.75）', approx(p0.x, 0, 1e-9), true, JSON.stringify(p0))
+  check('scale=2 且 X=100：贴右 x=705（余量 1920−1215）', approx(p100.x, 705, 1e-9), true, JSON.stringify(p100))
+  check('scale=2 时 Y 变成**裁切取景**：Y=0 露顶 / Y=100 露底',
+    approx(p0.y, 0, 1e-9) && approx(p100.y, -1080, 1e-9), true, `${p0.y} / ${p100.y}`)
 
   // ⑦ 源尺寸拿不到（0×0）时退回整块画布：不许 NaN 画出空白帧
   check('源尺寸缺失 → 退回整块画布（无 NaN）',
     rect(0, 0, 1920, 1080, { axis: 'x' }), { x: 0, y: 0, w: 1920, h: 1080 })
 
-  // ⑨ 竖屏画布的三道整类门：**三份表必须同集合**（转译器 / engine.js / 模板）。
-  //    少一处 = 「预览里有这一类、成片里没有」（或反过来），而且**不报错** —— 2026-10-02 加。
-  const tableOf = (src) => {
-    const m = src.match(/PORTRAIT_SWITCH\s*=\s*\{([\s\S]*?)\}/)
-    if (!m) return null
-    return [...m[1].matchAll(/([a-z_]+)\s*:\s*'([a-z_]+)'/g)].map((x) => x[1] + '=' + x[2]).sort().join(',')
+  // ⑩ **与转译器那份逐值对拍**（12 组参数 × 4 组尺寸 × 4 个数）—— 只改一边就是静默分叉。
+  {
+    const par = stageParityDiff(translator, html)
+    check('模板 ↔ 转译器的 `stageDrawRect` 逐值一致（同一套输入两份实现）',
+      par.error || par.diff, 0, par.error || '')
   }
-  const tTrans = tableOf(translator)
-  const tEngine = tableOf(engineJs)
-  const tHtml = tableOf(html)
-  check('竖屏三开关的表：三份同集合（转译器 / engine.js / 模板）',
-    !!tTrans && tTrans === tEngine && tTrans === tHtml, true,
-    JSON.stringify({ 转译器: tTrans, engine: tEngine, 模板: tHtml }))
-  check('竖屏三开关的表：8 类特效 + 运镜 + 音效，且不把贴纸算进去',
-    /shake=effects/.test(tTrans) && /overlay=effects/.test(tTrans) && /camera=camera/.test(tTrans)
-      && /sfx=sfx/.test(tTrans) && !/sticker/.test(tTrans), true, tTrans)
-
-  // ⑧ 源码消费面：算了要用（不是算完还硬铺满）
-  const srDecl = code.indexOf('var sr = stageDrawRect(')
-  const videoLayer = code.indexOf('ctx.drawImage(videoBitmap, 0, 0, CW, CH)')
-  check('renderFrame 里算出了摆放矩形', srDecl > 0, true)
-  check('衬底之后、视频层之前算矩形', srDecl > code.indexOf('drawStageBackdrop(ctx, videoBitmap)') && srDecl < videoLayer, true)
-  check('drawImage 之前把 CTM 送进矩形（translate + scale）',
-    code.indexOf('ctx.translate(sr.x, sr.y)') > srDecl && code.indexOf('ctx.translate(sr.x, sr.y)') < videoLayer, true)
-  check('运镜不动点映射进画面矩形（与 DOM 预览挂 #fit-box 同一语义）',
-    code.includes('sr.x + cam.ox / CW * sr.w') && code.includes('sr.y + cam.oy / CH * sr.h'), true)
 }
 
 // ── ④ 预览 DOM 路径：模糊层必须在主画面之下并被 .on 打开 ─────────────────────
@@ -390,14 +422,16 @@ console.log('\n④ 预览 DOM 路径（模板 + WebUI 编辑器）')
   // ⚠️ **连续位置（`position_pct`）的 DOM 修正**：CSS 的 `stage-*` 只有三档，两处 DOM 层都必须是
   //    「实测余量 × (pct/100 − class 基线)」这同一条式子 —— 少一处就是「Preview 里 25 档不动、成片动了」
   //    这种不报错的漂移（与 ③c 的 canvas 公式是同一条线性插值的 DOM 版）。
-  const vueShift = /function measureStageShift[\s\S]{0,2000}?pct \/ 100 - basel/
-  check('PolishPreview：连续位置的 DOM 修正在（实测余量 × (pct/100 − 基线)）', vueShift.test(previewVue), true)
+  const vueShift = new RegExp('function measureStageShift[^]*?(px / 100 - 0\\.5)[^]*?(py / 100 - 0\\.5)')
+  check('PolishPreview：两轴 DOM 修正在（实测余量 × (pct/100 − 0.5)）', vueShift.test(previewVue), true)
   check('PolishPreview：.fit-box 挂上了修正后的 transform',
     previewVue.includes('ref="fitBoxRef" :style="fitBoxStyle"'), true)
-  const tplShift = /function stageShiftPx[\s\S]{0,2000}?pct \/ 100 - basel/
-  check('模板 DOM 层：同一条修正公式（与 WebUI 预览同口径）', tplShift.test(html), true)
-  check('PolishPreview：位置修正读的是契约的 position_pct（不是老枚举）',
-    /typeof s\.position_pct === 'number'/.test(previewVue), true)
+  const tplShift = new RegExp('function stageShiftPx[^]*?(px / 100 - 0\\.5)[^]*?(py / 100 - 0\\.5)')
+  check('模板 DOM 层：同一条两轴修正公式（与 WebUI 预览同口径）', tplShift.test(html), true)
+  check('PolishPreview：两轴位置都读契约的 position_x/y_pct（不是老枚举、不是 position_pct）',
+    /typeof s\.position_x_pct === 'number'/.test(previewVue)
+    && /typeof s\.position_y_pct === 'number'/.test(previewVue)
+    && !/s\.position_pct/.test(previewVue), true)
 }
 
 // ── ⑤ 自证有效：把源码改回修复前，上面的判据必须翻面 ────────────────────────
@@ -446,6 +480,23 @@ console.log('\n⑤ 自证有效：变异后判据必须翻面（否则本脚本�
       approx(r.w / r.h / (720 / 1280), 1, 1e-9), false, JSON.stringify(r))
   }
 
+  // 变异 8：X 轴插值改回**硬居中**（2026-10-05 两轴 xy 的核心：拖了没反应 + 预览与成片一起分叉）
+  const centeredX = html.replace('x:bx+(bwid-w)*px, y:by+(bhgt-h)*py', 'x:bx+(bwid-w)/2, y:by+(bhgt-h)*py')
+  check('[变异] X 轴硬居中的替换确实命中了源码', centeredX !== html, true)
+  if (centeredX !== html) {
+    const r = loadRect(centeredX)(720, 1280, 1920, 1080, { axis: 'x', position_x_pct: 0, position_y_pct: 50 })
+    check('[变异] X 轴改回硬居中 → X=0 不再贴左（判据翻面）', approx(r.x, 0, 1e-6), false, JSON.stringify(r))
+  }
+
+  // 变异 9：**只改转译器那一份** —— 跨实现对拍必须翻面。S2/S3 是一对实现：只改一边 =
+  //    预览/成片对得上、底座那条腿对不上，而且不报错。
+  const transMut = translator.replace('x = bx + (bwid - w) * (stagePctX / 100);', 'x = bx + (bwid - w) / 2;')
+  check('[变异] 转译器 X 轴插值的替换确实命中了源码', transMut !== translator, true)
+  if (transMut !== translator) {
+    const par = stageParityDiff(transMut, html)
+    // 变异后**必须不相等**（种进 20 个数）：期望 `true`，不是 0
+    check('[变异] 转译器改回硬居中 → 跨实现对拍翻面', par.diff > 0, true, par.error || '差异 0 就是没抓住')
+  }
   // 变异 7：删掉 CTM 摆位（矩形算了不用 = 视频层还是硬铺满）
   const noCtm = html.replace('ctx.translate(sr.x, sr.y); ctx.scale(sr.w / CW, sr.h / CH);', '')
   check('[变异] 去掉 CTM 摆位（源码确实被改了）', noCtm !== html, true)

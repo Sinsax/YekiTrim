@@ -1545,15 +1545,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 对一条长视频是毫秒级的，不会把转译拖成"整条解码"。
   const sourceVideoPath = join(clipDir, config.source?.video ?? 'clip.mp4');
   const sourceSize = existsSync(sourceVideoPath) ? probeSize(sourceVideoPath) : null;
-  /// `true` = 竖素材（关运镜）；`null` = 判不了（探不到）。
+  /// `true` = 竖素材；`false` = 横素材；`null` = 判不了（探不到）。
   const sourceIsVertical = sourceSize ? sourceSize.height > sourceSize.width : null;
-  if (sourceIsVertical === true) {
-    note(
-      'source.video',
-      `源素材是**竖的**（${sourceSize.width}x${sourceSize.height}）—— 参照整条关掉运镜` +
-        '（`index.html:1413`：`zoom=1`、`handheld=0`），本仓同样关掉**全部 camera 事件**',
-    );
-  }
 
   // ---- 竖屏画布的**三道整类门**（2026-10-02 用户口径）----
   // 语义 = **按整类事件屏蔽**：只在转译侧跳过（成片与底座预览里都没有这一类），
@@ -1562,6 +1555,29 @@ export function translate(config, clipDir, outPath, options = {}) {
   //    （**源素材**方向、关运镜）是两条**独立**的闸：任一条要求禁就禁。
   // ⚠️ **缺字段 = false = 关**（老竖屏工程也一并关）；横画布不带这三道门（字段在横画布下不生效）。
   const CANVAS_PORTRAIT = (config.canvas?.orientation ?? 'landscape') === 'portrait';
+
+  // ---- 运镜门：**竖素材进了非竖画布**（2026-10-05 从「源竖就关」收窄）----
+  // 唯一判据在 Rust `ProjectFile::src_portrait_no_camera`（预览 API 与出片模板都注入它）：
+  //
+  //     竖素材（`h > w`）**且** 画布不是竖的
+  //
+  // 参照的 `getActiveCamera` / `cameraAt` 在它为真时整条返回 `zoom=1 / handheld=0`。
+  // ⚠️ 改造前判据只是「源竖」，于是**竖素材进竖画布**（画面正好铺满、放大不露底、
+  //    最该有运镜的一档）也永远打不开 —— 用户报的「竖屏素材没法运镜」就是它。
+  // ⚠️ **横素材进竖画布不受它影响**：那条归 `[stage] portrait_camera`（默认关、可开）。
+  const portraitNoCamera = sourceIsVertical === true && !CANVAS_PORTRAIT;
+  if (portraitNoCamera) {
+    note(
+      'source.video',
+      `源素材是**竖的**（${sourceSize.width}x${sourceSize.height}）而画布不是 —— 参照整条关掉运镜` +
+        '（`zoom=1`、`handheld=0`），本仓同样关掉**全部 camera 事件**',
+    );
+  } else if (sourceIsVertical === true) {
+    note(
+      'source.video',
+      `源素材是**竖的**、画布**也是竖的**：运镜**照常生效**（2026-10-05 起只关「竖素材进非竖画布」）`,
+    );
+  }
   /// 事件类型 → 开关名（不在表里 = 不受门控）。
   /// 「特效」口径 = 视频层那 8 类 + `overlay`（含片头 `fade_in` 那条覆盖层）。
   const PORTRAIT_SWITCH = {
@@ -1651,18 +1667,18 @@ export function translate(config, clipDir, outPath, options = {}) {
 
       switch (event.type) {
         case 'camera': {
-          // **竖素材：整条运镜不生效**（见上面 `sourceIsVertical` 的说明）。
+          // **竖素材进非竖画布：整条运镜不生效**（见上面 `portraitNoCamera` 的说明）。
           // 不是"丢掉"—— 是参照本来就不画，跳过才是**对齐**。
-          if (sourceIsVertical === true) {
+          if (portraitNoCamera) {
             break;
           }
           if (sourceIsVertical === null) {
-            // 探不到源尺寸 -> 判不了是不是竖素材。**明说，不猜。**
+            // 探不到源尺寸 -> 判不了"源竖 + 画布非竖"（门控的那一档）。**明说，不猜。**
             clamp(
               where,
-              '探不到源素材尺寸（ffprobe 不可用？），**判不了"源是不是竖素材"** —— ' +
-                '参照对竖素材会整条关掉运镜（`index.html:1413`），而这里只能照出运镜。' +
-                '若这份工程的源是竖的，运镜会与参照不同。',
+              '探不到源素材尺寸（ffprobe 不可用？），**判不了"竖素材进非竖画布"** —— ' +
+                '参照对那一档会整条关掉运镜，而这里只能照出运镜。' +
+                '若这份工程正是竖素材进横画布，运镜会与参照不同。',
             );
             break;
           }
@@ -2555,10 +2571,12 @@ export function translate(config, clipDir, outPath, options = {}) {
   const fitSrc = probeSize(join(clipDir, config.source?.video ?? 'clip.mp4'));
   const srcW = fitSrc ? fitSrc.width : width;
   const srcH = fitSrc ? fitSrc.height : height;
-  // **位置 = 百分比**（2026-10-02）：新字段 `position_pct` 优先；缺它（老工程）= 按老枚举换算
+  // **位置 = 两轴各自的百分比**（2026-10-05 x/y 改版）：`position_x_pct` / `position_y_pct`
+  // 优先；**缺哪条轴**就回落到单值 `position_pct`（2026-10-02 的字段），再缺按老枚举换算
   // （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100；方向不跨用 ⇒ 居中）。
-  // 与 `ProjectFile::resolve_stage` 的 `stage_position_pct` 逐值同义（含 `[0,100]` 夹取）。
-  const stagePct = (() => {
+  // 与 `ProjectFile::resolve_stage` 逐值同义（含 `[0,100]` 夹取）。
+  // ⚠️ 老单值 ⇒ 两轴同值：贴满的那条轴余量为 0，代入什么值都不动 ⇒ **与老行为逐像素等价**。
+  const stagePctLegacy = (() => {
     const raw = config.stage?.position_pct;
     if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.min(100, raw));
     const p = String(config.stage?.position ?? 'auto').trim().toLowerCase();
@@ -2569,6 +2587,10 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (p === 'bottom' && !landscape) return 100;
     return 50; // center / auto / 方向不跨用 / 认不出
   })();
+  const clampPct = (raw) =>
+    typeof raw === 'number' && Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : stagePctLegacy;
+  const stagePctX = clampPct(config.stage?.position_x_pct);
+  const stagePctY = clampPct(config.stage?.position_y_pct);
   // 轴**只看比例**（2026-10-02 起没有 auto 特例：不匹配的源一律**适配留边**）——
   // 与参照 `stageDrawRect` 的调用方同一条判据（交叉相乘，避免浮点除法）。
   const axis = (() => {
@@ -2579,11 +2601,13 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (lhs < rhs) return 'y';
     return 'fill';
   })();
-  // 枚举只是**过渡期兼容输出**（报告那行摘要用）；几何一律走 `stagePct`。
-  const stagePosition = stagePct <= 0
-    ? (CANVAS_PORTRAIT ? 'top' : 'left')
-    : stagePct >= 100
-      ? (CANVAS_PORTRAIT ? 'bottom' : 'right')
+  // 枚举只是**过渡期兼容输出**（报告那行摘要用）；几何一律走两轴 pct。
+  // 与 `ProjectFile::resolve_stage` 同口径：按**有留边的那条轴**报（`axis=fill` 一律 center）。
+  const stageMainPct = axis === 'x' ? stagePctX : axis === 'y' ? stagePctY : 50;
+  const stagePosition = stageMainPct <= 0
+    ? (axis === 'y' ? 'top' : 'left')
+    : stageMainPct >= 100
+      ? (axis === 'y' ? 'bottom' : 'right')
       : 'center';
   const stagePadding = Number(config.stage?.padding ?? 0) || 0;
   const stageScale = Number(config.stage?.scale ?? 1) || 1;
@@ -2609,9 +2633,6 @@ export function translate(config, clipDir, outPath, options = {}) {
         w = bwid;
         h = (bh * w) / bw;
       }
-      // 沿留边轴在两端之间线性插值（0 = 贴左、100 = 贴右）—— 与参照 `stageDrawRect` 逐值同义
-      x = bx + (bwid - w) * (stagePct / 100);
-      y = by + (bhgt - h) / 2;
     } else if (axis === 'y') {
       w = bwid;
       h = (bh * w) / bw;
@@ -2619,23 +2640,18 @@ export function translate(config, clipDir, outPath, options = {}) {
         h = bhgt;
         w = (bw * h) / bh;
       }
-      y = by + (bhgt - h) * (stagePct / 100);
-      x = bx + (bwid - w) / 2;
     } else {
       const s = Math.max(bwid / bw, bhgt / bh);
       w = bw * s;
       h = bh * s;
-      x = bx + (bwid - w) / 2;
-      y = by + (bhgt - h) / 2;
     }
-    if (Math.abs(stageScale - 1) > 1e-9) {
-      const mx = x + w / 2;
-      const my = y + h / 2;
-      w *= stageScale;
-      h *= stageScale;
-      x = mx - w / 2;
-      y = my - h / 2;
-    }
+    // ② 绕**布局盒中心**乘大小（先定画面大小，再按余量摆位）
+    w *= stageScale;
+    h *= stageScale;
+    // ③ 两轴各自在「盒 − 画面」的余量上按 `pct/100` 线性插值（= CSS `background-position` 语义；
+    //    余量为负时同一条插值就是**裁切取景**）—— 与参照 `stageDrawRect`（模板）逐值同义。
+    x = bx + (bwid - w) * (stagePctX / 100);
+    y = by + (bhgt - h) * (stagePctY / 100);
     return { x, y, w, h };
   };
   const SR = stageDrawRect(srcW, srcH, width, height);
@@ -2656,7 +2672,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   if (Math.abs(FIT - 1) > 1e-6 || SR.x !== 0 || SR.y !== 0 || STAGE_BG !== 'none') {
     note(
       'stage',
-      `源 ${srcW}x${srcH} -> 画布 ${width}x${height}（axis=${axis} position=${stagePosition} ` +
+      `源 ${srcW}x${srcH} -> 画布 ${width}x${height}（axis=${axis} position_x=${stagePctX} ` +
+        `position_y=${stagePctY} position=${stagePosition} ` +
         `padding=${stagePadding} scale=${stageScale}）：绘制矩形 ` +
         `${SR.x.toFixed(1)},${SR.y.toFixed(1)} ${SR.w.toFixed(1)}x${SR.h.toFixed(1)}` +
         `（fit ${FIT.toFixed(4)}），背景 bg=${STAGE_BG}`,
@@ -3771,10 +3788,10 @@ export function translate(config, clipDir, outPath, options = {}) {
 
     // ⚠️ **一个键都没有的层，也要把画面构成的几何落到基准 transform 上**（2026-10-02 修）。
     //
-    // `SR`/`FIT` 是画面构成（`axis`/`position_pct`/`scale`/`padding`）的唯一几何，
+    // `SR`/`FIT` 是画面构成（`axis`/`position_x+y_pct`/`scale`/`padding`）的唯一几何，
     // 而它以前**只**通过相机关键帧写进去（`placeKeyframe(..., 'scale', camScale * FIT)`）。
-    // 竖素材（**运镜被整条门控掉**，见上面的 `sourceIsVertical`——它自己那段注释就写着
-    // 「竖素材整条关掉运镜就是这种」）⇒ 这一层一个键都没有 ⇒ 主层停在 `scale=1 / offset=0`，
+    // 运镜被整条门控掉时（见上面的 `portraitNoCamera`）⇒ 这一层一个键都没有 ⇒ 主层停在
+    // `scale=1 / offset=0`，
     // 底座便按「源 1:1 居中」画：**竖素材进竖画布 = 画面缩在中间、四周一圈黑**（用户最常见的组合）。
     // 基准值取「中性相机」（`zoom = 1`、不动点=中心）算出的那一组 —— 与有键时的同一式子。
     // ⚠️ **第一个实参必须是 `1.0`，不是 `FIT`**：`cameraOffset` 内部已经 `scale = zoom * FIT`

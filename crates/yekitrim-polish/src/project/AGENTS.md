@@ -74,16 +74,26 @@
   "该工程含**已下线的特效事件**（…）" + 两条路（旧版本删事件 / 直接编辑 `polish.toml`），
   **普通解析错误原样透传**（判据只在 serde 明说 `unknown variant \`X\`` 时命中，`expected one of` 列表不算 ——
   裸匹配类型名必然误判）。那份名单是**历史清单**，别拿效果词汇表去校验它（那几个类型正是要消失的）。
-- **画面构成（`[canvas] orientation` + `[stage] position_pct / bg_mode / scale / padding / portrait_*`）与「衬底」**：
+- **画面构成（`[canvas] orientation` + `[stage] position_x/y_pct / bg_mode / scale / padding / portrait_*`）与「衬底」**：
   摆放与背景由 `ProjectFile::resolve_stage(src)` **唯一推导**，模板与编辑器只读注入的 `_canvas.stage`，
-  两边不各算一份。⚠️ **2026-10-02 改版**（用户拍板）：① **位置 = `position_pct`（0–100，界面五档吸附**
-  0/25/50/75/100**）**，老枚举 `position` **只读兼容、不再写出**（`auto` → 50 居中）；② **轴只看比例**
+  两边不各算一份。⚠️ **2026-10-05 改版**（用户拍板）：① **位置 = 两轴各自的
+  `position_x_pct` / `position_y_pct`（0–100，界面**两轴各五档**吸附 0/25/50/75/100）**，
+  `StageFit::free_x/free_y` = 该轴**可平移余量**（布局盒 − 缩放后画面）：`0` ⇒ 那条滑杆无效
+  （界面据此**置灰 + 行内写明原因**，**只读它、不许自己再按 axis/scale 推**），`<0` ⇒ 同一条插值
+  变成**裁切取景**。老单值 `position_pct` 与老枚举 `position` **只读兼容、不再写出**
+  （`skip_serializing`；缺哪条轴回落单值 ⇒ 两轴同值，与老行为逐像素等价 —— 有单测），
+  **写盘时 `StageConfig::migrate_position_pct` 把单值固化到两轴**（不固化 = 用户只动一条轴、
+  另一条下次加载跳回 50，静默丢值）；② **轴只看比例**
   （同比 → `fill`，否则 x/y）—— **`auto` 特例已删**，不匹配的源改成**适配留边**（老 `auto` 是裁切）；
   ③ 缺省背景 = `blur`（UI 删掉「自动」，老值按 blur 处理）；④ `padding` **字段保留、UI 不再出现**
   （与 `scale` 不同量、且 `deny_unknown_fields` 删不得）；⑤ 竖屏画布三个 `portrait_effects/camera/sfx`
   **bool、缺字段 = false = 关**（整类事件只在渲染侧跳过，**事件本身不动**）。
   ⚠️ **别拿 `StageFit.position` 算几何**（那是过渡期的兼容输出，25/75 会被压成 center）——
-  消费侧一律读 `StageFit::position_pct`。
+  消费侧一律读 `StageFit::position_x_pct` / `position_y_pct`。
+  ⚠️ **摆放顺序**：`padding` 定布局盒 → `axis` 定画面大小 → 绕**盒心**乘 `scale` → **两轴各自**在
+  「盒 − 画面」的余量上按百分比插值（= CSS `background-position` 语义）。2026-10-05 把缩放提到插值
+  之前：`scale=1` 或 `pct=50` 时与旧序**逐值相同**，只有 `scale≠1 且 pct≠50` 才不同（旧序下
+  `(盒宽 − 未缩放宽)` 才是插值区间，画面被推出盒外、滑杆够不到两端）。
   ⚠️ **竖屏出片露黑边**（用户报「精修竖屏时特效如震动会显示出背景的黑色，要在视频底下垫一层模糊」）
   两道闸缺一不可：
   ① `resolve_stage` 的背景门控是**画布方向**、不是 `axis` —— `axis=="fill" && !portrait` 才 `none`
@@ -96,12 +106,15 @@
   `none` 一个像素都不画（透明 = 黑，与改造前同源）。模糊半径/倍率一律取契约里的值，别写死 28px。
   ③ **摆放与运镜同样必须落在 canvas 出片路径里**：`resolve_stage` 推的 `axis/position/scale/padding`
   由模板 `stageDrawRect` 算成画面矩形（`ctx.translate/scale` 送进 CTM，`drawImage` 的 dst 仍是
-  `(0,0,CW,CH)` 字面量），**竖素材再额外吃掉运镜**（`getActiveCamera` 开头 `CFG.vertical` →
-  `zoom=1 / handheld=0`；`CFG.vertical` 由 `render/server.rs:261` 按「源 `h > w`」注入，**与画布方向无关**）。
+  `(0,0,CW,CH)` 字面量），**竖素材进非竖画布再额外吃掉运镜**（`getActiveCamera` 开头
+  `CFG.portrait_no_camera` → `zoom=1 / handheld=0`；判据 `ProjectFile::src_portrait_no_camera`
+  = 源竖 **且** 画布非竖，2026-10-05 从「源竖就关」收窄 ⇒ **竖素材进竖画布放行**）。
   只在 DOM/CSS 上消费这套推导的表现是「成片被拉成宽屏 + 竖素材在成片里照旧缩放」（用户 2026-09-21
   报的原文），预览侧全程正常、**不报错**。`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍算出
   `(0,0,CW,CH)` —— 横屏存量逐字节零回归的判据（真出片对拍过 SHA-256）。
-  钉子：`node webui/scripts/check-stage-backdrop.mjs`（73 项 + 8 处变异自证；③c 段钉摆放几何）、
+  钉子：`node webui/scripts/check-stage-backdrop.mjs`（88 项 + 10 处变异自证；③c 段钉两轴摆位、
+  ⑩ 与转译器那份 `stageDrawRect` 逐值对拍）、`node webui/scripts/check-layout-invariants.mjs`（⑦ 两轴滑杆 /
+  惰性轴置灰 + 行内原因）、
   `node webui/scripts/check-handheld.mjs`、Rust `template_stage_hooks_match_contract` +
   `portrait_canvas_fill_still_paints_backdrop`、真实像素 A/B
   `VTEDIT_BACKDROP_DIR=<竖屏工程> VTEDIT_BACKDROP_T=<被挪开的时刻> cargo test -p yekitrim-polish --test portrait_backdrop -- --ignored --nocapture`

@@ -511,6 +511,34 @@ impl CanvasConfig {
     }
 }
 
+impl StageConfig {
+    /// **单值 → 两轴的固化**（写盘前调用）：只有老 [`StageConfig::position_pct`] 时把两条轴都写出来。
+    ///
+    /// ⚠️ **不调它的后果是静默丢值**：`position_pct` 是 `skip_serializing` 的只读兼容字段 ——
+    /// 老工程在界面上只动了一条轴（新键只落一条），再保存一次老单值就没了；下次加载时**另一条轴**
+    /// 从「老值」跳回 50（用户看到的是"我只调了水平，垂直自己回到中间了"）。
+    /// 固化之后老字段退场，两轴的权威只在新键上。
+    ///
+    /// 语义 = 「缺哪条轴就补哪条」：两轴都有值时**不动**（那时老单值已经是死数据）。
+    /// 返回是否真的补了（`to_toml_commented` 不关心，单测关心）。
+    pub fn migrate_position_pct(&mut self) -> bool {
+        let legacy = match self.position_pct {
+            Some(v) if v.is_finite() => normalize_stage_pct(v),
+            _ => return false,
+        };
+        let mut touched = false;
+        if self.position_x_pct.is_none() {
+            self.position_x_pct = Some(legacy);
+            touched = true;
+        }
+        if self.position_y_pct.is_none() {
+            self.position_y_pct = Some(legacy);
+            touched = true;
+        }
+        touched
+    }
+}
+
 /// 画面构成：源视频比例 ≠ 画布比例时，主画面怎么摆、空出来的地方补什么。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -527,15 +555,32 @@ pub struct StageConfig {
     #[serde(default = "default_cover_blur_scale")]
     pub blur_scale: f64,
 
-    /// **主画面位置 = 画布内的对齐百分比**（0 = 贴左 / 贴上，50 = 居中，100 = 贴右 / 贴下）。
+    /// **主画面位置 = 画布内的对齐百分比（X 轴）**：0 = 贴左，50 = 居中，100 = 贴右。
     ///
     /// UI 是**五档吸附**（0/25/50/75/100）；数据模型留 0–100 连续，是为了以后加档位不必再动 schema。
-    /// 缺省 `None` = **老工程**：按 [`stage_position_pct`] 从老枚举 [`StageConfig::position`] 换算 ——
-    /// **`auto` 一律掉档为 50 居中**（2026-10-02 用户口径），`left`/`top` → 0、`right`/`bottom` → 100。
+    /// **两轴各自独立**（2026-10-05 用户口径：位置操作改成 xy、各带五档）：
+    /// 画面刚好贴满的那条轴**没有余量** ⇒ 那条滑杆无效（界面置灰并写明原因），
+    /// `scale > 1` 让画面大于布局盒之后，两条轴都变成**裁切取景**（0 = 露画面左上，100 = 露右下）。
+    /// 缺省 `None` = 按老字段 [`StageConfig::position_pct`] 换算。
     #[serde(default)]
+    pub position_x_pct: Option<f64>,
+
+    /// 同 [`StageConfig::position_x_pct`]，**Y 轴**（0 = 贴上，50 = 居中，100 = 贴下）。
+    #[serde(default)]
+    pub position_y_pct: Option<f64>,
+
+    /// ⚠️ **老字段（只读兼容，不再写出）**：2026-10-05 起位置拆成
+    /// [`StageConfig::position_x_pct`] / [`StageConfig::position_y_pct`] 两条。
+    ///
+    /// 单值时代的语义是「沿**留边轴**插值、交叉轴居中」—— 与「两轴都取这个值」**逐像素等价**
+    /// （刚好贴满的那条轴余量为 0，代入什么值都不动），所以迁移**不需要知道源比例**：
+    /// 缺 X/Y 的任一条就回落到它；它自己也缺时按 [`stage_position_pct`] 从老枚举
+    /// [`StageConfig::position`] 换算（`auto` → 50 居中，2026-10-02 用户口径）。
+    #[serde(default, skip_serializing)]
     pub position_pct: Option<f64>,
 
-    /// ⚠️ **老字段（只读兼容，不再写出）**：2026-10-02 起位置的权威是 [`StageConfig::position_pct`]。
+    /// ⚠️ **老字段（只读兼容，不再写出）**：2026-10-05 起位置的权威是
+    /// [`StageConfig::position_x_pct`] / [`StageConfig::position_y_pct`]。
     /// 保留它只为读得懂老 `polish.toml`；`skip_serializing` 保证新工程/再次保存的工程不再写这一行。
     /// 老语义映射见 [`stage_position_pct`]（`auto` = 居中，不再是「竖素材靠左」）。
     #[serde(default = "default_stage_position", skip_serializing)]
@@ -595,6 +640,8 @@ impl Default for StageConfig {
             bg_mode: default_stage_bg_mode(),
             bg_color: default_cover_bg_color(),
             blur_scale: default_cover_blur_scale(),
+            position_x_pct: None,
+            position_y_pct: None,
             position_pct: None,
             position: default_stage_position(),
             scale: default_stage_scale(),
@@ -681,7 +728,7 @@ pub fn stage_position_pct(raw: &str, portrait: bool) -> f64 {
     }
 }
 
-/// `[stage] position_pct` 规范化：NaN / 无穷 → 50 居中，其余夹到 `[0, 100]`。
+/// `[stage] position_x/y_pct`（以及只读的单值 `position_pct`）规范化：NaN / 无穷 → 50 居中，其余夹到 `[0, 100]`。
 ///
 /// **不吸附到五档**：五档是 UI 的交互（[`crate::project`] 这层只保证数值合法），
 /// 数据模型留连续是给以后加档位用的（例：0/10/…/90/100）。
@@ -710,11 +757,22 @@ pub struct StageFit {
     /// 主画面位置：`left|center|right`（axis=x）或 `top|center|bottom`（axis=y）。恒为具体值。
     ///
     /// ⚠️ **过渡期兼容输出**：五档里的 25/75 这个枚举表达不了（会被压成 `center`），
-    /// **消费侧一律改用 [`StageFit::position_pct`]**；这一项等三处消费侧全改完就删。
+    /// **消费侧一律改用 [`StageFit::position_x_pct`] / [`StageFit::position_y_pct`]**。
+    /// 它仍在出口上是给**老消费点**用的（`render/server.rs` 的 `vertical_position`、
+    /// 贴纸的老 `vertical` 分支、`PolishPreview` 在没有 `_canvas` 时的回落），**别拿它算几何**。
     pub position: String,
-    /// **主画面位置（0–100，权威）**：0 = 贴左 / 贴上，50 = 居中，100 = 贴右 / 贴下。
-    /// 模板 `stageDrawRect`、`canvas.js`/`engine.js`、转译器都按它算偏移。
-    pub position_pct: f64,
+    /// **主画面位置（X 轴，0–100，权威）**：0 = 贴左，50 = 居中，100 = 贴右。
+    /// 模板 `stageDrawRect`、`PolishPreview` 的 DOM 修正、转译器都按它算偏移。
+    pub position_x_pct: f64,
+    /// **主画面位置（Y 轴，0–100，权威）**：0 = 贴上，50 = 居中，100 = 贴下。
+    pub position_y_pct: f64,
+    /// 该轴的**可平移余量**（布局盒 px − 缩放后画面 px）：`> 0` 画面比盒小（在余量里挪），
+    /// `== 0` 刚好贴满（**那条滑杆无效**，界面据此置灰并写明原因），`< 0` 画面溢出
+    /// （同一条插值自动变成**裁切取景**：0 = 露画面左上，100 = 露右下）。
+    /// ⚠️ 界面只许**读**它决定置灰，不许自己再按 `axis/scale` 推一遍（那是第二份公式）。
+    pub free_x: f64,
+    /// 同 [`StageFit::free_x`]，Y 轴。
+    pub free_y: f64,
     /// 背景：`none` | `black` | `color` | `blur`。只有**横画布铺满**才是 `none`；
     /// 竖画布铺满也给底色（特效会把主画面挪出画布，没有底色就露透明）。
     pub bg: String,
@@ -744,7 +802,7 @@ impl StageDrawRect {
     }
 }
 
-/// **主画面矩形**（画布 px）：源帧经 `[stage]` 的 `axis/position_pct/scale/padding` 摆放后，
+/// **主画面矩形**（画布 px）：源帧经 `[stage]` 的 `axis/position_x_pct/position_y_pct/scale/padding` 摆放后，
 /// 落在画布上的那块矩形 `sr`。
 ///
 /// # 唯一真源是模板，这里是它的 Rust 镜像
@@ -761,12 +819,13 @@ impl StageDrawRect {
 /// | `:1808-1809` `cap=min(cw,ch)/2-1; if(pad>cap)pad=cap>0?cap:0` | `cap` |
 /// | `:1810` `bx=by=pad; bwid=cw-2pad; bhgt=ch-2pad` | 同名四元组 |
 /// | `:1811` `var axis=st.axis\|\|'fill'` | `axis`（空串 → `fill`） |
-/// | `:1815-1816` `pct=clamp(0,100,pct)/100` | `pct` |
-/// | `:1818-1822` `axis==='x'` 支（含 `:1820` 的 contain 夹取） | `"x"` 支 |
-/// | `:1823-1827` `axis==='y'` 支（含 `:1825` 的 contain 夹取） | `"y"` 支 |
-/// | `:1828-1832` `else`（fill：cover 语义 + 居中） | `else` 支 |
+/// | `:1815-1816` `px=clamp(px)/100; py=clamp(py)/100` | [`pct01`] ×2 |
+/// | `:1818-1822` `axis==='x'` 支（含 `:1820` 的 contain 夹取） | [`stage_fit_size`] `"x"` 支 |
+/// | `:1823-1827` `axis==='y'` 支（含 `:1825` 的 contain 夹取） | [`stage_fit_size`] `"y"` 支 |
+/// | `:1828-1832` `else`（fill：cover 语义） | [`stage_fit_size`] `else` 支 |
 /// | `:1833` `var sc=st.scale\|\|1` | `sc`（0/NaN → 1） |
-/// | `:1834-1837` `if(\|sc-1\|>1e-9)` 绕盒心缩放 | 同名分支 |
+/// | `:1835-1838` 绕**盒心**缩放（`w*=sc; h*=sc`） | 同名两乘 |
+/// | `:1839-1840` `x=bx+(bwid-w)*px; y=by+(bhgt-h)*py` | 同名两行 |
 ///
 /// # 它同时是 W1 的坐标系口径
 ///
@@ -780,28 +839,70 @@ impl StageDrawRect {
 ///
 /// `src` 拿不到尺寸（ffprobe 失败）时调用方可以传 `canvas` 自身当源 —— 那等价于
 /// 「按画布比例铺满」，在 `padding=0 / scale=1`（绝大多数工程）下与**整块画布**逐值相同。
+///
+/// # 摆放顺序（2026-10-05 改版，两轴 xy）
+///
+/// ① `padding` 定**布局盒**（画布去掉四周留白，按 `cap` 夹取）；② 按 `axis` 定画面**大小**
+/// （`x` = 按盒高适配、`y` = 按盒宽适配、`fill` = cover）；③ 绕**盒子中心**乘 `scale`；
+/// ④ **两轴各自**在「盒 − 画面」的余量上按 `position_*_pct/100` 线性插值（= CSS
+/// `background-position` 的百分比语义：0 贴左/上、1 贴右/下、0.5 居中；余量为负时同一条插值
+/// 就是**裁切取景**）。
+///
+/// ⚠️ 顺序 ③ 在 ④ 之前是 2026-10-05 的改动（改造前是「先插值、再绕**插值后**的盒心缩放」）：
+/// 两者在 `scale=1` **或** `pct=50` 时**逐值相同**，只有「`scale≠1` 且 `pct≠50`」才不同 ——
+/// 旧顺序下 `(盒宽 − **未缩放**宽)` 才是插值区间，于是 `scale>1` 时画面被推出盒外、
+/// 滑杆永远够不到两端（竖素材 `607.5→×2=1215`，`pct=0` 时右边缘停在 911px，右边 1009px 永远是空的）。
+/// 新顺序让「余量」与滑杆量的是**同一块**几何，`free_*` 因此能如实告诉界面哪条轴无效。
 pub fn stage_draw_rect(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) -> StageDrawRect {
     let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
-    let (bw, bh) = (src.0 as f64, src.1 as f64);
+    let (bx, by, bwid, bhgt) = stage_box(stage, canvas);
     // 模板 `:1806`
-    if !(bw > 0.0) || !(bh > 0.0) {
+    if !(src.0 > 0) || !(src.1 > 0) {
         return StageDrawRect { x: 0.0, y: 0.0, w: cw, h: ch };
     }
+    let (w, h) = stage_fit_size(stage, src, canvas);
+    // 模板 `:1815-1816` 的 pct（JS 里不是 number 才回落 50；这里只多一道 NaN/∞ 兜底，
+    // 生产值由 `normalize_stage_pct` 保证有限）
+    let px = pct01(stage.position_x_pct);
+    let py = pct01(stage.position_y_pct);
+    StageDrawRect {
+        x: bx + (bwid - w) * px,
+        y: by + (bhgt - h) * py,
+        w,
+        h,
+    }
+}
+
+/// `0–100` 连续值 → `0–1` 插值参数（NaN / 无穷 → 0.5 居中，越界夹取）。
+fn pct01(raw: f64) -> f64 {
+    if !raw.is_finite() { 0.5 } else { raw.clamp(0.0, 100.0) / 100.0 }
+}
+
+/// **布局盒**（画布去掉四周 `padding`，`cap = min(cw,ch)/2-1` 夹取）—— 模板 `:1807-1810`。
+/// `stage_draw_rect` / `stage_fit_size` / [`stage_free`] 共用这一份，不许各自再算。
+fn stage_box(stage: &StageFit, canvas: (u32, u32)) -> (f64, f64, f64, f64) {
+    let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
     // 模板 `:1807` `st.padding||0`：JS 里 NaN/undefined 都是 falsy → 0。
     let pad = if stage.padding.is_finite() { stage.padding } else { 0.0 };
     // 模板 `:1808-1809`
     let cap = cw.min(ch) / 2.0 - 1.0;
     let pad = if pad > cap { if cap > 0.0 { cap } else { 0.0 } } else { pad };
     // 模板 `:1810`
-    let (bx, by, bwid, bhgt) = (pad, pad, cw - pad * 2.0, ch - pad * 2.0);
+    (pad, pad, cw - pad * 2.0, ch - pad * 2.0)
+}
+
+/// **画面最终尺寸**（含 `scale`，画布 px）—— 模板 `:1817-1837`：按 `axis` 适配、再绕盒心缩放。
+fn stage_fit_size(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) -> (f64, f64) {
+    let (cw, ch) = (canvas.0 as f64, canvas.1 as f64);
+    if !(src.0 > 0) || !(src.1 > 0) {
+        return (cw, ch);
+    }
+    let (bw, bh) = (src.0 as f64, src.1 as f64);
+    let (_, _, bwid, bhgt) = stage_box(stage, canvas);
     // 模板 `:1811`
     let axis: &str = if stage.axis.is_empty() { "fill" } else { &stage.axis };
-    // 模板 `:1815-1816`（JS 里 `position_pct` 不是 number 才回落 50；这里只多一道 NaN/∞ 兜底，
-    // 生产值由 `normalize_stage_pct` 保证有限）
-    let pct = if stage.position_pct.is_finite() { stage.position_pct } else { 50.0 };
-    let pct = pct.clamp(0.0, 100.0) / 100.0;
-    // 模板 `:1817-1832`
-    let (mut x, mut y, mut w, mut h);
+    // 模板 `:1818-1832`
+    let (mut w, mut h);
     if axis == "x" {
         h = bhgt;
         w = bw * h / bh;
@@ -809,8 +910,6 @@ pub fn stage_draw_rect(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) ->
             w = bwid;
             h = bh * w / bw;
         }
-        x = bx + (bwid - w) * pct;
-        y = by + (bhgt - h) / 2.0;
     } else if axis == "y" {
         w = bwid;
         h = bh * w / bw;
@@ -818,26 +917,25 @@ pub fn stage_draw_rect(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) ->
             h = bhgt;
             w = bw * h / bh;
         }
-        y = by + (bhgt - h) * pct;
-        x = bx + (bwid - w) / 2.0;
     } else {
         let s = (bwid / bw).max(bhgt / bh);
         w = bw * s;
         h = bh * s;
-        x = bx + (bwid - w) / 2.0;
-        y = by + (bhgt - h) / 2.0;
     }
-    // 模板 `:1833-1837`：**先按 position 插值、再绕盒心缩放**（顺序不能反 —— 见 4b 的实测 303.75px）
+    // 模板 `:1833-1837`：绕盒心缩放（`scale` 是非有限值或 0 时按 1 —— 同 JS `st.scale||1`）
     let sc = if !stage.scale.is_finite() || stage.scale == 0.0 { 1.0 } else { stage.scale };
-    if (sc - 1.0).abs() > 1e-9 {
-        let (mx, my) = (x + w / 2.0, y + h / 2.0);
-        w *= sc;
-        h *= sc;
-        x = mx - w / 2.0;
-        y = my - h / 2.0;
-    }
-    StageDrawRect { x, y, w, h }
+    (w * sc, h * sc)
 }
+
+/// **两轴的可平移余量**（布局盒 px − 缩放后画面 px）= [`StageFit::free_x`] / [`StageFit::free_y`]。
+///
+/// `resolve_stage` 把它写进契约，界面**只读它**决定哪条滑杆置灰。
+pub fn stage_free(stage: &StageFit, src: (u32, u32), canvas: (u32, u32)) -> (f64, f64) {
+    let (_, _, bwid, bhgt) = stage_box(stage, canvas);
+    let (w, h) = stage_fit_size(stage, src, canvas);
+    (bwid - w, bhgt - h)
+}
+
 
 // ===== 时间轴 =====
 
@@ -857,6 +955,19 @@ fn default_metadata() -> String { "clip.json".into() }
 
 
 impl ProjectFile {
+    /// **「竖素材进了非竖画布」⇒ 运镜整条关掉** —— 两处注入（预览 API `api/polish.rs` 与出片模板
+    /// `render/server.rs`，键名 `portrait_no_camera`）都读它，**别各自现算**。
+    ///
+    /// 语义（2026-10-05 收窄）：改造前判据是**只看源**（源 `h > w` 一律关运镜），于是
+    /// **竖素材进竖画布**这一档（最想要运镜、画面正好铺满、放大完全不会露底）也永远打不开 ——
+    /// 用户报的「竖屏素材没法运镜」就是它。现在只关**方向不一致**的那一档：源竖 + 画布非竖
+    /// （左右留边，摇移/缩放会把它拖出画布露衬底）。**横素材进竖画布不受它影响**
+    /// （那条归 `[stage] portrait_camera`，默认关、可开）。
+    pub fn src_portrait_no_camera(&self, src: Option<(u32, u32)>) -> bool {
+        let vertical = src.map(|(w, h)| h > w).unwrap_or(false);
+        vertical && !self.canvas.is_portrait()
+    }
+
     /// 输出画布尺寸（唯一推导点）。
     pub fn canvas_size(&self) -> (u32, u32) {
         self.canvas.size()
@@ -870,8 +981,10 @@ impl ProjectFile {
     /// - **轴只看比例**：源与画布同比 → `fill`（铺满）；源更高 → `x`（左右留边）；源更扁 → `y`（上下留边）。
     ///   ⚠️ **`auto` 特例已删**：改造前 `auto` 对「不匹配但非竖素材」的源（4:3 / 2.35:1）是**裁切铺满**，
     ///   现在是**按比例适配 + 留边 + 背景**（用户 2026-10-02 拍板「适配留边」；想要裁切就把缩放调到所需比值）。
-    /// - **位置 = `position_pct`（0–100，权威）**：新字段优先；老工程按 [`stage_position_pct`] 从老枚举换算
-    ///   （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100；方向不跨用）。
+    /// - **位置 = 两轴各自的 `position_x_pct` / `position_y_pct`（0–100，权威）**：缺哪条轴就回落到
+    ///   单值时代的 `position_pct`，再缺按 [`stage_position_pct`] 从老枚举换算
+    ///   （`auto` → 50 居中、`left`/`top` → 0、`right`/`bottom` → 100）。同时算出 `free_x/free_y`
+    ///   （该轴可平移余量，界面据此置灰无效滑杆）。
     /// - **背景**：只有**横画布铺满**是 `none`；竖画布铺满仍按 `bg_mode` 给底色（见下）。
     ///
     /// ⚠️ 铺满**不等于**不要背景层：竖画布（1080×1920）下竖素材正好铺满画布，而特效
@@ -883,12 +996,17 @@ impl ProjectFile {
         let portrait = self.canvas.is_portrait();
         let k = cw as f64 / CANVAS_LANDSCAPE_WH.0 as f64;
 
-        // 位置：新字段优先；缺它（老工程）= 按老枚举换算（`auto` → 50 居中）
-        let pct = self
+        // 位置：**两轴各自独立**（2026-10-05）。缺哪条轴就回落到单值时代的 `position_pct`，
+        // 它再缺（更老的工程）就按老枚举换算（`auto` → 50 居中）。
+        // 单值时代的语义是「沿留边轴插值、交叉轴居中」，而**贴满的那条轴余量为 0**
+        // ⇒「两轴都取这个值」与它逐像素等价（见 `StageConfig::position_pct`）。
+        let legacy = self
             .stage
             .position_pct
             .map(normalize_stage_pct)
             .unwrap_or_else(|| stage_position_pct(&self.stage.position, portrait));
+        let px = self.stage.position_x_pct.map(normalize_stage_pct).unwrap_or(legacy);
+        let py = self.stage.position_y_pct.map(normalize_stage_pct).unwrap_or(legacy);
 
         // 比例比较用交叉相乘，避免浮点除法
         let aspect = src
@@ -904,11 +1022,14 @@ impl ProjectFile {
             _ => "fill",                              // 同比（或拿不到源尺寸）→ 铺满
         };
 
-        // 位置枚举只作**过渡期兼容输出**（五档里的 25/75 它表达不了 ⇒ 只有两端精确，其余给 center）
-        let position = if pct <= 0.0 {
-            if portrait { "top" } else { "left" }
-        } else if pct >= 100.0 {
-            if portrait { "bottom" } else { "right" }
+        // 位置枚举只作**过渡期兼容输出**（五档里的 25/75 它表达不了 ⇒ 只有两端精确，其余给 center）。
+        // 两轴时代它按**有留边的那条轴**报（`axis=x` 看 X、`axis=y` 看 Y、铺满一律 center），
+        // 消费点只剩 `vertical_position` / 贴纸老分支 / 预览没有 `_canvas` 时的回落 —— **别拿它算几何**。
+        let main = if axis == "x" { px } else if axis == "y" { py } else { 50.0 };
+        let position = if main <= 0.0 {
+            if axis == "y" { "top" } else { "left" }
+        } else if main >= 100.0 {
+            if axis == "y" { "bottom" } else { "right" }
         } else {
             "center"
         };
@@ -929,11 +1050,14 @@ impl ProjectFile {
 
         let (blur_px, blur_img_scale) = crate::cover::cover_blur_css(self.stage.blur_scale);
 
-        StageFit {
+        let mut fit = StageFit {
             axis: axis.into(),
             object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
             position: position.into(),
-            position_pct: pct,
+            position_x_pct: px,
+            position_y_pct: py,
+            free_x: 0.0,
+            free_y: 0.0,
             bg: bg.into(),
             bg_color: crate::cover::sanitize_hex_color(&self.stage.bg_color, "#000000"),
             blur_px,
@@ -944,7 +1068,15 @@ impl ProjectFile {
                 1.0
             },
             padding: self.stage.padding as f64 * k,
-        }
+        };
+        // 两轴的可平移余量：与 `stage_draw_rect` **共用同一份**盒/尺寸公式（`stage_free`），
+        // 界面只读它决定哪条滑杆置灰 —— 不许再按 `axis`/`scale` 自己推一遍。
+        // 源尺寸拿不到时按**画布自身**当源（与 `stage_draw_rect` 的退化口径一致）。
+        let free_src = src.filter(|(w, h)| *w > 0 && *h > 0).unwrap_or((cw, ch));
+        let (fx, fy) = stage_free(&fit, free_src, (cw, ch));
+        fit.free_x = fx;
+        fit.free_y = fy;
+        fit
     }
 
     /// 注入给模板与 WebUI 的画布契约（`_canvas`）—— 尺寸 / 摆放 / 字幕安全宽 / 贴纸落点的**唯一来源**。
@@ -989,7 +1121,11 @@ impl ProjectFile {
     /// `deny_unknown_fields`，而且它还会出口给前端与出片底座 —— 把版本塞进 schema 会波及它们。
     /// 版本是"文件的元数据"。读侧对应地在 `validate.rs` 摘掉这个键再看结构体。
     pub fn to_toml_commented(&self) -> anyhow::Result<String> {
-        let raw = toml::to_string_pretty(self)?;
+        // ⚠️ 写盘前先把「单值老字段」固化到两轴（否则 `skip_serializing` 会把它整个丢掉 ——
+        // 老工程只动一条轴时，另一条轴下次加载会从老值跳回 50）。
+        let mut me = self.clone();
+        me.stage.migrate_position_pct();
+        let raw = toml::to_string_pretty(&me)?;
         let lines: Vec<String> = raw.lines().map(|s| s.to_string()).collect();
 
         let mut result = String::new();
@@ -1091,8 +1227,10 @@ impl ProjectFile {
                         result.push_str("# bg_mode: blur(默认, 当前帧模糊铺满) / black / color；老值 auto 等同 blur\n");
                         result.push_str("# bg_color: bg_mode=color 的颜色(#rrggbb)\n");
                         result.push_str("# blur_scale: 模糊倍率, 1.0 = 基准 28px\n");
-                        result.push_str("# position_pct: 主画面位置 0~100（0 贴左/贴上, 50 居中(默认), 100 贴右/贴下）\n");
-                        result.push_str("#   界面是五档吸附 0/25/50/75/100；老字段 position 只读兼容(auto = 居中)\n");
+                        result.push_str("# position_x_pct / position_y_pct: 主画面位置 0~100（0 贴左/贴上, 50 居中(默认), 100 贴右/贴下）\n");
+                        result.push_str("#   界面是五档吸附 0/25/50/75/100，两轴各一条；贴满的那条轴没有余量（滑杆无效）\n");
+                        result.push_str("#   放大(scale>1)后两轴都变成裁切取景：0 露画面左上 / 100 露右下\n");
+                        result.push_str("#   老字段 position_pct(单值)/position 只读兼容(auto = 居中)\n");
                         result.push_str("# scale: 主画面缩放, 1.0 = 按当前轴适配到位（<1 再缩, >1 放大裁切）\n");
                         result.push_str("# padding: 老字段(px, 横画布基准)，界面已不再提供；留着仅为老工程照旧生效\n");
                         result.push_str("# portrait_effects / portrait_camera / portrait_sfx: 竖屏画布是否启用\n");
@@ -1593,13 +1731,21 @@ mod tests {
     // 手算期望值的口径：模板 `templates/index.html:1805-1839` 的每一式。
     // 判据是**能翻面的**：`stage_draw_rect` 里任一分支/顺序/夹取改一个字，下面的数字就对不上。
 
-    /// 测试用 `StageFit`：显式给四项几何（其余字段对几何无影响，取 `resolve_stage` 的典型值）。
+    /// 测试用 `StageFit`：显式给几何（其余字段对几何无影响，取 `resolve_stage` 的典型值）。
+    /// 两轴位置都给，默认居中 —— 老用例（单值）就是「两轴同值」的退化形态。
     fn stage(axis: &str, pct: f64, scale: f64, padding: f64) -> StageFit {
+        stage_xy(axis, pct, pct, scale, padding)
+    }
+
+    fn stage_xy(axis: &str, px: f64, py: f64, scale: f64, padding: f64) -> StageFit {
         StageFit {
             axis: axis.into(),
             object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
             position: "center".into(),
-            position_pct: pct,
+            position_x_pct: px,
+            position_y_pct: py,
+            free_x: 0.0,
+            free_y: 0.0,
             bg: if axis == "fill" { "none" } else { "blur" }.into(),
             bg_color: "#000000".into(),
             blur_px: 28,
@@ -1665,30 +1811,50 @@ mod tests {
         assert!((s16.h - 1536.0).abs() < 1e-9, "{s16:?}");
     }
 
-    /// **4b 钉子**：`scale` 与 `position` 的**合成顺序** = 先按 position 插值、**再**绕盒心缩放
-    /// （模板 `:1821` 用的是**未缩放**的 `w`）。
+    /// **两轴 xy + `scale` 的合成顺序钉子**（2026-10-05 改版）：先按 `axis` 定画面**大小** →
+    /// 绕**布局盒中心**乘 `scale` → **两轴各自**在 `(盒 − 画面)` 的余量上按 `pct/100` 插值。
     ///
-    /// 竖素材 `1080×1920` 进横画布 → `w=607.5`；`pct=0` 时先插值 `x=0+(1920-607.5)*0=0`，
-    /// 再绕盒心 `(303.75,540)` 放大 2 倍 → `x=303.75-607.5=-303.75`。
-    /// **反过来做**（先缩放再插值，Rust 改造前的写法）会得到 `x=0` —— 差 **303.75px**。
+    /// 竖素材 `1080×1920` 进横画布：`w=607.5 → ×2 = 1215`、`h=1080 → ×2 = 2160`。
+    /// - X 余量 `1920−1215 = 705`：`0` 贴左 `x=0`、`50` 居中 `x=352.5`、`100` 贴右 `x=705`；
+    /// - Y 余量 `1080−2160 = −1080`（**溢出 ⇒ 裁切取景**）：`0` 露画面顶 `y=0`、`100` 露底 `y=−1080`。
+    ///
+    /// ⚠️ 改造前是「先插值、再绕**插值后**的盒心缩放」：`pct=0` 会算成 `x=−303.75`（画面被推出盒左、
+    /// 右边 1009px 永远是空的，滑杆够不到两端）。这条把新式子连**旧值**一起写死，改回去立刻红。
     #[test]
-    fn scale_is_applied_after_position_interpolation() {
+    fn scale_is_applied_before_the_two_axis_percentage() {
         let src = (1080u32, 1920u32);
         let canvas = (1920u32, 1080u32);
-        let pct0 = stage_draw_rect(&stage("x", 0.0, 2.0, 0.0), src, canvas);
-        assert_eq!(pct0, StageDrawRect { x: -303.75, y: -540.0, w: 1215.0, h: 2160.0 });
-        // 先缩放再插值 = 旧写法，差 303.75px（把这条写死，改回旧顺序立刻红）
-        let w = 1080.0 * 1080.0 / 1920.0;
-        let old_x = 0.0 + (1920.0 - w * 2.0) * 0.0;
+        let at = |px: f64, py: f64| stage_draw_rect(&stage_xy("x", px, py, 2.0, 0.0), src, canvas);
+        assert_eq!(at(0.0, 0.0), StageDrawRect { x: 0.0, y: 0.0, w: 1215.0, h: 2160.0 });
+        assert_eq!(at(50.0, 50.0), StageDrawRect { x: 352.5, y: -540.0, w: 1215.0, h: 2160.0 });
+        assert_eq!(at(100.0, 100.0), StageDrawRect { x: 705.0, y: -1080.0, w: 1215.0, h: 2160.0 });
+        // 旧顺序在 pct=0 的答案：`x=0` 的盒心 `303.75` 减去缩放后半宽 `607.5`
+        let old_x = 607.5 / 2.0 - 1215.0 / 2.0;
         assert!(
-            ((pct0.x - old_x).abs() - 303.75).abs() < 1e-9,
-            "新旧顺序应差 303.75px: {} vs {old_x}",
-            pct0.x
+            ((at(0.0, 0.0).x - old_x).abs() - 303.75).abs() < 1e-9,
+            "旧顺序得 {old_x}，新顺序得 {}",
+            at(0.0, 0.0).x
         );
-        // pct=100：先插值 `x=1920-607.5=1312.5`，绕盒心 `(1616.25,540)` 放大 2 倍
-        // → `x=1616.25-607.5=1008.75`（旧写法是 `1920-1215=705`，同样差 303.75px）
-        let pct100 = stage_draw_rect(&stage("x", 100.0, 2.0, 0.0), src, canvas);
-        assert_eq!(pct100, StageDrawRect { x: 1008.75, y: -540.0, w: 1215.0, h: 2160.0 });
+    }
+
+    /// **两轴余量 `free_*`**（界面据此置灰）与「xy 各自独立」：
+    /// `axis=x` + `scale=1` ⇒ X 有余量（贴满的那条轴是 Y，余量 0）；`scale=2` ⇒ 两轴都非 0
+    /// （Y 变负 = 裁切取景）；`axis=fill` 同比 ⇒ 两轴都 0（画面正好铺满，两条滑杆都无效）。
+    #[test]
+    fn free_axes_say_which_slider_is_inert() {
+        let free_of = |axis: &str, scale: f64, src: (u32, u32), canvas: (u32, u32)| {
+            crate::project::stage_free(&stage(axis, 50.0, scale, 0.0), src, canvas)
+        };
+        let vert = (1080u32, 1920u32);
+        let land = (1920u32, 1080u32);
+        // 竖素材进横画布：只 X 能动（Y 正好贴满 ⇒ 那条滑杆无效）
+        assert_eq!(free_of("x", 1.0, vert, land), (1312.5, 0.0));
+        // 放大到画面宽于盒子：两轴都能动，Y 的余量变负 = 裁切取景（0 露顶 / 100 露底）
+        assert_eq!(free_of("x", 2.0, vert, land), (705.0, -1080.0));
+        // 同比铺满：画面正好等于布局盒 ⇒ 两条滑杆都无效
+        assert_eq!(free_of("fill", 1.0, vert, vert), (0.0, 0.0));
+        // 同比铺满 + 放大：两条轴都变成裁切取景（这才是"放大后才能平移"）
+        assert_eq!(free_of("fill", 2.0, vert, vert), (-1080.0, -1920.0));
     }
 
     /// 交叉轴：`axis=y`（比画布更扁的源）沿竖直方向按 `pct` 插值，横向居中。
@@ -1698,9 +1864,11 @@ mod tests {
     fn wide_source_moves_along_the_vertical_axis() {
         let sr = stage_draw_rect(&stage("y", 25.0, 1.0, 0.0), (2560, 1080), (1920, 1080));
         assert_eq!(sr, StageDrawRect { x: 0.0, y: 67.5, w: 1920.0, h: 810.0 });
-        // 位置枚举缺席 / 非有限值 → 50 居中（`normalize_stage_pct` 的上游保证，这里只钉兜底）
+        // 非有限值 → 50 居中（`normalize_stage_pct` 的上游保证，这里只钉兜底）；
+        // 两轴都给 NaN：`axis=y` 时 X 余量为 0，X 取什么都不影响几何 —— 这一条同时钉「两轴独立」。
         let mut s = stage("y", 25.0, 1.0, 0.0);
-        s.position_pct = f64::NAN;
+        s.position_x_pct = f64::NAN;
+        s.position_y_pct = f64::NAN;
         assert_eq!(stage_draw_rect(&s, (2560, 1080), (1920, 1080)).y, 135.0);
     }
 
@@ -1818,7 +1986,10 @@ mod canvas_stage_tests {
         assert_eq!(f.axis, "x");
         assert_eq!(f.object_fit, "contain");
         assert_eq!(f.position, "center", "auto → 50 居中");
-        assert!((f.position_pct - 50.0).abs() < 1e-9, "{}", f.position_pct);
+        assert!(
+            (f.position_x_pct - 50.0).abs() < 1e-9 && (f.position_y_pct - 50.0).abs() < 1e-9,
+            "{f:?}"
+        );
         assert_eq!(f.bg, "blur");
         assert_eq!(f.bg_color, "#000000");
         assert_eq!(f.blur_px, 28, "blur_scale=1.0 → 基准 28px");
@@ -1985,7 +2156,7 @@ mod canvas_stage_tests {
     }
 
     /// 老 `[stage] position` 枚举 → 百分比：**`auto` 掉档为 50 居中**（2026-10-02 口径），
-    /// 方向不跨用的值同样居中；新字段 `position_pct` 压过老枚举。
+    /// 方向不跨用的值同样居中；两轴新字段压过老枚举。
     #[test]
     fn legacy_position_enum_maps_to_pct() {
         assert_eq!(stage_position_pct("auto", false), 50.0);
@@ -1999,13 +2170,18 @@ mod canvas_stage_tests {
 
         let mut cfg = ProjectFile::example();
         cfg.stage.position = "right".into();
-        assert_eq!(cfg.resolve_stage(src_portrait()).position_pct, 100.0);
+        assert_eq!(cfg.resolve_stage(src_portrait()).position_x_pct, 100.0);
+        assert_eq!(cfg.resolve_stage(src_portrait()).position_y_pct, 100.0, "两轴同值");
         cfg.stage.position_pct = Some(25.0);
-        assert_eq!(cfg.resolve_stage(src_portrait()).position_pct, 25.0, "新字段优先");
+        assert_eq!(cfg.resolve_stage(src_portrait()).position_x_pct, 25.0, "单值字段压过老枚举");
+        // 只写一条轴 → 另一条回落到单值字段（不是回落到 50）—— 混写时不许静默丢值
+        cfg.stage.position_x_pct = Some(75.0);
+        let f = cfg.resolve_stage(src_portrait());
+        assert_eq!((f.position_x_pct, f.position_y_pct), (75.0, 25.0));
     }
 
-    /// `position_pct` 规范化：NaN → 50，越界夹到 `[0,100]`；五档都能落进契约
-    /// （`position` 枚举只保证两端精确，中间三档一律 `center` —— 消费侧改看 `position_pct`）。
+    /// `position_x/y_pct` 规范化：NaN → 50，越界夹到 `[0,100]`；五档都能落进契约
+    /// （`position` 枚举只保证两端精确，中间三档一律 `center` —— 消费侧改看两轴百分比）。
     #[test]
     fn position_pct_is_normalized_and_mapped() {
         assert_eq!(normalize_stage_pct(f64::NAN), 50.0);
@@ -2019,10 +2195,42 @@ mod canvas_stage_tests {
             (75.0, "center"),
             (100.0, "right"),
         ] {
-            cfg.stage.position_pct = Some(pct);
+            cfg.stage.position_x_pct = Some(pct);
             let f = cfg.resolve_stage(Some((1440, 1080))); // 4:3 → axis x，位置可见
             assert_eq!(f.position, pos, "pct {pct}");
-            assert!((f.position_pct - pct).abs() < 1e-9, "pct {pct}");
+            assert!((f.position_x_pct - pct).abs() < 1e-9, "pct {pct}");
+        }
+    }
+
+    /// **单值 → 两轴的迁移逐像素不变**（2026-10-05）：老工程只有 `position_pct`（或更老的枚举），
+    /// 迁移把它同时喂给两轴。理由：老语义是「沿**留边轴**插值、交叉轴居中」，而贴满的那条轴
+    /// **余量为 0** ⇒ 代入什么值都不动。三种轴（x / y / fill）逐值对拍。
+    #[test]
+    fn legacy_single_pct_migrates_pixel_identically() {
+        let cases = [
+            ((1080u32, 1920u32), (1920u32, 1080u32)), // ① 竖素材进横画布 → axis x
+            ((2560, 1080), (1080, 1920)),             // ② 横素材进竖画布 → axis y
+            ((1080, 1920), (1080, 1920)),             // ③ 竖素材进竖画布 → fill
+        ];
+        for (src, canvas) in cases {
+            for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
+                let mut old = ProjectFile::example();
+                old.canvas.orientation =
+                    if canvas.1 > canvas.0 { "portrait" } else { "landscape" }.into();
+                old.stage.position_pct = Some(pct);
+                let old_fit = old.resolve_stage(Some(src));
+                // 迁移 = 两轴都写这个值（`to_toml_commented` 写的就是新键）
+                let mut new = ProjectFile::example();
+                new.canvas.orientation = old.canvas.orientation.clone();
+                new.stage.position_x_pct = Some(pct);
+                new.stage.position_y_pct = Some(pct);
+                let new_fit = new.resolve_stage(Some(src));
+                assert_eq!(
+                    stage_draw_rect(&old_fit, src, canvas),
+                    stage_draw_rect(&new_fit, src, canvas),
+                    "{src:?} 进 {canvas:?} pct={pct} 迁移后必须逐值相同"
+                );
+            }
         }
     }
 
@@ -2034,7 +2242,8 @@ mod canvas_stage_tests {
         cfg.stage.bg_mode = "color".into();
         cfg.stage.bg_color = "#123456".into();
         cfg.stage.blur_scale = 2.0;
-        cfg.stage.position_pct = Some(75.0);
+        cfg.stage.position_x_pct = Some(75.0);
+        cfg.stage.position_y_pct = Some(25.0);
         cfg.stage.scale = 1.2;
         cfg.stage.padding = 24;
         cfg.sticker.position_mode = "manual".into();
@@ -2052,12 +2261,16 @@ mod canvas_stage_tests {
         let stage_sec = raw.split("[stage]").nth(1).expect("要有 [stage] 段");
         let stage_sec = stage_sec.split("\n[").next().unwrap_or("");
         assert!(!stage_sec.contains("position ="), "老 stage.position 不该再写出:\n{stage_sec}");
-        assert!(stage_sec.contains("position_pct"), "新字段要在:\n{stage_sec}");
+        assert!(stage_sec.contains("position_x_pct"), "新字段要在:\n{stage_sec}");
+        assert!(stage_sec.contains("position_y_pct"), "新字段要在:\n{stage_sec}");
+        // ⚠️ 单值老字段也**只读不写**：再保存一次就完成迁移，别让两个源并存
+        assert!(!stage_sec.contains("position_pct ="), "老单值字段不该再写出:\n{stage_sec}");
         let back: ProjectFile =
             toml::from_str(&yekitrim_core::config::version::strip_version_key(&raw).unwrap())
                 .expect("新表应可回读");
         assert_eq!(back.canvas.size(), (1080, 1920));
-        assert_eq!(back.stage.position_pct, Some(75.0));
+        assert_eq!(back.stage.position_x_pct, Some(75.0));
+        assert_eq!(back.stage.position_y_pct, Some(25.0));
         assert_eq!(back.stage.bg_mode, "color");
         assert_eq!(back.stage.bg_color, "#123456");
         assert!((back.stage.blur_scale - 2.0).abs() < 1e-9);
@@ -2065,6 +2278,51 @@ mod canvas_stage_tests {
         assert_eq!(back.stage.padding, 24);
         assert_eq!(back.sticker.position_mode, "manual");
         assert_eq!(back.sticker.position, "25% 70%");
+    }
+
+    /// **写盘时把老单值固化到两轴**（`migrate_position_pct`）：`position_pct` 是
+    /// `skip_serializing` 的只读兼容字段，不固化就是"用户只动一条轴、另一条轴下次加载跳回 50"。
+    #[test]
+    fn legacy_single_pct_is_frozen_into_both_axes_on_save() {
+        // 缺两轴 ⇒ 都补上，而且**落盘的是新键**
+        let mut cfg = ProjectFile::example();
+        cfg.stage.position_pct = Some(75.0);
+        let mut probe = cfg.stage.clone();
+        assert!(probe.migrate_position_pct(), "缺两条轴时应该补");
+        let raw = cfg.to_toml_commented().unwrap();
+        let sec = raw.split("[stage]").nth(1).expect("[stage] 段");
+        let sec = sec.split("\n[").next().unwrap_or("");
+        assert!(sec.contains("position_x_pct = 75.0"), "{sec}");
+        assert!(sec.contains("position_y_pct = 75.0"), "{sec}");
+        assert!(!sec.contains("position_pct ="), "老单值不该再写出:
+{sec}");
+
+        // 只缺一条 ⇒ **缺一补一**（已给的那条不被覆盖）
+        let mut half = ProjectFile::example();
+        half.stage.position_pct = Some(75.0);
+        half.stage.position_x_pct = Some(25.0);
+        assert!(half.stage.migrate_position_pct());
+        assert_eq!(
+            (half.stage.position_x_pct, half.stage.position_y_pct),
+            (Some(25.0), Some(75.0))
+        );
+
+        // 两轴都有值 ⇒ 一个数都不动（返回 false）
+        let mut both = ProjectFile::example();
+        both.stage.position_pct = Some(75.0);
+        both.stage.position_x_pct = Some(0.0);
+        both.stage.position_y_pct = Some(100.0);
+        assert!(!both.stage.migrate_position_pct());
+        assert_eq!(
+            (both.stage.position_x_pct, both.stage.position_y_pct),
+            (Some(0.0), Some(100.0))
+        );
+
+        // 老单值非有限（NaN）⇒ 不动：NaN 不能落盘、也不能喂进两轴
+        let mut nan = ProjectFile::example();
+        nan.stage.position_pct = Some(f64::NAN);
+        assert!(!nan.stage.migrate_position_pct());
+        assert_eq!((nan.stage.position_x_pct, nan.stage.position_y_pct), (None, None));
     }
 
     /// **存量工程的零回归**：没有这三张表的老 polish.toml，解析结果必须等同改造前
@@ -2075,6 +2333,8 @@ mod canvas_stage_tests {
         assert_eq!(cfg.canvas.size(), (1920, 1080));
         assert_eq!(cfg.stage.position, "auto", "老枚举仍在（只读兼容）");
         assert_eq!(cfg.stage.position_pct, None, "没写过 ⇒ None，按老枚举换算");
+        assert_eq!(cfg.stage.position_x_pct, None);
+        assert_eq!(cfg.stage.position_y_pct, None);
         // 缺省背景 2026-10-02 起是 blur（老值 auto 与它等价，解析结果一致）
         assert_eq!(cfg.stage.bg_mode, "blur");
         assert_eq!(cfg.stage.scale, 1.0);
@@ -2088,12 +2348,28 @@ mod canvas_stage_tests {
             ("x", "center", "blur"),
             "竖素材 + auto 位置 ⇒ 左右留边 + 居中 + 模糊底"
         );
-        assert!((f.position_pct - 50.0).abs() < 1e-9);
+        assert!((f.position_x_pct - 50.0).abs() < 1e-9 && (f.position_y_pct - 50.0).abs() < 1e-9);
+        // 竖素材进横画布：X 有余量（能动）、Y 正好贴满（余量 0 ⇒ 界面置灰那条滑杆）
+        assert!((f.free_x - 1312.5).abs() < 1e-9 && f.free_y == 0.0, "{f:?}");
     }
 
     /// **模板消费面的一致性钉子**：`_canvas.stage` 的每个字段、JS 里拼出的每个 class、
     /// 每个 CSS 变量，都必须真在 `templates/index.html` 里有定义/被读到 ——
     /// 这类错误**不会编译报错**，只会表现成"改了没反应"，是最难查的一类回归。
+    /// **`.portrait` 类选择器**（点号 + `portrait`，后面不是标识符字符）在模板里是否还在。
+    ///
+    /// 手写扫描、不引正则：这个 crate 不为一条测试判据加依赖。两种合法用法必须**不**命中：
+    /// `orientation === 'portrait'`（枚举值，前面不是点）与 `CFG.portrait_no_camera` /
+    /// `idx.portraitNoCamera`（属性访问，`portrait` 后面还接着标识符字符）。
+    fn has_portrait_class(html: &str) -> bool {
+        html.match_indices(".portrait").any(|(i, _)| {
+            match html[i + ".portrait".len()..].chars().next() {
+                None => true,
+                Some(c) => !(c.is_ascii_alphanumeric() || c == '_'),
+            }
+        })
+    }
+
     #[test]
     fn template_stage_hooks_match_contract() {
         let html = include_str!("../../templates/index.html");
@@ -2101,13 +2377,19 @@ mod canvas_stage_tests {
         let stage = contract["stage"].as_object().expect("stage 必须是对象");
         // 契约字段 ↔ 模板 JS 读的字段名（同名，缺一个就是"注入了却没人消费"）
         for key in [
-            "axis", "object_fit", "position", "position_pct", "bg", "bg_color", "blur_px",
-            "blur_img_scale", "scale", "padding",
+            "axis", "object_fit", "position", "position_x_pct", "position_y_pct", "bg", "bg_color",
+            "blur_px", "blur_img_scale", "scale", "padding",
         ] {
             assert!(stage.contains_key(key), "契约缺 stage.{key}");
             assert!(html.contains(key), "模板没消费 stage.{key}");
         }
-        // CSS class：JS 里是 'axis-'+axis / 'stage-'+position 拼出来的，CSS 必须两套都全
+        // `free_x/free_y`（该轴可平移余量）**故意不在上面那张表里**：它是**编辑器**的置灰依据
+        // （模板的 DOM 修正按 `getComputedStyle` **实测**余量 —— 那是 CSS 布局的真相，见 `stageShiftPx`），
+        // 消费点与判据在 `webui/scripts/check-layout-invariants.mjs`（含变异自证）。
+        for key in ["free_x", "free_y"] {
+            assert!(stage.contains_key(key), "契约缺 stage.{key}");
+        }
+        // CSS class：JS 里是 'axis-'+axis / 恒定的 'stage-center' 拼出来的，CSS 必须都在
         for cls in [
             "axis-fill", "axis-x", "axis-y",
             "stage-center", "stage-left", "stage-right", "stage-top", "stage-bottom",
@@ -2149,9 +2431,12 @@ mod canvas_stage_tests {
         assert!(html.find("ctx.translate(sr.x, sr.y)").unwrap() < video_layer, "CTM 摆位必须在视频层 drawImage 之前");
         // 改造前的竖屏布局（`.portrait` 类 + `left/center`）必须彻底退场，
         // 留着就会和新的 `axis-x` + `stage-*` 规则打架。
-        // ⚠️ 判据只能是**类选择器**（`.portrait`）：裸 `portrait` 会把合法用法一起打红 ——
-        // 2026-10-02 竖屏三开关落地后，模板里就有 `orientation === 'portrait'`（枚举值）与
-        // `PORTRAIT` / `portraitAllows`（标识符），它们**都不是**布局残留。
-        assert!(!html.contains(".portrait"), "模板里还有老的 .portrait 布局残留");
+        // ⚠️ 判据只能是**类选择器**（`.portrait` 且后面不是标识符字符）：裸 `portrait` 会把合法用法
+        // 一起打红 —— 2026-10-02 竖屏三开关落地后，模板里就有 `orientation === 'portrait'`（枚举值）与
+        // `PORTRAIT` / `portraitAllows`（标识符）；2026-10-05 又多了 `CFG.portrait_no_camera`
+        // （点号后紧跟 `portrait` 的**属性访问**，也不是类选择器）—— 它正是把旧的 `contains(".portrait")`
+        // 顶翻的那一条，所以这里必须按「`.` + `portrait` + 非标识符字符」来判。
+        let portrait_class = has_portrait_class(html);
+        assert!(!portrait_class, "模板里还有老的 .portrait 布局残留");
     }
 }

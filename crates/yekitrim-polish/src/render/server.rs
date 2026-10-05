@@ -379,6 +379,9 @@ impl RenderServer {
             let contract = project.canvas_contract(src_size);
             let vertical = src_size.map(|(w, h)| h > w).unwrap_or(false);
             cfg["vertical"] = serde_json::json!(vertical);
+            // 运镜门：**竖素材进了非竖画布**才关（2026-10-05 收窄，唯一判据在 `ProjectFile`）。
+            // 改造前这里注入的是 `vertical` 本身 ⇒ 竖素材进竖画布也永远打不开运镜。
+            cfg["portrait_no_camera"] = serde_json::json!(project.src_portrait_no_camera(src_size));
             // 兼容：模板里贴纸的老分支仍按 `vertical_position` 取位置（P2 由 `[sticker] manual` 接管）
             cfg["vertical_position"] = contract["stage"]["position"].clone();
             if vertical || project.canvas.is_portrait() {

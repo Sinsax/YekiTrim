@@ -21,8 +21,8 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-sticker-anchor.mjs` — 贴纸锚点/尺寸（事件左上角百分比 vs `[sticker] position` 中心百分比）。
   - `check-cover-stage.mjs` — 封面舞台：黑边覆盖 + 恒横版 + 模糊同源 + 类名穿透 + 图层栈
     （`.pane` 不许复用、`.lyr-props` 要 `min-height`、`COVER_HTML` 只替换一次、`#fx-extra` 无 z-index）。
-  - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖屏归零。
-  - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层。
+  - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖素材进非竖画布归零。
+  - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层 + 两轴摆位。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
   - `check-grid-parity.mjs` — **九宫格四方对拍**：`GRID_RECTS` 与 Rust `grid_rect` **逐值**一致、
     **格子中心**四份实现互差 ≤0.02%（Rust / engine / 模板**手抄表** / 转译器 `1/6`）。

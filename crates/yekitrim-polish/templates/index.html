@@ -699,10 +699,13 @@ function init(){
     var axis=STAGE.axis||'fill';
     vw.style.setProperty('--src-ar',(src.width>0&&src.height>0)?(src.width+' / '+src.height):'16 / 9');
     vw.style.setProperty('--stage-pad',((STAGE.padding||0)/(CANVAS.width||1920)*100)+'%');
-    // 刷新配置时会重建页面；这里仍先清掉上一轮的位置类，避免残留
+    // 刷新配置时会重建页面；这里仍先清掉上一轮的位置类，避免残留。
+    // ⚠️ 基线**恒为居中**（`stage-center`）：连续位置（两轴）由 `stageShiftPx()` 按
+    //    「实测余量 × (pct/100 − 0.5)」补 —— 两轴对称之后 `left/right/top/bottom` 那套三档 class
+    //    连同 `basel` 记账一起退场（少一类漂移源）。
     vw.className='';
     vw.classList.add('axis-'+axis);
-    if(axis!=='fill') vw.classList.add('stage-'+(STAGE.position||'center'));
+    vw.classList.add('stage-center');
     document.getElementById('fit-box').style.setProperty('--stage-scale',String(STAGE.scale||1));
     var fits=document.querySelectorAll('#video-wrap .source-video,#video-wrap .video-canvas');
     for(var i=0;i<fits.length;i++) fits[i].style.objectFit=STAGE.object_fit||'cover';
@@ -859,11 +862,11 @@ function init(){
   segs.forEach(function(s){s.events.forEach(function(e){if(e.type==='camera')camEvents.push(e);});});
   camEvents.sort(function(a,b){return a.time-b.time;});
 
-  if(CFG.vertical){curZoom=1.0;} // 竖屏不做运镜
+  if(CFG.portrait_no_camera){curZoom=1.0;} // 竖素材进非竖画布: 不做运镜（唯一判据由 Rust 注入）
   camEvents.forEach(function(ce){
     var is=ce.time, sd=evDur(ce,1.0), ie=is+sd;
     if(sd<0.5)return;
-    if(CFG.vertical)return; // 竖屏: 跳过运镜动画
+    if(CFG.portrait_no_camera)return; // 竖素材进非竖画布: 跳过运镜动画
     var zoom=ce.zoom||'中';
     var nextZoom=camFactor(zoom);
     var origin=ce.origin||liverOrigin;
@@ -889,27 +892,26 @@ function init(){
   // 幅度与不动点由 canvas IIFE 的 `window.__CAM_STATE` 给出（同一条求值路径，竖屏已在它里面归零）。
   var fitBox = document.getElementById('fit-box');
 
-  /** **连续位置的 DOM 修正（px）**：CSS 的 `stage-*` 只有三档（左/中/右），
-   *  这里按**实测**余量把盒子挪到 `position_pct` 那一档；`basel` = 当前 class 已经放到的位置
-   *  （0/0.5/1），所以只需要补差值 —— 两端（0/100）差值为 0，天然精确。
-   *  ⚠️ 与出片那条腿（`stageDrawRect` 的 `bx+(bwid-w)*pct`）是**同一条线性插值**：两处一起改。
+  /** **连续位置（两轴）的 DOM 修正（px）**：CSS 的 `#video-wrap` 基线**恒为居中**
+   *  （`applyStage` 只加 `stage-center`），这里按**实测**余量把盒子挪到
+   *  `position_x_pct` / `position_y_pct` 那一档：居中 ⇒ 只需补 `free × (pct/100 − 0.5)`
+   *  （两端 0/100 恰好是 ±free/2，天然精确）。
+   *  ⚠️ 与出片那条腿（`stageDrawRect` 的 `bx+(bwid-w)*pct`）是**同一条线性插值**、
+   *  且**同一条顺序**（先定画面大小 → 绕盒心缩放 → 再插值）：所以余量必须量**缩放后**的画面
+   *  （`clientWidth * scale`）—— `transform` 不改布局尺寸，不乘就会在 `scale≠1` 时整体漂移。
    *  ⚠️ 减的是 `getComputedStyle` 的 padding：`--stage-pad` 是百分比、浏览器已解析成 px，
    *  而 `clientWidth` 含 padding（不减掉会整体偏一个 padding）。 */
   function stageShiftPx() {
     var zero = { dx: 0, dy: 0 };
     var wrap = document.getElementById('video-wrap');
     if (!fitBox || !wrap) return zero;
-    var axis = STAGE.axis || 'fill';
-    if (axis === 'fill') return zero;
-    var pct = (typeof STAGE.position_pct === 'number') ? STAGE.position_pct : 50;
-    var pos = STAGE.position || 'center';
-    var basel = (pos === 'left' || pos === 'top') ? 0 : (pos === 'right' || pos === 'bottom') ? 1 : 0.5;
+    var sc = Number(STAGE.scale) || 1;
     var pad = parseFloat(getComputedStyle(wrap).paddingLeft) || 0;
-    var free = (axis === 'x')
-      ? (wrap.clientWidth - 2 * pad - fitBox.clientWidth)
-      : (wrap.clientHeight - 2 * pad - fitBox.clientHeight);
-    var d = free * (pct / 100 - basel);
-    return (axis === 'x') ? { dx: d, dy: 0 } : { dx: 0, dy: d };
+    var freeX = wrap.clientWidth - 2 * pad - fitBox.clientWidth * sc;
+    var freeY = wrap.clientHeight - 2 * pad - fitBox.clientHeight * sc;
+    var px = (typeof STAGE.position_x_pct === 'number') ? STAGE.position_x_pct : 50;
+    var py = (typeof STAGE.position_y_pct === 'number') ? STAGE.position_y_pct : 50;
+    return { dx: freeX * (px / 100 - 0.5), dy: freeY * (py / 100 - 0.5) };
   }
 
   function applyHandheldDOM(t) {
@@ -1427,12 +1429,14 @@ function init(){
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
     var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
 
-    // 竖视频素材不做运镜 —— **与画布方向无关**（用户报的就是"竖素材进横画布导出还在缩放"）。
+    // 运镜门 = **竖素材进了非竖画布**（`portrait_no_camera`，唯一判据在
+    // `ProjectFile::src_portrait_no_camera`；2026-10-05 从「源竖就关」收窄）。
+    // ⚠️ 竖素材进竖画布现在**放行**：画面正好铺满、放大不会露底，那才是最该有运镜的一档。
     // 与 engine.js `cameraAt` 逐值同口径：zoom 一并归零，不只是 handheld；不动点仍按
     // `layout.liver` 的 origin 给（zoom=1 时用不到，纯为三条 JS 路径同值）。
     // ⚠️ yekitrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
-    // 既有实现（不在 Chrome 出片链路上），两边口径的差异记在这里，别照抄回去。
-    if (CFG.vertical) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
+    // 既有实现（不在出片链路上），两边口径的差异记在这里，别照抄回去。
+    if (CFG.portrait_no_camera) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
 
     var wide = camFactor('远');
     for (var i = 0; i < cam.length; i++) {
@@ -1809,33 +1813,29 @@ function init(){
     if(pad>cap)pad=cap>0?cap:0;
     var bx=pad,by=pad,bwid=cw-pad*2,bhgt=ch-pad*2;
     var axis=st.axis||'fill';
-    // 位置 = **百分比**（0 贴左/贴上 … 100 贴右/贴下）：沿留边轴在两端之间线性插值。
-    // ⚠️ 权威是 `st.position_pct`（五档吸附：0/25/50/75/100）；`st.position` 那个枚举只保证
-    // 两端精确（25/75 会被压成 center）—— **别拿它算几何**，那是「预览与成片不一样」的老套路。
-    var pct=(typeof st.position_pct==='number')?st.position_pct:50;
-    pct=Math.max(0,Math.min(100,pct))/100;
     var x,y,w,h;
     if(axis==='x'){
       h=bhgt; w=bw*h/bh;
       if(w>bwid){w=bwid; h=bh*w/bw;}     // CSS max-width:100% 截住时按 contain 落（等比留边）
-      x=bx+(bwid-w)*pct;
-      y=by+(bhgt-h)/2;
     }else if(axis==='y'){
       w=bwid; h=bh*w/bw;
       if(h>bhgt){h=bhgt; w=bw*h/bh;}     // CSS max-height:100% 同理
-      y=by+(bhgt-h)*pct;
-      x=bx+(bwid-w)/2;
     }else{
       var s=Math.max(bwid/bw,bhgt/bh);
       w=bw*s; h=bh*s;
-      x=bx+(bwid-w)/2; y=by+(bhgt-h)/2;
     }
+    // ② 绕**布局盒中心**乘 `scale`（先定画面大小，再按余量摆位 —— 顺序与 Rust `stage_draw_rect` 逐式一致）
     var sc=st.scale||1;
-    if(Math.abs(sc-1)>1e-9){
-      var mx=x+w/2,my=y+h/2;
-      w*=sc; h*=sc; x=mx-w/2; y=my-h/2;
-    }
-    return {x:x,y:y,w:w,h:h};
+    w*=sc; h*=sc;
+    // ③ 两轴各自在「盒 − 画面」的余量上按 `pct/100` 线性插值（= CSS `background-position` 的百分比语义：
+    //    0 贴左/贴上、0.5 居中、1 贴右/贴下；余量为负时同一条插值就是**裁切取景**）。
+    // ⚠️ 权威是 `st.position_x_pct` / `st.position_y_pct`（各五档吸附：0/25/50/75/100）；`st.position`
+    //    那个枚举只保证两端精确（25/75 会被压成 center）—— **别拿它算几何**。
+    var px=(typeof st.position_x_pct==='number')?st.position_x_pct:50;
+    var py=(typeof st.position_y_pct==='number')?st.position_y_pct:50;
+    px=Math.max(0,Math.min(100,px))/100;
+    py=Math.max(0,Math.min(100,py))/100;
+    return {x:bx+(bwid-w)*px, y:by+(bhgt-h)*py, w:w, h:h};
   }
 
   // 背景层：black / color 铺满纯色；blur = 同一帧画面铺满 + 高斯模糊 + 压暗去饱和，

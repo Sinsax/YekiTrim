@@ -38,22 +38,22 @@
   自证方法：临时放一个只含 `Agent::new(` 的文件进 `crates/yekitrim-polish/src/llm/`，门禁应当 exit 1。
   用法：`python3 scripts/check_module_boundaries.py [-v]`。
 - **`check_module_map.py`** —— 模块卡门禁：读 `docs/module-map.json`（模块 id → 目录 → 卡 → verify），
-  校验**覆盖率 / 预算 / 四节骨架 / 索引表一致 / ⚠️ 行数下限**，违规非零退出。
+  校验**覆盖率 / 预算 / 四节骨架 / 索引一致 / ⚠️ 行数下限**，违规非零退出。
   `coverage_roots`（`crates/*/src`、`webui/src`、`scripts` …）下**每个源文件都必须落在某张卡的目录内**，
   否则报"无主文件"；**任何没登记进注册表的 `AGENTS.md` 也算失败**（卡片会漂移）。
   用法：`python3 scripts/check_module_map.py [-v|--json]`。
-- **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），三段：
-  **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 4 密集键**。
-  曲线那 348 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
+- **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），四段：
+  **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键**。
+  曲线 348 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
   `handheldSway` 的 2×4 正弦与"线性于 amp"、`stickerStateAt` 的四段相位与那条**够不到的**淡出、
-  弹幕在屏窗口的 `danmakuExitMs` 与 Rust 那份 `clamp_display_windows` 的常数对拍；
-  颜色那 13 项钉 `hexColor` 四种写法 + 垃圾输入必须 `null`；
-  **映射那 40 项**（2026-09-30 M2 加、2026-10-01 D5 补到 27：多了 8 项 `overlayBaseAngle` 角度换算）
-  拿一份**合成工程**过一遍 `translate`，钉三类
+  弹幕在屏窗口 `danmakuExitMs` 与 Rust `clamp_display_windows` 常数对拍；
+  颜色 13 项钉 `hexColor` 四种写法 + 垃圾输入必须 `null`；
+  几何 25 项抽 `stageDrawRect` 闭包、与模板逐值对拍（两轴 xy 插值）。
+  **映射那 44 项**拿**合成工程**过一遍 `translate`，钉三类
   "报告里一行、成片里没有"的旧伤：`overlay_type="color"/"fade_in"` 两档、只有 `name` 没有
   `sticker_tag` 的贴纸、以及 `style.camera` 没配时的**按档位默认倍率**（远 0.55 / 近 1.5 / 中 1.3）。
-  `--mutate` 再把 **25 处变异**逐一真改源码文本、加载变异体跑**同一份**检查，要求**全部打红**；
-  每处变异先断言"替换命中一次"（少了这一条，没匹配上的变异体会原样跑绿、看着像"守卫抓不住"）。
+  `--mutate` 把 **26 处变异**逐一真改源码、加载变异体跑**同一份**检查，要求**全部打红**；
+  每处先断言"替换命中一次"（少了这条，没匹配上的变异体原样跑绿，看着像"抓不住"）。
   ⚠️ **新加的检查要抽成函数并在 `mutate` 里一起调** —— 只写在顶层的检查变异台根本不会跑，
   于是那条变异"没被打红"（颜色那条第一版就是这么漏的）。
   用法：`node scripts/check-yekitrim-translator.mjs [--mutate]`。改了 `tools/` 必须跑它。

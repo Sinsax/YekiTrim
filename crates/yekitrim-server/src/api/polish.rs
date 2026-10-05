@@ -1231,6 +1231,12 @@ pub(super) async fn polish_project_get_impl(
                 "vertical".into(),
                 serde_json::json!(src_size.map(|(w, h)| h > w).unwrap_or(false)),
             );
+            // 运镜门：与出片模板读的**同一个判据**（`ProjectFile::src_portrait_no_camera`）——
+            // 竖素材进了非竖画布才关；竖素材进竖画布放行（2026-10-05 收窄）。
+            obj.insert(
+                "portrait_no_camera".into(),
+                serde_json::json!(cfg.src_portrait_no_camera(src_size)),
+            );
             obj.insert(
                 "vertical_position".into(),
                 contract["stage"]["position"].clone(),
@@ -2343,28 +2349,31 @@ fn polish_project_put_writes_canvas_stage_sticker() {
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.canvas.size(), (1080, 1920));
     assert_eq!(after.mute_ranges.len(), 1, "没提到的字段必须原样保留");
-    // ⚠️ 2026-10-02 起位置的权威是 `position_pct`（老枚举 `position` 已 `skip_serializing`、
-    // 只读兼容）——默认 = 没有新字段 ⇒ 走老枚举换算，`auto` → 50 居中。
-    assert_eq!(after.stage.position_pct, None, "没提交的段走默认（None），不能被顺手重置");
+    // ⚠️ 2026-10-05 起位置的权威是**两轴** `position_x_pct` / `position_y_pct`（老单值
+    // `position_pct` 与老枚举 `position` 都已 `skip_serializing`、只读兼容）——默认 = 没有新字段
+    // ⇒ 走老枚举换算，`auto` → 50 居中。
+    assert_eq!(after.stage.position_x_pct, None, "没提交的段走默认（None），不能被顺手重置");
+    assert_eq!(after.stage.position_y_pct, None, "没提交的段走默认（None），不能被顺手重置");
+    let fit0 = after.resolve_stage(Some((1920, 1080)));
     assert_eq!(
-        after.resolve_stage(Some((1920, 1080))).position_pct,
-        50.0,
-        "缺 position_pct 的老工程按老枚举换算：auto → 50 居中"
+        (fit0.position_x_pct, fit0.position_y_pct),
+        (50.0, 50.0),
+        "缺两轴的老工程按老枚举换算：auto → 50 居中（两轴同值）"
     );
 
-    // 2) 画面构成
+    // 2) 画面构成（两轴各自独立）
     let body = serde_json::json!({ "stage": {
         "bg_mode": "color", "bg_color": "#112233", "blur_scale": 2.0,
-        "position_pct": 100.0, "scale": 1.25, "padding": 30,
+        "position_x_pct": 25.0, "position_y_pct": 100.0, "scale": 1.25, "padding": 30,
     }});
     let _ = polish_project_put_locked(&dir, &body).expect("保存画面构成");
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.canvas.size(), (1080, 1920), "没提交 canvas 就不能被重置");
     let fit = after.resolve_stage(Some((1920, 1080)));
     assert_eq!(fit.axis, "y", "竖画布 × 横素材 = 上下留边");
-    // 位置 = **百分比**（五档之一 100 = 贴下）；老枚举只是过渡期兼容输出。
-    assert_eq!(fit.position_pct, 100.0);
-    assert_eq!(fit.position, "bottom", "竖画布 + pct=100 ⇒ 兼容枚举给 bottom");
+    // 位置 = **两轴百分比**（各五档之一）；老枚举只是过渡期兼容输出。
+    assert_eq!((fit.position_x_pct, fit.position_y_pct), (25.0, 100.0));
+    assert_eq!(fit.position, "bottom", "竖画布 + Y=100 ⇒ 兼容枚举给 bottom");
     assert_eq!(fit.bg, "color");
     assert_eq!(fit.bg_color, "#112233");
     assert!((fit.padding - 16.875).abs() < 1e-9, "30px × k(0.5625)");
@@ -2375,7 +2384,8 @@ fn polish_project_put_writes_canvas_stage_sticker() {
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     assert_eq!(after.sticker.position_mode, "manual");
     assert_eq!(after.sticker.position, "20% 80%");
-    assert_eq!(after.stage.position_pct, Some(100.0), "上一段必须还在");
+    assert_eq!(after.stage.position_x_pct, Some(25.0), "上一段必须还在");
+    assert_eq!(after.stage.position_y_pct, Some(100.0), "上一段必须还在");
 
     // 4) 落到 toml 文本上：段在、段注释在、根级 sticker_source 没被 [sticker] 顶掉
     let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
@@ -2385,27 +2395,58 @@ fn polish_project_put_writes_canvas_stage_sticker() {
         "[sticker]",
         "orientation = \"portrait\"",
         "position_mode = \"manual\"",
-        // ⚠️ 位置写的是新字段；老枚举 `position` 已 `skip_serializing`、**不该再出现在 [stage] 段里**
-        // （判据只在 [stage] 段内断：贴纸与事件也各有一个同名的 `position` 键）。
-        "position_pct = 100.0",
+        // ⚠️ 位置写的是两轴新字段；老枚举 `position` 与老单值 `position_pct` 都已 `skip_serializing`、
+        // **不该再出现在 [stage] 段里**（判据只在 [stage] 段内断：贴纸与事件也各有一个同名 `position` 键）。
+        "position_x_pct = 25.0",
+        "position_y_pct = 100.0",
         "# ===== 画面构成",
         "# ===== 贴纸落点",
         "sticker_source",
     ] {
         assert!(raw.contains(needle), "缺 {needle}:\n{raw}");
     }
+    let stage_sec = raw.split("[stage]").nth(1).unwrap_or("");
+    let stage_sec = stage_sec.split("\n[").next().unwrap_or("");
+    assert!(!stage_sec.contains("position_pct ="), "老单值字段不该再写出:\n{stage_sec}");
 
     // 5) 非法值：文件照存（不篡改用户输入），但渲染侧取到的是安全值
     let body = serde_json::json!({ "stage": {
-        "bg_mode": "frame", "bg_color": "url(evil)", "position_pct": 0.0
+        "bg_mode": "frame", "bg_color": "url(evil)", "position_x_pct": 0.0, "position_y_pct": 0.0
     }});
     let _ = polish_project_put_locked(&dir, &body).expect("保存非法值也不应报错");
     let after = yekitrim_polish::project::load_project(&dir).unwrap();
     let fit = after.resolve_stage(Some((1920, 1080)));
-    assert_eq!(fit.position_pct, 0.0);
+    assert_eq!((fit.position_x_pct, fit.position_y_pct), (0.0, 0.0));
     assert_eq!(fit.position, "top");
     assert_eq!(fit.bg, "blur", "未知 bg_mode 回落 auto → 补边时按模糊处理");
     assert_eq!(fit.bg_color, "#000000", "颜色必须净化，不能把 url(...) 带进模板 CSS");
+
+    // 6) **老单值 `position_pct` 在 API 面上仍能迁移，而且写盘时会固化到两轴**：
+    //    提交它 = 两轴都吃这个值（逐像素不变）；落盘的必须是**新键**，否则 `skip_serializing`
+    //    会让老单值在下次加载时凭空消失（用户只动一条轴、另一条轴跳回 50 —— 静默丢值）。
+    let body = serde_json::json!({ "stage": { "position_pct": 75.0 } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存老单值字段");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    let fit = after.resolve_stage(Some((1920, 1080)));
+    assert_eq!(
+        (after.stage.position_x_pct, after.stage.position_y_pct),
+        (Some(75.0), Some(75.0)),
+        "写盘时必须把老单值固化到两轴（`migrate_position_pct`）"
+    );
+    assert_eq!(
+        (fit.position_x_pct, fit.position_y_pct),
+        (75.0, 75.0),
+        "老单值 ⇒ 两轴同值（贴满的那条轴余量为 0，与老行为逐像素等价）"
+    );
+    // 只动一条轴：另一条轴必须**保持**老值（不是跳回 50）
+    let body = serde_json::json!({ "stage": { "position_pct": 75.0, "position_x_pct": 25.0 } });
+    let _ = polish_project_put_locked(&dir, &body).expect("只提交一条轴 + 老单值");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(
+        (after.stage.position_x_pct, after.stage.position_y_pct),
+        (Some(25.0), Some(75.0)),
+        "缺的那条轴补老单值（缺一补一），已给的那条不被覆盖"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
