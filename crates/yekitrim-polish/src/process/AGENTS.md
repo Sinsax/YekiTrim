@@ -33,8 +33,10 @@
 - `placement`（`mod placement;` **私有**，外部一律走 `cmd_process`）：
   `Frame`（`sticker_scale()` = `min(W,H)/1080`）、`Rect`、`Blocked`、`ObstacleKind`、`CameraShot`、
   `Pick`；`pick_sticker_position(blocked, allow, seed, f) -> Pick`、`sticker_box(x, y, f)`、
-  `camera_states_for(...)`、`transition_secs(label, prev_label, cut)`、`camera_expand`、`parse_origin`、`parse_px`、
-  `caption_band(f, font_size, stroke_px)`、`danmaku_band(f, font_size, stroke_px, ys)`、`main_frame_rect(...)`；
+  `camera_states_for(...)`、`transition_secs(label, prev_label, cut)`、`camera_expand`、`parse_origin_in_stage`、`parse_px`、
+  `caption_band(f, font_size, stroke_px)`、`danmaku_band(f, font_size, stroke_px, ys)`、`main_frame_rect(...)`、
+  `stage_rect(stage, src, canvas)`（主画面矩形 `sr`，唯一真源是 `project::stage_draw_rect`）、
+  `layout_region_rects(region, sr)` / `stage_region_rect(tl, br, sr)`（`layout.<区域>` 的百分比是 **`sr`** 的百分比）；
   常量 `FRAME_W|H = 1920|1080` / `STICKER_SIZE = 280.0` / `STICKER_MARGIN = 32.0` /
   `TRANSITION_SECS = 0.6` / `TRANSIENT_ZOOM = 1.10`。
 

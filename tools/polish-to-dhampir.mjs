@@ -2877,7 +2877,23 @@ export function translate(config, clipDir, outPath, options = {}) {
       }
       return best;
     };
-    /// 每个窗口的密集区间：`[上一个稀疏键 + 1, 窗口末 + 1]`。
+    /// 严格大于 `out` 的第一个稀疏键（没有就给 `Infinity`）。
+    const nextSparse = (out) => {
+      let lo = 0;
+      let hi = sparseSorted.length - 1;
+      let best = Infinity;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (sparseSorted[mid] > out) {
+          best = sparseSorted[mid];
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+      return best;
+    };
+    /// 每个窗口的密集区间：`[上一个稀疏键 + 1, 下一个稀疏键 - 1]`。
     ///
     /// **没有"上一个稀疏键"时就别往前铺。**
     ///
@@ -2886,9 +2902,18 @@ export function translate(config, clipDir, outPath, options = {}) {
     /// 两种情形下窗口**之前**都没有段结构可保护 —— 往前铺到第 0 帧只是白写。
     /// 实测：竖素材那份工程因此写了 **16716** 个关键帧（每帧一个），
     /// 而它们全是常量 `x=0,y=0,scale=1`；只从窗口起点开始写就够。
+    ///
+    /// ⚠️ **右端不许封在窗口末尾**（2026-10-05 修）：封在 `b + 1` 时，窗口之后到**下一个稀疏键**
+    /// 那一段里只有两个稀疏键 ⇒ 曲线退化成**两点直线弦**，`pow2_out` 被拉直 —— 实测过渡后段
+    /// zoom 偏 ~0.04（≈3%、画面边缘 ~29px）。触发条件正是用户报的"shake 与运镜同时存在"
+    /// （shake 窗口压在运镜过渡上）。所以右端铺到**下一个稀疏键的前一帧**；
+    /// 没有下一个稀疏键就铺到最后一个输出帧。左端保持不变（上面那条"16716 键"的教训仍在）。
     const denseRanges = spans.map(([a, b]) => {
       const prev = prevSparse(a);
-      return [prev === -1 ? a : prev + 1, b + 1];
+      const next = nextSparse(b + 1);
+      const right = Number.isFinite(next) ? next - 1 : lastOut;
+      // `max` 只为兜住"下一个稀疏键恰好是 `b + 1`"（那时 `next - 1 = b`，不许把区间收短）
+      return [prev === -1 ? a : prev + 1, Math.max(b + 1, right)];
     });
     const inDenseRange = (out) => denseRanges.some(([a, b]) => out >= a && out <= b);
 
