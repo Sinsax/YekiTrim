@@ -43,7 +43,7 @@
   否则报"无主文件"；**任何没登记进注册表的 `AGENTS.md` 也算失败**（卡片会漂移）。
   用法：`python3 scripts/check_module_map.py [-v|--json]`。
 - **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），三段：
-  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 4 项密集键区间**。
+  **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 4 密集键**。
   曲线那 348 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
   `handheldSway` 的 2×4 正弦与"线性于 amp"、`stickerStateAt` 的四段相位与那条**够不到的**淡出、
   弹幕在屏窗口的 `danmakuExitMs` 与 Rust 那份 `clamp_display_windows` 的常数对拍；
