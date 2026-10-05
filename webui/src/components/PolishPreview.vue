@@ -2811,8 +2811,12 @@ watch(() => props.persistedConfig, (cfg) => {
   if (key === dhampirCfgKey) return
   dhampirCfgKey = key
   if (!dhampirMode.value || !dhampirEngine) return
+  // 工程重载防抖：**150ms**（原 300ms）。它是"落盘完成 → 画面跟上"这段路上除了落盘防抖之外
+  // 唯一的等待，而落盘是离散事件（一次编辑一次 PUT），所以只需盖住"保存紧接着又一次保存"
+  // 的合并；两个防抖加起来从 ~1s 收到 ~0.4s。别再往上抬，也别拿掉（拿掉会把
+  // 「手改的值」与「后处理校准结果」两次重载挤成同一帧，反而看不到中间态）。
   if (dhampirReloadTimer) clearTimeout(dhampirReloadTimer)
-  dhampirReloadTimer = setTimeout(() => { dhampirReloadTimer = 0; reloadDhampirProject() }, 300)
+  dhampirReloadTimer = setTimeout(() => { dhampirReloadTimer = 0; reloadDhampirProject() }, 150)
 }, { immediate: true })
 
 // ===== 默认进 Dhampir（用户要求：默认为 dhampir；旧预览暂时禁用）=====

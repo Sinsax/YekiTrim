@@ -100,7 +100,8 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
 - ⚠️ **别再改回"落盘后 1.2s 自动跑"**：你还在面板里给新建的贴纸填 keyword 时它就会插进来，
   半成品被当成品处理（数量抽稀直接把它删掉）。**落盘 ≠ 编辑完成**：后处理只在 `emit('done')` 之后跑 ——
   面板控件 `change`（失焦/选定；`input` 每敲一键**不算**）/ 取消选中 / 切片段（要带**旧 dir**）/ 组件卸载
-  （卸载前先 `flushSave()`）。700ms 防抖 PUT 落盘；页面侧 `onEditDone` 再 1.5s 合并防抖 →
+  （卸载前先 `flushSave()`）。**250ms** 防抖 PUT 落盘（2026-10-05 由 700ms 收短：触发点都是离散
+  `change`，窗口只需盖住连点合并）；页面侧 `onEditDone` 再 1.5s 合并防抖 →
   `startJob('process', …, {silent:true, keepPreview:true})`。忙时走 `pendingProcess`（存 **dir**），空闲补跑一次。
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；
   `process` 侧三处吸附（`align_stickers_to_subtitles` / Step 2c / `align_pip_shots`）跳过它，
