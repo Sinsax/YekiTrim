@@ -973,6 +973,14 @@ const MUTATIONS = [
     to: "            const parts = String(event.stickerHint || '50% 50%').trim().split(/\\s+/);",
   },
   {
+    // 2026-10-05：两轴 xy 的 **X 轴插值**被改回硬居中 —— 位置滑杆整条失效
+    // （用户拖了没反应，且预览与成片一起静默分叉）。行为判据看不见它（合成工程没有真视频
+    // ⇒ `axis` 恒 `fill`），只有 `checkStageGeom` 抽出来的那段几何能钉住。
+    name: '画面构成的 X 轴位置被改回硬居中（位置滑杆失效）',
+    from: '    x = bx + (bwid - w) * (stagePctX / 100);',
+    to: '    x = bx + (bwid - w) / 2;',
+  },
+  {
     name: '弹幕偏移从源轴挪到成片轴（remap 之后才平移 —— 被裁掉的那段不再丢，时刻却错了）',
     from: [
       "          const cue = rawCues[index];",
@@ -991,7 +999,7 @@ async function loadVariant(source, run) {
   try {
     const file = join(dir, 'polish-to-dhampir.mjs');
     writeFileSync(file, source, 'utf8');
-    return await run(await import(pathToFileURL(file).href));
+    return await run(await import(pathToFileURL(file).href), source);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1019,7 +1027,7 @@ async function mutate() {
     }
     let reason = null;
     try {
-      await loadVariant(mutated, (curves) => {
+      await loadVariant(mutated, (curves, mutatedSource) => {
         checkCurves(curves);
         // 颜色那一段也要跑：不然"退回只认 6 位"这条变异永远不会红（实测踩过）。
         checkColors(curves);
@@ -1029,6 +1037,8 @@ async function mutate() {
         checkStage(curves);
         // 密集键右端那一段同理（③R3，2026-10-05）—— 不跑它这条变异就永远绿。
         checkDenseRanges(curves);
+        // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
+        checkStageGeom(mutatedSource);
       });
     } catch (error) {
       reason = String(error && error.message ? error.message : error).split('\n')[0];
@@ -1045,6 +1055,80 @@ async function mutate() {
     process.exit(1);
   }
   console.log(`全部 ${MUTATIONS.length} 处变异都打红了（守卫不是空转的）。`);
+}
+
+// ---------------------------------------------------------------------------
+// 画面构成的几何（`SR` / `FIT`）：**两轴 xy 的插值式子**（2026-10-05）
+// ---------------------------------------------------------------------------
+//
+// 为什么单独一段：转译器的 `stageDrawRect` 是个**闭包**（读 `axis` / `stagePctX` /
+// `stagePctY` / `stagePadding` / `stageScale` 这几个模块级 const），既没导出、也不在
+// `translate()` 的返回值里；而合成工程里**没有真视频** ⇒ `probeSize` 恒失败 ⇒ `axis` 恒 `fill`
+// ⇒ 它的几何在上面那组行为判据里**完全不可见**（"画面构成"那一组只能钉竖屏三道整类门）。
+//
+// 所以这一段**从源码文本里抽出那个箭头函数**再喂几何表；变异台改的也是同一份文本，
+// 因此它照样能翻面（`--mutate` 那条"X 轴改回硬居中"就是冲它来的）。
+//
+// 数值口径 = 竖素材 `1080x1920` 进横画布 `1920x1080`（`axis=x`）：`w = 1080*1080/1920 = 607.5`。
+const STAGE_RECT_RE = /const stageDrawRect = \(bw, bh, cw, ch\) => \{[\s\S]*?\n {2}\};/;
+function checkStageGeom(source) {
+  let n = 0;
+  const eq = (actual, expected, what) => {
+    n += 1;
+    if (actual !== expected) throw new Error(`${what}：期望 ${expected}，实得 ${actual}`);
+  };
+  const near = (actual, expected, what) => {
+    n += 1;
+    if (!(Math.abs(actual - expected) <= 1e-9)) {
+      throw new Error(`${what}：期望 ${expected}（±1e-9），实得 ${actual}`);
+    }
+  };
+  const hit = source.match(STAGE_RECT_RE);
+  assert.ok(hit, '转译器里找不到 `stageDrawRect`（闭包被改名或搬走了？）');
+  const make = new Function(
+    'axis', 'stagePctX', 'stagePctY', 'stagePadding', 'stageScale',
+    `${hit[0]}
+return stageDrawRect;`,
+  );
+  /// 抽出来的那个是**工厂**（`make(...)` 返回 `stageDrawRect` 本身），还要喂 `bw,bh,cw,ch`。
+  const rect = (axis, px, py, scale, pad = 0, src = [1080, 1920], canvas = [1920, 1080]) =>
+    make(axis, px, py, pad, scale)(...src, ...canvas);
+
+  // ① `scale=2`：**先定画面大小、再按余量插值**（旧顺序「先插值再绕插值后的盒心缩放」在
+  //    X=0 时给 -303.75，画面被推出盒外、右边 1009px 永远是空的）。余量 X = 1920-1215 = 705、
+  //    Y = 1080-2160 = -1080（负数 = 裁切取景）。
+  const r0 = rect('x', 0, 0, 2);
+  near(r0.x, 0, 'scale=2 且 X=0：贴左（不是旧顺序的 -303.75）');
+  near(r0.y, 0, 'scale=2 且 Y=0：露画面顶');
+  near(r0.w, 1215, 'scale=2 的宽 = 607.5×2');
+  near(r0.h, 2160, 'scale=2 的高 = 1080×2');
+  const r1 = rect('x', 50, 50, 2);
+  near(r1.x, 352.5, 'scale=2 居中：X 余量的一半');
+  near(r1.y, -540, 'scale=2 居中：Y 溢出的一半');
+  const r2 = rect('x', 100, 100, 2);
+  near(r2.x, 705, 'scale=2 且 X=100：贴右');
+  near(r2.y, -1080, 'scale=2 且 Y=100：露画面底');
+
+  // ② `scale=1`：X 在左右留边（1312.5）里五档插值；Y **没有余量** ⇒ 取什么值都不动（两轴独立）。
+  for (const [pct, want] of [[0, 0], [25, 328.125], [50, 656.25], [75, 984.375], [100, 1312.5]]) {
+    const r = rect('x', pct, 70, 1);
+    near(r.x, want, `axis=x scale=1 X=${pct}：在留边里线性插值`);
+    near(r.y, 0, `axis=x scale=1：Y 无余量（给 70 也是 0）`);
+  }
+
+  // ③ 同比铺满必须**精确等于整块画布**（存量逐字节零回归的钉子）。
+  const fill = rect('fill', 50, 50, 1, 0, [1080, 1920], [1080, 1920]);
+  eq(fill.x, 0, 'fill + 同比 ⇒ x=0');
+  eq(fill.y, 0, 'fill + 同比 ⇒ y=0');
+  eq(fill.w, 1080, 'fill + 同比 ⇒ w=画布宽');
+  eq(fill.h, 1920, 'fill + 同比 ⇒ h=画布高');
+
+  // ④ 键的读数：两轴新键优先、缺哪条回落单值 `position_pct`、再缺按老枚举（迁移逐像素不变）。
+  assert.ok(/config\.stage\?\.position_x_pct/.test(source), '转译器没读 `position_x_pct`');
+  assert.ok(/config\.stage\?\.position_y_pct/.test(source), '转译器没读 `position_y_pct`');
+  assert.ok(/config\.stage\?\.position_pct/.test(source), '转译器丢了单值老字段的回落');
+  n += 3;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,6 +1532,10 @@ console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全
 
 const stageChecks = checkStage(translatorModule);
 console.log(`✓ 画面构成（合成工程过 translate）：${stageChecks} 项全绿`);
+const geomChecks = checkStageGeom(readFileSync(TRANSLATOR, 'utf8'));
+console.log(`✓ 画面构成的几何（两轴 xy 插值，源码抽函数）：${geomChecks} 项全绿`);
+console.log('  钉住的是 2026-10-05：先定画面大小 → 绕盒心缩放 → **两轴各自**按余量百分比插值；');
+console.log('  scale=1 时与老顺序逐值相同、scale≠1 时 X=0 是贴左（旧顺序 -303.75 = 画面被推出盒外）');
 const denseChecks = checkDenseRanges(translatorModule);
 console.log(`✓ 密集键区间（③R3 右端落点 + 两个边界）：${denseChecks} 项全绿`);
 console.log('  钉住的是 2026-10-02：竖屏画布默认全关（缺字段 = 关）的**特效 / 音效**整类门 ——');

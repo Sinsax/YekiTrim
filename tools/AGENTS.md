@@ -51,7 +51,7 @@
   预览是 0.025s 连续交替（`index.html:532`），出片是固定 0.2s 的四级阶梯（`:1575`）。
 - ⚠️ **改那 6 个纯函数（含 `hexColor`）/ `zoomFactor` / `translate` 或弹幕窗口的 `danmakuExitMs`
   = 必须跑 `--mutate`**：这几条曲线/解析/映射是"看着差不多、差得远"的重灾区，守卫按**逐值**钉了
-  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 4 项密集键区间**，并要求 **25 处变异全部打红**。新增曲线/常量/解析分支/映射时
+  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 25 项几何 + 4 项密集键区间**，并要求 **26 处变异全部打红**。新增曲线/常量/解析分支/映射时
   **往守卫的 `MUTATIONS` 里加一条**（"一条不会红的用例不算用例"）。⚠️ 新加的检查**要抽成函数
   并在 `mutate` 里也调**：只写在顶层的话 `--mutate` 那条路径根本不跑它（颜色那条第一版就是这么漏的）。
   `translate` 与 `zoomFactor` 是**为了守卫才 export** 的（`isEntryPoint` 那道门保证直接跑仍是 CLI）。
@@ -167,8 +167,8 @@
 ## 验证
 
 ```bash
-node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 4 密集键区间
-node scripts/check-yekitrim-translator.mjs --mutate   # 25 处变异必须**全部打红**
+node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键
+node scripts/check-yekitrim-translator.mjs --mutate   # 26 处变异必须**全部打红**
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）

@@ -159,25 +159,128 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 | ⑤ 4e「框选模式不动任何东西直接保存」会改语义 | **真 UX 风险**（显示框 = 包围盒，生效的是 `grid[0]`/逐格障碍） | ⏳ 未动，需求待定 |
 | ⑤ 4f `_canvas.sticker.safe_margin` 零消费者 | **死契约**（全仓只有注入点一处命中，改它无任何效果却长得像 SSOT） | ✅ 已删 `6b6c185`（真值 32px 的五处实现由 `check-sticker-anchor.mjs` 对拍钉住） |
 
-⚠️ **竖素材 `CFG.vertical` 吃掉运镜**（任务书里点名的既有口径）**与用户报的 ③ 不是同一件事**：
+⚠️ **竖素材的运镜门**（任务书里点名的既有口径，2026-10-05 已从「源竖就关」收窄成
+「竖素材进非竖画布」= `portrait_no_camera`，见 §⑧·S5）**与用户报的 ③ 不是同一件事**：
 `getShake` 一个字段都不读 `camera`，shake 的 `ctx.translate` 在 camera 块**之外**、不被 `camScale` 缩放
 （实测 zoom=1.5 时仍是 `translate(42px,-42px) scale(1.5)`），所以竖屏门控**吃不掉 shake** ——
 这条在 §③ 开头已用数值证伪。
 
 ## 剩余缺口与配方（留给下一轮，2026-10-05 收口时记）
 
-1. **③ R3 的专属判据（唯一还缺的"能翻面的用例"）** —— 修已落 `9cd26c3`，三条既有守卫
-   （translator ✓ / `--mutate` 24 处全红 ✓ / drop-list 清单不变 ✓）都过，但**这个行为本身没被判据钉住**
-   （`denseRanges` 是主流程里的内联计算，守卫看不到它）。配方：
-   - 把 `tools/polish-to-dhampir.mjs` 里 `prevSparse` / `nextSparse` / `denseRanges` 那段抽成
-     **顶层 `export function denseRangesFor(spans, sparseSorted, lastOut)`**（主流程改成调它）；
-   - 在 `scripts/check-yekitrim-translator.mjs` 加 `checkDenseRanges(mod)`，至少三条：
-     ① 窗口 `[a,b]` + 下一个稀疏键在 `b+5` ⇒ 右端 = `b+4`（**不是 `b+1`**）；
-     ② 没有下一个稀疏键 ⇒ 右端 = `lastOut`；③ 下一个稀疏键恰是 `b+1` ⇒ 右端不小于 `b+1`；
-   - ⚠️ **抽成函数并在 `mutate()` 里一起调**（`scripts/AGENTS.md` 明写：只写在顶层的检查，
-     变异台根本不跑它 ⇒ 那条变异"没被打红"）；再往 `MUTATIONS` 加一条把右端改回 `b + 1` 的变异。
+1. ~~**③ R3 的专属判据**~~ ✅ **已清**：`tools/polish-to-dhampir.mjs` 抽出
+   `export function denseRangesFor(spans, sparseSorted, lastOut)`，守卫加 `checkDenseRanges`
+   （4 项：`b+4` / `lastOut` / 边界 / 主流程也走它），并进 `MUTATIONS` 一条（右端退回窗口末）。
+   判据每次跑都在输出里（"密集键区间（③R3 右端落点 + 两个边界）"）。
 2. **真出片烟测**：本批改了 `templates/index.html`（3 行：shake 强度取默认），
    `templates/AGENTS.md` 要求"改了模板必须真跑一次带字幕的出片"—— 还没跑。
 3. **⑤ 4e**：真 UX 风险（框选模式不动任何东西直接保存会把"包围盒"写成"自由选框"），**要不要修待用户定**；
 4. **③ R4**：中性基准只写给 0 键层 —— 需要底座"首键之前"的语义证据才能定性（`③ R4` 那条）；
 5. ~~**⑤ 4f**：`_canvas.sticker.safe_margin`~~ **已清**（`6b6c185`）。
+
+## ⑧ 2026-10-05 第二轮：主画面位置改成**两轴 xy**（S1–S7 落地记录）
+
+用户口径：「横素材 竖画布的位置操作改为 xy 操作、带吸附的五段」，并要求整合掉三种方向组合里
+不合理的内容。按 S1→S7 做完，**逐条差异与实据**记在这里。
+
+### 契约（S1）
+
+- `[stage] position_x_pct` / `position_y_pct`（各 0–100，界面两轴各五档吸附 0/25/50/75/100）
+  是**唯一权威**；老单值 `position_pct` 与老枚举 `position` 退成**只读兼容**（`skip_serializing`）。
+- `_canvas.stage.free_x` / `free_y` = 该轴**可平移余量**（布局盒 − 缩放后画面）；
+  界面**只读它**决定哪条滑杆置灰（`0` = 画面正好贴满那条轴 ⇒ 滑杆无效）。
+- 迁移 = 「缺哪条轴就补哪条，补的值取自老单值」⇒ 两轴同值。**贴满的那条轴余量为 0**，
+  代入什么值都不动 ⇒ 与单值时代**逐像素等价**（Rust 单测 `legacy_single_pct_migrates_pixel_identically`
+  跑 ③ 种方向 × 5 档逐值对拍）。
+
+### ⚠️ 与计划不同的一处：把 `scale` 提到插值**之前**（计划里写"公式一个字都不改"，那是错的）
+
+计划里那条论证 —— 「`bwid - w` 在 `scale>1` 时是负数」—— **不成立**：`scale` 是在 `axis` 分支
+**之后**才乘的，所以分支里的 `w` 永远是**未缩放**宽，`bwid - w ≥ 0` 恒成立。按计划原样做的话：
+
+- 竖素材 `1080×1920` 进横画布、`scale=2`、`pct=0` ⇒ 旧序 `x = 0 - 303.75 = -303.75`，
+  画面右边缘停在 **911px**，右边 **1009px 永远是空的**，滑杆怎么拖都盖不满；
+- `axis=x/y` 的两条轴里，交叉轴**在任何 scale 下**都恒为 0 位移 ⇒ 两条滑杆永远只有一条能动，
+  "xy" 只是个摆设。
+
+所以改成 **① 布局盒 → ② 按 axis 定画面大小 → ③ 绕盒心乘 scale → ④ 两轴各自在「盒 − 画面」余量上
+按百分比插值**（= CSS `background-position` 的百分比语义）。性质：
+
+- `scale=1` **或** 两轴都在 50 ⇒ 与旧序**逐值相同**（所以存量横屏、以及所有居中工程零变化）；
+- `scale≠1` 且 `pct≠50` 才不同 —— 那正是"旧序把画面推出盒外"的那一档；
+- 余量为负（画面大于盒）时同一条插值自动变成**裁切取景**：`0` 露画面左上、`100` 露右下
+  ⇒ 前一轮记的「① / ② 没有裁切能力」一并解决，**不需要新增 `axis=cover` 字段**。
+
+⚠️ 这条改了「先插值再绕插值后的盒心缩放」那个 4b 顺序钉子（`config.rs`
+`scale_is_applied_after_position_interpolation` → 改名 `scale_is_applied_before_the_two_axis_percentage`
+并重写期望）。旧值 `-303.75` 仍写在新判据里当**反例**，改回去立刻红。
+
+### ⚠️ 计划外发现的一条**静默丢值**（已修）
+
+老单值是 `skip_serializing` 的只读字段。界面上只动**一条**轴时，落盘只有那一条新键 ⇒ 老单值被丢掉，
+**另一条轴下次加载从老值跳回 50**（用户看到"我只调了水平，垂直自己回中间了"）。
+修法 = `StageConfig::migrate_position_pct()`，在 `to_toml_commented` 里对 clone 调一次
+（缺哪条补哪条、两轴都有值时不动、NaN 不动）。判据：Rust 单测
+`legacy_single_pct_is_frozen_into_both_axes_on_save` + server 侧
+`polish_project_put_writes_canvas_stage_sticker` 的第 6 步（提交老单值 / 只提交一条轴两种形态）。
+**这条是 server 测试先红的**（`left: (50.0, 50.0)`）—— 计划里没有它。
+
+### 四个渲染端 + 转译器（S2 / S3）
+
+| 端 | 改动 |
+|---|---|
+| 模板 `stageDrawRect` | 两轴版本；`applyStage` 的基线**恒为 `stage-center`**（`stage-left/right/top/bottom` 那套三档 class + `basel` 记账整条退场） |
+| 模板 `stageShiftPx` | 「实测余量 × (pct/100 − 0.5)」两轴对称；余量量的是**缩放后**画面（`clientWidth * scale`），`axis=fill` 不再早退（放大后 fill 也能平移） |
+| `PolishPreview.vue` | `measureStageShift` 同式；`stageClass` 恒加 `stage-center`；watch 键换成两轴 |
+| `tools/polish-to-dhampir.mjs` | `stagePctX` / `stagePctY`（缺哪条回落单值）+ `stageDrawRect` 同式 |
+| `engine.js` | 无 stage 几何（只有运镜），只跟着改 S5 的门 |
+
+### 判据（能翻面的）
+
+- `webui/scripts/check-stage-backdrop.mjs`：③c 改成两轴（88 项，原 73）+ **⑩ 与转译器那份
+  `stageDrawRect` 逐值对拍**（12 组参数 × 4 组尺寸 × 4 个数 —— 只改一边就翻面）；
+  **变异 +2**：① 模板 X 轴改回硬居中；② **只改转译器那一份**（跨实现对拍必须翻面）。
+- `webui/scripts/check-layout-invariants.mjs`：⑦ 两轴滑杆 / 惰性轴置灰 / 行内原因 / **放大后位置组要出现**
+  （**变异 ×5**）、⑧ 竖屏三开关的行内说明（**变异 ×1**）。
+- `scripts/check-yekitrim-translator.mjs`：新增 `checkStageGeom`（**25 项**，从源码抽闭包喂几何表 ——
+  合成工程没有真视频，`axis` 恒 `fill`，几何在那组行为判据里**不可见**）+ **变异 +1**（共 **26** 处）。
+- Rust：`stage_draw_rect` 两轴单测（贴满轴惰性 / `scale=2` 两轴都动 / 同比铺满精确 `(0,0,W,H)`）、
+  `free_axes_say_which_slider_is_inert`、迁移逐像素、写盘固化。
+- ⚠️ `template_stage_hooks_match_contract` 的「`.portrait` 残留」判据从 `contains(".portrait")` 改成
+  **类选择器**判定 —— 新增的 `CFG.portrait_no_camera` 正是"点号后紧跟 portrait"的属性访问，
+  把旧判据顶红了（那正是它注释里警告过的那类误判）。
+
+### S5：运镜门从「源竖就关」收窄成「竖素材进非竖画布」（**行为改动**）
+
+改造前判据只是**源** `h > w`，于是**竖素材进竖画布**（画面正好铺满、放大不露底、最该有运镜的一档）
+也永远打不开 —— 用户报的「竖屏素材没法运镜」就是它。现在注入 `portrait_no_camera` =
+`ProjectFile::src_portrait_no_camera` = 源竖 **且** 画布非竖（两处注入点：预览 API 与出片模板），
+四个消费端（模板 ×3 / `engine.js` / 转译器）读它。
+**横素材进竖画布不受影响**（那条仍归 `[stage] portrait_camera`，默认关、可开）。
+判据：`check-handheld.mjs` 多一条「`vertical=true` 而门为 false ⇒ 运镜照常」（= 钉住模板读的是门、
+不是源方向），模板三处早退 + engine + 转译器一起改。
+
+### S6 / UI
+
+- 竖画布三道整类门的说明从 `title` 提到**行内**一句（`check-layout-invariants.mjs` ⑧）。
+- 右栏「画面构成」：**缩放那条常驻**（`scale>1` = 放大裁切，任何比例下都有用）；
+  位置组 = 两条五档滑杆，**贴满的那条轴置灰 + 行内写明"放大后才能平移"**；
+  `showStageGeom = !sameRatio || scale != 1`（同比且没放大时整组隐藏 —— 那时两条都无效；
+  **放大后必须出现**，否则同比工程永远没有裁切取景入口）；背景组改为
+  「契约 `stage.bg != none` 就显示」（比"同比 + 竖屏开关"那套判据少一层推导）。
+
+### 三种方向组合的现状（前一轮的审计表，按本轮改动更新）
+
+| 组合 | axis | 绘制矩形（scale=1） | 位置滑杆 | 运镜 |
+|---|---|---|---|---|
+| 竖素材 → 横画布 | `x` | `(x, 0, 607.5, 1080)`，x 由 `position_x_pct` 在 0–1312.5 之间定 | X 有效 / **Y 置灰** | **关**（门 = 竖素材进非竖画布） |
+| 横素材 → 竖画布 | `y` | `(0, y, 1080, 607.5)`，y 由 `position_y_pct` 定 | Y 有效 / **X 置灰** | 归 `[stage] portrait_camera`（默认关、可开） |
+| 竖素材 → 竖画布 | `fill` | `(0,0,1080,1920)` 精确铺满 | 两条都置灰（`scale=1`）；**放大后两条都变成裁切取景** | **开**（本轮放行） |
+
+### 还没做
+
+- **真出片烟测**（`templates/AGENTS.md` 的硬要求）：本机 `../Dhampir/target/{release,debug}` **没有
+  `dhampir.exe`**，底座那条腿跑不起来 ⇒ **明说跳过**。已做的替代验证：
+  模板三个内联 `<script>` 块过 `new Function` 语法检查（0 错）、
+  `stageDrawRect`（88 项含跨实现对拍）与 `getActiveCamera`（77 项）都是**真执行**的判据、
+  `npm --prefix webui run build` 通过（Vue 那两份真编译）。
+  ⚠️ 编译期输入已重建（dist 指纹 `75094026f1332ea7`）；**跑新构建才有新页面**。

@@ -269,27 +269,35 @@
                         @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
               </div>
 
-              <template v-if="showStageGeom">
-                <div class="small muted mb-4">主画面位置</div>
-                <div class="row mb-6">
-                  <input type="range" class="flex-1" min="0" max="100" step="25" :value="stagePct"
-                         :disabled="stageBusy || !ready"
-                         @change="patchStage({ position_pct: Number($event.target.value) })">
-                  <span class="mono small" style="flex:none;width:3.2em">{{ positionLabel }}</span>
-                </div>
+              <div class="row mb-6">
+                <span class="small muted flex-none">缩放比例</span>
+                <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
+                       :disabled="stageBusy || !ready"
+                       @change="patchStage({ scale: Number($event.target.value) })">
+                <input type="number" class="mono small" style="width:4.4em" min="0.1" max="4" step="0.01"
+                       :value="stageScaleNum" :disabled="stageBusy || !ready"
+                       @change="patchStage({ scale: clampScale($event.target.value) })">
+              </div>
 
-                <div class="row mb-6">
-                  <span class="small muted flex-none">缩放比例</span>
-                  <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
-                         :disabled="stageBusy || !ready"
-                         @change="patchStage({ scale: Number($event.target.value) })">
-                  <input type="number" class="mono small" style="width:4.4em" min="0.1" max="4" step="0.01"
-                         :value="stageScaleNum" :disabled="stageBusy || !ready"
-                         @change="patchStage({ scale: clampScale($event.target.value) })">
-                </div>
+              <!-- 主画面位置 = **两轴各一条五档**（0/25/50/75/100）。贴满的那条轴没有余量
+                   （`free_*` = 0⁻），那条滑杆**置灰并写明原因** —— 否则用户拖了没反应只能猜。
+                   同比铺满且没放大时整组隐藏（那时两条都无效），放大后自动出现。 -->
+              <template v-if="showStageGeom">
+                <div class="small muted mb-4"
+                     title="两轴各自在可平移余量里五档吸附；放大（scale&gt;1）后同一条滑杆变成裁切取景">主画面位置</div>
+                <template v-for="ax in positionAxes" :key="ax.key">
+                  <div class="row mb-4">
+                    <span class="small muted flex-none" style="width:2.6em">{{ ax.label }}</span>
+                    <input type="range" class="flex-1" min="0" max="100" step="25" :value="ax.pct"
+                           :disabled="stageBusy || !ready || ax.inert" :title="ax.inert ? ax.hint : ''"
+                           @change="patchStage({ [ax.key]: Number($event.target.value) })">
+                    <span class="mono small" style="flex:none;width:3.2em">{{ ax.inert ? '—' : ax.text }}</span>
+                  </div>
+                  <div v-if="ax.inert" class="small muted mb-4">{{ ax.hint }}</div>
+                </template>
               </template>
 
-              <template v-if="showStageGeom || bgOnlyAfterSwitch">
+              <template v-if="stageBgVisible">
                 <div class="small muted mb-4">背景</div>
                 <div class="row mb-6 gap-6">
                   <button v-for="b in bgOptions" :key="b.value" class="mini-btn flex-1 jc-center"
@@ -312,7 +320,8 @@
 
               <template v-if="isPortraitCanvas">
                 <div class="small muted mb-4"
-                     title="竖屏画布下这三类默认全关（事件保留在时间轴上，勾上即恢复）">竖屏启用</div>
+                     title="竖屏画布下这三类默认全关；事件保留在时间轴上，勾上即恢复">竖屏启用（默认全关）</div>
+                <div class="small muted mb-6">竖画布默认不渲染运镜 / 特效 / 音效这三类</div>
                 <div class="row mb-6">
                   <label v-for="s in portraitSwitches" :key="s.key" class="row small"
                          style="gap:5px;align-items:center;cursor:pointer">
@@ -1431,24 +1440,38 @@ function toggleStickerSource(name) {
 const genTab = ref('export')
 const stageBusy = ref(false)
 const stageCfg = computed(() => cfg.value?.stage || {
-  bg_mode: 'blur', bg_color: '#000000', blur_scale: 1, position_pct: null, scale: 1, padding: 0,
+  bg_mode: 'blur', bg_color: '#000000', blur_scale: 1, scale: 1, padding: 0,
   portrait_effects: false, portrait_camera: false, portrait_sfx: false,
 })
 const isPortraitCanvas = computed(() => (cfg.value?.canvas?.orientation || 'landscape') === 'portrait')
 
-// ---- 主画面位置：**五档吸附**（0/25/50/75/100），唯一权威是契约里的 `position_pct` ----
-// 老工程的 `[stage] position` 枚举由 Rust `stage_position_pct` 一次性折算（`auto` → 50 居中），
-// 所以这里只读 `_canvas.stage.position_pct`，**不再有「自动」这一档**。
-const stagePct = computed(() => {
-  const p = Number(cfg.value?._canvas?.stage?.position_pct)
-  return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : 50
-})
-const positionLabel = computed(() => {
-  const i = Math.max(0, Math.min(4, Math.round(stagePct.value / 25)))
-  return (isPortraitCanvas.value
-    ? ['靠上', '偏上', '居中', '偏下', '靠下']
-    : ['靠左', '偏左', '居中', '偏右', '靠右'])[i]
-})
+// ---- 主画面位置：**两轴各一条五档**（0/25/50/75/100），唯一权威是契约里的两轴百分比 ----
+// 老工程的单值 `position_pct` / 老枚举 `position` 由 Rust `resolve_stage` 一次性折算到两轴
+// （`auto` → 50 居中），所以这里只读 `_canvas.stage.position_x_pct` / `position_y_pct`。
+const AXIS_LABELS = {
+  position_x_pct: ['靠左', '偏左', '居中', '偏右', '靠右'],
+  position_y_pct: ['靠上', '偏上', '居中', '偏下', '靠下'],
+}
+/** 两轴的**五档滑杆**。`free_x` / `free_y`（该轴可平移余量）由 Rust `resolve_stage` 算出来 ——
+ *  界面**只读它**决定置灰，绝不自己按 `axis`/`scale` 再推一遍（那是第二份公式）。
+ *  `free == 0` = 画面正好贴满那条轴 ⇒ 滑杆无效；置灰 + 行内写明原因（放大后才有效）。 */
+const positionAxes = computed(() => ['position_x_pct', 'position_y_pct'].map((key) => {
+  const st = cfg.value?._canvas?.stage || {}
+  const pctRaw = Number(st[key])
+  const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, pctRaw)) : 50
+  const free = Number(key === 'position_x_pct' ? st.free_x : st.free_y)
+  const inert = Number.isFinite(free) && free === 0
+  const i = Math.max(0, Math.min(4, Math.round(pct / 25)))
+  const horizontal = key === 'position_x_pct'
+  return {
+    key,
+    pct,
+    inert,
+    label: horizontal ? '水平' : '垂直',
+    text: AXIS_LABELS[key][i],
+    hint: (horizontal ? '横向' : '纵向') + '已贴满，放大后才能平移',
+  }
+}))
 /** 源与画布**同比**（交叉相乘；与 Rust 推 axis 同一条判据）。读不到源尺寸 ⇒ 不算同比（照常显示）。 */
 const sameRatio = computed(() => {
   const c = cfg.value?._canvas
@@ -1456,13 +1479,17 @@ const sameRatio = computed(() => {
   if (!c || !s?.width || !s?.height) return false
   return s.width * c.height === s.height * c.width
 })
-const anyPortraitSwitchOn = computed(() =>
-  ['portrait_effects', 'portrait_camera', 'portrait_sfx'].some((k) => stageCfg.value[k] === true))
-/** 位置 / 缩放：**同比时整组隐藏**（用户 2026-10-02 口径：铺满时调它们看不出效果） */
-const showStageGeom = computed(() => !sameRatio.value)
-/** 背景：同比时也藏；**例外** = 竖屏且开了任一开关（画面会被挪开 ⇒ 会露边，衬底才有意义） */
-const bgOnlyAfterSwitch = computed(() =>
-  sameRatio.value && isPortraitCanvas.value && anyPortraitSwitchOn.value)
+/** 位置那组：同比且**没放大**时整组隐藏（铺满 ⇒ 两条滑杆都无效、调了看不出效果）；
+ *  ⚠️ **放大后必须出现** —— 否则 `scale>1` 的裁切取景能力在这类工程里根本没有入口。
+ *  缩放那条**不在这组里**（任何比例下都有用：>1 = 放大裁切），常驻。 */
+const showStageGeom = computed(() => !sameRatio.value || stageScaleNum.value !== 1)
+/** 背景：契约说 `bg=none`（横画布铺满、画面铺满画布）时调它看不出效果 ⇒ 隐藏；
+ *  竖画布铺满仍铺衬底（`resolve_stage` 里那条画布方向的门控），照常显示。 */
+const stageBgVisible = computed(() => {
+  const st = cfg.value?._canvas?.stage
+  if (!st) return true
+  return (st.bg || 'none') !== 'none'
+})
 /** 竖屏画布专属三开关（缺字段 = 关；Rust 侧同样按缺字段 = false 处理） */
 const portraitSwitches = [
   { key: 'portrait_effects', label: '特效' },
@@ -1494,8 +1521,9 @@ function clampScale(v) {
 async function patchStage(patch) {
   if (!ready.value || stageBusy.value) return
   const next = { ...stageCfg.value, ...patch }
-  // ⚠️ `null`/`undefined` 必须在提交前摘掉：老工程没有 `position_pct`，直接透传会把 `null`
-  // 塞进深合并（服务端 `patch_config_file` 是按值合并的），而 TOML 没有 null 这种值。
+  // ⚠️ `null`/`undefined` 必须在提交前摘掉：老工程没有两轴百分比（`_canvas` 拿不到时是 50 的
+  // 兜底值，不是 null），而 `patch_config_file` 是按值深合并的，透传 `null` 会写进 TOML
+  // （TOML 没有 null 这种值）。
   for (const k of Object.keys(next)) {
     if (next[k] === null || next[k] === undefined) delete next[k]
   }

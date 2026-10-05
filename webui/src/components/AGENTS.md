@@ -46,11 +46,11 @@
 - **手工放的事件（`manual`）后处理一律不改写**：新建（`addEventAt`）、复制（`duplicateSelected`）与改时间都打这个标记；**吸附与 `cap_events` 抽稀全跳过**。
 - **属性面板用 `<Teleport :to="teleportTo">` 投到 `PolishView` 预览卡里的 `#tl-props-host`**（选中/编辑逻辑留在组件里）。
   **⚠️ 必须门控 Teleport**：目标是**挂载时**解析的，而那时子树还没进 document ⇒ 直接 `:to="propsTarget"` 会
-  解析到 null、**面板整块不渲染**（做法与踩坑：`docs/webui-components.md` ①.5）。
+  解析到 null、**面板整块不渲染**（踩坑：`docs/webui-components.md` ①.5）。
 - ⚠️ **别用裸 `<template>` 包裹要无条件渲染的内容**：Vue 会把它渲染成真正的 `<template>` 元素，
   要无条件渲染就直接把内容展开。同理：**前端布局类改动必须做几何断言**（`getBoundingClientRect()` 宽高 > 0）。
 - ⚠️ 写 headless harness 时：**`app.mount(host)` 会清空 `host` 的内容**、选中块只能靠 **pointerdown**
-  （`block.click()` 不选中）—— 布局与做法见 `docs/webui-components.md` ①.5。
+  （`block.click()` 不选中）—— 见 `docs/webui-components.md` ①.5。
 - **播放头跟随 = 只在播放时跟，且越界才滚、只滚刚好**：`watch(currentTime)` 第一句是 `if (!props.playing) return`；
   `drag`/`rulerDragging`/手动滚动后 2 秒（`userScrolling`）一律不跟。**别再退回"每帧把播放头钉在 30% 处"**。
 - **分段为空时时间轴照常渲染**：「去静音」在时间轴头部**常显**，**别再加回 `v-if="segments.length"` 门控**；
@@ -146,8 +146,8 @@
   做 `scale`，`s ≥ 1` 四周一律向外；露底只在画中画 `zoom_wide < 1`，刻意留黑边 `(1-factor)/2×1920 = 432px`）。
   三处兜底默认值（`default_zoom_mid/close/wide()`、模板与 `engine.js` 的 `camFactor`）一起改。
   **别再退回"靠 prompt/界面拦"**：守卫是唯一兜底。
-- ⚠ **竖屏（`vertical = true`）跟运镜一起屏蔽**：四条求值路径全部归零（`timeline::evaluate_frame`、
-  模板 `getActiveCamera` 返回 `CFG.vertical ? 0 : handheld`、`engine.js cameraAt` 竖屏分支返回 `handheld: 0`）。
+- ⚠ **运镜门 = 竖素材进非竖画布**（`portrait_no_camera`，2026-10-05 收窄）：模板 `getActiveCamera`
+  与 `engine.js cameraAt` 整条返回 `zoom=1 / handheld=0`；竖素材进竖画布**放行**（最该有运镜的一档）。
   **画中画到点收工**：`close_pip_shots` 补一条**回镜头**真事件，档位/不动点取**时间上**前一条非画中画运镜的
   **落点**；下一条在 `MIN_RETURN_SECS`(0.5s) 内就来则不补。幂等。⚠️ **前后镜头按时间算，不按文件顺序**（段之间时间上会重叠，求值器也先按时间排序再走）。
 - `process` 给每个 ≥1s 且没有运镜的段补 `zoom="中", anchor="liver"`；改默认档位/锚点就在这一处

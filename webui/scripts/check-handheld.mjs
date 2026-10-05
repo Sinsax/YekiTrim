@@ -140,7 +140,7 @@ const STUB = `
   function gridOrigin() { return '65% 50%'; }
   var CW = 1920, CH = 1080;
   var EVENT_IDX = { layout: {} };
-  var CFG = { vertical: false, style: { camera: {} } };
+  var CFG = { vertical: false, portrait_no_camera: false, style: { camera: {} } };
 `
 const tplCam = new Function(`${STUB}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`)()
 const engCam = new Function(`${STUB}\n${extractFunction(engineSrc, 'cameraAt')}\n return cameraAt`)()
@@ -153,7 +153,7 @@ const CAMS = [
   { time: 13.0, duration: 3.0, ev: { zoom: '远', handheld: true } },
   { time: 17.0, duration: 3.0, ev: { zoom: '中', handheld: false } },
 ]
-const engIdx = { vertical: false, camera: CAMS, camStyle: {}, cv: { W: 1920, H: 1080 }, layout: {} }
+const engIdx = { vertical: false, portraitNoCamera: false, camera: CAMS, camStyle: {}, cv: { W: 1920, H: 1080 }, layout: {} }
 
 console.log('\n起停状态机对拍（幅度曲线 + 景别，逐采样点）')
 for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0, 13.5, 16.9, 17.0, 17.3, 18.0, 25.0, 40.0]) {
@@ -165,36 +165,53 @@ for (const t of [0, 0.3, 0.6, 2, 5.9, 6.0, 6.3, 6.6, 9.9, 10.0, 10.2, 12.9, 13.0
     { handheld: round(b.handheld), zoom: round(b.zoom), ox: round(b.ox, 3), oy: round(b.oy, 3) }
   )
 }
-// 竖素材必须**整条**归零（模板 getActiveCamera 的口径；engine cameraAt 另有自己的门）。
+// 运镜门 = **竖素材进了非竖画布**（2026-10-05 收窄；注入键 `portrait_no_camera`，
+// 唯一判据在 Rust `ProjectFile::src_portrait_no_camera` = 源竖 **且** 画布非竖）。
 // 用户报的「竖屏素材没禁运镜、横屏导出也还在缩放」= 模板曾只归零 handheld、zoom 照跑：
 // 这一条就是那个门，摘掉它 zoom 立刻回到 1.5。
+// ⚠️ 竖素材进**竖画布**现在**放行**（画面正好铺满、放大不露底，那才是最该有运镜的一档）——
+//    所以门读的是新键，**不是** `CFG.vertical`；下面那条 `verticalOnly` 用例就是钉这件事的。
 {
-  const verticalSrc = STUB.replace('{ vertical: false,', '{ vertical: true,')
-  const verticalTpl = new Function(
-    `${verticalSrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
+  const gatedSrc = STUB.replace('vertical: false, portrait_no_camera: false', 'vertical: true, portrait_no_camera: true')
+  const gatedTpl = new Function(
+    `${gatedSrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
   )()
-  const tv = verticalTpl(2.0, CAMS)
-  check('[template] 竖素材 → 幅度归零', tv.handheld, 0)
-  check('[template] 竖素材 → 景别也归零（zoom=1，横画布导出同样禁）', tv.zoom, 1)
-  const idxV = { ...engIdx, vertical: true }
+  const tv = gatedTpl(2.0, CAMS)
+  check('[template] 竖素材进非竖画布 → 幅度归零', tv.handheld, 0)
+  check('[template] 竖素材进非竖画布 → 景别也归零（zoom=1）', tv.zoom, 1)
+  const idxV = { ...engIdx, vertical: true, portraitNoCamera: true }
   const ev = engCam(idxV, 2.0)
-  check('[engine  ] 竖素材 → 幅度归零', ev.handheld, 0)
-  check('[对拍] 竖素材 → 模板与 engine 的 zoom / 不动点逐值一致',
+  check('[engine  ] 竖素材进非竖画布 → 幅度归零', ev.handheld, 0)
+  check('[对拍] 竖素材进非竖画布 → 模板与 engine 的 zoom / 不动点逐值一致',
     { zoom: round(tv.zoom), ox: round(tv.ox, 3), oy: round(tv.oy, 3) },
     { zoom: round(ev.zoom), ox: round(ev.ox, 3), oy: round(ev.oy, 3) })
 
-  // 自证有效：把模板的竖素材门摘掉 → 上面两条必须翻面（CAMS 在 t=2.0 是「近」= 1.5、摇摆开着）
-  const noGate = html.replace('if (CFG.vertical) return { zoom: 1.0,', 'if (false) return { zoom: 1.0,')
-  check('[变异] 竖素材门确实被摘掉（源码被改了）', noGate !== html, true)
+  // ⚠️ **竖素材进竖画布照样有运镜**（门为 false 时 `vertical` 一点作用都没有）——
+  //    这条把「模板读的是门、不是源方向」钉死：改回 `CFG.vertical` 立刻翻面。
+  const verticalOnlySrc = STUB.replace('vertical: false, portrait_no_camera: false', 'vertical: true, portrait_no_camera: false')
+  const verticalOnlyTpl = new Function(
+    `${verticalOnlySrc}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`
+  )()
+  const vo = verticalOnlyTpl(2.0, CAMS)
+  check('[template] 竖素材进竖画布 → 运镜照常（门是「方向不一致」，不是「源竖」）', vo.zoom, 1.5)
+  check('[template] 竖素材进竖画布 → 摆动也照常', vo.handheld, 1)
+  const idxVO = { ...engIdx, vertical: true, portraitNoCamera: false }
+  const evo = engCam(idxVO, 2.0)
+  check('[对拍] 竖素材进竖画布 → 模板与 engine 逐值一致',
+    { zoom: round(vo.zoom), ox: round(vo.ox, 3), oy: round(vo.oy, 3), handheld: round(vo.handheld) },
+    { zoom: round(evo.zoom), ox: round(evo.ox, 3), oy: round(evo.oy, 3), handheld: round(evo.handheld) })
+
+  // 自证有效：把模板的运镜门摘掉 → 上面两条必须翻面（CAMS 在 t=2.0 是「近」= 1.5、摇摆开着）
+  const noGate = html.replace('if (CFG.portrait_no_camera) return { zoom: 1.0,', 'if (false) return { zoom: 1.0,')
+  check('[变异] 运镜门确实被摘掉（源码被改了）', noGate !== html, true)
   if (noGate !== html) {
     const tplNoGate = new Function(
-      `${verticalSrc}\n${extractFunction(noGate, 'getActiveCamera')}\n return getActiveCamera`
+      `${gatedSrc}\n${extractFunction(noGate, 'getActiveCamera')}\n return getActiveCamera`
     )()
-    check('[变异] 摘掉竖素材门 → zoom 判据翻面（回到 1.5）', tplNoGate(2.0, CAMS).zoom, 1.5)
-    check('[变异] 摘掉竖素材门 → 幅度判据翻面（回到 1）', tplNoGate(2.0, CAMS).handheld, 1)
+    check('[变异] 摘掉运镜门 → zoom 判据翻面（回到 1.5）', tplNoGate(2.0, CAMS).zoom, 1.5)
+    check('[变异] 摘掉运镜门 → 幅度判据翻面（回到 1）', tplNoGate(2.0, CAMS).handheld, 1)
   }
 }
-
 // ── 3c. 瞬时特效强度：三份实现的「缺省 / 0」口径必须一致 ──────────────────────
 // `intensity` 是**像素**位移，`0` 是合法值（= 不抖）。曾经两份预览都写 `ev.intensity || 14`
 // —— falsy 判定把 0 变成 14px ⇒ **预览抖、出片（转译器只认 number）不抖**；而 LLM 提示词的

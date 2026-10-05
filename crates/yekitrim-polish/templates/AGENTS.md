@@ -17,8 +17,9 @@
   - 覆盖层求值 `getOverlayState`（四档：`color` / `gradient` / `fade_in` / `fade_out`；**fade 两档 = 整窗
     线性斜坡、不叠 0.4s 包络**，所以分支必须排在包络之前）与色档助手（`overlay_fade_stop` / `overlayFadeStop`）；
   - `wrapCaptionParts`（字幕限宽折行，上限 `MAX_LINES = 3`、`MIN_RATIO = 0.7`、安全宽 = 画布宽 × 0.875）；
-  - `getActiveCamera` / `cameraAt`（运镜；两句函数开头都有**竖素材门**：`CFG.vertical` → 整条返回
-    `zoom=1 / handheld=0`）、`liverOrigin`（立绘原点，须与 Rust `grid_rect` 对齐）；
+  - `getActiveCamera` / `cameraAt`（运镜；两句函数开头都有**运镜门**：`CFG.portrait_no_camera`
+    （= 竖素材进了非竖画布，Rust 注入）→ 整条返回 `zoom=1 / handheld=0`）、
+    `liverOrigin`（立绘原点，须与 Rust `grid_rect` 对齐）；
   - `stageDrawRect`（视频层摆放矩形，**出片专用、`engine.js` 没有对应实现**）与
     `drawStageBackdrop`（画面衬底：`blur` / `black` / `color` / `none` 四种模式）。
 
@@ -69,9 +70,11 @@
   —— 那是"存量逐字节零回归"的判据。摆位经 CTM 送入矩形（`ctx.translate(sr.x,sr.y)` +
   `ctx.scale(sr.w/CW, sr.h/CH)`），`drawImage` 的 dst **保持字面量 `(0,0,CW,CH)`**：
   顺序钉子与两处变异都锚在它上面，别顺手改成 dest 矩形参数。
-- ⚠️ **竖素材屏蔽运镜与画布方向无关**：判据是**源视频**竖（注入的 `CFG.vertical`，`render/server.rs`
-  按 `h > w` 给），不是画布方向。只在循环末尾归零 `handheld` 不够 —— `zoom` 照旧把画面拖走，
-  而预览侧（`engine.js::cameraAt:310`）早就整条返回了：**预览不动、成片在缩放**，同样不报错。
+- ⚠️ **运镜门 = 竖素材进了非竖画布**（注入的 `CFG.portrait_no_camera`，唯一判据是
+  `ProjectFile::src_portrait_no_camera` = 源竖 **且** 画布非竖；2026-10-05 从「源竖就关」收窄）。
+  只在循环末尾归零 `handheld` 不够 —— `zoom` 照旧把画面拖走，而预览侧（`engine.js::cameraAt`）
+  早就整条返回了：**预览不动、成片在缩放**，同样不报错。⚠️ **竖素材进竖画布放行**（画面正好
+  铺满、放大不露底，那才是最该有运镜的一档）—— 判据别退回读 `CFG.vertical`。
   另注：`yekitrim-render-core::evaluate_frame` 只归零 handheld —— 那是**已删除**的 wgpu 路径留下的
   平行实现，现在没有生产消费者；两边口径差异记在这里，改之前先确认动的是哪条路径。
 - ⚠️ **字幕折行同样是两份实现**（本模板 `wrapCaptionParts` ↔ `engine.js::wrapCaptionParts`），
@@ -86,9 +89,9 @@
 ```bash
 node webui/scripts/check-overlay.mjs        # 覆盖层色档 + fade 两档契约：本模板 ↔ engine.js 逐例对拍（77 项）
 node webui/scripts/check-caption-wrap.mjs   # 折行契约（21 项 + 4 处变异自证）
-node webui/scripts/check-handheld.mjs       # 手持摇摆 + 运镜起停状态机（63 项，含竖素材 zoom/handheld 归零）
+node webui/scripts/check-handheld.mjs       # 手持摇摆 + 运镜起停状态机（77 项，含竖素材进非竖画布归零）
 node webui/scripts/check-sticker-anchor.mjs # 贴纸锚点（64 项）
-node webui/scripts/check-stage-backdrop.mjs # 衬底 + 视频层摆位（73 项 + 8 处变异自证；③b 裸变量 / ③c 几何）
+node webui/scripts/check-stage-backdrop.mjs # 衬底 + 视频层摆位（88 项 + 10 处变异自证；③b 裸变量 / ③c 两轴几何 + 与转译器对拍）
 
 # 改了模板后必须重建二进制，并真跑一次带字幕的出片
 cargo build -p yekitrim-cli

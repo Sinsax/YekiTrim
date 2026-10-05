@@ -217,8 +217,9 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
 
   // **竖屏画布的整类门**：竖屏默认全关、**缺字段 = 关**（与转译器同口径）。
   // 只过滤**建索引**这一步，事件本身一个字都不动 —— 开关打开、重新建索引即完全恢复。
-  // ⚠️ 判据是**画布方向**（`[canvas] orientation`），与 `cameraAt` 里那条「源素材竖」的门
-  //    （`cfg.vertical`）是两条独立的闸：任一条要求禁就禁。
+  // ⚠️ 判据是**画布方向**（`[canvas] orientation`），与 `cameraAt` 里那条「竖素材进了非竖画布」
+  //    的门（`cfg.portrait_no_camera`，由 Rust `ProjectFile::src_portrait_no_camera` 注入）
+  //    是两条独立的闸：任一条要求禁就禁。
   const portrait = (cfg._canvas?.orientation || cfg.canvas?.orientation || 'landscape') === 'portrait'
   const portraitAllows = (type) => {
     if (!portrait) return true
@@ -303,6 +304,9 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   idx.dmStyle = (cfg.style && cfg.style.danmaku) || {}
   idx.camStyle = (cfg.style && cfg.style.camera) || {}
   idx.vertical = !!cfg.vertical
+  // 运镜门：**竖素材进了非竖画布**（与模板 `getActiveCamera` / 转译器同一条，唯一判据在 Rust
+  // `ProjectFile::src_portrait_no_camera`，2026-10-05 从「源竖就关」收窄）——竖素材进竖画布放行。
+  idx.portraitNoCamera = !!cfg.portrait_no_camera
   // 画面构成契约（Rust resolve_stage 唯一推导）：贴纸落点模式 / 字幕安全宽 / 画布尺寸都从这里取
   idx.canvas = cfg._canvas || null
   // 画布参数（由 `_canvas` 推导）：百分比 → 像素、运镜不动点、贴纸几何都用它
@@ -363,8 +367,9 @@ export function cameraAt(idx, t) {
   ox = parseFloat(dp[0]) || 65
   oy = parseFloat(dp[1]) || 50
 
-  // 竖屏不做运镜 —— 手持摇摆是运镜的附加变种，跟随屏蔽
-  if (idx.vertical) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
+  // 竖素材进非竖画布不做运镜 —— 手持摇摆是运镜的附加变种，跟随屏蔽。
+  // ⚠️ 竖素材进竖画布**放行**（画面正好铺满、放大不露底）：那是最该有运镜的一档。
+  if (idx.portraitNoCamera) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
 
   const wide = camFactor('远', idx.camStyle)
   for (const c of idx.camera) {

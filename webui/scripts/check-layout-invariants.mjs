@@ -17,6 +17,13 @@
 //     且**点选落点不许跟着换算**（`[sticker] position` 是另一个键、另一套基准）。
 //     漏掉任一半，只要 `sr ≠ 整块画布` 存下来的区域就不是用户画的那一块，而且**不报错**。
 //
+//  ⑦ 主画面位置的**两轴**滑杆（2026-10-05 xy 改版）：合成一条 `position_pct` 就会丢掉一整个轴；
+//     而**贴满的那条轴没有余量**（`free_* == 0`）—— 不置灰 + 不写原因，用户拖了没反应只能猜。
+//     判据还必须钉住「放大后位置组要出现」：整组只按 `!sameRatio` 藏起来的话，`scale>1` 的裁切取景
+//     在同比工程里**根本没有入口**。
+//
+//  ⑧ 竖画布那三道整类门只挂在 `title` 上等于没说：提示必须在**行内**（用户不会去悬停）。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -48,6 +55,7 @@ const settings = await read('webui/src/views/SettingsView.vue')
 const overview = await read('webui/src/components/HomeClipsOverview.vue')
 const workbench = await read('webui/src/views/WorkbenchView.vue')
 const modelList = await read('webui/src/components/ModelList.vue')
+const polishView = await read('webui/src/views/PolishView.vue')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -179,5 +187,50 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('[变异] ⑥ 摘掉换算后"存盘走换算"判据翻面', /stageToSrRect\(/.test(mutated), false)
 }
 
+// ── ⑦ 主画面位置 = **两轴各一条五档**（2026-10-05）：无效轴置灰 + 行内写明原因 ──
+// 用户口径：「横素材 竖画布的位置操作改为 xy 操作、带吸附的五段」。两件事必须一起在：
+//   ① 两轴各自一条滑杆（提交两轴键，不是合成一条 `position_pct`）；
+//   ② 贴满的那条轴（`free_* == 0`）**置灰 + 写明原因** —— 否则又是一次「拖了没反应」。
+// 置灰判据只许**读契约的 `free_x` / `free_y`**（Rust `resolve_stage` 算的余量）：界面自己按
+// `axis`/`scale` 再推一遍就是第二份公式，改一边必漂。
+{
+  const twoAxes = (s) => s.includes('v-for="ax in positionAxes"')
+    && s.includes('const positionAxes = computed')
+    && s.includes('position_x_pct') && s.includes('position_y_pct')
+  const submitsBoth = (s) => s.includes('patchStage({ [ax.key]: Number($event.target.value) })')
+    && !s.includes('patchStage({ position_pct')
+  const readsFree = (s) => s.includes('st.free_x') && s.includes('st.free_y')
+  const disablesInert = (s) => s.includes(':disabled="stageBusy || !ready || ax.inert"')
+  const hintInline = (s) => s.includes('{{ ax.hint }}') && s.includes('已贴满，放大后才能平移')
+  const afterZoom = (s) => s.includes('!sameRatio.value || stageScaleNum.value !== 1')
+  check('⑦ 两轴各一条滑杆（positionAxes 渲染两轴键）', twoAxes(polishView), true)
+  check('⑦ 提交的是两轴键（不再写 position_pct）', submitsBoth(polishView), true)
+  check('⑦ 置灰判据读契约的 free_x / free_y（不自己推 axis/scale）', readsFree(polishView), true)
+  check('⑦ 无效轴置灰（`:disabled` 带上 ax.inert）', disablesInert(polishView), true)
+  check('⑦ 无效轴的**行内**原因在（不是只挂 title）', hintInline(polishView), true)
+  check('⑦ 放大后位置组要出现（同比工程也有裁切取景入口）', afterZoom(polishView), true)
+  const MUT7 = [
+    ['摘掉无效轴置灰', (s) => s.replace(':disabled="stageBusy || !ready || ax.inert"', ':disabled="stageBusy || !ready"')],
+    ['摘掉行内原因（只留 title）', (s) => s.replace('<div v-if="ax.inert" class="small muted mb-4">{{ ax.hint }}</div>', '')],
+    ['置灰判据改成自己算（不读契约）', (s) => s.replace('st.free_x', 'false ? 0 : 0')],
+    ['退回「同比就整组隐藏」（放大后也没有入口）', (s) => s.replace('!sameRatio.value || stageScaleNum.value !== 1', '!sameRatio.value')],
+    ['两轴合成回单条（位置操作退回一维）', (s) => s.replace('v-for="ax in positionAxes"', 'v-if="false"')],
+  ]
+  for (const [what, mutate] of MUT7) {
+    const m = mutate(polishView)
+    check(`[变异] ⑦ ${what} → 源码确实被改了`, m !== polishView, true)
+    const ok = twoAxes(m) && submitsBoth(m) && readsFree(m) && disablesInert(m) && hintInline(m) && afterZoom(m)
+    check(`[变异] ⑦ ${what} → 判据翻面`, ok, false)
+  }
+}
+
+// ── ⑧ 竖画布三道整类门的说明必须在**行内**（只挂 title = 用户看不到）──
+{
+  const inlineHint = (s) => s.includes('竖画布默认不渲染运镜 / 特效 / 音效这三类')
+  check('⑧ 竖屏三开关的行内说明在（不是只挂 title）', inlineHint(polishView), true)
+  const m = polishView.replace('竖画布默认不渲染运镜 / 特效 / 音效这三类', '竖屏启用')
+  check('[变异] ⑧ 摘掉行内说明 → 源码确实被改了', m !== polishView, true)
+  check('[变异] ⑧ 摘掉行内说明 → 判据翻面', inlineHint(m), false)
+}
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

@@ -1768,24 +1768,25 @@ const cv = computed(() => canvasOf(props.config))
 // 取值来自 `_canvas.stage` —— Rust `ProjectFile::resolve_stage` 唯一推导，前端不重算（两边不可能不一致）。
 // 拿不到 `_canvas`（老接口 / 非 preview 请求）时退回改造前的竖屏规则，行为与以前一致。
 const FALLBACK_STAGE = {
-  axis: 'fill', object_fit: 'cover', position: 'center', bg: 'none',
-  bg_color: '#000000', blur_px: 28, blur_img_scale: 1.187, scale: 1, padding: 0
+  axis: 'fill', object_fit: 'cover', position: 'center',
+  position_x_pct: 50, position_y_pct: 50, free_x: 0, free_y: 0,
+  bg: 'none', bg_color: '#000000', blur_px: 28, blur_img_scale: 1.187, scale: 1, padding: 0
 }
+/** 老接口只有 `vertical_position`（三档枚举）→ 回落成 X 轴百分比（`auto`/居中 → 50）。 */
+const legacyPositionPct = (v) => (v === 'left' || v === 'top' ? 0 : v === 'right' || v === 'bottom' ? 100 : 50)
 const stageFit = computed(() => {
   const s = props.config?._canvas?.stage
   if (s) return s
   return vertical.value
     ? { ...FALLBACK_STAGE, axis: 'x', object_fit: 'contain', bg: 'blur',
-        position: props.config?.vertical_position || 'left' }
+        position_x_pct: legacyPositionPct(props.config?.vertical_position) }
     : FALLBACK_STAGE
 })
 /** 背景层（当前帧模糊）只在 bg=blur 时需要；black / color 走舞台底色 */
 const bgOn = computed(() => stageFit.value.bg === 'blur')
-const stageClass = computed(() => {
-  const s = stageFit.value
-  const axis = s.axis || 'fill'
-  return axis === 'fill' ? ['axis-fill'] : ['axis-' + axis, 'stage-' + (s.position || 'center')]
-})
+/** 基线**恒为居中**：连续位置（两轴）由 `measureStageShift()` 按「实测余量 × (pct/100 − 0.5)」补，
+ *  与出片模板同一条式子（那边也只加 `stage-center`）。 */
+const stageClass = computed(() => ['axis-' + (stageFit.value.axis || 'fill'), 'stage-center'])
 /** fit 作用域的 CSS 变量：放在 `.stage` 上，`.video-wrap` / `.fit-box` / `.bg-video` 全部继承 */
 const stageStyle = computed(() => {
   const c = props.config?._canvas || {}
@@ -1816,11 +1817,12 @@ const stageStyle = computed(() => {
   }
 })
 
-// ---- 连续位置的 DOM 修正（`[stage] position_pct`，2026-10-02）----
-// CSS 的 `stage-*` 只有三档（左/中/右），而契约里的位置是 **0–100 的百分比**（五档吸附）。
-// 这里按**实测**余量把 `.fit-box` 挪到那一档：`basel` = 当前 class 已经放到的位置（0/0.5/1），
-// 所以只需要补差值 —— 两端（0/100）差值为 0，天然精确。
-// ⚠️ 与出片那条腿（模板 `stageDrawRect` 的 `bx+(bwid-w)*pct`）是**同一条线性插值**：两处一起改。
+// ---- 连续位置的 DOM 修正（`[stage] position_x/y_pct`，2026-10-05 两轴）----
+// `#video-wrap` 的基线**恒为居中**，而契约里的位置是**两轴各 0–100**（五档吸附）。
+// 这里按**实测**余量把 `.fit-box` 挪到那一档：居中 ⇒ 只补 `free × (pct/100 − 0.5)`，两端天然精确。
+// ⚠️ 与出片那条腿（模板 `stageDrawRect` 的 `bx+(bwid-w)*px`）是**同一条线性插值**、**同一条顺序**
+//   （先定画面大小 → 绕盒心缩放 → 再插值）：所以余量必须量**缩放后**的画面（`clientWidth * scale`）
+//   —— `transform` 不改布局尺寸，不乘就会在 `scale≠1` 时整体漂移。
 // ⚠️ 减掉 `getComputedStyle` 的 padding：`--stage-pad` 是百分比、浏览器已解析成 px，
 //   而 `clientWidth` 含 padding（不减掉会整体偏一个 padding）。
 const fitBoxRef = ref(null)
@@ -1830,17 +1832,13 @@ function measureStageShift() {
   const wrap = box ? box.parentElement : null
   if (!box || !wrap) return
   const s = stageFit.value
-  const axis = s.axis || 'fill'
-  if (axis === 'fill') { stageShift.value = { dx: 0, dy: 0 }; return }
-  const pct = typeof s.position_pct === 'number' ? s.position_pct : 50
-  const pos = s.position || 'center'
-  const basel = (pos === 'left' || pos === 'top') ? 0 : (pos === 'right' || pos === 'bottom') ? 1 : 0.5
+  const sc = Number(s.scale) || 1
   const pad = parseFloat(getComputedStyle(wrap).paddingLeft) || 0
-  const free = axis === 'x'
-    ? (wrap.clientWidth - 2 * pad - box.clientWidth)
-    : (wrap.clientHeight - 2 * pad - box.clientHeight)
-  const d = free * (pct / 100 - basel)
-  stageShift.value = axis === 'x' ? { dx: d, dy: 0 } : { dx: 0, dy: d }
+  const freeX = wrap.clientWidth - 2 * pad - box.clientWidth * sc
+  const freeY = wrap.clientHeight - 2 * pad - box.clientHeight * sc
+  const px = typeof s.position_x_pct === 'number' ? s.position_x_pct : 50
+  const py = typeof s.position_y_pct === 'number' ? s.position_y_pct : 50
+  stageShift.value = { dx: freeX * (px / 100 - 0.5), dy: freeY * (py / 100 - 0.5) }
 }
 const fitBoxStyle = computed(() => ({
   transform: 'translate(' + stageShift.value.dx + 'px,' + stageShift.value.dy + 'px) scale('
@@ -1849,7 +1847,8 @@ const fitBoxStyle = computed(() => ({
 // 测量时机：契约任一影响几何的字段变化后（下一帧再量，等布局落定）
 watch(() => {
   const s = stageFit.value
-  return [s.axis, s.position, s.position_pct, s.padding, s.scale, props.config?._canvas?.width, props.config?._canvas?.src?.width].join('|')
+  return [s.axis, s.position_x_pct, s.position_y_pct, s.padding, s.scale,
+    props.config?._canvas?.width, props.config?._canvas?.src?.width].join('|')
 }, async () => { await nextTick(); measureStageShift() })
 
 const stickerMap = computed(() => props.config?._assets?.sticker_map || {})

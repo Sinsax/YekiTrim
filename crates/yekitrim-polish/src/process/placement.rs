@@ -1049,9 +1049,10 @@ mod tests {
 
     // ===== 主画面障碍 =====
 
-    /// 测试用 `StageFit`：只关心 axis / position_pct / scale / padding 四项。
+    /// 测试用 `StageFit`：只关心 axis / position_x+y_pct / scale / padding 四项。
     /// `position` 字符串只当**旧三档**用（left/top → 0、right/bottom → 100、其余居中），
-    /// 与 `stage_position_pct` 同口径，方便老用例原样迁移。
+    /// 与 `stage_position_pct` 同口径，方便老用例原样迁移；**两轴同值** = 单值时代的几何
+    /// （贴满的那条轴余量为 0 ⇒ 与老行为逐像素等价）。
     fn stage(axis: &str, position: &str, scale: f64, padding: f64) -> crate::project::StageFit {
         let pct = match position {
             "left" | "top" => 0.0,
@@ -1062,7 +1063,10 @@ mod tests {
             axis: axis.into(),
             object_fit: if axis == "fill" { "cover" } else { "contain" }.into(),
             position: position.into(),
-            position_pct: pct,
+            position_x_pct: pct,
+            position_y_pct: pct,
+            free_x: 0.0,
+            free_y: 0.0,
             bg: if axis == "fill" { "none" } else { "blur" }.into(),
             bg_color: "#000000".into(),
             blur_px: 28,
