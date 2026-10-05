@@ -77,6 +77,11 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
         tracing::info!("  ⚠ Parse 警告: {} (请检查素材文件)", e);
     }
 
+    // **预览代理**（720p / GOP10）：预览定位从"长 GOP 源每次重解"变成"最近的 10 帧"，
+    // 实测 165ms → 18ms；体积约源的一半。**只给预览那条腿读**，出片永远用源。
+    // 失败只 warn、绝不阻断 init（预览回落源，功能不受影响）。
+    let _ = crate::render::proxy::ensure_preview_proxy(path, &example.source.video);
+
     tracing::info!("");
     tracing::info!("Next steps:");
     tracing::info!("  1. Edit .yekitrim/llm.toml — add your LLM API key");

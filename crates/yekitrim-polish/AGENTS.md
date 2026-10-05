@@ -5,7 +5,7 @@
 ## 职责
 
 从 `events.json` 出发生成片段/字幕/贴纸/音效/特效，输出渲染工程与成片。整条链：
-`polish init`（初始化 + 解析字幕弹幕）→ `polish llm`（分段 + 逐段事件）→ `polish process`（后处理 + 下载资源 + 计算位置）
+`polish init`（初始化 + 解析字幕弹幕 + **预览代理**）→ `polish llm`（分段 + 逐段事件）→ `polish process`（后处理 + 下载资源 + 计算位置）
 → `polish render`（底座 Dhampir 整段出画面 + 本仓 ffmpeg 混音/合流）→ `polish cover`（封面）。工程状态只在项目目录的
 `polish.toml` + `data/` 里，不碰数据库。
 
@@ -38,6 +38,13 @@
 不抬就是"弹幕没到左边缘就消失"（录播姬 XML 的 8 秒窗口对中文弹幕普遍不够）。明细见 core/`danmaku` 卡。
 
 `process::cmd_process`（process/ 卡）、`render::{cmd_render, render_chunk_sync}`（render/ 卡）。
+
+- **预览代理**（`render/proxy.rs`）：`polish init` 生成 `<片段>/_proxy_720.mp4`（720p / GOP10 CRF20，
+  **保持源帧率**、音轨 `copy`、幂等、失败不阻断 init），**只给预览那条腿读**
+  （`dhampir::prepare_project` 的 `video` 参数），**出片永远用源**。
+  实测：随机定位 **165ms → 18ms**、体积 **0.52× 源**（全 I 帧那档是 2.2–4.2×，容量在这里是硬约束 ——
+  别为了 18→7ms 把磁盘吃光）。四条能力都由 `tests/preview_proxy.rs` 钉着
+  （720p / 保持帧率 / 关键帧密度 / 幂等+过期回落），`VTEDIT_NO_PROXY=1` 可整体关掉。
 
 ## 边界
 

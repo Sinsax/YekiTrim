@@ -2142,7 +2142,7 @@ mod tests {
             .call(
                 t.req("POST", "/polish/dhampir-project")
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(body))
+                    .body(Body::from(body.clone()))
                     .unwrap(),
             )
             .await;
@@ -2195,6 +2195,37 @@ mod tests {
                 );
             }
         }
+
+        // **预览代理优先**（`polish init` 生成、只给预览那条腿用 —— 出片永远用源）。
+        //
+        // 断言的是**接线**：片段目录里存在新鲜的 `_proxy_720.mp4` 时，工程里的视频素材
+        // 必须指向代理（转译器再按代理探测时基/分辨率，所以画面缩放也是按它算的）。
+        // 这里用假文件就够 —— 探不到就回落 60fps/1920x1080，而 `uri` 一定是代理名。
+        let video_uri = |v: &serde_json::Value| -> String {
+            v["project"]["assets"]
+                .as_array()
+                .and_then(|a| a.iter().find(|x| x["kind"].as_str() == Some("video")))
+                .and_then(|a| a["uri"].as_str())
+                .unwrap_or("<没有视频素材>")
+                .to_string()
+        };
+        assert_eq!(video_uri(&v), "clip.mp4", "没有代理时必须读源");
+        std::fs::write(clip.join("_proxy_720.mp4"), b"not-a-real-video").unwrap();
+        let res2 = t
+            .call(
+                t.req("POST", "/polish/dhampir-project")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res2.status(), StatusCode::OK, "有代理那次也该成功");
+        let v2 = body_json(res2).await;
+        assert_eq!(
+            video_uri(&v2),
+            "_proxy_720.mp4",
+            "片段目录里有新鲜代理时，预览必须读代理（否则它白生成了）"
+        );
     }
 
     /// **wasm 资源转发**：`engine.js` 取得到、`.wasm` 的 MIME 正确、路径穿越被挡。
@@ -3043,7 +3074,16 @@ pub(super) async fn polish_dhampir_project(
             // ⚠️ **预览这条腿必须 `keep_muted = false`**（压缩时间线）：客户端靠"落在被掐掉的段里
         // = 没有对应帧"去跳屏蔽区间，整条时间线会让它一路播过那些段。
         // 出片那条腿相反（`render_video_only` 传 true，屏蔽区间交给尾部那一剪）。
-        let translated = yekitrim_polish::render::dhampir::prepare_project(&clip, &scratch, false)?;
+        // **有预览代理就用它**（`polish init` 生成，见 `render/proxy.rs`）：转译器会按代理
+        // 探测时基/分辨率写进工程，所以画面缩放/取景也是按它算的。
+        // 没有/过期 ⇒ `None`，照旧读源。
+        let preview_video = yekitrim_polish::render::proxy::preview_video_for(&clip);
+        let translated = yekitrim_polish::render::dhampir::prepare_project(
+            &clip,
+            &scratch,
+            false,
+            preview_video.as_deref(),
+        )?;
             let text = std::fs::read_to_string(&translated)
                 .map_err(|e| anyhow::anyhow!("读不出转译产物 {}：{e}", translated.display()))?;
             let mut subs: Vec<(String, String)> = Vec::new();
