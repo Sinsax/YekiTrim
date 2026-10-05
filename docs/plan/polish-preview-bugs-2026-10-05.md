@@ -157,7 +157,7 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 | ⑤ 4c 出片不钳贴纸安全边距 | **真 bug** | ✅ 已修 `4cc0756` |
 | ⑤ 4d 三层叠放顺序三套 | **降级为遗留**（承载那三层的 `.overlay-space` z-index 10 < 画布 40 ⇒ 默认预览里看不见） | ⛔ 不改（改了也看不见，只添风险） |
 | ⑤ 4e「框选模式不动任何东西直接保存」会改语义 | **真 UX 风险**（显示框 = 包围盒，生效的是 `grid[0]`/逐格障碍） | ⏳ 未动，需求待定 |
-| ⑤ 4f `_canvas.sticker.safe_margin` 零消费者 | **死契约**（无害） | ⏳ 未动 |
+| ⑤ 4f `_canvas.sticker.safe_margin` 零消费者 | **死契约**（全仓只有注入点一处命中，改它无任何效果却长得像 SSOT） | ✅ 已删 `6b6c185`（真值 32px 的五处实现由 `check-sticker-anchor.mjs` 对拍钉住） |
 
 ⚠️ **竖素材 `CFG.vertical` 吃掉运镜**（任务书里点名的既有口径）**与用户报的 ③ 不是同一件事**：
 `getShake` 一个字段都不读 `camera`，shake 的 `ctx.translate` 在 camera 块**之外**、不被 `camScale` 缩放
@@ -180,4 +180,4 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
    `templates/AGENTS.md` 要求"改了模板必须真跑一次带字幕的出片"—— 还没跑。
 3. **⑤ 4e**：真 UX 风险（框选模式不动任何东西直接保存会把"包围盒"写成"自由选框"），**要不要修待用户定**；
 4. **③ R4**：中性基准只写给 0 键层 —— 需要底座"首键之前"的语义证据才能定性（`③ R4` 那条）；
-5. **⑤ 4f**：`_canvas.sticker.safe_margin` 零消费者（无害，清理即可）。
+5. ~~**⑤ 4f**：`_canvas.sticker.safe_margin`~~ **已清**（`6b6c185`）。
