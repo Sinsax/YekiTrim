@@ -163,3 +163,21 @@ grep -n 'orientation' -A8 <片段目录>/polish.toml | grep portrait      # 竖�
 `getShake` 一个字段都不读 `camera`，shake 的 `ctx.translate` 在 camera 块**之外**、不被 `camScale` 缩放
 （实测 zoom=1.5 时仍是 `translate(42px,-42px) scale(1.5)`），所以竖屏门控**吃不掉 shake** ——
 这条在 §③ 开头已用数值证伪。
+
+## 剩余缺口与配方（留给下一轮，2026-10-05 收口时记）
+
+1. **③ R3 的专属判据（唯一还缺的"能翻面的用例"）** —— 修已落 `9cd26c3`，三条既有守卫
+   （translator ✓ / `--mutate` 24 处全红 ✓ / drop-list 清单不变 ✓）都过，但**这个行为本身没被判据钉住**
+   （`denseRanges` 是主流程里的内联计算，守卫看不到它）。配方：
+   - 把 `tools/polish-to-dhampir.mjs` 里 `prevSparse` / `nextSparse` / `denseRanges` 那段抽成
+     **顶层 `export function denseRangesFor(spans, sparseSorted, lastOut)`**（主流程改成调它）；
+   - 在 `scripts/check-yekitrim-translator.mjs` 加 `checkDenseRanges(mod)`，至少三条：
+     ① 窗口 `[a,b]` + 下一个稀疏键在 `b+5` ⇒ 右端 = `b+4`（**不是 `b+1`**）；
+     ② 没有下一个稀疏键 ⇒ 右端 = `lastOut`；③ 下一个稀疏键恰是 `b+1` ⇒ 右端不小于 `b+1`；
+   - ⚠️ **抽成函数并在 `mutate()` 里一起调**（`scripts/AGENTS.md` 明写：只写在顶层的检查，
+     变异台根本不跑它 ⇒ 那条变异"没被打红"）；再往 `MUTATIONS` 加一条把右端改回 `b + 1` 的变异。
+2. **真出片烟测**：本批改了 `templates/index.html`（3 行：shake 强度取默认），
+   `templates/AGENTS.md` 要求"改了模板必须真跑一次带字幕的出片"—— 还没跑。
+3. **⑤ 4e**：真 UX 风险（框选模式不动任何东西直接保存会把"包围盒"写成"自由选框"），**要不要修待用户定**；
+4. **③ R4**：中性基准只写给 0 键层 —— 需要底座"首键之前"的语义证据才能定性（`③ R4` 那条）；
+5. **⑤ 4f**：`_canvas.sticker.safe_margin` 零消费者（无害，清理即可）。
