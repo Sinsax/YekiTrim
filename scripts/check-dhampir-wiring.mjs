@@ -371,8 +371,8 @@ function fnBodyOf(src, name) {
   // ---- 4c：**「落盘完成」要在 `done` 之前**（2026-10-02 修）----
   //
   // `commitEdit` 必须把 `done` 挂到 `onceSaved` 上，**不能当场 emit**：落盘是 `touch()`
-  // 排的 700ms 定时器，当场发就等于告诉页面"磁盘上已经有这次改动了"，而其实还没有。
-  // 以前侥幸没出事纯粹是时序巧合（`process` 前压着 1.5s > 700ms）——
+  // 排的 `SAVE_DEBOUNCE_MS`（现 250ms）定时器，当场发就等于告诉页面"磁盘上已经有这次改动了"，而其实还没有。
+  // 以前侥幸没出事纯粹是时序巧合（`process` 前压着 1.5s > 250ms）——
   // 一旦有消费者不等那 1.5s（Dhampir 热重载就是），它立刻读到旧内容。
 {
   const editorSrc = readFileSync(TIMELINE_EDITOR, 'utf8')
