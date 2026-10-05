@@ -163,10 +163,8 @@
             <!-- 剪切**不禁用**：服务端遇到占用是排队而不是报错，拦在这里只会让用户
                  连点下一条都做不到（用户要求"允许点、排队等"）。占用时改文案说明会排队。 -->
             <button class="btn btn-primary cut-btn"
-                    :title="cutBusy
-                      ? '该项目正在' + kindText(cutBusy.kind) + '，点下去会排队等它结束'
-                      : ''"
-                    @click.stop="cutEvent(it.ev)">{{ cutBusy ? '排队中' : '剪切' }}</button>
+                    :title="cutTitle(it.ev)"
+                    @click.stop="cutEvent(it.ev)">{{ cutLabel(it.ev) }}</button>
           </div>
         </div>
       </template>
@@ -300,13 +298,13 @@ import { useRouter } from 'vue-router'
 import { api } from '../api/client'
 import { projectData } from '../api/projectData'
 import { initPolish, polishPost, runRender } from '../api/polish'
-import { watchJob, busyOn, clipKey, idxKey, outKey, kindText, QUEUED_HINT } from '../api/jobs'
+import { watchJob, busyOn, clipKey, idxKey, outKey, kindText, QUEUED_HINT, isActive } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
-import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf, isEditableKeyEvent } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf, clipNameOf, isEditableKeyEvent } from '../utils'
 import { readMasterVolume, readMuted, saveMasterVolume, saveMuted } from '../polish/audio'
 
 const props = defineProps({
@@ -336,6 +334,46 @@ const cutBusy = computed(() => outBusy.value || idxBusy.value)
 /** 某片段目录上有没有活动任务（渲染/精修/重切） */
 function clipBusyOf(name) {
   return busyOn(allJobs.value, [clipKey(pid.value, name)])
+}
+
+/**
+ * 这条事件**自己的**剪切任务状态（`''` / `'running'` / `'queued'`）。
+ *
+ * 判据是**它目标片段目录上的键**：服务端单条剪切按
+ * `scope_key::cut_keys(pid, out, Some(clip_dir))` 建任务，必定带 `p{pid}:clip:{clip_dir}`，
+ * 而目标目录名就是这条事件将要剪出来的那个（有 `clip_dir` 用它，否则 `clip-NN`）。
+ *
+ * ⚠️ **绝不能用项目级的 `cutBusy` 当文案判据**（2026-10-05 用户报「切一条，所有卡片都显示排队中」）：
+ * `cut_one` 必持 `p{pid}:out` / `p{pid}:idx`，于是**任何一条**剪切在跑都会让满墙卡片一起变样。
+ * 项目级那两个键只配当"点下去会排队"的**悬停提示**（见 `cutTitle`）。
+ *
+ * ⚠️ 只认 `cut_one`：**「一键全切」刻意不带 clip 键**（服务端注释原话：全切只处理没有 clip.mp4
+ * 的目录、不会碰精修工程，所以允许与精修并行）—— 于是它不会把整墙卡片都点亮，与用户口径一致。
+ */
+function cutState(ev) {
+  const dir = ev?.clip_dir ? String(ev.clip_dir) : clipNameOf(ev?.rank)
+  const key = clipKey(pid.value, dir)
+  const mine = (allJobs.value || []).filter(
+    (j) => isActive(j) && j.kind === 'cut_one' && (j.resources || []).includes(key)
+  )
+  // 同一条上可能既有在跑的又有刚排上的（用户连点）—— 在跑优先，否则"排队中"会盖住真相
+  if (mine.some((j) => j.status === 'running')) return 'running'
+  if (mine.some((j) => j.status === 'queued')) return 'queued'
+  return ''
+}
+/** 按钮文案：**只有这一条**在剪/排队时才变；其他卡片保持「剪切」（用户要求）。 */
+function cutLabel(ev) {
+  const s = cutState(ev)
+  return s === 'running' ? '剪切中' : s === 'queued' ? '排队中' : '剪切'
+}
+/** 悬停提示：本卡在剪/排队说本卡，否则说清"点下去会排队"。 */
+function cutTitle(ev) {
+  const s = cutState(ev)
+  if (s === 'running') return '这条正在剪切，剪完自动继续（任务抽屉里能看到进度）'
+  if (s === 'queued') return QUEUED_HINT
+  return cutBusy.value
+    ? '该项目正在' + kindText(cutBusy.value.kind) + '，点下去会排队等它结束'
+    : ''
 }
 /**
  * `changed`：**写完盘且不产生任务**的动作（删片段 / 改事件 / 新建事件）请求父页面重新取数。

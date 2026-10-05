@@ -36,6 +36,11 @@
 //     引擎手里的动图被清掉而宿主不再交字节。判据：两项短路都带 `animGen === dhampirAnimGen`，
 //     且**每个** `open()` 与 `attach()` 之后都 +1。
 //
+//  ⑫ 剪切按钮的文案必须按**这一条片段自己**的任务（2026-10-05 用户报：切一条，「所有都是排队」）。
+//     服务端 `cut_one` 必持 `p{pid}:out`/`p{pid}:idx` ⇒ 拿项目级键当判据就会让满墙卡片一起变样。
+//     判据钉三件事：走 `cutLabel`、按 `clipKey`+`cut_one` 过滤、在跑优先于排队。
+//     （「一键全切」刻意**不带** clip 键 ⇒ 不会点亮整墙，这条口径与用户一致。）
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -364,6 +369,30 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const m = mutate(previewVue)
     check(`[变异] ⑪ ${what} → 源码确实被改了`, m !== previewVue, true)
     check(`[变异] ⑪ ${what} → 判据翻面`, ok11(m), false)
+  }
+}
+// ── ⑫ 剪切按钮的文案按「这一条」而不是「这个项目」（用户报：切一条，所有卡片都显示排队）──
+{
+  const labelOk = /cutLabel\(it\.ev\)/
+  const oldBad = /\{\{ cutBusy \? '排队中' : '剪切' \}\}/
+  const stateOk = /function cutState\(ev\)/
+  const keyOk = /clipKey\(pid\.value, dir\)/
+  const kindOk = /j\.kind === 'cut_one'/
+  const runningFirst = /if \(mine\.some\(\(j\) => j\.status === 'running'\)\) return 'running'/
+  const wordsOk = /'running' \? '剪切中' : s === 'queued' \? '排队中' : '剪切'/
+  const ok12 = (t) => labelOk.test(t) && !oldBad.test(t) && stateOk.test(t)
+    && keyOk.test(t) && kindOk.test(t) && runningFirst.test(t) && wordsOk.test(t)
+  check('⑫ 剪切按钮文案走每片段判据（不是项目级 cutBusy）', ok12(clipsSection), true)
+  check('⑫ 每片段判据存在且按 clipKey 查', stateOk.test(clipsSection) && keyOk.test(clipsSection), true)
+  const MUT12 = [
+    ['退回项目级 cutBusy 当文案', (t) => t.replace("{{ cutLabel(it.ev) }}", "{{ cutBusy ? '排队中' : '剪切' }}")],
+    ['去掉 cut_one 过滤（渲染/精修也算剪切中）', (t) => t.replace("j.kind === 'cut_one' && ", '')],
+    ['去掉「在跑优先」那一句（在跑的反而不显示）', (t) => t.replace("  if (mine.some((j) => j.status === 'running')) return 'running'" + String.fromCharCode(10), '')],
+  ]
+  for (const [what, mutate] of MUT12) {
+    const m = mutate(clipsSection)
+    check(`[变异] ⑫ ${what} → 源码确实被改了`, m !== clipsSection, true)
+    check(`[变异] ⑫ ${what} → 判据翻面`, ok12(m), false)
   }
 }
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
