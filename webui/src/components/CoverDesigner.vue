@@ -2,8 +2,8 @@
   <div class="card" id="cover-design">
     <div class="row spread">
       <h2 class="card-h2 m-0"><Icon name="image" :size="16" /> 封面设计器</h2>
-      <button class="btn btn-primary" :disabled="generating || !!clipBusyJob"
-              :title="clipBusyJob ? '该片段正在' + kindText(clipBusyJob.kind) : ''"
+      <button class="btn btn-primary" :disabled="generating || !!coverBusyJob"
+              :title="coverBusyJob ? '本项目正在生成封面…' : ''"
               @click="generateCover()">{{ generating ? '生成中…' : '生成封面' }}</button>
     </div>
     <!-- 配置没读回来 → `configLoaded` 这道写入门闸继续关着，这个面板之后**不会**再保存任何改动。
@@ -352,7 +352,7 @@ import { toast } from '../stores/toast'
 import { addClient } from '../stores/log'
 import Icon from './Icon.vue'
 import { clipMediaUrl, fmtTime } from '../utils'
-import { watchJob, busyOn, clipKey, kindText } from '../api/jobs'
+import { watchJob, isActive } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 import {
   fetchFonts, fetchProject,
@@ -389,15 +389,19 @@ async function loadCoverCap() {
     coverCap.value = { loaded: true, ready: false, why: "读能力位失败：" + (e && e.message ? e.message : e) }
   }
 }
-// 封面与渲染/LLM/后处理写同一批文件（polish.toml / cover.jpg / _cover_frame.jpg），
-// 只在该片段被占用时禁用「生成封面」；改参数是同步保存，随时可存。
+// 封面只与**另一个封面**抢 `_cover_frame.jpg`；与渲染 / 后处理 / LLM **可以并行**
+// （封面只写 `cover*` 且重名自动加 `_1`/`_2`，渲染写视频，`process` 写 `polish.toml` 全是原子写）。
+// ⚠️ 所以**别按 `clipKey` 门控**：渲染正占着那个键 —— 以前这么写的结果就是"视频导出时点不动
+// 「生成封面」"（用户 2026-10-05 报的）。改参数是同步保存，随时可存。
 const { jobs: allJobs } = useJobs()
-const clipBusyJob = computed(() => {
-  // 反斜杠用 charCode 拼，别在字符串里写转义（切片页 sameDir 同款写法）
-  const name = String(props.dir || '').split(String.fromCharCode(92)).join('/').split('/').filter(Boolean).pop() || ''
+const coverBusyJob = computed(() => {
   const pid = props.pid
-  if (!name || !pid) return null
-  return busyOn(allJobs.value, [clipKey(pid, name)])
+  if (!pid) return null
+  return (
+    (allJobs.value || []).find(
+      (j) => isActive(j) && j.kind === 'polish_cover' && j.project === pid
+    ) || null
+  )
 })
 const generatingTitle = ref(false)
 /**
@@ -1626,7 +1630,7 @@ watch(
 
 async function generateCover() {
   if (generating.value) return
-  if (clipBusyJob.value) { toast('该片段正在' + kindText(clipBusyJob.value.kind) + '，请等它结束', 'err'); return }
+  if (coverBusyJob.value) { toast('本项目正在生成封面，请稍候', 'err'); return }
   generating.value = true
   try {
     // 出片要截的关键帧 = 设计器里选的这一帧：**无条件**按当前进度刷新一次，并把时间点写回

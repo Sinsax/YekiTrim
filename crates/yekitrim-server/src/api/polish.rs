@@ -99,9 +99,14 @@ pub(super) async fn polish_spawn(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir.clone());
-    // 资源域 = 这个片段目录：与同片段的其它精修任务、以及"单条重切"互斥（冲突则排队）。
+    // 资源域：**封面**只与另一个封面互斥（导出期间也允许生成封面，见 `scope_key::cover_keys`）；
+    // 其余精修任务 = 这个片段目录：与同片段的其它精修任务、以及"单条重切"互斥（冲突则排队）。
     // 档位按 kind：渲染重活、LLM 略重、init/process/cover 轻活（`JobClass::for_polish`）。
-    let keys = crate::scope_key::polish_keys(project, &path);
+    let keys = if kind == "cover" {
+        crate::scope_key::cover_keys(&path)
+    } else {
+        crate::scope_key::polish_keys(project, &path)
+    };
     let class = JobClass::for_polish(kind);
     let handle = state
         .jobs

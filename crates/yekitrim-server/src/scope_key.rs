@@ -152,6 +152,23 @@ pub fn polish_keys(pid: Option<i64>, dir: &Path) -> Keys {
     keys
 }
 
+/// **封面任务**（`polish cover`）的资源域：只与**另一个封面任务**互斥，与渲染 / 后处理 / LLM **并行**。
+///
+/// 为什么可以并行（不是"先把冲突去掉再说"）：
+/// - 封面只写 `cover.jpg` / `_cover_bg.jpg` / `_cover_frame.jpg`，而且同名会由
+///   `render::unique_output_path` 加 `_1` / `_2`；
+/// - 渲染写的是视频文件，`process` 写的是 `polish.toml` —— 后者每次都是 `write_atomic`，
+///   读者只会看到"旧整份"或"新整份"，不会读到半截。
+///
+/// 以前封面和渲染共用 [`polish_keys`] ⇒ 导出期间点「生成封面」只能排队（用户 2026-10-05 报的
+/// "视频导出时无法手动生成封面操作"）。**两个封面**仍然互斥（同一片段上会抢 `_cover_frame.jpg`）。
+///
+/// ⚠️ 键与 [`polish_keys`] **刻意完全不相交**（冲突判据是字符串相等）⇒ 前端不能再靠
+/// `clipKey` 判断封面是否在跑，要按 `JobSummary.kind == "polish_cover"` 门控。
+pub fn cover_keys(dir: &Path) -> Keys {
+    vec![format!("{}#cover", dir_key(dir))]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +182,31 @@ mod tests {
         assert!(
             crate::jobs::resources_conflict(&cut, &pol),
             "单条重切与同片段精修必须互斥: {cut:?} vs {pol:?}"
+        );
+    }
+
+    /// 用户 2026-10-05 报的「视频导出时无法手动生成封面」：封面与渲染/后处理**必须不相交**
+    /// （以前两者共用 `polish_keys` ⇒ 导出期间生成封面只能排队；前端还按 `clipKey` 把按钮置灰）。
+    #[test]
+    fn cover_runs_in_parallel_with_render_on_the_same_clip() {
+        let pid = 3;
+        let clip = std::path::PathBuf::from(r"F:\proj\output\clips\clip-07");
+        let cover = cover_keys(&clip);
+        let render = polish_keys(Some(pid), &clip);
+        assert!(
+            !crate::jobs::resources_conflict(&cover, &render),
+            "封面不该与渲染/后处理互斥（导出期间要能生成封面）: {cover:?} vs {render:?}"
+        );
+        // 但**两个封面**在同一片段上仍然互斥（抢 `_cover_frame.jpg`）
+        assert!(
+            crate::jobs::resources_conflict(&cover, &cover_keys(&clip)),
+            "同一片段的两个封面必须互斥"
+        );
+        // 别的片段的封面互不相干
+        let other = std::path::PathBuf::from(r"F:\proj\output\clips\clip-08");
+        assert!(
+            !crate::jobs::resources_conflict(&cover, &cover_keys(&other)),
+            "不同片段的封面互不相干"
         );
     }
 
