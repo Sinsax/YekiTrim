@@ -126,6 +126,20 @@ for (const n of NAMES) {
 }
 check('[grid] 格子中心四份实现互差 ≤0.02%（模板那张手抄表是历史漂移入口）', centerBad, [])
 
+// ③ 出串口径：`gridOrigin` 必须按两位小数（Rust `region_origin` 是 `{:.2}`）
+//
+// 不取整时它是**浮点 artifact**（`mid-right` → `83.33500000000001%`），而 Rust 给 `83.34%`、
+// 模板手抄表给 `83.33%` —— 三份「同一个物理点」的字符串形式各不相同。下游现在都走 `parseFloat`
+// 所以看不出；但**一旦有人比较或落盘这个串**就会踩（自由选框那支本来就有 `toFixed(2)`，是网格这支漏了）。
+const originBlock = blockOf(engineSrc, 'export function gridOrigin')
+// ⚠️ 谓词要**钉在代码上**（`p[0].toFixed(2)`），不能只写 `/toFixed\(2\)/` —— 上面那段注释里
+// 也出现了「toFixed(2)」这个词，泛匹配会把注释算成"实现了"，于是变异永远不翻面（我踩过一次）。
+const ROUNDED = /p\[0\]\.toFixed\(2\)/
+check('[grid] gridOrigin 按两位小数出串（与 Rust `{:.2}` 同口径）', ROUNDED.test(originBlock), true)
+// 自证：把 `.toFixed(2)` 摘掉（退回浮点 artifact 那版）⇒ 上面那条必须翻面
+check('[grid·变异] 摘掉 toFixed 后上面那条会翻面（本脚本抓得住）',
+  ROUNDED.test(originBlock.replaceAll('.toFixed(2)', '')), false)
+
 // 自证有效：把 engine 的 center 那格改坏（**纯字符串替换**，这格里有方括号，
 // 走 `new RegExp` 还要再套一层转义 —— 2026-10-05 就是在这上面连翻三次）
 const FROM = "'center': [33.33, 33.33, 66.67, 66.67]"

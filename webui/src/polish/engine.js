@@ -65,7 +65,12 @@ const GRID_CENTERS = Object.fromEntries(
 
 export function gridOrigin(name) {
   const p = GRID_CENTERS[name] || [50, 50]
-  return p[0] + '% ' + p[1] + '%'
+  // ⚠️ **两位小数，与 Rust `types.rs::region_origin` 的 `{:.2}` 同口径**（2026-10-05 修）：
+  // 不取整时这里给的是浮点artifact（`mid-right` 中心 = `83.33500000000001%`），而 Rust 给
+  // `83.34%`、模板手抄表给 `83.33%` —— 三份"同一个物理点"的字符串形式各不相同。
+  // 下游目前都走 `parseFloat` 所以看不出，但**一旦有人比较/落盘这个串**就会踩
+  //（`regionOrigin` 的自由选框那支本来就有 `toFixed(2)`，是网格这支漏了）。
+  return p[0].toFixed(2) + '% ' + p[1].toFixed(2) + '%'
 }
 
 const clampPct = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0 }
