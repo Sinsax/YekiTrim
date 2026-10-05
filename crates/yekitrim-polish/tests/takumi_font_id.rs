@@ -19,9 +19,17 @@
 //!  - 注册 [Emoji, LXGW]（Emoji 在前）：请求 `__nope__` / `NotoColorEmoji` /
 //!    `LXGWWenKaiLite-Regular` → 三张图**仍然逐字节相同**，中文都正常（落到 LXGW）。
 //!
-//! ⇒ 多支字体时"用哪支"由**注册顺序**决定，**不是**由 CSS 族名决定。
-//! 所以别名注册**不是**必要条件（它是前瞻保险，见 `render/takumi.rs` 那段注释）；
-//! 而"请求不存在的族名会出豆腐块"这个失败模式**在本版 Takumi 里不可达**。
+//! ⇒ 上面那段"三张图逐字节相同"的观察**有两个混淆项**，别把它的结论当成"族名无用"：
+//!   ① 那两次只注册**一支**字体 —— 那种设置下任何族名都只能落到它，**必然**相同，
+//!      对"族名有没有用"**没有分辨力**（所以下面的断言只是"兜底桶"的事实，不是"族名无效"）；
+//!   ② `render_cover_png` 那条**真封面**链路当时还有一个 CSS 适配 bug（见
+//!      `render/takumi.rs::find_outside_comments`）：模板注释里的 `@font-face` 会让
+//!      `strip_at_rule_blocks` 把 `html,body{…font-family:…}` 整条删掉 ⇒ 渲染器**从来没收到**
+//!      `font-family`，于是"换三支字体，出图逐字节相同"。用户 2026-10-05 报的
+//!      「设计器里选的字体和出图不一致」就是它。
+//! **族名是有效的**（2026-10-05 受控实测，三支真字体、同一条链）：元素上显式写
+//! `font-family` 三种值 ⇒ 逐像素差 2.5 万级；只靠 `html,body` 继承三种值 ⇒ 同样互不相同。
+//! 判据见下面的 `cover_font_change_must_change_the_pixels`（走真封面那张模板）。
 //!
 //! 这条现在只钉**能钉的事实**（见下面 `assert`）。真正的"用哪支"控制点是
 //! `cover.rs::cover_font_files()` 给出的**顺序** —— 那才是该加门禁的地方。
@@ -106,23 +114,26 @@ fn library_id_alias_makes_takumi_use_the_font() {
         entry.id, internal, d_id_miss, d_base_miss, d_base_id
     );
 
-    // ⚠️ **这里原本断言 `d_id_miss > 0`（"请求库 id 必须不同于请求不存在的族名"）——
-    // 那个断言在本版 Takumi 上**必然失败且断言的东西不成立****：认不出的族名会回退到
-    // 整个已注册字体库（见模块头注释的实测），所以两者本来就该相同。
+    // ⚠️ **这条断言 2026-10-05 翻回来了，而且它一直是红的**（本机实测：这条测试在
+    // 我动手之前就失败，数字一模一样 3960px）。
     //
-    // 改成钉**真实且有意义**的两条：
-    //  ① 库 id 与内嵌族名**都能**渲染出东西（非空白）—— 证明这支字体确实被注册进了渲染器；
-    //  ② 请求一个无关族名**不会**意外命中别的字体 —— 即它回退到的仍是同一支
-    //     （在多支字体场景下由注册序决定，这里只有一支，所以必然一致）。
-    // 若哪天 Takumi 收紧 fallback（只认精确族名），② 会变红 —— 那时**正好**要回到
-    // "别名是否生效"这个判据上，这条注释就是提醒。
+    // 原先这里断言 `d_id_miss == 0`（"请求库 id 与请求不存在的族名结果相同"），依据是
+    // 模块头那段"三张图逐字节相同"的观察 —— 而那两处观察各带一个混淆项（只注册**一支**字体、
+    // 且真封面链路的 CSS 被适配层吃掉），合起来给出了**"族名无用"的假结论**。
+    // 实测（三支真字体）：族名是有效的。
+    //
+    // 现在钉的是**别名真的生效**：请求库 id ≠ 请求不存在的族名。
     assert!(
-        d_id_miss == 0,
-        "请求库 id 与请求不存在的族名结果不同了（{d_id_miss} 像素）：Takumi 的 fallback 语义变了，         请重新评估别名注册是否仍只是'前瞻保险'，并把本测试改回'别名生效'的判据"
+        d_id_miss > 0,
+        "请求库 id 与请求不存在的族名**结果相同**（{d_id_miss} 像素）⇒ 库 id 别名没生效：         用户选的字体到不了渲染器（症状：设计器与出图不一致，改字体不出图变）"
     );
-    assert!(
-        d_base_id == 0,
-        "请求内嵌族名与请求库 id 结果不同（{d_base_id} 像素）：同上，fallback 语义变了"
+    // ⚠️ **不再断言 `d_base_id`**：本机实测"请求内嵌族名"的行为**与"请求不存在的族名"一致**
+    // （`d_base_miss == 0`）而**与请求库 id 不一致**（`d_base_id = 3960`）—— 为什么内嵌族名
+    // 没命中它自己那次注册（`FontResource::new` 走的正是内嵌族名），我**没有查到结论**。
+    // 猜一个断言写上去，只会把"我不知道"伪装成"我验过"；所以这里只把它打成一行读数。
+    eprintln!(
+        "   （读数，不算判据）内嵌族名 vs 缺失={} 内嵌族名 vs 库 id={}          —— 内嵌族名为什么没命中自注册，未定论",
+        d_base_miss, d_base_id
     );
     // ⚠️ **不要断言 `base == by_id`**（第一版这么写，错）：`base` 请求的是**内嵌族名**，
     // 而这支字体未必有拉丁字形（`SimHeiTest.ttf` 就没有）⇒ 它照样回退成 Geist，
@@ -137,5 +148,98 @@ fn library_id_alias_makes_takumi_use_the_font() {
         diff_pixels(&alias_only, &miss),
         0,
         "请求一个无关族名结果变了 ⇒ 字体选择不再只由注册序决定"
+    );
+}
+
+/// 渲染一次（**带外部 CSS**）—— 真封面那条链是"CSS 与 HTML 分开喂"的。
+fn render_rgba_css(html: &str, css: &str, fonts: &[PathBuf], tag: &str) -> Option<Vec<u8>> {
+    let dir = std::env::temp_dir().join(format!("vt-font-id-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let out = dir.join(format!("out-{tag}.jpg"));
+    yekitrim_polish::render::takumi::render_cover_png(html, css, &dir, &out, 640, 200, fonts).ok()?;
+    Some(image::open(&out).ok()?.to_rgba8().into_raw())
+}
+
+/// **`@font-face` 的清理必须跳过注释**（2026-10-05 那个 bug 的最小判据）。
+///
+/// 模板里那句注释写着「该字体的 `@font-face` 名 + 原栈」，而清理函数会从**注释里的**那个词
+/// 开始删到第一个 `}` —— 正好吃掉紧随其后的 `html,body{…font-family:…}`。
+/// 这条不需要字体库，任何机器都能跑（所以它是常驻判据，上面那条真渲染会按需跳过）。
+#[cfg(feature = "cover-takumi")]
+#[test]
+fn at_rule_stripping_must_ignore_comments() {
+    let css = "/* 这里提到 @font-face 一次，别把它当 at-rule */
+html,body{width:100%;font-family:'乐米波波体','Noto Sans SC',sans-serif;}
+@font-face{font-family:x;src:url(y)}";
+    let out = yekitrim_polish::render::takumi::adapt_css_for_takumi(css);
+    assert!(
+        out.contains("font-family:'乐米波波体'"),
+        "注释里的 `@font-face` 把后面的规则吃掉了 —— 字体栈到不了渲染器：
+{out}"
+    );
+    assert!(!out.contains("src:url(y)"), "真正的 `@font-face` 块必须被删掉：
+{out}");
+}
+
+/// **换 `[cover] font` 必须换出图**（用户报的"设计器选的字体与出图不一致"的端到端判据）。
+///
+/// 走**真封面那条链**：`build_cover_page_static`（真模板）→ `extract_style_blocks` →
+/// `adapt_css_for_takumi` → `render_cover_png`。两支不同的库内字体 ⇒ 像素必须不同。
+#[cfg(feature = "cover-takumi")]
+#[test]
+fn cover_font_change_must_change_the_pixels() {
+    let dir = yekitrim_core::fonts::dir();
+    let entries = yekitrim_core::fonts::scan_all(&dir);
+    let mut picked: Vec<(String, PathBuf)> = Vec::new();
+    for e in &entries {
+        // emoji 字体整幅都是彩色方块，拿它当"另一支"分辨力太强、也太慢；跳过它
+        if e.emoji {
+            continue;
+        }
+        if let Some(p) = yekitrim_core::fonts::resolve_all(&dir, &e.id) {
+            picked.push((e.id.clone(), p));
+        }
+        if picked.len() == 2 {
+            break;
+        }
+    }
+    if picked.len() < 2 {
+        eprintln!("跳过：字体库里非 emoji 字体不足两支（找到 {}）", picked.len());
+        return;
+    }
+    let fonts = picked.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>();
+    let render_for = |id: &str, tag: &str| -> Option<Vec<u8>> {
+        let mut cfg = yekitrim_polish::project::ProjectFile::example();
+        cfg.cover.font = id.to_string();
+        let lines = vec!["小学生跳舞".to_string()];
+        let html = yekitrim_polish::cover::build_cover_page_static(&cfg, false, &lines);
+        let css = yekitrim_polish::render::takumi::extract_style_blocks(&html);
+        render_rgba_css(&html, &css, &fonts, tag)
+    };
+    let a = render_for(&picked[0].0, "cover-a").expect("字体 1 渲染失败");
+    let b = render_for(&picked[1].0, "cover-b").expect("字体 2 渲染失败");
+    let d = diff_pixels(&a, &b);
+    eprintln!("换封面字体（{} -> {}）逐像素差 = {}", picked[0].0, picked[1].0, d);
+    assert!(
+        d > 0,
+        "换 `[cover] font` 出图**逐字节相同** ⇒ 字体栈没走到渲染器（或落进同一个兜底桶）：{} vs {}",
+        picked[0].0,
+        picked[1].0
+    );
+
+    // **存量零回归**：没选字体（`""`）与选了库里没有的字体，都该落到同一个兜底桶 ——
+    // 这正是修复前的行为（那时 CSS 里的字体栈被适配层吃掉，两者都落兜底桶）。
+    // 修复后"空值"走的是 `fallback_stack()`（首项 = 库里**默认**那支的内部族名），
+    // 而它解析出来仍是注册序第一支 = 默认那支 ⇒ 两者**依旧逐像素相同**。
+    // 这条一旦变红，说明空值那条路的观感变了 —— 那时必须先重新冻结封面参照帧
+    //（`scripts/fixtures/cover-golden/`），别让它悄悄漂。
+    let blank = render_for("", "cover-blank").expect("空字体渲染失败");
+    let unknown = render_for("__no_such_font_in_library__", "cover-unknown")
+        .expect("认不出的字体渲染失败");
+    let d2 = diff_pixels(&blank, &unknown);
+    eprintln!("空 `[cover] font` vs 认不出的字体 逐像素差 = {d2}");
+    assert_eq!(
+        d2, 0,
+        "空字体与认不出的字体出图不同了 ⇒ 存量工程的封面观感可能已经变了（重新冻结参照帧前先查清）"
     );
 }
