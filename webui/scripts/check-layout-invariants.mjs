@@ -30,6 +30,12 @@
 //     一个键把**整个文本图层**删了）。判据是**行为**级：把 `utils.isEditableKeyEvent` 抽出来喂
 //     假事件，并钉住四处调用点都真的过它 —— 少一处就是一类静默事故。
 //
+//  ⑪ 动图贴纸的「已加载」必须绑**引擎代**（2026-10-05 用户报：贴纸在 Dhampir 预览里不显示，
+//     强刷新才回来）。底座 `dhampir_project_open` 里有 `clear_animations()`，而宿主那边
+//     `animLoaded` 按 uri 继承、加载函数又短路"同素材不重传" ⇒ 每次热重载（每次编辑都会有一次）
+//     引擎手里的动图被清掉而宿主不再交字节。判据：两项短路都带 `animGen === dhampirAnimGen`，
+//     且**每个** `open()` 与 `attach()` 之后都 +1。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -67,6 +73,7 @@ const coverDesigner = await read('webui/src/components/CoverDesigner.vue')
 const timelineEditor = await read('webui/src/components/TimelineEditor.vue')
 const prepareView = await read('webui/src/views/PrepareView.vue')
 const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
+const previewVue = await read('webui/src/components/PolishPreview.vue')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -309,6 +316,54 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const m = src.replace('if (isEditableKeyEvent(e)) return', '/* no guard */')
     check(`[变异] ⑩ ${what} → 源码确实被改了`, m !== src, true)
     check(`[变异] ⑩ ${what} → 判据翻面`, passes(m), false)
+  }
+}
+// ── ⑪ 动图「已加载/已失败」必须绑引擎代（否则热重载后贴纸消失，只能靠 F5 回来）──
+// 事实链：底座 `dhampir_project_open` 成功即 `clear_animations()`（跨仓，见 Dhampir 的
+// `crates/dhampir-wasm/src/timeline_host.rs`）⇒ 引擎手上没有动图了；而宿主 `animLoaded` 按 uri
+// 继承 + `dhampirLoadAnimations` 短路 ⇒ 不再交字节 ⇒ 贴纸不画。每次编辑都会热重载一次，
+// 所以这是**必然**而不是偶发。判据与变异**共用同一份** `ok11`（否则变异只翻一半）。
+{
+  const declRe = /let dhampirAnimGen = 0/
+  const loadedSkip = /if \(st\.animLoaded && st\.animUri === a\.uri && st\.animGen === dhampirAnimGen\) continue/
+  const errorSkip = /if \(st\.animError && !st\.animPendingAttach && st\.animGen === dhampirAnimGen\) continue/
+  // **每个** open()/attach() 之后都要 +1：引擎在这两处都会把动图缓存清空
+  const bumpsAfter = (t, needle, window) => {
+    let at = t.indexOf(needle)
+    let n = 0
+    while (at >= 0) {
+      n += 1
+      if (!t.slice(at, at + window).includes('dhampirAnimGen += 1')) return -1
+      at = t.indexOf(needle, at + 1)
+    }
+    return n
+  }
+  const ok11 = (t) => declRe.test(t) && loadedSkip.test(t) && errorSkip.test(t)
+    && bumpsAfter(t, 'dhampirEngine.open(project)', 520) > 0
+    && bumpsAfter(t, 'await dhampirEngine.attach(canvas.id)', 420) === 1
+  check('⑪ 整条不变式在（声明 + 两项短路带代际 + 每个 open/attach 都 +1）', ok11(previewVue), true)
+  check('⑪ 声明了引擎代 dhampirAnimGen', declRe.test(previewVue), true)
+  check('⑪ 「已加载」的短路绑代际', loadedSkip.test(previewVue), true)
+  check('⑪ 「已失败」的短路也绑代际（瞬时失败不该黏住）', errorSkip.test(previewVue), true)
+  check('⑪ 每个 open() 之后都 +1（open 成功即清空动图）',
+    bumpsAfter(previewVue, 'dhampirEngine.open(project)', 520) > 0, true)
+  check('⑪ attach 之后也 +1（新引擎的动图缓存是空的）',
+    bumpsAfter(previewVue, 'await dhampirEngine.attach(canvas.id)', 420), 1)
+  const MUT11 = [
+    ['「已加载」短路丢掉代际判据', (t) => t.replace(' && st.animGen === dhampirAnimGen) continue', ') continue')],
+    ['open() 之后不再 +1', (t) => t.replace('dhampirAnimGen += 1', '/* no bump */')],
+    ['引擎代声明被删', (t) => t.replace('let dhampirAnimGen = 0', 'let ANIM_GEN_REMOVED = 0')],
+    ['attach 之后不再 +1', (t) => {
+      const at = t.indexOf('await dhampirEngine.attach(canvas.id)')
+      if (at < 0) return t
+      const seg = t.slice(at, at + 420)
+      return t.slice(0, at) + seg.replace('dhampirAnimGen += 1', '/* no bump */') + t.slice(at + 420)
+    }],
+  ]
+  for (const [what, mutate] of MUT11) {
+    const m = mutate(previewVue)
+    check(`[变异] ⑪ ${what} → 源码确实被改了`, m !== previewVue, true)
+    check(`[变异] ⑪ ${what} → 判据翻面`, ok11(m), false)
   }
 }
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
