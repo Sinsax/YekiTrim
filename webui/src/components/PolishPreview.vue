@@ -333,6 +333,22 @@ const dhampirAlignShown = ref('')
 let dhampirBlobUrls = [] // 字幕/弹幕的 blob URL，退出时要逐个释放
 let dhampirVideos = []
 let dhampirStickers = []
+
+/**
+ * **引擎代**：每换一个"引擎手上的动图缓存"，这个数就 +1。
+ *
+ * 换的地方只有两处，都在**引擎侧**：
+ *   * `attach()` —— 新建 `AnimationTextures`（空的）；
+ *   * `open()` 成功 —— 底座 `dhampir_project_open` 内部会 `clear_animations()`
+ *     （`crates/dhampir-wasm/src/timeline_host.rs`，注释原文"换一份工程就是换一批素材"）。
+ *
+ * ⚠️ 为什么必须有它：动图（GIF/动画 WebP）是**引擎自己解码**的，宿主只在加载时交一次字节；
+ * 而宿主那两项状态（`animLoaded` / `animError`）描述的是**引擎的手上状态**。
+ * 不绑代际就会出现这个组合：热重载 → 引擎被清空 → 宿主还拿着 `animLoaded=true`
+ * 不再交字节 ⇒ **贴纸在预览里消失，只有整页重载（F5）才回来**（用户报过，实测复现）。
+ * 而每次编辑都会走一次热重载（`dhampirCfgKey` watch），所以这条会把"偶发"变成"必然"。
+ */
+let dhampirAnimGen = 0
   dhampirVideos = []
   dhampirStickers = []
 let dhampirFpsWindow = { t0: 0, frames: 0 }
@@ -614,7 +630,7 @@ async function reloadDhampirProject() {
     }
 
     // **贴纸层描述必须重建**：新增/删除/挪时间的贴纸要新的 spans 才看得见。
-    // 动图加载状态按 uri 继承（见 dhampirStickersFrom），素材没换就不重传字节。
+    // 动图加载状态按 uri 继承（见 dhampirStickersFrom），但**有效性绑引擎代**（`dhampirAnimGen`）。
     dhampirStickers = dhampirStickersFrom(project)
     dhampirStickerDiag = null
     Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
@@ -626,6 +642,10 @@ async function reloadDhampirProject() {
       setTimeout(() => { if (dhampirMode.value) dhampirStatus.value = '' }, 2500)
       return
     }
+    // ⚠️ `open()` **成功**就代表底座刚 `clear_animations()` 过（失败时它保留上一份工程、
+    // 也不清动图）⇒ 代际 +1，让 `dhampirLoadAnimations` 必须重交一遍字节。
+    dhampirAnimGen += 1
+
     // 换绑源：新工程的 asset 区间可能变了，按当前的 `sourcesFor` 重新核对一遍。
     // （元素没变，`bindSource` 只是把 source→video 的映射重写一次，代价极小。）
     for (const [assetId, v] of dhampirSourceVideos) {
@@ -633,7 +653,7 @@ async function reloadDhampirProject() {
     }
     // **动图重新交给引擎**（在 open() 之后：`open()` 会清掉引擎里已加载的动图，
     // 所以顺序不能反 —— 反了就是"热重载后贴纸不动了"）。
-    // 素材没换（uri 相同）的会被 `animLoaded` 跳过，不重传字节。
+    // 上面刚 `dhampirAnimGen += 1` ⇒ 这次**一定会重交**（同代内才跳过）。
   await dhampirLoadAnimations(project)
     // 静态图的预热保留（它们仍走宿主位图那条路）。
     callPrewarmStickers()
@@ -812,10 +832,13 @@ async function dhampirLoadAnimations(project) {
     if (!a || !a.uri) continue
     // 只有动图走这条路；静态图（kind === 'image'）仍走宿主位图那条路。
     if (a.kind !== 'image_sequence') continue
-    if (st.animLoaded && st.animUri === a.uri) continue      // 幂等：同素材不重复传
+    // 幂等：**同一代引擎内**同素材不重复传。代际不同 = 引擎手上已经没有了（见 `dhampirAnimGen`）
+    if (st.animLoaded && st.animUri === a.uri && st.animGen === dhampirAnimGen) continue
     // 已确定失败的（真解不开/取不到）不反复重试 —— 否则日志会被刷成墙。
     // 但 "还没 attach" 那条**要重试**：它不是失败，是时机不对。
-    if (st.animError && !st.animPendingAttach) continue
+    // 失败也**按代记**：上一代引擎里失败的那张，换过引擎要再试一次
+    // （不记代的话，一次瞬时失败会让那张贴纸直到整页重载都不再出现）
+    if (st.animError && !st.animPendingAttach && st.animGen === dhampirAnimGen) continue
     try {
       // 地址口径与视频源一致（`clipMediaUrl` 把 dir 归一成片段名 + 拼 output/clips/…）
       //
@@ -839,6 +862,7 @@ async function dhampirLoadAnimations(project) {
       if (res && res.ok === true) {
         st.animLoaded = true
         st.animUri = a.uri
+        st.animGen = dhampirAnimGen
         st.animInfo = res.info || null
         st.animPendingAttach = false
         dhampirStickerStat.ready += 1
@@ -887,11 +911,13 @@ async function dhampirLoadAnimations(project) {
         }
         console.warn('dhampir: 动图没解开 ' + st.assetId + '（' + a.uri + '）：' + why)
         st.animError = why
+        st.animGen = dhampirAnimGen
       }
     } catch (e) {
       const why = (e && e.message) || String(e)
       console.warn('dhampir: 动图加载失败 ' + st.assetId + '（' + a.uri + '）：' + why)
       st.animError = why
+      st.animGen = dhampirAnimGen
     }
   }
 }
@@ -917,8 +943,9 @@ function dhampirStickersFrom(project) {
       }
     }
     spans.sort((x, y) => x.start - y.start)
-    // 动图（image_sequence）的加载状态**按 uri 继承**：热重载时素材没换就不必重传字节
-    // （引擎那边按 id 替换虽然幂等，但几十 MB 再传一遍是白花）。
+    // 动图（image_sequence）的加载状态**按 uri 继承**（连同 `animGen`）：同一代引擎内素材没换
+    // 就不必重传字节（几十 MB 再传一遍是白花）。⚠️ **跨代不继承有效性** ——
+    // 判据在 `dhampirLoadAnimations` 里带 `st.animGen === dhampirAnimGen`（见 `dhampirAnimGen`）。
     // assetId 取**新工程**的（理论上不变，但别让旧工程残留值漏进来）。
     const prev = prevByUri.get(a.uri)
     if (prev) return { ...prev, assetId: a.id, spans }
@@ -1109,6 +1136,8 @@ async function startDhampir() {
   }
   dhampirMark('工程 open + pkg 命名空间')
   await dhampirEngine.attach(canvas.id)
+  // 新引擎的动图缓存是空的 ⇒ 代际 +1（见 `dhampirAnimGen` 的说明）
+  dhampirAnimGen += 1
   // 源模式**交给引擎的探针** —— 实测引擎判 bitmap 是对的：
   // WebGPU 的 copyExternalImageToTexture **不接受 <video>**（只认
   // ImageBitmap / HTMLImageElement / HTMLCanvasElement / OffscreenCanvas），
