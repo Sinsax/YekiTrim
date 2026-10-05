@@ -1936,8 +1936,16 @@ export function translate(config, clipDir, outPath, options = {}) {
           //   auto  ：锚点是左上角 ⇒ 要挪
           const anchorPxX = (anchor.x / 100) * width;
           const anchorPxY = (anchor.y / 100) * height;
-          const leftTopX = anchor.center ? anchorPxX - box / 2 : anchorPxX;
-          const leftTopY = anchor.center ? anchorPxY - box / 2 : anchorPxY;
+          // ⚠️ **钳进安全区**（2026-10-05 修）：参照 `index.html:976-983 stickerBox` 与
+          // `engine.js::clampSticker` 都会把盒子左上角钳进 `[M, 边长-box-M]`（`M = 32*SK`），
+          // 而这条腿原先**没有这一道** ⇒ manual 落点写在边缘时（`"98% 50%"`）两条预览都显示钳过的
+          // 位置、成片却把贴纸甩到框外（实测 1920 宽：参照 1608 vs 这里 1741.6，出框 101.6px）
+          // —— 正是"预览与出片不一致"那一类，而且不报错。
+          const M = 32 * (Math.min(width, height) / 1080); // 与参照 `32*SK` 同一个量
+          const leftTopX = Math.max(M, Math.min(width - box - M,
+            anchor.center ? anchorPxX - box / 2 : anchorPxX));
+          const leftTopY = Math.max(M, Math.min(height - box - M,
+            anchor.center ? anchorPxY - box / 2 : anchorPxY));
           const baseX = leftTopX - width / 2 + box / 2;
           const baseY = leftTopY - height / 2 + box / 2;
 

@@ -360,4 +360,28 @@ if (brokenPick) {
 }
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
+// ===== 转译器：**出片那条活路径**也必须钳安全区（2026-10-05 补）=====
+//
+// 这份契约原先只列了 5 份实现（模板 / engine.js / canvas.js / timeline.rs / PolishView），
+// **漏了转译器** —— 而 `85d7fc0` 之后出片默认走底座，贴纸落点是
+// `tools/polish-to-dhampir.mjs` 算的（`tools/AGENTS.md`：它是模板的复刻副本）。
+//
+// 2026-10-05 实测缺口：manual `"98% 50%"` 在 1920 宽下参照钳到 **1608**，它给 **1741.6**
+//（**出框 101.6px**）—— 预览看着在框内、成片却甩到框外，且不报错。
+const translatorSrc = await readFile(join(root, 'tools/polish-to-dhampir.mjs'), 'utf8')
+const CLAMP_RE = /Math\.max\(M, Math\.min\(width - box - M,/
+check('[trans ] 贴纸落点要钳进安全区（与参照同一套 clamp）', CLAMP_RE.test(translatorSrc), true)
+check('[trans ] 安全边距与参照同一个量（32*SK）',
+  /const M = 32 \* \(Math\.min\(width, height\) \/ 1080\)/.test(translatorSrc), true)
+check('[trans ] 盒子边长与参照同一个量（280*SK）',
+  /const STICKER_BOX_BASE = 280\.0/.test(translatorSrc), true)
+// 自证有效：把 `Math.max(...)` 摘掉（退回"不钳"那版），上面第一条**必须**翻面
+const brokenClamp = mutateAll(translatorSrc, [
+  ['Math\\.max\\(M, Math\\.min\\(width - box - M,', 'Math.min(width - box - M,'],
+], '[trans·变异] 摘掉安全区 clamp')
+if (brokenClamp) {
+  check('[trans·变异] 摘掉 clamp 后上面那条判据会翻面（本脚本能抓到）',
+    CLAMP_RE.test(brokenClamp), false)
+}
+
 process.exit(failed ? 1 : 0)
