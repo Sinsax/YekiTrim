@@ -17,16 +17,43 @@
 
 - 通过 `.cargo/config.toml` 的别名：`xtask = "run -p xtask --"` —— 所以是
   `cargo xtask scan [path] [--show-bare-espeak]` 与
-  `cargo xtask package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR]`。
-- `scan`：`path` 默认 `target/release`；递归收 `SCAN_EXTENSIONS`（`exe` / `dll`），
-  跳过 `SKIP_DIRS`（`build` / `deps`）与**本工具自己的二进制**（见「边界」），逐文件计数 `MARKERS`（5 个：
+  `cargo xtask package [--skip-build] [--smoke-test] [--version V] [--out-dir DIR] [--target windows|linux]`。
+- `scan`：`path` 默认 `target/release`；递归收**可能的可执行产物**，跳过 `SKIP_DIRS`（`build` / `deps`）
+  与**本工具自己的二进制**（见「边界」），逐文件计数 `MARKERS`（5 个：
   `espeak-ng` / `espeak ng` / `espeak_` / `libespeak` / `piper_phonemize`，**不区分大小写**）。
   显式传单个文件时按原样扫、不做自我过滤（`package` 的门禁走的正是这条）。
-- `package`：版本 → `cargo build --release -p yekitrim-cli --locked` → `yekitrim.exe` → 调 `scan` 门禁 →
-  查 `webui/dist` → 组装 → 逐项断言必需文件 →（可选）`smoke_test` → `zip_dir` → 打印 size 与 sha256 →
-  **写 `<zip>.sha256.txt` 校验文件**（2026-10-01 起自动生成，见「边界」最后一条）。
-- 打包内容：`yekitrim.exe`、`webui/dist/`（整个）、`resources/fonts/放这里.txt`、
-  `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷）；
+  ⚠️ **判定"是不是产物"必须按内容，不能只按扩展名**（2026-10-05 修）：
+  原先只认 `exe`/`dll`，而 **Linux 产物没有扩展名** ⇒ 在 Linux 上一个文件都收不到、
+  直接以 "nothing to scan"（exit 3）退出。**后果是 GPL 红线在 Linux 上从未被执行**——
+  链接了 espeak-ng 的 ELF 会静默通过。现在 `looks_like_artifact()` 认"扩展名命中
+  **或** 文件头是 ELF 魔数（`\x7fELF`）"（只读前 4 字节）。这不会误伤：它只决定要不要扫，
+  扫到的标记才决定成败。回归验证：干净 ELF → 0；往 ELF 尾部追加 `espeak-ng` → 1。
+- `package`：版本 → `cargo build --release -p yekitrim-cli --locked` → 定位产物 → 调 `scan` 门禁 →
+  按平台组装 →（可选）`smoke_test` → 归档（Windows `zip_dir` / Linux `tar_gz_dir`）→
+  打印 size 与 sha256 → **写 `<归档>.sha256.txt` 校验文件**（2026-10-01 起自动生成，见「边界」最后一条）。
+  `--target` 默认按**宿主**推断（`cfg!(windows)`）；`linux` 走 `run_package_linux`。
+- **两个平台的打包差异**（Linux 通道 2026-10-05 加）：
+  | | Windows | Linux |
+  |---|---|---|
+  | 归档 | `yekitrim-v<V>-win-x64.zip` | `yekitrim-v<V>-linux-x64.tar.gz` |
+  | 主程序 | `yekitrim.exe` | `yekitrim`（ELF，0755） |
+  | 托盘 / `.ico` | 有 | **无**（Windows 专属概念） |
+  | 底座 | `dhampir/bin/dhampir.exe` | `dhampir/bin/dhampir` |
+  | 额外门禁 | —— | **glibc 上限检查**（见下） |
+  用 tar.gz 而非 zip 的理由：**zip 会丢 Unix 权限位**，解出来不可执行，用户得自己 `chmod +x`。
+  ⚠️ `tar_gz_dir` 必须固定 `--sort=name --mtime --owner/--group/--numeric-owner`，
+  否则同一份内容每次打包 sha256 都变、`checksums` 永远校验不上。
+- ⚠️ **Linux 通道会拒绝 glibc 超标的产物**（`MAX_GLIBC = (2, 39)`）：
+  Linux 二进制写死它需要的最高 `GLIBC_x.y`，宿主低于它就**直接起不来**
+  （`version 'GLIBC_2.43' not found`）。实测在本机 Arch（glibc 2.44）直编出来的要求
+  **GLIBC_2.43**，在**所有目标发行版上都跑不了** —— 而构建期完全看不出来。
+  所以 Linux 产物**必须**在 `docker/Dockerfile.linux-x64`（ubuntu:24.04）里编。
+  ⚠️ 改基座版本就要同步改 `MAX_GLIBC`，否则门禁会拦下自己刚编好的产物（或放过坏的）。
+  `max_glibc_symbol()` 刻意不依赖 `objdump`/`readelf`（本 crate 只用 std + sha2 + zip）。
+- 打包内容（⚠️ **2026-10-05 订正**：下面这条以前写"`webui/dist/`（整个）"，
+  但那次改动之后 dist 已经**编在 exe 里**、包里不再带它 —— 卡片当时没跟着改）：
+  `yekitrim[.exe]`、`resources/fonts/放这里.txt`、
+  `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷，包内名 `RELEASE-NOTES.md`）；
   **外加默认出片通道的随身件（2026-10-01）**：`tools/polish-to-dhampir.mjs`（转译器，它按**同层**
   `../spec/effects.json` 读效果词汇表）、`spec/effects.json`，以及底座三样
   `dhampir/bin/<exe>` + `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`

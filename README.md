@@ -579,8 +579,42 @@ node webui/scripts/check-caption-wrap.mjs    # 竖屏折行契约（wrapCaptionP
 node webui/scripts/check-sticker-anchor.mjs  # 贴纸锚点/尺寸契约（锚点=盒子左上、position=中心）
 node webui/scripts/check-cover-stage.mjs     # 封面舞台契约（设计器黑边覆盖 + 恒横版画布 + 模糊数字同源）
 cd webui && npm install && npm run build # 改 webui/src 后必须重建（dist 已入库）
-cargo xtask package --smoke-test         # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
+cargo xtask package --smoke-test                     # 打 Windows x64 发行包（含 espeak-ng 门禁 + 冒烟）
+cargo xtask package --target linux --smoke-test      # 打 Linux x64 发行包（tar.gz）
 ```
+
+### 发布 Linux x64 产物
+
+⚠️ **Linux 产物必须在固定基线的容器里编**，不能拿开发机上的 `cargo build` 直接发布：
+
+```bash
+docker build --network host -f docker/Dockerfile.linux-x64 -t yekitrim-linux-x64-builder .
+docker run --rm --network host \
+  -v "$PWD:/src" \
+  -v ../sherpa-onnx-prebuilt-no-tts/build/cmake-build/install/lib:/sherpa:ro \
+  -w /src yekitrim-linux-x64-builder \
+  cargo build --release -p yekitrim-cli --locked
+
+cargo xtask package --target linux --skip-build --smoke-test \
+  --dhampir-exe ../Dhampir/target/release/dhampir
+```
+
+**为什么必须这样**：Linux 二进制会写死它需要的最高 `GLIBC_x.y`。在滚动发行版（如 Arch，glibc 2.44）
+上直编出来的要求 **`GLIBC_2.43`** —— 而 Ubuntu 22.04 是 2.35、Debian 12 是 2.36、Ubuntu 24.04 是 2.39，
+**一个都跑不了**（`version 'GLIBC_2.43' not found`）。这个失败在构建期**完全看不出来**（链接零错误），
+只有用户下载后才炸。容器给的基线是 **glibc 2.39 / GCC 14**。
+
+打包器会**拒绝**任何超过 `MAX_GLIBC = (2, 39)` 的产物，所以拿开发机的产物去打包会直接失败并提示重建。
+
+| 项 | 值 |
+|---|---|
+| 运行时要求 | glibc ≥ 2.39、libstdc++ 带 `CXXABI_1.3.15`（GCC 12+） |
+| 可用 | Ubuntu 24.04+ / Debian 13+ / Fedora 40+ |
+| 不可用 | Ubuntu 22.04、Debian 12 —— 这是 `glibc2_28` 版 onnxruntime 的代价 |
+| 归档 | `yekitrim-v<版本>-linux-x64.tar.gz`（**tar.gz 不是 zip**：zip 会丢 0755 权限位，解出来不可执行） |
+| 与 Windows 的差异 | **没有托盘**（`.ico` / `yekitrim-tray` 是 Windows 概念） |
+
+⚠️ 改了 `docker/Dockerfile.linux-x64` 的基座版本，就要同步改 `crates/xtask/src/main.rs` 里的 `MAX_GLIBC`。
 
 > 依赖方向是**单向**的：`yekitrim-service` 绝不 `use yekitrim_server::*`；`yekitrim-server` 只依赖
 > `yekitrim-service`。细节与踩坑记录见各模块目录的 `AGENTS.md`（清单见
