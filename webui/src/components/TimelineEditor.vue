@@ -346,7 +346,7 @@ import { toast } from '../stores/toast'
 import Icon from './Icon.vue'
 import StickerPicker from './polish/StickerPicker.vue'
 import SfxPicker from './polish/SfxPicker.vue'
-import { TIMELINE_COLORS } from '../utils'
+import { TIMELINE_COLORS, isEditableKeyEvent } from '../utils'
 import {
   fetchProject, fetchSubtitles, fetchSfxCatalog, fetchStickerLibrary,
   saveProjectPatch, saveSubtitles, runSilence,
@@ -1597,8 +1597,8 @@ function onTimelineKey(e) {
   const x = e.clientX
   const y = e.clientY
   if (x < r.left || x > r.right || y < r.top || y > r.bottom) return
-  const tag = (e.target?.tagName || '').toUpperCase()
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return
+  // 同一份判据（`utils.js`）：输入框/下拉/富文本/输入法合成中一律不接管
+  if (isEditableKeyEvent(e)) return
   e.preventDefault()
   emit('toggle')
 }

@@ -267,3 +267,22 @@ export function clipMediaUrl(pid, clipNameOrDir, file = 'clip.mp4') {
   if (!pid || !name || !file) return ''
   return mediaUrl(pid, `output/clips/${name}/${file}`)
 }
+
+/**
+ * 这个键盘事件是不是**该归可编辑控件**（输入框 / 文本域 / 下拉 / 富文本 / 输入法合成中）？
+ *
+ * ⚠️ **只留这一份判据**：面板类快捷键（时间轴的 Space、封面设计器的 Delete/上下移、切片页的
+ * 方向键、预处理页的 Space）在接管按键前都要先过它。少一处就是一类**静默事故** ——
+ * 实测：封面设计器里在标题文本框按 Delete，一个键把**整个文本图层**删了
+ * （`CoverDesigner::onPanelKey` 当时没有这道闸，而它绑在整块 `.controls` 上）。
+ * ⚠️ `isComposing` 同样算"归控件"：中文输入法拼音候选里按 Delete/空格，语义在输入法手上。
+ */
+export function isEditableKeyEvent(e) {
+  if (!e) return false
+  if (e.isComposing === true) return true
+  const t = e.target
+  if (!t) return false
+  if (t.isContentEditable === true) return true
+  const tag = String(t.tagName || '').toUpperCase()
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}

@@ -351,7 +351,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { toast } from '../stores/toast'
 import { addClient } from '../stores/log'
 import Icon from './Icon.vue'
-import { clipMediaUrl, fmtTime } from '../utils'
+import { clipMediaUrl, fmtTime, isEditableKeyEvent } from '../utils'
 import { watchJob, isActive } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 import {
@@ -896,6 +896,9 @@ function moveLayerTo(fromKey, targetKey, before) {
 /** 快捷键（PS 味）：Ctrl/Cmd+[ / ] 上下移一层、加 Shift 置顶/置底、Delete 删掉选中层。
  *  绑在面板容器上（`@keydown`），别挂 window —— 精修页还有别的全局键。 */
 function onPanelKey(e) {
+  // ⚠️ **焦点在输入框里（或输入法合成中）⇒ 一个键都不接管**：那时 Delete 是删字符、
+  // 空格是输入，抢过来就成了"在标题文本框里打字，一个 Delete 把整个文本图层删了"（实测踩过）。
+  if (isEditableKeyEvent(e)) return
   const id = selectedKey.value
   if (!id || id.startsWith('guide') || LAYER_META[id]?.locked) return
   if ((e.ctrlKey || e.metaKey) && (e.key === ']' || e.key === '[')) {

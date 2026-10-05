@@ -277,7 +277,7 @@ import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { openJobs } from '../stores/ui'
-import { EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning, isEditableKeyEvent } from '../utils'
 
 const route = useRoute()
 const router = useRouter()
@@ -827,8 +827,7 @@ async function doCreate({ start: s, end: e, label: lb, summary: sm, type: ty }) 
 }
 
 function onKey(e) {
-  const tag = (e.target?.tagName || '').toLowerCase()
-  if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+  if (isEditableKeyEvent(e)) return
   if (e.code === 'Space') {
     e.preventDefault()
     togglePlay()

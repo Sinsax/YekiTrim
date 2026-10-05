@@ -24,6 +24,12 @@
 //
 //  ⑧ 竖画布那三道整类门只挂在 `title` 上等于没说：提示必须在**行内**（用户不会去悬停）。
 //
+//  ⑨ 「打开输出目录」只在本机渲染（服务端模式那里也没有这个端点）。
+//
+//  ⑩ 面板类快捷键**不许在输入框里抢键**（2026-10-05 用户报：封面设计器里在标题文本框按 Delete，
+//     一个键把**整个文本图层**删了）。判据是**行为**级：把 `utils.isEditableKeyEvent` 抽出来喂
+//     假事件，并钉住四处调用点都真的过它 —— 少一处就是一类静默事故。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -56,6 +62,11 @@ const overview = await read('webui/src/components/HomeClipsOverview.vue')
 const workbench = await read('webui/src/views/WorkbenchView.vue')
 const modelList = await read('webui/src/components/ModelList.vue')
 const polishView = await read('webui/src/views/PolishView.vue')
+const utilsJs = await read('webui/src/utils.js')
+const coverDesigner = await read('webui/src/components/CoverDesigner.vue')
+const timelineEditor = await read('webui/src/components/TimelineEditor.vue')
+const prepareView = await read('webui/src/views/PrepareView.vue')
+const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -257,5 +268,48 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 
+// ── ⑩ 面板快捷键不许在输入框里抢键（一个 Delete 删掉整个文本图层那件事）──
+// 用户原话：「封面设计器…我删文本框里的文字，一个 delete 把整个文本图层都删除了」。
+// `CoverDesigner::onPanelKey` 绑在整块 `.controls` 上，而文本框/数值框都在里面 ⇒ 打字时
+// Delete 冒泡到面板 = 删图层。判据分两层：
+//   ① **行为**：把 `utils.isEditableKeyEvent` 从源码抽出来，喂 6 组假事件（这一步是真跑的）；
+//   ② **接线**：四处面板快捷键都真的过它（少一处就是同一类事故的复现）。
+{
+  const hit = utilsJs.match(/export function isEditableKeyEvent\(e\) \{[^]*?\n\}/)
+  check('⑩ 能从 utils.js 抽出 isEditableKeyEvent', hit !== null, true)
+  if (hit !== null) {
+    const fn = new Function(`${hit[0].replace('export function', 'function')}\nreturn isEditableKeyEvent`)()
+    const cases = [
+      ['文本框', { target: { tagName: 'TEXTAREA' } }, true],
+      ['输入框', { target: { tagName: 'INPUT' } }, true],
+      ['下拉框', { target: { tagName: 'select' } }, true],
+      ['富文本', { target: { tagName: 'DIV', isContentEditable: true } }, true],
+      ['输入法合成中', { isComposing: true, target: { tagName: 'DIV' } }, true],
+      ['普通面板/画布', { target: { tagName: 'DIV' } }, false],
+      ['没有 target', { }, false],
+    ]
+    for (const [what, ev, want] of cases) check(`⑩ ${what} ⇒ 归控件？`, fn(ev), want)
+    // 变异：把 `INPUT` 那一支删掉 ⇒ 输入框立刻不再被认成可编辑
+    const noInput = hit[0].replace("tag === 'INPUT' || ", '')
+    check('[变异] ⑩ 删掉 INPUT 分支的替换命中了源码', noInput !== hit[0], true)
+    const fnNoInput = new Function(`${noInput.replace('export function', 'function')}\nreturn isEditableKeyEvent`)()
+    check('[变异] ⑩ 输入框不再算可编辑 ⇒ 行为判据翻面', fnNoInput({ target: { tagName: 'INPUT' } }), false)
+  }
+  const passes = (src) => /isEditableKeyEvent\(e\)/.test(src)
+  check('⑩ 封面设计器接管快捷键前先过它（bug 本体）', passes(coverDesigner), true)
+  check('⑩ 时间轴编辑器的 Space 也过它', passes(timelineEditor), true)
+  check('⑩ 预处理页的 Space 也过它', passes(prepareView), true)
+  check('⑩ 切片页的 Space/方向键也过它', passes(clipsSection), true)
+  // 变异：把守卫整行摘掉 ⇒ 判据必须翻面（两处调用点各来一次）
+  const MUT10 = [
+    ['封面设计器摘掉那道闸', coverDesigner],
+    ['时间轴编辑器的守卫整行删掉', timelineEditor],
+  ]
+  for (const [what, src] of MUT10) {
+    const m = src.replace('if (isEditableKeyEvent(e)) return', '/* no guard */')
+    check(`[变异] ⑩ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑩ ${what} → 判据翻面`, passes(m), false)
+  }
+}
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
