@@ -16,7 +16,10 @@
   **顺序 = 数组顺序、从下到上**，解析在 `cover.rs::resolve_cover_stack`）/ `CoverEffect`（`id` 是栈引用的
   稳定标识；`visible` 不存在 —— 可见性**只住 `layers` 里**）/ `SfxConfig` / `FilterConfig` /
   `SourceRef` / `CanvasConfig` / `StageConfig` / `StickerConfig` / `StageFit`；
-  `resolve_stage(src) -> StageFit`（画面构成的**唯一推导**）、`canvas_contract`、`canvas_size`、`is_portrait`、
+  `resolve_stage(src) -> StageFit`（画面构成的**唯一推导**）、`stage_draw_rect(stage, src, canvas) -> StageDrawRect`
+  （**主画面矩形 `sr`** 的 Rust SSOT = 模板 `index.html::stageDrawRect` 的逐式镜像；
+  `layout.<区域>` 的百分比与运镜不动点百分比都是**它的**百分比 = **W1 口径**）、
+  `canvas_contract`、`canvas_size`、`is_portrait`、
   `region_rect`、`stage_bg_mode` / `stage_position` / `sticker_position_mode`、`to_toml_commented`、`example`、
   `clamp_segments_to_duration`；**没有** `split_segments_by_mute_ranges`（已删除，见边界第一条）；
   常量 `CANVAS_LANDSCAPE_WH = (1920,1080)` / `CANVAS_PORTRAIT_WH = (1080,1920)` /
@@ -123,14 +126,16 @@
   **所以任何"直接 `toml::from_str::<ProjectFile>` 解析 `to_toml_commented()` 产物"的地方**都要先摘
   （单测里那几处就是这么做的）。版本与迁移的总规矩见 `crates/yekitrim-core/src/config/AGENTS.md`。
 
-- ⚠️ **`layout.<区域>` 的百分比坐标系没有定义**（2026-10-05 查明）：编辑端按**整帧/舞台 %**
-  记录（`PolishPreview.vue::pctAt`），四个渲染端按**主画面矩形 sr 的 %**读（模板 `:928`/`:1888`、
-  `PolishPreview.vue:1961`、转译器 `:2599`），而本目录的 `placement` 按**整帧**读 ⇒
-  `sr ≠ 整块画布`（源比例≠画布 / `stage.scale≠1` / `padding≠0`）就三方不一致。实测：4:3 源进
-  16:9、liver 框 10–40%、zoom=1 ⇒ 真障碍 `[384,816]` vs 模型 `[192,768]`，临界候选**压住主播
-  47px**；`scale=1.6` 时 **100% 落在真人身上**，而 `relaxed` 不触发、**零告警**。
-  两条互斥改法（源帧坐标 / 整帧坐标）见 `docs/plan/polish-preview-bugs-2026-10-05.md` §④ ——
-  **改之前先定语义；改一半比不改更糟**。
+- ⚠️ **`layout.<区域>` 的百分比坐标系 = 主画面矩形 `sr` 的百分比（W1，2026-10-05 用户拍板）**：
+  四个渲染端一直这么读（模板 `:928`/`:1888`、`PolishPreview.vue:1961`、转译器 `:2599`）；
+  **Rust 侧已落地**（`stage_draw_rect` 逐式镜像模板 `stageDrawRect`；`placement` 的障碍与不动点
+  都先经 `sr` 再进相机变换）—— 改造前 `placement` 按**整帧**读，`sr ≠ 整块画布`（源比例≠画布 /
+  `stage.scale≠1` / `padding≠0`）时与成片不一致。实测：4:3 源进 16:9、liver 框 10–40%、zoom=1 ⇒
+  真障碍 `[384,816]` vs 旧模型 `[192,768]`，临界候选**压住主播 47px**；`scale=1.6` 时真障碍
+  `(38.4,-151.2)–(729.6,367.2)` vs 旧模型 `(192,108)–(768,432)`。
+  ⚠️ **编辑端那半边还没改**（`PolishPreview.vue::pctAt` 仍按整帧 % 记录）：存量的 `origin`/选框
+  在「编辑端换算 + 点选落点仍用舞台坐标」落地前仍是整帧 %；两条改法见
+  `docs/plan/polish-preview-bugs-2026-10-05.md` §④。
 
 > 改动只允许落在本目录；跨模块改动先读对方卡，并跑两条门禁。
 
