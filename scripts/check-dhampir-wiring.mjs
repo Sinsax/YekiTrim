@@ -150,6 +150,9 @@ check(
 
 // ---- 热重载的四条判据（主检查与 --self-test 共用，避免两处各写一份而漂移）----
 // ---- 4：前端调的 `engine.*` 方法，`Engine` 上必须真的有 ----
+// 4f/4g 的探针（2026-10-05）：与主检查共用一份，别在两处各写一个正则而漂移
+const PROBE_SUBS_SIGNAL = /props\.persistedSubtitles/
+const PROBE_ASSET_RESTART = /dhampirVideoAssetsKey\(project\) !== dhampirAssetsKey/
 const PROBE_RELOAD_DEF = /async function reloadDhampirProject\s*\(\)\s*\{/
 const PROBE_RELOAD_WATCH = /watch\(\(\)\s*=>\s*props\.persistedConfig,/
 const PROBE_RELOAD_OPEN = /dhampirEngine\.open\(/
@@ -447,6 +450,48 @@ function fnBodyOf(src, name) {
       '热重载调了、首启没调 = 进页面时状态就是缺的',
     )
   }
+  // ---- 4f：**只改字幕也要触发重载**（2026-10-05 修「改完字幕预览不刷新」）----
+  //
+  // 字幕**不在 `polish.toml` 里**（它住 `data/subtitles.json`）⇒ 重载指纹里的配置子树
+  // 一个字节都不变，那次改动于是永远不触发重载。信号必须由父级在**落盘后**递进来
+  // （与 `persistedConfig` 同款：拖动中的镜像不算数，磁盘还没写下去）。
+  check(
+    PROBE_SUBS_SIGNAL.test(previewSrc),
+    '热重载指纹必须把「磁盘上那份字幕」算进去（props.persistedSubtitles）',
+    '缺了它：改完字幕预览不刷新 —— 字幕不住 polish.toml，配置子树不会变',
+  )
+  check(
+    /:persisted-subtitles="persistedSubs"/.test(viewSrc),
+    'PolishView 必须把 persistedSubs 递给预览',
+    '接了一半 = 信号永远是 null，判据看着在、实际不生效',
+  )
+  check(
+    /persistedSubs\.value = subs\.value/.test(fnBodyOf(viewSrc, 'onEditSaved')),
+    '「落盘完成」时才更新 persistedSubs（不能拿未落盘的镜像当磁盘版本）',
+    '镜像不算数：那时磁盘上还是旧字幕，重载只会把旧内容再喂一遍',
+  )
+
+  // ---- 4g：**素材集合变了必须整条重启**（2026-10-05 修「LLM 剪辑后自动刷新黑屏」）----
+  //
+  // `<video>` 源元素只在 `startDhampir()` 里按当时的 `project.assets` 建一次；LLM 剪辑
+  // 会重切 clip、增删片段 ⇒ 增量重载只对**旧元素** bindSource ⇒ 新素材没有元素 ⇒
+  // 引擎没有像素来源 ⇒ 画布整块黑（RENDER_ATTACHMENT 读不回来，连长帧遮罩都救不了）。
+  check(
+    PROBE_ASSET_RESTART.test(reloadBody),
+    '重载必须先比对素材指纹（dhampirVideoAssetsKey）再决定走哪条路',
+    '不比对 = 素材变了仍走增量重载 = 黑屏（用户看到"手动刷整页才正常"）',
+  )
+  check(
+    reloadBody.includes('stopDhampir()') && reloadBody.includes('await startDhampir()'),
+    '素材变了要 stopDhampir() + await startDhampir()（等价整页刷新，但保住页面状态）',
+    '只 open() 不重建源元素 = 新素材永远没元素',
+  )
+  check(
+    /dhampirAssetsKey = dhampirVideoAssetsKey\(project\)/.test(startBody),
+    '建源后必须记录素材指纹（否则比对永远不成立、等于没做）',
+    '只比对不记录 = 第一次重载就把自己当成"素材变了"',
+  )
+
   // ---- 4e-2：**动图直通真的接上了没有**（2026-10-02，host_api v6）----
   //
   // 版本号改成 6 只是"拦住两端错配"的闸，**不证明新能力被用上** ——
@@ -561,6 +606,7 @@ function fnBodyOf(src, name) {
 // 一共出现 5 次，把函数定义整个删掉、判据**照样绿**。所以判据必须绑在**定义**（`async function
 // reloadDhampirProject() {`）与**注册**（`watch(() => props.config,`）上，并由这里钉住。
 const SELF_TEST = process.argv.includes('--self-test');
+// 4f/4g 的探针（与主检查共用一份，避免两处各写一份而漂移）
 if (SELF_TEST) {
   const vueText = readFileSync(PREVIEW_VUE, 'utf8');
   const cases = [
@@ -571,6 +617,10 @@ if (SELF_TEST) {
     ['[变异] done 退回当场 emit（抢在落盘之前）', 'onceSaved(() => emit(\'done\', payload))', "emit('done', payload)"],
     // 字体：热重载不再装字体（退回"只在 startDhampir 里装"那版）—— 判据必须点名
     ['[变异] 热重载不装字体', '    await ensureProjectFonts(project)' + "\n" + '    const tb = project.timeline.timebase', '    const tb = project.timeline.timebase', PROBE_RELOAD_FONT],
+    // 4f：指纹里去掉字幕信号（退回"改字幕不刷新"那版）
+    ['[变异] 指纹里去掉字幕信号', 'props.persistedSubtitles,', '', PROBE_SUBS_SIGNAL],
+    // 4g：素材变了不再重启（退回"素材换了还走增量重载" ⇒ 黑屏）
+    ['[变异] 素材变了不再重启', 'if (dhampirVideoAssetsKey(project) !== dhampirAssetsKey) {', 'if (false) {', PROBE_ASSET_RESTART],
   ]
   const editorText = readFileSync(TIMELINE_EDITOR, 'utf8')
   let bad = 0
