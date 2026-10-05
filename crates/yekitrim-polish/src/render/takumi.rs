@@ -426,7 +426,7 @@ pub fn flatten_compound_selectors(css: &str, html: &str) -> String {
 fn strip_at_rule_blocks(css: &str, name: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let mut rest = css;
-    while let Some(i) = rest.find(name) {
+    while let Some(i) = find_outside_comments(rest, name) {
         out.push_str(&rest[..i]);
         let after = &rest[i..];
         match (after.find('{'), after.find('}')) {
@@ -439,6 +439,44 @@ fn strip_at_rule_blocks(css: &str, name: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// 在**不在注释里**的位置找 `name`（CSS 注释 = `/* … */`）。
+///
+/// ⚠️ **2026-10-05 用户报的 bug 就是漏了这一条**（「封面设计器里选的字体和出图不一致」）：
+/// 模板里那句注释写着「…「该字体的 `@font-face` 名 + 原栈」…」，而 `strip_at_rule_blocks`
+/// 从**注释里的** `@font-face` 开始删、删到**第一个 `}`** —— 那正好是紧随其后的
+/// `html,body{… font-family:… }` 的右括号 ⇒ **整条规则（含字体栈）被吃掉**。
+/// 表现：CSS 文本每次都变（注释里引用了族名），产物却**逐字节相同** —— 三次不同
+/// `[cover] font`（含一个不存在的字体）出图完全一致，因为 Takumi 从来没收到过 `font-family`，
+/// 落到"注册序第一支"。
+fn find_outside_comments(hay: &str, name: &str) -> Option<usize> {
+    let bytes = hay.as_bytes();
+    let needle = name.as_bytes();
+    if needle.is_empty() {
+        return None;
+    }
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            // 跳过整段注释（没闭合就到底 —— 与 `extract_style_blocks` 同一条口径）
+            match hay[i + 2..].find("*/") {
+                Some(k) => {
+                    i += 2 + k + 2;
+                    continue;
+                }
+                None => return None,
+            }
+        }
+        if bytes[i..].starts_with(needle) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    if bytes[i..].starts_with(needle) {
+        return Some(i);
+    }
+    None
 }
 
 /// 去掉某一条声明（`name: value;`），同一行里其它声明原样保留。
