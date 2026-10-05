@@ -148,6 +148,15 @@ yekitrim server --host 127.0.0.1 --allow-remote \
   手动发起的转写/渲染/剪切没有按账号的存储配额。公开服务请自己盯着磁盘。
 - **限流是按 IP 的**（加上任务侧的按账号配额）。同一出口 IP 后面的多个用户共享一份额度；
   额度设得较宽（见 `ratelimit.rs` 常量），正常使用碰不到。
+- **`POST /api/open-path` 只在本地免登录模式下存在**（精修页产物卡的「打开输出目录」）。
+  本地模式（`yekitrim-tray` 双击起的那份：绑 loopback + `--local-no-auth`，`/api/health`
+  回 `local_no_auth=true`）点一下，由**与本机同进程的服务端**去弹系统文件管理器；按钮也**只在那时渲染**。
+  服务端模式（`--allow-remote` / 反代）下 `local_admin` 是 `None` ⇒ 这个端点**回 404「未知接口」**，
+  前端**不渲染那颗按钮** —— 否则远端的人点一下、**服务器上**就弹出一个资源管理器窗口，
+  那是荒唐且有人身风险的能力。实现：`api::open_path`（先 `canonicalize` 再 `is_dir()`，
+  `explorer` / `open` / `xdg-open` 各拿一个参数，**不走 shell**）；
+  判据：`routes::tests::open_path_is_local_only_and_never_spawns_for_bad_paths`
+  （成功那条刻意不测 —— 它会真弹窗口）。
 - **日志含项目路径**：`/api/admin/logs` 与 `/api/admin/usage` 因此**仅 admin**。
   给出去的账号一律用普通角色（`yekitrim user add <name> --role user`）。
 - 单实例：同一个 `data_dir` 只能跑一个进程（`yekitrim.lock`）。要多副本请各自独立 `data_dir`

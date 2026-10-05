@@ -49,6 +49,12 @@ export const saveSubtitles = (pid, dir, segments) =>
 export const saveProjectPatch = (pid, dir, patch) =>
   api('/api/polish/project', { method: 'PUT', body: JSON.stringify({ ...scoped(pid, dir), ...patch }) })
 
+/** 用**本机**的文件管理器弹出这个目录（精修页「打开输出目录」）。
+ *  ⚠️ 只有本地免登录模式（托盘双击起的那份）认得这个端点；服务端模式回 404 ——
+ *  那时前端**根本不渲染那颗按钮**（`localNoAuthKnown()` 门控），所以不会有人撞到 404。 */
+export const openPath = (path) =>
+  api('/api/open-path', { method: 'POST', body: JSON.stringify({ path }), label: '打开输出目录' })
+
 export const selectVersion = (pid, dir, version) =>
   api('/api/polish/select-version', { method: 'POST', body: JSON.stringify({ ...scoped(pid, dir), version }) })
 

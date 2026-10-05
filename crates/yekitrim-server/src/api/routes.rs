@@ -207,6 +207,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::ingest::import_recording),
         )
         .route("/fs/list", post(fs_list))
+        // 本机打开一个目录（精修页「打开输出目录」）：**只在本地免登录模式下存在**，
+        // 服务端模式 handler 自己回 404（见 `api::open_path`）。挂在这一组而不是 `polish` 那组 ——
+        // 那组带 `enforce_scope` 的项目目录守卫，这条端点收的是任意本机目录。
+        .route("/open-path", post(open_path))
         .route("/ingest/records", get(crate::ingest::records))
         .route("/ingest/retry", post(crate::ingest::retry))
         // B站链接通道（P4）：解析（不落库）/ 提交下载 / 下载器就绪位
@@ -590,6 +594,87 @@ async fn removed_decision_endpoint_falls_back_to_json_404() {
     /// ⚠️ 403（令牌不对）那条路走的是 `auth::token_ok_for` 的纯函数单测，不在这里设 env：
     /// 本仓刻意不在测试里碰环境变量（`data_dir_in` 就是为这个存在的），**进程内并行**下
     /// 设 env 会让别的用例跟着变。
+    /// `POST /api/open-path`（精修页「打开输出目录」）**只在本地免登录模式下存在**：
+    /// 服务端模式必须 404（远端的人点一下、**服务器上**弹一个资源管理器窗口是不可接受的），
+    /// 本地模式也**只开已存在的目录**（不存在 / 没给 → 400，且**根本不走到 spawn**）。
+    ///
+    /// ⚠️ 成功那条**刻意不写测试**：它会真弹一个资源管理器窗口（本机与 CI 都不该发生）。
+    /// 这里只钉"不该开的都不开" —— 判据全是**能翻面的**：把 `open_path` 开头那道
+    /// `local_admin.is_none()` 摘掉，第一条立刻从 404 变成 400（而那两条喂的都是**不存在的目录**，
+    /// 所以谁也不会在跑测试的机器上真弹出一个资源管理器窗口）。
+    #[tokio::test]
+    async fn open_path_is_local_only_and_never_spawns_for_bad_paths() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        // ① 服务端模式（普通会话）：端点当不存在，连"这里有个能开目录的口子"都不透露。
+        // ⚠️ 这里刻意喂**不存在的目录**（而不是一个真目录）：万一有人把 `open_path` 开头那道
+        // `local_admin` 闸摘掉，这条会变成 400（"目录不存在"）而不是**真弹一个窗口** ——
+        // 判据照样翻面（404 → 400），但不会在跑测试的人机器上弹资源管理器。
+        let t = test_app().await;
+        let mut ghost = std::env::temp_dir();
+        ghost.push("yekitrim-definitely-missing-dir-server-mode");
+        let res = t
+            .call(
+                t.req("POST", "/open-path")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": ghost.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("未知接口"),
+            "服务端模式下必须报「未知接口」，实得：{}",
+            String::from_utf8_lossy(&bytes)
+        );
+
+        // ② 本地免登录模式：坏路径只 400，**不会**去 spawn 任何进程
+        let state = (*t.state)
+            .clone()
+            .with_local_admin(crate::model::LocalAdmin {
+                id: 1,
+                username: "local".into(),
+                role: "admin".into(),
+            });
+        let app = router(std::sync::Arc::new(state));
+        let local_post = |body: String| {
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/open-path")
+                .header("host", "127.0.0.1:26320")
+                .header("origin", "http://127.0.0.1:26320")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let mut missing = std::env::temp_dir();
+        missing.push("yekitrim-definitely-missing-dir-2f8a1c");
+        let res = app
+            .clone()
+            .oneshot(local_post(
+                serde_json::json!({ "path": missing.to_string_lossy() }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "不存在的目录必须 400（不 spawn）");
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("目录不存在"));
+
+        // ③ 本地模式 + 空 path：400（同样不 spawn）
+        let res = app
+            .clone()
+            .oneshot(local_post(serde_json::json!({ "path": "  " }).to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("缺少 path"));
+    }
+
     #[tokio::test]
     async fn shutdown_endpoint_is_404_without_token_env() {
         let t = test_app().await;
