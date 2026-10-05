@@ -828,6 +828,11 @@ function checkStage(curves) {
 }
 const MUTATIONS = [
   {
+    name: '密集键右端退回「窗口末尾」（③R3 的回归：两点直线弦把 pow2_out 拉直）',
+    from: '    const right = Number.isFinite(next) ? next - 1 : lastOut;',
+    to: '    const right = b;',
+  },
+  {
     name: '竖屏画布的整类门被摘掉（`portraitAllows` 恒放行）',
     from: '    return config.stage?.[`portrait_${key}`] === true;',
     to: '    return true;',
@@ -1022,6 +1027,8 @@ async function mutate() {
         checkMappings(curves);
         // 画面构成那一段同理（2026-10-02 的三道整类门）。
         checkStage(curves);
+        // 密集键右端那一段同理（③R3，2026-10-05）—— 不跑它这条变异就永远绿。
+        checkDenseRanges(curves);
       });
     } catch (error) {
       reason = String(error && error.message ? error.message : error).split('\n')[0];
@@ -1145,6 +1152,30 @@ function checkColors(mod) {
 //   * `style.camera` 没配某一档时的倍率 —— 模板有**按档位的默认值**（远 = 0.55），不是 1.0。
 //
 // 这三条的失效方式全是"报告里一行、成片里没有"，所以判据要落在**产物**上（调整图层 / 关键帧 / 资产）。
+// ---- 密集键往前铺的区间（③R3）--------------------------------------------
+// 抽成函数是因为**变异自证也要跑它**（`scripts/AGENTS.md`：只写在顶层的检查，变异台不会跑）。
+// 钉的是"右端落在哪一帧"：退回"窗口末尾"时，窗口之后到下一个稀疏键那一段只剩两个稀疏键 ⇒
+// 曲线退化成两点直线弦、`pow2_out` 被拉直（实测 zoom 偏 ~0.04 ≈ 3%）——而那条路径**只**在
+// "shake 窗口压在运镜过渡上"时触发，正是用户报的「shake 与运镜同时存在」。
+function checkDenseRanges(mod) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    checks += 1;
+    const a = JSON.stringify(actual);
+    const b = JSON.stringify(expected);
+    if (a !== b) throw new Error(`${what}：期望 ${b}，实得 ${a}`);
+  };
+  // 窗口 [100,130]、稀疏键在 150 ⇒ 右端 = **下一个稀疏键前一帧** 149（不是窗口末 131）
+  eq(mod.denseRangesFor([[100, 130]], [50, 150], 400), [[51, 149]], '右端 = 下一个稀疏键 - 1');
+  // 没有下一个稀疏键 ⇒ 铺到最后一个输出帧
+  eq(mod.denseRangesFor([[100, 130]], [50], 400), [[51, 400]], '没有下一个稀疏键 ⇒ 铺到末帧');
+  // 稀疏键**恰好**在 b+1 时它不算"下一个"（搜索严格大于 b+1）⇒ 继续铺到再下一个之前
+  eq(mod.denseRangesFor([[100, 130]], [50, 131, 200], 400), [[51, 199]], '恰在 b+1 的稀疏键不算下一个');
+  // 没有上一个稀疏键 ⇒ 从窗口起点开始（竖素材那份 16716 键的教训），右端照旧
+  eq(mod.denseRangesFor([[100, 130]], [200], 400), [[100, 199]], '没有上一个稀疏键 ⇒ 从窗口起点起');
+  return checks;
+}
+
 function checkMappings(mod) {
   let checks = 0;
   const eq = (actual, expected, what) => {
@@ -1417,6 +1448,8 @@ console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全
 
 const stageChecks = checkStage(translatorModule);
 console.log(`✓ 画面构成（合成工程过 translate）：${stageChecks} 项全绿`);
+const denseChecks = checkDenseRanges(translatorModule);
+console.log(`✓ 密集键区间（③R3 右端落点 + 两个边界）：${denseChecks} 项全绿`);
 console.log('  钉住的是 2026-10-02：竖屏画布默认全关（缺字段 = 关）的**特效 / 音效**整类门 ——');
 console.log('  横画布不受它影响、打开开关必须全回来（否则就是「关掉之后永久关掉」）');
 console.log('  钉住的是 M2 三条"报告里一行、成片里没有"：覆盖层 color/fade_in 两档、贴纸只有 name、');
