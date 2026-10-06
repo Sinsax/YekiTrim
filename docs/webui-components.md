@@ -888,6 +888,52 @@ return seg.frameStart + Math.round(localSec * seqFps)
 
 ---
 
+### 3.11 换片段时**封面整段覆盖**事故（2026-10-06，设计器基线必须跟着换）
+
+**用户原话**：「为什么 …/#/p/4/polish/唱到臭汗… 这个项目的所有封面设计器的标题是一样的」。
+
+**根因**（**是我上一轮"切片段不重挂预览"引入的**，只有那几小时的构建受影响）：
+
+`PolishView.watch(clipName)` 里先 `resetClipUiState()`（当时它第一句是 `coverKey++`）**再** `load()`；
+而 `dir` 是 `doLoad` 里 `await loadClips()` **之后**才写的 ⇒ 重挂出来的 `CoverDesigner` 挂载时
+拿到的是**旧片段的 dir** ⇒ `loadCoverConfig()` 读的是旧片段那份 `[cover]`；它的 600ms 防抖保存
+（`watch([titleLines, textX, …])` → `persistCoverConfig()`）用的却是**已经更新**的 `props.dir`
+⇒ **把旧片段的整套 `[cover]` 写进新片段**。
+
+实测（`GET /api/project-data/clips?project=4` + 逐字节比 `[cover]` 段）：p4 里 4 个片段与邻居的
+`[cover]` 段**完全一致**（1073 字节、含 `title_lines`），标题一模一样：
+
+| 被覆盖的片段 | 写进来的标题来自 |
+|---|---|
+| 高中上课打瞌睡… | 便利店打工… |
+| 左手废了还要唱《我的天空》 | 便利店打工… |
+| 为什么你们上班还能打游戏 | 不打游戏的时候都在干嘛（**这次探针现场撞出来的**） |
+| 左手比右手细一圈 | 唱到臭汗都出来了… |
+
+**修法三条一起**（缺一条症状就回来）：
+
+1. **父级不再提前重挂**：`resetClipUiState()` 里删掉 `coverKey++`（那一次重挂就是扳机）。
+2. **设计器自己听 `props.dir`**：换片段先 `configLoaded = false`（关写闸）、把这一片段的字段清空
+   （标题/高亮词/特效/图层栈/字体）、换 `videoSrc`、再 `loadCoverConfig()` + `fitTitleIntoSafeArea()`
+   —— 与 `onMounted` 同一套动作，只是**不重挂组件**（重挂的时机不可能对：`dir` 由父级异步更新）。
+3. **写盘前核对基线**（本仓那条"基线不可信不许写盘"）：`loadedDir` 记"这份值是哪个片段读回来的"，
+   `persistCoverConfig()` 里 `loadedDir !== props.dir` **一律不写**，并在面板上写明
+   「片段已切换，本次改动未保存（面板里那份属于上一个片段）」。
+
+**判据**：`webui/scripts/check-cover-stage.mjs` ⑧（4 项 + 4 处变异：拆掉基线核对 / 不记 `loadedDir` /
+去掉 dir watcher / 把 `coverKey++` 放回 `resetClipUiState`）+ 真页面 CDP
+`node .workbuddy/probe-cover-title.mjs`（5 项：进来时是 A 的标题、切过去后是**新片段自己的**标题、
+A 的 `polish.toml` 逐字节不变、B 的磁盘标题仍是 B 自己的）。
+
+⚠️ **数据面上的善后**（已经做过，原值备份在 `.workbuddy/cover-leak-backup/`）：那 4 个片段的
+`title_lines` 删掉、让标题回退到各自的 `[project] name`（各不相同的原话标题）；**被覆盖掉的样式**
+（字体/图层栈/颜色…）没有备份、不可恢复 —— 再打开设计器重调一次即可（这次不会再串了）。
+另：设计器**挂载/换片段时本来就会把这一份配置回写一次**（600ms 防抖），对"程序自己写出来的"文件
+那是逐字节幂等的；真正要防的是跨片段覆盖，所以探针那条判据写的是"**两份文件互不串**"、
+不是"一个字节都不动"。
+
+---
+
 ## ④ 运镜（camera）
 
 **三个能力**：**聚焦**（`anchor` = liver/danmaku/sticker/center）、**位移**（再写 `anchor_to` 即从 origin 平移到

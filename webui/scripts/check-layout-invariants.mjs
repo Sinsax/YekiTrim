@@ -744,9 +744,12 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const silentSwitch = (s) =>
     s.includes('load({ silent: hadEditor })') && s.includes('const hadEditor = ready.value')
   // ② 切片段要自己清的片段级草稿（以前靠"整棵重挂"顺手清零）
+  // ⚠️ 这里**不再要求** `coverKey++`：2026-10-06 的事故就是它（重挂那一刻 `dir` 还没换过来 ⇒
+  // 设计器读到旧片段、600ms 防抖把旧片段整套 `[cover]` 写进新片段）。封面现在自己
+  // `watch(props.dir)` 换片段 + 写盘前核对基线，那两条由 `check-cover-stage.mjs` ⑧ 守（4 处变异）。
   const resetClipState = (s) =>
-    /function resetClipUiState\(\) \{[\s\S]{0,500}?coverKey\.value\+\+/.test(s)
-      && /function resetClipUiState\(\) \{[\s\S]{0,500}?pointEdit\.value = false/.test(s)
+    /function resetClipUiState\(\) \{[\s\S]{0,700}?selectRegion\.value = ''/.test(s)
+      && /function resetClipUiState\(\) \{[\s\S]{0,700}?pointEdit\.value = false/.test(s)
   // ③ 预览自己听 dir
   const dirWatcher = (s) =>
     /watch\(\(\) => props\.dir,[\s\S]{0,240}?switchDhampirClip\(\)/.test(s)
@@ -775,7 +778,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     silentSwitch(s) && resetClipState(s) && dirWatcher(s) && srcGen(s) && buildBeforeResize(s)
       && attachSelfHeal(s) && pendingDrain(s)
   check('⑲ 切片段走静默加载（父级别卸载编辑器）', silentSwitch(polishView), true)
-  check('⑲ 片段级草稿自己清（封面重挂 + 落点草稿）', resetClipState(polishView), true)
+  check('⑲ 片段级草稿自己清（框选态 + 贴纸落点草稿）', resetClipState(polishView), true)
   check('⑲ 预览自己听 `props.dir` 换片段', dirWatcher(previewVue), true)
   check('⑲ 源元素 id 带代际（先建后拆不撞 id）', srcGen(previewVue), true)
   check('⑲ 换片段：先建源、最后才改画布尺寸/open', buildBeforeResize(previewVue), true)
@@ -783,7 +786,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑲ 换片段待办有人消费（tick 开头补跑）', pendingDrain(previewVue), true)
   const MUT19 = [
     ['切片段退回非静默 load（编辑器被卸载 = 黑屏）', polishView, (s) => s.replace('load({ silent: hadEditor })', 'load()'), silentSwitch],
-    ['不再重挂封面设计器（会拿上个片段的封面写进这个片段）', polishView, (s) => s.replace('  coverKey.value++\n  selectRegion.value = \'\'', '  selectRegion.value = \'\''), resetClipState],
+    ['切片段不清贴纸落点草稿（会把上一个片段的坐标写进这个片段）', polishView, (s) => s.replace('  pointEdit.value = false\n  draftPos.value = { x: 50, y: 50 }', '  draftPos.value = { x: 50, y: 50 }'), resetClipState],
     ['预览不再听 dir（换片段后画面停在上一个片段）', previewVue, (s) => s.replace('  switchDhampirClip()\n})', '})\n', 1), dirWatcher],
     ['源 id 退回不带代际（引擎绑到旧元素上）', previewVue, (s) => s.replace("v.id = 'dhampir-src-' + gen + '-' + i", "v.id = 'dhampir-src-' + i"), srcGen],
     ['先改画布尺寸再建源（黑窗撑到几百毫秒）', previewVue, (s) => s.replace(
