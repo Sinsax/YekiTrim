@@ -62,6 +62,12 @@ pub struct ClipEntry {
     pub original_start: f64,
     #[serde(default)]
     pub original_end: f64,
+    /// **多段片段的各段源区间**（`clip.json` 的 `ranges`；空 = 单段）。
+    ///
+    /// ⚠️ 空数组与"没有这个键"同义 —— 老索引/老片段一个字节都不用改。
+    /// 前端据此给卡片打「N 段」标记（`ProjectClipsSection` / 精修片段条 / 事件表）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<crate::types::EventRange>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -93,6 +99,12 @@ impl ClipEntry {
             popularity: event.popularity,
             original_start: event.start.to_seconds(),
             original_end: event.end.to_seconds(),
+            // 多段事件（分散事件合并的产物）：把各段记进索引，界面据此打标记
+            ranges: if event.ranges.len() > 1 {
+                event.ranges.clone()
+            } else {
+                Vec::new()
+            },
             created_at: now.clone(),
             updated_at: now,
             extra: serde_json::Map::new(),
@@ -411,6 +423,22 @@ fn merge_meta_into_entry(entry: &mut ClipEntry, meta: &serde_json::Value) {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
     }
+    // 多段标记：索引里没有就从 `clip.json` 补（判据与写侧一致：>1 段才算多段）
+    if entry.ranges.is_empty() {
+        if let Some(arr) = meta.get("ranges").and_then(|v| v.as_array()) {
+            let parsed: Vec<crate::types::EventRange> = arr
+                .iter()
+                .filter_map(|r| {
+                    let s = r.get("start").and_then(|v| v.as_f64())?;
+                    let e = r.get("end").and_then(|v| v.as_f64())?;
+                    (e > s).then(|| crate::types::EventRange::new(s, e))
+                })
+                .collect();
+            if parsed.len() > 1 {
+                entry.ranges = parsed;
+            }
+        }
+    }
 }
 
 /// 为一个事件找可复用的旧片段目录：标题相同或区间 IoU ≥ 0.5。
@@ -631,5 +659,83 @@ mod tests {
         let idx = reconcile_index(&t.0);
         assert!(idx.clips.contains_key("标题片段"));
         assert_eq!(idx.clips["标题片段"].rank, 3);
+    }
+}
+
+#[cfg(test)]
+mod multi_range_index_tests {
+    use super::*;
+    use crate::types::{Event, EventRange, EventSource, EventType, Timestamp};
+
+    fn ev_with_ranges(ranges: Vec<EventRange>) -> Event {
+        let mut e = Event {
+            start: Timestamp::from_seconds(0.0),
+            end: Timestamp::from_seconds(0.0),
+            label: "多段".into(),
+            summary: String::new(),
+            event_type: EventType::Other,
+            source: EventSource::Merged,
+            confidence: 1.0,
+            popularity: 0.5,
+            rank: 3,
+            clip_dir: None,
+            enabled: true,
+            ranges,
+            topic: Some("唱歌".into()),
+        };
+        e.normalize_ranges();
+        e
+    }
+
+    /// 多段事件 → 索引条目带 `ranges`（界面据此打「N 段」标记）；单段**不带**（老格式不变）。
+    #[test]
+    fn entry_from_event_keeps_multi_ranges_only() {
+        let multi = ev_with_ranges(vec![
+            EventRange::new(100.0, 120.0),
+            EventRange::new(200.0, 230.0),
+        ]);
+        let entry = ClipEntry::from_event(&multi, "clip-multi");
+        assert_eq!(entry.ranges.len(), 2);
+        assert_eq!((entry.original_start, entry.original_end), (100.0, 230.0));
+
+        let single = ev_with_ranges(vec![EventRange::new(10.0, 40.0)]);
+        let entry = ClipEntry::from_event(&single, "clip-single");
+        assert!(entry.ranges.is_empty(), "1 段不算多段（写侧口径 > 1）");
+
+        // 序列化：单段不许出现 `ranges` 键（老索引/老前端不受影响）
+        let single_json = serde_json::to_value(ClipEntry::from_event(&single, "x")).unwrap();
+        assert!(single_json.get("ranges").is_none(), "{single_json}");
+        let multi_json = serde_json::to_value(ClipEntry::from_event(&multi, "x")).unwrap();
+        assert_eq!(multi_json["ranges"].as_array().unwrap().len(), 2);
+    }
+
+    /// 索引里没有时从 `clip.json`（`meta`）补 `ranges` —— 老索引 + 新片段那条路。
+    #[test]
+    fn merge_meta_reads_ranges_from_clip_json() {
+        let meta = serde_json::json!({
+            "title": "多段片段",
+            "original_start": 100.0,
+            "original_end": 230.0,
+            "duration": 50.0,
+            "ranges": [{ "start": 100.0, "end": 120.0 }, { "start": 200.0, "end": 230.0 }],
+        });
+        let mut entry = ClipEntry::default();
+        merge_meta_into_entry(&mut entry, &meta);
+        assert_eq!(entry.ranges.len(), 2);
+        assert_eq!(entry.ranges[1].start, 200.0);
+
+        // 单段（1 条 ranges）与退化段（end <= start）都不算多段
+        let mut e2 = ClipEntry::default();
+        merge_meta_into_entry(
+            &mut e2,
+            &serde_json::json!({ "ranges": [{ "start": 10.0, "end": 40.0 }] }),
+        );
+        assert!(e2.ranges.is_empty());
+        let mut e3 = ClipEntry::default();
+        merge_meta_into_entry(
+            &mut e3,
+            &serde_json::json!({ "ranges": [{ "start": 5.0, "end": 5.0 }, { "start": 9.0, "end": 9.0 }] }),
+        );
+        assert!(e3.ranges.is_empty(), "退化段要滤掉");
     }
 }

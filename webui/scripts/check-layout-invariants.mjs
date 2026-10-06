@@ -902,5 +902,60 @@ console.log('\n㉑ 侧栏项目列表：最新加入的在上（且短标识不�
   }
 }
 
+// ── ㉒ 多段片段要有**特殊标记**（用户口径 2026-10-06：「多段的切片需要特殊标记」）──
+//
+// 四处卡片墙都要认得出多段（缺一处就是"有的列表看得出来、有的看不出来"）：
+//   ① 切片页卡片墙（已剪卡片 + 未剪切事件卡片）
+//   ② 精修页片段条（`FragmentList` 的卡片 + `PolishView::clipRow` 给的 `segments`）
+//   ③ 首页「切片总览」（两栏卡片）
+//   ④ 索引侧真把 `ranges` 带出来（`ClipEntry.ranges` + 从 `clip.json` 补）
+// ⚠️ 判据只认 **> 1**（与写侧 `ranges.len() > 1` 同口径）：单段写了 `ranges` 也不算多段。
+console.log('\n㉒ 多段片段的「N 段」标记（四处卡片墙 + 索引带出 ranges）')
+{
+  const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
+  const polishView = await read('webui/src/views/PolishView.vue')
+  const fragList = await read('webui/src/components/polish/FragmentList.vue')
+  const homeOverview = await read('webui/src/components/HomeClipsOverview.vue')
+  const clipIndex = await read('crates/yekitrim-core/src/cutting/clip_index.rs')
+
+  // ⚠️ **逐字匹配**，不用"窗口"：两个段数助手相邻，`[\s\S]{0,300}?` 会跨进下一个函数，
+  // 于是"只把第一个改成恒真"这种变异照样通过（这一版之前就是这么假绿的）。
+  const cardWall = (s) =>
+    /function clipRangeCount\(c\) \{\n  const n = Array\.isArray\(c\?\.meta\?\.ranges\) \? c\.meta\.ranges\.length : 0\n  return n > 1 \? n : 0\n\}/.test(s)
+      && /function eventRangeCount\(ev\) \{\n  const n = Array\.isArray\(ev\?\.ranges\) \? ev\.ranges\.length : 0\n  return n > 1 \? n : 0\n\}/.test(s)
+      && /v-if="clipRangeCount\(it\.view\.c\)"/.test(s)
+      && /v-if="eventRangeCount\(it\.ev\)"/.test(s)
+  const polishStrip = (s, f) =>
+    /const segs = Array\.isArray\(c\.meta\?\.ranges\) \? c\.meta\.ranges\.length : 0/.test(s)
+      && /segments: segs > 1 \? segs : 0/.test(s)
+      && /v-if="r\.segments > 1"/.test(f)
+  const overview = (s) =>
+    /segments: \(Array\.isArray\(meta\.ranges\) \? meta\.ranges\.length : 0\) > 1 \? meta\.ranges\.length : 0/.test(s)
+      && /v-if="it\.segments > 1"/.test(s)
+  const indexCarries = (s) =>
+    /pub ranges: Vec<crate::types::EventRange>,/.test(s)
+      && /ranges: if event\.ranges\.len\(\) > 1 \{/.test(s)
+      && /if parsed\.len\(\) > 1 \{\n                entry\.ranges = parsed;/.test(s)
+
+  check('㉒ 切片页卡片墙：已剪 + 未剪两种卡片都带标记', cardWall(clipsSection), true)
+  check('㉒ 精修页片段条：clipRow 给 segments + 卡片渲染', polishStrip(polishView, fragList), true)
+  check('㉒ 首页切片总览：条目带 segments + 卡片渲染', overview(homeOverview), true)
+  check('㉒ 索引/片段元数据真的带出 ranges（>1 才带）', indexCarries(clipIndex), true)
+
+  const MUT22 = [
+    ['判据放宽成 > 0（单段也会被打成「1 段」）', clipsSection, (s) => s.replace('  return n > 1 ? n : 0', '  return n', 1), cardWall],
+    ['切片页少了一处渲染（未剪切事件看不出"将切 N 段"）', clipsSection, (s) => s.replace('v-if="eventRangeCount(it.ev)"', 'v-if="false"'), cardWall],
+    ['精修片段条不再给 segments（那边看不出来）', polishView, (s) => s.replace('    segments: segs > 1 ? segs : 0,', ''), (m) => polishStrip(m, fragList)],
+    ['片段卡不渲染标记', fragList, (s) => s.replace('v-if="r.segments > 1"', 'v-if="false"'), (m) => polishStrip(polishView, m)],
+    ['首页总览不带 segments', homeOverview, (s) => s.replace('        segments: (Array.isArray(meta.ranges) ? meta.ranges.length : 0) > 1 ? meta.ranges.length : 0,', ''), overview],
+    ['索引条目丢掉 ranges（卡片无从得知）', clipIndex, (s) => s.replace('    pub ranges: Vec<crate::types::EventRange>,\n', ''), indexCarries],
+  ]
+  for (const [what, src, mutate, still] of MUT22) {
+    const m = mutate(src)
+    check(`[变异] ㉒ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉒ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

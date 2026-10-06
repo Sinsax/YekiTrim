@@ -50,6 +50,11 @@
               >
               <span v-else class="ov-fallback"><Icon name="film" :size="16" /></span>
               <span class="ov-dur">{{ it.dur }}</span>
+              <span
+                v-if="it.segments > 1"
+                class="ov-seg"
+                :title="'多段片段：由 ' + it.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+              >{{ it.segments }} 段</span>
               <span v-if="initing[it.key]" class="ov-init"><span class="spinner"></span>初始化…</span>
             </span>
             <span class="ov-card-title">{{ it.title }}</span>
@@ -101,6 +106,11 @@
               >
               <span v-else class="ov-fallback"><Icon name="film" :size="16" /></span>
               <span class="ov-dur">{{ it.dur }}</span>
+              <span
+                v-if="it.segments > 1"
+                class="ov-seg"
+                :title="'多段片段：由 ' + it.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+              >{{ it.segments }} 段</span>
               <span v-if="initing[it.key]" class="ov-init"><span class="spinner"></span>初始化…</span>
             </span>
             <span class="ov-card-title">{{ it.title }}</span>
@@ -229,6 +239,8 @@ const allClips = computed(() => {
         color,
         title: String(meta.title || x.name),
         dur: Math.round(Number(x.duration_secs) || 0) + 's',
+        /** **多段片段**的段数（`clip.json` 的 `ranges`；>1 才在卡上打标记） */
+        segments: (Array.isArray(meta.ranges) ? meta.ranges.length : 0) > 1 ? meta.ranges.length : 0,
         rank: Number(meta.rank) || 0,
         /** 「最后一次改动」的 unix 秒（服务端 `clips[].mtime`）：排序主键，见 sortedClips */
         mtime: Number(x.mtime) || 0,
@@ -417,6 +429,11 @@ onUnmounted(() => {
 .ov-fallback {
   display:flex; align-items:center; justify-content:center; height:78px;
   color:var(--ink-faint); background:var(--bg-soft);
+}
+/* 「N 段」标记（多段片段）：叠在时长下方 */
+.ov-seg {
+  position:absolute; right:3px; top:20px; padding:0 6px; border-radius:var(--r-full);
+  background:var(--pink-bg); color:var(--pink-text); font-size:10px; line-height:16px;
 }
 .ov-dur {
   position:absolute; right:3px; top:3px; padding:1px 5px; border-radius:var(--r-full);

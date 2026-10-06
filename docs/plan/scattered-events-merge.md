@@ -166,3 +166,32 @@ YEKITRIM_DATA_DIR=target/debug VT_PROJECT_DIR='…' [VT_SCATTER_FROM=1420] VT_SC
   服务端不解析 / Cutter 退化成单段 / `cut_ranges()` 不回退单段）+ 真页面 CDP
   `node .workbuddy/probe-slice-list.mjs`（11 项：加段/删段禁用、每段时长与总时长、
   **多段载荷带 ranges**、**单段载荷不带 ranges**）。探针把 `fetch` 换成拦截器 ⇒ **不写用户数据**。
+
+---
+
+## 9. P4 多段片段的「N 段」标记（已落地，2026-10-06）
+
+用户口径：「多段的切片需要特殊标记」。四处卡片墙都要认得出，判据只认 **> 1**
+（与写侧 `Event::ranges.len() > 1` 同一条口径；单段写了 `ranges` 也不算多段）：
+
+| 位置 | 标记 | 判据 |
+|---|---|---|
+| 切片页卡片墙（已剪卡片） | `N 段`（`tag r`，`title` 说明"分段剪、合并输出"） | `clip.json` 的 `ranges` |
+| 切片页卡片墙（未剪切事件） | `将切 N 段` | `events.json` 的 `ranges` |
+| 精修页片段条（`FragmentList`） | `N 段`（chip，贴在状态 chip 右边） | `clip.json` 的 `ranges`（`PolishView::clipRow` 给 `segments`） |
+| 首页「切片总览」 | `N 段`（叠在时长下方） | `clip.json` 的 `ranges` |
+
+索引侧：`ClipEntry` 加 `ranges`（`#[serde(default, skip_serializing_if = "Vec::is_empty")]`）——
+`from_event` 只在多段时带；老索引条目从 `clip.json` 的 `ranges` 补（`merge_meta_into_entry`，
+退化段滤掉、≤1 段不算）。**单段序列化出来没有 `ranges` 键**（老索引/老前端不受影响）。
+
+判据：
+- `check-layout-invariants.mjs` **㉒**（4 项 + **6 处变异**：判据放宽成 `>0` / 少一处渲染 /
+  精修片段条不给 segments / 片段卡不渲染 / 首页不带 segments / 索引丢掉 `ranges`）。
+  ⚠️ 两个段数助手相邻，第一版用 `[\s\S]{0,300}?` "窗口"匹配 ⇒ 变异只改第一个也照样通过（假绿），
+  已改成**逐字匹配**。
+- 核心单测 `cutting::clip_index::multi_range_index_tests`（2 条）：多段进索引 / 单段不写 `ranges` 键 /
+  从 `clip.json` 补 ranges / 退化段滤掉。
+- 行为级 `.workbuddy/check-range-badge.mjs`（**不需要起服务**）：从 `.vue` 源码**抠出**
+  `clipRangeCount` / `eventRangeCount` 喂 9 组数据（缺字段 / 空数组 / 1 条 / 2 条 / 3 条 / 脏数据）。
+- 真页面 `.workbuddy/probe-range-badge.mjs`：接口 vs DOM 对拍（多段的必须有标记、单段的不许有）。
