@@ -3290,6 +3290,14 @@ export function translate(config, clipDir, outPath, options = {}) {
   // ⚠️ 另有一条**改不掉**的限制：底座 `gaussian_blur.radius` 上限 16 ⇒ σ8，而参照模糊底要 σ28
   // ⇒ 即便打开也**只能做到一半**，按约定如实记 CLAMP（不是静默近似）。
   const BACKDROP_ENABLED = false;
+  if (STAGE_BG === 'blur' && !BACKDROP_ENABLED) {
+    clamp(
+      'stage',
+      'bg_mode="blur"：底座有原语、我们暂时不发 —— 配方（同源层 → 模糊调整层 → 主层）已在转译器里，' +
+        '被 `BACKDROP_ENABLED` 关着（未做产品路径验收）；且底座 `gaussian_blur.radius` 上限 16 ⇒ σ8，' +
+        '参照要 σ28（只能一半）。**纯色/黑不受这条影响**：它们走画布底色（`render_hints.background`）',
+    );
+  }
   if (BACKDROP_ENABLED && STAGE_BG === 'blur') {
     backdropTracks.push({
       id: 'bg1',
@@ -3347,16 +3355,32 @@ export function translate(config, clipDir, outPath, options = {}) {
       );
     }
   }
-  if (STAGE_BG !== 'none' && !BACKDROP_ENABLED) {
+  // **纯色/黑背景 = 底座的清屏色**（唯一不引入图层、也不碰泄漏的落地方式）。
+  const stageBackground =
+    STAGE_BG === 'black'
+      ? '#000000'
+      : STAGE_BG === 'color'
+        ? (String(config.stage?.bg_color ?? '').trim() || '#000000')
+        : '';
+  if (stageBackground) {
+    note(
+      'stage',
+      '背景 bg=' + STAGE_BG + '：按**画布底色**（render_hints.background = ' + stageBackground + '）发给底座 —— ' +
+        `留边处就是它，不引入任何图层`,
+    );
+  }
+  // ⚠️ 这条只对 **blur** 成立：纯色/黑走的是 `render_hints.background`（清屏色，零图层），
+  // 已经落地了 —— 拿"会加图层"去吓它，就是一条过期的说明（2026-10-06 修）。
+  if (STAGE_BG === 'blur' && !BACKDROP_ENABLED) {
     clamp(
       'stage',
       `背景层（bg=${STAGE_BG}）：**暂时不发** —— 它会加一个常驻的"有素材图层"，` +
         `从而触发底座的**分段路径逐帧泄漏**（实测：2 层时 1500 帧 OOM，1 层时全片通过；` +
         `去掉模糊也一样）。底座修好前，主画面之外的边是黑的` +
-        (STAGE_BG === 'color' ? '（底座也没有纯色背景层）' : ''),
+        (STAGE_BG === 'blur' ? '（模糊那条腿要图层，纯色那条腿走画布底色、已经能落地）' : ''),
     );
   } else if (STAGE_BG === 'color') {
-    note('stage', 'bg_mode=color：底座没有"纯色背景层"，那部分仍是黑底（与 bg_mode=black 同）');
+    note('stage', 'bg_mode=color：走画布底色（`render_hints.background`），留边处就是它');
   }
 
   // ---- 组装 ----
@@ -3976,7 +4000,15 @@ export function translate(config, clipDir, outPath, options = {}) {
     assets,
     timeline: { schema: 4, timebase, markers: [], tracks },
     view: { playhead: 0, selection: null, zoom: 1 },
-    render_hints: { width, height, format: 'mp4' },
+    // **画布底色**（零图层）：`bg_mode = color|black` 时把颜色交给底座当**清屏色**。
+    // ⚠️ 不要为它加图层：加一层"有素材的图层"会触发底座分段路径的逐帧泄漏（长片 OOM，实测 2 层 1500 帧）。
+    // `blur` 那条腿是**图层级**的（同源层 + 模糊），与这里的清屏色无关（它还关着，见 STAGE_BG 那两段）。
+    render_hints: {
+      width,
+      height,
+      format: 'mp4',
+      ...(stageBackground ? { background: stageBackground } : {}),
+    },
     extensions: {
       // **转译的来龙去脉留在这里**：工程文件本身要说清它是从哪来的。
       'yekitrim.polish_toml': {
