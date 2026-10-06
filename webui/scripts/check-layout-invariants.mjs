@@ -355,11 +355,28 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   // 六段必须**同时**在面板里，`openLane` 只是"焦点"（高亮哪一段 + 往哪儿滚）。
   // 判据钉三件事：① 没有 `v-if/v-else-if="openLane === '…'"` 的链（那就是"一轨一屏"回来了）；
   // ② 六段标题都在；③ 点轨道名会滚到那一段。
-  const LANE_GROUPS = ['分段 / 屏蔽', '字幕 / 弹幕', '运镜', '贴纸', '视觉特效', '音效']
+  // ⚠️ 2026-10-06 第二轮（用户："清理长文本…还有删除视觉特效…这两个根本没用…只留控件"）：
+  // **「视觉特效」整块删掉**（那组一个控件都没有：只有计数与说明），音效组只留音量滑块，
+  // 面板里的 `hint` 行 / 「· 说明」后缀 / 计数行全删 ⇒ 段数 6 → **5**。
+  const LANE_GROUPS = ['分段 / 屏蔽', '字幕 / 弹幕', '运镜', '贴纸', '音效']
+  const panelBody = (s) => {
+    const i = s.indexOf('lane-panel">')
+    const j = s.indexOf('<div id="tl-props-host"', i)
+    return i < 0 || j < 0 ? '' : s.slice(i, j)
+  }
+  // ⚠️ 判据要**恰好相等**（顺序也钉住）：只要求"这几段都在"的话，"把删掉的那段装回来"这条
+  // 变异翻不了面（多一段不影响"都在"）—— 实测踩过。
+  const groupHeads = (s) => [...s.matchAll(/<div class="lane-group-h">([^<]+)<\/div>/g)].map((m) => m[1])
   const allGroupsAtOnce = (s) =>
     !s.includes('v-if="openLane ===') && !s.includes('v-else-if="openLane ===')
-      && LANE_GROUPS.every((g) => s.includes(`<div class="lane-group-h">${g}</div>`))
-      && s.includes('所有轨道共用一个面板')
+      && JSON.stringify(groupHeads(s)) === JSON.stringify(LANE_GROUPS)
+  // **只留控件**：面板正文里不许有解释用的 `hint` 行、不许有那两个"没用"的读数标题
+  const onlyControls = (s) => {
+    const body = panelBody(s)
+    return !!body && !body.includes('class="hint') && !body.includes('特效事件')
+      && !body.includes('音效事件') && !body.includes('逐条在事件的属性面板里改')
+      && !body.includes('开关只影响渲染')
+  }
   const focusScrolls = (s) =>
     s.includes('laneGroupEls[lane]') && s.includes('scrollIntoView({ block: ' + "'nearest'" + ' })')
       && /:class="\{ on: openLane === 'segments' \}"/.test(s)
@@ -368,7 +385,8 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 页面渲染轨道设置面板，且排在 Teleport 目标之前', panelOk(polishView), true)
   check('⑰ 选中时间轴上的块 ⇒ 收起轨道设置（两块面板不并存）', blockSelectClosesLane(timelineEditor), true)
   check('⑰ 右栏合成一块、没有页签', noTabs(polishView), true)
-  check('⑰ 六段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
+  check('⑰ 五段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
+  check('⑰ 面板里**只留控件**（没有 hint 行 / 计数标题）', onlyControls(polishView), true)
   check('⑰ 点轨道名 = 焦点高亮 + 滚到那一段', focusScrolls(polishView), true)
   const MUT17 = [
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
@@ -378,6 +396,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     ['选中块不收起轨道设置', timelineEditor, (s) => s.replace("if (props.laneOpen) emit('lane-open', '')", ''), (m) => blockSelectClosesLane(m)],
     ['退回"一轨一屏"（点谁换谁）', polishView, (s) => s.replace(`<div class="lane-group" :class="{ on: openLane === 'subtitles' }"`, `<div v-if="openLane === 'subtitles'" class="lane-group"`), (m) => allGroupsAtOnce(m)],
     ['摘掉一段（面板里少一条轨道的设置）', polishView, (s) => s.replace('<div class="lane-group-h">运镜</div>', ''), (m) => allGroupsAtOnce(m)],
+    ['把「视觉特效」那段装回来（那组一个控件都没有）', polishView, (s) => s.replace('<div class="lane-group-h">音效</div>', '<div class="lane-group-h">视觉特效</div><div class="lane-group-h">音效</div>'), (m) => allGroupsAtOnce(m) && onlyControls(m)],
+    ['往面板里加回一条解释文字（hint 行）', polishView, (s) => s.replace('<div class="lane-group-h">音效</div>', '<div class="lane-group-h">音效</div><div class="hint mt-4">开关只影响渲染，不改事件</div>'), (m) => onlyControls(m)],
+    ['加回"音效事件 N 条"那行读数', polishView, (s) => s.replace('<div class="lane-group-h">音效</div>', '<div class="lane-group-h">音效</div><div class="row spread small mt-4"><span class="muted">音效事件</span></div>'), (m) => onlyControls(m)],
     ['点轨道名不再滚到那一段', polishView, (s) => s.replace("if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })", ''), (m) => focusScrolls(m)],
   ]
   for (const [what, src, mutate, still] of MUT17) {
