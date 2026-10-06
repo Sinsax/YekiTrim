@@ -42,6 +42,15 @@
   然后 `filtered.is_empty()` **静默返回 Ok** ⇒ 整条片段没有 `clip.srt`、无任何日志。
   现为 `s.start < end + 1ms && s.end > start - 1ms`，与弹幕的
   `e.start < end && e.end > start` 语义一致。回归钉子 5 条（含变异验证）。
+- **多段片段**（`Event.ranges`，分散事件合并的产物；空 = 单段 = 老行为）：
+  `cut_event` 逐段剪到 `<clip_dir>/.parts/part-NN.ts`（**一次选定编码器** —— 逐段各自探测会拼出
+  两种编码的流）→ concat demuxer `-c copy`；失败回退 `-filter_complex concat` 重编码，再失败换 libx264；
+  `.parts/` 成功失败都清掉。`clip.srt`/`clip.dm.srt` 按 `range_offsets` **逐段平移**
+  （第 2 段接在第 1 段之后；段间空隙的内容**不进成片**）；`clip.json` 多段时写 `ranges`、
+  `duration` 用**内容时长**（成片文件就是那个长度，跨度不算）。
+  判据 = `cutting::multi_range_tests`（4 条单测）+ 真剪一次
+  `VT_CUT_SRC=<mp4> cargo test -p yekitrim-core --lib diagnose_multi_range_cut -- --ignored --nocapture`
+  （验时长 ≈ 各段之和 + 音视频轨都在 + `.parts/` 清干净）。
 - 命名: `output/clips/<clip_dir>/clip.mp4`。`clip_dir` 来自 `events.json` 的 `clip_dir`：
   检测时先按标题/区间匹配旧片段（复用旧目录、保住精修产物），匹配不上再用标题 slug 生成
   唯一目录名；旧 events.json 没有 `clip_dir` 时回退 `clip-{rank:02}`。目录名不再等于 rank，

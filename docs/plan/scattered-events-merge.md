@@ -136,3 +136,19 @@ YEKITRIM_DATA_DIR=target/debug VT_PROJECT_DIR='…' [VT_SCATTER_FROM=1420] VT_SC
 - 被合并掉的主事件从 `events.json` 移除 ⇒ **必须先有 P2 多段剪切**（否则合并出来的片段切不出来），
   而且这会**改动已有片段拓扑**（两条片段并成一条）⇒ 要有日志/开关，且默认只在
   `scattered.enabled = true` 时生效。
+
+---
+
+## 7. P2 多段剪切（已落地，2026-10-06）
+
+- `cut_event(video, ranges, output)`：**单段走老路径**（`cut_segment`，行为不变）；多段
+  「逐段剪 `.ts`（**一次选定编码器**）→ concat demuxer `-c copy`」，失败回退
+  `-filter_complex concat` 重编码，再失败整体换 `libx264`；`.parts/` 成功失败都清掉。
+- 字幕/弹幕：`range_offsets` = `[0, d0, d0+d1, …]`，逐段裁剪 + 平移（第 2 段接在第 1 段之后），
+  段间空隙的内容**不进成片**；单段就是"减一个常数"，老的 `generate_clip_subtitle/danmaku`
+  改成薄包装（只给单测用），口径只留这一条。
+- `clip.json`：多段时写 `ranges`，`duration` = **内容时长**（成片文件长度，不是跨度）。
+- 判据：`cutting::multi_range_tests` 4 条单测（段起点累加 / 字幕平移 + 空隙排除 / 弹幕同口径 /
+  meta 的 duration 与 ranges）+ 真剪一次 `diagnose_multi_range_cut`：
+  `[0.5-2.0] + [3.0-4.5]` → 成片 **3.06s**（期望 3.0）、轨道 `h264,video | aac,audio`、
+  `.parts/` 清干净、用时 1.2s。
