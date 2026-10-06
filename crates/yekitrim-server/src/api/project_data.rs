@@ -640,12 +640,39 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
     if label.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "标题不能为空"));
     }
-    let start_sec = body.get("start_sec").and_then(|v| v.as_f64())
-        .or_else(|| body.get("start").and_then(|v| v.as_f64()))
-        .unwrap_or(0.0);
-    let end_sec = body.get("end_sec").and_then(|v| v.as_f64())
-        .or_else(|| body.get("end").and_then(|v| v.as_f64()))
-        .unwrap_or(start_sec + 10.0);
+    // **多段入点/出点列表**（粗剪拓展；2026-10-06）：预处理页可以传
+    // `ranges = [{start_sec, end_sec}, …]` —— 剪出来的是"分段剪、合并输出"的一条片段。
+    // 传了就**以 ranges 为准**：`start/end` 拉成首段起、末段末（与 `Event::normalize_ranges` 同一条）。
+    // ⚠️ 单段（1 条 ranges）与不传 ranges 完全等价 ⇒ 老的「标记入点/出点 → 切片」一个字节不变。
+    let mut ranges: Vec<yekitrim_core::types::EventRange> = Vec::new();
+    if let Some(arr) = body.get("ranges").and_then(|v| v.as_array()) {
+        for r in arr {
+            let rs = r.get("start_sec").and_then(|v| v.as_f64())
+                .or_else(|| r.get("start").and_then(|v| v.as_f64()));
+            let re = r.get("end_sec").and_then(|v| v.as_f64())
+                .or_else(|| r.get("end").and_then(|v| v.as_f64()));
+            if let (Some(rs), Some(re)) = (rs, re) {
+                if re > rs {
+                    ranges.push(yekitrim_core::types::EventRange::new(rs, re));
+                }
+            }
+        }
+        ranges.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let (start_sec, end_sec) = if ranges.is_empty() {
+        let start = body.get("start_sec").and_then(|v| v.as_f64())
+            .or_else(|| body.get("start").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+        let end = body.get("end_sec").and_then(|v| v.as_f64())
+            .or_else(|| body.get("end").and_then(|v| v.as_f64()))
+            .unwrap_or(start + 10.0);
+        (start, end)
+    } else {
+        (
+            ranges.iter().map(|r| r.start).fold(f64::MAX, f64::min),
+            ranges.iter().map(|r| r.end).fold(f64::MIN, f64::max),
+        )
+    };
     if end_sec <= start_sec {
         return Err(err(StatusCode::BAD_REQUEST, "结尾必须大于开头"));
     }
@@ -687,6 +714,11 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
         "clip_dir": clip_dir,
         "enabled": true,
     });
+    // 多段才写 `ranges`（单段 = 老格式，多一个键会让老工具以为"有多段"）
+    let mut event = event;
+    if ranges.len() > 1 {
+        event["ranges"] = serde_json::to_value(&ranges).unwrap_or(serde_json::Value::Null);
+    }
     if let Some(arr) = store.get_mut("events").and_then(|a| a.as_array_mut()) {
         arr.push(event.clone());
         let mut titles = serde_json::Map::new();
