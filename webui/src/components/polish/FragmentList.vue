@@ -13,6 +13,11 @@
       <img v-if="r.thumb" :src="r.thumb" class="frag-thumb" alt="" @error="$event.target.style.display = 'none'">
       <div v-else class="frag-thumb frag-thumb-empty">无缩略图</div>
       <span class="chip frag-state" :class="r.chip">{{ r.state }}</span>
+      <span
+        v-if="r.segments > 1"
+        class="chip frag-seg"
+        :title="'多段片段：由 ' + r.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+      >{{ r.segments }} 段</span>
       <b class="frag-title">{{ i + 1 }} · {{ r.title }}</b>
       <button
         v-if="!r.initialized"
@@ -36,6 +41,8 @@ const emit = defineEmits(['goto', 'init'])
 </script>
 
 <style scoped>
+/* 「N 段」标记（多段片段）：贴着状态 chip 排在它右边 */
+.frag-seg { position:absolute; top:6px; left:34px; background:var(--pink-bg); color:var(--pink-text); }
 .frag-cards { display:grid; grid-auto-flow:column; gap:8px; overflow-x:auto; padding:2px;
   /* 列方向排列时，缺省 justify-content:normal(=stretch) 会把 auto 宽的列**撑满整行** ——
      只有两张卡时它们会被推到两端，看着"隔了老远"。夹到左端、列宽取内容宽。 */

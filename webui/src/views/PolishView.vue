@@ -1021,11 +1021,14 @@ function clipRow(c) {
   const p = polishByDir.value[dir] || null
   const initialized = !!p?.polish_ready
   const state = !initialized ? '未初始化' : (p.rendered || p.cover ? '已导出' : '精修中')
+  // **多段片段**的段数（`clip.json` 的 `ranges`）：卡片上打「N 段」标记（>1 才算）
+  const segs = Array.isArray(c.meta?.ranges) ? c.meta.ranges.length : 0
   return {
     name: c.name,
     title: c.meta?.title || c.name,
     state,
     chip: state === '已导出' ? 'g' : state === '精修中' ? 'p' : 'n',
+    segments: segs > 1 ? segs : 0,
     initialized
   }
 }

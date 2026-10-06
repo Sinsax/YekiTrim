@@ -88,6 +88,11 @@
             <span v-if="Number(it.view.c.danmaku_count)" class="tag a">弹幕 {{ it.view.c.danmaku_count }}</span>
             <span v-if="Number(it.view.c.subtitle_count)" class="tag n">字幕 {{ it.view.c.subtitle_count }}</span>
             <span
+              v-if="clipRangeCount(it.view.c)"
+              class="tag r"
+              :title="RANGE_TITLE(clipRangeCount(it.view.c))"
+            >{{ clipRangeCount(it.view.c) }} 段</span>
+            <span
               v-if="it.view.orphan"
               class="tag n orphan-chip"
               title="重新检测后已经没有和它对应的事件了：这里按剪出时的信息显示，删掉重切才会重新关联"
@@ -135,6 +140,11 @@
             <span class="tag b">{{ Math.round((it.ev.end_sec || 0) - (it.ev.start_sec || 0)) }}s</span>
             <span v-if="Number(it.ev.danmaku_count)" class="tag a">弹幕 {{ it.ev.danmaku_count }}</span>
             <span v-if="Number(it.ev.subtitle_count)" class="tag n">字幕 {{ it.ev.subtitle_count }}</span>
+            <span
+              v-if="eventRangeCount(it.ev)"
+              class="tag r"
+              :title="RANGE_TITLE(eventRangeCount(it.ev))"
+            >将切 {{ eventRangeCount(it.ev) }} 段</span>
             <span
               v-if="!it.ev.clip_dir && occupiedRanks.has(Number(it.ev.rank))"
               class="tag r"
@@ -473,6 +483,21 @@ function matchedEventOf(c) {
 }
 
 /** 已剪片段的展示模型：有匹配事件就跟着事件（编辑后卡片会更新），否则用 clip.json 里冻结的信息。 */
+/** **多段片段**的段数（`clip.json` 的 `ranges`；空/1 段 = 普通单段片段）。
+ *  ⚠️ 判据只认 `> 1`：单段写不写 `ranges` 都不算多段（与写侧 `ranges.len() > 1` 同一条口径）。 */
+function clipRangeCount(c) {
+  const n = Array.isArray(c?.meta?.ranges) ? c.meta.ranges.length : 0
+  return n > 1 ? n : 0
+}
+
+/** 未剪切事件的段数（`events.json` 的 `ranges`）—— 剪出来就是多段片段。 */
+function eventRangeCount(ev) {
+  const n = Array.isArray(ev?.ranges) ? ev.ranges.length : 0
+  return n > 1 ? n : 0
+}
+
+const RANGE_TITLE = (n) => `多段片段：由 ${n} 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉，无字幕的空隙保留给「去静音」）`
+
 function clipView(c) {
   const ev = matchedEventOf(c)
   const meta = c.meta || {}
