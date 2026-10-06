@@ -1159,5 +1159,64 @@ console.log('\n㉖ 播放区读数：时钟 + 总秒数')
   }
 }
 
+// ── ㉗ 「LLM 剪辑」在**右栏「画面构成 / 输出」**面板里（用户口径 2026-10-06）──
+//
+// 用户原话：「llm剪辑放在右侧画面构成输出那个面板上」。
+// 位置本身是需求的一部分，所以判据钉三件：① 轨道设置面板里**没有**它；
+// ② 右栏面板里**有**；③ 排在「渲染导出」**上面**（先重剪、再出片，与工序顺序一致）。
+console.log('\n㉗ LLM 剪辑在右栏「画面构成 / 输出」面板')
+{
+  const polishView = await read('webui/src/views/PolishView.vue')
+  const lanePanel = (s) => {
+    const i = s.indexOf('lane-panel">')
+    const j = s.indexOf('<div id="tl-props-host"', i)
+    return i < 0 || j < 0 ? '' : s.slice(i, j)
+  }
+  const rightPanel = (s) => {
+    const i = s.indexOf('画面构成 / 输出')
+    const j = s.indexOf('<!-- 渲染导出弹窗', i)
+    return i < 0 || j < 0 ? '' : s.slice(i, j)
+  }
+  const inRight = (s) => /@click="runLlmJob"/.test(rightPanel(s))
+  const notInLane = (s) => !/runLlmJob/.test(lanePanel(s))
+  const beforeRender = (s) => {
+    const r = rightPanel(s)
+    const a = r.indexOf('runLlmJob')
+    const b = r.indexOf('openRenderModal')
+    return a >= 0 && b > a
+  }
+  check('㉗ 轨道设置面板里没有 LLM 剪辑', notInLane(polishView), true)
+  check('㉗ 右栏「画面构成 / 输出」面板里有它（接 `runLlmJob`）', inRight(polishView), true)
+  check('㉗ 且排在「渲染导出」上面（先重剪、再出片）', beforeRender(polishView), true)
+
+  const MUT27 = [
+    ['右栏那个按钮不再接 runLlmJob（点不动）', polishView,
+      (s) => s.replace('@click="runLlmJob"', '@click="() => {}"'), inRight],
+    ['把它挪回轨道设置面板里', polishView,
+      (s) => {
+        const lane = s.indexOf('<div class="lane-group-h">分段 / 屏蔽</div>')
+        if (lane < 0) return s
+        const at = s.indexOf('</div>', lane) + '</div>'.length
+        return s.slice(0, at) + '\n<button @click="runLlmJob">LLM 剪辑</button>\n' + s.slice(at)
+      }, notInLane],
+    ['把它排到「渲染导出」下面（工序顺序反了）', polishView,
+      (s) => {
+        const m = s.match(/\s*<!-- LLM 剪辑（用户 2026-10-06 要求搬到这里）[\s\S]*?LLM 剪辑<\/button>\n            <\/div>\n/)
+        if (!m) return s
+        const without = s.replace(m[0], '')
+        const line = '            <button class="btn btn-primary mt-6 w-full jc-center"'
+        const at = without.indexOf(line)
+        if (at < 0) return s
+        const lineEnd = without.indexOf('\n', at) + 1
+        return without.slice(0, lineEnd) + m[0] + without.slice(lineEnd)
+      }, beforeRender],
+  ]
+  for (const [what, src, mutate, still] of MUT27) {
+    const m = mutate(src)
+    check(`[变异] ㉗ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉗ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
