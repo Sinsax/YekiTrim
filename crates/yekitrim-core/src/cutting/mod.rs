@@ -20,7 +20,7 @@ use clip_index::{clip_meta_matches, is_safe_component, refresh_index};
 
 use crate::danmaku::DanmakuEntry;
 use crate::pipeline::{Stage, STAGE_CUT};
-use crate::types::PipelineContext;
+use crate::types::{EventRange, PipelineContext};
 
 pub struct Cutter;
 
@@ -90,6 +90,10 @@ impl Stage for Cutter {
                     let pop = event.popularity;
                     let ts_start = event.start;
                     let ts_end = event.end;
+                    // **多段片段**（分散事件合并的产物）：`ranges` 为空时就是 `start..end` 那一段，
+                    // 单段路径一个字节都不变（见 `Event::cut_ranges`）。
+                    let ranges = event.cut_ranges();
+                    let content_secs: f64 = ranges.iter().map(|r| r.duration()).sum();
                     let transcript = full_transcript.clone();
                     let danmaku = Arc::clone(&all_danmaku);
 
@@ -107,24 +111,37 @@ impl Stage for Cutter {
 
                         let vid_path = clip_dir.join("clip.mp4");
 
-                        tracing::debug!("剪切: {} ({:.1}s-{:.1}s)", dir_name, start, end);
-                        cut_segment(&v, start, end, &vid_path)?;
+                        if ranges.len() > 1 {
+                            tracing::info!(
+                                "剪切（多段）: {} {} 段，内容 {:.1}s / 跨度 {:.1}s-{:.1}s",
+                                dir_name,
+                                ranges.len(),
+                                content_secs,
+                                start,
+                                end
+                            );
+                        } else {
+                            tracing::debug!("剪切: {} ({:.1}s-{:.1}s)", dir_name, start, end);
+                        }
+                        cut_event(&v, &ranges, &vid_path)?;
                         let sub_path = clip_dir.join("clip.srt");
                         if let Some(ref t2) = transcript {
-                            if let Err(e) = generate_clip_subtitle(t2, start, end, &sub_path) {
+                            if let Err(e) = generate_clip_subtitle_ranges(t2, &ranges, &sub_path) {
                                 tracing::warn!("字幕生成失败 ({}): {}", dir_name, e);
                             }
                         }
 
                         if !danmaku.is_empty() {
                             let dm_path = clip_dir.join("clip.dm.srt");
-                            if let Err(e) = generate_clip_danmaku(&danmaku, start, end, &dm_path) {
+                            if let Err(e) = generate_clip_danmaku_ranges(&danmaku, &ranges, &dm_path) {
                                 tracing::warn!("弹幕生成失败 ({}): {}", dir_name, e);
                             }
                         }
 
                         let meta_path = clip_dir.join("clip.json");
-                        if let Err(e) = write_clip_meta(&meta_path, &t, &s, &et, pop, rank, ts_start, ts_end) {
+                        if let Err(e) = write_clip_meta(
+                            &meta_path, &t, &s, &et, pop, rank, ts_start, ts_end, &ranges,
+                        ) {
                             tracing::warn!("写入 clip.json 失败 ({}): {}", dir_name, e);
                         }
 
@@ -294,6 +311,199 @@ fn is_software_encoder(spec: EncoderSpec) -> bool {
     spec.0 == SOFTWARE_ENCODER.0
 }
 
+/// **多段剪切**：`ranges` 只有一段时走原来的单段路径（行为不变），多段时"逐段剪 → 拼接"。
+///
+/// 三段式兜底（与单段那条"硬件选中但跑到一半失效"同一精神）：
+/// ① 同一编码器逐段剪成 `.ts` → `concat` **不重编码**；
+/// ② 拼接失败（参数对不上/容器怪）→ 用同一编码器 `-filter_complex concat` **重编码一次**；
+/// ③ 硬件编码器整体失败 → 换 `libx264` 把①②再来一遍。
+///
+/// ⚠️ 多段**必须一次选定编码器**：逐段各自探测的话，第一段 nvenc、第二段降级 libx264 就会
+/// 拼出两个不同编码的流（`-c copy` 直接报错，或更糟：拼出坏文件）。
+fn cut_event(video: &Path, ranges: &[EventRange], output: &Path) -> Result<()> {
+    if ranges.len() <= 1 {
+        let r = ranges
+            .first()
+            .copied()
+            .unwrap_or(EventRange::new(0.0, 0.0));
+        return cut_segment(video, r.start, r.end, output);
+    }
+    let enc = encoder_config();
+    match cut_parts_and_concat(video, ranges, output, enc) {
+        Ok(()) => Ok(()),
+        Err(e) if !is_software_encoder(enc) => {
+            tracing::warn!(
+                "多段剪切（{} 段）用 {} 失败，降级 libx264 重试: {}",
+                ranges.len(),
+                enc.0,
+                e
+            );
+            cut_parts_and_concat(video, ranges, output, SOFTWARE_ENCODER).map_err(|e2| {
+                anyhow::anyhow!("{} 与 libx264 均失败；libx264 报: {}", enc.0, e2)
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 逐段剪 `.ts` → concat；`.parts/` 目录无论如何都清掉（失败也不留垃圾）。
+fn cut_parts_and_concat(
+    video: &Path,
+    ranges: &[EventRange],
+    output: &Path,
+    enc: EncoderSpec,
+) -> Result<()> {
+    let dir = output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".parts");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("创建临时切片目录失败: {}", dir.display()))?;
+    let result = (|| -> Result<()> {
+        let mut parts: Vec<PathBuf> = Vec::with_capacity(ranges.len());
+        for (i, r) in ranges.iter().enumerate() {
+            let part = dir.join(format!("part-{i:03}.ts"));
+            run_cut_part(video, r.start, r.end, &part, enc)?;
+            parts.push(part);
+        }
+        match concat_parts_copy(&parts, output) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!("concat 直接拼接失败（改用重编码拼接）: {e}");
+                concat_parts_reencode(&parts, output, enc)
+            }
+        }
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// 单段剪到 `.ts`（MPEG-TS 才能不重编码直接拼；`-bsf:v h264_mp4toannexb` 交给容器自己处理）。
+fn run_cut_part(
+    video: &Path,
+    start: f64,
+    end: f64,
+    output: &Path,
+    enc: EncoderSpec,
+) -> Result<()> {
+    let duration = (end - start).max(0.1);
+    let mut cmd = crate::process::cmd("ffmpeg");
+    cmd.arg("-y")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-ss")
+        .arg(format!("{:.3}", start))
+        .arg("-i")
+        .arg(video)
+        .arg("-t")
+        .arg(format!("{:.3}", duration))
+        .arg("-c:v")
+        .arg(enc.0)
+        .arg("-preset")
+        .arg(enc.1)
+        .arg(enc.2)
+        .arg("23")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-f")
+        .arg("mpegts")
+        .arg(output);
+    run_ffmpeg(
+        &mut cmd,
+        Duration::from_secs_f64(cut_timeout_secs(duration)),
+        "ffmpeg 分段剪切",
+    )?;
+    Ok(())
+}
+
+/// concat demuxer + `-c copy`（**不重编码**）。
+/// concat demuxer + `-c copy`（**不重编码**）。
+fn concat_parts_copy(parts: &[PathBuf], output: &Path) -> Result<()> {
+    let list = output
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".parts")
+        .join("list.txt");
+    let mut body = String::new();
+    for p in parts {
+        // concat demuxer 的单引号转义：单引号写成 '\''；路径反斜杠换正斜杠（Windows 上 ffmpeg 认）。
+        // ⚠️ 刻意用 `\u{27}` / `\u{5c}` 而不是字符字面量：后者的反斜杠在补丁文本里太容易被吃掉。
+        let q = '\u{27}';
+        let bs = '\u{5c}';
+        let s = p.to_string_lossy().replace(bs, "/");
+        let s = s.replace(q, &format!("{q}{bs}{q}{q}"));
+        body.push_str(&format!("file '{s}'\n"));
+    }
+    std::fs::write(&list, body).with_context(|| format!("写 concat 清单失败: {}", list.display()))?;
+
+    let mut cmd = crate::process::cmd("ffmpeg");
+    cmd.arg("-y")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list)
+        .arg("-c")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output);
+    let total: f64 = parts.len() as f64 * 60.0;
+    run_ffmpeg(
+        &mut cmd,
+        Duration::from_secs_f64(cut_timeout_secs(total)),
+        "ffmpeg 分段拼接",
+    )?;
+    Ok(())
+}
+
+/// 重编码拼接（`concat` 滤镜）：copy 那条路失败时的兜底。
+fn concat_parts_reencode(parts: &[PathBuf], output: &Path, enc: EncoderSpec) -> Result<()> {
+    let mut cmd = crate::process::cmd("ffmpeg");
+    cmd.arg("-y").arg("-loglevel").arg("error");
+    for p in parts {
+        cmd.arg("-i").arg(p);
+    }
+    let n = parts.len();
+    let mut filter = String::new();
+    for i in 0..n {
+        filter.push_str(&format!("[{i}:v][{i}:a]"));
+    }
+    filter.push_str(&format!("concat=n={n}:v=1:a=1[v][a]"));
+    cmd.arg("-filter_complex")
+        .arg(filter)
+        .arg("-map")
+        .arg("[v]")
+        .arg("-map")
+        .arg("[a]")
+        .arg("-c:v")
+        .arg(enc.0)
+        .arg("-preset")
+        .arg(enc.1)
+        .arg(enc.2)
+        .arg("23")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(output);
+    let total: f64 = n as f64 * 60.0;
+    run_ffmpeg(
+        &mut cmd,
+        Duration::from_secs_f64(cut_timeout_secs(total)),
+        "ffmpeg 分段重编码拼接",
+    )?;
+    Ok(())
+}
+
 fn cut_segment(video: &Path, start: f64, end: f64, output: &Path) -> Result<()> {
     let enc = encoder_config();
     match run_cut(video, start, end, output, enc) {
@@ -416,29 +626,66 @@ fn run_ffmpeg(cmd: &mut Command, timeout: Duration, what: &str) -> Result<String
 /// 跨边界的字幕本来就该被算进来，出片时再裁剪）；② 再给一点浮点容差。
 const SUBTITLE_TIME_EPSILON: f64 = 1e-3; // 1ms：SRT 的最小时间单位
 
-fn generate_clip_subtitle(
+/// 多段片段在成片时间轴上的**段起点**：第 i 段从 `offsets[i]` 开始（`offsets[0] == 0`）。
+///
+/// 单段时恒为 `[0.0]` —— 老路径一个字都不变。
+pub(crate) fn range_offsets(ranges: &[EventRange]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(ranges.len().max(1));
+    let mut acc = 0.0;
+    for r in ranges {
+        out.push(acc);
+        acc += r.duration();
+    }
+    if out.is_empty() {
+        out.push(0.0);
+    }
+    out
+}
+
+/// 时间窗列表（多段）→ 片段内时间轴：`(源区间, 成片内的段起点)`。
+///
+/// 多段片段是"分段剪、合并输出"：第 1 段之后的时间要减去前面所有段的时长。
+/// **单段就是 `[(start, end)]`**，此时这段逻辑退化成老行为（减一个常数），所以老的
+/// `generate_clip_subtitle` / `generate_clip_danmaku` 都改走这一条，不许再各写一份偏移。
+fn clip_time_windows(ranges: &[EventRange]) -> Vec<(EventRange, f64)> {
+    let offsets = range_offsets(ranges);
+    ranges
+        .iter()
+        .copied()
+        .zip(offsets)
+        .collect::<Vec<(EventRange, f64)>>()
+}
+
+/// 多段字幕：逐段裁剪 + 按**段起点**平移（第 2 段起时间轴接在第 1 段之后）。
+fn generate_clip_subtitle_ranges(
     transcript: &crate::types::Transcript,
-    start: f64,
-    end: f64,
+    ranges: &[EventRange],
     output: &Path,
 ) -> Result<()> {
-    let filtered: Vec<crate::types::TranscriptSegment> = transcript
-        .segments
-        .iter()
-        .filter(|s| {
-            s.start < end + SUBTITLE_TIME_EPSILON && s.end > start - SUBTITLE_TIME_EPSILON
-        })
-        .map(|s| crate::types::TranscriptSegment {
-            start: (s.start - start).max(0.0),
-            end: (s.end - start).max(0.0),
-            text: s.text.clone(),
-            confidence: s.confidence,
-        })
-        .collect();
+    let mut filtered: Vec<crate::types::TranscriptSegment> = Vec::new();
+    for (r, off) in clip_time_windows(ranges) {
+        for s in transcript.segments.iter().filter(|s| {
+            s.start < r.end + SUBTITLE_TIME_EPSILON && s.end > r.start - SUBTITLE_TIME_EPSILON
+        }) {
+            let start = (s.start - r.start).max(0.0) + off;
+            let end = (s.end - r.start).max(0.0) + off;
+            if end <= start {
+                continue;
+            }
+            filtered.push(crate::types::TranscriptSegment {
+                start,
+                end,
+                text: s.text.clone(),
+                confidence: s.confidence,
+            });
+        }
+    }
 
     if filtered.is_empty() {
         return Ok(());
     }
+    // 段落表按时间排一次：多段拼接后理论上有序，但源里跨段的段可能反序（防御）
+    filtered.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
 
     let clip_transcript = crate::types::Transcript {
         segments: filtered,
@@ -446,39 +693,49 @@ fn generate_clip_subtitle(
         asr_metadata: transcript.asr_metadata.clone(),
     };
 
-    crate::srt::write_srt(&clip_transcript, output)
-        .context("写入 clip 字幕失败")?;
+    crate::srt::write_srt(&clip_transcript, output).context("写入 clip 字幕失败")?;
     Ok(())
 }
 
-fn generate_clip_danmaku(
+/// 多段弹幕：与字幕同一条偏移口径。
+fn generate_clip_danmaku_ranges(
     entries: &[DanmakuEntry],
-    start: f64,
-    end: f64,
+    ranges: &[EventRange],
     output: &Path,
 ) -> Result<()> {
-    let filtered: Vec<&DanmakuEntry> = entries
-        .iter()
-        .filter(|e| e.start < end && e.end > start)
-        .collect();
-
-    if filtered.is_empty() {
+    struct Row {
+        start: f64,
+        end: f64,
+        text: String,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (r, off) in clip_time_windows(ranges) {
+        for e in entries.iter().filter(|e| e.start < r.end && e.end > r.start) {
+            let start = (e.start - r.start).max(0.0) + off;
+            let end = (e.end - r.start).max(0.0) + off;
+            if start >= end {
+                continue;
+            }
+            rows.push(Row {
+                start,
+                end,
+                text: e.text.clone(),
+            });
+        }
+    }
+    if rows.is_empty() {
         return Ok(());
     }
+    rows.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut file = std::fs::File::create(output)
         .with_context(|| format!("创建弹幕文件失败: {}", output.display()))?;
     use std::io::Write;
     file.write_all(b"\xEF\xBB\xBF")?;
 
-    for (i, entry) in filtered.iter().enumerate() {
-        let local_start = (entry.start - start).max(0.0);
-        let local_end = (entry.end - start).max(0.0);
-        if local_start >= local_end {
-            continue;
-        }
-        let ts_start = crate::types::Timestamp::from_seconds(local_start);
-        let ts_end = crate::types::Timestamp::from_seconds(local_end);
+    for (i, row) in rows.iter().enumerate() {
+        let ts_start = crate::types::Timestamp::from_seconds(row.start);
+        let ts_end = crate::types::Timestamp::from_seconds(row.end);
         writeln!(file, "{}", i + 1)?;
         writeln!(
             file,
@@ -486,11 +743,21 @@ fn generate_clip_danmaku(
             ts_start.to_srt_format(),
             ts_end.to_srt_format()
         )?;
-        writeln!(file, "{}", entry.text)?;
+        writeln!(file, "{}", row.text)?;
         writeln!(file)?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn generate_clip_subtitle(
+    transcript: &crate::types::Transcript,
+    start: f64,
+    end: f64,
+    output: &Path,
+) -> Result<()> {
+    generate_clip_subtitle_ranges(transcript, &[EventRange::new(start, end)], output)
 }
 
 /// 拼接多个 .ts 文件为单个 mp4（使用 ffmpeg concat demuxer，不重编码）
@@ -503,10 +770,18 @@ fn write_clip_meta(
     rank: u32,
     start: crate::types::Timestamp,
     end: crate::types::Timestamp,
+    ranges: &[EventRange],
 ) -> Result<()> {
     let start_s = start.to_seconds();
     let end_s = end.to_seconds();
-    let meta = serde_json::json!({
+    // 成片时长 = **内容时长**（多段片段把段间空隙丢掉了，所以不是 `end - start`）。
+    // 下游（预览/精修/切片卡）拿 `duration` 当"这条片段有多长"用，必须与文件一致。
+    let duration = if ranges.is_empty() {
+        (end_s - start_s).max(0.0)
+    } else {
+        ranges.iter().map(|r| r.duration()).sum::<f64>()
+    };
+    let mut meta = serde_json::json!({
         "title": title,
         // 切片自带摘要：重新检测会把 events.json 整份换掉，片段展示不该依赖它
         "summary": summary,
@@ -515,8 +790,12 @@ fn write_clip_meta(
         "rank": rank,
         "original_start": start_s,
         "original_end": end_s,
-        "duration": (end_s - start_s).max(0.0),
+        "duration": duration,
     });
+    if ranges.len() > 1 {
+        // 多段片段：把每段源区间写进 `clip.json`（切片页/精修据此显示"由 N 段组成"）
+        meta["ranges"] = serde_json::to_value(ranges).unwrap_or(serde_json::Value::Null);
+    }
     std::fs::write(path, serde_json::to_string_pretty(&meta)?)
         .with_context(|| format!("写入元数据失败: {}", path.display()))?;
     Ok(())
@@ -883,5 +1162,212 @@ mod tests {
                 picked.0
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod multi_range_tests {
+    use super::*;
+    use crate::types::{Transcript, TranscriptSegment};
+
+    fn seg(start: f64, end: f64, text: &str) -> TranscriptSegment {
+        TranscriptSegment {
+            start,
+            end,
+            text: text.into(),
+            confidence: 1.0,
+        }
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    fn dm(start: f64, end: f64, text: &str) -> DanmakuEntry {
+        DanmakuEntry {
+            start,
+            end,
+            text: text.into(),
+            color: "#ffffff".into(),
+            y: 0.0,
+            travel_duration: 8.0,
+        }
+    }
+
+    fn tmp(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("yekitrim-mr-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// 段起点：`[0, d0, d0+d1, …]`；单段恒 `[0]`（老路径一个字不变）。
+    #[test]
+    fn range_offsets_accumulate() {
+        assert_eq!(range_offsets(&[EventRange::new(10.0, 25.0)]), vec![0.0]);
+        assert_eq!(
+            range_offsets(&[
+                EventRange::new(10.0, 25.0),
+                EventRange::new(100.0, 110.0),
+                EventRange::new(200.0, 201.0),
+            ]),
+            vec![0.0, 15.0, 25.0]
+        );
+        assert_eq!(range_offsets(&[]), vec![0.0]);
+    }
+
+    /// 多段字幕：第 2 段起时间轴**接在第 1 段之后**（不是源时间），空隙里的字幕**不进成片**。
+    #[test]
+    fn multi_range_subtitle_shifts_per_piece() {
+        let dir = tmp("sub");
+        let out = dir.join("clip.srt");
+        let tr = Transcript {
+            segments: vec![
+                seg(10.0, 20.0, "第一段"),
+                seg(30.0, 40.0, "空隙里的（不该出现）"),
+                seg(100.0, 110.0, "第二段"),
+            ],
+            language: "zh".into(),
+            asr_metadata: None,
+        };
+        generate_clip_subtitle_ranges(
+            &tr,
+            &[EventRange::new(10.0, 25.0), EventRange::new(100.0, 115.0)],
+            &out,
+        )
+        .unwrap();
+        let srt = read(&out);
+        assert!(srt.contains("第一段"));
+        assert!(srt.contains("第二段"));
+        assert!(!srt.contains("空隙里"), "段间空隙的内容不许进成片：{srt}");
+        // 第 1 段：源 10-20 → 成片 00:00:00,000-00:00:10,000
+        assert!(srt.contains("00:00:00,000 --> 00:00:10,000"), "{srt}");
+        // 第 2 段：源 100-110 → 成片 15-25（前一段内容 15s：10→25）
+        assert!(srt.contains("00:00:15,000 --> 00:00:25,000"), "{srt}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 多段弹幕同一条偏移口径。
+    #[test]
+    fn multi_range_danmaku_shifts_per_piece() {
+        let dir = tmp("dm");
+        let out = dir.join("clip.dm.srt");
+        let entries = vec![
+            dm(11.0, 12.0, "A"),
+            dm(33.0, 34.0, "空隙"),
+            dm(101.0, 102.0, "B"),
+        ];
+        generate_clip_danmaku_ranges(
+            &entries,
+            &[EventRange::new(10.0, 25.0), EventRange::new(100.0, 115.0)],
+            &out,
+        )
+        .unwrap();
+        let srt = read(&out);
+        assert!(srt.contains("A") && srt.contains("B"));
+        assert!(!srt.contains("空隙"), "段间空隙的弹幕不许进成片：{srt}");
+        assert!(srt.contains("00:00:01,000 --> 00:00:02,000"), "{srt}");
+        assert!(srt.contains("00:00:16,000 --> 00:00:17,000"), "{srt}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `clip.json`：多段时写 `ranges`，`duration` = **内容时长**（不是跨度）。
+    #[test]
+    fn clip_meta_writes_ranges_and_content_duration() {
+        let dir = tmp("meta");
+        let path = dir.join("clip.json");
+        let ranges = vec![EventRange::new(100.0, 120.0), EventRange::new(200.0, 230.0)];
+        write_clip_meta(
+            &path,
+            "标题",
+            "摘要",
+            &crate::types::EventType::Chat,
+            0.5,
+            3,
+            crate::types::Timestamp::from_seconds(100.0),
+            crate::types::Timestamp::from_seconds(230.0),
+            &ranges,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&read(&path)).unwrap();
+        assert_eq!(v["duration"].as_f64().unwrap(), 50.0, "内容时长 = 20 + 30");
+        assert_eq!(v["original_start"].as_f64().unwrap(), 100.0);
+        assert_eq!(v["original_end"].as_f64().unwrap(), 230.0);
+        assert_eq!(v["ranges"].as_array().unwrap().len(), 2);
+        assert_eq!(v["ranges"][1]["start"].as_f64().unwrap(), 200.0);
+
+        // 单段（空 ranges）仍写 `end - start`，且**不写** `ranges` 键（老片段格式不变）
+        let path2 = dir.join("clip2.json");
+        write_clip_meta(
+            &path2,
+            "标题",
+            "摘要",
+            &crate::types::EventType::Chat,
+            0.5,
+            3,
+            crate::types::Timestamp::from_seconds(10.0),
+            crate::types::Timestamp::from_seconds(40.0),
+            &[],
+        )
+        .unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&read(&path2)).unwrap();
+        assert_eq!(v2["duration"].as_f64().unwrap(), 30.0);
+        assert!(v2.get("ranges").is_none(), "单段不许多出 ranges 键");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **真剪一次**（需要 ffmpeg）：两段 → 拼接，时长 ≈ 两段之和，且 `.parts/` 清干净。
+    ///
+    /// ```text
+    /// VT_CUT_SRC=<任意 mp4> cargo test -p yekitrim-core --lib diagnose_multi_range_cut -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn diagnose_multi_range_cut() {
+        let Ok(src) = std::env::var("VT_CUT_SRC") else {
+            eprintln!("用法: VT_CUT_SRC=<mp4> cargo test ... diagnose_multi_range_cut -- --ignored --nocapture");
+            return;
+        };
+        let dir = tmp("cut");
+        let clip_dir = dir.join("clip-01");
+        std::fs::create_dir_all(&clip_dir).unwrap();
+        let out = clip_dir.join("clip.mp4");
+        let ranges = vec![EventRange::new(0.5, 2.0), EventRange::new(3.0, 4.5)];
+        let started = std::time::Instant::now();
+        cut_event(Path::new(&src), &ranges, &out).expect("多段剪切");
+        println!("剪切用时 {:.1}s", started.elapsed().as_secs_f64());
+        assert!(out.exists(), "成片没生成");
+        assert!(!clip_dir.join(".parts").exists(), ".parts 必须清干净");
+        let probe = crate::process::cmd("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+            .arg(&out)
+            .output()
+            .expect("ffprobe");
+        let dur: f64 = String::from_utf8_lossy(&probe.stdout).trim().parse().unwrap_or(0.0);
+        println!("成片时长 {dur:.2}s（期望 ≈ 3.0s：1.5 + 1.5）");
+        assert!((dur - 3.0).abs() < 0.5, "时长不对: {dur}");
+        // 音视频轨都要在（拼接最常见的翻车就是"只剩画面"）
+        let streams = crate::process::cmd("ffprobe")
+            .args([
+                "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+                "-of", "csv=p=0",
+            ])
+            .arg(&out)
+            .output()
+            .expect("ffprobe streams");
+        let streams = String::from_utf8_lossy(&streams.stdout);
+        println!("轨道: {}", streams.trim().lines().collect::<Vec<_>>().join(" | "));
+        // ⚠️ `-show_entries stream=codec_type,codec_name` 的输出顺序是 **codec_type 在前**？
+        // 实测是 `h264,video`（name 在前）—— 所以取**最后一个**字段判类型，别取第一个。
+        let kinds: Vec<&str> = streams
+            .lines()
+            .filter_map(|l| l.split(',').next_back())
+            .collect();
+        assert!(kinds.contains(&"video"), "没有视频轨: {streams}");
+        assert!(kinds.contains(&"audio"), "没有音频轨: {streams}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
