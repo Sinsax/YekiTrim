@@ -45,6 +45,8 @@
 //     `busyOn` 的按钮门控靠快照新鲜度，间隔逼近 TTL 会让 `stale` 在边界抖动（门控时灵时不灵）。
 //     钉两件事：两个档位常量都在、间隔按「有在跑的任务且页面可见」选、定时器链在 stop 里清干净。
 //
+//  ⑮ 屏蔽区间的跳转：`source_in` 是**素材帧号**，而工程网格可能被抬到 30fps ——宿主混用就是“经过屏蔽时声音和视频全乱”。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -457,5 +459,44 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 
+// ── ⑮ 屏蔽区间的跳转必须用**素材帧率**换算源帧，不能用工程网格帧率（……）──
+{
+  const has = (re) => re.test(previewVue)
+  check('⑮ 宜当从工程的视频素材取源帧率',
+    has(/dhampirSourceFps = stb\.num > 0 && stb\.den > 0/), true)
+  check('⑮ 源秒 → 源帧 用素材帧率（dhampirFrameAt）',
+    has(/const src = Math\.max\(0, Math\.round\(\(seconds \|\| 0\) \* srcFps\)\)/), true)
+  check('⑮ 段落长度要换算回素材帧再比',
+    has(/const lenSrc = Math\.max\(1, Math\.round\(\(lenSeq \* srcFps\) \/ seqFps\)\)/), true)
+  check('⑮ 跳转点也用素材帧率算秒（dhampirNextSourceStart）',
+    has(/return next === undefined \? null : next \/ srcFps/), true)
+  // ⚠️ 必须**按函数切片**判：`const src = Math.max(0, Math.round((seconds || 0) * srcFps))`
+  // 这一行在 `dhampirFrameAt` 与 `dhampirNextSourceStart` 里**各有一份**，
+  // 全文匹配的话"源侧改用网格帧率"那条变异永远翻不了面（第二份还在）。
+  const fnBody = (src, name) => {
+    const i = src.indexOf('function ' + name)
+    if (i < 0) return ''
+    const j = src.indexOf(String.fromCharCode(10) + '}', i)
+    return j < 0 ? src.slice(i) : src.slice(i, j)
+  }
+  const ok14 = (t) => {
+    const frameAt = fnBody(t, 'dhampirFrameAt')
+    const nextStart = fnBody(t, 'dhampirNextSourceStart')
+    return /dhampirSourceFps = stb\.num > 0 && stb\.den > 0/.test(t)
+      && /\(seconds \|\| 0\) \* srcFps/.test(frameAt)
+      && /lenSeq \* srcFps\) \/ seqFps/.test(frameAt)
+      && /next \/ srcFps/.test(nextStart)
+  }
+  const MUT14 = [
+    ['源侧改用网格帧率（屏蔽后画面跳 6 倍远）', (t) => t.replace('const src = Math.max(0, Math.round((seconds || 0) * srcFps))', 'const src = Math.max(0, Math.round((seconds || 0) * seqFps))')],
+    ['段落长度不换算回素材帧', (t) => t.replace('const lenSrc = Math.max(1, Math.round((lenSeq * srcFps) / seqFps))', 'const lenSrc = lenSeq')],
+    ['跳转点用网格帧率算秒', (t) => t.replace('return next === undefined ? null : next / srcFps', 'return next === undefined ? null : next / seqFps')],
+  ]
+  for (const [what, mutate] of MUT14) {
+    const m = mutate(previewVue)
+    check(`[变异] ⑮ ${what} → 源码确实被改了`, m !== previewVue, true)
+    check(`[变异] ⑮ ${what} → 判据翻面`, ok14(m), false)
+  }
+}
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

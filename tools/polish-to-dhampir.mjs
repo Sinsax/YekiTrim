@@ -1436,12 +1436,23 @@ export function translate(config, clipDir, outPath, options = {}) {
     return out;
   };
 
+  // ⚠️ **`source_in` 是"素材自己的帧号"，不是序列帧号**（2026-10-06 修）：
+  // 底座 `EvalContext::source_frame` 是 `source_frame_looped(source_in, local_frame, 时间线时基, 素材时基, …)`
+  // —— 它把**序列帧**按时间换算成素材帧，再把 `source_in` 加上去。所以两者**单位不同**：
+  //   · 图层 `start`/`end` = 序列帧（工程网格，可能被抬到 30fps）；
+  //   · `source_in` = 素材帧（源自己的 5fps / 24fps / 60fps）。
+  // 单位混了会怎样（实测症状：**经过屏蔽区间之后声音和画面全乱**）：电台那种 5fps 素材 + 30fps 网格，
+  // 第二段本该从素材第 20 帧起，写成序列帧就是 120 ⇒ 画面跳到源里 6 倍远的位置，而声音（宿主按
+  // `source_in / 工程帧率` 换算的**秒**）是对的 ⇒ 两边从第一个屏蔽段起就分叉。
+  // 素材帧率与网格一致时（老工程、60fps 素材）两者数值相同 ⇒ 老产物逐字节不变。
+  const toSourceFrames = (seqFrame) => Math.round((seqFrame / fps) * (assetTimebase.num / assetTimebase.den));
+
   // 主画面：**每个保留区间一层**，首尾相接（不重叠）。
   const mainLayers = keepRanges.map((range, index) => ({
     id: `main-${index}`,
     start: range.outStart,
     end: range.outStart + (range.end - range.start),
-    source: { asset_id: videoAssetId, source_in: range.start },
+    source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },
     transform: { x: 0, y: 0, scale: 1.0, rotation: 0 },
     opacity: 1.0,
     blend: 'normal',
@@ -3166,7 +3177,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       end: range.outStart + (range.end - range.start),
       // **原声从素材的对应时刻取**，不是从头。
       // `source_in` 是素材内偏移，掐掉前面的部分之后必须跟着走。
-      source: { asset_id: videoAssetId, source_in: range.start },
+      source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },
       transform: { x: 0, y: 0, scale: 1.0, rotation: 0 },
       opacity: 1.0,
       blend: 'normal',
