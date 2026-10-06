@@ -38,6 +38,7 @@
 import { strict as assert } from 'node:assert';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -823,6 +824,16 @@ function checkStage(curves) {
 }
 const MUTATIONS = [
   {
+    name: '纯色背景不再发画布底色（黑屏回归）',
+    from: "      ...(stageBackground ? { background: stageBackground } : {}),",
+    to: '',
+  },
+  {
+    name: '模糊也发画布底色（把它当成纯色处理）',
+    from: "        : '';\n  if (stageBackground) {",
+    to: "        : '#000000';\n  if (stageBackground) {",
+  },
+  {
     name: '时基退回写死 60fps（30fps 素材 ⇒ 帧号错 2×）',
     from: '  const timebase = media?.fps ?? { num: 60, den: 1 };',
     to: '  const timebase = { num: 60, den: 1 };',
@@ -1051,6 +1062,7 @@ async function mutate() {
         checkStageGeom(mutatedSource);
         // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
         checkMediaProbe(curves);
+        checkStageBackground(curves);
       });
     } catch (error) {
       reason = String(error && error.message ? error.message : error).split('\n')[0];
@@ -1231,6 +1243,70 @@ function checkMediaProbe(mod) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
   return checks;
 }
+// ---------------------------------------------------------------------------
+// 画布底色：`bg_mode = color|black` 必须发 `render_hints.background`（零图层的那条路）
+// ---------------------------------------------------------------------------
+//
+// 用户报的「背景纯色/模糊一律黑屏」里，纯色那一半的落地方式就是它：底座**没有纯色图层原语**，
+// 而加一层"有素材的图层"会触发分段路径逐帧泄漏（长片 OOM）⇒ 只能走**清屏色**。
+// 判据：color ⇒ bg_color、black ⇒ #000000、blur ⇒ **不发**（它是图层那条腿，另有开关）。
+function checkStageBackground(mod) {
+  const dir0 = mkdtempSync(join(tmpdir(), 'yekitrim-bg-src-'));
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+  // ⚠️ 夹具必须有**真竖素材**：源比例 = 画布比例（或探不到源）时 `STAGE_BG` 会推成 `none`，
+  // 那条路根本不会发背景 —— 拿它量"纯色有没有发出去"是量不到的（实测踩过）。
+  try {
+    execFileSync('ffmpeg', [
+      '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=magenta:s=360x640:d=2:r=30',
+      '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', join(dir0, 'clip.mp4'),
+    ]);
+  } catch {
+    console.log('· 跳过画布底色判据：这台机器没有 ffmpeg');
+    return 0;
+  }
+  const docOf = (stageLines) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yekitrim-bg-'));
+    try {
+      copyFileSync(join(dir0, 'clip.mp4'), join(dir, 'clip.mp4'));
+      writeFileSync(
+        join(dir, 'polish.toml'),
+        [
+          'duration = 4.0',
+          '[project]',
+          'name = "bg-probe"',
+          'output = "o.mp4"',
+          '[source]',
+          'video = "clip.mp4"',
+          '[canvas]',
+          'orientation = "landscape"',
+          '[stage]',
+          ...stageLines,
+          '',
+        ].join('\n'),
+      );
+      return mod.translate(mod.parseToml(readFileSync(join(dir, 'polish.toml'), 'utf8')), dir, join(dir, 'd.json'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const color = docOf(['bg_mode = "color"', 'bg_color = "#123456"']);
+  eq(color.render_hints.background, '#123456', 'bg_mode=color ⇒ 画布底色 = bg_color');
+  const black = docOf(['bg_mode = "black"']);
+  eq(black.render_hints.background, '#000000', 'bg_mode=black ⇒ 画布底色 = #000000');
+  const dark = docOf(['bg_mode = "black"', 'bg_color = "#ffffff"']);
+  eq(dark.render_hints.background, '#000000', 'black 档不许被 bg_color 带走');
+  const blur = docOf(['bg_mode = "blur"']);
+  eq(blur.render_hints.background, undefined, 'blur ⇒ 不发画布底色（它是图层那条腿）');
+  const none = docOf([]);
+  eq(none.render_hints.background, undefined, '没写 bg_mode ⇒ 不发（与改造前一致）');
+  rmSync(dir0, { recursive: true, force: true });
+  return checks;
+}
+
 const translatorModule = await import(pathToFileURL(TRANSLATOR).href);
 let tomlChecks = 0;
 for (const c of TOML_CASES) {
@@ -1246,6 +1322,8 @@ for (const c of TOML_CASES) {
   tomlChecks += 1;
 }
 console.log(`✓ TOML 解析：${tomlChecks} 项全绿（含"普通表里的数组表"那种合法但少见的写法）`);
+const bgChecks = checkStageBackground(translatorModule);
+console.log(`✓ 画布底色（color/black 走 render_hints.background，blur 不发）：${bgChecks} 项全绿`);
 const mediaChecks = checkMediaProbe(translatorModule);
 if (mediaChecks > 0) {
   console.log(`✓ 媒体探测：${mediaChecks} 项全绿（30fps/640x360 源与 24fps/320x240 代理各一对）`);
