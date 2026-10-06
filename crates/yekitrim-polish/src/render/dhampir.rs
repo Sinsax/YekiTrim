@@ -233,6 +233,45 @@ fn which(name: &str) -> Option<PathBuf> {
 /// ⚠️ 第 4 条以前是唯一回退 ⇒ 装到别的机器上它指向一个**不存在的构建目录**，
 /// 于是"默认出片通道"在发布形态下**根本起不来**（`find_binary`/`wasm_dirs` 早就有 `current_exe()`
 /// 回退，只有它没有）。第 2 条**必须排在前面**：包内那一份才是与这个二进制配套的那一份。
+/// 把 mtime 打成人能读的一行（日志里"用了哪份转译器"要能一眼看出新旧）。
+fn fmt_mtime(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 不引 chrono：只要"能比大小、能看出是哪天"，UTC 秒足够（配合大小一起看）。
+    format!("mtime={secs}s(UTC)")
+}
+
+/// 候选顺序（**纯函数，可单测**）：开发构建里仓库那份排第一，发布包里 `<程序目录>/tools` 排第一。
+///
+/// ⚠️ 顺序就是这条 bug 的全部：`<exe 目录>/tools/` 里可能躺着一份**打包时拷进来的旧副本**，
+/// 它排第一就静默生效（本机实测四天），所有转译器修复都被误判成"没生效"。
+/// 判据：`dev_build_candidates_put_repo_first`。
+fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let under_target = exe.components().any(|c| c.as_os_str() == "target");
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(|r| r.join("tools").join("polish-to-dhampir.mjs"));
+    if under_target {
+        if let Some(repo) = &repo {
+            candidates.push(repo.clone());
+        }
+    }
+    if let Some(dir) = exe.parent() {
+        candidates.push(dir.join("tools").join("polish-to-dhampir.mjs"));
+        if let Some(up2) = dir.parent().and_then(Path::parent) {
+            candidates.push(up2.join("tools").join("polish-to-dhampir.mjs"));
+        }
+    }
+    if let Some(repo) = repo {
+        candidates.push(repo);
+    }
+    candidates
+}
+
 fn find_translator() -> Result<PathBuf> {
     let mut tried: Vec<String> = Vec::new();
     if let Ok(explicit) = std::env::var("VTEDIT_TRANSLATOR") {
@@ -242,21 +281,41 @@ fn find_translator() -> Result<PathBuf> {
         }
         bail!("VTEDIT_TRANSLATOR={explicit} 不是文件");
     }
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("tools").join("polish-to-dhampir.mjs"));
-            if let Some(up2) = dir.parent().and_then(Path::parent) {
-                candidates.push(up2.join("tools").join("polish-to-dhampir.mjs"));
-            }
-        }
-    }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(repo) = manifest.parent().and_then(Path::parent) {
-        candidates.push(repo.join("tools").join("polish-to-dhampir.mjs"));
-    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yekitrim"));
+    let under_target = exe.components().any(|c| c.as_os_str() == "target");
+    let repo_translator = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(|repo| repo.join("tools").join("polish-to-dhampir.mjs"));
+    let candidates = translator_candidates_for(&exe);
     for cand in candidates {
         if cand.is_file() {
+            // **把"用了哪一份"记下来**：这条曾经是隐形的 —— 旧副本排在第一位、静默生效了四天，
+            // 期间所有转译器改动都被误判成"没生效/代码没写对"。顺手把"比仓库那份旧"报成 warn。
+            let meta = std::fs::metadata(&cand).ok();
+            tracing::info!(
+                "  · 转译器：{}（{} 字节，{}）",
+                cand.display(),
+                meta.as_ref().map(|m| m.len().to_string()).unwrap_or_else(|| "?".into()),
+                meta.as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .map(fmt_mtime)
+                    .unwrap_or_else(|| "mtime 未知".into())
+            );
+            if let (Some(repo), true) = (repo_translator.as_ref(), under_target) {
+                if repo.is_file() && repo != &cand {
+                    let newer = match (meta.as_ref().and_then(|m| m.modified().ok()), std::fs::metadata(repo).and_then(|m| m.modified())) {
+                        (Some(picked), Ok(repo_t)) => repo_t > picked,
+                        _ => false,
+                    };
+                    if newer {
+                        tracing::warn!(
+                            "  ⚠ 选中的转译器比仓库那份**旧**（{}）—— 打包时拷进来的副本会排在前面，                             先删掉它或重建，否则转译器的新改动不会生效",
+                            repo.display()
+                        );
+                    }
+                }
+            }
             return Ok(cand);
         }
         tried.push(cand.to_string_lossy().into_owned());
@@ -1431,5 +1490,36 @@ mod artifact_tests {
         // 没有报告（正常工程）也要能解析成 0，而不是崩
         let empty = TranslateReport::parse("转译完成 -> x\n  轨道 1 条\n");
         assert_eq!((empty.drop_count, empty.clamp_count), (0, 0));
+    }
+
+    /// **开发构建必须优先仓库那份转译器**（2026-10-06 用户报的"画面构成里怎么改位置都是居中"的根因）。
+    ///
+    /// `<exe 目录>/tools/` 里可能有打包时拷进去的**旧副本**；它排第一就静默生效，
+    /// 于是转译器的一切修复（两轴位置 / 真实时基与分辨率 / `--video` 代理）全部"没生效"。
+    #[test]
+    fn dev_build_candidates_put_repo_first() {
+        let dev = translator_candidates_for(Path::new("F:/repo/target/debug/yekitrim.exe"));
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("仓库根")
+            .join("tools")
+            .join("polish-to-dhampir.mjs");
+        assert_eq!(
+            dev.first().map(|p| p == &repo),
+            Some(true),
+            "开发构建（exe 在 target/ 下）必须把仓库那份排第一，实得 {:?}",
+            dev.first()
+        );
+        assert!(dev.len() >= 2, "候选里还得留着打包位置那条兜底：{dev:?}");
+
+        // **发布包行为不变**：不在 target/ 下时，`<程序目录>/tools` 仍然排第一
+        let pkg = translator_candidates_for(Path::new("C:/app/yekitrim.exe"));
+        assert_eq!(
+            pkg.first(),
+            Some(&PathBuf::from("C:/app/tools/polish-to-dhampir.mjs")),
+            "发布包必须仍先找 <程序目录>/tools：{:?}",
+            pkg.first()
+        );
     }
 }
