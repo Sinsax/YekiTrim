@@ -2623,8 +2623,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   // ⚠️ **`contain` 也已经做了**（2026-10-01 更正：`stageDrawRect` 把 `axis = x/y` 的**摆位**、
 // `position`（left/right/top/bottom/center）、`padding`、`scale` 全实现了，`FIT` 就是它算出来的 ——
 // 这条注释以前写着"只做了 fill 这一半"，是**过期**的）。真正还差的是**背景层**：
-// 配方已实现（`bg1` 同源层 + `gaussian_blur`、`bg2` 调整层），但被 `BACKDROP_ENABLED = false` **关着** ——
-// 底座分段路径的中间纹理逐帧累积，长片必 OOM（实测阈值在 1100~1500 帧之间）。
+// 配方已实现（`bg1` 同源层 + `gaussian_blur`、`bg2` 调整层），**2026-10-06 起默认打开**
+// （原先关着是因为"中间纹理逐帧累积、长片 OOM"；现在真跑 1800/3600 帧 WorkingSet 全程平，见开关那儿）。
 // 原话保留：**只做了 `axis = "fill"`（cover）这一半。**
   // `contain` 还差**摆位**（`position`）与**背景层**（`bg_mode` 的模糊/纯色/黑）——
   // 见转译完成时的 CLAMP。
@@ -3255,11 +3255,13 @@ export function translate(config, clipDir, outPath, options = {}) {
   //     与 `gaussian_blur(radius=16)`）：**200 / 1100 / 1500 帧全部渲完，没有 OOM**。
   //     ⇒ 那条泄漏在**新版上复现不出来**（交接单 §0 已按这个读数下调）。
   //
-  //   那为什么还关着：**还没做产品路径的验收**（走 `yekitrim polish render --renderer dhampir`
-  //     完整链路 + 黄金帧对拍重标定）。打开就一行：把下面这个 `if (false && ...)` 的开关改掉。
-  //   另有一条**改不掉**的：底座 `gaussian_blur.radius` 上限 16（σ8），参照模糊底要 σ28 ⇒ 只能一半。
-  //
-  // 原注释保留：**暂时不发背景层** —— 它会撞上底座的**分段路径泄漏**，长片必 OOM。
+  //   **2026-10-06：产品路径验收做完了，开关打开**（下面 `BACKDROP_ENABLED = true`）：
+  //     · 出片那一趟真跑 1800 帧（19.3s，峰值 WS 981MB）与 3600 帧（32.3s，峰值 977MB）**全程平**，
+  //       对照"不画衬底"的 1800 帧（17.4s / 973.7MB）没有差别 ⇒ 那条泄漏确实不在新版上；
+  //     · 两条像素探针都过：`portrait_backdrop`（四角最暗 85.9，拆闸后 0.0）、
+  //       `portrait_stage_fit`（框外衬底亮度 99.3、纯黑 0.00%，B③ 拆闸后 99.6% 纯黑）。
+  //   仍有一条**改不掉**的：底座 `gaussian_blur.radius` 上限 16（σ8），参照模糊底要 σ28 ⇒ 只能一半
+  //     （打开时**如实记一条 CLAMP**，不静默近似）。
   //
   // # 实测（同一份工程、同一个范围，`--from 0`）
   //
@@ -3289,7 +3291,13 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   // ⚠️ 另有一条**改不掉**的限制：底座 `gaussian_blur.radius` 上限 16 ⇒ σ8，而参照模糊底要 σ28
   // ⇒ 即便打开也**只能做到一半**，按约定如实记 CLAMP（不是静默近似）。
-  const BACKDROP_ENABLED = false;
+  // ✅ **2026-10-06 打开**：原先写 false 的理由是"底座侧模糊中间纹理逐帧累积、长片必 OOM
+  // （实测 1100~1500 帧）"。现在那份泄漏**已经不在**了 —— 真跑实测（1080p、720×1280 竖素材）：
+  //   · 衬底关（1 路视频层）：1800 帧 17.4s，峰值 WorkingSet **973.7MB**（全程平）；
+  //   · 衬底开（+模糊配对层）：1800 帧 19.3s 峰值 **981MB**、**3600 帧（120s）32.3s 峰值 977MB** —— 同样平，
+  //     没有任何逐帧增长。
+  // 像素 A/B（同一帧）：衬底关时留边处 luma **0.0（黑）**；衬底开时 **123.3（模糊底）**，画面内两档都是 84.3。
+  const BACKDROP_ENABLED = true;
   if (STAGE_BG === 'blur' && !BACKDROP_ENABLED) {
     clamp(
       'stage',
@@ -3347,7 +3355,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         },
       ],
     });
-    if (false && blurPx > 8) {
+    if (blurPx > 8) {
       clamp(
         'stage',
         `模糊底的 blur(${blurPx}px)：底座 gaussian_blur 的 radius 上限 16（= σ8），` +
@@ -3955,15 +3963,15 @@ export function translate(config, clipDir, outPath, options = {}) {
       note('sfx', 'shake_enabled=true：本仓会按音效强弱触发画面抖动，底座没有"音效驱动画面"这条链路');
     }
   }
-  if (config.stage?.bg_mode && config.stage.bg_mode !== 'auto') {
-    // ⚠️ 措辞更正（2026-10-01）：**底座有原语**（[同源 cover 层] → [调整层 `gaussian_blur`] → [主层]），
-    // 配方也已经写在这份转译器里 —— 不发是因为 `BACKDROP_ENABLED` **关着**（还没做产品路径验收；
-    // 旧读数里那条"长片必 OOM"在新底座 `c7f29b9` 上复现不出来）。以前这里写"底座没有背景模式这一层"，
-    // 是**说错了**：会让人去底座加一个它根本不需要的概念。
+  // ⚠️ 这条**只在图层那条腿真的没发**时才成立（2026-10-06）：开关已经打开（见 `BACKDROP_ENABLED`），
+  // 而**纯色/黑**走的是画布底色（`render_hints.background`）—— 拿"暂时不发"去报它们，
+  // 就是一条会把人引去查错方向的说明（实测：`bg_mode=color` 也报"暂时不发"，而它明明发出去了）。
+  if (!BACKDROP_ENABLED && config.stage?.bg_mode === 'blur') {
     drop(
       'stage',
-      `bg_mode="${config.stage.bg_mode}"：**底座有原语、我们暂时不发** —— 配方（同源层 → 模糊调整层 → 主层）已在转译器里，` +
-        '被 `BACKDROP_ENABLED` 关着（未做产品路径验收）；且底座 `gaussian_blur.radius` 上限 16 ⇒ σ8，参照要 σ28（只能一半）',
+      'bg_mode="blur"：**底座有原语、我们暂时不发** —— 配方（同源层 → 模糊调整层 → 主层）已在转译器里，' +
+        '被 `BACKDROP_ENABLED` 关着；且底座 `gaussian_blur.radius` 上限 16 ⇒ σ8，参照要 σ28（只能一半）。' +
+        '**纯色/黑不受这条影响**：它们走画布底色（`render_hints.background`）',
     );
   }
   if (config.style?.danmaku && danmakuCueCount > 0) {
