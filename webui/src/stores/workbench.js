@@ -74,15 +74,38 @@ export function projectById(pid) {
   return wb.projects.find((p) => String(p.id) === String(pid)) || null
 }
 
-/** 侧栏过滤后的项目（名称/房间前缀匹配）。 */
+/**
+ * 侧栏项目排序：**最新加入的在最上面**（用户口径 2026-10-06：「更改左侧项目列表，
+ * 默认新的在上面 / 最新加入的项目在上面」）。
+ *
+ * ⚠️ 服务端 `GET /api/projects` 是 `ORDER BY id`（**老的在前面**，`db.rs::list_projects`），
+ * 这里必须自己翻过来 —— 别去改服务端：那条顺序还喂着别处（工作台卡片、CLI 列表），
+ * 用户要的是**侧栏**这一处。
+ * 排序键：`created_at` 降序（"最新加入"），同一秒（或老项目没有这个字段）时用 `id` 降序兜底 ——
+ * 两个键都是"越新越大"，方向一致，不会出现顺序抖动。
+ * ⚠️ 侧栏那枚**短标识**（`projectLabels`，`SideNav.vue`）刻意按 `id` 升序算 —— 列表顺序怎么变，
+ * 每个项目的标识都不许跟着变（否则"项目 3"会变成另一个项目）。
+ */
+export function sortProjectsNewestFirst(list) {
+  return [...(list || [])].sort((a, b) => {
+    const ca = Number(a?.created_at) || 0
+    const cb = Number(b?.created_at) || 0
+    if (ca !== cb) return cb - ca
+    return (Number(b?.id) || 0) - (Number(a?.id) || 0)
+  })
+}
+
+/** 侧栏过滤后的项目（名称/房间前缀匹配；**最新加入的在前**）。 */
 export const filteredProjects = computed(() => {
   const kw = wb.filter.trim().toLowerCase()
-  if (!kw) return wb.projects
-  return wb.projects.filter(
-    (p) =>
-      String(p.name || '').toLowerCase().includes(kw) ||
-      String(p.room || '').toLowerCase().includes(kw)
-  )
+  const list = kw
+    ? wb.projects.filter(
+        (p) =>
+          String(p.name || '').toLowerCase().includes(kw) ||
+          String(p.room || '').toLowerCase().includes(kw)
+      )
+    : wb.projects
+  return sortProjectsNewestFirst(list)
 })
 
 export function isExpanded(pid) {
