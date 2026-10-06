@@ -418,13 +418,22 @@ function dhampirFrameAt(seconds) {
   const srcFps = dhampirSourceFps || seqFps
   // 无段落表（单段、source_in=0）⇒ 源时间与序列时间同一时刻，直接乘网格帧率（老行为）
   if (!dhampirSegments.length) return Math.max(0, Math.round((seconds || 0) * seqFps))
-  // `source_in` 是**素材帧号** ⇒ 源秒要用素材帧率换算；段落长度是序列帧 ⇒ 换算回素材帧再比
-  const src = Math.max(0, Math.round((seconds || 0) * srcFps))
+  // `source_in` 是**素材帧号** ⇒ 源位置用素材帧率换算；段落长度是序列帧 ⇒ 换算回素材帧再比。
+  // ⚠️ **位置不取整**（见下面那段说明）：取整会把段内换算也钉在素材帧上。
+  const srcPos = Math.max(0, (seconds || 0) * srcFps)
   for (const seg of dhampirSegments) {
     const lenSeq = seg.frameEnd - seg.frameStart
     const lenSrc = Math.max(1, Math.round((lenSeq * srcFps) / seqFps))
-    if (src >= seg.sourceIn && src < seg.sourceIn + lenSrc) {
-      return seg.frameStart + Math.round(((src - seg.sourceIn) * seqFps) / srcFps)
+    if (srcPos >= seg.sourceIn && srcPos < seg.sourceIn + lenSrc) {
+      // ⚠️ **段内换算走秒，不走素材帧**（2026-10-06 修「5/30fps · 丢 30」）：
+      // 用素材帧算的话，5fps 素材的工程帧只能落在 `round(src)*seqFps/srcFps` = **6 的倍数**上
+      // ⇒ 一秒只有 5 个不同的帧号 ⇒ `tick()` 里 `f === dhampirFrameShown` 把另外 5/6 帧全挡掉
+      // ⇒ 读数 `5/30fps · 丢 30`，而**叠加层（字幕/弹幕/贴纸）也只动 5 次/秒** ——
+      // 那正是"30fps 网格下限"要解决的事，成片按 30fps 画、预览却只画 5 帧/秒 = 预览≠成片。
+      // 段落**边界**仍旧按素材帧判（`source_in` 与 `lenSrc` 同单位），所以"落在被掐掉的区间
+      // 里 ⇒ null"这条语义一个字都没变。
+      const localSec = (seconds || 0) - seg.sourceIn / srcFps
+      return seg.frameStart + Math.round(localSec * seqFps)
     }
   }
   return null
@@ -439,7 +448,8 @@ function dhampirFrameAt(seconds) {
  */
 function dhampirNextSourceStart(seconds) {
   const srcFps = dhampirSourceFps || dhampirFps.value || 30
-  const src = Math.max(0, Math.round((seconds || 0) * srcFps))
+  // 同 `dhampirFrameAt`：位置**不取整**（边界是素材帧、位置是秒，取整只会让判定抖半帧）
+  const src = Math.max(0, (seconds || 0) * srcFps)
   const next = dhampirSegments
     .map((s) => s.sourceIn)
     .filter((s) => s > src)
