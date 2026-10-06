@@ -126,9 +126,6 @@
                     <div class="row spread small">
                       <span class="muted">分段</span><span class="mono">{{ (cfg?.segments || []).length }}</span>
                     </div>
-                    <button class="btn mt-4 w-full jc-center" :disabled="scopeBusy"
-                            :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
-                            @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
                     <div class="row spread small mt-4">
                       <span class="muted">屏蔽</span><span class="mono">{{ (cfg?.mute_ranges || []).length }}</span>
                     </div>
@@ -267,7 +264,9 @@
           <!-- 右栏 = **一块**面板：「画面构成 / 输出」。用户口径（2026-10-06）：原来「生成与导出」
                与「画面构成」两块有重叠 —— 字幕字体 / 弹幕字体与偏移 / 贴纸来源 / 区域与落点全部搬进
                **轨道设置**（点时间轴上的轨道名打开），这里只留画面构成 + 出片。
-               两个页签随之删掉（页签的另一半已经没有内容了）；「LLM 剪辑」跟着它管的分段轨走。 -->
+               两个页签随之删掉（页签的另一半已经没有内容了）。
+               ⚠️ 「LLM 剪辑」用户 2026-10-06 明确要求放**这里**（与「渲染导出」并排，先重剪再出片）——
+               别再把它挪回轨道设置里。 -->
           <div class="card">
             <div class="row spread mb-8">
               <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面构成 / 输出</h2>
@@ -338,8 +337,17 @@
                  时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，可开可关、看得见），
                  不再是藏在画面构成里的三个复选框。 -->
 
+            <!-- LLM 剪辑（用户 2026-10-06 要求搬到这里）：重新分段 + 重新生成全部事件。
+                 它跟「渲染导出」是一前一后两道工序（先重剪、再出片），所以并排放在面板底部；
+                 失败的分段会在时间轴上标色、可单独重做那一段。 -->
+            <div class="row mt-12" style="gap:6px">
+              <button class="btn flex-1 jc-center" :disabled="scopeBusy"
+                      :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
+                      @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
+            </div>
+
             <!-- 出片（原来在「生成与导出」那块里，整块并没有别的内容了） -->
-            <button class="btn btn-primary mt-12 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
+            <button class="btn btn-primary mt-6 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
