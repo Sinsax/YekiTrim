@@ -166,24 +166,33 @@
                段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
                点一行选中它，「标记入点/出点」落到选中那一行；单行时与老行为完全等价。 -->
           <div class="slice-rows mt-6">
-            <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }" @click="activeRow = i">
-              <span class="mono small flex-none">{{ i + 1 }}</span>
+            <!-- ⚠️ **整行都可点选**（含输入框）：点/聚焦任一格都把它设为"正在编辑的那一段"。
+                 以前输入框上挂了 `@click.stop`，于是"改完数字再点标记入点"落到**别人**身上 ——
+                 用户报的「多段切片没法回过头来处理」就是这个（判据 ㉔ 的变异钉着它）。 -->
+            <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }"
+                 :title="'编辑第 ' + (i + 1) + ' 段（入点/出点只作用于选中的这段）'"
+                 @click="activeRow = i">
+              <button class="seg-pick" :class="{ on: i === activeRow }" :title="'选这一段来标记入点/出点'"
+                      @click.stop="activeRow = i">{{ i + 1 }}</button>
               <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.start"
-                     :title="'第 ' + (i + 1) + ' 段入点（秒）'" @click.stop>
+                     :title="'第 ' + (i + 1) + ' 段入点（秒）'" @focus="activeRow = i">
               <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.end"
-                     :title="'第 ' + (i + 1) + ' 段出点（秒）'" @click.stop>
+                     :title="'第 ' + (i + 1) + ' 段出点（秒）'" @focus="activeRow = i">
               <span class="mono small flex-none">{{ fmtDur(Number(r.end) - Number(r.start)) }}</span>
               <button class="mini-btn flex-none" :disabled="sliceRows.length <= 1" title="删掉这一段"
                       @click.stop="removeSliceRow(i)">×</button>
             </div>
           </div>
           <div class="row mt-6" style="gap:6px">
-            <button class="mini-btn flex-1 jc-center" title="把当前播放位置记为**选中那段**的入点" @click="mark('in')">标记入点</button>
-            <button class="mini-btn flex-1 jc-center" title="把当前播放位置记为**选中那段**的出点" @click="mark('out')">标记出点</button>
-            <button class="mini-btn flex-none" title="再加一段（与已有的合成同一条片段）" @click="addSliceRow">＋ 一段</button>
+            <button class="mini-btn flex-1 jc-center" :title="markHint('in')" @click="mark('in')">标记入点</button>
+            <button class="mini-btn flex-1 jc-center" :title="markHint('out')" @click="mark('out')">标记出点</button>
+            <button class="mini-btn flex-none" title="再加一段（与已有的合成同一条片段，加完自动转到新段）" @click="addSliceRow">＋ 一段</button>
           </div>
           <div class="row spread small mt-4">
-            <span class="muted">{{ sliceRows.length }} 段</span>
+            <span class="muted">
+              {{ sliceRows.length }} 段<template v-if="sliceRows.length > 1">
+                · 编辑中 <b class="seg-cur-num">{{ activeRow + 1 }}</b></template>
+            </span>
             <span class="mono">{{ fmtDur(sliceTotal) }}</span>
           </div>
           <input
@@ -699,7 +708,15 @@ function mark(which) {
   end.value = Math.max(markOut.value, markIn.value + 1)
 }
 
-/** 加一段（起止先取当前播放位置：标好出点才算数）。 */
+/** 「标记入点/出点」落点的悬停说明：多段时把段号说出来（按钮本身保持短文案）。 */
+function markHint(which) {
+  const n = activeRow.value + 1
+  const what = which === 'in' ? '入点' : '出点'
+  if (sliceRows.value.length <= 1) return `把当前播放位置记为第 ${n} 段的${what}`
+  return `把当前播放位置记为**第 ${n} 段**的${what}（只影响选中那段；先点行/编号换段）`
+}
+
+/** 加一段（起止先取当前播放位置：标好出点才算数）。**加完自动转到最新段**（用户口径）。 */
 function addSliceRow() {
   const t = Math.round((videoRef.value?.currentTime || currentTime.value || 0) * 10) / 10
   sliceRows.value.push({ start: t, end: t })
@@ -963,9 +980,17 @@ onUnmounted(() => {
    按钮被挤到上一行（flex-wrap 下就变成两块各占一行）。 */
 .slice-time { flex:1 1 0; width:auto; min-width:0; padding:4px 8px; font-size:12px; text-align:center; }
 /* 多段列表：一行一组入点/出点；点一行 = 选中它（「标记入点/出点」落到选中行） */
-.slice-row { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:6px; }
-.slice-row.on { background:var(--chip-bg); }
+.slice-row { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:6px;
+  border-left:3px solid transparent; cursor:pointer; }
+/* 选中的那段：底色 + **左侧色条**（光靠底色在多段时看不出"现在编辑的是哪一段"） */
+.slice-row.on { background:var(--chip-bg); border-left-color:var(--pink-text); }
 .slice-row .slice-time { max-width:86px; }
+/* 段号 = 选段按钮（点它换段，和点整行等效） */
+.seg-pick { flex:none; width:20px; height:20px; padding:0; border-radius:var(--r-full);
+  border:1px solid var(--line); background:var(--card); color:var(--ink-dim);
+  font-size:10.5px; line-height:1; cursor:pointer; }
+.seg-pick.on { border-color:var(--pink-text); background:var(--pink-bg); color:var(--pink-text); font-weight:700; }
+.seg-cur-num { color:var(--pink-text); }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */

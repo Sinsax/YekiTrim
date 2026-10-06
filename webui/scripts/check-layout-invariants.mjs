@@ -1018,5 +1018,62 @@ console.log('\n㉓ 字幕轨道：搜索（上一个/下一个）+ 滚轮缩放'
   }
 }
 
+// ── ㉔ 多段切片的**选段**：入点/出点只作用于选中的那段（用户口径 2026-10-06）──
+//
+// 用户原话：「预处理的多段切片没法回过头来处理，增加一个选择段，然后入点出点就指影响那个段，
+// 默认新建段时自动转到最新段」。
+//
+// 实测过的病根：行里两个输入框挂了 `@click.stop` ⇒ **想改数字的那位用户怎么点都换不了段**，
+// 接着按「标记入点」就落到别人身上（真页面探针修之前 ②③ 是红的）。四条一起钉：
+//   ① 整行可点选（输入框也认，`@focus` 也算）；
+//   ② 有个显式的选段按钮（`.seg-pick`）；
+//   ③ 加段自动转到最新段；
+//   ④ 界面上写得出来"现在编辑的是第几段"。
+console.log('\n㉔ 多段切片：选段（入点/出点只作用于选中那段）')
+{
+  const prepareView = await read('webui/src/views/PrepareView.vue')
+
+  const rowSelectable = (s) =>
+    /class="slice-row" :class="\{ on: i === activeRow \}"[\s\S]{0,200}?@click="activeRow = i"/.test(s)
+      && !/v-model\.number="r\.start"\s*\n\s*:title="'第 '[\s\S]{0,120}?@click\.stop/.test(s)
+      && /@focus="activeRow = i"/.test(s)
+  const pickButton = (s) =>
+    /class="seg-pick"[\s\S]{0,160}?@click\.stop="activeRow = i"/.test(s)
+      && /\.seg-pick\.on \{/.test(s)
+      && /\.slice-row\.on \{ background:var\(--chip-bg\); border-left-color:/.test(s)
+  const autoNewest = (s) =>
+    /function addSliceRow\(\) \{[\s\S]{0,400}?activeRow\.value = sliceRows\.value\.length - 1/.test(s)
+  const showsWhich = (s) =>
+    /function markHint\(which\)/.test(s)
+      && /编辑中 <b class="seg-cur-num">\{\{ activeRow \+ 1 \}\}<\/b>/.test(s)
+      && /const row = sliceRows\.value\[activeRow\.value\] \|\| sliceRows\.value\[0\]/.test(s)
+
+  check('㉔ 整行/输入框都能换段（输入框不许 `@click.stop`）', rowSelectable(prepareView), true)
+  check('㉔ 有显式选段按钮 + 选中态一眼看得见（左侧色条）', pickButton(prepareView), true)
+  check('㉔ 新建段自动转到最新段', autoNewest(prepareView), true)
+  check('㉔ 界面写得出"编辑中第 N 段"、标记按钮 title 说出落点', showsWhich(prepareView), true)
+
+  const MUT24 = [
+    ['输入框又挂回 `@click.stop`（改数字后换不了段 —— 就是这个 bug）', prepareView,
+      (s) => s.replace(":title=\"'第 ' + (i + 1) + ' 段入点（秒）'\" @focus=\"activeRow = i\"",
+        ":title=\"'第 ' + (i + 1) + ' 段入点（秒）'\" @click.stop"), rowSelectable],
+    ['去掉输入框的 `@focus` 选段', prepareView,
+      (s) => s.replaceAll(' @focus="activeRow = i"', ''), rowSelectable],
+    ['整行不再可点选', prepareView,
+      (s) => s.replace('                 @click="activeRow = i">', '                 >'), rowSelectable],
+    ['选段按钮摘掉', prepareView,
+      (s) => s.replace(/<button class="seg-pick"[\s\S]{0,220}?<\/button>/, ''), pickButton],
+    ['新建段不再自动转到最新段', prepareView,
+      (s) => s.replace('  activeRow.value = sliceRows.value.length - 1\n', ''), autoNewest],
+    ['界面上不再写"编辑中第 N 段"', prepareView,
+      (s) => s.replace(/<template v-if="sliceRows\.length > 1">[\s\S]{0,120}?<\/template>/, ''), showsWhich],
+  ]
+  for (const [what, src, mutate, still] of MUT24) {
+    const m = mutate(src)
+    check(`[变异] ㉔ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉔ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
