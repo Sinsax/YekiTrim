@@ -184,7 +184,15 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
   三键与那个函数**已删除**（`deny_unknown_fields` 下老 toml 里的键会落进 `extra`，静默忽略 ——
   0.6.0 本来就按"不兼容过去"处理）。
 
-**② 面板：一列里两块，互斥**
+**② 面板：一列里两块，互斥；轨道设置这块 = 一个面板装全部轨道**
+
+⚠️ **2026-10-06 修正（用户口径）**："需要将所有轨道的设置都合并到一个属性里，点哪个轨道都是同一个
+面板，这样好操作。" 所以面板里**六段同时在场**（顺序 = 泳道顺序），`openLane` 只是**焦点**：
+点轨道名 = 打开面板 + 滚到那一段（`scrollIntoView({block:'nearest'})`）+ 那一段标题高亮
+（`.lane-group.on > .lane-group-h`，前面加一枚 `▸`）。**不许回到"一轨一屏"**（`v-if="openLane === '…'"`
+的链）—— 判据 ⑰ 有这一条 + 三个变异（退回分屏 / 摘掉一段 / 点名字不滚）。
+面板长为六段之和 ⇒ 标题行**吸顶**（`.lane-head { position:sticky; top:-10px }`，滚到下面仍够得着「关闭」）。
+
 
 - 布局：`.props-host`（232px 定宽、`position:relative`）里两块**都绝对定位 `inset:0`** ——
   **轨道设置**由 PolishView 自己渲染（`.props-panel.card.lane-panel`），**块属性**由 TimelineEditor
