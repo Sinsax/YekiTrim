@@ -423,6 +423,16 @@ const videoSrc = ref('')
 const videoRef = ref(null)
 const fileInput = ref(null)
 const titleLines = ref([])
+/**
+ * **这份面板里的值是从哪个片段读回来的**（= 写盘基线）。
+ *
+ * ⚠️ 它是一道**写闸**（2026-10-06 事故）：切片段时若面板还留着上一个片段的基线，
+ * 而 `props.dir` 已经指向新片段，那次防抖保存就会把**上一个片段的整套 `[cover]`**
+ * 写进新片段（实测：两个片段的 `[cover]` 段 1073 字节逐字节相同、标题一模一样 ——
+ * 用户报的「所有封面设计器的标题是一样的」）。所以 `persistCoverConfig()` 里
+ * `loadedDir !== props.dir` 一律**不写**（并在界面上说出来）。
+ */
+const loadedDir = ref('')
 /** `.title-text` 元素本身（自动排版要量它的 rect；量 `.title-wrap` 会量到那个更宽的容器） */
 const titleTextRef = ref(null)
 /** 自动排版放不下时给用户的一句提示（放不下就说出来，别静默） */
@@ -1577,6 +1587,13 @@ function coverConfigPayload() {
 
 async function persistCoverConfig() {
   if (!configLoaded.value) return
+  // ⚠️ **基线必须属于当前片段**（见 `loadedDir` 的说明）：不属于就**不写**，并且说出来 ——
+  // 静默写下去就是"把上一个片段的封面覆盖到这个片段上"，而且不留任何痕迹。
+  if (loadedDir.value !== props.dir) {
+    saveError.value = '片段已切换，本次改动未保存（面板里那份属于上一个片段）'
+    console.warn('[cover] 拒绝写盘：面板基线来自 ' + loadedDir.value + '，当前片段是 ' + props.dir)
+    return
+  }
   if (savingConfig.value) { saveConfigPending = true; return }
   savingConfig.value = true
   try {
@@ -1923,6 +1940,7 @@ async function loadCoverConfig(retrying = false) {
       selectedKey.value = contentLayers.value.find((l) => l.key === 'title')?.key || contentLayers.value[0]?.key || 'frame'
     }
     configLoaded.value = true
+    loadedDir.value = props.dir
     configLoadError.value = ''
     return !hadSavedTitle
   } catch (e) {
@@ -1940,6 +1958,31 @@ async function loadCoverConfig(retrying = false) {
 async function reloadCoverConfig() {
   if (await loadCoverConfig(true)) await fitTitleIntoSafeArea()
 }
+
+/** 换片段：**先清空这一片段的字段**再读新片段。
+ *
+ * ⚠️ 不清空的话，读失败（或读得慢）时面板还留着**上一个片段**的标题/样式，而人一眼看不出来
+ * —— 正是本仓那条"换片段先清空"的纪律（`TimelineEditor` 的 `resetTimelineState` 同一个理由）。
+ * ⚠️ `configLoaded` 必须先关掉：它是**写入门闸**，基线没到就不许落盘。
+ * ⚠️ 这里**不重挂组件**（那是 2026-10-06 那次事故的扳机：重挂时 `dir` 还没换过来 ⇒ 读到旧片段、
+ * 写进新片段）。所以这条 watcher 与 `onMounted` 是**同一套动作**，只是不装监听器/观察者。
+ */
+watch(() => props.dir, async (dir, old) => {
+  if (!dir || dir === old) return
+  configLoaded.value = false
+  configLoadError.value = ''
+  loadedDir.value = ''
+  titleLines.value = []
+  highlightKeywords.value = []
+  hlFromFilter.value = false
+  fxList.value = []
+  stack.value = []
+  coverFont.value = ''
+  videoSrc.value = clipMediaUrl(props.pid, dir, 'clip.mp4')
+  updateStageScale()
+  syncControlsBound()
+  if (await loadCoverConfig()) await fitTitleIntoSafeArea()
+})
 
 onMounted(async () => {
   updateStageScale()

@@ -501,7 +501,12 @@ watch(clipName, (name) => {
  * 任务状态栏（`job` / `jobClose`）**刻意不动**：那是全项目共享的队列显示，不是片段级草稿
  * （与改动前的行为一致）。 */
 function resetClipUiState() {
-  coverKey.value++
+  // ⚠️ **不要在这里 `coverKey++`**（2026-10-06 事故）：这一句发生在 `load()` 之前，而
+  // `dir` 是 `doLoad` 里 `await loadClips()` **之后**才更新的 ⇒ 重挂出来的封面设计器
+  // 挂载时拿到的还是**上一个片段的 dir**，读的是上一份 `[cover]`，而它的 600ms 防抖保存
+  // 用的是更新后的 `props.dir` ⇒ **把上一个片段的整套封面配置写进这个片段**
+  // （实测：两个片段的 `[cover]` 段 1073 字节逐字节相同、标题一模一样）。
+  // 现在改由 `CoverDesigner` 自己 `watch(props.dir)` 换片段（见那边的说明）。
   selectRegion.value = ''
   pointEdit.value = false
   draftPos.value = { x: 50, y: 50 }

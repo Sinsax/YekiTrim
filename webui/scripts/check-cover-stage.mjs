@@ -407,5 +407,47 @@ check('模板有 `__LAYER_CSS__` 占位（图层栈注入点）', /<style>__LAYE
 check('[变异] 给 #fx-extra 加回内联 z-index → 判据翻面',
   fxExtraHasNoZIndex(coverHtml.replace('id="fx-extra" style="position:absolute;inset:0;pointer-events:none;"', 'id="fx-extra" style="position:absolute;inset:0;pointer-events:none;z-index:1;"')), false)
 
+// ⑧ 换片段**不许把上一个片段的封面写进这个片段**（2026-10-06 事故）
+//
+// 事故链：`PolishView.watch(clipName)` 里 `resetClipUiState()` 会 `coverKey++`，而那一刻
+// `dir` 还**没**更新（`doLoad` 要 `await loadClips()` 之后才写 `dir`）⇒ 重挂出来的设计器
+// 挂载时拿到的是**旧 dir**、读的是旧片段那份 `[cover]`；而它的 600ms 防抖保存用的是**已经更新**
+// 的 `props.dir` ⇒ 把旧片段的整套封面配置写进新片段。实测：p4 里 4 个片段的 `[cover]` 段
+// 与邻居**逐字节相同**（1073 字节）、标题一模一样 —— 用户报的「所有封面设计器的标题是一样的」。
+//
+// 三条一起守（缺一条症状就回来）：
+//   ① 设计器自己 `watch(props.dir)` 换片段（换片段先清空 + 关写闸 + 重读）；
+//   ② **写闸**：`persistCoverConfig` 里 `loadedDir !== props.dir` 一律不写（基线不可信不写盘）；
+//   ③ 父级**不许**在切片段那一刻提前重挂设计器（`coverKey++` 从 `resetClipUiState` 里删掉）。
+console.log('\n⑧ 换片段：设计器基线必须跟着换（不许把上一个片段的封面写进这个片段）')
+{
+  const dirWatcher = (s) => /watch\(\(\) => props\.dir, async \(dir, old\) => \{[\s\S]{0,700}?configLoaded\.value = false[\s\S]{0,700}?loadCoverConfig\(\)/.test(s)
+  const writeGate = (s) =>
+    /async function persistCoverConfig\(\) \{[\s\S]{0,400}?if \(loadedDir\.value !== props\.dir\) \{[\s\S]{0,200}?return/.test(s)
+  const recordsLoadedDir = (s) => /configLoaded\.value = true\s*\n\s*loadedDir\.value = props\.dir/.test(s)
+  const noEarlyRemount = (s) =>
+    /function resetClipUiState\(\) \{[\s\S]{0,600}?\}/.test(s)
+      && !/function resetClipUiState\(\) \{[\s\S]{0,600}?coverKey\.value\+\+/.test(s)
+  const polishView = await read('webui', 'src', 'views', 'PolishView.vue')
+  check('设计器自己听 `props.dir` 换片段（换片段先清空 + 关写闸 + 重读）', dirWatcher(designer), true,
+    '换成 `coverKey++` 重挂：重挂那一刻 `dir` 还没换过来 ⇒ 读到旧片段、写进新片段')
+  check('写盘前必须核对基线片段（`loadedDir === props.dir`）', writeGate(designer), true,
+    '没有这道闸，任何"面板基线是旧的"路径都会静默覆盖新片段')
+  check('读成功后记下 `loadedDir`（网关的基线）', recordsLoadedDir(designer), true)
+  check('父级切片段**不重挂**设计器（`resetClipUiState` 里没有 `coverKey++`）', noEarlyRemount(polishView), true)
+  const MUT = [
+    ['拆掉写盘前的基线核对（旧片段的封面又能覆盖新片段）', (s) => s.replace('  if (loadedDir.value !== props.dir) {', '  if (false) {')],
+    ['不记 loadedDir（写闸永远拦着，改了存不进去）', (s) => s.replace('    loadedDir.value = props.dir', '')],
+    ['去掉 dir watcher（换片段后设计器不重读）', (s) => s.replace('watch(() => props.dir, async (dir, old) => {', 'watch(() => null, async (dir, old) => {')],
+  ]
+  for (const [what, mutate] of MUT) {
+    const m = mutate(designer)
+    check(`[变异] ⑧ ${what} → 源码确实被改了`, m !== designer, true)
+    check(`[变异] ⑧ ${what} → 判据翻面`, dirWatcher(m) && writeGate(m) && recordsLoadedDir(m), false)
+  }
+  check('[变异] 父级又提前重挂设计器（`coverKey++` 回到 resetClipUiState）→ 判据翻面',
+    noEarlyRemount(polishView.replace('  selectRegion.value = \'\'', '  coverKey.value++\n  selectRegion.value = \'\'', 1)), false)
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
