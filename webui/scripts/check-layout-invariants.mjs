@@ -41,6 +41,10 @@
 //     判据钉三件事：走 `cutLabel`、按 `clipKey`+`cut_one` 过滤、在跑优先于排队。
 //     （「一键全切」刻意**不带** clip 键 ⇒ 不会点亮整墙，这条口径与用户一致。）
 //
+//  ⑬ `/api/jobs` 的轮询要**空闲降频**（2026-10-05 用户要求），但**空闲间隔必须 < `SNAPSHOT_TTL_MS`**：
+//     `busyOn` 的按钮门控靠快照新鲜度，间隔逼近 TTL 会让 `stale` 在边界抖动（门控时灵时不灵）。
+//     钉两件事：两个档位常量都在、间隔按「有在跑的任务且页面可见」选、定时器链在 stop 里清干净。
+//
 // 为什么是静态脚本而不是浏览器测试：本仓 `webui/scripts/` 的 7 个契约脚本都是**零依赖、不 import
 // 应用模块、不需要起服务**的源码文本判据（见 webui/AGENTS.md 的口径）。要跑真几何断言得同时起
 // 服务 + Chrome，那会把本地门禁变成"要环境才能跑"。所以这里只钉**源码级**的不变式；
@@ -79,6 +83,8 @@ const timelineEditor = await read('webui/src/components/TimelineEditor.vue')
 const prepareView = await read('webui/src/views/PrepareView.vue')
 const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
 const previewVue = await read('webui/src/components/PolishPreview.vue')
+const jobsStore = await read('webui/src/composables/useJobs.js')
+const jobsApiJs = await read('webui/src/api/jobs.js')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -395,5 +401,61 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     check(`[变异] ⑫ ${what} → 判据翻面`, ok12(m), false)
   }
 }
+// ── ⑬ `/api/jobs` 空闲降频，但空闲间隔必须 < SNAPSHOT_TTL_MS（门控靠快照新鲜度）──
+{
+  const num = (src, re) => {
+    const m = src.match(re)
+    return m ? Number(m[1]) : null
+  }
+  const busyMs = num(jobsStore, /const POLL_BUSY_MS = (\d+)/)
+  const idleMs = num(jobsStore, /const POLL_IDLE_MS = (\d+)/)
+  const ttlMs = num(jobsApiJs, /export const SNAPSHOT_TTL_MS = (\d+)/)
+  check('⑬ 两个档位常量都在 useJobs 里', busyMs !== null && idleMs !== null, true)
+  check('⑬ 快档就是原来的 3 秒（不偷偷改快的那一档）', busyMs, 3000)
+  check('⑬ 空闲档比快档慢（真的降了）', idleMs !== null && busyMs !== null && idleMs > busyMs, true)
+  check(
+    '⑬ 空闲档 < 快照保鲜期（否则 busyOn 门控会一直 stale）',
+    idleMs !== null && ttlMs !== null && idleMs < ttlMs,
+    true,
+  )
+  check(
+    '⑬ 间隔按「有在跑的任务 + 页面可见」来选',
+    /function pollDelay\(/.test(jobsStore) && /status === 'running'/.test(jobsStore)
+      && /visibilityState !== 'hidden'/.test(jobsStore),
+    true,
+  )
+  check(
+    '⑬ 定时器是 setTimeout 链（每轮重算间隔）而不是定死的 setInterval',
+    /timer = setTimeout\(/.test(jobsStore) && /schedule\(\)/.test(jobsStore)
+      && !/setInterval\(load/.test(jobsStore),
+    true,
+  )
+  check(
+    '⑬ 可见性监听在 stop 里摘掉（否则反复 start/stop 会攒一堆）',
+    /removeEventListener\('visibilitychange'/.test(jobsStore),
+    true,
+  )
+  const ok13 = (store, api) => {
+    const b = store.match(/const POLL_BUSY_MS = (\d+)/)
+    const i = store.match(/const POLL_IDLE_MS = (\d+)/)
+    const t = api.match(/export const SNAPSHOT_TTL_MS = (\d+)/)
+    if (!b || !i || !t) return false
+    const [bv, iv, tv] = [Number(b[1]), Number(i[1]), Number(t[1])]
+    return iv > bv && iv < tv
+      && /function pollDelay\(/.test(store) && /timer = setTimeout\(/.test(store)
+      && /removeEventListener\('visibilitychange'/.test(store)
+  }
+  const MUT13 = [
+    ['空闲档改成 3 秒（等于快档，没降频）', (t) => t.replace('const POLL_IDLE_MS = 10000', 'const POLL_IDLE_MS = 3000')],
+    ['空闲档改成 20 秒（超过快照保鲜期）', (t) => t.replace('const POLL_IDLE_MS = 10000', 'const POLL_IDLE_MS = 20000')],
+    ['定时器退回定死的 setInterval', (t) => t.replace('  timer = setTimeout(async () => {', '  timer = setInterval(async () => {')],
+  ]
+  for (const [what, mutate] of MUT13) {
+    const m = mutate(jobsStore)
+    check(`[变异] ⑬ ${what} → 源码确实被改了`, m !== jobsStore, true)
+    check(`[变异] ⑬ ${what} → 判据翻面`, ok13(m, jobsApiJs), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

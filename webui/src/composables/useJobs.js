@@ -11,6 +11,7 @@ const lastError = ref('')
 /** 快照是否已过期到不可信 —— 各视图据此把 `busyOn` 的门控降级成放行（见 `SNAPSHOT_TTL_MS`）。 */
 const stale = ref(true)
 let started = false
+/** 轮询定时器（`setTimeout` 链：间隔按 `pollDelay()` 每轮重算，见 `schedule`）。 */
 let timer = null
 let es = null
 const prevStatus = new Map()
@@ -89,15 +90,55 @@ function loadSoon() {
   coalesceTimer = setTimeout(() => { coalesceTimer = null; load() }, 250)
 }
 
+/**
+ * 轮询间隔：**有任务在跑才快，空闲时慢下来**（用户要求「无操作时减缓频率」）。
+ *
+ * ⚠️ **空闲间隔必须 < `SNAPSHOT_TTL_MS`（15s）**：`busyOn` 的按钮门控靠这份快照的"新鲜度"，
+ * 间隔逼近 TTL 会让 `stale` 在边界抖动 —— 门控时灵时不灵（宁可放行让服务端排队，但那不该是常态）。
+ * 10s 留了 5s 余量；想再慢就得同时把 TTL 抬上去，两件事必须一起改。
+ *
+ * 页面不可见时按空闲档走：没人看的时候没必要 3 秒一次（任务照旧在跑，SSE 到了照样会拉）。
+ */
+const POLL_BUSY_MS = 3000
+const POLL_IDLE_MS = 10000
+
+/** 下一次轮询该等多久：有在跑/排队的任务且页面可见 ⇒ 快档。 */
+function pollDelay() {
+  const busy = jobs.value.some((j) => j.status === 'running' || j.status === 'queued')
+  const visible = typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  return busy && visible ? POLL_BUSY_MS : POLL_IDLE_MS
+}
+
+/** 重新安排下一次（每次拉完都重新算间隔 —— 任务从空闲变忙时能立刻提到快档）。 */
+function schedule() {
+  if (!started) return
+  if (timer) clearTimeout(timer)
+  timer = setTimeout(async () => {
+    timer = null
+    await load()
+    schedule()
+  }, pollDelay())
+}
+
+function onVisibility() {
+  // 从后台切回来时别等满一个空闲周期：立刻拉一次并重排
+  if (!started) return
+  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+    load()
+    schedule()
+  }
+}
+
 function start() {
   if (started || !isAuthed()) return
   started = true
   load()
-  timer = setInterval(load, 3000)
+  schedule()
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
   try {
     es = new EventSource('/api/stream')
     es.onmessage = () => loadSoon()
-    // 断线由 EventSource 自己重连（3 秒轮询也一直在兜底）：只留一条 debug 痕迹
+    // 断线由 EventSource 自己重连（轮询一直兜底）：只留一条 debug 痕迹
     es.onerror = () => addClient('debug', '任务事件流断开，正在重连（期间靠轮询）', 'jobs')
   } catch (e) {
     addClient('debug', `任务事件流不可用（${e.message}），改用轮询`, 'jobs')
@@ -105,7 +146,8 @@ function start() {
 }
 
 function stop() {
-  if (timer) { clearInterval(timer); timer = null }
+  if (timer) { clearTimeout(timer); timer = null }
+  if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
   if (es) { es.close(); es = null }
   started = false
   jobs.value = []

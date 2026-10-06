@@ -499,18 +499,19 @@ async fn portrait_source_is_contained_and_motion_locked() {
 
     // ---------- B②：去掉竖屏运镜门（等价改造前：竖素材照样套 zoom_close=1.5）----------
     //
-    // 转译器里那道门是 `case 'camera'` 里的 `if (sourceIsVertical === true) { …整条不生效… }`。
+    // 转译器里那道门是 `case 'camera'` 开头的 `if (portraitNoCamera) { break; }`
+    // （2026-10-05 起：判据从"源是不是竖的"收窄成 `src_portrait_no_camera` —— 源竖**且**画布非竖，
+    // 由 Rust `ProjectFile::src_portrait_no_camera` 注入；竖素材进竖画布要照常运镜）。
     //
     // ⚠️ **必须用 `replace_first_after` 定位到 `case 'camera':` 之后那一个**（2026-10-02 修）：
-    // 转译器里 `if (sourceIsVertical === true) {` **出现过两次** —— 先一处是给报告用的 NOTE，
-    // 再一处才是运镜门。直接 `replacen(..., 1)` 会改掉**前面那一处 NOTE**：
-    // 变异体仍然把运镜整条关着（实测 `运镜 0 条`，成片与真转译器逐帧相同），
+    // 同一个形状在文件里出现过多次（给报告用的 NOTE 一处、运镜门一处）。直接 `replacen(..., 1)`
+    // 会改掉**前面那一处**，变异体仍然把运镜整条关着（实测 `运镜 0 条`，成片与真转译器逐帧相同），
     // 于是 B② 的判据必然"没翻面"。锚点必须落在语义位置上，不是第一个长得像的地方。
     let no_gate = translator_with("camera", |code| {
         let out = replace_first_after(
             code,
             "case 'camera': {",
-            "if (sourceIsVertical === true) {",
+            "if (portraitNoCamera) {",
             "if (false) {",
         );
         // `sourceIsVertical === null`（探不到媒体）那条分支也要关掉：探针工程探得到，
