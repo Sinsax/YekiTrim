@@ -860,5 +860,47 @@ console.log('\n⑳ 多段切片一条链（列表 → 载荷 → 服务端 → C
   }
 }
 
+// ── ㉑ 左侧项目列表：**最新加入的在最上面**（用户口径 2026-10-06）──
+//
+// 服务端 `GET /api/projects` 是 `ORDER BY id`（**老的在前面**，`db.rs::list_projects`）——
+// 侧栏必须自己翻过来。两条一起钉：
+//   ① `filteredProjects` 走 `sortProjectsNewestFirst`（`created_at` 降序，同秒按 `id` 降序兜底）；
+//   ② 侧栏那枚**短标识**（`.vue` 里的 `projectLabels`）仍旧按 `id` **升序**算 ——
+//      列表顺序怎么变，每个项目的标识都不许跟着变（否则"项目 3"会换到另一个项目上）。
+console.log('\n㉑ 侧栏项目列表：最新加入的在上（且短标识不跟着顺序变）')
+{
+  const workbenchStore = await read('webui/src/stores/workbench.js')
+  const sideNav = await read('webui/src/components/side/SideNav.vue')
+
+  const newestFirst = (s) =>
+    /export function sortProjectsNewestFirst\(list\)/.test(s)
+      && /const ca = Number\(a\?\.created_at\) \|\| 0/.test(s)
+      && /return cb - ca/.test(s)
+      && /return \(Number\(b\?\.id\) \|\| 0\) - \(Number\(a\?\.id\) \|\| 0\)/.test(s)
+  const wired = (s) => /return sortProjectsNewestFirst\(list\)/.test(s)
+      && /const list = kw[\s\S]{0,400}?: wb\.projects/.test(s)
+  // 短标识的稳定性：`projectLabels` 里那次排序必须是 **id 升序**
+  const labelsStable = (s) =>
+    /const projectLabels = computed\(\(\) => \{[\s\S]{0,600}?sort\(\(a, b\) => Number\(a\.id\) - Number\(b\.id\)\)/.test(s)
+
+  check('㉑ 侧栏排序：created_at 降序（同秒按 id 降序兜底）', newestFirst(workbenchStore), true,
+    '服务端是 id 升序；不自己翻就是"老的在最上面"')
+  check('㉑ `filteredProjects` 真的走了这个排序（过滤分支也要走）', wired(workbenchStore), true)
+  check('㉑ 短标识仍按 id 升序（不随列表顺序变）', labelsStable(sideNav), true)
+
+  // ⚠️ 每条变异带**自己那一条**判据（别写成把几条判据混在一个表达式里 —— 那会在
+  // "变异打在另一个文件上"时假绿，实测第一版就是这么侥幸通过的）。
+  const MUT21 = [
+    ['排序方向反了（又变成老的在最上面）', workbenchStore, (s) => s.replace('    if (ca !== cb) return cb - ca', '    if (ca !== cb) return ca - cb'), newestFirst],
+    ['过滤分支绕过排序（有过滤词时顺序又变回服务端顺序）', workbenchStore, (s) => s.replace('  return sortProjectsNewestFirst(list)', '  return list'), wired],
+    ['短标识改成跟着列表顺序算（"项目 3"会换人）', sideNav, (s) => s.replace('  const list = [...(wb.projects || [])].sort((a, b) => Number(a.id) - Number(b.id))', '  const list = [...(wb.projects || [])]'), labelsStable],
+  ]
+  for (const [what, src, mutate, still] of MUT21) {
+    const m = mutate(src)
+    check(`[变异] ㉑ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉑ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
