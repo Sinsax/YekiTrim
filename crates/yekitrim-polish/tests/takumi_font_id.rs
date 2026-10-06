@@ -92,6 +92,21 @@ fn library_id_alias_makes_takumi_use_the_font() {
         return;
     }
     let fonts = vec![path];
+    // ⚠️ 库里只有**一支**可用字体时这条断言没有分辨力：请求不存在族名会回退到"整个字体库"
+    // （本机实测就是这个机制），而那库里只有这一支 ⇒ 像素差恒为 0，断言必红。
+    // 兄弟测试 `cover_font_change_must_change_the_pixels` 早就按"不足两支就跳过"处理了，
+    // 这里补齐同一条（2026-10-06：本机字体库只剩 1 支非 emoji 字体 ⇒ `cargo test --workspace` 红）。
+    let usable = yekitrim_core::fonts::scan_all(&dir)
+        .into_iter()
+        .filter(|f| {
+            !f.id.to_ascii_lowercase().contains("emoji")
+                && !f.family_internal.to_ascii_lowercase().contains("emoji")
+        })
+        .count();
+    if usable < 2 {
+        eprintln!("跳过：字体库里非 emoji 字体不足两支（找到 {usable}）—— 这条断言没有分辨力");
+        return;
+    }
 
     // 内联样式（Takumi 的 HTML 前端只认它）+ 显式白底；文字用**拉丁**（Geist 有、
     // 所以"没接上"时会真的回退成不同字形；中文会被回退掩盖 —— 见模块头注释）。
