@@ -150,6 +150,33 @@ prompt_template = "{{DETECT_USER_PROMPT}}"
 # LLM 最大并发窗口数（默认 3；可根据 API 限流调大/调小）
 max_concurrent = 3
 
+# ── 分散事件合并（检测第二趟；2026-10-06 新增，默认关）──
+# 第一趟只收"完整话题"（硬标准 ≥30s）；同一个话题被别的话题打断成几小段时会被吞并或不报。
+# 打开后**再跑一趟低标准检测**，把小块都报出来（每块带 topic 归组键），全部窗口跑完后按
+# topic + 时间相邻合并成一条多段事件：无字幕的空隙**保留**成连续区间（交给「去静音」屏蔽），
+# 有内容的空隙用 ranges 丢掉；合并后**仍不达标就丢弃**。详见 docs/plan/scattered-events-merge.md
+[detection.scattered]
+enabled = false
+# 单块时长下限/上限（秒）：低于下限直接丢；上限只写进 prompt 当引导
+min_secs = 8.0
+max_secs = 60.0
+# 单块字幕条数下限（硬判据）与弹幕密度下限（0 = 不看弹幕；与条数是"或"关系）
+min_subs = 2
+dm_floor = 0.15
+# 判定"两块之间那一段算有内容"的门槛：字幕秒数超过它、或弹幕密度超过它 ⇒ 空隙要丢掉
+gap_sub_secs = 0.5
+gap_dm_floor = 0.3
+# 合并：同话题相邻块的最大间隔（秒）/ 合并后内容时长下限 / 字幕条数下限 / 跨度上限
+merge_gap_secs = 45.0
+merge_min_secs = 20.0
+merge_min_subs = 3
+max_merge_secs = 240.0
+# 要求 LLM 给每块输出 topic 归组键（合并靠它，不靠标题字面）
+topic_key = true
+# 第二趟的 prompt（留空 = 内建默认；这两项只留在本文件，不写进项目 yekitrim.toml）
+system_prompt = ""
+prompt_template = ""
+
 [cutting]
 # 输出目录
 output_dir = "./output"
@@ -344,6 +371,11 @@ fn write_project_config_inner(
         if let Some(table) = detection.as_table_mut() {
             table.remove("system_prompt");
             table.remove("prompt_template");
+            // 分散事件第二趟的两份 prompt 同理：只留在 `.yekitrim/config.toml`
+            if let Some(sc) = table.get_mut("scattered").and_then(|v| v.as_table_mut()) {
+                sc.remove("system_prompt");
+                sc.remove("prompt_template");
+            }
         }
     }
 
@@ -564,6 +596,56 @@ fn merge(base: &mut Config, overlay: Config) {
     // Option 字段：Some 才覆盖（None = 跟随 llm.toml 的全局并发）
     if overlay.detection.max_concurrent.is_some() {
         base.detection.max_concurrent = overlay.detection.max_concurrent;
+    }
+    // 分散事件合并（`[detection.scattered]`）：项目里写过的才覆盖程序默认。
+    // 口径与本节其余字段一致：bool 取**或**（不能靠"关"去覆盖程序里的开）、
+    // 数值/字符串"非默认才覆盖"（否则项目里的空段会把程序配置抹平）。
+    {
+        let o = &overlay.detection.scattered;
+        let b = &mut base.detection.scattered;
+        let d = crate::config::types::ScatteredConfig::default();
+        if o.enabled {
+            b.enabled = true;
+        }
+        if o.min_secs != d.min_secs {
+            b.min_secs = o.min_secs;
+        }
+        if o.max_secs != d.max_secs {
+            b.max_secs = o.max_secs;
+        }
+        if o.min_subs != d.min_subs {
+            b.min_subs = o.min_subs;
+        }
+        if o.dm_floor != d.dm_floor {
+            b.dm_floor = o.dm_floor;
+        }
+        if o.gap_sub_secs != d.gap_sub_secs {
+            b.gap_sub_secs = o.gap_sub_secs;
+        }
+        if o.gap_dm_floor != d.gap_dm_floor {
+            b.gap_dm_floor = o.gap_dm_floor;
+        }
+        if o.merge_gap_secs != d.merge_gap_secs {
+            b.merge_gap_secs = o.merge_gap_secs;
+        }
+        if o.merge_min_secs != d.merge_min_secs {
+            b.merge_min_secs = o.merge_min_secs;
+        }
+        if o.merge_min_subs != d.merge_min_subs {
+            b.merge_min_subs = o.merge_min_subs;
+        }
+        if o.max_merge_secs != d.max_merge_secs {
+            b.max_merge_secs = o.max_merge_secs;
+        }
+        if o.topic_key {
+            b.topic_key = true;
+        }
+        if !o.system_prompt.is_empty() {
+            b.system_prompt = o.system_prompt.clone();
+        }
+        if !o.prompt_template.is_empty() {
+            b.prompt_template = o.prompt_template.clone();
+        }
     }
 
     if !overlay.correct.system_prompt.is_empty() {
@@ -1475,5 +1557,98 @@ output_dir = "./out"
         let c: Config = toml::from_str(raw).expect("老 toml 里的已删键不能让整份配置解析失败");
         assert_eq!(c.asr.mode, "single", "其余键照常生效");
         assert_eq!(c.cutting.output_dir, "./out");
+    }
+}
+
+#[cfg(test)]
+mod scattered_config_tests {
+    use super::*;
+
+    /// 默认值就是文档里那张表 —— 改了字段默认值而没改模板/文档，这条会红。
+    #[test]
+    fn scattered_defaults_match_documentation() {
+        let s = crate::config::types::ScatteredConfig::default();
+        assert!(!s.enabled, "默认必须是关（不开就完全按老口径跑）");
+        assert_eq!(s.min_secs, 8.0);
+        assert_eq!(s.max_secs, 60.0);
+        assert_eq!(s.min_subs, 2);
+        assert_eq!(s.dm_floor, 0.15);
+        assert_eq!(s.gap_sub_secs, 0.5);
+        assert_eq!(s.gap_dm_floor, 0.3);
+        assert_eq!(s.merge_gap_secs, 45.0);
+        assert_eq!(s.merge_min_secs, 20.0);
+        assert_eq!(s.merge_min_subs, 3);
+        assert_eq!(s.max_merge_secs, 240.0);
+        assert!(s.topic_key);
+        assert!(s.system_prompt.is_empty() && s.prompt_template.is_empty());
+    }
+
+    /// 程序模板里必须**真有**这一段（否则设置页/手工改配置都找不到入口，等于没这个功能）。
+    #[test]
+    fn program_template_documents_scattered_block() {
+        assert!(GLOBAL_CONFIG_TOML.contains("[detection.scattered]"));
+        for key in [
+            "min_secs",
+            "max_secs",
+            "min_subs",
+            "dm_floor",
+            "gap_sub_secs",
+            "gap_dm_floor",
+            "merge_gap_secs",
+            "merge_min_secs",
+            "merge_min_subs",
+            "max_merge_secs",
+            "topic_key",
+        ] {
+            assert!(
+                GLOBAL_CONFIG_TOML.contains(key),
+                "程序模板缺键 {key}（配置五步的第 4 步）"
+            );
+        }
+        // 模板本身必须能解析（占位符替换后）
+        let parsed: Config = toml::from_str(GLOBAL_CONFIG_TOML).expect("程序模板必须能解析");
+        assert!(!parsed.detection.scattered.enabled);
+        assert_eq!(parsed.detection.scattered.min_secs, 8.0);
+    }
+
+    /// 项目里写过的那几项要能覆盖程序默认；没写的保持默认（不能把程序配置抹平）。
+    #[test]
+    fn scattered_project_overlay_merges_field_by_field() {
+        let overlay: Config = toml::from_str(
+            r#"
+[detection.scattered]
+enabled = true
+min_secs = 5.0
+merge_gap_secs = 90.0
+"#,
+        )
+        .expect("项目段必须能解析");
+        let mut base = Config::default();
+        assert!(!base.detection.scattered.enabled);
+        merge(&mut base, overlay);
+        assert!(base.detection.scattered.enabled, "enabled 取或");
+        assert_eq!(base.detection.scattered.min_secs, 5.0, "写过的值覆盖");
+        assert_eq!(base.detection.scattered.merge_gap_secs, 90.0);
+        // 没写的保持默认
+        assert_eq!(base.detection.scattered.max_secs, 60.0);
+        assert_eq!(base.detection.scattered.merge_min_subs, 3);
+        assert!(base.detection.scattered.topic_key);
+    }
+
+    /// 这段是**嵌套表**：序列化出来必须是 `[detection.scattered]` 一整个块（用户照着改配置），
+    /// 且往返之后一个字段都不丢。
+    #[test]
+    fn scattered_round_trips_through_toml() {
+        let mut cfg = Config::default();
+        cfg.detection.scattered.enabled = true;
+        cfg.detection.scattered.min_secs = 6.5;
+        cfg.detection.scattered.merge_min_subs = 4;
+        let text = toml::to_string(&cfg).expect("序列化");
+        assert!(text.contains("[detection.scattered]"), "必须是独立的嵌套表");
+        let back: Config = toml::from_str(&text).expect("反序列化");
+        assert!(back.detection.scattered.enabled);
+        assert_eq!(back.detection.scattered.min_secs, 6.5);
+        assert_eq!(back.detection.scattered.merge_min_subs, 4);
+        assert_eq!(back.detection.scattered.merge_gap_secs, 45.0, "没写过的保持默认");
     }
 }

@@ -53,6 +53,58 @@ pub const TITLE_RULES: &str = r#"标题(label)要求（最重要）：
 - emoji 可选，放句中/句尾，不放开头
 "#;
 
+/// **分散片段第二趟**的 system prompt（低标准：只要小段）。
+///
+/// 与第一趟（`DEFAULT_SYSTEM_PROMPT`）**口径相反**：第一趟"完整话题优先、低密度长段并走"，
+/// 这一趟"宁可多报、不要漏报"，并由宿主按 `topic` 归组合并、按代码里的硬门槛丢弃。
+pub const SCATTER_SYSTEM_PROMPT: &str = r#"你是直播切片分析助手。这一趟**只要小段**：把转录切成几十秒的零碎片段，宁可多报、不要漏报（后面会自动合并与丢弃）；每一段必须给一个 topic 短键，同一话题必须用完全一样的字符串。"#;
+
+/// **分散片段第二趟**的 user prompt（`{segments}` 必须留在最后 —— 前缀缓存）。
+pub const SCATTER_PROMPT: &str = r#"把直播转录切成**尽可能小**的候选片段（宿主随后按话题把它们合并成完整片段）。硬性要求：
+- 单段时长 {scatter_min_secs}~{scatter_max_secs} 秒；一小段来回（一个梗、一句吐槽、一次互动、一段副歌）就值得单独成段
+- **宁可多报，不要漏报**：拿不准要不要切就切出来 —— 后面会按 topic 合并、按标准丢弃
+- 同一个话题被别的话题**打断**时，被打断的每一块都要单独报出来，并给它们**同一把 topic 键**（这正是这一趟的意义）
+- 明显话题转换处才断开；同一句话不要拆开；ASR 乱码/纯哼唱不要单独成段
+
+topic（归组键，这一趟最重要）：
+- 6~10 个汉字以内，说清这一段在讲什么（如「唱歌」「上班吐槽」「情感问题」「游戏操作」）
+- **同一个话题必须用一模一样、一字不差的字符串**（宿主靠它把分散的几块并成一条）；换了话题就换键
+
+标题(label)：8~40 字，用主播原话/名场面/具体情景 + 反应吐槽，禁止"主播聊/主播说"式第三人称开头
+摘要(summary)：20~60 字
+
+参考标题：
+{reference_titles}
+
+event_type 取整段主体：gameplay、interaction、qna、reaction、storytelling、music、food、rant、chat、discussion、ranking、irl、other。
+
+输出：只输出 JSON 数组，每个元素含 start/end/label/summary/event_type/topic，不要 markdown。
+
+{hot_windows}
+
+只输出JSON数组：
+[{"start": 0.0, "end": 42.0, "label": "这操作给我看傻了??🤣", "summary": "核心看点...", "event_type": "interaction", "topic": "游戏操作"}]
+
+转录片段：
+
+{segments}"#;
+
+/// 检测的两趟：第一趟（普通事件，老口径）/ 第二趟（分散片段，低标准）。
+///
+/// ⚠️ 它同时是 **checkpoint 指纹的一部分**（见 `DetectionTask::prompt_fingerprint`），
+/// 两趟各写各的断点文件，别混。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectPass {
+    Main,
+    Scattered,
+}
+
+impl DetectPass {
+    pub fn is_scattered(self) -> bool {
+        matches!(self, DetectPass::Scattered)
+    }
+}
+
 /// 内建参考标题示例：config `detection.reference_titles` 与旧版
 /// prompt_template「参考标题：」段落都为空时的兜底（检测与封面标题共用）。
 pub const DEFAULT_REFERENCE_TITLES: &[&str] = &[
@@ -76,11 +128,14 @@ fn build_prompt(
     segments: &[TranscriptSegment],
     config: &DetectionConfig,
     hot_windows: &[(f64, f64)],
+    pass: DetectPass,
 ) -> String {
-    let template = if config.prompt_template.is_empty() {
-        DEFAULT_PROMPT
-    } else {
-        &config.prompt_template
+    let sc = &config.scattered;
+    let template = match pass {
+        DetectPass::Main if !config.prompt_template.is_empty() => &config.prompt_template,
+        DetectPass::Main => DEFAULT_PROMPT,
+        DetectPass::Scattered if !sc.prompt_template.is_empty() => &sc.prompt_template,
+        DetectPass::Scattered => SCATTER_PROMPT,
     };
     let seg_text = format_segments(segments);
     let hot = hot_windows_block(hot_windows);
@@ -104,6 +159,9 @@ fn build_prompt(
             },
         )
         .replace("{reference_titles}", &refs)
+        // 第二趟的两个昼夜额度写进 prompt（用户改配置即可，不用改 prompt 正文）
+        .replace("{scatter_min_secs}", &format!("{:.0}", sc.min_secs))
+        .replace("{scatter_max_secs}", &format!("{:.0}", sc.max_secs))
 }
 
 /// 弹幕爆发时刻块：让 LLM 看到观众反应最激烈的名场面位置。
@@ -326,6 +384,9 @@ struct RawEvent {
     summary: String,
     #[serde(default = "default_event_type")]
     event_type: String,
+    /// **分散片段第二趟**的归组键（第一趟的普通事件不输出它 ⇒ 恒为 None）。
+    #[serde(default)]
+    topic: Option<String>,
 }
 
 fn default_event_type() -> String {
@@ -352,6 +413,9 @@ fn parse_events(value: serde_json::Value) -> Result<Vec<Event>> {
                 rank: 0,
                 clip_dir: None,
                 enabled: true,
+                ranges: Vec::new(),
+                // 第二趟的候选块会带 `topic`（归组键）；第一趟的普通事件没有
+                topic: r.topic,
             }
         })
         .collect())
@@ -430,6 +494,22 @@ fn system_prompt(config: &DetectionConfig) -> &str {
         return &config.system_prompt;
     }
     DEFAULT_SYSTEM_PROMPT
+}
+
+/// 第二趟（分散片段）的 system prompt：自己的覆盖项 → 内建。
+fn scatter_system_prompt(config: &DetectionConfig) -> &str {
+    if !config.scattered.system_prompt.is_empty() {
+        return &config.scattered.system_prompt;
+    }
+    SCATTER_SYSTEM_PROMPT
+}
+
+/// 按趟取 system prompt（窗口调用只认这一处，别在别处再分支一遍）。
+fn system_prompt_for(config: &DetectionConfig, pass: DetectPass) -> &str {
+    match pass {
+        DetectPass::Main => system_prompt(config),
+        DetectPass::Scattered => scatter_system_prompt(config),
+    }
 }
 
 /// 标题+摘要传播潜力评分的 system prompt。
@@ -713,6 +793,7 @@ pub async fn call_with_progress(
     checkpoint_path: Option<&Path>,
     cancel: Option<crate::llm::agent::CancelProbe>,
     progress_tx: Option<tokio::sync::mpsc::Sender<Vec<Event>>>,
+    pass: DetectPass,
 ) -> Result<Vec<Event>> {
     if segments.is_empty() {
         return Ok(Vec::new());
@@ -765,6 +846,7 @@ pub async fn call_with_progress(
         detect: detect.clone(),
         hot_windows: hot_windows.to_vec(),
         project: project.map(crate::path::display),
+        pass,
     };
     // 链路解析：窗口调用走 `[llm.overrides.detect]`（Agent 的 llm 会传给 `process_window` 建客户端）
     let agent = Agent::new(llm.for_link(crate::config::LlmLink::Detect))
@@ -810,11 +892,21 @@ pub async fn call_with_progress(
     }
 
     if all_events.is_empty() {
+        // 第二趟"一条都没报"是**合法结果**（门槛高/这段确实没有零碎话题）：不能当成检测失败，
+        // 否则打开开关的副作用是"整个检测失败"。
+        if pass.is_scattered() {
+            tracing::info!("分散片段第二趟：窗口全部返回空 → 本次没有候选块");
+            return Ok(Vec::new());
+        }
         anyhow::bail!("LLM 事件检测失败");
     }
 
-    // 合并相邻/重叠事件
-    let merged = merge_window_events(all_events);
+    // 合并相邻/重叠事件。
+    // ⚠️ 门槛按趟取：第二趟**不许**用第一趟那条 30s 丢弃线（小块也是块，否则等于白开）。
+    let merged = match pass {
+        DetectPass::Main => merge_window_events(all_events),
+        DetectPass::Scattered => merge_window_events_min(all_events, 0.0),
+    };
     Ok(merged)
 }
 
@@ -824,12 +916,17 @@ struct DetectionTask {
     hot_windows: Vec<(f64, f64)>,
     /// 项目根目录（`output_dir` 的父级），只用于用量记账归因。
     project: Option<String>,
+    /// 这一趟是普通事件还是分散片段（决定 prompt / system prompt / 用量归因文案）。
+    pass: DetectPass,
 }
 
 #[async_trait]
 impl AgentTask<Vec<Event>> for DetectionTask {
     fn name(&self) -> &str {
-        "事件检测"
+        match self.pass {
+            DetectPass::Main => "事件检测",
+            DetectPass::Scattered => "事件检测（分散片段）",
+        }
     }
 
     fn usage_context(&self) -> crate::llm::usage::UsageContext {
@@ -859,7 +956,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
     }
 
     fn system_prompt(&self) -> String {
-        system_prompt(&self.detect).to_string()
+        system_prompt_for(&self.detect, self.pass).to_string()
     }
 
     /// system/user prompt 的指纹 → 折进窗口 id。改了 prompt 之后重跑检测，
@@ -867,7 +964,17 @@ impl AgentTask<Vec<Event>> for DetectionTask {
     fn prompt_fingerprint(&self) -> String {
         let mut parts = vec![
             self.system_prompt(),
-            self.detect.prompt_template.clone(),
+            match self.pass {
+                DetectPass::Main => self.detect.prompt_template.clone(),
+                DetectPass::Scattered => self.detect.scattered.prompt_template.clone(),
+            },
+            // 趟名：两趟的 prompt 撞上时（比如用户把第二趟模板填成第一趟那份）
+            // 也不许共用断点文件里的同一批窗口
+            if self.pass.is_scattered() {
+                "pass=scattered".to_string()
+            } else {
+                "pass=main".to_string()
+            },
             crate::config::resolve_reference_titles(&self.detect).join(
                 "
 ",
@@ -891,7 +998,7 @@ impl AgentTask<Vec<Event>> for DetectionTask {
                 confidence: 1.0,
             })
             .collect();
-        build_prompt(&segments, &self.detect, &self.hot_windows)
+        build_prompt(&segments, &self.detect, &self.hot_windows, self.pass)
     }
 
     fn parse_output(&self, _content: &str, _window: &[AgentItem]) -> Result<Vec<Event>> {
@@ -921,7 +1028,8 @@ impl AgentTask<Vec<Event>> for DetectionTask {
         let client = crate::llm::LlmClient::from_config(llm_cfg)?
             .with_timeout(180)
             .with_usage_context(self.usage_context());
-        process_window_inner(&client, &segments, &self.detect, &self.hot_windows, 0).await
+        process_window_inner(&client, &segments, &self.detect, &self.hot_windows, 0, self.pass)
+            .await
     }
 
     fn save_windows(&self, windows: &[AgentWindow<Vec<Event>>]) -> Result<serde_json::Value> {
@@ -936,6 +1044,16 @@ impl AgentTask<Vec<Event>> for DetectionTask {
 
 /// 合并来自不同窗口的事件：按时间排序，重叠或边界过近的合并（保留更长/更有信息量的标题）。
 fn merge_window_events(events: Vec<Event>) -> Vec<Event> {
+    // 第一趟的老口径：重叠 <50% 的两条里，截断后不足 30s 的**丢掉**（大概率是重复噪声）。
+    merge_window_events_min(events, 30.0)
+}
+
+/// 跨窗口合并（可配"截断后多短就丢"）。
+///
+/// ⚠️ **第二趟必须传 0**（`merge_window_events_min(events, 0.0)`）：分散片段的每一块本来就
+/// 可能只有几十秒，用第一趟那条 30s 门槛会把它们**全丢掉** —— 那样"降低标准"等于白做
+/// （症状：开关打开了、事件数一个没变）。去重仍然照做（重叠 ≥50% 留更长的）。
+fn merge_window_events_min(events: Vec<Event>, min_keep_secs: f64) -> Vec<Event> {
     if events.is_empty() {
         return events;
     }
@@ -977,8 +1095,8 @@ fn merge_window_events(events: Vec<Event>) -> Vec<Event> {
                 }
 
                 // 重叠 <50%：保留两个细分，后一个 start 截断到前一个 end
-                // 截断后太短（<30s）则丢弃（大概率是重复噪声）
-                if ev_end - last_end < 30.0 {
+                // 截断后太短则丢弃（大概率是重复噪声；门槛由调用方给）
+                if ev_end - last_end < min_keep_secs {
                     continue;
                 }
                 ev.start = Timestamp::from_seconds(last_end);
@@ -1002,6 +1120,7 @@ fn process_window_inner<'a>(
     detect: &'a DetectionConfig,
     hot_windows: &'a [(f64, f64)],
     depth: u8,
+    pass: DetectPass,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Event>>> + Send + 'a>> {
     Box::pin(async move {
         let win_start = segments.first().map(|s| s.start).unwrap_or(0.0);
@@ -1013,9 +1132,9 @@ fn process_window_inner<'a>(
             .filter(|(s, e)| s < &win_end && e > &win_start)
             .collect();
 
-        let prompt = build_prompt(segments, detect, &window_hot);
+        let prompt = build_prompt(segments, detect, &window_hot, pass);
         let messages = serde_json::json!([
-            {"role": "system", "content": system_prompt(detect)},
+            {"role": "system", "content": system_prompt_for(detect, pass)},
             {"role": "user", "content": prompt}
         ]);
 
@@ -1089,11 +1208,11 @@ fn process_window_inner<'a>(
             // 顺序执行（不并发），避免绕过 Agent 的并发闸门把在飞请求数翻倍。
             let mut combined: Vec<Event> = Vec::new();
             let mut errs: Vec<String> = Vec::new();
-            match process_window_inner(client, left, detect, hot_windows, depth + 1).await {
+            match process_window_inner(client, left, detect, hot_windows, depth + 1, pass).await {
                 Ok(mut events) => combined.append(&mut events),
                 Err(e) => errs.push(format!("{e:#}")),
             }
-            match process_window_inner(client, right, detect, hot_windows, depth + 1).await {
+            match process_window_inner(client, right, detect, hot_windows, depth + 1, pass).await {
                 Ok(mut events) => combined.append(&mut events),
                 Err(e) => errs.push(format!("{e:#}")),
             }
@@ -1275,6 +1394,8 @@ pub fn create_default_event(segments: &[TranscriptSegment]) -> Event {
         rank: 0,
         clip_dir: None,
         enabled: true,
+        ranges: Vec::new(),
+        topic: None,
     }
 }
 
@@ -1327,11 +1448,11 @@ mod tests {
         // 无热点：不追加爆发段落
         // 注：默认 user prompt 模板本身就含"弹幕爆发"字样（见文件顶部 prompt），
         // 所以这里断言的是"注入的爆发区间段落"没有出现，而不是这个词本身。
-        let no_hot = build_prompt(&segs, &cfg, &[]);
+        let no_hot = build_prompt(&segs, &cfg, &[], DetectPass::Main);
         assert!(!no_hot.contains("观众弹幕爆发时刻"));
 
         // 有热点：追加区间 + 要求
-        let hot = build_prompt(&segs, &cfg, &[(12.0, 22.0), (45.5, 55.5)]);
+        let hot = build_prompt(&segs, &cfg, &[(12.0, 22.0), (45.5, 55.5)], DetectPass::Main);
         assert!(hot.contains("[12.0-22.0] 弹幕爆发"));
         assert!(hot.contains("[45.5-55.5] 弹幕爆发"));
         assert!(hot.contains("不得切在这些爆发区间内部"));
@@ -1390,6 +1511,8 @@ mod tests {
             rank: 0,
             clip_dir: None,
             enabled: true,
+            ranges: Vec::new(),
+            topic: None,
         }];
         let llm = LlmConfig::default();
         let mut detect = DetectionConfig::default();
@@ -1418,6 +1541,8 @@ mod tests {
             rank: 0,
             clip_dir: None,
             enabled: true,
+            ranges: Vec::new(),
+            topic: None,
         }];
         let mut llm = LlmConfig::default();
         // 给个非空 key + 非 0 权重，确保不会被"未配置/权重为 0"的早退挡住，
@@ -1448,6 +1573,8 @@ mod tests {
                 rank: 0,
                 clip_dir: None,
                 enabled: true,
+                ranges: Vec::new(),
+                topic: None,
             }
         }
 
@@ -1473,6 +1600,8 @@ mod tests {
                 rank: 0,
                 clip_dir: None,
                 enabled: true,
+                ranges: Vec::new(),
+                topic: None,
             }
         }
 
@@ -1503,6 +1632,8 @@ mod tests {
                 rank: 0,
                 clip_dir: None,
                 enabled: true,
+                ranges: Vec::new(),
+                topic: None,
             }
         }
 
@@ -1536,7 +1667,7 @@ mod tests {
     fn prompt_puts_varying_segments_last() {
         let cfg = DetectionConfig::default();
         let segs = vec![seg(0.0, "第一句"), seg(10.0, "第二句")];
-        let p = build_prompt(&segs, &cfg, &[(120.0, 135.0)]);
+        let p = build_prompt(&segs, &cfg, &[(120.0, 135.0)], DetectPass::Main);
 
         let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
         let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块应在 prompt 里");
@@ -1558,7 +1689,7 @@ mod tests {
 转录片段：
 {segments}"
             .to_string();
-        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[(120.0, 135.0)]);
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[(120.0, 135.0)], DetectPass::Main);
         let hot_pos = p.find("观众弹幕爆发时刻").expect("爆发块不能丢");
         let seg_pos = p.find("第一句").expect("字幕应在 prompt 里");
         assert!(hot_pos < seg_pos, "老模板也要把爆发块放在字幕之前: {p}");
@@ -1568,7 +1699,7 @@ mod tests {
     #[test]
     fn prompt_omits_hot_block_when_empty() {
         let cfg = DetectionConfig::default();
-        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[]);
+        let p = build_prompt(&[seg(0.0, "第一句")], &cfg, &[], DetectPass::Main);
         assert!(!p.contains("观众弹幕爆发时刻"));
         assert!(!p.contains("{hot_windows}"), "占位符必须被替换掉");
     }
@@ -1707,7 +1838,7 @@ mod tests {
             .map(|i| seg(i as f64 * 10.0, &format!("第 {i} 句")))
             .collect();
 
-        let events = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0)
+        let events = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0, DetectPass::Main)
             .await
             .unwrap();
 
@@ -1728,7 +1859,7 @@ mod tests {
         let client = crate::llm::LlmClient::new("k", &base, "m").with_max_tokens(4096);
         let segs: Vec<TranscriptSegment> = (0..4).map(|i| seg(i as f64 * 10.0, "短句")).collect();
 
-        let err = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0)
+        let err = process_window_inner(&client, &segs, &DetectionConfig::default(), &[], 0, DetectPass::Main)
             .await
             .unwrap_err();
 
@@ -1769,6 +1900,7 @@ mod tests {
             None,
             None,
             None,
+            DetectPass::Main,
         )
         .await
         .unwrap();

@@ -547,6 +547,8 @@ mod tests {
             rank,
             clip_dir: clip_dir.map(str::to_string),
             enabled: true,
+            ranges: Vec::new(),
+            topic: None,
         }
     }
 

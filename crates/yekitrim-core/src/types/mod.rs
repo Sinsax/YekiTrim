@@ -145,6 +145,26 @@ pub enum EventSource {
     Merged,
 }
 
+/// 源区间（秒）。**多段片段**（分散事件合并的产物）用它记"这条片段由哪几段源拼成"。
+///
+/// 判据/不变式（`Event::ranges` 非空时）：`ranges[0].start == event.start`、
+/// `ranges.last().end == event.end`（两条真源会打架，单测 `event_ranges_cover_span` 钉住）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct EventRange {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl EventRange {
+    pub fn new(start: f64, end: f64) -> Self {
+        Self { start, end }
+    }
+
+    pub fn duration(&self) -> f64 {
+        (self.end - self.start).max(0.0)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub start: Timestamp,
@@ -166,6 +186,54 @@ pub struct Event {
     pub clip_dir: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// **多段源区间**（分散事件合并的产物）：非空时这条片段由 `ranges` 里的若干段拼成，
+    /// `start..end` 是它们的**并集跨度**（首段起、末段末）。
+    ///
+    /// ⚠️ 空 = 单段 = `start..end` —— 老 `events.json` / `clip.json` 一个字节都不用改，
+    /// 所有读侧（Cutter / 精修 / 前端）都按"空则单段"解释。见 `docs/plan/scattered-events-merge.md`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<EventRange>,
+    /// 分散事件第二趟的**归组键**（只有第二趟产出的候选块才有；合并后写在这一条上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+impl Event {
+    /// 这条片段实际要剪的源区间：`ranges` 为空时就是 `start..end` 那一段。
+    pub fn cut_ranges(&self) -> Vec<EventRange> {
+        if self.ranges.is_empty() {
+            vec![EventRange::new(
+                self.start.to_seconds(),
+                self.end.to_seconds(),
+            )]
+        } else {
+            self.ranges.clone()
+        }
+    }
+
+    /// 实际内容时长（多段 = 各段之和，不含段间空隙）。
+    pub fn content_secs(&self) -> f64 {
+        self.cut_ranges().iter().map(|r| r.duration()).sum()
+    }
+
+    /// 把 `ranges` 与 `start/end` 重新对齐（首段起、末段末；段按时间排序）。
+    pub fn normalize_ranges(&mut self) {
+        if self.ranges.is_empty() {
+            return;
+        }
+        self.ranges
+            .retain(|r| r.end > r.start + 1e-6);
+        if self.ranges.is_empty() {
+            return;
+        }
+        self.ranges.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.start = Timestamp::from_seconds(self.ranges[0].start);
+        self.end = Timestamp::from_seconds(self.ranges[self.ranges.len() - 1].end);
+    }
 }
 
 impl Event {
@@ -231,5 +299,76 @@ impl PipelineContext {
             started_at: Utc::now(),
             progress: Arc::new(NoopProgress) as Arc<dyn ProgressReporter>,
         }
+    }
+}
+
+#[cfg(test)]
+mod event_range_tests {
+    use super::*;
+
+    fn ev(start: f64, end: f64) -> Event {
+        Event {
+            start: Timestamp::from_seconds(start),
+            end: Timestamp::from_seconds(end),
+            label: "t".into(),
+            summary: String::new(),
+            event_type: EventType::Other,
+            source: EventSource::LLM,
+            confidence: 1.0,
+            popularity: 0.0,
+            rank: 0,
+            clip_dir: None,
+            enabled: true,
+            ranges: Vec::new(),
+            topic: None,
+        }
+    }
+
+    /// 空 `ranges` ⇒ 单段 = `start..end`（老 events.json 的全部情形）。
+    #[test]
+    fn empty_ranges_mean_single_span() {
+        let e = ev(10.0, 40.0);
+        let r = e.cut_ranges();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].start, r[0].end), (10.0, 40.0));
+        assert!((e.content_secs() - 30.0).abs() < 1e-9);
+    }
+
+    /// 多段 ⇒ `start/end` 必须被 `normalize_ranges` 拉回"首段起、末段末"（两条真源不许打架）。
+    #[test]
+    fn ranges_cover_span() {
+        let mut e = ev(0.0, 0.0);
+        e.ranges = vec![
+            EventRange::new(50.0, 70.0),
+            EventRange::new(10.0, 20.0),
+            EventRange::new(30.0, 40.0),
+        ];
+        e.normalize_ranges();
+        assert_eq!(e.start.to_seconds(), 10.0);
+        assert_eq!(e.end.to_seconds(), 70.0);
+        // 排序 + 内容时长 = 各段之和（不含空隙）
+        assert_eq!(
+            e.ranges.iter().map(|r| r.start).collect::<Vec<_>>(),
+            vec![10.0, 30.0, 50.0]
+        );
+        assert!((e.content_secs() - 40.0).abs() < 1e-9);
+        // 跨度 60s ≠ 内容 40s（空隙 20s）—— 这正是"合并后按内容时长判达标"的依据
+        assert!((e.end.to_seconds() - e.start.to_seconds() - 60.0).abs() < 1e-9);
+    }
+
+    /// 退化段（end <= start）在归一化时被丢掉；全空则保持单段语义。
+    #[test]
+    fn normalize_ranges_drops_degenerate() {
+        let mut e = ev(5.0, 25.0);
+        e.ranges = vec![EventRange::new(5.0, 5.0), EventRange::new(5.0, 25.0)];
+        e.normalize_ranges();
+        assert_eq!(e.ranges.len(), 1);
+        assert_eq!((e.start.to_seconds(), e.end.to_seconds()), (5.0, 25.0));
+
+        let mut e2 = ev(5.0, 25.0);
+        e2.ranges = vec![EventRange::new(9.0, 9.0)];
+        e2.normalize_ranges();
+        assert!(e2.ranges.is_empty());
+        assert_eq!(e2.cut_ranges().len(), 1); // 回退单段
     }
 }
