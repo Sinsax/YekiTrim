@@ -44,6 +44,8 @@
             :current-time="currentTime"
             :mark-in="markIn"
             :mark-out="markOut"
+            :ranges="sliceRows"
+            :active-range="activeRow"
             @save="onTrackSave"
             @seek="seekTo"
           />
@@ -173,6 +175,8 @@
                  :title="'编辑第 ' + (i + 1) + ' 段（入点/出点只作用于选中的这段）'"
                  @click="activeRow = i">
               <button class="seg-pick" :class="{ on: i === activeRow }" :title="'选这一段来标记入点/出点'"
+                      :style="{ borderColor: segColor(i).line, color: segColor(i).line,
+                                background: i === activeRow ? segColor(i).fill : 'transparent' }"
                       @click.stop="activeRow = i">{{ i + 1 }}</button>
               <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.start"
                      :title="'第 ' + (i + 1) + ' 段入点（秒）'" @focus="activeRow = i">
@@ -307,7 +311,7 @@ import { useJobs } from '../composables/useJobs'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
 import { openJobs } from '../stores/ui'
-import { EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning, isEditableKeyEvent } from '../utils'
+import { segColor, EVENT_TYPES, TYPE_ZH, mediaUrl, redetectWarning, isEditableKeyEvent } from '../utils'
 
 const route = useRoute()
 const router = useRouter()

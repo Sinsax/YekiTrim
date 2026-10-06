@@ -83,6 +83,28 @@ export const TYPE_COLORS = {
 }
 
 // 时间轴泳道/事件块着色（TimelineEditor 专用色板，与 TYPE_COLORS 同一色族）
+/**
+ * **多段切片**的段色（`PrepareView` 的段号 + `SubtitleTrack` 的色带共用同一份）。
+ *
+ * 用户口径 2026-10-06：「多段时需要将每一段都颜色标注，而不是只有最新的才标注」——
+ * 所以列表里每个段号、轨道上每条色带都按**同一套顺序**取色，一眼能对上"第 3 段在哪儿"。
+ * 超过 `SEG_COLORS.length` 段就循环（6 色足够分辨；真到十几段时看编号也不看颜色了）。
+ */
+export const SEG_COLORS = [
+  { line: 'rgba(232,104,56,.92)', fill: 'rgba(232,104,56,.28)' },
+  { line: 'rgba(59,130,246,.92)', fill: 'rgba(59,130,246,.26)' },
+  { line: 'rgba(16,185,129,.92)', fill: 'rgba(16,185,129,.26)' },
+  { line: 'rgba(168,85,247,.92)', fill: 'rgba(168,85,247,.26)' },
+  { line: 'rgba(234,179,8,.92)', fill: 'rgba(234,179,8,.28)' },
+  { line: 'rgba(236,72,153,.92)', fill: 'rgba(236,72,153,.26)' },
+]
+
+/** 第 i 段（0 基）的配色；`active` 时线更粗更亮。 */
+export function segColor(i) {
+  const c = SEG_COLORS[Math.abs(Number(i) || 0) % SEG_COLORS.length]
+  return c
+}
+
 export const TIMELINE_COLORS = {
   segments: '#525252', camera: '#2563eb', sticker: '#7c3aed', shake: '#dc2626',
   flash: '#d97706', blur: '#0891b2', vignette: '#4d7c0f',

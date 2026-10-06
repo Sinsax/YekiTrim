@@ -79,7 +79,19 @@
       <div class="sub-tracks" :style="{ width: trackWidth + 'px' }">
         <div class="s-lane" @pointerdown.self="seekFromEvent">
           <!-- 切片标记（入点→出点）在轨道上高亮，和下方「标记入点/出点」联动 -->
-          <div v-if="markWidth >= 1" class="mark-band" :style="{ left: markLeft + 'px', width: markWidth + 'px' }"></div>
+          <!-- **每一段都画色带**（用户 2026-10-06：不许只标最新那段）：色号与
+               `PrepareView` 列表里的段号**同一套调色板**，一眼能对上"第 3 段在哪儿"；
+               当前正在编辑那段更亮、并带编号。 -->
+          <div
+            v-for="b in bands"
+            :key="'mb' + b.i"
+            class="mark-band"
+            :class="{ on: b.on }"
+            :style="{ left: b.left + 'px', width: b.width + 'px', background: b.fill, borderLeftColor: b.line, borderRightColor: b.line }"
+            :title="'第 ' + (b.i + 1) + ' 段：' + fmtClock(b.start) + ' - ' + fmtClock(b.end)"
+          >
+            <span v-if="b.width >= 16" class="mb-num">{{ b.i + 1 }}</span>
+          </div>
           <div
             v-for="b in shownBlocks"
             :key="b.i"
@@ -112,8 +124,8 @@
       <span class="spacer"></span>
       <button class="mini-btn" :disabled="scaleIdx <= 0" title="缩小（同屏显示更长）" @click="zoom(-1)">－</button>
       <span class="muted small mono zoom-num">{{ scale }} px/s</span>
-      <button class="mini-btn" :disabled="scaleIdx >= SCALES.length - 1" title="放大（看清每一句）" @click="zoom(1)">＋</button>
-      <button class="mini-btn" title="缩到最小档（整场结构一目了然；长录播不会真的挤进一屏）" @click="fitAll">全览</button>
+      <button class="mini-btn" :disabled="scaleIdx >= scaleList.length - 1" title="放大（看清每一句）" @click="zoom(1)">＋</button>
+      <button class="mini-btn" title="全长度：整场刚好放进一屏（长录播也放得下）" @click="fitAll">全览</button>
     </div>
   </div>
 </template>
@@ -123,22 +135,37 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import Icon from '../Icon.vue'
 import { confirmDialog } from '../../stores/dialog'
 import { toast } from '../../stores/toast'
-import { fmtClock } from '../../utils'
+import { fmtClock, segColor } from '../../utils'
 
 const props = defineProps({
   segments: { type: Array, default: () => [] },
   duration: { type: Number, default: 0 },
   currentTime: { type: Number, default: 0 },
-  /** 切片标记：入点 / 出点（秒），在轨道上高亮 */
+  /** 切片标记：入点 / 出点（秒）—— 单段兼容用；多段请传 `ranges` */
   markIn: { type: Number, default: 0 },
-  markOut: { type: Number, default: 0 }
+  markOut: { type: Number, default: 0 },
+  /** **多段切片的全部区间**（`[{start,end}, …]`）：每一段都在轨道上画一条色带 */
+  ranges: { type: Array, default: () => [] },
+  /** 正在编辑的那一段（0 基）：它的色带更亮 */
+  activeRange: { type: Number, default: 0 }
 })
 const emit = defineEmits(['save', 'seek'])
 
-/** 缩放档位（像素/秒）：0.5 = 整场全览，120 = 逐字级 */
+/** 缩放档位（像素/秒）：从"全长度刚好一屏"到 120（逐字级）。
+ *  ⚠️ **最下面那一档是动态算的**（用户 2026-10-06：「最大还是定为全长度吧，还是很有必要」）：
+ *  固定 `0.5 px/s` 对 3 小时录音要 5400px，根本放不下一屏 ⇒「全览」名不副实。
+ *  现在底线 = `min(0.5, 可用宽度 / 总时长)`，保证**任何时候都能缩到"整场在一屏里"**。 */
 const SCALES = [0.5, 1, 2, 3, 5, 8, 12, 20, 30, 45, 60, 90, 120]
-const scaleIdx = ref(4)
-const scale = computed(() => SCALES[scaleIdx.value])
+const viewWidth = () => Math.max(80, (bodyRef.value?.clientWidth || bodyW.value) - 12)
+const fitScale = computed(() => {
+  const s = span.value
+  if (!(s > 0)) return SCALES[0]
+  return Math.min(SCALES[0], viewWidth() / s)
+})
+/** 实际可用的档位表：第 0 档 = 全长度刚好一屏（可能比 0.5 小得多）。 */
+const scaleList = computed(() => [fitScale.value, ...SCALES.filter((v) => v > fitScale.value)])
+const scaleIdx = ref(1)
+const scale = computed(() => scaleList.value[Math.min(scaleIdx.value, scaleList.value.length - 1)] || SCALES[0])
 const userZoomed = ref(false)   // 用户手动缩放过 → 不再自动改档
 
 const bodyRef = ref(null)
@@ -201,9 +228,9 @@ function gotoHit(i) {
   emit('seek', t)
   // 命中块至少要有 24px 宽才看得见：太小就自动升档
   const dur = Math.max(0.05, (Number(seg.end) || t + 0.5) - t)
-  if (dur * scale.value < 24 && scaleIdx.value < SCALES.length - 1) {
+  if (dur * scale.value < 24 && scaleIdx.value < scaleList.value.length - 1) {
     userZoomed.value = true
-    setScale(Math.min(SCALES.length - 1, scaleIdx.value + 2))
+    setScale(Math.min(scaleList.value.length - 1, scaleIdx.value + 2))
   }
   nextTick(() => scrollToTime(t, 0.5))
 }
@@ -226,7 +253,7 @@ function onWheel(e) {
   const rect = el.getBoundingClientRect()
   const cursorX = e.clientX - rect.left
   const anchorTime = (el.scrollLeft + cursorX) / (scale.value || 1)
-  const next = Math.max(0, Math.min(SCALES.length - 1, scaleIdx.value + (e.deltaY < 0 ? 1 : -1)))
+  const next = Math.max(0, Math.min(scaleList.value.length - 1, scaleIdx.value + (e.deltaY < 0 ? 1 : -1)))
   if (next === scaleIdx.value) return
   userZoomed.value = true
   scaleIdx.value = next
@@ -249,8 +276,27 @@ const span = computed(() => Math.max(hardSpan.value, 1))
 const trackWidth = computed(() => Math.max(span.value * scale.value, 320))
 const playheadLeft = computed(() => Math.max(0, Math.min(trackWidth.value, (Number(props.currentTime) || 0) * scale.value)))
 
-const markLeft = computed(() => Math.max(0, (Number(props.markIn) || 0) * scale.value))
-const markWidth = computed(() => Math.max(0, ((Number(props.markOut) || 0) - (Number(props.markIn) || 0)) * scale.value))
+/** 轨道上的段色带：有 `ranges` 就每段一条（每段自己的颜色），没有就退回老的单条 `markIn..markOut`。 */
+const bands = computed(() => {
+  const list = (props.ranges || []).length
+    ? props.ranges
+    : [{ start: props.markIn, end: props.markOut }]
+  return list.map((r, i) => {
+    const start = Number(r?.start) || 0
+    const end = Math.max(start, Number(r?.end) || 0)
+    const c = segColor(i)
+    return {
+      i,
+      start,
+      end,
+      on: i === (Number(props.activeRange) || 0),
+      left: start * scale.value,
+      width: (end - start) * scale.value,
+      line: c.line,
+      fill: i === (Number(props.activeRange) || 0) ? c.line : c.fill,
+    }
+  }).filter((b) => b.width >= 1)
+})
 
 const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100
 function fmtSec(v) {
@@ -315,6 +361,12 @@ function markUserScroll() {
   if (userScrollTimer) clearTimeout(userScrollTimer)
   userScrollTimer = setTimeout(() => { userScrolling.value = false; userScrollTimer = null }, 2000)
 }
+// 视口一变，"全长度那一档"跟着变 ⇒ 夹一下，别让 scaleIdx 指到表外
+watch([fitScale, bodyW], () => {
+  const max = scaleList.value.length - 1
+  if (scaleIdx.value > max) scaleIdx.value = max
+})
+
 function onScroll() {
   const el = bodyRef.value
   if (!el) return
@@ -340,7 +392,7 @@ function autoScale() {
   const secs = span.value <= 150 ? span.value : 120
   const target = w / Math.max(20, secs)
   let idx = 0
-  for (let i = 0; i < SCALES.length; i++) if (SCALES[i] <= target) idx = i
+  for (let i = 0; i < scaleList.value.length; i++) if (scaleList.value[i] <= target) idx = i
   scaleIdx.value = idx
 }
 function setScale(next) {
@@ -348,7 +400,7 @@ function setScale(next) {
   const old = scale.value
   // 以视口中心的时间为锚点换档，缩放时不会跳到别处
   const centerTime = el ? (el.scrollLeft + el.clientWidth / 2) / old : (Number(props.currentTime) || 0)
-  scaleIdx.value = Math.max(0, Math.min(SCALES.length - 1, next))
+  scaleIdx.value = Math.max(0, Math.min(scaleList.value.length - 1, next))
   nextTick(() => {
     const b = bodyRef.value
     if (!b) return
@@ -363,9 +415,11 @@ function zoom(dir) {
 function fitAll() {
   userZoomed.value = true
   const w = Math.max(320, (bodyRef.value?.clientWidth || bodyW.value) - 12)
-  const target = Math.min(SCALES[SCALES.length - 1], Math.max(SCALES[0], w / span.value))
+  const target = Math.min(scaleList.value[scaleList.value.length - 1], Math.max(fitScale.value, w / span.value))
+  // 取"不大于目标的那一档"里最大的一档 —— 含动态的第 0 档（全长度）
   let idx = 0
-  for (let i = 0; i < SCALES.length; i++) if (SCALES[i] <= target) idx = i
+  for (let i = 0; i < scaleList.value.length; i++) if (scaleList.value[i] <= target) idx = i
+  if (target >= fitScale.value && w / span.value >= fitScale.value) idx = Math.max(idx, 0)
   setScale(idx)
 }
 
@@ -674,8 +728,14 @@ onUnmounted(() => {
 .rz.r { right:0; border-radius:0 4px 4px 0; }
 .rz:hover { background:rgba(255,255,255,.45); }
 .playhead { position:absolute; top:0; bottom:0; width:2px; background:var(--red); z-index:5; pointer-events:none; }
-.mark-band { position:absolute; top:0; bottom:0; background:rgba(232,104,56,.30);
-  border-left:1px solid var(--main); border-right:1px solid var(--main); z-index:1; pointer-events:none; }
+.mark-band { position:absolute; top:0; bottom:0; z-index:1; pointer-events:none;
+  border-left:1px solid var(--main); border-right:1px solid var(--main); }
+/* 正在编辑的那一段：色带更实、再加一圈描边（其余段只用淡色，互不遮挡） */
+.mark-band.on { box-shadow:inset 0 0 0 1px var(--card); opacity:1; }
+.mark-band:not(.on) { opacity:.75; }
+/* 段号：色带宽到看得见时才写 */
+.mb-num { position:absolute; left:2px; top:1px; font-size:9px; line-height:1.2; color:#fff;
+  text-shadow:0 1px 2px rgba(0,0,0,.55); font-weight:700; }
 .lane-add { background:none; border:none; color:var(--ink-faint); cursor:pointer; line-height:1; padding:2px 4px; display:flex; }
 .lane-add:hover { color:var(--main-deep); }
 .track-foot { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; }
