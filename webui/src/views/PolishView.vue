@@ -109,41 +109,36 @@
             <div class="preview-row">
               <div class="props-host">
                 <div v-if="openLane" class="props-panel card lane-panel">
-                  <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板，
-                       不用来回切、也好对照）。点轨道名 = 打开这个面板 + 滚到对应那一段 + 标题高亮。
-                       ⚠️ 所以下面**不许**按 openLane 做条件渲染（v-if / v-else-if）—— 那又变成"一轨一屏、
-                       点谁换谁"（判据 `check-layout-invariants.mjs` ⑰ 钉着这一条，带变异自证）。
-                       分段 / 屏蔽是结构轨（没有眼睛），它的"生成"动作跟着它走。 -->
+                  <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板）。
+                       点轨道名 = 打开面板 + 滚到那一段 + 标题高亮。
+                       ⚠️ **只留控件**（用户 2026-10-06 第二轮：解释文字全删、能删的都删了）：
+                       不要 `hint` 行、不要「· 说明」后缀、不要计数行 —— 需要解释就写进 `title`（悬停可见）。
+                       ⚠️ 也不许写成按 `openLane` 条件渲染的链（判据 ⑰ 钉着这一条，带变异自证）。 -->
                   <div class="row spread lane-head">
                     <b>轨道设置</b>
                     <button class="mini-btn" @click="openLane = ''">关闭</button>
                   </div>
-                  <div class="hint mt-4" title="点时间轴上的轨道名会跳到对应那一段并高亮标题">所有轨道共用一个面板</div>
 
-                  <!-- ── 分段 / 屏蔽（结构轨：没有眼睛；"生成"那个动作跟着它管的分段轨走） ── -->
+                  <!-- ── 分段 / 屏蔽（结构轨：没有眼睛） ── -->
                   <div class="lane-group" :class="{ on: openLane === 'segments' }"
                        :ref="(el) => (laneGroupEls.segments = el)">
                     <div class="lane-group-h">分段 / 屏蔽</div>
-                    <div class="row spread small mt-6">
-                      <span class="muted">分段</span>
-                      <span class="mono">{{ (cfg?.segments || []).length }} 段</span>
+                    <div class="row spread small">
+                      <span class="muted">分段</span><span class="mono">{{ (cfg?.segments || []).length }}</span>
                     </div>
-                    <button class="btn mt-6 w-full jc-center" :disabled="scopeBusy"
+                    <button class="btn mt-4 w-full jc-center" :disabled="scopeBusy"
                             :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
-                            @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
-                    <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
-                    <div class="row spread small mt-8">
-                      <span class="muted">屏蔽</span>
-                      <span class="mono">{{ (cfg?.mute_ranges || []).length }} 段</span>
+                            @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
+                    <div class="row spread small mt-4">
+                      <span class="muted">屏蔽</span><span class="mono">{{ (cfg?.mute_ranges || []).length }}</span>
                     </div>
-                    <div class="hint mt-4">自动去静音按字幕间隔算，入口在时间轴头部（那里还带「撤销」）</div>
                   </div>
 
-                  <!-- ── 字幕 / 弹幕（文字层）：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
+                  <!-- ── 字幕 / 弹幕：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
                   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
                        :ref="(el) => (laneGroupEls.subtitles = el)">
                     <div class="lane-group-h">字幕 / 弹幕</div>
-                    <div class="small muted mt-6">字幕字体<span class="hint"> · 出片与预览</span></div>
+                    <div class="small muted">字幕字体</div>
                     <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
                       <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
                     </select>
@@ -151,92 +146,72 @@
                       <span class="muted">字体库读取失败：{{ fontsError }}</span>
                       <button class="mini-btn" @click="loadFonts">重试</button>
                     </div>
-                    <div v-else class="hint mt-4" :title="fontsRoot ? '字体目录：' + fontsRoot : ''">库内 {{ fonts.length }} 个字体</div>
-
-                    <div class="small muted mt-8">弹幕字体<span class="hint"> · 空 = 跟字幕</span></div>
+                    <div class="small muted mt-6">弹幕字体</div>
                     <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
                       <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
                     </select>
 
-                    <div class="row mt-8" style="gap:8px;align-items:center">
-                      <span class="small muted flex-none">时间偏移</span>
+                    <div class="row mt-6" style="gap:6px;align-items:center">
+                      <span class="small muted flex-none">偏移</span>
                       <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
-                             :disabled="dmOffsetSaving || !ready" :title="'当前 ' + dmOffset + 's，负 = 提前出现，正 = 推后；默认 -3（弹幕比直播晚约 3 秒）'"
+                             :disabled="dmOffsetSaving || !ready" :title="'弹幕时间偏移：' + dmOffset + 's，负 = 提前出现，正 = 推后（默认 -3）'"
                              @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
                       <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
                              :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
                              title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
                       <span class="mono small flex-none">s</span>
                     </div>
-                    <div class="hint mt-4" title="负 = 弹幕提前，正 = 推后；调成 0 可完全关闭偏移">负 = 弹幕提前</div>
 
-                    <!-- 弹幕**没有独立泳道**（用户早前明确"不要新增泳道"），它的显示开关就住在这里 -->
-                    <label class="ck-row mt-8" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
+                    <label class="ck-row mt-6" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
                       <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
                              @change="toggleLane('danmaku')">
                       显示弹幕
                     </label>
 
-                    <div class="small muted mt-8">弹幕区域<span class="hint"> · 在预览上框选</span></div>
-                    <div class="row mb-6">
+                    <div class="row mt-6">
                       <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-                              title="框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
+                              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
                         <Icon name="crop" :size="11" /> 框选弹幕区域
                       </button>
                     </div>
                     <template v-if="selectRegion === 'danmaku_area'">
-                      <div class="row spread small mb-4">
-                        <span class="mono">{{ rectText }}</span>
-                        <span v-if="hasFreeRect" class="chip p">自由选框</span>
-                        <span v-else class="chip n">九宫格默认</span>
-                      </div>
-                      <div class="row mb-6 gap-6">
+                      <div class="mono small mt-4">{{ rectText }}</div>
+                      <div class="row mt-4 gap-6">
                         <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
                         <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
                       </div>
-                      <div class="hint mb-6">{{ regionHint }}</div>
                     </template>
                   </div>
 
-                  <!-- ── 运镜：人物框（它同时喂后处理落点与运镜聚焦） ── -->
+                  <!-- ── 运镜：人物框（同时喂后处理落点与运镜聚焦） ── -->
                   <div class="lane-group" :class="{ on: openLane === 'camera' }"
                        :ref="(el) => (laneGroupEls.camera = el)">
                     <div class="lane-group-h">运镜</div>
-                    <div class="small muted mt-6">人物区域<span class="hint"> · 在预览上框选</span></div>
-                    <div class="row mb-6">
+                    <div class="row">
                       <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-                              title="框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍" @click="toggleSelect('liver')">
+                              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
                         <Icon name="crop" :size="11" /> 框选人物
                       </button>
                     </div>
                     <template v-if="selectRegion === 'liver'">
-                      <div class="row spread small mb-4">
-                        <span class="mono">{{ rectText }}</span>
-                        <span v-if="hasFreeRect" class="chip p">自由选框</span>
-                        <span v-else class="chip n">九宫格默认</span>
-                      </div>
-                      <div class="row mb-6 gap-6">
+                      <div class="mono small mt-4">{{ rectText }}</div>
+                      <div class="row mt-4 gap-6">
                         <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
                         <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
                       </div>
-                      <div class="hint mb-6">{{ regionHint }}</div>
                     </template>
-                    <div class="hint mt-4" title="人物框同时喂后处理的两个 step：贴纸落点避让与运镜聚焦">改完选框要重跑一次「重新后处理」才落到事件上</div>
                   </div>
 
                   <!-- ── 贴纸：来源 + 落点 ── -->
                   <div class="lane-group" :class="{ on: openLane === 'sticker' }"
                        :ref="(el) => (laneGroupEls.sticker = el)">
                     <div class="lane-group-h">贴纸</div>
-                    <div class="small muted mt-6">贴纸来源<span class="hint"> · LLM 可用</span></div>
                     <div class="ss-options">
                       <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
                               :class="{ on: stickerSource.includes(src.name) }"
-                              :title="src.tags?.length ? 'tags: ' + src.tags.join(' / ') : (src.description || '')"
+                              :title="'贴纸来源：' + src.name + (src.tags?.length ? '（tags: ' + src.tags.join(' / ') + '）' : (src.description ? '（' + src.description + '）' : '')) + ' —— 点一下开/关'"
                               @click="toggleStickerSource(src.name)">
                         <b>{{ src.name }}</b>
-                        <span v-if="src.tags?.length" class="ss-opt-meta">{{ src.tags.length }} tags</span>
-                        <span v-else-if="src.builtin" class="ss-opt-meta">内置</span>
                       </button>
                       <div v-if="stickerSourcesError" class="row small gap-6">
                         <span class="muted">读取失败：{{ stickerSourcesError }}</span>
@@ -245,8 +220,7 @@
                       <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
                     </div>
 
-                    <div class="small muted mt-8">落点<span class="hint"> · 自动避让 / 固定</span></div>
-                    <div class="row mb-6">
+                    <div class="row mt-6">
                       <button class="mini-btn flex-1 jc-center"
                               :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
                               :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
@@ -260,48 +234,24 @@
                       </button>
                     </div>
                     <template v-if="stickerCfg.position_mode === 'manual'">
-                      <div class="row spread small mb-4">
-                        <span class="mono">{{ pointEdit ? draftPosPct : stickerPosPct }}</span>
-                        <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
-                      </div>
-                      <div v-if="pointEdit" class="row mb-6 gap-6">
+                      <div class="mono small mt-4">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
+                      <div v-if="pointEdit" class="row mt-4 gap-6">
                         <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
                         <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
                       </div>
-                      <div v-if="pointEdit" class="hint mb-6" title="点选的位置 = 贴纸盒中心；保存后才写 polish.toml">在预览上点选新落点，保存后生效。</div>
                     </template>
                   </div>
 
-                  <!-- ── 视觉特效：整类开关 + 逐类型事件数（这一轨没有别的工程参数） ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'fx' }"
-                       :ref="(el) => (laneGroupEls.fx = el)">
-                    <div class="lane-group-h">视觉特效</div>
-                    <div class="small muted mt-6">特效事件<span class="hint"> · 按细分类型</span></div>
-                    <div v-if="fxCounts.length" class="mt-4">
-                      <div v-for="it in fxCounts" :key="it.type" class="row spread small">
-                        <span>{{ it.label }}</span><span class="mono">{{ it.n }}</span>
-                      </div>
-                    </div>
-                    <div v-else class="muted small mt-4">这条轨道上还没有特效事件</div>
-                    <div class="hint mt-6" title="眼睛关掉 = 这一整类不渲染 / 不转译；事件仍留在时间轴上，点亮即恢复">开关只影响渲染，不改事件</div>
-                  </div>
-
-                  <!-- ── 音效：全局默认音量（事件级可覆盖） ── -->
+                  <!-- ── 音效：**只留音量控件**（计数与说明按用户要求删了） ── -->
                   <div class="lane-group" :class="{ on: openLane === 'sfx' }"
                        :ref="(el) => (laneGroupEls.sfx = el)">
                     <div class="lane-group-h">音效</div>
-                    <div class="small muted mt-6">默认音量<span class="hint"> · 事件可覆盖</span></div>
-                    <div class="row mb-6" style="gap:8px;align-items:center">
+                    <div class="row" style="gap:6px;align-items:center">
                       <input type="range" class="flex-1" min="0" max="1" step="0.05" :value="sfxCfg.volume ?? 0.1"
                              :disabled="sfxBusy || !ready" title="全局默认音效音量（0~1）；事件自己的 volume / sfx_volume 优先"
                              @change="patchSfx({ volume: Number($event.target.value) })">
                       <span class="mono small flex-none">{{ Number(sfxCfg.volume ?? 0.1).toFixed(2) }}</span>
                     </div>
-                    <div class="row spread small mt-6">
-                      <span class="muted">音效事件</span>
-                      <span class="mono">{{ sfxEventCount }} 条</span>
-                    </div>
-                    <div class="hint mt-4" title="音效文件在程序目录的 sfx/ 下；事件面板里可以逐条换音效与音量">逐条在事件的属性面板里改</div>
                   </div>
                 </div>
                 <div id="tl-props-host"></div>
@@ -508,9 +458,6 @@ import { localNoAuthKnown } from '../stores/health'
 import { ensureFontFace } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
 import { jobsApi, watchJob, busyOn, clipKey, kindText, QUEUED_HINT } from '../api/jobs'
-// 效果词汇表（`spec/effects.json` 是**唯一权威**）：这里只用它算"视觉特效轨上有哪几类、各几条"，
-// 不另抄一份类型清单（`scripts/check-effect-registry.mjs` 钉着这两条派生表达式）。
-import EFFECT_SPEC from '../../../spec/effects.json'
 import { useJobs } from '../composables/useJobs'
 
 const route = useRoute()
@@ -1686,30 +1633,9 @@ function onLaneOpen(lane) {
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
   })
 }
-const FX_TYPE_IDS = EFFECT_SPEC.effects.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.id)
-const TYPE_LABELS = Object.fromEntries(EFFECT_SPEC.effects.map((e) => [e.id, e.label]))
-// 特效事件按细分类型计数（视觉特效那条轨道没有别的工程参数，就把"这条轨道上有什么"照实列出来）
-const fxCounts = computed(() => {
-  const by = new Map()
-  for (const seg of cfg.value?.segments || []) {
-    for (const ev of seg.events || []) {
-      const t = ev.type || ''
-      if (!FX_TYPE_IDS.includes(t)) continue
-      by.set(t, (by.get(t) || 0) + 1)
-    }
-  }
-  return [...by.entries()].map(([type, n]) => ({ type, n, label: TYPE_LABELS[type] || type }))
-})
-/** 音效事件条数（sfx 事件 + 任意带 `sfx` 引用的事件，与 `sound.rs::collect_sound_events` 同口径）。 */
-const sfxEventCount = computed(() => {
-  let n = 0
-  for (const seg of cfg.value?.segments || []) {
-    for (const ev of seg.events || []) {
-      if (ev.type === 'sfx' || ev.sfx) n += 1
-    }
-  }
-  return n
-})
+// ⚠️ 这里原来还有两张"视觉特效 / 音效计数"的表（从 `spec/effects.json` 派生）。
+// 用户 2026-10-06 第二轮："特效事件/这条轨道上还没有特效事件/开关只影响渲染…… 音效事件 0 条/
+// 逐条在事件的属性面板里改 这两个根本没用" ⇒ **整块删掉**（连读数一起）：面板只留控件。
 const bgOptions = [
   { value: 'color', label: '纯色' },
   { value: 'blur', label: '模糊' },
@@ -1929,12 +1855,14 @@ onUnmounted(() => {
 .lane-panel .row { margin-top:4px; }
 .lane-panel input, .lane-panel select { font-size:12px; }
 .lane-panel .ck-row { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
-/* 一个面板装六段 ⇒ 会长；标题行**吸顶**（滚到下面时「关闭」仍够得着） */
-.lane-panel .lane-head { position:sticky; top:-10px; z-index:2; background:var(--card); padding:10px 0 6px; margin-top:-10px; }
+/* 一个面板装五段 ⇒ 会长；标题行**吸顶**（滚到下面时「关闭」仍够得着）。
+   ⚠️ 2026-10-06 第二轮用户口径：「清理长文本、紧凑一点、能删的都删了，只留控件」
+   —— 间距按这条收过（原来的 mt-8/hint 行全删了，别再加回来）。 */
+.lane-panel .lane-head { position:sticky; top:-10px; z-index:2; background:var(--card); padding:10px 0 4px; margin-top:-10px; }
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
-.lane-group { margin-top:10px; padding-top:9px; border-top:1px solid var(--line-soft); }
-.lane-group:first-of-type { border-top:none; margin-top:2px; padding-top:0; }
-.lane-group-h { font-size:11.5px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; }
+.lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
+.lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
+.lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
 .stage-col { flex:1; min-width:0; }
