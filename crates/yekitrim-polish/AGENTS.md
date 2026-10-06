@@ -64,11 +64,11 @@
   带字幕的出片；`node webui/scripts/check-stage-backdrop.mjs` 的 ③b 段钉住这类裸变量
   （判据走**去注释后的源码** —— 注释里出现同样的字样会把判据自己顶翻）。
 - ⚠️ **`templates/index.html` 是出片路径的唯一实现，DOM/CSS 那层不算数**：canvas `renderFrame`
-  **不读 DOM**。只把 `_canvas.stage`（画面摆放）与 `CFG.portrait_no_camera`（运镜门控）消费在 DOM 上的话，
+  **不读 DOM**。只把 `_canvas.stage`（画面摆放）与 `CFG.lanes`（六条轨道的显示开关）消费在 DOM 上的话，
   成片与预览会**静默分叉**：竖素材进横画布 → 成片被拉成宽屏、竖素材在成片里照旧被 zoom 拖走
   （用户 2026-09-21 报的原文），预览里全程正常、不报错。两条消费点：`stageDrawRect`
   （`axis/position/scale/padding` → 画面矩形；`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍
-  **精确等于整块画布** = 横屏存量零回归）与 `getActiveCamera` 开头的 `CFG.portrait_no_camera` 早退
+  **精确等于整块画布** = 横屏存量零回归）与 `getActiveCamera` 开头的 `!CFG.lanes.camera` 早退
   （`zoom=1 / handheld=0`，与 `engine.js::cameraAt` 同口径；⚠️ `yekitrim-render-core::evaluate_frame`
   是**已删除**的 wgpu 路径留下的平行实现，只归零 handheld、且早已没有生产消费者 —— 别拿它对口径）。
   细节见 `templates/AGENTS.md`、`src/project/AGENTS.md`。

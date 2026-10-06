@@ -59,7 +59,9 @@
          所以用 teleportTo 门控，等 onMounted（本组件的 mounted 在 post-flush 阶段跑，
          那时页面已插入文档）再设值。 -->
     <Teleport v-if="teleportTo" :to="teleportTo">
-      <div class="props-panel card" @input="onPanelEdit" @change="onPanelCommit">
+      <!-- ⚠️ 轨道设置在页面的那一份面板里（PolishView 与它共用 `.props-host` 这一列）：
+           轨道设置打开时这里整块让位，两份面板不并存（用户口径：所有轨道合并到一个属性面板）。 -->
+      <div v-if="!laneOpen" class="props-panel card" @input="onPanelEdit" @change="onPanelCommit">
         <div class="row spread">
           <b>{{ panelTitle }}</b>
           <button v-if="selected" class="mini-btn" @click="selected = null">关闭</button>
@@ -286,7 +288,20 @@
     <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
       <div class="timeline-labels">
         <div v-for="lane in lanes" :key="'label-' + lane.type" class="lane-label">
-          <span>{{ lane.label }}</span>
+          <!-- 眼睛 = 这一类渲不渲染（**事件一个字都不动**，点亮即恢复）。判据由 Rust 注入
+               （`_lanes`，见 PolishView 的 laneEnabled）：竖屏素材/画布下运镜与视觉特效默认灭。
+               ⚠️ 「分段 / 屏蔽」是结构轨（分段是容器、屏蔽是剪切标记），没有"整类不渲染"这种语义，
+               所以它没有眼睛 —— 别给它补一个假装有作用的按钮。 -->
+          <button v-if="lane.lane" class="lane-eye" :class="{ off: !laneEnabled(lane.lane) }"
+                  :title="laneEyeTitle(lane)" @click.stop="emit('toggle-lane', lane.lane)">
+            <Icon :name="laneEnabled(lane.lane) ? 'eye' : 'eye-off'" :size="12" />
+          </button>
+          <span v-else class="lane-eye lane-eye-none"
+                title="分段 / 屏蔽是结构轨：分段是容器、屏蔽是剪切标记，没有「整类不渲染」这种语义">·</span>
+          <!-- 轨道名可点 = **这一条轨道的设置**（与时间轴上的块共用同一个属性面板） -->
+          <button class="lane-name" :class="{ on: laneOpen === lane.type }"
+                  :title="lane.label + '：点这里改这条轨道的设置'"
+                  @click.stop="emit('lane-open', lane.type)">{{ lane.label }}</button>
           <div class="lane-adds">
             <button v-if="lane.type !== 'segments'" class="add-lane"
                     :title="lane.type === 'fx' ? '在播放头处添加视觉特效（先选细分类型）' : '在播放头处添加'"
@@ -362,7 +377,11 @@ const props = defineProps({
   /** 后处理任务是否在跑（「重新后处理」按钮的禁用态） */
   reprocessBusy: { type: Boolean, default: false },
   /** 属性面板的 Teleport 挂载点（CSS 选择器）；默认由 PolishView 渲染在视频左侧 */
-  propsTarget: { type: String, default: '#tl-props-host' }
+  propsTarget: { type: String, default: '#tl-props-host' },
+  /** 当前打开的是哪条轨道的设置（空串 = 没打开）；由页面持有（它才是设置数据的家） */
+  laneOpen: { type: String, default: '' },
+  /** 六条轨道的开关（Rust 注入的 `_lanes`，已解析）：眼睛的亮/灭只读它，别在前端再推一遍 */
+  lanesOn: { type: Object, default: () => ({}) }
 })
 // 三个信号，**含义各不相同，别互相替代**：
 //   `preview` = 本地改动**立刻**镜像给页面（预览实时刷新，**不落盘**、不重挂载）
@@ -371,7 +390,7 @@ const props = defineProps({
 //                页面据此跑一次后处理；它保证**已在 `saved` 之后**（见 `commitEdit`）。
 // ⚠️ `saved` 与 `done` **不是**"落盘成功就算完成"：落盘了你还可能在改这个事件，
 //    所以后处理仍要等 `done`。两个信号各自服务一个消费者。
-const emit = defineEmits(['seek', 'toggle', 'preview', 'saved', 'done', 'reprocess', 'retried', 'redo-segment'])
+const emit = defineEmits(['seek', 'toggle', 'preview', 'saved', 'done', 'reprocess', 'retried', 'redo-segment', 'lane-open', 'toggle-lane'])
 const rootRef = ref(null)
 /**
  * 属性面板的 Teleport 目标。**必须等 onMounted 才设值**：本组件挂载时整棵编辑器子树
@@ -533,14 +552,28 @@ const uiGroup = (name) =>
 const LANE_TYPES = (lane) => (lane === 'fx' ? FX_TYPES : EFFECTS.filter((e) => (e.lane ?? 'fx') === lane).map((e) => e.id))
 
 const LANE_DEFS = [
+  // `lane` = 这一条轨道对应 `[stage.lanes]` 里的哪个开关（**没有** = 结构轨、不给眼睛）。
+  // ⚠️ 名字与 Rust `Lane::key` 一字不差；`check-layout-invariants.mjs` ⑯ 钉着这张表。
   { type: 'segments', label: '分段 / 屏蔽', color: TIMELINE_COLORS.segments, resizable: true },
-  { type: 'subtitles', label: '字幕', color: 'rgba(59,130,246,0.35)', resizable: true },
-  { type: 'camera', label: '运镜', color: TIMELINE_COLORS.camera, types: LANE_TYPES('camera'), resizable: true },
-  { type: 'sticker', label: '贴纸', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
-  { type: 'fx', label: '视觉特效', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
-  { type: 'sfx', label: '音效', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
+  { type: 'subtitles', label: '字幕', lane: 'subtitles', color: 'rgba(59,130,246,0.35)', resizable: true },
+  { type: 'camera', label: '运镜', lane: 'camera', color: TIMELINE_COLORS.camera, types: LANE_TYPES('camera'), resizable: true },
+  { type: 'sticker', label: '贴纸', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  { type: 'fx', label: '视觉特效', lane: 'effects', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
+  { type: 'sfx', label: '音效', lane: 'sfx', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
 ]
 const lanes = LANE_DEFS
+/** 一条轨道的眼睛当前亮不亮。**只读 Rust 注入的解析结果**（`_lanes`）——
+ *  默认值（素材竖/画布竖 ⇒ 运镜与视觉特效默认关）只住 Rust `ProjectFile::lane_default` 一处，
+ *  前端自己再推一遍就必然两边不一致（而且不报错）。读不到注入就当亮着（宁可多画）。 */
+function laneEnabled(lane) {
+  const v = props.lanesOn ? props.lanesOn[lane] : undefined
+  return typeof v === 'boolean' ? v : true
+}
+function laneEyeTitle(lane) {
+  return laneEnabled(lane.lane)
+    ? `${lane.label}：渲染中。点一下关掉（整类不渲染，事件仍留在时间轴上）`
+    : `${lane.label}：不渲染（竖屏素材默认关）。点一下打开`
+}
 
 const isFxType = (t) => FX_TYPES.includes(t)
 /** 覆盖类型（`overlay_type`）→ 中文名：属性面板下拉与泳道块标签共用一份，别各写一遍。 */
@@ -800,6 +833,8 @@ function blockItem(block) {
   return seg && seg.events ? seg.events[block.ei] || null : null
 }
 function selectBlock(lane, block) {
+  // 选中时间轴上的块 ⇒ 关掉轨道设置（两块面板共用一列，属性面板同一时刻只显示一份）
+  if (props.laneOpen) emit('lane-open', '')
   if (block.kind === 'sub') selected.value = { kind: 'sub', lane: lane.type, subIndex: block.subIndex }
   else if (block.kind === 'mute') selected.value = { kind: 'mute', lane: lane.type, muteIndex: block.muteIndex }
   else selected.value = { kind: block.kind, lane: lane.type, si: block.si, ei: block.ei }
@@ -1758,7 +1793,19 @@ async function loadData() {
 /* 泳道 34 → 26px（7 条泳道省 ~56px）；块 24 → 20px */
 .lane { height:26px; border-bottom:1px solid var(--line-soft); position:relative;
   display:flex; align-items:center; gap:10px; padding:0 12px; box-sizing:border-box; }
-.lane-label { width:96px; height:26px; box-sizing:border-box; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 8px; font-size:11.5px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
+.lane-label { width:124px; height:26px; box-sizing:border-box; flex:none; display:flex; align-items:center; gap:4px; padding:0 8px; font-size:11.5px; color:var(--ink-dim); border-bottom:1px solid var(--line-soft); }
+/* 眼睛：13px 见方的一枚小按钮。灭的时候整枚变淡（**不隐藏** —— 用户要看见"这条轨道被关了"） */
+.lane-eye { flex:none; display:flex; align-items:center; justify-content:center; width:16px; height:16px;
+  border-radius:4px; color:var(--main-deep); background:var(--bg-soft); cursor:pointer; }
+.lane-eye:hover { background:var(--main-soft); }
+.lane-eye.off { color:var(--ink-faint); background:transparent; }
+.lane-eye-none { background:transparent; color:var(--line); cursor:default; }
+/* 轨道名：点它 = 这条轨道的设置。`min-width:0` + 省略号是必需的 —— 轨道名一长（分段 / 屏蔽）
+   会把这一列撑破，而这一列是 `flex:none` 的定宽列。 */
+.lane-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  text-align:left; background:none; border:none; padding:0; font-size:11.5px; color:inherit; cursor:pointer; }
+.lane-name:hover { color:var(--main-deep); }
+.lane-name.on { color:var(--pink-text); font-weight:700; }
 .add-lane { background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; }
 .add-lane:hover { color:var(--main-deep); }
 .lane-adds { display:flex; align-items:center; gap:2px; }

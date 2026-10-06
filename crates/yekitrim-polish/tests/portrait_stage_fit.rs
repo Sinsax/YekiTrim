@@ -215,20 +215,6 @@ fn stats(jpeg: &[u8], cw: u32, ch: u32, inside: Option<&Rect>) -> Shot {
     }
 }
 
-fn replace_first_after(code: &str, anchor: &str, needle: &str, replacement: &str) -> String {
-    let a = code.find(anchor).unwrap_or_else(|| panic!("代码里找不到锚点 {anchor:?}"));
-    let tail = a + anchor.len();
-    let at = tail
-        + code[tail..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("锚点 {anchor:?} 之后找不到 {needle:?}"));
-    let mut out = String::with_capacity(code.len());
-    out.push_str(&code[..at]);
-    out.push_str(replacement);
-    out.push_str(&code[at + needle.len()..]);
-    out
-}
-
 /// 把一份**变异过的转译器**写到临时目录，返回路径（给 `common::render_range` 用）。
 fn translator_with(tag: &str, mutate: impl FnOnce(&str) -> String) -> PathBuf {
     let src = common::translator_path();
@@ -497,27 +483,27 @@ async fn portrait_source_is_contained_and_motion_locked() {
         );
     }
 
-    // ---------- B②：去掉竖屏运镜门（等价改造前：竖素材照样套 zoom_close=1.5）----------
+    // ---------- B②：摘掉「素材竖 ⇒ 运镜默认关」那条默认（等价改造前：竖素材照样套 zoom_close=1.5）----------
     //
-    // 转译器里那道门是 `case 'camera'` 开头的 `if (portraitNoCamera) { break; }`
-    // （2026-10-05 起：判据从"源是不是竖的"收窄成 `src_portrait_no_camera` —— 源竖**且**画布非竖，
-    // 由 Rust `ProjectFile::src_portrait_no_camera` 注入；竖素材进竖画布要照常运镜）。
+    // 0.6.0 起运镜门是**轨道眼睛**（`[stage.lanes] camera`），缺字段时的默认值由转译器里的
+    // `LANE_DEFAULT.camera = !(PORTRAIT_SRC || CANVAS_PORTRAIT)` 给出（与 Rust
+    // `ProjectFile::lane_default` 同口径）。这条变异**正落在那个默认上** ——
+    // 把"素材竖"这一项摘掉，探针工程（竖素材 + 横画布）就会照译运镜事件。
     //
-    // ⚠️ **必须用 `replace_first_after` 定位到 `case 'camera':` 之后那一个**（2026-10-02 修）：
-    // 同一个形状在文件里出现过多次（给报告用的 NOTE 一处、运镜门一处）。直接 `replacen(..., 1)`
-    // 会改掉**前面那一处**，变异体仍然把运镜整条关着（实测 `运镜 0 条`，成片与真转译器逐帧相同），
-    // 于是 B② 的判据必然"没翻面"。锚点必须落在语义位置上，不是第一个长得像的地方。
+    // ⚠️ **锚点必须落在语义位置上**（2026-10-02 的教训）：同一个 `camera:` 字样在
+    // `LANE_OF_TYPE` 里也有一份，直接 `replacen(..., 1)` 会改到那张映射表上
+    // （映射表改了不改默认 ⇒ 变异体仍把运镜关着 ⇒ 这条自证永远"没翻面"）。
+    // 全串 `camera: !(PORTRAIT_SRC || CANVAS_PORTRAIT),` 在文件里只出现一次，用它。
     let no_gate = translator_with("camera", |code| {
-        let out = replace_first_after(
-            code,
-            "case 'camera': {",
-            "if (portraitNoCamera) {",
-            "if (false) {",
+        // 锚点 = `laneDefaults()` 里那一行（**纯函数**，与 Rust `ProjectFile::lane_default` 同口径）。
+        // ⚠️ 别写成 `LANE_DEFAULT = { camera: ... }` —— 那张表 2026-10-06 已经搬进导出函数，
+        //    旧写法在文件里命中 0 次（实测：变异②直接"没生效"，A/B 变成比同一份产物）。
+        let out = code.replacen(
+            "    camera: !(portrait || canvas),",
+            "    camera: true,",
+            1,
         );
-        // `sourceIsVertical === null`（探不到媒体）那条分支也要关掉：探针工程探得到，
-        // 留着它不影响；但万一本机 ffprobe 探不到，两条分支都成了"不关运镜"，变异照样成立。
-        let out = out.replacen("if (sourceIsVertical === null) {", "if (false) {", 1);
-        assert_ne!(out, code, "变异②没生效（竖屏门锚点没命中）");
+        assert_ne!(out, code, "变异②没生效（lane 默认锚点没命中）");
         out
     });
     let m2 = render_range(&dir, Some(&no_gate), start, end, None, "mut_camera").unwrap();

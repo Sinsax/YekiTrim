@@ -86,6 +86,9 @@ pub fn load_config_from(project_path: &Path, filename: &str) -> anyhow::Result<P
         .map_err(|e| retired_effect_hint(e, &config_path))?;
     strip_blocked_sticker_sources(&mut config.sticker_source);
     fill_default_local_packages(&mut config.sticker_source);
+    // 老键 `[stage] portrait_*` → `[stage.lanes]` 的单向吸收（**只在内存里**；下一次保存才落盘）。
+    // ⚠️ 不做的话：竖画布下用户显式开过的运镜/特效/音效会**静默回到默认关**。
+    config.migrate_portrait_lanes();
     Ok(config)
 }
 

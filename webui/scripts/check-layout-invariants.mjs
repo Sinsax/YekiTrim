@@ -22,7 +22,24 @@
 //     判据还必须钉住「放大后位置组要出现」：整组只按 `!sameRatio` 藏起来的话，`scale>1` 的裁切取景
 //     在同比工程里**根本没有入口**。
 //
-//  ⑧ 竖画布那三道整类门只挂在 `title` 上等于没说：提示必须在**行内**（用户不会去悬停）。
+//  ⑧ 「哪一类渲不渲染」= 时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，2026-10-06）：
+//     眼睛的亮灭**只读 Rust 注入的 `_lanes`**（默认值只住 `ProjectFile::lane_default` 一处），
+//     前端自己再推一遍默认必然两边不一致、而且不报错；开关落盘必须走 `[stage.lanes]`
+//     （写成 `[stage] camera = false` 这种平铺键会静默存不进去 —— PUT 是逐字段白名单）。
+//
+//  ⑯ 每条**内容轨**一枚眼睛，结构轨（分段/屏蔽）**没有** —— 给它补一枚"看着有作用、
+//     其实什么也不管"的按钮，比没有更糟。
+//
+//  ⑰ 轨道名可点 = **这一条轨道的设置**，与时间轴块的属性面板**互斥**共用一列；
+//     `#tl-props-host` 是 Teleport 目标，必须是**空容器**（往里面塞页面自己的子节点会被 patch 顶掉）。
+//     右栏那两块（生成与导出 / 画面构成）合并成一块后不许再有页签（`genTab`）。
+//
+//  ⑱ 弹幕**没有独立泳道**（用户早前明确不加泳道）⇒ 它的显示开关与字体住「字幕 / 弹幕」轨的面板里；
+//     而弹幕字体同时决定**丈量宽度**（滚动时长按宽度算）—— 量宽与渲染必须同一个族，
+//     三处（预览 DOM / 模板 canvas / 转译器 ASS）都要读它。⚠️ `.dm` / `.cap` 必须写
+//     `font-family:inherit`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，会压过
+//     父层的内联字体栈（继承值永远输给本元素的任何声明）—— 不写就是"字体设置一点用没有"，
+//     静默、无报错。
 //
 //  ⑨ 「打开输出目录」只在本机渲染（服务端模式那里也没有这个端点）。
 //
@@ -87,6 +104,8 @@ const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
 const previewVue = await read('webui/src/components/PolishPreview.vue')
 const jobsStore = await read('webui/src/composables/useJobs.js')
 const jobsApiJs = await read('webui/src/api/jobs.js')
+const engineJs = await read('webui/src/polish/engine.js')
+const templateHtml = await read('crates/yekitrim-polish/templates/index.html')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -255,13 +274,134 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 
-// ── ⑧ 竖画布三道整类门的说明必须在**行内**（只挂 title = 用户看不到）──
+// ── ⑧ 轨道眼睛：亮灭只读注入 + 开关落盘 `[stage.lanes]`（2026-10-06）──
 {
-  const inlineHint = (s) => s.includes('竖画布默认不渲染运镜 / 特效 / 音效这三类')
-  check('⑧ 竖屏三开关的行内说明在（不是只挂 title）', inlineHint(polishView), true)
-  const m = polishView.replace('竖画布默认不渲染运镜 / 特效 / 音效这三类', '竖屏启用')
-  check('[变异] ⑧ 摘掉行内说明 → 源码确实被改了', m !== polishView, true)
-  check('[变异] ⑧ 摘掉行内说明 → 判据翻面', inlineHint(m), false)
+  // 亮灭只读 Rust 注入的 `_lanes`（默认值只住 Rust `ProjectFile::lane_default` 一处）
+  const readsInjected = (s) =>
+    /function laneEnabled\(lane\) \{[\s\S]{0,120}?props\.lanesOn\[lane\][\s\S]{0,120}?typeof v === 'boolean' \? v : true/.test(s)
+  const pageReadsLanes = (s) => s.includes('const lanesOn = computed(() => cfg.value?._lanes || {})')
+  const writesLanes = (s) =>
+    s.includes('patchStage({ lanes: { ...(stageCfg.value.lanes || {}), [lane]: !cur } })')
+  // 老的三键必须清干净（还在就是"两套开关并存"，用户改了没反应）
+  const noPortraitKeys = (s) =>
+    !s.includes('portrait_camera') && !s.includes('portrait_effects') && !s.includes('portrait_sfx')
+  check('⑧ 眼睛的亮灭只读注入的 `_lanes`（不自己推默认）', readsInjected(timelineEditor), true)
+  check('⑧ 页面读 Rust 注入的 `_lanes`', pageReadsLanes(polishView), true)
+  check('⑧ 开关落盘走 `[stage.lanes]`（不是平铺键）', writesLanes(polishView), true)
+  check('⑧ 老的三键（portrait_*）清干净了', noPortraitKeys(polishView + timelineEditor), true)
+  const eyeOk = (m) => readsInjected(m) && pageReadsLanes(polishView) && writesLanes(polishView) && noPortraitKeys(polishView + m)
+  const pageOk = (m) => readsInjected(timelineEditor) && pageReadsLanes(m) && writesLanes(m) && noPortraitKeys(m + timelineEditor)
+  const writeOk = (m) => readsInjected(timelineEditor) && pageReadsLanes(polishView) && writesLanes(m) && noPortraitKeys(polishView + timelineEditor)
+  const MUT8 = [
+    ['眼睛恒亮（不看注入）', timelineEditor, (s) => s.replace('props.lanesOn ? props.lanesOn[lane] : undefined', 'undefined'), eyeOk],
+    ['页面自己按 `stage.lanes` 推默认（不读注入）', polishView, (s) => s.replace('cfg.value?._lanes || {}', 'cfg.value?.stage?.lanes || {}'), pageOk],
+    ['开关写成平铺键（PUT 白名单里没有 ⇒ 静默存不进去）', polishView, (s) => s.replace('{ lanes: { ...(stageCfg.value.lanes || {}), [lane]: !cur } }', '{ [lane]: !cur }'), writeOk],
+  ]
+  for (const [what, src, mutate, still] of MUT8) {
+    const m = mutate(src)
+    check(`[变异] ⑧ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑧ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ── ⑯ 每条**内容轨**一枚眼睛，结构轨（分段 / 屏蔽）没有（2026-10-06）──
+{
+  const LANE_KEYS = ['subtitles', 'camera', 'sticker', 'effects', 'sfx']
+  const laneDefs = (s) => {
+    const at = s.indexOf('const LANE_DEFS = [')
+    if (at < 0) return ''
+    // ⚠️ 块的注释里也有 `]`（`[stage.lanes]`）—— 不能用"第一个 `]`"当结尾，
+    // 否则截出来的块永远少一半，判据会**假红**（我第一版就是这么挂的）。
+    const end = s.indexOf('const lanes = LANE_DEFS', at)
+    return end < 0 ? s.slice(at) : s.slice(at, end)
+  }
+  const everyLaneHasEye = (s) => {
+    const b = laneDefs(s)
+    return !!b && LANE_KEYS.every((k) => b.includes("lane: '" + k + "'"))
+  }
+  const structLaneHasNoEye = (s) => {
+    const b = laneDefs(s)
+    return !!b && !/type: 'segments'[^\n]*lane:/.test(b)
+  }
+  check('⑯ 五条内容轨都挂了开关名（眼睛）', everyLaneHasEye(timelineEditor), true)
+  check('⑯ 结构轨（分段 / 屏蔽）没有眼睛', structLaneHasNoEye(timelineEditor), true)
+  const MUT16 = [
+    ['给结构轨也补一枚眼睛（假装有作用）', (s) => s.replace("type: 'segments', label: '分段 / 屏蔽'", "type: 'segments', label: '分段 / 屏蔽', lane: 'segments'")],
+    ['摘掉运镜轨的开关名（这条轨道没有眼睛了）', (s) => s.replace("label: '运镜', lane: 'camera',", "label: '运镜',")],
+  ]
+  for (const [what, mutate] of MUT16) {
+    const m = mutate(timelineEditor)
+    check(`[变异] ⑯ ${what} → 源码确实被改了`, m !== timelineEditor, true)
+    check(`[变异] ⑯ ${what} → 判据翻面`, everyLaneHasEye(m) && structLaneHasNoEye(m), false)
+  }
+}
+
+// ── ⑰ 轨道名可点 = 轨道设置；与块的属性面板互斥；右栏合并成一块（2026-10-06）──
+{
+  const nameOpens = (s) => /@click\.stop="emit\('lane-open', lane\.type\)"/.test(s)
+  const itemYields = (s) => s.includes('<div v-if="!laneOpen" class="props-panel card"')
+  const lanePanel = (s) => s.includes('<div v-if="openLane" class="props-panel card lane-panel">')
+  const hostEmpty = (s) => s.includes('<div id="tl-props-host"></div>')
+  const panelBeforeHost = (s) => {
+    const a = s.indexOf('class="props-panel card lane-panel"')
+    const b = s.indexOf('<div id="tl-props-host"></div>')
+    return a >= 0 && b >= 0 && a < b
+  }
+  const noTabs = (s) => !s.includes('genTab') && s.includes('画面构成 / 输出')
+  const blockSelectClosesLane = (s) =>
+    /function selectBlock\(lane, block\) \{[\s\S]{0,300}?emit\('lane-open', ''\)/.test(s)
+  const panelOk = (s) => lanePanel(s) && panelBeforeHost(s) && hostEmpty(s)
+  check('⑰ 轨道名可点开设置', nameOpens(timelineEditor), true)
+  check('⑰ 块的属性面板在轨道设置打开时让位', itemYields(timelineEditor), true)
+  check('⑰ 页面渲染轨道设置面板，且排在 Teleport 目标之前', panelOk(polishView), true)
+  check('⑰ 选中时间轴上的块 ⇒ 收起轨道设置（两块面板不并存）', blockSelectClosesLane(timelineEditor), true)
+  check('⑰ 右栏合成一块、没有页签', noTabs(polishView), true)
+  const MUT17 = [
+    ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
+    ['轨道名不可点（没有入口）', timelineEditor, (s) => s.replace("@click.stop=\"emit('lane-open', lane.type)\"", ''), (m) => nameOpens(m)],
+    ['往 Teleport 目标里塞子节点', polishView, (s) => s.replace('<div id="tl-props-host"></div>', '<div id="tl-props-host"><span></span></div>'), (m) => panelOk(m)],
+    ['页签捡回来（右栏又分家）', polishView, (s) => s.replace("const openLane = ref('')", "const openLane = ref('')\nconst genTab = ref('export')"), (m) => noTabs(m)],
+    ['选中块不收起轨道设置', timelineEditor, (s) => s.replace("if (props.laneOpen) emit('lane-open', '')", ''), (m) => blockSelectClosesLane(m)],
+  ]
+  for (const [what, src, mutate, still] of MUT17) {
+    const m = mutate(src)
+    check(`[变异] ⑰ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑰ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ── ⑱ 弹幕字体 / 显示开关（无独立泳道 ⇒ 住字幕轨面板；量宽与渲染同族）（2026-10-06）──
+{
+  const noDanmakuLane = (s) => !s.includes("lane: 'danmaku'")
+  const dmToggleInPanel = (s) => s.includes("@change=\"toggleLane('danmaku')\"")
+  const dmFontSaves = (s) => s.includes('saveProjectPatch(pid.value, dir.value, { danmaku_font: next })')
+  const measureByFamily = (s) =>
+    s.includes('export function measureDanmakuWidths(dms, fontSize, fontFamily)')
+    && s.includes('hit.size === size && hit.family === family')
+    && s.includes("dmMeasureCtx.font = '600 ' + size + 'px ' + (family ?")
+  const templateMeasuresByFamily = (s) =>
+    s.includes('var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font)')
+  const layersInheritFont = (s) =>
+    /\.dm \{[\s\S]{0,700}?font-family:inherit;/.test(s) && /\.cap \{[\s\S]{0,400}?font-family:inherit;/.test(s)
+  const measOk = (m) => measureByFamily(m) && templateMeasuresByFamily(templateHtml) && layersInheritFont(previewVue)
+  check('⑱ 弹幕没有独立泳道（用户口径：不加泳道）', noDanmakuLane(timelineEditor), true)
+  check('⑱ 弹幕的显示开关住字幕轨面板', dmToggleInPanel(polishView), true)
+  check('⑱ 弹幕字体走 `danmaku_font` 落盘', dmFontSaves(polishView), true)
+  check('⑱ 预览量宽带字体族 + 缓存键含字体族', measureByFamily(engineJs), true)
+  check('⑱ 模板 canvas 量宽带字体族（与预览同口径）', templateMeasuresByFamily(templateHtml), true)
+  check('⑱ `.dm` / `.cap` 声明 `font-family:inherit`（否则被全局 `*` 规则盖掉）', layersInheritFont(previewVue), true)
+  const MUT18 = [
+    ['量宽的缓存键丢掉字体族（换字体拿旧宽度 ⇒ 没滚到边就消失）', engineJs, (s) => s.replace('hit.size === size && hit.family === family', 'hit.size === size'), measOk],
+    ['预览量宽退回 sans-serif', engineJs, (s) => s.replace(" + (family ? '\"' + family + '\",sans-serif' : 'sans-serif')", ''), measOk],
+    ['`.dm` 的 inherit 摘掉（字体设置静默失效）', previewVue, (s) => s.replace('      font-family:inherit; }', '      }'), layersInheritFont],
+    ['模板量宽退回 sans-serif', templateHtml, (s) => s.replace('var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font)', 'var dmFam = 0'), templateMeasuresByFamily],
+    ['弹幕面板里那枚显示开关摘掉', polishView, (s) => s.replace("@change=\"toggleLane('danmaku')\"", ''), dmToggleInPanel],
+  ]
+  for (const [what, src, mutate, still] of MUT18) {
+    const m = mutate(src)
+    check(`[变异] ⑱ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑱ ${what} → 判据翻面`, still(m), false)
+  }
 }
 // ── ⑨ 「打开输出目录」= **只在本机渲染** + 交给服务端弹文件管理器（2026-10-05）──
 // 用户口径：local 模式点一下**直接弹出文件夹**；server 模式**不显示这个按钮**。

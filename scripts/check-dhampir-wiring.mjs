@@ -322,16 +322,19 @@ const polishApiSrc = readFileSync(POLISH_API, 'utf8');
 // 出片腿：`render_video_only` 里那次 `prepare_project[_reporting](clip_dir, project_path, true)`
 // （`_reporting` 那个变体额外把转译报告带回来给 `--strict` 用 —— 参数口径**必须一样**）
 check(
-  /prepare_project(?:_reporting)?\(\s*clip_dir\s*,\s*project_path\s*,\s*true\s*\)/.test(dhampirSrc),
+  // ⚠️ 第 4 个参数（`video`：预览代理）2026-10-05 加进来之后，出片腿写的是 `..., true, None`
+  // —— 判据必须跟着放宽一位，否则它报的是"找不到"，而语义（整条时间线）一直没变。
+  /prepare_project(?:_reporting)?\(\s*clip_dir\s*,\s*project_path\s*,\s*true\s*(?:,\s*None\s*)?\)/.test(dhampirSrc),
   '出片腿必须传 `keep_muted = true`（整条时间线，屏蔽交给尾部那一剪）',
-  'render/dhampir.rs 里找不到 `prepare_project[_reporting](clip_dir, project_path, true)` —— ' +
+  'render/dhampir.rs 里找不到 `prepare_project[_reporting](clip_dir, project_path, true[, None])` —— ' +
     '传 false 就是"转译时先掐一遍、尾部再剪一遍"（成片短一大截 + 音轨错位）',
 );
 // 预览腿：`polish_dhampir_project` 里那次必须 `false`
 check(
-  /prepare_project\(\s*&clip\s*,\s*&scratch\s*,\s*false\s*\)/.test(polishApiSrc),
+  // 同出片腿：第 4 个参数是预览代理（`preview_video.as_deref()`），`keep_muted` 仍是 false。
+  /prepare_project\(\s*&clip\s*,\s*&scratch\s*,\s*false\s*(?:,\s*preview_video\.as_deref\(\),?\s*)?\)/.test(polishApiSrc),
   '预览腿必须传 `keep_muted = false`（压缩时间线，客户端要跳屏蔽区间）',
-  'api/polish.rs 里找不到 `prepare_project(&clip, &scratch, false)` —— ' +
+  'api/polish.rs 里找不到 `prepare_project(&clip, &scratch, false[, preview_video.as_deref()])` —— ' +
     '传 true 的话客户端拿不到"断点"，会一路播过屏蔽区间',
 );
 
