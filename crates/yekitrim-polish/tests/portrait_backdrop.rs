@@ -150,7 +150,12 @@ fn backdrop_guard() -> String {
 /// 转译器里那道"衬底总开关"。默认 `false` ⇒ 真实产物**本来就不画衬底**，
 /// 所以只想比"默认行为 vs 关掉衬底"是没有意义的（两边都不画）。
 /// 探针必须**先把它打开**，再比"打开后画了没"。
-const BACKDROP_FLAG: &str = "const BACKDROP_ENABLED = false;";
+/// 总开关那一行的**当前值**（2026-10-06 起是 `true` —— 底座那条逐帧泄漏已经不在，实测见转译器里的注释）。
+///
+/// ⚠️ 探针**不再靠"把它变异成 true"**来准备 A：真值就是 true，变异它只会变成空操作
+/// （`mutated_translator` 要求替换恰好命中一次，空操作直接失败）。A 用**真转译器**，
+/// B 只把衬底闸改成 `if (false)` —— 差异干净地落在"那道闸"上。
+const BACKDROP_FLAG: &str = "const BACKDROP_ENABLED = true;";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "手动像素探针：需要 VTEDIT_BACKDROP_DIR 指向真实竖屏工程，且本机能跑底座（二进制 + node 转译器）"]
@@ -200,24 +205,18 @@ async fn portrait_backdrop_is_not_black() {
     // B = 同一个转译器、但把整道衬底闸拆掉（`if (…)` → `if (false)`）。
     //
     // ⚠️ 两次都要动那个开关：只变异 A 的话，A 和 B 都不画衬底 —— 又变成自己比自己。
-    let on = common::mutated_translator(
-        "backdrop-on",
-        &[(BACKDROP_FLAG, "const BACKDROP_ENABLED = true;")],
-    )
-    .unwrap_or_else(|e| panic!("无法打开衬底总开关：{e:#}"));
+    // **前置事实**：总开关必须开着（关着时整条衬底路都不走，这条探针量的就是"画没画"）。
+    assert!(
+        common::backdrop_enabled(),
+        "衬底总开关关着（{BACKDROP_FLAG} 不在转译器里）—— 这条探针量不到衬底，先把开关打开或删掉这条探针"
+    );
 
     let anchor = backdrop_guard();
-    let off = common::mutated_translator(
-        "backdrop-off",
-        &[
-            (BACKDROP_FLAG, "const BACKDROP_ENABLED = true;"),
-            (anchor.as_str(), "if (false) {"),
-        ],
-    )
-    .unwrap_or_else(|e| panic!("无法构造变异转译器：{e:#}"));
+    let off = common::mutated_translator("backdrop-off", &[(anchor.as_str(), "if (false) {")])
+        .unwrap_or_else(|e| panic!("无法构造变异转译器：{e:#}"));
 
-    println!("A/B 里的 A = 总开关**打开**的转译器（衬底应当画出来），渲染 [{start:.2}, {end:.2}) 每帧");
-    let real = common::render_range(&dir, Some(&on), start, end).unwrap();
+    println!("A/B 里的 A = **真转译器**（总开关开着，衬底应当画出来），渲染 [{start:.2}, {end:.2}) 每帧");
+    let real = common::render_range(&dir, None, start, end).unwrap();
     common::save_frames(&real, Some(&out_dir), "real").unwrap();
 
     println!(
