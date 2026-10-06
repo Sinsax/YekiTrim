@@ -824,6 +824,16 @@ function checkStage(curves) {
 }
 const MUTATIONS = [
   {
+    name: '30fps 下限被摘掉（5fps 源 ⇒ 工程网格也 5fps）',
+    from: "  const timebase = mediaFps > 0 && mediaFps < FPS_FLOOR ? { num: FPS_FLOOR, den: 1 } : assetTimebase;",
+    to: "  const timebase = assetTimebase;",
+  },
+  {
+    name: '下限也套到素材上（5fps 素材被当成 30fps ⇒ 源帧号跑 6 倍）',
+    from: "    timebase: assetTimebase,",
+    to: "    timebase,",
+  },
+  {
     name: '纯色背景不再发画布底色（黑屏回归）',
     from: "      ...(stageBackground ? { background: stageBackground } : {}),",
     to: '',
@@ -835,8 +845,8 @@ const MUTATIONS = [
   },
   {
     name: '时基退回写死 60fps（30fps 素材 ⇒ 帧号错 2×）',
-    from: '  const timebase = media?.fps ?? { num: 60, den: 1 };',
-    to: '  const timebase = { num: 60, den: 1 };',
+    from: '  const assetTimebase = media?.fps ?? { num: 60, den: 1 };',
+    to: '  const assetTimebase = { num: 60, den: 1 };',
   },
   {
     name: '素材尺寸退回写死 1920x1080（代理/竖素材 ⇒ 缩放取景全错）',
@@ -1217,6 +1227,7 @@ function checkMediaProbe(mod) {
     ]);
     mk('clip.mp4', '640x360', 30);
     mk('alt.mp4', '320x240', 24);
+    mk('clip5.mp4', '640x360', 5);
     const toml = [
       'duration = 4.0',
       '[project]',
@@ -1236,10 +1247,21 @@ function checkMediaProbe(mod) {
       '视频素材的宽高必须是**实际媒体**的（写死 1920x1080 ⇒ 层 scale/FIT 全按错的算）');
     // ② `--video` 覆盖 = 预览代理那条腿：时基与尺寸都要跟着**代理**走
     const d2 = mod.translate(cfg, dir, join(dir, 'd2.json'), { video: 'alt.mp4' });
-    eq(JSON.stringify(d2.timeline.timebase), JSON.stringify({ num: 24, den: 1 }),
-      '`--video` 指向 24fps 的代理 ⇒ 时基必须跟着代理（否则预览帧号错）');
+    // 24fps 也低于 30 的下限 ⇒ 工程网格 30/1，而**素材时基仍是代理的 24/1**（两者一起看才对得上）
+    eq(JSON.stringify(d2.timeline.timebase), JSON.stringify({ num: 30, den: 1 }),
+      '24fps 代理也吃 30fps 下限 ⇒ 工程网格 30/1');
+    eq(JSON.stringify(videoOf(d2).timebase), JSON.stringify({ num: 24, den: 1 }),
+      '`--video` 指向 24fps 的代理 ⇒ **素材**时基必须是 24/1（源帧号靠它换算）');
     eq(`${videoOf(d2).width}x${videoOf(d2).height}`, '320x240',
       '`--video` 指向 320x240 的代理 ⇒ 素材尺寸必须跟着代理');
+    // ③ **30fps 下限**（2026-10-06 用户口径）：电台直播那种"视频流 5fps 静止帧、主要是音频"的素材，
+    //    工程网格抬到 30fps（叠加层一秒动 30 次），而**素材自己的时基仍然是 5fps**
+    //    （源帧号靠它换算 —— 套上下限会让 5fps 素材的源帧号跑 6 倍，画面 1/6 时长就播完）。
+    const d3 = mod.translate(cfg, dir, join(dir, 'd3.json'), { video: 'clip5.mp4' });
+    eq(JSON.stringify(d3.timeline.timebase), JSON.stringify({ num: 30, den: 1 }),
+      '源只有 5fps ⇒ 工程网格必须抬到 30/1（下限）');
+    eq(JSON.stringify(videoOf(d3).timebase), JSON.stringify({ num: 5, den: 1 }),
+      '源只有 5fps ⇒ **素材时基仍是 5/1**（源帧号靠它换算，不能跟着抬）');
   } finally { rmSync(dir, { recursive: true, force: true }); }
   return checks;
 }

@@ -1196,8 +1196,26 @@ export function translate(config, clipDir, outPath, options = {}) {
   const videoAbs = join(clipDir, videoRel);
   const media = existsSync(videoAbs) ? probeMedia(videoAbs) : null;
   // 探不到就维持改造前的值（60fps / 1920x1080）并**明确报一条 NOTE** —— 不静默假装探到了。
-  const timebase = media?.fps ?? { num: 60, den: 1 };
+  //
+  // ⚠️ **素材自己那份时基（`assetTimebase`，**不设下限**）与工程网格（`timebase`，**下限 30fps**）是两件事**：
+  //   · 源帧号靠**素材时基**换算（`asset_timebases` → `source_frame = seconds × asset.fps`）；
+  //     把下限也套到素材上，5fps 的片子会被当成 30fps ⇒ 源帧号跑 6 倍 ⇒ 画面在 1/6 时长内播完。
+  //   · 工程网格是**字幕/弹幕/贴纸/关键帧的更新频率**。电台直播那种"视频流 5fps 静止帧、主要是音频"的素材，
+  //     网格也降到 5fps 会让所有叠加层一秒只动 5 次（很糙）；给一个 **30fps 下限**，视频层照旧是静止帧、
+  //     叠加层按 30fps 走 —— 这正是用户要的（2026-10-06）。
+  const assetTimebase = media?.fps ?? { num: 60, den: 1 };
+  const mediaFps = assetTimebase.num / assetTimebase.den;
+  const FPS_FLOOR = 30;
+  const timebase = mediaFps > 0 && mediaFps < FPS_FLOOR ? { num: FPS_FLOOR, den: 1 } : assetTimebase;
   const fps = timebase.num / timebase.den;
+  if (media?.fps && mediaFps < FPS_FLOOR) {
+    note(
+      'assets',
+      `源素材只有 ${mediaFps}fps（电台那种"5fps 静止帧 + 音频"的流）⇒ **工程网格抬到 ${FPS_FLOOR}fps**：` +
+        '叠加层（字幕/弹幕/贴纸）按 30fps 更新，视频层仍是那几张静止帧（源帧号按素材自己的 ' +
+        `${mediaFps}fps 换算，不受影响）`,
+    );
+  }
   const mediaW = media?.width ?? null;
   const mediaH = media?.height ?? null;
   if (media?.fps == null) {
@@ -1217,7 +1235,8 @@ export function translate(config, clipDir, outPath, options = {}) {
     name: config.project?.name ?? 'clip',
     uri: videoRel,
     frame_count: null,
-    timebase,
+    // ⚠️ **素材自己的时基，不设下限**（源帧号靠它换算；套上限会让 5fps 素材的源帧号跑 6 倍）
+    timebase: assetTimebase,
     width: mediaW ?? 1920,
     height: mediaH ?? 1080,
     content_hash: null,
@@ -4021,6 +4040,9 @@ export function translate(config, clipDir, outPath, options = {}) {
       // **转译的来龙去脉留在这里**：工程文件本身要说清它是从哪来的。
       'yekitrim.polish_toml': {
         translated_at_frame_rate: timebase.num / timebase.den,
+        // 素材自己那份（没抬下限的那个）也记下来：两者不等时，看这张表就能分辨
+        // "工程网格被抬到 30" 与 "源真的 30fps"（排查时最容易混的一对）。
+        source_frame_rate: assetTimebase.num / assetTimebase.den,
         camera_events: cameraCount,
         shake_events: shakeCount,
         sticker_events: stickerCount,
