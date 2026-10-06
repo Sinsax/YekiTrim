@@ -989,7 +989,7 @@ console.log('\n㉓ 字幕轨道：搜索（上一个/下一个）+ 滚轮缩放'
       && /function onWheel\(e\) \{[\s\S]{0,700}?e\.preventDefault\(\)/.test(s)
       && /if \(e\.shiftKey\) return/.test(s)
       && /const anchorTime = \(el\.scrollLeft \+ cursorX\) \/ \(scale\.value \|\| 1\)/.test(s)
-      && /Math\.max\(0, Math\.min\(SCALES\.length - 1, scaleIdx\.value \+ \(e\.deltaY < 0 \? 1 : -1\)\)\)/.test(s)
+      && /Math\.max\(0, Math\.min\(scaleList\.value\.length - 1, scaleIdx\.value \+ \(e\.deltaY < 0 \? 1 : -1\)\)\)/.test(s)
 
   check('㉓ 搜索行在（输入框 + 上一个/下一个 + Enter/Shift+Enter）', searchUi(track), true)
   check('㉓ 命中表大小写不敏感 + 命中块高亮 + 改词清当前位置', hitLogic(track), true)
@@ -1038,7 +1038,7 @@ console.log('\n㉔ 多段切片：选段（入点/出点只作用于选中那段
       && !/v-model\.number="r\.start"\s*\n\s*:title="'第 '[\s\S]{0,120}?@click\.stop/.test(s)
       && /@focus="activeRow = i"/.test(s)
   const pickButton = (s) =>
-    /class="seg-pick"[\s\S]{0,160}?@click\.stop="activeRow = i"/.test(s)
+    /class="seg-pick"[\s\S]{0,400}?@click\.stop="activeRow = i"/.test(s)
       && /\.seg-pick\.on \{/.test(s)
       && /\.slice-row\.on \{ background:var\(--chip-bg\); border-left-color:/.test(s)
   const autoNewest = (s) =>
@@ -1062,7 +1062,7 @@ console.log('\n㉔ 多段切片：选段（入点/出点只作用于选中那段
     ['整行不再可点选', prepareView,
       (s) => s.replace('                 @click="activeRow = i">', '                 >'), rowSelectable],
     ['选段按钮摘掉', prepareView,
-      (s) => s.replace(/<button class="seg-pick"[\s\S]{0,220}?<\/button>/, ''), pickButton],
+      (s) => s.replace(/<button class="seg-pick"[\s\S]{0,600}?<\/button>/, ''), pickButton],
     ['新建段不再自动转到最新段', prepareView,
       (s) => s.replace('  activeRow.value = sliceRows.value.length - 1\n', ''), autoNewest],
     ['界面上不再写"编辑中第 N 段"', prepareView,
@@ -1072,6 +1072,65 @@ console.log('\n㉔ 多段切片：选段（入点/出点只作用于选中那段
     const m = mutate(src)
     check(`[变异] ㉔ ${what} → 源码确实被改了`, m !== src, true)
     check(`[变异] ㉔ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ── ㉕ 多段切片：**每段都上色** + 缩放底线 = **全长度**（用户口径 2026-10-06）──
+//
+// 两条：
+//   ① 「多段时需要将每一段都颜色标注，而不是只有最新的才标注」⇒ 轨道上 N 段 N 条色带，
+//      每段自己的颜色；列表里的段号用**同一套调色板**（一眼对得上"第 3 段在哪儿"）；
+//   ② 「最大还是定为全长度吧，还是很有必要」⇒ 缩小到底那一档是**动态算的**
+//      （`可用宽度 / 总时长`），固定 `0.5 px/s` 对 3 小时录音要 5400px，根本放不下一屏。
+console.log('\n㉕ 多段：每段上色 + 缩到底 = 全长度')
+{
+  const track = await read('webui/src/components/prepare/SubtitleTrack.vue')
+  const utils = await read('webui/src/utils.js')
+  const prepareView = await read('webui/src/views/PrepareView.vue')
+
+  const palette = (s) =>
+    /export const SEG_COLORS = \[/.test(s) && /export function segColor\(i\)/.test(s)
+      && (s.match(/line: 'rgba\(/g) || []).length >= 6
+  // ⚠️ **逐字**判"每一段都画"：光查"提到 props.ranges"会被
+  // `? [props.ranges[activeRange]]` 这种"只画当前那段"的变异骗过（实测踩过）。
+  const everyBand = (s) =>
+    /ranges: \{ type: Array, default: \(\) => \[\] \}/.test(s)
+      && /activeRange: \{ type: Number, default: 0 \}/.test(s)
+      && /const list = \(props\.ranges \|\| \[\]\)\.length\n\s*\? props\.ranges\n\s*: \[\{ start: props\.markIn, end: props\.markOut \}\]/.test(s)
+      && /const c = segColor\(i\)/.test(s)
+      && /on: i === \(Number\(props\.activeRange\) \|\| 0\),/.test(s)
+      && /v-for="b in bands"/.test(s)
+  const dynamicFloor = (s) =>
+    /const fitScale = computed\(\(\) => \{[\s\S]{0,220}?Math\.min\(SCALES\[0\], viewWidth\(\) \/ s\)/.test(s)
+      && /const scaleList = computed\(\(\) => \[fitScale\.value, \.\.\.SCALES\.filter\(\(v\) => v > fitScale\.value\)\]/.test(s)
+      && /const scale = computed\(\(\) => scaleList\.value\[/.test(s)
+  const wired = (s) =>
+    /:ranges="sliceRows"/.test(s) && /:active-range="activeRow"/.test(s)
+      && /:style="\{ borderColor: segColor\(i\)\.line/.test(s)
+
+  check('㉕ 共享调色板（≥6 色 + `segColor(i)`）', palette(utils), true)
+  check('㉕ 轨道：每段一条色带（不是只标当前那段）', everyBand(track), true)
+  check('㉕ 缩到底那一档是动态算的（可用宽度 / 总时长）', dynamicFloor(track), true)
+  check('㉕ 列表把整份 ranges 传下去 + 段号用同一套色', wired(prepareView), true)
+
+  const MUT25 = [
+    ['轨道只画当前那段（回到用户反对的行为）', track,
+      (s) => s.replace('    ? props.ranges\n', '    ? [props.ranges[Number(props.activeRange) || 0] || { start: 0, end: 0 }]\n'), everyBand],
+    ['每段用同一个颜色（分不出第几段）', track,
+      (s) => s.replace('    const c = segColor(i)', '    const c = segColor(0)'), everyBand],
+    ['缩到底那一档写回固定 0.5（3 小时放不下）', track,
+      (s) => s.replace('  return Math.min(SCALES[0], viewWidth() / s)', '  return SCALES[0]'), dynamicFloor],
+    ['列表不再把 ranges 传给轨道', prepareView,
+      (s) => s.replace('            :ranges="sliceRows"\n', ''), wired],
+    ['列表段号不再上色（与色带对不上）', prepareView,
+      (s) => s.replace(':style="{ borderColor: segColor(i).line, color: segColor(i).line,', ':style="{'), wired],
+    ['调色板缩到 2 色', utils,
+      (s) => s.replace(/export const SEG_COLORS = \[[\s\S]*?\n\]\n/, 'export const SEG_COLORS = [\n  { line: \'rgba(1,1,1,.9)\', fill: \'rgba(1,1,1,.2)\' },\n]\n'), palette],
+  ]
+  for (const [what, src, mutate, still] of MUT25) {
+    const m = mutate(src)
+    check(`[变异] ㉕ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉕ ${what} → 判据翻面`, still(m), false)
   }
 }
 
