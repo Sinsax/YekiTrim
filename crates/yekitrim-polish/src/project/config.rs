@@ -599,22 +599,34 @@ pub struct StageConfig {
     #[serde(default)]
     pub padding: u32,
 
-    /// **竖屏画布**下是否渲染**特效**事件（`flash/blur/hue_shift/noise/vignette/overlay/pulse/shake`）。
+    /// **六条轨道的显示开关**（0.6.0 起，用户 2026-10-06 口径）—— 时间轴每条轨道前那枚「眼睛」。
     ///
-    /// ⚠️ **缺字段 = false = 关**（2026-10-02 用户口径：竖屏默认全关，**老工程也一并关**）。
-    /// 语义 = **按整类事件屏蔽**（整轨），只影响渲染与预览求值，**绝不改事件** ——
-    /// 与「屏蔽只做标记」同一条纪律（打开即完全恢复）。字幕 / 弹幕 / 贴纸**不受它影响**。
-    #[serde(default)]
+    /// ⚠️ **每条轨道一个 `Option<bool>`**：`None`（缺字段 / 从没点过）＝**自动**，
+    /// 按**素材方向 + 画布方向**取默认（[`ProjectFile::lane_default`]）；
+    /// `Some(v)` ＝ 用户显式设定，一律照办。自动与显式都只在**渲染/预览侧**生效：
+    /// **事件本身一个字都不动**（与「屏蔽只做标记」同一条纪律，打开即完全恢复）。
+    ///
+    /// 取代了 0.5.0 的 `portrait_effects` / `portrait_camera` / `portrait_sfx` 三键：
+    /// 老口径把「竖屏默认关运镜/特效/音效」写成**硬门**（只认画布方向、素材竖的那一档由
+    /// `src_portrait_no_camera` 硬吃），用户既看不见也改不了 —— 用户报的
+    /// 「竖屏素材不应该默认不启用…」就是它。现在只是**默认值**，眼睛一点就能开。
+    #[serde(default, skip_serializing_if = "StageLanes::is_auto")]
+    pub lanes: StageLanes,
+
+    /// ⚠️ **老键（0.5.0）：只读兼容、不再写出、不参与判定**（判定只看 [`StageConfig::lanes`]）。
+    ///
+    /// 留着它们**不是为了行为兼容**，而是因为 `[stage]` 上有 `deny_unknown_fields`（而那个属性与
+    /// `flatten` 一起用时**不认** `extra`）：删掉字段会让任何写过这三个键的老工程**整份解析失败**
+    /// —— 实测 p4 的 `polish.toml` 里就写着 `portrait_camera = false`，删字段后 `load_project`
+    /// 直接 `unknown field portrait_camera`，那个片段在界面上变成"片段配置读取失败"。
+    /// 真值由 [`ProjectFile::migrate_portrait_lanes`] 单向吸收到 `lanes`（只吸收 `true`）。
+    #[serde(default, skip_serializing)]
     pub portrait_effects: bool,
-
-    /// **竖屏画布**下是否渲染**运镜**（`Event::Camera`）。缺字段 = 关。
-    /// ⚠️ 与「竖素材早退」（`CFG.vertical`，按源 `h > w`）是**两条独立的闸**，任一要求禁就禁。
-    #[serde(default)]
+    /// 同 [`StageConfig::portrait_effects`]。
+    #[serde(default, skip_serializing)]
     pub portrait_camera: bool,
-
-    /// **竖屏画布**下是否混入**音效**（`Event::Sfx`，含事件引用的 `sfx` / `sfx_volume`）。缺字段 = 关。
-    /// 收口在 `crate::render::sound::collect_sound_events`（cmd_render 的唯一 SFX 入口）。
-    #[serde(default)]
+    /// 同 [`StageConfig::portrait_effects`]。
+    #[serde(default, skip_serializing)]
     pub portrait_sfx: bool,
 
     #[serde(flatten)]
@@ -646,10 +658,117 @@ impl Default for StageConfig {
             position: default_stage_position(),
             scale: default_stage_scale(),
             padding: 0,
+            lanes: StageLanes::default(),
             portrait_effects: false,
             portrait_camera: false,
             portrait_sfx: false,
             extra: HashMap::new(),
+        }
+    }
+}
+
+// ===== 轨道显示开关（眼睛）=====
+
+/// 时间轴上的一条轨道 —— **显示开关（眼睛）的单位**，也是「这一类事件渲不渲染」的判据。
+///
+/// 六条轨道与时间轴泳道**一一对应**（`webui/src/components/TimelineEditor.vue::LANE_DEFS`）；
+/// 「分段/屏蔽」不在其中：那是结构轨（分段是容器、屏蔽是剪切标记），没有"整类不渲染"这种语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    Subtitles,
+    Danmaku,
+    Camera,
+    Sticker,
+    Effects,
+    Sfx,
+}
+
+impl Lane {
+    /// 顺序 = 时间轴泳道顺序（前端眼睛判定与注入的 JSON 都按它）。
+    pub const ALL: [Lane; 6] = [
+        Lane::Subtitles,
+        Lane::Danmaku,
+        Lane::Camera,
+        Lane::Sticker,
+        Lane::Effects,
+        Lane::Sfx,
+    ];
+
+    /// `polish.toml` 的键名 / 注入前端的键名。
+    pub fn key(self) -> &'static str {
+        match self {
+            Lane::Subtitles => "subtitles",
+            Lane::Danmaku => "danmaku",
+            Lane::Camera => "camera",
+            Lane::Sticker => "sticker",
+            Lane::Effects => "effects",
+            Lane::Sfx => "sfx",
+        }
+    }
+
+    /// 事件类型 → 所属轨道。**这张表就是 `spec/effects.json` 的 `lane` 分组**
+    /// （「覆盖层」D3 之后并进视觉特效轨）；认不出的类型返回 `None`（= 不受任何轨道门控）。
+    ///
+    /// ⚠️ 三份镜像必须同集合：这里、`webui/src/polish/engine.js::LANE_OF_TYPE`、
+    /// `tools/polish-to-dhampir.mjs::LANE_OF_TYPE`（`scripts/check-yekitrim-translator.mjs` 与
+    /// `webui/scripts/check-preview-engine.mjs` 各钉一条）。
+    pub fn of_event(ty: &str) -> Option<Lane> {
+        match ty {
+            "camera" => Some(Lane::Camera),
+            "sticker" => Some(Lane::Sticker),
+            "sfx" => Some(Lane::Sfx),
+            "shake" | "blur" | "flash" | "hue_shift" | "noise" | "vignette" | "overlay" | "pulse" => {
+                Some(Lane::Effects)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// `[stage.lanes]`：六条轨道的显式开关（`None` = 没设过 = 自动）。
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StageLanes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitles: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub danmaku: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticker: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sfx: Option<bool>,
+}
+
+impl StageLanes {
+    /// 一条都没设过 —— 整张表**不写进 toml**（新工程不该多出一个空 `[stage.lanes]`）。
+    pub fn is_auto(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// 写一条轨道的显式开关（`None` = 回到自动）—— 老键迁移用，界面走 `[stage]` 整块提交。
+    pub fn set(&mut self, lane: Lane, v: Option<bool>) {
+        match lane {
+            Lane::Subtitles => self.subtitles = v,
+            Lane::Danmaku => self.danmaku = v,
+            Lane::Camera => self.camera = v,
+            Lane::Sticker => self.sticker = v,
+            Lane::Effects => self.effects = v,
+            Lane::Sfx => self.sfx = v,
+        }
+    }
+
+    pub fn get(&self, lane: Lane) -> Option<bool> {
+        match lane {
+            Lane::Subtitles => self.subtitles,
+            Lane::Danmaku => self.danmaku,
+            Lane::Camera => self.camera,
+            Lane::Sticker => self.sticker,
+            Lane::Effects => self.effects,
+            Lane::Sfx => self.sfx,
         }
     }
 }
@@ -955,17 +1074,81 @@ fn default_metadata() -> String { "clip.json".into() }
 
 
 impl ProjectFile {
-    /// **「竖素材进了非竖画布」⇒ 运镜整条关掉** —— 两处注入（预览 API `api/polish.rs` 与出片模板
-    /// `render/server.rs`，键名 `portrait_no_camera`）都读它，**别各自现算**。
+    /// 一条轨道**没设过显式开关**时的默认值（用户 2026-10-06 口径）。
     ///
-    /// 语义（2026-10-05 收窄）：改造前判据是**只看源**（源 `h > w` 一律关运镜），于是
-    /// **竖素材进竖画布**这一档（最想要运镜、画面正好铺满、放大完全不会露底）也永远打不开 ——
-    /// 用户报的「竖屏素材没法运镜」就是它。现在只关**方向不一致**的那一档：源竖 + 画布非竖
-    /// （左右留边，摇移/缩放会把它拖出画布露衬底）。**横素材进竖画布不受它影响**
-    /// （那条归 `[stage] portrait_camera`，默认关、可开）。
-    pub fn src_portrait_no_camera(&self, src: Option<(u32, u32)>) -> bool {
-        let vertical = src.map(|(w, h)| h > w).unwrap_or(false);
-        vertical && !self.canvas.is_portrait()
+    /// | 轨道 | 默认关的条件 |
+    /// |---|---|
+    /// | 运镜 / 视觉特效 | **素材是竖的 或 画布是竖的** |
+    /// | 音效 | **画布是竖的**（口径不变：音效与素材方向无关） |
+    /// | 字幕 / 弹幕 / 贴纸 | 恒开 |
+    ///
+    /// ⚠️ 「素材竖」这一档取代了 0.5.0 的 `src_portrait_no_camera` **硬门**（源竖 + 画布非竖 ⇒
+    /// 运镜整条关掉、**改不了**）。用户要的是"看得见、点得动"，所以它降级成**默认值**：
+    /// 素材竖的工程眼睛默认灭，但点一下就能开（真开 = 参照与转译两侧都按开关走）。
+    /// ⚠️ 判不了素材方向（`src = None`）时**不算竖**（与 `vertical` 注入同一口径）。
+    pub fn lane_default(&self, lane: Lane, src: Option<(u32, u32)>) -> bool {
+        let portrait_canvas = self.canvas.is_portrait();
+        let portrait_src = src.map(|(w, h)| h > w).unwrap_or(false);
+        match lane {
+            Lane::Camera | Lane::Effects => !(portrait_src || portrait_canvas),
+            Lane::Sfx => !portrait_canvas,
+            Lane::Subtitles | Lane::Danmaku | Lane::Sticker => true,
+        }
+    }
+
+    /// 一条轨道**当前是否渲染**：显式开关优先，没设过取 [`ProjectFile::lane_default`]。
+    ///
+    /// 这是"这一类事件要不要进索引 / 要不要转译 / 要不要出声"的**唯一判据** ——
+    /// 预览（`webui/src/polish/engine.js` + `PolishPreview.vue`）、预览服务器模板
+    /// （`templates/index.html`）、出片转译器（`tools/polish-to-dhampir.mjs`）、
+    /// 音轨（`crate::render::sound::collect_sound_events`）四处都读同一份**注入结果**
+    /// （[`ProjectFile::lanes_json`]），不许各自现算。
+    pub fn lane_enabled(&self, lane: Lane, src: Option<(u32, u32)>) -> bool {
+        self.stage
+            .lanes
+            .get(lane)
+            .unwrap_or_else(|| self.lane_default(lane, src))
+    }
+
+    /// 老键（`[stage] portrait_camera/effects/sfx`）→ `[stage.lanes]` 的**一次性吸收**。
+    ///
+    /// 0.5.0 那三个键的语义是"**竖屏画布下**这一类开不开"，与 `[stage.lanes]` 的显式值是同一件事。
+    /// **只吸收 `true`**（`false` 不带信息：老键在横画布下根本不生效，把它落成 `Some(false)`
+    /// 会把"横画布本来开着"的运镜/特效**静默关掉**）。只在新键没设过时写。
+    ///
+    /// 不吸收的后果同样是静默的：用户在竖画布下点开过运镜（`portrait_camera = true`），
+    /// 升级后那个键被忽略 ⇒ 竖画布默认又变成关，用户只会看到"我明明开过"。
+    /// 返回是否真的吸收了（单测关心）。
+    pub fn migrate_portrait_lanes(&mut self) -> bool {
+        let legacy = [
+            (self.stage.portrait_camera, Lane::Camera),
+            (self.stage.portrait_effects, Lane::Effects),
+            (self.stage.portrait_sfx, Lane::Sfx),
+        ];
+        let mut touched = false;
+        for (old, lane) in legacy {
+            if old && self.stage.lanes.get(lane).is_none() {
+                self.stage.lanes.set(lane, Some(true));
+                touched = true;
+            }
+        }
+        touched
+    }
+
+    /// 六条轨道**解析后**的开关 —— 注入前端 `_lanes` 与预览模板 `lanes` 的唯一真源。
+    ///
+    /// ⚠️ 转译器（`tools/polish-to-dhampir.mjs`）读的是磁盘 `polish.toml` + 自己 ffprobe 的源尺寸，
+    /// 所以那一边有**第二份实现**（`LANE_DEFAULT`）；两边必须同口径，
+    /// 判据 = `scripts/check-yekitrim-translator.mjs` 的 `checkLaneSwitches`（含变异自证）。
+    pub fn lanes_json(&self, src: Option<(u32, u32)>) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for lane in Lane::ALL {
+            map.insert(
+                lane.key().to_string(),
+                serde_json::Value::Bool(self.lane_enabled(lane, src)),
+            );
+        }
+        serde_json::Value::Object(map)
     }
 
     /// 输出画布尺寸（唯一推导点）。
@@ -1233,8 +1416,10 @@ impl ProjectFile {
                         result.push_str("#   老字段 position_pct(单值)/position 只读兼容(auto = 居中)\n");
                         result.push_str("# scale: 主画面缩放, 1.0 = 按当前轴适配到位（<1 再缩, >1 放大裁切）\n");
                         result.push_str("# padding: 老字段(px, 横画布基准)，界面已不再提供；留着仅为老工程照旧生效\n");
-                        result.push_str("# portrait_effects / portrait_camera / portrait_sfx: 竖屏画布是否启用\n");
-                        result.push_str("#   特效/运镜/音效，缺字段 = false = 关（整类事件不渲染，事件本身不动）\n");
+                        result.push_str("# [stage.lanes]: 六条轨道的显示开关（时间轴每条轨道前那枚眼睛）\n");
+                        result.push_str("#   subtitles/danmaku/camera/sticker/effects/sfx = true/false；\n");
+                        result.push_str("#   缺字段 = 自动：运镜/特效在「素材竖 或 画布竖」时默认关，音效在竖画布下默认关，\n");
+                        result.push_str("#   字幕/弹幕/贴纸恒默认开。整类事件只在渲染侧跳过，事件本身不动（打开即恢复）\n");
                     }
                     _ => {
                         result.push_str("\n# ===== 贴纸落点 =====\n");
@@ -1268,10 +1453,11 @@ impl ProjectFile {
                 continue;
             }
 
-            // [style.danmaku] 后加注释（offset_secs 由 WebUI「弹幕时间偏移」滑块写入）
+            // [style.danmaku] 后加注释（offset_secs / font 由 WebUI 的弹幕组写入）
             if trimmed == "[style.danmaku]" {
                 result.push_str("\n# ===== 弹幕样式 =====\n");
                 result.push_str("# offset_secs: 弹幕时间偏移（秒，负 = 提前出现，默认 -3）\n");
+                result.push_str("# font: 弹幕字体（字体库 id），空 = 跟随字幕那条字体栈；它也决定丈量宽度\n");
                 result.push_str(line); result.push('\n');
                 continue;
             }
@@ -2340,8 +2526,9 @@ mod canvas_stage_tests {
         assert_eq!(cfg.stage.scale, 1.0);
         assert_eq!(cfg.stage.padding, 0, "padding 字段保留（老工程照旧生效）");
         assert_eq!(cfg.sticker.position_mode, "auto");
-        // 竖屏三开关：**缺字段 = 关**（用户口径：老工程也一并关）
-        assert!(!cfg.stage.portrait_effects && !cfg.stage.portrait_camera && !cfg.stage.portrait_sfx);
+        // 轨道开关：**缺字段 = 自动**（老工程一个 `[stage.lanes]` 都没有 ⇒ 全走默认）
+        assert!(cfg.stage.lanes.is_auto(), "老工程没有 [stage.lanes] ⇒ 整张表是自动");
+        assert_eq!(cfg.stage.lanes.get(Lane::Camera), None);
         let f = cfg.resolve_stage(Some((1080, 1920)));
         assert_eq!(
             (f.axis.as_str(), f.position.as_str(), f.bg.as_str()),
@@ -2351,6 +2538,119 @@ mod canvas_stage_tests {
         assert!((f.position_x_pct - 50.0).abs() < 1e-9 && (f.position_y_pct - 50.0).abs() < 1e-9);
         // 竖素材进横画布：X 有余量（能动）、Y 正好贴满（余量 0 ⇒ 界面置灰那条滑杆）
         assert!((f.free_x - 1312.5).abs() < 1e-9 && f.free_y == 0.0, "{f:?}");
+    }
+
+    /// **老键 `[stage] portrait_*` 必须还能解析**（`deny_unknown_fields` + `flatten` 会认不出来），
+    /// 而且 `true` 要被**单向吸收**到 `[stage.lanes]`（只吸收 true —— false 不带信息）。
+    #[test]
+    fn legacy_portrait_keys_still_parse_and_migrate_into_lanes() {
+        // 实测样本：p4 的 polish.toml 就写着这三行（全 false）。删字段的话这里直接解析失败。
+        let raw = "[source]
+video = \"clip.mp4\"
+subtitles = \"clip.srt\"
+[stage]
+portrait_effects = false
+portrait_camera = false
+portrait_sfx = false
+";
+        let mut cfg: ProjectFile = toml::from_str(raw).expect("老键必须还能解析");
+        assert!(cfg.stage.lanes.is_auto());
+        assert!(!cfg.migrate_portrait_lanes(), "全 false ⇒ 什么都没吸收（false 不是信息）");
+
+        // true 才吸收 —— 且只在**新键没设过**时
+        let raw2 = "[source]
+video = \"clip.mp4\"
+subtitles = \"clip.srt\"
+[stage]
+portrait_camera = true
+";
+        let mut a: ProjectFile = toml::from_str(raw2).expect("解析");
+        assert!(a.migrate_portrait_lanes());
+        assert_eq!(a.stage.lanes.camera, Some(true), "老键打开过 ⇒ 新键接管这件事");
+        assert_eq!(a.stage.lanes.effects, None, "没写过的那条仍是自动");
+        let mut b: ProjectFile = toml::from_str(raw2).expect("解析");
+        b.stage.lanes.camera = Some(false);
+        assert!(!b.migrate_portrait_lanes(), "新键已显式设过 ⇒ 老键不许覆盖它");
+        assert_eq!(b.stage.lanes.camera, Some(false));
+        // 写出去不许再带老键（否则永远吸收不完）
+        let text = a.to_toml_commented().expect("写");
+        assert!(!text.contains("portrait_camera"), "老键不再写出:
+{text}");
+    }
+
+    /// **轨道显示开关**（`[stage.lanes]`，2026-10-06）：默认值按素材/画布方向取，
+    /// 显式值一律照办；注入的 `_lanes` 必须与 `lane_enabled` 逐条一致。
+    #[test]
+    fn lane_switches_default_by_orientation_and_explicit_wins() {
+        let mut cfg = ProjectFile::example(); // 横画布
+        let land = Some((1920u32, 1080u32));
+        let port_src = Some((1080u32, 1920u32));
+        let port_canvas = Some((1080u32, 1920u32));
+
+        // 横画布 + 横素材：六条轨道全开（这就是"眼睛默认亮着")
+        for lane in Lane::ALL {
+            assert!(cfg.lane_enabled(lane, land), "横画布+横素材 {} 应默认开", lane.key());
+        }
+        // 用户口径：**素材竖 或 画布竖** ⇒ 运镜/视觉特效默认关；音效只跟画布
+        for lane in [Lane::Camera, Lane::Effects] {
+            assert!(!cfg.lane_enabled(lane, port_src), "竖素材 ⇒ {} 默认关", lane.key());
+        }
+        assert!(cfg.lane_enabled(Lane::Sfx, port_src), "音效与素材方向无关 ⇒ 竖素材下仍开");
+        assert!(cfg.lane_enabled(Lane::Sticker, port_src), "贴纸不受方向影响");
+        assert!(cfg.lane_enabled(Lane::Subtitles, port_src));
+        assert!(cfg.lane_enabled(Lane::Danmaku, port_src));
+        // 判不了源尺寸 ⇒ 不算竖（与 vertical 注入同口径）
+        cfg.canvas.orientation = "portrait".into();
+        assert!(!cfg.lane_enabled(Lane::Camera, None), "竖画布 + 判不了源 ⇒ 仍默认关运镜");
+        assert!(!cfg.lane_enabled(Lane::Sfx, None), "竖画布 ⇒ 音效默认关");
+        assert!(!cfg.lane_enabled(Lane::Camera, port_canvas), "竖画布 + 竖素材 ⇒ 关");
+        // 显式开关覆盖一切（竖素材 + 横画布那档曾经是**硬门**，现在点得开）
+        cfg.canvas.orientation = "landscape".into();
+        cfg.stage.lanes.camera = Some(true);
+        assert!(cfg.lane_enabled(Lane::Camera, port_src), "显式开 ⇒ 竖素材也能运镜");
+        cfg.stage.lanes.camera = Some(false);
+        assert!(!cfg.lane_enabled(Lane::Camera, land), "显式关 ⇒ 横画布也关");
+        // 注入的 `_lanes` 与逐个查询一致（预览/模板只有这一份真源）
+        let lanes = cfg.lanes_json(land);
+        for lane in Lane::ALL {
+            assert_eq!(
+                lanes[lane.key()].as_bool(),
+                Some(cfg.lane_enabled(lane, land)),
+                "{} 注入值必须与 lane_enabled 一致",
+                lane.key()
+            );
+        }
+        // 事件类型 → 轨道（转译器/引擎三份镜像同集合）
+        assert_eq!(Lane::of_event("camera"), Some(Lane::Camera));
+        assert_eq!(Lane::of_event("overlay"), Some(Lane::Effects), "覆盖层已并进视觉特效轨");
+        assert_eq!(Lane::of_event("sfx"), Some(Lane::Sfx));
+        assert_eq!(Lane::of_event("sticker"), Some(Lane::Sticker));
+        assert_eq!(Lane::of_event("segments"), None, "分段不是可关的轨道");
+    }
+
+    /// `[stage.lanes]` 的写盘形态：**全自动时一个字节都不写**（新工程不多出空表）；
+    /// 显式设过才落表，且能原样读回。
+    #[test]
+    fn stage_lanes_round_trip_and_stay_absent_when_auto() {
+        let auto = ProjectFile::example().to_toml_commented().expect("写 toml");
+        assert!(!auto.lines().any(|l| l == "[stage.lanes]"), "全自动 ⇒ 不写表:\n{auto}");
+
+        let mut cfg = ProjectFile::example();
+        cfg.stage.lanes.camera = Some(true);
+        cfg.stage.lanes.subtitles = Some(false);
+        let text = cfg.to_toml_commented().expect("写 toml");
+        assert!(text.lines().any(|l| l == "[stage.lanes]"), "显式设过 ⇒ 必须落表:\n{text}");
+        let back: ProjectFile = toml::from_str(
+            &text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("config_version"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("自己写出的东西自己得读得回来");
+        assert_eq!(back.stage.lanes.camera, Some(true));
+        assert_eq!(back.stage.lanes.subtitles, Some(false));
+        assert_eq!(back.stage.lanes.effects, None, "没设的那条仍是自动");
     }
 
     /// **模板消费面的一致性钉子**：`_canvas.stage` 的每个字段、JS 里拼出的每个 class、

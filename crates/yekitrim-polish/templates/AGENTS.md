@@ -17,8 +17,8 @@
   - 覆盖层求值 `getOverlayState`（四档：`color` / `gradient` / `fade_in` / `fade_out`；**fade 两档 = 整窗
     线性斜坡、不叠 0.4s 包络**，所以分支必须排在包络之前）与色档助手（`overlay_fade_stop` / `overlayFadeStop`）；
   - `wrapCaptionParts`（字幕限宽折行，上限 `MAX_LINES = 3`、`MIN_RATIO = 0.7`、安全宽 = 画布宽 × 0.875）；
-  - `getActiveCamera` / `cameraAt`（运镜；两句函数开头都有**运镜门**：`CFG.portrait_no_camera`
-    （= 竖素材进了非竖画布，Rust 注入）→ 整条返回 `zoom=1 / handheld=0`）、
+  - `getActiveCamera` / `cameraAt`（运镜；两句函数开头都有**运镜门**：`!CFG.lanes.camera`
+    （= 运镜轨的眼睛关着，Rust 按 `[stage.lanes]` 注入）→ 整条返回 `zoom=1 / handheld=0`）、
     `liverOrigin`（立绘原点，须与 Rust `grid_rect` 对齐）；
   - `stageDrawRect`（视频层摆放矩形，**出片专用、`engine.js` 没有对应实现**）与
     `drawStageBackdrop`（画面衬底：`blur` / `black` / `color` / `none` 四种模式）。
@@ -70,11 +70,14 @@
   —— 那是"存量逐字节零回归"的判据。摆位经 CTM 送入矩形（`ctx.translate(sr.x,sr.y)` +
   `ctx.scale(sr.w/CW, sr.h/CH)`），`drawImage` 的 dst **保持字面量 `(0,0,CW,CH)`**：
   顺序钉子与两处变异都锚在它上面，别顺手改成 dest 矩形参数。
-- ⚠️ **运镜门 = 竖素材进了非竖画布**（注入的 `CFG.portrait_no_camera`，唯一判据是
-  `ProjectFile::src_portrait_no_camera` = 源竖 **且** 画布非竖；2026-10-05 从「源竖就关」收窄）。
+- ⚠️ **运镜门 = 运镜轨的眼睛**（注入的 `CFG.lanes.camera`，唯一判据是
+  `ProjectFile::lane_enabled(Camera)`；2026-10-06 取代 `src_portrait_no_camera` 那个**硬门**：
+  旧口径是"源竖 + 画布非竖 ⇒ 整条关掉、界面改不了"，用户要的是**看得见、点得开**）。
   只在循环末尾归零 `handheld` 不够 —— `zoom` 照旧把画面拖走，而预览侧（`engine.js::cameraAt`）
-  早就整条返回了：**预览不动、成片在缩放**，同样不报错。⚠️ **竖素材进竖画布放行**（画面正好
-  铺满、放大不露底，那才是最该有运镜的一档）—— 判据别退回读 `CFG.vertical`。
+  早就整条返回了：**预览不动、成片在缩放**，同样不报错。⚠️ **竖素材 + 眼睛亮着就照常运镜**
+  （画面正好铺满、放大不露底，那才是最该有运镜的一档）—— 判据别退回读 `CFG.vertical`。
+  ⚠️ `CFG.lanes` 是**六条轨道**的开关（字幕/弹幕/贴纸/运镜/特效/音效），`buildIndex` 按它整类
+  跳过事件；**缺注入 = 全开**（宁可多画，不可静默吞掉）。
   另注：`yekitrim-render-core::evaluate_frame` 只归零 handheld —— 那是**已删除**的 wgpu 路径留下的
   平行实现，现在没有生产消费者；两边口径差异记在这里，改之前先确认动的是哪条路径。
 - ⚠️ **字幕折行同样是两份实现**（本模板 `wrapCaptionParts` ↔ `engine.js::wrapCaptionParts`），

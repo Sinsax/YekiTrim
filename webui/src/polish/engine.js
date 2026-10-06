@@ -124,18 +124,21 @@ let dmMeasureCtx = null
 // 按数组身份缓存：拖拽时每 60ms 重建一次索引，几万条弹幕逐个 measureText 会明显卡顿
 // （弹幕数组本身不变，只有 events 在改）。
 const dmWidthCache = new WeakMap()
-export function measureDanmakuWidths(dms, fontSize) {
+export function measureDanmakuWidths(dms, fontSize, fontFamily) {
   if (!dms || !dms.length) return []
   const size = fontSize || 42
+  // 字体族也是缓存键的一部分：换了字体（同一批弹幕、同字号）丈量结果会变，
+  // 只按 size 命中就会拿旧字体的宽度去算滚动时长 —— 弹幕没滚到边就消失。
+  const family = String(fontFamily || '').trim()
   const hit = dmWidthCache.get(dms)
-  if (hit && hit.size === size) return hit.widths
+  if (hit && hit.size === size && hit.family === family) return hit.widths
   if (!dmMeasureCtx) {
     const c = document.createElement('canvas')
     dmMeasureCtx = c.getContext('2d')
   }
-  dmMeasureCtx.font = '600 ' + size + 'px sans-serif'
+  dmMeasureCtx.font = '600 ' + size + 'px ' + (family ? '"' + family + '",sans-serif' : 'sans-serif')
   const widths = dms.map((d) => dmMeasureCtx.measureText(d.text || '').width + 20)
-  dmWidthCache.set(dms, { size, widths })
+  dmWidthCache.set(dms, { size, family, widths })
   return widths
 }
 
@@ -194,12 +197,16 @@ export const INDEXED_TYPES = [
   'vignette', 'hue_shift', 'noise', 'pulse', 'sfx',
 ]
 
-/// **竖屏画布的三道整类门**（2026-10-02 用户口径）：事件类型 → `[stage] portrait_<x>` 开关名。
-/// 不在表里 = 不受门控（贴纸 / 字幕 / 弹幕都在这一类里）。
-/// ⚠️ 这张表必须与 `tools/polish-to-dhampir.mjs::PORTRAIT_SWITCH`、`index.html` 里那份**同集合**
-///    —— 少一处就是「预览里有这一类、成片里没有」（或反过来），而且**不报错**。
-export const PORTRAIT_SWITCH = {
+/// **六条轨道的显示开关**（时间轴每条轨道前那枚眼睛，2026-10-06 用户口径）：
+/// 事件类型 → `[stage.lanes] <轨道>`。
+/// 不在表里 = 不受门控（认不出的类型照旧进索引）。
+/// ⚠️ 这张表必须与 `tools/polish-to-dhampir.mjs::LANE_OF_TYPE`、Rust `Lane::of_event`、
+///    `index.html` 里那份**同集合** —— 少一处就是「预览里有这一类、成片里没有」
+///    （或反过来），而且**不报错**。
+export const LANE_OF_TYPE = {
   camera: 'camera',
+  sticker: 'sticker',
+  sfx: 'sfx',
   shake: 'effects',
   blur: 'effects',
   flash: 'effects',
@@ -208,24 +215,25 @@ export const PORTRAIT_SWITCH = {
   vignette: 'effects',
   overlay: 'effects',
   pulse: 'effects',
-  sfx: 'sfx',
 }
 
 export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
 
-  // **竖屏画布的整类门**：竖屏默认全关、**缺字段 = 关**（与转译器同口径）。
-  // 只过滤**建索引**这一步，事件本身一个字都不动 —— 开关打开、重新建索引即完全恢复。
-  // ⚠️ 判据是**画布方向**（`[canvas] orientation`），与 `cameraAt` 里那条「竖素材进了非竖画布」
-  //    的门（`cfg.portrait_no_camera`，由 Rust `ProjectFile::src_portrait_no_camera` 注入）
-  //    是两条独立的闸：任一条要求禁就禁。
-  const portrait = (cfg._canvas?.orientation || cfg.canvas?.orientation || 'landscape') === 'portrait'
-  const portraitAllows = (type) => {
-    if (!portrait) return true
-    const key = PORTRAIT_SWITCH[type]
-    if (!key) return true
-    return cfg.stage?.['portrait_' + key] === true
+  // **六条轨道的显示开关**（`cfg._lanes`，**由 Rust `ProjectFile::lanes_json` 解析后注入**）。
+  // 只过滤**建索引**这一步，事件本身一个字都不动 —— 眼睛点亮、重新建索引即完全恢复。
+  // ⚠️ 这里**不自己算默认值**：`None`/缺字段的默认（素材竖或画布竖 ⇒ 运镜与特效默认关 ……）
+  //    只住 Rust `ProjectFile::lane_default` 一处；少了注入就当全开（宁可多画，不可静默吞掉）。
+  //    转译器那份必须**逐条同口径**（它有第二份实现：读磁盘 toml + 自己探源尺寸）。
+  const lanes = cfg._lanes || null
+  const laneOn = (lane) => {
+    const v = lanes ? lanes[lane] : undefined
+    return typeof v === 'boolean' ? v : true
+  }
+  const laneAllows = (type) => {
+    const lane = LANE_OF_TYPE[type]
+    return !lane || laneOn(lane)
   }
 
   // segments 截断到视频时长（与模板一致，防 LLM 生成的超出）
@@ -257,8 +265,8 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
     const segLabel = seg.note || ''
     ;(seg.events || []).forEach((ev) => {
       const type = ev.type || ''
-      // 竖屏画布的整类门（见上面 `portraitAllows`）：这一类整条不进索引
-      if (!portraitAllows(type)) return
+      // 轨道眼睛关着（见上面 `laneAllows`）：这一类整条不进索引
+      if (!laneAllows(type)) return
       const entry = { time: ev.time || 0, duration: evDuration(ev, 0), ev }
       if (idx[type]) idx[type].push(entry)
       else idx[type] = [entry]
@@ -286,7 +294,8 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   })
   ;INDEXED_TYPES.forEach((k) => idx[k].sort((a, b) => a.time - b.time))
 
-  idx.subs = subtitles || []
+  // 字幕轨的眼睛：只清**索引里的那份**（素材与 `data/subtitles.json` 一个字都没动）
+  idx.subs = laneOn('subtitles') ? (subtitles || []) : []
   // ---- 弹幕时间偏移（[style.danmaku] offset_secs，默认 -3 = 整体提前 3s）----
   // 只平移显示时刻（start/end）；y 泳道与 travel 与时间无关，不用动。
   // 与 templates/index.html 的 DM 注入点同口径：那里在注入时平移一次，
@@ -294,19 +303,24 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
   // ⚠️ 必须拷贝、不能写回调用方的数组：buildIndex 会被响应式地重复求值，
   // 写回去等于每次重算再叠一次偏移（模板那份只 load 一次，没有这个问题）。
   const dmOff = (cfg.style && cfg.style.danmaku && isFinite(cfg.style.danmaku.offset_secs)) ? cfg.style.danmaku.offset_secs : -3
-  idx.dms = (danmaku && dmOff !== 0)
-    ? danmaku.map((d) => ({ start: d.start + dmOff, end: d.end + dmOff, text: d.text, color: d.color, y: d.y, travel_duration: d.travel_duration }))
-    : (danmaku || [])
-  idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg))
+  // 弹幕轨的眼睛同理：关掉就是"这一帧没有弹幕"，素材与 `offset_secs` 都不动。
+  idx.dms = !laneOn('danmaku')
+    ? []
+    : (danmaku && dmOff !== 0)
+      ? danmaku.map((d) => ({ start: d.start + dmOff, end: d.end + dmOff, text: d.text, color: d.color, y: d.y, travel_duration: d.travel_duration }))
+      : (danmaku || [])
+  idx.dmWidths = measureDanmakuWidths(idx.dms, dmFontSize(cfg), dmFontFamily(cfg))
   idx.dur = dur
   idx.layout = cfg.layout || {}
   idx.subStyle = (cfg.style && cfg.style.subtitle) || {}
   idx.dmStyle = (cfg.style && cfg.style.danmaku) || {}
   idx.camStyle = (cfg.style && cfg.style.camera) || {}
   idx.vertical = !!cfg.vertical
-  // 运镜门：**竖素材进了非竖画布**（与模板 `getActiveCamera` / 转译器同一条，唯一判据在 Rust
-  // `ProjectFile::src_portrait_no_camera`，2026-10-05 从「源竖就关」收窄）——竖素材进竖画布放行。
-  idx.portraitNoCamera = !!cfg.portrait_no_camera
+  // 运镜门：**运镜轨的眼睛关着**（`[stage.lanes] camera`，唯一判据在 Rust
+  // `ProjectFile::lane_enabled`，2026-10-06 从 `portrait_no_camera` 硬门改成开关）。
+  // ⚠️ 与上面 buildIndex 的整类过滤是**同一枚开关**的两道消费点：事件不进索引 + 状态机不进运镜
+  //（`cameraAt` 的早退与空列表结果逐值相同，留着是为了与模板 `getActiveCamera` 同形对照）。
+  idx.cameraOff = !laneOn('camera')
   // 画面构成契约（Rust resolve_stage 唯一推导）：贴纸落点模式 / 字幕安全宽 / 画布尺寸都从这里取
   idx.canvas = cfg._canvas || null
   // 画布参数（由 `_canvas` 推导）：百分比 → 像素、运镜不动点、贴纸几何都用它
@@ -319,6 +333,8 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
 
 function sfxVolume(cfg) { return (cfg.sfx && cfg.sfx.volume) || 0.1 }
 function dmFontSize(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font_size) || 42 }
+/** 弹幕字体（`[style.danmaku] font`，字体库 id；空 = 跟着字幕那条字体栈走）。 */
+function dmFontFamily(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font) || '' }
 
 function safeEmoji(name) {
   const code = parseInt(name, 16)
@@ -367,9 +383,9 @@ export function cameraAt(idx, t) {
   ox = parseFloat(dp[0]) || 65
   oy = parseFloat(dp[1]) || 50
 
-  // 竖素材进非竖画布不做运镜 —— 手持摇摆是运镜的附加变种，跟随屏蔽。
-  // ⚠️ 竖素材进竖画布**放行**（画面正好铺满、放大不露底）：那是最该有运镜的一档。
-  if (idx.portraitNoCamera) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
+  // 运镜轨的眼睛关着 ⇒ 不做运镜 —— 手持摇摆是运镜的附加变种，跟随同一条开关。
+  // ⚠️ 返回值（默认聚焦中心 + zoom=1）与"空相机列表"逐值相同，见 buildIndex 里的 `cameraOff`。
+  if (idx.cameraOff) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
 
   const wide = camFactor('远', idx.camStyle)
   for (const c of idx.camera) {

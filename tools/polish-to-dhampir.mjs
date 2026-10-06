@@ -382,6 +382,29 @@ function srtTime(ms) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(msec).padStart(3, '0')}`;
 }
 
+/// 六条轨道**没设过显式开关**时的默认值 —— 纯函数，**与 Rust
+/// `ProjectFile::lane_default` 逐条一致**（那张表的单测在 `project/config.rs`；
+/// 这一份的对拍在 `scripts/check-yekitrim-translator.mjs::checkLaneSwitches`，含变异自证）。
+///
+/// 用户 2026-10-06 口径：竖屏素材不再**硬**关掉运镜/特效，改成"默认关、眼睛一点就能开"。
+///   * 运镜 / 视觉特效：**素材竖 或 画布竖** ⇒ 默认关；
+///   * 音效：**画布竖** ⇒ 默认关（与素材方向无关）；
+///   * 字幕 / 弹幕 / 贴纸：恒默认开。
+///
+/// ⚠️ `portraitSrc` 传 `null`（探不到源尺寸）时**不算竖**（与 Rust 注入的 `vertical` 同口径）。
+export function laneDefaults(portraitSrc, portraitCanvas) {
+  const portrait = portraitSrc === true;
+  const canvas = portraitCanvas === true;
+  return {
+    subtitles: true,
+    danmaku: true,
+    camera: !(portrait || canvas),
+    sticker: true,
+    effects: !(portrait || canvas),
+    sfx: !canvas,
+  };
+}
+
 /// 把一串 cue 写成 SRT。用于**重映射之后的字幕**（裁剪过的时间线）。
 function cuesToSrt(cues) {
   const out = [];
@@ -1631,21 +1654,14 @@ export function translate(config, clipDir, outPath, options = {}) {
   }
 
   // ---------------------------------------------------------------------
-  // **源是不是竖素材**（`CFG.vertical`）—— 它整条关掉运镜
+  // **源是不是竖素材**（`vertical`）—— 六条轨道开关里"素材竖"那一档的输入
   // ---------------------------------------------------------------------
   //
-  // 参照的判据在 `crates/yekitrim-polish/src/project/config.rs`：
-  //
-  //     源是竖素材（`h > w`，沿用既有判据）
-  //
-  // 而 `templates/index.html:1413` 里：
-  //
-  //     if (CFG.vertical) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
-  //
-  // 也就是**整个运镜状态机被跳过**（`zoom=1`、`handheld=0`、不动点仍按 layout 给）。
-  //
-  // 不处理它的症状是"**竖素材进横画布导出还在缩放**" —— 这正是 YekiTrim 修过的
-  // 那一类失败（`docs/plan/polish-vertical-canvas.md`）。
+  // 判据 = `h > w`（沿用既有口径，Rust 侧 `lane_default` 读同一件事）。
+  // 它**不再**单独关掉运镜：0.6.0 起「素材竖 ⇒ 运镜/视觉特效默认关」是
+  // `[stage.lanes]` 缺字段时的**默认值**，眼睛（或 toml 里写 true）一点就开 ——
+  // 参照侧（`templates/index.html::getActiveCamera` / `engine.js::cameraAt`）与这里
+  // 读的是**同一份** `lanes`，三端不可能各关各的。
   //
   // # 为什么这里要探媒体（与"不探测媒体"那条纪律的关系）
   //
@@ -1653,48 +1669,46 @@ export function translate(config, clipDir, outPath, options = {}) {
   // `dhampir probe --write` 回填" —— 为的是"在一台没有 ffmpeg 的机器上也能跑完
   // 并给出清单"。**贴纸 GIF 已经是例外**（要它的帧数与尺寸算缩放）。
   //
-  // 这里沿用同一条例外纪律：**探得到就照做，探不到就进 CLAMP 明说**
-  // —— 不给默认值假装成功。用 [`probeSize`]（只问宽高，不带 `-count_frames`），
+  // 这里沿用同一条例外纪律：**探得到就照做，探不到就进 NOTE 明说**（明说不装成功）。
+  // 用 [`probeSize`]（只问宽高，不带 `-count_frames`），
   // 对一条长视频是毫秒级的，不会把转译拖成"整条解码"。
   const sourceVideoPath = join(clipDir, config.source?.video ?? 'clip.mp4');
   const sourceSize = existsSync(sourceVideoPath) ? probeSize(sourceVideoPath) : null;
   /// `true` = 竖素材；`false` = 横素材；`null` = 判不了（探不到）。
   const sourceIsVertical = sourceSize ? sourceSize.height > sourceSize.width : null;
 
-  // ---- 竖屏画布的**三道整类门**（2026-10-02 用户口径）----
-  // 语义 = **按整类事件屏蔽**：只在转译侧跳过（成片与底座预览里都没有这一类），
-  // **事件本身一个字都不动** —— 与「屏蔽只做标记」同一条纪律，界面打开开关即完全恢复。
-  // ⚠️ 判据是**画布方向**（`[canvas] orientation = "portrait"`），与上面 `sourceIsVertical`
-  //    （**源素材**方向、关运镜）是两条**独立**的闸：任一条要求禁就禁。
-  // ⚠️ **缺字段 = false = 关**（老竖屏工程也一并关）；横画布不带这三道门（字段在横画布下不生效）。
+  // ---- 六条轨道的**显示开关**（时间轴每条轨道前那枚眼睛，2026-10-06 用户口径）----
+  // 语义 = **按整类屏蔽**：只在转译侧跳过（成片与底座预览里都没有这一类），
+  // **事件本身一个字都不动** —— 与「屏蔽只做标记」同一条纪律，界面点亮眼睛即完全恢复。
+  //
+  // 判据 = `[stage.lanes] <lane>`；**缺字段 = 自动**，默认值与 Rust
+  // `ProjectFile::lane_default` **同口径**（两边必须一模一样，判据见
+  // `scripts/check-yekitrim-translator.mjs::checkLaneSwitches`）：
+  //
+  //   * 运镜 / 视觉特效：**素材竖 或 画布竖** ⇒ 默认关；
+  //   * 音效：**画布竖** ⇒ 默认关（与素材方向无关）；
+  //   * 字幕 / 弹幕 / 贴纸：恒默认开。
+  //
+  // ⚠️ 「素材竖」这一档**取代了** 0.5.0 的 `portraitNoCamera` 硬门（源竖 + 画布非竖 ⇒
+  //    运镜整条关掉、**界面改不了**）。用户 2026-10-06 报的「竖屏素材不应该默认不启用视觉特效
+  //    轨道的内容」就是它 —— 现在它只是**默认值**，眼睛一点就能开，参照侧读同一份注入值。
   const CANVAS_PORTRAIT = (config.canvas?.orientation ?? 'landscape') === 'portrait';
-
-  // ---- 运镜门：**竖素材进了非竖画布**（2026-10-05 从「源竖就关」收窄）----
-  // 唯一判据在 Rust `ProjectFile::src_portrait_no_camera`（预览 API 与出片模板都注入它）：
-  //
-  //     竖素材（`h > w`）**且** 画布不是竖的
-  //
-  // 参照的 `getActiveCamera` / `cameraAt` 在它为真时整条返回 `zoom=1 / handheld=0`。
-  // ⚠️ 改造前判据只是「源竖」，于是**竖素材进竖画布**（画面正好铺满、放大不露底、
-  //    最该有运镜的一档）也永远打不开 —— 用户报的「竖屏素材没法运镜」就是它。
-  // ⚠️ **横素材进竖画布不受它影响**：那条归 `[stage] portrait_camera`（默认关、可开）。
-  const portraitNoCamera = sourceIsVertical === true && !CANVAS_PORTRAIT;
-  if (portraitNoCamera) {
-    note(
-      'source.video',
-      `源素材是**竖的**（${sourceSize.width}x${sourceSize.height}）而画布不是 —— 参照整条关掉运镜` +
-        '（`zoom=1`、`handheld=0`），本仓同样关掉**全部 camera 事件**',
-    );
-  } else if (sourceIsVertical === true) {
-    note(
-      'source.video',
-      `源素材是**竖的**、画布**也是竖的**：运镜**照常生效**（2026-10-05 起只关「竖素材进非竖画布」）`,
-    );
-  }
-  /// 事件类型 → 开关名（不在表里 = 不受门控）。
-  /// 「特效」口径 = 视频层那 8 类 + `overlay`（含片头 `fade_in` 那条覆盖层）。
-  const PORTRAIT_SWITCH = {
+  const PORTRAIT_SRC = sourceIsVertical === true;
+  /** 缺字段时的默认（**与 Rust `ProjectFile::lane_default` 逐条一致**）。 */
+  const LANE_DEFAULT = laneDefaults(PORTRAIT_SRC, CANVAS_PORTRAIT);
+  /** `true`/`false` = 用户显式设过；`null` = 自动。 */
+  const laneExplicit = (lane) => {
+    const v = config.stage?.lanes?.[lane];
+    return typeof v === 'boolean' ? v : null;
+  };
+  const laneOn = (lane) => laneExplicit(lane) ?? LANE_DEFAULT[lane] === true;
+  /// 事件类型 → 轨道（不在表里 = 不受门控）。
+  /// 「视觉特效」口径 = 视频层那 8 类 + `overlay`（含片头 `fade_in` 那条覆盖层）。
+  /// ⚠️ 与 Rust `Lane::of_event`、`webui/src/polish/engine.js::LANE_OF_TYPE` **同集合**。
+  const LANE_OF_TYPE = {
     camera: 'camera',
+    sticker: 'sticker',
+    sfx: 'sfx',
     shake: 'effects',
     blur: 'effects',
     flash: 'effects',
@@ -1703,14 +1717,38 @@ export function translate(config, clipDir, outPath, options = {}) {
     vignette: 'effects',
     overlay: 'effects',
     pulse: 'effects',
-    sfx: 'sfx',
   };
-  /** 这一类在**当前画布**下允许渲染吗（横画布恒 true；竖画布看 `[stage] portrait_<x>`，缺字段 = false）。 */
-  const portraitAllows = (type) => {
-    const key = PORTRAIT_SWITCH[type];
-    if (!key || !CANVAS_PORTRAIT) return true;
-    return config.stage?.[`portrait_${key}`] === true;
+  const laneAllows = (type) => {
+    const lane = LANE_OF_TYPE[type];
+    return !lane || laneOn(lane);
   };
+  if (sourceIsVertical === null) {
+    note(
+      'source.video',
+      '探不到源素材尺寸（ffprobe 不可用？）⇒ **判不了"素材竖"**，运镜/视觉特效按"素材不竖"取默认' +
+        '（横画布下 = 开）。参照侧读的是 Rust 注入的同一档，两边一致',
+    );
+  } else if (PORTRAIT_SRC && !CANVAS_PORTRAIT) {
+    note(
+      'source.video',
+      `源素材是**竖的**（${sourceSize.width}x${sourceSize.height}）而画布不是 ⇒ 运镜/视觉特效**默认关**` +
+        '（0.6.0 起是"眼睛默认灭"，`[stage.lanes]` 里写 true 即开）',
+    );
+  } else if (PORTRAIT_SRC) {
+    note(
+      'source.video',
+      `源素材是**竖的**、画布**也是竖的** ⇒ 运镜/视觉特效**默认关**；` +
+        '`[stage.lanes] camera/effects = true` 可点亮',
+    );
+  }
+  for (const lane of ['subtitles', 'danmaku', 'camera', 'sticker', 'effects', 'sfx']) {
+    if (laneExplicit(lane) === false) {
+      note(
+        'stage.lanes',
+        `\`${lane}\` 轨的眼睛**关着** ⇒ 这一整类不转译（事件/素材一个字都没动，点亮即恢复）`,
+      );
+    }
+  }
 
   // ---- 逐事件转译 ----
   const sfxClips = [];
@@ -1767,34 +1805,21 @@ export function translate(config, clipDir, outPath, options = {}) {
       const srcStart = frameAt(at);
       const srcEnd = frameAt(typeof event.end === 'number' ? event.end : at);
 
-      // **竖屏画布的整类门**（见上面 `portraitAllows`）：只跳过这一类事件的转译，
-      // 事件本身保留（开关打开即恢复）。⚠️ `continue` —— `break` 会跳出整个事件循环。
-      if (!portraitAllows(event.type)) {
+      // **轨道眼睛**（见上面 `laneAllows`）：只跳过这一类事件的转译，
+      // 事件本身保留（点亮眼睛即恢复）。⚠️ `continue` —— `break` 会跳出整个事件循环。
+      if (!laneAllows(event.type)) {
         note(
           where,
-          `竖屏画布 + \`[stage] portrait_${PORTRAIT_SWITCH[event.type]} = false\`（默认）：这一类整条不渲染` +
-            '（事件保留，界面打开开关即恢复）',
+          `轨道 \`${LANE_OF_TYPE[event.type]}\` 的眼睛关着（\`[stage.lanes]\`）：这一类整条不渲染` +
+            '（事件保留，界面点亮即恢复）',
         );
         continue;
       }
 
       switch (event.type) {
         case 'camera': {
-          // **竖素材进非竖画布：整条运镜不生效**（见上面 `portraitNoCamera` 的说明）。
-          // 不是"丢掉"—— 是参照本来就不画，跳过才是**对齐**。
-          if (portraitNoCamera) {
-            break;
-          }
-          if (sourceIsVertical === null) {
-            // 探不到源尺寸 -> 判不了"源竖 + 画布非竖"（门控的那一档）。**明说，不猜。**
-            clamp(
-              where,
-              '探不到源素材尺寸（ffprobe 不可用？），**判不了"竖素材进非竖画布"** —— ' +
-                '参照对那一档会整条关掉运镜，而这里只能照出运镜。' +
-                '若这份工程正是竖素材进横画布，运镜会与参照不同。',
-            );
-            break;
-          }
+          // 运镜整条被眼睛关掉时**根本走不到这里**（上面 `laneAllows` 就 `continue` 了）——
+          // 不是"丢掉"，是参照侧读同一份 `lanes` 也不画，跳过才是**对齐**。
           // 运镜 = Transform 上的关键帧。**这是底座已有的能力**（T8），
           // 所以这一条是"转过去"而不是"丢掉"。
           const factor = zoomFactor(event.zoom, config.style?.camera, where);
@@ -3503,7 +3528,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   }
 
   // 字幕与弹幕轨 —— 用底座自己的子系统，把 YekiTrim 的素材接进来。
-  const subtitleTracks = [];  if (config.source?.subtitles && existsSync(join(clipDir, config.source.subtitles))) {
+  const subtitleTracks = [];
+  // 字幕轨的眼睛关着 ⇒ **整条不转**（素材与 `data/subtitles.json` 一个字都没动）。
+  if (laneOn('subtitles') && config.source?.subtitles && existsSync(join(clipDir, config.source.subtitles))) {
     const id = config.source.subtitles;
     // **剪过的字幕要另写一份。**
     //
@@ -3672,7 +3699,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   const danmakuTracks = [];
   let danmakuCueCount = 0;
   const danmakuFile = config.source?.danmaku;
-  if (danmakuFile) {
+  // 弹幕轨的眼睛关着 ⇒ **整条不转**（素材一个字都没动）。
+  if (laneOn('danmaku') && danmakuFile) {
     const sourcePath = join(clipDir, danmakuFile);
     if (!existsSync(sourcePath)) {
       drop('source.danmaku', `弹幕素材 ${danmakuFile} 不存在`);
@@ -3937,7 +3965,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     //
     // `SR`/`FIT` 是画面构成（`axis`/`position_x+y_pct`/`scale`/`padding`）的唯一几何，
     // 而它以前**只**通过相机关键帧写进去（`placeKeyframe(..., 'scale', camScale * FIT)`）。
-    // 运镜被整条门控掉时（见上面的 `portraitNoCamera`）⇒ 这一层一个键都没有 ⇒ 主层停在
+    // 运镜整条被眼睛关掉时（见上面的 `laneAllows`）⇒ 这一层一个键都没有 ⇒ 主层停在
     // `scale=1 / offset=0`，
     // 底座便按「源 1:1 居中」画：**竖素材进竖画布 = 画面缩在中间、四周一圈黑**（用户最常见的组合）。
     // 基准值取「中性相机」（`zoom = 1`、不动点=中心）算出的那一组 —— 与有键时的同一式子。

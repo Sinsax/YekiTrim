@@ -149,6 +149,92 @@ wasm 预览配置。三处求值器统一走各自的 `evDur()` / `evDuration()`
 
 ---
 
+### 1.7 轨道眼睛与轨道设置（2026-10-06）
+
+**用户口径**（原话）：竖屏素材不该"默认不启用视觉特效轨道的内容"却**改不了** —— 改成
+**每条轨道前一枚眼睛**，竖屏素材只是"默认关"，点一下就开；同时**每条轨道的名字可点**，
+点开就是**这一条轨道的设置**（所有轨道共用一个属性面板）；右栏的「生成与导出」与「画面构成」
+有重叠 ⇒ 清掉重叠部分、**合成一块面板**。
+
+**① 眼睛 = `[stage.lanes]`（六条轨道）**
+
+| 轨道（泳道） | 眼睛的键 | 默认关的条件 |
+|---|---|---|
+| 字幕 | `subtitles` | 恒开 |
+| 运镜 | `camera` | **素材竖 或 画布竖** |
+| 贴纸 | `sticker` | 恒开 |
+| 视觉特效 | `effects` | **素材竖 或 画布竖** |
+| 音效 | `sfx` | **画布竖**（与素材方向无关） |
+| 分段 / 屏蔽 | — | **结构轨：没有眼睛**（分段是容器、屏蔽是剪切标记，没有"整类不渲染"这种语义） |
+
+⚠️ **弹幕没有独立泳道**（用户早前明确"不要新增泳道"，202px 是硬口径）⇒ 它的显示开关与字体
+住「字幕 / 弹幕」轨的设置面板里（面板里那枚「显示弹幕」勾选框走 `toggleLane('danmaku')`）。
+
+- 判据**只有一处**：Rust `ProjectFile::lane_enabled(lane, src)` = `[stage.lanes]` 里的显式值，
+  缺字段（`None` = 从没点过）时取 `lane_default`（上表）。解析结果由 `lanes_json` 注入：
+  预览 `GET /api/polish/project?preview=1` 的 **`_lanes`**、出片模板 CFG 的 **`lanes`**（`render/server.rs`）。
+- **前端不自己推默认值**：`TimelineEditor::laneEnabled()` 与 PolishView 的 `lanesOn` 都只读注入
+  （读不到 = 全开）。自己再推一遍就必然与 Rust 不一致，**而且不报错** —— 判据 ⑧ 钉着这两行。
+- 眼睛的作用面（**四端同一条开关**）：预览 DOM（`engine.js::laneAllows` + `idx.cameraOff`）、
+  出片模板（`index.html::laneAllows` + `getActiveCamera` 早退）、**转译器**（Dhampir 那条腿，
+  含 subtitle / danmaku 轨）、**音轨**（`render::sound::collect_sound_events`）。
+  **事件一个字都不动**（与"屏蔽只做标记"同一条纪律），点亮即完全恢复。
+- 旧口径（0.5.0）是**硬门**：`[stage] portrait_effects/portrait_camera/portrait_sfx` 三键 +
+  `ProjectFile::src_portrait_no_camera`（竖素材进非竖画布 ⇒ 运镜整条关掉，**界面改不了**）。
+  三键与那个函数**已删除**（`deny_unknown_fields` 下老 toml 里的键会落进 `extra`，静默忽略 ——
+  0.6.0 本来就按"不兼容过去"处理）。
+
+**② 面板：一列里两块，互斥**
+
+- 布局：`.props-host`（232px 定宽、`position:relative`）里两块**都绝对定位 `inset:0`** ——
+  **轨道设置**由 PolishView 自己渲染（`.props-panel.card.lane-panel`），**块属性**由 TimelineEditor
+  用 Teleport 投进 **`#tl-props-host`**。
+  ⚠️ **`#tl-props-host` 必须是空容器**：Teleport 直接往目标里插节点，与页面自己的子节点混在一起
+  会被 patch 顶掉（判据 ⑰ 有一条"往目标里塞子节点"的变异）。
+  ⚠️ `.lane-panel` 的面板底子（背景/边框/内边距/滚动）必须在 PolishView 里**再写一遍** ——
+  TimelineEditor 的 `.props-panel` 是 scoped 的（带 `data-v` 属性），套不到其它组件的元素上。
+- 互斥：页面的 `openLane` 是唯一判据。点轨道名 → `emit('lane-open', lane.type)` → 页面
+  `onLaneOpen`（再点一次收起）；TimelineEditor 的块属性面板带 `v-if="!laneOpen"`；
+  **选中时间轴上的块 ⇒ `emit('lane-open', '')` 收起轨道设置**（`selectBlock` 第一句）。
+- 面板内容按轨道分（`openLane` 的取值 = 泳道 type）：
+
+| `openLane` | 面板内容 |
+|---|---|
+| `segments` | 分段数 / 屏蔽数、**「LLM 剪辑（全部重做）」**（原来是右栏"生成"那一半） |
+| `subtitles` | 字幕字体、**弹幕字体**、弹幕时间偏移（滑块 + 直填框）、「显示弹幕」、弹幕区域框选 |
+| `camera` | 人物区域框选（同时喂贴纸落点与运镜聚焦） |
+| `sticker` | 贴纸来源 chips、落点（自动/固定 + 改落点 + 保存/取消） |
+| `fx` | 逐细分类型的事件条数（这条轨道没有别的工程参数） |
+| `sfx` | **默认音量**（`[sfx] volume`，事件级 `volume`/`sfx_volume` 可覆盖）+ 音效事件条数 |
+
+- **弹幕字体**（`[style.danmaku] font`，2026-10-06 新增）：值 = 字体库 id，空 = 跟字幕那条字体栈。
+  ⚠️ 它同时决定**丈量宽度**（滚动/渐隐时长按宽度算）⇒ 三处量宽都要读它：
+  `engine.js::measureDanmakuWidths(dms, size, family)`（**字体族进缓存键**）、
+  模板 `measureDanmakuWidths`、转译器 ASS 的 `Fontname`。量宽与渲染不同族 = "弹幕没滚到边就消失"。
+- ⚠️ **`.dm` / `.cap` 必须写 `font-family:inherit`**：`app.css` 的 `*{font-family:var(--font)}`
+  是**直接命中**这两类元素的声明，而**继承值永远输给本元素的任何声明** ⇒ 不写 inherit 时
+  父层（`.danmaku-layer` / `.captions`）的内联字体栈**一点效果都没有**、静默无报错。
+  这也是「弹幕字体 / 字幕字体选了没反应」的形状（判据 ⑱）。
+
+**③ 右栏合并**
+
+- 原来右栏是两个页签（导出 / 画面构成）。现在**一块面板**：`画面构成` + `渲染导出` + 任务状态栏；
+  页签、`genTab`、竖屏三开关整块删除（判据 ⑰ 有一条"页签捡回来"的变异）。
+- ⚠️ 「区域与落点」那一行**四颗按钮同行**的规矩随它搬走了：现在每条轨道面板里只有 1～2 颗按钮，
+  宽度不再是约束；但 `PolishView.vue` 里那几行的几何注释别删。
+
+**④ 几何与判据**
+
+- `.lane-label` **96px → 124px**（眼睛 16px + 名字 + ＋ 按钮），`justify-content:space-between` 改成
+  `gap:4px`，轨道名 `.lane-name` 是 `flex:1 1 auto; min-width:0` + 省略号（否则「分段 / 屏蔽」会撑破这列）。
+- 眼睛按钮 16px 见方、`aria` 语义靠 `title`（亮/灭两句文案不同）。
+- 判据：`webui/scripts/check-layout-invariants.mjs` 的 **⑧ / ⑯ / ⑰ / ⑱**（各带变异自证）+
+  `scripts/check-yekitrim-translator.mjs` 的 `checkLaneSwitches`（四种方向组合逐值对拍 +
+  7 条变异：整类门、`laneDefaults.camera/effects/sfx`、显式开关失效、字幕/弹幕轨门）+ Rust
+  `project::config::canvas_stage_tests::{lane_switches_default_by_orientation_and_explicit_wins, stage_lanes_round_trip_and_stay_absent_when_auto}`
+  与 `render::sound::tests::sfx_lane_switch_gates_audio`。
+---
+
 ## ② 精修预览（`PolishPreview.vue`）
 
 `PolishPreview.vue` —— 精修预览（自绘 DOM/GSAP 层 + 可选真渲染）。props `pid`/`dir`/`config`/`subtitles`/

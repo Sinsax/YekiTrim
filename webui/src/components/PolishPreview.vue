@@ -2042,6 +2042,9 @@ const capLayerStyle = computed(() => {
 const dmLayerStyle = computed(() => {
   const s = dmStyleCfg.value
   return {
+    // `[style.danmaku] font` 是**字体库 id**（与字幕同一套取法）：选了就排在最前，
+    // 没选就跟随字幕那条动态兜底栈（`capFallback`，服务端同源）—— 别写死字体名。
+    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : capFallback.value,
     fontSize: (s.font_size || 42) + 'px',
     color: s.color || '#ffffff',
     WebkitTextStroke: s.stroke || '2px #000000'
@@ -3027,10 +3030,18 @@ function pause() {
 .sticker-el img { width:100%; height:100%; object-fit:contain; }
 .sticker-emoji { font-size:var(--sticker-emoji, 200px); line-height:var(--sticker-s, 280px); text-align:center; font-family:'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
 .danmaku-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:var(--dm-h, 540px); overflow:hidden; }
-.dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill; }
+.dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill;
+      /* ⚠️ 必须 inherit：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**本元素的声明，
+         **压过**父层 `.danmaku-layer` 的内联 font-family（继承值永远输给本元素的任何声明）
+         ⇒ 不写 inherit 时「弹幕字体」这一项**一点效果都没有**、也不报错。
+         量宽（`measureDanmakuWidths`）与这里必须同一个族，否则弹幕没滚到边就消失。 */
+      font-family:inherit; }
 .captions { position:absolute; bottom:var(--cap-bottom, 80px); left:var(--cap-left, 120px); width:var(--cap-w, 1680px); }
 .cap { position:relative; text-align:center; padding:14px 0; font-weight:700; line-height:1.5;
-       -webkit-text-stroke:12px #403c3b; paint-order:stroke fill; }
+       -webkit-text-stroke:12px #403c3b; paint-order:stroke fill;
+       /* 同 `.dm`：`*{font-family:var(--font)}` 会盖掉父层 `.captions` 的字体栈
+          （那个栈由 `fetchFonts().fallback_stack` 透传，是"预览与成片同源"的**唯一通道**）。 */
+       font-family:inherit; }
 /* A5 折行：每行一个块级 nowrap 行 —— 断行由 wrapCaptionParts 决定（与出片一致） */
 .cap-line { display:block; white-space:nowrap; }
 .cap .hl { color:var(--hl-color, #f56b41); }

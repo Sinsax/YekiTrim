@@ -565,6 +565,14 @@ fn default_sub_position() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DanmakuStyle {
+    /// 弹幕字体：字体库里的 id（文件名去扩展名），空 = 跟随字幕那条字体栈。
+    /// 与 [`SubtitleStyle::font`] 同一套取值规则。
+    ///
+    /// ⚠️ 它同时决定**文字宽度**（滚动/渐隐时长按宽度算，见 `measureDanmakuWidths`）——
+    /// 预览/模板/转译器三处都必须用它量宽，量宽与渲染不一致就是"弹幕没滚到边就消失"。
+    #[serde(default)]
+    pub font: String,
+
     #[serde(default = "default_dm_size")]
     pub font_size: u32,
 
@@ -600,6 +608,7 @@ pub struct DanmakuStyle {
 impl Default for DanmakuStyle {
     fn default() -> Self {
         Self {
+            font: String::new(),
             font_size: default_dm_size(),
             color: default_dm_color(),
             stroke: default_dm_stroke(),

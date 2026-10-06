@@ -101,10 +101,193 @@
               <span v-else-if="pointEdit" class="chip p">点选落点 · 未保存</span>
               <span v-else class="muted small">字幕 · 贴纸 · 运镜 · 弹幕 · 音效</span>
             </div>
-            <!-- 左：属性面板挂载点（TimelineEditor 用 Teleport 把属性面板投进来，与时间轴分离）
-                 右：预览舞台 -->
+            <!-- 左：属性面板列（**一个**面板位置，两种内容：轨道设置 / 时间轴块的属性）
+                 右：预览舞台
+                 ⚠️ `#tl-props-host` 必须是**空容器**：TimelineEditor 用 Teleport 把块的属性面板
+                 投进它（Teleport 直接往目标里插节点，跟页面自己的子节点混在一起会被 patch 顶掉）。
+                 轨道设置那块由本页面渲染，两者用 `openLane` 互斥 —— 同一时刻只有一份面板。 -->
             <div class="preview-row">
-              <div id="tl-props-host" class="props-host"></div>
+              <div class="props-host">
+                <div v-if="openLane" class="props-panel card lane-panel">
+                  <div class="row spread">
+                    <b>{{ lanePanelTitle }}</b>
+                    <button class="mini-btn" @click="openLane = ''">关闭</button>
+                  </div>
+
+                  <!-- ── 分段 / 屏蔽（结构轨：没有眼睛；"生成"那个动作跟着它管的分段轨走） ── -->
+                  <template v-if="openLane === 'segments'">
+                    <div class="row spread small mt-6">
+                      <span class="muted">分段</span>
+                      <span class="mono">{{ (cfg?.segments || []).length }} 段</span>
+                    </div>
+                    <button class="btn mt-6 w-full jc-center" :disabled="scopeBusy"
+                            :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
+                            @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
+                    <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
+                    <div class="row spread small mt-8">
+                      <span class="muted">屏蔽</span>
+                      <span class="mono">{{ (cfg?.mute_ranges || []).length }} 段</span>
+                    </div>
+                    <div class="hint mt-4">自动去静音按字幕间隔算，入口在时间轴头部（那里还带「撤销」）</div>
+                  </template>
+
+                  <!-- ── 字幕 / 弹幕（文字层）：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
+                  <template v-else-if="openLane === 'subtitles'">
+                    <div class="small muted mt-6">字幕字体<span class="hint"> · 出片与预览</span></div>
+                    <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
+                      <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                    </select>
+                    <div v-if="fontsError" class="row small mt-4 gap-6">
+                      <span class="muted">字体库读取失败：{{ fontsError }}</span>
+                      <button class="mini-btn" @click="loadFonts">重试</button>
+                    </div>
+                    <div v-else class="hint mt-4" :title="fontsRoot ? '字体目录：' + fontsRoot : ''">库内 {{ fonts.length }} 个字体</div>
+
+                    <div class="small muted mt-8">弹幕字体<span class="hint"> · 空 = 跟字幕</span></div>
+                    <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
+                      <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                    </select>
+
+                    <div class="row mt-8" style="gap:8px;align-items:center">
+                      <span class="small muted flex-none">时间偏移</span>
+                      <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
+                             :disabled="dmOffsetSaving || !ready" :title="'当前 ' + dmOffset + 's，负 = 提前出现，正 = 推后；默认 -3（弹幕比直播晚约 3 秒）'"
+                             @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
+                      <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
+                             :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
+                             title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
+                      <span class="mono small flex-none">s</span>
+                    </div>
+                    <div class="hint mt-4" title="负 = 弹幕提前，正 = 推后；调成 0 可完全关闭偏移">负 = 弹幕提前</div>
+
+                    <!-- 弹幕**没有独立泳道**（用户早前明确"不要新增泳道"），它的显示开关就住在这里 -->
+                    <label class="ck-row mt-8" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
+                      <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
+                             @change="toggleLane('danmaku')">
+                      显示弹幕
+                    </label>
+
+                    <div class="small muted mt-8">弹幕区域<span class="hint"> · 在预览上框选</span></div>
+                    <div class="row mb-6">
+                      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                              title="框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
+                        <Icon name="crop" :size="11" /> 框选弹幕区域
+                      </button>
+                    </div>
+                    <template v-if="selectRegion === 'danmaku_area'">
+                      <div class="row spread small mb-4">
+                        <span class="mono">{{ rectText }}</span>
+                        <span v-if="hasFreeRect" class="chip p">自由选框</span>
+                        <span v-else class="chip n">九宫格默认</span>
+                      </div>
+                      <div class="row mb-6 gap-6">
+                        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
+                      </div>
+                      <div class="hint mb-6">{{ regionHint }}</div>
+                    </template>
+                  </template>
+
+                  <!-- ── 运镜：人物框（它同时喂后处理落点与运镜聚焦） ── -->
+                  <template v-else-if="openLane === 'camera'">
+                    <div class="small muted mt-6">人物区域<span class="hint"> · 在预览上框选</span></div>
+                    <div class="row mb-6">
+                      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                              title="框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍" @click="toggleSelect('liver')">
+                        <Icon name="crop" :size="11" /> 框选人物
+                      </button>
+                    </div>
+                    <template v-if="selectRegion === 'liver'">
+                      <div class="row spread small mb-4">
+                        <span class="mono">{{ rectText }}</span>
+                        <span v-if="hasFreeRect" class="chip p">自由选框</span>
+                        <span v-else class="chip n">九宫格默认</span>
+                      </div>
+                      <div class="row mb-6 gap-6">
+                        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
+                      </div>
+                      <div class="hint mb-6">{{ regionHint }}</div>
+                    </template>
+                    <div class="hint mt-4" title="人物框同时喂后处理的两个 step：贴纸落点避让与运镜聚焦">改完选框要重跑一次「重新后处理」才落到事件上</div>
+                  </template>
+
+                  <!-- ── 贴纸：来源 + 落点 ── -->
+                  <template v-else-if="openLane === 'sticker'">
+                    <div class="small muted mt-6">贴纸来源<span class="hint"> · LLM 可用</span></div>
+                    <div class="ss-options">
+                      <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
+                              :class="{ on: stickerSource.includes(src.name) }"
+                              :title="src.tags?.length ? 'tags: ' + src.tags.join(' / ') : (src.description || '')"
+                              @click="toggleStickerSource(src.name)">
+                        <b>{{ src.name }}</b>
+                        <span v-if="src.tags?.length" class="ss-opt-meta">{{ src.tags.length }} tags</span>
+                        <span v-else-if="src.builtin" class="ss-opt-meta">内置</span>
+                      </button>
+                      <div v-if="stickerSourcesError" class="row small gap-6">
+                        <span class="muted">读取失败：{{ stickerSourcesError }}</span>
+                        <button class="mini-btn" @click="loadStickerSources">重试</button>
+                      </div>
+                      <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
+                    </div>
+
+                    <div class="small muted mt-8">落点<span class="hint"> · 自动避让 / 固定</span></div>
+                    <div class="row mb-6">
+                      <button class="mini-btn flex-1 jc-center"
+                              :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
+                              :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
+                              @click="toggleStickerMode">
+                        <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
+                      </button>
+                      <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
+                              :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
+                              @click="startPointEdit">
+                        <Icon name="pin" :size="11" /> 改落点
+                      </button>
+                    </div>
+                    <template v-if="stickerCfg.position_mode === 'manual'">
+                      <div class="row spread small mb-4">
+                        <span class="mono">{{ pointEdit ? draftPosPct : stickerPosPct }}</span>
+                        <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
+                      </div>
+                      <div v-if="pointEdit" class="row mb-6 gap-6">
+                        <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
+                        <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
+                      </div>
+                      <div v-if="pointEdit" class="hint mb-6" title="点选的位置 = 贴纸盒中心；保存后才写 polish.toml">在预览上点选新落点，保存后生效。</div>
+                    </template>
+                  </template>
+
+                  <!-- ── 视觉特效：整类开关 + 逐类型事件数（这一轨没有别的工程参数） ── -->
+                  <template v-else-if="openLane === 'fx'">
+                    <div class="small muted mt-6">特效事件<span class="hint"> · 按细分类型</span></div>
+                    <div v-if="fxCounts.length" class="mt-4">
+                      <div v-for="it in fxCounts" :key="it.type" class="row spread small">
+                        <span>{{ it.label }}</span><span class="mono">{{ it.n }}</span>
+                      </div>
+                    </div>
+                    <div v-else class="muted small mt-4">这条轨道上还没有特效事件</div>
+                    <div class="hint mt-6" title="眼睛关掉 = 这一整类不渲染 / 不转译；事件仍留在时间轴上，点亮即恢复">开关只影响渲染，不改事件</div>
+                  </template>
+
+                  <!-- ── 音效：全局默认音量（事件级可覆盖） ── -->
+                  <template v-else-if="openLane === 'sfx'">
+                    <div class="small muted mt-6">默认音量<span class="hint"> · 事件可覆盖</span></div>
+                    <div class="row mb-6" style="gap:8px;align-items:center">
+                      <input type="range" class="flex-1" min="0" max="1" step="0.05" :value="sfxCfg.volume ?? 0.1"
+                             :disabled="sfxBusy || !ready" title="全局默认音效音量（0~1）；事件自己的 volume / sfx_volume 优先"
+                             @change="patchSfx({ volume: Number($event.target.value) })">
+                      <span class="mono small flex-none">{{ Number(sfxCfg.volume ?? 0.1).toFixed(2) }}</span>
+                    </div>
+                    <div class="row spread small mt-6">
+                      <span class="muted">音效事件</span>
+                      <span class="mono">{{ sfxEventCount }} 条</span>
+                    </div>
+                    <div class="hint mt-4" title="音效文件在程序目录的 sfx/ 下；事件面板里可以逐条换音效与音量">逐条在事件的属性面板里改</div>
+                  </template>
+                </div>
+                <div id="tl-props-host"></div>
+              </div>
               <div class="stage-col">
                 <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
@@ -113,225 +296,88 @@
             </div>
           </div>
 
+          <!-- 右栏 = **一块**面板：「画面构成 / 输出」。用户口径（2026-10-06）：原来「生成与导出」
+               与「画面构成」两块有重叠 —— 字幕字体 / 弹幕字体与偏移 / 贴纸来源 / 区域与落点全部搬进
+               **轨道设置**（点时间轴上的轨道名打开），这里只留画面构成 + 出片。
+               两个页签随之删掉（页签的另一半已经没有内容了）；「LLM 剪辑」跟着它管的分段轨走。 -->
           <div class="card">
             <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 生成与导出</h2>
-              <div class="row">
-                <button class="mini-btn" :class="{ selected: genTab === 'export' }" @click="genTab = 'export'">导出</button>
-                <button class="mini-btn" :class="{ selected: genTab === 'stage' }" @click="genTab = 'stage'">画面构成</button>
-              </div>
+              <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面构成 / 输出</h2>
+              <span class="muted small" title="字幕 / 弹幕 / 贴纸 / 区域与落点都在时间轴各条轨道的设置里（点轨道名打开）">轨道设置 → 时间轴</span>
             </div>
 
-            <template v-if="genTab === 'export'">
-            <!-- LLM 剪辑（参数：区域编辑 / 贴纸来源）—— 整块在「渲染导出」上方 -->
-            <div class="gen-block">
-              <div class="row spread mb-6">
-                <b class="t m-0"><Icon name="sparkles" :size="12" /> LLM 剪辑</b>
-                <span class="muted small">下列为参数</span>
-              </div>
-
-              <!-- 参数 1：区域与落点 —— 人物 / 弹幕区域 / 贴纸落点 同一行。
-                   三者的交互是同一种（在左侧预览上取坐标），所以并列一行；
-                   贴纸那格是"自动 / 固定"二选一，切到固定后再点预览取点。 -->
-              <div class="small muted mb-4">区域与落点<span class="hint"> · 在预览上点选</span></div>
-              <div class="row mb-6 region-row">
-                <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-                        title="框选主播人物：运镜聚焦到框中心" @click="toggleSelect('liver')">
-                  <Icon name="crop" :size="11" /> 人物
-                </button>
-                <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-                        title="框选弹幕显示区域（供运镜参考）" @click="toggleSelect('danmaku_area')">
-                  <Icon name="crop" :size="11" /> 弹幕
-                </button>
-                <button class="mini-btn flex-1 jc-center"
-                        :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
-                        :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
-                        @click="toggleStickerMode">
-                  <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
-                </button>
-                <!-- 「改落点」与上面三格同一行（用户要求：它原本单独占一行，白吃一行高度）。
-                     只存在于「固定」模式；编辑态里它让位给下面那行的「保存落点 / 取消」。
-                     点它会清掉框选态（`startPointEdit` 里），两者都是"在预览上取坐标"。 -->
-                <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
-                        :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
-                        @click="startPointEdit">
-                  <Icon name="pin" :size="11" /> 改落点
-                </button>
-              </div>
-              <template v-if="selectRegion">
-                <div class="row spread small mb-4">
-                  <span class="mono">{{ rectText }}</span>
-                  <span v-if="hasFreeRect" class="chip p">自由选框</span>
-                  <span v-else class="chip n">九宫格默认</span>
-                </div>
-                <div class="row mb-6 gap-6">
-                  <!-- 选框保存是"同步加锁写 polish.toml"，与任务不冲突：任务在跑时照样能存，
-                       随后的重算（process）会排到该片段空闲后自动补跑（reprocessLayout） -->
-                  <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-                  <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除选框</button>
-                </div>
-                <div class="hint mb-6">{{ regionHint }}</div>
-              </template>
-              <template v-else-if="stickerCfg.position_mode === 'manual'">
-                <!-- 固定落点是**草稿态**：在预览上点选只改 draft，「保存落点」才写 polish.toml。
-                     以前是"固定模式即常驻点选、点哪儿存哪儿"，看一眼预览就会改坏配置。 -->
-                <div class="row spread small mb-4">
-                  <span class="mono">{{ pointEdit ? draftPosPct : stickerPosPct }}</span>
-                  <span v-if="pointEdit" class="chip p">编辑中 · 未保存</span>
-                </div>
-                <!-- 保存/取消与说明只在编辑态出现：常态下「改落点」在上面那行，这里不留空行 -->
-                <div v-if="pointEdit" class="row mb-6 gap-6">
-                  <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
-                  <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
-                </div>
-                <!-- 一句话说清"点哪儿、什么时候生效"就够：括号里的坐标基准（点 = 贴纸盒中心）收进 title，
-                     与上面「字体目录」同法 —— 摆进行内会把 266px 的行撑成两行（`.hint` 是 11px）。 -->
-                <div v-if="pointEdit" class="hint mb-6"
-                     title="点选的位置 = 贴纸盒中心；保存后才写 polish.toml">
-                  在预览上点选新落点，保存后生效。
-                </div>
-              </template>
-
-              <!-- 参数 2：贴纸来源。只保留一组可点 chip：亮 = 启用，灰 = 停用。 -->
-              <div class="small muted mb-4">贴纸来源<span class="hint"> · LLM 可用的贴图来源</span></div>
-              <div class="ss-options">
-                <button
-                  v-for="src in allStickerOptions"
-                  :key="src.name"
-                  class="ss-opt"
-                  :class="{ on: stickerSource.includes(src.name) }"
-                  :title="src.tags?.length ? 'tags: ' + src.tags.join(' / ') : (src.description || '')"
-                  @click="toggleStickerSource(src.name)"
-                >
-                  <b>{{ src.name }}</b>
-                  <span v-if="src.tags?.length" class="ss-opt-meta">{{ src.tags.length }} tags</span>
-                  <span v-else-if="src.builtin" class="ss-opt-meta">内置</span>
-                </button>
-                <!-- "读不到"与"库是空的"必须分开：前者不该让用户去翻 stickers/ 目录 -->
-                <div v-if="stickerSourcesError" class="row small gap-6">
-                  <span class="muted">贴纸来源读取失败：{{ stickerSourcesError }}</span>
-                  <button class="mini-btn" @click="loadStickerSources">重试</button>
-                </div>
-                <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
-              </div>
-
-              <!-- 参数 3：字幕字体（字体库 = 程序目录 resources/fonts/）-->
-              <div class="small muted mb-4">字幕字体<span class="hint"> · 出片与预览的字幕</span></div>
-              <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
-                <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-              </select>
-              <div v-if="fontsError" class="row small mt-4 gap-6">
-                <span class="muted">字体库读取失败：{{ fontsError }}</span>
-                <button class="mini-btn" @click="loadFonts">重试</button>
-              </div>
-              <!-- 只报「库里有几个字体」：安装目录只有 admin 拿得到，而且是 `\\?\F:\…\fonts` 这种长路径，
-                   摆在标题行会撑满一整行 —— 收进 title，悬停可见（非 admin 没有 root，title 为空） -->
-              <div v-else class="hint mt-4" :title="fontsRoot ? '字体目录：' + fontsRoot : ''">
-                库内 {{ fonts.length }} 个字体
-              </div>
-
-              <!-- 参数 4：弹幕时间偏移（默认 -3 = 整体提前 3 秒，直接热重载预览） -->
-              <div class="row" style="margin-top:14px;gap:8px;align-items:center">
-                <span class="small muted flex-none">弹幕时间偏移</span>
-                <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
-                       :disabled="dmOffsetSaving || !ready" :title="'当前 ' + dmOffset + 's，负 = 提前出现，正 = 推后；默认 -3（弹幕比直播晚约 3 秒）'"
-                       @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
-                <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
-                       :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
-                       title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
-                <span class="mono small flex-none">s</span>
-              </div>
-              <div class="hint mt-4" title="弹幕显示普遍比画面晚几秒；调成 0 可完全关闭偏移">负 = 弹幕提前，正 = 推后</div>
-
-              <!-- 动作（去静音只在时间轴头部，那里还带「撤销」，此处不再重复） -->
-              <button class="btn mt-12 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'" @click="runLlmJob"><Icon name="sparkles" :size="13" /> LLM 剪辑（全部重做）</button>
-              <div class="hint mt-4" title="没产出事件的段在时间轴上标琥珀色">补某一段？点该段 →「只重做本段事件」</div>
+            <!-- 画面构成：画面尺寸 / 缩放比例 / 主画面位置（五档吸附）/ 背景。
+                 值存 polish.toml 的 [canvas] / [stage]；出片与预览共用同一份推导
+                 （Rust `resolve_stage` → `_canvas`），这里只做提交 + 重取，不在前端重算。 -->
+            <div class="small muted mb-4"
+                 title="源与画布同比例时主画面正好铺满：位置 / 缩放 / 背景都没有可见效果，故整组隐藏">画面尺寸</div>
+            <div class="row mb-6 gap-6">
+              <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
+                      :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
+                      @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
             </div>
 
-            <!-- 导出（在 LLM 参数块下方） -->
+            <div class="row mb-6">
+              <span class="small muted flex-none">缩放比例</span>
+              <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
+                     :disabled="stageBusy || !ready"
+                     @change="patchStage({ scale: Number($event.target.value) })">
+              <input type="number" class="mono small" style="width:4.4em" min="0.1" max="4" step="0.01"
+                     :value="stageScaleNum" :disabled="stageBusy || !ready"
+                     @change="patchStage({ scale: clampScale($event.target.value) })">
+            </div>
+
+            <!-- 主画面位置 = **两轴各一条五档**（0/25/50/75/100）。贴满的那条轴没有余量
+                 （`free_*` = 0⁻），那条滑杆**置灰并写明原因** —— 否则用户拖了没反应只能猜。
+                 同比铺满且没放大时整组隐藏（那时两条都无效），放大后自动出现。 -->
+            <template v-if="showStageGeom">
+              <div class="small muted mb-4"
+                   title="两轴各自在可平移余量里五档吸附；放大（scale&gt;1）后同一条滑杆变成裁切取景">主画面位置</div>
+              <template v-for="ax in positionAxes" :key="ax.key">
+                <div class="row mb-4">
+                  <span class="small muted flex-none" style="width:2.6em">{{ ax.label }}</span>
+                  <input type="range" class="flex-1" min="0" max="100" step="25" :value="ax.pct"
+                         :disabled="stageBusy || !ready || ax.inert" :title="ax.inert ? ax.hint : ''"
+                         @change="patchStage({ [ax.key]: Number($event.target.value) })">
+                  <span class="mono small" style="flex:none;width:3.2em">{{ ax.inert ? '—' : ax.text }}</span>
+                </div>
+                <div v-if="ax.inert" class="small muted mb-4">{{ ax.hint }}</div>
+              </template>
+            </template>
+
+            <template v-if="stageBgVisible">
+              <div class="small muted mb-4">背景</div>
+              <div class="row mb-6 gap-6">
+                <button v-for="b in bgOptions" :key="b.value" class="mini-btn flex-1 jc-center"
+                        :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
+                        @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
+              </div>
+              <div v-if="stageBgDisplay === 'color'" class="row mb-6">
+                <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
+                       :value="stageBgColor" :disabled="stageBusy || !ready"
+                       @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
+                <span class="mono small">{{ stageBgColor }}</span>
+              </div>
+              <div v-else class="row mb-6">
+                <span class="small muted flex-none">模糊强度</span>
+                <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
+                       :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
+                <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
+              </div>
+            </template>
+
+            <!-- 竖屏那三档（`[stage] portrait_*`）已删除：2026-10-06 起「哪一类渲不渲染」是
+                 时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，可开可关、看得见），
+                 不再是藏在画面构成里的三个复选框。 -->
+
+            <!-- 出片（原来在「生成与导出」那块里，整块并没有别的内容了） -->
             <button class="btn btn-primary mt-12 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
               该片段正在「{{ kindText(scopeBusyJob.kind) }}」，请稍候
             </div>
-            </template>
 
-            <!-- 画面构成页签：画面尺寸 / 主画面位置（五档吸附）/ 缩放比例 / 背景（+ 竖屏三开关）。
-                 值存 polish.toml 的 [canvas] / [stage]；出片与预览共用同一份推导
-                 （Rust `resolve_stage` → `_canvas`），这里只做提交 + 重取，不在前端重算。 -->
-            <template v-else>
-              <div class="small muted mb-4"
-                   title="源与画布同比例时主画面正好铺满：位置 / 缩放 / 背景都没有可见效果，故整组隐藏">画面尺寸</div>
-              <div class="row mb-6 gap-6">
-                <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
-                        :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
-                        @click="patchCanvas({ orientation: o.value })">{{ o.label }}</button>
-              </div>
-
-              <div class="row mb-6">
-                <span class="small muted flex-none">缩放比例</span>
-                <input type="range" class="flex-1" min="0.1" max="4" step="0.01" :value="stageScaleNum"
-                       :disabled="stageBusy || !ready"
-                       @change="patchStage({ scale: Number($event.target.value) })">
-                <input type="number" class="mono small" style="width:4.4em" min="0.1" max="4" step="0.01"
-                       :value="stageScaleNum" :disabled="stageBusy || !ready"
-                       @change="patchStage({ scale: clampScale($event.target.value) })">
-              </div>
-
-              <!-- 主画面位置 = **两轴各一条五档**（0/25/50/75/100）。贴满的那条轴没有余量
-                   （`free_*` = 0⁻），那条滑杆**置灰并写明原因** —— 否则用户拖了没反应只能猜。
-                   同比铺满且没放大时整组隐藏（那时两条都无效），放大后自动出现。 -->
-              <template v-if="showStageGeom">
-                <div class="small muted mb-4"
-                     title="两轴各自在可平移余量里五档吸附；放大（scale&gt;1）后同一条滑杆变成裁切取景">主画面位置</div>
-                <template v-for="ax in positionAxes" :key="ax.key">
-                  <div class="row mb-4">
-                    <span class="small muted flex-none" style="width:2.6em">{{ ax.label }}</span>
-                    <input type="range" class="flex-1" min="0" max="100" step="25" :value="ax.pct"
-                           :disabled="stageBusy || !ready || ax.inert" :title="ax.inert ? ax.hint : ''"
-                           @change="patchStage({ [ax.key]: Number($event.target.value) })">
-                    <span class="mono small" style="flex:none;width:3.2em">{{ ax.inert ? '—' : ax.text }}</span>
-                  </div>
-                  <div v-if="ax.inert" class="small muted mb-4">{{ ax.hint }}</div>
-                </template>
-              </template>
-
-              <template v-if="stageBgVisible">
-                <div class="small muted mb-4">背景</div>
-                <div class="row mb-6 gap-6">
-                  <button v-for="b in bgOptions" :key="b.value" class="mini-btn flex-1 jc-center"
-                          :class="{ selected: stageBgDisplay === b.value }" :disabled="stageBusy || !ready"
-                          @click="patchStage(b.value === 'color' ? { bg_mode: 'color', bg_color: stageBgColor } : { bg_mode: b.value })">{{ b.label }}</button>
-                </div>
-                <div v-if="stageBgDisplay === 'color'" class="row mb-6">
-                  <input type="color" style="width:46px;height:26px;padding:0;border:1px solid var(--line);border-radius:6px;background:none"
-                         :value="stageBgColor" :disabled="stageBusy || !ready"
-                         @change="patchStage({ bg_mode: 'color', bg_color: $event.target.value })">
-                  <span class="mono small">{{ stageBgColor }}</span>
-                </div>
-                <div v-else class="row mb-6">
-                  <span class="small muted flex-none">模糊强度</span>
-                  <input type="range" class="flex-1" min="0.2" max="4" step="0.1" :value="stageCfg.blur_scale ?? 1"
-                         :disabled="stageBusy || !ready" @change="patchStage({ blur_scale: Number($event.target.value) })">
-                  <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
-                </div>
-              </template>
-
-              <template v-if="isPortraitCanvas">
-                <div class="small muted mb-4"
-                     title="竖屏画布下这三类默认全关；事件保留在时间轴上，勾上即恢复">竖屏启用（默认全关）</div>
-                <div class="small muted mb-6">竖画布默认不渲染运镜 / 特效 / 音效这三类</div>
-                <div class="row mb-6">
-                  <label v-for="s in portraitSwitches" :key="s.key" class="row small"
-                         style="gap:5px;align-items:center;cursor:pointer">
-                    <input type="checkbox" :checked="stageCfg[s.key] === true" :disabled="stageBusy || !ready"
-                           @change="patchStage({ [s.key]: $event.target.checked })">
-                    {{ s.label }}
-                  </label>
-                </div>
-              </template>
-            </template>
             <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
                  同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
             <div class="job-box mt-8">
@@ -353,7 +399,7 @@
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
         <div class="card tl-card mt-16">
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane">
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
@@ -444,6 +490,9 @@ import { localNoAuthKnown } from '../stores/health'
 import { ensureFontFace } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
 import { jobsApi, watchJob, busyOn, clipKey, kindText, QUEUED_HINT } from '../api/jobs'
+// 效果词汇表（`spec/effects.json` 是**唯一权威**）：这里只用它算"视觉特效轨上有哪几类、各几条"，
+// 不另抄一份类型清单（`scripts/check-effect-registry.mjs` 钉着这两条派生表达式）。
+import EFFECT_SPEC from '../../../spec/effects.json'
 import { useJobs } from '../composables/useJobs'
 
 const route = useRoute()
@@ -1416,6 +1465,62 @@ async function saveDanmakuOffset(next) {
   }
 }
 
+/** 弹幕字体（`[style.danmaku] font`）：与字幕字体同一套 —— 写 id、空串 = 跟随字幕那条字体栈。
+ *  ⚠️ 它还决定弹幕的**丈量宽度**（滚动时长按宽度算）：预览 DOM、模板 canvas、转译器 ASS 三处
+ *  都必须用同一个族，否则弹幕没滚到边就消失。 */
+const danmakuFont = computed(() => cfg.value?.style?.danmaku?.font || '')
+/** 与字幕字体共用一个库；只多一项「跟字幕」（空串 = 继承字幕那条字体栈）。 */
+const danmakuFontOptions = computed(() => {
+  const known = new Set(fonts.value.map((f) => f.id))
+  const opts = [{ value: '', label: '跟字幕' }]
+  for (const o of fontOptions.value) {
+    if (o.placeholder || o.value === '') continue
+    if (!known.has(o.value) && o.value !== danmakuFont.value) continue
+    opts.push(o)
+  }
+  const cur = danmakuFont.value
+  if (cur && !known.has(cur) && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  return opts
+})
+async function onDanmakuFontChange(e) {
+  const next = e.target.value
+  if (next === danmakuFont.value) return
+  fontSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { danmaku_font: next })
+    if (next) await ensureFontFace(pid.value, dir.value, next, { onDebug: (m) => addClient('debug', m, 'polish') })
+    cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), danmaku: { ...(cfg.value?.style?.danmaku || {}), font: next } } }
+    // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘）
+    persistedCfg.value = cfg.value
+    await load({ silent: true })
+    toast(next ? `弹幕字体已改为「${next}」` : '弹幕字体已恢复为跟随字幕')
+  } catch (err) {
+    toast(err.message, 'err')
+    await load({ silent: true })
+  } finally {
+    fontSaving.value = false
+  }
+}
+
+// ---- 音效（`[sfx]`：全局默认音量；事件自己的 volume / sfx_volume 优先）----
+const sfxCfg = computed(() => cfg.value?.sfx || {})
+const sfxBusy = ref(false)
+async function patchSfx(patch) {
+  if (!ready.value || sfxBusy.value) return
+  const next = { ...sfxCfg.value, ...patch }
+  sfxBusy.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { sfx: next })
+    cfg.value = { ...cfg.value, sfx: next }
+    await load({ silent: true })
+  } catch (e) {
+    toast('音效设置保存失败：' + e.message, 'err')
+    await load({ silent: true })
+  } finally {
+    sfxBusy.value = false
+  }
+}
+
 async function onDanmakuOffsetChange(e) {
   // ⚠️ 这里**不能**拿 next 与 dmOffset.value 比较来去重：input 阶段已经把镜像
   // 更新成 next 了，那样比永远相等 ⇒ 永不落盘。change 本身只在值被改动后触发，
@@ -1444,14 +1549,12 @@ function toggleStickerSource(name) {
 // ---- 画面构成（[stage]：主画面位置 / 背景）----
 // 值存 polish.toml；渲染侧由 Rust `ProjectFile::resolve_stage` 推导成 `_canvas.stage`，
 // 这里**只做提交 + 重取**，不在前端重算 —— 否则又会多出一套推导，两边迟早不一致。
-/** 右栏页签：导出（LLM 参数 + 渲染）/ 画面构成（尺寸 + 位置 + 背景），头部标签切换 */
-const genTab = ref('export')
+// 右栏**没有页签了**（2026-10-06）：原来「导出 / 画面构成」两半合并成一块面板，
+// 而"导出"那一半的设置（字幕字体 / 弹幕字体与偏移 / 贴纸来源 / 区域与落点）全在**轨道设置**里。
 const stageBusy = ref(false)
 const stageCfg = computed(() => cfg.value?.stage || {
   bg_mode: 'blur', bg_color: '#000000', blur_scale: 1, scale: 1, padding: 0,
-  portrait_effects: false, portrait_camera: false, portrait_sfx: false,
 })
-const isPortraitCanvas = computed(() => (cfg.value?.canvas?.orientation || 'landscape') === 'portrait')
 
 // ---- 主画面位置：**两轴各一条五档**（0/25/50/75/100），唯一权威是契约里的两轴百分比 ----
 // 老工程的单值 `position_pct` / 老枚举 `position` 由 Rust `resolve_stage` 一次性折算到两轴
@@ -1498,12 +1601,55 @@ const stageBgVisible = computed(() => {
   if (!st) return true
   return (st.bg || 'none') !== 'none'
 })
-/** 竖屏画布专属三开关（缺字段 = 关；Rust 侧同样按缺字段 = false 处理） */
-const portraitSwitches = [
-  { key: 'portrait_effects', label: '特效' },
-  { key: 'portrait_camera', label: '运镜' },
-  { key: 'portrait_sfx', label: '音效' },
-]
+// ---- 轨道显示开关（`[stage.lanes]`：时间轴每条轨道前那枚眼睛）----
+// 「哪一类渲不渲染」的**唯一判据在 Rust**（`ProjectFile::lane_enabled`）：显式开关优先，
+// 缺字段时按 素材竖/画布竖 取默认（运镜与视觉特效默认关、音效跟画布、字幕弹幕贴纸恒开）。
+// 所以这里读的是 Rust 注入的 **`_lanes`**（已解析），前端**不再自己推一遍默认值** ——
+// 推第二遍就必然两边不一致，而且不报错（user 口径：竖屏素材默认关运镜/特效，但要看得见、点得开）。
+const lanesOn = computed(() => cfg.value?._lanes || {})
+/** 点眼睛 = 把这条轨道的显式开关翻面（`[stage]` 整块提交，与其它画面构成项同一条链）。 */
+function toggleLane(lane) {
+  const cur = lanesOn.value[lane] === true
+  patchStage({ lanes: { ...(stageCfg.value.lanes || {}), [lane]: !cur } })
+}
+/** 时间轴上点轨道名 ⇒ 打开这条轨道的设置（再点一次收起；与块的属性面板互斥）。 */
+const openLane = ref('')
+const LANE_TITLES = {
+  segments: '分段 / 屏蔽',
+  subtitles: '字幕 / 弹幕',
+  camera: '运镜',
+  sticker: '贴纸',
+  fx: '视觉特效',
+  sfx: '音效',
+}
+const lanePanelTitle = computed(() => (LANE_TITLES[openLane.value] || '轨道') + ' 设置')
+function onLaneOpen(lane) {
+  openLane.value = lane && lane !== openLane.value ? lane : ''
+}
+const FX_TYPE_IDS = EFFECT_SPEC.effects.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.id)
+const TYPE_LABELS = Object.fromEntries(EFFECT_SPEC.effects.map((e) => [e.id, e.label]))
+// 特效事件按细分类型计数（视觉特效那条轨道没有别的工程参数，就把"这条轨道上有什么"照实列出来）
+const fxCounts = computed(() => {
+  const by = new Map()
+  for (const seg of cfg.value?.segments || []) {
+    for (const ev of seg.events || []) {
+      const t = ev.type || ''
+      if (!FX_TYPE_IDS.includes(t)) continue
+      by.set(t, (by.get(t) || 0) + 1)
+    }
+  }
+  return [...by.entries()].map(([type, n]) => ({ type, n, label: TYPE_LABELS[type] || type }))
+})
+/** 音效事件条数（sfx 事件 + 任意带 `sfx` 引用的事件，与 `sound.rs::collect_sound_events` 同口径）。 */
+const sfxEventCount = computed(() => {
+  let n = 0
+  for (const seg of cfg.value?.segments || []) {
+    for (const ev of seg.events || []) {
+      if (ev.type === 'sfx' || ev.sfx) n += 1
+    }
+  }
+  return n
+})
 const bgOptions = [
   { value: 'color', label: '纯色' },
   { value: 'blur', label: '模糊' },
@@ -1713,7 +1859,16 @@ onUnmounted(() => {
 /* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，
    不会把整行/预览卡撑高（否则时间轴会被顶出首屏） */
 .props-host { position:relative; flex:none; width:232px; min-width:0; }
-.props-host :deep(.props-panel) { position:absolute; inset:0; width:auto; }
+/* 两块面板（时间轴块的属性 / 轨道设置）共用这一列：都绝对定位撑满 ⇒ 谁在都不会把这一行顶高。
+   `:deep(.props-panel)` 管的是 TimelineEditor **Teleport 进来**的那份；`.lane-panel` 是本页面
+   自己渲染的 —— 它的面板底子（背景/边框/内边距/滚动）必须在这里再写一遍：TimelineEditor 那份
+   是 scoped 的（带 data-v 属性），套不到本页面的元素上。 */
+.props-host :deep(.props-panel), .props-host .lane-panel { position:absolute; inset:0; width:auto; }
+.lane-panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
+.lane-panel label { margin-top:6px; }
+.lane-panel .row { margin-top:4px; }
+.lane-panel input, .lane-panel select { font-size:12px; }
+.lane-panel .ck-row { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
 .stage-col { flex:1; min-width:0; }
 /* 「区域与落点」的四颗取坐标按钮（人物 / 弹幕 / 固定 / 改落点）必须同一行：
    右栏是定宽 300px 的 grid 轨道，卡片 1px 边框 + 16px 内边距 → 行内容宽 266px；

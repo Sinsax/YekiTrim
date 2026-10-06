@@ -20,6 +20,11 @@
 // ⚠️ **两种形态都要认**（实测：只认 CSS 那种会漏掉最关键的两处）：
 //   ① CSS 形态：font-family:'A','B',sans-serif —— 模板 / 组件里的写法；
 //   ② **裸常量形态**：pub const EMOJI_FONT: &str = "'A','B',sans-serif" —— Rust 侧的写法。
+//
+// ⚠️ **两类"不是字体选择"的地方整份跳过**（否则门禁把自己的夹具当漂移，红得没人看）：
+//   ① 文件里的 `#[cfg(test)] mod tests` 之后（Rust 惯例把测试收尾）；
+//   ② **集成测试文件** `crates/*/tests/*.rs` —— 那种文件里没有 `mod tests` 可认（它本身就是测试），
+//      而里面的字体栈是喂给被测函数的**输入**（如 `takumi_font_id.rs` 那段 CSS 夹具）。
 //   cover.rs::EMOJI_FONT 与 server.rs::SYSTEM_FONT_STACK 正是**最该被收敛的两处**，
 //   而它们**不带 font-family: 前缀** —— 只写 CSS 判据的话，这条门禁会"绿着"放过它们。
 //
@@ -147,6 +152,11 @@ export function judge(root = ROOT) {
       if (!/\.(rs|vue|js|mjs|html|css)$/.test(f)) continue
       const rel = path.relative(root, f).split(path.sep).join('/')
       if (allowedFiles.has(rel) || rel === SELF) continue
+      // ⚠️ **集成测试文件整份算夹具**（`crates/*/tests/*.rs`）：那里的字体栈是被测函数的**输入**
+      // （如 `takumi_font_id.rs` 喂给 `adapt_css_for_takumi` 的一小段 CSS），不是产品里的字体选择 ——
+      // 与 `scanLiterals` 跳过 `#[cfg(test)] mod tests` 同一条口径，只是那种文件里
+      // 没有 `mod tests` 可认（Rust 集成测试本身就是测试）。实测踩到：它把夹具报成"第 8 份写死"。
+      if (/(^|\/)tests\/[^/]+\.rs$/.test(rel)) continue
       for (const h of scanLiterals(f)) {
         bad.push('未认领的字体栈字面量：' + rel + ':' + h.line + ' —— ' + h.text)
       }

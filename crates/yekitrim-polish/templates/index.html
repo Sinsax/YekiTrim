@@ -288,6 +288,30 @@ var CFG = {};
 })();
 
 // ============================================================
+// 六条轨道的**显示开关**（时间轴每条轨道前那枚眼睛，2026-10-06 用户口径）
+// ============================================================
+// ⚠️ 判据只有一处：Rust `ProjectFile::lane_enabled` 解析后注入 `CFG.lanes`
+//    （缺字段 = 自动：素材竖/画布竖 ⇒ 运镜与视觉特效默认关、音效只跟画布、字幕弹幕贴纸恒开）。
+//    这里**不自己算默认值** —— 少了注入就当全开（宁可多画，不可静默吞掉）。
+// ⚠️ 这张表必须与 `webui/src/polish/engine.js::LANE_OF_TYPE`、
+//    `tools/polish-to-dhampir.mjs::LANE_OF_TYPE`、Rust `Lane::of_event` **同集合**。
+// ⚠️ 必须放**顶层**：`buildIndex` 与 GSAP 运镜那两处、`getActiveCamera` 都要调它
+//    （挂在 buildIndex 里会让另外两处 `laneOn is not defined` —— 出片脚本整块抛错）。
+var LANE_OF_TYPE = {
+  camera: 'camera', sticker: 'sticker', sfx: 'sfx',
+  shake: 'effects', blur: 'effects', flash: 'effects', hue_shift: 'effects',
+  noise: 'effects', vignette: 'effects', overlay: 'effects', pulse: 'effects',
+};
+function laneOn(lane) {
+  var v = CFG.lanes ? CFG.lanes[lane] : undefined;
+  return typeof v === 'boolean' ? v : true;
+}
+function laneAllows(type) {
+  var lane = LANE_OF_TYPE[type];
+  return !lane || laneOn(lane);
+}
+
+// ============================================================
 // 输出画布 —— `_canvas` 唯一推导 (SSOT)。1920×1080 为基准，CK=宽比、CKH=高比；
 // 横屏画布 CK=CKH=1，所有坐标逐像素不变（零回归）。
 // ============================================================
@@ -862,11 +886,11 @@ function init(){
   segs.forEach(function(s){s.events.forEach(function(e){if(e.type==='camera')camEvents.push(e);});});
   camEvents.sort(function(a,b){return a.time-b.time;});
 
-  if(CFG.portrait_no_camera){curZoom=1.0;} // 竖素材进非竖画布: 不做运镜（唯一判据由 Rust 注入）
+  if(!laneOn('camera')){curZoom=1.0;} // 运镜轨的眼睛关着: 不做运镜（唯一判据由 Rust 注入）
   camEvents.forEach(function(ce){
     var is=ce.time, sd=evDur(ce,1.0), ie=is+sd;
     if(sd<0.5)return;
-    if(CFG.portrait_no_camera)return; // 竖素材进非竖画布: 跳过运镜动画
+    if(!laneOn('camera'))return; // 运镜轨的眼睛关着: 跳过运镜动画
     var zoom=ce.zoom||'中';
     var nextZoom=camFactor(zoom);
     var origin=ce.origin||liverOrigin;
@@ -1345,7 +1369,10 @@ function init(){
     var c = document.createElement('canvas');
     var cx = c.getContext('2d');
     var fs = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font_size) || 42;
-    cx.font = '600 ' + fs + 'px sans-serif';
+    // ⚠️ 字体族必须与渲染时**同一份**（[style.danmaku] font）：宽度决定滚动/渐隐时长，
+    //    量宽用回退字体会让弹幕没滚到边就消失（与 engine.js::measureDanmakuWidths 同口径）。
+    var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font) || '';
+    cx.font = '600 ' + fs + 'px ' + (dmFam ? '"' + dmFam + '",sans-serif' : 'sans-serif');
     for (var i = 0; i < DM.length; i++) {
       DM_WIDTHS[i] = cx.measureText(DM[i].text || '').width + 20;
     }
@@ -1373,25 +1400,12 @@ function init(){
     };
     var eLayer = document.getElementById('emoji-layer');
     var ei = 0; // 全局 sticker 序号, 匹配 DOM ID (sticker_N)
-    // **竖屏画布的三道整类门**（2026-10-02 用户口径）：竖屏默认全关、缺字段 = 关。
-    // 表必须与 `webui/src/polish/engine.js::PORTRAIT_SWITCH`、`tools/polish-to-dhampir.mjs` 同集合。
-    // 只过滤**建索引**这一步，事件本身不动（开关打开重新建索引即恢复）。
-    var PORTRAIT = ((CFG._canvas && CFG._canvas.orientation) || 'landscape') === 'portrait';
-    var PORTRAIT_SWITCH = {
-      camera: 'camera', shake: 'effects', blur: 'effects', flash: 'effects',
-      hue_shift: 'effects', noise: 'effects', vignette: 'effects', overlay: 'effects',
-      pulse: 'effects', sfx: 'sfx',
-    };
-    function portraitAllows(type) {
-      if (!PORTRAIT) return true;
-      var key = PORTRAIT_SWITCH[type];
-      if (!key) return true;
-      return !!(CFG.stage && CFG.stage['portrait_' + key] === true);
-    }
+    // **六条轨道的显示开关**（`laneAllows`，表在文件顶部 —— 三处都要用）。
+    // 只过滤**建索引**这一步，事件本身不动（眼睛点亮重新建索引即恢复）。
     (CFG.segments || []).forEach(function(seg) {
       (seg.events || []).forEach(function(ev) {
         var type = ev.type || '';
-        if (!portraitAllows(type)) return; // 竖屏画布：这一类整条不进索引
+        if (!laneAllows(type)) return; // 轨道眼睛关着：这一类整条不进索引
         var entry = { time: ev.time || 0, duration: evDur(ev, 0), ev: ev };
         if (type === 'sticker') {
           entry._img = document.getElementById('sticker_' + ei) || null;
@@ -1406,8 +1420,9 @@ function init(){
     ['camera','shake','flash','blur','overlay','vignette','hue_shift','noise','pulse','sfx'].forEach(function(k) {
       idx[k].sort(function(a,b) { return a.time - b.time; });
     });
-    idx.subs = SUB || [];
-    idx.dms = DM || [];
+    // 字幕/弹幕轨的眼睛：关掉就是"这一帧没有它"，素材一个字都没动
+    idx.subs = laneOn('subtitles') ? (SUB || []) : [];
+    idx.dms = laneOn('danmaku') ? (DM || []) : [];
     idx.dur = META.duration || CFG.duration || 239.8;
     idx.layout = CFG.layout || {};
     idx.subStyle = (CFG.style && CFG.style.subtitle) || {};
@@ -1429,14 +1444,15 @@ function init(){
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
     var dp = defOrigin.split(' '); ox = parseFloat(dp[0]) || 65; oy = parseFloat(dp[1]) || 50;
 
-    // 运镜门 = **竖素材进了非竖画布**（`portrait_no_camera`，唯一判据在
-    // `ProjectFile::src_portrait_no_camera`；2026-10-05 从「源竖就关」收窄）。
-    // ⚠️ 竖素材进竖画布现在**放行**：画面正好铺满、放大不会露底，那才是最该有运镜的一档。
+    // 运镜门 = **运镜轨的眼睛**（`[stage.lanes] camera`，唯一判据在
+    // `ProjectFile::lane_enabled`；2026-10-06 从 `portrait_no_camera` 硬门改成开关）。
+    // ⚠️ 返回值与"空运镜列表"逐值相同（默认聚焦中心 + zoom=1）；两条腿都留着是为了
+    //    与 engine.js `cameraAt` 的同形早退对齐。
     // 与 engine.js `cameraAt` 逐值同口径：zoom 一并归零，不只是 handheld；不动点仍按
     // `layout.liver` 的 origin 给（zoom=1 时用不到，纯为三条 JS 路径同值）。
     // ⚠️ yekitrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
     // 既有实现（不在出片链路上），两边口径的差异记在这里，别照抄回去。
-    if (CFG.portrait_no_camera) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
+    if (!laneOn('camera')) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
 
     var wide = camFactor('远');
     for (var i = 0; i < cam.length; i++) {

@@ -28,13 +28,14 @@ pub struct SoundEvent {
 /// - `Sfx` 事件直接输出；
 /// - 带 `sfx` 引用的事件（sticker/特效）也输出；
 /// - 事件跨度不足 1s 时按 1s 兜底；
-/// - ⚠️ **竖屏画布 + `[stage] portrait_sfx = false`（缺字段就是 false）→ 一条都不收**。
+/// - ⚠️ **音效轨的眼睛关着 → 一条都不收**（`[stage.lanes] sfx`；缺字段时 = 竖画布下默认关）。
 pub fn collect_sound_events(config: &ProjectFile) -> Vec<SoundEvent> {
-    // **竖屏画布的音效门**（2026-10-02 用户口径：竖屏默认全关、缺字段 = 关）。
+    // **音效轨的显示开关**（2026-10-06：从 `[stage] portrait_sfx` 硬门改成轨道眼睛）。
     // 语义 = **按整类事件屏蔽**：只影响混音，`polish.toml` 里的事件**一个字都不动**
-    // （与「屏蔽只做标记」同一条纪律：界面把开关打开即完全恢复）。
-    // ⚠️ 判据是**画布方向**（`[canvas] orientation`），横画布下这个字段不生效。
-    if config.canvas.is_portrait() && !config.stage.portrait_sfx {
+    // （与「屏蔽只做标记」同一条纪律：界面把眼睛点亮即完全恢复）。
+    // ⚠️ 判据只有一处（`ProjectFile::lane_enabled`）：缺字段时音效**只跟画布方向**
+    //    （竖画布默认关、横画布默认开），与素材方向无关 —— 别在这里另写一套条件。
+    if !config.lane_enabled(crate::project::Lane::Sfx, None) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -201,10 +202,10 @@ mod tests {
         assert!(events[0].duration.unwrap() >= 1.0);
     }
 
-    /// **竖屏画布的音效门**（2026-10-02）：缺字段 = 关 ⇒ 一条都不收；打开 `portrait_sfx` 才收。
-    /// ⚠️ 横画布不受这个字段影响（同样写 false 也照收）。
+    /// **音效轨的眼睛**（2026-10-06）：缺字段时竖画布默认关 ⇒ 一条都不收；
+    /// 眼睛点亮（`[stage.lanes] sfx = true`）或显式关掉都照办；横画布不受画布方向影响。
     #[test]
-    fn portrait_canvas_gates_sfx() {
+    fn sfx_lane_switch_gates_audio() {
         let mut config = base_config();
         config.segments[0].events = vec![Event::Sfx {
             time: 1.0,
@@ -212,11 +213,14 @@ mod tests {
             volume: None,
             end: Some(2.0),
         }];
-        assert!(!config.stage.portrait_sfx, "缺省就是关");
-        assert_eq!(collect_sound_events(&config).len(), 1, "横画布不受门控");
+        assert!(config.stage.lanes.is_auto(), "缺省 = 自动");
+        assert_eq!(collect_sound_events(&config).len(), 1, "横画布默认开");
         config.canvas.orientation = "portrait".into();
-        assert!(collect_sound_events(&config).is_empty(), "竖屏缺字段 = 关");
-        config.stage.portrait_sfx = true;
-        assert_eq!(collect_sound_events(&config).len(), 1, "打开开关即恢复");
+        assert!(collect_sound_events(&config).is_empty(), "竖画布缺字段 = 默认关");
+        config.stage.lanes.sfx = Some(true);
+        assert_eq!(collect_sound_events(&config).len(), 1, "眼睛点亮即恢复");
+        config.canvas.orientation = "landscape".into();
+        config.stage.lanes.sfx = Some(false);
+        assert!(collect_sound_events(&config).is_empty(), "显式关 ⇒ 横画布也不出声");
     }
 }

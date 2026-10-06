@@ -86,8 +86,12 @@
   另一条下次加载跳回 50，静默丢值）；② **轴只看比例**
   （同比 → `fill`，否则 x/y）—— **`auto` 特例已删**，不匹配的源改成**适配留边**（老 `auto` 是裁切）；
   ③ 缺省背景 = `blur`（UI 删掉「自动」，老值按 blur 处理）；④ `padding` **字段保留、UI 不再出现**
-  （与 `scale` 不同量、且 `deny_unknown_fields` 删不得）；⑤ 竖屏画布三个 `portrait_effects/camera/sfx`
-  **bool、缺字段 = false = 关**（整类事件只在渲染侧跳过，**事件本身不动**）。
+  （与 `scale` 不同量、且 `deny_unknown_fields` 删不得）；⑤ **六条轨道的显示开关 = `[stage.lanes]`**
+  （时间轴每条轨道前那枚**眼睛**，2026-10-06 用户口径）：每条一个 `Option<bool>`，`None` = 自动、
+  按 `ProjectFile::lane_default` 取默认（**素材竖 或 画布竖 ⇒ 运镜/视觉特效默认关；音效只跟画布；
+  字幕/弹幕/贴纸恒开**），显式值一律照办 —— **横画布也能整类关、竖画布也能整类开**，
+  取代了 0.5.0「竖屏全关」那个**硬门**（用户既看不见也改不了）。解析结果由 `lanes_json` 注入
+  （预览 `_lanes` / 出片模板 `lanes`），整类事件只在渲染侧跳过，**事件本身一个字都不动**。
   ⚠️ **别拿 `StageFit.position` 算几何**（那是过渡期的兼容输出，25/75 会被压成 center）——
   消费侧一律读 `StageFit::position_x_pct` / `position_y_pct`。
   ⚠️ **摆放顺序**：`padding` 定布局盒 → `axis` 定画面大小 → 绕**盒心**乘 `scale` → **两轴各自**在
@@ -106,9 +110,9 @@
   `none` 一个像素都不画（透明 = 黑，与改造前同源）。模糊半径/倍率一律取契约里的值，别写死 28px。
   ③ **摆放与运镜同样必须落在 canvas 出片路径里**：`resolve_stage` 推的 `axis/position/scale/padding`
   由模板 `stageDrawRect` 算成画面矩形（`ctx.translate/scale` 送进 CTM，`drawImage` 的 dst 仍是
-  `(0,0,CW,CH)` 字面量），**竖素材进非竖画布再额外吃掉运镜**（`getActiveCamera` 开头
-  `CFG.portrait_no_camera` → `zoom=1 / handheld=0`；判据 `ProjectFile::src_portrait_no_camera`
-  = 源竖 **且** 画布非竖，2026-10-05 从「源竖就关」收窄 ⇒ **竖素材进竖画布放行**）。
+  `(0,0,CW,CH)` 字面量），**运镜轨的眼睛关着时整条吃掉运镜**（`getActiveCamera` 开头
+  `!CFG.lanes.camera` → `zoom=1 / handheld=0`；判据 = `ProjectFile::lane_enabled(Camera)`，
+  2026-10-06 从 `src_portrait_no_camera` 硬门改成**可见可点的开关** ⇒ 竖素材进竖画布只要眼睛亮着就照常运镜）。
   只在 DOM/CSS 上消费这套推导的表现是「成片被拉成宽屏 + 竖素材在成片里照旧缩放」（用户 2026-09-21
   报的原文），预览侧全程正常、**不报错**。`axis=fill` + 无 padding + 源比例 == 画布比例 必须仍算出
   `(0,0,CW,CH)` —— 横屏存量逐字节零回归的判据（真出片对拍过 SHA-256）。

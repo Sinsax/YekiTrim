@@ -755,24 +755,32 @@ checks += 5;
 // 每一条都对应上面**某一条**断言。变异体跑的是同一份 `checkCurves`，
 // 所以"打红"就是"这份守卫真的能抓住这一类错误"。
 // ---------------------------------------------------------------------------
-// 画面构成（`[canvas]` / `[stage]`）：**位置百分比 + 竖屏三道整类门**（2026-10-02）
+// 六条轨道的**显示开关**（`[stage.lanes]`，2026-10-06）
 // ---------------------------------------------------------------------------
 //
-// 失败形态：竖屏「默认全关」与「转译器压根没读这个键」在报告里**长得一模一样**（都是一行没有），
-// 而两者差着整类事件。所以拿**同一份合成工程、只改 `[stage]` 那几行**，看产物扩展元数据
-// （`extensions['yekitrim.polish_toml']` 的 `shake_events` / `sfx_clips`）跟不跟着变。
+// 失败形态：竖屏「默认关」与「转译器压根没读这个键」在报告里**长得一模一样**（都是一行没有），
+// 而两者差着整类事件。所以拿**同一份合成工程、只改 `[canvas]` / `[stage.lanes]` 那几行**，
+// 看产物扩展元数据（`extensions['yekitrim.polish_toml']` 的 `shake_events` / `sfx_clips` /
+// `camera_events`）跟不跟着变。
 //
-// ⚠️ **`camera` 不在这组行为判据里**：运镜那条要先探到源尺寸（`probeSize`），合成工程里没有真视频
-// ⇒ 它会走「判不了源方向」的 CLAMP 分支、恒为 0 —— 那种断言是**空转**的。
-// 运镜落在同一张表、同一个 `continue` 上；表本身由 `webui/scripts/check-stage-backdrop.mjs` 三方对拍钉住。
-function checkStage(curves) {
-  const SYNTH = (canvasLines, stageLines) => [
+// ⚠️ 与 0.5.0 的差别（这就是用户报的那件事）：那时是**硬门**（`[stage] portrait_*`，
+// 只认画布方向、素材竖那一档由 `portraitNoCamera` 硬吃）—— 用户眼里"竖屏素材关不掉、也开不了"。
+// 现在显式开关**优先于一切**（横画布也能整类关掉、竖画布也能整类打开）。
+//
+// ⚠️ `camera` 以前不在这组行为判据里（要先探到源尺寸才判得了"素材竖"，合成工程里没有真视频）；
+// 0.6.0 起**竖画布**下运镜默认关（`!(素材竖 || 画布竖)`）—— 与源尺寸无关，
+// 所以它现在**能**在合成工程里被真断一次（下面 ② 的 `camera_events`）。
+function checkLaneSwitches(curves) {
+  const SYNTH = (canvasLines, stageLines, extra = []) => [
     'duration = 4.0',
     '[project]',
-    'name = "stage-probe"',
+    'name = "lane-probe"',
     'output = "o.mp4"',
     '[source]',
     'video = "clip.mp4"',
+    'subtitles = "clip.srt"',
+    'danmaku = "clip.dm.srt"',
+    ...extra,
     '[canvas]',
     ...canvasLines,
     '[stage]',
@@ -780,6 +788,11 @@ function checkStage(curves) {
     '[[segments]]',
     'start = 0.0',
     'end = 4.0',
+    '[[segments.events]]',
+    'type = "camera"',
+    'time = 0.5',
+    'end = 3.0',
+    'zoom = "近"',
     '[[segments.events]]',
     'type = "shake"',
     'time = 1.0',
@@ -791,37 +804,96 @@ function checkStage(curves) {
     'name = "pop-notice"',
     '',
   ].join('\n');
-  const probe = (canvasLines, stageLines) => {
-    const dir = mkdtempSync(join(tmpdir(), 'yekitrim-stage-'));
+  const SRT = ['1', '00:00:00,500 --> 00:00:02,000', '第一条字幕', '', ''].join('\n');
+  const probe = (canvasLines, stageLines, extra = []) => {
+    const dir = mkdtempSync(join(tmpdir(), 'yekitrim-lane-'));
     try {
       mkdirSync(join(dir, 'sfx'), { recursive: true });
       writeFileSync(join(dir, 'sfx', 'pop-notice.mp3'), 'ID3(fake)', 'utf8');
-      const doc = curves.translate(curves.parseToml(SYNTH(canvasLines, stageLines)), dir, join(dir, 'p.doc.json'));
-      return (doc.extensions || {})['yekitrim.polish_toml'] || {};
+      writeFileSync(join(dir, 'clip.srt'), SRT, 'utf8');
+      writeFileSync(join(dir, 'clip.dm.srt'), SRT, 'utf8');
+      const doc = curves.translate(curves.parseToml(SYNTH(canvasLines, stageLines, extra)), dir, join(dir, 'p.doc.json'));
+      const tracks = (doc.timeline && doc.timeline.tracks) || [];
+      return {
+        ...((doc.extensions || {})['yekitrim.polish_toml'] || {}),
+        subtitle_tracks: tracks.filter((t) => t.subtitle).length,
+        danmaku_tracks: tracks.filter((t) => t.danmaku).length,
+      };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   };
   const PORTRAIT = ['orientation = "portrait"'];
   const LANDSCAPE = ['orientation = "landscape"'];
-  const SWITCHES_ON = ['portrait_effects = true', 'portrait_sfx = true'];
-  // ① 横画布（对照组）：这两个字段**不生效** —— 特效与音效照转
+  // `[stage.lanes]` 是子表 ⇒ TOML 里必须写在 `[stage]` **之后**（SYNTH 把 stageLines 放在
+  // `[stage]` 头下面，所以这里给的就是"表里的行"；子表头要单独起一行）。
+  const LANES = (...keys) => ['', '[stage.lanes]', ...keys];
+  const ON = keys => LANES(...keys.map((k) => `${k} = true`));
+  const OFF = keys => LANES(...keys.map((k) => `${k} = false`));
+
+  // ① 横画布（对照组）：三类照转 —— 这是"开关没设过就是默认开"的基线
   const land = probe(LANDSCAPE, ['scale = 1.0']);
-  assert.ok(land.shake_events > 0, '横画布不该被竖屏开关影响：shake 必须照转');
-  assert.ok(land.sfx_clips > 0, '横画布不该被竖屏开关影响：sfx 必须照转');
-  checks += 2;
-  // ② 竖画布 + 缺字段 ⇒ 整类不转（用户口径：竖屏默认全关、缺字段 = 关）
+  assert.ok(land.camera_events > 0, '横画布缺字段：运镜必须照转');
+  assert.ok(land.shake_events > 0, '横画布缺字段：特效必须照转');
+  assert.ok(land.sfx_clips > 0, '横画布缺字段：音效必须照转');
+  checks += 3;
+
+  // ② 竖画布 + 缺字段 ⇒ 运镜 / 特效 / 音效**默认关**（字幕与弹幕不受影响）
   const off = probe(PORTRAIT, ['scale = 1.0']);
-  assert.equal(off.shake_events, 0, '竖屏缺字段：特效一条都不该转');
-  assert.equal(off.sfx_clips, 0, '竖屏缺字段：音效一条都不该转');
-  checks += 2;
-  // ③ 打开开关 ⇒ 全回来（判据不许是「关掉之后永久关掉」）
-  const on = probe(PORTRAIT, SWITCHES_ON);
-  assert.ok(on.shake_events > 0, '打开开关后特效应当转出来');
-  assert.ok(on.sfx_clips > 0, '打开开关后音效应当转出来');
-  checks += 2;
-  return 6;
+  assert.equal(off.camera_events, 0, '竖画布缺字段：运镜**默认关**（这是"竖屏素材默认不启用"那一半）');
+  assert.equal(off.shake_events, 0, '竖画布缺字段：特效默认关');
+  assert.equal(off.sfx_clips, 0, '竖画布缺字段：音效默认关');
+  assert.ok(off.subtitle_tracks > 0 && off.danmaku_tracks > 0, '字幕与弹幕**不受画布方向影响**（它们默认开）');
+  checks += 4;
+
+  // ③ 眼睛点亮 ⇒ 全回来（判据不许是「关掉之后永久关掉」——用户要的正是"点得开"）
+  const on = probe(PORTRAIT, ['scale = 1.0'], ON(['camera', 'effects', 'sfx']));
+  assert.ok(on.camera_events > 0, '点亮运镜轨后运镜应当转出来');
+  assert.ok(on.shake_events > 0, '点亮特效轨后特效应当转出来');
+  assert.ok(on.sfx_clips > 0, '点亮音效轨后音效应当转出来');
+  checks += 3;
+
+  // ④ **显式关**优先（横画布也能整类关掉 —— 硬门时代做不到这件事）
+  const hardOff = probe(LANDSCAPE, ['scale = 1.0'], OFF(['camera', 'effects', 'sfx']));
+  assert.equal(hardOff.camera_events, 0, '显式关运镜：横画布下也不许转');
+  assert.equal(hardOff.shake_events, 0, '显式关特效：横画布下也不许转');
+  assert.equal(hardOff.sfx_clips, 0, '显式关音效：横画布下也不许转');
+  checks += 3;
+
+  // ⑤ 文字层的眼睛：关掉 ⇒ 一条字幕/弹幕轨都不转（素材与 `clip.srt` 一个字都没动）
+  const subOff = probe(LANDSCAPE, ['scale = 1.0'], OFF(['subtitles', 'danmaku']));
+  assert.equal(subOff.subtitle_tracks, 0, '字幕轨的眼睛关着 ⇒ 不该有字幕轨');
+  assert.equal(subOff.danmaku_tracks, 0, '弹幕轨的眼睛关着 ⇒ 不该有弹幕轨');
+  assert.equal(land.subtitle_tracks, 1, '对照组：字幕轨的眼睛默认亮着 ⇒ 一条字幕轨');
+  assert.equal(land.danmaku_tracks, 1, '对照组：弹幕轨的眼睛默认亮着 ⇒ 一条弹幕轨');
+  checks += 4;
+
+  // ⑥ 默认值表：**四种方向组合逐值对拍**（与 Rust `ProjectFile::lane_default` 同一张表）。
+  //    `素材竖 + 横画布`就是用户报的那一档（旧硬门把它关死且改不了）。
+  const D = curves.laneDefaults;
+  assert.deepEqual(D(true, false), {
+    subtitles: true, danmaku: true, camera: false, sticker: true, effects: false, sfx: true,
+  }, '素材竖 + 横画布：运镜与视觉特效默认关，音效跟画布（仍是开）');
+  assert.deepEqual(D(false, true), {
+    subtitles: true, danmaku: true, camera: false, sticker: true, effects: false, sfx: false,
+  }, '横素材 + 竖画布：三类默认关');
+  assert.deepEqual(D(true, true), {
+    subtitles: true, danmaku: true, camera: false, sticker: true, effects: false, sfx: false,
+  }, '竖素材 + 竖画布：三类默认关');
+  assert.deepEqual(D(false, false), {
+    subtitles: true, danmaku: true, camera: true, sticker: true, effects: true, sfx: true,
+  }, '横素材 + 横画布：六条轨道全开');
+  assert.deepEqual(D(null, false), {
+    subtitles: true, danmaku: true, camera: true, sticker: true, effects: true, sfx: true,
+  }, '探不到源尺寸（null）**不算竖** —— 与 Rust 注入的 vertical 同口径');
+  assert.deepEqual(D(null, true), {
+    subtitles: true, danmaku: true, camera: false, sticker: true, effects: false, sfx: false,
+  }, '探不到源尺寸 + 竖画布：仍按画布方向默认关');
+  checks += 6;
+
+  return checks;
 }
+
 const MUTATIONS = [
   {
     name: 'source_in 退回序列帧（5fps 素材 + 30fps 网格 ⇒ 屏蔽后画面跳 6 倍远）',
@@ -869,9 +941,39 @@ const MUTATIONS = [
     to: '    const right = b;',
   },
   {
-    name: '竖屏画布的整类门被摘掉（`portraitAllows` 恒放行）',
-    from: '    return config.stage?.[`portrait_${key}`] === true;',
-    to: '    return true;',
+    name: '轨道整类门被摘掉（`laneAllows` 恒放行 ⇒ 竖屏默认关形同虚设）',
+    from: '      if (!laneAllows(event.type)) {',
+    to: '      if (false) {',
+  },
+  {
+    name: '竖屏素材/画布下运镜默认关被摘掉（`laneDefaults.camera` 恒开）',
+    from: '    camera: !(portrait || canvas),',
+    to: '    camera: true,',
+  },
+  {
+    name: '视觉特效默认只看画布（漏掉"素材竖"那一档）',
+    from: '    effects: !(portrait || canvas),',
+    to: '    effects: !canvas,',
+  },
+  {
+    name: '音效默认跟着素材方向走（口径是"只跟画布"）',
+    from: '    sfx: !canvas,',
+    to: '    sfx: !(portrait || canvas),',
+  },
+  {
+    name: '显式开关失效（`laneOn` 永远按默认值 ⇒ 眼睛点不开）',
+    from: '  const laneOn = (lane) => laneExplicit(lane) ?? LANE_DEFAULT[lane] === true;',
+    to: '  const laneOn = (lane) => LANE_DEFAULT[lane] === true;',
+  },
+  {
+    name: '字幕轨的眼睛被摘掉（关不掉字幕）',
+    from: "  if (laneOn('subtitles') && config.source?.subtitles",
+    to: '  if (config.source?.subtitles',
+  },
+  {
+    name: '弹幕轨的眼睛被摘掉（关不掉弹幕）',
+    from: "  if (laneOn('danmaku') && danmakuFile) {",
+    to: '  if (danmakuFile) {',
   },
   {
     name: 'backOut3 的 `s = 3` 改成经典 1.70158（过冲 1.25 -> 1.10）',
@@ -1069,8 +1171,8 @@ async function mutate() {
         checkColors(curves);
         // 映射那一段同理（M2 加的三条）。
         checkMappings(curves);
-        // 画面构成那一段同理（2026-10-02 的三道整类门）。
-        checkStage(curves);
+        // 六条轨道的显示开关同理（2026-10-06 的 `[stage.lanes]`）—— 不跑它，这几条变异永远绿。
+        checkLaneSwitches(curves);
         // 密集键右端那一段同理（③R3，2026-10-05）—— 不跑它这条变异就永远绿。
         checkDenseRanges(curves);
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
@@ -1726,16 +1828,17 @@ console.log('  并读四处源码（转译器 / 模板 / timeline.rs / engine.js
 const mappingChecks = checkMappings(translatorModule);
 console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全绿`);
 
-const stageChecks = checkStage(translatorModule);
-console.log(`✓ 画面构成（合成工程过 translate）：${stageChecks} 项全绿`);
+const laneChecks = checkLaneSwitches(translatorModule);
+console.log(`✓ 轨道显示开关（合成工程过 translate + 默认值表）：${laneChecks} 项全绿`);
 const geomChecks = checkStageGeom(readFileSync(TRANSLATOR, 'utf8'));
 console.log(`✓ 画面构成的几何（两轴 xy 插值，源码抽函数）：${geomChecks} 项全绿`);
 console.log('  钉住的是 2026-10-05：先定画面大小 → 绕盒心缩放 → **两轴各自**按余量百分比插值；');
 console.log('  scale=1 时与老顺序逐值相同、scale≠1 时 X=0 是贴左（旧顺序 -303.75 = 画面被推出盒外）');
 const denseChecks = checkDenseRanges(translatorModule);
 console.log(`✓ 密集键区间（③R3 右端落点 + 两个边界）：${denseChecks} 项全绿`);
-console.log('  钉住的是 2026-10-02：竖屏画布默认全关（缺字段 = 关）的**特效 / 音效**整类门 ——');
-console.log('  横画布不受它影响、打开开关必须全回来（否则就是「关掉之后永久关掉」）');
+console.log('  钉住的是 2026-10-06 的六条轨道开关（`[stage.lanes]`）：缺字段时"素材竖或画布竖 ⇒ 运镜/');
+console.log('  视觉特效默认关、音效只跟画布"，**显式开关优先于一切**（横画布也能关、竖画布也能开）——');
+console.log('  与 Rust `ProjectFile::lane_default` 四种方向组合逐值对拍');
 console.log('  钉住的是 M2 三条"报告里一行、成片里没有"：覆盖层 color/fade_in 两档、贴纸只有 name、');
 console.log('  以及 `style.camera` 没配时的**按档位默认倍率**（远 0.55 / 近 1.5 / 中 1.3，照抄模板）');
 

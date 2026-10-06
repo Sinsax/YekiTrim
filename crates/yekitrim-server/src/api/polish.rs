@@ -1231,12 +1231,9 @@ pub(super) async fn polish_project_get_impl(
                 "vertical".into(),
                 serde_json::json!(src_size.map(|(w, h)| h > w).unwrap_or(false)),
             );
-            // 运镜门：与出片模板读的**同一个判据**（`ProjectFile::src_portrait_no_camera`）——
-            // 竖素材进了非竖画布才关；竖素材进竖画布放行（2026-10-05 收窄）。
-            obj.insert(
-                "portrait_no_camera".into(),
-                serde_json::json!(cfg.src_portrait_no_camera(src_size)),
-            );
+            // 六条轨道的显示开关（时间轴那六枚眼睛）：与出片模板/转译器**同一个判据**
+            // （`ProjectFile::lane_enabled`，缺字段按素材+画布方向取默认）。
+            obj.insert("_lanes".into(), cfg.lanes_json(src_size));
             obj.insert(
                 "vertical_position".into(),
                 contract["stage"]["position"].clone(),
@@ -1671,6 +1668,11 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     if let Some(f) = body.get("subtitle_font").and_then(|v| v.as_str()) {
         cfg.style.subtitle.font = f.trim().to_string();
     }
+    // 弹幕字体：同 `subtitle_font`（值 = 字体库 id，空串 = 跟随字幕那条字体栈）。
+    // ⚠️ 它还决定弹幕的**丈量宽度**（滚动时长按宽度算），所以三处量宽都要读它。
+    if let Some(f) = body.get("danmaku_font").and_then(|v| v.as_str()) {
+        cfg.style.danmaku.font = f.trim().to_string();
+    }
     // 弹幕时间偏移（秒，负 = 提前）：精修工程参数，只影响弹幕显示时刻（三条消费腿各自
     // 在入口平移：出片模板 DM 注入点 / engine.js::buildIndex / 转译器 remap 之前），
     // 所以**保存即生效、不用重跑任务**。范围收在 ±10s，坏值当场报错不静默。
@@ -1697,6 +1699,11 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     if let Some(v) = body.get("sticker") {
         cfg.sticker = serde_json::from_value(v.clone())
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("sticker 解析失败: {e}")))?;
+    }
+    // 音效块（`[sfx]`：全局默认音量等）—— 音效轨的设置面板提交它。
+    if let Some(v) = body.get("sfx") {
+        cfg.sfx = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("sfx 解析失败: {e}")))?;
     }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
