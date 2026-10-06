@@ -824,6 +824,11 @@ function checkStage(curves) {
 }
 const MUTATIONS = [
   {
+    name: 'source_in 退回序列帧（5fps 素材 + 30fps 网格 ⇒ 屏蔽后画面跳 6 倍远）',
+    from: "    id: `main-${index}`,\n    start: range.outStart,\n    end: range.outStart + (range.end - range.start),\n    source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },",
+    to: "    source: { asset_id: videoAssetId, source_in: range.start },",
+  },
+  {
     name: '30fps 下限被摘掉（5fps 源 ⇒ 工程网格也 5fps）',
     from: "  const timebase = mediaFps > 0 && mediaFps < FPS_FLOOR ? { num: FPS_FLOOR, den: 1 } : assetTimebase;",
     to: "  const timebase = assetTimebase;",
@@ -1262,6 +1267,29 @@ function checkMediaProbe(mod) {
       '源只有 5fps ⇒ 工程网格必须抬到 30/1（下限）');
     eq(JSON.stringify(videoOf(d3).timebase), JSON.stringify({ num: 5, den: 1 }),
       '源只有 5fps ⇒ **素材时基仍是 5/1**（源帧号靠它换算，不能跟着抬）');
+    // ④ **`source_in` 的单位**（2026-10-06 用户报「经过屏蔽时声音和视频全乱」的根因）：
+    //    底座 `source_frame_looped(source_in, local_frame, 时间线时基, 素材时基, …)` 里
+    //    `source_in` 是**素材帧号**，而图层 `start` 是**序列帧号**。两者单位混了（都写成序列帧），
+    //    5fps 素材 + 30fps 网格下第二段会从源里 6 倍远的地方取帧 ⇒ 画面与声音从第一个屏蔽段起分叉。
+    //    夹具：6 秒、屏蔽 [2,4] ⇒ 第二段 start=60（2s×30），source_in 必须 = 20（4s×5），不是 120。
+    const tomlMute = [
+      'duration = 6.0',
+      // ⚠️ **数组表**写法：转译器自带的小 TOML 解析器只认数组表（真实 `polish.toml` 也是这么写的）
+      '[[mute_ranges]]',
+      'start = 2.0',
+      'end = 4.0',
+      '[project]',
+      'name = "mute-probe"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip5.mp4"',
+      '',
+    ].join('\n');
+    const d4 = mod.translate(mod.parseToml(tomlMute), dir, join(dir, 'd4.json'));
+    const v1 = ((d4.timeline.tracks || []).find((t) => t.id === 'v1') || {}).layers || [];
+    eq(v1.length, 2, '屏蔽一段 ⇒ 主画面切成两层（每段一层）');
+    eq(v1[1].start, 60, '第二段的 start 是**序列帧**（2s × 30fps 网格）');
+    eq(v1[1].source.source_in, 20, '第二段的 source_in 是**素材帧**（4s × 5fps 素材），不是 120');
   } finally { rmSync(dir, { recursive: true, force: true }); }
   return checks;
 }

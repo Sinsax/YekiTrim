@@ -366,6 +366,16 @@ let dhampirReadoutAt = 0
  * 直接乘时基会让整条预览偏 204 帧（3.4 秒），而且越过 8560 之后越界。
  */
 let dhampirSegments = []
+
+/**
+ * **源素材自己的帧率**（来自工程里那条视频素材的时基）。
+ *
+ * ⚠️ 它与 `dhampirFps`（**工程网格** = `timeline.timebase`）**不是一回事**（2026-10-06）：
+ * 电台那种"视频流 5fps 静止帧 + 主音频"的素材，工程网格会被抬到 30fps（让叠加层一秒动 30 次），
+ * 而素材仍只有 5fps。段落表里的 `source_in` 是**素材帧号**（底座 `source_frame_looped` 按时间换算），
+ * 所以"源秒 → 源帧"要用**这个**帧率；用网格帧率去比就是 6 倍错位（屏蔽区间的跳转点全错）。
+ */
+let dhampirSourceFps = 30
 // 贴纸诊断只报一次（每次进 Dhampir 模式重置）。这条日志是为了**不再猜**。
 let dhampirStickerDiag = null
 /**
@@ -381,6 +391,10 @@ let dhampirStickerDiag = null
 const dhampirStickerStat = { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0, delayConflict: 0 }
 
 function dhampirBuildSegments(project) {
+  // 源素材那份时基（= `source_in` 的单位）。取不到就当作与网格一致（老行为）。
+  const videoAsset = ((project.assets || []).find((a) => a.kind === 'video')) || {}
+  const stb = videoAsset.timebase || {}
+  dhampirSourceFps = stb.num > 0 && stb.den > 0 ? stb.num / stb.den : dhampirFps.value
   const track = ((project.timeline && project.timeline.tracks) || []).find((t) => t.id === 'v1')
   dhampirSegments = (((track && track.layers) || []))
     .filter((l) => l.enabled !== false)
@@ -400,12 +414,17 @@ function dhampirBuildSegments(project) {
  * 没有段落表（单段且 source_in=0）时退化成直接乘时基，与以前一致。
  */
 function dhampirFrameAt(seconds) {
-  const src = Math.max(0, Math.round((seconds || 0) * dhampirFps.value))
-  if (!dhampirSegments.length) return src
+  const seqFps = dhampirFps.value || 30
+  const srcFps = dhampirSourceFps || seqFps
+  // 无段落表（单段、source_in=0）⇒ 源时间与序列时间同一时刻，直接乘网格帧率（老行为）
+  if (!dhampirSegments.length) return Math.max(0, Math.round((seconds || 0) * seqFps))
+  // `source_in` 是**素材帧号** ⇒ 源秒要用素材帧率换算；段落长度是序列帧 ⇒ 换算回素材帧再比
+  const src = Math.max(0, Math.round((seconds || 0) * srcFps))
   for (const seg of dhampirSegments) {
-    const len = seg.frameEnd - seg.frameStart
-    if (src >= seg.sourceIn && src < seg.sourceIn + len) {
-      return seg.frameStart + (src - seg.sourceIn)
+    const lenSeq = seg.frameEnd - seg.frameStart
+    const lenSrc = Math.max(1, Math.round((lenSeq * srcFps) / seqFps))
+    if (src >= seg.sourceIn && src < seg.sourceIn + lenSrc) {
+      return seg.frameStart + Math.round(((src - seg.sourceIn) * seqFps) / srcFps)
     }
   }
   return null
@@ -419,12 +438,13 @@ function dhampirFrameAt(seconds) {
  * 两者在压缩工程上不是一回事，按前者跳会**跳两次**。
  */
 function dhampirNextSourceStart(seconds) {
-  const src = Math.max(0, Math.round((seconds || 0) * dhampirFps.value))
+  const srcFps = dhampirSourceFps || dhampirFps.value || 30
+  const src = Math.max(0, Math.round((seconds || 0) * srcFps))
   const next = dhampirSegments
     .map((s) => s.sourceIn)
     .filter((s) => s > src)
     .sort((a, b) => a - b)[0]
-  return next === undefined ? null : next / dhampirFps.value
+  return next === undefined ? null : next / srcFps
 }
 
 // ---- Dhampir 那条腿的 A/B 预滚（2026-09-30）----
