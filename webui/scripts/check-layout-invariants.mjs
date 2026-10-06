@@ -957,5 +957,66 @@ console.log('\n㉒ 多段片段的「N 段」标记（四处卡片墙 + 索引�
   }
 }
 
+// ── ㉓ 字幕轨道的搜索（上一个/下一个）+ 滚轮缩放（用户口径 2026-10-06）──
+//
+// 用户原话：「预处理界面的字幕轨道增加一个搜索功能，可以进行下一个上一个的进行，方便找位置。
+// 在字幕轨道用鼠标滚轮会缩小放大，当前是默认的为最大，这样好操控。」
+//
+// 两条各有一个**必须钉死**的点：
+//   ① 搜索：命中表大小写不敏感、上下一个会循环、当前命中在轨道上真亮；
+//   ② 滚轮：`@wheel` **不许是 `.passive`**（passive 监听器里 `preventDefault()` 无效，
+//      浏览器照样把页面滚走 ⇒ 缩放与滚动打架），且必须 `preventDefault` + 以鼠标位置为锚
+//      + `Shift+滚轮` 让路给滚动。
+console.log('\n㉓ 字幕轨道：搜索（上一个/下一个）+ 滚轮缩放')
+{
+  const track = await read('webui/src/components/prepare/SubtitleTrack.vue')
+
+  const searchUi = (s) =>
+    /class="track-search"/.test(s)
+      && /placeholder="搜索字幕内容/.test(s)
+      && /@click="searchStep\(-1\)"/.test(s)
+      && /@click="searchStep\(1\)"/.test(s)
+      && /@keydown\.enter\.prevent="searchStep\(\$event\.shiftKey \? -1 : 1\)"/.test(s)
+  const hitLogic = (s) =>
+    /const hits = computed\(\(\) => \{[\s\S]{0,400}?toLowerCase\(\)/.test(s)
+      && /\.toLowerCase\(\)\.includes\(q\)/.test(s)
+      && /hit: hitSet\.value\.has\(i\)/.test(s)
+      && /hitCur: hitPos\.value >= 0 && hits\.value\[hitPos\.value\] === i/.test(s)
+      && /watch\(query, \(\) => \{ hitPos\.value = -1 \}\)/.test(s)
+  const wheelZoom = (s) =>
+    /@wheel="onWheel"/.test(s)
+      && !/@wheel\.passive/.test(s)
+      && /function onWheel\(e\) \{[\s\S]{0,700}?e\.preventDefault\(\)/.test(s)
+      && /if \(e\.shiftKey\) return/.test(s)
+      && /const anchorTime = \(el\.scrollLeft \+ cursorX\) \/ \(scale\.value \|\| 1\)/.test(s)
+      && /Math\.max\(0, Math\.min\(SCALES\.length - 1, scaleIdx\.value \+ \(e\.deltaY < 0 \? 1 : -1\)\)\)/.test(s)
+
+  check('㉓ 搜索行在（输入框 + 上一个/下一个 + Enter/Shift+Enter）', searchUi(track), true)
+  check('㉓ 命中表大小写不敏感 + 命中块高亮 + 改词清当前位置', hitLogic(track), true)
+  check('㉓ 滚轮 = 缩放（非 passive + preventDefault + 鼠标锚点 + Shift 让路）', wheelZoom(track), true)
+
+  const MUT23 = [
+    ['滚轮监听改回 `.passive`（preventDefault 失效 ⇒ 缩放和滚动打架）', track,
+      (s) => s.replace('@wheel="onWheel"', '@wheel.passive="onWheel"'), wheelZoom],
+    ['滚轮不再 preventDefault（页面跟着滚）', track,
+      (s) => s.replace('  e.preventDefault()\n', ''), wheelZoom],
+    ['Shift+滚轮也让路没了（没法用滚轮滚动了）', track,
+      (s) => s.replace('  if (e.shiftKey) return          // 留给浏览器横向滚\n', ''), wheelZoom],
+    ['缩放不再以鼠标位置为锚（缩完跳到别处）', track,
+      (s) => s.replace('const anchorTime = (el.scrollLeft + cursorX) / (scale.value || 1)', 'const anchorTime = 0'), wheelZoom],
+    ['命中表不再忽略大小写（大写查询查不到）', track,
+      (s) => s.replace('.toLowerCase().includes(q)', '.includes(q)'), hitLogic],
+    ['命中块不再高亮（找不到位置）', track,
+      (s) => s.replace('      hit: hitSet.value.has(i),', '      hit: false,'), hitLogic],
+    ['「下一个」按钮摘掉（只剩键盘，鼠标党没法用）', track,
+      (s) => s.replace('@click="searchStep(1)"', '@click="() => {}"'), searchUi],
+  ]
+  for (const [what, src, mutate, still] of MUT23) {
+    const m = mutate(src)
+    check(`[变异] ㉓ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉓ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

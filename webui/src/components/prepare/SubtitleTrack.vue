@@ -40,12 +40,32 @@
       </span>
     </div>
 
+    <!-- 搜索：找一个词、在命中之间走来走去（用户 2026-10-06：「增加一个搜索功能，可以进行下一个上一个的进行，方便找位置」）。
+         `Enter` = 下一个命中、`Shift+Enter` = 上一个；命中的块在轨道上会亮起来（当前那条更亮）。 -->
+    <div class="track-search">
+      <Icon name="search" :size="12" />
+      <input
+        v-model="query"
+        class="fld-input search-input"
+        placeholder="搜索字幕内容（Enter 下一个）"
+        autocomplete="off"
+        @keydown.enter.prevent="searchStep($event.shiftKey ? -1 : 1)"
+        @keydown.esc="clearSearch"
+      >
+      <span class="muted small mono hit-count">{{ hitLabel }}</span>
+      <button class="mini-btn" :disabled="!hits.length" title="上一个命中（Shift+Enter）" @click="searchStep(-1)">上一个</button>
+      <button class="mini-btn" :disabled="!hits.length" title="下一个命中（Enter）" @click="searchStep(1)">下一个</button>
+      <button class="mini-btn" :disabled="!query" title="清空搜索（Esc）" @click="clearSearch">×</button>
+    </div>
+
     <!-- 滚动式字幕轨道：像素刻度 + 横向滚动（与精修时间轴同一套结构：左侧 sticky 标签列 + 右侧可滚轨道），
-         不再把整场（可能 3 小时）压进一个百分比泳道 —— 那样每句只有零点几像素，没法编辑。 -->
+         不再把整场（可能 3 小时）压进一个百分比泳道 —— 那样每句只有零点几像素，没法编辑。
+         ⚠️ 滚轮 = **缩放**（不是滚动）：锚点取鼠标底下那个时刻，缩完它还在鼠标底下；
+         要横向滚动就用 `Shift+滚轮` 或拖标尺（用户 2026-10-06 要求"滚轮会缩小放大"）。 -->
     <div
       ref="bodyRef"
       class="sub-body"
-      @wheel.passive="markUserScroll"
+      @wheel="onWheel"
       @pointerdown="markUserScroll"
       @scroll.passive="onScroll"
     >
@@ -64,7 +84,7 @@
             v-for="b in shownBlocks"
             :key="b.i"
             class="block"
-            :class="{ selected: b.i === selected, active: b.i === activeIndex }"
+            :class="{ selected: b.i === selected, active: b.i === activeIndex, hit: b.hit, 'hit-cur': b.hitCur }"
             :style="{ left: b.left + 'px', width: b.width + 'px' }"
             :title="b.title"
             @click.stop="selectSeg(b.i)"
@@ -129,6 +149,95 @@ const scrollLeft = ref(0)
 const selected = ref(-1)
 const draftText = ref('')
 
+// ── 搜索（找一个词、上一个/下一个跳动） ─────────────────────────
+const query = ref('')
+/** 命中序号（升序）。空查询 = 无命中。大小写不敏感；整条字幕的文本参与匹配。 */
+const hits = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return []
+  const out = []
+  props.segments.forEach((seg, i) => {
+    if (String(seg.text || '').toLowerCase().includes(q)) out.push(i)
+  })
+  return out
+})
+const hitPos = ref(-1)
+/** 命中读数：没查询/没命中 → `0/0`；有命中但还没跳 → `共 N 条`；跳过了 → `i/N`。 */
+const hitLabel = computed(() => {
+  const n = hits.value.length
+  if (!n) return '0/0'
+  if (hitPos.value < 0) return `共 ${n} 条`
+  return `${hitPos.value + 1}/${n}`
+})
+const hitSet = computed(() => new Set(hits.value))
+
+/** 跳到下一个/上一个命中：**从当前播放位置往后找**（到尾巴再绕回开头），选中它并 seek 过去。
+ *  这样"看到哪、接着往下找"的直觉成立；没有查询词时什么都不做。 */
+function searchStep(dir) {
+  const list = hits.value
+  if (!list.length) return
+  const t = Number(props.currentTime) || 0
+  let pos = -1
+  if (dir > 0) {
+    pos = list.findIndex((i) => (Number(props.segments[i]?.start) || 0) > t + 1e-6)
+    if (pos < 0) pos = 0
+  } else {
+    for (let k = list.length - 1; k >= 0; k--) {
+      if ((Number(props.segments[list[k]]?.start) || 0) < t - 1e-6) { pos = k; break }
+    }
+    if (pos < 0) pos = list.length - 1
+  }
+  hitPos.value = pos
+  gotoHit(list[pos])
+}
+
+/** 把第 i 条字幕选中 + seek 过去 + 在视口里居中（缩放不够时先放大到看得清）。 */
+function gotoHit(i) {
+  const seg = props.segments[i]
+  if (!seg) return
+  const t = Number(seg.start) || 0
+  selected.value = i
+  draftText.value = String(seg.text ?? '')
+  emit('seek', t)
+  // 命中块至少要有 24px 宽才看得见：太小就自动升档
+  const dur = Math.max(0.05, (Number(seg.end) || t + 0.5) - t)
+  if (dur * scale.value < 24 && scaleIdx.value < SCALES.length - 1) {
+    userZoomed.value = true
+    setScale(Math.min(SCALES.length - 1, scaleIdx.value + 2))
+  }
+  nextTick(() => scrollToTime(t, 0.5))
+}
+
+watch(query, () => { hitPos.value = -1 })
+
+function clearSearch() {
+  query.value = ''
+  hitPos.value = -1
+}
+
+/** 滚轮 = 缩放（鼠标底下那个时刻当锚点）；`Shift+滚轮` 交回浏览器做横向滚动。 */
+function onWheel(e) {
+  markUserScroll()
+  if (e.shiftKey) return          // 留给浏览器横向滚
+  e.preventDefault()
+  if (!e.deltaY) return
+  const el = bodyRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const cursorX = e.clientX - rect.left
+  const anchorTime = (el.scrollLeft + cursorX) / (scale.value || 1)
+  const next = Math.max(0, Math.min(SCALES.length - 1, scaleIdx.value + (e.deltaY < 0 ? 1 : -1)))
+  if (next === scaleIdx.value) return
+  userZoomed.value = true
+  scaleIdx.value = next
+  nextTick(() => {
+    const b = bodyRef.value
+    if (!b) return
+    b.scrollLeft = Math.max(0, anchorTime * scale.value - cursorX)
+    scrollLeft.value = b.scrollLeft
+  })
+}
+
 const maxEnd = computed(() => props.segments.reduce((m, s) => Math.max(m, Number(s.end) || 0), 0))
 // 轨道总长只增不减：拖动最后一条字幕时 duration 会跟着缩，若直接用它做总长，
 // 轨道宽度会边拖边抖（maxEnd 变小 → 总长变小 → 时间↔像素换算整体变化）。
@@ -168,6 +277,9 @@ const shownBlocks = computed(() => {
       left: start * sc,
       width: Math.max((end - start) * sc, 2),
       text,
+      // 搜索命中：所有命中都亮一点，当前那条最亮（`hitPos` 指向 hits 里的位置）
+      hit: hitSet.value.has(i),
+      hitCur: hitPos.value >= 0 && hits.value[hitPos.value] === i,
       title: `${fmtClock(start)} - ${fmtClock(end)}｜${text || '(空)'}`
     })
   })
@@ -569,6 +681,13 @@ onUnmounted(() => {
 .track-foot { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; }
 .spacer { flex:1; }
 .zoom-num { min-width:52px; text-align:center; }
+/* 搜索行：一条紧凑横排，贴在轨道上方 */
+.track-search { display:flex; align-items:center; gap:6px; padding:6px 8px 0; }
+.track-search .search-input { flex:1 1 0; min-width:0; width:auto; padding:3px 8px; font-size:12px; }
+.track-search .hit-count { min-width:44px; text-align:right; }
+/* 命中高亮：所有命中描个边，当前那条更亮（在黄色标尺带之下、选中态之上不冲突） */
+.block.hit { outline:1px solid var(--main-deep); outline-offset:-1px; }
+.block.hit-cur { outline:2px solid var(--pink-text); outline-offset:-1px; box-shadow:0 0 0 1px var(--pink-text) inset; }
 .hide-narrow { display:inline; }
 
 @media (max-width:1080px) {
