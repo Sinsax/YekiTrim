@@ -1277,3 +1277,38 @@ headless harness 就能真挂载组件、真量几何，`.workbuddy/`（已 giti
 
 > 改动只允许落在 `webui/src/components`；跨模块改动先读对方卡，并跑两条门禁
 > （`python3 scripts/check_module_map.py` 与 `python3 scripts/check_module_boundaries.py`）。
+
+---
+
+## ⑦ 预处理页字幕轨道：搜索 + 滚轮缩放（`prepare/SubtitleTrack.vue`，2026-10-06）
+
+用户口径：「预处理界面的字幕轨道增加一个搜索功能，可以进行下一个上一个的进行，方便找位置。
+在字幕轨道用鼠标滚轮会缩小放大，当前是默认的为最大，这样好操控。」
+
+### 搜索（上一个 / 下一个）
+
+- 一条件紧凑横排贴在轨道上方：放大镜 + 输入框 + 命中读数 + 「上一个 / 下一个 / ×」。
+  `Enter` = 下一个、`Shift+Enter` = 上一个、`Esc` = 清空；鼠标党用那两颗按钮。
+- 命中表 `hits`：**大小写不敏感**、按 `text.includes(q)` 逐条判；命中读数三态 ——
+  没查询/没命中 `0/0`、有命中还没跳 `共 N 条`、跳过了 `i/N`。
+- 跳转语义：**从当前播放位置往后找第一条命中**（到尾巴绕回开头）；`上一个` 反向同理。
+  跳过去时：选中该条（属性面板同款）+ `emit('seek')` + 视口居中；块太窄（<24px）自动升两档缩放。
+- 轨道上所有命中都描边（`.block.hit`），**当前那条**更粗（`.block.hit-cur`）。
+  ⚠️ 轨道是**虚拟化**的（只渲染视口 ±2s）⇒ 亮起的块数只会 ≤ 命中总数，判据别写"等于"。
+
+### 滚轮 = 缩放
+
+- `@wheel="onWheel"` —— **绝不能写成 `.passive`**：passive 监听器里 `preventDefault()` 无效，
+  浏览器照样把页面滚走，缩放和滚动就打架。判据 ㉓ 用变异钉着这一条。
+- 鼠标底下那个时刻当**锚点**：`anchorTime = (scrollLeft + cursorX) / pxPerSec`，
+  换档后 `scrollLeft = anchorTime × 新档 − cursorX` ⇒ 缩完它还在鼠标底下（实测 ±0.01s）。
+- `Shift+滚轮` 直接 `return`（让路给浏览器滚动）—— 不然滚轮被缩放独占，用户没法横向看长录音；
+  档位夹在 `[0, SCALES.length - 1]`，到顶到底什么都不做（不抖动）。
+- 滚轮同时 `markUserScroll()`：缩放后 2 秒内播放头不抢视口（与「用户接管视口」同一套纪律）。
+- 底部的 `－ / px/s / ＋ / 全览` 保留（键盘/触屏党仍有入口），默认档位仍由 `autoScale()` 按内容选
+  （一屏约 2 分钟；短视频整段可见），**没有"默认即最大"**——上下都有余量可调。
+
+判据：`check-layout-invariants.mjs` **㉓**（3 项 + **7 处变异**：`.passive` 回退 / 不 `preventDefault` /
+`Shift` 让路被删 / 锚点写死 / 大小写敏感 / 命中不高亮 / 「下一个」按钮摘掉）+
+真页面 `.workbuddy/probe-sub-search-zoom.mjs`（12 项：命中读数、逐条跳转都在轨道上真亮、一轮恒等、
+`px/s` 变化、锚点不动、`Shift+滚轮` 不缩放）。
