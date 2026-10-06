@@ -1134,5 +1134,30 @@ console.log('\n㉕ 多段：每段上色 + 缩到底 = 全长度')
   }
 }
 
+// ── ㉖ 播放区时间读数必须**同时给秒数**（用户口径 2026-10-06）──
+//
+// 用户原话：「播放（空格）09:36.5 需要显示秒数，方便定位」——时钟负责"读数"，
+// 秒数负责"填数"（切片列表里入点/出点两个框要的就是秒）。
+console.log('\n㉖ 播放区读数：时钟 + 总秒数')
+{
+  const prepareView = await read('webui/src/views/PrepareView.vue')
+  const hasSecs = (s) =>
+    /class="muted small mono cur-secs"[\s\S]{0,160}?\{\{ fmtSecs\(currentTime\) \}\}/.test(s)
+      && /function fmtSecs\(t\) \{[\s\S]{0,200}?toFixed\(1\) \+ 's'/.test(s)
+  check('㉖ 播放区同时显示时钟与总秒数', hasSecs(prepareView), true
+    , '只有 09:36.5 的话，填进点/出点时还得自己心算')
+  const MUT26 = [
+    ['秒数读数摘掉', prepareView,
+      (s) => s.replace(/\s*<span class="muted small mono cur-secs"[^>]*>[^<]*<\/span>/, ''), hasSecs],
+    ['秒数不带单位/精度（填不进那两个框）', prepareView,
+      (s) => s.replace("return (Math.max(0, Number(t) || 0)).toFixed(1) + 's'", 'return Math.max(0, Number(t) || 0)'), hasSecs],
+  ]
+  for (const [what, src, mutate, still] of MUT26) {
+    const m = mutate(src)
+    check(`[变异] ㉖ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉖ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

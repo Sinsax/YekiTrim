@@ -30,6 +30,8 @@
           <div class="row mt-8">
             <button class="mini-btn" @click="togglePlay">{{ playing ? '暂停' : '播放' }}（空格）</button>
             <span class="muted small mono">{{ fmtTime(currentTime) }}</span>
+            <!-- 总秒数：切片的入点/出点填的就是秒，读数直接跟着播放位置走（用户 2026-10-06 要求） -->
+            <span class="muted small mono cur-secs" title="当前播放位置的总秒数（切片的入点/出点填的就是这个）">{{ fmtSecs(currentTime) }}</span>
           </div>
         </div>
 
@@ -529,6 +531,13 @@ function fmtTime(t) {
   return `${String(m).padStart(2, '0')}:${s.padStart(4, '0')}`
 }
 
+/** 同一个时刻的**总秒数**（1 位小数，与切片入点/出点输入框的精度一致）。
+ *  用户口径 2026-10-06：「09:36.5 需要显示秒数，方便定位」—— 时钟负责"读数"，
+ *  秒数负责"填数"（列表里那两个框要的就是它）。 */
+function fmtSecs(t) {
+  return (Math.max(0, Number(t) || 0)).toFixed(1) + 's'
+}
+
 /** chips：由 status.files + 运行中任务推导（待开始 / 进行中 % / ✓）。 */
 function hasFile(prefix) {
   return (status.value?.files || []).some((f) => String(f).startsWith(prefix))
@@ -982,6 +991,7 @@ onUnmounted(() => {
 /* 切片块里的入点/出点读数：与左侧「标记」按钮同一行，占满剩余宽度。
    注意 flex-basis 必须写成 0 —— 全局 `input { width:100% }` 会让基线是整行宽，
    按钮被挤到上一行（flex-wrap 下就变成两块各占一行）。 */
+.cur-secs { color:var(--ink-dim); }
 .slice-time { flex:1 1 0; width:auto; min-width:0; padding:4px 8px; font-size:12px; text-align:center; }
 /* 多段列表：一行一组入点/出点；点一行 = 选中它（「标记入点/出点」落到选中行） */
 .slice-row { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:6px;
