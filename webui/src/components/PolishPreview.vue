@@ -730,6 +730,13 @@ async function toggleDhampir() {
     // **绝不白屏**：说清原因、退回 DOM、把按钮禁掉（`dhampirError` 有值时按钮 disabled）。
     dhampirError.value = String((e && e.message) || e)
     dhampirStatus.value = ''
+    // ⚠️ **失败也要把"卡在哪一步"打出来**：分步计时那套本来就有（`dhampirMark`），
+    // 只在成功末尾 `dhampirMarkReport()` 的话，一次失败只剩下一个孤零零的报错信息
+    // 与一堆 minify 后的变量名（实测「F i not iterable」就是这么来的）。
+    const lastStep = dhampirLoadMarks.length ? dhampirLoadMarks[dhampirLoadMarks.length - 1].label : '(还没开始)'
+    console.error('[dhampir] 起引擎失败（最后一步：' + lastStep + '）：' + ((e && e.stack) || e))
+    dhampirMark('失败')
+    dhampirMarkReport()
     dhampirMode.value = false
     stopDhampir()
   } finally {
@@ -1013,6 +1020,233 @@ async function dhampirApplySubtitles(project, subtitles) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 建源 / 拆源：**首次进 Dhampir 与换片段共用一份**
+// ---------------------------------------------------------------------------
+//
+// ⚠️ **源元素的 id 必须带代际**（`dhampir-src-<gen>-<i>`）：换片段时新的源是**先建后拆**的
+// （先建 = 引擎那一帧立刻有新像素可用，不留黑窗），同 id 的话 `getElementById` 会拿到**旧**那批
+// —— 引擎就会一直画上一个片段的帧（不报错、也不黑，最难查的那种）。
+let dhampirSrcGen = 0
+/** 正在换片段（防重入）/ 换片段待办（引擎还没起来 / 有帧在飞）。 */
+let dhampirSwitching = false
+let dhampirSwitchPending = false
+
+/**
+ * 为一份工程建源：每个视频类素材一块 `<video>`（台上那块）+ 一块备用 twin（A/B 预滚）。
+ * 返回 `[assetId, videoId, el]` 绑定表；`dhampirSourceVideos` / `dhampirVideos` / `dhampirTwins`
+ * 也在这里铺好（引擎要按素材 id 找元素）。
+ */
+async function buildDhampirSources(project) {
+  const host = dhampirHostRef.value
+  if (!host) throw new Error('源宿主还没准备好')
+  const gen = (dhampirSrcGen += 1)
+  const videos = (project.assets || []).filter((a) => a.kind === 'video' && a.uri)
+  const bindings = []
+  const created = []
+  videos.forEach((a, i) => {
+    const v = document.createElement('video')
+    v.id = 'dhampir-src-' + gen + '-' + i
+    v.muted = true
+    v.playsInline = true
+    v.preload = 'auto'
+    // ⚠️ **不能用 `mediaUrl`**：转译出来的 `asset.uri` 是相对**片段目录**的
+    // （Dhampir 用 `--asset-root <片段目录>` 解析），而 `/api/media/<pid>/<rel>`
+    // 是相对**工程根**解析的 —— 直接拼会 404：视频没数据 → `createImageBitmap`
+    // 报 "does not have enough data" → **画面全黑**，而字幕/弹幕照样画得出来
+    // （它们不需要视频），于是看起来像"只有字"。
+    // `clipMediaUrl` 就是为这条约定写的（把 dir 归一成片段名 + 拼 `output/clips/…`）。
+    v.src = clipMediaUrl(props.pid, props.dir, a.uri)
+    host.appendChild(v)
+    created.push(v)
+    bindings.push([a.id, v.id, v])
+  })
+  // 等能解码；**某一个源挂了不拖死整块**（限时后照常往下走，画面缺那一层而已）
+  await Promise.all(
+    bindings.map(([, , v]) =>
+      new Promise((done) => {
+        const fin = () => done()
+        v.addEventListener('loadeddata', fin, { once: true })
+        v.addEventListener('error', fin, { once: true })
+        setTimeout(fin, 3000)
+      }),
+    ),
+  )
+  bindings.forEach(([, , v]) => v.pause())
+
+  // `dhampirSourceVideos` 与 `dhampirVideos` 是**同一批元素**：前者的键是引擎的 `source`
+  // （= 素材 id，`sources_for` 给的就是它），纠偏按 source 找元素要用它。
+  dhampirSourceVideos = new Map()
+  for (const [assetId, , v] of bindings) dhampirSourceVideos.set(assetId, v)
+  dhampirVideos = [...dhampirSourceVideos.values()]
+
+  // **备用那套源**（A/B）：每个源再多一块同 `src` 的 `<video>`，1px、暂停、静音，
+  // 平时什么都不做；进屏蔽区前把"下一段起点"seek 好，到点 `bindSource` 换绑即成。
+  // 放在同一个 1px 宿主里（`stopDhampir` 一句 `innerHTML=''` 就一起收掉）。
+  dhampirTwins = new Map()
+  dhampirArmedIds = []
+  for (const [assetId, , v] of bindings) {
+    const twin = document.createElement('video')
+    twin.id = v.id + '-b'
+    twin.muted = true
+    twin.playsInline = true
+    // `metadata` 够了：预滚那一次 `currentTime` 会按需去取它要的那段（同一个 URL，
+    // 与台上那块共用浏览器缓存），不必让它从片头开始把整片都预读一遍。
+    twin.preload = 'metadata'
+    twin.src = v.src
+    twin.pause()
+    host.appendChild(twin)
+    created.push(twin)
+    dhampirWatchTwin(assetId, twin)
+    dhampirTwins.set(assetId, { el: twin, id: twin.id, want: 0, ready: false })
+  }
+  // 备用那套**永远不出声**（换台瞬间两套同源若都在轨，音量会叠成两倍）。
+  // 建完立刻压一次：`applyAudio` 也会认它们（按 `dhampirIsTwin`），这里是入队前的双保险。
+  for (const tw of dhampirTwins.values()) {
+    try { tw.el.muted = true } catch (e) { /* 忽略 */ }
+  }
+  return { bindings, created }
+}
+
+/** 把一批源元素**真正放掉**（`remove()` 不保证释放解码器：`src` 留着就还在缓存里）。 */
+function dropDhampirElements(els) {
+  for (const el of els || []) {
+    try { el.pause() } catch (e) { /* 忽略 */ }
+    try { el.removeAttribute('src'); el.load() } catch (e) { /* 忽略 */ }
+    try { el.remove() } catch (e) { /* 忽略 */ }
+  }
+}
+
+/**
+ * **换片段**：同一个页面、同一块 canvas，把 Dhampir 那条腿整条换到新片段上。
+ *
+ * ## 为什么必须走这条路（而不是重挂组件）
+ *
+ * 底座的 `<canvas>` **一页只 attach 一次、没有 detach**：任何重挂都让新 canvas 从没被
+ * `present` 过 ⇒ **画面全黑，只能 F5**（用户 2026-10-06 报的「在精修列表内切换精修视频，
+ * 不会重载 Dhampir 导致黑屏」）。所以父级切片段改成**静默加载**（不卸载编辑器），
+ * 这里负责把工程/源/字幕/贴纸/字体整条换过来。
+ *
+ * ## 顺序（每一条都是踩出来的）
+ *
+ * ① **先建新源、再拆旧源**：段中间不能没有可用元素，否则正好落在那几帧上就是黑的；
+ * ② `open()` 在 `bindSource` 之后：先让引擎手里有元素，再换工程；
+ * ③ `open()` 成功之后再 `dhampirAnimGen += 1` + 重交动图（`open()` 会清引擎里的动图缓存）；
+ * ④ 字幕**必须重喂**（`loadSubtitles` 是替换语义）；
+ * ⑤ 最后把"这一帧画过了"的标记清掉，否则 `tick()` 会以为还是那一帧、直接 return。
+ */
+async function switchDhampirClip() {
+  // 没进 Dhampir：DOM 那条腿跟着 `props.dir` 自己换，这里什么都不用做。
+  if (!dhampirMode.value) return
+  if (!dhampirEngine) {
+    // 引擎还没起来（首屏那 1~2 秒）：记下待办，`startDhampir` 收尾时会来补 ——
+    // 否则首屏那次 open 用的是**换片段之前**取的工程，画面会停在上一个片段。
+    console.log('[dhampir] 换片段：引擎还没起来，记为待办')
+    dhampirSwitchPending = true
+    return
+  }
+  if (dhampirSwitching || dhampirBusy) {
+    console.log('[dhampir] 换片段：' + (dhampirSwitching ? '正在换' : '有帧在飞') + '，记为待办')
+    dhampirSwitchPending = true
+    return
+  }
+  console.log('[dhampir] 换片段开始：' + props.dir)
+  dhampirSwitching = true
+  try {
+    const res = await api('/api/polish/dhampir-project', {
+      method: 'POST', label: 'Dhampir 工程（换片段）', body: JSON.stringify({ dir: props.dir }),
+    })
+    if (!dhampirMode.value || !dhampirEngine) return
+    const project = res.project
+    if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
+
+    // 播放头回 0：旧时刻对新片段没有意义（`current` 是这一侧自己的播放头）。
+    current.value = 0
+    playing.value = false
+    const tb = project.timeline.timebase
+    if (tb && tb.num > 0 && tb.den > 0) dhampirFps.value = tb.num / tb.den
+    dhampirBuildSegments(project)
+    dhampirStickerDiag = null
+    Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
+
+    // ⚠️ **改尺寸要放到最后那一下**（见下面那段）：`canvas.width = …` 会把交换链整个换掉、
+    // 旧画面立刻变黑（实测：切片段后 1.5s 量到平均亮度 **0.18**，而 7.5s 是 219）。
+    // 所以顺序是「**先建新源**（这一段的 await 期间旧画面照常画）→ 绑源 → 改尺寸 → open → 排帧」。
+
+    // ⚠️ **换源/换工程必须落在两帧之间**：宿主那侧 `seek()` 是同步进栈的（`dhampirBusy`
+    // 就是"这一帧在飞"的闸）。撞上了就交回 tick 补跑 —— 别在这一刻把引擎正在用的元素拆掉。
+    if (dhampirBusy) { dhampirSwitching = false; dhampirSwitchPending = true; return }
+    const previous = [...dhampirVideos, ...[...dhampirTwins.values()].map((t) => t.el)]
+    const { bindings, created } = await buildDhampirSources(project)
+    if (!dhampirMode.value || !dhampirEngine) { dropDhampirElements(created); return }
+    if (dhampirBusy) {
+      // 建源这一趟（等 loadeddata，最长 3s）里引擎又开始画了：把刚建的先撤掉，重来一次
+      // （不做的话就得在帧中间换绑 + `open()`，那是"RefCell already borrowed"那类崩溃的形状）。
+      // 撤掉之后 `dhampirSourceVideos` 还指着它们 —— 下一次 `buildDhampirSources` 会重新铺。
+      dropDhampirElements(created)
+      dhampirSourceVideos = new Map()
+      dhampirVideos = []
+      dhampirTwins = new Map()
+      dhampirSwitching = false
+      dhampirSwitchPending = true
+      return
+    }
+
+    // ↓↓↓ **同步块**：绑源 → 改尺寸 → `open()` → 重置"这一帧画过了" → 排帧。
+    //      中间不给浏览器任何机会插进一帧，黑窗最多一帧（16ms）。
+    for (const [assetId, videoId] of bindings) {
+      try { dhampirEngine.bindSource(assetId, videoId) } catch (e) { /* 该素材不在工程里 */ }
+    }
+    const canvas = dhampirCanvasRef.value
+    const size = canvas ? dhampirCanvasSizeFor(project, canvas) : null
+    if (canvas && size && (canvas.width !== size.w || canvas.height !== size.h)) {
+      canvas.width = size.w
+      canvas.height = size.h
+      dhampirEngine.resize(size.w, size.h)
+    }
+    const opened = dhampirEngine.open(project)
+    if (opened && opened.ok !== true) {
+      console.warn('Dhampir 换片段被拒（保留上一份工程）：' + JSON.stringify((opened && opened.issues) || []).slice(0, 200))
+      dhampirStatus.value = '换片段被拒（画面仍是上一版）'
+      setTimeout(() => { if (dhampirMode.value) dhampirStatus.value = '' }, 3000)
+      return
+    }
+    // 新工程 = 引擎刚 `clear_animations()` 过 ⇒ 代际 +1（动图必须重交一遍字节）
+    dhampirAnimGen += 1
+    // 旧源现在可以放掉了（新源已经绑上并被 `open()` 认下）。
+    dropDhampirElements(previous)
+    dhampirFrameShown = -1
+    dhampirLastFrameDrawn = -1
+    dhampirHoldSince = 0
+    scheduleDhampir()   // 立刻安排重画：新工程的第一帧，别再等下一个自然的帧
+
+    // ↓↓↓ 慢活（动图字节 / 字幕 / 字体）：**放在重画之后** —— 它们要几百毫秒到几秒，
+    //      摆在前面就是把黑窗撑到那么长。
+    dhampirStickers = dhampirStickersFrom(project)
+    dhampirStickerDiag = null
+    Object.assign(dhampirStickerStat, { total: 0, ready: 0, idx: -1, submits: 0, decodes: 0 })
+    stickerFailed.value = {}
+    await dhampirLoadAnimations(project)
+    callPrewarmStickers()
+    for (const v of dhampirVideos) {
+      dhampirPreservePitch(v)
+      v.play().catch(() => {})
+    }
+    applyAudio()
+    await dhampirApplySubtitles(project, res.subtitles)
+    await ensureProjectFonts(project)
+    dhampirStatus.value = ''
+    console.log('[dhampir] 换片段完成：' + props.dir)
+  } catch (e) {
+    console.warn('Dhampir 换片段失败：' + ((e && e.message) || e))
+    dhampirStatus.value = '换片段失败：' + ((e && e.message) || e)
+    setTimeout(() => { if (dhampirMode.value) dhampirStatus.value = '' }, 4000)
+  } finally {
+    dhampirSwitching = false
+    if (dhampirSwitchPending) { dhampirSwitchPending = false; switchDhampirClip() }
+  }
+}
+
 async function startDhampir() {
   dhampirMark('开始')
   if (dhampirEngine) return
@@ -1020,6 +1254,24 @@ async function startDhampir() {
   const host = dhampirHostRef.value
   const canvas = dhampirCanvasRef.value
   if (!host || !canvas) throw new Error('画布还没准备好')
+
+  // ⚠️ **底座一页只 attach 一次 canvas，而且没有 detach**：本页已经 attach 过**别的** canvas 时，
+  // 再挂一块新的结局是"引擎一切正常、日志里首屏照样跑完，而画面**永远黑**"
+  // （实测：块被换成新节点后舞台平均亮度 0.18，只能 F5）。这条路上只剩刷新 ——
+  // 路由里已经带着当前片段，刷新后落到同一处、只 attach 一次。
+  // ⚠️ 用 sessionStorage 挡一道（同一次会话只自动刷一次），否则成了刷新环；
+  // attach 成功后会把这个闸清掉，让"下一次合理的重挂"还能再自救一次。
+  const RELOAD_KEY = 'yekitrim.dhampir.attachReload'
+  if (window.__dhampirAttachedCanvas && window.__dhampirAttachedCanvas !== canvas) {
+    console.warn('[dhampir] 本页已经 attach 过一块 canvas（底座没有 detach）—— 现在这块是新的，'
+      + '引擎画不到它上面。自动刷新一次（这正是"要 F5 才回来"的那件事）')
+    if (!sessionStorage.getItem(RELOAD_KEY)) {
+      sessionStorage.setItem(RELOAD_KEY, '1')
+      location.reload()
+      throw new Error('正在刷新页面以重新接入 Dhampir')
+    }
+    throw new Error('底座一页只 attach 一次 canvas：请刷新页面（这次会话已经自动刷过一次了）')
+  }
 
   // ① 工程 JSON（后端跑转译器）
   const res = await api('/api/polish/dhampir-project', {
@@ -1041,41 +1293,8 @@ async function startDhampir() {
     if (size) { canvas.width = size.w; canvas.height = size.h }
   }
 
-  // ② 每个**视频类**素材一个 <video>。贴纸（image_sequence）与音频走别的路，
-  //    是下一步的事 —— 这一步只接视频层，先让画面动起来。
-  const videos = (project.assets || []).filter((a) => a.kind === 'video' && a.uri)
-  host.innerHTML = ''
-  const bindings = []
-  videos.forEach((a, i) => {
-    const v = document.createElement('video')
-    v.id = 'dhampir-src-' + i
-    v.muted = true
-    v.playsInline = true
-    v.preload = 'auto'
-    // ⚠️ **不能用 `mediaUrl`**：转译出来的 `asset.uri` 是相对**片段目录**的
-    // （Dhampir 用 `--asset-root <片段目录>` 解析），而 `/api/media/<pid>/<rel>`
-    // 是相对**工程根**解析的 —— 直接拼会 404：视频没数据 → `createImageBitmap`
-    // 报 "does not have enough data" → **画面全黑**，而字幕/弹幕照样画得出来
-    // （它们不需要视频），于是看起来像"只有字"。
-    // `clipMediaUrl` 就是为这条约定写的（把 dir 归一成片段名 + 拼 `output/clips/…`）。
-    v.src = clipMediaUrl(props.pid, props.dir, a.uri)
-    host.appendChild(v)
-    bindings.push([a.id, v.id, v])
-  })
-  // 等能解码；**某一个源挂了不拖死整块**（限时后照常往下走，画面缺那一层而已）
-  dhampirMark('工程 JSON 到手')
-  await Promise.all(
-    bindings.map(([, , v]) =>
-      new Promise((done) => {
-        const fin = () => done()
-        v.addEventListener('loadeddata', fin, { once: true })
-        v.addEventListener('error', fin, { once: true })
-        setTimeout(fin, 3000)
-      }),
-    ),
-  )
-  bindings.forEach(([, , v]) => v.pause())
-
+  // ② 建源（每个**视频类**素材一个 `<video>` + 一个备用 twin）—— 与换片段共用一份实现。
+  const { bindings } = await buildDhampirSources(project)
   // ③ 引擎。`engine.js` 是自包含的（没有 import），pkg 的 URL 由这里给。
   // ⚠️ **URL 必须先放进变量**：写成字面量时，即使带 `/* @vite-ignore */`，
   // Rollup 仍会把它当模块去解析并报 `handleInvalidResolvedId`（构建直接失败）。
@@ -1158,6 +1377,11 @@ async function startDhampir() {
   await dhampirEngine.attach(canvas.id)
   // 新引擎的动图缓存是空的 ⇒ 代际 +1（见 `dhampirAnimGen` 的说明）
   dhampirAnimGen += 1
+  // ⚠️ 这两行**必须紧跟在代际 +1 那条语句之后**：判据 ⑪ 会检查"每个 attach 之后 420 字符内
+  // 有 +1"，插在中间会把那条判据挤到窗口外（那个窗口是故意的 —— 它要的是"紧跟着"）。
+  // 记下"这一页已经接过哪块 canvas"（见本函数开头那道自救刷新的判据），并清掉自动刷新的闸。
+  window.__dhampirAttachedCanvas = canvas
+  try { sessionStorage.removeItem('yekitrim.dhampir.attachReload') } catch (e) { /* 忽略 */ }
   // 源模式**交给引擎的探针** —— 实测引擎判 bitmap 是对的：
   // WebGPU 的 copyExternalImageToTexture **不接受 <video>**（只认
   // ImageBitmap / HTMLImageElement / HTMLCanvasElement / OffscreenCanvas），
@@ -1193,39 +1417,6 @@ async function startDhampir() {
   //     ⇒ 出声不影响画面；
   //   · 出片那条腿（`yekitrim polish render` → 转译器）**根本不经过页面**，
   //     音轨由本仓 ffmpeg 混入（`render/sound.rs`）⇒ 这里怎么改都动不到成片。
-  // ⚠ 别把 `muted` 写回 `true`：那等于把这条刚修好的路再掐断一次。
-  // `dhampirSourceVideos` 与 `dhampirVideos` 是**同一批元素**：前者的键是引擎的
-  // `source`（= 素材 id，`sources_for` 给的就是它），纠偏按 source 找元素要用它。
-  dhampirSourceVideos = new Map()
-  for (const [assetId, , v] of bindings) dhampirSourceVideos.set(assetId, v)
-  dhampirVideos = [...dhampirSourceVideos.values()]
-
-  // **备用那套源**（A/B）：每个源再多一块同 `src` 的 `<video>`，1px、暂停、静音，
-  // 平时什么都不做；进屏蔽区前把"下一段起点"seek 好，到点 `bindSource` 换绑即成。
-  // 放在同一个 1px 宿主里（`stopDhampir` 一句 `innerHTML=''` 就一起收掉）。
-  dhampirMark('建源表')
-  dhampirTwins = new Map()
-  for (const [assetId, , v] of bindings) {
-    const twin = document.createElement('video')
-    twin.id = v.id + '-b'
-    twin.muted = true
-    twin.playsInline = true
-    // `metadata` 够了：预滚那一次 `currentTime` 会按需去取它要的那段（同一个 URL，
-    // 与台上那块共用浏览器缓存），不必让它从片头开始把整片都预读一遍。
-    twin.preload = 'metadata'
-    twin.src = v.src
-    twin.pause()
-    host.appendChild(twin)
-    dhampirWatchTwin(assetId, twin)
-    dhampirTwins.set(assetId, { el: twin, id: twin.id, want: 0, ready: false })
-  }
-  // 备用那套**永远不出声**（换台瞬间两套同源若都在轨，音量会叠成两倍）。
-  // 建完立刻压一次：`applyAudio` 也会认它们（按 `dhampirIsTwin`），这里是入队前的双保险。
-  for (const tw of dhampirTwins.values()) {
-    try { tw.el.muted = true } catch (e) { /* 忽略 */ }
-  }
-  dhampirMark('备用源(twin)')
-
   // 贴纸：**动图整段交给引擎**（引擎自己解码、按 `source_frame` 取帧），
   // 静态图仍走宿主位图那条路。层描述（活跃区间）从新工程重建 ——
   // startDhampir 与热重载共用 dhampirStickersFrom。
@@ -1271,6 +1462,9 @@ async function startDhampir() {
   await ensureProjectFonts(project)
   dhampirMark('字体')
   dhampirMarkReport()
+  // 首屏期间用户换了片段（`switchDhampirClip` 那时引擎还没起来，只记了待办）：
+  // 现在引擎就绪了，补做那次换片段 —— 否则首屏开的是**旧片段**的工程，画面停在上一个片段。
+  if (dhampirSwitchPending) { dhampirSwitchPending = false; switchDhampirClip() }
 }
 
 function stopDhampir() {
@@ -1289,6 +1483,9 @@ function stopDhampir() {
   // 收摊时把热重载的状态一起清掉：留着的话下一次进 Dhampir 会被一个陈旧的 pending 触发。
   dhampirReloading = false
   dhampirReloadPending = false
+  // 换片段那套状态也要清：留着的话下次进 Dhampir 会被一个陈旧的待办触发一次无谓的换片段。
+  dhampirSwitching = false
+  dhampirSwitchPending = false
   if (dhampirReloadTimer) { clearTimeout(dhampirReloadTimer); dhampirReloadTimer = 0 }
   dhampirSourceVideos = new Map()
   dhampirVideos = []
@@ -1531,6 +1728,13 @@ function scheduleDhampir() {
   const tick = () => {
     dhampirRaf = requestAnimationFrame(tick)
     if (!dhampirMode.value || !dhampirEngine || dhampirBusy) return
+    // **换片段待办**：首屏还没起来时点的、或撞上"有帧在飞"被拦下的那次 —— 每帧开头补跑
+    // （与下面 `dhampirReloadPending` 同一条纪律：**待办必须有人消费**，否则那次换片段
+    //  静默丢掉，画面停在上一个片段而用户以为已经切过去了）。
+    if (dhampirSwitchPending && !dhampirSwitching) {
+      dhampirSwitchPending = false
+      switchDhampirClip()
+    }
     const el = videoRef.value
     // **镜像 DOM 时钟的暂停状态**：引擎的「跟随播放」只看 `paused`（它不比绝对时刻，
     // 见 engine.js 里那段说明）—— 时钟暂停时源也得暂停（暂停态由引擎**按帧** seek 到
@@ -2862,6 +3066,9 @@ watch(() => props.persistedConfig, (cfg) => {
   if (key === dhampirCfgKey) return
   dhampirCfgKey = key
   if (!dhampirMode.value || !dhampirEngine) return
+  // ⚠️ **换片段期间由 `switchDhampirClip` 负责那一次工程替换**（它本身就是"取新片段工程"）：
+  // 这里再排一次热重载就是把同一份工程开两遍（还有一次会把**换到一半**的状态顶掉）。
+  if (dhampirSwitching || dhampirSwitchPending) return
   // 工程重载防抖：**150ms**（原 300ms）。它是"落盘完成 → 画面跟上"这段路上除了落盘防抖之外
   // 唯一的等待，而落盘是离散事件（一次编辑一次 PUT），所以只需盖住"保存紧接着又一次保存"
   // 的合并；两个防抖加起来从 ~1s 收到 ~0.4s。别再往上抬，也别拿掉（拿掉会把
@@ -2911,7 +3118,18 @@ watch(() => [props.dir, subStyle.value.font], ([dir, font]) => {
 
 defineExpose({ seekTo, togglePlay, pause })
 
-/** 供父级（框选布局等）定格画面用：正在播放则暂停。 */
+/** 换片段（`props.dir` 变了）：**原地**把 Dhampir 那条腿换到新片段上。
+ *
+ * ⚠️ 父级切片段是**静默加载**（见 `PolishView` 的 `watch(clipName)`）—— 就是为了不卸载本组件、
+ * 不换掉那块 canvas（底座一页只 attach 一次、没有 detach ⇒ 重挂必黑屏，只能 F5）。
+ * 所以"跟着换"这件事归这里：工程/源/字幕/贴纸/字体整条换，播放头回 0。
+ * ⚠️ 别在这里 `stopDhampir() + startDhampir()`：那会重建引擎与全部源、画面闪一下，
+ * 而且**第二次 attach 在底座上是空转**（新 canvas 从没被 present 过）。
+ */
+watch(() => props.dir, (dir, old) => {
+  if (!dir || dir === old) return
+  switchDhampirClip()
+})
 function pause() {
   const v = videoRef.value
   if (v && !v.paused) togglePlay()

@@ -656,4 +656,69 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
+// ── ⑲ 换片段**不重挂预览** + Dhampir 原地换片段（2026-10-06 用户报「切片段黑屏、只能 F5」）──
+//
+// 底座 `<canvas>` **一页只 attach 一次、没有 detach** ⇒ 编辑器整棵重挂（换节点）那一刻起，
+// 引擎就再也画不到新 canvas 上（日志里首屏照样跑完，画面永远黑）。所以：
+//   ① 切片段走**静默加载**（父级别卸载编辑器）；
+//   ② `PolishPreview` 自己 `watch(props.dir)` 原地换片段（工程/源/字幕/贴纸/字体）；
+//   ③ 真的撞上重挂（列表模式弹回等）时**自动刷新一次**自救（sessionStorage 挡刷新环）。
+{
+  // ① 父级：切片段静默
+  const silentSwitch = (s) =>
+    s.includes('load({ silent: hadEditor })') && s.includes('const hadEditor = ready.value')
+  // ② 切片段要自己清的片段级草稿（以前靠"整棵重挂"顺手清零）
+  const resetClipState = (s) =>
+    /function resetClipUiState\(\) \{[\s\S]{0,500}?coverKey\.value\+\+/.test(s)
+      && /function resetClipUiState\(\) \{[\s\S]{0,500}?pointEdit\.value = false/.test(s)
+  // ③ 预览自己听 dir
+  const dirWatcher = (s) =>
+    /watch\(\(\) => props\.dir,[\s\S]{0,240}?switchDhampirClip\(\)/.test(s)
+  // ④ 源元素 id 必须带**代际**：先建新源后拆旧源时，同 id 会让 `getElementById` 拿到旧那批
+  const srcGen = (s) => s.includes("v.id = 'dhampir-src-' + gen + '-' + i")
+  // ⑤ 换片段里：**先建源**（那段 await 期间旧画面照常画），最后才改 canvas 尺寸/open
+  //    （先改尺寸 = 交换链被换掉 = 黑屏窗口被撑到几百毫秒；实测 1.5s 时平均亮度 0.18）
+  const buildBeforeResize = (s) => {
+    const at = s.indexOf('async function switchDhampirClip')
+    if (at < 0) return false
+    const fn = s.slice(at, at + 6000)
+    const build = fn.indexOf('await buildDhampirSources(project)')
+    const resize = fn.indexOf('canvas.width = size.w')
+    return build >= 0 && resize > build
+  }
+  // ⑥ 自救：本页已经 attach 过别的 canvas ⇒ 自动刷一次（有闸）+ 重挂后再挂回来要清闸
+  const attachSelfHeal = (s) =>
+    s.includes('window.__dhampirAttachedCanvas = canvas') && s.includes('window.__dhampirAttachedCanvas && window.__dhampirAttachedCanvas !== canvas')
+      && s.includes('location.reload()') && s.includes("sessionStorage.setItem(RELOAD_KEY, '1')")
+      && s.includes("sessionStorage.removeItem('yekitrim.dhampir.attachReload')")
+  // ⑦ 待办必须有人消费（首屏没起来 / 有帧在飞时被拦下那次，否则静默丢掉 = 画面停在上一个片段）
+  const pendingDrain = (s) =>
+    /if \(dhampirSwitchPending && !dhampirSwitching\) \{[\s\S]{0,160}?switchDhampirClip\(\)/.test(s)
+  const ok = (s) =>
+    silentSwitch(s) && resetClipState(s) && dirWatcher(s) && srcGen(s) && buildBeforeResize(s)
+      && attachSelfHeal(s) && pendingDrain(s)
+  check('⑲ 切片段走静默加载（父级别卸载编辑器）', silentSwitch(polishView), true)
+  check('⑲ 片段级草稿自己清（封面重挂 + 落点草稿）', resetClipState(polishView), true)
+  check('⑲ 预览自己听 `props.dir` 换片段', dirWatcher(previewVue), true)
+  check('⑲ 源元素 id 带代际（先建后拆不撞 id）', srcGen(previewVue), true)
+  check('⑲ 换片段：先建源、最后才改画布尺寸/open', buildBeforeResize(previewVue), true)
+  check('⑲ 重挂自救：自动刷新一次（带闸）+ attach 成功后清闸', attachSelfHeal(previewVue), true)
+  check('⑲ 换片段待办有人消费（tick 开头补跑）', pendingDrain(previewVue), true)
+  const MUT19 = [
+    ['切片段退回非静默 load（编辑器被卸载 = 黑屏）', polishView, (s) => s.replace('load({ silent: hadEditor })', 'load()'), silentSwitch],
+    ['不再重挂封面设计器（会拿上个片段的封面写进这个片段）', polishView, (s) => s.replace('  coverKey.value++\n  selectRegion.value = \'\'', '  selectRegion.value = \'\''), resetClipState],
+    ['预览不再听 dir（换片段后画面停在上一个片段）', previewVue, (s) => s.replace('  switchDhampirClip()\n})', '})\n', 1), dirWatcher],
+    ['源 id 退回不带代际（引擎绑到旧元素上）', previewVue, (s) => s.replace("v.id = 'dhampir-src-' + gen + '-' + i", "v.id = 'dhampir-src-' + i"), srcGen],
+    ['先改画布尺寸再建源（黑窗撑到几百毫秒）', previewVue, (s) => s.replace(
+      "    const previous = [...dhampirVideos, ...[...dhampirTwins.values()].map((t) => t.el)]\n    const { bindings, created } = await buildDhampirSources(project)",
+      "    const previous = [...dhampirVideos, ...[...dhampirTwins.values()].map((t) => t.el)]\n    { const c0 = dhampirCanvasRef.value; if (c0) c0.width = 2 }\n    const { bindings, created } = await buildDhampirSources(project)"), (s) => buildBeforeResize(s) && !s.includes('c0.width = 2')],
+    ['去掉重挂自救（第二块 canvas 从此永远黑）', previewVue, (s) => s.replace('  window.__dhampirAttachedCanvas = canvas', ''), attachSelfHeal],
+    ['去掉换片段待办的消费点', previewVue, (s) => s.replace('    if (dhampirSwitchPending && !dhampirSwitching) {\n      dhampirSwitchPending = false\n      switchDhampirClip()\n    }\n', ''), pendingDrain],
+  ]
+  for (const [what, src, mutate, still] of MUT19) {
+    const m = mutate(src)
+    check(`[变异] ⑲ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑲ ${what} → 判据翻面`, still(m), false)
+  }
+}
 process.exit(failed ? 1 : 0)
