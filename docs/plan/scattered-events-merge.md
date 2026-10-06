@@ -152,3 +152,17 @@ YEKITRIM_DATA_DIR=target/debug VT_PROJECT_DIR='…' [VT_SCATTER_FROM=1420] VT_SC
   meta 的 duration 与 ranges）+ 真剪一次 `diagnose_multi_range_cut`：
   `[0.5-2.0] + [3.0-4.5]` → 成片 **3.06s**（期望 3.0）、轨道 `h264,video | aac,audio`、
   `.parts/` 清干净、用时 1.2s。
+
+---
+
+## 8. P3 预处理页「入点/出点列表」（已落地，2026-10-06）
+
+- `PrepareView.vue` 的「切片」卡：**列表**（每行一组入点/出点 + 该段时长 + 删），底部「＋ 一段」、
+  「标记入点/出点」（落到**选中行**）、段数与总时长。**只剩一段不给删**（删成 0 段 = 没有要切的东西）。
+- 载荷：**多段才带 `ranges`**（单段与老的「标记入点/出点」逐字段同形）；服务端
+  `POST /api/project-data/events` 认 `ranges`，`start/end` 拉成首段起、末段末，多段才写进事件。
+- 模态框（更多设置）在多段时把「开始/结束」置灰 + `title` 说明（起止由列表决定）。
+- 判据：`check-layout-invariants.mjs` **⑳**（5 项 + **5 处变异**：载荷一律带 ranges / 删段不挡最后一段 /
+  服务端不解析 / Cutter 退化成单段 / `cut_ranges()` 不回退单段）+ 真页面 CDP
+  `node .workbuddy/probe-slice-list.mjs`（11 项：加段/删段禁用、每段时长与总时长、
+  **多段载荷带 ranges**、**单段载荷不带 ranges**）。探针把 `fetch` 换成拦截器 ⇒ **不写用户数据**。

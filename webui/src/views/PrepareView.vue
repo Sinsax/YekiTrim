@@ -158,21 +158,37 @@
           <div class="hint mt-8">{{ prepareHint }}</div>
         </div>
 
-        <!-- 切片：标记起止 → 填标题 →「切片」即建事件并开始剪切（没填标题会打开表单）。
-             原来散在左列最下面的切片行 + 预处理卡里的「手动添加片段」入口都收进这一块。 -->
+        <!-- 切片：一组入点/出点 → 填标题 →「切片」即建事件并开始剪切（没填标题会打开表单）。
+             多组 = **分段剪、合并输出**（粗剪拓展 2026-10-06）。 -->
         <div class="card card-blk mt-12">
           <b class="t">切片</b>
-          <div class="row" style="gap:6px;margin:8px 0 6px">
-            <button class="mini-btn flex-none" @click="mark('in')">标记入点</button>
-            <input class="fld-input slice-time" :value="fmtTime(markIn)" readonly title="入点（当前播放位置）">
+          <!-- 多段（粗剪拓展 2026-10-06）：一组入点/出点 = 一条片段；**多组 = 分段剪、合并输出**。
+               段间空隙里"有内容"的部分会被丢掉，无字幕的保留（交给后处理「去静音」变屏蔽区间）。
+               点一行选中它，「标记入点/出点」落到选中那一行；单行时与老行为完全等价。 -->
+          <div class="slice-rows mt-6">
+            <div v-for="(r, i) in sliceRows" :key="i" class="slice-row" :class="{ on: i === activeRow }" @click="activeRow = i">
+              <span class="mono small flex-none">{{ i + 1 }}</span>
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.start"
+                     :title="'第 ' + (i + 1) + ' 段入点（秒）'" @click.stop>
+              <input class="fld-input slice-time" type="number" step="0.1" min="0" v-model.number="r.end"
+                     :title="'第 ' + (i + 1) + ' 段出点（秒）'" @click.stop>
+              <span class="mono small flex-none">{{ fmtDur(Number(r.end) - Number(r.start)) }}</span>
+              <button class="mini-btn flex-none" :disabled="sliceRows.length <= 1" title="删掉这一段"
+                      @click.stop="removeSliceRow(i)">×</button>
+            </div>
           </div>
-          <div class="row" style="gap:6px;margin-bottom:8px">
-            <button class="mini-btn flex-none" @click="mark('out')">标记出点</button>
-            <input class="fld-input slice-time" :value="fmtTime(markOut)" readonly title="出点（当前播放位置）">
+          <div class="row mt-6" style="gap:6px">
+            <button class="mini-btn flex-1 jc-center" title="把当前播放位置记为**选中那段**的入点" @click="mark('in')">标记入点</button>
+            <button class="mini-btn flex-1 jc-center" title="把当前播放位置记为**选中那段**的出点" @click="mark('out')">标记出点</button>
+            <button class="mini-btn flex-none" title="再加一段（与已有的合成同一条片段）" @click="addSliceRow">＋ 一段</button>
+          </div>
+          <div class="row spread small mt-4">
+            <span class="muted">{{ sliceRows.length }} 段</span>
+            <span class="mono">{{ fmtDur(sliceTotal) }}</span>
           </div>
           <input
             v-model="label"
-            class="fld-input"
+            class="fld-input mt-6"
             placeholder="片段标题"
             title="标题只用于人工查看（events.json / clip.json / 卡片展示）"
             @keyup.enter="sliceNow"
@@ -180,7 +196,7 @@
           <div class="row" style="gap:6px;margin-top:8px">
             <button class="btn btn-primary flex-1 jc-center"
                     :disabled="!canSlice || busy"
-                    :title="canSlice ? '按标记的起止建事件并立即开始剪切' : '先标记入点和出点'"
+                    :title="canSlice ? '按标记的起止建事件并立即开始剪切' : '每一段都要有入点和出点（出点大于入点）'"
                     @click="sliceNow">切片</button>
             <button class="mini-btn" :disabled="!canSlice" title="补类型 / 详情（标题已填则直接切）" @click="openAdd">更多设置</button>
           </div>
@@ -239,8 +255,13 @@
     <!-- 手动添加片段（轨道标记的落地表单） -->
     <AppModal :show="showAdd" title="添加片段" @close="showAdd = false">
       <div class="row">
-        <div class="flex-1 minw-120"><label>开始（秒）</label><input v-model.number="start" type="number" step="0.1" min="0"></div>
-        <div class="flex-1 minw-120"><label>结束（秒）</label><input v-model.number="end" type="number" step="0.1" min="0"></div>
+        <div class="flex-1 minw-120"><label>开始（秒）</label>
+          <input v-model.number="start" type="number" step="0.1" min="0" :disabled="sliceMulti" :title="modalStartTitle">
+        </div>
+        <div class="flex-1 minw-120"><label>结束（秒）</label>
+          <input v-model.number="end" type="number" step="0.1" min="0" :disabled="sliceMulti"
+                 :title="sliceMulti ? modalStartTitle : '结束（秒）'">
+        </div>
       </div>
       <div class="row mt-8">
         <div class="flex-2 minw-180"><label>标题（仅人工查看，不影响文件名）</label><input v-model="label" placeholder="片段标题"></div>
@@ -304,6 +325,16 @@ const duration = computed(() => Math.max(
 const status = ref(null)
 const markIn = ref(0)
 const markOut = ref(0)
+/** **多段切片列表**（粗剪拓展 2026-10-06）：每行一组入点/出点，剪出来是**一条**片段。
+ *  多行 = 分段剪、合并输出（段间"有内容"的空隙丢掉，无字幕的保留给「去静音」）。
+ *  ⚠️ 只有一行时载荷与老的「标记入点/出点」**完全一致**（不带 `ranges`）——服务端与老路径零差异。 */
+const sliceRows = ref([{ start: 0, end: 0 }])
+/** 「标记入点/出点」落到哪一行（点行选中）。 */
+const activeRow = ref(0)
+/** 列表总时长（各段内容之和；多段成片就是这个长度）。 */
+const sliceTotal = computed(() =>
+  sliceRows.value.reduce((m, r) => m + Math.max(0, (Number(r.end) || 0) - (Number(r.start) || 0)), 0),
+)
 const showAdd = ref(false)
 const start = ref(0)
 const end = ref(10)
@@ -460,8 +491,23 @@ const prepareHint = computed(() => {
   if (!hasEvents.value) return '转写已完成，接着跑事件检测（会整份覆盖 events.json，已剪片段不受影响）。'
   return '字幕和弹幕都随时能换（上面列表里切换）—— 换了之后点这个按钮重新检测生效。'
 })
-const canSlice = computed(() => markOut.value > markIn.value)
-const canAddClip = computed(() => !!(label.value.trim() && end.value > start.value))
+const canSlice = computed(
+  () => sliceRows.value.length > 0
+    && sliceRows.value.every((r) => Number(r.end) > Number(r.start)),
+)
+/** 多段（>1 行且都合法）时，模态框的起止由列表决定。 */
+const sliceMulti = computed(() => sliceRows.value.length > 1 && canSlice.value)
+const canAddClip = computed(
+  () => !!(label.value.trim() && (sliceMulti.value || end.value > start.value)),
+)
+
+/** 秒 → 紧凑时长（列表里用：12.5s / 1m02s）。 */
+function fmtDur(t) {
+  const v = Math.max(0, Number(t) || 0)
+  if (v < 60) return `${v.toFixed(1)}s`
+  const m = Math.floor(v / 60)
+  return `${m}m${String(Math.round(v % 60)).padStart(2, '0')}s`
+}
 
 function fmtTime(t) {
   const v = Math.max(0, Number(t) || 0)
@@ -639,10 +685,40 @@ function seekTo(t) {
 
 function mark(which) {
   const t = Math.round((videoRef.value?.currentTime || currentTime.value || 0) * 10) / 10
-  if (which === 'in') markIn.value = t
-  else markOut.value = t
+  const row = sliceRows.value[activeRow.value] || sliceRows.value[0]
+  if (which === 'in') row.start = t
+  else row.end = t
+  // 与老版同一套兜底：另一头没设/设反了就补 1s，免得标一个点永远是"无效段"
+  if (!(Number(row.end) > Number(row.start))) {
+    if (which === 'in') row.end = t + 1
+    else row.start = Math.max(0, t - 1)
+  }
+  markIn.value = Number(row.start) || 0
+  markOut.value = Number(row.end) || 0
   start.value = markIn.value
   end.value = Math.max(markOut.value, markIn.value + 1)
+}
+
+/** 加一段（起止先取当前播放位置：标好出点才算数）。 */
+function addSliceRow() {
+  const t = Math.round((videoRef.value?.currentTime || currentTime.value || 0) * 10) / 10
+  sliceRows.value.push({ start: t, end: t })
+  activeRow.value = sliceRows.value.length - 1
+}
+
+/** 删一段；只剩一段时不给删（那会变成"没有要切的东西"）。 */
+function removeSliceRow(i) {
+  if (sliceRows.value.length <= 1) return
+  sliceRows.value.splice(i, 1)
+  activeRow.value = Math.max(0, Math.min(activeRow.value, sliceRows.value.length - 1))
+}
+
+/** 列表 → 请求载荷（秒）。多段时服务端以 `ranges` 为准（`start/end` 拉成首段起、末段末）。 */
+function sliceRangePayload() {
+  return sliceRows.value.map((r) => ({
+    start_sec: Number(r.start) || 0,
+    end_sec: Number(r.end) || 0,
+  }))
 }
 
 /** 轨道编辑统一入口：`next` 是整份 segments；transient（拖动中）只更新本地，落盘由拖动结束/防抖触发。 */
@@ -788,22 +864,46 @@ function openAdd() {
   showAdd.value = true
 }
 
+/** 模态框那两个输入框在多段时是不生效的（起止由列表决定）—— 用 disabled + title 说清。 */
+const modalStartTitle = computed(() =>
+  sliceMulti.value
+    ? `多段（${sliceRows.value.length} 段）：起止由左侧列表决定，这里只显示首尾`
+    : '开始（秒）',
+)
+
 /** 切片行主按钮：标题已填 → 直接建事件并剪切（一次点击）；标题空 → 打开完整表单（类型/详情）。 */
 function sliceNow() {
-  if (!canSlice.value) { toast('先标记入点和出点'); return }
+  if (!canSlice.value) { toast('每一段都要有入点和出点（出点大于入点）'); return }
   if (!label.value.trim()) { toast('填个片段标题，或点「更多设置」补类型/详情'); openAdd(); return }
-  doCreate({ start: markIn.value, end: markOut.value, label: label.value.trim(), summary: summary.value, type: eventType.value })
+  const ranges = sliceRangePayload()
+  doCreate({
+    start: ranges[0].start_sec,
+    end: ranges[ranges.length - 1].end_sec,
+    ranges,
+    label: label.value.trim(),
+    summary: summary.value,
+    type: eventType.value,
+  })
 }
 
 async function saveClip() {
-  if (end.value <= start.value) { toast('结束必须大于开始'); return }
-  doCreate({ start: start.value, end: end.value, label: label.value.trim(), summary: summary.value, type: eventType.value })
+  // 多段（列表里 >1 段）⇒ 起止由列表决定，模态框那两个输入框只是单段时的编辑口
+  const ranges = sliceMulti.value ? sliceRangePayload() : null
+  if (!sliceMulti.value && end.value <= start.value) { toast('结束必须大于开始'); return }
+  doCreate({
+    start: ranges ? ranges[0].start_sec : start.value,
+    end: ranges ? ranges[ranges.length - 1].end_sec : end.value,
+    ranges,
+    label: label.value.trim(),
+    summary: summary.value,
+    type: eventType.value,
+  })
 }
 
 /** 建事件（**标题是唯一必填**，纯展示元数据）→ 立刻剪切 → 进切片页。
  *  目录/文件名固定 `clips/clip-NN/clip.mp4`（见 yekitrim-core cutting），标题只写进
  *  `events.json` / `clip.json(labels)` / `publish_config.json` 与界面展示。 */
-async function doCreate({ start: s, end: e, label: lb, summary: sm, type: ty }) {
+async function doCreate({ start: s, end: e, ranges, label: lb, summary: sm, type: ty }) {
   if (!lb) { toast('请填写标题'); return }
   if (e <= s) { toast('结束必须大于开始'); return }
   try {
@@ -812,7 +912,9 @@ async function doCreate({ start: s, end: e, label: lb, summary: sm, type: ty }) 
       start_sec: s,
       end_sec: e,
       event_type: ty,
-      summary: sm
+      summary: sm,
+      // **多段才带 `ranges`**：单段（含老路径）载荷一个字段都不变
+      ...(ranges && ranges.length > 1 ? { ranges } : {})
     })
     const rank = created?.event?.rank
     if (rank) await projectData.cutOne(pid.value, rank)
@@ -860,6 +962,10 @@ onUnmounted(() => {
    注意 flex-basis 必须写成 0 —— 全局 `input { width:100% }` 会让基线是整行宽，
    按钮被挤到上一行（flex-wrap 下就变成两块各占一行）。 */
 .slice-time { flex:1 1 0; width:auto; min-width:0; padding:4px 8px; font-size:12px; text-align:center; }
+/* 多段列表：一行一组入点/出点；点一行 = 选中它（「标记入点/出点」落到选中行） */
+.slice-row { display:flex; align-items:center; gap:6px; padding:2px 4px; border-radius:6px; }
+.slice-row.on { background:var(--chip-bg); }
+.slice-row .slice-time { max-width:86px; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */

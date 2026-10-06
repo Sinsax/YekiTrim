@@ -802,5 +802,63 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 
+// ── ⑳ 多段切片：预处理页列表 → 服务端 → Cutter 一条链（2026-10-06 粗剪拓展）──
+//
+// 用户口径：「在预处理位置可以设置多个切片入点出点以列表形式，这样就可以分段但是合并输出」。
+// 这条链**四段缺一不可**（缺哪段都是"界面能填、切出来还是单段"或"多段写不进去"）：
+//   ① 界面：列表（加/删/每段时长/总时长）+ 标记落到选中行；**只剩一段不给删**；
+//   ② 载荷：**多段才带 `ranges`**（单段与老的「标记入点/出点」逐字段同形 —— 老服务端/老路径零差异）；
+//   ③ 服务端：认 `ranges`，`start/end` 拉成首段起、末段末，多段才写进事件；
+//   ④ Cutter：多段 = 逐段剪 `.ts` → concat 不重编码（单段仍走老路径）。
+console.log('\n⑳ 多段切片一条链（列表 → 载荷 → 服务端 → Cutter）')
+{
+  const prepareView = await read('webui/src/views/PrepareView.vue')
+  const projectDataApi = await read('crates/yekitrim-server/src/api/project_data.rs')
+  const cutter = await read('crates/yekitrim-core/src/cutting/mod.rs')
+  const typesRs = await read('crates/yekitrim-core/src/types/mod.rs')
+
+  const hasList = (s) =>
+    s.includes('const sliceRows = ref(') && s.includes('function addSliceRow(')
+      && /function removeSliceRow\(i\) \{[\s\S]{0,200}?length <= 1[\s\S]{0,80}?return/.test(s)
+  const payloadCompat = (s) => /\.\.\.\(ranges && ranges\.length > 1 \? \{ ranges \} : \{\}\)/.test(s)
+  const serverTakesRanges = (s) =>
+    /body\.get\("ranges"\)/.test(s) && /ranges\.len\(\) > 1/.test(s)
+  // 多段分支必须**真的可达**（只查"有这几个函数"的话，把 `if ranges.len() <= 1` 改成恒真
+  // 也照样通过 —— 实测踩过）
+  const cutterMulti = (s) =>
+    /fn cut_event\([\s\S]{0,700}?if ranges\.len\(\) <= 1 \{/.test(s)
+      && /fn cut_parts_and_concat\(/.test(s) && /fn run_cut_part\(/.test(s)
+      && /fn concat_parts_copy\(/.test(s) && /"mpegts"/.test(s)
+  // `cut_ranges()` 的语义：空 ⇒ 回退单段；非空 ⇒ 原样（只查签名同样会被"恒假"骗过）
+  const emptyMeansSingle = (s) => {
+    const i = s.indexOf('pub fn cut_ranges(&self)')
+    if (i < 0) return false
+    const body = s.slice(i, i + 700)
+    return /if self\.ranges\.is_empty\(\) \{[\s\S]{0,200}?vec!\[EventRange::new\(/.test(body)
+      && /self\.ranges\.clone\(\)/.test(body)
+  }
+
+  check('⑳ 界面有列表（加段/删段且**只剩一段不给删**）', hasList(prepareView), true,
+    '删成 0 段 = 没有要切的东西，按钮该禁用而不是静默变成别的语义')
+  check('⑳ 载荷：多段才带 ranges（单段与老路径同形）', payloadCompat(prepareView), true,
+    '单段也塞 ranges 的话，老服务端/老脚本收到的是另一种形状')
+  check('⑳ 服务端认 ranges（首段起、末段末，多段才写进事件）', serverTakesRanges(projectDataApi), true)
+  check('⑳ Cutter 多段：逐段剪 ts + concat', cutterMulti(cutter), true)
+  check('⑳ `cut_ranges()`：空 = 单段', emptyMeansSingle(typesRs), true)
+
+  const MUT20 = [
+    ['载荷一律带 ranges（单段线格式被改）', prepareView, (s) => s.replace('...(ranges && ranges.length > 1 ? { ranges } : {})', '...(ranges ? { ranges } : {})'), payloadCompat],
+    ['删段不再挡"只剩一段"', prepareView, (s) => s.replace('  if (sliceRows.value.length <= 1) return\n', ''), hasList],
+    ['服务端不再解析 ranges', projectDataApi, (s) => s.replace('body.get("ranges")', 'body.get("ranges_noop")'), serverTakesRanges],
+    ['Cutter 不再逐段剪（多段退化成单段）', cutter, (s) => s.replace('    if ranges.len() <= 1 {', '    if true {'), cutterMulti],
+    ['`cut_ranges()` 不再回退单段（空 ranges ⇒ 什么都不切）', typesRs, (s) => s.replace('        } else {\n            self.ranges.clone()\n        }', '        }'), emptyMeansSingle],
+  ]
+  for (const [what, src, mutate, still] of MUT20) {
+    const m = mutate(src)
+    check(`[变异] ⑳ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ⑳ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
