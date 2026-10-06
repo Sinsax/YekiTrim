@@ -551,6 +551,8 @@ mod tests {
             rank,
             clip_dir: None,
             enabled: true,
+            ranges: Vec::new(),
+            topic: None,
         }
     }
 

@@ -13,6 +13,10 @@ use crate::pipeline::{Stage, STAGE_DETECT};
 use crate::types::{Event, EventStore, PipelineContext, Timestamp, Transcript, TranscriptSegment};
 
 mod llm;
+mod scattered;
+pub use scattered::{
+    absorb_scattered, merge_scattered, ScatteredCtx, ScatteredMergeStat,
+};
 pub use llm::{
     parse_json, test_llm, DEFAULT_PROMPT, DEFAULT_REFERENCE_TITLES, DEFAULT_SYSTEM_PROMPT,
     TITLE_RULES,
@@ -121,6 +125,48 @@ impl Stage for EventDetector {
             )
             .await?
         };
+
+        // ── 分散事件第二趟（默认关）──────────────────────────────────────────────
+        // 第一趟只收"完整话题"（硬标准 30s）；同一个话题被别的话题打断成几小段时会不报。
+        // 打开后**再跑一趟低标准检测**，按 topic 归组合并成一条多段事件，仍不达标的丢弃。
+        // ⚠️ 三件事必须同时成立，缺一个症状就回来：
+        //   ① 它**不走** `postprocess_events`（那条 30s 吞并会把小块吃光）；
+        //   ② 跨窗去重的丢弃门槛按趟取（第二趟传 0，见 `call_with_progress`）；
+        //   ③ 并回主列表时，"被普通事件盖住/紧贴"的**丢掉**（普通事件的标题与切点是权威）。
+        if detect_config.scattered.enabled && !llm_config.api_key.is_empty() {
+            match process_scattered_with_llm(
+                segments,
+                llm_config,
+                detect_config,
+                &hot_windows,
+                &ctx.output_dir,
+                ctx.detect_resume,
+                cancel.clone(),
+                heatmap.as_deref(),
+                video_duration,
+            )
+            .await
+            {
+                Ok((scattered, mut stat)) => {
+                    let kept_before = stat.kept;
+                    absorb_scattered(&mut events, scattered, &mut stat);
+                    tracing::info!(
+                        "分散事件合并：候选 {} 块 → 太短丢 {} / 归组 {} → 留下 {} 条                         （多块合并 {}、多段 ranges {}）；并回主列表时被普通事件盖住/紧贴丢 {}",
+                        stat.input,
+                        stat.dropped_too_short,
+                        stat.groups,
+                        kept_before,
+                        stat.merged_from_pieces,
+                        stat.multi_range,
+                        stat.absorbed_by_main,
+                    );
+                }
+                // 取消照旧透传（别把"用户点了停止"报成检测失败）
+                Err(e) if cancel.as_ref().is_some_and(|c| c()) => return Err(e),
+                // 第二趟失败**不连累主检测**：警告 + 继续（用户至少拿到第一趟的结果）
+                Err(e) => tracing::warn!("分散片段第二趟失败，已跳过（不影响主检测）: {e:#}"),
+            }
+        }
 
         // 追加主播标签（无 API key 的默认事件也适用），并控制标题长度上限
         if !detect_config.vtuber_name.is_empty() {
@@ -495,6 +541,7 @@ async fn process_with_llm(
         Some(&checkpoint_path),
         cancel.clone(),
         Some(partial_tx),
+        llm::DetectPass::Main,
     );
 
     let partial_task = tokio::spawn(async move {
@@ -521,6 +568,88 @@ async fn process_with_llm(
     let events = postprocess_events(events, segments);
 
     Ok(events)
+}
+
+/// **分散片段第二趟**（低标准）+ 按话题归组合并。
+///
+/// 与主通道**完全分开**（`docs/plan/scattered-events-merge.md`）：
+/// - 用 `DetectPass::Scattered`（自己的 prompt + 自己的 `topic` 归组键 + 自己的断点文件）；
+/// - **不经过 `postprocess_events`**（那条"最短 30s / 不足吞并相邻"正是要把小块吃掉的东西），
+///   只做：clamp 到片长并丢非法 → 吸附 ASR 段边界 → `merge_scattered` 归组合并；
+/// - 返回 `(事件, 统计)`：统计里"丢在哪一道门"一清二楚，日志与验收都看它。
+async fn process_scattered_with_llm(
+    segments: &[TranscriptSegment],
+    llm_config: &crate::config::LlmConfig,
+    detect_config: &crate::config::DetectionConfig,
+    hot_windows: &[(f64, f64)],
+    output_dir: &std::path::Path,
+    resume: Option<bool>,
+    cancel: Option<crate::llm::agent::CancelProbe>,
+    heatmap: Option<&[DensityWindow]>,
+    video_duration: Option<f64>,
+) -> Result<(Vec<Event>, ScatteredMergeStat)> {
+    let merged = merge_segments_for_detection(segments);
+    let checkpoint_path = output_dir.join("events.scattered.checkpoint.json");
+    if resume == Some(false) && checkpoint_path.exists() {
+        tracing::info!(
+            "用户选择重新开始，删除旧分散片段断点: {}",
+            checkpoint_path.display()
+        );
+        let _ = std::fs::remove_file(&checkpoint_path);
+    }
+    tracing::info!(
+        "分散片段第二趟：{} 段 → 预合并 {} 段，标准 时长≥{:.0}s 字幕≥{}条 或 弹幕密度≥{:.2}",
+        segments.len(),
+        merged.len(),
+        detect_config.scattered.min_secs,
+        detect_config.scattered.min_subs,
+        detect_config.scattered.dm_floor,
+    );
+
+    let pieces = llm::call_with_progress(
+        &merged,
+        llm_config,
+        detect_config,
+        hot_windows,
+        output_dir.parent(),
+        Some(&checkpoint_path),
+        cancel.clone(),
+        None,
+        llm::DetectPass::Scattered,
+    )
+    .await?;
+
+    // clamp 到片长 + 丢非法（与主通道同一条口径）
+    let mut pieces = pieces;
+    if let Some(max_end) = video_duration {
+        if max_end > 0.0 {
+            for e in &mut pieces {
+                e.start = Timestamp::from_seconds(e.start.to_seconds().clamp(0.0, max_end));
+                e.end = Timestamp::from_seconds(e.end.to_seconds().clamp(0.0, max_end));
+            }
+        }
+    }
+    pieces.retain(|e| e.end.to_seconds() > e.start.to_seconds());
+    // 吸附到 ASR 段边界（切点落在停顿处；小块尤其需要，否则会切在半句话上）
+    let pieces = snap_to_segments(pieces, segments);
+
+    let ctx = ScatteredCtx::new(&detect_config.scattered, segments).with_heatmap(
+        heatmap,
+        detect_config.danmaku_window_secs,
+    );
+    let (kept, stat) = merge_scattered(pieces, &ctx);
+    for e in &kept {
+        tracing::debug!(
+            "分散片段：{:.1}-{:.1}（内容 {:.1}s，{} 段）topic={:?} {}",
+            e.start.to_seconds(),
+            e.end.to_seconds(),
+            e.content_secs(),
+            e.cut_ranges().len(),
+            e.topic,
+            e.label
+        );
+    }
+    Ok((kept, stat))
 }
 
 /// 提取弹幕热点区间：密度 ≥ 0.5 的窗口按密度降序取 top N，相邻窗口合并为连续区间。
@@ -957,6 +1086,8 @@ mod tests {
             rank: 0,
             clip_dir: None,
             enabled: true,
+            ranges: Vec::new(),
+            topic: None,
         }
     }
 
@@ -1383,5 +1514,208 @@ mod tests {
                 e.label
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scatter_diag {
+    use super::*;
+
+    /// **真跑第二趟**（会发 LLM 调用）：拿一个真实项目的 `transcript.json` 跑分散片段检测 + 合并。
+    ///
+    /// ```text
+    /// VT_PROJECT_DIR=<项目目录> [VT_SCATTER_MAX_SEGS=120] cargo test -p yekitrim-core \
+    ///   --lib diagnose_scattered_pass -- --ignored --nocapture
+    /// ```
+    ///
+    /// ⚠️ LLM 参数取**程序目录**的 `.yekitrim/llm.toml`（和 `yekitrim detect` 同一条）；
+    /// ⚠️ 断点写**临时目录** —— 绝不往用户项目里落文件（诊断不许污染工程）。
+    #[tokio::test]
+    #[ignore]
+    async fn diagnose_scattered_pass() {
+        let Ok(project) = std::env::var("VT_PROJECT_DIR") else {
+            eprintln!("用法: VT_PROJECT_DIR=<项目目录> cargo test ... diagnose_scattered_pass -- --ignored --nocapture");
+            return;
+        };
+        let dir = std::path::PathBuf::from(&project);
+        let transcript_path = dir.join("output").join("transcript.json");
+        let raw = std::fs::read_to_string(&transcript_path).expect("读 transcript.json");
+        let transcript: Transcript = serde_json::from_str(&raw).expect("解析 transcript.json");
+        let max_segs: usize = std::env::var("VT_SCATTER_MAX_SEGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
+        let from: usize = std::env::var("VT_SCATTER_FROM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let segments: Vec<TranscriptSegment> = transcript
+            .segments
+            .iter()
+            .skip(from)
+            .take(max_segs)
+            .cloned()
+            .collect();
+        let span = (
+            segments.first().map(|s| s.start).unwrap_or(0.0),
+            segments.last().map(|s| s.end).unwrap_or(0.0),
+        );
+        let llm = crate::config::load_llm_config();
+        if llm.api_key.is_empty() {
+            eprintln!("程序目录没有 LLM key，跳过");
+            return;
+        }
+        let mut detect = crate::config::DetectionConfig::default();
+        detect.scattered.enabled = true;
+        if let Ok(v) = std::env::var("VT_SCATTER_MIN_SECS") {
+            if let Ok(n) = v.parse() {
+                detect.scattered.min_secs = n;
+            }
+        }
+        let tmp = std::env::temp_dir().join(format!("vt-scatter-diag-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("建临时目录");
+
+        println!("项目: {project}");
+        println!(
+            "节选 {} 段（{:.1}s~{:.1}s），标准：时长≥{:.0}s 字幕≥{}条 或 弹幕密度≥{:.2}",
+            segments.len(),
+            span.0,
+            span.1,
+            detect.scattered.min_secs,
+            detect.scattered.min_subs,
+            detect.scattered.dm_floor,
+        );
+        let started = std::time::Instant::now();
+        let (kept, stat) = process_scattered_with_llm(
+            &segments,
+            &llm,
+            &detect,
+            &[],
+            &tmp,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("第二趟跑通");
+        println!("用时 {:.1}s", started.elapsed().as_secs_f64());
+        println!("{stat:?}");
+        for e in &kept {
+            let ranges: Vec<String> = e
+                .cut_ranges()
+                .iter()
+                .map(|r| format!("{:.1}-{:.1}", r.start, r.end))
+                .collect();
+            println!(
+                "  {:.1}-{:.1} 内容 {:.1}s [{:?}] topic={:?} {}",
+                e.start.to_seconds(),
+                e.end.to_seconds(),
+                e.content_secs(),
+                ranges.join(" + "),
+                e.topic,
+                e.label
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod scatter_stage_diag {
+    use super::*;
+    use crate::pipeline::Stage;
+    use std::sync::Arc;
+
+    /// **端到端**（真跑 Stage 3）：把真实 `transcript.json` 复制进**临时工程**，打开
+    /// `[detection.scattered]`，跑完 `EventDetector` 再看落盘的 `events.json`。
+    ///
+    /// 它验的是"接线"那一层：第二趟 → 归组合并 → 并回主列表 → 写盘（以及多段 `ranges` 真的落进文件）。
+    ///
+    /// ```text
+    /// VT_PROJECT_DIR=<项目目录> [VT_SCATTER_MAX_SEGS=120] cargo test -p yekitrim-core \
+    ///   --lib diagnose_scattered_stage -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn diagnose_scattered_stage() {
+        let Ok(project) = std::env::var("VT_PROJECT_DIR") else {
+            eprintln!("用法: VT_PROJECT_DIR=<项目目录> cargo test ... diagnose_scattered_stage -- --ignored --nocapture");
+            return;
+        };
+        let src = std::path::PathBuf::from(&project);
+        let raw = std::fs::read_to_string(src.join("output").join("transcript.json"))
+            .expect("读 transcript.json");
+        let mut transcript: Transcript = serde_json::from_str(&raw).expect("解析 transcript.json");
+        let max_segs: usize = std::env::var("VT_SCATTER_MAX_SEGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
+        // 从哪一段开始截（默认开头）：想观察"主检测覆盖稀疏"的时段就把起点挪到那一段
+        let from: usize = std::env::var("VT_SCATTER_FROM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if from > 0 {
+            transcript.segments.drain(..from.min(transcript.segments.len()));
+        }
+        transcript.segments.truncate(max_segs);
+
+        let tmp = std::env::temp_dir().join(format!("vt-scatter-stage-{}", std::process::id()));
+        let out = tmp.join("output");
+        std::fs::create_dir_all(&out).expect("建临时工程");
+        std::fs::write(
+            out.join("transcript.json"),
+            serde_json::to_string_pretty(&transcript).unwrap(),
+        )
+        .expect("写临时 transcript");
+
+        let mut cfg = crate::config::Config::default();
+        cfg.llm = crate::config::load_llm_config();
+        if cfg.llm.api_key.is_empty() {
+            eprintln!("程序目录没有 LLM key（可给 YEKITRIM_DATA_DIR=target/debug），跳过");
+            return;
+        }
+        cfg.detection.scattered.enabled = true;
+        cfg.detection.llm_score_weight = 0.0; // 评分那次调用与本题无关，省掉
+
+        let mut ctx = PipelineContext::new(tmp.join("input.mp4"), out.clone());
+        ctx.config = Arc::new(cfg);
+        ctx.transcript = Some(transcript);
+
+        let started = std::time::Instant::now();
+        EventDetector.run(&mut ctx).await.expect("Stage 3 跑通");
+        println!("用时 {:.1}s", started.elapsed().as_secs_f64());
+
+        let written = std::fs::read_to_string(out.join("events.json")).expect("读 events.json");
+        let store: EventStore = serde_json::from_str(&written).expect("解析 events.json");
+        let multi = store.events.iter().filter(|e| !e.ranges.is_empty()).count();
+        let scattered = store.events.iter().filter(|e| e.topic.is_some()).count();
+        println!(
+            "落盘 {} 条：其中带 topic（分散那趟来的）{} 条、多段 ranges {} 条",
+            store.events.len(),
+            scattered,
+            multi
+        );
+        for e in &store.events {
+            let mark = if e.ranges.is_empty() { "   " } else { "[多]" };
+            let ranges: Vec<String> = e
+                .cut_ranges()
+                .iter()
+                .map(|r| format!("{:.1}-{:.1}", r.start, r.end))
+                .collect();
+            println!(
+                "{mark} {:>4} {:.1}-{:.1} 内容 {:.1}s topic={:?} {}",
+                e.rank,
+                e.start.to_seconds(),
+                e.end.to_seconds(),
+                e.content_secs(),
+                e.topic,
+                e.label
+            );
+            if !e.ranges.is_empty() {
+                println!("        ranges: {}", ranges.join(" + "));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

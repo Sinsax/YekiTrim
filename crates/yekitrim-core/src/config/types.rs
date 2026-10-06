@@ -638,6 +638,113 @@ impl Default for AsrConfig {
     }
 }
 
+/// **分散事件合并**（2026-10-06 新增）：检测第二趟的"低标准"与合并口径。
+///
+/// 为什么要它：第一趟只收"完整话题"（硬标准 30s + prompt 里 0.5~3 分钟），
+/// 于是**同一个话题被别的话题打断成几小段**时（电台/连麦里很常见）全都被吞并或干脆不报。
+/// 第二趟按更低的门槛把小块都报出来，检测结束后按 `topic` 归组合并：
+/// 无字幕的空隙**保留**（拼成一条连续区间，交给后处理「去静音」变屏蔽区间），
+/// 有内容的空隙用 `Event::ranges` **丢掉**；合并后仍不达标的**丢弃**。
+///
+/// 完整来龙去脉见 `docs/plan/scattered-events-merge.md`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScatteredConfig {
+    /// 总开关。**默认 false** —— 不开就完全按老口径跑（一次调用都不多发）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 单块时长下限（秒）：低于它的候选块直接丢（太短切出来没法看）。
+    #[serde(default = "default_scatter_min_secs")]
+    pub min_secs: f64,
+    /// 单块时长上限（秒）：只写进 prompt 当"小块"的引导，不做硬裁剪。
+    #[serde(default = "default_scatter_max_secs")]
+    pub max_secs: f64,
+    /// 单块字幕条数下限（硬判据，进合并前先过这道）。
+    #[serde(default = "default_scatter_min_subs")]
+    pub min_subs: usize,
+    /// 单块弹幕密度下限（0 = 不看弹幕）：与 `min_subs` 是**或**关系 —— 字幕少但弹幕炸的也算。
+    #[serde(default = "default_scatter_dm_floor")]
+    pub dm_floor: f64,
+    /// 判定"两个相邻块之间那一段算**有内容**"的字幕秒数门槛（≤ 它 = 无字幕空隙 ⇒ 保留成连续区间）。
+    #[serde(default = "default_scatter_gap_sub_secs")]
+    pub gap_sub_secs: f64,
+    /// 判定"空隙有内容"的弹幕密度门槛（超过它也算有内容 ⇒ 空隙要丢掉）。
+    #[serde(default = "default_scatter_gap_dm_floor")]
+    pub gap_dm_floor: f64,
+    /// 同话题两块的**最大间隔**（秒）：超过它就不再并成一条。
+    #[serde(default = "default_scatter_merge_gap_secs")]
+    pub merge_gap_secs: f64,
+    /// 合并后**内容时长**下限（秒）：不足 ⇒ 丢弃。
+    #[serde(default = "default_scatter_merge_min_secs")]
+    pub merge_min_secs: f64,
+    /// 合并后字幕条数下限：不足 ⇒ 丢弃。
+    #[serde(default = "default_scatter_merge_min_subs")]
+    pub merge_min_subs: usize,
+    /// 合并后跨度上限（秒）：超了按"从最热的块往两边收"截断，防一路并成整场。
+    #[serde(default = "default_scatter_max_merge_secs")]
+    pub max_merge_secs: f64,
+    /// 要求 LLM 给每块输出 `topic` 归组键（合并靠它，不靠标题字面）。关掉则只按时间相邻合并。
+    #[serde(default = "default_true")]
+    pub topic_key: bool,
+    /// 第二趟的 system prompt（留空 = 内建 `SCATTER_SYSTEM_PROMPT`）。
+    #[serde(default)]
+    pub system_prompt: String,
+    /// 第二趟的 user prompt 模板（留空 = 内建 `SCATTER_PROMPT`）。
+    #[serde(default)]
+    pub prompt_template: String,
+}
+
+fn default_scatter_min_secs() -> f64 {
+    8.0
+}
+fn default_scatter_max_secs() -> f64 {
+    60.0
+}
+fn default_scatter_min_subs() -> usize {
+    2
+}
+fn default_scatter_dm_floor() -> f64 {
+    0.15
+}
+fn default_scatter_gap_sub_secs() -> f64 {
+    0.5
+}
+fn default_scatter_gap_dm_floor() -> f64 {
+    0.3
+}
+fn default_scatter_merge_gap_secs() -> f64 {
+    45.0
+}
+fn default_scatter_merge_min_secs() -> f64 {
+    20.0
+}
+fn default_scatter_merge_min_subs() -> usize {
+    3
+}
+fn default_scatter_max_merge_secs() -> f64 {
+    240.0
+}
+
+impl Default for ScatteredConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_secs: default_scatter_min_secs(),
+            max_secs: default_scatter_max_secs(),
+            min_subs: default_scatter_min_subs(),
+            dm_floor: default_scatter_dm_floor(),
+            gap_sub_secs: default_scatter_gap_sub_secs(),
+            gap_dm_floor: default_scatter_gap_dm_floor(),
+            merge_gap_secs: default_scatter_merge_gap_secs(),
+            merge_min_secs: default_scatter_merge_min_secs(),
+            merge_min_subs: default_scatter_merge_min_subs(),
+            max_merge_secs: default_scatter_max_merge_secs(),
+            topic_key: true,
+            system_prompt: String::new(),
+            prompt_template: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionConfig {
     #[serde(default = "default_danmaku_window_secs")]
@@ -663,6 +770,9 @@ pub struct DetectionConfig {
     /// 填了才以本段为准（一般是排查限流时才需要单独压这里）。
     #[serde(default)]
     pub max_concurrent: Option<usize>,
+    /// **分散事件合并**（第二趟低标准检测 + 合并）。默认关 —— 见 `ScatteredConfig`。
+    #[serde(default)]
+    pub scattered: ScatteredConfig,
 }
 
 fn default_danmaku_window_secs() -> f64 {
@@ -682,6 +792,7 @@ impl Default for DetectionConfig {
             reference_titles: Vec::new(),
             llm_score_weight: default_llm_score_weight(),
             max_concurrent: None,
+            scattered: ScatteredConfig::default(),
         }
     }
 }
