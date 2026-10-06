@@ -527,8 +527,44 @@ watch(clipName, (name) => {
   if (name) { try { localStorage.setItem(LAST_CLIP_KEY.value, name) } catch {} }
   // 片段切换只改路由，必须在这里触发加载；但 `load()` 自己 replace 路由时不要再触发一次。
   if (name === loadedClip.value) return
-  load()
+  // ⚠️ **已经在编辑器里就别再走"骨架屏那一路"**（`load()` 非静默 ⇒ `loading=true` ⇒ 模板里那条
+  // `v-if="loading"` 把整棵编辑器换成骨架屏并**卸载**它）。卸载的代价不只是滚动位置：
+  // `PolishPreview` 里那块 `<canvas id="dhampir-canvas">` 一换节点就完了 —— 底座**一页只 attach
+  // 一次、没有 detach** ⇒ 新 canvas 从没被 present 过 ⇒ **画面全黑，只能 F5**
+  // （用户 2026-10-06 报的「在精修列表内切换精修视频，不会重载 Dhampir 导致黑屏」就是这个）。
+  // 所以：编辑器已经在时**静默加载**，canvas 原地留着；Dhampir 那条腿由 `PolishPreview`
+  // 自己 `watch(props.dir)` 换片段（见那边的 `switchDhampirClip`）。
+  const hadEditor = ready.value
+  if (hadEditor) resetClipUiState()
+  load({ silent: hadEditor })
 })
+
+/** 切片段时**必须自己清掉**的那几件"按片段记账"的界面状态。
+ *
+ * ⚠️ 以前这些是**靠"整棵编辑器重挂"顺手清零**的；现在切片段不再重挂（上面那条），
+ * 不清就会拿**上一个片段**的草稿去写**这个**片段 —— 最坏的是贴纸固定落点（点一下「保存落点」
+ * 就把上个片段的坐标写进新片段）。
+ *
+ * 各组件各自的责任（**别在这里重复做**）：
+ *   · `TimelineEditor`：自己 `watch(props.dir)` → `commitEdit` + `resetTimelineState` + `loadData`
+ *     （所以**不能**靠 `segKey++` 重挂它 —— 那条路不会 `commitEdit`，会把没落盘的改动丢掉）；
+ *   · `PolishPreview`：自己 `watch(props.dir)` 换片段（**绝不能**重挂 —— canvas！）；
+ *   · `CoverDesigner`：**只能重挂** —— 它的配置只在 `onMounted` 读一次、没有 dir 监听，
+ *     不重挂就是"看着上个片段的封面、一改就写进这个片段"（`coverKey++`）。
+ * 任务状态栏（`job` / `jobClose`）**刻意不动**：那是全项目共享的队列显示，不是片段级草稿
+ * （与改动前的行为一致）。 */
+function resetClipUiState() {
+  coverKey.value++
+  selectRegion.value = ''
+  pointEdit.value = false
+  draftPos.value = { x: 50, y: 50 }
+  renderModal.value = false
+  renderOutput.value = ''
+  canceling.value = false
+  previewPlaying.value = false
+  currentTime.value = 0
+  openLane.value = ''
+}
 const title = ref('精修编辑器')
 const loading = ref(false)
 const ready = ref(false)

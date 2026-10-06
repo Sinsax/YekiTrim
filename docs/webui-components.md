@@ -506,6 +506,51 @@ GIF / 动画 WebP 贴纸**不再逐帧吐位图**：宿主把整段字节交给�
 ⚠️ 还另有一份**行为测试**证明过它（临时脚本，未入库）：12 项覆盖"音量落到所有在响的元素 / 静音按钮 /
 音量 0 是合法值 / **换绑后旧元素立刻静音** / 收窄三态 / 三前缀"——④ 就是它抓出来的。
 
+### 2.7 换片段：**不重挂预览**，原地把 Dhampir 换过去（2026-10-06）
+
+**用户报的原文**：「在精修列表内切换精修视频，不会重载 Dhampir 导致黑屏，只能手动刷屏才行。」
+
+**根因**（两层，缺一条都解释不全）：
+
+1. 切片段走的是**非静默 `load()`**（`watch(clipName)` 里那一下）⇒ 模板的 `v-if="loading"`
+   把整棵编辑器换成骨架屏并**卸载** `PolishPreview` ⇒ 重新挂载时 `<canvas id="dhampir-canvas">`
+   是**新节点**，而底座 **一页只 attach 一次、没有 detach** ⇒ 引擎画的还是那块已经不在文档里的
+   canvas ⇒ **画面全黑**（F5 = 新页面、只 attach 一次，所以只有它能救）。
+   实测（CDP + 逐像素，修之前）：切完 1.5s 舞台平均亮度 **2.46**、7.5s **0.18**（黑），
+   而且 canvas 的身份标记**丢失**（= 被重挂）。
+2. 就算不重挂，Dhampir 那条腿也**没人通知换片段**：`reloadDhampirProject` 只换工程、**刻意不重建源**
+   （它是"改一个效果/挪个事件"那条路），而换片段必须连 `<video>` 源一起换。
+
+**修法**（三件，缺一条症状就回来）：
+
+- **父级别卸载编辑器**：`watch(clipName)` 里改成 `load({ silent: hadEditor })`
+  （`hadEditor = ready.value`）—— 编辑器已经在时静默加载，canvas 原地留着。
+  ⚠️ 顺带必须自己清那几件"按片段记账"的草稿（`resetClipUiState()`）：贴纸固定落点草稿
+  （不清 = 点一下「保存落点」就把上个片段的坐标写进新片段）、框选态、播放头、渲染弹窗；
+  `CoverDesigner` **只能重挂**（`coverKey++` —— 它的配置只在 `onMounted` 读一次、没有 dir 监听）；
+  `TimelineEditor` 不用管（它自己 `watch(props.dir)` → `commitEdit` + `resetTimelineState` + `loadData`）。
+  ⚠️ **不能**用 `segKey++` 去重挂时间轴：那条路不会 `commitEdit`，会把没落盘的改动丢掉。
+- **原地换片段**（`PolishPreview::switchDhampirClip`，`watch(() => props.dir)` 触发）：
+  取新工程 → 建新源 → 绑源 → 改画布尺寸 → `open()` → 重置帧标记 → 重灌动图/字幕/字体。
+  四条踩出来的顺序：
+  ① **先建新源、再拆旧源**（建源要等 `loadeddata`，最长 3s；这段里旧画面照常画 = 不黑）；
+  ② **源元素 id 必须带代际**（`dhampir-src-<gen>-<i>`）：同 id 时 `getElementById` 会拿到**旧**元素，
+     引擎就"一直画上一个片段的帧"—— 不报错、也不黑，最难查；
+  ③ **改 canvas 尺寸放在最后那一下**（`canvas.width = …` 会把交换链整个换掉）：先改尺寸 = 黑窗被撑到
+     几百毫秒（实测 1.5s 量到 **0.18**），放在 `open()` 前面那一个同步块里则最多黑一帧；
+  ④ 换片段待办**必须有人消费**（首屏没起来 / 有帧在飞时被拦下）：`tick()` 开头补跑，否则那次换片段
+     静默丢掉 ⇒ 画面停在上一个片段。
+- **重挂自救**：本页已经 attach 过**别的** canvas 时（列表模式弹回那一类路径），
+  `startDhampir` 里**自动刷新一次**（`sessionStorage` 挡刷新环，attach 成功后清闸）；
+  再撞上就明说"请刷新页面"，而不是留一块永远不亮的 canvas。
+
+**判据**：`webui/scripts/check-layout-invariants.mjs` ⑲（7 项 + 7 处变异：退回非静默 load /
+不重挂封面 / 预览不听 dir / 源 id 退回无代际 / 先改尺寸再建源 / 去掉自救 / 去掉待办消费点）+
+真页面 CDP `node .workbuddy/probe-clip-switch.mjs`（15 项：canvas 身份不变、日志有「换片段开始/完成」、
+舞台比例跟着新片段的 `[canvas] orientation` 换、**逐像素**三档都不黑、拨回列表模式后也不黑）。
+
+---
+
 ## ③ 封面设计器（`CoverDesigner.vue`）
 
 `CoverDesigner.vue` —— 封面设计器，props `dir`（必填）/`pid`，emit `changed`；只在该片段被占用时禁用「生成封面」。
