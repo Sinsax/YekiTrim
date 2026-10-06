@@ -616,38 +616,93 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
 }
 
-// ── ⑮ 屏蔽区间的跳转必须用**素材帧率**换算源帧，不能用工程网格帧率（……）──
+// ── ⑮ 屏蔽区间的跳转必须用**素材帧率**换算源帧 + 段内换算必须**连续**（秒）──
+//
+// ① `source_in` 是**素材帧号**：宿主拿工程网格帧率去换算源帧 ⇒ "经过屏蔽时声音和视频全乱"。
+// ② 段内换算若也按**素材帧**取整，工程帧只能落在 `round(src)×seqFps/srcFps` 的倍数上
+//    —— 5fps 素材 + 30fps 网格 = **6 的倍数** ⇒ 一秒只有 5 个不同帧号 ⇒ `tick()` 里
+//    `f === dhampirFrameShown` 把另外 5/6 帧全挡掉 ⇒ 读数 `5/30fps · 丢 30`，
+//    而叠加层（字幕/弹幕/贴纸）也只动 5 次/秒 = **预览≠成片**（成片按 30fps 画）。
+//    所以：段落**边界**按素材帧判（与 `source_in` 同单位），段内**换算走秒**。
 {
   const has = (re) => re.test(previewVue)
-  check('⑮ 宜当从工程的视频素材取源帧率',
+  check('⑮ 源帧率从工程的视频素材取',
     has(/dhampirSourceFps = stb\.num > 0 && stb\.den > 0/), true)
-  check('⑮ 源秒 → 源帧 用素材帧率（dhampirFrameAt）',
-    has(/const src = Math\.max\(0, Math\.round\(\(seconds \|\| 0\) \* srcFps\)\)/), true)
+  check('⑮ 源秒 → 源位置 用素材帧率（dhampirFrameAt）',
+    has(/const srcPos = Math\.max\(0, \(seconds \|\| 0\) \* srcFps\)/), true)
   check('⑮ 段落长度要换算回素材帧再比',
     has(/const lenSrc = Math\.max\(1, Math\.round\(\(lenSeq \* srcFps\) \/ seqFps\)\)/), true)
   check('⑮ 跳转点也用素材帧率算秒（dhampirNextSourceStart）',
     has(/return next === undefined \? null : next \/ srcFps/), true)
-  // ⚠️ 必须**按函数切片**判：`const src = Math.max(0, Math.round((seconds || 0) * srcFps))`
-  // 这一行在 `dhampirFrameAt` 与 `dhampirNextSourceStart` 里**各有一份**，
-  // 全文匹配的话"源侧改用网格帧率"那条变异永远翻不了面（第二份还在）。
+  // ⚠️ 必须**按函数切片**判：`const src…` 这一行在 `dhampirFrameAt` 与 `dhampirNextSourceStart`
+  // 里**各有一份**，全文匹配的话"源侧改用网格帧率"那条变异永远翻不了面（第二份还在）。
+  // ⚠️ **花括号配平**取函数体（不是切到第一个换行+右花括号）：切片版少一个收尾花括号，
+  // 拿它去 new Function(...) 直接语法错（这条行为判据第一版就是这么假红的）。
+  // 拿它去 `new Function(...)` 直接语法错（这条行为判据第一版就是这么假红的）。
   const fnBody = (src, name) => {
     const i = src.indexOf('function ' + name)
     if (i < 0) return ''
-    const j = src.indexOf(String.fromCharCode(10) + '}', i)
-    return j < 0 ? src.slice(i) : src.slice(i, j)
+    let depth = 0
+    for (let k = i; k < src.length; k += 1) {
+      if (src[k] === '{') depth += 1
+      else if (src[k] === '}') {
+        depth -= 1
+        if (depth === 0) return src.slice(i, k + 1)
+      }
+    }
+    return ''
   }
+  // ⭐ **行为级**：把 `dhampirFrameAt` 抠出来，喂一份真形状的段落表（p4 那颗 5fps 素材的真实读数：
+  // 网格 30 / 素材 5 / 三段 `(0,0) (485,109) (746,178)`），逐点对拍：
+  //   ① **连续性**：邻帧步长只能是 0 或 1 —— 取整到素材帧时步长会变成 6（这条就是那个 bug）；
+  //   ② 段落边界语义不变：10s→300、22.4s→503、40s→878、18s→null（落在被掐掉的区间里）。
+  const frameAtOf = (t) => {
+    const body = fnBody(t, 'dhampirFrameAt')
+    if (!body) return null
+    try {
+      return new Function(
+        'let dhampirFps={value:30},dhampirSourceFps=5;'
+        + 'let dhampirSegments=[{frameStart:0,frameEnd:485,sourceIn:0},{frameStart:485,frameEnd:746,sourceIn:109},{frameStart:746,frameEnd:2787,sourceIn:178}];'
+        + body + ';return dhampirFrameAt;',
+      )()
+    } catch (e) { return null }
+  }
+  const continuous = (f) => {
+    if (typeof f !== 'function') return false
+    let prev = -1
+    for (let i = 0; i <= 600; i += 1) {
+      const v = f(i / 600 * 10)          // 0~10s 扫 601 个点（含被掐掉的段落边界）
+      if (v === null) { prev = -1; continue }   // null = 落在被掐掉的区间里：断开，重新起算
+      if (v < prev) return false
+      if (prev >= 0 && v - prev > 1) return false   // 步长 > 1 = 又把帧号钉回素材帧了
+      prev = v
+    }
+    return true
+  }
+  const anchors = (f) => {
+    if (typeof f !== 'function') return false
+    return f(10) === 300 && f(22.4) === 503 && f(40) === 878 && f(18) === null
+  }
+  const frameAt = frameAtOf(previewVue)
+  check('⑮ 段内换算**连续**（5fps 素材也 30 帧/秒：邻帧步长 ≤ 1）', continuous(frameAt), true)
+  check('⑮ 段落边界语义不变（10s→300 / 22.4s→503 / 40s→878 / 18s→null）', anchors(frameAt), true)
   const ok14 = (t) => {
-    const frameAt = fnBody(t, 'dhampirFrameAt')
+    const f = fnBody(t, 'dhampirFrameAt')
     const nextStart = fnBody(t, 'dhampirNextSourceStart')
     return /dhampirSourceFps = stb\.num > 0 && stb\.den > 0/.test(t)
-      && /\(seconds \|\| 0\) \* srcFps/.test(frameAt)
-      && /lenSeq \* srcFps\) \/ seqFps/.test(frameAt)
+      && /const srcPos = Math\.max\(0, \(seconds \|\| 0\) \* srcFps\)/.test(f)
+      && /lenSeq \* srcFps\) \/ seqFps/.test(f)
       && /next \/ srcFps/.test(nextStart)
+      && continuous(frameAtOf(t)) && anchors(frameAtOf(t))
   }
   const MUT14 = [
-    ['源侧改用网格帧率（屏蔽后画面跳 6 倍远）', (t) => t.replace('const src = Math.max(0, Math.round((seconds || 0) * srcFps))', 'const src = Math.max(0, Math.round((seconds || 0) * seqFps))')],
+    ['源位置改用网格帧率（屏蔽后画面跳 6 倍远）', (t) => t.replace('const srcPos = Math.max(0, (seconds || 0) * srcFps)', 'const srcPos = Math.max(0, (seconds || 0) * seqFps)')],
     ['段落长度不换算回素材帧', (t) => t.replace('const lenSrc = Math.max(1, Math.round((lenSeq * srcFps) / seqFps))', 'const lenSrc = lenSeq')],
     ['跳转点用网格帧率算秒', (t) => t.replace('return next === undefined ? null : next / srcFps', 'return next === undefined ? null : next / seqFps')],
+    ['段内换算退回素材帧（5fps 素材 ⇒ 工程帧只能是 6 的倍数 = 只画 5 帧/秒、`丢 30`）',
+      // 复刻改造前那条式子：源位置**先取整到素材帧**，段内再按素材帧换算 —— 输出就只剩 6 的倍数
+      (t) => t.replace('      const localSec = (seconds || 0) - seg.sourceIn / srcFps\n      return seg.frameStart + Math.round(localSec * seqFps)',
+        '      const localSec = ((Math.round((seconds || 0) * srcFps) - seg.sourceIn) / srcFps)\n      return seg.frameStart + Math.round(localSec * seqFps)')],
   ]
   for (const [what, mutate] of MUT14) {
     const m = mutate(previewVue)
@@ -655,7 +710,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     check(`[变异] ⑮ ${what} → 判据翻面`, ok14(m), false)
   }
 }
-console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
+
 // ── ⑲ 换片段**不重挂预览** + Dhampir 原地换片段（2026-10-06 用户报「切片段黑屏、只能 F5」）──
 //
 // 底座 `<canvas>` **一页只 attach 一次、没有 detach** ⇒ 编辑器整棵重挂（换节点）那一刻起，
@@ -688,7 +743,8 @@ console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
   }
   // ⑥ 自救：本页已经 attach 过别的 canvas ⇒ 自动刷一次（有闸）+ 重挂后再挂回来要清闸
   const attachSelfHeal = (s) =>
-    s.includes('window.__dhampirAttachedCanvas = canvas') && s.includes('window.__dhampirAttachedCanvas && window.__dhampirAttachedCanvas !== canvas')
+    s.includes('window.__dhampirAttachedCanvas = canvas')
+      && s.includes('window.__dhampirAttachedCanvas && window.__dhampirAttachedCanvas !== canvas')
       && s.includes('location.reload()') && s.includes("sessionStorage.setItem(RELOAD_KEY, '1')")
       && s.includes("sessionStorage.removeItem('yekitrim.dhampir.attachReload')")
   // ⑦ 待办必须有人消费（首屏没起来 / 有帧在飞时被拦下那次，否则静默丢掉 = 画面停在上一个片段）
@@ -721,4 +777,6 @@ console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
     check(`[变异] ⑲ ${what} → 判据翻面`, still(m), false)
   }
 }
+
+console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
