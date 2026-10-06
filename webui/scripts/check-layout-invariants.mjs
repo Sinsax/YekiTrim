@@ -351,17 +351,34 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const blockSelectClosesLane = (s) =>
     /function selectBlock\(lane, block\) \{[\s\S]{0,300}?emit\('lane-open', ''\)/.test(s)
   const panelOk = (s) => lanePanel(s) && panelBeforeHost(s) && hostEmpty(s)
+  // ⚠️ **一个面板装全部轨道**（用户 2026-10-06 口径："点哪个轨道都是同一个面板，这样好操作"）：
+  // 六段必须**同时**在面板里，`openLane` 只是"焦点"（高亮哪一段 + 往哪儿滚）。
+  // 判据钉三件事：① 没有 `v-if/v-else-if="openLane === '…'"` 的链（那就是"一轨一屏"回来了）；
+  // ② 六段标题都在；③ 点轨道名会滚到那一段。
+  const LANE_GROUPS = ['分段 / 屏蔽', '字幕 / 弹幕', '运镜', '贴纸', '视觉特效', '音效']
+  const allGroupsAtOnce = (s) =>
+    !s.includes('v-if="openLane ===') && !s.includes('v-else-if="openLane ===')
+      && LANE_GROUPS.every((g) => s.includes(`<div class="lane-group-h">${g}</div>`))
+      && s.includes('所有轨道共用一个面板')
+  const focusScrolls = (s) =>
+    s.includes('laneGroupEls[lane]') && s.includes('scrollIntoView({ block: ' + "'nearest'" + ' })')
+      && /:class="\{ on: openLane === 'segments' \}"/.test(s)
   check('⑰ 轨道名可点开设置', nameOpens(timelineEditor), true)
   check('⑰ 块的属性面板在轨道设置打开时让位', itemYields(timelineEditor), true)
   check('⑰ 页面渲染轨道设置面板，且排在 Teleport 目标之前', panelOk(polishView), true)
   check('⑰ 选中时间轴上的块 ⇒ 收起轨道设置（两块面板不并存）', blockSelectClosesLane(timelineEditor), true)
   check('⑰ 右栏合成一块、没有页签', noTabs(polishView), true)
+  check('⑰ 六段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
+  check('⑰ 点轨道名 = 焦点高亮 + 滚到那一段', focusScrolls(polishView), true)
   const MUT17 = [
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
     ['轨道名不可点（没有入口）', timelineEditor, (s) => s.replace("@click.stop=\"emit('lane-open', lane.type)\"", ''), (m) => nameOpens(m)],
     ['往 Teleport 目标里塞子节点', polishView, (s) => s.replace('<div id="tl-props-host"></div>', '<div id="tl-props-host"><span></span></div>'), (m) => panelOk(m)],
     ['页签捡回来（右栏又分家）', polishView, (s) => s.replace("const openLane = ref('')", "const openLane = ref('')\nconst genTab = ref('export')"), (m) => noTabs(m)],
     ['选中块不收起轨道设置', timelineEditor, (s) => s.replace("if (props.laneOpen) emit('lane-open', '')", ''), (m) => blockSelectClosesLane(m)],
+    ['退回"一轨一屏"（点谁换谁）', polishView, (s) => s.replace(`<div class="lane-group" :class="{ on: openLane === 'subtitles' }"`, `<div v-if="openLane === 'subtitles'" class="lane-group"`), (m) => allGroupsAtOnce(m)],
+    ['摘掉一段（面板里少一条轨道的设置）', polishView, (s) => s.replace('<div class="lane-group-h">运镜</div>', ''), (m) => allGroupsAtOnce(m)],
+    ['点轨道名不再滚到那一段', polishView, (s) => s.replace("if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })", ''), (m) => focusScrolls(m)],
   ]
   for (const [what, src, mutate, still] of MUT17) {
     const m = mutate(src)

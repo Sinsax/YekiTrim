@@ -109,13 +109,21 @@
             <div class="preview-row">
               <div class="props-host">
                 <div v-if="openLane" class="props-panel card lane-panel">
-                  <div class="row spread">
-                    <b>{{ lanePanelTitle }}</b>
+                  <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板，
+                       不用来回切、也好对照）。点轨道名 = 打开这个面板 + 滚到对应那一段 + 标题高亮。
+                       ⚠️ 所以下面**不许**按 openLane 做条件渲染（v-if / v-else-if）—— 那又变成"一轨一屏、
+                       点谁换谁"（判据 `check-layout-invariants.mjs` ⑰ 钉着这一条，带变异自证）。
+                       分段 / 屏蔽是结构轨（没有眼睛），它的"生成"动作跟着它走。 -->
+                  <div class="row spread lane-head">
+                    <b>轨道设置</b>
                     <button class="mini-btn" @click="openLane = ''">关闭</button>
                   </div>
+                  <div class="hint mt-4" title="点时间轴上的轨道名会跳到对应那一段并高亮标题">所有轨道共用一个面板</div>
 
                   <!-- ── 分段 / 屏蔽（结构轨：没有眼睛；"生成"那个动作跟着它管的分段轨走） ── -->
-                  <template v-if="openLane === 'segments'">
+                  <div class="lane-group" :class="{ on: openLane === 'segments' }"
+                       :ref="(el) => (laneGroupEls.segments = el)">
+                    <div class="lane-group-h">分段 / 屏蔽</div>
                     <div class="row spread small mt-6">
                       <span class="muted">分段</span>
                       <span class="mono">{{ (cfg?.segments || []).length }} 段</span>
@@ -129,10 +137,12 @@
                       <span class="mono">{{ (cfg?.mute_ranges || []).length }} 段</span>
                     </div>
                     <div class="hint mt-4">自动去静音按字幕间隔算，入口在时间轴头部（那里还带「撤销」）</div>
-                  </template>
+                  </div>
 
                   <!-- ── 字幕 / 弹幕（文字层）：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
-                  <template v-else-if="openLane === 'subtitles'">
+                  <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
+                       :ref="(el) => (laneGroupEls.subtitles = el)">
+                    <div class="lane-group-h">字幕 / 弹幕</div>
                     <div class="small muted mt-6">字幕字体<span class="hint"> · 出片与预览</span></div>
                     <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
                       <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -186,10 +196,12 @@
                       </div>
                       <div class="hint mb-6">{{ regionHint }}</div>
                     </template>
-                  </template>
+                  </div>
 
                   <!-- ── 运镜：人物框（它同时喂后处理落点与运镜聚焦） ── -->
-                  <template v-else-if="openLane === 'camera'">
+                  <div class="lane-group" :class="{ on: openLane === 'camera' }"
+                       :ref="(el) => (laneGroupEls.camera = el)">
+                    <div class="lane-group-h">运镜</div>
                     <div class="small muted mt-6">人物区域<span class="hint"> · 在预览上框选</span></div>
                     <div class="row mb-6">
                       <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
@@ -210,10 +222,12 @@
                       <div class="hint mb-6">{{ regionHint }}</div>
                     </template>
                     <div class="hint mt-4" title="人物框同时喂后处理的两个 step：贴纸落点避让与运镜聚焦">改完选框要重跑一次「重新后处理」才落到事件上</div>
-                  </template>
+                  </div>
 
                   <!-- ── 贴纸：来源 + 落点 ── -->
-                  <template v-else-if="openLane === 'sticker'">
+                  <div class="lane-group" :class="{ on: openLane === 'sticker' }"
+                       :ref="(el) => (laneGroupEls.sticker = el)">
+                    <div class="lane-group-h">贴纸</div>
                     <div class="small muted mt-6">贴纸来源<span class="hint"> · LLM 可用</span></div>
                     <div class="ss-options">
                       <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
@@ -256,10 +270,12 @@
                       </div>
                       <div v-if="pointEdit" class="hint mb-6" title="点选的位置 = 贴纸盒中心；保存后才写 polish.toml">在预览上点选新落点，保存后生效。</div>
                     </template>
-                  </template>
+                  </div>
 
                   <!-- ── 视觉特效：整类开关 + 逐类型事件数（这一轨没有别的工程参数） ── -->
-                  <template v-else-if="openLane === 'fx'">
+                  <div class="lane-group" :class="{ on: openLane === 'fx' }"
+                       :ref="(el) => (laneGroupEls.fx = el)">
+                    <div class="lane-group-h">视觉特效</div>
                     <div class="small muted mt-6">特效事件<span class="hint"> · 按细分类型</span></div>
                     <div v-if="fxCounts.length" class="mt-4">
                       <div v-for="it in fxCounts" :key="it.type" class="row spread small">
@@ -268,10 +284,12 @@
                     </div>
                     <div v-else class="muted small mt-4">这条轨道上还没有特效事件</div>
                     <div class="hint mt-6" title="眼睛关掉 = 这一整类不渲染 / 不转译；事件仍留在时间轴上，点亮即恢复">开关只影响渲染，不改事件</div>
-                  </template>
+                  </div>
 
                   <!-- ── 音效：全局默认音量（事件级可覆盖） ── -->
-                  <template v-else-if="openLane === 'sfx'">
+                  <div class="lane-group" :class="{ on: openLane === 'sfx' }"
+                       :ref="(el) => (laneGroupEls.sfx = el)">
+                    <div class="lane-group-h">音效</div>
                     <div class="small muted mt-6">默认音量<span class="hint"> · 事件可覆盖</span></div>
                     <div class="row mb-6" style="gap:8px;align-items:center">
                       <input type="range" class="flex-1" min="0" max="1" step="0.05" :value="sfxCfg.volume ?? 0.1"
@@ -284,7 +302,7 @@
                       <span class="mono">{{ sfxEventCount }} 条</span>
                     </div>
                     <div class="hint mt-4" title="音效文件在程序目录的 sfx/ 下；事件面板里可以逐条换音效与音量">逐条在事件的属性面板里改</div>
-                  </template>
+                  </div>
                 </div>
                 <div id="tl-props-host"></div>
               </div>
@@ -465,7 +483,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '../stores/toast'
 import { confirmDialog } from '../stores/dialog'
@@ -1612,19 +1630,25 @@ function toggleLane(lane) {
   const cur = lanesOn.value[lane] === true
   patchStage({ lanes: { ...(stageCfg.value.lanes || {}), [lane]: !cur } })
 }
-/** 时间轴上点轨道名 ⇒ 打开这条轨道的设置（再点一次收起；与块的属性面板互斥）。 */
+/** 时间轴上点轨道名 ⇒ 打开「轨道设置」面板（**一个面板装全部轨道**），并滚到那一段。
+ *
+ * ⚠️ `openLane` 的语义是"**焦点**"（哪一段被高亮 + 往哪儿滚），不是"显示哪一段"：
+ * 面板里**六段全在**，点哪个轨道都看同一个面板（用户 2026-10-06 口径："点哪个轨道都是
+ * 同一个面板，这样好操作"）。再点同一条轨道 = 收起（回到块的属性面板）。 */
 const openLane = ref('')
-const LANE_TITLES = {
-  segments: '分段 / 屏蔽',
-  subtitles: '字幕 / 弹幕',
-  camera: '运镜',
-  sticker: '贴纸',
-  fx: '视觉特效',
-  sfx: '音效',
-}
-const lanePanelTitle = computed(() => (LANE_TITLES[openLane.value] || '轨道') + ' 设置')
+/** 每段 DOM（函数 ref）——滚到它用。普通对象即可（不参与渲染）。 */
+const laneGroupEls = {}
 function onLaneOpen(lane) {
-  openLane.value = lane && lane !== openLane.value ? lane : ''
+  if (!lane || lane === openLane.value) {
+    openLane.value = ''
+    return
+  }
+  openLane.value = lane
+  // 滚到那一段（`block:'nearest'` = 只在看不见时滚，不会把已经可见的那段顶走）
+  nextTick(() => {
+    const el = laneGroupEls[lane]
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
+  })
 }
 const FX_TYPE_IDS = EFFECT_SPEC.effects.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.id)
 const TYPE_LABELS = Object.fromEntries(EFFECT_SPEC.effects.map((e) => [e.id, e.label]))
@@ -1869,6 +1893,14 @@ onUnmounted(() => {
 .lane-panel .row { margin-top:4px; }
 .lane-panel input, .lane-panel select { font-size:12px; }
 .lane-panel .ck-row { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
+/* 一个面板装六段 ⇒ 会长；标题行**吸顶**（滚到下面时「关闭」仍够得着） */
+.lane-panel .lane-head { position:sticky; top:-10px; z-index:2; background:var(--card); padding:10px 0 6px; margin-top:-10px; }
+/* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
+.lane-group { margin-top:10px; padding-top:9px; border-top:1px solid var(--line-soft); }
+.lane-group:first-of-type { border-top:none; margin-top:2px; padding-top:0; }
+.lane-group-h { font-size:11.5px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; }
+.lane-group.on > .lane-group-h { color:var(--pink-text); }
+.lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
 .stage-col { flex:1; min-width:0; }
 /* 「区域与落点」的四颗取坐标按钮（人物 / 弹幕 / 固定 / 改落点）必须同一行：
    右栏是定宽 300px 的 grid 轨道，卡片 1px 边框 + 16px 内边距 → 行内容宽 266px；
