@@ -1718,4 +1718,312 @@ mod scatter_stage_diag {
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// **分散第二趟的"漏斗"诊断**：一次 LLM 调用，把"丢在哪一道门"逐层打出来。
+    ///
+    /// 回答的问题：*这条项目没有自动产出的复合片段，是阈值高了，还是第二趟根本没东西可加？*
+    ///
+    /// 做法（**只发一趟** LLM，之后全是纯函数重放 —— 换阈值不用再花钱，也不会被 LLM 抖动干扰）：
+    /// ① 真跑一遍第二趟，拿到**候选块**（还没过任何门）；
+    /// ② 逐块打印时长 / 字幕条数 / 弹幕峰值 —— 一眼看出它卡在哪条；
+    /// ③ 用**同一批候选块**重放 `merge_scattered`：默认配置 + 每道门单独放宽 + 全放宽，
+    ///    对拍 `ScatteredMergeStat`（哪道门吃掉了几条）；
+    /// ④ 拿项目**磁盘上的 `events.json`** 当真·主检测结果，跑 `absorb_scattered` ——
+    ///    看活下来的块里有多少被主事件"盖住/紧贴"丢掉（主检测覆盖越密，这道门吃得越多）。
+    ///
+    /// ```text
+    /// VT_PROJECT_DIR=<项目目录> [VT_SCATTER_FROM=0] [VT_SCATTER_MAX_SEGS=300] \
+    ///   cargo test -p yekitrim-core --lib diagnose_scattered_funnel -- --ignored --nocapture
+    /// ```
+    ///
+    /// ⚠️ 只写**临时目录**，绝不往用户项目里落文件；`events.json` 只读。
+    #[tokio::test]
+    #[ignore]
+    async fn diagnose_scattered_funnel() {
+        let Ok(project) = std::env::var("VT_PROJECT_DIR") else {
+            eprintln!("用法: VT_PROJECT_DIR=<项目目录> cargo test ... diagnose_scattered_funnel -- --ignored --nocapture");
+            return;
+        };
+        let dir = std::path::PathBuf::from(&project);
+        let raw = std::fs::read_to_string(dir.join("output").join("transcript.json"))
+            .expect("读 transcript.json");
+        let transcript: Transcript = serde_json::from_str(&raw).expect("解析 transcript.json");
+        let max_segs: usize = std::env::var("VT_SCATTER_MAX_SEGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let from: usize = std::env::var("VT_SCATTER_FROM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let segments: Vec<TranscriptSegment> = transcript
+            .segments
+            .iter()
+            .skip(from)
+            .take(max_segs)
+            .cloned()
+            .collect();
+        let win = (
+            segments.first().map(|s| s.start).unwrap_or(0.0),
+            segments.last().map(|s| s.end).unwrap_or(0.0),
+        );
+
+        // 主检测结果：磁盘上的 events.json（只读）—— 落在窗口内的事件才算数
+        let main_raw = std::fs::read_to_string(dir.join("output").join("events.json"))
+            .expect("读 events.json");
+        let store: EventStore = serde_json::from_str(&main_raw).expect("解析 events.json");
+        let mut main: Vec<Event> = store
+            .events
+            .into_iter()
+            .filter(|e| e.end.to_seconds() > win.0 && e.start.to_seconds() < win.1)
+            .collect();
+        main.sort_by(|a, b| {
+            a.start
+                .to_seconds()
+                .partial_cmp(&b.start.to_seconds())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let covered: f64 = main
+            .iter()
+            .map(|e| {
+                (e.end.to_seconds().min(win.1) - e.start.to_seconds().max(win.0)).max(0.0)
+            })
+            .sum();
+        println!(
+            "窗口 {:.1}-{:.1}（{:.0}s）：字幕 {} 段；主检测 {} 条、覆盖 {:.0}s（{:.1}%）",
+            win.0,
+            win.1,
+            win.1 - win.0,
+            segments.len(),
+            main.len(),
+            covered,
+            100.0 * covered / (win.1 - win.0).max(1e-6)
+        );
+
+        let llm = crate::config::load_llm_config();
+        if llm.api_key.is_empty() {
+            eprintln!("程序目录没有 LLM key，跳过");
+            return;
+        }
+        let mut detect = crate::config::DetectionConfig::default();
+        detect.scattered.enabled = true;
+
+        // ① 真跑一趟第二趟，拿**候选块**（process_scattered_with_llm 里那三步：预合并 → LLM → 吸附）
+        let tmp = std::env::temp_dir().join(format!("vt-scatter-funnel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let out = tmp.join("output");
+        std::fs::create_dir_all(&out).expect("建临时工程");
+        let merged_segs = merge_segments_for_detection(&segments);
+        let checkpoint = out.join("events.scattered.checkpoint.json");
+        let started = std::time::Instant::now();
+        let pieces = llm::call_with_progress(
+            &merged_segs,
+            &llm,
+            &detect,
+            &[],
+            Some(tmp.as_path()),
+            Some(&checkpoint),
+            None,
+            None,
+            llm::DetectPass::Scattered,
+        )
+        .await
+        .expect("第二趟跑通");
+        let pieces = snap_to_segments(
+            pieces
+                .into_iter()
+                .filter(|e| e.end.to_seconds() > e.start.to_seconds())
+                .collect(),
+            &segments,
+        );
+        println!(
+            "① 第二趟用了 {:.1}s，吐回**候选块 {} 个**（还没过任何门）",
+            started.elapsed().as_secs_f64(),
+            pieces.len()
+        );
+
+        // ② 逐块打印：它卡在哪条门上（时长 / 字幕 / 弹幕）
+        let base_ctx = ScatteredCtx::new(&detect.scattered, &segments);
+        for e in &pieces {
+            let (s, en) = (e.start.to_seconds(), e.end.to_seconds());
+            let subs = segments
+                .iter()
+                .filter(|seg| seg.start < en && seg.end > s)
+                .count();
+            let dur = en - s;
+            println!(
+                "    {:>7.1}-{:<7.1} 时长{:>6.1}s 字幕{:>3}条 topic={:<12} {}{}",
+                s,
+                en,
+                dur,
+                subs,
+                e.topic.as_deref().unwrap_or("∅"),
+                if dur + 1e-6 < detect.scattered.min_secs {
+                    "[时长不够]"
+                } else {
+                    ""
+                },
+                if subs < detect.scattered.min_subs { "[字幕不够]" } else { "" }
+            );
+        }
+        let _ = &base_ctx;
+
+        // ③ 同一批候选块重放 `merge_scattered`：每道门单独放宽 + 全放宽
+        let base = detect.scattered.clone();
+        let cases: Vec<(&str, crate::config::ScatteredConfig)> = vec![
+            ("默认", base.clone()),
+            ("单块下限 8→3s", crate::config::ScatteredConfig {
+                min_secs: 3.0, ..base.clone()
+            }),
+            ("字幕门 2→0", crate::config::ScatteredConfig {
+                min_subs: 0, ..base.clone()
+            }),
+            ("弹幕门关掉", crate::config::ScatteredConfig {
+                dm_floor: 0.0, ..base.clone()
+            }),
+            ("归组不认 topic", crate::config::ScatteredConfig {
+                topic_key: false, ..base.clone()
+            }),
+            ("合并后门槛 20s/3条→8s/0条", crate::config::ScatteredConfig {
+                merge_min_secs: 8.0, merge_min_subs: 0, ..base.clone()
+            }),
+            ("全放宽", crate::config::ScatteredConfig {
+                min_secs: 3.0,
+                min_subs: 0,
+                dm_floor: 0.0,
+                topic_key: false,
+                merge_min_secs: 8.0,
+                merge_min_subs: 0,
+                ..base.clone()
+            }),
+            ("全放宽 + 归组窗口 45→240s", crate::config::ScatteredConfig {
+                min_secs: 3.0,
+                min_subs: 0,
+                dm_floor: 0.0,
+                topic_key: false,
+                merge_min_secs: 8.0,
+                merge_min_subs: 0,
+                merge_gap_secs: 240.0,
+                max_merge_secs: 600.0,
+                ..base.clone()
+            }),
+        ];
+        println!("③ 同一批候选块换阈值重放（input/dropped_short/groups/kept/多块合并/多段/丢内容短/丢字幕少/被主盖掉）");
+        for (tag, cfg) in cases {
+            let ctx = ScatteredCtx::new(&cfg, &segments);
+            let (kept, stat) = merge_scattered(pieces.clone(), &ctx);
+            let mut m = main.clone();
+            let mut stat2 = stat.clone();
+            absorb_scattered(&mut m, kept.clone(), &mut stat2);
+            println!(
+                "   {:<28} {}/{}/{}/{}/{}/{}/{}/{}/{}   → 并回主列表后**新增 {} 条**",
+                tag,
+                stat.input,
+                stat.dropped_too_short,
+                stat.groups,
+                stat.kept,
+                stat.merged_from_pieces,
+                stat.multi_range,
+                stat.dropped_content_short,
+                stat.dropped_few_subs,
+                stat2.absorbed_by_main,
+                m.len() as i64 - main.len() as i64
+            );
+            for e in &kept {
+                if stat.multi_range > 0 && e.cut_ranges().len() > 1 {
+                    let rs: Vec<String> = e
+                        .cut_ranges()
+                        .iter()
+                        .map(|r| format!("{:.0}-{:.0}", r.start, r.end))
+                        .collect();
+                    println!(
+                        "        [多段] {:.0}-{:.0} 内容{:.0}s topic={:?} {} | {}",
+                        e.start.to_seconds(),
+                        e.end.to_seconds(),
+                        e.content_secs(),
+                        e.topic,
+                        e.label,
+                        rs.join(" + ")
+                    );
+                }
+            }
+        }
+
+        // ④ 主检测的空隙：第二趟**理论上**能加的只有这些地方
+        let mut gaps: Vec<(f64, f64)> = Vec::new();
+        let mut cursor = win.0;
+        for m in &main {
+            let (ms, me) = (m.start.to_seconds(), m.end.to_seconds());
+            if ms > cursor + 1.0 {
+                gaps.push((cursor, ms));
+            }
+            cursor = cursor.max(me);
+        }
+        if cursor < win.1 - 1.0 {
+            gaps.push((cursor, win.1));
+        }
+        println!(
+            "④ 主检测留出的空隙 {} 段、合计 {:.0}s（占窗口 {:.1}%）：",
+            gaps.len(),
+            gaps.iter().map(|(a, b)| b - a).sum::<f64>(),
+            100.0 * gaps.iter().map(|(a, b)| b - a).sum::<f64>() / (win.1 - win.0).max(1e-6)
+        );
+        for (a, b) in gaps.iter().take(12) {
+            let subs = segments
+                .iter()
+                .filter(|seg| seg.start < *b && seg.end > *a)
+                .count();
+            println!("    {:>8.1}-{:<8.1} {:<6.1}s 字幕{:>3}条", a, b, b - a, subs);
+        }
+
+        // ⑤ 默认配置下活下来的那些块，**到底为什么没进主列表**（被盖住？还是只紧贴？）
+        //    —— 这条决定了"该不该动阈值"：被盖住是覆盖问题，紧贴是切点问题。
+        let ctx = ScatteredCtx::new(&base, &segments);
+        let (kept, _) = merge_scattered(pieces.clone(), &ctx);
+        println!("⑤ 默认阈值下留下 {} 条，逐条看它离主事件有多远：", kept.len());
+        for e in &kept {
+            let (s, en) = (e.start.to_seconds(), e.end.to_seconds());
+            let dur = (en - s).max(1e-6);
+            let mut best_overlap = 0.0_f64;
+            let mut best_gap = f64::MAX;
+            let mut who = String::new();
+            for m in &main {
+                let (ms, me) = (m.start.to_seconds(), m.end.to_seconds());
+                let ov = (me.min(en) - ms.max(s)).max(0.0) / dur;
+                let gap = if s > me {
+                    s - me
+                } else if ms > en {
+                    ms - en
+                } else {
+                    0.0
+                };
+                if ov > best_overlap || gap < best_gap {
+                    if ov > best_overlap {
+                        best_overlap = ov;
+                        who = m.label.clone();
+                    }
+                    best_gap = best_gap.min(gap);
+                }
+            }
+            println!(
+                "    {:>8.1}-{:<8.1} 内容{:>5.1}s {}段 覆盖{:>5.1}% 最近间隔{:>6.1}s → {} {}",
+                s,
+                en,
+                e.content_secs(),
+                e.cut_ranges().len(),
+                100.0 * best_overlap,
+                best_gap,
+                if best_overlap >= 0.5 {
+                    "被盖住丢掉"
+                } else if best_gap <= 1.0 {
+                    "紧贴丢掉"
+                } else {
+                    "★留下"
+                },
+                who.chars().take(24).collect::<String>()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
+
