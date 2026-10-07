@@ -355,33 +355,60 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
 {
   const nameOpens = (s) => /@click\.stop="emit\('lane-open', lane\.type\)"/.test(s)
   const itemYields = (s) => s.includes('<div v-if="!laneOpen" class="props-panel card"')
-  const lanePanel = (s) => s.includes('<div v-if="openLane" class="props-panel card lane-panel"')
+  const lanePanel = (s) => /<div class="lane-panel" :ref=/.test(s)
   const hostEmpty = (s) => s.includes('<div id="tl-props-host"></div>')
-  const panelBeforeHost = (s) => {
-    const a = s.indexOf('class="props-panel card lane-panel"')
-    const b = s.indexOf('<div id="tl-props-host"></div>')
-    return a >= 0 && b >= 0 && a < b
-  }
-  const panelOk = (s) => lanePanel(s) && panelBeforeHost(s) && hostEmpty(s)
+  // ⚠️ 2026-10-06 第四轮：轨道设置搬到右栏常驻后，**面板不再排在 Teleport 目标之前**（反了）。
+  //    这里改成钉正确的两件事：左栏那个挂载点**是空容器**、且**只有一个**（Teleport 目标唯一）。
+  const hostCount = (s) => (s.match(/<div id="tl-props-host"><\/div>/g) || []).length
+  const panelOk = (s) => lanePanel(s) && hostEmpty(s) && hostCount(s) === 1
   const blockSelectClosesLane = (s) =>
     /function selectBlock\(lane, block\) \{[\s\S]{0,300}?emit\('lane-open', ''\)/.test(s)
-  // ⚠️ 右栏**两块常驻卡片**（2026-10-06 第二轮用户口径：「把轨道设置放在右侧常驻，改为
-  //    项目设置和 llm 剪辑导出之类的合并，画面尺寸退回原来的那个页面」）：
-  //    ①「画面尺寸」自己一块（它从合并块里独立出来了）②「项目设置 / 输出」。
-  //    **两块都在**、**没有页签**（页签那套 2026-10-06 第一轮就删了，别捡回来）。
-  const rightCol = (s) => {
-    const heads = [...s.matchAll(/<h2 class="m-0 card-h2"><Icon name="\w+" :size="15" \/> ([^<]+)<\/h2>/g)].map((m) => m[1])
-    return { heads, hasCanvas: heads.includes('画面尺寸'), hasProj: heads.includes('项目设置 / 输出') }
-  }
-  const noTabs = (s) => !s.includes('genTab') && rightCol(s).hasCanvas && rightCol(s).hasProj
-  // ⚠️ **两块卡片必须包在同一个 grid 子节点里**：`.edit-grid` 是两列 grid（`cols-main` = `1fr 300px`），
-  //    子节点 1 = 预览卡、子节点 2 = 右栏。两块直接摊开当两个子节点的话，第二块充当"第三列"
-  //    **掉到下一行占满整宽**（实测 1045px，跑到预览下面去了 —— 本轮真踩到）。
-  //    判据 = 两块卡在同一个 `.right-col` 包装里，且该包装有 flex 纵向布局。
+  // ⚠️ 右栏结构（2026-10-06 第四轮用户口径，**改过两轮才对齐**）：
+  //   ①「轨道设置」面板**整块搬到右栏常驻**（以前住在左侧 `props-host`、点轨道名才出现）；
+  //   ② 一块带页签的卡片：「项目设置」/「画面尺寸」**同一位置**切换（= 用户说的
+  //      "画面尺寸退回原来的那个页面"）—— 页签另一半装着画面尺寸/缩放/主画面位置/背景；
+  //   ③ 输出（LLM 剪辑 / 渲染导出 / 任务栏）在「项目设置」页签里，**不许删**
+  //      （用户原话：「你把项目设置全删了我是没想到的」）。
+  //   ⚠️ 全在**同一个 grid 子节点** `.right-col` 里 —— `.edit-grid` 是两列（`1fr 300px`），
+  //   摊成多个子节点时后面的会充当"第三列"**掉到下一行占满整宽**（本轮真踩到，实测 1045px）。
   const rightColWrapped = (s) =>
     /<div class="right-col">/.test(s)
     && /\.right-col\s*\{[^}]*display:\s*flex/.test(s)
     && /\.right-col\s*\{[^}]*flex-direction:\s*column/.test(s)
+  /** 页签那一对按钮（`sideTab`）—— 两个都在，且 `sideTab` 有 ref。 */
+  const hasSideTabs = (s) =>
+    s.includes("sideTab === 'project'") && s.includes("sideTab === 'canvas'")
+    && /const sideTab = ref\(/.test(s)
+  /** 画面尺寸得**住在页签的另一半**里（不是自己独立一块卡片）。 */
+  const canvasInsideTab = (s) => {
+    // 锚在**页签那个** v-if 之后的 v-else（文件里别处也有 `<template v-else>`）
+    const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
+    if (i < 0) return false
+    const j = s.indexOf('<template v-else>', i)
+    if (j < 0) return false
+    const k = s.indexOf('</template>', j)
+    const body = s.slice(j, k)
+    return body.includes('orientationOptions') && body.includes('stageScaleNum') && body.includes('positionAxes')
+  }
+  /** 项目设置那一半必须还在（LLM 剪辑 + 渲染导出 + 任务栏都在里面）。 */
+  const projectInsideTab = (s) => {
+    const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
+    if (i < 0) return false
+    // 取到页签的 v-else 为止（不是第一个 </template>：项目那半里还有内层 template）
+    const j = s.indexOf('<template v-else>', i)
+    const body = j < 0 ? s.slice(i) : s.slice(i, j)
+    return body.includes('runLlmJob') && body.includes('openRenderModal') && body.includes('job-box')
+  }
+  /** 轨道设置面板搬到右栏常驻：在 `.right-col` 里、且不再按 `openLane` 条件渲染。 */
+  const lanePanelResident = (s) => {
+    const rc = s.indexOf('<div class="right-col">')
+    const lc = s.indexOf('lane-group-h', rc)
+    const hp = s.indexOf('<div id="tl-props-host">')
+    if (!(rc >= 0 && lc > rc && hp >= 0 && hp < rc)) return false
+    // 面板必须是**常驻**的：那段 `lane-panel` 的 div 不许带 v-if
+    const seg = s.slice(s.indexOf('class="lane-panel"') - 120, s.indexOf('class="lane-panel"'))
+    return !/v-if/.test(seg)
+  }
   // ⚠️ **一个面板装全部轨道**（用户 2026-10-06 口径："点哪个轨道都是同一个面板，这样好操作"）：
   // 各段必须**同时**在面板里，`openLane` 只是"焦点"（高亮哪一段 + 往哪儿滚）。
   // 判据钉三件事：① 没有 `v-if/v-else-if="openLane === '…'"` 的链（那就是"一轨一屏"回来了）；
@@ -396,8 +423,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    但点时间轴「运镜」轨道名仍要能滚到那块（ref 同时挂 camera 与 danmaku_area 两个键）。
   const LANE_GROUPS = ['字幕 / 弹幕', '框选区域', '贴纸']
   const panelBody = (s) => {
-    const i = s.indexOf('props-panel card lane-panel')
-    const j = s.indexOf('<div id="tl-props-host"', i)
+    // 面板正文 = `.lane-panel` 到右栏第二张卡片（`项目设置 / 画面`）之间
+    const i = s.indexOf('class="lane-panel"')
+    const j = s.indexOf('项目设置 / 画面', i)
     return i < 0 || j < 0 ? '' : s.slice(i, j)
   }
   // ⚠️ 判据要**恰好相等**（顺序也钉住）：只要求"这几段都在"的话，"把删掉的那段装回来"这条
@@ -429,10 +457,13 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
       && /:class="\{ on: openLane === 'camera' \|\| openLane === 'danmaku' \}"/.test(s)
   check('⑰ 轨道名可点开设置', nameOpens(timelineEditor), true)
   check('⑰ 块的属性面板在轨道设置打开时让位', itemYields(timelineEditor), true)
-  check('⑰ 页面渲染轨道设置面板，且排在 Teleport 目标之前', panelOk(polishView), true)
+  check('⑰ 页面渲染轨道设置面板，且 Teleport 目标唯一且是空容器', panelOk(polishView), true)
   check('⑰ 选中时间轴上的块 ⇒ 收起轨道设置（两块面板不并存）', blockSelectClosesLane(timelineEditor), true)
-  check('⑰ 右栏两块常驻（画面尺寸 + 项目设置/输出）、没有页签', noTabs(polishView), true)
-  check('⑰ 右栏两块包在同一个 grid 子节点里（否则第二块掉到下一行占满整宽）', rightColWrapped(polishView), true)
+  check('⑰ 右栏包在同一个 grid 子节点里（否则后面的会掉到下一行占满整宽）', rightColWrapped(polishView), true)
+  check('⑰ 右栏有「项目设置 / 画面尺寸」两个页签', hasSideTabs(polishView), true)
+  check('⑰ 画面尺寸住在页签的另一半里（同一位置切换）', canvasInsideTab(polishView), true)
+  check('⑰ 项目设置那一半还在（LLM 剪辑 / 渲染导出 / 任务栏）', projectInsideTab(polishView), true)
+  check('⑰ 轨道设置面板搬到右栏常驻', lanePanelResident(polishView), true)
   check('⑰ 三段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
   check('⑰ 面板里**只留控件**（没有 hint 行 / 计数标题）', onlyControls(polishView), true)
   check('⑰ 面板里没有纯信息组（分段/屏蔽、音效都已删）', noInfoOnly(polishView), true)
@@ -442,8 +473,20 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
     ['轨道名不可点（没有入口）', timelineEditor, (s) => s.replace("@click.stop=\"emit('lane-open', lane.type)\"", ''), (m) => nameOpens(m)],
     ['往 Teleport 目标里塞子节点', polishView, (s) => s.replace('<div id="tl-props-host"></div>', '<div id="tl-props-host"><span></span></div>'), (m) => panelOk(m)],
-    ['页签捡回来（右栏又分家）', polishView, (s) => s.replace("const openLane = ref('')", `const openLane = ref('')\\nconst genTab = ref('export')`), (m) => noTabs(m)],
-    ['「画面尺寸」那块又并回项目设置（退回合并成一块）', polishView, (s) => s.replace('<h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面尺寸</h2>', '<h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面构成 / 输出</h2>'), (m) => noTabs(m)],
+    ['把「画面尺寸」页签删掉（回不去调画布）', polishView, (s) => s.replace("sideTab === 'canvas'", "sideTab === 'canvasX'"), (m) => hasSideTabs(m)],
+    ['画面尺寸那块搬出页签（不再同一位置切换）', polishView, (s) => {
+      // ⚠️ 锚在项目页签**之后**的那个 v-else（文件里 1000 行附近还有别的 v-else）
+      const p = s.indexOf("sideTab === 'project'")
+      const i = s.indexOf('<template v-else>', p)
+      const j = s.indexOf('</template>', i)
+      return s.slice(0, i) + s.slice(i, j).replace('orientationOptions', 'canvasOptsX') + s.slice(j)
+    }, (m) => canvasInsideTab(m)],
+    ['把项目设置那一半删掉（用户说"没想到"的那件事）', polishView, (s) => {
+      const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
+      const j = s.indexOf('<template v-else>', i)
+      return s.slice(0, i) + s.slice(i, j).replace('runLlmJob', 'llmJobX') + s.slice(j)
+    }, (m) => projectInsideTab(m)],
+    ['轨道设置又按 openLane 条件渲染（不常驻）', polishView, (s) => s.replace('<div class="lane-panel" :ref=', '<div v-if="openLane" class="lane-panel" :ref='), (m) => lanePanelResident(m)],
     ['右栏两块不包包装（第二块会掉到下一行占满整宽）', polishView, (s) => s.replace('class="right-col"', 'class="right-col-x"'), (m) => rightColWrapped(m)],
     ['选中块不收起轨道设置', timelineEditor, (s) => s.replace("if (props.laneOpen) emit('lane-open', '')", ''), (m) => blockSelectClosesLane(m)],
     ['退回"一轨一屏"（点谁换谁）', polishView, (s) => s.replace(`<div class="lane-group" :class="{ on: openLane === 'subtitles' }"`, `<div v-if="openLane === 'subtitles'" class="lane-group"`), (m) => allGroupsAtOnce(m)],
@@ -1223,14 +1266,14 @@ console.log('\n㉗ LLM 剪辑在右栏「画面构成 / 输出」面板')
 {
   const polishView = await read('webui/src/views/PolishView.vue')
   const lanePanel = (s) => {
-    const i = s.indexOf('props-panel card lane-panel')
-    const j = s.indexOf('<div id="tl-props-host"', i)
+    const i = s.indexOf('class="lane-panel"')
+    const j = s.indexOf('项目设置 / 画面', i)
     return i < 0 || j < 0 ? '' : s.slice(i, j)
   }
-  // ⚠️ 右栏拆成两块后锚点是「项目设置 / 输出」那块（画面尺寸那块里没有 LLM）。
+  // ⚠️ 锚点 = 「项目设置」页签那一半（画面尺寸那半里没有 LLM）。
   const rightPanel = (s) => {
-    const i = s.indexOf('项目设置 / 输出')
-    const j = s.indexOf('<!-- 渲染导出弹窗', i)
+    const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
+    const j = s.indexOf('<template v-else>', i)
     return i < 0 || j < 0 ? '' : s.slice(i, j)
   }
   const inRight = (s) => /@click="runLlmJob"/.test(rightPanel(s))
@@ -1242,7 +1285,7 @@ console.log('\n㉗ LLM 剪辑在右栏「画面构成 / 输出」面板')
     return a >= 0 && b > a
   }
   check('㉗ 轨道设置面板里没有 LLM 剪辑', notInLane(polishView), true)
-  check('㉗ 右栏「项目设置 / 输出」面板里有它（接 `runLlmJob`）', inRight(polishView), true)
+  check('㉗ 右栏「项目设置」页签里有它（接 `runLlmJob`）', inRight(polishView), true)
   check('㉗ 且排在「渲染导出」上面（先重剪、再出片）', beforeRender(polishView), true)
 
   const MUT27 = [
@@ -1251,25 +1294,25 @@ console.log('\n㉗ LLM 剪辑在右栏「画面构成 / 输出」面板')
     // 变异：把那个按钮塞进轨道设置面板正文（面板区间 = lane-panel 到 Teleport 目标之间）
     ['把它挪回轨道设置面板里', polishView,
       (s) => {
-        const host = s.indexOf('<div id="tl-props-host"')
-        if (host < 0) return s
-        return s.slice(0, host) + '<button @click="runLlmJob">LLM 剪辑</button>' + String.fromCharCode(10) + s.slice(host)
+        const at = s.indexOf('项目设置 / 画面')
+        if (at < 0) return s
+        return s.slice(0, at) + '<button @click="runLlmJob">LLM 剪辑</button>' + String.fromCharCode(10) + s.slice(at)
       }, notInLane],
     // 变异：把 LLM 那颗按钮从右栏那块里删掉、只留在别处（右栏就找不到了）
     ['右栏那块里没有它了（挪走）', polishView,
       (s) => {
-        const i = s.indexOf('项目设置 / 输出')
+        const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
         if (i < 0) return s
-        const j = s.indexOf('openRenderModal', i)
+        const j = s.indexOf('<template v-else>', i)
         if (j < 0) return s
         // 把右栏那块里的 runLlmJob 改名（等价于"按钮不在了"）
-        const seg = s.slice(i, j).replace('runLlmJob', 'runLlmJobElsewhere')
+        const seg = s.slice(i, j).replace('runLlmJob', 'llmBtnX')
         return s.slice(0, i) + seg + s.slice(j)
       }, inRight],
     // 变异：把「渲染导出」那颗按钮提到 LLM 剪辑**上面**（工序顺序反了）
     ['把它排到「渲染导出」下面（工序顺序反了）', polishView,
       (s) => {
-        const i = s.indexOf('项目设置 / 输出')
+        const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
         if (i < 0) return s
         const a = s.indexOf('runLlmJob', i)
         const b = s.indexOf('openRenderModal', i)
