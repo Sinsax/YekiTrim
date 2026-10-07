@@ -191,6 +191,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/project-data/events/:rank/cut", post(project_data_event_cut))
         .route("/project-data/clips/:rank/silence", post(project_data_clip_silence))
         .route("/project-data/transcript", get(project_data_transcript).put(project_data_transcript_put))
+        // 弹幕**正文**（首页切片总览「搜弹幕」按需拉）：只读，不回时间
+        .route("/project-data/danmaku-text", get(project_data_danmaku))
+        // 搜索用文本（字幕含 LLM 订正稿 + 弹幕，一次两桶）：只读，不回时间
+        .route("/project-data/search-text", get(project_data_search_text))
         .route("/project-data/correct", post(project_data_correct))
         .route("/project-data/pipeline", post(project_data_pipeline))
         .route("/project-data/config", get(project_data_config).put(project_data_config_put))

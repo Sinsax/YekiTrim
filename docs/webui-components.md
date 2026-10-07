@@ -1096,6 +1096,62 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
 - 判据：静态 `webui/scripts/check-layout-invariants.mjs` **㉘**（5 项 + 6 条变异自证）；
   真页面 `node .workbuddy/probe-range-badge.mjs`（`VT_PID=<有复合片段的项目>`）——
   与接口的 `ranges` 逐段对拍 + 几何断言 + 截图。
+
+### ⑥b 首页切片总览：一面墙 + 筛选 tag + 搜索（标题 / 字幕 / 弹幕）
+
+用户口径（2026-10-06）：①「未导出和已导出改成类似切片的那种筛选 tag，**所有切片都显示在一个区域内**」；
+②「在切片总览上显示搜索框，可以关键词查找，关键词可以锁到标题，字幕，弹幕」。
+
+**① 从两栏改成一面墙**（`.ov-cols` / `.ov-sec-done` 的竖虚线 / 只看一边那套**已删**）：
+
+- 筛选 tag = 切片页那套（`mini-btn` + `.selected`）：`全部 / 未导出 / 已导出`，选中态进
+  `localStorage['yekitrim.overview.filter']`。
+  ⚠️「已导出」判据 = `rendered || cover`，与切片页二级、卡片 chip **同一套**；**别用 `polish_ready`**
+  （剪切收尾就会 `polish init`，对已剪片段恒为真 ⇒ 筛不出东西）。
+- 排序 tag 顺手也放这一行：`最近改动`（`clips[].mtime`，默认）/ `热度名次`（`rank` 小在前）。
+- ⚠️ 现在所有卡片在同一面墙上，**「已导出」必须靠卡片左上角那枚 `.ov-fin` 标记**表达 ——
+  以前是靠"在哪一栏"，别把标记删了。
+- 判据钉的是**相反**的事（原来那条测"两栏有单栏态"，已作废）：
+  `class="ov-wall"` 只能出现 **1** 次、不许有 `ov-cols`。
+
+**② 搜索：按需拉取是这条的命门**
+
+| 落点 | 数据在哪 | 代价（实测） |
+|---|---|---|
+| 标题 | 已在缓存（`clips[].meta.title`） | **零请求**，常驻且不可取消 |
+| 字幕 | `/api/project-data/search-text` 的 `subs` | 每项目 **170~226 KB** |
+| 弹幕 | 同一个接口的 `dm` | 每项目 **4~72 KB** |
+
+- **默认只搜标题**；勾上「字幕」/「弹幕」**才**拉，拉过就缓存（`textCache`），
+  项目任务结束时**只失效那一个项目的两桶**。
+- ⚠️ **两桶一个接口**（`searchText`）：分开就是每项目两发 = 24 个请求，而两边失效时机完全一样。
+- ⚠️ **单飞**：`fetching[pid]` 一支；并带 `wantSub`/`wantDm` 门 —— 勾一个不许把另一桶也拉了。
+- 关键词空格分词、**几个词都命中**才算；命中词用 `<mark>` 点亮（`hl()` 先 HTML 转义再拼标签）。
+
+**⚠️ 弹幕正文必须摘 ASS 覆写标签**（`utils.js::dmPlain`，**只此一份**）：
+弹幕文件（尤其那份从录播姬 XML 转出来的 `.ass`）**每一条**都带
+`{\move(1970,0,-50,0)}` / `{\pos(960,1040)}{\c&H4FEDFF}` —— 解析层（`danmaku::parse_ass`）
+**有意原样保留**（渲染要按标签摆位）。不摘的话两头都坏：卡片上显示标签串；
+**搜 `move`/`pos` 会命中每一条弹幕**（那是标签不是内容）。
+
+**⚠️ 字幕桶要比"读 transcript.json"更宽**（本轮真 bug）：`transcript_file` 实测有三种取值 ——
+`output/transcript.json`、`output/video.srt`、`output/video_llm.srt`（**订正稿直接被登记成生效稿**）。
+按 JSON 硬解会把"生效稿是 SRT"的项目整份判成没有字幕：**项目 2（1018 段）与项目 3（2002 段）
+就这么静默丢了**（比"搜不到"更糟）。现在按**扩展名**分派解析，并且
+**订正稿与生效稿是同一个文件时不重复收**（否则"命中 N 条"翻倍）。
+另：SRT 开头是 **BOM + `1`**，不剥 BOM 那个序号会被当正文塞进搜索池。
+
+**⚠️ 命中行进不了流式布局**：卡片是定高 flex 列（媒体 78 + 标题 + 项目名 = **123px**），
+命中行塞进流里会**把标题挤到裁切**（实测 `titleClipped: true`）—— 它是**叠在缩略图下缘**的
+（`.ov-hit`，深色底 + 浅字，`mark` 另给一套配色）。
+搜索时**按命中条数降序**（同一句弹幕被刷屏 vs 只提一次，含义完全不同）。
+
+- 判据：静态 **㉚**（4 项 + 4 条变异：不摘标签 / `dmPlain` 只处理 `\N` / 按需门退化 / 退回两个接口）；
+  服务端 `cargo test -p yekitrim-server -- srt_body subtitle danmaku_texts`（5 条：BOM、序号行、
+  SRT 当生效稿、订正稿不重复收、ASS 标签原样保留）；
+  真页面 `node .workbuddy/probe-overview-search.mjs`（17 项：筛选 tag 换内容、勾选前后请求数、
+  命中高亮、命中行无标签、几何）。
+
 - `SubtitlePanel` / `SubtitleEditor`：字幕列表（props `segments`/`height`/`showEnd`/`editableTime`，emit `play`；
   点击时间可改 `start`/`end`）；`SubtitleEditor` 是「添加字幕 + 保存字幕」外壳，`addSub()` 后按 `start` 排序。
 - `prepare/SubtitleTrack`：预处理页字幕轨 + **常驻横排**「字幕属性」条（内容 / 起止秒 / 当前设为入点·出点 /

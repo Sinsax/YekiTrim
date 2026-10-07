@@ -34,6 +34,17 @@ export const projectData = {
   polishMap: (pid, label) => api(paths.polishMap(pid), { label }),
   config: (pid, label) => api(paths.config(pid), { label }),
   transcript: (pid, label) => api(`/api/project-data/transcript?${scopeQ(pid)}`, { label }),
+  /**
+   * 搜索用文本：**一次回两桶** `{subs: [...], dm: [...]}`（升序、不含时间）。
+   *
+   * - `subs` = 转写稿 + **LLM 订正稿**（`video_llm.srt`，存在才读）—— 订正稿能救回原稿听错的词。
+   * - `dm` = 弹幕正文（ASS / 录播姬 XML / SRT 三种，服务端走同一条解析路径）。
+   *
+   * 为什么两桶一个接口：勾上「字幕+弹幕」按项目各一发就是 24 个请求，合并后 12 个，
+   * 而且两边的失效时机完全一样（同一个任务结束刷新）。服务端只回正文不回时间
+   * （单项目弹幕 4~72 KB、转写 170~226 KB，带上时间轴只会凭空白涨）。
+   */
+  searchText: (pid, label) => api(`/api/project-data/search-text?${scopeQ(pid)}`, { label }),
 
   /**
    * 输入素材（弹幕 / 字幕）的**清单**：每类的生效值 + 状态 + 项目内候选 + ASR 槽位。
