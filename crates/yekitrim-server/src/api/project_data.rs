@@ -658,6 +658,12 @@ pub(super) fn data_events_create_impl(ws: &Workspace, body: &serde_json::Value) 
             }
         }
         ranges.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        // ⚠️ **重叠/相接的段必须并掉**再落盘：手工标段时两行可以互相压住（项目 12 那条 4 段片段
+        // 就是 `1625.7–1653.8` 里套着 `1632.0–1643.0`）—— 不去重 Cutter 会把同一段**剪两遍**
+        // （`clip.mp4` 158.3s = 四段之和，其中 11s 重复），而 `duration` 也按"各段之和"多报一遍，
+        // 界面上完全看不出来。与 `Event::normalize_ranges` 走**同一个函数**：只并
+        // `next.start <= last.end`，**有内容的空隙照旧留着**（那是"分段剪、中间别的话题丢掉"的表达）。
+        yekitrim_core::types::merge_overlapping_ranges(&mut ranges);
     }
     let (start_sec, end_sec) = if ranges.is_empty() {
         let start = body.get("start_sec").and_then(|v| v.as_f64())
@@ -2276,6 +2282,95 @@ async fn project_scoped_config_still_returns_the_project() {
     for kept in ["config_file", "root_dir", "yekitrim_raw", "config"] {
         assert!(v.get(kept).is_some(), "项目配置少了 {kept}: {v}");
     }
+}
+
+/// **手工标的多段切片：重叠的段落盘时必须并成一段**（否则同一段内容会被剪两遍）。
+///
+/// 现场：项目 12 那条手工 4 段片段 `1625.7–1653.8` 里套着 `1632.0–1643.0` —— `clip.mp4`
+/// 158.3s = 四段之和，其中 11s 是重复的，而 `duration` 也按各段之和多报一遍。
+/// 判据走**真接口**（`POST /project-data/events`），不直接调 `merge_overlapping_ranges`：
+/// 要钉住的正是"这条路真的会调它"。
+#[tokio::test]
+async fn create_event_merges_overlapping_ranges() {
+    let t = test_app().await;
+    let pid = project_ids(&t).await[0];
+    let body = serde_json::json!({
+        "label": "重叠段用例",
+        "ranges": [
+            {"start_sec": 441.4, "end_sec": 486.5},
+            {"start_sec": 929.0, "end_sec": 1003.0},
+            {"start_sec": 1625.7, "end_sec": 1653.8},
+            // ⚠️ 完全落在上一段里面：不许原样落盘
+            {"start_sec": 1632.0, "end_sec": 1643.0}
+        ]
+    });
+    let res = t
+        .call(
+            t.req("POST", &format!("/project-data/events?project={pid}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK, "建事件应当成功");
+
+    let raw = std::fs::read_to_string(t.root.join("output/events.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let ev = v["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["label"] == "重叠段用例")
+        .expect("新事件必须落盘");
+    let rs = ev["ranges"].as_array().expect("多段事件必须带 ranges");
+    assert_eq!(rs.len(), 3, "重叠的那段要被并掉：{rs:?}");
+    assert_eq!(
+        (
+            rs[2]["start"].as_f64().unwrap(),
+            rs[2]["end"].as_f64().unwrap()
+        ),
+        (1625.7, 1653.8),
+        "并出来的应当是外层那段（内含段不许把外层截短）"
+    );
+    // 外沿不变；也就是说"跨度"这条口径没被并段改掉
+    assert_eq!(ev["start"]["m"].as_u64().unwrap(), 7);
+    assert_eq!(ev["end"]["m"].as_u64().unwrap(), 27);
+}
+
+/// 反例：**中间隔了内容的两段不许并**（那是"分段剪、把中间别的话题丢掉"的表达）。
+#[tokio::test]
+async fn create_event_keeps_ranges_with_content_gap() {
+    let t = test_app().await;
+    let pid = project_ids(&t).await[0];
+    let body = serde_json::json!({
+        "label": "分段用例",
+        "ranges": [
+            {"start_sec": 100.0, "end_sec": 120.0},
+            {"start_sec": 140.0, "end_sec": 160.0}
+        ]
+    });
+    let res = t
+        .call(
+            t.req("POST", &format!("/project-data/events?project={pid}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let raw = std::fs::read_to_string(t.root.join("output/events.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let ev = v["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["label"] == "分段用例")
+        .expect("新事件必须落盘");
+    assert_eq!(
+        ev["ranges"].as_array().unwrap().len(),
+        2,
+        "中间隔了 20s 内容，两段必须留着"
+    );
 }
 
 }
