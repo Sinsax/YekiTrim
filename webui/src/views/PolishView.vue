@@ -1037,6 +1037,8 @@ function clipRow(c) {
     state,
     chip: state === '已导出' ? 'g' : state === '精修中' ? 'p' : 'n',
     segments: segs > 1 ? segs : 0,
+    // 各段源区间（按时间）：卡片上的悬停 title 用 `rangesHint` 一次列全（>1 段才有）
+    ranges: segs > 1 ? c.meta.ranges : [],
     initialized
   }
 }

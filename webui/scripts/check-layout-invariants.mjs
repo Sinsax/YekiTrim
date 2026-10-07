@@ -1218,5 +1218,94 @@ console.log('\n㉗ LLM 剪辑在右栏「画面构成 / 输出」面板')
   }
 }
 
+// ── ㉘ 复合片段（多段切片）的**各段源区间**必须看得见（用户口径 2026-10-06）──
+//
+// 背景：`clip.json` 的 `ranges` 记着"这条片段由源片的哪几段拼出来"，此前界面只显示「N 段」——
+// **哪几段**只有打开 `clip.json` 才知道。用户没法判断"这次合并合不合理"：项目 12 那条 4 段片段
+// 把 07:21 / 15:29 / 27:05 / 27:12 拼成一条（第一条与第二条隔了 7 分 22 秒），
+// 界面上只写「4 段」，看不出跨度。
+//
+// 判据钉四件事：
+//   ① 区间文案**只有一个出口**（`utils.js` 的 `compoundRanges` / `rangesText` / `rangesHint` /
+//      `rangesGapSecs` / `fmtSpan` / `segMark`）—— 四处各写一份的话，改一处漂三处；
+//   ② 切片页**两种**卡片（已剪 / 未剪切事件）都有可见的 `.range-line` 区间行（`v-for="it.ranges"`）；
+//   ③ 精修片段条与首页总览（卡片太小）至少把区间放进悬停 title，且走同一个出口；
+//   ④ 不再有各处手拼的区间文案 —— 尤其**不许**再用 `**` 当强调（用户可见文案里会原样显示成星号）。
+console.log('\n㉘ 复合片段的「各段源区间」（可见 + 单一出口）')
+{
+  const utils = await read('webui/src/utils.js')
+  const clipsSection = await read('webui/src/components/ProjectClipsSection.vue')
+  const fragList = await read('webui/src/components/polish/FragmentList.vue')
+  const homeOverview = await read('webui/src/components/HomeClipsOverview.vue')
+
+  // ① 单一出口：每个函数都按名字 + 关键行钉住（不用 `[\s\S]{0,n}` 窗口 —— 那会跨进相邻函数，
+  //    把某个函数改坏照样通过）
+  const formatter = (s) =>
+    s.includes('export function compoundRanges(src) {')
+    && s.includes('  return out.length > 1 ? out : []')
+    && s.includes('export function rangesGapSecs(src) {')
+    && s.includes('export function rangesText(src) {')
+    && s.includes('export function rangesHint(src) {')
+    && s.includes('export function fmtSpan(sec) {')
+    && s.includes('export function segMark(i) {')
+
+  // ② 两种卡片各有一行，且渲染的是 `it.ranges`（不是只把段数塞进 title）
+  const cardRow = (s) =>
+    (s.match(/class="range-line"/g) || []).length === 2
+    && s.includes('ranges: compoundRanges(meta)')
+    && s.includes('ranges: compoundRanges(ev)')
+    && s.includes('gap: rangesGapSecs(meta)')
+    && s.includes('v-for="(r, i) in it.ranges"')
+    && s.includes('{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}')
+    && s.includes('{{ segMark(i) }}')
+
+  // ③ 精修片段条（1 处）+ 首页总览（两栏各 1 处）都调同一个出口
+  const titles = (frag, ov) =>
+    frag.includes(':title="rangesHint(r.ranges)"')
+    && (ov.match(/:title="rangesHint\(it\.ranges\)"/g) || []).length === 2
+
+  // ④ 手拼文案（含 `**` 强调）已经清掉：`**` 在 title/卡片上会原样显示成星号
+  const noHandRolled = (...srcs) =>
+    srcs.every((s) => !s.includes("' 段源区间**分段剪、合并输出**"))
+      && srcs.every((s) => !/\*\*分段剪/.test(s))
+
+  check('㉘ 区间文案只有一个出口（utils 的六个函数齐备）', formatter(utils), true)
+  check('㉘ 切片页两种卡片都有可见区间行（各段起–止 + 段号）', cardRow(clipsSection), true)
+  check('㉘ 精修片段条与首页总览的 title 走同一个出口', titles(fragList, homeOverview), true)
+  check('㉘ 不再有手拼的区间文案（`**` 那种会原样显示的强调）',
+    noHandRolled(clipsSection, fragList, homeOverview), true)
+  // 「丢掉多少空隙」的外沿必须取 max(end)：段**可以互相重叠**（项目 12 那条就是
+  // 1625.7–1653.8 包着 1632–1643），写成"排序后最后一段的 end"会少算 11s 且不报错 ——
+  // 本轮就这么错过一次，是手算才发现的（探针里那份独立实现当时抄了同一条公式，两边一起错）。
+  const gapSpan = (s) =>
+    s.includes('const span = Math.max(...rs.map((r) => r.end)) - Math.min(...rs.map((r) => r.start))')
+  check('㉘ 空隙外沿取 max(end) − min(start)（重叠段不许少算）', gapSpan(utils), true)
+
+  const MUT28 = [
+    ['区间判据放宽（单段也当复合片段渲染）', utils,
+      (s) => s.replace('  return out.length > 1 ? out : []', '  return out'), formatter],
+    ['`rangesText` 被删（行内串没人拼得出来）', utils,
+      (s) => s.replace('export function rangesText(src) {', 'function rangesTextGone(src) {'), formatter],
+    ['切片页已剪卡片那行不渲染区间', clipsSection,
+      (s) => s.replace('class="range-line"', 'class="range-line-gone"'), cardRow],
+    ['未剪切事件卡片不再给 `ranges`（看不出"将切哪几段"）', clipsSection,
+      (s) => s.replace('ranges: compoundRanges(ev),', ''), cardRow],
+    ['首页总览退回只给段数（区间又看不见了）', homeOverview,
+      (s) => s.replace(':title="rangesHint(it.ranges)"', ':title="it.segments + \' 段\'"'), (m) => titles(fragList, m)],
+    ['精修片段条退回手拼文案', fragList,
+      (s) => s.replace(':title="rangesHint(r.ranges)"',
+        `:title="'多段片段：由 ' + r.segments + ' 段源区间**分段剪、合并输出**'"`),
+      (m) => noHandRolled(clipsSection, m, homeOverview)],
+    ['空隙外沿退回"最后一段的 end"（重叠段少算）', utils,
+      (s) => s.replace('const span = Math.max(...rs.map((r) => r.end)) - Math.min(...rs.map((r) => r.start))',
+        'const span = rs[rs.length - 1].end - rs[0].start'), gapSpan]
+  ]
+  for (const [what, src, mutate, still] of MUT28) {
+    const m = mutate(src)
+    check(`[变异] ㉘ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉘ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
