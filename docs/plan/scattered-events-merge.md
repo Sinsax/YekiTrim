@@ -261,3 +261,44 @@ YEKITRIM_DATA_DIR=target/debug VT_PROJECT_DIR='…' [VT_SCATTER_FROM=1420] VT_SC
 - 判据：`check-layout-invariants.mjs` **㉖**（1 项 + 2 处变异：读数摘掉 / 秒数不带单位与精度）+
   真页面 `probe-slice-select.mjs` 第 ⑦ 条：`{"clock":"09:36.5","secs":"576.5s"}`，且
   **秒数 = 时钟换算值**（不是各写各的）。
+
+---
+
+## 13. 重叠的段并成一段 + 项目 12 的实测（已落地，2026-10-06）
+
+### 13.1 真实 bug：重叠的段会被剪两遍
+
+起因是核查项目 12 那条**手工** 4 段片段（`排雷中`，`source: manual`）：
+
+| 段 | 区间 | 时长 |
+|---|---|---|
+| ① | 441.4 – 486.5 | 45.1s |
+| ② | 929.0 – 1003.0 | 74.0s |
+| ③ | 1625.7 – 1653.8 | 28.1s |
+| ④ | 1632.0 – 1643.0 | 11.0s ← **完全落在 ③ 里面** |
+
+`clip.mp4` 实测 **158.3s** = 四段之和 ⇒ 那 11s 被**剪了两遍**；`duration` / 卡片上的「内容时长」
+也按"各段之和"多报一遍。手工标段时两行本来就可以互相压住（预处理页不拦），所以这不是幻觉。
+
+修法：core 新增 `types::merge_overlapping_ranges`（**唯一一份**并段逻辑，只并 `next.start <= last.end`），
+`Event::normalize_ranges` 与写侧 `data_events_create_impl` 都走它；预处理页**先提示**
+（`.seg-overlap`「⚠️ 第 N 段重叠」）+ 总时长按并集算（否则界面 158s、剪出来 147s 两边对不上）。
+⚠️ **有内容的空隙不许并**：那正是"分段剪、把中间别的话题丢掉"的表达（`merge_group` 依赖它）。
+
+判据：`cargo test -p yekitrim-core --lib event_range_tests`（5 条，含重叠/内含/相接/空隙四象限）+ 
+`cargo test -p yekitrim-server create_event`（2 条走真接口：重叠并掉、有内容空隙留着）+
+`check-layout-invariants.mjs` **㉙**（3 项 + 5 处变异）+ 真页面 `.workbuddy/probe-seg-overlap.mjs`（9 项）。
+
+### 13.2 项目 12「有没有自动产出的复合片段」——没有，但不是阈值高
+
+- 有复合片段（1 条 4 段），但 `source: manual`：**手工标的**，`[detection.scattered].enabled = false`
+  （合并配置实测），`output/` 里也没有 `events.scattered.checkpoint.json` ⇒ **第二趟从来没跑过**。
+- 真开起来实测（`diagnose_scattered_funnel`，300 段 / 28.7 分钟窗口、主检测覆盖 **76.9%**）：
+  第二趟吐 **81** 个候选块 → 过门留下 **18** 条（含 **2** 条多段）→ `absorb_scattered` **全部丢掉**
+  （逐条打印的丢因：覆盖 49%~100%，最近间隔全是 **0.0s**）⇒ **新增 0 条**。
+- 阈值灵敏度（同一批候选块重放，不额外花钱）：单块下限 8→3s ✓无变化、字幕门 2→0 ✓无变化、
+  弹幕门关掉 ✓无变化；`merge_min_secs/merge_min_subs` 20s/3→8s/0 只**多活 1 条**；
+  全放宽 + 归组窗口 45→240s 仍是新增 0。
+- 结论：**瓶颈不是阈值，是主检测不留空隙**（第二趟只在"主事件没盖住的地方"才可能贡献）。
+  想要自动复合片段，得让**主检测**就带 topic、再把同话题的多条**主事件**并成一条多段 —— 即 §11 里
+  记的那个设计（P1b），尚未做。

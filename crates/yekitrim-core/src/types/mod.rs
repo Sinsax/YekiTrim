@@ -216,7 +216,7 @@ impl Event {
         self.cut_ranges().iter().map(|r| r.duration()).sum()
     }
 
-    /// 把 `ranges` 与 `start/end` 重新对齐（首段起、末段末；段按时间排序）。
+    /// 把 `ranges` 与 `start/end` 重新对齐（首段起、末段末；段按时间排序；**重叠/相接的段并成一段**）。
     pub fn normalize_ranges(&mut self) {
         if self.ranges.is_empty() {
             return;
@@ -231,9 +231,38 @@ impl Event {
                 .partial_cmp(&b.start)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        merge_overlapping_ranges(&mut self.ranges);
         self.start = Timestamp::from_seconds(self.ranges[0].start);
         self.end = Timestamp::from_seconds(self.ranges[self.ranges.len() - 1].end);
     }
+}
+
+/// 把**已按 start 排序**的区间里"重叠或首尾相接"的那些并成一段（内容取并集）。
+///
+/// 为什么要单独一步：手工在预处理页标段时，两行入点/出点**可以互相压住**——项目 12 那条
+/// 4 段片段就有 `1625.7–1653.8` 里套着 `1632.0–1643.0`。不去重的话 Cutter 会把这段
+/// **剪两遍**（`clip.mp4` 158.3s = 四段之和，其中 11s 是重复的），而 `duration` / 卡片上的
+/// 「内容时长」也按"各段之和"算 ⇒ 两处一起多报 11s，界面上完全看不出来。
+/// 「相接」（`next.start == last.end`）并掉是等价的（并集 = 同样两段内容），顺手也并了。
+///
+/// ⚠️ 只并 `next.start <= last.end`：**有内容的空隙**（`next.start > last.end`）必须留着 ——
+/// 那正是"分段剪、把中间别的话题丢掉"的表达（见 `detection::scattered::merge_group`）。
+pub fn merge_overlapping_ranges(ranges: &mut Vec<EventRange>) {
+    if ranges.len() < 2 {
+        return;
+    }
+    let mut out: Vec<EventRange> = Vec::with_capacity(ranges.len());
+    for r in ranges.iter() {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end + 1e-6 => {
+                if r.end > last.end {
+                    last.end = r.end;
+                }
+            }
+            _ => out.push(*r),
+        }
+    }
+    *ranges = out;
 }
 
 impl Event {
@@ -370,5 +399,57 @@ mod event_range_tests {
         e2.normalize_ranges();
         assert!(e2.ranges.is_empty());
         assert_eq!(e2.cut_ranges().len(), 1); // 回退单段
+    }
+
+    /// **重叠段必须并成一段**：重叠 = 同一段内容被剪两遍（项目 12 的真实数据：
+    /// `1625.7–1653.8` 里套着 `1632.0–1643.0` ⇒ `clip.mp4` 158.3s 里 11s 是重复的）。
+    #[test]
+    fn normalize_ranges_merges_overlapping() {
+        let mut e = ev(0.0, 0.0);
+        e.ranges = vec![
+            EventRange::new(441.4, 486.5),
+            EventRange::new(929.0, 1003.0),
+            EventRange::new(1625.7, 1653.8),
+            EventRange::new(1632.0, 1643.0), // ← 完全落在上一段里面
+        ];
+        e.normalize_ranges();
+        assert_eq!(e.ranges.len(), 3, "重叠那段要并掉：{:?}", e.ranges);
+        assert_eq!((e.ranges[2].start, e.ranges[2].end), (1625.7, 1653.8));
+        // 内容时长不再重复计那 11s（四段之和 158.2 → 并后 147.2）
+        assert!((e.content_secs() - 147.2).abs() < 1e-6);
+        assert_eq!((e.start.to_seconds(), e.end.to_seconds()), (441.4, 1653.8));
+    }
+
+    /// 部分重叠取并集（`10–30` + `20–40` ⇒ `10–40`）；**首尾相接**也并（内容等价，少一段噪声）。
+    #[test]
+    fn merge_overlapping_ranges_union_and_touch() {
+        let mut v = vec![
+            EventRange::new(10.0, 30.0),
+            EventRange::new(20.0, 40.0),
+            EventRange::new(40.0, 50.0),
+        ];
+        merge_overlapping_ranges(&mut v);
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].start, v[0].end), (10.0, 50.0));
+
+        // **有内容的空隙不许并**（那是"分段剪、中间别的话题丢掉"的表达）
+        let mut w = vec![EventRange::new(100.0, 120.0), EventRange::new(140.0, 160.0)];
+        merge_overlapping_ranges(&mut w);
+        assert_eq!(w.len(), 2, "中间隔了 20s，必须留着两段");
+
+        // 内含段取外层（不许把外层截短）
+        let mut x = vec![EventRange::new(100.0, 200.0), EventRange::new(120.0, 140.0)];
+        merge_overlapping_ranges(&mut x);
+        assert_eq!(x.len(), 1);
+        assert_eq!((x[0].start, x[0].end), (100.0, 200.0));
+        assert_eq!(x[0].end, 200.0, "短的那段在后，不许把外层 end 改小");
+
+        // 单段/空 = 原样
+        let mut y = vec![EventRange::new(1.0, 2.0)];
+        merge_overlapping_ranges(&mut y);
+        assert_eq!(y.len(), 1);
+        let mut z: Vec<EventRange> = Vec::new();
+        merge_overlapping_ranges(&mut z);
+        assert!(z.is_empty());
     }
 }

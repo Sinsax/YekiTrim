@@ -199,6 +199,11 @@
               {{ sliceRows.length }} 段<template v-if="sliceRows.length > 1">
                 · 编辑中 <b class="seg-cur-num">{{ activeRow + 1 }}</b></template>
             </span>
+            <span
+              v-if="sliceOverlaps.length"
+              class="seg-overlap"
+              :title="'第 ' + sliceOverlaps.join('、') + ' 段压在前一段上：同一段内容会被剪两遍，落盘时会自动并成一段'"
+            >⚠️ 第 {{ sliceOverlaps.join('、') }} 段重叠</span>
             <span class="mono">{{ fmtDur(sliceTotal) }}</span>
           </div>
           <input
@@ -346,10 +351,42 @@ const markOut = ref(0)
 const sliceRows = ref([{ start: 0, end: 0 }])
 /** 「标记入点/出点」落到哪一行（点行选中）。 */
 const activeRow = ref(0)
-/** 列表总时长（各段内容之和；多段成片就是这个长度）。 */
-const sliceTotal = computed(() =>
-  sliceRows.value.reduce((m, r) => m + Math.max(0, (Number(r.end) || 0) - (Number(r.start) || 0)), 0),
-)
+/** 列表总时长（各段内容之和；多段成片就是这个长度）。
+ *  ⚠️ **重叠的段先并掉再求和**：写侧（`data_events_create_impl` → `merge_overlapping_ranges`）
+ *  落盘前会把重叠/相接的段并成一段 —— 不并的话这里显示 158s、剪出来 147s，两边对不上。 */
+const sliceTotal = computed(() => {
+  const rs = sliceRows.value
+    .map((r) => ({ start: Number(r.start) || 0, end: Number(r.end) || 0 }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start)
+  let total = 0
+  let lastEnd = -Infinity
+  for (const r of rs) {
+    if (r.start <= lastEnd) {
+      if (r.end > lastEnd) {
+        total += r.end - lastEnd
+        lastEnd = r.end
+      }
+      continue
+    }
+    total += r.end - r.start
+    lastEnd = r.end
+  }
+  return total
+})
+/** 被**上一段压住**（或正好接上）的行号（1 基）：落盘时会并成一段。
+ *  重叠 = 同一段内容会被剪两遍，要让用户在点「切片」**之前**看见 —— 见 `merge_overlapping_ranges`。 */
+const sliceOverlaps = computed(() => {
+  const rs = sliceRows.value
+    .map((r, i) => ({ i, start: Number(r.start) || 0, end: Number(r.end) || 0 }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start)
+  const out = []
+  for (let k = 1; k < rs.length; k++) {
+    if (rs[k].start <= rs[k - 1].end + 1e-6) out.push(rs[k].i + 1)
+  }
+  return out
+})
 const showAdd = ref(false)
 const start = ref(0)
 const end = ref(10)
@@ -1005,6 +1042,9 @@ onUnmounted(() => {
   font-size:10.5px; line-height:1; cursor:pointer; }
 .seg-pick.on { border-color:var(--pink-text); background:var(--pink-bg); color:var(--pink-text); font-weight:700; }
 .seg-cur-num { color:var(--pink-text); }
+/* 重叠警告：这一段压在前一段上 ⇒ 同一段内容会被剪两遍（落盘时会并成一段，见
+   `merge_overlapping_ranges`）—— 琥珀色，只在真重叠时出现，别做成常驻 */
+.seg-overlap { color:var(--amber-deep); font-size:11px; white-space:nowrap; }
 .run-btn { width:100%; justify-content:center; margin-bottom:8px; }
 /* 输入素材（弹幕 / 字幕）两块清单：每块自带分隔虚线（MaterialList），这里别再画一条，
    否则第一块上面会出现双线。 */

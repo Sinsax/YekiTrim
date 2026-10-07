@@ -1307,5 +1307,59 @@ console.log('\n㉘ 复合片段的「各段源区间」（可见 + 单一出口�
   }
 }
 
+// ── ㉙ 重叠的段必须**并成一段**（不然同一段内容会被剪两遍）──
+//
+// 现场（项目 12 手工标的那条 4 段片段）：`1625.7–1653.8` 里套着 `1632.0–1643.0` ——
+// Cutter 按 `cut_ranges()` 逐段剪再拼，`clip.mp4` = 158.3s = **四段之和**（其中 11s 是重复的），
+// 而 `duration` / 卡片上的「内容时长」也按各段之和多报一遍 —— 两处一起错，界面上看不出来。
+// 手工标段时两行本来就可以互相压住，所以这条要**三处**都钉住：
+//   ① core 的 `merge_overlapping_ranges`（唯一一份并段逻辑，`normalize_ranges` 也走它）；
+//   ② 写侧 `create-event` 真的调它（不然手工那条路照旧落盘重叠）；
+//   ③ 预处理页**先告诉用户**（`.seg-overlap` 警告 + 总时长按并集算，别 158s/147s 两边对不上）。
+console.log('\n㉙ 重叠的段并成一段（核心 + 写侧 + 预处理页提示）')
+{
+  const coreTypes = await read('crates/yekitrim-core/src/types/mod.rs')
+  const projectData = await read('crates/yekitrim-server/src/api/project_data.rs')
+  const prepareView = await read('webui/src/views/PrepareView.vue')
+
+  // ⚠️ 判据只认 `next.start <= last.end`：放宽成"有内容的空隙也并"会把
+  //    "分段剪、中间别的话题丢掉"的表达整条毁掉（那是 `merge_group` 的语义）。
+  const coreMerge = (s) =>
+    s.includes('pub fn merge_overlapping_ranges(ranges: &mut Vec<EventRange>) {')
+    && s.includes('        merge_overlapping_ranges(&mut self.ranges);')
+    && s.includes('Some(last) if r.start <= last.end + 1e-6 => {')
+  const writeSide = (s) =>
+    s.includes('yekitrim_core::types::merge_overlapping_ranges(&mut ranges);')
+  const prepareUi = (s) =>
+    s.includes('const sliceOverlaps = computed(() => {')
+    && s.includes('if (rs[k].start <= rs[k - 1].end + 1e-6) out.push(rs[k].i + 1)')
+    && s.includes('v-if="sliceOverlaps.length"')
+    && s.includes('class="seg-overlap"')
+    && s.includes('if (r.start <= lastEnd) {') // sliceTotal 也按并集求和
+
+  check('㉙ core 只有一份并段逻辑（`normalize_ranges` 走它，只并相接/重叠）', coreMerge(coreTypes), true)
+  check('㉙ 写侧 create-event 真的调了它（手工那条路不再落盘重叠）', writeSide(projectData), true)
+  check('㉙ 预处理页会提示重叠 + 总时长按并集算', prepareUi(prepareView), true)
+
+  const MUT29 = [
+    ['并段判据放宽（把"有内容的空隙"也并了 —— 分段剪的语义没了）', coreTypes,
+      (s) => s.replace('Some(last) if r.start <= last.end + 1e-6 => {',
+        'Some(last) if r.start <= last.end + 60.0 => {'), coreMerge],
+    ['`normalize_ranges` 不再走并段（分散合并/索引那条路又漏了）', coreTypes,
+      (s) => s.replace('        merge_overlapping_ranges(&mut self.ranges);', ''), coreMerge],
+    ['写侧不再并（手工标的重叠照旧剪两遍）', projectData,
+      (s) => s.replace('    yekitrim_core::types::merge_overlapping_ranges(&mut ranges);', ''), writeSide],
+    ['预处理页不再提示重叠', prepareView,
+      (s) => s.replace('v-if="sliceOverlaps.length"', 'v-if="false"'), prepareUi],
+    ['总时长退回"各段直接相加"（与剪出来的长度对不上）', prepareView,
+      (s) => s.replace('    if (r.start <= lastEnd) {', '    if (false) {'), prepareUi]
+  ]
+  for (const [what, src, mutate, still] of MUT29) {
+    const m = mutate(src)
+    check(`[变异] ㉙ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉙ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
