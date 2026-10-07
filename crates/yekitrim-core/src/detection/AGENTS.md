@@ -69,6 +69,22 @@
   切片页那颗按钮撤掉了）—— 留着是给**已有**的老 events.json 兜底，用 curl/后续再说：
   合并后事件序号会变，旧片段要用户自己删掉重切。
   只读诊断：`VT_EVENTS_JSON=<项目>/output/events.json cargo test -p yekitrim-core --lib diagnose_merge_splits -- --ignored --nocapture`
+- **分散事件第二趟**（`scattered.rs` + `run()` 里那段，`[detection.scattered]` 默认**关**）：主通道只收
+  "完整话题"（后处理那条最短 30s 会吞并小块），所以同一个话题被别的话题打断成几小段时不报。第二趟用
+  自己的 prompt + 自己的 `topic` 归组键 + 自己的断点文件再跑一遍**低标准**检测，按话题拼成一条
+  **多段 `ranges`** 事件；仍不达标的丢。它**不走** `postprocess_events`（那条 30s 吞并会吃光小块），
+  跨窗去重门槛按趟取（第二趟传 0）。
+  ⚠️ **第二趟只在"主检测没盖住的地方"才可能贡献**：`absorb_scattered` 把被主事件盖住（重叠 ≥50%）
+  或紧贴（间隔 ≤1s）的一律丢掉 —— 主事件是权威。实测（项目 12，300 段 / 28.7 分钟窗口、主检测覆盖
+  76.9%）：第二趟吐 81 个候选块 → 过门留下 18 条（含 2 条多段），**全部**因"覆盖 ≥49% 或间隔 0.0s"
+  被丢 ⇒ **新增 0 条**；把 `merge_min_secs/merge_min_subs` 从 20s/3 条放到 8s/0 条也只多活 1 条。
+  ⇒ **密排项目上"没有复合片段"不是阈值高，是主检测不留空隙**（想要自动复合片段得让**主检测**就带
+  topic、再把同话题的多条主事件并成一条多段 —— 那是另一件设计，尚未做）。
+  只读诊断（两条，都会真发 LLM 调用、只写临时目录）：
+  `VT_PROJECT_DIR=<项目目录> [VT_SCATTER_FROM=0] [VT_SCATTER_MAX_SEGS=300] cargo test -p yekitrim-core`
+  `--lib diagnose_scattered_stage`（跑通整条 Stage 3，看最终落盘）/
+  `--lib diagnose_scattered_funnel`（**漏斗**：一次调用拿候选块，再用同一批块重放多组阈值 +
+  逐条打印"为什么没进主列表"—— 校准阈值看这条）。
 - ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` 的 `[detection] system_prompt` /
   `prompt_template` 是**写死的副本**（`config init` 时把内建文本填进去了），代码里改默认值对它无效；
   要么在设置页改，要么把两个字段留空（留空才走内建默认）。
