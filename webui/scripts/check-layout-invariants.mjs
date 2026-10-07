@@ -397,7 +397,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     // 取到页签的 v-else 为止（不是第一个 </template>：项目那半里还有内层 template）
     const j = s.indexOf('<template v-else>', i)
     const body = j < 0 ? s.slice(i) : s.slice(i, j)
-    return body.includes('runLlmJob') && body.includes('openRenderModal') && body.includes('job-box')
+    return body.includes('runLlmJob') && body.includes('openRenderModal') && body.includes('job-head')
   }
   /** 轨道设置面板搬到右栏常驻：在 `.right-col` 里、且不再按 `openLane` 条件渲染。 */
   /** 右栏那块区域里的卡片数（合并后应为 1）。 */
@@ -428,7 +428,8 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    ⇒ 段数 5 → **3**：字幕/弹幕 · 框选区域 · 贴纸。
   //    注意「运镜」这个标题**不再作为分组标题存在**（它的唯一控件"框选人物"并进了框选组），
   //    但点时间轴「运镜」轨道名仍要能滚到那块（ref 同时挂 camera 与 danmaku_area 两个键）。
-  const LANE_GROUPS = ['字幕 / 弹幕', '框选区域', '贴纸']
+  // 第六轮（2026-10-06）：「框选区域」改名「区域」，且贴纸排到区域**上面** ⇒ 顺序变了
+  const LANE_GROUPS = ['字幕 / 弹幕', '贴纸', '区域']
   const panelBody = (s) => {
     // 面板正文 = 「项目设置」页签那一半（合并后轨道设置内容就住在里面）
     const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
@@ -455,9 +456,14 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
   // ⚠️ **框选那两颗按钮必须同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）：
   //    判据 = 同一个 `.row` 里同时含这两颗按钮，而不是各占一行。
+  // 两颗框选按钮**在同一个容器里**（左右两栏时代要求"同一行"；三列并排后每列 83px，
+  // 横排实测溢出到 91 > 83 ⇒ 改成竖排的 `.col`。判据只要求"还在同一组、挨着"）。
   const selectBtnsOneRow = (s) => {
-    const rows = [...s.matchAll(/<div class="row">([\s\S]{0,900}?)<\/div>/g)].map((m) => m[1])
-    return rows.some((r) => r.includes("toggleSelect('danmaku_area')") && r.includes("toggleSelect('liver')"))
+    const at = s.indexOf("toggleSelect('danmaku_area')")
+    const bt = s.indexOf("toggleSelect('liver')")
+    if (at < 0 || bt < 0) return false
+    // 两颗之间不许出现分组标题（那就是又被拆到两组去了）
+    return !s.slice(Math.min(at, bt), Math.max(at, bt)).includes('lane-group-h')
   }
   // ⚠️ **纯信息组不许回来**：面板里不许再出现「分段 / 屏蔽」标题，也不许有只读计数行
   const noInfoOnly = (s) => {
@@ -482,10 +488,22 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 右栏只有一块卡片（块数多了会把时间轴挤走）', rightCardCount(polishView), 1)
   check('⑰ 那块卡片里没有「项目设置页 →」跳转链接（用户说不需要）',
     /项目设置页\s*→[\s\S]{0,20}?<\/router-link>/.test(polishView), false)
+  // ⚠️ 第六轮（用户 2026-10-06：「三个区域放在同一行」「把贴纸放在上面」「任务改成折叠的模式，
+  //    默认折叠，只显示当前是什么任务，展开显示详情，展开时不要挤占下方控件，是浮在上层的」）
+  check('⑰ 三组并排成三列（同一行）', /class="lane-cols"/.test(polishView) && /repeat\(3, minmax\(0,1fr\)\)/.test(polishView), true)
+  check('⑰ 组名恰好是 字幕/弹幕 · 贴纸 · 区域（贴纸排在区域上面）',
+    (polishView.match(/<div class="lane-group-h">([^<]+)<\/div>/g) || []).map((m) => m.replace(/<[^>]+>/g, '')).join('|'),
+    '字幕 / 弹幕|贴纸|区域')
+  check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
+  check('⑰ 任务详情是**浮层**（不挤占下方控件）',
+    /\.job-wrap \{ position:relative; \}/.test(polishView)
+    && /\.job-wrap > \.row, \.job-wrap > \.job-log \{ position:absolute; top:100%/.test(polishView), true)
+  check('⑰ ⚠️ 别把 absolute 写到 .job-wrap 上（整条任务栏会逃出卡片）',
+    /\.job-wrap \{[^}]*position:absolute/.test(polishView), false)
   check('⑰ 三段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
   check('⑰ 面板里**只留控件**（没有 hint 行 / 计数标题）', onlyControls(polishView), true)
   check('⑰ 面板里没有纯信息组（分段/屏蔽、音效都已删）', noInfoOnly(polishView), true)
-  check('⑰ 两颗框选按钮在**同一行**', selectBtnsOneRow(polishView), true)
+  check('⑰ 两颗框选按钮在**同一列里**（三列并排后横排物理放不下：实测 91 > 83）', selectBtnsOneRow(polishView), true)
   check('⑰ 点轨道名 = 焦点高亮 + 滚到那一段', focusScrolls(polishView), true)
   const MUT17 = [
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
@@ -516,7 +534,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     ['把「分段 / 屏蔽」那个纯信息组装回来', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">分段 / 屏蔽</div><div class="lane-group-h">贴纸</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
     ['把「音效」音量组装回来', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">音效</div><div class="lane-group-h">贴纸</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
     // 变异：把「框选弹幕区域」那颗按钮挪出那一行（塞进一个独立的 `.row`）⇒ 不再同行
-    ['框选的两颗按钮拆回两行', polishView, (s) => s.replace("框选弹幕区域", "框选弹幕区域</button></div><div class=\"row\"><button class=\"mini-btn flex-1 jc-center\">x"), (m) => selectBtnsOneRow(m)],
+    ['框选的两颗按钮拆回两组', polishView,
+      (s) => s.replace('title="在预览上框选主播人物', '<div class="lane-group-h">人物</div><button title="在预览上框选主播人物'),
+      (m) => selectBtnsOneRow(m)],
     ['往面板里加回一条解释文字（hint 行）', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">贴纸</div><div class="hint mt-4">开关只影响渲染，不改事件</div>'), (m) => onlyControls(m)],
     ['加回"音效事件 N 条"那行读数', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">贴纸</div><div class="row spread small mt-4"><span class="muted">音效事件</span></div>'), (m) => onlyControls(m)],
     ['点轨道名不再滚到那一段', polishView, (s) => s.replace("if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })", ''), (m) => focusScrolls(m)],
