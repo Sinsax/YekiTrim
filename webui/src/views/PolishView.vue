@@ -108,7 +108,7 @@
                  轨道设置那块由本页面渲染，两者用 `openLane` 互斥 —— 同一时刻只有一份面板。 -->
             <div class="preview-row">
               <div class="props-host">
-                <div v-if="openLane" class="props-panel card lane-panel">
+                <div v-if="openLane" class="props-panel card lane-panel" :ref="(el) => (laneGroupEls.__top = el)">
                   <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板）。
                        点轨道名 = 打开面板 + 滚到那一段 + 标题高亮。
                        ⚠️ **只留控件**（用户 2026-10-06 第二轮：解释文字全删、能删的都删了）：
@@ -119,17 +119,9 @@
                     <button class="mini-btn" @click="openLane = ''">关闭</button>
                   </div>
 
-                  <!-- ── 分段 / 屏蔽（结构轨：没有眼睛） ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'segments' }"
-                       :ref="(el) => (laneGroupEls.segments = el)">
-                    <div class="lane-group-h">分段 / 屏蔽</div>
-                    <div class="row spread small">
-                      <span class="muted">分段</span><span class="mono">{{ (cfg?.segments || []).length }}</span>
-                    </div>
-                    <div class="row spread small mt-4">
-                      <span class="muted">屏蔽</span><span class="mono">{{ (cfg?.mute_ranges || []).length }}</span>
-                    </div>
-                  </div>
+                  <!-- ⚠️ 「分段 / 屏蔽」那条**纯信息**的分组已删（用户 2026-10-06：仅信息展示的内容删除）。
+                       它只显示两个计数（分段 N / 屏蔽 N），没有任何控件 —— 段数在时间轴泳道上直接数得出来，
+                       两个数字放在设置面板里既不能改也不指向任何操作。**别再捡回来。** -->
 
                   <!-- ── 字幕 / 弹幕：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
                   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
@@ -164,33 +156,28 @@
                              @change="toggleLane('danmaku')">
                       显示弹幕
                     </label>
+                  </div>
 
-                    <div class="row mt-6">
+                  <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
+                       它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
+                       要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
+                       （两个框互斥，同一时刻只有一份）。
+                       ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
+                       都该滚到**这一组**（它们现在共用同一组控件）。 -->
+                  <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
+                       :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
+                    <div class="lane-group-h">框选区域</div>
+                    <div class="row">
                       <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
                               title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
                         <Icon name="crop" :size="11" /> 框选弹幕区域
                       </button>
-                    </div>
-                    <template v-if="selectRegion === 'danmaku_area'">
-                      <div class="mono small mt-4">{{ rectText }}</div>
-                      <div class="row mt-4 gap-6">
-                        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-                        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
-                      </div>
-                    </template>
-                  </div>
-
-                  <!-- ── 运镜：人物框（同时喂后处理落点与运镜聚焦） ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'camera' }"
-                       :ref="(el) => (laneGroupEls.camera = el)">
-                    <div class="lane-group-h">运镜</div>
-                    <div class="row">
                       <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
                               title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
                         <Icon name="crop" :size="11" /> 框选人物
                       </button>
                     </div>
-                    <template v-if="selectRegion === 'liver'">
+                    <template v-if="selectRegion">
                       <div class="mono small mt-4">{{ rectText }}</div>
                       <div class="row mt-4 gap-6">
                         <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
@@ -239,17 +226,11 @@
                     </template>
                   </div>
 
-                  <!-- ── 音效：**只留音量控件**（计数与说明按用户要求删了） ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'sfx' }"
-                       :ref="(el) => (laneGroupEls.sfx = el)">
-                    <div class="lane-group-h">音效</div>
-                    <div class="row" style="gap:6px;align-items:center">
-                      <input type="range" class="flex-1" min="0" max="1" step="0.05" :value="sfxCfg.volume ?? 0.1"
-                             :disabled="sfxBusy || !ready" title="全局默认音效音量（0~1）；事件自己的 volume / sfx_volume 优先"
-                             @change="patchSfx({ volume: Number($event.target.value) })">
-                      <span class="mono small flex-none">{{ Number(sfxCfg.volume ?? 0.1).toFixed(2) }}</span>
-                    </div>
-                  </div>
+                  <!-- ⚠️ 「音效」分组已整块删除（用户 2026-10-06：删除音效的音量设置）。
+                       它里面只有一条全局默认音量滑杆；事件自己的 `volume` / `sfx_volume` 优先，
+                       所以这条滑杆改的是"剩下那些没单独设过的事件"，用户看不出效果。
+                       ⚠️ **音效轨本身（眼睛 / `[stage.lanes].sfx`）没删** —— 删的只是这个面板分组。
+                       要改全局默认音量走 `polish.toml` 的 `[sfx] volume`。**别再把这组捡回来。** -->
                 </div>
                 <div id="tl-props-host"></div>
               </div>
@@ -261,23 +242,22 @@
             </div>
           </div>
 
-          <!-- 右栏 = **一块**面板：「画面构成 / 输出」。用户口径（2026-10-06）：原来「生成与导出」
-               与「画面构成」两块有重叠 —— 字幕字体 / 弹幕字体与偏移 / 贴纸来源 / 区域与落点全部搬进
-               **轨道设置**（点时间轴上的轨道名打开），这里只留画面构成 + 出片。
-               两个页签随之删掉（页签的另一半已经没有内容了）。
-               ⚠️ 「LLM 剪辑」用户 2026-10-06 明确要求放**这里**（与「渲染导出」并排，先重剪再出片）——
-               别再把它挪回轨道设置里。 -->
+          <!-- 右栏 = **两块常驻卡片**，必须包在**一个** grid 子节点里：
+               `.edit-grid` 是两列 grid（`cols-main` = `1fr 300px`），子节点 1 = 预览卡、
+               子节点 2 = 右栏。把两块直接摊开当两个子节点的话，第二块会充当"第三列"
+               **掉到下一行占满整宽**（实测 1045px 宽，跑到预览下面去了）。
+               用户 2026-10-06：「把轨道设置放在右侧常驻，改为项目设置和 llm 剪辑导出之类的合并，
+               画面尺寸退回原来的那个页面」—— 两块都在**这一列**里，上下常驻。 -->
+          <div class="right-col">
           <div class="card">
             <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面构成 / 输出</h2>
+              <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面尺寸</h2>
               <span class="muted small" title="字幕 / 弹幕 / 贴纸 / 区域与落点都在时间轴各条轨道的设置里（点轨道名打开）">轨道设置 → 时间轴</span>
             </div>
 
-            <!-- 画面构成：画面尺寸 / 缩放比例 / 主画面位置（五档吸附）/ 背景。
+            <!-- 缩放比例 / 主画面位置（五档吸附）/ 背景（`[stage]`）。
                  值存 polish.toml 的 [canvas] / [stage]；出片与预览共用同一份推导
                  （Rust `resolve_stage` → `_canvas`），这里只做提交 + 重取，不在前端重算。 -->
-            <div class="small muted mb-4"
-                 title="源与画布同比例时主画面正好铺满：位置 / 缩放 / 背景都没有可见效果，故整组隐藏">画面尺寸</div>
             <div class="row mb-6 gap-6">
               <button v-for="o in orientationOptions" :key="o.value" class="mini-btn flex-1 jc-center"
                       :class="{ selected: (canvasCfg.orientation || 'landscape') === o.value }" :disabled="stageBusy || !ready"
@@ -334,20 +314,30 @@
             </template>
 
             <!-- 竖屏那三档（`[stage] portrait_*`）已删除：2026-10-06 起「哪一类渲不渲染」是
-                 时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，可开可关、看得见），
-                 不再是藏在画面构成里的三个复选框。 -->
+                 时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，可开可关、看得见）。 -->
+          </div>
 
-            <!-- LLM 剪辑（用户 2026-10-06 要求搬到这里）：重新分段 + 重新生成全部事件。
-                 它跟「渲染导出」是一前一后两道工序（先重剪、再出片），所以并排放在面板底部；
+          <!-- 第二块：项目设置 / LLM 剪辑 / 渲染导出（用户 2026-10-06：「改为项目设置和 llm 剪辑
+               导出之类的合并」）。常驻，不折叠。
+               ⚠️ LLM 剪辑与渲染导出是一前一后两道工序（先重剪、再出片），所以上下相邻。 -->
+          <div class="card mt-12">
+            <div class="row spread mb-8">
+              <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 项目设置 / 输出</h2>
+              <router-link class="mini-btn flex-none" :to="`/p/${pid}/settings`"
+                           title="项目信息、yekitrim.toml 原文（预处理 / 检测 / ASR 等都在那里）、删除源录播 / 移除项目">项目设置页</router-link>
+            </div>
+
+            <!-- LLM 剪辑：重新分段 + 重新生成全部事件。
                  失败的分段会在时间轴上标色、可单独重做那一段。 -->
-            <div class="row mt-12" style="gap:6px">
+            <div class="row" style="gap:6px">
               <button class="btn flex-1 jc-center" :disabled="scopeBusy"
                       :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
                       @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
             </div>
 
-            <!-- 出片（原来在「生成与导出」那块里，整块并没有别的内容了） -->
+            <!-- 出片 -->
             <button class="btn btn-primary mt-6 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
+
 
             <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
             <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
@@ -368,6 +358,7 @@
               <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
               <div v-if="job.error || (jobRunning && job.log)" class="muted small mt-6 mono">{{ job.error || job.log }}</div>
             </div>
+          </div>
           </div>
         </div>
 
@@ -1521,24 +1512,9 @@ async function onDanmakuFontChange(e) {
   }
 }
 
-// ---- 音效（`[sfx]`：全局默认音量；事件自己的 volume / sfx_volume 优先）----
-const sfxCfg = computed(() => cfg.value?.sfx || {})
-const sfxBusy = ref(false)
-async function patchSfx(patch) {
-  if (!ready.value || sfxBusy.value) return
-  const next = { ...sfxCfg.value, ...patch }
-  sfxBusy.value = true
-  try {
-    await saveProjectPatch(pid.value, dir.value, { sfx: next })
-    cfg.value = { ...cfg.value, sfx: next }
-    await load({ silent: true })
-  } catch (e) {
-    toast('音效设置保存失败：' + e.message, 'err')
-    await load({ silent: true })
-  } finally {
-    sfxBusy.value = false
-  }
-}
+// ⚠️ 「音效」那一段（`sfxCfg` / `sfxBusy` / `patchSfx`）已随那个面板分组一起删除
+// （用户 2026-10-06：删除音效的音量设置）。全局默认音量仍在 `polish.toml` 的 `[sfx] volume`，
+// 只是界面上不再有那条滑杆 —— 事件自己的 `volume` / `sfx_volume` 优先，这条滑杆本来就改不动它们。
 
 async function onDanmakuOffsetChange(e) {
   // ⚠️ 这里**不能**拿 next 与 dmOffset.value 比较来去重：input 阶段已经把镜像
@@ -1647,7 +1623,10 @@ function onLaneOpen(lane) {
   openLane.value = lane
   // 滚到那一段（`block:'nearest'` = 只在看不见时滚，不会把已经可见的那段顶走）
   nextTick(() => {
-    const el = laneGroupEls[lane]
+    // ⚠️ `segments`（结构轨的纯信息组已删）与 `sfx`（音量组已删）**没有对应分组**：
+    //    点这两条轨道的名字仍要打开面板，但没东西可滚 —— 查不到就退回面板顶部，
+    //    别停在上一次的位置让标题高亮指向别处。
+    const el = laneGroupEls[lane] || laneGroupEls.__top
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
   })
 }
@@ -1858,6 +1837,8 @@ onUnmounted(() => {
 /* 两栏各取自然高度（右栏不跟着预览拉长）；时间轴在下一行整行铺开 —— 它的横向空间
    不再被右栏吃掉（刻度/泳道多出约 300px），编辑手感与刻度精度都更好 */
 .edit-grid { align-items:start; }
+/* 右栏那一列：两块卡片上下常驻（`min-width:0` 让内部的长控件能正常收缩，不被 grid 顶宽） */
+.right-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
 /* 预览卡内部：属性面板（时间轴 Teleport 过来的）在左，预览舞台在右 */
 .preview-row { display:flex; gap:12px; align-items:stretch; margin-top:8px; }
 /* 挂载点定宽 + relative；面板绝对定位撑满它 —— 属性表单再长也只在面板内部滚动，

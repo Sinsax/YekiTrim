@@ -31,11 +31,10 @@
   - **`/api/polish/subtitles` 的 404 是空态、不是错误**：`clip.srt` 与 `data/subtitles.json` 都不存在时
     服务端就返回 404「暂无字幕文件」，没转写的片段本来就是这样。**只有非 404 才算读失败** ——
     否则每个没有字幕的片段都会挂一条"读取失败，已暂停保存"，还把保存一起锁掉。
-  - **`reload()` 不许静默丢弃**：老写法 `if (drag || saving || saveTimer) return` 会在"后处理跑完要同步
-    结果"时被 250ms 防抖窗口挡掉 —— 编辑器留着后处理**之前**的值，紧接着 `flushSave` 又把旧值 PUT 回去，
-    把刚算出的贴纸落点/锚点坐标整个顶掉，而且没人重试。现在：忙 → 置 `reloadQueued` 排队，由 `flushSave`
-    的 `finally` 里 `drainQueuedReload()` 补做；真要跑时若还有没落盘的改动，**先落盘再重载**（用户的改动
-    不丢；被顶掉的那次后处理改写由渲染前的 `process` 重算回来）。重载期间再收到请求，`finally` 里再跑一轮。
+  - **`reload()` 不许静默丢弃**：老写法 `if (drag || saving || saveTimer) return` 会被 250ms 防抖窗口
+    挡掉 —— 编辑器留着后处理**之前**的值，紧接的 `flushSave` 又把旧值 PUT 回去，把刚算出的贴纸落点/锚点
+    整个顶掉且没人重试。现在：忙 → 置 `reloadQueued`，`flushSave` 的 `finally` 里 `drainQueuedReload()`
+    补做；真要跑时若还有没落盘的改动，**先落盘再重载**；期间再收到请求就再跑一轮。
   - **换片段先清空**：`watch(() => props.dir)` 里 `commitEdit` 之后必须 `resetTimelineState()` 再 `loadData()`。
     不清空的话，新片段读取失败时数组还留着**上一个片段**的分段/字幕，用户一次编辑就把它们写进新片段目录
     （跨片段串写）。清空 + `loadError` 拦写，两道一起才安全。
@@ -60,20 +59,15 @@
 一次 429 就把整段事件抹成 0）。四条硬规矩：
 
 1. **空结果 / 失败一律不覆盖**（`llm/events.rs::apply_outputs`）：`output == None`（429/超时/解析失败）
-   与 `Some([])`（模型返回空）都**跳过硬**，保留原有事件 —— 空结果是"这一次没生成"，
-   不是"这一段应该有 0 条事件"。回归钉子：`events.rs::tests`（空/失败/正常三条）。
+   与 `Some([])`（模型返回空）都**跳过硬**，保留原有事件。回归钉子：`events.rs::tests`（空/失败/正常三条）。
 2. **checkpoint 的窗口 id 必须带时间段**（`seg_{i}_{start}-{end}@fingerprint`）：命中条件只有
    `id && items`，而重新分段后「新的 seg_1」与「旧的 seg_1」的 ±3s 字幕窗口**可能一字不差**
    → 会把别的时间段的事件套过来（"续传之后显示不正常"）。带区间后重新分段必然失配。
-3. **逐段状态快照** `<project>/.yekitrim/polish_events.status.json`（`llm/status.rs`）：
-   `cmd_llm` 落盘、`polish_project_get?preview=1` 注入 `_llm_status`、
-   `TimelineEditor` 给**没产出事件的段**上琥珀色（成功 = 当前颜色，用户要求），
-   分段属性面板显示失败原因 + 「只重做本段事件」。
-   ⚠ **落盘前必须 `remap_to_segments`**：`cmd_llm` 拿到窗口结果之后还会砍掉超出视频时长的段，
-   窗口下标与最终段下标已经不是一回事（不对齐就会给错段标色）；
-   （屏蔽区间**不再**改段的构成 —— 它只做标记、不许删事件，见 `crates/yekitrim-polish/src/project/AGENTS.md`。）
-   成败**不看最终事件数** —— 空事件段会被 process 补上默认运镜，用 `events.is_empty()` 当判据
-   会让失败永远显示成成功。
+3. **逐段状态快照** `<project>/.yekitrim/polish_events.status.json`（`llm/status.rs`）：`cmd_llm` 落盘、
+   `polish_project_get?preview=1` 注入 `_llm_status`、`TimelineEditor` 给**没产出事件的段**上琥珀色，
+   分段面板显示失败原因 + 「只重做本段事件」。
+   ⚠ **落盘前必须 `remap_to_segments`**（`cmd_llm` 之后还会砍掉超出时长的段，窗口下标 ≠ 最终段下标）。
+   成败**不看最终事件数** —— 空事件段会被 process 补上默认运镜，用 `events.is_empty()` 判会让失败显示成成功。
 4. **入口语义**：`POST /api/polish/llm {full}` 的 `full` **默认 true = 全部重做**（先清 checkpoint；
    编辑器按钮再带一次二次确认，因为它会重写当前全部段与事件，含手工加的）；
    `POST /api/polish/llm-segment {index}` = **只重做这一段**（不重跑分段、不走 checkpoint、
@@ -82,11 +76,17 @@
 
 **精修页 `PolishView`：右栏按钮行有宽度预算**
 
-- ⚠️ **右栏只剩一块面板**（2026-10-06 用户口径）：原「生成与导出」与「画面构成」重叠 ⇒ 两个页签删掉、
-  合并成「画面构成 / 输出」。字幕字体 / 弹幕字体与偏移 / 贴纸来源 / 区域与落点 / LLM 剪辑 全搬到
-  **轨道设置**（点时间轴上的轨道名；**一个面板装全部六段** —— 点哪条轨道都是同一个面板、只滚到那一段，
-  2026-10-06 用户口径）；互斥规矩见 `webui/src/components/AGENTS.md`。⚠️ 行内容宽只有 **266px**，
-  `PolishView.vue` 里那几行按钮/滑块的几何推导别删。
+- ⚠️ **右栏 = 两块常驻卡片**（2026-10-06 第三轮用户口径：「把轨道设置放在右侧常驻，改为项目设置
+  和 llm 剪辑导出之类的合并，画面尺寸退回原来的那个页面」）：①**画面尺寸**（`[canvas]` 横屏/竖屏 +
+  缩放 / 主画面位置 / 背景）自己一块；②**项目设置 / 输出**（LLM 剪辑 + 渲染导出 + 一跳设置页链接）。
+  **两块都常驻、没有页签**（页签第一轮就删了）。⚠️ **两块必须包在同一个 grid 子节点 `.right-col` 里** ——
+  `.edit-grid` 是两列（`1fr 300px`），直接摊成两个子节点时第二块充当"第三列"**掉到下一行占满整宽**
+  （实测 1045px，本轮真踩到）。判据 ⑰。字幕/弹幕字体与偏移 · 贴纸来源 · 框选落点仍在**轨道设置**。
+- ⚠️ **轨道设置只留控件**（第三轮：「仅信息展示的内容删除，例如：分段 / 屏蔽」）：「分段 / 屏蔽」
+  （两个计数、零控件）与「音效」（一条全局音量滑杆，事件自己的 `volume`/`sfx_volume` 优先 ⇒
+  改了看不出效果；要改走 `polish.toml` 的 `[sfx] volume`）**整组删**。现在只剩三段：
+  字幕 / 弹幕 · 框选区域 · 贴纸。⚠️ **两颗框选按钮（弹幕区域 / 人物）必须同一行**（它们原分居
+  「字幕/弹幕」与「运镜」两组）；判据 ⑰ 用 `getBoundingClientRect().top` 相等钉。
 - **出片通道下拉已删除**（2026-10-01）：出片只剩底座一条腿，兜底腿已整条删除 —— 留一个只有一个
   选项的下拉只会让人以为"还有得选、只是我没选对"。`runRender` 不再收 `renderer` 参数。
 
@@ -146,19 +146,15 @@
   （会得到 clip-01, clip-02, clip-100, …, clip-11，卡片序号也跟着错）；②`.frag-cards`
   是 `grid-auto-flow:column`，**必须写 `justify-content:start` + `grid-auto-columns:max-content`** ——
   缺省 `normal`(=stretch) 会把 auto 宽的列撑满整行，只有两张卡时它们被推到两端。
-- ⚠️ 而「产物」栏以前显示的名字是写死的（`renderedName`/`coverName` 两个 ref 从没被赋过值，
-  恒为 `export.mp4` / `cover.jpg`），用户根本看不出产物其实叫 `vtuber-clip_1.mp4`，会以为被覆盖了 ——
-  现在直接取 `clipEntry.rendered_file` / `cover_file`，**别再退回写死的名字**（harness 有 8 项断言）。
+- ⚠️ 「产物」栏的名字原来写死（`renderedName`/`coverName` 从没被赋值，恒为 `export.mp4`/`cover.jpg`），
+  用户以为被覆盖了 —— 现在取 `clipEntry.rendered_file`/`cover_file`，别退回写死的名字。
 - ⚠️ **剪切完成 ⇒ 精修工程已就绪**（服务端在剪切收尾里 init，见 `crates/yekitrim-service/AGENTS.md`）：
   卡片的「精修」按钮正常情况下直接进页面；只有**老片段**（这次改动前剪出来的）才需要补一次 init，
   那条路**必须等任务跑完再跳**（发完就跳会先撞 `polish.toml not found` → 精修页显示「片段配置读取失败」）。
 - ⚠️ **删除不是任务（不发 job），刷新只能由前端自己驱动**：`ProjectClipsSection` 的数据是父页面
-  （`ProjectSlicesView`）传下来的**快照**，它自己的 `load()` 在 props 模式下只是照抄那份旧快照 ——
-  删完不 `emit('changed')` 让父页面 `load({silent:true})` 重新取数，卡片就留在墙上，用户再点一次
-  就是 404「clip-XX 不存在」（用户报过「删除会报错找不到内容」；日志现场 = 一次 200 紧接三次 404）。
-  同一条规矩适用于改事件（`saveEdit`）与新建片段（`addClip`）。`silent` 必须真的静默（别置 `loading`，
-  否则整面墙换骨架屏、子组件被卸载）；删除中按钮禁用（`deletingDirs`）防连点；404 当「已经不在了」
-  提示并刷新，而不是报删除失败。
+  传下来的**快照**，删完不 `emit('changed')` 让父页面 `load({silent:true})` 重新取数，用户再点就是
+  404「clip-XX 不存在」（报过「删除会报错找不到内容」）。同规矩适用于改事件与新建片段。
+  `silent` 必须真静默（否则整面墙换骨架屏）；删除中禁用防连点；404 当"已经不在了"提示并刷新。
 - ⚠️ `readSort()` 的回落必须用 **`SORT_OPTIONS[0]`**：以前写死 `key:'rank'`，换成 popularity 之后
   旧偏好失配 → 排序栏一个都不高亮、还按不存在的键静默排序（实测踩过）。
 - 筛选两级（v6.7）：一级 **已剪切 / 未剪切 / 全部（最后）**（`filterKey`），二级 **全部 / 精修中 / 已导出**
