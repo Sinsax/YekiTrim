@@ -428,8 +428,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    ⇒ 段数 5 → **3**：字幕/弹幕 · 框选区域 · 贴纸。
   //    注意「运镜」这个标题**不再作为分组标题存在**（它的唯一控件"框选人物"并进了框选组），
   //    但点时间轴「运镜」轨道名仍要能滚到那块（ref 同时挂 camera 与 danmaku_area 两个键）。
-  // 第六轮（2026-10-06）：「框选区域」改名「区域」，且贴纸排到区域**上面** ⇒ 顺序变了
-  const LANE_GROUPS = ['字幕 / 弹幕', '贴纸', '区域']
+  // 第八轮（2026-10-06）：「贴纸」与「区域」合并成**一组**「区域设置」（用户：
+  // 「贴纸和区域合并，显示为区域设置」）⇒ 只剩两组，顺序 字幕/弹幕 · 区域设置。
+  const LANE_GROUPS = ['字幕 / 弹幕', '区域设置']
   const panelBody = (s) => {
     // 面板正文 = 「项目设置」页签那一半（合并后轨道设置内容就住在里面）
     const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
@@ -455,11 +456,17 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
       && !lane.includes('开关只影响渲染')
   }
   // ⚠️ **框选那两颗按钮必须同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）：
-  //    判据 = 同一个 `.row` 里同时含这两颗按钮，而不是各占一行。
-  // 两颗框选按钮在**同一个 `.row`** 里（行排版下每组占满 300px，横排放得下）。
+  // 区域设置里三颗按钮（弹幕位置 / 人物位置 / 自动）**在同一行**。
+  // ⚠️ 别用 `<div class="row">…</div>` 正则：非贪婪解遇到**内层** `</div>` 就截断了，
+  //    永远跨不过这组按钮（实测 rows 里一条都不含三颗）。改用"三颗之间不许出现换行容器"。
   const selectBtnsOneRow = (s) => {
-    const rows = [...s.matchAll(/<div class="row">([\s\S]{0,900}?)<\/div>/g)].map((m) => m[1])
-    return rows.some((r) => r.includes("toggleSelect('danmaku_area')") && r.includes("toggleSelect('liver')"))
+    const marks = ["toggleSelect('danmaku_area')", "toggleSelect('liver')", 'toggleStickerMode']
+    const at = marks.map((m) => s.indexOf(m))
+    if (at.some((i) => i < 0)) return false
+    const lo = Math.min(...at)
+    const hi = Math.max(...at)
+    // 三颗之间只允许出现 button/span 这类行内元素，不许出现 div.row / div.col（那就是换了行/列）
+    return !/<div class="(row|col)[^"]*">/.test(s.slice(lo, hi))
   }
   // ⚠️ **纯信息组不许回来**：面板里不许再出现「分段 / 屏蔽」标题，也不许有只读计数行
   const noInfoOnly = (s) => {
@@ -468,7 +475,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   }
   const focusScrolls = (s) =>
     s.includes('laneGroupEls[lane]') && s.includes('scrollIntoView({ block: ' + "'nearest'" + ' })')
-      && /:class="\{ on: openLane === 'camera' \|\| openLane === 'danmaku' \}"/.test(s)
+      // ⚠️ 第八轮合并后「区域设置」同时挂 sticker / camera / danmaku_area 三个轨道名，
+      //    所以 on 的表达式是**三个** || 串起来的 —— 别再钉回两个。
+      && /:class="\{ on: openLane === 'sticker' \|\| openLane === 'camera' \|\| openLane === 'danmaku' \}"/.test(s)
   check('⑰ 轨道名可点开设置', nameOpens(timelineEditor), true)
   check('⑰ 块的属性面板在轨道设置打开时让位', itemYields(timelineEditor), true)
   check('⑰ 页面渲染轨道设置面板，且 Teleport 目标唯一且是空容器', panelOk(polishView), true)
@@ -489,10 +498,17 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   // ⚠️ 第七轮纠偏：第六轮我读成"三组并排成三列"是**误读**，用户说「整体还是以行来排版」。
   //    所以这里反过来钉：**不许**再有 `.lane-cols` 那套并列，三组必须是行排版（上下堆叠）。
   check('⑰ 三组是**行排版**（没有并排的列容器）', /class="lane-cols"/.test(polishView), false)
-  check('⑰ 三组上下堆叠（3 个 .lane-group 顺序排）', (polishView.match(/<div class="lane-group"/g) || []).length, 3)
-  check('⑰ 组名恰好是 字幕/弹幕 · 贴纸 · 区域（贴纸排在区域上面）',
+  check('⑰ 两组上下堆叠（贴纸与区域已合并）', (polishView.match(/<div class="lane-group"/g) || []).length, 2)
+  // 用户给的行序：**贴纸来源行在按钮行上面**。
+  // ⚠️ 别用 `indexOf('ss-options')` —— CSS 在 `<style>` 里也写了这个名字，会比模板更早命中。
+  //    锚在**模板里的**那一处（`<div class="ss-options">`）上。
+  check('⑰ 区域设置里：贴纸来源行在按钮行上面',
+    polishView.indexOf('<div class="ss-options">') < polishView.indexOf('> 弹幕位置'), true)
+  check('⑰ 区域设置里三颗按钮：弹幕位置 / 人物位置 / 自动（同一个 .row）',
+    selectBtnsOneRow(polishView), true)
+  check('⑰ 组名恰好是 字幕/弹幕 · 区域设置（贴纸已并入区域设置）',
     (polishView.match(/<div class="lane-group-h">([^<]+)<\/div>/g) || []).map((m) => m.replace(/<[^>]+>/g, '')).join('|'),
-    '字幕 / 弹幕|贴纸|区域')
+    '字幕 / 弹幕|区域设置')
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
   check('⑰ 任务详情是**浮层**（不挤占下方控件）',
     /\.job-wrap \{ position:relative; \}/.test(polishView)
@@ -502,7 +518,6 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 三段设置**同时**在一个面板里（不是一轨一屏）', allGroupsAtOnce(polishView), true)
   check('⑰ 面板里**只留控件**（没有 hint 行 / 计数标题）', onlyControls(polishView), true)
   check('⑰ 面板里没有纯信息组（分段/屏蔽、音效都已删）', noInfoOnly(polishView), true)
-  check('⑰ 两颗框选按钮在**同一行**', selectBtnsOneRow(polishView), true)
   check('⑰ 点轨道名 = 焦点高亮 + 滚到那一段', focusScrolls(polishView), true)
   const MUT17 = [
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
@@ -529,17 +544,16 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     ['右栏两块不包包装（第二块会掉到下一行占满整宽）', polishView, (s) => s.replace('class="right-col"', 'class="right-col-x"'), (m) => rightColWrapped(m)],
     ['选中块不收起轨道设置', timelineEditor, (s) => s.replace("if (props.laneOpen) emit('lane-open', '')", ''), (m) => blockSelectClosesLane(m)],
     ['退回"一轨一屏"（点谁换谁）', polishView, (s) => s.replace(`<div class="lane-group" :class="{ on: openLane === 'subtitles' }"`, `<div v-if="openLane === 'subtitles'" class="lane-group"`), (m) => allGroupsAtOnce(m)],
-    ['摘掉一段（面板里少一条轨道的设置）', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', ''), (m) => allGroupsAtOnce(m)],
-    ['把「分段 / 屏蔽」那个纯信息组装回来', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">分段 / 屏蔽</div><div class="lane-group-h">贴纸</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
-    ['把「音效」音量组装回来', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">音效</div><div class="lane-group-h">贴纸</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
-    // 变异：把「框选弹幕区域」那颗按钮挪出那一行（塞进一个独立的 `.row`）⇒ 不再同行
-    ['两颗框选按钮分到两个 .col（不再同行）', polishView,
-      (s) => s.replace('<Icon name="crop" :size="11" /> 框选人物', '<Icon name="crop" :size="11" /> 框选人物', 1)
-        .replace('<div class="row">' + String.fromCharCode(10) + '      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === \'danmaku_area\' }"',
-                 '<div class="col">' + String.fromCharCode(10) + '      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === \'danmaku_area\' }"'),
+    ['摘掉一段（面板里少一条轨道的设置）', polishView, (s) => s.replace('<div class="lane-group-h">区域设置</div>', ''), (m) => allGroupsAtOnce(m)],
+    ['把「分段 / 屏蔽」那个纯信息组装回来', polishView, (s) => s.replace('<div class="lane-group-h">区域设置</div>', '<div class="lane-group-h">分段 / 屏蔽</div><div class="lane-group-h">区域设置</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
+    ['把「音效」音量组装回来', polishView, (s) => s.replace('<div class="lane-group-h">区域设置</div>', '<div class="lane-group-h">音效</div><div class="lane-group-h">区域设置</div>'), (m) => allGroupsAtOnce(m) && noInfoOnly(m)],
+    // 变异：「自动」那颗挪进一个独立的 `.row` ⇒ 三颗不再同行
+    ['把「自动」那颗挪到另一行（三颗不再同行）', polishView,
+      (s) => s.replace('      <button class="mini-btn flex-1 jc-center"' + String.fromCharCode(10) + '              :class="{ selected: stickerCfg.position_mode === \'manual\' }"',
+                       '      </div>' + String.fromCharCode(10) + '      <div class="row mt-4">' + String.fromCharCode(10) + '      <button class="mini-btn flex-1 jc-center"' + String.fromCharCode(10) + '              :class="{ selected: stickerCfg.position_mode === \'manual\' }"'),
       (m) => selectBtnsOneRow(m)],
-    ['往面板里加回一条解释文字（hint 行）', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">贴纸</div><div class="hint mt-4">开关只影响渲染，不改事件</div>'), (m) => onlyControls(m)],
-    ['加回"音效事件 N 条"那行读数', polishView, (s) => s.replace('<div class="lane-group-h">贴纸</div>', '<div class="lane-group-h">贴纸</div><div class="row spread small mt-4"><span class="muted">音效事件</span></div>'), (m) => onlyControls(m)],
+    ['往面板里加回一条解释文字（hint 行）', polishView, (s) => s.replace('<div class="lane-group-h">区域设置</div>', '<div class="lane-group-h">区域设置</div><div class="hint mt-4">开关只影响渲染，不改事件</div>'), (m) => onlyControls(m)],
+    ['加回"音效事件 N 条"那行读数', polishView, (s) => s.replace('<div class="lane-group-h">区域设置</div>', '<div class="lane-group-h">区域设置</div><div class="row spread small mt-4"><span class="muted">音效事件</span></div>'), (m) => onlyControls(m)],
     ['点轨道名不再滚到那一段', polishView, (s) => s.replace("if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })", ''), (m) => focusScrolls(m)],
   ]
   for (const [what, src, mutate, still] of MUT17) {

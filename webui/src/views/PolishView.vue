@@ -191,10 +191,18 @@
       显示弹幕
     </label>
   </div>
-  <!-- ── 贴纸：来源 + 落点 ── -->
-  <div class="lane-group" :class="{ on: openLane === 'sticker' }"
-       :ref="(el) => (laneGroupEls.sticker = el)">
-    <div class="lane-group-h">贴纸</div>
+  <!-- ── **区域设置** = 贴纸来源 + 区域框选 + 落点模式（用户 2026-10-06 第八轮：
+       「贴纸和区域合并，显示为区域设置」）。原来「贴纸」与「区域」是两组，改的是同一批东西
+       （预览上的框与落点、以及贴纸落在哪儿），合并成一组。
+       行结构（用户给的样子）：
+         区域设置
+         [emoji][ysyk][…]                      ← 贴纸来源（多选开关）
+         [弹幕位置][人物位置][自动]              ← 三颗同一行；「自动」点一下切 自动/固定
+       ⚠️ ref 同时挂给 `sticker` / `camera` / `danmaku_area` 三个轨道名：点时间轴上这几条轨道
+       的名字都该滚到**这一组**（它们现在共用同一组控件）。 -->
+  <div class="lane-group" :class="{ on: openLane === 'sticker' || openLane === 'camera' || openLane === 'danmaku' }"
+       :ref="(el) => { laneGroupEls.sticker = el; laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
+    <div class="lane-group-h">区域设置</div>
     <div class="ss-options">
       <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
               :class="{ on: stickerSource.includes(src.name) }"
@@ -208,52 +216,45 @@
       </div>
       <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
     </div>
-  
+
+    <!-- ⚠️ **三颗同一行**（用户 2026-10-06 第八轮）：弹幕位置 / 人物位置 / 自动。
+         前两颗是预览上的自由选框（互斥，同一时刻只有一份），第三颗是贴纸落点模式开关。 -->
     <div class="row mt-6">
+      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
+        <Icon name="crop" :size="11" /> 弹幕位置
+      </button>
+      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
+        <Icon name="crop" :size="11" /> 人物位置
+      </button>
       <button class="mini-btn flex-1 jc-center"
               :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
               :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
               @click="toggleStickerMode">
         <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
       </button>
-      <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
-              :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
-              @click="startPointEdit">
-        <Icon name="pin" :size="11" /> 改落点
-      </button>
     </div>
-    <template v-if="stickerCfg.position_mode === 'manual'">
-      <div class="mono small mt-4">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
-      <div v-if="pointEdit" class="row mt-4 gap-6">
-        <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
-        <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
-      </div>
-    </template>
-  </div>
-  <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
-       它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
-       要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
-       （两个框互斥，同一时刻只有一份）。
-       ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
-       都该滚到**这一组**（它们现在共用同一组控件）。 -->
-  <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
-       :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
-    <div class="lane-group-h">区域</div>
-    <div class="row">
-      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
-        <Icon name="crop" :size="11" /> 框选弹幕区域
-      </button>
-      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
-        <Icon name="crop" :size="11" /> 框选人物
-      </button>
-    </div>
+
     <template v-if="selectRegion">
       <div class="mono small mt-4">{{ rectText }}</div>
       <div class="row mt-4 gap-6">
         <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
         <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
+      </div>
+    </template>
+    <template v-if="stickerCfg.position_mode === 'manual' && !selectRegion">
+      <div class="row mt-4 gap-6">
+        <button v-if="!pointEdit" class="mini-btn flex-1 jc-center"
+                :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
+                @click="startPointEdit">
+          <Icon name="pin" :size="11" /> 改落点
+        </button>
+        <div class="mono small">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
+      </div>
+      <div v-if="pointEdit" class="row mt-4 gap-6">
+        <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
+        <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
       </div>
     </template>
   </div>
