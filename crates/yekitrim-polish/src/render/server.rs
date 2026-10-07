@@ -243,12 +243,9 @@ pub const SYSTEM_FONT_STACK: &str = "'Noto Sans SC','Microsoft YaHei','Noto Sans
 /// `builtin_fonts` 那条也显式滤掉了 id 含 emoji 的。**别再在这里补判据**（那就又是"各处各写一份"）。
 pub fn preferred_fallback_family() -> String {
     let root = yekitrim_core::fonts::dir();
-    // ① 库里显式设过默认的那支（用户意图最强）
-    let preferred = yekitrim_core::fonts::scan_all(&root)
-        .into_iter()
-        .filter(|e| e.installed)
-        .find(|e| e.is_default)
-        .map(|e| e.family_internal.trim().to_string())
+    // ① 库里显式设过默认的那支（用户意图最强）—— 判据只此一处：`fonts::default_text_family`
+    //    （2026-10-06 收口；`cmd_init` 也走它，否则「设为默认」对新工程无效）
+    let preferred = yekitrim_core::fonts::default_text_family(&root)
         // ② 否则内置那支中文（自带字体里只有它不是 emoji）
         .or_else(|| {
             yekitrim_core::fonts::builtin_fonts()
@@ -617,9 +614,10 @@ mod tests {
 
     /// ⚠️ **P1-f 的钉子**：字体栈首项必须跟着"库里装了什么"走。
     ///
-    /// 自带那支的内部族名是 **`霞鹜文楷 轻便版`**（中文），而常量里写的是英文 `LXGW WenKai` ——
-    /// 两者**永远匹配不上**，于是"装了自带字体"在页面上**完全没有效果**（静默回退雅黑），
-    /// 而用户明明在字体库里看得到它。这条测试把"首项会不会跟着变"钉住。
+    /// 自带那支的内部族名是 **`Noto Sans SC`**（与 `SYSTEM_FONT_STACK` 首项同名，这是它比旧的
+    /// 霞鹜文楷省事的地方），而老常量里曾经写的是英文 `LXGW WenKai` —— 两者**永远匹配不上**，
+    /// 于是"装了自带字体"在页面上**完全没有效果**（静默回退雅黑），而用户明明在字体库里看得到它。
+    /// 这条测试把"首项会不会跟着变"钉住。
     #[test]
     fn stack_head_tracks_installed_library_font() {
         // 这台机器上装没装自带中文，决定首项 —— 两种情况都必须自洽
@@ -627,16 +625,31 @@ mod tests {
         assert!(!head.trim().is_empty(), "首项不能是空的（整串会多出个空段）");
         let stack = font_family_with_stack("x");
         assert!(stack.contains(&head), "栈里必须含首项本身: {head} vs {stack}");
-        // 回落态（库里没有可用中文）必须与老常量**同一套族名与顺序**，否则存量工程的像素会变。
-        // ⚠️ 比的是**族名与顺序**，不是引号风格：`TAIL_STACK` 保留单引号（与真模板一致）、
-        // 首项走 `quote_css` 的双引号 —— CSS 里 '阿里' 与 "阿里" 完全等价，逐字比必红
-        // （这条断言第一版就是这么写错的，两次）。
-        if head == quote_css("LXGW WenKai") {
-            let norm = |s: &str| s.replace('\'', "\"").replace(" ", "");
+        // 尾段永远不变（首项之外的部分由 `TAIL_STACK` 供给，`tail_stack_matches_core_authority` 另钉）。
+        //
+        // ⚠️ **2026-10-06 修掉一条死断言**：这里原来是
+        //     `if head == quote_css("LXGW WenKai") { assert_eq!(head + TAIL_STACK, SYSTEM_FONT_STACK) }`
+        //   —— 而 `preferred_fallback_family()` 在库里没有可用中文时回落到
+        //     `quote_css("Noto Sans SC")`（**永远不等于** `"LXGW WenKai"`）。那个 `if` 体**恒不执行**，
+        //     即"回落态与老常量同族名同序"这条保证在 polish 侧**实际没有测试覆盖**（换字体时忘了同步）。
+        //     现在改成**无条件**断言：首项 + 尾段拼出来必须逐字等于 `SYSTEM_FONT_STACK` 那一套形状
+        //     （首项本身随库里装了什么变，所以要先把首项归一化掉再比尾段）。
+        let norm = |s: &str| s.replace('\'', "\"").replace(' ', "");
+        let rebuilt = norm(&format!("{},{}", head, TAIL_STACK));
+        let expect = norm(SYSTEM_FONT_STACK);
+        // 首项在两种情况下都可能是 `Noto Sans SC`（库里那支的内部族名恰好就是它），
+        // 所以"逐字相等"是合法的强断言；不同时至少尾段必须完全一致。
+        if rebuilt != expect {
+            let tail_of = |s: &str| {
+                s.splitn(2, ',')
+                    .nth(1)
+                    .map(|t| t.to_string())
+                    .unwrap_or_default()
+            };
             assert_eq!(
-                norm(&format!("{},{}", head, TAIL_STACK)),
-                norm(SYSTEM_FONT_STACK),
-                "回落时必须与老常量同族名同顺序（不然存量工程跟着变）"
+                tail_of(&rebuilt),
+                tail_of(&expect),
+                "尾段必须与老常量同族名同顺序（不然存量工程跟着变）: {rebuilt} vs {expect}"
             );
         }
     }
@@ -653,6 +666,42 @@ mod tests {
             norm(&authority_tail()),
             norm(TAIL_STACK),
             "TAIL_STACK 与 yekitrim_core::fonts::fallback_chain() 漂了 —— 改兜底链只改 core 那一处"
+        );
+    }
+
+    /// ⚠️ **「三处必须同名」的机器判据 —— 第三处原先完全没有闸门**（2026-10-06 补）。
+    ///
+    /// `render_core::types::default_font()`（新工程 init 时写进 `polish.toml` 的那支）与
+    /// `yekitrim_core::fonts::fallback_chain()` 首项（空库回落栈）、`SYSTEM_FONT_STACK` 首项
+    /// **必须同名**：`types.rs` 那条注释就是这么要求的，但**没有任何测试钉住第三处** ——
+    /// 改 `default_font()` 不会有任何东西变红。
+    ///
+    /// 漂了的症状（`types.rs` 注释原话）：新工程显式写族名 A，而"没选字体"的工程用族名 B，
+    /// **同一台机器上两种工程渲染不同字体，且不报错**。
+    ///
+    /// ⚠️ 判据放在 `polish` 而不是 `render-core`：`render-core` **不许依赖 `yekitrim-core`**
+    /// （分层单向，反向成环），所以只有 polish 同时看得见两边。
+    #[test]
+    fn new_project_default_font_matches_fallback_chain_head() {
+        // `SubtitleStyle::default().font` 就是 `default_font()`（新工程 init 写入的那支）。
+        // 直接取默认值，别去 `use` 那个私有 fn —— 它没导出。
+        let from_render_core = yekitrim_render_core::types::SubtitleStyle::default().font;
+        let head = yekitrim_core::fonts::fallback_chain()
+            .first()
+            .cloned()
+            .expect("兜底链不能是空的");
+        assert_eq!(
+            from_render_core.trim(),
+            head.trim(),
+            "`render_core::default_font()` 与 `fonts::fallback_chain()` 首项漂了 —— \
+             新工程显式写入 {from_render_core:?}，而没选字体的工程用 {head:?}，\
+             同一台机器上两种工程会渲染不同字体且不报错。\
+             改字体请**三处一起改**（这里 + fonts.rs 的 fallback_chain + SYSTEM_FONT_STACK）"
+        );
+        // 顺带钉住第二处（常量首项）—— 它由 `SYSTEM_FONT_STACK` 的字面量给出。
+        assert!(
+            SYSTEM_FONT_STACK.starts_with(&format!("'{}'", head)),
+            "SYSTEM_FONT_STACK 首项必须也是 {head:?}: {SYSTEM_FONT_STACK}"
         );
     }
 

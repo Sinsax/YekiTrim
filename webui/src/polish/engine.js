@@ -129,6 +129,10 @@ export function measureDanmakuWidths(dms, fontSize, fontFamily) {
   const size = fontSize || 42
   // 字体族也是缓存键的一部分：换了字体（同一批弹幕、同字号）丈量结果会变，
   // 只按 size 命中就会拿旧字体的宽度去算滚动时长 —— 弹幕没滚到边就消失。
+  //
+  // ⚠️ `fontFamily` 收的是**完整字体栈**（`dmFontFamily(cfg)` 的返回值），这里**原样用**、
+  //    不要再包一层引号 —— 它的取值已经含回退链（自己 + 雅黑 + Noto），
+  //    包了会变成一个叫 `"X","Y",sans-serif` 的假族名（浏览器认不出 ⇒ 静默退默认体）。
   const family = String(fontFamily || '').trim()
   const hit = dmWidthCache.get(dms)
   if (hit && hit.size === size && hit.family === family) return hit.widths
@@ -136,7 +140,7 @@ export function measureDanmakuWidths(dms, fontSize, fontFamily) {
     const c = document.createElement('canvas')
     dmMeasureCtx = c.getContext('2d')
   }
-  dmMeasureCtx.font = '600 ' + size + 'px ' + (family ? '"' + family + '",sans-serif' : 'sans-serif')
+  dmMeasureCtx.font = '600 ' + size + 'px ' + (family || 'sans-serif')
   const widths = dms.map((d) => dmMeasureCtx.measureText(d.text || '').width + 20)
   dmWidthCache.set(dms, { size, family, widths })
   return widths
@@ -333,8 +337,19 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
 
 function sfxVolume(cfg) { return (cfg.sfx && cfg.sfx.volume) || 0.1 }
 function dmFontSize(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font_size) || 42 }
-/** 弹幕字体（`[style.danmaku] font`，字体库 id；空 = 跟着字幕那条字体栈走）。 */
-function dmFontFamily(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font) || '' }
+/** 弹幕字体族（`[style.danmaku] font`，字体库 id）。
+ *
+ *  ⚠️ **空 = 跟随字幕那条字体栈**（契约见 Rust `DanmakuStyle::font`），所以空值要退到
+ *  `.cap` 那套栈（`style.subtitle.font` + 雅黑 + Noto），**不是裸 `sans-serif`**。
+ *  以前这里返回空串、调用方退 `sans-serif` —— 那既不是"跟随字幕"，也和字幕的实际字体不同。
+ *  ⚠️ 量宽与绘制必须都走它：两处各写一份就会"量宽的字体 ≠ 画出来的字体"，
+ *  弹幕没滚到边就消失（与 `templates/index.html::dmFontFamily` 同口径）。 */
+function dmFontFamily(cfg) {
+  const own = (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font) || ''
+  if (own) return `"${own}","Microsoft YaHei","Noto Sans SC",sans-serif`
+  const sub = (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font) || 'Noto Sans SC'
+  return `"${sub}","Microsoft YaHei","Noto Sans SC",sans-serif`
+}
 
 function safeEmoji(name) {
   const code = parseInt(name, 16)

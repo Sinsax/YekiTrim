@@ -1178,6 +1178,22 @@ crates/yekitrim-core/assets/fonts/
    （老工程没显式选过字体时用哪支），不是给用户点的操作 —— 留按钮会让人以为
    "选了它所有工程的字幕都变"，而实际只影响没选过的那些。
    ⚠️ 服务端 `set_default` 与 CLI 面**保留**（初始化/修复要用），只是界面不再暴露。
+   ⚠️⚠️ **2026-10-06 更正：上面这段描述的行为当时并不存在，按钮其实也还在。**
+   两处都错了，用户报「每次切出切片，字体都不是字体库设置的默认字体」才暴露出来：
+   - **"初始化设定"是假的** —— `cmd_init` 当时**根本不读**默认位，写死的是
+     `render_core::types::default_font()` 的 `"Noto Sans SC"`。而剪切收尾会对每个新片段
+     自动跑 init（`core_pipeline::init_polish_for_clip`）⇒ 每个新片段都是硬编码那支。
+   - **按钮其实还在** —— `FontLibrary.vue` 有「设为默认文字」/「设为默认 emoji」两颗，
+     且 emoji 那颗是**死按钮**（服务端 `set_default` 见到 emoji 必定 `bail`）。
+   **现在的事实口径**：`cmd_init` 已经真的读默认位（`fonts::default_text_family`，
+   判据只此一处，`preferred_fallback_family()` 也走它）；emoji 那颗按 §22.4 的 C10 原设计
+   改回了**静态「自动补充」标签**。判据：`cargo test -p yekitrim-polish --test init_font_default`
+   （含变异自证）与 `.workbuddy/probe-fontlibrary.mjs`。
+
+   ⚠️ 同一次更正的第三条：**弹幕字体**。`DanmakuStyle::font` 的契约是「空 = 跟随字幕那条
+   字体栈」，但两个 canvas 路径（`engine.js` / `templates/index.html`）在空值时退的是
+   **裸 `sans-serif`** —— 既不是"跟随字幕"，也和量宽用的字体不是同一支。现已统一走
+   `dmFontFamily()`（预览与模板各一份，同口径）。
 
 ### 23.7 验收
 

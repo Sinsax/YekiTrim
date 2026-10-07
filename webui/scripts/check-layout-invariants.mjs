@@ -568,12 +568,24 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const noDanmakuLane = (s) => !s.includes("lane: 'danmaku'")
   const dmToggleInPanel = (s) => s.includes("@change=\"toggleLane('danmaku')\"")
   const dmFontSaves = (s) => s.includes('saveProjectPatch(pid.value, dir.value, { danmaku_font: next })')
+  // ⚠️ 2026-10-06：量宽那两条判据原先锚在**旧实现**上（`(family ? '"'+family+'",sans-serif' : 'sans-serif')`
+  // 与模板里那句 `var dmFam = …`）。那次改动把"弹幕字体为空"的口径**从裸 `sans-serif` 改成跟随字幕栈**
+  // （契约见 `DanmakuStyle::font`）—— 所以两处都换成了 `dmFontFamily(...)`。
+  // **判据的意图没变**（量宽必须带字体族、缓存键必须含字体族），只换锚点；
+  // 并新增一条直接钉"空值不退回裸 sans-serif"的判据，防止再退回去。
   const measureByFamily = (s) =>
     s.includes('export function measureDanmakuWidths(dms, fontSize, fontFamily)')
     && s.includes('hit.size === size && hit.family === family')
-    && s.includes("dmMeasureCtx.font = '600 ' + size + 'px ' + (family ?")
+    && s.includes("dmMeasureCtx.font = '600 ' + size + 'px ' + (family || 'sans-serif')")
+    && s.includes('function dmFontFamily(cfg)')
+    // 空值必须退到**字幕那条栈**，不是裸 sans-serif：
+    && s.includes("cfg.style.subtitle && cfg.style.subtitle.font")
   const templateMeasuresByFamily = (s) =>
-    s.includes('var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font)')
+    s.includes('function dmFontFamily()')
+    && s.includes('cx.font = \'600 \' + fs + \'px \' + dmFontFamily();')
+    // 绘制那条腿必须与量宽走**同一个**函数（否则量宽字体 ≠ 画的字体）
+    && s.includes("ctx.font = '600 ' + fs_dm + ' ' + dmFontFamily();")
+    && s.includes("CFG.style.subtitle && CFG.style.subtitle.font")
   const layersInheritFont = (s) =>
     /\.dm \{[\s\S]{0,700}?font-family:inherit;/.test(s) && /\.cap \{[\s\S]{0,400}?font-family:inherit;/.test(s)
   const measOk = (m) => measureByFamily(m) && templateMeasuresByFamily(templateHtml) && layersInheritFont(previewVue)
@@ -585,9 +597,10 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑱ `.dm` / `.cap` 声明 `font-family:inherit`（否则被全局 `*` 规则盖掉）', layersInheritFont(previewVue), true)
   const MUT18 = [
     ['量宽的缓存键丢掉字体族（换字体拿旧宽度 ⇒ 没滚到边就消失）', engineJs, (s) => s.replace('hit.size === size && hit.family === family', 'hit.size === size'), measOk],
-    ['预览量宽退回 sans-serif', engineJs, (s) => s.replace(" + (family ? '\"' + family + '\",sans-serif' : 'sans-serif')", ''), measOk],
+    ['预览量宽退回 sans-serif（丢掉字体族）', engineJs, (s) => s.replace(" + (family || 'sans-serif')", ''), measOk],
     ['`.dm` 的 inherit 摘掉（字体设置静默失效）', previewVue, (s) => s.replace('      font-family:inherit; }', '      }'), layersInheritFont],
-    ['模板量宽退回 sans-serif', templateHtml, (s) => s.replace('var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font)', 'var dmFam = 0'), templateMeasuresByFamily],
+    ['模板量宽退回 sans-serif（丢掉字体族）', templateHtml, (s) => s.replace(" + dmFontFamily();\n    for (var i = 0", "\n    for (var i = 0"), templateMeasuresByFamily],
+    ['弹幕字体为空时退回裸 sans-serif（不再跟随字幕栈）', engineJs, (s) => s.replace("const sub = (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font)", "const sub = null"), measOk],
     ['弹幕面板里那枚显示开关摘掉', polishView, (s) => s.replace("@change=\"toggleLane('danmaku')\"", ''), dmToggleInPanel],
   ]
   for (const [what, src, mutate, still] of MUT18) {
