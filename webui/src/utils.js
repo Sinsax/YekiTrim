@@ -105,6 +105,80 @@ export function segColor(i) {
   return c
 }
 
+// ── 复合片段（多段切片）的「各段源区间」：**全站唯一**的格式化出口 ──────────────
+//
+// 真源是 `clip.json` / `events.json` 里的 `ranges`（秒）。四处卡片墙（切片页两种卡 /
+// 精修片段条 / 首页总览）都调下面这几个函数 —— 别再在各自模板里拼区间文案：
+// 「N 段」是谁都会写，**哪几段**只有一处能改，否则改一处漂三处，静态判据也钉不住。
+//
+// ⚠️ 判据只认 **> 1 段**（与写侧 `ranges.len() > 1` 同口径）：单段写不写 `ranges` 都算普通片段，
+// 显示上必须和没有 `ranges` 的老片段**一个像素都不差**。
+// ⚠️ 输出**按时间排序**（写侧 `create-event` 与 `Event::normalize_ranges` 也是这个序）：
+// 手工标段时列表的行序是"添加顺序"，落盘后会变成时间序 —— 卡片上写的编号一律按时间，
+// 所以标题里明写"按时间"。
+
+/** 段号（0 基）：①②③… 超过 10 段退回 `11.`（圈码只到 ⑩）。 */
+export function segMark(i) {
+  const marks = '①②③④⑤⑥⑦⑧⑨⑩'
+  const n = Math.abs(Number(i) || 0)
+  return n < marks.length ? marks[n] : n + 1 + '.'
+}
+
+/** 秒 → `07:21.4` / `1:02:03.5`（**带一位小数**：段边界要精确到 0.1s 才核得动）。 */
+export function fmtSpan(sec) {
+  const n = Math.max(0, Number(sec) || 0)
+  const h = Math.floor(n / 3600)
+  const m = Math.floor((n % 3600) / 60)
+  const s = n - h * 3600 - m * 60
+  const mm = h ? String(m).padStart(2, '0') : String(m)
+  return (h ? h + ':' : '') + mm + ':' + s.toFixed(1).padStart(4, '0')
+}
+
+/** 规范化：接受 `[{start,end}]` 或 `{ranges:[…]}` / 卡片条目（`meta` / `ev` 都行）。
+ *  返回**按时间排序**、丢掉非法段之后的数组；不足 2 段返回 `[]`（调用方据此判"是不是复合片段"）。 */
+export function compoundRanges(src) {
+  const raw = Array.isArray(src) ? src : src?.ranges
+  if (!Array.isArray(raw)) return []
+  const out = raw
+    .map((r) => ({ start: Number(r?.start) || 0, end: Number(r?.end) || 0 }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start)
+  return out.length > 1 ? out : []
+}
+
+/** 段间**被丢掉**的时长（秒）= 外沿跨度 − 各段内容之和。单段/空 = 0。
+ *  ⚠️ 外沿用 `max(end) - min(start)`，**不是**"排序后最后一段的 end"：段是可能**互相重叠**的
+ *  （手工标段时两段可以压在一起 —— 项目 12 那条就有一条 1625.7–1653.8 包着 1632–1643），
+ *  那时"最后一个起点"的那个段未必是终点最大的那个，少算 11s 且**不报错**。 */
+export function rangesGapSecs(src) {
+  const rs = compoundRanges(src)
+  if (!rs.length) return 0
+  const span = Math.max(...rs.map((r) => r.end)) - Math.min(...rs.map((r) => r.start))
+  const content = rs.reduce((s, r) => s + (r.end - r.start), 0)
+  return Math.max(0, span - content)
+}
+
+/** 行内串：`① 07:21.4–08:06.5 · ② 15:29.0–16:43.0`（卡片那一行与悬停 title 共用）。 */
+export function rangesText(src) {
+  return compoundRanges(src)
+    .map((r, i) => `${segMark(i)} ${fmtSpan(r.start)}–${fmtSpan(r.end)}`)
+    .join(' · ')
+}
+
+/** 悬停 title：段数 + **全部区间** + 丢掉的空隙（>1s 才提）。
+ *  ⚠️ 用户可见文案里**不许**用 `**` 当强调（会原样显示成星号），这里只用中文标点。 */
+export function rangesHint(src) {
+  const rs = compoundRanges(src)
+  if (!rs.length) return ''
+  const gap = rangesGapSecs(rs)
+  const parts = [
+    `复合片段：按时间取 ${rs.length} 段源区间分段剪、合并输出（段间的空隙已丢掉）`,
+    rangesText(rs)
+  ]
+  if (gap >= 1) parts.push(`丢掉的有内容空隙合计 ${Math.round(gap)}s`)
+  return parts.join('\n')
+}
+
 export const TIMELINE_COLORS = {
   segments: '#525252', camera: '#2563eb', sticker: '#7c3aed', shake: '#dc2626',
   flash: '#d97706', blur: '#0891b2', vignette: '#4d7c0f',

@@ -16,7 +16,7 @@
       <span
         v-if="r.segments > 1"
         class="chip frag-seg"
-        :title="'多段片段：由 ' + r.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+        :title="rangesHint(r.ranges)"
       >{{ r.segments }} 段</span>
       <b class="frag-title">{{ i + 1 }} · {{ r.title }}</b>
       <button
@@ -31,6 +31,7 @@
 
 <script setup>
 // 精修页的片段切换卡：小卡片（只做跳转）、可 1 行/2 行显示（父级给 cardRows）
+import { rangesHint } from '../../utils'
 defineProps({
   rows: { type: Array, default: () => [] },
   current: { type: String, default: '' },

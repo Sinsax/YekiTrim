@@ -90,7 +90,7 @@
             <span
               v-if="clipRangeCount(it.view.c)"
               class="tag r"
-              :title="RANGE_TITLE(clipRangeCount(it.view.c))"
+              :title="rangesHint(it.ranges)"
             >{{ clipRangeCount(it.view.c) }} 段</span>
             <span
               v-if="it.view.orphan"
@@ -99,6 +99,16 @@
             >独立</span>
             <span v-if="isExported(it.view.c)" class="tag g">已导出</span>
             <span v-else-if="polishMap[it.view.c.dir]?.polish_ready" class="tag b">精修中</span>
+          </div>
+          <!-- **复合片段**：各段源区间（按时间）—— 只有多段才渲染，普通片段一个像素都不动。
+               段号 `segMark` + 颜色 `segColor`（与预处理页提段时同一套调色板）；
+               完整区间串与"丢掉多少空隙"在悬停 title 里（`rangesHint`，四处卡片墙共用一份）。 -->
+          <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
+            <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
+              <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
+              <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
+            </span>
+            <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
           </div>
           <div class="row mt-8 meta-slot">
             <span class="muted small mono">{{ fmt(it.view.start) }} → {{ fmt(it.view.end) }}</span>
@@ -143,13 +153,21 @@
             <span
               v-if="eventRangeCount(it.ev)"
               class="tag r"
-              :title="RANGE_TITLE(eventRangeCount(it.ev))"
+              :title="rangesHint(it.ranges)"
             >将切 {{ eventRangeCount(it.ev) }} 段</span>
             <span
               v-if="!it.ev.clip_dir && occupiedRanks.has(Number(it.ev.rank))"
               class="tag r"
               title="这个序号上有一个属于别的事件的旧片段：先把它删掉再剪，否则会覆盖它"
             >序号被占用</span>
+          </div>
+          <!-- 未剪切事件也能看出"剪出来是复合片段"：同一套区间行（内容与已剪卡片一致）。 -->
+          <div v-if="it.ranges.length" class="range-line" :title="rangesHint(it.ranges)">
+            <span v-for="(r, i) in it.ranges" :key="i" class="range-item">
+              <b :style="{ color: segColor(i).line }">{{ segMark(i) }}</b>
+              <span class="mono">{{ fmtSpan(r.start) }}–{{ fmtSpan(r.end) }}</span>
+            </span>
+            <span v-if="it.gap >= 1" class="range-gap">空隙 {{ Math.round(it.gap) }}s</span>
           </div>
           <div class="row mt-8 meta-slot">
             <span class="muted small mono">{{ fmt(it.ev.start_sec) }} → {{ fmt(it.ev.end_sec) }}</span>
@@ -314,7 +332,7 @@ import { toast } from '../stores/toast'
 import { confirmDialog, promptDialog } from '../stores/dialog'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
-import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf, clipNameOf, isEditableKeyEvent } from '../utils'
+import { EVENT_TYPES, TYPE_ZH, fmtClock, clipMediaUrl, redetectWarning, clipMatchesEvent, uncutEventsOf, clipNameOf, isEditableKeyEvent, compoundRanges, rangesHint, rangesGapSecs, fmtSpan, segMark, segColor } from '../utils'
 import { readMasterVolume, readMuted, saveMasterVolume, saveMuted } from '../polish/audio'
 
 const props = defineProps({
@@ -496,7 +514,8 @@ function eventRangeCount(ev) {
   return n > 1 ? n : 0
 }
 
-const RANGE_TITLE = (n) => `多段片段：由 ${n} 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉，无字幕的空隙保留给「去静音」）`
+/** 段数那枚 tag 与区间行的文案都从 `utils.js` 来（`rangesHint` / `rangesText` / `fmtSpan`）——
+ *  这里不再留第二份 `RANGE_TITLE`：曾经四处卡片墙各拼一句，改一处就漂三处。 */
 
 function clipView(c) {
   const ev = matchedEventOf(c)
@@ -510,7 +529,12 @@ function clipView(c) {
     summary: ev ? (ev.summary || '') : (meta.summary || ''),
     start: ev ? Number(ev.start_sec) : Number(meta.original_start),
     end: ev ? Number(ev.end_sec) : Number(meta.original_end),
-    popularity: ev ? Number(ev.popularity) || 0 : Number(meta.popularity) || 0
+    popularity: ev ? Number(ev.popularity) || 0 : Number(meta.popularity) || 0,
+    // **各段源区间**（按时间，>1 段才非空）：卡片上那一行就渲染它（见 `.range-line`）。
+    // ⚠️ 真源永远是**片段自己的 `clip.json`**（不是匹配到的事件）—— 重新检测后事件会变，
+    // 盘上这个片段还是按老区间剪的那条，"显示的段"必须和"剪出来的内容"一致。
+    ranges: compoundRanges(meta),
+    gap: rangesGapSecs(meta)
   }
 }
 
@@ -674,8 +698,14 @@ const shownItems = computed(() => {
   // 未剪切事件只在「未剪切 / 全部」出现 —— 二级筛选是已剪片段的事，不参与这两档
   const events = (k === 'uncut' || k === 'all') ? uncutEvents.value : []
   const items = [
-    ...clips.map(v => ({ kind: 'clip', id: 'c:' + v.c.dir, view: v })),
-    ...events.map(ev => ({ kind: 'event', id: 'e:' + ev.rank, ev }))
+    ...clips.map(v => ({ kind: 'clip', id: 'c:' + v.c.dir, view: v, ranges: v.ranges, gap: v.gap })),
+    ...events.map(ev => ({
+      kind: 'event',
+      id: 'e:' + ev.rank,
+      ev,
+      ranges: compoundRanges(ev),
+      gap: rangesGapSecs(ev)
+    }))
   ]
   return items.sort((a, b) => cmpStats(statsOfItem(a), statsOfItem(b)))
 })
@@ -1528,6 +1558,16 @@ onUnmounted(() => {
 .tag.g { color:var(--green-deep); }
 .tag.r { color:var(--red-deep); }
 .tag.n { color:var(--ink-dim); }
+/* 「各段源区间」行（复合片段专有）：**最多三行**，超出截断（完整清单在悬停 title 里）。
+   卡片的分区高度是固定的，这一行**不许**把下面的时间/摘要/工具栏顶下去（普通片段没有这一行，
+   一个像素都不变）。⚠️ `max-height` 是量出来的：项目 12 那条 4 段 + 空隙读数 = 51px，
+   卡在 32px 会**静默切掉第三行**（`overflow:hidden` 什么也不报）—— 探针钉了 scrollHeight ≤ clientHeight。
+   段号用 `segColor(i)` 上色（行内 style），与预处理页提段时同一套调色板。 */
+.range-line { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; max-height:52px;
+  overflow:hidden; margin-top:5px; font-size:10.5px; line-height:1.45; color:var(--ink-dim); }
+.range-item { display:inline-flex; align-items:center; gap:3px; white-space:nowrap; }
+.range-item b { font-size:11px; font-weight:700; }
+.range-gap { color:var(--ink-faint); white-space:nowrap; }
 /* 时间/热度固定一行 */
 .meta-slot { height:22px; overflow:hidden; white-space:nowrap; }
 /* 摘要：已剪固定两行；未剪切事件没有媒体区，摘要吃掉剩余高度（最多 8 行） */

@@ -53,7 +53,7 @@
               <span
                 v-if="it.segments > 1"
                 class="ov-seg"
-                :title="'多段片段：由 ' + it.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+                :title="rangesHint(it.ranges)"
               >{{ it.segments }} 段</span>
               <span v-if="initing[it.key]" class="ov-init"><span class="spinner"></span>初始化…</span>
             </span>
@@ -109,7 +109,7 @@
               <span
                 v-if="it.segments > 1"
                 class="ov-seg"
-                :title="'多段片段：由 ' + it.segments + ' 段源区间**分段剪、合并输出**（段间有内容的空隙已丢掉）'"
+                :title="rangesHint(it.ranges)"
               >{{ it.segments }} 段</span>
               <span v-if="initing[it.key]" class="ov-init"><span class="spinner"></span>初始化…</span>
             </span>
@@ -143,7 +143,7 @@ import { projectData } from '../api/projectData'
 import { initPolish } from '../api/polish'
 import { watchJob } from '../api/jobs'
 import { toast } from '../stores/toast'
-import { hashIndex } from '../utils'
+import { hashIndex, rangesHint } from '../utils'
 
 /** 单区块最多渲染多少张卡片进 DOM（墙本身只显示三行，超出纯 DOM 负担） */
 const RENDER_CAP = 120
@@ -241,6 +241,8 @@ const allClips = computed(() => {
         dur: Math.round(Number(x.duration_secs) || 0) + 's',
         /** **多段片段**的段数（`clip.json` 的 `ranges`；>1 才在卡上打标记） */
         segments: (Array.isArray(meta.ranges) ? meta.ranges.length : 0) > 1 ? meta.ranges.length : 0,
+        /** 各段源区间（按时间）：悬停 title 用 `rangesHint` 一次列全（只有多段非空） */
+        ranges: (Array.isArray(meta.ranges) ? meta.ranges.length : 0) > 1 ? meta.ranges : [],
         rank: Number(meta.rank) || 0,
         /** 「最后一次改动」的 unix 秒（服务端 `clips[].mtime`）：排序主键，见 sortedClips */
         mtime: Number(x.mtime) || 0,
