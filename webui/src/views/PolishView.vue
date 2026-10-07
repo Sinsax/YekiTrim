@@ -153,7 +153,13 @@
        它只显示两个计数（分段 N / 屏蔽 N），没有任何控件 —— 段数在时间轴泳道上直接数得出来，
        两个数字放在设置面板里既不能改也不指向任何操作。**别再捡回来。** -->
 
-  <!-- ── 字幕 / 弹幕：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
+<!-- ── 三组**并排成三列**（用户 2026-10-06 第六轮：「三个区域放在同一行」）──
+     顺序 = 字幕 / 弹幕 · 贴纸 · 区域（贴纸排在「区域」上面）。
+     ⚠️ 右栏只有 300px，三列各约 92px：**列内控件都必须能窄到不溢出**（`min-width:0` +
+     `flex-wrap`）。改动后要跑 CDP 探针量横向溢出（水平 scrollWidth > clientWidth 即算坏）。
+     ⚠️ 组的 `:ref` 仍按**轨道名**挂（`camera` 与 `danmaku_area` 共用「区域」那组）。 -->
+<div class="lane-cols">
+  <div class="lane-col">
   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
        :ref="(el) => (laneGroupEls.subtitles = el)">
     <div class="lane-group-h">字幕 / 弹幕</div>
@@ -169,7 +175,7 @@
     <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
       <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
     </select>
-
+  
     <div class="row mt-6" style="gap:6px;align-items:center">
       <span class="small muted flex-none">偏移</span>
       <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
@@ -180,42 +186,15 @@
              title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
       <span class="mono small flex-none">s</span>
     </div>
-
+  
     <label class="ck-row mt-6" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
       <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
              @change="toggleLane('danmaku')">
       显示弹幕
     </label>
   </div>
-
-  <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
-       它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
-       要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
-       （两个框互斥，同一时刻只有一份）。
-       ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
-       都该滚到**这一组**（它们现在共用同一组控件）。 -->
-  <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
-       :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
-    <div class="lane-group-h">框选区域</div>
-    <div class="row">
-      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
-        <Icon name="crop" :size="11" /> 框选弹幕区域
-      </button>
-      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
-        <Icon name="crop" :size="11" /> 框选人物
-      </button>
-    </div>
-    <template v-if="selectRegion">
-      <div class="mono small mt-4">{{ rectText }}</div>
-      <div class="row mt-4 gap-6">
-        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
-      </div>
-    </template>
   </div>
-
+  <div class="lane-col">
   <!-- ── 贴纸：来源 + 落点 ── -->
   <div class="lane-group" :class="{ on: openLane === 'sticker' }"
        :ref="(el) => (laneGroupEls.sticker = el)">
@@ -233,7 +212,7 @@
       </div>
       <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
     </div>
-
+  
     <div class="row mt-6">
       <button class="mini-btn flex-1 jc-center"
               :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
@@ -255,6 +234,40 @@
       </div>
     </template>
   </div>
+  </div>
+  <div class="lane-col">
+  <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
+       它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
+       要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
+       （两个框互斥，同一时刻只有一份）。
+       ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
+       都该滚到**这一组**（它们现在共用同一组控件）。 -->
+  <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
+       :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
+    <div class="lane-group-h">区域</div>
+    <!-- ⚠️ 三列并排后这一列只有 ~83px：两颗按钮**竖排**（横排实测溢出到 91 > 83）。
+         用户 2026-10-06 第五轮的原话「按钮显示在同一行内」是针对**左右两栏时代**说的，
+         并成三列后横排物理上放不下 —— 见判据 ⑰。 -->
+    <div class="col gap-4">
+      <button class="mini-btn w-full jc-start" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
+        <Icon name="crop" :size="11" /> 弹幕区
+      </button>
+      <button class="mini-btn w-full jc-start" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
+        <Icon name="crop" :size="11" /> 人物
+      </button>
+    </div>
+    <template v-if="selectRegion">
+      <div class="mono small mt-4">{{ rectText }}</div>
+      <div class="row mt-4 gap-6">
+        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
+      </div>
+    </template>
+  </div>
+  </div>
+</div>
 
   <!-- ⚠️ 「音效」分组已整块删除（用户 2026-10-06：删除音效的音量设置）。
        它里面只有一条全局默认音量滑杆；事件自己的 `volume` / `sfx_volume` 优先，
@@ -281,17 +294,24 @@
 
             <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
                  同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
-            <div class="job-box mt-8">
-              <div class="row spread small">
-                <b>{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
-                <div class="row">
-                  <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
-                  <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
-                  <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
-                </div>
+            <!-- 任务栏 = **可折叠**（用户 2026-10-06：「任务改成折叠的模式，默认折叠，只显示当前是什么
+                 任务，展开显示详情，展开时不要挤占下方控件，是浮在上层的」）。
+                 ① 默认折叠：**一行** = 任务名 + 状态 chip（就是"当前是什么任务"）；
+                 ② 展开：`position:absolute` 浮在上层，**不参与布局** ⇒ 不挤占下方控件
+                    （所以下面那块卡片要 `position:relative` 当定位锚）；
+                 ③ 任务在跑时，折叠态也带进度条 —— 不然折叠了就看不到进展。 -->
+            <div class="job-wrap">
+              <button class="job-head" :class="{ open: jobOpen }" @click="jobOpen = !jobOpen">
+                <b class="flex-1 ellipsis">{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
+                <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
+                <Icon name="chevron-down" :size="11" class="job-caret" />
+              </button>
+              <div v-if="jobOpen" class="row spread small mt-6">
+                <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
+                <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
+                <span v-if="!jobRunning" class="muted small">空闲</span>
               </div>
-              <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
-              <div v-if="job.error || (jobRunning && job.log)" class="muted small mt-6 mono">{{ job.error || job.log }}</div>
+              <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
             </div>
 
               </template>
@@ -1592,6 +1612,9 @@ const openLane = ref('')
  *  'canvas' = 画面尺寸（缩放 / 主画面位置 / 背景）。两个页签**同一个位置**切换 ——
  *  用户 2026-10-06：「画面尺寸改成之前的是说切换面板的那种，位置和项目设置是一个位置」。 */
 const sideTab = ref('project')
+/** 任务栏展开态：**默认折叠**（用户 2026-10-06：「默认折叠，只显示当前是什么任务」）。
+ *  展开时绝对定位浮在上层，不参与布局 ⇒ 不挤占下方控件。 */
+const jobOpen = ref(false)
 /** 每段 DOM（函数 ref）——滚到它用。普通对象即可（不参与渲染）。 */
 const laneGroupEls = {}
 function onLaneOpen(lane) {
@@ -1839,6 +1862,14 @@ onUnmounted(() => {
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
 .lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
 .lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
+/* 三组并排成三列（用户 2026-10-06 第六轮：「三个区域放在同一行」）。
+   ⚠️ 右栏只有 300px ⇒ 每列约 92px，列内控件必须能窄到不溢出。 */
+.lane-cols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; align-items:start; }
+.lane-col { min-width:0; }
+/* 并排后不再需要组间的横线分隔（改为列间距），但保留分组标题样式 */
+.lane-cols .lane-group { margin-top:0; padding-top:0; border-top:none; }
+.lane-cols .lane-group + .lane-group { margin-top:8px; }
+.lane-cols .fld-input, .lane-cols select { font-size:11px; padding-left:5px; padding-right:3px; }
 .lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
@@ -1871,7 +1902,27 @@ onUnmounted(() => {
 .ss-opt.on { background:var(--main-soft); border-color:var(--main); color:var(--main-deep);
   font-weight:600; opacity:1; }
 .ss-opt-meta { font-size:10px; opacity:.75; }
-.job-box { border:1px solid var(--line); border-radius:var(--r-sm); padding:8px 10px; background:var(--bg-soft); }
+/* 任务栏（可折叠，用户 2026-10-06 第六轮）：默认只一行（任务名 + 状态 chip）。
+   展开时的详情**绝对定位浮在上层** ⇒ 不参与布局、不挤占下方控件（`.card` 是它的定位锚）。 */
+.job-wrap { margin-top:8px; }
+.job-head { display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+  border:1px solid var(--line); border-radius:var(--r-sm); padding:6px 9px;
+  background:var(--bg-soft); color:var(--ink); font:inherit; font-size:12px; cursor:pointer; }
+.job-head:hover { border-color:var(--main); }
+.job-head .ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.job-caret { flex:none; opacity:.6; transition:transform .15s; }
+.job-head.open .job-caret { transform:rotate(180deg); }
+/* 展开的详情 = 浮层：`.job-wrap` 当定位锚（relative），详情 `top:100%` 贴着头往下浮，
+   **不占布局** ⇒ 下方控件一个都不动（用户：「展开时不要挤占下方控件，是浮在上层的」）。
+   ⚠️ 别把 `position:absolute` 写到 `.job-wrap` 上 —— 那样整条任务栏会逃出卡片、
+   跑到页面底部去（实测 top 从 520 变 1930）。 */
+.job-wrap { position:relative; }
+.job-wrap > .row, .job-wrap > .job-log { position:absolute; top:100%; left:0; right:0; z-index:6;
+  border:1px solid var(--line); border-top:none; border-radius:0 0 var(--r-sm) var(--r-sm);
+  background:var(--card); padding:7px 9px; margin:0;
+  box-shadow:0 6px 16px rgba(0,0,0,.16); }
+.job-wrap > .job-log { max-height:120px; overflow:auto; }
+
 /* 成片与封面统一为同尺寸 16:9 盒子（源都是 1920×1080，比例异常时裁切对齐） */
 .artifact-bar .cover-thumb,
 .artifact-bar .video-bar {
