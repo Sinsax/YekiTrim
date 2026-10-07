@@ -107,133 +107,13 @@
                  投进它（Teleport 直接往目标里插节点，跟页面自己的子节点混在一起会被 patch 顶掉）。
                  轨道设置那块由本页面渲染，两者用 `openLane` 互斥 —— 同一时刻只有一份面板。 -->
             <div class="preview-row">
+              <!-- ⚠️ 轨道设置面板**已整块搬到右栏常驻**（用户 2026-10-06：「还是把轨道设置放在右侧常驻」）。
+                   这里只剩时间轴块的属性面板挂载点 —— `#tl-props-host` 必须是**空容器**：
+                   TimelineEditor 用 Teleport 直接往目标里插节点，与本页面子节点混在一起会被 patch 顶掉。 -->
               <div class="props-host">
-                <div v-if="openLane" class="props-panel card lane-panel" :ref="(el) => (laneGroupEls.__top = el)">
-                  <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板）。
-                       点轨道名 = 打开面板 + 滚到那一段 + 标题高亮。
-                       ⚠️ **只留控件**（用户 2026-10-06 第二轮：解释文字全删、能删的都删了）：
-                       不要 `hint` 行、不要「· 说明」后缀、不要计数行 —— 需要解释就写进 `title`（悬停可见）。
-                       ⚠️ 也不许写成按 `openLane` 条件渲染的链（判据 ⑰ 钉着这一条，带变异自证）。 -->
-                  <div class="row spread lane-head">
-                    <b>轨道设置</b>
-                    <button class="mini-btn" @click="openLane = ''">关闭</button>
-                  </div>
-
-                  <!-- ⚠️ 「分段 / 屏蔽」那条**纯信息**的分组已删（用户 2026-10-06：仅信息展示的内容删除）。
-                       它只显示两个计数（分段 N / 屏蔽 N），没有任何控件 —— 段数在时间轴泳道上直接数得出来，
-                       两个数字放在设置面板里既不能改也不指向任何操作。**别再捡回来。** -->
-
-                  <!-- ── 字幕 / 弹幕：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
-                       :ref="(el) => (laneGroupEls.subtitles = el)">
-                    <div class="lane-group-h">字幕 / 弹幕</div>
-                    <div class="small muted">字幕字体</div>
-                    <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
-                      <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-                    </select>
-                    <div v-if="fontsError" class="row small mt-4 gap-6">
-                      <span class="muted">字体库读取失败：{{ fontsError }}</span>
-                      <button class="mini-btn" @click="loadFonts">重试</button>
-                    </div>
-                    <div class="small muted mt-6">弹幕字体</div>
-                    <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
-                      <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-                    </select>
-
-                    <div class="row mt-6" style="gap:6px;align-items:center">
-                      <span class="small muted flex-none">偏移</span>
-                      <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
-                             :disabled="dmOffsetSaving || !ready" :title="'弹幕时间偏移：' + dmOffset + 's，负 = 提前出现，正 = 推后（默认 -3）'"
-                             @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
-                      <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
-                             :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
-                             title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
-                      <span class="mono small flex-none">s</span>
-                    </div>
-
-                    <label class="ck-row mt-6" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
-                      <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
-                             @change="toggleLane('danmaku')">
-                      显示弹幕
-                    </label>
-                  </div>
-
-                  <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
-                       它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
-                       要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
-                       （两个框互斥，同一时刻只有一份）。
-                       ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
-                       都该滚到**这一组**（它们现在共用同一组控件）。 -->
-                  <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
-                       :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
-                    <div class="lane-group-h">框选区域</div>
-                    <div class="row">
-                      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
-                              title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
-                        <Icon name="crop" :size="11" /> 框选弹幕区域
-                      </button>
-                      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
-                              title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
-                        <Icon name="crop" :size="11" /> 框选人物
-                      </button>
-                    </div>
-                    <template v-if="selectRegion">
-                      <div class="mono small mt-4">{{ rectText }}</div>
-                      <div class="row mt-4 gap-6">
-                        <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
-                        <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
-                      </div>
-                    </template>
-                  </div>
-
-                  <!-- ── 贴纸：来源 + 落点 ── -->
-                  <div class="lane-group" :class="{ on: openLane === 'sticker' }"
-                       :ref="(el) => (laneGroupEls.sticker = el)">
-                    <div class="lane-group-h">贴纸</div>
-                    <div class="ss-options">
-                      <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
-                              :class="{ on: stickerSource.includes(src.name) }"
-                              :title="'贴纸来源：' + src.name + (src.tags?.length ? '（tags: ' + src.tags.join(' / ') + '）' : (src.description ? '（' + src.description + '）' : '')) + ' —— 点一下开/关'"
-                              @click="toggleStickerSource(src.name)">
-                        <b>{{ src.name }}</b>
-                      </button>
-                      <div v-if="stickerSourcesError" class="row small gap-6">
-                        <span class="muted">读取失败：{{ stickerSourcesError }}</span>
-                        <button class="mini-btn" @click="loadStickerSources">重试</button>
-                      </div>
-                      <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
-                    </div>
-
-                    <div class="row mt-6">
-                      <button class="mini-btn flex-1 jc-center"
-                              :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
-                              :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
-                              @click="toggleStickerMode">
-                        <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
-                      </button>
-                      <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
-                              :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
-                              @click="startPointEdit">
-                        <Icon name="pin" :size="11" /> 改落点
-                      </button>
-                    </div>
-                    <template v-if="stickerCfg.position_mode === 'manual'">
-                      <div class="mono small mt-4">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
-                      <div v-if="pointEdit" class="row mt-4 gap-6">
-                        <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
-                        <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
-                      </div>
-                    </template>
-                  </div>
-
-                  <!-- ⚠️ 「音效」分组已整块删除（用户 2026-10-06：删除音效的音量设置）。
-                       它里面只有一条全局默认音量滑杆；事件自己的 `volume` / `sfx_volume` 优先，
-                       所以这条滑杆改的是"剩下那些没单独设过的事件"，用户看不出效果。
-                       ⚠️ **音效轨本身（眼睛 / `[stage.lanes].sfx`）没删** —— 删的只是这个面板分组。
-                       要改全局默认音量走 `polish.toml` 的 `[sfx] volume`。**别再把这组捡回来。** -->
-                </div>
                 <div id="tl-props-host"></div>
               </div>
+
               <div class="stage-col">
                 <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
@@ -242,19 +122,192 @@
             </div>
           </div>
 
-          <!-- 右栏 = **两块常驻卡片**，必须包在**一个** grid 子节点里：
-               `.edit-grid` 是两列 grid（`cols-main` = `1fr 300px`），子节点 1 = 预览卡、
-               子节点 2 = 右栏。把两块直接摊开当两个子节点的话，第二块会充当"第三列"
-               **掉到下一行占满整宽**（实测 1045px 宽，跑到预览下面去了）。
-               用户 2026-10-06：「把轨道设置放在右侧常驻，改为项目设置和 llm 剪辑导出之类的合并，
-               画面尺寸退回原来的那个页面」—— 两块都在**这一列**里，上下常驻。 -->
+          <!-- 右栏 = **常驻一列**（用户 2026-10-06 第四轮口径）：
+               ① 轨道设置面板 —— 从左栏**整块搬过来**，内容一字未改，只是现在**常驻**、不再需要
+                  点时间轴轨道名才出现；
+               ② 一块**带页签的卡片**：「项目设置」/「画面尺寸」**同一个位置**用页签切换 ——
+                  这就是「画面尺寸退回原来的那个页面」：位置和项目设置是同一个，切页签过去调；
+               ③ 输出（LLM 剪辑 + 渲染导出 + 任务状态栏）在「项目设置」页签里，**一个字都没删**
+                  （用户 2026-10-06：「你把项目设置全删了我是没想到的」）。
+               ⚠️ 必须全在**同一个 grid 子节点** `.right-col` 里：`.edit-grid` 是两列
+               （`cols-main` = `1fr 300px`），摊成多个子节点时后面的会充当"第三列"
+               **掉到下一行占满整宽**（实测 1045px）。判据 ⑰ 钉着。 -->
           <div class="right-col">
-          <div class="card">
-            <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 画面尺寸</h2>
-              <span class="muted small" title="字幕 / 弹幕 / 贴纸 / 区域与落点都在时间轴各条轨道的设置里（点轨道名打开）">轨道设置 → 时间轴</span>
+            <div class="card">
+              <div class="row spread mb-8">
+                <h2 class="m-0 card-h2"><Icon name="sliders" :size="15" /> 轨道设置</h2>
+                <span class="muted small" title="点时间轴上的轨道名会滚到对应那一段并高亮">点轨道名定位</span>
+              </div>
+            <!-- 常驻（不再按 `openLane` 条件渲染）：面板一直在右栏，点轨道名只是滚到那一段并高亮。
+                 `__top` 是查不到对应分组时的兜底滚动目标（分段/屏蔽与音效两组已删）。 -->
+            <div class="lane-panel" :ref="(el) => (laneGroupEls.__top = el)">
+              <!-- **所有轨道的设置都在这一个面板里**（用户 2026-10-06：点哪个轨道都是同一个面板）。
+                   点轨道名 = 打开面板 + 滚到那一段 + 标题高亮。
+                   ⚠️ **只留控件**（用户 2026-10-06 第二轮：解释文字全删、能删的都删了）：
+                   不要 `hint` 行、不要「· 说明」后缀、不要计数行 —— 需要解释就写进 `title`（悬停可见）。
+                   ⚠️ 也不许写成按 `openLane` 条件渲染的链（判据 ⑰ 钉着这一条，带变异自证）。 -->
+
+              <!-- ⚠️ 「分段 / 屏蔽」那条**纯信息**的分组已删（用户 2026-10-06：仅信息展示的内容删除）。
+                   它只显示两个计数（分段 N / 屏蔽 N），没有任何控件 —— 段数在时间轴泳道上直接数得出来，
+                   两个数字放在设置面板里既不能改也不指向任何操作。**别再捡回来。** -->
+
+              <!-- ── 字幕 / 弹幕：字体 + 弹幕时间偏移 + 弹幕区域 ── -->
+              <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
+                   :ref="(el) => (laneGroupEls.subtitles = el)">
+                <div class="lane-group-h">字幕 / 弹幕</div>
+                <div class="small muted">字幕字体</div>
+                <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
+                  <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+                <div v-if="fontsError" class="row small mt-4 gap-6">
+                  <span class="muted">字体库读取失败：{{ fontsError }}</span>
+                  <button class="mini-btn" @click="loadFonts">重试</button>
+                </div>
+                <div class="small muted mt-6">弹幕字体</div>
+                <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
+                  <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+
+                <div class="row mt-6" style="gap:6px;align-items:center">
+                  <span class="small muted flex-none">偏移</span>
+                  <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
+                         :disabled="dmOffsetSaving || !ready" :title="'弹幕时间偏移：' + dmOffset + 's，负 = 提前出现，正 = 推后（默认 -3）'"
+                         @input="onDanmakuOffsetInput" @change="onDanmakuOffsetChange">
+                  <input class="rv-input" type="number" inputmode="decimal" min="-10" max="10" step="0.5"
+                         :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
+                         title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
+                  <span class="mono small flex-none">s</span>
+                </div>
+
+                <label class="ck-row mt-6" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
+                  <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
+                         @change="toggleLane('danmaku')">
+                  显示弹幕
+                </label>
+              </div>
+
+              <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
+                   它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
+                   要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
+                   （两个框互斥，同一时刻只有一份）。
+                   ⚠️ ref 同时挂给 `camera` 与 `danmaku_area` 两个轨道名：点时间轴上这两条轨道的名字
+                   都该滚到**这一组**（它们现在共用同一组控件）。 -->
+              <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
+                   :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
+                <div class="lane-group-h">框选区域</div>
+                <div class="row">
+                  <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+                          title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
+                    <Icon name="crop" :size="11" /> 框选弹幕区域
+                  </button>
+                  <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+                          title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
+                    <Icon name="crop" :size="11" /> 框选人物
+                  </button>
+                </div>
+                <template v-if="selectRegion">
+                  <div class="mono small mt-4">{{ rectText }}</div>
+                  <div class="row mt-4 gap-6">
+                    <button class="mini-btn primary" @click="applySelect"><Icon name="check" :size="11" /> 保存选框</button>
+                    <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
+                  </div>
+                </template>
+              </div>
+
+              <!-- ── 贴纸：来源 + 落点 ── -->
+              <div class="lane-group" :class="{ on: openLane === 'sticker' }"
+                   :ref="(el) => (laneGroupEls.sticker = el)">
+                <div class="lane-group-h">贴纸</div>
+                <div class="ss-options">
+                  <button v-for="src in allStickerOptions" :key="src.name" class="ss-opt"
+                          :class="{ on: stickerSource.includes(src.name) }"
+                          :title="'贴纸来源：' + src.name + (src.tags?.length ? '（tags: ' + src.tags.join(' / ') + '）' : (src.description ? '（' + src.description + '）' : '')) + ' —— 点一下开/关'"
+                          @click="toggleStickerSource(src.name)">
+                    <b>{{ src.name }}</b>
+                  </button>
+                  <div v-if="stickerSourcesError" class="row small gap-6">
+                    <span class="muted">读取失败：{{ stickerSourcesError }}</span>
+                    <button class="mini-btn" @click="loadStickerSources">重试</button>
+                  </div>
+                  <div v-else-if="!allStickerOptions.length" class="muted small">贴纸库为空：往 stickers/ 放贴纸包</div>
+                </div>
+
+                <div class="row mt-6">
+                  <button class="mini-btn flex-1 jc-center"
+                          :class="{ selected: stickerCfg.position_mode === 'manual' }" :disabled="stickerBusy || !ready"
+                          :title="stickerCfg.position_mode === 'manual' ? '固定落点：全部贴纸都落在同一点，切到固定后在预览上点选' : '自动避让：按安全区算法逐条找位置'"
+                          @click="toggleStickerMode">
+                    <Icon name="pin" :size="11" /> {{ stickerCfg.position_mode === 'manual' ? '固定' : '自动' }}
+                  </button>
+                  <button v-if="stickerCfg.position_mode === 'manual' && !pointEdit" class="mini-btn flex-1 jc-center"
+                          :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
+                          @click="startPointEdit">
+                    <Icon name="pin" :size="11" /> 改落点
+                  </button>
+                </div>
+                <template v-if="stickerCfg.position_mode === 'manual'">
+                  <div class="mono small mt-4">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
+                  <div v-if="pointEdit" class="row mt-4 gap-6">
+                    <button class="mini-btn primary" :disabled="stickerBusy" @click="savePointEdit"><Icon name="check" :size="11" /> 保存落点</button>
+                    <button class="mini-btn" :disabled="stickerBusy" @click="cancelPointEdit">取消</button>
+                  </div>
+                </template>
+              </div>
+
+              <!-- ⚠️ 「音效」分组已整块删除（用户 2026-10-06：删除音效的音量设置）。
+                   它里面只有一条全局默认音量滑杆；事件自己的 `volume` / `sfx_volume` 优先，
+                   所以这条滑杆改的是"剩下那些没单独设过的事件"，用户看不出效果。
+                   ⚠️ **音效轨本身（眼睛 / `[stage.lanes].sfx`）没删** —— 删的只是这个面板分组。
+                   要改全局默认音量走 `polish.toml` 的 `[sfx] volume`。**别再把这组捡回来。** -->
+            </div>
             </div>
 
+            <div class="card">
+              <div class="row spread mb-8">
+                <h2 class="m-0 card-h2"><Icon name="film" :size="15" /> 项目设置 / 画面</h2>
+                <div class="row">
+                  <button class="mini-btn" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
+                  <button class="mini-btn" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
+                </div>
+              </div>
+
+              <template v-if="sideTab === 'project'">
+            <!-- LLM 剪辑：重新分段 + 重新生成全部事件。
+                 失败的分段会在时间轴上标色、可单独重做那一段。 -->
+            <div class="row" style="gap:6px">
+              <button class="btn flex-1 jc-center" :disabled="scopeBusy"
+                      :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
+                      @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
+            </div>
+
+            <!-- 出片 -->
+            <button class="btn btn-primary mt-6 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
+
+            <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
+            <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
+              该片段正在「{{ kindText(scopeBusyJob.kind) }}」，请稍候
+            </div>
+
+            <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
+                 同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
+            <div class="job-box mt-8">
+              <div class="row spread small">
+                <b>{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
+                <div class="row">
+                  <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
+                  <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
+                  <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
+                </div>
+              </div>
+              <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
+              <div v-if="job.error || (jobRunning && job.log)" class="muted small mt-6 mono">{{ job.error || job.log }}</div>
+            </div>
+
+                <router-link class="mini-btn mt-8 w-full jc-center" :to="`/p/${pid}/settings`"
+                             title="项目信息、yekitrim.toml 原文（预处理 / 检测 / ASR 等都在那里）、删除源录播 / 移除项目">项目设置页 →</router-link>
+              </template>
+
+              <template v-else>
             <!-- 缩放比例 / 主画面位置（五档吸附）/ 背景（`[stage]`）。
                  值存 polish.toml 的 [canvas] / [stage]；出片与预览共用同一份推导
                  （Rust `resolve_stage` → `_canvas`），这里只做提交 + 重取，不在前端重算。 -->
@@ -312,56 +365,10 @@
                 <span class="mono small">{{ Number(stageCfg.blur_scale ?? 1).toFixed(1) }}×</span>
               </div>
             </template>
-
-            <!-- 竖屏那三档（`[stage] portrait_*`）已删除：2026-10-06 起「哪一类渲不渲染」是
-                 时间轴每条轨道前那枚**眼睛**（`[stage.lanes]`，可开可关、看得见）。 -->
-          </div>
-
-          <!-- 第二块：项目设置 / LLM 剪辑 / 渲染导出（用户 2026-10-06：「改为项目设置和 llm 剪辑
-               导出之类的合并」）。常驻，不折叠。
-               ⚠️ LLM 剪辑与渲染导出是一前一后两道工序（先重剪、再出片），所以上下相邻。 -->
-          <div class="card mt-12">
-            <div class="row spread mb-8">
-              <h2 class="m-0 card-h2"><Icon name="sparkles" :size="15" /> 项目设置 / 输出</h2>
-              <router-link class="mini-btn flex-none" :to="`/p/${pid}/settings`"
-                           title="项目信息、yekitrim.toml 原文（预处理 / 检测 / ASR 等都在那里）、删除源录播 / 移除项目">项目设置页</router-link>
-            </div>
-
-            <!-- LLM 剪辑：重新分段 + 重新生成全部事件。
-                 失败的分段会在时间轴上标色、可单独重做那一段。 -->
-            <div class="row" style="gap:6px">
-              <button class="btn flex-1 jc-center" :disabled="scopeBusy"
-                      :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
-                      @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
-            </div>
-
-            <!-- 出片 -->
-            <button class="btn btn-primary mt-6 w-full jc-center" :disabled="scopeBusy" :title="scopeBusy ? '该片段正在' + scopeBusyText : ''" @click="openRenderModal"><Icon name="film" :size="13" /> 渲染导出</button>
-
-
-            <!-- 别人（别的视图/标签页）占用这个片段时也提示一句，别让按钮变灰得没头没脑 -->
-            <div v-if="!jobRunning && scopeBusyJob" class="hint mt-8">
-              该片段正在「{{ kindText(scopeBusyJob.kind) }}」，请稍候
-            </div>
-
-            <!-- 任务状态栏：**常驻**（不再用 `v-if` 按任务有无出现/消失），只报「谁在跑 + 状态 + 进度」。
-                 同一件事不说三遍（jobLabel + chip + 「任务完成」），也不回显服务端日志（用户要求）。 -->
-            <div class="job-box mt-8">
-              <div class="row spread small">
-                <b>{{ job.kind ? jobLabel(job.kind) : '任务' }}</b>
-                <div class="row">
-                  <span v-if="jobRunning" class="muted small mono">{{ jobTimeText }}</span>
-                  <button v-if="jobRunning" class="mini-btn danger" :disabled="canceling" @click="cancelJob"><Icon name="x" :size="10" /> 中断</button>
-                  <span class="chip" :class="jobChipClass">{{ jobStatusText }}</span>
-                </div>
-              </div>
-              <div v-if="job.total > 0" class="progress mt-6"><div :style="{ width: pctJob + '%' }"></div></div>
-              <div v-if="job.error || (jobRunning && job.log)" class="muted small mt-6 mono">{{ job.error || job.log }}</div>
+              </template>
             </div>
           </div>
           </div>
-        </div>
-
         <!-- 时间轴编辑器独占一整行（在预览/生成两栏之下）：横向空间全给刻度与泳道。
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
@@ -1613,6 +1620,10 @@ function toggleLane(lane) {
  * 面板里**六段全在**，点哪个轨道都看同一个面板（用户 2026-10-06 口径："点哪个轨道都是
  * 同一个面板，这样好操作"）。再点同一条轨道 = 收起（回到块的属性面板）。 */
 const openLane = ref('')
+/** 右栏那块卡片的页签：'project' = 项目设置（含 LLM 剪辑 / 渲染导出 / 任务栏），
+ *  'canvas' = 画面尺寸（缩放 / 主画面位置 / 背景）。两个页签**同一个位置**切换 ——
+ *  用户 2026-10-06：「画面尺寸改成之前的是说切换面板的那种，位置和项目设置是一个位置」。 */
+const sideTab = ref('project')
 /** 每段 DOM（函数 ref）——滚到它用。普通对象即可（不参与渲染）。 */
 const laneGroupEls = {}
 function onLaneOpen(lane) {
@@ -1848,16 +1859,15 @@ onUnmounted(() => {
    `:deep(.props-panel)` 管的是 TimelineEditor **Teleport 进来**的那份；`.lane-panel` 是本页面
    自己渲染的 —— 它的面板底子（背景/边框/内边距/滚动）必须在这里再写一遍：TimelineEditor 那份
    是 scoped 的（带 data-v 属性），套不到本页面的元素上。 */
-.props-host :deep(.props-panel), .props-host .lane-panel { position:absolute; inset:0; width:auto; }
-.lane-panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
+/* ⚠️ 2026-10-06 第四轮：**轨道设置面板已整块搬到右栏常驻** —— 它不再住在这个挂载点里、
+   也不是覆盖层，所以 `.props-host .lane-panel` 的绝对定位那条**已删**（留着会让它脱离文档流、
+   右栏那张卡高度塌成 0）。`:deep(.props-panel)` 只留给 TimelineEditor Teleport 进来的那份。 */
+.props-host :deep(.props-panel) { position:absolute; inset:0; width:auto; }
+/* 右栏卡片里的轨道设置正文（紧凑间距按 2026-10-06 第二轮口径收过：只留控件） */
 .lane-panel label { margin-top:6px; }
 .lane-panel .row { margin-top:4px; }
 .lane-panel input, .lane-panel select { font-size:12px; }
 .lane-panel .ck-row { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
-/* 一个面板装五段 ⇒ 会长；标题行**吸顶**（滚到下面时「关闭」仍够得着）。
-   ⚠️ 2026-10-06 第二轮用户口径：「清理长文本、紧凑一点、能删的都删了，只留控件」
-   —— 间距按这条收过（原来的 mt-8/hint 行全删了，别再加回来）。 */
-.lane-panel .lane-head { position:sticky; top:-10px; z-index:2; background:var(--card); padding:10px 0 4px; margin-top:-10px; }
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
 .lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
 .lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
