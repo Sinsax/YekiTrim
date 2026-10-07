@@ -158,8 +158,6 @@
      ⚠️ 右栏只有 300px，三列各约 92px：**列内控件都必须能窄到不溢出**（`min-width:0` +
      `flex-wrap`）。改动后要跑 CDP 探针量横向溢出（水平 scrollWidth > clientWidth 即算坏）。
      ⚠️ 组的 `:ref` 仍按**轨道名**挂（`camera` 与 `danmaku_area` 共用「区域」那组）。 -->
-<div class="lane-cols">
-  <div class="lane-col">
   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
        :ref="(el) => (laneGroupEls.subtitles = el)">
     <div class="lane-group-h">字幕 / 弹幕</div>
@@ -193,8 +191,6 @@
       显示弹幕
     </label>
   </div>
-  </div>
-  <div class="lane-col">
   <!-- ── 贴纸：来源 + 落点 ── -->
   <div class="lane-group" :class="{ on: openLane === 'sticker' }"
        :ref="(el) => (laneGroupEls.sticker = el)">
@@ -234,8 +230,6 @@
       </div>
     </template>
   </div>
-  </div>
-  <div class="lane-col">
   <!-- ── 框选：**两颗按钮同一行**（用户 2026-10-06：「将框选区域的按钮显示在同一行内」）。
        它们改的是同一个东西（预览上的自由选框），以前一颗在「字幕/弹幕」、一颗在「运镜」，
        要框两块区域得在面板上下两头来回找。选框的读数与保存/清除按钮留在下面
@@ -245,17 +239,14 @@
   <div class="lane-group" :class="{ on: openLane === 'camera' || openLane === 'danmaku' }"
        :ref="(el) => { laneGroupEls.camera = el; laneGroupEls.danmaku_area = el }">
     <div class="lane-group-h">区域</div>
-    <!-- ⚠️ 三列并排后这一列只有 ~83px：两颗按钮**竖排**（横排实测溢出到 91 > 83）。
-         用户 2026-10-06 第五轮的原话「按钮显示在同一行内」是针对**左右两栏时代**说的，
-         并成三列后横排物理上放不下 —— 见判据 ⑰。 -->
-    <div class="col gap-4">
-      <button class="mini-btn w-full jc-start" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
+    <div class="row">
+      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'danmaku_area' }" :disabled="!ready"
               title="在预览上框选弹幕显示区域（供运镜参考，也是贴纸的避让障碍）" @click="toggleSelect('danmaku_area')">
-        <Icon name="crop" :size="11" /> 弹幕区
+        <Icon name="crop" :size="11" /> 框选弹幕区域
       </button>
-      <button class="mini-btn w-full jc-start" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
+      <button class="mini-btn flex-1 jc-center" :class="{ selected: selectRegion === 'liver' }" :disabled="!ready"
               title="在预览上框选主播人物：运镜聚焦到框中心，也是贴纸的避让障碍（改完要重跑一次「重新后处理」才落到事件上）" @click="toggleSelect('liver')">
-        <Icon name="crop" :size="11" /> 人物
+        <Icon name="crop" :size="11" /> 框选人物
       </button>
     </div>
     <template v-if="selectRegion">
@@ -266,8 +257,6 @@
       </div>
     </template>
   </div>
-  </div>
-</div>
 
   <!-- ⚠️ 「音效」分组已整块删除（用户 2026-10-06：删除音效的音量设置）。
        它里面只有一条全局默认音量滑杆；事件自己的 `volume` / `sfx_volume` 优先，
@@ -1862,14 +1851,9 @@ onUnmounted(() => {
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
 .lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
 .lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
-/* 三组并排成三列（用户 2026-10-06 第六轮：「三个区域放在同一行」）。
-   ⚠️ 右栏只有 300px ⇒ 每列约 92px，列内控件必须能窄到不溢出。 */
-.lane-cols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; align-items:start; }
-.lane-col { min-width:0; }
-/* 并排后不再需要组间的横线分隔（改为列间距），但保留分组标题样式 */
-.lane-cols .lane-group { margin-top:0; padding-top:0; border-top:none; }
-.lane-cols .lane-group + .lane-group { margin-top:8px; }
-.lane-cols .fld-input, .lane-cols select { font-size:11px; padding-left:5px; padding-right:3px; }
+/* ⚠️ 第六轮我一度把三组做成 `.lane-cols` 三列并排 —— **是误读**（用户第七轮：「整体还是以行来
+   排版」）。并三列时每列只有 83px，两颗框选按钮横排溢出 91>83、字体下拉被截断，全是被那个误解
+   逼出来的。**别再引回 `.lane-cols`**：三组上下堆叠成行，每组占满 300px。 */
 .lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
