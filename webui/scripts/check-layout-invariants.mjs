@@ -128,16 +128,31 @@ const RULES = [
     break: (s) => s.replace(/grid-column:\s*1\s*\/\s*-1\s*;/g, 'grid-column:auto;')
   },
   {
-    label: '.ov-cols 有单栏态（"只看一边"要真的只剩一栏）',
-    why: '用户要求"缩小展开，可以只看左边或者只看右边的栏"',
-    hit: (s) => /\.ov-cols\.single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/s.test(s),
-    break: (s) => s.replace('.ov-cols.single {', '.ov-cols.never {')
+    // 2026-10-06 用户口径变更：「未导出和已导出改成类似切片的那种筛选 tag，**所有切片都显示在一个区域内**」——
+    // 原先那条「`.ov-cols` 必须有单栏态」测的是**两栏并排 + 只看一边**，那套已经被筛 tag 取代。
+    // 现在要钉的是相反的事：**卡片墙只能有一面**，两栏结构不许回来（回来就又是两个滚动区）。
+    label: '切片总览只有一面卡片墙（筛选 tag 取代了未导出/已导出两栏）',
+    why: '用户要求"所有切片都显示在一个区域内"——两栏各自滚动会让"找一条片段"要在两个区里分别翻',
+    hit: (s) => {
+      const walls = (s.match(/class="ov-wall"/g) || []).length
+      return walls === 1 && !/class="ov-cols"/.test(s) && /OV_FILTERS/.test(s)
+    },
+    // 变异：把两栏结构加回来（`ov-cols` 一出现就该判翻面）
+    break: (s) => s.replace('<div v-if="shownClips.length"', '<div class="ov-cols"><div v-if="shownClips.length"')
   },
   {
-    label: '单栏时右栏那条竖虚线要撤掉',
-    why: '只剩一栏还挂着 border-left 会多出一条悬空的线',
-    hit: (s) => /\.ov-cols\.single\s+\.ov-sec-done\s*\{[^}]*border-left:\s*none/s.test(s),
-    break: (s) => s.replace(/\.ov-cols\.single\s+\.ov-sec-done\s*\{[^}]*border-left:\s*none/s, '.ov-cols.single .ov-sec-done {')
+    // 2026-10-06：两栏结构（`.ov-cols` / `.ov-sec-done` 的竖虚线）已随筛选 tag 一起删除 ——
+    // 那条"单栏时撤掉竖虚线"的判据随之作废（它测的节点不再存在）。
+    // 取而代之的判据：**搜索框必须真的存在且能锁到三处**（标题/字幕/弹幕）——
+    // 用户口径里的"关键词可以锁到标题，字幕，弹幕"，缺一个就是没做完。
+    label: '切片总览的搜索能锁标题/字幕/弹幕三处',
+    why: '用户点名要"关键词可以锁到标题，字幕，弹幕"——少一处等于功能没做全',
+    hit: (s) =>
+      /v-model="query"/.test(s)
+      && /\{ key: 'title', label: '标题'/.test(s)
+      && /\{ key: 'subtitle', label: '字幕'/.test(s)
+      && /\{ key: 'danmaku', label: '弹幕'/.test(s),
+    break: (s) => s.replace("{ key: 'danmaku', label: '弹幕'", "{ key: 'x', label: '弹幕'")
   },
   {
     label: 'extra_params 的 rows ≥ 10（高度翻倍）',
@@ -159,7 +174,7 @@ const RULES = [
 /** 关键标识符：模板里用到 + `<script setup>` 里必须定义过。 */
 const CRITICAL_BINDINGS = [
   ['webui/src/views/WorkbenchView.vue', workbench, ['doctorProblem', 'loadDoctor']],
-  ['webui/src/components/HomeClipsOverview.vue', overview, ['ovCols', 'showUnexported', 'showExported', 'focusCol']],
+  ['webui/src/components/HomeClipsOverview.vue', overview, ['ovFilter', 'OV_FILTERS', 'searchIn', 'query', 'shownClips']],
   ['webui/src/views/SettingsView.vue', settings, ['localNoAuth', 'visibleSections']],
   ['webui/src/components/ModelList.vue', modelList, ['canDownload']]
 ]
@@ -1260,9 +1275,11 @@ console.log('\n㉘ 复合片段的「各段源区间」（可见 + 单一出口�
     && s.includes('{{ segMark(i) }}')
 
   // ③ 精修片段条（1 处）+ 首页总览（两栏各 1 处）都调同一个出口
+  // ⚠️ 2026-10-06 起是 **1 处**（总览合并成一面卡片墙了；原先两栏各一处 = 2）。
+  //    改回多栏时这个数要跟着改，否则会误报"少了一处"。
   const titles = (frag, ov) =>
     frag.includes(':title="rangesHint(r.ranges)"')
-    && (ov.match(/:title="rangesHint\(it\.ranges\)"/g) || []).length === 2
+    && (ov.match(/:title="rangesHint\(it\.ranges\)"/g) || []).length === 1
 
   // ④ 手拼文案（含 `**` 强调）已经清掉：`**` 在 title/卡片上会原样显示成星号
   const noHandRolled = (...srcs) =>
@@ -1358,6 +1375,61 @@ console.log('\n㉙ 重叠的段并成一段（核心 + 写侧 + 预处理页提�
     const m = mutate(src)
     check(`[变异] ㉙ ${what} → 源码确实被改了`, m !== src, true)
     check(`[变异] ㉙ ${what} → 判据翻面`, still(m), false)
+  }
+}
+
+// ── ㉚ 首页切片总览的搜索：**按需拉取** + 弹幕正文要摘 ASS 覆写标签 ──
+//
+// 用户口径（2026-10-06）：「需要一个功能，在切片总览上显示搜索框，可以关键词查找，
+// 关键词可以锁到标题，字幕，弹幕。」
+//
+// 两条都对应真踩过的坑：
+//  ① **按需**：标题在缓存里（零请求），字幕/弹幕在项目文件里（实测每项目 170~226 KB 转写 +
+//     4~72 KB 弹幕）。进首页就全量拉 = 凭空搬 2~3 MB / 24 个请求。所以判据钉的是
+//     "**勾了才拉**"：`ensureText` 必须在勾选回调与 data 装载之后才被调用，
+//     并且**带 `wantSub`/`wantDm` 门**（否则勾一个会把另一桶也拉了）。
+//  ② **摘要标签**：弹幕每一条都带 `{\move(1970,0,-50,0)}` / `{\pos(960,1040)}` 这类 ASS 覆写标签
+//     （解析层有意保留，渲染要按它摆位）。不摘掉：卡片上显示标签串，且搜 `move`/`pos`
+//     **命中每一条弹幕**。摘标签只能在 `utils.js::dmPlain` 一处（别在两处各写一份正则）。
+console.log('\n㉚ 切片总览搜索（按需拉取 + 弹幕正文可读化）')
+{
+  const utils = await read('webui/src/utils.js')
+  const ov = await read('webui/src/components/HomeClipsOverview.vue')
+
+  // ① dmPlain：只此一份，且两条替换都在（`{...}` 覆写块 + `\N` 转义）
+  const dmPlain = (s) =>
+    /export function dmPlain\(s\)/.test(s)
+    && /\.replace\(\/\\\{\[\^\}\]\*\\\}\/g, ''\)/.test(s)
+    && /replace\(\/\\\\\[Nnh\]\/g/.test(s)
+  // ② 总览里必须**真的用了**它（定义了但没接上 = 白搭）
+  const usesDmPlain = (s) => /import \{[^}]*dmPlain[^}]*\} from '\.\.\/utils'/.test(s) && /\.map\(dmPlain\)/.test(s)
+  // ③ 按需：只在 searchIn 变化 / 装载后调 ensureText，且带 want 门
+  const onDemand = (s) =>
+    /const wantSub = searchIn\.subtitle && b\.subs === null/.test(s)
+    && /const wantDm = searchIn\.danmaku && b\.dm === null/.test(s)
+    && /if \(\(!wantSub && !wantDm\) \|\| fetching\[pid\]\) continue/.test(s)
+  // ④ 两桶一个接口（别退回两个接口 = 24 个请求）
+  const oneEndpoint = (s) => /projectData\.searchText\(/.test(s) && !/projectData\.danmakuText\(/.test(s)
+
+  check('㉚ `dmPlain` 只此一份（ASS 覆写块 + \\N 转义都摘）', dmPlain(utils), true)
+  check('㉚ 总览真的接了 `dmPlain`（定义了不接等于白搭）', usesDmPlain(ov), true)
+  check('㉚ 取字幕/弹幕走**按需 + 分桶门**（勾一个不连带拉另一个）', onDemand(ov), true)
+  check('㉚ 两桶一个接口（`searchText`，不回退成两个接口）', oneEndpoint(ov), true)
+
+  const MUT30 = [
+    ['弹幕正文不摘 ASS 标签（卡片显示标签串、搜 move 命中全部）', ov,
+      (s) => s.replace('.map(dmPlain)', '.map((x) => x)'), usesDmPlain],
+    ['`dmPlain` 不摘覆写块（只处理 \\N）', utils,
+      (s) => s.replace(".replace(/\\{[^}]*\\}/g, '')", '.replace(/(?:)/g, "")'), dmPlain],
+    ['按需门退化成"勾了就全拉"（勾字幕连弹幕一起拉）', ov,
+      (s) => s.replace('const wantDm = searchIn.danmaku && b.dm === null', 'const wantDm = true'), onDemand],
+    ['退回两个接口（每项目两发 = 24 个请求）', ov,
+      (s) => s.replace('projectData.searchText(', 'projectData.danmakuText('), oneEndpoint]
+  ]
+  for (const [what, src, mutate, still] of MUT30) {
+    const m = mutate(src)
+    check(`[变异] ㉚ ${what} → 源码确实被改了`, m !== src, true)
+    check(`[变异] ㉚ ${what} → 判据翻面`, still(m), false)
   }
 }
 

@@ -32,8 +32,8 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - 当前项目整行高亮判据 `String(p.id) === String(route.params.pid)`（与折叠轨同一个）：
   `.proj.on .proj-head` = `--main-soft` 底色 + 左侧 3px `--main` 强调条 + 名字 `--pink-text`
   （`--main-soft` #FAECEA 与悬停底 `--bg-soft` #F0EAE4 太接近）。
-- ⚠ 选择器**必须比 `.proj-head:hover` 更特指**，否则鼠标一放上去高亮就被悬停底色盖掉；
-  样式写在 `ProjectNode.vue` 的 scoped 里（样稿没有这个态），别塞回 app.css。
+- ⚠ 选择器**必须比 `.proj-head:hover` 更特指**，否则悬停底色会盖掉高亮；样式写在
+  `ProjectNode.vue` 的 scoped 里，别塞回 app.css。
 - 来源徽标只显示类型（`sourceBadge`）：本地来源回 **`本机`**，**不要拼路径**（服务端
   `source.label` 已含父目录/目录名，而项目名本身就是那个目录名）；完整标签 `sourceLabel(p)` 挂
   徽标的 `title`；设置页「来源」仍用完整 `sourceLabel`，两处分工别混。
@@ -46,8 +46,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
   `key === 'prepare' && …`，`stage >= 3`）。**切片与精修没有真正
   意义上的"完成"**，`stageInfo().done` 那两档只是瞬时状态 —— 状态交给进度 chip
   （已切 N · 待切 M / 精修 N/M）。
-- ⚠ 原来的 `cur` 档（`progress === i + 1`）**已按用户要求删除**；样稿
-  `docs/web-ui-mockups/ia-demos/multiuser.html` 里有 `.snode.cur`，那是**有意弃用**的 —— 别捡回来。
+- ⚠ 原来的 `cur` 档（`progress === i + 1`）**已按用户要求删除**；样稿里的 `.snode.cur` 是**有意弃用**的，别捡回来。
 - ⚠ `viewing` **必须再 `&& current`**：`SideNav` 对**每个** ProjectNode 都传同一个 `viewingStep`
   （只从 `route.name` 来，不带项目），不门控时多个项目同时展开会让同名阶段一起高亮。
 - 侧栏可折叠：`.side.mini`（`width:64px`）+ `stores/ui.js` 的 `ui.sideCollapsed`/`toggleSide()`、
@@ -122,6 +121,7 @@ Vue3 工作台的全部前端：壳 + 面包屑、hash 路由、首页 `#/workbe
 - 首页「切片总览」（`HomeClipsOverview.vue`）：全部项目的切片混排成一份总排序，**按各片段最后一次
   改动从新到旧**（`clips[].mtime`）—— 刚剪完/刚精修过的浮到最前。点卡片 = 去精修页，
   没初始化就自动 `polish init`（`initPolish(pid, dir)` 传**绝对目录**）。排序细节见附录 F。
+  一面墙 + 筛选 tag + 搜索（标题/字幕/弹幕）见 `docs/webui-components.md` ⑥b。
 - **任务完成后的刷新必须静默**：`load({silent:true})` 不置 `loading`、不卸载编辑器（非静默会把
   编辑器换成骨架屏，预览与滚动位置全丢）。
 - 会话类前端纪律：未登录 → **401**，`api/client.js` 统一跳登录并记回跳。

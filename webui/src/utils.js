@@ -179,6 +179,26 @@ export function rangesHint(src) {
   return parts.join('\n')
 }
 
+/**
+ * 弹幕正文的**可读化**：把 ASS 覆写标签与换行转义摘掉，只留人看的字。
+ *
+ * 为什么需要它：弹幕文件（尤其是 `ass` 那份，是从录播姬 XML 转出来的）里每一条都带
+ * `{\move(1970,0,-50,0)}` / `{\pos(960,1040)}{\c&HFF3F...}` 这类**定位/上色标签** ——
+ * 解析层（`danmaku::parse_ass`）**有意**原样保留它们（渲染要按标签摆位），但拿去做**关键词搜索**
+ * 会两头出问题：① 卡片上显示出来是乱码一样的标签串；② 搜 `move`/`pos` 会命中**每一条**弹幕
+ * （那是标签不是内容，纯属假命中）。
+ *
+ * ⚠️ 只摘 `{...}` 覆写块与 `\N`/`\n`/`\h` 转义；**不动**正文本身（含表情与标点）。
+ * 结果为空就说明这条弹幕本来只有标签（纯摆位行），调用方负责丢掉。
+ */
+export function dmPlain(s) {
+  return String(s ?? '')
+    .replace(/\{[^}]*\}/g, '')
+    .replace(/\\[Nnh]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export const TIMELINE_COLORS = {
   segments: '#525252', camera: '#2563eb', sticker: '#7c3aed', shake: '#dc2626',
   flash: '#d97706', blur: '#0891b2', vignette: '#4d7c0f',
