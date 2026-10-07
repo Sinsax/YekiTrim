@@ -25,6 +25,26 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 
     let mut example = ProjectFile::example();
 
+    // **新工程的字幕字体 = 字体库里「设为默认」的那支**（用户 2026-10-06 报：
+    // 「每次切出切片，字体都不是字体库设置的默认字体」）。
+    //
+    // ⚠️ 以前这里就是 `ProjectFile::example()` 里那个写死的 `"Noto Sans SC"`
+    // （`render_core::types::default_font()`），**从不查字体库** ⇒ 用户设的默认位对
+    // 新切出来的片段完全无效。剪切收尾会自动对每个新片段跑 init
+    // （`yekitrim_service::core_pipeline::init_polish_for_clip`），所以每个新片段都中招。
+    //
+    // ⚠️ 写**族名**而不是 id：`SubtitleStyle::font` 两条路都认（库内按 id 解析、库外当系统族名），
+    // 而"库里默认哪支"与 `fallback_stack()` 首项是同一个语义（都由
+    // `fonts::default_text_family` 给出）。写 id 会让预览的 `.cap` 栈与成片的
+    // `font_search_order` 首项对不上那支的内部族名。
+    //
+    // ⚠️ 库里没有任何一支设过默认 ⇒ **保持 example 的出厂值不动**（自带 Noto Sans SC），
+    // 那是设计好的空库回落态（与 `SYSTEM_FONT_STACK` 首项同名，有单测钉着）。
+    if let Some(family) = yekitrim_core::fonts::default_text_family(&yekitrim_core::fonts::dir()) {
+        tracing::info!("  ✓ 字幕字体 = 库里的默认字体：{family}");
+        example.style.subtitle.font = family;
+    }
+
     // 自动检测 clip.json (来自 yekitrim cut)
     let clip_json = path.join("clip.json");
     if clip_json.exists()

@@ -1009,6 +1009,33 @@ pub fn scan_dirs(root: &Path) -> Vec<FontEntry> {
     out
 }
 
+/// **「库里设了默认的那支」的唯一查询入口**（默认位给正文用）。
+///
+/// 返回**内部族名**（与 `fallback_chain()` 首项、`SYSTEM_FONT_STACK` 同一种东西）。
+///
+/// ⚠️ **为什么要有这个函数（2026-10-06）**：这个判据原先在 `yekitrim-polish` 里抄了两份
+/// （`render::server::preferred_fallback_family` 与 `cover::cover_font_files_in`），各自
+/// `.find(|e| e.is_default)` 一遍。而**新工程的「默认字体」这条路上一个消费者都没有**：
+/// `polish init` 写死 `render_core::default_font()` 的 `"Noto Sans SC"`，用户设的默认位
+/// 对新切出来的片段完全无效（用户报「每次切出切片，字体都不是字体库设置的默认字体」）。
+/// 现在 `cmd_init` 也走这里 —— **判据只此一处**。
+///
+/// 用**族名**而不是 id：`polish.toml` 里 `font` 那栏两条路都认（id 走库内解析、族名走系统栈），
+/// 而"库里默认哪支"要表达的是"排正文用哪支"，与栈首同一个语义。
+///
+/// emoji 字体**天然出不来**：`scan_dirs` 出口已把它强制成 `is_default = false`（职责分离）。
+/// 未安装的自带字体也出不来（`installed` 过滤）—— 否则会把一个盘上还没有的文件选成新工程默认。
+pub fn default_text_family(root: &Path) -> Option<String> {
+    scan_all(root)
+        .into_iter()
+        .filter(|e| e.installed && !e.emoji)
+        .find(|e| e.is_default)
+        .map(|e| {
+            let fam = e.family_internal.trim();
+            if fam.is_empty() { e.id } else { fam.to_string() }
+        })
+}
+
 /// 两种布局合并：**目录布局优先**（同名 id 时目录赢）。
 ///
 /// ⚠️ **还没下载的自带字体也会出现在结果里**（`installed: false`）—— 界面要能显示
@@ -2008,6 +2035,65 @@ mod tests_v2 {
         assert!(!read_meta(&root.join("a")).unwrap().is_default);
         assert!(read_meta(&root.join("b")).unwrap().is_default);
         assert!(set_default(&root, "nope").is_err());
+    }
+
+    // ===== 「库里默认那支」的唯一查询入口 =====
+    //
+    // ⚠️ 这一组钉的是 `cmd_init` 的行为来源（2026-10-06 用户报「每次切出切片，字体都不是
+    //    字体库设置的默认字体」）：新工程的字幕字体必须来自这里，而不是写死的那个常量。
+
+    /// 没设过默认 ⇒ `None`（调用方保持出厂值，别自己编一个）。
+    #[test]
+    fn default_text_family_none_without_flag() {
+        let root = tmp("deftext-none");
+        put_font(&root, "WenKai", "霞鹜文楷 轻便版", false, false);
+        assert_eq!(default_text_family(&root), None, "没人设默认位就该是 None");
+    }
+
+    /// 设了默认 ⇒ 返回**内部族名**（不是 id）—— 与 `fallback_chain()` 首项同一种东西。
+    #[test]
+    fn default_text_family_returns_internal_family() {
+        let root = tmp("deftext-hit");
+        put_font(&root, "WenKai", "霞鹜文楷 轻便版", false, true);
+        put_font(&root, "Other", "Other Family", false, false);
+        assert_eq!(
+            default_text_family(&root).as_deref(),
+            Some("霞鹜文楷 轻便版"),
+            "要族名不要 id（写进 polish.toml 的 font 那栏要能与栈首对上）"
+        );
+    }
+
+    /// ⚠️ emoji 字体**永不出现在这里**，哪怕手改 `FONT.toml` 把两个标志都立起来。
+    ///
+    /// 这是"字体职责分离"落到本函数上的那道：拿一支没有中文字形的字体去排正文 = 整条字幕豆腐块。
+    #[test]
+    fn default_text_family_never_returns_emoji() {
+        let root = tmp("deftext-emoji");
+        put_font(&root, "Emoji", "Noto Color Emoji", true, true);
+        assert_eq!(
+            default_text_family(&root),
+            None,
+            "emoji 字体即使手改成立默认位，也不能被选成正文默认"
+        );
+    }
+
+    /// 未安装（清单里有、盘上还没有）的自带字体也不能被选成新工程默认。
+    #[test]
+    fn default_text_family_skips_uninstalled() {
+        let root = tmp("deftext-uninstalled");
+        std::fs::create_dir_all(&root).unwrap();
+        // 自带那支"没下载"时 `scan_all` 会给一条 installed=false 的占位；
+        // 这里直接断言：任何 installed=false 的条目都不该被选中。
+        let picked = default_text_family(&root);
+        assert_eq!(picked, None, "空库不该选出一支盘上不存在的文件");
+    }
+
+    /// 设过默认的那支如果**内部族名为空**，回落用 id（界面上显示的就是 id，别给空串）。
+    #[test]
+    fn default_text_family_falls_back_to_id_when_family_blank() {
+        let root = tmp("deftext-blank");
+        put_font(&root, "NoFamily", "", false, true);
+        assert_eq!(default_text_family(&root).as_deref(), Some("NoFamily"));
     }
 
     // ===== 字体解析唯一入口（FontPlan）的钉子 =====

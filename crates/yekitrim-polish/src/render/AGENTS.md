@@ -80,20 +80,23 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     （实测：12s 的片子带 3s 屏蔽，修复前出 6.0s、修复后 9.0s = 与 chrome 逐毫秒一致）。
   - ⚠️ **字体：栈的顺序 + 粗体，两件都不能漏**（2026-10-01 修完"字体不对"）：
     `find_font(style.subtitle.font) -> (常规, Option<粗体>)`，逐支按
-    **① 字体库（`yekitrim_core::fonts::resolve_file`，id 就是配置里那串；目录/文件名是 ASCII slug —— 路径必纯 ASCII）
+    **① 字体库（`fonts::resolve_file`；目录/文件名是 ASCII slug ⇒ 路径必纯 ASCII）
     → ② 系统字体目录（族名归一化包含 + 别名表：`Microsoft YaHei` → `msyh.ttc`）** 解析；
-    要按的顺序 = 项目选的那支 + **`render::server::fallback_stack()`（动态兜底栈，唯一权威）** ——
-    首项随**库里"设为默认"那支**的内部族名走，库里没有可用中文时才回落到 `SYSTEM_FONT_STACK`
-    常量（回落态逐字相同有单测钉着）。⚠️ **别改回读常量**：那会让「设为默认」对成片永远无效
-    （2026-10-01 收掉的三处不统一之一）。栈还必须与 `webui/src/components/PolishPreview.vue`
-    的 `.cap` 栈同源（预览的兜底栈经 `/api/polish/fonts` 的 `fallback_stack` 透传，同一份计算）——
-    它仨曾经各写各的：常量把 Noto 排在雅黑前、预览是雅黑在前 ⇒ 同一个工程**预览是雅黑、成片是
-    Noto**（用户报的"字体不对"）。
+    顺序 = 项目选的那支 + **`fallback_stack()`（动态兜底栈，唯一权威）** ——
+    首项随**库里"设为默认"那支**走，库里没有可用中文时才回落到 `SYSTEM_FONT_STACK`
+    常量。⚠️ **别改回读常量**：那会让「设为默认」对成片永远无效（2026-10-01 收掉的三处不统一之一）。
+    栈还必须与 `PolishPreview.vue` 的 `.cap` 栈同源（经 `/api/polish/fonts` 的 `fallback_stack` 透传）——
+    它仨曾经各写各的 ⇒ 同一个工程**预览是雅黑、成片是 Noto**（用户报的"字体不对"）。
+    ⚠️ **「库里默认哪支」的判据只此一处**（2026-10-06）：`fonts::default_text_family`。
+    原先各抄一份 `.find(|e| e.is_default)`，而**最该问它的那条路（`cmd_init`）一次都没问过**
+    —— 症状是「每次切出切片，字体都不是字体库设置的默认字体」。新增消费点一律走它。
+    ⚠️ 这条栈决定**挑哪一支**，不是"渲染时能逐字形回退"：底座只收到**一个** `--font-file`
+    （`find_font` 沿栈首次命中即 `return`），缺字就画豆腐块。见 `font-library.md` §23.6。
     整个字体库照旧交给底座（`--font-dir`，它按每条轨的 `font_family` 在目录里找）。
     ⚠️ **`--font-bold-file` 必须传**：转译器给字幕写 `font_weight: 700`、弹幕 `600`（与预览的
     `.cap{font-weight:700}` / `.dm{font-weight:600}` 同口径），而底座**不合成粗体** ——
-    它只在 `>= 600` 时去要这个文件，拿不到就退回常规体 ⇒ **成片笔画比预览细一圈**（底座 schema 注释里
-    就写着这句）。所以 `find_font` 要配出**同一族的粗体**（`msyh.ttc` → `msyhbd.ttc`；可变字体如
+    它只在 `>= 600` 时去要这个文件，拿不到就退回常规体 ⇒ **成片笔画比预览细一圈**。
+    所以 `find_font` 要配出**同一族的粗体**（`msyh.ttc` → `msyhbd.ttc`；可变字体如
     `NotoSansSC-VF.ttf` 没有独立粗体 ⇒ `None`，此时 `describe()` 与就绪位会明说"没有粗体那一支"）。
   - **就绪位与严格模式**（2026-09-30 M3）：`dhampir::readiness(font)` 是**唯一的**"这台机器能不能出片"
     判断（六项各查一次文件：二进制/转译器/字体/node/预览产物/版本契约，**不渲染、不跑 node**）——
@@ -136,11 +139,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     （`yekitrim-service::core_pipeline::warm_loudness_cache`，只补缺失），热路径上一次剪切跑 N 遍。
   - `sticker_frames.json`（`prepare_sticker_data` 的解码结果）——6 个贴纸解 40.4s → 命中 1.67s
     （产物 95MB，断言过冷/热输出一致）。贴纸多一个就多一份解码，别把缓存去掉。
-    ⚠️ **贴纸图不止 GIF**：库里允许 `gif/png/jpg/jpeg/webp`（判据只有 `sticker_index::is_image_path`
-    一份），所以按 `<name>.<扩展名>` 找图、静态图当**单帧**（`render::gif::decode_sticker_frames_png`）。
-    以前写死 `<name>.gif` —— PNG 贴纸会被复制进项目、DOM 预览的 `<img>` 也显示得出来，
-    **成片里却一张都没有**（静默消失）。找不到图 / 解不出帧现在都打 warn，不再是无声的。
-    钉子：`cargo test -p yekitrim-polish --lib static_image_sticker_still_gets_frames`。
+    ⚠️ 贴纸图不止 GIF（`is_image_path` 一份判据管 `gif/png/jpg/jpeg/webp`）：写死 `<name>.gif` 会让
+    **PNG 贴纸在成片里一张都没有**（预览照常显示，静默消失）。现在找不到图/解不出帧都打 warn。
+    钉子：`static_image_sticker_still_gets_frames`。
   - 诊断：`VT_POLISH_DIR=<项目> cargo test -p yekitrim-polish --lib diagnose_sticker_cache -- --ignored --nocapture`
 - **屏蔽区间导出走硬件编码**：`Ffmpeg::cut_ranges` 是整段重编码，用 `detect_encoder()`
   的结果（libx264 时 17s → NVENC 9s）。别写回硬编码。

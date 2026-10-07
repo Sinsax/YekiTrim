@@ -565,8 +565,14 @@ fn default_sub_position() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DanmakuStyle {
-    /// 弹幕字体：字体库里的 id（文件名去扩展名），空 = 跟随字幕那条字体栈。
+    /// 弹幕字体：字体库里的 id，**空 = 跟随字幕那条字体栈**（`[style.subtitle] font`）。
     /// 与 [`SubtitleStyle::font`] 同一套取值规则。
+    ///
+    /// ⚠️ **「空 = 跟随字幕栈」是契约**（2026-10-06 明确）：三个消费点都必须在空值上退到
+    /// **字幕那条栈**，而不是裸 `sans-serif`。
+    /// ⚠️ 曾经 `engine.js` 与 `templates/index.html` 在空值时写的是裸 `sans-serif`
+    /// —— 那既不是"跟随字幕"，也和量宽用的字体不是同一支（量宽与渲染不一致 =
+    /// 弹幕没滚到边就消失）。**别再退回裸 `sans-serif`。**
     ///
     /// ⚠️ 它同时决定**文字宽度**（滚动/渐隐时长按宽度算，见 `measureDanmakuWidths`）——
     /// 预览/模板/转译器三处都必须用它量宽，量宽与渲染不一致就是"弹幕没滚到边就消失"。

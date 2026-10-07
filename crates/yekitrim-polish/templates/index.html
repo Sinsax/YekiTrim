@@ -1365,14 +1365,27 @@ function init(){
 
   // ---- 弹幕文字宽度预测量 ----
   var DM_WIDTHS = [];
+  /** 弹幕的字体族（**量宽与绘制必须用同一份**，否则滚动时长与画出来的宽度对不上）。
+   *
+   *  ⚠️ `[style.danmaku] font` 为空 = **跟随字幕那条字体栈**（契约见 `DanmakuStyle::font`），
+   *  所以空值要退到 `.cap` 那套栈（`subStyle.font` + 雅黑 + Noto），**不是裸 `sans-serif`**。
+   *  以前这里写的是裸 `sans-serif` —— 那既不是"跟随字幕"，也和字幕的实际字体不是同一支。
+   *  ⚠️ 本函数在**顶层**：canvas 出片那段是独立 IIFE，看不到 `init()` 里的东西（见 AGENTS.md）。
+   */
+  function dmFontFamily() {
+    var own = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font) || '';
+    if (own) return '"' + own + '","Microsoft YaHei","Noto Sans SC",sans-serif';
+    var sub = (CFG.style && CFG.style.subtitle && CFG.style.subtitle.font) || 'Noto Sans SC';
+    return '"' + sub + '","Microsoft YaHei","Noto Sans SC",sans-serif';
+  }
+
   function measureDanmakuWidths() {
     var c = document.createElement('canvas');
     var cx = c.getContext('2d');
     var fs = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font_size) || 42;
-    // ⚠️ 字体族必须与渲染时**同一份**（[style.danmaku] font）：宽度决定滚动/渐隐时长，
+    // ⚠️ 字体族必须与渲染时**同一份**（见 dmFontFamily）：宽度决定滚动/渐隐时长，
     //    量宽用回退字体会让弹幕没滚到边就消失（与 engine.js::measureDanmakuWidths 同口径）。
-    var dmFam = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font) || '';
-    cx.font = '600 ' + fs + 'px ' + (dmFam ? '"' + dmFam + '",sans-serif' : 'sans-serif');
+    cx.font = '600 ' + fs + 'px ' + dmFontFamily();
     for (var i = 0; i < DM.length; i++) {
       DM_WIDTHS[i] = cx.measureText(DM[i].text || '').width + 20;
     }
@@ -2086,7 +2099,9 @@ function init(){
       var sw_dm = parseFloat(strokeStr_dm) || 2;
       var sc_dm = strokeStr_dm.replace(/^[\d.]+px\s*/, '') || '#000000';
 
-      ctx.font = '600 ' + fs_dm + ' "Microsoft YaHei","Noto Sans SC",sans-serif';
+      // ⚠️ 与 `measureDanmakuWidths` 走**同一个** `dmFontFamily()`：两处各写一份就会
+      //    "量宽的字体 ≠ 画出来的字体" ⇒ 弹幕没滚到边就消失（而且不报错）。
+      ctx.font = '600 ' + fs_dm + ' ' + dmFontFamily();
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
 

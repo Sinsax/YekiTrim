@@ -129,17 +129,27 @@
           </button>
           <template v-else>
             <!-- **「设为默认」按职责显示**（2026-10-02 用户口径）：
-                 文字字体 → 「设为默认文字」；emoji 字体 → 「设为默认 emoji」；两者都有 → 两颗都给。
-                 ⚠️ 默认位只做**初始化设定**（老工程没显式选过字体时用它），不是"一改全改" ——
-                 文案里把那两个字说清楚，免得用户以为点了它所有工程的字幕都会变。
-                 ⚠️ 「两者都有」的两颗按钮操作的是**同一个 `is_default` 状态**（服务端只有唯一默认位），
-                 所以两颗会同时点亮 —— 这是如实反映，不是 bug。 -->
+                 文字字体 → 「设为默认文字」；emoji 字体 → 静态「自动补充」标签（见下）。
+                 ⚠️ 默认位的作用（**2026-10-06 更正**）—— 原先这里写的是「只做初始化设定
+                 （老工程没显式选过字体时用它）」，那句话**两个方向都错**：
+                 ① 初始化（`polish init`）当时**根本不读**默认位，写死的是 `Noto Sans SC`
+                    ⇒ 用户设了默认，新切出来的片段照旧不是它（用户 2026-10-06 报的就是这条）。
+                    现在 `cmd_init` 已改成读这个位（`crates/yekitrim-core/src/fonts.rs::default_text_family`）；
+                 ② 它影响的老工程**是"font 为空的工程"**，而 init 总会显式写 font ⇒ 这类工程几乎不存在。
+                 ⇒ 现在的事实口径：**新工程 init 时写入它；`font` 为空的工程渲染时用它**。
+                 ⚠️ 对**已存在**的工程不改写（它们的 `font` 已显式落盘，零迁移）。
+                 ⚠️ **emoji 那颗不是按钮**：服务端 `fonts::set_default` 见到 emoji **必定 bail**
+                 （职责分离，它只负责表情、不排正文）⇒ 画成按钮就是个"点了必然报错"的死按钮。
+                 按 `docs/plan/font-library.md` §22.4 的原设计（C10）改成**静态标签**。 -->
             <button v-if="canBeTextDefault(f)" class="mini-btn" :disabled="busy || f.is_default"
-              :title="f.is_default ? '已经是默认文字字体' : '设为默认文字（只影响没显式选过字体的工程）'"
+              :title="f.is_default ? '已经是默认文字字体' : '设为默认文字（新切出的片段用它；font 为空的工程也用它）'"
               @click="doDefault(f)">{{ f.is_default ? '默认文字' : '设为默认文字' }}</button>
-            <button v-if="canBeEmojiDefault(f)" class="mini-btn" :disabled="busy || f.is_default"
-              :title="f.is_default ? '已经是默认 emoji 字体' : '设为默认 emoji（emoji 缺字时用它补）'"
-              @click="doDefault(f)">{{ f.is_default ? '默认 emoji' : '设为默认 emoji' }}</button>
+            <!-- ⚠️ **emoji 这颗不是按钮**：服务端 `fonts::set_default` 见到 emoji **必定 bail**
+                 （职责分离，它只负责表情、不排正文）⇒ 画成按钮就是个"点了必然报错"的死按钮。
+                 按 `docs/plan/font-library.md` §22.4 的原设计（C10）改成**静态标签** ——
+                 样式复用 `.mini-btn.ghost`（当年就是为这一格备下的：`pointer-events:none`）。 -->
+            <span v-if="canBeEmojiDefault(f)" class="mini-btn ghost"
+              title="emoji 字体不参与默认位，它只在正文缺 emoji 字形时自动补充">自动补充</span>
             <button
               class="mini-btn danger"
               :disabled="busy || f.builtin"
@@ -196,7 +206,9 @@ const hasColor = (f) => !!f.color_format && f.color_format !== 'none'
 const isEmojiOnly = (f) => !!f.emoji && hasColor(f)
 /** 能当文字默认（emoji-only 的字体不能排正文，服务端 set_default 也拒绝）。 */
 const canBeTextDefault = (f) => f.installed !== false && !isEmojiOnly(f)
-/** 能当 emoji 默认（必须真有彩色字形 —— 纯文字字体补不出表情）。 */
+/** 该不该显示「自动补充」标签（必须有真彩色字形 —— 纯文字字体补不出表情）。
+ *  ⚠️ 这是**展示判据，不是"能不能设为默认"** —— emoji 字体永远拿不到默认位
+ *  （服务端 `fonts::set_default` 必定拒绝，`scan_dirs` 出口也强制 `is_default=false`）。 */
 const canBeEmojiDefault = (f) => f.installed !== false && hasColor(f)
 /** 只在卡片上标彩色格式时用（纯文字字体不标 —— 那个 none 是正常的）。 */
 const isEmojiCapable = (f) => hasColor(f)
