@@ -62,6 +62,14 @@
   底座来源 = 同层 `../Dhampir`（产物默认 `../Dhampir/out`、二进制默认 `../Dhampir/target/release/dhampir.exe`）；
   可用 `--dhampir-artifact <dir>` / `--dhampir-exe <path>` 覆盖。**找不到就拒绝打包** ——
   确实要打"没有底座"的包得显式 `--no-dhampir`（那台机器上默认通道会不可用）。
+  ⚠️ **`dist/` 里挑哪一份按「版本最高」，不按 mtime**（`dhampir_version_key`，2026-10-08 修）：
+  `dist/` 会**同时留着好几个版本**（打过 0.1.0 又打 0.2.0 就有两份）。原先按 mtime 取"最后碰过的"
+  ⇒ 在旧目录里随便 `touch` 一下、或重跑一次旧版本打包，就**静默把旧底座装进发行包**。
+  底座 0.2.0 换了字幕栅格化器（`drawtext`→libass）⇒ **老底座出来的是另一套字幕像素**，
+  而 `project_schema` / `host_api` 一个都没动、**没有任何自动信号**会报出来。
+  版本逐段数值比较（`0.10.0 > 0.9.0`；字典序会给出反答案），认不出版本的目录排最后；
+  唯一的兜底是"再退回 `out/`"，**永远不退回 mtime**。钉子：
+  `older_version_wins_never_even_when_touched_later`（把实现换回 mtime / 换回按名字排，两条都打红）。
   输出到 `<repo>/release/`（gitignored），包名 `yekitrim-v<版本>-win-x64`，zip 用 Deflated level 9。
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），

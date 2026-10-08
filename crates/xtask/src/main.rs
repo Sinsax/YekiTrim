@@ -762,13 +762,21 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// 把 zip 的校验和写成**每次都重新生成**的旁路文件（放在发行包**之外**，避免自指）。/// 底座新的默认产物目录：`<dhampir>/dist/dhampir-<版本>+<sha>/`，取**最新**的一份。
+/// 把 zip 的校验和写成**每次都重新生成**的旁路文件（放在发行包**之外**，避免自指）。/// 底座新的默认产物目录：`<dhampir>/dist/dhampir-<版本>+<sha>/`，取**版本最高**的一份。
 ///
 /// 为什么要有它：底座 `scripts/package.mjs` 的默认输出改成了 `dist/`，而我们的打包器一直按 `out/` 找，
-/// 症状是"底座明明打好了，这边却报产物不齐"（2026-10-01 踩到）。两份都认：这里给 dist 里最新的那份，
+/// 症状是"底座明明打好了，这边却报产物不齐"（2026-10-01 踩到）。两份都认：这里给 dist 里最新的一份，
 /// 调用方拿不到时再退回 `out/`。
+///
+/// ⚠️ **按版本排序，不按 mtime**（2026-10-08 修）：`dist/` 现在会**同时留着好几个版本**
+/// （打过 0.1.0 又打了 0.2.0），而 mtime 排序的语义是"最后碰过的那个"—— 在 0.1.0 目录里
+/// 随便 `touch` 一下、或重新跑一次旧版本的打包，就会**静默把旧底座装进发行包**。
+/// 这一条在 0.2.0 之前不致命（相邻版本差别小），但 0.2.0 换了字幕栅格化器
+/// （`drawtext` → libass）⇒ **老底座出来的是另一套字幕像素**，而**没有任何自动信号**会报出来
+/// （`project_schema` / `host_api` 都没动）。所以这里必须比版本，不能比时间。
+/// 认不出版本的目录排最后（拿不到就退回目录名比较，仍然不退回 mtime）。
 fn newest_dhampir_dist(root: &Path) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> = fs::read_dir(root.join("dist"))
+    let mut found: Vec<(Vec<u64>, String, PathBuf)> = fs::read_dir(root.join("dist"))
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -778,9 +786,28 @@ fn newest_dhampir_dist(root: &Path) -> Option<PathBuf> {
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.starts_with("dhampir-"))
         })
+        .map(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            (dhampir_version_key(&name), name, p)
+        })
         .collect();
-    found.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
-    found.pop()
+    // 版本号逐段数值比较（0.10.0 > 0.9.0；字典序会反过来），同版本再按目录名稳定定序。
+    found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    found.pop().map(|(_, _, p)| p)
+}
+
+/// 从 `dhampir-<版本>+<sha>` 里抠出可逐段比较的版本键。认不出 ⇒ 空键（排最后）。
+///
+/// 只认 `dhampir-` 前缀之后、第一个 `+` 或 `-` 之前的那一段（`0.2.0+60197a2`、`0.2.0-win32-x64` 都中）。
+fn dhampir_version_key(dir_name: &str) -> Vec<u64> {
+    let rest = dir_name.strip_prefix("dhampir-").unwrap_or(dir_name);
+    let version = rest.split(['+', '-']).next().unwrap_or("");
+    let parts: Vec<u64> = version.split('.').map_while(|s| s.parse().ok()).collect();
+    // `parse` 到第一个非数字就停：此刻若没吃完整段，说明这不是版本号（例如 `dhampir-nightly`）。
+    if parts.is_empty() || parts.len() != version.split('.').count() {
+        return Vec::new();
+    }
+    parts
 }
 
 // ============================================================================
@@ -1535,4 +1562,69 @@ fn sha256_of_file(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dist(dir: &str, names: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("xtask-dist-{dir}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for n in names {
+            fs::create_dir_all(root.join("dist").join(n)).unwrap();
+        }
+        root
+    }
+
+    fn picked(root: &Path) -> Option<String> {
+        newest_dhampir_dist(root)
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn version_key_parses_both_dir_shapes() {
+        assert_eq!(dhampir_version_key("dhampir-0.2.0+60197a2"), vec![0, 2, 0]);
+        assert_eq!(dhampir_version_key("dhampir-0.2.0-win32-x64"), vec![0, 2, 0]);
+        // 认不出来的排最后，不许当成 0.0.0 混进中间。
+        assert!(dhampir_version_key("dhampir-nightly").is_empty());
+        assert!(dhampir_version_key("dhampir-").is_empty());
+    }
+
+    /// 0.10.0 必须赢过 0.9.0 —— 字典序会给出反答案，这正是不能 `sort()` 字符串的原因。
+    #[test]
+    fn version_key_sorts_numerically_not_lexically() {
+        assert!(dhampir_version_key("dhampir-0.10.0+a") > dhampir_version_key("dhampir-0.9.0+a"));
+        assert!(dhampir_version_key("dhampir-1.0.0+a") > dhampir_version_key("dhampir-0.99.0+a"));
+    }
+
+    /// 核心判据：**旧版本目录更"新"也不许被选中**（这就是 mtime 排序的病）。
+    #[test]
+    fn older_version_wins_never_even_when_touched_later() {
+        let root = dist("stale-touch", &["dhampir-0.2.0+aaa", "dhampir-0.1.0+bbb"]);
+        // 给**旧**的那份刷一个更晚的 mtime，模拟"重新打了一次 0.1.0"。
+        let stale = root.join("dist").join("dhampir-0.1.0+bbb");
+        let f = stale.join("VERSION");
+        fs::write(&f, "version=0.1.0\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&f, "version=0.1.0\n").unwrap();
+        assert_eq!(picked(&root).as_deref(), Some("dhampir-0.2.0+aaa"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unrecognised_dirs_never_beat_a_real_version() {
+        let root = dist("junk", &["dhampir-0.1.0+a", "dhampir-scratch"]);
+        assert_eq!(picked(&root).as_deref(), Some("dhampir-0.1.0+a"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_dist_dir_is_none_so_caller_falls_back_to_out() {
+        let root = std::env::temp_dir().join(format!("xtask-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("out")).unwrap();
+        assert_eq!(picked(&root), None);
+        let _ = fs::remove_dir_all(&root);
+    }
 }

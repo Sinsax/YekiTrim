@@ -33,6 +33,12 @@
   ⚠️ `--video <相对路径>` 是**预览那条腿**用的（`yekitrim-polish/src/render/proxy.rs` 生成的 720p 代理）：
   把"实际媒体"换成代理，转译器**按代理**探测时基/分辨率（所以层的 `scale`/`FIT` 也按代理算）。
   **出片不许传** —— 成片永远用源。
+  ⚠️ `--font-families <json>` = 宿主给的「**库 id → 真族名**」映射（`fontFamilyFor`；两条腿都传）：
+  底座 0.2.0 起字幕走 libass，而 **libass 按族名找字体**，`polish.toml` 里存的却是**库 id**
+  （实测 id `GenJyuuGothic-Bold` ≠ 族名 `Gen Jyuu Gothic Bold`）。名字对不上时 libass **不报错**、
+  静默落 `ArialMT`（`lines_failed: 0`、`issues: []`）—— 比 `.notdef` 还隐蔽。**库外的值原样返回**
+  （老工程 `font = "LXGW WenKai"` 走系统字体栈，不该被改写）。本文件**不读 `FONT.toml`**：
+  那是 Rust 侧 `fonts` 的事，抄过来就是第二份会漂的实现。
 - ⚠️ **时基与分辨率来自"实际媒体"的探测**（`probeMedia`）：优先 `avg_frame_rate` 并**吸附到
   最近的标准帧率**（59.9946 → `60/1`；不吸附就会写出 `671400/11191` 这种不可用的时间基，
   帧号整体漂），吸附不上再用容器标称的 `r_frame_rate`；探不到回落 60fps / 1920×1080 **并报 NOTE**。
@@ -60,7 +66,7 @@
   预览是 0.025s 连续交替（`index.html:532`），出片是固定 0.2s 的四级阶梯（`:1575`）。
 - ⚠️ **改那 6 个纯函数（含 `hexColor`）/ `zoomFactor` / `translate` 或弹幕窗口的 `danmakuExitMs`
   = 必须跑 `--mutate`**：这几条曲线/解析/映射是"看着差不多、差得远"的重灾区，守卫按**逐值**钉了
-  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 25 项几何 + 4 项密集键区间**，并要求 **26 处变异全部打红**。新增曲线/常量/解析分支/映射时
+  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 25 项几何 + 4 项密集键 + 9 项字体族名**，并要求 **42 处变异全部打红**。新增曲线/常量/解析分支/映射时
   **往守卫的 `MUTATIONS` 里加一条**（"一条不会红的用例不算用例"）。⚠️ 新加的检查**要抽成函数
   并在 `mutate` 里也调**：只写在顶层的话 `--mutate` 那条路径根本不跑它（颜色那条第一版就是这么漏的）。
   `translate` 与 `zoomFactor` 是**为了守卫才 export** 的（`isEntryPoint` 那道门保证直接跑仍是 CLI）。
@@ -176,8 +182,8 @@
 ## 验证
 
 ```bash
-node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键
-node scripts/check-yekitrim-translator.mjs --mutate   # 26 处变异必须**全部打红**
+node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名
+node scripts/check-yekitrim-translator.mjs --mutate   # 42 处变异必须**全部打红**
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）

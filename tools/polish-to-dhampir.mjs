@@ -222,6 +222,42 @@ const drop = (where, what) => issues.push({ level: 'DROP', where, what });
 const clamp = (where, what) => issues.push({ level: 'CLAMP', where, what });
 const note = (where, what) => issues.push({ level: 'NOTE', where, what });
 
+// ---------------------------------------------------------------------------
+// 字体：库 id → 真族名
+// ---------------------------------------------------------------------------
+
+/// 库 id → **字体文件里的真族名**。由宿主（Rust）经 `--font-families <json>` 传进来。
+///
+/// 为什么必须有这一步：底座的 libass **按族名找字体**，而 `polish.toml` 里存的是**库 id**。
+/// 两者在库里**确实会不一样**（实测：id `GenJyuuGothic-Bold` vs 族名 `Gen Jyuu Gothic Bold`），
+/// 而名字对不上时 libass **不报错** —— 静默落 `ArialMT`，且 `lines_failed: 0`、`issues: []`。
+/// 实测（同字体、同 `fontsdir`，只换名字）：
+///
+///     fontselect: (GenJyuuGothic-Bold, 400, 0)    -> ArialMT            ← 传 id
+///     fontselect: (Gen Jyuu Gothic Bold, 400, 0)  -> GenJyuuGothic-Bold ← 传真族名
+///
+/// ⚠️ **库外的值原样返回**，一个字节都不动：老工程写 `font = "LXGW WenKai"` 那种
+/// "系统字体族名"本来就不在库里，它也**不该**被改写（那时宿主走系统字体栈兜底）。
+/// 这条与 `yekitrim_core::fonts::family_for` 是同一个口径（那边是 Rust 侧的权威）。
+///
+/// ⚠️ 映射由宿主给、本文件**不去读 `FONT.toml`**：转译器的纪律是零依赖、不探媒体、
+/// 只读本仓的工程文件。字体库的解析规则（两种布局、`family` 字段、emoji 过滤）在 Rust 侧
+/// 已经有一份，抄过来就是第二份会漂的实现。
+let fontFamilies = {};
+
+/// 给映射表赋值（CLI 解析 `--font-families` 时调；守卫可以直接调这个做逐值测）。
+export function setFontFamilies(map) {
+  fontFamilies = map && typeof map === 'object' ? map : {};
+}
+
+/// 见上。`raw` 空 / 不在映射里 → **原样返回**（`''` → `null`，契约里空就是"没指定"）。
+export function fontFamilyFor(raw) {
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (!id) return null;
+  const mapped = fontFamilies[id];
+  return typeof mapped === 'string' && mapped.trim() ? mapped.trim() : id;
+}
+
 /// 把 `"44.6%"` 或 `44.6` 变成比例。转不了就返回 null。
 function ratio(raw) {
   if (typeof raw === 'number') return raw > 1 ? raw / 100 : raw;
@@ -3671,7 +3707,13 @@ export function translate(config, clipDir, outPath, options = {}) {
         // **那台机器上没装** —— 它走到 CSS 的字体栈兜底
         // （`'LXGW WenKai','Noto Sans SC','Microsoft YaHei',sans-serif`），
         // 实际生效的是**微软雅黑**。名字如实带进契约，宿主找不到时会报出来。
-        font_family: subStyle.font || null,
+        //
+        // ⚠️ 但**库里那支要换成真族名**（`fontFamilyFor`）：底座的 libass 按族名找字体，
+        // 而 `polish.toml` 存的是**库 id**。实测同一份字体、同一个 `fontsdir`：
+        // 传 id `GenJyuuGothic-Bold` → `fontselect` 落 **ArialMT**；传真族名
+        // `Gen Jyuu Gothic Bold` → 命中。落 ArialMT 时 `lines_failed: 0`、`issues: []`
+        // —— 比 `.notdef` 还隐蔽，所以这一步不能省。
+        font_family: fontFamilyFor(subStyle.font),
       },
       layers: [{
         id: 'cue',
@@ -3876,7 +3918,9 @@ export function translate(config, clipDir, outPath, options = {}) {
             // YekiTrim 的弹幕 CSS：`font-weight:600`。
             font_weight: 600,
             line_height: 1.5,
-            font_family: dmStyle.font || null,
+            // 同字幕那条：库里那支换成真族名（弹幕空值 = 跟随字幕，转译器已经在
+            // 上面把空值填成字幕那支了，所以这里拿到的多半非空）。
+            font_family: fontFamilyFor(dmStyle.font),
           },
           layers: [{
             id: 'shots',
@@ -4132,7 +4176,9 @@ function runCli() {
     console.error(
       '用法：node tools/polish-to-dhampir.mjs <clip 目录> [--out 工程文件] [--keep-muted]\n' +
         '  --keep-muted  出片用：时间线保持整条，屏蔽区间交给尾部那一剪（预览**不能**用它）\n' +
-        '  --video       预览用：把"实际媒体"换成代理（时基/分辨率随之；**出片不许传**）',
+        '  --video       预览用：把"实际媒体"换成代理（时基/分辨率随之；**出片不许传**）\n' +
+        '  --font-families <json>  宿主给的「库 id → 真族名」映射（底座按族名找字体，\n' +
+        '                          传 id 会静默落 ArialMT；不给就按 id 原样写）',
     );
     process.exit(2);
   }
@@ -4143,6 +4189,18 @@ function runCli() {
   // **渲染那条腿不许传** —— 出片必须用源。
   const videoIndex = args.indexOf('--video');
   const videoRel = videoIndex >= 0 ? args[videoIndex + 1] : undefined;
+  // 宿主传来的「库 id → 真族名」映射（见 `fontFamilyFor`）。给了就装在全局，
+  // 没给就空表 —— 那时库里那支会按 id 原样写进契约（老行为，会静默落 ArialMT）。
+  const famIndex = args.indexOf('--font-families');
+  if (famIndex >= 0) {
+    const path = args[famIndex + 1];
+    try {
+      setFontFamilies(JSON.parse(readFileSync(path, 'utf8')));
+    } catch (e) {
+      console.error(`✗ 读不了 --font-families ${path}：${e.message}`);
+      process.exit(2);
+    }
+  }
 
   const tomlText = readFileSync(join(clipDir, 'polish.toml'), 'utf8');
   const config = parseToml(tomlText);
