@@ -1129,6 +1129,20 @@ const MUTATIONS = [
       "          const pieces = remapCueMs(cue.startMs, cue.endMs).map((p) => ({ startMs: p.startMs + dmOffsetSecs * 1000, endMs: p.endMs + dmOffsetSecs * 1000 }));",
     ].join("\n"),
   },
+  {
+    // 2026-10-08：库 id 不再换成真族名 ⇒ 底座那边静默落 ArialMT
+    // （`lines_failed: 0`、`issues: []`，报告全绿而成片字体全错）。
+    name: '库 id 不再解析成真族名（libass 静默落 ArialMT）',
+    from: '  const mapped = fontFamilies[id];',
+    to: '  const mapped = undefined;',
+  },
+  {
+    // 反面：把**库外**的值也改写 —— 老工程 `font = "LXGW WenKai"`（系统字体族名）会被
+    // 篡改成库里那支，预览与成片一起换字体。只钉"库内要换"的话，这条永远绿。
+    name: '库外的值也被改写（老工程的系统字体族名被篡改）',
+    from: '  return typeof mapped === \'string\' && mapped.trim() ? mapped.trim() : id;',
+    to: '  return typeof mapped === \'string\' && mapped.trim() ? mapped.trim() : `F:${id}`;',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -1175,6 +1189,8 @@ async function mutate() {
         checkLaneSwitches(curves);
         // 密集键右端那一段同理（③R3，2026-10-05）—— 不跑它这条变异就永远绿。
         checkDenseRanges(curves);
+        // 字体族名那条同理（2026-10-08）—— 不跑它，"库里那支没被换成真族名"永远绿。
+        checkFontFamily(curves);
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
         checkStageGeom(mutatedSource);
         // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
@@ -1534,6 +1550,45 @@ function checkColors(mod) {
 //   * `style.camera` 没配某一档时的倍率 —— 模板有**按档位的默认值**（远 = 0.55），不是 1.0。
 //
 // 这三条的失效方式全是"报告里一行、成片里没有"，所以判据要落在**产物**上（调整图层 / 关键帧 / 资产）。
+// ---- 字体：库 id → 真族名（2026-10-08，底座 0.2.0 起）--------------------
+// 抽成函数是因为**变异自证也要跑它**（`scripts/AGENTS.md`：只写在顶层的检查，变异台不会跑）。
+//
+// 钉的是"库里那支有没有被换成真族名"。底座 0.2.0 起字幕走 libass，而 **libass 按族名找字体**；
+// `polish.toml` 里存的却是**库 id**。两者在库里确实会不一样（实测 id `GenJyuuGothic-Bold`
+// vs 族名 `Gen Jyuu Gothic Bold`），而名字对不上时 libass **不报错** ——
+// 静默落 `ArialMT`，`lines_failed: 0`、`issues: []`。实测（同字体同 fontsdir，只换名字）：
+//
+//     fontselect: (GenJyuuGothic-Bold, 400, 0)    -> ArialMT            ← 传 id
+//     fontselect: (Gen Jyuu Gothic Bold, 400, 0)  -> GenJyuuGothic-Bold ← 传真族名
+//
+// ⚠️ 判据必须**同时**钉住"库内的要换"和"库外的不能动"：只钉前者的话，一个"把所有值都加上
+// 前缀"的写法也会绿 —— 而那会把老工程的 `LXGW WenKai` 一起改写（它不在库里，该走系统字体栈）。
+function checkFontFamily(mod) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+
+  // 库里有一支 id ≠ 族名（这正是 slug 形态的老工程会踩的那支）。
+  mod.setFontFamilies({ 'GenJyuuGothic-Bold': 'Gen Jyuu Gothic Bold', 乐米波波体: '乐米波波体' });
+  eq(mod.fontFamilyFor('GenJyuuGothic-Bold'), 'Gen Jyuu Gothic Bold', '库内 id ≠ 族名：必须换成真族名');
+  eq(mod.fontFamilyFor('乐米波波体'), '乐米波波体', '库内 id == 族名：原值返回（不许多加东西）');
+  eq(mod.fontFamilyFor('LXGW WenKai'), 'LXGW WenKai', '库外的值必须原样返回（那是系统字体族名）');
+  eq(mod.fontFamilyFor('lemi'), 'lemi', '认不出的一律原样，不许猜');
+  eq(mod.fontFamilyFor(''), null, '空 = 契约里的"没指定"');
+  eq(mod.fontFamilyFor('   '), null, '只空白也算没指定');
+  eq(mod.fontFamilyFor(undefined), null, 'undefined 不许抛');
+  // 映射里的空值不许把 id 抹成空串（那会让契约里出现 font_family: ""）。
+  mod.setFontFamilies({ X: '   ' });
+  eq(mod.fontFamilyFor('X'), 'X', '映射值是空白 ⇒ 退回 id，不许返回空串');
+
+  // 复位成空表，免得影响后续用例。
+  mod.setFontFamilies({});
+  eq(mod.fontFamilyFor('GenJyuuGothic-Bold'), 'GenJyuuGothic-Bold', '没有映射时按 id 原样（老行为）');
+  return checks;
+}
+
 // ---- 密集键往前铺的区间（③R3）--------------------------------------------
 // 抽成函数是因为**变异自证也要跑它**（`scripts/AGENTS.md`：只写在顶层的检查，变异台不会跑）。
 // 钉的是"右端落在哪一帧"：退回"窗口末尾"时，窗口之后到下一个稀疏键那一段只剩两个稀疏键 ⇒
@@ -1836,6 +1891,10 @@ console.log('  钉住的是 2026-10-05：先定画面大小 → 绕盒心缩放 
 console.log('  scale=1 时与老顺序逐值相同、scale≠1 时 X=0 是贴左（旧顺序 -303.75 = 画面被推出盒外）');
 const denseChecks = checkDenseRanges(translatorModule);
 console.log(`✓ 密集键区间（③R3 右端落点 + 两个边界）：${denseChecks} 项全绿`);
+const fontFamilyChecks = checkFontFamily(translatorModule);
+console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
+console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');
+console.log('  真族名（传 id 会静默落 ArialMT、lines_failed 仍是 0），库外的值必须**原样返回**');
 console.log('  钉住的是 2026-10-06 的六条轨道开关（`[stage.lanes]`）：缺字段时"素材竖或画布竖 ⇒ 运镜/');
 console.log('  视觉特效默认关、音效只跟画布"，**显式开关优先于一切**（横画布也能关、竖画布也能开）——');
 console.log('  与 Rust `ProjectFile::lane_default` 四种方向组合逐值对拍');

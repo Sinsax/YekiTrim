@@ -47,8 +47,8 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   Rust 直接收，响度对齐后 `Ffmpeg::mix_sfx` 混入 —— "画面归底座、声音归本仓"；缺文件会打 warn
   并跳过该条，不再静默）/ `sound_file_exists`（暂无消费者，判据与 collect 同源）。
   ⚠️ **`runner.rs` 已删除**（2026-09）：它自带一份 `ResolvedPaths` + `RenderRunner`，全仓库零消费者
-  （真正的 `ResolvedPaths`/`resolve_paths` 在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），
-  整模块只有一个 `#[allow(dead_code)]` 撑着。要加回"提帧 runner"先确认有第二条链路需要它。
+  （真正的在 `pipeline.rs`，经 `render/mod.rs` 的 `pub use pipeline::*` 出去），整个模块只靠一个
+  `#[allow(dead_code)]` 撑着。要加回"提帧 runner"先确认有第二条链路需要它。
 
 ## 边界
 
@@ -66,7 +66,7 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   - **底座的 stdout 落文件 + 按 offset tail，不许用管道**：它打 NDJSON（`start`/`progress`/`done`），
     要翻成 `frames A..B: NN%` 才有人认（不翻的话 WebUI 全程 0%）。它同样会拉起 ffmpeg 孙进程，
     所以照外层那条纪律：写进 `_temp_dhampir_progress.ndjson` 再 tail（带 `_temp_` 前缀，
-    失败时被 `cleanup_render_leftovers` 收掉）；stderr 直接继承，底座的 warn 原样进任务日志。
+    失败时被 `cleanup_render_leftovers` 收掉）；stderr 直接继承。
   - **`cmd_render` 开头必须把工程目录绝对化**（`std::path::absolute`）：`resolve_paths` 把
     `project.output` 归一成 `<工程目录>/export.mp4`，工程目录是**相对**的时候，合流前那一步
     "不是绝对路径就再 join 一次工程目录"会把目录名**拼两遍**（`<dir>\<dir>\export.mp4`
@@ -80,30 +80,31 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
     （实测：12s 的片子带 3s 屏蔽，修复前出 6.0s、修复后 9.0s = 与 chrome 逐毫秒一致）。
   - ⚠️ **字体：栈的顺序 + 粗体，两件都不能漏**（2026-10-01 修完"字体不对"）：
     `find_font(style.subtitle.font) -> (常规, Option<粗体>)`，逐支按
-    **① 字体库（`fonts::resolve_file`；目录/文件名是 ASCII slug ⇒ 路径必纯 ASCII）
-    → ② 系统字体目录（族名归一化包含 + 别名表：`Microsoft YaHei` → `msyh.ttc`）** 解析；
+    **① 字体库（`fonts::resolve_file`）→ ② 系统字体目录（族名归一化 + 别名表 `Microsoft YaHei`→`msyh.ttc`）** 解析；
     顺序 = 项目选的那支 + **`fallback_stack()`（动态兜底栈，唯一权威）** ——
-    首项随**库里"设为默认"那支**走，库里没有可用中文时才回落到 `SYSTEM_FONT_STACK`
-    常量。⚠️ **别改回读常量**：那会让「设为默认」对成片永远无效（2026-10-01 收掉的三处不统一之一）。
-    栈还必须与 `PolishPreview.vue` 的 `.cap` 栈同源（经 `/api/polish/fonts` 的 `fallback_stack` 透传）——
-    它仨曾经各写各的 ⇒ 同一个工程**预览是雅黑、成片是 Noto**（用户报的"字体不对"）。
-    ⚠️ **「库里默认哪支」的判据只此一处**（2026-10-06）：`fonts::default_text_family`。
-    原先各抄一份 `.find(|e| e.is_default)`，而**最该问它的那条路（`cmd_init`）一次都没问过**
-    —— 症状是「每次切出切片，字体都不是字体库设置的默认字体」。新增消费点一律走它。
-    ⚠️ 这条栈决定**挑哪一支**，不是"渲染时能逐字形回退"：底座只收到**一个** `--font-file`
-    （`find_font` 沿栈首次命中即 `return`），缺字就画豆腐块。见 `font-library.md` §23.6。
+    首项随**库里"设为默认"那支**走，库里没有可用中文时才回落 `SYSTEM_FONT_STACK`。
+    ⚠️ **别改回读常量**：那会让「设为默认」对成片永远无效。栈还必须与 `PolishPreview.vue` 的 `.cap`
+    同源（经 `/api/polish/fonts` 透传）——它仨曾各写各的 ⇒ 同一工程**预览雅黑、成片 Noto**。
+    ⚠️ **「库里默认哪支」判据只此一处**（2026-10-06）：`fonts::default_text_family`。原先各抄一份
+    `.find(|e| e.is_default)`，而**最该问它的 `cmd_init` 一次都没问过** ⇒「每次切出切片，字体都不是
+    字体库设置的默认字体」。新增消费点一律走它。⚠️ 这条栈只决定**挑哪一支**、不是"能逐字形回退"
+    （底座只收到**一个** `--font-file`），见 `font-library.md` §23.6。
+    ⚠️ **`font_family` 必须真族名**（2026-10-08，0.2.0 起）：libass **按族名**找字体，而 `polish.toml`
+    存的是**库 id**；两者**真的会不一样**（实测 id `GenJyuuGothic-Bold` vs 族名 `Gen Jyuu Gothic Bold`），
+    不一样时 libass **不报错**、静默落 `ArialMT`（`lines_failed: 0`）。所以出片前把 `id→族名`
+    经 `--font-families` 交给转译器（`write_font_families`，**库外原样**）。
     整个字体库照旧交给底座（`--font-dir`，它按每条轨的 `font_family` 在目录里找）。
     ⚠️ **`--font-bold-file` 必须传**：转译器给字幕写 `font_weight: 700`、弹幕 `600`（与预览的
     `.cap{font-weight:700}` / `.dm{font-weight:600}` 同口径），而底座**不合成粗体** ——
     它只在 `>= 600` 时去要这个文件，拿不到就退回常规体 ⇒ **成片笔画比预览细一圈**。
-    所以 `find_font` 要配出**同一族的粗体**（`msyh.ttc` → `msyhbd.ttc`；可变字体如
-    `NotoSansSC-VF.ttf` 没有独立粗体 ⇒ `None`，此时 `describe()` 与就绪位会明说"没有粗体那一支"）。
+    所以 `find_font` 要配出**同一族的粗体**（`msyh.ttc`→`msyhbd.ttc`；可变字体如 `NotoSansSC-VF.ttf`
+    没有独立粗体 ⇒ `None`，此时 `describe()` 与就绪位会明说"没有粗体那一支"）。
   - **就绪位与严格模式**（2026-09-30 M3）：`dhampir::readiness(font)` 是**唯一的**"这台机器能不能出片"
-    判断（六项各查一次文件：二进制/转译器/字体/node/预览产物/版本契约，**不渲染、不跑 node**）——
-    `/api/polish/dhampir-status`、`/api/health` 的 `dhampir_ready`、`yekitrim polish doctor`、前端提示
-    都读它。**别各写一份**（症状会是"医生说好、渲染却失败"）。
+    判断（八项各查一次：二进制/转译器/字体/node/**ffmpeg+libass**/预览产物/版本契约；`deep=false`
+    那条便宜腿不跑子进程）——`/api/polish/dhampir-status`、`/api/health` 的 `dhampir_ready`、
+    `polish doctor`、前端提示都读它。**别各写一份**（症状会是"医生说好、渲染却失败"）。
     `render_video_only(..., strict)` = `polish render --strict`：转译报告里 `DROP > 0` 就**拒绝出片**
-    并逐条列出（报告由 `prepare_project_reporting` 带回来；`TranslateReport::parse` 只认报告那几行的形状，
+    并逐条列出（报告由 `prepare_project_reporting` 带回；`TranslateReport::parse` 只认那几行的形状，
     认不出就当 0，**绝不让报告把出片搞崩**）。
 - **分类规则**：`frames A..B: NN%` / `chunk#N: ...%` → `jobs.progress()`（按**最小值**聚合：
   最慢的分块决定整体）；`-- Xxx --`、`FINISHED:`、`Cover saved:`、`✂ 已导出去除`、`⏱` 等里程碑
@@ -182,10 +183,9 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   `tests/takumi_font_id.rs` 与 `docs/plan/font-library.md` §13。
   ⚠️⚠️ **标题必须关掉 Takumi 的合成加粗**（`TAKUMI_TITLE_LAYER_CSS` 末尾 `#title{font-weight:400}`）：
   模板写 `900`，而 **Chrome 对库里那支单字面字体不合成加粗**（受控实测 400/900 逐像素相同），
-  **Takumi 会**（`font_size/32` 经 `draw_text_embolden`）⇒ 填充外撑 `e/2`、盖掉描边内缘
-  （20px 描边实测外扩 **10px → 7px**）。⚠️ **Takumi 认 `font-family`**（纠正旧结论：旧说法是把
-  「认不出的族名落进兜底桶」当成了「族名无用」）。⚠️ 标题里的 **emoji**（`title_lines` 联排、
-  非特效层）：族名走库 id + 4 向 `drop-shadow` 环（**别加对角**：链式累积会翻倍）（位图字形没有描边路径）+ 必须 `display:inline-block`。
+  **Takumi 会**（`draw_text_embolden`）⇒ 填充外撑 `e/2`、盖掉描边内缘（20px 描边实测 10px→7px）。
+  ⚠️ **Takumi 认 `font-family`**（纠正旧结论）。⚠️ 标题里的 **emoji**（`title_lines` 联排、非特效层）：
+  族名走库 id + 4 向 `drop-shadow` 环（**别加对角**：链式累积会翻倍）+ 必须 `display:inline-block`。
   📖 证据链 / A-B 数字 / 复跑命令：**`docs/plan/takumi-cover-capability.md` §15**。
 - **模板里两条"四处/两份实现"的契约**（改 `templates/index.html` 或 `webui/src/polish/engine.js` 前必读）：
   - **覆盖层色档**：`overlay_type == "gradient"` 的有效色档规则见 `yekitrim-render-core/src/timeline.rs::overlay_stops`；

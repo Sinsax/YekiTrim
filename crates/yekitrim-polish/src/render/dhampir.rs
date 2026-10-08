@@ -690,8 +690,21 @@ pub struct Readiness {
     pub font_bold: Option<String>,
     /// 版本契约（发布包里 `VERSION` 的 `project_schema=`）——只有定版产物才有。
     pub contract_version: Option<String>,
+    /// **产品版本**（`VERSION` 的 `version=`，如 `0.2.0`）——"这一版是哪一版"。
+    ///
+    /// ⚠️ 它与 `contract_version` 是**两条独立的线**：契约号只在兼容变更时动，而**产物字节**
+    /// 每次都可能变。0.2.0 就是「`project_schema` 没动、字幕栅格化器却换了」的那一版 ——
+    /// 那种改动**不会被任何契约校验拦下**，所以产品版本必须可见。
+    pub product_version: Option<String>,
+    /// wasm 导出面契约（`VERSION` 的 `host_api=`）——只有定版产物才有。
+    pub host_api_version: Option<String>,
     /// `node --version` 的原文（**只有深探才有**；便宜那一趟是 `None`）。
     pub node_version: Option<String>,
+    /// `ffmpeg -version` 第一行 + 有没有 libass（**只有深探才有**；便宜那一趟是 `None`）。
+    ///
+    /// 底座 0.2.0 起字幕走 libass（`subtitles=`），所以「ffmpeg 带不带它」是**出片前置**。
+    /// 不带时底座会响亮失败（不会静默出无字幕的片子），但那要等到出片那一刻 —— 这里提前说。
+    pub ffmpeg: Option<String>,
     /// **效果词汇表**（`spec/effects.json`）的路径。
     ///
     /// `None` **不是错误**：找不到包内那份时会退到**编译期内嵌**那一份（`include_str!`），
@@ -756,19 +769,48 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
             }
         }
     }
-    // 预览产物是可选的（只有页面预览要用），缺了不影响出片 —— 只记在字段里，不进 problems。
-    let (preview, contract_version) = match wasm_dirs() {
-        Ok((engine, _pkg)) => {
-            let version = engine
-                .parent()
-                .and_then(|dir| std::fs::read_to_string(dir.join("VERSION")).ok())
-                .and_then(|text| {
-                    text.lines()
-                        .find_map(|l| l.trim().strip_prefix("project_schema=").map(str::to_string))
-                });
-            (Some(engine.display().to_string()), version)
+    // 字幕栅格化要 ffmpeg 带 libass（底座 0.2.0 起字幕走 `subtitles=`）——
+    // **不带的 ffmpeg 不会静默出错**（底座会响亮失败），但会在**出片那一刻**才炸。
+    // 所以放在这里提前说。⚠️ 只有 `deep` 才探：这条要真起一次 ffmpeg，而就绪位在
+    // `/api/health` 这类热路径上会被调（与 `node_version` 同一条纪律）。
+    let mut ffmpeg_label = None;
+    if deep {
+        match ffmpeg_libass() {
+            Some(version) => {
+                if !version.libass {
+                    problems.push(
+                        "ffmpeg 没有带 libass（字幕要它）—— 换一个 `--enable-libass` 的构建；\
+                         自检：ffmpeg -filters | grep subtitles"
+                            .to_string(),
+                    );
+                }
+                ffmpeg_label = Some(version.text);
+            }
+            None => problems.push(
+                "找不到 ffmpeg（或它跑不起来）—— 出片要它做音轨/合流，字幕还要 libass".to_string(),
+            ),
         }
-        Err(_) => (None, None),
+    }
+    // 预览产物是可选的（只有页面预览要用），缺了不影响出片 —— 只记在字段里，不进 problems。
+    let (preview, contract_version, product_version, host_api_version) = match wasm_dirs() {
+        Ok((engine, _pkg)) => {
+            let text = engine
+                .parent()
+                .and_then(|dir| std::fs::read_to_string(dir.join("VERSION")).ok());
+            let field = |key: &str| {
+                text.as_deref().and_then(|t| {
+                    t.lines()
+                        .find_map(|l| l.trim().strip_prefix(key).map(str::to_string))
+                })
+            };
+            (
+                Some(engine.display().to_string()),
+                field("project_schema="),
+                field("version="),
+                field("host_api="),
+            )
+        }
+        Err(_) => (None, None, None, None),
     };
     // 词汇表：包内那份的路径（找不到就 None ⇒ 走编译期内嵌，**不是错误**，所以不进 `problems`）。
     let spec = crate::render::pipeline::spec_effects_path().map(|p| p.display().to_string());
@@ -780,10 +822,49 @@ pub fn readiness(project_font: &str, deep: bool) -> Readiness {
         font,
         font_bold,
         contract_version,
+        product_version,
+        host_api_version,
         node_version: node_version_label,
+        ffmpeg: ffmpeg_label,
         spec,
         problems,
     }
+}
+
+/// `ffmpeg -version` 的第一行 + **有没有 libass**（`[Parsed_subtitles_…]` 那个滤镜）。
+///
+/// ⚠️ 判据是 `-filters` 里有没有 `subtitles` 这一条，**不是**去 grep `--enable-libass` ——
+/// 后者只是构建配置的字符串，各家发行版写法不一；而滤镜**在不在**才是能不能用的判据。
+/// 上游给的正是这条自检命令（`ffmpeg -filters | grep subtitles`），这里照它实现。
+pub struct FfmpegInfo {
+    /// `ffmpeg -version` 的第一行（带构建标识，人读用）。
+    pub text: String,
+    pub libass: bool,
+}
+
+fn ffmpeg_libass() -> Option<FfmpegInfo> {
+    let ver = yekitrim_core::process::cmd("ffmpeg")
+        .arg("-version")
+        .output()
+        .ok()?;
+    if !ver.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&ver.stdout)
+        .lines()
+        .next()
+        .unwrap_or("ffmpeg")
+        .trim()
+        .to_string();
+    let filters = yekitrim_core::process::cmd("ffmpeg")
+        .args(["-hide_banner", "-filters"])
+        .output()
+        .ok()?;
+    // 认的是滤镜表里那一行（`.. subtitles  V->V  Render text subtitles using the libass library.`）。
+    let libass = String::from_utf8_lossy(&filters.stdout)
+        .lines()
+        .any(|l| l.split_whitespace().nth(1) == Some("subtitles"));
+    Some(FfmpegInfo { text, libass })
 }
 
 /// `node` 在不在给定的 PATH 里 —— **不启动进程**（就绪位会在 `/api/health` 这类热路径上被调）。
@@ -843,6 +924,36 @@ pub fn prepare_project(
     Ok(prepare_project_reporting(clip_dir, project_path, keep_muted, video)?.0)
 }
 
+/// 传给转译器的「库 id → 真族名」映射的**文件名**（写在工程目录里，出片结束由
+/// [`cleanup_project`] 收掉）。`_temp_` 前缀与其它草稿同一套命名 —— 启动清扫按这个前缀收孤儿。
+const FONT_FAMILIES_FILE: &str = "_temp_font_families.json";
+
+/// 写一份「库 id → 真族名」映射给转译器（`--font-families <json>`）。
+///
+/// 为什么要有它：底座 0.2.0 起走 libass，而 **libass 按族名找字体**，`polish.toml` 里存的
+/// 却是**库 id**。两者在库里**确实会不一样**（实测 id `GenJyuuGothic-Bold` vs 族名
+/// `Gen Jyuu Gothic Bold`），而名字对不上时 libass **不报错** —— 静默落 `ArialMT`，
+/// 且 `lines_failed: 0`、`issues: []`（比 `.notdef` 还隐蔽）。
+///
+/// ⚠️ 与 [`yekitrim_core::fonts::family_for`] 同一个口径（**库外原样返回**）：
+/// 老工程 `font = "LXGW WenKai"` 那种系统字体族名不该被改写 —— 所以这里**只放库里有的 id**，
+/// 库外的值由转译器自己原样保留。
+fn write_font_families(dest: &Path) -> Result<()> {
+    let mut map = serde_json::Map::new();
+    for e in yekitrim_core::fonts::scan_all(&yekitrim_core::fonts::dir()) {
+        let fam = e.family_internal.trim();
+        // 族名空 / 与 id 相同 ⇒ 没有"改写"这回事，省掉一条映射。
+        if fam.is_empty() || fam == e.id {
+            continue;
+        }
+        map.insert(e.id.clone(), serde_json::Value::String(fam.to_string()));
+    }
+    let body = serde_json::to_vec(&serde_json::Value::Object(map))?;
+    std::fs::write(dest, body)
+        .with_context(|| format!("写字体族名映射失败：{}", dest.display()))?;
+    Ok(())
+}
+
 /// 与 [`prepare_project`] 同一条路，但**把转译报告也带回来**（`--strict` 要用它）。
 pub fn prepare_project_reporting(
     clip_dir: &Path,
@@ -852,9 +963,12 @@ pub fn prepare_project_reporting(
 ) -> Result<(PathBuf, TranslateReport)> {
     let translator = find_translator()?;
     let translated = project_path.join("_dhampir_project.json");
+    let font_families = project_path.join(FONT_FAMILIES_FILE);
+    write_font_families(&font_families)?;
     let t = std::time::Instant::now();
     let mut cmd = yekitrim_core::process::cmd("node");
     cmd.arg(&translator).arg(clip_dir).arg("--out").arg(&translated);
+    cmd.arg("--font-families").arg(&font_families);
     if keep_muted {
         // **出片**那条腿：时间线保持整条，屏蔽区间交给尾部那一剪（见转译器里的说明）。
         // 预览**不能**加这个 —— 客户端要靠压缩时间线跳屏蔽区间。
@@ -905,6 +1019,10 @@ pub fn cleanup_project(project_path: &Path) {
         translated.clone(),
         translated.with_file_name("dhampir-danmaku.ass"),
         translated.with_file_name("dhampir-subtitle.srt"),
+        // 传给转译器的字体族名映射（`--font-families`）。⚠️ 忘了它就会**每出一次片、
+        // 在用户工程目录里留一个 `_temp_font_families.json`**（我自己实测漏过一次）——
+        // 它不属于工程，不该出现在那儿。
+        translated.with_file_name(FONT_FAMILIES_FILE),
     ] {
         std::fs::remove_file(&scratch).ok();
     }
@@ -1285,6 +1403,77 @@ mod artifact_tests {
         std::fs::remove_file(preview.parent().unwrap().join("VERSION")).unwrap();
         let err = verify_artifact_dir(&preview).expect_err("缺 VERSION 时必须报错");
         assert!(format!("{err}").contains("VERSION"), "报错要点名 VERSION");
+    }
+
+    /// `VERSION` 里三个字段都要能读出来，且**三者是三条独立的线**。
+    ///
+    /// 为什么值得钉：产品版本（`version=`）**没有运行时 API**（wasm 侧只有
+    /// `dhampir_host_api_version()`），所以"用户装的是 0.1.0 还是 0.2.0"**只能读这个文件**。
+    /// 而 0.2.0 恰好是「契约号不动、字幕像素却变了」的那一版 —— 那种改动不会被任何契约
+    /// 校验拦下，只有产品版本能区分它。读漏了就等于把这个盲区留在原地。
+    #[test]
+    fn version_file_yields_all_three_versions() {
+        let dir = std::env::temp_dir().join("yekitrim_dhampir_ver3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "version=0.2.0\nproject_schema=1\nhost_api=6\nlicense=Apache-2.0\n";
+        let field = |key: &str| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix(key).map(str::to_string))
+        };
+        assert_eq!(field("version=").as_deref(), Some("0.2.0"), "产品版本");
+        assert_eq!(field("project_schema=").as_deref(), Some("1"), "工程文件契约");
+        assert_eq!(field("host_api=").as_deref(), Some("6"), "wasm 导出面契约");
+        // ⚠️ `version=` **不许**匹配到 `host_api=` 之类的前缀相同项（这里靠的是完整前缀）。
+        assert_eq!(field("api="), None, "不许把 host_api= 当成 api=");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `ffmpeg -filters` 的判据是**滤镜表里有 `subtitles`**，不是有没有 libass 这四个字母。    ///
+    /// 为什么用滤镜表：`--enable-libass` 只是构建配置的字符串（各家发行版写法不一），
+    /// 而**滤镜在不在**才是能不能用的判据 —— 上游给的自检命令正是 `ffmpeg -filters | grep subtitles`。
+    #[test]
+    fn libass_is_detected_by_filter_not_by_build_flag() {
+        let parse = |out: &str| {
+            out.lines()
+                .any(|l| l.split_whitespace().nth(1) == Some("subtitles"))
+        };
+        // 真机的形状（ffmpeg 9.0.1 gyan build）。
+        assert!(parse(
+            " .. ass               V->V       Render ASS subtitles onto input video using the libass library.\n\
+              .. subtitles         V->V       Render text subtitles onto input video using the libass library."
+        ));
+        // 只有构建字符串、没有滤镜 ⇒ 不算有（这条正是"别 grep --enable-libass"）。
+        assert!(
+            !parse("configuration: --enable-libass --enable-fontconfig"),
+            "构建配置里有 --enable-libass **不等于**滤镜可用"
+        );
+        // 别被 `ass` 那条误判成 `subtitles`。
+        assert!(!parse(" .. ass   V->V   Render ASS subtitles onto input video"));
+    }
+
+    /// `cleanup_project` 必须把**传给转译器的字体族名映射**也收掉。
+    ///
+    /// 为什么值得钉：那个文件是出片时写进**用户工程目录**的草稿。漏了收 = 每出一次片就多留
+    /// 一个 `_temp_font_families.json`（实测我自己漏过一次，真机跑完出片后在工程目录里看到了它）。
+    /// 判据刻意**对着常量**而不是字面量 —— 那样改了文件名却忘了改 cleanup 时，这条会红。
+    #[test]
+    fn cleanup_removes_the_font_family_map() {
+        let dir = std::env::temp_dir().join("yekitrim_dhampir_cleanup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let translated = dir.join("_dhampir_project.json");
+        let families = dir.join(FONT_FAMILIES_FILE);
+        for f in [&translated, &families] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        cleanup_project(&dir);
+        assert!(!translated.exists(), "转译产物要收掉");
+        assert!(
+            !families.exists(),
+            "字体族名映射也要收掉（否则工程目录里每出一次片多一个草稿）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- M3：就绪位与转译报告的解析 ----

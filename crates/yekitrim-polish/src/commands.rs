@@ -821,6 +821,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         ("字体粗体", &ready.font_bold),
         ("预览产物", &ready.preview),
         ("Node", &ready.node_version),
+        ("ffmpeg", &ready.ffmpeg),
     ] {
         match value {
             Some(p) => tracing::info!("  ✓ {label}: {p}"),
@@ -834,8 +835,18 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
         Some(p) => tracing::info!("  ✓ 效果词汇表: {p}"),
         None => tracing::info!("  · 效果词汇表: 内嵌（包内没有 spec/effects.json，用编译期那份）"),
     }
-    if let Some(v) = &ready.contract_version {
-        tracing::info!("  · 版本契约 project_schema={v}");
+    // 契约面：**产品版本也要印**。两个"版本"是两回事 —— `project_schema` 管工程文件能不能读，
+    // `host_api` 管 wasm 导出面对不对得上，而"这一版是哪一版"（0.1.0 / 0.2.0）**只有 `version=` 能回答**，
+    // 且**没有运行时 API**（wasm 侧只有 `dhampir_host_api_version()`）。
+    // 0.2.0 恰好是「契约号不动、字幕像素变了」的第一版 —— 用户报"字幕看着不一样"时，
+    // 第一件要确认的就是他装的是哪一版底座。
+    if let Some(v) = &ready.product_version {
+        tracing::info!("  · 底座产品版本 version={v}");
+    }
+    match (&ready.contract_version, &ready.host_api_version) {
+        (Some(s), Some(h)) => tracing::info!("  · 版本契约 project_schema={s} / host_api={h}"),
+        (Some(s), None) => tracing::info!("  · 版本契约 project_schema={s}"),
+        _ => {}
     }
     for problem in &ready.problems {
         tracing::info!("  ✗ {problem}");
