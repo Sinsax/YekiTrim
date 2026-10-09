@@ -1279,8 +1279,9 @@ pub(super) async fn polish_project_get_impl(
 /// 而它泄露的是服务器的安装路径 —— 与 `/api/admin/usage` 的理由同一条。
 pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::CurrentUser>) -> ApiResult {
     let is_admin = user.is_admin();
+    let owner = crate::auth::owner_of(&user);
     let payload = blocking(move || {
-        let root = yekitrim_core::path::font_dir();
+        let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Fonts);
         let fonts: Vec<serde_json::Value> = yekitrim_core::fonts::scan_all(&root)
             .into_iter()
             .map(|f| {
@@ -1456,7 +1457,14 @@ pub(super) async fn polish_fonts_upload(
 /// ⚠️ 默认是**互斥**的（`fonts::set_default` 会把别的清掉）。
 /// ⚠️ 只影响**新建项目**用它；已有工程里 `polish.toml` 存的那串 id 不会被改写
 /// （改了就是替用户改他已定的稿子）。
-pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) -> ApiResult {
+pub(super) async fn polish_fonts_default(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner_fonts = yekitrim_core::owner::asset_dir(
+        crate::auth::owner_of(&user),
+        yekitrim_core::owner::AssetKind::Fonts,
+    );
     let id = body
         .get("id")
         .and_then(|v| v.as_str())
@@ -1467,7 +1475,7 @@ pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) ->
     blocking(move || {
         // set_default / remove 操作的是**当前可见的那份库**（`font_dir()` 读侧解析），
         // 不是写路径 —— `set_default` / `remove` 改的是**当前可见的那份库**（`font_dir()`）。
-        yekitrim_core::fonts::set_default(&yekitrim_core::path::font_dir(), &id)
+        yekitrim_core::fonts::set_default(&owner_fonts, &id)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
     })
     .await?;
@@ -1480,16 +1488,21 @@ pub(super) async fn polish_fonts_default(Json(body): Json<serde_json::Value>) ->
 /// 而且"字体 id 可以带空格/CJK"（`is_safe_id` 允许）—— 放进路径段还要额外转义。
 /// ⚠️ `builtin = true`（程序自带）**返回 403**（`fonts::remove_font` 直接 bail，文案「程序自带字体不可删除」）。
 pub(super) async fn polish_fonts_delete(
+    Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult {
+    let owner_fonts = yekitrim_core::owner::asset_dir(
+        crate::auth::owner_of(&user),
+        yekitrim_core::owner::AssetKind::Fonts,
+    );
     let id = q.get("id").map(String::as_str).unwrap_or("").trim().to_string();
     if id.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 id"));
     }
     blocking(move || {
         // ⚠️ `builtin` 那一支**必须**能被用户看见 —— 403 的文案就是「程序自带字体不可删除」，
-        // 与 `webui/src/components/FontLibrary.vue`（首页字体库区块）里把自带字体的删除键置灰是同一条规矩。
-        yekitrim_core::fonts::remove_font(&yekitrim_core::path::font_dir(), &id).map_err(|e| {
+        // 与 `webui/src/components/MediaLibrary.vue`（首页素材库）里把自带字体的删除键置灰是同一条规矩。
+        yekitrim_core::fonts::remove_font(&owner_fonts, &id).map_err(|e| {
             let msg = e.to_string();
             let status = if msg.contains("程序自带") {
                 StatusCode::FORBIDDEN
@@ -1773,9 +1786,12 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
 
 /// 可用的贴图来源：内置 emoji 码点池 + 全局贴纸库（exe 同级 stickers/）的包名与 tags。
 /// LLM 生成时按 sticker_source 过滤可用的贴纸池。
-pub(super) async fn polish_sticker_sources() -> ApiResult {
+pub(super) async fn polish_sticker_sources(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     use yekitrim_polish::assets::sticker_index::{load_package_meta, load_sticker_index};
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let index = load_sticker_index(&root);
     let mut out = vec![serde_json::json!({
         "name": "emoji",
@@ -1803,11 +1819,14 @@ pub(super) async fn polish_sticker_sources() -> ApiResult {
 ///
 /// 以磁盘为准（`scan_packages`），每个包给齐 `tags[].files`（`<包名>.toml` 的反向索引）
 /// 与全部文件名 —— 未构建的包也给文件，只是没有 tag（前端把它们平铺成一级条目）。
-pub(super) async fn polish_sticker_library() -> ApiResult {
+pub(super) async fn polish_sticker_library(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     use yekitrim_polish::assets::sticker_index::{
         list_package_files, load_package_meta, load_sticker_index, scan_packages,
     };
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let index = load_sticker_index(&root);
     let packs: Vec<serde_json::Value> = scan_packages(&root)
         .into_iter()
@@ -1849,8 +1868,11 @@ pub(super) async fn polish_sticker_library() -> ApiResult {
 /// 而且用户设的出点必须能被夹到这个长度（不然越界读素材会让底座报 `source_range_exceeded`）。
 /// 探不出时长的照样列出来（`duration: null`），界面置灰并写明原因 —— 不隐藏，
 /// 否则用户会觉得"我明明放进去了却没有"。
-pub(super) async fn polish_video_library() -> ApiResult {
-    let root = yekitrim_core::path::video_dir_readable();
+pub(super) async fn polish_video_library(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Videos);
     let lib_dir = root.to_string_lossy().to_string();
     let items: Vec<serde_json::Value> =
         blocking(move || Ok(yekitrim_polish::assets::sticker_index::scan_video_library(&root)))
@@ -1911,13 +1933,15 @@ pub(super) async fn polish_sfx_catalog() -> ApiResult {
 /// （包 / 包内文件），这里刻意**不收编**它 —— 收编就得让 `file` 认 `/`，
 /// 正好把上面那条安全性质破掉。
 pub(super) async fn polish_asset_file(
+    Extension(user): Extension<crate::auth::CurrentUser>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     use yekitrim_polish::assets::sticker_index::is_safe_component;
+    let owner = crate::auth::owner_of(&user);
     let kind = q.get("kind").map(String::as_str).unwrap_or("");
     let file = q.get("file").map(String::as_str).unwrap_or("");
-    let Some(root) = asset_kind_root(kind) else {
+    let Some(root) = asset_kind_root(owner, kind) else {
         return crate::media::json_error(StatusCode::BAD_REQUEST, "未知的素材类型");
     };
     if !is_safe_component(file) {
@@ -1949,15 +1973,19 @@ pub(super) async fn polish_asset_file(
     crate::media::serve_file(&path, &mime, range).await
 }
 
-/// `kind` → 该类型的库根目录（**唯一映射表**）。
+/// `kind` → 该 owner 该类型的库根目录（**唯一映射表**）。
 ///
-/// ⚠️ 一律走 `*_readable()`：新布局 + 存量回落的口径只有那一份，
-/// 这里写死 `resources/...` 会让**没搬迁的存量安装**预览全部 404。
-fn asset_kind_root(kind: &str) -> Option<std::path::PathBuf> {
-    use yekitrim_core::path;
+/// ⚠️ 一律走 `yekitrim_core::owner`，**别在这里拼 `resources/...`** ——
+/// 库位置的口径只有那一份（单人 = 程序目录、多用户 = 各自的树），
+/// 这里写死就等于是把另一套口径抄了第二遍。
+fn asset_kind_root(
+    owner: yekitrim_core::owner::Owner,
+    kind: &str,
+) -> Option<std::path::PathBuf> {
+    use yekitrim_core::owner::{asset_dir, AssetKind};
     match kind {
-        "video" => Some(path::video_dir_readable()),
-        "font" => Some(path::font_dir()),
+        "video" => Some(asset_dir(owner, AssetKind::Videos)),
+        "font" => Some(asset_dir(owner, AssetKind::Fonts)),
         _ => None,
     }
 }
@@ -1975,15 +2003,17 @@ fn asset_kind_root(kind: &str) -> Option<std::path::PathBuf> {
 /// 前端退成图标 + 文件名（见 `MediaLibrary.vue`）。**别回 500** —— 那会在界面上报一条
 /// "读取失败"，而实际只是"这张没缩略图、别的都好"。
 pub(super) async fn polish_video_thumb(
+    Extension(user): Extension<crate::auth::CurrentUser>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let owner = crate::auth::owner_of(&user);
     use yekitrim_polish::assets::sticker_index::is_safe_component;
     let file = q.get("file").map(String::as_str).unwrap_or("").to_string();
     if !is_safe_component(&file) {
         return crate::media::json_error(StatusCode::BAD_REQUEST, "文件名不合法");
     }
-    let root = yekitrim_core::path::video_dir_readable();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Videos);
     let src = root.join(&file);
     if !src.is_file() {
         return crate::media::json_error(StatusCode::NOT_FOUND, "素材不存在");
@@ -2074,11 +2104,13 @@ fn make_video_thumb(root: &std::path::Path, src: &std::path::Path, file: &str) -
 
 /// 贴纸库里的单张图（编辑器缩略图直连 `<img>`）；只读 + 路径安全校验，与 admin 版同款。
 pub(super) async fn polish_sticker_file(
+    Extension(user): Extension<crate::auth::CurrentUser>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    let owner = crate::auth::owner_of(&user);
     use yekitrim_polish::assets::sticker_index::{is_safe_component, sanitize_pack_name};
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let pack = q.get("pack").map(String::as_str).unwrap_or("");
     let name = q.get("name").map(String::as_str).unwrap_or("");
     let Some(pack) = sanitize_pack_name(pack) else {

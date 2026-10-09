@@ -131,8 +131,11 @@ async fn spawn_build(state: &Arc<AppState>, owner: i64, pack: &str) -> Result<St
 }
 
 /// `GET /api/polish/stickers` — 包列表（**以磁盘为准**：手工丢进库里的文件夹也会出现）。
-pub async fn packs_list() -> ApiResult {
-    let root = yekitrim_core::path::sticker_dir();
+pub async fn packs_list(
+    Extension(user): Extension<CurrentUser>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let index = si::load_sticker_index(&root);
     let packs: Vec<serde_json::Value> = si::scan_packages(&root)
         .into_iter()
@@ -172,8 +175,12 @@ pub async fn packs_list() -> ApiResult {
 }
 
 /// `GET /api/polish/stickers/:pack` — 包内文件 + 每个文件命中的 tags（展开预览时才拉）。
-pub async fn pack_detail(AxumPath(pack): AxumPath<String>) -> ApiResult {
-    let root = yekitrim_core::path::sticker_dir();
+pub async fn pack_detail(
+    Extension(user): Extension<CurrentUser>,
+    AxumPath(pack): AxumPath<String>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let dir = pack_dir(&root, &pack)?;
     if !dir.is_dir() {
         return Err(err(StatusCode::NOT_FOUND, format!("贴纸包不存在: {pack}")));
@@ -199,6 +206,7 @@ pub async fn pack_import(
     Extension(user): Extension<CurrentUser>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     let dir = body
         .get("dir")
         .and_then(|v| v.as_str())
@@ -231,7 +239,7 @@ pub async fn pack_import(
         )
     })?;
 
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let report = si::import_package(&root, &name, &src)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
 
@@ -296,9 +304,10 @@ pub async fn pack_upload(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     let (name, want_build) = parse_upload_args(&q, body.len())?;
     // 解压 + 写盘是同步 IO（几十 MB），交给 blocking 池；Bytes 提取本身在 async 侧（那是网络读取）
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let pack = name.clone();
     let report = super::api::blocking(move || {
         sz::import_package_from_zip(&root, &pack, &body)
@@ -329,7 +338,8 @@ pub async fn pack_build(
     Extension(user): Extension<CurrentUser>,
     AxumPath(pack): AxumPath<String>,
 ) -> ApiResult {
-    let root = yekitrim_core::path::sticker_dir();
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let dir = pack_dir(&root, &pack)?;
     if !dir.is_dir() {
         return Err(err(StatusCode::NOT_FOUND, format!("贴纸包不存在: {pack}")));
@@ -341,8 +351,12 @@ pub async fn pack_build(
 }
 
 /// `DELETE /api/polish/stickers/:pack` — 删掉整个包（目录 + 清单 + 索引项）。
-pub async fn pack_delete(AxumPath(pack): AxumPath<String>) -> ApiResult {
-    let root = yekitrim_core::path::sticker_dir();
+pub async fn pack_delete(
+    Extension(user): Extension<CurrentUser>,
+    AxumPath(pack): AxumPath<String>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let name = si::sanitize_pack_name(&pack)
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("包名不合法: {pack}")))?;
     let removed = si::remove_package(&root, &name)
@@ -352,10 +366,12 @@ pub async fn pack_delete(AxumPath(pack): AxumPath<String>) -> ApiResult {
 
 /// `GET /api/polish/stickers/:pack/files/:name` — 包内图片（预览用，`<img>` 直连）。
 pub async fn pack_file(
+    Extension(user): Extension<CurrentUser>,
     AxumPath((pack, name)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let root = yekitrim_core::path::sticker_dir();
+    let owner = crate::auth::owner_of(&user);
+    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let dir = match pack_dir(&root, &pack) {
         Ok(d) => d,
         Err(e) => return e.into_response(),

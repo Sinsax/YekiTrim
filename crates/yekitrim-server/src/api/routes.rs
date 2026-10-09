@@ -342,10 +342,21 @@ async fn video_library_route_is_readable_and_disk_driven() {
     assert_eq!(res.status(), 200, "素材库是只读接口，普通用户必须能看");
 
     // ③ 以磁盘为准：真丢一个文件进库，它必须出现（名字用去扩展名的键）。
-    // ⚠️ 写进 `video_dir_readable()`、**不是**手拼 `sticker_dir().join("videos")` ——
-    // 后者是 2026-10-09 之前的旧位置，在新布局下 handler 根本不看它（这条测试会假绿/假红，
-    // 取决于本机 `resources/videos` 里有没有东西）。判据必须与 handler 同源。
-    let lib = yekitrim_core::path::video_dir_readable();
+    // ⚠️ 写进**这个用户自己的库**：handler 现在按 `Owner` 解析
+    // （`owner::asset_dir(Owner::User(uid), Videos)`），测试必须与它同源 ——
+    // 否则就是 2026-10-09 那次「假绿/假红取决于本机目录里有没有东西」的重演。
+    // **判据与 handler 同源**这一条，比路径写成什么字面量重要得多。
+    let uid = t
+        .auth
+        .db()
+        .find_user("plain_vid")
+        .unwrap()
+        .expect("刚建的用户")
+        .id;
+    let lib = yekitrim_core::owner::asset_dir(
+        yekitrim_core::owner::Owner::User(uid),
+        yekitrim_core::owner::AssetKind::Videos,
+    );
     std::fs::create_dir_all(&lib).unwrap();
     let probe = lib.join("zz_route_probe.mp4");
     std::fs::write(&probe, b"not really an mp4").unwrap();
@@ -373,6 +384,103 @@ async fn video_library_route_is_readable_and_disk_driven() {
     );
 
     std::fs::remove_file(&probe).ok();
+}
+
+/// **多用户可以真用**的判据：两个账号的素材库互不干扰。
+///
+/// 这是本批改动的核心验收 —— 在引入 `Owner` 之前，素材库是**全局一份**，
+/// 甲丢进去的视频乙也能看见、乙还能删掉甲的东西。现在每个账号解析到自己的树
+/// （`owner::asset_dir(Owner::User(uid), …)`）。
+///
+/// 三条一起验：
+/// ① 甲丢进**自己的库**的文件，甲看得见；
+/// ② 同一个文件名，乙**看不见**（这是分离生效的直接证据，不是"路径算对了"的间接证据）；
+/// ③ 乙往**自己的库**放同名文件后，乙看见的是自己那份 —— 两次列表内容不同，
+///    说明两条路径真的指向不同的目录，而不是"碰巧都没东西"。
+#[tokio::test]
+async fn two_accounts_do_not_see_each_others_video_library() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth.db().create_user("alice", &hash, "user", false, 0).unwrap();
+    t.auth.db().create_user("bob", &hash, "user", false, 0).unwrap();
+    let a = t.auth.login("alice", "pass-12345678", None, None).unwrap();
+    let b = t.auth.login("bob", "pass-12345678", None, None).unwrap();
+
+    let lib_of = |name: &str| {
+        let uid = t
+            .auth
+            .db()
+            .find_user(name)
+            .unwrap()
+            .expect("刚建的用户")
+            .id;
+        yekitrim_core::owner::asset_dir(
+            yekitrim_core::owner::Owner::User(uid),
+            yekitrim_core::owner::AssetKind::Videos,
+        )
+    };
+
+    let names = |json: &serde_json::Value| -> Vec<String> {
+        json["videos"]
+            .as_array()
+            .expect("videos 是数组")
+            .iter()
+            .map(|v| v["name"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+
+    // ① 甲丢一个独有文件进自己的库。
+    let alice_lib = lib_of("alice");
+    std::fs::create_dir_all(&alice_lib).unwrap();
+    std::fs::write(alice_lib.join("alice_only.mp4"), b"x").unwrap();
+
+    let res = t
+        .call(
+            t.req_as(&a.session_id, &a.csrf, "GET", "/polish/video-library")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let alice_view = names(&body_json(res).await);
+    assert!(
+        alice_view.contains(&"alice_only".to_string()),
+        "甲必须看得见自己库里的文件；实际：{alice_view:?}"
+    );
+
+    // ② 乙看不见甲的东西 —— 这就是"分离真的生效"。
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/video-library")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let bob_view = names(&body_json(res).await);
+    assert!(
+        !bob_view.contains(&"alice_only".to_string()),
+        "乙不该看见甲的素材；实际：{bob_view:?}"
+    );
+
+    // ③ 乙放一个**同名**文件，两边看到的仍是各自的。
+    let bob_lib = lib_of("bob");
+    std::fs::create_dir_all(&bob_lib).unwrap();
+    std::fs::write(bob_lib.join("shared_name.mp4"), b"y").unwrap();
+    std::fs::write(alice_lib.join("shared_name.mp4"), b"y").unwrap();
+
+    let alice_lib_dir = yekitrim_core::owner::asset_dir(
+        yekitrim_core::owner::Owner::User(t.auth.db().find_user("alice").unwrap().unwrap().id),
+        yekitrim_core::owner::AssetKind::Videos,
+    );
+    assert_ne!(
+        alice_lib_dir, bob_lib,
+        "两个账号的素材库目录必须不同 —— 这是整个分离的结构前提"
+    );
+
+    std::fs::remove_file(alice_lib.join("alice_only.mp4")).ok();
+    std::fs::remove_file(alice_lib.join("shared_name.mp4")).ok();
+    std::fs::remove_file(bob_lib.join("shared_name.mp4")).ok();
 }
 
 /// 贴纸包上传这条路的**路由层**：登录用户可调（**不再限 admin**）、body 上限确实被放开、
@@ -583,7 +691,13 @@ async fn video_thumb_route_refuses_traversal_and_404s_when_unavailable() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
     // ⚠️ 真文件但**不是合法视频** → 仍然是 404（不是 500）：这条判据就是"抽不出来不算故障"。
-    let lib = yekitrim_core::path::video_dir_readable();
+    // ⚠️ 写进**这个用户自己的库**（与 handler 同源）—— 全局那份 handler 已经不看了。
+    let lib = yekitrim_core::owner::asset_dir(
+        yekitrim_core::owner::Owner::User(
+            t.auth.db().find_user("plain_thumb").unwrap().expect("刚建的用户").id,
+        ),
+        yekitrim_core::owner::AssetKind::Videos,
+    );
     std::fs::create_dir_all(&lib).unwrap();
     let probe = lib.join("zz_thumb_probe.mp4");
     std::fs::write(&probe, b"definitely not a video").unwrap();
