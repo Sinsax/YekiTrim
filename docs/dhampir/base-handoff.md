@@ -370,3 +370,94 @@ shape: 0,                             // OverlayShape::Solid
 * `crates/dhampir-worker/tests/timeline.rs` 的 `调整图层的_overlay_逐像素对上解析渐变` 里加了一条**专门用 `r2≠r`** 的纯色判据（`r2 == r` 时两种实现看不出区别，那正是它活了这么久的原因）；
 * `scripts/handoff-probe.mjs --self-test` 按**修好之后**的语义钉住这条（自检里那行注释写明了它以前的行为）；
 * 实测：真机 GPU 用例 **6/6 ok**、探针自检 **10/10**、`color-mask` 判据 **12/12**。
+
+---
+
+## 8. D5（新）**层没有表达"播放速率"的字段** —— 下游的变速在画面腿上静默失效
+
+### 一句话
+
+`Layer.source` 只有 `{asset_id, source_in}`，底座从 `source_in` 起**逐帧 1:1 播 `end-start` 帧**。
+下游要"这一段时间放两倍速"时，**除了缩短 `end-start` 之外没有任何表达方式** ——
+而缩短段长只改了**时长**，没有改**播放速率** ⇒ 内容被截断一半。
+
+### 症状与影响（为什么它是"静默"的）
+
+下游 YekiTrim 的"成片时间线"允许每段带 `speed`。转译器按 `round((ef-sf)/speed)` 缩短段长，
+于是**总帧数、总时长、`issues`、`failed` 全都正常** —— 但那段**只播了源的前 1/speed**。
+
+实测（下游用亮度斜坡源 `YAVG = 1.6665 × 源帧号`，从成片像素反推"这一帧在播源的哪一帧"）：
+
+| 段 | 计划播的源区间 | 实测真正播的 |
+|---|---|---|
+| ×1.0 | src 0→30 | src 8→28 ✓ |
+| **×2.0** | src 60→**120** | src 59→**89** ❌ 只播了前一半 |
+| **×0.5** | src 0→**60** | src 8→**119** ❌ 播了整个区间（应为 0→60） |
+
+**连带影响（值得单独看）**：下游的**音轨**是本仓自己用 ffmpeg `atempo` 拼的（音调不变，已验），
+**音轨那条腿是对的** ⇒ **声画分家**：×2.0 那段，声音跑完了 60 帧的内容、画面只跑了 30 帧。
+
+### 最小复现（自包含，不依赖 YekiTrim）
+
+用一个**亮度斜坡**当素材，速率一眼可读。生成（120 帧、30fps、`YAVG` 逐帧线性）：
+
+```bash
+ffmpeg -v error -f lavfi -i "color=c=black:s=320x240:r=30:d=4"   -vf "geq=lum='min(200,(N/120)*200)':cb=128:cr=128"   -c:v libx264 -pix_fmt yuv420p -y ramp.mp4
+# 自查：YAVG 应≈ 1.6665 × 帧号
+ffmpeg -v error -i ramp.mp4 -vf "select='eq(n\,60)',signalstats,metadata=print:file=-" -frames:v 1 -f null -
+```
+
+工程（**一段 ×2.0 的语义**：out 30 帧、要从 src 60 播到 120）：
+
+```json
+{"project_schema":1,"generator":{"app":"dhampir","version":"0.0.1"},
+ "meta":{"title":"speed-probe","created_at":null,"modified_at":null},
+ "assets":[{"id":"clip","kind":"video","name":"clip","uri":"ramp.mp4","frame_count":null,
+            "timebase":{"num":30,"den":1},"width":320,"height":240,
+            "content_hash":null,"tags":{},"note":""}],
+ "timeline":{"schema":4,"timebase":{"num":30,"den":1},"markers":[],
+   "tracks":[{"id":"v1","kind":"video","layers":[
+     {"id":"A","start":0,"end":30,"source":{"asset_id":"clip","source_in":60},
+      "transform":{"x":0,"y":0,"scale":1,"rotation":0},"opacity":1,"blend":"normal",
+      "enabled":true,"effects":[],"keyframes":[],"note":""}]}]},
+ "view":{"playhead":0,"selection":null,"zoom":1},
+ "render_hints":{"width":320,"height":240,"format":"mp4"},"extensions":{}}
+```
+
+```bash
+dhampir render --project speed-probe.json --asset-root . --out out.mp4
+# 期望（若支持速率）：out 帧 0..29 对应 src 60..120，YAVG 从 100 升到 198
+# 现状：out 帧 0..29 对应 src 60..89，YAVG 只从 100 升到 ~148  ⇒ 内容少了一半
+```
+
+### 已排除项
+
+* **不是下游转译器的算术错**：`round((ef-sf)/speed)` 与底座 `end-start` 完全一致，
+  下游的 `out_frames` 也是按它算的（自洽）。
+* **不是"关键帧写错了"**：`opacity` 关键帧对**时长**生效（下游叠化转场用它，已验证是真混合），
+  但它**不改变时间映射** —— 那是空间/合成量，不是时间量。
+* **不是编码器或 ffmpeg 的问题**：同一条素材用 ffmpeg `setpts` 缩放能正确变速（下游验过）。
+
+### 可疑点
+
+`crates/dhampir-core` 里层的时间映射：`Layer { start, end, source: { asset_id, source_in } }`。
+`end-start` 既表示"这一段占多长输出时间"，又被当成"要读多少源帧" —— 两者被绑死了，
+所以**没有任何旋钮能让它们不等**。
+
+### 建议的接口（哪个都行，下游都接得住）
+
+| 方案 | 形状 | 备注 |
+|---|---|---|
+| **A（推荐）** | `source: { asset_id, source_in, source_rate }`，`rate` = 播放速率 | 语义最直白：`end-start` 是输出帧数、`(end-start)*rate` 是消耗的源帧数 |
+| **B** | `source: { asset_id, source_in, source_out }` | 与"源区间"对偶，下游本来就有这个区间；代价是**冗余**（与 `end-start` 可能冲突，需要定义谁赢） |
+| **C** | 层上加 `time_scale: f64`（默认 1.0） | 与 `transform.scale`（空间）对偶，读起来最一致 |
+
+**验收判据（用上面的探针）**：同一工程加 `rate = 2.0` 后，
+out 帧 `0..29` 的 `YAVG` 应从 **100 升到 ~198**（而不是现在停在 ~148）；
+`rate = 0.5` 时 out 帧 `0..59` 应覆盖 src `60..90`。
+
+### 兜底（底座若决定不做）
+
+下游会把**画面**变速在界面上置灰（只保留音轨变速），并在文档里写明 ——
+那样功能缺一块，但至少**不再静默出错**。**请底座这边明确拍一下做或不做**，下游好决定要不要留这条兜底。
+
