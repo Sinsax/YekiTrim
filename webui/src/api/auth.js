@@ -25,5 +25,19 @@ export const authApi = {
     api('/api/auth/password', {
       method: 'PUT',
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+    }),
+
+  // ---- 账号与配额（**仅 admin**；非 admin 调会 403）----
+  //
+  // `listUsers` 只回展示字段（id / username / role / disabled / quota_bytes / created_at），
+  // **不含口令哈希**。
+  listUsers: () => api('/api/admin/users'),
+  // ⚠️ `quotaBytes = 0` 的含义是「**跟随全局默认**」，**不是**「不限」——
+  // 只有账号级与全局级都是 0 时才真的不限。别在 UI 上把 0 显示成「无限」。
+  // 负数会被服务端拒成 400（不静默夹成 0）。
+  setQuota: (username, quotaBytes) =>
+    api(`/api/admin/users/${encodeURIComponent(username)}/quota`, {
+      method: 'PUT',
+      body: JSON.stringify({ quota_bytes: quotaBytes })
     })
 }
