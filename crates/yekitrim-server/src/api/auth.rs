@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -238,6 +238,42 @@ pub(super) async fn admin_users(State(state): State<Arc<AppState>>) -> ApiResult
     ok(serde_json::json!({ "users": out }))
 }
 
+/// `PUT /api/admin/users/:name/quota` —— 设置某账号的配额上限（admin）。
+///
+/// 请求体 `{"quota_bytes": <非负整数>}`。`0` = **跟随全局默认**
+/// （`[storage] default_quota_bytes`），不是"不限" —— 两者都为 `0` 时才真的不限。
+///
+/// ⚠️ 负数一律**拒**（400），不静默夹成 0：`-1` 与 `0` 是两种意图，
+/// 静默转换会让管理员以为自己设了个"很小的限额"，实际是"跟着全局走"。
+/// ⚠️ 不存在的账号回 **404**（`set_quota` 返回 `false`），别回 200。
+pub(super) async fn admin_set_user_quota(
+    State(state): State<Arc<AppState>>,
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let raw = body
+        .get("quota_bytes")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 quota_bytes（整数）"))?;
+    if raw < 0 {
+        return Err(err(StatusCode::BAD_REQUEST, "quota_bytes 不能为负"));
+    }
+    // 闭包要 `move`，`name` 之后还要回给响应，所以克隆一份进去。
+    let key = name.clone();
+    let hit = blocking(move || {
+        state
+            .auth
+            .db()
+            .set_quota(&key, raw)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存配额失败: {e:#}")))
+    })
+    .await?;
+    if !hit {
+        return Err(err(StatusCode::NOT_FOUND, format!("账号不存在: {name}")));
+    }
+    ok(serde_json::json!({ "ok": true, "username": name, "quota_bytes": raw }))
+}
+
 
 
 
@@ -306,6 +342,62 @@ async fn must_change_password_blocks_everything_but_the_password_flow() {
         StatusCode::OK,
         "改密后配置路由也应恢复（改密门不该把它永久关掉）"
     );
+}
+
+/// **配额端点只有 admin 能调，且拒绝负数与不存在的账号**（P5）。
+///
+/// 三条一起验：
+/// ① 普通账号调 → 403（否则他给自己放宽配额，配额等于没有）；
+/// ② 负数 → 400（**不静默夹成 0** —— `-1` 与 `0` 是两种意图，`0` 是"跟随全局"）；
+/// ③ 不存在的账号 → 404（不静默 200）。
+#[tokio::test]
+async fn admin_quota_endpoint_is_admin_only_and_validates_input() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth.db().create_user("plain_q", &hash, "user", false, 0).unwrap();
+    let p = t.auth.login("plain_q", "pass-12345678", None, None).unwrap();
+    let admin = t.auth.login("admin", "initial-pass-1234", None, None).unwrap();
+
+    async fn put_quota(
+        t: &TestApp,
+        sid: &str,
+        csrf: &str,
+        name: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        t.call(
+            t.req_as(sid, csrf, "PUT", &format!("/admin/users/{name}/quota"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    // ① 普通账号：403
+    let res = put_quota(&t, &p.session_id, &p.csrf, "plain_q", serde_json::json!({"quota_bytes": 999})).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "普通账号不该能改配额");
+
+    // ② 负数：400
+    let res = put_quota(&t, &admin.session_id, &admin.csrf, "plain_q", serde_json::json!({"quota_bytes": -1})).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "负数必须拒，不许静默夹成 0");
+
+    // ③ 不存在的账号：404
+    let res = put_quota(&t, &admin.session_id, &admin.csrf, "nobody", serde_json::json!({"quota_bytes": 1})).await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND, "不存在的账号要 404，不能静默成功");
+
+    // 正常路径：设上去、读得回来
+    let res = put_quota(&t, &admin.session_id, &admin.csrf, "plain_q", serde_json::json!({"quota_bytes": 4096})).await;
+    assert_eq!(res.status(), StatusCode::OK, "admin 设合法值应当成功");
+    assert_eq!(
+        t.auth.db().find_user("plain_q").unwrap().unwrap().quota_bytes,
+        4096,
+        "配额要真的落到账本上"
+    );
+
+    // 缺少字段：400（别把"没给"当成 0）
+    let res = put_quota(&t, &admin.session_id, &admin.csrf, "plain_q", serde_json::json!({})).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
 /// 登录 → `/api/me` → 改密 → `must_change_password` 变 false（§3.5.10 第 1–5 条）。
