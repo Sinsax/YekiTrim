@@ -169,6 +169,69 @@
       <span class="muted">字体库读取失败：{{ fontsError }}</span>
       <button class="mini-btn" @click="loadFonts">重试</button>
     </div>
+
+    <!-- ── 字幕样式（用户 2026-10 点名四项：颜色 / 描边 / 大小 / 位置）。
+         ⚠️ 全在**本组内**（`docs/plan/next-version-subtitle-style.md` §3.2 方案 A）。
+         ⚠️ **读配置失败 ⇒ 整块变成只读 + 错误条**（`styleWriteBlocked`）：
+            这些控件的初值就是从 `cfg` 来的，而 `cfg` 读失败时为 null ——
+            不断写盘等于"拿默认值把磁盘上的样式清成默认"（本仓"静默丢改动"的老根因）。
+         ⚠️ 行内文案 ≤20 字，解释一律进 `title`（右栏卡片行内容宽只有 266px）。 -->
+    <div v-if="styleReadError" class="row small mt-6 gap-6">
+      <span class="muted">样式读取失败：{{ styleReadError }}</span>
+      <button class="mini-btn" @click="load({ silent: true })">重试</button>
+    </div>
+    <div class="ss-grid" :class="{ off: styleWriteBlocked || !ready }">
+      <div class="ss-row">
+        <span class="ss-lbl">字幕颜色</span>
+        <input type="color" class="ss-color" :value="subtitleColor"
+               :disabled="styleWriteBlocked || !ready" title="字幕正文颜色"
+               @change="onSubtitleColorChange">
+      </div>
+      <div class="ss-row" :title="strokeColorHint">
+        <span class="ss-lbl">描边颜色</span>
+        <input type="color" class="ss-color" :value="subtitleStrokeColor"
+               :disabled="!strokeEditable || !ready" title="字幕描边颜色"
+               @change="onSubtitleStrokeColorChange">
+      </div>
+      <div class="ss-row" :title="strokeWidthHint">
+        <span class="ss-lbl">描边宽度<em class="ss-tag">近似</em></span>
+        <input type="number" class="rv-input" inputmode="numeric" min="0" max="24" step="1"
+               :value="subtitleStrokeWidth" :disabled="!strokeEditable || !ready"
+               aria-label="字幕描边宽度（像素，近似）" @change="onSubtitleStrokeWidthChange">
+        <span class="mono small flex-none">px</span>
+      </div>
+      <div class="ss-row" :title="'字幕字号（px）。默认 72'">
+        <span class="ss-lbl">字幕大小</span>
+        <input type="number" class="rv-input" inputmode="numeric" min="8" max="400" step="1"
+               :value="subtitleSize" :disabled="styleWriteBlocked || !ready"
+               aria-label="字幕大小（像素）" @change="onSubtitleSizeChange">
+        <span class="mono small flex-none">px</span>
+      </div>
+      <div class="ss-row full" :title="positionHint">
+        <span class="ss-lbl">字幕位置</span>
+        <input type="range" class="flex-1 ss-range" min="0" max="50" step="0.5"
+               :value="subtitlePosPct" :disabled="styleWriteBlocked || !ready"
+               :title="positionHint" @input="onSubtitlePosInput" @change="onSubtitlePosChange">
+        <input type="number" class="rv-input" inputmode="decimal" min="0" max="50" step="0.5"
+               :value="subtitlePosPct" :disabled="styleWriteBlocked || !ready"
+               aria-label="字幕距底百分比" title="可直接填写（0 ~ 50）" @change="onSubtitlePosType">
+        <span class="mono small flex-none">%</span>
+      </div>
+    </div>
+    <!-- 「恢复默认」必须带一个**显式动作**：取色器/数字框天生只能产出具体值，
+         没有它用户就永远回不到"没设过"（而 `position_pct` 是 `Option`、
+         "不写"与"写 12"在成片侧**语义不同**）。⚠️ 对 size/color/stroke
+         这三项，"默认"= **不发键**（保持磁盘原样）—— 因为 serde 默认值与
+         "用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。 -->
+    <div class="row mt-4 gap-6">
+      <button class="mini-btn" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
+              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
+              @click="restoreSubtitlePos">位置→默认</button>
+      <button class="mini-btn" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
+              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
+              @click="restoreSubtitleSize">大小→默认</button>
+    </div>
+
     <div class="small muted mt-6">弹幕字体</div>
     <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
       <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -304,6 +367,53 @@
               <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
             </div>
 
+  <!-- ── 片头 / 片尾（`[intro_outro]`）────────────────────────────────────
+       用户口径：「片头片尾在项目设置内可以选择是否开启，然后可以选择素材库内的视频内容」。
+       每一侧 = 一个开关 + 一个素材下拉 + 入点/出点（可裁剪，缺省播完整段）。
+       ⚠️ **"开"的判据就是"选没选素材"**（Rust `IntroOutroClip::is_enabled`）——
+          不另设一个能和 `asset_id` 打架的 `enabled` 布尔：两个真源必然分叉。
+       ⚠️ 素材库是**全局**的（`<程序目录>/stickers/videos/`），下拉开一次就复用（`videoLibrary`）。 -->
+  <div class="lane-group" :class="{ on: openLane === 'intro' || openLane === 'outro' }">
+    <div class="lane-group-h">片头 / 片尾</div>
+    <template v-for="s in INTRO_OUTRO_SIDES" :key="s.key">
+      <div class="io-row">
+        <label class="io-head">
+          <input type="checkbox" :checked="!!introOutro[s.key].asset_id"
+                 :disabled="ioBusy || !ready"
+                 @change="onIntroOutroToggle(s.key, $event.target.checked)" />
+          <span>{{ s.label }}</span>
+        </label>
+        <template v-if="introOutro[s.key].asset_id">
+          <select class="fld-input" :value="introOutro[s.key].asset_id"
+                  :disabled="ioBusy || !ready"
+                  @change="onIntroOutroAsset(s.key, $event.target.value)">
+            <!-- ⚠️ 探不出时长的**照列但禁用**（别隐藏）：用户放进去了却在界面里找不到，
+                 比"能用但报错"更难查 -->
+            <option v-for="v in videoLibrary" :key="v.name" :value="v.name"
+                    :disabled="v.duration == null">
+              {{ v.name }}{{ v.duration == null ? '（读不出时长）' : '' }}
+            </option>
+          </select>
+          <div class="io-trim">
+            <span class="muted small">入</span>
+            <input class="fld-input io-num" type="number" min="0" step="0.1"
+                   :value="introOutro[s.key].in_sec" :disabled="ioBusy || !ready"
+                   title="从素材的第几秒开始（0 = 从头）"
+                   @change="onIntroOutroTrim(s.key, 'in_sec', $event.target.value)" />
+            <span class="muted small">出</span>
+            <input class="fld-input io-num" type="number" min="0" step="0.1"
+                   :value="introOutro[s.key].out_sec" :disabled="ioBusy || !ready"
+                   title="到素材的第几秒结束；0 = 播到素材结尾"
+                   @change="onIntroOutroTrim(s.key, 'out_sec', $event.target.value)" />
+            <span class="muted small io-dur">{{ introOutroSpan(s.key) }}</span>
+          </div>
+        </template>
+        <p v-else class="muted small m-0">未启用</p>
+      </div>
+    </template>
+    <p v-if="ioError" class="small m-0 mt-4 io-err">{{ ioError }}</p>
+  </div>
+
               </template>
 
               <template v-else>
@@ -351,7 +461,7 @@
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
         <div class="card tl-card mt-16">
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" :src-fps="srcFps" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane">
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
@@ -435,7 +545,8 @@ import { projectData } from '../api/projectData'
 import {
   fetchProject, fetchSubtitles, saveProjectPatch,
   initPolish, runLlm, runLlmSegment, runProcess, runRender,
-  fetchDhampirStatus, fetchStickerSources, fetchFonts,
+  fetchDhampirStatus, fetchDhampirProject, fetchStickerSources, fetchFonts,
+  fetchVideoLibrary,
   openPath, REGION_LABELS,
 } from '../api/polish'
 import { localNoAuthKnown } from '../stores/health'
@@ -560,6 +671,33 @@ async function openRenderModal() {
 }
 const timelineRef = ref(null)
 const previewRef = ref(null)
+
+// ---- 源素材帧率（成片轨的帧号域分母）----
+// ⚠️ **不是**工程网格帧率（`timeline.timebase`，转译器给它 30fps 下限）：电台那种 5fps 素材
+// 的网格会被抬到 30fps，拿网格帧率去算 `edlOutStart` 就是 6 倍错位，而且**不报错**。
+// 真源是转译工程里那条视频素材自己的 `timebase`（与 `PolishPreview` 的 `dhampirSourceFps`
+// **同一个值**，回落链也逐级相同：素材时基 → 工程网格 → 30）。
+const srcFps = ref(30)
+/** 是否拿到了真的源帧率（没有 ⇒ 成片轨的帧号不可信，面板里要如实说一句） */
+const srcFpsKnown = ref(false)
+async function loadSrcFps() {
+  try {
+    const res = await fetchDhampirProject(pid.value, dir.value)
+    const project = res && res.project
+    if (!project) return
+    const tb = project.timeline && project.timeline.timebase
+    const seqFps = tb && tb.num > 0 && tb.den > 0 ? tb.num / tb.den : 30
+    const asset = ((project.assets || []).find((a) => a.kind === 'video')) || {}
+    const atb = asset.timebase || {}
+    srcFps.value = atb.num > 0 && atb.den > 0 ? atb.num / atb.den : seqFps
+    srcFpsKnown.value = true
+  } catch (e) {
+    // 静默回落会让成片轨的 out_start 整体错位 —— 必须留痕。**但不拦页**：转译要跑 node，
+    // 底座没装好的机器上它本来就拿不到，而那时成片轨也还没开。
+    srcFpsKnown.value = false
+    addClient('debug', '源帧率取不到（成片轨按 30fps 显示）：' + (e && e.message ? e.message : e), 'polish')
+  }
+}
 
 const job = reactive({ id: '', kind: '', status: '', current: 0, total: 0, log: '', error: '' })
 let jobClose = null
@@ -923,6 +1061,9 @@ async function doLoad(opts = {}) {
       title.value = cfg.value?.project?.name || cfg.value?.source?.video || '精修编辑器'
       ready.value = true
       cfgError.value = ''
+      // 源素材帧率（成片轨 `edlOutStart` 的分母）。**失败不拦页** —— 拿不到就用 30，
+      // 但必须**记一条**（静默回落会让成片轨的帧号整体错位，而它不报错）。
+      loadSrcFps()
     } catch (e) {
       // 静默刷新失败：保留旧画面但必须报出来，否则用户以为改动已生效
       // 非静默（首次进入/切片段）失败时 `ready=false` 会渲染成**「未初始化精修项目」** ——
@@ -1059,6 +1200,9 @@ function onTimelinePreview(patch) {
   if (patch.segments && cfg.value) cfg.value = { ...cfg.value, segments: patch.segments }
   if (patch.subtitles) subs.value = patch.subtitles
   if (patch.mute_ranges && cfg.value) cfg.value = { ...cfg.value, mute_ranges: patch.mute_ranges }
+  // 成片时间线（EDL）—— 与上面三条同一条链：**本地镜像、不落盘**。
+  // 落盘由编辑器自己 debounce PUT 完成（`polish_project_put_locked` 的 `edl` 白名单支）。
+  if (patch.edl && cfg.value) cfg.value = { ...cfg.value, edl: patch.edl }
 }
 
 let processTimer = null
@@ -1420,10 +1564,229 @@ async function onSubtitleFontChange(e) {
   }
 }
 
+// ---- 字幕样式（颜色 / 描边 / 大小 / 位置）----
+// 落地全是 `polish.toml` 的 `[style.subtitle]`，**逐片段**生效（每个片段一份 polish.toml）。
+// 这些字段**只影响渲染与预览**（process 的贴纸/运镜重算不读它们）⇒ 保存即生效、不用重跑任务。
+//
+// ⚠️ **为什么每一项都要"是否设过"的判据**：`size`/`color`/`stroke` 在配置里有 serde 默认值，
+//    前端读回来的 72 / #dcbda0 / "12px #403c3b" **分不出**"用户显式写的就是它"与"从没写过"。
+//    而 `position_pct` 是 `Option`：**不写 = 走历史那条写死的落点公式**、写了 = 走百分比，
+//    两者在成片侧**语义不同**（`120/1080 = 11.11% ≠ 12%`）。
+//    ⇒ 所以：**只有用户真的改过才发键**，没改一个键都不发 —— 老工程 polish.toml 逐字节不动。
+//
+// ⚠️ **读失败 ⇒ 暂停写入**（本仓"静默丢改动"的老根因）：`cfg` 读失败时为 null，
+//    此时控件显示的会是兜底值、而任何一次写盘都会把磁盘上的样式清成默认。
+//    闸门 = `styleWriteBlocked`（照 `TimelineEditor::loadError` 那套）。
+
+/** 样式块的写入门闸：配置还没读到（或读到的是假空态）时**一个键都不许写**。 */
+const styleWriteBlocked = computed(() => !!cfgError.value || !cfg.value)
+/** 配置读取失败的原因（与 `cfgError` 同源，这里只是给样式块一条自己的可见错误条）。
+ *  ⚠️ 不许伪装成正常：读不到就出错误条 + 重试，绝不拿默认值写回磁盘。 */
+const styleReadError = computed(() => (styleWriteBlocked.value ? (cfgError.value || '尚未读到配置') : ''))
+
+/** 字幕正文颜色。缺省 = 配置默认（`#dcbda0`），照实显示但**不算"用户设过"**。 */
+const subtitleColor = computed(() => cfg.value?.style?.subtitle?.color || '#dcbda0')
+
+/** `stroke` 是**一个字符串装两个值**（格式 `"{宽}px {颜色}"`，默认 `"12px #403c3b"`）。
+ *  ⚠️ 拆/拼都要**容错**：手改坏的 toml 不该让整个面板报错，更不该被我们**写坏格式**。
+ *  解析不出来 ⇒ 回退到默认（12px / #403c3b）+ `strokeParsed=false`，
+ *  此时两个控件**只显示、不许写**（否则一写就把用户原来的怪格式覆盖掉了）。 */
+const STROKE_DEFAULT_WIDTH = 12
+const STROKE_DEFAULT_COLOR = '#403c3b'
+/** `"{宽}px {颜色}"` → `{w, c}`；认不出返回 null（调用方回退默认）。
+ *
+ *  ⚠️ **颜色统一规整成 6 位**（`toSixHex`）：读盘时若手写的是 `12px #fff`，
+ *  转译器那句 `match(/#[0-9a-fA-F]{6}/)` 匹配不到 → **静默用默认色**。
+ *  这里展开成 `#ffffff` 后，用户一改宽度/颜色就会把它**写成转译器认得的形式**（顺手修好）。
+ *  只读显示时也照实显示展开后的值（与成片一致），不留"看着是白、出片是灰"的错觉。 */
+function parseStroke(raw) {
+  if (typeof raw !== 'string') return null
+  const m = raw.trim().match(/^(-?\d+(?:\.\d+)?)\s*px\s+(#[0-9a-fA-F]{3,8})$/)
+  if (!m) return null
+  const w = Number(m[1])
+  if (!Number.isFinite(w) || w < 0) return null
+  const c = toSixHex(m[2])
+  if (!c) return null
+  return { w, c }
+}
+/** 当前 stroke 的解析结果；null = 格式认不出（→ 两个控件退化成只读回退显示）。 */
+const subtitleStrokeParsed = computed(() => parseStroke(cfg.value?.style?.subtitle?.stroke))
+const subtitleStrokeWidth = computed(() =>
+  subtitleStrokeParsed.value ? subtitleStrokeParsed.value.w : STROKE_DEFAULT_WIDTH)
+const subtitleStrokeColor = computed(() =>
+  subtitleStrokeParsed.value ? subtitleStrokeParsed.value.c : STROKE_DEFAULT_COLOR)
+/** 两个描边控件可否写：⚠️ 格式认不出 / 从没设过描边时**都不许写** ——
+ *  写下去会用一个规整的新串覆盖掉用户原来的（可能是手写的）格式，而且不报错。 */
+const strokeEditable = computed(() => !styleWriteBlocked.value && subtitleStrokeParsed.value !== null)
+/** 描边那两项的悬停说明（`title`，解释走这里而不是行内文案）。 */
+const strokeColorHint = computed(() => {
+  if (!cfg.value?.style?.subtitle?.stroke) return '未设置描边（用默认 12px #403c3b）'
+  if (!subtitleStrokeParsed.value) return '当前描边格式认不出，只读显示；要改请手改 polish.toml'
+  return '字幕描边的颜色。颜色与宽度同存一个键（"{宽}px {颜色}"）'
+})
+const strokeWidthHint = computed(() => {
+  if (!cfg.value?.style?.subtitle?.stroke) return '未设置描边（用默认 12px #403c3b）'
+  if (!subtitleStrokeParsed.value) return '当前描边格式认不出，只读显示；要改请手改 polish.toml'
+  return '近似值：底座只有描边开/关，成片侧可能不随宽度线性变化；预览侧是精确的'
+})
+
+/** 字幕字号（px）。默认 72。 */
+const subtitleSize = computed(() => {
+  const v = cfg.value?.style?.subtitle?.size
+  return typeof v === 'number' && Number.isFinite(v) ? v : 72
+})
+/** `size` 是否被显式设过（同 color：区分不了就按"没设过"处理，避免凭空写键）。 */
+const subtitleSizeSet = computed(() => typeof cfg.value?.style?.subtitle?.size === 'number')
+
+/** 字幕垂直位置（距底百分比，0~50）。默认 12 —— 但**默认值不等于"设过"**：
+ *  `position_pct` 缺省是 `null`（走历史公式），要区分开，否则一进页面就把它钉成 12。 */
+const subtitlePosSet = computed(() => {
+  const v = cfg.value?.style?.subtitle?.position_pct
+  return typeof v === 'number' && Number.isFinite(v)
+})
+const subtitlePosPct = computed(() => (subtitlePosSet.value ? cfg.value.style.subtitle.position_pct : 12))
+const positionHint = computed(() =>
+  subtitlePosSet.value
+    ? '字幕带底边距画布底边的百分比（0 ~ 50）；点「位置→默认」可回到未设置'
+    : '未设置：走历史落点公式（与 12% 略有差别）。拖动即改为按百分比')
+
+const styleSaving = ref(false)
+
+/** 提交样式 patch：成功后把镜像与 Dhampir 那条腿一起刷新，失败则回读磁盘（界面不许撒谎）。
+ *  ⚠️ 写盘走 `PUT /api/polish/project`（服务端 `update_polish_toml` 的逐字段白名单），
+ *     不做"开头 load、结尾整份写回"。 */
+async function saveSubtitleStyle(patch, okMsg) {
+  if (styleWriteBlocked.value) { toast('配置未读到，已暂停保存', 'err'); return }
+  styleSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, patch)
+    // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘，认的是 persistedConfig）+ 重取配置
+    await load({ silent: true })
+    persistedCfg.value = cfg.value
+    if (okMsg) toast(okMsg)
+  } catch (err) {
+    toast(err.message, 'err')
+    // 保存失败要让控件回到磁盘上的值（否则界面在撒谎）
+    await load({ silent: true })
+  } finally {
+    styleSaving.value = false
+  }
+}
+
+/** 把任意 hex 规整成 **6 位**（`#rrggbb`）。
+ *
+ *  ⚠️ **为什么必须补到 6 位**（2026-10 跨层核对发现，实测）：转译器的
+ *  `tools/polish-to-dhampir.mjs::parseStroke` **只认 6 位** —— 它那句是
+ *  `raw.match(/#[0-9a-fA-F]{6}/)`。而我们若把 `#fff` 原样写进 stroke，
+ *  转译器**匹配不到颜色** → 静默回落到**默认色**（`#403c3b` 深灰）：
+ *  用户选了白色描边，成片却是深灰、**不报错**。
+ *  所以这里统一展开（`#abc` → `#aabbcc`、`#abcd` → 去 alpha 取 RGB），
+ *  与 `hexColor()` 的展开口径一致。 */
+function toSixHex(c) {
+  const s = String(c || '').trim()
+  const m = s.match(/^#?([0-9a-fA-F]{3,8})$/)
+  if (!m) return null
+  let h = m[1]
+  if (h.length === 3 || h.length === 4) h = [...h].map((ch) => ch + ch).join('')
+  if (h.length === 8) h = h.slice(0, 6) // 带 alpha 的取 RGB（stroke 只有一色，底色统一 alpha=255）
+  if (h.length !== 6) return null
+  return '#' + h.toLowerCase()
+}
+
+/** 把 `{w, c}` 拼回 stroke 那个字符串（格式 `"{宽}px {颜色}"`，与默认值同形）。
+ *  ⚠️ 宽度取整 + clamp、颜色一律**规整成 6 位 hex** —— 这是**唯一**的写入口，
+ *  别在别处再拼一次（拼歪了就是把用户的描边写坏，而且不报错）。 */
+function composeStroke(w, c) {
+  const raw = Number(w)
+  const width = Number.isFinite(raw) ? Math.max(0, Math.min(24, Math.round(raw))) : STROKE_DEFAULT_WIDTH
+  const color = toSixHex(c) || STROKE_DEFAULT_COLOR
+  return `${width}px ${color}`
+}
+
+/** 字幕颜色。 */
+async function onSubtitleColorChange(e) {
+  const v = String(e.target.value || '').trim()
+  if (!/^#[0-9a-fA-F]{3,8}$/.test(v) || v.toLowerCase() === subtitleColor.value.toLowerCase()) return
+  await saveSubtitleStyle({ subtitle_color: v.toLowerCase() }, '字幕颜色已保存')
+}
+
+/** 描边颜色：只换 stroke 的**颜色部分**，宽度沿用当前解析值（认不出时不写）。 */
+async function onSubtitleStrokeColorChange(e) {
+  const cur = subtitleStrokeParsed.value
+  if (!cur) { toast('当前描边格式认不出，已拒绝写入', 'err'); return }
+  const v = String(e.target.value || '').trim()
+  if (!/^#[0-9a-fA-F]{3,8}$/.test(v) || v.toLowerCase() === cur.c.toLowerCase()) return
+  await saveSubtitleStyle({ subtitle_stroke: composeStroke(cur.w, v) }, '描边颜色已保存')
+}
+
+/** 描边宽度：只换 stroke 的**宽度部分**。⚠️ 成片侧是近似值（底座只有描边开/关）。 */
+async function onSubtitleStrokeWidthChange(e) {
+  const cur = subtitleStrokeParsed.value
+  if (!cur) { toast('当前描边格式认不出，已拒绝写入', 'err'); return }
+  const raw = String(e.target.value ?? '').trim()
+  const n = Number(raw)
+  if (raw === '' || !Number.isFinite(n)) { e.target.value = String(cur.w); return }
+  const next = composeStroke(n, cur.c)
+  e.target.value = String(Math.max(0, Math.min(24, Math.round(n))))
+  if (next === composeStroke(cur.w, cur.c)) return
+  await saveSubtitleStyle({ subtitle_stroke: next }, '描边宽度已保存（成片侧为近似）')
+}
+
+/** 字幕大小。⚠️ 清空 / 非数字一律还原显示、**不写盘**（否则退格清空的一瞬间就把值变成 8）。 */
+async function onSubtitleSizeChange(e) {
+  const raw = String(e.target.value ?? '').trim()
+  const n = Number(raw)
+  if (raw === '' || !Number.isFinite(n)) { e.target.value = String(subtitleSize.value); return }
+  const next = Math.min(400, Math.max(8, Math.round(n)))
+  e.target.value = String(next)
+  if (subtitleSizeSet.value && next === cfg.value.style.subtitle.size) return
+  await saveSubtitleStyle({ subtitle_size: next }, `字幕大小已保存（${next}px）`)
+}
+
+/** 位置滑杆：拖动只更新内存镜像（预览当场重算），松手才落盘。 */
+function onSubtitlePosInput(e) {
+  const n = Number(e.target.value)
+  if (!Number.isFinite(n)) return
+  const v = Math.min(50, Math.max(0, n))
+  cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), subtitle: { ...(cfg.value?.style?.subtitle || {}), position_pct: v } } }
+}
+
+/** 位置滑杆松手 → 落盘。 */
+async function onSubtitlePosChange(e) {
+  const n = Number(e.target.value)
+  if (!Number.isFinite(n)) return
+  const v = Math.min(50, Math.max(0, n))
+  if (subtitlePosSet.value && v === cfg.value.style.subtitle.position_pct) return
+  await saveSubtitleStyle({ subtitle_position_pct: v }, `字幕位置已保存（距底 ${v}%）`)
+}
+
+/** 位置数字框直填：清空 / 非数字还原、不写。 */
+async function onSubtitlePosType(e) {
+  const raw = String(e.target.value ?? '').trim()
+  const n = Number(raw)
+  if (raw === '' || !Number.isFinite(n)) { e.target.value = String(subtitlePosPct.value); return }
+  const v = Math.min(50, Math.max(0, n))
+  e.target.value = String(v)
+  if (subtitlePosSet.value && v === cfg.value.style.subtitle.position_pct) return
+  await saveSubtitleStyle({ subtitle_position_pct: v }, `字幕位置已保存（距底 ${v}%）`)
+}
+
+/** 「位置→默认」：**发 `null` = 显式删除该键** ⇒ 回到历史落点公式（与"写 12"语义不同）。 */
+async function restoreSubtitlePos() {
+  if (!subtitlePosSet.value) return
+  await saveSubtitleStyle({ subtitle_position_pct: null }, '字幕位置已恢复为未设置（走历史落点）')
+}
+
+/** 「大小→默认」：⚠️ 配置里 **区分不了**"显式写了 72"与"从没写过"（serde 默认值就是 72），
+ *  所以这里**不能发 72** —— 发出去就是把一个用户可能从没设过的值钉死成显式字段。
+ *  诚实做法：提示手动改回，**不假装能精确回退**（比假装能回退更诚实）。 */
+function restoreSubtitleSize() {
+  toast('字号无法精确回退（72 是默认值，配置区分不了"没写过"与"写了 72"）；请手动改回 72')
+}
+
 /** 弹幕时间偏移（精修工程参数，[style.danmaku] offset_secs）。
  *  拖动（input）只更新内存镜像 cfg → DOM/GSAP 预览即时重算（不落盘、不触发 Dhampir 重载）；
- *  松手（change）才落盘 + 更新 persistedCfg 触发 Dhampir 那条腿重拉（贴纸来源那套流程）。
- *  两条预览腿各吃各的：DOM 腿靠 buildIndex 平移 idx.dms，Dhampir 腿靠转译器平移 cue。 */
+ *  松手（change）才落盘 + 更新 persistedCfg 触发 Dhampir 那条腿重拉（贴纸来源那套流程）。 */
 function onDanmakuOffsetInput(e) {
   const next = Number(e.target.value)
   if (!Number.isFinite(next) || next === dmOffset.value) return
@@ -1700,6 +2063,104 @@ async function patchCanvas(patch) {
   }
 }
 
+// ---- 片头 / 片尾（[intro_outro]）----
+//
+// 用户口径：「片头片尾在项目设置内可以选择是否开启，然后可以选择素材库内的视频内容」，
+// 且入出点可裁剪、缺省播完整段。
+//
+// ⚠️ 「开」= 选了素材（`asset_id` 非空），**没有第二个 `enabled` 字段** ——
+//    两个真源必然分叉（Rust 侧 `IntroOutroClip::is_enabled` 是唯一判据）。
+// ⚠️ 写盘走 `saveProjectPatch`（与 [canvas] 同一条路），因为 `[intro_outro]` 是
+//    `polish.toml` 的一节、由 `ProjectFile` 反序列化 —— 不走它就得自己拼 toml。
+// ⚠️ `in_sec/out_sec` 缺省 0 表示「整段/播到结尾」，所以**新建一侧时不要填 0 以外的值**。
+const INTRO_OUTRO_SIDES = [
+  { key: 'intro', label: '片头' },
+  { key: 'outro', label: '片尾' }
+]
+const ioBusy = ref(false)
+const ioError = ref('')
+const videoLibrary = ref([])
+
+const introOutro = computed(() => ({
+  intro: { asset_id: '', in_sec: 0, out_sec: 0, ...(cfg.value?.intro_outro?.intro || {}) },
+  outro: { asset_id: '', in_sec: 0, out_sec: 0, ...(cfg.value?.intro_outro?.outro || {}) }
+}))
+
+/** 素材库下拉的数据源。读失败**不伪装成空库**（否则用户会以为素材丢了）。 */
+async function loadVideoLibrary() {
+  try {
+    const r = await fetchVideoLibrary(pid.value, dir.value, '读取视频素材库')
+    videoLibrary.value = r?.videos || []
+  } catch (e) {
+    videoLibrary.value = []
+    ioError.value = '素材库读取失败：' + e.message
+  }
+}
+
+/** 这一侧最终会播多久（给用户看的人话）。素材时长未知时给 `—`。 */
+function introOutroSpan(side) {
+  const cur = introOutro.value[side]
+  const asset = videoLibrary.value.find((v) => v.name === cur.asset_id)
+  if (!asset || asset.duration == null) return '—'
+  const inS = Math.max(0, Number(cur.in_sec) || 0)
+  // 与 Rust `IntroOutroClip::trim` 同口径：出点 <= 入点 / <= 0 ⇒ 播到素材结尾
+  const outS = Number(cur.out_sec) > inS ? Math.min(Number(cur.out_sec), asset.duration) : asset.duration
+  return `${(outS - inS).toFixed(1)}s`
+}
+
+/** 把一侧写回 `polish.toml`。`next` = 该侧完整对象（缺省那侧给空对象）。 */
+async function saveIntroOutro(side, next) {
+  if (!ready.value || ioBusy.value) return
+  ioBusy.value = true
+  ioError.value = ''
+  // ⚠️ 只发改的那一侧：patch 是深合并，另一侧原样保留（发整节会把对侧也覆盖成当前快照）
+  const payload = { intro_outro: { [side]: next } }
+  try {
+    await saveProjectPatch(pid.value, dir.value, payload)
+    await load({ silent: true })
+  } catch (e) {
+    ioError.value = '片头/片尾保存失败：' + e.message
+    await load({ silent: true })
+  } finally {
+    ioBusy.value = false
+  }
+}
+
+/** 勾/取消勾。取消 = **清空素材**（判据只有"有没有素材"，见上面的 ⚠️）。 */
+async function onIntroOutroToggle(side, on) {
+  const cur = introOutro.value[side]
+  if (on) {
+    // 开：默认挑库里的第一个可用素材（用户口径是"开启后可选择"，所以开就有个值，
+    // 不然勾了以后还是空的、看着像没生效）。库里一个都没有就提示并回退。
+    const first = videoLibrary.value.find((v) => v.duration != null)
+    if (!first) {
+      ioError.value = '素材库里还没有可用的视频 —— 先把文件放进素材库再来开片头/片尾'
+      return
+    }
+    if (cur.asset_id) return
+    await saveIntroOutro(side, { asset_id: first.name, in_sec: 0, out_sec: 0 })
+  } else {
+    if (!cur.asset_id) return
+    await saveIntroOutro(side, { asset_id: '', in_sec: 0, out_sec: 0 })
+  }
+}
+
+async function onIntroOutroAsset(side, name) {
+  const cur = introOutro.value[side]
+  // 换素材时**保留入出点**（用户调好的 0.5–2.5 换一支片子往往还想用同一段），
+  // 越界由 Rust `trim` 夹住，不会出错。
+  await saveIntroOutro(side, { asset_id: name, in_sec: cur.in_sec, out_sec: cur.out_sec })
+}
+
+async function onIntroOutroTrim(side, field, raw) {
+  const cur = introOutro.value[side]
+  const n = parseFloat(raw)
+  // 非数字/负数一律回 0（= 缺省语义），别把 NaN 写进 toml
+  const v = Number.isFinite(n) && n > 0 ? Number(n.toFixed(3)) : 0
+  if (v === cur[field]) return
+  await saveIntroOutro(side, { ...cur, [field]: v })
+}
+
 // ---- 贴纸落点（[sticker]：auto 安全区算法 / manual 固定一点）----
 // 与 [stage] 同一套：只提交 + 重取，落点换算全在 Rust（`_canvas.sticker`）。
 // 渲染侧在**出片时**分支（模板 `stickerAnchor` / engine.js `stickerAnchor`），
@@ -1819,6 +2280,7 @@ onMounted(() => {
   load()
   loadStickerSources()
   loadFonts()
+  loadVideoLibrary()
 })
 onUnmounted(() => {
   pageGone = true
@@ -1856,12 +2318,51 @@ onUnmounted(() => {
 /* 分组：每段一条细线 + 标题；点轨道名时那一段的标题高亮（`on`） */
 .lane-group { margin-top:7px; padding-top:7px; border-top:1px solid var(--line-soft); }
 .lane-group:first-of-type { border-top:none; margin-top:0; padding-top:0; }
+/* 片头/片尾：一侧一行（勾选 + 素材下拉 + 入出点）。右栏只有 300px，
+   所以入出点那行必须能换行、数字框要定宽（`min-width:0` 让 select 不被顶宽）。 */
+.io-row { margin-top:5px; }
+.io-head { display:flex; align-items:center; gap:5px; font-size:12px; cursor:pointer; }
+.io-row .fld-input { width:100%; min-width:0; margin-top:3px; font-size:12px; }
+.io-trim { display:flex; align-items:center; gap:4px; margin-top:3px; flex-wrap:wrap; }
+.io-num { width:62px; flex:none; }
+.io-dur { margin-left:auto; }
+.io-err { color:var(--red); }
 /* ⚠️ 第六轮我一度把三组做成 `.lane-cols` 三列并排 —— **是误读**（用户第七轮：「整体还是以行来
    排版」）。并三列时每列只有 83px，两颗框选按钮横排溢出 91>83、字体下拉被截断，全是被那个误解
    逼出来的。**别再引回 `.lane-cols`**：三组上下堆叠成行，每组占满 300px。 */
 .lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
+/* 字幕样式控件（用户 2026-10 四项 + 描边拆两件）。
+   ⚠️ 右栏定宽 300px、卡片 1px 边框 + 16px 内边距 ⇒ **行内容宽只有 266px**（判据 ⑰ 的预算）。
+   标签列定宽 62px（"描边宽度"+「近似」角标最宽那行），余下 ~200px 给控件。
+   ⚠️ **每一层都要 `min-width:0`**：`.ss-grid` 是 flex 列容器，不写的话它的自动最小尺寸
+   会被子项的内容撑开（flex 项默认 `min-width:auto`），整块就往右溢出。 */
+.ss-grid { display:flex; flex-direction:column; gap:4px; margin-top:6px; min-width:0; }
+/* 读失败 / 未就绪时整块降透明度（配合 :disabled，让"现在不能改"看得出来） */
+.ss-grid.off { opacity:.55; }
+.ss-row { display:flex; align-items:center; gap:6px; min-width:0; }
+.ss-lbl { flex:none; width:62px; font-size:11px; color:var(--ink-dim); white-space:nowrap;
+          display:flex; align-items:center; gap:3px; }
+/* 「近似」角标：描边宽度成片侧受底座限制（只有描边开/关），必须如实标注。 */
+.ss-tag { flex:none; font-style:normal; font-size:9px; line-height:1; padding:1px 3px; border-radius:3px;
+          background:var(--main-soft); color:var(--pink-text); }
+/* 取色器：`input[type=color]` 默认 22×22 左右带内边距白边，这里压成方方正正一小块 */
+.ss-color { flex:none; width:34px; height:20px; padding:0; border:1px solid var(--line);
+            border-radius:var(--r-sm); background:var(--card); cursor:pointer; }
+.ss-color:disabled { cursor:not-allowed; }
+.ss-color::-webkit-color-swatch-wrapper { padding:1px; }
+.ss-color::-webkit-color-swatch { border:none; border-radius:2px; }
+/* 位置行的滑块：占满标签后的剩余宽度（与弹幕偏移那行同一个写法） */
+.ss-range { min-width:0; }
+/* 位置行（滑杆 + 数字框 + 单位）三件挤在 266px 内：滑杆 `flex-1` 吃掉剩余宽度，
+   数字框与单位 `flex:none` 保持可用宽度。
+   ⚠️ 实测（`.workbuddy/check-subtitle-style-geom.mjs`）：不额外收窄时，这行会把末尾的 `%`
+   顶到 **right=283**（内容宽只有 266）—— 溢出 17px、而整行 `scrollWidth` 仍是 266（被 flex 吞了），
+   所以**只看 scrollWidth 查不出来**，必须逐个控件量右边界。把数字框在这行单独收窄到 5ch
+   （`.rv-input` 默认 6ch）后刚好落回预算内。 */
+.ss-row.full > .rv-input { width:5ch; }
+.ss-row.full > .ss-range { flex:1 1 auto; }
 .stage-col { flex:1; min-width:0; }
 /* 「区域与落点」的四颗取坐标按钮（人物 / 弹幕 / 固定 / 改落点）必须同一行：
    右栏是定宽 300px 的 grid 轨道，卡片 1px 边框 + 16px 内边距 → 行内容宽 266px；

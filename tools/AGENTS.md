@@ -66,7 +66,7 @@
   预览是 0.025s 连续交替（`index.html:532`），出片是固定 0.2s 的四级阶梯（`:1575`）。
 - ⚠️ **改那 6 个纯函数（含 `hexColor`）/ `zoomFactor` / `translate` 或弹幕窗口的 `danmakuExitMs`
   = 必须跑 `--mutate`**：这几条曲线/解析/映射是"看着差不多、差得远"的重灾区，守卫按**逐值**钉了
-  **348 项曲线 + 13 项颜色 + 44 项映射 + 6 项画面构成 + 25 项几何 + 4 项密集键 + 9 项字体族名**，并要求 **42 处变异全部打红**。新增曲线/常量/解析分支/映射时
+  **348 项曲线 + 13 项颜色 + 9 项描边解析 + 44 项映射 + 6 项画面构成 + 25 项几何 + 4 项密集键 + 9 项字体族名 + 2 项调整图层窗口夹取 + 8 项变速 + 9 项 TOML 数组表父级 + 5 项素材时基 + 8 项素材判据 + 10 项片头/片尾**，并要求 **52 处变异全部打红**。新增曲线/常量/解析分支/映射时
   **往守卫的 `MUTATIONS` 里加一条**（"一条不会红的用例不算用例"）。⚠️ 新加的检查**要抽成函数
   并在 `mutate` 里也调**：只写在顶层的话 `--mutate` 那条路径根本不跑它（颜色那条第一版就是这么漏的）。
   `translate` 与 `zoomFactor` 是**为了守卫才 export** 的（`isEntryPoint` 那道门保证直接跑仍是 CLI）。
@@ -101,6 +101,13 @@
   以前只认 6 位，后果**不是"少了个透明度"** —— overlay 那处是 `if (!first) drop(...)`，
   **整条覆盖层事件不进成片**（成片少了整块渐变色罩，而报告里只有一行 DROP）。
   认不出的值仍然必须返回 `null`（不许猜），由调用点兜底或报 DROP。
+- ⚠️ **`parseStroke` 那道前置正则必须与 `hexColor` 同宽（`{3,8}`）**（2026-10 修）：
+  `hexColor` 一直能展开 3/4 位，但 `parseStroke` **外层那个 `match`** 曾经只写 `{6}` ⇒
+  `stroke = "8px #fff"` **匹配不上、`hexColor` 根本走不到**，于是**静默回落到兜底深灰**
+  （实测 `[64,60,59]` 而不是白）。症状：用户在编辑器里选白色描边、**成片是深灰，报告里一行差异都没有**。
+  ⚠️ **只测 `hexColor` 抓不到它**（`hexColor('#fff')` 从来是对的，错的是调用点上的前置匹配）——
+  所以守卫走的就是 `parseStroke` 本体（`checkStroke`，9 项 + 一条变异）。
+  `parseStroke` **是为了守卫才 export** 的（`isEntryPoint` 那道门保证直接跑仍是 CLI）。
 - ⚠️ **报告里的字符串是接口产物，不是日志文案**：`DROP` / `CLAMP` / `NOTE` 的语义见
   `docs/yekitrim-integration.md` 第五节，给下游的用法是"CI 断言 `DROP == 0` / 把 `CLAMP` 逐条挂台账"。
   **别为了让流程通过而把某条差异从报告里删掉。**
@@ -182,9 +189,10 @@
 ## 验证
 
 ```bash
-node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名
-node scripts/check-yekitrim-translator.mjs --mutate   # 42 处变异必须**全部打红**
+node scripts/check-yekitrim-translator.mjs            # 348 曲线 + 13 颜色 + 9 描边 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名 + 2 夹取 + 8 变速 + 9 TOML 父级 + 5 素材时基 + 8 素材判据 + 10 片头/片尾
+node scripts/check-yekitrim-translator.mjs --mutate   # 52 处变异必须**全部打红**
 node scripts/check-dhampir-drop-list.mjs           # DROP/CLAMP 清单与基线一致（+ --self-test 自证）
+node scripts/check-edl-invariants.mjs              # 成片时间线三处消费点同源（`buildKeepRanges` 是消费点②）
 
 # 端到端烟测（对演示工程；产物落在 target/ 下，不进仓库）
 node tools/polish-to-dhampir.mjs docs/wgpu-effect-reference/demo --out target/yekitrim-demo/t.json

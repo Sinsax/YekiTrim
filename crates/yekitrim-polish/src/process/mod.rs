@@ -544,18 +544,70 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     let downloader = assets::downloader::AssetDownloader::new(project_path);
     download_keyword_assets(&downloader, &config, &sfx_blacklist).await;
 
+    // Step 5: 冷开场 / 回忆回溯意图 → `edl.clips`（第 5 批）。
+    //
+    // LLM 只在段窗口内写意图（`anchor = "cold_open"` / `"recall"`），**数不出"整片几次"** ——
+    // 配额与落实都在这里兜，与 `cap_pip_shots`（Step 1c）同一条先例、同一套理由。
+    //
+    // ⚠️ **只在"真的落实了"时才写 EDL**（`changed()`）：`edl.clips` 一旦非空，
+    // `mute_ranges` 就**整个被忽略**（`ProjectFile::resolve_edl`、规格 §2.3），
+    // 所以一支意图都没有的老工程**必须保持 `clips` 为空**，否则它的时间线会被无声换掉。
+    // `materialize_edl_intents` 的注释里写着这条硬前提，改之前先读它。
+    //
+    // 排在 Step 4 之后：它只读 `segments` 的意图 + 写 `edl`，与下载/音效都不相交；
+    // 位置要紧的是它在**写回之前**（`edl` 必须跟着 `segments` 一起落盘）。
+    let mut edl_intent_done = false;
+    {
+        let total_duration = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+        let materialized = materialize_edl_intents(
+            &mut config.segments,
+            &mut config.edl.clips,
+            total_duration,
+        );
+        if materialized.changed() {
+            tracing::info!(
+                "  ➕ 成片时间线：冷开场 {} · 回忆回溯 {} 条（共 {} 段）",
+                if materialized.cold_open { "1 条" } else { "无" },
+                materialized.recalls,
+                config.edl.clips.len()
+            );
+            edl_intent_done = true;
+        }
+    }
+
     // 标记 process 已完成（preview 依赖此标记决定是否先跑 process）。
     // 只写回 process 负责的字段：这中间用户存的选框 / 封面 / 屏蔽轨道不能被吞掉。
     let segments = config.segments;
     let intro_fade_seeded = config.intro_fade_seeded; // Step 3c 用掉的补种时机（只从 false 变 true）
+    // Step 5 的产物：`None` = 本趟没有落实任何意图 ⇒ **不许碰** `cfg.edl`
+    // （用户在前端的编辑、以及"老工程保持为空"的 R4 判据都靠这一条）。
+    let edl_clips = writeback_edl(edl_intent_done, config.edl.clips);
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
         cfg.intro_fade_seeded = intro_fade_seeded;
+        if let Some(clips) = edl_clips {
+            cfg.edl.clips = clips;
+        }
         cfg.processed = true;
     })
     .await?;
     tracing::info!("  ✓ polish.toml updated");
     Ok(())
+}
+
+/// Step 5 的**写回门**：本趟真的落实了冷开场/回忆回溯意图时，才把 `clips` 交给
+/// `update_polish_toml`；否则给 `None`（调用方**一个字节都不碰** `cfg.edl`）。
+///
+/// 抽成具名纯函数不是为了漂亮：它是 R4 那两层的**上层**，而端到端测试**咬不住它**
+/// （空 `Edl` 会被 `ProjectFile::edl` 的 `skip_serializing_if = "Edl::is_empty"` 静默吃掉，
+/// 把 `then_some` 改成无条件 `Some` 之后端到端测试照样绿）。所以它必须有自己的观察点 ——
+/// `process_writeback_gate_only_touches_edl_when_materialized`。
+/// 同一个教训见 `docs/plan/edl-retiming-spec.md` §11.14（`ensure_assets_should_run`）。
+///
+/// ⚠️ 门开着也**只是"允许写"**：里面的 `clips` 已经包含用户手拖过的段（Step 5 只在它前后插），
+/// 所以这个门不负责保用户数据，负责保的是"**没意图时别去动它**"。
+fn writeback_edl(materialized: bool, clips: Vec<project::EdlClip>) -> Option<Vec<project::EdlClip>> {
+    materialized.then_some(clips)
 }
 
 /// 贴纸避让上下文：按项目算一次，逐张贴纸再按自己的可见窗口取障碍。
@@ -1164,10 +1216,100 @@ pub fn cap_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{Event, MuteRange, ProjectFile, Segment};
+    use crate::project::{EdlClip, Event, MuteRange, ProjectFile, Segment};
 
     fn seg_with(events: Vec<Event>) -> Segment {
         Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, extra: Default::default() }
+    }
+
+    /// 第 6 批：**EDL 引用的视频素材必须走"复制进项目"那条路**，而且**段表为空时也要走**。
+    ///
+    /// 为什么单独钉这一条：贴纸/SFX 都挂在 `segments` 上，所以"没有段 ⇒ 没有素材要下"
+    /// 曾经成立；但**视频素材挂在 `edl.clips` 上**。`ensure_assets` 里那道
+    /// `!config.segments.is_empty()` 的门会把"只有 EDL、没有段"的工程整个跳过 ⇒
+    /// 出片在**没有素材拷贝**的情况下开跑，症状是"那一段缺画面"（不报错）。
+    ///
+    /// ⚠️ 判据只能落在**错误里提到了这个素材**，不能落在"文件复制成功"上：
+    /// `download_videos` 从 `path::sticker_dir()` 取库根（**不是** `data_dir()`，环境变量改不动它），
+    /// 单测没法把一个临时库注进去。真库当然没有 `mate` 这个素材 ⇒ 它必然报一条
+    /// 「库里没有」——**而这条报错本身就是"接线通了"的证据**（没接线的话一条错都不会有）。
+    /// "复制成功 + 幂等 + 内容对"由 `assets::downloader` 里的
+    /// `download_videos_copies_into_project_and_reports_missing` 用可注入的库根验。
+    /// 第 6 批：`ensure_assets` 的**门**不许把"只有 EDL、没有段"的工程挡在外面。
+    ///
+    /// `ensure_assets` 原来写的是 `!config.segments.is_empty()` —— 贴纸/SFX 挂在 `segments` 上，
+    /// 那个条件对它们是对的；但**视频素材挂在 `edl.clips` 上**，所以一个段表为空（或全被去静音
+    /// 切掉）的工程会被整个跳过，出片时**素材从没被复制过** ⇒ 那一段缺画面，且不报错。
+    ///
+    /// ⚠️ 判据刻意**不接 `tracing` 订阅者**：那要 `set_default`（**线程局部**），
+    /// 而 cargo 默认多线程跑用例 ⇒ 别的用例的事件会让它翻来覆去（实测：单跑绿、全量红）。
+    /// 换成**同一个谓词**的纯函数判据（下面那条 `?`），与门里的条件**同源**、且是确定性的。
+    #[test]
+    fn ensure_assets_gate_open_for_edl_only_project() {
+        let gate = crate::process::download::ensure_assets_should_run;
+
+        // 只有 EDL 素材、一条段都没有 —— 第 6 批要保证的正是这一档
+        assert!(
+            gate(&[], &[asset_clip("mate")]),
+            "段表为空但 EDL 引用素材 ⇒ 必须仍然去复制素材（否则出片缺这一段画面）",
+        );
+        // 老路子照旧：有段就跑
+        assert!(gate(&[seg_with(vec![])], &[]), "有段 ⇒ 照旧要跑");
+        // 段 + EDL 素材同时有
+        assert!(gate(&[seg_with(vec![])], &[asset_clip("mate")]), "两者都有 ⇒ 跑");
+        // 真的什么都没有 ⇒ 不必白跑一趟（这条防的是把门写成恒 `true`）
+        assert!(!gate(&[], &[]), "既没有段、也没有 EDL 素材 ⇒ 不该跑");
+        // 有 EDL 段但都是**本条片段**（非素材）⇒ 没有素材要复制，不必跑
+        let mut plain = asset_clip("mate");
+        plain.source_kind = None;
+        plain.asset_id = None;
+        assert!(!gate(&[], &[plain]), "EDL 段不指向素材 ⇒ 没有素材要复制");
+    }
+
+    /// 一个"指向素材库"的 EDL 段。
+    fn asset_clip(id: &str) -> yekitrim_render_core::types::EdlClip {
+        yekitrim_render_core::types::EdlClip {
+            source_start: 0.0,
+            source_end: 2.0,
+            speed: 1.0,
+            kind: None,
+            label: None,
+            source_kind: Some(yekitrim_render_core::types::EDL_SOURCE_ASSET.into()),
+            asset_id: Some(id.into()),
+            transition_in: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_assets_attempts_edl_video_copy_even_without_segments() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+
+        let mut cfg = ProjectFile::example();
+        cfg.segments.clear(); // 前提：段表为空，只有 EDL 引用素材
+        cfg.edl.clips = vec![yekitrim_render_core::types::EdlClip {
+            source_start: 0.0,
+            source_end: 2.0,
+            speed: 1.0,
+            kind: None,
+            label: None,
+            source_kind: Some(yekitrim_render_core::types::EDL_SOURCE_ASSET.into()),
+            asset_id: Some("lead-probe-nonexistent-material".into()),
+            transition_in: None,
+        }];
+        assert!(cfg.segments.is_empty(), "前提：这个工程一条段都没有");
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化")).expect("落盘");
+
+        let downloader = crate::assets::downloader::AssetDownloader::new(path);
+        let blacklist = crate::process::sfx::load_sfx_blacklist(&cfg);
+        let errs = crate::process::download::download_keyword_assets(&downloader, &cfg, &blacklist).await;
+
+        // 接线通了 ⇒ 它去查了库、没查到、报出来（1 条）。没接线 ⇒ 0 条（静默什么都不做）。
+        assert_eq!(
+            errs, 1,
+            "段表为空但有 EDL 素材时，也必须去把素材复制进项目；             报错条数 = {errs}（0 表示这条路压根没被走到 —— 出片会缺这一段画面）",
+        );
     }
 
     /// **屏蔽只做标记**：`cmd_process` 不许删掉屏蔽区间里的事件，也不许把段切碎。
@@ -1230,6 +1372,107 @@ mod tests {
 
         let spans: Vec<(f64, f64)> = after.segments.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(spans, vec![(0.0, 10.0)], "屏蔽区间不许把分段切碎");
+    }
+
+
+
+    /// **第 5 批 · 老工程零回归（R4 的端到端形态）**：没意图 ⇒ `edl.clips` 保持为空。
+    ///
+    /// 为什么这一条必须是**真跑 `cmd_process`**：判据不是"函数返回空"，而是
+    /// **`polish.toml` 里不许出现 `[edl]` 段**。有 EDL 时 `mute_ranges` 整个被忽略
+    /// （`ProjectFile::resolve_edl`、规格 §2.3），所以"写下去一个空 `[edl]`"这种
+    /// 看起来无害的事**会真的改变成片时间线**（第 1 批实测：toml 照样写出空段头，
+    /// 所以判据挂在 `Edl::is_empty` 上而不是 `clips` 自己的 `skip_serializing_if`）。
+    ///
+    /// ⚠️ **R4 是两层挡的，这条测试只咬得住其中一层。** 实测记录（`--mutate` 式自证）：
+    ///
+    /// | 把哪一层摘掉 | 本测试 |
+    /// |---|---|
+    /// | `ProjectFile::edl` 的 `skip_serializing_if = "Edl::is_empty"` | **红** ✅ |
+    /// | `cmd_process` 里 `edl_intent_done.then_some(...)` 那个门 | **绿** ❌ —— 空 `Edl` 被 serde 那层静默吃掉 |
+    ///
+    /// 所以这一条**不能**独自充当"写回门"的判据。写回门由
+    /// [`process_writeback_gate_only_touches_edl_when_materialized`] 用**纯谓词**钉住
+    /// （与 `docs/plan/edl-retiming-spec.md` §11.14 里 `ensure_assets_should_run` 同一个教训：
+    /// 两层判据要各自有观察点，否则拆掉一层毫无声响）。
+    ///
+    /// 同一条测试顺带钉住**幂等**：连跑两次 `cmd_process`，`edl` 一次都不许冒出来。
+    #[tokio::test]
+    async fn process_without_edl_intent_never_writes_edl() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(
+            path.join("data").join("subtitles.json"),
+            serde_json::json!([
+                {"index": 1, "start": 1.0, "end": 3.0, "text": "普通叙述", "html": ""},
+            ]).to_string(),
+        ).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new(); // 空来源表：Step 2 不解析关键字、不联网
+        cfg.mute_ranges = vec![MuteRange { start: 4.0, end: 6.0 }];
+        // 普通运镜（没有 cold_open / recall 意图）
+        cfg.segments = vec![Segment {
+            start: 0.0, end: 10.0, fx: "low".into(), note: String::new(),
+            events: vec![Event::Camera {
+                time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
+                anchor: Some("liver".into()), anchor_to: None, to_origin: None,
+                cut: false, handheld: false, manual: false,
+            }],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理 #1");
+        let after1 = crate::project::load_project(path).expect("重读");
+        assert!(after1.edl.clips.is_empty(), "没有意图 ⇒ edl.clips 必须保持为空");
+        let text1 = std::fs::read_to_string(path.join("polish.toml")).expect("读回 toml");
+        assert!(
+            !text1.contains("[edl]"),
+            "没有意图就**一个字节都不许写 EDL**（空的 [edl] 段头会让 mute_ranges 整个被忽略）\n{text1}"
+        );
+
+        // 幂等：再跑一次，还是一样
+        cmd_process(path).await.expect("后处理 #2");
+        let text2 = std::fs::read_to_string(path.join("polish.toml")).expect("读回 toml");
+        assert!(!text2.contains("[edl]"), "跑第二遍同样不许写 EDL");
+        assert!(crate::project::load_project(path).expect("重读").edl.clips.is_empty());
+    }
+
+    /// **写回门本身**的判据（上一条测试咬不住的那一层）。
+    ///
+    /// `cmd_process` 结尾原来写的是"整份写回"时代留下的形状，第 5 批给它加了第三个字段，
+    /// 门写成 `edl_intent_done.then_some(config.edl.clips)`：**只有本趟真的落实了意图，
+    /// 才把 `clips` 交给 `update_polish_toml`**，否则 `cfg.edl` 一个字节都不碰
+    /// （用户在时间轴上手拖过的 `clips` 靠这一条活着）。
+    ///
+    /// ⚠️ 为什么单开一条**纯谓词**测试：把 `then_some` 改成无条件 `Some(...)` 之后，
+    /// 上一条端到端测试**照样绿** —— 空 `Edl` 被 `skip_serializing_if = "Edl::is_empty"`
+    /// 那层静默吃掉，症状完全相同。两层判据必须各有各的观察点。
+    /// 谓词是 `fn(bool, Vec<EdlClip>) -> Option<Vec<EdlClip>>`，与 `cmd_process` 里
+    /// 那一行**同源**（`writeback_edl` 就是它的具名实现）。
+    #[test]
+    fn process_writeback_gate_only_touches_edl_when_materialized() {
+        let user_clips = vec![EdlClip {
+            source_start: 1.0, source_end: 2.0, speed: 1.0,
+            kind: Some("main".into()), label: None,
+            source_kind: None, asset_id: None, transition_in: None,
+        }];
+
+        // 没落实 ⇒ 门必须给出 `None`（= 调用方不许碰 `cfg.edl`）
+        assert_eq!(
+            writeback_edl(false, user_clips.clone()), None,
+            "本趟没落实意图 ⇒ 不许把 clips 交给写回（手拖过的 EDL 会被空 vec 覆盖成 0 段）"
+        );
+        // 落实了 ⇒ 原样交出去
+        assert_eq!(
+            writeback_edl(true, user_clips.clone()), Some(user_clips.clone()),
+            "落实了 ⇒ 必须交出去，否则冷开场生成了却不落盘"
+        );
+        // 落实了但结果确实是空（理论上到不了；钉住它而不是断言 unreachable）
+        assert_eq!(writeback_edl(true, Vec::new()), Some(Vec::new()));
     }
 
     fn sticker() -> Event {

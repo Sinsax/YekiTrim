@@ -6,6 +6,20 @@
 use std::path::Path;
 use super::ProjectFile;
 
+/// 成片时间线（EDL）**单级变速的合法区间**。
+///
+/// ⚠️ **这两个数字不是随便定的**：它们就是 ffmpeg `atempo` 的**单级范围**
+/// （`docs/plan/edl-retiming-spec.md` §3.2 / §4.1 第 8 条）。音轨变速**必须**用 `atempo`
+/// （用 `asetpts` 缩放会改采样率/变调 = 花栗鼠音，§9 R6），而单级 `atempo` 只吃
+/// `[0.5, 2.0]` —— 想要 `speed=0.25` 得写成 `atempo=0.5,atempo=0.5`（串联多级）。
+///
+/// ⇒ 常量表与 `atempo` 单级范围**必须一致**：把这里放宽到 `atempo` 之外，
+/// 第 4 批的真出片就会在音频滤镜上失败（或者更糟：静默取不到效果）。
+/// 反过来收紧就是白丢用户能用的档位。
+pub const SPEED_MIN: f64 = 0.5;
+/// 见 [`SPEED_MIN`]。
+pub const SPEED_MAX: f64 = 2.0;
+
 /// 从项目目录加载 polish.toml
 pub fn load_project(project_path: &Path) -> anyhow::Result<ProjectFile> {
     load_config_from(project_path, "polish.toml")
@@ -215,6 +229,58 @@ pub fn validate_project(config: &ProjectFile, project_path: &Path) -> Vec<String
         }
     }
 
+    warnings.extend(validate_edl(config));
+
+    warnings
+}
+
+/// 成片时间线（EDL）的校验（规格 §4.1 第 7 条）。
+///
+/// 判据四条：
+/// 1. 区间**非负**（`source_start >= 0`）—— 负的源起点会被 `edl_frame_at` 夹成 0，
+///    表现是"这段和上一段重合了一截"，**不报错**；
+/// 2. `source_end > source_start` —— 零长/倒置的段在推导里会被**静默跳过**，
+///    用户看到的是"我加了一段它没出现"；
+/// 3. `speed ∈ [SPEED_MIN, SPEED_MAX]`（与 `atempo` 单级范围一致，见 [`SPEED_MIN`]）；
+/// 4. **空 `clips` 且 `mute_ranges` 非空** ⇒ 报 NOTE：此时成片走的是补集派生（§2.2 规则 3），
+///    用户以为"成片轨是空的 = 什么都不剪"的误解在这里说清。
+///
+/// ⚠️ **不重叠是允许的**（重放/冷开场本来就是同一段出现两次，§2.1）—— 所以这里**没有**
+/// 重叠判据。乱序同样允许（数组顺序 = 成片播放顺序）。
+///
+/// ⚠️ **`[edl.clips]]` 里的路径字段 / `mute_ranges` 的"相加"语义都不在这里** ——
+/// `mute_ranges` 由消费侧生效，见 `project/AGENTS.md`。
+fn validate_edl(config: &ProjectFile) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    for (i, clip) in config.edl.clips.iter().enumerate() {
+        if clip.source_start < 0.0 {
+            warnings.push(format!(
+                "EDL clip {i}: source_start ({}) < 0 —— 起点会被夹到 0，与上一段重合",
+                clip.source_start
+            ));
+        }
+        if clip.source_end <= clip.source_start {
+            warnings.push(format!(
+                "EDL clip {i}: source_end ({}) <= source_start ({}) —— 这一段会被整段跳过",
+                clip.source_end, clip.source_start
+            ));
+        }
+        if !clip.speed.is_finite() || clip.speed < SPEED_MIN || clip.speed > SPEED_MAX {
+            warnings.push(format!(
+                "EDL clip {i}: speed ({}) 超出 [{SPEED_MIN}, {SPEED_MAX}]（= ffmpeg atempo 单级范围）",
+                clip.speed
+            ));
+        }
+    }
+
+    // NOTE：成片轨是空的、但屏蔽轨道非空 ⇒ 成片其实**按补集剪过**（§2.2 规则 3）。
+    if config.edl.clips.is_empty() && config.mute_ranges.iter().any(|m| m.normalized().is_some()) {
+        warnings.push(
+            "NOTE: EDL 为空、但屏蔽轨道非空 —— 成片按 mute_ranges 的补集派生（今天的行为）".into(),
+        );
+    }
+
     warnings
 }
 
@@ -222,9 +288,10 @@ pub fn validate_project(config: &ProjectFile, project_path: &Path) -> Vec<String
 mod tests {
     use super::{
         load_config_from, load_project, retired_effect_hint, retired_effect_message,
-        strip_blocked_sticker_sources, update_polish_toml, write_atomic,
+        strip_blocked_sticker_sources, update_polish_toml, validate_edl, validate_project,
+        write_atomic, SPEED_MAX, SPEED_MIN,
     };
-    use crate::project::{MuteRange, ProjectFile};
+    use crate::project::{Edl, EdlClip, MuteRange, ProjectFile};
     use yekitrim_render_core::types::Point;
 
     /// 临时精修工程：只放一份 polish.toml（`example()` 起手）。
@@ -361,5 +428,99 @@ mod tests {
         write_atomic(&dir.join("polish.toml"), &cfg.to_toml_commented().unwrap()).unwrap();
         let loaded = load_config_from(&dir, "polish.toml").expect("正常工程必须读得出来");
         assert_eq!(loaded.segments[0].events.len(), 1);
+    }
+
+    // ===== 成片时间线（EDL）的校验（规格 §4.1 第 7 条）=====
+
+    fn edl_cfg(clips: Vec<EdlClip>) -> ProjectFile {
+        ProjectFile { edl: Edl { clips }, ..ProjectFile::example() }
+    }
+
+    fn clip(s: f64, e: f64, speed: f64) -> EdlClip {
+        EdlClip {
+            source_start: s,
+            source_end: e,
+            speed,
+            kind: None,
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: None,
+        }
+    }
+
+    /// `SPEED_MIN` / `SPEED_MAX` **必须**等于 ffmpeg `atempo` 的单级范围
+    /// （§3.2 / §4.1 第 8 条 / R6）。把这两个数写死在这里，是为了**改常量必须改这里** ——
+    /// 常量表与 atempo 漂了，第 4 批的真出片会在音频滤镜上失败或静默失效。
+    #[test]
+    fn speed_bounds_match_atempo_single_stage() {
+        assert_eq!(SPEED_MIN, 0.5);
+        assert_eq!(SPEED_MAX, 2.0);
+        // 区间两端**必须合法**（边界值就是用户能选的档位），越界一格必须报。
+        assert!(validate_edl(&edl_cfg(vec![clip(0.0, 1.0, SPEED_MIN)])).is_empty());
+        assert!(validate_edl(&edl_cfg(vec![clip(0.0, 1.0, SPEED_MAX)])).is_empty());
+    }
+
+    /// 四条判据各自能翻面：负起点 / 倒置 / 零长 / 速率越界。
+    #[test]
+    fn edl_validation_reports_bad_ranges_and_speeds() {
+        // ① 负源起点（会被 `edl_frame_at` 夹成 0 ⇒ 与上一段重合，不报错就没人知道）
+        let w = validate_edl(&edl_cfg(vec![clip(-1.0, 2.0, 1.0)]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("source_start"), "{w:?}");
+
+        // ② end <= start（零长与倒置）
+        for c in [clip(3.0, 3.0, 1.0), clip(9.0, 7.0, 1.0)] {
+            let w = validate_edl(&edl_cfg(vec![c.clone()]));
+            assert!(
+                w.iter().any(|m| m.contains("source_end")),
+                "零长/倒置段必须报：{}\n{w:?}",
+                format!("{:?}", c)
+            );
+        }
+
+        // ③ 速率越界（两侧各一格）+ 非有限
+        for sp in [0.25, 2.5, 0.0, -1.0, f64::NAN] {
+            let w = validate_edl(&edl_cfg(vec![clip(0.0, 1.0, sp)]));
+            assert!(
+                w.iter().any(|m| m.contains("speed") && m.contains("atempo")),
+                "speed={sp} 必须报且点明 atempo：{w:?}"
+            );
+        }
+
+        // ④ **不重叠是允许的**（重放/冷开场：同一段出现两次，§2.1）⇒ 不许有重叠判据
+        let replay_ok = edl_cfg(vec![clip(5.0, 7.0, 1.0), clip(5.0, 7.0, 1.0)]);
+        assert!(validate_edl(&replay_ok).is_empty(), "重复段不是错误");
+        // 乱序同样允许（数组顺序 = 成片播放顺序，不是源顺序）
+        let out_of_order = edl_cfg(vec![clip(20.0, 22.0, 1.0), clip(0.0, 2.0, 1.0)]);
+        assert!(validate_edl(&out_of_order).is_empty(), "乱序剪辑不是错误");
+    }
+
+    /// 空 EDL + 非空 `mute_ranges` ⇒ 报 **NOTE**（成片其实按补集剪过，§2.2 规则 3）。
+    /// 不说清的话，用户会以为"成片轨是空的 = 什么都不剪"。
+    #[test]
+    fn empty_edl_with_mute_ranges_gets_a_note() {
+        let mut cfg = ProjectFile::example();
+        assert!(validate_edl(&cfg).is_empty(), "干净的老工程不该有新告警（R4 面）");
+        cfg.mute_ranges = vec![MuteRange { start: 3.0, end: 5.0 }];
+        let w = validate_edl(&cfg);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("NOTE:"), "{w:?}");
+        assert!(w[0].contains("补集"), "{w:?}");
+
+        // 一旦有 EDL，NOTE 就消失（此时 mute_ranges 被忽略，不再是"补集"）
+        cfg.edl.clips = vec![clip(0.0, 2.0, 1.0)];
+        assert!(validate_edl(&cfg).is_empty(), "{:?}", validate_edl(&cfg));
+    }
+
+    /// `validate_project`（路径那条路）确实把 EDL 判据带出去了 —— 别让新校验只挂在私有函数上。
+    #[test]
+    fn validate_project_includes_edl_warnings() {
+        let dir = tmp_project("edl-validate");
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![clip(0.0, 2.0, 4.0)];
+        let w = validate_project(&cfg, &dir);
+        assert!(w.iter().any(|m| m.contains("EDL clip 0")), "{w:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

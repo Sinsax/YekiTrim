@@ -24,8 +24,10 @@ use status::SegmentGenStatus;
 /// sticker_budget/sfx_budget: 数量上限, 提示词中明确约束
 /// sfx_blacklist: 被屏蔽的音效/标签, 注入 prompt
 ///
-/// 返回 `(segments, 弹幕筛选詞, 高亮词, 逐段生成状态)` —— 最后一项供调用方落盘成快照，
-/// 编辑器据此给"没产出事件的段"上警示色（见 `llm::status`）。
+/// 返回 `(segments, 弹幕筛选詞, 高亮词, 逐段生成状态, 成片时间线)` —— 第 5 项是
+/// **冷开场/回忆回溯意图落实出来的 `edl.clips`**（`None` = 这一段没有意图 ⇒ 调用方
+/// **不许碰** `cfg.edl`）；最后一项供调用方落盘成快照，编辑器据此给"没产出事件的段"上警示色
+/// （见 `llm::status`）。
 pub async fn run_llm_pipeline(
     llm_cfg: &LlmConfig,
     subtitles: &[Subtitle],
@@ -37,7 +39,13 @@ pub async fn run_llm_pipeline(
     sfx_blacklist: &[String],
     checkpoint_dir: Option<&PathBuf>,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
-) -> anyhow::Result<(Vec<Segment>, Vec<String>, Vec<String>, Vec<SegmentGenStatus>)> {
+) -> anyhow::Result<(
+    Vec<Segment>,
+    Vec<String>,
+    Vec<String>,
+    Vec<SegmentGenStatus>,
+    Option<Vec<crate::project::EdlClip>>,
+)> {
     let project = checkpoint_dir.map(|d| d.parent().unwrap_or(d).to_path_buf());
     // 链路解析：精修这一整条（分段 / 逐段事件 / 贴纸精挑 / 关键词）共用 `[llm.overrides.polish]`。
     // thinking 的"默认关思考"也在这里给出，别在下面各调用点再写一遍 with_thinking。
@@ -172,10 +180,34 @@ pub async fn run_llm_pipeline(
         }
     }
 
+    // Step 4c: 冷开场 / 回忆回溯意图 → `edl.clips`（第 5 批）。与 Step 4b 同一条理由：
+    // LLM 是按段窗口生成的、数不出"整片几次"，所以配额在这里先兜一遍，
+    // **编辑器里看到的就已经是合规的**（意图被收走、配额已裁）；`cmd_process` 里还会再兜一次（幂等）。
+    //
+    // ⚠️ 这里**只在真的落实了才动 EDL**（`changed()`）：一支意图都没有 ⇒ 一个新段都不加，
+    // `edl.clips` 保持为空 —— 有 EDL 时 `mute_ranges` 整个被忽略（`ProjectFile::resolve_edl`），
+    // 所以"没意图就别写"是 R4 存量零回归的判据本身。用户手拖过的 `clips` 在这里**读不到**
+    // （本函数只拿得到 `segments`，写盘那一步在 `cmd_llm` 里按 `changed()` 决定要不要合并）。
+    let materialized = {
+        let mut edl = crate::project::Edl::default();
+        let total_duration = segments.last().map(|s| s.end).unwrap_or(0.0);
+        let m = crate::process::materialize_edl_intents(&mut segments, &mut edl.clips, total_duration);
+        if m.changed() {
+            tracing::info!(
+                "  ➕ 成片时间线意图：冷开场 {} · 回忆回溯 {} 条",
+                if m.cold_open { "1 条" } else { "无" },
+                m.recalls
+            );
+            Some(edl.clips)
+        } else {
+            None
+        }
+    };
+
     // Step 5: emoji/irasu 位置计算 ("auto" → 计算值, 未来实现)
     // LLM 输出的 x/y 如果是 "auto", 由 cmd_process 统一计算
 
-    Ok((segments, dm_filter, hl_words, statuses))
+    Ok((segments, dm_filter, hl_words, statuses, materialized))
 }
 
 /// **只重做某一段**的事件（编辑器里分段属性面板上的那颗按钮）。

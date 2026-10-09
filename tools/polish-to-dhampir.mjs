@@ -912,7 +912,7 @@ function probeMedia(path) {
     const out = execFileSync(
       'ffprobe',
       ['-v', 'error', '-select_streams', 'v:0',
-       '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate',
+       '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate:format=duration',
        '-of', 'default=nw=1', path],
       { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] },
     );
@@ -956,7 +956,16 @@ function probeMedia(path) {
     })();
     const fps = snapped ?? nominal ?? average;
     if (!(width > 0 && height > 0) && fps === null) return null;
-    return { fps, width: width > 0 ? width : null, height: height > 0 ? height : null };
+    // ⚠️ **`duration` 是加出来的**（2026-10-09，给片头/片尾的「播到结尾」用）：
+    // 老消费点只读 `fps`/`width`/`height`，多一个键对它们**完全无影响**。
+    // 探不到就当 `null`（调用方据此报 DROP），**不给默认值假装成功**。
+    const duration = parseFloat(fields.get('duration') ?? '');
+    return {
+      fps,
+      width: width > 0 ? width : null,
+      height: height > 0 ? height : null,
+      duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+    };
   } catch {
     return null;
   }
@@ -1628,8 +1637,18 @@ export function translate(config, clipDir, outPath, options = {}) {
   };
 
   // 登记 EDL 里引用到的全部素材（在 keepRanges 之前，因为下面按 `range.assetId` 取时基）。
+  //
+  // ⚠️ **片头/片尾的素材也要登记**（2026-10-09）：它们由下面 `intro_outro` 那段拼进时间线，
+  //    而这里若不登记，`assetIdForRange` 会对它返回 `videoAssetId`（= 主素材）⇒
+  //    **片头放的是正片开头那几秒**，且 `DROP` 里一行都没有（注册表里查不到就当"源"）。
   const edlClipsRaw = Array.isArray(config.edl?.clips) ? config.edl.clips : [];
-  const referencedAssetNames = [...new Set(edlClipsRaw.map((c) => edlClipAssetId(c)).filter(Boolean))];
+  const ioRaw = config.intro_outro ?? {};
+  const ioAssetNames = [ioRaw.intro, ioRaw.outro]
+    .map((x) => (typeof x?.asset_id === 'string' ? x.asset_id.trim() : ''))
+    .filter(Boolean);
+  const referencedAssetNames = [
+    ...new Set([...edlClipsRaw.map((c) => edlClipAssetId(c)), ...ioAssetNames].filter(Boolean)),
+  ];
   for (const name of referencedAssetNames) registerVideoAsset(name);
 
   // ---- 音效素材 ----
@@ -1788,7 +1807,111 @@ export function translate(config, clipDir, outPath, options = {}) {
   //    段全会被 `clippedEnd > totalFrames` 夹没。这不是新问题（老分支同样退化成空），
   //    但要记住**它是静默的**：所以下面 `keepRanges` 为空时会打一条 NOTE（§4.2）。
   const edlClips = Array.isArray(config.edl?.clips) ? config.edl.clips : [];
-  const keepRanges = buildKeepRanges(totalFrames, muteFrames, keepMuted, edlClips, fps);
+  // ⚠️ **片头 / 片尾拼在 EDL 的首尾**（2026-10-09）。它与 Rust 的
+  //    `ProjectFile::edl_clips_with_intro_outro` 是**同一条推导的两份实现**，必须逐值一致 ——
+  //    不一致的症状是"画面有片头、音轨没有"或时长对不上，而 `mux_checked` 只在**样本数**上兜底。
+  //
+  //    为什么拼在这里：片头不过是"素材库里某段视频的一个区间"，而 `EdlClip` 本来就支持
+  //    `source_kind = "asset"` ⇒ 拼进去就自动继承了 `assetId`/`source_in`/时基那一整套。
+  //
+  //    `out_sec = 0` 表示**播到素材结尾**，所以先拿素材时长：用**项目里那份拷贝**
+  //    （`assets/videos/`）探，与 `registerVideoAsset` 同一份基准。
+  //    ⚠️ 探不到 ⇒ **跳过这一侧并报 DROP**（静默少一段片头是最坏形态）。
+  const introOutroClips = [];
+  {
+    const io = config.intro_outro ?? {};
+    const ioVideoDir = join(clipDir, 'assets', 'videos');
+    const findIoAsset = (name) => {
+      try {
+        return (
+          readdirSync(ioVideoDir)
+            .filter((f) => {
+              const stem = f.replace(/\.[^.]+$/, '');
+              return stem === name && VIDEO_EXTS.some((e) => f.toLowerCase().endsWith(e));
+            })
+            .sort()[0] ?? null
+        );
+      } catch {
+        return null;
+      }
+    };
+    for (const [side, which] of [
+      ['intro', '片头'],
+      ['outro', '片尾'],
+    ]) {
+      const item = io[side];
+      const name = typeof item?.asset_id === 'string' ? item.asset_id.trim() : '';
+      if (!name) continue;
+      const found = findIoAsset(name);
+      if (!found) {
+        drop(
+          'intro_outro',
+          `${which}素材「${name}」在项目里没有拷贝（找的是 assets/videos/${name}.*）—— ` +
+            '这一段不会出现在成片里。先跑一次后处理把素材复制进项目',
+        );
+        continue;
+      }
+      // ⚠️ **时长按素材自己的媒体探**（不是工程网格）——「播到结尾」要的是真时长。
+      const m = probeMedia(join(ioVideoDir, found));
+      const durSec = m?.duration ?? null;
+      if (!(durSec > 0)) {
+        drop(
+          'intro_outro',
+          `${which}素材「${name}」读不出时长，「播到结尾」是多久就定不下来 —— 这一段落不进去`,
+        );
+        continue;
+      }
+      const inSec = Math.max(0, Number(item.in_sec) || 0);
+      // 与 Rust `IntroOutroClip::trim` 同口径：出点 <= 0 或 <= 入点 ⇒ 播到素材结尾
+      const rawOut = Number(item.out_sec) || 0;
+      const outSec = rawOut <= 0 || rawOut <= inSec ? durSec : Math.min(rawOut, durSec);
+      const start = Math.min(inSec, durSec);
+      if (!(outSec > start)) {
+        drop('intro_outro', `${which}素材「${name}」的入出点算出来是空区间，这一段落不进去`);
+        continue;
+      }
+      introOutroClips.push({
+        side,
+        which,
+        clip: {
+          source_start: start,
+          source_end: outSec,
+          speed: 1.0,
+          kind: side,
+          label: `${which}·${name}`,
+          source_kind: 'asset',
+          asset_id: name,
+          // ⚠️ 片头/片尾都是**硬切**：片头前面没有可叠的东西，片尾的叠化会与
+          // 用户自己排在末尾那段的 `transition_in` 抢"前一段"的语义。
+          transition_in: null,
+        },
+      });
+    }
+  }
+  // ⚠️ 没有 EDL 时不在这里造基片（那是 `buildKeepRanges` 的 `mute_ranges` 补集分支的事）——
+  //    只有**已经给了 EDL** 的工程才在两端拼接，避免造出第二份"补集"推导。
+  const composedEdlClips = introOutroClips.length && edlClips.length
+    ? [
+        ...introOutroClips.filter((x) => x.side === 'intro').map((x) => x.clip),
+        ...edlClips,
+        ...introOutroClips.filter((x) => x.side === 'outro').map((x) => x.clip),
+      ]
+    : edlClips;
+  if (introOutroClips.length) {
+    if (!edlClips.length) {
+      drop(
+        'intro_outro',
+        '工程开了片头/片尾但没有成片时间线（`[edl.clips]` 为空）—— 本工具这条腿不替它造正片时间线，' +
+          '这一段被跳过；请在编辑器里存过一次时间线，或直接跑 `yekitrim polish render`',
+      );
+    } else {
+      note(
+        'intro_outro',
+        `片头/片尾拼进成片时间线：${introOutroClips.map((x) => x.which).join('、')}`,
+      );
+    }
+  }
+  const keepRanges = buildKeepRanges(totalFrames, muteFrames, keepMuted, composedEdlClips, fps);
   const durationFrames = keepRanges.length
     ? keepRanges[keepRanges.length - 1].outStart + (keepRanges[keepRanges.length - 1].durFrames ?? (keepRanges[keepRanges.length - 1].end - keepRanges[keepRanges.length - 1].start))
     : 0; // 裁剪后的总长

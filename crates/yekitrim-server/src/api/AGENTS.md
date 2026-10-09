@@ -59,31 +59,11 @@
      意图是「Dhampir 重建 wasm 后刷新即新」，靠 mtime 自然失效；写成 max-age 长缓存会破坏它。
   `Cache-Control: no-cache` 是「用前先校验」，不是「不许缓存」。
 - **`routes` 是唯一的路由权威**；加接口 = 在 `routes.rs` 挂一条 + 在对应领域模块写 handler。
-  ⚠️ **本地免登录（`--local-no-auth`，2026-10）**：`auth::authenticate` 开头有一条分支 ——
-  `AppState::local_admin` 是 `Some` 就**跳过会话与 CSRF**、直接注入本机管理员。
-  开启条件（缺一条就是"谁都能免密进来的后台"）：**只允许 loopback**、且与 `--allow-remote` 互斥
-  （由 `run_with` 开机守卫拒绝）。另加**两道闸**（`auth::guard_local_request`，任何一条不过是 403）：
-  ① `Host` 必须是 loopback 主机名 —— 防 DNS rebinding（恶意域名解析到 127.0.0.1）；
-  ② 写请求的 `Origin` / `Sec-Fetch-Site` 必须同源 —— 防别的网页跨站打进来。
-  ⚠️ 这两条是这次便利的**唯一**赔偿，别为了"让某个客户端好接"松掉；判据 =
-  `auth::tests::local_no_auth_guards_reject_foreign_host_and_cross_site`（含 `localhost.evil.com` 这类变体）。
-  哨兵会话 id 是 `LOCAL_SESSION_ID = "local-no-auth"`（**不在 sessions 表里**）⇒ 依赖真实会话的功能
-  在本地模式下不可用（最典型是改密码）。`/api/health` 会回 `local_no_auth` 布尔（前端据此收起「退出登录」）。
-  默认（不带该 flag）**一个字节都没变**，`unauthenticated_requests_are_401_except_whitelist` 仍钉着这一点。
-
-  ⚠️ **`POST /api/shutdown`（控制通道，2026-10）**：跨进程的优雅关停 —— 托盘（薄启动器，
-  不链接本 crate）只能靠 HTTP 敲这一下。它挂在**公开白名单**里（和 webhook 同理：要在"没有会话"
-  的场景下被敲响），所以**自己带三道闸**（`api::shutdown`）：
-  ① env `YEKITRIM_SHUTDOWN_TOKEN` **没设 ⇒ 404**（端点当不存在，不给探测口）；
-  ② 对端必须 **loopback**（纵深防御：将来绑了非本机地址也不接受远程关停）；
-  ③ 头 `x-yekitrim-shutdown-token` 要**常量时间**匹配（`auth::shutdown_token_ok` /
-  `token_ok_for`，别退回 `==`）；自定义头还会先触发 CORS 预检，挡住网页侧乱敲。
-  效果**等价于 Ctrl+C**（走 `run_with` 的优雅关停、限时 `SHUTDOWN_GRACE`、锁写成 `pid=0`）——
-  **别改成直接 `process::exit`**。判据：`auth::tests::shutdown_token_gate_is_exact_and_empty_safe`
-  与 `routes::tests::shutdown_endpoint_is_404_without_token_env`。
-  ⚠️ 令牌名/头名与 `crates/yekitrim-cli/src/tray.rs` 里**各写一份字面量**（托盘链接不了本 crate），
-  改一处必须改两处。
-
+  ⚠️ **本地免登录（`--local-no-auth`）/ `POST /api/shutdown` 控制通道**：正文（两道闸、三道闸、
+  互斥与开机守卫、哨兵会话、`local_no_auth` 布尔、令牌头名与托盘各写一份字面量）见 `docs/deploy.md`。
+  判据：`local_no_auth_guards_reject_foreign_host_and_cross_site` /
+  `shutdown_token_gate_is_exact_and_empty_safe` / `shutdown_endpoint_is_404_without_token_env` /
+  `unauthenticated_requests_are_401_except_whitelist`（免登录只允许 loopback、与 `--allow-remote` 互斥）。
   ⚠️ `GET /api/project-data/config` 同时回 `config`（**合并后**生效值）与 `project_config`
   （**项目文件自己**那份）：预处理页靠后者区分"本工程写了"与"跟随全局"
   （`merge` 对空串不覆盖 ⇒ 清空该键即恢复跟随全局）。只回合并值就分不出这两者。

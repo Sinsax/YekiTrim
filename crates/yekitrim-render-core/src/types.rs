@@ -517,6 +517,19 @@ pub struct SubtitleStyle {
     #[serde(default = "default_sub_position")]
     pub position: String,
 
+    /// 字幕**垂直落点**：文字带底边距画布底边的百分比（0~50）。
+    ///
+    /// ⚠️ **`None` ≠ 默认值，而是"老工程没写过"** —— 这是**存量零回归（R4）的关键**：
+    /// - `None`（缺省）⇒ 落点走**历史上那条写死的公式**（`cy = CH - 120 * CKH`），
+    ///   与改动前**逐字节相同**；
+    /// - `Some(pct)` ⇒ 落点按百分比算。
+    ///
+    /// 所以这里**故意不给 Default 值**：给了就分不出"用户选了 12%"与"没写过"，
+    /// 而 `120/1080 = 11.11%` 与 12% 并不相等 —— 用 % 表达"等于今天"必然留一点偏差。
+    /// ⚠️ **不要在 `impl Default` 里给它填 `Some(12.0)`**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_pct: Option<f64>,
+
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -530,6 +543,7 @@ impl Default for SubtitleStyle {
             stroke: default_sub_stroke(),
             highlight_color: default_highlight_color(),
             position: default_sub_position(),
+            position_pct: None,
             extra: HashMap::new(),
         }
     }
@@ -858,6 +872,352 @@ pub fn region_origin(region: &LayoutRegion) -> Option<String> {
     None
 }
 
+// ===== 成片时间线（EDL）=====
+
+/// 成片时间线的一段：`源区间` + `速率`。
+///
+/// **数组顺序 = 成片播放顺序**（区间可以重复、可以乱序、可以变速）—— 见
+/// `docs/plan/edl-retiming-spec.md` §2.1。成片起点（`out_start`）**永远派生、绝不落盘**：
+/// 落盘就有两个真源，改一段会让后面全部不同步（§2.2 规则 1）。
+///
+/// ⚠️ **不加 `deny_unknown_fields`**：这是**文件格式**（`polish.toml` 的 `[[edl.clips]]`），
+/// 规格 §11.4 已经预告要加 `source_kind` / `asset_id` / `transition_in`。
+/// 加了 deny 会让"新版本写过的工程"在旧版本上**直接读不出来**（而不是忽略那个键）。
+///
+/// ⚠️ 所有字段 `serde(default)`：老工程没有 `[[edl.clips]]`，一个字节都不该动（R4 存量零回归）。
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct EdlClip {
+    /// 源时间轴起点（秒，与 `events` 的 `time` 同一基准）。
+    #[serde(default)]
+    pub source_start: f64,
+
+    /// 源时间轴终点（秒）。必须 `> source_start`（校验在 `polish::project::validate`）。
+    #[serde(default)]
+    pub source_end: f64,
+
+    /// 速率：`1.0` = 原速；`0.5` = 慢放；`2.0` = 快放。
+    ///
+    /// ⚠️ 夹在 `[SPEED_MIN, SPEED_MAX]` = `[0.5, 2.0]` —— 那**不是随便定的**：它是
+    /// ffmpeg `atempo` 的**单级**范围（§3.2），超出去要串联多级 `atempo`。
+    /// 常量表的真源在 `yekitrim-polish::project::validate`（`SPEED_MIN` / `SPEED_MAX`），
+    /// 与 §4.1 第 8 条的"必须与 atempo 一致"是同一条。
+    #[serde(default = "default_edl_speed")]
+    pub speed: f64,
+
+    /// 语义标签（可选，**仅供 UI/统计**，不参与任何推导）：
+    /// `main` | `replay` | `recall` | `intro` | `outro`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// UI 显示名（可选，仅供 UI）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// 这一段**画面从哪来**（规格 §11.4）：`clip`（本条片段，缺省）| `asset`（素材库视频）。
+    ///
+    /// ⚠️ **`None` = `clip`**（不是"认不出的第三档"）：字段缺席是老工程，而老工程唯一可能的
+    /// 来源就是本条片段。用 `Option` 而不是带默认值的枚举，是为了让"用户没写过这个键"
+    /// 与"用户显式写了 clip"在**序列化**上也不可区分 —— 老工程重存一次不会多出一个键（R4）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+
+    /// 素材 id（**仅 `source_kind = "asset"` 时有意义**）。
+    ///
+    /// 指认的是**项目目录里那份拷贝**的名字（`<项目>/assets/videos/<文件名>`），
+    /// 不是素材库里的绝对路径 —— 库改名/换机器之后老工程照样出得来（`assets/AGENTS.md`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
+
+    /// 进入这一段时的转场（规格 §11.4，**可选**）：`cut`（缺省）| `flash` | `dissolve`。
+    ///
+    /// ⚠️ 第 7 批起 **`dissolve` 已被消费**（不再是"只落盘"）：
+    /// - **画面**（转译器）：把这一段挪到上面那条视频轨（`v2`），几何 = 本层 `start` 提前
+    ///   `DISSOLVE_OVERLAP_SEC`、上一层保持不透明，本层挂 `opacity` 0→1 线性关键帧
+    ///   （关键帧是**图层相对**帧号）。重叠跨轨才合法（同轨重叠是 `layer_overlap`）。
+    /// - **音轨**（`yekitrim-polish::render::ffmpeg`）：对重叠窗口做出段淡出 + 入段淡入
+    ///   （⚠️ 底座**不做**淡化，它把重叠音轨**直接相加**；见 `assemble_audio_from_edl_fades`）。
+    /// - 成立条件与重叠帧数由 [`EdlClip::dissolve_overlap_frames`] 定，
+    ///   派生结果读 [`ResolvedClip::dissolve_frames`]。
+    ///
+    /// ⚠️ **`flash` 仍未被消费**（认不出的档位 = 硬切，`transition_kind` 返回 `None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_in: Option<String>,
+}
+
+fn default_edl_speed() -> f64 {
+    1.0
+}
+
+/// `EdlClip::source_kind` 的取值 —— **`clip` 是缺省**（字段缺席 = 本条片段）。
+pub const EDL_SOURCE_CLIP: &str = "clip";
+/// `EdlClip::source_kind` 的取值 —— 素材库视频。
+pub const EDL_SOURCE_ASSET: &str = "asset";
+
+/// `EdlClip::transition_in` 的取值 —— **`cut` 是缺省**（字段缺席 = 硬切）。
+pub const EDL_TRANSITION_CUT: &str = "cut";
+/// `EdlClip::transition_in` 的取值 —— 叠化（跨轨重叠 + 上层 `opacity` 0→1 关键帧）。
+pub const EDL_TRANSITION_DISSOLVE: &str = "dissolve";
+
+/// `EdlClip::kind` 的取值 —— **片头**（拼在成片最前面的素材段）。
+///
+/// ⚠️ 与 `process::fx` 的 `EDL_KIND_COLD_OPEN` / `EDL_KIND_RECALL` 同一个命名空间，
+/// 但这两个由**用户设置**直接决定（`[intro_outro]`），不经 LLM 候选。
+pub const EDL_KIND_INTRO: &str = "intro";
+/// `EdlClip::kind` 的取值 —— **片尾**（拼在成片最后面的素材段）。
+pub const EDL_KIND_OUTRO: &str = "outro";
+
+/// **叠化的重叠时长（秒）** —— 相邻两段在成片时间轴上重叠这么久。
+///
+/// ⚠️ **必须与转译器 `polish-to-dhampir.mjs::DISSOLVE_OVERLAP_SEC` 逐值相同**
+/// （那里是零依赖的 node 脚本，只能照抄一份）。两边分歧的症状是
+/// "**画面叠化 0.5s、声音只淡了 0.25s**"—— 音画不同步这一类**不报错**。
+///
+/// 取 `0.5` 的理由（探针 `.workbuddy/edl-transition-probe/` 就是用它测的，
+/// 规格 §11.3 说"典型 0.3~1.0s"）：0.3s 在 60fps 下只有 18 帧，窗口太短时"中点两层同时可见"
+/// 这条判据与硬切的区分度下降；1.0s 又长到"两段各让出半秒"肉眼可见。
+pub const DISSOLVE_OVERLAP_SEC: f64 = 0.5;
+
+impl EdlClip {
+    /// 这一段的**入场转场**（`None` = 硬切）。
+    ///
+    /// ⚠️ **判据只此一份**（Rust 侧）：转译器 `edlClipTransition`、前端
+    /// `edl.js::edlTransition` 是另两处消费点，必须同口径。
+    ///
+    /// 口径：`transition_in` 必须是**小写** `"dissolve"` —— `"Dissolve"` / `"DISSOLVE"`
+    /// 不认（工程文件是机器写的，宽容只会让"拼错"从"看得出来"变成"看不出来"）；
+    /// 其余一切（字段缺席 / `"cut"` / 认不出的档位）⇒ `None` = 硬切。
+    pub fn transition_kind(&self) -> Option<&'static str> {
+        match self.transition_in.as_deref() {
+            Some(EDL_TRANSITION_DISSOLVE) => Some(EDL_TRANSITION_DISSOLVE),
+            _ => None,
+        }
+    }
+
+    /// 这一段**实际发生**的叠化重叠帧数（`0` = 没有叠化）。
+    ///
+    /// 三条成立条件（与转译器 `mainGeom` 那一段逐条同构）：
+    /// ① 自己声明了 `dissolve`；
+    /// ② `prev_frames`（**前一段在成片里占的帧数**）与自己的帧数都 `> overlap` ——
+    ///    重叠 ≥ 段长会把那一段整段吃掉（那不是叠化，是删段）；
+    /// ③ `overlap >= 1`（`fps` 探不出来时是 0 ⇒ 退化成硬切）。
+    ///
+    /// ⚠️ 调用方拿 `frames` = **这一段自己的**成片帧数（`edl_clip_frames`）。
+    /// 第一段没有"前一段"可叠，由调用方传 `prev_frames = 0` 表达。
+    pub fn dissolve_overlap_frames(&self, frames: u64, prev_frames: u64, fps: f64) -> u64 {
+        if self.transition_kind().is_none() {
+            return 0;
+        }
+        if !(fps > 0.0) || !fps.is_finite() {
+            return 0;
+        }
+        let overlap = (DISSOLVE_OVERLAP_SEC * fps).round() as u64;
+        if overlap < 1 || overlap >= frames || overlap >= prev_frames {
+            return 0;
+        }
+        overlap
+    }
+}
+
+impl EdlClip {
+    /// 这一段是不是**素材库来源**（`source_kind = "asset"`）。
+    ///
+    /// ⚠️ **判据只此一份**：转译器（`polish-to-dhampir.mjs`）、Rust 音轨组装、前端成片轨
+    /// （`polish/edl.js::edlSourceKind`）三处必须同口径 —— 分歧的症状是"预览里那段是素材、
+    /// 成片里是本条"（或反过来），而**不报错**。前端那处是 JS，只能照抄，靠本函数的
+    /// 文档注释 + 守卫对齐。
+    ///
+    /// 认不出的值（拼错 / 未来档位）按**本条片段**处理，与"字段缺席"同一条路 ——
+    /// 素材那一档要额外要求 `asset_id` 存在才有意义（见 [`Self::asset_id_ref`]）。
+    pub fn is_asset(&self) -> bool {
+        self.source_kind.as_deref() == Some(EDL_SOURCE_ASSET)
+    }
+
+    /// 这一段指向的**素材 id**（`source_kind = "asset"` 且 `asset_id` 非空时才有值）。
+    ///
+    /// ⚠️ 空串 / 全空白**不算 id**：`asset_id = ""` 会静默退化成"素材库里没有这个文件"，
+    /// 而那种失败在出片里表现为"这一段用回本条片段" —— 用户看不出区别。所以这里
+    /// 把"没有 id"当成**没填**，由调用侧报出来（转译器侧是一条 DROP）。
+    pub fn asset_id_ref(&self) -> Option<&str> {
+        if !self.is_asset() {
+            return None;
+        }
+        self.asset_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+}
+
+/// 成片时间线：`clips[]`（`polish.toml` 的 `[[edl.clips]]`）。
+///
+/// ⚠️ **`clips` 为空 = 老工程 = 今天的行为**：由 `mute_ranges` 的补集派生（§2.2 规则 3）。
+/// **不是"EDL 为空 ⇒ 什么都不剪"**，也不是"两者相加"—— 有 EDL 时 `mute_ranges` 被**忽略**，
+/// 因为 `mute_ranges` 本来就是 EDL 的一个特例（只删、不排、不速）。相加会让
+/// "这段到底播不播"产生歧义（§2.2 的 ⚠️）。
+///
+/// ⚠️ **`skip_serializing_if` 必须有**：空 EDL 不能被写进文件，否则老工程重存一次就多出一个
+/// `[edl]` 段（R4 零回归的判据之一）。
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct Edl {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<EdlClip>,
+}
+
+/// `Edl::resolve_clips` 的派生结果：**成片时间轴**上的一段。
+///
+/// 全部字段都是派生值，**没有一个落盘**（§2.2 规则 1）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedClip {
+    /// 成片起点（秒）= `out_start_frame / fps`。
+    pub out_start: f64,
+    /// 成片终点（秒）= `out_end_frame / fps`。
+    pub out_end: f64,
+    /// 成片时长（秒）= `out_end - out_start`。
+    pub out_duration: f64,
+    /// 成片起点（**帧号**，整数累加的结果本身）。
+    pub out_start_frame: u64,
+    /// 成片终点（**帧号**）。最后一段的这个值就是 `total_frames`（§2.2 规则 2）。
+    pub out_end_frame: u64,
+    /// 源时间轴起点（秒，照抄该段的 `source_start`）。
+    pub source_start: f64,
+    /// 源时间轴终点（秒，照抄该段的 `source_end`）。
+    pub source_end: f64,
+    /// 该段的速率（照抄该段的 `speed`）。
+    pub speed: f64,
+    /// 这一段的**入场转场**（第 7 批 / task-10）：`None` = 硬切，`Some("dissolve")` = 叠化。
+    ///
+    /// 照抄 `EdlClip::transition_in` 的**已归一化**值（认不出的档位在这里就是 `None`，
+    /// 与 `EdlClip::transition_kind` 同口径）。
+    ///
+    /// ⚠️ **`out_start` 不因它而变**（规格 §2.2 规则 1 那条"落盘/派生分界"的延伸）：
+    /// 叠化的几何是"画面那一层提前 `DISSOLVE_OVERLAP_SEC` 开演"，
+    /// 而 `out_start` 是**成片时间轴**的唯一推导（三处消费点逐值同构，
+    /// `check-edl-invariants.mjs` 钉着）。把重叠算进 `out_start` 会让整条下游
+    /// （字幕/弹幕/音效重映射、总时长、合流断言）跟着漂 —— 那是第二份推导。
+    /// 所以转场只**描述**这一段，改动落在消费侧（画面层提前 / 音轨交叉淡化）。
+    pub transition_in: Option<String>,
+    /// 这一段与**前一段**实际重叠的帧数（`0` = 没有叠化）。
+    ///
+    /// 由 [`EdlClip::dissolve_overlap_frames`] 在**本函数里唯一算一次** ——
+    /// 消费侧（音轨交叉淡化 / 前端成片轨角标）**只读它，不许自己再推一遍**：
+    /// 两份推导分歧的症状是"**画面叠 0.5s、声音只淡了 0.25s**"，而**不报错**。
+    pub dissolve_frames: u64,
+}
+
+/// 源秒 → 源帧号。**与转译器的 `frameAt` 逐式相同**（`tools/polish-to-dhampir.mjs:1340`：
+/// `Math.round(seconds * fps)`）—— 两边不同口径就等于"预览 ≠ 成片"，而那条缝**不报错**。
+pub fn edl_frame_at(seconds: f64, fps: f64) -> u64 {
+    if !(fps > 0.0) || !seconds.is_finite() {
+        return 0;
+    }
+    (seconds * fps).round().max(0.0) as u64
+}
+
+impl Edl {
+    /// 是否为空（没有一段）—— **写盘判据**：空 EDL 一个字节都不写（R4 存量零回归）。
+    ///
+    /// ⚠️ 只给 `clips` 加 `skip_serializing_if` **是不够的**：`Edl` 本身是个表，
+    /// toml 照样会写出一个空的 `[edl]` 段头 ⇒ 老工程重存一次就"多了一段"，
+    /// 那正是"老工程产物逐字节不变"要挡的东西。所以 `ProjectFile::edl` 那个字段上
+    /// 也要挂 `skip_serializing_if = "Edl::is_empty"`。两条缺一不可。
+    pub fn is_empty(&self) -> bool {
+        self.clips.is_empty()
+    }
+
+    /// **成片时间线的唯一推导**（规格 §4.1 第 3 条）。
+    ///
+    /// 只做"clips → 成片时间轴"这一段**纯数学**；"空 clips 时拿 `mute_ranges` 的补集兜底"
+    /// 是 `ProjectFile` 那一层的事（`ProjectFile::resolve_edl`）—— `mute_ranges` 是
+    /// `polish.toml` 的业务字段，本 crate 不认识它。
+    ///
+    /// # 为什么在**帧号域**累加（规格 §9 R8 累加漂移）
+    ///
+    /// `out_start` 是**累加**出来的：`Σ 前面每段的时长`。如果在**秒域**累加
+    /// （`out_start += (source_end - source_start) / speed`），每段一次 f64 舍入会**推着后面
+    /// 所有段一起偏** —— 段越多、变速越碎越明显。`cut_ranges` 时代没有累加，这是 **EDL 特有**的风险。
+    ///
+    /// 所以这里的口径是：**每段先量化成整数帧，`out_start_frame` 用整数累加，最后才除以 `fps`**
+    /// （`out_start = out_start_frame / fps`）。三条好处：
+    /// ① 累加本身**无舍入**（整数加法）；
+    /// ② 与转译器 `buildKeepRanges` 的 `outStart`（同样是整数帧累加，`polish-to-dhampir.mjs:480-484`）
+    ///    **逐值一致** —— §4.4 第 4 条那条 `check-edl-invariants.mjs` 对拍的前提；
+    /// ③ `out_end[i] == out_start[i+1]` **精确成立**（同在帧格上），段间不会有浮点缝。
+    ///
+    /// # 参数
+    ///
+    /// - `fps`：源素材帧率（**必需**，帧号域的前提）。`<= 0` 或非有限值 ⇒ 返回空数组。
+    /// - 段的顺序**就是** `self.clips` 的顺序（§2.1：数组顺序 = 成片播放顺序），这里**不排序**。
+    /// - 非法段（`source_end <= source_start`、`speed` 非正或非有限）**跳过**，不 panic ——
+    ///   拦人话在 `validate`，这里只保证"算得出来"。跳过的段不占帧号。
+    pub fn resolve_clips(&self, fps: f64) -> Vec<ResolvedClip> {
+        let mut out = Vec::with_capacity(self.clips.len());
+        if !(fps > 0.0) || !fps.is_finite() {
+            return out;
+        }
+        // ⚠️ 累加器是 **u64 帧号**，不是 f64 秒 —— 见上面 R8。
+        let mut out_cursor: u64 = 0;
+        // 前一段**在成片里占的帧数**（叠化的成立条件之一要用它，见
+        // `EdlClip::dissolve_overlap_frames`）。非法段被 `continue` 跳过时**不更新** ——
+        // 跳过的段不占帧号，也就不该成为"前一段"。
+        let mut prev_frames: u64 = 0;
+        for clip in &self.clips {
+            let Some(frames) = edl_clip_frames(clip, fps) else {
+                continue;
+            };
+            let start = out_cursor;
+            let end = start + frames;
+            out_cursor = end;
+            // ⚠️ **叠化重叠在这里唯一算一次**（`dissolve_overlap_frames` 是三家
+            // （转译器 / 音轨 / 前端）共同的成立条件）。消费侧只读 `dissolve_frames`。
+            let dissolve_frames = clip.dissolve_overlap_frames(frames, prev_frames, fps);
+            out.push(ResolvedClip {
+                out_start: start as f64 / fps,
+                out_end: end as f64 / fps,
+                out_duration: frames as f64 / fps,
+                out_start_frame: start,
+                out_end_frame: end,
+                source_start: clip.source_start,
+                source_end: clip.source_end,
+                speed: clip.speed,
+                transition_in: clip.transition_kind().map(str::to_string),
+                dissolve_frames,
+            });
+            prev_frames = frames;
+        }
+        out
+    }
+
+    /// 成片总帧数 = **最后一段的 `out_end_frame`**（§2.2 规则 2，与 `dhampir::sequence_frames`
+    /// 读所有层 `end` 最大值同一口径）。空 clips ⇒ `0`。
+    pub fn total_frames(&self, fps: f64) -> u64 {
+        self.resolve_clips(fps).last().map(|c| c.out_end_frame).unwrap_or(0)
+    }
+}
+
+/// 一段在成片里占**多少帧**：`源帧数 / speed`，四舍五入到整数帧。
+///
+/// 口径与转译器 §4.2 第 2 条"`outStart` 累加改成 `+ (end - start) / speed`"一致 ——
+/// `end - start` 是**该段的源帧数**（不是秒数乘出来再除），这样两边的中间量落在同一格上：
+/// 先 `round(秒 × fps)` 得到源帧边界，再除速率。反例：`round((e - s) * fps / speed)` 在
+/// 非帧对齐的时刻上会比转译器差 1 帧，而那 1 帧会**顺延到后面所有段**。
+///
+/// `speed <= 0` / 非有限 / `source_end <= source_start` ⇒ `None`（该段作废）。
+fn edl_clip_frames(clip: &EdlClip, fps: f64) -> Option<u64> {
+    if !clip.speed.is_finite() || clip.speed <= 0.0 {
+        return None;
+    }
+    if !clip.source_start.is_finite() || !clip.source_end.is_finite() {
+        return None;
+    }
+    let sf = edl_frame_at(clip.source_start, fps);
+    let ef = edl_frame_at(clip.source_end, fps);
+    if ef <= sf {
+        return None;
+    }
+    let frames = ((ef - sf) as f64 / clip.speed).round();
+    if !(frames >= 1.0) {
+        return None;
+    }
+    Some(frames as u64)
+}
+
 // ===== 文本输入（渲染核心的最小字幕/弹幕结构，与 yekitrim-core 解耦）=====
 
 /// 字幕输入：与 data/subtitles.json 的条目结构一致。
@@ -884,4 +1244,103 @@ pub struct Danmaku {
 
 fn default_travel() -> f64 {
     8.0
+}
+
+#[cfg(test)]
+mod edl_tests {
+    use super::*;
+
+    fn clip(s: f64, e: f64, speed: f64) -> EdlClip {
+        EdlClip {
+            source_start: s,
+            source_end: e,
+            speed,
+            kind: None,
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: None,
+        }
+    }
+
+    /// 规格 §9 **R8 累加漂移**的**单元级**判据：`out_start` 在帧号域累加 ⇒ 整数、无漂移。
+    ///
+    /// 30 段各恰好 1 帧（fps=30、原速）：帧号域 ⇒ 终点精确 `30` 帧、`out_end == 1.0`；
+    /// 秒域累加（`(1.0/30.0)` 加 30 次）= `0.9999999999999999` ⇒ 这条会红。
+    #[test]
+    fn resolve_clips_accumulates_in_frame_domain() {
+        let edl = Edl {
+            clips: (0..30)
+                .map(|i| clip(i as f64 / 30.0, (i + 1) as f64 / 30.0, 1.0))
+                .collect(),
+        };
+        let r = edl.resolve_clips(30.0);
+        assert_eq!(r.len(), 30);
+        assert_eq!(r[29].out_end_frame, 30);
+        assert_eq!(r[29].out_end, 1.0, "帧号域累加必须精确到 1.0");
+        assert_eq!(r[0].out_start_frame, 0);
+        // 段间**精确**相接（同在帧格上，不留浮点缝）
+        for w in r.windows(2) {
+            assert_eq!(w[0].out_end_frame, w[1].out_start_frame);
+            assert_eq!(w[0].out_end, w[1].out_start);
+        }
+        assert_ne!((0..30).map(|_| 1.0 / 30.0).sum::<f64>(), 1.0, "秒域累加会漂（R8）");
+    }
+
+    /// `speed` 参与时长：`(源帧数 / speed)`，四舍五入到整数帧。
+    #[test]
+    fn resolve_clips_scales_by_speed() {
+        let edl = Edl { clips: vec![clip(0.0, 3.0, 0.5), clip(10.0, 11.0, 2.0)] };
+        let r = edl.resolve_clips(30.0);
+        // (0,3) = 90 帧 ÷ 0.5 = 180；(10,11) = 30 帧 ÷ 2 = 15
+        assert_eq!((r[0].out_start_frame, r[0].out_end_frame), (0, 180));
+        assert_eq!((r[1].out_start_frame, r[1].out_end_frame), (180, 195));
+        assert_eq!(r[0].speed, 0.5);
+        assert_eq!(edl.total_frames(30.0), 195, "总帧数 = 最后一段的 out_end");
+    }
+
+    /// 退化输入不 panic：fps 非法 ⇒ 空；段非法 ⇒ 跳过并**不占帧号**。
+    #[test]
+    fn resolve_clips_tolerates_degenerate_input() {
+        assert!(Edl::default().resolve_clips(30.0).is_empty());
+        assert!(Edl::default().total_frames(30.0) == 0);
+        assert!(Edl { clips: vec![clip(0.0, 1.0, 1.0)] }.resolve_clips(0.0).is_empty());
+        assert!(Edl { clips: vec![clip(0.0, 1.0, 1.0)] }.resolve_clips(f64::NAN).is_empty());
+        let edl = Edl {
+            clips: vec![
+                clip(5.0, 5.0, 1.0),   // 零长
+                clip(9.0, 7.0, 1.0),   // 倒置
+                clip(0.0, 2.0, 0.0),   // speed = 0
+                clip(0.0, 2.0, f64::INFINITY),
+                clip(0.0, 2.0, 1.0),   // 唯一合法
+            ],
+        };
+        let r = edl.resolve_clips(30.0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].out_start_frame, 0, "被跳过的段不许占帧号");
+    }
+
+    /// 帧号换算与转译器的 `frameAt`（`Math.round(sec * fps)`）同口径。
+    #[test]
+    fn frame_at_matches_translator_round() {
+        assert_eq!(edl_frame_at(0.0, 30.0), 0);
+        assert_eq!(edl_frame_at(1.0 / 30.0, 30.0), 1);
+        assert_eq!(edl_frame_at(0.5, 30.0), 15);
+        assert_eq!(edl_frame_at(-3.0, 30.0), 0, "负的夹到 0（校验另有告警）");
+        assert_eq!(edl_frame_at(1.0, 0.0), 0, "fps 非法 ⇒ 0");
+    }
+
+    /// 序列化契约：空 EDL 写出来**什么都没有**（连 `[edl]` 段头都不许有 ——
+    /// `ProjectFile::edl` 上那层 `skip_serializing_if` 靠的就是 `Edl::is_empty`）。
+    #[test]
+    fn empty_edl_serializes_to_nothing() {
+        assert!(Edl::default().is_empty());
+        assert_eq!(serde_json::to_value(Edl::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(
+            serde_json::to_value(Edl { clips: vec![clip(1.0, 2.0, 1.0)] }).unwrap(),
+            serde_json::json!({ "clips": [{ "source_start": 1.0, "source_end": 2.0, "speed": 1.0 }] }),
+            "speed=1.0 会写出来（它是必填字段的缺省值，不是 Option）"
+        );
+        assert!(!Edl { clips: vec![clip(1.0, 2.0, 1.0)] }.is_empty());
+    }
 }

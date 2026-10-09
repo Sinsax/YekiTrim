@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::project::ProjectFile;
+use yekitrim_render_core::types::Edl;
 use crate::render::backend::RenderBackendKind;
 use crate::render::ffmpeg::Ffmpeg;
 use crate::render::sound::collect_sound_events;
@@ -199,8 +200,117 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     }
     tracing::info!("  Duration: {:.1}s", duration);
 
-    let fps = 30;
-    // ⚠️ `VTEDIT_PARALLELISM` 与这里那个 30fps 的 `frame_count` 都是**已删除的 Chrome 分块腿**
+    // ---------------------------------------------------------------------
+    // **帧率：真探，不许猜**（R6）
+    // ---------------------------------------------------------------------
+    //
+    // 这里以前写的是 `let fps = 30;` —— 一个**看着很合理**的错。EDL 的整条推导
+    // （`resolve_clips` / `out_start_frame` 累加 / 音轨的每一段切点）都建立在 fps 上，
+    // 拿 30 去推一个 60fps 的工程会让每段成片起点差一倍，而不报错、报告里两个数还自洽。
+    //
+    // ⚠️ **权威是素材自己**（与 `dhampir.rs::sequence_frames` 从转译产物读帧数同源：
+    // 转译器写的时间基就是素材的）。探不到时**回落到 30** 而不是报错 ——
+    // 老工程/无声素材也要能出片，而"探不到时硬失败"会把本来能出片的工程卡死。
+    let mut fps = 30.0_f64;
+    match Ffmpeg::probe_fps(&resolved.video) {
+        Ok(real) => {
+            fps = real;
+            tracing::info!("  FPS: {:.3}（ffprobe 实测）", fps);
+        }
+        Err(e) => {
+            tracing::warn!("  ⚠ 帧率探不到，回落 30fps（EDL 的推导会按 30 算）: {e:#}");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // **EDL：唯一的剪辑真相**（规格 §5 / §9 R7）
+    // ---------------------------------------------------------------------
+    //
+    // `resolve_edl` 是**唯一**的推导入口（`project/config.rs`）：
+    // `edl.clips` 非空就用它，否则用 `mute_ranges` 的补集推。
+    // ⚠️ **`clips` 非空而 `resolve_clips` 返回空**（`total_duration <= 0` 时会发生）
+    // ⇒ 这是"有 EDL 但推不出时间线"，必须**当场报错**：
+    // 悄悄走到"空 EDL ⇒ 不剪"那条路会让用户拖出来的段**全部消失**。
+    //
+    // ---------------------------------------------------------------------
+    // **片头 / 片尾**（`[intro_outro]`）拼在 EDL 的首尾
+    // ---------------------------------------------------------------------
+    //
+    // 与 EDL **同一份推导**：片头不过是"素材库里某段视频的一个区间"，而 `EdlClip` 本来就支持
+    // `source_kind = "asset"` ⇒ 拼进去就自动继承了重放/变速/叠化/字幕重映射/总时长推导。
+    // 这里只做一件 EDL 之外的事：**探素材时长**（`[intro_outro]` 存的是素材 id + 入出点秒数，
+    // 而"出点 = 0 表示播到结尾"要拿真时长才能算出来）。`project` 模块不认识 ffprobe，所以注入。
+    let intro_outro_clips = config.edl_clips_with_intro_outro(duration, |id| {
+        let asset = crate::assets::sticker_index::find_video_asset(&yekitrim_core::path::sticker_dir(), id)?;
+        let dur = get_video_duration(&asset.path.to_string_lossy());
+        if dur.is_none() {
+            tracing::warn!(
+                "  片头/片尾素材「{id}」读不出时长（{}）—— 这一段不会加进成片",
+                asset.path.display()
+            );
+        }
+        dur
+    });
+    for msg in &intro_outro_clips.1 {
+        // ⚠️ **必须报出来**：用户以为开了片头、成片里却没有，是最坏的那种静默失败。
+        tracing::warn!("  ⚠ {msg}");
+    }
+    let uses_intro_outro = !config.intro_outro.is_empty();
+    // ⚠️ **原始 clip 列表要一起带出来**：`ResolvedClip` 是派生值、**不带 `asset_id`**
+    //    （§2.2 规则 1：没有一个字段落盘），而音轨那条腿要靠 `asset_id` 决定
+    //    "这一段的声音从哪个文件读"。两个列表**同序同长**（`resolve_clips` 逐段映射）。
+    let (edl_clips, edl_raw_clips, has_edl) = if uses_intro_outro && !intro_outro_clips.0.is_empty() {
+        // 拼过片头片尾之后就是一条**真 EDL**：尾部那道 `cut_ranges` 必须跳过（否则剪两次）。
+        let raw = intro_outro_clips.0;
+        let resolved = Edl { clips: raw.clone() }.resolve_clips(fps);
+        (resolved, raw, true)
+    } else {
+        let raw = if !config.edl.clips.is_empty() {
+            config.edl.clips.clone()
+        } else {
+            // 与 `resolve_edl` 的兜底**同一个函数**（别在这里另推一份补集）
+            crate::project::edl_clips_from_mute_complement(&config.mute_ranges, duration)
+        };
+        let clips = config.resolve_edl(duration, fps);
+        let has = !config.edl.clips.is_empty();
+        (clips, raw, has)
+    };
+    if has_edl && edl_clips.is_empty() {
+        anyhow::bail!(
+            "工程里有 {} 段 EDL，但推不出成片时间线（`total_duration <= 0`？实测 duration={duration}）。\
+             这时导出会**丢掉全部剪辑**，所以直接拒绝而不是静默按原样出片。",
+            config.edl.clips.len()
+        );
+    }
+    let edl_total_frames = if edl_clips.is_empty() {
+        None
+    } else {
+        // ⚠️ 取**解析出来的**最后一段的 `out_end_frame`（`resolve_clips` 的产物），
+        // **不是** `config.edl.total_frames(fps)` —— 后者只看落盘的 `[edl.clips]`，
+        // 拼进来的片头/片尾不在里面 ⇒ 这里会少算 1.5s + 3s，
+        // 而画面那条腿（转译器已按拼过的列表出片）是**对的** ⇒ `mux_checked` 当场拒绝合流。
+        // 实测：派生 1080 帧 vs 实得 1350 帧（2026-10-09）。
+        edl_clips.last().map(|c| c.out_end_frame)
+    };
+    if let (true, Some(frames)) = (has_edl, edl_total_frames) {
+        tracing::info!(
+            "\n  -- EDL --\n  v {} 段 -> {} 段成片时间线，成片 {} 帧（{:.2}s），源 {:.2}s",
+            edl_raw_clips.len(),
+            edl_clips.len(),
+            frames,
+            frames as f64 / fps,
+            duration
+        );
+        // ⚠️ **有 EDL 时尾部那道 `cut_ranges` 必须跳过**：唯一那一刀就是 EDL 本身。
+        // 两道都执行 = "剪两次"（实测 12s 带 3s 屏蔽 → 6.0s），而且音轨按一条时间线拼、
+        // 画面被剪了两次 ⇒ 从第一个屏蔽点起彻底错位。
+        tracing::info!(
+            "  ⚠ 有 EDL：`mute_ranges` 整个被忽略（规格 §2.3，成片播什么只由 EDL 决定），\
+             尾部那道 `cut_ranges` 也**跳过** —— 唯一那一刀就是 EDL 本身"
+        );
+    }
+
+    // ⚠️ `VTEDIT_PARALLELISM` 与 `frame_count` 都是**已删除的 Chrome 分块腿**
     // 留下的（它按 fps × 时长切块、4 路并行）。底座那条腿**不用它们**：帧数由
     // `dhampir::render_video_only` 从转译产物里读（唯一权威，见 `render/AGENTS.md`）。
     // 留着只为了下面那条日志（"这个工程多少秒 / 多少帧"是排查时第一眼要看的数字）。
@@ -209,8 +319,8 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4)
         .max(1);
-    let frame_count = (duration * fps as f64).ceil() as usize;
-    tracing::info!("    {} frames at {} fps", frame_count, fps);
+    let frame_count = (duration * fps).ceil() as usize;
+    tracing::info!("    {} frames at {:.3} fps", frame_count, fps);
     tracing::debug!("    (VTEDIT_PARALLELISM={parallelism} —— 仅历史遗留，底座那条腿不分块)");
 
     // 选择渲染后端。
@@ -245,6 +355,27 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         sfx_data.len(),
         t_sound.elapsed().as_secs_f64()
     );
+    // ---------------------------------------------------------------------
+    // **音效必须重映射**（R2）：`collect_sound_events` 给的是**源时间**，
+    // 而下面 `mix_sfx` 按**成片时间**摆 `adelay`。
+    //
+    // ⚠️ 不重映射的症状是"每个音效都错位、零报错"：爆点那一下晚两秒，
+    // 会被当成"音效文件选错了"。EDL 一重排就整体失效。
+    // ⚠️ 空 `edl_clips` 时 `remap_sound_events` **原样返回**（等于老行为）——
+    // 别在这里另写一个"空就跳过"，那会让两条路的口径分家。
+    let sfx_data = if sfx_data.is_empty() {
+        sfx_data
+    } else {
+        let remapped = render::sound::remap_sound_events(&sfx_data, &edl_clips, fps);
+        if remapped.len() != sfx_data.len() {
+            tracing::info!(
+                "  v 音效按成片时间线重映射：{} 条 -> {} 条（重放/屏蔽段会一对多或丢弃）",
+                sfx_data.len(),
+                remapped.len()
+            );
+        }
+        remapped
+    };
 
     // 贴纸帧**不再在这里预解码**。
     //
@@ -291,7 +422,119 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("\n  -- Audio --");
     let t_audio = std::time::Instant::now();
     let ta = project_path.join("_temp_audio.aac");
-    if let Err(e) = Ffmpeg::extract_audio(&resolved.video, &ta.to_string_lossy()) {
+    // ---------------------------------------------------------------------
+    // **原声轨：有 EDL 就按 EDL 重拼，没有就走老路**（B 件）
+    // ---------------------------------------------------------------------
+    //
+    // 老路（`extract_audio` 整条 + 尾部 `cut_ranges`）只能**删掉**区间，
+    // 表达不了"重放 / 冷开场"这类**顺序改变 + 重复**的剪辑。而画面那条腿
+    // 现在按 EDL 出片 ⇒ 音轨不跟着重排就**从第一个重放点起彻底错位**，
+    // 且两边都不报错。
+    //
+    // ⚠️ 两条路的判据**只有 `edl_clips` 这一个**（不是"有没有 mute_ranges"）：
+    // 有 EDL 时 `mute_ranges` 已经作为"源时间轴上的洞"被转译器与 `resolve_edl`
+    // 两边各自求过交，音轨再按它剪一次就是第三刀。
+    //
+    // ⚠️ **不能只看 `has_edl`**：`resolve_edl` 在**没有 EDL** 时也会用
+    // `mute_ranges` 的补集推出一份 clips（那是老工程的兼容路径）。那份 clips 的
+    // 语义是"掐掉屏蔽段"，与老路的 `extract + cut_ranges` **逐秒等价**，
+    // 但走它要保证 `cut_ranges` 被跳过 —— 所以判据是 `has_edl`，
+    // 而**非** `!edl_clips.is_empty()`。
+    if has_edl {
+        // ⚠️ **第四个数是逐段 `speed`**（第 4 批）：`atempo` 按它串联，
+        // 时长随 `round((ef-sf)/speed)` 走 —— 与画面那条腿（转译器缩段长）
+        // 和派生（`resolve_clips`）**是同一个数**。这里少传一个值，
+        // 音轨就会按原速拼，而画面已经变了 ⇒ 从第一个变速段起彻底错位、零报错。
+        let quads: Vec<(f64, f64, f64, f64)> = edl_clips
+            .iter()
+            .map(|c| (c.source_start, c.source_end, c.out_start, c.speed))
+            .collect();
+        let sped = quads.iter().filter(|c| (c.3 - 1.0).abs() > 1e-9).count();
+        tracing::info!(
+            "  ✂ 按 EDL 重拼音轨（{} 段，与画面同一条时间线；其中 {} 段变速）",
+            quads.len(),
+            sped
+        );
+        // ⚠️ **素材段的声音必须从素材自己读**（2026-10-09 踩到，片头/片尾暴露的既有缺口）：
+        // 画面那条腿底座对 `source_kind = "asset"` 的段取的是**素材自己的**画面
+        // （片头是素材库那段片子），而这条音轨腿原先**硬编码读主素材** ——
+        // 实测 1080 帧画面配 864000 样本音轨（差 216000），`mux_checked` 当场拒绝合流。
+        // 就算不拒（比如素材段恰好等长），也会是"画面放片头、声音放正片对白"的错位且**不报错**。
+        //
+        // 判据取段自己的 `asset_id`（`assets/AGENTS.md` 那条：出口是**项目内那份拷贝**），
+        // 空/找不到 ⇒ `None` ⇒ 读主素材（老工程与正片段**逐字节不变**，R4）。
+        let audio_of: Vec<Option<String>> = edl_raw_clips
+            .iter()
+            .map(|c| {
+                let id = c.asset_id.as_deref()?.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                // ⚠️ 用**段的 `asset_id` 找文件**，路径基准是项目里的 `assets/videos/`
+                let p = project_path
+                    .join("assets")
+                    .join(crate::assets::sticker_index::VIDEO_LIBRARY_SUBDIR)
+                    .join(id);
+                // 允许 `asset_id` 带扩展名或不带（库里那份拷贝是真文件名）
+                if p.is_file() {
+                    return Some(p.to_string_lossy().to_string());
+                }
+                let hit = std::fs::read_dir(p.parent()?)
+                    .ok()?
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|q| {
+                        q.file_stem().and_then(|s| s.to_str()) == Some(id)
+                    })?;
+                Some(hit.to_string_lossy().to_string())
+            })
+            .collect();
+        let swapped = audio_of.iter().filter(|o| o.is_some()).count();
+        if swapped > 0 {
+            tracing::info!("  ⚠ {swapped} 段的声音来自素材文件（片头/片尾/视频素材），不是主素材");
+        }
+        // ⚠️ **叠化处的音频交叉淡化**（第 7 批 / task-10）：画面那条腿把上层提前
+        // `DISSOLVE_OVERLAP_SEC` 做叠化，音轨必须跟同一条时间线，否则画面在淡化、
+        // 声音还在硬切（割裂感明显，而两边都不报错）。
+        //
+        // ⚠️ **不能指望底座**（实测）：它把重叠的音频层**直接相加**，
+        // `opacity` 关键帧对音频**没有任何作用** —— 相加 ≠ 交叉淡化
+        // （两条人声相加会成倍变响，实测重叠区比单段高约 +6 dB）。
+        // 画面归底座、**音轨归本仓**，所以淡化在这里做。
+        //
+        // ⚠️ **判据只读 `dissolve_frames`，不许在这里自己再推一遍**：
+        // 它由 `EdlClip::dissolve_overlap_frames` 在 `resolve_clips` 里唯一算一次
+        // （成立条件：有前一段、重叠 ≥1 帧、且严格小于两段各自的长 ——
+        // 第一段没有前一段可叠，段太短时叠化会把那一段整段吃掉）。
+        // 两份推导分歧的症状是"画面叠 0.5s、声音只淡了 0.25s"，而**不报错**。
+        let mut fades: Vec<(usize, usize, f64)> = Vec::new();
+        for i in 1..edl_clips.len() {
+            let overlap = edl_clips[i].dissolve_frames;
+            if overlap == 0 {
+                continue;
+            }
+            fades.push((i - 1, i, (overlap as f64) / fps));
+        }
+        if !fades.is_empty() {
+            tracing::info!(
+                "  v 叠化处的音轨交叉淡化：{} 条边（各让出一半窗口，见 assemble_audio_from_edl_fades）",
+                fades.len()
+            );
+        }
+        // ⚠️ **整轨 rate 固定 1.0**：逐段速率走 `quads` 的第四个数（`atempo`）。
+        // 这个参数是"整片统一变速"的口子，今天不用它。
+        if let Err(e) = Ffmpeg::assemble_audio_from_edl_sources(
+            &resolved.video,
+            &quads,
+            &fades,
+            &audio_of,
+            &ta.to_string_lossy(),
+            1.0,
+        ) {
+            cleanup(project_path, &tv, &ta);
+            anyhow::bail!("按 EDL 组装音轨失败: {e:#}");
+        }
+    } else if let Err(e) = Ffmpeg::extract_audio(&resolved.video, &ta.to_string_lossy()) {
         cleanup(project_path, &tv, &ta);
         anyhow::bail!("音频提取失败: {e:#}");
     }
@@ -381,7 +624,17 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     };
     let op_path = unique_output_path(&op_path);
     let op = op_path.to_string_lossy().into_owned();
-    if let Err(e) = Ffmpeg::mux(&tv.to_string_lossy(), &ta.to_string_lossy(), &op) {
+    // ⚠️ **合流前的时长断言**（R5）：`mux` 带 `-shortest`，两条轨不等长时它静默截断。
+    // 有派生值时按它卡（帧相等或 ±1 帧 —— 半帧量化是 EDL 的固有代价，规格 §2.4）；
+    // 没有派生值（老工程 / 时长未知）时传 `None`，等于不做断言（也**不做**"大概对一下"）。
+    let check_frames = edl_total_frames;
+    if let Err(e) = Ffmpeg::mux_checked(
+        &tv.to_string_lossy(),
+        &ta.to_string_lossy(),
+        &op,
+        check_frames,
+        fps,
+    ) {
         cleanup(project_path, &tv, &ta);
         anyhow::bail!("音视频合流失败: {e:#}");
     }
@@ -389,11 +642,19 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     tracing::info!("  ⏱ 合流 {:.1}s", t_mux.elapsed().as_secs_f64());
 
     // 手动屏蔽区间：导出时直接从成片中剪掉
-    let mute_ranges: Vec<(f64, f64)> = config
-        .mute_ranges
-        .iter()
-        .filter_map(|r| r.normalized())
-        .collect();
+    //
+    // ⚠️⚠️ **有 EDL 时这一整段必须跳过**（"屏蔽区间只能剪一次"，规格 §5）。
+    // 两道都执行 = 画面被剪两次而音轨只按 EDL 拼了一次 ⇒ 成片短一大截、
+    // 从第一个屏蔽点起音画错位。实测：12s 带 3s 屏蔽，正确 9.0s，剪两次 6.0s。
+    let mute_ranges: Vec<(f64, f64)> = if has_edl {
+        Vec::new()
+    } else {
+        config
+            .mute_ranges
+            .iter()
+            .filter_map(|r| r.normalized())
+            .collect()
+    };
     if !mute_ranges.is_empty() {
         let t_mute = std::time::Instant::now();
         let muted_out = project_path.join("_temp_muted.mp4");

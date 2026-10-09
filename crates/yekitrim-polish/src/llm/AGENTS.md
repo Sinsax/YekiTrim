@@ -12,7 +12,7 @@
 ## 入口
 
 - `mod.rs`：`run_llm_pipeline(llm_cfg, subtitles, danmaku, event_type, sticker_source, sticker_budget, sfx_budget, sfx_blacklist, checkpoint_dir)` →
-  `(Vec<Segment>, 弹幕过滤词, 高亮词, Vec<SegmentGenStatus>)`；`regenerate_segment_events(llm_cfg, subtitles, sticker_source, sfx_blacklist, event_type, segments, index, project)`。
+  `(Vec<Segment>, 弹幕过滤词, 高亮词, Vec<SegmentGenStatus>, Option<Vec<EdlClip>>)`；`regenerate_segment_events(llm_cfg, subtitles, sticker_source, sfx_blacklist, event_type, segments, index, project)`。
 - `segment`：`generate_segments(...)`、`build_segmentation_system_prompt(sticker_source)`、`build_segmentation_user_prompt(...)`、
   `build_events_user_prompt(segment, subtitles, candidate_text)`。
 - `events`：`EventGenTask::{new, with_project, build_windows, apply_outputs}`、`run_event_agent(...)`、
@@ -68,6 +68,10 @@
   把变化部分放中间等于把后面的固定内容全浪费掉。老模板（用户 config.toml 里的副本）没有
   `{hot_windows}`，`build_prompt` 会把它拼进 `{segments}` 的替换值里——位置等价、不丢内容。
   `response_format = { type = "json_object" }` 放在 `[llm] extra_params` 里。
+- **意图一次收走**（第 5 批，Step 4c）：`materialize_edl_intents` 在**落盘前**先跑一遍
+  （与 Step 4b 同一条理由：编辑器里看到的就已经合规 —— 配额已裁、`anchor` 已收走）。
+  ⚠️ 它**清掉** `anchor = "cold_open"` / `"recall"` 这两个值，别的 anchor 一律不碰；
+  清掉之后落盘的段表里就没有意图了 ⇒ `cmd_process` 不会再落实一次（幂等靠这一条，见 `process/AGENTS.md`）。
 - **落盘前的守卫与 `process` 成对**：`llm/mod.rs` Step 4/4b 会补默认运镜（`zoom="中", anchor="liver"`）、
   跑 `cap_pip_shots` / `align_pip_shots` / `close_pip_shots` / `align_stickers_to_subtitles`
   —— 与 `process/mod.rs` Step 1/1c 是**两个重复实现，要一起改**；让编辑器里看到的就已经合规。
@@ -78,6 +82,9 @@
   一句「系统只在初次后处理时在片头补、不要重复写」，片头那份见 `process/AGENTS.md` Step 3c（用户可手动改/删）。
 - **老 checkpoint 必须过时间迁移**：里面的事件还是 `duration` 字段 → `EventGenTask::load_windows` 会先
   走 `crate::project::upgrade_event_times` 再解析，别绕过它。
+- ⚠️ **冷开场/回忆回溯的意图写在 `anchor` 上**（`segment.rs::build_events_system_prompt` 那一段）：
+  `anchor = "cold_open"` = 爆点提前播一次、`"recall"` = 爆点后面重提。**不是景别**，`process` 会收走它。
+  配额在 `process` 侧（整片冷开场 1 条、回忆回溯 2 条）—— LLM 只是表达意图。
 - ⚠️ **改内建 prompt 要同步用户配置**：`.yekitrim/config.toml` / `.yekitrim/llm.toml` 里的是
   `config init` 填进去的**副本**，改代码默认值对它无效；**每个程序目录各有一份**（debug / release 互不相干）。
 - 用了贴纸包来源时 `run_llm_pipeline` 才拼 `local_sticker_candidates_text`（**只列已构建的包**，

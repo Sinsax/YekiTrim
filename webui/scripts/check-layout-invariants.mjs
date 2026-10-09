@@ -430,7 +430,7 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    但点时间轴「运镜」轨道名仍要能滚到那块（ref 同时挂 camera 与 danmaku_area 两个键）。
   // 第八轮（2026-10-06）：「贴纸」与「区域」合并成**一组**「区域设置」（用户：
   // 「贴纸和区域合并，显示为区域设置」）⇒ 只剩两组，顺序 字幕/弹幕 · 区域设置。
-  const LANE_GROUPS = ['字幕 / 弹幕', '区域设置']
+  const LANE_GROUPS = ['字幕 / 弹幕', '区域设置', '片头 / 片尾']
   const panelBody = (s) => {
     // 面板正文 = 「项目设置」页签那一半（合并后轨道设置内容就住在里面）
     const i = s.indexOf("<template v-if=\"sideTab === 'project'\">")
@@ -498,7 +498,10 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   // ⚠️ 第七轮纠偏：第六轮我读成"三组并排成三列"是**误读**，用户说「整体还是以行来排版」。
   //    所以这里反过来钉：**不许**再有 `.lane-cols` 那套并列，三组必须是行排版（上下堆叠）。
   check('⑰ 三组是**行排版**（没有并排的列容器）', /class="lane-cols"/.test(polishView), false)
-  check('⑰ 两组上下堆叠（贴纸与区域已合并）', (polishView.match(/<div class="lane-group"/g) || []).length, 2)
+  // ⚠️ 2026-10-09 由 2 → 3：加了「片头 / 片尾」（用户：「片头片尾在项目设置内可以选择是否开启，
+  //    然后可以选择素材库内的视频内容」）。它是**有控件的真组**（开关 + 素材下拉 + 入出点），
+  //    不是当年删掉的那种纯信息组 —— 所以 `noInfoOnly` 那条判据照样成立，别把它一起改松。
+  check('⑰ 三组上下堆叠（字幕/弹幕 · 区域设置 · 片头/片尾）', (polishView.match(/<div class="lane-group"/g) || []).length, 3)
   // 用户给的行序：**贴纸来源行在按钮行上面**。
   // ⚠️ 别用 `indexOf('ss-options')` —— CSS 在 `<style>` 里也写了这个名字，会比模板更早命中。
   //    锚在**模板里的**那一处（`<div class="ss-options">`）上。
@@ -506,9 +509,9 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     polishView.indexOf('<div class="ss-options">') < polishView.indexOf('> 弹幕位置'), true)
   check('⑰ 区域设置里三颗按钮：弹幕位置 / 人物位置 / 自动（同一个 .row）',
     selectBtnsOneRow(polishView), true)
-  check('⑰ 组名恰好是 字幕/弹幕 · 区域设置（贴纸已并入区域设置）',
+  check('⑰ 组名恰好是 字幕/弹幕 · 区域设置 · 片头/片尾',
     (polishView.match(/<div class="lane-group-h">([^<]+)<\/div>/g) || []).map((m) => m.replace(/<[^>]+>/g, '')).join('|'),
-    '字幕 / 弹幕|区域设置')
+    '字幕 / 弹幕|区域设置|片头 / 片尾')
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
   check('⑰ 任务详情是**浮层**（不挤占下方控件）',
     /\.job-wrap \{ position:relative; \}/.test(polishView)

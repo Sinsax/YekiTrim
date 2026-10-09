@@ -4,7 +4,7 @@
 //! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
-use crate::project::{Event, Segment};
+use crate::project::{EdlClip, Event, Segment};
 
 /// 瞬时特效的 duration 上限（秒）。
 /// 原则：瞬时特效只能“爆发一下”，不允许长时间驻留。
@@ -319,6 +319,268 @@ pub fn cap_handheld_sway(segments: &mut [Segment]) -> usize {
         }
     }
     stripped
+}
+
+// ── 冷开场 / 回忆回溯（第 5 批）──────────────────────────────────────
+//
+// 「爆点提前播一次」（冷开场）与「爆点后面重提」（回忆回溯）在本仓是**同一件事的两个落点**：
+// 都是"把源时间轴上某一段，在成片时间轴上**再放一次**"—— 也就是 `[[edl.clips]]` 里
+// `source_start`/`source_end` 与另一段**完全相同**。所以这一批**没有新原语**：
+// 复用的是第 2 批（重放）已经打好、逐像素验过的多 layer 画面 + 分段音轨那套。
+
+/// 冷开场在整片里**最多几次**（用户要求：一个切片只能有一次）。
+///
+/// 与 [`MAX_PIP_SHOTS`] 同一条理由 —— 冷开场是**开头那一下**的戏剧手段，
+/// 每次窗口都来一段就等于没有开头。
+pub const MAX_COLD_OPEN: usize = 1;
+
+/// 回忆回溯在整片里**最多几次**。比冷开场松一档：它落在正片中间，可以多点。
+pub const MAX_RECALL: usize = 2;
+
+/// 冷开场的**最短素材时长**（秒）：比这更短的片段单独提到片头只是闪一下，不像"爆点"。
+pub const MIN_COLD_OPEN_SECS: f64 = 1.0;
+
+/// LLM 在 `Event::Camera` 上表达「这段值得当冷开场 / 值得在后面重提」用的 `anchor` 取值。
+///
+/// ⚠️ **为什么挂在 `anchor` 上而不是新事件类型**：`Event` 是 `deny`-less 的 tagged enum，
+/// 加一个变体会牵动**四处求值器**（模板 canvas / GSAP / `engine.js` / Rust）与词汇表门禁；
+/// 而这里要表达的只是**意图**、活不过 `process` 这一趟（下一节就见分晓）。
+/// `anchor` 是现成的自由字符串字段，认不出的值本来就被 `resolve_camera_anchors` 忽略，
+/// 所以老工程、老 LLM 输出零影响。
+pub const INTENT_COLD_OPEN: &str = "cold_open";
+/// 见 [`INTENT_COLD_OPEN`]。回忆回溯 = 在正片里再放一次。
+pub const INTENT_RECALL: &str = "recall";
+
+/// `EdlClip::kind` 的两个本批新取值（UI/统计用，**不参与任何推导**）。
+pub const EDL_KIND_COLD_OPEN: &str = "cold_open";
+pub const EDL_KIND_RECALL: &str = "recall";
+
+/// 一次冷开场/回忆回溯的**落实结果**（`cmd_process` 拿它打日志、判"要不要落盘"）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MaterializedEdl {
+    /// 冷开场真的加了一条（配额内）
+    pub cold_open: bool,
+    /// 回忆回溯加了几条
+    pub recalls: usize,
+}
+
+impl MaterializedEdl {
+    /// 本趟有没有真的改 EDL（`false` ⇒ 调用方**一个字节都不许写**）。
+    pub fn changed(&self) -> bool {
+        self.cold_open || self.recalls > 0
+    }
+}
+
+/// 把 LLM 的「冷开场 / 回忆回溯」意图**落实成 `edl.clips`**，并兜住配额。
+///
+/// # 照抄的先例
+///
+/// 形状与 [`cap_pip_shots`] 完全一致，包括它存在的**全部理由**：
+/// **LLM 是按段窗口生成的，数不出"整片几次"** —— 所以"最多一次"这条配额只能在这里兜。
+/// LLM 只负责在它看得见的那一段上写下意图（`anchor = "cold_open"` / `"recall"`），
+/// 删掉/降级的决定权在这里。
+///
+/// # 触发条件（**要紧的一条**）
+///
+/// ⚠️ 有 EDL 时 `mute_ranges` **整个被忽略**（`ProjectFile::resolve_edl`、规格 §2.3），
+/// 所以"生成 EDL"= **把老工程的时间线无声地换掉**。因此这里有一条硬前提：
+///
+/// > **`existing` 非空时只增不改**；`existing` 为空时**只看本轮意图**：
+/// > 一支意图都没有 ⇒ 返回 [`MaterializedEdl::default`]（`changed() == false`）
+/// > ⇒ 调用方**不写 `polish.toml`** ⇒ `edl.clips` 保持为空 ⇒ 老工程逐字节零回归（R4）。
+///
+/// 用户在前端手拖过的 `edl.clips` 一律**原样保留**（只在它前面插冷开场、不改它一根毫毛）。
+///
+/// # 配额与幂等
+///
+/// - 冷开场：**整片最多 [`MAX_COLD_OPEN`] 条**。候选按时间序排，只留**最早的**那条
+///   （与 `cap_pip_shots` 留最早一条「远」同一条规则）；其余**只清意图、不加段**。
+/// - 回忆回溯：最多 [`MAX_RECALL`] 条，同样按时间序取最早的那几条。
+/// - **幂等**：落实之后**意图被就地清掉**（`anchor` 置 `None`）—— 这是"意图是**一次性
+///   触发条件**、不是持续状态"的落点。再跑一次没有任何候补、也没有新意图 ⇒ 什么都不加。
+///   实测必要性：`process` 会被预览与出片**隐式重跑**，靠"看 EDL 里有没有这一段"去判重
+///   在用户删掉重放段之后就会把它复活（`intro_fade_seeded` 那条教训一模一样的形状）。
+///
+/// # 手工事件
+///
+/// 带 `manual: true` 的运镜**不参与**（用户自己摆的事件不被后处理改写，见
+/// `crates/yekitrim-polish/src/process/AGENTS.md`）—— 也就意味着**用户手工加的重放段
+/// 不会被本函数删掉**，它只在 `existing` 里、原样保留。
+///
+/// # 时间取值
+///
+/// 重放段的源区间 = 该意图所属**意图窗口**（该段上第一个意图事件的 `time` 到其 `end`），
+/// 夹到 `[0, total_duration]`。冷开场插在**数组最前**（成片第一段）；
+/// 回忆回溯插在**它所属那一段之后**（在成片里的对应位置重提一次）。
+///
+/// 返回落实结果；`changed()` 为假时调用方不许动 `polish.toml`。
+pub fn materialize_edl_intents(
+    segments: &mut [Segment],
+    edl: &mut Vec<EdlClip>,
+    total_duration: f64,
+) -> MaterializedEdl {
+    // 1) 收集全部候选（按时间序）：要能分辨"哪条最早" —— 与 `cap_pip_shots` 同一套做法。
+    let mut intents: Vec<(usize, Intent, f64, f64)> = Vec::new();
+    for (si, seg) in segments.iter().enumerate() {
+        for ev in seg.events.iter() {
+            // 用户手工摆的运镜不参与（它的事件、它的意图都由用户说了算）
+            if ev.is_time_manual() {
+                continue;
+            }
+            let Some(intent) = anchor_intent(ev) else { continue };
+            let time = ev.get_time();
+            let end = ev.end().unwrap_or(time);
+            intents.push((si, intent, time, end));
+        }
+    }
+    intents.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 2) 按配额挑出活下来的：冷开场一条、回忆回溯 N 条（都是"最早优先"）。
+    //    没活下来的只**清意图**，不往 EDL 里加东西。
+    let mut live: Vec<(usize, Intent, f64, f64)> = Vec::new();
+    let (mut cold_left, mut recall_left) = (MAX_COLD_OPEN, MAX_RECALL);
+    for cand in intents.iter().copied() {
+        match cand.1 {
+            Intent::ColdOpen if cold_left > 0 => {
+                cold_left -= 1;
+                live.push(cand);
+            }
+            Intent::Recall if recall_left > 0 => {
+                recall_left -= 1;
+                live.push(cand);
+            }
+            _ => {
+                tracing::info!(
+                    "  ⚠ {}太密（{:.1}s · 整片只允许 {} 条）：本段不再重复播放",
+                    cand.1.label(),
+                    cand.2,
+                    cand.1.quota()
+                );
+            }
+        }
+    }
+
+    // 3) **清掉全部意图**（活的、死的都清）—— 幂等就靠这一步。
+    //    清的是"我这一趟看到的那几条"的意图；换了 kind 的 anchor 不在这里。
+    for (si, seg) in segments.iter_mut().enumerate() {
+        for ev in seg.events.iter_mut() {
+            if ev.is_time_manual() {
+                continue;
+            }
+            if anchor_intent(ev).is_some() {
+                clear_anchor(ev);
+                let _ = si;
+            }
+        }
+    }
+
+    if live.is_empty() {
+        return MaterializedEdl::default();
+    }
+
+    // 4) 落实。新段一律 `speed = 1.0`（本批只做"再放一次"，变速是第 4 批的独立维度）、
+    //    `source_kind`/`asset_id`/`transition_in` 留 `None`（= 本条片段、硬切）。
+    let mut result = MaterializedEdl::default();
+    // 冷开场：**插在数组最前**。数组顺序 = 成片播放顺序（§2.1），所以插最前就是"提前播"。
+    let colds: Vec<_> = live.iter().filter(|c| c.1 == Intent::ColdOpen).collect();
+    let (mut cold_clip, mut recall_clips) = (None, Vec::new());
+    for (_, _, time, end) in colds.into_iter().copied() {
+        if let Some((s, e)) = clamp_span(time, end, total_duration) {
+            cold_clip = Some(EdlClip {
+                source_start: s,
+                source_end: e,
+                speed: 1.0,
+                kind: Some(EDL_KIND_COLD_OPEN.into()),
+                label: Some("冷开场".into()),
+                source_kind: None,
+                asset_id: None,
+                transition_in: None,
+            });
+        }
+    }
+    for (_, _, time, end) in live.iter().filter(|c| c.1 == Intent::Recall).copied() {
+        if let Some((s, e)) = clamp_span(time, end, total_duration) {
+            recall_clips.push(EdlClip {
+                source_start: s,
+                source_end: e,
+                speed: 1.0,
+                kind: Some(EDL_KIND_RECALL.into()),
+                label: Some("回忆回溯".into()),
+                source_kind: None,
+                asset_id: None,
+                transition_in: None,
+            });
+        }
+    }
+
+    if let Some(clip) = cold_clip {
+        // 冷开场同理：**插在数组最前**，原 EDL 一个字节不动地跟在后面。
+        edl.insert(0, clip);
+        result.cold_open = true;
+    }
+    for clip in recall_clips {
+        // 回忆回溯插在**末尾**：正片播完再提一次，语义上不需要"落在某一处"的精确性，
+        // 而"插在中间"要先把意图映射回"它落在成片第几段"—— 那是第 2 份推导，本批不做。
+        edl.push(clip);
+        result.recalls += 1;
+    }
+    result
+}
+
+/// 一个候选意图的两种档。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    ColdOpen,
+    Recall,
+}
+
+impl Intent {
+    fn label(self) -> &'static str {
+        match self {
+            Intent::ColdOpen => "冷开场",
+            Intent::Recall => "回忆回溯",
+        }
+    }
+    fn quota(self) -> usize {
+        match self {
+            Intent::ColdOpen => MAX_COLD_OPEN,
+            Intent::Recall => MAX_RECALL,
+        }
+    }
+}
+
+/// 这条事件有没有表达冷开场/回忆回溯意图（读 `anchor`）。
+fn anchor_intent(ev: &Event) -> Option<Intent> {
+    let Event::Camera { anchor, .. } = ev else { return None };
+    match anchor.as_deref().map(str::trim) {
+        Some(INTENT_COLD_OPEN) => Some(Intent::ColdOpen),
+        Some(INTENT_RECALL) => Some(Intent::Recall),
+        _ => None,
+    }
+}
+
+/// 清掉意图（只清这两个值 —— 别的 anchor 不碰）。
+fn clear_anchor(ev: &mut Event) {
+    if let Event::Camera { anchor, .. } = ev
+        && matches!(anchor.as_deref().map(str::trim), Some(INTENT_COLD_OPEN) | Some(INTENT_RECALL))
+    {
+        *anchor = None;
+    }
+}
+
+/// 把 `[time, end]` 夹进 `[0, total_duration]`，并保证长于 [`MIN_COLD_OPEN_SECS`]。
+/// 推不出合法区间（时长未知 / 太短 / 起止相等）⇒ `None`（宁缺毋滥，别往 EDL 里塞空段
+/// —— 空段会被 `Edl::resolve_clips` 跳过，但它会**留在 `polish.toml` 里**，看着像有东西）。
+fn clamp_span(time: f64, end: f64, total_duration: f64) -> Option<(f64, f64)> {
+    if !total_duration.is_finite() || total_duration <= 0.0 {
+        return None;
+    }
+    let s = time.max(0.0);
+    let e = end.min(total_duration);
+    if !(e - s >= MIN_COLD_OPEN_SECS) {
+        return None;
+    }
+    Some((s, e))
 }
 
 /// 运镜倍率的**旧默认值**（都只可能来自内建 Default，UI 从来没有入口改它们——
@@ -1047,5 +1309,210 @@ mod tests {
         assert_eq!(handheld_flags(&segs), vec![true, false, true]);
         assert_eq!(cap_handheld_sway(&mut segs), 2, "前一条与回镜头都剥掉");
         assert_eq!(handheld_flags(&segs), vec![false, false, false]);
+    }
+
+    // ── 冷开场 / 回忆回溯配额守卫（第 5 批）──────────────────────────
+    /// 一条表达"冷开场/回忆回溯"意图的运镜事件（`anchor` 是意图、不是景别）。
+    fn intent_cam(time: f64, end: f64, anchor: &str) -> Event {
+        Event::Camera {
+            time,
+            end: Some(end),
+            zoom: "中".into(),
+            origin: "50% 50%".into(),
+            anchor: Some(anchor.into()),
+            anchor_to: None,
+            to_origin: None,
+            cut: false,
+            handheld: false,
+            manual: false,
+        }
+    }
+
+    fn clip_of(s: f64, e: f64, kind: Option<&str>) -> EdlClip {
+        EdlClip {
+            source_start: s,
+            source_end: e,
+            speed: 1.0,
+            kind: kind.map(String::from),
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: None,
+        }
+    }
+
+    fn kinds(clips: &[EdlClip]) -> Vec<Option<&str>> {
+        clips.iter().map(|c| c.kind.as_deref()).collect()
+    }
+
+    /// **配额守卫有判据**：3 个冷开场候选 ⇒ 落实后**只剩 1 个**（任务书的准入判据）。
+    ///
+    /// 与 `cap_pip_shots` 的 `pip_only_one_per_clip` 同一条：LLM 按段窗口生成，
+    /// 三个窗口各写一次"这段是爆点"是完全可能的，而整片只允许一次。
+    #[test]
+    fn cold_open_only_one_per_clip() {
+        let mut segs = vec![
+            Segment { start: 0.0, end: 20.0, fx: "med".into(), note: String::new(),
+                events: vec![intent_cam(2.0, 6.0, INTENT_COLD_OPEN)], extra: Default::default() },
+            Segment { start: 20.0, end: 40.0, fx: "med".into(), note: String::new(),
+                events: vec![intent_cam(22.0, 26.0, INTENT_COLD_OPEN)], extra: Default::default() },
+            Segment { start: 40.0, end: 60.0, fx: "med".into(), note: String::new(),
+                events: vec![intent_cam(42.0, 46.0, INTENT_COLD_OPEN)], extra: Default::default() },
+        ];
+        let mut clips: Vec<EdlClip> = Vec::new();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        assert_eq!(m.recalls, 0, "这一趟一条回忆回溯都没有");
+        assert!(m.cold_open, "有一条活下来");
+        assert_eq!(clips.len(), 1, "3 个候选 ⇒ 只剩 1 个：{clips:?}");
+        assert_eq!(clips[0].kind.as_deref(), Some(EDL_KIND_COLD_OPEN));
+        assert_eq!((clips[0].source_start, clips[0].source_end), (2.0, 6.0),
+            "留下的是**最早**那条（与 cap_pip_shots 留最早一条「远」同规则）");
+        // 全部意图都被清掉（活的死的都清）—— 幂等的前提
+        let leftover: Vec<&str> = segs.iter().flat_map(|s| s.events.iter())
+            .filter_map(|e| match e { Event::Camera { anchor, .. } => anchor.as_deref(), _ => None })
+            .collect();
+        assert!(leftover.is_empty(), "落实之后意图必须全部收走，仍有：{leftover:?}");
+    }
+
+    /// **幂等**：同一轨道跑两次，`edl.clips` **不再叠加**（任务书的准入判据）。
+    ///
+    /// `process` 会被预览与出片**隐式重跑**，所以"加一次就不再加"是硬要求 ——
+    /// 不幂等的话用户每预览一次时间线就长一段。靠的是"意图是**一次性触发条件**"：
+    /// 落实时把 `anchor` 收走，第二趟就没有候补了。
+    #[test]
+    fn cold_open_materialize_is_idempotent() {
+        let mut segs = vec![Segment {
+            start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![
+                intent_cam(2.0, 6.0, INTENT_COLD_OPEN),
+                intent_cam(12.0, 16.0, INTENT_RECALL),
+                intent_cam(20.0, 24.0, INTENT_RECALL),
+            ],
+            extra: Default::default(),
+        }];
+        let mut clips: Vec<EdlClip> = Vec::new();
+
+        let first = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        assert!(first.cold_open);
+        assert_eq!(first.recalls, 2);
+        assert_eq!(kinds(&clips), vec![Some(EDL_KIND_COLD_OPEN), Some(EDL_KIND_RECALL), Some(EDL_KIND_RECALL)]);
+        let after_first = clips.clone();
+
+        // 第二趟：没有任何意图了 ⇒ 一个字节都不加，`changed()` 必须为假
+        let second = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        assert!(!second.changed(), "第二趟不许再落实任何东西");
+        assert_eq!(clips, after_first, "EDL 逐值不变（不叠加）");
+
+        // 第三趟以防万一（幂等要能反复成立，不是"两次碰巧一样"）
+        let third = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        assert!(!third.changed());
+        assert_eq!(clips, after_first);
+    }
+
+    /// **老工程零回归**：没有意图 ⇒ `edl.clips` 保持为空 ⇒ `changed()` 为假（调用方不写盘）。
+    ///
+    /// 判据刻意落在 `changed()` 上，而不是"`clips` 是空的"：真正要挡的是
+    /// **写盘那一步** —— `cmd_process` 只在 `changed()` 为真时才把 `clips` 交给
+    /// `update_polish_toml`。有 EDL 时 `mute_ranges` 整个被忽略（`resolve_edl`、规格 §2.3），
+    /// 所以"没意图就别写"就是 R4 本身。
+    #[test]
+    fn no_intent_keeps_edl_untouched() {
+        // 普通运镜（没有 cold_open/recall）—— 都不算意图
+        let mut segs = segs_of(&[(0.0, "中"), (10.0, "远"), (20.0, "近")]);
+        let mut clips: Vec<EdlClip> = Vec::new();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        assert!(!m.changed(), "没有意图 ⇒ 不许改 EDL");
+        assert!(clips.is_empty());
+        let cams = cam_spans(&segs);
+        assert_eq!(cams.len(), 3, "普通运镜一条都不许动");
+
+        // 别的 anchor 也不许被误当成意图、更不许被"顺手清掉"（只清自己认得的两个值）
+        let mut segs = vec![Segment {
+            start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![Event::Camera {
+                time: 0.0, end: Some(5.0), zoom: "中".into(), origin: "50% 50%".into(),
+                anchor: Some("liver".into()), anchor_to: None, to_origin: None,
+                cut: false, handheld: false, manual: false,
+            }], extra: Default::default() }];
+        let before: Vec<Option<String>> = segs.iter().flat_map(|s| s.events.iter())
+            .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })
+            .collect();
+        let mut clips: Vec<EdlClip> = Vec::new();
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0).changed());
+        let after: Vec<Option<String>> = segs.iter().flat_map(|s| s.events.iter())
+            .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })
+            .collect();
+        assert_eq!(before, after, "不认得的 anchor 原样留着");
+
+        // 用户手拖过的 EDL：**原样保留**，只在最前面插冷开场
+        let mut segs = vec![Segment {
+            start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(5.0, 9.0, INTENT_COLD_OPEN)], extra: Default::default() }];
+        let mut clips = vec![clip_of(0.0, 30.0, Some("main"))];
+        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        assert!(m.cold_open);
+        assert_eq!(clips.len(), 2);
+        assert_eq!(kinds(&clips), vec![Some(EDL_KIND_COLD_OPEN), Some("main")],
+            "冷开场插在**数组最前**（数组顺序 = 成片播放顺序），用户那条原样跟在后面");
+        assert_eq!((clips[1].source_start, clips[1].source_end), (0.0, 30.0), "用户那段没被改");
+    }
+
+    /// 手工运镜不参与：用户自己摆的运镜不被后处理改写（`manual` 那条硬规矩）。
+    #[test]
+    fn manual_camera_intent_is_ignored() {
+        let mut ev = intent_cam(2.0, 6.0, INTENT_COLD_OPEN);
+        if let Event::Camera { manual, .. } = &mut ev { *manual = true; }
+        let mut segs = vec![Segment {
+            start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![ev], extra: Default::default() }];
+        let mut clips: Vec<EdlClip> = Vec::new();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 30.0);
+        assert!(!m.changed(), "手工事件不参与（也不替用户清 anchor）");
+        assert!(clips.is_empty());
+        assert!(
+            matches!(&segs[0].events[0], Event::Camera { anchor: Some(a), .. } if a == INTENT_COLD_OPEN),
+            "用户手写的东西原样留着",
+        );
+    }
+
+    /// 区间兜底：总时长未知 / 意图窗口太短 ⇒ 宁缺毋滥，一个空段都不往 EDL 里塞。
+    ///
+    /// 塞了的话它**进得了 `polish.toml`**（`resolve_clips` 才会跳过它），
+    /// 看着像"有东西"而实际什么都不播。
+    #[test]
+    fn materialize_skips_impossible_spans() {
+        // 总时长未知
+        let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(2.0, 6.0, INTENT_COLD_OPEN)], extra: Default::default() }];
+        let mut clips: Vec<EdlClip> = Vec::new();
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 0.0).changed(), "时长未知 ⇒ 不落实");
+        assert!(clips.is_empty());
+
+        // 窗口短于 MIN_COLD_OPEN_SECS：
+        let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(2.0, 2.4, INTENT_COLD_OPEN)], extra: Default::default() }];
+        assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0).changed(), "太短 ⇒ 不落实");
+        assert!(clips.is_empty());
+
+        // 端点夹到 [0, total_duration]：起点为负、终点越界都夹回来
+        let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            events: vec![intent_cam(-3.0, 99.0, INTENT_COLD_OPEN)], extra: Default::default() }];
+        assert!(materialize_edl_intents(&mut segs, &mut clips, 30.0).cold_open);
+        assert_eq!((clips[0].source_start, clips[0].source_end), (0.0, 30.0), "夹进 [0, 总时长]");
+    }
+
+    /// 回忆回溯上限是 [`MAX_RECALL`]（比冷开场松一档，但也是有上限的）。
+    #[test]
+    fn recall_is_capped() {
+        let events: Vec<Event> = (0..5).map(|i| intent_cam(i as f64 * 10.0, i as f64 * 10.0 + 3.0, INTENT_RECALL)).collect();
+        let mut segs = vec![Segment { start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
+            events, extra: Default::default() }];
+        let mut clips: Vec<EdlClip> = Vec::new();
+        let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
+        assert_eq!(m.recalls, MAX_RECALL, "5 个候选 ⇒ 只剩 MAX_RECALL 个");
+        assert_eq!(clips.len(), MAX_RECALL);
+        // 留最早的几条
+        let starts: Vec<f64> = clips.iter().map(|c| c.source_start).collect();
+        assert_eq!(starts, vec![0.0, 10.0], "按时间序取最早的那几条");
     }
 }

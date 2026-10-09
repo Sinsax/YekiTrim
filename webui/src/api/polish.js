@@ -80,6 +80,12 @@ export const stickerFileUrl = (pid, dir, pack, name) => {
 export const fetchSfxCatalog = (pid, dir, label = '') =>
   api(`/api/polish/sfx-catalog?${qs(pid, dir)}`, { label })
 
+/** 视频素材库（只读）：`[{name, file, duration}]`。
+ *  `name` = **去扩展名**的素材键，就是 `[intro_outro]` 里存的那一串；
+ *  `duration` 可能是 `null`（探不出时长）—— 界面要照列并置灰，别隐藏。 */
+export const fetchVideoLibrary = (pid, dir, label = '') =>
+  api(`/api/polish/video-library?${qs(pid, dir)}`, { label })
+
 async function startJob(url, pid, dir, extra = {}) {
   return api(url, { method: 'POST', body: JSON.stringify({ ...scoped(pid, dir), ...extra }) })
 }
@@ -116,6 +122,19 @@ export const fetchDhampirStatus = (pid, dir) =>
     method: 'POST',
     body: JSON.stringify({ ...scoped(pid, dir) }),
     label: '底座出片通道就绪位',
+  })
+/** 转译后的**底座工程 JSON**（`{project, …}`）。页面用它取两个数：
+ *  ① `project.timeline.timebase`（工程网格帧率）；② 那条视频素材的 `timebase`（**源素材自己的**帧率）。
+ *
+ *  ⚠️ 两者**不是一回事**（2026-10-06 起）：电台那种"5fps 静止帧 + 主音频"的素材，工程网格会被
+ *  转译器抬到 **30fps 下限**，而素材仍是 5fps。成片轨的 `edlOutStart(clips, fps)` 要的是
+ *  **源素材自己那份** —— 拿网格帧率去算就是 6 倍错位（每段的 out_start 全错），而且不报错。
+ *  `PolishPreview` 走同一份判据（它那边的 `dhampirSourceFps`），这里是同一个值的第二处消费者。 */
+export const fetchDhampirProject = (pid, dir) =>
+  api('/api/polish/dhampir-project', {
+    method: 'POST',
+    body: JSON.stringify({ ...scoped(pid, dir) }),
+    label: '底座工程',
   })
 export const coverTitle = (pid, dir) => startJob('/api/polish/cover-title', pid, dir)
 export const coverFrame = (pid, dir, time) => startJob('/api/polish/cover-frame', pid, dir, { time })

@@ -20,6 +20,10 @@ pub struct DownloadReport {
     pub sticker_existing: usize,
     pub sfx_downloaded: usize,
     pub sfx_existing: usize,
+    /// 复制进项目的**视频素材**份数（第 6 批 / 规格 §11.2 第 2 条）。
+    pub video_downloaded: usize,
+    /// 已经在项目里、跳过复制的视频素材份数（幂等）。
+    pub video_existing: usize,
     pub errors: Vec<String>,
 }
 
@@ -91,6 +95,87 @@ impl AssetDownloader {
                                 report.sticker_downloaded += copied;
                             }
                         }
+            }
+        }
+        report
+    }
+
+    /// 把 EDL 里引用到的**视频素材**从素材库复制进项目（第 6 批 / 规格 §11.2 第 2 条）。
+    ///
+    /// # 纪律与贴纸那条**完全同源**（`assets/AGENTS.md` 那条 ⚠️）
+    ///
+    /// 库在 `<程序目录>/stickers/videos/`，而**出片与预览只读项目目录**
+    /// （`<项目>/assets/videos/`）。这是"单个 polish 项目能独立复现"的**唯一**保证 ——
+    /// 库改名 / 换机器之后老项目照样出得来。所以这里**只复制、绝不写库里的绝对路径**。
+    ///
+    /// # 判据取 EDL 段自己的 `asset_id`
+    ///
+    /// 段里写的 `asset_id` 就是**素材名**（去扩展名，与 [`sticker_index::VideoAsset::name`]
+    /// 同口径），不是路径 —— 用户换台机器、素材库搬家，那个字符串照样指得对。
+    ///
+    /// # 两条硬规矩（照抄贴纸那条的两条）
+    ///
+    /// ① **复制失败必须报出来**（`report.errors`）—— "项目里没有这个素材"以前对贴纸是一条
+    ///    看不见的失败（日志一个字都没有，出片时贴纸凭空消失）。视频更贵：底座的
+    ///    `file_for(asset_id)` 找不到文件是**出片整段失败**，所以这里必须点名。
+    /// ② **幂等**：目标已存在就跳过（复制过的项目重跑 `process` 不该反复拷几百 MB）。
+    pub fn download_videos(&self, asset_ids: &[String]) -> DownloadReport {
+        self.download_videos_from(&yekitrim_core::path::sticker_dir(), asset_ids)
+    }
+
+    /// [`Self::download_videos`] 的**库根可注入**版本。
+    ///
+    /// ⚠️ 存在的理由只有一个：**让单测能真跑**。`path::sticker_dir()` 是
+    /// `exe_dir()/stickers`（**不是** `data_dir()`，所以 `YEKITRIM_DATA_DIR` 改不动它），
+    /// 而"指到临时库上"才是这条逻辑唯一值得验的地方 —— 靠改环境变量去测会拿到一个
+    /// **不确定的**结果（两个并行用例抢同一个进程级变量），那种测试的失败是噪声、不是信号。
+    pub fn download_videos_from(
+        &self,
+        library_root: &Path,
+        asset_ids: &[String],
+    ) -> DownloadReport {
+        let mut report = DownloadReport::default();
+        if asset_ids.is_empty() {
+            return report;
+        }
+        let dest_dir = self.project_path.join("assets").join(super::sticker_index::VIDEO_LIBRARY_SUBDIR);
+        if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+            report.errors.push(format!(
+                "视频素材：建项目素材目录失败（{}）: {e}",
+                dest_dir.display()
+            ));
+            return report;
+        }
+        let library = library_root;
+        let mut seen: Vec<&str> = Vec::new();
+        for id in asset_ids {
+            let id = id.trim();
+            if id.is_empty() || seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            let Some(asset) = super::sticker_index::find_video_asset(library, id) else {
+                report.errors.push(format!(
+                    "视频素材「{id}」: 程序目录素材库里没有它（找的是 {}）—— \
+                     出片时这一段会失败，请先把素材放进素材库再跑一次后处理",
+                    library.join(super::sticker_index::VIDEO_LIBRARY_SUBDIR).display()
+                ));
+                continue;
+            };
+            let dest = dest_dir.join(asset.file_name());
+            if dest.exists() {
+                report.video_existing += 1;
+                continue;
+            }
+            match std::fs::copy(&asset.path, &dest) {
+                Ok(_) => {
+                    report.video_downloaded += 1;
+                    println!("  ✓ 视频素材 {} → {}", id, dest.display());
+                }
+                Err(e) => report.errors.push(format!(
+                    "视频素材「{id}」: 复制 {} 进项目失败: {e}",
+                    asset.path.display()
+                )),
             }
         }
         report
@@ -305,6 +390,28 @@ impl AssetDownloader {
     }
 }
 
+/// 从 EDL 里收集所有被引用到的**视频素材 id**（去重、保序、过滤空串）。
+///
+/// 与 [`collect_sfx_ids`] 同一个形状：**消费点拿它去调 [`AssetDownloader::download_videos`]**，
+/// 而"哪些素材被引用"这个判断只写在这里一份 —— 出片那条腿要复现"这段用哪个素材"时
+/// 也读同一份 EDL 段（`render/dhampir.rs` 在拼 asset 列表时按 `asset_id` 查）。
+///
+/// ⚠️ **只收 `is_asset()` 成立的段**：`asset_id` 写在本条片段上是**无意义**的
+/// （`EdlClip::asset_id_ref` 的文档写着这条），收进来会让"没引用的素材被复制进项目"——
+/// 项目白白胖几百 MB，而用户看不到这件事。
+pub fn collect_edl_asset_ids(clips: &[yekitrim_render_core::types::EdlClip]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for clip in clips {
+        if let Some(id) = clip.asset_id_ref() {
+            let id = id.to_string();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 /// 从 segments 中收集所有被引用的 SFX id
 pub fn collect_sfx_ids(segments: &[Segment]) -> Vec<String> {
     let mut ids: Vec<String> = vec![];
@@ -343,5 +450,114 @@ fn extract_sfx_field(event: &Event) -> Option<&String> {
         Event::Pulse { sfx: Some(s), .. } => Some(s),
         Event::Overlay { sfx: Some(s), .. } => Some(s),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod video_asset_tests {
+    use super::*;
+    use yekitrim_render_core::types::EdlClip;
+
+    fn asset_clip(id: &str) -> EdlClip {
+        EdlClip {
+            source_start: 1.0,
+            source_end: 2.0,
+            speed: 1.0,
+            kind: None,
+            label: None,
+            source_kind: Some("asset".into()),
+            asset_id: Some(id.into()),
+            transition_in: None,
+        }
+    }
+
+    fn source_clip() -> EdlClip {
+        EdlClip {
+            source_start: 0.0,
+            source_end: 1.0,
+            speed: 1.0,
+            kind: None,
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: None,
+        }
+    }
+
+    /// 收集判据：**只收 `is_asset()` 成立的段**、去重、保序。
+    ///
+    /// ⚠️ 本条片段上写了 `asset_id` 也**不算引用** —— 收进来会让没被用到的素材
+    /// 白白复制几百 MB 进项目，而用户看不到这件事（`EdlClip::asset_id_ref` 的注释同一句）。
+    #[test]
+    fn collect_edl_asset_ids_only_asset_clips_dedup_and_order() {
+        let clips = vec![
+            source_clip(),
+            asset_clip("op-ed"),
+            asset_clip("b-roll"),
+            asset_clip("op-ed"), // 去重
+            EdlClip { asset_id: Some("not-referenced".into()), ..source_clip() }, // 非 asset ⇒ 不收
+            EdlClip { source_kind: Some("asset".into()), ..source_clip() },      // asset 但没 id ⇒ 不收
+            EdlClip { source_kind: Some("asset".into()), asset_id: Some("  ".into()), ..source_clip() },
+        ];
+        assert_eq!(collect_edl_asset_ids(&clips), vec!["op-ed", "b-roll"]);
+        assert!(collect_edl_asset_ids(&[]).is_empty());
+        assert!(collect_edl_asset_ids(&[source_clip()]).is_empty());
+    }
+
+    /// **复制进项目**：从素材库复制到 `<项目>/assets/videos/`、**幂等**、
+    /// 库里没有时**报出来**（不许静默）。
+    ///
+    /// ⚠️ 走 [`AssetDownloader::download_videos_from`]（库根可注入）—— 用 `sticker_dir()`
+    /// 那条路要靠环境变量把库指到临时目录，而那是**进程级**的：两个并行用例抢同一个变量
+    /// 会让结论变成噪声。这里要验的恰恰是"指到某个库上会发生什么"。
+    ///
+    /// ⚠️ 真实工程上那条判据（**删掉库里的素材后项目照样出片**）在 `.workbuddy/task8-e2e/`
+    /// 里真跑过、逐帧像素逐点相同；这条是它的单元级对照。
+    #[test]
+    fn download_videos_copies_into_project_and_reports_missing() {
+        let lib = tempfile::tempdir().unwrap();
+        // ⚠️ `lib.path()` 是**库根**（= `sticker_dir()`），`videos/` 是它下面那个子目录
+        let lib_root = lib.path();
+        let vids = lib_root.join("videos");
+        std::fs::create_dir_all(&vids).unwrap();
+        std::fs::write(vids.join("op-ed.mp4"), b"fake-video-bytes").unwrap();
+        // 库里的贴纸不该被当成视频
+        std::fs::write(vids.join("sticker.gif"), b"x").unwrap();
+
+        let proj = tempfile::tempdir().unwrap();
+        let downloader = AssetDownloader::new(proj.path());
+        let copy = |ids: &[&str]| {
+            let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+            downloader.download_videos_from(lib_root, &owned)
+        };
+
+        // ① 真的复制进去了，而且内容一个字节不差
+        let r = copy(&["op-ed"]);
+        assert_eq!((r.video_downloaded, r.video_existing, r.errors.len()), (1, 0, 0), "{:?}", r.errors);
+        let copied = proj.path().join("assets").join("videos").join("op-ed.mp4");
+        assert!(copied.exists(), "必须复制进项目目录");
+        assert_eq!(std::fs::read(&copied).unwrap(), b"fake-video-bytes");
+
+        // ② 幂等：第二次是 existing，不是又复制一份（项目不会反复拷几百 MB）
+        let again = copy(&["op-ed"]);
+        assert_eq!((again.video_downloaded, again.video_existing), (0, 1), "必须是幂等的");
+
+        // ③ 库里没有的 id ⇒ 一条 errors（点名 + 说清去哪儿找），且不产生文件
+        let missing = copy(&["nope"]);
+        assert_eq!(missing.errors.len(), 1, "{:?}", missing.errors);
+        assert!(missing.errors[0].contains("nope"), "{:?}", missing.errors);
+        assert!(!proj.path().join("assets").join("videos").join("nope.mp4").exists());
+
+        // ④ 同一个 id 传两遍**只处理一次**（去重发生在 seen 里，第二遍直接 continue）
+        let dup = copy(&["op-ed", "op-ed"]);
+        assert_eq!((dup.video_downloaded, dup.video_existing, dup.errors.len()), (0, 1, 0), "去重后只处理一次");
+
+        // ⑤ 空列表 ⇒ 一个文件都不碰、不报错
+        let empty = copy(&[]);
+        assert_eq!((empty.video_downloaded, empty.video_existing), (0, 0));
+        assert!(empty.errors.is_empty());
+
+        // ⑥ 空白的 id 不当成素材（否则会去库里找一个叫 "" 的文件）
+        assert!(copy(&["   "]).errors.is_empty());
     }
 }
