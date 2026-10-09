@@ -135,8 +135,31 @@ pub struct ServerArgs {
 ///
 /// P2 起**归属由 DB 决定**；老用户升级后原来的项目不能凭空消失，因此在这里只读导入：
 /// 已登记过的路径会跳过（幂等），缺失的条目忽略。
-fn import_legacy_projects(db: &db::Db) -> anyhow::Result<usize> {
-    let Some(admin) = db.find_user("admin")? else {
+/// 把**单人时期**的存量（素材 + 程序配置）归入**首个管理员**名下。
+///
+/// 判据是"`users` 里 id 最小的那个 admin"。为什么是**首个管理员**而不是"当前登录的人"：
+/// 启动期没有会话；而单人时期的那些东西，事实上就是这台机器主人的 ——
+/// 首个管理员正是当年 `create_user("admin", …)` 建的那个账号。
+///
+/// ⚠️ 没有管理员（全新安装 / 还没初始化）⇒ 直接跳过，**不建目录、不动任何文件**。
+/// ⚠️ 幂等与"搬运而非复制"的语义全在 `yekitrim_core::owner::migrate_legacy_assets_to`，
+/// 这里只负责选出那个 uid。**别在这里自己写 rm/mv** —— 那样会绕过它已经钉住的判据。
+fn migrate_solo_assets_to_first_admin(db: &db::Db) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let users = db.list_users()?;
+    let Some(first_admin) = users
+        .iter()
+        .filter(|u| u.role == "admin")
+        .min_by_key(|u| u.id)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(yekitrim_core::owner::migrate_legacy_assets_to(
+        yekitrim_core::owner::Owner::User(first_admin.id),
+        &yekitrim_core::path::data_dir(),
+    )?)
+}
+
+fn import_legacy_projects(db: &db::Db) -> anyhow::Result<usize> {    let Some(admin) = db.find_user("admin")? else {
         return Ok(0);
     };
     let mut imported = 0usize;
@@ -372,6 +395,25 @@ where
     }
     let refreshed = yekitrim_service::projects::refresh_all_bytes(auth.db());
     info!("项目占用已刷新（{refreshed} 个项目）");
+
+    // ---- 单人存量归入首个管理员（2026-10-10）----
+    //
+    // 单人时期的素材与配置住在 `<数据>/resources/` 与 `<数据>/.yekitrim/`，
+    // 而多用户形态下 `Owner::User` 解析到 `users/<uid>/…` —— 不做这一步，
+    // 已用很久的机器一开多用户就是**空素材库 + 默认配置**，看着像"东西全丢了"。
+    //
+    // ⚠️ **只对 id 最小的管理员做一次**、且**只在目标还不存在时**搬（幂等，见
+    // `owner::migrate_legacy_assets_to`）。搬运是 `rename`（不是复制 —— 素材可能几个 GB）；
+    // 跨盘失败时**如实报错并保持原状**，绝不悄悄退化成"复制一半"。
+    // ⚠️ 失败**不影响启动**：这是数据搬迁，搬不动就该让用户看到原因后自己处理。
+    match migrate_solo_assets_to_first_admin(auth.db()) {
+        Ok(ref moved) if moved.is_empty() => {}
+        Ok(moved) => info!(
+            "已把单人时期的 {} 项存量归入首个管理员名下（素材/配置现在按账号分开）",
+            moved.len()
+        ),
+        Err(e) => tracing::warn!("归入首个管理员的存量失败（不影响启动，数据保持原状）: {e:#}"),
+    }
 
     // 首次运行（没有程序配置）时自动生成默认配置；已有配置不会被覆盖
     match yekitrim_service::ensure_global_config() {

@@ -864,6 +864,70 @@ pub fn load_global_config() -> Config {
     config
 }
 
+// ============================================================================
+// 按归属读配置（`Owner`）—— 见 `crate::owner`
+// ============================================================================
+//
+// ⚠️ **这里是"程序配置按用户分"的收口点**：配置路径一律经
+// `crate::owner::config_path` / `state_dir`，**别在别处拼 `.yekitrim/config.toml`**。
+//
+// 与素材库同一条规矩：单人（`Owner::Local`）解析到**现状位置**（零迁移），
+// 多用户解析到各自的 `users/<uid>/.yekitrim/`。
+
+/// 按归属读程序配置（`config.toml`），不合并项目文件。
+///
+/// 单人（[`crate::owner::Owner::Local`]）等价于 [`load_global_config`] ——
+/// 这条等价性有单测钉住，是"单人零迁移"的判据之一。
+pub fn load_config_for(owner: crate::owner::Owner) -> Config {
+    let mut config = Config::default();
+    let path = crate::owner::config_path(owner);
+    if let Ok(Some(overlay)) = load_from_file(&path, ConfigKind::Global) {
+        merge(&mut config, overlay);
+    }
+    config
+}
+
+/// 按归属读 LLM 配置（`llm.toml`）。
+///
+/// ⚠️ 这个文件里有**明文 api_key**。按用户分之后，每个账号只读到自己那份 ——
+/// 这是相对"全局一份、所有人共用同一个 key"的**安全净改善**。
+pub fn load_llm_config_for(owner: crate::owner::Owner) -> LlmConfig {
+    let path = crate::owner::state_dir(owner).join("llm.toml");
+    if !path.exists() {
+        return LlmConfig::default();
+    }
+    let content = match version::prepare(&path, ConfigKind::Llm) {
+        Ok(p) => p.text,
+        Err(e) => {
+            tracing::warn!("读取 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            return LlmConfig::default();
+        }
+    };
+    match toml::from_str::<LlmFile>(&content) {
+        Ok(f) => f.llm,
+        Err(e) => {
+            tracing::warn!("解析 {} 失败: {}，使用默认 LLM 配置", path.display(), e);
+            LlmConfig::default()
+        }
+    }
+}
+
+/// 按归属做"解析失败就说出来"的检查（设置页写入门闸的数据源）。
+///
+/// 单人时指向现状文件；多用户时指向该账号自己的两份。语义与
+/// [`global_config_parse_error`] 完全一致，只是换了 base 目录。
+pub fn config_parse_error_for(owner: crate::owner::Owner) -> Option<String> {
+    let home = crate::owner::state_dir(owner);
+    for (name, what) in [("config.toml", "程序配置"), ("llm.toml", "LLM 配置")] {
+        let path = home.join(name);
+        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
+        if let Err(e) = toml::from_str::<toml::Value>(&raw) {
+            return Some(format!("{}（{}）解析失败，本次使用的是内建默认值: {e}", what, path.display()));
+        }
+    }
+    None
+}
+
 /// 用 toml_edit 将 events_file 写入当前目录的 yekitrim.toml
 pub fn save_events_path(path: &str) -> Result<()> {
     save_events_path_in(&PathBuf::from(PROJECT_CONFIG_FILE), path)

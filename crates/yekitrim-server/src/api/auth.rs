@@ -271,7 +271,10 @@ async fn must_change_password_blocks_everything_but_the_password_flow() {
         ("GET", "/jobs"),
         ("GET", "/project-data/status?project=1"),
         ("GET", "/config"),
-        ("GET", "/admin/config"),
+        // ⚠️ `/admin/config` 2026-10-10 已删除（配置按 `Owner` 分、挪到用户层的 `/config*`）。
+        // 上面那条 `/config` 覆盖同一性质 —— 它回 `llm_raw`（**明文 API key**），
+        // 所以改密强制门必须照旧拦住它。**别把这条也删掉**：那会让"持初始密码的会话
+        // 直接读到 API key"重新成立。
         ("GET", "/admin/users"),
         ("GET", "/admin/invites"),
     ] {
@@ -299,9 +302,9 @@ async fn must_change_password_blocks_everything_but_the_password_flow() {
         "改密后应恢复正常"
     );
     assert_eq!(
-        t.call(t.req("GET", "/admin/config").body(Body::empty()).unwrap()).await.status(),
+        t.call(t.req("GET", "/config").body(Body::empty()).unwrap()).await.status(),
         StatusCode::OK,
-        "改密后 admin 路由也应恢复（改密门不该把它永久关掉）"
+        "改密后配置路由也应恢复（改密门不该把它永久关掉）"
     );
 }
 
