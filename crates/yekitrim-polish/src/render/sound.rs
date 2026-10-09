@@ -407,4 +407,53 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!((out[0].time - 4.0).abs() < 1e-9, "实得 {}", out[0].time);
     }
+
+    /// **变速段的音效重映射**（`speed != 1`）。
+    ///
+    /// ⚠️ 此前**本文件所有用例的 `speed` 都是 1.0** —— 也就是说变速那条分支
+    /// （`local = (ev_frame - sf) / speed`）一直是**没有判据**的。它是这批改动里
+    /// 唯一"写对了但没人看着"的算式，而算错了的症状是**音效整体前移/后移**，
+    /// 出片看着正常、只是"点不对"（很难和人声对上时才想起查）。
+    ///
+    /// 取 2 倍速：源 [0,10) 压成成片 [0,5)。源 6.0s 处那条音效
+    /// ⇒ 段内 6.0s ⇒ 成片 3.0s。
+    #[test]
+    fn remap_sound_events_scales_with_speed() {
+        use yekitrim_render_core::types::{Edl, EdlClip};
+        let edl = Edl {
+            clips: vec![EdlClip {
+                source_start: 0.0, source_end: 10.0, speed: 2.0,
+                kind: None, label: None, source_kind: None, asset_id: None, transition_in: None,
+            }],
+        };
+        let clips = edl.resolve_clips(60.0);
+        // 段长按 `round((ef - sf) / speed)` = round(600/2) = 300 帧 = 5.0s
+        assert_eq!(clips[0].out_end_frame - clips[0].out_start_frame, 300);
+
+        let events = vec![SoundEvent {
+            time: 6.0, file: "sfx/boom.mp3".into(), r#type: "sfx".into(), volume: None, duration: None,
+        }];
+        let out = remap_sound_events(&events, &clips, 60.0);
+        assert_eq!(out.len(), 1, "段内那条音效必须被映射出来");
+        assert!(
+            (out[0].time - 3.0).abs() < 1e-9,
+            "2 倍速下源 6.0s 应落在成片 3.0s（不除 speed 会得到 6.0s）；实得 {}",
+            out[0].time
+        );
+
+        // 半速（0.5×）：源 [0,10) 拉成成片 [0,20)。源 6.0s ⇒ 段内 6.0s ⇒ 成片 **12.0s**。
+        let edl_slow = Edl {
+            clips: vec![EdlClip {
+                source_start: 0.0, source_end: 10.0, speed: 0.5,
+                kind: None, label: None, source_kind: None, asset_id: None, transition_in: None,
+            }],
+        };
+        let slow = remap_sound_events(&events, &edl_slow.resolve_clips(60.0), 60.0);
+        assert_eq!(slow.len(), 1);
+        assert!(
+            (slow[0].time - 12.0).abs() < 1e-9,
+            "0.5 倍速下源 6.0s 应落在成片 12.0s；实得 {}",
+            slow[0].time
+        );
+    }
 }

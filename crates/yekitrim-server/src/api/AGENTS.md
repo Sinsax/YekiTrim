@@ -35,11 +35,12 @@
 
 ## 边界
 
-- ⚠️ **素材库的读写都是用户层（2026-10-09 起；此前写限 admin）**：用户口径「素材库是用户级、跟随用户」
-  —— 它是给使用者准备素材的地方，不是程序配置。三个库（视频/贴纸/字体）在路由上归成一组
+- ⚠️ **素材库的读写都是用户层（2026-10-09 起；此前写限 admin），且真按 `Owner` 分库（2026-10-10）**：
+  三个库（视频/贴纸/字体）在路由上归成一组
   **`let assets = Router::new()`**，merge 进 `protected`（⇒ **未登录仍 401**：放开的是"哪个用户"，
   不是"要不要登录"）。
-  ⚠️ **这一组刻意不挂 `enforce_scope`**：库是**程序级**的（`<数据目录>/resources/*`）、不属于任何工程；
+  ⚠️ **这一组刻意不挂 `enforce_scope`**：库**不属于任何工程**（单人 = `<数据目录>/resources/*`，
+  多用户 = `<数据目录>/users/<uid>/resources/*`，位置一律由 `yekitrim_core::owner` 算）；
   挂进去的后果实测过 —— `fonts/import` 那条带 `{dir}` 的请求会被 scope 中间件按"这个目录在不在你的
   项目里"判掉回 **404**，而它要的其实是"服务器上某个目录里躺着一支字体"。
   ⚠️ **同一路径别在两个 Router 里各挂一次**：axum merge 时 panic（`Overlapping method route`），
@@ -56,10 +57,10 @@
   后者抽第 1 秒那帧（<1s 退到第 0 帧）、按 `<库>/.thumbs/<名>@<mtime>.jpg` 缓存；
   ⚠️ **抽不出来回 404 不是 500** —— 没装 ffmpeg / 容器怪异 / 文件损坏都只是"这张没缩略图"，
   回 500 会让界面报读取失败，而其它素材全都好好的。
-  ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir()`** —— 它负责 `create_dir_all`。
-  读写现在解析到**同一个目录**（`<数据目录>/resources/fonts`，2026-10-02 资产收回程序目录之后），
-  但仍别自己拼路径：目录不存在时要建出来。`set_default`/`remove` 操作的是**当前可见的那份库**
-  （`font_dir()`），这是有意的。
+  ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir_for(owner)`**，**`owner` 不能省**：
+  这三个接口在**用户路由**上，而 `fonts::ensure_dir()` 是单人库入口 —— 2026-10-10 实测其后果是
+  "传了却看不见"（字节落进别人的库）。改后实测 carol 上传 → `users/2/resources/fonts/`，
+  admin 列表里没有它。`set_default`/`remove` 同样按 `asset_dir(owner, Fonts)`。
   ⚠️ 这三条**有意不挂 `enforce_scope`**（见本卡「素材库」那条）；导入用"服务器上的路径"
   而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
