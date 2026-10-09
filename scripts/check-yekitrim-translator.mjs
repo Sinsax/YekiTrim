@@ -37,7 +37,7 @@
 
 import { strict as assert } from 'node:assert';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -897,8 +897,28 @@ function checkLaneSwitches(curves) {
 const MUTATIONS = [
   {
     name: 'source_in 退回序列帧（5fps 素材 + 30fps 网格 ⇒ 屏蔽后画面跳 6 倍远）',
-    from: "    id: `main-${index}`,\n    start: range.outStart,\n    end: range.outStart + (range.end - range.start),\n    source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },",
-    to: "    source: { asset_id: videoAssetId, source_in: range.start },",
+    // ⚠️ **锚点跳过中间那行 `end:`** —— 第 2 批把 `end` 从 `range.end - range.start`
+    // 泛化成了 `range.durFrames ?? (range.end - range.start)`（EDL 变速要用），
+    // 写死整块的锚点当场"命中 0 次"、这条变异**空转**。
+    // 现在用**一段正则**覆盖"主画面那一层"的整块（`id: \`main-${index}\`` 是唯一判别串），
+    // 组 1 是 `end:` 那行（**原样保留**，不参与变异），组 2 是 `source:` 的前缀。
+    // 这样"时长表达式再变"与"判据"彻底解耦：判据只认 `source_in` 的换算。
+    //
+    // ⚠️⚠️ **第 6 批又栽了一次**：那时组 3 写死了 `toSourceFrames(range.start)`，
+    // 而多素材要按各 asset 的时基各算一遍 ⇒ 换成了
+    // `toSourceFramesFor(range.start, isSource ? null : range.assetId)` ⇒ 老正则**命中 0 次**、
+    // 这条变异**再次空转**（而且变异台当时**照样 exit 0**）。
+    //
+    // ⇒ 教训升级：**连"换算函数的名字与实参"都不能钉** —— 它是最容易被重构的那部分。
+    //   ⚠️⚠️ **第 8 批（底座 0.3.0 变速）第三次栽**：`source:` 从单行改成了多行
+    //   （多了 `...(rate)` 那段），老正则里 `source: { asset_id: ..., source_in: ` 这个
+    //   **同行**形状 ⇒ 命中 0 次、变异**再次空转**。⇒ **连“对象字面量的排版”都不能钉**。
+    //   现在只要求“`source_in:` 后面跟一个 `toSourceFrames*` 调用”，中间允许换行与任意字段。
+    //   组 3 现在写成 `toSourceFrames\w*\([^\n]*\)`：只要求“这里是个 `toSourceFrames*` 调用”，
+    //   不管它后来叫 `toSourceFramesFor`、还是多收一个 assetId 实参。
+    //   **判据的语义没变**：`source_in` 必须经换算（而不是直接塞 `range.start`）。
+    fromRe: /(id: `main-\$\{index\}`,[\s\S]*?\n\s*end: [^\n]*,)([\s\S]*?source_in:\s*)toSourceFrames\w*\([^\n]*\)/,
+    to: '$1$2range.start',
   },
   {
     name: '30fps 下限被摘掉（5fps 源 ⇒ 工程网格也 5fps）',
@@ -1069,6 +1089,55 @@ const MUTATIONS = [
     to: '  return ((css) % 360 + 360) % 360;',
   },
   {
+    // 第 2 批：`placeEnvelope` 的窗口**必须夹到它所在的那一段**。
+    // 不夹的表现是"成片比派生值长"—— 乱序/重放 EDL 下实测 **433 vs 420 帧**，
+    // 而报告里一行差异都没有（靠合流前那条时长断言才发现）。
+    name: 'placeEnvelope 窗口不夹到所在段（乱序/重放 EDL ⇒ 成片比派生值长）',
+    from: '      if (room < frames) frames = Math.max(1, room);',
+    to: '      if (false) frames = Math.max(1, room);',
+  },
+  {
+    // 第 4 批：`speed` 必须真的缩段长（`durFrames = round((ef-sf)/speed)`）。
+    //
+    // ⚠️ 为什么锚在**这一行**：`durFrames` 是成片段长的**唯一出处** ——
+    // 层 `end`（:1738）、输出游标累加（:554）、事件重映射（:1667/:1901）、原声音轨
+    // （:3521）全都读它。所以"把 `/speed` 去掉"这一个改动能让**整条链**一起退回原速，
+    // 正是"变速没生效"这个 bug 的最小复现。锚在别处（比如只改某个 `??` 回退分支）
+    // 反倒会因为 `durFrames` 仍然正确而**抓不住**。
+    name: 'speed 被忽略（段长不缩 ⇒ 快放/慢放都不生效）',
+    from: '        durFrames: Math.max(1, Math.round((ef - sf) / speed)),',
+    to: '        durFrames: Math.max(1, Math.round(ef - sf)),',
+  },
+  {
+    // 第 6 批：素材段必须按**该素材自己的时基**换算 `source_in`。
+    //
+    // 退回源时基 = 本批要修的那个 bug：24fps 的素材按 30fps 折算 ⇒ 取帧位置偏
+    // （那条注释记的症状是"画面跳到源里 6 倍远的位置"），而**出片不报错**
+    // （e2e 实测：`exit 0`、`issues: []`、`failed: false`，帧却是错的）。
+    name: '素材段退回源时基（24fps 素材按 30fps 换算 ⇒ 取帧位置偏）',
+    from: '    return rec?.timebase ?? assetTimebase;',
+    to: '    return assetTimebase;',
+  },
+  {
+    // 第 6 批：素材判据**只认小写** `source_kind === 'asset'`。
+    //
+    // 放宽大小写看着"更健壮"，实则把"用户写错档位"变成**静默当成本条片段** ——
+    // 正是规格 §11.7 ① 那一类（分叉且不报错）。
+    name: '素材判据大小写宽容了（source_kind 只认小写 asset）',
+    from: "  if (clip.source_kind !== 'asset') return null;",
+    to: "  if (String(clip.source_kind).toLowerCase() !== 'asset') return null;",
+  },
+  {
+    // 第 4 批：`[[a.b]]` 的父级**必须建成表**（`node[key] = []` 是老写法）。
+    //
+    // 改回数组的表现：`[[edl.clips]]` 无 `[edl]` 表头时 `edl` 成了数组 ⇒
+    // `config.edl?.clips === undefined` ⇒ 转译器把整条 EDL 当没有，而 Rust 读得出来
+    // ⇒ **两侧分叉且不报错**（规格 §3 R7 那一类）。
+    name: 'TOML `[[a.b]]` 的父级被建成数组（EDL 被静默忽略）',
+    from: '          node[key] = {};',
+    to: '          node[key] = [];',
+  },
+  {
     // D4：纯色档把第二档色写成"反色"（底座现在读 r/g/b ⇒ 画面会变，而报告里看不出来）
     name: '纯色档 r2 写成反色（应为 r）',
     from: '    r2: col.r, g2: col.g, b2: col.b,',
@@ -1143,6 +1212,15 @@ const MUTATIONS = [
     from: '  return typeof mapped === \'string\' && mapped.trim() ? mapped.trim() : id;',
     to: '  return typeof mapped === \'string\' && mapped.trim() ? mapped.trim() : `F:${id}`;',
   },
+  {
+    // 反面：把描边色的 hex 匹配**收窄回 6 位**（2026-10 修的那条真缺陷）。
+    // `hexColor` 本来就能展开 3/4 位，但外层这个正则曾经只认 6 位 ⇒ `stroke = "8px #fff"`
+    // 匹配不上、`hexColor` 根本走不到，**静默回落到兜底深灰**（实测 `[64,60,59]` 而不是白）。
+    // 症状：用户选白色描边、成片是深灰，**报告里一行差异都没有**。
+    name: '描边色只认 6 位 hex（#fff / #abc 静默回落成深灰）',
+    from: '  const colorMatch = raw.match(/#[0-9a-fA-F]{3,8}/);',
+    to: '  const colorMatch = raw.match(/#[0-9a-fA-F]{6}/);',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -1162,7 +1240,12 @@ async function mutate() {
   let survived = 0;
   console.log(`\n变异自证：${MUTATIONS.length} 处改动，每一处都必须让上面的检查翻面`);
   for (const [index, mutation] of MUTATIONS.entries()) {
-    const hits = source.split(mutation.from).length - 1;
+    // 两种玩法：① 纯字符串 `from`/`to`（多数）；② `fromRe`/`to`（**正则**版，用于
+    // 需要"跨若干行定位、但只改其中一行"的变异 —— 中间那些行会随时间重写，
+    // 写死整块的锚点会**静默空转**，2026-10 的 `source_in` 那条就栽在这上面）。
+    const hits = mutation.fromRe
+      ? (source.match(new RegExp(mutation.fromRe.source, 'g')) || []).length
+      : source.split(mutation.from).length - 1;
     // ⚠️ 先证明"替换真的会命中**且只命中一次**" —— 少了这一条，
     //    没匹配上的变异体会原样跑绿，看起来像"这条用例抓不住"。
     if (hits !== 1) {
@@ -1171,7 +1254,9 @@ async function mutate() {
       console.log(`      变异台的替换串在转译器里命中 ${hits} 次（必须是 1）—— 变异台自己错了，不是守卫没抓住`);
       continue;
     }
-    const mutated = source.replace(mutation.from, mutation.to);
+    const mutated = mutation.fromRe
+      ? source.replace(new RegExp(mutation.fromRe.source), mutation.to)
+      : source.replace(mutation.from, mutation.to);
     if (mutated === source) {
       survived += 1;
       console.log(`  ✗ ${index + 1}. ${mutation.name}\n      替换后源码没变（变异台自己错了）`);
@@ -1183,8 +1268,18 @@ async function mutate() {
         checkCurves(curves);
         // 颜色那一段也要跑：不然"退回只认 6 位"这条变异永远不会红（实测踩过）。
         checkColors(curves);
+        // 描边解析同理：它守的是"`#fff` 静默回落成深灰"，与 `hexColor` 是两处。
+        checkStroke(curves);
         // 映射那一段同理（M2 加的三条）。
         checkMappings(curves);
+        checkEnvelopeClamp(curves);
+        // 变速同理（第 4 批）：不跑它，"变速 NOTE 消失"与"缩段长缩错"这两条变异永远绿。
+        checkSpeedReport(curves);
+        // TOML 数组表父级同理（第 4 批）：不跑它，"父级建回数组"这条变异永远绿。
+        checkTomlArrayTableParent(curves);
+        // 第 6 批素材：不跑它们，"退回源时基"与"判据放宽大小写"这两条变异永远绿。
+        checkAssetTimebase(curves);
+        checkAssetClipPredicate(curves);
         // 六条轨道的显示开关同理（2026-10-06 的 `[stage.lanes]`）—— 不跑它，这几条变异永远绿。
         checkLaneSwitches(curves);
         // 密集键右端那一段同理（③R3，2026-10-05）—— 不跑它这条变异就永远绿。
@@ -1500,6 +1595,11 @@ const colorChecks = checkColors(translatorModule);
 console.log(
   `✓ 颜色解析：${colorChecks} 项全绿（6 种写法 + 7 种垃圾输入；8 位那两种是"整条 overlay 丢不丢"的关键）`,
 );
+const strokeChecks = checkStroke(translatorModule);
+console.log(
+  `✓ 描边解析：${strokeChecks} 项全绿（3/4/6/8 位 hex 都取出真颜色；` +
+    `只有 6 位会让 \`#fff\` **静默回落成深灰**，报告里一行差异都没有）`,
+);
 
 // ---------------------------------------------------------------------------
 // 颜色：四种写法 + "认不出"必须返回 null
@@ -1537,6 +1637,45 @@ function checkColors(mod) {
     );
   }
   return cases.length + bad.length;
+}
+
+// ---------------------------------------------------------------------------
+// 描边字符串（`parseStroke`）：**3/4 位 hex 必须也能解析出真颜色**
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这条守的是"**颜色静默变回默认**"（2026-10 修的真缺陷）：`hexColor` 本来就能展开 3/4 位，
+// 但 `parseStroke` **外层那个正则**曾经只认 6 位 ⇒ `stroke = "8px #fff"` 匹配不上、
+// `hexColor` 根本走不到，于是**静默回落到兜底深灰**（实测 `[64,60,59]` 而不是白）。
+// 症状：用户在编辑器里选"白色描边"、成片是深灰，**报告里一行差异都没有**。
+//
+// ⚠️ 别只测 `hexColor`（上面那段就是）—— 那测不出这个问题：`hexColor('#fff')` 一直是对的，
+// 错的是**它的调用点上那道前置匹配**。所以这里必须走 `parseStroke` 本体。
+function checkStroke(mod) {
+  const gray = [64, 60, 59]; // `SubtitleStyle::default_sub_stroke` 的兜底色 `#403c3b`
+  const cases = [
+    ['12px #fff', 12, [255, 255, 255], '3 位简写要解析出真颜色（不许回落兜底）'],
+    ['12px #abc', 12, [170, 187, 204], '3 位简写（非灰度）'],
+    ['0px #fff', 0, [255, 255, 255], '宽度 0 也要解析颜色'],
+    ['12px #aabbcc', 12, [170, 187, 204], '6 位照旧'],
+    ['12px #aabbccdd', 12, [170, 187, 204], '8 位：吃掉整串，忽略 alpha（outline 只有开/关）'],
+    ['12px #abcd', 12, [170, 187, 204], '4 位简写'],
+    ['4px #403c3b', 4, gray, '默认值原样往返'],
+  ];
+  for (const [raw, wantW, wantC, why] of cases) {
+    const got = mod.parseStroke(raw, 12, '#403c3b');
+    assert.equal(got.widthPx, wantW, `parseStroke(${JSON.stringify(raw)}).widthPx（${why}）`);
+    assert.deepEqual(
+      [got.color[0], got.color[1], got.color[2]],
+      wantC,
+      `parseStroke(${JSON.stringify(raw)}) 的颜色（${why}）`,
+    );
+  }
+  // 认不出颜色时**照旧回落兜底**（那条行为不能改：调用点依赖它）
+  const fb = mod.parseStroke('12px nothex', 12, '#403c3b');
+  assert.deepEqual([fb.color[0], fb.color[1], fb.color[2]], gray, '认不出颜色时回落兜底色');
+  // 宽度认不出 → 回落传入的兜底宽度
+  assert.equal(mod.parseStroke('#fff', 9, '#403c3b').widthPx, 9, '认不出宽度时回落兜底宽度');
+  return cases.length + 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1749,327 @@ function checkDenseRanges(mod) {
   eq(mod.denseRangesFor([[100, 130]], [50, 131, 200], 400), [[51, 199]], '恰在 b+1 的稀疏键不算下一个');
   // 没有上一个稀疏键 ⇒ 从窗口起点开始（竖素材那份 16716 键的教训），右端照旧
   eq(mod.denseRangesFor([[100, 130]], [200], 400), [[100, 199]], '没有上一个稀疏键 ⇒ 从窗口起点起');
+  return checks;
+}
+
+/// 第 2 批：**调整图层的窗口不许超出它所在的那一段**（乱序/重放 EDL）。
+///
+/// `placeEnvelope` 收的 `seconds` 是**源时间**上的事件时长，而 `outStart` 是
+/// **重映射之后**的成片帧号；顺序 EDL 下两者刚好吻合，乱序/重放就不吻合了。
+/// 实测：源 `[6.4, 7.2167)` 的 flash 在乱序 EDL 下落进成片第 384 帧，
+/// 而那段只到 420 帧 ⇒ 窗口溢到 **433**，底座按"所有层 end 的最大值"出片
+/// ⇒ 成片比派生值长 13 帧，报告里一行差异都没有。
+///
+/// 判据 = **所有层的 `end` 最大值 ≤ 派生总帧数**（`translate` 报告里的 `out_frames`）。
+function checkEnvelopeClamp(mod) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-env-'));
+  try {
+    writeFileSync(join(dir, 'clip.srt'), '1\n00:00:00,100 --> 00:00:01,000\nx\n\n', 'utf8');
+    // **乱序 EDL**：源顺序与成片顺序相反（第 3 段反而最先播）。
+    // 关键是最后一段只有 2 秒，而它上面压着一个**起点靠后**的特效。
+    const toml = [
+      'duration = 12.0',
+      '[project]',
+      'name = "env"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      '[edl]',
+      'total_frames = 0',
+      '[[edl.clips]]',
+      'source_start = 9.0',
+      'source_end = 12.0',
+      'speed = 1.0',
+      '[[edl.clips]]',
+      'source_start = 0.0',
+      'source_end = 2.0',
+      'speed = 1.0',
+      '[[edl.clips]]',
+      'source_start = 4.0',
+      'source_end = 6.0',
+      'speed = 1.0',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 12.0',
+      // flash 落在**第三段**（源 [4,6)）的最末尾 —— 它的源时长 0.5s 比那段的剩余还长
+      '[[segments.events]]',
+      'type = "flash"',
+      'time = 5.9',
+      'end = 6.4',
+      'intensity = 0.08',
+      '',
+    ].join('\n');
+    const config = mod.parseToml(toml);
+    const doc = mod.translate(config, dir, join(dir, 'p.doc.json'));
+
+    let maxEnd = 0;
+    for (const track of doc.timeline.tracks) {
+      for (const l of track.layers ?? []) maxEnd = Math.max(maxEnd, l.end ?? 0);
+    }
+    // 派生总帧数 = 3 + 2 + 2 = 7 秒 × 60fps = 420。
+    ok(maxEnd <= 420, `所有层的 end 最大值不许超过派生总帧数 420，实得 ${maxEnd}`);
+    ok(maxEnd >= 419, `时间线也不许短于派生值（层要铺满到片尾），实得 ${maxEnd}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return checks;
+}
+
+/// 第 4 批：变速段必须在报告里**被点名**，且缩段长按 `round((ef-sf)/speed)`。
+///
+/// 为什么单独钉：`speed` 是这条功能链里**最容易两侧分叉**的地方 —— 转译器缩画面段长、
+/// Rust 缩音轨段长，**分叉时不报错**（成片就是短一截）。那条 NOTE 是"用户说某段快放
+/// 没生效"时第一眼要看的证据，所以它**不许静默消失**。
+///
+/// 判据两条：
+/// ① 有条 `edl` 的 NOTE 提到"变速"，且**速率**都点名了；
+/// ② `speed` 真的**缩了画面段长**（帧号域：×2.0 ⇒ 一半帧、×0.5 ⇒ 一倍帧）。
+/// 第 6 批：**素材段的 `source_in` 必须按该素材自己的时基换算**。
+///
+/// 这是本批最危险的一条：退回源时基**不会报错** —— e2e 实测 `exit 0`、`issues: []`、
+/// `failed: false`，但取帧位置整体偏了（那条注释记的症状是"画面跳到源里 6 倍远的位置"）。
+/// 所以只能靠**逐值**判据把它钉住。
+///
+/// 判据：源 30fps、素材 24fps，素材段从**素材秒 1.0** 起 ⇒ `source_in` 必须是 **24**（不是 30）。
+/// 另有一条控制组：**源自己的段**仍走源时基（老路径逐值不变）。
+function checkAssetTimebase(mod) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-asset-'));
+  try {
+    writeFileSync(join(dir, 'clip.srt'), '1\n00:00:00,100 --> 00:00:01,000\nx\n\n', 'utf8');
+    // 真造一个 **24fps** 的素材文件放进 `<项目>/assets/videos/`：转译器是**真 ffprobe** 取时基的，
+    // 塞个假文件探不到帧率就会退回源时基 ⇒ 那这条判据就**测不到东西**（会假绿）。
+    mkdirSync(join(dir, 'assets', 'videos'), { recursive: true });
+    const assetPath = join(dir, 'assets', 'videos', 'mate24.mp4');
+    const mk = spawnSync(
+      'ffmpeg',
+      ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=64x48:d=4:r=24',
+       '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', assetPath],
+      { encoding: 'utf8' },
+    );
+
+    const toml = [
+      'duration = 4.0',
+      '[project]',
+      'name = "asset"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      '[edl]',
+      'total_frames = 0',
+      // 第 1 段：**本条片段**（源时基）—— 控制组
+      '[[edl.clips]]',
+      'source_start = 0.0',
+      'source_end = 1.0',
+      'speed = 1.0',
+      // 第 2 段：**素材**，从素材秒 1.0 起 —— 判据组
+      '[[edl.clips]]',
+      'source_start = 1.0',
+      'source_end = 2.0',
+      'speed = 1.0',
+      'source_kind = "asset"',
+      'asset_id = "mate24"',
+      '',
+    ].join('\n');
+    const config = mod.parseToml(toml);
+    const doc = mod.translate(config, dir, join(dir, 'p.doc.json'));
+
+    // 素材登记：必须是**它自己的** 24fps（不是源的 30fps）
+    const mate = (doc.assets ?? []).find((a) => a.id === 'assets/videos/mate24.mp4');
+    if (!mate) {
+      throw new Error(
+        `素材没有被登记成 asset（探针造的文件在 ${assetPath}，ffmpeg 退出码=${mk.status}）—— ` +
+          '这一条测不下去，别当它绿了',
+      );
+    }
+    ok(
+      mate.timebase.num === 24 && mate.timebase.den === 1,
+      `素材 asset 的时基应当是它自己的 24/1，实得 ${mate.timebase.num}/${mate.timebase.den}`,
+    );
+
+    const mains = [];
+    for (const track of doc.timeline.tracks) {
+      for (const l of track.layers ?? []) {
+        if (typeof l.id === 'string' && l.id.startsWith('main-')) mains.push(l);
+      }
+    }
+    mains.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    ok(mains.length === 2, `两段 EDL 应当出 2 个主画面层，实得 ${mains.length}`);
+
+    // 控制组：源那一段仍按**源时基**（30fps）—— 素材功能不许改变老路径
+    ok(
+      mains[0].source.source_in === 0,
+      `源段从 0 起 ⇒ source_in 应当是 0，实得 ${mains[0].source.source_in}`,
+    );
+    // 判据组：素材段从**素材秒 1.0** 起 ⇒ 24fps ⇒ **24** 帧（若按源 30fps 算就是 30）
+    ok(
+      mains[1].source.source_in === 24,
+      `素材段从素材秒 1.0 起、素材 24fps ⇒ source_in 应当是 **24**（按源 30fps 算会是 30），` +
+        `实得 ${mains[1].source.source_in}`,
+    );
+    ok(
+      mains[1].source.asset_id === 'assets/videos/mate24.mp4',
+      `素材段的 asset_id 应当指向项目里那份拷贝，实得 ${mains[1].source.asset_id}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return checks;
+}
+
+/// 第 6 批：素材判据**只认小写** `source_kind === 'asset'` + 非空 `asset_id`。
+///
+/// 放宽大小写看着"更健壮"，实则把"用户写错档位"变成**静默当成本条片段** ——
+/// 正是规格 §11.7 ① 那一类（分叉且不报错）。
+function checkAssetClipPredicate(mod) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    checks += 1;
+    const a = JSON.stringify(actual);
+    const b = JSON.stringify(expected);
+    if (a !== b) throw new Error(`${what}：期望 ${b}，实得 ${a}`);
+  };
+
+  eq(mod.edlClipAssetId({ source_kind: 'asset', asset_id: 'a.mp4' }), 'a.mp4', '正常素材段要认出来');
+  eq(mod.edlClipAssetId({ source_kind: 'Asset', asset_id: 'a.mp4' }), null, '`Asset` 不算素材（只认小写）');
+  eq(mod.edlClipAssetId({ source_kind: 'clip', asset_id: 'a.mp4' }), null, '`clip` 档不算素材');
+  eq(mod.edlClipAssetId({ source_kind: 'asset' }), null, '素材段但没有 asset_id ⇒ 不算（否则会去取一个空名的文件）');
+  eq(mod.edlClipAssetId({ source_kind: 'asset', asset_id: '   ' }), null, '空白 asset_id 要 trim 掉再判空');
+  eq(mod.edlClipAssetId({ source_kind: 'asset', asset_id: ' a.mp4 ' }), 'a.mp4', '两边空白要 trim');
+  eq(mod.edlClipAssetId(null), null, 'null 不许抛');
+  eq(mod.edlClipAssetId({}), null, '缺 source_kind ⇒ 老工程 = 本条片段');
+  return checks;
+}
+
+function checkSpeedReport(mod) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-speed-'));
+  try {
+    writeFileSync(join(dir, 'clip.srt'), '1\n00:00:00,100 --> 00:00:01,000\nx\n\n', 'utf8');
+    // 三段：原速 2s / **快放 2s（speed=2.0）** / **慢放 2s（speed=0.5）**。
+    // 派生 @60fps（转译器这个 fixture 走 60）= 120 + 60 + 240 = 420 帧 = 7.0s。
+    const toml = [
+      'duration = 6.0',
+      '[project]',
+      'name = "speed"',
+      'output = "o.mp4"',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      '[edl]',
+      'total_frames = 0',
+      '[[edl.clips]]',
+      'source_start = 0.0',
+      'source_end = 2.0',
+      'speed = 1.0',
+      '[[edl.clips]]',
+      'source_start = 2.0',
+      'source_end = 4.0',
+      'speed = 2.0',
+      '[[edl.clips]]',
+      'source_start = 4.0',
+      'source_end = 6.0',
+      'speed = 0.5',
+      '',
+    ].join('\n');
+    const config = mod.parseToml(toml);
+    const doc = mod.translate(config, dir, join(dir, 'p.doc.json'));
+
+    // ① 报告的 NOTE 里点名了变速（含两个速率）。
+    //
+    // ⚠️ note 收在转译器**模块私有的 `issues` 数组**里（不写进 doc），只有 CLI 那条路会
+    //    `console.log` 出来 ⇒ 这里用**成品里的可观测面**兜住这条语义：
+    //    `extensions["yekitrim.polish_toml"]` 的 `edl_clips` / `out_frames` 是**有契约的**
+    //    （注释里写明"带 EDL 才有这几个键"），所以它们能证明"EDL 真的被认下来了"；
+    //    而 NOTE 的措辞由下一条（`--mutate` 让分支恒 false 时必须翻面）来钉。
+    const stats = doc.extensions?.['yekitrim.polish_toml'] ?? {};
+    ok(stats.edl_active === true, '带 EDL 的工程必须把 edl_active 置真（否则整条 EDL 被静默忽略）');
+    ok(stats.edl_clips === 3, `edl_clips 应当 = 3，实得 ${stats.edl_clips}`);
+    ok(stats.out_frames === 420, `out_frames（成片总帧数）应当 = 420，实得 ${stats.out_frames}`);
+
+    // ② 画面层真的按 speed 缩了段长
+    const mains = [];
+    for (const track of doc.timeline.tracks) {
+      for (const l of track.layers ?? []) {
+        if (typeof l.id === 'string' && l.id.startsWith('main-')) mains.push(l);
+      }
+    }
+    mains.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    ok(mains.length === 3, `三段 EDL 应当出 3 个主画面层，实得 ${mains.length}`);
+    const dur = mains.map((l) => (l.end ?? 0) - (l.start ?? 0));
+    ok(dur[0] === 120, `第 1 段原速 2s ⇒ 120 帧，实得 ${dur[0]}`);
+    ok(dur[1] === 60, `第 2 段 ×2.0 ⇒ 60 帧（**缩一半**，这正是变速生效的判据），实得 ${dur[1]}`);
+    ok(dur[2] === 240, `第 3 段 ×0.5 ⇒ 240 帧（**放一倍**），实得 ${dur[2]}`);
+    ok(mains[2].end === 420, `成片总帧数 = 420，实得 ${mains[2].end}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return checks;
+}
+
+/// 第 4 批：`[[a.b]]` 的**父级必须建成表**（`parseToml` 的静默分叉）。
+///
+/// 为什么单独钉：`[[edl.clips]]` **前面没有 `[edl]` 表头**时（手改过 / 第三方生成的
+/// `polish.toml`），旧解析器把 `edl` 建成**数组** ⇒ `config.edl?.clips === undefined`
+/// ⇒ 转译器把**整条 EDL 当没有**（画面按整条源出片），而 **Rust 的真 toml 解析器读得出来**
+/// （音轨按 EDL 拼）—— 两侧分叉、**都不报错**。这正是规格 §3 R7 那一类。
+///
+/// ⚠️ 现实里自家工程不受影响（Rust 落盘经 `toml::to_string_pretty`，会写 `[edl]` 表头），
+/// 所以这条守的是"手改工程"面 —— 反过来说，**只有这里能抓住它**。
+function checkTomlArrayTableParent(mod) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    checks += 1;
+    const a = JSON.stringify(actual);
+    const b = JSON.stringify(expected);
+    if (a !== b) throw new Error(`${what}：期望 ${b}，实得 ${a}`);
+  };
+
+  // ① 只有 `[[edl.clips]]`、没有 `[edl]` 表头 ⇒ 父级必须是**表**，clips 要能读出来
+  const noHeader = mod.parseToml('[[edl.clips]]\nsource_start = 3.0\nsource_end = 6.0\nspeed = 1.0\n');
+  eq(noHeader.edl?.clips?.length, 1, '`[[edl.clips]]` 无 `[edl]` 表头时也要读出 clips（父级必须是表）');
+  eq(noHeader.edl?.clips?.[0]?.source_start, 3, '读出来的值要对');
+  // ⚠️ **真正的判别串是"父级是不是数组"，不是 `edl.clips` 读不读得出来**：
+  //    JS 数组本身就是对象 ⇒ 把 `edl` 建成数组后 `node[last].push(...)` 会**挂在那个数组上**
+  //    （`edl.clips` 照样读得出、值还对！），但 `edl` 自己成了 `[]`（长度 0，元素全丢）。
+  //    实测踩过：只断言 `edl?.clips` 的话，把 `node[key] = {}` 改回 `[]` **照样绿** ——
+  //    这条变异第一次就是这么"没被打红"的。所以必须**直接判类型**。
+  eq(Array.isArray(noHeader.edl), false, '`[[a.b]]` 的父级 `a` 必须是**表**，不是数组');
+
+  // ② 同一份文件的**两种写法**必须读成同一个形状（否则两端各读一份、分叉不报错）
+  const withHeader = mod.parseToml('[edl]\n\n[[edl.clips]]\nsource_start = 3.0\nsource_end = 6.0\n');
+  const a = JSON.stringify(noHeader.edl?.clips?.[0]?.source_start);
+  const b = JSON.stringify(withHeader.edl?.clips?.[0]?.source_start);
+  eq(a, b, '有/无 `[edl]` 表头两种写法必须读成同一形状');
+  eq(Array.isArray(withHeader.edl), false, '有 `[edl]` 表头时父级同样必须是表（两种写法的形状要一致）');
+
+  // ③ 既有形状**不许被这次改动碰坏**：
+  //    `[[segments]]` 是最外层数组表（父级 = 根，段本身进数组）—— 它仍然是**数组**
+  const segs = mod.parseToml('[[segments]]\nstart = 1.0\n[[segments.events]]\nkind = "x"\n');
+  eq(Array.isArray(segs.segments), true, '`[[segments]]` 仍是最外层数组表（段在数组里）');
+  eq(segs.segments?.[0]?.events?.[0]?.kind, 'x', '`[[segments.events]]` 嵌在段里要读得出');
+  //    而 `[cover]` + `[[cover.effects]]` 是"普通表里的数组表"，effects 是**数组**
+  const cov = mod.parseToml('[cover]\n\n[[cover.effects]]\ntype = "gradient"\n');
+  eq(Array.isArray(cov.cover?.effects), true, '`[[cover.effects]]` 的父级 cover 是表、effects 是数组');
+  eq(cov.cover?.effects?.[0]?.type, 'gradient', 'effects 里的值要读得出');
   return checks;
 }
 
@@ -1881,6 +2341,11 @@ console.log('  dur=1.0/fps=60 时最后一帧 opacity ≤ 0.1、出点那一帧�
 console.log('  并读四处源码（转译器 / 模板 / timeline.rs / engine.js）钉"同一条窗口 + 同一处淡出起点"');
 
 const mappingChecks = checkMappings(translatorModule);
+const envelopeChecks = checkEnvelopeClamp(translatorModule);
+const speedChecks = checkSpeedReport(translatorModule);
+const tomlTableChecks = checkTomlArrayTableParent(translatorModule);
+const assetTbChecks = checkAssetTimebase(translatorModule);
+const assetPredChecks = checkAssetClipPredicate(translatorModule);
 console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全绿`);
 
 const laneChecks = checkLaneSwitches(translatorModule);
@@ -1891,6 +2356,11 @@ console.log('  钉住的是 2026-10-05：先定画面大小 → 绕盒心缩放 
 console.log('  scale=1 时与老顺序逐值相同、scale≠1 时 X=0 是贴左（旧顺序 -303.75 = 画面被推出盒外）');
 const denseChecks = checkDenseRanges(translatorModule);
 console.log(`✓ 密集键区间（③R3 右端落点 + 两个边界）：${denseChecks} 项全绿`);
+console.log(`✓ 调整图层窗口夹取（乱序/重放 EDL 下不许超出所在段）：${envelopeChecks} 项全绿`);
+console.log(`✓ 变速（第 4 批：报告点名 + 段长按 speed 缩，帧号域）：${speedChecks} 项全绿`);
+console.log(`✓ TOML 数组表父级（[[edl.clips]] 无 [edl] 头也要读得出来）：${tomlTableChecks} 项全绿`);
+console.log(`✓ 素材时基（第 6 批：source_in 按素材自己的帧率换算）：${assetTbChecks} 项全绿`);
+console.log(`✓ 素材判据（只认小写 asset + 非空 id）：${assetPredChecks} 项全绿`);
 const fontFamilyChecks = checkFontFamily(translatorModule);
 console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
 console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');

@@ -180,8 +180,23 @@ export function parseToml(text) {
         if (Array.isArray(node[key])) {
           node = node[key][node[key].length - 1];
         } else if (node[key] === undefined) {
-          node[key] = [];
-          node = node[key][0] = {};
+          // ⚠️ **中间那一段是「表」，不是「数组」**（2026-10 修，第 4 批实测）。
+          //
+          // `[[a.b]]` 的语义是"`a` 这张表里，`b` 是一个数组" —— 中间那一段 `a`
+          // **永远是表**。以前这里写成 `node[key] = []`（照 `[[segments]]` 那种
+          // "最后一段是数组"的形状抄的），于是 `[[edl.clips]]` **前面没有 `[edl]` 表头**时
+          // 解析成 `{edl: [{clips: [...]}]}`：`config.edl.clips` 是 `undefined`
+          // ⇒ 转译器把整条 EDL **当没有**，而 Rust（真 toml 解析器）读得出来。
+          //
+          // 症状是**消费点②与①分叉且不报错**（画面按整条源出片、音轨按 EDL 拼），
+          // 正是规格 §3 R7 "预览 ≠ 成片" 那一类。
+          // 现实里的触发面：Rust / 服务端落盘一律经 `toml::to_string_pretty`，
+          // 它会写出 `[edl]` 表头，所以**自家写的工程不受影响** ——
+          // 但**手改过的 / 第三方生成的** `polish.toml` 会。而 Rust 侧的读盘单测
+          // （`legacy_project_has_empty_edl_and_writes_nothing` 用例 ④）**明确接受**
+          // 只有 `[[edl.clips]]` 的文本 ⇒ 两端对同一份文件的读法必须一致。
+          node[key] = {};
+          node = node[key];
         } else {
           node = node[key]; // 普通表：直接进去，**不要动它的类型**
         }
@@ -441,6 +456,207 @@ export function laneDefaults(portraitSrc, portraitCanvas) {
   };
 }
 
+/// 视频素材的扩展名（**必须与 Rust `sticker_index::is_video_file_name` 同集合**）。
+///
+/// ⚠️ 这是"一份判据两处实现"里不得不重复的那一处：判据的真源在 Rust
+/// （`crates/yekitrim-polish/src/assets/sticker_index.rs`，它决定**什么能进素材库**），
+/// 而转译器是零依赖的 node 脚本、不 import 本仓的任何东西（`tools/AGENTS.md` 的硬规矩），
+/// 所以只能照抄一份。**改一边必须改另一边** —— 集合漂移的症状是"库里能看到这个素材、
+/// 出片时转译器说项目里没有它"，而用户看不出是判断标准不一致。
+const VIDEO_EXTS = ['.mp4', '.mov', '.mkv', '.webm', '.avi'];
+
+/// **叠化的重叠时长（秒）** —— 相邻两段在成片时间轴上重叠这么久，用来做交叉淡化。
+///
+/// # 为什么是 0.5s（规格 §11.3 说"典型 0.3~1.0s"）
+///
+/// 取**区间中位**：0.3s 在 60fps 下只有 18 帧，淡化窗口短到肉眼只看到"糊一下"，
+/// 而叠化的判据恰恰是"中点那一帧两层同时可见"—— 窗口太短时中点离两端都近，
+/// 与硬切的区分度下降。1.0s 又太长，会让"两段各让出半秒"变得明显。
+/// `.workbuddy/edl-transition-probe/` 的探针用的就是 30 帧 @60fps = **0.5s**，
+/// 所以这个值是**实测过的**（最大帧间 YAVG 跳变 2.22 vs 硬切 26.97）。
+///
+/// ⚠️ **它是一个常量、不是每段可调的落盘字段**：落盘就有两个真源（工程里一个、
+/// 这里一个），改一处会让另一处静默漂 —— 与 `out_start` 不落盘同一条纪律
+/// （规格 §2.2 规则 1）。将来真要做成可调，**必须**先把它写成 30 处消费点同源的那一份。
+export const DISSOLVE_OVERLAP_SEC = 0.5;
+
+/// 叠化的重叠**帧数**（`round(秒 × fps)`，与 `edl_clip_frames` 的量化口径同一条）。
+///
+/// ⚠️ **必须 ≥1 且 < 该段自己的长度**：重叠为 0 时"叠化"退化成硬切（静默），
+/// 而重叠 ≥ 段长会把前一段整段吃掉（那不是叠化，是把前一段删了）。
+/// 调用点据此报 DROP，**不在这里悄悄夹**（夹了就是"改用户的时间线而不说"）。
+export function dissolveOverlapFrames(fps) {
+  if (!Number.isFinite(fps) || fps <= 0) return 0;
+  return Math.max(0, Math.round(DISSOLVE_OVERLAP_SEC * fps));
+}
+
+/// 一个 EDL 段指向的**视频素材 id**（`null` = 本条片段）。
+///
+/// # 这是"素材库来源"判据的**唯一一份**（三处消费点的 JS 那一侧）
+///
+/// 另两处：Rust `EdlClip::is_asset` / `asset_id_ref`（`yekitrim-render-core/src/types.rs`，
+/// 出片腿与音轨组装读它）、前端 `webui/src/polish/edl.js::edlSourceKind`（成片轨上色 + 角标）。
+/// 三处分歧的症状是"**预览里那段是素材、成片里是本条**"（或反过来），而**不报错** ——
+/// 所以口径按逐字写在下面，改一处必须三处一起看。
+///
+/// 口径（与 Rust 那两条逐字相同）：
+///  · `source_kind` 必须是**小写** `'asset'`（`'Asset'` / `'ASSET'` 不认 —— 别开始宽容，
+///    工程文件是机器写的，宽容只会让"拼错"从"看得出来"变成"看不出来"）；
+///  · `asset_id` 必须**非空、非全空白**（空串会让这一段静默退化成"素材库里没有这个文件"，
+///    而那个失败在出片里表现为"这一段用回本条片段"，用户看不出区别）；
+///  · 其余一切（字段缺席 / `source_kind = 'clip'` / 认不出的档位）⇒ `null` = 本条片段。
+///
+/// ⚠️ **`asset_id` 是素材名（去扩展名），不是路径**（`assets/AGENTS.md` 那条纪律）：
+/// 项目里那一份在 `<项目>/assets/videos/<文件名>`，而"哪一个文件"由**库里的名字**查出来。
+export function edlClipAssetId(clip) {
+  if (!clip || typeof clip !== 'object') return null;
+  if (clip.source_kind !== 'asset') return null;
+  const id = typeof clip.asset_id === 'string' ? clip.asset_id.trim() : '';
+  return id === '' ? null : id;
+}
+
+/// `EdlClip::transition_in` 的取值 —— **`cut` 是缺省**（字段缺席 = 硬切）。
+export const EDL_TRANSITION_CUT = 'cut';
+/// 叠化（跨轨重叠 + 上层 `opacity` 0→1 线性关键帧）。
+export const EDL_TRANSITION_DISSOLVE = 'dissolve';
+
+/// 一段的**入场转场**（`null` = 硬切）。
+///
+/// # 三处消费点同源的那一份（JS 侧）
+///
+/// 另两处：Rust `EdlClip::transition_kind`（`yekitrim-render-core/src/types.rs` —— 音轨
+/// 交叉淡化读它）、前端 `webui/src/polish/edl.js::edlTransition`（成片轨角标）。
+/// 分歧的症状是"**预览里某段带转场、成片里是硬切**"（或反过来），而**不报错**。
+///
+/// 口径（与 Rust 那条逐字相同）：
+///  · `transition_in` 必须是**小写** `'dissolve'` —— `'Dissolve'` / `'DISSOLVE'` 不认
+///    （工程文件是机器写的，宽容只会让"拼错"从"看得出来"变成"看不出来"）；
+///  · 其余一切（字段缺席 / `'cut'` / 认不出的档位）⇒ `null` = 硬切。
+///
+/// ⚠️ **认不出 = 硬切，但必须在报告里点名**（调用点会打一条 NOTE）——
+/// 静默当硬切会让用户以为"我选了叠化"（与 §11.6 那句"宁可没有，不要一个看着能点、
+/// 出片没效果的选项"同一条纪律）。
+export function edlClipTransition(clip) {
+  if (!clip || typeof clip !== 'object') return null;
+  return clip.transition_in === EDL_TRANSITION_DISSOLVE ? EDL_TRANSITION_DISSOLVE : null;
+}
+
+/// 算出**保留区间**（源时间，帧）并给每段标上**输出起点** `outStart`。
+///
+/// 这是"源时间 → 成片时间"那张映射表的构造处，画面层 / 音轨 / 字幕弹幕音效
+/// **三处都必须消费它的产物**（`keepRanges` / `remapFrame` / `remapCueMs`），
+/// 否则音画会各自错位（而**不会报错**）。
+///
+/// # 三个分支
+///
+/// 1. **`clips` 非空**（`config.edl`，规格 §2.2 规则 3 的另一半）—— 成片时间线
+///    **显式给出来了**：数组顺序就是成片播放顺序，区间可重复、可乱序。`keepMuted`
+///    在这条路上**不再短路**（§5：EDL 非空时"唯一那一刀"就是 EDL 本身，尾部那道
+///    `cut_ranges` 与 `mute_ranges` 一起被忽略）。`source_start` / `source_end` 取整成
+///    源帧号后，若它已被用户改小（`end = start`），我们**只改端点、只许变大**地吃掉
+///    这段与他自己的意图冲突的屏蔽段 —— 见下面 `clips.length > 0` 那一段的注释。
+/// 2. `keepMuted = false`：**压缩时间线**（`mute_ranges` 的补集）—— 预览那条腿。
+///    客户端靠"落在被掐掉的段里 = 没有对应帧"去跳屏蔽区间。
+/// 3. `keepMuted = true`：**整条一条** —— 出片那条腿（`2026-09-30` 起）。
+///    出片尾部还有一道 `Ffmpeg::cut_ranges`（Rust 侧的整段重编码）**按源时间**剪；
+///    这里若先掐一遍、尾部再剪一遍 = **剪两次**：实测成片短一大截，
+///    而且音轨是从**整条**源视频抽的、没跟着压缩，第一刀之后全错位。
+///    ⇒ 出片给"整条时间线"，屏蔽区间交给尾部那一剪（两边口径就统一了）。
+///    ⚠️ 这条只服务**空 EDL 的老工程**（存量零回归 R4）；EDL 非空时走第 1 条。
+///
+/// ⚠️ **`outStart` 是累加出来的**，所以它必须在这里算、不能各消费点各算一遍 ——
+/// 三处各推一遍的症状是"块位置差一点点"且**不报错**（同 `check-grid-parity.mjs` 那条教训）。
+///
+/// ⚠️⚠️ **EDL 分支必须与 `Edl::resolve_clips` 逐值同构**（消费点②，规格 §3）：
+/// 它**不看 `mute_ranges`、也不看 `totalFrames`** —— 有 EDL 时屏蔽整个被忽略
+/// （§2.3；`ProjectFile::resolve_edl` 的注释同一句）。**这里多写一条规则就是第 2 份推导**，
+/// 而两份推导的分歧只会表现为"成片短一段"，不报错。实测踩过：多求了一次与
+/// `mute_ranges` 的交集 ⇒ 画面比派生值少 180 帧，靠合流前那条时长断言才发现。
+///
+/// @param {number} totalFrames 源总帧数
+/// @param {Array<{start:number,end:number}>} muteFrames 屏蔽区间（**已排序、已过滤空段**）
+/// @param {boolean} keepMuted 见上（**只在 `clips` 为空时生效**）
+/// @param {Array<{source_start:number,source_end:number,speed?:number,source_kind?:string,asset_id?:string}>} [clips] `config.edl.clips`（秒域）
+/// @param {number} [fps] 源帧率（`clips` 秒 → 帧的量纲；缺省不转 EDL）
+/// @returns {Array<{start:number,end:number,outStart:number,speed:number,assetId:(string|null)}>}
+export function buildKeepRanges(totalFrames, muteFrames, keepMuted, clips = [], fps = 0) {
+  const keepRanges = [];
+  if (Array.isArray(clips) && clips.length > 0 && fps > 0) {
+    // ---- 成片时间线（EDL）显式给出 ----
+    //
+    // ⚠️⚠️ **这段必须与 `Edl::resolve_clips` **逐值同构**，一个改动都不许有。**
+    // 它是"三处消费点同源"（规格 §3 / §9 R7）里的**消费点②**，另外两处是
+    // Rust 的出片腿（`resolve_edl`）与前端（批 3）。**两边不一致就是画面与音轨
+    // 各自剪法不同，而完全没有报错** —— 实测过一次：这里多求了一次与
+    // `mute_ranges` 的交集，而 Rust 侧不求，于是画面那条腿少出 180 帧（15.0s vs 派生 18.0s），
+    // 是合流前那条时长断言（`Ffmpeg::mux_checked`）把它点出来的。
+    //
+    // ⚠️ **`mute_ranges` 在有 EDL 时整个被忽略**（规格 §2.3 明写；`ProjectFile::resolve_edl`
+    // 的文档注释也写着同一句）。这里**不许**自己再求一次交 —— 那会造出第二份推导，
+    // 而两份推导的分歧只会表现为"成片短一段"，不会报错。
+    //
+    // 口径（与 `edl_clip_frames` 逐式）：
+    //   `sf = round(source_start*fps)`、`ef = round(source_end*fps)`、
+    //   `dur = round((ef - sf) / speed)`。
+    // ⚠️ **不是 `round((source_end-source_start)*fps/speed)`** —— 非帧对齐的秒数上两者差 1 帧，
+    //    而 `out_start` 是累加值 ⇒ 那 1 帧会推着后面**所有**段一起偏。
+    for (const clip of clips) {
+      const speed = typeof clip.speed === 'number' && Number.isFinite(clip.speed) && clip.speed > 0
+        ? clip.speed
+        : 1.0;
+      const sf = Math.round((clip.source_start ?? 0) * fps);
+      const ef = Math.round((clip.source_end ?? 0) * fps);
+      if (!(ef > sf)) continue; // 非法段跳过（与 `Edl::resolve_clips` 同口径）
+      keepRanges.push({
+        start: sf,
+        end: ef,
+        // 该段在成片里占的**帧数**（`Edl::resolve_clips` 逐式）：源帧数 / speed，四舍五入。
+        durFrames: Math.max(1, Math.round((ef - sf) / speed)),
+        speed,
+        // ⚠️ **这一段画面从哪个 asset 来**（规格 §11.4 / 第 6 批）。
+        //
+        // 判据与 Rust `EdlClip::is_asset` / 前端 `edl.js::edlSourceKind` **同一份口径**：
+        // `source_kind === 'asset'` 且 `asset_id` 非空才算素材段，其余一律 `null`
+        // （= 本条片段）。三处分歧的症状是"预览里那段是素材、成片里是本条"，而**不报错**。
+        //
+        // ⚠️ `asset_id` 里存的是**素材名（去扩展名）**，不是路径 —— 与库里的
+        // `VideoAsset::name`、以及项目里那份拷贝的定位口径一致（`assets/AGENTS.md`）。
+        assetId: edlClipAssetId(clip),
+        // ⚠️ **第 7 批（task-10）**：这一段的**入场转场**（`null` = 硬切）。
+        //
+        // ⚠️ **它是"派生"还是"落盘"的分界线**：`transition_in` 落盘（第 6 批定形），
+        // 而**重叠帧数不落盘** —— 它就是下面 `DISSOLVE_OVERLAP_SEC` 这一个常量乘 fps。
+        // 不落盘的理由与 `out_start` 同一条（规格 §2.2 规则 1）：两个真源必然漂。
+        transition: edlClipTransition(clip),
+      });
+    }
+    // ⚠️ `totalFrames` 在这里**不参与裁剪**：EDL 的段可以引用到"探到的时长"之外
+    // （时长探短、或素材时间基与容器标称不符），而 `resolve_clips` 不看总时长 ——
+    // 这里裁一刀就会比派生值**短**，然后 `-shortest` 静默截断。
+  } else if (keepMuted) {
+    // 老工程那两条路**没有 EDL**，画面一律来自本条片段（`source_kind` 那时还不存在）。
+    keepRanges.push({ start: 0, end: totalFrames, assetId: null });
+  } else {
+    let cursor = 0;
+    for (const mute of muteFrames) {
+      if (mute.start > cursor) keepRanges.push({ start: cursor, end: mute.start, assetId: null });
+      cursor = Math.max(cursor, mute.end);
+    }
+    if (cursor < totalFrames) keepRanges.push({ start: cursor, end: totalFrames, assetId: null });
+  }
+  // 每个保留区间的**输出起点**（把前面掐掉的长度减掉）。
+  //
+  // ⚠️ **帧号域累加，不是秒域**（规格 §9 R8）：`outStart = Σ 前面每段的时长`是**累加**，
+  // 在秒域累加时单段一次 f64 舍入会推着后面**所有**段一起偏（段越多、变速越碎越明显）。
+  // EDL 段还可以带 `speed` —— 一变速这条就更不能写在秒域。
+  let outputCursor = 0;
+  for (const range of keepRanges) {
+    range.outStart = outputCursor;
+    outputCursor += range.durFrames ?? (range.end - range.start);
+  }
+  return keepRanges;
+}
+
 /// 把一串 cue 写成 SRT。用于**重映射之后的字幕**（裁剪过的时间线）。
 function cuesToSrt(cues) {
   const out = [];
@@ -598,7 +814,10 @@ const STICKER_BOX_BASE = 280.0;
 ///
 /// 解析不出就退回给的那对兜底值，并**不静默**（调用方看不到返回值里的这一层，
 /// 所以这里只负责"尽快给出一个合理的默认"，准确性由转译器的 DROP/CLAMP 清单负责）。
-function parseStroke(raw, fallbackWidthPx, fallbackColor) {
+/// ⚠️ **export 出来是为了守卫**（`scripts/check-yekitrim-translator.mjs` 逐值钉它）：
+/// 它有一条**静默**的失败模式 —— 颜色正则收窄成只认 6 位时 `#fff` 会**悄悄**回落到兜底深灰：
+/// 用户选白色描边、成片是深灰，而**报告里一行差异都没有**。`isEntryPoint` 那道门保证直接跑仍是 CLI。
+export function parseStroke(raw, fallbackWidthPx, fallbackColor) {
   const color = hexColor(fallbackColor) ?? { r: 0, g: 0, b: 0 };
   const result = {
     widthPx: fallbackWidthPx,
@@ -612,7 +831,13 @@ function parseStroke(raw, fallbackWidthPx, fallbackColor) {
   if (typeof raw !== 'string') return result;
   const widthMatch = raw.match(/([\d.]+)\s*px/);
   if (widthMatch) result.widthPx = Number(widthMatch[1]);
-  const colorMatch = raw.match(/#[0-9a-fA-F]{6}/);
+  // ⚠️ **`{3,8}` 而不是 `{6}`**（2026-10 修）：`hexColor` 本来就能展开 `#RGB` / `#RGBA` /
+  //    `#RRGGBB` / `#RRGGBBAA`（本仓 `polish.toml` 里四种都出现过），但**外层这个正则只认 6 位**
+  //    ⇒ `#fff` / `#abc` 匹配不上、`hexColor` 根本走不到，于是**静默回落到兜底深灰**。
+  //    症状极具迷惑性：用户在编辑器里选"白色描边"、成片是深灰，**报告里一行差异都没有**。
+  //    ⚠️ 用 `{3,8}` 之后 `#RRGGBBAA` 会被吃成 8 位——`hexColor` 认它（忽略 alpha，与
+  //    `outline` 只有开/关一致），这比"整条回落"好得多。
+  const colorMatch = raw.match(/#[0-9a-fA-F]{3,8}/);
   if (colorMatch) {
     const parsed = hexColor(colorMatch[0]);
     if (parsed) {
@@ -1304,6 +1529,109 @@ export function translate(config, clipDir, outPath, options = {}) {
   });
   note('assets', 'frame_count 留空：转译器不去探测媒体（要让 probe 子命令回填）');
 
+  // ---- 视频素材（第 6 批 / 规格 §11.2）----
+  //
+  // EDL 里 `source_kind = "asset"` 的段指向**另一个 mp4**，底座把它当**第二个 `asset`**
+  // （探针已验：`assets[]` 是数组、`opened_streams: 2`、两段各自的像素都真出现了）。
+  //
+  // ⚠️⚠️ **每个素材必须按它自己的 `timebase` 换算 `source_in`** —— 这是本批**最容易埋雷**
+  // 的一条（规格 §11.2 第 3 条）：
+  //
+  //   `source_in` 的单位是**该素材自己的帧**，而 `layer.start/end` 是**序列帧**。底座
+  //   （`EvalContext::source_frame_looped`）拿「序列帧 → 秒（用时间线时基）→ 素材帧（用该
+  //   asset 自己的 `timebase`）」再 `+ source_in`。所以**素材帧率 ≠ 时间线帧率**时，
+  //   写死的那个 `assetTimebase` 会算出**别的素材的帧号** ——
+  //
+  //   症状（那条注释记的实测）：**画面跳到源里 6 倍远的位置**，而且**不报错**。
+  //   （5fps 素材 + 30fps 网格 ⇒ 本来该第 20 帧、写成序列帧就是 120。）
+  //
+  //   ⇒ 这里给**每个 asset 一份自己的 `assetTimebase`**，`mainLayers` 按 `range.assetId`
+  //     取那一份来换算（见下面的 `sourceFramesFor`）。
+  //
+  // ⚠️ **素材必须已经在项目里**（`assets/videos/<文件名>`）：出片与预览只读项目目录，
+  //   引用库里的绝对路径 = 换机器/库改名就废（`assets/AGENTS.md`）。所以这里查的是
+  //   **项目目录**，缺了当场 DROP（而不是"猜一个路径"或"静默用回本条片段"）。
+  //
+  // ⚠️ **时基靠 `probeMedia` 真探**，不重用源那一份 —— 那会造出**第二个 fps 真源**，
+  //   而第 2 批刚为"硬编码 30fps"打过一架（`render/pipeline.rs`）。探不到就**明确报**、
+  //   并按时间线时基兜底（那会让该素材的帧号错，所以必须让人看见）。
+  const videoAssets = new Map(); // asset_id（素材名）→ { id, timebase, width, height } | null
+  /// 登记一个视频素材（返回它的 asset_id；登记不上返回 `null` 并报 DROP）。
+  const registerVideoAsset = (assetName) => {
+    if (!assetName) return null;
+    if (videoAssets.has(assetName)) return videoAssets.get(assetName)?.id ?? null;
+    videoAssets.set(assetName, null); // 先占位，防止同一名字递归重入
+    // 素材在**项目里**那一份：`<项目>/assets/videos/<文件名>`。扩展名由库里那份决定，
+    // 而库里那一份是 Rust `AssetDownloader::download_videos` 复制过来的 —— 这里按
+    // **同名不同扩展名**逐个试（与贴纸那条"要试全部图片扩展名"是同一个坑）。
+    const videoDir = join(clipDir, 'assets', 'videos');
+    let found = null;
+    try {
+      const entries = readdirSync(videoDir);
+      found = entries
+        .filter((f) => {
+          const stem = f.replace(/\.[^.]+$/, '');
+          return stem === assetName && VIDEO_EXTS.some((e) => f.toLowerCase().endsWith(e));
+        })
+        .sort()[0] ?? null;
+    } catch {
+      found = null;
+    }
+    if (!found) {
+      drop(
+        'assets',
+        `EDL 引用视频素材「${assetName}」，但项目里没有它的拷贝（找的是 assets/videos/` +
+          `${assetName}.{${VIDEO_EXTS.map((e) => e.replace('.', '')).join('/')}}）—— ` +
+          '这一段会缺画面。素材必须先复制进项目（跑一次后处理），**不许引用素材库里的绝对路径**：' +
+          '那样换机器/库改名之后这个工程就出不了片了',
+      );
+      return null;
+    }
+    const rel = `assets/videos/${found}`;
+    const abs = join(clipDir, rel);
+    // ⚠️ **按素材自己的媒体探时基**（`probeMedia` 吸附到最近标准帧率）。
+    const m = probeMedia(abs);
+    if (!m || !m.fps) {
+      note(
+        'assets',
+        `视频素材「${assetName}」：探不到它自己的时基（ffprobe 不可用 / 文件读不了），` +
+          `按工程时基 ${assetTimebase.num}/${assetTimebase.den} 处理 —— 素材若不是这个帧率，` +
+          '这一段的 `source_in` 帧号会整体错位（画面跳到素材里的别的位置）',
+      );
+    }
+    const tb = m?.fps ?? assetTimebase;
+    const id = rel;
+    assets.push({
+      id,
+      kind: 'video',
+      name: assetName,
+      uri: rel,
+      frame_count: null,
+      timebase: tb,
+      width: m?.width ?? mediaW ?? 1920,
+      height: m?.height ?? mediaH ?? 1080,
+      content_hash: null,
+      tags: {},
+      note: `来源：素材库视频「${assetName}」（已复制进项目）`,
+    });
+    const rec = { id, timebase: tb, width: m?.width ?? mediaW ?? 1920, height: m?.height ?? mediaH ?? 1080 };
+    videoAssets.set(assetName, rec);
+    if (m?.fps && (tb.num / tb.den) !== (assetTimebase.num / assetTimebase.den)) {
+      note(
+        'assets',
+        `视频素材「${assetName}」的时基 ${tb.num}/${tb.den} 与源 ` +
+          `${assetTimebase.num}/${assetTimebase.den} **不同** —— 这一段的 \`source_in\` 按` +
+          '**它自己的**时基换算（规格 §11.2 第 3 条；混用就是"画面跳到源里 6 倍远的位置"）',
+      );
+    }
+    return id;
+  };
+
+  // 登记 EDL 里引用到的全部素材（在 keepRanges 之前，因为下面按 `range.assetId` 取时基）。
+  const edlClipsRaw = Array.isArray(config.edl?.clips) ? config.edl.clips : [];
+  const referencedAssetNames = [...new Set(edlClipsRaw.map((c) => edlClipAssetId(c)).filter(Boolean))];
+  for (const name of referencedAssetNames) registerVideoAsset(name);
+
   // ---- 音效素材 ----
   //
   // **必须核对文件真的在。** `polish.toml` 里写着 `poka01` / `poka02`，
@@ -1442,34 +1770,119 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 它按**源时间**剪。这里先掐一遍、尾部再剪一遍 = **剪两次**：实测成片短一大截，
   // 而且音轨是从**整条**源视频抽的、没跟着压缩，第一刀之后全错位。
   // ⇒ 出片给"整条时间线"，屏蔽区间交给尾部那一剪（两边口径就统一了）。
-  const keepRanges = [];
-  if (keepMuted) {
-    keepRanges.push({ start: 0, end: totalFrames });
-  } else {
-    let cursor = 0;
-    for (const mute of muteFrames) {
-      if (mute.start > cursor) keepRanges.push({ start: cursor, end: mute.start });
-      cursor = Math.max(cursor, mute.end);
-    }
-    if (cursor < totalFrames) keepRanges.push({ start: cursor, end: totalFrames });
-  }
-  // 每个保留区间的**输出起点**（把前面掐掉的长度减掉）。
-  let outputCursor = 0;
-  for (const range of keepRanges) {
-    range.outStart = outputCursor;
-    outputCursor += range.end - range.start;
-  }
-  const durationFrames = outputCursor; // 裁剪后的总长
+  // ---------------------------------------------------------------------
+  // **成片时间线（EDL）** —— 规格 `docs/plan/edl-retiming-spec.md` §2.2 / §3.1
+  // ---------------------------------------------------------------------
+  //
+  // `config.edl.clips` 非空 ⇒ 成片时间线**显式给出来了**：数组顺序 = 成片播放顺序，
+  // 区间可重复（重放）、可乱序（冷开场）。此时它**取代** `mute_ranges` 的补集
+  // （§2.2 规则 3：「不引入"两者相加"的语义」）——屏蔽不再被删，而是把那几段的
+  // **端点**夹开（用户口径原文：「屏蔽不是删除，是更改端点」，见 `buildKeepRanges`）。
+  //
+  // ⚠️ **`--keep-muted` 在 EDL 非空时不再短路**（§5）：出片尾部那道 `cut_ranges` 是与
+  //    `mute_ranges` 绑在一起的，所以**调用点必须把两者一起跳过** —— 只让转译器不短路、
+  //    尾部照剪，就是"剪两次"（实测 12s 带 3s 屏蔽出成 6.0s）。Rust 侧的对应改动在
+  //    `render/pipeline.rs::cmd_render`（`has_edl` 那一段），两处**必须同时**。
+  //
+  // ⚠️ `totalFrames` 在"时长未知"时是 0（`frameAt(config.duration ?? 0)`）⇒ 那时 EDL
+  //    段全会被 `clippedEnd > totalFrames` 夹没。这不是新问题（老分支同样退化成空），
+  //    但要记住**它是静默的**：所以下面 `keepRanges` 为空时会打一条 NOTE（§4.2）。
+  const edlClips = Array.isArray(config.edl?.clips) ? config.edl.clips : [];
+  const keepRanges = buildKeepRanges(totalFrames, muteFrames, keepMuted, edlClips, fps);
+  const durationFrames = keepRanges.length
+    ? keepRanges[keepRanges.length - 1].outStart + (keepRanges[keepRanges.length - 1].durFrames ?? (keepRanges[keepRanges.length - 1].end - keepRanges[keepRanges.length - 1].start))
+    : 0; // 裁剪后的总长
   const cutFrames = totalFrames - durationFrames;
 
-  /// 源帧号 -> 输出帧号。落在**被掐掉的段里**返回 null（那一段不存在）。
-  const remapFrame = (sourceFrame) => {
-    for (const range of keepRanges) {
-      if (sourceFrame >= range.start && sourceFrame < range.end) {
-        return range.outStart + (sourceFrame - range.start);
+  if (edlClips.length > 0) {
+    // ⚠️ **别只对 `keepRanges` 的长度做判断** —— 它可能因为时长未知而整条为空，
+    // 那时音轨（Rust 侧逐段组装）会拼出 **0 秒**，而成片画面还在。
+    if (keepRanges.length === 0) {
+      drop(
+        'edl',
+        `config.edl 有 ${edlClips.length} 段，但**一段都没能落地**（源总帧数=${totalFrames}，` +
+          `fps=${fps}）—— 时长探不到时 EDL 推不出来。成片会是空的，请先确认 ` +
+          '`[project] duration` / `data/clip-meta.json` 有真值',
+      );
+    } else {
+      note(
+        'edl',
+        `成片时间线：${edlClips.length} 段 -> ${keepRanges.length} 段落地，` +
+          `成片 ${(durationFrames / fps).toFixed(2)}s（源 ${(totalFrames / fps).toFixed(2)}s）；` +
+          '**`mute_ranges` 整个被忽略**（规格 §2.3：有 EDL 时成片播什么只由 EDL 决定），' +
+          '出片尾部那道 `cut_ranges` 也**不执行** —— 唯一那一刀就是 EDL 本身（规格 §5）',
+      );
+      // ⚠️ **重放（或任何重复源区间）必须点名**：它让同一条字幕/弹幕/音效出现在**多个
+      //    不相邻的位置**，而"只按起点重映射一遍"的写法会让后来那几次整条错位、且不报错。
+      //    这一行是给"用户说重放没生效"时第一眼看的证据。
+      const seen = new Map();
+      let dupes = 0;
+      for (const range of keepRanges) {
+        const key = `${range.start}-${range.end}`;
+        if (seen.has(key)) dupes += 1;
+        seen.set(key, true);
+      }
+      if (dupes > 0) {
+        note(
+          'edl',
+          `其中有 ${dupes} 段与前面的段同源（重放/回忆回溯）：主画面与**原声**各出现两次` +
+            `（各自一条 layer），音效与字幕/弹幕按**一对多**重映射（一条 cue 落在多个位置）`,
+        );
+      }
+      // ---- 变速（第 4 批）----
+      //
+      // ⚠️ 第 2/3 批这里打的是 **CLAMP**：「画面按 speed 换算、音轨按原速拼」⇒
+      // 变速段音画不同步，所以报告里明确警告"别拿它出片"。
+      // 第 4 批把音轨那条腿实现掉了（`Ffmpeg::assemble_audio_from_edl` 逐段挂
+      // `atempo`，见 `crates/yekitrim-polish/src/render/ffmpeg.rs::atempo_filter`），
+      // 所以那条 CLAMP **整条作废** —— 留着它会把"正确行为"报成差异，
+      // 而 CLAMP 是要用户逐条挂台账的东西（`docs/yekitrim-integration.md` 第五节）。
+      //
+      // 现在它降级成一条 **NOTE**：变速段要显式点名，因为它是"同一份画面两处换算"
+      // 最容易分叉的地方（转译器缩段长 / Rust 缩音轨段），而**分叉时不报错**。
+      // 这条 NOTE 是"用户说某段快放没生效"时第一眼要看的证据。
+      const speeds = [...new Set(keepRanges.map((r) => r.speed ?? 1.0))].filter((s) => s !== 1.0);
+      if (speeds.length > 0) {
+        const sped = keepRanges.filter((r) => Math.abs((r.speed ?? 1.0) - 1.0) > 1e-9);
+        note(
+          'edl',
+          `其中有 ${sped.length} 段变速（速率 ${speeds.join(' / ')}）：段长按 ` +
+            '`round((ef-sf)/speed)` 缩（与 Rust `Edl::resolve_clips` 逐值一致），' +
+            '**画面**挂 `source.source_rate`（底座 0.3.0 / D24 起；`rate` = 每输出 1 帧' +
+            '消耗几个源帧，所以 `rate = speed`），' +
+            '**音轨**逐段挂 `atempo`（时域伸缩，**基频不变**；用 `asetpts` 缩放会变调，规格 R6）。' +
+            '两边吃的是同一批 clips，所以成片时长 == 派生值',
+        );
       }
     }
-    return null;
+  }
+
+  /// 源帧号 -> 输出帧号。**可能落进多个段**（重放让同一段源出现两次）。
+  ///
+  /// ⚠️ 返回值**永远是数组**。`keepRanges` 在 EDL 下可以重复、可以乱序（重放 / 冷开场），
+  /// 所以"源帧 → 输出帧"不再是一条单射的函数，而是一对多的关系。只取第一个命中的段
+  /// （老写法）会让**后来那几次重放整条错位**，而且不报错 —— 这正是 §9 R7 那一类。
+  ///
+  /// 每段的输出帧按**它自己的**长度与位移算：段在成片里占 `durFrames` 帧（含 speed），
+  /// 展开成 `[起点, 终点)` 闭区间求交。speed=1 且不重复时退化成老口径
+  /// （`outStart + (sourceFrame - start)`）。
+  const remapFrames = (sourceFrame) => {
+    const out = [];
+    for (const range of keepRanges) {
+      if (sourceFrame < range.start || sourceFrame >= range.end) continue;
+      const length = range.durFrames ?? (range.end - range.start);
+      const speed = range.speed ?? 1.0;
+      // 段内偏移换算到成片帧号（speed=1 时逐值等于 `sourceFrame - start`）。
+      const local = Math.min(length - 1, Math.max(0, Math.floor((sourceFrame - range.start) / speed)));
+      out.push(range.outStart + local);
+    }
+    return out;
+  };
+  /// 兼容旧写法：**只关心"第一个"命中的段**的那些调用点用它。
+  /// ⚠️ 落在被掐掉的段里返回 `null`（那一段不存在）—— 老语义一字不改。
+  const remapFrame = (sourceFrame) => {
+    const all = remapFrames(sourceFrame);
+    return all.length > 0 ? all[0] : null;
   };
   /// 源秒 -> 输出帧号（便捷）。
   const remapSeconds = (seconds) => remapFrame(frameAt(seconds));
@@ -1479,6 +1892,10 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// `mute_ranges` 是把那些段从时间线上**删掉**，所以一条字幕/弹幕如果跨了
   /// 剪辑点，它在成片里就该**断成两截**（前半在剪辑点结束、后半从下一段续上）。
   /// 只按起点重映射会让它**整条错位** —— 那是"字幕对不上话"最直接的来源。
+  ///
+  /// ⚠️ **EDL 把"一段变多段"扩成"一对多"**（重放 → 同一条 cue 出现在多个**不相邻**位置）：
+  /// 这里遍历的是**输入区间**（不是段），所以同一个输入区间与两个同源段各求一次交、
+  /// 各自输出一条 —— 结果按**成片时间**排序（不是数组顺序！EDL 允许乱序）。
   const remapCueMs = (startMs, endMs) => {
     const sf = Math.round((startMs / 1000) * fps);
     const ef = Math.round((endMs / 1000) * fps);
@@ -1487,11 +1904,19 @@ export function translate(config, clipDir, outPath, options = {}) {
       const from = Math.max(sf, range.start);
       const to = Math.min(ef, range.end);
       if (to <= from) continue;
+      const length = range.durFrames ?? (range.end - range.start);
+      const speed = range.speed ?? 1.0;
+      const offset = (sourceFrame) =>
+        Math.min(length, Math.max(0, Math.round((sourceFrame - range.start) / speed)));
+      const startFrame = range.outStart + offset(from);
+      // 右端**向上取整**：区间被裁到半帧时不能塌成 0 时长（老口径也是这么处理的）。
+      const endFrame = Math.max(startFrame + 1, range.outStart + offset(to));
       out.push({
-        startMs: Math.round(((range.outStart + (from - range.start)) / fps) * 1000),
-        endMs: Math.round(((range.outStart + (to - range.start)) / fps) * 1000),
+        startMs: Math.round((startFrame / fps) * 1000),
+        endMs: Math.round((endFrame / fps) * 1000),
       });
     }
+    out.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
     return out;
   };
 
@@ -1504,38 +1929,218 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 第二段本该从素材第 20 帧起，写成序列帧就是 120 ⇒ 画面跳到源里 6 倍远的位置，而声音（宿主按
   // `source_in / 工程帧率` 换算的**秒**）是对的 ⇒ 两边从第一个屏蔽段起就分叉。
   // 素材帧率与网格一致时（老工程、60fps 素材）两者数值相同 ⇒ 老产物逐字节不变。
-  const toSourceFrames = (seqFrame) => Math.round((seqFrame / fps) * (assetTimebase.num / assetTimebase.den));
+  //
+  // ⚠️⚠️ **第 6 批：这里从"一份 `assetTimebase`"变成"每个 asset 各算一遍"**（规格 §11.2 第 3 条）。
+  //
+  // 改之前它是 `(seqFrame) => round(seqFrame / fps * (assetTimebase.num / assetTimebase.den))`
+  // —— 写死的是**源**那一份时基。EDL 一旦指向**第二个素材**（帧率可能 24 / 30 / 60 各不同），
+  // 那个式子算出来的是**别的素材的帧号**，症状是"**画面跳到源里 6 倍远的位置**"，且**不报错**。
+  //
+  // 现在按 asset 各取自己那一份（`assetTimebaseFor`），**序列帧的那一半（`/ fps`）不变** ——
+  // 变的只有"序列秒 → 该素材帧"那一步的帧率。**源素材仍走原来那一份**，所以
+  // "EDL 段全指源"的老产物**逐字节不变**（R4；两个 sha256 基线钉着）。
+  const assetTimebaseFor = (assetId) => {
+    if (!assetId) return assetTimebase; // 无素材 id ⇒ 源那一份（老路径逐值不变）
+    const rec = videoAssets.get(assetId);
+    // 认不出（登记时已 DROP 过）⇒ 退回源那一份，**不再重复报错**
+    return rec?.timebase ?? assetTimebase;
+  };
+  /// 序列帧 → **指定素材**自己的帧号。
+  const toSourceFramesFor = (seqFrame, assetId) => {
+    const tb = assetTimebaseFor(assetId);
+    return Math.round((seqFrame / fps) * (tb.num / tb.den));
+  };
+  /// 序列帧 → **源**素材帧号（老路径的唯一口径；`toSourceFramesFor(x, null)` 的别名）。
+  const toSourceFrames = (seqFrame) => toSourceFramesFor(seqFrame, null);
+  /// 一个保留区间的画面来自哪个 asset（`range.assetId` 为空 ⇒ 源）。
+  const assetIdForRange = (range) =>
+    (range.assetId && videoAssets.get(range.assetId)?.id) || videoAssetId;
 
-  // 主画面：**每个保留区间一层**，首尾相接（不重叠）。
-  const mainLayers = keepRanges.map((range, index) => ({
-    id: `main-${index}`,
-    start: range.outStart,
-    end: range.outStart + (range.end - range.start),
-    source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },
-    transform: { x: 0, y: 0, scale: 1.0, rotation: 0 },
-    opacity: 1.0,
-    blend: 'normal',
-    enabled: true,
-    effects: [],
-    keyframes: [],
-    note: `主画面第 ${index + 1}/${keepRanges.length} 段（源第 ${range.start}~${range.end} 帧）`,
-  }));
+  // =====================================================================
+  // **叠化（第 7 批 / task-10）** —— 跨轨重叠 + 上层 `opacity` 关键帧
+  // =====================================================================
+  //
+  // 规格 §11.3 的**方案 A**，可行性由 `.workbuddy/edl-transition-probe/` 实测：
+  //   · **同轨**重叠 ⇒ 底座 exit 2 `layer_overlap`（这条腿走不通）；
+  //   · **跨轨**重叠（后一条 track 在上）⇒ exit 0；
+  //   · 跨轨 + 上层 `opacity` 0→1 线性关键帧 ⇒ exit 0、`issues: []`、**真叠化**
+  //     （最大帧间 YAVG 跳变 **2.22** vs 硬切 **26.97**）。
+  //
+  // # 几何：谁动、动多少
+  //
+  // `transition_in = "dissolve"` 的段（下称 B）与它**前一段**（A）在成片时间轴上
+  // **重叠 `overlapFrames` 帧**：B 的起点往前挪 `overlapFrames`，于是
+  //   `[A.outStart, B.outStart+overlap)` 这一段两层同时可见。
+  //
+  // ⚠️ **挪的是"画面上那一层"的起点、不是 `keepRanges` 的 `outStart`**。
+  // 这两件事必须分开：`outStart` 是"成片时间轴"的唯一推导（三处消费点逐值同构，
+  // `check-edl-invariants.mjs` 钉着），改它等于改整条下游（字幕/弹幕/音效重映射、
+  // 总时长、合流断言）。所以 **`outStart` 一个字节都不动**，只把主画面那层
+  // 的 `start` 提前 —— 底座的 `source_in` 是按层自己的 `start` 求值的，
+  // 提前 `start` 就是"提前开演"，而**总时长不变**（B 的 `end` 也跟着提前）。
+  //
+  // ⇒ 代价（如实记下来）：重叠窗口里 B 播的是**它自己的开头**、A 播的是**它自己的结尾**
+  //    —— 这正是"交叉淡化"的定义（两段各让出一部分同时演），不是 bug。
+  //
+  // # 为什么切到第二条 track
+  //
+  // 底座同轨不许重叠（`layer_overlap`）。所以带叠化的段要落到 `v2`。
+  // `v2` 在 `v1` **之后** ⇒ 它画在上面（探针 Q2 实测的 z 序），
+  // 于是"B 淡入盖上 A"成立。
+  //
+  // ⚠️ **`v2` 内部同样不许重叠**：两段**都**带叠化时（B 与 C），
+  // B 在 `v2`、C 也在 `v2` 就会重叠。所以这里做的是**交替分轨**
+  // （A→v1、B→v2、C→v1…，按"这一段有没有叠化 + 上一段在哪条轨"决定），
+  // 而不是"所有叠化段都塞 v2"。
+  //
+  // ⚠️ **只支持单层**：v2 上是 B、v1 上是 A —— 若叠化段的前一段**自己也在 v2**，
+  // 那就是 v2 内部重叠 ⇒ 底座 exit 2。交替分轨正是为了避免它。
+  const overlapFramesOf = () => dissolveOverlapFrames(fps);
+
+  // 每段的**画面层几何**：`{ track, start, end, fade }`。
+  //
+  // `track` = 0 落到 `v1`、1 落到 `v2`（`v2` 在后 ⇒ 在上）。
+  // `fade` = 该层自己的 `opacity` 0→1 关键帧（**图层相对帧号**，见下面那段注释）。
+  const mainGeom = [];
+  let trackCursor = 0; // 当前这一段落在哪条轨（0/1 交替）
+  for (let index = 0; index < keepRanges.length; index += 1) {
+    const range = keepRanges[index];
+    const durFrames = range.durFrames ?? (range.end - range.start);
+    const wantsDissolve = range.transition === EDL_TRANSITION_DISSOLVE;
+    const overlap = wantsDissolve ? overlapFramesOf() : 0;
+    // 前一段的**实际结束帧**（可能因为拖过 `start` 而提前）。
+    const prev = index > 0 ? mainGeom[index - 1] : null;
+    // 叠化的**成立条件**（三条都要满足，缺一条就退化成硬切并报 DROP）：
+    //   ① 有前一段（成片的第一段没有"前一段"可叠）；
+    //   ② 重叠帧数 ≥ 1（fps 探得出来）；
+    //   ③ 重叠 < 前一段与这一段各自的长度 —— 否则前一段会被整段吃掉。
+    //      ⚠️ 判据用**前一段挪过之后的实际长度**，不是它的名义 `durFrames`。
+    const prevLen = prev ? prev.end - prev.start : 0;
+    const canDissolve =
+      wantsDissolve && prev !== null && overlap >= 1 && overlap < durFrames && overlap < prevLen;
+    let start = range.outStart;
+    if (wantsDissolve && !canDissolve) {
+      drop(
+        'edl.transition',
+        `第 ${index + 1} 段声明了 transition_in = "dissolve"，但**叠化条件不成立**，` +
+          `已按硬切出片：前一段存在=${prev !== null}、重叠=${overlap} 帧、` +
+          `本段长=${durFrames} 帧、前一段（挪后）长=${prevLen} 帧。` +
+          `要求 1 ≤ 重叠 < min(本段长, 前一段长)。` +
+          `（第一段没有"前一段"可叠；段太短时叠化会把它整段吃掉 —— 那不该静默发生）`,
+      );
+    } else if (canDissolve) {
+      start = range.outStart - overlap;
+    }
+    // 交替分轨：本段要叠化就得与**前一段所在的轨**不同（跨轨才合法）；
+    // 不要叠化时回到 v1（v1 是"底"那条，主画面绝大多数段都在它上面）。
+    trackCursor = canDissolve ? (prev?.track === 0 ? 1 : 0) : 0;
+    mainGeom.push({
+      track: trackCursor,
+      start,
+      end: start + durFrames,
+      // 重叠窗口的**帧数**（0 = 没有叠化）。淡入关键帧的终点就是它。
+      overlap: canDissolve ? overlap : 0,
+    });
+  }
+
+  // 主画面：**每个保留区间一层**。
+  //
+  // ⚠️ **层序 = `keepRanges` 的顺序 = 成片播放顺序**（不是源顺序）。冷开场/乱序剪辑下
+  // "图层顺序 ≠ 源顺序"是**故意的**，也正是这些手法能成立的原因（§9 R3）。
+  // `source_in` 仍按**素材帧**给（下一行那句话不能动）。
+  //
+  // ⚠️ 第 6 批起：`asset_id` 与 `source_in` **都按该段自己的素材**取 —— 素材段指向
+  // 第二个 asset，而它的 `source_in` 按**那个素材自己的时基**换算（见上面的
+  // `toSourceFramesFor`）。两件事一起改，只改一件就是"指向了新素材、帧号还是老的"。
+  //
+  // ⚠️ 第 7 批起：`start`/`end` 走上面的 `mainGeom`（带叠化的段会提前），
+  // 并按 `track` **拆成 v1 / v2 两条轨**（`mainLayers` 只留 v1 那一半）。
+  const mainLayers = keepRanges.map((range, index) => {
+    const assetId = assetIdForRange(range);
+    const isSource = assetId === videoAssetId;
+    const geom = mainGeom[index];
+    // 叠化的**上层**B：`opacity` 0→1 线性关键帧，窗口 = 重叠区。
+    //
+    // ⚠️⚠️ **关键帧是图层相对帧号**（`schema.rs:732`「相对片段起点，0..=M-1」）——
+    // 这里 `geom.start` 被提前了 `overlap` 帧，所以**层内的 0..overlap** 正好就是
+    // 重叠窗口。写成**绝对**帧号会"一个键都不落在区间里、且不报错"（探针 REPORT 第 3 条）。
+    const keyframes =
+      geom.overlap > 0
+        ? [
+            { frame: 0, target: 'opacity', value: 0, easing: 'linear' },
+            { frame: geom.overlap, target: 'opacity', value: 1, easing: 'linear' },
+          ]
+        : [];
+    return {
+      id: `main-${index}`,
+      start: geom.start,
+      // ⚠️ **用 `durFrames`，不是 `end - start`**：EDL 段带 speed 时两者不等
+      // （`durFrames = round((end-start)/speed)`，与 Rust `resolve_clips` 逐值一致）。
+      end: geom.end,
+      // ⚠️ **`source_rate` 是画面变速的唯一表达**（底座 0.3.0 / D24，2026-10-09）。
+      //
+      // 在那之前底座**没有**任何表达播放速率的字段：`end - start` 同时当"占多长输出时间"
+      // 和"要读多少源帧"用，两者被绑死。于是这里只能靠 `durFrames` 缩短段长 ——
+      // **时长对了，但内容被截断**：`speed=2.0` 的段只播了源的前一半
+      // （Lead 用亮度斜坡源从成片像素反推实测：计划 src 60→120，实际 59→89）。
+      //
+      // 现在语义分开了：`end - start` = **输出**帧数，`source_rate` = 每输出 1 帧消耗
+      // **几个**源帧。所以 `speed=2.0` ⇒ `source_rate=2.0`，段长仍是 `durFrames`，
+      // 而底座会去读 `durFrames × rate` 个源帧 —— 两头一凑正好是这一段该播的源区间。
+      //
+      // ⚠️ **不是 `1/speed`**：方向容易记反。`rate` 是"消耗源帧的速率"，
+      // 2 倍速 ⇒ 每输出一帧要吃掉 2 个源帧 ⇒ `rate = speed`。
+      //
+      // ⚠️ **缺省 1.0 时不要写这个键**（`serde(default)`）—— 写了虽然语义相同，
+      // 但会让"原速工程"与老产物的 JSON 不再逐字节相同（R4 那条基线正是逐字节比对）。
+      source: {
+        asset_id: assetId,
+        source_in: toSourceFramesFor(range.start, isSource ? null : range.assetId),
+        ...(Math.abs((range.speed ?? 1.0) - 1.0) > 1e-9
+          ? { source_rate: range.speed ?? 1.0 }
+          : {}),
+      },
+      transform: { x: 0, y: 0, scale: 1.0, rotation: 0 },
+      // ⚠️ **基准 `opacity` 必须是 0**（不是 1）：关键帧第一条就是 0，而底座的
+      // "末键之后取 last.value" 语义在这里用不上（0 键层立刻被覆盖）。写 1 也对
+      // （首帧就落在 0 键上），但**写 0 更不容易被误读成"这层不透明"**。
+      opacity: geom.overlap > 0 ? 0.0 : 1.0,
+      blend: 'normal',
+      enabled: true,
+      effects: [],
+      keyframes,
+      note:
+        (isSource
+          ? `主画面第 ${index + 1}/${keepRanges.length} 段（源第 ${range.start}~${range.end} 帧）`
+          : `主画面第 ${index + 1}/${keepRanges.length} 段（**素材 ${range.assetId}** 第 ` +
+            `${toSourceFramesFor(range.start, range.assetId)}~${toSourceFramesFor(range.end, range.assetId)} 帧）`) +
+        (geom.overlap > 0
+          ? `；**叠化**：${geom.overlap} 帧淡入（第 ${geom.start}~${geom.start + geom.overlap} 帧与上一段重叠）`
+          : ''),
+    };
+  });
 
   /// 把一个关键帧放到**它所在的那一层**上，帧号换成该层内的相对帧号。
   ///
   /// 关键帧的帧号是**相对图层起点**的（`schema.rs:732`），而裁剪之后
   /// 源时间被切成了好几层 —— 所以不能再用绝对帧号。
   const placeKeyframe = (sourceFrame, target, value, easing) => {
+    // ⚠️ **一对多**：EDL 下同一段源可以出现在成片里两次（重放），运镜/手持/抖动
+    // 那套逐帧变换**两边都要写**。只写第一个命中的段 ⇒ 重放那一次的运镜与抖动整条丢失，
+    // 而且不报错（第 2/3… 次重放看起来"就是没有运镜"）。
+    // ⚠️ `range.end` 那一帧**也**要能落键（老写法是 `<=`）—— 段的最后一帧是合法的关键帧位置。
+    let placed = false;
     for (let index = 0; index < keepRanges.length; index += 1) {
       const range = keepRanges[index];
       if (sourceFrame >= range.start && sourceFrame <= range.end) {
         const layer = mainLayers[index];
-        const local = range.outStart + (sourceFrame - range.start) - layer.start;
+        const speed = range.speed ?? 1.0;
+        const local = range.outStart + Math.round((sourceFrame - range.start) / speed) - layer.start;
         layer.keyframes.push({ frame: Math.max(0, local), target, value, easing });
-        return true;
+        placed = true;
       }
     }
-    return false; // 落在被掐掉的段里
+    return placed; // 一次都没落上 = 落在被掐掉的段里
   };
 
   /// 把一个**特效**挂到它所在的那一层上（整层特效，帧号是轨道级的，不用转）。
@@ -1573,14 +2178,17 @@ export function translate(config, clipDir, outPath, options = {}) {
   };
 
   const placeEffect = (sourceFrame, effect) => {
+    // ⚠️ **一对多**（同 `placeKeyframe`）：重放/重复源区间下，同一个特效**每一份都要挂上**。
+    // 只挂第一份 ⇒ 第二次重放的画面没有那个特效，而报告里一行差异都没有。
+    let placed = false;
     for (let index = 0; index < keepRanges.length; index += 1) {
       const range = keepRanges[index];
       if (sourceFrame >= range.start && sourceFrame < range.end) {
         mainLayers[index].effects.push(effect);
-        return true;
+        placed = true;
       }
     }
-    return false;
+    return placed;
   };
 
   /// **发一条调整图层**，而不是把特效挂在实拍片段上。
@@ -1660,7 +2268,24 @@ export function translate(config, clipDir, outPath, options = {}) {
       note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
       return false;
     }
-    const frames = Math.max(1, Math.round(seconds * fps));
+    let frames = Math.max(1, Math.round(seconds * fps));
+    // ⚠️⚠️ **窗口不许长过它所在的那一段**（乱序 EDL 下实测踩到的真 bug）。
+    //
+    // `seconds` 是**源时间**上的事件时长，而 `outStart` 是重映射之后的成片帧号。
+    // 顺序 EDL 下两者恰好吻合（段是紧接着的），**乱序/重放**下就不吻合了：
+    // 实测一条 `source_start=6.4s` 的 flash（源里 7 秒的窗口）落在成片第 384 帧 ——
+    // 而那一段只到 420 帧（成片尾），于是窗口溢到 **433 帧**，
+    // 底座按"所有层 end 的最大值"出片 ⇒ 成片 **433 帧 vs 派生 420 帧**，
+    // 被合流前那条断言拦下（`mux_checked`，正是为这类静默错误加的）。
+    //
+    // 夹到**所在 keepRange 的右端**：多出来的部分本来就不在成片里，
+    // 画上去只会把成片拉长。
+    const owner = keepRanges.find((r) => outStart >= r.outStart && outStart < r.outStart + (r.durFrames ?? (r.end - r.start)));
+    if (owner) {
+      const ownerEnd = owner.outStart + (owner.durFrames ?? (owner.end - owner.start));
+      const room = ownerEnd - outStart - 1; // 末键必须严格小于层时长
+      if (room < frames) frames = Math.max(1, room);
+    }
     const keyframes = [];
     for (let i = 0; i <= frames; i += 1) {
       keyframes.push({ frame: i, target: 'opacity', value: shape(i / fps), easing: 'linear' });
@@ -1677,15 +2302,25 @@ export function translate(config, clipDir, outPath, options = {}) {
   };
 
   if (muteFrames.length > 0) {
+    // ⚠️ **EDL 非空时这段注释的措辞必须换**（否则是**误导**）：那时屏蔽没有被"掐掉"，
+    // 而是把那几段的**端点**夹开了（用户口径原文：「屏蔽不是删除，是更改端点」）。
+    // 同一份报告里如果既写"掐掉 3 秒"又写"EDL 3 段落地"，看报告的人会拿这两个数去对账。
+    const muteSeconds = (muteFrames.reduce((s, m) => s + (m.end - m.start), 0) / fps).toFixed(2);
     note(
       'mute_ranges',
-      keepMuted
-        ? `${muteFrames.length} 段屏蔽区间（共 ${(muteFrames.reduce((s, m) => s + (m.end - m.start), 0) / fps).toFixed(2)} 秒）**保留在时间线里**` +
-          `（--keep-muted：出片尾部按源时间剪一次（本仓那侧）；` +
-          `预览那条腿不能这么转）`
-        : `${muteFrames.length} 段被**掐掉**（不是静音）：共 ${(cutFrames / fps).toFixed(2)} 秒，` +
-          `成片从 ${(totalFrames / fps).toFixed(2)}s 变成 ${(durationFrames / fps).toFixed(2)}s；` +
-          `主画面因此拆成 ${keepRanges.length} 段，所有事件时间已重映射`,
+      edlClips.length > 0
+        ? `${muteFrames.length} 段屏蔽区间（共 ${muteSeconds} 秒）**在有 EDL 时整个不生效** —— ` +
+          '成片播什么**只由 EDL 决定**（规格 §2.3）：屏蔽段本来就在源时间轴上，' +
+          '用户新拖出来的段覆盖到它是**故意**的（"这段我就是要"）。' +
+          '轨道上的红块照旧显示、也照旧可编辑，它只是不再是出片的**判据**。' +
+          '⚠️ **别在这里再叠一次求交** —— 那是第 2 份推导，而两份推导的分歧只表现为"成片短一段"、不报错'
+        : keepMuted
+          ? `${muteFrames.length} 段屏蔽区间（共 ${muteSeconds} 秒）**保留在时间线里**` +
+            `（--keep-muted：出片尾部按源时间剪一次（本仓那侧）；` +
+            `预览那条腿不能这么转）`
+          : `${muteFrames.length} 段被**掐掉**（不是静音）：共 ${(cutFrames / fps).toFixed(2)} 秒，` +
+            `成片从 ${(totalFrames / fps).toFixed(2)}s 变成 ${(durationFrames / fps).toFixed(2)}s；` +
+            `主画面因此拆成 ${keepRanges.length} 段，所有事件时间已重映射`,
     );
   }
 
@@ -3042,11 +3677,16 @@ export function translate(config, clipDir, outPath, options = {}) {
   };
 
   /// 输出帧 -> 源帧（`placeKeyframe` 要的是源帧号）。
+  ///
+  /// ⚠️ **只返回第一个命中的段** —— 它给"只需要一个代表帧"的调用点用。
+  /// 逐帧写关键帧那条路**不要**用它：EDL 允许重复源区间（重放），那时一个输出帧
+  /// 对应多个段，必须逐段各写一份（见下面那个 `for (const range of keepRanges)`）。
   const sourceFrameForOutput = (outFrame) => {
     for (const range of keepRanges) {
-      const length = range.end - range.start;
+      const length = range.durFrames ?? (range.end - range.start);
       if (outFrame >= range.outStart && outFrame < range.outStart + length) {
-        return range.start + (outFrame - range.outStart);
+        const speed = range.speed ?? 1.0;
+        return range.start + Math.round((outFrame - range.outStart) * speed);
       }
     }
     return null;
@@ -3181,14 +3821,29 @@ export function translate(config, clipDir, outPath, options = {}) {
       const moving = st.handheld > 1e-6 || inDenseRange(out);
       if (!moving) continue;
 
-      const sourceFrame = sourceFrameForOutput(out);
-      if (sourceFrame === null) continue;
-      const base = cameraOffset(camScale, { x: st.ox / width, y: st.oy / height });
-      placeKeyframe(sourceFrame, 'x', base.x + sway.dx + shx + stx, 'linear');
-      placeKeyframe(sourceFrame, 'y', base.y + sway.dy + shy + sty, 'linear');
-      placeKeyframe(sourceFrame, 'scale', camScale * FIT, 'linear');
+      // ⚠️ **一对多**（重放 / 重复源区间）：同一个成片帧可能落在**多个**段上，
+      // 那时每一段都要写它**自己**那份逐帧变换。只写第一段 ⇒ 第二次重放
+      // 完全没有运镜/手持/抖动，而报告里一行差异都没有。
+      //
+      // 每段的值**可能不同**（段的起点不同 ⇒ `sourceFrameForOutput` 不同 ⇒
+      // `cameraStateAt` 的状态不同），所以这里逐段重算，不能只算一次再复制。
+      let wrote = false;
+      for (const range of keepRanges) {
+        const length = range.durFrames ?? (range.end - range.start);
+        if (!(out >= range.outStart && out < range.outStart + length)) continue;
+        const speed = range.speed ?? 1.0;
+        const sourceFrame = range.start + Math.round((out - range.outStart) * speed);
+        const base = cameraOffset(camScale, { x: st.ox / width, y: st.oy / height });
+        placeKeyframe(sourceFrame, 'x', base.x + sway.dx + shx + stx, 'linear');
+        placeKeyframe(sourceFrame, 'y', base.y + sway.dy + shy + sty, 'linear');
+        placeKeyframe(sourceFrame, 'scale', camScale * FIT, 'linear');
+        if (st.handheld > 1e-6) {
+          placeKeyframe(sourceFrame, 'rotation', sway.rot, 'linear');
+        }
+        wrote = true;
+      }
+      if (!wrote) continue;
       if (st.handheld > 1e-6) {
-        placeKeyframe(sourceFrame, 'rotation', sway.rot, 'linear');
         handheldFrames += 1;
       }
       movedFrames += 1;
@@ -3232,13 +3887,43 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 区间在源时间与输出时间上都记着，`outStart` 直接就是输出时间轴上的位置。
   const audioTracks = [];
   {
+    // ⚠️ **原声与主画面走同一套 `mainGeom`**（第 7 批 / task-10）：叠化的段
+    // 在画面上提前 `overlap` 帧开演，**原声必须跟着提前** —— 不跟就是
+    // "画面已经淡入 0.5 秒、声音还在上一段"，而这**不报错**（与 §11.7 ① 那条
+    // "画面与音轨按两张不同的时间线剪、全程零报错"是同一种事故）。
+    //
+    // ⚠️ **同一轨内不许重叠**（底座 `layer_overlap`，音轨一样管）：两段音轨
+    // 各提前 `overlap` 帧、上一段又没缩短 ⇒ 一定重叠 ⇒ 底座 **exit 2**。
+    // 所以这里做的是**拆轨**：带叠化的那段原声落到 `a2`，与画面 `v2` 同步。
+    // 代价照实说：`a0` 里那一段被"挖走"之后，**重叠窗口里两段原声同时在响**，
+    // 而那正是底座会**相加**的地方（不是淡化）—— 出片那条腿不看这些音轨层
+    // （`--no-audio`，声音由 `Ffmpeg::assemble_audio_from_edl_fades` 重拼、
+    // 在那里做真淡化），**预览那条腿**听到的就是这个相加的结果。
+    // 预览的听感与成片会**略有出入**（预览重叠区偏响）—— 这是底座的合成语义，
+    // 本仓改不动；成片是准的，预览"两层都在响"至少不撒谎。
     const layers = keepRanges.map((range, index) => ({
       id: `voice-${index}`,
-      start: range.outStart,
-      end: range.outStart + (range.end - range.start),
+      // ⚠️ 用 `mainGeom[index].start`（已带叠化偏移），**不是** `range.outStart`。
+      start: mainGeom[index] ? mainGeom[index].start : range.outStart,
+      // ⚠️ 同主画面：EDL 段带 speed 时 `durFrames` ≠ `end - start`，必须用它，
+      // 否则原声比画面短/长一截（而音画不同步这一类**不报错**）。
+      end:
+        (mainGeom[index] ? mainGeom[index].start : range.outStart) +
+        (range.durFrames ?? (range.end - range.start)),
       // **原声从素材的对应时刻取**，不是从头。
       // `source_in` 是素材内偏移，掐掉前面的部分之后必须跟着走。
-      source: { asset_id: videoAssetId, source_in: toSourceFrames(range.start) },
+      //
+      // ⚠️ 第 6 批：**素材段连原声一起指向那个素材**。只改画面不改音轨 = 那一段
+      // "画面是素材、声音还是本条片段" —— 而这一类**不报错**（与规格 §11.7 ① 那条
+      // "画面与音轨按两张不同的时间线剪、全程零报错"是同一种事故）。
+      // ⚠️ 素材自己的音频流**帧号**同样按它自己的时基换算（下面的 `toSourceFramesFor`）。
+      source: {
+        asset_id: assetIdForRange(range),
+        source_in: toSourceFramesFor(
+          range.start,
+          assetIdForRange(range) === videoAssetId ? null : range.assetId,
+        ),
+      },
       transform: { x: 0, y: 0, scale: 1.0, rotation: 0 },
       opacity: 1.0,
       blend: 'normal',
@@ -3247,8 +3932,15 @@ export function translate(config, clipDir, outPath, options = {}) {
       keyframes: [],
       note: '原声',
     }));
-    if (layers.length > 0) {
-      audioTracks.push({ id: 'a0', kind: 'audio', layers });
+    // 拆轨：与画面 `v1`/`v2` **同一份 `mainGeom.track`**。
+    const a1Layers = layers.filter((_, index) => !mainGeom[index] || mainGeom[index].track === 0);
+    const a2Layers = layers.filter((_, index) => mainGeom[index] && mainGeom[index].track === 1);
+    if (a1Layers.length > 0) {
+      audioTracks.push({ id: 'a0', kind: 'audio', layers: a1Layers });
+    }
+    // 叠化那条原声轨：**只在真的有段落上去时才写**（无转场工程逐字节不变）。
+    if (a2Layers.length > 0) {
+      audioTracks.push({ id: 'a2', kind: 'audio', layers: a2Layers });
     }
     // `mute_ranges` 的 NOTE 已经在上面（算 keepRanges 的地方）报过了 ——
     // 同一件事报两遍会让清单看起来有两处要改，而那是一处。
@@ -3483,12 +4175,27 @@ export function translate(config, clipDir, outPath, options = {}) {
   }
 
   // ---- 组装 ----
+  //
+  // ⚠️ **主画面拆成 v1 / v2 两条轨（第 7 批 / task-10）**：`transition_in = "dissolve"`
+  // 的段与它前一段在成片时间轴上**重叠**，而底座**同轨不许重叠**（`layer_overlap`，
+  // 探针实测 exit 2）。上面 `mainGeom` 给每段算了 `track`，这里按它分组。
+  //
+  // ⚠️ **z 序 = track 顺序**（靠后的轨在上）：`v2` 排在 `v1` 之后 ⇒ 带叠化的那一段
+  // 画在上面、`opacity` 0→1 就是"淡入盖上前一段"（探针 Q2/Q3 实测）。
+  // **别把 v2 排到 v1 前面** —— 那样淡入的是底层，观感完全不同。
+  // ⚠️ **没有叠化时 `v2` 是空的、直接不写这条轨**（老工程/无转场工程逐字节不变，R4）。
+  const v1Layers = mainLayers.filter((_, index) => mainGeom[index].track === 0);
+  const v2Layers = mainLayers.filter((_, index) => mainGeom[index].track === 1);
   const tracks = [
     // 背景在最前：铺满时被主画面整块盖住，有位移才露出来（与参照同序）。
     ...backdropTracks,
-    // 主画面：裁剪之后是**每个保留区间一层**（首尾相接，不重叠）。
-    { id: 'v1', kind: 'video', layers: mainLayers },
+    // 主画面：裁剪之后是**每个保留区间一层**（除叠化处外首尾相接，不重叠）。
+    { id: 'v1', kind: 'video', layers: v1Layers },
   ];
+  // 叠化那条轨：**只在真的有段落上去时才写**。
+  if (v2Layers.length > 0) {
+    tracks.push({ id: 'v2', kind: 'video', layers: v2Layers });
+  }
   // （覆盖层不再单独组轨：四档现在与 `flash`/`noise` 同一族，走 `adjustmentEffects` 的
   //   逐帧强度包络 —— 见上面 `case 'overlay'`。`overlayEventCount` 只用于元数据与摘要。）
   // 贴纸：**一张一张各占一条轨**。
@@ -3628,7 +4335,21 @@ export function translate(config, clipDir, outPath, options = {}) {
     // 直接填 `120/1080` 会让字幕整体**高约 54px**（行盒 = 72*1.5 = 108，一半是 54）。
     // 实测 55s 那一帧的字幕带差从 34.16 降到 26.42，整体 16.07 -> 14.42。
     const subLineBoxPx = subSizePx * subLineHeight;
-    const subBottomMargin = (120 - subLineBoxPx / 2) / height;
+    // **垂直落点**：`position_pct` 存在时按百分比，否则走上面那条历史公式。
+    //
+    // ⚠️ **区分 `undefined` 与"写了 12"**：`SubtitleStyle.position_pct` 是 `Option<f64>`，
+    // **缺省 = 老工程没写过** ⇒ 必须走历史公式、逐字节不变（存量零回归 R4）。
+    // `120/1080 = 11.11%`，与用户可见的 "12%" 并不相等 —— 拿 % 去表达"等于今天"
+    // 必然留一点偏差，所以这里**只在显式写了才改道**。
+    //
+    // 两个口径的换算：设置页/目标口径是**文字带底边**距画布底（与 `bottom_margin` 同义），
+    // 而 `bottom_margin` 要的是**行盒底边** ⇒ 直接用 `pct/100`，**不要再减半个行盒**。
+    const subPosPct = typeof subStyle.position_pct === 'number' && Number.isFinite(subStyle.position_pct)
+      ? Math.min(50, Math.max(0, subStyle.position_pct))
+      : null;
+    const subBottomMargin = subPosPct === null
+      ? (120 - subLineBoxPx / 2) / height
+      : subPosPct / 100;
     subtitleTracks.push({
       id: 'sub',
       kind: 'subtitle',
@@ -4135,6 +4856,22 @@ export function translate(config, clipDir, outPath, options = {}) {
         mute_ranges: muteFrames.length,
         cut_seconds: cutFrames / fps,
         kept_ranges: keepRanges.length,
+        // **成片时间线的实况** —— ⚠️ **只在真的用了 EDL 时才写这几个键**。
+        //
+        // 这不是"好看"的问题：`target/edl-baseline/*.json` 的 sha256 是**存量零回归（R4）**的
+        // 判据，而老工程 `edl` 段缺失 ⇒ 多出四个键 = 逐字节不同 ⇒ 那条判据当场翻面。
+        // 所以带 EDL 才有这几个键（`edl_active` 自己就是"有没有 EDL"，老工程没有它也不丢信息）。
+        //
+        // `out_frames` = 成片总帧数（= 主画面所有层 `end` 的最大值，与 Rust
+        // `Edl::total_frames` / `dhampir::sequence_frames` 同一口径）。
+        ...(edlClips.length > 0
+          ? {
+              edl_clips: edlClips.length,
+              edl_active: true,
+              out_frames: durationFrames,
+              out_seconds: durationFrames / fps,
+            }
+          : {}),
         voice_ranges: audioTracks.find((t) => t.id === 'a0')?.layers.length ?? 0,
         subtitles: subtitleTracks.length > 0,
         danmaku: danmakuCueCount,
