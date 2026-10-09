@@ -20,7 +20,7 @@ use yekitrim_service::db::IngestSessionRow;
 
 use super::auth::CurrentUser;
 use super::model::AppState;
-use crate::auth::ClientIp;
+use crate::auth::{owner_of, ClientIp};
 
 type AppError = (StatusCode, Json<serde_json::Value>);
 type ApiResult<T = serde_json::Value> = Result<Json<T>, AppError>;
@@ -1467,7 +1467,7 @@ pub async fn bilibili_submit(
         .iter()
         .filter_map(|p| crate::download_worker::estimate_bytes(p.duration_secs, &cfg.ingest.max_quality))
         .sum();
-    let probe_dir = yekitrim_service::projects::tenant_root(user.id);
+    let probe_dir = yekitrim_core::owner::owner_root(owner_of(&user));
     yekitrim_service::ingest::capacity::check_capacity(
         state.auth.db(),
         user.id,

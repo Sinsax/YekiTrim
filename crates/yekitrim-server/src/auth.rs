@@ -73,6 +73,28 @@ impl CurrentUser {
     }
 }
 
+/// **身份 → 数据归属**的唯一转换点（见 `yekitrim_core::owner`）。
+///
+/// 这是"单人 / 多用户两种形态共用一套业务"的那个**唯一分叉点**：
+///
+/// - 本地免登录（`--local-no-auth`，托盘形态）注入的是合成身份，其会话 id 是
+///   [`LOCAL_SESSION_ID`] ⇒ [`Owner::Local`]，数据落在**程序目录**下（现状不变）；
+/// - 正常登录 ⇒ [`Owner::User`]，数据落在该账号自己的树下。
+///
+/// ⚠️ **判据是"这次是不是本地形态"，不是"账号是不是 admin"** —— 别改成按 role 判。
+/// 本地模式注入的合成身份**恰好**是 admin，但管理员在**多用户模式下登录**时，
+/// 他的数据仍应落在自己的 `users/<uid>/` 里，而不是落到全局去。
+///
+/// ⚠️ 以后新增"按用户分数据"的地方，一律经这里拿 `Owner`，
+/// **别自己看 `session_id` / `role` 拼路径**（那就是硬规矩 3 禁掉的业务分支）。
+pub fn owner_of(user: &CurrentUser) -> yekitrim_core::owner::Owner {
+    if user.session_id == LOCAL_SESSION_ID {
+        yekitrim_core::owner::Owner::Local
+    } else {
+        yekitrim_core::owner::Owner::User(user.id)
+    }
+}
+
 /// 已认证调用者（写进**响应**扩展，供最外层的 `access_log` 中间件记「谁在操作」）。
 ///
 /// 请求扩展里的 [`CurrentUser`] 只在被认证层包住的 handler 里可见，挂在最外层的
@@ -848,6 +870,46 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mk_user(id: i64, role: &str, session_id: &str) -> CurrentUser {
+        CurrentUser {
+            id,
+            username: format!("u{id}"),
+            role: role.to_string(),
+            must_change_password: false,
+            session_id: session_id.to_string(),
+        }
+    }
+
+    /// 「两种形态共用一套业务」的**唯一分叉点**：本地形态 → `Owner::Local`，
+    /// 登录形态 → `Owner::User(uid)`。
+    #[test]
+    fn owner_fork_is_local_session_versus_real_login() {
+        assert_eq!(
+            owner_of(&mk_user(1, "admin", LOCAL_SESSION_ID)),
+            yekitrim_core::owner::Owner::Local,
+            "本地免登录（托盘）必须是 Local，数据才落在程序目录下"
+        );
+        assert_eq!(
+            owner_of(&mk_user(42, "user", "some-real-session")),
+            yekitrim_core::owner::Owner::User(42)
+        );
+    }
+
+    /// ⚠️ 判据是**会话形态**、不是 **role**。
+    ///
+    /// 本地模式注入的合成身份碰巧是 admin；但一个**在多用户模式下真登录的管理员**，
+    /// 数据仍必须落在自己的 `users/<uid>/` 里 —— 否则他就把自己的东西写进全局，
+    /// 与普通用户看到的混在一起。
+    #[test]
+    fn an_admin_logged_in_normally_still_gets_his_own_tree() {
+        let real_admin = mk_user(1, "admin", "real-session-cookie");
+        assert_eq!(
+            owner_of(&real_admin),
+            yekitrim_core::owner::Owner::User(1),
+            "多用户模式下登录的管理员，数据要落在自己的树下、不是全局"
+        );
+    }
 
     fn headers_with(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
