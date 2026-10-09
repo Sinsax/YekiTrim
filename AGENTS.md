@@ -8,12 +8,11 @@
 
 **这个文件是路由页，不是手册。按模块的规矩在各自目录的 `AGENTS.md` 里。**
 
-- DSH 会在 read/write/edit **触到某个目录**时自动注入那一份 `AGENTS.md`：**动手前先读该目录的卡**
-  （表在下面「入口」）。卡里写的是"这个模块是什么、入口在哪、不许碰什么、改完跑什么"。
-- 这里只放：全局不变式、模块索引、改代码协议、验证命令。
-- ⚠️ 根文件有 **20 KB 硬预算**（`scripts/check_module_map.py` 会卡）。DSH 的工作区指令预算总共
-  65536 B，而超预算时它**先整份丢掉较宽的文件** —— 根文件一旦膨胀，全局规矩会连模块索引一起消失
-  （拆卡之前根文件 237 KB，被静默截到 65 KB，底下的安全规矩全没进上下文）。**别再往这里加模块级内容**。
+- DSH 在 read/write/edit **触到某个目录**时自动注入那一份 `AGENTS.md`：**动手前先读该目录的卡**（表在
+  「入口」）。这里只放：全局不变式、模块索引、改代码协议、验证命令。
+- ⚠️ 根文件有 **20 KB 硬预算**（`scripts/check_module_map.py` 会卡）。DSH 的工作区指令预算总共 65536 B，
+  超预算时它**先整份丢掉较宽的文件** —— 根文件一旦膨胀，全局规矩会连模块索引一起消失（拆卡之前根文件
+  237 KB，被静默截到 65 KB，底下的安全规矩全没进上下文）。**别再往这里加模块级内容**。
 
 ### 六个 crate 与依赖方向（单向，硬规矩）
 
@@ -64,8 +63,8 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 ### CLI（命令表面）
 
-**命令面归 `crates/yekitrim-cli/AGENTS.md`** —— 那张表曾在本文件里与它重复，占用最坏指令链预算，
-已挪回它该在的卡。**别再往这里抄第二份。**
+**命令面归 `crates/yekitrim-cli/AGENTS.md`** —— 那张表曾在这里重复、占用最坏指令链预算，已挪回它该在的卡。
+**别再往这里抄第二份。**
 
 ## 入口
 
@@ -126,9 +125,9 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
 
 以下是**全局**不变式（模块内的规矩在各自卡里）：
 
-- ⚠️ **程序资产只挂一个根**（2026-10-02 口径：*不要用户目录*）：`path::data_dir()` =
-  `YEKITRIM_DATA_DIR` ?? `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.yekitrim/`**
-  —— 两个可能的位置就必然有地方只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
+- ⚠️ **程序资产只挂一个根**（2026-10-02 口径：*不要用户目录*）：`path::data_dir()` = `YEKITRIM_DATA_DIR` ??
+  `exe_dir()`，配置/账本/模型/字体/工程全在它下面。**别再挂 `~/.yekitrim/`** —— 两个可能的位置就必然有地方
+  只查一处（实测 CLI 与 WebUI 各看一份字体库）。见 **`docs/file-layout.md`**。
 - ⚠️ **同步 IO 绝不能留在 async 线程上**（剪切时"整个服务器连不上"的根因）：handler 里的
   同步文件访问走 `api::blocking(f)`，任务体走 `api::spawn_job`。完整纪律（已覆盖清单、panic 兜底、
   路径锁）在 `crates/yekitrim-server/src/api/AGENTS.md`。
@@ -151,13 +150,13 @@ README 的「架构」一节有同一张图的展开版；分层决策的来龙�
   ② `api/config.rs::PROJECT_PATH_KEYS` + `check_project_paths` / `check_material_paths`；
   ③ 消费侧纵深防御（`yekitrim-polish/src/cover.rs` 的 `tenant::ensure_within`）。
   细节与"新增路径字段要做什么"在 `crates/yekitrim-server/src/api/AGENTS.md`。
-- ⚠️ **WebUI 在 release 里是内嵌的**（`yekitrim-server/build.rs` 把 `webui/dist` 编进 exe）：
-  **升级只需换 exe**，"新 exe + 旧界面"这种错配在物理上不存在。debug 走读盘（改前端不必重链接），
-  `--webui-dir` / `YEKITRIM_WEBUI_DIR` 可显式覆盖。⚠️ `webui/dist` **仍要入库**、改了 `src` 仍要重建
-  —— 它是**编译期输入**（缺失或比 `src` 旧都让编译失败），不是运行时依赖。
-- ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `yekitrim-wasm` / `render-frame` 接口
-  **整条已删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），
-  画面归底座、音轨归本仓。**别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
+- ⚠️ **WebUI 在 release 里是内嵌的**（`yekitrim-server/build.rs` 把 `webui/dist` 编进 exe）：**升级只需换
+  exe**，"新 exe + 旧界面"这种错配在物理上不存在。debug 走读盘（改前端不必重链接），`--webui-dir` /
+  `YEKITRIM_WEBUI_DIR` 可显式覆盖。⚠️ `webui/dist` **仍要入库**、改了 `src` 仍要重建 —— 它是**编译期输入**
+  （缺失或比 `src` 旧都让编译失败），不是运行时依赖。
+- ⚠️ **本仓不再自带任何 GPU 渲染**：wgpu 管线 / `native/` / `yekitrim-wasm` / `render-frame` 接口**整条已
+  删除**，GPU 那侧归独立的 **Dhampir 底座**。⚠️ **出片默认就是底座**（`dhampir`），画面归底座、音轨归本仓。
+  **别再往本仓加回 GPU 管线** —— 细节与删除清单见 `polish-render` 卡。
 - ⚠️ **默认端口 26320 只有一份定义**：`yekitrim-service/src/doctor.rs::DEFAULT_PORT`。
   `ServerArgs.port`、`DEFAULT_URL`、`polish preview` 回退都引用它，**别处不许再写端口字面量**。
 - ⚠️ **只监听 loopback**；`--allow-remote` 才对外，且**仍用初始密码时拒绝启动**。

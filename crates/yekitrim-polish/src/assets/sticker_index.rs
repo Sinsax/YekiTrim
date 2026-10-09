@@ -289,7 +289,7 @@ fn is_windows_reserved(stem: &str) -> bool {
 /// 单段名能否安全地当作一段路径用：非空、非 `.`/`..`、不含分隔符与冒号、
 /// 无控制字符、不是 Windows 保留名。
 ///
-/// 用于 `<包名>` 与包内文件名（两者都会变成 `/api/admin/stickers/...` 的路径参数）。
+/// 用于 `<包名>` 与包内文件名（两者都会变成 `/api/polish/stickers/...` 的路径参数）。
 /// 真正的越权拦截是 `canonicalize()` 之后的 `starts_with(root)`，这里只是第一道。
 pub fn is_safe_component(s: &str) -> bool {
     !s.is_empty()

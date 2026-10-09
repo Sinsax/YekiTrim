@@ -151,6 +151,26 @@ export const fontUrl = (pid, dir, name) =>
   `/api/polish/font?${qs(pid, dir)}${name ? '&name=' + encodeURIComponent(name) : ''}`
 
 /**
+ * **素材库统一取文件** URL（素材库界面预览用）：`/api/polish/asset?kind=&file=`。
+ *
+ * `kind` = `'video'` | `'font'`；根目录由**服务端**按 kind 现取（带存量回落），
+ * 前端只给**单个文件名**、绝不拼路径。
+ *
+ * ⚠️ 给 `<video>` / `<img>` / `@font-face` **直连**，别走 `api()` —— 那条只认 JSON。
+ * ⚠️ 贴纸**不走这里**：贴纸是两级（包/包内文件），走 `stickersApi.fileUrl(pack, name)`。
+ * 这两条分工别混 —— 硬塞进来就得让 `file` 认 `/`，正好把服务端那道
+ * "只允许单个文件名" 的安全性质破掉。
+ */
+export const assetUrl = (kind, file) =>
+  `/api/polish/asset?kind=${encodeURIComponent(kind)}&file=${encodeURIComponent(file)}`
+
+/** 视频素材的**缩略图** URL（服务端 ffmpeg 抽第 1 秒那帧并缓存）。
+ *
+ * ⚠️ 抽不出来时服务端回 **404**（不是 500）—— `<img>` 会自然触发 `onerror`，
+ * 前端退成图标即可。**别在 JS 里先探一次**：那等于每个缩略图多打一个请求。 */
+export const videoThumbUrl = (file) => `/api/polish/video-thumb?file=${encodeURIComponent(file)}`
+
+/**
  * 字体库（只读）：`{ root, fallback_stack, fonts: [{id, file, family, display_name, bytes, builtin,
  * is_default, license, scripts, emoji, installed, flat}], builtin: [{id, display_name, family,
  * license, license_url, installed}] }`。

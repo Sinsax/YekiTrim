@@ -62,24 +62,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/logs/events", get(admin_logs_stream))
         // LLM 用量（每次调用的 token / 缓存命中 / 耗时；设置页「LLM 用量」卡，仅 admin）
         .route("/admin/usage", get(admin_usage))
-        // 表情包（本地贴纸库）：全局资产，只有管理员能导入 / 构建 / 删除
-        .route("/admin/stickers", get(crate::stickers::packs_list))
-        .route("/admin/stickers/import", post(crate::stickers::pack_import))
-        // 上传 zip 建新包（WebUI 的「添加表情包」）。请求体是压缩包原始字节 ——
-        // 单独给这一条放开体积上限（axum 默认 2 MB），其它接口维持不变。
-        .route(
-            "/admin/stickers/upload",
-            post(crate::stickers::pack_upload)
-                .layer(axum::extract::DefaultBodyLimit::max(
-                    crate::stickers::UPLOAD_MAX_BYTES,
-                )),
-        )
-        .route(
-            "/admin/stickers/:pack",
-            get(crate::stickers::pack_detail).delete(crate::stickers::pack_delete),
-        )
-        .route("/admin/stickers/:pack/build", post(crate::stickers::pack_build))
-        .route("/admin/stickers/:pack/files/:name", get(crate::stickers::pack_file))
+        // ⚠️ **表情包（贴纸库）2026-10-09 已挪到用户层** —— 见下面 `/polish/stickers/*` 那几条。
+        // 用户口径「素材库是用户级、跟随用户」：贴纸库与字体库一样是**使用者准备素材**的地方。
+        // **别在 admin 层再加回来**：同一路径挂两次 axum 直接 panic（"Overlapping method route"）。
         .route("/doctor", get(doctor))
         .route("/config", get(config_get))
         .route("/config/global", put(config_global_put))
@@ -87,28 +72,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/llm/test", post(llm_test))
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
-        // 字体库**写**操作：库是**程序级全局资产**（`<exe 同级>/resources/fonts/`），
-        // 与贴纸库同规矩 —— **读**谁都能读（`GET /api/polish/fonts`），**写只给 admin**。
-        // 导入走"服务器上已有的文件路径"（`/api/fs/list` 也仅 admin）—— 这条仍在，
-        // 用于"服务器上已经躺着那支字体"的场景。
-        .route("/polish/fonts/import", post(polish_fonts_import))
-        // **拖拽上传**（2026-10-02 用户要求"导入字体改为拖拽字体文件"）：请求体是字体的
-        // 原始字节（`application/octet-stream`，不是 multipart —— 同贴纸上传那条做法）。
-        // ⚠️ 必须单独给这一条放开体积上限：axum 默认只收 2 MB，而字体动辄 10~30 MB
-        // （413 就是这层丢了）。上限常量与前端预检是同一个数。
-        .route(
-            "/polish/fonts/upload",
-            post(polish_fonts_upload).layer(axum::extract::DefaultBodyLimit::max(
-                FONT_UPLOAD_MAX_BYTES,
-            )),
-        )
-        // 设为默认（唯一默认；**不动任何工程的字体配置**）
-        .route("/polish/fonts/default", post(polish_fonts_default))
-        // 下载**自带字体**（清单见 `yekitrim_core::fonts::BUILTIN_FONTS`；幂等，已装好的跳过）。
-        // ⚠️ 会联网（约 38 MB），所以是 POST 而不是 GET 的副作用；**仅 admin**。
-        .route("/polish/fonts/builtin", post(polish_fonts_builtin))
-        // 删除（`?id=`，与 `/polish/font?name=` 同形）；**程序自带的返回 403**
-        .route("/polish/fonts", delete(polish_fonts_delete))
+        // ⚠️ **字体库的写操作 2026-10-09 已挪到用户层**（`/api/polish/fonts/*`，见下面那几条）：
+        // 用户口径「素材库是用户级、跟随用户」。**别在这里再加回来** —— 同一路径挂两次
+        // 在 axum 里会 panic（"Overlapping method route"），而不是"后者覆盖前者"。
         // ⚠️ 改密强制门**也必须盖住 admin 路由**：初始密码会同时写进日志与
         // `initial-admin-password.txt`，持它的会话若能调 `/api/config`，就等于直接拿到
         // 明文 LLM API key（`config_get_impl` 会回 `llm_raw`）并能铸造邀请码 ——
@@ -148,20 +114,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 贴纸帧表**预热**：页面加载时就把"播到才解"的整段解码挪走（见那个函数的说明）
         .route("/polish/sticker-prewarm", post(polish_sticker_prewarm))
         .route("/polish/sticker-sources", get(polish_sticker_sources))
-        // 贴纸库只读浏览（编辑器里 keyword→贴纸 的两级选择）；写操作仍只在 admin
+        // 贴纸库只读浏览（编辑器里 keyword→贴纸 的两级选择）
         .route("/polish/sticker-library", get(polish_sticker_library))
         .route("/polish/sticker-file", get(polish_sticker_file))
         // 音效目录（编辑器里音效事件的列表选择）
         .route("/polish/sfx-catalog", get(polish_sfx_catalog))
-        // 视频素材库（项目设置里「片头/片尾」挑素材；只读，与贴纸库同规矩）
-        .route("/polish/video-library", get(polish_video_library))
+        // ⚠️ `/polish/video-library` **不在这里**，它挂在 `assets` 路由上（素材库那一组）——
+        // 同一路径挂两个 Router 再 merge，axum 会 panic（"Overlapping method route"），
+        // **不是**"后者覆盖前者"。实测漏删一份 = 52 个单测全红。
         // ⚠️ 这里曾经有 `POST /polish/render-frame`（wgpu 单帧真渲染预览）—— 那条 GPU 链路已删除
         // （GPU 那侧交给独立的 Dhampir 底座）。别把它加回来。
         .route("/polish/font", get(polish_font))
-        // 字体库只读浏览（exe 同级 resources/fonts/）：字幕/封面字体的下拉数据源。
-        // ⚠️ 写入（导入/设默认/删除）**不在这里**，在 admin 层（见上面那三条）：
-        // 库是程序级全局资产，一张普通账号的会话不该能改所有人的字体
-        // （读走 `GET /api/polish/fonts`，写走 admin 层的 `/api/polish/fonts/*`）
+        // 字体库**只读**浏览：字幕/封面字体的下拉数据源。
+        // ⚠️ 写操作（导入/上传/设默认/装自带/删除）**不在这里** —— 它们与贴纸库管理一起
+        // 挂在不带 `enforce_scope` 的 `assets` 路由上（见下面那个 `let assets = ...`）。
         .route("/polish/fonts", get(polish_fonts))
         .route("/polish/select-version", post(polish_select_version))
         .route("/polish/silence", post(polish_silence))
@@ -171,6 +137,56 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.clone(),
             crate::scope::enforce_scope,
         ));
+
+    // **素材库（用户级资产）**：视频 / 贴纸 / 字体三类的浏览、取文件与管理。
+    //
+    // ⚠️ **刻意不挂 `enforce_scope`**：素材库是**程序级**的（`<数据目录>/resources/*`），
+    // 不属于任何工程。挂进去的后果实测过 —— `fonts/import` 那条带 `{dir}` 的请求会被
+    // scope 中间件按"这个目录在不在你的项目里"判掉、回 404，而它要的其实是
+    // "服务器上某个目录里躺着一支字体"。同规矩适用于贴纸的 `import`（按目录导入）。
+    // 它仍然在 `protected` 下 ⇒ **未登录 401**（放开的是"哪个用户"，不是"要不要登录"）。
+    let assets = Router::new()
+        // 统一取文件：`?kind=video|font&file=<单个文件名>`，根目录服务端按 kind 现取
+        .route("/polish/asset", get(polish_asset_file))
+        // 视频缩略图（网格里那张真帧；抽不出来回 404，前端退成图标）
+        .route("/polish/video-thumb", get(polish_video_thumb))
+        // 视频素材库列表
+        .route("/polish/video-library", get(polish_video_library))
+        // 字体库管理（2026-10-09 从 admin 层挪来）
+        .route("/polish/fonts/import", post(polish_fonts_import))
+        // **拖拽上传**：请求体是字体的原始字节（`application/octet-stream`，不是 multipart
+        // —— 同贴纸上传那条做法）。⚠️ 必须单独给这一条放开体积上限：axum 默认只收 2 MB，
+        // 而字体动辄 10~30 MB（413 就是这层丢了）。上限常量与前端预检是同一个数。
+        .route(
+            "/polish/fonts/upload",
+            post(polish_fonts_upload).layer(axum::extract::DefaultBodyLimit::max(
+                FONT_UPLOAD_MAX_BYTES,
+            )),
+        )
+        // 设为默认（唯一默认；**不动任何工程的字体配置**）
+        .route("/polish/fonts/default", post(polish_fonts_default))
+        // 装**自带字体**（幂等；已内嵌、不联网）
+        .route("/polish/fonts/builtin", post(polish_fonts_builtin))
+        // 删除（`?id=`）；**程序自带的回 403**（判断在 handler 里，不是靠路由门控）
+        .route("/polish/fonts", delete(polish_fonts_delete))
+        // 贴纸库管理（2026-10-09 从 `/admin/stickers/*` 挪来，**老路径已删除、不保留别名**：
+        // 那是给"只有管理员能管"设计的，留着会变成两套语义）
+        .route("/polish/stickers", get(crate::stickers::packs_list))
+        .route("/polish/stickers/import", post(crate::stickers::pack_import))
+        // 上传 zip 建新包。请求体是压缩包原始字节 —— 单独放开体积上限（axum 默认 2 MB）。
+        .route(
+            "/polish/stickers/upload",
+            post(crate::stickers::pack_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::stickers::UPLOAD_MAX_BYTES,
+                )),
+        )
+        .route(
+            "/polish/stickers/:pack",
+            get(crate::stickers::pack_detail).delete(crate::stickers::pack_delete),
+        )
+        .route("/polish/stickers/:pack/build", post(crate::stickers::pack_build))
+        .route("/polish/stickers/:pack/files/:name", get(crate::stickers::pack_file));
 
     let protected = Router::new()
         .route("/me", get(me))
@@ -231,6 +247,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/jobs/:id/cancel", post(job_cancel))
         .route("/media/*path", get(media_get))
         .merge(polish)
+        .merge(assets)
         // ⚠️ 两层的顺序**不能反**：`require_user` 必须在外层（先跑并写入 `CurrentUser`），
         // 改密强制门在内层才读得到用户。axum 里"后加的 layer 在外层"，所以这两行看起来是倒着写的。
         .route_layer(axum::middleware::from_fn(crate::auth::require_password_changed))
@@ -324,8 +341,11 @@ async fn video_library_route_is_readable_and_disk_driven() {
         .await;
     assert_eq!(res.status(), 200, "素材库是只读接口，普通用户必须能看");
 
-    // ③ 以磁盘为准：真丢一个文件进库，它必须出现（名字用去扩展名的键）
-    let lib = yekitrim_core::path::sticker_dir().join("videos");
+    // ③ 以磁盘为准：真丢一个文件进库，它必须出现（名字用去扩展名的键）。
+    // ⚠️ 写进 `video_dir_readable()`、**不是**手拼 `sticker_dir().join("videos")` ——
+    // 后者是 2026-10-09 之前的旧位置，在新布局下 handler 根本不看它（这条测试会假绿/假红，
+    // 取决于本机 `resources/videos` 里有没有东西）。判据必须与 handler 同源。
+    let lib = yekitrim_core::path::video_dir_readable();
     std::fs::create_dir_all(&lib).unwrap();
     let probe = lib.join("zz_route_probe.mp4");
     std::fs::write(&probe, b"not really an mp4").unwrap();
@@ -355,36 +375,44 @@ async fn video_library_route_is_readable_and_disk_driven() {
     std::fs::remove_file(&probe).ok();
 }
 
-/// 贴纸包上传这条路的**路由层**：只有 admin 能调、body 上限确实被放开、垃圾字节是 400。
+/// 贴纸包上传这条路的**路由层**：登录用户可调（**不再限 admin**）、body 上限确实被放开、
+/// 垃圾字节是 400。
 ///
-/// 三件事缺任何一条，前端看到都是"接口不存在或返回格式错误"：
-/// ① 非 admin 必须 403（贴纸库是全局资产）；
-/// ② `DefaultBodyLimit` 必须挂在**这一条**路由上 —— axum 默认只收 2 MB，
+/// ⚠️ **2026-10-09 语义变更**：用户口径「素材库是用户级、跟随用户」⇒ 贴纸/字体库的写操作
+/// 从 admin 层挪到用户层。这条测试因此**反过来**钉住"普通用户能过关"：
+/// 拿垃圾字节去试，必须走到 handler 拿到 **400**（解压失败），而**不是 403**。
+/// 若哪天有人把 admin 门控加回去，这里立刻红。
+///
+/// 另外两件事缺任何一条，前端看到都是"接口不存在或返回格式错误"：
+/// ① `DefaultBodyLimit` 必须挂在**这一条**路由上 —— axum 默认只收 2 MB，
 ///    用一个 3 MiB 的体试探：被 413 掉就说明那层丢了（改回默认值/漏挂 layer 都会挂在这条）；
-/// ③ 内容不是 zip 时给 400 与原因（不是 500，也不能当成成功）。
+/// ② 内容不是 zip 时给 400 与原因（不是 500，也不能当成成功）。
 /// 正常解压的路径在 `yekitrim-polish::assets::sticker_zip` 的 13 条单测里（它们用临时目录，
 /// 不碰真实的贴纸库）；这里刻意只喂垃圾字节，免得往 `<exe_dir>/stickers/` 写真文件。
 #[tokio::test]
-async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
+async fn sticker_upload_route_is_open_to_users_and_raises_body_limit() {
     let t = test_app().await;
 
-    // ① 普通用户：403
+    // ① 普通用户**也能调**（素材库是用户级资产）—— 这里只验"没被门控挡在 403"
     let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
     t.auth.db().create_user("plain_upload", &hash, "user", false, 0).unwrap();
     let b = t.auth.login("plain_upload", "pass-12345678", Some("10.9.9.9"), None).unwrap();
     let res = t
         .call(
-            t.req_as(&b.session_id, &b.csrf, "POST", "/admin/stickers/upload?name=zz_probe")
-                .body(Body::from(b"not a zip".to_vec()))
+            t.req_as(&b.session_id, &b.csrf, "POST", "/polish/stickers/upload?name=zz_probe")
+                .body(Body::from(vec![1u8, 2, 3]))
                 .unwrap(),
         )
         .await;
-    assert_eq!(res.status(), StatusCode::FORBIDDEN, "非 admin 不能让上传落进全局贴纸库");
-
-    // ③ 垃圾字节 → 400 且带原因
+    assert_ne!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "素材库已改为用户级：登录用户不该被 403 挡住"
+    );
+    // ② 垃圾字节 → 400 且带原因（普通用户那条：**放行到 handler**，由内容判失败）
     let res = t
         .call(
-            t.req("POST", "/admin/stickers/upload?name=zz_probe")
+            t.req("POST", "/polish/stickers/upload?name=zz_probe")
                 .body(Body::from(b"definitely not a zip".to_vec()))
                 .unwrap(),
         )
@@ -400,7 +428,7 @@ async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
     let big = vec![0u8; 3 * 1024 * 1024];
     let res = t
         .call(
-            t.req("POST", "/admin/stickers/upload?name=zz_probe")
+            t.req("POST", "/polish/stickers/upload?name=zz_probe")
                 .body(Body::from(big))
                 .unwrap(),
         )
@@ -412,7 +440,7 @@ async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
     );
 
     // 包名不合法 / 缺名字：在解压之前就挡住
-    for uri in ["/admin/stickers/upload?name=..%2Fx", "/admin/stickers/upload"] {
+    for uri in ["/polish/stickers/upload?name=..%2Fx", "/polish/stickers/upload"] {
         let res = t
             .call(t.req("POST", uri).body(Body::from(vec![1u8, 2, 3])).unwrap())
             .await;
@@ -431,16 +459,168 @@ async fn sticker_upload_route_is_admin_only_and_raises_body_limit() {
     }
 }
 
-/// 字体库的三条**写**路由（P1-e）：只有 admin 能调、缺参数是 400。
+/// **素材取文件**（`GET /polish/asset`）的路由层：登录用户可读、只认**单个文件名**、认不出 kind 是 400。
 ///
-/// 与贴纸那条同规矩：字体库是**程序级全局资产**（`<程序目录>/resources/fonts/`），
-/// 非 admin 能动它就是"普通用户往服务器写文件"。这里刻意只走**失败路径**，
-/// 不往真实字体库里写东西（成功路径用临时目录，在 `yekitrim-core::fonts` 的 11 条单测里）。
+/// ⚠️ 这条路径是素材库预览的唯一出口，所以"只允许单个文件名"是它的**安全性质**
+/// （不是风格问题）：一旦 `file` 认 `/` 或 `..`，一个普通账号就能拿 `?kind=font&file=../...
+/// /llm.toml` 去读服务器上任意文件。判据因此必须钉在**穿越尝试**上，而不只是"正常文件名能取到"。
 #[tokio::test]
-async fn font_write_routes_are_admin_only() {
+async fn asset_file_route_reads_one_named_file_and_refuses_traversal() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth
+        .db()
+        .create_user("plain_asset", &hash, "user", false, 0)
+        .unwrap();
+    let b = t
+        .auth
+        .login("plain_asset", "pass-12345678", Some("10.9.9.7"), None)
+        .unwrap();
+
+    // 认不出的 kind → 400（不是 500、也不能静默当成某个默认类型）
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/asset?kind=sticker&file=x")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "未知 kind 必须 400");
+
+    // 缺 file → 400
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/asset?kind=font")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "缺 file 必须 400");
+
+    // ⚠️ **穿越尝试一律 400**：这些正是"只认单个文件名"要挡的东西。
+    // 用 `%2F` / `%5C` 是因为查询串里裸 `/` 也会被解析，编码形式更接近攻击者真会发的东西。
+    for bad in [
+        "../llm.toml",
+        "..%2Fllm.toml",
+        "a%2Fb.ttf",
+        "a%5Cb.ttf",
+        "C%3A%5Cwindows%5Cx.ttf",
+        "%2Fetc%2Fpasswd",
+    ] {
+        let uri = format!("/polish/asset?kind=font&file={bad}");
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, "GET", &uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "穿越尝试必须被挡住: {uri}");
+    }
+
+    // 正常文件名但库里没有 → 404（区别于 400：这条是"没这个东西"，不是"你不该问"）
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/asset?kind=font&file=zz_nope.ttf")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // 未登录 → 401（放开的是"哪个用户"，不是"要不要登录"）
+    let res = t
+        .call(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/polish/asset?kind=font&file=x.ttf")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// **视频缩略图**（`GET /polish/video-thumb`）的路由层：文件名安全校验 + 抽不出来是 **404 而不是 500**。
+///
+/// ⚠️ "404 而不是 500" 是这条接口的核心约定：抽帧要起 ffmpeg，而没装 ffmpeg / 容器怪异 /
+/// 文件损坏都**不是接口故障**，只是"这张没有缩略图"。回 500 的话素材库会在界面上报一条
+/// 读取失败，而实际其它素材全都好好的。这里用假字节 mp4 正好钉住它（ffmpeg 必然抽不出帧）。
+#[tokio::test]
+async fn video_thumb_route_refuses_traversal_and_404s_when_unavailable() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth
+        .db()
+        .create_user("plain_thumb", &hash, "user", false, 0)
+        .unwrap();
+    let b = t
+        .auth
+        .login("plain_thumb", "pass-12345678", Some("10.9.9.6"), None)
+        .unwrap();
+
+    // 穿越尝试 → 400
+    for bad in ["..%2Fllm.toml", "a%2Fb.mp4", "%2Fetc%2Fpasswd"] {
+        let uri = format!("/polish/video-thumb?file={bad}");
+        let res = t
+            .call(
+                t.req_as(&b.session_id, &b.csrf, "GET", &uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "穿越尝试必须被挡住: {uri}");
+    }
+
+    // 库里没有这个文件 → 404
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/video-thumb?file=zz_nope.mp4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // ⚠️ 真文件但**不是合法视频** → 仍然是 404（不是 500）：这条判据就是"抽不出来不算故障"。
+    let lib = yekitrim_core::path::video_dir_readable();
+    std::fs::create_dir_all(&lib).unwrap();
+    let probe = lib.join("zz_thumb_probe.mp4");
+    std::fs::write(&probe, b"definitely not a video").unwrap();
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/video-thumb?file=zz_thumb_probe.mp4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert!(
+        res.status() == StatusCode::NOT_FOUND || res.status() == StatusCode::OK,
+        "抽不出帧只能是 404（或真抽到了 200），实际 {} —— 绝不能是 500",
+        res.status()
+    );
+    std::fs::remove_file(&probe).ok();
+    // 顺带把这次可能生成的缓存清掉，别在真实库里留垃圾
+    std::fs::remove_file(lib.join(".thumbs").join("zz_thumb_probe.mp4@0.jpg")).ok();
+}
+
+/// 字体库的**写**路由：**登录用户可调**（2026-10-09 起，不再是 admin-only）、缺参数是 400。
+///
+/// ⚠️ **语义变更**：用户口径「素材库是用户级、跟随用户」—— 素材库是给使用者准备素材的地方，
+/// 不是程序配置，所以写操作从 admin 层挪到了用户层（与贴纸库同口径）。
+/// 这条测试因此**反过来**钉住"普通用户能过关"：拿缺参数的请求去试，必须是 **400**，
+/// **不是 403**。谁把 admin 门控加回来，这里立刻红。
+///
+/// ⚠️ 但**「已认证」这道门仍在**：未登录必须 401（见下面那段）—— 放开的是"哪个用户"，
+/// 不是"要不要登录"。
+///
+/// 这里刻意只走**失败路径**，不往真实字体库里写东西
+/// （成功路径用临时目录，在 `yekitrim-core::fonts` 的 11 条单测里）。
+#[tokio::test]
+async fn font_write_routes_accept_any_logged_in_user() {
     let t = test_app().await;
 
-    // 普通用户：三条全 403（读是敞开的，写是 admin 的）
+    // 普通用户：**不该**被 403 挡住（素材库已是用户级资产）
     let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
     t.auth.db().create_user("plain_font", &hash, "user", false, 0).unwrap();
     let b = t
@@ -450,10 +630,7 @@ async fn font_write_routes_are_admin_only() {
     for (method, uri) in [
         ("POST", "/polish/fonts/import"),
         ("POST", "/polish/fonts/default"),
-        // 安装自带字体**必须**仅 admin：它会往服务器磁盘写几十 MB
-        // （字体已内嵌、**不联网**，但仍不能让普通用户触发"任意用户写大文件"）
         ("POST", "/polish/fonts/builtin"),
-        // 上传（拖拽导入）：同样仅 admin —— 它是"任意用户往服务器写大文件"的另一个口子
         ("POST", "/polish/fonts/upload?name=x.ttf"),
         ("DELETE", "/polish/fonts?id=whatever"),
     ] {
@@ -465,7 +642,37 @@ async fn font_write_routes_are_admin_only() {
                     .unwrap(),
             )
             .await;
-        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{method} {uri} 必须仅 admin");
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {uri} 素材库已改为用户级，不该 403"
+        );
+    }
+
+    // ⚠️ **未登录仍然挡住**：放开的是"哪个用户"，不是"要不要登录"。
+    // 少了这条，一条匿名请求就能往服务器字体库里写文件。
+    for (method, uri) in [
+        ("POST", "/polish/fonts/import"),
+        ("POST", "/polish/fonts/upload?name=x.ttf"),
+        ("DELETE", "/polish/fonts?id=whatever"),
+        ("POST", "/polish/stickers/upload?name=x"),
+    ] {
+        let res = t
+            .call(
+                // ⚠️ **不能**用 `t.req(..)` —— 它自带 admin 的会话 cookie
+                // （`test_support.rs::req` 里加了 Cookie），那样测的是"已登录"、
+                // 这条判据会**永远绿**。匿名请求必须自己建、不带 Cookie。
+                // （第一版就是拿 `t.req` 写的：401 断言实际收到 400 ——
+                //  请求已经进了 handler，说明它根本不是匿名的。）
+                axum::http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(b"{}".to_vec()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {uri} 未登录必须 401");
     }
 
     // admin + 缺参数：400（不是 500，也不能当成功）

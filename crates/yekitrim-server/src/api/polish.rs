@@ -1894,6 +1894,184 @@ pub(super) async fn polish_sfx_catalog() -> ApiResult {
     ok(serde_json::json!({ "ok": true, "entries": entries }))
 }
 
+/// **素材库统一取文件**接口（`GET /api/polish/asset?kind=&file=`）—— 三个类型一条路。
+///
+/// 为什么要有它：素材库改成"文件夹管理器"之后，**三种素材都要能预览**
+/// （视频要能真播、贴纸看大图、字体用样例字）—— 而三条老的取文件路各有各的形状：
+/// 贴纸走 `?pack=&name=`、字体根本没有"取文件"（只有"取字库元数据"）、视频没有。
+/// 与其让前端按类型分支拼三种 URL，不如**在服务端收敛成一条**：
+/// 前端永远只说"哪个类型、哪个文件"。
+///
+/// ⚠️ **`kind` 只用来选根目录，不参与拼路径** —— 路径一律由服务端从
+/// [`kind_root`] 现取，`file` 只允许**单个文件名**（`is_safe_component` 挡
+/// 分隔符与 `..`），所以拿不到库外的文件。**别再接受"子目录"或"相对路径"**：
+/// 那等于把 canonicalize 那层兜底变成唯一防线。
+///
+/// ⚠️ 贴纸仍然走老路（`/polish/sticker-file?pack=&name=`）：贴纸是**两级**
+/// （包 / 包内文件），这里刻意**不收编**它 —— 收编就得让 `file` 认 `/`，
+/// 正好把上面那条安全性质破掉。
+pub(super) async fn polish_asset_file(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use yekitrim_polish::assets::sticker_index::is_safe_component;
+    let kind = q.get("kind").map(String::as_str).unwrap_or("");
+    let file = q.get("file").map(String::as_str).unwrap_or("");
+    let Some(root) = asset_kind_root(kind) else {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "未知的素材类型");
+    };
+    if !is_safe_component(file) {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "文件名不合法");
+    }
+    let path = root.join(file);
+    // 同步 canonicalize 不能留在 async worker 上（`api/mod.rs` 的纪律）——
+    // 这条是**播放热路径**：视频预览会打出一连串 Range 请求。
+    let (real, root_real) = tokio::task::spawn_blocking({
+        let (p2, r2) = (path.clone(), root.clone());
+        move || {
+            (
+                p2.canonicalize().unwrap_or_else(|_| p2.clone()),
+                r2.canonicalize().unwrap_or_else(|_| r2.clone()),
+            )
+        }
+    })
+    .await
+    .unwrap_or_else(|_| (path.clone(), root.clone()));
+    if !real.starts_with(&root_real) {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "文件不在素材库内");
+    }
+    // ⚠️ mime 按**扩展名**给，别一律 octet-stream：浏览器靠它决定"当视频播还是当文件下载"。
+    // `mime_guess` 对 mp4/webm/ttf/otf/png/jpg 都认，认不出的才落到 octet-stream。
+    let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+    let range = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    crate::media::serve_file(&path, &mime, range).await
+}
+
+/// `kind` → 该类型的库根目录（**唯一映射表**）。
+///
+/// ⚠️ 一律走 `*_readable()`：新布局 + 存量回落的口径只有那一份，
+/// 这里写死 `resources/...` 会让**没搬迁的存量安装**预览全部 404。
+fn asset_kind_root(kind: &str) -> Option<std::path::PathBuf> {
+    use yekitrim_core::path;
+    match kind {
+        "video" => Some(path::video_dir_readable()),
+        "font" => Some(path::font_dir()),
+        _ => None,
+    }
+}
+
+/// **视频素材的缩略图**（`GET /api/polish/video-thumb?file=`）—— 素材库网格用。
+///
+/// 抽**第一秒**那一帧（不是第 0 帧：很多录播文件开头是黑场或渐入，截出来一片纯黑，
+/// 用户会以为"这素材是坏的"）。缩到 320px 宽，JPEG q=4 —— 网格里那格才 72px 高。
+///
+/// ⚠️ **结果按 `<库>/.thumbs/<文件>@<mtime>.jpg` 缓存**：抽帧要起一次 ffmpeg（几十到几百毫秒），
+/// 而网格一进页面就会把**每个**视频都拉一遍。不做缓存的话，一个 50 个素材的库每次打开
+/// 都白跑 50 次 ffmpeg。文件名里带 **mtime** ⇒ 用户换了同名文件自然失效，不用清缓存。
+///
+/// ⚠️ 抽不出来（ffmpeg 不在 PATH / 容器怪异 / 文件损坏）**不是错误**：回 404，
+/// 前端退成图标 + 文件名（见 `MediaLibrary.vue`）。**别回 500** —— 那会在界面上报一条
+/// "读取失败"，而实际只是"这张没缩略图、别的都好"。
+pub(super) async fn polish_video_thumb(
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use yekitrim_polish::assets::sticker_index::is_safe_component;
+    let file = q.get("file").map(String::as_str).unwrap_or("").to_string();
+    if !is_safe_component(&file) {
+        return crate::media::json_error(StatusCode::BAD_REQUEST, "文件名不合法");
+    }
+    let root = yekitrim_core::path::video_dir_readable();
+    let src = root.join(&file);
+    if !src.is_file() {
+        return crate::media::json_error(StatusCode::NOT_FOUND, "素材不存在");
+    }
+    // 抽帧是同步阻塞（起 ffmpeg），整段丢 blocking 池 —— 否则网格一进页面就把 worker 占满。
+    // ⚠️ `file` 必须是 `String`（owned）：闭包要求 `'static`，借用 `q` 活不过它。
+    let thumb = tokio::task::spawn_blocking(move || make_video_thumb(&root, &src, &file))
+        .await
+        .ok()
+        .flatten();
+    let Some(thumb) = thumb else {
+        // 抽不出来 = "没有缩略图"，不是"接口坏了"（前端按 404 退成图标）
+        return crate::media::json_error(StatusCode::NOT_FOUND, "无法生成缩略图");
+    };
+    let range = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok());
+    crate::media::serve_file(&thumb, "image/jpeg", range).await
+}
+
+/// 抽并缓存一帧。返回 `None` = 抽不出来（调用方回 404）。
+///
+/// 缓存在 `<库>/.thumbs/` 下 —— ⚠️ 以 `.` 开头是有意的：`scan_video_library` 只认**文件**，
+/// 而 `.thumbs` 是目录，本来就不会被列成素材；名字带点则是为了让人一眼看出"这是程序生成的"。
+fn make_video_thumb(root: &std::path::Path, src: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
+    let mtime = std::fs::metadata(src).ok()?.modified().ok()?;
+    let stamp = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dir = root.join(".thumbs");
+    let out = dir.join(format!("{file}@{stamp}.jpg"));
+    if out.is_file() {
+        return Some(out); // 缓存命中
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    // `-ss 1` 放在 `-i` **之前** = 快速定位（跳过去而不是解码过去）；
+    // `-frames:v 1` 只取一帧；`-vf scale=320:-2` 保宽 320、高按偶数对齐（JPEG 要求偶数）。
+    // ⚠️ `-update 1` 不能省：输出名不带 `%03d` 时 ffmpeg 会警告"Use a pattern … or the
+    // -update option"，虽然当前版本仍会写出文件，但那是**靠默认行为兜的**。
+    // 实测（`op.mp4`，3s）：不加这行有 [image2] 警告，加了干净 —— 别等哪个版本把它变成硬错误。
+    let st = yekitrim_core::process::cmd("ffmpeg")
+        .args([
+            "-y",
+            "-ss",
+            "1",
+            "-i",
+            &src.to_string_lossy(),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=320:-2",
+            "-q:v",
+            "4",
+            "-update",
+            "1",
+            &out.to_string_lossy(),
+        ])
+        .output()
+        .ok()?;
+    if !st.status.success() || !out.is_file() {
+        // 短于 1 秒的素材（`-ss 1` 越过结尾）：退到第 0 帧再试一次。
+        // ⚠️ 别直接放弃 —— 片头素材常常就一两秒，那正是最需要缩略图的一类。
+        std::fs::remove_file(&out).ok();
+        let st2 = yekitrim_core::process::cmd("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &src.to_string_lossy(),
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=320:-2",
+                "-q:v",
+                "4",
+                "-update",
+                "1",
+                &out.to_string_lossy(),
+            ])
+            .output()
+            .ok()?;
+        if !st2.status.success() || !out.is_file() {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 /// 贴纸库里的单张图（编辑器缩略图直连 `<img>`）；只读 + 路径安全校验，与 admin 版同款。
 pub(super) async fn polish_sticker_file(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,

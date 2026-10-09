@@ -35,17 +35,33 @@
 
 ## 边界
 
-- **字体库的`写`只在 admin 层**：`POST /api/polish/fonts/import`（body `{path, name?}`，只收
-  `ttf/otf`，**拒收 `.ttc/.otc`**）、`POST /api/polish/fonts/default`（`{id}`，**唯一默认**）、
-  `DELETE /api/polish/fonts?id=`（`builtin=true` → **403「程序自带字体不可删除」**）。
-  读仍是用户层的 `GET /api/polish/fonts`（改走 `fonts::scan_all`，多回 `display_name/builtin/is_default`
-  /`flat`（老平铺布局标签）/`fallback_stack`（**动态兜底字体栈**，预览 `.cap` 栈与成片同源的收口））。
+- ⚠️ **素材库的读写都是用户层（2026-10-09 起；此前写限 admin）**：用户口径「素材库是用户级、跟随用户」
+  —— 它是给使用者准备素材的地方，不是程序配置。三个库（视频/贴纸/字体）在路由上归成一组
+  **`let assets = Router::new()`**，merge 进 `protected`（⇒ **未登录仍 401**：放开的是"哪个用户"，
+  不是"要不要登录"）。
+  ⚠️ **这一组刻意不挂 `enforce_scope`**：库是**程序级**的（`<数据目录>/resources/*`）、不属于任何工程；
+  挂进去的后果实测过 —— `fonts/import` 那条带 `{dir}` 的请求会被 scope 中间件按"这个目录在不在你的
+  项目里"判掉回 **404**，而它要的其实是"服务器上某个目录里躺着一支字体"。
+  ⚠️ **同一路径别在两个 Router 里各挂一次**：axum merge 时 panic（`Overlapping method route`），
+  **不是**后者覆盖前者（实测漏删一份 `/polish/video-library` = 52 个单测全红）。
+  读是 `GET /api/polish/fonts`（`fonts::scan_all`，多回 `display_name/builtin/is_default`/`flat`
+  /`fallback_stack`）；写是 `POST /polish/fonts/{import,upload,default,builtin}` 与
+  `DELETE /polish/fonts?id=`（`builtin=true` → **403「程序自带字体不可删除」**，判断在 handler 里）。
+  贴纸端点 `/polish/stickers[...]` **2026-10-09 从 `/admin/stickers/*` 挪来，老路径已删除**。
+- **素材库取文件（`GET /polish/asset?kind=video|font&file=`）与 `GET /polish/video-thumb?file=`**：
+  ⚠️ 前者的**安全性质是"只认单个文件名"**（`is_safe_component` 挡分隔符与 `..`，根目录由
+  `asset_kind_root` 按 kind 现取）—— 一旦 `file` 认 `/`，普通账号就能拿
+  `?kind=font&file=../.yekitrim/llm.toml` 读走 API key。有单测钉在**穿越尝试**上（不是"正常文件名
+  能取到"），去掉那道判断立刻红。⚠️ 贴纸**不收编**进来（两级：包/包内文件，收编就得让 `file` 认 `/`）。
+  后者抽第 1 秒那帧（<1s 退到第 0 帧）、按 `<库>/.thumbs/<名>@<mtime>.jpg` 缓存；
+  ⚠️ **抽不出来回 404 不是 500** —— 没装 ffmpeg / 容器怪异 / 文件损坏都只是"这张没缩略图"，
+  回 500 会让界面报读取失败，而其它素材全都好好的。
   ⚠️ **写路径（导入/上传/装自带）必须走 `fonts::ensure_dir()`** —— 它负责 `create_dir_all`。
   读写现在解析到**同一个目录**（`<数据目录>/resources/fonts`，2026-10-02 资产收回程序目录之后），
   但仍别自己拼路径：目录不存在时要建出来。`set_default`/`remove` 操作的是**当前可见的那份库**
   （`font_dir()`），这是有意的。
-  ⚠️ 这三条**有意不挂 `enforce_scope`**：字体库是**程序级全局资产**、不在任何项目内，
-  与贴纸库同规矩（读敞开、写限 admin）；导入用"服务器上的路径"而非上传，理由同 `/api/fs/list`。
+  ⚠️ 这三条**有意不挂 `enforce_scope`**（见本卡「素材库」那条）；导入用"服务器上的路径"
+  而非上传，理由同 `/api/fs/list`。
 - **`POST /api/polish/cover`** 的 body 多了可选 **`renderer`**（现在**只有 `takumi`** —— `chrome` 那条截图腿 2026-10-01 整条删除，传它由 `cover.rs` **明确报错**）：服务端**只透传**成子进程的 `--renderer`，取值口径与白名单只在 `crates/yekitrim-polish/src/cover.rs`（**只此一份**，不在这一层抄第二份），认不出的值由那里**报错**。**能不能用**（编了 feature + 字体库非空）回在 `/api/health.cover_static`（`{compiled, fonts, fonts_dir, ready}`）—— 前端据此把「生成封面」置灰并在卡片里写原因（通道弹窗已删）；health 是公开接口，只回布尔 + 字体库路径（本机配置问题，不是账号/工程信息）。
 
 - ⚠️ **`/polish/dhampir-wasm/*` 的响应压缩与 ETag/304**（2026-10-02 首屏提速，只在这条路由上开）：

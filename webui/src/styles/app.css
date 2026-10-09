@@ -260,6 +260,10 @@ iframe.preview { width:100%; height:75vh; border:0; border-radius:12px; backgrou
 .toast { position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:150; background:var(--ink); color:var(--bg);
   padding:8px 18px; border-radius:var(--r-full); font-size:13px; max-width:80vw; box-shadow:var(--shadow-hover); }
 .toast.err { background:var(--red-deep); }
+/* ⚠️ `warn` 2026-10-09 补：此前只有 `.err` 有样式，而代码里已经在传 `'warn'`
+   （跳过非字体文件那类"没失败、但要让你知道"的提示）—— 落回默认底色的 warn
+   与普通成功提示**长得一模一样**，用户分不出"做成了"和"跳过了一些"。 */
+.toast.warn { background:var(--tan); color:var(--ink); }
 .dialog-modal { width:min(440px,92vw); background:var(--card); border:1px solid var(--line); border-radius:var(--r);
   box-shadow:var(--shadow-hover); padding:20px; }
 .dialog-title { font-size:15px; font-weight:700; margin-bottom:8px; }
