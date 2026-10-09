@@ -1170,7 +1170,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// ⚠️ "未安装"必须**看得见**：`scan_all` 会把清单里有、盘上没有的自带字体也列出来，
 /// 这里要把它们标成 `未安装（可下载）`，否则用户以为库里空空如也。
 pub fn cmd_fonts_list() -> anyhow::Result<()> {
-    let root = yekitrim_core::path::font_dir();
+    let root = yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env());
     tracing::info!("🔤  字体库: {}", root.display());
     let list = yekitrim_core::fonts::scan_all(&root);
     let installed = list.iter().filter(|e| e.installed).count();

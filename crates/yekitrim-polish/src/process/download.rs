@@ -44,7 +44,9 @@ pub(super) async fn try_resolve_sticker(
         }
         // 贴纸包名（如 "ysyk"）：keyword 通常是包名，直接从包内选文件
         src => {
-            let packages = crate::assets::sticker_index::scan_packages(&yekitrim_core::path::sticker_dir());
+            let packages = crate::assets::sticker_index::scan_packages(
+                &yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env()),
+            );
             if packages.iter().any(|p| p.name == src) {
                 crate::assets::sticker_index::pick_package_file(&packages, src, time)
             } else {

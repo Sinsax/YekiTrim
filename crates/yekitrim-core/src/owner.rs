@@ -29,6 +29,61 @@ use std::path::{Path, PathBuf};
 
 use super::path;
 
+/// 身份**跨进程**传递的环境变量名。
+///
+/// ## 为什么必须有它
+///
+/// 出片 / 封面 / 预览都走**子进程**（`yekitrim polish <sub> <dir>`，见 `render/AGENTS.md`：
+/// 分钟级的重活不能跑在服务进程里）。子进程要自己解析字体库、贴纸库的位置 ——
+/// 拿不到父进程的 `Owner`，它就只会看全局那一份 ⇒
+/// **多用户下 A 导入的字体，B 出片时会被用上**（实测的失效形态：不报错、只是字体不对）。
+///
+/// ## 为什么用环境变量，而不是命令行参数
+///
+/// - `polish` 有 render / cover / preview / init / process… **每一条都得带上**它。
+///   加参数要动 `clap` 的每个子命令 + 每处 `extra` 拼装；环境变量在 `Command` 上**一处生效**。
+/// - 子进程还会再拉起孙进程（ffmpeg、底座 Dhampir），环境变量**自动继承**，命令行不会。
+/// - 本仓已有先例：`YEKITRIM_DATA_DIR` 就是同一种"路径面的进程级开关"（见 [`path::data_dir`]）。
+///
+/// ⚠️ 认不出的值**回落 `Local` 并打 warn**（不报错）：出片直接失败比"用错了库"更难查，
+/// 而这个值理论上只可能来自手改环境变量或旧版父进程。
+pub const OWNER_ENV: &str = "YEKITRIM_OWNER";
+
+impl Owner {
+    /// 从 [`OWNER_ENV`] 读身份；没设 = [`Owner::Local`]（CLI 与单人的常态）。
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var(OWNER_ENV).ok().as_deref())
+    }
+
+    /// [`from_env`] 的可注入版本（单测用：edition 2024 下 `set_var` 是 `unsafe`，
+    /// 与 `path::data_dir_in` 同一条理由）。
+    pub fn from_env_value(raw: Option<&str>) -> Self {
+        let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Owner::Local;
+        };
+        if raw == "local" {
+            return Owner::Local;
+        }
+        match raw.parse::<i64>() {
+            Ok(uid) if uid > 0 => Owner::User(uid),
+            // ⚠️ 认不出**不静默**：多用户下"出片用了全局字体库"这种症状
+            // 在日志里一个字都看不到就太难查了。
+            _ => {
+                tracing::warn!("{OWNER_ENV}={raw} 认不出（只认 local 或正整数 uid），按单人形态继续");
+                Owner::Local
+            }
+        }
+    }
+
+    /// 写进子进程环境的字符串（与 [`from_env_value`] 互逆）。
+    pub fn as_env_value(&self) -> String {
+        match self {
+            Owner::Local => "local".to_string(),
+            Owner::User(uid) => uid.to_string(),
+        }
+    }
+}
+
 /// 数据归属 —— 决定"这份数据属于谁"。
 ///
 /// 单人部署下恒为 [`Owner::Local`]，此时**所有解析结果等于 2026-10 现状的位置**
@@ -124,6 +179,43 @@ pub fn asset_dir(owner: Owner, kind: AssetKind) -> PathBuf {
 /// [`asset_dir`] 的可注入版本（单测用）。
 pub fn asset_dir_at(owner: Owner, kind: AssetKind, data_home: &Path) -> PathBuf {
     resources_dir_at(owner, data_home).join(kind.dir_name())
+}
+
+/// 贴纸库**该读哪个目录** —— 单人形态带回存量回落，多用户不带。
+///
+/// ## 为什么多用户**不**回落
+///
+/// `path::sticker_dir_readable()` 那套回落是为了"2026-10-09 之前的老安装别突然变空"：
+/// 老位置 `<data>/stickers/` → 新位置 `<data>/resources/stickers/`。
+/// 那是**这台机器**的历史，只对 [`Owner::Local`] 成立。
+///
+/// 用户自己的树（`users/<uid>/resources/stickers`）是**新长出来的**，从来没有老位置 ——
+/// 给它套一套回落等于凭空制造"两个可能的位置"，正是本模块明令禁止的第 2 条。
+pub fn sticker_dir_readable(owner: Owner) -> PathBuf {
+    sticker_dir_readable_at(owner, &path::data_dir())
+}
+
+/// [`sticker_dir_readable`] 的可注入版本（单测用）。
+pub fn sticker_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
+    match owner {
+        // 单人：**逐字沿用现状那条**（含回落），保证零回归。
+        Owner::Local => path::sticker_dir_readable_at(data_home),
+        Owner::User(_) => asset_dir_at(owner, AssetKind::Stickers, data_home),
+    }
+}
+
+/// 视频素材库**该读哪个目录** —— 单人形态带回存量回落，多用户不带
+/// （理由同 [`sticker_dir_readable`]）。
+pub fn video_dir_readable(owner: Owner) -> PathBuf {
+    video_dir_readable_at(owner, &path::data_dir())
+}
+
+/// [`video_dir_readable`] 的可注入版本（单测用）。
+pub fn video_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
+    match owner {
+        Owner::Local => path::video_dir_readable_at(data_home),
+        Owner::User(_) => asset_dir_at(owner, AssetKind::Videos, data_home),
+    }
 }
 
 /// 该 owner 的**状态目录**（`<…>/.yekitrim/`：配置、server.toml…）。
@@ -316,6 +408,41 @@ mod tests {
                 seen.push((d, label));
             }
         }
+    }
+
+    /// 身份跨进程往返：`as_env_value` → `from_env_value` 必须还原同一个 owner。
+    ///
+    /// 这条是"子进程与父进程看同一个库"的**唯一**根据 —— 它两边一旦漂移，
+    /// 症状是**多用户下出片用了别人的字体库**，而且不报错。
+    #[test]
+    fn owner_env_value_roundtrips() {
+        for owner in [Owner::Local, Owner::User(1), Owner::User(7), Owner::User(i64::MAX)] {
+            let v = owner.as_env_value();
+            assert_eq!(
+                Owner::from_env_value(Some(&v)),
+                owner,
+                "{owner:?} 经环境变量往返后变了"
+            );
+        }
+    }
+
+    /// 没设 / 空串 / 认不出 ⇒ 一律回落单人形态（**不报错**：出片失败更难查）。
+    #[test]
+    fn owner_env_falls_back_to_local_when_missing_or_bogus() {
+        assert_eq!(Owner::from_env_value(None), Owner::Local);
+        assert_eq!(Owner::from_env_value(Some("")), Owner::Local);
+        assert_eq!(Owner::from_env_value(Some("   ")), Owner::Local);
+        assert_eq!(Owner::from_env_value(Some("local")), Owner::Local);
+        // 认不出的值 —— 包括 uid 不许为 0/负数（`users.id` 从 1 起）
+        for bad in ["abc", "0", "-3", "1.5", "uid7"] {
+            assert_eq!(
+                Owner::from_env_value(Some(bad)),
+                Owner::Local,
+                "{bad} 应回落单人形态"
+            );
+        }
+        // 两侧空白照常认
+        assert_eq!(Owner::from_env_value(Some(" 42 ")), Owner::User(42));
     }
 
     /// 临时根目录（core **没有** dev-dependencies，`tempfile` 不在依赖表里 ——

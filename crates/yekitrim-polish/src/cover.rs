@@ -112,8 +112,17 @@ pub fn cover_static_capability() -> (bool, usize, std::path::PathBuf) {
 /// 也要用它，而那个函数在**没编 cover-takumi** 时同样要能算 —— 否则前端连
 /// "为什么用不了静态封面"都问不出来（门控会让它编译不过，而不是回 0）。
 #[cfg_attr(not(feature = "cover-takumi"), allow(dead_code))]
+/// **这个进程干活用的字体库**（按 `Owner`，经 `YEKITRIM_OWNER` 从父进程继承）。
+///
+/// ⚠️ 封面这条腿也是**子进程**（`yekitrim polish cover <dir>`），所以它同样不能写死
+/// `path::font_dir()` —— 多用户下那会让 A 导入的字体出现在 B 的封面里。
+/// 单人（CLI / 托盘）没有 `YEKITRIM_OWNER`，解析结果就是现状位置，**零变化**。
+fn font_dir_owned() -> std::path::PathBuf {
+    yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env())
+}
+
 fn cover_font_files() -> Vec<std::path::PathBuf> {
-    cover_font_files_in(&yekitrim_core::fonts::dir())
+    cover_font_files_in(&font_dir_owned())
 }
 
 /// [`cover_font_files`] 的可注入版本（单测用临时库）。
@@ -617,7 +626,7 @@ pub const EMOJI_STROKE_COLOR: &str = "#2a2522";
 /// **不解析、也不起兜底作用** —— 真正让 Takumi 出 emoji 的是**注册序**（见
 /// `cover_font_files_in` 的 emoji 收尾）。保留系统族名只是为了浏览器预览（设计器）那条路。
 pub fn emoji_font_stack() -> String {
-    let root = yekitrim_core::path::font_dir();
+    let root = font_dir_owned();
     let tail = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
     match yekitrim_core::fonts::emoji_font(&root) {
         Some(e) => {
@@ -720,7 +729,7 @@ fn wrap_emoji_runs(line: &str, family: &str, ring: f64) -> String {
 
 /// 库里**那支 emoji 字体**的 id（没有 = 空串）。
 fn cover_emoji_font_id() -> String {
-    yekitrim_core::fonts::emoji_font(&yekitrim_core::path::font_dir())
+    yekitrim_core::fonts::emoji_font(&font_dir_owned())
         .map(|e| e.id)
         .unwrap_or_default()
 }

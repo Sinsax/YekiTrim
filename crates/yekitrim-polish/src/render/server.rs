@@ -109,7 +109,8 @@ async fn serve_library_font(axum::extract::Path(name): axum::extract::Path<Strin
     }
     // 字体动辄几十 MB，读盘别占着 async worker（这条服务器也要抓帧/截图）
     let loaded = tokio::task::spawn_blocking(move || {
-        let root = yekitrim_core::path::font_dir();
+        // ⚠️ 按归属：预览也是**子进程**（`polish preview`），多用户下不能让 A 用上 B 的字体。
+        let root = yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env());
         let path = yekitrim_core::fonts::resolve_all(&root, &name)?;
         let file = path.file_name()?.to_str()?.to_string();
         std::fs::read(&path).ok().map(|b| (b, file))
@@ -143,7 +144,11 @@ fn font_content_type(file: &str) -> &'static str {
 /// `index.html` 的 `.cap{font-family:"<style.subtitle.font>"…}`、`cover.html` 的
 /// `__FONT_FAMILY__` 都直接把这一串当 CSS 字族名用。名字一样，那条规则一行都不用改。
 pub fn font_face_css(font_ids: &[&str]) -> String {
-    font_face_css_in(&yekitrim_core::path::font_dir(), font_ids)
+    // 同上：按归属选库（单人 = 现状位置，零变化）。
+    font_face_css_in(
+        &yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env()),
+        font_ids,
+    )
 }
 
 /// [`font_face_css`] 的目录版（测试用临时目录，免得往程序目录写字）。
