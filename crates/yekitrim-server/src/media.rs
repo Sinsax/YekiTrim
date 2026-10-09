@@ -103,7 +103,7 @@ fn stream_file(
 
 /// 按 HTTP Range 语义输出一个本地文件：200 全量 / 206 分段 / 416 不可满足。
 ///
-/// `/api/media/*` 与 `/api/admin/stickers/*/files/*` 共用这一份——两处都是
+/// `/api/media/*` 与 `/api/polish/stickers/*/files/*` 共用这一份——两处都是
 /// "只服务服务端已有文件"，不该各写一遍分块与 Range 处理。
 pub(crate) async fn serve_file(
     path: &Path,

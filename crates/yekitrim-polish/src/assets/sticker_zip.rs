@@ -1,6 +1,6 @@
 //! 上传 zip → 新贴纸包：`import_package_from_zip`。
 //!
-//! WebUI 的「＋ 添加表情包」走这里（`POST /api/admin/stickers/upload`，
+//! WebUI 的「＋ 添加表情包」走这里（`POST /api/polish/stickers/upload`，
 //! 请求体就是压缩包原始字节）。这是全站**第二处**有意接收用户上传的入口
 //! （第一处是封面背景图 base64），所以闸门都在这儿：
 //!
@@ -15,7 +15,7 @@
 //!   `sanitize_pack_name` 也拒绝 `.` 开头，所以它既不出现在列表里也不可能被接口访问。
 //!
 //! 摊平（不保留子目录）是有意的：贴纸库本来就是扁平的（`list_package_files`
-//! 只看包目录第一层），包内文件名还要当 `/api/admin/stickers/:pack/files/:name`
+//! 只看包目录第一层），包内文件名还要当 `/api/polish/stickers/:pack/files/:name`
 //! 的路径参数（`is_safe_component` 拒绝分隔符）。摊平后的**重名只留第一个**，
 //! 其余计入 `skipped`（不静默丢——报给用户）。
 

@@ -82,7 +82,7 @@
   上传**没有进度条**（`fetch` 拿不到上传进度），只显示「上传中…」。
   zip 依赖钉在 `zip = "2.4.2"`（`default-features = false, features = ["deflate"]`）：
   该版本连同全部传递依赖都在本机 cargo 缓存里，**4.6.1 的 deflate 走 `flate2/zlib-rs`，那份没缓存**。
-- 目录导入**接口保留但没有 UI**：`POST /api/admin/stickers/import {dir,name,build}`
+- 目录导入**接口保留但没有 UI**：`POST /api/polish/stickers/import {dir,name,build}`
   （`import_package`：把服务器上一个目录里的图片**复制**进 `stickers/<包名>/`，来源目录原样留着）
   —— 留给「服务器上已经有一堆图」时用 curl 导入。两条入口的共同规矩：目标已存在一律拒绝、
   绝不合并；一张图都没进来（复制失败 / 压缩包里没有图片）就报 400 且不留目录。
@@ -95,14 +95,16 @@
 - `sfx_catalog` 的屏蔽语义：精确 id（如 `fear-1`）屏蔽单个音效；`tag:xxx`（如 `tag:surprise`）
   屏蔽整个标签族。项目级 `polish.toml [sfx] blacklist` 与全局 `.yekitrim/config.toml [sfx] blacklist`
   由 `process::load_sfx_blacklist` 求并集。
-- 只读接口（非 admin 可读）：`GET /api/polish/sticker-library`（磁盘为准）与
+- 只读接口：`GET /api/polish/sticker-library`（磁盘为准）与
   `GET /api/polish/sticker-file`（缩略图）；音效列表来自 `GET /api/polish/sfx-catalog`。
-  写操作仍然只在 admin 侧，别把库管理接口开到 `/polish/*`。
-- 管理接口（全部 admin）：`GET /api/admin/stickers`（列表）/ `GET .../:pack`（包内文件 + 每个文件的
-  tags，展开时才拉）/ `POST .../upload?name=&build=`（**上传 zip**）/ `POST .../import {dir,name,build}` /
-  `POST .../:pack/build` / `DELETE .../:pack`（目录 + 清单 + 索引项一起删）/
+- 管理接口（**2026-10-09 起全在 `/polish/stickers/*`，登录用户即可用**；原 `/api/admin/stickers/*`
+  **已删除、不留别名** —— 用户口径「素材库是用户级、跟随用户」）：`GET /api/polish/stickers`（列表）/
+  `GET .../:pack`（包内文件 + 每个文件的 tags，展开时才拉）/ `POST .../upload?name=&build=`（**上传 zip**）/
+  `POST .../import {dir,name,build}` / `POST .../:pack/build` / `DELETE .../:pack`（目录 + 清单 + 索引项一起删）/
   `GET .../:pack/files/:name`（预览图，与 `/api/media/*` 共用 `media::serve_file` 的 Range 实现）。
   包名过 `sanitize_pack_name`、文件名过 `is_safe_component`，再 canonicalize 要求落在库内。
+  ⚠️ 这一组**刻意不挂 `enforce_scope`**（库是程序级、不在任何工程内）—— 详见
+  `crates/yekitrim-server/src/api/AGENTS.md`「素材库」那条。
 - `is_image_file_name` 是**唯一**的图片扩展名判据 —— 上传、目录导入、包扫描、预览四处都走它，
   别在任何地方再抄一份扩展名清单。
 - ⚠️ `is_safe_component` 挡路径拼接（删除片段/贴纸文件名）是**既有约定，别松**；

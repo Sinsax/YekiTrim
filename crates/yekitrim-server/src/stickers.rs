@@ -1,10 +1,14 @@
 //! 表情包（本地贴纸库）管理：列表 / 上传导入 / LLM 压缩构建 / 删除 / 预览图。
 //!
-//! 库固定在 `yekitrim_core::path::sticker_dir()` = `<程序目录>/stickers/`：
-//! 一个子文件夹 = 一个包（`stickers/<包名>/*.gif`），包名即 LLM 选贴纸时的 `keyword`。
+//! 库固定在 `yekitrim_core::path::sticker_dir()` = `<数据目录>/resources/stickers/`：
+//! 一个子文件夹 = 一个包（`<包名>/*.gif`），包名即 LLM 选贴纸时的 `keyword`。
 //!
-//! 这些接口全在 admin 路由组里（`require_admin`）：贴纸库是**全局资产** ——
-//! 写的是程序目录、花的是管理员的 LLM 额度，普通用户只在精修页选择用哪些包。
+//! ⚠️ **2026-10-09 起这些接口在用户路由组里，登录用户都能调**（原为 `require_admin`）：
+//! 用户口径「素材库是用户级、跟随用户」—— 素材库是给使用者准备素材的地方。
+//! 路由挂在 `routes.rs` 那个**不带 `enforce_scope`** 的 `assets` 组上（库是程序级、不在
+//! 任何工程内），未登录仍是 401。
+//! ⚠️ 代价是**任何登录用户都能改这份共享库**，这是用户明确选的（原先的理由是
+//! "一张普通账号的会话不该改所有人的贴纸"）—— 别再单方面加回 admin 门控。
 //!
 //! 「构建」复用 CLI 的那一份实现（`yekitrim_polish::commands::build_package_tags`）：
 //! LLM 读文件名产出 10~20 个语义 tag 的反向索引 → 写 `stickers/<包名>.toml` +
@@ -15,8 +19,8 @@
 //!
 //! | 入口 | 来源 | UI |
 //! |---|---|---|
-//! | `POST /admin/stickers/upload` | 浏览器上传的 zip（请求体原始字节） | 有（首页「表情包」区块） |
-//! | `POST /admin/stickers/import` | 服务器上一个已有目录（复制，来源原样留着） | 无，留给 curl/本地目录 |
+//! | `POST /polish/stickers/upload` | 浏览器上传的 zip（请求体原始字节） | 有（首页「表情包」区块） |
+//! | `POST /polish/stickers/import` | 服务器上一个已有目录（复制，来源原样留着） | 无，留给 curl/本地目录 |
 //!
 //! ⚠️ 上传那条是全站**第二处**有意接收用户输入的字节流（第一处是封面背景图），
 //! 闸门（请求体上限 + 解压限值 + 只取 basename）都在 `pack_upload` 与
@@ -126,7 +130,7 @@ async fn spawn_build(state: &Arc<AppState>, owner: i64, pack: &str) -> Result<St
     Ok(id)
 }
 
-/// `GET /api/admin/stickers` — 包列表（**以磁盘为准**：手工丢进库里的文件夹也会出现）。
+/// `GET /api/polish/stickers` — 包列表（**以磁盘为准**：手工丢进库里的文件夹也会出现）。
 pub async fn packs_list() -> ApiResult {
     let root = yekitrim_core::path::sticker_dir();
     let index = si::load_sticker_index(&root);
@@ -167,7 +171,7 @@ pub async fn packs_list() -> ApiResult {
     }))
 }
 
-/// `GET /api/admin/stickers/:pack` — 包内文件 + 每个文件命中的 tags（展开预览时才拉）。
+/// `GET /api/polish/stickers/:pack` — 包内文件 + 每个文件命中的 tags（展开预览时才拉）。
 pub async fn pack_detail(AxumPath(pack): AxumPath<String>) -> ApiResult {
     let root = yekitrim_core::path::sticker_dir();
     let dir = pack_dir(&root, &pack)?;
@@ -186,7 +190,7 @@ pub async fn pack_detail(AxumPath(pack): AxumPath<String>) -> ApiResult {
     ok(serde_json::json!({ "ok": true, "pack": pack, "files": files }))
 }
 
-/// `POST /api/admin/stickers/import` — 把服务器上一个目录里的图片复制成新包。
+/// `POST /api/polish/stickers/import` — 把服务器上一个目录里的图片复制成新包。
 ///
 /// `{dir, name?, build?}`：`name` 缺省取来源目录名；`build=true` 时顺带起构建任务，
 /// 但**导入成功与构建任务是两件事** —— 构建起不来（已有任务在跑）只回一句 `job_error`。
@@ -278,7 +282,7 @@ fn parse_upload_args(q: &UploadQuery, body_len: usize) -> Result<(String, bool),
     Ok((name, build))
 }
 
-/// `POST /api/admin/stickers/upload?name=<包名>&build=<0|1>` — 把上传的 zip 解压成新包。
+/// `POST /api/polish/stickers/upload?name=<包名>&build=<0|1>` — 把上传的 zip 解压成新包。
 ///
 /// 请求体就是压缩包的**原始字节**（`application/octet-stream`，不是 multipart）：
 /// 单文件上传用 multipart 只是多一层边界解析，而前端 `api()` 本来就能直接传 `File`。
@@ -319,7 +323,7 @@ pub async fn pack_upload(
     Ok(Json(out))
 }
 
-/// `POST /api/admin/stickers/:pack/build` — LLM 压缩构建（覆盖 `<包名>.toml` 并注册）。
+/// `POST /api/polish/stickers/:pack/build` — LLM 压缩构建（覆盖 `<包名>.toml` 并注册）。
 pub async fn pack_build(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<CurrentUser>,
@@ -336,7 +340,7 @@ pub async fn pack_build(
     ok(serde_json::json!({ "ok": true, "id": id }))
 }
 
-/// `DELETE /api/admin/stickers/:pack` — 删掉整个包（目录 + 清单 + 索引项）。
+/// `DELETE /api/polish/stickers/:pack` — 删掉整个包（目录 + 清单 + 索引项）。
 pub async fn pack_delete(AxumPath(pack): AxumPath<String>) -> ApiResult {
     let root = yekitrim_core::path::sticker_dir();
     let name = si::sanitize_pack_name(&pack)
@@ -346,7 +350,7 @@ pub async fn pack_delete(AxumPath(pack): AxumPath<String>) -> ApiResult {
     ok(serde_json::json!({ "ok": true, "name": name, "removed": removed }))
 }
 
-/// `GET /api/admin/stickers/:pack/files/:name` — 包内图片（预览用，`<img>` 直连）。
+/// `GET /api/polish/stickers/:pack/files/:name` — 包内图片（预览用，`<img>` 直连）。
 pub async fn pack_file(
     AxumPath((pack, name)): AxumPath<(String, String)>,
     headers: axum::http::HeaderMap,

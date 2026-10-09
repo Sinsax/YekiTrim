@@ -14,7 +14,7 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
 ## 入口
 
 - 构建：`cd webui && npm install && npm run build`（`build` = `vite build`，`outDir: dist` + `emptyOutDir`）。
-- 起不了 npm 脚本时直接调 vite：`node webui/node_modules/vite/bin/vite.js build`（**在 `webui/` 下跑**）。
+  起不了 npm 脚本时直接调 vite：`node webui/node_modules/vite/bin/vite.js build`（**在 `webui/` 下跑**）。
 - `webui/scripts/` **九个**静态判据脚本（零依赖、不 import 应用模块、不需要起服务）：
   - `check-overlay.mjs` — 覆盖层色档：`templates/index.html` ↔ `src/polish/engine.js` 逐例对拍。
   - `check-caption-wrap.mjs` — 竖屏折行：`wrapCaptionParts` 两份实现。
@@ -31,8 +31,8 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块跨满
     整行（否则滑条压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` · `ModelList` 下载按
     admin 门控 · 模板标识符必须有定义（Vue 对未定义变量**不报错**）。⚠️ 每条带**变异自证**。
-  - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`）。
-    （卡里曾写"已进 `gates.mjs`"，但仓里**没有**这个聚合脚本 —— 逐个跑即可。）
+  - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`，仓里**没有** `gates.mjs`
+    这个聚合脚本 —— 逐个跑即可）。
 - 子目录细则看各自卡：`src/AGENTS.md`、`src/api/AGENTS.md`、`src/styles/AGENTS.md`、`src/polish/AGENTS.md`。
 
 ## 边界
@@ -53,19 +53,10 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
 ## 验证
 
 ```bash
-npm --prefix webui run build
-node webui/scripts/check-overlay.mjs
-node webui/scripts/check-caption-wrap.mjs
-node webui/scripts/check-sticker-anchor.mjs
-node webui/scripts/check-cover-stage.mjs
-node webui/scripts/check-handheld.mjs
-node webui/scripts/check-stage-backdrop.mjs
-node webui/scripts/check-preview-ab.mjs
-node webui/scripts/check-grid-parity.mjs
-node webui/scripts/check-layout-invariants.mjs
-node scripts/check-preview-audio.mjs
+npm --prefix webui run build            # 构建门禁（缺它 dist 就是旧的，编译还会失败）
+for f in webui/scripts/check-*.mjs scripts/check-preview-audio.mjs; do node "$f" || break; done
 ```
 
 `npm run build` 成功 = `webui/dist/` 重新生成（`emptyOutDir` 会清空旧 hash 名）；**dist 入库，
-必须和 `src/` 的改动一起提交**。九个 node 脚本各自打印对拍项数与通过情况，退出码非 0 即失败；
-它们零依赖、不 import 应用模块（`webui/package.json` 没有 `"type": "module"`）。
+必须和 `src/` 的改动一起提交**。九个 node 脚本（清单见「入口」）各自打印对拍项数与通过情况，
+退出码非 0 即失败；它们零依赖、不 import 应用模块（`webui/package.json` 没有 `"type": "module"`）。

@@ -1158,18 +1158,21 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
   拆分 / 定位 / 删除），未选中时字段禁用 + 一句提示（用户要求：不要右侧竖面板）。
 - `prepare/MaterialList`：弹幕/字幕共用清单，props `items/kind/busy/emptyText`、emits `pick/activate/remove`
   —— **改一边等于改两边**（ASR 产物不可删、`exists=false` 照实报，见 `webui/src/AGENTS.md`）。
-- `StickerPacks`：首页表情包区块（**仅 admin**）：上传 zip / LLM 压缩构建 / 卡片墙 + 大图预览。
-  库与 zip 安全细节指向 `crates/yekitrim-polish/src/assets/AGENTS.md`。⚠️ **这是全站第二处有意接收用户上传的入口**
-  （第一处是封面背景图 base64）；「服务器文件建项目」那条仍然**永不接受上传**。别按旧规矩把它删掉 —— 它是有意做的。
-  ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust `UPLOAD_MAX_BYTES`
-  是同一个数（改一处要改两处），前端必须先挡。**`preview` 只存 `{pack, name}`**，文件对象由 `previewFile`
-  从 `detail` 现取（别存快照）。
-- `FontLibrary`：首页字体库区块（**仅 admin**；2026-10-02 起管理就内嵌在这一块，**没有单独的 `#/fonts` 页**）。
-  导入（`ServerDirPicker mode="file" :exts="['ttf','otf']"`，**路径由服务端拼**，与「表情包 → 添加」同一份）/
-  下载自带字体（幂等，清单在服务端）/ 删除（自带的那支按钮置灰 + 服务端 403）/ 设为默认（`is_default`
-  与字幕/封面下拉、状态行三处共用）全在这一块；「测试文本」实时喂所有卡片试渲染（空 = 各卡用「永 Aa 123」）。
-  预览用**现场注册的出片同源字节**（`/api/polish/font?name=<id>` 建 `FontFace`），浏览器认不出的格式
-  卡片上挂「预览不可用」，**不许静默回退到系统字体假装换好了** —— 详见 `docs/plan/font-library.md` §12/§21。
+- `MediaLibrary`：首页素材库，**文件夹管理器**布局（2026-10-09 重写；原 `StickerPacks` / `FontLibrary`
+  两个文件**已删除**，能力全并入这一处）。左=类型导航（视频 / 贴纸 / 字体），右=该类型网格；
+  三种素材折成同一形状（`items` 里的映射表），**一个网格画三种** —— 别再退回"三块各自实现"。
+  统一导入 = 拖拽 + 点选；统一预览 = 缩略图 + 点击放大（视频真播、字体现场渲染、贴纸看大图）。
+  ⚠️ **视频没有上传**（可能几 GB）：那档只显示目录名让用户放文件，拖拽被显式忽略。
+  ⚠️ 素材库自 2026-10-09 起是**用户级资产**：读敞开、**写也对所有登录用户放开**（原先仅 admin）。
+  ⚠️ 前端 `webui/src/api/stickers.js::UPLOAD_MAX_BYTES` 与 Rust `UPLOAD_MAX_BYTES` 是同一个数，
+  字体那份同理（`FONT_UPLOAD_MAX_BYTES`）—— 改一处要改两处，前端必须先挡（超限服务端回 413 + 纯文本，
+  `client.js` 只认 JSON，会误报成"接口不存在或返回格式错误"）。
+  库与 zip 安全细节指向 `crates/yekitrim-polish/src/assets/AGENTS.md`；字体导入的路径由服务端拼
+  （`ServerDirPicker mode="file" :exts="['ttf','otf']"`），自带字体不可删、预览用**现场注册的出片同源字节**
+  （`/api/polish/font?name=<id>` 建 `FontFace`），浏览器认不出的格式挂「预览不可用」、
+  **不许静默回退到系统字体假装换好了** —— 详见 `docs/plan/font-library.md` §12/§21。
+  ⚠️ 素材库的写路径**刻意不挂 `enforce_scope`**（库不在任何工程内，挂进去 `fonts/import` 的 `{dir}`
+  会被按"在不在你项目里"判掉回 404）。
 - `polish/StickerPicker`：贴纸两级列表（keyword 一级 → 缩略图二级）；选中写 `keyword/sticker_tag/name/source`，
   **`name` 必须是去扩展名的文件名**（后处理与出片按 stem 匹配）；数据来自**只读**接口
   `GET /api/polish/sticker-library`（写操作只在 admin 侧，别把库管理接口开到 `/polish/*`）。
@@ -1223,7 +1226,7 @@ to_origin）、**画中画**（`zoom="远"`），外加**附加变种：手持�
     （DOM 里会出现两个 `.file-box`），弹窗等于没带来任何新能力 —— 用户当场指出"根本不对"。
   - ⚠️ **"服务器文件"永远是服务器侧的**：本链路**不许出现 `<input type="file">`** —— 只走 `/api/fs/list`
     列服务器目录。用户明确要求"只能选服务器的内容，不是本机内容"，加一个原生文件框就会破这条。
-    （全站唯一两个接受上传的入口是封面背景图与 `StickerPacks`，与本链路无关。）
+    （全站唯一两个接受上传的入口是封面背景图与素材库 `MediaLibrary`，与本链路无关。）
   - 与「表情包 → 添加」（`mode="dir"`）共用：那条链路不传 `exts`、也不关心 `update:listing`，新增的 emit 是可选的。
 - **品牌标（正式 logo，2026-10）**：用户提供，**当前采用 `logo_fix2.png`**（987×971，近乎方形）。
   生成资产统一走这条管线：`getbbox()` 裁切 → **居中补成方形** → 留 **3%** 边距 → 出 512/192/180/32/16。
