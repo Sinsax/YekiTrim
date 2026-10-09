@@ -262,17 +262,23 @@ pub fn config_path_at(owner: Owner, data_home: &Path) -> PathBuf {
 /// 跑第二遍是 no-op。这也是"用户自己已经把东西放好了"的情况。
 ///
 /// ⚠️ **`Owner::Local` 不参与**：它就是源头，没有可迁的。
+///
+/// ## ⚠️ 判据是"**源头有没有东西**"，不是"用户树在不在"（2026-10-10 修的真 bug）
+///
+/// 第一版写的是 `if !data_home.join("users").is_dir() { return }`，理由是
+/// "还没有任何用户树 ⇒ 还没进过多用户模式"。**那是错的**：`users/` 目录只在
+/// **第一次按 `Owner::User` 写过东西时**才被创建，而升级后的第一件事正是启动 server ——
+/// 那一刻 `users/` 根本不存在，于是迁移**静默不跑**，用户的素材永远留在
+/// `<data>/resources/`，首个管理员登录后看到一个**空素材库**。
+/// 实测复现：全新数据目录 + 老布局素材 → 启动 → 日志里"归入首个管理员"一次都没出现。
+///
+/// 现在只问一件事：**源头有东西吗**。没有就是不迁（全新安装天然满足）；
+/// 有就迁。目标已存在仍然会跳过（幂等，见下）。
 pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Result<Vec<PathBuf>> {
     let Owner::User(_) = owner else {
         return Ok(Vec::new()); // 单人形态：数据本来就在那儿，无事可做
     };
     let legacy_resources = path::resources_dir_at(data_home);
-    // 目标根 = users/<uid>/resources
-    let users_root = data_home.join("users");
-    if !users_root.is_dir() {
-        // 还没有任何用户树 ⇒ 无事可做（全新安装，或还没登录过多用户模式）
-        return Ok(Vec::new());
-    }
 
     let mut moved = Vec::new();
 
@@ -473,8 +479,10 @@ mod tests {
         let legacy_state = path::yekitrim_home_at(home);
         std::fs::create_dir_all(&legacy_state).unwrap();
         std::fs::write(legacy_state.join("llm.toml"), b"[llm]\napi_key = \"k\"\n").unwrap();
-        // 用户树存在（否则迁移会认为"还没进过多用户模式"）
-        std::fs::create_dir_all(home.join("users/7")).unwrap();
+        // ⚠️ **刻意不建 `users/7`** —— 真实升级路径上它就是不存在的：
+        // `users/` 只在第一次按 `Owner::User` 写过东西时才出现，而升级后第一件事
+        // 正是启动 server。第一版迁移代码用"users/ 在不在"当判据，于是**静默不跑**
+        // （实测复现过）。这条测试现在钉住那个场景。
 
         let moved = migrate_legacy_assets_to(Owner::User(7), home).unwrap();
         assert!(!moved.is_empty(), "应当真的搬了东西");
@@ -494,8 +502,7 @@ mod tests {
     fn migration_is_idempotent_and_never_clobbers_the_target() {
         let tmp = temp_root("idem");
         let home = tmp.as_path();
-        std::fs::create_dir_all(home.join("users/7")).unwrap();
-
+        // 同上：刻意不建 `users/7`，走真实升级路径。
         // 用户已经在自己的库里放了东西。
         let own = asset_dir_at(Owner::User(7), AssetKind::Fonts, home);
         std::fs::create_dir_all(&own).unwrap();
