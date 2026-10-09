@@ -46,20 +46,30 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 //
 // ⚠️ **读不到不算错**（打包形态可能没带上它）：那时退化成"不知道词汇表"，
 // 报告退回原来那句"不认识的事件类型"，**不让缺一个 JSON 把出片搞挂**。
+//
+// ⚠️ **2026-10-09：发布包里 `effects.json` 从 `<程序目录>/spec/` 挪到 `<程序目录>/runtime/`**
+//（与转译器合并成一个目录）。所以这里要**试两个位置**，而不是写死 `../spec`：
+//   ① 同目录 `./effects.json`  —— 新布局（两个文件都在 `runtime/` 里）
+//   ② `../spec/effects.json`  —— 老布局 + **开发树**（`tools/` 与 `spec/` 是仓库根下并列的两个目录）
+// 顺序无所谓（两者不会同时存在），但两个都得试：只试新的 ⇒ 开发树里守卫全空转；
+// 只试老的 ⇒ 发布包里退化成"不知道词汇表"（而它**不报错**，只是报告文案变粗）。
 const EFFECT_VOCAB = (() => {
   const empty = { known: new Set(), labels: new Map(), loaded: false };
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const raw = readFileSync(join(here, '..', 'spec', 'effects.json'), 'utf8');
-    const spec = JSON.parse(raw);
-    return {
-      known: new Set(spec.effects.map((e) => e.id)),
-      labels: new Map(spec.effects.map((e) => [e.id, e.label])),
-      loaded: true,
-    };
-  } catch {
-    return empty;
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const rel of [['effects.json'], ['..', 'spec', 'effects.json']]) {
+    try {
+      const raw = readFileSync(join(here, ...rel), 'utf8');
+      const spec = JSON.parse(raw);
+      return {
+        known: new Set(spec.effects.map((e) => e.id)),
+        labels: new Map(spec.effects.map((e) => [e.id, e.label])),
+        loaded: true,
+      };
+    } catch {
+      // 试下一个位置
+    }
   }
+  return empty;
 })();
 
 // ---------------------------------------------------------------------------

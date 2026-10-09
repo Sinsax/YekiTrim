@@ -225,14 +225,18 @@ fn which(name: &str) -> Option<PathBuf> {
 /// # 顺序（2026-10-01 修：发布形态下"找不到转译器"）
 ///
 /// 1. `VTEDIT_TRANSLATOR`（显式；指错 = **当场报错**，与 `find_binary` 同一口径）
-/// 2. **`<程序目录>/tools/polish-to-dhampir.mjs`** —— 打包后的位置（`xtask package` 会把
-///    `tools/` 与 `spec/effects.json` 一起放进去；转译器自己按**同层** `../spec/effects.json` 读词汇表）
-/// 3. `<程序目录>/../../tools/…` —— 开发树（`target/debug/yekitrim.exe` 往上两级就是仓库根）
-/// 4. `CARGO_MANIFEST_DIR/../..` —— **构建期**路径，只当最后的保险
+/// 2. **`<程序目录>/runtime/polish-to-dhampir.mjs`** —— 打包后的位置（`xtask package` 把
+///    转译器与 `effects.json` **一起**放进 `runtime/`；转译器自己先试**同目录**的
+///    `effects.json`、再回落 `../spec/effects.json`，两条路见它的 `EFFECT_VOCAB`）
+/// 3. `<程序目录>/tools/polish-to-dhampir.mjs` —— **老位置**（2026-10-09 之前的包 + 存量安装）
+/// 4. `<程序目录>/../../{runtime,tools}/…` —— 开发树（`target/debug/yekitrim.exe` 往上两级就是仓库根）
+/// 5. `CARGO_MANIFEST_DIR/../..` —— **构建期**路径，只当最后的保险
 ///
-/// ⚠️ 第 4 条以前是唯一回退 ⇒ 装到别的机器上它指向一个**不存在的构建目录**，
+/// ⚠️ **第 4 条以前是唯一回退** ⇒ 装到别的机器上它指向一个**不存在的构建目录**，
 /// 于是"默认出片通道"在发布形态下**根本起不来**（`find_binary`/`wasm_dirs` 早就有 `current_exe()`
 /// 回退，只有它没有）。第 2 条**必须排在前面**：包内那一份才是与这个二进制配套的那一份。
+/// ⚠️ **新位（`runtime/`）必须排在新老并存时的前面**：两个都在说明用户手动拷过一份，
+/// 而"用哪一份"要可预期（这条曾经踩过：旧副本排第一、静默生效四天）。
 /// 把 mtime 打成人能读的一行（日志里"用了哪份转译器"要能一眼看出新旧）。
 fn fmt_mtime(t: std::time::SystemTime) -> String {
     let secs = t
@@ -243,11 +247,16 @@ fn fmt_mtime(t: std::time::SystemTime) -> String {
     format!("mtime={secs}s(UTC)")
 }
 
-/// 候选顺序（**纯函数，可单测**）：开发构建里仓库那份排第一，发布包里 `<程序目录>/tools` 排第一。
+/// 候选顺序（**纯函数，可单测**）：开发构建里仓库那份排第一，发布包里 `<程序目录>/runtime` 排第一。
 ///
 /// ⚠️ 顺序就是这条 bug 的全部：`<exe 目录>/tools/` 里可能躺着一份**打包时拷进来的旧副本**，
 /// 它排第一就静默生效（本机实测四天），所有转译器修复都被误判成"没生效"。
 /// 判据：`dev_build_candidates_put_repo_first`。
+///
+/// ⚠️ **2026-10-09：发布包里的落点由 `tools/` 改成 `runtime/`**（与词汇表合并成一个目录）。
+/// 老 `<程序目录>/tools/` 仍留在候选里当**回落** —— 存量安装升级时那个目录还在，
+/// 不给回落就会"升级后找不到转译器、出片直接报错"。
+/// 新位必须排在老位**之前**：两个都在时（用户手动拷过一份）要优先用新的那个。
 fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let under_target = exe.components().any(|c| c.as_os_str() == "target");
@@ -261,8 +270,11 @@ fn translator_candidates_for(exe: &Path) -> Vec<PathBuf> {
         }
     }
     if let Some(dir) = exe.parent() {
+        // 新位（`<程序目录>/runtime/`）优先，老位（`<程序目录>/tools/`）兜底
+        candidates.push(dir.join("runtime").join("polish-to-dhampir.mjs"));
         candidates.push(dir.join("tools").join("polish-to-dhampir.mjs"));
         if let Some(up2) = dir.parent().and_then(Path::parent) {
+            candidates.push(up2.join("runtime").join("polish-to-dhampir.mjs"));
             candidates.push(up2.join("tools").join("polish-to-dhampir.mjs"));
         }
     }
@@ -1702,13 +1714,31 @@ mod artifact_tests {
         );
         assert!(dev.len() >= 2, "候选里还得留着打包位置那条兜底：{dev:?}");
 
-        // **发布包行为不变**：不在 target/ 下时，`<程序目录>/tools` 仍然排第一
+        // **发布包**：新位 `<程序目录>/runtime` 排第一（2026-10-09 由 `tools/` 改来）
         let pkg = translator_candidates_for(Path::new("C:/app/yekitrim.exe"));
         assert_eq!(
             pkg.first(),
-            Some(&PathBuf::from("C:/app/tools/polish-to-dhampir.mjs")),
-            "发布包必须仍先找 <程序目录>/tools：{:?}",
+            Some(&PathBuf::from("C:/app/runtime/polish-to-dhampir.mjs")),
+            "发布包必须先找 <程序目录>/runtime：{:?}",
             pkg.first()
+        );
+        // ⚠️ **老位必须仍在候选里**（存量安装升级时 `<程序目录>/tools/` 那份还在）——
+        // 少了它，装过老版本的机器升级后**找不到转译器、出片直接报错**。
+        assert!(
+            pkg.contains(&PathBuf::from("C:/app/tools/polish-to-dhampir.mjs")),
+            "老位置 <程序目录>/tools 必须留作回落：{pkg:?}"
+        );
+        // ⚠️ **新位必须排在新老并存时的前面**：两个都在 = 用户手动拷过一份，
+        // "用哪一份"要可预期（这条曾经踩过：旧副本排第一、静默生效四天）。
+        let new_idx = pkg
+            .iter()
+            .position(|p| p == Path::new("C:/app/runtime/polish-to-dhampir.mjs"));
+        let old_idx = pkg
+            .iter()
+            .position(|p| p == Path::new("C:/app/tools/polish-to-dhampir.mjs"));
+        assert!(
+            new_idx < old_idx,
+            "runtime/ 必须排在 tools/ 之前（新位优先）：{pkg:?}"
         );
     }
 }

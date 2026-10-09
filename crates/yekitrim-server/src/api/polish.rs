@@ -1838,19 +1838,20 @@ pub(super) async fn polish_sticker_library() -> ApiResult {
 
 /// 视频素材库（**只读**，非 admin 也能看）：项目设置里「片头/片尾」挑素材用。
 ///
-/// 与 `polish_sticker_library` 同一条口径：**以磁盘为准**（`scan_video_assets`），
-/// 手工把文件丢进 `<程序目录>/stickers/videos/` 也会出现在这里。
+/// 与 `polish_sticker_library` 同一条口径：**以磁盘为准**（`scan_video_library`），
+/// 手工把文件丢进 `<数据目录>/resources/videos/` 也会出现在这里。
+///
+/// ⚠️ 视频库**不再挂在贴纸根下面**（2026-10-09）：它有自己的根，判据是
+/// `path::video_dir_readable()`（带存量回落）。别写回 `sticker_dir().join("videos")`
+/// —— 那样新布局下这里会**永远返回空列表**，而界面只会显示"库是空的"、不报错。
 ///
 /// 每个素材带上**时长**（ffprobe）—— 界面要靠它把"出点 = 0 表示播到结尾"显示成人话，
 /// 而且用户设的出点必须能被夹到这个长度（不然越界读素材会让底座报 `source_range_exceeded`）。
 /// 探不出时长的照样列出来（`duration: null`），界面置灰并写明原因 —— 不隐藏，
 /// 否则用户会觉得"我明明放进去了却没有"。
 pub(super) async fn polish_video_library() -> ApiResult {
-    let root = yekitrim_core::path::sticker_dir();
-    let lib_dir = root
-        .join(yekitrim_polish::assets::sticker_index::VIDEO_LIBRARY_SUBDIR)
-        .to_string_lossy()
-        .to_string();
+    let root = yekitrim_core::path::video_dir_readable();
+    let lib_dir = root.to_string_lossy().to_string();
     let items: Vec<serde_json::Value> =
         blocking(move || Ok(yekitrim_polish::assets::sticker_index::scan_video_library(&root)))
             .await?

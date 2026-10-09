@@ -735,20 +735,27 @@ pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
 // 视频素材库扫描（第 6 批 / 规格 §11.2）
 // ============================================================
 
-/// 视频素材库在程序目录里的**相对位置**：`<程序目录>/stickers/videos/`。
+/// 视频素材库在程序目录里的**相对位置**：`<程序目录>/resources/videos/`。
 ///
-/// # 为什么挂在 `stickers/` 下面（而不是另开一个根）
+/// # 为什么不再挂在 `stickers/` 下面（2026-10-09 挪出来）
 ///
-/// 根卡那条"程序资产只挂一个根（`path::data_dir()`）"是硬规矩 —— 素材库要么住
-/// `data_dir` 下，要么住一个用户目录，而后者已经被明令删掉。`stickers/` 就是
-/// `data_dir()` 下**已经存在**的那个素材库根，视频作为**并列的一类**放进它的子目录里，
-/// 比再造一个 `<程序目录>/videos/` 少一个"新增根"（那个根要重新处理 debug/release 两份实例、
-/// 打包、备份的每一条路径）。一个子目录，零新根。
+/// 它原先住 `<程序目录>/stickers/videos/`，当时的理由是"少一个新根"。但那个理由只算了
+/// **新增路径的成本**，没算**两类库混住的成本**：
 ///
-/// ⚠️ **它不在 `scan_packages` 的视野里**：那个函数只认"非 `.` 开头、非 `backup`"的子文件夹，
-/// 而 `videos` 是个**普通子文件夹** ⇒ 一个装满 mp4 的 `videos/` 会被当成一个贴纸包扫出来、
-/// 然后因为 `files` 全是非图片而**被丢掉**（`if !files.is_empty()`）—— 所以它今天不会污染
-/// 贴纸列表。这条注释放在这里，是为了让"以后给 `scan_packages` 放松过滤"的人先看见它。
+/// ⚠️ ① **`scan_packages` 会把 `videos/` 当成一个贴纸包扫出来** —— 它只认"非 `.` 开头、
+///    非 `backup`"的子文件夹，而 `videos` 正是个普通子文件夹。今天没污染列表**纯属巧合**：
+///    包内 `files` 全是非图片，于是被 `if !files.is_empty()` 丢掉。哪天有人放松那层过滤
+///    （支持空包 / 支持混合类型的包），`videos/` 立刻变成贴纸列表里一个空包 ——
+///    而"碰巧没坏"不是判据。
+/// ⚠️ ② **名字骗人**：装 mp4 的库叫 `stickers/videos`。素材种类再扩容（音频、图片）时，
+///    这个根会变成 `stickers/audios` / `stickers/images` —— 那显然不对。
+///
+/// 现在视频与贴纸是 `<数据目录>/resources/` 下**并列**的两类：`resources/stickers/` 与
+/// `resources/videos/`。`videos` 不再是 `stickers` 的子目录 ⇒ 上面 ① 那条
+/// **从"碰巧不发生"变成"结构上不可能发生"**。
+///
+/// ⚠️ **本常量现在只是"目录名"，调用方不该再 `贴纸根.join(VIDEO_LIBRARY_SUBDIR)`** ——
+/// 视频库有自己的根，走 `path::video_dir_readable()`（它带存量回落）。
 pub const VIDEO_LIBRARY_SUBDIR: &str = "videos";
 
 /// 素材库里的一个视频素材。
@@ -774,16 +781,19 @@ impl VideoAsset {
     }
 }
 
-/// 扫描视频素材库（`<库根>/videos/*.mp4` 那种扁平结构，**不递归**）。
+/// 扫描视频素材库（`<库目录>/*.mp4` 那种扁平结构，**不递归**）。
+///
+/// ⚠️ **参数是视频库目录本身，不是贴纸根**（2026-10-09 挪库时收紧）：以前传贴纸根、
+/// 函数内部 `join("videos")`，于是"视频库在哪"有两份推导（调用方以为在贴纸下面、
+/// 函数里又拼一次）。现在视频库有自己的根，`path::video_dir_readable()` 是唯一判据。
 ///
 /// 返回按文件名排序的列表 —— **顺序稳定**是列表接口与"库里选一个"的前提
 /// （`read_dir` 的顺序是文件系统给的，不稳定）。
 ///
 /// 目录不存在 ⇒ 空列表（不是错误）：素材库是"用户可以一个都没放"的东西。
-/// 与贴纸库同一条纪律：**以磁盘为准**，手工把文件丢进 `videos/` 也会出现。
-pub fn scan_video_library(root: &Path) -> Vec<VideoAsset> {
-    let dir = root.join(VIDEO_LIBRARY_SUBDIR);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+/// 与贴纸库同一条纪律：**以磁盘为准**，手工把文件丢进去也会出现。
+pub fn scan_video_library(dir: &Path) -> Vec<VideoAsset> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut paths: Vec<PathBuf> = entries
@@ -1589,11 +1599,11 @@ mod tests {
     #[test]
     fn scan_video_library_is_flat_sorted_and_video_only() {
         let dir = tempfile::tempdir().unwrap();
-        // 库根下没有 videos/ ⇒ 空表（素材库是"可以一个都没放"的东西）
+        // 目录不存在 ⇒ 空表（素材库是"可以一个都没放"的东西）
         assert!(scan_video_library(dir.path()).is_empty());
 
-        let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
-        std::fs::create_dir_all(&vids).unwrap();
+        // ⚠️ 参数就是**视频库目录本身**（2026-10-09 挪库时收紧）。
+        let vids = dir.path().to_path_buf();
         for n in ["b.webm", "a.mp4", "c.mkv"] {
             std::fs::write(vids.join(n), b"x").unwrap();
         }
@@ -1615,9 +1625,7 @@ mod tests {
     #[test]
     fn find_video_asset_never_falls_back_to_the_first_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
-        std::fs::create_dir_all(&vids).unwrap();
-        std::fs::write(vids.join("only.mp4"), b"x").unwrap();
+        std::fs::write(dir.path().join("only.mp4"), b"x").unwrap();
 
         assert!(find_video_asset(dir.path(), "only").is_some());
         assert!(find_video_asset(dir.path(), "missing").is_none(), "找不到不许给第一个");
@@ -1634,19 +1642,41 @@ mod tests {
     /// 会把"非 `.` 开头、非 `backup`"的子目录都当包扫 —— 里面全是 mp4 时它以"一张图都没有"
     /// 被丢掉（`if !files.is_empty()`）。这条钉住那个**意外但正确**的行为：以后有人给
     /// `scan_packages` 放松过滤时，这里会先红。
+    /// **视频库与贴纸库是两棵独立的树**（2026-10-09 挪库之后的新判据）。
+    ///
+    /// 老位置 `stickers/videos/` 是个普通子目录，而 `scan_packages` 会把"非 `.` 开头、
+    /// 非 `backup`"的子目录都当包扫 —— 里面全是 mp4 时它以"一张图都没有"被丢掉。
+    /// 也就是说：**视频库不污染贴纸列表，靠的是"碰巧"。** 挪到 `resources/videos/`
+    /// 之后这条从"碰巧"变成"结构上不可能"，这条用例同时钉住两件事：
+    /// ① 老那种"贴纸根下面有个 mp4 子目录"的形态仍不污染（存量库）；
+    /// ② 两棵树分开之后，贴纸扫描对另一棵树**完全无感**。
     #[test]
     fn video_library_dir_does_not_leak_into_sticker_packages() {
         let dir = tempfile::tempdir().unwrap();
+        // ① 存量形态：贴纸根下面那个 videos/ 子目录
         let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
         std::fs::create_dir_all(&vids).unwrap();
         std::fs::write(vids.join("a.mp4"), b"x").unwrap();
+        // ② 新形态：`resources/` 下并列的贴纸库与视频库（互不嵌套）
+        let resources = dir.path().join("resources");
+        let new_stickers = resources.join("stickers");
+        let new_videos = resources.join("videos");
+        std::fs::create_dir_all(&new_stickers).unwrap();
+        std::fs::create_dir_all(&new_videos).unwrap();
+        std::fs::write(new_videos.join("op.mp4"), b"x").unwrap();
         // 一个真的贴纸包，用来证明扫描本身没坏
-        let pkg = dir.path().join("ysyk");
+        let pkg = new_stickers.join("ysyk");
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(pkg.join("笑.gif"), b"x").unwrap();
 
-        let names: Vec<String> = scan_packages(dir.path()).into_iter().map(|p| p.name).collect();
-        assert_eq!(names, vec!["ysyk"], "videos/ 里一张图都没有 ⇒ 不该出现在贴纸包里");
+        let names: Vec<String> = scan_packages(&new_stickers)
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, vec!["ysyk"], "videos/ 不是贴纸库的子目录 ⇒ 不该出现在贴纸包里");
+        // 存量那棵树上同样不许冒出来
+        let legacy: Vec<String> = scan_packages(dir.path()).into_iter().map(|p| p.name).collect();
+        assert!(legacy.is_empty(), "贴纸根下只有个全 mp4 的 videos/ ⇒ 一个包都不该有");
     }
 
     #[test]

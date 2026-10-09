@@ -51,8 +51,14 @@ pub(crate) fn spec_effects_path() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // ⚠️ **2026-10-09：发布包里的落点由 `spec/` 改成 `runtime/`**
+            //（与转译器合并成一个目录）。老 `<程序目录>/spec/` 仍作**回落**：
+            // 存量安装升级时那个目录还在，不给回落会让 doctor 与转译器都读不到权威词汇表。
+            // 新位排前面（两个都在时优先用新的）。`effects.json` 的名字不变。
+            candidates.push(dir.join("runtime").join("effects.json"));
             candidates.push(dir.join("spec").join("effects.json"));
             if let Some(up2) = dir.parent().and_then(Path::parent) {
+                candidates.push(up2.join("runtime").join("effects.json"));
                 candidates.push(up2.join("spec").join("effects.json"));
             }
         }
@@ -241,7 +247,13 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // 这里只做一件 EDL 之外的事：**探素材时长**（`[intro_outro]` 存的是素材 id + 入出点秒数，
     // 而"出点 = 0 表示播到结尾"要拿真时长才能算出来）。`project` 模块不认识 ffprobe，所以注入。
     let intro_outro_clips = config.edl_clips_with_intro_outro(duration, |id| {
-        let asset = crate::assets::sticker_index::find_video_asset(&yekitrim_core::path::sticker_dir(), id)?;
+        // ⚠️ 走 `video_dir_readable()`（**不是** `sticker_dir().join("videos")`）：
+        // 视频库 2026-10-09 从 `stickers/` 底下挪到 `resources/videos/`，且带回存量回落。
+        // 拼错的话表现是"片头素材找不到/读不出时长" ⇒ 这一段被跳掉，**成片短一截且不报错**。
+        let asset = crate::assets::sticker_index::find_video_asset(
+            &yekitrim_core::path::video_dir_readable(),
+            id,
+        )?;
         let dur = get_video_duration(&asset.path.to_string_lossy());
         if dur.is_none() {
             tracing::warn!(

@@ -575,21 +575,22 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
     //   ③ 底座自己：`dhampir/bin/<exe>`（出片）+ `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
     //      —— 包内形状由 `yekitrim_polish::render::dhampir::{find_binary, wasm_dirs, preview_dir}` 定义
     //      （`<程序目录>/dhampir/…`），底座侧的产出来自它自己的 `node scripts/package.mjs`。
-    fs::create_dir_all(package_dir.join("tools"))?;
-    fs::create_dir_all(package_dir.join("spec"))?;
+    //
+    // ⚠️ **2026-10-09：转译器与词汇表合并进 `<程序目录>/runtime/`**（原先 `tools/` + `spec/`）。
+    // 消费侧的候选顺序跟着改（`dhampir.rs::translator_candidates_for` 与
+    // `pipeline.rs::spec_effects_path` 都是"新位优先、老位回落"）。
+    let runtime_dir = package_dir.join("runtime");
+    fs::create_dir_all(&runtime_dir)?;
     let translator = root.join("tools").join("polish-to-dhampir.mjs");
     if !translator.is_file() {
         return Err(format!("missing translator at {}", translator.display()).into());
     }
-    fs::copy(
-        &translator,
-        package_dir.join("tools").join("polish-to-dhampir.mjs"),
-    )?;
+    fs::copy(&translator, runtime_dir.join("polish-to-dhampir.mjs"))?;
     let vocab = root.join("spec").join("effects.json");
     if !vocab.is_file() {
         return Err(format!("missing effect vocabulary at {}", vocab.display()).into());
     }
-    fs::copy(&vocab, package_dir.join("spec").join("effects.json"))?;
+    fs::copy(&vocab, runtime_dir.join("effects.json"))?;
 
     if options.no_dhampir {
         println!("warning: --no-dhampir：包里**不带底座** —— 目标机器上默认出片通道不可用");
@@ -663,7 +664,7 @@ fn run_package(options: &PackageOptions) -> Result<(), Box<dyn std::error::Error
         )?;
         println!("    + dhampir/（出片二进制 + 预览产物 + VERSION）");
     }
-    println!("    + tools/polish-to-dhampir.mjs + spec/effects.json（转译器与效果词汇表）");
+    println!("    + runtime/polish-to-dhampir.mjs + runtime/effects.json（转译器与效果词汇表）");
 
     // ⚠️ 2026-10-02 起：自带字体**内嵌在 yekitrim.exe 里**（`crates/yekitrim-core/assets/fonts/`，
     // 经 include_bytes! 进二进制），首次启动自动落盘到字体库 —— 所以**发行包仍然只带一个空目录**，
@@ -1011,18 +1012,21 @@ fn run_package_linux(
         }
     }
 
-    // 转译器 + 效果词汇表（与 Windows 同源；`polish-to-dhampir.mjs` 按**同层** ../spec 读）
-    let tools_dir = package_dir.join("tools");
-    fs::create_dir_all(&tools_dir)?;
+    // 转译器 + 效果词汇表（与 Windows 同源）
+    //
+    // ⚠️ **2026-10-09：两者合并进 `<程序目录>/runtime/`**（原先分别是 `tools/` 与 `spec/`）。
+    // 合并后转译器与词汇表**同目录**，所以它自己那份查找会先试 `./effects.json`、
+    // 再回落 `../spec/effects.json`（见 `polish-to-dhampir.mjs` 的 `EFFECT_VOCAB`）——
+    // 开发树里仍是 `tools/` + `spec/` 并列，两条路都得留。
+    let runtime_dir = package_dir.join("runtime");
+    fs::create_dir_all(&runtime_dir)?;
     let translator = root.join("tools").join("polish-to-dhampir.mjs");
     if translator.is_file() {
-        fs::copy(&translator, tools_dir.join("polish-to-dhampir.mjs"))?;
+        fs::copy(&translator, runtime_dir.join("polish-to-dhampir.mjs"))?;
     }
     let spec = root.join("spec").join("effects.json");
     if spec.is_file() {
-        let spec_dir = package_dir.join("spec");
-        fs::create_dir_all(&spec_dir)?;
-        fs::copy(&spec, spec_dir.join("effects.json"))?;
+        fs::copy(&spec, runtime_dir.join("effects.json"))?;
     }
 
     // ---------------------------------------------------------------- 可选冒烟
@@ -1175,10 +1179,33 @@ fn smoke_test_linux(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>
     let _ = child.wait();
 
     // 首次运行会生成运行态（数据目录、server.toml 含真实绝对路径）—— 一律不许进发布包。
+    // ⚠️ **2026-10-09：素材库落点由 `stickers/` 改成 `resources/` 下的子目录**。
+    // ⚠️ `resources/` 与 `runtime/` 是**随包发的**，别整个删 —— 只清生成出来的素材库子目录，
+    // 且 `resources/fonts` 只清子项、保留组装阶段写的 `放这里.txt`（与 Linux 通道同一条）。
     for junk in [".yekitrim", "stickers"] {
         let p = package_dir.join(junk);
         if p.exists() {
             let _ = fs::remove_dir_all(&p);
+        }
+    }
+    for junk in ["resources/stickers", "resources/videos"] {
+        let p = package_dir.join(junk);
+        if p.exists() {
+            let _ = fs::remove_dir_all(&p);
+        }
+    }
+    let fonts_dir = package_dir.join("resources").join("fonts");
+    if let Ok(entries) = fs::read_dir(&fonts_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name() == "放这里.txt" {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
         }
     }
     result
@@ -1357,8 +1384,16 @@ fn smoke_test(package_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let _ = child.kill();
     let _ = child.wait();
 
-    // First run creates .yekitrim / stickers next to the exe; runtime state must not ship.
-    for generated in [".yekitrim", "stickers"] {
+    // First run creates .yekitrim next to the exe, and the asset library under resources/;
+    // runtime state must not ship.
+    //
+    // ⚠️ `resources/` 本身是**随包发的**（里面有 `fonts/放这里.txt`），所以**不能整个删**
+    // —— 只清首次运行会生成的那几个**素材库**子目录。`runtime/` 也是随包发的，**不清理**。
+    // ⚠️ `resources/fonts` **不在这里删**：它的清理在下面，得保留 `放这里.txt`。
+    if package_dir.join(".yekitrim").exists() {
+        fs::remove_dir_all(package_dir.join(".yekitrim"))?;
+    }
+    for generated in ["resources/stickers", "resources/videos"] {
         let path = package_dir.join(generated);
         if path.exists() {
             fs::remove_dir_all(&path)?;

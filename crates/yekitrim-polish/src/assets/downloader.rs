@@ -120,18 +120,25 @@ impl AssetDownloader {
     ///    `file_for(asset_id)` 找不到文件是**出片整段失败**，所以这里必须点名。
     /// ② **幂等**：目标已存在就跳过（复制过的项目重跑 `process` 不该反复拷几百 MB）。
     pub fn download_videos(&self, asset_ids: &[String]) -> DownloadReport {
-        self.download_videos_from(&yekitrim_core::path::sticker_dir(), asset_ids)
+        // ⚠️ 判据是 `video_dir_readable()`（**不是** `sticker_dir().join("videos")`）：
+        // 视频库 2026-10-09 从贴纸根底下挪到 `<数据目录>/resources/videos/`，
+        // 且带存量回落。拼错 ⇒ 每个视频素材都报"库里没有它"，成片整段失败。
+        self.download_videos_from(&yekitrim_core::path::video_dir_readable(), asset_ids)
     }
 
-    /// [`Self::download_videos`] 的**库根可注入**版本。
+    /// [`Self::download_videos`] 的**视频库目录可注入**版本。
     ///
-    /// ⚠️ 存在的理由只有一个：**让单测能真跑**。`path::sticker_dir()` 是
-    /// `exe_dir()/stickers`（**不是** `data_dir()`，所以 `YEKITRIM_DATA_DIR` 改不动它），
-    /// 而"指到临时库上"才是这条逻辑唯一值得验的地方 —— 靠改环境变量去测会拿到一个
-    /// **不确定的**结果（两个并行用例抢同一个进程级变量），那种测试的失败是噪声、不是信号。
+    /// ⚠️ 参数是**视频库目录本身**（`<数据目录>/resources/videos/`），不是贴纸根
+    /// —— 2026-10-09 挪库时收紧了语义，与 `sticker_index::scan_video_library` 同一口径。
+    /// 老签名收的是贴纸根、内部再 `join("videos")`，于是"视频库在哪"有两份推导。
+    ///
+    /// ⚠️ 它存在的理由只有一个：**让单测能真跑**。`path::video_dir_readable()` 是
+    /// `data_dir()/resources/videos`，而"指到临时库上"才是这条逻辑唯一值得验的地方
+    /// —— 靠改环境变量去测会拿到一个**不确定的**结果（两个并行用例抢同一个进程级变量），
+    /// 那种测试的失败是噪声、不是信号。
     pub fn download_videos_from(
         &self,
-        library_root: &Path,
+        video_dir: &Path,
         asset_ids: &[String],
     ) -> DownloadReport {
         let mut report = DownloadReport::default();
@@ -146,7 +153,7 @@ impl AssetDownloader {
             ));
             return report;
         }
-        let library = library_root;
+        let library = video_dir;
         let mut seen: Vec<&str> = Vec::new();
         for id in asset_ids {
             let id = id.trim();
@@ -158,7 +165,7 @@ impl AssetDownloader {
                 report.errors.push(format!(
                     "视频素材「{id}」: 程序目录素材库里没有它（找的是 {}）—— \
                      出片时这一段会失败，请先把素材放进素材库再跑一次后处理",
-                    library.join(super::sticker_index::VIDEO_LIBRARY_SUBDIR).display()
+                    library.display()
                 ));
                 continue;
             };
@@ -516,10 +523,9 @@ mod video_asset_tests {
     #[test]
     fn download_videos_copies_into_project_and_reports_missing() {
         let lib = tempfile::tempdir().unwrap();
-        // ⚠️ `lib.path()` 是**库根**（= `sticker_dir()`），`videos/` 是它下面那个子目录
-        let lib_root = lib.path();
-        let vids = lib_root.join("videos");
-        std::fs::create_dir_all(&vids).unwrap();
+        // ⚠️ `lib.path()` 就是**视频库目录本身**（2026-10-09 挪库后语义收紧：
+        //    以前传的是贴纸根、函数内部再 `join("videos")`，于是"视频库在哪"有两份推导）。
+        let vids = lib.path().to_path_buf();
         std::fs::write(vids.join("op-ed.mp4"), b"fake-video-bytes").unwrap();
         // 库里的贴纸不该被当成视频
         std::fs::write(vids.join("sticker.gif"), b"x").unwrap();
@@ -528,7 +534,7 @@ mod video_asset_tests {
         let downloader = AssetDownloader::new(proj.path());
         let copy = |ids: &[&str]| {
             let owned: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
-            downloader.download_videos_from(lib_root, &owned)
+            downloader.download_videos_from(&vids, &owned)
         };
 
         // ① 真的复制进去了，而且内容一个字节不差

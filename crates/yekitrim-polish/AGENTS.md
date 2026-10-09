@@ -116,11 +116,10 @@
   `clip: (0,0,1920,1080)`。**别再退回 `clip: None`**：headless 实测视口只有 1904×929，
   16:9 页面被居中 → 成片变 1904×929 且左右两条黑边（老 bug，已修）；`#toolbar`（右下角 ↻ 预览按钮）
   在 `html.export` 下 `display:none`，否则会被连按钮一起抓进成片。
-- ⚠️ **封面不接 Dhampir**（2026-09-30 探索结论；三种"接入"的含义、逐条利弊与"什么时候才该重开"见
-  **`docs/plan/cover-dhampir-tradeoff.md`**）：封面是"静态单帧 + HTML/CSS 排版"，而**设计器 = 同一份
-  HTML/CSS** 是它唯一的不变式 —— 换渲染器就是第三份实现。且 Dhampir 今天缺的正好是封面全在用的
-  （字距/行高/文字阴影/描边宽度与颜色/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），
-  速度上也没有收益（实测一张封面 ≈3.0–3.3s，Dhampir 单帧冷启动就要 1.5–3.2s）。
+- ⚠️ **封面不接 Dhampir**：封面是"静态单帧 + HTML/CSS 排版"，而**设计器 = 同一份 HTML/CSS**
+  是它唯一的不变式 —— 换渲染器就是第三份实现；且 Dhampir 缺的正好是封面全在用的那些
+  （字距/行高/文字阴影/描边/混合模式/backdrop-filter/emoji/暗角/扫描线/σ>8 模糊），速度也没收益。
+  三种"接入"的利弊与"什么时候才该重开"见 **`docs/plan/cover-dhampir-tradeoff.md`**。
 - **封面只剩一条渲染通道**（2026-10-01 用户拍板）：**`takumi`**（静态渲染，`src/render/takumi.rs`，
   `cover-takumi` feature **默认关**但 CLI 的 `default` 带上它）。**`chrome` 那条 headless Chrome 截图通道
   已整条删除** —— `normalize_cover_renderer` 对 `"chrome"` 给的是**单独的**「这条腿已删除」错误
@@ -155,6 +154,9 @@
   前端 `CoverDesigner.vue::wrapEmojiRuns` 是镜像，**改一边要改另一边**；📖 证据链见
   **`docs/plan/takumi-cover-capability.md` §15**。
 
+- ⚠️ **资产布局回落**（`tests/asset_layout_fallback.rs`）：素材库收拢到
+  `resources/{stickers,videos}` 后，**存量安装靠"读两个位置"才不坏** —— 老位置仍列得出来、
+  新位一出现就以它为准、视频库不再嵌套在贴纸库下（均有变异自证）。见 `docs/file-layout.md`。
 - ⚠️ **两条真像素探针**（`tests/portrait_*.rs`，`#[ignore]`，2026-10-02 修好并真跑过）：
   `portrait_stage_fit`（竖素材进横画布必须 contain + 运镜被吃掉）与 `portrait_backdrop`
   （挪开处必须是模糊衬底、不是黑）。**harness 的三条口径与被修掉的坑**（抽帧要抽成片、变异锚点要落在

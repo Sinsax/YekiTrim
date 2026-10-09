@@ -42,18 +42,55 @@ set YEKITRIM_DATA_DIR=F:\yekitrim-data
 │   │   ├── qwen3-asr/            #   hybrid 填词
 │   │   └── silero-vad/           #   VAD
 │   └── bin/                      # 内置下载器（yt-dlp）
-├── resources/fonts/              # ← 字体库（path::font_dir 的唯一落点）
-│   └── 放这里.txt
-└── stickers/                     # 贴纸库（path::sticker_dir）
+├── resources/                    # ← 用户素材库的根（path::resources_dir）
+│   ├── fonts/                    # 字体库（path::font_dir 的唯一落点）
+│   │   └── 放这里.txt
+│   ├── stickers/                 # 贴纸库（path::sticker_dir）
+│   └── videos/                   # 视频素材库（path::video_dir —— 片头/片尾从这里选）
+└── runtime/                      # ← 程序自带的交付物（path::runtime_dir，只读、用户别动）
+    ├── polish-to-dhampir.mjs     #   转译器（本仓方言 → 底座 Dhampir 工程）
+    └── effects.json              #   效果词汇表（11 个效果类型的唯一权威）
 ```
 
-**只有这三处是"官方位置"**，且各自只有一份解析函数：
+**只有这四类"官方位置"**，且各自只有一份解析函数：
 
 | 资产 | 唯一解析 | 落点 |
 |---|---|---|
 | 配置 / 账本 / 模型 / 工程 | `path::yekitrim_home()` | `<data_dir>/.yekitrim/` |
 | 字体库 | `path::font_dir()` | `<data_dir>/resources/fonts/` |
-| 贴纸库 | `path::sticker_dir()` | `<data_dir>/stickers/` |
+| 贴纸库 | `path::sticker_dir()` | `<data_dir>/resources/stickers/` |
+| 视频素材库 | `path::video_dir()` | `<data_dir>/resources/videos/` |
+| 转译器 + 词汇表 | `path::runtime_dir()` | `<data_dir>/runtime/` |
+
+⚠️ **`resources/` 与 `runtime/` 的分界是"谁往里放东西"**：`resources/` 是**用户素材**
+（用户增删贴纸/视频/字体，`放这里.txt` 就是写给用户的），`runtime/` 是**随版本发布的只读交付物**
+（用户不该动）。**发布包只装 `runtime/`**，`resources/` 只建空目录 + 说明。
+
+### 2026-10-09 的收拢（与老位置的回落关系）
+
+这一轮把"同类资产住两个不同名字的根"合成一棵树，并顺手消掉一个隐患：
+
+| 资产 | 老位置（**仍读**） | 新位置（**写**） |
+|---|---|---|
+| 贴纸库 | `<data_dir>/stickers/` | `<data_dir>/resources/stickers/` |
+| 视频库 | `<data_dir>/stickers/videos/`（更早）<br>`<data_dir>/resources/stickers/videos/`（中间态） | `<data_dir>/resources/videos/` |
+| 转译器 | `<data_dir>/tools/polish-to-dhampir.mjs` | `<data_dir>/runtime/polish-to-dhampir.mjs` |
+| 词汇表 | `<data_dir>/spec/effects.json` | `<data_dir>/runtime/effects.json` |
+
+⚠️ **写一律往新位置，读两个位置都认**（`sticker_dir_readable()` / `video_dir_readable()`），
+判据是**目录存在与否**、不是"里面有没有东西" —— 用内容当判据会让"新建的空库"被老位置顶掉。
+**不做自动搬迁**（用户手工移）；回落的意义只是"升级后库不会突然变空"。
+判据：`path::tests::readable_dirs_fall_back_to_legacy_locations`。
+
+⚠️ **视频库挪出 `stickers/` 的直接收益**：它原先是个普通子目录，而 `scan_packages` 会把
+"非 `.` 开头、非 `backup`"的子目录都当贴纸包扫 —— 装满 mp4 时它以"一张图都没有"被丢掉，
+**今天不污染列表纯属巧合**（`if !files.is_empty()`）。挪开之后这条从"碰巧不发生"
+变成"结构上不可能"。
+
+⚠️ **仓库源码树不受影响**：`tools/` 与 `spec/` 在**仓库里**仍是原名原有位置
+（`tools/` 有模块卡与注册表登记，`spec/effects.json` 是权威源）。变的是**发布包与运行时的落点**。
+转译器的词汇表查找因此要试**两档**：同目录 `./effects.json`（新发布包）与
+`../spec/effects.json`（开发树 / 老包）。
 
 ### 不在这里的东西（有意）
 
