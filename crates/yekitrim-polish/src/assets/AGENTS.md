@@ -29,9 +29,18 @@
 
 ## 边界
 
-- 库固定在 `yekitrim_core::path::sticker_dir()` = **`<程序目录>/stickers/`**（不是项目里那份拷贝）：
+- 库固定在 `yekitrim_core::path::sticker_dir()` = **`<程序目录>/resources/stickers/`**（不是项目里那份拷贝）：
   一个子文件夹 = 一个包，`<包名>.toml` = LLM 压出来的 tag 索引，`sticker.toml` = 已构建包的注册表。
   **debug 与 release 实例各有一份库，互不相干**（改包别只改一个）。
+- ⚠️ **视频素材库是它的兄弟目录、不是子目录**（2026-10-09 挪的）：`path::video_dir()` =
+  **`<程序目录>/resources/videos/`**。判据一律走 `path::video_dir_readable()`（带存量回落），
+  **别再写 `sticker_dir().join("videos")`** —— 那样新布局下视频库**永远返回空**，而界面只会显示
+  "库是空的"、不报错。挪出去的直接收益：原先是贴纸根下的普通子目录，
+  而 `scan_packages` 会把非 `.` 开头、非 `backup` 的子目录都当包扫 ⇒ 装满 mp4 的 `videos/`
+  只靠"一张图都没有于是被 `if !files.is_empty()` 丢掉"**碰巧**没污染贴纸列表，现在是结构上不可能。
+  `scan_video_library(dir)` / `download_videos_from(video_dir, …)` 的参数都是**视频库目录本身**。
+- ⚠️ 贴纸库的**老位置 `<程序目录>/stickers/` 仍然读**（存量安装）：写往新位置，
+  读走 `sticker_dir_readable_at()`（新位置不存在才回落）。判据是**目录存在与否**，不看内容多少。
 - ⚠️ **项目要用的是"复制进项目的那一份"**：`AssetDownloader::download_stickers` 把事件**选中的那个文件**
   复制到 `<项目>/assets/stickers/`，而**出片与预览只读项目目录**（`prepare_sticker_data` 解帧、
   `build_sticker_map` 给 DOM）。这是"单个 polish 项目能独立复现"的唯一保证 —— 库改名/换图/换机器之后

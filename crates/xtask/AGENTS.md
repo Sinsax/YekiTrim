@@ -54,8 +54,11 @@
   但那次改动之后 dist 已经**编在 exe 里**、包里不再带它 —— 卡片当时没跟着改）：
   `yekitrim[.exe]`、`resources/fonts/放这里.txt`、
   `LICENSE`、`THIRD-PARTY-NOTICES.md`，以及 `docs/releases/v<版本>.md`（存在才拷，包内名 `RELEASE-NOTES.md`）；
-  **外加默认出片通道的随身件（2026-10-01）**：`tools/polish-to-dhampir.mjs`（转译器，它按**同层**
-  `../spec/effects.json` 读效果词汇表）、`spec/effects.json`，以及底座三样
+  **外加默认出片通道的随身件（2026-10-01；落点 2026-10-09 改）**：转译器
+  `tools/polish-to-dhampir.mjs` 与效果词汇表 `spec/effects.json` —— ⚠️ **两者现在都装进包内
+  `runtime/`**（原先分别是包内 `tools/` 与 `spec/`）：合并成一个目录，所以转译器的词汇表查找
+  先试**同目录** `./effects.json`、再回落 `../spec/effects.json`（开发树仍是 `tools/` + `spec/` 并列，
+  两条路都得留）。另外还有底座三样
   `dhampir/bin/<exe>` + `dhampir/preview/{engine.js,pkg/*}` + `dhampir/VERSION`
   （包内形状由 `yekitrim_polish::render::dhampir::{find_binary,wasm_dirs,preview_dir}` 定义；
   ⚠️ `VERSION` 在 **`dhampir/` 下**、不在 `preview/` 里 —— 摆错报错只说"缺 VERSION"）。
@@ -73,7 +76,10 @@
   输出到 `<repo>/release/`（gitignored），包名 `yekitrim-v<版本>-win-x64`，zip 用 Deflated level 9。
 - `smoke_test`：起打包好的 exe（端口 `18000 + 纳秒%1000`，Windows 上 `CREATE_NO_WINDOW`），
   最多 20 次 × 500ms 轮询 `/api/health`（含 `"ok"` + `true`）与 `/`（` 200 ` + `<div id="app">`），
-  然后 kill 并**清掉 `package_dir` 里的 `.yekitrim` 与 `stickers`**（首次运行会生成它们，运行态不许进发布包）。
+  然后 kill 并**清掉首次运行生成的运行态** —— ⚠️ **2026-10-09 起素材库落在 `resources/` 下**：
+  清理名单是 `.yekitrim/` + `resources/stickers/` + `resources/videos/`，而 **`resources/fonts/`
+  只清子项、保留组装阶段写的 `放这里.txt`**（`resources/` 与 `runtime/` 本身是随包发的，
+  **不能整个删**）。老位置 `<程序目录>/stickers/` 仍在名单里（老包形态）。
 
 ## 边界
 

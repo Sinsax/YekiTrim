@@ -88,9 +88,127 @@ pub fn yekitrim_home_at(data_dir: &Path) -> PathBuf {
     data_dir.join(STATE_DIR_NAME)
 }
 
-/// 预设贴纸文件夹路径（程序目录下的 `stickers/` 目录）。
+/// **用户素材库的根** —— `<数据目录>/resources/`（贴纸、视频、字体都在它下面）。
+///
+/// ⚠️ **2026-10-09 收拢**：这三类曾经分散在 `<数据目录>/stickers/`（含它下面的 `videos/`
+/// 子目录）与 `<数据目录>/resources/fonts/`，即"同类资产住两个不同名字的根"。
+/// 现在统一到 `resources/` 下按**素材种类**分子目录 —— 贴纸与视频是**并列**的两类，
+/// 视频不再是贴纸的子目录。
+///
+/// 与 [`data_dir`] 同一条规矩：**只有一个位置**，`YEKITRIM_DATA_DIR` 是唯一的口子。
+pub fn resources_dir() -> PathBuf {
+    resources_dir_at(&data_dir())
+}
+
+/// [`resources_dir`] 的可注入版本（单测用：不碰环境变量）。
+pub fn resources_dir_at(data_home: &Path) -> PathBuf {
+    data_home.join("resources")
+}
+
+/// 贴纸库路径 —— `<数据目录>/resources/stickers/`。
+///
+/// ⚠️ **老位置 `<数据目录>/stickers/` 仍然读**（见 [`sticker_dir_readable`]）：
+/// 存量安装里那个目录里有用户自己的贴纸包，改名不迁移就会让"贴纸库空了"。
+/// **写一律往新位置**，读两个位置都认。
 pub fn sticker_dir() -> PathBuf {
-    exe_dir().join("stickers")
+    sticker_dir_at(&data_dir())
+}
+
+/// [`sticker_dir`] 的可注入版本（单测用）。
+pub fn sticker_dir_at(data_home: &Path) -> PathBuf {
+    resources_dir_at(data_home).join("stickers")
+}
+
+/// 贴纸库的**老位置**（2026-10-09 之前）：`<数据目录>/stickers/`。
+///
+/// 只为**读回落**存在。新位置一旦有内容就以新位置为准。
+pub fn legacy_sticker_dir_at(data_home: &Path) -> PathBuf {
+    data_home.join("stickers")
+}
+
+/// 贴纸库**该读哪个目录**：新位置存在就用它，否则回落老位置，都没有则返回新位置
+/// （调用方据此报"库为空"，而不是报一个不存在的路径）。
+///
+/// ⚠️ **判据是"目录存在"而不是"目录里有东西"**：用户可以先建个空库再放。
+/// 用"有没有内容"当判据会让"新建的空库"被老位置顶掉 —— 那是个只会出现在迁移期的怪状态。
+pub fn sticker_dir_readable() -> PathBuf {
+    sticker_dir_readable_at(&data_dir())
+}
+
+/// [`sticker_dir_readable`] 的可注入版本（单测用）。
+pub fn sticker_dir_readable_at(data_home: &Path) -> PathBuf {
+    let new = sticker_dir_at(data_home);
+    if new.is_dir() {
+        return new;
+    }
+    let old = legacy_sticker_dir_at(data_home);
+    if old.is_dir() {
+        return old;
+    }
+    new
+}
+
+/// 视频素材库路径 —— `<数据目录>/resources/videos/`。
+///
+/// ⚠️ **2026-10-09 从 `stickers/videos/` 挪出来**：它是**独立的一类素材**，
+/// 挂在贴纸库下面有两个坏处 ——（a）名字骗人；（b）`scan_packages` 会把 `videos/`
+/// 当成一个贴纸包扫出来，今天只靠"包内 `files` 全非图片 ⇒ 被丢掉"**碰巧**没污染列表。
+/// 挪出来之后这条隐患从"碰巧"变成"结构上不可能"。
+///
+/// 老位置仍读（存量库），见 [`video_dir_readable`]。
+pub fn video_dir() -> PathBuf {
+    video_dir_at(&data_dir())
+}
+
+/// [`video_dir`] 的可注入版本（单测用）。
+pub fn video_dir_at(data_home: &Path) -> PathBuf {
+    resources_dir_at(data_home).join("videos")
+}
+
+/// 视频库的**该读哪个目录**：新位置 → 老 `<data>/resources/stickers/videos` →
+/// 更老 `<data>/stickers/videos`，都没有则返回新位置。
+///
+/// ⚠️ 中间那一档是必须的：`resources/stickers/videos` 是"贴纸库刚挪进 `resources/`
+/// 但视频还没挪"那一步的中间态 —— 只认头尾两档会让那一刻的视频库变空。
+pub fn video_dir_readable() -> PathBuf {
+    video_dir_readable_at(&data_dir())
+}
+
+/// [`video_dir_readable`] 的可注入版本（单测用）。
+pub fn video_dir_readable_at(data_home: &Path) -> PathBuf {
+    let candidates = [
+        video_dir_at(data_home),
+        sticker_dir_at(data_home).join("videos"),
+        legacy_sticker_dir_at(data_home).join("videos"),
+    ];
+    candidates
+        .iter()
+        .find(|p| p.is_dir())
+        .cloned()
+        .unwrap_or_else(|| video_dir_at(data_home))
+}
+
+/// **程序自带的运行时资产**目录 —— `<数据目录>/runtime/`（转译器 + 效果词汇表）。
+///
+/// ⚠️ 与 `resources/` 的区别是**谁往里放东西**：`resources/` 是**用户素材**
+/// （用户可以增删贴纸/视频/字体），`runtime/` 是**随版本发布的只读交付物**
+/// （用户不该动）。发布包只装后者。
+///
+/// 老位置是两个分开的目录 `<数据目录>/tools/` 与 `<数据目录>/spec/`，仍作回落读。
+pub fn runtime_dir() -> PathBuf {
+    runtime_dir_at(&data_dir())
+}
+
+/// [`runtime_dir`] 的可注入版本（单测用）。
+pub fn runtime_dir_at(data_home: &Path) -> PathBuf {
+    data_home.join("runtime")
+}
+
+/// 老位置：`<数据目录>/tools/`（转译器）与 `<数据目录>/spec/`（词汇表）。
+///
+/// 返回 `(老 tools, 老 spec)`，供两个消费点各自回落。
+pub fn legacy_runtime_dirs_at(data_home: &Path) -> (PathBuf, PathBuf) {
+    (data_home.join("tools"), data_home.join("spec"))
 }
 
 /// 字体库路径 —— **程序目录下**：`<数据目录>/resources/fonts/`。
@@ -140,6 +258,74 @@ mod tests {
         assert_eq!(display(Path::new(r"\\?\UNC\srv\share\a")), r"\\srv\share\a");
         assert_eq!(display(Path::new(r"F:\media\a")), r"F:\media\a");
         assert_eq!(display(Path::new("/tmp/a")), "/tmp/a");
+    }
+
+    /// 2026-10-09 的布局：`resources/{stickers,videos,fonts}` + `runtime/`。
+    ///
+    /// 钉住**纯拼接**（`.is_dir()` 那层回落测不到静态路径，见下一条用例）。
+    #[test]
+    fn assets_live_under_resources_and_runtime_is_separate() {
+        let d = Path::new("/install");
+        assert_eq!(resources_dir_at(d), Path::new("/install/resources"));
+        assert_eq!(font_dir_at(d), Path::new("/install/resources/fonts"));
+        assert_eq!(sticker_dir_at(d), Path::new("/install/resources/stickers"));
+        assert_eq!(video_dir_at(d), Path::new("/install/resources/videos"));
+        assert_eq!(runtime_dir_at(d), Path::new("/install/runtime"));
+        // ⚠️ 视频**不是**贴纸的子目录（挪库的全部意义就是这个）
+        assert!(!video_dir_at(d).starts_with(sticker_dir_at(d)));
+        // 老位置仍可算出来（回落要用）
+        assert_eq!(legacy_sticker_dir_at(d), Path::new("/install/stickers"));
+        assert_eq!(
+            legacy_runtime_dirs_at(d),
+            (PathBuf::from("/install/tools"), PathBuf::from("/install/spec"))
+        );
+    }
+
+    /// **存量升级不丢库**：新位置不存在时，两个 `*_readable` 必须回落到老位置。
+    ///
+    /// 为什么值得单测：`sticker_dir_readable()` 的判据是**目录存在与否**，
+    /// 写错（比如永远返回新位置）的表现是"升级后贴纸库/视频库全空"——
+    /// 而**界面只会显示"库是空的"，不报错**，用户会以为自己的素材被删了。
+    /// 这条同时钉住"中间态"：`resources/stickers/videos`（贴纸挪了、视频还没挪）。
+    #[test]
+    fn readable_dirs_fall_back_to_legacy_locations() {
+        let tmp = std::env::temp_dir().join(format!(
+            "_yekitrim_path_fallback_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // ① 什么都没有 ⇒ 返回**新位置**（调用方据此报"库为空"，而不是一个瞎编的路径）
+        assert_eq!(sticker_dir_readable_at(&tmp), sticker_dir_at(&tmp));
+        assert_eq!(video_dir_readable_at(&tmp), video_dir_at(&tmp));
+
+        // ② 只有老位置 ⇒ 回落到它（**这条就是"存量不丢"**）
+        let old_stickers = legacy_sticker_dir_at(&tmp);
+        std::fs::create_dir_all(old_stickers.join("ysyk")).unwrap();
+        assert_eq!(sticker_dir_readable_at(&tmp), old_stickers);
+        let old_videos = old_stickers.join("videos");
+        std::fs::create_dir_all(&old_videos).unwrap();
+        assert_eq!(video_dir_readable_at(&tmp), old_videos);
+
+        // ③ 新位置一建出来就**立刻**以新位置为准（不看内容多少，只看存在）
+        let new_stickers = sticker_dir_at(&tmp);
+        std::fs::create_dir_all(&new_stickers).unwrap();
+        assert_eq!(sticker_dir_readable_at(&tmp), new_stickers);
+
+        // ④ 中间态：贴纸已挪进 resources，视频还在贴纸库底下 ⇒ 视频回落命中中间那一档
+        let mid_videos = new_stickers.join("videos");
+        std::fs::create_dir_all(&mid_videos).unwrap();
+        assert_eq!(video_dir_readable_at(&tmp), mid_videos);
+        // 新位置也建出来 ⇒ 两档都以新位置为准
+        std::fs::create_dir_all(video_dir_at(&tmp)).unwrap();
+        assert_eq!(video_dir_readable_at(&tmp), video_dir_at(&tmp));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// **资产只有一个位置**：默认在程序目录，`YEKITRIM_DATA_DIR` 是唯一的口子。

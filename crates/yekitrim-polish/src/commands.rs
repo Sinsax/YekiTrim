@@ -877,7 +877,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
 /// 列出本地贴纸索引: 组名 | 成员数 | tags
 pub fn cmd_stickers_list() -> anyhow::Result<()> {
     use crate::assets::sticker_index::StickerIndex;
-    let dir = yekitrim_core::path::sticker_dir();
+    let dir = yekitrim_core::path::sticker_dir_readable();
     tracing::info!("📋  本地贴纸索引: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     let groups = idx.groups();
@@ -903,7 +903,7 @@ pub fn cmd_stickers_list() -> anyhow::Result<()> {
 /// 测试 keyword → 贴纸匹配 (可多个 keyword)
 pub fn cmd_stickers_test(keywords: &[String]) -> anyhow::Result<()> {
     use crate::assets::sticker_index::StickerIndex;
-    let dir = yekitrim_core::path::sticker_dir();
+    let dir = yekitrim_core::path::sticker_dir_readable();
     tracing::info!("🎯  本地贴纸匹配测试: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     for kw in keywords {
@@ -953,7 +953,7 @@ pub async fn build_package_tags(
     use crate::assets::sticker_index::{
         list_package_files, package_meta_to_toml, build_package_meta_from_tags,
     };
-    let dir = yekitrim_core::path::sticker_dir();
+    let dir = yekitrim_core::path::sticker_dir_readable();
     let package_dir = dir.join(package);
     if !package_dir.is_dir() {
         anyhow::bail!("贴纸包不存在: {}", package_dir.display());
@@ -1055,7 +1055,7 @@ async fn llm_generate_package_tags(
 /// 扫描本地贴纸目录生成/更新 stickers.json 清单
 pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
     use crate::assets::sticker_index::{StickerIndex, StickerMeta};
-    let dir = yekitrim_core::path::sticker_dir();
+    let dir = yekitrim_core::path::sticker_dir_readable();
     tracing::info!("🔍  扫描本地贴纸目录: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     let mut metas: Vec<StickerMeta> = idx

@@ -28,7 +28,8 @@
   write_project_config, save_transcript_path_in, normalize_project_paths_in}`；
   `config::types::Config` / `ProjectConfig::current_stage(&output_dir)`。
 - `process::{cmd, hide_console_window}`：起子进程的唯一入口（**全仓都用它**，理由见「边界」）。
-- `path::{yekitrim_home, sticker_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
+- `path::{yekitrim_home, resources_dir, sticker_dir, sticker_dir_readable, video_dir, video_dir_readable,
+  runtime_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
   resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
 - `progress::ProgressReporter`（trait）+ `NoopProgress`；`filelock::{with_path_lock, lock_path,
   with_path_lock_sync}`；`tenant::{jail_join, jail_existing, ensure_within}`。
@@ -75,6 +76,15 @@
 - **弹幕路径解析在 `pipeline/runner.rs::resolve_danmaku`**（`inject_config` 调它）：相对路径按
   **工程根（`output_dir` 的父目录）→ 视频父目录**的顺序试，两个基准都试一遍，否则
   「视频在 `videos/`、弹幕在工程根」的布局会静默丢掉弹幕。
+- ⚠️ **2026-10-09 资产布局收拢**（`path.rs`，全仓路径的唯一 choke point —— 20+ 处调用都只认这几个函数）：
+  `resources/{fonts,stickers,videos}` 是**用户素材**（用户增删），`runtime/{polish-to-dhampir.mjs,
+  effects.json}` 是**随版本发布的只读交付物**。分界是"谁往里放东西"。
+  ⚠️ **写往新位置、读两个位置都认**（`sticker_dir_readable()` / `video_dir_readable()`）：
+  判据是**目录存在与否**、不是"里面有没有东西"（用内容当判据会让新建的空库被老位置顶掉）。
+  **不做自动搬迁**（用户手工移），回落只为"升级后库不会突然变空"。
+  ⚠️ 视频库挪出 `stickers/` 的收益：原先它是贴纸根下的普通子目录，而 `scan_packages` 会把
+  非 `.` 开头、非 `backup` 的子目录都当包扫 ⇒ 只靠"一张图都没有于是被丢掉"**碰巧**没污染列表。
+  完整布局表与老→新对照在 **`docs/file-layout.md`**。
 - **字体库**：`yekitrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**。
   ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
   默认 = `exe_dir()`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。

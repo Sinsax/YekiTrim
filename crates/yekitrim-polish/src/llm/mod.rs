@@ -93,7 +93,7 @@ pub async fn run_llm_pipeline(
 
     let checkpoint_path = checkpoint_dir.map(|d| d.join("polish_events.checkpoint.json"));
     // 本地贴纸候选（只暴露真实存在的贴纸包名）
-    let sticker_root = yekitrim_core::path::sticker_dir();
+    let sticker_root = yekitrim_core::path::sticker_dir_readable();
     let has_local = sticker_source.iter().any(|s| {
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
@@ -121,7 +121,7 @@ pub async fn run_llm_pipeline(
     );
 
     // Step 2b: 本地贴纸按 tag 批量精挑具体文件
-    let sticker_root = yekitrim_core::path::sticker_dir();
+    let sticker_root = yekitrim_core::path::sticker_dir_readable();
     let has_local = sticker_source.iter().any(|s| {
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
@@ -255,7 +255,7 @@ pub async fn regenerate_segment_events(
         32,
         sfx_blacklist,
     );
-    let sticker_root = yekitrim_core::path::sticker_dir();
+    let sticker_root = yekitrim_core::path::sticker_dir_readable();
     let has_local = sticker_source
         .iter()
         .any(|s| crate::assets::sticker_index::is_package_source(&sticker_root, s));
@@ -321,7 +321,7 @@ async fn run_sticker_choice_step(
     use crate::llm::events::{choose_sticker_files_batch, StickerChoiceContext};
     use std::collections::BTreeMap;
 
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::path::sticker_dir_readable();
 
     // 收集所有带 sticker_tag 的本地贴纸事件，按 (包名, tag) 分组
     // key: (package_name, tag)
