@@ -402,7 +402,9 @@ shape: 0,                             // OverlayShape::Solid
 用一个**亮度斜坡**当素材，速率一眼可读。生成（120 帧、30fps、`YAVG` 逐帧线性）：
 
 ```bash
-ffmpeg -v error -f lavfi -i "color=c=black:s=320x240:r=30:d=4"   -vf "geq=lum='min(200,(N/120)*200)':cb=128:cr=128"   -c:v libx264 -pix_fmt yuv420p -y ramp.mp4
+ffmpeg -v error -f lavfi -i "color=c=black:s=320x240:r=30:d=4" \
+  -vf "geq=lum='min(200,(N/120)*200)':cb=128:cr=128" \
+  -c:v libx264 -pix_fmt yuv420p -y ramp.mp4
 # 自查：YAVG 应≈ 1.6665 × 帧号
 ffmpeg -v error -i ramp.mp4 -vf "select='eq(n\,60)',signalstats,metadata=print:file=-" -frames:v 1 -f null -
 ```
