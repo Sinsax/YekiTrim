@@ -37,6 +37,33 @@ pub fn dir() -> PathBuf {
     crate::path::font_dir()
 }
 
+/// **按归属**取字体库（`Owner::Local` = 现状位置；`Owner::User(uid)` = 各自的树）。
+///
+/// ⚠️ 渲染子进程（出片/封面）走这条 —— 它经 [`crate::owner::Owner::from_env`] 拿到父进程的
+/// 身份。**别让子进程退回 `dir()`**：那就是"多用户下 A 导入的字体、B 出片时被用上"。
+pub fn dir_for(owner: crate::owner::Owner) -> PathBuf {
+    crate::owner::asset_dir(owner, crate::owner::AssetKind::Fonts)
+}
+
+/// [`ensure_dir`] 的按归属版本。
+pub fn ensure_dir_for(owner: crate::owner::Owner) -> std::io::Result<PathBuf> {
+    let root = dir_for(owner);
+    std::fs::create_dir_all(&root)?;
+    // ⚠️ 迁移闸是**按进程一次**的（见 `ASCII_MIGRATED`），而同一个进程里可能先后处理
+    // 不同 owner（server 是长驻进程）⇒ 这里也要为每个 root 各跑一次。
+    // 幂等的：判据是"名字还不是 ASCII / 有没有 id"。
+    let moved = migrate_ascii_layouts(&root);
+    if !moved.is_empty() {
+        tracing::info!("字体库：{} 支字体的路径搬成 ASCII（{})", moved.len(), moved.join(", "));
+    }
+    Ok(root)
+}
+
+/// **按归属**解析字体 id → 文件路径（`None` = 库里没有这一支）。
+pub fn resolve_file_for(owner: crate::owner::Owner, id: &str) -> Option<PathBuf> {
+    resolve_all(&dir_for(owner), id)
+}
+
 
 /// “这次进程里已经跑过 ASCII 迁移了” —— 见 [`migrate_ascii_layouts`]，**每个进程只跑一次**。
 ///

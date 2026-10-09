@@ -508,7 +508,10 @@ fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
     // 的机器上出片 —— 那时库里还是 `<中文目录>/<中文名>.ttf`，解析出来的路径直接交给 ffmpeg
     // 就是**每条字幕访问违例一次**（240 帧 4s → 37s，且一个字都画不出来）。
     // 失败不拦：库不可用时后面的解析会给它自己的错误。
-    let _ = yekitrim_core::fonts::ensure_dir();
+    // ⚠️ **按归属**（子进程经 `YEKITRIM_OWNER` 从父进程继承身份）——
+    // 多用户下必须看**这个账号自己的**字体库，否则 A 导入的字体 B 出片时会被用上（不报错）。
+    let owner = yekitrim_core::owner::Owner::from_env();
+    let _ = yekitrim_core::fonts::ensure_dir_for(owner);
     if let Ok(explicit) = std::env::var("VTEDIT_DHAMPIR_FONT") {
         let p = PathBuf::from(&explicit);
         if p.is_file() {
@@ -519,9 +522,10 @@ fn find_font(project_font: &str) -> Result<(PathBuf, Option<PathBuf>)> {
     let listing = system_font_listing();
     let mut tried: Vec<String> = Vec::new();
     for family in font_search_order(project_font) {
-        if let Some(p) = yekitrim_core::fonts::resolve_file(&family) {
+        if let Some(p) = yekitrim_core::fonts::resolve_file_for(owner, &family) {
             // 库内字体：粗体就在库里按 `<id> Bold` 找；找不到就交给底座（它会退回这一支）
-            let bold = yekitrim_core::fonts::resolve_file(&format!("{family} Bold")).filter(|b| *b != p);
+            let bold = yekitrim_core::fonts::resolve_file_for(owner, &format!("{family} Bold"))
+                .filter(|b| *b != p);
             return Ok((p, bold));
         }
         if let Some(p) = pick_font_from_listing(&listing, &family) {
@@ -1201,6 +1205,9 @@ fn run_render(
     project_font: &str,
 ) -> Result<()> {
     let binary = find_binary()?;
+    // 归属在**这个函数里也算一次**（`find_font` 里那次是它自己的局部变量）：
+    // `--font-dir` 交给底座的必须是同一个库。
+    let owner = yekitrim_core::owner::Owner::from_env();
     let (font, font_bold) = find_font(project_font)?;
     let t = std::time::Instant::now();
     let progress_path = out.with_file_name("_temp_dhampir_progress.ndjson");
@@ -1235,7 +1242,9 @@ fn run_render(
         // 项目配置里的值）在目录里找 —— 只给 `--font-file` 的话，"库里选了字体"这件事
         // 在成片里只对**字幕那一支**生效、弹幕那支仍然是兜底字体。
         .arg("--font-dir")
-        .arg(yekitrim_core::path::font_dir())
+        // 同一个归属：底座按 `font_family` 在这个目录里找 —— 给错目录就是"库里选了字体
+        // 在成片里只对字幕生效 / 或干脆换了别人的字体"。
+        .arg(yekitrim_core::fonts::dir_for(owner))
         .stdout(std::process::Stdio::from(progress_file))
         .stderr(std::process::Stdio::inherit());
     if !with_audio {

@@ -263,6 +263,7 @@ pub(super) async fn run_polish_child(
     sub: &str,
     dir: &Path,
     extra: &[String],
+    owner: yekitrim_core::owner::Owner,
 ) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -290,6 +291,11 @@ pub(super) async fn run_polish_child(
     let mut child = tcmd
         .args(&args)
         .env("NO_COLOR", "1")
+        // ⚠️ **子进程必须知道"这份数据属于谁"**：它自己解析字体库/贴纸库，
+        // 不告诉它就只会看全局那一份 ⇒ 多用户下 A 导入的字体 B 出片时被用上（不报错）。
+        // 用环境变量而不是 `--owner`：见 `owner::OWNER_ENV` 的说明（子进程还会拉起孙进程，
+        // 环境变量自动继承、命令行不会）。
+        .env(yekitrim_core::owner::OWNER_ENV, owner.as_env_value())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(file))
         .stderr(std::process::Stdio::from(err_file))

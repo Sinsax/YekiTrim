@@ -123,7 +123,10 @@ impl AssetDownloader {
         // ⚠️ 判据是 `video_dir_readable()`（**不是** `sticker_dir().join("videos")`）：
         // 视频库 2026-10-09 从贴纸根底下挪到 `<数据目录>/resources/videos/`，
         // 且带存量回落。拼错 ⇒ 每个视频素材都报"库里没有它"，成片整段失败。
-        self.download_videos_from(&yekitrim_core::path::video_dir_readable(), asset_ids)
+        self.download_videos_from(
+            &yekitrim_core::owner::video_dir_readable(yekitrim_core::owner::Owner::from_env()),
+            asset_ids,
+        )
     }
 
     /// [`Self::download_videos`] 的**视频库目录可注入**版本。
@@ -209,7 +212,7 @@ impl AssetDownloader {
             ));
             return 0;
         };
-        let sticker_dir = yekitrim_core::path::sticker_dir();
+        let sticker_dir = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
         if !sticker_dir.exists() {
             report.errors.push(format!(
                 "贴纸「{source}」: 程序目录贴纸库不存在（{}），复制不进项目",

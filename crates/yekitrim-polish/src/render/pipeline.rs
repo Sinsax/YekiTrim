@@ -251,7 +251,7 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         // 视频库 2026-10-09 从 `stickers/` 底下挪到 `resources/videos/`，且带回存量回落。
         // 拼错的话表现是"片头素材找不到/读不出时长" ⇒ 这一段被跳掉，**成片短一截且不报错**。
         let asset = crate::assets::sticker_index::find_video_asset(
-            &yekitrim_core::path::video_dir_readable(),
+            &yekitrim_core::owner::video_dir_readable(yekitrim_core::owner::Owner::from_env()),
             id,
         )?;
         let dur = get_video_duration(&asset.path.to_string_lossy());

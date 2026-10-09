@@ -85,7 +85,7 @@ pub(super) struct PolishJobOpts {
 
 pub(super) async fn polish_spawn(
     state: &AppState,
-    owner: i64,
+    owner: yekitrim_core::owner::Owner,
     project: Option<i64>,
     kind: &str,
     dir: String,
@@ -108,10 +108,20 @@ pub(super) async fn polish_spawn(
         crate::scope_key::polish_keys(project, &path)
     };
     let class = JobClass::for_polish(kind);
+    // ⚠️ 两处要的东西**不一样**，别把它们合并成一个变量：
+    // 任务队列（账本）按**数字 uid** 记归属；而子进程要的是**完整 `Owner`** ——
+    // 单人形态是 `Local`、数字 uid 根本表达不了（`--local-no-auth` 下 uid 是合成管理员的）。
+    let job_owner_uid = match owner {
+        // 单人（`--local-no-auth`）没有真实账号 —— 任务队列仍要一个 uid 才能记归属，
+        // 用 1（首个管理员，与存量迁移的落点一致）。**这不影响数据位置**：
+        // 数据位置只由上面那个 `owner` 决定。
+        yekitrim_core::owner::Owner::Local => 1,
+        yekitrim_core::owner::Owner::User(uid) => uid,
+    };
     let handle = state
         .jobs
         .create(
-            owner,
+            job_owner_uid,
             JobSpec::new(format!("polish_{}", kind), format!("polish {kind} · {dir_name}"), keys, class),
         )
         .await;
@@ -185,7 +195,7 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
-                    run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra).await
+                    run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra, owner).await
                 }
                 "cover" => {
                     // 与 render 同理：封面也走外部 CLI（同样要能看进度、能取消）。
@@ -196,7 +206,7 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
-                    run_polish_child(&data_dir, &jobs, &job_id, "cover", &path, &extra).await
+                    run_polish_child(&data_dir, &jobs, &job_id, "cover", &path, &extra, owner).await
                 }
                 _ => anyhow::bail!("未知 kind"),
             }
@@ -217,7 +227,7 @@ pub(super) fn scope_pid(ext: Option<axum::extract::Extension<crate::scope::Scope
 
 pub(super) async fn polish_init(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "init", dir, PolishJobOpts::default()).await
+    polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "init", dir, PolishJobOpts::default()).await
 }
 
 /// LLM 剪辑（整片）。
@@ -230,7 +240,7 @@ pub(super) async fn polish_llm(State(state): State<Arc<AppState>>, Extension(use
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
     // 缺省 true：宁可重做，也不要静默续传
     let full = body.get("full").and_then(|v| v.as_bool()).unwrap_or(true);
-    polish_spawn(&state, user.id, scope_pid(pid), "llm", dir, PolishJobOpts { full, ..Default::default() }).await
+    polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "llm", dir, PolishJobOpts { full, ..Default::default() }).await
 }
 
 /// 只重做某一段的事件（编辑器：时间轴 → 选中分段 → 「只重做本段事件」）。
@@ -242,7 +252,7 @@ pub(super) async fn polish_llm_segment(State(state): State<Arc<AppState>>, Exten
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少分段下标 index"))? as usize;
     polish_spawn(
         &state,
-        user.id,
+        crate::auth::owner_of(&user),
         scope_pid(pid),
         "llm_segment",
         dir,
@@ -253,7 +263,7 @@ pub(super) async fn polish_llm_segment(State(state): State<Arc<AppState>>, Exten
 
 pub(super) async fn polish_process(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     let dir = body.get("dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    polish_spawn(&state, user.id, scope_pid(pid), "process", dir, PolishJobOpts::default()).await
+    polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "process", dir, PolishJobOpts::default()).await
 }
 
 pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(user): Extension<crate::auth::CurrentUser>, pid: Option<Extension<crate::scope::ScopeProjectId>>, Json(body): Json<serde_json::Value>) -> ApiResult {
@@ -294,7 +304,7 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
     };
     polish_spawn(
         &state,
-        user.id,
+        crate::auth::owner_of(&user),
         scope_pid(pid),
         "render",
         dir,
@@ -308,7 +318,7 @@ pub(super) async fn polish_cover(State(state): State<Arc<AppState>>, Extension(u
     // 通道由**前端**给（现在只有 `takumi`）；这里只透传，取值口径在 `cover.rs`（只一份）——
     // 传 `chrome` 会由那里**明确报错**（那条截图腿已删除），这一层不抄第二份白名单。
     let renderer = body.get("renderer").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    polish_spawn(&state, user.id, scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
+    polish_spawn(&state, crate::auth::owner_of(&user), scope_pid(pid), "cover", dir, PolishJobOpts { renderer, ..Default::default() }).await
 }
 
 

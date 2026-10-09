@@ -153,7 +153,7 @@ fn retired_effect_message(raw: &str, config_path: &Path) -> Option<String> {
 /// 仅当配置里没有任何本地贴纸包时才追加，避免重复。
 fn fill_default_local_packages(sources: &mut Vec<String>) {
     use crate::assets::sticker_index::{load_sticker_index, is_package_source};
-    let root = yekitrim_core::path::sticker_dir();
+    let root = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
     // 判断是否已有本地包（非 emoji/irasu 且目录存在）
     let has_package = sources.iter().any(|s| is_package_source(&root, s));
     if has_package {
