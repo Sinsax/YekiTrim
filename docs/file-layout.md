@@ -65,6 +65,37 @@ set YEKITRIM_DATA_DIR=F:\yekitrim-data
 ⚠️ **`resources/` 与 `runtime/` 的分界是"谁往里放东西"**：`resources/` 是**用户素材**
 （用户增删贴纸/视频/字体，`放这里.txt` 就是写给用户的），`runtime/` 是**随版本发布的只读交付物**
 （用户不该动）。**发布包只装 `runtime/`**，`resources/` 只建空目录 + 说明。
+（多用户下 `runtime/` 仍是**全局一份**：它是随版本发布的交付物，不是谁的素材。）
+
+### 2026-10-10：按归属（`Owner`）—— 上面那张表是**单人形态**的形状
+
+新增了**身份维度**（`yekitrim_core::owner`）：`Owner::Local`（托盘 / CLI / `--local-no-auth`）
+与 `Owner::User(uid)`（多用户模式下某个账号）。**路径不再由调用方自己拼**，一律问 `owner`：
+
+| 资产 | 单人（`Owner::Local`） | 多用户（`Owner::User(uid)`） |
+|---|---|---|
+| 素材根 | `<data>/resources/` | `<data>/users/<uid>/resources/` |
+| 字体 / 贴纸 / 视频 | `<data>/resources/{fonts,stickers,videos}/` | `<data>/users/<uid>/resources/{fonts,stickers,videos}/` |
+| 配置（`config.toml` / `llm.toml`） | `<data>/.yekitrim/` | `<data>/users/<uid>/.yekitrim/` |
+| **账本**（`users` / `sessions` / `invites` / `yekitrim.db`） | `<data>/yekitrim.db` | **同一份，永远全局** |
+
+⚠️ **账本永远不按用户分** —— 它是**身份的来源**，按用户分就是"登录前先得知道你是谁"的循环依赖。
+项目按 **行级** `projects.owner_id` 归属（本来就是对的形状，未改）。
+
+单人那一列**逐字等于**上面那张老表 ⇒ **单人升级零迁移**、目录形状不变。
+判据：`owner::tests::local_owner_resolves_to_exactly_todays_locations`。
+
+⚠️ **升级到多用户时，单人存量的归属**：`owner::migrate_legacy_assets_to` 把
+`<data>/resources/*` 与 `<data>/.yekitrim/{config,llm}.toml` **移动**（不是复制 ——
+素材可能几个 GB，复制会占双倍磁盘且两份从此分叉）到**首个管理员**（id 最小的 admin）名下。
+幂等、目标已存在就跳过、`Owner::Local` 不参与、跨盘失败如实报错并保持原状。
+启动时由 `yekitrim-server::migrate_solo_assets_to_first_admin` 跑一次。
+
+⚠️ **渲染/封面/预览是子进程**（`yekitrim polish render|cover|preview`），拿不到父进程的
+`Owner` ⇒ 父进程经 **`YEKITRIM_OWNER` 环境变量**传下去（`local` 或 uid），
+子进程用 `Owner::from_env()` 读回。选环境变量而不是命令行参数：polish 每个子命令都要带上它、
+且子进程还会拉起**孙进程**（ffmpeg / 底座），环境变量自动继承、命令行不会。
+认不出的值回落 `Local` 并打 warn（**不报错** —— 出片失败比"用错了库"更难查）。
 
 ### 2026-10-09 的收拢（与老位置的回落关系）
 

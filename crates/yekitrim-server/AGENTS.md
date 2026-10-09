@@ -152,7 +152,8 @@
 
 ### 贴纸 / 认证 / 限流
 
-- `src/stickers.rs`：admin-only 路由（贴纸库是**全局资产**）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
+- `src/stickers.rs`：路由在**用户层**（**不是** admin-only —— 贴纸库按 `Owner` 分，见 `src/stickers.rs` 头部；
+  单人 = `<数据>/resources/stickers/`，多用户 = `<数据>/users/<uid>/resources/stickers/`）；`spawn_build` 走 JobManager（占 `stickers` 键，取消在
   **批次边界**生效）；64 MiB `DefaultBodyLimit` **只给上传那一条**放开（axum 默认 2 MB）；`.../:pack/files/:name` 与
   `/api/media/*` 共用 `media::serve_file` 的 Range 实现；包名过 `sanitize_pack_name`、文件名过 `is_safe_component`。
 - `src/media.rs::serve_file` 是**唯一**的文件出口（`/api/media/*`、贴纸文件、Dhampir wasm 资源）。

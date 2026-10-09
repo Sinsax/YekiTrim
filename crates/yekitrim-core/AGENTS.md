@@ -12,7 +12,7 @@
 
 `lib.rs` 的模块表（**就是全表，新增模块必须在这里登记**）：
 `types` / `config` / `fonts` / `path` / `srt` / `pipeline` / `audio` / `asr` / `llm` / `download` /
-`detection` / `danmaku` / `cutting` / `progress` / `filelock` / `tenant`。
+`detection` / `danmaku` / `cutting` / `progress` / `filelock` / `tenant` / `owner`。
 
 ## 入口
 
@@ -31,6 +31,12 @@
 - `path::{yekitrim_home, resources_dir, sticker_dir, sticker_dir_readable, video_dir, video_dir_readable,
   runtime_dir, font_dir, user_home, display}`；`fonts::{dir, ensure_dir, scan, scan_at,
   resolve_file, resolve_file_at, family_of, is_font_file_name, is_safe_id}`。
+- `owner`：`Owner::{Local, User(uid), user, is_local, uid, from_env, from_env_value, as_env_value}`、
+  `AssetKind::{Fonts, Stickers, Videos, dir_name}`、`owner_root(_at)` / `resources_dir(_at)` /
+  `asset_dir(_at)` / `state_dir(_at)` / `config_path(_at)`、
+  `sticker_dir_readable(_at)` / `video_dir_readable(_at)`、`migrate_legacy_assets_to`、常量 `OWNER_ENV`。
+  ⚠️ **`Owner` 只回答"是谁"、不回答"在哪"**（路径一律由本模块算）—— 这是"将来真要落成用户级目录时
+  业务代码一行不动"的全部依据。
 - `progress::ProgressReporter`（trait）+ `NoopProgress`；`filelock::{with_path_lock, lock_path,
   with_path_lock_sync}`；`tenant::{jail_join, jail_existing, ensure_within}`。
 - `download::{model_names, model_install, download_all, download_vad_model, ensure_models}`。
@@ -85,7 +91,14 @@
   ⚠️ 视频库挪出 `stickers/` 的收益：原先它是贴纸根下的普通子目录，而 `scan_packages` 会把
   非 `.` 开头、非 `backup` 的子目录都当包扫 ⇒ 只靠"一张图都没有于是被丢掉"**碰巧**没污染列表。
   完整布局表与老→新对照在 **`docs/file-layout.md`**。
-- **字体库**：`yekitrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**。
+- ⚠️ **素材/配置的路径一律经 `owner`（2026-10-10 起）**：`Owner::Local`（托盘 / CLI /
+  `--local-no-auth`）解析到**现状位置**（`<data>/resources/*`、`<data>/.yekitrim/`）⇒ 单人零迁移；
+  `Owner::User(uid)` 解析到 `<data>/users/<uid>/…`。
+  **不许再在别处拼 `data_dir().join("resources")`** —— 那就是第二条通道（本模块头部三条硬规矩）。
+  子进程（出片/封面/预览）经 `OWNER_ENV` 从父进程继承身份。
+  ⚠️ **账本（`users`/`sessions`/`invites` 表）永远全局**：它是身份的来源，按用户分是循环依赖。
+- **字体库**：`yekitrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**
+  （单人；多用户走 `fonts::dir_for(owner)`）。
   ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
   默认 = `exe_dir()`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
   这条路径**曾经**是"用户固定目录 `~/.yekitrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
