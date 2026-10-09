@@ -858,12 +858,12 @@ mod tests {
             }
         };
         let mut fonts: Vec<std::path::PathBuf> = Vec::new();
-        // 字体目录：`font_dir()` 是现在唯一的位置（`<数据目录>/resources/fonts`）；
+        // 字体目录：按 `YEKITRIM_OWNER` 选（`fonts::dir_for`），与出片同一份库；
         // 后两项是**探针专用**的回落态（人肉验收时也许还没跑过 server，库是空的）
         // cargo test 的 cwd = crate 目录 ⇒ 用 CARGO_MANIFEST_DIR 的父目录锚 repo 根
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).map(Path::to_path_buf).unwrap_or_default();
         let candidates = [
-            yekitrim_core::path::font_dir(),
+            yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env()),
             repo.join("target/debug/resources/fonts"),
             repo.join("resources/fonts"),
         ];
@@ -902,9 +902,14 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_title_emoji_variants() {
+        // ⚠️ 兜底按 `YEKITRIM_OWNER` 选库（`fonts::dir_for`）：探针在子进程里跑，
+        // 要与出片看到同一份库。写死全局 `path::font_dir()` 在多用户下会对不上。
         let root = PathBuf::from(
-            std::env::var("VTEDIT_PROBE_FONT_ROOT")
-                .unwrap_or_else(|_| yekitrim_core::path::font_dir().display().to_string()),
+            std::env::var("VTEDIT_PROBE_FONT_ROOT").unwrap_or_else(|_| {
+                yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env())
+                    .display()
+                    .to_string()
+            }),
         );
         let ids = [
             "乐米波波体",

@@ -1208,15 +1208,16 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
 
 /// `yekitrim fonts install [--id X]`：装上自带字体（把**内嵌字节**写进字体库，幂等、不联网）。
 ///
-/// ⚠️ 根目录走 `ensure_dir()`（它负责 `create_dir_all`）。
-/// 现在读写解析到**同一个目录**（`<数据目录>/resources/fonts`），但仍别自己拼路径 ——
-/// 目录不存在时要建出来。
+/// ⚠️ 根目录走 `ensure_dir_for(Owner::from_env())`（它负责 `create_dir_all`）。
+/// **必须带 owner**：这条与 server 的 `/polish/fonts/builtin`（修复入口）是同一件事的
+/// 两个入口，装到不同的库上就会出现"CLI 说装好了、界面说没有"。
+/// 身份经 `YEKITRIM_OWNER` 从父进程继承（单人下就是 `Local`）。
 ///
 /// ⚠️ 2026-10-02 从"下载"改成"内嵌"：正常情况下**根本不该需要这条命令** ——
 /// 首次启动 `ensure_builtin_fonts` 已经自动装好了。它留作**修复入口**
 /// （用户手删了库里那支、或落盘失败之后想补回来）。
 pub fn cmd_fonts_install(id: Option<&str>) -> anyhow::Result<()> {
-    let root = yekitrim_core::fonts::ensure_dir()?;
+    let root = yekitrim_core::fonts::ensure_dir_for(yekitrim_core::owner::Owner::from_env())?;
     let want: Vec<&yekitrim_core::fonts::BuiltinFont> = match id {
         Some(id) => {
             let hit: Vec<_> = yekitrim_core::fonts::builtin_fonts()

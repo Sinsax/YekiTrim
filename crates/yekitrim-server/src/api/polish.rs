@@ -1371,7 +1371,11 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
 /// ⚠️ 收的是**服务器上的路径**，不是上传 —— 与 `/api/fs/list` 同一条来源（axum 默认 body 上限 2 MB，
 /// 上传要像贴纸那样单独放宽 `DefaultBodyLimit`，那是另一件事）。所以这条**必须** `require_admin`：
 /// 普通用户让它读服务器任意文件就是路径面事故。
-pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> ApiResult {
+pub(super) async fn polish_fonts_import(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     let path = match body.get("path").and_then(|v| v.as_str()).map(str::trim) {
         Some(p) if !p.is_empty() => PathBuf::from(p),
         _ => {
@@ -1403,9 +1407,10 @@ pub(super) async fn polish_fonts_import(Json(body): Json<serde_json::Value>) -> 
         // 目录布局写入 + 读字体表都碰磁盘（可能是网络盘），一律留在 blocking 池上。
         // ⚠️ 字体库的错都是 `anyhow`（"只收 .ttf/.otf"、"程序自带字体不可删除"…），
         // 转成 400 + 原话：用户要看到"为什么这支不行"，不是笼统的 500。
-        // ⚠️ 写路径走 `ensure_dir()`（它会 `create_dir_all`），别自己拼 `font_dir()`。
-        // 两者现在解析到**同一个目录**（读=写），但仍要走它 —— 目录不存在时要建出来。
-        let root = yekitrim_core::fonts::ensure_dir()
+        // ⚠️ 写路径走 `ensure_dir_for(owner)`（它会 `create_dir_all`），别自己拼 `font_dir()`。
+        // ⚠️ **必须带 owner**：这条走的是 `require_user` 那条用户路由，写错的库会让
+        // 甲导入的字体落进单人库、而甲自己的库还是空的（多用户下就是"传了却看不见"）。
+        let root = yekitrim_core::fonts::ensure_dir_for(owner)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         yekitrim_core::fonts::import_font(&root, &path, display.as_deref())
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
@@ -1434,9 +1439,11 @@ pub(crate) const FONT_UPLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// 这条收的是**浏览器里的字节**。两条都能进库，但来源不同、安全考量也不同 ——
 /// 这条不需要路径归属校验（没有路径），只需要体积上限 + 格式校验。
 pub(super) async fn polish_fonts_upload(
+    Extension(user): Extension<crate::auth::CurrentUser>,
     Query(q): Query<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     let file_name = q.get("name").map(String::as_str).unwrap_or("").trim();
     if file_name.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 name（字体文件名）"));
@@ -1452,8 +1459,9 @@ pub(super) async fn polish_fonts_upload(
     }
     let display = q.get("display").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let entry = blocking(move || {
-        // ⚠️ 写路径走 `ensure_dir()`（它会 `create_dir_all`），别自己拼 `font_dir()`。
-        let root = yekitrim_core::fonts::ensure_dir()
+        // ⚠️ 写路径走 `ensure_dir_for(owner)`（它会 `create_dir_all`）。**必须带 owner** ——
+        // 写错的库 = 用户传完字体、库里却没有。
+        let root = yekitrim_core::fonts::ensure_dir_for(owner)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         yekitrim_core::fonts::import_font_bytes(&root, &base, &body, display.as_deref())
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
@@ -1537,7 +1545,11 @@ pub(super) async fn polish_fonts_delete(
 /// （用户手删了库里那支之后想补回来），语义与 CLI 的 `yekitrim fonts install` 完全一致。
 ///
 /// 仍然走 `blocking`：写 ~23 MB 到（可能很慢的）磁盘上，不该占住 tokio worker。
-pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) -> ApiResult {
+pub(super) async fn polish_fonts_builtin(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
     let only = body
         .get("id")
         .and_then(|v| v.as_str())
@@ -1545,9 +1557,9 @@ pub(super) async fn polish_fonts_builtin(Json(body): Json<serde_json::Value>) ->
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let report = blocking(move || {
-        // ⚠️ 写路径走 `ensure_dir()`（它负责 `create_dir_all`）——
-        // 否则字体会写进程序目录，换个构建/安装目录就全部「未安装」。
-        let root = yekitrim_core::fonts::ensure_dir()
+        // ⚠️ 写路径走 `ensure_dir_for(owner)`（它负责 `create_dir_all`）——
+        // 否则字体会写进**别人的**库里，而本账号的库仍然显示「未安装」。
+        let root = yekitrim_core::fonts::ensure_dir_for(owner)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("字体库目录不可用: {e}")))?;
         // 点名单支时先确认它真是自带的 —— 否则用户白等一场才发现 id 打错
         if let Some(id) = &only {
@@ -2183,7 +2195,10 @@ mod tests {
         let payload = serde_json::json!({
             "root": "",
             "fallback_stack": yekitrim_polish::render::server::fallback_stack(),
-            "emoji_family": yekitrim_core::fonts::emoji_font(&yekitrim_core::path::font_dir()).map(|e| {
+            "emoji_family": yekitrim_core::fonts::emoji_font(&yekitrim_core::fonts::dir_for(
+                yekitrim_core::owner::Owner::from_env(),
+            ))
+            .map(|e| {
                 if e.family_internal.trim().is_empty() { e.id } else { e.family_internal }
             }),
             "fonts": [],
@@ -2266,7 +2281,7 @@ mod tests {
     async fn 贴纸预热让随后的取帧快得多() {
         // 找一张真的贴纸 GIF（贴纸库或某个真工程的产物）。
         let gif = [
-            yekitrim_core::path::sticker_dir(),
+            yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env()),
             std::path::PathBuf::from(r"E:\media\.yekitrim-cover-e2e\clip14\proj\assets\stickers"),
         ]
         .into_iter()

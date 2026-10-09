@@ -270,6 +270,51 @@ pub fn parse_project_id(raw: &str) -> Option<i64> {
     raw.trim().parse::<i64>().ok().filter(|id| *id > 0)
 }
 
+// ============================================================================
+// 容量配额（P5）
+// ============================================================================
+
+/// **生效的配额上限（字节）**，`0` = 不限。
+///
+/// 优先级：`users.quota_bytes`（每账号） > `[storage] default_quota_bytes`（全局默认）。
+///
+/// ⚠️ **账号自己的非零值优先**：管理员给某人单独放宽/收紧之后，再改全局默认**不该**把它冲掉。
+/// 反过来，账号那栏是 `0` 时表示"跟随全局"（这是 `users` 表默认值的语义，不是"不限"）——
+/// 真想表达"这个人不限"目前只能用全局 `0`；这一点在
+/// `docs/plan/local-single-user-migration.md` 里记为已知限制。
+pub fn effective_quota_bytes(user_quota: i64, default_quota: u64) -> u64 {
+    if user_quota > 0 {
+        user_quota as u64
+    } else {
+        default_quota
+    }
+}
+
+/// 这个账号**当前占用**多少字节（源 + 产物，直接从 `projects` 汇总）。
+///
+/// ⚠️ 与 `storage_summary` 同源：**不要**另建一张 storage 表去增量维护 ——
+/// 那就有了两个真相来源，早晚对不上（`db.rs::storage_summary` 的注释也是这么说的）。
+///
+/// ⚠️ **数字格式化一律走 `disk::human_bytes`**（那边已有一份，别再抄第二份）。
+pub fn used_bytes(db: &Db, uid: i64) -> anyhow::Result<u64> {
+    Ok(db
+        .storage_summary(Some(uid))?
+        .into_iter()
+        .map(|(_, b)| b)
+        .sum())
+}
+
+/// 加 `incoming` 字节之后会不会超配额。`quota == 0` = 不限，恒 `Ok`。
+///
+/// ⚠️ **这是"软闸门"，不是硬保证**：判据是**登记在 `projects` 表里的占用**，
+/// 而用户往自己的素材库里丢文件、或项目根目录里手工放的东西**没有**登记进表
+/// （`measure_project` 只覆盖源与 `output/`）。要做成硬配额得先有全盘扫描，
+/// 那与"不引入第二个真相来源"冲突。当前语义 = **拦住无上限的项目堆积**，
+/// 这对"多用户下每人一份素材"已经够用。要真硬配额是另一件事。
+pub fn quota_exceeded(used: u64, incoming: u64, quota: u64) -> bool {
+    quota != 0 && used.saturating_add(incoming) > quota
+}
+
 /// `/api/projects` 的单行摘要（阶段来自项目配置的推导，见 `config::current_stage`）。
 pub fn summary_json(project: &ProjectRow, owner_name: Option<&str>) -> serde_json::Value {
     let (stage, has_clips, missing_config) = match Workspace::load(Some(&project.config_file)) {
@@ -325,6 +370,42 @@ mod tests {
         assert!(dir.starts_with(root.join("users").join("7").join("23058")), "{}", dir.display());
         let leaf = dir.file_name().unwrap().to_string_lossy().to_string();
         assert!(leaf.contains('-'), "目录名应带时间戳与 pid: {leaf}");
+    }
+
+    // ---- 容量配额（P5）----
+
+    /// 配额优先级：账号自己的非零值赢，否则跟随全局默认。
+    #[test]
+    fn effective_quota_prefers_the_account_then_the_global_default() {
+        // 账号设了 → 用它（哪怕全局更大/更小）
+        assert_eq!(effective_quota_bytes(5_000, 1_000), 5_000);
+        assert_eq!(effective_quota_bytes(500, 1_000_000), 500);
+        // 账号是 0（= 跟随全局） → 用全局
+        assert_eq!(effective_quota_bytes(0, 1_000), 1_000);
+        // 两处都是 0 → 不限
+        assert_eq!(effective_quota_bytes(0, 0), 0);
+        // 负数（脏数据）当作"跟随全局"，**不能**变成天文数字的上限
+        assert_eq!(effective_quota_bytes(-1, 1_000), 1_000);
+    }
+
+    /// `0` = 不限：**任何时候都不该拒**（这是全局默认值，也是全新安装的状态）。
+    #[test]
+    fn zero_quota_never_rejects() {
+        assert!(!quota_exceeded(0, 0, 0));
+        assert!(!quota_exceeded(u64::MAX, u64::MAX, 0));
+    }
+
+    /// 边界：**恰好等于上限要放行**（`>` 而不是 `>=`）。
+    ///
+    /// ⚠️ 这条是有意的：用户把配额设成 100 MB、正好用掉 100 MB 时，"再来一个 0 字节"
+    /// 不该被拒；改成 `>=` 会让"刚好用满"的人连登记都做不了。
+    #[test]
+    fn quota_boundary_is_exclusive_and_overflow_safe() {
+        assert!(!quota_exceeded(100, 0, 100), "恰好用满必须放行");
+        assert!(quota_exceeded(100, 1, 100), "超出 1 字节就该拦");
+        assert!(!quota_exceeded(99, 1, 100));
+        // 求和溢出不许回绕成"没超"（`saturating_add`）
+        assert!(quota_exceeded(u64::MAX, 1, 100));
     }
 
     #[test]

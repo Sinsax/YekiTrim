@@ -578,6 +578,24 @@ pub struct Db {
         })
     }
 
+    /// 设置某账号的**配额上限**（字节，`0` = 跟随 `[storage] default_quota_bytes`）。
+    ///
+    /// ⚠️ **`0` 不等于"不限"**，是"跟随全局默认"（见 `projects::effective_quota_bytes`）。
+    /// 账号级与全局级都是 `0` 时才真的不限 —— 这正是全新安装的状态。
+    /// 返回值 = 有没有这个账号（`false` 时调用方应回 404，别静默成功）。
+    ///
+    /// 为什么需要它：注册流程固定写 `quota_bytes = 0`，此前**没有任何地方能改这个字段** ——
+    /// 于是"每用户配额"这条链实际上只有全局默认一个旋钮可用。
+    pub fn set_quota(&self, username: &str, quota_bytes: i64) -> Result<bool> {
+        self.with(|conn| {
+            let n = conn.execute(
+                "UPDATE users SET quota_bytes = ?2 WHERE username = ?1",
+                params![username, quota_bytes.max(0)],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     pub fn set_disabled(&self, username: &str, disabled: bool) -> Result<bool> {
         self.with(|conn| {
             let n = conn.execute(

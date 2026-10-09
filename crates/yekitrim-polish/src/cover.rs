@@ -1748,10 +1748,12 @@ mod tests {
             Ok(extra) => format!("{css}\n{extra}"),
             Err(_) => css,
         };
-        // 字体注册序与生产完全一致（defaults 先、emoji 最后）—— 本机是平铺布局那两支
+        // 字体注册序与生产完全一致（defaults 先、emoji 最后）—— 本机是平铺布局那两支。
+        // ⚠️ 兜底也走 `font_dir_owned()`（= 按 `YEKITRIM_OWNER` 选库）：探针在**子进程**里跑，
+        // 与出片时看到的是同一份库；写死全局 `path::font_dir()` 会让多用户下探的库与真出的片对不上。
         let root = std::path::PathBuf::from(
             std::env::var("VTEDIT_COVER_PROBE_FONTS")
-                .unwrap_or_else(|_| yekitrim_core::path::font_dir().display().to_string()),
+                .unwrap_or_else(|_| font_dir_owned().display().to_string()),
         );
         let fonts = cover_font_files_in(&root);
         eprintln!("探针：字体注册序 = {:?}", fonts);

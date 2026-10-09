@@ -54,6 +54,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 内置下载器（yt-dlp）安装：全局资产（下到 <程序目录>/.yekitrim/bin/），仅 admin
         .route("/admin/downloader/install", post(crate::ingest::downloader_install))
         .route("/admin/users", get(admin_users))
+        // 配额（P5）：只有 admin 能改别人的额度。⚠️ 与 `/admin/users` 同一层，
+        // **不是**用户层 —— 普通账号不该能给自己放宽配额。
+        .route("/admin/users/:name/quota", put(admin_set_user_quota))
         .route("/admin/recorder/test", post(admin_recorder_test))
         .route("/admin/invites", get(admin_invites).post(admin_invite_create))
         .route("/admin/invites/registration", put(admin_registration_put))
@@ -560,7 +563,9 @@ async fn sticker_upload_route_is_open_to_users_and_raises_body_limit() {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{uri}");
     }
     // 真实贴纸库里不该留下任何东西（三条失败路径都只能在暂存目录里动手，且必须清掉）
-    let root = yekitrim_core::path::sticker_dir();
+    // ⚠️ 走 `sticker_dir_readable(Owner::from_env())` 而不是全局 `path::sticker_dir()`：
+    // "真实的那份库"是谁的，由身份决定（多用户下是 `users/<uid>/…`）。
+    let root = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
     if root.is_dir() {
         let leftovers: Vec<String> = std::fs::read_dir(&root)
             .unwrap()
