@@ -258,6 +258,13 @@
         <div class="card">
           <InviteManager />
         </div>
+
+        <!-- 账号配额（P5）：与邀请码同一页 —— 都是"管别人那个账号"的事。
+             ⚠️ 配额只对**普通账号**有意义（管理员豁免，他要能清理超额的账号）。 -->
+        <div class="section-title">账号配额</div>
+        <div class="card">
+          <UserQuotaManager />
+        </div>
       </div>
     </div>
     </template>
@@ -297,6 +304,7 @@ import { toast } from '../stores/toast'
 import Icon from '../components/Icon.vue'
 import SliderField from '../components/SliderField.vue'
 import InviteManager from '../components/InviteManager.vue'
+import UserQuotaManager from '../components/UserQuotaManager.vue'
 import RecorderConfig from '../components/RecorderConfig.vue'
 import DownloaderConfig from '../components/DownloaderConfig.vue'
 import LlmUsage from '../components/LlmUsage.vue'

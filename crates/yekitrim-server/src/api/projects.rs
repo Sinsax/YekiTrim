@@ -175,25 +175,21 @@ pub(super) async fn create_local_project(
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
 
-    // **容量预检**：与采集入库那条路**同源**（`capacity::check_capacity`）——
-    // 它同时查每用户配额与全局磁盘水位，是这套里唯一的判据。
+    // ---- 这里**曾经**放过一道容量预检，已删除（2026-10-10）----
     //
-    // ⚠️ 手工建项目**估不出** `incoming`（用户挑的是一个已存在的目录，量它得整个扫一遍，
-    // 会把建项目这一步变成秒级阻塞）⇒ 这里传 `0`，语义是"**已经**超了就别再建了"。
-    // 增量拦截留给入库那条路（它拿得到预估体积）。
-    // ⚠️ **管理员豁免**：他要能收拾一个已经超额的账号，把自己也锁在外面只会让人没法运维。
-    if !user.is_admin() {
-        let cfg = yekitrim_core::config::load_global_config();
-        let probe_dir = yekitrim_core::owner::owner_root(owner_of(&user));
-        yekitrim_service::ingest::capacity::check_capacity(
-            state.auth.db(),
-            user.id,
-            0,
-            &probe_dir,
-            &cfg,
-        )
-        .map_err(|e| err(StatusCode::INSUFFICIENT_STORAGE, format!("{e:#}")))?;
-    }
+    // 当时的写法是 `if !user.is_admin() { check_capacity(...) }`，理由是"手工建项目这条路
+    // 没查过配额"。**实测它一次都不会触发**：`source.kind = "local"` 在 `projects_create`
+    // 与 `/project/init` 两处入口都先挡了 `if !user.is_admin() → 403`，所以能走到这里的
+    // **只有管理员**，而闸门又豁免管理员 ⇒ 条件恒假。
+    //
+    // 起过的验证（隔离数据目录、上限设 1 字节、已登记占用 11 字节）：
+    // 管理员仍能建项目、返回 200 —— 确认是死代码，不是"没测到"。
+    //
+    // 结论：**手工建项目这条路上没有需要补的配额闸门** ——
+    // 非管理员建项目的三条路（B站链接 / 录播姬 / 下载）**本来就各自调了**
+    // `capacity::check_capacity`（`ingest.rs` / `ingest_worker.rs` / `download_worker.rs`），
+    // 而管理员**按设计**不受配额约束（他要能收拾一个已经超额的账号）。
+    // 别再把这段加回来 —— 要么真让它对某些人生效，要么就别写。
 
     let dir = yekitrim_service::projects::resolve_target_dir(
         user.id,
@@ -614,61 +610,6 @@ mod tests {
 
 
     use axum::body::Body;
-
-/// **手工建项目这条路也过容量预检**（P5 补齐），与采集入库同源。
-///
-/// ⚠️ 这条**只能拿管理员测**：`source.kind = "local"` 本来就仅限 admin
-/// （"服务器端已有文件"是 admin-only 来源，见 `projects_create`）。
-/// 而非 admin 的三条建项目路径（B站链接 / 录播姬 / 下载）**早就各自查过容量**了 ——
-/// 所以这里补的是**管理员那条**：他自己没有配额，但**全局磁盘上限**（`max_disk_bytes`）
-/// 对他一样生效。
-///
-/// 判据用全局 `max_disk_bytes`：设成 1 字节 ⇒ 任何 `used > 0` 都该被拒。
-#[tokio::test]
-async fn manual_project_creation_respects_the_global_disk_cap() {
-    let t = test_app().await;
-    // 夹具里已经有一个项目（id=1），给它登记一点占用。
-    t.auth.db().update_project_bytes(1, 0, 4096).unwrap();
-
-    // 全局上限压到 1 字节 —— 已用 4 KB，必然超。
-    let dir = std::env::temp_dir().join(format!("yekitrim-cap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("b.mp4"), b"fake").unwrap();
-    let cfg_path = dir.join("yekitrim.toml");
-    std::fs::write(&cfg_path, "input_file = \"b.mp4\"
-").unwrap();
-
-    // 直接调 impl（这层不经过路由，配置从全局读）。
-    // ⚠️ 全局配置是**真文件**，测试里不能改它 ⇒ 改为直接验判据函数本身，
-    // 保证"手工建项目确实调了 check_capacity"这件事由源码结构 + 这条断言共同钉住。
-    let cfg = yekitrim_core::config::load_global_config();
-    let err = yekitrim_service::ingest::capacity::check_capacity(
-        t.auth.db(),
-        1,
-        0,
-        &dir,
-        &yk_cfg_with_cap(&cfg, 1),
-    )
-    .unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("磁盘上限") || msg.contains("配额"),
-        "超上限时必须给出可读的拒绝原因；实际：{msg}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// 造一份"全局磁盘上限 = `cap`"的配置（测试用；不改真实全局配置）。
-fn yk_cfg_with_cap(
-    base: &yekitrim_core::config::Config,
-    cap: u64,
-) -> yekitrim_core::config::Config {
-    let mut c = base.clone();
-    c.storage.max_disk_bytes = cap;
-    c
-}
 
 /// 移除项目 = **只注销绑定**：目录里一个文件都不动，而且能重新导入同一个目录。
 ///
