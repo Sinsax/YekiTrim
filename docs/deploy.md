@@ -50,6 +50,24 @@ yekitrim server --open          # 默认 127.0.0.1:26320
   · 写请求的 `Origin` / `Sec-Fetch-Site` 必须同源 —— 防别的网页跨站调这套 API。
   ⚠️ 也就是说：**免登录 = 这台机器上能访问 127.0.0.1 的任何进程都能操作它**（它本来就是个本机工具）。
   要对外/多人用，请用 `yekitrim server`(**要登录**) 那条路，别用托盘这套。
+  ⚠️ 判据（改了这条便利必须跑）：`auth::tests::local_no_auth_guards_reject_foreign_host_and_cross_site`
+  （含 `localhost.evil.com` 这类变体）、`routes::tests::shutdown_endpoint_is_404_without_token_env`、
+  `auth::tests::shutdown_token_gate_is_exact_and_empty_safe`、
+  `unauthenticated_requests_are_401_except_whitelist`（默认不带 flag 时一个字节都没变）。
+
+  **实现锚点**（改之前先读这几处；正文都在这几行注释里，别在本卡抄第二份）：
+  · 免登录分支在 `auth::authenticate` 开头：`AppState::local_admin` 是 `Some` 就跳过会话与 CSRF、
+    直接注入本机管理员；两道闸在 `auth::guard_local_request`（`Host` 必须 loopback 主机名 +
+    写请求 `Origin`/`Sec-Fetch-Site` 同源）。开启条件由 `run_with` 的开机守卫保证
+    （**只允许 loopback、且与 `--allow-remote` 互斥** —— 缺一条就是"谁都能免密进来的后台"）。
+    哨兵会话 id `LOCAL_SESSION_ID = "local-no-auth"`（**不在 sessions 表里**）⇒ 依赖真实会话的
+    功能在本地模式下不可用（最典型是改密码）。
+  · 关停通道在 `api::shutdown`：env `YEKITRIM_SHUTDOWN_TOKEN` **没设 ⇒ 404**（不给探测口）、
+    对端必须 loopback、头 `x-yekitrim-shutdown-token` 要**常量时间**匹配
+    （`auth::shutdown_token_ok` / `auth::token_ok_for`，**别退回 `==`**）。效果**等价于 Ctrl+C**
+    （走 `run_with` 的优雅关停、限时 `SHUTDOWN_GRACE`、锁写成 `pid=0`）—— **别改成直接 `process::exit`**。
+    ⚠️ 令牌名/头名与 `crates/yekitrim-cli/src/tray.rs` 里**各写一份字面量**（托盘链接不了 server crate），
+    **改一处必须改两处**。
 - 通知区图标：**左键 = 打开网页**；**右键**菜单 = 当前地址（灰显只读）/ 打开网页 / **退出**。
 - 「退出」走的是**优雅关停**：服务收尾后 `yekitrim.lock` 会被写成 `pid=0`，下次启动不会报"残留锁"。
 - **已经在跑时再双击**：它会先探测该端口上是不是已有 YekiTrim —— 是就**直接把已有界面打开**再退出，

@@ -428,10 +428,21 @@ console.log('\n④ 预览 DOM 路径（模板 + WebUI 编辑器）')
     previewVue.includes('ref="fitBoxRef" :style="fitBoxStyle"'), true)
   const tplShift = new RegExp('function stageShiftPx[^]*?(px / 100 - 0\\.5)[^]*?(py / 100 - 0\\.5)')
   check('模板 DOM 层：同一条两轴修正公式（与 WebUI 预览同口径）', tplShift.test(html), true)
-  check('PolishPreview：两轴位置都读契约的 position_x/y_pct（不是老枚举、不是 position_pct）',
+  // ⚠️ **这条判据必须限定作用对象**（2026-10 修）：原来写的是裸 `/s\.position_pct/`，不分是哪个 `s`。
+  //    而 `PolishPreview.vue` 里现在有**两个** `s`：
+  //      · `stageStyle` 的 `s`（= `[stage]`）→ 老单值 `position_pct` **已作废、不许再读**（这才是本判据的本意）
+  //      · `capLayerStyle` 的 `s`（= `[style.subtitle]`）→ **字幕**的新字段 `position_pct`，**语义完全无关**
+  //    裸匹配会被后者误伤 ⇒ 判据**恒红**，而且红的正是"本仓正在新增的功能"，
+  //    真回归反倒被这条常红判据淹没（狼来了）。所以拆成两条：位置那半条照旧，禁用那半条**只扫 stageStyle 的函数体**。
+  check('PolishPreview：两轴位置都读契约的 position_x/y_pct',
     /typeof s\.position_x_pct === 'number'/.test(previewVue)
-    && /typeof s\.position_y_pct === 'number'/.test(previewVue)
-    && !/s\.position_pct/.test(previewVue), true)
+    && /typeof s\.position_y_pct === 'number'/.test(previewVue), true)
+  {
+    // 取 `stageStyle` 那个 computed 的函数体，只在这里面禁老单值。
+    const m = previewVue.match(/const stageStyle = computed\(\(\) => \{[\s\S]*?\n\}\)/)
+    check('PolishPreview：stageStyle 不再读老单值 position_pct（字幕的同名字段不算）',
+      !!m && !/s\.position_pct/.test(m[0]), true)
+  }
 }
 
 // ── ⑤ 自证有效：把源码改回修复前，上面的判据必须翻面 ────────────────────────

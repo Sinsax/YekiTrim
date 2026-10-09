@@ -71,9 +71,36 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub silence_ranges: Vec<MuteRange>,
 
+    /// 16. **成片时间线（EDL）**：成片真的按什么顺序、以什么速率播哪些源区间。
+    ///
+    /// - **缺省 = 空 = 今天的行为**（源时间轴减掉 `mute_ranges`）⇒ 老工程零迁移（R4）；
+    /// - **非空时 `mute_ranges` 被忽略**（它是 EDL 的一个特例，见 [`ProjectFile::resolve_edl`]）；
+    /// - 推导**只有一条**：`ProjectFile::resolve_edl`。
+    ///
+    /// ⚠️ `#[serde(default)]` + `skip_serializing_if` 缺一不可：
+    /// 少了 `default`，老工程（没有 `[edl]` 段）会**直接读不出来**（`ProjectFile` 是
+    /// `deny_unknown_fields`，而缺字段同样是错）；少了 `skip_serializing_if`，老工程重存一次
+    /// 就凭空多出一个空 `[edl]` 段。规格 §2、§9 R4；见 `docs/plan/edl-retiming-spec.md`。
+    ///
+    /// ⚠️ 判据挂在 `Edl::is_empty` 上、**不能只靠 `Edl::clips` 自己的 `skip_serializing_if`**：
+    /// `Edl` 是一张**表**，内部字段被跳过之后 toml 仍然会写出空的 `[edl]` 段头（实测过）。
+    #[serde(default, skip_serializing_if = "Edl::is_empty")]
+    pub edl: Edl,
+
     /// 是否已执行过 process（preview 用它判断是否需要先 process）
     #[serde(default, skip_serializing_if = "is_false")]
     pub processed: bool,
+
+    /// 17. **片头 / 片尾**（项目设置里开关 + 从全局素材库挑一段视频）。
+    ///
+    /// 缺省 = 两个都不开 ⇒ **老工程零迁移**（`IntroOutroConfig::is_empty` 控制
+    /// `skip_serializing_if`，与 `edl` 同一条规矩：不写这个键 ⇔ 行为与今天逐字节相同）。
+    ///
+    /// ⚠️ 它**不自己做剪辑**，只是 [`ProjectFile::edl_with_intro_outro`] 的输入：
+    /// 片头 = 素材库那段视频的一个区间，片尾 = 另一段，它们被**拼进 EDL 的首尾**。
+    /// 所以「片头片尾」与「重放/变速」走的是**同一条成片时间线**，没有第二套时序。
+    #[serde(default, skip_serializing_if = "IntroOutroConfig::is_empty")]
+    pub intro_outro: IntroOutroConfig,
 
     /// 16. 片头淡入（`overlay_type = "fade_in"`）的补种时机**已经用掉**：初次 process 判定过片头之后置位，
     ///     往后这条事件在不在、长什么样都由用户说了算 —— 删掉再跑 process 也不会补回来（那是用户意图，
@@ -109,6 +136,65 @@ impl MuteRange {
 
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+/// **`mute_ranges` 的补集 → EDL clips**（规格 §2.3 的纯机械转换），速率一律 `1.0`。
+///
+/// 这就是"空 EDL 退化成今天的行为"那一步（§2.2 规则 3）。口径**逐条对齐转译器**
+/// `buildKeepRanges(totalFrames, muteFrames, /*keepMuted=*/ false)`
+/// （`tools/polish-to-dhampir.mjs:467-486`，预览腿今天跑的就是它）：
+///
+/// 1. 每一段先 `normalized()`（排序端点、`start` 夹到 `>= 0`、退化的丢掉）——
+///    对应 JS 的 `filter(m => m.end > m.start)`；
+/// 2. 按 `start` 升序 —— 对应 JS 的 `.sort()`；
+/// 3. 游标推进：`start > cursor` 就补一段 `[cursor, start]`；`cursor = max(cursor, end)`
+///    （`max` 吃掉重叠区间，与 JS 一致）；
+/// 4. 末尾若 `cursor < total` 再补一段 `[cursor, total]`。
+///
+/// ⚠️ **与"屏蔽只做标记"那条硬规矩的关系**：这里只**算**，不改 `mute_ranges`、不切段、不删事件
+/// （见 `project/AGENTS.md` 边界第一条）。
+///
+/// ⚠️ `total_duration <= 0`（时长未知）⇒ 返回空：补集的右端推不出来，硬编一个值是编的。
+pub fn edl_clips_from_mute_complement(
+    mute_ranges: &[MuteRange],
+    total_duration: f64,
+) -> Vec<EdlClip> {
+    if !(total_duration > 0.0) || !total_duration.is_finite() {
+        return Vec::new();
+    }
+    let mut muted: Vec<(f64, f64)> = mute_ranges.iter().filter_map(|m| m.normalized()).collect();
+
+    muted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut clips = Vec::new();
+    let mut cursor = 0.0_f64;
+    for (start, end) in muted {
+        if start > cursor {
+            clips.push(EdlClip {
+                source_start: cursor,
+                source_end: start,
+                speed: 1.0,
+                kind: None,
+                label: None,
+                source_kind: None,
+                asset_id: None,
+                transition_in: None,
+            });
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < total_duration {
+        clips.push(EdlClip {
+            source_start: cursor,
+            source_end: total_duration,
+            speed: 1.0,
+            kind: None,
+            label: None,
+                source_kind: None,
+                asset_id: None,
+                transition_in: None,
+            });
+    }
+    clips
 }
 
 // ===== 项目元信息 =====
@@ -186,9 +272,10 @@ pub struct SourceRef {
 // ===== 布局 =====
 // （类型定义已迁入 yekitrim-render-core/types.rs，此处重导出保持兼容）
 pub use yekitrim_render_core::types::{
-    free_rect, grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Event,
-    Layout,
-    LayoutRegion, Point, Segment, StyleRoot, SubtitleStyle,
+    free_rect, grid_rect, region_origin, region_rects, parse_pct, CameraStyle, DanmakuStyle, Edl,
+    EdlClip, Event, Layout,
+    LayoutRegion, Point, ResolvedClip, Segment, StyleRoot, SubtitleStyle,
+    EDL_KIND_INTRO, EDL_KIND_OUTRO, EDL_SOURCE_ASSET,
 };
 
 // ===== 九宫格 =====
@@ -261,6 +348,82 @@ impl Default for SfxConfig {
 }
 
 fn default_true() -> bool { true }
+
+// ===== 片头 / 片尾 =====
+
+/// 片头 / 片尾的**一段素材引用**：素材库里的哪个文件、取它的哪一段。
+///
+/// `asset_id` = 素材库（`path::video_dir()`）里文件名**去扩展名**的那一串，
+/// 与贴纸 `name` 同一套口径。
+///
+/// ⚠️ `in_sec` / `out_sec` 是**相对素材自己**的秒数，且 `out_sec = 0`（缺省）
+/// 表示**播到素材结尾** —— 不能用 `0` 当"零长度"，因为"从 0 播到 0"不是任何人的意图，
+/// 而"从 0 播到结尾"是最常见的意图。解析在 [`IntroOutroConfig::trim`] 一处做。
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IntroOutroClip {
+    /// 素材库里的视频 id（文件名去扩展名）。空 = 这一项没开。
+    #[serde(default)]
+    pub asset_id: String,
+    /// 入点（秒，相对素材）。0 = 从头。
+    #[serde(default)]
+    pub in_sec: f64,
+    /// 出点（秒，相对素材）。**0 = 到素材结尾**（见类型注释）。
+    #[serde(default)]
+    pub out_sec: f64,
+}
+
+impl Default for IntroOutroClip {
+    fn default() -> Self {
+        Self {
+            asset_id: String::new(),
+            in_sec: 0.0,
+            out_sec: 0.0,
+        }
+    }
+}
+
+impl IntroOutroClip {
+    /// 这一项算不算"开了"：必须有素材。
+    pub fn is_enabled(&self) -> bool {
+        !self.asset_id.trim().is_empty()
+    }
+
+    /// 入出点解析成 `(in, out)` 秒，`out` 用 `asset_duration` 兜底。
+    ///
+    /// 四条规矩（都在这里，消费侧别再各算一份）：
+    /// 1. 负数一律夹到 0（负入点在 ffmpeg/底座里是未定义行为）；
+    /// 2. `out_sec <= 0` ⇒ 播到素材结尾（缺省语义）；
+    /// 3. `out <= in` ⇒ 也当"播到结尾"（用户把出点拖到入点左边，意图是"没设出点"；
+    ///    返回一个空区间只会让这一项静默消失）；
+    /// 4. 出点超过素材长度 ⇒ 夹到素材结尾（越界读会让底座报 `source_range_exceeded`）。
+    pub fn trim(&self, asset_duration: f64) -> (f64, f64) {
+        let start = self.in_sec.max(0.0);
+        let end = if self.out_sec <= 0.0 || self.out_sec <= start {
+            asset_duration
+        } else {
+            self.out_sec.min(asset_duration)
+        };
+        (start.min(asset_duration), end)
+    }
+}
+
+/// 片头 / 片尾设置（`[intro_outro]`）。
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IntroOutroConfig {
+    #[serde(default)]
+    pub intro: IntroOutroClip,
+    #[serde(default)]
+    pub outro: IntroOutroClip,
+}
+
+impl IntroOutroConfig {
+    /// 两个都没开 ⇒ 不写这个键（老工程零迁移，与 `Edl::is_empty` 同一条规矩）。
+    pub fn is_empty(&self) -> bool {
+        !self.intro.is_enabled() && !self.outro.is_enabled()
+    }
+}
 
 // ===== 封面配置 =====
 
@@ -1156,6 +1319,136 @@ impl ProjectFile {
         self.canvas.size()
     }
 
+    /// **成片时间线的唯一推导**（规格 §4.1 第 3 条）：`polish.toml` → 成片时间轴。
+    ///
+    /// 三条硬性派生规则（§2.2）都落在这里：
+    ///
+    /// | # | 规则 | 实现 |
+    /// |---|---|---|
+    /// | 1 | `out_start = Σ 前面每段的时长 / speed`，**永不落盘** | `Edl::resolve_clips`（帧号域累加） |
+    /// | 2 | `total_frames` = 最后一段的 `out_end` | [`Edl::total_frames`] |
+    /// | 3 | **空 `clips` ⇒ 退化成 `mute_ranges` 的补集** | 本函数下面那段 |
+    ///
+    /// # 规则 3 是 R4 存量零回归的关键
+    ///
+    /// 老工程 `[edl]` 段缺失 ⇒ `clips` 为空 ⇒ 走补集，结果与今天
+    /// `Ffmpeg::cut_ranges`（`render/ffmpeg.rs:181`，整条视频减掉 `mute_ranges`）**同一件事**：
+    /// 屏蔽段被删掉、其余原样、尾段一直到片尾。
+    ///
+    /// ⚠️ **有 EDL 时 `mute_ranges` 整个被忽略**，不是"两者相加"—— 那样"这段到底播不播"
+    /// 就有歧义。`mute_ranges` 保留为**用户可见的轨道 + 输入**，EDL 是"成片真的按什么播"（§2.3）。
+    ///
+    /// # 参数
+    ///
+    /// - `total_duration`：源视频总时长（秒）。`<= 0` 且 `clips` 为空时返回**空数组**
+    ///   （时长未知 ⇒ 补集推不出来；调用侧应给真值）。
+    /// - `fps`：源素材帧率（帧号域累加的前提，见 [`Edl::resolve_clips`]）。
+    pub fn resolve_edl(&self, total_duration: f64, fps: f64) -> Vec<ResolvedClip> {
+        if !self.edl.clips.is_empty() {
+            return self.edl.resolve_clips(fps);
+        }
+        Edl {
+            clips: edl_clips_from_mute_complement(&self.mute_ranges, total_duration),
+        }
+        .resolve_clips(fps)
+    }
+
+    /// 把**片头 / 片尾**拼到 EDL 的首尾，返回合成后的 clips。
+    ///
+    /// 这是 `[intro_outro]` 落进成片时间线的**唯一入口**。
+    ///
+    /// # 为什么拼在这里、而不是新写一条时序
+    ///
+    /// 片头不过是"素材库里某段视频的一段区间"，而 EDL 的 [`EdlClip`] 本来就支持
+    /// `source_kind = "asset"`（第 6 批做的视频素材）—— 所以片头片尾**不需要任何新机制**，
+    /// 只是往 clips 数组的头尾各插一项。于是它自动继承：重放、变速、叠化、字幕/音效重映射、
+    /// 总时长推导、以及三处消费点同源的那 17 项对拍。
+    ///
+    /// # 与用户 EDL / `mute_ranges` 的关系
+    ///
+    /// 基片时间线取 [`Self::resolve_edl`] 的**输入口径**（`edl.clips` 非空就用它，
+    /// 否则用 `mute_ranges` 的补集），再在两端拼接。所以：
+    /// - 用户已经手排过 EDL ⇒ 片头片尾**接在他排好的首尾**（不覆盖他的排序）；
+    /// - 没有 EDL、只有屏蔽 ⇒ 接在补集推出来的正片前后。
+    ///
+    /// # 参数
+    ///
+    /// - `duration_of(asset_id) -> Option<f64>`：素材库那个文件的时长（秒）。
+    ///   **由调用方注入**：本模块（`project`）不认识素材库/ffprobe，那是 `process` / `render` 的事。
+    ///   返回 `None` = 这个素材找不到（或探不出时长）⇒ **跳过这一项**并返回它，让调用方能报出来
+    ///   （静默少一段片头是最坏形态：用户以为开了，成片里没有）。
+    ///
+    /// 返回 `(clips, skipped)`，`skipped` 是"想加但没加成的"人话描述。
+    pub fn edl_clips_with_intro_outro(
+        &self,
+        total_duration: f64,
+        duration_of: impl Fn(&str) -> Option<f64>,
+    ) -> (Vec<EdlClip>, Vec<String>) {
+        let mut clips: Vec<EdlClip> = if !self.edl.clips.is_empty() {
+            self.edl.clips.clone()
+        } else {
+            edl_clips_from_mute_complement(&self.mute_ranges, total_duration)
+        };
+
+        let mut skipped = Vec::new();
+        let mut head = Vec::new();
+        let mut tail = Vec::new();
+
+        for (which, item, kind) in [
+            ("片头", &self.intro_outro.intro, EDL_KIND_INTRO),
+            ("片尾", &self.intro_outro.outro, EDL_KIND_OUTRO),
+        ] {
+            if !item.is_enabled() {
+                continue;
+            }
+            let id = item.asset_id.trim();
+            let Some(dur) = duration_of(id) else {
+                skipped.push(format!("{which}素材「{id}」找不到或读不出时长，这一段没有加进去"));
+                continue;
+            };
+            let (start, end) = item.trim(dur);
+            if !(end > start) {
+                skipped.push(format!("{which}素材「{id}」的入出点算出来是空区间（{start:.2}s–{end:.2}s），没有加进去"));
+                continue;
+            }
+            let clip = EdlClip {
+                source_start: start,
+                source_end: end,
+                speed: 1.0,
+                kind: Some(kind.to_string()),
+                label: Some(format!("{which}·{id}")),
+                source_kind: Some(EDL_SOURCE_ASSET.to_string()),
+                asset_id: Some(id.to_string()),
+                // ⚠️ 片头**不叠化**：没有"前一段"可重叠，硬切是唯一有意义的取值。
+                transition_in: None,
+            };
+            if kind == EDL_KIND_INTRO {
+                head.push(clip);
+            } else {
+                tail.push(clip);
+            }
+        }
+
+        if head.is_empty() && tail.is_empty() {
+            return (clips, skipped);
+        }
+        // 片尾若与原正片首段同时带叠化会撞"前一段"语义，所以只让**片尾的首段**保留硬切；
+        // 片头接在正片前面时，正片首段的 `transition_in` 要清掉 —— 它前面现在有东西了，
+        // 而那个东西不是它原本要叠化的对象（原本是硬切，因为它在最前面）。
+        if !head.is_empty() {
+            if let Some(first) = clips.first_mut() {
+                if first.transition_in.is_some() {
+                    first.transition_in = None;
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(head.len() + clips.len() + tail.len());
+        out.extend(head);
+        out.append(&mut clips);
+        out.extend(tail);
+        (out, skipped)
+    }
+
 
     /// 解析主画面摆放。`src` = 源视频尺寸（ffprobe；拿不到给 `None`）。
     ///
@@ -1431,6 +1724,29 @@ impl ProjectFile {
                 continue;
             }
 
+            // [edl] 后加注释（成片时间线，规格 §2.1）。⚠️ 空 EDL **不会**出现在文件里
+            // （`Edl::clips` 带 `skip_serializing_if`）⇒ 老工程重存不会凭空多出这一段（R4）。
+            if trimmed == "[edl]" {
+                result.push_str("\n# ===== 成片时间线（EDL） =====\n");
+                result.push_str("# 缺省 = 空数组 = 今天的行为（源时间轴减掉 mute_ranges）\n");
+                result.push_str("# 数组顺序 = 成片播放顺序；区间可以重复、可以乱序、可以变速\n");
+                result.push_str("# ⚠️ 非空时 mute_ranges 被忽略（它是 EDL 的一个特例），不是两者相加\n");
+                result.push_str("# 成片起点 out_start 永远派生、不落盘：out_start = Σ 前面每段的 (source_end - source_start) / speed\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+
+            // [[edl.clips]] 标记
+            if trimmed.starts_with("[[edl.clips]]") {
+                result.push_str("# 一段：源区间 + 速率\n");
+                result.push_str("# source_start / source_end: 源时间轴的秒（与 events 的 time 同一基准）\n");
+                result.push_str("# speed: 1.0=原速, 0.5=慢放, 2.0=快放（夹在 [0.5, 2.0]，两侧各五档）\n");
+                result.push_str("# kind: 可选语义标签 main/replay/recall/intro/outro（仅供 UI/统计）\n");
+                result.push_str("# label: 可选 UI 显示名\n");
+                result.push_str(line); result.push('\n');
+                continue;
+            }
+
             // [filter] 后加注释
             if trimmed == "[filter]" {
                 result.push_str("\n# ===== 关键词过滤 =====\n");
@@ -1608,7 +1924,12 @@ impl ProjectFile {
             ],
             mute_ranges: Vec::new(),
             silence_ranges: Vec::new(),
+            // ⚠️ 示例工程**故意留空**：空 EDL = 今天的行为（R4）。别在这里塞一段示例 clips，
+            //    那会让"新建工程"就带上一条成片时间线。
+            edl: Edl::default(),
             processed: false,
+            // ⚠️ 同上：示例工程不许带片头片尾（空 = 老行为）。
+            intro_outro: IntroOutroConfig::default(),
             intro_fade_seeded: false,
             extra: HashMap::new(),
         }
@@ -1655,6 +1976,132 @@ pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一个"正片段"的构造器（`EdlClip` 没有 `Default`，字段太多）。
+    fn main_clip(start: f64, end: f64, transition: Option<&str>) -> EdlClip {
+        EdlClip {
+            source_start: start,
+            source_end: end,
+            speed: 1.0,
+            kind: Some("main".into()),
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: transition.map(|t| t.to_string()),
+        }
+    }
+
+    /// 片头/片尾的**入出点语义**（`IntroOutroClip::trim`）—— 四条规矩各一条判据。
+    #[test]
+    fn intro_outro_trim_semantics() {
+        let clip = |in_s: f64, out_s: f64| IntroOutroClip {
+            asset_id: "op".into(),
+            in_sec: in_s,
+            out_sec: out_s,
+        };
+        // 1. 缺省（两个 0）= 整段
+        assert_eq!(clip(0.0, 0.0).trim(10.0), (0.0, 10.0));
+        // 2. 只给入点 = 从入点到结尾
+        assert_eq!(clip(2.0, 0.0).trim(10.0), (2.0, 10.0));
+        // 3. 入出点都给 = 就用它们
+        assert_eq!(clip(2.0, 5.0).trim(10.0), (2.0, 5.0));
+        // 4. 负入点夹到 0；出点越过素材长度夹到长度
+        assert_eq!(clip(-3.0, 99.0).trim(10.0), (0.0, 10.0));
+        // 5. 出点在入点左边（用户拖反了）= 当"没设出点"，播到结尾
+        //    （返回空区间会让这一项静默消失，而用户的意图是"我改主意了"）
+        assert_eq!(clip(5.0, 2.0).trim(10.0), (5.0, 10.0));
+    }
+
+    /// 空素材 = 没开；有素材 = 开了。判据只有这一个。
+    #[test]
+    fn intro_outro_enabled_needs_an_asset() {
+        let mut c = IntroOutroConfig::default();
+        assert!(c.is_empty(), "两个都没素材 ⇒ 不写这个键（老工程零迁移）");
+        c.intro.asset_id = "  ".into();
+        assert!(c.is_empty(), "只有空白字符不算开了");
+        c.intro.asset_id = "op".into();
+        assert!(!c.is_empty());
+    }
+
+    /// 片头拼在**最前**、片尾拼在**最后**，且片头/片尾都是 `asset` 段。
+    #[test]
+    fn intro_outro_clips_are_prepended_and_appended() {
+        let mut cfg = ProjectFile::example();
+        // 让正片就是"整段"（示例工程 edl 与 mute_ranges 都空 ⇒ 补集推不出东西，
+        // 所以这里显式给一条正片段，模拟"用户已经排过 EDL"）。
+        cfg.edl.clips = vec![main_clip(1.0, 3.0, None)];
+        cfg.intro_outro.intro.asset_id = "logo".into();
+        cfg.intro_outro.intro.in_sec = 0.5;
+        cfg.intro_outro.intro.out_sec = 2.5;
+        cfg.intro_outro.outro.asset_id = "end".into();
+
+        let (clips, skipped) = cfg.edl_clips_with_intro_outro(10.0, |id| match id {
+            "logo" => Some(10.0),
+            "end" => Some(4.0),
+            _ => None,
+        });
+        assert!(skipped.is_empty(), "不该有跳过：{skipped:?}");
+        assert_eq!(clips.len(), 3, "片头 + 正片 + 片尾");
+
+        // 片头在最前、区间 = 素材的 0.5–2.5
+        let head = &clips[0];
+        assert_eq!(head.kind.as_deref(), Some(EDL_KIND_INTRO));
+        assert_eq!(head.source_kind.as_deref(), Some(EDL_SOURCE_ASSET));
+        assert_eq!(head.asset_id.as_deref(), Some("logo"));
+        assert_eq!((head.source_start, head.source_end), (0.5, 2.5));
+
+        // 正片在中间，原样保留
+        let main = &clips[1];
+        assert_eq!((main.source_start, main.source_end), (1.0, 3.0));
+        assert_eq!(main.source_kind, None, "正片段不该被改来源");
+
+        // 片尾在最后、out=0 ⇒ 播到素材结尾(4.0)
+        let tail = &clips[2];
+        assert_eq!(tail.kind.as_deref(), Some(EDL_KIND_OUTRO));
+        assert_eq!(tail.asset_id.as_deref(), Some("end"));
+        assert_eq!((tail.source_start, tail.source_end), (0.0, 4.0));
+    }
+
+    /// 素材找不到 ⇒ **跳过并报出来**，不是静默少一段。
+    #[test]
+    fn intro_outro_reports_missing_asset() {
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![main_clip(0.0, 5.0, None)];
+        cfg.intro_outro.intro.asset_id = "ghost".into();
+        let (clips, skipped) = cfg.edl_clips_with_intro_outro(10.0, |_| None);
+        assert_eq!(clips.len(), 1, "只有正片");
+        assert_eq!(skipped.len(), 1, "必须有一条说明");
+        assert!(skipped[0].contains("ghost"), "要点名是哪个素材：{}", skipped[0]);
+    }
+
+    /// 两个都没开 ⇒ 合成结果与 `resolve_edl` **逐值相同**（老工程零回归）。
+    #[test]
+    fn no_intro_outro_changes_nothing() {
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![main_clip(1.0, 3.0, Some("dissolve"))];
+        let before = cfg.edl.clips.clone();
+        let (clips, skipped) = cfg.edl_clips_with_intro_outro(10.0, |_| None);
+        assert!(skipped.is_empty());
+        assert_eq!(clips, before, "没开片头片尾时一个字节都不该动");
+        assert_eq!(
+            clips[0].transition_in.as_deref(),
+            Some("dissolve"),
+            "首段的叠化不该被清掉（没有片头插进来）"
+        );
+    }
+
+    /// 插了片头之后，**正片首段的 `transition_in` 必须清掉** —— 它前面现在有东西了，
+    /// 而那个东西不是它原本要叠化的对象（原本它在最前面，叠化对它无意义）。
+    #[test]
+    fn intro_clears_first_main_transition() {
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![main_clip(1.0, 3.0, Some("dissolve"))];
+        cfg.intro_outro.intro.asset_id = "logo".into();
+        let (clips, _) = cfg.edl_clips_with_intro_outro(10.0, |_| Some(5.0));
+        assert_eq!(clips[0].kind.as_deref(), Some(EDL_KIND_INTRO));
+        assert_eq!(clips[1].transition_in, None, "正片首段的叠化要清掉");
+        assert_eq!(clips[0].transition_in, None, "片头自己永远是硬切");
+    }
 
     #[test]
     fn grid_rect_all_nine() {
@@ -2076,6 +2523,377 @@ mod tests {
 
         let zero_scale = stage_draw_rect(&stage("fill", 50.0, 0.0, 0.0), (1920, 1080), canvas);
         assert_eq!(zero_scale, StageDrawRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
+    }
+}
+
+/// 成片时间线（EDL）的数据模型层单测（第 1 批，规格 §2 / §4.1）。
+///
+/// ⚠️ 本批**没有消费点**（转译器/渲染/前端都不读它），所以这些测试是这一层唯一的回归网。
+///
+/// 每一条都**能翻面**：判据不是"跑得出数"，而是"照今天的补集逻辑对拍" / "秒域累加会算错" /
+/// "老工程一个字节都不多" —— 改坏实现就会红。
+#[cfg(test)]
+mod edl_tests {
+    use super::*;
+
+    fn clip(s: f64, e: f64, speed: f64) -> EdlClip {
+        EdlClip {
+            source_start: s,
+            source_end: e,
+            speed,
+            kind: None,
+            label: None,
+            source_kind: None,
+            asset_id: None,
+            transition_in: None,
+        }
+    }
+
+    /// 规格 §2.2 规则 3 / R4：**空 EDL + 有 mute_ranges ⇒ 与今天的补集逐值一致**。
+    ///
+    /// "今天" = 转译器 `buildKeepRanges(totalFrames, muteFrames, /*keepMuted=*/false)`：
+    /// 游标推进、`max()` 吃重叠、末尾补到片尾。这里手算期望值并逐值对拍。
+    #[test]
+    fn empty_edl_derives_mute_complement() {
+        let mut cfg = ProjectFile::example();
+        cfg.mute_ranges = vec![
+            MuteRange { start: 5.0, end: 8.0 },
+            MuteRange { start: 12.0, end: 14.5 },
+        ];
+        let got = cfg.resolve_edl(20.0, 30.0);
+        let spans: Vec<(f64, f64)> = got.iter().map(|c| (c.source_start, c.source_end)).collect();
+        assert_eq!(spans, vec![(0.0, 5.0), (8.0, 12.0), (14.5, 20.0)], "补集三段");
+        // 速率恒 1.0（屏蔽 = "只删不排不速"的 EDL，§2.3）
+        assert!(got.iter().all(|c| c.speed == 1.0), "派生出来的段必须原速");
+        // 首尾相接、无空隙（§6.4 方案 A：空隙 = 不播）
+        assert_eq!(got[0].out_end_frame, got[1].out_start_frame);
+        assert_eq!(got[1].out_end_frame, got[2].out_start_frame);
+        // 成片总长 = 源总帧数 − 被屏蔽的帧数：600 − (5..8s = 90) − (12..14.5s = 75) = 435。
+        // ⚠️ 那是**成片帧数**，不是源帧数 —— 混起来正是"成片段落和源对不上"的经典错。
+        let total = got.last().unwrap().out_end_frame;
+        assert_eq!(total, 600 - 90 - 75, "末尾补到片尾（成片帧号域）");
+        assert_eq!(cfg.edl.total_frames(30.0), 0, "空 EDL 本身没有帧数");
+        assert_eq!(total, cfg.resolve_edl(20.0, 30.0).last().unwrap().out_end_frame);
+    }
+
+    /// 屏蔽区间**乱序 + 重叠**时口径不变：`max()` 吃重叠、顺序不影响结果（转译器同款）。
+    #[test]
+    fn empty_edl_complement_tolerates_unsorted_and_overlapping() {
+        let mut cfg = ProjectFile::example();
+        cfg.mute_ranges = vec![
+            MuteRange { start: 12.0, end: 14.5 },
+            MuteRange { start: 4.0, end: 6.0 },
+            MuteRange { start: 5.0, end: 8.0 }, // 与上一段重叠
+            MuteRange { start: 9.0, end: 9.0 }, // 退化段：丢掉
+        ];
+        let got = cfg.resolve_edl(20.0, 30.0);
+        let spans: Vec<(f64, f64)> = got.iter().map(|c| (c.source_start, c.source_end)).collect();
+        assert_eq!(spans, vec![(0.0, 4.0), (8.0, 12.0), (14.5, 20.0)]);
+    }
+
+    /// 屏蔽覆盖到片尾 ⇒ 补集**没有尾段**（`cursor` 已经到 `total`）。
+    /// 照抄转译器 `if (cursor < totalFrames)` 那一句。
+    #[test]
+    fn empty_edl_complement_drops_tail_when_fully_muted_to_end() {
+        let mut cfg = ProjectFile::example();
+        cfg.mute_ranges = vec![MuteRange { start: 10.0, end: 20.0 }];
+        let got = cfg.resolve_edl(20.0, 30.0);
+        assert_eq!(got.len(), 1, "只该剩 [0,10)");
+        assert_eq!((got[0].source_start, got[0].source_end), (0.0, 10.0));
+    }
+
+    /// 空 EDL + **无** mute_ranges ⇒ 整条一段（= 今天 `cut_ranges` 被跳过 ⇒ 一个字节不动）。
+    /// 这一条看着平凡，其实是 R4 的**主路径**：绝大多数老工程没有屏蔽轨道。
+    #[test]
+    fn empty_edl_without_mute_is_one_whole_clip() {
+        let cfg = ProjectFile::example();
+        assert!(cfg.mute_ranges.is_empty());
+        let got = cfg.resolve_edl(114.383, 30.0);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].source_start, got[0].source_end), (0.0, 114.383));
+        assert_eq!(got[0].out_start_frame, 0);
+        assert_eq!(got[0].out_end_frame, edl_test_frame_at(114.383, 30.0));
+    }
+
+    /// 时长未知（`<= 0`）时补集推不出来 ⇒ 返回**空**，不瞎编一个右端。
+    #[test]
+    fn empty_edl_without_duration_is_empty() {
+        let mut cfg = ProjectFile::example();
+        cfg.mute_ranges = vec![MuteRange { start: 5.0, end: 8.0 }];
+        assert!(cfg.resolve_edl(0.0, 30.0).is_empty());
+        assert!(ProjectFile::example().resolve_edl(0.0, 30.0).is_empty());
+    }
+
+    /// 规格 §2.2 规则 1：`out_start` 是**累加**的（多段、含 `speed != 1`）。
+    ///
+    /// 期望值按帧号手算：fps=30 ⇒ (0,3)=90 帧、×0.5 ⇒ 180 帧；(10,11)=30 帧、×2 ⇒ 15 帧；
+    /// (20,22)=60 帧、×1 ⇒ 60 帧。累积起点 0 / 180 / 195，总长 255 帧。
+    #[test]
+    fn resolve_accumulates_out_start_with_speed() {
+        let cfg = ProjectFile {
+            edl: Edl {
+                clips: vec![clip(0.0, 3.0, 0.5), clip(10.0, 11.0, 2.0), clip(20.0, 22.0, 1.0)],
+            },
+            ..ProjectFile::example()
+        };
+        let got = cfg.resolve_edl(60.0, 30.0);
+        assert_eq!(got.len(), 3);
+        let frames: Vec<(u64, u64)> = got.iter().map(|c| (c.out_start_frame, c.out_end_frame)).collect();
+        assert_eq!(frames, vec![(0, 180), (180, 195), (195, 255)]);
+        // 秒域口径 = 帧号 / fps（同一个值，不是另算一遍）
+        assert_eq!(got[1].out_start, 180.0 / 30.0);
+        assert_eq!(got[2].out_start, 195.0 / 30.0);
+        assert_eq!(got[2].out_duration, 2.0, "60 帧 @30fps = 2s");
+        assert_eq!(cfg.edl.total_frames(30.0), 255, "§2.2 规则 2：总长 = 最后一段的 out_end");
+    }
+
+    /// 规格 §9 **R8 累加漂移**：`out_start` 必须在**帧号域**累加，不能在秒域累加。
+    ///
+    /// 判据选得能翻面：30 段、每段**恰好 1 帧**（源 `[i/30, (i+1)/30)`），fps=30、原速。
+    /// 帧号域 ⇒ 第 30 段终点是整数 `30` 帧 ⇒ `out_end == 1.0` **精确**。
+    /// 秒域 ⇒ `(1.0/30.0)` 累加 30 次 = `0.9999999999999999` ≠ `1.0` ⇒ 这条断言当场红。
+    ///
+    /// ⚠️ 这就是"单段一次舍入、推着后面所有段一起偏"的那个机制（`cut_ranges` 时代没有累加，
+    /// 是 **EDL 特有**的风险）。
+    #[test]
+    fn frame_domain_accumulation_has_no_drift() {
+        let clips: Vec<EdlClip> = (0..30)
+            .map(|i| clip(i as f64 / 30.0, (i + 1) as f64 / 30.0, 1.0))
+            .collect();
+        let cfg = ProjectFile { edl: Edl { clips }, ..ProjectFile::example() };
+        let got = cfg.resolve_edl(1.0, 30.0);
+        assert_eq!(got.len(), 30);
+        for (i, c) in got.iter().enumerate() {
+            assert_eq!(c.out_start_frame, i as u64, "第 {i} 段起点必须是整数帧");
+            assert_eq!(c.out_end_frame, i as u64 + 1);
+        }
+        assert_eq!(got[29].out_end, 1.0, "30 帧 ÷ 30fps 必须**精确**等于 1.0");
+        assert_eq!(cfg.edl.total_frames(30.0), 30);
+
+        // 反证：秒域累加会漂 —— 把"正确做法"与"错误做法"摆在一起，判据才算钉住。
+        let naive: f64 = (0..30).map(|_| 1.0 / 30.0).sum();
+        assert_ne!(naive, 1.0, "秒域累加应当漂（这正是 R8）");
+    }
+
+    /// 段的**顺序就是数组顺序**（§2.1：数组顺序 = 成片播放顺序）—— 重放/冷开场靠它，
+    /// 推导里**绝不排序**。同一段重复两次，成片里就该出现两次。
+    #[test]
+    fn clip_order_is_playback_order_and_repeats_are_kept() {
+        let cfg = ProjectFile {
+            edl: Edl { clips: vec![clip(5.0, 7.0, 1.0), clip(5.0, 7.0, 1.0)] },
+            ..ProjectFile::example()
+        };
+        let got = cfg.resolve_edl(30.0, 30.0);
+        assert_eq!(got.len(), 2, "同一段出现两次是**功能**，不是重复数据");
+        assert_eq!(got[0].out_start_frame, 0);
+        assert_eq!(got[1].out_start_frame, 60, "第二遍接在第一遍之后");
+    }
+
+    /// **非空 clips ⇒ `mute_ranges` 整个被忽略**（§2.2 的 ⚠️：不相加、不取交）。
+    #[test]
+    fn non_empty_edl_ignores_mute_ranges() {
+        let cfg = ProjectFile {
+            edl: Edl { clips: vec![clip(0.0, 4.0, 1.0)] },
+            mute_ranges: vec![MuteRange { start: 1.0, end: 2.0 }],
+            ..ProjectFile::example()
+        };
+        let got = cfg.resolve_edl(30.0, 30.0);
+        assert_eq!(got.len(), 1, "有 EDL 时屏蔽轨道不参与");
+        assert_eq!((got[0].source_start, got[0].source_end), (0.0, 4.0), "区间原样，没被屏蔽切过");
+    }
+
+    /// 非法段**不 panic**：倒置/零长/非正速率/非有限 fps 一律**静默跳过**整段
+    /// （拦人话在 `validate`，推导只保证算得出来）。
+    #[test]
+    fn illegal_clips_are_skipped_not_panicking() {
+        let cfg = ProjectFile {
+            edl: Edl {
+                clips: vec![
+                    clip(5.0, 5.0, 1.0),  // 零长
+                    clip(9.0, 7.0, 1.0),  // 倒置
+                    clip(0.0, 2.0, 0.0),  // speed = 0
+                    clip(0.0, 2.0, -1.0), // speed < 0
+                    clip(0.0, 2.0, 1.0),  // 唯一合法的一条
+                ],
+            },
+            ..ProjectFile::example()
+        };
+        let got = cfg.resolve_edl(30.0, 30.0);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].out_start_frame, got[0].out_end_frame), (0, 60));
+        // fps 非法 ⇒ 空（帧号域的前提没了）
+        assert!(cfg.resolve_edl(30.0, 0.0).is_empty());
+        assert!(cfg.resolve_edl(30.0, f64::NAN).is_empty());
+    }
+
+    /// 规格 §4.1 / R4（本批**最重要的**一条）：**老工程（没有 `[edl]` 段）读写零回归**。
+    ///
+    /// 两道都要：
+    /// ① **读**：老文本（只有 `[source]`）能解析，`edl.clips` 为空；
+    /// ② **写**：空 EDL **不产生任何 `edl` 字样**（否则老工程重存一次就多出一段）。
+    #[test]
+    fn legacy_project_has_empty_edl_and_writes_nothing() {
+        // ① 读：一行 edl 都没有的老工程
+        let legacy: ProjectFile =
+            toml::from_str("[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n")
+                .expect("老工程必须照旧读得出来");
+        assert!(legacy.edl.clips.is_empty(), "缺 [edl] ⇒ 空 EDL");
+
+        // ② 写：空 EDL 一个字节都不许写
+        let raw = ProjectFile::example().to_toml_commented().unwrap();
+        assert!(!raw.contains("edl"), "空 EDL 不该出现在文件里:\n{raw}");
+        assert!(!raw.contains("[edl]") && !raw.contains("[[edl.clips]]"), "{raw}");
+
+        // ③ 非空才写，且能回读（含可选字段的缺省）
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![
+            EdlClip {
+                source_start: 12.4,
+                source_end: 18.9,
+                speed: 1.0,
+                kind: Some("replay".into()),
+                label: Some("爆点重放".into()),
+                source_kind: None,
+                asset_id: None,
+                transition_in: None,
+            },
+            clip(0.0, 3.0, 0.5), // 只写必填字段：speed 缺省 = 1.0 那一档由下面的省略用例覆盖
+        ];
+        let raw = cfg.to_toml_commented().unwrap();
+        assert!(raw.contains("[[edl.clips]]"), "非空 EDL 要落盘:\n{raw}");
+        assert!(raw.contains("kind = \"replay\"") && raw.contains("label = \"爆点重放\""), "{raw}");
+        // `to_toml_commented` 的产物带一行 `config_version`（文本层元数据），回读前要摘掉
+        // —— 与正式读盘那条路同口径（`ProjectFile` 是 `deny_unknown_fields`）。
+        let back: ProjectFile =
+            toml::from_str(&yekitrim_core::config::version::strip_version_key(&raw).unwrap())
+                .expect("EDL 必须可回读");
+        assert_eq!(back.edl.clips.len(), 2);
+        assert_eq!(back.edl.clips[0].kind.as_deref(), Some("replay"));
+        assert_eq!(back.edl.clips[1].speed, 0.5);
+        assert_eq!(back.resolve_edl(30.0, 30.0).len(), 2);
+
+        // ④ `speed` 缺省 = 1.0（手写的最小 `[[edl.clips]]`，只有两个区间字段）
+        let minimal: ProjectFile = toml::from_str(
+            "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n\
+             [[edl.clips]]\nsource_start = 1.0\nsource_end = 2.0\n",
+        )
+        .expect("只写必填字段的 clips 也要读得出来");
+        assert_eq!(minimal.edl.clips[0].speed, 1.0, "speed 缺省 = 原速");
+        assert!(minimal.edl.clips[0].kind.is_none() && minimal.edl.clips[0].label.is_none());
+
+        // ⑤ 第 6 批（task-8）：`source_kind` / `asset_id` / `transition_in` 三个字段**真的在**了
+        //    —— 规格 §11.4 的落盘形状。这条以前断言"含未来字段的 clips 必须忽略而不是报错"，
+        //    那时它们还不是字段（那是"不加 `deny_unknown_fields`"的判据）。现在字段已落地，
+        //    所以它升级成"**必须解析出来**"，否则素材段会静默退化成本条片段。
+        let asset_clip: ProjectFile = toml::from_str(
+            "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n\
+             [[edl.clips]]\nsource_start = 1.0\nsource_end = 2.0\n\
+             source_kind = \"asset\"\nasset_id = \"op-ed.mp4\"\ntransition_in = \"flash\"\n",
+        )
+        .expect("含素材字段的 clips 必须解析成功");
+        assert_eq!(asset_clip.edl.clips.len(), 1);
+        assert!(asset_clip.edl.clips[0].is_asset(), "source_kind=asset 要认出来");
+        assert_eq!(asset_clip.edl.clips[0].asset_id_ref(), Some("op-ed.mp4"));
+        assert_eq!(asset_clip.edl.clips[0].transition_in.as_deref(), Some("flash"));
+
+        // ⑥ `is_asset` / `asset_id_ref` 的**判据语义**（三处消费点同口径的那一份）：
+        //    · 字段缺席 / 显式 `clip` / 拼错的档位 ⇒ **一律 `clip`**（认不出不猜素材）
+        //    · `source_kind=asset` 但 `asset_id` 空 / 全空白 ⇒ `asset_id_ref()` 给 `None`
+        //      （空串会静默退化成"库里没这个文件"，用户看不出那一段其实播的是本条片段）
+        //
+        // ⚠️ 必须解析成 `ProjectFile`：`[[edl.clips]]` 那个表头对 `EdlClip` 本身是个**未知键**
+        //    （它没有 `deny_unknown_fields`），直接 `from_str::<EdlClip>` 会**静默**返回全默认值
+        //    —— 那样这几条断言会全部"通过"，而它们一个字节都没读到（本文件的测试就是这么自证的）。
+        let clip_like = |raw: &str| -> EdlClip {
+            let cfg: ProjectFile = toml::from_str(&format!(
+                "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n\
+                 [[edl.clips]]\nsource_start = 1.0\nsource_end = 2.0\n{raw}"
+            ))
+            .expect("clip 解析");
+            assert_eq!(cfg.edl.clips.len(), 1, "这条探针只造一段:\n{raw}");
+            cfg.edl.clips[0].clone()
+        };
+        // 正控：`source_start` 真的读到了（否则上面那句"必须解析成 ProjectFile"就没被验证）
+        assert_eq!(clip_like("").source_start, 1.0, "探针本身必须真的读到字段");
+        assert!(!clip_like("").is_asset(), "字段缺席 = 本条");
+        assert!(!clip_like("source_kind = \"clip\"\n").is_asset());
+        assert!(!clip_like("source_kind = \"Clip\"\n").is_asset(), "大小写不宽容（别开始宽容）");
+        assert!(!clip_like("source_kind = \"movie\"\n").is_asset(), "认不出的档位 = 本条");
+        let empty_id = clip_like("source_kind = \"asset\"\n");
+        assert!(empty_id.is_asset() && empty_id.asset_id_ref().is_none(), "asset 但没 id");
+        let blank_id = clip_like("source_kind = \"asset\"\nasset_id = \"  \"\n");
+        assert!(blank_id.asset_id_ref().is_none(), "全空白不算 id");
+        // 本条片段带了 `asset_id` 也不指素材 —— `is_asset()` 是唯一门
+        let clip_with_id = clip_like("asset_id = \"op-ed.mp4\"\n");
+        assert!(clip_with_id.asset_id_ref().is_none(), "非 asset 时 asset_id 无意义");
+    }
+
+    /// **R4 存量零回归**：老工程的 `[[edl.clips]]`（没有那三个新字段）**逐字节**原样重存。
+    ///
+    /// 这是"新字段必须 `serde(default)` + `skip_serializing_if`"那条硬规矩的**行为**判据：
+    /// 只写必填字段的一段，读进来再 `to_toml_commented()` 出去，文本里**不许**出现
+    /// `source_kind` / `asset_id` / `transition_in` 任何一个 —— 出现了就是"老工程重存一次就多三个键"，
+    /// 而那是 R4 要挡的东西（两个 sha256 基线的量级来源）。
+    #[test]
+    fn edl_new_asset_fields_absent_stay_absent_on_rewrite() {
+        let old: ProjectFile = toml::from_str(
+            "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n\
+             [[edl.clips]]\nsource_start = 1.0\nsource_end = 2.0\nspeed = 0.5\n",
+        )
+        .expect("老 clips");
+        assert!(!old.edl.clips[0].is_asset());
+        let raw = old.to_toml_commented().unwrap();
+        for key in ["source_kind", "asset_id", "transition_in"] {
+            assert!(
+                !raw.contains(key),
+                "老工程重存不许写出新键 `{key}`（R4 逐字节零回归）:\n{raw}"
+            );
+        }
+        // 反向：**写了**的必须原样写出来（否则用户的素材段会静默丢来源）
+        let mut cfg = ProjectFile::example();
+        cfg.edl.clips = vec![EdlClip {
+            source_start: 1.0,
+            source_end: 2.0,
+            speed: 1.0,
+            kind: None,
+            label: None,
+            source_kind: Some("asset".into()),
+            asset_id: Some("op-ed.mp4".into()),
+            transition_in: Some("flash".into()),
+        }];
+        let raw = cfg.to_toml_commented().unwrap();
+        assert!(
+            raw.contains("source_kind = \"asset\"")
+                && raw.contains("asset_id = \"op-ed.mp4\"")
+                && raw.contains("transition_in = \"flash\""),
+            "素材段必须落盘:\n{raw}"
+        );
+        let back: ProjectFile =
+            toml::from_str(&yekitrim_core::config::version::strip_version_key(&raw).unwrap())
+                .expect("素材段要能回读");
+        assert_eq!(back.edl.clips[0].asset_id_ref(), Some("op-ed.mp4"));
+        assert_eq!(back.edl.clips[0].transition_in.as_deref(), Some("flash"));
+    }
+
+    /// `Edl` / `EdlClip` 的 **JSON 契约**：前端与出片底座读的是 JSON（`serde_json`），
+    /// 空 clips 也要能反序列化（前端 patch 时不会每次都带 `edl`）。
+    #[test]
+    fn edl_json_contract_defaults_and_empties() {
+        let empty: Edl = serde_json::from_value(serde_json::json!({})).expect("缺 clips ⇒ 空");
+        assert!(empty.clips.is_empty());
+        let one: Edl = serde_json::from_value(serde_json::json!({
+            "clips": [{ "source_start": 1.5, "source_end": 2.5 }]
+        }))
+        .expect("最小 JSON 也要能解析");
+        assert_eq!(one.clips[0].speed, 1.0);
+        // 空 EDL 序列化成 `{}`（不是 `{"clips":[]}`）—— 与「空 EDL 不落盘」同一件事
+        assert_eq!(serde_json::to_value(Edl::default()).unwrap(), serde_json::json!({}));
+    }
+
+    /// 本地镜像 `frameAt`（`Math.round(sec * fps)`），用来手算期望帧号。
+    /// ⚠️ 故意**不复用**被测的那份实现 —— 自己算一遍才算对拍。
+    fn edl_test_frame_at(sec: f64, fps: f64) -> u64 {
+        (sec * fps).round() as u64
     }
 }
 

@@ -153,6 +153,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/sticker-file", get(polish_sticker_file))
         // 音效目录（编辑器里音效事件的列表选择）
         .route("/polish/sfx-catalog", get(polish_sfx_catalog))
+        // 视频素材库（项目设置里「片头/片尾」挑素材；只读，与贴纸库同规矩）
+        .route("/polish/video-library", get(polish_video_library))
         // ⚠️ 这里曾经有 `POST /polish/render-frame`（wgpu 单帧真渲染预览）—— 那条 GPU 链路已删除
         // （GPU 那侧交给独立的 Dhampir 底座）。别把它加回来。
         .route("/polish/font", get(polish_font))
@@ -289,6 +291,70 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+
+/// **视频素材库**（`GET /polish/video-library`）的路由层：普通用户可读、形状对、磁盘为准。
+///
+/// 三件事：
+/// ① 它是**只读**接口（与贴纸库同规矩：读敞开、写限 admin）⇒ 普通用户必须 200 而不是 403；
+/// ② 回的是 `{ok, videos:[{name,file,duration}]}` —— `name` 是**去扩展名**的素材键
+///    （`[intro_outro]` 存的就是它），`duration` 给界面算"播到结尾"用；
+/// ③ **以磁盘为准**：往库里真写一个 <1KB 的假 mp4，它必须出现在列表里。
+///    这里刻意只验"出现"、不验 duration —— 假字节 ffprobe 探不出时长，
+///    正好钉住"探不出也要列出来（`duration: null`）"这条（隐藏掉用户会以为文件没放进去）。
+#[tokio::test]
+async fn video_library_route_is_readable_and_disk_driven() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth
+        .db()
+        .create_user("plain_vid", &hash, "user", false, 0)
+        .unwrap();
+    let b = t
+        .auth
+        .login("plain_vid", "pass-12345678", Some("10.9.9.8"), None)
+        .unwrap();
+
+    // ① 普通用户可读
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/video-library")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "素材库是只读接口，普通用户必须能看");
+
+    // ③ 以磁盘为准：真丢一个文件进库，它必须出现（名字用去扩展名的键）
+    let lib = yekitrim_core::path::sticker_dir().join("videos");
+    std::fs::create_dir_all(&lib).unwrap();
+    let probe = lib.join("zz_route_probe.mp4");
+    std::fs::write(&probe, b"not really an mp4").unwrap();
+
+    let res = t
+        .call(
+            t.req_as(&b.session_id, &b.csrf, "GET", "/polish/video-library")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let json = body_json(res).await;
+    let videos = json["videos"].as_array().expect("videos 必须是数组");
+    let found = videos.iter().find(|v| v["name"] == "zz_route_probe");
+    assert!(
+        found.is_some(),
+        "手工丢进库的文件必须出现（以磁盘为准）；实际列表：{videos:?}"
+    );
+    let found = found.unwrap();
+    assert_eq!(found["file"], "zz_route_probe.mp4", "file 是带扩展名的真文件名");
+    assert!(
+        found["duration"].is_null(),
+        "探不出时长的素材要照样列出来、duration 给 null（不能隐藏）"
+    );
+
+    std::fs::remove_file(&probe).ok();
+}
+
 /// 贴纸包上传这条路的**路由层**：只有 admin 能调、body 上限确实被放开、垃圾字节是 400。
 ///
 /// 三件事缺任何一条，前端看到都是"接口不存在或返回格式错误"：

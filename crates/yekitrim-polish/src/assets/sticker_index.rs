@@ -64,6 +64,75 @@ pub fn is_image_path(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 「一个文件名算不算**视频素材**」的**唯一判据**（第 6 批 / 规格 §11.2 第 1 条）：
+/// 只认这 5 种扩展名（大小写不敏感）。
+///
+/// # 为什么是这 5 种
+///
+/// 判据不是"能不能装下画面"，而是**`dhampir`（底座）能不能解码它** —— 素材是给底座出片用的，
+/// 它解不了的扩展名收进库里只会变成一次出片失败。所以这张清单取的是**容器层**最通用的
+/// 那几种：`mp4` / `mov`（H.264/H.265，直播录像与剪辑导出的默认）、`mkv`（录播姬那一侧的默认
+/// 封装）、`webm`（VP8/VP9，浏览器与录屏工具常见）、`avi`（老素材与部分采集卡的默认）。
+///
+/// ⚠️ **不按"内容探测"判、只看扩展名**：与 `is_image_file_name` 同一条纪律（一份判据、
+/// 一个位置），判据要能在**没有 ffmpeg / 没有磁盘 IO** 的地方用（上传闸门、列表、包扫描都走它）。
+/// 真解码不了的文件由**出片那条腿**报出来（底座给 `file_for` 的错误），不是在这里猜。
+///
+/// ⚠️ **别把视频塞进贴纸那条路**：贴纸要被解码成逐帧 PNG（`prepare_sticker_data`），
+/// 而视频是**整段交给底座**的第二个 `asset`（它自带 `timebase` / `width` / `height`）。
+/// 两者的下游完全不同，所以这里是一个**并列**判据、不是 `is_image_file_name` 的超集 ——
+/// 调用点必须显式区分（见 [`MediaKind`]）。
+pub fn is_video_file_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(|x| {
+            matches!(
+                x.to_ascii_lowercase().as_str(),
+                "mp4" | "mov" | "mkv" | "webm" | "avi"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 路径版判据（素材库扫描 / 复制进项目用）。
+pub fn is_video_path(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .map(is_video_file_name)
+        .unwrap_or(false)
+}
+
+/// 一个素材文件属于哪一类 —— **调用点显式区分"图片"与"视频"的唯一判据**。
+///
+/// 规格 §11.2 第 1 条的原文是"别把视频塞进贴纸那条路（贴纸要解帧成图片，视频不是贴纸）"。
+/// 两个扩展名判据各自独立，而**同时**满足两者的文件（理论上不存在，但"存在就选一个"这种事
+/// 必须有确定的答案）在这里被**明确**判成视频 —— 因为把视频当图片走贴纸那条路会解帧失败，
+/// 而把图片当视频只会让底座报一次"解不了"，后者的失败是响的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    /// 贴纸那种图片（`gif/png/jpg/jpeg/webp`）—— 走解帧那条路。
+    Image,
+    /// 视频素材（`mp4/mov/mkv/webm/avi`）—— 整段登记成底座的第二个 `asset`。
+    Video,
+}
+
+/// 按文件名判类（两个判据都不认 ⇒ `None`，**不给默认值**）。
+pub fn media_kind_of_name(name: &str) -> Option<MediaKind> {
+    if is_video_file_name(name) {
+        Some(MediaKind::Video)
+    } else if is_image_file_name(name) {
+        Some(MediaKind::Image)
+    } else {
+        None
+    }
+}
+
+/// 按路径判类（同 [`media_kind_of_name`]）。
+pub fn media_kind_of_path(p: &Path) -> Option<MediaKind> {
+    p.file_name().and_then(|n| n.to_str()).and_then(media_kind_of_name)
+}
+
 /// 贴纸包 TOML 元数据（`stickers/<包名>.toml`，由 `stickers build --llm` 生成）。
 /// 采用 tag → 文件列表的双向索引，供 LLM 两步选择使用。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -660,6 +729,88 @@ pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
         }
     }
     packages
+}
+
+// ============================================================
+// 视频素材库扫描（第 6 批 / 规格 §11.2）
+// ============================================================
+
+/// 视频素材库在程序目录里的**相对位置**：`<程序目录>/stickers/videos/`。
+///
+/// # 为什么挂在 `stickers/` 下面（而不是另开一个根）
+///
+/// 根卡那条"程序资产只挂一个根（`path::data_dir()`）"是硬规矩 —— 素材库要么住
+/// `data_dir` 下，要么住一个用户目录，而后者已经被明令删掉。`stickers/` 就是
+/// `data_dir()` 下**已经存在**的那个素材库根，视频作为**并列的一类**放进它的子目录里，
+/// 比再造一个 `<程序目录>/videos/` 少一个"新增根"（那个根要重新处理 debug/release 两份实例、
+/// 打包、备份的每一条路径）。一个子目录，零新根。
+///
+/// ⚠️ **它不在 `scan_packages` 的视野里**：那个函数只认"非 `.` 开头、非 `backup`"的子文件夹，
+/// 而 `videos` 是个**普通子文件夹** ⇒ 一个装满 mp4 的 `videos/` 会被当成一个贴纸包扫出来、
+/// 然后因为 `files` 全是非图片而**被丢掉**（`if !files.is_empty()`）—— 所以它今天不会污染
+/// 贴纸列表。这条注释放在这里，是为了让"以后给 `scan_packages` 放松过滤"的人先看见它。
+pub const VIDEO_LIBRARY_SUBDIR: &str = "videos";
+
+/// 素材库里的一个视频素材。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoAsset {
+    /// 素材名（**去扩展名的文件名**，与贴纸 `name` 同口径）。
+    ///
+    /// ⚠️ 它是 UI/事件里引用这个素材的键，而**出片的真源是 `file_name`** ——
+    /// 两者分开，是因为用户可能有两个同名不同扩展名的素材（`op.mp4` / `op.webm`）。
+    pub name: String,
+    /// 库里的**绝对路径**（复制进项目时的源；⚠️ **绝不落进 `polish.toml`**）。
+    pub path: PathBuf,
+}
+
+impl VideoAsset {
+    /// 复制进项目时用的目标文件名（`<项目>/assets/videos/<这个>`）。
+    pub fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+}
+
+/// 扫描视频素材库（`<库根>/videos/*.mp4` 那种扁平结构，**不递归**）。
+///
+/// 返回按文件名排序的列表 —— **顺序稳定**是列表接口与"库里选一个"的前提
+/// （`read_dir` 的顺序是文件系统给的，不稳定）。
+///
+/// 目录不存在 ⇒ 空列表（不是错误）：素材库是"用户可以一个都没放"的东西。
+/// 与贴纸库同一条纪律：**以磁盘为准**，手工把文件丢进 `videos/` 也会出现。
+pub fn scan_video_library(root: &Path) -> Vec<VideoAsset> {
+    let dir = root.join(VIDEO_LIBRARY_SUBDIR);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_video_path(p))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_stem().and_then(|s| s.to_str())?.to_string();
+            Some(VideoAsset { name, path })
+        })
+        .collect()
+}
+
+/// 在视频素材库里按**素材名**找一个（`name` 去扩展名，与 [`VideoAsset::name`] 同口径）。
+///
+/// ⚠️ 找不到给 `None`，**不许退化成"取第一个"**：那会让用户选的素材悄悄变成另一个，
+/// 而出片里只是"画面不对"、不报错（贴纸那条路踩过同一个坑，见 `downloader.rs` 的注释）。
+pub fn find_video_asset(root: &Path, name: &str) -> Option<VideoAsset> {
+    let want = name.trim();
+    if want.is_empty() {
+        return None;
+    }
+    scan_video_library(root).into_iter().find(|a| a.name == want)
 }
 
 /// 从贴纸包中确定性选一个文件 stem。
@@ -1385,6 +1536,117 @@ mod tests {
         // 路径版只看文件名那一段（调用方给的是包里的条目路径）
         assert!(is_image_path(Path::new("dir/sub/x.webp")));
         assert!(!is_image_path(Path::new("dir/sub")));
+    }
+
+    /// **两个扩展名判据是并列的、不是包含关系**（规格 §11.2 第 1 条 / 第 6 批）。
+    ///
+    /// ⚠️ 这条钉的是"**别把视频塞进贴纸那条路**"：贴纸要被解帧成逐帧 PNG，而视频是整段
+    /// 交给底座的另一个 `asset`。所以 `is_video_file_name` 不许是 `is_image_file_name` 的
+    /// 超集，也不许有任何一个扩展名同时落在两边（真重叠了 `media_kind_of_name` 会判成视频，
+    /// 那是**有意的**，但重叠本身是配置错误 —— 这里把它钉死）。
+    #[test]
+    fn video_extension_check_is_parallel_not_a_superset() {
+        for ok in ["a.mp4", "b.MOV", "c.mkv", "d.webm", "e.AVI", "x.MP4"] {
+            assert!(is_video_file_name(ok), "{ok}");
+        }
+        // ⚠️ **图片不算视频**：把 gif 收进视频库会让"贴纸包"被当成素材段（反向也成立）
+        for no in ["a.gif", "b.png", "c.jpg", "d.jpeg", "e.webp", "a.txt", "b", "", "a.mp4.bak"] {
+            assert!(!is_video_file_name(no), "{no}");
+        }
+        // 两边的集合**不相交**（一条判据漏了扩展名会在这里露出来）
+        let all = [
+            "mp4", "mov", "mkv", "webm", "avi", "gif", "png", "jpg", "jpeg", "webp",
+        ];
+        for ext in all {
+            let name = format!("x.{ext}");
+            assert!(
+                !(is_image_file_name(&name) && is_video_file_name(&name)),
+                "{ext} 同时落在两个判据里 —— 两个集合必须不相交"
+            );
+        }
+        assert!(is_video_path(Path::new("dir/sub/x.mkv")));
+        assert!(!is_video_path(Path::new("dir/sub")));
+    }
+
+    /// `media_kind_of_name` 是**调用点显式区分"图片/视频"的唯一判据**，且**认不出的给 `None`**
+    /// （不许给默认值假装成功 —— 那会让 .txt 之类的东西混进素材库）。
+    #[test]
+    fn media_kind_distinguishes_image_video_and_neither() {
+        assert_eq!(media_kind_of_name("a.gif"), Some(MediaKind::Image));
+        assert_eq!(media_kind_of_name("a.PNG"), Some(MediaKind::Image));
+        assert_eq!(media_kind_of_name("a.mp4"), Some(MediaKind::Video));
+        assert_eq!(media_kind_of_name("a.WEBM"), Some(MediaKind::Video));
+        assert_eq!(media_kind_of_name("a.txt"), None);
+        assert_eq!(media_kind_of_name("a"), None);
+        assert_eq!(media_kind_of_name(""), None);
+        assert_eq!(media_kind_of_path(Path::new("d/s/a.mkv")), Some(MediaKind::Video));
+        assert_eq!(media_kind_of_path(Path::new("d/s/a.jpg")), Some(MediaKind::Image));
+        assert_eq!(media_kind_of_path(Path::new("d/s")), None);
+    }
+
+    /// 视频素材库的扫描：**以磁盘为准**、只收视频、按名排序（顺序稳定是列表接口的前提）、
+    /// 拆掉扩展名当素材名、目录不存在给空表而不是报错。
+    #[test]
+    fn scan_video_library_is_flat_sorted_and_video_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // 库根下没有 videos/ ⇒ 空表（素材库是"可以一个都没放"的东西）
+        assert!(scan_video_library(dir.path()).is_empty());
+
+        let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
+        std::fs::create_dir_all(&vids).unwrap();
+        for n in ["b.webm", "a.mp4", "c.mkv"] {
+            std::fs::write(vids.join(n), b"x").unwrap();
+        }
+        // 非视频必须被挡在外面（贴纸、文本、目录）
+        std::fs::write(vids.join("sticker.gif"), b"x").unwrap();
+        std::fs::write(vids.join("notes.txt"), b"x").unwrap();
+        std::fs::create_dir_all(vids.join("subdir")).unwrap();
+
+        let got: Vec<String> = scan_video_library(dir.path()).into_iter().map(|a| a.name).collect();
+        assert_eq!(got, vec!["a", "b", "c"], "只收视频、按文件名排序、去扩展名");
+        // 绝对路径要真的指向库里的文件（复制进项目时的源）
+        let a = find_video_asset(dir.path(), "a").expect("a.mp4 要能找到");
+        assert!(a.path.exists() && a.path.ends_with("a.mp4"), "{:?}", a.path);
+        assert_eq!(a.file_name(), "a.mp4");
+    }
+
+    /// **找不到给 `None`，不许退化成"取第一个"** —— 那会让用户选的素材悄悄变成另一个，
+    /// 而出片里只是"画面不对"、不报错（贴纸那条路踩过同一个坑）。
+    #[test]
+    fn find_video_asset_never_falls_back_to_the_first_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
+        std::fs::create_dir_all(&vids).unwrap();
+        std::fs::write(vids.join("only.mp4"), b"x").unwrap();
+
+        assert!(find_video_asset(dir.path(), "only").is_some());
+        assert!(find_video_asset(dir.path(), "missing").is_none(), "找不到不许给第一个");
+        assert!(find_video_asset(dir.path(), "").is_none());
+        assert!(find_video_asset(dir.path(), "   ").is_none());
+        // ⚠️ 素材名带扩展名（用户按文件名写 asset_id）**不匹配** —— 判据是"去扩展名的 stem"
+        assert!(
+            find_video_asset(dir.path(), "only.mp4").is_none(),
+            "asset_id 存的是素材名（去扩展名），带扩展名不该命中"
+        );
+    }
+
+    /// ⚠️ **`videos/` 不许污染贴纸包列表**：它是库根下的一个普通子目录，而 `scan_packages`
+    /// 会把"非 `.` 开头、非 `backup`"的子目录都当包扫 —— 里面全是 mp4 时它以"一张图都没有"
+    /// 被丢掉（`if !files.is_empty()`）。这条钉住那个**意外但正确**的行为：以后有人给
+    /// `scan_packages` 放松过滤时，这里会先红。
+    #[test]
+    fn video_library_dir_does_not_leak_into_sticker_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        let vids = dir.path().join(VIDEO_LIBRARY_SUBDIR);
+        std::fs::create_dir_all(&vids).unwrap();
+        std::fs::write(vids.join("a.mp4"), b"x").unwrap();
+        // 一个真的贴纸包，用来证明扫描本身没坏
+        let pkg = dir.path().join("ysyk");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("笑.gif"), b"x").unwrap();
+
+        let names: Vec<String> = scan_packages(dir.path()).into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["ysyk"], "videos/ 里一张图都没有 ⇒ 不该出现在贴纸包里");
     }
 
     #[test]

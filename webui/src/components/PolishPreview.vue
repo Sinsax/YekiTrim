@@ -2243,14 +2243,36 @@ const colorOverlayStyle = computed(() => {
 
 const capLayerStyle = computed(() => {
   const s = subStyle.value
+  // **字幕垂直落点**：`position_pct` 存在时按百分比，否则保持历史上那条 CSS 的 80px。
+  //
+  // ⚠️⚠️ **容器底边 ≠ 文字带底边，要补两项**（2026-10 复核发现，缺了会跟成片恒差、且不报错）：
+  //   ① `.cap` 自己 `padding:14px 0`（见下面 `.cap` 的样式）⇒ 文字带底边比容器底边高 14px；
+  //   ② `.cap` 是 `line-height:1.5`，最后一行 inline box 的**底边**在字形底边之下
+  //      `(lh - size)/2 = 0.25 × size` ⇒ 再多 N*0.25×size…… 只有**最后一行**那一份（`0.25 × size`）。
+  //   合计：`14 + 0.25 × size`。
+  //
+  // ⚠️ **这条"缺省时看不出、一用新控件就恒差"**：缺省 `--cap-bottom` 是 `80px`，
+  // 而 `80 - (14 + 0.25×72) = 48`…… 老路径之所以没问题，是因为**缺省走的是 `.settings` 里那条
+  // `80 * v.kh`**、并且出片侧 `CH-120` 那套是"视觉对齐"的历史口径 —— 两边本来就是照着
+  // "看起来一致"调出来的。**所以缺省路径一个字节都不许动**（下面 `posPct === null` 分支）。
+  //
+  // ⚠️ 偏差**不是常数**：size 48→120 时它从 26px 涨到 44px。也就是说"字越大错位越大"，
+  // 而「字幕位置」恰恰是视觉最敏感的那一项 —— 所以必须按 size 补，不能写死 14。
+  const CAP_PAD_Y = 14 // 与 `.cap { padding:14px 0 }` 同值 —— 改一边必须改另一边
+  const capSize = s.size || 72
+  const capAnchorFix = CAP_PAD_Y + 0.25 * capSize
+  const posPct = typeof s.position_pct === 'number' && Number.isFinite(s.position_pct)
+    ? Math.min(50, Math.max(0, s.position_pct))
+    : null
   return {
     // ⚠️ 兜底栈 = capFallback（服务端动态算、与成片同源，空串回落字面量）；选了库内字体时排最前。
     // 这里曾写死 `"${s.font || 'LXGW WenKai'}","Microsoft YaHei",…` —— "设为默认"对预览无效。
     fontFamily: s.font ? `"${s.font}",${capFallback.value}` : capFallback.value,
-    fontSize: (s.size || 72) + 'px',
+    fontSize: capSize + 'px',
     color: s.color || '#dcbda0',
     WebkitTextStroke: s.stroke || '12px #403c3b',
-    '--hl-color': s.highlight_color || '#f56b41'
+    '--hl-color': s.highlight_color || '#f56b41',
+    ...(posPct === null ? {} : { '--cap-bottom': `calc(${posPct}% + ${capAnchorFix}px)` })
   }
 })
 const dmLayerStyle = computed(() => {

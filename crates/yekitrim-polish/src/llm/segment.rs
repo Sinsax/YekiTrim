@@ -122,6 +122,17 @@ pub(crate) fn build_events_system_prompt(
 - 硬切(cut:true)同理: 整片偶尔一次就好, 连续硬切会让画面很跳
 - handheld 是**可选的附加变种**（近景专用）: 只在正想要"手持镜头/临场纪实"的紧张、沉浸时刻用,
   **不是每条近景都要摇**; 它是持续状态 —— 想切回平稳镜头就再写一条不带 handheld 的运镜
+- 冷开场/回忆回溯（**只在真值得时才写，绝大多数段落都不该写**）: 给运镜写一个特殊的 anchor
+  来表达"这一段值得在成片里**再放一次**" —— 它不是你这一段的运镜景别, 写完系统会收走:
+  * `"anchor":"cold_open"` —— 「爆点提前播一次」: 把这一段**原样复制到成片最前面**当冷开场。
+    只在整段就是一个**能独立成立的爆点**（几秒内信息完整、不需要前文铺垫）时才写;
+    ⚠️ **整片最多一次**（系统按时间序只留最早的一条, 其余写了的会被丢掉）
+  * `"anchor":"recall"` —— 「爆点后面重提」: 把它在正片之后再放一次, 做呼应/回扣。
+    只在"这件事后面还要被提起"（前面埋了、后面接了梗）时才写, **整片最多两条**
+  * 两者都要写满 `time`/`end`（就是被复用的那几秒, **至少 1 秒**）; 写了它**就不用**再写
+    同一时间段的普通运镜了 —— 一条事件只表达一件事
+  * ⚠️ 同一段里两种都想要就写两条事件（两个 anchor 各一条）; 但**别为了让片子好看而滥用**:
+    整片一次冷开场 + 最多两次回忆回溯, 超出的会被丢掉, 白写
 - x/y 始终写 "auto"
 - **优先为每个特效/贴纸从候选清单配一个音效** (候选已按当前 clip 方向筛选, 配错风险低);
   仅当候选清单确实没有合适音效时才留空
@@ -387,6 +398,28 @@ mod tests {
         let norm = normalize_segments_json(raw);
         let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
         assert!(matches!(segments[0].events[0], crate::project::Event::Shake { .. }));
+    }
+
+    /// 提示词必须把**冷开场 / 回忆回溯的意图词**教给 LLM，且与 `process` 侧认的值**逐字一致**。
+    ///
+    /// 判据刻意落在"提示词里出现了 `process` 认的那两个字符串"上（而不是"出现过中文说明"）：
+    /// 这两处一旦漂移，症状是 **LLM 高高兴兴写了 `anchor = "coldopen"`，`process` 一个都不认得
+    /// ⇒ 一条 EDL 都不生成，而全链路零报错**（正是 `INTENT_COLD_OPEN` 常量存在的理由）。
+    #[test]
+    fn prompt_teaches_the_intent_anchors_process_recognizes() {
+        let prompt = build_events_system_prompt(&[], &[], "");
+        for (anchor, label) in [
+            (crate::process::INTENT_COLD_OPEN, "冷开场"),
+            (crate::process::INTENT_RECALL, "回忆回溯"),
+        ] {
+            assert!(
+                prompt.contains(anchor),
+                "提示词必须出现 `{anchor}`（{label}）—— 否则 LLM 只会写别的词，process 一条都不认"
+            );
+        }
+        // 配额也要在提示词里明说：LLM 数不出"整片几次"，但至少要它别每段都写
+        assert!(prompt.contains("最多一次") || prompt.contains("最多一条"), "提示词要写明冷开场的整片配额");
+        assert!(prompt.contains("最多两条"), "提示词要写明回忆回溯的整片配额");
     }
 
     /// 提示词里 shake 的 `intensity` 示例必须是**像素**量级。

@@ -36,7 +36,7 @@
 // （不去 import 应用模块、也不动仓库里的文件）—— 每次都是新 URL，模块缓存不会串。
 
 import { strict as assert } from 'node:assert';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1221,6 +1221,41 @@ const MUTATIONS = [
     from: '  const colorMatch = raw.match(/#[0-9a-fA-F]{3,8}/);',
     to: '  const colorMatch = raw.match(/#[0-9a-fA-F]{6}/);',
   },
+  {
+    // 2026-10-09：**片头/片尾整个不拼进成片时间线** —— 片头根本没出现（少 1.5s+3s），
+    // 画面与音轨各自算出一个不同的总长，靠 `mux_checked` 才拦得住。
+    name: '片头/片尾不拼进时间线（片头根本没出现）',
+    from: `  const composedEdlClips = introOutroClips.length && edlClips.length
+    ? [
+        ...introOutroClips.filter((x) => x.side === 'intro').map((x) => x.clip),
+        ...edlClips,
+        ...introOutroClips.filter((x) => x.side === 'outro').map((x) => x.clip),
+      ]
+    : edlClips;`,
+    to: '  const composedEdlClips = edlClips;',
+  },
+  {
+    // 反面：**拼进去了，但素材没登记** ⇒ `assetIdForRange` 对片头返回 `videoAssetId`
+    // （= 主素材）⇒ **片头放的是正片开头那几秒**，而 DROP/NOTE 里**一行都没有**
+    // （注册表里查不到就当"源"）。这条只有断 `source.asset_id` 才抓得住。
+    name: '片头/片尾的素材不登记（片头静默变成本条片段）',
+    from: '    ...new Set([...edlClipsRaw.map((c) => edlClipAssetId(c)), ...ioAssetNames].filter(Boolean)),',
+    to: '    ...new Set([...edlClipsRaw.map((c) => edlClipAssetId(c))].filter(Boolean)),',
+  },
+  {
+    // 反面：**入点被丢掉**（永远从头播）⇒「可裁剪」这个能力整个失效，而时长往往还对得上
+    // （只有出点 > 素材时长时才看得出来）—— 所以必须有一个"入点真的生效"的判据。
+    name: '片头入点被丢掉（永远从素材 0 开始播）',
+    from: '      const start = Math.min(inSec, durSec);',
+    to: '      const start = 0;',
+  },
+  {
+    // 反面：**「出点 = 0 ⇒ 播到结尾」退化成"出点 0 就是空段"** ⇒ 片尾整段消失。
+    // 这条判据同时钉住 `probeMedia` 的 `duration`（拿不到时长时不许拿 0 当长度硬凑）。
+    name: '「out_sec = 0 ⇒ 播到结尾」退化成空段（片尾消失）',
+    from: '      const outSec = rawOut <= 0 || rawOut <= inSec ? durSec : Math.min(rawOut, durSec);',
+    to: '      const outSec = rawOut <= 0 || rawOut <= inSec ? 0 : Math.min(rawOut, durSec);',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -1286,6 +1321,8 @@ async function mutate() {
         checkDenseRanges(curves);
         // 字体族名那条同理（2026-10-08）—— 不跑它，"库里那支没被换成真族名"永远绿。
         checkFontFamily(curves);
+        // 片头/片尾（2026-10-09）—— 不跑它，"不拼进时间线"与"素材没登记"两条变异永远绿。
+        checkIntroOutro(curves);
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
         checkStageGeom(mutatedSource);
         // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
@@ -1954,6 +1991,105 @@ function checkAssetClipPredicate(mod) {
   return checks;
 }
 
+/// 片头 / 片尾（2026-10-09）：`[intro_outro]` 必须**拼进成片时间线**，且要用**素材自己**的画面。
+///
+/// 为什么单独钉 —— 它是"一份推导两份实现"里最容易漏的一处：Rust
+/// (`ProjectFile::edl_clips_with_intro_outro`) 与这里的 `intro_outro` 段必须给出同一个
+/// 段数/总帧数，否则画面与音轨各剪各的。实测两种漏法的症状：
+///   ① 完全不拼 ⇒ 片头根本没出现（时长少 1.5s+3s），`mux_checked` 报"画面帧数不一致"；
+///   ② 拼了但**没登记素材** ⇒ `assetIdForRange` 回落成主素材，**片头放的是正片开头**，
+///      而 DROP/NOTE 里一行都没有（注册表查不到就当"源"）。判据②靠断 `source.asset_id`。
+///
+/// fixture 用**真媒体**（ffprobe 探时长与帧率），所以它同时钉住 `probeMedia` 的 `duration`
+/// 那一项 —— 「出点 = 0 ⇒ 播到结尾」全靠它，探不到就必须 DROP（不许拿 0 当长度）。
+function checkIntroOutro(mod) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-io-'));
+  try {
+    mkdirSync(join(dir, 'assets', 'videos'), { recursive: true });
+    // 主素材 2s / 素材 1s，都用 ffmpeg 造（拿不到 ffmpeg 就跳过这一组 —— 与其它探媒体守卫同口径）
+    const mk = (out, secs, color) => {
+      try {
+        execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
+          `color=c=${color}:s=160x120:d=${secs},format=yuv420p`, '-r', '30',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', out],
+          { stdio: ['ignore', 'ignore', 'ignore'], timeout: 60000 });
+        return existsSync(out);
+      } catch (e) {
+        // ⚠️ **只吞"ffmpeg 不可用"**（ENOENT）。别的错（滤镜写错、参数非法）**照抛** ——
+        //    一律吞掉的话，这条 guard 会打印"0 项全绿"、看着像通过（实测踩过：
+        //    `existsSync` 没 import ⇒ `ReferenceError` 被吞 ⇒ 静默跳过整组判据）。
+        if (e && e.code === 'ENOENT') return false;
+        throw e;
+      }
+    };
+    if (!mk(join(dir, 'clip.mp4'), 2, 'blue') || !mk(join(dir, 'assets', 'videos', 'op.mp4'), 1, 'red')) {
+      // ⚠️ **拿不到 ffmpeg 时返回 0 项**（这一组不适用）—— 但**别把它当"通过"**：
+      //    这条 return 一旦因为别的原因（比如 `mk` 内部抛了个 ImportError）走到，
+      //    打印出来就是"0 项全绿"，看着像过了。所以 `mk` 的 `catch` 只在
+      //    **确实是 ffmpeg 不可用**时吞异常，其余照抛。
+      return checks;
+    }
+    writeFileSync(join(dir, 'clip.srt'), '1\n00:00:00,100 --> 00:00:01,000\nx\n\n', 'utf8');
+    const toml = [
+      'duration = 2.0',
+      '[project]', 'name = "io"', 'output = "o.mp4"',
+      '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+      '[edl]', 'total_frames = 0',
+      '[[edl.clips]]', 'source_start = 0.0', 'source_end = 2.0', 'speed = 1.0',
+      '[intro_outro.intro]', 'asset_id = "op"', 'in_sec = 0.3', 'out_sec = 0.8',
+      '[intro_outro.outro]', 'asset_id = "op"', 'in_sec = 0.0', 'out_sec = 0.0',
+      '',
+    ].join('\n');
+    const config = mod.parseToml(toml);
+    ok(config.intro_outro?.intro?.asset_id === 'op',
+      'TOML 里的 [intro_outro.intro] 必须被解析出来（父级要建成表）');
+    const doc = mod.translate(config, dir, join(dir, 'p.doc.json'));
+
+    const mains = [];
+    for (const track of doc.timeline.tracks) {
+      for (const l of track.layers ?? []) {
+        if (typeof l.id === 'string' && l.id.startsWith('main-')) mains.push(l);
+      }
+    }
+    mains.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    ok(mains.length === 3, `1 段 EDL + 片头 + 片尾 应当出 3 个主画面层，实得 ${mains.length}`);
+
+    // ① 片头在最前、长度 = (0.8 − 0.3)s × 30fps = 15 帧
+    ok((mains[0].end ?? 0) - (mains[0].start ?? 0) === 15,
+      `片头 0.3–0.8s @30fps ⇒ 15 帧，实得 ${(mains[0].end ?? 0) - (mains[0].start ?? 0)}`);
+    // ①-bis **入点真的生效**：`source_in` = 0.3s × 30fps = 9（素材自己的时基）。
+    //   ⚠️ 这条不能用 `in_sec = 0` 的 fixture —— 那样"入点被丢掉"的变异**照样全绿**
+    //      （实测踩过：变异 51 存活）。用户要的"可裁剪，设置入点出点"全靠它。
+    ok(mains[0].source?.source_in === 9,
+      `片头入点 0.3s @30fps ⇒ source_in = 9，实得 ${JSON.stringify(mains[0].source)}`);
+    // ② **片头用的是素材自己的画面**（不是主素材）—— 这是"登记漏了"那个静默坑的判据
+    ok(String(mains[0].source?.asset_id ?? '').includes('op.mp4'),
+      `片头必须指向素材 op.mp4，实得 ${JSON.stringify(mains[0].source)}`);
+    // ③ 正片还是本条片段
+    ok(String(mains[1].source?.asset_id ?? '').includes('clip.mp4'),
+      `中间那段必须是本条片段，实得 ${JSON.stringify(mains[1].source)}`);
+    // ④ 片尾在最后、out_sec=0 ⇒ **播到素材结尾**（1s @30 = 30 帧）
+    ok((mains[2].end ?? 0) - (mains[2].start ?? 0) === 30,
+      `片尾「播到结尾」⇒ 素材整段 1s = 30 帧，实得 ${(mains[2].end ?? 0) - (mains[2].start ?? 0)}`);
+    ok(String(mains[2].source?.asset_id ?? '').includes('op.mp4'),
+      `片尾必须指向素材 op.mp4，实得 ${JSON.stringify(mains[2].source)}`);
+    // ⑤ 总长 = 15 + 60 + 30
+    ok(mains[2].end === 105, `成片总帧数 = 15+60+30 = 105，实得 ${mains[2].end}`);
+    // ⑥ 素材真的被登记进 assets（没登记的话 assetIdForRange 会静默回落）
+    ok((doc.assets ?? []).some((a) => String(a.id ?? '').includes('op.mp4')),
+      '素材必须出现在 doc.assets 里（没登记 ⇒ 片头静默变成主素材）');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return checks;
+}
+
 function checkSpeedReport(mod) {
   let checks = 0;
   const ok = (cond, what) => {
@@ -2346,6 +2482,7 @@ const speedChecks = checkSpeedReport(translatorModule);
 const tomlTableChecks = checkTomlArrayTableParent(translatorModule);
 const assetTbChecks = checkAssetTimebase(translatorModule);
 const assetPredChecks = checkAssetClipPredicate(translatorModule);
+const introOutroChecks = checkIntroOutro(translatorModule);
 console.log(`✓ 映射（合成工程过 translate）：${mappingChecks} 项全绿`);
 
 const laneChecks = checkLaneSwitches(translatorModule);
@@ -2361,6 +2498,7 @@ console.log(`✓ 变速（第 4 批：报告点名 + 段长按 speed 缩，帧�
 console.log(`✓ TOML 数组表父级（[[edl.clips]] 无 [edl] 头也要读得出来）：${tomlTableChecks} 项全绿`);
 console.log(`✓ 素材时基（第 6 批：source_in 按素材自己的帧率换算）：${assetTbChecks} 项全绿`);
 console.log(`✓ 素材判据（只认小写 asset + 非空 id）：${assetPredChecks} 项全绿`);
+console.log(`✓ 片头/片尾（[intro_outro] 拼进时间线 + 用素材自己的画面）：${introOutroChecks} 项全绿`);
 const fontFamilyChecks = checkFontFamily(translatorModule);
 console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
 console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');

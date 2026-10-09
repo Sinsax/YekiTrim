@@ -45,6 +45,74 @@ export function transientDur(ev, def) {
   return Math.max(0.1, Math.min(evDuration(ev, def), cap))
 }
 
+// ---- 成片时间线（EDL）的 out_start 推导 ----
+/**
+ * `clips[]` → 每段的成片帧区间。**契约逐字冻结**（规格 §2.4 / §14），别改名、别改签名：
+ * `scripts/check-edl-invariants.mjs` 用 `export function edlOutStart(clips, fps)` 正则探测它，
+ * 找到即开始与 Rust `Edl::resolve_clips` / 转译器 `buildKeepRanges` **逐值对拍**（R7 预览≠成片）。
+ *
+ * ```
+ * sf        = round(source_start * fps)          // 源两端各自量化成帧号
+ * ef        = round(source_end   * fps)
+ * durFrames = round((ef - sf) / speed)           // speed 缺省 1.0
+ * out_start = 整数帧号域的 running sum            // ⚠️ 累加只在帧域，绝不在秒域
+ * out_end   = out_start + durFrames
+ * ```
+ *
+ * ⚠️ **不是** `round((source_end - source_start) * fps / speed)`：两者在**非帧对齐的秒值**上
+ * 差 **1 帧**，而 `out_start` 是累加的 ⇒ 那 1 帧会顺延到**后面所有段**。Rust 侧与守卫的参照
+ * 推导**各自独立踩到**过这一版，所以它写进规格。改回看起来"等价"的那一版 = 整个成片轨错位。
+ *
+ * ⚠️ **累加必须在帧号域**（R8 累加漂移）：`out_start += durFrames`（整数）而不是
+ * `out_start += (source_end - source_start) / speed`（秒）。后者每段一次 f64 舍入会推着
+ * 后面**所有**段一起偏 —— 段越多、变速越碎越明显。
+ *
+ * ⚠️ **非法段整段跳过、不占帧号**（`source_end <= source_start` / `speed <= 0` / 非有限 /
+ * 算出来 < 1 帧）—— 与 Rust `edl_clip_frames` 返回 `None` 同口径。跳过的段**不出现在返回值里**，
+ * 所以调用方拿到的下标与 `clips` 的下标**不一定一一对应**（自带的 `source_start` 可用来对回去）。
+ *
+ * @param {Array<{source_start:number, source_end:number, speed?:number}>} clips 秒域，有序 = 成片播放顺序
+ * @param {number} fps 源素材帧率（帧号域累加的分母；`<= 0` / 非有限 ⇒ 空数组）
+ * @returns {Array<{out_start:number, out_end:number, durFrames:number, source_start:number, source_end:number, speed:number}>}
+ */
+export function edlOutStart(clips, fps) {
+  const out = []
+  // fps 非法 ⇒ 帧号域的前提没了：与 Rust `Edl::resolve_clips` 一样返回空，不猜一个默认值。
+  if (!Number.isFinite(fps) || fps <= 0) return out
+  let cursor = 0 // **整数帧号**累加（R8）
+  for (const c of clips || []) {
+    if (!c) continue
+    const speed = Number.isFinite(c.speed) && c.speed > 0 ? c.speed : 1.0
+    const ss = Number(c.source_start)
+    const se = Number(c.source_end)
+    if (!Number.isFinite(ss) || !Number.isFinite(se)) continue
+    const sf = Math.round(ss * fps)
+    const ef = Math.round(se * fps)
+    if (ef <= sf) continue // 倒置 / 零长：该段作废（与 Rust `edl_clip_frames` 同口径）
+    const durFrames = Math.round((ef - sf) / speed)
+    if (!(durFrames >= 1)) continue
+    out.push({
+      out_start: cursor,
+      out_end: cursor + durFrames,
+      durFrames,
+      source_start: ss,
+      source_end: se,
+      speed,
+    })
+    cursor += durFrames
+  }
+  return out
+}
+
+/**
+ * 成片总帧数 = **最后一段的 `out_end`**（规格 §2.2 规则 2，与 Rust `Edl::total_frames`、
+ * 底座 `sequence_frames` 读所有层 `end` 最大值同一口径）。空 clips ⇒ `0`。
+ */
+export function edlTotalFrames(clips, fps) {
+  const r = edlOutStart(clips, fps)
+  return r.length ? r[r.length - 1].out_end : 0
+}
+
 // ---- 九宫格格子矩形（百分比；命名与 Rust render-core/types.rs grid_rect 一致）----
 // 顺序同 Rust 的 GRID_CELLS 列表：左上→右下。
 export const GRID_RECTS = {

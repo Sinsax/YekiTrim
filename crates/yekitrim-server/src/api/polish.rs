@@ -1668,6 +1668,55 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     if let Some(f) = body.get("subtitle_font").and_then(|v| v.as_str()) {
         cfg.style.subtitle.font = f.trim().to_string();
     }
+    // ── 字幕样式（2026-10）：颜色 / 描边 / 字号 / 垂直落点 ──────────────────────
+    //
+    // 与 `subtitle_font` 同一条路：**保存即生效、不用重跑任务**（只影响渲染与预览）。
+    // ⚠️ 这四条以前**不在白名单里** ⇒ 前端发过来被静默丢掉，而 PUT 仍回 `{"ok":true}`
+    //    （正是下面那段注释说的「没列进来的键保存时不报错、但静默存不进去」；
+    //    实测：发出 4 个键，`polish.toml` 一个字都没变、控件随即回弹到原值）。
+    // 四条都**只认 body 里真的出现过的键**：键缺席 = 不动磁盘 —— 这是老工程逐字节零回归（R4）的前提。
+    if let Some(c) = body.get("subtitle_color").and_then(|v| v.as_str()) {
+        let c = c.trim();
+        // 坏颜色**不写**（写进去会让封面与预览各自净化成不同的兜底色 —— 静默变色）。
+        // 只做形态检查；真正的净化仍在消费侧（`sanitize_hex_color` 那份不许在这里抄第二份）。
+        if c.starts_with('#') && c.len() > 1 {
+            cfg.style.subtitle.color = c.to_string();
+        }
+    }
+    if let Some(s) = body.get("subtitle_stroke").and_then(|v| v.as_str()) {
+        // 格式 `"{宽度}px {颜色}"`（与 `SubtitleStyle::default_sub_stroke` 同形）。
+        // 转译器按这个形状解析，**写歪了描边会整条回落到默认值**且不报错，所以宁可拒收。
+        let s = s.trim();
+        if !s.is_empty() {
+            cfg.style.subtitle.stroke = s.to_string();
+        }
+    }
+    if let Some(v) = body.get("subtitle_size") {
+        // 字号（px）：范围收在 8~400（与模板/转译器都对得上），**坏值当场报错、不静默**。
+        let n = v
+            .as_u64()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "subtitle_size 必须是整数"))?;
+        cfg.style.subtitle.size = n.clamp(8, 400) as u32;
+    }
+    if let Some(v) = body.get("subtitle_position_pct") {
+        // 垂直落点 = **文字带底边**距画布底的百分比（0~50）。
+        //
+        // ⚠️ `null` 与「键缺席」**语义不同**，必须分辨（本字段唯一的设计要点）：
+        //   · 键缺席 → 不动磁盘（老工程保持"没写过"，走历史公式）；
+        //   · `null`  → **显式恢复"未设置"**（`Some → None`）。
+        //     这是「位置 → 默认」那颗按钮的**唯一通路** —— 少了这一支，用户就再也回不到未设置。
+        if v.is_null() {
+            cfg.style.subtitle.position_pct = None;
+        } else {
+            let n = v.as_f64().ok_or_else(|| {
+                err(StatusCode::BAD_REQUEST, "subtitle_position_pct 必须是数字或 null")
+            })?;
+            if !n.is_finite() {
+                return Err(err(StatusCode::BAD_REQUEST, "subtitle_position_pct 必须是有限数"));
+            }
+            cfg.style.subtitle.position_pct = Some(n.clamp(0.0, 50.0));
+        }
+    }
     // 弹幕字体：同 `subtitle_font`（值 = 字体库 id，空串 = 跟随字幕那条字体栈）。
     // ⚠️ 它还决定弹幕的**丈量宽度**（滚动时长按宽度算），所以三处量宽都要读它。
     if let Some(f) = body.get("danmaku_font").and_then(|v| v.as_str()) {
@@ -1704,6 +1753,18 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
     if let Some(v) = body.get("sfx") {
         cfg.sfx = serde_json::from_value(v.clone())
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("sfx 解析失败: {e}")))?;
+    }
+    // 成片时间线（`[edl]`：重放 / 冷开场 / 回忆回溯）—— 第 3 批的成片轨提交它。
+    //
+    // ⚠️ **漏了这一支就是"保存不报错、值静默丢掉"**（见本函数上面那段注释）：界面上
+    // 成片轨改完显示"已保存"、PUT 照回 `{"ok":true}`，而 `polish.toml` 一个字节没变。
+    // 第 3 批实测过：前端提交 `{edl:{clips:[…]}}`，白名单里没有 `edl` ⇒ 探针单测当场红。
+    // ⚠️ 空 `Edl`（`clips` 为空）**不写盘**是 `ProjectFile.edl` 字段上那个
+    // `skip_serializing_if = "Edl::is_empty"` 负责的 —— 那正是老工程重存逐字节不变（R4）的前提，
+    // 所以这里**照收**即可，别在这里特判"空的就别赋值"（那会让"清空 EDL"这个操作失灵）。
+    if let Some(v) = body.get("edl") {
+        cfg.edl = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("edl 解析失败: {e}")))?;
     }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
@@ -1773,6 +1834,39 @@ pub(super) async fn polish_sticker_library() -> ApiResult {
         })
         .collect();
     ok(serde_json::json!({ "ok": true, "packs": packs }))
+}
+
+/// 视频素材库（**只读**，非 admin 也能看）：项目设置里「片头/片尾」挑素材用。
+///
+/// 与 `polish_sticker_library` 同一条口径：**以磁盘为准**（`scan_video_assets`），
+/// 手工把文件丢进 `<程序目录>/stickers/videos/` 也会出现在这里。
+///
+/// 每个素材带上**时长**（ffprobe）—— 界面要靠它把"出点 = 0 表示播到结尾"显示成人话，
+/// 而且用户设的出点必须能被夹到这个长度（不然越界读素材会让底座报 `source_range_exceeded`）。
+/// 探不出时长的照样列出来（`duration: null`），界面置灰并写明原因 —— 不隐藏，
+/// 否则用户会觉得"我明明放进去了却没有"。
+pub(super) async fn polish_video_library() -> ApiResult {
+    let root = yekitrim_core::path::sticker_dir();
+    let lib_dir = root
+        .join(yekitrim_polish::assets::sticker_index::VIDEO_LIBRARY_SUBDIR)
+        .to_string_lossy()
+        .to_string();
+    let items: Vec<serde_json::Value> =
+        blocking(move || Ok(yekitrim_polish::assets::sticker_index::scan_video_library(&root)))
+            .await?
+            .into_iter()
+            .map(|a| {
+                let path = a.path.to_string_lossy().to_string();
+                let duration = yekitrim_polish::render::get_video_duration(&path);
+                serde_json::json!({
+                    "name": a.name,
+                    "file": a.file_name(),
+                    "duration": duration,
+                })
+            })
+            .collect();
+    // `root` 给界面显示"把文件放哪" —— 用户看不到目录就只能猜。
+    ok(serde_json::json!({ "ok": true, "root": lib_dir, "videos": items }))
 }
 
 /// 音效目录（只读）：编辑器里音效事件/特效配声的列表选择。
@@ -2368,6 +2462,118 @@ mod tests {
     }
 
 
+/// 成片时间线（EDL）必须能经 PUT 写进 `polish.toml`，且**没提到的键一个字节都不动**。
+///
+/// 为什么单独钉：`polish_project_put_locked` 是**逐字段白名单**，它自己上面就写着
+/// 「没列进来的键保存时不报错、但静默存不进去」。第 3 批（前端成片轨）提交
+/// `{edl: {clips: [...]}}` —— 白名单里**没有 `edl` 这一支**的话，界面显示"已保存"、
+/// 磁盘上一个字节都没变、PUT 照回 `{"ok":true}`（正是那段注释预言的那类事故；
+/// 交付前用探针单测真跑出来过，所以这条是**回归判据**，不是预防性装饰）。
+#[test]
+fn polish_project_put_writes_edl_and_leaves_unmentioned_keys_alone() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-edl-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = yekitrim_polish::project::ProjectFile::example();
+    // 放一条屏蔽区间：PUT 只提交 `edl` 时，它必须**原样保留**（逐字段白名单的语义）。
+    cfg.mute_ranges.push(yekitrim_polish::project::MuteRange { start: 1.0, end: 2.0 });
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) 只有 `edl`：写进去了，而且没提到的 `mute_ranges` 没被动
+    let body = serde_json::json!({ "edl": { "clips": [
+        { "source_start": 3.0, "source_end": 6.0, "speed": 1.0, "kind": "replay", "label": "爆点重放" }
+    ] } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存 edl");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.edl.clips.len(), 1, "edl 没写进 polish.toml（PUT 白名单漏了 edl 这一支）");
+    assert_eq!(after.edl.clips[0].source_start, 3.0);
+    assert_eq!(after.edl.clips[0].kind.as_deref(), Some("replay"));
+    assert_eq!(after.mute_ranges.len(), 1, "只提交 edl 时 mute_ranges 必须原样保留");
+    assert_eq!(after.mute_ranges[0].start, 1.0);
+
+    // 2) **老工程零回归**：清空 EDL 之后 `polish.toml` 里**不许留空的 `[edl]` 段头**。
+    //    判据挂在 `ProjectFile.edl` 字段的 `skip_serializing_if = "Edl::is_empty"` 上 ——
+    //    只挂在 `Edl::clips` 自己身上是不够的（toml 照样写出空的 `[edl]` 段头），
+    //    那样老工程重存一次就"多一段"（data-model 的第一版单测正是这么红的）。
+    let clear = serde_json::json!({ "edl": { "clips": [] } });
+    let _ = polish_project_put_locked(&dir, &clear).expect("清空 edl");
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    assert!(
+        !raw.contains("[edl]"),
+        "清空 EDL 之后不许留空的 `[edl]` 段头（老工程重存必须逐字节不变）:\n{raw}"
+    );
+    let cleared = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert!(cleared.edl.is_empty(), "清空之后内存里也该是空的");
+    assert_eq!(cleared.mute_ranges.len(), 1, "清空 edl 不该碰 mute_ranges");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 成片时间线（EDL）必须能**经整张路由表**（真 HTTP：会话 + CSRF + 作用域 + 路径锁）存下来、
+/// 再读回来。这是第 3 批交付时唯一**没被验到**的那条缝（前端成片轨改完 → F5 → 还在不在）。
+///
+/// 为什么 `polish_project_put_writes_edl_and_leaves_unmentioned_keys_alone` 不够：
+/// 那条直接调 `polish_project_put_locked`，绕过了 ① 路由挂没挂 ② `scope.rs::enforce_scope`
+/// 会不会把 `dir` 拦掉 ③ 请求体解析 ④ GET 侧有没有把 `edl` 回给前端。
+/// 这四处任意一处错，前端都是"显示已保存、刷新就没了"，而上面那条单测**照样绿**。
+#[tokio::test]
+async fn polish_project_http_roundtrips_edl() {
+    let app = crate::api::test_support::test_app().await;
+    let dir = app.root.to_string_lossy().replace('\\', "/");
+    let cfg = yekitrim_polish::project::ProjectFile::example();
+    std::fs::write(app.root.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) PUT：走真 HTTP（带会话 cookie + CSRF 头）
+    let body = serde_json::json!({
+        "dir": dir,
+        "edl": { "clips": [
+            { "source_start": 3.0, "source_end": 6.0, "speed": 1.0, "kind": "replay", "label": "爆点重放" },
+            { "source_start": 0.0, "source_end": 12.0, "speed": 1.0 },
+        ] },
+    });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let res = app.call(req).await;
+    assert_eq!(res.status(), 200, "PUT /polish/project 应当 200");
+
+    // 2) 磁盘上真的写了
+    let on_disk = yekitrim_polish::project::load_project(&app.root).unwrap();
+    assert_eq!(on_disk.edl.clips.len(), 2, "edl 没落到 polish.toml");
+    assert_eq!(on_disk.edl.clips[0].kind.as_deref(), Some("replay"));
+
+    // 3) GET 要把它读回来（前端刷新靠这一步；GET 丢了 `edl` 同样是"刷新就没了"）
+    let req = app
+        .req("GET", &format!("/polish/project?dir={dir}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.call(req).await;
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let clips = json
+        .get("edl")
+        .and_then(|e| e.get("clips"))
+        .and_then(|c| c.as_array())
+        .unwrap_or_else(|| panic!("GET 没把 edl.clips 回给前端（刷新后成片轨会空）: {json}"));
+    assert_eq!(clips.len(), 2);
+    assert_eq!(clips[0].get("kind").and_then(|k| k.as_str()), Some("replay"));
+    assert_eq!(clips[0].get("source_start").and_then(|v| v.as_f64()), Some(3.0));
+
+    // 4) 再 PUT 一次清空 ⇒ 磁盘上不许留空的 `[edl]` 段头（R4：老工程重存逐字节不变）
+    let clear = serde_json::json!({ "dir": dir, "edl": { "clips": [] } });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(clear.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200);
+    let raw = std::fs::read_to_string(app.root.join("polish.toml")).unwrap();
+    assert!(!raw.contains("[edl]"), "清空后不许留空的 `[edl]` 段头:\n{raw}");
+}
+
 /// 画布方向 / 画面构成 / 贴纸落点要能真写进 `polish.toml`，且**不碰**没提到的段。
 ///
 /// 回归：PUT 是**逐字段白名单**（见 `polish_project_put_locked`）——漏一个分支就是
@@ -2488,6 +2694,124 @@ fn polish_project_put_writes_canvas_stage_sticker() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 字幕样式四键（`subtitle_color` / `subtitle_stroke` / `subtitle_size` / `subtitle_position_pct`）
+/// **必须真的写进 `polish.toml`**。
+///
+/// ⚠️ 这条测试的存在理由就是上面那段注释里的坑：`polish_project_put_locked` 是**逐字段白名单**，
+/// 没列进来的键 **PUT 照样回 `{"ok":true}`、而磁盘一个字都不动**。实测过（2026-10）：
+/// 前端把 4 个键全发出来，`polish.toml` 里 4 个值一个都没变，控件随即回弹到原值，
+/// **全程不报任何错**。字幕样式这套控件的后端口子就曾经整条缺失。
+///
+/// 同时钉住本字段的**语义核心**：`position_pct: null` 与「键缺席」**不是一回事** ——
+/// 前者是"显式恢复未设置"（`Some → None`），后者是"别动磁盘"。
+#[test]
+fn polish_project_put_writes_subtitle_style() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-substyle-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = yekitrim_polish::project::ProjectFile::example();
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) 四个键一次提交：全部要落到盘上
+    let body = serde_json::json!({
+        "subtitle_color": "#ff0000",
+        "subtitle_stroke": "8px #00ff00",
+        "subtitle_size": 96,
+        "subtitle_position_pct": 25.0,
+    });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存字幕样式");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.style.subtitle.color, "#ff0000", "颜色必须写进去");
+    assert_eq!(after.style.subtitle.stroke, "8px #00ff00", "描边必须写进去");
+    assert_eq!(after.style.subtitle.size, 96, "字号必须写进去");
+    assert_eq!(after.style.subtitle.position_pct, Some(25.0), "落点必须写进去");
+    // 没提交的键不能被顺手重置
+    assert_eq!(after.style.subtitle.highlight_color, "#f56b41", "没提到的字段必须原样保留");
+
+    // 2) 落到 toml 文本上（防"内存里对了但序列化没写"）。
+    //    ⚠️ 颜色/描边/字号在 `[style.subtitle]` 段内，但 `position_pct` 我们**只在这里**断言，
+    //    因为 `[stage]` 段有个同名的老字段 —— 见第 3 步那段注释。
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    let sub_sec = || {
+        raw.split("[style.subtitle]")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n[")
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    let sec = sub_sec();
+    for needle in [
+        "color = \"#ff0000\"",
+        "stroke = \"8px #00ff00\"",
+        "size = 96",
+    ] {
+        assert!(sec.contains(needle), "`[style.subtitle]` 缺 {needle}:\n{sec}");
+    }
+    assert!(
+        sec.lines().any(|l| l.trim_start() == "position_pct = 25.0"),
+        "`[style.subtitle]` 缺 `position_pct = 25.0`:\n{sec}"
+    );
+
+    // 3) ⚠️ 语义核心：`null` = 显式恢复"未设置"（这是「位置 → 默认」按钮的唯一通路）
+    let body = serde_json::json!({ "subtitle_position_pct": serde_json::Value::Null });
+    let _ = polish_project_put_locked(&dir, &body).expect("恢复默认落点");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.style.subtitle.position_pct, None, "null 必须把 Some 打回 None");
+    assert_eq!(after.style.subtitle.size, 96, "null 只作用于落点，别的字段不能跟着被重置");
+    // ⚠️ **判据只能看 `[style.subtitle]` 那一段里的行**，两个坑都要躲开：
+    //   ① `to_toml_commented` 的**注释文本**里就写着 "position_pct" 这个词（说明缺省语义那段）
+    //      ⇒ `raw.contains("position_pct")` 恒真、断言会空转；
+    //   ② `[stage]` 段**本来就有一个同名的** `position_pct`（画面构成的单值落点，与本字段无关）
+    //      ⇒ 全文扫 `starts_with("position_pct =")` 会被它误伤。
+    //    所以先切出 `[style.subtitle]` 段、再逐行看行首。
+    //
+    // ⚠️⚠️ **必须重新读盘**：上面那个 `raw` 是第 2 步（写 null **之前**）读的 —— 直接复用会让这条
+    //     断言永远看着"删掉了"（假绿），而那正是本测试要防的东西（第一版就是这么写的，一跑就露）。
+    let raw2 = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    let sub_sec = raw2
+        .split("[style.subtitle]")
+        .nth(1)
+        .unwrap_or("")
+        .split("\n[")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !sub_sec.lines().any(|l| l.trim_start().starts_with("position_pct =")),
+        "恢复默认后 [style.subtitle] 里不该再有 position_pct 键:\n{sub_sec}"
+    );
+
+    // 4) **键缺席 = 不动磁盘**（老工程零回归 R4 的前提）
+    let body = serde_json::json!({ "subtitle_color": "#123456" });
+    let _ = polish_project_put_locked(&dir, &body).expect("只改颜色");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.style.subtitle.color, "#123456");
+    assert_eq!(after.style.subtitle.size, 96, "缺席的键不能被默认值顶掉");
+    assert_eq!(after.style.subtitle.position_pct, None, "缺席的键不能被顶回某个默认百分比");
+
+    // 5) 坏值当场报 400，**不静默**
+    let bad = serde_json::json!({ "subtitle_size": "很大" });
+    assert!(polish_project_put_locked(&dir, &bad).is_err(), "字号非数字必须报错");
+    let bad = serde_json::json!({ "subtitle_position_pct": "中间" });
+    assert!(polish_project_put_locked(&dir, &bad).is_err(), "落点非数字且非 null 必须报错");
+    // 坏颜色**不写**（也不报错 —— 与既有净化口径一致），但不能污染磁盘
+    let bad = serde_json::json!({ "subtitle_color": "not-a-color" });
+    let _ = polish_project_put_locked(&dir, &bad).expect("坏颜色不报错");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.style.subtitle.color, "#123456", "坏颜色必须被拒收、不能写脏");
+
+    // 6) 越界值被夹住（0~50 / 8~400），不是写进野值
+    let body = serde_json::json!({ "subtitle_position_pct": 999.0, "subtitle_size": 9999 });
+    let _ = polish_project_put_locked(&dir, &body).expect("越界值应当被夹住");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(after.style.subtitle.position_pct, Some(50.0), "落点夹到 50");
+    assert_eq!(after.style.subtitle.size, 400, "字号夹到 400");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 
 /// 手持摇摆（`Event::Camera::handheld`）随 `segments` 整体收下 ——
 /// 运镜新字段走的是既有的 segments 通道（不是逐字段白名单里的新分支），

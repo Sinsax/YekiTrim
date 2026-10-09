@@ -27,7 +27,11 @@
   `normalize_event_ends(segments)`；`cap_pip_shots` / `align_pip_shots(segments, subtitles)` /
   `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles)`；
   常量 `MAX_PIP_SHOTS = 1` / `MIN_PIP_SECS = 1.5` / `MIN_RETURN_SECS = 0.5` /
-  `STICKER_SNAP_MAX_SECS = 2.0` / `LEGACY_ZOOM_{MID,CLOSE,WIDE}`。
+  `STICKER_SNAP_MAX_SECS = 2.0` / `LEGACY_ZOOM_{MID,CLOSE,WIDE}`；
+  **第 5 批**：`materialize_edl_intents(segments, &mut edl_clips, total_duration) -> MaterializedEdl`
+  （冷开场/回忆回溯意图 → `edl.clips` + 配额）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
+  `MIN_COLD_OPEN_SECS = 1.0` / `INTENT_COLD_OPEN = "cold_open"` / `INTENT_RECALL = "recall"` /
+  `EDL_KIND_COLD_OPEN` / `EDL_KIND_RECALL`；`mod.rs::writeback_edl(materialized, clips)`。
 - `download`：`sanitize_sticker_name(keyword)`、`cmd_download(project_path)`、`download_keyword_assets(...)`、
   `ensure_assets(project_path)`（`api/polish.rs` 的预览/出片前都会调）；`try_resolve_sticker` 是 `pub(super)` 实现。
 - `placement`（`mod placement;` **私有**，外部一律走 `cmd_process`）：
@@ -134,6 +138,30 @@
   `split_segments_by_mute_ranges` 把屏蔽区内的事件从 `polish.toml` 删掉（而 process 会被预览/出片
   隐式触发）—— 已删除，**别再加回来**。回归：`cargo test -p yekitrim-polish --lib mute_range_keeps_events`
   （`process::tests`，临时工程真跑 `cmd_process`，把删事件钉红）。
+- **冷开场 / 回忆回溯：LLM 表达意图、`process` 落实成 `edl.clips`**（第 5 批，Step 5）。
+  LLM 在**运镜事件**上写 `anchor = "cold_open"` / `"recall"` 表示"这段值得在成片里再放一次"
+  （**不是**景别 —— 见 `llm/segment.rs` 的提示词段）。落实 = 往 `edl.clips` 里加一段**与它源区间
+  完全相同**的 clip（冷开场插**数组最前**、回忆回溯**追加在末尾**），复用第 2 批（重放）已经验过的
+  多 layer + 分段音轨那套，**本批没有新原语**。
+  ⚠️ **配额与合法性只能在这里兜**，与 `cap_pip_shots` 同一条理由：**LLM 是按段窗口生成的，数不出
+  "整片几次"**。冷开场整片 [`MAX_COLD_OPEN`]=1（按时间序留**最早**那条）、回忆回溯 [`MAX_RECALL`]=2；
+  落选的只**清意图**、不加段（日志报「太密」）。
+  ⚠️ **幂等靠"意图是一次性触发条件"**：落实时把两个认得的 `anchor` **就地清掉**（`clear_anchor`，
+  别的 anchor 一律不碰），所以第二趟没有任何候补。**别改成"看 EDL 里有没有这一段"去判重** ——
+  用户删掉重放段之后再跑 process 就会把它复活（`intro_fade_seeded` 那条教训一模一样的形状）。
+  带 `manual` 的运镜不参与（用户自己摆的事件不被后处理改写）。
+  ⚠️ **触发条件 = 老工程零回归的判据本身**：`edl.clips` 一旦非空，`mute_ranges` 就**整个被忽略**
+  （`ProjectFile::resolve_edl`、规格 §2.3）。所以 `cmd_process` 只在**真的落实了**时才写
+  （`writeback_edl(edl_intent_done, clips)`），没意图的工程**一个字节都不碰** `cfg.edl`。
+  ⚠️ **这一条是两层挡的、两层各有各的观察点**：把 `writeback_edl` 改成无条件 `Some` 之后，
+  端到端那条 `process_without_edl_intent_never_writes_edl` **照样绿** —— 空 `Edl` 会被
+  `ProjectFile::edl` 的 `skip_serializing_if = "Edl::is_empty"` 静默吃掉，症状完全相同
+  ⇒ 写回门必须有**纯谓词**判据（`process_writeback_gate_only_touches_edl_when_materialized`）。
+  同一条教训见 `docs/plan/edl-retiming-spec.md` §11.14（`ensure_assets_should_run`）。
+  回归：`cold_open_only_one_per_clip`（3 候选 → 只剩 1）/ `cold_open_materialize_is_idempotent` /
+  `no_intent_keeps_edl_untouched` / `manual_camera_intent_is_ignored` /
+  `materialize_skips_impossible_spans` / `recall_is_capped`。
+  ⚠️ 改内建 prompt 对**已有配置无效**（`.yekitrim/config.toml` 里是 `config init` 填的副本）。
 - `resolve_event_sfx` 未命中规则的事件按"宁缺毋滥"清空音效；`Step 3b` 对"字幕命中规则但 LLM 没放事件"
   的时刻在预算内补建 sfx 事件。屏蔽列表条目的语义见 `assets/sfx_catalog.rs::is_blacklisted`。
 - 真实工程诊断：`VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_pip_and_silence -- --ignored --nocapture`

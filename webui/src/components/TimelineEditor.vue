@@ -51,7 +51,20 @@
         {{ TYPE_LABELS[t] }}<span class="muted">{{ t }}</span>
       </button>
     </div>
-    <!-- 属性面板：用 Teleport 投到页面给的挂载点（PolishView 把它放在视频左侧，与时间轴分离）。
+    <!-- 「加入成片」菜单（§6.3 第 ② 条的三个落位）。fixed 定位：不受时间轴横向滚动与卡片裁切影响。
+         入口只有一个（成片轨标签上的 ＋）—— 用户在源轴上框选/选中之后，决定这段插到成片的哪里。 -->
+    <div v-if="edlMenu" class="fx-menu edl-menu" :style="{ left: edlMenu.x + 'px', top: edlMenu.y + 'px' }">
+      <div class="fx-menu-t muted small">把选中的源区间加到成片</div>
+      <button class="fx-menu-item" title="作为成片的第一段（冷开场）" @click="addEdl('head')">
+        插到片头<span class="muted">冷开场</span>
+      </button>
+      <button class="fx-menu-item" title="插到成片轨当前播放头所在的那一段之后" @click="addEdl('at')">
+        插到播放头<span class="muted">当前位置</span>
+      </button>
+      <button class="fx-menu-item" title="追加到成片末尾" @click="addEdl('tail')">
+        追加到片尾<span class="muted">末尾</span>
+      </button>
+    </div>
          选中状态与全部编辑逻辑仍留在这个组件里，页面只决定它出现在哪儿。
          ⚠️ Teleport 的目标是**挂载时**用 document.querySelector 解析的：本组件挂载时，
          整个编辑器子树还没插进 document（Vue 先建子节点、最后才 hostInsert），
@@ -64,9 +77,81 @@
       <div v-if="!laneOpen" class="props-panel card" @input="onPanelEdit" @change="onPanelCommit">
         <div class="row spread">
           <b>{{ panelTitle }}</b>
-          <button v-if="selected" class="mini-btn" @click="selected = null">关闭</button>
+          <button v-if="selected || edlSelected >= 0" class="mini-btn" @click="selected = null; edlSelected = -1">关闭</button>
         </div>
-        <div v-if="!selected" class="props-empty muted small">点时间轴上的块，在这里改属性</div>
+        <!-- 成片段的面板（§6.3 第 ③⑤ 条）。它与源轴块的面板**互斥**共存（选成片段就清 selected）。 -->
+        <template v-if="edlSelBlock">
+          <div class="row spread mt-4">
+            <span class="chip p">成片第 {{ edlSelBlock.index + 1 }} 段</span>
+            <span class="muted small">共 {{ edlTotalSecs.toFixed(2) }}s</span>
+          </div>
+          <div class="edl-sum">
+            成片 {{ edlSelBlock.outStartSecs.toFixed(2) }}s → {{ edlSelBlock.outEndSecs.toFixed(2) }}s
+            <span class="muted">（{{ (edlSelBlock.outEndSecs - edlSelBlock.outStartSecs).toFixed(2) }}s）</span>
+          </div>
+          <!-- 源区间 = 这一段播源素材的哪一块。⚠️ 草稿态：改完按「应用」才写进 clips
+               （与「固定落点」那条口径一致：拖控件时不该把半成品落盘）。 -->
+          <div class="row">
+            <div class="flex-1"><label>源起（秒）</label>
+              <input type="number" step="0.01" min="0" :value="edlSpanStart" @input="startEdlSpanEdit(); edlDraftSpan.start = $event.target.value"></div>
+            <div class="flex-1"><label>源止（秒）</label>
+              <input type="number" step="0.01" min="0" :value="edlSpanEnd" @input="startEdlSpanEdit(); edlDraftSpan.end = $event.target.value"></div>
+          </div>
+          <div class="row mt-6 gap-4">
+            <button class="mini-btn" :disabled="!edlDraftSpan" @click="applyEdlSpan">应用区间</button>
+            <button v-if="edlDraftSpan" class="mini-btn" @click="cancelEdlSpanEdit">取消</button>
+            <button class="mini-btn" title="预览跳到这一段在源时间轴上的起点" @click="edlSeekSource">定位</button>
+          </div>
+          <label>速率</label>
+          <div class="row edl-speeds">
+            <button v-for="sp in EDL_SPEEDS" :key="sp.value" class="mini-btn"
+                    :class="{ selected: Math.abs(edlSelBlock.speed - sp.value) < 0.001 }"
+                    :disabled="!sp.enabled" :title="sp.title"
+                    @click="edlSetSpeed(edlSelBlock.index, sp.value)">{{ sp.label }}</button>
+          </div>
+          <!-- ⚠️ 变速**第 4 批（task-7）已接通**：画面缩段长（转译器，与 `resolve_clips` 逐值一致）、
+               音轨逐段挂 `atempo`（时域伸缩，**基频不变**）。所以这里不再有置灰档 ——
+               留一条说明是因为"变速到底改了什么"在界面上看不出来（块只是变宽/变窄）。 -->
+          <p class="mini-hint" title="画面按 speed 缩段长、音轨按 atempo 时域伸缩（音调不变）；源素材那一段的起点不受影响">
+            变速同时改画面与音轨：档速 > 1 块变窄、< 1 变宽；音调不变
+          </p>
+          <label>名字（可选）</label>
+          <input :value="edlSelBlock.label" placeholder="例如：爆点重放"
+                 @input="edlSetLabel(edlSelBlock.index, $event.target.value)">
+          <!-- 转场（第 7 批 / task-10）：叠化 = 与**前一段**交叠淡化（画面跨轨重叠 +
+               音轨交叉淡化）。⚠️ 成片的第一段没有"前一段"可叠，所以那一段不给按钮。 -->
+          <label>入场转场</label>
+          <div class="row edl-speeds">
+            <button class="mini-btn"
+                    :class="{ selected: !edlSelBlock.transition }"
+                    :disabled="edlSelBlock.index === 0"
+                    :title="edlSelBlock.index === 0
+                      ? '成片第一段没有上一段可叠，只能硬切'
+                      : '直接切到本段（默认）'"
+                    @click="edlSetTransition(edlSelBlock.index, EDL_TRANSITION_CUT)">硬切</button>
+            <button class="mini-btn"
+                    :class="{ selected: edlSelBlock.transition === 'dissolve' }"
+                    :disabled="edlSelBlock.index === 0"
+                    :title="edlSelBlock.index === 0
+                      ? '成片第一段没有上一段可叠，只能硬切'
+                      : '与上一段重叠 0.5s 淡化：画面跨轨叠化、原声交叉淡化'"
+                    @click="edlSetTransition(edlSelBlock.index, EDL_TRANSITION_DISSOLVE)">叠化</button>
+          </div>
+          <p class="mini-hint" title="叠化 = 画面把本段挪到上层、用 0.5s 不透明度淡入盖住上一段；原声在同一窗口里交叉淡化">
+            叠化：与上一段重叠 0.5s 淡化；过于短的段会退回硬切
+          </p>
+          <div class="row spread mt-6 small">
+            <span class="muted">来源</span>
+            <span class="chip" :class="edlSelBlock.sourceKind === 'asset' ? 'warn' : 'n'">{{ edlSelBlock.sourceLabel }}</span>
+          </div>
+          <p class="mini-hint" title="块与块首尾相接：源时间上不连续的地方，在成片里就是一次跳切">块首尾相接 = 跳切</p>
+          <div class="row mt-8">
+            <button class="mini-btn" @click="edlDuplicate(edlSelBlock.index)">重放一次</button>
+            <button class="mini-btn danger" @click="edlDelete(edlSelBlock.index)">删除</button>
+            <span class="muted small ml-auto">{{ saveText }}</span>
+          </div>
+        </template>
+        <div v-else-if="!selected" class="props-empty muted small">点时间轴上的块，在这里改属性</div>
         <template v-else-if="selItem">
           <!-- ── 标配：开始 / 结束 / 入点 / 出点 / 定位（所有类型都有） ── -->
           <div class="row">
@@ -309,6 +394,18 @@
             <button v-else class="add-lane mute-add" title="在播放头处添加屏蔽区间" @click="addMuteAtCurrent"><Icon name="scissors" :size="11" /></button>
           </div>
         </div>
+        <!-- 成片轨的标签列（**只有开了 EDL 才出现**；老工程这里什么都没有 ⇒ 界面零变化）。
+             ⚠️ 它是**第二条时间轴**，不是第 8 条源泳道：上面 7 条的 x 坐标是源时间、
+             永不被 EDL 影响（§6.1）。所以这一格用 `.edl-label` 单独的类名（多一点视觉分隔），
+             也刻意**不给眼睛** —— 它没有"整类不渲染"这种语义，EDL 空着就是这条路没开。 -->
+        <div v-if="edlOn" class="lane-label edl-label">
+          <span class="lane-eye lane-eye-none" title="成片时间线：源时间 → 成片时间的映射（不是第 8 条源泳道）">▸</span>
+          <span class="lane-name edl-label-name" title="成片时间线（EDL）：块与块首尾相接，宽度 = 源区间 ÷ 速率，所以变速看得见">成片</span>
+          <div class="lane-adds">
+            <button class="add-lane" title="把源时间轴上选中的一段加进成片（插片头 / 插播放头 / 追加片尾）"
+                    @click.stop="openEdlMenu($event)"><Icon name="plus" :size="11" /></button>
+          </div>
+        </div>
         <div class="lane-label ruler-label">时间</div>
     </div>
     <div ref="tracksRef" class="timeline-tracks">
@@ -339,6 +436,49 @@
           </div>
         </div>
       </div>
+      <!-- ── 成片时间轴（EDL）：**第二条轴**，与上面 7 条源泳道并列（§6.2 双轨视图）──
+           ⚠️ 三条铁律：
+           ① 它的横向位置走 **`edlTrackWidth`（成片时长）**，不是 `trackWidth`（源时长）——
+              成片通常比源**短**（跳切/屏蔽）或**长**（重放/慢放），共用源宽会把块画到格子外面；
+           ② 块的左右位置走 **`outStartSecs`**（成片时间），**不是 `source_start`**（源时间）。
+              后者看着更省事，但那样"重放段"会与正片叠在同一处、慢放段宽度也不会变 —— 正是
+              §6.2 要消灭的"看不见映射"；
+           ③ 上面 7 条的 x 坐标**一个像素都不因 EDL 改变**（`laneBlocks` 只读源时间，见 §6.1）。
+           默认隐藏：`edlOn` 为假时整块不渲染（老工程界面逐字节不变）。 -->
+      <div v-if="edlOn" class="lane edl-lane">
+        <div class="lane-track edl-track" :style="{ width: edlTrackWidth + 'px' }">
+          <!-- 播放头：按**映射后的成片时间**画（两轨共享同一个播放头，但成片轨显示映射后的位置，
+               §6.2 第 3 条）。落在被删掉的源区间里时 `edlHeadLeft` 是 null ⇒ 不画
+               （那一段在成片里不存在，画在 0 或末尾都是在撒谎）。 -->
+          <div v-if="edlHeadLeft !== null" class="playhead" :style="{ left: edlHeadLeft + 'px' }"></div>
+          <div
+            v-for="b in edlTrackBlocks"
+            :key="'edl-' + b.index"
+            class="block edl-block"
+            :class="{ selected: edlSelected === b.index, 'edl-bad': b.invalid, 'edl-asset': b.sourceKind === 'asset' }"
+            :style="{ left: b.outLeft + 'px', width: b.outWidth + 'px' }"
+            :title="edlBlockTitle(b)"
+            @pointerdown.stop="edlSelected = b.index; selected = null"
+            @dblclick.stop="edlDelete(b.index)"
+          >
+            <span class="resize resize-l" title="拖这里改这一段的源起点" @pointerdown.stop="startEdlDrag($event, b, 'resize-l')"></span>
+            <!-- §6.5：来源角标 —— 素材库来源与"本条片段"必须一眼分得开。
+                 数据模型（第 6 批）加上 `source_kind`/`asset_id` 后这里自动跟上，
+                 判据只在 `polish/edl.js::edlSourceKind` 一处。 -->
+            <span class="edl-badge" :class="b.sourceKind === 'asset' ? 'asset' : 'clip'">{{ b.sourceLabel }}</span>
+            <!-- §6.5+第 7 批：转场角标 —— **叠化是"段与段之间"的事**，扫成片轨时要能一眼
+                 看出哪几段之间有叠化（光靠面板里选中态看不出来）。
+                 判据只在 `polish/edl.js::edlTransition` 一处，且**第一段不显示**
+                 （没有上一段可叠，出片时会退化成硬切）。 -->
+            <span v-if="b.transition === 'dissolve'" class="edl-xf" title="入场叠化：与上一段重叠 0.5s 淡化">≈</span>
+            <span class="edl-lab">{{ b.label || EDL_KINDS[b.kind] || ('第 ' + (b.index + 1) + ' 段') }}</span>
+            <span class="edl-sp">{{ b.speed === 1 ? '×1.0' : '×' + b.speed }}</span>
+            <button class="edl-rep" title="把这一段再放一次（复制并排在其后；连点几次就是重放几次）"
+                    @pointerdown.stop @click.stop="edlDuplicate(b.index)">重放</button>
+            <span class="resize" title="拖这里改这一段的源终点" @pointerdown.stop="startEdlDrag($event, b, 'resize-r')"></span>
+          </div>
+        </div>
+      </div>
       <div class="lane ruler-lane">
         <div ref="rulerTrackRef" class="lane-track ruler-track" :style="{ width: trackWidth + 'px' }"
              @pointerdown="onRulerPointerDown">
@@ -366,6 +506,15 @@ import {
   fetchProject, fetchSubtitles, fetchSfxCatalog, fetchStickerLibrary,
   saveProjectPatch, saveSubtitles, runSilence,
 } from '../api/polish'
+// EDL 的**共享只读派生** + 编辑动作（算式只有一处：`engine.js::edlOutStart`，
+// 判据 `node scripts/check-edl-invariants.mjs`）。本组件只消费，不重算。
+import {
+  EDL_SPEEDS, EDL_KINDS, MIN_CLIP_SECS, EDL_SPEED_MIN, EDL_SPEED_MAX, edlBlocks, edlOutSecs, edlVisible,
+  EDL_TRANSITION_CUT, EDL_TRANSITION_DISSOLVE, setClipTransition,
+  addRangeToEdl, duplicateClipAt, removeClipAt,
+  setClipSpan, setClipSpeed, setClipLabel,
+  clipIndexAtOut, clipIndexAtSource, edlOutSecsAtSource,
+} from '../polish/edl'
 
 const props = defineProps({
   dir: { type: String, required: true },
@@ -381,7 +530,12 @@ const props = defineProps({
   /** 当前打开的是哪条轨道的设置（空串 = 没打开）；由页面持有（它才是设置数据的家） */
   laneOpen: { type: String, default: '' },
   /** 六条轨道的开关（Rust 注入的 `_lanes`，已解析）：眼睛的亮/灭只读它，别在前端再推一遍 */
-  lanesOn: { type: Object, default: () => ({}) }
+  lanesOn: { type: Object, default: () => ({}) },
+  /** 源素材**自己的**帧率（帧号域累加的分母，见 `polish/edl.js`）。
+   *  ⚠️ 与"工程网格"（`timeline.timebase`，有 30fps 下限）**不是一回事**：电台那种 5fps 素材
+   *  的网格会被抬到 30fps，用网格帧率去比 `edlOutStart` 就是 6 倍错位。
+   *  拿不到就按 30（与 `PolishPreview` 的回落同一个值），**别自己再写一份推导**。 */
+  srcFps: { type: Number, default: 30 }
 })
 // 三个信号，**含义各不相同，别互相替代**：
 //   `preview` = 本地改动**立刻**镜像给页面（预览实时刷新，**不落盘**、不重挂载）
@@ -420,6 +574,12 @@ const segments = ref([])
 const llmStatus = ref(null)
 const subtitles = ref([])
 const muteRanges = ref([])
+/**
+ * **成片时间线（EDL）的 `clips[]`** —— 只存这一份（`polish.toml` 的 `[[edl.clips]]` 镜像）。
+ * ⚠️ `out_start` **永不落盘、永不进这个数组**（§2.2 规则 1：落盘就有两个真源）——
+ * 它由 `edlBlocks` 现算（唯一的算式在 `engine.js::edlOutStart`）。
+ */
+const edlClips = ref([])
 const loudness = ref([])
 const scale = ref(60)
 const duration = ref(60)
@@ -522,6 +682,7 @@ const selectedMute = computed(() => {
 })
 const selItem = computed(() => selectedSeg.value || selectedEv.value || selectedSub.value || selectedMute.value)
 const panelTitle = computed(() => {
+  if (edlSelected.value >= 0) return '成片段属性'
   if (!selected.value) return '属性'
   return { seg: '分段属性', event: '事件属性', sub: '字幕属性', mute: '屏蔽属性' }[selected.value.kind] || '属性'
 })
@@ -562,6 +723,43 @@ const LANE_DEFS = [
   { type: 'sfx', label: '音效', lane: 'sfx', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
 ]
 const lanes = LANE_DEFS
+
+// ── 成片时间线（EDL）：双轨视图的第二条轴 ────────────────────────
+// **默认隐藏**：`edl.clips` 为空时不渲染任何东西（老工程界面零变化，§6.2 第 4 条）。
+// ⚠️ 空 clips 在后端**不是**"什么都不播"—— `ProjectFile::resolve_edl` 会拿 `mute_ranges` 的
+// 补集兜底（§2.2 规则 3）。那是**业务分流**，住 Rust 一处；前端**不重算**它，
+// 只把"空"读成"这条路没开"。
+const edlOn = computed(() => edlVisible({ edl: { clips: edlClips.value } }))
+/** 成片轨的块（纯派生：源区间、成片轴上的起点与宽、来源角标）。 */
+const edlTrackBlocks = computed(() => edlBlocks({ edl: { clips: edlClips.value } }, props.srcFps, scale.value))
+/** 成片总时长（秒）= 最后一段的 out_end。⚠️ 不是源时长，也不是各段源长之和（变速后两者都不对）。 */
+const edlSecs = computed(() => edlOutSecs({ edl: { clips: edlClips.value } }, props.srcFps))
+/** 成片轨的像素宽（两轴共用同一个横向尺度 `scale`，所以"一秒"在两轴上一样长）。 */
+const edlTrackWidth = computed(() => Math.max(edlSecs.value * scale.value, 120))
+/**
+ * 播放头在**成片轴**上的位置。落在"不在任何成片段里的源区间"（被删掉的那段）时 `null` ——
+ * 那一段在成片里不存在，这时**不画**成片轨的播放头（画在 0 或末尾都是在撒谎）。
+ */
+const edlHeadLeft = computed(() => {
+  if (!edlOn.value) return null
+  const out = edlOutSecsAtSource(edlTrackBlocks.value, Number(props.currentTime) || 0)
+  return out === null ? null : out * scale.value
+})
+/** 选中的那一段（EDL 块）—— 属性面板的一支；与 `selected` 互斥。 */
+const edlSelected = ref(-1)
+const edlSelBlock = computed(() => (edlSelected.value >= 0 ? edlTrackBlocks.value[edlSelected.value] || null : null))
+const edlTotalSecs = computed(() => {
+  const r = edlTrackBlocks.value.filter((b) => !b.invalid)
+  return r.length ? r[r.length - 1].outEndSecs : 0
+})
+/** 面板两个输入框显示的值：草稿优先（用户正在填），否则照块的真值。 */
+const edlSpanStart = computed(() => (edlDraftSpan.value ? edlDraftSpan.value.start : (edlSelBlock.value ? round2(edlSelBlock.value.source_start) : 0)))
+const edlSpanEnd = computed(() => (edlDraftSpan.value ? edlDraftSpan.value.end : (edlSelBlock.value ? round2(edlSelBlock.value.source_end) : 0)))
+/** 「加入成片」菜单（fixed 定位，不受时间轴横向滚动影响；与 `fxMenu` 同款）。 */
+const edlMenu = ref(null)
+/** 面板里手动填的那一段的源区间（`null` = 跟随块；非 null = 草稿态，见 `commitEdlSpan`）。 */
+const edlDraftSpan = ref(null)
+
 /** 一条轨道的眼睛当前亮不亮。**只读 Rust 注入的解析结果**（`_lanes`）——
  *  默认值（素材竖/画布竖 ⇒ 运镜与视觉特效默认关）只住 Rust `ProjectFile::lane_default` 一处，
  *  前端自己再推一遍就必然两边不一致（而且不报错）。读不到注入就当亮着（宁可多画）。 */
@@ -835,12 +1033,14 @@ function blockItem(block) {
 function selectBlock(lane, block) {
   // 选中时间轴上的块 ⇒ 关掉轨道设置（两块面板共用一列，属性面板同一时刻只显示一份）
   if (props.laneOpen) emit('lane-open', '')
+  // 成片段与源块的面板**互斥**共存（同一列）：选源块就把成片段让出去。
+  edlSelected.value = -1
   if (block.kind === 'sub') selected.value = { kind: 'sub', lane: lane.type, subIndex: block.subIndex }
   else if (block.kind === 'mute') selected.value = { kind: 'mute', lane: lane.type, muteIndex: block.muteIndex }
   else selected.value = { kind: block.kind, lane: lane.type, si: block.si, ei: block.ei }
 }
 /** 块/选中 → 落盘分组（决定 PUT 到哪个接口、以及要不要跑后处理）。 */
-const dirtyKindOf = (kind) => (kind === 'sub' ? 'subtitles' : kind === 'mute' ? 'mute' : 'segments')
+const dirtyKindOf = (kind) => (kind === 'sub' ? 'subtitles' : kind === 'mute' ? 'mute' : kind === 'edl' ? 'edl' : 'segments')
 
 function seek(t) { emit('seek', t) }
 
@@ -861,7 +1061,7 @@ function onBlockDblClick(block) {
 // 改动 → ①立刻 emit('preview') 镜像给页面（预览实时变，不重挂载）②700ms 防抖 PUT 落盘。
 // **落盘不等于完成**：后处理要等 `emit('done')`（见下面的 commitEdit），
 // 否则你加完贴纸还在面板里填 keyword 时它就会插进来处理这个半成品。
-const dirty = { segments: false, subtitles: false, mute: false }
+const dirty = { segments: false, subtitles: false, mute: false, edl: false }
 const saveState = ref('')   // '' | 'saving' | 'ok' | 'err'
 const saveErr = ref('')
 const savedAt = ref('')
@@ -909,7 +1109,7 @@ function touch(kind) {
  */
 let onSavedHook = null
 function onceSaved(fn) {
-  const pending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute || saving
+  const pending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute || dirty.edl || saving
   if (!pending) { fn(); return }
   onSavedHook = fn
 }
@@ -941,6 +1141,7 @@ function emitPreview() {
   if (dirty.segments) payload.segments = segments.value
   if (dirty.subtitles) payload.subtitles = subtitles.value
   if (dirty.mute) payload.mute_ranges = muteRanges.value
+  if (dirty.edl) payload.edl = { clips: edlClips.value }
   if (Object.keys(payload).length) emit('preview', payload)
 }
 /** 面板里任何输入都算「选中项被改了」（容器上事件委托，省掉每个字段挂一遍）。 */
@@ -1005,6 +1206,27 @@ function normalizeLocal() {
       m.start = round2(st); m.end = round2(en)
     })
   }
+  // 成片段：两端对齐到 2 位小数、夹到源时长内，并保证 `end > start`。
+  // ⚠️ **不重排**（数组顺序 = 成片播放顺序，§2.1 —— 排序会改掉成片本身）。
+  // ⚠️ 这里**只归一**，不做"删掉非法段"那种破坏性动作：非法段由 UI 标红，让用户自己决定
+  //（后端 `resolve_clips` 会跳过它，不 panic）。
+  if (dirty.edl) {
+    const lim = getDuration()
+    edlClips.value = edlClips.value.map((c) => {
+      const out = { ...c }
+      const sp = Number(out.speed)
+      out.speed = Number.isFinite(sp) && sp > 0 ? Math.min(EDL_SPEED_MAX, Math.max(EDL_SPEED_MIN, sp)) : 1.0
+      let st = Number(out.source_start)
+      let en = Number(out.source_end)
+      if (!Number.isFinite(st)) st = 0
+      if (!Number.isFinite(en)) en = st + MIN_CLIP_SECS
+      st = Math.max(0, Math.min(lim, st))
+      en = Math.max(0, Math.min(lim, en))
+      out.source_start = round2(st)
+      out.source_end = round2(en)
+      return out
+    })
+  }
 }
 
 async function flushSave() {
@@ -1018,23 +1240,29 @@ async function flushSave() {
   const segs = dirty.segments ? segments.value : null
   const mutes = dirty.mute ? muteRanges.value : null
   const subs = dirty.subtitles ? subtitles.value : null
+  const edls = dirty.edl ? { clips: edlClips.value } : null
   // 没有待落的改动 = 磁盘上已经是最新的 ⇒ 等在这里的那个「完成」信号没有保存可等了，
   // 当场放行（否则页面会为一个**本来就已落盘**的改动一直不重载）。
-  if (!segs && !mutes && !subs) { fireSavedHook(); return }
+  if (!segs && !mutes && !subs && !edls) { fireSavedHook(); return }
   normalizeLocal()
   saving = true
   saveState.value = 'saving'
   try {
-    if (segs || mutes) {
+    if (segs || mutes || edls) {
       const patch = {}
       if (segs) patch.segments = segs
       if (mutes) patch.mute_ranges = mutes
+      // 成片时间线（`[[edl.clips]]`）：整个 `edl` 块提交（键缺席 = 不动磁盘）。
+      // ⚠️ 删空最后一段时提交的是 `{ clips: [] }` —— 后端 `ProjectFile.edl` 字段上的
+      // `skip_serializing_if = "Edl::is_empty"` 会让它**一个字节都不写**（R4）。
+      // 前端**不做**这层过滤：序列化口径只有后端一处，前端再滤一遍就是第二个真源。
+      if (edls) patch.edl = edls
       await saveProjectPatch(props.pid, props.dir, patch)
     }
     if (subs) {
       await saveSubtitles(props.pid, props.dir, subs)
     }
-    dirty.segments = dirty.subtitles = dirty.mute = false
+    dirty.segments = dirty.subtitles = dirty.mute = dirty.edl = false
     saveAttempts = 0
     saveState.value = 'ok'
     savedAt.value = new Date().toTimeString().slice(0, 8)
@@ -1052,7 +1280,7 @@ async function flushSave() {
     drainQueuedReload()
     // 「落盘完成」的信号在这一刻发出去（成功才发；失败留在 dirty 上等退避重试，
     // 由那一次成功的 flushSave 补发 —— 页面不会为一个没落盘的改动去重载）。
-    if (!dirty.segments && !dirty.subtitles && !dirty.mute && !loadError.value) fireSavedHook()
+    if (!dirty.segments && !dirty.subtitles && !dirty.mute && !dirty.edl && !loadError.value) fireSavedHook()
   }
 }
 function scheduleSaveRetry() {
@@ -1081,7 +1309,7 @@ async function reload() {
   reloadRunning = true
   try {
     reloadQueued = false
-    const pending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute
+    const pending = !!saveTimer || dirty.segments || dirty.subtitles || dirty.mute || dirty.edl
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
     // 基线不可信（上次读失败）时不能落盘：空数组/上一个片段的内容写下去就是把真数据抹掉
     const canFlush = pending && !loadError.value
@@ -1130,6 +1358,11 @@ function resetTimelineState() {
   segments.value = []
   subtitles.value = []
   muteRanges.value = []
+  // ⚠️ 成片轨同样**必须清空**：旧片段的 clips 留着，下一次编辑就会把它写进新片段的
+  // `polish.toml`（与上面那三行同一条"跨片段串写"的引信）。
+  edlClips.value = []
+  edlSelected.value = -1
+  edlDraftSpan.value = null
   loudness.value = []
   duration.value = 60
   dirty.segments = dirty.subtitles = dirty.mute = false
@@ -1429,6 +1662,199 @@ function addMuteAtCurrent() {
   touch('mute')
 }
 
+// ── 成片时间线（EDL）：加入 / 复制 / 拖缘 / 变速 / 删除 ───────────
+// 全部改变的是 `edlClips`（`polish.toml` 的 `[[edl.clips]]`），**一个源时间的字段都不碰**
+// （§6.1：源轴 7 条泳道的 x 坐标永不被 EDL 影响）。
+//
+// 落盘走 `saveProjectPatch({ edl: { clips } })` —— ⚠️ 它经 `polish_project_put_locked` 的
+// **逐字段白名单**：`edl` 那一支是 task-4 加的（本批之前 PUT 会静默丢掉它、还回 `{"ok":true}`）。
+// 所以这里的改动**必须**能真写进 `polish.toml`，否则就是"看着能存、实际没存"。
+//
+// ⚠️ 空 EDL 一个字节都不许写：判据挂在后端 `ProjectFile.edl` 字段的
+// `skip_serializing_if = "Edl::is_empty"` 上（**不是**只靠 `Edl::clips` 自己那层 ——
+// toml 照样会写出空的 `[edl]` 段头）。前端这边只保证"用户删空最后一段时提交的是空数组"，
+// 序列化那一步归后端，**不要**在前端替它过滤（那会变成第二个真源）。
+
+/** 当前框选/选中要加入成片的那段源区间：优先「分段 / 屏蔽」轨上的选中块，否则播放头前 3 秒的窗口。 */
+function edlSourceRange() {
+  const it = selItem.value
+  if (it && selected.value) {
+    const k = selected.value.kind
+    if (k === 'seg') {
+      const s = Number(it.start) || 0
+      const e = Number(it.end) || s
+      if (e - s >= 0.05) return { start: round2(s), end: round2(e) }
+    }
+    if (k === 'seg' && it.events) return null
+    if (k === 'sub' || k === 'mute') {
+      const s = Number(it.start) || 0
+      const e = Number(it.end) || s
+      if (e - s >= 0.05) return { start: round2(s), end: round2(e) }
+    }
+    if (k === 'event') {
+      const s = Number(it.time) || 0
+      const e = s + evDur(it)
+      if (e - s >= 0.05) return { start: round2(s), end: round2(e) }
+    }
+  }
+  const dur = getDuration()
+  const t = Math.max(0, Number(props.currentTime) || 0)
+  const end = Math.min(dur, t + 3)
+  if (end - t < 0.05) return null
+  return { start: round2(t), end: round2(end) }
+}
+
+/** 打开「加入成片」菜单（固定定位在触发按钮下方）。 */
+function openEdlMenu(evt) {
+  const r = evt.currentTarget.getBoundingClientRect()
+  edlMenu.value = { x: Math.round(Math.min(r.left, window.innerWidth - 180)), y: Math.round(r.bottom + 4) }
+  document.addEventListener('pointerdown', closeEdlMenu, true)
+}
+function closeEdlMenu(e) {
+  if (e && e.target && e.target.closest && e.target.closest('.edl-menu')) return
+  if (!edlMenu.value) return
+  edlMenu.value = null
+  document.removeEventListener('pointerdown', closeEdlMenu, true)
+}
+
+/**
+ * 「加入成片」的三个入口（§6.3 第 ② 条）。
+ *  · `head` 插到片头 · `at` 插到当前播放头 · `tail` 追加到片尾
+ */
+function addEdl(where) {
+  closeEdlMenu()
+  const r = edlSourceRange()
+  if (!r) { toast('先在源时间轴上选一段（分段/字幕/屏蔽块，或把播放头停在起点）', 'err'); return }
+  const at = where === 'at' ? clipIndexAtSource(edlTrackBlocks.value, Number(props.currentTime) || 0) + 1 : -1
+  const next = addRangeToEdl(edlClips.value, r.start, r.end, getDuration(), where, at)
+  if (next.length === edlClips.value.length) { toast('这一段太短，没有加进去', 'err'); return }
+  edlClips.value = next
+  edlSelected.value = next.length - 1
+  selected.value = null // 面板让位给这一段（两份面板同一时刻只显示一份）
+  touch('edl')
+  toast(`已加入成片：${r.start.toFixed(2)}s → ${r.end.toFixed(2)}s`)
+}
+
+/** 「×2 重放」= 复制这一段并排在其后（§6.3 第 ④ 条）。连点几次就是重放几次。 */
+function edlDuplicate(i) {
+  const next = duplicateClipAt(edlClips.value, i)
+  if (next.length === edlClips.value.length) return
+  edlClips.value = next
+  edlSelected.value = i + 1
+  touch('edl')
+}
+
+/** 双击块 = 删除这一段（与其余轨道同一套交互：双击即删 + 「撤销删除」兜底）。 */
+function edlDelete(i) {
+  if (i < 0 || i >= edlClips.value.length) return
+  const clip = edlClips.value[i]
+  edlClips.value = removeClipAt(edlClips.value, i)
+  if (edlSelected.value === i) edlSelected.value = -1
+  else if (edlSelected.value > i) edlSelected.value -= 1
+  rememberDeleted('成片段', clip, (item) => {
+    const arr = [...edlClips.value]
+    insertAt(arr, i, item)
+    edlClips.value = arr
+    touch('edl')
+  })
+  touch('edl')
+}
+
+/** 拖块的**左缘/右缘**改的是 `source_start` / `source_end`（§6.3 第 ③ 条）。 */
+function startEdlDrag(e, block, mode) {
+  if (block.invalid) return
+  e.preventDefault()
+  e.stopPropagation()
+  edlSelected.value = block.index
+  selected.value = null
+  const startX = e.clientX
+  const dur = getDuration()
+  const i = block.index
+  const origStart = block.source_start
+  const origEnd = block.source_end
+  let moved = false
+  const apply = (evt) => {
+    const delta = (evt.clientX - startX) / scale.value
+    if (Math.abs(evt.clientX - startX) > 1) moved = true
+    if (mode === 'resize-l') {
+      edlClips.value = setClipSpan(edlClips.value, i, Math.min(origEnd - MIN_CLIP_SECS, origStart + delta), origEnd, dur)
+    } else {
+      edlClips.value = setClipSpan(edlClips.value, i, origStart, Math.max(origStart + MIN_CLIP_SECS, origEnd + delta), dur)
+    }
+    touch('edl')
+  }
+  const onMove = (evt) => apply(evt)
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
+    if (moved) commitEdit('成片段拖拽结束')
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+}
+
+/** 面板改速率（档位按钮）。后端第 4 批起全部档位可用（见 `EDL_SPEEDS`）。 */
+function edlSetSpeed(i, v) {
+  edlClips.value = setClipSpeed(edlClips.value, i, v)
+  touch('edl')
+}
+
+/** 面板填的两端（**草稿态**：必须按「应用」才写进 clips，与"固定落点"那条口径一致）。 */
+function startEdlSpanEdit() {
+  const b = edlSelBlock.value
+  if (!b) return
+  edlDraftSpan.value = { start: round2(b.source_start), end: round2(b.source_end) }
+}
+function applyEdlSpan() {
+  const d = edlDraftSpan.value
+  const b = edlSelBlock.value
+  if (!d || !b) return
+  const next = setClipSpan(edlClips.value, b.index, Number(d.start), Number(d.end), getDuration())
+  if (next === edlClips.value) return
+  edlClips.value = next
+  edlDraftSpan.value = null
+  touch('edl')
+  commitEdit('成片段改区间')
+}
+function cancelEdlSpanEdit() { edlDraftSpan.value = null }
+
+/** 面板改显示名（可选字段，清空即删键）。 */
+function edlSetLabel(i, v) {
+  edlClips.value = setClipLabel(edlClips.value, i, v)
+  touch('edl')
+}
+/**
+ * 面板改**入场转场**（第 7 批 / task-10）：`'cut'` = 硬切（**删键**，缺省即硬切）、
+ * `'dissolve'` = 与上一段重叠 0.5s 淡化。
+ *
+ * ⚠️ **硬切写"删键"而不是写 `transition_in = "cut"`**：字段缺席与显式 `"cut"` 在
+ * Rust / 转译器 / 这里三处**同口径**（都是硬切），但删键能让老工程与"没动过转场"的工程
+ * **逐字节相同**（R4）—— 写一个显式 `"cut"` 会让每次点一下按钮都在 `polish.toml` 里多一行。
+ */
+function edlSetTransition(i, v) {
+  edlClips.value = setClipTransition(edlClips.value, i, v)
+  touch('edl')
+}
+/** 面板「定位」：把预览跳到这一段**在源时间轴上**的起点（预览是源时间驱动的）。 */
+function edlSeekSource() {
+  const b = edlSelBlock.value
+  if (b) seek(b.source_start)
+}
+/** 鼠标停在成片轨上时给一条"成片 x 秒 = 源 x 秒"的提示（§6.2 第 3 条）。 */
+function edlBlockTitle(b) {
+  const sp = b.speed === 1 ? '×1.0' : '×' + b.speed
+  return [
+    `成片第 ${b.outStartSecs.toFixed(2)}s → ${b.outEndSecs.toFixed(2)}s（共 ${(b.outEndSecs - b.outStartSecs).toFixed(2)}s）`,
+    `源 ${b.source_start.toFixed(2)}s → ${b.source_end.toFixed(2)}s · 速率 ${sp}`,
+    b.label ? `名字：${b.label}` : '',
+    b.transition === 'dissolve' ? '入场：叠化（与上一段重叠 0.5s 淡化）' : '',
+    b.invalid ? '⚠ 这一段不合法（结束必须晚于开始、速率必须为正），出片会跳过它' : '',
+    '拖左右缘改源区间 · 双击删除',
+  ].filter(Boolean).join('\n')
+}
+
 function duplicateSelected() {
   const ev = selectedEv.value
   if (!ev) return
@@ -1669,6 +2095,7 @@ onUnmounted(() => {
   commitEdit('离开页面')
   window.removeEventListener('keydown', onTimelineKey)
   document.removeEventListener('pointerdown', closeFxMenu, true)
+  document.removeEventListener('pointerdown', closeEdlMenu, true)
   if (userScrollTimer) clearTimeout(userScrollTimer)
   if (undoTimer) { clearTimeout(undoTimer); undoTimer = null }
   // 还有没落盘的改动（<700ms 的窗口）：**先落盘再走**，别把最后几下编辑丢掉
@@ -1716,7 +2143,7 @@ watch(() => props.currentTime, (t) => {
   // 在可视区里 → 不动（这是重点：别每帧重定位）
 })
 
-defineExpose({ reload, save: flushSave, segments, subtitles, muteRanges })
+defineExpose({ reload, save: flushSave, segments, subtitles, muteRanges, edlClips })
 
 watch(() => props.dir, async (_now, before) => {
   // 换片段＝这一轮编辑结束：先按**旧目录**把欠的那次后处理交代出去，再加载新片段的数据
@@ -1751,12 +2178,17 @@ async function loadData() {
   segments.value = cfg?.segments || []
   llmStatus.value = cfg?._llm_status && Array.isArray(cfg._llm_status.segments) ? cfg._llm_status : null
   muteRanges.value = Array.isArray(cfg?.mute_ranges) ? cfg.mute_ranges.map(m => ({ start: Number(m.start) || 0, end: Number(m.end) || 0 })) : []
+  // 成片时间线：**缺 `[edl]` 段 = 老工程 = 空数组**（后端 `serde(default)`）。
+  // ⚠️ 空数组在这里读成"这条路没开"，**不是**"什么都不播" —— 补集兜底住 `resolve_edl` 一处。
+  edlClips.value = Array.isArray(cfg?.edl?.clips) ? cfg.edl.clips.map(c => ({ ...c })) : []
+  edlSelected.value = -1
+  edlDraftSpan.value = null
   applySilenceState(cfg)
   const last = cfg?.segments?.[cfg.segments.length - 1]
   duration.value = cfg?.duration || last?.end || 60
   loudness.value = cfg?.loudness_curve || []
   // 磁盘上的数据就是"已保存"的状态：清掉脏标记与状态文字
-  dirty.segments = dirty.subtitles = dirty.mute = false
+  dirty.segments = dirty.subtitles = dirty.mute = dirty.edl = false
   saveAttempts = 0
   saveState.value = ''
 
@@ -1812,6 +2244,37 @@ async function loadData() {
 .mute-add { color:#ef4444; }
 .mute-add:hover { color:#b91c1c; }
 .lane-track { position:relative; height:26px; }
+/* ── 成片轨（EDL）：**第二条时间轴**，26px 与源泳道等高（不挤上面那 7 条）──
+   底色与源泳道区分开（源 = 素材、成片 = 结果），块与块首尾相接（§6.4 方案 A：空隙 = 不播）。 */
+.edl-lane { background:var(--bg-soft); }
+.edl-track { background:repeating-linear-gradient(90deg, transparent 0 39px, var(--line-soft) 39px 40px); }
+.edl-label { background:var(--bg-soft); }
+.edl-label-name { color:var(--main-deep); }
+/* 成片段：底色与源泳道的块刻意不同（源是蓝/红/橙一族，成片走靛紫），
+   这样"哪条轨上的块"不用读文字就能分辨。 */
+.edl-block { background:#6d5bd0; top:3px; height:20px; padding:0 4px; cursor:default;
+  display:flex; align-items:center; gap:4px; }
+.edl-block.selected { outline:2px solid #fff; z-index:3; }
+/* §6.5：**素材库来源的段必须视觉可分**（不同底色 + 来源角标）——
+   它是最贵的一类错误（成片里突然出现别的视频，预览却看不出来）。 */
+.edl-block.edl-asset { background:#0f766e; }
+/* 非法段（倒置 / 零长 / 速率非正）：出片会跳过它，必须当场看得出来 */
+.edl-block.edl-bad { background:#b91c1c; outline:1.5px dashed #fca5a5; }
+.edl-lab { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.edl-sp { flex:none; opacity:.85; font-variant-numeric:tabular-nums; }
+.edl-badge { flex:none; font-size:9px; line-height:14px; padding:0 4px; border-radius:3px;
+  background:rgba(255,255,255,.28); }
+.edl-badge.asset { background:#fde68a; color:#7c4a03; font-weight:700; }
+/* 转场角标（第 7 批）：只有叠化才画。⚠️ 必须 `flex:none` —— 块窄的时候它会被
+   可收缩的兄弟（`.edl-lab`）挤没，而"挤没"就等于"用户看不出这一段有叠化"。 */
+.edl-xf { flex:none; font-size:11px; line-height:14px; padding:0 3px; border-radius:3px;
+  background:#a5b4fc; color:#1e1b4b; font-weight:700; }
+.edl-rep { flex:none; border:none; border-radius:3px; padding:0 4px; height:14px; line-height:14px;
+  font-size:9px; cursor:pointer; background:rgba(255,255,255,.32); color:#fff; }
+.edl-rep:hover { background:rgba(255,255,255,.55); color:#1e1b4b; }
+/* 面板里的成片摘要行 + 速率档位 */
+.edl-sum { margin-top:4px; font-size:12px; color:var(--ink); font-variant-numeric:tabular-nums; }
+.edl-speeds { flex-wrap:wrap; gap:4px; }
 /* 响度包络线：**必须压在不透明的字幕块之上**（块 z-index:2、选中块 3），否则说话时段
    （也就是最该看电平的时候）整段被块盖住 —— 这是"波形看不见"的根因。
    仍在播放头（z-index:5）之下。`pointer-events:none` 保持不变：不挡拖块、不挡选中。 */

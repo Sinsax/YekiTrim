@@ -56,3 +56,38 @@
   （3px 宽滑块的 `scrollWidth` = 10）。要量"子元素视觉右缘是否越过容器右缘"。
 - ⚠️ **改这种嵌套块别手数括号**：两轮手数都数错（SFC 报 `Element is missing end tag`）。
   写个逐行 `<div>`/`<template>` 深度追踪，直接定位到"`.grid` 自己少一个 `</div>`"。
+
+---
+
+## 附：两处"静默假绿"的配方（2026-10 字幕样式四键）
+
+`crates/yekitrim-server/src/api/AGENTS.md` 只留了结论，配方在这。
+
+### ① `polish_project_put_locked` 的逐字段白名单
+
+它是**逐字段白名单**：没列进来的键，**PUT 照样回 `{"ok":true}`，而 `polish.toml` 一个字都不动**
+（该函数自己的注释就写着这句）。2026-10 字幕样式四键（`subtitle_color` / `subtitle_stroke` /
+`subtitle_size` / `subtitle_position_pct`）整条漏过 ⇒ 症状是
+**"toast 说已保存 → 控件回弹到原值 → 全程无报错"**。
+
+**判据**：在 `api/polish.rs` 里 grep 那个字段名；**命中 0 次就是要补分支**（照 `subtitle_font` 那段写），
+并配一条回归测试（`polish_project_put_writes_subtitle_style`）。
+
+### ② "断言某个键被删掉/没写出"的测试会假绿
+
+同一条测试的第一版是**假绿**的：第 3 步（写 `null` 之后）断言"`[style.subtitle]` 里不该再有
+`position_pct`"——但它复用了第 2 步（**写 `null` 之前**）读的 `raw`。
+`raw` 是合法变量、类型也对，**读代码看不出来**。
+
+⇒ 两条硬规矩：
+1. **判据前必须重新读盘**（读盘要发生在写盘**之后**）；
+2. **做一次变异自证**：把读盘那句改回"复用旧变量"，测试**必须翻红**；不红就是空转。
+
+⚠️ 断 `.toml` 文本时还有**两个字符串判据陷阱**：
+- `raw.contains("position_pct")` **恒真** —— `to_toml_commented` 的**注释文本**里就有这个词
+  （缺省语义那段的说明）；
+- **`[stage]` 段本来就有一个同名的 `position_pct`**（画面构成的单值落点，与 `[style.subtitle]`
+  那个无关）⇒ 全文扫 `line.starts_with("position_pct =")` 会被它误伤。
+
+⇒ 必须先切段再逐行看行首：
+`raw.split("[style.subtitle]").nth(1).unwrap_or("").split("\n[").next().unwrap_or("")`

@@ -24,9 +24,9 @@
   **工作副本不许有 CRLF**（`git ls-files --eol` 里出现 `w/crlf` 即违规）。为什么必须机器拦：
   `.gitattributes` 的 `eol=lf` **只在检出时生效、不会重写工作区已有文件**，而任何做换行翻译的写入
   方式（Python `write_text` 默认就会）都能把工作副本变成 CRLF —— 那会让**变异自证型契约脚本静默
-  失效**（它们在源码文本上 `.replace` 含 `
-` 的锚点，CRLF 让锚点匹配不上 ⇒ 变异不生效 ⇒ 判据不
-  翻面，脚本照旧"通过"），同时 `webui/dist` 的 chunk hash 整体漂移。实测连踩三轮、无任何报错。
+  失效**（`.replace` 的锚点含 `
+`，CRLF 下匹配不上 ⇒ 变异不生效 ⇒ 判据不翻面，脚本照旧"通过"），
+  同时 `webui/dist` 的 chunk hash 整体漂移。实测连踩三轮、无任何报错。
   覆盖：`downloader` 不许开子进程 / 不许知道 B站；`bilibili` 不许知道下载器；`net/` 不许知道 B站；
   `download_worker` 不许引用 `ingest_worker` / 不许有录播姬语义；`core` / `render-core` / `polish` 不许认识上层；
   `service` 不许认识 `server`；`server` 不许认识 `cli`；`cli` 只用 server 的入口；
@@ -43,7 +43,8 @@
   否则报"无主文件"；**任何没登记进注册表的 `AGENTS.md` 也算失败**（卡片会漂移）。
   用法：`python3 scripts/check_module_map.py [-v|--json]`。
 - **`check-yekitrim-translator.mjs`** —— 转译器守卫（**node，不是 python**），四段：
-  **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名**。
+  **348 曲线 + 13 颜色 + 44 映射 + 6 画面构成 + 25 几何 + 4 密集键 + 9 字体族名
+  + 2 夹取 + 8 变速 + 9 TOML 父级 + 13 素材 + 10 片头/片尾**。
   曲线 348 项钉 `backOut3` 的过冲峰值 1.25、`shakeOffsetAt` 四级阶梯**每档的边界两侧**、
   `handheldSway` 的 2×4 正弦与"线性于 amp"、`stickerStateAt` 的四段相位与那条**够不到的**淡出、
   弹幕在屏窗口 `danmakuExitMs` 与 Rust `clamp_display_windows` 常数对拍；
@@ -53,7 +54,7 @@
   **映射那 44 项**拿**合成工程**过一遍 `translate`，钉三类
   "报告里一行、成片里没有"的旧伤：`overlay_type="color"/"fade_in"` 两档、只有 `name` 没有
   `sticker_tag` 的贴纸、以及 `style.camera` 没配时的**按档位默认倍率**（远 0.55 / 近 1.5 / 中 1.3）。
-  `--mutate` 把 **42 处变异**逐一真改源码、加载变异体跑**同一份**检查，要求**全部打红**；
+  `--mutate` 把 **52 处变异**逐一真改源码、加载变异体跑**同一份**检查，要求**全部打红**；
   每处先断言"替换命中一次"（少了这条，没匹配上的变异体原样跑绿，看着像"抓不住"）。
   ⚠️ **新加的检查要抽成函数并在 `mutate` 里一起调** —— 只写在顶层的检查变异台根本不会跑，
   于是那条变异"没被打红"（颜色那条第一版就是这么漏的）。

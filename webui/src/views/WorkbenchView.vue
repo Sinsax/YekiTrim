@@ -378,12 +378,12 @@
       <ModelList :models="models" @changed="loadDoctor" />
     </div>
 
-    <!-- 字体库（管理就内嵌在这一块，没有单独页面）：程序级全局资产，写操作仅管理员 ——
-         与下面的表情包同规矩，普通用户整块不显示。细节见 components/FontLibrary.vue。 -->
-    <FontLibrary v-if="isAdmin" />
-
-    <!-- 表情包（本地贴纸库）：全局资产，仅管理员 —— 普通用户整块不显示 -->
-    <StickerPacks v-if="isAdmin" />
+    <!-- 素材库 = **视频 / 字体 / 贴纸 三合一**（用户 2026-10-09：「素材库将视频素材，字体，贴纸，
+         合并一下，只是ui上合并」）。⚠️ 合并只在**这一层**：内部仍是 `FontLibrary` / `StickerPacks`
+         各自原来的实现，一行没改 —— 别把它们的逻辑搬进来（两份实现变三份）。
+         字体与贴纸是程序级全局资产、写操作仅 admin（普通用户进那两页看到说明）；
+         **视频那一页人人可看**（片头/片尾要从它挑素材）。 -->
+    <MediaLibrary :is-admin="isAdmin" />
 
   </div>
 </template>
@@ -395,7 +395,7 @@ import Icon from '../components/Icon.vue'
 import ServerDirPicker, { VIDEO_EXTS } from '../components/ServerDirPicker.vue'
 import AppModal from '../components/AppModal.vue'
 import ServerFileBrowser from '../components/ServerFileBrowser.vue'
-import StickerPacks from '../components/StickerPacks.vue'
+import MediaLibrary from '../components/MediaLibrary.vue'
 import HomeClipsOverview from '../components/HomeClipsOverview.vue'
 import ModelList from '../components/ModelList.vue'
 import { authState } from '../stores/auth'
@@ -419,7 +419,6 @@ import { fmtBytes, fmtTime, ingestState, setReady } from '../stores/ingest'
 import { fmtClock, fmtCount } from '../utils'
 import { loadProjects, wb } from '../stores/workbench'
 import { api } from '../api/client'
-import FontLibrary from '../components/FontLibrary.vue'
 
 const isAdmin = computed(() => authState.user?.role === 'admin')
 

@@ -343,7 +343,7 @@ pub async fn cmd_llm(
     }
 
     // 运行 LLM pipeline
-    let (segments, dm_filter, hl_words, gen_status) = llm::run_llm_pipeline(
+    let (segments, dm_filter, hl_words, gen_status, edl_clips) = llm::run_llm_pipeline(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
@@ -376,10 +376,16 @@ pub async fn cmd_llm(
     // 注：屏蔽区间**不再**改段的构成（只做标记，见上），所以这里只可能因时长截断而对不上。
     let final_segments = new_config.segments.clone();
     let (segments, dm_filter, hl_words) = (new_config.segments, new_config.filter.danmaku, new_config.filter.highlight);
+    // 冷开场/回忆回溯落到 `edl.clips`（第 5 批）：`None` = 本轮没有意图 ⇒ **不许碰** `cfg.edl`。
+    // ⚠️ 有 EDL 时 `mute_ranges` 整个被忽略（`ProjectFile::resolve_edl`、规格 §2.3），
+    // 所以"没意图就别写"是 R4 存量零回归的判据本身；用户手拖过的 clips 在这里被 `None` 保住。
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
         cfg.filter.danmaku = dm_filter;
         cfg.filter.highlight = hl_words;
+        if let Some(clips) = edl_clips {
+            cfg.edl.clips = clips;
+        }
     })
     .await?;
 
