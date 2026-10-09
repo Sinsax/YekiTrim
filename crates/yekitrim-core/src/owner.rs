@@ -150,6 +150,79 @@ pub fn config_path_at(owner: Owner, data_home: &Path) -> PathBuf {
     state_dir_at(owner, data_home).join("config.toml")
 }
 
+/// 把**单人时期**的存量（`<data>/resources/*` 与 `<data>/.yekitrim/{config,llm}.toml`）
+/// 归到某个账号名下 —— **一次性、幂等、不复制内容**。
+///
+/// ## 为什么要它
+///
+/// 单人形态（[`Owner::Local`]）的数据就在 `<数据>/resources/` 与 `<数据>/.yekitrim/`；
+/// 而多用户形态下 [`Owner::User`] 解析到 `<数据>/users/<uid>/…`。不做这一步的话，
+/// 一台已用很久的机器一开多用户，**新账号看到的是空素材库与默认配置**，
+/// 用户会以为"我的东西全丢了"。
+///
+/// ## 语义：**移动**，不是复制
+///
+/// 素材可能有几个 GB（`op.mp4`、贴纸包），**复制一份是错的**（占双倍磁盘、
+/// 且两份从此分叉）。所以是 `rename`；跨盘时 `rename` 会失败，那时**如实报错、
+/// 保持原状**，让调用方（或用户手工）决定 —— 绝不悄悄退化成"复制一半"。
+///
+/// ⚠️ **只在目标不存在时动手**（幂等）：`users/<uid>/resources/` 已经在了就整段跳过，
+/// 跑第二遍是 no-op。这也是"用户自己已经把东西放好了"的情况。
+///
+/// ⚠️ **`Owner::Local` 不参与**：它就是源头，没有可迁的。
+pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let Owner::User(_) = owner else {
+        return Ok(Vec::new()); // 单人形态：数据本来就在那儿，无事可做
+    };
+    let legacy_resources = path::resources_dir_at(data_home);
+    // 目标根 = users/<uid>/resources
+    let users_root = data_home.join("users");
+    if !users_root.is_dir() {
+        // 还没有任何用户树 ⇒ 无事可做（全新安装，或还没登录过多用户模式）
+        return Ok(Vec::new());
+    }
+
+    let mut moved = Vec::new();
+
+    // ① 素材：<data>/resources/* → <data>/users/<uid>/resources/*
+    if legacy_resources.is_dir() {
+        for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
+            let from = legacy_resources.join(kind.dir_name());
+            if !from.is_dir() {
+                continue;
+            }
+            let to = asset_dir_at(owner, kind, data_home);
+            if to.exists() {
+                continue; // 幂等：已经有目标了，不动
+            }
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&from, &to)?;
+            moved.push(to);
+        }
+    }
+
+    // ② 配置：<data>/.yekitrim/{config,llm}.toml → <data>/users/<uid>/.yekitrim/
+    let legacy_state = path::yekitrim_home_at(data_home);
+    let dest_state = state_dir_at(owner, data_home);
+    for name in ["config.toml", "llm.toml"] {
+        let from = legacy_state.join(name);
+        if !from.is_file() {
+            continue;
+        }
+        let to = dest_state.join(name);
+        if to.exists() {
+            continue; // 幂等
+        }
+        std::fs::create_dir_all(&dest_state)?;
+        std::fs::rename(&from, &to)?;
+        moved.push(to);
+    }
+
+    Ok(moved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,13 +310,95 @@ mod tests {
             for kind in kinds {
                 let d = asset_dir_at(owner, kind, home);
                 // 不许有人已经占了这个位置。
-                assert!(
-                    !seen.iter().any(|(p, _)| *p == d),
-                    "{label} 的 {kind:?} 与 {} 撞在 {d:?}",
-                    seen.iter().find(|(p, _)| *p == d).unwrap().1
-                );
+                if let Some((_, other)) = seen.iter().find(|(p, _)| *p == d) {
+                    panic!("{label} 的 {kind:?} 与 {other} 撞在 {d:?}");
+                }
                 seen.push((d, label));
             }
         }
+    }
+
+    /// 临时根目录（core **没有** dev-dependencies，`tempfile` 不在依赖表里 ——
+    /// 与 `fonts.rs` / `download.rs` 的测试同一套做法：`std::env::temp_dir()` + 唯一名）。
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yekitrim-owner-test-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 迁移把存量**搬到**该账号名下，而不是复制 —— 复制会让两份从此分叉、还占双倍磁盘。
+    #[test]
+    fn migration_moves_legacy_assets_into_the_users_tree() {
+        let tmp = temp_root("move");
+        let home = tmp.as_path();
+
+        // 造出"单人时期"的存量。
+        let legacy_stickers = path::sticker_dir_at(home);
+        std::fs::create_dir_all(&legacy_stickers).unwrap();
+        std::fs::write(legacy_stickers.join("pack.toml"), b"x").unwrap();
+        let legacy_fonts = path::font_dir_at(home);
+        std::fs::create_dir_all(&legacy_fonts).unwrap();
+        std::fs::write(legacy_fonts.join("a.ttf"), b"font").unwrap();
+        let legacy_state = path::yekitrim_home_at(home);
+        std::fs::create_dir_all(&legacy_state).unwrap();
+        std::fs::write(legacy_state.join("llm.toml"), b"[llm]\napi_key = \"k\"\n").unwrap();
+        // 用户树存在（否则迁移会认为"还没进过多用户模式"）
+        std::fs::create_dir_all(home.join("users/7")).unwrap();
+
+        let moved = migrate_legacy_assets_to(Owner::User(7), home).unwrap();
+        assert!(!moved.is_empty(), "应当真的搬了东西");
+
+        // 到了目标位置……
+        let new_fonts = asset_dir_at(Owner::User(7), AssetKind::Fonts, home);
+        assert!(new_fonts.join("a.ttf").is_file(), "字体应已搬到用户树");
+        let new_llm = state_dir_at(Owner::User(7), home).join("llm.toml");
+        assert!(new_llm.is_file(), "llm.toml 应已搬到用户树");
+        // ……而**源头不再留着**（= 真搬，不是复制）。
+        assert!(!legacy_fonts.join("a.ttf").exists(), "搬运后源头不该还有同一份");
+        assert!(!legacy_state.join("llm.toml").exists(), "搬运后源头不该还有同一份");
+    }
+
+    /// 幂等：第二遍是 no-op，且**不会**拿存量覆盖用户自己已经放好的东西。
+    #[test]
+    fn migration_is_idempotent_and_never_clobbers_the_target() {
+        let tmp = temp_root("idem");
+        let home = tmp.as_path();
+        std::fs::create_dir_all(home.join("users/7")).unwrap();
+
+        // 用户已经在自己的库里放了东西。
+        let own = asset_dir_at(Owner::User(7), AssetKind::Fonts, home);
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("mine.ttf"), b"mine").unwrap();
+        // 同时老位置也有东西。
+        let legacy = path::font_dir_at(home);
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("old.ttf"), b"old").unwrap();
+
+        let moved = migrate_legacy_assets_to(Owner::User(7), home).unwrap();
+        assert!(moved.is_empty(), "目标已存在时不该动任何东西");
+        assert!(own.join("mine.ttf").is_file(), "用户自己的东西必须原样留着");
+        assert!(legacy.join("old.ttf").is_file(), "存量也不该被删（人没让删）");
+
+        // 再跑一遍仍然没事（幂等）。
+        let again = migrate_legacy_assets_to(Owner::User(7), home).unwrap();
+        assert!(again.is_empty());
+    }
+
+    /// 单人形态**不参与迁移** —— 它就是源头。
+    #[test]
+    fn migration_is_a_noop_for_the_local_owner() {
+        let tmp = temp_root("local");
+        let home = tmp.as_path();
+        let legacy = path::font_dir_at(home);
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("a.ttf"), b"font").unwrap();
+
+        let moved = migrate_legacy_assets_to(Owner::Local, home).unwrap();
+        assert!(moved.is_empty());
+        assert!(legacy.join("a.ttf").is_file(), "单人形态一个字节都不该动");
     }
 }

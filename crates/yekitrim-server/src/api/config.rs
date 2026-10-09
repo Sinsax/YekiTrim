@@ -56,20 +56,22 @@ fn models_impl() -> ApiResult {
 ///
 /// 要读某个工程的配置：`GET /api/project-data/config?project=<id>`。
 /// 要读合并后的生效配置：也走那条（它按项目解析）。
-pub(super) fn config_get_impl() -> ApiResult {
-    let home = yekitrim_core::path::yekitrim_home();
+pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
+    // ⚠️ 按 **Owner** 取目录：单人 = 程序目录（现状），多用户 = 该账号自己的 `.yekitrim/`。
+    // **别退回 `path::yekitrim_home()`** —— 那会让所有账号共用同一份配置（含明文 LLM key）。
+    let home = yekitrim_core::owner::state_dir(owner);
     // ⚠️ 同步 IO：读 config.toml / llm.toml 两份（含 API key），调用方必须下 blocking 池。
     let global_raw = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
     let llm_raw = std::fs::read_to_string(home.join("llm.toml")).unwrap_or_default();
-    let global_cfg = yekitrim_core::config::load_global_config();
-    let llm_cfg = yekitrim_core::config::load_llm_config();
+    let global_cfg = yekitrim_core::config::load_config_for(owner);
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     // ⚠️ **`config_error` 必须留着**：设置页表单的写入门闸就是它
     // （`SettingsView.vue::loadConfig` 把它存进 `configError`）—— 程序配置解析失败时那份配置会被
     // **整体忽略**、表单只剩内建默认值，用户不改也不知道；这时若还允许保存，
     // 一次「保存」就把内建默认值覆盖到真实配置文件上。所以这里如实报出原因。
     // 2026-10-03 把这条路改成"纯程序配置"时差点把它一起删掉 —— 它的语义跟着从
     // "merged 配置的解析错误"变成"程序配置的解析错误"，比原来更准确。
-    let config_error = yekitrim_core::config::global_config_parse_error().unwrap_or_default();
+    let config_error = yekitrim_core::config::config_parse_error_for(owner).unwrap_or_default();
     ok(serde_json::json!({
         "global_raw": global_raw,
         "llm_raw": llm_raw,
@@ -79,10 +81,14 @@ pub(super) fn config_get_impl() -> ApiResult {
     }))
 }
 
-pub(super) async fn config_get(State(_state): State<Arc<AppState>>) -> ApiResult {
+pub(super) async fn config_get(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    State(_state): State<Arc<AppState>>,
+) -> ApiResult {
     // ⚠️ 同步 IO：读 config.toml / llm.toml 两份 + 解析（含 llm.toml 的 API key）。
     // `project_data.rs` 里同一个 impl 早就这么包了，这条 `/api/config` 路由漏了。
-    blocking(config_get_impl).await
+    let owner = crate::auth::owner_of(&user);
+    blocking(move || config_get_impl(owner)).await
 }
 
 /// 项目配置里会被当作**路径**的键：`(section, key)`。
@@ -249,8 +255,13 @@ pub(super) fn config_yekitrim_put_impl(ws: &Workspace, body: &serde_json::Value,
 ///
 /// - `raw`：源文件模式，整份覆盖写；
 /// - `patch`：表单模式，`{ section: { key: value } }` 合并写，未涉及的 section/注释原样保留。
-pub(super) async fn config_global_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let path = yekitrim_core::path::yekitrim_home().join("config.toml");
+pub(super) async fn config_global_put(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let path = yekitrim_core::owner::state_dir(owner).join("config.toml");
     // patch / 源文件两种写法都会读改写整份配置，加锁避免并发提交互相覆盖；
     // 锁在 await 里持有，读改写下 blocking 池（`with_path_lock` 的闭包跑在当前线程）
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
@@ -274,8 +285,13 @@ pub(super) fn config_global_put_locked(path: &Path, body: &serde_json::Value) ->
 }
 
 /// 保存 LLM 配置：`raw` 整份覆盖写，`patch` 合并写（保留注释与其他键）。
-pub(super) async fn config_llm_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
-    let path = yekitrim_core::path::yekitrim_home().join("llm.toml");
+pub(super) async fn config_llm_put(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult {
+    let owner = crate::auth::owner_of(&user);
+    let path = yekitrim_core::owner::state_dir(owner).join("llm.toml");
     let _guard = yekitrim_core::filelock::lock_path(&path).await;
     blocking(move || config_llm_put_locked(&path, &body)).await
 }
@@ -295,9 +311,12 @@ pub(super) fn config_llm_put_locked(path: &Path, body: &serde_json::Value) -> Ap
     ok(serde_json::json!({ "ok": true }))
 }
 
-pub(super) async fn llm_test() -> ApiResult {
+pub(super) async fn llm_test(
+    Extension(user): Extension<crate::auth::CurrentUser>,
+) -> ApiResult {
     // 只有"读配置"是同步 IO（HTTP 调用本身是 async，保持不动）
-    let llm = blocking(|| Ok(yekitrim_core::config::load_llm_config())).await?;
+    let owner = crate::auth::owner_of(&user);
+    let llm = blocking(move || Ok(yekitrim_core::config::load_llm_config_for(owner))).await?;
     if llm.api_key.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "LLM API key 未配置"));
     }
@@ -371,6 +390,100 @@ mod tests {
 
     use axum::body::Body;
 
+
+/// **程序配置按账号分开**：甲存的 LLM key 乙看不见，各存各的。
+///
+/// 这是 `Owner` 落到配置面的判据 —— 在引入 `Owner` 之前 `config.toml` / `llm.toml`
+/// 是**全局一份**，所有账号共用同一个 `api_key`（也共用同一份 base_url/model）。
+///
+/// 用 `/api/config/llm` 的 `raw` 整份覆盖写（那条路不依赖模板里的具体键名，
+/// 免得测试与 `LLM_CONFIG_TOML` 的字段名绑死），再用 `/api/config` 读回来比对。
+#[tokio::test]
+async fn config_is_per_account_and_llm_key_does_not_leak() {
+    let t = test_app().await;
+    let hash = yekitrim_service::auth::hash_password("pass-12345678").unwrap();
+    t.auth.db().create_user("cfg_a", &hash, "user", false, 0).unwrap();
+    t.auth.db().create_user("cfg_b", &hash, "user", false, 0).unwrap();
+    let a = t.auth.login("cfg_a", "pass-12345678", None, None).unwrap();
+    let b = t.auth.login("cfg_b", "pass-12345678", None, None).unwrap();
+
+    async fn put_llm(
+        t: &TestApp,
+        sid: &str,
+        csrf: &str,
+        raw: &str,
+    ) -> axum::response::Response {
+        t.call(
+            t.req_as(sid, csrf, "PUT", "/config/llm")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({ "raw": raw }).to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+    async fn get_cfg(t: &TestApp, sid: &str, csrf: &str) -> serde_json::Value {
+        let res = t
+            .call(t.req_as(sid, csrf, "GET", "/config").body(Body::empty()).unwrap())
+            .await;
+        body_json(res).await
+    }
+
+    // 甲写自己的 key。
+    let res = put_llm(
+        &t,
+        &a.session_id,
+        &a.csrf,
+        "[llm]
+api_key = \"key-of-alice\"
+model = \"m-a\"
+",
+    )
+    .await;
+    assert_eq!(res.status(), 200, "甲应能存自己的 LLM 配置");
+
+    // 甲看得见。
+    let ja = get_cfg(&t, &a.session_id, &a.csrf).await;
+    assert!(
+        ja["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
+        "甲应读到自己的 key；实际：{}",
+        ja["llm_raw"]
+    );
+
+    // 乙**看不见** —— 这就是"配置真的分开了"。
+    let jb = get_cfg(&t, &b.session_id, &b.csrf).await;
+    assert!(
+        !jb["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
+        "乙不该看见甲的 LLM key（明文 key 泄露）；实际：{}",
+        jb["llm_raw"]
+    );
+
+    // 乙写自己的，两边互不覆盖。
+    let res = put_llm(&t, &b.session_id, &b.csrf, "[llm]
+api_key = \"key-of-bob\"
+").await;
+    assert_eq!(res.status(), 200);
+    let ja2 = get_cfg(&t, &a.session_id, &a.csrf).await;
+    assert!(
+        ja2["llm_raw"].as_str().unwrap_or("").contains("key-of-alice"),
+        "乙写自己的配置**不该**动到甲的；实际：{}",
+        ja2["llm_raw"]
+    );
+    let jb2 = get_cfg(&t, &b.session_id, &b.csrf).await;
+    assert!(jb2["llm_raw"].as_str().unwrap_or("").contains("key-of-bob"));
+}
+
+/// 单人形态（`Owner::Local`）读的就是**现状那两个文件**，零迁移。
+///
+/// 直接对 `config_get_impl` 断言路径来源：单人下 `state_dir` = `<data>/.yekitrim`，
+/// 与 `path::yekitrim_home()` 是同一个地方。这条红了说明有人挪了单人的配置位置。
+#[test]
+fn local_owner_config_dir_is_exactly_the_legacy_home() {
+    assert_eq!(
+        yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::Local),
+        yekitrim_core::path::yekitrim_home(),
+        "单人形态的配置目录必须还是 <数据目录>/.yekitrim，否则升级后配置全丢"
+    );
+}
 
 /// `/api/models` 的每条必须带上「实际路径 + 来源」：判定跟运行时同一套查找顺序
 /// （配置 → 用户目录 → 程序目录），界面照它显示。曾经只回 `dir.exists()`（程序目录），

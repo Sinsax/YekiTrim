@@ -36,10 +36,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     // 旧路径作为过渡别名挂在**同一个 require_admin 层**下（否则普通账号能读到 LLM key）
     let admin = Router::new()
         .route("/admin/doctor", get(doctor))
-        .route("/admin/config", get(config_get))
-        .route("/admin/config/global", put(config_global_put))
-        .route("/admin/config/llm", put(config_llm_put))
-        .route("/admin/llm/test", post(llm_test))
+        // ⚠️ **程序配置 2026-10-10 已挪到用户层**（`/api/config*`，见下面的 `assets` 组）：
+        // 配置现在按 `Owner` 分（`owner::state_dir(owner)`），**每个账号读自己那份
+        // `config.toml` / `llm.toml`**（后者含明文 api_key —— 再挂 admin 层就等于
+        // "只有管理员能有 key、普通账号永远配不了自己的"）。**别在这里加回来**：
+        // 同一路径挂两次 axum 直接 panic（`Overlapping method route`）。
         .route("/admin/models", get(models_get))
         .route("/admin/models/download", post(models_download))
         // 采集/录播姬：`GET` 读概览、`PUT` 保存配置（表单）、`POST .../token` 生成/关闭 webhook token
@@ -66,10 +67,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         // 用户口径「素材库是用户级、跟随用户」：贴纸库与字体库一样是**使用者准备素材**的地方。
         // **别在 admin 层再加回来**：同一路径挂两次 axum 直接 panic（"Overlapping method route"）。
         .route("/doctor", get(doctor))
-        .route("/config", get(config_get))
-        .route("/config/global", put(config_global_put))
-        .route("/config/llm", put(config_llm_put))
-        .route("/llm/test", post(llm_test))
         .route("/models", get(models_get))
         .route("/models/download", post(models_download))
         // ⚠️ **字体库的写操作 2026-10-09 已挪到用户层**（`/api/polish/fonts/*`，见下面那几条）：
@@ -186,7 +183,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::stickers::pack_detail).delete(crate::stickers::pack_delete),
         )
         .route("/polish/stickers/:pack/build", post(crate::stickers::pack_build))
-        .route("/polish/stickers/:pack/files/:name", get(crate::stickers::pack_file));
+        .route("/polish/stickers/:pack/files/:name", get(crate::stickers::pack_file))
+        // ---- 程序配置（2026-10-10 从 admin 层挪来；旧 `/admin/*` 路径已删除）----
+        // 配置按 `Owner` 分：**每个账号读/写自己那份** `config.toml` + `llm.toml`。
+        // 因此它和素材库同一条道理 —— 归用户层，不挂 `enforce_scope`
+        // （配置不属于任何工程），但仍在 `protected` 下 ⇒ 未登录 401。
+        .route("/config", get(config_get))
+        .route("/config/global", put(config_global_put))
+        .route("/config/llm", put(config_llm_put))
+        .route("/llm/test", post(llm_test));
 
     let protected = Router::new()
         .route("/me", get(me))
