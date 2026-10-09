@@ -10,6 +10,7 @@ use axum::{
 };
 use yekitrim_service::Workspace;
 
+use crate::auth::owner_of;
 use crate::model::AppState;
 use crate::persist;
 use super::*;
@@ -170,7 +171,7 @@ pub(super) async fn create_local_project(
     output_dir: Option<&str>,
     overwrite: bool,
 ) -> ApiResult {
-    let tenant = yekitrim_service::projects::tenant_root(user.id);
+    let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
     let dir = yekitrim_service::projects::resolve_target_dir(
@@ -520,7 +521,7 @@ pub(super) async fn project_init(
         .or_else(|| body.get("dir"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 input"))?;
-    let tenant = yekitrim_service::projects::tenant_root(user.id);
+    let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
     let abs = PathBuf::from(raw);
     // 旧值可能是绝对路径：只接受"落在自己租户根内"的那种，其余按相对路径处理
     let rel_dir = if abs.is_absolute() {

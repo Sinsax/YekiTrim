@@ -18,6 +18,7 @@ use crate::{
     media,
 };
 use super::*;
+use crate::auth::owner_of;
 use super::{config::*, pipeline::*, polish::*, projects::*};
 
 // ---- 项目数据（P2：作用域 = 本人项目 id，`?config=` 仅作过渡期反查） ----
@@ -1388,7 +1389,7 @@ pub(super) async fn fs_list(
         return Err(err(StatusCode::FORBIDDEN, "仅管理员可浏览服务器文件"));
     }
     // 允许的根 = 租户根 + [storage] local_roots（这些只是"快捷入口"；管理员可用任意绝对路径）
-    let tenant = yekitrim_service::projects::tenant_root(user.id);
+    let tenant = yekitrim_core::owner::owner_root(owner_of(&user));
     std::fs::create_dir_all(&tenant)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("创建租户目录失败: {e}")))?;
     let roots = yekitrim_service::projects::local_roots(user.id);
