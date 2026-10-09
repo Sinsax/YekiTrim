@@ -74,7 +74,39 @@ fn new_layout_wins_once_it_exists() {
     assert_eq!(vids, vec!["new-op"], "用的是新位置那份，不是老的那份");
 }
 
-/// ③ **视频库不再是贴纸库的子目录** —— 挪库要消灭的那个隐患。
+/// ③ **空目录不许顶掉有素材的库**（2026-10-09 抓到的真 bug）。
+///
+/// 用户手工搬迁的自然顺序是**先建目录、后搬文件** —— 于是中途会出现一个**空壳**目录。
+/// 只看 `is_dir()` 的话空壳就当选了，而真素材还躺在老位置：视频库返回**空列表**、
+/// 界面只说"库是空的"、**一个字都不报**（正是升级最怕的那种静默失败）。
+/// 判据：有内容的必须赢过先出现的空壳，无论空壳排多靠前。
+#[test]
+fn empty_leftover_must_not_shadow_a_populated_library() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 中间态空壳（搬迁中先建出来的）+ 老位置的真素材
+    std::fs::create_dir_all(tmp.path().join("resources").join("stickers").join("videos")).unwrap();
+    let legacy_videos = tmp.path().join("stickers").join("videos");
+    std::fs::create_dir_all(&legacy_videos).unwrap();
+    std::fs::write(legacy_videos.join("op.mp4"), b"real").unwrap();
+
+    let root = yekitrim_core::path::video_dir_readable_at(tmp.path());
+    assert_eq!(root, legacy_videos, "空壳不许当选，要挑真有素材的那份");
+    let vids: Vec<String> = yekitrim_polish::assets::sticker_index::scan_video_library(&root)
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(vids, vec!["op"], "素材必须还在（空列表 = 用户以为素材被删了）");
+}
+
+/// ④ 全空时返回**新位置**（全新安装的合法状态，别退回老路径）。
+#[test]
+fn all_empty_resolves_to_the_new_location() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = yekitrim_core::path::video_dir_readable_at(tmp.path());
+    assert_eq!(root, tmp.path().join("resources").join("videos"));
+}
+
+/// ⑤ **视频库不再是贴纸库的子目录** —— 挪库要消灭的那个隐患。
 ///
 /// 老形态下 `videos/` 是贴纸根下的普通子目录，`scan_packages` 会把它当包扫，
 /// 只靠"里面一张图都没有 ⇒ 被丢掉"**碰巧**没污染列表。这里钉住新形态：
