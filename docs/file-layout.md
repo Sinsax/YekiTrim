@@ -82,6 +82,23 @@ set YEKITRIM_DATA_DIR=F:\yekitrim-data
 **不做自动搬迁**（用户手工移）；回落的意义只是"升级后库不会突然变空"。
 判据：`path::tests::readable_dirs_fall_back_to_legacy_locations`。
 
+⚠️⚠️ **视频库是上面那条规矩的唯一例外，而且它是被真 bug 逼出来的**（2026-10-09 修）：
+判据是"**有内容的**优先，都没有才看存在"。原因是用户手工搬迁的自然顺序是
+**先建目录、后搬文件** —— 中途必然出现一个**空壳**：
+```
+resources/videos/            ← 新建的，还空着      ← 只看 is_dir() 就是它当选
+resources/stickers/videos/   ← 搬迁中途留的空残留  ← 只看 is_dir() 也是它
+stickers/videos/op.mp4       ← 真素材还在这儿      ← 于是永远轮不到
+```
+后果 = 视频库返回**空列表**，界面只说"库是空的"、**一个字都不报** ——
+用户以为素材被删了。所以 `video_dir_readable_at` 走**两轮**：
+① 挑"目录存在**且 `read_dir` 非空**"的；② 都没有才退回"目录存在"的那个
+（全新安装本来就该是空的，那时返回新位置才对）。
+判据：`tests/asset_layout_fallback.rs::empty_leftover_must_not_shadow_a_populated_library`
++ `all_empty_resolves_to_the_new_location`（已变异自证）。
+⚠️ **贴纸库不适用这条**：贴纸包是**子目录**，`scan_packages` 本来就发现得了；
+而且"空库"对贴纸是常态（用户还没建包），拿内容当判据会把新建的空贴纸库顶回老位置。
+
 ⚠️ **视频库挪出 `stickers/` 的直接收益**：它原先是个普通子目录，而 `scan_packages` 会把
 "非 `.` 开头、非 `backup`"的子目录都当贴纸包扫 —— 装满 mp4 时它以"一张图都没有"被丢掉，
 **今天不污染列表纯属巧合**（`if !files.is_empty()`）。挪开之后这条从"碰巧不发生"

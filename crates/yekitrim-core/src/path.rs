@@ -170,6 +170,14 @@ pub fn video_dir_at(data_home: &Path) -> PathBuf {
 ///
 /// ⚠️ 中间那一档是必须的：`resources/stickers/videos` 是"贴纸库刚挪进 `resources/`
 /// 但视频还没挪"那一步的中间态 —— 只认头尾两档会让那一刻的视频库变空。
+///
+/// ⚠️ **"存在"不足以当选，这一档要挑"真有素材"的那个**（2026-10-09 修的真 bug）：
+/// 用户手工搬迁时**先建目录、后搬文件**，于是新位置/中间态会先出现一个**空目录**。
+/// 只看 `is_dir()` 的话那个空壳就当选了，而**真素材还躺在老位置** ——
+/// 结果视频库返回**空列表**、界面只说"库是空的"、**一个字都不报**。
+/// 实测配方：`resources/stickers/videos/`（空残留）+ `stickers/videos/op.mp4` → 解析到空的那份。
+/// 所以顺序是**两轮**：先挑"目录存在**且里面有文件**"的，都没有再退回"目录存在"的那个
+/// （空库也是合法状态 —— 全新安装就是空的，那时返回新位置才对）。
 pub fn video_dir_readable() -> PathBuf {
     video_dir_readable_at(&data_dir())
 }
@@ -181,11 +189,26 @@ pub fn video_dir_readable_at(data_home: &Path) -> PathBuf {
         sticker_dir_at(data_home).join("videos"),
         legacy_sticker_dir_at(data_home).join("videos"),
     ];
+    // 第一轮：有内容才算数（`read_dir` 至少一个条目）。
+    if let Some(hit) = candidates.iter().find(|p| dir_has_entries(p)) {
+        return hit.clone();
+    }
+    // 第二轮：空目录也认（全新安装 / 用户刚建好还没放东西）。
     candidates
         .iter()
         .find(|p| p.is_dir())
         .cloned()
         .unwrap_or_else(|| video_dir_at(data_home))
+}
+
+/// 目录存在**且里面至少有一个条目**。
+///
+/// ⚠️ 用来区分"真有素材的库"与"搬迁过程中先建出来的空壳"。
+/// 读不了的目录一律按"没有内容"处理（调不动就当空，别让权限问题顶掉一个可用的库）。
+fn dir_has_entries(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
 }
 
 /// **程序自带的运行时资产**目录 —— `<数据目录>/runtime/`（转译器 + 效果词汇表）。
