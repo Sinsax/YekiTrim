@@ -51,6 +51,43 @@ fn concat_temp_path() -> std::path::PathBuf {
 const ATEMPO_STAGE_MIN: f64 = 0.5;
 const ATEMPO_STAGE_MAX: f64 = 2.0;
 
+/// 音效**两端**的淡入/淡出时长（秒）—— 消除爆音（总方案 §22）。
+///
+/// ⚠️ **只此一处**：以前是硬编码在 `mix_sfx` 的格式串里（`d=0.2`），
+/// 现在两端共用同一个数。改它就同时改两头 —— 这是有意的：一长一短会听出"进得慢、收得急"。
+/// 0.2s 的取舍：短到听不出"音效被削了头"（人耳对 < 50ms 的包络不敏感，但 20ms 以下
+/// 仍会爆），长到足以盖掉起音突跳。
+const SFX_FADE_SECS: f64 = 0.2;
+
+/// 一条音效的 `-filter_complex` 片段：裁长 → **两端淡入淡出** → 延时到位 → 音量 → 打标签。
+///
+/// 抽成纯函数是为了**能单测**（`mix_sfx` 自己会真起 ffmpeg 子进程，判据没法进去）——
+/// 而这段正是 §22 改的东西，也是最容易"看着对、其实少了一个 `afade`"的地方。
+///
+/// # ⚠️ `fade_d` 为什么必须夹到 `dur`
+///
+/// `afade=t=in` 的 `d` 长过素材时 **ffmpeg 不报错**，但淡入**永远走不完**
+/// （整条音效都在爬升）—— 听起来像"音效变小了"，而不是"淡入没生效"。
+/// 这类"不报错但不对"的形态在本仓出过多次，所以在这里夹死。
+///
+/// 极短事件（`dur < 2 × SFX_FADE_SECS`）两头窗口会**重叠**：允许（等于整段都在淡），
+/// 比爆音好；总长仍由 `atrim=0:{dur}` 保证不超出素材。
+///
+/// # ⚠️ 顺序不能动
+///
+/// `atrim` → `afade=in` → `afade=out` → `adelay` → `volume`。
+/// 两个 `afade` 的 `st`/`d` 都是**素材内**的时间轴（`st=0` 与 `dur - fade`），
+/// 一旦挪到 `adelay` **之后**，时间轴就变成"整条音轨"的 —— 起始时刻全错
+/// （表现是"淡入跑到别的音效上去了"）。`volume` 放最后是它与淡入淡出可交换、放末尾更直观。
+fn sfx_filter_chain(input_idx: usize, dur: f64, delay_ms: u64, volume: f64) -> String {
+    let fade_d = SFX_FADE_SECS.min(dur);
+    let fade_st = (dur - SFX_FADE_SECS).max(0.0);
+    format!(
+        "[{}:a]atrim=0:{},afade=t=in:st=0:d={},afade=t=out:st={}:d={},adelay={}|{},volume={}[s{}]",
+        input_idx, dur, fade_d, fade_st, fade_d, delay_ms, delay_ms, volume, input_idx - 1
+    )
+}
+
 /// 把任意正速率拆成**若干级 `[0.5, 2.0]` 的 `atempo`**，拼成一条滤镜串。
 ///
 /// # 为什么必须"串联多级"而不是一级写个大数
@@ -247,12 +284,13 @@ impl Ffmpeg {
         for (i, event) in sfx_events.iter().enumerate() {
             input_args.push("-i".to_string());
             input_args.push(event.file.clone());
-            let delay_ms = (event.time * 1000.0) as u64;
             let dur = event.duration.unwrap_or(0.5);
-            let fade_st = (dur - 0.2).max(0.0);
-            filter_parts.push(format!(
-                "[{}:a]atrim=0:{},afade=t=out:st={}:d=0.2,adelay={}|{},volume={}[s{}]",
-                i + 1, dur, fade_st, delay_ms, delay_ms, event.volume, i
+            let delay_ms = (event.time * 1000.0) as u64;
+            filter_parts.push(sfx_filter_chain(
+                i + 1,
+                dur,
+                delay_ms,
+                event.volume,
             ));
             mix_inputs.push(format!("[s{}]", i));
         }
@@ -1051,6 +1089,52 @@ pub struct SfxEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **§22 音效两端都要淡**：`afade=t=in` 与 `afade=t=out` 必须都在。
+    ///
+    /// 为什么要有这条判据：以前只有 `t=out`，而"少一个淡入"的症状是**爆音**
+    /// （波形从 0 直接跳到峰值）—— 它不在日志里、不在画面上、也不让出片失败，
+    /// 只能靠耳朵。**这是全仓唯一能自动锁住它的地方。**
+    ///
+    /// 变异自证：把 `sfx_filter_chain` 里的 `afade=t=in:st=0:d={}` 整段删掉 ⇒ 本条翻红。
+    #[test]
+    fn sfx_filter_has_fades_on_both_ends() {
+        let f = sfx_filter_chain(1, 1.0, 500, 0.1);
+        assert!(f.contains("afade=t=in:st=0:d=0.2"), "缺淡入（会爆音）：{f}");
+        assert!(f.contains("afade=t=out:st=0.8:d=0.2"), "缺淡出：{f}");
+        // 顺序：`atrim` 在前、两个 `afade` 在 `adelay` **之前**（见函数注释：挪到后面起始时刻全错）
+        let i_atrim = f.find("atrim").expect("要有 atrim");
+        let i_in = f.find("afade=t=in").expect("要有淡入");
+        let i_out = f.find("afade=t=out").expect("要有淡出");
+        let i_delay = f.find("adelay").expect("要有 adelay");
+        assert!(i_atrim < i_in && i_in < i_out && i_out < i_delay, "顺序不对：{f}");
+        // 标签用 `输入下标 - 1`（与 `mix_inputs` 的 `[s{i}]` 对齐）
+        assert!(f.ends_with("[s0]"), "输出标签要与调用方对齐：{f}");
+    }
+
+    /// ⚠️ **淡入时长必须夹到素材长度** —— 否则 ffmpeg **不报错**但淡入永远走不完
+    /// （整条音效都在爬升），听起来像"音效变小了"。
+    ///
+    /// 变异自证：把 `SFX_FADE_SECS.min(dur)` 改成 `SFX_FADE_SECS` ⇒ 本条翻红。
+    #[test]
+    fn sfx_fade_never_exceeds_the_clip() {
+        // 0.1s 的音效：两个 0.2s 的窗口都会超出素材 ⇒ 必须被夹到 0.1
+        let f = sfx_filter_chain(1, 0.1, 0, 0.1);
+        assert!(f.contains("afade=t=in:st=0:d=0.1"), "淡入要夹到素材长度：{f}");
+        assert!(f.contains("afade=t=out:st=0:d=0.1"), "淡出同样要夹：{f}");
+        // 起始时刻不许是负数
+        assert!(!f.contains("st=-"), "st 不许为负：{f}");
+
+        // 正好 0.2s：两端窗口相接、各占满一半，都不超出
+        let e = sfx_filter_chain(1, 0.2, 0, 0.1);
+        assert!(e.contains("afade=t=in:st=0:d=0.2") && e.contains("afade=t=out:st=0:d=0.2"), "{e}");
+
+        // 够长时用满 0.2s，且淡出从 dur-0.2 开始
+        let n = sfx_filter_chain(2, 3.0, 1000, 0.5);
+        assert!(n.contains("afade=t=out:st=2.8:d=0.2"), "{n}");
+        assert!(n.contains("adelay=1000|1000"), "延时两端都要给（单声道/立体声）：{n}");
+        assert!(n.ends_with("[s1]"), "{n}");
+    }
 
     /// 帧率解析：**1001 那一族必须不丢精度**。
     ///
