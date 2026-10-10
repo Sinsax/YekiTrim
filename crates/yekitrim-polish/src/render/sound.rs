@@ -153,6 +153,11 @@ fn type_name(ev: &Event) -> String {
         Event::Pulse { .. } => "pulse".into(),
         Event::Overlay { .. } => "overlay".into(),
         Event::Camera { .. } => "camera".into(),
+        // 元素**不发声**：`Event::Element` 没有 `sfx` 字段（规格 §2 的结构里就没有），
+        // 所以它不会出现在 `collect_sound_events` 的结果里。这里保留一个分支只是为了让
+        // 这个 match 穷尽 —— 回 `kind` 而不是 `"element"`，万一将来有人给它接了音效，
+        // 日志里能直接看出是文字还是贴纸。
+        Event::Element { kind, .. } => kind.clone(),
     }
 }
 

@@ -288,6 +288,17 @@ fn event_kind(ev: &Event) -> &'static str {
         Event::Pulse { .. } => "pulse",
         Event::Overlay { .. } => "overlay",
         Event::Sfx { .. } => "sfx",
+        // ⚠️ 元素按**它自己的 `kind`** 分轨，而不是统一回一个 "element"：
+        // 这个函数要回答的是"哪些事件画在同一个视觉通道上"，而文字与贴纸在成片里
+        // 是**两种不同的东西**（文字是排版、贴纸是图片），质量分要能把它们分开统计。
+        // 统一回 "element" 会让"这一段的元素密度"把两类混成一个数。
+        Event::Element { kind, .. } => match kind.as_str() {
+            "text" => "text",
+            "sticker" => "sticker",
+            // 认不出的 kind 仍回 `element`：既不是已知的哪一类，也**不许**被静默算进
+            // 上面两类里（那会让质量分说"贴纸很多"而其实是写错了 kind 的元素）。
+            _ => "element",
+        },
     }
 }
 
