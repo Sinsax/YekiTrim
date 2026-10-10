@@ -605,7 +605,9 @@ function gridOrigin(name){
 function camFactor(label){
   var c=(CFG.style&&CFG.style.camera)||{};
   var v,d;
-  if(label==='近'){v=c.zoom_close;d=1.5;}
+  // ⚠️ 四个档位的默认值必须与 Rust `CameraStyle` 逐值一致（门禁 check-camera-zoom-parity 钉住）。
+  if(label==='特写'){v=c.zoom_closeup;d=1.8;}
+  else if(label==='近'){v=c.zoom_close;d=1.5;}
   else if(label==='远'){v=c.zoom_wide;d=0.55;}
   else{v=c.zoom_mid;d=1.3;}
   return (typeof v==='number'&&isFinite(v))?v:d;

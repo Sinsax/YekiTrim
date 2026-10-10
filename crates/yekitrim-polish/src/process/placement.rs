@@ -169,6 +169,12 @@ pub const WIDE_LABEL: &str = "远";
 /// 近景档位的档位名 —— 手持摇摆（`handheld`）唯一可用的景别，见 `process::fx::cap_handheld_sway`。
 pub const CLOSE_LABEL: &str = "近";
 
+/// **特写**档位的档位名（规格 `camera-and-noise-spec.md` §3.3 方案 A，系数 1.8）。
+///
+/// ⚠️ 它与 `近` 是**两个独立档位**（1.8 vs 1.5），别把 `特写` 当成 `近` 的同义词 ——
+/// 手持摇摆仍然只允许 `近`（用户口径没变），特写不继承它。
+pub const CLOSEUP_LABEL: &str = "特写";
+
 /// 这一段运镜的过渡时长：**硬切条件**（两端任一为远景「画中画」，或本事件自带 `cut`）
 /// 时是 **0 = 硬切**，否则 0.6s 缓动。
 ///

@@ -189,6 +189,19 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1d1: 特写焦点守卫（§18-A）。特写（1.8 倍）**强制 `anchor = liver`**。
+    //
+    // ⚠️ 理由：1.8 倍下弹幕/贴纸区基本被挤出画面，聚焦过去就是"主播不见了"。
+    //    这一档下任何非 liver 的聚焦意图都不成立。只碰「特写」档，其余档位零影响。
+    // ⚠️ 必须排在 Step 2d（`resolve_camera_anchors`）**之前** —— 那一步才把
+    //    `anchor` 解析成 `origin`，改在它之后就没用了（改的是因、解析的是果）。
+    {
+        let changed = cap_closeup_anchor(&mut config.segments);
+        if changed > 0 {
+            tracing::info!("  · 特写档强制聚焦主播：已改 {changed} 处（§18-A）");
+        }
+    }
+
     // Step 1d2: 荷兰角守卫（§19）。三条规则：夹 ±6°、全片最多 2 条、**禁配画中画**。
     //
     // ⚠️ 禁配画中画**不是审美偏好而是几何事实**（规格 §4.4b）：整帧旋转 θ 后要盖满画布

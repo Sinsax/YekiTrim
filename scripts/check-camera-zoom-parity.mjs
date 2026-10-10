@@ -35,7 +35,7 @@ const root = join(here, '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 
 /** 五处默认值必须同时等于这三个数 —— 改档位就是改这里 + 五处（有变异钉着）。 */
-const EXPECTED = { 近: 1.5, 远: 0.55, 中: 1.3 }
+const EXPECTED = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 }
 
 let failures = 0
 const check = (name, ok, detail) => {
@@ -57,6 +57,7 @@ function rustDefaults(src) {
   }
   return {
     mid: grab('default_zoom_mid'),
+    closeup: grab('default_zoom_closeup'),
     close: grab('default_zoom_close'),
     wide: grab('default_zoom_wide'),
   }
@@ -79,18 +80,23 @@ function jsCamFactorDefaults(src) {
       src.match(/return pick\(c\.zoom_mid,\s*([0-9.]+)\)/)
     return m ? Number(m[1]) : null
   }
-  return { close: grab('近'), wide: grab('远'), mid: grab('中') ?? midFallback() }
+  return {
+    closeup: grab('特写'),
+    close: grab('近'),
+    wide: grab('远'),
+    mid: grab('中') ?? midFallback(),
+  }
 }
 
 /** ④ 转译器：`const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 }`。 */
 function translatorDefaults(src) {
   const m = src.match(/const defaults = \{([^}]+)\}/)
-  if (!m) return { close: null, wide: null, mid: null }
+  if (!m) return { closeup: null, close: null, wide: null, mid: null }
   const get = (label) => {
     const mm = m[1].match(new RegExp(`${label}:\\s*([0-9.]+)`))
     return mm ? Number(mm[1]) : null
   }
-  return { close: get('近'), wide: get('远'), mid: get('中') }
+  return { closeup: get('特写'), close: get('近'), wide: get('远'), mid: get('中') }
 }
 
 /** ⑤ 后端：`("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0)` 的夹取区间。 */
@@ -101,7 +107,12 @@ function serverClamps(src) {
     const m = src.match(new RegExp(`\\("${key}",\\s*&mut cam\\.${key},\\s*([0-9.]+)(?:_f64)?,\\s*([0-9.]+)(?:_f64)?\\)`))
     return m ? [Number(m[1]), Number(m[2])] : null
   }
-  return { mid: grab('zoom_mid'), close: grab('zoom_close'), wide: grab('zoom_wide') }
+  return {
+    mid: grab('zoom_mid'),
+    closeup: grab('zoom_closeup'),
+    close: grab('zoom_close'),
+    wide: grab('zoom_wide'),
+  }
 }
 
 function run(variant) {
@@ -115,6 +126,7 @@ function run(variant) {
 
   console.log('\n① 五处**默认值**逐值一致（这是"预览 = 成片"的前提）')
   const all = [
+    ['特写', rust.closeup, tpl.closeup, eng.closeup, trans.closeup],
     ['近', rust.close, tpl.close, eng.close, trans.close],
     ['远', rust.wide, tpl.wide, eng.wide, trans.wide],
     ['中', rust.mid, tpl.mid, eng.mid, trans.mid],
@@ -132,11 +144,13 @@ function run(variant) {
   // 中景与近景：下限 1.0 = 不比原始画面更小（< 1 会缩出黑边，那是画中画的语义）
   check('zoom_mid 夹到 [1.0, 3.0]', eq(srv.mid?.[0], 1.0) && eq(srv.mid?.[1], 3.0), `实得 ${JSON.stringify(srv.mid)}`)
   check('zoom_close 夹到 [1.0, 3.0]', eq(srv.close?.[0], 1.0) && eq(srv.close?.[1], 3.0), `实得 ${JSON.stringify(srv.close)}`)
+  // 特写与中/近同一区间：它同样是"放大"，< 1 会缩出黑边（那是画中画的语义）。
+  check('zoom_closeup 夹到 [1.0, 3.0]', eq(srv.closeup?.[0], 1.0) && eq(srv.closeup?.[1], 3.0), `实得 ${JSON.stringify(srv.closeup)}`)
   // 画中画：> 1 就不是画中画了；下限取正数（0 会让画面缩成一个点）
   check('zoom_wide 夹到 [0.05, 1.0]', eq(srv.wide?.[0], 0.05) && eq(srv.wide?.[1], 1.0), `实得 ${JSON.stringify(srv.wide)}`)
 
   console.log('\n③ 后端夹取区间必须**包住**默认值（否则默认值一存就被夹坏）')
-  for (const [key, label] of [['mid', '中'], ['close', '近'], ['wide', '远']]) {
+  for (const [key, label] of [['mid', '中'], ['closeup', '特写'], ['close', '近'], ['wide', '远']]) {
     const c = srv[key]
     const d = EXPECTED[label]
     check(
@@ -151,6 +165,7 @@ function run(variant) {
   // 或反过来前端夹了、后端存了 5.0。所以这两组数必须是同一批。
   const fe = frontendRanges(variant.polishView)
   check('zoom_close 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.close, srv.close), `前端 ${JSON.stringify(fe.close)} / 后端 ${JSON.stringify(srv.close)}`)
+  check('zoom_closeup 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.closeup, srv.closeup), `前端 ${JSON.stringify(fe.closeup)} / 后端 ${JSON.stringify(srv.closeup)}`)
   check('zoom_mid 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.mid, srv.mid), `前端 ${JSON.stringify(fe.mid)} / 后端 ${JSON.stringify(srv.mid)}`)
   check('zoom_wide 前端滑杆区间 = 后端夹取区间', rangesEqual(fe.wide, srv.wide), `前端 ${JSON.stringify(fe.wide)} / 后端 ${JSON.stringify(srv.wide)}`)
 }
@@ -160,7 +175,12 @@ function frontendRanges(src) {
     const m = src.match(new RegExp(`key: '${key}',\\s*label: '[^']*',\\s*min: ([0-9.]+),\\s*max: ([0-9.]+)`))
     return m ? [Number(m[1]), Number(m[2])] : null
   }
-  return { close: grab('zoom_close'), mid: grab('zoom_mid'), wide: grab('zoom_wide') }
+  return {
+    closeup: grab('zoom_closeup'),
+    close: grab('zoom_close'),
+    mid: grab('zoom_mid'),
+    wide: grab('zoom_wide'),
+  }
 }
 
 const rangesEqual = (a, b) =>
