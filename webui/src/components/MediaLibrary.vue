@@ -143,6 +143,13 @@
               <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
               <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
               <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
+              <!-- 用户口径：「信息不足」⇒ 补 分辨率/编码/帧率/码率（另加音轨，静音素材做片头是常见坑）。
+                   ⚠️ 每一项都可能是 `—`：探不出来时**如实显示 —**，不留空、更不编一个数。 -->
+              <div class="ml-info-row"><span class="muted">分辨率</span><b>{{ preview.dimText }}</b></div>
+              <div class="ml-info-row"><span class="muted">编码</span><b>{{ preview.codecText }}</b></div>
+              <div class="ml-info-row"><span class="muted">帧率</span><b>{{ preview.fpsText }}</b></div>
+              <div class="ml-info-row"><span class="muted">码率</span><b>{{ preview.bitrateText }}</b></div>
+              <div class="ml-info-row"><span class="muted">音轨</span><b>{{ preview.audioText }}</b></div>
             </div>
           </template>
         </template>
@@ -315,6 +322,14 @@ function fmtDuration(sec) {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
 
+/** 帧率 → `30 fps` / `29.97 fps`。**整数不显示小数**（`30 fps` 比 `30.00 fps` 清爽），
+ * 探不出来给 `—`，**不猜**（`0 fps` 是编的）。 */
+function fmtFps(v) {
+  if (!v || v <= 0) return '—'
+  // 取整后再比：`29.9999` 这种浮点误差不该显示成 `29.9999 fps`
+  return `${Math.abs(v - Math.round(v)) < 0.005 ? Math.round(v) : v.toFixed(2)} fps`
+}
+
 /** 点一个贴纸包 → 拉整包图，填进右栏。
  *
  * ⚠️ **只服务贴纸**：视频已改回弹窗（用户口径），不在这里处理 —— 别再把视频分支加回来，
@@ -336,6 +351,13 @@ async function selectItem(it) {
       url: it.url,
       durationText: fmtDuration(it.duration),
       sizeText: '…',
+      // 技术信息直接来自列表接口（服务端已一次 ffprobe 探全），点选无延迟。
+      // ⚠️ 每一项都可能缺失 ⇒ 显示侧逐项兜底成 `—`，**不要在这里编默认值**。
+      dimText: it.width && it.height ? `${it.width}×${it.height}` : '—',
+      codecText: it.codec ? String(it.codec).toUpperCase() : '—',
+      fpsText: fmtFps(it.fps),
+      bitrateText: it.bitrate ? `${(it.bitrate / 1e6).toFixed(1)} Mbps` : '—',
+      audioText: it.has_audio === true ? '有' : it.has_audio === false ? '无（静音）' : '—',
     }
     // 大小是"锦上添花"：拿不到就显示 —，**不能因为探不到就让整条选中失败**。
     // ⚠️ 落结果前核对还是不是同一条，防止点得快时慢响应覆盖新选中。
@@ -437,9 +459,15 @@ const items = computed(() => {
       badge: v.duration == null ? '不可用' : null,
       thumb: videoThumbUrl(v.file),
       url: assetUrl('video', v.file),
-      // 右栏要用：文件名（显示 + 探大小）与时长（`m:ss`）
+      // 右栏要用：文件名（显示 + 探大小）、时长（`m:ss`）与技术信息（服务端已探好）
       file: v.file,
       duration: v.duration,
+      width: v.width,
+      height: v.height,
+      codec: v.codec,
+      fps: v.fps,
+      bitrate: v.bitrate,
+      has_audio: v.has_audio,
       type: 'video',
       detail: v.duration == null ? 'ffprobe 读不出时长，片头/片尾里选不了它。' : null,
     }))
@@ -457,8 +485,14 @@ const items = computed(() => {
       type: 'font',
       // ⚠️ 自带字体**不可删**（服务端回 403）—— 前端就别给那颗按钮，而不是让用户点了再报错。
       // 判据是 `builtin`，与 `fonts::remove_font` 同源。
+      // ⚠️ **emoji 字体不给「设为默认」**（用户报「设为默认失败…NotoColorEmoji-CBDT」）：
+      // emoji 是**独立的补充槽位**，不参与"正文默认位"的竞争 —— `scan_all` 出口就把它
+      // 强制成 `is_default = false`（`fonts.rs` 的 A4 第三道拦截）。给它按钮 =
+      // 点下去必然失败，而且会走到 `dir_for_id` 那条**误导性**的报错
+      // （"不在目录布局里…先重新导入一次"，把这支好好的自带字体说成坏了）。
+      // 判据 `f.emoji` 由接口直接给出，与 `set_default` 里 `meta.emoji` 同源。
       actions: [
-        f.is_default || f.installed === false
+        f.is_default || f.installed === false || f.emoji
           ? null
           : { label: '默认', hint: '设为默认字体（只影响新工程的推荐位）', run: () => doSetDefault(f) },
         f.builtin ? null : { label: '删除', hint: '从字体库删除', run: () => doDeleteFont(f) },
@@ -716,7 +750,10 @@ onMounted(() => load())
    ⚠️ 预览栏**定宽**而不是自适应：视频播放器需要一个稳定的宽高比参考，
    宽度一变、同一段视频每换一次选中就跳一次尺寸。 */
 .ml-side {
-  flex:none; width:600px;                 /* 用户口径：宽度翻倍（300 → 600） */
+  /* 宽度：300 → 600（用户：「宽度翻倍」）→ 860（用户：「视频太矮，想让画面更高」）。
+     ⚠️ 视频高度 = 栏宽 / 宽高比，而栏宽就是这里 —— 想让画面更高**只能加宽这一处**
+     （16:9 在 600px 下只有 338px 高，在 860px 下有 484px）。 */
+  flex:none; width:860px;
   display:flex; flex-direction:column; gap:8px;
   border-left:1px solid var(--line); padding-left:12px;
   min-height:220px;
@@ -764,9 +801,9 @@ onMounted(() => load())
 
 /* 包内图片列表：多列小图，可滚。一个包 200+ 张（ysyk = 210），
    不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。
-   6 列是跟着 600px 的栏宽定的：列数少了每张图被拉得很大、一屏反而看得更少。 */
+   8 列是跟着 860px 的栏宽定的：列数少了每张图被拉得很大、一屏反而看得更少。 */
 .ml-side-grid {
-  display:grid; grid-template-columns:repeat(6, 1fr); gap:4px;
+  display:grid; grid-template-columns:repeat(8, 1fr); gap:4px;
   max-height:460px; overflow-y:auto; padding-right:2px;
 }
 .ml-side-grid img {
