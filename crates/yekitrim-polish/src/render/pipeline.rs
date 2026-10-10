@@ -1148,6 +1148,36 @@ pub fn measure_loudness_curve_cached(cache_dir: &Path, media_path: &Path) -> Vec
     curve
 }
 
+/// 读响度曲线缓存，**但不校验 key** —— 给 `process` 的 §6 爆点判据用。
+///
+/// ⚠️ 为什么不是把 `media_key` 变 `pub`：那样调用方要自己拼 key 格式，
+/// 而 key 格式一变（这里已经改过一次口径）就会有地方悄悄读不出曲线 ——
+/// 症状是"爆点判据的音效那一路静默失效"。把"读 + 校验"合成一个函数，
+/// 调用方不可能只做一半。
+///
+/// ⚠️ 校验用的 key 与写缓存时**同一个** `media_key`（本模块私有）——
+/// 这正是不能把它拆出去的原因。
+pub fn read_loudness_curve_checked(cache_dir: &Path, media_path: &Path) -> Vec<(f64, f64)> {
+    let cache_file = cache_dir.join("data").join("loudness.json");
+    let Some(key) = media_key(media_path) else { return Vec::new() };
+    let Ok(raw) = std::fs::read_to_string(&cache_file) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { return Vec::new() };
+    // ⚠️ **必须验 key**：换过源视频之后缓存还在，不验就会拿上一条视频的响度
+    // 去判这一条的爆点 —— 全错但**不报错**。
+    if v.get("key").and_then(|x| x.as_str()) != Some(key.as_str()) {
+        return Vec::new();
+    }
+    v.get("points")
+        .and_then(|p| p.as_array())
+        .map(|points| {
+            points
+                .iter()
+                .filter_map(|p| Some((p.get("t")?.as_f64()?, p.get("db")?.as_f64()?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 缓存键：文件名 + 修改时间(秒) + 字节数（内容变了就失效）。
 fn media_key(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy().into_owned();
