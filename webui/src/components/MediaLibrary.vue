@@ -122,15 +122,32 @@
         </div>
       </section>
 
-      <!-- **右侧预览栏** —— 只服务贴纸（用户口径 2026-10-10 修订）：
+      <!-- **右侧预览栏**（用户口径 2026-10-10 最终版）：
+           · 视频 —— 点左边在这里**直接播放**，并显示文件名/时长/大小；
            · 贴纸 —— 在这里**列表显示**整包；
-           · **视频** —— 改成**点击弹窗**播放（用户口径：「视频还是改成点击弹出吧，
-             视频的右侧栏删除」）。视频要的是"大一点看清楚"，弹窗比定宽栏合适，
-             而且弹窗本来就有（`zoom`），不用为视频单留一条渲染分支；
-           · **字体** —— 没有右栏，样例文字输入框在左侧。
-           ⚠️ 所以右栏的显示条件从 `kind !== 'font'` 收紧成 **`kind === 'sticker'`**：
-           视频页整条右栏不渲染（不是渲染出来再藏起来 —— 那还会占掉 600px 的宽度）。 -->
-      <aside v-if="kind === 'sticker'" class="ml-side">
+           · 字体 —— **没有右栏**（样例文字输入框在左侧），字体用网格里现场渲染的样例看效果。
+           ⚠️ 显示条件是 `kind !== 'font'`（两个类型共用一条右栏，靠 `kind` 切内容）。
+           ⚠️ 用户中途试过"视频改弹窗、右栏只留贴纸"，又改回来了 —— **别再自动改回去**。 -->
+      <aside v-if="kind !== 'font'" class="ml-side">
+        <template v-if="kind === 'video'">
+          <div v-if="!preview" class="ml-side-empty muted small">
+            点左边的视频，在这里预览播放
+          </div>
+          <template v-else>
+            <!-- ⚠️ **尺寸由视频自己决定**（见 `.ml-side-video` 的说明）：
+                 以前这里写死 `aspect-ratio:16/9`，而库里的 `op.mp4` 是 320×240(4:3)
+                 ⇒ 画面框比例不对（拉伸或留黑边）。现在不由 CSS 猜比例。 -->
+            <video :src="preview.url" controls class="ml-side-video"></video>
+            <div class="ml-side-info">
+              <div class="ml-info-row"><span class="muted">名称</span><b>{{ preview.name }}</b></div>
+              <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
+              <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
+              <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
+            </div>
+          </template>
+        </template>
+
+        <template v-else>
         <div v-if="!preview" class="ml-side-empty muted small">
           点左边的贴纸包，在这里列出包内所有图
         </div>
@@ -153,6 +170,7 @@
               @click="openStickerImage(f)"
             >
           </div>
+        </template>
         </template>
       </aside>
     </div>
@@ -259,8 +277,16 @@ const preview = ref(null)
 function switchKind(k) {
   if (kind.value === k) return
   kind.value = k
-  // 右栏只服务贴纸；切走就把选中清掉（右栏那时整条不渲染，留着旧数据没意义）。
+  // 右栏服务视频与贴纸；切到字体时整条不渲染，而且两类数据形状不同 ——
+  // 不清的话从贴纸切到视频，右栏会拿着 `{files:[…]}` 去渲染 `<video>`。
   preview.value = null
+}
+
+/** 秒 → `m:ss`（视频时长）。探不出来时给 `—`，**不猜**。 */
+function fmtDuration(sec) {
+  if (!sec || sec <= 0) return '—'
+  const t = Math.round(sec)
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
 
 /** 点一个贴纸包 → 拉整包图，填进右栏。
@@ -269,7 +295,33 @@ function switchKind(k) {
  * 那会让"右栏"同时承担两种形态。
  * ⚠️ **贴纸要现拉 detail**（列表只有 `count`）：整包的图只在这一刻拉一次。
  * ⚠️ 落结果前核对 `preview.value?.name`，否则点得快时慢响应会覆盖新选中。 */
-async function selectStickerPack(it) {
+async function selectItem(it) {
+  if (it.type === 'video') {
+    // ⚠️ **别拿 `it.key` 去 `videos` 里反查** —— `videos.value` 里放的是**接口原始对象**
+    // （只有 `{name, file, duration}`，**没有 `key`**），`it.key` 是 `items` 计算时才造出来的。
+    // 曾经写成 `videos.value.find(x => x.key === it.key)` ⇒ 永远 `undefined` ⇒
+    // **点了视频右栏什么都不出现**。「有字段名就读」之前先 `Object.keys()` 看一眼。
+    // `it` 自己就带齐了要用的字段，直接用。
+    if (typeof it.file !== 'string' || !it.file) return
+    preview.value = {
+      type: 'video',
+      name: it.name,
+      file: it.file,
+      url: it.url,
+      durationText: fmtDuration(it.duration),
+      sizeText: '…',
+    }
+    // 大小是"锦上添花"：拿不到就显示 —，**不能因为探不到就让整条选中失败**。
+    // ⚠️ 落结果前核对还是不是同一条，防止点得快时慢响应覆盖新选中。
+    try {
+      const res = await fetch(it.url, { method: 'HEAD' })
+      const len = Number(res.headers.get('content-length') || 0)
+      if (preview.value?.file === it.file) preview.value.sizeText = fmtBytes(len)
+    } catch {
+      if (preview.value?.file === it.file) preview.value.sizeText = '—'
+    }
+    return
+  }
   preview.value = { type: 'sticker', name: it.name, files: [] }
   try {
     const d = await stickersApi.detail(it.name)
@@ -416,19 +468,14 @@ async function load(force = false) {
 }
 
 async function open(it) {
-  // **视频：点击弹窗播放**（用户口径 2026-10-10：「视频还是改成点击弹出吧，视频的右侧栏删除」）。
-  // 弹窗比定宽右栏大得多，看画面本来就更合适；那条 `<video>` 分支本来就在弹窗里，直接复用。
-  if (it.type === 'video') {
-    zoom.value = { type: 'video', title: it.name, url: it.url, detail: it.detail }
-    return
-  }
-  // **字体：也走弹窗**（没有右栏，看大字形）。
+  // **字体没有右栏**（用户口径）：直接弹窗看大字形。
   if (it.type === 'font') {
     zoom.value = { type: 'font', title: it.name, stack: it.stack, sample: it.sample, meta: it.meta, detail: it.detail }
     return
   }
-  // **贴纸：进右侧预览栏**（在那儿列整包）。
-  await selectStickerPack(it)
+  // **视频与贴纸都进右侧预览栏**（视频在那儿直接播、贴纸在那儿列整包）。
+  // ⚠️ 视频**不弹窗** —— 用户试过弹窗那条路又改回来了，别再自动改回去。
+  await selectItem(it)
 }
 
 /** 从右栏的贴纸列表里点开一张 —— 大图仍走弹窗（列表格子小，看不清细节）。 */
@@ -629,6 +676,26 @@ onMounted(() => load())
   min-height:160px; text-align:center; padding:0 12px;
   border:1px dashed var(--line); border-radius:8px;
 }
+/* 视频（右栏里的那只）。
+   ⚠️ **尺寸要由视频自己决定，不能用 CSS 猜比例**（用户口径：「播放器要显示正确的尺寸」）：
+     · `width:100%` —— 铺满栏宽；
+     · `height:auto` —— 高度按视频**内在宽高比**算；
+     · **不要写 `aspect-ratio`** —— 那是猜。我上一版写死 `16/9`，而库里的 `op.mp4`
+       是 320×240(4:3) ⇒ 画面框比例就是错的（这条正是用户报的"尺寸不对"）。
+     · **不要写 `object-fit`** —— 不写时元素本身就被视频撑成正确比例，
+       黑边根本不会出现；写 `contain` 反而会在比例算错时留边。
+     · `flex:none` —— `.ml-side` 是 column flex 容器，不加会被压扁（默认 `flex-shrink:1`）。
+   实测：op.mp4(320×240) → 元素 600×450；probe.mp4(1920×1080) → 元素 600×338。 */
+.ml-side-video {
+  flex:none; width:100%; height:auto; display:block;
+  border-radius:8px; background:#000;
+}
+.ml-side-info { flex:none; display:flex; flex-direction:column; gap:5px; }
+.ml-info-row { display:flex; gap:8px; align-items:baseline; font-size:12px; }
+.ml-info-row > .muted { flex:none; width:36px; }
+.ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
+.ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
 /* 包内图片列表：多列小图，可滚。一个包 200+ 张（ysyk = 210），
    不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。
    6 列是跟着 600px 的栏宽定的：列数少了每张图被拉得很大、一屏反而看得更少。 */
