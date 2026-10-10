@@ -512,6 +512,27 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 组名恰好是 字幕/弹幕 · 区域设置 · 片头/片尾',
     (polishView.match(/<div class="lane-group-h">([^<]+)<\/div>/g) || []).map((m) => m.replace(/<[^>]+>/g, '')).join('|'),
     '字幕 / 弹幕|区域设置|片头 / 片尾')
+  // ---- 2026-10 用户追加两条：字幕样式两列 + 片头片尾独立页签 ----
+  // ⚠️ 片头/片尾**搬进了自己的页签**（用户：「片头片尾放在一个单独的页面」），
+  //    但它仍然是三组之一（下面那条 `lane-group` 计数与组名判据照旧成立）。
+  // ⚠️ 提取值要用**捕获组**：早先写成整体 replace 会得到 `"|"|"`（正则把引号也吃了）。
+  check('⑰ 三个页签：项目设置 / 画面尺寸 / 片头片尾',
+    [...polishView.matchAll(/@click="sideTab = '(\w+)'"/g)].map((m) => m[1]).join('|'),
+    'project|canvas|intro')
+  // 片头片尾的**内容**必须在 `sideTab === 'intro'` 那个 `v-else-if` 分支里，
+  // 也就是：分支标记之后、下一个分支（`v-else` 的画面尺寸）之前，能找到 io-row。
+  const introAt = polishView.indexOf("v-else-if=\"sideTab === 'intro'\"")
+  const canvasAt = polishView.indexOf('<template v-else>', introAt)
+  check('⑰ 片头片尾块落在 intro 分支内（不在 project 分支里）',
+    introAt > 0 && canvasAt > introAt && polishView.slice(introAt, canvasAt).includes('io-row'), true)
+  // 字幕四项必须是**两列两行**（用户：「改为两行的排版」）：两个 `.ss-row-2` 容器、
+  // 每个里正好两条 `.ss-row`。⚠️ 判据走**模板**：CSS 里也写了 `.ss-row-2`，只数全文件会数重。
+  const ssTpl = polishView.slice(polishView.indexOf('<div class="ss-grid"'), polishView.indexOf('恢复默认'))
+  check('⑰ 字幕样式是两列两行（2 个 .ss-row-2 × 每个 2 条 .ss-row）',
+    (ssTpl.match(/<div class="ss-row-2">/g) || []).length === 2
+    && (ssTpl.match(/<div class="ss-row"/g) || []).length === 4, true)
+  check('⑰ 两列态给数字框留了 `min-width:0`（不然 flex 最小尺寸会把右列顶出容器）',
+    /\.ss-num \{ flex:1 1 auto; min-width:0; \}/.test(polishView), true)
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
   check('⑰ 任务详情是**浮层**（不挤占下方控件）',
     /\.job-wrap \{ position:relative; \}/.test(polishView)
