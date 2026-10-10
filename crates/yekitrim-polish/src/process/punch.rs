@@ -236,6 +236,114 @@ impl PunchDetector {
     }
 }
 
+// ===== 从真实数据构造信号（§6 的输入适配层）=====
+//
+// ⚠️ **归一化在这里做完**，别留给 `detect` —— 判据那一层只认 0~1，
+// 而这三路的量纲完全不同（字幕是"每秒几个字"、弹幕是"每秒几条"、响度是 dB）。
+// 量纲混进判据之后，"哪一路分量大"就由单位决定了 —— 正是今天只有弹幕一个特征时的毛病。
+
+/// 字幕信号：按**每窗字数**归一化（分母是窗口宽度，不是说话时长 —— 见函数内的 ⚠️）。
+///
+/// ⚠️ 这里用"字数/秒"而不是"条数/秒"：ASR 会把**一口气重复的音节**切成连续碎片
+/// （本仓实测：`21.92→21.97→22.02` 那种，0.05s 一条），按条数算的话这种碎片段
+/// 会拿到和"一句完整长句"一样的分 —— 而后者才是真的信息密度高。
+///
+/// ⚠️ `max_cps` 是**该切片自己**的基准（取所有窗口的最大值），不是全局常数：
+/// 不同主播语速差一倍，用常数会让慢速主播**永远判不出爆点**。
+pub fn subtitle_signal(subtitles: &[Subtitle], window: f64) -> Vec<SignalPoint> {
+    if subtitles.is_empty() || window <= 0.0 {
+        return Vec::new();
+    }
+    let mut buckets: std::collections::BTreeMap<usize, f64> = Default::default();
+    for sub in subtitles {
+        // 字数按 `chars()` 数（CJK 一个字算一个）；空白先去掉，否则英文句子的空格会灌水。
+        let chars = sub.text.chars().filter(|c| !c.is_whitespace()).count() as f64;
+        let idx = (sub.start / window).floor() as usize;
+        *buckets.entry(idx).or_insert(0.0) += chars;
+    }
+    // ⚠️⚠️ **分母是窗口宽度，不是"这一段说话的总时长"。**
+    //
+    // 用说话时长当分母是个**看起来更精确、实际更糟**的选择：碎片字幕的时长极短
+    // （本仓实测 0.05s 一条），`字数 / 0.2s` 能到 20 字/秒，而一句 4 秒的正常话只有 2.5 字/秒
+    // ⇒ **判据被碎片彻底劫持**，"信息密度高"变成"字幕切得碎"。
+    // 用窗口宽度当分母之后，量纲是"这一窗里说了多少字" —— 那才是"这段信息量大不大"。
+    // ⚠️ 这个错法是我自己的用例（`subtitle_signal_weights_characters_not_fragments`）抓出来的。
+    let raw: Vec<(f64, f64)> = buckets
+        .into_iter()
+        .map(|(i, chars)| (i as f64 * window, chars / window))
+        .collect();
+    normalize_points(&raw)
+}
+
+/// 弹幕信号：按**每秒条数**归一化（该切片自己作基准）。
+///
+/// ⚠️ 只数条数会把**刷屏**当成高潮（规格 D-2）。这一步**不做**多特征
+/// （平均消息长度 / 相似度）—— 规格明说那是"可选增强，不是前提"。
+/// 但归一化至少让它与字幕信号**同量纲**，不再是一路压倒性的特征。
+pub fn danmaku_signal(counts: &[(f64, f64)], window: f64) -> Vec<SignalPoint> {
+    if counts.is_empty() || window <= 0.0 {
+        return Vec::new();
+    }
+    let mut buckets: std::collections::BTreeMap<usize, f64> = Default::default();
+    for (at, count) in counts {
+        let idx = (at / window).floor() as usize;
+        *buckets.entry(idx).or_insert(0.0) += count;
+    }
+    let raw: Vec<(f64, f64)> = buckets
+        .into_iter()
+        .map(|(i, c)| (i as f64 * window, c / window))
+        .collect();
+    normalize_points(&raw)
+}
+
+/// 响度信号：把 dB 曲线归一化成 0~1。
+///
+/// ⚠️ **用百分位而不是 min/max**：一次爆音（掌声/尖叫/爆音效）会让 max 高出一大截，
+/// 于是"其余所有时刻"都被压到接近 0 —— 判据等于只看那一个尖峰。
+/// 取 5%~95% 分位作基准，把极值**夹进**区间（不是丢掉），保留了"它确实很高"。
+///
+/// ⚠️ 也**不做**"相对静音底噪"的判定：那是 §7 的事（它要分"拖沓沉默/喜剧停顿"），
+/// 这里只回答"这一刻响不响"。
+pub fn loudness_signal(curve: &[(f64, f64)]) -> Vec<SignalPoint> {
+    if curve.is_empty() {
+        return Vec::new();
+    }
+    let mut dbs: Vec<f64> = curve.iter().map(|(_, db)| *db).collect();
+    dbs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pick = |q: f64| -> f64 {
+        let i = ((dbs.len() - 1) as f64 * q).round() as usize;
+        dbs[i.min(dbs.len() - 1)]
+    };
+    let lo = pick(0.05);
+    let hi = pick(0.95);
+    let span = (hi - lo).abs();
+    curve
+        .iter()
+        .map(|(at, db)| {
+            let strength = if span < 1e-9 {
+                // 整段一样响（或只有一个采样点）⇒ 没有"响度信息"，给一个中性值。
+                // ⚠️ 给 0 会让这一路静默失效（"整段都响"被判成"整段都不响"）；
+                //    给 1 会把它变成万能爆点。0.5 = 不参与推动，但也不是缺席。
+                0.5
+            } else {
+                ((db - lo) / span).clamp(0.0, 1.0)
+            };
+            SignalPoint { at: *at, strength }
+        })
+        .collect()
+}
+
+/// 把 `(时间, 原始值)` 归一化到 0~1（按**最大值**作基准；全 0 时全部回 0）。
+fn normalize_points(raw: &[(f64, f64)]) -> Vec<SignalPoint> {
+    let max = raw.iter().map(|(_, v)| *v).fold(0.0, f64::max);
+    raw.iter()
+        .map(|(at, v)| SignalPoint {
+            at: *at,
+            strength: if max > 0.0 { (v / max).clamp(0.0, 1.0) } else { 0.0 },
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +495,122 @@ mod tests {
         assert!(
             d.detect(&[], 60.0, PUNCH_WINDOW_SECS).is_empty(),
             "判据的主信号是字幕；它不在就不该给结论"
+        );
+    }
+
+    // ── 输入适配层（从真实数据构造信号）──────────────────────────
+
+    fn sub(start: f64, end: f64, text: &str) -> Subtitle {
+        Subtitle {
+            index: 0,
+            start,
+            end,
+            text: text.into(),
+            html: String::new(),
+        }
+    }
+
+    /// 字幕信号按**每秒字数**算 —— 碎片密但字数少的一段，不该拿到与长句同档的分。
+    ///
+    /// ⚠️ 这是真实数据里最常见的形态（本仓实测 0.05s 的碎片占 2.6%，
+    /// ASR 把一口气重复的音节切成连续碎片）。按**条数**算的话这种碎片段会拿满分。
+    #[test]
+    fn subtitle_signal_weights_characters_not_fragments() {
+        // 窗 0：一条 4s 的长句（10 个字 → 2.5 字/秒）
+        // 窗 1：四条 0.05s 的碎片，共 4 个字 —— 条数多，但总字数少
+        let subs = vec![
+            sub(0.0, 4.0, "这是一句完整的话啊"),
+            sub(5.0, 5.05, "啊"),
+            sub(5.1, 5.15, "啊"),
+            sub(5.2, 5.25, "啊"),
+            sub(5.3, 5.35, "啊"),
+        ];
+        let pts = subtitle_signal(&subs, PUNCH_WINDOW_SECS);
+        assert_eq!(pts.len(), 2, "两个窗各一个点: {pts:?}");
+        let w0 = pts.iter().find(|p| p.at == 0.0).unwrap();
+        let w1 = pts.iter().find(|p| p.at == 5.0).unwrap();
+        assert_eq!(w0.strength, 1.0, "长句那个窗是基准（最强）");
+        assert!(
+            w1.strength < 0.5,
+            "四条碎片（共 4 字/0.2s 跨度）不该与长句同档: {w1:?}"
+        );
+    }
+
+    /// 响度信号用 **5%~95% 分位**归一化 —— 一个孤立尖峰不该把其余时刻全压到 0。
+    #[test]
+    fn loudness_signal_is_not_hijacked_by_a_single_spike() {
+        // 20 个正常点（-30 ~ -10 dB）+ 1 个爆音（0 dB）
+        let mut curve: Vec<(f64, f64)> = (0..20)
+            .map(|i| (i as f64 * 0.5, -30.0 + i as f64))
+            .collect();
+        curve.push((10.0, 0.0)); // 爆音
+        let pts = loudness_signal(&curve);
+        assert_eq!(pts.len(), curve.len());
+        // 中间的普通点若被尖峰压扁，strength 会接近 0；分位归一化应当让它们保持可分辨
+        let mid = pts.iter().find(|p| (p.at - 4.5).abs() < 1e-9).unwrap();
+        assert!(
+            mid.strength > 0.1,
+            "普通点被孤立尖峰压扁了（min/max 归一化的症状）: {mid:?}"
+        );
+        // 尖峰仍应是最高的（夹进区间，不是丢掉）
+        let spike = pts.iter().find(|p| (p.at - 10.0).abs() < 1e-9).unwrap();
+        assert_eq!(spike.strength, 1.0, "爆音必须仍是最强");
+    }
+
+    /// 弹幕信号按每秒条数归一化；**空输入 ⇒ 空信号**（= "本次无弹幕信号"）。
+    #[test]
+    fn danmaku_signal_is_empty_when_there_is_no_danmaku() {
+        assert!(danmaku_signal(&[], PUNCH_WINDOW_SECS).is_empty());
+        // 同一窗内多条要累加
+        let pts = danmaku_signal(&[(0.0, 3.0), (1.0, 2.0), (6.0, 1.0)], PUNCH_WINDOW_SECS);
+        assert_eq!(pts.len(), 2);
+        let w0 = pts.iter().find(|p| p.at == 0.0).unwrap();
+        let w1 = pts.iter().find(|p| p.at == 5.0).unwrap();
+        assert_eq!(w0.strength, 1.0, "5 条那个窗是基准");
+        assert!((w1.strength - 0.2).abs() < 1e-9, "1 条 = 5 条的 1/5: {w1:?}");
+    }
+
+    /// 整段一样响时**不给 0 也不给 1**：给 0 是静默失效，给 1 是万能爆点。
+    #[test]
+    fn flat_loudness_curve_is_neutral() {
+        let pts = loudness_signal(&[(0.0, -20.0), (1.0, -20.0), (2.0, -20.0)]);
+        assert_eq!(pts.len(), 3);
+        for p in &pts {
+            assert_eq!(p.strength, 0.5, "整段一样响 ⇒ 中性，不是 0 也不是 1");
+        }
+    }
+
+    /// **端到端**：用真实形态的数据（字幕 + 弹幕 + 响度）跑一遍三个适配器 + 检测。
+    #[test]
+    fn adapters_feed_the_detector_end_to_end() {
+        let subs = vec![
+            sub(0.0, 4.0, "普通的一句话就这样"),
+            sub(20.0, 24.0, "这里突然说了一大堆话哈哈哈哈哈"),
+        ];
+        // 弹幕只在 20s 附近爆
+        let dm = danmaku_signal(&[(20.5, 30.0), (21.0, 25.0), (0.5, 1.0)], PUNCH_WINDOW_SECS);
+        // 响度也在 20s 附近高
+        let loud = loudness_signal(
+            &(0..60)
+                .map(|i| {
+                    let t = i as f64;
+                    let db = if (20.0..25.0).contains(&t) { -5.0 } else { -30.0 };
+                    (t, db)
+                })
+                .collect::<Vec<_>>(),
+        );
+        let d = PunchDetector {
+            subtitle_points: subtitle_signal(&subs, PUNCH_WINDOW_SECS),
+            danmaku_points: dm,
+            sfx_points: loud,
+        };
+        let s = d.signals();
+        assert!(s.subtitles && s.danmaku && s.sfx, "三路都该有信号: {s:?}");
+        assert!(!s.describe().contains("无弹幕"), "有弹幕时别报降级: {}", s.describe());
+        let p = d.detect(&[], 60.0, PUNCH_WINDOW_SECS);
+        assert!(
+            p.iter().any(|x| (x.at - 20.0).abs() < 1e-9),
+            "20s 那一窗三路齐高，必须判成爆点: {p:?}"
         );
     }
 
