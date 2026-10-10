@@ -17,10 +17,7 @@
 ├── runtime/                        【账号无关】随版本发布的只读交付物
 │   ├── polish-to-dhampir.mjs
 │   └── effects.json
-├── global/                         【所有人的公用层】
-│   ├── .yekitrim/
-│   │   ├── config.toml             配置**初始化模板**
-│   │   └── llm.toml                LLM 密钥模板
+├── global/                         【公用素材库】—— 只有素材
 │   └── resources/
 │       ├── fonts/                  公用字体（含程序自带的 2 支）
 │       ├── stickers/               公用贴纸包
@@ -28,7 +25,7 @@
 └── users/
     ├── 1/                          ← admin（也就是 local 那个人）
     │   ├── .yekitrim/
-    │   │   ├── config.toml         自己的配置（首次从 global 拷一份）
+    │   │   ├── config.toml         自己的配置
     │   │   └── llm.toml
     │   └── resources/{fonts,stickers,videos}/
     └── 2/                          ← 普通账号，结构完全相同
@@ -59,27 +56,26 @@
 > ⚠️ **别把写入也改成"往列表里第一个存在的目录写"**：那会让"全局"变成
 > "谁先写谁占用"，公用素材被某个账号的私有版本顶掉，而其他人看到的东西随之变化。
 
-## 配置：`global` 那份是**初始化模板**，不是"每次合并的默认值"
+## `global/` 就是"公用素材库"这一件事
 
-账号**首次初始化**时，从 `global/.yekitrim/{config,llm}.toml` **拷一份**到
-`users/<uid>/.yekitrim/`；之后各自独立演进。
+**它不装配置。** 曾经短暂地把 `global/.yekitrim/{config,llm}.toml` 当"账号初始化模板"，
+已按用户口径去掉：配置是**账号无关的程序配置**，住在顶层 `<数据>/.yekitrim/`。
 
-**为什么不是"读取时逐键合并"**：那样改一次全局配置会**改变所有还没覆盖那一键的人**的
-行为 —— 用户会觉得"我的设置自己变了"；而"我明明改了自己那份"也可能被全局悄悄盖掉。
-**初始化一次**的语义是可预期的：拷完之后，你的就是你自己的。
+> 为什么值得写下来：这个"模板"是我加进去的，它让 `global/` 同时承担两件事
+> （公用素材 + 配置默认），而用户对它的心智模型只有一件 ——**公用素材库**。
+> 概念一旦变浑，后面每个改动都要重新问一次"该放 global 还是顶层"。
 
-⚠️ 幂等：**目标已存在就跳过**，绝不覆盖（覆盖会冲掉用户改过的 API key / 检测参数）。
-⚠️ 全局那份也没有时不报错 —— 走各处的内置默认值即可（全新安装就是这样）。
+⚠️ 别再把配置类的目录塞进 `global/`。判据：`global/` 下面**只该有 `resources/`**，
+有单测 `global_root_holds_assets_only` 钉着。
 
 ## 顺序（三条，错了都**不报错**、只是结果不对）
 
-server 启动时：`install_local_admin` → 存量迁移 → `ensure_global_config` → `seed_account_config`
+server 启动时：`install_local_admin` → 存量迁移 → `ensure_global_config`
 
 | 步骤 | 必须在此之前 | 反了的后果 |
 |---|---|---|
 | `install_local_admin` | 一切按 `Local` 取路径的操作 | 落到默认 `users/1/`（通常恰好对，故只在"首个管理员不是 1"时露馅） |
-| 存量迁移 | `seed_account_config` | 先 seed 会给管理员建一份"出厂默认"，把用户改过的那份挡在门外 |
-| `ensure_global_config` | `seed_account_config` | 模板还没生成，seed 找不到源、静默不做（实测：新库启动后 `users/1` 下空空如也） |
+| `ensure_global_config` | （不再有下游依赖） | —— |
 
 ## 账号无关的三类（刻意不按用户分）
 

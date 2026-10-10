@@ -214,10 +214,12 @@ pub fn local_admin_uid() -> i64 {
 
 /// **全局（公用）素材库根** —— `<数据目录>/global/resources/`。
 ///
-/// 口径（2026-10-10 用户拍板）：
-/// - **素材内容共享**：全局库对所有账号可见（用户库优先、全局补缺）；
-/// - `global/.yekitrim/{config,llm}.toml` 是**初始化模板**：账号首次初始化时拷一份，
-///   之后各自独立演进（**不是**每次读取都合并 —— 那样改全局会悄悄改变所有人的行为）。
+/// 口径（2026-10-10 用户拍板）：**`global/` 就是"公用素材库"这一件事** ——
+/// 字体 / 贴纸 / 视频素材，对所有账号可见（用户库优先、全局补缺）。
+///
+/// ⚠️ **它不装配置**：曾经短暂地把 `global/.yekitrim/{config,llm}.toml` 当"账号初始化模板"，
+/// 已按用户口径去掉 —— 配置回到顶层 `.yekitrim/`（账号无关的程序配置）。
+/// 别再把配置类的目录塞进 `global/`：那会让"公用素材库"这个概念变浑。
 pub fn global_resources_dir() -> PathBuf {
     global_root().join("resources")
 }
@@ -559,6 +561,34 @@ mod tests {
             asset_dir_at(Owner::User(local_admin_uid()), AssetKind::Fonts, home),
             home.join(GLOBAL_DIR_NAME).join("resources").join("fonts"),
             "管理员库不能等于全局库"
+        );
+    }
+
+    /// **`global/` 只放素材** —— 它不是"第二个配置目录"。
+    ///
+    /// 这条钉住用户 2026-10-10 的口径：「global 更多是作为一个公用素材库的作用」。
+    /// 曾经短暂地把账号配置模板放进去（`global/.yekitrim/config.toml`），已去掉；
+    /// 这条会红着拦住"顺手再把配置塞回去"。
+    #[test]
+    fn global_root_holds_assets_only() {
+        let assets = global_resources_dir();
+        let name = assets.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        assert_eq!(name, "resources", "global 下面只该有 resources/（素材），实得 {assets:?}");
+        assert_eq!(
+            assets.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            Some(GLOBAL_DIR_NAME),
+            "上一层必须是 global/"
+        );
+
+        // 三个素材种类都能在 global 下取到。
+        for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
+            assert!(assets.join(kind.dir_name()).ends_with(kind.dir_name()));
+        }
+
+        // ⚠️ 配置**不在** `global/` 里（它在顶层 `.yekitrim/`）。
+        assert!(
+            !assets.starts_with(path::data_dir().join("global").join(path::STATE_DIR_NAME)),
+            "配置目录不该在 global/ 下"
         );
     }
 
