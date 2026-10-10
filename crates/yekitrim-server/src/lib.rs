@@ -159,6 +159,31 @@ fn migrate_solo_assets_to_first_admin(db: &db::Db) -> anyhow::Result<Vec<std::pa
     )?)
 }
 
+/// 告诉 `owner` 层「`Local` 是谁」。
+///
+/// ## 为什么需要这一步
+///
+/// `Owner::Local` 代表**当前管理员**（托盘 / `--local-no-auth` / CLI 都是"这台机器的主人"），
+/// 所以它必须解析到 `users/<admin>/` —— 与"admin 在 WebUI 里登录"**同一处**。
+/// 但 core **不认识账本**（它连 `yekitrim_service` 都不许 `use`），所以"当前管理员是谁"
+/// 只能由上层查出来注入一次。
+///
+/// ⚠️ **必须在任何按 `Local` 取路径的操作之前调**（本函数在启动流程里紧跟建表、早于
+/// 所有 handler 与任务）。顺序反了不会报错，只会让那几次解析落到 `users/1/`
+/// —— 恰好等于默认值，所以**只在"首个管理员不是 1"时才看得出来**。
+/// 那种库是可能的（1 号账号被删过），所以别省这一步。
+fn install_local_admin(db: &db::Db) -> anyhow::Result<()> {
+    if let Some(u) = db
+        .list_users()?
+        .iter()
+        .filter(|u| u.role == "admin")
+        .min_by_key(|u| u.id)
+    {
+        yekitrim_core::owner::set_local_admin(u.id);
+    }
+    Ok(())
+}
+
 fn import_legacy_projects(db: &db::Db) -> anyhow::Result<usize> {    let Some(admin) = db.find_user("admin")? else {
         return Ok(0);
     };
@@ -406,6 +431,13 @@ where
     // `owner::migrate_legacy_assets_to`）。搬运是 `rename`（不是复制 —— 素材可能几个 GB）；
     // 跨盘失败时**如实报错并保持原状**，绝不悄悄退化成"复制一半"。
     // ⚠️ 失败**不影响启动**：这是数据搬迁，搬不动就该让用户看到原因后自己处理。
+    //
+    // ⚠️ **顺序**：先 `install_local_admin` 再迁移。迁移本身用的是 `Owner::User(uid)`
+    // （不依赖这一步），但**紧跟其后的** `ensure_global_config` 等初始化按 `Local` 取路径 ——
+    // 顺序反了那些东西会落到 `users/1/`（默认值，通常恰好对，所以只在"首个管理员不是 1"时才露馅）。
+    if let Err(e) = install_local_admin(auth.db()) {
+        tracing::warn!("解析「当前管理员是谁」失败（按默认 uid=1 继续）: {e:#}");
+    }
     match migrate_solo_assets_to_first_admin(auth.db()) {
         Ok(ref moved) if moved.is_empty() => {}
         Ok(moved) => info!(

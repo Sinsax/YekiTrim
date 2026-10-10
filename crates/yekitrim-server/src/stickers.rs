@@ -88,7 +88,12 @@ fn pack_dir(root: &Path, pack: &str) -> Result<PathBuf, AppError> {
 /// `<包名>.toml` 与 `sticker.toml` 索引），与另一个构建任务互斥（排队）。
 ///
 /// 略重档 + 后台优先级：整段在等 LLM 网络，不该跟渲染抢重活名额，也不该插在用户点按的任务前面。
-async fn spawn_build(state: &Arc<AppState>, owner: i64, pack: &str) -> Result<String, String> {
+async fn spawn_build(
+    state: &Arc<AppState>,
+    owner: i64,
+    data_owner: yekitrim_core::owner::Owner,
+    pack: &str,
+) -> Result<String, String> {
     let handle = state
         .jobs
         .create(
@@ -114,7 +119,16 @@ async fn spawn_build(state: &Arc<AppState>, owner: i64, pack: &str) -> Result<St
             jobs.complete(&job_id).await;
             return;
         }
-        match yekitrim_polish::commands::build_package_tags(&pack, progress.as_ref()).await {
+        // ⚠️ **必须传 `data_owner`，不能用 `build_package_tags`（那个走 `Owner::from_env()`）**：
+        // 本任务跑在 **server 进程**里，而 server 的环境变量是它自己启动时那份 ——
+        // 多用户下会去翻单人库，报「贴纸包不存在」，而列表里那个包好好地在着。
+        match yekitrim_polish::commands::build_package_tags_for(
+            data_owner,
+            &pack,
+            progress.as_ref(),
+        )
+        .await
+        {
             Ok(r) => {
                 jobs.log(
                     &job_id,
@@ -254,7 +268,7 @@ pub async fn pack_import(
         "skipped": report.skipped,
     });
     if want_build {
-        match spawn_build(&state, user.id, &name).await {
+        match spawn_build(&state, user.id, crate::auth::owner_of(&user), &name).await {
             Ok(id) => out["job"] = serde_json::json!(id),
             Err(e) => out["job_error"] = serde_json::json!(e),
         }
@@ -328,7 +342,7 @@ pub async fn pack_upload(
     });
     // 与 pack_import 同一条规矩：导入成功与构建任务是两件事，构建起不来只回一句 job_error
     if want_build {
-        match spawn_build(&state, user.id, &name).await {
+        match spawn_build(&state, user.id, crate::auth::owner_of(&user), &name).await {
             Ok(id) => out["job"] = serde_json::json!(id),
             Err(e) => out["job_error"] = serde_json::json!(e),
         }
@@ -348,7 +362,7 @@ pub async fn pack_build(
     if !dir.is_dir() {
         return Err(err(StatusCode::NOT_FOUND, format!("贴纸包不存在: {pack}")));
     }
-    let id = spawn_build(&state, user.id, &pack)
+    let id = spawn_build(&state, user.id, crate::auth::owner_of(&user), &pack)
         .await
         .map_err(|e| err(StatusCode::CONFLICT, e))?;
     ok(serde_json::json!({ "ok": true, "id": id }))
