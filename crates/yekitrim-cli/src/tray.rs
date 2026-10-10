@@ -250,6 +250,51 @@ mod win {
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
     }
 
+    /// 工作区里**最新的**源码修改时间（`crates/*/src/**` + 各 `Cargo.toml` + `Cargo.lock`）。
+    ///
+    /// 只用来判"`yekitrim.exe` 是不是旧了"。见 [`ensure_server_binary`] 里那段说明：
+    /// 只看 `main.rs` 会漏掉"改了别的 crate"的情况。
+    ///
+    /// 只看 `crates/` 与那三样清单文件 —— 不扫 `webui/`（它是 `include_bytes!` 进来的**编译期输入**，
+    /// 真变了会让 cargo 自己重编，用不着这里判）与 `docs/`、`target/`。
+    fn newest_source_mtime(root: &std::path::Path) -> Option<std::time::SystemTime> {
+        let mut newest: Option<std::time::SystemTime> = None;
+        let mut bump = |p: &std::path::Path| {
+            // ⚠️ 不用 let-chain：本 crate 是 edition 2021（let-chain 要 2024）
+            if let Some(t) = std::fs::metadata(p).ok().and_then(|m| m.modified().ok()) {
+                if newest.map_or(true, |cur| t > cur) {
+                    newest = Some(t);
+                }
+            }
+        };
+        for f in ["Cargo.toml", "Cargo.lock"] {
+            bump(&root.join(f));
+        }
+        let crates = root.join("crates");
+        let Ok(rd) = std::fs::read_dir(&crates) else { return newest };
+        for entry in rd.flatten() {
+            let cdir = entry.path();
+            if !cdir.is_dir() {
+                continue;
+            }
+            bump(&cdir.join("Cargo.toml"));
+            // 递归扫 `src/`（深度有限：本仓 crate 内部不再嵌套 crate）
+            let mut stack = vec![cdir.join("src")];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else { continue };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        bump(&p);
+                    }
+                }
+            }
+        }
+        newest
+    }
+
     /// 数据目录。
     ///
     /// ⚠️ 这里是 `yekitrim_core::path::data_dir()` 规则的**第二份实现**（`YEKITRIM_DATA_DIR` ?? exe 同级）
@@ -373,6 +418,7 @@ mod win {
             return; // 不在 target/<profile>/ 下（发行包/安装目录）⇒ 什么都不做
         };
         // 源码目录的判据：`crates/yekitrim-cli/src/main.rs` 在不在。
+        // ⚠️ 这个文件**只用来判"这里是不是源码目录"**，不再当作过期判据的唯一输入（见下）。
         let src = root
             .join("crates")
             .join("yekitrim-cli")
@@ -381,14 +427,20 @@ mod win {
         if !src.is_file() {
             return; // 不是源码目录 ⇒ 什么都不做（发行包里绝不会突然调 cargo）
         }
+        // ⚠️⚠️ **过期判据必须扫全部工作区源码，不能只看 `main.rs`**（2026-10-11 实测踩到）：
+        // 上一版只看 `main.rs` 的时间戳，于是"改了 `yekitrim-server`/`polish`/`core` 而 `main.rs`
+        // 没动"时它判定"不过期"、**静默跳过编译** ⇒ 用户重启托盘多少次都是**旧二进制**。
+        // 实测现场：`yekitrim.exe` 20:35、`main.rs` 19:15（比 exe 旧 ⇒ 判"不过期"）、
+        // 而真正改过的 `crates/yekitrim-server/src/api/polish.rs` 是 00:57 —— **早该重编**。
+        // 表现是"改了半天没反应、且不报错"，与上一版 `crate_dir()` 找错目录那个坑同一类。
+        //
+        // 取舍：扫一遍 `crates/*/src` + `Cargo.toml` 的 `max(mtime)` 只是几百次 `metadata`，
+        // 比"静默跑旧二进制"便宜得多；**仍然不是"永远重编"**（没改就还是跳过）。
         let stale = match std::fs::metadata(&exe) {
-            Ok(m) => {
-                let src_t = std::fs::metadata(&src).ok().and_then(|m| m.modified().ok());
-                match (m.modified().ok(), src_t) {
-                    (Some(a), Some(b)) => b > a, // 源码更新 ⇒ 得编
-                    _ => false,
-                }
-            }
+            Ok(m) => match m.modified().ok() {
+                Some(exe_t) => newest_source_mtime(&root).is_none_or(|src_t| src_t > exe_t),
+                None => false,
+            },
             Err(_) => true, // exe 根本不在 ⇒ 必须编
         };
         if !stale {
