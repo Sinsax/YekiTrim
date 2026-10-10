@@ -855,6 +855,95 @@ pub fn get_video_size(video_path: &str) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
+/// 视频素材的技术信息（右栏"信息不足"补的那几行）。
+///
+/// ⚠️ **一次 ffprobe 拿全**，不要一个字段起一个进程：素材库可能有几十个视频，
+/// 每个视频 5 次 `ffprobe` = 几百次进程创建，列表接口会明显变慢（实测每个 ~30ms）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct VideoProbe {
+    /// 秒。读不出是 `None`（不是 0.0 —— 0 是个合法的时长，两回事）。
+    pub duration: Option<f64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// 编码器名（`h264` / `hevc` / `vp9`…）。
+    pub codec: Option<String>,
+    /// 帧率（浮点，`29.97` 这种要保留小数）。
+    pub fps: Option<f64>,
+    /// 总码率（bit/s）。
+    pub bitrate: Option<u64>,
+    /// 有没有音轨 —— 视频素材用在片头/片尾时，没声音的会是静音，值得先说清楚。
+    pub has_audio: bool,
+}
+
+/// 探一个视频文件的技术信息。**任何一项读不到就给 `None`**，绝不猜、绝不用 0 顶替。
+///
+/// 用 `-of json` 一次拿全：`format=duration,bit_rate` + 视频流的 `width,height,codec_name,r_frame_rate`，
+/// 再顺带看一眼有没有音频流。r_frame_rate 是 `"30000/1001"` 这种分数，要自己除。
+pub fn probe_video(video_path: &str) -> VideoProbe {
+    let out = yekitrim_core::process::cmd("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries",
+            "format=duration,bit_rate:stream=codec_type,codec_name,width,height,r_frame_rate",
+            "-of", "json",
+            video_path,
+        ])
+        .output();
+    let Ok(out) = out else { return VideoProbe::default() };
+    if !out.status.success() {
+        return VideoProbe::default();
+    }
+    let Ok(text) = std::str::from_utf8(&out.stdout) else {
+        return VideoProbe::default();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return VideoProbe::default();
+    };
+    let mut p = VideoProbe::default();
+    if let Some(f) = v.get("format") {
+        p.duration = f
+            .get("duration")
+            .and_then(|d| d.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|d| *d > 0.0);
+        p.bitrate = f
+            .get("bit_rate")
+            .and_then(|d| d.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|b| *b > 0);
+    }
+    for st in v.get("streams").and_then(|s| s.as_array()).into_iter().flatten() {
+        let kind = st.get("codec_type").and_then(|x| x.as_str()).unwrap_or("");
+        if kind == "audio" {
+            p.has_audio = true;
+            continue;
+        }
+        if kind != "video" || p.width.is_some() {
+            continue; // 只认第一条视频流（封面图那种附带的流不参与）
+        }
+        p.width = st.get("width").and_then(|x| x.as_u64()).map(|x| x as u32);
+        p.height = st.get("height").and_then(|x| x.as_u64()).map(|x| x as u32);
+        p.codec = st.get("codec_name").and_then(|x| x.as_str()).map(str::to_string);
+        p.fps = st
+            .get("r_frame_rate")
+            .and_then(|x| x.as_str())
+            .and_then(parse_rational);
+    }
+    p
+}
+
+/// `"30000/1001"` → `29.970…`。分母为 0 或格式不对 ⇒ `None`（不猜成 0）。
+fn parse_rational(s: &str) -> Option<f64> {
+    let (num, den) = s.split_once('/')?;
+    let n: f64 = num.trim().parse().ok()?;
+    let d: f64 = den.trim().parse().ok()?;
+    if d == 0.0 {
+        return None;
+    }
+    let v = n / d;
+    (v > 0.0).then_some(v)
+}
+
 pub fn get_video_duration(video_path: &str) -> Option<f64> {
     let out = yekitrim_core::process::cmd("ffprobe")
         .args([

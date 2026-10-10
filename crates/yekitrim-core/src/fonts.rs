@@ -1098,7 +1098,54 @@ pub fn scan_all_roots(roots: &[PathBuf]) -> Vec<FontEntry> {
             }
         }
     }
+    // ⚠️ **以用户库（`roots[0]`）那份选择为准**：`scan_all` 会拿**它自己那个根**的根部记录
+    // 去应用，所以后一个根（全局库）扫出来的条目可能带着**全局库的** `is_default`
+    // —— 那是别的用户/历史留下的，不该在这里生效（全局库是公用素材，不该有用户偏好）。
+    // 所以：**只要用户库有选择记录，就以它为准把其余全部清掉**。
+    apply_default_selection_over(roots.first().map(|p| p.as_path()), &mut out);
     out
+}
+
+/// 多根收尾：用户库根部那条记录是**唯一权威**。
+///
+/// `root` 为空（调用方没给用户库）⇒ 不动，保留各根自己的结果。
+fn apply_default_selection_over(user_root: Option<&Path>, out: &mut [FontEntry]) {
+    let Some(root) = user_root else { return };
+    let Some(sel) = read_meta(root) else { return };
+    if !sel.is_default || sel.id.trim().is_empty() {
+        return;
+    }
+    let want = sel.id.trim();
+    for e in out.iter_mut() {
+        e.is_default = e.id.eq_ignore_ascii_case(want);
+    }
+}
+
+/// 把库根部的"默认选择"（若有）标到 `out` 里对应那条上。
+///
+/// ⚠️ **为什么默认位不在各支自己的 `FONT.toml` 里**：自带字体住在**全局库**，
+/// 而默认位只能写**用户库**（写全局库 = 所有用户共享一个偏好）。所以改成
+/// "在根部记一条选择"，两种来源通吃。这条记录**不是一支字体**（没有字体文件 ⇒
+/// `dir_entries` 不会把它当成条目），必须单独读一次。
+///
+/// ⚠️ **必须挂在 `scan_all` 上**（而不是只在 `scan_all_roots` 里）：`default_text_family`、
+/// 出片、封面等好几个消费者走的是**单根** `scan_all`。只修多根那条的后果是
+/// "界面显示了默认、出片却不认" —— 同一份数据两处读法不一致，正是本仓反复吃亏的形态。
+fn apply_default_selection(root: &Path, out: &mut [FontEntry]) {
+    // ⚠️ **`read_meta` 要的是"目录"**（它自己拼 `FONT.toml`），别把文件路径传进去。
+    let Some(sel) = read_meta(root) else {
+        return; // 没有选择记录 ⇒ 默认位就是各条目自己的 `is_default`（老行为）
+    };
+    if !sel.is_default || sel.id.trim().is_empty() {
+        return;
+    }
+    let want = sel.id.trim();
+    for e in out.iter_mut() {
+        // ⚠️ 别的支要**清掉**：默认是互斥的。只标不扫的话，用户库那支原来的默认
+        // 会和新的选择同时为真 —— 而 `default_text_family` 取的是**第一个**
+        // ⇒ 谁在前谁赢，与用户刚做的操作无关。
+        e.is_default = e.id.eq_ignore_ascii_case(want);
+    }
 }
 
 pub fn scan_all(root: &Path) -> Vec<FontEntry> {
@@ -1137,6 +1184,11 @@ pub fn scan_all(root: &Path) -> Vec<FontEntry> {
         });
     }
     out.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+    // ⚠️ **收尾必须应用"默认选择"**（见 `apply_default_selection`）：默认位记在**库根部**
+    // 一条记录里（因为自带字体在全局库、而默认位只能写用户库），不在这里应用的话，
+    // `set_default` 会回 `{"ok": true}`、盘上也写着 `is_default = true`，
+    // **但所有消费者都看不到默认** —— 写入成功、读取丢失、状态分裂（实测踩过）。
+    apply_default_selection(root, &mut out);
     out
 }
 
@@ -1735,12 +1787,30 @@ pub fn remove_font(root: &Path, id: &str) -> anyhow::Result<()> {
 /// 界面（`FontLibrary.vue`）已经把「设为默认」按钮对 emoji 卡片隐藏了，这里是**第二道**
 /// —— 配置是文本文件，用户能手改 `FONT.toml`。
 pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
+    set_default_all_roots(std::slice::from_ref(&root.to_path_buf()), id)
+}
+
+/// [`set_default`] 的**两层库**版本：在 `roots`（用户库在前、全局库在后）里找这支字体。
+///
+/// ⚠️ **为什么需要它**：自带字体（Noto Sans SC / Noto Color Emoji）装在**全局库**
+/// （`global/resources/fonts`）里，而 `set_default(root, …)` 只看**用户库** ⇒ 找不到
+/// ⇒ 报"这支字体不在目录布局里（老布局没有元数据），先重新导入一次"。
+/// 那条错误信息把用户指去了**完全错误的方向**（让他重导一个好好的自带字体）。
+/// 实测：`NotoColorEmoji-CBDT` 目录、`font.ttf`、`FONT.toml` 三件齐全，就在全局库里。
+///
+/// ⚠️ **写仍然只写用户库**：默认位（`FONT.toml` 的 `is_default`）是**用户自己的偏好**，
+/// 写进全局库会变成"一个用户改了默认，所有用户跟着变"。所以这里只借用多根**读**，
+/// 写路径（下面的 `dir_entries`）仍然只有 `roots[0]`。
+pub fn set_default_all_roots(roots: &[PathBuf], id: &str) -> anyhow::Result<()> {
     let id = id.trim();
     if !is_safe_id(id) {
         anyhow::bail!("非法 id");
     }
-    let Some(dir) = dir_for_id(root, id) else {
-        anyhow::bail!("这支字体不在目录布局里（老布局没有元数据），先重新导入一次：{id}");
+    let Some(dir) = resolve_all_roots(roots, id) else {
+        // ⚠️ 原来的文案一竿子咬定"老布局没有元数据，先重新导入一次"—— **误导**：
+        // 自带字体就在全局库里、元数据齐全，报这句会把用户指去重导一个好好的字体。
+        // 找不到就是找不到，别替用户猜原因。
+        anyhow::bail!("字体库里找不到这支字体：{id}");
     };
     let mut meta = read_meta(&dir).unwrap_or_default();
     // ⚠️ 判据用**元数据 + id 兜底**：老库/手写的 `FONT.toml` 可能没写 `emoji` 字段，
@@ -1748,25 +1818,51 @@ pub fn set_default(root: &Path, id: &str) -> anyhow::Result<()> {
     if meta.emoji || id.to_ascii_lowercase().contains("emoji") {
         anyhow::bail!("emoji 字体自动补充，不参与默认（它只负责表情，不排正文）");
     }
-    let mut entries = scan_dirs(root);
+    // ⚠️ 以下全是**写路径**，只认 `roots[0]`（用户库）—— 见上面的说明，默认位是用户自己的偏好。
+    // `roots` 为空时用 `.` 兜底（调用方不该这样，但别让它 panic）。
+    let write_root = roots.first().cloned().unwrap_or_else(|| PathBuf::from("."));
+    let mut entries = scan_dirs(&write_root);
     for e in entries.iter_mut() {
         if e.id.eq_ignore_ascii_case(id) {
             meta.display_name = if e.display_name.is_empty() { e.id.clone() } else { e.display_name.clone() };
             meta.family = if e.family_internal.is_empty() { e.family.clone() } else { e.family_internal.clone() };
         }
     }
-    // 先把其它支的 is_default 清掉（唯一默认）。⚠️ 目录名不再等于 id ⇒ 用 `dir_entries` 拿真实目录。
-    for (slug, other, _file, mut m) in dir_entries(root) {
+    // ⚠️ **默认位一律记在用户库根部**（`<user>/fonts/FONT.toml`），一条规则、两种来源通吃：
+    //
+    //   · 用户库那支 —— 以前写在它自己的 `FONT.toml` 里，现在也统一收到根部；
+    //   · **全局库那支（自带字体）** —— 只能记在根部。写全局库 = 改所有用户共用的元数据。
+    //
+    // 只写一处的好处：**不存在"两份记录互相打架"**。上一版就是又想原地写、又想写根部
+    // （`if is_within { 原地 } else { 根部 }`），结果从全局那支**换回来**时爆
+    // "系统找不到指定的路径"：根部那份陈旧记录还指着全局那支，清不掉。
+    //
+    // 先把**各条目自己**的 `is_default` 都清掉（老数据里就有，不清会和根部记录同时为真 ——
+    // 而 `default_text_family` 取第一个，谁在前谁赢，与用户刚做的操作无关）。
+    for (slug, other, _file, mut m) in dir_entries(&write_root) {
         if entry_id(&slug, &m).eq_ignore_ascii_case(id) {
             continue;
         }
         if m.is_default {
             m.is_default = false;
+            // ⚠️ 清不掉也**不能中断**：老库里某个目录可能已不可写，但那不该让
+            // "把 A 设成默认"这件事整体失败（B 残留的 is_default 由根部记录在读取时压掉，
+            // 见 `apply_default_selection`）。
             let _ = write_meta(&other, &m);
         }
     }
-    meta.is_default = true;
-    write_meta(&dir, &meta)?;
+    // 再写根部记录。⚠️ **要 `create_dir_all`**：用户库可能还没建过（全新账号、只装了自带字体），
+    // `read_meta`/`write_meta` 都只拼路径、不建目录 ⇒ 写盘时 "系统找不到指定的路径"（实测踩过）。
+    std::fs::create_dir_all(&write_root)?;
+    let mut sel = read_meta(&write_root).unwrap_or_default();
+    sel.id = id.to_string();
+    sel.display_name = meta.display_name.clone();
+    sel.family = meta.family.clone();
+    sel.is_default = true;
+    // ⚠️ 如实带上 `emoji`：`scan_all` 出口按它把 emoji 强制成非默认（职责分离），
+    // 别让这条选择记录绕过那道闸。
+    sel.emoji = meta.emoji;
+    write_meta(&write_root, &sel)?;
     Ok(())
 }
 
@@ -2093,6 +2189,53 @@ mod tests_v2 {
         );
     }
 
+    /// **装在全局库里的字体也要能设成默认**（用户报：`NotoColorEmoji-CBDT` "设为默认失败…
+    /// 先重新导入一次"）。
+    ///
+    /// 自带字体住在 `global/resources/fonts/`，而默认位只能写**用户库**
+    /// （写全局库 = 所有用户共享一个偏好）。所以必须是"两读、一写"：
+    /// 从两个根里**找**，往用户库**记**。
+    #[test]
+    fn default_works_for_a_font_in_the_global_root() {
+        let user = tmp("def-global-user");
+        let global = tmp("def-global-global");
+        // 字体只装在**全局库**，用户库是空的
+        put_font(&global, "NotoSansSC-Regular", "Noto Sans SC", false, false);
+        std::fs::create_dir_all(&user).unwrap();
+
+        set_default_all_roots(&[user.clone(), global.clone()], "NotoSansSC-Regular").unwrap();
+
+        // ① 记录落在**用户库根部**，不在全局库（全局那份的 is_default 必须是 false）
+        assert!(
+            !read_meta(&global.join("NotoSansSC-Regular")).unwrap().is_default,
+            "默认位不能写进全局库（那是所有用户共用的）"
+        );
+        assert!(read_meta(&user).unwrap().is_default, "默认位该记在用户库根部");
+        // ② 扫描时这条记录要被**应用**上去（写入成功但读不出来 = 用户看到"设了没生效"）
+        let got = scan_all_roots(&[user.clone(), global.clone()]);
+        let hit = got.iter().find(|e| e.id == "NotoSansSC-Regular").unwrap();
+        assert!(hit.is_default, "scan_all_roots 必须把根部记录应用上");
+        assert_eq!(got.iter().filter(|e| e.is_default).count(), 1, "默认必须互斥");
+    }
+
+    /// 从"全局库那支"**换回**用户库那支 —— 上一版在这里爆
+    /// "系统找不到指定的路径"（根部陈旧记录清不掉 / 用户库目录还没建）。
+    #[test]
+    fn switching_default_back_to_a_user_font_replaces_the_global_selection() {
+        let user = tmp("def-switch-user");
+        let global = tmp("def-switch-global");
+        put_font(&global, "NotoSansSC-Regular", "Noto Sans SC", false, false);
+        put_font(&user, "WenKai", "霞鹜文楷 轻便版", false, false);
+
+        set_default_all_roots(&[user.clone(), global.clone()], "NotoSansSC-Regular").unwrap();
+        set_default_all_roots(&[user.clone(), global.clone()], "WenKai").unwrap();
+
+        let got = scan_all_roots(&[user.clone(), global.clone()]);
+        assert_eq!(got.iter().filter(|e| e.is_default).count(), 1, "同时只能有一支默认");
+        assert!(got.iter().find(|e| e.id == "WenKai").unwrap().is_default);
+        assert!(!got.iter().find(|e| e.id == "NotoSansSC-Regular").unwrap().is_default);
+    }
+
     /// 设为默认：唯一默认 + 未知 id 报错
     #[test]
     fn set_default_is_exclusive() {
@@ -2105,8 +2248,17 @@ mod tests_v2 {
         }
         set_default(&root, "a").unwrap();
         set_default(&root, "b").unwrap();
+        // ⚠️ 默认位的落点已改成**库根部一条记录**（`<root>/FONT.toml`），不再是各支自己的
+        // `FONT.toml`：自带字体住在全局库，而默认位只能写用户库（见
+        // `default_works_for_a_font_in_the_global_root`）。所以这里查根部。
+        assert_eq!(read_meta(&root).unwrap().id, "b", "根部记录要指向最后一次设的那支");
+        // 各支自己的标记必须是干净的 —— 否则会和根部记录**同时为真**，
+        // 而 `default_text_family` 取第一个 ⇒ 谁在前谁赢，与用户刚做的操作无关。
         assert!(!read_meta(&root.join("a")).unwrap().is_default);
-        assert!(read_meta(&root.join("b")).unwrap().is_default);
+        // 而且**扫描结果**是最终判据：写进去了但读不出来 = 用户看到"设了没生效"。
+        let got = scan_all(&root);
+        assert_eq!(got.iter().filter(|e| e.is_default).count(), 1, "默认必须互斥");
+        assert!(got.iter().find(|e| e.id == "b").unwrap().is_default, "结果里默认要是 b");
         assert!(set_default(&root, "nope").is_err());
     }
 
@@ -2179,6 +2331,8 @@ mod tests_v2 {
 
     /// 造一支"已装"的字体目录（带元数据）。
     fn put_font(root: &Path, id: &str, family: &str, emoji: bool, is_default: bool) {
+        // ⚠️ 先建 root：`put_font` 只建它自己那层，而 `set_default` 现在要往**根部**写记录
+        std::fs::create_dir_all(root).unwrap();
         let d = root.join(id);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("font.ttf"), b"x").unwrap();
@@ -2471,9 +2625,17 @@ mod tests_v2 {
         let e = set_default(&root, "Emoji").unwrap_err();
         assert!(e.to_string().contains("emoji"), "报错要说清是 emoji 不受理：{e}");
         assert!(!read_meta(&root.join("Emoji")).unwrap().is_default);
-        // 正常字体照旧
+        // 正常字体照旧。
+        // ⚠️ 默认位的落点已改成**库根部一条记录**（`<root>/FONT.toml`），不再是各支自己的
+        // `FONT.toml` —— 因为自带字体住在全局库，而默认位只能写用户库（见
+        // `default_works_for_a_font_in_the_global_root`）。所以这里查根部。
         set_default(&root, "WenKai").unwrap();
-        assert!(read_meta(&root.join("WenKai")).unwrap().is_default);
+        assert!(read_meta(&root).unwrap().is_default, "默认位记在库根部");
+        assert_eq!(read_meta(&root).unwrap().id, "WenKai", "根部记录要指向选的那支");
+        // 而且**扫描结果里**必须是它 —— 写进去了但读不出来才是真故障。
+        let got = scan_all(&root);
+        assert_eq!(got.iter().filter(|e| e.is_default).count(), 1, "默认必须互斥");
+        assert!(got.iter().find(|e| e.id == "WenKai").unwrap().is_default);
     }
 
     /// ⚠️ **字体库只有一个位置**的钉子（2026-10-02 口径切换）。

@@ -1499,7 +1499,10 @@ pub(super) async fn polish_fonts_default(
     Extension(user): Extension<crate::auth::CurrentUser>,
     Json(body): Json<serde_json::Value>,
 ) -> ApiResult {
-    let owner_fonts = yekitrim_core::owner::asset_dir(
+    // ⚠️ **两层库**：自带字体装在全局库里，只看用户库会找不到它们
+    // （用户报「设为默认失败：…先重新导入一次：NotoColorEmoji-CBDT」就是这个）。
+    // `set_default_all_roots` 只借用多根**读**，写仍然落用户库。
+    let owner_fonts = yekitrim_core::owner::asset_dirs(
         crate::auth::owner_of(&user),
         yekitrim_core::owner::AssetKind::Fonts,
     );
@@ -1513,7 +1516,7 @@ pub(super) async fn polish_fonts_default(
     blocking(move || {
         // set_default / remove 操作的是**当前可见的那份库**（`font_dir()` 读侧解析），
         // 不是写路径 —— `set_default` / `remove` 改的是**当前可见的那份库**（`font_dir()`）。
-        yekitrim_core::fonts::set_default(&owner_fonts, &id)
+        yekitrim_core::fonts::set_default_all_roots(&owner_fonts, &id)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))
     })
     .await?;
@@ -1927,11 +1930,20 @@ pub(super) async fn polish_video_library(
             .into_iter()
             .map(|a| {
                 let path = a.path.to_string_lossy().to_string();
-                let duration = yekitrim_polish::render::get_video_duration(&path);
+                // ⚠️ **一次 ffprobe 拿全**（不是"每个字段起一个进程"）：素材库可能有几十个视频。
+                // 右栏要显示分辨率/编码/帧率/码率，全在这里探好 —— 前端拿到就能画，
+                // 不必为点开一个视频再发一次请求（那会让点选有可见延迟）。
+                let p = yekitrim_polish::render::probe_video(&path);
                 serde_json::json!({
                     "name": a.name,
                     "file": a.file_name(),
-                    "duration": duration,
+                    "duration": p.duration,
+                    "width": p.width,
+                    "height": p.height,
+                    "codec": p.codec,
+                    "fps": p.fps,
+                    "bitrate": p.bitrate,
+                    "has_audio": p.has_audio,
                 })
             })
             .collect();
