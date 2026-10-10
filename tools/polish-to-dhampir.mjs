@@ -2550,6 +2550,8 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// ⚠️ 与 Rust `Lane::of_event`、`webui/src/polish/engine.js::LANE_OF_TYPE` **同集合**。
   const LANE_OF_TYPE = {
     camera: 'camera',
+    // 元素（§5）沿用 sticker 轨（规格 §7 座位表）—— 与 engine.js / 模板 / Rust 同集合
+    element: 'sticker',
     sticker: 'sticker',
     sfx: 'sfx',
     shake: 'effects',
@@ -2657,6 +2659,26 @@ export function translate(config, clipDir, outPath, options = {}) {
             '（事件保留，界面点亮即恢复）',
         );
         continue;
+      }
+
+      // §5：**元素（`element`）在进 switch 之前先归一化**。
+      //
+      // ⚠️ 为什么要在这里做，而不是在 `case 'element'` 里做：
+      //    贴纸路径（`case 'sticker'`）里有 200 多行 —— 素材解析（`name` → 文件 →
+      //    探测帧数与尺寸 → 登记资产 → 算盒子与关键帧）与**三条已修过的历史坑**
+      //    （先判 `tag` 会整条丢、帧数必须真的探、逐帧延迟表只在非匀速时写）。
+      //    在 `case` 里"再走一遍 switch"要绕一圈、还会踩到 `break`/`continue` 语义；
+      //    在这里把形状换掉**最省事也最不容易错** —— 下面那条 case 看到的
+      //    就是一条普普通通的 sticker 事件。
+      //
+      // ⚠️ 只对 `kind === "sticker"` 做归一化：`kind === "text"` 要留给下面的 case 报
+      //    "还没有排版通道"（**必须报到报告里**，不许静默跳过 —— R1）。
+      if (event.type === 'element' && String(event.kind ?? '').trim().toLowerCase() === 'sticker') {
+        // 关键词在 `text` 里（§5 E1 的字段口径），搬到 `keyword`；
+        // 元素没有 `sfx` 字段（规格 §2 的结构里没有）⇒ 别让残留值漏过去。
+        event.type = 'sticker';
+        event.keyword = event.text ?? '';
+        delete event.sfx;
       }
 
       switch (event.type) {
@@ -3119,6 +3141,35 @@ export function translate(config, clipDir, outPath, options = {}) {
             note: `贴纸「${tag}」(${how}) 落点 ${event.x},${event.y}（盒子 ${box.toFixed(0)}px，素材 ${sourceW}×${sourceH}，缩放 ${fit.toFixed(3)}）+ 弹出/上浮/淡出关键帧`,
           });
           if (event.sfx) note(where, `贴纸自带音效「${event.sfx}」已单独转成音轨`);
+          break;
+        }
+
+        case 'element': {
+          // 统一视觉元素（§5）。走到这里的**只有 `kind === "text"`**（以及认不出的 kind）——
+          // `kind === "sticker"` 已在 switch 之前归一化成 `type = "sticker"` 了。
+          //
+          // ⚠️ 这个 `case` 存在的意义是**让"文字元素没有出图通道"这件事被明确报出来**，
+          //    而不是落进 `default` 的"不认识的事件类型"（那会把"本仓的待办"
+          //    说成"工程的问题"，而两者该由不同的人去处理）。
+          // ⚠️ `kind === "sticker"` 的元素**根本走不到这里** —— 上面已经归一化成
+          //    `type = "sticker"` 并入 `case 'sticker'` 了（复用那条验过的路径）。
+          const kind = (event.kind ?? '').trim().toLowerCase();
+          if (kind === 'text') {
+            // 文字元素 = **本仓排版 + 底座文本原语**。
+            //
+            // ⚠️ 本趟**只登记、不出图**（保守决策 #60）：文字排版（字号/折行/描边/底衬）
+            //    是 E3 的下一步（`BoxSize::text` 还没接上生产调用方），
+            //    在没有排版结果之前把它当图片画 = "大字压住主播脸"。
+            //    ⇒ 这里**显式 DROP 并说明原因**，而不是静默跳过 ——
+            //      静默跳过正是本仓 R1 那条禁忌（"报告里一行、成片里没有"）。
+            drop(
+              where,
+              `文字元素「${event.text ?? ''}」还没有排版通道（§5 E3 的调用方未接上）` +
+                ` —— 这是本仓的待办，不是工程的问题`,
+            );
+            break;
+          }
+          drop(where, `元素 \`kind = "${event.kind ?? ''}"\` 认不出（只认 text / sticker）`);
           break;
         }
 

@@ -292,7 +292,7 @@ function stickerAnchor(idx, ev) {
 /// `scripts/check-preview-engine.mjs` 会逐项对拍；**加类型时两处一起加**。
 export const INDEXED_TYPES = [
   'camera', 'sticker', 'shake', 'flash', 'blur', 'overlay',
-  'vignette', 'hue_shift', 'noise', 'pulse', 'sfx',
+  'vignette', 'hue_shift', 'noise', 'pulse', 'sfx', 'element',
 ]
 
 /// **六条轨道的显示开关**（时间轴每条轨道前那枚眼睛，2026-10-06 用户口径）：
@@ -303,6 +303,9 @@ export const INDEXED_TYPES = [
 ///    （或反过来），而且**不报错**。
 export const LANE_OF_TYPE = {
   camera: 'camera',
+  // 元素（§5）**沿用 `sticker` 轨**（规格 §7 的座位表：只改显示标签为「元素」）——
+  // 这样老工程零迁移，而"元素的眼睛"与"贴纸的眼睛"是同一个开关（它们本来就在一条轨道上）。
+  element: 'sticker',
   sticker: 'sticker',
   sfx: 'sfx',
   shake: 'effects',
@@ -861,6 +864,52 @@ export function danmakuAt(idx, t) {
 // ---- 贴纸四阶段：popIn back.out(3) / floatUp / hold / fadeOut ----
 // 窗口 = **事件时长** `dur`（不溢出）：淡出在窗口**内部**消化（`dur - 0.3 -> dur` 渐隐），
 // 所以出点 = 最后一帧。旧判据 `dur + (0.35 + 0.4 + 0.3)` 多显示 0.4 秒 ✗（与模板/CPU 参考同形）。
+/// 元素（§5）在 `t` 时刻的可见集合。
+///
+/// ⚠️ **`kind === "sticker"` 的元素直接复用 [`stickersAt`]**：把这一类的形状换成贴纸
+/// （关键词在 `text` 里，搬到 `keyword`）再走同一条求值 —— 弹出/上浮/淡出的时序
+/// 在四处实现里逐值对齐过（模板 canvas、模板 DOM、本文件、`timeline.rs`），
+/// 重写一份必然漂移，而漂移的症状是"预览与成片不一样"。
+///
+/// ⚠️ `kind === "text"` **返回空**（§5 E3 的排版通道还没接上）。
+/// 这里**故意不近似** —— 规格 §5.2 明说文字要动态盒算落点，近似的结果是"大字压住主播脸"。
+/// 转译器会在报告里明说这条，所以这里静默是对的（"说"只有一处口径）。
+export function getElements(idx, t) {
+  const out = []
+  for (const e of idx.element || []) {
+    const kind = String(e.kind ?? '').trim().toLowerCase()
+    if (kind !== 'sticker') continue
+    const et = e.time, dur = e.duration || 2.5
+    if (t < et || t > et + dur) continue
+    const fadeOut = Math.min(0.3, dur)
+    if (!(fadeOut > 0)) continue
+    const k = Math.min(1, Math.max(0, dur - fadeOut) / (0.35 + 0.4))
+    const popIn = 0.35 * k, floatUp = 0.4 * k, fadeStart = dur - fadeOut
+    let opacity = 0, scale = 1, rot = 0, yOff = 0
+    if (t - et < popIn) {
+      const p = (t - et) / popIn
+      const bp = E.backOut(p, 3)
+      scale = 0.3 + 0.7 * bp
+      rot = -15 + 15 * bp
+      opacity = E.pow2Out(p)
+    } else if (t < et + popIn + floatUp) {
+      const p = (t - et - popIn) / floatUp
+      opacity = 1; scale = 1; rot = 0
+      yOff = -stickerFloatUp(idx.cv) * p
+    } else if (t < et + fadeStart) {
+      opacity = 1; scale = 1; rot = 0
+      yOff = -stickerFloatUp(idx.cv)
+    } else {
+      const p = (t - fadeStart) / fadeOut
+      opacity = Math.max(0, 1 - p)
+      scale = 1; rot = 0
+      yOff = -stickerFloatUp(idx.cv)
+    }
+    out.push({ src: (idx.stickerSrc || (() => ''))(e.text || ''), opacity, scale, rot, yOff })
+  }
+  return out
+}
+
 export function stickersAt(idx, t) {
   const out = []
   for (const e of idx.sticker) {

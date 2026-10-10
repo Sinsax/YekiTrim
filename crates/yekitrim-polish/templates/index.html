@@ -299,6 +299,8 @@ var CFG = {};
 //    （挂在 buildIndex 里会让另外两处 `laneOn is not defined` —— 出片脚本整块抛错）。
 var LANE_OF_TYPE = {
   camera: 'camera', sticker: 'sticker', sfx: 'sfx',
+  // 元素（§5）沿用 sticker 轨（规格 §7 座位表）—— 与 engine.js 那份同集合
+  element: 'sticker',
   shake: 'effects', blur: 'effects', flash: 'effects', hue_shift: 'effects',
   noise: 'effects', vignette: 'effects', overlay: 'effects', pulse: 'effects',
 };
@@ -1043,6 +1045,28 @@ function init(){
     tl.set('#'+el.id,{visibility:'hidden'},et+dur);
   };
 
+  // 元素（§5）：**按 `kind` 分派**。
+  //
+  // ⚠️ `kind === "sticker"` 时**把关键词搬到 `keyword` 再交给 `handlers.sticker`** ——
+  //    那些用例是这条腿最容易出错的地方（emoji codepoint 回退、`STICKER_MAP` 命中、`SK` 缩放、
+  //    入场弹出 + 上浮 + 贴边淡出五段关键帧），重写一份必然漂移。
+  //    `ev` 是**传入对象**，这里改的是它的副本 ⇒ 不动调用方手里的那份。
+  //
+  // ⚠️ `kind === "text"` 目前**不画**（§5 E3 的排版通道未接上）。这里**故意什么都不做**，
+  //    而不是画一个近似 —— 近似的结果就是"大字压住主播脸"（规格 §5.2 明说这是主要工作量）。
+  //    转译器会在**报告里明说**这条（不许静默少画，R1），所以这里静默是对的：
+  //    "说"的职责在报告那一处，这里再报一遍会变成两处口径。
+  handlers.element = function(ev, et) {
+    var kind=(ev.kind||'').trim().toLowerCase();
+    if(kind==='sticker'){
+      var asSticker=Object.assign({},ev,{keyword:ev.text||'',type:'sticker'});
+      delete asSticker.kind;
+      handlers.sticker(asSticker,et);
+      return;
+    }
+    // 认不出的 kind 与 `text` 一样：不画（报告里已有说明）
+  };
+
   handlers.shake = function(ev, et) {
     shake(tl,et,typeof ev.intensity==='number'?ev.intensity:14,transientDur(ev,0.3));
     fxSfx(ev);
@@ -1410,6 +1434,7 @@ function init(){
       flash: [], blur: [], overlay: [], sfx: [],
       vignette: [],
       hue_shift: [], noise: [], pulse: [],
+      element: [],
     };
     var eLayer = document.getElementById('emoji-layer');
     var ei = 0; // 全局 sticker 序号, 匹配 DOM ID (sticker_N)
@@ -1424,13 +1449,19 @@ function init(){
           entry._img = document.getElementById('sticker_' + ei) || null;
           ei++;
         }
+        // 元素（§5）：`kind=sticker` 的那些由 `handlers.element` 交给 `handlers.sticker` 画，
+        // 所以它们的 DOM id 也按**同一条 `sticker_N` 计数**（同一个 getElementById 口径）。
+        if (type === 'element' && String(ev.kind || '').trim().toLowerCase() === 'sticker') {
+          entry._img = document.getElementById('sticker_' + ei) || null;
+          ei++;
+        }
         if (idx[type]) { idx[type].push(entry); return; }
         if (!idx[type]) idx[type] = [];
         idx[type].push(entry);
       });
     });
     // sort by time (sticker keep DOM creation order)
-    ['camera','shake','flash','blur','overlay','vignette','hue_shift','noise','pulse','sfx'].forEach(function(k) {
+    ['camera','shake','flash','blur','overlay','vignette','hue_shift','noise','pulse','sfx','element'].forEach(function(k) {
       idx[k].sort(function(a,b) { return a.time - b.time; });
     });
     // 字幕/弹幕轨的眼睛：关掉就是"这一帧没有它"，素材一个字都没动

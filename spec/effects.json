@@ -36,7 +36,8 @@
       "vignette": "handlers.vignette",
       "hue_shift": "handlers.hue_shift",
       "noise": "handlers.noise",
-      "pulse": "handlers.pulse"
+      "pulse": "handlers.pulse",
+      "element": "handlers.element"
     },
     "dom_preview": {
       "camera": "cameraAt",
@@ -49,7 +50,8 @@
       "vignette": "getVignette",
       "hue_shift": "getHueShiftFlash",
       "noise": "getNoiseOpacity",
-      "pulse": "getPulse"
+      "pulse": "getPulse",
+      "element": "getElements"
     },
     "dhampir_case": {
       "camera": "camera",
@@ -62,7 +64,8 @@
       "vignette": "vignette",
       "hue_shift": "hue_shift",
       "noise": "noise",
-      "pulse": "pulse"
+      "pulse": "pulse",
+      "element": "element"
     },
     "post_span": {
       "camera": null,
@@ -75,7 +78,8 @@
       "vignette": "vignette",
       "hue_shift": "hue_shift",
       "noise": "noise",
-      "pulse": "pulse"
+      "pulse": "pulse",
+      "element": null
     }
   },
   "effects": [
@@ -301,6 +305,31 @@
       "sfx_capable": true,
       "status": "active",
       "lane": "fx"
+    },
+    {
+      "id": "element",
+      "label": "元素（文字 / 贴纸）",
+      "kind": "durable",
+      "params": [
+        "kind",
+        "text",
+        "style",
+        "pos",
+        "sticker_tag",
+        "x",
+        "y",
+        "manual",
+        "end"
+      ],
+      "dhampir": "按 kind 分派：sticker → ImageSequence（复用贴纸路径）；text → 待排版通道",
+      "canvas": true,
+      "dom_preview": true,
+      "llm": true,
+      "duration_cap": null,
+      "default_span": 2,
+      "sfx_capable": false,
+      "status": "active",
+      "lane": "sticker"
     }
   ]
 }

@@ -25,6 +25,7 @@
 |---|---|---|---|---|
 | `camera` | 持续 · 运镜 | `zoom`(远/中/近)、`anchor`/`anchor_to`、`origin`/`to_origin`、`cut`、`handheld` | 事件自带（秒） | 时间/起止/类型/zoom/anchor/anchor_to/cut/handheld/配音 |
 | `sticker` | 持续 · 贴纸 | `keyword`、`sticker_tag`、`name`、`source`、`x`、`y`、`sfx`、`sfx_volume` | 1.5~2.5s（prompt 建议；process 可延长到后一条字幕结束，≤ +50%） | 时间/起止/keyword→贴纸两级列表/配音 |
+| `element` | 持续 · 元素（文字/贴纸） | `kind`(text/sticker)、`text`、`style`(hook/chapter/comment/count)、`pos`(top/center/bottom)、`sticker_tag`、`x`、`y`、`manual` | 1.2~5s（**process 强制**，见 §2.6） | 时间/起止/kind/正文或关键词/样式/落点档位 |
 | `overlay` | 持续 · 覆盖层 | `overlay_type`(color/gradient/fade_in/fade_out)、`color`、`opacity`、`colors[]`、`shape`(linear/radial)、`angle`(线性档方向；CSS 约定 0=向上，缺省=右下 135°) | 0.5~5s（prompt 建议；fade 两档整块时长＝渐变时长） | 时间/起止/类型/颜色/不透明度/配音（渐变档另有 colors/形状/方向） |
 | `sfx` | 点 · 音效 | `name`(音效 id)、`volume`、`end` | 缺省 = 文件原始长度 | 时间/起止/音效列表/音量 |
 | `shake` | 瞬时 · 视觉 | `intensity`(默认 14) | cap 0.5 / 默认 0.3 | 时间/起止/intensity/配音 |
@@ -154,6 +155,39 @@ handheld = true      # 可省；手持摇摆（附加变种）—— 只在 zoom
 - **老工程迁移**：`origin = "50% 50%"` 且没有 `anchor`/`to_origin` 的事件，会被补成
   `anchor = "liver"`（日志会报条数）。依据是这个值从来不是用户能设的——它是 LLM prompt
   示例与两个默认生成器写死的常量，一直被当作「没指定」。不迁移的话老切片重跑仍然对着画面正中推。
+
+### 2.6 元素 `element`（持续）
+
+**元素 = 统一的视觉元素**（总方案 §5），一支承载两种 `kind`：
+
+```toml
+type = "element"; time = 3.0; end = 5.0; kind = "text"
+text = "这就是传说中的…"   # kind=text 时是正文；kind=sticker 时是关键词（同 sticker.keyword）
+style = "hook"            # hook | chapter | comment | count（kind=text 用）
+pos = "top"               # top | center | bottom（kind=text 用）
+
+type = "element"; time = 10.0; end = 12.0; kind = "sticker"
+text = "ysyk"             # 关键词（贴纸包名）
+sticker_tag = "害怕"
+x = "auto"; y = "auto"    # 与 sticker 同口径（process 计算）
+```
+
+| `style` | 用途 |
+|---|---|
+| `hook` | 钩子标题（大号高对比强描边） |
+| `chapter` | 章节卡（中号带底居中） |
+| `comment` | 吐槽（小号带底色块） |
+| `count` | 计数/积累（"第 3 次"） |
+
+- ⚠️ **`element` 与 `sticker` 长期共存**：老工程里全是 `type = "sticker"`，
+  两个变体都会被 `process` 当视觉元素看待，**不迁移**（`polish.toml` 一个字节都不动）。
+- ⚠️ **`kind` 缺省**：LLM 偶尔漏写（提示词里 `kind` 与 `text` 挨着），
+  缺省时留空字符串 ⇒ 按认不出的 kind 处理，**整个工程照样读得出来**。
+- ⚠️ **`manual`**：语义与 `sticker.manual` 完全一致 —— 后处理不改写它的时间。
+- 时长规矩与贴纸**完全相同**（最短 1.2s / 最长 5.0s / 不跨静音空隙），见 `process` 的 `fit_element_span`。
+- ⚠️ **`kind = "text"` 目前不出图**（§5 E3 的排版通道未接上）：
+  转译器会**在报告里明说**「文字元素还没有排版通道」，而不是静默跳过。
+  `kind = "sticker"` 走贴纸路径，**与 `type = "sticker"` 逐字节等价**。
 
 ### 2.2 贴纸 `sticker`（持续）
 
