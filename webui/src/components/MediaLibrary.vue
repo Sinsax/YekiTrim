@@ -154,18 +154,44 @@
         <template v-else>
           <div class="row spread mb-8" style="flex-wrap:nowrap">
             <b class="m-0">{{ preview.name }}</b>
-            <span class="muted small">{{ preview.files.length }} 张</span>
+            <span class="muted small">
+              <!-- 筛选中时把"看到的 / 总共"都说出来 —— 只显示一个数会让人以为图少了 -->
+              {{ preview.activeTag ? `${shownFiles.length} / ${preview.files.length} 张` : `${preview.files.length} 张` }}
+            </span>
           </div>
+
+          <!-- **标签筛选**：点一个标签只看那一类，再点一次取消。
+               标签是**包内文件自己的** tags 聚合出来的（见 `selectItem`），
+               所以"有哪些标签"永远和"图实际带了什么标签"一致。 -->
+          <div v-if="preview.tagList.length" class="ml-tagbar">
+            <button
+              class="ml-tag"
+              :class="{ on: !preview.activeTag }"
+              @click="preview.activeTag = null"
+            >全部 <span class="ml-tag-n">{{ preview.files.length }}</span></button>
+            <button
+              v-for="t in preview.tagList"
+              :key="t"
+              class="ml-tag"
+              :class="{ on: preview.activeTag === t }"
+              :title="`只看带「${t}」的图`"
+              @click="preview.activeTag = preview.activeTag === t ? null : t"
+            >{{ t }} <span class="ml-tag-n">{{ tagCount(t) }}</span></button>
+          </div>
+
           <p v-if="!preview.files.length" class="muted small m-0">这个包里没有图片。</p>
+          <p v-else-if="!shownFiles.length" class="muted small m-0">
+            这个包里没有带「{{ preview.activeTag }}」标签的图。
+          </p>
           <!-- ⚠️ `loading="lazy"`：一个包可能有 200+ 张（ysyk 就是 210），
                不懒加载会一次性全解码，整页卡住。 -->
           <div v-else class="ml-side-grid">
             <img
-              v-for="f in preview.files"
+              v-for="f in shownFiles"
               :key="f.name"
               :src="f.url"
               :alt="f.name"
-              :title="f.name"
+              :title="f.tags.length ? `${f.name} · ${f.tags.join(' / ')}` : f.name"
               loading="lazy"
               @click="openStickerImage(f)"
             >
@@ -322,20 +348,44 @@ async function selectItem(it) {
     }
     return
   }
-  preview.value = { type: 'sticker', name: it.name, files: [] }
+  preview.value = { type: 'sticker', name: it.name, files: [], tagList: [], activeTag: null }
   try {
     const d = await stickersApi.detail(it.name)
     if (preview.value?.name !== it.name) return // 期间又点了别的包 ⇒ 丢弃这次结果
+    // ⚠️ **把 `tags` 一起带上**（detail 接口本来就回了，以前丢掉了）——
+    // 右栏的标签筛选全靠它。`tags` 缺失时给 `[]`，那张图就只在"全部"里出现。
     preview.value.files = (d?.files || []).map((f) => ({
       name: f.name,
       url: stickersApi.fileUrl(it.name, f.name),
+      tags: Array.isArray(f.tags) ? f.tags : [],
     }))
+    // 标签清单**从包内文件现算**，不用列表接口那份 —— 两份数据来源不同会打架
+    // （列表的 `tags[].count` 是"命中文件数"，这里要的是"有哪些标签"）。
+    // 顺序按命中数降序、同数按字面，保证同一份数据每次渲染顺序一致。
+    const n = {}
+    for (const f of preview.value.files) for (const t of f.tags) n[t] = (n[t] || 0) + 1
+    preview.value.tagList = Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b, 'zh'))
   } catch (e) {
     if (preview.value?.name === it.name) {
       preview.value.files = []
       toast('读取包内图片失败：' + e.message, 'err')
     }
   }
+}
+
+/** 右栏当前该显示的贴纸（按标签筛过）。`activeTag` 为空 ⇒ 整包。 */
+const shownFiles = computed(() => {
+  const p = preview.value
+  if (!p || p.type !== 'sticker') return []
+  if (!p.activeTag) return p.files
+  return p.files.filter((f) => f.tags.includes(p.activeTag))
+})
+
+/** 某个标签在这个包里命中多少张（标签栏上那个小数字）。 */
+function tagCount(t) {
+  const p = preview.value
+  if (!p || p.type !== 'sticker') return 0
+  return p.files.filter((f) => f.tags.includes(t)).length
 }
 
 /** [`coverOf`] 的 await 版（点开时用：要拿到**确定**结果，不能拿占位空串）。 */
@@ -695,6 +745,22 @@ onMounted(() => load())
 .ml-info-row > .muted { flex:none; width:36px; }
 .ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
 .ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* 标签筛选栏。
+   ⚠️ `flex-wrap:wrap` + **不给 max-height**：ysyk 有 34 个标签，写死高度会
+   把标签藏起来（用户根本不知道还有别的标签）。让它自然换行、整栏跟着长。
+   标签多时这一块会比较高，所以**排在图片列表上面**，图片列表自己滚（见 `.ml-side-grid`）。 */
+.ml-tagbar { display:flex; flex-wrap:wrap; gap:4px; flex:none; }
+.ml-tag {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:2px 7px; border-radius:999px; cursor:pointer;
+  font-size:11px; line-height:1.6;
+  border:1px solid var(--line); background:transparent; color:inherit;
+}
+.ml-tag:hover { border-color:var(--main); }
+/* 选中态：**底色 + 边框一起变**，只变边框在小标签上几乎看不出来。 */
+.ml-tag.on { border-color:var(--main); background:var(--main-soft); color:var(--main); }
+.ml-tag-n { opacity:.6; font-size:10px; }
 
 /* 包内图片列表：多列小图，可滚。一个包 200+ 张（ysyk = 210），
    不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。
