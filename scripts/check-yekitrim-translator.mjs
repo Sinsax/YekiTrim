@@ -1256,6 +1256,26 @@ const MUTATIONS = [
     from: '      const outSec = rawOut <= 0 || rawOut <= inSec ? durSec : Math.min(rawOut, durSec);',
     to: '      const outSec = rawOut <= 0 || rawOut <= inSec ? 0 : Math.min(rawOut, durSec);',
   },
+  {
+    // §24 更正的反面：**把摘掉的那段加回来** = 转译器开始发逐条颜色 ⇒ 成片比参照更花。
+    // 这正是那份计划书建议的"修法"（`editing-techniques-catalog.md` §0.4），
+    // 所以必须有一条判据把它拦住 —— 它不会让任何测试变红，只会让成片悄悄变色。
+    //
+    // ⚠️ 用 `fromRe`（正则版）而不是字符串版：这条锚点里**反斜杠与引号都很密**
+    // （`/\\[0-9]?c&H…/gi` 本身就是转义重灾区），写字符串要数四层转义，
+    // 数错一次的后果是"变异台自己没命中"而**看起来像守卫抓不住**。
+    // 正则版只关心"那一行在不在"，`\s` 吸收缩进、不必数字符。
+    name: '弹幕逐条颜色被发出去（应摘掉：参照 canvas 不上色）',
+    fromRe: /\.replace\(\/\\\\\[0-9\]\?c&H\[0-9A-Fa-f\]\{6\}&\?\/gi, ''\)/,
+    to: ".replace(/__disable_strip_color__/, '')",
+  },
+  {
+    // 同一条判据的**另一半**：正则退回"只认 6 位"是另一种"看着还在、其实漏了"的形状
+    // （3/4 位简写写法的 `\c` 会漏网发出去）—— 与描边那条 `#fff` 的教训同形。
+    name: '弹幕颜色正则退化成只认 6 位（3/4 位简写漏网）',
+    fromRe: /c&H\[0-9A-Fa-f\]\{6\}&\?\/gi/,
+    to: 'c&H[0-9A-Fa-f]{6}&?/g',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -1305,6 +1325,9 @@ async function mutate() {
         checkColors(curves);
         // 描边解析同理：它守的是"`#fff` 静默回落成深灰"，与 `hexColor` 是两处。
         checkStroke(curves);
+        // ⚠️ 弹幕逐条颜色（§24 更正）：它走**源码文本**判据 ⇒ 必须喂 `mutatedSource`
+        // （喂原始 `translatorSource` 的话，变异体改了源码而检查还在看老文本，这条永远绿）。
+        checkDanmakuColorStripped(mutatedSource);
         // 映射那一段同理（M2 加的三条）。
         checkMappings(curves);
         checkEnvelopeClamp(curves);
@@ -1608,6 +1631,9 @@ function checkStageBackground(mod) {
 }
 
 const translatorModule = await import(pathToFileURL(TRANSLATOR).href);
+// 转译器的**源码文本**，给那些"判据落在 `translate` 内部闭包上、拿不到函数引用"的检查用
+// （`checkDanmakuColorStripped` 是第一个消费者）。读一次在这里，别在检查函数里各读一遍。
+const translatorSource = readFileSync(TRANSLATOR, 'utf8');
 let tomlChecks = 0;
 for (const c of TOML_CASES) {
   let root = null;
@@ -1636,6 +1662,11 @@ const strokeChecks = checkStroke(translatorModule);
 console.log(
   `✓ 描边解析：${strokeChecks} 项全绿（3/4/6/8 位 hex 都取出真颜色；` +
     `只有 6 位会让 \`#fff\` **静默回落成深灰**，报告里一行差异都没有）`,
+);
+const dmColorChecks = checkDanmakuColorStripped();
+console.log(
+  `✓ 弹幕逐条颜色：${dmColorChecks} 项全绿（\`\\c\` **必须被摘掉** —— 参照 canvas 不上色，` +
+    `发了就是"底座比参照更花"，实测 48.8s 那帧参照白 / 底座品红）`,
 );
 
 // ---------------------------------------------------------------------------
@@ -1713,6 +1744,95 @@ function checkStroke(mod) {
   // 宽度认不出 → 回落传入的兜底宽度
   assert.equal(mod.parseStroke('#fff', 9, '#403c3b').widthPx, 9, '认不出宽度时回落兜底宽度');
   return cases.length + 2;
+}
+
+// ---------------------------------------------------------------------------
+// 弹幕逐条颜色：`\c` **必须被摘掉**（这是**有意的**，不是缺口）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这条守的是一个**方向反了**的误判（2026-10-10 核实）。上游计划书
+//（`docs/plan/editing-techniques-catalog.md` §0.4）把「转译器不生成 `\c` 覆盖」列为
+// 「本仓单方面就能修」的接线缺口 —— 而真相是**反的**：
+//
+//   参照 = **本仓 canvas**（`templates/index.html` 的 `getActiveDms`），它每条的出口是
+//   `{ text, opacity, x, y }`、**不带颜色**；上色只用**轨道级** `dmS.color`。
+//   底座其实**支持**逐条颜色 ⇒ 一旦转译器把 `\c` 发出去，成片就**比参照更花**。
+//
+// 这不是推断：转译器早期版本**真的发过**，实测「48.8s 那一帧 YekiTrim 是白的、底座是品红的」，
+// 于是 `85d7fc0`（2026-10-01，与"底座成为默认出片通道"**同一批**）加了 `stripColorTags` 主动摘掉。
+//
+// ⇒ 这条断言的方向是"**摘掉才算对**"。它防的是"下一个人照着那份计划书好心加回来"——
+//   那种改法不会让任何测试变红、也不会报错，只会让成片悄悄比参照花。
+//
+// ⚠️ 判据走**源码**（`translatorSource`）而不是导出函数：`stripColorTags` 是 `translate`
+// 内部的闭包、拿不到引用，而"这段源码还在不在"正是要锁的东西。
+// ⚠️ **源码是参数、不是闭包捕获**：变异台必须能把**变异后**的文本喂进来 ——
+// 捕获外层那个常量的话，变异体改了源码而检查仍在看原文，**这条变异永远绿**
+// （`checkStageGeom` 也踩过同一个坑，所以它同样收 `mutatedSource`）。
+// ⚠️ 正则会**再收一次**：只断言"出现过 `stripColorTags` 这个词"是不够的 ——
+// 把 `.replace(/\\c&H…/)` 那行删掉、只留下函数名，词还在、功能没了。
+function checkDanmakuColorStripped(src = translatorSource) {
+  // ⚠️ **别只断言"那句话在不在"** —— 这是第一版踩的坑：把 `[0-9]?` 去掉
+  // （退化成只认 `c&H`、3/4 位简写漏网）之后**那句话仍然原样在**，
+  // 于是判据照样绿、变异台报"守卫抓不住"（实跑抓到过）。
+  // ⇒ 必须**真跑那条正则**，判据才落在**语义**上而不是**字面上**。
+  //
+  // ⚠️ **不用正则去正则匹配**：`\.replace\((\/\\\\\[0-9\]...` 这种要数四层转义，
+  // 实测写错一次就 `match: null`（锚点静默失效比报红难查十倍）。
+  // 改成**定位 + 取定界符之间**：找到 `stripColorTags` 那几行，逐行取 `/` 与 `/gi` 之间的原文。
+  const lines = src.split('\n');
+  const start = lines.findIndex((l) => l.includes('const stripColorTags'));
+  assert.ok(start >= 0, '转动器里找不到 `stripColorTags`（它是"摘掉弹幕逐条颜色"的唯一实现）');
+  const block = lines.slice(start, start + 4).join('\n');
+  const open = block.indexOf('/\\\\');
+  const close = block.indexOf('/gi', open);
+  assert.ok(
+    open >= 0 && close > open,
+    '`stripColorTags` 的第一条 `.replace(/…/gi, \'\')` 不见了 —— 它就是"摘掉弹幕逐条颜色"的实现。' +
+      '参照 canvas 不上色，发出去就是"底座比参照更花"（实测 48.8s 那帧参照白/底座品红）。见 §24 更正。',
+  );
+  const inner = block.slice(open + 1, close);
+  // 真跑一遍。⚠️ **单跑第一条只摘指令本身**：`{\c&H3366FF}蓝` → `{}蓝`
+  // （花括号是**第二条** `.replace(/\{\s*\}/g,'')` 收的）—— 所以这里要**两条一起**跑，
+  // 那才是 `stripColorTags` 的真实语义。第一版只跑第一条、却按"花括号也没了"写断言，
+  // 于是判据自己红了（代码是对的）—— 这类"期望写错"最容易让人去改本来正确的代码。
+  const strip = new RegExp(inner, 'gi');
+  const stripEmpty = /\{\s*\}/g;
+  const clean = (s) => s.replace(strip, '').replace(stripEmpty, '');
+  const cases = [
+    ['{\\c&H3366FF}蓝', '蓝', '6 位（最常见）'],
+    ['{\\1c&H3366FF}蓝', '蓝', '\\1c 带配色组序号'],
+    ['{\\3c&HFF0000}红', '红', '\\3c 同上'],
+    ['{\\c&H3366FF&}蓝', '蓝', '结尾多一个 & 也要摘'],
+    ['{\\c&h3366ff}小写', '小写', '小写 hex 也认（/i）'],
+    // 与别的指令同处一个标签块：只摘 `\c`，`\pos` 留着
+    ['{\\pos(1,2)\\c&H3366FF}文', '{\\pos(1,2)}文', '只摘 \\c，别的不许动'],
+  ];
+  for (const [raw, want, why] of cases) {
+    assert.equal(clean(raw), want, `摘 \`\\c\` 失败：${why} —— ${raw}`);
+  }
+  // 反方向：**不带颜色的标签块一个字符都不许动**（`\pos` 那条 P0 的教训）
+  assert.equal(clean('{\\pos(1,2)}文'), '{\\pos(1,2)}文', '没颜色标签的块必须原样保留');
+  // 摘完还要顺手清掉空标签块，否则下游拿到一堆 `{}`
+  assert.ok(
+    block.includes('/\\{\\s*\\}/g'),
+    '摘掉 `\\c` 之后要顺手去掉摘空的 `{}` 标签块（否则下游拿到一堆空标签）',
+  );
+  // 反方向：**不许**有一条"发 `\c`"的代码还活着（按计划书加回来就该红）。
+  // 摘的那几行要先剔掉，否则它自己就把这条判据顶翻。
+  const withoutStrip = block
+    .split('\n')
+    .filter((l) => !l.includes('.replace('))
+    .join('\n');
+  const emit = /\\c&H/.exec(withoutStrip);
+  assert.equal(
+    emit,
+    null,
+    '`\\c` 只许被"摘"，不许被"发" —— 这里发现一处疑似**生成**逐条颜色的代码：' +
+      `${emit?.[0]?.trim() ?? ''}。若真要做弹幕上色，那要同时改参照渲染器与底座两侧（新需求），` +
+      '不是把摘掉的那段加回来（见 `polish-upgrade-consolidated.md` 更正 ④）。',
+  );
+  return 3 + cases.length + 1;
 }
 
 // ---------------------------------------------------------------------------
