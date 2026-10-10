@@ -222,6 +222,25 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1d3: 文字元素排版（§5 E3）—— **只排版、不定落点**。
+    //
+    // ⚠️ **这一步存在的理由**：在它之前，落点求解器只会算**固定 280px 的贴纸盒**，
+    //    而文字是**变宽高**的（字号 + 折行）。不排版就把文字当"一个 280 方块"
+    //    去避让 ⇒ 大字压住主播脸 —— 而那正是 §5 要消灭的症状。
+    //
+    // ⚠️ **落点不在这里定**：这里只算盒子与把**解析后的样式**写回 `source`。
+    //    真正的落点由 Step 2b2 走 `pick_box_position`（与贴纸同一个求解器）——
+    //    因为障碍物（主播脸/字幕带/弹幕）那套东西是在 Step 2b 才组装出来的。
+    //    第一版在这里直接写锚点位置，结果是"文字排在画面正中、
+    //    **完全没避开主播脸**"，而且**不报错**。
+    {
+        let (cw, ch) = config.canvas_size();
+        let laid_out = layout_text_elements(&mut config.segments, cw as f64, ch as f64);
+        if laid_out > 0 {
+            tracing::info!("  · 文字元素排版：已排 {laid_out} 条（§5 E3）");
+        }
+    }
+
     // Step 1e: 跳切配额（§17）。跳切在语法上就是"接缝处的构图跳" = `mute_ranges` 的边界
     // 上落一条 `cut: true` 的运镜（**零新字段**，规格方案 A）。LLM 有表达权（写 cut）、
     // 这里只有解释权与配额权。排在 1d 之后：那一步会剥掉非近景的 handheld，
@@ -526,6 +545,81 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             );
             if min_clearance < 20.0 {
                 tracing::info!("  ⚠ 贴纸安全区余量最小仅 {min_clearance:.0}px: 人物/弹幕区域选框贴得太近, 建议放宽选框或减少贴纸数量");
+            }
+        }
+    }
+
+    // Step 2b2: 文字元素落点（§5 E3）—— **与贴纸同一个求解器**。
+    //
+    // ⚠️ 为什么在 Step 2b **之后**：障碍物（主播脸 / 字幕带 / 弹幕带 / 主画面）
+    //    是 2b 组装出来的，而文字要避的正是它们。第一版把落点写在 Step 1d3，
+    //    结果是"文字排在画面正中、完全没避开主播脸"，而且**不报错**。
+    //
+    // ⚠️ 用 `pick_box_position`（**动态盒**版本）而不是 `pick_sticker_position`：
+    //    后者的盒子写死 `280 × sticker_scale`。文字是变宽高的 ——
+    //    按 280 方块避让会让三行大字**压住主播脸**，而那正是本项要消灭的症状。
+    {
+        let (cw, ch) = config.canvas_size();
+        let f = placement::Frame::new(cw, ch);
+        let video_size = crate::render::get_video_size(
+            &project_path.join(&config.source.video).to_string_lossy(),
+        );
+        let obstacles = sticker_obstacles(&config, &data_dir, video_size);
+
+        let mut placed: Vec<(f64, f64, placement::Rect)> = Vec::new();
+        let mut count = 0usize;
+        let mut relaxed = 0usize;
+        let mut min_clearance = f64::MAX;
+
+        for seg in &mut config.segments {
+            for (idx, event) in seg.events.iter_mut().enumerate() {
+                // ⚠️ 时间**先取出来**再解构：解构会把 `event` 可变借出去，
+                //    之后再调 `event.get_time()` 是"可变借还活着时又要不可变借"（E0502）。
+                let time = event.get_time();
+                let end = event.end_or_default().unwrap_or(time);
+                let crate::project::Event::Element { kind, text, style, pos, x, y, .. } = event
+                else {
+                    continue;
+                };
+                if kind.trim().to_lowercase() != "text" || text.trim().is_empty() {
+                    continue;
+                }
+                let ts = placement::TextStyle::parse(style.as_deref().unwrap_or(""));
+                let anchor = placement::TextAnchor::parse(pos.as_deref().unwrap_or(""));
+                let layout = placement::TextLayout::solve(text, ts, anchor, f);
+                let b = layout.box_size();
+
+                let blocked = obstacles.blocked_at(time, end, &placed);
+                let seed = (idx as f64 * 5.1 + seg.start * 1.7).fract();
+                let pick = placement::pick_box_position(&blocked, &obstacles.allow, seed, f, &b);
+                *x = Some(pick.x_pct(f));
+                *y = Some(pick.y_pct(f));
+                if pick.relaxed {
+                    relaxed += 1;
+                    tracing::info!(
+                        "  ⚠ 文字元素 @{time:.1}s: 帧内无安全落点, 取重叠最小 ({}, {})",
+                        x.as_deref().unwrap_or("?"),
+                        y.as_deref().unwrap_or("?"),
+                    );
+                }
+                placed.push((time, end + 0.65, placement::box_at(pick.x, pick.y, &b)));
+                min_clearance = min_clearance.min(pick.clearance);
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            tracing::info!(
+                "  ✓ text 落点 {count} 个 (按**排版后的真盒子**避让{}, 最小余量 {:.0}px)（§5 E3）",
+                if relaxed > 0 {
+                    format!(", {relaxed} 个兜底")
+                } else {
+                    String::new()
+                },
+                min_clearance,
+            );
+            if relaxed > 0 {
+                tracing::info!("  ⚠ 有 {relaxed} 条文字没找到无重叠落点 —— 考虑把那条文字缩短或挪 pos");
             }
         }
     }
@@ -1311,6 +1405,102 @@ pub fn ensure_intro_fade_in(config: &mut project::ProjectFile) -> bool {
 /// 与贴纸的 keyword→name 同一套约定：锚点是**意图**（LLM 或人写的），每次 process 重算，
 /// 所以改了选框/挪了贴纸不用手改坐标；解析结果才进渲染侧，四条渲染路径都不需要认识锚点。
 /// 认不出的锚点只告警、保留原 `origin`，不让整条管线失败。
+/// 把 [`crate::process::placement::TextStyle`] 写回它**原始的档位名**。
+///
+/// ⚠️ 必须是这四个词本身（`hook`/`chapter`/`comment`/`count`）——
+/// 消费方（转译器）拿它去选轨道的 id 与报告文案，换一个拼法就会分叉。
+fn style_name(ts: crate::process::placement::TextStyle) -> &'static str {
+    use crate::process::placement::TextStyle as T;
+    match ts {
+        T::Hook => "hook",
+        T::Chapter => "chapter",
+        T::Comment => "comment",
+        T::Count => "count",
+    }
+}
+
+/// 文字元素排版（§5 E3）：给每条 `kind = "text"` 的元素算出盒子尺寸。
+///
+/// 把结果写回 `element.style` 之外的**既有字段**（`x`/`y`）—— 不新增契约字段：
+/// * `x`/`y` 本来就表示"落点百分比"（贴纸用），文字用**百分比**表示盒子左上角，
+///   与贴纸同一套坐标系 ⇒ 渲染端不必区分两种元素；
+/// * 写的是**算出来的锚点**（top/center/bottom 三档的中线位置），
+///   避让仍由渲染端做（它才有障碍物信息）。
+///
+/// 返回值 = 实际排版了几条（用于日志）。
+///
+/// ⚠️ **认不出的 `style` 按 `comment` 处理并打日志**，不报错 ——
+/// `style` 是 LLM 写的自由文本，错一个字母就让整条出片失败，代价远大于"字小了一点"。
+fn layout_text_elements(
+    segments: &mut [project::Segment],
+    frame_w: f64,
+    frame_h: f64,
+) -> usize {
+    use crate::process::placement::{Frame, TextAnchor, TextLayout, TextStyle};
+
+    let f = Frame { w: frame_w, h: frame_h };
+    let mut done = 0usize;
+    for seg in segments.iter_mut() {
+        for ev in seg.events.iter_mut() {
+            let crate::project::Event::Element { kind, text, style, pos, x, y, source, .. } = ev else {
+                continue;
+            };
+            if kind.trim().to_lowercase() != "text" {
+                continue;
+            }
+            if text.trim().is_empty() {
+                continue;
+            }
+            let raw_style = style.clone().unwrap_or_default();
+            if !raw_style.trim().is_empty() && !TextStyle::is_known(&raw_style) {
+                tracing::warn!(
+                    "  ⚠ 文字元素「{}」的 style = \"{}\" 认不出，按 comment 处理",
+                    text,
+                    raw_style
+                );
+            }
+            let ts = TextStyle::parse(&raw_style);
+            let anchor = TextAnchor::parse(pos.as_deref().unwrap_or(""));
+            let layout = TextLayout::solve(text, ts, anchor, f);
+            let (px, py) = layout.anchor_origin(f);
+            // 写**百分比**（与贴纸的 `x`/`y` 同一种表示）。
+            *x = Some(format!("{:.2}%", px / f.w * 100.0));
+            *y = Some(format!("{:.2}%", py / f.h * 100.0));
+            // ⚠️ 把**解析后的样式参数**一起写回去，让转译器**读**而不是自己再存一份。
+            //
+            // 为什么必须这样：四档的数值（字号/描边/颜色/字重）如果 Rust 与 JS
+            // 各存一份，分叉的症状是"算出来的盒子与画出来的字对不上"
+            // （文字溢出自家的底衬色块），而且**两边单测各自都过**。
+            // 本仓对付这类问题的既定形态就是 `process` 解析、消费方读
+            //（`Event::Element.name`/`source` 对贴纸做的同一件事）。
+            //
+            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>`
+            // —— 用 `|` 分隔而不是 JSON：`source` 是 `Option<String>`，
+            // 塞 JSON 会让它看起来像结构化数据，而它只是"这一条解析出来的参数"。
+            let c = ts.color();
+            let sc = ts.stroke_color();
+            *source = Some(format!(
+                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}",
+                style_name(ts),
+                ts.base_font_px(),
+                ts.base_stroke_px(),
+                c[0],
+                c[1],
+                c[2],
+                c[3],
+                sc[0],
+                sc[1],
+                sc[2],
+                sc[3],
+                ts.font_weight(),
+                ts.has_backdrop() as u8,
+            ));
+            done += 1;
+        }
+    }
+    done
+}
+
 fn resolve_camera_anchors(config: &mut project::ProjectFile, data_dir: &Path) {
     let ctx = AnchorCtx::collect(config, data_dir);
     let mut unknown: Vec<String> = Vec::new();

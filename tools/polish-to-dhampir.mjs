@@ -2607,6 +2607,70 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 那个数组就彻底没人写了 —— 计数会永远显示 0，是**比不计数更糟**的那种元数据）。
   // 现在四档统一走 `placeEnvelope`，这里就改成一个诚实的计数器。
   let overlayEventCount = 0;
+  // 文字元素（§5 E3）：**每条独立一层**，不复用字幕轨。
+  //
+  // ⚠️ 为什么不共用 `subtitleTracks`：那条轨的 `SubtitleStyle` 是**字幕的**
+  //    （`font_ratio` 0.0667、底部、`max_lines` 3）—— 大字混进去会被字幕的
+  //    字号与位置规则吃掉。四档预设的字号差近 3 倍，必须各排各的。
+  const textCues = [];
+  // 文字样式的**兜底**（§5 E3）。
+  //
+  // ⚠️ **正常路径不读这里** —— 样式由 `process` 的 Step 1d3 解析后写进
+  //    `event.source`（格式见 `process/mod.rs::layout_text_elements`），
+  //    转译器只**解析**它。这里这份只在"工程没过 `process`"时兜底
+  //    （直接手写 polish.toml 跑转译器的那种）。
+  //
+  // ⚠️ 为什么不在这里维护第二份真表：两边各存一份数值，分叉的症状是
+  //    "算出来的盒子与画出来的字对不上"（文字溢出自家的底衬），
+  //    而**两边单测各自都过** —— 这类"两份同一个事实"的坑本仓踩过多次。
+  const TEXT_STYLE_FALLBACK = {
+    hook: { fontPx: 120, strokePx: 8, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 900, backdrop: false },
+    chapter: { fontPx: 84, strokePx: 5, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
+    comment: { fontPx: 44, strokePx: 2, color: [255, 226, 122, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
+    count: { fontPx: 64, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
+  };
+
+  /// 解析 `process` 写回的样式串：`style|font_px|stroke_px|r,g,b,a|weight|backdrop`。
+  ///
+  /// ⚠️ **认不出就退回兜底并按 `style` 名取那一档** —— 不抛错：
+  /// 这个串是**本仓自己写的**，它坏了属于"内部不一致"，
+  /// 而"因为一个解析失败整条出片跑不出来"的代价远大于"这条字用了默认样式"。
+  /// ⚠️ 退回时**必须能被看见**：调用方据返回值里的 `parsed` 打一行 note。
+  function parseTextStyle(source, styleName) {
+    const fallback = TEXT_STYLE_FALLBACK[styleName] ?? TEXT_STYLE_FALLBACK.comment;
+    if (typeof source !== 'string' || source.length === 0) {
+      return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
+    }
+    const parts = source.split('|');
+    if (parts.length !== 7) {
+      return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
+    }
+    const [name, fontPx, strokePx, colorCsv, strokeCsv, weight, backdrop] = parts;
+    const parseRgba = (csv) => csv.split(',').map((v) => Number.parseInt(v, 10));
+    const rgba = parseRgba(colorCsv);
+    const strokeRgba = parseRgba(strokeCsv);
+    const nums = [fontPx, strokePx, weight, backdrop].map((v) => Number.parseFloat(v));
+    if (
+      rgba.length !== 4 ||
+      strokeRgba.length !== 4 ||
+      rgba.some((v) => !Number.isFinite(v)) ||
+      strokeRgba.some((v) => !Number.isFinite(v)) ||
+      nums.some((v) => !Number.isFinite(v))
+    ) {
+      return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
+    }
+    return {
+      name,
+      fontPx: nums[0],
+      strokePx: nums[1],
+      color: rgba,
+      strokeColor: strokeRgba,
+      weight: nums[2],
+      // `backdrop` 写的是 `0`/`1`（Rust 的 `bool as u8`）。
+      backdrop: nums[3] !== 0,
+      parsed: true,
+    };
+  }
   const stickerLayers = [];
   /// **调整图层**：走「调整级」管线的特效（Warp / ColorAdjust / ColorMask）
   /// 必须挂在**没有素材**的图层上，否则渲染器整条丢掉（见下面的 `placeAdjustment`）。
@@ -3164,17 +3228,54 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    `type = "sticker"` 并入 `case 'sticker'` 了（复用那条验过的路径）。
           const kind = (event.kind ?? '').trim().toLowerCase();
           if (kind === 'text') {
-            // 文字元素 = **本仓排版 + 底座文本原语**。
+            // 文字元素 = **本仓排版 + 底座的字幕样式原语**（§5 E3）。
             //
-            // ⚠️ 本趟**只登记、不出图**（保守决策 #60）：文字排版（字号/折行/描边/底衬）
-            //    是 E3 的下一步（`BoxSize::text` 还没接上生产调用方），
-            //    在没有排版结果之前把它当图片画 = "大字压住主播脸"。
-            //    ⇒ 这里**显式 DROP 并说明原因**，而不是静默跳过 ——
-            //      静默跳过正是本仓 R1 那条禁忌（"报告里一行、成片里没有"）。
-            drop(
+            // ⚠️ 这一条以前是 `drop()`（"还没有排版通道"）。现在排好了 ——
+            //    `process` 的 Step 1d3 已经把盒子算出来并写回 `x`/`y`（百分比），
+            //    这里把它落成一层文字。
+            //
+            // ⚠️ **底座没有"自由文本图层"**（`Layer` 上没有 text 字段）——
+            //    文字在底座里一律走**字幕资产 + `SubtitleStyle`**。
+            //    所以这条的实现是：给每一条文字元素建**一个自己的 ASS 资产 +
+            //    一个单层字幕轨**，样式从四档预设推。
+            //    ⚠️ 不塞进主字幕轨：那条轨的样式是字幕的（font_ratio 0.0667 / 底部），
+            //    混进去会让大字被字幕的样式与位置规则吃掉。
+            const rawStyle = (event.style ?? '').trim().toLowerCase();
+            const st = parseTextStyle(event.source, rawStyle);
+            if (!st.parsed) {
+              note(
+                where,
+                `文字元素「${event.text ?? ''}」的样式参数没拿到（event.source 为空或坏）` +
+                  ` —— 按 ${st.name} 的**兜底值**画；正常路径下这不该发生（process 会写回）`,
+              );
+            }
+            if (rawStyle && !TEXT_STYLE_FALLBACK[rawStyle]) {
+              note(where, `文字元素「${event.text ?? ''}」的 style = "${rawStyle}" 认不出，按 comment 处理`);
+            }
+            const textBody = String(event.text ?? '');
+            if (!textBody.trim()) {
+              drop(where, '文字元素没有 text（空文本没什么可画的）');
+              break;
+            }
+            const startFrame = remapFrame(srcStart);
+            if (startFrame === null) {
+              note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
+              break;
+            }
+            const endFrame = Math.max(startFrame + 1, remapFrame(srcEnd) ?? startFrame + 1);
+            textCues.push({
+              start: startFrame,
+              end: endFrame,
+              text: textBody,
+              style: st,
+              // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
+              pos: (event.pos ?? '').trim().toLowerCase() || 'bottom',
+            });
+            note(
               where,
-              `文字元素「${event.text ?? ''}」还没有排版通道（§5 E3 的调用方未接上）` +
-                ` —— 这是本仓的待办，不是工程的问题`,
+              `文字元素「${textBody}」-> 独立文字层（style=${rawStyle || 'comment'}，` +
+                `pos=${(event.pos ?? '').trim().toLowerCase() || 'bottom'}，` +
+                `占 ${endFrame - startFrame} 帧）`,
             );
             break;
           }
@@ -4975,8 +5076,100 @@ export function translate(config, clipDir, outPath, options = {}) {
   // 字幕之前 —— 两者只有在"贴纸与字幕在时间上重叠"时才看得出区别。
   //
   // 音频不参与绘制顺序，放最后只为读起来清楚。
+  // 文字元素 -> 每档预设一条轨（§5 E3）。
+  //
+  // ⚠️ **按 `style` 分组**而不是"一条元素一条轨"：同一档的样式完全相同，
+  //    分成多条轨会产生一堆 id 不同、内容等价的轨道（底座每多一条轨就多一趟合成）。
+  //    ⚠️ 但**不同档绝不能合并** —— 那是"大招与吐槽用同一个字号"。
+  const textTracks = [];
+  {
+    const byStyle = new Map();
+    for (const cue of textCues) {
+      const key = cue.style.name;
+      if (!byStyle.has(key)) byStyle.set(key, []);
+      byStyle.get(key).push(cue);
+    }
+    // ⚠️ 遍历**固定顺序**（不是 Map 的插入序）：同一份工程跑两次要逐字节相同。
+    for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
+      const cues = byStyle.get(styleName);
+      if (!cues || cues.length === 0) continue;
+      const st = cues[0].style;
+      const id = `text_${styleName}`;
+      // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
+      //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
+      //    时间格式四件事，而它们都已经在那条里被验过了（有单测 + 真出片）。
+      //    重复实现 = 两套转义规则，迟早分叉。
+      const ass = cuesToAss(
+        cues.map((c) => ({
+          startMs: (c.start / fps) * 1000,
+          endMs: (c.end / fps) * 1000,
+          // ⚠️ ASS 里 `\n` 是硬换行 —— 排版那一步已经折好行了
+          //    （`TextLayout::solve` 的 `lines`），但它的结果**没有传下来**
+          //    （底座重排一次，用 `safe_width_ratio` 与 `shrink_min_scale` 约束）。
+          //    这里把原始文本原样发出，让底座按同一套常量排 —— 两边口径一致
+          //    （`safe_width_ratio` 0.875 就是 `CAPTION_SAFE_WIDTH_RATIO`）。
+          text: c.text,
+          travelMs: 0,
+        })),
+        { font: 'Sans', fontSize: st.fontPx },
+      );
+      const assPath = join(clipDir, `dhampir-${id}.ass`);
+      writeFileSync(assPath, ass, 'utf8');
+      assets.push({
+        id,
+        kind: 'subtitle',
+        name: `文字-${styleName}`,
+        uri: assPath,
+        frame_count: null,
+        timebase,
+        width: null,
+        height: null,
+        content_hash: null,
+        tags: {},
+        note: `§5 E3 文字元素（${styleName}），共 ${cues.length} 条`,
+      });
+      textTracks.push({
+        id,
+        kind: 'subtitle',
+        subtitle: {
+          font_ratio: st.fontPx / height,
+          // ⚠️ 文字**不贴底**：它的纵向位置由 `pos` 决定，而底座的
+          //    `bottom_margin` 是"字幕贴底多少"。给 0.5（居中）当**中立值**，
+          //    真正的位置由 ASS 的 `\an` 对齐码表达（见 `buildAss`）。
+          bottom_margin: 0.5,
+          max_lines: 3,
+          color: st.color,
+          outline: true,
+          // ⚠️ 描边口径与字幕**同一条**：CSS 居中 -> 底座外侧宽度要折半。
+          stroke_ratio: st.strokePx / 2 / height,
+          stroke_color: st.strokeColor,
+          fade_in_ms: 0,
+          fade_out_ms: 0,
+          rise_in_px: 0,
+          rise_out_px: 0,
+          font_weight: st.weight,
+          // ⚠️ **不缩字号**：文字的字号是四档预设**定死**的（那是它的语义），
+          //    像字幕那样"装不下就缩"会让 `hook` 缩成 `comment`。
+          shrink_min_scale: 1.0,
+          // ⚠️ **也不截断**：排版那一步（Rust `TextLayout::solve`）已经按
+          //    `CAPTION_MAX_LINES` 折好并截过，这里再截一次是重复裁剪。
+          keep_all_lines: true,
+          safe_width_ratio: 0.875,
+        },
+        layers: cues.map((c, i) => ({
+          id: `${id}_${i}`,
+          start: c.start,
+          end: c.end,
+          source: { asset_id: id, source_in: 0 },
+          opacity: 1.0,
+        })),
+      });
+    }
+  }
+
   for (const track of stickerTracks) tracks.push(track);
   for (const track of audioTracks) tracks.push(track);
+  for (const track of textTracks) tracks.push(track);
   for (const track of subtitleTracks) tracks.push(track);
   for (const track of danmakuTracks) tracks.push(track);
 
