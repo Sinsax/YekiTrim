@@ -291,9 +291,13 @@ function fmtDuration(sec) {
  * 探不到就显示 `—` —— 宁可少显示一行，也不要编一个数出来。
  * ⚠️ **贴纸要现拉 detail**（列表只有 `count`）：整包的图只在这一刻拉一次。 */
 async function selectItem(it) {
-  if (kind.value === 'video') {
-    const v = videos.value.find((x) => x.key === it.key)
-    if (!v) return
+  if (it.type === 'video') {
+    // ⚠️ **别拿 `it.key` 去 `videos` 里反查** —— `videos.value` 里放的是**接口原始对象**
+    // （只有 `{name, file, duration}`，**没有 `key`**），`it.key` 是 `items` 计算时才造出来的。
+    // 以前写成 `videos.value.find(x => x.key === it.key)` ⇒ 永远 `undefined` ⇒ `if (!v) return`
+    // ⇒ **点了视频右栏什么都不出现**（用户报的正是这个）。`it` 自己就带齐了要用的字段。
+    if (typeof it.file !== 'string' || !it.file) return
+    const v = it
     preview.value = {
       type: 'video',
       name: v.name,
