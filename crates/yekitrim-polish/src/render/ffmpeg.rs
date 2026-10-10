@@ -413,6 +413,98 @@ impl Ffmpeg {
         Ok(())
     }
 
+    /// §11：把 **BGM** 混进已有音轨（人声段自动闪避）。
+    ///
+    /// * `audio_input` —— 已经混过音效的音轨；
+    /// * `bgm_file` —— 音乐文件；
+    /// * `duck_expr` —— 闪避的 `volume` 表达式（[`crate::render::bgm::duck_gain_expr`]）；
+    /// * `cfg` —— 音量/淡入淡出；
+    /// * `total_secs` —— 成片时长（淡出的起点由它算）；
+    /// * `loop_until_end` —— 音乐比片子短时是否循环铺满；
+    /// * `output` —— 产物（**AAC**，与 `mix_sfx` 同口径：下游按解码样本数对账）。
+    ///
+    /// # 为什么把"闪避"写成 `volume` 表达式而不是 `sidechaincompress`
+    ///
+    /// `sidechaincompress` 是现成的闪避滤镜，但它要**两路输入**，且自带
+    /// `release`（包络释放时间）这个"压缩器"语义。我们**已经**有"哪里有人声"
+    /// 这份数据（§21 的响度曲线/分段响度），直接把判据写出来更准、也更容易解释。
+    /// 详见 [`crate::render::bgm::duck_gain_expr`]。
+    ///
+    /// ⚠️ **BGM 那一级必须是独立的一次 ffmpeg 调用**（不是塞进 `mix_sfx` 的
+    /// `filter_complex`）：`mix_sfx` 的输入序号是按音效条数动态编的，
+    /// 往里面插一路会让那套编号与"音效 i 对应 `[s{i}]`"的对应关系错位 ——
+    /// 而错位的表现是**音效配错文件**，不是报错。
+    #[allow(clippy::too_many_arguments)]
+    pub fn mix_bgm(
+        audio_input: &str,
+        bgm_file: &str,
+        duck_expr: &str,
+        cfg: &crate::render::bgm::BgmConfig,
+        total_secs: f64,
+        loop_until_end: bool,
+        output: &str,
+    ) -> anyhow::Result<()> {
+        let mut input_args: Vec<String> = vec![
+            "-y".to_string(),
+            "-i".to_string(),
+            audio_input.to_string(),
+            // ⚠️ **循环放在输入侧**（`-stream_loop -1`）而不是滤镜侧：
+            //    滤镜侧要写 `aloop` + 手工算循环点，而 `-stream_loop -1` 是
+            //    "无限循环这一路输入"——`-shortest` 会让它停在主音轨结束时。
+            //    ⚠️ `-stream_loop` 必须**紧挨着它作用的那个 `-i`**（ffmpeg 的
+            //    选项作用域规则），写到前面去会作用到主音轨上 ⇒ 主音轨也被循环。
+        ];
+        if loop_until_end {
+            input_args.push("-stream_loop".to_string());
+            input_args.push("-1".to_string());
+        }
+        input_args.push("-i".to_string());
+        input_args.push(bgm_file.to_string());
+
+        // BGM 那一级：音量 → 淡入 → 淡出 → 闪避。
+        //
+        // ⚠️ **闪避（`volume=<expr>:eval=frame`）必须排在淡入淡出之后**：
+        //    排在前面的话淡出会把"已经压低的"再乘一遍（观感是结尾音乐几乎没了）。
+        //    ⚠️ `eval=frame` 不能省 —— 默认 `eval=once` 只在**开头求值一次**，
+        //    于是整片用一个恒定增益，"闪避"退化成"全局调低"而**不报错**。
+        let mut bgm_chain = crate::render::bgm::bgm_filter_chain(1, total_secs, cfg);
+        // `bgm_filter_chain` 以 `[bgm]` 结尾 ⇒ 把标签摘掉，接上闪避，再打回去。
+        if bgm_chain.ends_with("[bgm]") {
+            bgm_chain.truncate(bgm_chain.len() - "[bgm]".len());
+        }
+        bgm_chain.push_str(&format!(",volume={duck_expr}:eval=frame[bgm]"));
+
+        let filter_complex = format!(
+            "{bgm_chain};[0:a][bgm]amix=inputs=2:duration=first:normalize=0[a]"
+        );
+
+        let mut args: Vec<String> = input_args;
+        args.extend_from_slice(&[
+            "-filter_complex".into(),
+            filter_complex,
+            "-map".into(),
+            "[a]".into(),
+            // ⚠️ `-shortest`：`-stream_loop -1` 的那一路是**无限长**的，
+            //    没有它这次调用**永远不会结束**（表现是"出片卡在混音那一步"）。
+            "-shortest".into(),
+            "-acodec".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "128k".into(),
+            output.into(),
+        ]);
+
+        let status = yekitrim_core::process::cmd("ffmpeg")
+            .args(&args)
+            .stderr(Stdio::null())
+            .stdout(Stdio::null())
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("ffmpeg BGM mix failed");
+        }
+        Ok(())
+    }
+
     /// 按屏蔽区间剪掉一段时间：视频/音频同步跳过的部分会被移除。
     ///
     /// 这里是**整段重编码**（select 过滤没法流转发），所以编码器要走

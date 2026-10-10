@@ -838,7 +838,106 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
             move_file(&lim, &ma)?;
             move_file(&ma, &ta)?;
         }
+
         tracing::info!("  ⏱ 音效混音 {:.1}s", t_audio.elapsed().as_secs_f64());
+    }
+
+    // ---- §11 背景音乐（**只做引入，不做卡点**）----
+    //
+    // ⚠️ 规格 `editing-techniques-catalog.md` §3c：本仓此前没有 BGM ⇒
+    //    没有节拍网格 ⇒ **卡点是"不适用项"**（"不要假装能做"）。
+    //    这里只把音乐**引进来**，并让它**不抢主播的话**。
+    {
+        let bgm = &config.bgm;
+        if bgm.enabled && !bgm.is_usable() {
+            // ⚠️ **开了开关但没选曲**必须报出来 —— 不能静默当"没开"：
+            //    用户明明开了，报告里一行都没有，他只会以为"功能坏了"。
+            tracing::warn!("  ⚠ [bgm] enabled = true 但没选曲（file 为空）—— 本次不出背景音乐");
+        } else if bgm.is_usable() {
+            let bgm_path = if Path::new(&bgm.file).is_absolute() {
+                PathBuf::from(&bgm.file)
+            } else {
+                project_path.join(&bgm.file)
+            };
+            if !bgm_path.exists() {
+                // 选了曲但文件不在：**报出来**（静默跳过的表现是"配了 BGM 但成片没有"）。
+                tracing::warn!(
+                    "  ⚠ [bgm] 文件不存在：{} —— 本次不出背景音乐",
+                    bgm_path.display()
+                );
+            } else {
+                // 人声段：**按字幕段量响度**，与 §21 用**同一个函数**
+                // （`measure_segment_loudness`）—— 两套"哪里有人声"的判据打架时，
+                // 会出现"音效闪了、BGM 没闪"（或反之），而两者看起来都"在工作"。
+                //
+                // ⚠️ 判据是"这一段里有没有人说话"，而不是"响度大不大"：
+                //    游戏音效也很响，但它不该压 BGM（压了会得到"一有枪声音乐就变小"
+                //    这种奇怪的结果）。字幕段天然就是"有人声的时间段"。
+                //
+                // ⚠️ 响度曲线**走缓存版**（与出片页/§21 同一份）：不缓存等于
+                //    每个带 BGM 的工程都重跑一遍整段 ebur128。
+                let loudness_curve =
+                    measure_loudness_curve_cached(project_path, Path::new(&resolved.video));
+                //
+                // ⚠️ 这里**不去逐段解码**（`measure_segment_loudness` 是"每段跑一次 ffmpeg"，
+                //    几十段就是几十次解码）—— 我们只需要"**有没有人声**"这个布尔量，
+                //    所以把已有的响度曲线按段取**中位/平均**就够了，零额外 IO。
+                let duck_segs: Vec<(f64, f64, Option<f64>)> = config
+                    .segments
+                    .iter()
+                    .map(|sg| {
+                        let pts: Vec<f64> = loudness_curve
+                            .iter()
+                            .filter(|(t, _)| *t >= sg.start && *t <= sg.end)
+                            .map(|(_, d)| *d)
+                            .collect();
+                        let db = if pts.is_empty() {
+                            None
+                        } else {
+                            Some(pts.iter().sum::<f64>() / pts.len() as f64)
+                        };
+                        (sg.start, sg.end, db)
+                    })
+                    .collect();
+                let expr = render::bgm::duck_gain_expr(&duck_segs, bgm.duck_ratio);
+                let total = duration;
+                // ⚠️ BGM 自己那一路的输出文件**必须独立**（不能复用音效那块作用域里的 `ma`，
+                //    它在这个作用域里根本不存在）—— 而且两路**上下串行**，
+                //    共用一个中间文件会在"音效那步没跑"时读到一个不存在的文件。
+                let mb = project_path.join("_temp_audio_b.aac");
+                match Ffmpeg::mix_bgm(
+                    &ta.to_string_lossy(),
+                    &bgm_path.to_string_lossy(),
+                    &expr,
+                    bgm,
+                    total,
+                    bgm.loop_until_end,
+                    &mb.to_string_lossy(),
+                ) {
+                    Ok(()) => {
+                        let lim = project_path.join("_temp_audio_l.aac");
+                        Ffmpeg::apply_limiter(&mb.to_string_lossy(), &lim.to_string_lossy())?;
+                        move_file(&lim, &mb)?;
+                        move_file(&mb, &ta)?;
+                        tracing::info!(
+                            "  ✓ BGM 已混入：{}（音量 {:.2}、闪避到 {:.2}、淡入 {:.1}s / 淡出 {:.1}s{}）（§11）",
+                            bgm_path.display(),
+                            bgm.volume,
+                            bgm.duck_ratio,
+                            bgm.fade_in,
+                            bgm.fade_out,
+                            if bgm.loop_until_end { "、循环铺满" } else { "" },
+                        );
+                    }
+                    Err(e) => {
+                        // ⚠️ **BGM 失败不该让整条出片失败**（它是一层装饰，
+                        //    而画面/人声才是主体）—— 但要**报出来**，
+                        //    不能"配了 BGM 却安静地没有"。
+                        tracing::warn!("  ⚠ BGM 混音失败（{e}）—— 本次成片没有背景音乐");
+                    }
+                }
+            }
+        }
     }
 
     tracing::info!("\n  -- Mux --");
