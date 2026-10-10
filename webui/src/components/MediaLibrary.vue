@@ -184,6 +184,38 @@ const sampleOf = () => testText.value.trim() || SAMPLE
 /** 三种素材各自的列表状态（切类型不互清 —— 切回来是即时的）。 */
 const videos = ref([])
 const packs = ref([])
+/** 包封面：`{包名: 图片URL}`。**列表接口不带文件名**（只回 `count`），所以封面要现拉 detail。
+ *
+ * ⚠️ 缓存在这里、**每个包只拉一次**：`items` 是 computed，每次重算都会调 `coverOf`，
+ * 不缓存就是"每渲染一次发一轮请求"（素材库一多就是几十连发）。
+ * ⚠️ 拉失败**留空**（渲染成占位），不要拿别人的图顶上 —— 张冠李戴比没有图更难发现。 */
+const covers = reactive({})
+function coverOf(pack) {
+  if (covers[pack] !== undefined) return covers[pack]
+  covers[pack] = '' // 占位，同时充当"已在拉"的标记
+  stickersApi
+    .detail(pack)
+    .then((d) => {
+      const first = (d?.files || [])[0]?.name
+      covers[pack] = first ? stickersApi.fileUrl(pack, first) : ''
+    })
+    .catch(() => {
+      covers[pack] = ''
+    })
+  return ''
+}
+/** [`coverOf`] 的 await 版（点开时用：要拿到**确定**结果，不能拿占位空串）。 */
+async function coverOfAsync(pack) {
+  if (covers[pack]) return covers[pack]
+  try {
+    const d = await stickersApi.detail(pack)
+    const first = (d?.files || [])[0]?.name
+    covers[pack] = first ? stickersApi.fileUrl(pack, first) : ''
+  } catch {
+    covers[pack] = ''
+  }
+  return covers[pack]
+}
 const fonts = ref([])
 // ⚠️ **每种素材各有各的根**，别只留一个 —— 视频/字体/贴纸的库是三棵不同的树
 // （`<数据>/resources/{videos,fonts,stickers}`，多用户下再套一层 `users/<uid>/`）。
@@ -249,15 +281,18 @@ const items = computed(() => {
   // 贴纸：一行一个包（不是一张图一个格）—— 包内可能几百张，铺成格子会卡；
   // 这里用包里第一张当封面，点开看整包。
   return packs.value.map((p) => {
-    const first = (p.files || [])[0]
     return {
       key: p.name,
       name: p.name,
-      sub: `${(p.files || []).length} 张${p.built ? '' : ' · 未构建'}`,
+      // ⚠️ **列表接口只回 `count`，没有 `files`**（`files` 只有 `detail` 才回）。
+      // 这里以前读 `(p.files || []).length` ⇒ **永远是 0**，界面显示"0 张"，
+      // 而磁盘上其实有几百张（实测 ysyk = 210 张）。点开还会误报"这个贴纸包里没有图片"。
+      sub: `${p.count || 0} 张${p.built ? '' : ' · 未构建'}`,
       title: p.description || p.name,
       badge: p.built ? null : '未构建',
-      thumb: first ? stickersApi.fileUrl(p.name, first) : '',
-      url: first ? stickersApi.fileUrl(p.name, first) : '',
+      // 封面图要**现取**（列表不带文件名）：`coverOf` 只拉一次 detail 并缓存。
+      thumb: coverOf(p.name),
+      url: coverOf(p.name),
       type: 'sticker',
       detail: p.built ? null : '未构建：图能看，但 LLM 生成事件时读不到这个包。',
       actions: [
@@ -295,17 +330,20 @@ async function load(force = false) {
   }
 }
 
-function open(it) {
+async function open(it) {
   if (it.type === 'font') {
     zoom.value = { type: 'font', title: it.name, stack: it.stack, sample: it.sample, meta: it.meta, detail: it.detail }
     return
   }
-  if (!it.url) {
-    // 贴纸包里一张图都没有：给一句人话，别弹一个空白框
+  // ⚠️ 封面可能是**异步**拉来的（列表不带文件名），点得早时 `it.url` 还是空 ——
+  // 这里必须**现要一次**，否则"包里明明有 210 张"却弹「没有图片」。
+  const url = it.url || (it.type === 'sticker' ? await coverOfAsync(it.name) : '')
+  if (!url) {
+    // 真的一张图都没有：给一句人话，别弹一个空白框
     toast('这个贴纸包里没有图片')
     return
   }
-  zoom.value = { type: it.type, title: it.name, url: it.url, detail: it.detail }
+  zoom.value = { type: it.type, title: it.name, url, detail: it.detail }
 }
 const zoom = ref(null)
 
@@ -453,7 +491,7 @@ async function doBuildPack(p) {
 }
 
 async function doDeletePack(p) {
-  if (!(await confirmDialog(`删除贴纸包「${p.name}」？包内 ${(p.files || []).length} 张图会一起删掉。`, { danger: true })))
+  if (!(await confirmDialog(`删除贴纸包「${p.name}」？包内 ${p.count || 0} 张图会一起删掉。`, { danger: true })))
     return
   busy.value = true
   try {
