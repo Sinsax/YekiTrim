@@ -122,52 +122,37 @@
         </div>
       </section>
 
-      <!-- **右侧预览栏**（用户口径 2026-10-10）：
-           · 视频 —— 点左边即可在这里**直接播放**，并显示时长/大小/文件名；
-           · 贴纸 —— 在这里**列表显示**（一整包的图，不再弹窗翻）；
-           · 字体 —— **不要右栏**（样例文字输入框在左侧）；字体用网格里现场渲染的样例看效果。
-           ⚠️ 三个类型共用同一套 DOM，靠 `kind` 切内容；左栏选什么、右栏跟着变，
-           这就是"文件夹管理器"该有的手感（左选、右看），别再给某个类型单开一个弹窗。 -->
-      <aside v-if="kind !== 'font'" class="ml-side">
-        <template v-if="kind === 'video'">
-          <div v-if="!preview" class="ml-side-empty muted small">
-            点左边的视频，在这里预览播放
-          </div>
-          <template v-else>
-            <video :src="preview.url" controls class="ml-side-video"></video>
-            <div class="ml-side-info">
-              <div class="ml-info-row"><span class="muted">名称</span><b>{{ preview.name }}</b></div>
-              <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
-              <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
-              <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
-            </div>
-          </template>
-        </template>
-
+      <!-- **右侧预览栏** —— 只服务贴纸（用户口径 2026-10-10 修订）：
+           · 贴纸 —— 在这里**列表显示**整包；
+           · **视频** —— 改成**点击弹窗**播放（用户口径：「视频还是改成点击弹出吧，
+             视频的右侧栏删除」）。视频要的是"大一点看清楚"，弹窗比定宽栏合适，
+             而且弹窗本来就有（`zoom`），不用为视频单留一条渲染分支；
+           · **字体** —— 没有右栏，样例文字输入框在左侧。
+           ⚠️ 所以右栏的显示条件从 `kind !== 'font'` 收紧成 **`kind === 'sticker'`**：
+           视频页整条右栏不渲染（不是渲染出来再藏起来 —— 那还会占掉 600px 的宽度）。 -->
+      <aside v-if="kind === 'sticker'" class="ml-side">
+        <div v-if="!preview" class="ml-side-empty muted small">
+          点左边的贴纸包，在这里列出包内所有图
+        </div>
         <template v-else>
-          <div v-if="!preview" class="ml-side-empty muted small">
-            点左边的贴纸包，在这里列出包内所有图
+          <div class="row spread mb-8" style="flex-wrap:nowrap">
+            <b class="m-0">{{ preview.name }}</b>
+            <span class="muted small">{{ preview.files.length }} 张</span>
           </div>
-          <template v-else>
-            <div class="row spread mb-8" style="flex-wrap:nowrap">
-              <b class="m-0">{{ preview.name }}</b>
-              <span class="muted small">{{ preview.files.length }} 张</span>
-            </div>
-            <p v-if="!preview.files.length" class="muted small m-0">这个包里没有图片。</p>
-            <!-- ⚠️ `loading="lazy"`：一个包可能有 200+ 张（ysyk 就是 210），
-                 不懒加载会一次性全解码，整页卡住。 -->
-            <div v-else class="ml-side-grid">
-              <img
-                v-for="f in preview.files"
-                :key="f.name"
-                :src="f.url"
-                :alt="f.name"
-                :title="f.name"
-                loading="lazy"
-                @click="openStickerImage(f)"
-              >
-            </div>
-          </template>
+          <p v-if="!preview.files.length" class="muted small m-0">这个包里没有图片。</p>
+          <!-- ⚠️ `loading="lazy"`：一个包可能有 200+ 张（ysyk 就是 210），
+               不懒加载会一次性全解码，整页卡住。 -->
+          <div v-else class="ml-side-grid">
+            <img
+              v-for="f in preview.files"
+              :key="f.name"
+              :src="f.url"
+              :alt="f.name"
+              :title="f.name"
+              loading="lazy"
+              @click="openStickerImage(f)"
+            >
+          </div>
         </template>
       </aside>
     </div>
@@ -274,49 +259,17 @@ const preview = ref(null)
 function switchKind(k) {
   if (kind.value === k) return
   kind.value = k
+  // 右栏只服务贴纸；切走就把选中清掉（右栏那时整条不渲染，留着旧数据没意义）。
   preview.value = null
 }
 
-/** 秒 → `m:ss`（视频时长）。探不出来时给 `—`，**不猜**。 */
-function fmtDuration(sec) {
-  if (!sec || sec <= 0) return '—'
-  const t = Math.round(sec)
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
-}
-
-/** 选中一条素材 → 装配右栏要的数据。
+/** 点一个贴纸包 → 拉整包图，填进右栏。
  *
- * ⚠️ **视频的大小要现问服务端**：列表接口只回 `{name, file, duration}`（没有 `size`）。
- * 这里用 `HEAD` 探一次 `Content-Length`（那条取文件的路支持 Range，所以 HEAD 很轻）；
- * 探不到就显示 `—` —— 宁可少显示一行，也不要编一个数出来。
- * ⚠️ **贴纸要现拉 detail**（列表只有 `count`）：整包的图只在这一刻拉一次。 */
-async function selectItem(it) {
-  if (it.type === 'video') {
-    // ⚠️ **别拿 `it.key` 去 `videos` 里反查** —— `videos.value` 里放的是**接口原始对象**
-    // （只有 `{name, file, duration}`，**没有 `key`**），`it.key` 是 `items` 计算时才造出来的。
-    // 以前写成 `videos.value.find(x => x.key === it.key)` ⇒ 永远 `undefined` ⇒ `if (!v) return`
-    // ⇒ **点了视频右栏什么都不出现**（用户报的正是这个）。`it` 自己就带齐了要用的字段。
-    if (typeof it.file !== 'string' || !it.file) return
-    const v = it
-    preview.value = {
-      type: 'video',
-      name: v.name,
-      file: v.file,
-      url: v.url,
-      durationText: fmtDuration(v.duration),
-      sizeText: '…',
-    }
-    // 大小是"锦上添花"，拿不到就显示 —，**不能因为探不到就让整条选中失败**
-    try {
-      const res = await fetch(v.url, { method: 'HEAD' })
-      const len = Number(res.headers.get('content-length') || 0)
-      if (preview.value?.file === v.file) preview.value.sizeText = fmtBytes(len)
-    } catch {
-      if (preview.value?.file === v.file) preview.value.sizeText = '—'
-    }
-    return
-  }
-  // 贴纸包：列表只给 count，整包的文件名/URL 现拉
+ * ⚠️ **只服务贴纸**：视频已改回弹窗（用户口径），不在这里处理 —— 别再把视频分支加回来，
+ * 那会让"右栏"同时承担两种形态。
+ * ⚠️ **贴纸要现拉 detail**（列表只有 `count`）：整包的图只在这一刻拉一次。
+ * ⚠️ 落结果前核对 `preview.value?.name`，否则点得快时慢响应会覆盖新选中。 */
+async function selectStickerPack(it) {
   preview.value = { type: 'sticker', name: it.name, files: [] }
   try {
     const d = await stickersApi.detail(it.name)
@@ -463,15 +416,19 @@ async function load(force = false) {
 }
 
 async function open(it) {
-  // 字体**没有右栏**（用户口径）：直接走放大弹窗看大字形。
+  // **视频：点击弹窗播放**（用户口径 2026-10-10：「视频还是改成点击弹出吧，视频的右侧栏删除」）。
+  // 弹窗比定宽右栏大得多，看画面本来就更合适；那条 `<video>` 分支本来就在弹窗里，直接复用。
+  if (it.type === 'video') {
+    zoom.value = { type: 'video', title: it.name, url: it.url, detail: it.detail }
+    return
+  }
+  // **字体：也走弹窗**（没有右栏，看大字形）。
   if (it.type === 'font') {
     zoom.value = { type: 'font', title: it.name, stack: it.stack, sample: it.sample, meta: it.meta, detail: it.detail }
     return
   }
-  // 视频 / 贴纸：选中即进**右侧预览栏**（视频在那儿直接播、贴纸在那儿列整包）。
-  // ⚠️ 这里**不再弹窗** —— 用户口径是"点视频在右栏预览播放、贴纸在右栏列表显示"，
-  // 再弹一个模态框就是两套交互抢同一件事。
-  await selectItem(it)
+  // **贴纸：进右侧预览栏**（在那儿列整包）。
+  await selectStickerPack(it)
 }
 
 /** 从右栏的贴纸列表里点开一张 —— 大图仍走弹窗（列表格子小，看不清细节）。 */
@@ -672,25 +629,9 @@ onMounted(() => load())
   min-height:160px; text-align:center; padding:0 12px;
   border:1px dashed var(--line); border-radius:8px;
 }
-/* ⚠️ **必须显式给高度/宽高比，且 `flex:none`** —— 这是"视频不播放"的根因：
-   `.ml-side` 是 `flex-direction:column` 的容器，`<video>` 作为 flex item 默认
-   `flex-shrink:1`、且没有内在高度约束，于是被压到接近 0 高 ——
-   界面上只剩一条黑边、`controls` 挤成看不见的一条，点哪都不是"播放"。
-   （我没有在真实浏览器里复现，是从 CSS 规则推的；但"有控件却不播"这个症状与它完全吻合。）
-   `aspect-ratio` 让它在等宽的前提下按视频比例撑开高度，不写死像素。 */
-.ml-side-video {
-  flex:none; width:100%; aspect-ratio:16 / 9;
-  border-radius:8px; background:#000; display:block;
-  object-fit:contain;
-}
-.ml-side-info { flex:none; display:flex; flex-direction:column; gap:5px; }
-.ml-info-row { display:flex; gap:8px; align-items:baseline; font-size:12px; }
-.ml-info-row > .muted { flex:none; width:36px; }
-.ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
-.ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* 包内图片列表：三列小图，可滚。一个包 200+ 张（ysyk = 210），
-   不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。 */
-/* 栏宽翻倍后列数跟着加，否则每张图被拉得很大、一屏反而看得更少。 */
+/* 包内图片列表：多列小图，可滚。一个包 200+ 张（ysyk = 210），
+   不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。
+   6 列是跟着 600px 的栏宽定的：列数少了每张图被拉得很大、一屏反而看得更少。 */
 .ml-side-grid {
   display:grid; grid-template-columns:repeat(6, 1fr); gap:4px;
   max-height:460px; overflow-y:auto; padding-right:2px;
