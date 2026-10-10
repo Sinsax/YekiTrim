@@ -97,6 +97,19 @@ pub(crate) fn build_events_system_prompt(
     {{"type":"camera","time":9.0,"end":12.0,"zoom":"中","anchor":"danmaku","anchor_to":"liver"}}
 - sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
+- element: **文字元素**（钩子标题 / 章节卡 / 吐槽 / 计数）。比贴纸更适合"要写一句话"的场合
+  {{"type":"element","kind":"text","time":30.0,"end":32.4,"text":"这就是传说中的…","style":"hook","pos":"top"}}
+  {{"type":"element","kind":"text","time":75.0,"end":77.5,"text":"第 3 次了","style":"count","pos":"center"}}
+  style 四选一:
+  * `hook` 钩子标题 —— 大号高对比强描边, 用在**开场或一个爆点之前**, 要"抓人"
+  * `chapter` 章节卡 —— 中号带底居中, 用在**话题切换**处, 像小标题
+  * `comment` 吐槽 —— 小号带底色块, 用在**你对画面里的事有话说**的时候(最常见的一种)
+  * `count` 计数/积累 —— 中号, 用在"第 N 次""又来了"这种**重复累积**的场合
+  pos 三选一: `top` / `center` / `bottom`(不写默认 center)。文字**不要**用 `x`/`y`(那是贴纸的)
+  ⚠️ **文字很短**: 一条最多 12 个字(超了会被系统按两行折, 再长就压画面了)
+  ⚠️ **别和字幕重复**: 字幕已经在说这句话了, 就不要再写一条一样的文字元素 ——
+     文字的用途是**字幕没说的那句**(标题 / 你的吐槽 / 计数), 不是复读机
+  ⚠️ 整段最多 1~2 条。文字元素很抢眼, 写多了整片都是大字 → 反而没有重点
 - 视觉特效: {}
   {{"type":"shake","time":8.0,"end":8.3,"intensity":14,"sfx":"tag:爆発"}}
   intensity 是**像素**位移(默认 14, 常用 10~30), 0 = 不抖; **别写 0.5 这种亚像素值 —— 那等于看不出来**
@@ -221,8 +234,9 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 
 /// LLM 可能漏掉事件对象的 type 字段 (serde tagged enum 必需)。
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
-/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld→camera, overlay_type→overlay, keyword→sticker,
-/// name→sfx, intensity/color→shake。无法推断的保持原样（由 serde 报错）。
+/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld→camera, overlay_type/colors→overlay,
+/// kind（或 text+style/pos）→element, keyword→sticker, name→sfx, intensity/color→shake。
+/// 无法推断的保持原样（由 serde 报错）。
 pub(crate) fn normalize_segments_json(json: &str) -> String {
     let infer_type = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<&'static str> {
         if obj.contains_key("zoom")
@@ -236,6 +250,23 @@ pub(crate) fn normalize_segments_json(json: &str) -> String {
         }
         if obj.contains_key("overlay_type") || obj.contains_key("colors") {
             return Some("overlay");
+        }
+        // 元素（§5）：`kind` 是它独有的分派字段，最可靠。
+        //
+        // ⚠️ **必须排在 `keyword` 之前**：`kind = "sticker"` 的元素既可能带 `kind`
+        // 也可能带 `text`（关键词就存在 `text` 里），而**老** `sticker` 事件带的是 `keyword`。
+        // 三条规则不重叠（`kind` / `keyword` / `text+style|pos`），但顺序上先认 `kind`
+        // 更安全：万一将来给元素补一个 `keyword` 别名，也不会被上面那条抢走。
+        if obj.contains_key("kind") {
+            return Some("element");
+        }
+        // 兜底：只写了 `text` 的元素（LLM 漏了 `kind`）。⚠️ 判据加上 `style` 或 `pos` ——
+        // **不能只看 `text`**：`sfx` 没有 `text`、但别的模型可能用 `text` 当 `name` 的别名，
+        // 加上这两个元素独有的字段之后就不可能与其它类型混淆。
+        if obj.contains_key("text")
+            && (obj.contains_key("style") || obj.contains_key("pos"))
+        {
+            return Some("element");
         }
         if obj.contains_key("keyword") {
             return Some("sticker");
@@ -396,6 +427,56 @@ mod tests {
         assert!(
             matches!(&evs[6], crate::project::Event::Camera { handheld: true, .. }),
             "只写 handheld 的应推断成 camera: {norm}"
+        );
+    }
+
+    /// 元素（§5 E5）的**类型推断**：`kind` 独有，`text + style/pos` 是兜底。
+    ///
+    /// ⚠️ 这条判据的**反面**才是重点：元素与既有的 `sticker` 事件都会带"关键词"，
+    /// 归错了**不会报错**（都解析成功），只会让一条文字变成贴纸、或者反过来。
+    /// 所以要同时钉住"该认出来的认出来"与"不该抢的不许抢"。
+    #[test]
+    fn normalize_infers_element_without_stealing_sticker() {
+        let raw = r#"[{"start":0.0,"end":30.0,"fx":"low","note":"","events":[
+            {"kind":"text","time":3.0,"end":5.0,"text":"这就是传说中的…","style":"hook","pos":"top"},
+            {"kind":"sticker","time":8.0,"end":10.0,"text":"ysyk","sticker_tag":"害怕"},
+            {"time":14.0,"end":16.0,"text":"漏写了 kind","style":"comment"},
+            {"time":20.0,"end":22.0,"keyword":"laugh","x":"auto","y":"auto"}
+          ]}]"#;
+        let norm = normalize_segments_json(raw);
+        let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
+        let evs = &segments[0].events;
+        assert_eq!(evs.len(), 4);
+        match &evs[0] {
+            crate::project::Event::Element { kind, text, style, .. } => {
+                assert_eq!(kind, "text");
+                assert_eq!(text, "这就是传说中的…");
+                assert_eq!(style.as_deref(), Some("hook"));
+            }
+            other => panic!("带 kind 的应当推断成 element，实得 {other:?}"),
+        }
+        match &evs[1] {
+            crate::project::Event::Element { kind, text, .. } => {
+                assert_eq!(kind, "sticker");
+                assert_eq!(text, "ysyk", "贴纸类元素的关键词存在 `text` 里");
+            }
+            other => panic!("kind=sticker 的元素也该推断成 element，实得 {other:?}"),
+        }
+        match &evs[2] {
+            crate::project::Event::Element { kind, text, .. } => {
+                assert_eq!(text, "漏写了 kind");
+                // ⚠️ 只写了 `text` + `style`（没有 kind）也要认 —— 认不出的症状是
+                // serde 报 "missing field kind"，而 LLM 会**反复**犯这个错（提示词里
+                // `kind` 与 `text` 挨着写，模型很容易只抄一个）。
+                assert_eq!(kind, "", "没写 kind 时留空字符串，由 process 当认不出的值处理");
+            }
+            other => panic!("text+style 该推断成 element，实得 {other:?}"),
+        }
+        // ⚠️ **老 sticker 不许被抢走**：它带 `keyword` 且**没有** `kind`/`text`+`style`。
+        // 抢走的症状是"所有存量工程里的贴纸都变成元素了"（观感可能碰巧相似，极难发现）。
+        assert!(
+            matches!(&evs[3], crate::project::Event::Sticker { keyword, .. } if keyword == "laugh"),
+            "带 keyword 的仍必须是 sticker: {norm}"
         );
     }
 
