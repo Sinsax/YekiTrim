@@ -658,7 +658,7 @@ onMounted(() => load())
    ⚠️ 预览栏**定宽**而不是自适应：视频播放器需要一个稳定的宽高比参考，
    宽度一变、同一段视频每换一次选中就跳一次尺寸。 */
 .ml-side {
-  flex:none; width:300px;
+  flex:none; width:600px;                 /* 用户口径：宽度翻倍（300 → 600） */
   display:flex; flex-direction:column; gap:8px;
   border-left:1px solid var(--line); padding-left:12px;
   min-height:220px;
@@ -668,17 +668,28 @@ onMounted(() => load())
   min-height:160px; text-align:center; padding:0 12px;
   border:1px dashed var(--line); border-radius:8px;
 }
-.ml-side-video { width:100%; border-radius:8px; background:#000; display:block; }
-.ml-side-info { display:flex; flex-direction:column; gap:5px; }
+/* ⚠️ **必须显式给高度/宽高比，且 `flex:none`** —— 这是"视频不播放"的根因：
+   `.ml-side` 是 `flex-direction:column` 的容器，`<video>` 作为 flex item 默认
+   `flex-shrink:1`、且没有内在高度约束，于是被压到接近 0 高 ——
+   界面上只剩一条黑边、`controls` 挤成看不见的一条，点哪都不是"播放"。
+   （我没有在真实浏览器里复现，是从 CSS 规则推的；但"有控件却不播"这个症状与它完全吻合。）
+   `aspect-ratio` 让它在等宽的前提下按视频比例撑开高度，不写死像素。 */
+.ml-side-video {
+  flex:none; width:100%; aspect-ratio:16 / 9;
+  border-radius:8px; background:#000; display:block;
+  object-fit:contain;
+}
+.ml-side-info { flex:none; display:flex; flex-direction:column; gap:5px; }
 .ml-info-row { display:flex; gap:8px; align-items:baseline; font-size:12px; }
 .ml-info-row > .muted { flex:none; width:36px; }
 .ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
 .ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* 包内图片列表：三列小图，可滚。一个包 200+ 张（ysyk = 210），
    不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。 */
+/* 栏宽翻倍后列数跟着加，否则每张图被拉得很大、一屏反而看得更少。 */
 .ml-side-grid {
-  display:grid; grid-template-columns:repeat(3, 1fr); gap:4px;
-  max-height:420px; overflow-y:auto; padding-right:2px;
+  display:grid; grid-template-columns:repeat(6, 1fr); gap:4px;
+  max-height:460px; overflow-y:auto; padding-right:2px;
 }
 .ml-side-grid img {
   width:100%; aspect-ratio:1; object-fit:contain; cursor:zoom-in;
