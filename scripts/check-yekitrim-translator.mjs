@@ -1072,8 +1072,15 @@ const MUTATIONS = [
   {
     // M2：把"没配倍率"的兜底退回 1.0 —— 远景档会整段不拉远（成片里看不出来，只有报告一行）。
     name: 'zoomFactor 的"远"档默认值退回 1.0（不再照抄模板的 0.55）',
-    from: '  const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 };',
-    to: '  const defaults = { 近: 1.5, 远: 1.0, 中: 1.3 };',
+    from: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };',
+    to: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 1.0, 中: 1.3 };',
+  },
+  {
+    // §18-A：特写档（1.8）是**新加的第四档** —— 把它退回"近"的 1.5，
+    // 症状是"特写不够特写"，而从报告上看不出来（倍率只体现为画面大小）。
+    name: '（§18-A）zoomFactor 的"特写"档退回近景 1.5（第四档失效）',
+    from: '  const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };',
+    to: '  const defaults = { 特写: 1.5, 近: 1.5, 远: 0.55, 中: 1.3 };',
   },
   {
     // M2：`color` 档的 Solid 写成 Linear —— 单色覆盖层会变成"两个同色档的渐变"（看不出来，但形状不对）。
@@ -2581,6 +2588,10 @@ function checkMappings(mod) {
   // ---- 1. `zoomFactor`：按档位的默认值（照抄模板 `index.html:578`）----
   eq(mod.zoomFactor('远', undefined), 0.55, 'zoom="远" 没配置时要退**模板默认** 0.55（不是 1.0）');
   eq(mod.zoomFactor('近', undefined), 1.5, 'zoom="近" 默认 1.5');
+  // §18-A：**第四档**。少了这条，把 特写 退回 1.5 的变异不会被打红
+  // （加完那处变异才发现这里没有对应断言 —— 变异台先于断言存在，正是它该抓的）。
+  eq(mod.zoomFactor('特写', undefined), 1.8, 'zoom="特写" 默认 1.8（§18-A 的第四档）');
+  eq(mod.zoomFactor('特写', { zoom_closeup: 2.2 }), 2.2, '特写配了就用配置的值');
   eq(mod.zoomFactor('中', undefined), 1.3, 'zoom="中" 默认 1.3');
   eq(mod.zoomFactor('认不出的档位', undefined), 1.3, '认不出的档位按**中景**（模板 else 分支）');
   eq(mod.zoomFactor('远', { zoom_wide: 0.8 }), 0.8, '配了就用配置的值');
@@ -2865,6 +2876,6 @@ console.log('  钉住的是 2026-10-06 的六条轨道开关（`[stage.lanes]`�
 console.log('  视觉特效默认关、音效只跟画布"，**显式开关优先于一切**（横画布也能关、竖画布也能开）——');
 console.log('  与 Rust `ProjectFile::lane_default` 四种方向组合逐值对拍');
 console.log('  钉住的是 M2 三条"报告里一行、成片里没有"：覆盖层 color/fade_in 两档、贴纸只有 name、');
-console.log('  以及 `style.camera` 没配时的**按档位默认倍率**（远 0.55 / 近 1.5 / 中 1.3，照抄模板）');
+console.log('  以及 `style.camera` 没配时的**按档位默认倍率**（§18-A 起四档：特写 1.8 / 近 1.5 / 远 0.55 / 中 1.3，照抄模板）');
 
 if (process.argv.includes('--mutate')) await mutate();

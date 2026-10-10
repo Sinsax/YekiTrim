@@ -1116,7 +1116,12 @@ function init(){
     var dur=transientDur(ev,0.3);
     var nid='noise_'+(window.__NOISE_COUNTER||0); window.__NOISE_COUNTER=(window.__NOISE_COUNTER||0)+1;
     var ne=document.createElement('div');
-    ne.id=nid;ne.style.cssText='position:absolute;inset:0;z-index:3;pointer-events:none;mix-blend-mode:overlay;opacity:0.15;background-image:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCI+PGZpbHRlciBpZD0iZiI+PGZlVHVyYnVsZW5jZSB0eXBlPSJmcmFjdGFsTm9pc2UiIGJhc2VGcmVxdWVuY3k9Ii43IiBudW1PY3RhdmVzPSIzIiAvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNmKSIgb3BhY2l0eT0iMCIgLz48L3N2Zz4=)';
+    // §20：用与 canvas 路径**同一个** `noiseTile`（灰度、逐帧可复现），
+    // 不再是那张 SVG `feTurbulence` 图 —— 两处画法必须同源，否则预览又会与成片分叉。
+    ne.id=nid;ne.style.cssText='position:absolute;inset:0;z-index:3;pointer-events:none;mix-blend-mode:overlay;opacity:0.15';
+    // ⚠️ 帧号取 `window.__CUR_FRAME`（抓帧循环写的），**不是** `et * 某个 fps` ——
+    //    DOM 层没有 fps，自己乘一个会与 canvas 路径分叉。
+    try { ne.style.backgroundImage = 'url(' + noiseTile(window.__CUR_FRAME || 0).toDataURL() + ')'; } catch (e) {}
     document.getElementById('overlay').before(ne);
     tl.to('#'+nid,{opacity:0.08,duration:0.08},et);
     tl.to('#'+nid,{opacity:0,duration:Math.min(0.3,dur*0.6),ease:'sine.out'},et+dur*0.4);
@@ -1815,6 +1820,53 @@ function init(){
     return 0;
   }
 
+  // §20：一张 64×64 的**灰度**噪声瓷砖，逐帧不同、同一帧可复现。
+  //
+  // ⚠️ **必须是帧号的函数**（与底座 `color_mask.wgsl` 的 `noise_at` 同一条理由）：
+  // 用 `Math.random()` 会让同一帧渲染两次不一样 —— 预览与成片就对不上了，
+  // 而这正是本仓最要避免的"看起来成功、其实没验"。
+  //
+  // 波形用**整数哈希**，与底座那支同形（乘法用同一批大奇数）：
+  // 两边不要求逐像素相同（一个是 GPU 一个 CPU），但"同一帧可复现"这条必须一致。
+  var __NOISE_TILES = {};
+  function noiseTile(frame) {
+    var key = 'f' + frame;
+    if (__NOISE_TILES[key]) return __NOISE_TILES[key];
+    var S = 64;
+    var cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    var c2 = cv.getContext('2d');
+    var img = c2.createImageData(S, S);
+    for (var y = 0; y < S; y++) {
+      for (var x = 0; x < S; x++) {
+        var v = noiseHash(x, y, frame, 7);
+        // 围绕中灰 128 抖动 —— 与底座的 `(n - 0.5) * 255` 同一个中心
+        var g = Math.max(0, Math.min(255, Math.round(128 + (v - 0.5) * 255)));
+        var i = (y * S + x) * 4;
+        img.data[i] = g; img.data[i + 1] = g; img.data[i + 2] = g;
+        img.data[i + 3] = 255;   // **灰度**：三通道同值，不是彩色噪点
+      }
+    }
+    c2.putImageData(img, 0, 0);
+    __NOISE_TILES[key] = cv;
+    // 别让这个缓存无限涨（长片几千帧）—— 只留最近 8 张
+    var keys = Object.keys(__NOISE_TILES);
+    if (keys.length > 8) { delete __NOISE_TILES[keys[0]]; }
+    return cv;
+  }
+
+  // 与底座 `color_mask.wgsl::hash_u32` 同形的整数哈希（32 位环绕）。
+  function noiseHash(x, y, frame, seed) {
+    var v = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)
+           ^ Math.imul(frame, 83492791) ^ Math.imul(seed, 2654435761)) >>> 0;
+    v = (v ^ (v >>> 16)) >>> 0;
+    v = Math.imul(v, 0x7feb352d) >>> 0;
+    v = (v ^ (v >>> 15)) >>> 0;
+    v = Math.imul(v, 0x846ca68b) >>> 0;
+    v = (v ^ (v >>> 16)) >>> 0;
+    return (v & 0x00ffffff) / 16777216;
+  }
+
   function getNoiseOpacity(t, items) {
     for (var i = 0; i < items.length; i++) {
       var n = items[i], et = n.time;
@@ -1995,13 +2047,25 @@ function init(){
       ctx.restore();
     }
 
-    // ---- noise overlay ----
+    // ---- noise overlay（§20：真黑白噪点，不再是白纱）----
+    //
+    // ⚠️ **这里以前画的是一层纯白薄纱**（`fillStyle='#ffffff'` 铺满 + 0.08 的透明度）。
+    // 名字叫 noise、画的是白纱 —— 而**真噪声一直都在 DOM 预览的 `handlers.noise` 里**
+    // （一张 SVG `feTurbulence` 的 data-URI），所以"预览 ≠ 成片"在这里是**一直存在**的。
+    // 用户拍板「noise 需要改成真黑白噪点」⇒ 两处一起换成真噪声。
+    //
+    // 画法刻意与底座 `color_mask.wgsl` 的第 3 段对齐：
+    //   `rgb = rgb + (n - 0.5) * 255 * amount`，`n` 是 `(x, y, frame, seed)` 的整数哈希。
+    // 这里用 canvas 的 `globalCompositeOperation = 'overlay'` 近似"加一个标量"的观感
+    // —— 逐像素写 ImageData 在这个分辨率下太慢（1080p 每帧 200 万像素 × 3600 帧）。
     var noiseOp = getNoiseOpacity(t, idx.noise);
     if (noiseOp > 0.005) {
       ctx.save();
       ctx.globalAlpha = noiseOp;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, CW, CH);
+      ctx.globalCompositeOperation = 'overlay';
+      var nTile = noiseTile(t);
+      var nPat = ctx.createPattern(nTile, 'repeat');
+      if (nPat) { ctx.fillStyle = nPat; ctx.fillRect(0, 0, CW, CH); }
       ctx.restore();
     }
 
@@ -2257,6 +2321,10 @@ function init(){
 
     for (var fi = startFrame; fi < endFrame; fi++) {
       var t = fi / fps;
+      // §20：把**当前帧号**暴露出来 —— DOM 层的噪声瓷砖要它才"逐帧不同、同一帧可复现"。
+      // ⚠️ DOM 层拿不到 `fi`（它走 GSAP 时间轴），所以必须由这里主动写出来；
+      // 不写的话噪声瓷砖会**固定在第 0 帧那一张**，表现是"噪声在动、但每一帧都一样"。
+      window.__CUR_FRAME = fi;
       var relIdx = fi - startFrame;
       var frameB64 = window.__FRAME_BYTES[relIdx];
       if (!frameB64) continue;
