@@ -138,18 +138,24 @@
                  以前这里写死 `aspect-ratio:16/9`，而库里的 `op.mp4` 是 320×240(4:3)
                  ⇒ 画面框比例不对（拉伸或留黑边）。现在不由 CSS 猜比例。 -->
             <video :src="preview.url" controls class="ml-side-video"></video>
+            <!-- 用户口径：「信息作为两排排版」（原来 9 行一路竖着排，又把栏撑高、又不好扫）。
+                 **两列**：左列是"这个文件是什么"（名称/文件/时长/大小），
+                 右列是"它有什么技术规格"（分辨率/编码/帧率/码率/音轨）—— 分栏本身就是分组。
+                 ⚠️ 每一项都可能是 `—`：探不出来时**如实显示 —**，不留空、更不编一个数。 -->
             <div class="ml-side-info">
-              <div class="ml-info-row"><span class="muted">名称</span><b>{{ preview.name }}</b></div>
-              <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
-              <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
-              <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
-              <!-- 用户口径：「信息不足」⇒ 补 分辨率/编码/帧率/码率（另加音轨，静音素材做片头是常见坑）。
-                   ⚠️ 每一项都可能是 `—`：探不出来时**如实显示 —**，不留空、更不编一个数。 -->
-              <div class="ml-info-row"><span class="muted">分辨率</span><b>{{ preview.dimText }}</b></div>
-              <div class="ml-info-row"><span class="muted">编码</span><b>{{ preview.codecText }}</b></div>
-              <div class="ml-info-row"><span class="muted">帧率</span><b>{{ preview.fpsText }}</b></div>
-              <div class="ml-info-row"><span class="muted">码率</span><b>{{ preview.bitrateText }}</b></div>
-              <div class="ml-info-row"><span class="muted">音轨</span><b>{{ preview.audioText }}</b></div>
+              <div class="ml-info-col">
+                <div class="ml-info-row"><span class="muted">名称</span><b>{{ preview.name }}</b></div>
+                <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
+                <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
+                <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
+              </div>
+              <div class="ml-info-col">
+                <div class="ml-info-row"><span class="muted">分辨率</span><b>{{ preview.dimText }}</b></div>
+                <div class="ml-info-row"><span class="muted">编码</span><b>{{ preview.codecText }}</b></div>
+                <div class="ml-info-row"><span class="muted">帧率</span><b>{{ preview.fpsText }}</b></div>
+                <div class="ml-info-row"><span class="muted">码率</span><b>{{ preview.bitrateText }}</b></div>
+                <div class="ml-info-row"><span class="muted">音轨</span><b>{{ preview.audioText }}</b></div>
+              </div>
             </div>
           </template>
         </template>
@@ -750,10 +756,14 @@ onMounted(() => load())
    ⚠️ 预览栏**定宽**而不是自适应：视频播放器需要一个稳定的宽高比参考，
    宽度一变、同一段视频每换一次选中就跳一次尺寸。 */
 .ml-side {
-  /* 宽度：300 → 600（用户：「宽度翻倍」）→ 860（用户：「视频太矮，想让画面更高」）。
-     ⚠️ 视频高度 = 栏宽 / 宽高比，而栏宽就是这里 —— 想让画面更高**只能加宽这一处**
-     （16:9 在 600px 下只有 338px 高，在 860px 下有 484px）。 */
-  flex:none; width:860px;
+  /* 宽度：300 → 600（用户：「宽度翻倍」）→ **自适应**（用户：「播放器的高度还是没变」）。
+     ⚠️ **不能写死像素**：视频高度 = 栏宽 ÷ 宽高比，所以想让画面更高就得让栏更宽 ——
+     但写死 860px 在窄窗口里**只会横向溢出**，右侧被切掉、还得拖滚动条
+     （实测：窗口 744px 时文档宽 1012px，就是这个毛病，用户截图里播放器被截断正是它）。
+     改成"占窗口的 62%、至少 380px、至多 860px"：
+       · 窗口够宽 ⇒ 拿满 860px（画面最高，这是用户要的）；
+       · 窗口窄 ⇒ 跟着缩，**永远不溢出**。 */
+  flex:none; width:clamp(380px, 62%, 860px);
   display:flex; flex-direction:column; gap:8px;
   border-left:1px solid var(--line); padding-left:12px;
   min-height:220px;
@@ -777,9 +787,13 @@ onMounted(() => load())
   flex:none; width:100%; height:auto; display:block;
   border-radius:8px; background:#000;
 }
-.ml-side-info { flex:none; display:flex; flex-direction:column; gap:5px; }
+/* 信息**两列**（用户口径：「信息作为两排排版」）。
+   ⚠️ `align-items:flex-start`：两列行数不同（左 4 行、右 5 行），不写会被拉成等高、
+   左列多出一截空白。`gap:20px` 是列间距，比行间距大，让人一眼看出是**两栏**不是一串。 */
+.ml-side-info { flex:none; display:flex; gap:20px; align-items:flex-start; }
+.ml-info-col { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:5px; }
 .ml-info-row { display:flex; gap:8px; align-items:baseline; font-size:12px; }
-.ml-info-row > .muted { flex:none; width:36px; }
+.ml-info-row > .muted { flex:none; width:42px; }
 .ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
 .ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
@@ -891,9 +905,22 @@ onMounted(() => load())
   .ml-nav { flex-direction:row; width:auto; flex-wrap:wrap; }
   /* 预览栏转成整行、并去掉那条竖分隔线（横排时它变成一条突兀的顶边） */
   .ml-side {
-    width:100%; border-left:none; border-top:1px solid var(--line);
+    /* 竖排是**上下**两段，此时"栏宽"= 整行宽：`clamp(…, 62%, …)` 在这宽度下会算出
+       一个比可视区窄的怪值（62% 是相对**父容器**，竖排后父容器是整个内容区）——
+       直接放开成 100%。 */
+    width:100%;
+    border-left:none; border-top:1px solid var(--line);
     padding-left:0; padding-top:12px;
   }
   .ml-side-grid { grid-template-columns:repeat(auto-fill, minmax(64px, 1fr)); max-height:320px; }
+  /* 竖排后栏宽 = 整行，但**窄窗口**下两列挤成一团（每列只剩一百多像素）⇒ 掉回一列。 */
+  .ml-side-info { flex-direction:column; gap:5px; }
+}
+
+/* 中等宽度：栏还没到 860px，两列各自只剩 ~200px，`文件` 那种长值会被压得很窄。
+   这时**并成一列**更好读 —— 用容器查询做不到（父容器是 flex 项，宽度由 clamp 决定），
+   所以按窗口宽断一次。 */
+@media (max-width: 1100px) {
+  .ml-side-info { flex-direction:column; gap:5px; }
 }
 </style>
