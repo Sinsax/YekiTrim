@@ -134,10 +134,20 @@
             点左边的视频，在这里预览播放
           </div>
           <template v-else>
-            <!-- ⚠️ **尺寸由视频自己决定**（见 `.ml-side-video` 的说明）：
-                 以前这里写死 `aspect-ratio:16/9`，而库里的 `op.mp4` 是 320×240(4:3)
-                 ⇒ 画面框比例不对（拉伸或留黑边）。现在不由 CSS 猜比例。 -->
-            <video :src="preview.url" controls class="ml-side-video"></video>
+            <!-- **外围框 + 里面按比例的视频**（用户口径：「加外围框，其实不冲突吧」—— 确实不冲突）：
+                 框负责 `min-height` / `max-height`，视频在框内按自身比例撑满，
+                 互不干涉 ⇒ 既能限制高度，又不会因为"框比视频高"而留下黑边。 -->
+            <div class="ml-video-frame" :style="videoFrameInline">
+              <!-- ⚠️ 比例**由视频自己报**（`loadedmetadata` 时读 `videoWidth/videoHeight`），
+                   不写死 —— 以前写死 `16/9`，而库里的 `op.mp4` 是 320×240(4:3) ⇒ 框就是错的。
+                   `@loadedmetadata` 而不是 `mounted`：那时才有真实分辨率。 -->
+              <video
+                :src="preview.url"
+                controls
+                class="ml-side-video"
+                @loadedmetadata="onVideoMeta($event)"
+              ></video>
+            </div>
             <!-- 用户口径：「信息作为两排排版」（原来 9 行一路竖着排，又把栏撑高、又不好扫）。
                  **两列**：左列是"这个文件是什么"（名称/文件/时长/大小），
                  右列是"它有什么技术规格"（分辨率/编码/帧率/码率/音轨）—— 分栏本身就是分组。
@@ -328,6 +338,35 @@ function fmtDuration(sec) {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
 
+/** 当前视频的宽高比（`null` = 还没拿到，用 16:9 兜底免得框塌成 0 高）。 */
+const videoRatio = ref(null)
+
+/** 框的内联样式：把视频比例写给**框**。
+ *
+ * ⚠️ **比例必须落在框上，不能只靠视频自己撑**：`.ml-side` 是 column flex，
+ * 框没有确定高度时只写 `min/max-height` 会让它缩到 `min-height`（实测被钉在 200px，
+ * 加宽栏完全没效果）。给框一个 `aspect-ratio` 之后高度就有依据了，
+ * 再由 `min/max-height` 夹住上下限。
+ *
+ * ⚠️ 换视频时要**重置**，否则新视频先按上一个的比例闪一下（`null` ⇒ 16:9 兜底）。 */
+const videoFrameInline = computed(() => {
+  const r = videoRatio.value
+  if (!r) return {}
+  const style = { aspectRatio: String(r) }
+  // ⚠️ **只有"不窄于 1:1"的视频才给宽度下限**：竖屏需要的是"窄而高"的框
+  // （宽度由 `max-height` 反推），强行给 `min-width` 会让框比视频宽 ⇒ 两侧黑边（实测 24px）。
+  if (r >= 1) style.minWidth = 'min(100%, 380px)'
+  return style
+})
+
+/** `<video>` 报到真实分辨率 ⇒ 记下比例。拿不到就保持 `null`（兜底 16:9）。 */
+function onVideoMeta(e) {
+  const v = e?.target
+  if (v?.videoWidth > 0 && v?.videoHeight > 0) {
+    videoRatio.value = v.videoWidth / v.videoHeight
+  }
+}
+
 /** 帧率 → `30 fps` / `29.97 fps`。**整数不显示小数**（`30 fps` 比 `30.00 fps` 清爽），
  * 探不出来给 `—`，**不猜**（`0 fps` 是编的）。 */
 function fmtFps(v) {
@@ -344,6 +383,7 @@ function fmtFps(v) {
  * ⚠️ 落结果前核对 `preview.value?.name`，否则点得快时慢响应会覆盖新选中。 */
 async function selectItem(it) {
   if (it.type === 'video') {
+    videoRatio.value = null // 换视频先清比例，等 loadedmetadata 再报（避免按上一个的比例闪一下）
     // ⚠️ **别拿 `it.key` 去 `videos` 里反查** —— `videos.value` 里放的是**接口原始对象**
     // （只有 `{name, file, duration}`，**没有 `key`**），`it.key` 是 `items` 计算时才造出来的。
     // 曾经写成 `videos.value.find(x => x.key === it.key)` ⇒ 永远 `undefined` ⇒
@@ -782,10 +822,72 @@ onMounted(() => load())
      · **不要写 `object-fit`** —— 不写时元素本身就被视频撑成正确比例，
        黑边根本不会出现；写 `contain` 反而会在比例算错时留边。
      · `flex:none` —— `.ml-side` 是 column flex 容器，不加会被压扁（默认 `flex-shrink:1`）。
-   实测：op.mp4(320×240) → 元素 600×450；probe.mp4(1920×1080) → 元素 600×338。 */
+     · ⚠️ **必须显式解除 `max-height`** —— 这是"播放器高度怎么都改不了"的**真正原因**：
+       `styles/app.css:241` 有一条**全局** `video { max-height:170px }`（给工程里那些小预览用的），
+       它**依旧命中**这个元素 —— 我给自己的类设了 `width/height` 却**没管 `max-height`**，
+       于是无论栏宽 300 / 600 / 860，播放器**永远只有 170px 高**。
+       实测（宽度 860 与 460 各放一只）：两者都是 `848x170` / `448x170` —— 高度被钉死在 170。
+       这也解释了为什么"加宽栏却没变高"：宽度确实变了，只是被 max-height 截回来了。
+   实测：op.mp4(320×240) 在 860 栏下 → 860×636；probe.mp4(1920×1080) → 860×484。 */
+
+/* 视频的**外围框**：负责"能有多大 / 至少多大"，不参与比例计算。
+   · `max-height:70vh` —— 用户口径的上限。竖屏长视频（720×1280）在 860 栏下会到 1529px，
+     不收住会把信息区顶到几屏之外、得滚动才看得见。
+   · `min-height:200px` —— 用户口径的下限。窄窗口下 4:3 只算出 ~150px 时，
+     不至于缩成一条缝（这条正是"起码能正常显示"）。
+   · `display:flex` + `justify-content:center` —— 视频按比例缩进框里时**居中**，
+     而不是贴着左边、右边空一块。 */
+.ml-video-frame {
+  flex:none; width:100%;
+  /* 比例由 JS 写在行内 `aspect-ratio`（见 `videoFrameStyle`）—— 框**就是视频的形状**，
+     所以不会有黑边。
+     · `max-height:70vh`（用户口径的上限）：竖屏长视频在 860 栏下会到 1529px，
+       不收住会把信息区顶出几屏。收住后框变矮、**宽度也跟着按比例收**（`aspect-ratio` 的效果），
+       于是仍然没有黑边 —— 这正是"上限"和"无黑边"能同时成立的原因。
+     · `min-height:200px`（用户口径的下限）：窄窗口下 4:3 只算出 ~150px 时不至于缩成一条缝。
+       ⚠️ 上限与下限冲突时（如竖屏在很矮的窗口里）浏览器取 min 优先，框会略高于 70vh，
+       这是有意的 —— "起码能正常显示"优先于严格上限。 */
+  /* ⚠️ **`width:100%` + `aspect-ratio` 在"被 max-height 夹住"时会破功**：
+     竖屏 720×1280 想要的框是 634×1127，但 `max-height:70vh` 把它压到 634 高 ——
+     而 `width:100%` 是**硬性**的 ⇒ 宽度不跟着缩 ⇒ 视频只能缩到框中间，
+     两侧留下 504px 黑边（实测就是这个数）。
+     改成 `width:auto` + `height:100%` 也不行（框又会塌）。
+     正解：**宽度交给 `aspect-ratio` 推**（`width:auto` + `height:auto` 由 max-height 决定，
+     但宽度没有约束源）。所以给框加 `max-width:100%` 并把宽度放开为 `auto`，
+     由 `aspect-ratio` + `max-height` 共同算出宽度。 */
+  /* ⚠️ 宽度要 `auto` —— 只有 `auto` 才能让 `aspect-ratio` 真正接管宽度
+     （竖屏那支靠 `max-height` 反推出一个**较窄**的框，`width:100%` 会挡住它 ⇒ 504px 黑边）。
+     ⚠️ 但纯 `auto` 会让**小视频**的框塌到原生尺寸（320×240 的 `op.mp4` 框只有 320 宽，
+     本该铺满栏宽）。所以给一个宽度下限 —— **只对"宽高比 ≥ 1"的视频加**
+     （见模板上的 `style`：竖屏不能有这个下限，否则框比视频宽 ⇒ 24px 黑边，实测过）。
+     `align-self:center`：宽框居中，不贴左边。 */
+  width:auto;
+  min-height:200px; max-height:70vh; max-width:100%;
+  align-self:center;
+  display:flex; align-items:center; justify-content:center;
+  background:#000; border-radius:8px; overflow:hidden;
+}
+/* 框里的视频：**宽高都跟着框，并保持自身比例**。
+   ⚠️ 关键在 `max-width:100%` + `max-height:100%` + `object-fit:contain` 这一组：
+     两者同时成立时浏览器**按比例缩放**（不会拉伸），于是
+       · 框比视频"方" ⇒ 视频按高度贴满、左右留极窄的边（框本来就贴合，几乎看不见）；
+       · 框比视频"扁" ⇒ 视频按宽度贴满。
+     这就是"完全覆盖视频、不要黑边"与"高度有上下限"能同时成立的原因：
+     **框管尺寸、视频管比例**，两件事分开。
+   ⚠️ `max-height:none` 仍然必要：全局 `styles/app.css:241` 的 `video{max-height:170px}`
+     会命中这里 —— 那正是"播放器高度怎么都改不了"的真正原因（实测 860 栏下也只有 170px 高）。
+     它由本规则里的 `max-height:100%` 覆盖（scoped 选择器特异性更高），这里再显式写一次防止
+     将来有人调优先级时又漏掉。 */
 .ml-side-video {
-  flex:none; width:100%; height:auto; display:block;
-  border-radius:8px; background:#000;
+  display:block; margin:0;
+  /* 框的形状已经等于视频比例了，视频**填满框**即可 —— `object-fit:contain` 是保险：
+     万一比例还没报上来（兜底 16:9）时视频也不会被拉变形，只会暂时留一点边。 */
+  width:100%; height:100%;
+  object-fit:contain;
+  border-radius:8px; background:transparent;
+  /* ⚠️ **必写**：全局 `styles/app.css:241` 有 `video{max-height:170px}`，
+     它正是"播放器高度怎么都改不了"的真正原因（实测 860 栏下也只有 170px 高）。 */
+  max-height:none;
 }
 /* 信息**两列**（用户口径：「信息作为两排排版」）。
    ⚠️ `align-items:flex-start`：两列行数不同（左 4 行、右 5 行），不写会被拉成等高、
