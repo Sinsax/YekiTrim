@@ -41,6 +41,8 @@ pub async fn run_llm_pipeline(
     sticker_budget: usize,
     sfx_budget: usize,
     sfx_blacklist: &[String],
+    // 屏蔽区间（§17 跳切的接缝判据读它）。传 `&[]` = 没有屏蔽 ⇒ 不认任何跳切。
+    mute_ranges: &[crate::project::MuteRange],
     checkpoint_dir: Option<&PathBuf>,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<(
@@ -189,6 +191,13 @@ pub async fn run_llm_pipeline(
         let moved = crate::process::align_segment_boundaries(&mut segments, subtitles);
         if moved > 0 {
             tracing::info!("  ✂ 句末边界守卫：挪了 {moved} 处分段边界（原来切在句子中间）");
+        }
+        // 跳切配额（§17）：与 `process/mod.rs` Step 1e 是**配对的两处**（§16/§17 的成对纪律）。
+        // ⚠️ **排在句末边界守卫之后**：接缝判据读 `mute_ranges`（源时间轴，与段边界无关），
+        // 但跳切**挂在哪一段**取决于段表 —— 边界刚挪过，这里算出来的才是最终归属。
+        let jumps = crate::process::cap_jump_cuts(&mut segments, mute_ranges, subtitles);
+        if jumps > 0 {
+            tracing::info!("  ⚠ 跳切配额（§17）：{jumps} 处降级为平滑运镜");
         }
     }
 

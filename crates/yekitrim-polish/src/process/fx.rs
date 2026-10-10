@@ -4,7 +4,7 @@
 //! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
-use crate::project::{Decision, EdlClip, Event, Segment};
+use crate::project::{Decision, EdlClip, Event, MuteRange, Segment};
 
 /// 瞬时特效的 duration 上限（秒）。
 /// 原则：瞬时特效只能“爆发一下”，不允许长时间驻留。
@@ -1065,6 +1065,153 @@ fn normalize_event_end(event: &mut Event) {
     let (time, end) = (event.get_time(), event.end().unwrap_or_else(|| event.default_end()));
     let span = (end - time).clamp(0.1, cap);
     event.set_end(Some(time + span));
+}
+
+// ── 跳切手法（§17）──────────────────────────────────────────────────
+//
+// 规格 `camera-and-noise-spec.md` §2，**用户已拍板**：*"跳切手法可以，当前已有硬切运镜可以支持"*。
+//
+// ⚠️ **本仓其实"已经在跳切"了**（调研实测：三段 mute 共 17.49s，成片正好短 17.49s）——
+// `mute_ranges` + `Ffmpeg::cut_ranges` 就是在做**时间轴裁剪**。
+// **缺的不是能力，是"把它当节奏工具"的配额与统计。**
+//
+// 采用规格**方案 A**（**零新字段**）：跳切在语义上就是"接缝处的构图跳"，
+// 而 `cut: true` 已经表达了"构图跳" ⇒ 不需要 `jump: true` 这种新字段。
+// LLM 在接缝处写 `cut`（**表达意图**），这里识别"接缝 + cut" = 跳切（**落实 + 管配额**）。
+//
+// ⚠️ **这与本仓架构一致**：LLM 写意图、`process` 做确定性翻译
+// （同 `anchor`→`origin`、`keyword`→贴纸名 的既有约定）。
+// **别改成"后处理自己在接缝处插"** —— 那会绕开 LLM，规格明确否掉了那种写法。
+
+/// 单段内最多允许几次跳切（规格 §2.3 的建议配额）。
+///
+/// 规格给这条配额的理由值得留在这里：既有守卫 `cap_pip_shots`（画中画整片 ≤1）与
+/// `cap_handheld_sway` 的先例 ⇒ **跳切必须有配额**，否则"连续硬切会让画面很跳"
+/// （LLM 提示词原话已经这么说）。
+pub const MAX_JUMPS_PER_SEGMENT: usize = 2;
+
+/// 相邻两次跳切至少隔这么久（秒）—— 即"全片约每 20s 一次"（规格 §2.3）。
+///
+/// 实现成"按时间扫、两次至少隔 [`JUMP_MIN_GAP_SECS`]"而不是"整片 ≤ 时长/20"：
+/// 两者在**均匀分布**时等价，但后者依赖总时长 —— 时长未知（`duration == 0`）
+/// 或极端长片下会算出一个没意义的配额。
+pub const JUMP_MIN_GAP_SECS: f64 = 20.0;
+
+/// 接缝判定的容差（秒）。取 1 帧量级：`cut` 的 `time` 与 mute 边界计算路径不同，
+/// 会有微小浮点差；取 0 = 只有**完全相同**才算，实际会漏掉几乎全部真实接缝。
+pub const SEAM_EPS_SECS: f64 = 0.05;
+
+/// 一个"跳切"在语法上是什么。
+///
+/// ⚠️ **它不是一个新效果**，是**一段接缝的标注** —— 结构上只有这两件事：
+/// ① `at` 是接缝时刻（**源时间轴**，与 `mute_ranges` 同一坐标系）；② `seg` 落在哪一段。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JumpCut {
+    /// 接缝时刻（源时间轴）。
+    pub at: f64,
+    /// 落在 `segments` 的第几段。
+    pub seg: usize,
+}
+
+/// 找出所有**跳切接缝**：落在「被剪掉的区间边界」上的硬切运镜。
+///
+/// 纯函数（不修改任何东西），便于先按配额决定剔谁。
+///
+/// 判据：某条 `cut: true` 的 camera 的 `time` 落在某个 `mute_range` 的**边界**上
+/// （误差 ≤ [`SEAM_EPS_SECS`]）—— 贴 `start` 或 `end` 都算，
+/// 因为"剪掉中间一段"会在**两侧各留一个接缝**。
+///
+/// `manual` 事件不参与（与 `cap_pip_shots` / `align_stickers_to_subtitles` 同一条规则：
+/// 用户手工放的东西后处理一律不改写）。
+pub fn find_jump_seams(segments: &[Segment], mute_ranges: &[MuteRange]) -> Vec<JumpCut> {
+    let mut out: Vec<JumpCut> = Vec::new();
+    // ⚠️ **这里有两道互相遮蔽的闸**，与 §3 `clip_quality` 那条同一形状：
+    // ① 这个早期 return（没有屏蔽区间 ⇒ 不可能有接缝）；② 下面逐边界的 `on_seam` 判据。
+    // 单独把①改成恒真时 `no_mute_ranges_means_no_jump_cuts` **照样绿**（②还在拦）；
+    // 只有**两道一起拆**才会真的翻红（实测过）。所以变异自证要同时改这两处，
+    // 否则会得到"这条用例抓不住"的**错误结论**。
+    if mute_ranges.is_empty() {
+        return out;
+    }
+    for (si, seg) in segments.iter().enumerate() {
+        for ev in seg.events.iter() {
+            if ev.is_time_manual() {
+                continue;
+            }
+            let Event::Camera { time, cut, .. } = ev else { continue };
+            if !*cut {
+                continue;
+            }
+            let on_seam = mute_ranges
+                .iter()
+                .filter_map(|m| m.normalized())
+                .any(|(s, e)| {
+                    (*time - s).abs() <= SEAM_EPS_SECS || (*time - e).abs() <= SEAM_EPS_SECS
+                });
+            if on_seam {
+                out.push(JumpCut { at: *time, seg: si });
+            }
+        }
+    }
+    // 按时间排序后处理 —— 不依赖文件顺序（`cap_pip_shots` 那条教训：段之间时间会重叠）。
+    out.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// 跳切**配额守卫**：按规格 §2.3 剔掉超额的跳切。
+///
+/// 两道闸（**独立**，规格各给了一个数）：
+/// ① **单段 ≤ [`MAX_JUMPS_PER_SEGMENT`]**；
+/// ② **相邻两次至少隔 [`JUMP_MIN_GAP_SECS`]**。
+///
+/// "剔掉"= 把那条 camera 的 `cut` 改回 `false`（**降级成平滑运镜**、不是删事件）——
+/// 与 `cap_pip_shots` 把「远」降级成「中」同一手法：**保留事件本身**，只收回那个"手法"资格。
+/// `speed`/`anchor`/`origin` 一个字都不动。
+///
+/// 幂等：降级后 `cut` 为假 ⇒ 下次再跑既不会重复计数、也不会再降。
+/// 返回被降级的条数。
+pub fn cap_jump_cuts(
+    segments: &mut [Segment],
+    mute_ranges: &[MuteRange],
+    _subtitles: &[Subtitle],
+) -> usize {
+    let seams = find_jump_seams(segments, mute_ranges);
+    if seams.is_empty() {
+        return 0;
+    }
+    // 本轮要降级的 `(seg, at)`：按 `(段, 时刻)` 精确匹配回事件
+    // （同一段里可能有多条同刻的 cut，下标匹配更脆）。
+    let mut demote: Vec<(usize, f64)> = Vec::new();
+    let mut per_seg: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut last_kept: Option<f64> = None;
+    for seam in &seams {
+        let count = per_seg.entry(seam.seg).or_insert(0);
+        let too_many_in_segment = *count >= MAX_JUMPS_PER_SEGMENT;
+        let too_soon = last_kept.is_some_and(|prev| seam.at - prev < JUMP_MIN_GAP_SECS);
+        if too_many_in_segment || too_soon {
+            demote.push((seam.seg, seam.at));
+            continue;
+        }
+        *count += 1;
+        last_kept = Some(seam.at);
+    }
+    if demote.is_empty() {
+        return 0;
+    }
+    let mut demoted = 0usize;
+    for (si, at) in &demote {
+        if let Some(seg) = segments.get_mut(*si) {
+            for ev in seg.events.iter_mut() {
+                if let Event::Camera { time, cut, .. } = ev {
+                    if *cut && (*time - *at).abs() <= SEAM_EPS_SECS {
+                        *cut = false;
+                        demoted += 1;
+                    }
+                }
+            }
+        }
+    }
+    demoted
 }
 
 #[cfg(test)]
@@ -2252,5 +2399,160 @@ mod tests {
         let moved = align_segment_boundaries(&mut segs, &subs);
         assert_eq!(moved, 0, "会把前段吃到 0.4s（低于下限）⇒ 必须放弃");
         assert_eq!((segs[0].end, segs[1].start), (2.0, 2.0));
+    }
+
+    // ── 跳切（§17）──────────────────────────────────────────────────
+    //
+    // ⚠️ 判据要覆盖**两个方向**：接缝处该留的必须留（别把用户要的手法一起剔掉），
+    // 超额的必须剔（否则"连续硬切让画面很跳"）。只测一边的话，
+    // "守卫恒返回 0"与"守卫把什么都剔光"都能骗过它。
+
+    /// 一条带 `cut` 的运镜（跳切的候选）。
+    fn cam_cut(time: f64, cut: bool) -> Event {
+        Event::Camera {
+            time,
+            end: Some(time + 2.0),
+            zoom: "中".into(),
+            origin: "50% 50%".into(),
+            anchor: None,
+            anchor_to: None,
+            to_origin: None,
+            cut,
+            handheld: false,
+            manual: false,
+            speed: None,
+        }
+    }
+
+    fn segs_with(events: Vec<Event>) -> Vec<Segment> {
+        vec![Segment {
+            start: 0.0,
+            end: 600.0,
+            fx: "med".into(),
+            note: String::new(),
+            events,
+            extra: Default::default(),
+        }]
+    }
+
+    fn mute(s: f64, e: f64) -> MuteRange {
+        MuteRange { start: s, end: e }
+    }
+
+    fn cuts(segs: &[Segment]) -> Vec<bool> {
+        segs.iter()
+            .flat_map(|s| s.events.iter())
+            .filter_map(|e| match e {
+                Event::Camera { cut, .. } => Some(*cut),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// ① **接缝处该留的必须留**：`cut` 落在 mute 边界上 ⇒ 认得出、且不被误剔。
+    #[test]
+    fn jump_seam_is_recognised_at_mute_boundaries() {
+        // 两个接缝：mute 4.0→6.0 的两侧
+        let segs = segs_with(vec![cam_cut(0.0, false), cam_cut(4.0, true), cam_cut(6.0, true)]);
+        let seams = find_jump_seams(&segs, &[mute(4.0, 6.0)]);
+        assert_eq!(seams.len(), 2, "两侧各一个接缝: {seams:?}");
+        assert_eq!(seams[0].at, 4.0);
+        assert_eq!(seams[1].at, 6.0);
+
+        // 两个接缝相隔 2s < 20s ⇒ 第二个要被剔（密度闸）
+        let mut segs2 = segs.clone();
+        let demoted = cap_jump_cuts(&mut segs2, &[mute(4.0, 6.0)], &[]);
+        assert_eq!(demoted, 1, "相隔 2s 的第二次跳切超出密度闸");
+        assert_eq!(cuts(&segs2), vec![false, true, false]);
+    }
+
+    /// ② **不落在接缝上的 `cut` 不算跳切**（它就是普通的切镜，不占跳切配额）。
+    #[test]
+    fn ordinary_cut_is_not_a_jump() {
+        let segs = segs_with(vec![cam_cut(1.0, true), cam_cut(3.0, true)]);
+        let seams = find_jump_seams(&segs, &[mute(4.0, 6.0)]);
+        assert!(seams.is_empty(), "1.0/3.0 都不在 4.0/6.0 上: {seams:?}");
+        // 没有接缝 ⇒ 一个字都不改
+        let mut segs2 = segs.clone();
+        assert_eq!(cap_jump_cuts(&mut segs2, &[mute(4.0, 6.0)], &[]), 0);
+        assert_eq!(cuts(&segs2), vec![true, true], "普通切镜不许被碰");
+    }
+
+    /// ③ **单段配额**：同一段内第 3 条跳切要降级（间隔闸在这里被时间拉开、不干扰）。
+    #[test]
+    fn per_segment_quota_demotes_the_third_jump() {
+        let segs = segs_with(vec![
+            cam_cut(10.0, true),
+            cam_cut(40.0, true),
+            cam_cut(70.0, true), // 第 3 条：超出 MAX_JUMPS_PER_SEGMENT(2)
+        ]);
+        // 三条 mute 的边界恰好落在这些时刻上
+        let mutes = [mute(9.0, 10.0), mute(39.0, 40.0), mute(69.0, 70.0)];
+        let seams = find_jump_seams(&segs, &mutes);
+        assert_eq!(seams.len(), 3);
+        let mut segs2 = segs.clone();
+        assert_eq!(cap_jump_cuts(&mut segs2, &mutes, &[]), 1);
+        assert_eq!(cuts(&segs2), vec![true, true, false], "只剔第 3 条");
+    }
+
+    /// ④ **密度闸**：跨段也算 —— 两段各一条、但只隔 5s ⇒ 第二条被剔
+    /// （配额是"整片节奏"，不是"每段各算各的"）。
+    #[test]
+    fn density_gate_applies_across_segments() {
+        let mk = |start: f64, at: f64| Segment {
+            start,
+            end: start + 30.0,
+            fx: "med".into(),
+            note: String::new(),
+            events: vec![cam_cut(at, true)],
+            extra: Default::default(),
+        };
+        let mut segs = vec![mk(0.0, 10.0), mk(30.0, 15.0)]; // 10.0 与 15.0 相隔 5s
+        let mutes = [mute(9.5, 10.0), mute(14.5, 15.0)];
+        let mut segs_clone = segs.clone();
+        let demoted = cap_jump_cuts(&mut segs_clone, &mutes, &[]);
+        assert_eq!(demoted, 1, "跨段的第二次也太密");
+        assert_eq!(segs_clone[0].events.len(), 1, "事件本身要留着（只收回手法资格）");
+        assert_eq!(segs_clone[1].events.len(), 1);
+        let _ = &mut segs;
+    }
+
+    /// ⑤ **幂等**：跑两遍与跑一遍结果相同（process 每次预览/出片都会被隐式触发）。
+    #[test]
+    fn jump_cap_is_idempotent() {
+        let mutes = [mute(9.0, 10.0), mute(14.0, 15.0)];
+        let mut segs = segs_with(vec![cam_cut(10.0, true), cam_cut(15.0, true)]);
+        let first = cap_jump_cuts(&mut segs, &mutes, &[]);
+        let after_first = cuts(&segs);
+        let second = cap_jump_cuts(&mut segs, &mutes, &[]);
+        assert_eq!(second, 0, "第二趟没有可剔的了");
+        assert_eq!(cuts(&segs), after_first, "第二趟不许再改");
+        assert_eq!(first, 1);
+    }
+
+    /// ⑥ **手工事件不参与**（与 `cap_pip_shots` / 贴纸对齐同一条规则）。
+    #[test]
+    fn manual_jump_is_never_touched() {
+        let mut manual = cam_cut(10.0, true);
+        manual.set_time_manual(true);
+        let mut segs = segs_with(vec![manual, cam_cut(15.0, true)]);
+        let mutes = [mute(9.5, 10.0), mute(14.5, 15.0)];
+        let demoted = cap_jump_cuts(&mut segs, &mutes, &[]);
+        // 手工那条根本不进接缝清单 ⇒ 不算配额；自动那条也不超
+        assert_eq!(demoted, 0, "手工事件既不计数也不被改");
+        match &segs[0].events[0] {
+            Event::Camera { cut, .. } => assert!(*cut, "手工的 cut 必须原样"),
+            _ => unreachable!(),
+        }
+    }
+
+    /// ⑦ **没有 mute 区间 ⇒ 一条接缝都没有**（存量工程零回归：不许凭空动 cut）。
+    #[test]
+    fn no_mute_ranges_means_no_jump_cuts() {
+        let segs = segs_with(vec![cam_cut(0.0, true), cam_cut(10.0, true)]);
+        assert!(find_jump_seams(&segs, &[]).is_empty());
+        let mut segs2 = segs.clone();
+        assert_eq!(cap_jump_cuts(&mut segs2, &[], &[]), 0);
+        assert_eq!(cuts(&segs2), vec![true, true]);
     }
 }

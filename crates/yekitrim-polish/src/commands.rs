@@ -370,6 +370,8 @@ pub async fn cmd_llm_for(
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
+        // §17 跳切的接缝判据要读它 —— 与 `cmd_process` 同一份 `mute_ranges`。
+        &config.mute_ranges,
         Some(&project_path.join(yekitrim_core::path::PROJECT_STATE_DIR_NAME)),
         cancel,
     ).await?;
