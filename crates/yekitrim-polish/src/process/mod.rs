@@ -11,6 +11,9 @@ mod sfx;
 mod download;
 mod fx;
 mod placement;
+/// 剪辑质量分（总方案 §3）：纯函数、无 IO。**不做成 `pub use`** —— 它不是后处理步骤，
+/// 不参与 `cmd_process`，只是"算出来给人看"的一层，调用方显式走 `process::quality::`。
+pub mod quality;
 pub use sfx::*;
 pub use download::*;
 pub use fx::*;
@@ -2592,6 +2595,64 @@ mod diagnose_boundaries {
         let again = super::align_segment_boundaries(&mut fresh, &subs);
         println!("[幂等] 第二次挪了 {again} 处（必须为 0）");
         assert_eq!(again, 0, "守卫必须收敛");
+    }
+}
+
+/// 只读诊断：在**真实工程**上看「剪辑质量分」（总方案 §3）的实际分布。
+///
+/// ⚠️ 这个探针在**把分数给用户看之前**必须先跑：分数是"给人看的数"，
+/// 而 §3 的判据（边界/爆点/间隔）全是**第一次**用在真实数据上 ——
+/// 不先看分布，就无法判断"85 分"到底是好还是烂，也无从发现某条判据在真实数据里
+/// 恒真/恒假（那会让分数退化成常数，界面上看着有数、其实什么都没量）。
+///
+/// ```text
+/// VT_POLISH_DIR=<项目目录(绝对路径)> cargo test -p yekitrim-polish --lib \
+///   diagnose_quality -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod diagnose_quality {
+    #[test]
+    #[ignore]
+    fn diagnose_quality() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_quality -- --ignored --nocapture");
+            return;
+        };
+        let path = std::path::PathBuf::from(&dir);
+        let config = crate::project::load_project(&path).expect("读取 polish.toml");
+        let subs: Vec<crate::parse::srt::Subtitle> = serde_json::from_str(
+            &std::fs::read_to_string(path.join("data/subtitles.json")).expect("读 data/subtitles.json"),
+        )
+        .expect("解析 subtitles.json");
+
+        // 片子时长：优先 clip.json 的 duration，退到末段 end。
+        let duration = std::fs::read_to_string(path.join("clip.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v.get("duration").and_then(|d| d.as_f64()))
+            .or_else(|| config.segments.last().map(|s| s.end))
+            .unwrap_or(0.0);
+
+        let q = super::quality::evaluate(&config.segments, &subs, duration);
+        println!("\n项目: {dir}");
+        println!("时长 {duration:.2}s · 分段 {} · 视觉事件 {}", q.segments, q.visual_events);
+        println!("\n[Smoothness] {:.2}（= 时长 / (1 + 干扰)）", q.smoothness());
+        println!("[每分钟干扰] {:.2}", q.interruptions_per_minute());
+        println!("[展示分] {:.1} / 100", q.score());
+
+        println!("\n[干扰明细] 共 {} 条", q.interruption_count());
+        for (k, n) in q.by_kind() {
+            println!("  {:<14} {} 条 —— {}", k.key(), n, k.label());
+        }
+        for i in q.interruptions.iter().take(20) {
+            println!("    {:>8.2}s  {}", i.at, i.kind.key());
+        }
+
+        // ⚠️ **判据不许恒真/恒假**：三条判据至少各命中过一次，或至少"确实可能命中"。
+        //    全 0 不一定是 bug（片子可能真的剪得干净），但**值得看一眼** —— 所以只提示不失败。
+        if q.interruption_count() == 0 {
+            println!("\n⚠ 零干扰。先确认这不是判据失效：字幕 {} 条、事件 {} 个", subs.len(), q.visual_events);
+        }
     }
 }
 
