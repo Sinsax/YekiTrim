@@ -22,6 +22,32 @@ export const E = {
 
 export function lerp(a, b, t) { return a + (b - a) * t }
 
+/** 运镜速度档位表（§16）：`速度 → 过渡秒数`。与转译器 `CAMERA_SPEED_SECS` **同源**。
+ *
+ * ⚠️ **`med` 不在表里** —— 它是**老式子** `min(dur × 0.5, 0.6)`（与"没写过 `speed`"同一档）。
+ * 把它写成固定秒数就破坏了存量零回归：短段的过渡会全变。
+ */
+export const CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.25, slow: 1.5 }
+
+/** 运镜过渡时长（秒），**与 `tools/polish-to-dhampir.mjs::cameraTransitionFrames` 同口径**。
+ *
+ * ⚠️ 一边改了另一边不改，症状是「预览里推进快慢与成片不一致」—— 不看两个版本对着比根本发现不了。
+ * ⚠️ 转译器那边算出**帧**（还要 `round` + `max(1,…)`），这里要**秒**；两者只在
+ * "同一档位对应同一段时间"这个层面上同源，别试图把 `max(1,…)` 也搬过来。
+ *
+ * - `hardCut` ⇒ 0（硬切不缓动；`cut` 与速度互斥、以 `cut` 为准）
+ * - `med` / 没写 / 认不出 ⇒ 老式子 `min(dur × 0.5, 0.6)`
+ * - `snap` / `fast` ⇒ 固定秒数；`slow` ⇒ `min(1.5, dur × 0.8)`（夹住，否则推不完就切走）
+ */
+export function cameraTransitionSecs(ev, dur, hardCut) {
+  if (hardCut) return 0
+  const norm = typeof ev?.speed === 'string' ? ev.speed.trim().toLowerCase() : ''
+  if (Object.prototype.hasOwnProperty.call(CAMERA_SPEED_SECS, norm)) {
+    return norm === 'slow' ? Math.min(CAMERA_SPEED_SECS.slow, dur * 0.8) : CAMERA_SPEED_SECS[norm]
+  }
+  return Math.min(dur * 0.5, 0.6)
+}
+
 // ---- 瞬时特效时长钳制（与 process/fx.rs transient_duration_cap 一致）----
 export const TRANSIENT_CAP = {
   shake: 0.5, flash: 0.3, blur: 0.4,
@@ -474,12 +500,15 @@ export function cameraAt(idx, t) {
   for (const c of idx.camera) {
     if (t < c.time) break
     const tgt = camFactor(c.ev.zoom, idx.camStyle)
-    const td = Math.min(c.duration * 0.5, 0.6)
+    // 硬切判据要在**算 td 之前**出来（`cameraTransitionSecs` 拿它当第一优先），
+    // 所以这一段顺序不能调：先判 `hardCut`、再算 `td`。早先 `td` 只依赖 `duration`，
+    // 顺序无所谓；现在 `speed` 与 `cut` 互斥、以 `cut` 为准，顺序就成了正确性的一部分。
+    const hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6
+    const td = cameraTransitionSecs(c.ev, c.duration, hardCut)
     const ce = c.time + td
     // 硬切：本事件写了 cut（编辑器「方式 = 硬切」），或远景（画中画）进出整档都是硬切：
     // 缓动缩过去看着像镜头在拉远，而它要的是喜剧式的切换，所以这一段不缓动、
     // 连位移也一并瞬间到位。cut 把同一条规则放开给任意景别。
-    const hardCut = c.ev.cut === true || Math.abs(tgt - wide) < 1e-6 || Math.abs(zoom - wide) < 1e-6
     const p = t >= ce || hardCut ? 1.0 : E.pow2Out((t - c.time) / td)
     if (t >= ce || hardCut) zoom = tgt
     else zoom = lerp(zoom, tgt, p)

@@ -90,7 +90,8 @@
         "anchor",
         "anchor_to",
         "cut",
-        "handheld"
+        "handheld",
+        "speed"
       ],
       "dhampir": "TransformV2（关键帧）",
       "canvas": true,

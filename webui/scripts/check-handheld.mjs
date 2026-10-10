@@ -148,7 +148,19 @@ const STUB = `
   }
 `
 const tplCam = new Function(`${STUB}\n${extractFunction(html, 'getActiveCamera')}\n return getActiveCamera`)()
-const engCam = new Function(`${STUB}\n${extractFunction(engineSrc, 'cameraAt')}\n return cameraAt`)()
+// ⚠️ `cameraAt` 现在会调 `cameraTransitionSecs`（运镜速度 §16）—— 这个对拍台是把**函数体从源码里
+// 抠出来 eval** 的，被调用的兄弟函数不会自动跟进来 ⇒ 不显式注入就会
+// `ReferenceError: cameraTransitionSecs is not defined`（实测：整套门禁在这里炸）。
+// 档位表也要一并给（`cameraTransitionSecs` 读它）。
+// ⚠️ `CAMERA_SPEED_SECS` 是 **`const` 字面量**，不是 `function` 声明 ⇒ 不能走 `extractFunction`
+// （它会抛"找不到 function CAMERA_SPEED_SECS("）—— 这里按变量声明抓。
+const SPEED_TABLE = new Function(
+  `${/export const CAMERA_SPEED_SECS\s*=\s*\{[^}]*\}/.exec(engineSrc)[0].replace('export ', '')}\n return CAMERA_SPEED_SECS`,
+)()
+const engCam = new Function(
+  `${STUB}\nvar CAMERA_SPEED_SECS = ${JSON.stringify(SPEED_TABLE)};\n` +
+    `${extractFunction(engineSrc, 'cameraTransitionSecs')}\n${extractFunction(engineSrc, 'cameraAt')}\n return cameraAt`,
+)()
 
 // 事件序列：近景开摇摆 → 近景续 → 硬切收 → 远景（硬切，另一端瞬变）→ 中景收
 const CAMS = [

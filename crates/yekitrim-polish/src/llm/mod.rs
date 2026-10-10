@@ -157,6 +157,7 @@ pub async fn run_llm_pipeline(
                 // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
                 handheld: false,
                 manual: false,
+                speed: None,
             });
         }
     }
