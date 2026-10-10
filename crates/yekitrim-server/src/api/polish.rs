@@ -3701,7 +3701,11 @@ pub(super) async fn polish_dhampir_project(
                 }
             }
             // 草稿用完就清（与出片那条同一个纪律：只删自己造的）。
-            yekitrim_polish::render::dhampir::cleanup_project(&scratch);
+            // ⚠️ 传**本次产物路径**（`translated`），不是目录 —— 草稿名带独占后缀
+            // （见 `dhampir::scratch_tag`），按目录重算会一个都删不掉；
+            // 而且并发预览时，只有传自己的路径才不会删掉**另一个请求**正在用的文件
+            // （用户报的 `ENOENT ... _temp_font_families.json` 就是那么来的）。
+            yekitrim_polish::render::dhampir::cleanup_project(&translated);
             Ok((text, subs))
         },
     )
