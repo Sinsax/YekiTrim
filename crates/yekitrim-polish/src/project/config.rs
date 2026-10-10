@@ -3002,6 +3002,7 @@ mod camera_clamp_tests {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         }
     }
 
@@ -3792,6 +3793,7 @@ portrait_camera = true
     fn camera_speed_stays_absent_when_unset() {
         let mut cfg = ProjectFile::example();
         let cam = |speed: Option<&str>| crate::project::Event::Camera {
+        tilt: None,
             time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(),
             anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false,
             manual: false, speed: speed.map(|s| s.to_string()),

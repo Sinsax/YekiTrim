@@ -980,6 +980,7 @@ mod tests {
             to_origin: None, cut: false,
             handheld,
             speed: None,
+            tilt: None,
             manual: false,
         }
     }
@@ -1031,6 +1032,7 @@ mod tests {
                     cut,
                     handheld,
                     manual: false,
+                    tilt: None,
                 }
             }
             other => other,

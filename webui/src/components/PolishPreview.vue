@@ -2233,7 +2233,11 @@ const videoStyle = computed(() => {
   // 在出片模板里是最内层（最后 apply 到画面上的那一段）。
   const sway = handheldSway(current.value, f.camera.handheld)
   if (sway.dx || sway.dy) t.push(`translate(${sway.dx}px, ${sway.dy}px)`)
-  if (sway.rot) t.push(`rotate(${sway.rot}deg)`)
+  // 旋转角 = **荷兰角（§19）+ 手持摇摆的 rot**（与出片模板、转译器逐式同口径）。
+  // ⚠️ 相加而不是二选一：荷兰角是"静止的持续倾斜"、手持 rot 是"微幅抖动"，
+  //    同时开时两个都要有 —— 二选一会静默丢掉一个，而界面上完全看不出来。
+  const camTilt = (f.camera.tilt || 0) + sway.rot
+  if (camTilt) t.push(`rotate(${camTilt}deg)`)
   // 判据是「缩放不等于 1」而不是「大于 1」：画中画档位（zoom<1）也是合法运镜
   // 摇摆的呼吸缩放与运镜缩放都是绕不动点的缩放，合成一个 scale（amp=0 时 sway.scale 恒为 1）
   const camScale = f.zoom * sway.scale

@@ -2770,6 +2770,12 @@ export function translate(config, clipDir, outPath, options = {}) {
             // 运镜速度（规格 `camera-and-noise-spec.md` §1）：`snap|fast|med|slow`。
             // 缺省（没写）= 老式子，见 `cameraTransitionFrames`。
             speed: event.speed,
+            // 荷兰角（规格 §4）：整帧绕**聚焦中心**旋转的度数，正 = 顺时针。
+            // ⚠️ 这里是**持续状态**，与 `zoom` 同一套状态机（跟着到下一条运镜）——
+            //    做成"瞬时特效"的话"到点就回正"会变成**闪一下**（规格 §4.5 原话）。
+            // ⚠️ `process::cap_dutch_angle` 已经夹过 ±6°、限过配额、并把**与画中画同段**的
+            //    剔除掉了（几何原因：`远` 档最大安全角是 0.00°）。这里不再重复判。
+            tilt: typeof event.tilt === 'number' ? event.tilt : 0,
           });
           cameraCount += 1;
           break;
@@ -3870,6 +3876,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       originTo: shot.originTo ?? shot.origin ?? focus ?? { x: 0.5, y: 0.5 },
       cut: shot.cut,
       handheld: shot.handheld,
+      tilt: shot.tilt ?? 0,
     }))
     .filter((e) => e.outStart !== null)
     .sort((a, b) => a.outStart - b.outStart);
@@ -3878,6 +3885,10 @@ export function translate(config, clipDir, outPath, options = {}) {
     const t = outFrame / fps;
     let zoom = 1.0;
     let handheld = 0.0;
+    // 荷兰角也走"持续状态 + 同一段过渡"：与 zoom 逐式同形（同 `td`、同 `hardCut`、同 `p`）。
+    // ⚠️ 起始值**必须是 0**（不倾斜）—— 写成第一条事件的 tilt 会让**片头一开始就歪着**，
+    //    而用户从任何界面都看不出那个初值是从哪来的。
+    let tilt = 0.0;
     const def = focus ?? { x: 0.5, y: 0.5 };
     let ox = def.x * 100;
     let oy = def.y * 100;
@@ -3892,6 +3903,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       const p = (t >= ce || hardCut) ? 1.0 : pow2Out((t - startT) / td);
       zoom = (t >= ce || hardCut) ? e.z : zoom + (e.z - zoom) * p;
       handheld += ((e.handheld ? 1.0 : 0.0) - handheld) * p;
+      tilt += ((e.tilt ?? 0) - tilt) * p;
       const ax = e.origin.x * 100;
       const ay = e.origin.y * 100;
       const bx = e.originTo.x * 100;
@@ -3899,7 +3911,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       ox = ax + (bx - ax) * p;
       oy = ay + (by - ay) * p;
     }
-    return { zoom, handheld, ox: (ox * width) / 100, oy: (oy * height) / 100 };
+    return { zoom, handheld, tilt, ox: (ox * width) / 100, oy: (oy * height) / 100 };
   };
 
   /// 输出帧 -> 源帧（`placeKeyframe` 要的是源帧号）。
@@ -4010,6 +4022,8 @@ export function translate(config, clipDir, outPath, options = {}) {
     const inDenseRange = (out) => denseRanges.some(([a, b]) => out >= a && out <= b);
 
     let handheldFrames = 0;
+    // §19：荷兰角逐帧计数（与 handheld 分开报，这样报告里能看出到底哪个生效了）
+    let dutchFrames = 0;
     let movedFrames = 0;
     for (let out = 0; out <= lastOut; out += 1) {
       const st = cameraStateAt(out);
@@ -4044,7 +4058,11 @@ export function translate(config, clipDir, outPath, options = {}) {
       // 所以它的判据仍然是"amp 还没回到 0"。
       // 手持是连续量（amp 平滑进出），判据仍是"amp 还没回到 0"；
       // 其余那些窗口用**往前铺过的**密集区间（见 `denseRanges`）。
-      const moving = st.handheld > 1e-6 || inDenseRange(out);
+      // ⚠️ **`tilt` 也必须进这个判据**（§19）。只写 `handheld || inDenseRange(out)` 的话，
+      //    一段"只有荷兰角、没有别的动效"的运镜**整段被跳过** —— 转译器算出了 tilt、
+      //    note 里也没有它（因为那一帧根本没走到），表现是"配了荷兰角、成片一动不动"，
+      //    而且它**不报错**。荷兰角是**持续状态**，判据与 handheld 同类（连续量）。
+      const moving = st.handheld > 1e-6 || Math.abs(st.tilt ?? 0) > 1e-6 || inDenseRange(out);
       if (!moving) continue;
 
       // ⚠️ **一对多**（重放 / 重复源区间）：同一个成片帧可能落在**多个**段上，
@@ -4063,8 +4081,19 @@ export function translate(config, clipDir, outPath, options = {}) {
         placeKeyframe(sourceFrame, 'x', base.x + sway.dx + shx + stx, 'linear');
         placeKeyframe(sourceFrame, 'y', base.y + sway.dy + shy + sty, 'linear');
         placeKeyframe(sourceFrame, 'scale', camScale * FIT, 'linear');
-        if (st.handheld > 1e-6) {
-          placeKeyframe(sourceFrame, 'rotation', sway.rot, 'linear');
+        // 旋转通道 = **荷兰角（§19）+ 手持摇摆的 rot**，两者**相加**。
+        //
+        // ⚠️ 它们是**不同的东西、必须叠加**而不是二选一：
+        //    荷兰角是"静止的持续倾斜"（幅度大、要停住），手持 rot 是"微幅抖动"
+        //    （幅度小、一直在变）。写成 `if (tilt) ... else if (handheld) ...` 的话，
+        //    同时开时**会丢掉一个** —— 而"丢的是哪个"取决于判断顺序，
+        //    表现是"开了手持就没有荷兰角"或反过来，从界面上完全看不出来。
+        //
+        // ⚠️ 只要**任何一个**非零就得写：以前这里只在 handheld 时写，
+        //    改成只看 handheld 会让荷兰角**永远写不进去**（转译器算对了、成片没歪）。
+        const rot = (st.tilt ?? 0) + (st.handheld > 1e-6 ? sway.rot : 0);
+        if (Math.abs(rot) > 1e-6 || st.handheld > 1e-6) {
+          placeKeyframe(sourceFrame, 'rotation', rot, 'linear');
         }
         wrote = true;
       }
@@ -4072,7 +4101,17 @@ export function translate(config, clipDir, outPath, options = {}) {
       if (st.handheld > 1e-6) {
         handheldFrames += 1;
       }
+      if (Math.abs(st.tilt ?? 0) > 1e-6) {
+        dutchFrames += 1;
+      }
       movedFrames += 1;
+    }
+    if (dutchFrames > 0) {
+      note(
+        'camera.tilt',
+        `荷兰角（§19）逐帧写进视频层的 rotation（${dutchFrames} 帧）—— ` +
+          '与手持摇摆的 rot **相加**（两者是不同尺度上的倾斜，同时开时都在）',
+      );
     }
     if (handheldFrames > 0) {
       note(

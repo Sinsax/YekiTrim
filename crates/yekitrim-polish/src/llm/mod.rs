@@ -160,6 +160,7 @@ pub async fn run_llm_pipeline(
                 handheld: false,
                 manual: false,
                 speed: None,
+                tilt: None,
             });
         }
     }
