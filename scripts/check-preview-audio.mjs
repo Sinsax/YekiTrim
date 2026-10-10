@@ -248,7 +248,49 @@ ok(sfxVolumeOk(SRC), 'applyAudio 没把音量铺到音效播放器 —— 不走
   ok(sfxVolumeOk(bad), '变异自证：SFX 没被 applyAudio 铺竟然没被识别出来', true);
 }
 
+// ---- ⑩ 拖动之后必须把引擎源叫醒（用户报的「拖动的时候直接没声音了」）----
+//
+// 现场：在一条 6 Mbps 的流上 seek ⇒ 浏览器丢掉解码缓冲、等同暂停；而时钟（`videoRef`）
+// 是另一块元素且在 Dhampir 下 `muted = true`，它照旧在走 ⇒ **没有任何东西会重新 play()**：
+//   · `dhampirAlignSources` 尾部那条兜底要求 `clockRunning`，拖动期间可能为 false ⇒ 直接 return；
+//   · tick 的镜像循环只在「`v.paused !== el.paused`」时才动 ⇒ 两者"状态一致"时漏掉。
+const seekWakeOk = (src) => {
+  const fn = bodyOf(src, 'seekTo');
+  if (!fn) return false;
+  // 必须真的续播，且必须覆盖并集视图（换台中间态里旧元素会掉出 dhampirVideos）
+  return /dhampirAllSourceVideos\(\)/.test(fn) && /\.play\(\)/.test(fn) && /dhampirIsTwin\(dv\)/.test(fn);
+};
+ok(seekWakeOk(SRC), 'seekTo 没有把引擎源叫醒 —— 拖动一次就静音（源在 6Mbps 流上 seek 后停住，没人续播）');
+{
+  const bad = mutate('      if (dv.paused) dv.play().catch(() => {})', '      void dv');
+  ok(seekWakeOk(bad), '变异自证：去掉续播竟然没被识别出来', true);
+}
+
+// ---- ⑪ 拖动时"落位置"必须覆盖并集，不能只看台上那批 ----
+const syncUnionOk = (src) => {
+  const fn = bodyOf(src, 'syncDhampirTime');
+  if (!fn) return false;
+  // ⚠️ **必须先去掉注释再查**：上面那段说明里就写着 `dhampirAllSourceVideos()`，
+  // 直接对整个函数体做正则会让变异（把真代码换成 `dhampirVideos`）**照样命中注释**，
+  // 变异自证因此抓不到它（本仓既有纪律：判据走"去注释后的源码"，见 `check-stage-backdrop.mjs` ③b）。
+  const code = fn.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  return /dhampirAllSourceVideos\(\)/.test(code);
+};
+ok(syncUnionOk(SRC), 'syncDhampirTime 只遍历 dhampirVideos —— 换台中间态里掉出数组的元素位置不跟着走');
+{
+  // ⚠️ 锚点必须**这个函数独有**：`seen.add(v)` 只在 syncDhampirTime 里出现
+  //（`applyAudio` 与 `seekTo` 也各有一处同类遍历，用那句当锚点会命中错的地方
+  //  —— 本脚本的 `mutate` 只替换第一处）。
+  const uniqSrc = '  for (const v of dhampirAllSourceVideos()) {' + '\n' +
+    '    if (!v || seen.has(v)) continue';
+  const uniqBad = '  for (const v of dhampirVideos) {' + '\n' +
+    '    if (!v || seen.has(v)) continue';
+  const bad = mutate(uniqSrc, uniqBad);
+  ok(syncUnionOk(bad), '变异自证：syncDhampirTime 退回只看台上那批竟然没被识别出来', true);
+}
+
 console.log(`✓ 预览出声契约：${checks} 项全绿（含 ${mutations} 处变异自证）`);
 console.log('  源出声(不写死 muted) / startDhampir 铺状态 / Dhampir tick 补 SFX / applyAudio 覆盖两批 / 备用恒静音 /');
 console.log('  出声时纠偏收窄 + preservesPitch / 纠偏真走那个区间 / 建源与换绑都装音高保持 /');
-console.log('  Dhampir 下台上那块闭麦 / 音量铺到 SFX / 换台补 sync');
+console.log('  Dhampir 下台上那块闭麦 / 音量铺到 SFX / 换台补 sync /');
+console.log('  拖动后叫醒引擎源 + 落位置覆盖并集');

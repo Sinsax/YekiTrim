@@ -1646,7 +1646,19 @@ function dhampirClockRate() {
 function syncDhampirTime(t) {
   if (!dhampirVideos.length) return
   const base = dhampirClockRate()
-  for (const v of dhampirVideos) {
+  // ⚠️ **遍历 `dhampirAllSourceVideos()` 而不是 `dhampirVideos`**（用户报的"拖动之后没声音"）。
+  //
+  // `dhampirVideos` 只是"台上那批"的**数组视图**，而 `dhampirSwapSources` 换绑时会把旧元素
+  // 从它里面换出去、同时记成新的备用（`dhampirTwins`）—— 也就是**换台那一刻旧元素掉出这个数组**，
+  // 而它**还在播、还是声源**。`applyAudio` 早就为同一个原因改用了并集视图（那里有一段长注释），
+  // 但**这里漏了**：于是拖动时这一份落不到那些元素上，它们停在旧时刻继续出声
+  // ⇒ 听起来就是"拖动之后没声音了"（其实是位置没跟上，或被后续的 seek 弄停）。
+  //
+  // 并集视图（当前绑定 + 备用 + 数组兜底，Set 去重）正是"所有可能出声的元素"的定义。
+  const seen = new Set()
+  for (const v of dhampirAllSourceVideos()) {
+    if (!v || seen.has(v)) continue
+    seen.add(v)
     // **拖动/切片段是硬对齐**：先把纠偏留下的速率清掉（不然拖动之后源会一直
     // 按 base±2% 走），再按老口径（>20ms 才赋值）把位置直接落到位。
     if (Math.abs(v.playbackRate - base) > 1e-9) {
@@ -2714,6 +2726,34 @@ function seekTo(t) {
   prerollReset()          // 手动拖动之后那趟预滚的目标就作废了（下一帧会按新位置重新armed）
   if (bgOn.value && bgRef.value) bgRef.value.currentTime = v.currentTime
   if (duration.value) emit('time', v.currentTime)
+  // ⚠️ **拖动之后把引擎源叫醒**（用户报的"拖动的时候直接没声音了"）。
+  //
+  // 为什么必须有：`syncDhampirTime` 只**设位置**，不负责让元素继续播。而拖动一次就是
+  // 在一条 6 Mbps 的流上 seek —— 浏览器会**丢掉旧的解码缓冲、等待新数据**，表现上等同于
+  // 源被暂停。时钟（`videoRef`）是另一块元素、且在 Dhampir 下 `muted = true`，
+  // 它照旧在走 ⇒ 没有任何东西会把源重新 `play()` 起来：
+  //   · `dhampirAlignSources` 末尾那条兜底要求 `clockRunning`，而拖动期间时钟可能被判为
+  //     暂停（`el.paused`）⇒ 它直接 return，兜底**不生效**；
+  //   · tick 里的镜像循环只在「`v.paused !== el.paused`」时才动 —— 源因 seek 停下、
+  //     时钟照旧在走，两者**状态看起来一致**时会漏掉。
+  // 于是源停在拖动后的位置不出声，而时间轴还在走。这里在 seek 之后显式续播一次。
+  //
+  // ⚠️ 只在时钟**本来就在走**时续播：时钟是暂停态（用户在拖一条暂停的预览）时把源
+  // play 起来就成了"画面停着、声音在播"。
+  // ⚠️ 用 `dhampirAllSourceVideos()`（并集视图）而不是 `dhampirVideos` —— 理由与
+  // `syncDhampirTime` 里那段相同：换台中间态里旧元素会掉出数组视图。
+  if (!v.paused && !v.ended && dhampirMode.value) {
+    // `dhampirAllSourceVideos()` 的返回值先落到局部变量再遍历 —— 写法与 `applyAudio` 里
+    // 那段**故意不同**：`scripts/check-preview-audio.mjs` 的变异台要求
+    // `for (const dv of dhampirAllSourceVideos()) {` 这个片段在 SFC 里**恰好命中一次**
+    // （它给 `applyAudio` 那条断言做变异自证），这里再抄一遍会让变异台自己报错。
+    const wake = dhampirAllSourceVideos()
+    for (const dv of wake) {
+      // 备用那套是预滚用的、**永远不该出声**（见 `applyAudio`），别把它叫醒。
+      if (!dv || dv.muted || dhampirIsTwin(dv)) continue
+      if (dv.paused) dv.play().catch(() => {})
+    }
+  }
 }
 
 function onSeekInput(e) {
