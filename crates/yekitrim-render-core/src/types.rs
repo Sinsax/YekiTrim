@@ -248,6 +248,51 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end: Option<f64>,
     },
+
+    // === 统一视觉元素（总方案 §5，规格 `elements-spec.md`）===
+    //
+    // ⚠️ **这一支同时承载 `text` 与 `sticker` 两种 kind**（靠 `kind` 分派），
+    // 而不是给文字单开一个 `text` 变体。理由与规格 §2 一致：两者在时间轴上是**同一类东西**
+    // （一个有开始/结束的视觉元素，挂在同一条轨道上），差别只在"画什么"。
+    // 拆成两个变体的话，配额守卫、贴纸对齐、落点避让、时间轴渲染都得各写两遍。
+    //
+    // ⚠️ **`elements` 是新写法，`Sticker` 变体仍然在**（§5 的 E2 只是"迁进来"、
+    // **不是**把老变体删掉）。老工程里全是 `[[segments.events]] type = "sticker"`，
+    // 删变体 = 所有存量工程读不出来（R4）。两个变体长期共存，由 `process` 一并看待。
+    Element {
+        time: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f64>,
+        /// `"text"` 或 `"sticker"`。**不用 enum**：认不出的值要能给一条像样的报错
+        /// （enum 只会说"unknown variant"，而这里要告诉用户"是哪一条元素、写了什么"）。
+        kind: String,
+        /// 元素**显示什么**。`kind = "text"` 时是正文；`kind = "sticker"` 时是关键词
+        /// （语义同 `Event::Sticker.keyword`，即贴纸包名）。
+        text: String,
+        /// `text` 的样式预设：`hook` / `chapter` / `comment` / `count`（规格 §2）。
+        /// `kind = "sticker"` 时不用。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
+        /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pos: Option<String>,
+        /// 贴纸语义 tag（`kind = "sticker"`，语义同 `Event::Sticker.sticker_tag`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sticker_tag: Option<String>,
+        /// 落点百分比（`kind = "sticker"`；`"auto"` = 交给避让求解器）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<String>,
+        /// 手工定时标记（语义同 `Event::Sticker.manual`：后处理一律不改写）。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        manual: bool,
+        /// 解析后的贴纸文件名 / 来源（由 `process` 填，与 `Event::Sticker` 同语义）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
 }
 
 /// 运镜缺省聚焦中心：画面正中（老行为），有 `anchor` 时由 process 覆盖。
@@ -280,6 +325,7 @@ impl Event {
             Event::Pulse { time, .. } => *time,
             Event::Overlay { time, .. } => *time,
             Event::Sfx { time, .. } => *time,
+            Event::Element { time, .. } => *time,
         }
     }
 
@@ -297,6 +343,7 @@ impl Event {
             Event::Pulse { end, .. } => *end,
             Event::Overlay { end, .. } => *end,
             Event::Sfx { end, .. } => *end,
+            Event::Element { end, .. } => *end,
         }
     }
 
@@ -314,6 +361,7 @@ impl Event {
             Event::Pulse { end, .. } => *end = value,
             Event::Overlay { end, .. } => *end = value,
             Event::Sfx { end, .. } => *end = value,
+            Event::Element { end, .. } => *end = value,
         }
     }
 
@@ -335,6 +383,10 @@ impl Event {
             Event::Pulse { .. } => 0.4,
             // 音效不补：`None` 是「用文件原始长度」的合法语义
             Event::Sfx { .. } => 0.0,
+            // 元素：文字与贴纸都是**持续类**，缺省 2.0 与 `Sticker` 同档
+            // （§5 的元素时长规则另有「最短 1.2s / 最长 5s」的守卫，那在 `process` 里、
+            //  不在这里 —— 这里只管「没写 end」时的兜底）。
+            Event::Element { .. } => 2.0,
         }
     }
 

@@ -3562,6 +3562,129 @@ portrait_camera = true
     /// 为什么这条是"零回归判据"而不是风格问题：今天**所有**存量工程都没写 `speed`，
     /// 而 `polish.toml` 是**逐字节对拍**的对象（出片产物 SHA 是硬判据）。
     /// 少了 `skip_serializing_if`，每个 camera 事件都会多出一行 `speed = ""` ——
+    // ── §5 E1：`elements` 骨架 ────────────────────────────────────────
+    //
+    // 这一步**只加类型、不改任何行为**，所以判据全是"读得回 / 没写的键不许出现"。
+
+    /// `Event::Element` 的两种 `kind` 都要能**写出去再读回来**。
+    ///
+    /// ⚠️ 为什么不是"结构体字段对"就够：`polish.toml` 的序列化**就是**文件格式，
+    /// 而 `Element` 是 `#[serde(tag = "type")]` 的**枚举变体** —— 变体名的拼写
+    /// （`element` vs `elements`）只有走一遍真读写才验得到。名字写错的表现是
+    /// "`polish.toml` 里静静地少了一条元素"，不报错。
+    #[test]
+    fn element_roundtrips_both_kinds() {
+        let mut cfg = ProjectFile::example();
+        cfg.segments[0].events = vec![
+            crate::project::Event::Element {
+                time: 3.0,
+                end: Some(5.0),
+                kind: "text".into(),
+                text: "第 3 次了".into(),
+                style: Some("count".into()),
+                pos: Some("top".into()),
+                sticker_tag: None,
+                x: None,
+                y: None,
+                manual: false,
+                name: None,
+                source: None,
+            },
+            crate::project::Event::Element {
+                time: 6.0,
+                end: Some(7.5),
+                kind: "sticker".into(),
+                text: "ysyk".into(),
+                style: None,
+                pos: None,
+                sticker_tag: Some("害怕".into()),
+                x: Some("auto".into()),
+                y: Some("auto".into()),
+                manual: false,
+                name: None,
+                source: None,
+            },
+        ];
+        let text = cfg.to_toml_commented().expect("写 toml");
+        assert!(
+            text.contains("type = \"element\""),
+            "变体名必须是 `element`（`[[segments.events]] type` 那个值）:
+{text}"
+        );
+        let back: ProjectFile = toml::from_str(
+            &text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("config_version"))
+                .collect::<Vec<_>>()
+                .join("
+"),
+        )
+        .expect("自己写出的 elements 自己得读得回来");
+        let evs = &back.segments[0].events;
+        assert_eq!(evs.len(), 2, "两条元素都要读回来");
+        match &evs[0] {
+            crate::project::Event::Element { kind, text, style, pos, .. } => {
+                assert_eq!(kind, "text");
+                assert_eq!(text, "第 3 次了");
+                assert_eq!(style.as_deref(), Some("count"));
+                assert_eq!(pos.as_deref(), Some("top"));
+            }
+            other => panic!("期望一条 text 元素，实得 {other:?}"),
+        }
+        match &evs[1] {
+            crate::project::Event::Element { kind, text, sticker_tag, x, .. } => {
+                assert_eq!(kind, "sticker");
+                assert_eq!(text, "ysyk", "`text` 在 sticker 语义下就是关键词（贴纸包名）");
+                assert_eq!(sticker_tag.as_deref(), Some("害怕"));
+                assert_eq!(x.as_deref(), Some("auto"));
+            }
+            other => panic!("期望一条 sticker 元素，实得 {other:?}"),
+        }
+    }
+
+    /// ⚠️ **R4：没写过 `elements` 的老工程重存必须逐字节不变。**
+    ///
+    /// `Element` 的所有可选字段都挂了 `skip_serializing_if`，而 `manual` 用的是
+    /// `skip_serializing_if = "std::ops::Not::not"`（`false` 时不写）。
+    /// 这三处少一个，`polish.toml` 里就会冒出一片 `style = ""` / `manual = false`，
+    /// **老工程一存就全变**（diff 全红、基线全要重冻）—— 而那正是 R4 禁止的。
+    #[test]
+    fn unset_element_fields_are_not_written() {
+        let mut cfg = ProjectFile::example();
+        cfg.segments[0].events = vec![crate::project::Event::Element {
+            time: 1.0,
+            end: None,
+            kind: "text".into(),
+            text: "只填了必填项".into(),
+            style: None,
+            pos: None,
+            sticker_tag: None,
+            x: None,
+            y: None,
+            manual: false,
+            name: None,
+            source: None,
+        }];
+        let text = cfg.to_toml_commented().expect("写 toml");
+        // 只需看那一条元素事件块：`[style.camera]` 那些无关字段不在同一段里，
+        // 但 `[[segments.events]]` 里**确实只有这一条**，所以按"从 type = \"element\""往后切"。
+        let i = text.find("type = \"element\"").expect("应当写了这条元素");
+        let block: String = text[i..].lines().take(14).collect::<Vec<_>>().join("
+");
+        for absent in ["style", "pos", "sticker_tag", "manual", "name", "source", "end"] {
+            assert!(
+                !block.contains(&format!("{absent} =")),
+                "没写过的 `{absent}` 不许落盘（存量逐字节零回归）:
+{block}"
+            );
+        }
+        // 反过来：必填的那两件必须在
+        assert!(block.contains("kind = \"text\""), "kind 是分派依据，必须在:
+{block}");
+        assert!(block.contains("text = "), "正文必须在:
+{block}");
+    }
+
     /// 值虽然等价，但文件变了、diff 全红、基线全要重冻。
     ///
     /// ⚠️ 它也顺带钉住"写出来的东西读得回来"（`deny_unknown_fields` 的结构体上，
