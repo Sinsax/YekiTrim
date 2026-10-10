@@ -429,7 +429,29 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
         let strict = std::env::var("VTEDIT_STRICT")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        render::dhampir::render_video_only(project_path, &clip_dir, &config.style.subtitle.font, strict)?;
+        let (_, translate_report) =
+            render::dhampir::render_video_only(project_path, &clip_dir, &config.style.subtitle.font, strict)?;
+        // ⚠️ 总方案 §4「转译报告可见」：报告**必须播报**，否则新效果的失败形态
+        // 就是"静默少画"（点了没反应，谁也不知道）。CLI 侧走 tracing，
+        // 服务端那条腿在 `api/render.rs` 里把同样的行送进任务日志面板。
+        for (level, msg) in render::dhampir::report_lines(&translate_report) {
+            match level {
+                "warn" => tracing::warn!("  {msg}"),
+                "debug" => tracing::debug!("  {msg}"),
+                _ => tracing::info!("  {msg}"),
+            }
+        }
+        // 报告也要落盘一份（`<工程>/data/translate_report.json`）：任务日志会被滚动清掉，
+        // 而"这条片子到底缺没缺效果"是**事后要能回答**的问题。
+        if let Ok(body) = serde_json::to_vec_pretty(&translate_report) {
+            let path = project_path.join("data").join("translate_report.json");
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Err(e) = std::fs::write(&path, body) {
+                tracing::warn!("  转译报告落盘失败（不影响出片）：{e}");
+            }
+        }
     }
     tracing::info!("\n  -- Audio --");
     let t_audio = std::time::Instant::now();

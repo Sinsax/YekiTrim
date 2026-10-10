@@ -59,6 +59,15 @@ y = "auto"
 | `comment` | 吐槽 | 小号、带底色块 |
 | `count` | 计数/积累（"第 3 次"） | 中号、可递增 |
 
+> ⚠️ **2026-10-10 更正（核实于 `polish-upgrade-consolidated.md` §3）**：下文 §3 依据
+> `p9-downstream-requirements.md` 得出的"底座缺 `stroke`/`highlight_color`/`entrance`"**已过期**：
+> - `SubtitleStyle.stroke` 是 **`String`**（`"12px #403c3b"`）、`highlight_color` **存在**且
+>   **转译器/预览/封面三条腿都在用**（`types.rs:503–522`）；
+> - `entrance` 是**有意从契约下线**（`project/legacy.rs:19–38`，有读时吞并单测），
+>   **不是"底座没做"** ⇒ E4 不能表述为"等底座补 `entrance`"，只能"本仓逐帧近似"或"重新提需求+发明规格"。
+> - ⇒ **§9 的 E4 里只有 T5（真卡拉OK）确实被阻塞**（缺**词级时间戳**），
+>   **T1/T2/T3/T4/T6 全部本仓自足、可立即实施**。
+
 ---
 
 ## 3. ⚠️ **新增变化①：底座有三个字段缺失，是本项的前置**

@@ -8,6 +8,41 @@
 // 这里以前写的是「项目内相对路径（如 `output/clips/clip-01`）」—— **那句是错的**，
 // 而它错得有代价：照它拼出来的路径一定 404，且「查不到目录」与「路径写错」长得一样。
 import { api } from './client'
+import { addClient } from '../stores/log'
+
+/**
+ * 把 `POST /polish/dhampir-project` 回包里的**转译报告**写进运行日志（总方案 §4「转译报告可见」）。
+ *
+ * **为什么要有它**：出片只剩底座一条腿（R1），而转译的失败形态是 **"静默少画"** ——
+ * `DROP` 表示"参照有、底座表达不了"，那个效果在成片里**就是没有**，但以前报告只活在服务端
+ * 一个局部变量里，用户看到的永远是"点了没反应"。
+ *
+ * ⚠️ **零 DROP 也要记一条**：静默的零与"根本没跑报告"在日志里长得一模一样，
+ * 而"本次零 DROP"是**可核对的好消息**。服务端 `dhampir::report_lines` 是同一口径的镜像。
+ * ⚠️ 逐条明细走 `debug`（DROP 清单是已知且逐条有理由的），别升级成 warn 淹掉面板。
+ * ⚠️ 三处调用点（首启 / 热重载 / 取帧率）共用这一份 —— 别各写一遍。
+ */
+export function logTranslateReport(res, source = 'dhampir') {
+  const rep = res && res.translate_report
+  // 老服务端 / 异常回包：没有报告就**明说**，别假装"零 DROP"（那正是本条要消灭的静默）。
+  if (!rep || typeof rep !== 'object') {
+    addClient('debug', '转译报告：本次回包没带报告（服务端版本较旧？）', source)
+    return
+  }
+  const drops = Number(rep.drop_count) || 0
+  const clamps = Number(rep.clamp_count) || 0
+  if (drops > 0) {
+    addClient('warn', `转译报告：${drops} 条 DROP（参照有、底座表达不了 ⇒ 成片里这些效果是缺的）`, source)
+  } else {
+    addClient('info', '转译报告：0 条 DROP（本次没有静默丢失的效果）', source)
+  }
+  if (clamps > 0) {
+    addClient('info', `转译报告：${clamps} 条 CLAMP（被截断/收敛到可表达的范围内）`, source)
+  }
+  for (const d of rep.drops || []) addClient('debug', `DROP ${d}`, source)
+  for (const c of rep.clamps || []) addClient('debug', `CLAMP ${c}`, source)
+}
+
 
 // 区域名（与 polish.toml 的 [layout.*] 一一对应）。
 // 九宫格 → 自由选框的换算（GRID_RECTS / regionRect）在 polish/engine.js。

@@ -101,7 +101,7 @@ fn 出片是只含画面的视频且帧数对得上() {
     println!("{}", dhampir::describe(""));
 
     let out = match dhampir::render_video_only(&work, &clip, "", false) {
-        Ok(p) => p,
+        Ok((p, _report)) => p,
         Err(e) => panic!("出片失败：{}", dhampir::explain(&e)),
     };
     assert!(out.is_file(), "产物不存在：{}", out.display());

@@ -99,7 +99,8 @@ pub fn render_project(dir: &Path, translator: Option<&Path>) -> anyhow::Result<P
         None => unsafe { std::env::remove_var("VTEDIT_TRANSLATOR") },
     }
     let font = load_project(dir).map(|c| c.style.subtitle.font).unwrap_or_default();
-    let result = yekitrim_polish::render::dhampir::render_video_only(dir, dir, &font, false);
+    let result = yekitrim_polish::render::dhampir::render_video_only(dir, dir, &font, false)
+        .map(|(p, _report)| p);
     // 还原环境变量**先于**错误返回：否则一次失败会把变异体泄漏给后面的探针。
     match prev {
         Some(v) => unsafe { std::env::set_var("VTEDIT_TRANSLATOR", v) },

@@ -147,6 +147,8 @@ import { toast } from '../stores/toast'
 import { addClient } from '../stores/log'
 import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
+// §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
+import { logTranslateReport } from '../api/polish'
 import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
@@ -635,6 +637,8 @@ async function reloadDhampirProject() {
     })
     // 期间可能已经退出 Dhampir 模式（`stopDhampir` 把引擎置空了）—— 那就别往回写。
     if (!dhampirMode.value || !dhampirEngine) return
+    // §4：转译报告先播报（它解释"为什么某个效果在成片里不见了"）
+    logTranslateReport(res, 'dhampir')
     const project = res.project
     if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
 
@@ -1167,6 +1171,8 @@ async function switchDhampirClip() {
       method: 'POST', label: 'Dhampir 工程（换片段）', body: JSON.stringify({ dir: props.dir }),
     })
     if (!dhampirMode.value || !dhampirEngine) return
+    // §4：转译报告先播报（换片段也是新一次转译）
+    logTranslateReport(res, 'dhampir')
     const project = res.project
     if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
 
@@ -1291,6 +1297,8 @@ async function startDhampir() {
   })
   const project = res.project
   if (!project || !project.timeline) throw new Error('后端没有返回可用的工程')
+  // §4：首启那次转译的报告也要播报（这是用户最常走的那条路）
+  logTranslateReport(res, 'dhampir')
   const tb = project.timeline.timebase
   if (tb && tb.num > 0 && tb.den > 0) dhampirFps.value = tb.num / tb.den
   // 段落表要和时基一起先算好：**帧号映射全靠它**（见 dhampirFrameAt 的说明）。
