@@ -2641,6 +2641,40 @@ mod tests {
             !clip.join("_dhampir_project.json").exists(),
             "转译草稿没有清掉"
         );
+        // **转译报告要带回来**（总方案 §4「转译报告可见」）。
+        //
+        // 判据是"这个键**存在**且形状对"，不是"DROP 恰好等于某个数" ——
+        // 合成片段转译出几条 DROP 会随转译器演进而变，钉死数值等于给未来埋一颗假红。
+        // 真正不变的是：**报告必须出现在回包里**（前端据此提示"这个效果没生效"）。
+        assert!(
+            v.get("translate_report").is_some(),
+            "回包必须带 translate_report（§4：DROP/CLAMP 不许静默消失）：{v}"
+        );
+        let rep = &v["translate_report"];
+        assert!(
+            rep["drop_count"].is_number(),
+            "translate_report.drop_count 要是数字：{rep}"
+        );
+        assert!(
+            rep["clamp_count"].is_number(),
+            "translate_report.clamp_count 要是数字：{rep}"
+        );
+        assert!(
+            rep["drops"].is_array() && rep["clamps"].is_array(),
+            "逐条明细要能被前端列出来：{rep}"
+        );
+        // ⚠️ 形状一致性：条数必须与明细数组长度**对得上** ——
+        // 否则前端"3 条 DROP"点开只看得到 1 条（`parse` 只数不填的退化形态抓不到别的）。
+        assert_eq!(
+            rep["drop_count"].as_u64().unwrap() as usize,
+            rep["drops"].as_array().unwrap().len(),
+            "drop_count 与 drops 长度必须一致：{rep}"
+        );
+        assert_eq!(
+            rep["clamp_count"].as_u64().unwrap() as usize,
+            rep["clamps"].as_array().unwrap().len(),
+            "clamp_count 与 clamps 长度必须一致：{rep}"
+        );
         // **字幕/弹幕的文本要带回来。**
         //
         // 工程里那两条资产的 `uri` 是**绝对路径**（指向转译输出目录），浏览器取不到 ——
@@ -3776,9 +3810,9 @@ pub(super) async fn polish_dhampir_project(
     // 症状是最难查的那一类：**预览看起来正常，只是没有字幕和弹幕**，还不报错。
     // 所以这里在 cleanup **之前**把内容读出来，让前端用 blob URL 喂给
     // `engine.loadSubtitles([{ assetId, url, format }])`（解析在 wasm 里，走 parse_srt/parse_ass）。
-    let (json, subs) = run_blocking(
+    let (json, subs, translate_report) = run_blocking(
         "Dhampir 转译",
-        move || -> anyhow::Result<(String, Vec<(String, String)>)> {
+        move || -> anyhow::Result<(String, Vec<(String, String)>, yekitrim_polish::render::dhampir::TranslateReport)> {
             // ⚠️ **预览这条腿必须 `keep_muted = false`**（压缩时间线）：客户端靠"落在被掐掉的段里
         // = 没有对应帧"去跳屏蔽区间，整条时间线会让它一路播过那些段。
         // 出片那条腿相反（`render_video_only` 传 true，屏蔽区间交给尾部那一剪）。
@@ -3786,12 +3820,16 @@ pub(super) async fn polish_dhampir_project(
         // 探测时基/分辨率写进工程，所以画面缩放/取景也是按它算的。
         // 没有/过期 ⇒ `None`，照旧读源。
         let preview_video = yekitrim_polish::render::proxy::preview_video_for(&clip);
-        let translated = yekitrim_polish::render::dhampir::prepare_project(
-            &clip,
-            &scratch,
-            false,
-            preview_video.as_deref(),
-        )?;
+        // ⚠️ 用 `_reporting` 那条腿（不是 `prepare_project`）：总方案 §4「转译报告可见」
+        // 要求 DROP/CLAMP **看得见**。预览是用户最常碰的那条路，报告在这里被丢掉
+        // 等于"这个效果没生效"永远没人知道 —— 与出片那条腿同口径。
+        let (translated, translate_report) =
+            yekitrim_polish::render::dhampir::prepare_project_reporting(
+                &clip,
+                &scratch,
+                false,
+                preview_video.as_deref(),
+            )?;
             let text = std::fs::read_to_string(&translated)
                 .map_err(|e| anyhow::anyhow!("读不出转译产物 {}：{e}", translated.display()))?;
             let mut subs: Vec<(String, String)> = Vec::new();
@@ -3810,7 +3848,15 @@ pub(super) async fn polish_dhampir_project(
             // 而且并发预览时，只有传自己的路径才不会删掉**另一个请求**正在用的文件
             // （用户报的 `ENOENT ... _temp_font_families.json` 就是那么来的）。
             yekitrim_polish::render::dhampir::cleanup_project(&translated);
-            Ok((text, subs))
+            // 报告也带出去（§4）：DROP>0 必须让用户看见，不能只在服务端打一行日志。
+            for (level, msg) in yekitrim_polish::render::dhampir::report_lines(&translate_report) {
+                match level {
+                    "warn" => tracing::warn!("{msg}"),
+                    "debug" => tracing::debug!("{msg}"),
+                    _ => tracing::info!("{msg}"),
+                }
+            }
+            Ok((text, subs, translate_report))
         },
     )
     .await?;
@@ -3820,7 +3866,14 @@ pub(super) async fn polish_dhampir_project(
         .into_iter()
         .map(|(name, text)| (name, serde_json::Value::String(text)))
         .collect();
-    ok(serde_json::json!({ "ok": true, "project": project, "subtitles": subtitles }))
+    // 转译报告进回包（总方案 §4）：`translate_report` 是**接口产物**，
+    // 前端据此提示"这个效果其实没生效"。零 DROP 也回（那是有意义的好消息，且可核对）。
+    ok(serde_json::json!({
+        "ok": true,
+        "project": project,
+        "subtitles": subtitles,
+        "translate_report": translate_report,
+    }))
 }
 
 /// 贴纸逐帧 PNG 的**进程内缓存**。

@@ -1366,12 +1366,16 @@ fn run_render(
 /// `strict` = `polish render --strict`：**转译报告里 `DROP > 0` 就拒绝出片**。
 /// 给"不允许静默缺效果"的人一个开关（默认关：DROP 清单是**已知且逐条有理由**的，
 /// 见 `docs/plan/dhampir-parity-register.md` §五 M2）。
+///
+/// 返回 `(产物路径, 转译报告)` —— 报告**必须带回给调用方**
+/// （总方案 §4「转译报告可见」：新效果的失败形态是**静默少画**，
+/// 报告只活在函数里 = 用户永远看不到"这个效果其实没生效"）。
 pub fn render_video_only(
     project_path: &Path,
     clip_dir: &Path,
     project_font: &str,
     strict: bool,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, TranslateReport)> {
     let out = video_intermediate(project_path);
     // **出片：整条时间线**（`keep_muted = true`）—— 屏蔽区间由 `cmd_render` 尾部那一剪按源时间去掉，
     // 与当年 chrome 那条腿同一处、同一条口径。传 false 会**剪两次**（成片短一大截 + 音轨错位）。
@@ -1389,7 +1393,45 @@ pub fn render_video_only(
     let frames = sequence_frames(&translated)?;
     run_render(&translated, clip_dir, 0, frames - 1, &out, false, project_font)?;
     cleanup_project(&translated);
-    Ok(out)
+    Ok((out, report))
+}
+
+/// 把转译报告**播报**进日志（总方案 §4「转译报告可见」的唯一出口）。
+///
+/// 为什么必须有：出片只剩底座一条腿（R1），而转译的失败形态是**静默少画** ——
+/// `DROP`/`CLAMP` 天天在发生，但报告以前只活在 `render_video_only` 的局部变量里，
+/// 用户看到的永远是"点了没反应"。这里把它变成**看得见的一行**。
+///
+/// ⚠️ **一条都不许静默**：DROP>0 打 `warn`（成片里真的缺东西），=0 也打一行 `info`
+///    —— "本次零 DROP"本身是**好消息且可核对**，静默的零与"没跑报告"分不出来。
+/// ⚠️ 逐条明细走 `debug`：`DROP` 清单是**已知且逐条有理由**的（见 `dhampir-parity-register.md` §五 M2），
+///    全量塞进 `info` 会淹掉日志面板。要逐条看就开 debug。
+pub fn report_lines(report: &TranslateReport) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    if report.drop_count > 0 {
+        out.push((
+            "warn",
+            format!(
+                "转译报告：{} 条 DROP（参照有、底座表达不了 ⇒ 成片里这些效果是缺的）",
+                report.drop_count
+            ),
+        ));
+    } else {
+        out.push(("info", "转译报告：0 条 DROP（本次没有静默丢失的效果）".to_string()));
+    }
+    if report.clamp_count > 0 {
+        out.push((
+            "info",
+            format!("转译报告：{} 条 CLAMP（被截断/收敛到可表达的范围内）", report.clamp_count),
+        ));
+    }
+    for (i, d) in report.drops.iter().enumerate() {
+        out.push(("debug", format!("DROP #{} {d}", i + 1)));
+    }
+    for (i, c) in report.clamps.iter().enumerate() {
+        out.push(("debug", format!("CLAMP #{} {c}", i + 1)));
+    }
+    out
 }
 
 
@@ -1800,8 +1842,58 @@ mod artifact_tests {
         assert_eq!((empty.drop_count, empty.clamp_count), (0, 0));
     }
 
-    /// **开发构建必须优先仓库那份转译器**（2026-10-06 用户报的"画面构成里怎么改位置都是居中"的根因）。
+    /// **报告必须"看得见"**（总方案 §4「转译报告可见」）。
     ///
+    /// 这条专钉**零 DROP 也要播报**：静默的零与"根本没跑报告"在日志里长得一模一样，
+    /// 而"本次零 DROP"是**可核对的好消息**（§4 的原话：新效果的失败形态是"静默少画"）。
+    /// 变异自证：把 `report_lines` 里 else 那支删掉（只在 drop>0 时播报），本测试翻红。
+    #[test]
+    fn report_lines_always_speaks_even_when_clean() {
+        let clean = TranslateReport::default();
+        let lines = report_lines(&clean);
+        assert!(
+            lines.iter().any(|(lv, _)| *lv == "info"),
+            "零 DROP 也必须有一条 info —— 否则\"没丢东西\"与\"没跑报告\"分不出来：{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|(lv, _)| *lv == "warn"),
+            "零 DROP 不该有 warn：{lines:?}"
+        );
+
+        // 有 DROP ⇒ 必须 warn（成片里真的缺东西，得让人看见）
+        let dirty = TranslateReport {
+            drop_count: 2,
+            clamp_count: 1,
+            drops: vec!["[shake] 底座表达不了".into(), "[pulse] 同上".into()],
+            clamps: vec!["[flash] 收敛到上限".into()],
+        };
+        let lines = report_lines(&dirty);
+        let warn: Vec<&String> = lines
+            .iter()
+            .filter(|(lv, _)| *lv == "warn")
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(warn.len(), 1, "DROP>0 恰好一条 warn：{lines:?}");
+        assert!(warn[0].contains('2'), "warn 要带条数：{}", warn[0]);
+
+        // 逐条明细走 debug（DROP 清单是已知的，全塞 info 会淹掉日志面板）
+        let debug_n: usize = lines.iter().filter(|(lv, _)| *lv == "debug").count();
+        assert_eq!(debug_n, 3, "2 条 DROP + 1 条 CLAMP 各一条 debug：{lines:?}");
+
+        // CLAMP 有而 DROP 无 ⇒ 仍不许出 warn（CLAMP 是收敛，不是丢失）
+        let clamp_only = TranslateReport {
+            clamp_count: 1,
+            clamps: vec!["[camera] 收敛".into()],
+            ..Default::default()
+        };
+        let lines = report_lines(&clamp_only);
+        assert!(
+            !lines.iter().any(|(lv, _)| *lv == "warn"),
+            "只有 CLAMP 时不该 warn（那个效果还在，只是收敛了）：{lines:?}"
+        );
+    }
+
+    /// **开发构建必须优先仓库那份转译器**（2026-10-06 用户报的"画面构成里怎么改位置都是居中"的根因）。    ///
     /// `<exe 目录>/tools/` 里可能有打包时拷进去的**旧副本**；它排第一就静默生效，
     /// 于是转译器的一切修复（两轴位置 / 真实时基与分辨率 / `--video` 代理）全部"没生效"。
     #[test]
