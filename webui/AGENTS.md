@@ -22,6 +22,9 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-cover-stage.mjs` — 封面舞台：黑边覆盖 + 恒横版 + 模糊同源 + 类名穿透 + 图层栈
     （`.pane` 不许复用、`.lyr-props` 要 `min-height`、`COVER_HTML` 只替换一次、`#fx-extra` 无 z-index）。
   - `check-handheld.mjs` — 手持摇摆：波形逐值对拍 + 起停状态机 + 竖素材进非竖画布归零。
+  - `../scripts/check-camera-zoom-parity.mjs` — **运镜档位表五处逐值一致**（§18-C）：三档默认倍率
+    （`render-core` / 模板 `camFactor` / `engine.js` / 转译器）+ 后端夹取区间 + 前端滑杆同值。
+    任一路漏改的症状是"预览与成片用不同倍率"，两边各自看都正常。**8 处变异自证**。
   - `check-stage-backdrop.mjs` — 画面构成/衬底：四种模式 + 图层序 + 预览 DOM 层 + 两轴摆位。
   - `check-preview-ab.mjs` — 跳屏蔽区间的 A/B 预滚（换台顺序、Dhampir 闸门）。
   - `check-grid-parity.mjs` — **九宫格四方对拍**：`GRID_RECTS` 与 Rust `grid_rect` **逐值**一致、

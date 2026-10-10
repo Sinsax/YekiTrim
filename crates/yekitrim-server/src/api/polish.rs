@@ -1843,6 +1843,39 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
         cfg.edl = serde_json::from_value(v.clone())
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("edl 解析失败: {e}")))?;
     }
+    // 运镜档位缩放（`[style.camera]`，总方案 §18-C：**只暴露配置、不改默认**）。
+    //
+    // ⚠️ **漏了这一支就是"保存不报错、值静默丢掉"**（就是上面那段注释警告的那类）：
+    // 界面上改完显示"已保存"、PUT 照回 `{"ok":true}`，而 `polish.toml` 一个字节没变。
+    //
+    // ⚠️ **这里是"档位表"的第 6 个消费点**。另外 4 处（`render-core::CameraStyle::factor()`、
+    // 模板 canvas、`engine.js`、转译器）都从**同一份配置**读，所以这里只要把值存进去就自动一致；
+    // 也正因如此，**存进去的是一个会被四条渲染路径直接采信的数**，必须在这里夹住：
+    //   * `zoom_mid` / `zoom_close` ∈ [1.0, 3.0] —— 下限 1.0 = "不许比原始画面更小"
+    //     （`< 1` 会缩出黑边，那是 `zoom_wide` 的语义，写在中景上必是手滑）；
+    //   * `zoom_wide` ∈ [0.05, 1.0] —— 它就是画中画，**大于 1 就不再是画中画**；
+    //     下限取正数：0 会让画面缩成一个点。
+    // 上限 3.0 的依据是规格 §0.6 / §3.2 的**露边**实测（系数越大、平移时露出的画面外区域越多，
+    // 实测 `scale=1.3` 已有 622px 暴露面）—— 3.0 是"还能靠夹取兜住"的范围，再大就该走
+    // 基线守卫而不是配置。**别把上限放开**：放开的症状是"出片时画面边缘出现黑/糊边"，
+    // 而那时用户已经看不出是哪个值的问题。
+    if let Some(v) = body.get("camera") {
+        let mut cam: yekitrim_polish::project::CameraStyle = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("camera 解析失败: {e}")))?;
+        for (name, value, lo, hi) in [
+            ("zoom_mid", &mut cam.zoom_mid, 1.0_f64, 3.0_f64),
+            ("zoom_close", &mut cam.zoom_close, 1.0, 3.0),
+            ("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0),
+        ] {
+            if !value.is_finite() {
+                return Err(err(StatusCode::BAD_REQUEST, format!("{name} 必须是有限数")));
+            }
+            // 夹取而不是报错：滑杆拖到边界是正常操作。但**存的是夹取后的值** ——
+            // 界面提交 5.0、配置里落 3.0，用户下次打开看到的就是真实生效的数。
+            *value = value.clamp(lo, hi);
+        }
+        cfg.style.camera = cam;
+    }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
@@ -2983,6 +3016,85 @@ async fn polish_project_http_roundtrips_edl() {
     assert_eq!(app.call(req).await.status(), 200);
     let raw = std::fs::read_to_string(app.root.join("polish.toml")).unwrap();
     assert!(!raw.contains("[edl]"), "清空后不许留空的 `[edl]` 段头:\n{raw}");
+}
+
+/// §18-C：`[style.camera]` 三个档位系数必须能被**存进去**、**读回来**、且**越界被夹住**。
+///
+/// 为什么值得一条真 HTTP 用例（而不是只测 `CameraStyle` 的反序列化）：
+/// 白名单里漏一个键 = **保存不报错、值静默丢掉**（本文件上面那段注释记着这个坑，
+/// `edl` 那次就是被探针单测抓出来的）。`camera` 是同一个形状的新增键，
+/// 只测结构体的话，**handler 里忘了接**它照样绿。
+#[tokio::test]
+async fn polish_project_http_roundtrips_camera_zoom() {
+    let app = crate::api::test_support::test_app().await;
+    let dir = app.root.to_string_lossy().replace('\\', "/");
+    let cfg = yekitrim_polish::project::ProjectFile::example();
+    std::fs::write(app.root.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) PUT：三档都给一个**合法**值，近景调到用户想要的方向（1.5 → 1.8，即方案 A 的目标倍率）
+    let body = serde_json::json!({
+        "dir": dir,
+        "camera": { "zoom_mid": 1.3, "zoom_close": 1.8, "zoom_wide": 0.55 },
+    });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200, "PUT /polish/project 应当 200");
+
+    // 2) 磁盘上真的写了（这是"静默丢掉"唯一能被抓到的地方）
+    let on_disk = yekitrim_polish::project::load_project(&app.root).unwrap();
+    assert_eq!(on_disk.style.camera.zoom_close, 1.8, "camera.zoom_close 没落到 polish.toml");
+    assert_eq!(on_disk.style.camera.zoom_mid, 1.3);
+    assert_eq!(on_disk.style.camera.zoom_wide, 0.55);
+    // `factor()` 是四条渲染路径共用的那张表 —— 存进去的值要真的从它读出来
+    assert_eq!(on_disk.style.camera.factor("近"), 1.8, "factor() 没读到新值");
+
+    // 3) 越界要被**夹住**（不是照单全收，也不是报错）
+    //    zoom_close 太小（< 1 会缩出黑边，那是画中画的语义）、zoom_wide 太大（> 1 就不是画中画了）
+    let wild = serde_json::json!({
+        "dir": dir,
+        "camera": { "zoom_mid": 1.3, "zoom_close": 0.2, "zoom_wide": 9.0 },
+    });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(wild.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200, "越界是夹取、不是报错（滑杆拖到边界是正常操作）");
+    let clamped = yekitrim_polish::project::load_project(&app.root).unwrap();
+    assert_eq!(clamped.style.camera.zoom_close, 1.0, "zoom_close 下限该夹到 1.0");
+    assert_eq!(clamped.style.camera.zoom_wide, 1.0, "zoom_wide 上限该夹到 1.0");
+    assert_eq!(clamped.style.camera.zoom_mid, 1.3, "没越界的档位不许被顺手改");
+
+    // 4) GET 要把它读回来（刷新后界面上还是真实生效的值）
+    let req = app
+        .req("GET", &format!("/polish/project?dir={dir}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.call(req).await;
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let got = json
+        .get("style")
+        .and_then(|s| s.get("camera"))
+        .and_then(|c| c.get("zoom_close"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| panic!("GET 没把 style.camera.zoom_close 回给前端: {json}"));
+    assert_eq!(got, 1.0, "GET 要回**夹取后**的值（界面据此回弹到真实生效的数）");
+
+    // 5) 非有限数要明确拒（`clamp` 对 NaN 是恒等，会把它一路写进渲染）
+    let nan = serde_json::json!({ "dir": dir, "camera": { "zoom_close": 0.0 } });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(nan.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200, "0 会被夹到 1.0（不是 400）");
+    let z = yekitrim_polish::project::load_project(&app.root).unwrap();
+    assert_eq!(z.style.camera.zoom_close, 1.0, "0 该夹到下限 1.0");
 }
 
 /// **§1 决策理由必须经整张路由表回给前端**（真 HTTP：会话 + CSRF + 作用域 + 路径锁）。
