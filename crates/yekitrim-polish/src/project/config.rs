@@ -961,6 +961,11 @@ impl Lane {
         match ty {
             "camera" => Some(Lane::Camera),
             "sticker" => Some(Lane::Sticker),
+            // 元素（§5）沿用 sticker 轨（规格 §7 座位表：只改显示标签为「元素」）
+            // ⚠️ **四处必须同集合**：这里 / `engine.js::LANE_OF_TYPE` /
+            //    `templates/index.html::LANE_OF_TYPE` / `polish-to-dhampir.mjs::LANE_OF_TYPE`。
+            //    少一处 = 「预览里有这一类、成片里没有」（或反过来），而且**不报错**。
+            "element" => Some(Lane::Sticker),
             "sfx" => Some(Lane::Sfx),
             "shake" | "blur" | "flash" | "hue_shift" | "noise" | "vignette" | "overlay" | "pulse" => {
                 Some(Lane::Effects)
@@ -3530,6 +3535,17 @@ portrait_camera = true
         assert_eq!(Lane::of_event("sfx"), Some(Lane::Sfx));
         assert_eq!(Lane::of_event("sticker"), Some(Lane::Sticker));
         assert_eq!(Lane::of_event("segments"), None, "分段不是可关的轨道");
+        // §5：元素沿用 sticker 轨（规格 §7 座位表）。
+        // ⚠️ 这条判据的价值在**跨文件**：`Lane::of_event` / `engine.js::LANE_OF_TYPE` /
+        //    `templates/index.html::LANE_OF_TYPE` / `polish-to-dhampir.mjs::LANE_OF_TYPE`
+        //    四处必须同集合，而**少一处不报错** —— 表现是"预览里有这一类、成片里没有"
+        //    （或反过来），用户只会看到"关掉眼睛之后成片里还有"。
+        //    另三处由 `scripts/check-preview-engine.mjs` 与 `check-layout-invariants.mjs` 钉。
+        assert_eq!(
+            Lane::of_event("element"),
+            Some(Lane::Sticker),
+            "元素必须与 sticker 同轨（否则老工程的眼睛开关管不到它）"
+        );
     }
 
     /// `[stage.lanes]` 的写盘形态：**全自动时一个字节都不写**（新工程不多出空表）；
