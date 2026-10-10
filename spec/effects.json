@@ -278,7 +278,7 @@
         "intensity",
         "sfx"
       ],
-      "dhampir": "ColorMask::flash（参照出片画的是纯白薄纱，不是噪声）",
+      "dhampir": "ColorMask::noise（真黑白噪点：逐像素加性灰度噪声，逐帧不同、同一帧可复现）",
       "canvas": true,
       "dom_preview": true,
       "llm": true,

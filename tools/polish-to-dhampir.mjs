@@ -3433,25 +3433,34 @@ export function translate(config, clipDir, outPath, options = {}) {
 
         case 'noise': {
           const startFrame = remapFrame(srcStart);
-          // **参照出片里的 `noise` 是一层纯白薄纱**，不是噪声：
+          // §20：`noise` 发**底座的 `noise` 原语**（真黑白噪点），不再发白色 `flash`。
           //
-          //     getNoiseOpacity -> 0.08（0.08s 升到峰值，0.72s 落回）
-          //     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, CW, CH)
+          // ⚠️ **这条以前映射成白色 `flash`**，注释自陈"参照出片里的 noise 是一层纯白薄纱"。
+          // 用户拍板「noise 需要改成真黑白噪点」⇒ 坐标系换了：**以真噪声为准**，
+          // 本仓出片模板的 `handlers.noise` 同步改成真噪声（那边改完要重建二进制）。
           //
-          // 所以这里映射成 **白色 `flash`**，而不是底座的 `noise` 特效 ——
-          // 画面以参照成片为准。这一条同时是**本仓出片模板的可疑处**：名字叫 noise、
-          // 出片画的却是白纱（真正的噪声只在 DOM 预览的 `handlers.noise` 里）。
+          // ⚠️ 强度**从 0.08 降下来到 0.15 是错的、0.08 保持不变也是错的** ——
+          //    这两个数不可直接比较：白纱 0.08 是"整屏盖一层 8% 的白"（低频、糊），
+          //    真噪点 0.08 是"逐像素 ±10/255 的颗粒"（高频、刺）。
+          //    底座侧的量纲 bug 修掉之后（`NOISE_FULL_SCALE`），**0.08 就是 ±10 的颗粒** ——
+          //    那是一个明显可见但不糊的强度，正合"爆点闪一下"的用法。
+          //    ⚠️ 以前那个 bug 让 0.08 变成 ±0.04（看不见），所以本节的两个数**不可比**。
+          //
+          // 参数名与底座登记表对齐：`amount` + `seed`（见 `dhampir-core/src/effects.rs` 的 `NOISE`）。
+          // `seed` 取一个固定值：噪声必须是**帧号的函数**，同一帧两次渲染要逐字节相同
+          //（用随机会让预览与成片对不上）。
           placeEnvelope(
             startFrame,
             0.80,
-            { kind: 'flash', params: { amount: 0.08, r: 1, g: 1, b: 1 } },
+            { kind: 'noise', params: { amount: 0.08, seed: 7 } },
             (dt) => (dt < 0.08 ? dt / 0.08 : Math.max(0, 1 - (dt - 0.08) / 0.72)),
             where,
           );
           note(
             where,
-            '参照出片的 `noise` 是**纯白薄纱**（0.08 峰值、0.08s 升、0.72s 落），不是噪声 —— ' +
-              '按白纱复现。**这是本仓出片模板的一处"名不副实"，值得本仓自己核。**',
+            '`noise` 发底座的**真黑白噪点**（§20）：amount 0.08 + 固定 seed，' +
+              '包络沿用 0.08s 升 / 0.72s 落。⚠️ 以前这里发的是白色 `flash`（参照出片的"白纱"），' +
+              '现在以真噪声为准 —— 出片模板的 `handlers.noise` 已同步改成真噪声。',
           );
           break;
         }
