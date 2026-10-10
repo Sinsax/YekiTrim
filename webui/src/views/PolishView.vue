@@ -139,6 +139,7 @@
                 <div class="row">
                   <button class="mini-btn" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
                   <button class="mini-btn" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
+                  <button class="mini-btn" :class="{ selected: sideTab === 'intro' }" @click="sideTab = 'intro'">片头片尾</button>
                 </div>
               </div>
 
@@ -181,31 +182,40 @@
       <button class="mini-btn" @click="load({ silent: true })">重试</button>
     </div>
     <div class="ss-grid" :class="{ off: styleWriteBlocked || !ready }">
-      <div class="ss-row">
-        <span class="ss-lbl">字幕颜色</span>
-        <input type="color" class="ss-color" :value="subtitleColor"
-               :disabled="styleWriteBlocked || !ready" title="字幕正文颜色"
-               @change="onSubtitleColorChange">
+      <!-- **两列两行**（用户口径：「改为两行的排版」）：
+           第 1 行 = 两个**颜色**（字幕 / 描边），第 2 行 = 两个**数值**（描边宽度 / 大小）。
+           按"控件同类"分组，而不是按语义配对 —— 颜色框与数字框宽度差很远，混排会参差不齐。
+           ⚠️ 每行两列、每列 ~130px（行内容宽 266px）：标签 62px + 控件；
+              颜色框 34px 够，数字框给 `flex:1` 吃掉剩余宽度。 -->
+      <div class="ss-row-2">
+        <div class="ss-row">
+          <span class="ss-lbl">字幕颜色</span>
+          <input type="color" class="ss-color" :value="subtitleColor"
+                 :disabled="styleWriteBlocked || !ready" title="字幕正文颜色"
+                 @change="onSubtitleColorChange">
+        </div>
+        <div class="ss-row" :title="strokeColorHint">
+          <span class="ss-lbl">描边颜色</span>
+          <input type="color" class="ss-color" :value="subtitleStrokeColor"
+                 :disabled="!strokeEditable || !ready" title="字幕描边颜色"
+                 @change="onSubtitleStrokeColorChange">
+        </div>
       </div>
-      <div class="ss-row" :title="strokeColorHint">
-        <span class="ss-lbl">描边颜色</span>
-        <input type="color" class="ss-color" :value="subtitleStrokeColor"
-               :disabled="!strokeEditable || !ready" title="字幕描边颜色"
-               @change="onSubtitleStrokeColorChange">
-      </div>
-      <div class="ss-row" :title="strokeWidthHint">
-        <span class="ss-lbl">描边宽度<em class="ss-tag">近似</em></span>
-        <input type="number" class="rv-input" inputmode="numeric" min="0" max="24" step="1"
-               :value="subtitleStrokeWidth" :disabled="!strokeEditable || !ready"
-               aria-label="字幕描边宽度（像素，近似）" @change="onSubtitleStrokeWidthChange">
-        <span class="mono small flex-none">px</span>
-      </div>
-      <div class="ss-row" :title="'字幕字号（px）。默认 72'">
-        <span class="ss-lbl">字幕大小</span>
-        <input type="number" class="rv-input" inputmode="numeric" min="8" max="400" step="1"
-               :value="subtitleSize" :disabled="styleWriteBlocked || !ready"
-               aria-label="字幕大小（像素）" @change="onSubtitleSizeChange">
-        <span class="mono small flex-none">px</span>
+      <div class="ss-row-2">
+        <div class="ss-row" :title="strokeWidthHint">
+          <span class="ss-lbl">描边宽度<em class="ss-tag">近似</em></span>
+          <input type="number" class="rv-input ss-num" inputmode="numeric" min="0" max="24" step="1"
+                 :value="subtitleStrokeWidth" :disabled="!strokeEditable || !ready"
+                 aria-label="字幕描边宽度（像素，近似）" @change="onSubtitleStrokeWidthChange">
+          <span class="mono small flex-none">px</span>
+        </div>
+        <div class="ss-row" :title="'字幕字号（px）。默认 72'">
+          <span class="ss-lbl">字幕大小</span>
+          <input type="number" class="rv-input ss-num" inputmode="numeric" min="8" max="400" step="1"
+                 :value="subtitleSize" :disabled="styleWriteBlocked || !ready"
+                 aria-label="字幕大小（像素）" @change="onSubtitleSizeChange">
+          <span class="mono small flex-none">px</span>
+        </div>
       </div>
       <div class="ss-row full" :title="positionHint">
         <span class="ss-lbl">字幕位置</span>
@@ -367,7 +377,15 @@
               <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
             </div>
 
-  <!-- ── 片头 / 片尾（`[intro_outro]`）────────────────────────────────────
+              </template>
+
+              <!-- ⚠️ **片头片尾是独立页签**（用户口径：「片头片尾放在一个单独的页面」）——
+                   它原先挤在「项目设置」那一段的末尾，跟字幕样式/贴纸等混在一起。
+                   现在与「项目设置 / 画面尺寸」并列成第三个页签，同一位置切换。
+                   标记值用 `'intro'`（不是 `'introOutro'`）：与 `INTRO_OUTRO_SIDES` 的
+                   `key` 无关，只是页签名。 -->
+              <template v-else-if="sideTab === 'intro'">
+                  <!-- ── 片头 / 片尾（`[intro_outro]`）────────────────────────────────────
        用户口径：「片头片尾在项目设置内可以选择是否开启，然后可以选择素材库内的视频内容」。
        每一侧 = 一个开关 + 一个素材下拉 + 入点/出点（可裁剪，缺省播完整段）。
        ⚠️ **"开"的判据就是"选没选素材"**（Rust `IntroOutroClip::is_enabled`）——
@@ -413,7 +431,6 @@
     </template>
     <p v-if="ioError" class="small m-0 mt-4 io-err">{{ ioError }}</p>
   </div>
-
               </template>
 
               <template v-else>
@@ -1966,8 +1983,10 @@ function toggleLane(lane) {
  * 同一个面板，这样好操作"）。再点同一条轨道 = 收起（回到块的属性面板）。 */
 const openLane = ref('')
 /** 右栏那块卡片的页签：'project' = 项目设置（含 LLM 剪辑 / 渲染导出 / 任务栏），
- *  'canvas' = 画面尺寸（缩放 / 主画面位置 / 背景）。两个页签**同一个位置**切换 ——
- *  用户 2026-10-06：「画面尺寸改成之前的是说切换面板的那种，位置和项目设置是一个位置」。 */
+ *  'canvas' = 画面尺寸（缩放 / 主画面位置 / 背景），
+ *  'intro' = 片头片尾（用户 2026-10：「片头片尾放在一个单独的页面」）。
+ *  **三个页签同一个位置**切换 —— 用户 2026-10-06：「画面尺寸改成之前的是说切换面板的那种，
+ *  位置和项目设置是一个位置」。 */
 const sideTab = ref('project')
 /** 任务栏展开态：**默认折叠**（用户 2026-10-06：「默认折叠，只显示当前是什么任务」）。
  *  展开时绝对定位浮在上层，不参与布局 ⇒ 不挤占下方控件。 */
@@ -2342,6 +2361,17 @@ onUnmounted(() => {
 /* 读失败 / 未就绪时整块降透明度（配合 :disabled，让"现在不能改"看得出来） */
 .ss-grid.off { opacity:.55; }
 .ss-row { display:flex; align-items:center; gap:6px; min-width:0; }
+/* **两列一行**（用户口径：「改为两行的排版」）。
+   ⚠️ 两个坑，都实测过：
+   ① 两列各 130px，而标签 `62px` 是**为单列**定的 —— 照搬会让数字框只剩 ~40px（显示不下 "400"）。
+      所以列内标签收窄到 **44px**（"描边宽度"+「近似」角标仍能放下），控件拿回 ~80px。
+   ② `min-width:0` 必须在**每一层**：`.ss-row` 是 flex 项，flex 的默认 `min-width:auto`
+      会被数字框的 `size` 属性撑开，把右列顶出容器（本卡早就为同类问题写过警告）。 */
+.ss-row-2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; min-width:0; }
+.ss-row-2 > .ss-row { min-width:0; }
+.ss-row-2 .ss-lbl { width:44px; }
+/* 两列态下的数字框：吃掉标签与单位之后的剩余宽度（下限 0 才收得住） */
+.ss-num { flex:1 1 auto; min-width:0; }
 .ss-lbl { flex:none; width:62px; font-size:11px; color:var(--ink-dim); white-space:nowrap;
           display:flex; align-items:center; gap:3px; }
 /* 「近似」角标：描边宽度成片侧受底座限制（只有描边开/关），必须如实标注。 */
