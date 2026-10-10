@@ -550,6 +550,25 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     polishView.indexOf('<div class="side-tabs">') < polishView.indexOf('<div class="ss-grid"'), true)
   check('⑰ 右栏那个「项目设置」大标题已删（页签名已自明）',
     /<h2 class="m-0 card-h2"><Icon name="sliders"/.test(polishView), false)
+  // ---- 「位置→默认 / 大小→默认」必须在「字幕字体」那一行（用户口径：放在字幕字体旁边）----
+  // ⚠️ 判据要求**两件事同时成立**：① 两颗按钮都落在 `.ss-font-row` 这个容器里；
+  //    ② 全页各只出现一次（防止"新位置加了、老位置忘了删"—— 那会渲染出两组一模一样的按钮）。
+  const fontRowOk = (src) => {
+    const i = src.indexOf('<div class="row ss-font-row">');
+    if (i < 0) return false;
+    const seg = src.slice(i, src.indexOf('</div>', i));
+    return /restoreSubtitlePos/.test(seg) && /restoreSubtitleSize/.test(seg);
+  };
+  check('⑰ 两颗「→默认」在「字幕字体」那一行（.ss-font-row）里', fontRowOk(polishView), true);
+  {
+    const bad = polishView.replace('<div class="row ss-font-row">', '<div class="row mt-4 gap-6">');
+    check('⑰ [变异] 换掉字体行的类名 → 判据翻面', fontRowOk(bad), false);
+  }
+  check('⑰ 两颗「→默认」全页各只出现一次（新位置加了、老位置别再留一份）',
+    (polishView.match(/@click="restoreSubtitlePos"/g) || []).length === 1
+    && (polishView.match(/@click="restoreSubtitleSize"/g) || []).length === 1, true)
+  check('⑰ 字体行有 `min-width:0`（否则中文标签 + 两颗按钮会横向溢出）',
+    /\.ss-font-row \{ display:flex; align-items:center; gap:6px; min-width:0/.test(polishView), true)
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
   check('⑰ 任务详情是**浮层**（不挤占下方控件）',
     /\.job-wrap \{ position:relative; \}/.test(polishView)
