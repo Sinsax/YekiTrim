@@ -135,7 +135,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import Icon from './Icon.vue'
 import AppModal from './AppModal.vue'
 import { api } from '../api/client'
@@ -185,7 +185,14 @@ const sampleOf = () => testText.value.trim() || SAMPLE
 const videos = ref([])
 const packs = ref([])
 const fonts = ref([])
-const root = ref('')
+// ⚠️ **每种素材各有各的根**，别只留一个 —— 视频/字体/贴纸的库是三棵不同的树
+// （`<数据>/resources/{videos,fonts,stickers}`，多用户下再套一层 `users/<uid>/`）。
+// 以前这里只有一份 `root`、且**永远取 video-library 那个**，于是切到"字体"页时
+// 提示语照旧显示视频目录（"把字体文件拖到这里"下面写着 `…\resources\videos`）——
+// **只是显示错了，写入是对的**（后端各按各的 kind 落盘）。这类"看着不对但不报错"
+// 最容易让人以为传错地方，所以三个根分开存。
+const roots = reactive({ video: '', font: '', sticker: '' })
+const root = computed(() => roots[kind.value] || '')
 const loading = ref(false)
 const error = ref('')
 const counts = computed(() => ({
@@ -273,9 +280,12 @@ async function load(force = false) {
       api('/api/polish/fonts', { label: '读取字体库' }),
     ])
     videos.value = v?.videos || []
-    root.value = v?.root || ''
     packs.value = s?.packs || []
     fonts.value = f?.fonts || []
+    // 三个根各取各的（都只对 admin 非空 —— 服务端刻意不给非 admin 回服务器路径）
+    roots.video = v?.root || ''
+    roots.sticker = s?.root || ''
+    roots.font = f?.root || ''
     if (force) toast('素材库已刷新')
   } catch (e) {
     // ⚠️ 读失败**不伪装成空库**（否则用户会以为素材丢了、反复重放文件）。
