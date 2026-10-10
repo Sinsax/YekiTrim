@@ -1636,20 +1636,39 @@ pub(super) async fn polish_font(Query(q): Query<std::collections::HashMap<String
                 candidates.push(d.join(&base).with_extension("otf"));
                 candidates.push(d.join(&base).with_extension("ttc"));
             }
-            // 程序级字体库（resources/fonts/）：`name` 就是字体 id（文件名去扩展名）。
+            // 程序级字体库：`name` 就是字体 id（文件名去扩展名）。
             // 放在项目候选之后 —— 项目里自带的字体优先，库只是"别处都没有"时的来源。
-            if let Some(p) = yekitrim_core::fonts::resolve_file(name.trim()) {
+            //
+            // ⚠️ **必须走 `resolve_all_roots` + 两层根（用户库优先、全局补缺），不能只 `resolve_file`**：
+            // 自带字体装在 **`global/`** 子库里，而 `fonts::resolve_file` 只看单层 `fonts::dir()` ——
+            // 用它会让"选了自带字体"在这条路上一律解析不到（随后就落到雅黑兜底，见下）。
+            // 出片那条腿（`render/server.rs::serve_library_font`）用的就是这两层，
+            // 两边不同口径正是"预览与出片不一致"的来源，这里对齐它。
+            let roots = yekitrim_core::owner::asset_dirs(
+                yekitrim_core::owner::Owner::from_env(),
+                yekitrim_core::owner::AssetKind::Fonts,
+            );
+            if let Some(p) = yekitrim_core::fonts::resolve_all_roots(&roots, name.trim()) {
                 candidates.push(p);
             }
             candidates.push(Path::new("C:/Windows/Fonts").join(&base).with_extension("ttf"));
         }
     }
-    candidates.push(std::path::Path::new("C:/Windows/Fonts/msyh.ttc").to_path_buf());
-    // ⚠️ 这里**不再有内置字体文件**（发行包也刻意不带，见 README「字体」与 THIRD-PARTY-NOTICES.md）：
-    // 候选链到系统字体（微软雅黑）就是最后一档兜底了。
-    // 想用圆润可爱的标题风格，请**用户自行安装**乐米波波体（LemiBoBoTi，杭州乐米网络科技，
-    // 官方授权地址 https://font.leminet.cn/）——它的授权是「免费商用，但**不包括嵌入式用途**」，
-    // 随软件分发/内嵌字体文件必须另行授权，所以别再把 ttf 塞回仓库或发布包。
+    // ⚠️⚠️ **这里曾经硬塞一档 `C:/Windows/Fonts/msyh.ttc` 兜底，那是"换字体没反应"的根因**
+    // （2026-10 实测）：任何解析不到的名字都回**微软雅黑**的字节，而且回 **200**。
+    // 于是前端 `new FontFace("乐米波波体", <雅黑字节>)` 注册**成功**、
+    // `.cap{font-family:"乐米波波体"}` 也能命中 —— 但画出来是雅黑字形，**全链路不报错**。
+    // 实测四个名字（含一个根本不存在的）返回的字节 **sha1 全等** `e5a993b85dd9`。
+    // 用户报的「预览时字体更换没有正常实现、刷新也没有」就是它。
+    //
+    // 现在与出片那条腿（`render/server.rs::serve_library_font`，`/vt-fonts/<id>`）**同口径**：
+    // **解析不到就 404，绝不拿另一支字体顶包**。前端 `fonts.js` 本来就把失败
+    // 当"回退系统字体栈"处理（失败不抛），404 正是它预期的信号。
+    //
+    // ⚠️ 那支"圆润可爱"的 **乐米波波体是给用户自行安装的**（授权不含嵌入式用途，
+    // 见 README「字体」与 THIRD-PARTY-NOTICES.md）——它**不在库里**，所以走的是
+    // `C:/Windows/Fonts/<名字>` 那条**按名字**的候选（装了就命中、没装就 404），
+    // 而不是"随便给一支中文"。
     for c in &candidates {
         if { let __p = c.clone(); tokio::task::spawn_blocking(move || __p.exists()).await.unwrap_or(false) } {
             match {
@@ -2252,6 +2271,91 @@ mod tests {
         assert!(
             payload.get("emoji_family").is_some(),
             "emoji_family 字段必须在（前端据此决定要不要追加栈尾）"
+        );
+    }
+
+    /// `GET /api/polish/font` **解析不到就必须 404，绝不拿别的字体顶包**。
+    ///
+    /// 钉的是 2026-10 用户报的「换字体没反应、刷新也没用」：这条 handler 曾经在候选链末尾
+    /// 硬塞一档 `C:/Windows/Fonts/msyh.ttc`，于是**任何**名字（含根本不存在的）都回 200 +
+    /// 微软雅黑的字节。前端 `new FontFace("<要的名字>", <雅黑字节>)` 注册**成功**、
+    /// CSS 也命中，画出来却是雅黑 —— **全链路一个错都不报**。
+    ///
+    /// 实测四个名字（含 `完全不存在的字体XYZ`）返回字节 sha1 全等 `e5a993b85dd9`
+    /// （= `msyh.ttc` 的 19704352 字节），就是这条漏洞的直接证据。
+    ///
+    /// 判据只看**候选链**（不碰文件系统，避免依赖测试机的字体）：源码里不许再出现那档兜底，
+    /// 且必须与出片那条腿同口径走**两层**解析（`resolve_all_roots` + 用户库/全局库）。
+    #[test]
+    fn 字体端点不许拿别的字体顶包_且按两层库解析() {
+        let src = include_str!("polish.rs");
+        // 取 `polish_font` 那个函数体（到下一个 `pub(super)` 项为止）
+        let start = src.find("pub(super) async fn polish_font(").expect("polish_font 必须还在");
+        let rest = &src[start..];
+        let end = rest[1..]
+            .find("\npub(super)")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let body = &rest[..end];
+        // ⚠️ **必须先剥注释再查**：上面那段解释性注释里就写着 `msyh.ttc`（在讲这条坑本身），
+        // 不剥掉的话判据会被自己的说明文字顶翻 —— 本仓既有纪律（判据走"去注释后的源码"）。
+        let code: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("msyh.ttc"),
+            "字体端点又硬塞了 msyh.ttc 兜底 —— 任何名字都会回微软雅黑且 **200**，\
+             前端注册成功、CSS 命中，画出来却是雅黑（换字体没反应的根因）"
+        );
+        assert!(
+            code.contains("resolve_all_roots"),
+            "字体端点必须走两层库解析（`resolve_all_roots` + 用户库/全局库）—— \
+             自带字体装在 `global/`，只查单层会解析不到自家字体"
+        );
+        assert!(
+            !code.contains("fonts::resolve_file("),
+            "别退回单层的 `fonts::resolve_file` —— 它只看 `fonts::dir()`，\
+             自带字体（在 global/）一律解析不到"
+        );
+    }
+
+    /// 接口级：`GET /api/polish/font?name=<不存在的名字>` 必须 **404**，不是 200 + 别的字体。
+    ///
+    /// 与上一条（源码级候选链判据）互补：这条真发请求，钉的是**对外行为**。
+    /// 只断言状态码 —— 不断言字节，免得依赖测试机装了哪些字体。
+    ///
+    /// ⚠️ **`dir` 必须传项目内的绝对路径**：`/polish/font` 挂在 `enforce_scope` 那层里，
+    /// 给相对/不存在的 `dir` 会被**中间件**先回 404 —— 那样这条用例"过了"却**根本没走到 handler**，
+    /// 是假通过（实测：加回 msyh 兜底后它照样绿，因为它压根没进 handler）。
+    /// 所以这里用 `t.root`（那个真项目目录）拼绝对路径。
+    #[tokio::test]
+    async fn 字体端点对解析不到的名字回404而不是200() {
+        let t = super::test_support::test_app().await;
+        // 手写百分号编码（本 crate 没有 urlencoding 依赖；`dir` 里有 `\` 与 `:` 必须编掉）
+        let dir: String = t
+            .root
+            .to_string_lossy()
+            .chars()
+            .map(|c| match c {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
+                _ => format!("%{:02X}", c as u32),
+            })
+            .collect();
+        // ⚠️ 路径**不带 `/api` 前缀**：`api::router()` 返回的就是内层路由，
+        // `/api` 那一段由 `nest("/api", …)` 加上（本文件与其它 api 单测一致）。
+        let uri = format!(
+            "/polish/font?project=1&dir={}&name=__绝对不存在的字体_XZ__",
+            dir
+        );
+        let resp = t.call(t.req("GET", &uri).body(Body::empty()).unwrap()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "解析不到的字体必须 404 —— 回 200 + 任意字体字节会让前端\
+             `new FontFace(要的名字, 别的字体字节)` 注册成功、CSS 命中却画出别的字形，\
+             整条链路不报错（用户报的「换字体没反应」）"
         );
     }
 
