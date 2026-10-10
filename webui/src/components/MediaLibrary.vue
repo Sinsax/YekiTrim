@@ -22,24 +22,30 @@
           class="ml-tab"
           :class="{ on: kind === t.key }"
           :title="t.hint"
-          @click="kind = t.key"
+          @click="switchKind(t.key)"
         >
           <Icon :name="t.icon" :size="15" class="ml-ico" />
           <span class="ml-lab">{{ t.label }}</span>
           <span class="ml-cnt">{{ counts[t.key] }}</span>
         </button>
+
+        <!-- 字体页的「样例文字」放**左侧类型栏**（用户口径：字体不需要右侧栏，
+             样例文字输入框放左侧即可）—— 它是"这一类素材的显示参数"，跟着导航走比
+             挤在右上角更顺：选了字体、视线不用跨过整个网格去改样例。 -->
+        <label v-if="kind === 'font'" class="ml-sample-wrap">
+          <span class="muted small">样例文字</span>
+          <input
+            v-model="testText"
+            class="ml-sample"
+            placeholder="留空 = 永 Aa 123"
+          >
+        </label>
       </nav>
 
       <section class="ml-main">
         <div class="row spread mb-8">
           <span class="muted small">{{ hint }}</span>
           <div class="row" style="flex-wrap:nowrap">
-            <input
-              v-if="kind === 'font'"
-              v-model="testText"
-              class="ml-sample"
-              placeholder="样例文字（留空 = 永 Aa 123）"
-            >
             <button class="mini-btn primary" :disabled="busy" @click="fileInput?.click()">
               <Icon name="plus" :size="13" /> {{ importLabel }}
             </button>
@@ -79,7 +85,12 @@
              网格上方那排小按钮 = 该类型的**管理动作**（默认 / 构建 / 删除），
              悬停或聚焦该格才出现 —— 常显会把 108px 的格子塞满，而它们是低频操作。 -->
         <div v-else class="ml-grid mt-8">
-          <div v-for="it in items" :key="it.key" class="ml-cell-wrap">
+          <div
+            v-for="it in items"
+            :key="it.key"
+            class="ml-cell-wrap"
+            :class="{ sel: preview && preview.name === it.name }"
+          >
             <button class="ml-cell" :title="it.title" @click="open(it)">
               <span class="ml-thumb">
                 <!-- 字体：没有缩略图，直接用该字体现场渲染样例字（就是"预览效果"本身） -->
@@ -110,6 +121,55 @@
           </div>
         </div>
       </section>
+
+      <!-- **右侧预览栏**（用户口径 2026-10-10）：
+           · 视频 —— 点左边即可在这里**直接播放**，并显示时长/大小/文件名；
+           · 贴纸 —— 在这里**列表显示**（一整包的图，不再弹窗翻）；
+           · 字体 —— **不要右栏**（样例文字输入框在左侧）；字体用网格里现场渲染的样例看效果。
+           ⚠️ 三个类型共用同一套 DOM，靠 `kind` 切内容；左栏选什么、右栏跟着变，
+           这就是"文件夹管理器"该有的手感（左选、右看），别再给某个类型单开一个弹窗。 -->
+      <aside v-if="kind !== 'font'" class="ml-side">
+        <template v-if="kind === 'video'">
+          <div v-if="!preview" class="ml-side-empty muted small">
+            点左边的视频，在这里预览播放
+          </div>
+          <template v-else>
+            <video :src="preview.url" controls class="ml-side-video"></video>
+            <div class="ml-side-info">
+              <div class="ml-info-row"><span class="muted">名称</span><b>{{ preview.name }}</b></div>
+              <div class="ml-info-row"><span class="muted">文件</span><span class="mono ml-ell" :title="preview.file">{{ preview.file }}</span></div>
+              <div class="ml-info-row"><span class="muted">时长</span><b>{{ preview.durationText }}</b></div>
+              <div class="ml-info-row"><span class="muted">大小</span><b>{{ preview.sizeText }}</b></div>
+            </div>
+          </template>
+        </template>
+
+        <template v-else>
+          <div v-if="!preview" class="ml-side-empty muted small">
+            点左边的贴纸包，在这里列出包内所有图
+          </div>
+          <template v-else>
+            <div class="row spread mb-8" style="flex-wrap:nowrap">
+              <b class="m-0">{{ preview.name }}</b>
+              <span class="muted small">{{ preview.files.length }} 张</span>
+            </div>
+            <p v-if="!preview.files.length" class="muted small m-0">这个包里没有图片。</p>
+            <!-- ⚠️ `loading="lazy"`：一个包可能有 200+ 张（ysyk 就是 210），
+                 不懒加载会一次性全解码，整页卡住。 -->
+            <div v-else class="ml-side-grid">
+              <img
+                v-for="f in preview.files"
+                :key="f.name"
+                :src="f.url"
+                :alt="f.name"
+                :title="f.name"
+                loading="lazy"
+                @click="openStickerImage(f)"
+              >
+            </div>
+          </template>
+        </template>
+      </aside>
     </div>
 
     <!-- 点击放大：视频真播（用 `<video>` + Range，服务端那条取文件路已支持）、
@@ -204,6 +264,71 @@ function coverOf(pack) {
     })
   return ''
 }
+/* ---------------- 右侧预览栏 ---------------- */
+
+/** 当前选中的素材（视频对象 / 贴纸包对象）。`null` = 还没选。 */
+const preview = ref(null)
+
+/** 切类型：**顺手清掉选中**。不清的话，从"贴纸"切到"视频"时右栏还挂着上一个贴纸包
+ * （右栏是按 `kind` 渲染的，数据却是上一个类型的）—— 会显示成"视频页里列着一堆图"。 */
+function switchKind(k) {
+  if (kind.value === k) return
+  kind.value = k
+  preview.value = null
+}
+
+/** 秒 → `m:ss`（视频时长）。探不出来时给 `—`，**不猜**。 */
+function fmtDuration(sec) {
+  if (!sec || sec <= 0) return '—'
+  const t = Math.round(sec)
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
+}
+
+/** 选中一条素材 → 装配右栏要的数据。
+ *
+ * ⚠️ **视频的大小要现问服务端**：列表接口只回 `{name, file, duration}`（没有 `size`）。
+ * 这里用 `HEAD` 探一次 `Content-Length`（那条取文件的路支持 Range，所以 HEAD 很轻）；
+ * 探不到就显示 `—` —— 宁可少显示一行，也不要编一个数出来。
+ * ⚠️ **贴纸要现拉 detail**（列表只有 `count`）：整包的图只在这一刻拉一次。 */
+async function selectItem(it) {
+  if (kind.value === 'video') {
+    const v = videos.value.find((x) => x.key === it.key)
+    if (!v) return
+    preview.value = {
+      type: 'video',
+      name: v.name,
+      file: v.file,
+      url: v.url,
+      durationText: fmtDuration(v.duration),
+      sizeText: '…',
+    }
+    // 大小是"锦上添花"，拿不到就显示 —，**不能因为探不到就让整条选中失败**
+    try {
+      const res = await fetch(v.url, { method: 'HEAD' })
+      const len = Number(res.headers.get('content-length') || 0)
+      if (preview.value?.file === v.file) preview.value.sizeText = fmtBytes(len)
+    } catch {
+      if (preview.value?.file === v.file) preview.value.sizeText = '—'
+    }
+    return
+  }
+  // 贴纸包：列表只给 count，整包的文件名/URL 现拉
+  preview.value = { type: 'sticker', name: it.name, files: [] }
+  try {
+    const d = await stickersApi.detail(it.name)
+    if (preview.value?.name !== it.name) return // 期间又点了别的包 ⇒ 丢弃这次结果
+    preview.value.files = (d?.files || []).map((f) => ({
+      name: f.name,
+      url: stickersApi.fileUrl(it.name, f.name),
+    }))
+  } catch (e) {
+    if (preview.value?.name === it.name) {
+      preview.value.files = []
+      toast('读取包内图片失败：' + e.message, 'err')
+    }
+  }
+}
+
 /** [`coverOf`] 的 await 版（点开时用：要拿到**确定**结果，不能拿占位空串）。 */
 async function coverOfAsync(pack) {
   if (covers[pack]) return covers[pack]
@@ -253,6 +378,9 @@ const items = computed(() => {
       badge: v.duration == null ? '不可用' : null,
       thumb: videoThumbUrl(v.file),
       url: assetUrl('video', v.file),
+      // 右栏要用：文件名（显示 + 探大小）与时长（`m:ss`）
+      file: v.file,
+      duration: v.duration,
       type: 'video',
       detail: v.duration == null ? 'ffprobe 读不出时长，片头/片尾里选不了它。' : null,
     }))
@@ -331,20 +459,22 @@ async function load(force = false) {
 }
 
 async function open(it) {
+  // 字体**没有右栏**（用户口径）：直接走放大弹窗看大字形。
   if (it.type === 'font') {
     zoom.value = { type: 'font', title: it.name, stack: it.stack, sample: it.sample, meta: it.meta, detail: it.detail }
     return
   }
-  // ⚠️ 封面可能是**异步**拉来的（列表不带文件名），点得早时 `it.url` 还是空 ——
-  // 这里必须**现要一次**，否则"包里明明有 210 张"却弹「没有图片」。
-  const url = it.url || (it.type === 'sticker' ? await coverOfAsync(it.name) : '')
-  if (!url) {
-    // 真的一张图都没有：给一句人话，别弹一个空白框
-    toast('这个贴纸包里没有图片')
-    return
-  }
-  zoom.value = { type: it.type, title: it.name, url, detail: it.detail }
+  // 视频 / 贴纸：选中即进**右侧预览栏**（视频在那儿直接播、贴纸在那儿列整包）。
+  // ⚠️ 这里**不再弹窗** —— 用户口径是"点视频在右栏预览播放、贴纸在右栏列表显示"，
+  // 再弹一个模态框就是两套交互抢同一件事。
+  await selectItem(it)
 }
+
+/** 从右栏的贴纸列表里点开一张 —— 大图仍走弹窗（列表格子小，看不清细节）。 */
+function openStickerImage(f) {
+  zoom.value = { type: 'sticker', title: f.name, url: f.url, detail: preview.value?.name }
+}
+
 const zoom = ref(null)
 
 /* ---------------- 统一导入 ---------------- */
@@ -505,7 +635,14 @@ async function doDeletePack(p) {
   toast('贴纸包已删除')
 }
 
-const fmtBytes = (n) => (n > 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB')
+// 字节数 → 人话。⚠️ **全组件只有这一份**（以前我另加过一份，撞了 `Identifier already declared`）——
+// 要改单位就改这里，别在别处再写一个。
+const fmtBytes = (n) =>
+  !n || n < 0
+    ? '—' // 探不到（HEAD 失败 / 元数据读不出）就**照实说没拿到**，不显示 "0 KB" 那种假数
+    : n > 1024 * 1024
+      ? (n / 1024 / 1024).toFixed(1) + ' MB'
+      : Math.round(n / 1024) + ' KB'
 
 onMounted(() => load())
 </script>
@@ -515,6 +652,47 @@ onMounted(() => load())
 .ml-body { display:flex; gap:12px; align-items:flex-start; }
 .ml-nav { display:flex; flex-direction:column; gap:4px; flex:none; width:128px; }
 .ml-main { flex:1 1 auto; min-width:0; }
+
+/* ---------- 右侧预览栏 ----------
+   三栏：类型导航（128px）| 素材网格（自适应）| 预览栏（定宽）。
+   ⚠️ 预览栏**定宽**而不是自适应：视频播放器需要一个稳定的宽高比参考，
+   宽度一变、同一段视频每换一次选中就跳一次尺寸。 */
+.ml-side {
+  flex:none; width:300px;
+  display:flex; flex-direction:column; gap:8px;
+  border-left:1px solid var(--line); padding-left:12px;
+  min-height:220px;
+}
+.ml-side-empty {
+  display:flex; align-items:center; justify-content:center;
+  min-height:160px; text-align:center; padding:0 12px;
+  border:1px dashed var(--line); border-radius:8px;
+}
+.ml-side-video { width:100%; border-radius:8px; background:#000; display:block; }
+.ml-side-info { display:flex; flex-direction:column; gap:5px; }
+.ml-info-row { display:flex; gap:8px; align-items:baseline; font-size:12px; }
+.ml-info-row > .muted { flex:none; width:36px; }
+.ml-info-row > b, .ml-info-row > span:not(.muted) { min-width:0; overflow-wrap:anywhere; }
+.ml-ell { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 包内图片列表：三列小图，可滚。一个包 200+ 张（ysyk = 210），
+   不给最大高度会把整页撑到几屏长、左栏的网格被挤出视野。 */
+.ml-side-grid {
+  display:grid; grid-template-columns:repeat(3, 1fr); gap:4px;
+  max-height:420px; overflow-y:auto; padding-right:2px;
+}
+.ml-side-grid img {
+  width:100%; aspect-ratio:1; object-fit:contain; cursor:zoom-in;
+  border-radius:6px; background:var(--bg-soft); display:block;
+}
+.ml-side-grid img:hover { outline:1px solid var(--main); }
+
+/* 选中态：左网格里当前在右栏显示的那一条。
+   ⚠️ 必须**比 `:hover` 更特指**，否则鼠标一移开就看不见选的是谁。 */
+.ml-cell-wrap.sel .ml-cell { border-color:var(--main); background:var(--main-soft); }
+
+/* 左栏里的「样例文字」：跟类型导航同一列，不上浮到主区右上角。 */
+.ml-sample-wrap { display:flex; flex-direction:column; gap:4px; margin-top:8px; padding:0 2px; }
+.ml-sample-wrap .ml-sample { width:100%; }
 
 .ml-tab {
   display:flex; align-items:center; gap:8px;
@@ -584,6 +762,12 @@ onMounted(() => load())
 /* 窄屏：导航转成横排一行（128px 定宽在手机上是纯浪费）。 */
 @media (max-width: 720px) {
   .ml-body { flex-direction:column; }
-  .ml-nav { flex-direction:row; width:auto; }
+  .ml-nav { flex-direction:row; width:auto; flex-wrap:wrap; }
+  /* 预览栏转成整行、并去掉那条竖分隔线（横排时它变成一条突兀的顶边） */
+  .ml-side {
+    width:100%; border-left:none; border-top:1px solid var(--line);
+    padding-left:0; padding-top:12px;
+  }
+  .ml-side-grid { grid-template-columns:repeat(auto-fill, minmax(64px, 1fr)); max-height:320px; }
 }
 </style>
