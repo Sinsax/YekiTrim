@@ -676,6 +676,56 @@ fn last_touched_secs(dir: &Path) -> u64 {
     best
 }
 
+/// 一条切片的**剪辑质量分**（总方案 §3）；算不出来回 `None`（前端不显示那一栏）。
+///
+/// ⚠️ **三条"不算"的口径**（都是"宁可不显示，也不给一个错的数"）：
+/// - 没有 `polish.toml` ⇒ 还没精修：没有分段/事件，算出来是"零干扰满分" —— **假的高分**；
+/// - 没有 `data/subtitles.json` ⇒ 句子判据无源：只剩"爆点/间隔"两条在工作，
+///   分数**偏高且不可比**（用户无从知道少算了一条）；
+/// - 解析失败 ⇒ 同上。
+///
+/// 时长取 `clip.json` 的 `duration`（即 `duration_secs`）；它 ≤ 0 时退回"末段 end"——
+/// 老片段可能没有 duration，退回后至少还能算出一个分数。
+///
+/// ⚠️ **下面有两道冗余闸**（`polish.toml` 存在性 + `load_project` 成功），**两道都要留**：
+/// 它们现在**互相遮蔽** —— 单独去掉任一道，没精修的片段仍会因为另一道回 `None`，
+/// 所以**变异自证必须两道一起拆**才翻红（实测：只拆一道时
+/// `clips_回质量分_但没精修过的回_null` 照样绿，差点被误判成"测试没锁住"）。
+/// 留两道是因为第一道是**语义**（"没精修过"）、第二道是**容错**（文件在但读坏了）——
+/// 判据不同，不是重复。
+fn clip_quality(dir: &Path, duration_secs: f64) -> Option<serde_json::Value> {
+    if !dir.join("polish.toml").exists() {
+        return None;
+    }
+    let subs_raw = std::fs::read_to_string(dir.join("data").join("subtitles.json")).ok()?;
+    let subtitles: Vec<yekitrim_polish::parse::srt::Subtitle> = serde_json::from_str(&subs_raw).ok()?;
+    let cfg = yekitrim_polish::project::load_project(dir).ok()?;
+    let duration = if duration_secs > 0.0 {
+        duration_secs
+    } else {
+        cfg.segments.last().map(|s| s.end).unwrap_or(0.0)
+    };
+    let q = yekitrim_polish::process::quality::evaluate(&cfg.segments, &subtitles, duration);
+
+    // 逐条干扰也回给前端：切片页 tooltip 要写"哪儿扣的分" ——
+    // 只回一个数的话用户没法判断"这个 62 分到底怎么了"（与 §1 同一套理由）。
+    let items: Vec<serde_json::Value> = q
+        .interruptions
+        .iter()
+        .map(|i| serde_json::json!({ "kind": i.kind.key(), "at": i.at, "label": i.kind.label() }))
+        .collect();
+    Some(serde_json::json!({
+        // 展示分保留 1 位小数 —— 界面上就显示到这个精度，别传一串浮点尾数
+        "score": (q.score() * 10.0).round() / 10.0,
+        "smoothness": (q.smoothness() * 100.0).round() / 100.0,
+        "per_minute": (q.interruptions_per_minute() * 100.0).round() / 100.0,
+        "count": q.interruption_count(),
+        "segments": q.segments,
+        "visual_events": q.visual_events,
+        "interruptions": items,
+    }))
+}
+
 /// 统计落在 [start, end] 内的起始点数量（starts 必须升序）。
 pub(super) fn count_in_range(starts: &[f64], start: f64, end: f64) -> u64 {
     if starts.is_empty() || end < start { return 0; }
@@ -968,6 +1018,10 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
             let end = meta.get("original_end").and_then(|v| v.as_f64()).unwrap_or(0.0);
             count_in_range(&starts[..], start, end)
         };
+        // 剪辑质量分（总方案 §3）：**只在已初始化精修工程时**才算 —— 没有 `polish.toml`
+        // 就没有分段/事件，算出来是"零干扰满分"，那是**假的高分**、比没有更糟。
+        // 算不出来（工程缺失/字幕缺失/解析失败）一律 `null`，前端不显示那一栏。
+        let quality = clip_quality(&dir_path, duration_secs);
         out.push(serde_json::json!({
             "dir": yekitrim_core::path::display(&dir_path),
             "name": entry.file_name().to_string_lossy(),
@@ -983,6 +1037,7 @@ pub(super) fn data_clips_impl(ws: &Workspace) -> ApiResult {
             "meta": meta,
             "subtitle_count": subtitle_count,
             "danmaku_count": danmaku_count,
+            "quality": quality,
         }));
     }
     // 目录名不再保证是 `clip-NN`（新片段用标题 slug）：优先按 `clip.json` 的 rank 排，
@@ -1627,6 +1682,95 @@ pub(super) fn resolve_media_path(
 
 #[cfg(test)]
 mod tests {
+    /// **§3 剪辑质量分**：`/project-data/clips` 必须回它，且**没精修过的片段回 `null`**。
+    ///
+    /// 两条判据缺一不可：
+    /// ① 有 `polish.toml` + 字幕 ⇒ 回一个对象（含 `score` 与逐条 `interruptions`）；
+    /// ② **没有 `polish.toml`** ⇒ 回 `null`。这一条是**防"假的高分"**：没有分段/事件时
+    ///    四条判据全部无可判 ⇒ `evaluate` 得 0 干扰 ⇒ **满分 100**。把它显示出去比不显示更糟 ——
+    ///    用户会以为"这条剪得完美"，而其实系统**根本还没看过它**。
+    #[tokio::test]
+    async fn clips_回质量分_但没精修过的回_null() {
+        let t = test_app().await;
+        let pid = project_ids(&t).await[0];
+        let clips_dir = t.root.join("output/clips");
+        std::fs::create_dir_all(&clips_dir).unwrap();
+
+        // ① 没精修过的片段：**有字幕、但没有 polish.toml**。
+        //    ⚠️ 必须有字幕 —— 否则它会因为"读不到 subtitles.json"而回 null，
+        //    那样即使删掉 polish.toml 那道检查，测试**照样绿**（变异自证当场抓出过这个漏洞：
+        //    判据没有隔离到它要锁的那一行）。带上字幕后，唯一能让它回 null 的理由
+        //    就只剩"没有 polish.toml"这一条。
+        let bare = clips_dir.join("bare");
+        std::fs::create_dir_all(bare.join("data")).unwrap();
+        std::fs::write(bare.join("clip.json"), r#"{"rank":1,"duration":20.0}"#).unwrap();
+        std::fs::write(
+            bare.join("data/subtitles.json"),
+            r#"[{"index":1,"start":0.5,"end":3.0,"text":"这话还没说完","html":""}]"#,
+        )
+        .unwrap();
+
+        // ② 已精修：polish.toml + data/subtitles.json。边界 1.0 切在一句话中间 ⇒ 该扣分。
+        let done = clips_dir.join("done");
+        std::fs::create_dir_all(done.join("data")).unwrap();
+        std::fs::write(done.join("clip.json"), r#"{"rank":2,"duration":10.0}"#).unwrap();
+        std::fs::write(
+            done.join("data/subtitles.json"),
+            r#"[{"index":1,"start":0.5,"end":3.0,"text":"这话还没说完","html":""}]"#,
+        )
+        .unwrap();
+        let cfg = yekitrim_polish::project::ProjectFile::example();
+        std::fs::write(done.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        // `example()` 的分段是 0~10（单段）⇒ 没有内部切点。手工换成两段、边界落句中。
+        let mut two = cfg;
+        two.segments = vec![
+            yekitrim_polish::project::Segment {
+                start: 0.0, end: 1.0, fx: "low".into(), note: String::new(),
+                events: vec![], extra: Default::default(),
+            },
+            yekitrim_polish::project::Segment {
+                start: 1.0, end: 10.0, fx: "med".into(), note: String::new(),
+                events: vec![], extra: Default::default(),
+            },
+        ];
+        std::fs::write(done.join("polish.toml"), two.to_toml_commented().unwrap()).unwrap();
+
+        let res = t
+            .call(t.req("GET", &format!("/project-data/clips?project={pid}")).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let json = body_json(res).await;
+        let arr = json.as_array().expect("clips 要回数组");
+
+        let by_name = |n: &str| {
+            arr.iter()
+                .find(|c| c.get("name").and_then(|v| v.as_str()) == Some(n))
+                .unwrap_or_else(|| panic!("找不到片段 {n}: {json}"))
+        };
+
+        // ① 没精修过 ⇒ null（**不是** 100 分）
+        assert!(
+            by_name("bare").get("quality").map(|q| q.is_null()).unwrap_or(false),
+            "没精修过的片段 quality 必须是 null —— 回满分就是「假的高分」: {}",
+            by_name("bare")
+        );
+
+        // ② 已精修 ⇒ 有对象、分数被扣、逐条理由带着位置
+        let q = by_name("done").get("quality").expect("要有 quality");
+        assert!(!q.is_null(), "已精修过的片段必须回质量分: {q}");
+        let score = q.get("score").and_then(|v| v.as_f64()).expect("score 要是数字");
+        assert!(score < 100.0, "边界切在句子中间，分数必须低于满分，实得 {score}");
+        assert_eq!(q.get("count").and_then(|v| v.as_u64()), Some(1), "应当正好 1 条干扰: {q}");
+        let items = q.get("interruptions").and_then(|v| v.as_array()).expect("要带逐条明细");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("kind").and_then(|v| v.as_str()), Some("mid_sentence"));
+        assert_eq!(items[0].get("at").and_then(|v| v.as_f64()), Some(1.0));
+        assert!(
+            items[0].get("label").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false),
+            "每条要有给人看的理由（界面 tooltip 直接显示）: {items:?}"
+        );
+    }
+
     /// **`/api/media/*` 必须带 ETag，并且命中 `If-None-Match` 时回 304。**
     ///
     /// # 为什么这条判据要有（2026-10-02）

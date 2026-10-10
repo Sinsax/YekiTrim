@@ -87,6 +87,15 @@
             <span class="tag n">{{ Math.round(it.view.c.size_bytes / 1024 / 1024) }}MB</span>
             <span v-if="Number(it.view.c.danmaku_count)" class="tag a">弹幕 {{ it.view.c.danmaku_count }}</span>
             <span v-if="Number(it.view.c.subtitle_count)" class="tag n">字幕 {{ it.view.c.subtitle_count }}</span>
+            <!-- 剪辑质量分（§3）：**没精修过就不显示**（后端回 null）。
+                 它量的是"剪得顺不顺"（可感知的打断次数），**不是**"好不好看" ——
+                 所以 hover 里把扣分项逐条列出来：只给一个数字，用户没法判断该不该管。 -->
+            <span
+              v-if="clipQuality(it.view.c)"
+              class="tag"
+              :class="qualityTagClass(clipQuality(it.view.c).score)"
+              :title="qualityHint(clipQuality(it.view.c))"
+            >剪辑 {{ clipQuality(it.view.c).score }}</span>
             <span
               v-if="clipRangeCount(it.view.c)"
               class="tag r"
@@ -567,6 +576,54 @@ function eventStats(ev) {
     subtitle: Number(ev.subtitle_count) || 0,
     rank: Number(ev.rank) || 0
   }
+}
+
+/**
+ * 剪辑质量分（§3）——**后端算好、这里只展示**。
+ *
+ * ⚠️ `null` = 这条片段**还没精修过**（没有分段/事件 ⇒ 算了也是假的满分）。
+ * 前端一律**不显示**那一枚 tag，**不许**把 `null` 显示成 0 或 100 ——
+ * 那正是后端特意回 `null` 要避免的事（见 `clip_quality` 的注释）。
+ * 判据用 `Number.isFinite`：后端字段缺失/为 null 时 `score` 会拿到 `undefined`。
+ */
+function clipQuality(c) {
+  const q = c?.quality
+  if (!q || !Number.isFinite(Number(q.score))) return null
+  return q
+}
+
+/** 分数 → tag 配色（≥85 良 / ≥60 中 / 其余差）。阈值是**展示口径**，不打分、不落盘。 */
+function qualityTagClass(score) {
+  const s = Number(score)
+  if (s >= 85) return 'q-good'
+  if (s >= 60) return 'q-mid'
+  return 'q-bad'
+}
+
+/**
+ * 质量分的 hover 文案：**逐条列出扣分项**。
+ *
+ * 为什么不能只给一个数字：§3 量的是"可感知的打断次数"，用户看到 `剪辑 62`
+ * 无从知道是"边界切在句子中间"还是"特效挨太近"—— 前者拖动边界就能修、
+ * 后者要删事件，**处理方式完全不同**。
+ */
+function qualityHint(q) {
+  const n = Number(q?.count) || 0
+  const head = n > 0
+    ? `剪辑质量 ${q.score} 分：发现 ${n} 处可感知的打断`
+    : `剪辑质量 ${q.score} 分：没有发现可感知的打断`
+  const items = Array.isArray(q?.interruptions) ? q.interruptions : []
+  if (!items.length) {
+    return `${head}\n（只统计"打断"，不评价内容好不好看）`
+  }
+  // 最多列 8 条：再多 tooltip 自己也读不过来
+  const lines = items.slice(0, 8).map((i) => {
+    const t = Number(i.at)
+    const at = Number.isFinite(t) ? `${t.toFixed(1)}s ` : ''
+    return `· ${at}${i.label || i.kind || ''}`
+  })
+  if (items.length > 8) lines.push(`… 另有 ${items.length - 8} 处`)
+  return `${head}\n${lines.join('\n')}`
 }
 
 /** 通用比较器：先按当前排序键升降序，同值时进过精修的优先，再按序号兜底（保证顺序稳定）。 */
@@ -1558,6 +1615,11 @@ onUnmounted(() => {
 .tag.g { color:var(--green-deep); }
 .tag.r { color:var(--red-deep); }
 .tag.n { color:var(--ink-dim); }
+/* 剪辑质量分（§3）：三档配色。⚠️ 只用 tokens 里存在且**双主题都定义**的语义色
+   （`--green-deep` / `--amber-deep` / `--red-deep` 在亮暗两套里都有）。 */
+.tag.q-good { color:var(--green-deep); }
+.tag.q-mid { color:var(--amber-deep); }
+.tag.q-bad { color:var(--red-deep); }
 /* 「各段源区间」行（复合片段专有）：**最多三行**，超出截断（完整清单在悬停 title 里）。
    卡片的分区高度是固定的，这一行**不许**把下面的时间/摘要/工具栏顶下去（普通片段没有这一行，
    一个像素都不变）。⚠️ `max-height` 是量出来的：项目 12 那条 4 段 + 空隙读数 = 51px，
