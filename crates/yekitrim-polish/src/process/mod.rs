@@ -201,6 +201,57 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1f: 爆点判据（§6）—— **一个纯函数、一份判据、一处阈值**，§6/§7/§8 共用。
+    //
+    // ⚠️ 这一步**本趟只做"算出来 + 报出来"**，不改任何事件（保守决策 #45）：
+    //    改事件的那两件事（§7 保护爆点后的停顿、§8 按 role 分配额）各自还需要
+    //    改 `silence` 与 `cap_events` 的行为，而它们**都有存量回归面**。
+    //    先把判据接上真实数据、把"这次用了哪几路信号"播出来，是那两件事的前提：
+    //    §6 自己的验收标准就是"判据多信号且无弹幕不静默失效"，不是"事件被改了"。
+    //
+    // ⚠️ **不许静默降级**（规格 §2 规则 2）：无弹幕时必须明说。
+    //    `Signals::describe()` 就是那句话 —— 措辞在 `punch.rs` 里一处，
+    //    别在这里另写一份（两处的措辞会漂移，而"降级有没有被说出来"是判据本身）。
+    {
+        let window = punch::PUNCH_WINDOW_SECS;
+        let total_duration = config
+            .segments
+            .iter()
+            .map(|s| s.end)
+            .fold(0.0_f64, f64::max)
+            .max(subtitles.iter().map(|s| s.end).fold(0.0_f64, f64::max));
+
+        // 弹幕：只按"每个窗口多少条"取数；文件不在就是空的那一路（**不是** 0 分那一路）。
+        let danmaku_counts = read_danmaku_counts(&project_path.join("data"), window);
+        // 响度：走已有的缓存读数（与 `render/pipeline.rs` 同一个文件、同一个 key 口径）。
+        // ⚠️ **只读缓存，不现算**：测量要解码整条音轨（秒级~分钟级），而 `process`
+        //    是**每次预览/出片都被隐式触发**的热路径。缓存不在就当作"没有这一路信号"。
+        let loudness = crate::render::read_loudness_curve_checked(
+            &project_path,
+            &project_path.join("clip.mp4"),
+        );
+
+        let detector = punch::PunchDetector {
+            subtitle_points: punch::subtitle_signal(&subtitles, window),
+            danmaku_points: punch::danmaku_signal(&danmaku_counts, window),
+            sfx_points: punch::loudness_signal(&loudness),
+        };
+        let signals = detector.signals();
+        let punches = detector.detect(&config.segments, total_duration, window);
+        // ⚠️ 这一行**必须**无条件打出来（有弹幕时是"用了哪几路"，无弹幕时那句带 ⚠️）。
+        //    只在"判出爆点"时才打的话，"判据整条没生效"与"这次真的没有爆点"就分不出来。
+        tracing::info!("  · 爆点判据（§6）：{}；判出 {} 处", signals.describe(), punches.len());
+        if !punches.is_empty() {
+            let detail: Vec<String> = punches
+                .iter()
+                .take(5)
+                .map(|p| format!("{:.1}s({:.2})", p.at, p.score))
+                .collect();
+            tracing::info!("    v 分布：{}{}", detail.join(" "),
+                if punches.len() > 5 { " …" } else { "" });
+        }
+    }
+
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
@@ -917,6 +968,38 @@ fn normalize_danmaku_windows(data_dir: &Path) -> usize {
             0
         }
     }
+}
+
+/// 每个 `window` 秒窗口里的弹幕**条数**（§6 的弹幕那一路）。
+///
+/// ⚠️ 返回**空**表示"没有弹幕信号"，返回一堆 0 表示"有弹幕但都很稀疏" ——
+/// 这两件事在 §6 的判据里含义完全不同（前者不参与归一化，后者是真·低分）。
+/// 所以文件缺失/解析失败时返回空，而不是补 0。
+///
+/// ⚠️ 按**弹幕起点**归窗（不是中点）：弹幕的 `start` 是它进场那一刻，
+/// 而"观众在爆点那一刻刷屏"应当算在爆点那一窗；用中点会让峰值**整体后移**半个滚动时长
+/// （实测滚动 10s 级，那就是 5s 的滞后 —— 与规格说的"滞后校正"是两回事，别混）。
+fn read_danmaku_counts(data_dir: &Path, window: f64) -> Vec<(f64, f64)> {
+    let path = data_dir.join("danmaku.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return Vec::new() };
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(default)]
+        start: f64,
+    }
+    let Ok(rows) = serde_json::from_str::<Vec<Row>>(&raw) else { return Vec::new() };
+    if rows.is_empty() || window <= 0.0 {
+        return Vec::new();
+    }
+    let mut buckets: std::collections::BTreeMap<i64, f64> = Default::default();
+    for r in &rows {
+        let idx = (r.start / window).floor() as i64;
+        *buckets.entry(idx).or_insert(0.0) += 1.0;
+    }
+    buckets
+        .into_iter()
+        .map(|(i, c)| (i as f64 * window, c))
+        .collect()
 }
 
 /// `data/danmaku.json` 的轨道高度（空/缺失/解析失败 → 无弹幕障碍）
@@ -2619,6 +2702,72 @@ mod diagnose_boundaries {
         let again = super::align_segment_boundaries(&mut fresh, &subs);
         println!("[幂等] 第二次挪了 {again} 处（必须为 0）");
         assert_eq!(again, 0, "守卫必须收敛");
+    }
+}
+
+/// 只读诊断：在**真实工程**上看「爆点判据」（总方案 §6）判出来的分布。
+///
+/// ⚠️ 与 `diagnose_quality` 同一条理由：§6 的判据（阈值 0.6、权重 0.6/0.2/0.2、加成 0.35）
+/// 是**保守拍的**（规格没给数），第一次用在真实数据上必须**先看分布** ——
+/// 否则无从判断"判出 3 处"是多还是少，也发现不了某条判据在真实数据里**恒真/恒假**
+/// （那会让它退化成常数：界面上看着有结论、其实什么都没量）。
+///
+/// ⚠️ 特别要看**两路信号都不在**时那一路的 `describe()` 有没有说出来（规格 §2 规则 2）。
+///
+/// ```text
+/// VT_POLISH_DIR=<项目目录(绝对路径)> cargo test -p yekitrim-polish --lib ///   diagnose_punch -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod diagnose_punch {
+    #[test]
+    #[ignore]
+    fn diagnose_punch() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_punch -- --ignored --nocapture");
+            return;
+        };
+        let path = std::path::PathBuf::from(&dir);
+        let config = crate::project::load_project(&path).expect("读取 polish.toml");
+        let subs: Vec<crate::parse::srt::Subtitle> = serde_json::from_str(
+            &std::fs::read_to_string(path.join("data/subtitles.json")).expect("读 data/subtitles.json"),
+        )
+        .expect("解析 subtitles.json");
+
+        let window = super::punch::PUNCH_WINDOW_SECS;
+        let duration = config
+            .segments
+            .iter()
+            .map(|s| s.end)
+            .fold(0.0_f64, f64::max)
+            .max(subs.iter().map(|s| s.end).fold(0.0_f64, f64::max));
+
+        let dm = super::read_danmaku_counts(&path.join("data"), window);
+        let loud = crate::render::read_loudness_curve_checked(&path, &path.join("clip.mp4"));
+        let detector = super::punch::PunchDetector {
+            subtitle_points: super::punch::subtitle_signal(&subs, window),
+            danmaku_points: super::punch::danmaku_signal(&dm, window),
+            sfx_points: super::punch::loudness_signal(&loud),
+        };
+        let signals = detector.signals();
+        let punches = detector.detect(&config.segments, duration, window);
+
+        println!("
+项目: {dir}");
+        println!("时长 {duration:.2}s · 字幕 {} 条 · 弹幕桶 {} · 响度点 {}", subs.len(), dm.len(), loud.len());
+        println!("信号: {}", signals.describe());
+        println!("字幕点 {} · 弹幕点 {} · 响度点 {}", detector.subtitle_points.len(), detector.danmaku_points.len(), detector.sfx_points.len());
+        println!("判出爆点 {} 处（阈值 {:.2}）", punches.len(), super::punch::PUNCH_THRESHOLD);
+        for p in &punches {
+            println!("  {:.2}s ~ {:.2}s  分 {:.3}", p.at, p.end, p.score);
+        }
+        // 密度：爆点占全片比例。⚠️ 全是爆点（=1.0）或一个都没有，都说明判据退化了。
+        let cover: f64 = punches.iter().map(|p| p.end - p.at).sum();
+        println!("爆点覆盖 {:.1}s（占全片 {:.1}%）", cover,
+            if duration > 0.0 { cover / duration * 100.0 } else { 0.0 });
+        if duration > 0.0 && !punches.is_empty() {
+            let ratio = cover / duration;
+            assert!(ratio < 0.9, "爆点覆盖了 {:.0}% 的全片 —— 判据退化成「处处是爆点」了", ratio * 100.0);
+        }
     }
 }
 
