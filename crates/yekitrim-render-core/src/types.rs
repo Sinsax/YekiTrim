@@ -22,11 +22,58 @@ pub struct Segment {
     #[serde(default)]
     pub note: String,
 
+    /// **叙事角色**（总方案 §8）：这一段在整条片子里干什么。
+    ///
+    /// 规格 §3.6 明确要求**先做最小版**：
+    /// > 完整的六种 `role` + 配方 + 守卫是个大改动。**最小可用版**：只分
+    /// > **`hook` / `punch` / 其余**三类 —— 就能拿到 80% 的"起伏感"，改动面小得多。
+    ///
+    /// ⇒ 取值只有 `hook` / `punch` / `"`（其余，**空串**）。
+    ///
+    /// ⚠️ **用 `String` 而不是 enum**：`polish.toml` 是**用户会手改**的文件，
+    /// 而且是**跨版本**的。enum 遇到认不出的值会让**整个工程反序列化失败**
+    /// （`unknown variant`）—— 那意味着"手改了一个字，整个精修配置读不出来"。
+    /// 用 `String` 则认不出的值由 [`Self::role`] 归进"其余"，行为与不写一样。
+    ///
+    /// ⚠️ `#[serde(default)]` + `skip_serializing_if`：**老工程零迁移**（R4）。
+    /// 没写过 `role` 的工程重存时**一个字节都不该多出**。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+
     #[serde(default)]
     pub events: Vec<Event>,
 
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl Segment {
+    /// **归一化后的叙事角色**（§8 的三档最小版）：`hook` / `punch` / `""`（其余）。
+    ///
+    /// ⚠️ **认不出的值一律归进"其余"（空串）**，不报错、不启发式猜。
+    /// 规格 §3.6 只要求三档，所以 `setup`/`build`/`afterglow`/`cta` 这些
+    /// **更细的角色值也归"其余"** —— 那是有意的：它们的行为与"其余"相同，
+    /// 而"猜一个近似档"会让手写了细角色的工程拿到**没人设计过**的行为。
+    ///
+    /// 大小写不敏感 + 去空白：`polish.toml` 是手改的（`Hook` / `hook ` 都该认得），
+    /// 而"手改了一个大小写就整档失效"是最难查的一类问题（它不报错）。
+    pub fn role(&self) -> &'static str {
+        match self.role.trim().to_ascii_lowercase().as_str() {
+            "hook" => "hook",
+            "punch" => "punch",
+            _ => "",
+        }
+    }
+
+    /// 这一段是不是**钩子**（片头抓人那一段）。
+    pub fn is_hook(&self) -> bool {
+        self.role() == "hook"
+    }
+
+    /// 这一段是不是**爆点**（名场面那一段）。
+    pub fn is_punch(&self) -> bool {
+        self.role() == "punch"
+    }
 }
 
 fn default_fx() -> String {

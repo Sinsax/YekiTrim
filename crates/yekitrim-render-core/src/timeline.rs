@@ -957,6 +957,7 @@ mod tests {
             end: 10.0,
             fx: "low".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![ev],
             extra: Default::default(),
         }
@@ -1059,6 +1060,7 @@ mod tests {
             end: 12.0,
             fx: "low".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![
                 camera_ev_h(0.0, 4.0, "近", "65% 50%", true),
                 camera_ev_h(6.0, 4.0, "中", "65% 50%", false),

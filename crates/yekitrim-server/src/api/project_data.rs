@@ -1725,10 +1725,12 @@ mod tests {
         let mut two = cfg;
         two.segments = vec![
             yekitrim_polish::project::Segment {
+                role: String::new(),
                 start: 0.0, end: 1.0, fx: "low".into(), note: String::new(),
                 events: vec![], extra: Default::default(),
             },
             yekitrim_polish::project::Segment {
+                role: String::new(),
                 start: 1.0, end: 10.0, fx: "med".into(), note: String::new(),
                 events: vec![], extra: Default::default(),
             },

@@ -427,7 +427,7 @@ mod tests {
     }
 
     fn seg(start: f64, end: f64, events: Vec<Event>) -> Segment {
-        Segment { start, end, fx: "med".into(), note: String::new(), events, extra: Default::default() }
+        Segment { start, end, fx: "med".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
     }
 
     fn window(idx: usize, output: Option<Vec<Event>>) -> AgentWindow<Vec<Event>> {

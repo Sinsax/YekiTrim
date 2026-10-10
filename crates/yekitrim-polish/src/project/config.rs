@@ -2001,7 +2001,7 @@ impl ProjectFile {
             segments: vec![
                 Segment {
                     start: 0.0, end: 10.0, fx: "low".into(), note: "开场".into(),
-                    events: vec![], extra: HashMap::new(),
+                    role: String::new(), events: vec![], extra: HashMap::new(),
                 },
             ],
             mute_ranges: Vec::new(),
@@ -3006,6 +3006,7 @@ mod camera_clamp_tests {
             end,
             fx: "low".into(),
             note: String::new(),
+            role: String::new(),
             events,
             extra: Default::default(),
         }
@@ -3562,6 +3563,88 @@ portrait_camera = true
     /// 为什么这条是"零回归判据"而不是风格问题：今天**所有**存量工程都没写 `speed`，
     /// 而 `polish.toml` 是**逐字节对拍**的对象（出片产物 SHA 是硬判据）。
     /// 少了 `skip_serializing_if`，每个 camera 事件都会多出一行 `speed = ""` ——
+    // ── §8：`role` 三档 ───────────────────────────────────────────────
+
+    /// ⚠️ **R4：没写过 `role` 的老工程重存不许冒出 `role = ""`。**
+    ///
+    /// `Segment.role` 挂了 `skip_serializing_if = "String::is_empty"`。
+    /// 摘掉它的症状是**每一个工程文件一存就全变**（每条 segment 多一行），
+    /// diff 全红、基线全要重冻 —— 而那正是 R4 禁止的。
+    #[test]
+    fn unset_segment_role_is_not_written() {
+        let mut cfg = ProjectFile::example();
+        cfg.segments[0].role = String::new();
+        let text = cfg.to_toml_commented().expect("写 toml");
+        assert!(
+            !text.contains("role ="),
+            "没写过 role 的段不许落盘（存量逐字节零回归）:
+{text}"
+        );
+    }
+
+    /// 写了 `role` 要能**写出去再读回来**（`polish.toml` 的序列化格式就是文件格式）。
+    #[test]
+    fn segment_role_roundtrips() {
+        let mut cfg = ProjectFile::example();
+        cfg.segments[0].role = "punch".into();
+        let text = cfg.to_toml_commented().expect("写 toml");
+        assert!(text.contains("role = \"punch\""), "role 要落盘:
+{text}");
+        let back: ProjectFile = toml::from_str(
+            &text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("config_version"))
+                .collect::<Vec<_>>()
+                .join("
+"),
+        )
+        .expect("自己写出的 role 自己得读得回来");
+        assert_eq!(back.segments[0].role, "punch");
+    }
+
+    /// ⚠️ **认不出的值归"其余"，不报错** —— 这是"手改一个字不至于让整个工程读不出来"的保证。
+    ///
+    /// 用 enum 的话 `role = "Hook"`（大小写）或 `role = "setup"`（细角色）会让
+    /// **整个 `polish.toml` 反序列化失败**。而 `polish.toml` 是用户会手改的文件。
+    #[test]
+    fn unknown_role_degrades_to_other_instead_of_failing() {
+        for (written, expect) in [
+            ("hook", "hook"),
+            ("Hook", "hook"),        // 大小写不敏感
+            ("  punch  ", "punch"),  // 去空白
+            ("PUNCH", "punch"),
+            ("setup", ""),           // 细角色 ⇒ 其余（行为与"其余"相同）
+            ("afterglow", ""),
+            ("cta", ""),
+            ("", ""),
+            ("完全不认识的值", ""),   // 中文乱写也不该炸
+        ] {
+            let seg = crate::project::Segment {
+                start: 0.0,
+                end: 1.0,
+                fx: "low".into(),
+                note: String::new(),
+                role: written.into(),
+                events: Vec::new(),
+                extra: Default::default(),
+            };
+            assert_eq!(seg.role(), expect, "role={written:?} 应归成 {expect:?}");
+        }
+        // 便捷断言与 `role()` 一致
+        let mk = |r: &str| crate::project::Segment {
+            start: 0.0,
+            end: 1.0,
+            fx: "low".into(),
+            note: String::new(),
+            role: r.into(),
+            events: Vec::new(),
+            extra: Default::default(),
+        };
+        assert!(mk("hook").is_hook() && !mk("hook").is_punch());
+        assert!(mk("punch").is_punch() && !mk("punch").is_hook());
+        assert!(!mk("").is_hook() && !mk("").is_punch());
+    }
+
     // ── §5 E1：`elements` 骨架 ────────────────────────────────────────
     //
     // 这一步**只加类型、不改任何行为**，所以判据全是"读得回 / 没写的键不许出现"。
