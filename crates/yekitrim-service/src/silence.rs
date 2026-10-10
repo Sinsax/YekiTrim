@@ -44,10 +44,21 @@ pub async fn run_silence(
                 );
             }
             Ok(applied) => {
-                tracing::info!(
-                    "  ✓ {name}: 静音 {} 段 → 与现有屏蔽相加（新增 {} / 共 {}）",
-                    applied.ranges.len(), applied.added, applied.total
-                );
+                // §7：被保护下来的那些（紧跟爆点之后的"喜剧停顿"）**必须报出来** ——
+                // 不报的话用户看到"有一段没被剪"，界面上没有任何解释，
+                // 那看上去就是**功能没生效**（而不是"它有意保留了"）。
+                if applied.protected.is_empty() {
+                    tracing::info!(
+                        "  ✓ {name}: 静音 {} 段 → 与现有屏蔽相加（新增 {} / 共 {}）",
+                        applied.ranges.len(), applied.added, applied.total
+                    );
+                } else {
+                    tracing::info!(
+                        "  ✓ {name}: 静音 {} 段 → 与现有屏蔽相加（新增 {} / 共 {}）；                         §7 保护了 {} 段紧跟爆点之后的停顿（喜剧节拍）",
+                        applied.ranges.len(), applied.added, applied.total,
+                        applied.protected.len()
+                    );
+                }
                 changed += 1;
             }
             Err(e) => tracing::warn!("  ⚠ {name}: {e:#}"),
