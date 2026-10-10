@@ -595,11 +595,107 @@ pub const LEGACY_ZOOM_CLOSE: f64 = 1.3;
 /// 离得远的（纯视觉反应、没有台词可依附）保持原位。
 pub const STICKER_SNAP_MAX_SECS: f64 = 2.0;
 
+/// 元素（贴纸/文字）的**最短在屏时长**（秒）。
+///
+/// 用户 2026-10-11 口径：「需要最小时间，不足就**延续到超过最小时间的且覆盖下一个字幕的结尾**」。
+///
+/// 为什么需要它 —— 现网实测（73 个片段 / 909 条字幕）字幕时长 **min 0.05s、max 16.30s**，
+/// 跨度 326×；`<0.5s` 的占 2.6%。ASR 会把一口气重复的音节切成 0.05s 的连续碎片
+/// （真实样本：`21.92→21.97→22.02` 三条，每条都是「凯，凯，凯…」），
+/// 元素吸到这种碎片上只是**闪一下**，等于没放。
+pub const ELEMENT_MIN_SECS: f64 = 1.2;
+
+/// 元素（贴纸/文字）的**最长在屏时长**（秒）。
+///
+/// 用户同一条口径的另半边：「同时也有最长时间，不然前面时零碎的字幕，
+/// **后面满足时一句话很长**就显得很奇怪」—— 前面被最短时长撑开、后面又很长，反差更大。
+/// 实测 >5s 的字幕占 9.6%（最长 16.30s），所以这一档确实够得着。
+///
+/// ⚠️ **只截元素、不碰字幕**（用户明确：「不对字幕处理，只对其他元素处理」）：
+/// 元素是贴图/贴字，截短不丢内容；字幕截短会吃字，那是另一件事。
+pub const ELEMENT_MAX_SECS: f64 = 5.0;
+
+/// 把一条元素的时间窗口**按最短/最长时长规矩**规整，返回规整后的 `end`。
+///
+/// 语义（用户 2026-10-11 拍板，三条一起才是完整规则）：
+///
+/// 1. **起点不动** —— 元素挂在哪句话上是 LLM 的意图，不因为时长不够就往前挪。
+/// 2. **不足 [`ELEMENT_MIN_SECS`] 就往后「吞」字幕**：end 沿字幕序列**逐条**往后延，
+///    一直延到「已经盖满 ≥ [`ELEMENT_MIN_SECS`]，**且**落在某条字幕的结尾上」为止。
+///    这就是用户说的「延续到超过最小时间的且覆盖下一个字幕的结尾」——
+///    不只看够不够长，还要**停在字幕边界**，否则元素会断在半句话中间。
+/// 3. **超过 [`ELEMENT_MAX_SECS`] 就硬截到最长**（不丢内容，因为截的是元素不是字幕）。
+///
+/// 「没有更多字幕可吞、仍然不足最短」时**接受现状**（不凭空造时长：字幕之间的静音段
+/// 是真实留白，元素硬撑到那儿只会盖住没人说话的画面）。
+///
+/// 只有 `end` 会变（`start` 由调用方决定），返回的是**四舍五入到厘秒**之后的值，
+/// 与其余时间字段同一精度口径。
+/// 元素往后「吞」字幕时**允许跨过的最大空隙**（秒）。
+///
+/// 字幕之间是有**真实静音空隙**的（ASR 切出来的碎片本来就不连续）。实测真实碎片链：
+/// `…→22.67`，然后下一条从 `23.20` 起 —— 中间空了 **3.13s**。
+/// 不带这道闸的话，"吞到够长"会一头扎进静音段：元素从 21.92 一直撑到 25.80
+/// （累计 3.88s），**在没人说话的画面上悬着 3 秒**。
+/// 那正是用户要避免的"很奇怪"，只是从另一头冒出来。
+///
+/// 所以：下一段字幕的**起点**离当前 end 超过这个值就不再往后吞，**接受现状**
+/// （哪怕还没到 [`ELEMENT_MIN_SECS`]）—— 短一点也比盖住静音段强。
+pub const ELEMENT_MAX_GAP_SECS: f64 = 0.5;
+
+/// 把一条元素的时间窗口**按最短/最长时长规矩**规整，返回规整后的 `end`。
+///
+/// 语义（用户 2026-10-11 拍板，四条一起才是完整规则）：
+///
+/// 1. **起点不动** —— 元素挂在哪句话上是 LLM 的意图，不因为时长不够就往前挪。
+/// 2. **不足 [`ELEMENT_MIN_SECS`] 就往后「吞」字幕**：end 沿字幕序列**逐条**往后延，
+///    一直延到「已经盖满 ≥ [`ELEMENT_MIN_SECS`]，**且**落在某条字幕的结尾上」为止。
+///    这就是用户说的「延续到超过最小时间的且覆盖下一个字幕的结尾」——
+///    不只看够不够长，还要**停在字幕边界**，否则元素会断在半句话中间。
+/// 3. **不跨静音空隙**：下一段字幕的起点离当前 end 超过 [`ELEMENT_MAX_GAP_SECS`] 就停下
+///    （见该常量的说明 —— 否则元素会在没人说话的画面上一悬三秒）。
+/// 4. **超过 [`ELEMENT_MAX_SECS`] 就硬截到最长**（不丢内容，因为截的是元素不是字幕）。
+///
+/// 「没有更多字幕可吞、仍然不足最短」时**接受现状**（不凭空造时长）。
+///
+/// 只有 `end` 会变（`start` 由调用方决定），返回的是**四舍五入到厘秒**之后的值，
+/// 与其余时间字段同一精度口径。
+fn fit_element_span(start: f64, end: f64, subs: &[Subtitle]) -> f64 {
+    let mut e = end;
+    // ②/③ 不足最短：顺着字幕往后吞，直到「够长 且 停在字幕结尾」，但不跨静音空隙
+    if e - start < ELEMENT_MIN_SECS {
+        // ⚠️ 按**起点**排序的候选（`subs` 未必有序：段之间时间会重叠，调用方传进来的
+        // 可能是拼接结果）。只考虑起点在当前位置之后的。
+        let mut cands: Vec<&Subtitle> = subs.iter().filter(|s| s.start > e - 1e-6).collect();
+        cands.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        for s in cands {
+            // 空隙太宽 ⇒ 停下（接受现状，别在静音段上悬着）
+            if s.start - e > ELEMENT_MAX_GAP_SECS {
+                break;
+            }
+            e = s.end;
+            if e - start >= ELEMENT_MIN_SECS {
+                break;
+            }
+        }
+    }
+    // ④ 超过最长：硬截（截的是元素，不丢内容）
+    if e - start > ELEMENT_MAX_SECS {
+        e = start + ELEMENT_MAX_SECS;
+    }
+    (e * 100.0).round() / 100.0
+}
+
 /// 表情贴纸对齐**最近的字幕**（用户要求：「表情贴纸也需要对齐最近的字幕」）。
 ///
 /// 起点吸到那条字幕的开始、终点吸到它的结束 —— 贴纸正好盖住它反应的那句话，头尾都落在
 /// 字幕边界上（与画中画的 `align_pip_shots` 同一套思路）。离最近字幕超过
 /// [`STICKER_SNAP_MAX_SECS`] 的、以及短得没法盖（< 0.2s）的字幕都不动。
+///
+/// 吸完之后再过一道 [`fit_element_span`] 的最短/最长时长规矩（2026-10-11 新增）：
+/// 吸到 0.05s 碎片上的会被往后撑到盖满 ≥ [`ELEMENT_MIN_SECS`]，吸到长句上的被截到
+/// ≤ [`ELEMENT_MAX_SECS`]。
+///
 /// 只改 `time`/`end`；排在 `process` Step 2c（尾帧自适应）之前，2c 还能往后接一句。
 pub fn align_stickers_to_subtitles(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize {
     let mut aligned = 0usize;
@@ -615,20 +711,28 @@ pub fn align_stickers_to_subtitles(segments: &mut [Segment], subtitles: &[Subtit
             if dist > STICKER_SNAP_MAX_SECS {
                 continue;
             }
+            // ⚠️ **这里曾经有一道 `sub 短于 0.2s 就跳过` 的守卫**（2026-10-11 删）：
+            // 它是"没有补救手段"年代的产物 —— 那时吸到碎字幕上只能闪一下，所以干脆不吸。
+            // 现在 [`fit_element_span`] 就是来治这件事的（往后吞到 ≥ 最短时长），
+            // 留着那道守卫会把**最该被治的碎片**（0.05s，现网占 2.6%）全部放过。
             let len = sub.end - sub.start;
-            if len < 0.2 {
-                continue;
-            }
             let old_end = end.unwrap_or(*time + len);
-            if (*time - sub.start).abs() < 1e-6 && (old_end - sub.end).abs() < 1e-6 {
+            let start = (sub.start * 100.0).round() / 100.0;
+            let fitted = fit_element_span(start, sub.end, subtitles);
+            if (*time - start).abs() < 1e-6 && (old_end - fitted).abs() < 1e-6 {
                 continue;
             }
-            *time = (sub.start * 100.0).round() / 100.0;
-            *end = Some((sub.end * 100.0).round() / 100.0);
+            *time = start;
+            *end = Some(fitted);
             aligned += 1;
             tracing::info!(
-                "  · 贴纸对齐字幕：{:.2}s → {:.2}s（原 {:.2}s → {:.2}s）",
-                *time, sub.end, sub.start, old_end
+                "  · 贴纸对齐字幕：{:.2}s → {:.2}s（原 {:.2}s → {:.2}s{}{}）",
+                *time,
+                fitted,
+                sub.start,
+                old_end,
+                if fitted > sub.end + 1e-6 { "，不足最短往后吞" } else { "" },
+                if fitted + 1e-6 < sub.end { "，超最长已截" } else { "" }
             );
         }
     }
@@ -1104,14 +1208,139 @@ mod tests {
         assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 0);
         assert_eq!(sticker_span(&segs), (20.0, 22.0));
 
-        // 太短的字幕（0.1s）盖不住，跳过
+        // 很碎的字幕（0.1s）**不再跳过，而是被最短时长规矩撑开**（2026-10-11 改）：
+        // 旧行为是"盖不住就跳过"，但那样最该被治的碎片反而没人管。
+        // 这里只有一条字幕、后面没有可吞的，于是落在它自己的结尾上（见
+        // `element_accepts_short_span_when_no_more_subtitles`）。
         let short = vec![sub(1, 30.0, 30.1)];
         let mut segs = sticker_seg(sticker(30.05, 2.0));
-        assert_eq!(align_stickers_to_subtitles(&mut segs, &short), 0);
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &short), 1);
+        assert_eq!(sticker_span(&segs), (30.0, 30.1));
 
         // 没有字幕 → 原样
         let mut segs = sticker_seg(sticker(5.0, 2.0));
         assert_eq!(align_stickers_to_subtitles(&mut segs, &[]), 0);
+    }
+
+    /// **最短时长**：吸到碎字幕上的元素要往后「吞」到「够长 **且** 停在字幕结尾」。
+    ///
+    /// 用的是**现网实测的真实碎片链**（73 片段 / 909 条字幕里挑出来的那一串）：
+    /// ASR 把一口气重复的音节切成 0.05s 的连续碎片 ——
+    /// `21.92→21.97→22.02`，空隙，`22.22→22.27→22.32→22.37→22.42`，空隙，`22.47→22.52`，
+    /// 空隙，`22.62→22.67`。元素吸到这种碎片上原本只闪 0.05s。
+    #[test]
+    fn element_extends_past_min_duration_and_lands_on_subtitle_end() {
+        use crate::parse::srt::Subtitle;
+        fn sub(i: usize, start: f64, end: f64) -> Subtitle {
+            Subtitle { index: i, start, end, text: String::new(), html: String::new() }
+        }
+        // 真实碎片链（照抄实测的 `21.92→21.97→22.02` / `22.22→…→22.42`）——
+        // ⚠️ 中间的**空隙是真实的**（ASR 切出来的碎片本来就不连续），别为了凑够 1.2s
+        // 把它们填平：那会掩盖"字幕之间是静音留白、吞不过去"这个真实约束。
+        let subs = vec![
+            sub(1, 21.92, 21.97),
+            sub(2, 21.97, 22.02),
+            sub(3, 22.22, 22.27),
+            sub(4, 22.27, 22.32),
+            sub(5, 22.32, 22.37),
+            sub(6, 22.37, 22.42),
+            sub(7, 22.47, 22.52),
+            sub(8, 22.62, 22.67),
+            sub(9, 23.20, 25.80), // 再往后一条正常长度的，保证有得吞
+        ];
+        // 元素吸到第一条碎片：起点 21.92，原 end 21.97（只有 0.05s）
+        let mut segs = sticker_seg(sticker(21.95, 0.02));
+        align_stickers_to_subtitles(&mut segs, &subs);
+        let (t0, t1) = sticker_span(&segs);
+        assert_eq!(t0, 21.92, "起点吸到那条碎片字幕的开始");
+        assert!(
+            t1 > 21.97,
+            "至少要吞过那 0.05s 的碎片（实得 {:.2}s）",
+            t1 - t0
+        );
+        // ⚠️ 关键：**落在某条字幕的结尾上**（不能断在半句话中间）
+        assert!(
+            subs.iter().any(|s| (s.end - t1).abs() < 1e-6),
+            "end 必须停在字幕边界上，实得 {t1}（字幕结尾：{:?}）",
+            subs.iter().map(|s| s.end).collect::<Vec<_>>()
+        );
+        // 21.92 + 1.2 = 23.12 —— 但**够不到**：22.67 之后下一条从 23.20 起，
+        // 中间空了 3.13s > [`ELEMENT_MAX_GAP_SECS`]，于是停在 22.67（不足 1.2s 也停）。
+        // 宁可短，也不要在没人说话的画面上悬 3 秒。
+        assert_eq!(t1, 22.67, "不该跨过 3.13s 的静音空隙去凑够 1.2s");
+
+        // 反例：碎片之间挨得近（空隙 < 0.5s）时，就该一路吞到够长
+        let tight = vec![
+            sub(1, 30.00, 30.40),
+            sub(2, 30.50, 30.90),
+            sub(3, 31.00, 31.50),
+            sub(4, 31.60, 32.30), // 30.00 + 1.2 = 31.20 ⇒ 第一条够长的是 32.30? 不：31.50 就够
+        ];
+        let mut segs = sticker_seg(sticker(30.05, 0.3));
+        align_stickers_to_subtitles(&mut segs, &tight);
+        assert_eq!(
+            sticker_span(&segs),
+            (30.0, 31.5),
+            "空隙都很小 ⇒ 吞到第一个 ≥1.2s 的边界（31.5 - 30.0 = 1.5s）"
+        );
+    }
+
+    /// **最长时长**：吸到长句上的元素要硬截到 [`ELEMENT_MAX_SECS`]。
+    ///
+    /// 实测现网有 16.30s 的字幕（>5s 的占 9.6%）——用户原话「后面满足时一句话很长就显得很奇怪」。
+    #[test]
+    fn element_is_capped_at_max_duration() {
+        use crate::parse::srt::Subtitle;
+        fn sub(i: usize, start: f64, end: f64) -> Subtitle {
+            Subtitle { index: i, start, end, text: String::new(), html: String::new() }
+        }
+        // 真实样本：16.30s 那条（`[141.96, 158.26]`）
+        let subs = vec![sub(1, 141.96, 158.26)];
+        let mut segs = sticker_seg(sticker(142.0, 1.0));
+        assert_eq!(align_stickers_to_subtitles(&mut segs, &subs), 1);
+        let (t0, t1) = sticker_span(&segs);
+        assert_eq!(t0, 141.96);
+        assert_eq!(t1 - t0, ELEMENT_MAX_SECS, "应硬截到最长 {ELEMENT_MAX_SECS}s");
+    }
+
+    /// 字幕不够吞（后面没有更多字幕）时**接受现状**，不凭空造时长。
+    ///
+    /// 字幕之间的静音段是真实留白 —— 元素硬撑到那儿只会盖住没人说话的画面。
+    #[test]
+    fn element_accepts_short_span_when_no_more_subtitles() {
+        use crate::parse::srt::Subtitle;
+        fn sub(i: usize, start: f64, end: f64) -> Subtitle {
+            Subtitle { index: i, start, end, text: String::new(), html: String::new() }
+        }
+        // 只有一条 0.6s 的字幕，后面再没有别的 → 吞不动，停在它自己的结尾
+        let subs = vec![sub(1, 50.0, 50.6)];
+        let mut segs = sticker_seg(sticker(50.05, 0.5));
+        align_stickers_to_subtitles(&mut segs, &subs);
+        assert_eq!(sticker_span(&segs), (50.0, 50.6), "没有更多字幕可吞就接受现状");
+    }
+
+    /// **幂等**：`cmd_process` 每次预览/出片都会被隐式触发，同一条元素反复规整必须收敛。
+    #[test]
+    fn element_fit_is_idempotent() {
+        use crate::parse::srt::Subtitle;
+        fn sub(i: usize, start: f64, end: f64) -> Subtitle {
+            Subtitle { index: i, start, end, text: String::new(), html: String::new() }
+        }
+        let subs = vec![
+            sub(1, 21.92, 21.97),
+            sub(2, 21.97, 22.02),
+            sub(3, 22.22, 22.27),
+            sub(4, 22.27, 22.32),
+            sub(5, 141.96, 158.26),
+        ];
+        for t in [21.95f64, 22.24, 142.0, 50.0] {
+            let mut segs = sticker_seg(sticker(t, 1.0));
+            align_stickers_to_subtitles(&mut segs, &subs);
+            let first = sticker_span(&segs);
+            let n = align_stickers_to_subtitles(&mut segs, &subs);
+            assert_eq!(sticker_span(&segs), first, "第二轮不该再变（t={t}）");
+            assert_eq!(n, 0, "第二轮不该再报对齐条数（t={t}）");
+        }
     }
 
     /// 手工定过时间的贴纸**既不吸附也不延长**（用户报过"调整结束时间没成功"：
