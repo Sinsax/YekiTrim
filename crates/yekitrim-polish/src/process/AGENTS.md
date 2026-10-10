@@ -25,9 +25,11 @@
   （全局 `.yekitrim/config.toml [sfx] blacklist` ∪ 项目 `polish.toml [sfx] blacklist`）。
 - `fx`：`transient_duration_cap(event_type)` / `transient_default_duration(event_type)` /
   `normalize_event_ends(segments)`；`cap_pip_shots` / `align_pip_shots(segments, subtitles)` /
-  `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles)`；
+  `close_pip_shots` / `cap_handheld_sway` / `align_stickers_to_subtitles(segments, subtitles)` /
+  `fit_element_span(start, end, subs)`（元素时长规矩，私有）；
   常量 `MAX_PIP_SHOTS = 1` / `MIN_PIP_SECS = 1.5` / `MIN_RETURN_SECS = 0.5` /
-  `STICKER_SNAP_MAX_SECS = 2.0` / `LEGACY_ZOOM_{MID,CLOSE,WIDE}`；
+  `STICKER_SNAP_MAX_SECS = 2.0` / `ELEMENT_MIN_SECS = 1.2` / `ELEMENT_MAX_SECS = 5.0` /
+  `ELEMENT_MAX_GAP_SECS = 0.5` / `LEGACY_ZOOM_{MID,CLOSE,WIDE}`；
   **第 5 批**：`materialize_edl_intents(segments, &mut edl_clips, total_duration) -> MaterializedEdl`
   （冷开场/回忆回溯意图 → `edl.clips` + 配额）；常量 `MAX_COLD_OPEN = 1` / `MAX_RECALL = 2` /
   `MIN_COLD_OPEN_SECS = 1.0` / `INTENT_COLD_OPEN = "cold_open"` / `INTENT_RECALL = "recall"` /
@@ -71,6 +73,29 @@
   自动后处理就把值吸回去了 —— 看上去就是"改了没生效"。
   回归：`cargo test -p yekitrim-polish --lib cap_events_never_removes_manual_events`；
   真实工程：`VT_POLISH_DIR=<片段目录> cargo test -p yekitrim-polish --lib diagnose_manual_events_survive_process -- --ignored --nocapture`（**会写回该工程的 polish.toml**，只在临时工程上用）。
+- **元素（贴纸/文字）的时长规矩 —— 最短 / 最长 / 不跨静音空隙**（2026-10-11 用户口径：
+  「需要最小时间，不足就延续到超过最小时间的且覆盖下一个字幕的结尾，同时也有最长时间，
+  不然前面时零碎的字幕，后面满足时一句话很长就显得很奇怪」）。
+  实现在 `fx.rs::fit_element_span`，由 `align_stickers_to_subtitles` 在**吸完字幕之后**调一次。
+  **只动元素的 `time`/`end`，一个字节都不碰字幕**（用户明确：「不对字幕处理，只对其他元素处理」——
+  字幕截短会吃字，元素是贴图/贴字，截短不丢内容）。四条规矩：
+  ① **起点不动**（元素挂哪句话是 LLM 的意图，不因为时长不够就往前挪）；
+  ② **不足 `ELEMENT_MIN_SECS`(1.2s) 就往后吞**字幕，直到「累计够长 **且** 落在某条字幕的结尾上」
+  —— 后半句别省，只看够不够长的话元素会断在半句话中间；
+  ③ **不跨静音空隙**（`ELEMENT_MAX_GAP_SECS` 0.5s）：下一段字幕起点离当前 end 超过它就**停下、
+  接受现状**。⚠️ 没有这道闸，"吞到够长"会一头扎进静音段 —— 实测真实碎片链
+  `…→22.67`、下一条 `23.20→25.80`，跨过去就是**在没人说话的画面上悬 3.88s**，
+  正是用户要避免的"很奇怪"从另一头冒出来；
+  ④ **超过 `ELEMENT_MAX_SECS`(5.0s) 硬截**。
+  ⚠️ 同时**删掉了旧的 `sub 短于 0.2s 就跳过` 守卫**：那是"没有补救手段"年代的产物，
+  留着会把**最该被治的碎片**（实测 0.05s 的占 2.6%，ASR 把一口气重复的音节切成连续碎片，
+  如 `21.92→21.97→22.02`）全部放过。
+  现网实测（73 片段 / 909 条字幕）字幕时长 min 0.05s / max 16.30s（跨度 326×，>5s 占 9.6%）——
+  四条规矩一起把最大值压到 5.0s 封顶、把碎片撑到字幕边界上。
+  回归：`element_extends_past_min_duration_and_lands_on_subtitle_end`（用**真实碎片链**）/
+  `element_is_capped_at_max_duration`（16.30s 那条真实样本）/
+  `element_accepts_short_span_when_no_more_subtitles` / `element_fit_is_idempotent`
+  （process 每次预览/出片都被隐式触发，必须收敛）。三条规矩分别做过变异自证。
 - **落点规则**（`placement.rs`，Step 2b）：帧坐标固定 1920×1080，贴纸固定 280×280，`ev.x/ev.y` 是**盒子左上角**
   百分比（模板 DOM/canvas 与 `engine.js` 都按左上角消费，模板再钳制到 `[32,1608]×[32,768]`）。
   障碍 = ①人物 `layout.liver`、②弹幕区域 `layout.danmaku_area`（都在**源帧**坐标里框选，出片时视频整体被
