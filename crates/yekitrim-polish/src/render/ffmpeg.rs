@@ -79,13 +79,97 @@ const SFX_FADE_SECS: f64 = 0.2;
 /// 两个 `afade` 的 `st`/`d` 都是**素材内**的时间轴（`st=0` 与 `dur - fade`），
 /// 一旦挪到 `adelay` **之后**，时间轴就变成"整条音轨"的 —— 起始时刻全错
 /// （表现是"淡入跑到别的音效上去了"）。`volume` 放最后是它与淡入淡出可交换、放末尾更直观。
-fn sfx_filter_chain(input_idx: usize, dur: f64, delay_ms: u64, volume: f64) -> String {
+///
+/// # §21：`volume` 那一段可能是**一条分段包络**
+///
+/// `envelope_filters` 已经把 `volume` 算好了（可能是空串），所以这里**不再无条件写 `volume=`**：
+/// - 包络为空 ⇒ 写原来那一条 `volume=<标量>`（**逐字节与改造前相同**）；
+/// - 包络非空 ⇒ 只写包络。⚠️ **不能再补一条 `volume=<标量>`** ——
+///   包络的最后一段已经兜到素材末尾了，多补一条只是重复（而且会把标量盖在包络上）。
+fn sfx_filter_chain(
+    input_idx: usize,
+    dur: f64,
+    delay_ms: u64,
+    volume: f64,
+    envelope: &[SfxEnvelopePoint],
+) -> String {
     let fade_d = SFX_FADE_SECS.min(dur);
     let fade_st = (dur - SFX_FADE_SECS).max(0.0);
+    let vol_part = {
+        let env = envelope_filters(envelope, dur, volume);
+        if env.is_empty() {
+            format!("volume={volume}")
+        } else {
+            env
+        }
+    };
     format!(
-        "[{}:a]atrim=0:{},afade=t=in:st=0:d={},afade=t=out:st={}:d={},adelay={}|{},volume={}[s{}]",
-        input_idx, dur, fade_d, fade_st, fade_d, delay_ms, delay_ms, volume, input_idx - 1
+        "[{}:a]atrim=0:{},afade=t=in:st=0:d={},afade=t=out:st={}:d={},adelay={}|{},{}[s{}]",
+        input_idx, dur, fade_d, fade_st, fade_d, delay_ms, delay_ms, vol_part, input_idx - 1
     )
+}
+
+/// 把包络折成 ffmpeg 的**分段 `volume` 滤镜**串（总方案 §21 的唯一实现）。
+///
+/// # 形状
+///
+/// 每一段产出一条 `volume=<增益>:enable='between(t,起,止)'`；
+/// **最后一段不开 `enable`** —— 它兜到素材末尾，而 `atrim` 保证素材只到 `dur`。
+///
+/// # ⚠️ 为什么用"分段阶跃"而不是 `volume` 的表达式求值
+///
+/// `volume=eval=frame:volume='...'` 能吃表达式，但**表达式的语法随 ffmpeg 版本漂移**，
+/// 且把响度曲线编译成一个合法表达式需要自己做插值 + 转义（对 `,` `'` `;` 都是雷区，
+/// 而这三个字符在 `filter_complex` 里都是**分隔符**）。分段阶跃没有这个问题：
+/// 增益是**字面浮点数**，`enable` 里只有 `between(t,a,b)` 一种形状。
+///
+/// 代价是"段内是平的"（阶跃不是斜坡）。这对**闪避**是对的 ——
+/// 响度曲线的采样点本来就比音效持续期稀疏，斜坡插值给的是**不存在的平滑**。
+///
+/// # ⚠️ 空包络 ⇒ 返回空串
+///
+/// 调用方拼串时 `format!` 里那个 `{}` 会变成两个连续逗号（`,,`）。
+/// ffmpeg **容忍**空滤镜（实测 `volume=0.5,,volume=0.5` 能跑），但这是运气不是契约，
+/// 所以调用方要自己避开 —— 见 `mix_sfx` 里那段 `join`。
+fn envelope_filters(envelope: &[SfxEnvelopePoint], dur: f64, base: f64) -> String {
+    // 有效拐点：`t` 有限、`gain` 有限正数、落在素材内；按 `t` 稳定排序；同 `t` 保留最后一个。
+    let mut pts: Vec<(f64, f64)> = envelope
+        .iter()
+        .filter(|p| p.t.is_finite() && p.gain.is_finite() && p.gain > 0.0 && p.t >= 0.0 && p.t <= dur)
+        .map(|p| (p.t, p.gain))
+        .collect();
+    if pts.is_empty() {
+        return String::new();
+    }
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // 同一个 `t` 上出现多个点 ⇒ 保留**最后一个**（后写的是调用方的最终意图）
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9 && {
+        b.1 = a.1;
+        true
+    });
+    // ⚠️ **必须有一个 `t = 0` 的起点**（不变式 ①）：没有的话第一段之前没有增益，
+    //    ffmpeg 会把它当 0 —— 表现是"音效开头少了半截"，而它不报错。
+    if pts[0].0 > 1e-9 {
+        pts.insert(0, (0.0, base));
+    }
+    // 只有一个点（就在 0）⇒ 等于匀速，交回给调用方那一个 `volume=<base>`
+    if pts.len() < 2 {
+        return String::new();
+    }
+    let mut out = Vec::with_capacity(pts.len());
+    for (i, (t, gain)) in pts.iter().enumerate() {
+        let last = i + 1 == pts.len();
+        if last {
+            // 最后一段**不开 enable**：从 `t` 兜到素材末尾（`atrim` 已经切好了）
+            out.push(format!("volume={gain:.6}"));
+        } else {
+            let end = pts[i + 1].0;
+            // ⚠️ `enable` 里**不能有空格**（`between(t, 1, 2)` 里的空格在某些
+            //    ffmpeg 版本会被当成滤镜参数的分隔符）—— 少一个空格比多一个好。
+            out.push(format!("volume={gain:.6}:enable='between(t,{t:.6},{end:.6})'"));
+        }
+    }
+    out.join(",")
 }
 
 /// 把任意正速率拆成**若干级 `[0.5, 2.0]` 的 `atempo`**，拼成一条滤镜串。
@@ -291,6 +375,7 @@ impl Ffmpeg {
                 dur,
                 delay_ms,
                 event.volume,
+                &event.envelope,
             ));
             mix_inputs.push(format!("[s{}]", i));
         }
@@ -1084,6 +1169,32 @@ pub struct SfxEvent {
     pub file: String,
     pub volume: f64,
     pub duration: Option<f64>,
+    /// §21 闪避包络。空 = 匀速（与今天逐字节相同）⇒ 用 `volume` 那一个数。
+    pub envelope: Vec<SfxEnvelopePoint>,
+}
+
+/// 音效闪避的**包络拐点**（总方案 §21）：`(相对音效起点的秒数, 该点的增益)`。
+///
+/// # 为什么需要它（今天是"逐事件定档"）
+///
+/// 已有机制是"音效最终响度 = 该时刻视频响度 − 8dB"，但它**只在音效起始时刻取一次样**
+/// （`pipeline.rs` 的 `loudness_curve.iter().rev().find(|(t,_)| sd.time >= *t)`）。
+/// 音效持续 0.5s 期间人声可能起落，**档位不会跟着变** —— 这就是
+/// "音效有时还是盖住人声"的根因。
+///
+/// 包络把"取一个点"换成"取一段"：在音效持续期内按响度曲线逐点重算增益。
+///
+/// # ⚠️ 三条不变式
+///
+/// 1. **第一个拐点必须在 `t = 0`**（否则起始那一段没有增益，等于静音 —— 而 ffmpeg
+///    对"没有 `volume` 覆盖的区间"用的是**上一个** `volume`，第一段之前没有上一个 ⇒ 全 0）。
+/// 2. **点必须按 `t` 严格递增**（`volume=enable='between(t,..)'` 是顺序叠加的，
+///    乱序会让后面的被前面覆盖，表现是"包络没生效"）。
+/// 3. **`t = 0` 那个点的增益就是原有的定档值** —— 保证"没有响度曲线"时行为与今天**逐字节相同**。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SfxEnvelopePoint {
+    pub t: f64,
+    pub gain: f64,
 }
 
 #[cfg(test)]
@@ -1099,7 +1210,7 @@ mod tests {
     /// 变异自证：把 `sfx_filter_chain` 里的 `afade=t=in:st=0:d={}` 整段删掉 ⇒ 本条翻红。
     #[test]
     fn sfx_filter_has_fades_on_both_ends() {
-        let f = sfx_filter_chain(1, 1.0, 500, 0.1);
+        let f = sfx_filter_chain(1, 1.0, 500, 0.1, &[]);
         assert!(f.contains("afade=t=in:st=0:d=0.2"), "缺淡入（会爆音）：{f}");
         assert!(f.contains("afade=t=out:st=0.8:d=0.2"), "缺淡出：{f}");
         // 顺序：`atrim` 在前、两个 `afade` 在 `adelay` **之前**（见函数注释：挪到后面起始时刻全错）
@@ -1119,21 +1230,109 @@ mod tests {
     #[test]
     fn sfx_fade_never_exceeds_the_clip() {
         // 0.1s 的音效：两个 0.2s 的窗口都会超出素材 ⇒ 必须被夹到 0.1
-        let f = sfx_filter_chain(1, 0.1, 0, 0.1);
+        let f = sfx_filter_chain(1, 0.1, 0, 0.1, &[]);
         assert!(f.contains("afade=t=in:st=0:d=0.1"), "淡入要夹到素材长度：{f}");
         assert!(f.contains("afade=t=out:st=0:d=0.1"), "淡出同样要夹：{f}");
         // 起始时刻不许是负数
         assert!(!f.contains("st=-"), "st 不许为负：{f}");
 
         // 正好 0.2s：两端窗口相接、各占满一半，都不超出
-        let e = sfx_filter_chain(1, 0.2, 0, 0.1);
+        let e = sfx_filter_chain(1, 0.2, 0, 0.1, &[]);
         assert!(e.contains("afade=t=in:st=0:d=0.2") && e.contains("afade=t=out:st=0:d=0.2"), "{e}");
 
         // 够长时用满 0.2s，且淡出从 dur-0.2 开始
-        let n = sfx_filter_chain(2, 3.0, 1000, 0.5);
+        let n = sfx_filter_chain(2, 3.0, 1000, 0.5, &[]);
         assert!(n.contains("afade=t=out:st=2.8:d=0.2"), "{n}");
         assert!(n.contains("adelay=1000|1000"), "延时两端都要给（单声道/立体声）：{n}");
         assert!(n.ends_with("[s1]"), "{n}");
+    }
+
+    // ── §21 音效闪避包络 ────────────────────────────────────────────
+
+    fn pt(t: f64, gain: f64) -> SfxEnvelopePoint {
+        SfxEnvelopePoint { t, gain }
+    }
+
+    /// ① ⚠️ **空包络必须与改造前逐字节相同**（R4）。
+    ///
+    /// 判据用**整串相等**而不是"包含 `volume=`" —— 后者在包络真的被塞进去时也会通过，
+    /// 于是"匀速"与"有包络"分不开，而这条用例的全部意义就在于把这两者分开。
+    #[test]
+    fn empty_envelope_is_byte_identical_to_the_old_chain() {
+        let with_empty = sfx_filter_chain(1, 2.0, 500, 0.25, &[]);
+        let expected =
+            "[1:a]atrim=0:2,afade=t=in:st=0:d=0.2,afade=t=out:st=1.8:d=0.2,             adelay=500|500,volume=0.25[s0]"
+                .replace("             ", "");
+        assert_eq!(with_empty, expected, "空包络必须退回原来那一条 volume");
+    }
+
+    /// ② 包络真的被写进滤镜串：**分段 `volume` + `enable='between(...)'`**。
+    ///
+    /// ⚠️ 段数必须是 **n−1**（最后一段不开 `enable`、兜到素材末尾）——
+    /// 写成 n 段会让最后一段也带 `enable`，于是 `atrim` 之后那一点点尾部**没有增益**。
+    #[test]
+    fn envelope_becomes_piecewise_volume_filters() {
+        let env = [pt(0.0, 0.5), pt(0.3, 0.1), pt(0.7, 0.5)];
+        let f = sfx_filter_chain(1, 1.0, 0, 0.5, &env);
+        assert!(f.contains("volume=0.500000:enable='between(t,0.000000,0.300000)'"), "{f}");
+        assert!(f.contains("volume=0.100000:enable='between(t,0.300000,0.700000)'"), "{f}");
+        assert!(f.contains("volume=0.500000[s0]"), "最后一段必须兜到末尾且不带 enable：{f}");
+        assert_eq!(f.matches("enable=").count(), 2, "n 个点 ⇒ n−1 段带 enable：{f}");
+        // ⚠️ `enable` 里不许有空格（某些 ffmpeg 版本会把空格当参数分隔符）
+        assert!(!f.contains("between(t, "), "enable 里不许有空格：{f}");
+    }
+
+    /// ③ ⚠️⚠️ **没有 `t = 0` 的点时必须补一个**（不变式 ①）。
+    ///
+    /// 不补的后果不是报错 —— 是**音效开头那一截没有增益**（ffmpeg 对"第一段 `enable`
+    /// 之前"的区间用的是初值，而那个初值就是滤镜链里**上一个** `volume`，
+    /// 一个都没有时按 1.0 处理 ⇒ 开头**过响**，正好与闪避相反）。
+    /// 这类"不报错但意思反了"的形态在本仓出过多次，所以单独钉一条。
+    #[test]
+    fn envelope_starts_at_zero_even_without_a_zero_point() {
+        let env = [pt(0.4, 0.05), pt(0.8, 0.5)];
+        let f = sfx_filter_chain(1, 1.0, 0, 0.42, &env);
+        assert!(
+            f.contains("volume=0.420000:enable='between(t,0.000000,0.400000)'"),
+            "必须用**基线增益** `0.42` 补出一个 t=0 的点：{f}"
+        );
+    }
+
+    /// ④ 乱序输入必须被**排序**（不变式 ②）。
+    ///
+    /// `enable` 是**顺序叠加**的：乱序时后一条会盖住前一条，表现是"包络没生效"。
+    #[test]
+    fn envelope_points_are_sorted_and_deduped() {
+        let env = [pt(0.7, 0.5), pt(0.0, 0.5), pt(0.3, 0.1)];
+        let f = sfx_filter_chain(1, 1.0, 0, 0.5, &env);
+        let i03 = f.find("0.000000,0.300000").expect("0→0.3 段");
+        let i37 = f.find("0.300000,0.700000").expect("0.3→0.7 段");
+        assert!(i03 < i37, "段必须按时间递增：{f}");
+        // 同 t 重复 ⇒ 保留**后写的**那个（`dedup_by` 取 a 的值）
+        let dup = [pt(0.0, 0.9), pt(0.0, 0.2), pt(0.5, 0.5)];
+        let g = sfx_filter_chain(1, 1.0, 0, 0.9, &dup);
+        assert!(g.contains("volume=0.200000:enable='between(t,0.000000,0.500000)'"), "{g}");
+    }
+
+    /// ⑤ 越界/非法的点必须被**丢掉**，绝不让它们进滤镜串。
+    ///
+    /// ⚠️ 一个 `NaN` 或负增益写进 `filter_complex` 会让**整条 ffmpeg 命令失败** ——
+    /// 表现是"整个渲染任务挂了"，而原因在一串数字里根本看不出来。
+    #[test]
+    fn illegal_envelope_points_are_dropped() {
+        let env = [
+            pt(0.0, 0.5),
+            pt(f64::NAN, 0.5),
+            pt(0.3, f64::INFINITY),
+            pt(0.4, -1.0),
+            pt(0.5, 0.0),
+            pt(9.9, 0.5), // 超出 1.0s 的素材
+        ];
+        let f = sfx_filter_chain(1, 1.0, 0, 0.5, &env);
+        assert!(!f.contains("NaN") && !f.contains("inf") && !f.contains("-1"), "{f}");
+        // 只剩 t=0 一个有效点 ⇒ 退化成匀速（与空包络同一条路）
+        assert!(f.contains("volume=0.5[s0]"), "{f}");
+        assert_eq!(f.matches("enable=").count(), 0, "只剩一个点 ⇒ 不该有分段：{f}");
     }
 
     /// 帧率解析：**1001 那一族必须不丢精度**。

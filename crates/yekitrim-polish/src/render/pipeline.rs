@@ -630,11 +630,24 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
                 let target = video_db - 8.0;
                 let vol = 10.0_f64.powf((target - file_db) / 20.0) * llm_factor(sd.volume);
                 let vol = vol.clamp(0.005, 1.0);
+                // §21 **闪避包络**：把上面那次"只在起点取样的定档"扩成**整个持续期**的逐点增益。
+                //
+                // ⚠️ 起点那个点必须**等于** `vol`（见 `sfx_gain_envelope` 的不变式），
+                //    于是"响度曲线取不到 / 音效没有时长"时包络退化 ⇒ 与改造前**逐字节相同**。
+                let env = sfx_gain_envelope(
+                    sd.time,
+                    sd.duration.unwrap_or(0.5),
+                    file_db,
+                    llm_factor(sd.volume),
+                    &loudness_curve,
+                    &seg_loudness,
+                );
                 Some(render::ffmpeg::SfxEvent {
                     time: sd.time,
                     file: f.to_string_lossy().to_string(),
                     volume: vol,
                     duration: sd.duration,
+                    envelope: env,
                 })
             })
             .collect();
@@ -723,6 +736,83 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
 
 /// 与 `render::sound::SoundEvent` 相同；保留旧 pub 名避免破坏外部引用。
 pub type SoundEvent = crate::render::sound::SoundEvent;
+
+/// §21 音效闪避：把"在音效**起点**取一次样的定档"扩成**整个持续期**的逐点增益包络。
+///
+/// # 参数
+///
+/// - `start` / `dur`：音效在成片时间轴上的起点与时长。`dur` 之后的点会被 `atrim` 切掉，
+///   所以这里**不必**裁剪（但 `ffmpeg` 侧的 `envelope_filters` 会再夹一次 —— 两层都做，
+///   因为这一层的 `dur` 可能是 `unwrap_or(0.5)` 的**缺省值**）。
+/// - `file_db`：音效文件自身的响度（用它做基准，与调用方那次定档同源）。
+/// - `rel_factor`：LLM 给的相对系数。
+/// - `curve`：**视频**响度曲线 `(t, dB)`；`segs`：段级兜底 `(start, end, dB)`。
+///
+/// # 返回
+///
+/// 拐点列表，**第一个点一定是 `(0.0, 起点增益)`**。空/单点都表示"匀速"，
+/// 调用方退化回那一个 `volume` 数（⇒ 与改造前逐字节相同）。
+///
+/// # ⚠️ 三条不变式（`SfxEnvelopePoint` 的文档里写了"为什么"）
+///
+/// **① 起点那个点的增益 = 原有的定档值。** 这是"没有曲线时零行为改动"的唯一保证 ——
+///    `vol` 那一行算的是 `10^((video_db − 8 − file_db)/20) × rel_factor`，
+///    这里必须用**同一串算式**，不能各自近似（差一点点都会让所有存量工程的音效变响/变轻）。
+///
+/// **② 只在曲线**真的覆盖到**的时候**加点。**覆盖不到就不加点** ——
+///    拿 `-26.0` 那种兜底值去造点会让音效在持续期内**莫名其妙地起伏**。
+///
+/// **③ 增益上夹到 `[0.005, 1.0]`**，与调用方那次 `clamp` 同一个区间。
+///    下界不是 0：`volume=0` 的段在 `amix` 里仍占一个输入，而**听感上等于音效消失**
+///    —— 闪避是"让路"不是"静音"，留 0.005（≈ −46dB）比彻底听不见好。
+fn sfx_gain_envelope(
+    start: f64,
+    dur: f64,
+    file_db: f64,
+    rel_factor: f64,
+    curve: &[(f64, f64)],
+    segs: &[(f64, f64, Option<f64>)],
+) -> Vec<render::ffmpeg::SfxEnvelopePoint> {
+    // 起点增益 = 调用方那次定档（不变式 ①）。两者**必须**同式。
+    let gain_at = |video_db: f64| -> f64 {
+        let v = 10.0_f64.powf((video_db - 8.0 - file_db) / 20.0) * rel_factor;
+        v.clamp(0.005, 1.0)
+    };
+    // 该时刻的视频响度：曲线优先（取"最后一个 ≤ t 的点"），段级兜底。
+    let video_db_at = |t: f64| -> Option<f64> {
+        if let Some((_, d)) = curve.iter().rev().find(|(ct, _)| t >= *ct) {
+            return Some(*d);
+        }
+        segs.iter()
+            .find(|(s, e, _)| t >= *s && t < *e)
+            .and_then(|(_, _, d)| *d)
+    };
+
+    let start_db = video_db_at(start).unwrap_or(-26.0);
+    let mut out = vec![render::ffmpeg::SfxEnvelopePoint {
+        t: 0.0,
+        gain: gain_at(start_db),
+    }];
+    if !dur.is_finite() || dur <= 0.0 || curve.is_empty() {
+        return out; // 没有时长 / 没有曲线 ⇒ 匀速
+    }
+    // 音效持续期内**曲线自己有的**采样点（不变式 ②：不造点）。
+    // ⚠️ 用 `start + 1e-6` 起：起点那个点已经加过了，重复加会被 `dedup` 掉，
+    //    但先把条件写清比依赖去重更稳。
+    for (t, db) in curve {
+        if *t <= start + 1e-6 || *t >= start + dur - 1e-6 {
+            continue;
+        }
+        if !t.is_finite() || !db.is_finite() {
+            continue;
+        }
+        out.push(render::ffmpeg::SfxEnvelopePoint {
+            t: *t - start,
+            gain: gain_at(*db),
+        });
+    }
+    out
+}
 
 // ============================================================
 // process
@@ -1222,9 +1312,106 @@ pub fn print_final_stats(output: &str, start: std::time::Instant) {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas_supported_effects, effect_spec_json, missing_support, unique_output_path, used_effect_types,
+        canvas_supported_effects, effect_spec_json, missing_support, sfx_gain_envelope,
+        unique_output_path, used_effect_types,
     };
     use std::path::{Path, PathBuf};
+
+    // ── §21 音效闪避包络（音频域）────────────────────────────────────
+
+    /// ① ⚠️ **不变式 ①：起点那个点的增益必须等于调用方那次定档**。
+    ///
+    /// 这条是"没有曲线时零回归"的**唯一**保证 —— 差一点点（比如忘了乘 `rel_factor`、
+    /// 或漏掉 `-8.0`）都会让**所有存量工程**的音效一起变响/变轻，而它不会报错。
+    /// 所以判据不比对"近似值"，而是**照着调用方同一串算式**重算一遍再逐位相等。
+    #[test]
+    fn envelope_first_point_is_the_original_fixed_gain() {
+        let curve = vec![(0.0, -20.0)];
+        let env = sfx_gain_envelope(5.0, 1.0, -14.0, 1.0, &curve, &[]);
+        assert_eq!(env.len(), 1, "曲线只盖到起点 ⇒ 只有起点那一个点: {env:?}");
+        assert_eq!(env[0].t, 0.0);
+        // 调用方的算式：10^((video_db − 8 − file_db)/20) × rel_factor，再夹 [0.005, 1.0]
+        let want = 10.0_f64.powf((-20.0 - 8.0 - (-14.0)) / 20.0);
+        assert!(
+            (env[0].gain - want).abs() < 1e-12,
+            "起点增益必须与定档同式：实得 {} 期望 {want}",
+            env[0].gain
+        );
+    }
+
+    /// ② 持续期内**有**曲线采样点 ⇒ 真的多出点，且 `t` 是**相对音效起点**的。
+    ///
+    /// ⚠️ 相对时间这件事最容易错：把绝对时间写进去，`enable='between(t,…)'` 就会指到
+    /// 音效窗口**之外**，表现是"包络一点没生效"（而滤镜串看着完全正常）。
+    #[test]
+    fn envelope_samples_are_relative_to_the_sfx_start() {
+        // 音效 5.0s 起、长 2.0s；曲线在 5.5 / 6.0 各有一个点（都在窗口内）
+        let curve = vec![(0.0, -20.0), (5.5, -8.0), (6.0, -26.0)];
+        let env = sfx_gain_envelope(5.0, 2.0, -14.0, 1.0, &curve, &[]);
+        assert_eq!(env.len(), 3, "起点 + 两个窗口内的采样点: {env:?}");
+        assert_eq!(env[0].t, 0.0);
+        assert!((env[1].t - 0.5).abs() < 1e-9, "5.5 − 5.0 = 0.5，实得 {}", env[1].t);
+        assert!((env[2].t - 1.0).abs() < 1e-9, "6.0 − 5.0 = 1.0，实得 {}", env[2].t);
+        // 5.5s 的视频响度 −8 ⇒ 比 5.0s 的 −20 更响 ⇒ 增益应当**更大**（音效跟着抬）
+        assert!(
+            env[1].gain > env[0].gain,
+            "人声更响的区间音效增益应当更高：{:?}",
+            env.iter().map(|p| p.gain).collect::<Vec<_>>()
+        );
+    }
+
+    /// ③ ⚠️ **窗口外**的曲线点一个都不许进来（不变式 ②）。
+    ///
+    /// 进来之后：`atrim` 已经把素材切到 `dur` 了，所以那些段**永远不会被播放** ——
+    /// 不是错，是**没用的滤镜**（滤镜串变长、每段多一次 `enable` 求值）。
+    /// 但更糟的是"没有窗口概念"时源点可能落在**负数** `t` 上，那会让第一段 `enable`
+    /// 的范围反着写。
+    #[test]
+    fn envelope_ignores_curve_points_outside_the_window() {
+        let curve = vec![(0.0, -20.0), (4.0, -5.0), (5.5, -8.0), (7.5, -5.0), (9.0, -5.0)];
+        let env = sfx_gain_envelope(5.0, 2.0, -14.0, 1.0, &curve, &[]);
+        assert_eq!(env.len(), 2, "只有 5.5 落在 [5.0, 7.0) 内: {env:?}");
+        assert!(env.iter().all(|p| p.t >= 0.0), "不许出现负的 t: {env:?}");
+        assert!(env.iter().all(|p| p.t < 2.0), "不许超出时长: {env:?}");
+    }
+
+    /// ④ 段级兜底也能当信号源（曲线为空时）。
+    #[test]
+    fn envelope_falls_back_to_segment_loudness() {
+        let segs = vec![(0.0, 10.0, Some(-20.0))];
+        let env = sfx_gain_envelope(3.0, 1.0, -14.0, 1.0, &[], &segs);
+        assert_eq!(env.len(), 1);
+        let want = 10.0_f64.powf((-20.0 - 8.0 - (-14.0)) / 20.0);
+        assert!((env[0].gain - want).abs() < 1e-12, "段级兜底也要同式：{env:?}");
+    }
+
+    /// ⑤ ⚠️ 时长非法 / 无信号 ⇒ **只有起点一个点**（= 匀速，逐字节零回归）。
+    #[test]
+    fn degenerate_inputs_collapse_to_a_single_point() {
+        let curve = vec![(0.0, -20.0), (5.5, -8.0)];
+        for (dur, label) in [(0.0, "零时长"), (-1.0, "负时长"), (f64::NAN, "NaN 时长")] {
+            let env = sfx_gain_envelope(5.0, dur, -14.0, 1.0, &curve, &[]);
+            assert_eq!(env.len(), 1, "{label} 必须退化成匀速: {env:?}");
+        }
+        // 完全没有信号（没有曲线、也没有段级）⇒ 用 −26.0 兜底，但仍只有起点
+        let env = sfx_gain_envelope(5.0, 2.0, -14.0, 1.0, &[], &[]);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].t, 0.0);
+    }
+
+    /// ⑥ ⚠️ **增益必须夹在 `[0.005, 1.0]`** —— 与调用方那次 `clamp` 同区间。
+    ///
+    /// ⚠️ 下界**不是 0**：`volume=0` 听感上等于"音效消失"，而闪避是**让路**不是静音。
+    /// 这条判据防的是"有人觉得 0 更干净" —— 那种改法会让爆点音效**整段消失**。
+    #[test]
+    fn envelope_gain_stays_inside_the_clamp() {
+        // 视频极响（+20dB）⇒ 未夹取时增益会远超 1.0
+        let env = sfx_gain_envelope(0.0, 1.0, -30.0, 4.0, &[(0.0, 20.0)], &[]);
+        assert!(env[0].gain <= 1.0, "上限必须夹住: {}", env[0].gain);
+        // 视频极轻（−80dB）⇒ 未夹取时会接近 0
+        let env = sfx_gain_envelope(0.0, 1.0, 0.0, 1.0, &[(0.0, -80.0)], &[]);
+        assert!(env[0].gain >= 0.005, "下限必须是 0.005 而不是 0: {}", env[0].gain);
+    }
 
     struct TmpDir(PathBuf);
 
