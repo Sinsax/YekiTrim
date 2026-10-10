@@ -2985,6 +2985,47 @@ async fn polish_project_http_roundtrips_edl() {
     assert!(!raw.contains("[edl]"), "清空后不许留空的 `[edl]` 段头:\n{raw}");
 }
 
+/// **§1 决策理由必须经整张路由表回给前端**（真 HTTP：会话 + CSRF + 作用域 + 路径锁）。
+///
+/// ⚠️ 为什么不能只测 Rust 侧：`serde_json::to_value(&cfg)` 里**自动**带着 `decisions`，
+/// 但这只说明"序列化器认得它"。前端拿不到它还有**另外三处**能坏：
+/// ① `enforce_scope` 把 `dir` 拦掉；② 请求体解析；③ GET 侧改成手工挑字段的 map
+/// （`polish_project_get_impl` 里就有一串 `obj.insert(...)` 的手工装配，随时可能被改成白名单）。
+/// 任意一处错，用户看到的就是"理由面板永远空的"，而 Rust 那侧测试**照样绿**。
+#[tokio::test]
+async fn polish_project_http_returns_decisions() {
+    let app = crate::api::test_support::test_app().await;
+    let dir = app.root.to_string_lossy().replace('\\', "/");
+    let mut cfg = yekitrim_polish::project::ProjectFile::example();
+    cfg.decisions = vec![yekitrim_polish::project::Decision::at(
+        "boundary_sentence_end",
+        12.5,
+        "切点原来落在一句话中间；已挪到最近一条字幕的结束处",
+        Some("10.00s → 12.50s".to_string()),
+    )];
+    std::fs::write(app.root.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    let req = app
+        .req("GET", &format!("/polish/project?dir={dir}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.call(req).await;
+    assert_eq!(res.status(), 200);
+    let json = body_json(res).await;
+    let ds = json
+        .get("decisions")
+        .and_then(|d| d.as_array())
+        .unwrap_or_else(|| panic!("GET 没把 decisions 回给前端（理由面板会永远空）: {json}"));
+    assert_eq!(ds.len(), 1, "条数不对：{ds:?}");
+    assert_eq!(ds[0].get("kind").and_then(|v| v.as_str()), Some("boundary_sentence_end"));
+    assert_eq!(ds[0].get("at").and_then(|v| v.as_f64()), Some(12.5));
+    assert!(
+        ds[0].get("text").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false),
+        "理由文案要真的传过来（界面直接显示它）: {ds:?}"
+    );
+    assert_eq!(ds[0].get("detail").and_then(|v| v.as_str()), Some("10.00s → 12.50s"));
+}
+
 /// 画布方向 / 画面构成 / 贴纸落点要能真写进 `polish.toml`，且**不碰**没提到的段。
 ///
 /// 回归：PUT 是**逐字段白名单**（见 `polish_project_put_locked`）——漏一个分支就是

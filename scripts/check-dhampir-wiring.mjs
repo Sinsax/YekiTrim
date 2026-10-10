@@ -332,9 +332,11 @@ check(
 // 预览腿：`polish_dhampir_project` 里那次必须 `false`
 check(
   // 同出片腿：第 4 个参数是预览代理（`preview_video.as_deref()`），`keep_muted` 仍是 false。
-  /prepare_project\(\s*&clip\s*,\s*&scratch\s*,\s*false\s*(?:,\s*preview_video\.as_deref\(\),?\s*)?\)/.test(polishApiSrc),
+  // ⚠️ `_reporting` 变体（§4 转译报告可见）与出片腿同一个理由要认 —— 两条腿的参数口径必须一样；
+  // 判据一边认一边不认的话，改了预览腿这条就报"找不到"，而 keep_muted 语义其实没动过。
+  /prepare_project(?:_reporting)?\(\s*&clip\s*,\s*&scratch\s*,\s*false\s*(?:,\s*preview_video\.as_deref\(\),?\s*)?\)/.test(polishApiSrc),
   '预览腿必须传 `keep_muted = false`（压缩时间线，客户端要跳屏蔽区间）',
-  'api/polish.rs 里找不到 `prepare_project(&clip, &scratch, false[, preview_video.as_deref()])` —— ' +
+  'api/polish.rs 里找不到 `prepare_project[_reporting](&clip, &scratch, false[, preview_video.as_deref()])` —— ' +
     '传 true 的话客户端拿不到"断点"，会一路播过屏蔽区间',
 );
 

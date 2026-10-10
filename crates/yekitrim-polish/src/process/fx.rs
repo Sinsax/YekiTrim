@@ -4,7 +4,7 @@
 //! 边界：手工事件（`Event::is_time_manual()`）一律跳过改写；这些守卫在 `process/mod.rs` 里的调用顺序是硬约束，改一处要看整条 Step 序 —— 见 `crates/yekitrim-polish/src/process/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
-use crate::project::{EdlClip, Event, Segment};
+use crate::project::{Decision, EdlClip, Event, Segment};
 
 /// 瞬时特效的 duration 上限（秒）。
 /// 原则：瞬时特效只能“爆发一下”，不允许长时间驻留。
@@ -433,9 +433,25 @@ pub fn is_sentence_end(text: &str) -> bool {
 /// **两个方向都找不到就原样不动** —— 宁可不切，也不把一个更差的点按上去。
 ///
 /// 返回被挪动的边界个数（0 = 本来就都在句末）。日志由调用方报。
+///
+/// 需要**逐条明细**（记决策理由）用 [`align_segment_boundaries_detailed`]。
 pub fn align_segment_boundaries(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize {
+    align_segment_boundaries_detailed(segments, subtitles).len()
+}
+
+/// 一次边界挪动的明细：`(原位置, 新位置, 新位置是不是句末标点)`。
+///
+/// 第三个字段给**决策理由**用：句末标点与"字幕收尾兜底"是两种不同的判据，
+/// 理由文案要分得清（否则用户看到"落在句末"而那条字幕根本没有句末标点，会觉得系统在瞎说）。
+pub type BoundaryMove = (f64, f64, bool);
+
+/// 同 [`align_segment_boundaries`]，但**带回每一条挪动的明细**（总方案 §1 要拿它写理由）。
+pub fn align_segment_boundaries_detailed(
+    segments: &mut [Segment],
+    subtitles: &[Subtitle],
+) -> Vec<BoundaryMove> {
     if segments.len() < 2 || subtitles.is_empty() {
-        return 0;
+        return Vec::new();
     }
     // 按 start 排序拿"相邻"关系（段之间时间会重叠，文件顺序不算数）。
     // ⚠️ 记的是**原下标**：改的是 `segments[idx]` 本体，不是排序后的副本。
@@ -448,7 +464,7 @@ pub fn align_segment_boundaries(segments: &mut [Segment], subtitles: &[Subtitle]
     });
 
     // 先把每条"共享边界"的候选算出来，再统一落盘 —— 边改边读会让后面的判据看到半成品。
-    let mut moves: Vec<(usize, usize, f64)> = Vec::new(); // (前段 idx, 后段 idx, 新边界)
+    let mut moves: Vec<(usize, usize, BoundaryMove)> = Vec::new(); // (前段 idx, 后段 idx, 明细)
     for w in order.windows(2) {
         let (a, b) = (w[0], w[1]);
         // 两段必须真的首尾相接才谈得上"共享边界"；有缝/重叠就让它们保持原样。
@@ -468,14 +484,18 @@ pub fn align_segment_boundaries(segments: &mut [Segment], subtitles: &[Subtitle]
         {
             continue;
         }
-        moves.push((a, b, better));
+        // 落点是不是"句末标点那句"的结尾 —— 决定理由文案（见 `BoundaryMove` 的说明）。
+        let by_punct = subtitles
+            .iter()
+            .any(|s| (s.end - better).abs() < 1e-6 && is_sentence_end(&s.text));
+        moves.push((a, b, (shared, better, by_punct)));
     }
 
-    for (a, b, t) in &moves {
+    for (a, b, (_, t, _)) in &moves {
         segments[*a].end = *t;
         segments[*b].start = *t;
     }
-    moves.len()
+    moves.into_iter().map(|(_, _, m)| m).collect()
 }
 
 /// 这个时刻算不算"切得干净"（见 [`align_segment_boundaries`] 的两条判据）。
@@ -570,6 +590,71 @@ pub const BOUNDARY_GAP_SECS: f64 = 1.0;
 
 /// 挪边界之后每段至少要剩下这么长（秒），否则不挪 —— 免得把一段吃到只剩一帧。
 pub const MIN_SEGMENT_SECS: f64 = 0.5;
+
+/// **决策理由的类别**（总方案 §1）。写进 `polish.toml` 的 `[[decisions]]` 的 `kind`。
+///
+/// ⚠️ **这些串是稳定标识**：界面按它分组/着色、判据按它 grep。
+/// 改文案改 [`Decision::text`]，**别改这里**（改了就等于换了一种决策）。
+pub mod decision_kind {
+    /// 分段边界被句末守卫挪动（§2 的产物）。
+    pub const BOUNDARY_SENTENCE_END: &str = "boundary_sentence_end";
+    /// 分段边界本来就切得干净、没动。
+    pub const BOUNDARY_ALREADY_CLEAN: &str = "boundary_already_clean";
+    /// 分段边界想挪但找不到合格点，**保持原样**（§2 的弃权）。
+    pub const BOUNDARY_KEPT_AS_IS: &str = "boundary_kept_as_is";
+    /// 给没有运镜的段补了默认运镜。
+    pub const CAMERA_DEFAULT_ADDED: &str = "camera_default_added";
+    /// 画中画超出配额、被降级成中景。
+    pub const PIP_DEMOTED: &str = "pip_demoted";
+    /// 元素（贴纸/文字）时长被规矩调整。
+    pub const ELEMENT_SPAN_FITTED: &str = "element_span_fitted";
+    /// 片头淡入被补上。
+    pub const INTRO_FADE_SEEDED: &str = "intro_fade_seeded";
+}
+
+/// 把 §2 的一次边界挪动翻成一条**人话理由**。
+///
+/// ⚠️ **两种落点要分开说**：落在句末标点上 vs 退到字幕收尾 —— 后者那条字幕根本没有句末标点，
+/// 一律写"落在句末"就是骗人（用户点开一看会发现那句话没说完，从此不信整个面板）。
+pub fn boundary_move_decision(m: &BoundaryMove) -> Decision {
+    let (from, to, by_punct) = *m;
+    let text = if by_punct {
+        "切点原来落在一句话中间；已挪到上一句说完的位置（句末标点）"
+    } else {
+        "切点原来落在一句话中间；附近没有句末标点，已挪到最近一条字幕的结束处"
+    };
+    Decision {
+        kind: decision_kind::BOUNDARY_SENTENCE_END.to_string(),
+        at: Some(to),
+        start: None,
+        end: None,
+        text: text.to_string(),
+        detail: Some(format!("{from:.2}s → {to:.2}s")),
+    }
+}
+
+/// **按 `kind` 去重**（后面的胜出）—— 顺延来的旧理由与"本趟新产生的"会撞车。
+///
+/// 判据只有 `kind` 一项、**不比位置**：这些类别每个至多描述一件事
+/// （片头淡入整片一条；边界类每处一条，而"同一处"在顺延与新增里必然同名同位置）。
+/// ⚠️ 边界类若同一 `kind` 有多处（多个切点都挪过），这条 `retain` 会把它们**误删** ——
+/// 所以这里按 `(kind, at)` 判重，`at` 为 `None` 的（整片级）按 `kind` 判重。
+pub fn dedup_decisions(list: &mut Vec<Decision>) {
+    let mut seen: Vec<(String, Option<i64>)> = Vec::new();
+    let mut out: Vec<Decision> = Vec::with_capacity(list.len());
+    // 从后往前：**本趟新产生的在尾部**，遇重复先保留它（后面的胜出）。
+    for d in list.drain(..).rev() {
+        // 位置量化到毫秒，避免 f64 相等判定抖动。
+        let key = (d.kind.clone(), d.at.map(|t| (t * 1000.0).round() as i64));
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        out.push(d);
+    }
+    out.reverse();
+    *list = out;
+}
 
 /// 把 LLM 的「冷开场 / 回忆回溯」意图**落实成 `edl.clips`**，并兜住配额。
 ///
