@@ -95,6 +95,9 @@
   `Owner::Local`（托盘 / CLI / `--local-no-auth`）**就是当前管理员**，与 `Owner::User(admin)`
   **逐字节相同**，落在 `<data>/users/<uid>/{.yekitrim,resources}/`；顶层**没有** `resources/`。
   标准结构与"谁是谁"见 **`docs/plan/single-user-layout.md`**。
+  ⚠️ **`global/` 只是"公用素材库"**（`global/resources/{fonts,stickers,videos}`，对所有账号
+  可见、用户库优先、全局补缺）—— **它不装配置**；配置是账号无关的程序配置，在顶层
+  `<数据>/.yekitrim/`。别再往 `global/` 下塞配置类目录（有单测 `global_root_holds_assets_only`）。
   ⚠️ 「当前管理员是谁」由上层 `owner::set_local_admin(uid)` 注入（core 不认识账本），
   默认 1；server 启动时紧跟建表调用。
   **不许再在别处拼 `data_dir().join("resources")`** —— 那就是第二条通道（本模块头部三条硬规矩）。
