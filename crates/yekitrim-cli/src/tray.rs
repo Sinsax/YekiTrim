@@ -338,6 +338,82 @@ mod win {
         }
     }
 
+    // ---------------------------------------------------------------- 保证子进程是最新的
+
+    /// **让同目录的 `yekitrim.exe` 追上源码**（开发时用；发行包里天然 no-op）。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// `cargo run --bin yekitrim-tray` **只构建 tray 这一个 bin**。而托盘真正干活的
+    /// 是**同目录的 `yekitrim.exe`** —— 它属于同一个 crate 的另一个 bin，**不会被连带构建**。
+    /// 于是改了 `main.rs` / 任何被 `yekitrim` 用到的代码之后，托盘起来的仍是**旧二进制**
+    /// （实测：`yekitrim-tray.exe` 18:52:40 重建、`yekitrim.exe` 停在 18:52:30，
+    /// 而源码 19:15 才改）。表现就是"改了半天没反应"，且**不报错**。
+    ///
+    /// ## 判据：只认"像源码目录"的地方
+    ///
+    /// 判据是 `crates/yekitrim-cli/src/main.rs` **存不存在** —— 发行包/安装目录里没有
+    /// `crates/`，于是天然 no-op（用户那里绝不会突然调 cargo）。
+    ///
+    /// ⚠️ **不是"永远重编"**：每次双击都 `cargo build` 会让正常启动白等十几秒。
+    /// 只有**真的旧了**（源码比 exe 新）或 **exe 不在** 时才编。
+    ///
+    /// ⚠️ 判据只看 `main.rs` 的时间戳，所以"**只改了别的 crate**、`main.rs` 没动"
+    /// 这种情况这里看不出来 —— 那种情况下 exe 本来就该重编，但本函数会跳过。
+    /// 这是**有意的保守取舍**：宁可偶尔漏编一次（表现为改动没生效，可再跑一次），
+    /// 也不要每次启动都白等（那是**每次**都付代价）。
+    fn ensure_server_binary() {
+        let Some(dir) = crate_dir() else { return };
+        let exe = dir.join("yekitrim.exe");
+        // ⚠️ **`crate_dir()` 是 `target/debug`**（exe 所在目录），而源码在**仓库根**下，
+        // 也就是 `target/debug` 往上**两级**。第一版直接拿 `dir.join("crates/…")`
+        // ⇒ 找的是 `target/debug/crates/…`（不存在）⇒ **静默 return、永远不编**
+        // （实测：托盘起来了、`yekitrim.exe` 时间戳一点没动，日志里也没有那句提示）。
+        let Some(root) = dir.parent().and_then(|p| p.parent()) else {
+            return; // 不在 target/<profile>/ 下（发行包/安装目录）⇒ 什么都不做
+        };
+        // 源码目录的判据：`crates/yekitrim-cli/src/main.rs` 在不在。
+        let src = root
+            .join("crates")
+            .join("yekitrim-cli")
+            .join("src")
+            .join("main.rs");
+        if !src.is_file() {
+            return; // 不是源码目录 ⇒ 什么都不做（发行包里绝不会突然调 cargo）
+        }
+        let stale = match std::fs::metadata(&exe) {
+            Ok(m) => {
+                let src_t = std::fs::metadata(&src).ok().and_then(|m| m.modified().ok());
+                match (m.modified().ok(), src_t) {
+                    (Some(a), Some(b)) => b > a, // 源码更新 ⇒ 得编
+                    _ => false,
+                }
+            }
+            Err(_) => true, // exe 根本不在 ⇒ 必须编
+        };
+        if !stale {
+            return;
+        }
+
+        log("检测到 yekitrim.exe 过期，正在编译…");
+        // ⚠️ **不能 `Command::new("cargo")` 直接起**：Windows 上 cargo 是 shim，
+        // `CreateProcess` 不查 PATHEXT，找不到它。交给 `cmd /c` 解析。
+        // 工作目录 = 上面算好的仓库根（`target/debug` 往上两级）——
+        // 不在仓库根跑，`--bin yekitrim` 会找不到包。
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "cargo", "build", "--bin", "yekitrim"])
+            .current_dir(&root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+        match cmd.status() {
+            Ok(st) if st.success() => log("yekitrim.exe 已重编"),
+            // 编失败**不拦**：可能离线/锁冲突/磁盘满。用旧的先跑，问题留给用户可见的地方。
+            Ok(st) => log(&format!("编译 yekitrim.exe 失败（{st}），将用现有二进制启动")),
+            Err(e) => log(&format!("无法调用 cargo 编译 yekitrim.exe：{e}，将用现有二进制启动")),
+        }
+    }
+
     // ---------------------------------------------------------------- 起子进程
     fn spawn_server(token: &str) -> std::io::Result<Child> {
         let exe = crate_dir()
@@ -595,6 +671,14 @@ mod win {
             hwnd: Mutex::new(0),
             job: Mutex::new(0),
         });
+
+        // ⚠️ **起子进程之前，先把 `yekitrim.exe` 追到最新**（见 `ensure_server_binary`）。
+        // 背景：`cargo run --bin yekitrim-tray` **只编 tray 这一个 bin** —— Cargo 的行为，
+        // 不是 bug。而托盘拉起的是**同目录的 `yekitrim.exe`**，它没被重编，于是你看到的
+        // 是旧界面/旧逻辑，却以为改动没生效（这个坑真实踩过）。
+        // 失败**只警告不拦**：编不出来（没装 cargo、离线、只读目录）时，用一个旧但能跑的
+        // 二进制，也比"点了没反应"强；真正起不来后面 `spawn_server` 还会报。
+        ensure_server_binary();
 
         let mut child = match spawn_server(&token) {
             Ok(c) => c,
