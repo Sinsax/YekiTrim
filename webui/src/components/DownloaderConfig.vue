@@ -66,7 +66,8 @@
       </div>
 
       <div class="form-section">
-      <div class="form-section-title">存放位置</div>：下载与入库的**共同**落点（属于 [storage]，不是 B站专属） ═══ -->
+      <!-- ═══ 存放位置：下载与入库的**共同**落点（属于 [storage]，不是 B站专属） ═══ -->
+      <div class="form-section-title">存放位置</div>
       <label class="fld mt-12">
         <span class="lbl">项目存放位置</span>
         <div class="row">

@@ -65,6 +65,7 @@
         追加到片尾<span class="muted">末尾</span>
       </button>
     </div>
+    <!-- 属性面板：用 Teleport 投到页面给的挂载点（PolishView 把它放在视频左侧，与时间轴分离）。
          选中状态与全部编辑逻辑仍留在这个组件里，页面只决定它出现在哪儿。
          ⚠️ Teleport 的目标是**挂载时**用 document.querySelector 解析的：本组件挂载时，
          整个编辑器子树还没插进 document（Vue 先建子节点、最后才 hostInsert），
