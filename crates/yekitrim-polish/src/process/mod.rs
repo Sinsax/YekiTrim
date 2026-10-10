@@ -179,6 +179,49 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1c2: 情绪轨道（§10）。从**弹幕**反推「观众情绪」，无弹幕时退到**字幕**。
+    //
+    // ⚠️ 为什么值得单独一步：本仓的弹幕信号原来**只用了 1/4** ——
+    //    只数条数（`analyze` 的中点），而 `text` / `color` / `mode` 三个字段
+    //    **解析了但没人读**。条数只知道"这里很热"，而情绪知道"这里是**震惊**"
+    //    还是"**爆笑**" —— **两者该配的画面完全不同**。
+    //
+    // ⚠️ **两条判据都要报出来**（规格 §2.3 的硬要求，不许静默降级）：
+    //    用户必须能从日志里看出"这个判断基于弹幕还是字幕、各多少条"。
+    {
+        let w = emotion_window_secs(&config);
+        let total = config.duration.unwrap_or(0.0);
+        let danmaku_entries = load_danmaku_entries(&data_dir);
+        let track = if !danmaku_entries.is_empty() && total > 0.0 {
+            let t = yekitrim_core::danmaku::emotion::track(&danmaku_entries, w, total);
+            tracing::info!(
+                "  · 情绪轨道：弹幕 {} 条 + 字幕 {} 条（窗口 {w:.1}s）（§10）",
+                danmaku_entries.len(),
+                subtitles.len()
+            );
+            t
+        } else if total > 0.0 {
+            // ⚠️ **无弹幕** ⇒ 只用字幕。
+            let t = emotion_from_subtitles(&subtitles, w, total);
+            tracing::info!("  ⚠ 本次无弹幕信号，情绪轨道按字幕判（§10）");
+            t
+        } else {
+            Vec::new()
+        };
+        // "两者都弱" ⇒ **降低演出强度**（不是硬演）。
+        if !track.is_empty() {
+            let strong = track.iter().filter(|x| !x.emotion.is_weak()).count();
+            if strong == 0 {
+                tracing::info!("  · 情绪信号弱（无窗口强度达阈值），已降低演出密度（§10）");
+            } else {
+                tracing::info!("  · 情绪轨道：{strong}/{} 个窗口有明确情绪（§10）", track.len());
+            }
+        }
+        if !track.is_empty() {
+            write_emotion_track(&data_dir, &track, w);
+        }
+    }
+
     // Step 1d: 手持摇摆只允许挂在近景上（用户定的门槛：那是近景专用的附加变种）。
     // 放在画中画收工之后 —— 那一步补出来的回镜头（可能承接了前一条的 handheld）也一起吃这道守卫。
     // 与画中画同一条道理：LLM 会写错景别、用户也会在编辑器里把景别改掉，靠 prompt 和界面都拦不住。
@@ -1091,6 +1134,106 @@ fn camera_shots(
 /// 会把老片段一直顶到最前面。归一化是幂等的，第二次进来 `changed == 0`、一个字节都不动。
 ///
 /// 读不出来 / 解析失败一律**不动**（与 `read_danmaku_ys` 的降级口径一致）。
+/// 情绪窗口长度：与**检测侧**的弹幕窗口**同一个值**（`danmaku_window_secs`，默认 10s）。
+///
+/// ⚠️ 读的是 `yekitrim-core` 的全局配置，**不是** polish.toml 里另开一个字段：
+/// 两处窗口不一致会让"热度最高的窗口"与"情绪最强的窗口"错位半格，
+/// 而排片是按这两个信号一起决策的。
+///
+/// ⚠️ 并且**不小于 1 秒** —— 0.5s 的窗口会让一条弹幕的情绪只覆盖半秒，
+/// 演出还没落下来就过去了。
+fn emotion_window_secs(config: &project::ProjectFile) -> f64 {
+    let _ = config;
+    let raw = yekitrim_core::config::load_global_config().detection.danmaku_window_secs;
+    // `load_global_config` 自带默认值，但用户可能手改成一个非法值 ⇒ 兜一道。
+    if raw > 0.0 {
+        raw.max(1.0)
+    } else {
+        10.0
+    }
+}
+
+/// 读弹幕条目（**唯一入口 `load_danmaku_auto`** —— 别在这里再抄一份格式判断）。
+///
+/// ⚠️ 读不到/解析失败一律返回空（**不是错误**）：情绪轨道是**可选增强**，
+/// 它失败不该让整条出片失败。调用方据"空"退到字幕，并打那一行日志。
+fn load_danmaku_entries(data_dir: &Path) -> Vec<yekitrim_core::danmaku::DanmakuEntry> {
+    let p = data_dir.join("danmaku.json");
+    if !p.exists() {
+        return Vec::new();
+    }
+    // ⚠️ 这里读的是**本仓自己写的** `data/danmaku.json`（`DanmakuEntry` 的 JSON），
+    //    不是用户的原始弹幕文件 —— 格式已经归一过了。
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<yekitrim_core::danmaku::DanmakuEntry>>(&raw).unwrap_or_default()
+}
+
+/// **无弹幕时**从字幕反推情绪（规格 §2.3 的主判据）。
+///
+/// ⚠️ 与弹幕那条**判据不同**：主播不会用"笑死"标记自己好笑，
+/// 他的情绪体现在**语气词 / 感叹号 / 叠问号**（`emotion::score_subtitle`）。
+fn emotion_from_subtitles(
+    subs: &[parse::srt::Subtitle],
+    window_secs: f64,
+    total_duration: f64,
+) -> Vec<yekitrim_core::danmaku::emotion::EmotionWindow> {
+    use yekitrim_core::danmaku::emotion::{Emotion, EmotionWindow};
+
+    if window_secs <= 0.0 || total_duration <= 0.0 {
+        return Vec::new();
+    }
+    let n = (total_duration / window_secs).ceil() as usize;
+    let mut out: Vec<EmotionWindow> = (0..n)
+        .map(|i| EmotionWindow {
+            start: i as f64 * window_secs,
+            emotion: Emotion::default(),
+            count: 0,
+            hits: Vec::new(),
+        })
+        .collect();
+
+    for sub in subs {
+        // 与弹幕同口径：按**中点**归窗。
+        let mid = (sub.start + sub.end) / 2.0;
+        let idx = (mid / window_secs) as usize;
+        let Some(w) = out.get_mut(idx) else { continue };
+        let e = yekitrim_core::danmaku::emotion::score_subtitle(&sub.text);
+        w.emotion = w.emotion.max_with(&e);
+        w.count += 1;
+        if !e.is_weak() {
+            w.hits.push("字幕语气".to_string());
+        }
+    }
+    out
+}
+
+/// 把情绪轨道写盘（`data/emotion.json`）。
+///
+/// ⚠️ **写盘而不是只留在内存**：消费方（演出脚本 / LLM 提示 / 界面）在**别的进程**
+/// 里读它。只算不存的话，这个能力就只活在这一次 `process` 调用里。
+///
+/// ⚠️ 写失败**只 warn**，不中断 —— 情绪轨道是可选增强（见 `load_danmaku_entries`）。
+fn write_emotion_track(
+    data_dir: &Path,
+    track: &[yekitrim_core::danmaku::emotion::EmotionWindow],
+    window_secs: f64,
+) {
+    let payload = serde_json::json!({
+        "window_secs": window_secs,
+        "windows": track,
+    });
+    let p = data_dir.join("emotion.json");
+    match serde_json::to_string_pretty(&payload)
+        .map_err(|e| e.to_string())
+        .and_then(|s| std::fs::write(&p, s).map_err(|e| e.to_string()))
+    {
+        Ok(()) => {}
+        Err(e) => tracing::warn!("  ⚠ 情绪轨道写盘失败（{e}）—— 本次不产出 data/emotion.json"),
+    }
+}
+
 fn normalize_danmaku_windows(data_dir: &Path) -> usize {
     let path = data_dir.join("danmaku.json");
     let Ok(raw) = std::fs::read_to_string(&path) else { return 0 };

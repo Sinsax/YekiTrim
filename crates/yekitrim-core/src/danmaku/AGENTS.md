@@ -24,6 +24,11 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
   `peak_density(...)`。
 - 检测侧入口在 `detection::EventDetector`；切片侧由 `cutting::Cutter` 调 `load_danmaku_auto` 写
   `<clip_dir>/clip.dm.srt`。
+- **§10 情绪轨道**（`emotion` 子模块，**公开**）：`emotion::track(&[DanmakuEntry], window_secs,
+  total_duration) -> Vec<EmotionWindow>`（**L1 词表 + L2 颜色**，零成本、可解释）；
+  `Emotion{joy,shock,laugh,awe}` / `EmotionWindow{start,emotion,count,hits}` /
+  `score_subtitle(text) -> Emotion`（**无弹幕时的判据**）。消费方是 `yekitrim-polish` 的
+  `process`（Step 1c2，写 `data/emotion.json`）。
 
 ## 边界
 
@@ -49,6 +54,15 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
   （`"10.700000000000001".parse::<f64>()` 与 `serde_json::from_str::<f64>()` 的位不同），
   严格相等会让每次 `process` 都重写一遍 `data/danmaku.json` —— 内容不变、mtime 一直翻新，
   而首页「切片总览」按 mtime 排序，老片段会被一直顶在最前面。见 `WINDOW_EPS_SECS`。
+- ⚠️ **情绪轨道的三条纪律**（`emotion.rs`，规格 `docs/plan/emotion-narrative-engine.md` §2）：
+  ① **不是热度** —— `popularity` 只知道"这里很热"，情绪要知道"这里是**震惊**还是**爆笑**"，
+  两者该配的画面完全不同；② **无弹幕必须退到字幕**，且**在日志里明说用了哪条判据**（不许静默降级）；
+  ③ **信号弱时降低演出强度，不是硬演**（`Emotion::is_weak`，阈值 0.15）。
+  ⚠️ 窗口合成用 **max 不是平均**：100 条无关弹幕里夹 1 条"？？？"，平均会把它冲淡到看不见，
+  而那 1 条恰恰是"震惊"的证据。⚠️ 彩色判定用**饱和度**而不是"!= 白"
+  （近白 `#f0f0f0` 是默认色系，只看"非白"会让每条白弹幕都算"花了钱"）。
+  ⚠️ `hits` 字段**不是调试便利**：情绪会驱动画面（静音/闪白/大字），
+  "为什么这里突然静音了"必须有可查的答案。
 - Web 侧拿弹幕路径的**统一入口是 `Workspace::danmaku_path`**（`danmaku_file` 是相对工程目录存的）；
   管线侧是 `pipeline::runner::resolve_danmaku`。别在别处 `PathBuf::from` 之后直接用。
 
@@ -60,4 +74,6 @@ B站导出 ASS/SRT、录播姬落 `danmaku.xml`，用户手上有什么就得吃
 cargo test -p yekitrim-core --lib danmaku
 ```
 
-`danmaku::tests` + `parser::tests` 覆盖 ASS 解析、XML 解析与密度计算；换解析器或改判据必须全绿。
+`danmaku::tests` + `parser::tests` + `emotion::tests` 覆盖 ASS 解析、XML 解析、密度计算与情绪判定；
+换解析器或改判据必须全绿。⚠️ 写情绪用例时注意**按中点归窗**：`end = start + 4.0` 的条目会落到
+窗口 2 而不是窗口 0（踩过：报出来像"词表串了"，其实是读错了窗口）。

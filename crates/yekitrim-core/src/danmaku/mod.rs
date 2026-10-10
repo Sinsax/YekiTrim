@@ -1,10 +1,16 @@
 //! danmaku：弹幕解析（ASS / 录播姬 XML / SRT）与时间窗密度（热力图）。
 //!
-//! 入口：`load_danmaku_auto`（唯一该用的格式自适应入口）、`analyze`、`average_density`、`peak_density`、`parse_bililive_xml`、`parse_srt_file`；`parser` 是私有子模块。
+//! 入口：`load_danmaku_auto`（唯一该用的格式自适应入口）、`analyze`、`average_density`、`peak_density`、`parse_bililive_xml`、`parse_srt_file`、`emotion::track`（§10 情绪轨道）；`parser` 是私有子模块。
 //! 边界：**别用 `parse_ass` 直读用户的 `danmaku_file`**（真实弹幕是 XML，会静默吐 0 条还不报错），格式判据只在 `load_danmaku_auto` 里有一份 —— 见 `crates/yekitrim-core/src/danmaku/AGENTS.md`
 
 mod parser;
 pub use parser::*;
+
+/// 情绪轨道（§10）：从弹幕反推「观众情绪」。
+///
+/// ⚠️ **公开**（不像 `parser` 那样藏起来）：它的消费方是 `detection` 与
+/// `yekitrim-polish` 里的演出/编排，不是"本模块内部实现细节"。
+pub mod emotion;
 
 use std::path::Path;
 
