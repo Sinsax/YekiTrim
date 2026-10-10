@@ -259,6 +259,26 @@ pub async fn cmd_llm(
     full: bool,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
+    cmd_llm_for(
+        yekitrim_core::owner::Owner::from_env(),
+        project_path,
+        full,
+        cancel,
+    )
+    .await
+}
+
+/// [`cmd_llm`] 的实现体，**带 owner**。
+///
+/// ⚠️ **server 必须走这一个**：`polish_spawn` 的 `"llm"` 分支是**在 server 进程内直接调**
+/// （不是拉子进程），所以 `YEKITRIM_OWNER` 那套对它无效 —— 用 `cmd_llm` 会去读
+/// **单人库**的贴纸索引，症状是多用户下"自己传的贴纸包选不中"。
+pub async fn cmd_llm_for(
+    owner: yekitrim_core::owner::Owner,
+    project_path: &Path,
+    full: bool,
+    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+) -> anyhow::Result<()> {
     tracing::info!("🤖  LLM config generation... (full={full})");
 
     // 全部重做：先把 checkpoint 拿掉，之后每个窗口都会真问模型一次
@@ -301,7 +321,9 @@ pub async fn cmd_llm(
     }
 
     // 从 .yekitrim/llm.toml 读取 LLM 配置（与 yekitrim 自身一致）
-    let llm_cfg = yekitrim_core::config::load_llm_config();
+    // ⚠️ 按 **owner** 读：无 owner 版读的是顶层 `.yekitrim/llm.toml`，
+    // 迁移后顶层那份已经搬进 `users/<uid>/`，用它会永远读到默认值。
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
         tracing::info!("  ⚠ No LLM API key configured. Edit .yekitrim/llm.toml");
         return Ok(());
@@ -344,6 +366,7 @@ pub async fn cmd_llm(
 
     // 运行 LLM pipeline
     let (segments, dm_filter, hl_words, gen_status, edl_clips) = llm::run_llm_pipeline(
+        owner,
         &llm_cfg,
         &subtitles, &danmaku, &event_type, &config.sticker_source,
         sticker_budget, sfx_budget, &sfx_blacklist,
@@ -421,6 +444,22 @@ pub async fn cmd_llm_segment(
     index: usize,
     cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
 ) -> anyhow::Result<()> {
+    cmd_llm_segment_for(
+        yekitrim_core::owner::Owner::from_env(),
+        project_path,
+        index,
+        cancel,
+    )
+    .await
+}
+
+/// [`cmd_llm_segment`] 的实现体，**带 owner**（理由同 [`cmd_llm_for`]）。
+pub async fn cmd_llm_segment_for(
+    owner: yekitrim_core::owner::Owner,
+    project_path: &Path,
+    index: usize,
+    cancel: Option<yekitrim_core::llm::agent::CancelProbe>,
+) -> anyhow::Result<()> {
     tracing::info!("🤖  重做分段 #{index} 的事件...");
 
     let config = project::load_project(project_path)?;
@@ -439,7 +478,9 @@ pub async fn cmd_llm_segment(
         subtitles.retain(|s| !config.mute_ranges.iter().any(|r| r.overlaps(s.start, s.end)));
     }
 
-    let llm_cfg = yekitrim_core::config::load_llm_config();
+    // ⚠️ 按 **owner** 读：无 owner 版读的是顶层 `.yekitrim/llm.toml`，
+    // 迁移后顶层那份已经搬进 `users/<uid>/`，用它会永远读到默认值。
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
         // 单段重做是用户明确点的动作：不做就报错，别静默返回"成功"
         anyhow::bail!("未配置 LLM API key（设置页「LLM 配置」或 .yekitrim/llm.toml）");
@@ -454,6 +495,7 @@ pub async fn cmd_llm_segment(
 
     let mut segments = config.segments.clone();
     let status = llm::regenerate_segment_events(
+        owner,
         &llm_cfg,
         &subtitles,
         &config.sticker_source,
@@ -877,7 +919,7 @@ pub fn cmd_doctor(_project_path: &Path) -> anyhow::Result<()> {
 /// 列出本地贴纸索引: 组名 | 成员数 | tags
 pub fn cmd_stickers_list() -> anyhow::Result<()> {
     use crate::assets::sticker_index::StickerIndex;
-    let dir = yekitrim_core::path::sticker_dir_readable();
+    let dir = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
     tracing::info!("📋  本地贴纸索引: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     let groups = idx.groups();
@@ -903,7 +945,7 @@ pub fn cmd_stickers_list() -> anyhow::Result<()> {
 /// 测试 keyword → 贴纸匹配 (可多个 keyword)
 pub fn cmd_stickers_test(keywords: &[String]) -> anyhow::Result<()> {
     use crate::assets::sticker_index::StickerIndex;
-    let dir = yekitrim_core::path::sticker_dir_readable();
+    let dir = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
     tracing::info!("🎯  本地贴纸匹配测试: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     for kw in keywords {
@@ -944,16 +986,40 @@ pub async fn cmd_stickers_build(package: &str) -> anyhow::Result<()> {
         .map(|_| ())
 }
 
+/// `cmd_stickers_build` 的实现体（身份取 `YEKITRIM_OWNER`）。
+///
+/// ⚠️ 这是**子进程**那条腿（`yekitrim stickers build`）。server 里跑构建任务的那条腿
+/// 走 [`build_package_tags_for`]，**必须**显式带 owner —— 见那里的注释。
+pub async fn build_package_tags(
+    package: &str,
+    progress: &dyn yekitrim_core::progress::ProgressReporter,
+) -> anyhow::Result<PackageBuildReport> {
+    build_package_tags_for(
+        yekitrim_core::owner::Owner::from_env(),
+        package,
+        progress,
+    )
+    .await
+}
+
 /// `cmd_stickers_build` 的实现体。WebUI 传入进度桥（复用 `ProgressReporter`：
 /// 每批 LLM 调用上报 `stage_progress`，并在**批次边界**轮询 `cancelled()`）。
-pub async fn build_package_tags(
+///
+/// ⚠️ **`owner` 必须由调用方传进来**，别在这里用 `Owner::from_env()`：
+/// 这个函数在 **server 进程内**被任务线程直接调用，而 server 进程的环境变量是它**自己**
+/// 启动时那份（`YEKITRIM_OWNER` 只在"server 拉起 polish 子进程"时才有意义）——
+/// 于是多用户下构建会去翻**单人库**，报「贴纸包不存在」。
+/// 实测症状（2026-10-10）：admin 的包在 `users/1/resources/stickers/testpack`，
+/// 构建却去 `resources/stickers/testpack` 找，任务失败、而列表里那个包好好地在着。
+pub async fn build_package_tags_for(
+    owner: yekitrim_core::owner::Owner,
     package: &str,
     progress: &dyn yekitrim_core::progress::ProgressReporter,
 ) -> anyhow::Result<PackageBuildReport> {
     use crate::assets::sticker_index::{
         list_package_files, package_meta_to_toml, build_package_meta_from_tags,
     };
-    let dir = yekitrim_core::path::sticker_dir_readable();
+    let dir = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
     let package_dir = dir.join(package);
     if !package_dir.is_dir() {
         anyhow::bail!("贴纸包不存在: {}", package_dir.display());
@@ -964,9 +1030,15 @@ pub async fn build_package_tags(
         anyhow::bail!("贴纸包内没有图片文件: {}", package_dir.display());
     }
 
-    let llm_cfg = yekitrim_core::config::load_llm_config();
+    // ⚠️ **按 owner 读**（不是 `load_llm_config()` —— 那个读顶层 `.yekitrim/llm.toml`）。
+    // 迁移之后顶层那份**已经搬走了**，用无 owner 版会永远读到默认值 ⇒ 明明配了 key
+    // 却报"未配置 LLM API key"。
+    let llm_cfg = yekitrim_core::config::load_llm_config_for(owner);
     if llm_cfg.api_key.is_empty() || llm_cfg.api_key == "sk-your-api-key-here" {
-        anyhow::bail!("未配置 LLM API key，无法 build 贴纸包 tags (编辑 .yekitrim/llm.toml)");
+        anyhow::bail!(
+            "未配置 LLM API key，无法 build 贴纸包 tags              (编辑 {} 里的 llm.toml)",
+            yekitrim_core::owner::state_dir(owner).display()
+        );
     }
 
     tracing::info!("  🤖 用 LLM 生成 tags ({} 个文件)...", files.len());
@@ -1055,7 +1127,7 @@ async fn llm_generate_package_tags(
 /// 扫描本地贴纸目录生成/更新 stickers.json 清单
 pub async fn cmd_stickers_scan(llm: bool) -> anyhow::Result<()> {
     use crate::assets::sticker_index::{StickerIndex, StickerMeta};
-    let dir = yekitrim_core::path::sticker_dir_readable();
+    let dir = yekitrim_core::owner::sticker_dir_readable(yekitrim_core::owner::Owner::from_env());
     tracing::info!("🔍  扫描本地贴纸目录: {}", dir.display());
     let idx = StickerIndex::scan(&dir);
     let mut metas: Vec<StickerMeta> = idx

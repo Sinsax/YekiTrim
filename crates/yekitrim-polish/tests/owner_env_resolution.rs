@@ -59,33 +59,54 @@ fn env_value_selects_a_different_library_per_account() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// **单人不变**：没有 `YEKITRIM_OWNER`（CLI / 托盘的常态）⇒ 解析到现状那两个位置。
+/// **没有 `YEKITRIM_OWNER`（CLI / 托盘的常态）⇒ `Local` ⇒ 落在管理员的用户树里。**
 ///
-/// 这条是"单人零回归"在**子进程侧**的判据 —— 上面那条改的是子进程怎么选库，
-/// 一旦把 `Local` 也导去用户树，托盘用户升级后素材库会突然全空。
+/// ⚠️ **2026-10-10 改口径**：这条原来叫 `missing_env_keeps_the_single_user_locations`，
+/// 钉的是"`Local` = 顶层 `<data>/resources/`"。那条口径就是这次"贴纸构建了但没识别"的根 ——
+/// 托盘与 admin 登录指向了两个地方，同一个人两套素材。
+/// 现在的判据是：**`Local` 必须与 `User(当前管理员)` 逐字节相同**。
 #[test]
-fn missing_env_keeps_the_single_user_locations() {
+fn missing_env_resolves_to_the_admin_user_tree() {
     use yekitrim_core::owner::Owner;
 
-    // 父进程没设（`None`）＝ 单人。
+    // 父进程没设（`None`）＝ 单人 / 托盘。
     assert_eq!(Owner::from_env_value(None), Owner::Local);
     assert_eq!(Owner::from_env_value(Some("local")), Owner::Local);
 
-    // 单人解析结果**必须逐字等于** path 层那份现状实现（含存量回落）。
-    assert_eq!(
+    let admin = yekitrim_core::owner::local_admin_uid();
+    assert!(admin > 0);
+
+    // 三个库都必须与"管理员本人"指向同一处，且落在 users/ 下。
+    for (label, got, as_admin) in [
+        (
+            "字体",
+            yekitrim_core::fonts::dir_for(Owner::Local),
+            yekitrim_core::fonts::dir_for(Owner::User(admin)),
+        ),
+        (
+            "视频",
+            yekitrim_core::owner::video_dir_readable(Owner::Local),
+            yekitrim_core::owner::video_dir_readable(Owner::User(admin)),
+        ),
+        (
+            "贴纸",
+            yekitrim_core::owner::sticker_dir_readable(Owner::Local),
+            yekitrim_core::owner::sticker_dir_readable(Owner::User(admin)),
+        ),
+    ] {
+        assert_eq!(got, as_admin, "{label}库：Local 必须就是管理员那棵树");
+        assert!(
+            got.components().any(|c| c.as_os_str() == "users"),
+            "{label}库必须落在 users/ 下，实得 {}",
+            got.display()
+        );
+    }
+
+    // 顶层那份**不再**是解析结果（存量靠迁移搬走，不靠回落）。
+    assert_ne!(
         yekitrim_core::fonts::dir_for(Owner::Local),
         yekitrim_core::path::font_dir(),
-        "单人字体库必须还是 <数据目录>/resources/fonts"
-    );
-    assert_eq!(
-        yekitrim_core::owner::video_dir_readable(Owner::Local),
-        yekitrim_core::path::video_dir_readable(),
-        "单人视频库必须还走现状那条（含存量回落）"
-    );
-    assert_eq!(
-        yekitrim_core::owner::sticker_dir_readable(Owner::Local),
-        yekitrim_core::path::sticker_dir_readable(),
-        "单人贴纸库必须还走现状那条（含存量回落）"
+        "不许再解析到顶层 <数据目录>/resources/fonts"
     );
 
     // 而多用户**不带**那份回落（用户树是新长出来的，没有"老位置"这回事）。

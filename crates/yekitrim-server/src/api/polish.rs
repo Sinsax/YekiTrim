@@ -112,10 +112,10 @@ pub(super) async fn polish_spawn(
     // 任务队列（账本）按**数字 uid** 记归属；而子进程要的是**完整 `Owner`** ——
     // 单人形态是 `Local`、数字 uid 根本表达不了（`--local-no-auth` 下 uid 是合成管理员的）。
     let job_owner_uid = match owner {
-        // 单人（`--local-no-auth`）没有真实账号 —— 任务队列仍要一个 uid 才能记归属，
-        // 用 1（首个管理员，与存量迁移的落点一致）。**这不影响数据位置**：
-        // 数据位置只由上面那个 `owner` 决定。
-        yekitrim_core::owner::Owner::Local => 1,
+        // 单人（`--local-no-auth`）没有真实账号 —— 任务队列仍要一个 uid 才能记归属。
+        // ⚠️ 用**当前管理员的真实 uid**（`Local` 就是那个人的另一种进入方式），
+        // 别写死 1：首个管理员不一定是 1（1 号账号被删过就是这种库）。
+        yekitrim_core::owner::Owner::Local => yekitrim_core::owner::local_admin_uid(),
         yekitrim_core::owner::Owner::User(uid) => uid,
     };
     let handle = state
@@ -161,7 +161,10 @@ pub(super) async fn polish_spawn(
                     } else {
                         "LLM 生成中…"
                     }).await;
-                    yekitrim_polish::commands::cmd_llm(&path, opts.full, cancel.clone()).await?;
+                    // ⚠️ **必须带 owner**：本条在 server 进程内直接跑（不是拉子进程），
+                    // 所以 `YEKITRIM_OWNER` 那套对它无效 —— 用 `cmd_llm` 会去读
+                    // **单人库**的贴纸索引，症状是多用户下"自己传的贴纸包选不中"。
+                    yekitrim_polish::commands::cmd_llm_for(owner, &path, opts.full, cancel.clone()).await?;
                     jobs.log(&job_id, "info", "LLM 完成，自动执行 process 后处理…").await;
                     yekitrim_polish::process::cmd_process(&path).await
                 }
@@ -172,7 +175,7 @@ pub(super) async fn polish_spawn(
                         .segment_index
                         .ok_or_else(|| anyhow::anyhow!("缺少 segment_index"))?;
                     jobs.log(&job_id, "info", format!("只重做分段 #{idx} 的事件…")).await;
-                    yekitrim_polish::commands::cmd_llm_segment(&path, idx, cancel.clone()).await?;
+                    yekitrim_polish::commands::cmd_llm_segment_for(owner, &path, idx, cancel.clone()).await?;
                     jobs.log(&job_id, "info", "完成，自动执行 process 后处理…").await;
                     yekitrim_polish::process::cmd_process(&path).await
                 }

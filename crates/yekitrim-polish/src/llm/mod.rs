@@ -28,7 +28,11 @@ use status::SegmentGenStatus;
 /// **冷开场/回忆回溯意图落实出来的 `edl.clips`**（`None` = 这一段没有意图 ⇒ 调用方
 /// **不许碰** `cfg.edl`）；最后一项供调用方落盘成快照，编辑器据此给"没产出事件的段"上警示色
 /// （见 `llm::status`）。
+/// ⚠️ **`owner` 必须显式传**：这个函数在 **server 进程内**被任务线程直接调用
+/// （`cmd_llm` ← `polish_spawn` 的 `"llm"` 分支），而那里没有 `YEKITRIM_OWNER`
+/// —— 用 `sticker_dir_readable()` 会去翻单人库，于是多用户下"选不中自己传的贴纸包"。
 pub async fn run_llm_pipeline(
+    owner: yekitrim_core::owner::Owner,
     llm_cfg: &LlmConfig,
     subtitles: &[Subtitle],
     danmaku: &[DanmakuEntry],
@@ -93,7 +97,7 @@ pub async fn run_llm_pipeline(
 
     let checkpoint_path = checkpoint_dir.map(|d| d.join("polish_events.checkpoint.json"));
     // 本地贴纸候选（只暴露真实存在的贴纸包名）
-    let sticker_root = yekitrim_core::path::sticker_dir_readable();
+    let sticker_root = yekitrim_core::owner::sticker_dir_readable(owner);
     let has_local = sticker_source.iter().any(|s| {
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
@@ -121,12 +125,12 @@ pub async fn run_llm_pipeline(
     );
 
     // Step 2b: 本地贴纸按 tag 批量精挑具体文件
-    let sticker_root = yekitrim_core::path::sticker_dir_readable();
+    let sticker_root = yekitrim_core::owner::sticker_dir_readable(owner);
     let has_local = sticker_source.iter().any(|s| {
         crate::assets::sticker_index::is_package_source(&sticker_root, s)
     });
     if has_local {
-        run_sticker_choice_step(&mut segments, subtitles, llm_cfg, project.as_deref(), cancel.clone()).await?;
+        run_sticker_choice_step(owner, &mut segments, subtitles, llm_cfg, project.as_deref(), cancel.clone()).await?;
     }
 
     // Step 3: 关键词提取
@@ -221,6 +225,7 @@ pub async fn run_llm_pipeline(
 /// 生成失败（429 等）时**保留该段原有事件**并如实返回失败状态
 /// —— `apply_outputs` 对空结果不覆盖，这里也不动 polish.toml（调用方只写成功的结果）。
 pub async fn regenerate_segment_events(
+    owner: yekitrim_core::owner::Owner,
     llm_cfg: &LlmConfig,
     subtitles: &[Subtitle],
     sticker_source: &[String],
@@ -295,7 +300,7 @@ pub async fn regenerate_segment_events(
 
     // Step2b：本地贴纸精挑（只在这一段上跑）
     if has_local {
-        run_sticker_choice_step(&mut one, subtitles, llm_cfg, project, cancel).await?;
+        run_sticker_choice_step(owner, &mut one, subtitles, llm_cfg, project, cancel).await?;
     }
     // 与整片那条路同一批段级收尾：贴纸吸附最近字幕 + 画中画守卫
     crate::process::align_stickers_to_subtitles(&mut one, subtitles);
@@ -311,6 +316,7 @@ pub async fn regenerate_segment_events(
 
 /// Step2b：读取本地贴纸包 TOML，按 `(包名, sticker_tag)` 分组批量精挑具体文件，写回 event.name/source。
 async fn run_sticker_choice_step(
+    owner: yekitrim_core::owner::Owner,
     segments: &mut [Segment],
     subtitles: &[Subtitle],
     llm_cfg: &LlmConfig,
@@ -321,7 +327,7 @@ async fn run_sticker_choice_step(
     use crate::llm::events::{choose_sticker_files_batch, StickerChoiceContext};
     use std::collections::BTreeMap;
 
-    let root = yekitrim_core::path::sticker_dir_readable();
+    let root = yekitrim_core::owner::sticker_dir_readable(owner);
 
     // 收集所有带 sticker_tag 的本地贴纸事件，按 (包名, tag) 分组
     // key: (package_name, tag)

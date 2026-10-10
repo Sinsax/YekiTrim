@@ -474,14 +474,27 @@ api_key = \"key-of-bob\"
 
 /// 单人形态（`Owner::Local`）读的就是**现状那两个文件**，零迁移。
 ///
-/// 直接对 `config_get_impl` 断言路径来源：单人下 `state_dir` = `<data>/.yekitrim`，
-/// 与 `path::yekitrim_home()` 是同一个地方。这条红了说明有人挪了单人的配置位置。
+/// 直接对 `config_get_impl` 断言路径来源。
+///
+/// ⚠️ **2026-10-10 改口径**：单人（`Local`）的配置目录**不再是** `<data>/.yekitrim`，
+/// 而是**管理员**的 `<data>/users/<uid>/.yekitrim` —— 与"admin 登录后看到的那份"
+/// 必须是同一份。原来那条断言钉的是"Local = 顶层"，正是"同一个人两套配置"的根。
 #[test]
-fn local_owner_config_dir_is_exactly_the_legacy_home() {
+fn local_owner_config_dir_is_the_admin_user_tree() {
+    let got = yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::Local);
+    let admin = yekitrim_core::owner::local_admin_uid();
     assert_eq!(
-        yekitrim_core::owner::state_dir(yekitrim_core::owner::Owner::Local),
+        got,
+        yekitrim_core::path::data_dir()
+            .join("users")
+            .join(admin.to_string())
+            .join(yekitrim_core::path::STATE_DIR_NAME),
+        "单人形态的配置目录必须落在当前管理员名下（与 admin 登录后是同一份）"
+    );
+    assert_ne!(
+        got,
         yekitrim_core::path::yekitrim_home(),
-        "单人形态的配置目录必须还是 <数据目录>/.yekitrim，否则升级后配置全丢"
+        "不许再解析到顶层 <数据目录>/.yekitrim"
     );
 }
 

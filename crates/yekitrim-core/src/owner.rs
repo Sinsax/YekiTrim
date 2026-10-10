@@ -1,15 +1,26 @@
 //! 数据归属（`Owner`）—— **身份 → 数据位置**的唯一通道。
 //!
-//! ## 为什么有这个模块
+//! ## 口径（2026-10-10 定稿）：**只有一种布局 —— 多用户**
 //!
-//! 这个程序有两种形态，**两种都要能用**：
+//! 「单人 / local」**不是另一套目录**，它就是 **admin 这个账号**：
+//! 托盘与 `--local-no-auth` 注入的合成身份是 admin，于是它们的数据落在
+//! `users/<首个管理员>/` 下 —— 与"admin 在 server 里登录"**逐字节相同**。
 //!
-//! ① **单人 / local**（托盘、CLI）：本机唯一使用者，数据就在程序目录下，今天的样子；
-//! ② **多用户**（`yekitrim server` 正常模式）：每个账号有自己的素材库与配置。
+//! ```text
+//! <数据目录>/
+//! ├── .yekitrim/          账本 + server.toml + models + logs   （账号无关）
+//! ├── runtime/            随版本发布的交付物                    （账号无关）
+//! └── users/<uid>/        .yekitrim/{config,llm}.toml + resources/{fonts,stickers,videos}/
+//! ```
 //!
-//! 两种形态**共用同一套业务逻辑**，差别只允许出现在「**身份从哪来**」这一个点上
-//! （单人 = [`Owner::Local`]，多用户 = [`Owner::User`]）。业务代码只问
-//! 「这份数据属于谁」，**不许自己拼数据目录**。
+//! **顶层没有 `resources/`。** 完整结构与"谁是谁"见 `docs/plan/single-user-layout.md`。
+//!
+//! ⚠️ **托盘与"admin 登录"必须解析到同一处**：它们本来就是同一个人的两种进入方式。
+//! 以前托盘落 `<数据>/resources/`、admin 登录落 `<数据>/users/1/`，于是"同一个我"
+//! 在两个地方各有一套素材 —— 这正是 2026-10-10「贴纸构建了但没识别」的根
+//! （构建按单人库写 A、列表按 `User(1)` 读 B）。
+//!
+//! 业务代码只问「这份数据属于谁」，**不许自己拼数据目录**。
 //!
 //! ## 三条硬规矩（违反即判负）
 //!
@@ -86,14 +97,14 @@ impl Owner {
 
 /// 数据归属 —— 决定"这份数据属于谁"。
 ///
-/// 单人部署下恒为 [`Owner::Local`]，此时**所有解析结果等于 2026-10 现状的位置**
-/// （`<数据目录>/resources/*`、`<数据目录>/.yekitrim/config.toml`），
-/// 因而**单人升级到本版零迁移**。
+/// ⚠️ **两种取值都落进 `users/<uid>/`**（2026-10-10 起）：`Local` 只是
+/// "**还没查过账本**"的那一档，解析时会被替换成当前管理员。
+/// 见 [`set_local_admin`] 与 [`resolve`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Owner {
-    /// 本机唯一使用者：托盘 / CLI / `server --local-no-auth`。
+    /// 托盘 / CLI / `server --local-no-auth` —— **uid 待解析**（= 当前管理员）。
     Local,
-    /// 多用户模式下的某个账号（`users.id`）。
+    /// 某个具体账号（`users.id`）。
     User(i64),
 }
 
@@ -141,24 +152,69 @@ impl AssetKind {
 
 /// 该 owner 的**数据根**。
 ///
-/// - [`Owner::Local`] → [`path::data_dir`]（**现状不变**）；
+/// - [`Owner::Local`] → `<数据目录>/users/<当前管理员>/`（**与 `User(admin)` 相同**）；
 /// - [`Owner::User`] → `<数据目录>/users/<uid>/`。
 pub fn owner_root(owner: Owner) -> PathBuf {
     owner_root_at(owner, &path::data_dir())
 }
 
 /// [`owner_root`] 的可注入版本（单测用：不碰环境变量）。
+///
+/// ⚠️ 入参 owner 一律先过 [`resolve`]：`Local` **不是**"顶层目录"，而是
+/// "uid 还没查出来、等于当前管理员"。见模块头部的口径。
 pub fn owner_root_at(owner: Owner, data_home: &Path) -> PathBuf {
+    let uid = resolve(owner);
+    data_home.join("users").join(uid.to_string())
+}
+
+/// **把 `Local` 解析成具体 uid** —— 本模块唯一一处"谁是谁"的判定。
+///
+/// `Local`（托盘 / CLI / `--local-no-auth`）代表的**就是当前管理员**，
+/// 所以它和 `User(admin_uid)` 必须落到同一个目录。以前 `Local` 直接映射到**顶层**
+/// `<data>/resources/`，于是"同一个我"在 `resources/` 与 `users/1/` 各有一套素材 ——
+/// 实测症状：贴纸构建写进了 A、列表读的是 B（2026-10-10）。
+///
+/// ## 谁装这个解析器
+///
+/// core **不认识账本**（它连 `yekitrim_service` 都不许 `use`），所以"当前管理员是谁"
+/// 由上层用 [`set_local_admin`] 注入一次（server 启动查到首个管理员后；
+/// CLI / 托盘的 `--local-no-auth` 同理）。**没装**时的兜底见下。
+///
+/// ## 没装时为什么是 1、而不是报错
+///
+/// `data_dir()` 在**单元测试**与**纯 CLI**（不碰账本的那些命令）里都会被调用，
+/// 那些场景下账本可能压根不存在。此时用 uid=1 是**唯一合理**的选择：
+/// 全新库的首个账号必然是 1（`users.id` 自增），而"首个管理员"的判定本来就是 min-id。
+///
+/// ⚠️ 兜底**不是**"猜"：真有多用户库时，上层一定装过（server 启动就装）。
+/// 这里不 panic 是因为 core 的纯函数不该依赖"上层有没有调过某个初始化"。
+fn resolve(owner: Owner) -> i64 {
     match owner {
-        Owner::Local => data_home.to_path_buf(),
-        Owner::User(uid) => data_home.join("users").join(uid.to_string()),
+        Owner::User(uid) => uid,
+        Owner::Local => local_admin_uid(),
     }
+}
+
+/// `Local` 解析成的 uid（默认 1 = 全新库的首个账号）。
+static LOCAL_ADMIN_UID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+
+/// 装一次"当前管理员是谁"（server 启动 / 托盘拉起服务前调）。
+///
+/// 幂等；只认正数（<=0 视为"没查到"，保持原值 —— 静默写成 0 会让所有人落到 `users/0/`）。
+pub fn set_local_admin(uid: i64) {
+    if uid > 0 {
+        LOCAL_ADMIN_UID.store(uid, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// 当前 `Local` 解析成的 uid（单测与诊断用；生产代码不该拿它自己拼路径）。
+pub fn local_admin_uid() -> i64 {
+    LOCAL_ADMIN_UID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// 该 owner 的**素材库根**。
 ///
-/// - [`Owner::Local`] → `<数据目录>/resources/`（**现状不变**）；
-/// - [`Owner::User`] → `<数据目录>/users/<uid>/resources/`。
+/// 一律 `<数据目录>/users/<uid>/resources/`（`Local` 即当前管理员）。
 pub fn resources_dir(owner: Owner) -> PathBuf {
     resources_dir_at(owner, &path::data_dir())
 }
@@ -170,8 +226,7 @@ pub fn resources_dir_at(owner: Owner, data_home: &Path) -> PathBuf {
 
 /// 某一类素材的库目录。
 ///
-/// ⚠️ [`Owner::Local`] 的三个结果**必须逐字节等于** `path::{font_dir, sticker_dir, video_dir}`
-/// 今天的返回值 —— 这是"单人零迁移"的判据，有单测钉住。
+/// ⚠️ 三者的父目录一律是 `users/<uid>/resources/`（`Local` 先经 [`resolve`] 换成管理员 uid）。
 pub fn asset_dir(owner: Owner, kind: AssetKind) -> PathBuf {
     asset_dir_at(owner, kind, &path::data_dir())
 }
@@ -181,41 +236,35 @@ pub fn asset_dir_at(owner: Owner, kind: AssetKind, data_home: &Path) -> PathBuf 
     resources_dir_at(owner, data_home).join(kind.dir_name())
 }
 
-/// 贴纸库**该读哪个目录** —— 单人形态带回存量回落，多用户不带。
+/// 贴纸库**该读哪个目录**。
 ///
-/// ## 为什么多用户**不**回落
+/// ⚠️ **2026-10-10 起不再分"单人/多人"两条路**：`Local` 也被解析成管理员 uid，
+/// 于是它读的是**用户树**（`users/<uid>/resources/stickers/`）。
 ///
-/// `path::sticker_dir_readable()` 那套回落是为了"2026-10-09 之前的老安装别突然变空"：
-/// 老位置 `<data>/stickers/` → 新位置 `<data>/resources/stickers/`。
-/// 那是**这台机器**的历史，只对 [`Owner::Local`] 成立。
+/// 因此这里**不再**套 [`path::sticker_dir_readable_at`] 那套"老位置回落"
+/// —— 那套回落找的是**顶层** `<data>/stickers/` 与 `<data>/resources/stickers/`，
+/// 而用户树从来不是"从顶层长出来"的：套回落 = 凭空造出第二个候选位置，
+/// 正是本模块硬规矩 2 禁止的事。
 ///
-/// 用户自己的树（`users/<uid>/resources/stickers`）是**新长出来的**，从来没有老位置 ——
-/// 给它套一套回落等于凭空制造"两个可能的位置"，正是本模块明令禁止的第 2 条。
+/// 顶层存量怎么处理？**靠迁移**（`migrate_legacy_assets_to`）：升级时把
+/// `<data>/resources/*` 搬进首个管理员的树，搬完顶层就该是空的。
 pub fn sticker_dir_readable(owner: Owner) -> PathBuf {
     sticker_dir_readable_at(owner, &path::data_dir())
 }
 
 /// [`sticker_dir_readable`] 的可注入版本（单测用）。
 pub fn sticker_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
-    match owner {
-        // 单人：**逐字沿用现状那条**（含回落），保证零回归。
-        Owner::Local => path::sticker_dir_readable_at(data_home),
-        Owner::User(_) => asset_dir_at(owner, AssetKind::Stickers, data_home),
-    }
+    asset_dir_at(owner, AssetKind::Stickers, data_home)
 }
 
-/// 视频素材库**该读哪个目录** —— 单人形态带回存量回落，多用户不带
-/// （理由同 [`sticker_dir_readable`]）。
+/// 视频素材库**该读哪个目录**（口径同 [`sticker_dir_readable`]）。
 pub fn video_dir_readable(owner: Owner) -> PathBuf {
     video_dir_readable_at(owner, &path::data_dir())
 }
 
 /// [`video_dir_readable`] 的可注入版本（单测用）。
 pub fn video_dir_readable_at(owner: Owner, data_home: &Path) -> PathBuf {
-    match owner {
-        Owner::Local => path::video_dir_readable_at(data_home),
-        Owner::User(_) => asset_dir_at(owner, AssetKind::Videos, data_home),
-    }
+    asset_dir_at(owner, AssetKind::Videos, data_home)
 }
 
 /// 该 owner 的**状态目录**（`<…>/.yekitrim/`：配置、server.toml…）。
@@ -325,26 +374,40 @@ pub fn migrate_legacy_assets_to(owner: Owner, data_home: &Path) -> std::io::Resu
 mod tests {
     use super::*;
 
-    /// ⚠️ **单人零迁移的判据**：`Owner::Local` 的每个解析结果必须**逐字节等于**
-    /// `path::*` 今天的返回值。这条一旦红了，就说明有人悄悄挪了单人的数据位置。
+    /// ⚠️ **口径判据（2026-10-10 改）**：`Owner::Local` 必须与"当前管理员"**逐字节相同**。
+    ///
+    /// 这条**取代**了原来的 `local_owner_resolves_to_exactly_todays_locations`
+    /// （它钉的是"`Local` = 顶层 `<data>/resources/`"）。那条口径就是这次
+    /// "贴纸构建了但没识别"的根 —— 托盘与 admin 登录指向了两个地方。
     #[test]
-    fn local_owner_resolves_to_exactly_todays_locations() {
+    fn local_owner_resolves_to_the_admin_user_tree() {
         let home = Path::new("/data");
-        for (owner_kind, want) in [
-            (AssetKind::Fonts, path::font_dir_at(home)),
-            (AssetKind::Stickers, path::sticker_dir_at(home)),
-            (AssetKind::Videos, path::video_dir_at(home)),
-        ] {
-            assert_eq!(
-                asset_dir_at(Owner::Local, owner_kind, home),
-                want,
-                "单人形态下 {:?} 的位置必须与现状一致",
-                owner_kind
+        let admin = local_admin_uid();
+        assert!(admin > 0, "管理员 uid 必须是正数，实得 {admin}");
+
+        // 顶层**不该**再出现在任何解析结果里。
+        let top_resources = path::resources_dir_at(home);
+        for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
+            let local = asset_dir_at(Owner::Local, kind, home);
+            let as_user = asset_dir_at(Owner::User(admin), kind, home);
+            assert_eq!(local, as_user, "{kind:?}：Local 必须等于 User({admin})");
+            assert!(
+                local.starts_with(home.join("users")),
+                "{kind:?} 必须落在 users/ 下，实得 {}",
+                local.display()
             );
+            assert_ne!(local, top_resources.join(kind.dir_name()),
+                "{kind:?} 不许再解析到顶层 resources/");
         }
-        assert_eq!(owner_root_at(Owner::Local, home), home);
-        assert_eq!(resources_dir_at(Owner::Local, home), path::resources_dir_at(home));
-        assert_eq!(state_dir_at(Owner::Local, home), path::yekitrim_home_at(home));
+
+        // 每个具体 uid 都有自己的一棵树，且互不相等。
+        let a = asset_dir_at(Owner::User(1), AssetKind::Fonts, home);
+        let b = asset_dir_at(Owner::User(2), AssetKind::Fonts, home);
+        assert_ne!(a, b, "不同账号的库必须分开");
+        let admin_home = home.join("users").join(local_admin_uid().to_string());
+        assert_eq!(owner_root_at(Owner::Local, home), admin_home);
+        assert_eq!(resources_dir_at(Owner::Local, home), admin_home.join("resources"));
+        assert_eq!(state_dir_at(Owner::Local, home), admin_home.join(path::STATE_DIR_NAME));
     }
 
     /// 多用户形态：三类素材都落在 `<data>/users/<uid>/resources/<kind>/`。
@@ -399,21 +462,34 @@ mod tests {
     fn different_owners_never_share_a_directory() {
         let home = Path::new("/data");
         let kinds = [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos];
+        let admin = local_admin_uid();
         let mut seen: Vec<(PathBuf, &str)> = Vec::new();
-        for (label, owner) in [
-            ("local", Owner::Local),
-            ("u1", Owner::User(1)),
-            ("u2", Owner::User(2)),
+        // ⚠️ `local` 与 `admin`（即 `User(admin_uid)`）**本来就该撞** ——
+        // 它们是同一个人。所以只把"**不同人**"放进互斥检查。
+        for (label, owner, is_admin_self) in [
+            ("local", Owner::Local, true),
+            ("admin", Owner::User(admin), true),
+            ("u2", Owner::User(2), false),
+            ("u3", Owner::User(3), false),
         ] {
             for kind in kinds {
                 let d = asset_dir_at(owner, kind, home);
-                // 不许有人已经占了这个位置。
-                if let Some((_, other)) = seen.iter().find(|(p, _)| *p == d) {
-                    panic!("{label} 的 {kind:?} 与 {other} 撞在 {d:?}");
+                // 只有"不同的账号"之间才不许撞。
+                if !is_admin_self {
+                    if let Some((_, other)) = seen.iter().find(|(p, _)| *p == d) {
+                        panic!("{label} 的 {kind:?} 与 {other} 撞在 {d:?}");
+                    }
                 }
                 seen.push((d, label));
             }
         }
+
+        // 正面判据：`Local` 与 admin **必须**是同一处（这正是本版的口径）。
+        assert_eq!(
+            asset_dir_at(Owner::Local, AssetKind::Fonts, home),
+            asset_dir_at(Owner::User(admin), AssetKind::Fonts, home),
+            "Local 就是 admin，两者必须是同一棵库树"
+        );
     }
 
     /// 身份跨进程往返：`as_env_value` → `from_env_value` 必须还原同一个 owner。

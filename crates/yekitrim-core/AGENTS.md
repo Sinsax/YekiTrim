@@ -91,14 +91,18 @@
   ⚠️ 视频库挪出 `stickers/` 的收益：原先它是贴纸根下的普通子目录，而 `scan_packages` 会把
   非 `.` 开头、非 `backup` 的子目录都当包扫 ⇒ 只靠"一张图都没有于是被丢掉"**碰巧**没污染列表。
   完整布局表与老→新对照在 **`docs/file-layout.md`**。
-- ⚠️ **素材/配置的路径一律经 `owner`（2026-10-10 起）**：`Owner::Local`（托盘 / CLI /
-  `--local-no-auth`）解析到**现状位置**（`<data>/resources/*`、`<data>/.yekitrim/`）⇒ 单人零迁移；
-  `Owner::User(uid)` 解析到 `<data>/users/<uid>/…`。
+- ⚠️ **素材/配置的路径一律经 `owner`（2026-10-10 起）**：**只有一种布局 —— 多用户**。
+  `Owner::Local`（托盘 / CLI / `--local-no-auth`）**就是当前管理员**，与 `Owner::User(admin)`
+  **逐字节相同**，落在 `<data>/users/<uid>/{.yekitrim,resources}/`；顶层**没有** `resources/`。
+  标准结构与"谁是谁"见 **`docs/plan/single-user-layout.md`**。
+  ⚠️ 「当前管理员是谁」由上层 `owner::set_local_admin(uid)` 注入（core 不认识账本），
+  默认 1；server 启动时紧跟建表调用。
   **不许再在别处拼 `data_dir().join("resources")`** —— 那就是第二条通道（本模块头部三条硬规矩）。
   子进程（出片/封面/预览）经 `OWNER_ENV` 从父进程继承身份。
   ⚠️ **账本（`users`/`sessions`/`invites` 表）永远全局**：它是身份的来源，按用户分是循环依赖。
-- **字体库**：`yekitrim_core::fonts` + `path::font_dir()` = **`<数据目录>/resources/fonts/`**
-  （单人；多用户走 `fonts::dir_for(owner)`）。
+- **字体库**：`yekitrim_core::fonts`；位置一律 `fonts::dir_for(owner)`
+  = `<数据目录>/users/<uid>/resources/fonts/`（`Local` 即当前管理员，见上一条）。
+  ⚠️ 下面那些写 `<数据目录>/resources/fonts/` 的旧描述读作"**该 owner 的**字体库"。
   ⚠️ **2026-10-02 起资产全部收回程序目录**（用户口径：*不要用户目录*）：`path::data_dir()`
   默认 = `exe_dir()`，可用 `YEKITRIM_DATA_DIR` 覆盖（debug/release 共用一份模型的唯一口子）。
   这条路径**曾经**是"用户固定目录 `~/.yekitrim/fonts` 优先 + 老库一次性搬家"，已整条删掉 ——
