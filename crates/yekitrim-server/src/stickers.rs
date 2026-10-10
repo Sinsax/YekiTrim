@@ -154,8 +154,14 @@ pub async fn packs_list(
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
     let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Stickers);
+    // ⚠️ **读两层**（用户库优先、全局补缺，2026-10-10）：公用贴纸包放在 `global/` 里，
+    // 只看用户库会把它们整批漏掉（界面上表现为"公用素材凭空消失"）。
+    let roots = yekitrim_core::owner::asset_dirs(
+        owner,
+        yekitrim_core::owner::AssetKind::Stickers,
+    );
     let index = si::load_sticker_index(&root);
-    let packs: Vec<serde_json::Value> = si::scan_packages(&root)
+    let packs: Vec<serde_json::Value> = si::scan_packages_roots(&roots)
         .into_iter()
         .map(|pkg| {
             let meta = si::load_package_meta(&root, &pkg.name);

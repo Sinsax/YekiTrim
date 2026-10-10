@@ -956,7 +956,13 @@ const FONT_FAMILIES_FILE: &str = "_temp_font_families.json";
 /// 库外的值由转译器自己原样保留。
 fn write_font_families(dest: &Path) -> Result<()> {
     let mut map = serde_json::Map::new();
-    for e in yekitrim_core::fonts::scan_all(&yekitrim_core::fonts::dir()) {
+    // ⚠️ **两层**：自带字体在 `global/`，只扫用户库会让底座拿不到自带字体的族名
+    // ⇒ 字幕里用到它时静默回落（"预览有字、成片不同"这类最难查的形态）。
+    let roots = yekitrim_core::owner::asset_dirs(
+        yekitrim_core::owner::Owner::from_env(),
+        yekitrim_core::owner::AssetKind::Fonts,
+    );
+    for e in yekitrim_core::fonts::scan_all_roots(&roots) {
         let fam = e.family_internal.trim();
         // 族名空 / 与 id 相同 ⇒ 没有"改写"这回事，省掉一条映射。
         if fam.is_empty() || fam == e.id {

@@ -212,6 +212,42 @@ pub fn local_admin_uid() -> i64 {
     LOCAL_ADMIN_UID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// **全局（公用）素材库根** —— `<数据目录>/global/resources/`。
+///
+/// 口径（2026-10-10 用户拍板）：
+/// - **素材内容共享**：全局库对所有账号可见（用户库优先、全局补缺）；
+/// - `global/.yekitrim/{config,llm}.toml` 是**初始化模板**：账号首次初始化时拷一份，
+///   之后各自独立演进（**不是**每次读取都合并 —— 那样改全局会悄悄改变所有人的行为）。
+pub fn global_resources_dir() -> PathBuf {
+    global_root().join("resources")
+}
+
+/// 全局根 `<数据目录>/global/`。
+pub fn global_root() -> PathBuf {
+    path::data_dir().join(GLOBAL_DIR_NAME)
+}
+
+/// 全局目录名。
+pub const GLOBAL_DIR_NAME: &str = "global";
+
+/// 某类素材**该读哪几个目录**，**按优先级从高到低**：`[用户库, 全局库]`。
+///
+/// ## 为什么是"候选列表"而不是违反硬规矩 2
+///
+/// 硬规矩 2 禁的是**同一个东西有多个可能位置、而解析时只查一处**（那种漂移不报错）。
+/// 这里是**有意的分层**：用户库优先、全局补缺，两层**都查**、顺序**固定**，
+/// 且"写到哪"永远只有一处（[`asset_dir`] = 用户库）。
+///
+/// ⚠️ **写绝不能走这个列表** —— 往"第一个存在的"里写会让"全局只读"变成"谁先写谁占用"。
+pub fn asset_dirs(owner: Owner, kind: AssetKind) -> Vec<PathBuf> {
+    let mut v = vec![asset_dir(owner, kind)];
+    let g = global_resources_dir().join(kind.dir_name());
+    if !v.contains(&g) {
+        v.push(g);
+    }
+    v
+}
+
 /// 该 owner 的**素材库根**。
 ///
 /// 一律 `<数据目录>/users/<uid>/resources/`（`Local` 即当前管理员）。
@@ -489,6 +525,40 @@ mod tests {
             asset_dir_at(Owner::Local, AssetKind::Fonts, home),
             asset_dir_at(Owner::User(admin), AssetKind::Fonts, home),
             "Local 就是 admin，两者必须是同一棵库树"
+        );
+    }
+
+    /// **全局层**（`<data>/global/resources/`）：素材共享、且**用户库优先**。
+    ///
+    /// 这条钉住三件事：① 顺序是 `[用户库, 全局库]`；② 两者不同；③ **写路径**只有一个
+    /// （`asset_dir` = 用户库）—— 写如果也跟着"候选列表"走，"全局只读"就变成"谁先写谁占用"。
+    #[test]
+    fn global_library_is_a_second_read_layer_but_never_a_write_target() {
+        let home = Path::new("/data");
+        for kind in [AssetKind::Fonts, AssetKind::Stickers, AssetKind::Videos] {
+            let user = asset_dir_at(Owner::User(7), kind, home);
+            let global = home.join(GLOBAL_DIR_NAME).join("resources").join(kind.dir_name());
+
+            // 全局库与任何账号的库都不是同一个目录。
+            assert_ne!(user, global, "{kind:?}：用户库不能等于全局库");
+
+            // 顺序固定：用户库在前（同 id 时用户赢）。
+            // ⚠️ `asset_dirs` 走真实 data_dir()，所以这里只断言**关系**，不比绝对路径。
+            let dirs = asset_dirs(Owner::User(7), kind);
+            assert_eq!(dirs.len(), 2, "{kind:?}：正好两层");
+            assert_ne!(dirs[0], dirs[1], "{kind:?}：两层必须不同");
+            assert!(
+                dirs[1].ends_with(Path::new(GLOBAL_DIR_NAME).join("resources").join(kind.dir_name())),
+                "{kind:?}：第二层必须是 global/resources/<kind>，实得 {}",
+                dirs[1].display()
+            );
+        }
+
+        // admin 那棵树与全局库也是分开的（admin ≠ 全局）。
+        assert_ne!(
+            asset_dir_at(Owner::User(local_admin_uid()), AssetKind::Fonts, home),
+            home.join(GLOBAL_DIR_NAME).join("resources").join("fonts"),
+            "管理员库不能等于全局库"
         );
     }
 

@@ -121,8 +121,19 @@ fn font_dir_owned() -> std::path::PathBuf {
     yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env())
 }
 
+/// 封面这条腿该看的**全部**字体库，按优先级：`[用户库, 全局库]`。
+///
+/// ⚠️ **必须两层**（2026-10-10）：自带字体装在 `global/` 里，只看用户库会让封面
+/// **一个字体都找不到**（Takumi 不读系统字体 ⇒ 直接报"字体库为空"）。
+fn font_roots_owned() -> Vec<std::path::PathBuf> {
+    yekitrim_core::owner::asset_dirs(
+        yekitrim_core::owner::Owner::from_env(),
+        yekitrim_core::owner::AssetKind::Fonts,
+    )
+}
+
 fn cover_font_files() -> Vec<std::path::PathBuf> {
-    cover_font_files_in(&font_dir_owned())
+    cover_font_files_in_roots(&font_roots_owned())
 }
 
 /// [`cover_font_files`] 的可注入版本（单测用临时库）。
@@ -140,7 +151,13 @@ fn cover_font_files() -> Vec<std::path::PathBuf> {
 // 的全集（实测见 `tests/takumi_font_id.rs`），所以**注册序第一支 ≈ 真正画标题的那支**。
 // 这里把**库里设了默认的那支排最前**、其余按 id 稳定排序 —— 不再是裸 `out.sort()`：
 // 那只按路径字典序排，"设为默认"对封面完全无效（LXGW 排在 Emoji 前纯属 L < N 的运气）。
+#[cfg(test)]
 fn cover_font_files_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    cover_font_files_in_roots(std::slice::from_ref(&root.to_path_buf()))
+}
+
+/// 多根版本：用户库优先、全局补缺（`roots[0]` 赢同 id 的后者）。
+fn cover_font_files_in_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
     let mut defaults: Vec<std::path::PathBuf> = Vec::new();
     let mut rest: Vec<(String, std::path::PathBuf)> = Vec::new();
     // ⚠️ **emoji 字体单独拎出来、排到最后注册**（2026-10-02，字体职责分离）。
@@ -156,8 +173,8 @@ fn cover_font_files_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     // ① 数字/字母这类 emoji 字体**也有**的字形会被它抢走（观感突变）；
     // ② 与下面 `is_default` 的语义冲突（默认位是给正文用的）。
     let mut emojis: Vec<std::path::PathBuf> = Vec::new();
-    for e in yekitrim_core::fonts::scan_all(root) {
-        if let Some(p) = yekitrim_core::fonts::resolve_all(root, &e.id).filter(|p| p.is_file()) {
+    for e in yekitrim_core::fonts::scan_all_roots(roots) {
+        if let Some(p) = yekitrim_core::fonts::resolve_all_roots(roots, &e.id).filter(|p| p.is_file()) {
             if e.emoji {
                 emojis.push(p);
             } else if e.is_default {
@@ -626,9 +643,9 @@ pub const EMOJI_STROKE_COLOR: &str = "#2a2522";
 /// **不解析、也不起兜底作用** —— 真正让 Takumi 出 emoji 的是**注册序**（见
 /// `cover_font_files_in` 的 emoji 收尾）。保留系统族名只是为了浏览器预览（设计器）那条路。
 pub fn emoji_font_stack() -> String {
-    let root = font_dir_owned();
+    let roots = font_roots_owned();
     let tail = "'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
-    match yekitrim_core::fonts::emoji_font(&root) {
+    match yekitrim_core::fonts::emoji_font_roots(&roots) {
         Some(e) => {
             // ⚠️ **用库 id，不用内部族名**（2026-10-02 纠正）：浏览器那条路（设计器 `FontFace` /
             // `@font-face`）与服务器路由 `/api/polish/font?name=` **都按 id 解析**，声明成内部族名

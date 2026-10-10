@@ -60,8 +60,12 @@ pub fn ensure_dir_for(owner: crate::owner::Owner) -> std::io::Result<PathBuf> {
 }
 
 /// **按归属**解析字体 id → 文件路径（`None` = 库里没有这一支）。
+///
+/// ⚠️ **两层都搜**（用户库优先、全局补缺，2026-10-10）：自带字体装在 `global/`，
+/// 只搜用户库的话**出片会找不到字体**（表现为"预览有字、成片没有"或直接报
+/// "至少一个字体文件"）—— 这正是这条函数不能只看一层的理由。
 pub fn resolve_file_for(owner: crate::owner::Owner, id: &str) -> Option<PathBuf> {
-    resolve_all(&dir_for(owner), id)
+    resolve_all_roots(&crate::owner::asset_dirs(owner, crate::owner::AssetKind::Fonts), id)
 }
 
 
@@ -1068,6 +1072,35 @@ pub fn default_text_family(root: &Path) -> Option<String> {
 /// ⚠️ **还没下载的自带字体也会出现在结果里**（`installed: false`）—— 界面要能显示
 /// "有这支、可以下载"。所以**别把 `scan_all().len()` 当"库里有多少字体"用**，
 /// 要判"真能用"请过滤 `installed`（或直接 `resolve_all` 试解析）。
+/// 多根扫描：**按传入顺序优先**（`roots[0]` 赢），后面的只补前面没有的 id。
+///
+/// 这是"用户库优先、全局补缺"的落点（`owner::asset_dirs` 给出的就是那个顺序）。
+/// 空根不存在时照常扫（`scan_all` 对不存在的目录返回空），所以调用方不必先过滤。
+pub fn scan_all_roots(roots: &[PathBuf]) -> Vec<FontEntry> {
+    let mut out: Vec<FontEntry> = Vec::new();
+    for root in roots {
+        for e in scan_all(root) {
+            match out.iter().position(|x| x.id.eq_ignore_ascii_case(&e.id)) {
+                // 前面那层已经有了 ⇒ 通常以它为准。
+                None => out.push(e),
+                // ⚠️ **例外：前面那层只是"清单里的占位"（`installed: false`，盘上没有），
+                // 而后面这层真装着** ⇒ 换成后面那个。
+                //
+                // 不换的后果（实测）：自带字体装在**全局库**里，而每个用户库的
+                // `scan_all` 都会补一条"自带字体、未安装"的占位。用户库在前 ⇒ 占位赢
+                // ⇒ 界面永远显示"未安装"（还有一个「下载」按钮），可它其实好好的 ——
+                // 而且出片时是能用的。**显示与实际不一致**正是这批改动要消灭的形态。
+                Some(i) => {
+                    if !out[i].installed && e.installed {
+                        out[i] = e;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn scan_all(root: &Path) -> Vec<FontEntry> {
     let mut out = scan_dirs(root);
     for e in scan_at(root) {
@@ -1119,6 +1152,11 @@ pub fn resolve_dir_file(root: &Path, id: &str) -> Option<PathBuf> {
 /// 两种布局都能解析（目录优先）。
 pub fn resolve_all(root: &Path, id: &str) -> Option<PathBuf> {
     resolve_dir_file(root, id).or_else(|| resolve_file_at(root, id))
+}
+
+/// 多根解析（`roots[0]` 优先）—— 用户库里有就用用户的，没有才去全局库找。
+pub fn resolve_all_roots(roots: &[PathBuf], id: &str) -> Option<PathBuf> {
+    roots.iter().find_map(|r| resolve_all(r, id))
 }
 
 /// 字体 id → **页面里该用的 CSS 字族名**（三处字体来源的唯一权威）。
@@ -1224,9 +1262,16 @@ impl FontPlan {
 /// ⚠️ **\`is_default\` 在这里被无视**：emoji 字体的"默认位"没有意义（它不参与正文竞争），
 /// 见 \`set_default\` 的拒绝逻辑与 \`read_meta\` 侧的口径。
 pub fn emoji_font(root: &Path) -> Option<FontEntry> {
-    let mut hits: Vec<FontEntry> = scan_all(root)
+    emoji_font_roots(std::slice::from_ref(&root.to_path_buf()))
+}
+
+/// 多根版本（用户库优先、全局补缺）—— 自带 emoji 字体在**全局库**里。
+pub fn emoji_font_roots(roots: &[PathBuf]) -> Option<FontEntry> {
+    let mut hits: Vec<FontEntry> = scan_all_roots(roots)
         .into_iter()
-        .filter(|e| e.emoji && e.installed && resolve_all(root, &e.id).is_some_and(|p| p.is_file()))
+        .filter(|e| {
+            e.emoji && e.installed && resolve_all_roots(roots, &e.id).is_some_and(|p| p.is_file())
+        })
         .collect();
     // ⚠️ **优先序：自带(清单内) > 其它，再按 id 稳定序**（2026-10-02，实测踩到）。
     //
@@ -1527,15 +1572,16 @@ pub fn install_builtin_font(root: &Path, b: &BuiltinFont) -> anyhow::Result<()> 
 /// 字体库一建出来就是"能选字"的状态。**失败只 warn、不返回 Err** —— 字体装不上不该拦住
 /// `yekitrim server` 启动或一条 CLI 命令（没有它顶多是回落到系统字体栈，功能降级不是故障）。
 ///
-/// ⚠️ 要 `ensure_dir()` 已经跑过（写路径 = 用户固定目录）。
+/// ⚠️ **装在全局库**（`<数据>/global/resources/fonts/`，2026-10-10 用户拍板）：
+/// 自带字体是"程序自带的**公用**素材"，不属于任何账号 —— 装一份所有人共用，
+/// 而不是每个账号首次启动各落一份（约 20 MB × 人数）。
+/// 各账号通过 `owner::asset_dirs()` 的"用户库优先、全局补缺"看到它。
 pub fn ensure_builtin_fonts() {
-    let root = match ensure_dir() {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("字体库目录不可用，跳过自带字体安装：{e}");
-            return;
-        }
-    };
+    let root = crate::owner::global_resources_dir().join("fonts");
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        tracing::warn!("全局字体库目录不可用，跳过自带字体安装：{e}");
+        return;
+    }
     match install_builtin_fonts(&root) {
         Ok(ids) if ids.is_empty() => {}
         Ok(ids) => tracing::info!("自带字体已就绪（本次安装 {} 支）：{}", ids.len(), ids.join(", ")),

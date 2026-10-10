@@ -1242,9 +1242,16 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// ⚠️ "未安装"必须**看得见**：`scan_all` 会把清单里有、盘上没有的自带字体也列出来，
 /// 这里要把它们标成 `未安装（可下载）`，否则用户以为库里空空如也。
 pub fn cmd_fonts_list() -> anyhow::Result<()> {
-    let root = yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env());
+    // ⚠️ **两层**（用户库优先、全局补缺）：自带字体装在 `global/` 里，
+    // 只看用户库会把它们列成"未安装（可下载）"—— 用户会去点那个按钮，而它其实早就装好了。
+    let owner = yekitrim_core::owner::Owner::from_env();
+    let roots = yekitrim_core::owner::asset_dirs(owner, yekitrim_core::owner::AssetKind::Fonts);
+    let root = roots[0].clone();
     tracing::info!("🔤  字体库: {}", root.display());
-    let list = yekitrim_core::fonts::scan_all(&root);
+    if let Some(g) = roots.get(1) {
+        tracing::info!("     公用（全局）: {}", g.display());
+    }
+    let list = yekitrim_core::fonts::scan_all_roots(&roots);
     let installed = list.iter().filter(|e| e.installed).count();
     tracing::info!("  共 {} 支（已安装 {} 支 / 待下载 {} 支）", list.len(), installed, list.len() - installed);
     for e in &list {
@@ -1266,7 +1273,11 @@ pub fn cmd_fonts_list() -> anyhow::Result<()> {
         tracing::info!(
             "  {}  族名={:?}  显示名={:?}  {}{}",
             e.id,
-            yekitrim_core::fonts::family_for_at(&root, &e.id),
+            roots
+                .iter()
+                .map(|r| yekitrim_core::fonts::family_for_at(r, &e.id))
+                .find(|s| !s.is_empty())
+                .unwrap_or_default(),
             e.display_name,
             if e.installed { format!("{}KB", e.bytes / 1024) } else { "-".to_string() },
             tags
