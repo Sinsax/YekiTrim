@@ -166,6 +166,185 @@ pub fn unique_output_path(path: &Path) -> std::path::PathBuf {
     }
 }
 
+/// 多版本成片（§9）：同一素材出 N 条**开头不同**的片子，用户挑一条。
+///
+/// ⚠️ **不新造渲染机制**（规格 §5.3 的原话："多版本不需要改这套 —— 就是跑 N 次，
+/// 每次覆盖 `[editing]` 的 selected"）：这里逐版把开头挪到第 i 个候选，
+/// 然后调**同一个** [`cmd_render`]。另造一套并行出片 = 两条渲染路径，
+/// 而它们的像素**必须**一致 —— 那种"两份实现"是本仓反复踩的坑。
+///
+/// ⚠️ **产物靠 `unique_output_path` 排开**（`_1`/`_2`），这是既有能力、不改它。
+/// 所以"版本 0"就是普通的 `export.mp4`，版本 1 是 `export_1.mp4`，依此类推。
+///
+/// ⚠️ **算不出候选时怎么办**：报告 + 退回"只出一版"。
+/// **不许**硬凑几个假候选 —— 那会让用户以为"有三个选择"，而三个其实是同一条片子。
+pub async fn cmd_render_versions(
+    project_path: &Path,
+    versions: usize,
+) -> anyhow::Result<()> {
+    use crate::project::{ending_candidates, opening_candidates, Cue};
+
+    if versions <= 1 {
+        // 与不做多版本**逐字节相同**（R4）。
+        return cmd_render(project_path).await;
+    }
+
+    let project_path =
+        &std::path::absolute(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+
+    // 字幕 -> 候选判据要的 `Cue`。
+    let cues: Vec<Cue> = {
+        let p = project_path.join("data").join("subtitles.json");
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| v.as_array().cloned())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| {
+                        let start = s.get("start")?.as_f64()?;
+                        let end = s.get("end")?.as_f64()?;
+                        let text = s.get("text")?.as_str()?.to_string();
+                        Some(Cue { start, end, text })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // 爆点窗口（§6 的爆点判据已经在 process 里算过并落盘）。
+    let hotspots: Vec<(f64, f64)> = {
+        let p = project_path.join("data").join("beats.json");
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| v.get("beats").and_then(|b| b.as_array()).cloned())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|b| {
+                        let s = b.get("start")?.as_f64()?;
+                        let e = b.get("end")?.as_f64()?;
+                        Some((s, e))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let openings = opening_candidates(&cues, &hotspots, versions);
+    let endings = ending_candidates(&cues, &hotspots, versions);
+    tracing::info!(
+        "  · 多版本成片（§9）：字幕 {} 条、爆点 {} 处 ⇒ 开头候选 {} 个、结尾候选 {} 个",
+        cues.len(),
+        hotspots.len(),
+        openings.len(),
+        endings.len(),
+    );
+
+    if openings.len() < 2 {
+        tracing::warn!(
+            "  ⚠ 只有 {} 个开头候选（要 {} 版）—— 无法凑出版本差异，**退回只出一版**",
+            openings.len(),
+            versions
+        );
+        tracing::warn!("     （候选靠「句末 / 静默 / 避开爆点」三条判据得出；素材太短或没有自然断点时会不足）");
+        return cmd_render(project_path).await;
+    }
+
+    let n = openings.len().min(versions);
+    for i in 0..n {
+        let at = openings[i].at;
+        // ⚠️ 逐版**改一次开头**再出片 —— 改的是**工程文件本身**，
+        // 所以下一版必须能把它改回来/改成下一档（见下面 `set_first_segment_start`）。
+        let total = duration_for_versions(project_path);
+        crate::project::update_polish_toml(project_path, |cfg| {
+            set_opening(cfg, at, total);
+        })
+        .await?;
+        tracing::info!(
+            "  ▶ 版本 {}/{}：开头选在 {at:.2}s（{}）（§9）",
+            i + 1,
+            n,
+            openings[i].reason
+        );
+        cmd_render(project_path).await?;
+    }
+
+    // ⚠️ **收工后把开头恢复到第 0 个候选**：否则用户下次直接点"出片"，
+    // 拿到的会是**最后一版**的剪辑 —— 而工程文件上看不出这件事。
+    let total = duration_for_versions(project_path);
+    crate::project::update_polish_toml(project_path, |cfg| {
+        set_opening(cfg, openings[0].at, total);
+    })
+    .await?;
+    tracing::info!(
+        "  ✓ 多版本成片完成：{n} 版（产物按 _1/_2 排开）；工程已恢复到第一版的开头（§9）"
+    );
+    if endings.len() > 1 {
+        tracing::info!(
+            "  · 结尾候选有 {} 个（本趟**只变开头** —— 同时变头尾会让两个变量的效果混在一起，用户无法归因）",
+            endings.len()
+        );
+    }
+    Ok(())
+}
+
+/// 读工程时长（多版本换开头要用它算 EDL；读不到就退回 0 = 不改）。
+fn duration_for_versions(project_path: &std::path::Path) -> f64 {
+    std::fs::read_to_string(project_path.join("data").join("clip-meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("duration").and_then(|d| d.as_f64()))
+        .unwrap_or(0.0)
+}
+
+/// 把成片的**开头**挪到 `at`（多版本成片的"换开头"）。
+///
+/// ⚠️ **改的是 EDL，不是 `segments[0]`** —— 这条是实测踩出来的：
+/// 第一版改 `segments[0].start/end`，三版跑完日志一行不差、
+/// **三个产物逐字节相同**。原因是成片时间线来自
+/// [`ProjectFile::resolve_edl`]，而它的输入是 `edl.clips`（手排过）
+/// 或 `mute_ranges` 的**补集**（没排过）—— `segments[]` 根本不在那条链上。
+///
+/// 做法：写一条**显式 EDL**（`[0, at)` 这一段是"被掐掉的开头"，不写进 clips），
+/// 让第一个 clip 从 `at` 开始。显式 EDL 一非空，`resolve_edl` 就直接用它。
+///
+/// ⚠️ **其余部分沿用原来的口径**：原工程有手排 EDL 就只用它**第一个 clip 的起点**
+/// 当"原开头"，其余 clips 原样保留（我们不重排用户的剪辑，只挪起点）。
+/// 原工程没有 EDL ⇒ 用 `mute_ranges` 的补集当基准。
+///
+/// ⚠️ `at` 落在原开头**之前**或无意义时**什么都不做**（保守：宁可这版与上一版相同，
+/// 也不要把开头挪到一个不存在的位置）。
+fn set_opening(cfg: &mut ProjectFile, at: f64, total_duration: f64) {
+    use crate::project::edl_clips_from_mute_complement;
+
+    // 基准 clips：手排的优先，否则用屏蔽的补集。
+    let base: Vec<yekitrim_render_core::types::EdlClip> = if !cfg.edl.clips.is_empty() {
+        cfg.edl.clips.clone()
+    } else {
+        edl_clips_from_mute_complement(&cfg.mute_ranges, total_duration)
+    };
+    if base.is_empty() || !at.is_finite() {
+        return;
+    }
+    let orig_start = base[0].source_start;
+    // ⚠️ **不许往前走**（`at < orig_start`）这条**只在逐版推进时**才成立。
+    // 收工时的"恢复到第一版"**必须能往回退** —— 实测踩到：三版跑完 EDL 起点已经是
+    // 4.1，恢复调用被这条判据拒绝 ⇒ 工程停在**最后一版**的开头，
+    // 而日志照旧打"已恢复到第一版"。用户下次直接点出片会拿到第 3 版。
+    //
+    // ⇒ 判据拆开：**只要求 `at` 落在 `[0, 第一个 clip 的终点)` 内**（合法的源时刻），
+    //    "是否比当前靠前"由调用方决定（`cmd_render_versions` 里逐版是递增的）。
+    if at < 0.0 || !at.is_finite() || at >= base[0].source_end - 1e-9 {
+        return;
+    }
+
+    let mut clips = base;
+    clips[0].source_start = at;
+    cfg.edl.clips = clips;
+    let _ = orig_start;
+}
+
 pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // ⚠️ **先把工程目录变成绝对路径**（2026-09-30 实测踩到）：`resolve_paths` 把
     // `project.output` 归一成 `<工程目录>/export.mp4` —— 工程目录是**相对**的时候，
@@ -1312,10 +1491,87 @@ pub fn print_final_stats(output: &str, start: std::time::Instant) {
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas_supported_effects, effect_spec_json, missing_support, sfx_gain_envelope,
+        canvas_supported_effects, effect_spec_json, missing_support, set_opening, sfx_gain_envelope,
         unique_output_path, used_effect_types,
     };
     use std::path::{Path, PathBuf};
+
+    // ── §9 多版本成片：换开头 ────────────────────────────────────────
+
+    fn project_with_video_span(total: f64) -> crate::project::ProjectFile {
+        let mut cfg = crate::project::ProjectFile::example();
+        cfg.mute_ranges.clear();
+        cfg.edl.clips.clear();
+        let _ = total;
+        cfg
+    }
+
+    /// ⚠️ **换开头必须落在 EDL 上**，不能落在 `segments[0]` 上。
+    ///
+    /// 这条钉的是一个**实测踩到、而且当时完全看不出来**的坑：
+    /// 第一版改的是 `cfg.segments[0].start/end`，三版跑完日志一行不差、
+    /// **三个产物逐字节相同** —— 因为成片时间线来自 `resolve_edl`
+    /// （输入是 `edl.clips` 或 `mute_ranges` 的补集），`segments[]` 不在那条链上。
+    ///
+    /// 判据：改完之后 `resolve_edl` 的**第一个 clip 起点**必须等于新开头。
+    /// 只断言"`cfg.edl.clips` 非空"是不够的（写进去一个没人读的字段也会非空）。
+    #[test]
+    fn 换开头要真的改到成片时间线() {
+        let mut cfg = project_with_video_span(8.0);
+        set_opening(&mut cfg, 2.2, 8.0);
+
+        let clips = cfg.resolve_edl(8.0, 30.0);
+        assert!(!clips.is_empty(), "改完之后 EDL 是空的 —— 成片会没有画面");
+        let first_start = clips[0].source_start;
+        assert!(
+            (first_start - 2.2).abs() < 1e-6,
+            "EDL 第一段起点是 {first_start}，不是要求的 2.2 —— \
+             换开头没有落到成片时间线上（这正是那条'三版逐字节相同'的坑）"
+        );
+    }
+
+    /// ⚠️ **收工时的"恢复"必须能往回退**。
+    ///
+    /// 踩过的坑：逐版是**递增**的（0.3 → 2.2 → 4.1），而收工时要退回到 0.3。
+    /// 第一版里有一条"`at` 必须比当前起点靠后"的判据，把恢复调用拒绝了 ⇒
+    /// 工程停在**最后一版**的开头，而日志照旧打"已恢复到第一版"。
+    /// 用户下次直接点出片，拿到的是第 3 版，而工程文件上看不出这件事。
+    #[test]
+    fn 恢复开头能往回退() {
+        let mut cfg = project_with_video_span(8.0);
+        // 模拟逐版推进到最后一版。
+        set_opening(&mut cfg, 4.1, 8.0);
+        assert!((cfg.resolve_edl(8.0, 30.0)[0].source_start - 4.1).abs() < 1e-6);
+        // 收工：退回第一版。
+        set_opening(&mut cfg, 0.3, 8.0);
+        let back = cfg.resolve_edl(8.0, 30.0)[0].source_start;
+        assert!(
+            (back - 0.3).abs() < 1e-6,
+            "恢复后起点是 {back}，不是 0.3 —— 恢复调用被'只能往后'的判据挡掉了"
+        );
+    }
+
+    /// 越界/无意义的 `at` 一律**什么都不做**（保守：宁可这版与上版相同，
+    /// 也不要把开头挪到一个不存在的位置）。
+    #[test]
+    fn 越界的开头不动工程() {
+        let mut cfg = project_with_video_span(8.0);
+        set_opening(&mut cfg, -1.0, 8.0);
+        assert!(cfg.edl.clips.iter().all(|c| c.source_start >= 0.0), "负起点被写进去了");
+        // 越过视频末尾。
+        let mut cfg2 = project_with_video_span(8.0);
+        set_opening(&mut cfg2, 99.0, 8.0);
+        // 没有 EDL 且没有屏蔽时基准 clips 是空的 ⇒ 直接返回（不改）。
+        assert!(cfg2.edl.clips.is_empty(), "越界的开头不该写出 EDL");
+    }
+
+    /// 时长未知（0）时不许造出 EDL —— 否则成片会变成"零帧"。
+    #[test]
+    fn 时长未知时不造_edl() {
+        let mut cfg = project_with_video_span(0.0);
+        set_opening(&mut cfg, 1.0, 0.0);
+        assert!(cfg.edl.clips.is_empty(), "时长未知却写出了 EDL");
+    }
 
     // ── §21 音效闪避包络（音频域）────────────────────────────────────
 
