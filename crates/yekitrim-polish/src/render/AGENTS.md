@@ -118,15 +118,16 @@ ffmpeg 调用；`frame.rs`/`gif.rs`/`sound.rs`/`backend.rs`/`context.rs` 是底�
   `server::run` 启动时 `render_proc::sweep_orphans` 结束上一次遗留的渲染（**先核对命令行**
   再杀，pid 会被系统回收）。服务器重启带不走子进程 —— 实测两个渲染各留 3 个渲染孙进程空转两小时，
   把后续渲染拖到根本跑不完。
-- **卡死守卫**：父进程按"子进程 60s 无输出 → warn"看着底座；底座自己的进度在
-  `_temp_dhampir_progress.ndjson` 里（见上面那条）。别再退回**无超时轮询**：那是"长时间无反应 +
-  日志空白"的直接来源。（页面侧那条 `VTEDIT_STALL_SECS` / `chrome::DEFAULT_STALL_SECS` 的抓帧卡死
-  守卫随 chrome 那条腿一起删了 —— 现在**没有**它，卡死只能靠上面那条无输出 warn 发现。）
+- **卡死守卫**：父进程按"子进程 60s 无输出 → warn"看着底座；底座进度在
+  `_temp_dhampir_progress.ndjson`。别再退回**无超时轮询**（"长时间无反应 + 日志空白"的来源）。
 - **分阶段打点**：`cmd_render` 每段一条 `⏱ 阶段 {:.1}s`，`render_chunk_sync` 把每块的
   **抽帧 / 渲染 / 编码**分开报（`chunk#N: done N frames（抽帧 …s / 渲染 …s / 编码 …s）`）。
   实测 clip-35（262s 片段，debug 构建）294s 里：起服务 16.1s、贴纸 GIF 40.8s、分块 210.7s
   （每块 抽帧 ~30s + 渲染 145~171s + 编码 8s）、音效混音 9.3s、合流 2.7s、屏蔽重编码 9.2s。
   出片慢先看这几条，别再猜。
+- ⚠️ **BGM（§11）**：**只做引入、不做卡点**（无节拍网格 ⇒ 不适用项）。默认关。
+  那块必须与音效 `if !sfx_data.is_empty()` **并列**（写里面 ⇒ 没音效的工程完全不跑）。
+  闪避表达式的**逗号要转义 `\,`**。两条坑都只有量响度才发现，详见 `render/bgm.rs`。
 - ⚠️ **封面不搭渲染的便车**（2026-10-02 用户拍板"视频导出就只导出"）：`cmd_render` 尾部原来串的
   `cover::cmd_cover(project_path, Some(&op), None)` 已删 —— 渲染任务只出成片；封面走自己的入口
   （CLI `yekitrim polish cover` / `POST /api/polish/cover` 独立任务，关键帧回落 `resolved.video`）。

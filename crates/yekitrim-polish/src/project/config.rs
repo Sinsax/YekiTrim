@@ -58,6 +58,18 @@ pub struct ProjectFile {
     #[serde(default)]
     pub sfx: SfxConfig,
 
+    /// 12b. **背景音乐**（§11）。
+    ///
+    /// ⚠️ **默认关**（`BgmConfig::default().enabled == false`）⇒ 老工程零迁移（R4）：
+    /// 不写这个键 ⇔ 行为与今天逐字节相同（今天全仓"BGM"的每一处都是
+    /// **"把 BGM 从 ASR 里排除"**，没有任何一处往成片里放音乐）。
+    ///
+    /// ⚠️ **本项只做"引入"，不做卡点**：卡点要"切点落在音乐强拍上"，
+    /// 而强拍来自**音乐的节拍网格** —— 本仓此前没有 BGM 也就没有网格。
+    /// 规格明写那是"**不适用项**，不要假装能做"。见 `render/bgm.rs`。
+    #[serde(default, skip_serializing_if = "crate::render::BgmConfig::is_empty")]
+    pub bgm: crate::render::BgmConfig,
+
     /// 13. 时间轴
     #[serde(default)]
     pub segments: Vec<Segment>,
@@ -2002,6 +2014,7 @@ impl ProjectFile {
                 highlight: vec!["OBS".into(), "游戏".into()],
             },
             sfx: SfxConfig::default(),
+            bgm: crate::render::BgmConfig::default(),
             cover: CoverConfig::default(),
             segments: vec![
                 Segment {
