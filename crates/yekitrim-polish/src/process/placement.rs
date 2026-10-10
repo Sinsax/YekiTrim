@@ -107,6 +107,49 @@ impl Frame {
     }
 }
 
+/// 一个**视觉元素**在落点求解时占的盒子（左上角 + 宽高，像素）。
+///
+/// # 为什么要有这个类型（§5 E3 的地基）
+///
+/// 求解器原来到处用 `f.sticker_size()`（= `280 × sticker_scale`）—— 那是**贴纸**的尺寸。
+/// 文字是**变宽高**的（字号 + 折行 → 可能 520×120，也可能 300×240），
+/// 沿用 280×280 的症状是**"大字压住主播脸"**：求解器以为只占了 280 宽，实际画出去一大片。
+///
+/// ⚠️ **`h` 与 `w` 分开**，不是"正方形"：文字盒明显是扁的。
+/// 用正方形近似会让纵向预测偏大（文字实际只占一行高，却按宽度那么多去避让）
+/// ⇒ 能放下的位置被判成放不下，落点被迫跑到角落。
+///
+/// ⚠️ **`float_up` 也在这里**：它是"入场动画往上飘"的额外占位，只有贴纸有
+/// （文字的动效另有其法，见规格 §4）。文字传 0 即可。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxSize {
+    pub w: f64,
+    pub h: f64,
+    /// 入场动画的额外上浮占位（贴纸的 `floatUp`；文字传 0）。
+    pub float_up: f64,
+}
+
+impl BoxSize {
+    /// 贴纸盒（**历史行为**：`280 × sticker_scale` 见方 + `18 × sticker_scale` 上浮）。
+    ///
+    /// 这条是**默认路径**，`pick_sticker_position` 的就是它 ⇒ 贴纸落点逐像素不变（R4）。
+    pub fn sticker(f: Frame) -> Self {
+        Self { w: f.sticker_size(), h: f.sticker_size(), float_up: f.float_up() }
+    }
+
+    /// 文字盒：按**排版算出来的**实际宽高（无入场上浮）。
+    ///
+    /// ⚠️ **目前只有单测在用它** —— E3 这一步交付的是"求解器支持动态盒"这个**能力**，
+    /// 真正的调用方（把 `elements.text` 的排版结果接进来）在 E3 的下一步。
+    /// 挂 `cfg(test)` 而不是压一个 `#[allow(dead_code)]`：后者会让它悄悄烂在那里
+    /// （仓库规矩是 0 warnings，而这个 warning 正是"还没接上"的提醒）。
+    /// 接上生产调用点时把这个属性摘掉即可。
+    #[cfg(test)]
+    pub fn text(w: f64, h: f64) -> Self {
+        Self { w, h, float_up: 0.0 }
+    }
+}
+
 /// 候选网格步长（16px ≈ 帧宽的 0.83%）。
 const GRID_STEP: f64 = 16.0;
 /// 只在 clearance ≥ 最高档 × 该比例的候选里撒点（“中心而不是边缘”）。
@@ -579,7 +622,8 @@ pub fn main_frame_rect(
 
 // ===== 落点 =====
 
-#[derive(Debug, Clone, Copy)]
+/// 落点结果。`PartialEq` 是给"重构前后逐点相同"那条判据用的（贴纸路径的 R4 保证）。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pick {
     /// 贴纸盒子左上角（帧像素）。
     pub x: f64,
@@ -602,11 +646,20 @@ impl Pick {
 
 /// 贴纸盒子占位（含 floatUp 上浮；碰撞测试与「同刻贴纸互斥」共用）。
 pub fn sticker_box(x: f64, y: f64, f: Frame) -> Rect {
-    Rect::new(x, y - f.float_up(), x + f.sticker_size(), y + f.sticker_size())
+    box_at(x, y, &BoxSize::sticker(f))
 }
 
-fn probe(x: f64, y: f64, f: Frame) -> Rect {
-    sticker_box(x, y, f)
+/// 把「左上角 + 盒子」变成矩形。
+///
+/// ⚠️ **`y - float_up` 是有意的**：盒子的**视觉**左上角是 `y`，
+/// 但入场动画期间它还会往上飘 `float_up`，所以避让时要连飘上去的那块一起算。
+/// 文字盒的 `float_up = 0` ⇒ 退化成 `Rect::new(x, y, x+w, y+h)`。
+pub fn box_at(x: f64, y: f64, b: &BoxSize) -> Rect {
+    Rect::new(x, y - b.float_up, x + b.w, y + b.h)
+}
+
+fn probe(x: f64, y: f64, b: &BoxSize) -> Rect {
+    box_at(x, y, b)
 }
 
 /// 候选坐标轴：等距网格 + 各障碍边缘的「临界位」（贴着障碍刚好放下）。
@@ -631,25 +684,29 @@ fn axis(min: f64, max: f64, critical: impl Iterator<Item = f64>) -> Vec<f64> {
     out
 }
 
-fn center_dist(x: f64, y: f64, f: Frame) -> f64 {
-    let dx = x + f.sticker_size() / 2.0 - f.w / 2.0;
-    let dy = y + f.sticker_size() / 2.0 - f.h / 2.0;
+/// 盒子中心到帧心的距离（用于"挑最靠近画面中心的那一个"）。
+///
+/// ⚠️ 盒子**宽高分开**：`b.w / b.h` 而不是同一个数。文字盒是扁的，
+/// 用宽度当高会让"哪个候选更居中"的判断整体偏移 —— 那不会报错，只会让落点看着"偏了一点"。
+fn center_dist(x: f64, y: f64, f: Frame, b: &BoxSize) -> f64 {
+    let dx = x + b.w / 2.0 - f.w / 2.0;
+    let dy = y + b.h / 2.0 - f.h / 2.0;
     (dx * dx + dy * dy).sqrt()
 }
 
 /// 从可行候选里挑「安全区中心」的一个：clearance 最高档 → 最靠近帧心的前 N 个 → seed 伪随机。
-fn central_pick(cands: &[(f64, f64, f64)], seed: f64, f: Frame) -> Pick {
+fn central_pick(cands: &[(f64, f64, f64)], seed: f64, f: Frame, box_: &BoxSize) -> Pick {
     let best = cands.iter().map(|c| c.2).fold(f64::MIN, f64::max);
     let mut band: Vec<&(f64, f64, f64)> = cands
         .iter()
         .filter(|c| c.2 >= best * CENTRAL_RATIO - 1e-6)
         .collect();
-    band.sort_by(|a, b| {
-        center_dist(a.0, a.1, f)
-            .partial_cmp(&center_dist(b.0, b.1, f))
+    band.sort_by(|p, q| {
+        center_dist(p.0, p.1, f, box_)
+            .partial_cmp(&center_dist(q.0, q.1, f, box_))
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then(p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal))
+            .then(p.1.partial_cmp(&q.1).unwrap_or(std::cmp::Ordering::Equal))
     });
     let n = band.len().min(CENTRAL_PICK);
     let idx = ((seed.clamp(0.0, 0.999_999) * n as f64) as usize).min(n - 1);
@@ -665,20 +722,50 @@ fn central_pick(cands: &[(f64, f64, f64)], seed: f64, f: Frame) -> Pick {
 /// - `seed`：0~1 的确定性伪随机数（调用方按 段起点 + 事件序号 生成）。
 /// - `f`：输出画布（`[canvas]` 推导；所有边界/盒子尺寸随它缩放）。
 pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64, f: Frame) -> Pick {
+    pick_box_position(blocked, allow, seed, f, &BoxSize::sticker(f))
+}
+
+/// 推导落点（**任意尺寸的盒子** —— §5 E3 的动态盒）。
+///
+/// # 与 [`pick_sticker_position`] 的关系
+///
+/// 贴纸那条是这一条的**薄包装**（盒子固定为 `BoxSize::sticker(f)`）—— 所以
+/// **贴纸落点逐像素不变**，而文字可以传自己的宽高。
+///
+/// ⚠️ **这不是"顺手抽出个公共函数"**：求解器里 `sticker_size()` 出现过 **6 次**
+/// （两轴的下界/上界/临界位、以及 probe 的矩形）。漏改任意一处，
+/// 症状都是**文字落点算错一个方向**（比如横向避让按 280 算、纵向按文字真实高算），
+/// 而单看某一处代码完全"合理"。全部收敛到 `b` 之后，漏改在**类型上**就不可能了。
+///
+/// # 参数
+///
+/// - `blocked`：障碍（人物/字幕/弹幕…）。
+/// - `allow`：可选的偏好区域（手写的 `layout.sticker_area` 自由选框）；**只作偏好**，
+///   当它里面没有安全位置时自动放弃（安全优先）。
+/// - `seed`：0~1 的确定性伪随机数（调用方按 `段起点 + 事件序号` 生成）。
+/// - `f`：输出画布（`[canvas]` 推导；边界与边距随它缩放）。
+/// - `b`：盒子尺寸（**像素**；贴纸见 [`BoxSize::sticker`]，文字见 [`BoxSize::text`]）。
+pub fn pick_box_position(
+    blocked: &[Blocked],
+    allow: &[Rect],
+    seed: f64,
+    f: Frame,
+    b: &BoxSize,
+) -> Pick {
     // 临界候选：盒子刚好贴在障碍右侧/下方，或刚好停在左侧/上方
     let xs = axis(
         f.margin(),
-        f.w - f.margin() - f.sticker_size(),
+        f.w - f.margin() - b.w,
         blocked
             .iter()
-            .flat_map(|b| [b.rect.x1 + TOUCH, b.rect.x0 - f.sticker_size() - TOUCH]),
+            .flat_map(|bg| [bg.rect.x1 + TOUCH, bg.rect.x0 - b.w - TOUCH]),
     );
     let ys = axis(
-        f.margin() + f.float_up(),
-        f.h - f.margin() - f.sticker_size(),
+        f.margin() + b.float_up,
+        f.h - f.margin() - b.h,
         blocked
             .iter()
-            .flat_map(|b| [b.rect.y1 + f.float_up() + TOUCH, b.rect.y0 - f.sticker_size() - TOUCH]),
+            .flat_map(|bg| [bg.rect.y1 + b.float_up + TOUCH, bg.rect.y0 - b.h - TOUCH]),
     );
 
     let mut free: Vec<(f64, f64, f64)> = Vec::new();
@@ -688,7 +775,7 @@ pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64, f: 
 
     for &x in &xs {
         for &y in &ys {
-            let p = probe(x, y, f);
+            let p = probe(x, y, b);
             let mut clearance = p.gap_to_frame_edge(f);
             let mut cost = 0.0;
             for b in blocked {
@@ -721,19 +808,19 @@ pub fn pick_sticker_position(blocked: &[Blocked], allow: &[Rect], seed: f64, f: 
 
     let pool = if !free_in_allow.is_empty() { &free_in_allow } else { &free };
     if !pool.is_empty() {
-        return central_pick(pool, seed, f);
+        return central_pick(pool, seed, f, b);
     }
 
     // 兜底：所有位置都压着东西 → 取重叠代价最小者，并列时取最靠近帧心的。
-    lowest.sort_by(|a, b| {
-        center_dist(a.1, a.2, f)
-            .partial_cmp(&center_dist(b.1, b.2, f))
+    lowest.sort_by(|a, c| {
+        center_dist(a.1, a.2, f, b)
+            .partial_cmp(&center_dist(c.1, c.2, f, b))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let n = lowest.len().min(CENTRAL_PICK).max(1);
     let idx = ((seed.clamp(0.0, 0.999_999) * n as f64) as usize).min(n - 1);
     let (_, x, y) = lowest[idx];
-    let p = probe(x, y, f);
+    let p = probe(x, y, b);
     let clearance = blocked
         .iter()
         .map(|b| p.gap_to(&b.rect))
@@ -756,6 +843,107 @@ mod tests {
 
     fn band_caption() -> Rect {
         caption_band(F, 72.0, 12.0)
+    }
+
+    // ── §5 E3：动态盒（文字用）─────────────────────────────────────
+
+    /// ⚠️ **贴纸路径必须逐像素不变**（R4）：`pick_sticker_position` 与
+    /// `pick_box_position(.., BoxSize::sticker(f))` 在**任意**输入下结果相同。
+    ///
+    /// 这条是这次重构（把 `sticker_size()` 换成 `BoxSize`）**唯一**可以出错的地方：
+    /// 求解器里那个尺寸出现过 6 次，换错任意一处都会让贴纸落点漂移，
+    /// 而单看代码每一处都"合理"。
+    #[test]
+    fn sticker_path_is_byte_identical_after_dynamic_box_refactor() {
+        let blocked = vec![
+            Blocked::new(Rect::new(0.0, 0.0, 640.0, 1080.0), ObstacleKind::DanmakuArea),
+            Blocked::new(band_caption(), ObstacleKind::Captions),
+        ];
+        for seed_i in 0..64 {
+            let seed = seed_i as f64 / 64.0;
+            let a = pick_sticker_position(&blocked, &[], seed, F);
+            let b = pick_box_position(&blocked, &[], seed, F, &BoxSize::sticker(F));
+            assert_eq!(a, b, "seed {seed}：贴纸路径不许因为动态盒重构而漂移");
+        }
+        // 竖屏同样对一遍（`sticker_scale` 在那边是 1.0，横竖数值路径不同）
+        let port = Frame::new(1080, 1920);
+        for seed_i in 0..16 {
+            let seed = seed_i as f64 / 16.0;
+            let a = pick_sticker_position(&blocked, &[], seed, port);
+            let b = pick_box_position(&blocked, &[], seed, port, &BoxSize::sticker(port));
+            assert_eq!(a, b, "竖屏 seed {seed} 同样不许漂移");
+        }
+    }
+
+    /// **盒子越大，落点越靠边** —— 动态盒真的在起作用（而不是"传了但没用"）。
+    ///
+    /// 判据取**相关性**而不是某个具体坐标：文字宽高变化的组合太多，
+    /// 钉死一个坐标只能证明"这条路我跑过"，证明不了"它按盒子大小避让"。
+    #[test]
+    fn bigger_box_is_pushed_further_from_the_caption_band() {
+        // 一条底部字幕带：盒子越宽，越难在它上方找到位置
+        let blocked = vec![Blocked::new(band_caption(), ObstacleKind::Captions)];
+        let narrow = BoxSize::text(300.0, 100.0);
+        let wide = BoxSize::text(1500.0, 100.0);
+
+        let mut narrow_clear = 0.0;
+        let mut wide_clear = 0.0;
+        for seed_i in 0..32 {
+            let seed = seed_i as f64 / 32.0;
+            let a = pick_box_position(&blocked, &[], seed, F, &narrow);
+            let b = pick_box_position(&blocked, &[], seed, F, &wide);
+            // 宽盒子的下沿必须**在字幕带上方**（否则就是"大字压住字幕"）
+            assert!(
+                b.y + wide.h <= band_caption().y0 + 1e-6 || b.x + wide.w <= band_caption().x0 || b.x >= band_caption().x1,
+                "seed {seed}：1500 宽的盒子压进了字幕带: {b:?}"
+            );
+            narrow_clear += a.clearance;
+            wide_clear += b.clearance;
+        }
+        assert!(
+            wide_clear <= narrow_clear + 1e-9,
+            "宽盒子的平均余量不该比窄盒子大（{wide_clear} vs {narrow_clear}）—— 动态盒没生效？"
+        );
+    }
+
+    /// **纵向避让必须用盒子的 `h`，不是 `w`**（正方形近似的变异要能被抓到）。
+    ///
+    /// ⚠️ 这条是补的：`bigger_box_is_pushed_further_from_the_caption_band` 对
+    /// **替换 `b.h` → `b.w`** 的变异**不翻面**（实测过）—— 因为宽盒子本来就够宽，
+    /// 两种算法都会把它推离字幕带。抓这个变异要用**又宽又扁**的盒子配**又薄又宽的障碍**。
+    /// ⚠️ 判据也不是"它应当贴着障碍"：求解器**偏好画面中心**（`center_dist`），
+    /// 会主动躲到中间去。真正能分辨两种算法的是**"有没有位置可放"**：
+    ///   * 用真实高度（120）：障碍下方那一大片都能放 ⇒ `relaxed = false`；
+    ///   * 用宽度当高（1400）：盒子比画面还高 ⇒ **一个候选都放不下** ⇒ `relaxed = true`。
+    #[test]
+    fn vertical_fit_uses_box_height_not_width() {
+        // 一块薄障碍（横向铺满、只有 60px 高）
+        let blocked = vec![Blocked::new(Rect::new(0.0, 0.0, 1920.0, 60.0), ObstacleKind::Liver)];
+        let flat = BoxSize::text(1400.0, 120.0);
+        const N: usize = 32;
+        for seed_i in 0..N {
+            let seed = seed_i as f64 / N as f64;
+            let p = pick_box_position(&blocked, &[], seed, F, &flat);
+            assert!(
+                !p.relaxed,
+                "seed {seed}: 扁盒子（1400×120）退化到了 relaxed ——                  说明纵向避让把它当成了 1400 高的巨型盒子（拿了宽度当高）: {p:?}"
+            );
+            assert!(p.y + flat.h <= F.h + 1e-6, "seed {seed}: 盒子出画: {p:?}");
+        }
+    }
+
+    /// 文字盒**不带**入场上浮（`: `float_up = 0`）—— 用错的后果是落点整体偏上 18px。
+    #[test]
+    fn text_box_has_no_float_up() {
+        let t = BoxSize::text(400.0, 120.0);
+        assert_eq!(t.float_up, 0.0, "文字没有贴纸那种入场飘起，占位不该往上留");
+        let r = box_at(100.0, 200.0, &t);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (100.0, 200.0, 500.0, 320.0));
+        // 对照：贴纸盒**要**往上留 `float_up`（否则入场那一瞬会压住东西）
+        let s = BoxSize::sticker(F);
+        assert!(s.float_up > 0.0, "贴纸盒必须留入场上浮占位");
+        let rs = box_at(0.0, 0.0, &s);
+        assert!(rs.y0 < 0.0, "贴纸盒的上沿应当在 y 之上（留出上浮量）");
     }
 
     /// 竖屏贴纸尺寸 = **短边**基准：横竖画布下贴纸绝对像素相同（都是 280×280），
