@@ -531,8 +531,25 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 字幕样式是两列两行（2 个 .ss-row-2 × 每个 2 条 .ss-row）',
     (ssTpl.match(/<div class="ss-row-2">/g) || []).length === 2
     && (ssTpl.match(/<div class="ss-row"/g) || []).length === 4, true)
-  check('⑰ 两列态给数字框留了 `min-width:0`（不然 flex 最小尺寸会把右列顶出容器）',
-    /\.ss-num \{ flex:1 1 auto; min-width:0; \}/.test(polishView), true)
+  // ⚠️⚠️ 这一条是**两次翻车换来的**，别改松：
+  //   ① 只写 `.ss-num { flex:1 1 auto }` 没用 —— `.rv-input`（同特异性、写在文件**后面**）
+  //      带着 `flex:0 0 auto; width:6ch`，源码顺序在后者胜 ⇒ 数字框被钉在 ~32px，
+  //      `400` 显示不全（用户："两列的排版有问题"）。
+  //   ② 同理 `.ss-row-2 .ss-lbl { width:44px }` 会被后面那条 `.ss-lbl { width:62px }` 盖掉
+  //      （实测 `numBoxW:[266,266]` —— 数字框吞掉整行）。
+  //   所以**两者都必须用子选择器加深特异性**，这条判据同时钉住这两处。
+  check('⑰ 两列态的 `.ss-num` 用子选择器压过 `.rv-input`（只写 .ss-num 会被宽度规则盖掉）',
+    /\.ss-row-2 > \.ss-row > \.ss-num \{[^}]*flex:1 1 auto[^}]*min-width:0/.test(polishView), true)
+  check('⑰ 两列态的 `.ss-lbl` 用子选择器压过基础规则的 62px',
+    /\.ss-row-2 > \.ss-row > \.ss-lbl \{ width:44px; \}/.test(polishView), true)
+  // ⚠️ 角标在两列里放不下（文字 44px + 角标 24px + 间距 > 44px 列宽）⇒ 已删，改由 title 承载。
+  check('⑰ 两列里不再挂「近似」角标（放不下会被裁掉一半）',
+    /<span class="ss-lbl">描边宽度<\/span>/.test(polishView), true)
+  // 页签必须在**最上面**、且那个大标题已删。
+  check('⑰ 三个页签独占最上面一行（`.side-tabs` 在 ss-grid 之前）',
+    polishView.indexOf('<div class="side-tabs">') < polishView.indexOf('<div class="ss-grid"'), true)
+  check('⑰ 右栏那个「项目设置」大标题已删（页签名已自明）',
+    /<h2 class="m-0 card-h2"><Icon name="sliders"/.test(polishView), false)
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
   check('⑰ 任务详情是**浮层**（不挤占下方控件）',
     /\.job-wrap \{ position:relative; \}/.test(polishView)

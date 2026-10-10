@@ -134,13 +134,17 @@
                **掉到下一行占满整宽**。判据 ⑰ 钉着。 -->
           <div class="right-col">
             <div class="card">
-              <div class="row spread mb-8">
-                <h2 class="m-0 card-h2"><Icon name="sliders" :size="15" /> 项目设置</h2>
-                <div class="row">
-                  <button class="mini-btn" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
-                  <button class="mini-btn" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
-                  <button class="mini-btn" :class="{ selected: sideTab === 'intro' }" @click="sideTab = 'intro'">片头片尾</button>
-                </div>
+              <!-- **三个页签独占最上面一行**（用户口径：「三个标签页放在最上面，删除最上面
+                   项目设置这个大文字」）。原先标题与页签挤在同一行、还占掉一半宽度。
+                   ⚠️ 那个 `<h2>项目设置</h2>` 已删 —— 页签名本身就说清了这是什么，
+                      再挂一个大标题属于同一件事说两遍（本卡既有纪律）。
+                   ⚠️ 用 `flex:1` 让三颗**等宽铺满**：右栏 300px 内容宽 266px，三颗各自
+                      约 84px，中文四个字（12px×4=48px）+ padding 22px + 边框 2px = 72px
+                      ⇒ 放得下，不会溢出。 -->
+              <div class="side-tabs">
+                <button class="mini-btn" :class="{ selected: sideTab === 'project' }" @click="sideTab = 'project'">项目设置</button>
+                <button class="mini-btn" :class="{ selected: sideTab === 'canvas' }" @click="sideTab = 'canvas'">画面尺寸</button>
+                <button class="mini-btn" :class="{ selected: sideTab === 'intro' }" @click="sideTab = 'intro'">片头片尾</button>
               </div>
 
               <template v-if="sideTab === 'project'">
@@ -203,7 +207,12 @@
       </div>
       <div class="ss-row-2">
         <div class="ss-row" :title="strokeWidthHint">
-          <span class="ss-lbl">描边宽度<em class="ss-tag">近似</em></span>
+          <!-- ⚠️ 原先这里挂着一个「近似」角标，**两列排版下放不下**（实测：文字 44px +
+               角标 24px + 间距 3px = 71px，而列里只有 44px ⇒ 角标被裁掉一半）。
+               而且 `strokeWidthHint` 的悬停提示里**本来就写着**「近似值：底座只有描边开/关…」
+               —— 角标属于同一件事说两遍。删掉角标，保悬停提示。
+               ⚠️ `.ss-tag` 的样式**留着**（别顺手删）：它是通用角标类，别处可能还在用。 -->
+          <span class="ss-lbl">描边宽度</span>
           <input type="number" class="rv-input ss-num" inputmode="numeric" min="0" max="24" step="1"
                  :value="subtitleStrokeWidth" :disabled="!strokeEditable || !ready"
                  aria-label="字幕描边宽度（像素，近似）" @change="onSubtitleStrokeWidthChange">
@@ -2357,6 +2366,11 @@ onUnmounted(() => {
    标签列定宽 62px（"描边宽度"+「近似」角标最宽那行），余下 ~200px 给控件。
    ⚠️ **每一层都要 `min-width:0`**：`.ss-grid` 是 flex 列容器，不写的话它的自动最小尺寸
    会被子项的内容撑开（flex 项默认 `min-width:auto`），整块就往右溢出。 */
+/* 右栏卡片的**页签行**（项目设置 / 画面尺寸 / 片头片尾）—— 独占最上面一行、三颗等宽。
+   ⚠️ `min-width:0` 每层都要：flex 项默认 `min-width:auto`，中文页签名会把盒子撑到内容宽
+   （三颗加起来 > 266px）从而横向溢出。 */
+.side-tabs { display:flex; gap:6px; margin-bottom:8px; min-width:0; }
+.side-tabs > .mini-btn { flex:1 1 0; min-width:0; justify-content:center; padding:4px 6px; }
 .ss-grid { display:flex; flex-direction:column; gap:4px; margin-top:6px; min-width:0; }
 /* 读失败 / 未就绪时整块降透明度（配合 :disabled，让"现在不能改"看得出来） */
 .ss-grid.off { opacity:.55; }
@@ -2369,9 +2383,24 @@ onUnmounted(() => {
       会被数字框的 `size` 属性撑开，把右列顶出容器（本卡早就为同类问题写过警告）。 */
 .ss-row-2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; min-width:0; }
 .ss-row-2 > .ss-row { min-width:0; }
-.ss-row-2 .ss-lbl { width:44px; }
-/* 两列态下的数字框：吃掉标签与单位之后的剩余宽度（下限 0 才收得住） */
-.ss-num { flex:1 1 auto; min-width:0; }
+/* ⚠️⚠️ 这里**不能只写 `.ss-row-2 .ss-lbl`**：`.ss-lbl` 的基础规则写在文件**后面**
+   （见下面那条 `width:62px`），同特异性下**后者胜** ⇒ 62px 生效、两列里标签吃掉一大半，
+   数字框被挤成"要么 6ch 要么撑满整行"（实测 `numBoxW:[266,266]` —— 正是用户看到的"排版有问题"）。
+   用 `>` 加深一层特异性，压过后面那条基础规则。 */
+.ss-row-2 > .ss-row > .ss-lbl { width:44px; }
+/* 两列态下的数字框：吃掉标签与单位之后的剩余宽度。
+   ⚠️⚠️ **必须显式覆盖 `width`** —— `.rv-input`（同特异性 0,1,0，但写在文件**后面**）
+   带着 `flex:none; width:6ch`，源码顺序在后者胜 ⇒ 只写 `flex:1 1 auto` **根本不起作用**，
+   框仍被钉在 6ch（≈38px，装不下带 padding 的 `400`）。
+   这正是"两列排版有问题"的直接原因：我上一版的几何自测用的是**独立复刻页**，
+   那里没有 `.rv-input` 这两条，于是量出假通过（63px）。**用例必须带上真实样式。** */
+/* ⚠️⚠️ **必须比 `.rv-input` 更特指**，不能只写 `.ss-num`：
+   `.rv-input` 的 `flex:0 0 auto; width:46px`（另一条是 `6ch`）写在文件**后面**，
+   同特异性下后者胜 ⇒ `.ss-num` 的 `flex:1 1 auto` 被完全盖掉。
+   实测（带 `data-v-*` 的真实渲染）：数字框只有 **32px**、`flexGrow:0`，
+   `400` 显示不全 —— 这就是用户说的"两列的排版有问题"。
+   加一层 `.ss-row-2 > .ss-row > ` 提高特异性，压过那条基础规则。 */
+.ss-row-2 > .ss-row > .ss-num { flex:1 1 auto; width:auto; min-width:0; }
 .ss-lbl { flex:none; width:62px; font-size:11px; color:var(--ink-dim); white-space:nowrap;
           display:flex; align-items:center; gap:3px; }
 /* 「近似」角标：描边宽度成片侧受底座限制（只有描边开/关），必须如实标注。 */
