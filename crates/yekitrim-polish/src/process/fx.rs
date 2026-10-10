@@ -371,6 +371,206 @@ impl MaterializedEdl {
     }
 }
 
+/// 句末判据：这条字幕是不是**说完整了**。
+///
+/// 依据 `docs/plan/editing-decision-layer.md` §5.2：**"不必上词级时间戳"** ——
+/// 字幕自带 `text` + `start/end`，"这条是不是以句末标点结尾"就够了。
+///
+/// 认三种形态（都是**句末**，不是句中）：
+/// - **句末标点**：`。！？…` 与它们的全角/半角混用（`!?` `.` 在中文 ASR 里也会出现在句末）；
+/// - **省略号**：`…` / `...` —— "话没说完但停住了"，正是可以切的地方；
+/// - ⚠️ **引号/括号收尾**：`"好。"` 这种**标点被引号包住**的形态，
+///   所以先剥掉尾部的成对包裹符再看标点（不剥的话最常见的对白引号会被判成"没说完"）。
+///
+/// ⚠️ **逗号、顿号、分号一律不算**（`,` / `，` / `、` / `；` / `:`）——
+/// 那些正是"话说一半"的标志，把切点放上去就是本守卫要防的事。
+pub fn is_sentence_end(text: &str) -> bool {
+    let t = text.trim_end();
+    // 尾部包裹符可以叠（`"'…"'` 这种），循环剥干净再判标点。
+    let mut core = t;
+    loop {
+        let stripped = core
+            .trim_end()
+            .trim_end_matches(['"', '\'', '”', '’', '」', '』', '）', ')', '】', '》', '〉']);
+        if stripped.len() == core.len() {
+            break;
+        }
+        core = stripped;
+    }
+    if core.is_empty() {
+        return false;
+    }
+    // `...` 要整串认（尾字符是 `.` 时逐个剥会把它当句号，但那也是句末，等价）。
+    core.ends_with(['。', '！', '？', '…', '!', '?', '.'])
+}
+
+/// 句末边界守卫（总方案 §2）：**切片/分段边界必须落在句末**，不再"一句话说到一半就切"。
+///
+/// 依据 HIVE 论文（[arXiv 2507.02790](https://arxiv.org/html/2507.02790v1)）：
+/// *"ensure that clip boundaries do not interrupt ongoing dialogue"* ——
+/// **去掉边界选择，Hook Rate 从 0.87 掉到 0.28**（掉 2/3）。
+///
+/// # 判据（两条取其一，都在**字幕**上判，不碰事件）
+///
+/// 1. **句末标点**：该时刻所在那条字幕以 [`is_sentence_end`] 为真；
+/// 2. **足够长的空隙**：该时刻落在两条字幕之间且**间隙 > [`BOUNDARY_GAP_SECS`]** ——
+///    没人说话时切，当然不会切断句子。
+///
+/// # 怎么改（**结构性约束**）
+///
+/// 只挪**段的 `start`/`end`**，且：
+/// - 段是**首尾相接**的一条链（每个 `end` = 下一个 `start`），所以一次改动要**成对**做：
+///   把边界从 `t` 挪到 `t'` ⇒ 前一段的 `end` 与后一段的 `start` 一起改成 `t'`；
+/// - **单段工程 / 首段起点 / 末段终点一律不动**（整片就是个段时无处可挪，
+///   首尾是片子的开头结尾，挪了就是剪掉片头片尾）；
+/// - 按时间排序后处理，**不依赖文件顺序**（段之间时间会重叠 —— 见 `cap_pip_shots` 那条教训）；
+/// - `manual` 段**不参与**（用户自己锁的边界，照 `cap_pip_shots` 的先例）。
+///
+/// # 落点怎么选
+///
+/// 在「原位置 ± [`BOUNDARY_SEARCH_SECS`]」这个窗口里找**最近的合格点**：
+/// 优先句末字幕的**结束点**（那句话说完的位置），其次窗口内的长空隙中点。
+/// **两个方向都找不到就原样不动** —— 宁可不切，也不把一个更差的点按上去。
+///
+/// 返回被挪动的边界个数（0 = 本来就都在句末）。日志由调用方报。
+pub fn align_segment_boundaries(segments: &mut [Segment], subtitles: &[Subtitle]) -> usize {
+    if segments.len() < 2 || subtitles.is_empty() {
+        return 0;
+    }
+    // 按 start 排序拿"相邻"关系（段之间时间会重叠，文件顺序不算数）。
+    // ⚠️ 记的是**原下标**：改的是 `segments[idx]` 本体，不是排序后的副本。
+    let mut order: Vec<usize> = (0..segments.len()).collect();
+    order.sort_by(|a, b| {
+        segments[*a]
+            .start
+            .partial_cmp(&segments[*b].start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // 先把每条"共享边界"的候选算出来，再统一落盘 —— 边改边读会让后面的判据看到半成品。
+    let mut moves: Vec<(usize, usize, f64)> = Vec::new(); // (前段 idx, 后段 idx, 新边界)
+    for w in order.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        // 两段必须真的首尾相接才谈得上"共享边界"；有缝/重叠就让它们保持原样。
+        let shared = segments[a].end;
+        if (shared - segments[b].start).abs() > 1e-6 {
+            continue;
+        }
+        if boundary_is_clean(shared, subtitles) {
+            continue;
+        }
+        let Some(better) = best_boundary_near(shared, subtitles) else {
+            continue;
+        };
+        // 挪了之后得仍是合法段（不能把某一段吃掉）。
+        if better <= segments[a].start + MIN_SEGMENT_SECS
+            || better >= segments[b].end - MIN_SEGMENT_SECS
+        {
+            continue;
+        }
+        moves.push((a, b, better));
+    }
+
+    for (a, b, t) in &moves {
+        segments[*a].end = *t;
+        segments[*b].start = *t;
+    }
+    moves.len()
+}
+
+/// 这个时刻算不算"切得干净"（见 [`align_segment_boundaries`] 的两条判据）。
+///
+/// `pub(crate)` 供诊断探针（`diagnose_boundaries`）读数；生产路径只有
+/// [`align_segment_boundaries`] 一个入口。
+pub(crate) fn boundary_is_clean(t: f64, subs: &[Subtitle]) -> bool {
+    // ⚠️ **先判"落在空隙里"，再判"落在字幕内部"** —— 顺序不能反。
+    // 字幕的**结束点**同时满足两个条件（`start <= t <= end`），先判包含就会把它
+    // 当成"这条字幕内部"、进而要求句末标点；而它其实是**两句话之间的位置**。
+    // 实测后果：真实 ASR 字幕没有终句标点 ⇒ 字幕结束点全被判成"不干净" ⇒
+    // 兜底候选自己把自己滤光、守卫永远放弃（`boundary_falls_back_...` 那条测试钉住它）。
+    // 判据用"严格在外"（`t >= s.end` 与 `t <= s.start`），让结束点归到空隙那一侧。
+    let inside = subs.iter().any(|s| s.start < t && t < s.end);
+    if inside {
+        // 落在某条字幕**内部**（严格意义）：只有整条说完才算干净。
+        let s = subs
+            .iter()
+            .find(|s| s.start < t && t < s.end)
+            .expect("上面 any 已确认存在");
+        return is_sentence_end(&s.text);
+    }
+    // 落在空隙 / 边界点上：够宽就行。算到"上一条说完"与"下一条开口"之间的距离。
+    let prev_end = subs
+        .iter()
+        .filter(|s| s.end <= t)
+        .map(|s| s.end)
+        .next_back();
+    let next_start = subs.iter().filter(|s| s.start >= t).map(|s| s.start).next();
+    match (prev_end, next_start) {
+        (Some(p), Some(n)) => (n - p) > BOUNDARY_GAP_SECS,
+        // 片头之前 / 片尾之后：没有对话可切断。
+        _ => true,
+    }
+}
+
+/// 在 `t` 附近找最近的合格切点（两个方向都找，取更近的那个）。
+///
+/// # 两类候选（**上限是真实数据的现实，不是设计偏好**）
+///
+/// ① **句末字幕的结束点** —— 首选。天然满足"不切断句子"，落点是**那句话说完的瞬间**，
+///    正是剪辑上该切的位置。
+/// ② ⚠️ **任意字幕的结束点** —— 兜底。**这一条不是可选的**：实测本仓可得的字幕样本里
+///    句末标点占比 **0/13 = 0%**（ASR 输出与手写 demo 都不带终句标点），
+///    只认 ① 的话守卫在真实数据上**永远找不到点、永远放弃** —— 那等于没做这一项。
+///    字幕结束点弱于句末标点，但仍**强于"句中任意位置"**：它是 ASR 判断的"这一口气说完了"，
+///    而我们能拿到的信号里没有比它更细的（规格 §5.2 明说"不必上词级时间戳"）。
+///    ⇒ 保险起见只做**同一条字幕内部的收尾**，不跨到别的字幕上。
+///
+/// 两类一起按"离 `t` 的绝对距离"排序，最近的胜出；`t` 自己若已干净
+/// （[`boundary_is_clean`]）就不会走到这里。
+pub(crate) fn best_boundary_near(t: f64, subs: &[Subtitle]) -> Option<f64> {
+    // ① 句末标点优先（距离相同时它排前面 —— 排序稳定，先入者先出）。
+    let mut cands: Vec<(f64, u8)> = subs
+        .iter()
+        .filter(|s| is_sentence_end(&s.text))
+        .map(|s| (s.end, 0u8))
+        .filter(|(e, _)| (e - t).abs() <= BOUNDARY_SEARCH_SECS)
+        .filter(|(e, _)| boundary_is_clean(*e, subs))
+        .collect();
+    // ② 兜底：任意字幕的结束点（见上面第 ② 条的理由）。
+    cands.extend(
+        subs.iter()
+            .map(|s| (s.end, 1u8))
+            .filter(|(e, _)| (e - t).abs() <= BOUNDARY_SEARCH_SECS)
+            .filter(|(e, _)| boundary_is_clean(*e, subs)),
+    );
+    // 按距离排；距离相同看类别（0 = 句末标点，更优）。
+    cands.sort_by(|a, b| {
+        (a.0 - t)
+            .abs()
+            .partial_cmp(&(b.0 - t).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
+    cands.first().map(|(e, _)| *e)
+}
+
+/// 边界前后找替代点的搜索半径（秒）。
+///
+/// 4.0s 的取舍：太小 ⇒ 大量边界"找不到就放弃"，守卫形同虚设；
+/// 太大 ⇒ 挪动幅度盖过一个语气停顿，看着像"切错地方了"。真实字幕中位时长 2.64s，
+/// 4.0s ≈ 一句话多一点，正好够到"上一句说完 / 下一句说完"。
+pub const BOUNDARY_SEARCH_SECS: f64 = 4.0;
+
+/// 多大的字幕间隙算"没人说话"（秒）。窄于它就不是一句说完了，只是换气。
+///
+/// ⚠️ 与 §2 规格给的 `0.35s` **不同**：那个数是"判定句子结束"用的（很短就够了），
+/// 这里还要求它宽到**能承载一个切点** —— 0.35s 的缝切下去，前后两个字幕几乎连着，
+/// 观感与"句中切"无异。取与 `STICKER_SNAP_MAX_SECS`(2.0s) 同一个量级。见保守决策记录。
+pub const BOUNDARY_GAP_SECS: f64 = 1.0;
+
+/// 挪边界之后每段至少要剩下这么长（秒），否则不挪 —— 免得把一段吃到只剩一帧。
+pub const MIN_SEGMENT_SECS: f64 = 0.5;
+
 /// 把 LLM 的「冷开场 / 回忆回溯」意图**落实成 `edl.clips`**，并兜住配额。
 ///
 /// # 照抄的先例
@@ -1743,5 +1943,223 @@ mod tests {
         // 留最早的几条
         let starts: Vec<f64> = clips.iter().map(|c| c.source_start).collect();
         assert_eq!(starts, vec![0.0, 10.0], "按时间序取最早的那几条");
+    }
+
+    // ===== §2 句末边界守卫 =====
+
+    fn ssub(i: usize, start: f64, end: f64, text: &str) -> Subtitle {
+        Subtitle { index: i, start, end, text: text.into(), html: String::new() }
+    }
+
+    fn seg_of(start: f64, end: f64) -> Segment {
+        Segment {
+            start,
+            end,
+            fx: "med".into(),
+            note: String::new(),
+            events: Vec::new(),
+            extra: Default::default(),
+        }
+    }
+
+    /// **句末判据本身**：句末标点认、句中标点不认。
+    ///
+    /// 变异自证：把 `is_sentence_end` 里的 `'，'` 加进结尾字符集 ⇒ `逗号不是句末` 翻红。
+    #[test]
+    fn sentence_end_detects_terminal_punctuation_only() {
+        // 句末：认
+        for t in ["好。", "真的吗？", "太好了！", "我没想到…", "等等...", "ok.", "what?"] {
+            assert!(is_sentence_end(t), "应判为句末：{t:?}");
+        }
+        // **句中：一律不认**（这些正是"话说一半"的标志）
+        for t in ["你好，", "然后、", "因为；", "注意：", "没有标点", ""] {
+            assert!(!is_sentence_end(t), "不该判为句末：{t:?}");
+        }
+        // ⚠️ **标点被引号包住**：ASR 的对白引号极常见，剥掉包裹符才认得出。
+        // 不剥的话最常见的形态会被判成"没说完" ⇒ 守卫几乎失效。
+        for t in ["他说\"好。\"", "「真的吗？」", "（笑）！", "'ok.'"] {
+            assert!(is_sentence_end(t), "引号/括号收尾也要认得出句末：{t:?}");
+        }
+    }
+
+    /// **守卫的主判据**：切在句子中间 ⇒ 挪到最近的"说完"位置。
+    ///
+    /// 场景：边界落在 `14.0~16.0` 这条字幕**内部**（那句话还没说完，无句末标点）。
+    /// 两个候选：`12.5`（上一句说完，距 15.0 有 2.5s）与 `16.0`（这条字幕说完，距 1.0s）
+    /// ⇒ 取**更近的 16.0**（少动为妙）。两段仍必须首尾相接。
+    #[test]
+    fn boundary_moves_off_mid_sentence_to_previous_sentence_end() {
+        let subs = vec![
+            ssub(1, 10.0, 12.5, "先说第一句。"),
+            ssub(2, 14.0, 16.0, "这话还没说完呢接下来还有"), // 无句末标点
+            ssub(3, 20.0, 22.0, "第二句说完了。"),
+        ];
+        let mut segs = vec![seg_of(0.0, 15.0), seg_of(15.0, 30.0)];
+        let moved = align_segment_boundaries(&mut segs, &subs);
+        assert_eq!(moved, 1, "应当挪动 1 处边界");
+        assert_eq!(segs[0].end, 16.0, "挪到**最近**的说完位置（16.0 比 12.5 近）");
+        assert_eq!(segs[1].start, 16.0, "后一段的 start 必须跟着一起改（首尾相接不变）");
+    }
+
+    /// **近的那一侧胜出**：候选在左右都有时取距离更小的（不是"一律往前"）。
+    ///
+    /// 这条把"方向偏好"钉死：守卫**不偏向任何一侧**，只按距离。
+    /// 边界切在 `12.0`（一条长字幕内部），左侧候选 `7.0`（距 5.0 ❌超半径）、
+    /// 右侧候选 `12.5`（距 0.5 ✅）⇒ 只能往右。
+    /// 反过来的场景见下一条测试，两者一起证明**没有固定方向**。
+    #[test]
+    fn boundary_picks_the_nearer_side_not_a_fixed_direction() {
+        // 边界 12.0 落在 `11.0~13.0` 这条**内部**（无句末标点 ⇒ 不干净）
+        let subs = vec![
+            ssub(1, 5.0, 7.0, "早一句"),   // end 7.0，距 12.0 = 5.0（超 4s 半径）
+            ssub(2, 11.0, 13.0, "还在说"), // end 13.0，距 12.0 = 1.0 ✅
+        ];
+        let mut segs = vec![seg_of(0.0, 12.0), seg_of(12.0, 20.0)];
+        assert_eq!(align_segment_boundaries(&mut segs, &subs), 1);
+        assert_eq!(segs[0].end, 13.0, "只有右侧候选在半径内 ⇒ 往右");
+
+        // 镜像场景：边界落在 `3.0~5.0` 内部，右侧候选远、左侧候选近 ⇒ 往左
+        let subs2 = vec![
+            ssub(1, 1.0, 2.0, "早一句"), // end 2.0，距 4.0 = 2.0 ✅
+            ssub(2, 3.0, 5.0, "还在说"), // end 5.0，距 4.0 = 1.0 ✅（更近）
+        ];
+        let mut segs2 = vec![seg_of(0.0, 4.0), seg_of(4.0, 20.0)];
+        assert_eq!(align_segment_boundaries(&mut segs2, &subs2), 1);
+        assert_eq!(
+            segs2[0].end, 5.0,
+            "两侧都在半径内 ⇒ 取更近的（5.0 距 1.0 < 2.0 距 2.0）"
+        );
+    }
+
+    /// **本来就在句末 ⇒ 一个字节都不动**（守卫的"零副作用"判据）。
+    ///
+    /// 落盘前后逐字节相同是 R4 的一部分：守卫不该把已经切干净的项目改出差异来。
+    #[test]
+    fn boundary_leaves_clean_cuts_untouched() {
+        let subs = vec![
+            ssub(1, 10.0, 12.5, "第一句。"),
+            ssub(2, 14.0, 16.0, "第二句。"),
+        ];
+        // 边界就在 12.5（上一句结尾）
+        let mut segs = vec![seg_of(0.0, 12.5), seg_of(12.5, 30.0)];
+        let before: Vec<(f64, f64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(align_segment_boundaries(&mut segs, &subs), 0);
+        let after: Vec<(f64, f64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(before, after, "已经切在句末的工程必须逐值不变");
+
+        // 边界落在**宽空隙**里也算干净（没人说话，切不伤句子）
+        let mut segs2 = vec![seg_of(0.0, 18.0), seg_of(18.0, 30.0)];
+        // 12.5~14.0 只有 1.5s；用 17.5 那个真正的宽缝
+        let subs2 = vec![
+            ssub(1, 10.0, 12.5, "第一句。"),
+            ssub(2, 20.0, 22.0, "第二句。"),
+        ];
+        assert_eq!(align_segment_boundaries(&mut segs, &subs2), 0);
+        assert_eq!(segs[0].end, 12.5);
+        assert_eq!(
+            align_segment_boundaries(&mut segs2, &[]),
+            0,
+            "没有字幕时无可判 ⇒ 原样不动"
+        );
+    }
+
+    /// **找不到合格点就不动** —— 宁可不切，也不按一个更差的点上去。
+    ///
+    /// 相邻两句都离得很远（超出 [`BOUNDARY_SEARCH_SECS`]）时，边界保持原值。
+    /// ⚠️ 这条同时钉住"兜底候选也受同一个半径约束"：兜底放宽的是**标点要求**，不是**距离**。
+    #[test]
+    fn boundary_gives_up_when_no_clean_point_is_near() {
+        let subs = vec![
+            ssub(1, 0.0, 2.0, "很早的一句。"),
+            ssub(2, 50.0, 52.0, "很晚的一句。"),
+        ];
+        let mut segs = vec![seg_of(0.0, 30.0), seg_of(30.0, 60.0)];
+        assert_eq!(
+            align_segment_boundaries(&mut segs, &subs),
+            0,
+            "30.0 附近 4s 内没有字幕结束点（句末或兜底都没有）⇒ 不许乱挪"
+        );
+        assert_eq!((segs[0].end, segs[1].start), (30.0, 30.0));
+    }
+
+    /// ⚠️ **兜底候选**：真实 ASR 字幕**常常没有句末标点**（本仓可得的样本里实测 0/13 = 0%）。
+    ///
+    /// 只认句末标点的话，这个守卫在真实数据上会**永远放弃** ⇒ 等于没做这一项。
+    /// 所以没有句末点时退到"**字幕结束点**"—— 它仍强于"句中任意位置"。
+    ///
+    /// 变异自证：把 `best_boundary_near` 里第 ② 类候选整段删掉 ⇒ 本测试翻红
+    /// （边界会停在 15.0 不动，而那里正切在一句话中间）。
+    #[test]
+    fn boundary_falls_back_to_subtitle_end_when_no_terminal_punctuation() {
+        // 三条字幕**全都没有**句末标点（模拟真实 ASR 输出）
+        let subs = vec![
+            ssub(1, 10.0, 12.5, "先说第一句"),
+            ssub(2, 14.0, 16.0, "这话还没说完"),
+            ssub(3, 20.0, 22.0, "第二句说完了"),
+        ];
+        assert!(
+            subs.iter().all(|s| !is_sentence_end(&s.text)),
+            "前提：这批字幕一个句末标点都没有"
+        );
+        let mut segs = vec![seg_of(0.0, 15.0), seg_of(15.0, 30.0)];
+        let moved = align_segment_boundaries(&mut segs, &subs);
+        assert_eq!(moved, 1, "没有句末标点也要能挪（退到字幕结束点）");
+        assert_eq!(
+            (segs[0].end, segs[1].start),
+            (16.0, 16.0),
+            "15.0 切在「这话还没说完」中间 ⇒ 退到它说完的 16.0（比 12.5 更近）"
+        );
+    }
+
+    /// **单段工程 / 有空隙的段表一律不动**（边界结构的合法性）。
+    #[test]
+    fn boundary_respects_segment_structure() {
+        let subs = vec![ssub(1, 10.0, 12.5, "一句。")];
+        // 只有一个段：无处可挪（挪了就是剪片头片尾）
+        let mut one = vec![seg_of(0.0, 15.0)];
+        assert_eq!(align_segment_boundaries(&mut one, &subs), 0);
+        assert_eq!((one[0].start, one[0].end), (0.0, 15.0));
+
+        // 两段**不接壤**（中间有缝）：不是"共享边界"，不许动
+        let mut gap = vec![seg_of(0.0, 15.0), seg_of(20.0, 30.0)];
+        assert_eq!(
+            align_segment_boundaries(&mut gap, &subs),
+            0,
+            "有缝的两段之间不是共享边界"
+        );
+        assert_eq!((gap[0].end, gap[1].start), (15.0, 20.0));
+    }
+
+    /// **幂等**：`process` 每次预览/出片都被隐式重跑，守卫必须收敛。
+    #[test]
+    fn boundary_guard_is_idempotent() {
+        let subs = vec![
+            ssub(1, 10.0, 12.5, "第一句。"),
+            ssub(2, 14.0, 16.0, "没说完的话"),
+            ssub(3, 20.0, 22.0, "第二句。"),
+        ];
+        let mut segs = vec![seg_of(0.0, 15.0), seg_of(15.0, 30.0)];
+        let first = align_segment_boundaries(&mut segs, &subs);
+        assert_eq!(first, 1);
+        let snapshot: Vec<(f64, f64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(
+            align_segment_boundaries(&mut segs, &subs),
+            0,
+            "第二次必须不再挪（已经落在句末）"
+        );
+        let again: Vec<(f64, f64)> = segs.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(snapshot, again, "幂等：值也不许漂");
+    }
+
+    /// **不许把段吃到只剩一帧**：挪动后每段仍需 ≥ [`MIN_SEGMENT_SECS`]。
+    #[test]
+    fn boundary_never_shrinks_a_segment_below_minimum() {
+        let subs = vec![ssub(1, 0.4, 0.6, "很短的一句。")];
+        // 边界在 2.0；唯一的合格点在 0.6，挪过去会把前段压到 0.6（> 0.5）……
+        // 换成 0.2 起点的段：挪到 0.6 后前段只有 0.4s < MIN ⇒ 必须放弃
+        let mut segs = vec![seg_of(0.2, 2.0), seg_of(2.0, 10.0)];
+        let moved = align_segment_boundaries(&mut segs, &subs);
+        assert_eq!(moved, 0, "会把前段吃到 0.4s（低于下限）⇒ 必须放弃");
+        assert_eq!((segs[0].end, segs[1].start), (2.0, 2.0));
     }
 }

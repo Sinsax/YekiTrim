@@ -47,7 +47,7 @@
 | # | 名称 | 状态 | 证据（本文核实） | 一句话 |
 |---|---|---|---|---|
 | **1** | 决策理由 `reason` | 📐 | 全仓 `reason` 3 处命中**全是 LLM 重做状态**（`llm/status.rs:33`、`commands.rs:514`、`llm/mod.rs:297`），**零个**决策理由字段 | 每个自动决策说"为什么切在这" |
-| **2** | 句末边界守卫 | 📐 | `句末` **0 命中**；`snap_start`/`snap_end` 只保护特效时间，**不保护段边界** | 不再把话说一半就切 |
+| **2** | 句末边界守卫 | ✅ **已实现** | `fx::align_segment_boundaries` + `is_sentence_end`；process Step 0b 与 llm Step 4b 两处成对；含兜底候选（真实字幕 0% 句末标点） | 不再把话说一半就切 |
 | **3** | 剪辑质量分 | 📐 | `smoothness` **0 命中** | 每条切片一个"剪得好不好"的数 |
 | **4** | 转译报告可见 | ✅ **已实现**（`8c0770c` 后） | `dhampir::report_lines` + `render_video_only` 带报告 + `/polish/dhampir-project` 回包带 `translate_report` + 前端 `logTranslateReport` 三处播报 + CLI 落盘 `data/translate_report.json` | 失效不再静默 |
 
