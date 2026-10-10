@@ -328,6 +328,24 @@
       </button>
     </div>
 
+    <!-- 运镜强度（总方案 §18-C）：**只暴露配置、不改默认**。
+         三档的语义在 `[style.camera]` 里（中/近/画中画），这张表被四条渲染路径共用
+         （render-core / 模板 canvas / engine.js / 转译器）⇒ 改了这里预览与成片**同时**变。
+         ⚠️ 硬切（`cut`）与远景不受这个值影响 —— 它们是"不去"而不是"缩放"。 -->
+    <template>
+      <div class="mono small mt-6">运镜强度</div>
+      <label v-for="z in zoomFields" :key="z.key" class="row gap-6 mt-4" style="align-items:center">
+        <span class="small" style="width:52px">{{ z.label }}</span>
+        <input type="range" class="flex-1" :min="z.min" :max="z.max" step="0.05"
+               :value="zoomValue(z.key)" :disabled="styleSaving || !ready"
+               :title="z.title"
+               @input="onZoomInput(z.key, $event)"
+               @change="onZoomCommit(z.key, $event)" />
+        <span class="mono small" style="width:34px;text-align:right">{{ zoomValue(z.key).toFixed(2) }}</span>
+      </label>
+      <div class="muted small mt-4">越大越近；预览与成片同时生效</div>
+    </template>
+
     <template v-if="selectRegion">
       <div class="mono small mt-4">{{ rectText }}</div>
       <div class="row mt-4 gap-6">
@@ -1785,6 +1803,54 @@ function onSubtitlePosInput(e) {
   if (!Number.isFinite(n)) return
   const v = Math.min(50, Math.max(0, n))
   cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), subtitle: { ...(cfg.value?.style?.subtitle || {}), position_pct: v } } }
+}
+
+// ── 运镜强度（§18-C）───────────────────────────────────────────────
+//
+// 只暴露配置、**不改默认**。默认值就是 `[style.camera]` 里的历史值（中 1.3 / 近 1.5 /
+// 画中画 0.55），没写过这个键的工程读出来还是这三个数 ⇒ 存量工程观感零变化（R4）。
+//
+// ⚠️ **夹取范围与后端 `api/polish.rs` 的 `camera` 分支必须一致**。两边不一致的症状是
+// "滑块拖到 3.0、保存后弹回 2.5"（后端夹了、前端没夹）或反过来"前端夹了、后端存了 5.0"。
+// 上下限的依据（露边 + 语义）见后端那段注释 —— 这里只镜像，别在别处再写一份。
+const ZOOM_FIELDS = [
+  { key: 'zoom_close', label: '近景', min: 1.0, max: 3.0, title: '近景特写缩放（camera zoom=近）。默认 1.5，越大越近' },
+  { key: 'zoom_mid', label: '中景', min: 1.0, max: 3.0, title: '中景缩放（camera zoom=中）。默认 1.3' },
+  { key: 'zoom_wide', label: '画中画', min: 0.05, max: 1.0, title: '画中画缩放（camera zoom=远），小于 1 时四周留黑边。默认 0.55' },
+]
+const zoomFields = ZOOM_FIELDS
+
+/** 读当前生效值；没写过这个键就回落到历史默认（与后端同一批数）。 */
+const ZOOM_DEFAULTS = { zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
+function zoomValue(key) {
+  const v = cfg.value?.style?.camera?.[key]
+  return Number.isFinite(v) ? v : ZOOM_DEFAULTS[key]
+}
+
+/** 拖动只更新内存镜像（预览当场重算），松手才落盘 —— 与字幕位置滑杆同一套理由。 */
+function onZoomInput(key, e) {
+  const n = Number(e.target.value)
+  if (!Number.isFinite(n)) return
+  cfg.value = {
+    ...cfg.value,
+    style: { ...(cfg.value?.style || {}), camera: { ...(cfg.value?.style?.camera || {}), [key]: n } },
+  }
+}
+
+/** 松手 → 落盘。三档一起提交（后端那个分支收整块 `camera`）。 */
+async function onZoomCommit(key, e) {
+  const n = Number(e.target.value)
+  if (!Number.isFinite(n)) return
+  const f = ZOOM_FIELDS.find((x) => x.key === key)
+  const next = Math.min(f.max, Math.max(f.min, Math.round(n * 100) / 100))
+  const camera = {
+    zoom_mid: zoomValue('zoom_mid'),
+    zoom_close: zoomValue('zoom_close'),
+    zoom_wide: zoomValue('zoom_wide'),
+    [key]: next,
+  }
+  if (next === zoomValue(key) && camera[key] === cfg.value?.style?.camera?.[key]) return
+  await saveSubtitleStyle({ camera }, `${f.label}强度已保存（${next.toFixed(2)}）`)
 }
 
 /** 位置滑杆松手 → 落盘。 */
