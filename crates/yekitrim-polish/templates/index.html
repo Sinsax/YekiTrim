@@ -945,7 +945,9 @@ function init(){
     var cam = window.__CAM_STATE(t);
     var sw = handheldSway(t, cam.handheld);
     var sh = stageShiftPx();
-    if (!sw.dx && !sw.dy && !sw.rot && sw.scale === 1 && !sh.dx && !sh.dy) {
+    // 荷兰角（§19）也要进这条腿 —— 与 canvas 路径同一个 `cam.tilt`，一起决定"要不要动"。
+    var camTilt = (cam.tilt || 0) + sw.rot;
+    if (!sw.dx && !sw.dy && !camTilt && sw.scale === 1 && !sh.dx && !sh.dy) {
       if (fitBox.style.transform) { fitBox.style.transform = ''; fitBox.style.transformOrigin = ''; }
       return;
     }
@@ -955,7 +957,7 @@ function init(){
     var sc = (STAGE.scale || 1) * sw.scale;
     fitBox.style.transformOrigin = (cam.ox / CW * 100) + '% ' + (cam.oy / CH * 100) + '%';
     fitBox.style.transform = 'translate(' + (sh.dx + sw.dx * k) + 'px,' + (sh.dy + sw.dy * k)
-      + 'px) rotate(' + sw.rot + 'deg) scale(' + sc + ')';
+      + 'px) rotate(' + camTilt + 'deg) scale(' + sc + ')';
   }
 
   // ---- 事件处理器注册表 ----
@@ -1483,6 +1485,9 @@ function init(){
     // 手持摇摆的**幅度** 0~1：与 zoom 完全同一套状态机（同一段 td / 同一条缓动），
     // 差别只是档位只有 0/1 —— 开了就跟到下一条不带 handheld 的运镜。
     var handheld = 0.0;
+    // 荷兰角（规格 §4）：整帧绕聚焦中心旋转的度数，**持续状态**、与 zoom 同一套状态机。
+    // ⚠️ 初值必须是 0 —— 取第一条事件的 tilt 会让**片头一开始就歪着**。
+    var tilt = 0.0;
     var layout = (EVENT_IDX && EVENT_IDX.layout) || {};
     var liver = layout.liver || {};
     var defOrigin = liver.origin_grid ? gridOrigin(liver.origin_grid) : (liver.origin || '65% 50%');
@@ -1496,7 +1501,7 @@ function init(){
     // `layout.liver` 的 origin 给（zoom=1 时用不到，纯为三条 JS 路径同值）。
     // ⚠️ yekitrim-render-core 的 `evaluate_frame` 只归零 handheld、保留 zoom —— 那是 wgpu 路径的
     // 既有实现（不在出片链路上），两边口径的差异记在这里，别照抄回去。
-    if (!laneOn('camera')) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0 };
+    if (!laneOn('camera')) return { zoom: 1.0, ox: ox * CW / 100, oy: oy * CH / 100, handheld: 0.0, tilt: 0.0 };
 
     var wide = camFactor('远');
     for (var i = 0; i < cam.length; i++) {
@@ -1514,6 +1519,9 @@ function init(){
       else { zoom = lerp(zoom, tgt, p); }
       // 手持摇摆是状态机上的持续项：与 zoom 走同一段窗口、同一条缓动（硬切时一起瞬间到位）。
       handheld = lerp(handheld, c.ev.handheld === true ? 1.0 : 0.0, p);
+      // 荷兰角走**与 zoom 逐式同形**的过渡（同 `td`、同 `hardCut`、同 `p`）。
+      // ⚠️ `typeof` 判定而不是 `|| 0`：`tilt = 0` 是合法值（不倾斜），falsy 判定会把它当缺省。
+      tilt = lerp(tilt, typeof c.ev.tilt === 'number' ? c.ev.tilt : 0.0, p);
       // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
       // 起点取事件自己的 origin 而不是上一个事件的落点，与 zoom 同一段窗口、同一条缓动。
       var oa = (c.ev.origin || defOrigin).split(' ');
@@ -1527,7 +1535,7 @@ function init(){
     }
     // 竖素材已在函数开头整条返回（zoom 与 handheld 一起归零），走到这里的 handheld 必然是
     // 运镜状态机上的持续项（开了就跟到下一条不带 handheld 的运镜），直接交出。
-    return { zoom: zoom, ox: ox * CW / 100, oy: oy * CH / 100, handheld: handheld };
+    return { zoom: zoom, ox: ox * CW / 100, oy: oy * CH / 100, handheld: handheld, tilt: tilt };
   }
 
   // DOM/GSAP 预览层（脚本顶层作用域，看不见这个 IIFE）取相机状态：
@@ -1947,10 +1955,14 @@ function init(){
     // （画布百分比的像素形式）映射进画面矩形 —— 铺满时 sr=(0,0,CW,CH)，与改造前逐值一致。
     var anchorX = sr.x + cam.ox / CW * sr.w;
     var anchorY = sr.y + cam.oy / CH * sr.h;
-    if (Math.abs(camScale - 1.0) > 0.001 || sway.rot !== 0 || sway.dx !== 0 || sway.dy !== 0) {
+    // 旋转角 = **荷兰角（§19）+ 手持摇摆的 rot**，两者相加（与转译器逐式同口径）。
+    // ⚠️ 必须相加而不是二选一：荷兰角是"静止的持续倾斜"，手持 rot 是"微幅抖动"，
+    //    同时开时**两个都要有** —— 二选一会静默丢掉一个。
+    var camTilt = (cam.tilt || 0) + sway.rot;
+    if (Math.abs(camScale - 1.0) > 0.001 || camTilt !== 0 || sway.dx !== 0 || sway.dy !== 0) {
       if (sway.dx || sway.dy) ctx.translate(sway.dx, sway.dy);
       ctx.translate(anchorX, anchorY);
-      if (sway.rot) ctx.rotate(sway.rot * Math.PI / 180);
+      if (camTilt) ctx.rotate(camTilt * Math.PI / 180);
       ctx.scale(camScale, camScale);
       ctx.translate(-anchorX, -anchorY);
     }

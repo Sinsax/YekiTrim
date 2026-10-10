@@ -145,6 +145,19 @@ pub(crate) fn build_events_system_prompt(
   跳切之间**插一个贴纸/文字**是教科书级的做法(它盖住跳的那一下, 观感更顺) —— 值得这么做
 - handheld 是**可选的附加变种**（近景专用）: 只在正想要"手持镜头/临场纪实"的紧张、沉浸时刻用,
   **不是每条近景都要摇**; 它是持续状态 —— 想切回平稳镜头就再写一条不带 handheld 的运镜
+- **荷兰角**(`tilt`, 可选): 画面**持续歪一点**, 用来表达 **紧张/不安/尴尬/荒诞**。
+  写 `"tilt":4.5` 这样一个小数(度, 正=顺时针, 负=逆时针)。
+  ⚠️ **必须同时满足两条, 否则不要写**:
+  ① **该段的情绪必须很高**(`fx` 是 `high`, 或这一段被你标成了 `punch`) ——
+     荷兰角不是"随便歪一下", 它是**强情绪**的视觉隐喻; 低强度叙述里用会显得莫名其妙;
+  ② 语义确实属于 紧张/不安/尴尬/荒诞/翻车 之一(最经典的是「尴尬/社死」 —— 画面"歪"= 心理失衡)。
+  ⚠️ **三条硬约束**(系统会强制, 写了越界也不会生效):
+  * **角度必须 ≤ 6 度** —— 超过就像拍摄事故, 系统会夹到 6;
+  * **整片最多 2 处** —— 多了就不特殊了(超出的会被系统丢掉);
+  * **绝对不要和画中画(zoom="远")出现在同一段** —— 画面缩小后本来就有黑边, 再转必然露出更多。
+  ⚠️ 它是**持续状态**(与 handheld 同一套机制): 歪着会一直保持到下一条运镜,
+  想回正就再写一条**不带 `tilt`** 的运镜。别用它铺长时间。
+
 - 冷开场/回忆回溯（**只在真值得时才写，绝大多数段落都不该写**）: 给运镜写一个特殊的 anchor
   来表达"这一段值得在成片里**再放一次**" —— 它不是你这一段的运镜景别, 写完系统会收走:
   * `"anchor":"cold_open"` —— 「爆点提前播一次」: 把这一段**原样复制到成片最前面**当冷开场。
@@ -256,7 +269,7 @@ fn sticker_lang_desc(sticker_source: &[String]) -> String {
 
 /// LLM 可能漏掉事件对象的 type 字段 (serde tagged enum 必需)。
 /// 解析前按字段特征推断补全, 提高不同模型的输出容错性。
-/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld→camera, overlay_type/colors→overlay,
+/// 推断规则: zoom/origin/anchor/anchor_to/cut/handheld/tilt→camera, overlay_type/colors→overlay,
 /// kind（或 text+style/pos）→element, keyword→sticker, name→sfx, intensity/color→shake。
 /// 无法推断的保持原样（由 serde 报错）。
 pub(crate) fn normalize_segments_json(json: &str) -> String {
@@ -267,6 +280,9 @@ pub(crate) fn normalize_segments_json(json: &str) -> String {
             || obj.contains_key("anchor_to")
             || obj.contains_key("cut")
             || obj.contains_key("handheld")
+            // §19 荷兰角：只写 tilt 的运镜也该被认出来（与 handheld 同一条理由 ——
+            // 附加变种常常不重复景别之外的字段）
+            || obj.contains_key("tilt")
         {
             return Some("camera");
         }
@@ -437,13 +453,14 @@ mod tests {
             {"time":10.0,"end":12.0,"keyword":"laugh","x":"auto","y":"auto"},
             {"time":3.0,"name":"pop","volume":0.5},
             {"time":12.0,"end":15.0,"anchor":"liver"},
-            {"time":20.0,"end":24.0,"handheld":true}
+            {"time":20.0,"end":24.0,"handheld":true},
+            {"time":30.0,"end":34.0,"tilt":4.5}
           ]}
         ]"#;
         let norm = normalize_segments_json(raw);
         let segments: Vec<crate::project::Segment> = serde_json::from_str(&norm).unwrap();
         let evs = &segments[0].events;
-        assert_eq!(evs.len(), 7);
+        assert_eq!(evs.len(), 8);
         assert!(matches!(evs[0], crate::project::Event::Camera { .. }));
         assert!(matches!(evs[1], crate::project::Event::Shake { .. }));
         assert!(matches!(evs[2], crate::project::Event::Camera { .. }));
@@ -457,6 +474,13 @@ mod tests {
         assert!(
             matches!(&evs[6], crate::project::Event::Camera { handheld: true, .. }),
             "只写 handheld 的应推断成 camera: {norm}"
+        );
+        // §19 只写 tilt 同理 —— ⚠️ 漏了这一条的症状是"LLM 写了荷兰角、系统报
+        // 「不认识的事件类型」"，而它**只在这一段生成时炸**（其它段正常），
+        // 看起来像"偶发失败"。
+        assert!(
+            matches!(&evs[7], crate::project::Event::Camera { tilt: Some(d), .. } if (*d - 4.5).abs() < 1e-9),
+            "只写 tilt 的应推断成 camera: {norm}"
         );
     }
 

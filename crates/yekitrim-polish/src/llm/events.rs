@@ -423,6 +423,7 @@ mod tests {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         }
     }
 

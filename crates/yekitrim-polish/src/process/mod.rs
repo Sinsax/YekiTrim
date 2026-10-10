@@ -123,6 +123,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         });
     }
 
@@ -185,6 +186,26 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let stripped = cap_handheld_sway(&mut config.segments);
         if stripped > 0 {
             tracing::info!("  ⚠ 手持摇摆只在近景可用，已剔除 {stripped} 条（非近景）");
+        }
+    }
+
+    // Step 1d2: 荷兰角守卫（§19）。三条规则：夹 ±6°、全片最多 2 条、**禁配画中画**。
+    //
+    // ⚠️ 禁配画中画**不是审美偏好而是几何事实**（规格 §4.4b）：整帧旋转 θ 后要盖满画布
+    //    所需的缩放是 `max((W·cosθ+H·sinθ)/W, (W·sinθ+H·cosθ)/H)`；反解各档最大安全角 ——
+    //    「远」(0.55) → **0.00°**、「中」(1.3) → 10.24°、「近」(1.5) → 17.98°。
+    //    「远」的画面本来只有画布的 55%（左右各 432px 黑边），再转必然露出更多。
+    //    而规格 §4.2 的场景表第 3 条恰恰推荐"画中画配合" —— 那两条互相矛盾，
+    //    按**几何**这条硬约束走。
+    //
+    // ⚠️ 排在**画中画收工之后**（与 `cap_handheld_sway` 同一条理由）：`close_pip_shots`
+    //    会补出新的运镜事件，排前面就看不到"这一段里其实有画中画"。
+    {
+        let stripped = cap_dutch_angle(&mut config.segments);
+        if stripped > 0 {
+            tracing::info!(
+                "  ⚠ 荷兰角：已剔除/夹取 {stripped} 条（上限 {MAX_DUTCH_ANGLE}°，全片最多 {MAX_DUTCH_SHOTS} 条，且不与画中画同段）"
+            );
         }
     }
 
@@ -1744,6 +1765,7 @@ mod tests {
                 time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None,
                 cut: false, handheld: false, manual: false, speed: None,
+                tilt: None,
             }],
             extra: Default::default(),
         }];
@@ -1813,7 +1835,7 @@ mod tests {
     }
 
     fn camera() -> Event {
-        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None }
+        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None, tilt: None }
     }
 
     /// 覆盖事件（默认 1s 窗口）。
@@ -2146,7 +2168,7 @@ mod tests {
         assert_eq!(moments.len(), 3, "0.2s 与 0.5s 声音事件冲突被跳过");
         assert_eq!(moments[0].0, 5.2);
         // camera 等无声音事件不挡补位
-        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None }];
+        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None, tilt: None }];
         let moments = find_uncovered_sfx_moments(&subs, &cam, 4);
         assert_eq!(moments[0].0, 0.2, "camera 不占用音效时刻");
         // 预算 0 → 空
@@ -2165,6 +2187,7 @@ mod tests {
             time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(),
             anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false,
             speed: None,
+            tilt: None,
         }));
     }
 

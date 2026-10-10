@@ -489,6 +489,10 @@ export function cameraAt(idx, t) {
   let oy = 50
   // 手持摇摆的**幅度** 0~1：与 zoom 同一段窗口、同一条缓动（状态机：保持到下一条运镜）
   let handheld = 0
+  // 荷兰角（规格 §4）：整帧绕聚焦中心旋转的度数，**持续状态**、与 zoom 同一套状态机。
+  // ⚠️ 初值必须是 0（不能取第一条事件的值）：否则**片头一开始就歪着**，而用户
+  //    从任何界面都看不出那个初值是从哪来的。
+  let tilt = 0
   // 默认聚焦中心：自由选框（框选布局）> origin_grid > origin > 首个格子
   const defOrigin = regionOrigin(idx.layout.liver)
   const dp = defOrigin.split(' ')
@@ -497,7 +501,7 @@ export function cameraAt(idx, t) {
 
   // 运镜轨的眼睛关着 ⇒ 不做运镜 —— 手持摇摆是运镜的附加变种，跟随同一条开关。
   // ⚠️ 返回值（默认聚焦中心 + zoom=1）与"空相机列表"逐值相同，见 buildIndex 里的 `cameraOff`。
-  if (idx.cameraOff) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0 }
+  if (idx.cameraOff) return { zoom: 1.0, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld: 0, tilt: 0 }
 
   const wide = camFactor('远', idx.camStyle)
   for (const c of idx.camera) {
@@ -517,6 +521,9 @@ export function cameraAt(idx, t) {
     else zoom = lerp(zoom, tgt, p)
     // 手持摇摆是状态机上的持续项（跟到下一条不带 handheld 的运镜），同一段 p 起停
     handheld = lerp(handheld, c.ev.handheld === true ? 1 : 0, p)
+    // 荷兰角走**与 zoom 逐式同形**的过渡（同 `td`、同 `hardCut`、同 `p`）。
+    // ⚠️ 用 `typeof === 'number'` 而不是 `|| 0`：`tilt = 0`（不倾斜）是合法值。
+    tilt = lerp(tilt, typeof c.ev.tilt === 'number' ? c.ev.tilt : 0, p)
     // 不动点：本事件的 origin → to_origin（缺省即原地不动）。
     // 起点取事件自己的 origin，与 zoom 同一段窗口、同一条缓动。
     const oa = String(c.ev.origin || defOrigin).split(' ')
@@ -526,7 +533,7 @@ export function cameraAt(idx, t) {
     ox = lerp(Number.isFinite(ax) ? ax : ox, Number.isFinite(bx) ? bx : ox, p)
     oy = lerp(Number.isFinite(ay) ? ay : oy, Number.isFinite(by) ? by : oy, p)
   }
-  return { zoom, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld }
+  return { zoom, ox: (ox / 100) * idx.cv.W, oy: (oy / 100) * idx.cv.H, handheld, tilt }
 }
 
 // ---- 视频层复合状态：shake/blur/最终 zoom ----

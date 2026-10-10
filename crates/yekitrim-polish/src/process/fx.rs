@@ -270,6 +270,7 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
             handheld: prev.as_ref().is_some_and(|s| s.handheld),
             manual: false,
             speed: None,
+            tilt: None,
         };
         tracing::info!(
             "  · 画中画到点收工：{:.2}s 起回镜头（持到 {:.2}s · {}）",
@@ -320,6 +321,96 @@ pub fn cap_handheld_sway(segments: &mut [Segment]) -> usize {
         }
     }
     stripped
+}
+
+// ── 荷兰角（§19）──────────────────────────────────────────────────
+
+/// 荷兰角（`tilt`）的角度上限（度）—— 规格 §4.3 定的"防滥用"值。
+///
+/// 超过就像"拍摄事故"；6° 已是明显倾斜。⚠️ 这个上限**有几何依据、不是拍脑袋**：
+/// 整帧旋转 6° 后要盖满画布只需缩放 `1.1804`，而 `中` 档给 1.3、`近` 档给 1.5，
+/// 余量都很充足（规格 §4.4b 有完整推导与四角包含检验）。
+pub const MAX_DUTCH_ANGLE: f64 = 6.0;
+
+/// 荷兰角在**整片里最多几次**（规格 §4.3）—— 照 `MAX_PIP_SHOTS` 的先例。
+///
+/// 理由与画中画同一条：这类"特殊手段"一旦不受限就不特殊了。
+pub const MAX_DUTCH_SHOTS: usize = 2;
+
+/// 荷兰角守卫（规格 §4.3 + §4.4b）：**夹角度 + 限额 + 禁配画中画**。
+///
+/// # ⚠️ 为什么必须禁配「远」（画中画）
+///
+/// 整帧旋转 θ 后要盖满 1920×1080，需要的缩放是
+/// `max((W·cosθ + H·sinθ)/W, (W·sinθ + H·cosθ)/H)`。反解各档最大安全角：
+///
+/// | 档位 | 倍率 | 最大安全角 |
+/// |---|---|---|
+/// | **远（画中画）** | **0.55** | **0.00°** |
+/// | 中 | 1.30 | 10.24° |
+/// | 近 | 1.50 | 17.98° |
+///
+/// 「远」的画面**本来就只有画布的 55%**（左右各 432px 黑边），再转必然露出更多 ——
+/// **一格都转不得**。而规格 §4.2 的场景表第 3 条恰恰写着"画中画配合……两者叠加最自然"
+/// （§4.4b 记录了这处自相矛盾）。两条硬约束里**几何是硬的那条**，所以按它来。
+///
+/// # 三条规则
+///
+/// 1. **夹到 ±[`MAX_DUTCH_ANGLE`]**；`0` / 非有限值 ⇒ 清成 `None`（不写出）。
+/// 2. **与「远」同段** ⇒ 直接剔除（见上）。⚠️ 判据是**同一段里有 `zoom == "远"` 的运镜**，
+///    不是"这条运镜自己是远" —— 状态机是持续的，同段任何一条画中画都会让它露边。
+/// 3. **全片最多 [`MAX_DUTCH_SHOTS`] 条**，超出按 `time` 最早的保留（确定性）。
+///
+/// ⚠️ **只剥不补**：没写 `tilt` 的工程一个字节都不动（R4）。返回被剥/被夹的条数。
+pub fn cap_dutch_angle(segments: &mut [Segment]) -> usize {
+    let mut changed = 0usize;
+    // (段下标, 事件下标, time) —— 只在"活下来"的倾斜上收集，供配额那条用
+    let mut kept: Vec<(usize, usize, f64)> = Vec::new();
+
+    for (si, seg) in segments.iter_mut().enumerate() {
+        // 这一段里有没有画中画（任意一条运镜）
+        let has_wide = seg
+            .events
+            .iter()
+            .any(|ev| matches!(ev, Event::Camera { zoom, .. } if zoom.trim() == PIP_LABEL));
+        for (ei, ev) in seg.events.iter_mut().enumerate() {
+            let Event::Camera { tilt, time, .. } = ev else { continue };
+            let Some(deg) = *tilt else { continue };
+            // ① 非有限 / 零 ⇒ 清掉（写进 toml 或交给转译器都会出问题）
+            if !deg.is_finite() || deg == 0.0 {
+                *tilt = None;
+                changed += 1;
+                continue;
+            }
+            // ② 与画中画同段 ⇒ 剔除（会露黑边）
+            if has_wide {
+                *tilt = None;
+                changed += 1;
+                continue;
+            }
+            // ① 夹到上限（负数合法：两个方向都是荷兰角）
+            let clamped = deg.clamp(-MAX_DUTCH_ANGLE, MAX_DUTCH_ANGLE);
+            if (clamped - deg).abs() > f64::EPSILON {
+                *tilt = Some(clamped);
+                changed += 1;
+            }
+            kept.push((si, ei, *time));
+        }
+    }
+
+    // ③ 全片配额：按 `time` 最早保留，其余剥掉
+    if kept.len() > MAX_DUTCH_SHOTS {
+        kept.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (si, ei, _) in kept.into_iter().skip(MAX_DUTCH_SHOTS) {
+            if let Event::Camera { tilt, .. } = &mut segments[si].events[ei] {
+                if tilt.is_some() {
+                    *tilt = None;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    changed
 }
 
 // ── 冷开场 / 回忆回溯（第 5 批）──────────────────────────────────────
@@ -1412,6 +1503,7 @@ mod tests {
                     handheld: false,
                     manual: false,
                     speed: None,
+                    tilt: None,
                 },
             ],
             extra: Default::default(),
@@ -1460,6 +1552,7 @@ mod tests {
                     handheld: false,
                     manual: false,
                     speed: None,
+                    tilt: None,
                 },
                 Event::Overlay {
                     time: 8.0,
@@ -1502,6 +1595,42 @@ mod tests {
             handheld,
             manual: false,
             speed: None,
+            tilt: None,
+        }
+    }
+
+    /// 带荷兰角（`tilt`）的运镜。
+    fn cam_t(time: f64, zoom: &str, tilt: f64) -> Event {
+        let Event::Camera {
+            time,
+            end,
+            zoom: z,
+            origin,
+            anchor,
+            anchor_to,
+            to_origin,
+            cut,
+            handheld,
+            manual,
+            speed,
+            ..
+        } = cam(time, zoom)
+        else {
+            unreachable!()
+        };
+        Event::Camera {
+            time,
+            end,
+            zoom: z,
+            origin,
+            anchor,
+            anchor_to,
+            to_origin,
+            cut,
+            handheld,
+            manual,
+            speed,
+            tilt: Some(tilt),
         }
     }
 
@@ -1608,6 +1737,7 @@ mod tests {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         };
         for to_origin in [Some("70% 30%"), None] {
             let mut segs = vec![Segment {
@@ -2123,6 +2253,7 @@ mod tests {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         }
     }
 
@@ -2236,6 +2367,7 @@ mod tests {
                 time: 0.0, end: Some(5.0), zoom: "中".into(), origin: "50% 50%".into(),
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None,
                 cut: false, handheld: false, manual: false, speed: None,
+                tilt: None,
             }], extra: Default::default() }];
         let before: Vec<Option<String>> = segs.iter().flat_map(|s| s.events.iter())
             .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })
@@ -2662,6 +2794,7 @@ mod tests {
             handheld: false,
             manual: false,
             speed: None,
+            tilt: None,
         }
     }
 
@@ -2798,4 +2931,198 @@ mod tests {
         assert_eq!(cap_jump_cuts(&mut segs2, &[], &[]), 0);
         assert_eq!(cuts(&segs2), vec![true, true]);
     }
+
+    // ── §19 荷兰角守卫 ────────────────────────────────────────────────
+
+    fn tilt_of(segs: &[Segment], si: usize, ei: usize) -> Option<f64> {
+        match &segs[si].events[ei] {
+            Event::Camera { tilt, .. } => *tilt,
+            _ => panic!("不是运镜事件"),
+        }
+    }
+
+    /// ① ⚠️⚠️ **禁配画中画**：与「远」同段的倾斜必须被剔除。
+    ///
+    /// 这是规格 §4.4b 那处自相矛盾的落点 —— 场景表推荐"画中画配合"，
+    /// 而几何说「远」(0.55) 的最大安全角是 **0.00°**。按几何走。
+    /// ⚠️ 判据必须用**同一个段里另有一条「远」**的情形：只看"这条自己是不是远"会漏掉
+    /// 状态机的持续性（倾斜跟着到下一条运镜，中间夹一条画中画照样露边）。
+    #[test]
+    fn dutch_angle_is_stripped_when_the_segment_has_pip() {
+        let mut segs = vec![
+            // 同一段里：先一条普通倾斜的运镜，再来一条画中画
+            Segment {
+                start: 0.0,
+                end: 20.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(0.0, "中", 5.0), cam(10.0, "远")],
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 1, "同段有画中画 ⇒ 倾斜必须被剔除");
+        assert_eq!(tilt_of(&segs, 0, 0), None);
+    }
+
+    /// ② ⚠️ **但另一段里的画中画不该误伤**：判据是"同段"，不是"全片".
+    ///
+    /// 写成全片扫描会变成"只要片子里有画中画就一个荷兰角都用不了" ——
+    /// 而配额是 2 条，那等于**整条特性静默失效**（不报错、只是永远不生效）。
+    #[test]
+    fn pip_in_another_segment_does_not_strip_the_angle() {
+        let mut segs = vec![
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(0.0, "中", 5.0)],
+                extra: Default::default(),
+            },
+            Segment {
+                start: 10.0,
+                end: 20.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam(10.0, "远")],
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 0, "别的段有画中画不该影响这一段");
+        assert_eq!(tilt_of(&segs, 0, 0), Some(5.0));
+    }
+
+    /// ③ **夹到 ±6°**（两个方向都要夹）。
+    #[test]
+    fn dutch_angle_is_clamped_in_both_directions() {
+        let mut segs = vec![
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(0.0, "中", 15.0), cam_t(4.0, "中", -9.0)],
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 2);
+        assert_eq!(tilt_of(&segs, 0, 0), Some(6.0), "正向夹到 +6");
+        assert_eq!(tilt_of(&segs, 0, 1), Some(-6.0), "负向夹到 −6（两个方向都是荷兰角）");
+    }
+
+    /// ④ ⚠️ **全片最多 2 条，超出留 `time` 最早的**。
+    ///
+    /// 取"最早"而不是"最先出现"是为**确定性**：段表里段的顺序与时间顺序**不是一回事**
+    /// （LLM 按窗口生成 + 去静音切段，段之间时间会重叠）。
+    #[test]
+    fn dutch_angle_is_capped_at_two_shots() {
+        // 故意让数组顺序与时间顺序相反
+        let mut segs = vec![
+            Segment {
+                start: 30.0,
+                end: 40.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(30.0, "中", 4.0)], // 最晚
+                extra: Default::default(),
+            },
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(0.0, "中", 4.0)], // 最早 ⇒ 留
+                extra: Default::default(),
+            },
+            Segment {
+                start: 15.0,
+                end: 25.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(15.0, "中", 4.0)], // 居中 ⇒ 留
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 1, "三条 ⇒ 剥掉一条");
+        assert_eq!(tilt_of(&segs, 1, 0), Some(4.0), "最早的留下");
+        assert_eq!(tilt_of(&segs, 2, 0), Some(4.0), "次早的留下");
+        assert_eq!(tilt_of(&segs, 0, 0), None, "最晚的被剥掉");
+    }
+
+    /// ⑤ **幂等**：process 每次预览/出片都被隐式触发，第二趟必须 0 改动。
+    #[test]
+    fn dutch_angle_cap_is_idempotent() {
+        let mut segs = vec![
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam_t(0.0, "中", 99.0), cam_t(4.0, "中", 3.0), cam_t(6.0, "中", 2.0)],
+                extra: Default::default(),
+            },
+        ];
+        let first = cap_dutch_angle(&mut segs);
+        assert!(first > 0, "第一趟该有改动");
+        let snapshot: Vec<Option<f64>> = (0..3).map(|i| tilt_of(&segs, 0, i)).collect();
+        assert_eq!(cap_dutch_angle(&mut segs), 0, "第二趟必须收敛");
+        let after: Vec<Option<f64>> = (0..3).map(|i| tilt_of(&segs, 0, i)).collect();
+        assert_eq!(snapshot, after, "再跑也不许变");
+    }
+
+    /// ⑥ ⚠️ **零 / 非有限值一律清成 `None`**（不许写出 `tilt = 0` 或 `NaN`）。
+    ///
+    /// `NaN` 进 toml 会让**整个工程读不出来**；`0.0` 则是"写了个没用的键"
+    /// （零倾斜 = 不倾斜，写了只会让 `polish.toml` 多一行噪声）。
+    #[test]
+    fn dutch_angle_drops_zero_and_non_finite() {
+        let mut segs = vec![
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![
+                    cam_t(0.0, "中", 0.0),
+                    cam_t(2.0, "中", f64::NAN),
+                    cam_t(4.0, "中", f64::INFINITY),
+                ],
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 3);
+        for i in 0..3 {
+            assert_eq!(tilt_of(&segs, 0, i), None, "第 {i} 条该被清掉");
+        }
+    }
+
+    /// ⑦ ⚠️ **没写 `tilt` 的工程一个字节都不动**（R4）。
+    #[test]
+    fn no_tilt_means_no_change_at_all() {
+        let mut segs = vec![
+            Segment {
+                start: 0.0,
+                end: 10.0,
+                fx: "med".into(),
+                note: String::new(),
+                role: String::new(),
+                events: vec![cam(0.0, "中"), cam(4.0, "近"), cam(6.0, "远")],
+                extra: Default::default(),
+            },
+        ];
+        assert_eq!(cap_dutch_angle(&mut segs), 0);
+        for i in 0..3 {
+            assert_eq!(tilt_of(&segs, 0, i), None);
+        }
+    }
+
 }
