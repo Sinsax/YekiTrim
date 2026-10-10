@@ -166,7 +166,23 @@
   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
        :ref="(el) => (laneGroupEls.subtitles = el)">
     <div class="lane-group-h">字幕 / 弹幕</div>
-    <div class="small muted">字幕字体</div>
+    <!-- **「字幕字体」标签 + 两颗「→默认」同一行**（用户口径：「位置→默认 / 大小→默认
+         这俩个放在字幕字体旁边」= 就贴在"字幕字体"这四个字旁边）。
+         ⚠️ 这两颗按钮**与字体无关** —— `位置→默认` 管的是下面「字幕位置」那条滑杆、
+            `大小→默认` 管的是「字幕大小」那个数字框，只是位置挪到了这里（名字保持原样，
+            各自的 `title` 写清了管什么：本卡纪律「行内文案 ≤20 字，解释进 title」）。
+         ⚠️ 与下面那个字幕样式块共用 `styleWriteBlocked`：读配置失败时整块只读，
+            这两颗也必须一起禁用，否则会"拿默认值把磁盘上的样式清成默认"。
+         ⚠️ 宽度实测：标签 50px + 两颗各 84px + 间距 12px = 230px ≤ 行宽 266px。 -->
+    <div class="row ss-font-row">
+      <span class="small muted flex-none">字幕字体</span>
+      <button class="mini-btn flex-none" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
+              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
+              @click="restoreSubtitlePos">位置→默认</button>
+      <button class="mini-btn flex-none" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
+              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
+              @click="restoreSubtitleSize">大小→默认</button>
+    </div>
     <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
       <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
     </select>
@@ -237,19 +253,13 @@
         <span class="mono small flex-none">%</span>
       </div>
     </div>
-    <!-- 「恢复默认」必须带一个**显式动作**：取色器/数字框天生只能产出具体值，
-         没有它用户就永远回不到"没设过"（而 `position_pct` 是 `Option`、
-         "不写"与"写 12"在成片侧**语义不同**）。⚠️ 对 size/color/stroke
-         这三项，"默认"= **不发键**（保持磁盘原样）—— 因为 serde 默认值与
-         "用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。 -->
-    <div class="row mt-4 gap-6">
-      <button class="mini-btn" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
-              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
-              @click="restoreSubtitlePos">位置→默认</button>
-      <button class="mini-btn" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
-              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
-              @click="restoreSubtitleSize">大小→默认</button>
-    </div>
+    <!-- ⚠️ 「恢复默认」那两颗按钮**已移到「字幕字体」那一行**（用户口径：「位置→默认 /
+         大小→默认这俩个放在字幕字体旁边」）。别在这里加回来 —— 判据 ⑰ 钉着"它们必须在
+         `.ss-font-row` 里、且全页各只出现一次"。
+         口径不变：取色器/数字框天生只能产出具体值，没有显式恢复动作用户就永远回不到"没设过"
+         （而 `position_pct` 是 `Option`、"不写"与"写 12"在成片侧**语义不同**）。
+         ⚠️ 对 size/color/stroke 这三项，"默认" = **不发键**（保持磁盘原样）——
+            serde 默认值与"用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。 -->
 
     <div class="small muted mt-6">弹幕字体</div>
     <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
@@ -2361,6 +2371,11 @@ onUnmounted(() => {
 .lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
+/* 「字幕字体」标签 + 两颗「→默认」同一行（用户口径：放在"字幕字体"旁边）。
+   ⚠️ `min-width:0` 每层都要：flex 项默认 `min-width:auto`，中文标签 + 两颗按钮的总宽
+   会被当成最小宽度而横向溢出。两颗按钮 `flex:none`（文字别再被压窄到换行）。 */
+.ss-font-row { display:flex; align-items:center; gap:6px; min-width:0; margin-bottom:4px; }
+.ss-font-row > * { min-width:0; }
 /* 字幕样式控件（用户 2026-10 四项 + 描边拆两件）。
    ⚠️ 右栏定宽 300px、卡片 1px 边框 + 16px 内边距 ⇒ **行内容宽只有 266px**（判据 ⑰ 的预算）。
    标签列定宽 62px（"描边宽度"+「近似」角标最宽那行），余下 ~200px 给控件。
