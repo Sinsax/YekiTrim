@@ -265,6 +265,13 @@ pub enum Event {
         end: Option<f64>,
         /// `"text"` 或 `"sticker"`。**不用 enum**：认不出的值要能给一条像样的报错
         /// （enum 只会说"unknown variant"，而这里要告诉用户"是哪一条元素、写了什么"）。
+        ///
+        /// ⚠️ **`#[serde(default)]` 不能省**：LLM 会**反复**漏写 `kind`（提示词里
+        /// `kind` 与 `text` 挨着，模型很容易只抄一个）。没有 default 时整个工程
+        /// **反序列化直接失败** —— 那不是"少一条文字"，而是"这个切片的精修配置读不出来"。
+        /// 留空字符串 ⇒ 由 `process` 按"认不出的 kind"处理（当作 `text`，且质量分里
+        /// 归到第三类 `element`，能看到异常）。
+        #[serde(default)]
         kind: String,
         /// 元素**显示什么**。`kind = "text"` 时是正文；`kind = "sticker"` 时是关键词
         /// （语义同 `Event::Sticker.keyword`，即贴纸包名）。
