@@ -426,6 +426,7 @@ fn default_segment() -> Segment {
     Segment {
         start: 0.0, end: 10.0, fx: "low".into(),
         note: "Auto".into(), events: vec![],
+        role: String::new(),
         extra: Default::default(),
     }
 }

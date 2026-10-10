@@ -220,8 +220,8 @@ mod tests {
         // 一个 0~30s 的窗口（成功），被屏蔽区间切成 0~10 / 20~30 两段
         let windows = vec![SegmentGenStatus::ok(0, 0.0, 30.0, 5)];
         let segs = vec![
-            Segment { start: 0.0, end: 10.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
-            Segment { start: 20.0, end: 30.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 0.0, end: 10.0, fx: "med".into(), note: String::new(), events: vec![], role: String::new(), extra: Default::default() },
+            Segment { start: 20.0, end: 30.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default(), role: String::new() },
         ];
         let out = remap_to_segments(&windows, &segs);
         assert_eq!(out.len(), 2);
@@ -235,7 +235,7 @@ mod tests {
     fn remap_keeps_failure_across_split() {
         use crate::project::Segment;
         let windows = vec![SegmentGenStatus::failed(3, 60.0, 90.0, "429", 0)];
-        let segs = vec![Segment { start: 70.0, end: 90.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() }];
+        let segs = vec![Segment { start: 70.0, end: 90.0, fx: "med".into(), note: String::new(), events: vec![], role: String::new(), extra: Default::default() }];
         let out = remap_to_segments(&windows, &segs);
         assert!(!out[0].ok, "切/裁之后仍然要能看出这一段没生成成功");
         assert_eq!(out[0].reason, "429");

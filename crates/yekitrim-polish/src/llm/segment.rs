@@ -201,6 +201,28 @@ pub(crate) fn build_events_user_prompt(segment: &Segment, subtitles: &[Subtitle]
 ", segment.start, segment.end);
     prompt.push_str(&format!("段情绪密度: {}
 ", segment.fx));
+    // §8：把这一段的**叙事角色**告诉 LLM，并给出该角色的"配方"（规格 §3.2 那张表）。
+    //
+    // ⚠️ 只对 `hook` / `punch` 两档说话，**"其余"一个字都不说** ——
+    //    这是有意的：「几乎不放特效（守住静，才有动的对比）」这件事
+    //    **没法用一句提示词说清**，而随口一说会让 LLM 把"其余段"也当成需要表现的角色，
+    //    结果又是"每段都热闹"（那正是要避免的）。
+    //    不说的效果是：其余段沿用今天的行为（改动的只有被明确标了角色的那些段）。
+    match segment.role() {
+        "hook" => prompt.push_str(
+            r#"段角色: hook（**钩子** —— 片头最抓人的那一段）
+配方: 要"抓人"。可以上大字元素(style=hook) + 强音效 + 硬切运镜; 但**别把它塞满** ——
+钩子的目的是让人留下来接着看, 不是让人看特效。整段 1~2 个亮点就够。
+"#,
+        ),
+        "punch" => prompt.push_str(
+            r#"段角色: punch（**爆点/名场面** —— 全片最值得被剪出来的地方）
+配方: 这一段应当**最有表现力**。在预算内上足: 近景/画中画运镜 + shake + flash + 音效 + 贴纸。
+⚠️ 预算仍是**硬上限**, 超了会被系统抽稀 —— 榨干配额, 但不要越界。
+"#,
+        ),
+        _ => {}
+    }
     if !candidate_text.is_empty() {
         prompt.push_str(&format!("
 {}
@@ -310,6 +332,7 @@ pub fn build_segmentation_system_prompt(sticker_source: &[String]) -> String {
   "start": 0.0,
   "end": 85.0,
   "fx": "high",
+  "role": "punch",
   "note": "子话题备注"
 }}
 
@@ -319,6 +342,13 @@ pub fn build_segmentation_system_prompt(sticker_source: &[String]) -> String {
 - 同一话题连续叙述合并，不硬切；<4s 的碎片并入前一段
 - 爆点/名场面单独成段
 - fx: low=安静叙述/少特效, med=日常, high=爆点/密集特效
+- role: 这一段在**整条片子里**干什么，三选一（不写 = 其余）:
+  * `hook` —— **钩子**：片头最抓人的那一句/那一幕。**整片至多一段**，要有"不放这个观众就划走了"的强度
+  * `punch` —— **爆点/名场面**：这一段是全片最值得被剪出来的地方。**整片至少要有一段**
+  * （其余段**不写 role**，留空）—— 铺垫、过渡、收尾都算这一类。**不要**给每段都标 role:
+    全片都是爆点等于没有爆点，而"每段都热闹"正是要避免的
+- role 要靠**内容**判，不是靠 fx: fx 是"特效该多密"，role 是"它在故事里的位置"。
+  两者常常同向（爆点通常 fx=high），但**不要**机械地按 fx 抄 role
 - note: 只写该段在讲什么子话题，例如"发现视角不对"、"尝试换场景"，不要概括整个视频
 - 不要输出 direction/budget/effects 等字段
 - {} 仅在贴纸可用时说明 keyword 语言；分段本身不选贴纸
@@ -427,6 +457,41 @@ mod tests {
         assert!(
             matches!(&evs[6], crate::project::Event::Camera { handheld: true, .. }),
             "只写 handheld 的应推断成 camera: {norm}"
+        );
+    }
+
+    /// ⚠️ **§8：`role` 的配方只对 `hook`/`punch` 两档说，其余段一个字都不许加。**
+    ///
+    /// 反面才是重点：如果"其余段"也被塞进一段说明，LLM 会把**每一段**都当成需要表现的角色
+    /// ⇒ 又回到"每段都热闹"（那正是 §8 要治的病）。
+    /// 判据因此同时钉"该说的说了"与"不该说的没说"。
+    #[test]
+    fn role_recipe_is_only_added_for_hook_and_punch() {
+        let seg = |role: &str| crate::project::Segment {
+            start: 0.0,
+            end: 30.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: role.into(),
+            events: Vec::new(),
+            extra: Default::default(),
+        };
+        let base_len = build_events_user_prompt(&seg(""), &[], "").len();
+        let hook = build_events_user_prompt(&seg("hook"), &[], "");
+        let punch = build_events_user_prompt(&seg("punch"), &[], "");
+        assert!(hook.contains("hook"), "hook 段要说清角色: {hook}");
+        assert!(punch.contains("punch"), "punch 段要说清角色: {punch}");
+        assert!(
+            hook.len() > base_len && punch.len() > base_len,
+            "两档都要**多出**配方说明（{base_len} → hook {} / punch {}）",
+            hook.len(),
+            punch.len()
+        );
+        // ⚠️ 反面：其余段（空 role）与基础提示词**逐字节相同**
+        assert_eq!(
+            build_events_user_prompt(&seg("其他"), &[], ""),
+            build_events_user_prompt(&seg(""), &[], ""),
+            "认不出的 role 必须与空 role 完全等价（不许泄漏半句配方）"
         );
     }
 

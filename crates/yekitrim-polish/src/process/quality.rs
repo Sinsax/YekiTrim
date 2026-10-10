@@ -313,6 +313,7 @@ mod tests {
 
     fn seg(start: f64, end: f64, fx: &str, events: Vec<Event>) -> Segment {
         Segment {
+            role: String::new(),
             start,
             end,
             fx: fx.into(),

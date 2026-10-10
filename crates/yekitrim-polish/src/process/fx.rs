@@ -1214,6 +1214,121 @@ pub fn cap_jump_cuts(
     demoted
 }
 
+// ===== §8 叙事形状守卫（`role` 三档）=====
+
+/// 整片**至多一个**钩子。
+pub const MAX_HOOKS: usize = 1;
+/// `setup` 类（这里 = "其余"）最多占整片的比例 —— 规格 §3.3 的表给的 40%。
+pub const MAX_SETUP_RATIO: f64 = 0.4;
+
+/// `role` 三档的分布（给日志/判据看）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NarrativeShape {
+    pub hook: usize,
+    pub punch: usize,
+    pub other: usize,
+    /// 被守卫改动的段数（降级 / 提拔）。
+    pub changed: usize,
+}
+
+/// **叙事形状守卫**（§8，规格 §3.3 ①）。
+///
+/// # 为什么必须有它
+///
+/// `role` 只是**给 LLM 的提示**，它不一定听话 —— 与 `cap_pip_shots` / `cap_handheld_sway`
+/// 完全同一条理由：**LLM 会写错、用户也会改，守卫是唯一兜底**。
+///
+/// 规格给的三条规则，这里实现两条半（第三条见下面的 ⚠️）：
+///
+/// | 守卫 | 规则 | 这里怎么做 |
+/// |---|---|---|
+/// | `hook` | 至多一段（多则只留最早的） | 按**时间序**留最早那条，其余清成"其余" |
+/// | `punch` | 全片至少一个（没有就把 `fx="high"` 的段提拔上来） | 没有 `punch` 时，把**时长最长**的 `fx=="high"` 段提拔成 `punch` |
+/// | `setup` | 不许超过整片 40% | ❌ **不做**，见下 |
+///
+/// # ⚠️ 为什么不做"`setup` 不超过 40%"
+///
+/// 三档最小版里**没有 `setup` 这个值**（规格 §3.6 明确："只分 `hook` / `punch` / 其余三类"）。
+/// 而"不写 `role`"的就是**其余** —— 它包含了铺垫、过渡、收尾，**天然就是大多数段**。
+/// 拿 40% 去卡它会**必然误伤**：一条正常的片子里"其余"占 60~80% 才是对的。
+///
+/// ⇒ 这一条要等**六种角色**那一版才有意义（那时 `setup` 与 `afterglow`/`cta` 分得开）。
+/// 硬做的话症状是：**每一趟 process 都在改段的 role**，而用户从界面上看不出为什么。
+///
+/// # 幂等
+///
+/// 跑第二趟必须是 0 改动：`hook` 已唯一、`punch` 已存在 ⇒ 两条规则都不触发。
+pub fn enforce_narrative_shape(segments: &mut [crate::project::Segment]) -> NarrativeShape {
+    let mut shape = NarrativeShape::default();
+
+    // ① `hook` 至多一段：按**时间序**留最早的那条。
+    //
+    // ⚠️ 按时间序而不是文件顺序：段之间时间上会重叠（LLM 按窗口生成 + 去静音切段），
+    // 而"最早的钩子"只有在排序之后才说得清（同 `close_pip_shots` 那条教训）。
+    let mut hooks: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.is_hook())
+        .map(|(i, _)| i)
+        .collect();
+    hooks.sort_by(|a, b| {
+        segments[*a]
+            .start
+            .partial_cmp(&segments[*b].start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if hooks.len() > MAX_HOOKS {
+        // 留最早的一条（hooks[0]），其余降级成"其余"（**保留段，只清 role**）
+        for &i in hooks.iter().skip(MAX_HOOKS) {
+            segments[i].role.clear();
+            shape.changed += 1;
+        }
+        shape.hook = MAX_HOOKS;
+    } else {
+        shape.hook = hooks.len();
+    }
+
+    // ② `punch` 至少一段：没有就把**时长最长**的 `fx == "high"` 段提拔上来。
+    //
+    // ⚠️ 取"时长最长"而不是"第一条 high"：短促的 high 段可能只是插了一句惊呼，
+    // 而长的那一段才是真的名场面。且**并列时取时间最早的**（确定性 —— 否则
+    // 同一份输入两次跑出不同结果，而 process 是每次预览/出片都隐式触发的）。
+    shape.punch = segments.iter().filter(|s| s.is_punch()).count();
+    if shape.punch == 0 {
+        let mut best: Option<(usize, f64, f64)> = None; // (下标, 时长, 起点)
+        for (i, s) in segments.iter().enumerate() {
+            if s.fx != "high" {
+                continue;
+            }
+            let len = s.end - s.start;
+            if len <= 0.0 {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((_, blen, bstart)) => {
+                    len > blen + 1e-9 || ((len - blen).abs() <= 1e-9 && s.start < bstart)
+                }
+            };
+            if better {
+                best = Some((i, len, s.start));
+            }
+        }
+        if let Some((i, _, _)) = best {
+            segments[i].role = "punch".into();
+            shape.punch = 1;
+            shape.changed += 1;
+        }
+        // ⚠️ **一个 `fx == "high"` 都没有时，什么都不做**：
+        //    硬提拔一条"最长段"会让一条本来平实的片子凭空长出一个"爆点"，
+        //    而那个标签会往下游传（§7 会因此保护一段不该保护的停顿）。
+        //    空手而归在这里是**正确答案**，不是失败。
+    }
+
+    shape.other = segments.len() - shape.hook - shape.punch;
+    shape
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1235,6 +1350,7 @@ mod tests {
             end: 10.0,
             fx: "high".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![blur(Some(2.5))],
             extra: Default::default(),
         }];
@@ -1252,6 +1368,7 @@ mod tests {
             end: 10.0,
             fx: "high".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![blur(None)],
             extra: Default::default(),
         }];
@@ -1269,6 +1386,7 @@ mod tests {
             end: 10.0,
             fx: "high".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![
                 Event::Sticker {
                     time: 1.0,
@@ -1315,6 +1433,7 @@ mod tests {
             end: 30.0,
             fx: "high".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![
                 Event::Sticker {
                     time: 1.0,
@@ -1393,6 +1512,7 @@ mod tests {
             end: 600.0,
             fx: "med".into(),
             note: String::new(),
+            role: String::new(),
             events: times_zooms.iter().map(|(t, z)| cam(*t, z)).collect(),
             extra: Default::default(),
         }]
@@ -1495,6 +1615,7 @@ mod tests {
                 end: 60.0,
                 fx: "med".into(),
                 note: String::new(),
+                role: String::new(),
                 events: vec![mover(to_origin), cam(10.0, "远")],
                 extra: Default::default(),
             }];
@@ -1528,6 +1649,7 @@ mod tests {
             end: 11.0,
             fx: "med".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![cam(10.0, "远")],
             extra: Default::default(),
         }];
@@ -1544,6 +1666,7 @@ mod tests {
                 end: 30.0,
                 fx: "med".into(),
                 note: String::new(),
+                role: String::new(),
                 events: vec![cam(0.0, "中"), cam(20.0, "远")],
                 extra: Default::default(),
             },
@@ -1552,6 +1675,7 @@ mod tests {
                 end: 60.0,
                 fx: "med".into(),
                 note: String::new(),
+                role: String::new(),
                 events: vec![cam(45.0, "近")],
                 extra: Default::default(),
             },
@@ -1567,6 +1691,7 @@ mod tests {
         // 段之间时间上可以重叠（LLM 按窗口生成）→ 前后镜头按**时间**算，不看文件顺序：
         // 文件里画中画所在段排在前面，但时间上它之前是后一段那条「近」
         let mk = |start: f64, end: f64, ev: Event| Segment {
+            role: String::new(),
             start,
             end,
             fx: "med".into(),
@@ -1606,6 +1731,7 @@ mod tests {
             end: 60.0,
             fx: "med".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![ev],
             extra: Default::default(),
         }]
@@ -1813,7 +1939,7 @@ mod tests {
         let mut ev = cam(10.0, "远");
         ev.set_time_manual(true);
         let mut segs = vec![Segment {
-            start: 8.0, end: 20.0, fx: "med".into(), note: String::new(), events: vec![ev], extra: Default::default(),
+            start: 8.0, end: 20.0, fx: "med".into(), note: String::new(), role: String::new(), events: vec![ev], extra: Default::default(),
         }];
         assert_eq!(align_pip_shots(&mut segs, &subs), 0, "manual 的画中画不该被对齐");
         let Event::Camera { time, end, .. } = &segs[0].events[0] else { panic!() };
@@ -1827,7 +1953,7 @@ mod tests {
             Subtitle { index: i, start, end, text: String::new(), html: String::new() }
         }
         fn seg_with(ev: Event) -> Vec<Segment> {
-            vec![Segment { start: 8.0, end: 20.0, fx: "med".into(), note: String::new(), events: vec![ev], extra: Default::default() }]
+            vec![Segment { start: 8.0, end: 20.0, fx: "med".into(), note: String::new(), events: vec![ev], role: String::new(), extra: Default::default() }]
         }
         let subs = vec![sub(1, 9.0, 12.5), sub(2, 13.5, 16.0)];
 
@@ -1859,6 +1985,7 @@ mod tests {
         // 切镜整段卡在一条 1.2s 的字幕里（< MIN_PIP_SECS）→ 往后借到下一条字幕结束
         let subs = vec![sub(1, 10.0, 11.2), sub(2, 11.5, 13.2)];
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![cam(10.2, "远")], extra: Default::default(),   // cam 自带 duration 2.0
         }];
@@ -1879,6 +2006,7 @@ mod tests {
     fn pip_alignment_clamps_to_segment_without_subtitles() {
         // 没有字幕 → 用分段边界兜底：跨过段尾的切镜被夹回段内
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 12.0, fx: "med".into(), note: String::new(),
             events: vec![cam(10.0, "远")], extra: Default::default(),
         }];
@@ -1928,6 +2056,7 @@ mod tests {
     fn handheld_only_survives_on_close_up() {
         // 近景（含带空格的写法）保留，其余景别一律剥掉 —— 用户定的门槛：只允许近景
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
             events: vec![
                 cam_h(0.0, "近", true),
@@ -1957,6 +2086,7 @@ mod tests {
     fn pip_close_restores_handheld_from_previous_shot() {
         // 前一条是「近」+ 手持摇摆：画中画收工回到近景，摇摆跟着回来
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
             events: vec![cam_h(0.0, "近", true), cam(10.0, "远")],
             extra: Default::default(),
@@ -1967,6 +2097,7 @@ mod tests {
         // 回到非近景（前一条被手改/LLM 写成中景 + handheld）：回镜头也承接，
         // 但两条中景都会被 cap_handheld_sway 剥掉 —— cmd_process 里守卫就排在收工之后
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
             events: vec![cam_h(0.0, "中", true), cam(10.0, "远")],
             extra: Default::default(),
@@ -2020,10 +2151,13 @@ mod tests {
     fn cold_open_only_one_per_clip() {
         let mut segs = vec![
             Segment { start: 0.0, end: 20.0, fx: "med".into(), note: String::new(),
+                role: String::new(),
                 events: vec![intent_cam(2.0, 6.0, INTENT_COLD_OPEN)], extra: Default::default() },
             Segment { start: 20.0, end: 40.0, fx: "med".into(), note: String::new(),
+                role: String::new(),
                 events: vec![intent_cam(22.0, 26.0, INTENT_COLD_OPEN)], extra: Default::default() },
             Segment { start: 40.0, end: 60.0, fx: "med".into(), note: String::new(),
+                role: String::new(),
                 events: vec![intent_cam(42.0, 46.0, INTENT_COLD_OPEN)], extra: Default::default() },
         ];
         let mut clips: Vec<EdlClip> = Vec::new();
@@ -2049,6 +2183,7 @@ mod tests {
     #[test]
     fn cold_open_materialize_is_idempotent() {
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![
                 intent_cam(2.0, 6.0, INTENT_COLD_OPEN),
@@ -2095,6 +2230,7 @@ mod tests {
 
         // 别的 anchor 也不许被误当成意图、更不许被"顺手清掉"（只清自己认得的两个值）
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![Event::Camera {
                 time: 0.0, end: Some(5.0), zoom: "中".into(), origin: "50% 50%".into(),
@@ -2113,6 +2249,7 @@ mod tests {
 
         // 用户手拖过的 EDL：**原样保留**，只在最前面插冷开场
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![intent_cam(5.0, 9.0, INTENT_COLD_OPEN)], extra: Default::default() }];
         let mut clips = vec![clip_of(0.0, 30.0, Some("main"))];
@@ -2130,6 +2267,7 @@ mod tests {
         let mut ev = intent_cam(2.0, 6.0, INTENT_COLD_OPEN);
         if let Event::Camera { manual, .. } = &mut ev { *manual = true; }
         let mut segs = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
             events: vec![ev], extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
@@ -2150,6 +2288,7 @@ mod tests {
     fn materialize_skips_impossible_spans() {
         // 总时长未知
         let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            role: String::new(),
             events: vec![intent_cam(2.0, 6.0, INTENT_COLD_OPEN)], extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
         assert!(!materialize_edl_intents(&mut segs, &mut clips, 0.0).changed(), "时长未知 ⇒ 不落实");
@@ -2157,12 +2296,14 @@ mod tests {
 
         // 窗口短于 MIN_COLD_OPEN_SECS：
         let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            role: String::new(),
             events: vec![intent_cam(2.0, 2.4, INTENT_COLD_OPEN)], extra: Default::default() }];
         assert!(!materialize_edl_intents(&mut segs, &mut clips, 30.0).changed(), "太短 ⇒ 不落实");
         assert!(clips.is_empty());
 
         // 端点夹到 [0, total_duration]：起点为负、终点越界都夹回来
         let mut segs = vec![Segment { start: 0.0, end: 30.0, fx: "med".into(), note: String::new(),
+            role: String::new(),
             events: vec![intent_cam(-3.0, 99.0, INTENT_COLD_OPEN)], extra: Default::default() }];
         assert!(materialize_edl_intents(&mut segs, &mut clips, 30.0).cold_open);
         assert_eq!((clips[0].source_start, clips[0].source_end), (0.0, 30.0), "夹进 [0, 总时长]");
@@ -2173,6 +2314,7 @@ mod tests {
     fn recall_is_capped() {
         let events: Vec<Event> = (0..5).map(|i| intent_cam(i as f64 * 10.0, i as f64 * 10.0 + 3.0, INTENT_RECALL)).collect();
         let mut segs = vec![Segment { start: 0.0, end: 60.0, fx: "med".into(), note: String::new(),
+            role: String::new(),
             events, extra: Default::default() }];
         let mut clips: Vec<EdlClip> = Vec::new();
         let m = materialize_edl_intents(&mut segs, &mut clips, 60.0);
@@ -2195,9 +2337,108 @@ mod tests {
             end,
             fx: "med".into(),
             note: String::new(),
+            role: String::new(),
             events: Vec::new(),
             extra: Default::default(),
         }
+    }
+
+    // ── §8 叙事形状守卫 ────────────────────────────────────────────
+
+    fn nseg(start: f64, end: f64, fx: &str, role: &str) -> Segment {
+        Segment {
+            start,
+            end,
+            fx: fx.into(),
+            note: String::new(),
+            role: role.into(),
+            events: Vec::new(),
+            extra: Default::default(),
+        }
+    }
+
+    /// ① `hook` **至多一段**（多则只留最早的），且**保留段本身**（只清 role）。
+    ///
+    /// ⚠️ "只清 role、不删段"是刻意的：段是**时间轴结构**，删掉会让整条片子的
+    /// 分段结果变样；而 `role` 只是一个标签。守卫的职责是**修标签**，不是改结构。
+    #[test]
+    fn only_one_hook_survives() {
+        let mut segs = vec![
+            nseg(30.0, 40.0, "med", "hook"), // 时间上第二条
+            nseg(0.0, 10.0, "med", "hook"),  // 最早 —— 这条要留下
+            nseg(50.0, 60.0, "med", "hook"),
+            nseg(10.0, 20.0, "med", "punch"),
+        ];
+        let shape = enforce_narrative_shape(&mut segs);
+        assert_eq!(shape.hook, 1, "hook 只该留一条");
+        assert_eq!(shape.punch, 1, "已有的 punch 不许被碰");
+        assert_eq!(shape.changed, 2, "改动的是多余的两条");
+        assert_eq!(segs.len(), 4, "段不许被删（只清标签）");
+        assert!(segs[1].is_hook(), "留下的是**时间最早**那条（下标 1，start=0.0）");
+        assert!(!segs[0].is_hook() && !segs[2].is_hook(), "其余两条已降级");
+    }
+
+    /// ② 一段 `punch` 都没有时，把**时长最长**的 `fx=="high"` 段提拔上来。
+    #[test]
+    fn longest_high_segment_is_promoted_when_no_punch_exists() {
+        let mut segs = vec![
+            nseg(0.0, 3.0, "high", ""),   // 短促的惊呼
+            nseg(10.0, 30.0, "med", ""),  // 时长最长但**不是** high ⇒ 不许提拔
+            nseg(40.0, 55.0, "high", ""), // 15s，最长的 high ⇒ 这条
+            nseg(60.0, 62.0, "high", ""),
+        ];
+        let shape = enforce_narrative_shape(&mut segs);
+        assert_eq!(shape.punch, 1);
+        assert_eq!(shape.changed, 1);
+        assert!(segs[2].is_punch(), "提拔的应当是最长的 high 段: {segs:?}");
+        assert!(!segs[1].is_punch(), "med 段不该被提拔成爆点");
+    }
+
+    /// ③ ⚠️ **一个 `fx == "high"` 都没有 ⇒ 什么都不做**（不许凭空造一个爆点）。
+    ///
+    /// 硬提拔一条"最长段"的后果是**往下游传**：§7 会因此保护一段不该保护的停顿，
+    /// 而用户从任何界面都看不出那个标签是哪来的。
+    #[test]
+    fn no_high_segment_means_no_punch_is_invented() {
+        let mut segs = vec![nseg(0.0, 30.0, "low", ""), nseg(30.0, 60.0, "med", "")];
+        let shape = enforce_narrative_shape(&mut segs);
+        assert_eq!(shape.punch, 0, "不该凭空造爆点");
+        assert_eq!(shape.changed, 0);
+        assert!(segs.iter().all(|s| s.role().is_empty()));
+    }
+
+    /// ④ **幂等**：跑第二趟必须 0 改动。
+    ///
+    /// ⚠️ `process` 是**每次预览/出片都被隐式触发**的 —— 不幂等的守卫会每跑一次
+    /// 就改一次，而用户看到的是"role 自己在变"。
+    #[test]
+    fn narrative_shape_is_idempotent() {
+        let mut segs = vec![
+            nseg(0.0, 10.0, "med", "hook"),
+            nseg(10.0, 20.0, "med", "hook"),
+            nseg(20.0, 40.0, "high", ""),
+        ];
+        let first = enforce_narrative_shape(&mut segs);
+        assert!(first.changed > 0, "第一趟应当有改动");
+        let second = enforce_narrative_shape(&mut segs);
+        assert_eq!(second.changed, 0, "第二趟必须收敛: {second:?}");
+        assert_eq!(second.hook, 1);
+        assert_eq!(second.punch, 1);
+        let third = enforce_narrative_shape(&mut segs);
+        assert_eq!(third, second, "再跑也不许变");
+    }
+
+    /// ⑤ 已经有 `punch` 时**不许再提拔**别的段（否则每趟都会多一个爆点）。
+    #[test]
+    fn existing_punch_is_never_added_to() {
+        let mut segs = vec![
+            nseg(0.0, 10.0, "high", "punch"),
+            nseg(10.0, 40.0, "high", ""), // 更长，但不该被提拔
+        ];
+        let shape = enforce_narrative_shape(&mut segs);
+        assert_eq!(shape.punch, 1);
+        assert_eq!(shape.changed, 0);
+        assert!(segs[0].is_punch() && !segs[1].is_punch());
     }
 
     /// **句末判据本身**：句末标点认、句中标点不认。
@@ -2430,6 +2671,7 @@ mod tests {
             end: 600.0,
             fx: "med".into(),
             note: String::new(),
+            role: String::new(),
             events,
             extra: Default::default(),
         }]
@@ -2500,6 +2742,7 @@ mod tests {
     #[test]
     fn density_gate_applies_across_segments() {
         let mk = |start: f64, at: f64| Segment {
+            role: String::new(),
             start,
             end: start + 30.0,
             fx: "med".into(),

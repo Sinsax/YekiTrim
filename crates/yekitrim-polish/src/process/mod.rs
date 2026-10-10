@@ -252,6 +252,24 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1g: 叙事形状守卫（§8）—— `role` 只是**给 LLM 的提示**，它不一定听话。
+    // 与 `cap_pip_shots` / `cap_handheld_sway` 完全同一条理由：**LLM 会写错、用户也会改，
+    // 守卫是唯一兜底**。两条规则：`hook` 至多一段（留最早的）、`punch` 至少一段（没有就从
+    // 最长的 `fx=="high"` 段提拔）。⚠️ 规格第三条「`setup` 不超过 40%」**没做** ——
+    // 三档最小版里没有 `setup`（规格 §3.6），"其余"天然就是大多数段，拿 40% 卡它会必然误伤。
+    //
+    // ⚠️ 排在**预算抽稀（Step 1b）之后**：抽稀可能删掉段里的事件、但不删段本身，
+    //    所以段的集合在 1b 之后才稳定；排前面会让守卫基于一份马上要变的表做决定。
+    {
+        let shape = enforce_narrative_shape(&mut config.segments);
+        if shape.changed > 0 {
+            tracing::info!(
+                "  · 叙事形状（§8）：hook {} / punch {} / 其余 {}；调整 {} 段",
+                shape.hook, shape.punch, shape.other, shape.changed
+            );
+        }
+    }
+
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
@@ -1388,7 +1406,7 @@ mod tests {
     use crate::project::{EdlClip, Event, MuteRange, ProjectFile, Segment};
 
     fn seg_with(events: Vec<Event>) -> Segment {
-        Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, extra: Default::default() }
+        Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
     }
 
     /// 第 6 批：**EDL 引用的视频素材必须走"复制进项目"那条路**，而且**段表为空时也要走**。
@@ -1509,6 +1527,7 @@ mod tests {
             end: 10.0,
             fx: "low".into(),
             note: String::new(),
+            role: String::new(),
             events: vec![Event::Sticker {
                 time: 5.0,
                 end: Some(6.0),
@@ -1568,8 +1587,8 @@ mod tests {
         let mut cfg = ProjectFile::example();
         cfg.sticker_source = Vec::new();
         cfg.segments = vec![
-            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
-            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], role: String::new(), extra: Default::default() },
+            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default(), role: String::new() },
         ];
         std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
             .expect("写 polish.toml");
@@ -1637,8 +1656,8 @@ mod tests {
         let mut cfg = ProjectFile::example();
         cfg.sticker_source = Vec::new();
         cfg.segments = vec![
-            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
-            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], role: String::new(), extra: Default::default() },
+            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default(), role: String::new() },
         ];
         std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化")).expect("写");
 
@@ -1719,6 +1738,7 @@ mod tests {
         cfg.mute_ranges = vec![MuteRange { start: 4.0, end: 6.0 }];
         // 普通运镜（没有 cold_open / recall 意图）
         cfg.segments = vec![Segment {
+            role: String::new(),
             start: 0.0, end: 10.0, fx: "low".into(), note: String::new(),
             events: vec![Event::Camera {
                 time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
