@@ -323,6 +323,61 @@ pub fn cap_handheld_sway(segments: &mut [Segment]) -> usize {
     stripped
 }
 
+// ── 特写档（§18-A）────────────────────────────────────────────────
+
+/// 特写档位的档位名（与 `placement::CLOSEUP_LABEL` 同源，别各写一份字面量）。
+const CLOSEUP_LABEL: &str = crate::process::placement::CLOSEUP_LABEL;
+
+/// 主播焦点锚点名（`anchor = "liver"`）—— 特写档的**唯一**合法焦点。
+const ANCHOR_LIVER: &str = "liver";
+
+/// 特写焦点守卫（规格 `camera-and-noise-spec.md` §3.3 末段，用户拍板）：
+/// **特写档强制 `anchor = liver`**。
+///
+/// # ⚠️ 为什么这是硬约束而不是提示
+///
+/// 特写把画面放到 **1.8 倍**。聚焦到弹幕/贴纸时，"不动点"会跟着移到那个目标上 ——
+/// 而弹幕区在 1.8 倍下**基本被挤出画面**（1080 高的 1.8 倍只看得到中间 600px）。
+/// 症状是"切了特写，主播不见了，只剩弹幕在一片糊背景上"。
+///
+/// ⇒ 这一档下**任何非 `liver` 的聚焦意图都不成立**，直接改回 `liver`。
+///
+/// # 只改 `anchor`，不动 `origin`
+///
+/// `origin` 是 Step 2d 由 `anchor` 解析出来的**结果坐标**，每次跑 process 都会重算覆盖
+/// （见 `resolve_camera_anchors`）—— 所以这里只改因、不碰果。
+///
+/// ⚠️ `anchor_to`（终点聚焦）**也一起管**：它是"从这里移到那里"的终点，
+/// 特写下移到弹幕同样看不到。两头都锁死在 `liver`。
+///
+/// ⚠️ **只碰 `特写` 档**：`中`/`近`/`远` 一个字节不动（R4）。返回被改的条数。
+pub fn cap_closeup_anchor(segments: &mut [Segment]) -> usize {
+    let mut changed = 0usize;
+    for seg in segments.iter_mut() {
+        for ev in seg.events.iter_mut() {
+            let Event::Camera { zoom, anchor, anchor_to, .. } = ev else { continue };
+            if zoom.trim() != CLOSEUP_LABEL {
+                continue;
+            }
+            // `None` 也要补上：特写没有一个"合理的默认焦点"，缺省就是主播。
+            let anchor_ok = anchor.as_deref().map(str::trim) == Some(ANCHOR_LIVER);
+            if !anchor_ok {
+                *anchor = Some(ANCHOR_LIVER.to_string());
+                changed += 1;
+            }
+            // 终点：写了别的就拉回来；本来就 `None` 时**不动**（原地聚焦是合法的，
+            // 补一个等值的 `anchor_to` 只会让 polish.toml 多一行噪声）。
+            if let Some(to) = anchor_to.as_deref() {
+                if to.trim() != ANCHOR_LIVER {
+                    *anchor_to = Some(ANCHOR_LIVER.to_string());
+                    changed += 1;
+                }
+            }
+        }
+    }
+    changed
+}
+
 // ── 荷兰角（§19）──────────────────────────────────────────────────
 
 /// 荷兰角（`tilt`）的角度上限（度）—— 规格 §4.3 定的"防滥用"值。
@@ -1596,6 +1651,51 @@ mod tests {
             manual: false,
             speed: None,
             tilt: None,
+        }
+    }
+
+    /// 带 `anchor`（可空）的运镜 —— 验特写焦点守卫用。
+    fn cam_a(time: f64, zoom: &str, anchor: Option<&str>, anchor_to: Option<&str>) -> Event {
+        let Event::Camera {
+            time,
+            end,
+            zoom: z,
+            origin,
+            cut,
+            handheld,
+            manual,
+            speed,
+            tilt,
+            ..
+        } = cam(time, zoom)
+        else {
+            unreachable!()
+        };
+        Event::Camera {
+            time,
+            end,
+            zoom: z,
+            origin,
+            anchor: anchor.map(str::to_string),
+            anchor_to: anchor_to.map(str::to_string),
+            to_origin: None,
+            cut,
+            handheld,
+            manual,
+            speed,
+            tilt,
+        }
+    }
+
+    fn seg_with(events: Vec<Event>) -> Segment {
+        Segment {
+            start: 0.0,
+            end: 30.0,
+            fx: "med".into(),
+            note: String::new(),
+            role: String::new(),
+            events,
+            extra: Default::default(),
         }
     }
 
@@ -3123,6 +3223,97 @@ mod tests {
         for i in 0..3 {
             assert_eq!(tilt_of(&segs, 0, i), None);
         }
+    }
+
+
+    // ── §18-A 特写焦点守卫 ────────────────────────────────────────────
+
+    fn anchor_of(segs: &[Segment], i: usize) -> Option<String> {
+        match &segs[0].events[i] {
+            Event::Camera { anchor, .. } => anchor.clone(),
+            _ => panic!("不是运镜事件"),
+        }
+    }
+
+    /// ① ⚠️ **特写下非 liver 的聚焦一律改回 liver**（用户拍板）。
+    ///
+    /// 1.8 倍下弹幕/贴纸区基本被挤出画面，聚焦过去就是"主播不见了"。
+    #[test]
+    fn closeup_forces_liver_anchor() {
+        let mut segs = vec![seg_with(vec![
+            cam_a(0.0, "特写", Some("danmaku"), None),
+            cam_a(5.0, "特写", Some("sticker"), None),
+            cam_a(9.0, "特写", Some("center"), None),
+        ])];
+        assert_eq!(cap_closeup_anchor(&mut segs), 3);
+        for i in 0..3 {
+            assert_eq!(anchor_of(&segs, i).as_deref(), Some("liver"), "第 {i} 条");
+        }
+    }
+
+    /// ② ⚠️ **终点焦点 `anchor_to` 也一起锁**。
+    ///
+    /// 它是"从这里移到那里"的终点 —— 特写下移到弹幕同样看不到。
+    /// ⚠️ 只锁 `anchor` 不锁 `anchor_to` 的症状是"推的时候回来了、推完又跑掉"。
+    #[test]
+    fn closeup_forces_liver_on_both_ends() {
+        let mut segs = vec![seg_with(vec![cam_a(0.0, "特写", Some("danmaku"), Some("center"))])];
+        assert_eq!(cap_closeup_anchor(&mut segs), 2, "起点与终点各算一处");
+        match &segs[0].events[0] {
+            Event::Camera { anchor, anchor_to, .. } => {
+                assert_eq!(anchor.as_deref(), Some("liver"));
+                assert_eq!(anchor_to.as_deref(), Some("liver"));
+            }
+            _ => panic!(),
+        }
+    }
+
+    /// ③ ⚠️ **只碰「特写」档**（R4）。
+    ///
+    /// ⚠️ 判据必须**同时**验"特写被改了"和"其余档位没被改" ——
+    /// 只验前者的话，把守卫写成"全档位都强制 liver"照样绿。
+    #[test]
+    fn closeup_guard_leaves_other_tiers_alone() {
+        let mut segs = vec![seg_with(vec![
+            cam_a(0.0, "中", Some("danmaku"), None),
+            cam_a(5.0, "近", Some("danmaku"), None),
+            cam_a(9.0, "远", Some("danmaku"), None),
+            cam_a(12.0, "特写", Some("danmaku"), None),
+        ])];
+        assert_eq!(cap_closeup_anchor(&mut segs), 1, "只有特写那条该被改");
+        assert_eq!(anchor_of(&segs, 0).as_deref(), Some("danmaku"), "中景不许动");
+        assert_eq!(anchor_of(&segs, 1).as_deref(), Some("danmaku"), "近景不许动");
+        assert_eq!(anchor_of(&segs, 2).as_deref(), Some("danmaku"), "画中画不许动");
+        assert_eq!(anchor_of(&segs, 3).as_deref(), Some("liver"), "特写该被改");
+    }
+
+    /// ④ **缺省（没写 anchor）也要补成 liver**，但幂等。
+    ///
+    /// ⚠️ `None` 与 `Some("liver")` 在这里必须**行为一致**（都算"已经是 liver"），
+    /// 否则每跑一次 process 都会多改一次 —— 而 process 每次预览/出片都被隐式触发，
+    /// 症状是"日志每次都刷一行、polish.toml 每次都被重写"。
+    #[test]
+    fn closeup_guard_is_idempotent() {
+        let mut segs = vec![seg_with(vec![
+            cam_a(0.0, "特写", None, None),
+            cam_a(5.0, "特写", Some("liver"), None),
+        ])];
+        let first = cap_closeup_anchor(&mut segs);
+        assert_eq!(first, 1, "只有缺省那条要补");
+        assert_eq!(anchor_of(&segs, 0).as_deref(), Some("liver"));
+        assert_eq!(cap_closeup_anchor(&mut segs), 0, "第二趟必须收敛");
+    }
+
+    /// ⑤ 档位名要**去空白**再比（LLM/编辑器可能带空格）。
+    #[test]
+    fn closeup_label_is_trimmed() {
+        let mut segs = vec![seg_with(vec![
+            cam_a(0.0, " 特写 ", Some("danmaku"), None),
+            cam_a(5.0, "近 ", Some("danmaku"), None),
+        ])];
+        assert_eq!(cap_closeup_anchor(&mut segs), 1);
+        assert_eq!(anchor_of(&segs, 0).as_deref(), Some("liver"), "带空白的特写也要认");
+        assert_eq!(anchor_of(&segs, 1).as_deref(), Some("danmaku"), "带空白的近景仍不许动");
     }
 
 }

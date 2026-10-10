@@ -1864,6 +1864,10 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("camera 解析失败: {e}")))?;
         for (name, value, lo, hi) in [
             ("zoom_mid", &mut cam.zoom_mid, 1.0_f64, 3.0_f64),
+            // 特写（§18-A / 规格 §3.3 方案 A）：与中/近同区间 —— 它同样是"放大"，
+            // < 1 会缩出黑边（那是画中画的语义）。⚠️ 三处必须同批：
+            // 这里、`webui/src/views/PolishView.vue` 的滑杆、以及门禁的期望表。
+            ("zoom_closeup", &mut cam.zoom_closeup, 1.0, 3.0),
             ("zoom_close", &mut cam.zoom_close, 1.0, 3.0),
             ("zoom_wide", &mut cam.zoom_wide, 0.05, 1.0),
         ] {

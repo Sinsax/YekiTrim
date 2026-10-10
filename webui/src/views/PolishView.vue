@@ -1814,6 +1814,7 @@ function onSubtitlePosInput(e) {
 // "滑块拖到 3.0、保存后弹回 2.5"（后端夹了、前端没夹）或反过来"前端夹了、后端存了 5.0"。
 // 上下限的依据（露边 + 语义）见后端那段注释 —— 这里只镜像，别在别处再写一份。
 const ZOOM_FIELDS = [
+  { key: 'zoom_closeup', label: '特写', min: 1.0, max: 3.0, title: '特写缩放（camera zoom=特写）。默认 1.8，比近景更近一档' },
   { key: 'zoom_close', label: '近景', min: 1.0, max: 3.0, title: '近景特写缩放（camera zoom=近）。默认 1.5，越大越近' },
   { key: 'zoom_mid', label: '中景', min: 1.0, max: 3.0, title: '中景缩放（camera zoom=中）。默认 1.3' },
   { key: 'zoom_wide', label: '画中画', min: 0.05, max: 1.0, title: '画中画缩放（camera zoom=远），小于 1 时四周留黑边。默认 0.55' },
@@ -1821,7 +1822,7 @@ const ZOOM_FIELDS = [
 const zoomFields = ZOOM_FIELDS
 
 /** 读当前生效值；没写过这个键就回落到历史默认（与后端同一批数）。 */
-const ZOOM_DEFAULTS = { zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
+const ZOOM_DEFAULTS = { zoom_closeup: 1.8, zoom_close: 1.5, zoom_mid: 1.3, zoom_wide: 0.55 }
 function zoomValue(key) {
   const v = cfg.value?.style?.camera?.[key]
   return Number.isFinite(v) ? v : ZOOM_DEFAULTS[key]

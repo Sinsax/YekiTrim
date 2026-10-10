@@ -544,6 +544,18 @@ pub struct CameraStyle {
     /// 近景特写缩放 (camera zoom="近")
     #[serde(default = "default_zoom_close")]
     pub zoom_close: f64,
+    /// **特写**缩放（`camera zoom="特写"`，规格 `camera-and-noise-spec.md` §3.3 方案 A）。
+    ///
+    /// 用户拍板 **1.8**（2026-10-11）。`近`(1.5) 保持不变 ⇒ 存量工程零影响。
+    ///
+    /// ⚠️ **露边余量比 `近` 大得多**：单侧可平移 `(1.8−1)×1920/2 = 768px`
+    /// （`近` 是 480px、`中` 是 288px）。参考基准是那次 `scale=1.3` 的 622px 实测。
+    /// ⇒ 特写档下运镜**更"钉"**（平移空间更大是好事，但画面也更满）。
+    ///
+    /// ⚠️ **特写必须强制 `anchor = liver`**（用户拍板）：放大 1.8 倍后弹幕/贴纸区常被
+    /// 挤出画面，"聚焦弹幕"会看不到目标。守卫在 `process::fx::cap_closeup_anchor`。
+    #[serde(default = "default_zoom_closeup")]
+    pub zoom_closeup: f64,
     /// 画中画缩放 (camera zoom="远")。小于 1 = 画面缩小、四周留黑边
     #[serde(default = "default_zoom_wide")]
     pub zoom_wide: f64,
@@ -559,6 +571,7 @@ impl CameraStyle {
     /// 否则「预览看到的不是成片」——1.5/1.8 的硬编码就是这么来的。
     pub fn factor(&self, label: &str) -> f64 {
         match label.trim() {
+            "特写" => self.zoom_closeup,
             "近" => self.zoom_close,
             "远" => self.zoom_wide,
             _ => self.zoom_mid,
@@ -570,6 +583,7 @@ impl Default for CameraStyle {
     fn default() -> Self {
         Self {
             zoom_mid: default_zoom_mid(),
+            zoom_closeup: default_zoom_closeup(),
             zoom_close: default_zoom_close(),
             zoom_wide: default_zoom_wide(),
             extra: HashMap::new(),
@@ -639,6 +653,14 @@ fn default_zoom_mid() -> f64 {
 }
 fn default_zoom_close() -> f64 {
     1.5
+}
+/// 特写倍率（用户拍板 1.8，规格 §3.3 方案 A）。
+///
+/// ⚠️ 这个值与 `近`(1.5) 一起决定了"两档之间看得出区别"：
+/// 1.35× 的差距（1.8/1.5）在画面上是明显的一档，而 2.0/1.5=1.33×
+/// 与它几乎一样 —— 所以取 2.0 的收益很小、露边代价却更大（960px vs 768px）。
+fn default_zoom_closeup() -> f64 {
+    1.8
 }
 /// 画中画倍率：0.55 = 画面缩到 55%，四周黑边各 `(1-0.55)/2×1920 = 432px`
 /// （0.7 时是 288px）。旧工程里的 0.7 由 `cmd_process` 的迁移改成新默认。

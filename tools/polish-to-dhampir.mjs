@@ -1235,7 +1235,8 @@ function pickSticker(pkg, tag) {
 /// 运镜的 `zoom` 名 -> 倍率。**逐字照抄参照的 `camFactor`**（`templates/index.html:578-585`）：
 ///
 /// ```js
-/// if(label==='近'){v=c.zoom_close;d=1.5;}
+/// if(label==='特写'){v=c.zoom_closeup;d=1.8;}
+/// else if(label==='近'){v=c.zoom_close;d=1.5;}
 /// else if(label==='远'){v=c.zoom_wide;d=0.55;}
 /// else{v=c.zoom_mid;d=1.3;}
 /// return (typeof v==='number'&&isFinite(v))?v:d;
@@ -1265,8 +1266,10 @@ export function overlayBaseAngle(cssAngle) {
 }
 
 export function zoomFactor(name, camera, where) {
-  const defaults = { 近: 1.5, 远: 0.55, 中: 1.3 };
-  const keys = { 近: 'zoom_close', 远: 'zoom_wide', 中: 'zoom_mid' };
+  // ⚠️ 这张表与 Rust `CameraStyle`、模板 `camFactor`、`engine.js::camFactor`
+  //    **四处逐值一致**（门禁 `check-camera-zoom-parity.mjs` 钉住）。
+  const defaults = { 特写: 1.8, 近: 1.5, 远: 0.55, 中: 1.3 };
+  const keys = { 特写: 'zoom_closeup', 近: 'zoom_close', 远: 'zoom_wide', 中: 'zoom_mid' };
   // 认不出的档位按**中景**（与模板的 `else` 分支同口径）。
   const key = keys[name] ?? 'zoom_mid';
   const fallback = defaults[name] ?? 1.3;
