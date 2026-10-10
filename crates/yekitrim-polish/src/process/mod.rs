@@ -186,6 +186,19 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // Step 1e: 跳切配额（§17）。跳切在语法上就是"接缝处的构图跳" = `mute_ranges` 的边界
+    // 上落一条 `cut: true` 的运镜（**零新字段**，规格方案 A）。LLM 有表达权（写 cut）、
+    // 这里只有解释权与配额权。排在 1d 之后：那一步会剥掉非近景的 handheld，
+    // 但不会动 cut（跳切与 handheld 是两回事）。
+    // ⚠️ 必须排在**画中画收工之后**：`close_pip_shots` 会补出新的运镜事件，
+    // 那些补出来的事件也可能带 cut —— 排前面就会漏掉它们。
+    {
+        let capped = cap_jump_cuts(&mut config.segments, &config.mute_ranges, &subtitles);
+        if capped > 0 {
+            tracing::info!("  ⚠ 跳切配额（§17）：{capped} 处降级为平滑运镜");
+        }
+    }
+
     // Step 2: 根据 sticker_source 分配来源 + 解析 keyword → name (轮询 + 逐源兜底)
     {
         let sources = config.sticker_source.clone();
@@ -820,11 +833,11 @@ fn camera_shots(
     sr: placement::Rect,
 ) -> Vec<placement::CameraShot> {
     // 档位名 + 是否硬切要留到最后才用得上：过渡长度取决于**相邻两段**的档位与本条自己的 cut
-    let mut pairs: Vec<(bool, String, placement::CameraShot)> = segments
+    let mut pairs: Vec<(bool, String, Option<String>, placement::CameraShot)> = segments
         .iter()
         .flat_map(|seg| seg.events.iter())
         .filter_map(|ev| match ev {
-            crate::project::Event::Camera { time, end, zoom, origin, to_origin, cut, .. } => {
+            crate::project::Event::Camera { time, end, zoom, origin, to_origin, cut, speed, .. } => {
                 let shot = placement::CameraShot {
                     time: *time,
                     end: end.unwrap_or(*time),
@@ -838,19 +851,26 @@ fn camera_shots(
                     zoom: camera_style.factor(zoom) * placement::TRANSIENT_ZOOM,
                     transition: placement::TRANSITION_SECS,
                 };
-                Some((*cut, zoom.clone(), shot))
+                Some((*cut, zoom.clone(), speed.clone(), shot))
             }
             _ => None,
         })
         .collect();
-    pairs.sort_by(|a, b| a.2.time.partial_cmp(&b.2.time).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.sort_by(|a, b| a.3.time.partial_cmp(&b.3.time).unwrap_or(std::cmp::Ordering::Equal));
     pairs
         .iter()
         .enumerate()
-        .map(|(i, (cut, label, shot))| {
+        .map(|(i, (cut, label, speed, shot))| {
             let prev_label = if i == 0 { "" } else { pairs[i - 1].1.as_str() };
             placement::CameraShot {
-                transition: placement::transition_secs(label, prev_label, *cut),
+                // ⚠️ 带上 `speed`（§16）：照抄定值会在写了 `speed` 的工程里偏掉障碍窗口。
+                transition: placement::transition_secs(
+                    label,
+                    prev_label,
+                    *cut,
+                    speed.as_deref(),
+                    (shot.end - shot.time).max(0.0),
+                ),
                 ..*shot
             }
         })

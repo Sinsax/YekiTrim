@@ -133,11 +133,37 @@ pub const CLOSE_LABEL: &str = "近";
 /// `cut`（编辑器里的「方式 = 硬切」）把同一条规则放开给任意景别。
 /// 模板 canvas、GSAP 与 `engine.js` 三处同步实现同一条规则；贴纸避让靠这个值知道
 /// 那一段根本没有过渡窗口（否则会凭空多算出一个早已结束的旧状态当障碍）。
-pub fn transition_secs(label: &str, prev_label: &str, cut: bool) -> f64 {
+/// 运镜过渡时长（秒）—— **带上 §16 的 `speed`**。
+///
+/// ⚠️ 这里的口径必须与**求值器**一致，否则贴纸避让会算错障碍窗口：
+/// 求值器（模板 `getActiveCamera` / `engine.js cameraAt` / 转译器）用的是
+/// `cameraTransitionSecs(ev, dur, hardCut)` ——
+/// `snap 0.1 / fast 0.25 / med 老式子 / slow min(1.5, dur×0.8)`。
+/// **在这条路径上照抄一份定值会在写了 `speed` 的工程里偏**（偏了的表现是
+/// "贴纸偶尔压在正在运动的画面上"—— 不报错、只有逐帧看才发现）。
+///
+/// 三档「硬切」（`cut` / 本档是远 / 上一档是远）一律 0、**优先于 `speed`**，
+/// 与求值器 `hardCut` 的判据同源。
+///
+/// `speed = None` 时**逐值等于**改动前的历史行为（= [`TRANSITION_SECS`]）——
+/// 存量工程（今天全都没写 `speed`）走的就是这一档。
+pub fn transition_secs(
+    label: &str,
+    prev_label: &str,
+    cut: bool,
+    speed: Option<&str>,
+    dur: f64,
+) -> f64 {
     if cut || label.trim() == WIDE_LABEL || prev_label.trim() == WIDE_LABEL {
-        0.0
-    } else {
-        TRANSITION_SECS
+        return 0.0;
+    }
+    // 与 `webui/src/polish/engine.js::cameraTransitionSecs` 同一条分支：
+    // `med` / 没写 / 认不出 ⇒ 老式子；`snap`/`fast` 固定；`slow` 夹到 `dur × 0.8`。
+    match speed.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("snap") => 0.10,
+        Some("fast") => 0.25,
+        Some("slow") => 1.5_f64.min(dur * 0.8),
+        _ => TRANSITION_SECS,
     }
 }
 
@@ -869,14 +895,14 @@ mod tests {
     /// 远景进出是硬切：那一段**没有**过渡窗口，所以窗口里不该凭空多出一个早已结束的旧状态。
     #[test]
     fn wide_shot_is_a_hard_cut_with_no_transition_window() {
-        assert_eq!(transition_secs("远", "中", false), 0.0);
-        assert_eq!(transition_secs("中", "远", false), 0.0, "退出远景同样是切");
-        assert_eq!(transition_secs("近", "远", false), 0.0);
-        assert_eq!(transition_secs("远", "远", false), 0.0);
-        assert_eq!(transition_secs("中", "近", false), TRANSITION_SECS, "普通档位仍走缓动");
+        assert_eq!(transition_secs("远", "中", false, None, TRANSITION_SECS), 0.0);
+        assert_eq!(transition_secs("中", "远", false, None, TRANSITION_SECS), 0.0, "退出远景同样是切");
+        assert_eq!(transition_secs("近", "远", false, None, TRANSITION_SECS), 0.0);
+        assert_eq!(transition_secs("远", "远", false, None, TRANSITION_SECS), 0.0);
+        assert_eq!(transition_secs("中", "近", false, None, TRANSITION_SECS), TRANSITION_SECS, "普通档位仍走缓动");
         // 硬切（编辑器「方式 = 硬切」）：任意档位都能瞬间到位，不只有画中画
-        assert_eq!(transition_secs("中", "近", true), 0.0);
-        assert_eq!(transition_secs("近", "中", true), 0.0);
+        assert_eq!(transition_secs("中", "近", true, None, TRANSITION_SECS), 0.0);
+        assert_eq!(transition_secs("近", "中", true, None, TRANSITION_SECS), 0.0);
 
         // 0.5s 处在「刚切到远景」之后：窗口 [0.5, 2.0] 看不到切走之前的旧状态
         let shots = vec![
@@ -894,7 +920,7 @@ mod tests {
                 origin: (960.0, 540.0),
                 origin_to: (960.0, 540.0),
                 zoom: 0.55,
-                transition: transition_secs("远", "中", false),
+                transition: transition_secs("远", "中", false, None, TRANSITION_SECS),
             },
         ];
         let st = camera_states_for(&shots, (1600.0, 540.0), 0.5, 2.0);
@@ -907,6 +933,38 @@ mod tests {
         ];
         let st = camera_states_for(&soft, (1600.0, 540.0), 0.5, 2.0);
         assert!(st.contains(&((1600.0, 540.0), 1.15)), "缓动下旧状态可见: {st:?}");
+    }
+
+    /// §16 `speed` 要传进贴纸避让：**与求值器同口径**，且硬切优先于 `speed`。
+    #[test]
+    fn transition_window_follows_camera_speed() {
+        // 四档与 `engine.js::cameraTransitionSecs` 逐值同口径（@ dur=5s，`slow` 装得下）
+        assert_eq!(transition_secs("中", "中", false, Some("snap"), 5.0), 0.10);
+        assert_eq!(transition_secs("中", "中", false, Some("fast"), 5.0), 0.25);
+        assert_eq!(transition_secs("中", "中", false, Some("slow"), 5.0), 1.5);
+        // `med` = 老式子（这里即 `TRANSITION_SECS`），**不是**一个新常数
+        assert_eq!(transition_secs("中", "中", false, Some("med"), 5.0), TRANSITION_SECS);
+        // `slow` 要夹到 `dur × 0.8`（短镜头推不完就会被切走）
+        assert_eq!(transition_secs("中", "中", false, Some("slow"), 1.0), 0.8);
+        assert_eq!(transition_secs("中", "中", false, Some("slow"), 0.5), 0.4);
+        // 大小写/空白归一（LLM 会写 "Slow "）；认不出的值退回老式子（不猜）
+        assert_eq!(transition_secs("中", "中", false, Some(" SLOW "), 5.0), 1.5);
+        assert_eq!(transition_secs("中", "中", false, Some("warp"), 5.0), TRANSITION_SECS);
+
+        // ⚠️ **硬切优先于 speed**：`cut` 与本档/上一档是远，都必须 0 —— 哪怕写了 `slow`。
+        // 求值器那边也是这个优先级（`hardCut` 先判）。
+        assert_eq!(transition_secs("中", "近", true, Some("slow"), 5.0), 0.0);
+        assert_eq!(transition_secs("远", "中", false, Some("slow"), 5.0), 0.0);
+        assert_eq!(transition_secs("中", "远", false, Some("slow"), 5.0), 0.0);
+
+        // ⚠️ **存量零回归**：`speed = None` 时逐值等于改动前，**不论 dur 给什么**
+        for dur in [0.0, 0.5, 1.0, 5.0, 60.0] {
+            assert_eq!(
+                transition_secs("中", "近", false, None, dur),
+                TRANSITION_SECS,
+                "没写 speed ⇒ 老行为（dur={dur}）"
+            );
+        }
     }
 
     #[test]
