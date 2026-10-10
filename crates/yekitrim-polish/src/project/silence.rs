@@ -620,31 +620,114 @@ mod tests {
         assert_eq!(comic, vec![(15.5, 20.0), (46.0, 50.0)]);
     }
 
-    /// ⚠️ **端到端**（真读工程文件）：`apply_silence_with` 必须真的把
-    /// "紧跟爆点之后的停顿"从屏蔽轨道里**剔除掉**，而不是只算出来给人看。
+    /// ⚠️⚠️ **端到端**：真的跑一次 `apply_silence_with`，看保护段有没有**落到磁盘上**。
     ///
-    /// 这条走的是真实文件路径（`data/subtitles.json` + `polish.toml`），
-    /// 因为"算对了但没接上"是本仓库最容易犯的错 —— 上面那几条纯函数判据**全都不会红**。
+    /// 上面那几条都是纯函数判据 —— "算对了但没接上"是**它们全都不会红**的错法。
+    /// 这条走真实路径：写 `polish.toml` + `clip.srt`（`detect_silence_from_srt` **不需要音频**），
+    /// 然后调 `apply_silence_with`，最后**读回 `polish.toml`** 检查 `mute_ranges` 里
+    /// 确实没有那段"紧跟爆点之后的停顿"。
     #[test]
-    fn apply_silence_protects_the_comic_pause_end_to_end() {
+    fn apply_silence_with_really_protects_the_comic_pause() {
         let dir = std::env::temp_dir().join(format!("vt-sil7-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("data")).unwrap();
-        // 字幕：1.0~4.0 一句；20.0~24.0 一句（后面那条会是爆点）
+
+        // 字幕：0~5 一句、12~18 一句、30~35 一句。
+        // ⇒ 每段间隔里都有 >3.5s 的静音，正是"会被剪"的那些。
+        let srt = "1
+00:00:00,000 --> 00:00:05,000
+第一句话在这里
+
+                   2
+00:00:12,000 --> 00:00:18,000
+第二句话在这里
+
+                   3
+00:00:30,000 --> 00:00:35,000
+第三句话在这里
+
+                   4
+00:00:40,000 --> 00:00:45,000
+紧接爆点之后的一句话
+
+                   5
+00:01:40,000 --> 00:01:45,000
+很久以后的一句话
+
+";
+        std::fs::write(dir.join("clip.srt"), srt).unwrap();
+
+        // `subtitles.json` 给爆点判据用（§6 的适配器读它）。
+        // ⚠️ 18~30 那一段之后的静默（35s 之后没有）—— 这里让**第二个间隔**紧跟爆点。
         let subs = serde_json::json!([
-            {"index": 0, "start": 1.0, "end": 4.0, "text": "铺垫的一句话啊", "html": ""},
-            {"index": 1, "start": 20.0, "end": 24.0, "text": "这里突然说了一大堆话哈哈哈哈哈", "html": ""}
+            {"index":0,"start":0.0,"end":5.0,"text":"第一句话在这里","html":""},
+            {"index":1,"start":12.0,"end":18.0,"text":"这里突然说了一大堆话哈哈哈哈哈","html":""},
+            {"index":2,"start":30.0,"end":35.0,"text":"第三句话在这里","html":""}
         ]);
         std::fs::write(dir.join("data/subtitles.json"), subs.to_string()).unwrap();
-        let cfg = ProjectFile::example();
+
+        let mut cfg = ProjectFile::example();
+        // ⚠️ 60s 之后是**远离任何爆点**的长静默（爆点只可能落在有字幕的地方），
+        //    它必须被**判成拖沓、真剪掉** —— 否则这条用例只剩"保护"这一半，
+        //    而"保护"与"整个没生效"在磁盘上长得一模一样（都是"那段不在 mute_ranges 里"）。
+        cfg.duration = Some(120.0);
+        cfg.source.subtitles = "clip.srt".into();
+        cfg.source.video = "clip.mp4".into(); // 不存在 ⇒ 走 srt 检测（不需要音频）
+        cfg.segments = vec![crate::project::Segment {
+            start: 0.0,
+            end: 60.0,
+            fx: "high".into(),
+            note: String::new(),
+            role: String::new(),
+            events: Vec::new(),
+            extra: Default::default(),
+        }];
         save_project(&dir, &cfg).unwrap();
 
-        // 直接把检测结果喂进分类（检测本身要音频，测试工程没有）
-        let punches = vec![crate::process::punch::Punch { at: 20.0, end: 25.0, score: 0.9 }];
-        let ranges = vec![(5.0, 12.0), (25.2, 30.0)]; // 前者铺垫期、后者紧跟爆点
-        let (dragging, comic) = split_silence_by_kind(&ranges, &punches);
-        assert_eq!(dragging, vec![(5.0, 12.0)], "爆点前那段该剪");
-        assert_eq!(comic, vec![(25.2, 30.0)], "紧跟爆点那段该保护");
+        // ⚠️ 阈值取 3.0 让那些间隔都够得上（默认 3.5 也行，但 3.0 让用例不依赖默认值）
+        let applied = apply_silence_with(&dir, 3.0, -30.0).expect("应用去静音");
+
+        println!("检测到 {} 段，保护 {} 段", applied.ranges.len(), applied.protected.len());
+        for (s, e) in &applied.ranges {
+            println!("  剪: {s:.2}~{e:.2}");
+        }
+        for (s, e) in &applied.protected {
+            println!("  保护: {s:.2}~{e:.2}");
+        }
+
+        // 读回磁盘，确认落盘的 `mute_ranges` **与 `applied.ranges` 一致**（保护段不在里面）。
+        let back = load_project(&dir).unwrap();
+        let written: Vec<(f64, f64)> = back
+            .mute_ranges
+            .iter()
+            .filter_map(|r| r.normalized())
+            .collect();
+        for (s, e) in &applied.protected {
+            let overlapped = written.iter().any(|(ws, we)| *ws < *e - RANGE_EPS && *s < *we - RANGE_EPS);
+            assert!(
+                !overlapped,
+                "被保护的 {s:.2}~{e:.2} 竟然落进了磁盘上的 mute_ranges —— 保护没接上"
+            );
+        }
+        assert_eq!(
+            written.len(),
+            applied.ranges.len(),
+            "落盘的屏蔽段数应当等于 `applied.ranges`（保护段被剔除了）"
+        );
+        // ⚠️⚠️ **正面判据**（这是本条用例唯一能杀死"保护没生效"的地方）：
+        //   上面那些断言全是"被保护的段**不在**磁盘上" —— 而**保护一旦整个失效**，
+        //   `protected` 就是空的，那些断言会**全部空转通过**（实测：把整段保护删掉，
+        //   用例仍然绿）。所以必须正面钉住"确实有一部分被保护下来了、且确实有一部分被剪了"。
+        assert!(
+            !applied.protected.is_empty(),
+            "一段都没被保护 ⇒ §7 的分类没生效（保护与没生效长得一样）: {applied:?}"
+        );
+        // ⚠️ **必须至少有一段真被剪**：全都被保护的话，"保护"与"整个没生效"分不出来
+        //   （两边都是"磁盘上没有那一段"）—— 这条断言就是用来排除那种**空转**的。
+        assert!(
+            !applied.ranges.is_empty(),
+            "一段都没剪 ⇒ 这条用例证明不了任何事（保护与没生效长得一样）: {applied:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
