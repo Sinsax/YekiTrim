@@ -173,8 +173,8 @@
           <div v-if="MANUAL_TYPES.includes(selItem.type)" class="manual-row mt-4">
             <span class="chip" :class="selItem.manual ? 'p' : 'n'">{{ selItem.manual ? '手动' : '自动对齐' }}</span>
             <span class="muted small">{{ selItem.manual
-              ? '后处理不改写它：不吸附字幕、也不参与数量抽稀'
-              : '后处理会吸附到最近字幕；数量超出额度时可能被抽稀删掉' }}</span>
+              ? '后处理不改写它'
+              : '后处理会吸附到最近字幕' }}</span>
             <button v-if="selItem.manual" class="mini-btn" title="交回自动处理：下一次后处理会把它吸附到最近字幕（数量超出额度时也可能被抽稀）" @click="followSubtitles">跟随字幕</button>
           </div>
 
@@ -276,8 +276,6 @@
                   </select>
                 </div>
               </div>
-              <div class="hint" title="锚点在「后处理」时解析成坐标；「移到」非空就是从聚焦点平移过去。手持摇摆会持续晃动到下一条不带它的运镜，只在近景生效。">「移到」非空 = 从聚焦点平移<br>
-                手持摇摆只在近景生效</div>
             </template>
 
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
@@ -1534,7 +1532,6 @@ const spanHint = computed(() => {
   const ev = selectedEv.value
   if (!ev) return ''
   if (ev.type === 'sticker') return '贴纸会在「结束」之后再淡出 0.3s；入场 0.35s / 浮起 0.4s 也另计。'
-  if (ev.type === 'camera') return '运镜是状态机：档位保持到下一条运镜；「远」（画中画）的结束时间 = 到点回镜头。'
   if (SFX_CAPABLE.includes(ev.type) && ev.type !== 'overlay') return '瞬时特效只表现爆发瞬间（后处理会把跨度夹到 0.1~0.6s）。'
   return ''
 })
