@@ -109,9 +109,9 @@ async fn serve_library_font(axum::extract::Path(name): axum::extract::Path<Strin
     }
     // 字体动辄几十 MB，读盘别占着 async worker（这条服务器也要抓帧/截图）
     let loaded = tokio::task::spawn_blocking(move || {
-        // ⚠️ 按归属：预览也是**子进程**（`polish preview`），多用户下不能让 A 用上 B 的字体。
-        let root = yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env());
-        let path = yekitrim_core::fonts::resolve_all(&root, &name)?;
+        // ⚠️ 按归属 **且两层**：预览也是**子进程**（`polish preview`），多用户下不能让 A 用上 B 的
+        // 字体；而自带字体在**全局库**里 —— 只查用户库会让预览里"选了自带字体 → 404 → 回落系统字体"。
+        let path = yekitrim_core::fonts::resolve_all_roots(&font_roots_owned(), &name)?;
         let file = path.file_name()?.to_str()?.to_string();
         std::fs::read(&path).ok().map(|b| (b, file))
     })
@@ -144,15 +144,26 @@ fn font_content_type(file: &str) -> &'static str {
 /// `index.html` 的 `.cap{font-family:"<style.subtitle.font>"…}`、`cover.html` 的
 /// `__FONT_FAMILY__` 都直接把这一串当 CSS 字族名用。名字一样，那条规则一行都不用改。
 pub fn font_face_css(font_ids: &[&str]) -> String {
-    // 同上：按归属选库（单人 = 现状位置，零变化）。
-    font_face_css_in(
-        &yekitrim_core::fonts::dir_for(yekitrim_core::owner::Owner::from_env()),
-        font_ids,
+    // ⚠️ **两层**（用户库优先、全局补缺，2026-10-10）：自带字体装在 `global/` 里，
+    // 只查用户库 ⇒ 出片时「选了自带字体」不注入 `@font-face` ⇒ 静默回落系统字体。
+    font_face_css_in_roots(&font_roots_owned(), font_ids)
+}
+
+/// 这个进程该看的字体库（按 `Owner`，经 `YEKITRIM_OWNER` 从父进程继承）。
+fn font_roots_owned() -> Vec<std::path::PathBuf> {
+    yekitrim_core::owner::asset_dirs(
+        yekitrim_core::owner::Owner::from_env(),
+        yekitrim_core::owner::AssetKind::Fonts,
     )
 }
 
 /// [`font_face_css`] 的目录版（测试用临时目录，免得往程序目录写字）。
 pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
+    font_face_css_in_roots(std::slice::from_ref(&root.to_path_buf()), font_ids)
+}
+
+/// 多根版本的 `@font-face` 注入（`roots[0]` 优先）。
+pub fn font_face_css_in_roots(roots: &[std::path::PathBuf], font_ids: &[&str]) -> String {
     let mut css = String::new();
     for id in font_ids {
         let id = id.trim();
@@ -162,7 +173,7 @@ pub fn font_face_css_in(root: &Path, font_ids: &[&str]) -> String {
         // ⚠️ **必须走 `resolve_all`**（两种布局都认：v2 目录 `<slug>/font.ttf` + 老平铺文件）。
         // 以前这里是 `resolve_file_at`（**只认老平铺**）⇒ v2 目录布局下**什么都不注入**，
         // 于是"选了库里的字体、出片没换"（而预览那边另有 @font-face，看着还是对的）。
-        let Some(path) = yekitrim_core::fonts::resolve_all(root, id) else {
+        let Some(path) = yekitrim_core::fonts::resolve_all_roots(roots, id) else {
             // 解析不到就**什么都不注入**：老工程的 `font = "LXGW WenKai"` 走到这里，
             // 行为与从前一致（当系统字体族名用）。
             continue;
@@ -247,7 +258,9 @@ pub const SYSTEM_FONT_STACK: &str = "'Noto Sans SC','Microsoft YaHei','Noto Sans
 /// `scan_dirs` 对 `emoji==true` 强制 `is_default=false`（所以上面的 `.find(|e| e.is_default)` 选不到它），
 /// `builtin_fonts` 那条也显式滤掉了 id 含 emoji 的。**别再在这里补判据**（那就又是"各处各写一份"）。
 pub fn preferred_fallback_family() -> String {
-    let root = yekitrim_core::fonts::dir();
+    // ⚠️ **两层**：自带中文那支在 `global/` 里。
+    let roots = font_roots_owned();
+    let root = roots[0].clone();
     // ① 库里显式设过默认的那支（用户意图最强）—— 判据只此一处：`fonts::default_text_family`
     //    （2026-10-06 收口；`cmd_init` 也走它，否则「设为默认」对新工程无效）
     let preferred = yekitrim_core::fonts::default_text_family(&root)
@@ -257,9 +270,17 @@ pub fn preferred_fallback_family() -> String {
                 .iter()
                 .find(|b| {
                     !b.id.to_ascii_lowercase().contains("emoji")
-                        && yekitrim_core::fonts::builtin_installed(&root, b)
+                        && roots
+                            .iter()
+                            .any(|r| yekitrim_core::fonts::builtin_installed(r, b))
                 })
-                .map(|b| yekitrim_core::fonts::family_for_at(&root, b.id))
+                .map(|b| {
+                    roots
+                        .iter()
+                        .map(|r| yekitrim_core::fonts::family_for_at(r, b.id))
+                        .find(|f| !f.is_empty())
+                        .unwrap_or_default()
+                })
         })
         .unwrap_or_default();
     if preferred.trim().is_empty() {

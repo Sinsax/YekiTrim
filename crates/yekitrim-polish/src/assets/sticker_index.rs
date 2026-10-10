@@ -695,6 +695,22 @@ fn normalize_keyword(kw: &str) -> String {
 
 /// 扫描 `sticker_dir()` 根目录下的贴纸包子文件夹。
 /// 每个子文件夹 = 一个 `StickerPackage`，文件夹名即 LLM 候选名。
+/// 多根扫描（`roots[0]` 优先）—— 用户库优先、全局补缺。
+///
+/// 同名包以**前面那层**为准（用户库赢了全局库），与 `fonts::scan_all_roots` 同口径。
+pub fn scan_packages_roots(roots: &[PathBuf]) -> Vec<StickerPackage> {
+    let mut out: Vec<StickerPackage> = Vec::new();
+    for root in roots {
+        for p in scan_packages(root) {
+            if out.iter().any(|x| x.name == p.name) {
+                continue; // 前面那层已经有了
+            }
+            out.push(p);
+        }
+    }
+    out
+}
+
 pub fn scan_packages(root: &Path) -> Vec<StickerPackage> {
     let mut packages = Vec::new();
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -792,6 +808,20 @@ impl VideoAsset {
 ///
 /// 目录不存在 ⇒ 空列表（不是错误）：素材库是"用户可以一个都没放"的东西。
 /// 与贴纸库同一条纪律：**以磁盘为准**，手工把文件丢进去也会出现。
+/// 多根扫描（`roots[0]` 优先）—— 用户库优先、全局补缺（同名文件以用户库那份为准）。
+pub fn scan_video_library_roots(roots: &[PathBuf]) -> Vec<VideoAsset> {
+    let mut out: Vec<VideoAsset> = Vec::new();
+    for root in roots {
+        for a in scan_video_library(root) {
+            if out.iter().any(|x| x.name == a.name) {
+                continue;
+            }
+            out.push(a);
+        }
+    }
+    out
+}
+
 pub fn scan_video_library(dir: &Path) -> Vec<VideoAsset> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();

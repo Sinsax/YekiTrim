@@ -462,6 +462,36 @@ where
         Err(e) => info!("⚠ 自动生成程序配置失败（将使用内建默认值）: {e:#}"),
     }
 
+    // 给还没有自己配置的账号从全局模板落一份（幂等：自己已经有那份就跳过）。
+    //
+    // ⚠️ **位置不能提前**，两个理由各踩过一次：
+    // ① 必须在**迁移之后** —— 迁移把单人时期的 `config/llm.toml` 搬进首个管理员名下，
+    //    先 seed 会给管理员先建一份"出厂默认"，把用户改过的那份挡在门外；
+    // ② 必须在**全局配置生成之后** —— `global/.yekitrim/config.toml` 就是模板本身，
+    //    它还没生成时 seed 找不到源，静默什么都不做（实测：新库启动后 users/1 下空空如也）。
+    // 两条顺序错了都**不报错**，只是结果不对，所以别顺手挪这块。
+    match auth.db().list_users() {
+        Ok(users) => {
+            for u in &users {
+                match yekitrim_service::seed_account_config(
+                    yekitrim_core::owner::Owner::User(u.id),
+                ) {
+                    Ok(created) if created.is_empty() => {}
+                    Ok(created) => info!(
+                        "已从全局模板为账号 `{}` 初始化 {} 项配置",
+                        u.username,
+                        created.len()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "账号 `{}` 配置初始化失败（不影响启动）: {e:#}",
+                        u.username
+                    ),
+                }
+            }
+        }
+        Err(e) => tracing::warn!("列账号失败，跳过配置初始化: {e:#}"),
+    }
+
     // 启动工程（2026-10-03 起**只是"上次用的是哪个"这条记忆**，不再是全局状态）：
     // 显式 `--config` 优先，否则恢复上次记忆的那份；都没有就什么都不做。
     // 它**不进 `AppState`** —— 每个请求由 `scope::Scope` 按 `?project=<id>` 现解析出自己那份。

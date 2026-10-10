@@ -1294,8 +1294,15 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
     let is_admin = user.is_admin();
     let owner = crate::auth::owner_of(&user);
     let payload = blocking(move || {
-        let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Fonts);
-        let fonts: Vec<serde_json::Value> = yekitrim_core::fonts::scan_all(&root)
+        // ⚠️ **读两层**（用户库优先、全局补缺，2026-10-10）：自带字体装在**全局**，
+        // 用户自己导入的在**自己库**里；只看其中一层会"少一半字体"。
+        // 写入仍然只有一处（各 `ensure_dir_for(owner)`），见 `owner::asset_dirs` 的说明。
+        let roots = yekitrim_core::owner::asset_dirs(
+            owner,
+            yekitrim_core::owner::AssetKind::Fonts,
+        );
+        let root = roots[0].clone();
+        let fonts: Vec<serde_json::Value> = yekitrim_core::fonts::scan_all_roots(&roots)
             .into_iter()
             .map(|f| {
                 serde_json::json!({
@@ -1303,7 +1310,12 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
                     "file": f.file,
                     // ⚠️ 走 `family_for`（唯一权威），别直接回 `f.family`（那是"从文件读到的名字"，
                     // 可能与 FONT.toml 不一致）—— 界面上"内部族名 vs 显示名"两行要靠它对得上。
-                    "family": yekitrim_core::fonts::family_for_at(&root, &f.id),
+                    // ⚠️ 走多根：这款字体可能在**全局库**里（自带字体就在那）
+                    "family": roots
+                        .iter()
+                        .map(|r| yekitrim_core::fonts::family_for_at(r, &f.id))
+                        .find(|s| !s.is_empty())
+                        .unwrap_or_default(),
                     "display_name": f.display_name,
                     "bytes": f.bytes,
                     "builtin": f.builtin,
@@ -1334,7 +1346,12 @@ pub(super) async fn polish_fonts(Extension(user): Extension<crate::auth::Current
                     "family": b.family,
                     "license": b.license,
                     "license_url": b.license_url,
-                    "installed": yekitrim_core::fonts::builtin_installed(&root, b),
+                    // ⚠️ 自带字体现在装在**全局库**里，所以"装没装"要按**两层**判：
+                    // 只看用户库会永远报 `installed: false`（界面显示"未安装"，
+                    // 而实际出片时是能用的 —— 这种不一致最难查）。
+                    "installed": roots
+                        .iter()
+                        .any(|r| yekitrim_core::fonts::builtin_installed(r, b)),
                 })
             })
             .collect();
@@ -1897,10 +1914,15 @@ pub(super) async fn polish_video_library(
     Extension(user): Extension<crate::auth::CurrentUser>,
 ) -> ApiResult {
     let owner = crate::auth::owner_of(&user);
-    let root = yekitrim_core::owner::asset_dir(owner, yekitrim_core::owner::AssetKind::Videos);
-    let lib_dir = root.to_string_lossy().to_string();
+    // ⚠️ **读两层**（用户库优先、全局补缺）：公用视频素材放在 `global/` 里。
+    // 显示的 `root` 仍是**用户库** —— 那是"你放文件放这儿"，全局库是只读公用素材。
+    let roots = yekitrim_core::owner::asset_dirs(
+        owner,
+        yekitrim_core::owner::AssetKind::Videos,
+    );
+    let lib_dir = roots[0].to_string_lossy().to_string();
     let items: Vec<serde_json::Value> =
-        blocking(move || Ok(yekitrim_polish::assets::sticker_index::scan_video_library(&root)))
+        blocking(move || Ok(yekitrim_polish::assets::sticker_index::scan_video_library_roots(&roots)))
             .await?
             .into_iter()
             .map(|a| {
