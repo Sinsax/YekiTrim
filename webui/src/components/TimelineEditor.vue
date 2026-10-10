@@ -212,6 +212,23 @@
                 <Icon name="sparkles" :size="11" /> 只重做本段事件
               </button>
             </div>
+
+            <!-- 系统理由（§1）：后处理在这段上**自动**改过什么、凭什么。
+                 只读 —— 它描述"已经发生的事"，改它没有效果（要改就改上面的起止/景别）。 -->
+            <div v-if="segDecisions.length" class="seg-why mt-6">
+              <div class="row spread small">
+                <span class="muted">系统做得对吗</span>
+                <span class="chip n">{{ segDecisions.length }} 条自动决策</span>
+              </div>
+              <div v-for="(d, i) in segDecisions" :key="i" class="why-row" :title="d.detail || ''">
+                <span class="why-dot" :class="d.kind === 'boundary_sentence_end' ? 'b' : 'o'"></span>
+                <span class="why-text">{{ d.text }}</span>
+                <span v-if="d.detail" class="muted small mono why-detail">{{ d.detail }}</span>
+              </div>
+              <div class="mini-hint">
+                后处理每次重跑都会重算这些理由；要改结果请直接拖动上面的分段边界。
+              </div>
+            </div>
           </template>
 
           <template v-else-if="selected.kind === 'sub'">
@@ -571,6 +588,13 @@ const segments = ref([])
 /** 最近一次 LLM 生成的结果快照（`polish_project_get?preview=1` 注入的 `_llm_status`）：
  *  哪一段成功/失败、失败原因、生成时间。用于给分段上警示色 + 面板里显示状态。 */
 const llmStatus = ref(null)
+/**
+ * 系统理由（§1）：后处理在**整片**上自动做过的决策，来自 `polish.toml` 的 `[[decisions]]`。
+ *
+ * ⚠️ 它是**只读回执**，不是配置 —— 改它没有任何效果（后端每趟 process 重算覆盖）。
+ * 面板里那条提示（"要改结果请拖动分段边界"）就是防用户以为这里能改。
+ */
+const decisions = ref([])
 const subtitles = ref([])
 const muteRanges = ref([])
 /**
@@ -917,8 +941,27 @@ function segGen(si) {
   return list.find((s) => Number(s.index) === Number(si)) || null
 }
 
-/** unix 秒 → `MM-DD HH:MM`（本地时区），用于"整片最近一次生成"那行。 */
-function fmtTs(ts) {
+/**
+ * 当前选中分段**相关的**系统理由（§1）。
+ *
+ * 归属判据分两种（理由自己不带"属于哪一段" —— 后处理是按整片算的）：
+ * - **带 `at` 的**（边界类）：切点落在这一段的 `[start, end]` 里就算它的；
+ * - **不带 `at` 的**（整片级，如片头淡入 / 画中画降级）：只挂在**首段**上 ——
+ *   否则用户点每一段都会看到同一句"补了片头淡入"，很快就不看了。
+ */
+const segDecisions = computed(() => {
+  if (selected.value?.kind !== 'seg') return []
+  const seg = segments.value[selected.value.si]
+  if (!seg) return []
+  const isFirst = selected.value.si === 0
+  return decisions.value.filter((d) => {
+    if (d.at === null || d.at === undefined) return isFirst
+    const t = Number(d.at)
+    return Number.isFinite(t) && t >= seg.start - 0.001 && t <= seg.end + 0.001
+  })
+})
+
+/** unix 秒 → `MM-DD HH:MM`（本地时区），用于"整片最近一次生成"那行。 */function fmtTs(ts) {
   const d = new Date(Number(ts) * 1000)
   if (Number.isNaN(d.getTime())) return ''
   const p = (n) => String(n).padStart(2, '0')
@@ -2175,6 +2218,8 @@ async function loadData() {
   loadError.value = ''
   segments.value = cfg?.segments || []
   llmStatus.value = cfg?._llm_status && Array.isArray(cfg._llm_status.segments) ? cfg._llm_status : null
+  // §1 系统理由：缺这个键 = 老工程 / 没跑过后处理 ⇒ 空数组（不是错误）。
+  decisions.value = Array.isArray(cfg?.decisions) ? cfg.decisions : []
   muteRanges.value = Array.isArray(cfg?.mute_ranges) ? cfg.mute_ranges.map(m => ({ start: Number(m.start) || 0, end: Number(m.end) || 0 })) : []
   // 成片时间线：**缺 `[edl]` 段 = 老工程 = 空数组**（后端 `serde(default)`）。
   // ⚠️ 空数组在这里读成"这条路没开"，**不是**"什么都不播" —— 补集兜底住 `resolve_edl` 一处。
@@ -2301,6 +2346,20 @@ async function loadData() {
 /* 覆盖层未设色档时的退化说明（终色此刻实为 transparent，取色器只能显示黑，必须解释一句） */
 .mini-hint { margin:6px 0 0; padding:5px 7px; background:var(--bg-soft); border-radius:6px;
   font-size:11px; line-height:1.5; color:var(--ink-faint); }
+/* §1 系统理由：只读回执。左缘一道竖线把它与"可编辑的字段"在视觉上分开 ——
+   用户点进来的第一反应是"这能不能改"，答案是不能（改结果请拖边界）。 */
+.seg-why { border-left: 2px solid var(--line, var(--bg-soft)); padding-left: 8px; }
+.seg-why .chip { font-size: 10px; padding: 1px 6px; }
+.why-row { display:flex; align-items:baseline; gap:6px; margin-top:5px; }
+/* 圆点：边界类（品牌橙）与其它（金发调）—— 让用户扫一眼就分得出是哪一类决策。
+   ⚠️ 只用 tokens 里**存在**的变量：本仓没有 `--warn`（写过一次，静默拿到 fallback）。 */
+.why-dot { flex:none; width:6px; height:6px; border-radius:50%; margin-top:1px;
+  background: var(--ink-faint); }
+.why-dot.b { background: var(--main); }
+.why-dot.o { background: var(--tan-deep); }
+/* ⚠️ 文案是**人话**、可能比较长，必须允许折行（右栏内容宽只有 266px） */
+.why-text { flex:1 1 auto; min-width:0; font-size: 11px; line-height:1.5; color: var(--ink); }
+.why-detail { flex:none; font-size:10px; white-space:nowrap; }
 .props-panel label { margin-top:6px; }
 .props-panel .row { margin-top:4px; }
 .props-panel input[type="color"] { height: 26px; padding: 0 2px; }

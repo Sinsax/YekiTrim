@@ -70,10 +70,39 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 边界挪了就得重算；排在后面等于让所有事件挂在一个已经不存在的边界上。
     // 与 `llm/mod.rs` Step 4b 是**配对的两处**（老工程只有 process 这条腿能重跑）——
     // 同 `cap_pip_shots` 那条先例：LLM 那边管"刚生成就对齐"，这里管"每次后处理都收敛"。
-    let moved = align_segment_boundaries(&mut config.segments, &subtitles);
-    if moved > 0 {
-        tracing::info!("  ✂ 句末边界守卫：挪了 {moved} 处分段边界（原来切在句子中间）");
+    //
+    // 明细带回来记进**决策理由**（§1）：用户看得见"哪一处、从哪挪到哪、凭什么"。
+    let boundary_moves = align_segment_boundaries_detailed(&mut config.segments, &subtitles);
+    if !boundary_moves.is_empty() {
+        tracing::info!(
+            "  ✂ 句末边界守卫：挪了 {} 处分段边界（原来切在句子中间）",
+            boundary_moves.len()
+        );
+        for m in &boundary_moves {
+            tracing::info!("     · {:.2}s → {:.2}s{}", m.0, m.1, if m.2 { "（句末标点）" } else { "（字幕收尾）" });
+        }
     }
+    // 决策理由（§1）的**顺延规则**。
+    //
+    // ⚠️ 为什么不能"每趟清空重算"：有**两类**决策天然只在某一趟发生，但描述的是
+    //    **已经改过、且仍然生效**的事实 —— 清掉就等于用户每跑一次 process 丢一次解释：
+    //    · **边界类**：守卫幂等 —— 第一次挪到句末，第二次看到"已经干净"返回 0 条；
+    //    · **片头淡入类**：`intro_fade_seeded` 一次性补种 —— 补过就置位，不再命中。
+    //    实测：第一趟 2 条 → 第二趟 0 条。
+    // ⇒ 做法 = **旧的两类先接过来**，再叠加本趟新产生的，最后按 `kind` 去重（本趟的胜）。
+    //   次数型决策（画中画降级）不在顺延范围：它描述"本趟降了几条"，上一趟的数字已经过时。
+    const CARRY_OVER: [&str; 2] = [
+        decision_kind::BOUNDARY_SENTENCE_END,
+        decision_kind::INTRO_FADE_SEEDED,
+    ];
+    let mut decisions: Vec<crate::project::Decision> = config
+        .decisions
+        .iter()
+        .filter(|d| CARRY_OVER.contains(&d.kind.as_str()))
+        .cloned()
+        .collect();
+    decisions.extend(boundary_moves.iter().map(boundary_move_decision));
+    dedup_decisions(&mut decisions);
 
     // Step 1: 为每段生成 Camera event (如果还没有)
     for seg in &mut config.segments {
@@ -124,6 +153,12 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let demoted = cap_pip_shots(&mut config.segments);
         if demoted > 0 {
             tracing::info!("  ⚠ 画中画降级 {} 条（整片只允许 {} 条）", demoted, MAX_PIP_SHOTS);
+            // §1 决策理由：这一条最容易被误解成"效果没做"—— 说清是**配额**而不是失败。
+            decisions.push(crate::project::Decision::whole(
+                decision_kind::PIP_DEMOTED,
+                format!("画中画整片只允许 {} 条，超出的 {demoted} 条已降级成中景", MAX_PIP_SHOTS),
+                Some("效果仍在，只是不再是画中画".to_string()),
+            ));
         }
         let aligned = align_pip_shots(&mut config.segments, &subtitles);
         if aligned > 0 {
@@ -549,7 +584,16 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 规则时还会凭空给它挂一个音效 —— 补默认事件不该去动声音。
     if ensure_intro_fade_in(&mut config) {
         tracing::info!("  ➕ 首段补片头淡入（fade_in {INTRO_FADE_SECS}s，可在时间轴上改/删）");
+        decisions.push(crate::project::Decision::whole(
+            decision_kind::INTRO_FADE_SEEDED,
+            format!("首段补了一条 {INTRO_FADE_SECS}s 的黑场淡入（只在初次后处理补一次）"),
+            Some("往后改/删都归你，重跑 process 不会补回来".to_string()),
+        ));
+        // 顺延来的那条（上趟补的）与上面这条同类 —— 去重，保留本趟这条。
+        dedup_decisions(&mut decisions);
     }
+    // §1：决策理由**每趟重算后落盘**（与其它字段一起走下面的 update_polish_toml）。
+    config.decisions = decisions;
 
     // Step 4: 自动下载 sticker + SFX
     let downloader = assets::downloader::AssetDownloader::new(project_path);
@@ -590,12 +634,17 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
     // 只写回 process 负责的字段：这中间用户存的选框 / 封面 / 屏蔽轨道不能被吞掉。
     let segments = config.segments;
     let intro_fade_seeded = config.intro_fade_seeded; // Step 3c 用掉的补种时机（只从 false 变 true）
+    // §1 决策理由：**必须显式写回** —— `update_polish_toml` 只覆盖它闭包里点名的字段，
+    // 漏掉这一行就是"算出来了但一个字节都没落盘"（§4 那次「PUT 说已保存、磁盘一字不动」
+    // 是同一个形状的坑）。空 vec 会把旧理由清掉，这正是"每趟重算"的语义。
+    let decisions = config.decisions;
     // Step 5 的产物：`None` = 本趟没有落实任何意图 ⇒ **不许碰** `cfg.edl`
     // （用户在前端的编辑、以及"老工程保持为空"的 R4 判据都靠这一条）。
     let edl_clips = writeback_edl(edl_intent_done, config.edl.clips);
     project::update_polish_toml(project_path, move |cfg| {
         cfg.segments = segments;
         cfg.intro_fade_seeded = intro_fade_seeded;
+        cfg.decisions = decisions;
         if let Some(clips) = edl_clips {
             cfg.edl.clips = clips;
         }
@@ -1383,6 +1432,142 @@ mod tests {
 
         let spans: Vec<(f64, f64)> = after.segments.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(spans, vec![(0.0, 10.0)], "屏蔽区间不许把分段切碎");
+    }
+
+    /// **§1 决策理由真的落盘了**（端到端，走真 `cmd_process` + 真 `polish.toml`）。
+    ///
+    /// 为什么要端到端：`update_polish_toml` 是**只覆盖闭包里点名字段**的写回 ——
+    /// 算出来的理由漏写一行就"一个字节都不落盘"，而**单元测试里直接调守卫永远看不出来**
+    /// （守卫自己是对的）。这正是 §4 那次「PUT 说已保存、磁盘一字不动」的形状。
+    ///
+    /// 构造一个"边界切在句子中间"的工程，断言：
+    /// ① `decisions` 非空且含边界类决策；② 磁盘上真能读回来（round-trip）；
+    /// ③ 重跑 process 幂等（理由不叠加）。
+    #[tokio::test]
+    async fn decisions_are_recorded_and_round_trip_to_disk() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        // 三条字幕全无句末标点（真实 ASR 的常见形态），边界 5.0 落在第二条**内部**
+        let subs = serde_json::json!([
+            {"index": 1, "start": 0.0, "end": 2.0, "text": "第一句", "html": ""},
+            {"index": 2, "start": 4.0, "end": 6.0, "text": "还在说", "html": ""},
+            {"index": 3, "start": 10.0, "end": 12.0, "text": "第三句", "html": ""},
+        ]);
+        std::fs::write(path.join("data").join("subtitles.json"), subs.to_string()).expect("写字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![
+            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+        ];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+
+        // ② 从**磁盘**读回来（不是读内存）—— 这才叫"落盘了"
+        let after = crate::project::load_project(path).expect("重新读 polish.toml");
+        assert!(
+            !after.decisions.is_empty(),
+            "边界被挪过就必须留下决策理由（落盘失败？update_polish_toml 漏写字段？）"
+        );
+        assert!(
+            after.decisions.iter().any(|d| d.kind == decision_kind::BOUNDARY_SENTENCE_END),
+            "要有边界类决策，实得：{:?}",
+            after.decisions.iter().map(|d| &d.kind).collect::<Vec<_>>()
+        );
+        // 理由必须是**人话**（界面直接显示），不是空串或只有 kind
+        let dm = after
+            .decisions
+            .iter()
+            .find(|d| d.kind == decision_kind::BOUNDARY_SENTENCE_END)
+            .expect("上面刚断言存在");
+        assert!(!dm.text.trim().is_empty(), "理由文案不许为空");
+        assert!(dm.at.is_some(), "边界类决策要带位置（界面据此定位）");
+        // 边界确实挪到了第二条字幕的结束点 6.0
+        assert_eq!((after.segments[0].end, after.segments[1].start), (6.0, 6.0));
+
+        // ③ 幂等：重跑一次，**理由不叠加也不丢失**。
+        //
+        // ⚠️ 这一条踩过一次：守卫是幂等的（第二次看到边界已干净就返回 0 条挪动），
+        // 若理由也跟着"本趟没挪 ⇒ 清空"，用户每跑一次 process 就**丢掉一次解释**，
+        // 而那个被挪过的边界还在原地（实测 2 条 → 0 条）。所以边界类理由要**顺延**。
+        let n_first = after.decisions.len();
+        assert!(n_first > 0, "前提：第一趟要有理由");
+        cmd_process(path).await.expect("第二次后处理");
+        let again = crate::project::load_project(path).expect("再读");
+        assert_eq!(
+            again.decisions.len(),
+            n_first,
+            "重复 process 既不许让理由越攒越多、也不许把它们丢掉：{n_first} → {}",
+            again.decisions.len()
+        );
+        // 边界位置也没漂（幂等的另一半）
+        assert_eq!(
+            (again.segments[0].end, again.segments[1].start),
+            (6.0, 6.0),
+            "第二次 process 不许再把边界挪一次"
+        );
+    }
+
+    /// **顺延的边界**：本趟挪了**新的**边界时，同位置的旧理由被本趟覆盖（不重复），
+    /// 位置不同的旧理由保留（那个边界仍是它挪过的，解释不能丢）。
+    #[tokio::test]
+    async fn decisions_do_not_duplicate_on_repeat_runs() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        let subs = serde_json::json!([
+            {"index": 1, "start": 0.0, "end": 2.0, "text": "第一句", "html": ""},
+            {"index": 2, "start": 4.0, "end": 6.0, "text": "还在说", "html": ""},
+            {"index": 3, "start": 10.0, "end": 12.0, "text": "第三句", "html": ""},
+        ]);
+        std::fs::write(path.join("data").join("subtitles.json"), subs.to_string()).expect("写字幕");
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.segments = vec![
+            Segment { start: 0.0, end: 5.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+            Segment { start: 5.0, end: 15.0, fx: "med".into(), note: String::new(), events: vec![], extra: Default::default() },
+        ];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化")).expect("写");
+
+        // 连跑三趟：条数必须**恒等**（既不叠加也不丢）
+        cmd_process(path).await.expect("第 1 趟");
+        let n1 = crate::project::load_project(path).expect("读").decisions.len();
+        cmd_process(path).await.expect("第 2 趟");
+        let n2 = crate::project::load_project(path).expect("读").decisions.len();
+        cmd_process(path).await.expect("第 3 趟");
+        let n3 = crate::project::load_project(path).expect("读").decisions.len();
+        assert_eq!((n1, n2, n3), (n1, n1, n1), "三趟跑下来条数必须恒定，实得 {n1}/{n2}/{n3}");
+
+        // 同一位置不许出现两条边界理由
+        let ats: Vec<Option<f64>> = crate::project::load_project(path)
+            .expect("读")
+            .decisions
+            .iter()
+            .filter(|d| d.kind == decision_kind::BOUNDARY_SENTENCE_END)
+            .map(|d| d.at)
+            .collect();
+        let mut sorted = ats.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.dedup();
+        assert_eq!(sorted.len(), ats.len(), "同一位置出现了重复理由：{ats:?}");
+    }
+
+    /// **老工程零回归**：没有决策时 `[decisions]` 不许出现在 `polish.toml` 里。
+    ///
+    /// `skip_serializing_if = "Vec::is_empty"` 是 R4 的判据 —— 空 vec 若照写，
+    /// 每个老工程重新保存一次就会多出一段空表（逐字节回归判据立刻红）。
+    #[test]
+    fn empty_decisions_are_not_serialized() {
+        let cfg = ProjectFile::example();
+        let toml = cfg.to_toml_commented().expect("序列化");
+        assert!(
+            !toml.contains("[[decisions]]"),
+            "空 decisions 不许写出表头（R4：老工程逐字节零回归）"
+        );
     }
 
 

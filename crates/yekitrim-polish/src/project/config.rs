@@ -91,6 +91,20 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "is_false")]
     pub processed: bool,
 
+    /// 18. **决策理由**（总方案 §1）：最近一次 `process` 里每个**自动**决策"为什么这么做"。
+    ///
+    /// 依据 LAVE（ACM IUI 2024）：*"explains its rationale for the trimmings... For transparency"*。
+    /// 本仓此前**零个** `reason` 字段 —— 用户看到切好的片子，不知道系统为什么这么切。
+    ///
+    /// ⚠️ **是"记录"，不是"配置"**：`process` 每次重算覆盖它，用户改它没有任何效果
+    /// （所以界面只读展示）。真正能改的东西仍住在各自字段里
+    /// （`segments[].start/end`、`mute_ranges`…）。
+    /// ⚠️ **不是规格 §5.1 那套 `[[editing.boundaries]]` / `[[editing.prune]]`**：
+    /// 那套要新增三张表 + 迁移；本项的价值在"看得见为什么"，**先落最小形态**。
+    /// 空 ⇒ 不写这个键 ⇒ 老工程逐字节零回归（R4）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
+
     /// 17. **片头 / 片尾**（项目设置里开关 + 从全局素材库挑一段视频）。
     ///
     /// 缺省 = 两个都不开 ⇒ **老工程零迁移**（`IntroOutroConfig::is_empty` 控制
@@ -112,6 +126,74 @@ pub struct ProjectFile {
     /// 扩展兜底
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// 一条**决策理由**（总方案 §1）：后处理在这件事上为什么这么做。
+///
+/// 记进 `polish.toml` 的 `[[decisions]]`，界面只读展示。**用户改它没有任何效果** ——
+/// 它是"发生了什么"的回执，不是"要做什么"的配置。
+///
+/// ⚠️ **`kind` 用稳定英文枚举串、`text` 是人话**：前者给机器/判据用（要能 grep、能做回归），
+/// 后者给人看（可自由改文案而不破坏判据）。两者**都要写**：只给 `text` 就没法写"某类决策
+/// 必须有理由"这种判据；只给 `kind` 用户就得去查表。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Decision {
+    /// 决策类别（稳定标识，见 `process::DecisionKind` 的常量）。
+    pub kind: String,
+
+    /// 这次决策**作用的范围**（秒）。边界类 = 那个切点；区间类 = 起止。
+    /// `None` = 整片级（如"本趟零决策"）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f64>,
+
+    /// 一句话人话理由（界面直接显示）。
+    pub text: String,
+
+    /// 附加数值（如"原 15.00s → 16.00s"里的位移量）—— 界面可选展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl Decision {
+    /// 构造一个「点」决策（单时刻）。
+    pub fn at(kind: &str, t: f64, text: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            at: Some(t),
+            start: None,
+            end: None,
+            text: text.into(),
+            detail,
+        }
+    }
+
+    /// 构造一个「区间」决策。
+    pub fn span(kind: &str, start: f64, end: f64, text: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            at: None,
+            start: Some(start),
+            end: Some(end),
+            text: text.into(),
+            detail,
+        }
+    }
+
+    /// 构造一个「整片级」决策（无具体范围）。
+    pub fn whole(kind: &str, text: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            at: None,
+            start: None,
+            end: None,
+            text: text.into(),
+            detail,
+        }
+    }
 }
 
 /// 一个屏蔽区间：start~end 之间的内容会被手动剪掉。
@@ -1928,6 +2010,8 @@ impl ProjectFile {
             //    那会让"新建工程"就带上一条成片时间线。
             edl: Edl::default(),
             processed: false,
+            // ⚠️ 决策理由**默认空**：示例工程不该带一条假理由（空 = 老行为，R4）。
+            decisions: Vec::new(),
             // ⚠️ 同上：示例工程不许带片头片尾（空 = 老行为）。
             intro_outro: IntroOutroConfig::default(),
             intro_fade_seeded: false,
