@@ -11,6 +11,8 @@ mod sfx;
 mod download;
 mod fx;
 mod placement;
+/// 爆点判据（总方案 §6）：一个纯函数、一份判据、一处阈值，供 §6/§7/§8 共用。
+pub mod punch;
 /// 剪辑质量分（总方案 §3）：纯函数、无 IO。**不做成 `pub use`** —— 它不是后处理步骤，
 /// 不参与 `cmd_process`，只是"算出来给人看"的一层，调用方显式走 `process::quality::`。
 pub mod quality;
