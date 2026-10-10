@@ -978,6 +978,7 @@ mod tests {
             anchor_to: None,
             to_origin: None, cut: false,
             handheld,
+            speed: None,
             manual: false,
         }
     }
@@ -1016,7 +1017,7 @@ mod tests {
     #[test]
     fn camera_pans_origin_over_transition() {        let mut cfg = Cfg::example();
         let ev = match camera_ev(0.0, 4.0, "中", "80% 50%") {
-            Event::Camera { time, end, zoom, origin, anchor, anchor_to, cut, handheld, .. } => {
+            Event::Camera { time, end, zoom, origin, anchor, anchor_to, cut, handheld, speed, .. } => {
                 Event::Camera {
                     time,
                     end,
@@ -1024,6 +1025,7 @@ mod tests {
                     origin,
                     anchor,
                     anchor_to,
+                    speed,
                     to_origin: Some("20% 50%".into()),
                     cut,
                     handheld,

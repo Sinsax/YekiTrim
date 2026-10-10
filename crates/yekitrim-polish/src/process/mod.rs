@@ -120,6 +120,7 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             // 手持摇摆是可选项：补默认运镜从不自己开（非近景也会被守卫剔除）
             handheld: false,
             manual: false,
+            speed: None,
         });
     }
 
@@ -1617,7 +1618,7 @@ mod tests {
             events: vec![Event::Camera {
                 time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None,
-                cut: false, handheld: false, manual: false,
+                cut: false, handheld: false, manual: false, speed: None,
             }],
             extra: Default::default(),
         }];
@@ -1687,7 +1688,7 @@ mod tests {
     }
 
     fn camera() -> Event {
-        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false }
+        Event::Camera { time: 0.0, end: Some(3.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None }
     }
 
     /// 覆盖事件（默认 1s 窗口）。
@@ -2020,7 +2021,7 @@ mod tests {
         assert_eq!(moments.len(), 3, "0.2s 与 0.5s 声音事件冲突被跳过");
         assert_eq!(moments[0].0, 5.2);
         // camera 等无声音事件不挡补位
-        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false }];
+        let cam = vec![crate::project::Event::Camera { time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(), anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false, speed: None }];
         let moments = find_uncovered_sfx_moments(&subs, &cam, 4);
         assert_eq!(moments[0].0, 0.2, "camera 不占用音效时刻");
         // 预算 0 → 空
@@ -2038,6 +2039,7 @@ mod tests {
         assert!(!event_has_sfx_ref(&Event::Camera {
             time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(),
             anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false, manual: false,
+            speed: None,
         }));
     }
 

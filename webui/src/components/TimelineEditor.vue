@@ -258,6 +258,20 @@
                 <option value="smooth">平滑运镜（0.6s 推移）</option>
                 <option value="cut">硬切（瞬间切换）</option>
               </select>
+              <!-- 运镜速度（§16）：只在**平滑**下有意义 —— 硬切本来就是 0 秒，
+                   同时写以 cut 为准（转译器与模板都这么判）。所以硬切时置灰、并写明原因，
+                   而不是让它看着能点、点了没反应。 -->
+              <label :title="selItem.cut ? '硬切没有过渡，速度不起作用' : '推近/拉远的快慢'">推进速度</label>
+              <select
+                :value="selItem.speed || 'med'"
+                :disabled="selItem.cut === true"
+                @change="setCameraSpeed(selItem, $event.target.value)"
+              >
+                <option value="med">默认（跟镜头时长）</option>
+                <option value="snap">极快（0.1s，像怼上去）</option>
+                <option value="fast">较快（0.25s）</option>
+                <option value="slow">缓慢（1.5s）</option>
+              </select>
               <label>景别</label>
               <select :value="selItem.zoom" @change="setZoom(selItem, $event.target.value)">
                 <option value="远">远（画中画）</option>
@@ -870,6 +884,16 @@ function setHandheld(ev, on) {
 function setZoom(ev, z) {
   ev.zoom = z
   if (z !== '近') delete ev.handheld
+}
+/**
+ * 运镜速度（§16）：`med` 是**默认档、等于"没写过"**，所以选它要**删字段**而不是写 `speed="med"`——
+ * 写上去会让 `polish.toml` 多出一个键，而存量零回归（R4）的判据正是"没设过就不出现这个键"。
+ * 转译器两侧走同一条分支（`cameraTransitionFrames` 里 `med` 与缺省合并），所以删掉它行为不变、
+ * 文件也不变。与 `setHandheld` 的「关掉即删字段」同一条纪律。
+ */
+function setCameraSpeed(ev, v) {
+  if (!v || v === 'med') delete ev.speed
+  else ev.speed = v
 }
 /** `#rgb` / `#rrggbb` → 取色器能认的 `#rrggbb`（认不出时给 `fallback`，淡入/淡出用黑色）。 */
 function hexOf(v, fallback = '#ffffff') {

@@ -422,6 +422,7 @@ mod tests {
             cut: false,
             handheld: false,
             manual: false,
+            speed: None,
         }
     }
 

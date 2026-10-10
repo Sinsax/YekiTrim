@@ -1276,6 +1276,38 @@ const MUTATIONS = [
     fromRe: /c&H\[0-9A-Fa-f\]\{6\}&\?\/gi/,
     to: 'c&H[0-9A-Fa-f]{6}&?/g',
   },
+  {
+    // ⚠️ **§16 最关键的一处**：把 `med` 也写成一个固定秒数。
+    // 这是"照着规格顺手把 med 补进表里"的写法 —— 看着更整洁，但它把
+    // `med` 从**老式子**（`min(dur×0.5, 0.6)`）改成了常量 ⇒ 存量工程里**短段的过渡全变**
+    // （长段也是），而**没有任何测试会红**。R4 只靠这一条守。
+    name: 'med 变成固定秒数（存量过渡全变、R4 破）',
+    fromRe: /  snap: 0\.10,\n  fast: 0\.25,\n  slow: 1\.5,/,
+    to: '  snap: 0.10,\n  fast: 0.25,\n  med: 0.6,\n  slow: 1.5,',
+  },
+  {
+    // `slow` 不夹整段长度 ⇒ "过渡比镜头本身还长"，推不完就切走（规格 §1.2 那条硬约束）
+    name: 'slow 不夹整段长度（过渡比镜头还长）',
+    fromRe: /if \(norm === 'slow'\) secs = Math\.min\(secs, durationSec \* 0\.8\);/,
+    to: "if (norm === 'slow') secs = secs;",
+  },
+  {
+    // 硬切不再优先 ⇒ `cut: true` 配 `speed: "slow"` 会变成一条 1.5s 的缓动
+    // （"切镜"静默变成"推镜"，画面到得比该有的时间晚）。
+    name: '硬切不再压过速度（cut 配 slow 变成缓动）',
+    fromRe: /if \(hardCut\) return 0;/,
+    to: 'if (false) return 0;',
+  },
+  {
+    // ⚠️ **跨文件的漂移**：改的是**预览**那一份（`webui/src/polish/engine.js`），
+    // 不是被这个守卫"测"的转译器。`MUTATIONS` 的表都是 `{from,to}` 作用在转译器源码上，
+    // 所以这条是**特例**：由 `mutate` 里的 `crossFileMutations` 单独处理。
+    // 它守的是"一份规则多份实现"里最隐蔽的一种：两边都改、但改得不一样。
+    name: '（跨文件）预览的运镜速度表漂了（fast 0.25 → 0.3）',
+    file: 'webui/src/polish/engine.js',
+    from: 'export const CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.25, slow: 1.5 }',
+    to: 'export const CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.3, slow: 1.5 }',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -1301,6 +1333,37 @@ async function mutate() {
     const hits = mutation.fromRe
       ? (source.match(new RegExp(mutation.fromRe.source, 'g')) || []).length
       : source.split(mutation.from).length - 1;
+    // ⚠️ 跨文件变异（表里带 `file`）**必须先于**下面那道"命中一次"的前置检查 ——
+    //    那道检查是在**转译器源码**里数命中数的，而跨文件变异打的是**别的文件** ⇒ 恒为 0，
+    //    于是它会被判成"变异台自己错了"、永远不会真的去改文件（第一版就是这么漏的，
+    //    而门禁自己把原因打了出来："变异台的替换串在转译器里命中 0 次"）。
+    if (mutation.file) {
+      const target = join(HERE, '..', mutation.file);
+      const targetSrc = readFileSync(target, 'utf8');
+      const tHits = targetSrc.split(mutation.from).length - 1;
+      if (tHits !== 1) {
+        survived += 1;
+        console.log(`  ✗ ${index + 1}. ${mutation.name}`);
+        console.log(`      变异串在 ${mutation.file} 里命中 ${tHits} 次（必须是 1）—— 变异台自己错了`);
+        continue;
+      }
+      writeFileSync(target, targetSrc.replace(mutation.from, mutation.to));
+      let xReason = null;
+      try {
+        checkCameraSpeedParity();
+      } catch (error) {
+        xReason = String(error && error.message ? error.message : error).split('\n')[0];
+      } finally {
+        writeFileSync(target, targetSrc); // 无论如何都要还原，否则后面全烂
+      }
+      if (xReason === null) {
+        survived += 1;
+        console.log(`  ✗ ${index + 1}. ${mutation.name}\n      检查**没红** —— 漂移守卫抓不住这一类`);
+      } else {
+        console.log(`  ✓ ${index + 1}. ${mutation.name}\n      打红在：${xReason}`);
+      }
+      continue;
+    }
     // ⚠️ 先证明"替换真的会命中**且只命中一次**" —— 少了这一条，
     //    没匹配上的变异体会原样跑绿，看起来像"这条用例抓不住"。
     if (hits !== 1) {
@@ -1328,6 +1391,9 @@ async function mutate() {
         // ⚠️ 弹幕逐条颜色（§24 更正）：它走**源码文本**判据 ⇒ 必须喂 `mutatedSource`
         // （喂原始 `translatorSource` 的话，变异体改了源码而检查还在看老文本，这条永远绿）。
         checkDanmakuColorStripped(mutatedSource);
+        // 运镜速度（§16）同理：它守的是"缺省档与老式子逐值一致"，不跑它，
+        // "把 med 写成一个固定秒数"这条变异永远绿。
+        checkCameraSpeed(curves);
         // 映射那一段同理（M2 加的三条）。
         checkMappings(curves);
         checkEnvelopeClamp(curves);
@@ -1668,6 +1734,18 @@ console.log(
   `✓ 弹幕逐条颜色：${dmColorChecks} 项全绿（\`\\c\` **必须被摘掉** —— 参照 canvas 不上色，` +
     `发了就是"底座比参照更花"，实测 48.8s 那帧参照白 / 底座品红）`,
 );
+const camSpeedChecks = checkCameraSpeed(translatorModule);
+const camParityChecks = checkCameraSpeedParity();
+console.log(
+  `✓ 运镜速度（§16）：${camSpeedChecks} 项全绿（四档 + 缺省与**老式子逐值一致** —— ` +
+    `存量工程没写 \`speed\`，那一档差一帧就是横屏全体回归）`,
+);
+if (camParityChecks > 0) {
+  console.log(
+    `✓ 运镜速度对拍：${camParityChecks} 项全绿（预览 engine.js ↔ 转译器 —— ` +
+      `两处漂了就是"预览推得快、成片推得慢"，而两边都不会报错）`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // 颜色：四种写法 + "认不出"必须返回 null
@@ -1833,6 +1911,166 @@ function checkDanmakuColorStripped(src = translatorSource) {
       '不是把摘掉的那段加回来（见 `polish-upgrade-consolidated.md` 更正 ④）。',
   );
   return 3 + cases.length + 1;
+}
+
+// ---------------------------------------------------------------------------
+// 运镜速度（规格 `camera-and-noise-spec.md` §1 / 总方案 §16）
+// ---------------------------------------------------------------------------
+//
+// 在它之前过渡时长是**写死**的（`min(dur × 0.5, 0.6)`），推近/拉远的快慢完全一样。
+//
+// ⚠️ **这条判据里最重要的一项不是"四档对不对"，而是"缺省档与老式子逐值一致"** ——
+// 今天所有工程都没写 `speed`，只要那一档偏一帧，**全部存量横屏工程同时回归**
+// （而且不会报错：过渡短一点/长一点都不会让任何测试红）。
+// 所以这里不看"差不多"，而是拿**改动前那句原话**当参照、逐值比。
+function checkCameraSpeed(mod) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+  const f = mod.cameraTransitionFrames;
+  assert.equal(typeof f, 'function', '`cameraTransitionFrames` 要 export（守卫靠它逐值测）');
+  checks += 1;
+
+  // ① 四档在自己该在的秒数上（@60fps，段长 5s 足够装下任何一档）
+  eq(f({ speed: 'snap', hardCut: false, durationSec: 5, fps: 60 }), 6, 'snap = 0.10s');
+  eq(f({ speed: 'fast', hardCut: false, durationSec: 5, fps: 60 }), 15, 'fast = 0.25s');
+  eq(f({ speed: 'slow', hardCut: false, durationSec: 5, fps: 60 }), 90, 'slow = 1.5s');
+  // `med` 与"没写"走同一条老式子：min(5×0.5, 0.6) = 0.6 ⇒ 36 帧
+  eq(f({ speed: 'med', hardCut: false, durationSec: 5, fps: 60 }), 36, 'med = 老式子');
+
+  // ② ⚠️ **缺省档：与改动前那句原话逐值一致**（fps × 段长 的网格，五种"等于没写"的写法）
+  const oldExpr = (durationSec, fps) =>
+    Math.max(1, Math.round(Math.min(durationSec * 0.5, 0.6) * fps));
+  let mismatches = 0;
+  let compared = 0;
+  for (const fps of [24, 25, 30, 50, 60]) {
+    for (let dur = 0.01; dur <= 12; dur += 0.017) {
+      for (const speed of [undefined, 'med', null, '', 'bogus-speed']) {
+        const got = f({ speed, hardCut: false, durationSec: dur, fps });
+        const want = oldExpr(dur, fps);
+        compared += 1;
+        if (got !== want) {
+          if (mismatches < 3) {
+            assert.fail(
+              `缺省档与老式子不一致（speed=${JSON.stringify(speed)} dur=${dur.toFixed(3)} ` +
+                `fps=${fps}）：得 ${got}，老式子 ${want} —— **存量工程全体回归**`,
+            );
+          }
+          mismatches += 1;
+        }
+      }
+    }
+  }
+  eq(mismatches, 0, `缺省/med/垃圾值 共 ${compared} 组必须逐值等于老式子`);
+
+  // ③ `slow` 要夹到整段的 0.8（否则"过渡比镜头还长"，推不完就切走）
+  eq(f({ speed: 'slow', hardCut: false, durationSec: 1, fps: 60 }), 48, 'slow 夹到 1×0.8 = 0.8s');
+  eq(f({ speed: 'slow', hardCut: false, durationSec: 0.5, fps: 60 }), 24, 'slow 夹到 0.4s');
+  // ④ 硬切优先于速度（两者互斥、以 cut 为准）
+  eq(f({ speed: 'slow', hardCut: true, durationSec: 5, fps: 60 }), 0, '硬切 = 0 帧（cut 压过 speed）');
+  // ⑤ 除硬切外**至少 1 帧**：0 帧会让它退化成硬切，而用户写 slow 要的正是"看得见的缓动"。
+  //    ⚠️ 期望值要按**帧率**算：`snap` 0.10s @24fps = round(2.4) = **2 帧**，不是 1
+  //    （第一版我写死 1，判据自己红了 —— 代码是对的）。要试"被 `max(1,…)` 兜到"，
+  //    得让 round 真的落到 0：`snap` 0.10s @ 4fps = round(0.4) = 0 ⇒ 兜成 1。
+  eq(f({ speed: 'snap', hardCut: false, durationSec: 0.001, fps: 24 }), 2, 'snap@24fps = 2 帧');
+  eq(f({ speed: 'snap', hardCut: false, durationSec: 0.001, fps: 4 }), 1, 'round 到 0 时兜成 1 帧');
+  // ⑥ 大小写/空白要认（LLM 写出 "Slow " 不该静默退回老式子）
+  eq(f({ speed: ' SLOW ', hardCut: false, durationSec: 5, fps: 60 }), 90, '大小写与空白都要归一');
+  return checks;
+}
+
+// ---------------------------------------------------------------------------
+// 运镜速度：**预览引擎与转译器必须同口径**（§16 的第二处实现）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这是"一份规则多份实现"的老形状：`webui/src/polish/engine.js` 里也有一份过渡时长
+// （预览要按它画推进动画）。两边漂了的表现是**「预览里推得快、成片里推得慢」** ——
+// 不看两个版本对着比根本发现不了，而且没有任何测试会红。
+//
+// 判据：同一份档位表 + 同一组样本，**逐个比对两边的秒数**。
+// ⚠️ 只比"档位 → 秒数"这个层面：转译器那边还要 `round` + `max(1,…)` 落成帧，
+// 那是帧号的事，与预览无关，硬比会在 24/25/30fps 上假红。
+function checkCameraSpeedParity() {
+  const enginePath = join(HERE, '..', 'webui', 'src', 'polish', 'engine.js');
+  if (!existsSync(enginePath)) {
+    console.log('· 跳过运镜速度对拍：找不到 webui/src/polish/engine.js');
+    return 0;
+  }
+  const src = readFileSync(enginePath, 'utf8');
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+
+  // ① 档位表两处必须逐值相同（先从源码里把表抽出来比，避免"两边都写错了但恰好一致"）
+  const tableOf = (text, name) => {
+    const m = new RegExp(`${name}\\s*=\\s*\\{([^}]*)\\}`).exec(text);
+    if (!m) return null;
+    const out = {};
+    for (const part of m[1].split(',')) {
+      const kv = /(\w+)\s*:\s*([\d.]+)/.exec(part);
+      if (kv) out[kv[1]] = Number(kv[2]);
+    }
+    return out;
+  };
+  const engineTable = tableOf(src, 'CAMERA_SPEED_SECS');
+  const transTable = tableOf(translatorSource, 'CAMERA_SPEED_SECS');
+  assert.ok(engineTable, 'engine.js 里找不到 `CAMERA_SPEED_SECS`（运镜速度档位表）');
+  assert.ok(transTable, '转译器里找不到 `CAMERA_SPEED_SECS`');
+  checks += 2;
+  assert.deepEqual(
+    engineTable,
+    transTable,
+    `运镜速度档位表两处不一致（预览 engine.js vs 转译器）—— 症状是"预览与成片推进快慢不同"：\n` +
+      `  engine.js: ${JSON.stringify(engineTable)}\n  转译器: ${JSON.stringify(transTable)}`,
+  );
+  checks += 1;
+  // `med` 两边都**不许**出现在表里（它必须走老式子，见类型注释与转译器那段）
+  assert.ok(!('med' in engineTable) && !('med' in transTable), '`med` 不许进档位表：它必须走老式子');
+  checks += 1;
+
+  // ② 行为对拍：把 engine.js 的那份函数**扒出来**真跑（本目录不 import 前端模块，与其它
+  //    `webui/scripts/check-*.mjs` 同一套做法：从源码文本里取函数体）
+  const fnSrc = /export function cameraTransitionSecs\([\s\S]*?\n\}/.exec(src);
+  assert.ok(fnSrc, 'engine.js 里找不到 `cameraTransitionSecs`（预览侧的过渡时长）');
+  const evalFn = new Function(
+    'CAMERA_SPEED_SECS',
+    `${fnSrc[0].replace('export function', 'return function')}`,
+  )(engineTable);
+  const trans = transTable;
+  const transSecs = (speed, dur, hardCut) => {
+    if (hardCut) return 0;
+    const norm = typeof speed === 'string' ? speed.trim().toLowerCase() : '';
+    if (Object.prototype.hasOwnProperty.call(trans, norm)) {
+      return norm === 'slow' ? Math.min(trans.slow, dur * 0.8) : trans[norm];
+    }
+    return Math.min(dur * 0.5, 0.6);
+  };
+  let compared = 0;
+  let bad = 0;
+  for (const dur of [0.3, 1, 2.5, 5, 12]) {
+    for (const speed of [undefined, null, 'med', 'snap', 'fast', 'slow', ' SLOW ', 'warp']) {
+      for (const hardCut of [false, true]) {
+        const a = evalFn({ speed }, dur, hardCut);
+        const b = transSecs(speed, dur, hardCut);
+        compared += 1;
+        if (Math.abs(a - b) > 1e-9) {
+          if (bad < 3) {
+            assert.fail(
+              `预览与转译器的运镜过渡不一致：speed=${JSON.stringify(speed)} dur=${dur} ` +
+                `hardCut=${hardCut} ⇒ engine ${a}s / 转译器 ${b}s（症状：预览与成片快慢不同）`,
+            );
+          }
+          bad += 1;
+        }
+      }
+    }
+  }
+  eq(bad, 0, `预览 vs 转译器 共 ${compared} 组必须逐值一致`);
+  return checks;
 }
 
 // ---------------------------------------------------------------------------

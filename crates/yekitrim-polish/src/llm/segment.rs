@@ -84,6 +84,11 @@ pub(crate) fn build_events_system_prompt(
   anchor = 聚焦谁: "liver"(主播) / "danmaku"(弹幕) / "sticker"(贴纸) / "center"(画面中央)
   想从一处移到另一处, 再写 anchor_to (同样的取值); 不写就是原地聚焦
   想**硬切**(切镜, 瞬间换构图、没有推移动画)再加 "cut":true —— 只在刻意切镜时用, 不是常规手段
+  想控制**推进快慢**加 "speed":"snap"/"fast"/"med"/"slow"
+  (snap=0.1秒几乎瞬移、像"怼"上去 -> 爆点/惊吓; fast=0.25秒 ->
+  情绪起/话题转折; med=默认**(不用写)**; slow=1.5秒缓慢推近 -> 蓄力/铺垫/感伤)
+  ⚠️ speed 与 cut 别一起写 (同时写以 cut 为准、speed 被忽略)
+  例: {{"type":"camera","time":30.0,"end":34.0,"zoom":"近","anchor":"liver","speed":"slow"}}
   近景想要"手持相机"的临场晃动感, 再加 "handheld":true —— **只在 zoom:"近" 上有效**（其他景别会被系统剔除）;
   它是叠加在运镜上的**持续状态**: 开了就一直摇到下一条不带它的运镜, 不是一次性特效
   例: {{"type":"camera","time":20.0,"end":24.0,"zoom":"近","anchor":"liver","handheld":true}}

@@ -2996,6 +2996,7 @@ mod camera_clamp_tests {
             to_origin: None, cut: false,
             handheld: false,
             manual: false,
+            speed: None,
         }
     }
 
@@ -3553,6 +3554,77 @@ portrait_camera = true
         assert_eq!(back.stage.lanes.camera, Some(true));
         assert_eq!(back.stage.lanes.subtitles, Some(false));
         assert_eq!(back.stage.lanes.effects, None, "没设的那条仍是自动");
+    }
+
+    /// **§16 运镜 `speed` 的存量零回归（R4）**：没写过 `speed` 的工程，
+    /// 落盘文本里**不许出现 `speed` 这个键**。
+    ///
+    /// 为什么这条是"零回归判据"而不是风格问题：今天**所有**存量工程都没写 `speed`，
+    /// 而 `polish.toml` 是**逐字节对拍**的对象（出片产物 SHA 是硬判据）。
+    /// 少了 `skip_serializing_if`，每个 camera 事件都会多出一行 `speed = ""` ——
+    /// 值虽然等价，但文件变了、diff 全红、基线全要重冻。
+    ///
+    /// ⚠️ 它也顺带钉住"写出来的东西读得回来"（`deny_unknown_fields` 的结构体上，
+    /// 加字段最容易踩的就是自己写的文件自己读不回）。
+    #[test]
+    fn camera_speed_stays_absent_when_unset() {
+        let mut cfg = ProjectFile::example();
+        let cam = |speed: Option<&str>| crate::project::Event::Camera {
+            time: 1.0, end: Some(4.0), zoom: "中".into(), origin: "50% 50%".into(),
+            anchor: None, anchor_to: None, to_origin: None, cut: false, handheld: false,
+            manual: false, speed: speed.map(|s| s.to_string()),
+        };
+        cfg.segments[0].events = vec![cam(None)];
+        // ⚠️ 判据**只看那一条 camera 事件块**，不是全文、也不是"分段之前"。
+        // `polish.toml` 里另有两个**同名的无关字段**，两次都把我绊了：
+        //   ① `[[edl.clips]]` 的 `speed`（变速倍率）；
+        //   ② `[style.danmaku]` 的 `speed`（弹幕滚动速度，默认 **8.0**）—— 它排在
+        //      `[style.camera]` 前、却在 `[[segments]]` **之前**，所以"按 `[edl]` 切"
+        //      照样把它圈进来。
+        // ⇒ 按**类型**判：把落盘文本解析回 `ProjectFile`，看那条 camera 事件里的 `speed`
+        //    是不是 `None`。这才是这一项真正要锁的东西（"没写过 = 读回来还是没写过"）。
+        let text = cfg.to_toml_commented().expect("写 toml");
+        let back_unset: ProjectFile = toml::from_str(
+            &text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("config_version"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("自己写出的东西自己得读得回来");
+        match &back_unset.segments[0].events[0] {
+            crate::project::Event::Camera { speed, .. } => assert_eq!(
+                speed, &None,
+                "没写过 speed ⇒ 读回来必须仍是 None（写上 `speed = \"\"` 就破坏了存量逐字节零回归）"
+            ),
+            other => panic!("期望一条 camera，实得 {other:?}"),
+        }
+        // 顺带确认它**真的没被写进事件的文本里**（上面那条是语义判据，这条是文本判据）
+        let ev_text = text.split("[[segments.events]]").nth(1).unwrap_or("");
+        let ev_block = ev_text.split("[[segments]]").next().unwrap_or(ev_text);
+        assert!(
+            !ev_block.contains("speed"),
+            "camera 事件块里不许出现 `speed` 键：\n{ev_block}"
+        );
+
+        // 写过的必须原样落盘、且读得回来
+        cfg.segments[0].events = vec![cam(Some("slow"))];
+        let text = cfg.to_toml_commented().expect("写 toml");
+        assert!(text.contains("speed = \"slow\""), "写过的必须落盘：\n{text}");
+        let back: ProjectFile = toml::from_str(
+            &text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("config_version"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("自己写出的东西自己得读得回来");
+        match &back.segments[0].events[0] {
+            crate::project::Event::Camera { speed, .. } => {
+                assert_eq!(speed.as_deref(), Some("slow"));
+            }
+            other => panic!("期望一条 camera，实得 {other:?}"),
+        }
     }
 
     /// **模板消费面的一致性钉子**：`_canvas.stage` 的每个字段、JS 里拼出的每个 class、

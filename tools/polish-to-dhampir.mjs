@@ -1307,6 +1307,45 @@ export const backOut3 = (t) => {
 
 export const pow2Out = (p) => 1 - (1 - p) * (1 - p);
 
+/// **运镜速度档位表**（规格 `camera-and-noise-spec.md` §1.2）：`速度 → 过渡秒数`。
+///
+/// ⚠️ **`med` 不在表里** —— 它的算法是**老式子** `min(dur × 0.5, 0.6)`，
+/// 与"没写 `speed`"走**同一条**分支。把它写成一个固定秒数（比如 0.6）就**破坏了 R4**：
+/// 存量工程里那些短段的过渡会从 `dur × 0.5` 变成 0.6，**每一段都变**。
+export const CAMERA_SPEED_SECS = {
+  snap: 0.10,
+  fast: 0.25,
+  slow: 1.5,
+};
+
+/// 运镜过渡应该占多少**帧**（规格 §1）。
+///
+/// - `hardCut` ⇒ 0（硬切不用缓动，`cut` 与速度互斥、以 `cut` 为准）；
+/// - `speed` 认不出 / 没写 / `med` ⇒ **老式子** `max(1, round(min(dur × 0.5, 0.6) × fps))`；
+/// - `snap` / `fast` ⇒ 固定秒数；
+/// - `slow` ⇒ `min(1.5, dur × 0.8)` —— ⚠️ **必须夹**：不夹的话"过渡比镜头本身还长"，
+///   会**推不完就切走**（规格 §1.2 那条硬约束）。
+///
+/// ⚠️ 结果**至少 1 帧**（除硬切）：0 帧会让这一段退化成硬切，
+/// 而用户写 `slow` 想要的恰恰是"看得见的缓动"。
+///
+/// 抽成导出函数是为了**能逐值测**（守卫的 `checkCameraSpeed`）——
+/// 它埋在 `translate` 的大循环里，行为判据只能靠"造工程出产物"间接看，太钝。
+export function cameraTransitionFrames({ speed, hardCut, durationSec, fps }) {
+  if (hardCut) return 0;
+  const norm = typeof speed === 'string' ? speed.trim().toLowerCase() : '';
+  let secs;
+  if (Object.prototype.hasOwnProperty.call(CAMERA_SPEED_SECS, norm)) {
+    secs = CAMERA_SPEED_SECS[norm];
+    // `slow` 夹到整段的 0.8（`snap`/`fast` 本来就比任何段短，夹了也不变）
+    if (norm === 'slow') secs = Math.min(secs, durationSec * 0.8);
+  } else {
+    // 没写 / `med` / 认不出的值 —— **老式子，一个字节不改**
+    secs = Math.min(durationSec * 0.5, 0.6);
+  }
+  return Math.max(1, Math.round(secs * fps));
+}
+
 /// 四段相位的**标称**段长（窗口装得下时用的值，见 `stickerStateAt`）。
 export const STICKER_POP_IN_SEC = 0.35;
 export const STICKER_FLOAT_UP_SEC = 0.4;
@@ -2706,6 +2745,9 @@ export function translate(config, clipDir, outPath, options = {}) {
             zoom: event.zoom,
             handheld: event.handheld === true,
             where,
+            // 运镜速度（规格 `camera-and-noise-spec.md` §1）：`snap|fast|med|slow`。
+            // 缺省（没写）= 老式子，见 `cameraTransitionFrames`。
+            speed: event.speed,
           });
           cameraCount += 1;
           break;
@@ -3670,9 +3712,9 @@ export function translate(config, clipDir, outPath, options = {}) {
     const hardCut = shot.cut
       || Math.abs(z - WIDE_ZOOM) < 1e-6
       || Math.abs(prevZoom - WIDE_ZOOM) < 1e-6;
-    // `td = min(duration * 0.5, 0.6)`；硬切时整段不缓动。
+    // 过渡窗口（规格 §1）：`speed` 决定，缺省走**老式子**（存量逐字节零回归）。
     const durationSec = Math.max(1 / fps, (shot.srcEnd - shot.srcStart) / fps);
-    const tdFrames = hardCut ? 0 : Math.max(1, Math.round(Math.min(durationSec * 0.5, 0.6) * fps));
+    const tdFrames = cameraTransitionFrames({ speed: shot.speed, hardCut, durationSec, fps });
 
     // 过渡的**起点**：zoom 还是上一个状态，但不动点已经是**本事件自己的** origin
     // （YekiTrim 里 `ox = lerp(ax, bx, p)`，p=0 时就是 ax）。

@@ -269,6 +269,7 @@ pub fn close_pip_shots(segments: &mut [Segment]) -> usize {
             // 回镜头复原的是「前一条那条镜头」，手持摇摆也一并复原（非近景由守卫剥掉）
             handheld: prev.as_ref().is_some_and(|s| s.handheld),
             manual: false,
+            speed: None,
         };
         tracing::info!(
             "  · 画中画到点收工：{:.2}s 起回镜头（持到 {:.2}s · {}）",
@@ -1145,6 +1146,7 @@ mod tests {
                     to_origin: None, cut: false,
                     handheld: false,
                     manual: false,
+                    speed: None,
                 },
             ],
             extra: Default::default(),
@@ -1191,6 +1193,7 @@ mod tests {
                     cut: false,
                     handheld: false,
                     manual: false,
+                    speed: None,
                 },
                 Event::Overlay {
                     time: 8.0,
@@ -1232,6 +1235,7 @@ mod tests {
             cut: false,
             handheld,
             manual: false,
+            speed: None,
         }
     }
 
@@ -1336,6 +1340,7 @@ mod tests {
             cut: false,
             handheld: false,
             manual: false,
+            speed: None,
         };
         for to_origin in [Some("70% 30%"), None] {
             let mut segs = vec![Segment {
@@ -1839,6 +1844,7 @@ mod tests {
             cut: false,
             handheld: false,
             manual: false,
+            speed: None,
         }
     }
 
@@ -1946,7 +1952,7 @@ mod tests {
             events: vec![Event::Camera {
                 time: 0.0, end: Some(5.0), zoom: "中".into(), origin: "50% 50%".into(),
                 anchor: Some("liver".into()), anchor_to: None, to_origin: None,
-                cut: false, handheld: false, manual: false,
+                cut: false, handheld: false, manual: false, speed: None,
             }], extra: Default::default() }];
         let before: Vec<Option<String>> = segs.iter().flat_map(|s| s.events.iter())
             .filter_map(|e| match e { Event::Camera { anchor, .. } => Some(anchor.clone()), _ => None })

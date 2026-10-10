@@ -115,6 +115,27 @@ pub enum Event {
         /// **手工定过时间**（见 `Sticker::manual`）：画中画的 `align_pip_shots` 会跳过它。
         #[serde(default, skip_serializing_if = "is_false")]
         manual: bool,
+        /// **运镜速度**（规格 `camera-and-noise-spec.md` §1）：`snap` | `fast` | `med` | `slow`。
+        ///
+        /// 在这之前过渡时长是**写死**的（`td = min(dur × 0.5, 0.6)`）—— 推近/拉远的快慢
+        /// 完全一样，LLM 与用户都改不了。
+        ///
+        /// ⚠️ **缺省必须走原式**（`med` 的算法一个字节不改）：今天所有工程都没写 `speed`，
+        /// 存量横屏要**逐字节零回归**（R4）。所以这里是 `Option`、不是带默认值的 `String`：
+        /// `None` 与 `Some("med")` 在转译器里走**同一条**分支，但只有前者保证"没写过就不写出"。
+        ///
+        /// ⚠️ **与 `cut` 互斥**：同时写以 `cut` 为准（硬切 = 过渡 0 秒 = `speed` 无穷快）。
+        ///
+        /// ⚠️ **`skip_serializing_if` 在这个字段上是冗余的**（2026-10-10 实测）：
+        /// `toml` 序列化**本来就跳过 `Option::None`**（写了个探针：`Option<String>` 的 `None`
+        /// 不落键，而同结构里的 `bool = false` 照落）。所以"没写过 ⇒ 文件里没有 `speed`"
+        /// **由类型本身保证**，去掉这个属性也不会回归 —— 实测拆掉它之后那条零回归用例
+        /// **照样绿**：不是判据没锁住，是这件事本来就不靠它。
+        /// 留着它有两个理由：① 与同文件的 `manual` / `handheld` 保持一致；
+        /// ② 万一哪天字段改成带默认值的 `String`，它就成了唯一的防线。
+        /// **别为它写"变异自证"** —— 那个变异永远不会红（这条注释就是那次尝试的记录）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        speed: Option<String>,
     },
 
     // === 瞬时特效 (所有 sfx 接受布尔值) ===
