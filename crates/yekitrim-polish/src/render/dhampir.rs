@@ -942,7 +942,22 @@ pub fn prepare_project(
 
 /// 传给转译器的「库 id → 真族名」映射的**文件名**（写在工程目录里，出片结束由
 /// [`cleanup_project`] 收掉）。`_temp_` 前缀与其它草稿同一套命名 —— 启动清扫按这个前缀收孤儿。
+///
+/// ⚠️ 保留这个名字只为**历史孤儿清扫**认得出旧文件（老版本留下过固定名的那种）。
+/// 新增的转译**一律带 `scratch_tag()` 后缀**，见 `prepare_project_reporting`。
 const FONT_FAMILIES_FILE: &str = "_temp_font_families.json";
+/// 同上，但**去掉扩展名** —— `cleanup_project` 要按后缀拼回全名（`_temp_font_families.a1.json`）。
+const FONT_FAMILIES_FILE_STEM: &str = "_temp_font_families";
+
+/// 本次转译的**独占后缀**（如 `.a3f19c2d`）。见 `prepare_project_reporting` 里那段并发说明。
+///
+/// ⚠️ 不引入任何随机源依赖：用**进程内自增**即可 —— 冲突只可能发生在同一进程的并发调用之间，
+/// 跨进程各写各的临时名也无妨（`cleanup` 只删自己那套）。
+fn scratch_tag() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!(".{:x}", SEQ.fetch_add(1, Ordering::Relaxed))
+}
 
 /// 写一份「库 id → 真族名」映射给转译器（`--font-families <json>`）。
 ///
@@ -984,8 +999,24 @@ pub fn prepare_project_reporting(
     video: Option<&str>,
 ) -> Result<(PathBuf, TranslateReport)> {
     let translator = find_translator()?;
-    let translated = project_path.join("_dhampir_project.json");
-    let font_families = project_path.join(FONT_FAMILIES_FILE);
+    // ⚠️ **每次转译用一套独占的临时名**（下面 `scratch_tag()`）—— 固定名会**撞车**。
+    //
+    // 实测（用户报的 `ENOENT ... _temp_font_families.json`）：同一片段被并发预览两次，
+    // 两个请求落在**同一个** `.yekitrim/` 里，文件名又都是固定的 ⇒
+    // A 的 `cleanup_project` 把 B 刚写好的文件删掉，B 的 node 随即读不到。
+    // 日志里的证据是"转译器"那行**成对出现**（19:41:29.463 与 .494、27.253 与 .272…），
+    // 间隔十几毫秒 —— 就是两个并发请求。
+    //
+    // 加唯一后缀之后，各次转译互不可见，cleanup 只能删自己那套。
+    let tag = scratch_tag();
+    let translated = project_path.join(format!("_dhampir_project{tag}.json"));
+    let font_families = project_path.join(format!("_temp_font_families{tag}.json"));
+    // ⚠️ 目录**必须自己建**：`std::fs::write` 不建父目录。以前靠调用方（server handler）
+    // 先 `create_dir_all`，但库函数不该假设这件事 —— 出片/短片段/单帧三条腿都走这里。
+    if let Some(parent) = translated.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("建转译草稿目录失败：{}", parent.display()))?;
+    }
     write_font_families(&font_families)?;
     let t = std::time::Instant::now();
     let mut cmd = yekitrim_core::process::cmd("node");
@@ -1035,16 +1066,36 @@ pub fn prepare_project_reporting(
 }
 
 /// 收拾转译留下的草稿（**只删自己造的**：`_temp_video.mp4` 归主流程）。
-pub fn cleanup_project(project_path: &Path) {
-    let translated = project_path.join("_dhampir_project.json");
+///
+/// `translated` = [`prepare_project`] 返回的那个路径，也就是**本次**转译的产物。
+///
+/// ⚠️ **别拿固定文件名重算**（早期版本是 `project_path.join("_dhampir_project.json")`）：
+/// 每套草稿现在带独占后缀（见 [`scratch_tag`]）⇒ 按固定名重算会**一个都删不掉**，
+/// 用户工程目录里就开始堆积 `_dhampir_project.a1.json` 这种垃圾。
+///
+/// ⚠️ 改签名还有一个**顺带的好处**：调用方必须持有"本次产物"的路径才能清理，
+/// 于是"清掉了别人正在用的文件"这件事从**类型上**就难发生了（并发预览撞车的根因）。
+pub fn cleanup_project(translated: &Path) {
+    // `_dhampir_project.a1.json` → 后缀 `.a1`（没有后缀时是空串 ⇒ 退回老固定名）
+    let tag = translated
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("_dhampir_project"))
+        .unwrap_or("")
+        .to_string();
+    let families = if tag.is_empty() {
+        translated.with_file_name(FONT_FAMILIES_FILE)
+    } else {
+        translated.with_file_name(format!("{FONT_FAMILIES_FILE_STEM}{tag}.json"))
+    };
     for scratch in [
-        translated.clone(),
+        translated.to_path_buf(),
         translated.with_file_name("dhampir-danmaku.ass"),
         translated.with_file_name("dhampir-subtitle.srt"),
         // 传给转译器的字体族名映射（`--font-families`）。⚠️ 忘了它就会**每出一次片、
         // 在用户工程目录里留一个 `_temp_font_families.json`**（我自己实测漏过一次）——
         // 它不属于工程，不该出现在那儿。
-        translated.with_file_name(FONT_FAMILIES_FILE),
+        families,
     ] {
         std::fs::remove_file(&scratch).ok();
     }
@@ -1327,7 +1378,7 @@ pub fn render_video_only(
     // 出片**永远用源**：`video = None`（代理只服务预览）
     let (translated, report) = prepare_project_reporting(clip_dir, project_path, true, None)?;
     if strict && report.drop_count > 0 {
-        cleanup_project(project_path);
+        cleanup_project(&translated);
         bail!(
             "--strict：转译报告里有 {} 条 DROP（参照有、底座表达不了的），拒绝出片。\n  逐条：\n    {}\n  \
              （不加 `--strict` 就会照常出片，但这些效果在成片里是缺的）",
@@ -1337,7 +1388,7 @@ pub fn render_video_only(
     }
     let frames = sequence_frames(&translated)?;
     run_render(&translated, clip_dir, 0, frames - 1, &out, false, project_font)?;
-    cleanup_project(project_path);
+    cleanup_project(&translated);
     Ok(out)
 }
 
@@ -1494,12 +1545,53 @@ mod artifact_tests {
         for f in [&translated, &families] {
             std::fs::write(f, b"x").unwrap();
         }
-        cleanup_project(&dir);
+        cleanup_project(&translated);
         assert!(!translated.exists(), "转译产物要收掉");
         assert!(
             !families.exists(),
             "字体族名映射也要收掉（否则工程目录里每出一次片多一个草稿）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **并发预览撞车**（用户报的 `ENOENT ... _temp_font_families.json`）。
+    ///
+    /// 现场：同一片段被同时预览两次 ⇒ 两个请求共用**同一个** `.yekitrim/`，
+    /// 而草稿名是**固定**的 ⇒ A 的 cleanup 删掉 B 刚写好、正要交给 node 的文件。
+    /// 日志里的铁证是"转译器"那行**成对出现**、间隔十几毫秒。
+    ///
+    /// 判据：两次转译的草稿路径**必须不同**，且清理 A 不能动到 B 的文件。
+    #[test]
+    fn concurrent_translations_use_disjoint_scratch_names() {
+        let dir = std::env::temp_dir().join("yekitrim_dhampir_concurrent");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 模拟两次并发转译各自的产物路径（`prepare_project_reporting` 用 `scratch_tag()` 生成）
+        let ta = scratch_tag();
+        let tb = scratch_tag();
+        let a = dir.join(format!("_dhampir_project{ta}.json"));
+        let b = dir.join(format!("_dhampir_project{tb}.json"));
+        assert_ne!(a, b, "两次转译的草稿路径必须不同，否则会互相删");
+
+        // ⚠️ **族名映射的文件名必须由 `cleanup_project` 自己推**，不能在这里替我拼好 ——
+        // 这条测试第一版就是自己拼的，结果把"cleanup 只会按固定名找"这个 bug 放过去了
+        // （变异测试抓到：把推导换成固定名，测试依然是绿的）。
+        // 判据改成"**写完两个文件，看 cleanup 删掉哪个**"。
+        let fam_a = dir.join(format!("{FONT_FAMILIES_FILE_STEM}{ta}.json"));
+        let fam_b = dir.join(format!("{FONT_FAMILIES_FILE_STEM}{tb}.json"));
+        for f in [&a, &b, &fam_a, &fam_b] {
+            std::fs::write(f, b"{}").unwrap();
+        }
+        // A 收工时**只该删自己那套**
+        cleanup_project(&a);
+        assert!(!a.exists(), "A 自己的产物要删掉");
+        assert!(
+            !fam_a.exists(),
+            "A 自己的字体族名映射也要删掉 —— 这条钉的是「按后缀推导文件名」那步推导，             退回固定名（`_temp_font_families.json`）时它会红"
+        );
+        assert!(b.exists(), "A 的清理**不许**动到并发的 B 的产物");
+        assert!(fam_b.exists(), "同理，B 的字体族名映射也要留着");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
