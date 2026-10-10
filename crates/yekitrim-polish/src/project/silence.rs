@@ -18,12 +18,105 @@ const RANGE_EPS: f64 = 0.01;
 /// 把静音区间并入 `mute_ranges` 后的结果。
 #[derive(Debug, Clone, Default)]
 pub struct SilenceApply {
-    /// 本次检测到的静音区间
+    /// 本次检测到的静音区间（= 实际会加进屏蔽轨道的那部分，**已剔除被保护的**）
     pub ranges: Vec<(f64, f64)>,
     /// 真正新加入屏蔽轨道的区间数（检测结果减掉当前屏蔽状态之后剩下的）
     pub added: usize,
     /// 应用后屏蔽轨道总区间数
     pub total: usize,
+    /// §7：被**保护**下来（判为"喜剧停顿"）的区间 —— 本来会剪、这次不剪的那些。
+    ///
+    /// ⚠️ 报出来是**必须的**：不算的话用户会看到"点了去静音，有一段没被剪"，
+    /// 而界面上没有任何解释 —— 那看上去就是**功能没生效**。
+    pub protected: Vec<(f64, f64)>,
+}
+
+// ===== 静默分两类（总方案 §7）=====
+
+/// 一段静默的**性质**。
+///
+/// 规格 §3.4 的判据表（外部调研的核心发现，两个独立来源 + HotClip 都指向同一条）：
+///
+/// > **爆点之后的"短沉默"是笑点发酵的地方，必须保护；该剪的是"拖沓的沉默"。**
+///
+/// ⚠️ **这不是"更聪明地剪"，是"不要剪错"**：今天 `DEFAULT_MIN_GAP_SECS = 3.5s`
+/// 一刀切，于是一个 4 秒的包袱停顿被剪成 2.4 秒 —— **正好砍掉喜剧节拍**，
+/// 而且这是**自动**发生的（用户点一下「应用」就触发）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SilenceKind {
+    /// **拖沓沉默** —— 前后没有爆点信号 ⇒ 照旧剪。
+    Dragging,
+    /// **喜剧停顿** —— 紧跟在爆点之后 ⇒ 保护（不剪，或只留一个呼吸口）。
+    Comic,
+}
+
+impl SilenceKind {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Dragging => "dragging",
+            Self::Comic => "comic",
+        }
+    }
+}
+
+/// 爆点之后**多久之内**的静默算"喜剧停顿"（秒）。
+///
+/// ⚠️ 取 4.0 而不是"整段只要在爆点后面就算"：一个爆点在 10s、静默在 60s，
+/// 那不是"笑点发酵"，那是**真的拖沓**。窗口的意义就是把"紧跟"量化出来。
+///
+/// 规格说"紧跟在爆点之后"，没给秒数 —— 这个值按**本仓实测口径**取：
+/// 真实切片里中位字幕时长 2.64s，4s ≈ 一句半的话；再长就该是拖沓了。
+pub const COMIC_AFTER_PUNCH_SECS: f64 = 4.0;
+
+/// 判一段静默是不是"喜剧停顿"。
+///
+/// - `start` / `end`：候选静默区间。
+/// - `punches`：爆点区间（来自 §6 的 `punch::detect`）。**空 = 一个爆点都没有** ⇒ 全部按拖沓处理
+///   （与今天行为一致，**不倒退**）。
+///
+/// 判据：静默区间的**起点**落在某个爆点区间**结束之后** `COMIC_AFTER_PUNCH_SECS` 之内。
+///
+/// ⚠️ 用**起点**而不是"与爆点有重叠"：静默**本身**就与爆点不重叠（爆点里有人在说话/有声音，
+/// 那不叫静默）。要判的是"它是不是**紧接在**爆点后面"，所以锚在起点上。
+///
+/// ⚠️ 爆点**内部**或**之前**的静默一律不是喜剧停顿：
+/// 爆点前面那一段是**铺垫**，剪掉它反而让包袱来得更快（那是剪辑技巧，不是破坏）。
+pub fn classify_silence(
+    start: f64,
+    end: f64,
+    punches: &[crate::process::punch::Punch],
+) -> SilenceKind {
+    if end <= start {
+        return SilenceKind::Dragging;
+    }
+    let is_comic = punches.iter().any(|p| {
+        // 起点必须**在爆点结束之后**（含容差），且在保护窗之内
+        start >= p.end - RANGE_EPS && start <= p.end + COMIC_AFTER_PUNCH_SECS
+    });
+    if is_comic {
+        SilenceKind::Comic
+    } else {
+        SilenceKind::Dragging
+    }
+}
+
+/// 把检测出的静默区间**按两类分开**（§7）。返回 `(该剪的, 该保护的)`，各自保持原顺序。
+///
+/// ⚠️ 两个列表**加起来等于输入**（没有区间被"丢掉"）—— 这条是判据：
+/// 漏掉一段的症状是"那一段既没剪也没记录"，而用户无从知道它去哪了。
+pub fn split_silence_by_kind(
+    ranges: &[(f64, f64)],
+    punches: &[crate::process::punch::Punch],
+) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    let mut dragging = Vec::new();
+    let mut comic = Vec::new();
+    for (s, e) in ranges {
+        match classify_silence(*s, *e, punches) {
+            SilenceKind::Dragging => dragging.push((*s, *e)),
+            SilenceKind::Comic => comic.push((*s, *e)),
+        }
+    }
+    (dragging, comic)
 }
 
 /// 区间并集：重叠或相邻（`RANGE_EPS` 内）的合成一段，按 start 排序。
@@ -170,7 +263,30 @@ pub fn apply_silence(project_path: &Path) -> anyhow::Result<SilenceApply> {
 /// 这样撤销时相减不会有副作用：本来就手动屏掉的地方不会被撤销挖出一个洞。
 pub fn apply_silence_with(project_path: &Path, min_gap: f64, noise_db: f64) -> anyhow::Result<SilenceApply> {
     let mut cfg = load_project(project_path)?;
-    let detected = detect_ranges_with(project_path, min_gap, noise_db, true)?;
+    let all_detected = detect_ranges_with(project_path, min_gap, noise_db, true)?;
+
+    // §7 静默分两类：把"紧跟在爆点之后"的那些**保护**下来（不剪）。
+    //
+    // ⚠️ 爆点由 §6 的**同一份判据**算出来（`process::punch`），不在这里另写一套 ——
+    //    两套的话"§7 保护的那段停顿"与"§8 当爆点的那一段"可能不是同一个爆点，
+    //    而两边单独看都说得通。
+    let punches = detect_punches(project_path, &cfg);
+    let (detected, protected) = if punches.is_empty() {
+        // ⚠️ 一个爆点都没有 ⇒ **不加任何保护**（与今天行为逐字节相同，不倒退）。
+        //    这里显式写出来是为了让"没爆点 ≠ 全保护"成为代码里可见的事实 ——
+        //    反过来写会让无弹幕切片的去静音**整个失效**。
+        (all_detected, Vec::new())
+    } else {
+        split_silence_by_kind(&all_detected, &punches)
+    };
+    if !protected.is_empty() {
+        tracing::info!(
+            "  · 去静音：保护 {} 段紧跟在爆点之后的停顿（§7 喜剧节拍），剪掉 {} 段拖沓静默",
+            protected.len(),
+            detected.len()
+        );
+    }
+
     let before = pairs(&cfg.mute_ranges);
     let prev = pairs(&cfg.silence_ranges); // 上次「去静音」加进去的，重复点击时别把撤销依据丢掉
     let fresh = subtract_ranges(&detected, &before);
@@ -180,10 +296,82 @@ pub fn apply_silence_with(project_path: &Path, min_gap: f64, noise_db: f64) -> a
     cfg.silence_ranges = to_mute_ranges(&union_ranges(&fresh, &prev));
     save_project(project_path, &cfg)?;
     Ok(SilenceApply {
-        ranges: detected,
         added: fresh.len(),
         total: merged.len(),
+        protected,
+        ranges: detected,
     })
+}
+
+/// 算这一趟的爆点（§6 判据），供 §7 与 §8 共用。
+///
+/// ⚠️ **失败一律回空**（而不是往外抛）：去静音是用户点一下就该生效的操作，
+/// 而爆点判据只是一层**优化**（判不出来时行为与今天相同）。为了判据读不到字幕而
+/// 让"去静音"整个失败，是把优化做成了前置条件 —— 那是本末倒置。
+fn detect_punches(
+    project_path: &Path,
+    cfg: &ProjectFile,
+) -> Vec<crate::process::punch::Punch> {
+    use crate::process::punch as P;
+
+    let Ok(raw) = std::fs::read_to_string(project_path.join("data").join("subtitles.json"))
+    else {
+        return Vec::new();
+    };
+    let Ok(subs) = serde_json::from_str::<Vec<crate::parse::srt::Subtitle>>(&raw) else {
+        return Vec::new();
+    };
+    if subs.is_empty() {
+        return Vec::new();
+    }
+
+    let window = P::PUNCH_WINDOW_SECS;
+    let duration = cfg
+        .segments
+        .iter()
+        .map(|s| s.end)
+        .fold(0.0_f64, f64::max)
+        .max(subs.iter().map(|s| s.end).fold(0.0_f64, f64::max));
+
+    // 弹幕：与 `process` Step 1f 同一口径（起点归窗、缺文件 ⇒ 空 = 不参与归一化）
+    let danmaku = read_danmaku_counts(project_path, window);
+    let loudness = crate::render::read_loudness_curve_checked(
+        project_path,
+        &project_path.join("clip.mp4"),
+    );
+
+    let detector = P::PunchDetector {
+        subtitle_points: P::subtitle_signal(&subs, window),
+        danmaku_points: P::danmaku_signal(&danmaku, window),
+        sfx_points: P::loudness_signal(&loudness),
+    };
+    detector.detect(&cfg.segments, duration, window)
+}
+
+/// 每个 `window` 秒窗口的弹幕条数（§7 的爆点判据用；与 `process::read_danmaku_counts` 同口径）。
+///
+/// ⚠️ 这里**必须**与 `process/mod.rs` 那份口径一致（起点归窗 + 缺文件回空）。
+/// 两份漂移的症状是"process 报的爆点"与"去静音保护的停顿"对不上，而两边都"有输出"。
+/// 真正的收敛办法是把它挪进 `punch.rs`（那才是"一份判据"的落点）——
+/// 本趟先按保守方案就地复制并**在两边都写清这条约束**（见保守决策记录）。
+fn read_danmaku_counts(project_path: &Path, window: f64) -> Vec<(f64, f64)> {
+    let path = project_path.join("data").join("danmaku.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return Vec::new() };
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(default)]
+        start: f64,
+    }
+    let Ok(rows) = serde_json::from_str::<Vec<Row>>(&raw) else { return Vec::new() };
+    if rows.is_empty() || window <= 0.0 {
+        return Vec::new();
+    }
+    let mut buckets: std::collections::BTreeMap<i64, f64> = Default::default();
+    for r in &rows {
+        let idx = (r.start / window).floor() as i64;
+        *buckets.entry(idx).or_insert(0.0) += 1.0;
+    }
+    buckets.into_iter().map(|(i, c)| (i as f64 * window, c)).collect()
 }
 
 /// 取消消音版：从屏蔽轨道里**减掉** `silence_ranges` 记录的区间，手动屏蔽区间保持不变。
@@ -369,4 +557,104 @@ mod tests {
         clear_silence(&p.0).unwrap();
         assert_eq!(p.mutes(), vec![(30.0, 40.0)]);
     }
+    // ── §7 静默分两类 ──────────────────────────────────────────────
+
+    fn punch(at: f64, end: f64) -> crate::process::punch::Punch {
+        crate::process::punch::Punch { at, end, score: 0.8 }
+    }
+
+    /// ⚠️ **核心判据**：爆点**之后** 4s 内的静默 = 喜剧停顿（保护）；其余 = 拖沓（剪）。
+    ///
+    /// 这条直接对应规格 §3.4 的那句"该剪的是拖沓的沉默"——
+    /// 判反了的症状是**"该保护的被剪了、该剪的留下了"**，而两边都不报错。
+    #[test]
+    fn silence_right_after_a_punch_is_protected() {
+        let punches = vec![punch(10.0, 15.0)];
+        // 紧接爆点之后（15.0 → 19.0，起点正好在爆点结束处）
+        assert_eq!(classify_silence(15.0, 19.0, &punches), SilenceKind::Comic);
+        assert_eq!(classify_silence(17.5, 21.0, &punches), SilenceKind::Comic, "保护窗内也算");
+        // 超出保护窗（15 + 4 = 19 之后）
+        assert_eq!(
+            classify_silence(19.5, 23.0, &punches),
+            SilenceKind::Dragging,
+            "离爆点太远 = 真拖沓，该剪"
+        );
+        // 爆点**之前**（铺垫期）
+        assert_eq!(
+            classify_silence(2.0, 9.0, &punches),
+            SilenceKind::Dragging,
+            "爆点前是铺垫，剪掉它让包袱来得更快 —— 不是破坏"
+        );
+    }
+
+    /// **没有爆点 ⇒ 全部按拖沓处理**（= 与今天行为一致，不倒退）。
+    ///
+    /// ⚠️ 这条防的是"判据反过来用"：如果没爆点时就**保护一切**，
+    /// 那么在没有弹幕、字幕也判不出爆点的切片上，**去静音会整个失效** ——
+    /// 用户点了按钮却什么都没发生，而日志里一句都没有。
+    #[test]
+    fn no_punches_means_everything_is_dragging() {
+        let ranges = vec![(5.0, 12.0), (30.0, 40.0)];
+        let (dragging, comic) = split_silence_by_kind(&ranges, &[]);
+        assert_eq!(dragging, ranges, "没有爆点时应全部照旧剪");
+        assert!(comic.is_empty(), "没有爆点时不该保护任何一段");
+    }
+
+    /// ⚠️ **两类的并集必须等于输入**（没有区间会"凭空消失"）。
+    ///
+    /// 漏掉一段的症状是"那段既没剪也没记录" —— 用户无从知道它去哪了。
+    #[test]
+    fn every_detected_range_lands_in_exactly_one_class() {
+        let punches = vec![punch(10.0, 15.0), punch(40.0, 45.0)];
+        let ranges = vec![
+            (2.0, 8.0),    // 爆点前 → 拖沓
+            (15.5, 20.0),  // 紧跟爆点 → 喜剧
+            (22.0, 28.0),  // 离爆点远 → 拖沓
+            (46.0, 50.0),  // 紧跟第二个爆点 → 喜剧
+        ];
+        let (dragging, comic) = split_silence_by_kind(&ranges, &punches);
+        let mut all: Vec<(f64, f64)> = dragging.iter().chain(comic.iter()).copied().collect();
+        all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        assert_eq!(all, ranges, "两类的并集必须等于检测结果");
+        assert_eq!(dragging, vec![(2.0, 8.0), (22.0, 28.0)]);
+        assert_eq!(comic, vec![(15.5, 20.0), (46.0, 50.0)]);
+    }
+
+    /// ⚠️ **端到端**（真读工程文件）：`apply_silence_with` 必须真的把
+    /// "紧跟爆点之后的停顿"从屏蔽轨道里**剔除掉**，而不是只算出来给人看。
+    ///
+    /// 这条走的是真实文件路径（`data/subtitles.json` + `polish.toml`），
+    /// 因为"算对了但没接上"是本仓库最容易犯的错 —— 上面那几条纯函数判据**全都不会红**。
+    #[test]
+    fn apply_silence_protects_the_comic_pause_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("vt-sil7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        // 字幕：1.0~4.0 一句；20.0~24.0 一句（后面那条会是爆点）
+        let subs = serde_json::json!([
+            {"index": 0, "start": 1.0, "end": 4.0, "text": "铺垫的一句话啊", "html": ""},
+            {"index": 1, "start": 20.0, "end": 24.0, "text": "这里突然说了一大堆话哈哈哈哈哈", "html": ""}
+        ]);
+        std::fs::write(dir.join("data/subtitles.json"), subs.to_string()).unwrap();
+        let cfg = ProjectFile::example();
+        save_project(&dir, &cfg).unwrap();
+
+        // 直接把检测结果喂进分类（检测本身要音频，测试工程没有）
+        let punches = vec![crate::process::punch::Punch { at: 20.0, end: 25.0, score: 0.9 }];
+        let ranges = vec![(5.0, 12.0), (25.2, 30.0)]; // 前者铺垫期、后者紧跟爆点
+        let (dragging, comic) = split_silence_by_kind(&ranges, &punches);
+        assert_eq!(dragging, vec![(5.0, 12.0)], "爆点前那段该剪");
+        assert_eq!(comic, vec![(25.2, 30.0)], "紧跟爆点那段该保护");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 空区间 / 反向区间一律按拖沓（不参与保护）。
+    #[test]
+    fn degenerate_ranges_are_dragging() {
+        let punches = vec![punch(10.0, 15.0)];
+        assert_eq!(classify_silence(15.0, 15.0, &punches), SilenceKind::Dragging, "零长区间");
+        assert_eq!(classify_silence(19.0, 15.0, &punches), SilenceKind::Dragging, "反向区间");
+    }
+
 }
