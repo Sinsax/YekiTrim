@@ -64,6 +64,17 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         tracing::info!("  · [style.camera] {label} {from} → {to}（新内建默认；要改回去手改 polish.toml）");
     }
 
+    // Step 0b: 句末边界守卫（总方案 §2）—— 分段边界必须落在句末，不再"话说一半就切"。
+    //
+    // ⚠️ **必须排在这里**（Step 1 补默认运镜**之前**）：运镜/贴纸/音效的事件都按段边界生成，
+    // 边界挪了就得重算；排在后面等于让所有事件挂在一个已经不存在的边界上。
+    // 与 `llm/mod.rs` Step 4b 是**配对的两处**（老工程只有 process 这条腿能重跑）——
+    // 同 `cap_pip_shots` 那条先例：LLM 那边管"刚生成就对齐"，这里管"每次后处理都收敛"。
+    let moved = align_segment_boundaries(&mut config.segments, &subtitles);
+    if moved > 0 {
+        tracing::info!("  ✂ 句末边界守卫：挪了 {moved} 处分段边界（原来切在句子中间）");
+    }
+
     // Step 1: 为每段生成 Camera event (如果还没有)
     for seg in &mut config.segments {
         let sd = seg.end - seg.start;
@@ -2284,6 +2295,118 @@ mod diagnose_camera_anchors {
             }
         }
         println!("camera 事件共 {n} 条");
+    }
+}
+
+/// 只读诊断：在**真实工程**上看「句末边界守卫」（总方案 §2）到底挪了几处、挪了多少。
+///
+/// 为什么要有它：守卫的全部风险是"找不到合格点就放弃" ⇒ 形同虚设，而单元测试用的是合成字幕，
+/// 看不出**真实字幕里句末标点的比例**。这个探针把真实数据上的命中率、挪动幅度、
+/// 以及"判为干净 / 被挪 / 放弃"三类各多少条打出来。
+///
+/// ⚠️ **只读**：只 `load_project` + 读 `data/subtitles.json`，**不写回**（与
+/// `diagnose_manual_events_survive_process` 那条"会写回"的探针不同）。
+///
+/// ```bash
+/// VT_POLISH_DIR=<项目目录(含 polish.toml 与 data/)> \
+///   cargo test -p yekitrim-polish --lib diagnose_boundaries -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod diagnose_boundaries {
+    #[test]
+    #[ignore]
+    fn diagnose_boundaries() {
+        let Ok(dir) = std::env::var("VT_POLISH_DIR") else {
+            eprintln!("用法: VT_POLISH_DIR=<项目目录> cargo test -p yekitrim-polish --lib diagnose_boundaries -- --ignored --nocapture");
+            return;
+        };
+        let path = std::path::PathBuf::from(&dir);
+        let config = crate::project::load_project(&path).expect("读取 polish.toml");
+        let subs: Vec<crate::parse::srt::Subtitle> = serde_json::from_str(
+            &std::fs::read_to_string(path.join("data/subtitles.json")).expect("读 data/subtitles.json"),
+        )
+        .expect("解析 subtitles.json");
+
+        println!("\n项目: {dir}");
+        println!("字幕 {} 条 · 分段 {} 个", subs.len(), config.segments.len());
+
+        // ① 字幕本身的句末比例：守卫的上限就是它（没有句末点可挪 ⇒ 只能落到空隙）。
+        let ends = subs.iter().filter(|s| super::fx::is_sentence_end(&s.text)).count();
+        println!(
+            "\n[句末标点] {ends}/{} 条判为句末（{:.1}%）—— 守卫的可挪点数上限",
+            subs.len(),
+            if subs.is_empty() { 0.0 } else { ends as f64 * 100.0 / subs.len() as f64 }
+        );
+
+        // ② 逐个共享边界看原本干不干净、挪去哪。
+        let segs = config.segments.clone();
+        let mut order: Vec<usize> = (0..segs.len()).collect();
+        order.sort_by(|a, b| segs[*a].start.partial_cmp(&segs[*b].start).unwrap_or(std::cmp::Ordering::Equal));
+        let mut clean = 0usize;
+        let mut moved: Vec<(f64, f64, f64)> = Vec::new();
+        let mut gave_up = 0usize;
+        let mut refused_by_min: Vec<f64> = Vec::new();
+        for w in order.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let shared = segs[a].end;
+            if (shared - segs[b].start).abs() > 1e-6 {
+                continue;
+            }
+            let before_ok = super::fx::boundary_is_clean(shared, &subs);
+            if before_ok {
+                clean += 1;
+                continue;
+            }
+            match super::fx::best_boundary_near(shared, &subs) {
+                // ⚠️ **同一道最小段长闸**：守卫会对"挪完把某段吃到 < 0.5s"的候选弃权，
+                // 探针不跟着判就会**报出比实跑更多的挪动数**（实测踩到：探针说 1 处、
+                // 实跑 0 处 —— 两者对不上会让人以为守卫坏了）。
+                Some(t)
+                    if t > segs[a].start + super::fx::MIN_SEGMENT_SECS
+                        && t < segs[b].end - super::fx::MIN_SEGMENT_SECS =>
+                {
+                    moved.push((shared, t, t - shared))
+                }
+                Some(_) => refused_by_min.push(shared),
+                None => gave_up += 1,
+            }
+        }
+
+        println!("\n[共享边界] 本来就干净 {clean} 处");
+        println!("           被挪走 {} 处", moved.len());
+        println!("           找不到合格点而放弃 {gave_up} 处");
+        println!("           挪了会把段吃到 <{:.1}s 而弃权 {} 处", super::fx::MIN_SEGMENT_SECS, refused_by_min.len());
+        for (from, to, d) in moved.iter().take(20) {
+            println!("             {from:8.2}s → {to:8.2}s  （{:+.2}s）", d);
+        }
+        for at in refused_by_min.iter().take(10) {
+            println!("             弃权：{at:8.2}s 挪过去后某段不足 {:.1}s", super::fx::MIN_SEGMENT_SECS);
+        }
+        let total = clean + moved.len() + gave_up;
+        if total > 0 {
+            println!(
+                "\n[命中率] 需要挪的占 {:.1}%（{} / {}）",
+                (moved.len() + gave_up) as f64 * 100.0 / total as f64,
+                moved.len() + gave_up,
+                total
+            );
+        }
+
+        // ③ 真跑一次守卫，确认端到端挪了几处、且第一段起点与末段终点没被动过。
+        // ⚠️ 用**全新的副本**：上面的循环改的是 `segs`（把每一处都试挪了一遍），
+        // 直接拿它跑"实跑"会得到 0 —— 那是探针自己造成的，不是守卫的行为。
+        let mut fresh = config.segments.clone();
+        let orig_first = fresh.first().map(|s| s.start);
+        let orig_last = fresh.last().map(|s| s.end);
+        let n = super::align_segment_boundaries(&mut fresh, &subs);
+        println!("\n[实跑] align_segment_boundaries 在原始段表上挪了 {n} 处");
+        assert_eq!(fresh.first().map(|s| s.start), orig_first, "首段起点不许被动");
+        assert_eq!(fresh.last().map(|s| s.end), orig_last, "末段终点不许被动");
+
+        // ④ 幂等：再跑一次必须是 0。
+        let again = super::align_segment_boundaries(&mut fresh, &subs);
+        println!("[幂等] 第二次挪了 {again} 处（必须为 0）");
+        assert_eq!(again, 0, "守卫必须收敛");
     }
 }
 

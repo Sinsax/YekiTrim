@@ -182,6 +182,13 @@ pub async fn run_llm_pipeline(
         if stickers > 0 {
             tracing::info!("  · 贴纸已对齐最近字幕 {} 条", stickers);
         }
+        // 句末边界守卫（总方案 §2）：与 `process/mod.rs` Step 0b 是**配对的两处**。
+        // ⚠️ **排在 `cap_pip_shots` 那组之后**：那组按段边界对齐画中画，边界挪了就得重对齐；
+        // 反过来排会让画中画停在旧边界上（编辑器里看着对、出片再被 process 挪一次就错位）。
+        let moved = crate::process::align_segment_boundaries(&mut segments, subtitles);
+        if moved > 0 {
+            tracing::info!("  ✂ 句末边界守卫：挪了 {moved} 处分段边界（原来切在句子中间）");
+        }
     }
 
     // Step 4c: 冷开场 / 回忆回溯意图 → `edl.clips`（第 5 批）。与 Step 4b 同一条理由：
