@@ -109,6 +109,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/polish/cover-frame", post(polish_cover_frame))
         .route("/polish/project", get(polish_project_get).put(polish_project_put))
         .route("/polish/subtitles", get(polish_subtitles_get).put(polish_subtitles_put))
+        // §10 情绪轨道：把 `process` 算出来的 `data/emotion.json` 交给界面。
+        // ⚠️ 这个端点就是 `emotion.json` 的**第一个读者** —— 在此之前它只有写者
+        //    （全仓 grep 只找得到写的一方），是一件"算出真数据、然后扔掉"的产物。
+        //    空态回 404（不是 `{windows:[]}`），见 handler 的说明。
+        .route("/polish/emotion", get(polish_emotion_get))
         // 贴纸的**第 k 帧**（浏览器侧没有可用的多帧图解码，见那个函数的说明）
         .route("/polish/sticker-frame", post(polish_sticker_frame))
         // 贴纸帧表**预热**：页面加载时就把"播到才解"的整段解码挪走（见那个函数的说明）
