@@ -277,7 +277,9 @@ export const STEPS = [
 // 顺序 = 标签条顺序；`/settings` 落到第一项。
 export const SETTINGS_SECTIONS = [
   { key: 'config', label: '程序配置', sub: 'ASR / 检测 / 剪切，写入 .yekitrim/config.toml' },
-  { key: 'llm', label: 'LLM 配置', sub: '接口地址、密钥、模型与并发，写入 .yekitrim/llm.toml' },
+  // ⚠️ 副标题要带上"提示词"：那一组写的是 **config.toml 的 [detection]**（不是 llm.toml），
+  //    只是摆在这一页。不写出来，用户会以为这页所有东西都落在 llm.toml 里。
+  { key: 'llm', label: 'LLM 配置', sub: '接口 / 密钥 / 模型 / 并发（llm.toml）· 提示词与参考标题（config.toml）' },
   // 本地免登录模式下整页不显示（没有注册/邀请这回事）—— `localHidden` 由
   // SettingsView 的标签过滤与 router 的守卫共同执行，两处都读 `stores/health.js`。
   // ⚠️ ASR 模型管理**不在这里**：它搬去首页当「运行状况」面板了（那是全机共享的资源，

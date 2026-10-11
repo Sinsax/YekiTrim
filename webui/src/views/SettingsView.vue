@@ -98,25 +98,10 @@
         <!-- ④ 高级：提示词 + 全部调参。默认收起 —— 这些是"默认值就是最佳实践"的旋钮，
              摊开只会把常用项淹掉（用户口径："死配置或者最佳配置就隐藏吧"）。 -->
         <details class="form-adv">
-          <summary>高级参数<span class="muted small">提示词 / 断句 / 调参</span></summary>
+          <summary>高级参数<span class="muted small">断句 / 调参</span></summary>
 
-          <div class="form-section">
-            <div class="form-section-title">提示词</div>
-            <div class="prompt-pair">
-              <div>
-                <label title="每行一条，可含 emoji；留空用内建示例">参考标题</label>
-                <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
-              </div>
-              <div>
-                <label>检测 system_prompt</label>
-                <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
-              </div>
-            </div>
-            <div class="mt-8">
-              <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
-              <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
-            </div>
-          </div>
+          <!-- ⚠️ 「提示词」整组**已搬到 LLM 配置页**（2026-10，用户要求）：参考标题与两个检测
+               prompt 都是喂给 LLM 的文本，摆在"程序配置"里要跨页找。**别在这里加回来。** -->
 
           <div class="form-section">
             <div class="form-section-title">断句与分块<span class="muted small">默认值已按实测调好</span></div>
@@ -197,6 +182,39 @@
             <SliderField v-model="form.llm.max_tokens" class="span-2" label="max_tokens" :min="256" :max="65536" :step="256" />
             <SliderField v-model="form.llm.max_concurrent" class="span-2" label="并发请求数" :min="1" :max="32" :step="1"
                          hint="对所有 LLM 调用生效" />
+          </div>
+        </div>
+
+        <!-- ⚠️ 「提示词」从**程序配置页**搬来这里（2026-10，用户要求）：参考标题 + 两个检测
+             prompt 都是喂给 LLM 的文本。⚠️ 写的是 **config.toml 的 [detection]**（不是 llm.toml）
+             —— 搬的是**位置**，不是归属，保存仍走 buildGlobalPatch。 -->
+        <div class="form-section">
+          <div class="form-section-title">提示词<span class="muted small">写入 config.toml 的 [detection]</span></div>
+          <div class="prompt-pair">
+            <div>
+              <label title="每行一条，可含 emoji；留空用内建示例">参考标题</label>
+              <textarea v-model="referenceTitlesText" rows="8" placeholder="每行一条参考标题"></textarea>
+              <!-- ★ 留空时把**实际会用哪几条**显示出来：`reference_titles = []` **不代表没有参考标题**，
+                   运行时照样注入内建那几条（`resolve_reference_titles`）。
+                   ⚠️ 只做灰字预览、**不预填进输入框** —— 预填会让用户"以为是自己的"，
+                      一保存就把内建那几条固化进 config.toml，从此再也回不到内建更新。 -->
+              <div v-if="!referenceTitlesText.trim() && referenceTitlesDefault.length" class="rt-preview">
+                <div class="muted small">
+                  留空时使用内建示例（{{ referenceTitlesDefault.length }} 条）：
+                </div>
+                <ul class="rt-list">
+                  <li v-for="(t, i) in referenceTitlesDefault" :key="i">{{ t }}</li>
+                </ul>
+              </div>
+            </div>
+            <div>
+              <label>检测 system_prompt</label>
+              <textarea v-model="form.detection.system_prompt" rows="8" placeholder="留空使用内建默认"></textarea>
+            </div>
+          </div>
+          <div class="mt-8">
+            <label>检测 prompt_template<span class="muted small">（{segments} 会被替换）</span></label>
+            <textarea v-model="form.detection.prompt_template" rows="12" placeholder="留空使用内建默认"></textarea>
           </div>
         </div>
 
@@ -325,6 +343,10 @@ const llmRaw = ref('')
 const configError = ref('')
 const llmResult = ref('')
 const referenceTitlesText = ref('')
+/** 留空时**实际会用**的内建参考标题（服务端 `GET /api/config` 的 `reference_titles_default`）。
+ *  ⚠️ 只用于灰字预览，**绝不预填进 `referenceTitlesText`** —— 预填会让用户"以为是自己的"，
+ *  一保存就把内建那几条固化进 config.toml，从此再也回不到内建更新。 */
+const referenceTitlesDefault = ref([])
 const asrModeHint = computed(() => form.asr.mode === 'hybrid' ? 'SenseVoice 打轴 + qwen3 填词' : 'SenseVoice')
 /**
  * 本地免登录位（`GET /api/health.local_no_auth`）—— **与 `App.vue` 同一口径**：
@@ -493,6 +515,8 @@ async function loadConfig() {
     llmRaw.value = d.llm_raw || ''
     // config 解析失败时后端会给出原因，必须显式提示，否则表单只是静默显示默认值
     configError.value = d.config_error || ''
+    // 留空「参考标题」时**实际会用**的那几条（服务端给，别在前端再抄一份字面量）。
+    referenceTitlesDefault.value = Array.isArray(d.reference_titles_default) ? d.reference_titles_default : []
     // 用 global_config（只含 .yekitrim/config.toml）：这块表单编辑的就是**程序配置**，
     // merged 配置会被某个工程的 yekitrim.toml 覆盖，表单就会和源文件对不上。
     // （2026-10-03 起 /api/config 不再回 merged 的 `config`，那个兜底随之删掉。）
@@ -576,13 +600,20 @@ async function toggleLlmSource() {
   }
 }
 
+/** 文本框（每行一条）→ `form.detection.reference_titles`。
+ *  ⚠️ **两页共用一个函数**（程序配置页的保存 + LLM 页的保存都要它）：
+ *  抄两份必然漂移，而漂移的表现是"在某一页改的没生效"。 */
+function syncReferenceTitlesFromText() {
+  form.detection.reference_titles = referenceTitlesText.value
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
 async function saveGlobal() {
   if (!loaded.value) { toast('配置未加载成功，已禁止保存', 'err'); return }
   try {
-    form.detection.reference_titles = referenceTitlesText.value
-      .split('\n')
-      .map(s => s.trim())
-      .filter(Boolean)
+    syncReferenceTitlesFromText()
     if (editSource.value) {
       await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ raw: globalRaw.value }) })
       toast('config.toml 已保存')
@@ -603,6 +634,11 @@ async function saveLlm() {
       toast('llm.toml 已保存')
     } else {
       await api('/api/config/llm', { method: 'PUT', body: JSON.stringify({ patch: buildLlmPatch() }) })
+      // ⚠️ **提示词那一组写的是 config.toml 的 [detection]**，不是 llm.toml ——
+      //    它只是**摆在**这一页（用户要求），归属没变。所以这一页的保存必须**两个文件都存**，
+      //    否则用户在这里改了参考标题、点「保存」看着成功、实际一个字节都没落盘。
+      syncReferenceTitlesFromText()
+      await api('/api/config/global', { method: 'PUT', body: JSON.stringify({ patch: buildGlobalPatch() }) })
       toast('LLM 配置已保存')
     }
     await loadConfig()
@@ -701,6 +737,11 @@ onMounted(async () => {
 .span-all { grid-column:1 / -1; }
 .prompt-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; margin-top:8px; }
 .prompt-pair textarea, .prompt-with-side textarea { min-height:230px; resize:vertical; }
+/* 留空「参考标题」时的内建示例预览（只读灰字，**不是**输入框）*/
+.rt-preview { margin-top:6px; padding:6px 8px; border-radius:4px;
+  background:var(--bg-soft); border:1px dashed var(--line-soft); }
+.rt-list { margin:4px 0 0; padding-left:16px; }
+.rt-list li { font-size:11.5px; line-height:1.6; color:var(--ink-faint); }
 .prompt-with-side { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px 12px; margin-top:8px; align-items:start; }
 .side-col { display:flex; flex-direction:column; gap:8px; min-width:0; }
 .side-title { font-weight:700; font-size:12.5px; color:var(--ink); margin-bottom:4px; }
