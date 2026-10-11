@@ -144,8 +144,14 @@ export const runSilence = (pid, dir, extra = {}) => startJob('/api/polish/silenc
  *  出片通道**没有可选项**：只有底座 dhampir 一条腿（本仓那条兜底腿已整条删除）。 */
 // `renderer` 参数**已删除**：出片只剩底座一条腿（本仓 headless Chrome 那条 2026-10-01 整条删除），
 // 传它没有意义 —— 传 `chrome` 服务端会回 **400**（不静默当默认）。
-export const runRender = (pid, dir, outputFile = 'export.mp4') =>
-  startJob('/api/polish/render', pid, dir, { output_file: outputFile })
+//
+// `versions`（§9 多版本成片）：出 N 条**开头不同**的片子，产物按 `_1`/`_2` 排开。
+// ⚠️ **不传 / 传 1 = 完全走老路**（一条成片、逐字节零回归）—— 调用方只在 >1 时才传。
+export const runRender = (pid, dir, outputFile = 'export.mp4', versions = 1) =>
+  startJob('/api/polish/render', pid, dir, {
+    output_file: outputFile,
+    ...(versions > 1 ? { versions } : {}),
+  })
 /** 生成封面。`renderer`：只有 `takumi`（静态渲染，不出浏览器、内存小）；不传 = 服务端默认。
  *  ⚠️ 老脚本里的 `chrome` 已整条删除，传了会由 `cover.rs` **明确报错**（不是"认不出"）。 */
 export const runCover = (pid, dir, renderer) =>

@@ -590,6 +590,20 @@
       <p class="hint mt-6">
         只接受项目内相对路径<span class="muted">（同名自动改名）</span> <span class="mono">名字_1.mp4</span>。
       </p>
+      <!-- §9 多版本成片：出 N 条**开头不同**的片子，方便挑一个开头。
+           ⚠️ 这个能力**以前只有 CLI 有**（`--versions`），界面上够不到 —— 这里补的就是那个入口。
+           ⚠️ 默认 1 = 完全走老路（一条成片、逐字节零回归），所以默认值必须是 1 而不是"空"。 -->
+      <label class="mt-6" title="出 N 条开头不同的片子，产物按 _1/_2 排开，方便挑一个开头。1 = 只出一版">版本数</label>
+      <select v-model.number="renderVersions" :disabled="renderVersionsBusy">
+        <option :value="1">1 · 只出一版（默认）</option>
+        <option :value="2">2 · 两个开头候选</option>
+        <option :value="3">3 · 三个开头候选</option>
+        <option :value="5">5 · 五个开头候选</option>
+      </select>
+      <p v-if="renderVersions > 1" class="hint mt-6" title="候选按「句末 / 静默 / 避开爆点」三条判据选出">
+        将出 {{ renderVersions }} 版，按 <span class="mono">_1/_2</span> 排开。
+        <span class="muted">每版都是一次完整出片，会明显更久。</span>
+      </p>
       <!-- 出片通道下拉已删：出片只有底座一条腿（本仓那条 headless Chrome 兜底腿 2026-10-01
            整条删除），留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。 -->
       <!-- 就绪位（M3）：底座不可用时**在点渲染之前**就说明白，而不是任务跑到一半才失败。
@@ -720,6 +734,10 @@ const segKey = ref(0)
 /** 封面设计器重挂载计数（封面任务完成后重挂拉新图） */
 const coverKey = ref(0)
 const renderModal = ref(false)
+/** §9 多版本成片：出几版。**默认 1 = 完全走老路**（不传 `--versions`，逐字节零回归）。 */
+const renderVersions = ref(1)
+/** 渲染任务在飞时锁住版本下拉（改了它这一趟也用不上，徒增困惑）。 */
+const renderVersionsBusy = computed(() => scopeBusy.value)
 const renderOutput = ref('')
 // 出片通道这个选择项**已删除**（2026-10-01）：出片只剩底座一条腿，本仓那条 headless
 // Chrome 兜底腿整条删掉了，留一个只有一个选项的下拉只会让人以为"还有得选、只是我没选对"。
@@ -1592,7 +1610,8 @@ function doRender() {
   // `output_file` 必须是**项目内相对路径**（服务端 jail 校验）；留空则用 polish.toml 里的 project.output
   // ⚠️ 渲染与封面已解耦（2026-10-02）：导出只出成片，不再自动重生成封面 ——
   // 所以这里**不碰 coverKey**（封面设计器/产物图保持用户上一版封面，要更新去点「生成封面」）
-  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim()), { after: () => { load({ silent: true }) } })
+  // §9：`versions` 只在 >1 时才由 `runRender` 发出去（1 = 不传 = 老路）。
+  startJob('render', () => runRender(pid.value, dir.value, renderOutput.value.trim(), renderVersions.value), { after: () => { load({ silent: true }) } })
 }
 
 // 时间轴的保存与后处理见上面「时间轴编辑 → 预览 → 落盘 → 后处理」（编辑器自己防抖落盘）
