@@ -182,7 +182,12 @@
           <template v-if="selected.kind === 'seg'">
             <label>备注</label>
             <input v-model="selItem.note" placeholder="分段备注">
-            <label>情绪</label>
+            <!-- ⚠️ 这个标签以前写作「情绪」——**名字是错的**，会让人以为它背后是 §10 的情绪轨道。
+                 它绑的是 `fx`（**演出密度**）：`low/med/high` 决定这一段塞多少特效/音效。
+                 真正的情绪轨道是 `process` 算出来的 `data/emotion.json`（观众情绪），
+                 与这里**没有关系**，而且它**目前还没有界面**。
+                 ⇒ 标签照实写「演出密度」；混用「情绪」会让两件事互相冒名。 -->
+            <label>演出密度</label>
             <select v-model="selItem.fx">
               <option value="low">low · 安静叙述</option>
               <option value="med">med · 日常</option>
