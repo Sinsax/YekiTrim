@@ -115,7 +115,7 @@
               </div>
 
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :karaoke-cues="karaokeCues" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
               </div>
@@ -717,6 +717,9 @@ const ready = ref(false)
 const cfg = ref(null)
 const subs = ref([])
 const dm = ref([])
+/// §5 T5 真卡拉OK：`data/karaoke-cues.json` 的 `cues`（逐字时刻表，给预览画逐字推进）。
+/// ⚠️ 空数组 = 不逐字（整条显示）—— 没开开关 / 没跑过 `process` 的工程都是这一档。
+const karaokeCues = ref([])
 const clips = ref([])
 /** 切片列表读取失败的原因（非空 → 界面走错误条，**不进"还没有可精修的切片"那个空态**）。
  *  以前失败被 `catch { clips = [] }` 伪装成空态，用户会以为切片丢了。 */
@@ -1190,6 +1193,23 @@ async function doLoad(opts = {}) {
         // 弹幕文件缺失是常态（老工程没有 data/danmaku.json）：只记 debug，不刷屏
         addClient('debug', `读取弹幕失败（可能没有弹幕文件）：${e.message}`, 'polish')
         if (!silent) dm.value = []
+      }
+      // §5 T5 真卡拉OK：逐字时刻表（`data/karaoke-cues.json`，`process` 落的结论）。
+      //
+      // ⚠️ 只在工程真的开了 `karaoke` 时才读：没开的工程**一个请求都不发**
+      //    （文件本来也不存在；省掉一次必然 404 的往返，也免得日志里刷一条没意义的 debug）。
+      // ⚠️ 读失败**只记 debug、不打断** —— 与弹幕同规格：逐字只是增强，
+      //    退化成整条字幕（`buildIndex` 那边有守卫）比让整页报错好。
+      if (cfg.value?.elements?.karaoke === true) {
+        try {
+          const r = await fetch(clipMediaUrl(pid.value, dir.value, 'data/karaoke-cues.json'))
+          karaokeCues.value = r.ok ? ((await r.json())?.cues || []) : []
+        } catch (e) {
+          addClient('debug', `读取卡拉OK结论失败（退化成整条字幕）：${e.message}`, 'polish')
+          karaokeCues.value = []
+        }
+      } else {
+        karaokeCues.value = []
       }
     }
     await refreshClipEntry()

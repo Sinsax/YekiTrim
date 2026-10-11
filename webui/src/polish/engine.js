@@ -318,7 +318,7 @@ export const LANE_OF_TYPE = {
   pulse: 'effects',
 }
 
-export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc }) {
+export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, karaokeCues }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
 
@@ -438,6 +438,24 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
 
   // 字幕轨的眼睛：只清**索引里的那份**（素材与 `data/subtitles.json` 一个字都没动）
   idx.subs = laneOn('subtitles') ? (subtitles || []) : []
+  // ---- §5 T5 真卡拉OK：把逐字时刻表按**字幕起点**索引（预览腿）----
+  //
+  // ⚠️ 开着的工程才吃它：`cfg.elements.karaoke` 为假 ⇒ `idx.karaoke` 是空 Map ⇒
+  //    `subsAt` 一定走整条那条路 ⇒ **存量工程逐像素不变**（R4）。
+  //
+  // ⚠️ 按**起点毫秒**索引而不是数组下标：结论文件里只有"对得上"的那些条
+  //    （对不上的被质量闸退了），下标与 `subtitles` 对不上 —— 与转译器
+  //    `polish-to-dhampir.mjs` 的 `byStart` 同一口径（那边也这么写，注释同一条理由）。
+  idx.karaoke = new Map()
+  if (cfg.elements && cfg.elements.karaoke === true && Array.isArray(karaokeCues)) {
+    for (const c of karaokeCues) {
+      if (!c || !Array.isArray(c.times) || !Array.isArray(c.chars)) continue
+      // 校验"字与时间一一对应"——形不对就当没有（宁可整条，也不要画半个字）
+      if (c.chars.length !== c.times.length) continue
+      const key = Math.round(Number(c.start) * 1000)
+      if (Number.isFinite(key)) idx.karaoke.set(key, c.times)
+    }
+  }
   // ---- 弹幕时间偏移（[style.danmaku] offset_secs，默认 -3 = 整体提前 3s）----
   // 只平移显示时刻（start/end）；y 泳道与 travel 与时间无关，不用动。
   // 与 templates/index.html 的 DM 注入点同口径：那里在注入时平移一次，
@@ -897,6 +915,67 @@ export function getVignette(idx, t) {
 
 
 // ---- 字幕：fade in/out + 高亮分段 ----
+/// **T5 真卡拉OK（预览腿）**：按字级时间戳算出"此刻该显示到第几个字"。
+///
+/// ⚠️⚠️ **这是与转译器 `polish-to-dhampir.mjs::splitKaraoke` 的逐值对拍实现**，
+/// 两边**必须同口径** —— 漂了的症状是「预览里字在长、成片里是整条」（或反过来），
+/// **两边各自看都正常、也都不报错**。判据 = `scripts/check-karaoke-parity.mjs`。
+///
+/// ⚠️ 与转译器**有意不同**的一点：那边是"先切成 N 条 cue 再交给底座"（因为底座没有
+/// 逐字通道），这边是"求值期算一个截断长度"（预览本来每帧就算一次）。
+/// **算法一致、产物形态不同** —— 所以对拍的是**每个字落在哪一刻**，不是 cue 列表。
+///
+/// ⚠️ 三道守卫与转译器一致，缺一不可（每一道都对应那边的一段注释）：
+///   ① 字数对不上 / 只有一个字 ⇒ 不切
+///   ② 时间戳非单调 ⇒ 数据坏了，不切（别硬算出一个来回跳的动画）
+///   ③ **每字严格递增**（`prev + 1`）：ASR 把一口气的几个字给同一时刻时，
+///      `Math.max(ms, prev)` 不够 —— 那样多条会挤在同一刻、屏幕上"唰"地一起冒出来。
+///      ⇒ 必须严格递增；顶出末尾就整条退回。
+///
+/// 返回 `null` = 不切（调用方按整条字幕画）。
+export function karaokeSplitCount(sub, times, subStart, subEnd) {
+  const text = String(sub?.text ?? '')
+  const chars = Array.from(text)
+  if (chars.length <= 1) return null
+  if (!Array.isArray(times) || times.length !== chars.length) return null
+  const span = subEnd - subStart
+  if (!(span > 0)) return null
+  const at = []
+  let prev = subStart
+  for (let i = 0; i < chars.length; i += 1) {
+    const ts = times[i]
+    if (!Number.isFinite(ts)) return null
+    if (i > 0 && ts < times[i - 1]) return null
+    const rel = (ts - subStart) / span
+    let ms = subStart + rel * span
+    // ⚠️⚠️ **必须是 1 毫秒，不是 `1e-6`** —— 与转译器的 `Math.max(ms, prev + 1)` **同量纲**。
+    //    预览的时间轴本来是秒，写成 `prev + 1e-6`（= 1 微秒）看着"也递增了"，但**门槛不同**：
+    //    当多个字挤在同一时刻、可用区间又很窄时，出片腿会因"顶出末尾"整条退回，
+    //    而预览腿塞得下 ⇒ **预览里逐字在长、成片里是整条**。
+    //    这正是本判据第一次跑就抓出来的那一条（35 项里红 1 项）。
+    ms = Math.max(ms, prev + 0.001)
+    at.push(ms)
+    prev = ms
+  }
+  at[0] = subStart
+  // 顶出末尾 ⇒ 切不了（与转译器同一条守卫）
+  if (at[at.length - 1] > subEnd) return null
+  return at
+}
+
+/// 按 [karaokeSplitCount] 算出的时刻表，返回 `t` 时刻应显示的**字数**（1..n）。
+/// 返回 0 表示"字幕已经出来、但第一个字还没到" —— 与转译器 `at[0] = startMs` 的
+/// 口径一致：**第一个字立即显示**，所以正常不会出现 0（除非 t 恰在边界上取整）。
+export function karaokeShownChars(at, t) {
+  if (!Array.isArray(at) || !at.length) return 0
+  let n = 0
+  for (let i = 0; i < at.length; i += 1) {
+    if (t >= at[i]) n = i + 1
+    else break
+  }
+  return n
+}
+
 export function subsAt(idx, t) {
   const out = []
   for (const s of idx.subs) {
@@ -924,6 +1003,35 @@ export function subsAt(idx, t) {
       else if (m[0].trim()) parts.push({ text: m[0], hl: false })
     }
     if (!parts.length) parts.push({ text: s.text || '', hl: false })
+    // ---- §5 T5 真卡拉OK：按字级时刻把**显示文本**截到"此刻该出现的字数" ----
+    //
+    // ⚠️ **只在能对上的那一条字幕上生效**：`idx.karaoke` 按起点毫秒索引，
+    //    对不上 ⇒ `times` 是 undefined ⇒ `karaokeSplitCount` 返回 null ⇒ 整条原样。
+    // ⚠️ 与成片侧的形态差异（求值期截断 vs 切成 N 条 cue）是**有意**的，见
+    //    `karaokeSplitCount` 的注释；两边**每个字落在哪一刻**必须逐值相等，
+    //    判据 `scripts/check-karaoke-parity.mjs`。
+    let shown = null
+    if (idx.karaoke && idx.karaoke.size) {
+      const times = idx.karaoke.get(Math.round(s.start * 1000))
+      if (times) {
+        const at = karaokeSplitCount(s, times, s.start, s.end)
+        if (at) {
+          const n = karaokeShownChars(at, t)
+          // n<=0 ⇒ 第一个字还没到 —— 此时**不画**（画整条会"未唱先全出"，画空串会闪一下）
+          const full = parts.map((p) => p.text).join('')
+          shown = Array.from(full).slice(0, Math.max(0, n)).join('')
+          if (!shown.length) continue
+        }
+      }
+    }
+    if (shown !== null) {
+      // ⚠️ 截断后**丢掉 `hl` 分段**：逐字推进的每一帧都是"前缀"，而 `hl` 是按整条原文
+      //    标的 —— 前缀落在 `hl` 段中间时该不该高亮没有定义。宁可退成整段同色
+      //    （卡拉OK本来就该是"一个字一个字亮"，与 `hl` 是两套语义），也不要画出一个
+      //    没人预期的半截高亮。
+      out.push({ parts: [{ text: shown, hl: false }], opacity, yOff: yOff + pulse.yOff, scale: pulse.scale })
+      continue
+    }
     out.push({ parts, opacity, yOff: yOff + pulse.yOff, scale: pulse.scale })
   }
   return out

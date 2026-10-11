@@ -192,6 +192,9 @@ const props = defineProps({
    */
   persistedSubtitles: { type: Array, default: null },
   danmaku: { type: Array, default: () => [] },
+  /// §5 T5 真卡拉OK：`data/karaoke-cues.json` 里的 `cues`（逐字时刻表）。
+  /// ⚠️ 缺省空数组 = 不逐字（整条显示）—— 没跑过 `process` 的老工程就是这一档。
+  karaokeCues: { type: Array, default: () => [] },
   metaDuration: { type: Number, default: 0 },
   // 框选布局模式：叠加选框 + 暂停运镜（缩放复位），选框坐标为整帧百分比
   selectMode: { type: Boolean, default: false },
@@ -2183,7 +2186,12 @@ const idx = computed(() => buildIndex({
   subtitles: props.subtitles,
   danmaku: props.danmaku,
   duration: effDuration.value,
-  stickerSrc
+  stickerSrc,
+  // §5 T5 真卡拉OK：逐字时刻表由 `PolishView` 从 `data/karaoke-cues.json` 取来传下
+  // （预览自己不取数 —— 取数一律走 `api/` 层，见 `webui/src/api/AGENTS.md`）。
+  // ⚠️ 没传 / 开关关着 ⇒ `buildIndex` 里那个 `cfg.elements.karaoke === true` 与
+  //    `Array.isArray` 双闸都会挡住 ⇒ 走整条字幕 ⇒ **存量工程逐像素不变**（R4）。
+  karaokeCues: props.karaokeCues
 }))
 
 // ---- 逐帧状态（rAF 更新 current 触发重算）----
