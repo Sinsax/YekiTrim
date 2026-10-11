@@ -49,6 +49,18 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // **T5 真卡拉OK**：把字级时间轴的对齐**结论**落成 `data/karaoke-cues.json`。
+    //
+    // ⚠️ **必须排在这里**（屏蔽区过滤**之后**）：结论里的 `subtitle_index` 要能被转译器
+    // 对回它看到的那份字幕。转译器读的是 `clip.srt` 减去屏蔽区之后的集合 ——
+    // 用过滤**前**的字幕去对齐，index 会指向成片里根本不存在的字幕。
+    //
+    // ⚠️ 与 `sync_char_timeline` 的分工：那条搬**数据**（ASR 原样的时间轴，在 `cmd_parse` 里），
+    // 这条落**结论**（哪个字属于哪条字幕、在第几秒）。两条各自跑、互不依赖顺序 ——
+    // 但**读的是同一个 `data/char-timeline.json`**，所以 parse 得先跑过。
+    // 「没数据不落文件 / 只在真变了才写 / 写失败只 warn」三条见 `parse::karaoke` 模块头。
+    sync_karaoke_cues(project_path, &subtitles, &config.elements);
+
     // **屏蔽区间只做标记，不切段、不删事件**（用户要求）：`mute_ranges` 由**消费侧**生效 ——
     // 出片在合流之后 `Ffmpeg::cut_ranges` 把这几段剪掉、预览跳过它、字幕在上面已经过滤过。
     //
@@ -1278,6 +1290,54 @@ fn write_emotion_track(
     {
         Ok(()) => {}
         Err(e) => tracing::warn!("  ⚠ 情绪轨道写盘失败（{e}）—— 本次不产出 data/emotion.json"),
+    }
+}
+
+/// **T5 真卡拉OK**：算对齐结论并落 `data/karaoke-cues.json`。
+///
+/// ⚠️ **只在工程真的开了 `karaoke` 时才算** —— 没开的工程连算都不算，
+/// **一个文件都不多**（R4：不配时存量工程逐字节不变，`data/` 也不许多出东西）。
+///
+/// ⚠️ **缺 `data/char-timeline.json` ⇒ 明说降级**（`tracing::info!`），
+/// **不许静默变回普通字幕** —— 用户开了 `karaoke`、报告里却什么都不说，
+/// 就变成"以为开着、其实没开"。与本仓 #147/#181 同一族要求。
+fn sync_karaoke_cues(project_path: &Path, subs: &[parse::srt::Subtitle], cfg: &crate::render::ElementsConfig) {
+    // 开关关着 ⇒ **完全不动**（不算、不写、不报）。这是 R4 那条"逐字节不变"的保证点。
+    if !cfg.karaoke {
+        return;
+    }
+    let Some(log) = parse::charlog::load_char_timeline(project_path) else {
+        // ⚠️ **降级必须被看见**：用户开了卡拉OK、但工程里没有字级时间戳 ⇒ 逐字切不了。
+        // 这里用 `info!`（不是 debug）：这是**用户开了开关却没生效**，不是常态噪声。
+        tracing::info!(
+            "  ⚠ 卡拉OK（T5）已开启，但找不到字级时间戳（asr/timeline.json）\
+             —— **降级成普通字幕**（不逐字切）。要逐字请先跑 ASR（`process` 全流程）"
+        );
+        return;
+    };
+    let Some(cues) = parse::karaoke::build_karaoke_cues(&log, subs) else {
+        tracing::info!(
+            "  ⚠ 卡拉OK（T5）已开启，但字级时间戳与 {} 条字幕**一条都对不上**\
+             —— **降级成普通字幕**（不逐字切）",
+            subs.len()
+        );
+        return;
+    };
+    let wrote = parse::karaoke::write_karaoke_cues(project_path, &cues);
+    if wrote {
+        tracing::info!(
+            "  ✓ 卡拉OK（T5）：{} 条字幕逐字切分 → {}（退掉 {} 条对不上的）",
+            cues.cues.len(),
+            parse::karaoke::KARAOKE_CUES_REL,
+            cues.skipped
+        );
+    }
+    if cues.skipped > 0 {
+        // 退掉的条数**每次都要报**（哪怕文件没变）—— 它是"为什么有些字幕没逐字"的唯一解释。
+        tracing::info!(
+            "  · 卡拉OK（T5）：{} 条字幕命中率不足，**退回普通整条字幕**（不硬切）",
+            cues.skipped
+        );
     }
 }
 
