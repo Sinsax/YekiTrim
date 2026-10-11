@@ -324,6 +324,7 @@
       "dhampir": "按 kind 分派：sticker → ImageSequence（复用贴纸路径）；text → 待排版通道",
       "canvas": true,
       "dom_preview": true,
+      "_note_dom_preview": "⚠️ 2026-10-12 改回 true（task-26 实测）：`webui/src/polish/engine.js::getElements` 的 **sticker 支已能真画出**（真跑：`src` 非空、`opacity/scale/rot` 走 backOut 四阶段）。修的时候查出**四处**成因（不止 task-25 记录的两处）：(a) `if (kind !== 'sticker') continue` 恒真；(b) 读 `e.kind`/`e.text` 而 buildIndex 只把载荷放在 `e.ev.*`；(c) 一个**恒真的兜底** `(idx.stickerSrc || (() => ''))(...)` —— `idx` 上从来没有 `stickerSrc`，它让 (a)(b) 的修复看起来无效；(d) `buildIndex` 的 element 分支**从来不设 `entry.src`**（只有 sticker 分支设）。⚠️ **但 `kind === 'text'` 仍是有意留空**（§5 E3：文字要动态盒算落点、故意不近似）—— **别把这条 true 读成『文字支也好了』**。门禁 check-preview-engine.mjs 已删除 element 基线并全绿。",
       "llm": true,
       "duration_cap": null,
       "default_span": 2,
