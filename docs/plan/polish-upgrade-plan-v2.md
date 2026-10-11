@@ -355,3 +355,35 @@ GPU 底座 vs 浏览器 CSS **本来就不逐像素相同**。§20 的度量用
 经 `idx.soundEvents` → `audio.js::sync` **预览里真的出声**。
 ⇒ ②c 对这类**只报告不判红**（保守登记不误导人；判红会在本范围内制造一条红门禁）。
 **待另立项对齐。**
+
+---
+
+## 进度快照（本轮进行中）
+
+| 任务 | 内容 | 负责人 | 状态 |
+|---|---|---|---|
+| **批0.1** | 真 LLM 产出率实测 | `assets` | ✅ **完成**（推翻我的假设） |
+| **批0.2** | 门禁维度漏洞 | `guard` | ✅ **完成**（6/6 变异全红，我复跑确认） |
+| **task-11** | §5 E5a 提示词产出 text | — | ⚠️ **作废**（前提被实测推翻） |
+| **批2 §20** | 预览白纱 + noiseTile | `frontend-edl` | 🔄 Step 1 完，Step 2 进行中 |
+| **批3 §5** | `element` 预览 (a)(b) | `frontend-edl` | 🔄 一并接 |
+| **D1** | `--keep-muted` 出片失败 | `replay` | ✅ **修完待提交** |
+| **批4 §18-A** | 提示词 + 下拉加「特写」 | `coldopen` | 🔄 提示词+单测完 |
+
+### 已验证的门禁（本轮）
+- `check_module_map.py` ⇒ **35 模块 / 7 项全过**
+- `check_module_boundaries.py` ⇒ **17 条 / 415 文件 / 0 违规**
+- `check-preview-engine.mjs --mutate` ⇒ **6/6 全红**（我复跑）
+- `cargo test -p yekitrim-polish --lib` ⇒ **490 passed / 0 failed**
+
+### ⚠️ 当前冻结：`webui/dist`
+由 `replay` 的一次 `cargo build`（非故意）触发重新生成，与 `src` 不同步
+（`engine.js` 尚无 `noiseTile` 导出，而 `PolishPreview.vue` 已 import）⇒ **任何构建都会失败**。
+⇒ **解冻条件**：`frontend-edl` 的 Step 2 收口（加导出）+ `coldopen` 的 `TimelineEditor.vue` 完成 ⇒ 一次重建。
+⚠️ **dist 是完整产物（15 个 js），线上可用**，只是不同步 —— 不是半成品。
+
+### ★ 两处"故意不做"要写清（别让后人误以为坏了）
+1. **`element.kind === 'text'`**：预览**故意不近似**（`engine.js:885` 注释），是 **§5 E3** 的范围。
+   ⇒ `element` 修复后**能画的是 sticker 支**，text 支**仍是有意留空**。
+2. **§20 像素证明 = 消费侧**（既有 1.8 档代码，本轮未改）；
+   **3/3 取样 = 生产者**（本轮改了提示词）。**两个命题不许混为一谈。**
