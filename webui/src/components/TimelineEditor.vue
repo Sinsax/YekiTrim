@@ -182,6 +182,17 @@
           <template v-if="selected.kind === 'seg'">
             <label>备注</label>
             <input v-model="selItem.note" placeholder="分段备注">
+            <!-- §8 叙事角色：**只读展示**。
+                 以前这个字段在界面上**完全看不见** —— 而它并不只是个标签：
+                 ① LLM 按它选配方（`hook` = 钩子、`punch` = 爆点/名场面，见 llm/segment.rs 的 match）；
+                 ② `process` 的 Step 1g 守卫按它纠偏（`enforce_narrative_shape`：hook 至多一段、
+                    punch 至少一段）。
+                 ⇒ 用户看得到"这一段被当成什么角色"，才解释得通"为什么这段特效多、那段几乎没动"。
+                 ⚠️ **不做成可编辑下拉**：手工改 role 会让它和 LLM 的配方、守卫的假设脱节，
+                    而这两者都不是即时重算的 —— 那会造出一个"改了没反应"的控件。
+                    要改就重跑 LLM（那本来就是 role 的生产者）。 -->
+            <label title="叙事角色：由 LLM 判定，决定这一段的特效配方与守卫规则。要改请重跑 LLM 剪辑">叙事角色</label>
+            <div class="role-readonly" :title="roleHint">{{ roleLabel }}</div>
             <!-- ⚠️ 这个标签以前写作「情绪」——**名字是错的**，会让人以为它背后是 §10 的情绪轨道。
                  它绑的是 `fx`（**演出密度**）：`low/med/high` 决定这一段塞多少特效/音效。
                  真正的情绪轨道是 `process` 算出来的 `data/emotion.json`（观众情绪），
@@ -724,6 +735,34 @@ const selectedMute = computed(() => {
   return i != null ? (muteRanges.value[i] || null) : null
 })
 const selItem = computed(() => selectedSeg.value || selectedEv.value || selectedSub.value || selectedMute.value)
+
+// ── §8 叙事角色（只读展示）──────────────────────────────────────────────────
+// ⚠️ 取值与文案必须与 `llm/segment.rs` 的 `match segment.role()` **对得上** ——
+//    那边的两档配方就是这里的 tooltip 正文。**加档位要两边一起加**
+//    （`hook`/`punch` 之外的串是"其余"：提示词对它们**一个字都不说**，
+//     所以这里也**不编造**公式，只如实说"按默认配方"）。
+const ROLE_TEXT = {
+  hook: {
+    label: 'hook · 钩子',
+    hint: '片头最抓人的一段：允许大字元素 + 强音效 + 硬切运镜，但整段只放 1~2 个亮点。'
+      + '守卫：全片至多一段 hook（多余会被降级）。',
+  },
+  punch: {
+    label: 'punch · 爆点 / 名场面',
+    hint: '全片最值得剪出来的地方：在预算内上足近景 / 画中画运镜 + shake + flash + 音效 + 贴纸。'
+      + '守卫：全片至少一段 punch（没有就从最长的 fx=high 段提拔）。',
+  },
+}
+const roleLabel = computed(() => {
+  const r = String(selItem.value?.role ?? '').trim()
+  if (!r) return '未标注（按默认配方）'
+  return ROLE_TEXT[r]?.label || `${r}（认不出，按默认配方）`
+})
+const roleHint = computed(() => {
+  const r = String(selItem.value?.role ?? '').trim()
+  return ROLE_TEXT[r]?.hint || '这一段没有角色标注：提示词对"其余段"一个字都不说，沿用默认配方（几乎不放特效，守住静）。'
+})
+
 const panelTitle = computed(() => {
   if (edlSelected.value >= 0) return '成片段属性'
   if (!selected.value) return '属性'
@@ -2285,6 +2324,10 @@ async function loadData() {
 
 <style scoped>
 .timeline { width:100%; }
+/* §8 叙事角色的**只读**展示（不是输入框）：样式做成"一行文字"而不是控件，
+   免得用户以为它能点/能改（它确实不能 —— 见模板注释里的理由）。 */
+.role-readonly { font-size:12px; color:var(--ink-dim); background:var(--bg-soft);
+  border:1px solid var(--line-soft); border-radius:6px; padding:4px 8px; cursor:default; }
 /* 头部一行（标题/提示 + 去静音）；原来标题在卡片头、去静音单独占一行，共省 ~70px */
 .tl-head { display:flex; align-items:center; justify-content:space-between; gap:10px;
   flex-wrap:wrap; margin-bottom:6px; }
