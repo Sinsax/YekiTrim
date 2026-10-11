@@ -207,13 +207,29 @@ function run(v) {
   // ⚠️ 第一版只查 `* fps` 这种字面写法 ⇒ `noiseTile(current * 30)` **能溜过去**
   //    （30 是字面量、不带 `fps` 字样）—— 变异自证当场抓到，见报告。
   //    现在改成**白名单式**：括号里除了那个变量名和少量算术，出现别的标识符/数字就红。
-  const frameArg = (v.preview.match(/noiseTile\(\s*([^)]*?)\s*\)/) || [])[1]
+  // ⚠️ 帧号：**优先 `dhampirFrameShown`（引擎已画到的帧）**，引擎没跑时**才**回落到
+  // `current × 工程网格帧率`。
+  //
+  // ★ 为什么允许回落（2026-10-12 真机探针实测补的）：`dhampirFrameShown` **只在 Dhampir
+  //   渲染循环里更新**，底座没接上时它恒为 `-1`。第一版**只**用它 ⇒
+  //   **底座未就绪时预览整个没有噪声**（旧那版用响应式 `current`，两条腿都能走）
+  //   —— 那是我引入的**回归**，被真机探针抓出来了（`.workbuddy/noise-parity/`）。
   check(
-    'PolishPreview 的噪声帧号取自 `dhampirFrameShown`（引擎已画到的帧）',
-    /^dhampirFrameShown$/.test(String(frameArg).trim()),
-    `实际传入的是 \`${frameArg}\` —— 只许**原样**传 \`dhampirFrameShown\`。\n` +
-      '         用 `current * fps` / `current * 30` 之类自造帧号会与 canvas 路径分叉\n' +
-      '         （出片模板 :1122 的注释写明了这条）。'
+    'PolishPreview 的噪声帧号**优先**取 `dhampirFrameShown`（引擎已画到的帧）',
+    /dhampirFrameShown\s*>=\s*0\s*\?\s*dhampirFrameShown/.test(v.preview),
+    '`dhampirFrameShown` 是"引擎已经画到第几帧"—— 引擎在跑时就必须用它，\n' +
+      '         否则会与 canvas 路径分叉（出片模板 :1122 的注释写明了这条）。'
+  )
+  check(
+    'PolishPreview 的噪声帧号回落用的是**工程网格帧率**（`dhampirFps`），不是素材帧率',
+    /current\.value\s*\*\s*\(\s*dhampirFps\.value\s*\|\|\s*30\s*\)/.test(v.preview),
+    '回落只该在**引擎缺席**时生效；帧率要用 `dhampirFps`（= `timeline.timebase`，与底座工程同源），\n' +
+      '         ⚠️ 别用 `dhampirSourceFps`（素材帧率）—— 那是另一个量，会数出错帧。'
+  )
+  // 反向：不许把帧率**写死**成常数
+  check(
+    'PolishPreview 没有把噪声帧率写死成常数（`current * 30` 这种）',
+    !/noiseTile\(\s*current\s*\*\s*30/.test(v.preview)
   )
 }
 
@@ -318,15 +334,30 @@ function mutate() {
   }
 
   // ── 帧号来源：**不许自造** ──
-  // ⚠️ 真实调用嵌在模板串里：`url(${noiseTile(dhampirFrameShown).toDataURL()})`
-  for (const [bad_, label] of [
-    ['current * 30', '`current * 30`'],
-    ['current * srcFps', '`current * srcFps`'],
-    ['Math.round(t * 60)', '`Math.round(t * 60)`'],
-    ['dhampirFrameShown + 1', '`dhampirFrameShown + 1`'],
-  ]) {
-    const m = mut(base.preview, /noiseTile\(\s*dhampirFrameShown\s*\)/, `noiseTile(${bad_})`)
-    expectRed(`把预览噪声帧号改成 ${label}`, { ...base, preview: m.src }, [m])
+  // ⚠️ 真实调用嵌在模板串里：`url(${noiseTile(frame).toDataURL()})`，而 `frame` 是个三元。
+  //    变异要打在**优先分支那半边**（把引擎帧号换掉）。
+  {
+    const m = mut(base.preview, /dhampirFrameShown\s*>=\s*0[\s\S]{0,40}?\?\s*dhampirFrameShown/,
+      'true ? Math.round(current.value * 30)')
+    expectRed('把预览帧号的**优先分支**换成自造帧号（越过引擎帧号）',
+      { ...base, preview: m.src }, [m])
+  }
+  {
+    // ⚠️ 锚点要**带上 `Math.round(current.value * ...)` 这个上下文**：
+    //    `dhampirFps.value` 在文件里还有 5 处别的用法（399/419/452/650/...），
+    //    光锚它自己的话 `.replace()` 会打中**第一处**、变异静默没效果 ⇒ 假失败。
+    const m = mut(base.preview,
+      /Math\.round\(current\.value \* \(dhampirFps\.value \|\| 30\)\)/,
+      'Math.round(current.value * 30)')
+    expectRed('把回落帧率从 `dhampirFps`（工程网格）换成写死的 30',
+      { ...base, preview: m.src }, [m])
+  }
+  {
+    const m = mut(base.preview,
+      /Math\.round\(current\.value \* \(dhampirFps\.value \|\| 30\)\)/,
+      'Math.round(current.value * (dhampirSourceFps || 30))')
+    expectRed('把回落帧率误用成 `dhampirSourceFps`（素材帧率，会数出错帧）',
+      { ...base, preview: m.src }, [m])
   }
   {
     const m = mut(base.template, /noiseTile\(window\.__CUR_FRAME \|\| 0\)/, 'noiseTile(et * 30)')

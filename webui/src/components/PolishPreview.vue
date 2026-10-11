@@ -2179,9 +2179,21 @@ const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
 /**
  * §20 真黑白噪点的样式（与成片**同源**，不是"白纱"）。
  *
- * ⚠️ 帧号取 **`dhampirFrameShown`**（引擎已经画到第几帧），**不是** `current * fps` ——
- * 出片模板的同一条注释（`templates/index.html:1122`）写明了原因：DOM 层没有 fps 这个概念，
- * 自己乘一个就会与 canvas 路径分叉（两边用**不同的**噪声图 = 又一处"预览 ≠ 成片"）。
+ * ⚠️ **帧号优先级：`dhampirFrameShown` 可用就用它，否则回落到 `current` 推出来的帧。**
+ *
+ * 为什么优先 `dhampirFrameShown`：出片模板的同一条注释（`templates/index.html:1122`）写明了 ——
+ * DOM 层没有 fps 这个概念，**自己乘一个 fps 会与 canvas 路径分叉**（两边用不同的噪声图）。
+ * 所以只要引擎在跑，就必须用"引擎已经画到第几帧"。
+ *
+ * ⚠️⚠️ **但它不是永远可用**：`dhampirFrameShown` 只在 **Dhampir 渲染循环**
+ * （`tick()` 里 `engine.seek(...).then(...)`）里更新，**底座没接上时它恒为 `-1`**。
+ * 我第一版**只**用它 ⇒ 底座未就绪时 `noiseTile(-1)` 仍然会画，但
+ * **`PolishPreview` 那条腿（非 Dhampir）整个没有噪声** —— 这是**我引入的回归**：
+ * 改之前那版用的是响应式的 `current`（两条腿都能走）。
+ *
+ * ⇒ 所以这里做**兜底**：引擎没在跑（`dhampirFrameShown < 0`）时，
+ * 用 `current` 换算帧号（`Math.round(current * fps)`）。这只在**没有引擎**时生效 ——
+ * 那时本来就没有"引擎已画到的帧"可比，`current` 是唯一可用的时钟。
  *
  * ⚠️ 不透明度为 0 时**不生成背景图** —— `noiseTile` 要建 canvas + 逐像素写 64×64，
  * 绝大多数帧根本不挂 noise，每帧白算一次是浪费（模板那边判的是 `noiseOp > 0.005`，同口径）。
@@ -2189,7 +2201,14 @@ const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
 const noiseStyle = computed(() => {
   const op = noiseOp.value
   if (!(op > 0.005)) return { opacity: 0 }
-  return { opacity: op, backgroundImage: `url(${noiseTile(dhampirFrameShown).toDataURL()})` }
+  // ⚠️ `dhampirFrameShown < 0` = 引擎从未画过（底座未就绪 / 这条腿没启用）
+  // 回落到 `current` 推出帧号时用**工程网格帧率**（`dhampirFps` = `timeline.timebase`）——
+  // 与底座工程 `assets[].timebase` 同源，也正是成片那条腿数帧用的那个率。
+  // ⚠️ 别用 `dhampirSourceFps`（素材帧率）：它只在有素材时才有值，而且与工程网格不是一回事。
+  const frame = dhampirFrameShown >= 0
+    ? dhampirFrameShown
+    : Math.round(current.value * (dhampirFps.value || 30))
+  return { opacity: op, backgroundImage: `url(${noiseTile(frame).toDataURL()})` }
 })
 const vignette = computed(() => getVignette(idx.value, current.value))
 const colorOverlay = computed(() => getOverlayState(idx.value, current.value))
