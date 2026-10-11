@@ -69,6 +69,16 @@ export const fetchProject = (pid, dir, withPreview = false, label = '') =>
 export const fetchSubtitles = (pid, dir, label = '') =>
   api(`/api/polish/subtitles?${qs(pid, dir)}`, { label })
 
+/** §10 情绪轨道（`data/emotion.json`，`process` 算出来的观众情绪）。
+ *
+ *  ⚠️ **404 是正常空态，不是错误**：`emotion.json` 只在"有弹幕且判出了窗口"时才写。
+ *     调用方必须把它当"这个工程没有情绪轨道"处理（画一条淡提示），
+ *     **不许弹错误、也不许静默丢弃**（与 `/polish/subtitles` 的 404 同一条纪律）。
+ *
+ *  ⚠️ 这个函数就是 `emotion.json` 的**第一个前端读者** —— 它此前全仓零消费者。 */
+export const fetchEmotion = (pid, dir, label = '') =>
+  api(`/api/polish/emotion?${qs(pid, dir)}`, { label })
+
 function qs(pid, dir, withPreview = false) {
   const q = new URLSearchParams()
   if (pid != null && pid !== '') q.set('project', String(pid))

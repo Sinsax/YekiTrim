@@ -1186,6 +1186,58 @@ pub(super) async fn polish_subtitles_get_impl(
     Err(err(StatusCode::NOT_FOUND, "暂无字幕文件"))
 }
 
+/// **§10 情绪轨道** —— 把 `process` 算出来的 `data/emotion.json` 交给界面。
+///
+/// # ⚠️ 这个端点存在的唯一理由：`emotion.json` 以前**一个读者都没有**
+///
+/// `process` 早就把情绪轨道算出来并写盘了（`process/mod.rs::write_emotion_track`），
+/// 但 2026-10-12 那次全仓核查的结论是：**只有写者、没有任何读它的代码** ——
+/// 演出脚本、LLM 提示、界面三条都没接。⇒ 它是**一个"算出真数据、然后扔掉"的产物**。
+///
+/// 这个端点 + 前端那条轨道就是补上的**读者**。
+///
+/// ⚠️ **404 是正常空态，不是错误**：`emotion.json` 只在"有弹幕且判出了窗口"时才写
+/// （调用方用 `if !track.is_empty()` 把着，口径与 `punches.json` 一致）。
+/// 没有弹幕的工程本来就不该有情绪轨道 —— 前端按空态画一条淡提示，**不许报错**。
+///
+/// ⚠️ 路径同样过 `validated_project_dir`（路径面三防线之一），
+/// 且整段是同步 IO ⇒ 必须 `blocking`（慢盘上一次 `exists()` 就是几百 ms）。
+pub(super) async fn polish_emotion_get(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    blocking(move || block_on_here(polish_emotion_get_impl(State(state), Query(q)))).await
+}
+
+pub(super) async fn polish_emotion_get_impl(
+    State(_state): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult {
+    let dir = q.get("dir").ok_or_else(|| err(StatusCode::BAD_REQUEST, "缺少 dir"))?;
+    let path = validated_project_dir(dir)?;
+    let json_path = path.join("data").join("emotion.json");
+    // 同步 stat 不能留在 async worker 上（api/mod.rs 的纪律，与上面 subtitles 同一条）
+    let exists = {
+        let p = json_path.clone();
+        tokio::task::spawn_blocking(move || p.exists()).await.unwrap_or(false)
+    };
+    if !exists {
+        // ⚠️ 空态用 404 而不是 `{windows:[]}`：让"没有这个产物"与"有但是空的"
+        //    在协议上就分得开 —— 前端才不会把"没跑过 process"画成"跑了但没判出情绪"。
+        return Err(err(StatusCode::NOT_FOUND, "暂无情绪轨道（该工程没跑过 process，或没有弹幕）"));
+    }
+    let raw = std::fs::read_to_string(&json_path)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("读取失败: {e}")))?;
+    // ⚠️ 解析失败要**报出来**（别 `unwrap_or(Null)` 静默吞掉）——
+    //    这是本仓自己的产物，坏了属于内部不一致，装看不见只会让它更难查。
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("情绪轨道解析失败: {e}")))?;
+    ok(serde_json::json!({
+        "window_secs": v.get("window_secs").cloned().unwrap_or(serde_json::Value::Null),
+        "windows": v.get("windows").cloned().unwrap_or_else(|| serde_json::json!([])),
+    }))
+}
+
 pub(super) async fn polish_subtitles_put(State(_state): State<Arc<AppState>>, Json(body): Json<serde_json::Value>) -> ApiResult {
     // ⚠️ 整段都是同步 IO：`validated_project_dir` 的 canonicalize + 建 data/ + 写两份文件。
     // GET 孪生（polish_subtitles_get）早就这么包了，PUT 这一半漏了。

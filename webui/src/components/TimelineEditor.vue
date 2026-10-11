@@ -569,6 +569,29 @@
           </div>
         </div>
       </div>
+      <!-- ── §10 情绪轨道（观众情绪，`process` 算出来的 `data/emotion.json`）──
+           ⚠️ **它是一条"只读的观察轨"，不是第 8 条可编辑源泳道** —— 与成片轨同一个地位：
+             * 横向位置走 **源时间**（`trackWidth`），因为 `emotion.json` 的窗口就是源时间；
+             * **没有加号、没有眼睛**：情绪不是"事件"，没法手工添加，也没有"整类不渲染"的语义
+               （它根本不影响出片，只影响"你解释得通这段为什么吵"）；
+             * 默认隐藏：`emotionWindows` 为空时整块不渲染（没有弹幕的工程界面逐字节不变）。
+           ⚠️ **这条轨存在的理由是补上一个缺失的读者**：`emotion.json` 此前**全仓零消费者**
+             （只有 `write_emotion_track` 一个写者）—— 是一件"算出真数据、然后扔掉"的产物。
+             这一段就是那个读者：端点 `GET /api/polish/emotion` 见 `api/polish.rs`。 -->
+      <div v-if="emotionWindows.length" class="lane emotion-lane">
+        <div class="lane-label emotion-label">
+          <span class="lane-eye lane-eye-none"
+                title="情绪轨道：由弹幕算出的观众情绪（不驱动画面，仅供判读「这段为什么吵」）">◔</span>
+          <span class="lane-name emotion-label-name"
+                title="情绪轨道：按弹幕关键词算出的四维情绪（喜/惊/笑/叹）· 不参与出片">情绪</span>
+          <div class="lane-adds"></div>
+        </div>
+        <div class="lane-track" :style="{ width: trackWidth + 'px' }">
+          <div v-for="(w, i) in emotionWindows" :key="'emo' + i" class="block emotion-block"
+               :style="{ left: w.left + 'px', width: w.width + 'px', opacity: w.opacity, background: w.color }"
+               :title="w.title">{{ w.label }}</div>
+        </div>
+      </div>
       <div class="lane ruler-lane">
         <div ref="rulerTrackRef" class="lane-track ruler-track" :style="{ width: trackWidth + 'px' }"
              @pointerdown="onRulerPointerDown">
@@ -593,7 +616,7 @@ import StickerPicker from './polish/StickerPicker.vue'
 import SfxPicker from './polish/SfxPicker.vue'
 import { TIMELINE_COLORS, isEditableKeyEvent } from '../utils'
 import {
-  fetchProject, fetchSubtitles, fetchSfxCatalog, fetchStickerLibrary,
+  fetchProject, fetchSubtitles, fetchEmotion, fetchSfxCatalog, fetchStickerLibrary,
   saveProjectPatch, saveSubtitles, runSilence,
 } from '../api/polish'
 // EDL 的**共享只读派生** + 编辑动作（算式只有一处：`engine.js::edlOutStart`，
@@ -670,6 +693,10 @@ const llmStatus = ref(null)
  */
 const decisions = ref([])
 const subtitles = ref([])
+/** §10 情绪轨道的**原始**响应（`{window_secs, windows}`）；`null` = 没有这个产物。
+ *  ⚠️ 存原始值而不是算好的块：`trackWidth` 会随窗口宽度变化，块的像素位置必须在
+ *     computed 里重算（与 `laneBlocks` 同一条理由）。 */
+const emotionRaw = ref(null)
 const muteRanges = ref([])
 /**
  * **成片时间线（EDL）的 `clips[]`** —— 只存这一份（`polish.toml` 的 `[[edl.clips]]` 镜像）。
@@ -1113,6 +1140,56 @@ const segDecisions = computed(() => {
   const p = (n) => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+
+/** §10 情绪轨道的四维色。**只影响观感，不参与任何计算** —— 选色的唯一要求是
+ *  四个维度在同一行上**一眼分得开**（色相分开），亮度也别差太远（否则深底上看不见浅的那个）。 */
+const EMOTION_COLORS = { joy: '#f59e0b', shock: '#ef4444', laugh: '#22c55e', awe: '#8b5cf6' }
+const EMOTION_ZH = { joy: '喜', shock: '惊', laugh: '笑', awe: '叹' }
+
+/** §10 情绪轨道的显示块（源时间 → 像素）。
+ *
+ *  ⚠️ **占主导的那个维度画出来，四个都塞进去就成了一团糊**：`Emotion::dominant()`
+ *     是 Rust 那边的**唯一一份**判定（平局按固定顺序 `shock > laugh > awe > joy`，
+ *     为的是同一份工程两次跑出同样结果）。前端**不重算**那个顺序 ——
+ *     重算一份必然漂移，而漂移的表现是"预览标红、成片按别的配方"，不报错。
+ *     ⇒ 这里只按**数值大小**挑最大者；平局时按同一张固定顺序，与 Rust 对齐。
+ *
+ *  ⚠️ 不透明度按 `count`（参与判定的弹幕条数）走：**3 条弹幕判出的"震惊"与 300 条
+ *     不是一回事**。条的窗口画淡一点，让"这里其实没多少弹幕"一眼看得出来 ——
+ *     只画一个纯色块会把它伪装成同样可信。 */
+const emotionWindows = computed(() => {
+  const raw = emotionRaw.value
+  const ws = Array.isArray(raw?.windows) ? raw.windows : []
+  const ORDER = ['shock', 'laugh', 'awe', 'joy']
+  return ws
+    .map((w) => {
+      const em = w?.emotion || {}
+      const start = Number(w?.start) || 0
+      const dur = Number(raw?.window_secs) || 0
+      let best = ORDER[0], bestV = -1
+      for (const k of ORDER) {
+        const v = Number(em[k]) || 0
+        // 严格大于：ORDER 的先后即平局优先级，与 Rust `dominant()` 同序
+        if (v > bestV) { best = k; bestV = v }
+      }
+      if (!(bestV > 0)) return null // 四个维度全 0 = 这一窗什么都没判出来，不画
+      const count = Number(w?.count) || 0
+      const hits = Array.isArray(w?.hits) ? w.hits.slice(0, 6).join('、') : ''
+      return {
+        start,
+        left: start * scale.value,
+        width: Math.max(dur * scale.value, 4),
+        // 3 条起画实，越多越实；上限 0.85 免得盖住时间刻度
+        opacity: Math.min(0.85, 0.35 + Math.min(count, 30) / 30 * 0.5),
+        color: EMOTION_COLORS[best] || '#64748b',
+        label: EMOTION_ZH[best] || best,
+        title: `情绪 ${EMOTION_ZH[best] || best}（${best}）· ${start.toFixed(2)}s 起 ${dur}s`
+          + `\n强度 ${bestV.toFixed(3)} · 参与判定 ${count} 条弹幕`
+          + (hits ? `\n命中词：${hits}` : '\n命中词：无（按颜色/模式判的）'),
+      }
+    })
+    .filter(Boolean)
+})
 
 function laneBlocks(lane) {
   const out = []
@@ -2402,6 +2479,18 @@ async function loadData() {
       return false
     }
   }
+
+  // §10 情绪轨道：**404 同样是正常空态**（没有弹幕 / 没跑过 process 的工程就没有这个产物）。
+  // ⚠️ 它**不影响 loadError / 保存闸门** —— 这是一条只读观察轨，读不到只是"没得看"，
+  //    与"基线不可信、必须暂停写盘"是两件事，别把它并进上面那条失败路径。
+  // ⚠️ 其它错误也**只 warn 不打断**：理由同上（它不参与任何写路径）。
+  try {
+    const emoRes = await fetchEmotion(props.pid, props.dir, '读取情绪轨道')
+    emotionRaw.value = emoRes || null
+  } catch (e) {
+    emotionRaw.value = null
+    if (e.status !== 404) addClient('warn', '情绪轨道读取失败（不影响编辑）：' + (e.message || e), 'timeline')
+  }
   return true
 }
 </script>
@@ -2447,6 +2536,20 @@ async function loadData() {
 /* ── 成片轨（EDL）：**第二条时间轴**，26px 与源泳道等高（不挤上面那 7 条）──
    底色与源泳道区分开（源 = 素材、成片 = 结果），块与块首尾相接（§6.4 方案 A：空隙 = 不播）。 */
 .edl-lane { background:var(--bg-soft); }
+/* §10 情绪轨：**只读观察轨**（与成片轨同一个地位，不是第 8 条源泳道）。
+   ⚠️ 底色刻意也走 `--bg-soft`：它不是"可编辑的内容轨"，视觉上就不该与上面 7 条抢。
+   色相由每个块自己的 inline `background` 给（四维各一色），这里不写死颜色。 */
+.emotion-lane { background:var(--bg-soft); }
+.emotion-label { background:var(--bg-soft); }
+.emotion-label-name { color:var(--main-deep); font-weight:400; }
+/* ⚠️ `cursor:default` + 无 resize 把手：**这条轨上的块拖不动**。
+   给它一个"能拖"的光标会造出一个"拖了没反应"的控件 —— 情绪是算出来的，不是用户放的。
+   ⚠️⚠️ **必须写成 `.block.emotion-block`**：`.emotion-block` 与 `.block` **特指度相同**
+   （都只有一个类），而 `.block` 在文件后面 ⇒ 平手时后者赢 ⇒ 光标仍然是 `grab`（实测抓到过）。
+   ⇒ 靠**多一个类**抬特指度，不许靠"写在前面还是后面"去赌顺序。 */
+.block.emotion-block { cursor:default; top:4px; height:18px; padding:0 5px; border-radius:3px;
+  display:flex; align-items:center; font-size:10px; color:#fff;
+  text-shadow:0 1px 1px rgba(0,0,0,.45); }
 .edl-track { background:repeating-linear-gradient(90deg, transparent 0 39px, var(--line-soft) 39px 40px); }
 .edl-label { background:var(--bg-soft); }
 .edl-label-name { color:var(--main-deep); }
