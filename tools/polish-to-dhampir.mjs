@@ -2745,6 +2745,12 @@ export function translate(config, clipDir, outPath, options = {}) {
       shake_hz: optNum(raw.shake_hz),
       plate_color: optColor(raw.plate_color),
       plate_pad_px: optNum(raw.plate_pad_px),
+      // ── T5 真卡拉OK（2026-10-11）──
+      // ⚠️ 裸 `bool`：`bool` 的"没写"与"写了 false"行为等价（都是关），
+      //    所以它不触发 #155 那个"显式写的默认值被等值 skip 吃掉"的坑
+      //    （那个坑说的是**非默认值**被吃掉）。与同段的 `typewriter` 同一口径。
+      // 只有**真的**是 `true` 才算开（`"yes"` / `1` 一律当关 —— 保守）。
+      karaoke: raw.karaoke === true,
     };
   };
 
@@ -2865,6 +2871,136 @@ export function translate(config, clipDir, outPath, options = {}) {
       }
     }
     return out.length > 0 ? out : [cue];
+  }
+
+  /// 读 **T5 真卡拉OK** 的派生产物 `data/karaoke-cues.json`（`process` 落的**结论**）。
+  ///
+  /// ⚠️⚠️ **为什么结论落 `data/` 而不是 `polish.toml`**：`polish.toml` 是**用户会手改的配置**，
+  /// 结论混进去"谁对"就说不清了；而且那会让**每个存量工程都被追加一段派生数据**，
+  /// "不配时逐字节不变"这条红线当场就假。详见本仓 `parse::karaoke` 的模块头。
+  ///
+  /// ⚠️ **读不到就返回 `null`**（老工程没有这个文件、或没跑过 `process`）——
+  /// **不是空数组**：调用方要能区分"没有结论"（明说降级）与"结论是空的"。
+  ///
+  /// ⚠️ **形状不对也当没有**（不猜、不补）：这是本仓自己的中间产物，
+  /// 形状不对说明上游改了东西，那时候**静默半用**比"当作没有"危险得多。
+  function readKaraokeCues(clipDir) {
+    const p = join(clipDir, 'data', 'karaoke-cues.json');
+    if (!existsSync(p)) return null;
+    let doc;
+    try {
+      doc = JSON.parse(readFileSync(p, 'utf8'));
+    } catch {
+      return null;
+    }
+    if (!doc || !Array.isArray(doc.cues) || doc.cues.length === 0) return null;
+    for (const c of doc.cues) {
+      if (!c || !Array.isArray(c.chars) || !Array.isArray(c.times)) return null;
+      if (c.chars.length !== c.times.length || c.chars.length === 0) return null;
+      if (typeof c.start !== 'number' || typeof c.end !== 'number') return null;
+    }
+    return doc;
+  }
+
+  /// 把**一条字幕片段**按**自己的字级时间**切成逐字 cue（T5）。**纯函数、无累积状态**。
+  ///
+  /// # 与 `splitTypewriter` 的分工（⚠️ 别把两者混起来）
+  ///
+  /// | | 切哪条轨 | 依据 |
+  /// |---|---|---|
+  /// | `splitTypewriter` | 文字元素轨 | **等速**（`chars_per_sec`，近似） |
+  /// | 本函数 | **SRT 字幕轨** | **字级时间戳**（ASR 实测，硬依据） |
+  ///
+  /// ❌ 本函数**不切文字元素轨**：元素文本是 LLM 另写的标题（提示词明确要求"别和字幕重复"），
+  /// 与 ASR 时间轴**天然对不齐**。理由写在本仓 `render/elements.rs::ElementsConfig::karaoke`
+  /// 与 `parse/karaoke.rs` 的模块头。
+  ///
+  /// # 单位一律是**毫秒**（与 `remapCueMs` / `cuesToSrt` 同口径）
+  ///
+  /// ⚠️ 这里**不碰帧号**：上游 `remapCueMs` 给的、下游 `cuesToSrt` 要的都是毫秒。
+  /// 曾经按帧号写，产物是一串 `NaN:NaN:NaN,NaN`（`srtTime(undefined)`）——
+  /// 而且**不报错**：SRT 照样写出来了、只是时间全是 NaN。
+  ///
+  /// # 逐字 cue 的形状：**累积文本**（像打字机），不是"只显示这一个字"
+  ///
+  /// 第 i 条的 `text` 是原句的**前 i+1 个字**。理由：卡拉OK的观感是"字一个个亮起来、
+  /// 前面已出现的留在屏幕上"，而不是"屏幕上永远只有一个字"（那是"一个字一个字蹦"）。
+  /// 且累积文本与 T2 共用同一套缓存路径。
+  ///
+  /// ⚠️ **每字至少 1ms、末字铺到片段结束**：0 时长的 cue 在底座那边一帧都不显示
+  /// ⇒ 那个字**永远不会出现**，而报告里看着"切了 N 条"（"报告与事实相反"的又一种形态）。
+  ///
+  /// ⚠️ 时间来自**字级时间戳**（`times[i]` 是第 i 个字的出现时刻，秒、**源时间轴**）——
+  /// **不是均分**。这条是 T5 与 T2 的本质区别，判据里有一条专门钉它。
+  ///
+  /// `piece` = 本片段（**成片时间轴**毫秒）；`subStartMs`/`subEndMs` = 它所属的**整条字幕**
+  /// （**源时间轴**毫秒，也是 `times` 的口径）。跨剪辑点时一条字幕会被 remap 成多段，
+  /// 每段各自算一遍相对位置 —— 段内逐字、段间自然断开，**零额外映射**。
+  ///
+  /// 返回 `null` 表示**这条切不了**（调用方退回整条普通字幕，并计数）：
+  /// 字数与时间个数对不上、时间不是单调、字太少、或切不出任何有效 cue。
+  function splitKaraoke(piece, karaokeCue, subStartMs, subEndMs) {
+    const chars = Array.from(piece.text);
+    if (chars.length <= 1) return null;
+    const times = karaokeCue?.times;
+    if (!Array.isArray(times) || times.length !== chars.length) return null;
+
+    const startMs = piece.startMs;
+    const endMs = piece.endMs;
+    if (!(endMs > startMs)) return null;
+    const spanMs = subEndMs - subStartMs;
+    if (!(spanMs > 0)) return null;
+
+    // 按"字级时间在**整条字幕**里的相对位置"投到**本片段**的毫秒区间。
+    // ⛔ **这不是均分**：均分是 `(i+1)/n`，这里用的是**每个字自己的时间戳**。
+    const at = [];
+    let prev = startMs;
+    for (let i = 0; i < chars.length; i += 1) {
+      const t = times[i];
+      if (!Number.isFinite(t)) return null;
+      // 单调守卫：时间戳必须不减（上游是单调的；不单调说明数据坏了 ⇒ 退回整条）。
+      if (i > 0 && t < times[i - 1]) return null;
+      const rel = (t * 1000 - subStartMs) / spanMs;
+      let ms = Math.round(startMs + rel * (endMs - startMs));
+      // ⚠️ **每字必须比前一个字晚**（至少 1ms）。
+      //
+      // 这里以前写的是 `ms = Math.max(ms, prev)` —— **不够**：`prev` 是"上一个字的时刻"，
+      // 而下一个字只保证 `s + 1`（在下面出 cue 时）。当所有时间戳都相同（ASR 把一口气
+      // 吐的几个字给了同一个时刻），4 条 cue 会**全部挤在 `[0,1]`**：条数对、每条时长也 > 0，
+      // 唯独**互相重叠** —— 屏幕上一瞬间同时冒出 "A"/"AB"/"ABC"。
+      // ⇒ 必须**严格递增**：`prev + 1` 才是"至少占一个自己的时刻"。
+      ms = Math.max(ms, prev + 1);
+      at.push(ms);
+      prev = ms;
+    }
+    // 第一个字从片段起点开始（`times[0]` 可能略晚于字幕起点，但字幕已经出来了 ——
+    // 第一个字理应立即显示，否则字幕会先"空"一小段）。
+    //
+    // ⚠️ 归一之后**不需要**再补一轮"严格递增"：上面那个 `prev + 1` 已经保证了
+    //    `at[i] - at[i-1] >= 1`，而把 `at[0]` 往回拉到 `startMs` **只会把间距拉大**
+    //    （`at[0]` 是向后取 max 出来的，只可能 ≥ 原值之后被调**小**、间距更大）。
+    //    曾经在这里多写了一个 `Math.max(at[i], at[i-1]+1)` 的循环 —— 那是**死代码**，
+    //    判据里"把每字严格递进去掉"的那个变异因此**打不红**（实测：77 号变异存活）。
+    //    删掉它，让判据钉在**真正起作用**的那一处上。
+    at[0] = startMs;
+    // ⚠️ 严格递增之后可能**顶出片段末尾**（字数多于可用毫秒）⇒ 那种情况切不了，
+    //    退回整条（宁可整条正常显示，也不要一条挤爆/越界的 cue 序列）。
+    if (at[at.length - 1] > endMs) return null;
+
+    const out = [];
+    for (let i = 0; i < chars.length; i += 1) {
+      const s = at[i];
+      // `at` 已严格递增 ⇒ 正常情况下 `at[i+1] > s`；`Math.max(..., s + 1)` 是**兜底**，
+      // 防的是"最后一个字的时刻恰好等于 endMs"那种边界（那时 `e <= s`）。
+      const e = i + 1 < chars.length ? Math.max(at[i + 1], s + 1) : endMs;
+      if (e <= s) continue;
+      out.push({ startMs: s, endMs: Math.min(e, endMs), text: chars.slice(0, i + 1).join('') });
+    }
+    // ⚠️ **0 条**（比如字全挤在同一毫秒）⇒ 当作切不了，退回整条 —— 交给调用方计数。
+    if (out.length === 0) return null;
+    // 最后一条铺到片段结束（上面 `Math.min(e, endMs)` 可能把它截短了）。
+    out[out.length - 1].endMs = endMs;
+    return out;
   }
 
   const stickerLayers = [];
@@ -4863,6 +4999,85 @@ export function translate(config, clipDir, outPath, options = {}) {
       if (pieces.length > 1) straddled += 1;
       for (const piece of pieces) remapped.push({ ...piece, text: cue.text });
     }
+
+    // ── T5 真卡拉OK：按**字级时间戳**把每条字幕切成逐字 cue（2026-10-11）──
+    //
+    // ⚠️⚠️ **切的是这条 SRT 轨，不是文字元素轨**（那一条归 T2 打字机）。
+    //    理由：元素文本是 LLM 另写的标题、提示词明确要求"别和字幕重复"，
+    //    与 ASR 时间轴**天然对不齐**。详见 `render/elements.rs::ElementsConfig::karaoke`。
+    //
+    // ⚠️ **顺序：先切、再 remap**（上面那次 `remapCueMs` 是**已经在跑的老路**，
+    //    我们在这里对**已 remap 的成片时间轴**切）。为什么不是"先切再 remap"：
+    //    字级时间是**源时间轴**的，而 `remapped` 已经是**成片时间轴**了。
+    //    要"先切"，就得在 `remapCueMs` 之前按源时间插进去 —— 但**逐字 cue 的时间戳本身
+    //    不是剪辑点**，跨剪辑点该断的是**整条字幕**（已有逻辑），不是"字的边界"。
+    //    所以：**整条字幕先 remap（跨剪辑点的自然断成两段），再在每段内部按字级时间切**。
+    //    ⇒ 每条 remap 片段各自携带**自己那段的时长**，逐字时间按**相对位置**投进去，
+    //      跨剪辑点的那两段各自从头开始逐字，**零额外映射**。
+    // ⚠️ 这里**自己读一次**配置（不借用下面 `textTracks` 块里的 `elementsCfg` ——
+    //    那一个在后面、作用域不同）。`readElementsCfg` 是纯函数，读两次不会不一致。
+    const karaokeOn = readElementsCfg(config).karaoke === true;
+    if (karaokeOn) {
+      const kdoc = readKaraokeCues(clipDir);
+      if (kdoc === null) {
+        // ⚠️ **降级必须被看见**：用户开了卡拉OK、却没有结论文件
+        //    （老工程 / 没跑过 `process`）⇒ 明说，**不许静默变回普通字幕**。
+        note(
+          'elements.karaoke',
+          '卡拉OK（T5）已开启，但读不到 data/karaoke-cues.json' +
+            '（老工程、或没跑过 `process`）—— **降级成普通字幕**（不逐字切）。' +
+            '跑一次 `yekitrim polish process` 会生成它',
+        );
+      } else {
+        // 按**原字幕的起点**索引结论（结论里的 `start` 是**源时间轴的秒**）。
+        // ⚠️ 用"起点相等"匹配，不用数组下标 —— 结论文档里**只有对得上的那些条**
+        //    （对不上的被质量闸退了），下标与 `rawCues` 对不上。
+        const byStart = new Map();
+        for (const c of kdoc.cues) byStart.set(Math.round(c.start * 1000), c);
+        const out = [];
+        let splitOk = 0;
+        for (const cue of rawCues) {
+          // ⚠️ **`remapCueMs` 给的是毫秒**（`{startMs, endMs}`），不是帧号 ——
+          //    这里全程按毫秒走，别和帧号混起来（混了会写出一串 `NaN:NaN:NaN,NaN`）。
+          const pieces = remapCueMs(cue.startMs, cue.endMs);
+          const kc = byStart.get(Math.round(cue.startMs));
+          // 结论里没有这条（= 被质量闸退了）⇒ **照原样整条**，不改动。
+          if (!kc) {
+            for (const piece of pieces) out.push({ ...piece, text: cue.text });
+            continue;
+          }
+          let any = false;
+          for (const piece of pieces) {
+            const sliced = splitKaraoke(
+              // 逐字时间戳是**源时间轴**的秒；`times[i]` 是第 i 个字的**绝对**出现时刻。
+              // `splitKaraoke` 用「本条字幕的起止（源时间轴毫秒）」把这个绝对时刻
+              // 投到「本 remap 片段（成片时间轴毫秒）」上 —— 相对位置换算在里面。
+              { startMs: piece.startMs, endMs: piece.endMs, text: cue.text },
+              kc,
+              cue.startMs,
+              cue.endMs,
+            );            if (sliced === null) {
+              out.push({ ...piece, text: cue.text });
+            } else {
+              for (const p of sliced) out.push({ startMs: p.startMs, endMs: p.endMs, text: p.text });
+              any = true;
+            }
+          }
+          if (any) splitOk += 1;
+        }
+        // ⚠️ 逐字切之后条目顺序可能乱（remap 本身允许乱序）——
+        //    底座按文件顺序读，必须**按时间排好**。
+        out.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+        remapped.length = 0;
+        remapped.push(...out);
+        note(
+          'elements.karaoke',
+          `卡拉OK（T5）：${splitOk} 条字幕按**字级时间戳**逐字切成 ${out.length} 条 cue` +
+            `（其中 ${kdoc.skipped} 条命中率不足，**退回普通整条字幕**）。` +
+            '⚠️ 代价：逐字展开后 cue 数变多，底座按**文本**做栅格化缓存 ⇒ 命中率会下降。',
+        );
+      }
+    }
     const subName = 'dhampir-subtitle.srt';
     const subPath = join(dirname(outPath ?? clipDir), subName);
     mkdirSync(dirname(subPath), { recursive: true });
@@ -4952,10 +5167,47 @@ export function translate(config, clipDir, outPath, options = {}) {
         stroke_color: subStroke.color,
         // **淡入淡出**（YekiTrim `getActiveSubs`：fadeIn 0.35 / fadeOut 0.18、
         // 入场从下方 +20px 浮上来、退场向上 -8px）。
-        fade_in_ms: Math.round(0.35 * 1000),
-        fade_out_ms: Math.round(0.18 * 1000),
-        rise_in_px: 20,
-        rise_out_px: 8,
+        //
+        // ⚠️⚠️ **开了 T5 卡拉OK时，这里两个都设 0、`rise` 也归零**（2026-10-11 实测定的）。
+        //
+        // # 为什么（实测的 frame 表，不是推理）
+        //
+        // 底座的淡入淡出是**每条 cue 各自重放一遍**（`overlay.rs::text_envelope_scaled`
+        // 收的 `local_ms` 是**条内**位置）。而逐字切开之后，中间那些 cue 只有**字间距那么长**：
+        //
+        //   逐字 cue 时长实测：`[34, 33, 33, 34, 33, …]` ms ⇒ 33ms vs 350ms 淡入 = 只走到 **~10%**
+        //                                             33ms vs 180ms 淡出 = 只走到 **~18%**
+        //
+        // ⇒ 每条 cue **还没亮起来就被下一条顶掉**。实测（同一份工程只切 `karaoke`，逐帧数亮像素）：
+        //
+        // | frame | t     | 淡入 350 / 淡出 180 | 两者都设 0 |
+        // |-------|-------|---------------------|-----------|
+        // | 28    | 0.47s | **0**（整条不可见） | 3394      |
+        // | 32–140| 0.5–2.3s | 2714–3394（**在抖**） | **3394 恒定** |
+        // | 148   | 2.47s | **0**（整条不可见） | 3394      |
+        // | 150   | 2.50s | **0**（第 16 个字根本不出现） | **4731** ← 「日」出现 |
+        // | 175–178| 2.9s | **0**（最后一个字闪一下就没了） | 4731 |
+        //
+        // ⇒ 症状是"**有的字压根没画出来、有的字只有半透明**"，而报告里照样写着
+        //    "切了 N 条" —— 又一种"报告与事实相反"。**两者都设 0 之后是一条干净的阶梯**：
+        //    2.50s 之前恒为 1607、之后恒为 2214（正是第 16 个字那一笔）。
+        //
+        // ⚠️ **只在开了 `karaoke` 时这么写**：普通字幕轨的 350/180 一个字都不动（R4）。
+        //    卡拉OK的语义本来就是"字逐个**亮起来**"，淡入反而是干扰。
+        //
+        // ⚠️⚠️ **预览侧（`webui/src/polish/`）为什么不跟着改** —— 免得下一个人重新纠结：
+        //   * 预览**本来就没有** T2/T5 的逐字切分（`grep -rn "typewriter" webui/src/` = **0 命中**）；
+        //     它遍历的是 `idx.subs`（**原始字幕**，`engine.js:758`），不是切分后的 cue。
+        //   * 而预览的淡入（`engine.js:761` `t - s.start`）**本来就是逐条重放、与底座语义一致**
+        //     ⇒ **本轮不存在"淡入分叉"**。
+        //   * ⇒ 真正的分叉是"**预览没接切分**"，而且它**先于 T5 存在**（T2 就没接）。
+        //     那是独立一批（要给前端复刻两套切分 + 把 Rust 的对齐结论喂过去），**本轮不做**。
+        //     只改淡入反而会造出**新的半同步**（预览：整条+淡入；成片：逐字+硬切），
+        //     比现在**更难解释**。
+        fade_in_ms: karaokeOn ? 0 : Math.round(0.35 * 1000),
+        fade_out_ms: karaokeOn ? 0 : Math.round(0.18 * 1000),
+        rise_in_px: karaokeOn ? 0 : 20,
+        rise_out_px: karaokeOn ? 0 : 8,
         // **字重与行高**：YekiTrim 的 CSS 写死了
         //   `.cap { font-weight:700; line-height:1.5; }`
         // 底座先前两样都不设（400 / 1.2）—— 笔画比它细一圈，两行字幕的行距也窄。
@@ -5290,6 +5542,24 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    不会分叉（规格 §4.1 那条硬约束）。
     const elementsCfg = readElementsCfg(config);
     const tw = elementsCfg.typewriter === true;
+    // ⚠️⚠️ **T2 与 T5 同时开着时，两者各管各的轨 —— 不冲突、不互斥**（2026-10-11 澄清）。
+    //
+    // 一开始想把它们做成"`karaoke` 赢、T2 让位"，核对之后发现**没有冲突**：
+    //   * `karaoke`（T5）切的是 **SRT 字幕轨**（上面 `remapped` 那一段）；
+    //   * `typewriter`（T2）切的是 **文字元素轨**（这里的 `textCues`）。
+    // 两条轨、两套素材、互不相干 ⇒ **同时开着是正确的组合**
+    //（字幕逐字跟着人声走 + 大字标题用等速打字机）。
+    //
+    // ⚠️ 但**必须报一条 NOTE**：用户同时开了两个，要让他知道**各自作用在哪条轨** ——
+    //    否则会以为"叠了两种效果"（实际是两条不同的轨各有一种）。
+    if (tw && elementsCfg.karaoke === true) {
+      note(
+        'elements.karaoke',
+        '打字机（T2，**文字元素轨**）与卡拉OK（T5，**字幕轨**）同时开着 —— ' +
+          '两者作用于**不同的轨**，各管各的、不冲突也不叠加：' +
+          '字幕按字级时间戳逐字亮，大字标题按等速打字机出现',
+      );
+    }
     if (tw) {
       const before = textCues.length;
       const split = [];

@@ -1418,6 +1418,74 @@ const MUTATIONS = [
     from: 'export const CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.25, slow: 1.5 }',
     to: 'export const CAMERA_SPEED_SECS = { snap: 0.10, fast: 0.3, slow: 1.5 }',
   },
+  // ===== T5 真卡拉OK（2026-10-11）=====
+  {
+    // ⚠️ **本批最关键的一处**：把逐字切分退化成**均分**。
+    //
+    // 这正是"顺手把 T2 那套等速搬过来"会写出的代码 —— 看着能跑、cue 数也对，
+    // 唯独**时间不是 ASR 给的**。症状：卡拉OK的节奏与人声对不上（快了或慢了），
+    // 而报告里写着"切了 N 条"、一行差异都没有。T5 的全部价值就在这一条上。
+    name: '（T5）逐字时间退化成均分（丢掉字级时间戳）',
+    fromRe: /const rel = \(t \* 1000 - subStartMs\) \/ spanMs;/,
+    to: 'const rel = (i + 1) / chars.length;',
+  },
+  {
+    // 缺结论文件时**静默**变回普通字幕（把那条"降级"的 note 删掉）。
+    // 用户开了开关却什么都没发生，报告里一行差异都没有 —— 与 #147/#181 同一族。
+    name: '（T5）缺结论文件时不报降级（静默变回普通字幕）',
+    fromRe: /note\(\n          'elements\.karaoke',\n          '卡拉OK（T5）已开启，但读不到 data\/karaoke-cues\.json'/,
+    to: "note(\n          'elements.karaoke',\n          '' + '已开启但读不到结论'",
+  },
+  {
+    // 开关反了：只有 `"yes"`/`1` 也算开 ⇒ 脏值被当成"用户开了"，
+    // 而 `polish.toml` 里写 `karaoke = "yes"` 的人以为开了、其实按保守口径该是关的。
+    name: '（T5）脏值被当成"开"（`karaoke === true` 放宽）',
+    fromRe: /karaoke: raw\.karaoke === true,/,
+    to: 'karaoke: raw.karaoke === true || raw.karaoke === "yes",',
+  },
+  {
+    // 每字不再保证**严格递增** ⇒ 时间戳相同的字挤在同一个时刻、几条 cue 互相重叠
+    // （条数对、每条时长也 > 0，唯独屏幕上一瞬间同时冒出 "A"/"AB"/"ABC"）。
+    // ⚠️ 锚在 `prev + 1` 那一处 —— 它才是**真正**保证严格递增的地方。
+    name: '（T5）每字不再严格递增（挤在一起的字互相重叠）',
+    fromRe: /ms = Math\.max\(ms, prev \+ 1\);/,
+    to: 'ms = Math.max(ms, prev);',
+  },
+  {
+    // 逐字 cue 不再排序 ⇒ 底座按文件顺序读，可能后一条先出现（时间倒挂）。
+    // ⚠️ 锚点要**带上后一行**：`out.sort((a,b)…)` 在 `remapCueMs` 里也有一份，
+    //    只匹配那一行会命中 2 次（变异台自己报"命中 2 次"—— 实测踩过）。
+    name: '（T5）逐字 cue 不按时间排序（条目倒挂）',
+    fromRe: /out\.sort\(\(a, b\) => a\.startMs - b\.startMs \|\| a\.endMs - b\.endMs\);\n        remapped\.length = 0;/,
+    to: 'out.sort((a, b) => a.text.length - b.text.length);\n        remapped.length = 0;',
+  },
+  {
+    // 时间戳不再做单调守卫 ⇒ 坏数据（时间倒挂）被原样用出去，
+    // 切出来的 cue 会重叠/倒退，而"看起来切了"。
+    name: '（T5）时间戳不做单调守卫（坏数据被原样用出去）',
+    fromRe: /if \(i > 0 && t < times\[i - 1\]\) return null;/,
+    to: 'if (false) return null;',
+  },
+  {
+    // 开 karaoke 时**不**把淡入设 0 ⇒ 逐字 cue 只有 33ms、走不完 350ms 淡入
+    // ⇒ 有的字根本不画出来（实测 frame 150 = 0 亮像素，而它本该是第 16 个字）。
+    name: '（T5）开 karaoke 时淡入仍留 350ms（逐字 cue 亮不起来）',
+    fromRe: /fade_in_ms: karaokeOn \? 0 : Math\.round\(0\.35 \* 1000\),/,
+    to: 'fade_in_ms: Math.round(0.35 * 1000),',
+  },
+  {
+    // 淡出同理：最后一个字会在 180ms 淡出里"闪一下就没了"（实测 frame 175-178 = 0）。
+    name: '（T5）开 karaoke 时淡出仍留 180ms（末字闪一下就没）',
+    fromRe: /fade_out_ms: karaokeOn \? 0 : Math\.round\(0\.18 \* 1000\),/,
+    to: 'fade_out_ms: Math.round(0.18 * 1000),',
+  },
+  {
+    // ⚠️ **R4 面**：把 `karaokeOn` 的判断去掉、**无条件**设 0 ⇒
+    //    普通字幕轨的 350/180 淡入被改掉 = 存量工程成片变样（不配 karaoke 也变）。
+    name: '（T5）淡入无条件设 0（普通字幕轨的淡入被改掉，R4 破）',
+    fromRe: /fade_in_ms: karaokeOn \? 0 : Math\.round\(0\.35 \* 1000\),/,
+    to: 'fade_in_ms: 0,',
+  },
 ];
 
 /// 把 `source` 写进临时目录并真加载一遍（新 URL = 新模块实例，缓存不会串）。
@@ -2717,6 +2785,9 @@ function checkTextElementLane(mod, src = translatorSource) {
     //    只有一层的话，"默认时多写了个键"或"默认值走岔"各有一个能溜过去。
     // ------------------------------------------------------------------
     checks += checkTextMotion(mod, dir, src);
+  // **T5 真卡拉OK（2026-10-11）** —— 与 T2 同属"文字动效"这一族，但**切的是另一条轨**。
+  // ⚠️ 抽成独立函数是**为了 `--mutate` 也能跑到它**（只写在顶层的话变异台根本不跑）。
+  checks += checkKaraoke(mod, src);
     return checks;
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2889,6 +2960,380 @@ function checkTextMotion(mod, dir, src) {
   }
 
   return checks;
+}
+
+/// **T5 真卡拉OK** 的判据（2026-10-11）。
+///
+/// # 它守的是什么
+///
+/// E4b 把 ASR 字级时间戳搬进工程（`data/char-timeline.json`），但**没有任何消费者** ——
+/// 产物写出来、没人读、不报错（"哑产物"，与本趟反复抓到的"哑字段"同形）。
+/// T5 就是那个消费者：按**字级时间戳**把 **SRT 字幕轨**逐字切开。
+///
+/// ⚠️⚠️ **它切的是字幕轨，不是文字元素轨**（后者归 T2 打字机）。
+/// 元素文本是 LLM 另写的标题、提示词明确要求"别和字幕重复"，与 ASR 时间轴**天然对不齐**。
+///
+/// # 判据里的核心一条：**不是均分**
+///
+/// 把字级时间**故意拉不等距**（第 3 个字 1.8s 才出现），断言切开后的 cue 边界
+/// **跟着那个时间走**，并**显式断言 `≠` 均分会算出的值**。
+/// 均分实现（把 T2 那套等速搬过来）在这条上必红 —— 那是 T5 与 T2 的分界线。
+function checkKaraoke(mod, translateSrc) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-karaoke-'));
+  try {
+    // 夹具：真视频（转译器要探时基/分辨率）+ 一条 3 秒字幕「ABCD」。
+    const mp4 = join(dir, 'clip.mp4');
+    try {
+      execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
+        'color=c=white:s=160x120:d=3,format=yuv420p', '-f', 'lavfi', '-i',
+        'anullsrc=r=48000:cl=stereo', '-shortest', '-r', '60',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', mp4],
+        { stdio: ['ignore', 'ignore', 'ignore'], timeout: 120000 });
+    } catch (e) {
+      if (e && e.code === 'ENOENT') return checks; // 没有 ffmpeg ⇒ 静默跳过（与其它探媒体守卫同口径）
+      throw e;
+    }
+    writeFileSync(join(dir, 'clip.srt'),
+      '1\n00:00:00,000 --> 00:00:03,000\nABCD\n\n', 'utf8');
+
+    /// 造 `data/karaoke-cues.json`（形状与 Rust `parse::karaoke::KaraokeCues` 逐字段一致）。
+    const writeCues = (doc) => {
+      mkdirSync(join(dir, 'data'), { recursive: true });
+      writeFileSync(join(dir, 'data', 'karaoke-cues.json'),
+        JSON.stringify(doc, null, 2), 'utf8');
+    };
+
+    /// 跑一次 translate，取生成的 `dhampir-subtitle.srt` 内容。
+    const runWith = (karaoke, doc) => {
+      if (doc === null) {
+        try { rmSync(join(dir, 'data', 'karaoke-cues.json')); } catch { /* 本来就没有 */ }
+      } else {
+        writeCues(doc);
+      }
+      const lines = [
+        'config_version = 1', 'duration = 3.0', 'processed = true', '',
+        '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+        'danmaku = ""', 'metadata = ""', '',
+        '[canvas]', 'width = 1920', 'height = 1080', '',
+        '[[segments]]', 'start = 0.0', 'end = 3.0', 'role = "other"', 'index = 1', '',
+      ];
+      if (karaoke) lines.push('[elements]', 'karaoke = true', '');
+      const out = join(dir, 'karaoke.doc.json');
+      mod.translate(mod.parseToml(lines.join('\n')), dir, out);
+      // 字幕资产写在工程文件旁边。
+      const srt = join(dir, 'dhampir-subtitle.srt');
+      return { srt: existsSync(srt) ? readFileSync(srt, 'utf8') : '' };
+    };
+
+    /// 从 SRT 里抽出 cue 的 `[startMs, endMs, text]`。
+    const parse = (text) => {
+      const out = [];
+      const blocks = text.replace(/\r\n?/g, '\n').split(/\n{2,}/);
+      for (const b of blocks) {
+        const ls = b.split('\n').filter((l) => l.trim() !== '');
+        if (ls.length < 2) continue;
+        const m = ls.find((l) => l.includes('-->'));
+        if (!m) continue;
+        const g = m.match(/(\d+):(\d+):(\d+),(\d+)\s*-->\s*(\d+):(\d+):(\d+),(\d+)/);
+        if (!g) continue;
+        const ms = (h, mm, s, f) => (+h) * 3600000 + (+mm) * 60000 + (+s) * 1000 + (+f);
+        out.push([ms(g[1], g[2], g[3], g[4]), ms(g[5], g[6], g[7], g[8]),
+          ls.slice(ls.indexOf(m) + 1).join(' ')]);
+      }
+      return out;
+    };
+
+    // 字级时间轴：**故意不等距** —— 第 3 个字要 1.8s 才出现。
+    const pulled = { source_chars: 4, skipped: 0,
+      cues: [{ subtitle_index: 1, start: 0.0, end: 3.0,
+        chars: ['A', 'B', 'C', 'D'], times: [0.0, 0.2, 1.8, 2.0] }] };
+
+    // ㉚ **关着时：与今天逐字节相同**（R4）。字幕还是那一条，且**没有**卡拉OK的 NOTE。
+    const off = runWith(false, pulled);
+    const offCues = parse(off.srt);
+    ok(offCues.length === 1,
+      `\`karaoke\` 没配（默认关）时字幕轨必须**还是那一条**，实得 ${offCues.length} 条 —— ` +
+      'R4 红线：不配时底座工程逐字节不变');
+    ok(offCues[0][2] === 'ABCD', `关着时那条字幕文本必须原样，实得 ${JSON.stringify(offCues[0][2])}`);
+
+    // ㉛ **开着时：逐字切开，条数 = 字数**。
+    const on = runWith(true, pulled);
+    const onCues = parse(on.srt);
+    ok(onCues.length === 4,
+      `开了 \`karaoke\` 且有字级时间 ⇒ 「ABCD」必须切成 4 条，实得 ${onCues.length} 条`);
+    ok(onCues.map((c) => c[2]).join('|') === 'A|AB|ABC|ABCD',
+      `逐字 cue 必须是**累积文本**（A / AB / ABC / ABCD），实得 ${JSON.stringify(onCues.map((c) => c[2]))}`);
+
+    // ㉜ ★★ **时间是字级时间戳，不是均分**（T5 的定义性判据）。
+    //
+    // 均分会把 4 个字摊在 0–3000ms 上 ⇒ 边界 0 / 750 / 1500 / 2250。
+    // 字级时间是 0 / 0.2 / 1.8 / 2.0 秒 ⇒ 边界 0 / 200 / 1800 / 2000。
+    const uniform = [0, 750, 1500, 2250];
+    const got = onCues.map((c) => c[0]);
+    ok(JSON.stringify(got) === JSON.stringify([0, 200, 1800, 2000]),
+      `逐字 cue 的起点必须**逐字来自字级时间戳**（期望 [0,200,1800,2000]），实得 ${JSON.stringify(got)}。` +
+      '⚠️ 若实得 [0,750,1500,2250] 就是**退化成了均分**（把 T2 的打字机搬过来了）—— ' +
+      '那 T5 就没有存在意义了');
+    ok(JSON.stringify(got) !== JSON.stringify(uniform),
+      `必须**显式区别于均分** ${JSON.stringify(uniform)}，实得 ${JSON.stringify(got)}`);
+
+    // ㉝ **首尾相接、不重叠、不倒退**，且末条铺到字幕结束。
+    for (let i = 1; i < onCues.length; i += 1) {
+      ok(onCues[i][0] >= onCues[i - 1][0],
+        `第 ${i} 条的起点不许早于前一条（时间必须单调），实得 ${JSON.stringify(got)}`);
+      ok(onCues[i][0] >= onCues[i - 1][1],
+        `第 ${i} 条必须接在前一条之后（不重叠），实得 ${JSON.stringify(onCues)}`);
+    }
+    ok(onCues[onCues.length - 1][1] === 3000,
+      `末条必须铺到字幕结束（3000ms），实得 ${onCues[onCues.length - 1][1]}`);
+
+    // ㉞ **每条至少 1ms**（0 时长的 cue 在底座一帧都不显示 ⇒ 那个字永不出现）。
+    for (const [s, e, t] of onCues) {
+      ok(e > s, `cue ${JSON.stringify(t)} 的时长必须 > 0（实得 ${s}→${e}）—— ` +
+        '0 时长的 cue 底座一帧都不显示，那个字**永远不会出现**，而报告里看着"切了 N 条"');
+    }
+
+    // ㉟ ⚠️ **缺结论文件 ⇒ 明说降级**（不许静默变回普通字幕）。
+    //
+    // 这是本条的**核心纪律**：用户开了 `karaoke`、却没有 `data/karaoke-cues.json`
+    // （老工程 / 没跑过 `process`）⇒ 必须**说出来**。静默变回普通字幕
+    // 会让用户"以为开着、其实没开" —— 与 #147/#181 同一族。
+    const degraded = runWith(true, null);
+    const degradedCues = parse(degraded.srt);
+    ok(degradedCues.length === 1,
+      `读不到结论文件时必须**退回普通整条字幕**（1 条），实得 ${degradedCues.length} 条`);
+
+    // ㊱ **源码文本判据兜底**（照 ⑬–⑰ 那个写法）：
+    // 降级那条 `note` 必须真的在源码里（变异台里行为可能看不见，文本抓得住）。
+    ok(translateSrc.includes('卡拉OK（T5）已开启，但读不到 data/karaoke-cues.json'),
+      '缺结论文件时必须有那条"**降级成普通字幕**"的 note —— ' +
+      '没有它，用户开了开关却什么都没发生，报告里一行差异都没有');
+    ok(translateSrc.includes('karaoke: raw.karaoke === true'),
+      '`readElementsCfg` 必须把 `karaoke` 按 `=== true` 收（`"yes"`/`1` 一律当关 —— 保守）');
+    ok(translateSrc.includes('const tw = elementsCfg.typewriter === true;'),
+      '**元素轨那条路**仍必须由 `typewriter` 单独控制 —— ' +
+      'T2（元素轨、等速）与 T5（字幕轨、字级时间）**切的是两条不同的轨**，' +
+      '别把 `karaoke` 混进元素轨的判断里（那会把两条轨耦合成一条）');
+    ok(translateSrc.includes('if (tw && elementsCfg.karaoke === true)'),
+      '两者同时开着时必须有那条 NOTE（告诉用户各管各的轨）—— ' +
+      '没有它，用户会以为"叠了两种效果"');
+
+    // ㊲ **脏值：`karaoke = "yes"` / `1` 一律当关**（不炸、不误开）。
+    const dirty = ['karaoke = "yes"', 'karaoke = 1'];
+    for (const line of dirty) {
+      const lines = [
+        'config_version = 1', 'duration = 3.0', 'processed = true', '',
+        '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+        'danmaku = ""', 'metadata = ""', '',
+        '[canvas]', 'width = 1920', 'height = 1080', '',
+        '[[segments]]', 'start = 0.0', 'end = 3.0', 'role = "other"', 'index = 1', '',
+        '[elements]', line, '',
+      ];
+      writeCues(pulled);
+      let doc;
+      try {
+        doc = mod.translate(mod.parseToml(lines.join('\n')), dir, join(dir, 'dirty.doc.json'));
+      } catch (e) {
+        throw new Error(`脏值 \`${line}\` 让转译器抛了：${e && e.message}`);
+      }
+      ok(doc !== null && doc !== undefined, `脏值 \`${line}\` 必须能跑完（不炸）`);
+      const dirtySrt = join(dir, 'dhampir-subtitle.srt');
+      const dc = existsSync(dirtySrt) ? parse(readFileSync(dirtySrt, 'utf8')) : [];
+      ok(dc.length === 1,
+        `脏值 \`${line}\` 必须当**关**（1 条普通字幕），实得 ${dc.length} 条 —— ` +
+        '只有真的是 `true` 才算开');
+    }
+
+    // ㊳ ⚠️ **`polish.toml` 里不许出现任何切分键**（架构红线）。
+    //
+    // 结论落 `data/karaoke-cues.json`，**不落进用户的配置** —— 两条理由：
+    // ① `polish.toml` 是用户会手改的，结论混进去"谁对"就说不清了；
+    // ② 那会让**每个存量工程都被追加一段派生数据** ⇒ "不配时逐字节不变"当场就假。
+    for (const bad of ['char_timeline = ', 'karaoke_cues = ', '逐字 = ']) {
+      ok(!translateSrc.includes(bad),
+        `转译器源码里不许出现 \`${bad}\` —— 切分结论**不许写进用户的 polish.toml**`);
+    }
+    // ㊴ ⚠️ **挤在一起的字必须各占一个时刻**（"每字 ≥1ms"那条守卫的判据）。
+    //
+    // 上面那档用的是**拉得很开**的时间戳，永远走不到那条 `Math.max(ms, prev)` ——
+    // 于是"把每字最小间距删掉"这个变异**存活**（实测：77 号变异第一版没红）。
+    // 这一档专门喂**挤在一起**的时间戳：4 个字全在 0.0s 附近。
+    // ⇒ 没有守卫时它们会塌成同一个时刻，`s + 1` 之外的字**被合并掉**（那个字永不出现）。
+    const cramped = { source_chars: 4, skipped: 0,
+      cues: [{ subtitle_index: 1, start: 0.0, end: 3.0,
+        chars: ['A', 'B', 'C', 'D'], times: [0.0, 0.0, 0.0, 0.0] }] };
+    const crampedRun = runWith(true, cramped);
+    const crampedCues = parse(crampedRun.srt);
+    ok(crampedCues.length === 4,
+      `4 个字的时间戳**全挤在 0.0s** 时仍必须切出 4 条（每条至少占一个时刻），` +
+      `实得 ${crampedCues.length} 条 —— 塌在一起的字会被合并、那个字**永远不出现**`);
+    for (const [s, e, t] of crampedCues) {
+      ok(e > s, `挤在一起时 cue ${JSON.stringify(t)} 的时长仍必须 > 0（实得 ${s}→${e}）`);
+    }
+    // ⚠️ **只数条数是不够的**（实测）：上一条 `e > s` 也拦不住 ——
+    //    去掉每字最小间距之后 4 条会**全部挤在 `[0,1]`**（各 1ms），
+    //    条数对、每条时长也 > 0，**唯独互相重叠** ⇒ 屏幕上同时冒出 "A"/"AB"/"ABC"。
+    //    ⇒ 必须断言**互不重叠**（这才是"每字至少占一个时刻"的真正含义）。
+    for (let i = 1; i < crampedCues.length; i += 1) {
+      ok(crampedCues[i][0] >= crampedCues[i - 1][1],
+        `挤在一起时第 ${i} 条必须接在前一条**之后**（不重叠），实得 ` +
+        `${JSON.stringify(crampedCues.map((c) => [c[0], c[1], c[2]]))} —— ` +
+        '全挤在同一个时刻会让几条 cue 同时显示（屏幕上一堆字叠着）');
+    }
+    // 且**不许**因此把它们摊成均分（守卫只保证"不塌、不叠"，不保证"摊开"）。
+    const crampedStarts = crampedCues.map((c) => c[0]);
+    ok(crampedStarts.every((v, i) => i === 0 || v >= crampedStarts[i - 1]),
+      `挤在一起时起点仍必须单调，实得 ${JSON.stringify(crampedStarts)}`);
+
+    // ㊵ ⚠️ **时间戳倒挂 ⇒ 退回整条**（单调守卫那条的判据）。
+    //
+    // 同样：上面那档的数据是单调的，永远走不到 `if (i > 0 && t < times[i-1]) return null`。
+    // 喂一份**倒挂**的数据（第 2 个字早于第 1 个）⇒ 必须**不作数**、退回整条普通字幕。
+    const backwards = { source_chars: 4, skipped: 0,
+      cues: [{ subtitle_index: 1, start: 0.0, end: 3.0,
+        chars: ['A', 'B', 'C', 'D'], times: [2.0, 0.1, 1.8, 2.5] }] };
+    const bwRun = runWith(true, backwards);
+    const bwCues = parse(bwRun.srt);
+    ok(bwCues.length === 1,
+      `字级时间**倒挂**（第 2 个字早于第 1 个）时**必须退回整条普通字幕**（1 条），` +
+      `实得 ${bwCues.length} 条 —— 坏数据被原样用出去会切出重叠/倒退的 cue，` +
+      '而报告里看着"切了 N 条"');
+    ok(bwCues[0][2] === 'ABCD', `退回的那条必须是原文本，实得 ${JSON.stringify(bwCues[0][2])}`);
+
+    // ㊶ **字数与时间个数对不上 ⇒ 退回整条**（不猜、不补齐）。
+    const mismatched = { source_chars: 3, skipped: 0,
+      cues: [{ subtitle_index: 1, start: 0.0, end: 3.0,
+        chars: ['A', 'B', 'C'], times: [0.0, 0.5, 1.0] }] };
+    const mmRun = runWith(true, mismatched);
+    const mmCues = parse(mmRun.srt);
+    ok(mmCues.length === 1,
+      `字数（ABCD=4）与结论里的字（3 个）**对不上**时必须退回整条（1 条），` +
+      `实得 ${mmCues.length} 条 —— 不猜、不补齐`);
+
+    // ㊷ **形状坏掉的结论文件 ⇒ 当作没有**（走降级那条路，不是半用）。
+    const badShapes = [
+      ['{}', '空对象'],
+      ['{"cues":[]}', '空 cues'],
+      ['{"cues":[{"start":0,"end":3,"chars":["A"],"times":[]}]}', 'chars/times 长度不等'],
+      ['{"cues":[{"start":0,"end":3}]}', '缺 chars/times'],
+      ['not json at all', '根本不是 JSON'],
+    ];
+    for (const [body, why] of badShapes) {
+      mkdirSync(join(dir, 'data'), { recursive: true });
+      writeFileSync(join(dir, 'data', 'karaoke-cues.json'), body, 'utf8');
+      const lines = [
+        'config_version = 1', 'duration = 3.0', 'processed = true', '',
+        '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+        'danmaku = ""', 'metadata = ""', '',
+        '[canvas]', 'width = 1920', 'height = 1080', '',
+        '[[segments]]', 'start = 0.0', 'end = 3.0', 'role = "other"', 'index = 1', '',
+        '[elements]', 'karaoke = true', '',
+      ];
+      let doc;
+      try {
+        doc = mod.translate(mod.parseToml(lines.join('\n')), dir, join(dir, 'bad.doc.json'));
+      } catch (e) {
+        throw new Error(`形状坏掉的结论（${why}）让转译器抛了：${e && e.message}`);
+      }
+      ok(doc !== null && doc !== undefined, `形状坏掉的结论（${why}）必须能跑完（不炸）`);
+      const bsrt = join(dir, 'dhampir-subtitle.srt');
+      const bc = existsSync(bsrt) ? parse(readFileSync(bsrt, 'utf8')) : [];
+      ok(bc.length === 1,
+        `形状坏掉的结论（${why}）必须**当作没有**（退回 1 条普通字幕），实得 ${bc.length} 条 —— ` +
+        '静默半用比"当作没有"危险得多');
+    }
+
+    // ㊹ ⚠️ **两条字幕时结果必须仍按时间有序**（"按时间排序"那条的判据）。
+    //
+    // 上面全是**单条字幕**的夹具 ⇒ 输出天然有序，排序那句是空转的，
+    // 于是"把排序改成按文本长度"这个变异**存活**（实测：78 号变异第一版没红）。
+    // 这一档喂**两条**字幕，并让**第二条的字更长**：按长度排会把它们颠倒过来。
+    writeFileSync(join(dir, 'clip.srt'),
+      '1\n00:00:00,000 --> 00:00:01,400\nAB\n\n2\n00:00:01,400 --> 00:00:03,000\nCDEFGH\n\n',
+      'utf8');
+    const two = { source_chars: 8, skipped: 0, cues: [
+      { subtitle_index: 1, start: 0.0, end: 1.4, chars: ['A', 'B'], times: [0.0, 0.7] },
+      { subtitle_index: 2, start: 1.4, end: 3.0, chars: ['C', 'D', 'E', 'F', 'G', 'H'],
+        times: [1.4, 1.6, 1.8, 2.2, 2.6, 2.9] },
+    ] };
+    const twoRun = runWith(true, two);
+    const twoCues = parse(twoRun.srt);
+    ok(twoCues.length === 8,
+      `两条字幕（2 + 6 字）开了卡拉OK必须切成 8 条，实得 ${twoCues.length} 条`);
+    for (let i = 1; i < twoCues.length; i += 1) {
+      ok(twoCues[i][0] >= twoCues[i - 1][0],
+        `**跨字幕**也必须按时间有序：第 ${i} 条的起点 ${twoCues[i][0]} 早于前一条 ` +
+        `${twoCues[i - 1][0]}（实得 ${JSON.stringify(twoCues.map((c) => c[0]))}）—— ` +
+        '底座按文件顺序读，倒挂 = 后出现的内容先显示');
+    }
+    // ⚠️ 顺序必须**真的是时间序**，不是"碰巧按长度"—— 短的那条（AB）必须在前面。
+    ok(twoCues[0][2] === 'A' && twoCues[7][2] === 'CDEFGH',
+      `首条必须是第一条字幕的第一个字、末条是第二条字幕的全句，实得 ` +
+      `${JSON.stringify([twoCues[0][2], twoCues[7][2]])}`);
+    // 复原成单条字幕，免得影响后面的档。
+    writeFileSync(join(dir, 'clip.srt'),
+      '1\n00:00:00,000 --> 00:00:03,000\nABCD\n\n', 'utf8');
+
+    // ㊹ ★★ **淡入淡出：开 karaoke ⇒ 全 0；关着 ⇒ 350/180 逐字节不变**（R4）。
+    //
+    // # 为什么开 karaoke 必须把淡入淡出设 0（实测定的一条，不是推理）
+    //
+    // 底座的淡入是**每条 cue 各自重放**（`overlay.rs::text_envelope_scaled` 收的
+    // `local_ms` 是**条内**位置）。逐字切开后中间那些 cue 只有**字间距那么长**：
+    //   实测逐字 cue 时长 `[34, 33, 33, 34, 33, …]` ms
+    //   ⇒ 33ms vs 350ms 淡入 = 只到 ~10%；33ms vs 180ms 淡出 = 只到 ~18%
+    // ⇒ **还没亮就被下一条顶掉**。实测（只切 `karaoke`，逐帧数亮像素）：
+    //   frame 28(0.47s)=0、148(2.47s)=0、**150(2.50s)=0（第 16 个字根本不出现）**、
+    //   175–178(2.9s)=0（最后一个字闪一下就没了）；两个都设 0 后是干净阶梯 1607 → 2214。
+    const subStyle = (doc) => {
+      const t = (doc.timeline?.tracks ?? []).find((x) => x.id === 'sub');
+      return t ? (t.subtitle ?? {}) : null;
+    };
+    /// 用同一条字幕、只切 `karaoke`，取字幕轨样式。
+    const withKaraoke = (on) => {
+      const lines = [
+        'config_version = 1', 'duration = 3.0', 'processed = true', '',
+        '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"',
+        'danmaku = ""', 'metadata = ""', '',
+        '[canvas]', 'width = 1920', 'height = 1080', '',
+        '[[segments]]', 'start = 0.0', 'end = 3.0', 'role = "other"', 'index = 1', '',
+      ];
+      if (on) lines.push('[elements]', 'karaoke = true', '');
+      writeCues(pulled);
+      return subStyle(mod.translate(mod.parseToml(lines.join('\n')), dir,
+        join(dir, `fade-${on}.doc.json`)));
+    };
+    const stOn = withKaraoke(true);
+    const stOff = withKaraoke(false);
+    ok(stOn !== null && stOff !== null, '夹具不完整：字幕轨样式没拿到');
+    ok(stOn.fade_in_ms === 0 && stOn.fade_out_ms === 0,
+      `开 \`karaoke\` 时淡入淡出必须**都设 0**（实得 fade_in=${stOn.fade_in_ms} fade_out=${stOn.fade_out_ms}）。` +
+      '逐字 cue 只有 ~33ms，走不完 350/180ms ⇒ 每条才到 10%/18% 就被顶掉，' +
+      '**有的字根本画不出来、有的只有半透明**，而报告里照样写"切了 N 条"');
+    ok(stOn.rise_in_px === 0 && stOn.rise_out_px === 0,
+      `开 \`karaoke\` 时上下浮动也要归零（实得 rise_in=${stOn.rise_in_px} rise_out=${stOn.rise_out_px}）—— ` +
+      '同一个道理：33ms 的 cue 里浮 20px 等于一直在动');
+    ok(stOff.fade_in_ms === 350 && stOff.fade_out_ms === 180 &&
+       stOff.rise_in_px === 20 && stOff.rise_out_px === 8,
+      `**关着时必须逐字节不变**（R4）：期望 350/180/20/8，实得 ` +
+      `${stOff.fade_in_ms}/${stOff.fade_out_ms}/${stOff.rise_in_px}/${stOff.rise_out_px} —— ` +
+      '普通字幕轨的淡入一个字都不许动');
+
+    // ㊸ 机械钉住"读的是 data/ 下的派生产物"这一条（而不是某种"从 srt 反推"的旁路）。
+    ok(translateSrc.includes("join(clipDir, 'data', 'karaoke-cues.json')"),
+      '结论必须从 `data/karaoke-cues.json` 读 —— ' +
+      '那是 `process` 落的派生产物，不是从字幕旁路推出来的');
+
+    return checks;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function checkIntroOutro(mod) {

@@ -2145,7 +2145,7 @@ mod tests {
     fn 只配了动效字段也必须写进_toml() {
         // 逐个字段单独配一次 —— 任何一个漏判都会让这条红。
         type Set = fn(&mut crate::render::ElementsConfig);
-        let cases: [(&str, Set); 7] = [
+        let cases: [(&str, Set); 8] = [
             ("scale_in_from", |e| e.scale_in_from = Some(0.7)),
             ("scale_in_peak", |e| e.scale_in_peak = Some(1.15)),
             ("scale_in_ms", |e| e.scale_in_ms = Some(180)),
@@ -2153,6 +2153,9 @@ mod tests {
             ("shake_hz", |e| e.shake_hz = Some(18.0)),
             ("plate_color", |e| e.plate_color = Some([0, 0, 0, 140])),
             ("plate_pad_px", |e| e.plate_pad_px = Some(12.0)),
+            // ⚠️ T5 真卡拉OK（2026-10-11 加）—— 与上面七个是**同一个坑**：
+            // 只配了它、`is_empty()` 漏判它 ⇒ `[elements]` 整段不写 ⇒ 用户开的卡拉OK静默消失。
+            ("karaoke", |e| e.karaoke = true),
         ];
         for (key, set) in cases {
             let mut cfg = ProjectFile::example();
