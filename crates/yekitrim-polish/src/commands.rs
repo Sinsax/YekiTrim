@@ -113,6 +113,50 @@ pub async fn cmd_init(path: &Path) -> anyhow::Result<()> {
 // ============================================================
 // parse
 // ============================================================
+
+/// 把 ASR 的**字级时间戳**搬进精修工程（`<片段>/data/char-timeline.json`）。
+///
+/// 数据源是 Stage 2 落的 `<output_dir>/asr/timeline.json`（逐字时间轴），
+/// 目录关系与候选顺序见 `parse::charlog` 模块头 —— ⚠️ **`output_dir` 与片段目录不是同一个**。
+///
+/// # 三条纪律
+///
+/// 1. **没有就没有**：找不到 / 读不动 / 形状不合法 ⇒ 静默返回，**不报错、不阻断**
+///    （调用方 `cmd_parse` / `cmd_init` 照常往下走）。存量工程绝大部分没有那份中间产物。
+/// 2. **没数据不落文件**：只有真读到字级时间才写 `data/char-timeline.json`。
+///    落一份空的是**错的** —— 存量工程目录里会凭空多出一个文件，"删掉 asr 文件 ⇒ 行为逐字节
+///    相同"这条 R4 判据当场就假了。
+/// 3. **只在真变了才写**：重跑 `parse`（预览/出片会隐式触发链路上的东西）不该把文件 mtime
+///    刷新一遍 —— 首页「切片总览」按片段目录里最新文件的 mtime 排序，无条件重写会把老片段
+///    一直顶到最前面。与 `process::normalize_danmaku_windows` 同一条纪律。
+///
+/// 对齐结果本身（哪些字属于哪条字幕）由纯函数 `parse::charlog::align_chars_to_subtitles` 算，
+/// 与字幕的对应关系**不落盘**（它是可重算的派生值，落盘就有两个真源）。这里落的是
+/// **ASR 原样的字级时间轴** —— 一句话：搬数据，不搬结论。
+fn sync_char_timeline(project_path: &Path) {
+    let Some(log) = parse::charlog::load_char_timeline(project_path) else {
+        // 存量工程的常态。debug 级：一天几十条工程，每条都 info 会把日志刷花。
+        tracing::debug!("无字级时间戳（asr/timeline.json 不在），跳过 —— 不影响工程");
+        return;
+    };
+    let path = project_path.join(parse::charlog::CHAR_TIMELINE_REL);
+    let Ok(pretty) = serde_json::to_string_pretty(&log) else {
+        tracing::debug!("字级时间戳序列化失败，跳过");
+        return;
+    };
+    // 「只在真变了才写」：内容一致就一个字节都不碰（含 mtime）。
+    if std::fs::read_to_string(&path).map(|old| old == pretty).unwrap_or(false) {
+        tracing::debug!("字级时间戳未变化，跳过写入");
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, &pretty) {
+        // 写不进去也不许阻断 parse：字级时间戳是**增强**，不是工程成立的前提。
+        tracing::warn!("字级时间戳写入失败（不影响工程）: {} {e}", path.display());
+        return;
+    }
+    tracing::info!("  ✓ 字级时间戳: {} 字 → {}", log.char_count(), parse::charlog::CHAR_TIMELINE_REL);
+}
+
 pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
     let config = project::load_project(project_path)?;
     let warnings = project::validate_project(&config, project_path);
@@ -175,6 +219,16 @@ pub async fn cmd_parse(project_path: &Path) -> anyhow::Result<()> {
         data_dir.join("danmaku.json"),
         serde_json::to_string_pretty(&danmaku)?,
     )?;
+
+    // **字级时间戳搬运**（ASR `asr/timeline.json` → `data/char-timeline.json`）。
+    //
+    // ⚠️ **没有就没有**：存量工程的绝大部分都没有那份 ASR 中间产物，所以这里
+    // 「找不到 ⇒ 什么都不做」。四个不许：不许报错、不许阻断 init/parse、
+    // **不许落任何文件**（落空文件 = 存量工程目录里凭空多一个文件，破坏 R4 逐字节口径）。
+    // 与 `_proxy_720.mp4` 那条「失败不阻断 init」同一个口径。
+    //
+    // 目录关系与候选顺序见 `parse::charlog` 模块头（`output/` ≠ 片段目录，是父子）。
+    sync_char_timeline(project_path);
 
     // 读取 clip.json (元数据), 生成 clip-meta.json
     let meta_path = if !resolved.metadata.is_empty() && Path::new(&resolved.metadata).exists() {

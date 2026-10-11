@@ -196,22 +196,29 @@ pub struct SubtitleChars {
 /// - `clip.srt` 是 normalize **之后**的排版结果：行尾 `。.` `，、；：,;:` 被去掉、转述引号被删
 ///   （`asr/text.rs::normalize`）。
 ///
-/// 所以直接按 `==` 对必然大面积为空。
+/// 所以直接按 `==` 去对必然大面积为空。
 ///
-/// # 算法：**子序列贪心**
+/// # 算法：**子序列贪心 + 命中率闸**
 ///
 /// `normalize` 只**删**字符（行尾标点、引号）与把 `：` 换成 `，`，**从不重排** ——
-/// 即字幕文本是时间轴文本的**子序列**（允许个别字符被替换，见下）。所以对每条字幕：
+/// 即字幕文本是时间轴文本的**子序列**（个别字符可能被替换/写错）。所以对每条字幕：
 ///
-/// 1. 从时间轴的 `cursor` 开始，**按序**吃掉字幕的每个字符（在窗口内找第一个相等的字）；
-/// 2. 找不到相等的（错字）就**顺手吃掉当前位置那个字**并继续 —— 那是"替换"而不是"插入"；
-/// 3. 吃掉这一条之后 `cursor` 前进到最后一个命中位置 + 1（确保**单调、不回头**）。
+/// 1. 从时间轴的 `cursor` 起，**按序**走字幕的每个非空白字：
+///    在**前方 `SEARCH_AHEAD` 个字以内**找第一个相等的字 —— 找到就跳过去（消化掉删/插），
+///    找不到就**原地吃一个**（当作"替换"，字幕那个字按时间轴当前位置计时）；
+/// 2. 走完这一条后算**命中率** = 真正相等的字数 ÷ 字数；
+///    ⚠️ 低于 [`MIN_HIT_RATE`] ⇒ **整条作废、游标回滚**，不产出条目；
+/// 3. 通过的字条把 `cursor` 留在最后吃到的位置 + 1（**单调、不回头**）。
 ///
-/// ⚠️ **单调是硬要求**：字幕本身按时间有序，字也必须只往后走 —— 否则第二条字幕会把
-/// 第一条的字再吃一遍，时间会诡异地"回退"。
+/// ⚠️ **命中率闸是必需的，不是保险丝**：没有它，任何一段文本都能靠"原地吃替身"凑出一个
+/// 结果 —— 于是"字幕与时间轴毫无关系"（工程拼错、字幕被人工改过）也会产出一串**看起来正常
+/// 但全是错的时间**。那正是本仓最怕的"跑得通、结果不对"。加了闸之后，对不上就是**没有**。
 ///
-/// ⚠️ **对不上的字幕（吃掉 0 个字）直接跳过**，不产出空条目 —— 下游拿到"没时间"比拿到
-/// "一串 0 秒"安全。字幕文本与时间轴完全无关时（拼接错的工程）这一条保证不瞎猜。
+/// ⚠️ **单调是硬要求**：字幕按时间有序，字也必须只往后走 —— 否则第二条字幕会把第一条的
+/// 字再吃一遍，时间凭空回退。
+///
+/// ⚠️ **作废的字条回滚游标**：不回滚的话，"一条对不上的字幕"会白白吃掉时间轴上一段字，
+/// 把它后面**本来能对上**的字也顶掉（错一条连累一片）。
 ///
 /// ⚠️ `chars` 与 `times` 长度不一致、或时间轴为空 ⇒ 返回**空数组**（= 没有字级数据）。
 pub fn align_chars_to_subtitles(log: &CharTimelineLog, subs: &[Subtitle]) -> Vec<SubtitleChars> {
@@ -222,9 +229,11 @@ pub fn align_chars_to_subtitles(log: &CharTimelineLog, subs: &[Subtitle]) -> Vec
     let mut cursor = 0usize;
 
     for sub in subs {
+        let start_cursor = cursor;
         let mut chars = Vec::new();
         let mut times = Vec::new();
-        // 跳过空白：字幕里的空格/换行不占时间轴（`\N` 折行等）
+        let mut matched = 0usize;
+        // 跳过空白：字幕里的空格/换行不占时间轴（SRT 的 `\N` 折行等）
         for c in sub.text.chars().filter(|c| !c.is_whitespace()) {
             if cursor >= tl.len() {
                 break;
@@ -233,20 +242,22 @@ pub fn align_chars_to_subtitles(log: &CharTimelineLog, subs: &[Subtitle]) -> Vec
             if tc == c {
                 chars.push(tc);
                 times.push(t);
+                matched += 1;
                 cursor += 1;
             } else {
-                // 错字（normalize 改了标点、或 ASR 与最终稿不一致）：
-                // 只在**后面能找回来**时才搜；找不到就按"替换"吃掉当前位置。
-                let found = tl[cursor..].iter().position(|(tc2, _)| *tc2 == c);
+                // 错字 / normalize 改过的标点：只在**前方一小段**里找得回来才跳，
+                // 否则按"替换"原地吃掉当前位置（时间不漂）。
+                let found = tl[cursor..].iter().take(SEARCH_AHEAD + 1).position(|(tc2, _)| *tc2 == c);
                 match found {
-                    Some(off) if off <= SEARCH_AHEAD => {
+                    Some(off) => {
                         cursor += off;
                         let (tc2, t2) = tl[cursor];
                         chars.push(tc2);
                         times.push(t2);
+                        matched += 1;
                         cursor += 1;
                     }
-                    _ => {
+                    None => {
                         chars.push(tc);
                         times.push(t);
                         cursor += 1;
@@ -254,9 +265,14 @@ pub fn align_chars_to_subtitles(log: &CharTimelineLog, subs: &[Subtitle]) -> Vec
                 }
             }
         }
-        if !chars.is_empty() {
-            out.push(SubtitleChars { subtitle_index: sub.index, chars, times });
+
+        // 命中率不足 ⇒ 整条作废并**回滚游标**（不连累后面的字条）
+        let hit_rate = if chars.is_empty() { 0.0 } else { matched as f64 / chars.len() as f64 };
+        if chars.is_empty() || hit_rate < MIN_HIT_RATE {
+            cursor = start_cursor;
+            continue;
         }
+        out.push(SubtitleChars { subtitle_index: sub.index, chars, times });
     }
     out
 }
@@ -265,6 +281,13 @@ pub fn align_chars_to_subtitles(log: &CharTimelineLog, subs: &[Subtitle]) -> Vec
 /// 太小 = 偶发错字就退化成"替身"。4 是本仓既有的错位容忍量级
 /// （`asr/align.rs` 的 `RESYNC_LOOKAHEAD = 4`）。
 const SEARCH_AHEAD: usize = 4;
+
+/// 一条字幕至少要有的**真实命中率**才认它（见 [`align_chars_to_subtitles`] 的 ⚠️）。
+///
+/// `normalize` 只删标点/引号，实测那类差异占行内字符的很小一部分；留 0.5 是**故意宽松**的
+/// （宁可多对几条半准的，也不要因为一两个错字整条丢掉），同时把"完全无关"（命中率≈0）挡在外面。
+const MIN_HIT_RATE: f64 = 0.5;
+
 
 #[cfg(test)]
 mod tests {
@@ -276,8 +299,12 @@ mod tests {
 
     /// 造一份 `timeline.json`（形状照 `artifacts::timeline_record`：逐字给 0.1s 间隔）。
     /// ⚠️ 这是**按结构造的样本**，不是真链路产出的 —— 真跑 ASR 要模型与音频。
+    ///
+    /// ⚠️ 时间用 `i / 10.0` 而不是 `i as f64 * 0.1`：后者在 f64 上会积出
+    /// `0.30000000000000004`，让断言里那些"应该是 0.3"的字面量对不上 —— 那是**测试自己的**
+    /// 浮点噪声，不是被测代码的问题。真链路的 `times` 来自模型，本来就不是十进制整数。
     fn log_from(text: &str) -> CharTimelineLog {
-        let times: Vec<f64> = (0..text.chars().count()).map(|i| i as f64 * 0.1).collect();
+        let times: Vec<f64> = (0..text.chars().count()).map(|i| i as f64 / 10.0).collect();
         CharTimelineLog {
             text: text.into(),
             chars: text.chars().count(),
@@ -348,19 +375,24 @@ mod tests {
         assert_eq!(got[1].times, vec![0.2, 0.3], "第二条要接着往后走，不能回头");
     }
 
-    /// **真实差异**：`normalize` 删掉了行尾句号、删掉了引号、把 `：` 换成 `，`
-    /// （`asr/text.rs`）。时间轴上还有那些字 ⇒ 字幕文本是它的**子序列**。
+    /// **真实差异**：`normalize` 删掉了引号、把 `：` 换成 `，`、收敛行尾句号
+    /// （`asr/text.rs`）。时间轴上还留着那些字符 ⇒ 字幕文本是它的**子序列**。
+    ///
+    /// ⚠️ 注意 `，` 在时间轴上是 `：` —— 它**不同**，但前方 4 个字内找不到 `，`，
+    /// 所以按"替换"吃掉当前的 `：`（这正是本函数对付 normalize 改写的方式：
+    /// **占一个位置、拿时间轴上的时间**，而位置由"跳过被删掉的引号"来纠正）。
     #[test]
     fn tolerance_to_normalize_deletions() {
-        // 时间轴是 normalize 之前的原文
+        // 时间轴 = normalize 之前的原文
         let log = log_from("他说：“你好。”");
-        // 落盘字幕是 normalize 之后的（去引号 + 冒号变逗号 + 收敛行尾句号）
+        // 落盘字幕 = normalize 之后的
         let got = align_chars_to_subtitles(&log, &[sub(1, "他说，你好")]);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].chars, vec!['他', '说', '你', '好']);
-        // 时间必须取**时间轴上那些字**的位置，而不是顺序数下来的
-        // 时间轴索引:  他0 说1 ：2 “3 你4 好5 。6 ”7
-        assert_eq!(got[0].times, vec![0.0, 0.1, 0.4, 0.5]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        let s = &got[0];
+        assert_eq!(s.chars, vec!['他', '说', '：', '你', '好']);
+        // 时间轴索引:      他0 说1 ：2 “3 你4 好5 。6 ”7
+        // `“` 被**跳过**（搜回来），所以「你」吃到的是索引 4 的时间 0.4，不是数下来的 0.3
+        assert_eq!(s.times, vec![0.0, 0.1, 0.2, 0.4, 0.5]);
     }
 
     /// 时间**单调不回退**：第二条字幕不许把第一条的字再吃一遍。
@@ -374,16 +406,40 @@ mod tests {
         assert_eq!(got[2].times, vec![0.4, 0.5], "第三次出现的是**后面**那两个，不是开头那两个");
     }
 
-    /// 错字（替换）不把整条字幕带偏：小范围搜不回来就按"替身"吃掉当前位置。
+    /// 错字（替换）不把整条字幕带偏：搜不回来就按"替身"吃掉**时间轴上当前位置那个字**，
+    /// 位置与时间都不漂；命中率够高照常通过。
     #[test]
     fn substitution_stays_local() {
         let log = log_from("你好世界");
-        // 字幕写错了一个字（时间轴是「好」，字幕是「妈」）
+        // 字幕写错了一个字（时间轴是「好」，字幕是「妈」）—— 4 个字里 3 个命中 = 0.75 ≥ 0.5
         let got = align_chars_to_subtitles(&log, &[sub(1, "你妈世界")]);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[1].chars, vec!['妈'], "吃掉的是时间轴当前位置那个字（替身）");
-        assert_eq!(got[0].times[1], 0.1, "位置不变，时间不漂");
-        assert_eq!(got[0].chars.last(), Some(&'界'), "后面的字照常接上");
+        assert_eq!(got.len(), 1, "{got:?}");
+        let s = &got[0];
+        assert_eq!(s.chars[1], '好', "吃掉的是**时间轴**当前位置那个字（替身），不是字幕那个字");
+        assert_eq!(s.times[1], 0.1, "位置不变，时间不漂");
+        assert_eq!(s.chars.last(), Some(&'界'), "后面的字照常接上");
+        assert_eq!(s.times, vec![0.0, 0.1, 0.2, 0.3]);
+    }
+
+    /// ⚠️ **命中率闸**：字幕与时间轴**完全无关**（工程拼错 / 字幕被人工换过）⇒
+    /// 整条作废，**不许**靠"原地吃替身"凑出一串看着正常、其实全错的时间。
+    #[test]
+    fn unrelated_subtitle_is_rejected_by_hit_rate() {
+        let log = log_from("你好世界");
+        let got = align_chars_to_subtitles(&log, &[sub(1, "abcdef")]);
+        assert!(got.is_empty(), "毫无关系的字幕必须作废: {got:?}");
+    }
+
+    /// 作废的字条必须**回滚游标** —— 否则一条坏字幕会白白吃掉一段字轴，
+    /// 把它后面本来能对上的字幕一起顶掉（"错一条连累一片"）。
+    #[test]
+    fn rejected_subtitle_rolls_back_cursor() {
+        let log = log_from("你好世界");
+        // 第 1 条完全对不上；第 2 条本该从字轴**开头**对上
+        let got = align_chars_to_subtitles(&log, &[sub(1, "abcdef"), sub(2, "你好")]);
+        assert_eq!(got.len(), 1, "只有第 2 条该留下: {got:?}");
+        assert_eq!(got[0].subtitle_index, 2);
+        assert_eq!(got[0].times, vec![0.0, 0.1], "游标回滚后必须从字轴开头对上");
     }
 
     /// 空白不占位（字幕里的空格 / SRT 的 `\N` 折行）。
@@ -395,20 +451,12 @@ mod tests {
         assert_eq!(got[0].times, vec![0.0, 0.1, 0.2, 0.3]);
     }
 
-    /// 与时间轴完全无关的字幕 ⇒ **跳过**（不产出空条目、也不产出 0 秒）。
-    #[test]
-    fn unrelated_subtitle_is_skipped() {
-        let log = log_from("你好世界");
-        let got = align_chars_to_subtitles(&log, &[sub(1, "abc"), sub(2, "世界")]);
-        assert_eq!(got.len(), 1, "对不上的那条被跳过: {got:?}");
-        assert_eq!(got[0].subtitle_index, 2);
-    }
-
     /// 时间轴用量超出 ⇒ 剩下的字不再产出，但**已产出的部分保持正确**（不 panic）。
     #[test]
     fn subtitle_longer_than_timeline_stops_cleanly() {
         let log = log_from("你好");
         let got = align_chars_to_subtitles(&log, &[sub(1, "你好世界")]);
+        assert_eq!(got.len(), 1);
         assert_eq!(got[0].chars, vec!['你', '好']);
         assert_eq!(got[0].times, vec![0.0, 0.1]);
     }
