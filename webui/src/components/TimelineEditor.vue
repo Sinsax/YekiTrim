@@ -327,6 +327,49 @@
             </template>
 
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
+            <!-- 统一视觉元素（§5 E4a）：`kind` 分派 text / sticker。
+                 ⚠️ `element` 落在**贴纸轨**（词汇表里它的 lane = "sticker"），
+                    但它是**一条独立的事件类型**，不能折进下面的 `type === 'sticker'` 分支
+                    （那个分支编辑的是老的 `sticker` 变体，字段名完全不同：keyword vs kind+text）。 -->
+            <template v-else-if="selItem.type === 'element'">
+              <label>元素种类</label>
+              <select :value="selItem.kind || 'text'" @change="setElementKind(selItem, $event.target.value)">
+                <option value="text">文字（大字标题 / 章节 / 注释）</option>
+                <option value="sticker">贴纸（按关键词取图）</option>
+              </select>
+
+              <!-- 文字支：正文 + 样式档 + 纵向档位 -->
+              <template v-if="(selItem.kind || 'text') === 'text'">
+                <label>文字内容</label>
+                <input :value="selItem.text || ''" placeholder="要显示的字"
+                       @input="selItem.text = $event.target.value">
+                <label>样式</label>
+                <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
+                  <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
+                </select>
+                <label>纵向位置</label>
+                <select :value="selItem.pos || 'bottom'" @change="selItem.pos = $event.target.value">
+                  <option value="top">上</option>
+                  <option value="center">中</option>
+                  <option value="bottom">下</option>
+                </select>
+                <!-- ⚠️ 如实说明"谁说了算"：横向 x/y 与避让由 process 排版写回，
+                     这与贴纸那句「位置 x/y 由后处理算」是同一条口径。 -->
+                <div class="hint" title="后处理会按字幕带 / 人物 / 弹幕框算安全落点，每次重跑覆盖横纵坐标">
+                  横向位置由后处理按安全落点算（每次重跑覆盖）。
+                </div>
+              </template>
+
+              <!-- 贴纸支：复用已有的贴纸选择器 -->
+              <template v-else>
+                <StickerPicker :lib="stickerLib" :pid="pid" :dir="dir"
+                               :pack="selItem.text || ''" :tag="selItem.sticker_tag || ''"
+                               :name="selItem.name || ''" :source="selItem.source || ''"
+                               @pick="onStickerPick" />
+                <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
+              </template>
+            </template>
+
             <template v-else-if="selItem.type === 'sticker'">
               <StickerPicker :lib="stickerLib" :pid="pid" :dir="dir"
                              :pack="selItem.keyword || ''" :tag="selItem.sticker_tag || ''"
@@ -782,6 +825,34 @@ const EFFECTS = EFFECT_SPEC.effects
 const FX_TYPES = EFFECTS.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.id)
 /** 类型中文名（只用于展示；可选性由轨道决定，见 `isFxType`）。 */
 const TYPE_LABELS = Object.fromEntries(EFFECTS.map((e) => [e.id, e.label]))
+
+/** §5 E4a 文字元素的四档样式。**必须与出片侧 `TEXT_STYLE_FALLBACK` 同集合**
+ *  （`tools/polish-to-dhampir.mjs`：hook / chapter / comment / count）——
+ *  这里是**选项**，那里是**权威**；漏一档的症状是"界面里选不到那个样式"。
+ *  ⚠️ 数值（字号/描边/颜色）**不在这里抄一份**：那是出片侧的活，界面上抄了就会漂。 */
+const TEXT_STYLES = [
+  { value: 'hook', label: '钩子（最大字）' },
+  { value: 'chapter', label: '章节' },
+  { value: 'comment', label: '注释（默认）' },
+  { value: 'count', label: '计数' }
+]
+
+/** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——
+ *  `text` 支读 `text`、`sticker` 支读 `keyword`（老变体）与 `text`（贴纸包名，
+ *  见 `Event::Element` 的文档注释）。只改 `kind` 而不动载荷 = 切过去是一个空元素。
+ *  ⚠️ 反方向（切回 text）**不清 text** —— 用户可能只是点错了，清掉就等于让他重打一遍。 */
+function setElementKind(ev, kind) {
+  ev.kind = kind
+  if (kind === 'sticker') {
+    // 贴纸关键词在 `text` 上（与 `Event::Sticker.keyword` 语义相同）
+    if (ev.text === undefined) ev.text = ''
+    delete ev.style
+    delete ev.pos
+  } else {
+    if (ev.style === undefined) ev.style = 'comment'
+    if (ev.pos === undefined) ev.pos = 'bottom'
+  }
+}
 /** 能挂音效的类型（`SFX_CAPABLE`）。 */
 const SFX_CAPABLE = EFFECTS.filter((e) => e.sfx_capable === true).map((e) => e.id)
 /** 属性面板的两组（`ui` 分组；原先两组数组也在这里手写）。
@@ -1671,6 +1742,13 @@ function defaultEvent(type, t) {
   const ev = { type, time: round2(t), end: round2(t + span0(type)) }
   if (type === 'camera') { ev.zoom = '中'; ev.origin = '50% 50%'; ev.anchor = 'liver'; ev.cut = false }
   else if (type === 'sticker') { ev.keyword = ''; ev.x = '50%'; ev.y = '50%' }
+  // §5 E4a：`element` 必须带上 `kind` —— 它是**按 kind 分派**的（text 走排版、sticker 走贴纸图）。
+  // ⚠️ 以前这里没有这一支 ⇒ 新建出来的 element 是 `{type,time,end}`，
+  //    `kind` 缺失 ⇒ 反序列化时靠 `#[serde(default)]` 变空串 ⇒ 出片侧按"认不出的 kind"处理。
+  //    而 `kind = "text"` 且 `text` 为空时，转译器会 `drop('文字元素没有 text')` ——
+  //    也就是用户"新建了一个元素，界面上什么都没有、成片里也什么都没有"。
+  //    默认给 `text`：它是最常用的一支，且空文本会在属性面板里立刻被看见。
+  else if (type === 'element') { ev.kind = 'text'; ev.text = ''; ev.style = 'comment'; ev.pos = 'bottom' }
   else if (type === 'overlay') { ev.overlay_type = 'color'; ev.color = '#ff3232'; ev.opacity = 0.3 }
   else if (type === 'sfx') { ev.name = ''; ev.volume = 0.3 }
   else if (INTENSITY_TYPES.includes(type)) ev.intensity = type === 'shake' ? 14 : 30
