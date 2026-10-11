@@ -282,6 +282,37 @@
              @change="toggleLane('danmaku')">
       显示弹幕
     </label>
+
+    <!-- ── BGM（§11）─────────────────────────────────────────────────────────
+         用户口径：**背景音乐**。这一段存在的唯一理由是"把已经做好的能力接上入口" ——
+         出片侧的混音/闪避/淡入淡出**早就实现了**，此前却**没有任何界面能打开它**。
+         ⚠️ 关着且没选文件时，服务端**不写 `[bgm]` 段**（`BgmConfig::is_empty` + skip_serializing_if），
+            所以"看都没看过这一段"的老工程重存之后逐字节不变。 -->
+    <div class="small muted mt-6" title="背景音乐：出片时混进成片，说话时自动压低（闪避）">背景音乐</div>
+    <label class="ck-row" :title="bgm.enabled ? '当前开启；点一下关闭（不改文件选择）' : '当前关闭；点一下开启'">
+      <input type="checkbox" :checked="bgm.enabled === true" :disabled="bgmSaving || !ready"
+             @change="onBgmToggle">
+      启用背景音乐
+    </label>
+    <input class="fld-input mt-6" type="text" :value="bgmFilePath || bgm.file"
+           :disabled="bgmSaving || !ready" placeholder="工程内相对路径，如 bgm/song.mp3"
+           aria-label="BGM 文件（工程内相对路径）"
+           title="相对工程目录的路径（不许绝对路径 / 不许 ..）"
+           @input="bgmFilePath = $event.target.value" @change="onBgmFileCommit">
+    <div class="ss-row-2 mt-6">
+      <div class="ss-row" title="BGM 自己的基准音量（0 ~ 1）。默认 0.22 —— 要垫在人声下面">
+        <span class="ss-lbl">音量</span>
+        <input type="number" class="rv-input ss-num" inputmode="decimal" min="0" max="1" step="0.01"
+               :value="bgm.volume" :disabled="bgmSaving || !ready"
+               aria-label="BGM 音量" @change="onBgmNum('volume', 0, 1, 'BGM 音量')($event)">
+      </div>
+      <div class="ss-row" title="有人声时把 BGM 压到基准的百分之多少（闪避）。默认 0.35">
+        <span class="ss-lbl">闪避</span>
+        <input type="number" class="rv-input ss-num" inputmode="decimal" min="0" max="1" step="0.05"
+               :value="bgm.duck_ratio" :disabled="bgmSaving || !ready"
+               aria-label="BGM 闪避比例" @change="onBgmNum('duck_ratio', 0, 1, '闪避比例')($event)">
+      </div>
+    </div>
   </div>
   <!-- ── **区域设置** = 贴纸来源 + 区域框选 + 落点模式（用户 2026-10-06 第八轮：
        「贴纸和区域合并，显示为区域设置」）。原来「贴纸」与「区域」是两组，改的是同一批东西
@@ -2057,6 +2088,53 @@ const stageBgVisible = computed(() => {
 // 所以这里读的是 Rust 注入的 **`_lanes`**（已解析），前端**不再自己推一遍默认值** ——
 // 推第二遍就必然两边不一致，而且不报错（user 口径：竖屏素材默认关运镜/特效，但要看得见、点得开）。
 const lanesOn = computed(() => cfg.value?._lanes || {})
+
+// ── BGM（§11）────────────────────────────────────────────────────────────────
+// ⚠️ 这一段补的是「**能力全在、入口一个都没有**」：`render/bgm.rs` 的配置与滤波链、
+//    出片链路里对它们的调用**早就写好了**，但 `PUT /api/polish/project` 是逐字段白名单
+//    且**没有 `bgm` 这一支** ⇒ 前端发过去被静默丢掉、接口还回 `{"ok":true}`。
+//    用户此前**只能手改 `polish.toml`** 才能开 BGM。
+// 读的是 `cfg.bgm`（GET 回的就是整份 `ProjectFile`；`skip_serializing_if` 只影响写盘，
+// 读的时候 Rust 侧 `#[serde(default)]` 会把缺的那个键补成默认值 ⇒ 这里永远有对象）。
+const bgm = computed(() => cfg.value?.bgm || { enabled: false, file: '', volume: 0.22, duck_ratio: 0.35, fade_in: 1, fade_out: 2, loop_until_end: true })
+const bgmSaving = ref(false)
+/** BGM 的相对路径输入框的**本地镜像**：用户打字期间不落盘（与 note/keyword 那批同口径）。 */
+const bgmFilePath = ref('')
+
+/** 保存 BGM 的一个子集。只发传进来的键 —— 键缺席 = 服务端不动磁盘（R4 前提）。 */
+async function saveBgm(patch, msg) {
+  bgmSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { bgm: patch })
+    cfg.value = { ...cfg.value, bgm: { ...bgm.value, ...patch } }
+    if (msg) toast(msg)
+  } catch (e) {
+    toast(e?.message || 'BGM 设置保存失败')
+  } finally {
+    bgmSaving.value = false
+  }
+}
+function onBgmToggle(e) {
+  saveBgm({ enabled: e.target.checked }, e.target.checked ? 'BGM 已开启（出片时混入）' : 'BGM 已关闭')
+}
+/** 文件路径：失焦才落盘；⚠️ 空串 = 清空选择（服务端认它，配合 enabled=false 就不写 `[bgm]` 段）。 */
+function onBgmFileCommit() {
+  const v = String(bgmFilePath.value ?? '').trim()
+  if (v === (bgm.value.file || '')) return
+  saveBgm({ file: v }, v ? `BGM 已选：${v}` : 'BGM 文件已清空')
+}
+function onBgmNum(key, min, max, label) {
+  return (e) => {
+    const raw = String(e.target.value ?? '').trim()
+    const n = Number(raw)
+    // ⚠️ 清空 / 非数字一律**还原显示、不写盘**（否则退格清空的一瞬间就把值写成下限）
+    if (raw === '' || !Number.isFinite(n)) { e.target.value = String(bgm.value[key]); return }
+    const next = Math.min(max, Math.max(min, n))
+    e.target.value = String(next)
+    if (next === bgm.value[key]) return
+    saveBgm({ [key]: next }, `${label}已保存（${next}）`)
+  }
+}
 /** 点眼睛 = 把这条轨道的显式开关翻面（`[stage]` 整块提交，与其它画面构成项同一条链）。 */
 function toggleLane(lane) {
   const cur = lanesOn.value[lane] === true

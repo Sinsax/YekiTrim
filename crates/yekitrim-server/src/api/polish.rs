@@ -1880,6 +1880,79 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
         }
         cfg.style.camera = cam;
     }
+    // ── BGM（§11）：把已实现的能力接上界面入口 ────────────────────────────────
+    //
+    // ⚠️ 这一段补的是一个**"实现了但没人能打开"**的洞：
+    //   `render/bgm.rs` 的 BgmConfig / `bgm_filter_chain` / `duck_gain_expr` 全都写好了、
+    //   出片链路（`render/ffmpeg.rs`、`render/pipeline.rs`）也真的调它们，
+    //   但**写配置的入口一条都没有** —— 本函数是逐字段白名单，`bgm` 不在里面，
+    //   于是前端（乃至手写的 API 调用）发过来会被**静默丢掉**，而 PUT 照旧回 `{"ok":true}`
+    //   （正是下面那段注释说的那个形状）。用户**没有任何办法**打开 BGM。
+    //
+    // ⚠️ **只认 body 里真的出现过的键**：键缺席 = 不动磁盘 —— R4 的前提
+    //   （老工程 `polish.toml` 里没有 `[bgm]`，本条不许把它写出来）。
+    //   `BgmConfig::is_empty()` ⇔ `!enabled && file.is_empty()` 配 `skip_serializing_if`
+    //   决定了"关着且没选文件"就**不写这个键** ⇒ 只看不点开关的老工程逐字节不变。
+    if let Some(bgm) = body.get("bgm") {
+        let b = bgm
+            .as_object()
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm 必须是对象"))?;
+        // 逐键覆盖：只认出现过的键，缺席的保持原值。
+        if let Some(v) = b.get("enabled") {
+            cfg.bgm.enabled = v
+                .as_bool()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.enabled 必须是布尔"))?;
+        }
+        if let Some(v) = b.get("file").and_then(|v| v.as_str()) {
+            // ⚠️ **相对路径**：与前缀面同一套口径（`scope.rs::is_safe_project_relative`，
+            //    唯一一份）。BGM 文件是"工程目录里的一个文件"，不是服务器任意路径 ——
+            //    这里是第二道兜底，第一道在 scope 中间件。
+            let f = v.trim();
+            if !f.is_empty() && !crate::scope::is_safe_project_relative(f) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "bgm.file 必须是工程内的相对路径（不许绝对路径 / 不许 ..）",
+                ));
+            }
+            cfg.bgm.file = f.to_string();
+        }
+        // 数值三项：坏值**当场报错、不静默**（写进去会让出片按一个没人预期的音量混合）。
+        if let Some(v) = b.get("volume") {
+            let n = v
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.volume 必须是有限数"))?;
+            cfg.bgm.volume = n.clamp(0.0, 1.0);
+        }
+        if let Some(v) = b.get("duck_ratio") {
+            let n = v
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.duck_ratio 必须是有限数"))?;
+            cfg.bgm.duck_ratio = n.clamp(0.0, 1.0);
+        }
+        if let Some(v) = b.get("fade_in") {
+            let n = v
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.fade_in 必须是有限数"))?;
+            // 上限 30s：再长就不是"淡入"而是"整片都没起来"了（滑杆拖到边界是正常操作，
+            // 所以夹取而不是报错 —— 与 `[style.camera]` 那段的处置一致）。
+            cfg.bgm.fade_in = n.clamp(0.0, 30.0);
+        }
+        if let Some(v) = b.get("fade_out") {
+            let n = v
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.fade_out 必须是有限数"))?;
+            cfg.bgm.fade_out = n.clamp(0.0, 30.0);
+        }
+        if let Some(v) = b.get("loop_until_end") {
+            cfg.bgm.loop_until_end = v
+                .as_bool()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bgm.loop_until_end 必须是布尔"))?;
+        }
+    }
     let raw = cfg.to_toml_commented().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("序列化失败: {e}")))?;
     std::fs::write(dir.join("polish.toml"), raw).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败: {e}")))?;
     ok(serde_json::json!({ "ok": true }))
@@ -2957,6 +3030,73 @@ fn polish_project_put_writes_edl_and_leaves_unmentioned_keys_alone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **§11 BGM：PUT 必须真的能把它写进 `polish.toml`**（"实现了但没人能打开"的回归判据）。
+///
+/// 为什么单独钉：`render/bgm.rs` 的 `BgmConfig` / `bgm_filter_chain` / `duck_gain_expr`
+/// 早就写好了，出片链路也真的在调它们 —— **缺的只是"写配置的入口"**。
+/// 而本函数是**逐字段白名单**，`bgm` 不在名单里时：前端（乃至手写 API）发过来被**静默丢掉**，
+/// PUT 照旧回 `{"ok":true}`，用户**没有任何办法**打开 BGM。
+/// 与上面 `edl` 那条是**同一种事故形状**（白名单漏一支 ⇒ 界面说"已保存"、磁盘没变）。
+#[test]
+fn polish_project_put_writes_bgm() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-bgm-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = yekitrim_polish::project::ProjectFile::example();
+    cfg.mute_ranges.push(yekitrim_polish::project::MuteRange { start: 1.0, end: 2.0 });
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) 打开 BGM + 选文件：必须真的落盘，且没提到的 `mute_ranges` 原样保留
+    let body = serde_json::json!({ "bgm": {
+        "enabled": true,
+        "file": "bgm/song.mp3",
+        "volume": 0.3,
+        "duck_ratio": 0.4,
+    } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存 bgm");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert!(after.bgm.enabled, "bgm.enabled 没写进 polish.toml（PUT 白名单漏了 bgm 这一支）");
+    assert_eq!(after.bgm.file, "bgm/song.mp3");
+    assert!((after.bgm.volume - 0.3).abs() < 1e-9, "bgm.volume 不对");
+    assert!((after.bgm.duck_ratio - 0.4).abs() < 1e-9, "bgm.duck_ratio 不对");
+    // 没提交的键保持默认（`fade_in` 1.0 / `fade_out` 2.0 / `loop_until_end` true）
+    assert!((after.bgm.fade_in - 1.0).abs() < 1e-9, "缺席的 fade_in 该保持默认 1.0");
+    assert!((after.bgm.fade_out - 2.0).abs() < 1e-9, "缺席的 fade_out 该保持默认 2.0");
+    assert!(after.bgm.loop_until_end, "缺席的 loop_until_end 该保持默认 true");
+    assert_eq!(after.mute_ranges.len(), 1, "只提交 bgm 时 mute_ranges 必须原样保留");
+
+    // 2) **路径面**：`file` 必须是工程内相对路径（绝对路径 / `..` 一律拒收）。
+    //    ⚠️ 这条是第二道兜底，第一道在 `scope.rs`；两道都要有。
+    for bad in ["/etc/passwd", "C:/Windows/win.ini", "../outside.mp3", "a/../../b.mp3"] {
+        let body = serde_json::json!({ "bgm": { "file": bad } });
+        assert!(
+            polish_project_put_locked(&dir, &body).is_err(),
+            "bgm.file = {bad:?} 必须被拒收（它是工程内相对路径，不是服务器任意路径）"
+        );
+    }
+    // 拒收之后磁盘上那份不许被改坏
+    let still = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(still.bgm.file, "bgm/song.mp3", "拒收非法值之后，原来的 file 必须原样保留");
+
+    // 3) **坏值当场报错、不静默**（写进去会让出片按一个没人预期的音量混合）
+    let body = serde_json::json!({ "bgm": { "enabled": "yes" } });
+    assert!(polish_project_put_locked(&dir, &body).is_err(), "bgm.enabled 必须是布尔");
+
+    // 4) **老工程零回归**：关掉且清空文件之后，`polish.toml` 里**不许留空的 `[bgm]` 段头**。
+    //    判据挂在 `BgmConfig::is_empty()` 的 `skip_serializing_if` 上 ——
+    //    少了它，老工程重存一次就"多一段"（与 `[edl]` 那条完全同形）。
+    let clear = serde_json::json!({ "bgm": { "enabled": false, "file": "" } });
+    let _ = polish_project_put_locked(&dir, &clear).expect("关闭 bgm");
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    assert!(
+        !raw.contains("[bgm]"),
+        "关掉且没选文件之后不许留空的 `[bgm]` 段头（老工程重存必须逐字节不变）:\n{raw}"
+    );
+    assert!(yekitrim_polish::project::load_project(&dir).unwrap().bgm.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 成片时间线（EDL）必须能**经整张路由表**（真 HTTP：会话 + CSRF + 作用域 + 路径锁）存下来、
 /// 再读回来。这是第 3 批交付时唯一**没被验到**的那条缝（前端成片轨改完 → F5 → 还在不在）。
 ///
@@ -3020,6 +3160,77 @@ async fn polish_project_http_roundtrips_edl() {
     assert_eq!(app.call(req).await.status(), 200);
     let raw = std::fs::read_to_string(app.root.join("polish.toml")).unwrap();
     assert!(!raw.contains("[edl]"), "清空后不许留空的 `[edl]` 段头:\n{raw}");
+}
+
+/// **§11 BGM 必须能经整张路由表**（真 HTTP：会话 + CSRF + 作用域 + 路径锁）存下来、再读回来。
+///
+/// 为什么上面那条 `polish_project_put_writes_bgm` 不够：那条直接调
+/// `polish_project_put_locked`，绕过了 ① 路由挂没挂 ② `scope.rs::enforce_scope`
+/// 会不会把 `dir` 拦掉 ③ 请求体解析 ④ GET 侧有没有把 `bgm` 回给前端。
+/// 这四处任意一处错，用户都是"显示已保存、刷新就弹回去"，而上面那条**照样绿**。
+/// （`edl` / `camera` 两条同形用例就是这个道理。）
+///
+/// ⚠️ 顺带钉住**路径面**：`bgm.file` 是"工程内相对路径"，绝对路径必须被拒 ——
+/// 它与 `cover.image` 是同一类字段，多一个漏收口的口子就是一条任意文件读取。
+#[tokio::test]
+async fn polish_project_http_roundtrips_bgm() {
+    let app = crate::api::test_support::test_app().await;
+    let dir = app.root.to_string_lossy().replace('\\', "/");
+    let cfg = yekitrim_polish::project::ProjectFile::example();
+    std::fs::write(app.root.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) PUT：前端发的形状（`saveProjectPatch(pid, dir, { bgm: patch })`）
+    let body = serde_json::json!({
+        "dir": dir,
+        "bgm": { "enabled": true, "file": "bgm/song.mp3", "volume": 0.3, "duck_ratio": 0.4 },
+    });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200, "PUT /polish/project 应当 200");
+
+    // 2) 磁盘上真的写了
+    let on_disk = yekitrim_polish::project::load_project(&app.root).unwrap();
+    assert!(on_disk.bgm.enabled, "bgm 没落到 polish.toml（白名单漏了 bgm 这一支）");
+    assert_eq!(on_disk.bgm.file, "bgm/song.mp3");
+    assert!((on_disk.bgm.volume - 0.3).abs() < 1e-9);
+
+    // 3) GET 要把它读回来 —— 前端刷新靠这一步；GET 丢了 `bgm` 同样是"刷新就弹回去"
+    let req = app
+        .req("GET", &format!("/polish/project?dir={dir}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.call(req).await;
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let bgm = json
+        .get("bgm")
+        .unwrap_or_else(|| panic!("GET 没把 bgm 回给前端（勾选框刷新后会弹回去）: {json}"));
+    assert_eq!(bgm.get("enabled").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(bgm.get("file").and_then(|v| v.as_str()), Some("bgm/song.mp3"));
+
+    // 4) **路径面**：绝对路径必须被拒（这是第二道；第一道在 scope 中间件）
+    let bad = serde_json::json!({ "dir": dir, "bgm": { "file": "C:/Windows/win.ini" } });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(bad.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 400, "绝对路径必须被拒收");
+
+    // 5) 关掉并清空 ⇒ 不许留空的 `[bgm]` 段头（R4：老工程重存逐字节不变）
+    let clear = serde_json::json!({ "dir": dir, "bgm": { "enabled": false, "file": "" } });
+    let req = app
+        .req("PUT", "/polish/project")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(clear.to_string()))
+        .unwrap();
+    assert_eq!(app.call(req).await.status(), 200);
+    let raw = std::fs::read_to_string(app.root.join("polish.toml")).unwrap();
+    assert!(!raw.contains("[bgm]"), "关掉后不许留空的 `[bgm]` 段头:\n{raw}");
 }
 
 /// §18-C：`[style.camera]` 三个档位系数必须能被**存进去**、**读回来**、且**越界被夹住**。
