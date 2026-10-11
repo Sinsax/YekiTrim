@@ -140,6 +140,33 @@ fn missing_support<'a>(
 }
 
 
+/// **合流前那道帧数断言该拿什么数去卡**（缺陷 D1 的判据本体，抽出来是为了可测）。
+///
+/// # 为什么要抽成函数
+///
+/// 这条分流逻辑**写错了不报错、只表现为"要么误报要么放空"** —— 正是本仓最该被单测钉住的形状。
+/// 实测踩过（2026-10-11，`--keep-muted` 出片必然失败）：无 EDL 时 `edl_total_frames` 是
+/// **mute 补集**的长度（12s 带 3s 屏蔽 ⇒ 540 帧），而画面那条腿拿到的是**整条时间线**
+/// （`dhampir.rs::render_video_only` 硬编码 `keep_muted = true`）⇒ 断言在 `cut_ranges`
+/// **之前**拿"剪完之后"的数去卡 ⇒ 每次都红。
+///
+/// # 判据
+///
+/// `has_edl == true` ⇒ 尾部那道 `cut_ranges` **被跳过**（`:1038` 的判据就是它）⇒
+/// 合流点长度 **==** 成片长度 ⇒ 拿派生值卡。
+/// `has_edl == false` ⇒ `mute_ranges` 的活还在后头（`cut_ranges`）⇒ 合流点上两条腿**都是全长**，
+/// 派生值（补集）是"剪完之后"的数 ⇒ **这里不能卡**，改由剪完之后那道断言卡。
+///
+/// ⚠️ **别改成无条件 `None`**：有 EDL 那条路是这道断言的**主战场**
+/// （重放 / 冷开场 / 变速全靠它挡"画面漏段"），放空等于把主战场让出去。
+pub(crate) fn mux_check_frames(has_edl: bool, edl_total_frames: Option<u64>) -> Option<u64> {
+    if has_edl {
+        edl_total_frames
+    } else {
+        None
+    }
+}
+
 /// 若目标文件已存在，返回 `stem_1.ext` / `stem_2.ext` 等不冲突路径。
 pub fn unique_output_path(path: &Path) -> std::path::PathBuf {
     if !path.exists() {
@@ -1016,7 +1043,25 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
     // ⚠️ **合流前的时长断言**（R5）：`mux` 带 `-shortest`，两条轨不等长时它静默截断。
     // 有派生值时按它卡（帧相等或 ±1 帧 —— 半帧量化是 EDL 的固有代价，规格 §2.4）；
     // 没有派生值（老工程 / 时长未知）时传 `None`，等于不做断言（也**不做**"大概对一下"）。
-    let check_frames = edl_total_frames;
+    //
+    // ⚠️⚠️ **这里的"派生值"必须是「合流那一刻两条腿的实际长度」，不是「成片最终长度」**
+    // （缺陷 D1，2026-10-11 修）。两者在"尾部还要再剪一刀"的工程上**不相等**：
+    //
+    //   * **有 EDL**：画面那条腿按 EDL 出片（转译器 `--keep-muted` 传的也是拼过的 EDL），
+    //     而 `cut_ranges` 被**跳过**（`:1038` 判据是 `has_edl`）⇒ 合流点长度 == 成片长度
+    //     ⇒ `edl_total_frames` **就是**那个数，照旧。
+    //   * **无 EDL（老工程 + `mute_ranges`）**：画面那条腿拿到的是**整条时间线**
+    //     （`dhampir.rs::render_video_only` 硬编码 `keep_muted = true`，注释写明
+    //     "屏蔽区间由 `cmd_render` 尾部那一剪按源时间去掉"），音轨那条腿走的也是
+    //     **整条 `extract_audio`** —— 两条腿在合流点**都是全长**，`mute_ranges` 要等
+    //     `:1047` 的 `cut_ranges` 才剪。而 `resolve_edl` 在没有 EDL 时会用
+    //     `mute_ranges` 的**补集**推一份 clips（老工程兼容路径）⇒ `edl_total_frames`
+    //     是**剪完之后**的长度（实测 12s 带 3s 屏蔽：540 vs 720）⇒ 断言在剪之前
+    //     拿剪之后的数去卡 ⇒ **每次都误报**。
+    //
+    // 所以这里按"尾部那一刀要不要跑"分流。⚠️ **别改成无条件 `None`** —— 那会把
+    // 有 EDL 那条路（本断言的**主战场**，重放/冷开场/变速全靠它挡"画面漏段"）一起废掉。
+    let check_frames = mux_check_frames(has_edl, edl_total_frames);
     if let Err(e) = Ffmpeg::mux_checked(
         &tv.to_string_lossy(),
         &ta.to_string_lossy(),
@@ -1061,6 +1106,48 @@ pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
                 }
             }
             Err(e) => tracing::info!("  ⚠ 屏蔽区间导出失败: {e:#}"),
+        }
+
+        // ⚠️⚠️ **剪完之后补一道时长校验**（缺陷 D1 的另一半，别删）。
+        //
+        // 上面 `mux_checked` 在**无 EDL** 时已经不做帧数断言了（合流点上两条腿都是全长，
+        // 拿"剪完之后"的 `edl_total_frames` 去卡必然误报）。但**不能就这么把这条腿放空** ——
+        // 本断言的职责是「成片时长 == 派生时长」，而**现在才是成片真正的长度**：
+        // 无 EDL 时 `edl_total_frames` 恰恰就是"屏蔽补集"的长度（`resolve_edl` 的兼容路径），
+        // 也就是剪完之后**应该**有多长。所以在**这里**卡它是**正的**。
+        //
+        // 两处断言的关系（谁挡谁）：
+        //   * 有 EDL ⇒ `mux_checked` 挡（此处 `mute_ranges` 为空，进不来）；
+        //   * 无 EDL ⇒ `mux_checked` 不挡，由**这里**挡。
+        // 合起来 = 无论走哪条路，成片长度都被卡住，且**都不会误报**。
+        if let Some(want) = edl_total_frames {
+            if fps > 0.0 {
+                match Ffmpeg::probe_duration(&op) {
+                    Ok(secs) => {
+                        let got = (secs * fps).round() as i64;
+                        let want = want as i64;
+                        // 与 `mux_checked` 同口径：±1 帧（半帧量化是 EDL 的固有代价，规格 §2.4）。
+                        // ⚠️ 这里**能用帧数卡**（不像音轨要用样本数）：`cut_ranges` 是**整段重编码**，
+                        //    它按帧边界切，不会像 AAC 那样把容器时长撑大。
+                        if (got - want).abs() > 1 {
+                            cleanup(project_path, &tv, &ta);
+                            anyhow::bail!(
+                                "剪完屏蔽区间之后成片长度与成片时间线不一致：派生 {want} 帧（{:.3}s），\
+                                 实得 {got} 帧（{secs:.3}s，fps={fps}）。差超过 1 帧 ⇒ \
+                                 尾部那道 `cut_ranges` 剪多了/剪少了（`mute_ranges` 与派生补集不同源？）。",
+                                want as f64 / fps
+                            );
+                        }
+                        tracing::info!(
+                            "  ✓ 剪后时长断言通过：成片 {got} 帧（{secs:.3}s）/ 派生 {want} 帧"
+                        );
+                    }
+                    Err(e) => {
+                        // 探不到就**明说**（不给假绿）：这条腿的成片长度这次没有被校验。
+                        tracing::warn!("  ⚠ 剪后时长断言跳过：量成片时长失败 {e:#}");
+                    }
+                }
+            }
         }
     }
 
@@ -2098,5 +2185,41 @@ mod tests {
             serde_json::from_value(serde_json::json!({"type": "blur", "time": 1.0, "end": 1.3})).unwrap(),
         );
         assert_eq!(used_effect_types(&cfg), vec!["shake".to_string(), "blur".to_string()]);
+    }
+
+    // ── 缺陷 D1：合流前那道帧数断言该拿什么数卡 ──────────────────────
+
+    /// **无 EDL 时不许在合流点卡**（那时 `edl_total_frames` 是"剪完之后"的数，
+    /// 而 `cut_ranges` 还没跑 —— 卡它就是那次"派生 540 / 实得 720"的误报）。
+    ///
+    /// 变异自证（改坏一定会红）：
+    ///   * 改回无条件 `edl_total_frames` ⇒ 这条红（Some(540) != None）；
+    ///   * 改成无条件 `None` ⇒ `有_edl_时必须在合流点卡` 那条红（主战场被放空）。
+    #[test]
+    fn 无_edl_时合流点不卡帧数() {
+        let got = super::mux_check_frames(false, Some(540));
+        assert_eq!(
+            got, None,
+            "无 EDL 时合流点上两条腿都是全长（画面 --keep-muted、音轨整条 extract），\
+             而 {0:?} 是 mute 补集=剪完之后的数。在这里卡它 ⇒ 「派生 540 帧 / 实得 720 帧」必然误报。",
+            Some(540u64)
+        );
+        // 连派生值都没有时同样不卡（老工程 / 时长未知）。
+        assert_eq!(super::mux_check_frames(false, None), None);
+    }
+
+    /// **有 EDL 时必须卡**（这条是主战场：重放/冷开场/变速靠它挡"画面漏段"）。
+    ///
+    /// ⚠️ 这条防的是"为了修 D1 顺手把它一起放松"——那正是任务书点名的"不要放宽断言了事"。
+    #[test]
+    fn 有_edl_时必须在合流点卡() {
+        assert_eq!(
+            super::mux_check_frames(true, Some(1080)),
+            Some(1080),
+            "有 EDL 时 `cut_ranges` 被跳过 ⇒ 合流点长度就是成片长度 ⇒ 必须拿派生值卡。\
+             放空 = 重放/冷开场/变速那条路的'画面漏段'没人挡了。"
+        );
+        // 有 EDL 但推不出帧数（理论上的空 resolve）⇒ 没有可卡的值，只能不卡。
+        assert_eq!(super::mux_check_frames(true, None), None);
     }
 }
