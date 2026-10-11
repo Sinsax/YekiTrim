@@ -781,7 +781,22 @@ export function danmakuExitMs(startMs, endMs, travelMs) {
   return endMs > need ? endMs : need;
 }
 
-function cuesToAss(cues, { font = 'Sans', fontSize = 42 } = {}) {
+/// ⚠️⚠️ `kind: 'text'` 那条路**必须**传 `danmaku: false`。
+///
+/// `cuesToAss` 是给**弹幕**写的，而弹幕的出点规则是"至少滚到左边缘出画"
+/// （`danmakuExitMs`：`max(endMs, start + 300 + travel)`）。文字元素**不滚**，
+/// 却被同一条规则处理 ⇒ 每条 cue 的出点都被抬到 `start + 300ms`。
+///
+/// ★ **这个缺陷在打字机之前看不出来**：一条文字元素只有**一条** cue，
+///   被抬到 300ms 也好、抬到 10 秒也好，只要原时长 ≥300ms，
+///   `max()` 取的就是原值 ⇒ **行为完全正确**。而打字机把它拆成十几条短 cue
+///   （每条 60~70ms）之后，`max()` 一律取 300ms ⇒
+///   **所有 cue 互相重叠、每条都比自己该在的位置长 4 倍** ——
+///   表现为"打字机完全不生效，文字一次全冒出来"（正是我们想修的那个观感）。
+///
+/// ⚠️ 所以这里加一个**显式开关**而不是改 `danmakuExitMs`：
+///   那条规则对弹幕是**对的**（有实测支撑，改它会让弹幕提前消失）。
+function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) {
   const out = [];
   out.push('[Script Info]');
   out.push('ScriptType: v4.00+');
@@ -804,7 +819,10 @@ function cuesToAss(cues, { font = 'Sans', fontSize = 42 } = {}) {
   out.push('Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
   for (const cue of cues) {
     out.push(
-      `Dialogue: 0,${assTime(cue.startMs)},${assTime(danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs))},Default,,0,0,0,,${withMoveTravel(cue.text, cue.travelMs)}`,
+      `Dialogue: 0,${assTime(cue.startMs)},${assTime(
+        // ⚠️ 文字元素**原样用 `endMs`**（它不滚，"抬起出点"那条规则不适用）。
+        danmaku ? danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs) : cue.endMs,
+      )},Default,,0,0,0,,${withMoveTravel(cue.text, cue.travelMs)}`,
     );
   }
   out.push('');
@@ -2710,8 +2728,12 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// ⚠️ 判据与 Rust 那份逐条对齐（见 `elements.rs` 的同名函数）：
   ///   关着/一个字/脏区间/脏帧率 ⇒ 原样一条；**不许产出 0 帧的 cue**
   ///   （0 帧在底座那边一帧都不显示 ⇒ 那个字永远不会出现）。
+  /// ⚠️ **这里不再判 `cfg.typewriter`** —— 调用方（`if (tw)`）已经判过了。
+  /// 两处都判会让"关着开关"这件事有**两个**执行点：
+  /// 变异台改外层、内层照样短接 ⇒ 变异**改不动行为** ⇒ 那条变异永远"存活"
+  /// （实测：`const tw = true` 与 `if (false) return [cue]` 两处都抓不住）。
+  /// ★ 与 §9 那次同一个形状：**一道门只留一个执行点**，否则测的是另一个。
   function splitTypewriter(cue, fps, cfg) {
-    if (!cfg.typewriter) return [cue];
     const chars = Array.from(cue.text);
     if (chars.length <= 1 || cue.end <= cue.start || !(fps > 0) || !Number.isFinite(fps)) {
       return [cue];
@@ -5237,7 +5259,10 @@ export function translate(config, clipDir, outPath, options = {}) {
           text: c.text,
           travelMs: 0,
         })),
-        { font: 'Sans', fontSize: st.fontPx },
+        // ⚠️⚠️ **`danmaku: false` 不能省** —— 文字元素不滚，
+        //    弹幕那条"至少滚到出画"的出点规则会把每条 cue 抬到 300ms，
+        //    打字机拆出来的短 cue 于是**全部重叠**（详见 `cuesToAss` 的文档）。
+        { font: 'Sans', fontSize: st.fontPx, danmaku: false },
       );
       const assPath = join(clipDir, `dhampir-${id}.ass`);
       writeFileSync(assPath, ass, 'utf8');
