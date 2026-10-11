@@ -20,12 +20,42 @@
 //     node scripts/check-effect-registry.mjs
 //     node scripts/check-effect-registry.mjs --self-test   # 自证：多一个/少一个都必须红（不碰真文件）
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(repo, rel), 'utf8');
+
+/** 递归读一棵目录下所有源码文件（用于"锚点有没有消费者"那条判据）。
+ *  ⚠️ 只收源码后缀，跳过 `node_modules` / `dist` / `target` —— 那些是生成物，
+ *     拿它们当"消费者"会让判据恒真（dist 是 src 的产物，src 删了 dist 还在）。
+ *  ⚠️ **定义文件自己不在消费范围内**（调用方传的是别的目录），否则"定义了就算有人用"。 */
+function readTree(rootRel, lang, selfFile) {
+  const exts = { js: ['.js', '.mjs', '.vue'], html: ['.html'], rs: ['.rs'] }[lang] ?? ['.js'];
+  const skip = new Set(['node_modules', 'dist', 'target', '.git', 'assets']);
+  const out = [];
+  const walk = (rel) => {
+    let entries;
+    try {
+      entries = readdirSync(join(repo, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const next = `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (!skip.has(e.name)) walk(next);
+      } else if (exts.some((x) => e.name.endsWith(x))) {
+        // ⚠️ 定义文件自己不算消费者（理由见调用点的长注释）
+        if (selfFile && next === selfFile) continue;
+        try { out.push(read(next)); } catch { /* 读不了就跳过，别让判据因此报红 */ }
+      }
+    }
+  };
+  walk(rootRel);
+  return out.join('\n');
+}
 
 /** 去掉注释后再抽取（注释里也写着 `handlers.xxx` 这种示例，裸匹配会误命中）。 */
 const stripComments = (text, lang) => {
@@ -239,6 +269,97 @@ function checkDhampirCoverage(registry) {
   return { checks, failures };
 }
 
+/// **可达性判据：锚点光"在那个文件里存在"不算数，必须**真的被消费者调用到**。
+///
+/// ⚠️ 这条补的是一个**真实的维度漏洞**（2026-10-12，由 §5 E4a 撞出来）。
+///
+/// 原判据只有 `text.includes(anchor)` —— 在**定义文件**里做子串匹配。
+/// 它回答的是"这个名字出现过吗"，**从来不问"有没有人用"**。
+/// ⇒ 死代码照样全绿。真实案例：`getElements` 在 `engine.js` 里定义得好好的、
+///    词汇表也认领了它，但**整个 `webui/src` 里零个调用点** ——
+///    结果是 `element` 事件在预览里一个字都不画，而门禁是绿的。
+///
+/// 判据：锚点名必须出现在**定义文件之外**的某个消费者里（`import` 或调用）。
+/// ⚠️ **刻意做粗**（"有没有别的文件用它"），不做数据流分析：
+///    目的是拦住"导出了但没人用"这种一眼可见的洞，不是证明运行时一定执行到。
+///    真正的"画得对不对"由各自的运行期判据管（`check-preview-engine.mjs` 等）。
+function checkAnchorsAreReached(site, meta, wanted, failures) {
+  let checks = 0;
+  // 消费者范围：前端预览锚点找 `webui/src`，转译器/后处理锚点找它们各自的调用方。
+  const CONSUMER_GLOBS = {
+    dom_preview: ['webui/src'],
+    dhampir_case: ['tools', 'crates/yekitrim-polish/src'],
+    post_span: ['crates/yekitrim-polish/src'],
+    canvas: ['crates/yekitrim-polish/templates'],
+  };
+  // ⚠️ `canvas` 是**自包含**的：`handlers.xxx` 的定义与派发都在 `index.html` 里，
+  //    **没有跨文件消费者** ⇒ 对它做"别的文件提没提到"是错的。
+  //    它的可达性判据是「**同文件里有没有按类型取用 handler**」。
+  //    ⚠️ 实际写法是**两行**（`var fn=handlers[ev.type];` 然后 `fn(ev,et);`），
+  //       不是 `handlers[...](...)` 一行 —— 第一版按一行写，于是把整个 canvas 判成死代码（假红）。
+  const SELF_CONTAINED = { canvas: /handlers\s*\[[^\]]+\]/ };
+  const roots = CONSUMER_GLOBS[site] ?? [];
+  // ⚠️⚠️ **必须把"定义文件自己"从消费语料里剔掉** —— 否则判据恒真。
+  //    第一版就是漏了这一步：`dom_preview` 的消费范围写的是 `webui/src`，
+  //    而 `engine.js` **就在 `webui/src` 里** ⇒ 定义行本身就算"有人引用" ⇒
+  //    我把 `getVignette` 的**唯一消费者删掉**之后门禁**照样全绿**（实测确认过）。
+  //    ⇒ **纪律：写"有没有人用它"这类判据时，第一件事是把"它自己"排除掉。**
+  const corpus = roots
+    .map((r) => readTree(r, meta.lang, meta.file))
+    .join('\n');
+  for (const [id, anchor] of Object.entries(wanted)) {
+    if (anchor === null) continue;
+    checks += 1;
+    // 自包含 site：判据是"定义文件里有没有派发点"（不是别的文件提没提到）。
+    if (SELF_CONTAINED[site]) {
+      const self = stripComments(read(meta.file), meta.lang);
+      if (!SELF_CONTAINED[site].test(self)) {
+        failures.push(
+          `锚点**不可达**：\`${site}\` 是自包含的，但 ${meta.file} 里**没有按类型派发**` +
+            `（期望 \`${SELF_CONTAINED[site]}\`）—— 定义了却没人调，效果不会出画`,
+        );
+      }
+      continue;
+    }
+    if (!corpus) continue; // 找不到消费目录时**不报红**（那是判据配置问题，不是实现问题）
+    // `handlers.flash` 这种按 `handlers[type]` 派发，取最后一段即可。
+    const bare = anchor.includes('.') ? anchor.split('.').pop() : anchor;
+    const esc = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?<![\\w.])${esc}(?![\\w])`);
+    // ⚠️⚠️ **"被别的文件引用"只是入口的一种**。锚点也可能是**同文件内的间接调用**
+    //    （`getShake`/`getBlur`/`sfxVolume`/`cameraAt` 全是被 `videoFxAt`/`buildIndex` 调的，
+    //     而 `videoFxAt` 才是预览直接消费的那个）。
+    //    ⇒ 判据分两级：① 定义文件之外有人提到它；② 否则看它在**自己文件里有没有调用位**。
+    const outsideUsed = re.test(stripComments(corpus, meta.lang));
+    let insideUsed = false;
+    if (!outsideUsed) {
+      const self = stripComments(read(meta.file), meta.lang);
+      // ⚠️ 定义文件里的"使用形态"按 site 不同：
+      //   * `dhampir_case` / `post_span` 是 **switch/match 派发**（`case 'flash':` / `"flash" =>`），
+      //     它**不是调用**、后面也不跟 `(` ⇒ 光找 `name(` 会把整个转译器判成死代码（实测假红）。
+      //   * 其余的（`dom_preview`）是普通函数 ⇒ 找调用位 `name(`，且**不算它自己的定义行**。
+      if (site === 'dhampir_case') {
+        insideUsed = new RegExp(`case\\s+'${esc}'\\s*:`).test(self);
+      } else if (site === 'post_span') {
+        insideUsed = new RegExp(`"${esc}"\\s*=>`).test(self);
+      } else {
+        const callRe = new RegExp(`${esc}\\s*\\(`, 'g');
+        const defRe = new RegExp(
+          `(?:function\\s+${esc}\\s*\\(|(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s*)?(?:\\(|function))`,
+        );
+        insideUsed = [...self.matchAll(callRe)].length > (defRe.test(self) ? 1 : 0);
+      }
+    }
+    if (!outsideUsed && !insideUsed) {
+      failures.push(
+        `锚点**没有消费者**：\`${anchor}\`（词汇表 ${id} → ${site}）既没被 ${roots.join(' / ')} 引用、` +
+          `在 ${meta.file} 里也没有调用位 —— 它就是死代码：门禁以前只在定义文件里查"名字在不在"，这种洞照样绿`,
+      );
+    }
+  }
+  return checks;
+}
+
 function checkAnchors(registry) {
   const failures = [];
   let checks = 0;
@@ -254,6 +375,7 @@ function checkAnchors(registry) {
         failures.push(`锚点对不上：${meta.file} 里找不到 \`${anchor}\`（词汇表 ${id} → ${site}）`);
       }
     }
+    checks += checkAnchorsAreReached(site, meta, wanted, failures);
     // 孤儿：文件里有、词汇表没认领
     const orph = [...orphanNames(site, text)].filter((n) => !claimed.has(n));
     // `dom_preview` 的 `*At`/`sfxVolume` 形态不在 `get*` 正则里 ⇒ 天然不会误报；
@@ -432,7 +554,27 @@ function selfTest() {
     '报红要点名那个效果与缺失的锚点',
   );
 
-  console.log(`✓ 词汇表门禁自证：${checks} 项（多一个 / 少一个 / 少了底座锚点，都必须红且点名）`);
+  // ④ **可达性判据本身不许空转**（2026-10-12 补）。
+  //
+  // ⚠️ 这条自检的由来：可达性判据第一版**漏了把定义文件自己从消费语料里剔掉** ——
+  //    `dom_preview` 的消费范围是 `webui/src`，而 `engine.js` **就在里面**
+  //    ⇒ 定义行自己就算"有人引用" ⇒ 我把 `getVignette` 的**唯一消费者删掉**之后
+  //    门禁**照样全绿**（实测确认）。判据写错的表现是"看起来全过"，比报错难发现。
+  //
+  // 做法：喂一个**不可能被任何地方引用**的锚点名，要求判据必须翻红并点名。
+  {
+    const probe = { ...registry.anchors.dom_preview, __probe__: 'definitelyNotReferencedAnywhere12345' };
+    const fails = [];
+    checkAnchorsAreReached('dom_preview', ANCHOR_SITES.dom_preview, probe, fails);
+    eq(fails.length > 0, true, '可达性判据对"没人引用的锚点"必须报红');
+    eq(
+      fails.some((f) => f.includes('definitelyNotReferencedAnywhere12345')),
+      true,
+      '可达性判据报红时要**点名**那个锚点',
+    );
+  }
+
+  console.log(`✓ 词汇表门禁自证：${checks} 项（多一个 / 少一个 / 少了底座锚点 / 锚点不可达，都必须红且点名）`);
 }
 
 if (process.argv.includes('--self-test')) {
