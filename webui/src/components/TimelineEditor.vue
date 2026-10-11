@@ -51,6 +51,18 @@
         {{ TYPE_LABELS[t] }}<span class="muted">{{ t }}</span>
       </button>
     </div>
+    <!-- 元素轨道的 ＋：先选「文字 / 贴纸」再加（明细见 `addElementAt` 的注释） -->
+    <div v-if="elementMenu" class="fx-menu" :style="{ left: elementMenu.x + 'px', top: elementMenu.y + 'px' }">
+      <div class="fx-menu-t muted small">在播放头处添加</div>
+      <button class="fx-menu-item" title="大字标题 / 章节 / 注释，由后处理排版落点"
+              @click="addElementAt('text')">
+        文字<span class="muted">kind=text</span>
+      </button>
+      <button class="fx-menu-item" title="按关键词从贴纸库取图"
+              @click="addElementAt('sticker')">
+        贴纸<span class="muted">kind=sticker</span>
+      </button>
+    </div>
     <!-- 「加入成片」菜单（§6.3 第 ② 条的三个落位）。fixed 定位：不受时间轴横向滚动与卡片裁切影响。
          入口只有一个（成片轨标签上的 ＋）—— 用户在源轴上框选/选中之后，决定这段插到成片的哪里。 -->
     <div v-if="edlMenu" class="fx-menu edl-menu" :style="{ left: edlMenu.x + 'px', top: edlMenu.y + 'px' }">
@@ -65,9 +77,7 @@
         追加到片尾<span class="muted">末尾</span>
       </button>
     </div>
-    <!-- 属性面板：用 Teleport 投到页面给的挂载点（PolishView 把它放在视频左侧，与时间轴分离）。
-         选中状态与全部编辑逻辑仍留在这个组件里，页面只决定它出现在哪儿。
-         ⚠️ Teleport 的目标是**挂载时**用 document.querySelector 解析的：本组件挂载时，
+    <!-- 属性面板：Teleport 到页面给的挂载点（选中与编辑逻辑仍留在本组件里） -->
          整个编辑器子树还没插进 document（Vue 先建子节点、最后才 hostInsert），
          直接写 :to="propsTarget" 会解析不到、面板完全不渲染（只剩一块空白）。
          所以用 teleportTo 门控，等 onMounted（本组件的 mounted 在 post-flush 阶段跑，
@@ -327,10 +337,7 @@
             </template>
 
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
-            <!-- 统一视觉元素（§5 E4a）：`kind` 分派 text / sticker。
-                 ⚠️ `element` 落在**贴纸轨**（词汇表里它的 lane = "sticker"），
-                    但它是**一条独立的事件类型**，不能折进下面的 `type === 'sticker'` 分支
-                    （那个分支编辑的是老的 `sticker` 变体，字段名完全不同：keyword vs kind+text）。 -->
+            <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
               <label>元素种类</label>
               <select :value="selItem.kind || 'text'" @change="setElementKind(selItem, $event.target.value)">
@@ -580,8 +587,11 @@
              这一段就是那个读者：端点 `GET /api/polish/emotion` 见 `api/polish.rs`。 -->
       <div v-if="emotionWindows.length" class="lane emotion-lane">
         <div class="lane-label emotion-label">
+          <!-- ⚠️ 占位符**必须与其它结构轨一致（`·`）**：这里原先我自己发明了 `◔`，
+               看着像个"半开的眼睛" ⇒ 用户会以为这是个能点的眼睛开关（实测被问「◔ 这个是？」）。
+               它**不是眼睛**（这条轨没有"整类不渲染"的语义），就该跟分段/屏蔽/成片三处同一个符号。 -->
           <span class="lane-eye lane-eye-none"
-                title="情绪轨道：由弹幕算出的观众情绪（不驱动画面，仅供判读「这段为什么吵」）">◔</span>
+                title="情绪轨道：由弹幕算出的观众情绪（不驱动画面，仅供判读「这段为什么吵」）">·</span>
           <span class="lane-name emotion-label-name"
                 title="情绪轨道：按弹幕关键词算出的四维情绪（喜/惊/笑/叹）· 不参与出片">情绪</span>
           <div class="lane-adds"></div>
@@ -1878,10 +1888,43 @@ function onLaneAdd(laneType, evt) {
   if (laneType === 'subtitles') { addSubtitleAtCurrent(); return }
   if (laneType === 'segments') { addMuteAtCurrent(); return }
   if (laneType === 'fx') { openFxMenu(evt); return }
+  // ⚠️ **元素轨必须给菜单、不能直接加**：这条轨道装 `sticker` 与 `element` 两种事件类型，
+  //    直接 `addEventAt('sticker')` 会让 `element`（即"文字"那一支）**永远造不出来**。
+  //    与视觉特效同规格（类型由轨道分配，面板里只允许在同轨道的细分类型之间换）。
+  if (laneType === 'sticker') { openElementMenu(evt); return }
   addEventAt(laneType)
 }
 
 const fxMenu = ref(null) // { x, y } | null —— 视觉特效的细分类型菜单（fixed 定位，不受时间轴滚动影响）
+const elementMenu = ref(null) // 同上，元素轨的「文字 / 贴纸」二选一
+
+function openElementMenu(evt) {
+  const r = evt.currentTarget.getBoundingClientRect()
+  elementMenu.value = { x: Math.round(r.left), y: Math.round(r.bottom + 4) }
+  document.addEventListener('pointerdown', closeElementMenu, true)
+}
+function closeElementMenu(e) {
+  if (e && e.target && e.target.closest && e.target.closest('.fx-menu')) return
+  if (!elementMenu.value) return
+  elementMenu.value = null
+  document.removeEventListener('pointerdown', closeElementMenu, true)
+}
+/** 在播放头处加一个**指定 kind** 的元素（`text` 走排版、`sticker` 走贴纸图）。 */
+function addElementAt(kind) {
+  closeElementMenu()
+  const type = kind === 'text' ? 'element' : 'sticker'
+  const before = segments.value.reduce((n, s) => n + s.events.length, 0)
+  addEventAt(type)
+  // `addEventAt` 在"没有分段"或越界时**不加**（它会自己 toast）——
+  // 这时别去改一个不存在的事件（下标 -1 会写到上一段的最后一条上）。
+  const after = segments.value.reduce((n, s) => n + s.events.length, 0)
+  if (after === before) return
+  if (type === 'element') {
+    // `defaultEvent` 已经给了 `kind='text'` + 空 `text` + `style/pos` 默认值，这里不用再补。
+    // 之所以仍走 `addEventAt('element')` 而不是自己构造：**下标与选中逻辑只住那一处**。
+    return
+  }
+}
 
 function openFxMenu(evt) {
   const r = evt.currentTarget.getBoundingClientRect()
