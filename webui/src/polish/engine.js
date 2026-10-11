@@ -406,6 +406,27 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
           entry.src = stickerSrc ? stickerSrc(name) : ''
           entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
           entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
+        } else if (kind === 'text') {
+          // §5 E3 预览侧：文字元素**直接读 `process` 已经算好的东西**，不重算。
+          //
+          // ⚠️⚠️ 这条以前是**有意留空**的，理由写的是「文字要动态盒算落点，故意不近似」
+          //    + 「转译器会在报告里明说这条，所以这里静默是对的」。**两条都已经不成立**：
+          //    ① 排版通道**早就实现**了（`process` 的 Step 1d3 `layout_text_elements`）
+          //       —— 它把 `x`/`y`（百分比）与**解析后的样式串**写回事件；
+          //    ② 转译器那条 `drop()` 也**换成了真实现**（独立 ASS 资产 + 单层字幕轨），
+          //       真跑出片里文字是真的画出来的（A/B 帧已验）。
+          //    ⇒ 于是预览与成片**真的分叉**：成片有字、预览没有，而且不报错。
+          //
+          // ★ **这里不去"近似"任何东西** —— 落点与样式都是 `process` 写好的，
+          //   预览只是**读**。所以原来那句"故意不近似"的顾虑在这里**根本不适用**：
+          //   读一份已经算好的值，不是自己近似一份。
+          //   这也是本仓对付"两份实现漂移"的既定形态（与贴纸的 `source` 同一条）。
+          entry.textBody = String(ev.text ?? '')
+          entry.textStyle = parseTextSource(ev.source)
+          // 落点同样是百分比字符串（`"9%"`），与贴纸 `x`/`y` 同一种表示
+          entry.textX = numPct(ev.x)
+          entry.textY = numPct(ev.y)
+          entry.textPos = String(ev.pos ?? '').trim().toLowerCase() || 'bottom'
         }
       }
     })
@@ -468,6 +489,48 @@ function dmFontFamily(cfg) {
 function safeEmoji(name) {
   const code = parseInt(name, 16)
   return Number.isNaN(code) ? '✨' : String.fromCodePoint(code)
+}
+
+/** 把 `"9%"` / `"9.00%"` / `9` 这类落点值读成数值百分比。读不出返回 `null`。
+ *  ⚠️ **只读不推**：`process` 写的就是这个格式（`format!("{:.2}%", …)`），
+ *  预览**不重新算落点** —— 见 `buildIndex` 的 `kind === 'text'` 分支。 */
+function numPct(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v !== 'string') return null
+  const m = v.trim().match(/^(-?\d+(?:\.\d+)?)%?$/)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  return Number.isFinite(n) ? n : null
+}
+
+/** 解析 `process` 写回的文字样式串：
+ *  `<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>`。
+ *
+ *  ⚠️ **认不出返回 `null`，由调用方决定怎么办** —— 不在这里编一套兜底数值。
+ *  理由与转译器那句注释同源：这个串是**本仓自己写的**，它坏了属于"内部不一致"；
+ *  而预览如果自己编一套，就会**掩盖**那个不一致（看起来画对了、其实与成片不同）。
+ *  ⇒ 读不出时 `getElements` 那条**不画**，并让调用方知道（不静默画错的东西）。 */
+function parseTextSource(src) {
+  if (typeof src !== 'string' || !src.includes('|')) return null
+  const p = src.split('|')
+  if (p.length < 7) return null
+  const num = (s, d) => { const n = parseFloat(s); return Number.isFinite(n) ? n : d }
+  const rgba = (s) => {
+    const a = String(s || '').split(',').map((x) => parseFloat(x))
+    return a.length >= 4 && a.every((x) => Number.isFinite(x)) ? a : null
+  }
+  const fill = rgba(p[3])
+  const stroke = rgba(p[4])
+  if (!fill) return null
+  return {
+    name: p[0] || 'comment',
+    fontPx: num(p[1], 44),
+    strokePx: num(p[2], 0),
+    fill,
+    stroke: stroke || [26, 26, 26, 255],
+    weight: num(p[5], 700),
+    backdrop: num(p[6], 0) > 0
+  }
 }
 
 // ---- 运镜档位 → 缩放系数。必须与 Rust CameraStyle::factor 逐值一致 ----
@@ -897,20 +960,20 @@ export function danmakuAt(idx, t) {
 /// 在四处实现里逐值对齐过（模板 canvas、模板 DOM、本文件、`timeline.rs`），
 /// 重写一份必然漂移，而漂移的症状是"预览与成片不一样"。
 ///
-/// ⚠️ `kind === "text"` **返回空**。
-/// 这里**故意不近似** —— 规格 §5.2 明说文字要动态盒算落点，近似的结果是"大字压住主播脸"。
+/// ⚠️⚠️ **`kind === "text"` 现在也画了**（2026-10-12 接通，§5 E3 预览侧）。
 ///
-/// ⚠️⚠️ **但下面这句理由已经过期了，如实改掉**（2026-10-12 实测）：
-/// 原文写的是「转译器会在报告里明说这条，所以这里静默是对的（"说"只有一处口径）」——
-/// **现在不成立了**：转译器那条 `kind === "text"` 的 `drop()` 已经换成真实现
-/// （建成独立 ASS 资产 + 单层字幕轨），**真跑出片里文字元素是真的画出来的**。
-/// 实测：造一条 `text = "ZEBRA-TEXT-MARKER"` 的元素（2–8s），
-/// 出片第 4s 帧上**肉眼可见这行大字**（`frame-4.png`），而第 1.5s 帧没有；
-/// `data/translate_report.json` 里 `drop_count = 1`，唯一那条是**封面**（与文字元素无关）。
-/// ⇒ 也就是说 **预览与成片现在真的分叉了**：成片有这行字、预览里没有，
-/// 而"预览里没有"以前靠"转译器会报出来"兜底 —— 那个兜底已经没了。
-/// ⇒ 这条**不是**"静默是对的"，而是**一个待补的缺口**：预览要么补上文字排版，
-///   要么在这里给出一条**自己**的可见提示（不能继续靠一个已经不存在的下游报告）。
+/// 背景（为什么以前留空、为什么现在必须补上）：旧注释写的是「故意不近似」
+/// + 「转译器会在报告里明说这条，所以这里静默是对的」。**这两条都已经不成立**：
+/// ① 排版通道**早就实现**了（`process` Step 1d3 `layout_text_elements`：
+///    把 `x`/`y` 百分比与**解析后的样式串**写回事件）；
+/// ② 转译器那条 `drop()` 也**换成了真实现**（独立 ASS 资产 + 单层字幕轨）——
+///    真跑出片里文字是**真的画出来的**（A/B 帧已验：第 4s 有那行字、第 1.5s 没有）。
+/// ⇒ 于是预览与成片**真的分叉**：成片有字、预览没有，**而且不报错**。
+///
+/// ★ **这里不"近似"任何东西** —— 落点与样式都是 `process` 写好的，预览只是**读**
+///   （`entry.textX/textY/textStyle`，见 `buildIndex` 的 `kind === 'text'` 分支）。
+///   所以原来那句"故意不近似"的顾虑在这里**根本不适用**。
+///   样式串读不出时**不画**（不自己编一套兜底数值去掩盖"内部不一致"）。
 export function getElements(idx, t) {
   const out = []
   for (const e of idx.element || []) {
@@ -921,6 +984,50 @@ export function getElements(idx, t) {
     //    `stickersAt` 同口径）—— **所以绝不能全局把 `e.` 换成 `e.ev.`**：
     //    那会把本来能用的贴纸求值弄坏。逐行判断，这就是"两错两对"。
     const kind = String(e.ev?.kind ?? '').trim().toLowerCase()
+    // §5 E3 预览侧：文字元素走**另一条**形状（它没有图源、有正文与样式）。
+    // ⚠️ 排在贴纸之前判：两者都来自 `idx.element`，但载荷完全不同。
+    if (kind === 'text') {
+      const et = e.time, dur = e.duration || 2.5
+      if (t < et || t > et + dur) continue
+      // ⚠️ 样式串读不出（`process` 没跑过 / 串坏了）⇒ **不画**，
+      //    不在这里编一套兜底数值 —— 那会掩盖"内部不一致"（看着画对了、其实与成片不同）。
+      if (!e.textStyle || !String(e.textBody || '').trim()) continue
+      if (e.textX === null || e.textX === undefined || e.textY === null || e.textY === undefined) continue
+      // 与贴纸同一条进出场曲线（弹出/上浮/淡出），保证同一屏里的元素观感一致。
+      const fadeOut = Math.min(0.3, dur)
+      if (!(fadeOut > 0)) continue
+      const k = Math.min(1, Math.max(0, dur - fadeOut) / (0.35 + 0.4))
+      const popIn = 0.35 * k, floatUp = 0.4 * k, fadeStart = dur - fadeOut
+      let opacity = 0, scale = 1, rot = 0, yOff = 0
+      if (t - et < popIn) {
+        const p = (t - et) / popIn
+        const bp = E.backOut(p, 3)
+        scale = 0.3 + 0.7 * bp
+        rot = -15 + 15 * bp
+        opacity = E.pow2Out(p)
+      } else if (t < et + popIn + floatUp) {
+        const p = (t - et - popIn) / floatUp
+        opacity = 1; yOff = -stickerFloatUp(idx.cv) * p
+      } else if (t < et + fadeStart) {
+        opacity = 1; yOff = -stickerFloatUp(idx.cv)
+      } else {
+        const p = (t - fadeStart) / fadeOut
+        opacity = Math.max(0, 1 - p)
+        yOff = -stickerFloatUp(idx.cv)
+      }
+      out.push({
+        // `text` 支**没有 `src`** —— 消费方按这个字段分流（有 src 画图、没有则画字）
+        src: '',
+        isText: true,
+        text: String(e.textBody),
+        style: e.textStyle,
+        xPct: e.textX,
+        yPct: e.textY,
+        pos: e.textPos,
+        opacity, scale, rot, yOff
+      })
+      continue
+    }
     if (kind !== 'sticker') continue
     const et = e.time, dur = e.duration || 2.5
     if (t < et || t > et + dur) continue

@@ -47,6 +47,19 @@
             <span v-else class="sticker-emoji">{{ st.emoji }}</span>
           </div>
         </div>
+        <!-- §5 E3 预览侧：文字元素。落点/样式**全部读 `process` 写回的值**（不重算）。
+             ⚠️ 与出片侧同一条口径：`process` 解析、消费方读 —— 预览不自己推一份，
+                否则就是"两份实现必然漂移"那个老病（成片有字、预览没有/位置不同）。 -->
+        <div class="text-layer">
+          <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
+               :style="{ left: tx.xPct + '%', top: tx.yPct + '%', opacity: tx.opacity,
+                         transform: 'translateY(' + tx.yOff + 'px) scale(' + tx.scale + ') rotate(' + tx.rot + 'deg)',
+                         fontSize: tx.style.fontPx + 'px',
+                         fontWeight: tx.style.weight,
+                         color: rgbaCss(tx.style.fill),
+                         WebkitTextStrokeWidth: tx.style.strokePx + 'px',
+                         WebkitTextStrokeColor: rgbaCss(tx.style.stroke) }">{{ tx.text }}</div>
+        </div>
         <div class="danmaku-layer" :style="dmLayerStyle">
           <div v-for="(d, i) in dmRows" :key="'d' + i" class="dm" :style="{ left: d.x + 'px', top: d.y + 'px', opacity: d.opacity }">{{ d.text }}</div>
         </div>
@@ -149,7 +162,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure, noiseTile } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -2242,6 +2255,17 @@ const capRowsWrapped = computed(() => capRows.value.map((c) => {
 }))
 const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
+
+/** §5 E3：文字元素在 `t` 时刻的可见集合（读 `process` 写回的落点与样式）。
+ *  ⚠️ `getElements` 返回里**混着贴纸与文字两种形状**（都来自 `idx.element`）——
+ *  这里只取 `isText` 的那些。贴纸走 `stickersAt`（另一条已经验过的路径），别混用。 */
+const texts = computed(() => getElements(idx.value, current.value).filter((e) => e.isText === true))
+
+/** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
+function rgbaCss(c) {
+  const a = Array.isArray(c) && c.length >= 4 ? c[3] / 255 : 1
+  return `rgba(${c[0]},${c[1]},${c[2]},${Number.isFinite(a) ? a : 1})`
+}
 const progress = computed(() => duration.value ? Math.round(current.value / duration.value * 1000) : 0)
 const fmt = (s) => {
   const n = Number(s) || 0
@@ -3374,6 +3398,17 @@ function pause() {
 .sticker-el { position:absolute; width:var(--sticker-s, 280px); height:var(--sticker-s, 280px); display:flex; align-items:center; justify-content:center; }
 .sticker-el img { width:100%; height:100%; object-fit:contain; }
 .sticker-emoji { font-size:var(--sticker-emoji, 200px); line-height:var(--sticker-s, 280px); text-align:center; font-family:'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif; }
+/* §5 E3 文字元素层。落点由内联 style 给（`left/top` 百分比，**`process` 写回的值**）。
+   ⚠️ 居中用独立的 `translate` 属性、**不放进内联 `transform`** ——
+      内联 transform 承载动画（scale/rotate），两者写同一个属性会互相覆盖
+      （表现就是"字的位置突然跳掉"或"缩放不动"，且不报错）。 */
+.text-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:100%; pointer-events:none; }
+.text-el { position:absolute; white-space:pre; translate:-50% -50%; line-height:1.15;
+           /* 同 `.cap` / `.dm`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，
+              会盖掉父层继承的字体栈（那个栈是"预览与成片同源"的唯一通道）⇒ 必须 inherit。 */
+           font-family:inherit;
+           /* 与出片侧 ASS 的描边同口径：先描边后填充 */
+           paint-order:stroke fill; }
 .danmaku-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:var(--dm-h, 540px); overflow:hidden; }
 .dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill;
       /* ⚠️ 必须 inherit：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**本元素的声明，
