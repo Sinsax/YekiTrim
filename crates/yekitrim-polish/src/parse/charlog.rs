@@ -155,7 +155,7 @@ pub fn load_char_timeline(clip_dir: &Path) -> Option<CharTimelineLog> {
                 if log.chars_with_times().is_none() {
                     tracing::debug!(
                         "字级时间戳形状不合法（{} 字 vs {} 个时间）—— 当作没有: {}",
-                        log.chars().count(),
+                        log.char_count(),
                         log.times.len(),
                         candidate.display()
                     );
