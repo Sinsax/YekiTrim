@@ -70,6 +70,17 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "crate::render::BgmConfig::is_empty")]
     pub bgm: crate::render::BgmConfig,
 
+    /// 12d. **文字元素动效**（§5 E4a）—— 目前只有 T2 打字机。
+    ///
+    /// ⚠️ **默认关** ⇒ 老工程零迁移（R4：不写这个段 ⇔ 行为与今天逐字节相同）。
+    /// 做法与 §11 BGM 同源：新能力一律"默认关 + 显式开"，
+    /// 免得"升级一次、存量工程的观感全变"。
+    ///
+    /// ⚠️ 只做**本仓自足**的那一档（T2）。T1/T3/T4/T6 要底座新能力，
+    /// 见 `render/elements.rs` 的模块注释与 `docs/plan/dhampir-elements-request.md`。
+    #[serde(default, skip_serializing_if = "crate::render::ElementsConfig::is_empty")]
+    pub elements: crate::render::ElementsConfig,
+
     /// 12c. **多版本成片动过 EDL 时的用户原值备份**（§9）。
     ///
     /// ⚠️ 只在工程**本来就有手排 EDL**、且跑过 `--versions > 1` 时才非空。
@@ -2026,6 +2037,7 @@ impl ProjectFile {
             },
             sfx: SfxConfig::default(),
             bgm: crate::render::BgmConfig::default(),
+            elements: crate::render::ElementsConfig::default(),
             user_edl_backup: Vec::new(),
             cover: CoverConfig::default(),
             segments: vec![
@@ -2090,6 +2102,31 @@ pub fn clamp_segments_to_duration(segments: &mut Vec<Segment>, duration: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚠️ **R4 红线**：`[elements]` 默认关 ⇒ **老工程一个字节都不变**。
+    ///
+    /// 判据不是"读一下 `is_empty()`"，而是**真的序列化一遍**、看那个键有没有冒出来 ——
+    /// `skip_serializing_if` 写错（比如写成 `default` 才该有的样子）时，
+    /// `is_empty()` 照样返回 true，但 toml 里会多出一个 `[elements]` 段，
+    /// 而"存量工程重存一次就变样"正是本仓的硬红线。
+    #[test]
+    fn 默认的_elements_不写进_toml_r4() {
+        let cfg = ProjectFile::example();
+        let text = cfg.to_toml_commented().expect("序列化不该失败");
+        assert!(
+            !text.contains("[elements]"),
+            "默认配置不该写出 `[elements]` 段（R4 零回归）——多出来的键就是\"升级一次、工程变样\""
+        );
+        // 开了开关就必须写下去，否则下次加载就丢了（与 `is_empty` 那条判据配套）。
+        let mut on = ProjectFile::example();
+        on.elements.typewriter = true;
+        let text_on = on.to_toml_commented().expect("序列化不该失败");
+        assert!(
+            text_on.contains("[elements]"),
+            "开了打字机却没写下来 ⇒ 下次加载静默丢失（本仓典型\"设置不生效\"）"
+        );
+        assert!(text_on.contains("typewriter"), "开关本身必须在");
+    }
 
     /// 一个"正片段"的构造器（`EdlClip` 没有 `Default`，字段太多）。
     fn main_clip(start: f64, end: f64, transition: Option<&str>) -> EdlClip {
