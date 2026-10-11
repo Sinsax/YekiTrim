@@ -34,7 +34,7 @@
       </div>
       <div class="corner-glow"><div class="gb"></div></div>
       <div class="fx fx-vignette" :style="vignetteStyle"></div>
-      <div class="fx fx-noise" :style="{ opacity: noiseOp }"></div>
+      <div class="fx fx-noise" :style="noiseStyle"></div>
       <div class="fx fx-flash" :style="flashStyle"></div>
       <div class="fx fx-hue" :style="hueStyle"></div>
       <div class="fx fx-color" :style="colorOverlayStyle"></div>
@@ -149,7 +149,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, wrapCaptionParts, capMeasure, noiseTile } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -2176,6 +2176,21 @@ const vfx = computed(() => videoFxAt(idx.value, current.value))
 const flash = computed(() => getFlash(idx.value, current.value))
 const hueFlash = computed(() => getHueShiftFlash(idx.value, current.value))
 const noiseOp = computed(() => getNoiseOpacity(idx.value, current.value))
+/**
+ * §20 真黑白噪点的样式（与成片**同源**，不是"白纱"）。
+ *
+ * ⚠️ 帧号取 **`dhampirFrameShown`**（引擎已经画到第几帧），**不是** `current * fps` ——
+ * 出片模板的同一条注释（`templates/index.html:1122`）写明了原因：DOM 层没有 fps 这个概念，
+ * 自己乘一个就会与 canvas 路径分叉（两边用**不同的**噪声图 = 又一处"预览 ≠ 成片"）。
+ *
+ * ⚠️ 不透明度为 0 时**不生成背景图** —— `noiseTile` 要建 canvas + 逐像素写 64×64，
+ * 绝大多数帧根本不挂 noise，每帧白算一次是浪费（模板那边判的是 `noiseOp > 0.005`，同口径）。
+ */
+const noiseStyle = computed(() => {
+  const op = noiseOp.value
+  if (!(op > 0.005)) return { opacity: 0 }
+  return { opacity: op, backgroundImage: `url(${noiseTile(dhampirFrameShown).toDataURL()})` }
+})
 const vignette = computed(() => getVignette(idx.value, current.value))
 const colorOverlay = computed(() => getOverlayState(idx.value, current.value))
 const capRows = computed(() => subsAt(idx.value, current.value))
@@ -3319,7 +3334,16 @@ function pause() {
    它们的值都由被冻住的 `current` 算出来（定格期间不变），所以实时画在上面与拍进快照等价。
    正常播放时没有任何视觉变化：仍然在视频之上、字幕/弹幕/贴纸之下。 */
 .fx { position:absolute; inset:0; pointer-events:none; z-index:6; }
-.fx-noise { background:#fff; }
+/* ⚠️ `noise`（§20 真黑白噪点）—— 曾经这里是 `background:#fff` 的**纯白薄纱**，
+   而成片腿（`templates/index.html:1124` 的 DOM 路径 / `:2066` 的 canvas 路径）早已是**真噪声**。
+   两边不一致 = 「预览看到白纱、成片看到真噪点」—— 本仓明令禁止的「预览与成片分叉」，
+   而 `check-effect-registry.mjs` **一路绿灯**（它只查 `engine.js` 里有没有 `getNoiseOpacity` 这个**名字**，
+   不查那层**画了什么**）。
+   现在：背景图由 `noiseTile(dhampirFrameShown)` 逐帧生成（`polish/engine.js`，与出片模板**逐字相同**，
+   有 `webui/scripts/check-noise-parity.mjs` 钉住）；混合模式与成片一样是 `overlay`。
+   ⚠️ 成片 DOM 层写的是 `z-index:3`，这里必须保持 `6`（`.fx` 那条注释说明了原因：要压在定格遮罩
+   `z-index:5` 之上，否则跳屏蔽区间时整块闪没）—— 这条**差异是有意的**，不要"对齐"成 3。 */
+.fx-noise { mix-blend-mode:overlay; }
 .fx-color { opacity:0; }
 
 /* 虚拟 overlay（默认 1920×1080，随 `_canvas` 由 --ov-w/--ov-h 代入）：top:0 left:0 后由 scale 定位中心 */

@@ -390,6 +390,23 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
         // 落点不在这里改：auto 用 ev.x/ev.y（process 安全区算法），
         // manual 固定到 _canvas.sticker.position —— 统一在 stickersAt 里算，
         // 免得"落点"散在索引期与求值期两处（老代码的竖屏 xOverride 就是这种双头）。
+      } else if (type === 'element') {
+        // ⚠️⚠️ **第四处缺陷**：`element` 分支**从来不设 `entry.src`** ——
+        //   只有上面的 `sticker` 分支设。而 `getElements` 是拿 `entry.src` 当图源的
+        //   ⇒ **就算把 (a) 放行、(b) 改读 `e.ev.*`，`src` 仍然是空的**。
+        //   （这也是为什么"只修 :889 与 :917"不足以让贴纸画出来。）
+        //
+        //   解析口径与 `sticker` 分支**完全一致**（`name || keyword` → `stickerSrc`），
+        //   但只在 `kind === 'sticker'` 时解析：`kind === 'text'` 是**有意留空**的
+        //   （`getElements` 上方的注释：文字要动态盒算落点，故意不近似），
+        //   给它解析图源会误导下一个人以为 text 支也通了。
+        const kind = String(ev.kind ?? '').trim().toLowerCase()
+        if (kind === 'sticker') {
+          const name = ev.name || ev.keyword || ev.text || ''
+          entry.src = stickerSrc ? stickerSrc(name) : ''
+          entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
+          entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
+        }
       }
     })
   })
@@ -886,7 +903,13 @@ export function danmakuAt(idx, t) {
 export function getElements(idx, t) {
   const out = []
   for (const e of idx.element || []) {
-    const kind = String(e.kind ?? '').trim().toLowerCase()
+    // ⚠️ 载荷在 **`e.ev`** 上，不在 entry 自己身上 —— `buildIndex`（:371）造的是
+    // `{ time, duration, ev }`。这里曾经读 `e.kind` ⇒ 恒 `undefined` ⇒ `kind !== 'sticker'`
+    // 恒真 ⇒ **整条 element 通道一个都画不出来**（静默：既不报错、也不画）。
+    // ⚠️ 同函数里 `e.time` / `e.duration`（下面两处）**是对的**（那两个字段确实在 entry 上，
+    //    `stickersAt` 同口径）—— **所以绝不能全局把 `e.` 换成 `e.ev.`**：
+    //    那会把本来能用的贴纸求值弄坏。逐行判断，这就是"两错两对"。
+    const kind = String(e.ev?.kind ?? '').trim().toLowerCase()
     if (kind !== 'sticker') continue
     const et = e.time, dur = e.duration || 2.5
     if (t < et || t > et + dur) continue
@@ -914,7 +937,17 @@ export function getElements(idx, t) {
       scale = 1; rot = 0
       yOff = -stickerFloatUp(idx.cv)
     }
-    out.push({ src: (idx.stickerSrc || (() => ''))(e.text || ''), opacity, scale, rot, yOff })
+    // ⚠️ 同上：`text` 也在 **`e.ev`** 上。这里曾经读 `e.text` ⇒ 恒 `undefined` ⇒
+    // `src` 恒空串 ⇒ **画出来了但是空白的**（比"画不出来"更隐蔽：它有 opacity、有 scale，
+    // 只是没图）。只修上面那个 `continue` 而不修这里，症状就从"看不见"变成"看不见但占位"。
+    //
+    // ⚠️⚠️ **第三处缺陷**：曾经写的是 `(idx.stickerSrc || (() => ''))(...)` ——
+    //    但 **`idx` 上从来没有 `stickerSrc`**：`buildIndex` 只把解析结果落到 **`entry.src`**
+    //    （见上面 `type === 'sticker'` 分支）。⇒ 那个 `||` 兜底**恒生效**、`src` **恒为空串**，
+    //    于是**即使 (a)(b) 都修好，贴纸照样是空的**。
+    //    这里改成与 `type === 'sticker'` 同口径：**读 `e.src`**（索引期已经解析好的 URL）。
+    //    ⇒ 这就是"两处错误"背后的**第三处**：一个**恒真的兜底**，它让前两处的修复看起来无效。
+    out.push({ src: e.src || '', opacity, scale, rot, yOff })
   }
   return out
 }
@@ -970,4 +1003,61 @@ export function stickersAt(idx, t) {
     })
   }
   return out
+}
+
+// ── §20 `noise`（真黑白噪点）────────────────────────────────────────────
+//
+// ⚠️ **为什么这两条住在 `engine.js`**：`noise` 的 `dom_preview` 通道按 `spec/effects.json`
+//    就定义在这里（`channels.dom_preview` = "`engine.js` 的 `get<Camel>(id)`"）。
+//    出片那条腿（`templates/index.html`）跑在**无打包器的浏览器**里，**import 不了本模块**
+//    ⇒ 两份物理拷贝是**必然的**。两份**逐字相同**由 `scripts/check-noise-parity.mjs` 钉住
+//    （逐 token 比对，注释除外）。
+//
+// ⚠️ **帧号必须来自"已经画到第几帧"**，**不是** `t × fps` —— 出片模板的同一条注释写明了：
+//    自己乘一个 fps 会与 canvas 路径分叉（两边用不同的噪声图 = 又一次"预览 ≠ 成片"）。
+//    预览侧那个量是 `PolishPreview.vue` 的 `dhampirFrameShown`。
+
+/// 噪声贴图缓存：`'f<frame>'` → 64×64 canvas。**只留最近 8 张**（长片逐帧缓存会吃满内存）。
+const __NOISE_TILES = {}
+
+/// 64×64 的**灰度**噪声贴图（与出片模板 `noiseTile` 逐字相同）。
+///
+/// 中灰 128 抖动：`128 + (v - 0.5) * 255` —— 与底座的 `(n - 0.5) * 255` 同义。
+/// ⚠️ 三通道写成**同一个 `g`**（用户口径"黑白噪点"不是彩色噪点），alpha 恒 255（不透光斑）。
+export function noiseTile(frame) {
+  var key = 'f' + frame;
+  if (__NOISE_TILES[key]) return __NOISE_TILES[key];
+  var S = 64;
+  var cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  var c2 = cv.getContext('2d');
+  var img = c2.createImageData(S, S);
+  for (var y = 0; y < S; y++) {
+    for (var x = 0; x < S; x++) {
+      var v = noiseHash(x, y, frame, 7);
+      var g = Math.max(0, Math.min(255, Math.round(128 + (v - 0.5) * 255)));
+      var i = (y * S + x) * 4;
+      img.data[i] = g; img.data[i + 1] = g; img.data[i + 2] = g;
+      img.data[i + 3] = 255;
+    }
+  }
+  c2.putImageData(img, 0, 0);
+  __NOISE_TILES[key] = cv;
+  // 只留最近 8 张
+  var keys = Object.keys(__NOISE_TILES);
+  if (keys.length > 8) { delete __NOISE_TILES[keys[0]]; }
+  return cv;
+}
+
+/// 整数哈希（与底座 `color_mask.wgsl::hash_u32` 同义、与出片模板逐字相同）。
+/// 纯函数 ⇒ **同一帧可复现**（三腿一致的那条不变量就靠它）。
+export function noiseHash(x, y, frame, seed) {
+  var v = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663)
+         ^ Math.imul(frame, 83492791) ^ Math.imul(seed, 2654435761)) >>> 0;
+  v = (v ^ (v >>> 16)) >>> 0;
+  v = Math.imul(v, 0x7feb352d) >>> 0;
+  v = (v ^ (v >>> 15)) >>> 0;
+  v = Math.imul(v, 0x846ca68b) >>> 0;
+  v = (v ^ (v >>> 16)) >>> 0;
+  return (v & 0x00ffffff) / 16777216;
 }
