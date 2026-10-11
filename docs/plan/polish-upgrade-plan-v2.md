@@ -717,3 +717,19 @@ rgb = rgb + vec3<f32>((n - 0.5) * NOISE_FULL_SCALE * mask.noise_amount);   // NO
 | 预览腿**同帧截图** | 本机预览时钟不同步（四种 seek 手段全试过）—— **环境限制，非产品缺陷** |
 | 批3 §6 爆点 / §8 role 界面 / §9 多版本 / §11 BGM | 未做 |
 | `check-font-inputs.mjs` 红 | ⚠️ **pre-existing**（干净 HEAD 上同样红，已验证） |
+
+### §17 跳切标记 —— **已实装，本轮补验证**（不是新做）
+计划书原写「给屏蔽轨加跳切标记」，实测**生产链与显示链都在**：
+```
+生产者：llm/mod.rs:199 → process::cap_jump_cuts（配额：每段 MAX_JUMPS_PER_SEGMENT + 最小间隔）
+        LLM 写 cut=true（真取样 run1 里 21 条 camera 中有 1 条）
+显示  ：TimelineEditor.vue:946 labelFor 的 '切·' 前缀，泳道上一眼可见
+```
+**真跑复刻 labelFor**（不是读代码）：
+```
+{type:'camera',zoom:'特写',anchor:'liver',cut:true}  → "切·特写 liver"
+{type:'camera',zoom:'近',anchor:'liver',cut:false}   → "近 liver"
+{type:'camera',zoom:'中',anchor:'liver',cut:true,handheld:true} → "摇·切·中 liver"
+```
+⇒ ✅ **新增的「特写」档与跳切标记能叠用**（`切·特写`），且与「摇」前缀的优先级正确。
+⚠️ **仍未做的只是"截图"这一步**（要起服务器截时间轴），**功能本身不是"没做"**。
