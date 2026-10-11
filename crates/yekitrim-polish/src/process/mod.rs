@@ -10,6 +10,9 @@ use crate::{assets, parse, project};
 mod sfx;
 mod download;
 mod fx;
+/// §23 节奏约束求解器：>6s 没有视觉变化的区间自动补一个最低强度的推近。
+/// 纯函数（扫区间 + 给补位点），**不落盘**；判据在 `process`。
+pub mod pacing;
 mod placement;
 /// 爆点判据（总方案 §6）：一个纯函数、一份判据、一处阈值，供 §6/§7/§8 共用。
 pub mod punch;
@@ -886,6 +889,50 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 config.edl.clips.len()
             );
             edl_intent_done = true;
+        }
+    }
+
+    // Step 6: §23 节奏约束求解器 —— 扫出 >6s 没有视觉变化的区间。
+    //
+    // ⚠️⚠️ **本趟只报告、不落盘**（保守决策：R4 零回归）。
+    //    理由与规格那句话直接相关：规格特别强调过"**留白是'没有说话'，
+    //    不是'画面死着'**"，而本仓有**大量**安静叙述切片 ——
+    //    自动往它们身上补运镜，是**改观感**的行为，不能在一次升级里
+    //    悄悄对所有存量工程生效。所以这一趟先让它**可见**：
+    //    把扫出来的空档打进日志，用户看过真实数字之后再决定要不要开。
+    //
+    // ⚠️ 这也是"**别让信息静默消失**"那条纪律：算出来了就一定要说出来，
+    //    哪怕暂时不用它。等真开开关时，判据与统计都已经在跑了。
+    {
+        let mut all_events: Vec<crate::project::Event> = Vec::new();
+        for seg in &config.segments {
+            all_events.extend(seg.events.iter().cloned());
+        }
+        {
+            let dur = config.segments.last().map(|s| s.end).unwrap_or(0.0);
+            let gaps = pacing::find_idle_gaps(dur, &all_events);
+            if gaps.is_empty() {
+                tracing::info!("  · §23 节奏：没有 >6s 的静止区间（画面变化够密）");
+            } else {
+                let total: f64 = gaps.iter().map(|g| g.duration()).sum();
+                tracing::info!(
+                    "  · §23 节奏：{} 段 >6s 无视觉变化，共 {:.1}s（最长 {:.1}s）——                      建议补 {} 档最低强度推近，每段一个",
+                    gaps.len(),
+                    total,
+                    gaps.iter().map(|g| g.duration()).fold(0.0_f64, f64::max),
+                    pacing::PUNCH_ZOOM,
+                );
+                for g in gaps.iter().take(5) {
+                    tracing::info!(
+                        "      {:.1}s–{:.1}s（{:.1}s）⇒ 建议在 {:.1}s 补一个 {:.1}s 的推近",
+                        g.start,
+                        g.end,
+                        g.duration(),
+                        g.at,
+                        pacing::PUNCH_DURATION_SECS,
+                    );
+                }
+            }
         }
     }
 
