@@ -871,7 +871,13 @@ const LANE_DEFS = [
   { type: 'segments', label: '分段 / 屏蔽', color: TIMELINE_COLORS.segments, resizable: true },
   { type: 'subtitles', label: '字幕', lane: 'subtitles', color: 'rgba(59,130,246,0.35)', resizable: true },
   { type: 'camera', label: '运镜', lane: 'camera', color: TIMELINE_COLORS.camera, types: LANE_TYPES('camera'), resizable: true },
-  { type: 'sticker', label: '贴纸', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  // ⚠️ 轨头标签是「元素」不是「贴纸」（§5 E1）。这条轨**同时装 `sticker` 与 `element`**
+  //    （`LANE_TYPES('sticker')` → `['sticker','element']`，与 `spec/effects.json` 的座位表一致），
+  //    所以叫「贴纸」会让"往这条轨加一个元素"变成一件靠猜的事 ——
+  //    用户看到的标签必须涵盖它能装的东西。
+  //    ⚠️ `lane` 这个键**仍然是 `sticker`**（磁盘上的键名、Rust `Lane::key` 与
+  //    `LANE_OF_TYPE` 都按它走）—— 只改**显示标签**，不做数据迁移。
+  { type: 'sticker', label: '元素', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
   { type: 'fx', label: '视觉特效', lane: 'effects', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
   { type: 'sfx', label: '音效', lane: 'sfx', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
 ]
