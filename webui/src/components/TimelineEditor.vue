@@ -277,6 +277,7 @@
                 <option value="远">远（画中画）</option>
                 <option value="中">中景</option>
                 <option value="近">近景</option>
+                <option value="特写">特写（怼脸）</option>
               </select>
               <!-- 手持摇摆：运镜的附加变种，门槛只在近景（用户定的口径）。
                    关掉即删字段（保持配置干净）；景别改离近景由 setZoom 顺带剥掉。 -->

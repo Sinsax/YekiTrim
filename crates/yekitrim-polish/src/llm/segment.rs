@@ -80,7 +80,11 @@ pub(crate) fn build_events_system_prompt(
 
 事件类型 (每个事件对象以 "type" 字段开头):
 - camera: 运镜. {{"type":"camera","time":0.5,"end":3.5,"zoom":"中","anchor":"liver"}}
-  zoom = "远"/"中"/"近"（远=画面缩小成画中画）
+  zoom = "远"/"中"/"近"/"特写"（远=画面缩小成画中画）
+  特写比近景再近一档: 近景是"凑近了看", 特写是"怼到脸上"——
+  只在情绪炸开的那一瞬间用(爆笑/震惊/名场面), 整段长时间怼着脸会很压迫, 别当常规景别
+  特写只能聚焦主播: 写别的聚焦会被系统改回 "liver"
+  例: {{"type":"camera","time":42.0,"end":44.0,"zoom":"特写","anchor":"liver"}}
   anchor = 聚焦谁: "liver"(主播) / "danmaku"(弹幕) / "sticker"(贴纸) / "center"(画面中央)
   想从一处移到另一处, 再写 anchor_to (同样的取值); 不写就是原地聚焦
   想**硬切**(切镜, 瞬间换构图、没有推移动画)再加 "cut":true —— 只在刻意切镜时用, 不是常规手段
@@ -632,6 +636,85 @@ mod tests {
         assert!(
             prompt.contains("像素"),
             "提示词里必须写明 intensity 的单位是像素"
+        );
+    }
+
+    /// 提示词必须把**特写**这一档教给 LLM，且教的那个词在**消费侧真源**里是独立一档。
+    ///
+    /// 批0.1 实测（`docs/plan/llm-production-rate.md`）：改之前连着跑三次真实 LLM，
+    /// `zoom="特写"` 命中 **0 / 0 / 0**，而同三次里 `zoom` 任意值有 **20 / 19 / 21** 条 ——
+    /// LLM 明明在写 zoom，只是**永远不写「特写」**。这正是 §18-A：
+    /// **词不存在 ⇒ 产出恒为 0，且全链路零报错**。
+    ///
+    /// ⚠️ 判据刻意**不写 `"特写"` 字面量**：档位名从提示词里抠出来，
+    /// 倍率喂给 `project::CameraStyle::factor`（**运镜倍率的唯一真源**）解析 ——
+    /// 这样"提示词与消费侧漂移"会被直接抓住（两边各写一份字面量的判据拦不住漂移）。
+    #[test]
+    fn prompt_teaches_a_zoom_level_the_consumer_resolves_distinctly() {
+        let prompt = build_events_system_prompt(&[], &[], "");
+        let style = crate::project::CameraStyle::default();
+
+        // 从枚举行 `zoom = "远"/"中"/"近"/"特写"（…）` 里抠出全部档位名
+        let enum_line = prompt
+            .lines()
+            .find(|l| l.contains("zoom ="))
+            .expect("提示词里必须有 zoom 的枚举行");
+        let levels: Vec<&str> = enum_line.split('"').skip(1).step_by(2).collect();
+        assert!(
+            levels.len() >= 4,
+            "zoom 枚举行至少要列出四档；解析到 {levels:?}，枚举行 = {enum_line}"
+        );
+
+        // 真源侧：近/中 各是多少（`factor` 认不出的档位会兜底成中景）
+        let near = style.factor("近");
+        let mid = style.factor("中");
+        // 提示词里必须有**至少一档**比近景更近 ⇒ 那颗词就是"特写"，
+        // 不管它叫什么、也不用在测试里重复写一遍它的名字
+        let closer: Vec<(&str, f64)> = levels
+            .iter()
+            .map(|l| (*l, style.factor(l)))
+            .filter(|(_, f)| *f > near)
+            .collect();
+        assert!(
+            !closer.is_empty(),
+            "提示词必须列出一档比近景({near})更近的景别，否则 LLM 永远写不出特写；             实测各档 = {levels:?} -> {:?}",
+            levels.iter().map(|l| (*l, style.factor(l))).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            closer.len(),
+            1,
+            "比近景更近的档只该有一个（特写）；实得 {closer:?}"
+        );
+        let (closeup_label, closeup_factor) = closer[0];
+        assert!(
+            closeup_factor != mid,
+            "特写档({closeup_factor}) 不能与中景({mid}) 同值"
+        );
+        // 其余档位一个都不许被 `factor` 的兜底 `_ => mid` 吞掉
+        // （吞掉 = 提示词教了一个消费侧不认的词，症状正是批0.1 的"产出恒为 0"）
+        for l in &levels {
+            if *l == closeup_label {
+                continue;
+            }
+            assert!(
+                *l == "中" || style.factor(l) != mid,
+                "档位 `{l}` 被 factor 的兜底分支吞成了中景 —— 提示词教了一个消费侧不认的词"
+            );
+        }
+
+        // 示例：批0.1 的旁证是"camera 有示例 ⇒ 产出 20/19/21 次"，示例是教 LLM 用词的有效手段
+        let example = prompt
+            .lines()
+            .find(|l| l.contains(&format!(r#""zoom":"{closeup_label}""#)))
+            .expect("必须给一条特写的示例 —— 有示例的词才会被 LLM 真正用起来");
+        assert!(
+            example.contains(r#""anchor":"liver""#),
+            "特写示例必须带 \"anchor\":\"liver\" —— 焦点守卫会把别的焦点改回主播，             教 LLM 写一个必被系统改掉的值等于白写；示例行 = {example}"
+        );
+        // 与近景的区别要说清（否则 LLM 会把它当 `近` 的同义词，等于没加）
+        assert!(
+            prompt.contains("特写比近景再近一档"),
+            "提示词要说清特写与近景的区别（{closeup_factor} / {near} 是两个独立档位）"
         );
     }
 }
