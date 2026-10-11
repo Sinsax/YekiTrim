@@ -68,6 +68,67 @@ pub struct ElementsConfig {
     /// 它也是"这条 cue 总时长够不够打完"的判据输入。
     #[serde(default = "default_hold_secs")]
     pub hold_secs: f64,
+
+    // =================================================================
+    // T1 弹入 / T4 抖动 / T6 底衬（2026-10-11）
+    //
+    // ⚠️⚠️ **全部 `Option<T>` + `skip_serializing_if`，不用裸值 + "等值就跳过"。**
+    //
+    // 裸 `f64` + `skip_serializing_if = "等于默认值"` 能满足"老工程一个键都不多"，
+    // 但会让**用户显式写的默认值被静默吃掉** —— 读回来仍是默认、渲染逐像素一样，
+    // 所以**永远不会有症状**，而"显式写了却读不回来"是本仓最恨的那类静默。
+    // `Option` 一举两得：**不写键 = 默认行为**，**写了就是写的那个值**。
+    //
+    // 底座侧的字段名与口径见 Dhampir 仓的 `docs/text-motion-integration.md`
+    // （T1/T3/T4）与 `docs/plan/t6-plate-interface.md`（T6）——
+    // **转译器逐字照抄那些名字**，本结构体只是"本仓这一侧的输入形状"。
+    // =================================================================
+    /// **T1 弹入**：起始缩放倍率。`None` = 1.0（不缩）。参照 `0.7`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_in_from: Option<f64>,
+
+    /// **T1 弹入**：曲线的**终点**倍率。`None` = 1.0（不过冲）。参照 `1.15`。
+    ///
+    /// ⚠️ **它是曲线端点，不是实际峰值** —— 底座那条 `back_out3`（s=3）在中点
+    /// 冲到 1.25，所以实际最大是 `from + (peak - from) × 1.25`
+    /// （参照值下 = `0.7 + 0.45 × 1.25 = 1.2625`，实测取整后 1.245）。
+    /// 想改"过冲多少"要同时动两个端点。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_in_peak: Option<f64>,
+
+    /// **T1 弹入**：窗口时长（毫秒）。`None` = 0 = **关**（不缩）。
+    ///
+    /// ⚠️ 三个 T1 字段里**只有它**决定开不开：`from` / `peak` 都给了但它是 0
+    /// ⇒ 不缩（"窗口多长"才定义得了"缩到什么程度"，另两个只是端点）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_in_ms: Option<u64>,
+
+    /// **T4 抖动**：幅度（**文档像素**）。`None` = 0 = **关**。
+    ///
+    /// 与 `rise_in_px` / `transform.x/y` 同一套坐标系（文档像素），不是目标像素。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shake_px: Option<f64>,
+
+    /// **T4 抖动**：基频（Hz）。`None` = 底座默认 18.0。只在 `shake_px > 0` 时有意义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shake_hz: Option<f64>,
+
+    /// **T6 底衬**：颜色（RGBA）。`None` = **不铺底衬**（一个像素都不多画）。参照 `[0,0,0,140]`。
+    ///
+    /// ⚠️ alpha 会**乘上**这一帧的不透明度 —— 别在这里再乘一次淡入系数（那会淡两次）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate_color: Option<[u8; 4]>,
+
+    /// **T6 底衬**：从**字形墨迹**四周各外扩多少（**目标像素**）。`None` ⇒ 底座按 12.0 算。
+    ///
+    /// ⚠️ 两个 T6 字段的关系是**单向**的：`plate_color = None` 时
+    /// `plate_pad_px` **读都不会被读到** ⇒ 只写它是**没有任何效果**的。
+    ///
+    /// ⚠️ 口径是"从**字形墨迹**外扩"，不是"从行盒外扩"（底座第一版按行盒算，
+    /// 实测下侧留白被吃掉 4px，已修）。本仓只管写字段，这个区别只在
+    /// "预览里也要画底衬"时才要本仓自己复刻 —— 那时**必须按墨迹算**。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate_pad_px: Option<f64>,
 }
 
 fn default_chars_per_sec() -> f64 {
