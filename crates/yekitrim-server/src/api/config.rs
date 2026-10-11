@@ -72,12 +72,21 @@ pub(super) fn config_get_impl(owner: yekitrim_core::owner::Owner) -> ApiResult {
     // 2026-10-03 把这条路改成"纯程序配置"时差点把它一起删掉 —— 它的语义跟着从
     // "merged 配置的解析错误"变成"程序配置的解析错误"，比原来更准确。
     let config_error = yekitrim_core::config::config_parse_error_for(owner).unwrap_or_default();
+    // ⚠️ **`reference_titles_default` = 设置页"留空实际会用哪几条"**：
+    //    这几条写死在 `detection::DEFAULT_REFERENCE_TITLES`，`config.toml` 里的
+    //    `reference_titles = []` **不代表没有参考标题** —— 运行时照样注入内建那几条。
+    //    不给前端看，用户在设置页只会看到一个空框、以为没配（实测被问过）。
+    //    ⚠️ 前端**只拿它做灰字预览，绝不预填进输入框**：预填会让用户"以为是自己的"，
+    //    一保存就把内建那几条固化进 config.toml，从此再也回不到内建更新。
+    let reference_titles_default: Vec<&str> =
+        yekitrim_core::detection::DEFAULT_REFERENCE_TITLES.to_vec();
     ok(serde_json::json!({
         "global_raw": global_raw,
         "llm_raw": llm_raw,
         "global_config": serde_json::to_value(global_cfg).unwrap_or_default(),
         "llm_config": serde_json::to_value(llm_cfg).unwrap_or_default(),
         "config_error": config_error,
+        "reference_titles_default": reference_titles_default,
     }))
 }
 
