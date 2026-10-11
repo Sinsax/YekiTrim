@@ -16,7 +16,13 @@ use std::path::{Path, PathBuf};
 ///
 /// ⚠️ **默认 `enabled = false`** ⇒ 老工程零迁移（R4）。
 /// 这也是"音轨全是直播原声"那个既有事实的显式化 —— 不写这个键 ⇔ 行为与今天逐字节相同。
+///
+/// ⚠️⚠️ **`deny_unknown_fields` 是必须的**（2026-10-11 与 `[elements]` 同批发现）：
+/// 少了它，`volume` 拼成 `volumn` 会被 serde **静默丢掉**，而 `enabled = true` 照旧生效 ——
+/// 表现是"开了 BGM、音量不是我写的那个"，**不报错、日志正常**。
+/// 顶层 `ProjectFile` 本来就是 `deny_unknown_fields`，同段加它**不新增口径**。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BgmConfig {
     /// 总开关。**默认关** —— 不写这个键的老工程行为不变。
     #[serde(default)]

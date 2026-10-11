@@ -2128,6 +2128,55 @@ mod tests {
         assert!(text_on.contains("typewriter"), "开关本身必须在");
     }
 
+    /// ⚠️⚠️ **`[elements]` 里拼错的键必须当场报错，不许静默丢掉**（2026-10-11 实测发现）。
+    ///
+    /// 起因：把 `chars_per_sec` 拼成 `char_per_sec_typo` 之后跑 `process`，
+    /// **日志一切正常、不报错**，段里只剩 `chars_per_sec = 14.0`（默认值）——
+    /// 也就是"用户写了个速度，程序当没看见"。这正是本仓反复踩的那一类：
+    /// **跑得通、日志正常、结果不对**。
+    ///
+    /// ⚠️ 判据必须落在**解析**上（`Err`），不能只断言结构体上有 `deny_unknown_fields` 这个属性 ——
+    /// 那是**字面**判据，属性挪到别的段上照样绿（`checkDanmakuColorStripped` 那次
+    /// "只断言那句话在不在"踩过一模一样的坑）。
+    ///
+    /// ⚠️ `to_toml_commented()` 的产物**顶层带一行 `config_version`**，而它不在
+    /// `ProjectFile` 里（`deny_unknown_fields` 会因此拒绝）⇒ 必须先
+    /// `strip_version_key`，与生产那条读路径同源（见 project 卡末段）。
+    #[test]
+    fn elements_里拼错的键必须报错而不是静默丢掉() {
+        let strip = |s: String| {
+            yekitrim_core::config::version::strip_version_key(&s).expect("摘版本键")
+        };
+        let base = strip(ProjectFile::example().to_toml_commented().expect("序列化"));
+
+        // ① 拼错速度键 —— 最容易写错、后果最隐蔽（开关照样 true、唯独速度不是用户写的那个）。
+        let bad = format!("{base}\n[elements]\ntypewriter = true\nchar_per_sec_typo = 99\n");
+        let err = toml::from_str::<ProjectFile>(&bad)
+            .expect_err("拼错的键必须让解析失败，实得解析通过了（静默丢掉）");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("char_per_sec_typo") || msg.contains("unknown field"),
+            "报错信息里得能看出是哪个键拼错了，实得：{msg}"
+        );
+
+        // ② 正确的三个键必须照样解析得动（别把 `deny_unknown_fields` 加过头）。
+        let good = format!(
+            "{base}\n[elements]\ntypewriter = true\nchars_per_sec = 22.0\nhold_secs = 0.3\n"
+        );
+        let ok = toml::from_str::<ProjectFile>(&good).expect("正确的三个键必须解析通过");
+        assert!(ok.elements.typewriter, "开关没读到");
+        assert!(
+            (ok.elements.chars_per_sec - 22.0).abs() < 1e-9,
+            "速度没读到，实得 {}",
+            ok.elements.chars_per_sec
+        );
+        assert!(
+            (ok.elements.hold_secs - 0.3).abs() < 1e-9,
+            "静止尾巴没读到，实得 {}",
+            ok.elements.hold_secs
+        );
+    }
+
     /// 一个"正片段"的构造器（`EdlClip` 没有 `Default`，字段太多）。
     fn main_clip(start: f64, end: f64, transition: Option<&str>) -> EdlClip {
         EdlClip {
