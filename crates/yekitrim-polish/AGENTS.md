@@ -37,20 +37,9 @@
 （`yekitrim_core::danmaku::clamp_display_windows`）：渲染侧的渐隐钉在窗口末尾、滚动由 `travel` 决定，
 不抬就是"弹幕没到左边缘就消失"（录播姬 XML 的 8 秒窗口对中文弹幕普遍不够）。明细见 core/`danmaku` 卡。
 
-`crates/yekitrim-polish/src/parse/charlog.rs`：**字级时间戳搬运**（E4b）——
-`CharTimelineLog`（`asr/timeline.json` 的只读镜像）/ `Breath` / `SubtitleChars`、
-`char_timeline_candidates(clip_dir)`、`load_char_timeline(clip_dir)`、`align_chars_to_subtitles(log, subs)`；
-常量 `CHAR_TIMELINE_FILE` / `CHAR_TIMELINE_REL`。入口在 `commands.rs::sync_char_timeline`（`cmd_parse` 里调）。
-⚠️ **`output_dir`（`<工程根>/output`）与片段目录（`<工程根>/output/clips/<名>`）不是同一个** ——
-ASR 产物在**前者**的 `asr/` 下，而 polish 只拿得到后者、且 `output_dir` 可配置 ⇒
-只能**按路径反推**（照 `resolve_danmaku` 的"多候选、第一个存在的赢"）。候选表**顺序有判据**
-（三个同时存在时必须规范布局①赢）—— 顺序写错在正常布局下**看不出来**。
-⚠️ **缺文件必须优雅**：`None` ⇒ 不报错、不阻断 `init`/`parse`、**不落任何文件**
-（落空文件 = 存量工程目录凭空多一个，破坏 R4 逐字节口径）；真读到数据也**只在内容变了才写**
-（mtime 一刷新，片段会被首页顶到最前）。对不全的字幕按**命中率闸**整条作废并**回滚游标**
-（没有闸的话"毫无关系"也能凑出一串看着正常的时间）。判据：`tests/char_timeline_carry.rs`（3 条端到端）
-+ `parse::charlog::tests`（15 条）。
-⚠️ 样本 `timeline.json` 是**按 `asr::artifacts::TimelineRecord` 结构造的**，不是真链路产出。
+`parse/charlog.rs`：**字级时间戳搬运**（E4b，`asr/timeline.json` → `data/char-timeline.json`；
+入口 `commands.rs::sync_char_timeline`）。⚠️ `output_dir` ≠ 片段目录（父子）⇒ 路径反推；
+**缺文件优雅**（不报错、不阻断、**不落文件**=R4），有数据**只在变了才写**。理由见该文件模块头。
 
 `process::cmd_process`（process/ 卡）、`render::{cmd_render, render_chunk_sync}`（render/ 卡）。
 
