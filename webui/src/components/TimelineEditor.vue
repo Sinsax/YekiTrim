@@ -77,11 +77,8 @@
         追加到片尾<span class="muted">末尾</span>
       </button>
     </div>
-    <!-- 属性面板：Teleport 到页面给的挂载点（选中与编辑逻辑仍留在本组件里） -->
-         整个编辑器子树还没插进 document（Vue 先建子节点、最后才 hostInsert），
-         直接写 :to="propsTarget" 会解析不到、面板完全不渲染（只剩一块空白）。
-         所以用 teleportTo 门控，等 onMounted（本组件的 mounted 在 post-flush 阶段跑，
-         那时页面已插入文档）再设值。 -->
+    <!-- 属性面板：Teleport 到页面给的挂载点。⚠️ 必须 `v-if="teleportTo"` 门控 ——
+         目标在**挂载时**解析，那时子树还没进 document，直接 `:to` 会整块不渲染。 -->
     <Teleport v-if="teleportTo" :to="teleportTo">
       <!-- ⚠️ 轨道设置在页面的那一份面板里（PolishView 与它共用 `.props-host` 这一列）：
            轨道设置打开时这里整块让位，两份面板不并存（用户口径：所有轨道合并到一个属性面板）。 -->
@@ -529,6 +526,9 @@
           >
             <span v-if="block.resizable && block.leftResizable" class="resize resize-l" @pointerdown.stop="startPointer($event, lane, block, 'resize-l')"></span>
             <span v-if="block.resizable" class="resize" @pointerdown.stop="startPointer($event, lane, block, 'resize-r')"></span>
+            <!-- §10 情绪徽标：并进分段块（不单开泳道，见 `segEmotion`） -->
+            <span v-if="block.emo" class="emo-badge" :style="{ background: block.emo.color }"
+                  :title="block.emo.title">{{ block.emo.label }}</span>
             {{ block.label }}
           </div>
         </div>
@@ -574,32 +574,6 @@
                     @pointerdown.stop @click.stop="edlDuplicate(b.index)">重放</button>
             <span class="resize" title="拖这里改这一段的源终点" @pointerdown.stop="startEdlDrag($event, b, 'resize-r')"></span>
           </div>
-        </div>
-      </div>
-      <!-- ── §10 情绪轨道（观众情绪，`process` 算出来的 `data/emotion.json`）──
-           ⚠️ **它是一条"只读的观察轨"，不是第 8 条可编辑源泳道** —— 与成片轨同一个地位：
-             * 横向位置走 **源时间**（`trackWidth`），因为 `emotion.json` 的窗口就是源时间；
-             * **没有加号、没有眼睛**：情绪不是"事件"，没法手工添加，也没有"整类不渲染"的语义
-               （它根本不影响出片，只影响"你解释得通这段为什么吵"）；
-             * 默认隐藏：`emotionWindows` 为空时整块不渲染（没有弹幕的工程界面逐字节不变）。
-           ⚠️ **这条轨存在的理由是补上一个缺失的读者**：`emotion.json` 此前**全仓零消费者**
-             （只有 `write_emotion_track` 一个写者）—— 是一件"算出真数据、然后扔掉"的产物。
-             这一段就是那个读者：端点 `GET /api/polish/emotion` 见 `api/polish.rs`。 -->
-      <div v-if="emotionWindows.length" class="lane emotion-lane">
-        <div class="lane-label emotion-label">
-          <!-- ⚠️ 占位符**必须与其它结构轨一致（`·`）**：这里原先我自己发明了 `◔`，
-               看着像个"半开的眼睛" ⇒ 用户会以为这是个能点的眼睛开关（实测被问「◔ 这个是？」）。
-               它**不是眼睛**（这条轨没有"整类不渲染"的语义），就该跟分段/屏蔽/成片三处同一个符号。 -->
-          <span class="lane-eye lane-eye-none"
-                title="情绪轨道：由弹幕算出的观众情绪（不驱动画面，仅供判读「这段为什么吵」）">·</span>
-          <span class="lane-name emotion-label-name"
-                title="情绪轨道：按弹幕关键词算出的四维情绪（喜/惊/笑/叹）· 不参与出片">情绪</span>
-          <div class="lane-adds"></div>
-        </div>
-        <div class="lane-track" :style="{ width: trackWidth + 'px' }">
-          <div v-for="(w, i) in emotionWindows" :key="'emo' + i" class="block emotion-block"
-               :style="{ left: w.left + 'px', width: w.width + 'px', opacity: w.opacity, background: w.color }"
-               :title="w.title">{{ w.label }}</div>
         </div>
       </div>
       <div class="lane ruler-lane">
@@ -1167,6 +1141,29 @@ const EMOTION_ZH = { joy: '喜', shock: '惊', laugh: '笑', awe: '叹' }
  *  ⚠️ 不透明度按 `count`（参与判定的弹幕条数）走：**3 条弹幕判出的"震惊"与 300 条
  *     不是一回事**。条的窗口画淡一点，让"这里其实没多少弹幕"一眼看得出来 ——
  *     只画一个纯色块会把它伪装成同样可信。 */
+/** §10 情绪 —— **单个分段**最强的那一窗（给分段块当徽标）。
+ *
+ *  ⚠️ 语义：情绪是**这一段**的属性（"这段为什么吵"），不是第 8 条泳道。
+ *    单开一行会让同一信息在时间轴上出现两次、还白占 26px（整块按 7 条泳道定的高度）。
+ *  ⚠️ 只取**与 `[seg.start, seg.end)` 真重叠**的窗口，且取最强的那一窗 ——
+ *    一个分段可能横跨好几个窗口，全画会糊成一片。
+ *  ⚠️ 没有窗口 / 强度 0 ⇒ 返回 `null`：**不显示**（不许画一个"中性"的占位，
+ *    那会让人以为"这里判过了、是平静"，而真相是"这里没数据"）。 */
+function segEmotion(seg) {
+  const ws = emotionWindows.value
+  if (!ws || !ws.length) return null
+  const a = Number(seg.start) || 0
+  const b = Number(seg.end) || a
+  let best = null
+  for (const w of ws) {
+    const s = w.start
+    const e = s + (Number(emotionRaw.value?.window_secs) || 0)
+    if (e <= a || s >= b) continue // 不重叠
+    if (!best || w.strength > best.strength) best = w
+  }
+  return best
+}
+
 const emotionWindows = computed(() => {
   const raw = emotionRaw.value
   const ws = Array.isArray(raw?.windows) ? raw.windows : []
@@ -1193,6 +1190,8 @@ const emotionWindows = computed(() => {
         opacity: Math.min(0.85, 0.35 + Math.min(count, 30) / 30 * 0.5),
         color: EMOTION_COLORS[best] || '#64748b',
         label: EMOTION_ZH[best] || best,
+        // 最强维度的强度 —— `segEmotion` 用它挑"这一段最值得说的那一窗"
+        strength: bestV,
         title: `情绪 ${EMOTION_ZH[best] || best}（${best}）· ${start.toFixed(2)}s 起 ${dur}s`
           + `\n强度 ${bestV.toFixed(3)} · 参与判定 ${count} 条弹幕`
           + (hits ? `\n命中词：${hits}` : '\n命中词：无（按颜色/模式判的）'),
@@ -1229,13 +1228,17 @@ function laneBlocks(lane) {
       // 上次 LLM 生成没产出事件的段：换个颜色标出来（成功 = 当前颜色，用户要求）
       const gen = segGen(si)
       const bad = !!gen && gen.ok === false
+      // §10 情绪徽标（并进分段块，不单开泳道）—— 见 `segEmotion`
+      const emo = segEmotion(seg)
       out.push({
         kind: 'seg', si,
         time: seg.start,
         left: seg.start * scale.value,
         width: Math.max((seg.end - seg.start) * scale.value, 8),
         label: seg.note || ('分段 ' + (si + 1)),
+        emo,
         title: '分段 ' + Number(seg.start).toFixed(1) + 's → ' + Number(seg.end).toFixed(1) + 's'
+          + (emo ? `\n${emo.title}` : '')
           + (bad ? `\n⚠ 上次 LLM 生成失败：${gen.reason || '没有产出事件'}（选中它可「只重做本段事件」）` : ''),
         color: bad ? '#f59e0b' : TIMELINE_COLORS.segments,
         resizable: true,
@@ -2579,19 +2582,10 @@ async function loadData() {
 /* ── 成片轨（EDL）：**第二条时间轴**，26px 与源泳道等高（不挤上面那 7 条）──
    底色与源泳道区分开（源 = 素材、成片 = 结果），块与块首尾相接（§6.4 方案 A：空隙 = 不播）。 */
 .edl-lane { background:var(--bg-soft); }
-/* §10 情绪轨：**只读观察轨**（与成片轨同一个地位，不是第 8 条源泳道）。
-   ⚠️ 底色刻意也走 `--bg-soft`：它不是"可编辑的内容轨"，视觉上就不该与上面 7 条抢。
-   色相由每个块自己的 inline `background` 给（四维各一色），这里不写死颜色。 */
-.emotion-lane { background:var(--bg-soft); }
-.emotion-label { background:var(--bg-soft); }
-.emotion-label-name { color:var(--main-deep); font-weight:400; }
-/* ⚠️ `cursor:default` + 无 resize 把手：**这条轨上的块拖不动**。
-   给它一个"能拖"的光标会造出一个"拖了没反应"的控件 —— 情绪是算出来的，不是用户放的。
-   ⚠️⚠️ **必须写成 `.block.emotion-block`**：`.emotion-block` 与 `.block` **特指度相同**
-   （都只有一个类），而 `.block` 在文件后面 ⇒ 平手时后者赢 ⇒ 光标仍然是 `grab`（实测抓到过）。
-   ⇒ 靠**多一个类**抬特指度，不许靠"写在前面还是后面"去赌顺序。 */
-.block.emotion-block { cursor:default; top:4px; height:18px; padding:0 5px; border-radius:3px;
-  display:flex; align-items:center; font-size:10px; color:#fff;
+/* §10 情绪徽标 —— 挂在**分段块**里（不再单开一条泳道）。
+   ⚠️ 不写死颜色：四维各一色，由 `block.emo.color` 行内给。 */
+.emo-badge { flex:none; margin-right:5px; padding:0 4px; border-radius:3px;
+  font-size:9px; line-height:14px; color:#fff;
   text-shadow:0 1px 1px rgba(0,0,0,.45); }
 .edl-track { background:repeating-linear-gradient(90deg, transparent 0 39px, var(--line-soft) 39px 40px); }
 .edl-label { background:var(--bg-soft); }

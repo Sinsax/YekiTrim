@@ -76,9 +76,19 @@ const has = (text, re) => re.test(text);
   check('loadData 里**调了** fetchEmotion（不 import 不算接线）', has(tl, /await fetchEmotion\(/));
   check('有 emotionRaw 状态', has(tl, /emotionRaw\s*=\s*ref\(/));
   check('算出了 emotionWindows', has(tl, /const emotionWindows\s*=\s*computed\(/));
-  check('模板里**渲染**了 emotion-block', has(tl, /class="block emotion-block"/));
-  check('轨迹容器 v-if 挂在 emotionWindows.length 上（空态不占位）', has(tl, /v-if="emotionWindows\.length"/));
-  check('块绑定了 left/width（不是写死位置）', has(tl, /:style="\{ left: w\.left \+ 'px', width: w\.width \+ 'px'/));
+  // ⚠️⚠️ 2026-10 口径改了：情绪**并进分段块**，不再单开第 8 条泳道。
+  //    理由（用户实报）：单开一行让同一信息在时间轴上出现两次，还白占 26px ——
+  //    整块布局按"7 条泳道 + 标尺"定的，多一行会把下面的「时间」行挤乱
+  //    （实测：视觉特效的块溢出到了时间行上）。
+  //    ⇒ 判据跟着改：**必须没有独立泳道**，且徽标**必须挂在分段块上**。
+  check('**不再**单开情绪泳道（第 8 条会把布局挤乱）', !has(tl, /class="lane emotion-lane"/));
+  check('徽标挂在**分段块**里（不是独立泳道）', has(tl, /v-if="block\.emo"\s+class="emo-badge"/));
+  check('segEmotion 按**时间真重叠**挑窗（不是按下标/整段照搬）',
+    has(tl, /function segEmotion\(seg\)/) && has(tl, /if \(e <= a \|\| s >= b\) continue/));
+  check('没有数据时返回 null、不画占位（"没数据"≠"判过了是平静"）',
+    has(tl, /if \(!ws \|\| !ws\.length\) return null/));
+  check('分段块把情绪放进 title（可悬停查到强度/条数/命中词）',
+    has(tl, /emo\.title/) && has(tl, /const emo = segEmotion\(seg\)/));
   // ⚠️ 四维配色与"主导维度"判定必须与 Rust 同序（平局顺序漂了 = 同一份工程两次跑法不同）
   check('四维配色齐', has(tl, /EMOTION_COLORS\s*=\s*\{[^}]*joy[^}]*shock[^}]*laugh[^}]*awe/) || has(tl, /EMOTION_COLORS/));
   check('主导维度的平局顺序 = shock > laugh > awe > joy（与 Rust dominant() 同序）',
@@ -110,12 +120,16 @@ if (process.argv.includes('--self-test')) {
   assert.notEqual(swapped, tl, '自证：顺序变异必须命中');
   assert.equal(/\['shock',\s*'laugh',\s*'awe',\s*'joy'\]/.test(swapped), false, '自证②：换序后必须红');
   self += 1;
-  // ③ 拿掉块的渲染 ⇒ 必须红
-  const noBlock = tl.replace('class="block emotion-block"', 'class="block"');
-  assert.notEqual(noBlock, tl, '自证：渲染变异必须命中');
-  assert.equal(/class="block emotion-block"/.test(noBlock), false, '自证③：拿掉渲染后必须红');
+  // ③ 拿掉**分段块里的徽标** ⇒ 必须红（新口径下的"渲染"就是这一处）
+  const noBadge = tl.replace('v-if="block.emo"', 'v-if="false"');
+  assert.notEqual(noBadge, tl, '自证：徽标变异必须命中');
+  assert.equal(/v-if="block\.emo"/.test(noBadge), false, '自证③：拿掉徽标后必须红');
+  // ④ 把情绪**改回单开一条泳道** ⇒ 也必须红（防止有人再"顺手加一行"）
+  const reLane = tl.replace('<div class="lane ruler-lane">', '<div class="lane emotion-lane"><i></i></div><div class="lane ruler-lane">');
+  assert.notEqual(reLane, tl, '自证：加回泳道的变异必须命中');
+  assert.equal(/class="lane emotion-lane"/.test(reLane), true, '自证④：加回泳道后判据必须能看见它');
   self += 1;
-  console.log(`✓ 情绪轨道接线自证：${self} 项（拿掉调用 / 换平局序 / 拿掉渲染，都必须红）`);
+  console.log(`✓ 情绪轨道接线自证：${self} 项（拿掉调用 / 换平局序 / 拿掉徽标，都必须红）`);
   process.exit(0);
 }
 
