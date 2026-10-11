@@ -291,3 +291,39 @@ GPU 底座 vs 浏览器 CSS **本来就不逐像素相同**。§20 的度量用
 | §22 预览与成片的**实际听感** | 需人工听 |
 | §18-A 接线后的**实际出片** | 尚未接线 |
 | §16 `snap` vs `slow` 的**过渡帧数** | 源码逐式一致，未做像素实测 |
+
+---
+
+## 附：批 0.2 的两个关键发现（`guard` 交付，我独立复核）
+
+### ① `element` 在预览里画不出来 —— **有两处独立成因**（修一处不够）
+
+| # | 成因 | 位置 |
+|---|---|---|
+| **(a)** | `if (kind !== 'sticker') continue` 提前出局 | `webui/src/polish/engine.js:890` |
+| **(b)** | ★ **字段路径错位**：`getElements` 读 `e.kind`/`e.text`，而 `buildIndex` 只把载荷放在 **`e.ev.kind`/`e.ev.text`** | `engine.js:889` vs **`:371`** |
+
+**`:371` 原文**：`const entry = { time: ev.time || 0, duration: evDuration(ev, 0), ev }`
+⇒ **entry 上根本没有 `kind`/`text` 字段** ⇒ `e.kind` 恒 `undefined` ⇒ `kind` 恒 `""` ⇒ **第一个 `continue` 就出局**。
+
+★ **我独立做了实验证伪"只修 (a) 就够了"**：
+```
+只修 (a)（放行不 continue），保留 (b) 错位：
+  → [{"kind":""}]          kind 是空串、text 是 undefined
+```
+⇒ **元素会被 push 出来，但渲染成空** —— 比"画不出来"更隐蔽（**静默空白**）。
+
+⇒ **task-26 修 `element` 时必须 (a)(b) 一起验。**
+（对照 `stickersAt` 读 `e.time`/`e.duration` —— 那两个**确实在 entry 上**，所以它是对的：
+**同一个文件里两种读法并存，正是这个 bug 能潜伏的原因。**）
+
+### ② 门禁的维度漏洞在**第二个门禁里也存在**
+`check-effect-registry.mjs` 接受 `element.dom_preview: true`，因为
+`anchors.dom_preview.element = "getElements"` —— **函数名在就过**。
+⇒ **同一维度漏洞出现两次**（`check-preview-engine.mjs` + `check-effect-registry.mjs`）。
+新的 ②c 已从**出口侧**堵住（登记与实测不一致就红）。
+
+### ③ `sfx` 登记得比事实**保守**（`dom_preview: false`，但它真的会响）
+经 `idx.soundEvents` → `audio.js::sync` **预览里真的出声**。
+⇒ ②c 对这类**只报告不判红**（保守登记不误导人；判红会在本范围内制造一条红门禁）。
+**待另立项对齐。**
