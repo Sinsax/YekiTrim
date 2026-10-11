@@ -427,6 +427,9 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc })
           entry.textX = numPct(ev.x)
           entry.textY = numPct(ev.y)
           entry.textPos = String(ev.pos ?? '').trim().toLowerCase() || 'bottom'
+          // §5 E4a：文字元素的**动效**（T1 弹入 / T4 抖动 / T6 底衬 / T2 打字机）。
+          // 参数来自工程级 `[elements]` 段（**不是每条事件自己的字段**）—— 与出片侧同一个来源。
+          entry.textMotion = textMotionCfg(cfg)
         }
       }
     })
@@ -491,6 +494,68 @@ function safeEmoji(name) {
   return Number.isNaN(code) ? '✨' : String.fromCodePoint(code)
 }
 
+/** §5 E4a 文字元素动效的**工程级**参数（`[elements]` 段）。
+ *
+ *  ⚠️ **它与事件无关**：T1/T2/T4/T6 都是"整个工程开不开、参数多少"，
+ *  与出片侧读的是**同一个段**（`render/elements.rs::ElementsConfig`）。
+ *  ⇒ 预览这里也读工程级配置，**不往每条事件上加字段** —— 那会变成第二个真源。
+ *
+ *  ⚠️ **`None` 的落点必须与 Rust 逐值一致**（每一条都在 `elements.rs` 有出处）：
+ *   * `scaleInMs` 缺省 0 ⇒ **关**。⚠️ 三个 T1 字段里**只有它决定开不开** ——
+ *     `from`/`peak` 都给了但它是 0 就不缩（"窗口多长"才定义得了"缩到什么程度"）。
+ *   * `shakePx` 缺省 0 ⇒ 关；`shakeHz` 缺省 **18.0**（`DEFAULT_SHAKE_HZ`）。
+ *   * `plateColor` 缺省 ⇒ **不铺底衬**（一个像素都不多画）。
+ *     ⚠️ 两个 T6 字段是**单向**的：没颜色时 `padPx` **读都不会被读到**。
+ *   * `typewriter` 缺省 false。
+ */
+function textMotionCfg(cfg) {
+  const e = (cfg && cfg.elements) || {}
+  const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  return {
+    typewriter: e.typewriter === true,
+    scaleInFrom: num(e.scale_in_from, 1.0),
+    scaleInPeak: num(e.scale_in_peak, 1.0),
+    scaleInMs: num(e.scale_in_ms, 0),
+    shakePx: num(e.shake_px, 0),
+    shakeHz: num(e.shake_hz, 18.0),
+    plateColor: Array.isArray(e.plate_color) && e.plate_color.length >= 4 ? e.plate_color : null,
+    platePadPx: num(e.plate_pad_px, 12.0)
+  }
+}
+
+/** T1 弹入的曲线：`back_out3`，**逐字照抄** Dhampir 的
+ *  `dhampir-timeline/src/text_motion.rs::back_out3`（s = 3）。
+ *
+ *  ⚠️ 它**过冲到 1.25 再回落**，而 `scaleInPeak` 是**曲线端点不是峰值** ——
+ *  参照值下实际最大是 `0.7 + (1.15-0.7)×1.25 = 1.2625`。
+ *  两边各写一份必然漂移，所以这里连注释都按那边抄，改一处就要改另一处。 */
+function backOut3(p) {
+  const t = Math.min(1, Math.max(0, p))
+  const u = t - 1
+  return u * u * (4 * u + 3) + 1
+}
+
+/** T4 抖动的**逐帧偏移**（文档像素）。**逐字照抄** `text_motion.rs::text_shake_px`。
+ *
+ *  ⚠️ 三条"关"的分支必须**显式挡**（那边专门写了三行解释，这里是同一套）：
+ *   * `shakePx <= 0` / 非有限 ⇒ `(0,0)`；
+ *   * `shakeHz <= 0` ⇒ **也要挡**。0 Hz 代进公式**不崩**：`sin(phase)` 是常数，
+ *     整条字**偏移一个固定量** —— 那不是"不抖"，是**错位**，而且同屏多条各偏各的；
+ *   * `t` 非有限 ⇒ `(0,0)`（NaN 会顺着 `sin` 传染到落点）。
+ *  ⚠️ 两个方向的频率**刻意不同**（`2.7`/`3.1`、`1.3`/`1.0`）：
+ *     都相同的话轨迹退化成一条对角直线，不是抖。 */
+function textShakePx(tSec, shakePx, shakeHz, shakePhase) {
+  if (!(shakePx > 0) || !Number.isFinite(shakePx)) return [0, 0]
+  if (!(shakeHz > 0) || !Number.isFinite(shakeHz) || !Number.isFinite(tSec)) return [0, 0]
+  const ph = Number.isFinite(shakePhase) ? shakePhase : 0
+  const w = 2 * Math.PI * shakeHz
+  const dx = shakePx * (0.62 * Math.sin(w * tSec + ph) + 0.38 * Math.sin(w * 2.7 * tSec + ph * 1.9))
+  const dy =
+    shakePx *
+    (0.62 * Math.sin(w * 1.3 * tSec + ph + 1.1) + 0.38 * Math.sin(w * 3.1 * tSec + ph * 0.6 + 2.3))
+  return [dx, dy]
+}
+
 /** 把 `"9%"` / `"9.00%"` / `9` 这类落点值读成数值百分比。读不出返回 `null`。
  *  ⚠️ **只读不推**：`process` 写的就是这个格式（`format!("{:.2}%", …)`），
  *  预览**不重新算落点** —— 见 `buildIndex` 的 `kind === 'text'` 分支。 */
@@ -504,7 +569,6 @@ function numPct(v) {
 }
 
 /** 解析 `process` 写回的文字样式串：
- *  `<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>`。
  *
  *  ⚠️ **认不出返回 `null`，由调用方决定怎么办** —— 不在这里编一套兜底数值。
  *  理由与转译器那句注释同源：这个串是**本仓自己写的**，它坏了属于"内部不一致"；
@@ -1015,16 +1079,59 @@ export function getElements(idx, t) {
         opacity = Math.max(0, 1 - p)
         yOff = -stickerFloatUp(idx.cv)
       }
+      // ---- §5 E4a 动效：T1 弹入 / T4 抖动 / T6 底衬 / T2 打字机 ----
+      //
+      // ⚠️ **全部与出片侧同一条式子**（Dhampir `text_motion.rs`，转译器逐字照抄那些名字）：
+      //    预览这边是**第三份**实现 ⇒ 三份都得同值，否则症状是
+      //    "预览里弹得挺好、成片里不弹"（或反过来），而且**两边各自看都正常**。
+      const mo = e.textMotion
+      const local = t - et
+      // T1 弹入：⚠️ **窗口过了就恒为 1.0，不是停在 `peak`** ——
+      //   `back_out3(1) == 1` ⇒ 曲线终点是 `peak`；要的是"弹过头再回落"，
+      //   写成"窗口外给 peak"会让字**一直大 15%**，看着像"字号配错了"。
+      // ⚠️ 只有 `scaleInMs > 0` 才开（另两个端点只是端点）。
+      let motionScale = 1
+      if (mo && mo.scaleInMs > 0 && local >= 0) {
+        const win = mo.scaleInMs / 1000
+        if (local < win) {
+          motionScale = mo.scaleInFrom + (mo.scaleInPeak - mo.scaleInFrom) * backOut3(local / win)
+        }
+      }
+      // T4 抖动：纯 `t` 的函数（无累积状态 ⇒ 逐帧可复现）。
+      let shakeX = 0, shakeY = 0
+      if (mo && mo.shakePx > 0) {
+        ;[shakeX, shakeY] = textShakePx(local, mo.shakePx, mo.shakeHz, 0)
+      }
+      // T6 底衬：没颜色就**一个像素都不多画**（`padPx` 读都不读 —— 单向关系）。
+      // ⚠️ alpha 会**乘上这一帧的不透明度**，所以这里**不在这里再乘一次淡入**（那会淡两次）。
+      const plate = mo && mo.plateColor ? mo.plateColor : null
+      // T2 打字机：逐字显示。⚠️ 与出片侧同口径 —— 按**总时长**均分，
+      //   到点前只显示 `floor(进度 × 字数)` 个字。**不拆 cue**，直接在求值期截断
+      //   （出片那边必须拆 cue 是因为底座要按帧画；预览这里一次求值就够了）。
+      let shownText = String(e.textBody)
+      if (mo && mo.typewriter && shownText.length > 1) {
+        const p = dur > 0 ? Math.min(1, Math.max(0, local / dur)) : 1
+        const n = Math.floor(p * shownText.length)
+        shownText = shownText.slice(0, Math.max(0, n))
+      }
       out.push({
         // `text` 支**没有 `src`** —— 消费方按这个字段分流（有 src 画图、没有则画字）
         src: '',
         isText: true,
-        text: String(e.textBody),
+        text: shownText,
         style: e.textStyle,
         xPct: e.textX,
         yPct: e.textY,
         pos: e.textPos,
-        opacity, scale, rot, yOff
+        opacity,
+        // ⚠️ 动效缩放**乘在**进出场缩放上（不是一个替代另一个）—— 与底座
+        //    `line.scale × enter_scale × cue.scale` 的乘法合成同口径。
+        scale: scale * motionScale,
+        rot,
+        yOff,
+        shakeX,
+        shakeY,
+        plate
       })
       continue
     }
