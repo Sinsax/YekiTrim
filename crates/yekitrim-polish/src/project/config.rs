@@ -2128,6 +2128,51 @@ mod tests {
         assert!(text_on.contains("typewriter"), "开关本身必须在");
     }
 
+    /// ⚠️⚠️ **只配了 T1/T4/T6、没开打字机 ⇒ 必须写出去**（2026-10-11）。
+    ///
+    /// # 这条钉的是 `is_empty()` 那个坑
+    ///
+    /// 上面那条只验了"默认不写"与"开了打字机要写"。而加了 T1/T4/T6 七个字段之后，
+    /// `is_empty()` 若**只**判 `!self.typewriter`，就会有第三种情况出错：
+    ///
+    /// > 用户配了 `shake_px = 14`、**没开** `typewriter`
+    /// > ⇒ `is_empty()` 说"空" ⇒ `[elements]` 整段**不写出去**
+    /// > ⇒ 用户写的那行**静默丢失**（`polish.toml` 里还在，成片不抖）
+    ///
+    /// ★ 与同段那条 `deny_unknown_fields` 是**同族**的错 —— "用户写了配置、程序当他没写"。
+    /// 症状都一样：**跑得通、日志正常、结果不对**。
+    #[test]
+    fn 只配了动效字段也必须写进_toml() {
+        // 逐个字段单独配一次 —— 任何一个漏判都会让这条红。
+        type Set = fn(&mut crate::render::ElementsConfig);
+        let cases: [(&str, Set); 7] = [
+            ("scale_in_from", |e| e.scale_in_from = Some(0.7)),
+            ("scale_in_peak", |e| e.scale_in_peak = Some(1.15)),
+            ("scale_in_ms", |e| e.scale_in_ms = Some(180)),
+            ("shake_px", |e| e.shake_px = Some(14.0)),
+            ("shake_hz", |e| e.shake_hz = Some(18.0)),
+            ("plate_color", |e| e.plate_color = Some([0, 0, 0, 140])),
+            ("plate_pad_px", |e| e.plate_pad_px = Some(12.0)),
+        ];
+        for (key, set) in cases {
+            let mut cfg = ProjectFile::example();
+            // ⚠️ 刻意**不开** `typewriter`：这正是 `is_empty()` 只判它时会漏的那种。
+            assert!(!cfg.elements.typewriter, "前提：打字机是关的");
+            set(&mut cfg.elements);
+            assert!(
+                !cfg.elements.is_empty(),
+                "只配了 `{key}`、`is_empty()` 却说空 ⇒ `[elements]` 整段不会写出去，\
+                 用户配的 `{key}` 静默丢失"
+            );
+            let text = cfg.to_toml_commented().expect("序列化不该失败");
+            assert!(
+                text.contains("[elements]"),
+                "只配了 `{key}` ⇒ 必须写出 `[elements]` 段（否则下次加载就丢了）"
+            );
+            assert!(text.contains(key), "`{key}` 本身必须在");
+        }
+    }
+
     /// ⚠️⚠️ **`[elements]` 里拼错的键必须当场报错，不许静默丢掉**（2026-10-11 实测发现）。
     ///
     /// 起因：把 `chars_per_sec` 拼成 `char_per_sec_typo` 之后跑 `process`，
