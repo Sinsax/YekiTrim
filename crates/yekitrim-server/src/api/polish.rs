@@ -81,6 +81,11 @@ pub(super) struct PolishJobOpts {
     pub full: bool,
     /// `llm_segment`：只重做这一段的事件（下标见 `polish.toml` 的 `[[segments]]`）
     pub segment_index: Option<usize>,
+    /// `render`：多版本成片（§9）—— 出 N 条**开头不同**的片子，产物按 `_1`/`_2` 排开。
+    ///
+    /// ⚠️ **None = 不传 `--versions`**，让 CLI 用它自己的默认值 `1`（= 完全走老路、
+    /// 逐字节零回归）。服务端不抄第二份默认值 —— 与 `renderer` 同一条口径。
+    pub versions: Option<usize>,
 }
 
 pub(super) async fn polish_spawn(
@@ -198,6 +203,13 @@ pub(super) async fn polish_spawn(
                         extra.push("--renderer".into());
                         extra.push(r);
                     }
+                    // 多版本成片（§9）：**只在 >1 时才透传**。
+                    // ⚠️ 传 `--versions 1` 与"不传"在 CLI 上是同一条路（`versions <= 1` 直接走
+                    //    `cmd_render`），但**不传**更安全：少一个参数就少一处默认值漂移。
+                    if let Some(v) = opts.versions.filter(|v| *v > 1) {
+                        extra.push("--versions".into());
+                        extra.push(v.to_string());
+                    }
                     run_polish_child(&data_dir, &jobs, &job_id, "render", &path, &extra, owner).await
                 }
                 "cover" => {
@@ -305,13 +317,37 @@ pub(super) async fn polish_render(State(state): State<Arc<AppState>>, Extension(
             ))
         }
     };
+    // 多版本成片（§9）：出 N 条**开头不同**的片子。
+    //
+    // ⚠️ 这是 §9 的**界面入口** —— 在此之前 `--versions` **只有 CLI 有**，
+    //    WebUI 的点「渲染导出」永远只出一版，用户在界面上**根本够不到**这个能力。
+    //
+    // 取值口径：缺席 / `null` ⇒ `None` ⇒ 不带 `--versions`（CLI 默认 1 = 老路）。
+    // 上限 10：每版都是一次完整出片（分钟级），再多不像"给个选择"而像误操作。
+    // 非整数 / 0 / 负数 ⇒ **400**，不静默当 1 —— 用户以为在出多版、拿到了单版，
+    // 与 §9 那个"静默假成功"是同一类欺骗。
+    let versions = match body.get("versions") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "versions 必须是非负整数"))?;
+            if n > 10 {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "versions 最多 10（每版都是一次完整出片，分钟级）",
+                ));
+            }
+            Some(n as usize)
+        }
+    };
     polish_spawn(
         &state,
         crate::auth::owner_of(&user),
         scope_pid(pid),
         "render",
         dir,
-        PolishJobOpts { output_file, renderer, ..Default::default() },
+        PolishJobOpts { output_file, renderer, versions, ..Default::default() },
     )
     .await
 }
