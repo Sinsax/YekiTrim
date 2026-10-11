@@ -944,6 +944,60 @@ const MUTATIONS = [
     to: '          safe_width_ratio: 0.6,',
   },
 
+  // ---- T1/T4/T6 接线（§5 E4a，2026-10-11）----
+  //
+  // ⚠️ 加变异前先确认它**能改出不同的行为**（本趟删过一条 `frame+0 ≡ frame` 的无效变异）。
+  //    下面每一条都对应一条真实判据，且**逐条实测过会红**。
+  //
+  // ① `motionFields` 不接出去 ⇒ 配置读了但没用（工程里 `[elements]` 看着还在）。
+  {
+    name: 'T1/T4/T6 的 `motionFields` 不摊进 subtitle ⇒ 配置读了没接出去',
+    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),',
+    to: '',
+  },
+  // ② `undefined` 也写进去 ⇒ 老工程**多出一堆 null 键**（R4 违规：
+  //    "没写"与"写了 null"在底座那边**语义不同**，`plate_color: null` 是"显式不铺"）。
+  {
+    name: 'T1/T4/T6 把 `undefined` 也写出去 ⇒ 老工程多出键（R4 违规）',
+    from: '      if (v !== undefined) out[key] = v;',
+    to: '      out[key] = v === undefined ? null : v;',
+  },
+  // ③ `optNum` 退回 `num` 口径 ⇒ "没配"与"配了默认值"混成一件事。
+  {
+    name: '`optNum` 退回兜底默认值的口径 ⇒ 没配也会写出键',
+    from: '    const optNum = (v) => (typeof v === \'number\' && Number.isFinite(v) ? v : undefined);',
+    to: '    const optNum = (v) => (typeof v === \'number\' && Number.isFinite(v) ? v : 0);',
+  },
+  // ④ 抖动相位不按档错开 ⇒ 四轨同拍（这正是选 ① 时**唯一**能拿到的分隔度）。
+  {
+    name: '抖动相位不按 style 档错开 ⇒ 四个档的轨全部同拍',
+    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),',
+    to: '          ...motionFields(elementsCfg, undefined),',
+  },
+  // ⑤ 相位把 0 那一档也写出去 ⇒ R4 违规（0 就是底座默认值）。
+  {
+    name: '抖动相位把 0 那一档也写出去 ⇒ 老工程多一个 `shake_phase: 0`',
+    from: "    if (phase !== 0) put('shake_phase', phase);",
+    to: "    put('shake_phase', phase);",
+  },
+  // ⑥ `[elements]` 的颜色不校验 ⇒ 半截值进底座工程 ⇒ **整份工程反序列化失败**
+  //    （不是"这一项不生效"，是"整片出不了"）。
+  {
+    name: '`[elements]` 颜色不校验长度 ⇒ 半截值让整份工程读不了',
+    from: '      if (!Array.isArray(v) || v.length !== 4) return undefined;',
+    to: '      if (!Array.isArray(v)) return undefined;',
+  },
+  // ⑦ 毫秒字段不校验整数 ⇒ `u64` 收到小数，serde 报错、整份工程读不了。
+  {
+    name: '`scale_in_ms` 不校验整数 ⇒ `u64` 收到小数，整份工程读不了',
+    from: '      scale_in_ms: Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0',
+    to: '      scale_in_ms: typeof raw.scale_in_ms === \'number\' && raw.scale_in_ms >= 0',
+  },
+  // ⑧ ★ **`is_empty()` 只判打字机** ⇒ 「配了 `shake_px`、没开 typewriter」的工程
+  //    被判成空、`[elements]` 整段不写出去 ⇒ 用户配的那行**静默丢失**。
+  //    ⚠️ 这条锚在 **Rust 侧**（`elements.rs`），不在本文件里 —— 见下面 `rustMutations`。
+  //    （留个位置说明为什么它不在这张表里，免得下一个人以为漏了。）
+
   {
     name: 'source_in 退回序列帧（5fps 素材 + 30fps 网格 ⇒ 屏蔽后画面跳 6 倍远）',
     // ⚠️ **锚点跳过中间那行 `end:`** —— 第 2 批把 `end` 从 `range.end - range.start`
@@ -2648,10 +2702,193 @@ function checkTextElementLane(mod, src = translatorSource) {
       '`cuesToAss` 里必须有"文字元素原样用 `endMs`"那个分支（弹幕才走出点规则）');
     ok(src.includes('const tailStart = Math.max(0, cue.end - holdFrames);'),
       '静止尾巴必须留着（`cue.end - holdFrames`）—— 打完立刻消失观众读不完');
+
+    // ------------------------------------------------------------------
+    // ⑱–㉚ §5 E4a **T1 弹入 / T4 抖动 / T6 底衬**（2026-10-11）
+    //
+    // 手法与 ⑥–⑫ 同源：**同一个工程**改 `[elements]` 再跑一遍，逐条对拍。
+    // 底座接口（字段名逐字照抄，别自己起名）：
+    //   T1/T4 → Dhampir `docs/text-motion-integration.md`
+    //   T6    → `docs/plan/t6-plate-interface.md`
+    //
+    // ⚠️ **R4 在这里是两层，两层都要有**（本仓 #154 的教训）：
+    //    ① **JSON 键层** —— 全默认时底座工程里**一个键都不多**；
+    //    ② **求值层** —— 全默认时底座读出来的样式与老工程**逐字段相等**。
+    //    只有一层的话，"默认时多写了个键"或"默认值走岔"各有一个能溜过去。
+    // ------------------------------------------------------------------
+    checks += checkTextMotion(mod, dir, src);
     return checks;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/// T1/T4/T6 的判据（§5 E4a，2026-10-11）。
+///
+/// ⚠️ **抽成函数是为了 `--mutate` 也能跑它** —— 只写在 `checkTextElementLane`
+/// 里面的话，变异台那条路径照样会调用（它调的就是本函数），但将来若有人把它
+/// 挪到顶层就废了。`scripts/AGENTS.md` 里那条"新检查要抽成函数并在 mutate 里也调"说的就是这件事。
+function checkTextMotion(mod, dir, src) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  /// 用同一份工程、换 `[elements]` 段，跑一次 `translate`，取 `text_hook` 轨的 `subtitle`。
+  const withElements = (extraLines) => {
+    const lines = [
+      'config_version = 1',
+      'duration = 2.0',
+      'processed = true',
+      '',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      'danmaku = ""',
+      'metadata = ""',
+      '',
+      '[canvas]',
+      'width = 1920',
+      'height = 1080',
+      '',
+      '[strip]',
+      'max_duration = 2.0',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 2.0',
+      'role = "other"',
+      'index = 1',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 0.2',
+      'end = 1.5',
+      'text = "钩子标题"',
+      'style = "hook"',
+      'pos = "top"',
+      'x = "10%"',
+      'y = "20%"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      '',
+    ];
+    if (extraLines.length) lines.push('[elements]', ...extraLines, '');
+    const doc = mod.translate(mod.parseToml(lines.join(String.fromCharCode(10))), dir, join(dir, 'm.doc.json'));
+    const track = (doc.timeline?.tracks ?? []).find((t) => t.id === 'text_hook');
+    return track ? (track.subtitle ?? {}) : null;
+  };
+
+  /// 底座的 T1/T4/T6 键名（**逐字来自接口文档**）。
+  const MOTION_KEYS = ['scale_in_from', 'scale_in_peak', 'scale_in_ms',
+    'shake_px', 'shake_hz', 'shake_phase', 'plate_color', 'plate_pad_px'];
+
+  // ⑱ **R4 第一层：全默认时一个键都不多**。
+  //
+  // ⚠️ 这条是 **R4 红线**的执行处：不配 `[elements]` 的工程必须产出与今天
+  // **逐字节相同**的底座工程。多一个键 = "升级一次、成片可能就变了"。
+  const off = withElements([]);
+  ok(off !== null, '夹具不完整：`text_hook` 轨没出现（`[source]` 段少了会让 `remapFrame` 全返回 null）');
+  const leaked = MOTION_KEYS.filter((k) => k in off);
+  ok(leaked.length === 0,
+    `没配 \`[elements]\` 却写出了动效键 ${JSON.stringify(leaked)} —— ` +
+    'R4 要求默认时**一个键都不多**（多一个键就是"升级一次、工程变样"）');
+
+  // ⑲ **R4 第二层：默认时求值结果是"单位变换"**（不只是"键没写出来"）。
+  //
+  // ⚠️ 与 ⑱ 不重复：⑱ 守"键集合"，这条守"值" —— 若哪天有人把默认值改成
+  // 非单位（比如 `plate_pad_px` 默认 12、或者抖动默认开着），键可以仍然不写、
+  // 而底座那边读出来是"有动效"。两层是**两个漏法**。
+  ok(off.scale_in_ms === undefined || off.scale_in_ms === null,
+    `默认时 scale_in_ms 应当是"没写"（= 不弹入），实得 ${JSON.stringify(off.scale_in_ms)}`);
+  ok(off.shake_px === undefined || off.shake_px === null || off.shake_px === 0,
+    `默认时 shake_px 应当是"没写"或 0（= 不抖），实得 ${JSON.stringify(off.shake_px)}`);
+  ok(off.plate_color === undefined || off.plate_color === null,
+    `默认时 plate_color 应当是"没写"（= 不铺底衬），实得 ${JSON.stringify(off.plate_color)}`);
+  ok(off.font_ratio === undefined || off.font_ratio !== undefined,
+    'font_ratio 仍在（这条只是让 ⑱ 的"键集合"有个非动效键作对照）');
+
+  // ⑳–㉖ 七个字段**配了就必须写出去，且值要对**。
+  //
+  // ⚠️ 逐字段独立一档（不是"全配一遍"）：全配的话某一个字段漏写会被
+  //    其它字段的存在掩盖 —— 那样判据钉的是"至少有一个字段通了"。
+  const perField = [
+    ['scale_in_from', 'scale_in_from = 0.7', 'scale_in_from', 0.7],
+    ['scale_in_peak', 'scale_in_peak = 1.15', 'scale_in_peak', 1.15],
+    ['scale_in_ms', 'scale_in_ms = 180', 'scale_in_ms', 180],
+    ['shake_px', 'shake_px = 14.0', 'shake_px', 14.0],
+    ['shake_hz', 'shake_hz = 18.0', 'shake_hz', 18.0],
+    ['plate_color', 'plate_color = [0, 0, 0, 140]', 'plate_color', [0, 0, 0, 140]],
+    ['plate_pad_px', 'plate_pad_px = 12.0', 'plate_pad_px', 12.0],
+  ];
+  for (const [label, tomlLine, key, want] of perField) {
+    const st = withElements([tomlLine]);
+    ok(st !== null, `夹具不完整（${label} 那一档没拿到 text_hook）`);
+    ok(key in st, `配了 \`${label}\`，底座工程里却没有 \`${key}\` 这个键 —— 用户配了等于没配`);
+    ok(JSON.stringify(st[key]) === JSON.stringify(want),
+      `\`${key}\` 应当写成 ${JSON.stringify(want)}，实得 ${JSON.stringify(st[key])}`);
+  }
+
+  // ㉗ **⚠️⚠️ 只配动效字段、不开打字机 ⇒ 必须照样写出去**（`is_empty()` 那个坑）。
+  //
+  // `ElementsConfig::is_empty()` 曾经**只**判 `!typewriter`。加了这七个字段之后，
+  // 「配了 `shake_px`、没开 `typewriter`」的工程会被判成**空** ⇒ `[elements]`
+  // 整段不写出去 ⇒ 用户写的那行**静默丢失**（`polish.toml` 里还在，成片不抖）。
+  // ★ 与 `deny_unknown_fields` 那条是**同族**的错——"用户写了配置、程序当他没写"。
+  const onlyShake = withElements(['shake_px = 14.0']);
+  ok(onlyShake !== null, '夹具不完整（只配 shake_px 那一档没拿到 text_hook）');
+  ok(onlyShake.shake_px === 14.0,
+    '只配了 `shake_px`、没开 `typewriter` ⇒ `shake_px` **丢了** —— ' +
+    '`is_empty()` 没把新字段算进去（`[elements]` 整段没写出去）。' +
+    '这是"用户写了配置、程序当他没写"，症状是成片不抖而报告一行差异都没有');
+
+  // ㉘ **源码文本判据兜底**（照 ⑬–⑰ 那个写法）。
+  //
+  // 为什么行为判据之外还要这条：行为判据在**变异台里可能看不见变异体**
+  // （⑬–⑰ 那段的实测记录）。这两处是"接线"本身，变异体改了源码文本、
+  // 而用 `mutatedSource` 加载的模块仍然行为正确时，只有文本判据抓得住。
+  ok(src.includes('...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),'),
+    '字幕轨必须把 `motionFields(elementsCfg)` 摊进 `subtitle` —— ' +
+    '写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在');
+  ok(src.includes("if (phase !== 0) put('shake_phase', phase);"),
+    '`motionFields` 必须逐键显式 `put`，且 `shake_phase` 要**排除 0** —— ' +
+    '0 是底座默认值，写出来就是 R4 违规（"没写"与"写了默认值"必须是同一份字节）');
+  ok(src.includes('if (v !== undefined) out[key] = v;'),
+    '`motionFields` 必须**跳过 `undefined`**（不是写成 `null`）—— ' +
+    '底座那边 `plate_color: null` 是"显式不铺"，与"没写"**语义不同**');
+  ok(src.includes('const optNum = (v) =>'),
+    '`readElementsCfg` 必须有 `optNum`（可选数字）—— ' +
+    '用它才能把"没配"与"配了默认值"分开（`num` 会兜底成默认值 ⇒ 两件事混成一件）');
+
+  // ㉙ **脏配置必须被挡住**（不是"尽量读懂"，是"宁可当没配"）。
+  //
+  // ⚠️ 两条都在防同一件事：**让整份底座工程反序列化失败**。
+  //    那不是"这一项不生效"，而是"整片出不了" —— 比静默更糟，因为它是**硬失败**，
+  //    而出片链路的失败信息指向底座，很难回想到是 `polish.toml` 里一个手滑的值。
+  //
+  // ① `plate_color` 必须是**四元组**：底座那边是 `[u8;4]`，写成 3 个数 / 5 个数
+  //    会让 serde 报类型错（**整份工程**读不了）。
+  // ② `scale_in_ms` 必须是**整数**：底座那边是 `u64`，收到 `180.5` 会让 serde 报错。
+  //
+  // ⇒ 两处**返回值必须是 `undefined`**（= 不写这个键 = 回到老行为），
+  //    而**不是**"截断/取整/补零" —— 猜一个值出来就是替用户改配置。
+  const dirty = [
+    ['plate_color = [0, 0, 0]', 'plate_color', '半截颜色（3 个数）'],
+    ['plate_color = [0, 0, 0, 140, 9]', 'plate_color', '多一个数的颜色（5 个数）'],
+    ['plate_color = [0, 0, 0, 999]', 'plate_color', 'alpha 越界（999 > 255）'],
+    ['scale_in_ms = 180.5', 'scale_in_ms', '毫秒写成小数'],
+  ];
+  for (const [tomlLine, key, why] of dirty) {
+    const st = withElements([tomlLine]);
+    ok(st !== null, `夹具不完整（脏值那一档：${why}）`);
+    ok(!(key in st),
+      `${why}（\`${tomlLine}\`）时**不该**写出 \`${key}\` —— ` +
+      `底座那边类型对不上会让**整份工程反序列化失败**（不是"这一项不生效"，是"整片出不了"）。` +
+      `实测写出了 ${JSON.stringify(st[key])}`);
+  }
+
+  return checks;
 }
 
 function checkIntroOutro(mod) {

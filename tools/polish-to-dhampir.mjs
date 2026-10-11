@@ -2758,7 +2758,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// 会消失，但这里显式判一次 —— 免得将来有人换成别的序列化器时**静默多出 `null`**。
   /// （底座那边 `shake_px: null` 与"没写"**都是**关，但 `plate_color: null` 是
   /// "显式不铺"，语义不同 ⇒ 不能靠 `undefined` 悄悄变 `null`。）
-  const motionFields = (cfg) => {
+  ///
+  /// `phase` 是**这一轨**的抖动相位（见 `SHAKE_PHASE_BY_STYLE`）。
+  const motionFields = (cfg, phase) => {
     const out = {};
     const put = (key, v) => {
       if (v !== undefined) out[key] = v;
@@ -2768,10 +2770,36 @@ export function translate(config, clipDir, outPath, options = {}) {
     put('scale_in_ms', cfg.scale_in_ms);
     put('shake_px', cfg.shake_px);
     put('shake_hz', cfg.shake_hz);
+    // ⚠️ **相位按档错开，但 0 那一档不写**（0 就是底座默认值 ⇒ 写了是 R4 违规：
+    //    "没写"与"写了默认值"在老工程上必须是**同一份字节**）。
+    //    这一条与上面五个不同：它的值**取决于轨身份**，不是纯配置。
+    if (phase !== 0) put('shake_phase', phase);
     put('plate_color', cfg.plate_color);
     put('plate_pad_px', cfg.plate_pad_px);
     return out;
   };
+
+  /// 抖动相位**按 style 档错开**（§5 E4a T4，2026-10-11）。
+  ///
+  /// # ⚠️⚠️ 这是**轨级**相位，不是逐条 —— 底座的契约边界就是这样
+  ///
+  /// 底座的 `shake_phase` 住在 `SubtitleStyle` 上（**轨级**），而
+  /// `overlay.rs` 的 cue 循环里读的是那个 `style` ⇒ **同一轨的所有 cue 相位必然相同**。
+  /// 底座在 `overlay.rs:359` 自己写着：
+  /// > "相位默认给 0；'同屏多条要错开'由宿主显式写 `shake_phase` 决定
+  /// >  （**契约不给自动错开，那要靠条目身份，而契约层没有那个身份**）"
+  ///
+  /// ⇒ 底座是**有意**把这件事交回宿主的，宿主的能力边界就是轨级。
+  ///
+  /// ★ **所以这条局限必须记住：同一条轨里有多条 cue 时，它们同拍。**
+  ///   本仓按 style 分 4 轨、文字元素**通常**一档一条，但**不保证**；
+  ///   同一档出现两次（两段 hook）就同拍。这不是 bug，是契约边界。
+  ///   要真正逐条错开，得回底座加 `Cue.shake_phase` ——
+  ///   ⚠️ 那件事与 T3（`Cue.scale`）**是同一个形状**，应该**一起做**，别单独为 T4 做。
+  ///
+  /// 间隔取 1.9：实测"把相位挪 1.9 之后抖动轨迹明显不同"的那个量级。
+  /// 0 那一档**不写键**（0 就是底座默认值，写出来是 R4 违规）。
+  const SHAKE_PHASE_BY_STYLE = { hook: 0, chapter: 1.9, comment: 3.8, count: 5.7 };
 
   /// 把一条 cue 拆成"逐字出现"的多条（T2）。
   ///
@@ -5382,7 +5410,9 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ 字段名**逐字照底座接口文档**，别自己起名：
           //    T1/T4 → 底座 `docs/text-motion-integration.md`
           //    T6    → `docs/plan/t6-plate-interface.md`
-          ...motionFields(elementsCfg),
+          // ⚠️ `shake_phase` 是**轨级**（按 style 档错开，见 `SHAKE_PHASE_BY_STYLE`）——
+          //    同轨多条 cue 仍同拍，那是底座契约的能力边界。
+          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),
         },
         layers: cues.map((c, i) => ({
           id: `${id}_${i}`,
