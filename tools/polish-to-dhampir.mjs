@@ -2671,6 +2671,100 @@ export function translate(config, clipDir, outPath, options = {}) {
       parsed: true,
     };
   }
+  // ---------------------------------------------------------------------
+  // §5 E4a —— **T2 打字机**（文字元素动效里唯一本仓自足的那一档）。
+  //
+  // ⚠️ 与 Rust 侧 `render/elements.rs` 是**同一套口径的两份实现**：
+  //    Rust 那份负责"能不能开 / 参数落盘"，这份负责"真的把 cue 拆开"。
+  //    ⚠️ 两边必须逐值一致（既有 `checkElementsParity` 钉着，它拿同一组输入
+  //    跑 Rust 的常数与这里的常数对拍）。
+  //
+  // ⚠️ **不新增字段、也不改 `Event`** —— 配置读的是 `[elements]` 段
+  //    （与 §11 BGM 同一套做法：新能力一律"默认关 + 显式开"）。
+  // ---------------------------------------------------------------------
+
+  /// 读 `[elements]` 段，**带兜底**：认不出的值退回默认，绝不抛错。
+  ///
+  /// ⚠️ 这个段是**用户手写的** ⇒ 类型写错（`typewriter = "yes"`）时
+  /// `=== true` 自然为 false（= 关着），那是**安全方向**；
+  /// 而速度/尾巴是数字，脏值必须在这里就挡掉（下面除法会炸）。
+  const readElementsCfg = (config) => {
+    const raw = config?.elements ?? {};
+    const num = (v, fallback) =>
+      typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+    const speed = num(raw.chars_per_sec, 14.0);
+    const hold = num(raw.hold_secs, 0.6);
+    return {
+      // ⚠️ 只有**真的**是 `true` 才算开（`"yes"` / `1` 一律当关 —— 保守）。
+      typewriter: raw.typewriter === true,
+      // 与 Rust `safe_chars_per_sec()` 同一套夹取：非正数一律退默认。
+      chars_per_sec: speed > 0 ? speed : 14.0,
+      hold_secs: hold >= 0 ? hold : 0.6,
+    };
+  };
+
+  /// 把一条 cue 拆成"逐字出现"的多条（T2）。
+  ///
+  /// ⚠️ **纯函数、无累积状态** —— 规格 §4.1 的硬约束：`seek` 到第 N 帧
+  /// 与"播到第 N 帧"必须长得一样，否则预览与导出分叉。
+  /// ⚠️ 判据与 Rust 那份逐条对齐（见 `elements.rs` 的同名函数）：
+  ///   关着/一个字/脏区间/脏帧率 ⇒ 原样一条；**不许产出 0 帧的 cue**
+  ///   （0 帧在底座那边一帧都不显示 ⇒ 那个字永远不会出现）。
+  function splitTypewriter(cue, fps, cfg) {
+    if (!cfg.typewriter) return [cue];
+    const chars = Array.from(cue.text);
+    if (chars.length <= 1 || cue.end <= cue.start || !(fps > 0) || !Number.isFinite(fps)) {
+      return [cue];
+    }
+    const span = cue.end - cue.start;
+    const perCharSecs = 1 / cfg.chars_per_sec;
+    // 每字至少 1 帧：帧不够时**宁可少打几个字**，也不产出 0 帧 cue。
+    const maxSteps = Math.max(1, Math.floor(span));
+    const wanted = Math.floor(span / (perCharSecs * fps));
+    const typingFrames = Math.min(Math.max(1, wanted), maxSteps);
+
+    const out = [];
+    let shown = 0;
+    let frame = cue.start;
+    const holdFrames = Math.round(cfg.hold_secs * fps);
+
+    for (let i = 0; i < typingFrames; i += 1) {
+      const target = Math.min(
+        chars.length,
+        Math.max(1, Math.ceil(((i + 1) / typingFrames) * chars.length)),
+      );
+      let next = cue.start + Math.round(((i + 1) * span) / typingFrames);
+      next = Math.min(cue.end, Math.max(next, frame + 1));
+      out.push({ start: frame, end: next, text: chars.slice(0, target).join('') });
+      shown = target;
+      frame = next;
+      if (frame >= cue.end) break;
+    }
+
+    if (shown < chars.length || frame < cue.end) {
+      const tailStart = Math.max(0, cue.end - holdFrames);
+      if (tailStart > frame) {
+        out.push({
+          start: frame,
+          end: tailStart,
+          text: chars.slice(0, Math.max(1, shown)).join(''),
+        });
+        frame = tailStart;
+      }
+      if (frame < cue.end) {
+        const full = chars.join('');
+        const last = out[out.length - 1];
+        // 与最后一条文本相同时**合并**（不产出内容等价的两条 cue）。
+        if (last && last.text === full && last.end === frame) {
+          last.end = cue.end;
+        } else {
+          out.push({ start: frame, end: cue.end, text: full });
+        }
+      }
+    }
+    return out.length > 0 ? out : [cue];
+  }
+
   const stickerLayers = [];
   /// **调整图层**：走「调整级」管线的特效（Warp / ColorAdjust / ColorMask）
   /// 必须挂在**没有素材**的图层上，否则渲染器整条丢掉（见下面的 `placeAdjustment`）。
@@ -5084,6 +5178,38 @@ export function translate(config, clipDir, outPath, options = {}) {
   const textTracks = [];
   {
     const byStyle = new Map();
+    // ⚠️⚠️ **T2 打字机（§5 E4a）在这里拆 cue** —— 拆完再分组，
+    //    否则下面"按 style 取 cues[0].style"那条会拿到拆之前的那一条。
+    //
+    // ⚠️ **为什么是拆 cue、不是 ASS 的 `\k` 覆盖标签**：底座解析字幕时会把
+    //    `{...}` 整块剥掉（`subtitle.rs::ass_text_to_plain`，只留颜色与 `\move`）
+    //    ⇒ `\k`（libass 原生卡拉OK）**根本到不了 libass**，那条路是死的。
+    //    拆 cue 是唯一可行的：不改底座一行，且**成片与预览读的是同一份 cue 表**，
+    //    不会分叉（规格 §4.1 那条硬约束）。
+    const elementsCfg = readElementsCfg(config);
+    const tw = elementsCfg.typewriter === true;
+    if (tw) {
+      const before = textCues.length;
+      const split = [];
+      for (const cue of textCues) {
+        for (const piece of splitTypewriter(
+          { start: cue.start, end: cue.end, text: cue.text },
+          fps,
+          elementsCfg,
+        )) {
+          split.push({ ...cue, start: piece.start, end: piece.end, text: piece.text });
+        }
+      }
+      textCues.length = 0;
+      textCues.push(...split);
+      note(
+        'elements.typewriter',
+        `打字机（T2）：${before} 条文字元素拆成 ${split.length} 条逐字 cue` +
+          `（${elementsCfg.chars_per_sec} 字/秒 + ${elementsCfg.hold_secs}s 静止尾巴）。` +
+          '⚠️ 逐帧计算、无累积状态 ⇒ seek 到第 N 帧与播到第 N 帧同形',
+      );
+    }
+
     for (const cue of textCues) {
       const key = cue.style.name;
       if (!byStyle.has(key)) byStyle.set(key, []);
