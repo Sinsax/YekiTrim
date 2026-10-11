@@ -36,6 +36,8 @@
 //! 所以 [`PunchDetector::signals()`] 会把"实际用上了哪几路"报出来，
 //! 由调用方决定怎么播报 —— **别让调用方自己猜**（它会猜错的）。
 
+use serde::Serialize;
+
 use crate::parse::srt::Subtitle;
 use crate::project::Segment;
 
@@ -99,7 +101,11 @@ pub struct SignalPoint {
 }
 
 /// 一处爆点。
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// ⚠️ `Serialize` 是给 `data/punches.json` 用的（§6 落盘，见 `mod.rs::write_punch_report`）——
+/// 那一段以前**算出即弃**、只打日志，消费方一个都读不到。加这个 derive 只是让结果
+/// 能被别的进程读，**不改变任何判据逻辑**。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Punch {
     /// 窗口起点（秒）。
     pub at: f64,

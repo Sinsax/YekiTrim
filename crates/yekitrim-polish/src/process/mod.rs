@@ -361,6 +361,23 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             tracing::info!("    v 分布：{}{}", detail.join(" "),
                 if punches.len() > 5 { " …" } else { "" });
         }
+        // ⚠️⚠️ **落盘而不是只打日志**（§6 的真缺陷）。
+        //   这里以前是：算出来 → `tracing::info!` → **出块即弃**。
+        //   日志只活在这一次调用的控制台里，**消费方（界面 / 报告 / LLM）一个都读不到**，
+        //   于是"爆点判据"这个能力等于不存在 —— 与 `data/emotion.json` 同一种病
+        //   （算出真数据、然后扔掉）。
+        //   ⇒ 落 `data/punches.json`，让结果**可被别的进程读**。
+        //
+        //   ⚠️ **`if !punches.is_empty()` 这道门是 R4 要求，不是优化**：
+        //      上面那段 §6 是**无条件块**，于是"没有爆点的工程"也会走到这里。
+        //      无条件写会让**每一个**存量工程在跑过 `process` 之后多出一个文件，
+        //      而"存量工程逐字节不变"是本仓的硬判据。
+        //      ⇒ 与隔壁 `write_emotion_track` 完全同一条口径（那边也是 `if !track.is_empty()`）。
+        //      ⚠️ 别为了"空结果也要能查"就把它改成无条件 —— 那是拿 R4 换可观测性，
+        //         而"这次没有爆点"已经由**上面那句恒打的日志**覆盖了（文件不是唯一载体）。
+        if !punches.is_empty() {
+            write_punch_report(&data_dir, &signals, &punches);
+        }
     }
 
     // Step 1g: 叙事形状守卫（§8）—— `role` 只是**给 LLM 的提示**，它不一定听话。
@@ -1301,6 +1318,46 @@ fn write_emotion_track(
     {
         Ok(()) => {}
         Err(e) => tracing::warn!("  ⚠ 情绪轨道写盘失败（{e}）—— 本次不产出 data/emotion.json"),
+    }
+}
+
+/// **§6 爆点判据的落盘**（`data/punches.json`）。
+///
+/// ⚠️ **为什么必须落盘**：这一段的判据以前算完只 `tracing::info!` 一句，
+/// **出块即弃**。日志只活在这一次 `process` 的控制台里 ——
+/// 界面读不到、报告读不到、下次跑也没了。于是"爆点判据"这个能力
+/// **形同不存在**（与 `data/emotion.json`、`data/char-timeline.json` 同一种病）。
+///
+/// ⚠️ **只在判出爆点时写**（调用方用 `if !punches.is_empty()` 把着）：
+/// 无条件写会让每个存量工程跑过一次 `process` 就多一个文件，
+/// 而"存量逐字节不变"是硬判据。"这次没有爆点"由**恒打的那句日志**覆盖 —— 文件不是唯一载体。
+/// ⚠️ 别为了"空结果也可查"就改成无条件：那是拿 R4 换可观测性（隔壁 `write_emotion_track`
+/// 同样是 `if !track.is_empty()` 才写，口径一致）。
+///
+/// ⚠️ 写失败**只 warn**，不中断：爆点报告是**可选增强**，不是出片的前提。
+fn write_punch_report(
+    data_dir: &Path,
+    signals: &punch::Signals,
+    punches: &[punch::Punch],
+) {
+    let payload = serde_json::json!({
+        // 用了哪几路信号 —— 无弹幕时正是**降级**的证据，必须落进去而不是只进日志
+        "signals": {
+            "subtitles": signals.subtitles,
+            "danmaku": signals.danmaku,
+            "sfx": signals.sfx,
+        },
+        "window_secs": punch::PUNCH_WINDOW_SECS,
+        "count": punches.len(),
+        "punches": punches,
+    });
+    let p = data_dir.join("punches.json");
+    match serde_json::to_string_pretty(&payload)
+        .map_err(|e| e.to_string())
+        .and_then(|s| std::fs::write(&p, s).map_err(|e| e.to_string()))
+    {
+        Ok(()) => {}
+        Err(e) => tracing::warn!("  ⚠ 爆点报告写盘失败（{e}）—— 本次不产出 data/punches.json"),
     }
 }
 
@@ -2250,6 +2307,57 @@ mod tests {
         let text2 = std::fs::read_to_string(path.join("polish.toml")).expect("读回 toml");
         assert!(!text2.contains("[edl]"), "跑第二遍同样不许写 EDL");
         assert!(crate::project::load_project(path).expect("重读").edl.clips.is_empty());
+    }
+
+    /// **§6 爆点报告只在真的判出爆点时落盘**（R4 判据）。
+    ///
+    /// `write_punch_report` 让"算出即弃"的爆点判据变成可被别的进程读的产物。
+    /// ⚠️ **但这道门是 R4 要求，不是优化**：§6 那个块是**无条件块**，
+    /// 所以"没有爆点的工程"也会走到写盘点 —— 无条件写就等于
+    /// **每个存量工程跑过一次 `process` 都多一个 `data/punches.json`**，
+    /// 而"存量逐字节不变"是本仓硬判据。
+    ///
+    /// 本测试用**没有任何字幕**的工程（字幕信号为空 ⇒ 三路信号全无、`fx` 先验也是 `low`）
+    /// 逼出"判不出爆点"的情形，然后断言文件**不出现**。
+    /// ⚠️ 一开始我用"一条平淡字幕"当反例，**测试当场红了** —— 因为字幕信号的权重是
+    /// `0.6`，而门槛也是 `0.6`：**只要有一段够密的字幕就能单独过线**。
+    /// ⇒ 这个反例本身是错的（它其实**该**判出爆点），换成真正无信号的工程才对。
+    ///
+    /// ⚠️ 反向那一半（真判出爆点时确实写了）由 `punches.json` 的字段形状兜住 ——
+    /// 这里只钉 R4 这一侧，因为**多写**才是会破坏存量工程的那个方向。
+    #[tokio::test]
+    async fn no_punches_means_no_punch_report_file() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        // **空字幕表**：三路信号全无（没有弹幕文件、没有响度缓存）
+        std::fs::write(path.join("data").join("subtitles.json"), "[]")
+            .expect("写空字幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new(); // 不联网
+        cfg.duration = Some(10.0);
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "low".into(), note: String::new(),
+            events: vec![Event::Camera {
+                time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
+                anchor: Some("liver".into()), anchor_to: None, to_origin: None,
+                cut: false, handheld: false, manual: false, speed: None,
+                tilt: None,
+            }],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+
+        assert!(
+            !path.join("data").join("punches.json").exists(),
+            "判不出爆点时**不许**产出 data/punches.json —— 无条件写会让每个存量工程\
+             跑过一次 process 就多一个文件（R4 逐字节不变）"
+        );
     }
 
     /// **写回门本身**的判据（上一条测试咬不住的那一层）。
