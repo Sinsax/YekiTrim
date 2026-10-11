@@ -962,6 +962,16 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                     );
                 }
             }
+            // ⚠️⚠️ **同样落盘，而不是只打日志**（与 §6 爆点判据完全同一条理由）。
+            //   这一段以前是"算出来 → 打几行日志 → 出块即弃"：日志只活在这一次 `process`
+            //   的控制台里，界面读不到、下次跑也没了。而 §23 恰恰是**最需要用户先看数字
+            //   再决定**的一项（"留白是没有说话，不是画面死着"—— 自动补运镜会改观感）。
+            //   ⇒ 落 `data/pacing.json`，把"有多少静止区间"变成**可查的事实**。
+            //   ⚠️ R4 口径与 §6 一致：**只在扫出空档时才落**（无条件写会让每个存量工程
+            //      多一个文件）。"本来就很密"这个结论由上面那句**恒打**的日志承载。
+            if !gaps.is_empty() {
+                write_pacing_report(&data_dir, &gaps);
+            }
         }
     }
 
@@ -1358,6 +1368,55 @@ fn write_punch_report(
     {
         Ok(()) => {}
         Err(e) => tracing::warn!("  ⚠ 爆点报告写盘失败（{e}）—— 本次不产出 data/punches.json"),
+    }
+}
+
+/// **§23 节奏求解器的落盘**（`data/pacing.json`）。
+///
+/// ⚠️ **为什么必须落盘**：这一段以前算完只 `tracing::info!` 几行，**出块即弃** ——
+/// 界面读不到、下次跑也没了。而 §23 是个**特别需要用户先看数字再拍板**的功能：
+/// 规格自己强调过「留白是'没有说话'，不是'画面死着'」，自动往安静叙述切片上补运镜
+/// 是**改观感**的行为。所以这一趟只报告不落盘（保守），但**报告必须是可查的**，
+/// 不能只活在控制台里 —— 那等于没算。
+///
+/// ⚠️ 写失败**只 warn**，不中断：节奏报告是可选增强，不是出片前提。
+///
+/// ⚠️ 与 `write_punch_report` 一样**只在有内容时才调**（R4：无条件写会让每个存量工程
+/// 跑过一次 `process` 就多一个文件）。
+fn write_pacing_report(data_dir: &Path, gaps: &[pacing::IdleGap]) {
+    let items: Vec<serde_json::Value> = gaps
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "start": g.start,
+                "end": g.end,
+                "duration": g.duration(),
+                // 建议补位的**时刻**（区间中点 —— 贴着上一个事件补会让两条运镜首尾相接，
+                // 看着像"一个特别长的运镜"）
+                "suggest_at": g.at,
+                "suggest_zoom_tier": pacing::PUNCH_ZOOM,
+                "suggest_duration_secs": pacing::PUNCH_DURATION_SECS,
+            })
+        })
+        .collect();
+    let payload = serde_json::json!({
+        // 判据阈值：超过它才算"静止"（§23 的 6s 口径）
+        "min_gap_secs": pacing::IDLE_THRESHOLD_SECS,
+        "count": gaps.len(),
+        "total_secs": gaps.iter().map(|g| g.duration()).sum::<f64>(),
+        "longest_secs": gaps.iter().map(|g| g.duration()).fold(0.0_f64, f64::max),
+        // ⚠️ **本趟只报告、不落盘**：这个布尔是给读它的人（界面/报告）一个明确交代，
+        //    免得看到一张空档表以为"系统已经替我补了"。
+        "applied": false,
+        "gaps": items,
+    });
+    let p = data_dir.join("pacing.json");
+    match serde_json::to_string_pretty(&payload)
+        .map_err(|e| e.to_string())
+        .and_then(|s| std::fs::write(&p, s).map_err(|e| e.to_string()))
+    {
+        Ok(()) => {}
+        Err(e) => tracing::warn!("  ⚠ 节奏报告写盘失败（{e}）—— 本次不产出 data/pacing.json"),
     }
 }
 
@@ -2356,6 +2415,54 @@ mod tests {
         assert!(
             !path.join("data").join("punches.json").exists(),
             "判不出爆点时**不许**产出 data/punches.json —— 无条件写会让每个存量工程\
+             跑过一次 process 就多一个文件（R4 逐字节不变）"
+        );
+    }
+
+    /// **§23 节奏报告：扫出空档才落盘**（R4 判据）。
+    ///
+    /// §23 与 §6 是同一种病（"算出来 → 打日志 → 出块即弃"），修法也同形：落
+    /// `data/pacing.json` 让"有多少静止区间"变成**可查的事实**。
+    /// ⚠️ 而 §23 尤其需要可查 —— 它**只报告不落盘**（保守决策：自动补运镜会改观感），
+    /// 所以"我到底该不该开它"完全取决于用户能不能看到真实数字。
+    ///
+    /// ⚠️ 门与 §6 同口径：**没有空档就不落文件**，否则每个存量工程跑过一次 `process`
+    /// 都多一个 `data/pacing.json`（R4：存量逐字节不变）。"本来就很密"由恒打的日志承载。
+    ///
+    /// ⚠️ 反向那一半（真空档时确实写了、且字段对得上）由真机验证过：
+    /// 2.0–40.0s 的 38s 空档 ⇒ `pacing.json` 里 `start:2.0 / end:40.0 / duration:38.0 /
+    /// suggest_at:21.0`（中点）与日志「1 段 >6s，共 38.0s」**逐项一致**。
+    #[tokio::test]
+    async fn no_idle_gaps_means_no_pacing_report_file() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path();
+        std::fs::create_dir_all(path.join("data")).expect("建 data/");
+        std::fs::write(path.join("data").join("subtitles.json"), "[]").expect("写空字幕");
+        std::fs::write(path.join("data").join("danmaku.json"), "[]").expect("写空弹幕");
+
+        let mut cfg = ProjectFile::example();
+        cfg.sticker_source = Vec::new();
+        cfg.duration = Some(10.0);
+        // ⚠️ 一段**铺满全程**的运镜 ⇒ 没有 >6s 的静止区间
+        cfg.segments = vec![Segment {
+            role: String::new(),
+            start: 0.0, end: 10.0, fx: "low".into(), note: String::new(),
+            events: vec![Event::Camera {
+                time: 0.0, end: Some(10.0), zoom: "中".into(), origin: "50% 50%".into(),
+                anchor: Some("liver".into()), anchor_to: None, to_origin: None,
+                cut: false, handheld: false, manual: false, speed: None,
+                tilt: None,
+            }],
+            extra: Default::default(),
+        }];
+        std::fs::write(path.join("polish.toml"), cfg.to_toml_commented().expect("序列化"))
+            .expect("写 polish.toml");
+
+        cmd_process(path).await.expect("后处理");
+
+        assert!(
+            !path.join("data").join("pacing.json").exists(),
+            "画面变化够密时**不许**产出 data/pacing.json —— 无条件写会让每个存量工程\
              跑过一次 process 就多一个文件（R4 逐字节不变）"
         );
     }
