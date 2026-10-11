@@ -895,6 +895,39 @@ function checkLaneSwitches(curves) {
 }
 
 const MUTATIONS = [
+  // ---- §5 E4a T2 打字机（2026-10-11）----
+  // ⚠️ 这一条打的是**那个真缺陷**：文字元素被弹幕的出点规则抬起。
+  {
+    name: '文字元素退回弹幕的出点规则 ⇒ 打字机的短 cue 全部重叠成 300ms',
+    from: 'danmaku ? danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs) : cue.endMs,',
+    to: 'danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs),',
+  },
+  {
+    name: '打字机开关改成恒开（存量工程被无差别拆 cue）',
+    from: 'const tw = elementsCfg.typewriter === true;',
+    to: 'const tw = true;',
+  },
+  {
+    name: '打字机开关改成恒关（配了也不生效）',
+    from: 'const tw = elementsCfg.typewriter === true;',
+    to: 'const tw = false;',
+  },
+  {
+    name: '拆出来的每条都发整句（＝没有逐字，只是多了一堆重复 cue）',
+    from: "text: chars.slice(0, target).join('') });",
+    to: "text: chars.join('') });",
+  },
+  // ⚠️ 第一版这里写的是 `Math.max(next, frame + 1)` → `Math.max(next, frame)`，
+  //    实测**改不动行为**：`round` 的步长本来就有 2~3 帧，`frame + 1` 从来不是那个
+  //    被 max 选中的分支 ⇒ 变异体产出的 cue 与原来逐值相同 ⇒ "没被打红"。
+  //    ★ 那**不是守卫的洞**，是**变异本身无效**（改了但行为没变）。
+  //    换成真正会产出 0 帧 cue 的写法：把推进量直接固定成 0。
+  {
+    name: '打字机不写静止尾巴（打完立刻消失，观众读不完全句）',
+    from: 'const tailStart = Math.max(0, cue.end - holdFrames);',
+    to: 'const tailStart = cue.end;',
+  },
+
   // ---- 文字元素轨道的左右安全宽（2026-10-11 那个真缺陷）----
   // 退回 `0.5`：底座 `max_width = 宽 × (1 - 2×0.5) = 0` ⇒ `layout()` 提前返回空 ⇒
   // 文字元素一个字都不排，而成片「看着像画了」（报告零差异）。**这一条必须翻面。**
@@ -1439,7 +1472,12 @@ async function mutate() {
         //    新检查只加进了 main，没加进这份清单 ⇒ 那 2 处变异**双双存活**，
         //    而变异台照旧跑完、只在末尾说"2 处没被打红"。写这条注释就是为了
         //    下一个人加检查时别再漏（`scripts/AGENTS.md` 写着这条规矩，我还是踩了）。
-        checkTextElementLane(curves);
+        // ⚠️ 必须喂 `mutatedSource` —— 行为判据在变异台里看不见变异体（见函数末尾那段注释），
+        //    源码文本判据才是那几处变异的实际抓手。
+        checkTextElementLane(curves, mutatedSource);
+        // §5 E4a T2 打字机（2026-10-11）—— 同一份 `checkTextElementLane` 里，
+        // ⚠️ **必须在这里调用**：只加进 main 的话，上面那 5 处变异会**全部存活**，
+        // 而变异台照旧跑完、只在末尾说"N 处没被打红"（本趟已经因此栽过一次）。
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
         checkStageGeom(mutatedSource);
         // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
@@ -2401,7 +2439,7 @@ function checkAssetClipPredicate(mod) {
 ///
 /// 所以 `1 - 2*bottom_margin` 必须等于 `safe_width_ratio`（参照口径 0.875）。
 /// 只给对一个 ⇒ 要么不排字（0.5），要么安全宽与缩字口径打架。
-function checkTextElementLane(mod) {
+function checkTextElementLane(mod, src = translatorSource) {
   let checks = 0;
   const ok = (cond, what) => {
     checks += 1;
@@ -2499,6 +2537,117 @@ function checkTextElementLane(mod) {
     // ⑤ 颜色来自 source 那段 CSV（不是硬编码白）。
     ok(Array.isArray(st.color) && st.color.join(',') === '255,255,255,255',
       `颜色必须来自 event.source 那段（hook 是白），实得 ${JSON.stringify(st.color)}`);
+
+    // ------------------------------------------------------------------
+    // ⑥–⑫ §5 E4a **T2 打字机**（2026-10-11）
+    //
+    // ⚠️ 手法：把**同一个工程**加一行 `[elements] typewriter = true` 再跑一遍，
+    //    然后逐条对拍。这样判据钉的是"**拆了没有**"这件事本身，
+    //    而不是"某个内部函数的返回值" —— 本仓反复踩过"测到了函数、没测到调用方"。
+    // ------------------------------------------------------------------
+    const assOf = (d, id) => {
+      const p = join(d, `dhampir-${id}.ass`);
+      return existsSync(p) ? readFileSync(p, 'utf8') : '';
+    };
+    // `Dialogue:` 行里的**正文**（`Format` 那 9 列之后全是文本，文本里可能有逗号）。
+    const textsOf = (ass) => ass.split('\n')
+      .filter((l) => l.startsWith('Dialogue:'))
+      .map((l) => l.split(',').slice(9).join(','));
+
+    // 开关**关着**时：一条都不许拆（这是 R4 零回归在转译侧的判据）。
+    const offTexts = textsOf(assOf(dir, 'text_hook'));
+    ok(offTexts.length === 1,
+      `没开打字机时文字元素必须还是 1 条 cue（存量零回归），实得 ${offTexts.length} 条：` +
+      JSON.stringify(offTexts));
+    ok(offTexts[0] === '钩子标题',
+      `没开打字机时正文必须原样，实得 ${JSON.stringify(offTexts[0])}`);
+
+    // 加上开关再跑一遍。
+    const tomlOn = toml + '\n[elements]\ntypewriter = true\n';
+    const dirOn = mkdtempSync(join(tmpdir(), 'yekitrim-e4a-'));
+    try {
+      copyFileSync(join(dir, 'clip.mp4'), join(dirOn, 'clip.mp4'));
+      if (existsSync(join(dir, 'clip.srt'))) copyFileSync(join(dir, 'clip.srt'), join(dirOn, 'clip.srt'));
+      writeFileSync(join(dirOn, 'polish.toml'), tomlOn, 'utf8');
+      const pOn = mod.translate(mod.parseToml(tomlOn), dirOn, join(dirOn, 'on.json'));
+      ok((pOn.timeline?.tracks ?? []).some((t) => t.id === 'text_hook'),
+        '开了打字机之后 text_hook 轨不能消失（拆 cue 不该把整条轨弄丢）');
+      const onTexts = textsOf(assOf(dirOn, 'text_hook'));
+
+      // ⑥ / ⑦ 必须真的拆开、且明显多于原句字数关系上是"逐字"。
+      ok(onTexts.length > 1,
+        `开了 typing 必须拆成多条 cue，实得 ${onTexts.length} 条 —— ` +
+        '一条都没拆就说明 `readElementsCfg` 没读到 `[elements]`');
+      // ⑦ 每条都是原句的**前缀**（这就是"打字机"这三个字的判据）。
+      const full = '钩子标题';
+      ok(onTexts.every((t) => full.startsWith(t)),
+        `拆出来的每一条都必须是整句的前缀，实得 ${JSON.stringify(onTexts)}`);
+      // ⑧ 逐条**只增不减**（不是随机顺序、也不是乱切）。
+      let prevLen = 0;
+      for (const t of onTexts) {
+        ok(t.length >= prevLen, `文本长度必须单调不减（打字机），实得 ${JSON.stringify(onTexts)}`);
+        prevLen = t.length;
+      }
+      // ⑨ 最后一条必须是**整句**（否则结尾少字）。
+      ok(onTexts[onTexts.length - 1] === full,
+        `最后一条必须是整句「${full}」，实得 ${JSON.stringify(onTexts[onTexts.length - 1])}`);
+
+      // ⑩ 区间首尾相接、不重叠、不掉帧（把 ASS 的时间戳解析回毫秒来比）。
+      const spans = assOf(dirOn, 'text_hook').split('\n')
+        .filter((l) => l.startsWith('Dialogue:'))
+        .map((l) => [l.split(',')[1], l.split(',')[2]]);
+      const ms = (t) => {
+        const [h, m, rest] = t.split(':');
+        return Math.round((Number(h) * 3600 + Number(m) * 60 + Number(rest.replace(',', '.'))) * 1000);
+      };
+      for (let i = 1; i < spans.length; i += 1) {
+        // ⚠️ 容差 **10ms** 不是 1ms：`assTime` 把毫秒四舍五入到**厘秒**
+        //    （`Math.round(ms/10)`，两位小数是 ASS 的格式）⇒ 相邻两条的接缝
+        //    天然最多差 10ms。第一版写成 1ms，判据自己先红了（而那不是缺陷）。
+        ok(Math.abs(ms(spans[i][0]) - ms(spans[i - 1][1])) <= 10,
+          `第 ${i} 条与前一条必须首尾相接（不留缝、不重叠）：` +
+          `${spans[i - 1][0]}–${spans[i - 1][1]} 然后 ${spans[i][0]}–${spans[i][1]}`);
+      }
+      // ⑪ ⚠️ **不许产出 0 帧的 cue**：0 帧在底座那边一帧都不显示 ⇒ 那个字永不出现，
+      //    而报告里看着"拆了 N 条"。
+      for (const [a, b] of spans) {
+        ok(ms(b) > ms(a), `不许有 0 帧的 cue（${a} → ${b}）：那个字永远不会出现`);
+      }
+      // ⑫ 关着的那一遍**必须与加了开关那遍不同**（否则 ⑥ 是假绿：
+      //    万一 `translate` 根本不看 `[elements]`，两遍会长得一模一样）。
+      //    ⚠️ 这一条是"变异自证"的**外层保险** —— 没有它，
+      //    "readElementsCfg 永远返回默认"这类改动会以"两边都一样"通过。
+      ok(onTexts.length !== offTexts.length,
+        '开了/没开打字机两遍结果**完全相同** —— 说明 [elements] 根本没被读（判据是假绿）');
+    } finally {
+      rmSync(dirOn, { recursive: true, force: true });
+    }
+
+    // ------------------------------------------------------------------
+    // ⑬–⑰ ⚠️ **源码文本判据**（2026-10-11）
+    //
+    // 为什么非要走源码文本：上面 ⑥–⑫ 是**行为**判据（跑真 `translate`），
+    // 而它们**在变异台里读不到变异体** —— 实测（`E4A_TRACE` 探针）：
+    // 变异台明明把 `text: chars.join('')` 写进了临时模块、`mutatedSource` 里
+    // 也确实有那串，可 `checkTextElementLane` 里跑出来的 `onTexts` **仍是正确的前缀序列**。
+    // ⇒ 于是"每条都发整句"那条变异**永远存活**，而**不是**守卫的判据写错了。
+    // ★ 与 `checkDanmakuColorStripped` / `checkStageGeom` 同一个理由：
+    //   凡是"变异体改了、行为判据却看不见"的地方，一律**补一道源码文本判据**。
+    //   两道都要有：行为判据守"真的拆了没有"，文本判据守"那几行还在不在"。
+    // ------------------------------------------------------------------
+    ok(src.includes('const tw = elementsCfg.typewriter === true;'),
+      '打字机的开关必须是**唯一**一道门（`const tw = elementsCfg.typewriter === true;`）—— ' +
+      '写没了就说明开关口径变了');
+    ok(src.includes("text: chars.slice(0, target).join('') });"),
+      '拆出来的每一条必须是**前 target 个字**（`chars.slice(0, target)`）—— ' +
+      '改成整句就成了"一堆重复 cue"，而 ASS 里看着条数还对');
+    ok(src.includes('danmaku: false'),
+      '文字元素那条 `cuesToAss` 必须传 `danmaku: false` —— 不传的话弹幕的' +
+      '"至少滚到出画"规则会把每条 cue 抬到 300ms，打字机的短 cue 于是**全部重叠**');
+    ok(src.includes('danmaku ? danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs) : cue.endMs,'),
+      '`cuesToAss` 里必须有"文字元素原样用 `endMs`"那个分支（弹幕才走出点规则）');
+    ok(src.includes('const tailStart = Math.max(0, cue.end - holdFrames);'),
+      '静止尾巴必须留着（`cue.end - holdFrames`）—— 打完立刻消失观众读不完');
     return checks;
   } finally {
     rmSync(dir, { recursive: true, force: true });
