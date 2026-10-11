@@ -1,26 +1,53 @@
-//! §5 E4a —— 文字元素动效（**只做本仓自足的那一档**）。
+//! §5 E4a —— 文字元素动效。
 //!
 //! 规格见 `docs/plan/elements-spec.md` §4 的 T1–T6 表。本模块负责
-//! **T2 打字机**（typewriter：字逐个出现）。
+//! **T2 打字机**（typewriter：字逐个出现）+ **T1 弹入 / T4 抖动 / T6 底衬
+//! 的配置形状**（2026-10-11 接上；真正的逐帧求值在**底座**，
+//! 见 Dhampir 仓的 `crates/dhampir-timeline/src/text_motion.rs`）。
 //!
-//! # ⚠️ 为什么只有 T2
+//! # 底座字幕轨能力：2026-10-11 起**四项已就绪**
 //!
-//! 规格 §3 的 2026-10-10 更正写着"T1/T2/T3/T4/T6 全部本仓自足"，但**那句话的本意是
-//! "不必等 `entrance`/`highlight_color` 两个字段"**，不等于"底座已经有逐帧能力"。
-//! 拿底座的真实渲染路径对过一遍之后（结论记在保守决策 #125–#128）：
+//! 下表是 2026-10-10 那次勘察的结论（当时后四项都缺），**已过期**，保留是为了
+//! 说清"为什么当初只做了 T2"：
 //!
-//! | 动效 | 需要什么 | 底座字幕轨现状 |
+//! | 动效 | 需要什么 | 底座现状（2026-10-11） |
 //! |---|---|---|
-//! | **T2 打字机** | 逐帧改**显示几个字** | ✅ 本仓把一条 cue 按帧拆开即可（见下） |
-//! | T1 弹入 | `font_ratio` **逐帧缩放** | ❌ 没有这个通道 |
-//! | T3 强调放大 | 换色 + 放大 | ⚠️ 换色 ✅（`highlight_color` 已在用）；放大 ❌ |
-//! | T4 抖动 | **持续**逐帧纵向偏移 | ❌ `rise_in_px` 是**一次性入场位移**，不是持续抖动 |
-//! | T6 底衬 | 文字背后的色块 | ❌ `force_style` 只拼五个键，**没有 `BorderStyle`/`BackColour`** |
+//! | T2 打字机 | 逐帧改**显示几个字** | ✅ 本仓把一条 cue 按帧拆开即可（见下） |
+//! | T1 弹入 | `font_ratio` **逐帧缩放** | ✅ `scale_in_from` / `scale_in_peak` / `scale_in_ms` |
+//! | T4 抖动 | **持续**逐帧偏移 | ✅ `shake_px` / `shake_hz` / `shake_phase`（纯 `t` 的函数） |
+//! | T6 底衬 | 文字背后的色块 | ✅ `plate_color` / `plate_pad_px` |
+//! | T3 强调放大 | 逐条放大 | ⚠️ **底座通道已就绪**（`Cue.scale`）—— 但**本仓不接**，见下 |
 //!
-//! 后四项已合并成一份底座需求（`docs/plan/dhampir-elements-request.md`），
-//! **不硬凑**（用几十~上百条 cue 假装"缩放"，观感与代价都不成立）。
+//! # ⚠️⚠️ T3 强调放大：**底座通道已就绪，本仓无触发源 —— 故意留空**
 //!
-//! # ⚠️ 为什么拆 cue、而不是 ASS 的 `\k` 覆盖标签
+//! **不是没做，是没得接。** 写清楚免得下一个人再花一遍时间查（我自己查了一轮）：
+//!
+//! * **底座的通道是好的**：`Cue.scale: Option<f32>`（`None` = 1.0），
+//!   乘法合成 `line.scale × enter_scale × cue.scale`，判据齐、变异自证过
+//!   （底座 `ac97b70`）。
+//! * **但它是"逐条"的，而本仓这一档没有"哪一条要放大"这个信息。**
+//!   底座那个字段的文档写着"哪几条命中是**宿主**知道的（按 `<span class="hl">` 标记判）"。
+//!   实测本仓这一条路**从来不产这个标记**：
+//!   ```
+//!   tools/polish-to-dhampir.mjs:3371  const textBody = String(event.text ?? '');  ← 原样透传
+//!   tools/polish-to-dhampir.mjs:3385  text: textBody,                             ← 直进 cue
+//!   process/mod.rs 里 'class="hl"'                                     → 0 命中
+//!   .hl 的生产者只有 cover.rs（封面）/ takumi.rs（封面测试）           → 都不在这条路
+//!   ```
+//!   ⇒ 文字元素这条路**从头到尾不存在"哪几个字是关键词"**。
+//!
+//! * ⚠️ **不许拿 `filter.highlight_keywords` 顶替。** 那是**封面**的字段
+//!   （`cover.rs` 消费），借来的后果是"**用户改了封面高亮设置，成片里的文字动效跟着变**"——
+//!   一个字段两处语义，而且**症状是静默的**（没人会往"我刚改的是封面"那想）。
+//!   这属于本仓最贵的那类错，"跑得通、不报错、结果不对"。
+//!
+//! * **真要做 = 新功能，不是接线**：要同时定"关键词从哪来"+ 改 `process`
+//!   （把标记写进 `event.text` 或新字段）+ 提示词 + 前端，**单开一批**。
+//!
+//! ⇒ 所以本结构体里**没有** `emphasize_*` 字段，转译器也**不写** `cue.scale`。
+//!   底盘那份 `Cue.scale` 通道空转着，等产品决策。
+//!
+//! # ⚠️ 为什么 T2 拆 cue、而不是 ASS 的 `\k` 覆盖标签
 //!
 //! 底座解析字幕时会把 `{...}` 覆盖标签**整块剥掉**（`subtitle.rs::ass_text_to_plain`，
 //! 只留颜色与 `\move`）。⇒ `\k`（libass 原生卡拉OK）**根本到不了 libass**，
@@ -144,14 +171,41 @@ impl Default for ElementsConfig {
             typewriter: false,
             chars_per_sec: default_chars_per_sec(),
             hold_secs: default_hold_secs(),
+            // T1 / T4 / T6：全部 `None` = 全关（老工程零迁移）。
+            scale_in_from: None,
+            scale_in_peak: None,
+            scale_in_ms: None,
+            shake_px: None,
+            shake_hz: None,
+            plate_color: None,
+            plate_pad_px: None,
         }
     }
 }
 
 impl ElementsConfig {
     /// 空配置（与 `skip_serializing_if` 配套：空 ⇔ 不写这个键 ⇔ 老行为）。
+    ///
+    /// ⚠️⚠️ **新增字段必须一起判**（2026-10-11）—— 这里曾经**只**判 `!self.typewriter`。
+    ///
+    /// 加了 T1/T4/T6 那七个字段之后，只判打字机的话：
+    /// 「配了 `shake_px = 14`、没开 `typewriter`」的工程会被判成**空** ⇒
+    /// `[elements]` 整段**不写出去** ⇒ 用户写的 `shake_px` **静默丢失**
+    /// （`process` 日志一切正常、`polish.toml` 里那行还在，唯独成片不抖）。
+    /// ★ 与同段那条 `deny_unknown_fields` 是**同族**的错：
+    ///   "用户写了配置、程序当他没写"。
+    ///
+    /// 判据：`默认的_elements_不写进_toml_r4`（全默认才不写）+ checkTextElementLane
+    /// 的「只配抖动、不开打字机」那一条（**必须写出去**）。
     pub fn is_empty(&self) -> bool {
         !self.typewriter
+            && self.scale_in_from.is_none()
+            && self.scale_in_peak.is_none()
+            && self.scale_in_ms.is_none()
+            && self.shake_px.is_none()
+            && self.shake_hz.is_none()
+            && self.plate_color.is_none()
+            && self.plate_pad_px.is_none()
     }
 
     /// 每秒字数**夹取到可用范围**。
@@ -409,6 +463,7 @@ mod tests {
             typewriter: true,
             chars_per_sec: 0.0,
             hold_secs: f64::NAN,
+            ..Default::default()
         };
         assert_eq!(bad.safe_chars_per_sec(), default_chars_per_sec());
         assert_eq!(bad.safe_hold_secs(), default_hold_secs());
@@ -417,6 +472,7 @@ mod tests {
             typewriter: true,
             chars_per_sec: -5.0,
             hold_secs: -1.0,
+            ..Default::default()
         };
         assert_eq!(neg.safe_chars_per_sec(), default_chars_per_sec());
         assert_eq!(neg.safe_hold_secs(), default_hold_secs());
@@ -425,6 +481,7 @@ mod tests {
             typewriter: true,
             chars_per_sec: 20.0,
             hold_secs: 1.2,
+            ..Default::default()
         };
         assert_eq!(ok.safe_chars_per_sec(), 20.0);
         assert_eq!(ok.safe_hold_secs(), 1.2);

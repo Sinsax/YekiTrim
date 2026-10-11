@@ -2710,15 +2710,67 @@ export function translate(config, clipDir, outPath, options = {}) {
     const raw = config?.elements ?? {};
     const num = (v, fallback) =>
       typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+    /// ⚠️ **可选数字**：`undefined` / 脏值 ⇒ `undefined`（= 不写这个键 = 底座默认）。
+    ///
+    /// ⚠️ 与 `num` 的差别是**故意的**：`num` 是"兜底成默认值再往下用"，
+    /// 这里是"没写就**不写进底座工程**"。两者混用会让"用户没配"与
+    /// "用户配了等于默认的数"变成同一件事 —— 那正是 R4 要防的
+    /// （底座那边 6 个键都是 `Option`，"不写"与"写默认值"是**两种**状态）。
+    const optNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
     const speed = num(raw.chars_per_sec, 14.0);
     const hold = num(raw.hold_secs, 0.6);
+    // ⚠️ **T6 底衬颜色**：四元组、每项 0..255 且是整数。缺一项 / 越界 / 非数
+    //    ⇒ 整个当"没配"（底座那边是 `[u8;4]`，写半截进去会让**整份工程**反序列化失败）。
+    const optColor = (v) => {
+      if (!Array.isArray(v) || v.length !== 4) return undefined;
+      if (!v.every((c) => Number.isInteger(c) && c >= 0 && c <= 255)) return undefined;
+      return v;
+    };
     return {
       // ⚠️ 只有**真的**是 `true` 才算开（`"yes"` / `1` 一律当关 —— 保守）。
       typewriter: raw.typewriter === true,
       // 与 Rust `safe_chars_per_sec()` 同一套夹取：非正数一律退默认。
       chars_per_sec: speed > 0 ? speed : 14.0,
       hold_secs: hold >= 0 ? hold : 0.6,
+      // ── T1 弹入 / T4 抖动 / T6 底衬（2026-10-11）──
+      // 口径与字段名见底座 `docs/text-motion-integration.md` 与
+      // `docs/plan/t6-plate-interface.md`。**全部 `undefined` = 不写键**。
+      scale_in_from: optNum(raw.scale_in_from),
+      scale_in_peak: optNum(raw.scale_in_peak),
+      // ⚠️ 毫秒是整数。`u64` 收到小数会让**整份工程**反序列化失败（serde 不隐式取整）。
+      scale_in_ms: Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0
+        ? raw.scale_in_ms
+        : undefined,
+      shake_px: optNum(raw.shake_px),
+      shake_hz: optNum(raw.shake_hz),
+      plate_color: optColor(raw.plate_color),
+      plate_pad_px: optNum(raw.plate_pad_px),
     };
+  };
+
+  /// 把 T1/T4/T6 那几个**配了的**字段挂到字幕轨的 `subtitle` 上。
+  ///
+  /// ⚠️ **不配就不写键**（不是"写默认值"）—— 底座那边六个键全是 `Option`，
+  /// 「没写」与「写了等于默认的数」是**两种**状态，混起来会让老工程多出键
+  /// （R4 红线：默认全关时底座工程**逐字节相同**）。
+  ///
+  /// ⚠️ **`undefined` 一律不写**：`{ a: undefined }` 经 `JSON.stringify` 本来就
+  /// 会消失，但这里显式判一次 —— 免得将来有人换成别的序列化器时**静默多出 `null`**。
+  /// （底座那边 `shake_px: null` 与"没写"**都是**关，但 `plate_color: null` 是
+  /// "显式不铺"，语义不同 ⇒ 不能靠 `undefined` 悄悄变 `null`。）
+  const motionFields = (cfg) => {
+    const out = {};
+    const put = (key, v) => {
+      if (v !== undefined) out[key] = v;
+    };
+    put('scale_in_from', cfg.scale_in_from);
+    put('scale_in_peak', cfg.scale_in_peak);
+    put('scale_in_ms', cfg.scale_in_ms);
+    put('shake_px', cfg.shake_px);
+    put('shake_hz', cfg.shake_hz);
+    put('plate_color', cfg.plate_color);
+    put('plate_pad_px', cfg.plate_pad_px);
+    return out;
   };
 
   /// 把一条 cue 拆成"逐字出现"的多条（T2）。
@@ -5283,8 +5335,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         id,
         kind: 'subtitle',
         subtitle: {
-          font_ratio: st.fontPx / height,
-          // ⚠️⚠️ **`bottom_margin` 不是"文字的位置"，它是底座算「左右安全宽」的输入。**
+          font_ratio: st.fontPx / height,          // ⚠️⚠️ **`bottom_margin` 不是"文字的位置"，它是底座算「左右安全宽」的输入。**
           //
           // 这里原先写 0.5（注释说"居中当中立值"）—— 那让**每一条文字元素都静默消失**。
           // 底座的 `text_layout::layout`：
@@ -5323,6 +5374,15 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    `CAPTION_MAX_LINES` 折好并截过，这里再截一次是重复裁剪。
           keep_all_lines: true,
           safe_width_ratio: 0.875,
+          // ── T1 弹入 / T4 抖动 / T6 底衬（2026-10-11，§5 E4a）──
+          //
+          // ⚠️ **只写配了的键**（`motionFields` 里 `undefined` 一律不写）：
+          //    不配 ⇒ 底座工程**一个键都不多** ⇒ 存量工程产物逐字节不变（R4）。
+          //
+          // ⚠️ 字段名**逐字照底座接口文档**，别自己起名：
+          //    T1/T4 → 底座 `docs/text-motion-integration.md`
+          //    T6    → `docs/plan/t6-plate-interface.md`
+          ...motionFields(elementsCfg),
         },
         layers: cues.map((c, i) => ({
           id: `${id}_${i}`,
