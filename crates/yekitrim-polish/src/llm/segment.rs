@@ -4,6 +4,7 @@
 //! 边界：覆盖层示例必须给 `colors` 数组（四处求值器只认 `colors`，只写 `color` 会导致覆盖层全画不出来）；改内建 prompt 要同步用户配置里的副本 —— 见 `crates/yekitrim-polish/src/llm/AGENTS.md`
 
 use crate::parse::srt::Subtitle;
+use yekitrim_core::danmaku::emotion::{Emotion, EmotionWindow};
 use crate::project::Segment;
 use yekitrim_core::llm::agent::extract_json_array;
 use yekitrim_core::llm::LlmClient;
@@ -20,9 +21,21 @@ pub async fn generate_segments(
     sticker_budget: usize,
     sfx_budget: usize,
     sfx_blacklist: &[String],
+    // §10 **情绪热区**：`(窗口, 窗口时长)` —— 让分段不只看话题，也看观众反应翻面。
+    // 传 `&[]` = 没有情绪数据（没弹幕且字幕也判不出）⇒ 提示词里那一节整块不出现，
+    // **与改动前逐字节相同**（存量工程的 LLM 输入不变）。
+    emotion: &[EmotionWindow],
+    emotion_window_secs: f64,
 ) -> anyhow::Result<Vec<Segment>> {
     let system_prompt = build_segmentation_system_prompt(sticker_source);
-    let user_prompt = build_segmentation_user_prompt(subtitles, event_type, sticker_budget, sfx_budget, sfx_blacklist);
+    let user_prompt = build_segmentation_user_prompt(
+        subtitles,
+        event_type,
+        sticker_budget,
+        sfx_budget,
+        sfx_blacklist,
+        &emotion_hint_lines(emotion, emotion_window_secs),
+    );
 
     // 解析失败时把错误回传 LLM 重试 1 次（P4 第二部分）
     let mut last_err = None;
@@ -343,6 +356,109 @@ pub(crate) fn normalize_segments_json(json: &str) -> String {
 }
 
 /// Step1 system prompt: 分段 + 每段情绪密度
+/// **无弹幕时按字幕语气判情绪**（与 `process::emotion_from_subtitles` **同口径**）。
+///
+/// ⚠️ 这份是**第二份实现**，因为 `process` 那个是私有项。两份必须一起改 ——
+/// 判据见 `scripts/check-emotion-track.mjs`（它钉住"分段与徽标同一判据"）。
+/// 差别只在"按谁的文本判"：那边用 `Subtitle::text`，这边一样。
+/// 归窗口径也必须一致：**按中点**（`(start+end)/2`）。
+pub(crate) fn emotion_from_subtitles_local(
+    subs: &[Subtitle],
+    window_secs: f64,
+    total_duration: f64,
+) -> Vec<EmotionWindow> {
+    use yekitrim_core::danmaku::emotion::score_subtitle;
+    if window_secs <= 0.0 || total_duration <= 0.0 {
+        return Vec::new();
+    }
+    let n = (total_duration / window_secs).ceil() as usize;
+    let mut out: Vec<EmotionWindow> = (0..n)
+        .map(|i| EmotionWindow {
+            start: i as f64 * window_secs,
+            emotion: Emotion::default(),
+            count: 0,
+            hits: Vec::new(),
+        })
+        .collect();
+    for sub in subs {
+        let mid = (sub.start + sub.end) / 2.0;
+        let idx = (mid / window_secs) as usize;
+        let Some(w) = out.get_mut(idx) else { continue };
+        let e = score_subtitle(&sub.text);
+        w.emotion = w.emotion.max_with(&e);
+        w.count += 1;
+        if !e.is_weak() {
+            w.hits.push("字幕语气".to_string());
+        }
+    }
+    out
+}
+
+/// **弹幕情绪窗口 → 一行行可读的"情绪热区"文本**（喂给分段提示词）。
+///
+/// # 为什么分段要看情绪
+///
+/// 原来的分段**只看话题**（字幕文本）。但一段内容的"该不该切开"不只是话题变了没有 ——
+/// **情绪翻面**同样是硬边界：从"铺垫"一下跳到"爆笑"，中间那刀不切，
+/// 出片就是一个温吞的段里夹着一个爆点，`role`/`fx` 也没法按段给对。
+///
+/// ⚠️ 数据来源：**弹幕**（`emotion::track`，L1 词表 + L2 颜色），
+///    没有弹幕时**退到字幕语气**（与 `process` 的 `emotion_from_subtitles` 同口径）。
+///    所以这里拿到的是**与时间轴徽标同一份判据**算出来的东西 ——
+///    不允许分段用一种"情绪"、界面显示另一种。
+///
+/// ⚠️ **只给"有明确情绪"的窗口**（`best > 0`）：四维全 0 的窗口写进提示词
+///    等于告诉 LLM"这里是平静的"，而真相是"这里没数据/没判出来" —— 那是两件事。
+pub(crate) fn emotion_hint_lines(windows: &[EmotionWindow], window_secs: f64) -> Vec<String> {
+    /// 与前端徽标、Rust `dominant()` **同序**（平局时谁赢）。
+    const ORDER: [(&str, &str); 4] = [
+        ("shock", "震惊"),
+        ("laugh", "爆笑"),
+        ("awe", "感叹"),
+        ("joy", "开心"),
+    ];
+    let mut out = Vec::new();
+    for w in windows {
+        let e: &Emotion = &w.emotion;
+        let mut best = ORDER[0].0;
+        let mut best_v = -1.0_f64;
+        for (k, _) in ORDER.iter() {
+            let v = match *k {
+                "shock" => e.shock,
+                "laugh" => e.laugh,
+                "awe" => e.awe,
+                _ => e.joy,
+            };
+            if v > best_v {
+                best = k;
+                best_v = v;
+            }
+        }
+        // ⚠️ 阈值与 `Emotion::is_weak` 同一个（0.15）：弱信号不写进提示词，
+        //    否则几十条"开心 0.16"会把真正的爆点淹掉。
+        if best_v < 0.15 {
+            continue;
+        }
+        let zh = ORDER.iter().find(|(k, _)| *k == best).map(|(_, z)| *z).unwrap_or(best);
+        let hits = if w.hits.is_empty() {
+            String::new()
+        } else {
+            // 只取前 4 个，避免一行太长把真正的重点淹掉
+            format!("（{}）", w.hits.iter().take(4).cloned().collect::<Vec<_>>().join("、"))
+        };
+        out.push(format!(
+            "{:.0}s-{:.0}s {} {:.2} x{}条 {}",
+            w.start,
+            w.start + window_secs,
+            zh,
+            best_v,
+            w.count,
+            hits
+        ));
+    }
+    out
+}
+
 pub fn build_segmentation_system_prompt(sticker_source: &[String]) -> String {
     let sticker_desc = sticker_lang_desc(sticker_source);
     format!(r#"你是一个直播切片助手。将单个切片内字幕按话题切分成段。
@@ -361,6 +477,12 @@ pub fn build_segmentation_system_prompt(sticker_source: &[String]) -> String {
 - 优先在字幕间隙 >2s 或话题明显变化处切段
 - 同一话题连续叙述合并，不硬切；<4s 的碎片并入前一段
 - 爆点/名场面单独成段
+- **情绪翻面也是切点**（与"话题变化"同等重要）：用户消息里给了「情绪热区」就是
+  弹幕判出来的观众反应。**同一话题里情绪从平淡猛跳到震惊/爆笑的那一刀要切开** ——
+  否则一个段里既有铺垫又有爆点，`fx` 和 `role` 给哪一档都是错的
+  （给 high 则前半段过度演出，给 low 则爆点被埋掉）。
+- ⚠️ **情绪热区只帮你找切点，不要照着它写 note**：note 仍然只描述"这段在讲什么"。
+  也不要把每个热区都切一刀 —— 相邻热区情绪相同就并成一段
 - fx: low=安静叙述/少特效, med=日常, high=爆点/密集特效
 - role: 这一段在**整条片子里**干什么，三选一（不写 = 其余）:
   * `hook` —— **钩子**：片头最抓人的那一句/那一幕。**整片至多一段**，要有"不放这个观众就划走了"的强度
@@ -382,6 +504,7 @@ pub fn build_segmentation_user_prompt(
     sticker_budget: usize,
     sfx_budget: usize,
     sfx_blacklist: &[String],
+    emotion_lines: &[String],
 ) -> String {
     let mut prompt = format!("视频类型: {}
 视频时长(秒): {}
@@ -397,6 +520,21 @@ pub fn build_segmentation_user_prompt(
     prompt.push_str(&format!("
 全片预算: sticker 总数不超过 {} 个, sfx 事件总数不超过 {} 个
 ", sticker_budget, sfx_budget));
+    // ⚠️ 情绪热区放在**字幕之前**：先让 LLM 看到"全片哪里炸"，
+    //    再逐条读文本 —— 反过来会让它先入为主地按文本切完、忽略这一节。
+    //    空数组 ⇒ 整节不出现（存量工程输入逐字节不变）。
+    if !emotion_lines.is_empty() {
+        prompt.push_str("
+情绪热区 (弹幕算出的观众反应, 每行: 时间范围 情绪 强度 条数 命中词):
+");
+        for l in emotion_lines {
+            prompt.push_str(l);
+            prompt.push('\n');
+        }
+        prompt.push_str("
+(上面只是**切点提示**: 情绪从平淡猛跳到震惊/爆笑的地方要切开; 情绪相同的相邻热区并成一段)
+");
+    }
     prompt.push_str("
 字幕内容 (每行: [开始秒-结束秒] 文本):
 ");
@@ -445,6 +583,53 @@ fn target_segment_count(subtitles: &[Subtitle]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §10 **情绪热区**进分段提示词 —— 三条边界。
+    ///
+    /// ⚠️ 这三条钉的是"有情绪"与"没情绪"**必须能区分**：空数组时那一节整块不出现
+    /// （存量工程的 LLM 输入逐字节不变 = R4 的保证点）。
+    #[test]
+    fn emotion_hints_reach_segmentation_prompt() {
+        use yekitrim_core::danmaku::emotion::{Emotion, EmotionWindow};
+        let w = |start: f64, shock: f64, laugh: f64, cnt: u64| EmotionWindow {
+            start,
+            emotion: Emotion { joy: 0.0, shock, laugh, awe: 0.0 },
+            count: cnt,
+            hits: vec!["？？？".into()],
+        };
+
+        // ① 有窗口 ⇒ 出「情绪热区」一节，且带时间范围/中文名/强度/条数
+        let lines = emotion_hint_lines(&[w(10.0, 0.9, 0.0, 12)], 10.0);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("10s-20s"), "要写窗口的**秒数范围**: {}", lines[0]);
+        assert!(lines[0].contains("震惊"), "要用中文名: {}", lines[0]);
+        assert!(lines[0].contains("0.90"), "要带强度: {}", lines[0]);
+        assert!(lines[0].contains("12"), "要带条数: {}", lines[0]);
+
+        let subs = vec![super::Subtitle { index: 0, start: 0.0, end: 5.0, text: "测试".into(), html: String::new() }];
+        let with = build_segmentation_user_prompt(&subs, "game", 5, 5, &[], &lines);
+        assert!(with.contains("情绪热区"), "提示词里必须有这一节");
+        let without = build_segmentation_user_prompt(&subs, "game", 5, 5, &[], &[]);
+        assert!(!without.contains("情绪热区"), "**空数组 ⇒ 整节不出现**（存量逐字节不变）");
+
+        // ② 弱信号（< 0.15）不进提示词 —— 几十条"开心 0.16"会把真爆点淹掉
+        assert!(emotion_hint_lines(&[w(0.0, 0.10, 0.05, 3)], 10.0).is_empty());
+        // ③ 四维全 0 ⇒ 也不进（"没数据" ≠ "判出来是平静"）
+        assert!(emotion_hint_lines(&[w(0.0, 0.0, 0.0, 0)], 10.0).is_empty());
+
+        // ④ 主导维度按 shock > laugh > awe > joy 取（与 Rust `dominant()` 同序）
+        let l = emotion_hint_lines(&[w(0.0, 0.5, 0.5, 9)], 10.0);
+        assert!(l[0].contains("震惊"), "平局时 shock 赢: {}", l[0]);
+    }
+
+    /// ⚠️ **判据必须容忍"合法的不一致"**：确认系统提示词里那条规则在。
+    /// （改提示词时最容易忘的就是"规则说了要按情绪切、但用户消息里没有情绪数据"。）
+    #[test]
+    fn segmentation_prompt_mentions_emotion_cut_point() {
+        let p = build_segmentation_system_prompt(&[]);
+        assert!(p.contains("情绪翻面也是切点"), "规则里必须有这条");
+        assert!(p.contains("不要照着它写 note"), "要有别拿它当 note 的约束");
+    }
 
     /// 回归测试: LLM 输出缺 type 字段时按字段特征补全 (实际失败样例)
     #[test]

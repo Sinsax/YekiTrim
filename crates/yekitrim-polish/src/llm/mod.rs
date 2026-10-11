@@ -70,8 +70,32 @@ pub async fn run_llm_pipeline(
 
     // Step 1: 分段 + 段情绪密度（全局单次调用，预算感知采样）
     println!("  ── LLM: Segmentation (type: {}) ──", event_type);
+    // §10 **情绪热区** —— 让分段不只看话题。
+    //
+    // ⚠️ 用与 `process` 写 `data/emotion.json` **同一份判据**（弹幕优先、无弹幕退字幕），
+    //    否则"分段按一种情绪切、时间轴徽标显示另一种"。
+    // ⚠️ 窗口时长取 `detection.danmaku_window_secs`（全局配置）—— 与 `process::emotion_window_secs`
+    //    同源；这里拿不到 `ProjectFile`，所以传全局那份。（分段时间轴与窗口时长无关，
+    //    只有"写进提示词的秒数范围"用它。）
+    let emo_w = yekitrim_core::config::load_global_config().detection.danmaku_window_secs;
+    let emo_total = subtitles.last().map(|s| s.end).unwrap_or(0.0);
+    let emotion_windows = if !danmaku.is_empty() && emo_total > 0.0 {
+        yekitrim_core::danmaku::emotion::track(danmaku, emo_w, emo_total)
+    } else if emo_total > 0.0 {
+        // ⚠️ 无弹幕 ⇒ 用字幕语气（与 process 的 `emotion_from_subtitles` 同口径）。
+        //    这里就地算，是因为那个函数是 polish::process 的私有项。
+        segment::emotion_from_subtitles_local(subtitles, emo_w, emo_total)
+    } else {
+        Vec::new()
+    };
+    if !emotion_windows.is_empty() {
+        println!("  · 情绪热区：{} 个窗口（窗口 {emo_w:.1}s）→ 喂给分段", emotion_windows.len());
+    } else {
+        println!("  · 情绪热区：无（没弹幕且字幕也判不出）—— 分段按纯话题切");
+    }
     let mut segments = match segment::generate_segments(
         &client, subtitles, event_type, sticker_source, sticker_budget, sfx_budget, sfx_blacklist,
+        &emotion_windows, emo_w,
     ).await {
         Ok(s) => { println!("  ✓ {} segments", s.len()); s }
         Err(e) => { println!("  ⚠ Segmentation failed: {}. Using default.", e); vec![default_segment()] }
