@@ -53,12 +53,14 @@
         <div class="text-layer">
           <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
                :style="{ left: tx.xPct + '%', top: tx.yPct + '%', opacity: tx.opacity,
-                         transform: 'translateY(' + tx.yOff + 'px) scale(' + tx.scale + ') rotate(' + tx.rot + 'deg)',
+                         transform: 'translateY(' + tx.yOff + 'px) translate(' + tx.shakeX + 'px,' + tx.shakeY + 'px) scale(' + tx.scale + ') rotate(' + tx.rot + 'deg)',
                          fontSize: tx.style.fontPx + 'px',
                          fontWeight: tx.style.weight,
                          color: rgbaCss(tx.style.fill),
                          WebkitTextStrokeWidth: tx.style.strokePx + 'px',
-                         WebkitTextStrokeColor: rgbaCss(tx.style.stroke) }">{{ tx.text }}</div>
+                         WebkitTextStrokeColor: rgbaCss(tx.style.stroke),
+                         background: tx.plate ? rgbaCss(tx.plate) : 'transparent',
+                         padding: tx.plate ? '0.06em 0.18em' : '0' }">{{ tx.text }}</div>
         </div>
         <div class="danmaku-layer" :style="dmLayerStyle">
           <div v-for="(d, i) in dmRows" :key="'d' + i" class="dm" :style="{ left: d.x + 'px', top: d.y + 'px', opacity: d.opacity }">{{ d.text }}</div>
@@ -3407,8 +3409,12 @@ function pause() {
            /* 同 `.cap` / `.dm`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，
               会盖掉父层继承的字体栈（那个栈是"预览与成片同源"的唯一通道）⇒ 必须 inherit。 */
            font-family:inherit;
-           /* 与出片侧 ASS 的描边同口径：先描边后填充 */
-           paint-order:stroke fill; }
+           /* 与出片侧 ASS 的描边同口径：先描边后填充。
+              ⚠️ 底衬（T6）是**背景色**，天然在字形之下 ⇒ `paint-order` 不影响它，
+                 不需要为它另开一层。 */
+           paint-order:stroke fill;
+           /* T6 底衬：圆角随字号走，避免小字上显得方硬。 */
+           border-radius:0.08em; }
 .danmaku-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:var(--dm-h, 540px); overflow:hidden; }
 .dm { position:absolute; white-space:nowrap; font-weight:600; -webkit-text-stroke:2px #000; paint-order:stroke fill;
       /* ⚠️ 必须 inherit：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**本元素的声明，
