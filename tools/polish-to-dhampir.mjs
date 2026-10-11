@@ -5133,10 +5133,27 @@ export function translate(config, clipDir, outPath, options = {}) {
         kind: 'subtitle',
         subtitle: {
           font_ratio: st.fontPx / height,
-          // ⚠️ 文字**不贴底**：它的纵向位置由 `pos` 决定，而底座的
-          //    `bottom_margin` 是"字幕贴底多少"。给 0.5（居中）当**中立值**，
-          //    真正的位置由 ASS 的 `\an` 对齐码表达（见 `buildAss`）。
-          bottom_margin: 0.5,
+          // ⚠️⚠️ **`bottom_margin` 不是"文字的位置"，它是底座算「左右安全宽」的输入。**
+          //
+          // 这里原先写 0.5（注释说"居中当中立值"）—— 那让**每一条文字元素都静默消失**。
+          // 底座的 `text_layout::layout`：
+          //
+          //     let margin = style.bottom_margin.clamp(0.0, 0.5);
+          //     let max_width_px = sequence_width * (1.0 - 2.0 * margin);
+          //
+          // 0.5 ⇒ `max_width_px = 宽度 × 0 = 0` ⇒ 函数**提前返回空布局**，
+          // 一个字都不排。★ 而报告里**一行差异都没有**（转译成功、轨道也在、
+          // `probe` 零 error/warning），只有真去数像素才发现成片里没有那几个字。
+          // 实测：`--versions` 那个工程改成 0.5 之后，文字位置的黄色像素数 **0**
+          // （字幕自己的 `hl_color` 有 27k 像素，形状还长得像，极易误判成"画出来了"）。
+          //
+          // ⇒ 用**字幕同一条口径**：底座那个 `safe_width_ratio` 字段的文档自己写着
+          //   "本仓先前拿 `bottom_margin` 当左右边距用…转译器按参照显式写 0.875"，
+          //   但 `layout()` **今天仍然只读 `bottom_margin`**（`safe_width_ratio`
+          //   只在缩字那条路上被读到）。所以这里**必须**给 `bottom_margin` 一个
+          //   能让安全宽成立的值：`margin = (1 - 0.875) / 2 = 0.0625`。
+          //   ⚠️ 纵向位置**不受它影响** —— 那是 `pos` + ASS 对齐码的事（见 `cuesToAss`）。
+          bottom_margin: (1 - 0.875) / 2,
           max_lines: 3,
           color: st.color,
           outline: true,
