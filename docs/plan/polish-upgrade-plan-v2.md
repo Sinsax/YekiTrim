@@ -733,3 +733,26 @@ rgb = rgb + vec3<f32>((n - 0.5) * NOISE_FULL_SCALE * mask.noise_amount);   // NO
 ```
 ⇒ ✅ **新增的「特写」档与跳切标记能叠用**（`切·特写`），且与「摇」前缀的优先级正确。
 ⚠️ **仍未做的只是"截图"这一步**（要起服务器截时间轴），**功能本身不是"没做"**。
+
+### §6 爆点判据 —— **已修**（"算了就扔" → 可被读）
+**原状**：`detector.detect(...)` → `tracing::info!` 一句 → **出块即弃**。
+日志只活在这一次调用的控制台里 ⇒ 界面/报告/LLM 一个都读不到 ⇒ 能力形同不存在。
+
+**改法**：`Punch` 加 `Serialize` + 新增 `write_punch_report` → `data/punches.json`。
+
+**真机证据**（`noise-parity` 工程真跑 `process`）：
+```json
+{ "count": 1, "punches": [{"at":0.0,"end":10.0,"score":0.9999999999999999}],
+  "signals": {"danmaku": true, "sfx": false, "subtitles": true}, "window_secs": 5.0 }
+```
+⇒ 与日志「爆点判据：字幕 + 弹幕；判出 1 处」**逐项一致**，且**降级信息（sfx=false）也落进了文件**。
+
+★ **R4 那道门是硬要求**：§6 是**无条件块**，无条件写会让**每个存量工程**跑过一次
+`process` 就多出一个文件 ⇒ 用 `if !punches.is_empty()` 把住
+（与隔壁 `write_emotion_track` 的 `if !track.is_empty()` 同口径）。
+**变异自证**：拆掉那道 `if` ⇒ 新测试 `no_punches_means_no_punch_report_file` **当场红** ✅
+
+⚠️ **该测试第一版写错了反例**：我用"一条平淡字幕"当"判不出爆点"的样本，
+**测试自己红了** —— 因为**字幕信号权重 `0.6` 恰好等于门槛 `PUNCH_THRESHOLD = 0.6`**，
+一段够密的字幕能**单独过线**。⇒ 反例本身不是反例。
+**教训**：**写"负例"之前要先确认它真的是负例**（与"先标定量具"同一族）。
