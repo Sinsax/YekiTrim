@@ -38,8 +38,8 @@
 不抬就是"弹幕没到左边缘就消失"（录播姬 XML 的 8 秒窗口对中文弹幕普遍不够）。明细见 core/`danmaku` 卡。
 
 `parse/charlog.rs`：**字级时间戳搬运**（E4b，`asr/timeline.json` → `data/char-timeline.json`；
-入口 `commands.rs::sync_char_timeline`）。⚠️ `output_dir` ≠ 片段目录（父子）⇒ 路径反推；
-**缺文件优雅**（不报错、不阻断、**不落文件**=R4），有数据**只在变了才写**。理由见该文件模块头。
+入口 `commands.rs::sync_char_timeline`）。⚠️ **`output_dir` ≠ 片段目录**（父子，polish 拿不到 ctx）⇒
+路径反推；**缺文件优雅**（不报错、不阻断、**不落文件**=R4）。见 `docs/plan/char-timeline-carry.md`。
 
 `process::cmd_process`（process/ 卡）、`render::{cmd_render, render_chunk_sync}`（render/ 卡）。
 
