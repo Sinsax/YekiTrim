@@ -791,3 +791,35 @@ rgb = rgb + vec3<f32>((n - 0.5) * NOISE_FULL_SCALE * mask.noise_amount);   // NO
 
 ⚠️ **仍未做的**：路径输入框只做形态校验（服务端拒绝对路径），**没有文件选择器**；
 BGM 库（`bgm::library`，从 `工程/bgm/` 列出音频）**尚未接到界面**。功能可用、体验待补。
+
+#### §11 界面截图证据（真页面，`docs/plan/bgm-ui-2026-10.png`）
+起真服务器（`--port 26493`）+ 真 Chrome（CDP 注入会话 cookie）打开
+`#/p/1/polish/clip-01`，**渲染后的 DOM** 里实测到这一组：
+
+```html
+<div class="small muted mt-6" title="背景音乐：出片时混进成片，说话时自动压低（闪避）">背景音乐</div>
+<label class="ck-row" title="当前关闭；点一下开启">
+  <input type="checkbox"> 启用背景音乐 </label>
+<input class="fld-input mt-6" type="text" placeholder="工程内相对路径，如 bgm/song.mp3"
+       aria-label="BGM 文件（工程内相对路径）" value="">
+<span class="ss-lbl">音量</span><input type="number" value="0.22">
+<span class="ss-lbl">闪避</span><input type="number" value="0.35">
+```
+⚠️ `音量 0.22` / `闪避 0.35` 正是 Rust 的 `default_bgm_volume()` / `default_duck_ratio()`
+—— 证明前端读的是**真配置**，不是写死的展示值。
+
+**几何断言**（光查 DOM 在不在会漏掉"渲染出来但零尺寸"，本仓既有纪律）：
+
+| 控件 | 宽×高 | 位置 |
+|---|---|---|
+| 启用背景音乐（checkbox 行） | 266×19 | (1380, 602) |
+| BGM 文件（工程内相对路径） | 266×33 | (1380, 632) |
+| BGM 音量 | 80×15 | (1430, 672) |
+| BGM 闪避比例 | 80×15 | (1566, 672) |
+
+四项宽高**全部 > 0**，且都落在右栏（x≈1380，栏宽 300px）之内 ✅
+
+★ **探针本身也踩了两个坑**（都不是产品问题）：
+① `--dump-dom` 的 `--user-data-dir` 用**反斜杠**路径会让 Chrome **静默挂死**（`status: null`、零输出）
+   —— 换成正斜杠立刻正常。**"探针没输出"要先怀疑探针**。
+② `--dump-dom` **没法注入 cookie** ⇒ 停在登录页。改用 CDP 的 `Network.setCookie` 才进得去。
