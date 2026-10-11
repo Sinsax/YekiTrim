@@ -39,7 +39,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// ⚠️ **默认全关** ⇒ 老工程零迁移（R4：存量逐字节不变）。
 /// 不写这个段 ⇔ 行为与今天逐字节相同 —— 与 §11 BGM 同一套做法。
+///
+/// ⚠️⚠️ **`deny_unknown_fields` 是必须的**（2026-10-11 实测发现）：
+/// 少了它，`chars_per_sec` 拼成 `char_per_sec` 会被 **serde 静默丢掉** ——
+/// 不报错、不打日志、`typewriter` 照旧 `true`，**唯独速度不是用户写的那个**。
+/// 实测：写 `char_per_sec_typo = 99` 跑完 `process`，日志一切正常、
+/// 段里只剩 `chars_per_sec = 14.0`（默认值）。
+/// ★ 这正是本仓反复踩的那一类："**跑得通、日志正常、结果不对**"。
+/// 顶层 `ProjectFile` 本来就是 `deny_unknown_fields`，同段加它**不新增口径**。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElementsConfig {
     /// 打字机总开关。**默认关**。
     #[serde(default)]
