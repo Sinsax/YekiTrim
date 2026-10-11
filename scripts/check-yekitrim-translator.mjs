@@ -895,6 +895,22 @@ function checkLaneSwitches(curves) {
 }
 
 const MUTATIONS = [
+  // ---- 文字元素轨道的左右安全宽（2026-10-11 那个真缺陷）----
+  // 退回 `0.5`：底座 `max_width = 宽 × (1 - 2×0.5) = 0` ⇒ `layout()` 提前返回空 ⇒
+  // 文字元素一个字都不排，而成片「看着像画了」（报告零差异）。**这一条必须翻面。**
+  {
+    name: '文字轨 bottom_margin 退回 0.5 ⇒ 可用宽 0 ⇒ 文字一个字都不排',
+    from: '          bottom_margin: (1 - 0.875) / 2,',
+    to: '          bottom_margin: 0.5,',
+  },
+  // 只改 `safe_width_ratio` 而不动 `bottom_margin`：两个字段**由不同的人读**，
+  // 口径一分叉，折行与缩字就算不到一起（判据要的是「两者自洽」，不只是「各自合法」）。
+  {
+    name: '文字轨 safe_width_ratio 与 bottom_margin 推出的安全宽不一致',
+    from: '          safe_width_ratio: 0.875,',
+    to: '          safe_width_ratio: 0.6,',
+  },
+
   {
     name: 'source_in 退回序列帧（5fps 素材 + 30fps 网格 ⇒ 屏蔽后画面跳 6 倍远）',
     // ⚠️ **锚点跳过中间那行 `end:`** —— 第 2 批把 `end` 从 `range.end - range.start`
@@ -1419,6 +1435,11 @@ async function mutate() {
         checkFontFamily(curves);
         // 片头/片尾（2026-10-09）—— 不跑它，"不拼进时间线"与"素材没登记"两条变异永远绿。
         checkIntroOutro(curves);
+        // ⚠️⚠️ 文字元素轨道的安全宽（2026-10-11）—— **这一条我第一版漏了**：
+        //    新检查只加进了 main，没加进这份清单 ⇒ 那 2 处变异**双双存活**，
+        //    而变异台照旧跑完、只在末尾说"2 处没被打红"。写这条注释就是为了
+        //    下一个人加检查时别再漏（`scripts/AGENTS.md` 写着这条规矩，我还是踩了）。
+        checkTextElementLane(curves);
         // 画面构成的**几何**（两轴 xy 插值）：合成工程里不可见，只能从源码文本抽函数来跑。
         checkStageGeom(mutatedSource);
         // 媒体探测那一段同理（不跑它，写死时基的变异永远绿）
@@ -2367,6 +2388,123 @@ function checkAssetClipPredicate(mod) {
 ///
 /// fixture 用**真媒体**（ffprobe 探时长与帧率），所以它同时钉住 `probeMedia` 的 `duration`
 /// 那一项 —— 「出点 = 0 ⇒ 播到结尾」全靠它，探不到就必须 DROP（不许拿 0 当长度）。
+/// 第 7 批：**文字元素轨道的左右安全宽**。
+///
+/// 钉的是 2026-10-11 修的那个真缺陷：`bottom_margin: 0.5` ⇒ 底座算出的可用宽度为 **0**
+/// ⇒ `text_layout::layout` **提前返回空布局** ⇒ 文字元素一个字都不排，而成片里
+/// 「看着像画了」（字幕照画、报告零差异、`probe` 零 error）—— 只有数像素才发现少了那几个字。
+///
+/// ⚠️ 两个字段**必须互相自洽**，而它们由**不同的人**读：
+/// - `bottom_margin` —— `layout()` 真的读它（`margin = bottom_margin.clamp(0,0.5)`、
+///   `max_width = width * (1 - 2*margin)`）；
+/// - `safe_width_ratio` —— 目前只在**缩字**那条路上被读到。
+///
+/// 所以 `1 - 2*bottom_margin` 必须等于 `safe_width_ratio`（参照口径 0.875）。
+/// 只给对一个 ⇒ 要么不排字（0.5），要么安全宽与缩字口径打架。
+function checkTextElementLane(mod) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-elem-'));
+  try {
+    // 造一个 2 秒的黑底素材（拿不到 ffmpeg 就跳过这一组，与其它探媒体守卫同口径）
+    let have = false;
+    try {
+      execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
+        'color=c=black:s=320x240:d=2,format=yuv420p', '-r', '30',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', join(dir, 'clip.mp4')],
+        { stdio: ['ignore', 'ignore', 'ignore'], timeout: 60000 });
+      have = existsSync(join(dir, 'clip.mp4'));
+    } catch (e) {
+      // ⚠️ 只吞"ffmpeg 不可用"（ENOENT）；别的错照抛（一律吞会让这条静默空转）。
+      if (e && e.code === 'ENOENT') have = false;
+      else throw e;
+    }
+    if (!have) return 0;
+
+    // ⚠️ **`[source]` 段不能省** —— 少了它 `keepRanges` 推不出来，
+    //    `remapFrame` 全返回 null ⇒ 文字元素**整条被跳过**（"落在被掐掉的区间里"），
+    //    于是这条守卫会以"没有 text_hook 轨"失败，而真因是**夹具不完整**。
+    //    第一版就是这么写的（实测：同一个工程补上 `[source]` 后轨道立刻出现）。
+    const srtText = ['1', '00:00:00,300 --> 00:00:01,200', '有字幕', ''].join(String.fromCharCode(10)) + String.fromCharCode(10);
+    writeFileSync(join(dir, 'clip.srt'), srtText, 'utf8');
+    // 一条文字元素。`source` 是 process 写回的四档参数（style|font|stroke|color|stroke|weight|backdrop）。
+    writeFileSync(join(dir, 'polish.toml'), [
+      'config_version = 1',
+      'duration = 2.0',
+      'processed = true',
+      '',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      'danmaku = ""',
+      'metadata = ""',
+      '',
+      '[canvas]',
+      'width = 1920',
+      'height = 1080',
+      '',
+      '[strip]',
+      'max_duration = 2.0',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 2.0',
+      'role = "other"',
+      'index = 1',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 0.2',
+      'end = 1.5',
+      'text = "钩子标题"',
+      'style = "hook"',
+      'pos = "top"',
+      'x = "10%"',
+      'y = "20%"',
+      `source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"`,
+      '',
+    ].join('\n'), 'utf8');
+
+    // ⚠️ 签名是 `translate(cfg, dir, outPath, options)` —— 配置要**显式 parseToml**
+    //    （与 checkMediaProbe 那几组同口径），不是只给一个目录。
+    const toml = readFileSync(join(dir, 'polish.toml'), 'utf8');
+    const project = mod.translate(mod.parseToml(toml), dir, join(dir, 'elem.json'));
+    const track = (project.timeline?.tracks ?? []).find((t) => t.id === 'text_hook');
+    ok(!!track, '文字元素必须落成一条 text_hook 轨（在 `case element` 里）；实得轨：' +
+      JSON.stringify((project.timeline?.tracks ?? []).map((t) => t.id)));
+    if (!track) return checks;
+
+    const st = track.subtitle ?? {};
+    // ① 左右安全宽必须真的**大于 0** —— 这条就是那个缺陷的直接判据。
+    ok(st.bottom_margin < 0.5,
+      `bottom_margin=${st.bottom_margin} ⇒ 底座可用宽 = 宽 × ${1 - 2 * st.bottom_margin}` +
+      '（0.5 时是 0 ⇒ 布局提前返回空 ⇒ 文字一个字都不排，而成片报告零差异）');
+    ok(1 - 2 * st.bottom_margin > 0.5,
+      `文字轨的可用宽只有 ${1 - 2 * st.bottom_margin} —— 太窄，长一点的标题必然被丢行`);
+    // ② 与 `safe_width_ratio` **互相自洽**（两个字段由不同的人读，口径必须同一个）。
+    ok(Math.abs((1 - 2 * st.bottom_margin) - st.safe_width_ratio) < 1e-6,
+      `bottom_margin(${st.bottom_margin}) 推出的安全宽 ${1 - 2 * st.bottom_margin} ` +
+      `与 safe_width_ratio(${st.safe_width_ratio}) 不一致 —— 两个消费点会算出不同的折行`);
+    // ③ 字号按四档走（hook 基准 120px @1080 ⇒ ratio 120/1080）。
+    ok(Math.abs(st.font_ratio - 120 / 1080) < 1e-6,
+      `hook 的字号比例应为 120/1080，实得 ${st.font_ratio}（那是四档预设的语义，不许缩）`);
+    // ④ 文字**不缩字号**（缩了 hook 会变成 comment，四档就没意义了）。
+    ok(st.shrink_min_scale === 1,
+      'shrink_min_scale 必须为 1：文字的字号是四档预设定死的，像字幕那样缩会让 hook 缩成 comment');
+    // ⑤ 颜色来自 source 那段 CSV（不是硬编码白）。
+    ok(Array.isArray(st.color) && st.color.join(',') === '255,255,255,255',
+      `颜色必须来自 event.source 那段（hook 是白），实得 ${JSON.stringify(st.color)}`);
+    return checks;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function checkIntroOutro(mod) {
   let checks = 0;
   const ok = (cond, what) => {
@@ -2868,6 +3006,11 @@ console.log(`✓ TOML 数组表父级（[[edl.clips]] 无 [edl] 头也要读得�
 console.log(`✓ 素材时基（第 6 批：source_in 按素材自己的帧率换算）：${assetTbChecks} 项全绿`);
 console.log(`✓ 素材判据（只认小写 asset + 非空 id）：${assetPredChecks} 项全绿`);
 console.log(`✓ 片头/片尾（[intro_outro] 拼进时间线 + 用素材自己的画面）：${introOutroChecks} 项全绿`);
+const textElemChecks = checkTextElementLane(translatorModule);
+console.log(`✓ 文字元素轨道（左右安全宽 + 与 safe_width_ratio 自洽 + 四档字号）：${textElemChecks} 项全绿`);
+console.log('  钉住的是 2026-10-11：`bottom_margin: 0.5` ⇒ 底座 `max_width = 宽 × (1 - 2×0.5) = 0`');
+console.log('  ⇒ `text_layout::layout` **提前返回空布局** ⇒ 文字元素一个字都不排，而成片「看着像画了」');
+console.log('  （字幕照画、转译报告零差异、`probe` 零 error）—— 只有真去数像素才发现少了那几个字');
 const fontFamilyChecks = checkFontFamily(translatorModule);
 console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
 console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');
