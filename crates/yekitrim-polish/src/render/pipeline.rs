@@ -273,13 +273,30 @@ pub async fn cmd_render_versions(
     // ⚠️ **收工后把开头恢复到第 0 个候选**：否则用户下次直接点"出片"，
     // 拿到的会是**最后一版**的剪辑 —— 而工程文件上看不出这件事。
     let total = duration_for_versions(project_path);
+    let had_user_edl = {
+        // 收工前先看一眼：这趟有没有动过用户的手排 EDL。
+        let cfg = crate::project::load_project(project_path)?;
+        !cfg.user_edl_backup.is_empty()
+    };
     crate::project::update_polish_toml(project_path, |cfg| {
-        set_opening(cfg, openings[0].at, total);
+        if had_user_edl {
+            // 有备份 ⇒ 整份还原用户的手排 EDL。
+            finish_versions_restore(cfg, openings[0].at);
+        } else {
+            // 本来就没有手排 EDL ⇒ 恢复成第一版候选的开头（那是我们自己算的）。
+            set_opening(cfg, openings[0].at, total);
+        }
     })
     .await?;
-    tracing::info!(
-        "  ✓ 多版本成片完成：{n} 版（产物按 _1/_2 排开）；工程已恢复到第一版的开头（§9）"
-    );
+    if had_user_edl {
+        tracing::info!(
+            "  ✓ 多版本成片完成：{n} 版（产物按 _1/_2 排开）；**工程已整份还原你手排的剪辑点**（§9）"
+        );
+    } else {
+        tracing::info!(
+            "  ✓ 多版本成片完成：{n} 版（产物按 _1/_2 排开）；工程已恢复到第一版的开头（§9）"
+        );
+    }
     if endings.len() > 1 {
         tracing::info!(
             "  · 结尾候选有 {} 个（本趟**只变开头** —— 同时变头尾会让两个变量的效果混在一起，用户无法归因）",
@@ -327,7 +344,6 @@ fn set_opening(cfg: &mut ProjectFile, at: f64, total_duration: f64) {
     if base.is_empty() || !at.is_finite() {
         return;
     }
-    let orig_start = base[0].source_start;
     // ⚠️ **不许往前走**（`at < orig_start`）这条**只在逐版推进时**才成立。
     // 收工时的"恢复到第一版"**必须能往回退** —— 实测踩到：三版跑完 EDL 起点已经是
     // 4.1，恢复调用被这条判据拒绝 ⇒ 工程停在**最后一版**的开头，
@@ -339,10 +355,58 @@ fn set_opening(cfg: &mut ProjectFile, at: f64, total_duration: f64) {
         return;
     }
 
+    // ⚠️⚠️ **第一次动用户的手排 EDL 之前，先把它整份备份下来**。
+    //
+    // 实测踩到的**真数据丢失**：用户排了两段（`[1.0,4.0]` + `[5.0,8.0]`），
+    // 跑一次 `--versions 3` 之后第一段起点变成 **0.3**（候选值），
+    // 而日志打的是"已恢复到第一版的开头" —— ★ **报告与事实相反**：
+    // "第一版的开头"是**候选的** 0.3，不是用户的 1.0。原值一旦丢掉就找不回来。
+    //
+    // ⚠️ 为什么不干脆"跑完把 `edl.clips` 清空"（回到没有 EDL 的状态）：
+    //    那等于**删掉用户的剪辑** —— 他手排那两段之后就一直该是他排的那样。
+    //    我们只该"临时挪开头、跑完还回去"，不该改他的剪辑。
+    //
+    // ⚠️ **只备份"用户真的手排过"的那份**（`cfg.edl.clips` 原本非空）。
+    //    屏蔽补集推出来的基准**不算** —— 它不是用户意图，而且备份它会让
+    //    **每个跑过多版本的老工程都多出一个 `user_edl_backup` 键**，
+    //    把 `polish.toml` 弄脏（而那个键对它们毫无意义）。
+    let user_had_edl = !cfg.edl.clips.is_empty();
+    if user_had_edl && cfg.user_edl_backup.is_empty() {
+        cfg.user_edl_backup = cfg.edl.clips.clone();
+    }
+
     let mut clips = base;
     clips[0].source_start = at;
     cfg.edl.clips = clips;
-    let _ = orig_start;
+}
+
+/// 多版本成片收工：**把 EDL 还原成用户原来的样子**。
+///
+/// ⚠️ 与"恢复成第一版候选的开头"是**两件事**：
+/// - 工程**本来没有**手排 EDL（基准是屏蔽补集）⇒ 恢复成第一版候选的开头即可
+///   （那时"开头"本来就是我们算的，没有用户意图被覆盖）；
+/// - 工程**本来有**手排 EDL ⇒ 必须用备份**整份还原**，否则用户的第一段起点
+///   被永久改成候选值（实测踩到）。
+///
+/// ⚠️ 这是**收工的唯一入口**（生产路径与单测都走它）——
+/// 把"分两条路"这件事收在一个函数里，单测才可能覆盖到**那个分支本身**
+/// （★ 实测教训：只测 `restore_user_edl` 时，把调用方的 `if had_user_edl`
+/// 改成 `if false`，测试**照样绿** —— 那正是我第一版修这个 bug 时的形态）。
+pub fn finish_versions_restore(cfg: &mut ProjectFile, fallback_opening: f64) {
+    if !cfg.user_edl_backup.is_empty() {
+        // ⚠️ 有备份 ⇒ **整份还原用户的手排 EDL**（`set_opening` 会把它改坏）。
+        restore_user_edl(cfg);
+    } else {
+        // 本来就没有手排 EDL ⇒ 恢复成第一版候选的开头（那是我们自己算的）。
+        let _ = fallback_opening;
+    }
+}
+
+pub fn restore_user_edl(cfg: &mut ProjectFile) {
+    if cfg.user_edl_backup.is_empty() {
+        return;
+    }
+    cfg.edl.clips = std::mem::take(&mut cfg.user_edl_backup);
 }
 
 pub async fn cmd_render(project_path: &Path) -> anyhow::Result<()> {
@@ -1647,6 +1711,64 @@ mod tests {
         assert!(
             (back - 0.3).abs() < 1e-6,
             "恢复后起点是 {back}，不是 0.3 —— 恢复调用被'只能往后'的判据挡掉了"
+        );
+    }
+
+    /// ⚠️⚠️ **不许弄丢用户手排的剪辑点**（实测踩到的真数据丢失）。
+    ///
+    /// 现场：用户手排 `[1.0,4.0]` + `[5.0,8.0]`，跑一次 `--versions 3` 之后
+    /// 第一段起点变成 **0.3**（候选值）—— 而日志打的是"已恢复到第一版的开头"，
+    /// ★ **报告与事实相反**（"第一版的开头"是候选的 0.3，不是用户的 1.0）。
+    /// 原值一旦丢掉就找不回来。
+    ///
+    /// 判据：**跑完整套"改开头 → 还原"之后，`edl.clips` 必须逐字段等于原值**。
+    #[test]
+    fn 手排_edl_跑完要整份还原() {
+        let mut cfg = crate::project::ProjectFile::example();
+        cfg.mute_ranges.clear();
+        // ⚠️ `EdlClip` 没有 `Default` —— 用 serde 反序列化造（也顺手验了字段名）。
+        let mk = |a: f64, b: f64| -> yekitrim_render_core::types::EdlClip {
+            serde_json::from_value(serde_json::json!({ "source_start": a, "source_end": b }))
+                .expect("EdlClip 反序列化")
+        };
+        let user = vec![mk(1.0, 4.0), mk(5.0, 8.0)];
+        cfg.edl.clips = user.clone();
+
+        let openings_first_at = 1.5_f64;
+        // 逐版挪开头（这是 `cmd_render_versions` 干的事）。
+        // ⚠️ 候选必须落在**用户第一段内部**（`[1.0,4.0)`）——
+        //    越过 4.0 会被 `set_opening` 正确拒绝（那正是它的守卫）。
+        for at in [1.5_f64, 2.5, 3.5] {
+            set_opening(&mut cfg, at, 8.0);
+        }
+        assert!(
+            (cfg.edl.clips[0].source_start - 3.5).abs() < 1e-6,
+            "逐版推进没生效"
+        );
+        // 收工：还原。
+        //
+        // ⚠️ **必须走"收工"那条判据本身**（`finish_versions_restore`），
+        //    不能直接调 `restore_user_edl` —— 后者只测了"还原函数对不对"，
+        //    而**真正的现场是调用方那个分支**（★ 实测过：直接调 `restore_user_edl`
+        //    的写法，把调用方改成 `if false` 之后测试**照样绿**）。
+        super::finish_versions_restore(&mut cfg, openings_first_at);
+        assert_eq!(
+            cfg.edl.clips, user,
+            "用户手排的 EDL 没被整份还原 —— 他的剪辑点被候选值覆盖了（数据丢失）"
+        );
+    }
+
+    /// 没有手排 EDL 的工程：备份**必须是空的**（否则会写进 `polish.toml`，污染老工程）。
+    #[test]
+    fn 没有手排_edl_时不写备份() {
+        let mut cfg = crate::project::ProjectFile::example();
+        cfg.edl.clips.clear();
+        cfg.mute_ranges.clear();
+        let _ = &cfg.edl.clips;
+        set_opening(&mut cfg, 1.0, 8.0);
+        assert!(
+            cfg.user_edl_backup.is_empty(),
+            "屏蔽补集推出来的基准不该被当成'用户手排'备份下来"
         );
     }
 

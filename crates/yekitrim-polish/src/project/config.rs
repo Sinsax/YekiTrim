@@ -70,6 +70,17 @@ pub struct ProjectFile {
     #[serde(default, skip_serializing_if = "crate::render::BgmConfig::is_empty")]
     pub bgm: crate::render::BgmConfig,
 
+    /// 12c. **多版本成片动过 EDL 时的用户原值备份**（§9）。
+    ///
+    /// ⚠️ 只在工程**本来就有手排 EDL**、且跑过 `--versions > 1` 时才非空。
+    /// 收工时用它把 `edl.clips` **整份还原** —— 否则用户手排的第一段起点
+    /// 会被换成候选值，**永久丢失**（实测：`1.0` → `0.3`，而日志说"已恢复"）。
+    ///
+    /// ⚠️ 为什么是"备份 + 还原"而不是"跑完清空 `edl.clips`"：
+    /// 清空 = **删掉用户的剪辑**。他手排的段之后就该一直是他排的那样。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_edl_backup: Vec<yekitrim_render_core::types::EdlClip>,
+
     /// 13. 时间轴
     #[serde(default)]
     pub segments: Vec<Segment>,
@@ -2015,6 +2026,7 @@ impl ProjectFile {
             },
             sfx: SfxConfig::default(),
             bgm: crate::render::BgmConfig::default(),
+            user_edl_backup: Vec::new(),
             cover: CoverConfig::default(),
             segments: vec![
                 Segment {
