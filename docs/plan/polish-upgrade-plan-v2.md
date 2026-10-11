@@ -376,7 +376,20 @@ GPU 底座 vs 浏览器 CSS **本来就不逐像素相同**。§20 的度量用
 - `check-preview-engine.mjs --mutate` ⇒ **6/6 全红**（我复跑）
 - `cargo test -p yekitrim-polish --lib` ⇒ **490 passed / 0 failed**
 
-### ⚠️ 当前冻结：`webui/dist`
+### ✅ 冻结已解除（构建实测通过）
+```
+$ npm --prefix webui run build  ⇒ ✓ built in 1.51s
+  dist 指纹: src_fnv1a64 = a415015306ed33d2
+```
+★ **验证 dist 的教训（本会话第三次"grep 命中既非充分也非必要"）**：
+我最初在 `dist/assets/*.js` 里 grep `noiseTile` → **0**，一度以为没打进去。
+实际是 ① 标识符被**压缩改名** ② Vue scoped CSS **编进 `.css` 而非 `.js`**。
+⇒ 改查**行为特征**后全部确认：`toDataURL` ✅1 处、
+`fx-noise[data-v-beae5945]{mix-blend-mode:overlay}` ✅ 在 `.css` 里、
+旧白纱 `fx-noise{background:#fff}` ✅ 已消失、「特写」下拉 ✅3 处。
+⇒ **验收要查"行为特征"，不要查"源码标识符"。**
+
+### ⚠️ 原冻结记录（存档）：`webui/dist`
 由 `replay` 的一次 `cargo build`（非故意）触发重新生成，与 `src` 不同步
 （`engine.js` 尚无 `noiseTile` 导出，而 `PolishPreview.vue` 已 import）⇒ **任何构建都会失败**。
 ⇒ **解冻条件**：`frontend-edl` 的 Step 2 收口（加导出）+ `coldopen` 的 `TimelineEditor.vue` 完成 ⇒ 一次重建。
