@@ -2927,7 +2927,7 @@ mod tests {
         assert!(prompt.contains("fx"));
         assert!(!prompt.contains("\"direction\":"));
         // Step1 user prompt: 大分类导航 + 黑名单
-        let user_prompt = crate::llm::segment::build_segmentation_user_prompt(&[], "测试", 5, 4, &blacklist);
+        let user_prompt = crate::llm::segment::build_segmentation_user_prompt(&[], "测试", 5, 4, &blacklist, &[]);
         assert!(user_prompt.contains("大分类与细分 tag"));
         assert!(user_prompt.contains("主播情绪反应"));
         assert!(user_prompt.contains("fear-1"));
