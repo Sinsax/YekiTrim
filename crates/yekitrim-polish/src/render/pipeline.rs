@@ -279,6 +279,27 @@ pub async fn cmd_render_versions(
     }
 
     let n = openings.len().min(versions);
+    // ⚠️⚠️ **先确认"换开头"这件事真的做得到，再开始出片**。
+    //
+    // 实测踩到的**静默假成功**（2026-10-12）：工程缺 `data/clip-meta.json` 时
+    // `duration_for_versions` 回落到 **0.0**，而 `edl_clips_from_mute_complement(ranges, 0.0)`
+    // 对"非正时长"返回**空 Vec** ⇒ `set_opening` 在 `base.is_empty()` 那一句**直接 return**，
+    // **一个字节都不写**。于是循环照常跑 N 遍、日志照常打「版本 2/3：开头选在 2.40s」，
+    // 而**每一版渲染的输入完全相同** —— 三个产物**逐字节相同**（MD5 全等于 `a6f7f120…`）。
+    // 更糟的是收工那句还宣称"已恢复到第一版的开头"。**报告与事实相反**。
+    //
+    // ⇒ 判据：**每一版的开头值必须真的落到 `cfg.edl.clips[0].source_start` 上**，
+    //    落不下去就**当场报错**，而不是出一堆一样的片子。
+    //    （宁可失败得吵，也不要"看起来成功、拿到的是同一份"。这正是 §9 的验收标准
+    //     "两版 MD5 不同"能成立的前提。）
+    if duration_for_versions(project_path) <= 0.0 {
+        anyhow::bail!(
+            "多版本成片（§9）无法换开头：工程里读不到时长 \
+             （`data/clip-meta.json` 缺失或没有 `duration` 字段）—— \
+             时长是 0 时「换开头」写不进 EDL，会输出 {n} 份**逐字节相同**的成片。\
+             ⚠️ 先跑一次 `polish process` 生成 clip-meta.json，或改用不带 `--versions` 的普通出片。"
+        );
+    }
     for i in 0..n {
         let at = openings[i].at;
         // ⚠️ 逐版**改一次开头**再出片 —— 改的是**工程文件本身**，
@@ -288,6 +309,22 @@ pub async fn cmd_render_versions(
             set_opening(cfg, at, total);
         })
         .await?;
+        // ⚠️ **写后自检**：确认这一版的开头真的落在磁盘上（见上面那段"静默假成功"）。
+        //    没有这一步，`set_opening` 里任何一个提前 return 都会退化成"出一堆一样的片子"。
+        let applied = crate::project::load_project(project_path)?
+            .edl
+            .clips
+            .first()
+            .map(|c| c.source_start);
+        match applied {
+            Some(s) if (s - at).abs() < 1e-6 => {}
+            other => anyhow::bail!(
+                "多版本成片（§9）第 {}/{n} 版的开头（{at:.2}s）**没有写进工程**\
+                 （磁盘上是 {other:?}）—— 继续跑只会得到一份与上一版相同的成片。\
+                 常见原因：`data/clip-meta.json` 缺 `duration`、或工程里有手排 EDL 与候选不兼容。",
+                i + 1
+            ),
+        }
         tracing::info!(
             "  ▶ 版本 {}/{}：开头选在 {at:.2}s（{}）（§9）",
             i + 1,
@@ -1747,6 +1784,80 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     // ── §9 多版本成片：换开头 ────────────────────────────────────────
+
+    /// **时长读不到时，换开头是"写不进去"的** —— 这条钉的就是那个静默假成功。
+    ///
+    /// 实测（2026-10-12）：工程缺 `data/clip-meta.json` ⇒ `duration_for_versions` 回落 **0.0**
+    /// ⇒ `edl_clips_from_mute_complement(ranges, 0.0)` 对非正时长返回**空 Vec**
+    /// ⇒ `set_opening` 在 `base.is_empty()` 处**直接 return、一个字节都不写**。
+    /// 后果：`--versions 3` 跑三遍、日志三行"开头选在 X"、**三个产物逐字节相同**
+    /// （MD5 全等 `a6f7f120…`），而收工那句还宣称"已恢复到第一版的开头"。**报告与事实相反。**
+    ///
+    /// ⇒ 修法有两层，这条测试钉**第一层**（`set_opening` 的语义本身）：
+    ///    **`total_duration <= 0` 时它什么都不写**，所以调用方必须先判时长。
+    ///    第二层（调用方 `cmd_render_versions` 的两道自检）由真跑验证，见计划书 §9。
+    ///
+    /// ⚠️ **变异自证的结论要说准**：我试着把**源头**那道守卫
+    /// （`edl_clips_from_mute_complement` 的 `total_duration > 0.0`）放宽掉，
+    /// 这条测试**照样绿** —— 因为 `set_opening` 后面还有一道独立的
+    /// `at >= base[0].source_end - 1e-9`（时长 0 时 `source_end` 也是 0，任何正 `at` 都过不去）。
+    /// ⇒ **两条守卫各自都足以拦住这个 bug**（这是好事：纵深），
+    ///   但这意味着**单看本测试红了/绿了，分辨不出是哪一条在起作用**。
+    ///   要单独钉住源头那一条，得直接测 `edl_clips_from_mute_complement(_, 0.0).is_empty()`。
+    ///   （教训：**"变异没翻面"不等于"测试没用"** —— 它可能说明有多条路径，要去看清是哪一条。）
+    ///
+    /// 下面这条是"补集在边界时长上的行为"判据。
+    ///
+    /// ⚠️⚠️ **它的变异自证也失败了，而原因值得记一笔**：我把源头那道
+    /// `!(total_duration > 0.0)` 守卫放宽，**这条照样绿** —— 因为在 `muted` 为空时，
+    /// 函数末尾那句 `if cursor < total_duration`（`0 < 0` = false）**同样**不产出任何 clip。
+    /// ⇒ 也就是说，对"空屏蔽 + 0 时长"这个输入，**有两处独立逻辑各自都返回空**，
+    /// 用这个输入**分辨不出**是哪一处挡住了。
+    /// ⇒ **本测试因此只钉"结果"（空就是空），钉不住具体是哪道守卫** —— 这一点如实写明，
+    ///   而不是假装它做了变异自证。真正防住 §9 那个静默假成功的是**调用方那两道自检**
+    ///   （`cmd_render_versions` 里的时长预检 + 写后回读），它们由真跑验证：
+    ///   缺 `clip-meta.json` 时 `--versions 2` **当场报错**、补上之后三版 MD5 各不相同。
+    #[test]
+    fn mute_complement_yields_nothing_for_nonpositive_duration() {
+        // 时长 0 / NaN ⇒ 必须是空（两条路都指向这个结果）
+        assert!(
+            crate::project::edl_clips_from_mute_complement(&[], 0.0).is_empty(),
+            "时长 0 时补集必须为空 —— §9 静默假成功的源头"
+        );
+        assert!(
+            crate::project::edl_clips_from_mute_complement(&[], f64::NAN).is_empty(),
+            "非有限时长同样必须为空"
+        );
+        // 正时长、无屏蔽 ⇒ 一整段（证明"空"不是这个函数的常态）
+        let ok = crate::project::edl_clips_from_mute_complement(&[], 40.0);
+        assert_eq!(ok.len(), 1, "正时长无屏蔽应当给出一整段");
+        assert!((ok[0].source_end - 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_opening_writes_nothing_when_duration_is_zero() {
+        let mut cfg = crate::project::ProjectFile::example();
+        cfg.mute_ranges.clear();
+        cfg.edl.clips.clear();
+        // 时长 0（= clip-meta.json 缺失时的回落值）
+        set_opening(&mut cfg, 2.4, 0.0);
+        assert!(
+            cfg.edl.clips.is_empty(),
+            "时长 0 时 `set_opening` 必须**什么都不写** —— \
+             这正是调用方必须先判时长的原因（否则日志说换了开头、产物却一模一样）"
+        );
+        // 正时长下它才真的写
+        let mut ok = crate::project::ProjectFile::example();
+        ok.mute_ranges.clear();
+        ok.edl.clips.clear();
+        set_opening(&mut ok, 2.4, 40.0);
+        assert_eq!(ok.edl.clips.len(), 1, "正时长下应当写出一个 clip");
+        assert!(
+            (ok.edl.clips[0].source_start - 2.4).abs() < 1e-9,
+            "换开头的落点必须精确等于候选时刻，实际 {}",
+            ok.edl.clips[0].source_start
+        );
+    }
 
     fn project_with_video_span(total: f64) -> crate::project::ProjectFile {
         let mut cfg = crate::project::ProjectFile::example();
