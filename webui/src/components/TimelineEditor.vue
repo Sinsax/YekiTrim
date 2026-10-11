@@ -1067,6 +1067,20 @@ function onOverlayTypePick(ev, ot) {
 
 function labelFor(ev) {
   if (ev.type === 'sticker') return ev.keyword || ev.name || '贴纸'
+  // §5 E4a：`element` 是**按 `kind` 分派**的两种东西（文字走排版 / 贴纸走贴纸图），
+  // 泳道上必须一眼分得出 —— 否则两块都写 "element"，用户看不出哪个是文字哪个是贴纸。
+  // 旧代码没有这一支，直接落到 `return ev.type` ⇒ 两种元素统统显示字面量 "element"。
+  if (ev.type === 'element') {
+    const k = ev.kind || 'text'
+    // ⚠️ `kind` 可能是 LLM 漏写/写错的值（Rust 侧 `#[serde(default)]` 兜空串）。
+    // 认不出时**照实说**，别默认成"文字" —— 那会把一个坏数据伪装成正常元素。
+    if (k === 'text') {
+      const t = (ev.text || '').trim()
+      return t ? (t.length > 14 ? t.slice(0, 14) + '…' : t) : '文字'
+    }
+    if (k === 'sticker') return (ev.text || '').trim() || ev.name || '贴纸'
+    return '⚠' + k
+  }
   if (ev.type === 'camera') {
     // 硬切的块加个「切」前缀：泳道上一眼能看出哪几段是瞬间换构图（用户要的切镜）
     // 「摇」= 手持摇摆（附加变种），排在最前：它是叠加状态，跟切的"瞬间换构图"是两回事
@@ -1280,7 +1294,11 @@ function laneBlocks(lane) {
         width: Math.max(dur * scale.value, 10),
         label: labelFor(ev),
         title: type + ' @ ' + t.toFixed(2) + 's → ' + (t + dur).toFixed(2) + 's',
-        color: TIMELINE_COLORS[type] || lane.color,
+        // §5 E4a：`element` 的两种 `kind` 用**不同颜色** —— 只靠 label 区分太弱
+        // （泳道块很窄，字常被截断）。文字沿用元素轨底色，贴纸换成贴纸色系。
+        color: (type === 'element' && (ev.kind || 'text') === 'sticker')
+          ? '#7c3aed'
+          : (TIMELINE_COLORS[type] || lane.color),
         resizable: true,
         leftResizable: true,
         minLen: 0.1,
@@ -1866,10 +1884,31 @@ function changeEventType(type) {
   touch('segments')
 }
 
+/**
+ * 贴纸选择器选完之后写回**当前选中的事件**。
+ *
+ * ⚠️⚠️ **必须同时认 `sticker` 与 `element(kind=sticker)` 两种载体**：
+ * 贴纸有两代写法并存（`Event::Sticker` 是老的、`Event::Element{kind:"sticker"}` 是 §5 E2 迁进来的），
+ * 而两者的**关键词字段名不一样**：
+ *   · `type === 'sticker'` → 关键词在 **`keyword`**
+ *   · `type === 'element'` + `kind === 'sticker'` → 关键词在 **`text`**（Rust `Element::text` 的文档写明）
+ *
+ * 老代码只认 `ev.type !== 'sticker'` 就 `return`，于是**在元素轨上选好贴纸图之后什么都没发生**
+ * （用户报的「选完没反应」）—— 选项看着选中了、`touch()` 也没跑，一刷新全空。
+ * ⚠️ 别退回"只写 `ev.keyword`"：`Element` 根本没有这个字段，写了也是给对象挂一个
+ * 会被 serde 丢掉的野键（**不报错、不落盘**）。
+ */
 function onStickerPick(patch) {
   const ev = selectedEv.value
-  if (!ev || ev.type !== 'sticker') return
-  if (patch.keyword !== undefined) ev.keyword = patch.keyword || ''
+  if (!ev) return
+  const isSticker = ev.type === 'sticker'
+  const isElementSticker = ev.type === 'element' && (ev.kind || 'text') === 'sticker'
+  if (!isSticker && !isElementSticker) return
+  // 关键词落在哪个字段由载体决定（见上）
+  if (patch.keyword !== undefined) {
+    if (isSticker) ev.keyword = patch.keyword || ''
+    else ev.text = patch.keyword || ''
+  }
   if (patch.sticker_tag !== undefined) ev.sticker_tag = patch.sticker_tag || undefined
   if (patch.name !== undefined) {
     if (patch.name) ev.name = patch.name
@@ -1915,17 +1954,28 @@ function closeElementMenu(e) {
 /** 在播放头处加一个**指定 kind** 的元素（`text` 走排版、`sticker` 走贴纸图）。 */
 function addElementAt(kind) {
   closeElementMenu()
-  const type = kind === 'text' ? 'element' : 'sticker'
+  // ⚠️⚠️ **两种 kind 都建 `element`**（差别只在 `kind` 字段）。
+  //
+  // 旧代码写的是 `kind === 'text' ? 'element' : 'sticker'` —— 选「贴纸」会建出一条
+  // **老式 `type:"sticker"` 事件**（`Event::Sticker`），于是：
+  //   ① 属性面板走的是 `.type==='sticker'` 那一支，**根本没有「元素种类」下拉**
+  //      ⇒ 用户点的明明是「元素轨 → 贴纸」，「文字/贴纸」的切换却不存在（用户报的正是这个）；
+  //   ② 磁盘上留下的是 `type:"sticker"`，而不是元素轨该有的 `type:"element"`。
+  // 两个变体在 Rust 侧**长期共存**（老工程全是 `sticker`，§5 E2 只是"迁进来"、没删老变体），
+  // 所以这不是"数据坏了"—— 而是**新建时选错了载体**，等于每次点贴纸都退回旧写法。
+  // ⇒ 元素轨的 ＋ 一律产 `element`，老 `sticker` 事件只读进来、继续能用。
   const before = segments.value.reduce((n, s) => n + s.events.length, 0)
-  addEventAt(type)
+  addEventAt('element')
   // `addEventAt` 在"没有分段"或越界时**不加**（它会自己 toast）——
   // 这时别去改一个不存在的事件（下标 -1 会写到上一段的最后一条上）。
   const after = segments.value.reduce((n, s) => n + s.events.length, 0)
   if (after === before) return
-  if (type === 'element') {
-    // `defaultEvent` 已经给了 `kind='text'` + 空 `text` + `style/pos` 默认值，这里不用再补。
-    // 之所以仍走 `addEventAt('element')` 而不是自己构造：**下标与选中逻辑只住那一处**。
-    return
+  // `defaultEvent` 给的是 `kind='text'`；这里按用户选的 kind 落到正确载荷上。
+  // `addEventAt` 会把新块设为选中（`selected` = `{kind:'event', si, ei}`），
+  // 所以 `selectedEv` 拿到的就是刚建的那条 —— **别在这儿重算一遍下标**（下标算法只住 `addEventAt`）。
+  if (kind === 'sticker') {
+    const ev = selectedEv.value
+    if (ev && ev.type === 'element') setElementKind(ev, 'sticker')
   }
 }
 
