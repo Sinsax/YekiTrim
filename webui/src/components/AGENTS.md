@@ -81,17 +81,16 @@
 - ⚠️ **Dhampir 加载期间不许播**（门帘 + 播放键置灰 + `togglePlay` 三道闸；热重载不挂）：见
   `docs/webui-components.md` §2.5。
 ### 封面设计器（`CoverDesigner.vue`）
-- **真图层栈（PS 口径，2026-09）**：面板 = 左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」。⚠️ 2026-10
-  用户要求：**列表与设置改左右排布**、右栏**减半**（→ `minmax(220px,20%)`，省下给预览）。两栏走 **grid**
-  （`.lyr-body` 两列），别退回 flex 子项（`flex-basis` 会被内容顶开、不等宽）。⚠️ 面板**定高**
-  （`syncControlsBound` + `CONTROLS_MIN_H` 380px 下限，否则裁掉底部工具条）；两栏各自滚、`min-height` 必须是
-  **0**（`auto` ⇒ 永不出滚动条）。列表**上 = 更靠前** = `[cover] layers` 的**倒序**；顺序与可见性都
-  落盘，出片由 `resolve_cover_stack`/`plan_cover_layers` 注 z-index，前端 `resolveStack`/`blockZ`/
-  `layerVisible`/`layerStyle` 是**镜像** —— **两边一起改**。
+- **真图层栈（PS 口径）**：面板 = 左预览 / 右「左：属性 · 右：图层列表 · 底：工具条」；
+  **列表与设置左右排布**、右栏 `minmax(220px,20%)`、两栏走 **grid**（别退回 flex 子项 —— `flex-basis`
+  会被内容顶开、不等宽）；⚠️ 面板**定高**（`CONTROLS_MIN_H` 380px 下限，否则裁掉底部工具条）、两栏各自滚且
+  `min-height` 必须 **0**（`auto` ⇒ 永不出滚动条）。列表**上 = 更靠前** = `[cover] layers` **倒序**；
+  顺序与可见性都落盘，出片由 `resolve_cover_stack`/`plan_cover_layers` 注 z-index，前端
+  `resolveStack`/`blockZ`/`layerVisible`/`layerStyle` 是**镜像** —— **两边一起改**。几何数字见 ③.1。
 - **图层行** `[拖柄 ⠿][眼睛][缩略][名字][徽标][垃圾桶]`：**眼睛 = 非破坏性隐藏**（`visible:false` →
-  `display:none`，行留着淡化；安全区那两行走 localStorage）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即
-  恢复；**特效/表情连 `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。
-  ⚠️ 别退回"用属性字段模拟开关"（v1 那套已废）。
+  `display:none`，行留着淡化）· **删除 = 从栈里摘掉**（固定层属性全留、加回来即恢复；**特效/表情连
+  `[[cover.effects]]` 那条一起删**）· **视频预览 `locked`**：可隐藏、不给删/拖。
+  ⚠️ 别退回"用属性字段模拟开关"（v1 已废）。
 - **拖动排序**：行上 HTML5 DnD + 2px 插入指示线（显示序 = 栈倒序，换算集中在 `moveLayerTo`）；快捷键绑
   `.controls`（**别挂 window**）：`Ctrl/Cmd+[ ]` 上下移、`Shift` 置顶底、`Delete` 删层。
 - **画布拖动跟选中层走**（`dragTarget` 是唯一判据）：视频预览→`bg_x/bg_y`（滚轮 `bg_zoom`）· 文字→
@@ -104,8 +103,8 @@
   （以前只读 `cover.*` → "面板空、标题却高亮"）。③.7 有全表。⚠️ 高亮串走 `v-html`，CSS **必须 `:deep()`**，否则匹配不上、
   高亮色**静默**失效。⚠️ **高亮字号 `hl_font_scale` 同读 `--hl-fs`**。
 - **新建图层**（底部工具条，菜单向上弹）：可叠加六种（表情·光晕·模糊·暗角点·颜色覆盖·扫描线，落
-  `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**＝选中/打开）。
-  视频预览与安全区不在菜单里。**文字预设已删**（`presets`/`applyPreset`/`.preset-row`）；⚠️ CLI 侧
+  `[[cover.effects]]`、带稳定随机 `id`）+ 单层三种（背景·滤镜·文字；已有→标「已有」但**可点**）；
+  视频预览与安全区不在菜单里。**文字预设已删**（`presets`/`applyPreset`）；⚠️ CLI 侧
   `polish cover --template` 还在。
 - ⚠️ **内容层的 z-index 只在行内给**（`layerStyle()`）：CSS 里不许写
   `.stage-bg/.stage-media/.vignette-layer/.gradient-layer/.title-wrap` 的 z-index；设计器专属两层固定在上面
@@ -131,9 +130,9 @@
 - ⚠️ **镜像清单**（用户报过"设计器与成片不一致"）：字体栈 · 描边 `#2a2522` · 阴影
   `0 5px 22px rgba(0,0,0,.78)`（×`stageScale`）· 渐变底色取自 `[style.subtitle].highlight_color` · **层序/z-index
   走同一个栈** · 特效公式（`blur`=`1+amount×14`、`overlay`=`rgba(hex,amount)`+blend、emoji=`48+amount×240`）·
-  emoji **描边环**（4 向 `drop-shadow`、**别加对角**；宽 = 标题联排 `描边/4`、特效层 `size×0.03`；描边 0 ⇒
-  无环）· `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` >
-  `65% 50%`）· `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
+  emoji **描边环**（4 向 `drop-shadow`、**别加对角**；宽 = 标题联排 `描边/4`、特效层 `size×0.03`）·
+  `liverOrigin()` 优先序 = `region_origin`（自由选框中心 > `origin_grid` > `origin` > `grid[0]` > `65% 50%`）·
+  `bg_zoom` 0.5~3 · **高亮字号 `--hl-fs`**。
 - ⚠️ **取帧播放器常驻舞台**（`.stage-video-live`；`_cover_frame.jpg` 的 img 只兜底）：**不许按选中层门控**（曾
   这么干 → 切层没法拖进度条、选好的帧跳回去）；前端不是帧源（后端 ffmpeg 截帧），同帧靠 `seekToFramePos`
   （钉子 ②）。
@@ -169,8 +168,8 @@
   **已删除**、能力全并入它 —— 改素材库只改这一处）：左=类型导航、右=该类型网格；三种素材折成同一
   形状（`items` 的映射），**一个网格画三种** —— ⚠️ 别再退回"三块各自实现"。规则与坑见
   `docs/webui-components.md`「素材库」：**视频没有上传**（几 GB，拖拽直接 return）· 缩略图抽不出是
-  **404 不是 500** · 写操作已放开给登录用户（自带字体不给删除按钮、删除一律 `confirmDialog`）·
-  前端上传上限预检必须留着（超限回 413 纯文本，`client.js` 只认 JSON，会误报成"接口不存在"）。
+  **404 不是 500** · 删除一律 `confirmDialog` · 前端上传上限预检必须留着（超限回 413 纯文本，
+  `client.js` 只认 JSON，会误报成"接口不存在"）。
 - `SliderField`：⚠ **设置页的数值项走 `components/SliderField.vue`**（滑块 + 行尾可直填数字框，16 处）。
   ⚠ **滑块宽度 = 所在格子的 1/3**（`input[type=range]` 的 `width:100%` 会被 flex-basis 盖掉，**别再改回 100%**）；
 - `JobList`/`jobs/JobDrawer`（任务列表与按钮门控 —— "界面哑火"的来源，2026-09-16 一次补齐）：
@@ -179,16 +178,14 @@
     按钮一起冻住（症状：队列加载不出来 + 剪切按钮一直灰）。新增轮询接口自己给短超时；noisy 接口**慢过
     `SLOW_MS`(1s) 照样记 info**。
   - ⚠ **读失败 ≠ 没有任务**：`useJobs.load()` 失败时**保留上一份快照**并置 `lastError`，`JobList` 把「读取中 /
-    读取失败（带重试按钮）/ 真的没有任务」**分三态**显示。以前失败写 `jobs.value = []`，界面和"真的没有任务"
-    长得一样（都是「暂无任务」）。
-  - ⚠ **门控要能被陈旧快照兜住**：`busyOn` 只是"提前告诉用户要等"，**不是正确性保证**（正确性由服务端的资源键
-    排队兜）。`useJobs.stale`（快照超过 `SNAPSHOT_TTL_MS`=15s 没刷新）为真时，各视图必须把 `busyOn` 的结果降级
-    成 `null` 放行 —— 否则一次读取故障就把页面按钮永久锁死。**别把门控当"不许点"**：宁可放行让服务端去排队。
-  - ⚠ **任务结束的刷新必须 `silent`**：`ProjectSlicesView` 的 `onJobDone` 曾漏了 `silent:true` —— 非静默
-    `load()` 一置 `loading`，`v-if="loading"` 就把整面卡片墙换成骨架屏并**卸载 `ProjectClipsSection`** →
-    `clipsRef` 变 null → 工具条三颗按钮（`:disabled="!clipsRef"`）全灰；慢盘上这一次要 3–4 秒，而它**每个任务
-    结束都跑一次**（用户报的"剪切完界面卡住、按钮变灰"）。这类刷新还要**单飞 + 尾随重刷**
-    （`ProjectSlicesView.load` 的 `inflight`/`queuedReload`）。
+    读取失败（带重试按钮）/ 真的没有任务」**分三态**显示（以前失败写 `jobs.value = []`，界面和"真的没有任务"
+    长得一样）。
+  - ⚠ **门控要能被陈旧快照兜住**：`busyOn` 只是"提前告诉用户要等"，**不是正确性保证**。`useJobs.stale`
+    （快照超过 `SNAPSHOT_TTL_MS`=15s）为真时各视图必须把 `busyOn` 降级成 `null` 放行 —— 否则一次读取故障就把
+    按钮永久锁死。**别把门控当"不许点"**：宁可放行让服务端去排队。
+  - ⚠ **任务结束的刷新必须 `silent`**：`ProjectSlicesView.onJobDone` 曾漏了 `silent:true` —— 非静默 `load()`
+    一置 `loading`，`v-if="loading"` 就把卡片墙换成骨架屏并**卸载 `ProjectClipsSection`** → `clipsRef` 变 null
+    → 工具条三颗按钮全灰（慢盘 3–4 秒，而它每个任务结束都跑）。这类刷新还要**单飞 + 尾随重刷**。
   - ⚠ **按钮按作用域门控**：`api/jobs.js` 的 `clipKey/outKey/idxKey/MODELS_KEY/STICKERS_KEY` 必须与
     `crates/yekitrim-server/src/scope_key.rs` 一致，`busyOn(jobs, keys)` 求交集 —— 只在自己片段/项目被占用时才
     禁用，「别处有任务在跑」不再让按钮变灰。**同步保存类操作（选框/封面参数/字幕/去静音）不受门控。**
