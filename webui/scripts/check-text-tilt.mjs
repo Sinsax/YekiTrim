@@ -35,9 +35,11 @@
 // engine.js 当 CJS。所以这里从源码文本里抠函数来跑（与 check-caption-wrap.mjs /
 // check-overlay.mjs / check-sticker-anchor.mjs 同一套配对括号提取）。
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ENGINE = join(HERE, '..', 'src', 'polish', 'engine.js')
@@ -156,8 +158,11 @@ function check(name, ok, detail) {
   else { fail++; failures.push(name + (detail ? ' —— ' + detail : '')) }
 }
 
-function runSuite(mutate, { verbose = true } = {}) {
+async function runSuite(mutate, { verbose = true } = {}) {
   const T = loadTransform(mutate)
+  // ⚠️ ⑧ 要**同一个变异体**的源码文本 —— 不能在里面 `readFileSync(ENGINE)`
+  //    重新读磁盘：那样变异根本不进 ⑧，两条新变异"打不红"（第一版就是这么写的）。
+  const mutatedSrc = (() => { let s = readFileSync(ENGINE, 'utf8'); return mutate ? mutate(s) : s })()
   let suitePass = 0, suiteFail = 0
   const rec = (ok) => { if (ok) suitePass++; else suiteFail++ }
 
@@ -225,6 +230,90 @@ function runSuite(mutate, { verbose = true } = {}) {
     rec(Math.max(...[0, 1, 3, 4].map((i) => Math.abs(flipped[i] - dhampirLinear(6, 1, 0.88)[i]))) > 1e-3)
   }
 
+  // ⑧ ★ **解析层也要钉住**（2026-10-13 补的真实缺口）
+  //
+  //  ①–⑦ 全部只测 `textTiltTransform`（**渲染函数**）—— 它拿到的是 `tx.style.tiltDeg`。
+  //  而那个值由 `parseTextSource` 从 `source` 串的 **p7/p8** 解析出来，
+  //  再经 `buildIndex` → `getElements` 交给渲染层。
+  //
+  //  ⚠️ **这一段以前完全没有判据**：只要 `parseTextSource` 读错下标
+  //  （例如把 p7/p8 写成 p8/p9、或 `parts.length === 9` 写成 `8`），
+  //  ①–⑦ **照样全绿**（它们自己喂 `style`），而**预览里字永远不歪**。
+  //  这正是本仓"测到了函数、没测到调用方"那一类（`parseStroke` 就是这么漏的）。
+  //
+  //  判据落在**最后那个可见的值上**：`getElements` 真的吐出来的 `style.tiltDeg`。
+  //  为此把 `parseTextSource` 与 `getElements` 一起从源码里抠出来跑。
+  {
+    const code = [
+      extractFn(mutatedSrc, 'parseTextSource'),
+      extractFn(mutatedSrc, 'getElements'),
+    ].join('\n')
+    // `getElements` 只依赖 `idx`（纯读），不需要 `buildIndex`。
+    // eslint-disable-next-line no-new-func
+    const mod = new Function(code + '; return { parseTextSource, getElements };')()
+    const parseTextSource = mod.parseTextSource
+    const getElements = mod.getElements
+
+    // (a) 四档的真实 source 串 → p7/p8 必须落到 tiltDeg / squashY
+    const SOURCES = [
+      ['hook|64|6|255,255,255,255|26,26,26,255|900|1|6|1', 6, 1],
+      ['count|52|5|255,255,255,255|26,26,26,255|700|1|-4|1', -4, 1],
+      ['chapter|52|5|255,255,255,255|26,26,26,255|700|1|0|0.92', 0, 0.92],
+      ['comment|40|4|255,255,255,255|26,26,26,255|600|1|0|1', 0, 1],
+    ]
+    for (const [s, tilt, squash] of SOURCES) {
+      const got = parseTextSource(s)
+      rec(close(got.tiltDeg, tilt, 1e-12) && close(got.squashY, squash, 1e-12))
+    }
+    // (b) R4：**7 段的老串**（没有 p7/p8）必须落到恒等，不许 NaN/undefined
+    {
+      const got = parseTextSource('hook|120|8|255,255,255,255|26,26,26,255|900|0')
+      rec(close(got.tiltDeg, 0, 1e-12) && close(got.squashY, 1, 1e-12))
+    }
+    // (c) **可见性**：走**真的 `buildIndex` → `getElements`** 那条路，
+    //     断言吐出来的条目真的带着这两个值。
+    //     ⚠️ 这是本段唯一"端到端"的一条 —— (a)/(b) 只证明解析函数对，
+    //     而**预览用的是 `buildIndex` 填好的 `e.textStyle`**（不是现解析的）。
+    //     少了这一条，`buildIndex` 里漏填 `textStyle` 仍然全绿而预览不歪。
+    //
+    //     ⚠️ **别用"抠函数"那套**（(a)/(b) 用的）：`buildIndex` 会牵出
+    //     `INDEXED_TYPES` / `LANE_OF_TYPE` / `evDuration` / … 一串模块级依赖，
+    //     逐个抠是补不完的（实测连撞 `INDEXED_TYPES`、`evDuration` 两个 ReferenceError）。
+    //     这里改成**把真文件复制成一个临时 `.mjs` 再动态 import** ——
+    //     依赖由模块系统自己解析，与"抠函数"是两条路，此处选后者。
+    //     ⚠️ 必须复制：`webui/package.json` 没有 `"type": "module"`，
+    //     原地 `import` 会被 Node 当 CJS 拒绝。
+    //     ⚠️ **临时文件必须与 `engine.js` 同目录**（不是 `tmpdir()`）：
+    //     它有相对导入 `./canvas.js`，搬到别处就 `ERR_MODULE_NOT_FOUND`
+    //     （实测报的是 `file:///C:/Users/…/Temp/canvas.js`）。
+    const tmp = join(dirname(ENGINE), `.tmp-tilt-probe-${process.pid}-${Date.now()}.mjs`)
+    writeFileSync(tmp, mutatedSrc, 'utf8')
+    let mod2
+    try {
+      mod2 = await import(pathToFileURL(tmp).href)
+      const segments = [{
+        start: 0, end: 10,
+        events: [
+          { type: 'element', kind: 'text', time: 0.4, end: 1.6, text: '钩子',
+            style: 'hook', source: SOURCES[0][0], x: '50%', y: '20%' },
+          { type: 'element', kind: 'text', time: 3.4, end: 4.6, text: '章节',
+            style: 'chapter', source: SOURCES[2][0], x: '50%', y: '60%' },
+        ],
+      }]
+      // ⚠️ 夹具必须带 `config.segments[].start/end`：`buildIndex` 用 `s.start < dur`
+      //    过滤（缺 `start` ⇒ `undefined < 10` 恒假 ⇒ **整段被丢掉**、`element` 桶空）。
+      const idx = mod2.buildIndex({
+        config: { segments, duration: 10 }, subtitles: [], danmaku: [], duration: 10,
+      })
+      const a = mod2.getElements(idx, 1.0)
+      const b = mod2.getElements(idx, 4.0)
+      rec(a.length === 1 && !!a[0].style && close(a[0].style.tiltDeg, 6, 1e-12))
+      rec(b.length === 1 && !!b[0].style && close(b[0].style.squashY, 0.92, 1e-12))
+    } finally {
+      try { rmSync(tmp, { force: true }) } catch { /* 清不掉就算了，别盖住真错 */ }
+    }
+  }
+
   return { suitePass, suiteFail }
 }
 
@@ -247,6 +336,17 @@ const MUTATIONS = [
                         'Number.isFinite(style.squashY) ? style.squashY : 0.5') },
   { name: '位移旋钮丢了：translateY 写死 0',
     f: (s) => s.replace("'translateY(' + yOff + 'px)'", "'translateY(0px)'") },
+  // ---- ⑧ 解析层（2026-10-13）----
+  // ⚠️ 这两条打的**不是**渲染函数，而是 `parseTextSource` 的**下标与兜底**。
+  //    它们必须让 ⑧ 翻面 —— 而 ①–⑦ **不会红**（那几条自己喂 `style`）。
+  //    这正是加 ⑧ 的理由：只测渲染函数时，下标写错**整条判据照样全绿**。
+  //    ⚠️ 锚点写的是**预览那份**的 `num(p[7], 0)`（不是转译器那份的
+  //    `parts.length === 9 ? …`）—— 两者长得像、住在两个仓，**别抄错**。
+  { name: '解析下标错位：tilt 读 p[8]、squash 读 p[7]（预览里字永远不歪）',
+    f: (s) => s.replace('tiltDeg: num(p[7], 0),\n    squashY: num(p[8], 1)',
+                        'tiltDeg: num(p[8], 0),\n    squashY: num(p[7], 1)') },
+  { name: '解析兜底不再是恒等：tilt 缺省兜 6（缺字段的字也会歪）',
+    f: (s) => s.replace('tiltDeg: num(p[7], 0)', 'tiltDeg: num(p[7], 6)') },
 ]
 
 // ---------- 跑 ----------
@@ -257,9 +357,9 @@ console.log('参照：Dhampir `text_transform.rs::blit_affine` 的正向 = R(rot
 console.log('')
 
 if (!isMutate) {
-  const r = runSuite((s) => s, { verbose: true })
+  const r = await runSuite((s) => s, { verbose: true })
   pass = r.suitePass; fail = r.suiteFail
-  console.log(`\n①–⑦ 共 ${pass + fail} 项，通过 ${pass}，失败 ${fail}`)
+  console.log(`\n①–⑧ 共 ${pass + fail} 项，通过 ${pass}，失败 ${fail}`)
   if (fail) { console.log('\n失败明细：'); for (const f of failures) console.log('  ✘ ' + f) }
   else console.log('✓ 预览的 CSS 矩阵与出片侧逐值一致（顺序为 rotate → scale）')
 
@@ -269,7 +369,7 @@ if (!isMutate) {
   for (const m of MUTATIONS) {
     let red = false
     try {
-      const r2 = runSuite(m.f, { verbose: false })
+      const r2 = await runSuite(m.f, { verbose: false })
       red = r2.suiteFail > 0
     } catch (e) {
       red = true // 抠不出函数 / 参数非法也算"打红"（变异体已不可用）
@@ -285,7 +385,7 @@ if (!isMutate) {
   let allRed = true
   for (const m of MUTATIONS) {
     let red = false
-    try { red = runSuite(m.f, { verbose: false }).suiteFail > 0 } catch { red = true }
+    try { red = (await runSuite(m.f, { verbose: false })).suiteFail > 0 } catch { red = true }
     if (!red) allRed = false
     console.log(`  ${red ? '✓ 打红' : '✘ 没红'}  ${m.name}`)
   }
