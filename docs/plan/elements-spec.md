@@ -41,7 +41,7 @@ end   = 5.0
 # --- kind = "text" ---
 text  = "这就是传说中的…"
 style = "hook"           # hook | chapter | comment | count
-pos   = "top"            # top | center | bottom
+pos   = "top"            # top | center | bottom —— ⚠️ 见下方更正
 
 # --- kind = "sticker" ---
 keyword     = "ysyk"
@@ -49,6 +49,29 @@ sticker_tag = "害怕"
 x = "auto"
 y = "auto"
 ```
+
+### ⚠️ `pos` 的更正（2026-10-12 实测）：**只有预览生效，成片一律贴底**
+
+`pos` 在 `process` 里是**真被消费**的（`placement.rs::TextAnchor::parse` 按它选一条纵向带，
+`pick_box_position` 在这条带里挑不重叠的落点，再写回 `x`/`y` 百分比）。
+**预览**读那对 `x`/`y`，所以三档在预览里看得出差别。
+
+**但成片侧没接通**：转译器把文字元素转成 ASS 时对齐码**硬编码 `Alignment 2`**（底部居中），
+`pos` 既没进对齐码、也没进底座任何字段 ⇒ **三条档位在成片里长得一样**。
+
+★ **根因不是"忘了接线"，而是底座没有可用的纵向锚**：
+
+* `bottom_margin` 身兼两职 —— 底座 `text_layout::layout` 里
+  `max_width_px = sequence_width × (1 − 2 × margin)`（左右安全宽）**与**
+  `block_top = 1 − margin − …`（纵向位置）读的是**同一个值**。
+  而安全宽 0.875 要求它 = **0.0625**；`top` 档要抬到画面上方却需要它 ≈ **0.6**，
+  抬上去宽度就是负数 ⇒ **一个字都排不出来**（转译器注释记着这次真实事故：
+  误填 0.5 时"每一条文字元素都静默消失"，报告里**一行差异都没有**）。
+* ASS 的 `{\an8}` 会被底座 `parse_ass` **当覆盖标签丢掉**；`force_style` 只拼五个键。
+
+⇒ **要修必须底座加一个与 `bottom_margin` 解耦的纵向锚字段**，
+需求与建议接口见 [`dhampir-elements-request.md`](dhampir-elements-request.md) 的「T7 纵向锚」。
+**在那之前**本仓不假装它生效：设置界面与规格都照实标注。
 
 ### `text` 的四个 `style` 预设
 
@@ -146,6 +169,24 @@ FFmpeg 全在外侧，所以要折半** —— 注释记着实测"直接填 12 �
 （覆盖度要靠"全是白墨"才恢复得出来），底衬要的是**另一种墨**，与那条设计正面冲突。
 
 ⇒ 四项的接口形状、数值与验收判据见 **`docs/plan/dhampir-elements-request.md`**。
+
+> ### ⚠️ 上表的"结论"一列**已过期**（2026-10-12 核，实施 §5 E4a 时复核）
+>
+> 底座**后来真做了**那三个通道 —— `Dhampir/crates/dhampir-timeline/src/text_motion.rs`
+> **576 行**，T1/T4 的原语都在里面：
+> `back_out3`（弹入曲线）· `text_shake_px`（持续抖动的逐帧位移）·
+> `text_envelope_scaled` · `scale_in_params` / `shake_params`（从 `SubtitleStyle` 读参数）。
+> 所以 **T1 弹入 / T4 抖动 / T6 底衬 / T2 打字机 四项在本仓都已接通**：
+> 转译器写字段（`motionFields`，`undefined` 一律不写 ⇒ 存量产物逐字节不变），
+> 预览侧是 `engine.js::getElements` 里那段"与出片侧同一条式子"。
+>
+> ⚠️ 保留上表是为了记住**它当时是对的**（"别以为本仓自足"这个判断救了工期），
+> 而不是让后来的人照着它去重新提一遍需求。**复核口径：`text_motion.rs` 是否存在、
+> 是否有真实现**（不是只看函数名 —— 那也是"代码在 ≠ 生效"）。
+>
+> ⚠️ 本次复核新发现的缺口**不在动效**，而在**纵向档位**：
+> `pos`（top/center/bottom）**只有预览认、成片不认** ——
+> 见 §2 的 `pos` 行与 `dhampir-elements-request.md` 的「T7 纵向锚」。
 
 ### 4.1 ⚠️ **一条硬约束（必须写进实现）**
 

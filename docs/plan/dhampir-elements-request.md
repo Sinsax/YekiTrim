@@ -27,6 +27,78 @@
 
 ⇒ 结论：**逐帧的缩放、持续位移、底衬，三个通道都不存在。**
 
+---
+
+## ⚠️ 追加需求（2026-10-12）：文字轨的**纵向锚**（`T7`，本次实施时发现）
+
+> 这一条不在原计划里 —— 是**做 §5 E3 的「元素落点」时顺手核出来的**。
+> 它与上面三项**性质不同**：上面三项是"动效不够好"，这一项是**"用户选的东西没生效"**。
+
+### 现象
+
+本仓的 `elements.text` 有一个 `pos = "top" | "center" | "bottom"` 档位（`elements-spec.md` §2），
+`process` 也**真的按它选落点**（`placement.rs::TextAnchor::parse` → 在对应带里挑不重叠的点 →
+写回 `x`/`y` 百分比）。**预览按它摆、成片不认** ⇒ 两块分叉：
+
+* 预览：`top` 的字在画面上方、`center` 的在中部；
+* 成片：**三条全贴底**，`pos` 完全无效。
+
+### 为什么本仓接不通（两条路都堵死）
+
+1. **`bottom_margin` 不能拿来做纵向位置**。底座 `text_layout::layout`：
+
+   ```rust
+   let margin = style.bottom_margin.clamp(0.0, 0.5);
+   let max_width_px = sequence_width * (1.0 - 2.0 * margin);   // ← 左右安全宽
+   let block_top = 1.0 - margin - (keep as f32) * line_height_norm;  // ← 纵向位置
+   ```
+
+   **同一个字段身兼两职**：左右安全宽要求它 **0.0625**（`(1-0.875)/2`，转译器现在就是这么填的），
+   而把 `top` 档抬到画面上方需要它 ≈ **0.6**。抬上去之后
+   `max_width_px = W × (1 − 1.2) < 0` ⇒ **一个字都排不出来**。
+   ⚠️ 这**不是理论风险**：转译器那段注释记着一次真实事故 ——
+   `bottom_margin` 误填 `0.5` 时"每一条文字元素都静默消失"，报告里**一行差异都没有**。
+
+2. **ASS 对齐码传不到底座**。`.ass` 里写 `{\an8}` 会被底座 `parse_ass`
+   **当覆盖标签丢掉**（单测名就叫「解析_ass_跳过样式段并去掉覆盖标签」）；
+   而 Style 行的 `Alignment` / `MarginV` 也不参与底座自己的 `text_layout::layout`
+   （那条路只读 `SubtitleStyle`）。且 `force_style` **只拼五个键**，塞不进对齐。
+
+### 建议接口
+
+给 `SubtitleStyle` 加一个**与 `bottom_margin` 解耦**的纵向锚，最小形状：
+
+```rust
+pub struct SubtitleStyle {
+    // ... 既有字段 ...
+    /// 文字块**底边的归一化 y**（0 = 画面顶，1 = 画面底）。默认 1.0 = 现行为。
+    ///
+    /// ⚠️ 与 `bottom_margin` **必须分开**：那个字段今天是"左右安全宽"的输入
+    ///    （见 `text_layout::layout` 那句 `1.0 - 2.0 * margin`），
+    ///    再拿它当纵向位置会让宽度塌成 0（本仓踩过，文字静默全没）。
+    #[serde(default = "one_f32")]
+    pub anchor_bottom: f32,
+}
+```
+
+**底座的 `block_top` 改为**：`anchor_bottom - (keep as f32) * line_height_norm`
+（`bottom_margin` 回归它"只管左右"的本职）。
+
+**本仓怎么用**：转译器把 `[elements.text].pos` 映射成
+`anchor_bottom`（`top ≈ 0.30` / `center ≈ 0.62` / `bottom ≈ 1.0`，
+数值应取 `placement.rs::TextAnchor` 那条带的中线，**由底座定口径后本仓跟随**）。
+
+**验收**：同一条文字元素，`pos = top` / `center` / `bottom` 三份工程出片后，
+黄色像素的**纵向重心**必须明显不同（单调：top < center < bottom），
+且三者的**左右安全宽一致**（`bottom_margin` 不动 ⇒ 折行与字号都不该变）。
+
+⚠️ **在底座给出这个字段之前**，本仓的选择只有：
+① 维持现状（预览按档位、成片贴底，**分叉继续存在**）；
+② 把预览也改成"一律贴底"（分叉消失，但等于**承认四档是假的**）。
+本仓**暂取 ①**，并在设置界面把这个落差的**真实情况**标出来（不假装它生效了）。
+
+---
+
 ## T1 弹入（pop-in）
 
 **要什么**：字带弹性放大出现 —— `0.7 → 1.15 → 1.0`。

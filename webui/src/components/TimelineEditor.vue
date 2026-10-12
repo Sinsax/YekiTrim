@@ -362,6 +362,15 @@
                 <div class="hint" title="后处理会按字幕带 / 人物 / 弹幕框算安全落点，每次重跑覆盖横纵坐标">
                   横向位置由后处理按安全落点算（每次重跑覆盖）。
                 </div>
+                <!-- ⚠️⚠️ **这条是"照实说"，不是装饰文案** ——
+                     纵向档位**只有预览生效，成片一律贴底**（转译器把 ASS 对齐码硬编码成 2）。
+                     根因是底座没有可用的纵向锚：`bottom_margin` 同时充当"左右安全宽"的输入
+                     （必须 0.0625），拿它抬位置会让宽度塌成 0、文字**静默全没**（有真实事故）。
+                     需求与建议接口见 `docs/plan/dhampir-elements-request.md` 的「T7 纵向锚」。
+                     ⚠️ 别为了"界面好看"删掉它：删了用户就会以为选了「上」、成片就在上方。 -->
+                <div class="hint warn-hint" title="成片的文字纵向位置暂时固定贴底：底座还没有可与左右安全宽解耦的纵向锚字段（需求已提）。预览会按档位显示，成片不会。">
+                  ⚠️ 纵向档位目前只在预览生效，成片会贴底。
+                </div>
               </template>
 
               <!-- 贴纸支：复用已有的贴纸选择器 -->
@@ -2638,6 +2647,10 @@ async function loadData() {
   font-size:9px; line-height:14px; color:#fff;
   text-shadow:0 1px 1px rgba(0,0,0,.45); }
 .edl-track { background:repeating-linear-gradient(90deg, transparent 0 39px, var(--line-soft) 39px 40px); }
+/* 如实警示（"选了但成片不生效"这类）。**别用 `.hint`**：那条是灰字"说明"，
+   与"你选的这个在成片里不会生效"是两种语气，混用会让真正的落差被当噪声忽略。
+   颜色走两套主题都有的 `--amber-deep`（不新造 token）。 */
+.warn-hint { font-size:11px; color:var(--amber-deep); }
 .edl-label { background:var(--bg-soft); }
 .edl-label-name { color:var(--main-deep); }
 /* 成片段：底色与源泳道的块刻意不同（源是蓝/红/橙一族，成片走靛紫），
