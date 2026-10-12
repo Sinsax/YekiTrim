@@ -614,6 +614,229 @@ export function animMotion(cfg, animName) {
   }
 }
 
+// =====================================================================
+// 逐字（P3/P4，2026-10-13）
+// =====================================================================
+//
+// ⚠️⚠️ **本段是 Dhampir 两份 Rust 实现的移植**，不是"再设计一遍"：
+//
+//   `crates/dhampir-timeline/src/text_perchar.rs`      ← 几何（这份下面两段）
+//   `crates/dhampir-timeline/src/text_perchar_anim.rs`  ← 时间（`charTransformAt`）
+//
+// **权威在 Rust 那两份**（成片是它们画的）。本段只需逐值对齐 ——
+// 对齐由 `scripts/check-perchar-parity.mjs` 钉住：那条判据**不实现算法**，
+// 而是跑底座真机拿 `cells`、再跑这里的函数、**逐字逐字段比**。
+//
+// 漂移的症状是本仓最恨的那一类：**预览里字散开了、成片里没散**（或反过来），
+// 而**两边各自看都正常**。本仓已栽过四次同形状的坑。
+
+/** 逐字档位的**缺省值**（与 Rust `PerCharSpec::default()` 逐字段同值）。
+ *
+ *  ⚠️ 两边缺省值必须**同一份**：`Option` 字段少写一个键时，两端算出不同的字
+ *  —— 而那种"少了半档"的症状是"预览里动、成片里不动一半"。
+ *  ⚠️ 缩放的缺省是 `1.0`**不是** `0.0`（Rust 那边专门有个 `one()` 函数就为这个）：
+ *  写成 0 会让字**缩成不可见**，而 0 是合法值 ⇒ 不报错。 */
+export const PER_CHAR_DEFAULT = {
+  name: null,
+  scaleFrom: 1.0,
+  scaleTo: 1.0,
+  rotationFrom: 0.0,
+  rotationTo: 0.0,
+  offsetXFrom: 0.0,
+  offsetXTo: 0.0,
+  offsetYFrom: 0.0,
+  offsetYTo: 0.0,
+  perCharFrames: 0,
+  staggerFrames: 0,
+  easing: 'linear',
+  reverse: false,
+  spreadXEm: 0.0,
+  spreadYEm: 0.0,
+  spreadXFrom: 0.0,
+  spreadXTo: 0.0,
+  spreadYFrom: 0.0,
+  spreadYTo: 0.0
+}
+
+/** 把工程里那份 `per_char`（**snake_case**，与 toml/JSON 同形）读成上面的驼峰形状。 */
+export function readPerChar(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const n = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  const d = PER_CHAR_DEFAULT
+  return {
+    name: typeof raw.name === 'string' ? raw.name : d.name,
+    scaleFrom: n(raw.scale_from, d.scaleFrom),
+    scaleTo: n(raw.scale_to, d.scaleTo),
+    rotationFrom: n(raw.rotation_from, d.rotationFrom),
+    rotationTo: n(raw.rotation_to, d.rotationTo),
+    offsetXFrom: n(raw.offset_x_from, d.offsetXFrom),
+    offsetXTo: n(raw.offset_x_to, d.offsetXTo),
+    offsetYFrom: n(raw.offset_y_from, d.offsetYFrom),
+    offsetYTo: n(raw.offset_y_to, d.offsetYTo),
+    perCharFrames: n(raw.per_char_frames, d.perCharFrames),
+    staggerFrames: n(raw.stagger_frames, d.staggerFrames),
+    easing: typeof raw.easing === 'string' ? raw.easing : d.easing,
+    reverse: raw.reverse === true,
+    spreadXEm: n(raw.spread_x_em, d.spreadXEm),
+    spreadYEm: n(raw.spread_y_em, d.spreadYEm),
+    spreadXFrom: n(raw.spread_x_from, d.spreadXFrom),
+    spreadXTo: n(raw.spread_x_to, d.spreadXTo),
+    spreadYFrom: n(raw.spread_y_from, d.spreadYFrom),
+    spreadYTo: n(raw.spread_y_to, d.spreadYTo)
+  }
+}
+
+/** **全角 / 半角**判定 —— 逐字照抄 Rust `text_layout.rs::is_full_width`。
+ *
+ *  ⚠️ 覆盖范围是**按 Unicode 区块列的**，不是"看起来宽不宽"猜的：
+ *  猜的话会漏掉假名、谚文、全角标点，而那些恰恰在中日韩字幕里天天出现。
+ *  ⚠️ 区块表**必须与 Rust 那份逐段一致** —— 少一段的症状是"某几个字的位置
+ *  从那里开始整体偏"，而**行宽看着还对**（因为偏差是局部的）。 */
+function isFullWidth(ch) {
+  const code = ch.codePointAt(0)
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3041 && code <= 0x33ff) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0x9fff) ||
+    (code >= 0xa000 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1f64f) ||
+    (code >= 0x20000 && code <= 0x3fffd)
+  )
+}
+
+/** **零宽**判定 —— 逐字照抄 Rust `text_layout.rs::is_zero_width`。 */
+function isZeroWidth(ch) {
+  const code = ch.codePointAt(0)
+  return (
+    (code >= 0x0300 && code <= 0x036f) || // 组合用附加符号
+    (code >= 0x200b && code <= 0x200f) || // 零宽空格 / 方向标记
+    (code >= 0xfe00 && code <= 0xfe0f) || // 变体选择符
+    (code >= 0xfe20 && code <= 0xfe2f) || // 组合用半角符号
+    code === 0x200d || // 零宽连接符
+    code === 0xfeff // 零宽不换行空格
+  )
+}
+
+/** 一个字的**逻辑宽度**（em）—— 逐字照抄 Rust `text_layout.rs::advance_em`。
+ *
+ *  ⚠️ 与本模块既有的 `measureCaption` 家族共用同一套常数：
+ *  全角 1.0 / 半角 0.5 / 空格 0.25。**别在这里另写一套** ——
+ *  那会让"逐字定位"与"折行"用两个字宽，而症状是"折行位置对、逐字位置偏"。 */
+export function advanceEm(ch) {
+  if (isZeroWidth(ch)) return 0.0
+  if (isFullWidth(ch)) return 1.0
+  if (ch === ' ' || ch === '\t') return 0.25
+  return 0.5
+}
+
+/** **逐字几何**：每个字在哪、多宽 —— 与 Rust `CharLayout::of` 同形。
+ *
+ *  ⚠️ 返回的是**行内局部坐标**（原点是这一行的左端），居中的事由调用方做。
+ *  ⚠️ 零宽字符**也占一个格子**（位置与前一个字相同、宽为 0）：
+ *  逐字错峰按**序号**取时间 ⇒ 序号必须与"用户看到的第几个字"一致，
+ *  过滤掉零宽字符会让序号整体前移（"第 3 个字"指到别的字上）。 */
+export function charLayoutOf(text) {
+  const s = String(text ?? '')
+  const out = []
+  let offset = 0
+  for (const ch of s) {
+    const adv = advanceEm(ch)
+    out.push({ ch, offsetEm: offset, advanceEm: adv })
+    offset += adv
+  }
+  return out
+}
+
+/** 这一档**有没有逐字动效** —— 与 Rust `PerCharSpec::is_active` 同一条判据。
+ *
+ *  ⚠️ 判据是"时长 > 0 **且**至少一个通道真的会动"，**不是**"有没有名字"：
+ *  一个只有名字、所有端点都相等的档什么都不会动，让它进逐字路径
+ *  等于白白把整行拆开重画（每个字一张位图），而画面**一点变化都没有**。
+ *  ⚠️ `spread_*` 那一对**也要算**：漏了它们，症状是"只配了散开的档完全不生效"。 */
+export function perCharActive(spec) {
+  if (!spec || !(spec.perCharFrames > 0)) return false
+  const moves = (a, b) => Math.abs(a - b) > 1e-6
+  return (
+    moves(spec.scaleFrom, spec.scaleTo) ||
+    moves(spec.rotationFrom, spec.rotationTo) ||
+    moves(spec.offsetXFrom, spec.offsetXTo) ||
+    moves(spec.offsetYFrom, spec.offsetYTo) ||
+    moves(spec.spreadXFrom, spec.spreadXTo) ||
+    moves(spec.spreadYFrom, spec.spreadYTo)
+  )
+}
+
+/** 第 `index` 个字**自己那一份动画的起始帧** —— 与 Rust `start_frame_for` 同式。
+ *
+ *  ⚠️ `count <= 1` 时恒 0（单个字没有"错峰"可言）。 */
+export function perCharStartFrame(spec, index, count) {
+  if (!spec || count <= 1) return 0
+  const last = count - 1
+  const i = Math.min(index, last)
+  const rank = spec.reverse ? last - i : i
+  return rank * spec.staggerFrames
+}
+
+/** **逐字变换**：第 `index` 个字在 `localFrame` 帧长什么样。
+ *
+ *  与 Rust `char_transform_at` 同式。⚠️ 三条边界各自会踩：
+ *  ① 没动效 ⇒ 恒等；② **还没轮到 ⇒ 起始值**（不是恒等 —— 给恒等会让字
+ *  "先正常显示一下再重新弹"，闪一下、极难归因）；③ **已经完了 ⇒ 终止值**
+ *  （不是恒等 —— 散开的字不该在动画结束后飞回去）。 */
+export function charTransformAt(spec, index, count, localFrame) {
+  const IDENTITY = { scale: 1.0, rotationDeg: 0.0, offsetXEm: 0.0, offsetYEm: 0.0 }
+  if (!perCharActive(spec)) return IDENTITY
+  const start = perCharStartFrame(spec, index, count)
+  const dur = spec.perCharFrames
+  // ⚠️ 必须浮点：整数除法会算出 0 ⇒ 全部字停在起始值（"配了不动"）。
+  const raw = (localFrame - start) / dur
+  const t = Math.min(1, Math.max(0, raw))
+  // ⚠️ 曲线走**本模块既有**的那份缓动，不另写。认不出的串退回线性
+  //    （逐帧路径里不许抛：一帧抛 = 整块 chunk 失败）。
+  const e = easePerChar(spec.easing, t)
+  const mix = (a, b) => a + (b - a) * e
+  // **按序号放大的位移**：`rank/(count-1)` 归一化 ⇒ 最后一个字挪满
+  // `spread*Em`，且**与字数无关**。没有它时"散开"退化成整行平移
+  //（每个字同一个位移）⇒ 字距不变，而**包围盒仍会宽一点点**（落点取整）
+  // ⇒ 判据会假绿。这是 2026-10-13 真机实测抓到的。
+  let rank = 0
+  if (count > 1) {
+    const last = count - 1
+    const i = Math.min(index, last)
+    rank = (spec.reverse ? last - i : i) / last
+  }
+  const spreadX = mix(spec.spreadXFrom, spec.spreadXTo) * spec.spreadXEm * rank
+  const spreadY = mix(spec.spreadYFrom, spec.spreadYTo) * spec.spreadYEm * rank
+  return {
+    scale: mix(spec.scaleFrom, spec.scaleTo),
+    rotationDeg: mix(spec.rotationFrom, spec.rotationTo),
+    offsetXEm: mix(spec.offsetXFrom, spec.offsetXTo) + spreadX,
+    offsetYEm: mix(spec.offsetYFrom, spec.offsetYTo) + spreadY
+  }
+}
+
+/** 逐字用的缓动。**复用 `E` 上那几张曲线表**（与整块动效同一套）。
+ *
+ *  ⚠️ 认不出的串**退回线性**（与 Rust `Easing::from_text` 的兜底一致）——
+ *  逐帧路径里抛一次就是整块 chunk 失败。 */
+function easePerChar(name, t) {
+  const key = String(name ?? '').trim()
+  if (key === 'back_out') return E.backOut(t, 3)
+  if (key === 'ease' || key === 'ease-in-out' || key === 'ease_in_out') {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+  }
+  if (key === 'ease-in' || key === 'ease_in') return t * t
+  if (key === 'ease-out' || key === 'ease_out') return 1 - (1 - t) * (1 - t)
+  return t
+}
+
 function textMotionCfg(cfg) {
   const e = (cfg && cfg.elements) || {}
   const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
