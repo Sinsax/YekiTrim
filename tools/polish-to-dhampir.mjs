@@ -2703,19 +2703,28 @@ export function translate(config, clipDir, outPath, options = {}) {
     return Math.min(1, Math.max(0, Number(v.toFixed(4))));
   }
 
-  /// 解析 `process` 写回的样式串：`style|font_px|stroke_px|r,g,b,a|weight|backdrop`。
+  /// 解析 `process` 写回的样式串：
+  /// `<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>`
   ///
   /// ⚠️ **认不出就退回兜底并按 `style` 名取那一档** —— 不抛错：
   /// 这个串是**本仓自己写的**，它坏了属于"内部不一致"，
   /// 而"因为一个解析失败整条出片跑不出来"的代价远大于"这条字用了默认样式"。
   /// ⚠️ 退回时**必须能被看见**：调用方据返回值里的 `parsed` 打一行 note。
+  ///
+  /// ⚠️ **T3 之后是 9 段、不是 7 段**：`tilt_deg` / `squash_y` 由 `process` **追加在末尾**
+  /// （`crates/yekitrim-polish/src/process/mod.rs` 那条注释写了理由：插在中间会让既有字段
+  /// 静默错位）。所以这里的长度判据要**同时接受 7 与 9** ——
+  /// 只认 9 的话，**没重跑过 `process` 的老工程整条字都退回兜底样式**（能出片、但字号/颜色全错，
+  /// 而报告里只有一行 note）；只认 7 的话，新工程的新字段**被整个丢掉**（字不歪不压，静默）。
+  /// 两个方向的症状都极隐蔽 ⇒ 两种长度都收，缺的两个字段走恒等值。
   function parseTextStyle(source, styleName) {
     const fallback = TEXT_STYLE_FALLBACK[styleName] ?? TEXT_STYLE_FALLBACK.comment;
     if (typeof source !== 'string' || source.length === 0) {
       return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
     }
     const parts = source.split('|');
-    if (parts.length !== 7) {
+    // 7 = T3 之前（无 tilt/squash）；9 = T3 之后。别的长度一律当坏了。
+    if (parts.length !== 7 && parts.length !== 9) {
       return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
     }
     const [name, fontPx, strokePx, colorCsv, strokeCsv, weight, backdrop] = parts;
@@ -2732,6 +2741,14 @@ export function translate(config, clipDir, outPath, options = {}) {
     ) {
       return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
     }
+    // ---- T3：倾斜 / 纵向压缩 ----
+    //
+    // ⚠️ **缺省必须是恒等值 `(0, 1)`**（不歪、不压）—— 老工程那 7 段串走的就是这里，
+    //    给错默认（比如 tilt 非 0）会让**所有存量工程的字突然歪掉**，
+    //    而那个歪从报告里看不出来（不报错、不 CLAMP）。
+    // ⚠️ 解析不出数（NaN）也走恒等 —— 与上面"认不出退回兜底"同一条纪律。
+    const tiltRaw = parts.length === 9 ? Number.parseFloat(parts[7]) : 0;
+    const squashRaw = parts.length === 9 ? Number.parseFloat(parts[8]) : 1;
     return {
       name,
       fontPx: nums[0],
@@ -2741,6 +2758,9 @@ export function translate(config, clipDir, outPath, options = {}) {
       weight: nums[2],
       // `backdrop` 写的是 `0`/`1`（Rust 的 `bool as u8`）。
       backdrop: nums[3] !== 0,
+      // T3：角度制（正 = 顺时针）/ 纵向倍数（1.0 = 不压）。
+      tiltDeg: Number.isFinite(tiltRaw) ? tiltRaw : 0,
+      squashY: Number.isFinite(squashRaw) ? squashRaw : 1,
       parsed: true,
     };
   }
@@ -5858,6 +5878,33 @@ export function translate(config, clipDir, outPath, options = {}) {
           end: c.end,
           source: { asset_id: id, source_in: 0 },
           opacity: 1.0,
+          // ---- T3：倾斜 → `rotation`、纵向压缩 → `scale_y` ----
+          //
+          // ⚠️ **必须写在图层自己的 `transform` 上**，不是轨级 `subtitle`：
+          //    底座的 `overlay.rs::evaluate_overlay` 读的是
+          //    `layers[i].transform`（`track.layers.iter().find(|l| l.covers(frame))`），
+          //    `TrackV2.subtitle` / `SubtitleStyle` 那条路**收不到旋转**（实测）。
+          //    写错地方的症状是"写了、不报错、成片里字不歪"。
+          //
+          // ⚠️ **`rotation` 不能做关键帧**（底座 `evaluate_overlay` 不求值关键帧）⇒
+          //    只写**静态值**。想做"摇摆"得先在求值层打通，**别在这儿写关键帧** ——
+          //    那会是一条静默失效的路。
+          //
+          // ⚠️ **只写非恒等的键**（`rotation !== 0` / `scale_y !== 1`）：
+          //    恒等时**一个键都不出现** ⇒ 老工程（四档里 `chapter`/`comment` 之外，
+          //    以及所有 `tilt=0, squash=1` 的字）产物**逐字节不变**（R4）。
+          //    与 `TransformV2::scale_y` 的 `skip_serializing_if = "is_one_f32"` 同一条纪律。
+          //
+          // ⚠️ `scale_y` 是**纵向的额外倍数、乘在 `scale` 之上**（契约见
+          //    `dhampir-timeline/src/layer.rs:131`）⇒ 直接写 `squashY` 即可，
+          //    **不要**写成 `scale * squashY`（那会压两次）。
+          transform: {
+            x: 0,
+            y: 0,
+            scale: 1.0,
+            ...(st.squashY !== 1 ? { scale_y: st.squashY } : {}),
+            ...(st.tiltDeg !== 0 ? { rotation: st.tiltDeg } : {}),
+          },
         })),
       });
     }

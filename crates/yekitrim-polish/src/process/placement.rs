@@ -583,6 +583,53 @@ impl TextStyle {
     pub const fn has_backdrop(self) -> bool {
         matches!(self, Self::Chapter | Self::Comment)
     }
+
+    /// **倾斜角度**（度，**正 = 顺时针**）。`0.0` = 不歪。
+    ///
+    /// # 值域是硬约束，不是口味
+    ///
+    /// 规格给的上限是 **±7°** —— 再大就开始影响可读性（汉字是方块字，
+    /// 歪过去之后行基线不再水平，长句读起来要"转头"）。
+    /// ⚠️ 所以本函数返回的**每**一档都必须落在 `[-7, 7]` 内，
+    /// 由 `tilt_within_readability_limit` 钉住。
+    ///
+    /// # 为什么只有两档非零
+    ///
+    /// 倾斜是**强调**手段，用在"这句话我要你停一下"的地方：
+    /// `hook`（钩子标题）与 `count`（"第 3 次了"这种累积计数）才是那个语气。
+    /// `chapter`（章节卡）与 `comment`（吐槽）是**常态阅读**的两档，歪着反而添乱。
+    /// ⚠️ 认不出的 `style` 会解析成 `Comment`（最保守档，见 [`Self::parse`]）
+    /// ⇒ **兜底档是不歪的那一档**，这与 `TextAnchor::Auto` 的"认不出走最保守"同一条规矩。
+    pub const fn tilt_deg(self) -> f64 {
+        match self {
+            // 钩子最抢眼，给到上限附近；计数次之（它要"跳出来"但不能喧宾夺主）。
+            Self::Hook => 6.0,
+            Self::Count => -4.0,
+            // 常态阅读档：不歪。
+            Self::Chapter | Self::Comment => 0.0,
+        }
+    }
+
+    /// **纵向压缩倍数**（`1.0` = 不压）。`< 1.0` = 压扁。
+    ///
+    /// # 值域同样是硬约束
+    ///
+    /// 规格给的下限是 **0.85** —— 再压字就"瘪"了（汉字的重心与字面高度是设计好的，
+    /// 压过头看着像被裁掉一截）。由 `squash_within_readability_limit` 钉住。
+    ///
+    /// # 语义
+    ///
+    /// 这是**纵向**倍数，横向不动（即"瘦高/矮胖"那个维度），
+    /// 与等比缩放 `scale` 是两个独立旋钮。`0.92` = 压掉 8% 的高度。
+    ///
+    /// ⚠️ 只有 `chapter`（章节卡）压一点点 —— 卡片式排版略扁显得"稳"。
+    /// 其余三档一律 `1.0`（不压），**包含兜底档 `Comment`**。
+    pub const fn squash_y(self) -> f64 {
+        match self {
+            Self::Chapter => 0.92,
+            Self::Hook | Self::Comment | Self::Count => 1.0,
+        }
+    }
 }
 
 /// 文字在画面上的**纵向锚点**（规格里的 `pos`）。
@@ -2123,6 +2170,78 @@ mod tests {
         assert!(
             sticker_box(p.x, p.y, F).intersects(&main),
             "对照组应该压在主画面上, 否则那条钉子没意义: {p:?} vs {main:?}"
+        );
+    }
+
+    // ---- T3：倾斜 / 纵向压缩的值域（可读性硬约束）----
+
+    /// 档位名（只给断言消息用；`process::style_name` 是私有的，别为测试放开它）。
+    fn label(s: TextStyle) -> &'static str {
+        match s {
+            TextStyle::Hook => "hook",
+            TextStyle::Chapter => "chapter",
+            TextStyle::Comment => "comment",
+            TextStyle::Count => "count",
+        }
+    }
+
+    /// 四档的参照表（加字段时要一起想：**这一档歪/压真的合适吗**）。
+    const ALL_STYLES: [TextStyle; 4] = [
+        TextStyle::Hook,
+        TextStyle::Chapter,
+        TextStyle::Comment,
+        TextStyle::Count,
+    ];
+
+    /// ★ **倾斜不得越过可读性上限 ±7°**。
+    ///
+    /// ⚠️ 这条是**值域门禁**，不是"某个数字对不对"：将来谁想把 Hook 调到 10°，
+    /// 必须**先改这条判据并说明理由** —— 而不是悄悄越过去。
+    #[test]
+    fn tilt_within_readability_limit() {
+        for s in ALL_STYLES {
+            let t = s.tilt_deg();
+            assert!(
+                (-7.0..=7.0).contains(&t),
+                "{} 的倾斜 {t}° 越过 ±7° 可读性上限",
+                label(s)
+            );
+        }
+    }
+
+    /// ★ **纵向压缩不得小于 0.85**（同上，值域门禁）。
+    #[test]
+    fn squash_within_readability_limit() {
+        for s in ALL_STYLES {
+            let q = s.squash_y();
+            assert!(
+                (0.85..=1.0).contains(&q),
+                "{} 的纵向压缩 {q} 越界（须在 [0.85, 1.0]）",
+                label(s)
+            );
+        }
+    }
+
+    /// **兜底档（`Comment`）必须是最保守的：不歪、不压。**
+    ///
+    /// ⚠️ 这条钉的是"认不出的 `style` 会退化成 `Comment`"这条链——
+    /// 若哪天把 `Comment` 调成歪的，那所有写错 style 的事件都会跟着歪，
+    /// 而用户从任何界面都看不出那个歪是从哪来的。
+    #[test]
+    fn fallback_style_is_the_most_conservative() {
+        assert_eq!(TextStyle::parse("认不出的档位"), TextStyle::Comment);
+        assert_eq!(TextStyle::Comment.tilt_deg(), 0.0, "兜底档不许歪");
+        assert_eq!(TextStyle::Comment.squash_y(), 1.0, "兜底档不许压");
+    }
+
+    /// 四档两两之间**至少有一项不同** —— 防"加了字段但四档写成一模一样"。
+    #[test]
+    fn the_four_styles_are_not_all_identical() {
+        let tilts: Vec<f64> = ALL_STYLES.iter().map(|s| s.tilt_deg()).collect();
+        let squashes: Vec<f64> = ALL_STYLES.iter().map(|s| s.squash_y()).collect();
+        assert!(
+            tilts.iter().any(|t| *t != tilts[0]) || squashes.iter().any(|q| *q != squashes[0]),
+            "四档的 (tilt, squash) 完全相同 —— 那这两个字段等于没加：{tilts:?} / {squashes:?}"
         );
     }
 }
