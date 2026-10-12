@@ -639,8 +639,23 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     const bind = s.indexOf("toggleLane('danmaku')")
     const font = s.indexOf('@change="onDanmakuFontChange"')
     if (head < 0 || lbl < 0 || bind < 0 || font < 0) return false
-    return head < lbl && lbl < font && bind <= lbl + 20
-      && !/<div class="(row|col)[^"]*">/.test(s.slice(head, lbl))
+    // ⚠️ **块级容器的判据不能只认 `row|col`**（2026-10-13 修的腐烂锚点）：
+    //    原来的写法是 `/<div class="(row|col)[^"]*">/`，只认这两种 class。
+    //    而"标题被换成块级容器"的**通用形态**是**任何** `<div …>`／`<p …>`／`<section …>`
+    //    —— `.small`/`.muted` 这类 class **不带 `display`**（`app.css:111-112` 只写 color/font-size）
+    //    ⇒ 一个 `<div class="small muted">` **本来就是块级**，足以把勾选框挤到下一行。
+    //    症状就是：**变异体真的破坏了布局，而判据不翻面** ⇒ 变异台报"❌ 没打红"，
+    //    于是这条不变式**静默失效**（锚点腐烂），比"报错"难发现得多。
+    //
+    //    ⚠️⚠️ **必须往前看**：标题**自己**那个开标签在 `head` **之前**
+    //    （`indexOf('弹幕设置')` 落在标签**内容**上），所以切片从 `head` 开始只会看到
+    //    **闭合**标签 `</div>` —— 第一版就是这么写的，正则恒不命中、判据照旧不翻面。
+    //    正确的窗口是"标题开标签之前一小段 + 标题与勾选框之间"。
+    //    留 40 字符足以覆盖 `<div class="small muted">` 这量级的开标签。
+    const from = Math.max(0, head - 40)
+    const window = s.slice(from, lbl)
+    const blockish = /<(div|p|section|ul|ol|h[1-6]|tr|li)\b[^>]*>/.test(window)
+    return head < lbl && lbl < font && bind <= lbl + 20 && !blockish
   }
   check('⑰ 「显示弹幕」与「弹幕设置」标题同一行、且字体下拉在它后面',
     dmToggleBesideHead(tplOnly), true)
