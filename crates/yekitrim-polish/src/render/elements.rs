@@ -28,7 +28,9 @@
 //! * **但它是"逐条"的，而本仓这一档没有"哪一条要放大"这个信息。**
 //!   底座那个字段的文档写着"哪几条命中是**宿主**知道的（按 `<span class="hl">` 标记判）"。
 //!   实测本仓这一条路**从来不产这个标记**：
-//!   ```
+//!   ⚠️ **围栏必须标 `text`**（2026-10-13）：裸 ` ``` ` 会被 rustdoc 当 **Rust 代码**编译，
+//!   而这段是带 `←` 的**证据摘录** ⇒ `cargo test -p yekitrim-polish --doc` 恒红。
+//!   ```text
 //!   tools/polish-to-dhampir.mjs:3371  const textBody = String(event.text ?? '');  ← 原样透传
 //!   tools/polish-to-dhampir.mjs:3385  text: textBody,                             ← 直进 cue
 //!   process/mod.rs 里 'class="hl"'                                     → 0 命中
