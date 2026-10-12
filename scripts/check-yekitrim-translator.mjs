@@ -961,6 +961,15 @@ const MUTATIONS = [
     from: '          safe_width_ratio: 0.875,',
     to: '          safe_width_ratio: 0.6,',
   },
+  // ---- 文字层 transform.rotation 的**无条件**存在（2026-10-13 那个真缺陷）----
+  // 底座 `TransformV2.rotation` 没有 serde(default) ⇒ 省掉它**整份工程载入失败**。
+  // 退回"只在 tilt≠0 时才写"⇒ `chapter` 档（tilt=0, squash≠1）必然省略它 ⇒
+  // `dhampir probe` 报 `missing field rotation`、一个像素都出不来。
+  {
+    name: '文字层退回「只在 tilt≠0 时才写 rotation」⇒ chapter 档省掉它、整份工程载入失败',
+    from: '            rotation: st.tiltDeg,',
+    to: '            ...(st.tiltDeg !== 0 ? { rotation: st.tiltDeg } : {}),',
+  },
 
   // ---- T1/T4/T6 接线（§5 E4a，2026-10-11）----
   //
@@ -2733,6 +2742,31 @@ function checkTextElementLane(mod, src = translatorSource) {
     //     "复用 bottom_margin 当左右安全宽"的老路，而那个字段现在还要表达纵向。
     ok(st.safe_width_ratio === 0.875,
       `safe_width_ratio 必须显式 0.875（不写就退回复用的老路、与纵向锚打架），实得 ${st.safe_width_ratio}`);
+
+    // ------------------------------------------------------------------
+    // ⑤e **文字层的 `transform.rotation` 必须无条件存在**（2026-10-13 真缺陷）
+    //
+    // 底座 `TransformV2.rotation` **没有** `serde(default)`（`layer.rs:154`），
+    // 而 `scale_y` 才有（`:151`）⇒ 只省略 `rotation` 会让**整份工程载入失败**：
+    //     「工程文件字段不符：missing field `rotation`」
+    //
+    // ⚠️ 症状极具迷惑性、必须专门钉：
+    //   `chapter` 档（`tilt=0, squash≠1`）= 只省 rotation ⇒ **必然炸**；
+    //   而 `hook`/`count` 档（`tilt≠0`）恰好带着 rotation ⇒ 看起来"能用"。
+    //   于是"一整份工程因为一个字的样式档而完全出不了片"，而**报告里零差异**。
+    //   实测：`dhampir probe --project <产物>` 直接报 `missing field rotation`。
+    //
+    // ⚠️ 判据落在**产物里那个键**上（与 ⑤b 同一条纪律：不能测"我的映射返回了什么"）。
+    // ------------------------------------------------------------------
+    const rotLayer = (track.layers ?? [])[0];
+    ok(!!rotLayer, '文字轨必须有层');
+    ok(rotLayer && 'rotation' in (rotLayer.transform ?? {}),
+      '文字层的 transform 必须**无条件**带 rotation —— 底座 `TransformV2.rotation` ' +
+      '没有 serde(default)，省掉它整份工程载入失败（missing field `rotation`）；' +
+      '`chapter` 档 tilt=0 会省略它 ⇒ 必然炸。实得 ' +
+      JSON.stringify(rotLayer && rotLayer.transform));
+    ok(rotLayer && Number.isFinite(rotLayer.transform.rotation),
+      `rotation 必须是个数（角度制），实得 ${JSON.stringify(rotLayer && rotLayer.transform.rotation)}`);
 
     // ------------------------------------------------------------------
     // ⑥–⑫ §5 E4a **T2 打字机**（2026-10-11）
