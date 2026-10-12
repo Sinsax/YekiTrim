@@ -616,6 +616,64 @@ function parseTextSource(src) {
   }
 }
 
+// ---- 文字元素的 CSS transform（T4）----
+//
+// ⚠️⚠️ **这个顺序是本模块最容易被"顺手改对"的地方，改它之前先读完这段。**
+//
+// 权威定义在 Dhampir 侧，两处：
+//   · 契约/GPU：`dhampir-core/src/render/compose.rs::inverse_affine`
+//       正向  p_out = R(rot) · ((p_src − c_src) ⊙ scale) + c_out + offset
+//       逆向  p_src = R(−rot) · (p_out − c_out − offset) ⊘ scale + c_src
+//   · 文字/CPU（T2）：`dhampir-worker/src/text_transform.rs::blit_affine`
+//       ← 出片时真正给字做仿射的就是它。它把 `scale` 从标量推广成 `(sx, sy)`，
+//         其余（绕中心、旋转方向、offset 语义）逐字不变。
+//
+// 出片的**正向**（上面四角循环展开）是：
+//       dx = (px − c_src_x) · sx ;  dy = (py − c_src_y) · sy
+//       ox = cos·dx − sin·dy + c_out_x
+//       oy = sin·dx + cos·dy + c_out_y
+// 写成矩阵就是 **`R(rot) · S(sx, sy)`** —— 点**先缩放、后旋转**。
+//
+// CSS 的 transform 是**右到左**作用的：`transform: A B` 作用在点上是 `A(B(p))`，
+// 即矩阵 `A·B`。所以要得到 `R·S`，**`rotate` 必须写在 `scale` 前面**：
+//
+//       ✔ `rotate(T deg) scale(sx, sy)`   → 矩阵 R·S  ← 与出片逐值相同
+//       ✘ `scale(sx, sy) rotate(T deg)`   → 矩阵 S·R  ← 斜着的字会被沿**旋转后的轴**拉伸
+//
+// ⚠️ 实测差多少（`tilt=6, sx=1.2, sy=0.92`，600×120 的字盒）：线性矩阵元素最大差 **0.183**，
+//    换算到字盒角上 ≈ **4.4px**；`tilt=7,sy=0.85` 时 ≈ 5.5px。**肉眼不一定看得出**，
+//    但"斜着的字被拉歪"在长句上会明显（基线不再等距）。
+// ⚠️ 两个**退化情形两种顺序都对**，所以随手试很容易以为没事：
+//    `sy == 1`（不压）或 `tilt == 0`（不歪）⇒ `R·S == S·R`。本档位表里
+//    `chapter/comment` 恰好就是 `tilt=0, squash=1` ⇒ **默认那两档永远试不出来**。
+//
+// 合成顺序（自左向右 = 从最外层到最内层）：
+//   `translateY(浮起) translate(抖动) rotate(倾斜+进场旋转) scale(动效缩放, 纵向压缩)`
+//   · `translateY`/`translate` 是**位移**，与线性部分可交换（都在最外层，先挪位置）；
+//   · **`rotate` 里是两个角相加**：样式倾斜（`tiltDeg`，绕中心、整段恒定）+ 进场动画的
+//     临时旋转（`rot`，`backOut` 回弹，进场结束恒为 0）。两者都是绕**同一个中心**的
+//     旋转 ⇒ 直接相加即可，**不需要**写成两次 `rotate`。
+//   · `scale(scale, squashY)` 是**两参数**版本 = 非等比（CSS 的 `scale()` 两参数正好是
+//     `(x, y)`）：横向 = 动画缩放，纵向 = 动画缩放 × 纵向压缩。
+//     ⚠️ 写成 `scale(a) scaleY(b)` 是**等价的**（`scale(a) scaleY(b)` ≡ `scale(a, a·b)`，
+//        已逐值验证），但**顺序仍要在 `rotate` 之后** —— 当年工作区里那版错就错在
+//        把它放到了 `rotate` 前面，与出片差了整整一个矩阵乘法序。
+//
+// 导出是为了让判据（`webui/scripts/check-text-tilt.mjs`）能 import 它，
+// 把"顺序"这件事钉成机器判据 —— 而不是靠下次改的人读到这段注释。
+export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {} }) {
+  const squashY = Number.isFinite(style.squashY) ? style.squashY : 1
+  const tiltDeg = Number.isFinite(style.tiltDeg) ? style.tiltDeg : 0
+  // 旋转角 = 样式倾斜 + 进场动画旋转（绕同一个中心 ⇒ 直接相加）。
+  const deg = tiltDeg + rot
+  return (
+    'translateY(' + yOff + 'px)' +
+    ' translate(' + shakeX + 'px,' + shakeY + 'px)' +
+    ' rotate(' + deg + 'deg)' +
+    ' scale(' + scale + ', ' + scale * squashY + ')'
+  )
+}
+
 // ---- 运镜档位 → 缩放系数。必须与 Rust CameraStyle::factor 逐值一致 ----
 // 缺省 1.3/1.5/0.55（与 render-core 的 Default 相同）；这里曾写 1.8/1.5，
 // 于是 [style.camera] 缺失时预览比成片小一大截。
