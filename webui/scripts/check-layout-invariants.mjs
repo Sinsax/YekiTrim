@@ -187,7 +187,7 @@ const CRITICAL_BINDINGS = [
   ['webui/src/components/ModelList.vue', modelList, ['canDownload']],
   // 文字动效那组控件（2026-10-13）。⚠️ **Vue 对模板里未定义的标识符不报错**，
   // 而是渲染成空白 —— 症状是"面板里少了一行，没有任何报错"。这里逐个钉住。
-  ['webui/src/views/PolishView.vue', polishView, ['swayDeg', 'swayMs', 'patchElements', 'rangeOrNull', 'numOrNull']]
+  ['webui/src/views/PolishView.vue', polishView, ['swayDeg', 'swayMs', 'patchElements', 'rangeOrNull', 'numOrNull', 'pacing', 'pacingText', 'pacingTitle']]
 ]
 
 console.log('\n① 布局不变式（每条都做变异自证）')
