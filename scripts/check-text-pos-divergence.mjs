@@ -92,26 +92,72 @@ check(
 );
 
 // ---------------------------------------------------------------------------
-// ② 界面：旧警示**不许回来**
+// ② 界面：**下拉已经撤掉了**，而且旧警示不许回来
+//
+// ⚠️ 2026-10-12 用户口径：「精简为和贴纸同逻辑的」——
+//    文字元素面板现在只有「内容 + 样式 + 一句位置说明」，与贴纸同形。
+//    `pos` 不再从界面写入 ⇒ 走 `TextAnchor::Auto`（后处理按安全落点算）。
+//    这条判据**跟着翻面**：以前守"下拉在不在 + 警示撤没撤"，
+//    现在守"下拉**不许回来** + 位置归后处理"。
 // ---------------------------------------------------------------------------
-check('「纵向位置」下拉还在（文字支没被删）', TL.includes('纵向位置'));
 check(
-  '★ 那条"只在预览生效、成片贴底"的旧警示已经撤掉（回来就是谎报）',
+  '★ 「纵向位置」下拉**不许回来**（用户要的是贴纸同逻辑：不给选位置）',
+  // ⚠️ 判**模板里的 label**，不是"整份文件不含这四个字" ——
+  //    注释里正当地提到了这个下拉（"别再退回…"），按全文判会把它自己顶翻。
+  //    判据要认的是**用户看得见的那一行**。
+  !/<label>纵向位置<\/label>/.test(TL) && !/selItem\.pos\s*=/.test(TL),
+);
+check(
+  '★ 那条"只在预览生效、成片贴底"的旧警示也不许回来（回来就是谎报）',
   !/纵向档位目前只在预览生效/.test(TL),
 );
 check(
   '旧警示的样式也没留在样式表里（防"定义了没用"）',
   !/\.warn-hint\s*\{/.test(TL),
 );
+// ⚠️ **与贴纸"同逻辑"要有可核对的形状**：两边那句位置说明必须同字。
+//    只断言"文字支有句 hint"太弱 —— 写成"横向位置由…"（只提横向）也照样过，
+//    而那正是"看起来文字和贴纸不是一回事"的来源。
+const STICKER_HINT = '位置 x/y 由后处理算（每次重跑覆盖）。';
+check(
+  '★ 文字与贴纸有**同一句**位置说明（"同逻辑"的可核对形状）',
+  TL.split(STICKER_HINT).length - 1 >= 2,
+);
+
+// ---------------------------------------------------------------------------
+// ②b Rust 那一侧：**没写 `pos` 就是"让后处理算"**（`TextAnchor::Auto`）
+//
+// ⚠️ 这条是"界面撤了下拉"的**后端对应面**：界面不再写 `pos`，
+//    所以"字段缺失"是**常态**。若兜底仍是 `Bottom`（老口径），
+//    所有没带 `pos` 的文字都会贴底 —— 与"自动算"正好相反，而且不报错。
+// ---------------------------------------------------------------------------
+const PLACEMENT = read('crates/yekitrim-polish/src/process/placement.rs');
+check(
+  'Rust 侧有 `Auto` 档（与贴纸同口径：不给纵向带、在整块安全区里挑）',
+  /^    Auto,$/m.test(PLACEMENT),
+);
+check(
+  '★ `TextAnchor::parse` 认不出的兜底是 `Auto`（不是贴底）',
+  /_ => Self::Auto,/.test(PLACEMENT),
+);
+check(
+  '`Auto` 走"没偏好"的中线占位（真正落点由 2b2 求解器定）',
+  /TextAnchor::Center \| TextAnchor::Auto =>/.test(PLACEMENT),
+);
 
 // ---------------------------------------------------------------------------
 // ③ 文档：记着"已接通"（别让后来的人照旧结论重提需求）
 // ---------------------------------------------------------------------------
-check('elements-spec 有 `pos` 纵向档位那一节', /`pos` 的纵向档位/.test(SPEC));
+check('elements-spec 有 `pos` 那一节（界面撤了、字段仍在，必须写下为什么）',
+  /`pos`：界面已撤，字段仍在/.test(SPEC));
 check('spec 提到了新的纵向锚字段', /anchor_bottom/.test(SPEC));
 check(
   '★ spec 写的是"已接通"（别让后来的人照旧结论重提一遍需求）',
-  /已接通成片/.test(SPEC) && !/只有预览生效，成片一律贴底/.test(SPEC),
+  /已接通成片|成片侧也已经接通/.test(SPEC) && !/只有预览生效，成片一律贴底/.test(SPEC),
+);
+check(
+  '★ spec 记下了"和贴纸同逻辑"这条定稿（面板已不给选位置）',
+  /和贴纸同逻辑/.test(SPEC) && /TextAnchor::Auto/.test(SPEC),
 );
 check('spec 记下了真机实测的三档重心（可复核）', /0\.394/.test(SPEC) && /0\.903/.test(SPEC));
 check('需求文档仍有 T7 纵向锚一节（供底座侧追溯）', /T7.*纵向锚|纵向锚.*T7/.test(REQ));
@@ -152,8 +198,8 @@ if (process.argv.includes('--self-test')) {
   self += 1;
   // ③ 旧警示被加回来 ⇒ 必须红（判据是双向的：既防没接线，也防谎报）
   const warnBack = TL.replace(
-    '<!-- ⚠️ **这条以前是警示，现在撤了**',
-    '<!-- x --><div>纵向档位目前只在预览生效，成片会贴底。</div><!-- ⚠️ **这条以前是警示，现在撤了**',
+    '<label>样式</label>',
+    '<div class="hint warn-hint">纵向档位目前只在预览生效，成片会贴底。</div><label>样式</label>',
   );
   assert.notEqual(warnBack, TL, '自证③：变异必须命中');
   assert.equal(/纵向档位目前只在预览生效/.test(warnBack), true, '自证③：警示回来必须被检出');
@@ -165,7 +211,20 @@ if (process.argv.includes('--self-test')) {
   assert.notEqual(noSafeW, TRANS, '自证④：变异必须命中');
   assert.equal(/safe_width_ratio: 0\.875,/.test(noSafeW), false, '自证④：拿掉安全宽必须红');
   self += 1;
-  console.log(`✓ 文字纵向档位接线自证：${self} 项（一维分轨 / 不写进轨 / 警示回潮 / 拿掉安全宽，都必须红）`);
+  // ⑤ **「纵向位置」下拉被加回来** ⇒ 必须红（用户要的是贴纸同逻辑：不给选位置）。
+  //    ⚠️ 连 `selItem.pos =` 那半也要覆盖 —— 只藏 label 而逻辑还在写 `pos`
+  //    是"看着撤了、实际还写"，比不撤更坏（界面与落点对不上）。
+  const posBack = TL.replace('<label>样式</label>', '<label>纵向位置</label><select :value="selItem.pos"></select><label>样式</label>');
+  assert.notEqual(posBack, TL, '自证⑤：变异必须命中');
+  assert.equal(/<label>纵向位置<\/label>/.test(posBack), true, '自证⑤：下拉回来必须被检出');
+  self += 1;
+  // ⑥ Rust 兜底退回 `Bottom` ⇒ 必须红（界面已经不写 `pos` 了，
+  //    退回贴底就是"所有没带 pos 的文字统统贴底"，与"自动算"相反且不报错）。
+  const bottomFallback = PLACEMENT.replace('_ => Self::Auto,', '_ => Self::Bottom,');
+  assert.notEqual(bottomFallback, PLACEMENT, '自证⑥：变异必须命中');
+  assert.equal(/_ => Self::Auto,/.test(bottomFallback), false, '自证⑥：退回贴底必须红');
+  self += 1;
+  console.log(`✓ 文字纵向档位接线自证：${self} 项（一维分轨 / 不写进轨 / 警示回潮 / 拿掉安全宽 / 下拉回潮 / 兜底退回贴底，都必须红）`);
   process.exit(0);
 }
 
