@@ -72,13 +72,30 @@ if (m) {
   const fnStart = s.indexOf('function parseTextStyle(')
   const fnEnd = fnStart < 0 ? -1 : s.indexOf('\n  }', fnStart)
   const body = fnStart < 0 ? '' : s.slice(fnStart, fnEnd < 0 ? s.length : fnEnd)
-  const js = /parts\.length\s*!==\s*(\d+)/.exec(body)
+  // ⚠️⚠️ **JS 侧合法段数是【一个集合】，不是单个数字**（2026-10-13 修，判据腐烂）。
+  //
+  //    `T3` 加 `tilt`/`squash` 时用的是**向后兼容**的写法：
+  //        if (parts.length !== 7 && parts.length !== 9) { /* 兜底 */ }
+  //    —— 7 段（老工程）与 9 段（T3 之后）**都是合法的**。
+  //
+  //    而旧判据的 `/parts\.length\s*!==\s*(\d+)/` 只抓**第一个**数字（7），
+  //    再拿它跟 Rust 的 9 比 ⇒ 报「Rust 写 9 段，JS 按 7 段解析 —— 永远命中兜底」。
+  //    **那句结论是错的**：9 段明明在生产里正常工作（T3 的判据全绿、真机出片过）。
+  //    症状是**门禁恒红**，而恒红的门禁比没有门禁更坏 ——
+  //    它会训练人"这条红了是正常的"，于是真正腐烂的那天也没人看。
+  //
+  //    ⇒ 判据改成：**Rust 写的段数必须落在 JS 接受的集合里**。
+  //      这样才能同时表达"老段数仍兼容"与"新段数已被认识"两件事；
+  //      真要收紧（比如某天不再兼容 7 段）时，集合自然只剩一个数。
+  const accepted = [...body.matchAll(/parts\.length\s*!==\s*(\d+)/g)].map((x) => Number(x[1]))
+  const jsOk = accepted.length > 0 && accepted.includes(rustFields)
   check(
-    `两侧字段数一致（Rust ${rustFields} 段）`,
-    js !== null && Number(js[1]) === rustFields,
-    js === null
+    `两侧字段数一致（Rust ${rustFields} 段 ∈ JS 接受 {${accepted.join(', ')}}）`,
+    jsOk,
+    accepted.length === 0
       ? '`parseTextStyle` 里找不到 `parts.length !== N` —— 它没有校验段数'
-      : `Rust 写 ${rustFields} 段，JS 按 ${js[1]} 段解析 —— 永远命中兜底`,
+      : `Rust 写 ${rustFields} 段，而 JS 只接受 {${accepted.join(', ')}} —— ` +
+        '落在集合外就**永远命中兜底**（所有文字退到 comment 档）',
   )
 }
 
