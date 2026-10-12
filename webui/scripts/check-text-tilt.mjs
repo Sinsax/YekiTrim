@@ -65,13 +65,44 @@ function extractFn(src, name) {
   throw new Error('函数 ' + name + ' 的花括号不配对')
 }
 
+/** 抠出一个 `const NAME = { … }` 对象字面量的**完整声明**（含 `const`）。
+ *
+ *  ⚠️ 与 `extractFn` 不同：这里要的是**声明本身**（`const ANIM_PRESETS = {...}`），
+ *  因为它会被拼进 `new Function` 里当模块级常量用。
+ *  ⚠️ 按**花括号配对**取，不按行 —— 表里每一档的值是**嵌套对象**（`{ tiltDeg: -6.0 }`），
+ *  取到第一个 `}` 会**只拿到半张表**（而那会让后半段的档静默查不到 ⇒ 判据假绿）。 */
+function extractConst(src, name) {
+  const at = src.indexOf('const ' + name + ' = ')
+  if (at < 0) throw new Error('找不到常量 ' + name + '（改名了就要同步本判据）')
+  const open = src.indexOf('{', at)
+  let depth = 0
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++
+    else if (src[j] === '}') {
+      depth--
+      if (depth === 0) return src.slice(at, j + 1) + ';'
+    }
+  }
+  throw new Error('常量 ' + name + ' 的花括号不配对')
+}
+
 /** 把抠出来的源码变成一个可调函数。 */
 function loadTransform(mutate) {
   let src = readFileSync(ENGINE, 'utf8')
   if (mutate) src = mutate(src)
   const code = extractFn(src, 'textTiltTransform')
+  // ⚠️ **判据把函数体抠出来单独求值** ⇒ 它引用的任何模块级符号都不在作用域里。
+  //    `textTiltTransform` 从 39 档（2026-10-13）起会调 `animPreset(...)` 去查
+  //    `tilt_*` / `slam_squash` ⇒ 不补就是 `ReferenceError: animPreset is not defined`
+  //    （实测：这条判据当场炸了）。
+  //    ⇒ 把**真的那张预设表与真函数**一起抠出来求值 —— **不许塞个假实现**：
+  //      塞假的会让"预设里的角度改了、判据还绿"，而那正是本判据要钉的乘法顺序的前提。
+  const tableSrc = extractConst(src, 'ANIM_PRESETS')
+  const presetSrc = extractFn(src, 'animPreset')
   // eslint-disable-next-line no-new-func
-  return new Function(code + '; return textTiltTransform;')()
+  return new Function(
+    tableSrc + '\n' + presetSrc + '\n' + code + '; return textTiltTransform;',
+  )()
 }
 
 // ---------- CSS transform 串 → 3x3 矩阵（只认本判据会出现的那几个函数）----------
