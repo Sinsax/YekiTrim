@@ -684,6 +684,39 @@ export const ANIM_PRESETS = {
   },
   hop_big: {
     perChar: { offsetYFrom: 0.9, offsetYTo: 0, perCharFrames: 26, staggerFrames: 7, easing: 'back_out' }
+  },
+  // ===== E 组：竖排（3 档）=====
+  //
+  // ⚠️ 与 A–D 组**形状不同**：竖排不是"逐字变换"，而是**整条轨的排版方向**
+  //    （底座 `SubtitleStyle::vertical`）⇒ 用 `vertical: true` 这个**轨级**键，
+  //    不是 `perChar`。所以这一组的 `perChar` 可以缺省（横排那套全不动）。
+  //
+  // ⚠️⚠️ **列容量 = 安全比例 ÷ 字号比例**（真机踩过）：
+  //    安全宽 0.2 + 字号 0.16 ⇒ 每列只放得下 1.25 个字，而 `maxLines` 默认 3
+  //    ⇒ 六字标题**只画出头两个字**。症状像渲染 bug，其实是这个式子。
+  //    所以竖排档位必须**同时**给一个够大的 `safeWidthRatio`（下面给 0.86）。
+  //
+  // ⚠️ 竖排**忽略 `anchorBottom`**（底座第一版的口径收窄）：横排下它管纵向位置，
+  //    竖排下纵向变成**长度方向**，语义转置了 ⇒ 改为按内容居中。
+  vtext_thin: {
+    vertical: true,
+    fontFamily: 'LXGW WenKai',
+    fontWeight: 400,
+    safeWidthRatio: 0.86
+  },
+  vtext_bold: {
+    vertical: true,
+    fontFamily: 'LXGW WenKai',
+    fontWeight: 700,
+    safeWidthRatio: 0.86
+  },
+  vtext_shrink: {
+    vertical: true,
+    fontFamily: 'LXGW WenKai',
+    fontWeight: 700,
+    safeWidthRatio: 0.86,
+    // 竖排 + 逐字变小（E 组第 3 档 = 竖排 + C 组能力）
+    perChar: { scaleSpread: -0.45, perCharFrames: 16, staggerFrames: 3 }
   }
 }
 

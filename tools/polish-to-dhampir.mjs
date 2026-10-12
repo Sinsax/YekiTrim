@@ -2964,6 +2964,24 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (on && preset.perChar !== undefined) {
       out.per_char = preset.perChar;
     }
+    // **E 组：竖排**（2026-10-13）。
+    //
+    // ⚠️ 只在 `preset.vertical` 为 **`true`** 时写 —— **不写 `false`**。
+    //    底座的字段是 `Option<bool>` 且 `skip_serializing_if = "Option::is_none"`：
+    //    `None` 与 `Some(false)` 语义相同（都横排），但只有 `None`**不落盘**。
+    //    写 `Some(false)` 会让**每个老工程**的样式里多出一个 `vertical: false`
+    //    ⇒ R4 判据（老工程逐字节不变）当场红。
+    //    ⚠️ 这正是"三态"那条老坑的又一例：**"没配"与"配成假"必须分开**。
+    if (on && preset.vertical === true) {
+      out.vertical = true;
+    }
+    // ⚠️ 竖排的**列容量 = 安全比例 ÷ 字号比例**（真机踩过）：
+    //    安全宽 0.2 + 字号 0.16 ⇒ 每列 1.25 个字，而 `max_lines` 默认 3
+    //    ⇒ 六字标题**只画出头两个字**（症状像渲染 bug，其实是配置的数学）。
+    //    档位表里给了够大的 `safe_width_ratio`，这里照传。
+    if (on && preset.safe_width_ratio !== undefined) {
+      out.safe_width_ratio = preset.safe_width_ratio;
+    }
     return out;
   };
 
@@ -3147,6 +3165,31 @@ export function translate(config, clipDir, outPath, options = {}) {
     },
     hop_big: {
       perChar: { offset_y_from: 0.9, offset_y_to: 0, per_char_frames: 26, stagger_frames: 7, easing: 'back_out' },
+    },
+
+    // ===== E 组：竖排（3 档）=====
+    //
+    // ⚠️ 与 A–D 组形状不同：竖排是**轨级排版方向**，不是逐字变换。
+    //    值走 `vertical: true`（底座 `SubtitleStyle::vertical`）。
+    //
+    // ⚠️⚠️ **列容量 = 安全比例 ÷ 字号比例**（真机踩过）：安全宽 0.2 + 字号 0.16
+    //    ⇒ 每列 1.25 个字，而 `max_lines` 默认 3 ⇒ 六字标题**只画出头两个字**。
+    //    ⇒ 竖排必须同时给够大的 `safe_width_ratio`（下面 0.86）。
+    //
+    // ⚠️ 竖排**忽略 `anchor_bottom`**（底座第一版的口径收窄，已写在字段文档里）。
+    vtext_thin: {
+      vertical: true,
+      safe_width_ratio: 0.86,
+    },
+    vtext_bold: {
+      vertical: true,
+      safe_width_ratio: 0.86,
+    },
+    vtext_shrink: {
+      vertical: true,
+      safe_width_ratio: 0.86,
+      // E 组第 3 档 = 竖排 + C 组的逐字字号能力。
+      perChar: { scale_spread: -0.45, per_char_frames: 16, stagger_frames: 3 },
     },
   };
 

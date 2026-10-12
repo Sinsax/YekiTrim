@@ -974,6 +974,17 @@ const ANIM_GROUPS = [
       { value: 'hop_fast', label: '跳起 · 快错峰' },
       { value: 'hop_big', label: '跳起 · 大字慢跳' }
     ]
+  },
+  // ===== E 组：竖排（3 档）=====
+  // ⚠️ 竖排改的是**整条轨的排版方向**（底座 `SubtitleStyle::vertical`），
+  //    与上面那些"逐字/整块变换"不是同一层 —— 但用户看到的仍是同一个下拉。
+  {
+    group: '竖排（逐字）',
+    items: [
+      { value: 'vtext_thin', label: '竖排 · 细楷' },
+      { value: 'vtext_bold', label: '竖排 · 粗体' },
+      { value: 'vtext_shrink', label: '竖排 · 逐字变小' }
+    ]
   }
 ]
 
