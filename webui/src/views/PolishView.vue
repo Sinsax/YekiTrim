@@ -302,6 +302,48 @@
       <span class="mono small flex-none">s</span>
     </div>
 
+    <!-- ── 文字动效（`[elements]`，2026-10-13）──
+         打字机 / 弹入 / 抖动 / 底衬 / 摇摆这五个能力**早就在后端与转译器里**，
+         但**一直没有界面**（`ElementsConfig` 那十来个字段前端只被 `engine.js` 读、
+         没人写）⇒ 用户只能手改 `polish.toml`，而 PUT 的逐字段白名单里**也没有
+         `elements` 这一支**，改完点保存会被**静默丢掉**（"已保存"、文件没变）。
+         本次一并补上：白名单分支 + 这里这组控件。
+
+         ⚠️ **每一个控件都必须"关得掉、且关掉即不写键"**：底座那批字段全是
+         `Option<T>`，`None` = 老行为。发 `0` / `false` 会**写出一个键** ⇒ 老工程
+         重存多出内容（R4）。所以下面一律发 `null`（服务端 `patch_config_file`
+         删键），与「LLM 按链路覆盖」那块用勾选框表达"跟随全局"是同一条纪律。
+
+         ⚠️ 长度预算：右栏内容宽只有 266px，行内文案 ≤20 字。 -->
+    <div class="row mt-6" style="gap:6px;align-items:center">
+      <span class="small muted flex-none">文字动效</span>
+      <span class="flex-1"></span>
+    </div>
+
+    <div class="row mt-6" style="gap:6px;align-items:center">
+      <span class="small muted flex-none" style="width:52px">摇摆</span>
+      <input type="range" class="flex-1" min="0" max="20" step="0.5" :value="swayDeg"
+             :disabled="elementsSaving || !ready"
+             title="摆动幅度（度，单边）：写 8 ⇒ 在 −8°…+8° 之间往复。0 = 关。⚠️ 幅度与周期都给才摆动，任一为 0 即关"
+             @change="patchElements({ sway_deg: rangeOrNull($event, 0) })">
+      <input class="rv-input" type="number" inputmode="decimal" min="0" max="20" step="0.5"
+             :value="swayDeg" :disabled="elementsSaving || !ready" aria-label="摇摆幅度（度）"
+             title="0 = 关（不写这个键）" @change="patchElements({ sway_deg: numOrNull($event, 0, 20) })">
+      <span class="mono small flex-none">°</span>
+    </div>
+
+    <div class="row mt-6" style="gap:6px;align-items:center">
+      <span class="small muted flex-none" style="width:52px">周期</span>
+      <input type="range" class="flex-1" min="0" max="2000" step="50" :value="swayMs"
+             :disabled="elementsSaving || !ready"
+             title="一次往复用多久（毫秒）：快摆 600 显活泼，慢摆 1600 显醉/晕。0 = 关"
+             @change="patchElements({ sway_ms: rangeOrNull($event, 0) })">
+      <input class="rv-input" type="number" inputmode="numeric" min="0" max="2000" step="50"
+             :value="swayMs" :disabled="elementsSaving || !ready" aria-label="摇摆周期（毫秒）"
+             title="0 = 关（不写这个键）" @change="patchElements({ sway_ms: numOrNull($event, 0, 2000) })">
+      <span class="mono small flex-none">ms</span>
+    </div>
+
     <!-- ── BGM（§11）**整段已按用户口径删除**（2026-10：「将项目设置的这一栏删除，暂且用不到
          bgm，背景音乐」）⇒ 界面上不再有「背景音乐」分组（开关 / 文件 / 音量 / 闪避）。
          ⚠️ **能力一个字都没动**：`render/bgm.rs`、`[bgm]` 配置段、`PUT /api/polish/project` 的
@@ -877,6 +919,69 @@ const dmOffset = computed(() => {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : -3
 })
 const dmOffsetSaving = ref(false)
+
+// ── 文字动效（`[elements]`，2026-10-13）─────────────────────────────
+// ⚠️ **读的是 `cfg.elements`（`polish.toml` 的 `[elements]` 段）**，不是 `style.*`：
+//    这批动效参数是**工程级**的（打字机、抖动、底衬、摇摆），与按档的颜色/字体不同。
+// ⚠️ 缺键 ⇒ `null`（= 关）。**不许回落到某个"看起来合理"的数** ——
+//    回落后用户一按保存就会把那个数写进 toml，老工程凭空多出内容（R4）。
+const elementsSaving = ref(false)
+const swayDeg = computed(() => numOrNullValue(cfg.value?.elements?.sway_deg))
+const swayMs = computed(() => numOrNullValue(cfg.value?.elements?.sway_ms))
+
+/** 读一份"可能是 undefined / null / 脏值"的配置数 ⇒ 数字或 `null`（= 没配）。 */
+function numOrNullValue(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** 表单原始值 → 写进配置的数；`<= floor` 一律当"关" ⇒ `null`（发出去就是删键）。 */
+function toNullBelow(raw, floor) {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= floor) return null
+  return n
+}
+
+/** 滑块用的：`0` 表示关。 */
+function rangeOrNull(e, floor) {
+  return toNullBelow(e.target.value, floor)
+}
+
+/** 数字框用的：顺手夹在 `[floor, cap]`（手填的数字不吸附 step，但不能越界）。 */
+function numOrNull(e, floor, cap) {
+  const n = toNullBelow(e.target.value, floor)
+  return n === null ? null : Math.min(n, cap)
+}
+
+/**
+ * 保存 `[elements]` 的若干字段。
+ *
+ * ⚠️ **发 `null` 而不是 `0`**：服务端 `patch_config_file` 见到 `null` 会**删掉那个键**，
+ * 于是"关掉"= 老工程原样（R4）；发 `0` 会写出 `sway_deg = 0`，虽然渲染上等价，
+ * 但**文件变了**，老工程重存就多内容。
+ *
+ * ⚠️ 走 `cfg.value.elements` 的**乐观合并 + 失败回读**（与同页其它 patch 一致）：
+ * 失败时若不回读，界面会留着用户刚改的值而磁盘没变（"看着保存了"）。
+ */
+async function patchElements(patch) {
+  elementsSaving.value = true
+  try {
+    await saveProjectPatch(pid.value, dir.value, { elements: { ...(cfg.value?.elements || {}), ...patch } })
+    const next = { ...(cfg.value?.elements || {}) }
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete next[k]
+      else next[k] = v
+    }
+    cfg.value = { ...cfg.value, elements: next }
+    // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只读磁盘）。
+    persistedCfg.value = cfg.value
+    toast(patch.sway_deg !== undefined ? '摇摆幅度已保存' : '摇摆周期已保存')
+  } catch (err) {
+    toast(err.message, 'err')
+    await load({ silent: true })
+  } finally {
+    elementsSaving.value = false
+  }
+}
 /** 下拉选项：**只有库内字体**（2026-10-02 起不再有「（系统默认）」这一项）。
  *
  *  ⚠️ **为什么去掉「（系统默认）」**：自带字体已改成**内嵌**（首次启动就装好），库永远是"有字可用"的
