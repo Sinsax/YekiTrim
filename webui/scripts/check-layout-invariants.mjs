@@ -449,8 +449,10 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     if (!body) return false
     // ⚠️ 只看**轨道设置那一段**（到 `lane-sep` 分隔线为止）：`lane-sep` 之后是 LLM 剪辑 /
     //    任务栏，那里的 `.hint`（"该片段正在…请稍候"）是正常状态提示，不是轨道解释文字。
+    // ⚠️ 只看**模板**：`<script setup>` 与 `<style>` 里这些词到处都有（注释、类名），
+    //    拿整份文件判会把判据变成"永远翻不了面的空转"。
     const k = body.indexOf('lane-sep')
-    const lane = k < 0 ? body : body.slice(0, k)
+    const lane = (k < 0 ? body : body.slice(0, k)).split('<script')[0]
     return !lane.includes('class="hint') && !lane.includes('特效事件')
       && !lane.includes('音效事件') && !lane.includes('逐条在事件的属性面板里改')
       && !lane.includes('开关只影响渲染')
@@ -527,7 +529,16 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     introAt > 0 && canvasAt > introAt && polishView.slice(introAt, canvasAt).includes('io-row'), true)
   // 字幕四项必须是**两列两行**（用户：「改为两行的排版」）：两个 `.ss-row-2` 容器、
   // 每个里正好两条 `.ss-row`。⚠️ 判据走**模板**：CSS 里也写了 `.ss-row-2`，只数全文件会数重。
-  const ssTpl = polishView.slice(polishView.indexOf('<div class="ss-grid"'), polishView.indexOf('恢复默认'))
+  // ⚠️ 右端锚点**换过一次**（2026-10-12 跟随用户的按钮改名）：
+  //    原锚是 `恢复默认`，而用户把按钮改成了「重置位置 / 重置大小」、那句文案整句消失 ⇒
+  //    `indexOf` 返回 **-1** ⇒ `slice(i, -1)` 把整段**切到最后**（不是空！），
+  //    于是这里数到的 `.ss-row` 是**整个文件**的、永远凑不出 4 条 —— 判据翻红，
+  //    而红的原因是锚点烂了，不是排版坏了。**锚点必须指一个真的存在的字面量**。
+  //    现在用音乐那段注释（它紧跟在 `.ss-grid` 块之后、且属于别的小节）。
+  const ssEnd = polishView.indexOf('「位置→默认 / 大小→默认」那两颗按钮')
+  const ssTpl = polishView.slice(polishView.indexOf('<div class="ss-grid"'), ssEnd)
+  check('⑰ 字幕样式块的右端锚点仍然存在（锚点烂了会让下面那条判空转/恒红）',
+    ssEnd > polishView.indexOf('<div class="ss-grid"'), true)
   check('⑰ 字幕样式是两列两行（2 个 .ss-row-2 × 每个 2 条 .ss-row）',
     (ssTpl.match(/<div class="ss-row-2">/g) || []).length === 2
     && (ssTpl.match(/<div class="ss-row"/g) || []).length === 4, true)
@@ -550,23 +561,74 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
     polishView.indexOf('<div class="side-tabs">') < polishView.indexOf('<div class="ss-grid"'), true)
   check('⑰ 右栏那个「项目设置」大标题已删（页签名已自明）',
     /<h2 class="m-0 card-h2"><Icon name="sliders"/.test(polishView), false)
-  // ---- 「位置→默认 / 大小→默认」必须在「字幕字体」那一行（用户口径：放在字幕字体旁边）----
+  // ---- 「重置位置 / 重置大小」必须在「字幕字体」那一行（用户口径：紧挨着它们管的控件）----
+  // ⚠️ 2026-10 用户改口：「位置→默认 / 大小→默认 改成 重置位置，重置大小」——**文案与参照物都变了**：
+  //    在「字幕字体」那一行（`.ss-font-row`）里的，现在是**「字幕字体」标签 + 两颗重置按钮**，
+  //    而它们管的控件（字幕位置 / 字幕大小）紧跟在下面 —— 这才是"按钮贴着它复位的东西"。
   // ⚠️ 判据要求**两件事同时成立**：① 两颗按钮都落在 `.ss-font-row` 这个容器里；
   //    ② 全页各只出现一次（防止"新位置加了、老位置忘了删"—— 那会渲染出两组一模一样的按钮）。
+  //    ⚠️⚠️ **红线在 2026-10-12 搬了位置**：上一版要求"两颗按钮落在 `.ss-font-row` 里"，
+  //    但用户的口径是「重置位置 / 重置大小」——**按钮要贴着它复位的东西**，
+  //    而它们复位的是「字幕位置」滑杆与「字幕大小」数字框（在 `.ss-grid` 里）
+  //    ⇒ 按钮搬到了 `.ss-grid` **之后**。旧判据留着的结果是：
+  //    代码按用户口径搬好了，判据却要求它搬回去 —— 那正是"判据在测另一个东西"。
+  //    现在钉"按钮紧跟在 `.ss-grid` 之后、且在 `.ss-font-row` **之前**（字体行不再有按钮）"。
   const fontRowOk = (src) => {
-    const i = src.indexOf('<div class="row ss-font-row">');
-    if (i < 0) return false;
-    const seg = src.slice(i, src.indexOf('</div>', i));
-    return /restoreSubtitlePos/.test(seg) && /restoreSubtitleSize/.test(seg);
+    const fontRow = src.indexOf('<div class="row ss-font-row">');
+    const grid = src.indexOf('<div class="ss-grid"');
+    if (fontRow < 0 || grid < 0) return false;
+    // 两颗按钮所在的位置：取第一个绑定处，从它往前找最近的那个 `<div …>`。
+    const btn = src.indexOf('@click="restoreSubtitlePos"');
+    if (btn < 0) return false;
+    const holder = src.lastIndexOf('<div', btn);
+    // ① 按钮在 `.ss-grid` **之后**（贴住它复位的两个控件）；
+    // ② 按钮**不在** `.ss-font-row` 里（字体行只管字体下拉）。
+    return holder > grid && holder !== fontRow;
   };
-  check('⑰ 两颗「→默认」在「字幕字体」那一行（.ss-font-row）里', fontRowOk(polishView), true);
+  check('⑰ 两颗重置按钮紧跟 `.ss-grid`（贴住它们复位的两个控件），不在字体行里',
+    fontRowOk(polishView), true);
   {
-    const bad = polishView.replace('<div class="row ss-font-row">', '<div class="row mt-4 gap-6">');
-    check('⑰ [变异] 换掉字体行的类名 → 判据翻面', fontRowOk(bad), false);
+    // 变异：把按钮搬回字体行 ⇒ 必须翻面（那正是本次修掉的重复渲染形态）。
+    const bad = polishView.replace(
+      '<div class="row ss-font-row">\n      <span class="small muted flex-none">字幕字体</span>\n    </div>',
+      '<div class="row ss-font-row">\n      <span class="small muted flex-none">字幕字体</span>\n'
+      + '      <button @click="restoreSubtitlePos">重置位置</button>\n    </div>',
+    );
+    check('⑰ [变异] 把重置按钮搬回字体行 → 判据翻面', fontRowOk(bad), false);
   }
-  check('⑰ 两颗「→默认」全页各只出现一次（新位置加了、老位置别再留一份）',
-    (polishView.match(/@click="restoreSubtitlePos"/g) || []).length === 1
-    && (polishView.match(/@click="restoreSubtitleSize"/g) || []).length === 1, true)
+  check('⑰ 两颗重置按钮全页各只出现一次（新位置加了、老位置别再留一份）',
+    // ⚠️ 判**模板**（`<script>` 之前）：`<script setup>` 里本来就有这两条函数定义，
+    //    拿整份文件数会恒等于 2 —— 判据变成永远红的空转。只数模板里的绑定。
+    (polishView.slice(0, polishView.indexOf('<script')).match(/@click="restoreSubtitlePos"/g) || []).length === 1
+    && (polishView.slice(0, polishView.indexOf('<script')).match(/@click="restoreSubtitleSize"/g) || []).length === 1, true)
+  // ⚠️ 旧文案「位置→默认 / 大小→默认」**不许再出现在模板里**（用户点名要改的文案）：
+  //    留着就等于"改了代码没改界面"。只在注释里提旧名可以，行内文案不许有。
+  //
+  // ⚠️⚠️ **必须先把 HTML 注释剥掉再判**（2026-10-12 修）：这条判据原先拿整段模板正则，
+  //    而上一次改动**在注释里解释了"为什么改名"**（正当地引用了旧文案）⇒ 判据翻红，
+  //    红的原因是注释、不是界面 —— 那正是「判据在测另一个东西」。
+  //    剥注释的义务在判据这边（注释里引用旧文案是**该做的**）。
+  const tplOnly = polishView.slice(0, polishView.indexOf('<script')).replace(/<!--[\s\S]*?-->/g, '')
+  check('⑰ 旧文案「位置→默认 / 大小→默认」已从模板里清掉',
+    /(位置|大小)→默认/.test(tplOnly), false)
+  // ⚠️ 同理，「背景音乐」那一栏**整组已删**（用户 2026-10：「将项目设置的这一栏删除，
+  //    暂且用不到 bgm」）—— 只删**入口**，Rust 侧 `[bgm]` 与 `render/bgm.rs` 一个字都没动。
+  //    模板里再出现 `onBgm*` / `bgm.` 就是那一栏被捡回来了。
+  //    ⚠️ 同样**剥注释**（删掉的那段在注释里被逐条点名，不剥就一直红）。
+  check('⑰ 「背景音乐」分组已整组删除（模板里没有 BGM 控件与处理器）',
+    /onBgm|bgm\./.test(tplOnly), false)
+  // ⚠️ 「显示弹幕」与弹幕字体**同一行之后**（2026-10 用户口径：「显示弹幕放在弹幕字体同一行后」）：
+  //    判据只钉"顺序"——勾选框在弹幕字体下拉之后、且本组里不再有第二个弹幕设置面板。
+  //    ⚠️ 之前的写法拿 `@change="onDanmakuFontChange"` 当锚，而那个字符串在 `<script>` 里
+  //    也有定义、且在**模板之后** ⇒ `indexOf` 命中 2013 行 ⇒ "显示弹幕在 277" 永远小于它 ⇒
+  //    **恒红**。锚必须限定在模板里的那个下拉。
+  // ⚠️ 锚点**不能用 `>显示弹幕<`**：那一行现在是纯文本（前后是换行，不是标签边界），
+  //    `indexOf` 返回 -1 ⇒ 判据恒红（红线挂在锚点上，不是挂在顺序上）。
+  //    改用 `toggleLane('danmaku')` —— 它在模板里唯一，且就在那个勾选框上。
+  check('⑰ 「显示弹幕」排在弹幕字体下拉之后',
+    tplOnly.indexOf('显示弹幕') > tplOnly.indexOf('@change="onDanmakuFontChange"')
+    && tplOnly.indexOf('@change="onDanmakuFontChange"') > 0
+    && tplOnly.includes("toggleLane('danmaku')"), true)
   check('⑰ 字体行有 `min-width:0`（否则中文标签 + 两颗按钮会横向溢出）',
     /\.ss-font-row \{ display:flex; align-items:center; gap:6px; min-width:0/.test(polishView), true)
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
