@@ -1931,6 +1931,21 @@ pub(super) fn polish_project_put_locked(dir: &Path, body: &serde_json::Value) ->
         cfg.edl = serde_json::from_value(v.clone())
             .map_err(|e| err(StatusCode::BAD_REQUEST, format!("edl 解析失败: {e}")))?;
     }
+    // 文字元素动效（`[elements]`：打字机 / 弹入 / 抖动 / 底衬 / 摇摆）。
+    //
+    // ⚠️ **漏了这一支就是"保存不报错、值静默丢掉"**（同上那段注释警告的那类）：
+    //    界面上改完显示"已保存"、PUT 照回 `{"ok":true}`，而 `polish.toml` 一个字节没变。
+    //
+    // ⚠️ 与 `edl` 那一支**同形**：空配置**不写盘**由 `ProjectFile.elements` 字段上的
+    //    `skip_serializing_if = "ElementsConfig::is_empty"` 负责，所以这里**照收**即可
+    //    —— 别在这里特判"空的就别赋值"（那会让"清空动效"这个操作失灵）。
+    //
+    // ⚠️ 反序列化即校验：`ElementsConfig` 是 `deny_unknown_fields` ⇒
+    //    前端写错键名会**当场 400**，而不是静默存下一个没人读的键。
+    if let Some(v) = body.get("elements") {
+        cfg.elements = serde_json::from_value(v.clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, format!("elements 解析失败: {e}")))?;
+    }
     // 运镜档位缩放（`[style.camera]`，总方案 §18-C：**只暴露配置、不改默认**）。
     //
     // ⚠️ **漏了这一支就是"保存不报错、值静默丢掉"**（就是上面那段注释警告的那类）：
@@ -3114,6 +3129,68 @@ fn polish_project_put_writes_edl_and_leaves_unmentioned_keys_alone() {
     let cleared = yekitrim_polish::project::load_project(&dir).unwrap();
     assert!(cleared.edl.is_empty(), "清空之后内存里也该是空的");
     assert_eq!(cleared.mute_ranges.len(), 1, "清空 edl 不该碰 mute_ranges");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **`[elements]` 必须能经 PUT 存下来**（2026-10-13）。
+///
+/// # 为什么补这条
+///
+/// `polish_project_put_locked` 是**逐字段白名单** —— 请求体里有一个键、白名单里没有它，
+/// 就是**保存不报错、值静默丢掉**：界面显示"已保存"、PUT 照回 `{"ok":true}`，
+/// 而 `polish.toml` 一个字节没变。本文件上面已经为同一个坑补过 `edl` 与 `[style.camera]`。
+///
+/// ⚠️ 起因是加 **T7 摇摆**（`sway_deg` / `sway_ms`）时发现：那一批文字动效字段
+/// （打字机 / 弹入 / 抖动 / 底衬 / 摇摆）**连一个 UI 都没有，也没有 PUT 分支** ——
+/// 用户只能手改 `polish.toml`，而**改完点保存会被静默丢掉**。
+#[test]
+fn elements_put_落盘且清空不留空段头() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-elements-put-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = yekitrim_polish::project::ProjectFile::example();
+    // 放一条屏蔽区间：PUT 只提交 `elements` 时它必须**原样保留**（白名单的语义）。
+    cfg.mute_ranges.push(yekitrim_polish::project::MuteRange { start: 1.0, end: 2.0 });
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 1) 只提交 `elements`：摇摆 + 抖动都写进去，没提到的键没被动。
+    let body = serde_json::json!({ "elements": {
+        "sway_deg": 8.0,
+        "sway_ms": 900,
+        "shake_px": 14.0,
+    } });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存 elements");
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert_eq!(
+        after.elements.sway_deg,
+        Some(8.0),
+        "sway_deg 没写进 polish.toml（PUT 白名单漏了 elements 这一支 ⇒ 用户存了等于没存）"
+    );
+    assert_eq!(after.elements.sway_ms, Some(900), "sway_ms 没落盘");
+    assert_eq!(after.elements.shake_px, Some(14.0), "shake_px 没落盘");
+    assert_eq!(after.mute_ranges.len(), 1, "只提交 elements 时 mute_ranges 必须原样保留");
+
+    // 2) **老工程零回归**：清空之后不许留空的 `[elements]` 段头。
+    //    判据挂在 `ProjectFile.elements` 的 `skip_serializing_if` 上（与 `edl` 同款）。
+    let clear = serde_json::json!({ "elements": {} });
+    let _ = polish_project_put_locked(&dir, &clear).expect("清空 elements");
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    assert!(
+        !raw.contains("[elements]"),
+        "清空之后不许留空的 `[elements]` 段头（老工程重存必须逐字节不变）:\n{raw}"
+    );
+    let cleared = yekitrim_polish::project::load_project(&dir).unwrap();
+    assert!(cleared.elements.is_empty(), "清空之后内存里也该算空");
+    assert_eq!(cleared.mute_ranges.len(), 1, "清空 elements 不该碰 mute_ranges");
+
+    // 3) **脏键必须当场 400**（`deny_unknown_fields`）—— 拼错的键名静默存下来
+    //    比报错坏得多：用户以为配上了，而没有任何东西读它。
+    let bad = serde_json::json!({ "elements": { "sway_degrees": 8.0 } });
+    assert!(
+        polish_project_put_locked(&dir, &bad).is_err(),
+        "拼错的键名必须报错，不许静默存下一个没人读的键"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
