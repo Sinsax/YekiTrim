@@ -158,6 +158,38 @@ pub struct ElementsConfig {
     pub plate_pad_px: Option<f64>,
 
     // =================================================================
+    // T7 摇摆（2026-10-13）
+    //
+    // 规格：`docs/plan/text-styles-emotion-base-mapping.md` §1.2 ——
+    // 「摇摆 | 笑 / 得意；慢摆 = 醉、眩晕 | **角度 + 周期**」。
+    // 两个旋钮各一个字段，与那条规格**逐字对应**（别自己发明第三个）。
+    //
+    // ⚠️⚠️ **它要的"往复"只能靠关键帧** —— 静态 `rotation` 做不出摆动。
+    // 底座原先 `evaluate_overlay` **不求值关键帧** ⇒ 写了会被**静默忽略**，
+    // 所以规格里这条一直标着 ❌「摇摆做不到」。
+    // 2026-10-13 底座 `bcff0a5` 把求值接通了，这里才**第一次**能真做。
+    //
+    // ⚠️ 仍然 `Option<T>`：`sway_deg = None` 或 `sway_ms = None` = **关**
+    //（两个都要给才动得了 —— 只给角度没周期 = 不知道摆多快）。
+    // =================================================================
+    /// **T7 摇摆**：摆幅（**度**，单边）。`None` = 0 = **关**。
+    ///
+    /// 写 **8** ⇒ 在 `−8° … +8°` 之间往复（单边 8°，所以峰谷差 16°）。
+    /// ⚠️ 口径是**单边幅度**、不是全程 —— 写 8 得到的是 ±8，不是 0…8。
+    /// 与 [`Self::sway_ms`] 的关系是**双向**的：两个都给才动。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sway_deg: Option<f64>,
+
+    /// **T7 摇摆**：**一次往复**的周期（毫秒）。`None` = **关**。
+    ///
+    /// 写 **900** ⇒ 从一端摆到另一端再摆回来用 0.9 秒（一个完整来回）。
+    ///
+    /// ⚠️ 是**完整来回**，不是半程 —— "摆过去"只有 `sway_ms / 2`。
+    /// 规格里"快摆 = 笑 / 慢摆 = 醉"说的就是它：快摆 ~600ms、慢摆 ~1600ms。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sway_ms: Option<u64>,
+
+    // =================================================================
     // T5 真卡拉OK（2026-10-11）
     // =================================================================
     /// **T5 真卡拉OK**：按 **ASR 字级时间戳**逐字切 **SRT 字幕轨**的 cue。**默认关**。
@@ -220,6 +252,9 @@ impl Default for ElementsConfig {
             shake_hz: None,
             plate_color: None,
             plate_pad_px: None,
+            // T7 摇摆：默认关（老工程零迁移）。
+            sway_deg: None,
+            sway_ms: None,
             // T5：默认关（老工程零迁移）。
             karaoke: false,
         }
@@ -254,6 +289,12 @@ impl ElementsConfig {
             && self.shake_hz.is_none()
             && self.plate_color.is_none()
             && self.plate_pad_px.is_none()
+            // ⚠️ T7 摇摆（2026-10-13）—— **上面那段警告说的就是这个坑**：
+            //    漏判这两个字段 ⇒ 「只配了摆动、没开打字机」的工程被判成**空**
+            //    ⇒ `[elements]` 整段不写出去 ⇒ 用户写的 `sway_deg` **静默丢失**
+            //    （日志正常、`polish.toml` 里那行还在，唯独字不摆）。
+            && self.sway_deg.is_none()
+            && self.sway_ms.is_none()
     }
 
     /// 每秒字数**夹取到可用范围**。
@@ -547,5 +588,43 @@ mod tests {
             .is_empty(),
             "开了开关就不算空 —— 否则这个键不会被写下来，下次跑就丢失了"
         );
+    }
+
+    /// ★ **每一个可选字段单独配了都必须算「非空」**（2026-10-13 补）。
+    ///
+    /// # 为什么必须逐个过一遍
+    ///
+    /// `is_empty() == true` ⇒ `[elements]` **整段不写出去**。
+    /// 所以**漏判一个字段 = 那个字段静默丢失**：日志正常、`polish.toml` 里那行还在、
+    /// 唯独成片里没效果。上面 `is_empty` 的注释记的正是 2026-10-11 那次
+    ///（只判 `!self.typewriter`，于是「配了 `shake_px`、没开打字机」整段被丢）。
+    ///
+    /// ⚠️ 那条只测了 `typewriter` / `karaoke` 两个**开关**，
+    /// 而**漏判的从来都是 `Option<T>` 那批**（新增字段时最容易被忘）。
+    /// 这里逐个构造"只配这一个"的配置 ⇒ **加新字段忘了判 is_empty 会当场红**。
+    #[test]
+    fn 任一可选字段配了都不算空() {
+        // (字段名, 只配这一个的配置) —— 加字段时**往这里加一行**。
+        let cases: [(&str, ElementsConfig); 10] = [
+            ("scale_in_from", ElementsConfig { scale_in_from: Some(0.7), ..Default::default() }),
+            ("scale_in_peak", ElementsConfig { scale_in_peak: Some(1.15), ..Default::default() }),
+            ("scale_in_ms", ElementsConfig { scale_in_ms: Some(240), ..Default::default() }),
+            ("shake_px", ElementsConfig { shake_px: Some(14.0), ..Default::default() }),
+            ("shake_hz", ElementsConfig { shake_hz: Some(18.0), ..Default::default() }),
+            ("plate_color", ElementsConfig { plate_color: Some([0, 0, 0, 140]), ..Default::default() }),
+            ("plate_pad_px", ElementsConfig { plate_pad_px: Some(12.0), ..Default::default() }),
+            ("sway_deg", ElementsConfig { sway_deg: Some(8.0), ..Default::default() }),
+            ("sway_ms", ElementsConfig { sway_ms: Some(900), ..Default::default() }),
+            // 开关那两个也一并过（它们曾经就是唯一的判据）。
+            ("karaoke", ElementsConfig { karaoke: true, ..Default::default() }),
+        ];
+        for (name, cfg) in cases {
+            assert!(
+                !cfg.is_empty(),
+                "只配了 `{name}` 却被判成空 ⇒ `[elements]` 整段不写出去 ⇒ \
+                 `{name}` **静默丢失**（日志正常、toml 里那行还在、成片里没效果）。\
+                 修法：在 `is_empty()` 里把 `{name}` 一起判上"
+            );
+        }
     }
 }
