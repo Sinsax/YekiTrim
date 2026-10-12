@@ -27,10 +27,10 @@
     没有这道闸，读失败会被当成"空时间轴"，用户拖一下就把 `segments: []` PUT 回去 —— 磁盘上的分段/字幕
     就这么没了。横幅 + 「重试」在 `tl-head` 下面（**不能放进 Teleport 面板**：挂载点解析不到就整块不渲染）。`saveText` 里 `loadError` 必须优先于 `saving`/`ok` —— 这时写着"已保存"是骗人的。
   - **`/api/polish/subtitles` 的 404 是空态、不是错误**（`clip.srt` 与 `data/subtitles.json` 都没有
-    就是没转写）。**只有非 404 才算读失败** —— 否则每个没字幕的片段都挂"读取失败，已暂停保存"。
-  - **`reload()` 不许静默丢弃**：`if (drag || saving || saveTimer) return` 会被 250ms 防抖挡掉，
-    编辑器留着后处理**之前**的值、紧接着 `flushSave` 又把旧值 PUT 回去，顶掉刚算的贴纸落点且没人重试。
-    现在：忙 → 置 `reloadQueued`，`flushSave` 的 `finally` 里 `drainQueuedReload()` 补做。
+    就是没转写）。**只有非 404 才算读失败**。
+  - **`reload()` 不许静默丢弃**：忙 → 置 `reloadQueued`，`flushSave` 的 `finally` 里
+    `drainQueuedReload()` 补做（否则编辑器留着后处理**之前**的值、紧接着 `flushSave` 又把旧值 PUT 回去，
+    顶掉刚算的贴纸落点且没人重试）。
   - **换片段先清空**：`watch(() => props.dir)` 里 `commitEdit` 后必须 `resetTimelineState()` 再 `loadData()`
     —— 否则新片段读失败时数组还留着**上一个片段**的分段/字幕（跨片段串写）。
   - **可见性**：`PolishView` 页面级读取（`fetchProject`）失败要记 `cfgError`，否则 `ready=false` 会渲染成
@@ -39,8 +39,7 @@
     与贴纸来源（`stickerSourcesError`）同理：保留上一次列表 + 错误条，**不许退化成假空态**。
   - `CoverDesigner` 的 `configLoaded` 是**写入门闸**（读失败时拿默认值写回会把磁盘配置清成默认）：
     读失败必须出错误条 + 「重试」；保存失败用与「保存中…」同处的常驻文字（`.save-err`），不是一闪就没的 toast。
-  - **误删要有退路**：删除是"双击即生效 → 250ms 落盘 → 随后自动后处理"，点完就不可逆 ——
-    `TimelineEditor` 保留**最近一次删除**（`lastDeleted`，15 秒）给头部一枚「撤销删除」，
+  - **误删要有退路**：`TimelineEditor` 保留**最近一次删除**（`lastDeleted`，15 秒）给头部一枚「撤销删除」，
     事件按**分段对象本身**认位（后处理会整体改写 segments，下标会漂）；只有**分段**保留删除确认。
 - **任务完成后的刷新必须静默**：`PolishView.load({silent:true})` 不置 `loading`、不卸载编辑器
   （非静默会把编辑器换成骨架屏，预览与滚动位置全丢）。需重新取数的子组件各用 `:key` 重挂：
