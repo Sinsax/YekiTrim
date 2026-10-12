@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文字元素样式 · 情绪靠形态与动态</title>
+<style>
+/* ============================================================
+   定位：文字元素 == 贴纸（贴在画面上的情绪外挂）。所以：
+     · 不带任何背景元素（背景归特效）
+     · 情绪词沿用贴纸库的 tag（开心/笑/害怕/紧张/生气/呆）
+   ⚠️ 与前两版最大的不同：**情绪靠文字的形态表达，不靠边框**。
+      上一版 16 档里有 11 档是 900 字重 + 平排 + 一圈边 —— 那不是"情绪"，
+      是同一个方块字换了颜色。这一版每档的**排布方式**都不一样。
+   ⚠️ 描边用 `paint-order:stroke fill`（真外侧；裸 `-webkit-text-stroke` 会啃笔画）。
+   ============================================================ */
+:root{ --bg:#0f0d0c; --card:#1b1716; --line:#312a26; --dim:#918177; --ink:#f2e9e1; --accent:#f0a93c; }
+*{box-sizing:border-box}
+body{margin:0;padding:22px 16px 60px;background:var(--bg);color:var(--ink);
+  font-family:"Microsoft YaHei",sans-serif;font-size:13px;line-height:1.65}
+h1{font-size:18px;margin:0 0 5px}
+.lede{color:var(--dim);font-size:12px;margin:0 0 14px;max-width:820px}
+.note{border-left:3px solid var(--accent);background:#282015;padding:10px 14px;margin:0 0 24px;
+  font-size:12px;line-height:1.75;color:#e6d6c4;border-radius:0 6px 6px 0;max-width:870px}
+.note code{background:#392c1d;padding:1px 5px;border-radius:3px;font-size:11px}
+
+.fam{margin-bottom:28px}
+.fam-h{font-size:14px;font-weight:700;color:var(--accent);margin:0 0 2px}
+.fam-h small{color:var(--dim);font-weight:400;font-size:11px;margin-left:8px}
+.fam-d{color:var(--dim);font-size:11.5px;margin:0 0 12px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px}
+.nm{font-size:12.5px;font-weight:700;margin-bottom:2px}
+.nm .tag{font-size:10px;font-weight:400;color:#e8b06a;background:#2c2116;
+  border:1px solid #4a3823;border-radius:999px;padding:1px 7px;margin-left:7px}
+.stage{position:relative;width:100%;aspect-ratio:16/9;border-radius:8px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;container-type:inline-size;margin:10px 0}
+/* 三种底片只为检验可读性，不是样式的一部分 */
+.bg1{background:linear-gradient(135deg,#f4f1eb,#dde4ec)}
+.bg2{background:linear-gradient(135deg,#1b1e26,#0a0c10)}
+.bg3{background:repeating-linear-gradient(45deg,#7a4b52 0 14px,#5d6f8a 14px 28px,#8a7a5d 28px 42px)}
+.t{white-space:pre-line;text-align:center;line-height:1.1;paint-order:stroke fill}
+.ch{display:inline-block}
+.par{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--dim);
+  display:flex;flex-wrap:wrap;gap:2px 9px}
+.par b{color:#a89a8d;font-weight:400}
+.use{color:#9d8b7c;font-size:10.5px;margin-top:6px}
+.tech{color:#7d6e63;font-size:10px;margin-top:4px;font-family:ui-monospace,Consolas,monospace}
+.tech i{color:#a58a5f;font-style:normal}
+
+/* ============================================================
+   全站分两段：
+     一 · 字体样式（静态）—— 倾斜 / 弧形 / 大小字 / 逐字抖散 / 竖排 / 逐字变小 / 逐字放大
+     二 · 动效（动态）  —— 抖动 / 摇摆 / 砸入 / 收缩 / 弹出 / 逐字跳起
+   每个动效组都配**同一句台词**，方便横向比 —— 同字不同动，情绪立刻分得开。
+   ⚠️ 循环动画只为"在这张静态稿里看得见"。真实出片是**一次性**的
+      （进场播一遍就定住），不会一直晃 —— 这里为了让效果可见用了 infinite。
+   ⚠️ `prefers-reduced-motion` 时全部停掉，不硬演。
+   ============================================================ */
+
+/* ① 砸入：从 2.4 倍 + 模糊收进来，中途略微过冲再定住 */
+@keyframes kSlam{
+  0%{transform:scale(2.4);filter:blur(.4cqw);opacity:0}
+  55%{transform:scale(.9);filter:blur(0);opacity:1}
+  78%{transform:scale(1.07)}
+  100%{transform:scale(1)}
+}
+.mSlam{animation:kSlam .5s cubic-bezier(.2,.9,.3,1.15) both infinite}
+
+/* ② 顿压：整块狠狠往下砸一下，带压扁 */
+@keyframes kThud{
+  0%{transform:rotate(-6deg) scaleY(1.18) translateY(-1.2em);opacity:0}
+  45%{transform:rotate(-6deg) scaleY(.82) translateY(.12em);opacity:1}
+  70%{transform:rotate(-6deg) scaleY(1.06) translateY(0)}
+  100%{transform:rotate(-6deg) scaleY(1) translateY(0)}
+}
+.mThud{animation:kThud .48s cubic-bezier(.3,.8,.3,1) both infinite}
+
+/* ③ 摇摆：整块左右晃（笑到抖） */
+@keyframes kSway{0%,100%{transform:rotate(-3.5deg)}50%{transform:rotate(3.5deg)}}
+.mSway{animation:kSway .42s ease-in-out infinite}
+
+/* ④ 抖动：横向高频细颤（害怕/紧张） */
+@keyframes kJitter{
+  0%,100%{transform:translate(0,0)}
+  20%{transform:translate(-.055em,.03em)}
+  40%{transform:translate(.055em,-.03em)}
+  60%{transform:translate(-.03em,-.05em)}
+  80%{transform:translate(.03em,.05em)}
+}
+.mJitter{animation:kJitter .11s linear infinite}
+
+/* ⑤ 逐字弹跳：错峰起跳（开心） */
+@keyframes kHop{0%,100%{transform:translateY(0)}28%{transform:translateY(-.26em)}60%{transform:translateY(0)}}
+.mHop{display:inline-block;animation:kHop .66s ease-in-out infinite}
+
+/* ⑥ 慢推近：一点点放大 + 字距收紧（紧张） */
+@keyframes kCreep{0%{transform:scale(1);letter-spacing:0}
+  100%{transform:scale(1.11);letter-spacing:-.05em}}
+.mCreep{animation:kCreep 1.9s ease-in-out infinite alternate}
+
+/* ⑦ 下沉渐隐：缩下去、淡掉（无奈） */
+@keyframes kSink{0%{transform:scale(1) translateY(0);opacity:1}
+  100%{transform:scale(.84) translateY(.14em);opacity:.22}}
+.mSink{animation:kSink 1.7s ease-in infinite}
+
+/* ⑧ 打字机：逐字出来 + 光标（信息） */
+@keyframes kType{from{width:0}to{width:100%}}
+@keyframes kCaret{0%,49%{border-color:#fff}50%,100%{border-color:transparent}}
+.mType{display:inline-block;overflow:hidden;white-space:nowrap;
+  border-right:.075em solid #fff;animation:kType 1.5s steps(6) infinite,kCaret .5s step-end infinite}
+
+/* ⑨ 滑动淡入：从左侧滑进来 + 淡入（信息族 —— 克制、不抖、不弹） */
+@keyframes kSlide{0%{transform:translateX(-.5em);opacity:0}100%{transform:translateX(0);opacity:1}}
+.mSlide{animation:kSlide .42s ease-out both infinite}
+
+/* ⑩ 逐字辐射：从中心往外推（惊呼/欢呼） */
+@keyframes kPop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.14);opacity:1}100%{transform:scale(1)}}
+.mPop{display:inline-block;animation:kPop .46s cubic-bezier(.2,.9,.3,1.2) both infinite}
+
+@media (prefers-reduced-motion:reduce){
+  .mSlam,.mThud,.mSway,.mJitter,.mHop,.mCreep,.mSink,.mType,.mPop,.mSlide{animation:none}
+}
+/* ============ 总结区 ============ */
+.sumwrap{margin-top:34px;padding-top:22px;border-top:2px solid #3a2f26}
+h2{font-size:16px;margin:26px 0 6px;color:#f0a93c}
+h2:first-child{margin-top:0}
+.sumlede{color:#b3a49a;font-size:12px;line-height:1.75;max-width:900px;margin:0 0 12px}
+.sumlede b{color:#f2e9e1}
+table.sum{border-collapse:collapse;width:100%;font-size:11.5px;margin:0 0 6px}
+table.sum th,table.sum td{border:1px solid #332c27;padding:7px 10px;vertical-align:top;
+  text-align:left;line-height:1.55}
+table.sum th{background:#241f1b;color:#e0d2c4;font-weight:600;white-space:nowrap}
+table.sum td:first-child{font-weight:600;color:#e8b06a;background:#221c16;white-space:nowrap}
+table.sum td:first-child span{display:block;font-weight:400;color:#8d7f74;font-size:10.5px;margin-top:2px}
+table.sum td:nth-child(2){color:#f2e9e1;font-weight:600;white-space:nowrap}
+table.sum td:nth-child(4){color:#a89a8d;font-size:11px}
+table.sum tr.g1 td:first-child{background:#2a1d16}
+table.sum tr.g2 td:first-child{background:#221c16}
+table.sum tr.g3 td:first-child{background:#1c2118}
+table.sum tr.g4 td:first-child{background:#1a1f24}
+.yes{color:#8fd0a0;font-weight:600;white-space:nowrap}
+.no{color:#e08b8b;font-weight:600;white-space:nowrap}
+.warn{color:#e8b06a;font-weight:600;white-space:nowrap}
+.dim{color:#8d7f74}
+/* --- 本轮新增的动效变体 --- */
+@keyframes kSwayBig{0%,100%{transform:rotate(-9deg)}50%{transform:rotate(9deg)}}
+@keyframes kSwaySlow{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(5deg)}}
+@keyframes kSlamHard{0%{transform:scale(3.4);filter:blur(.55cqw);opacity:0}
+  55%{transform:scale(.88);filter:blur(0);opacity:1}78%{transform:scale(1.09)}100%{transform:scale(1)}}
+@keyframes kFadeOnly{0%{opacity:1}100%{opacity:.12}}
+@keyframes kSinkFast{0%{transform:scale(1) translateY(0);opacity:1}
+  100%{transform:scale(.8) translateY(.16em);opacity:.15}}
+@keyframes kPopSoft{0%{transform:scale(.7);opacity:0}70%{transform:scale(1.05);opacity:1}100%{transform:scale(1)}}
+@keyframes kHopSlow{0%,100%{transform:translateY(0)}32%{transform:translateY(-.34em)}64%{transform:translateY(0)}}
+.mHopF{display:inline-block;animation:kHop .42s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){
+  .mJitter,.mSway,.mSlam,.mThud,.mSink,.mPop,.mHop,.mHopF,.mType,.mSlide{animation:none}
+}
+/* 章节标题条 */
+h2.sec{font-size:17px;margin:40px 0 4px;padding:0 0 9px;border-bottom:2px solid #f0a93c;color:#f0a93c}
+h2.sec span{display:block;font-size:11.5px;font-weight:400;color:#918177;margin-top:5px}
+h2.sec span b{color:#e8b06a}
+.sectip{color:#b3a49a;font-size:12px;line-height:1.75;max-width:900px;margin:0 0 18px}
+.sectip b{color:#f2e9e1}
+</style>
+</head>
+<body>
+
+<h1>文字元素样式 · 情绪靠形态与动态</h1>
+<p class="lede">两个轴一起做：<b>形态</b>（字怎么排）+ <b>动态</b>（字怎么动）。
+形态那一版解决了"大差不差"；这一版补上动态 —— 因为<b>同一句话，动法不同情绪也不同</b>：
+「啊？！」砸进来是惊吓，慢慢推近是紧张。</p>
+<div class="note">
+  <b>为什么形态才是情绪的载体。</b>同样一句"太吵了吧"：平排 = 陈述；
+  末字放大 = 爆发；逐字旋转 = 抱怨；整体歪+压扁 = 冲击；拉开字距 = 迟疑；竖排 = 恐怖。
+  <b>字没变、颜色没变，情绪全变了。</b>
+  <br>⚠️ 下面画的是<b>文字贴片本身</b>（无背景元素）；底纹换成三种只为检验可读性。
+  ⚠️ 其中<b>逐字变换 / 倾斜 / 竖排 / 底衬圆角</b>今天到不了成片 —— 底座没有这些字段。
+</div>
+
+<h2 class="sec">一 · 字体样式<span>静态的「怎么排」。7 种，只改字的形状与排布，不涉及时间。</span></h2>
+<p class="sectip">同一句「太吵了吧」，只换排布方式 —— <b>字没变、颜色没变，读出来的情绪全变了</b>。</p>
+
+<div class="fam">
+  <div class="fam-h">1 · 倾斜<small>整块 rotate</small></div>
+  <div class="fam-d">整句话一起歪。感觉：<b>不稳、用力</b> —— 像贴上去时没贴正。角度大小直接对应情绪轻重。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">倾斜 · 标准 <span class="tag">整块变换</span></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;background:#14110f;padding:.22em .5em;transform:rotate(-6deg)">太吵了吧</div>
+      </div>
+      <div class="par"><span><b>旋转</b>-6°</span><span><b>范围</b>整块</span></div>
+      <div class="use">生气、不服、用力喊</div>
+      <div class="tech">靠 <i>transform:rotate</i>（整块）</div>
+    </div>
+    <div class="card">
+      <div class="nm">倾斜 · 小角度 <span class="tag">整块变换</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:8cqw;color:#fff;-webkit-text-stroke:.55cqw #000;transform:rotate(-3deg)">有点不爽</div>
+      </div>
+      <div class="par"><span><b>旋转</b>-3°</span><span><b>范围</b>整块</span></div>
+      <div class="use">轻度不满</div>
+      <div class="tech">角度小 = 情绪轻；角度大 = 情绪重</div>
+    </div>
+    <div class="card">
+      <div class="nm">倾斜 · 反方向 <span class="tag">整块变换</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:8.4cqw;color:#FFD400;-webkit-text-stroke:.6cqw #14110f;transform:rotate(5deg)">拜托…</div>
+      </div>
+      <div class="par"><span><b>旋转</b>+5°</span><span><b>范围</b>整块</span></div>
+      <div class="use">撒娇、求饶（正角度更软）</div>
+      <div class="tech">正负方向 = 两种情绪</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">2 · 弧形<small>逐字旋转</small></div>
+  <div class="fam-d">每个字各自转一点，排成一条弧线。感觉：<b>声音在起伏</b> —— 笑、喊、唱。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">弧形 · 上拱 <span class="tag">逐字旋转</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:10cqw;color:#FFD400;-webkit-text-stroke:.55cqw #14110f;text-shadow:.9cqw 0 0 #14110f,-.9cqw 0 0 #14110f,0 .9cqw 0 #14110f,0 -.9cqw 0 #14110f"><span class="ch" style="transform:rotate(-16deg) translateY(0.22em)">哈</span><span class="ch" style="transform:rotate(-8deg) translateY(0.05em)">哈</span><span class="ch" style="transform:rotate(0deg) translateY(0em)">哈</span><span class="ch" style="transform:rotate(8deg) translateY(0.05em)">哈</span><span class="ch" style="transform:rotate(16deg) translateY(0.22em)">哈</span></div>
+      </div>
+      <div class="par"><span><b>逐字</b>±16° 递减</span><span><b>位移</b>两端下沉</span></div>
+      <div class="use">大笑、欢呼</div>
+      <div class="tech">逐字 rotate 按"到中心的距离"递减</div>
+    </div>
+    <div class="card">
+      <div class="nm">弧形 · 波浪 <span class="tag">逐字旋转</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:8cqw;color:#fff;-webkit-text-stroke:.55cqw #14110f"><span class="ch" style="transform:rotate(9deg) translateY(0.1em)">起</span><span class="ch" style="transform:rotate(-4deg) translateY(-0.06em)">伏</span><span class="ch" style="transform:rotate(9deg) translateY(0.1em)">不</span><span class="ch" style="transform:rotate(-4deg) translateY(-0.06em)">定</span></div>
+      </div>
+      <div class="par"><span><b>逐字</b>正负交替</span></div>
+      <div class="use">唱、念白、情绪起伏</div>
+      <div class="tech">正负交替 = 波浪（比单向弧更"飘"）</div>
+    </div>
+    <div class="card">
+      <div class="nm">弧形 · 下垂 <span class="tag">逐字旋转</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'KaiTi';font-weight:400;font-size:7cqw;color:#C9A6FF"><span class="ch" style="transform:rotate(7deg) translateY(.1em)">唉</span><span class="ch" style="transform:rotate(14deg) translateY(.24em)">…</span></div>
+      </div>
+      <div class="par"><span><b>逐字</b>正向递增</span><span><b>位移</b>逐字下沉</span></div>
+      <div class="use">叹气、泄气</div>
+      <div class="tech">反向用 = 弧线朝下，情绪也跟着沉</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">3 · 大小字<small>同句字号对撞</small></div>
+  <div class="fam-d">一句话里某几个字特别大。感觉：<b>重音</b> —— 等于给文字加了重读。放哪个字，重音就在哪。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">大小字 · 末字重音 <span class="tag">逐字字号</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:6.4cqw;color:#fff;-webkit-text-stroke:.42cqw #14110f">太吵了<span class="ch" style="font-size:2.4em;line-height:.9">吧</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>88 → 210</span><span><b>位置</b>末字</span></div>
+      <div class="use">爆发在最后</div>
+      <div class="tech">末字撑大 = 重音落在最末（最常用）</div>
+    </div>
+    <div class="card">
+      <div class="nm">大小字 · 首字重音 <span class="tag">逐字字号</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:6.4cqw;color:#FF3B30;-webkit-text-stroke:.5cqw #fff"><span class="ch" style="font-size:2.2em">不</span>爽！</div>
+      </div>
+      <div class="par"><span><b>字号</b>88 → 194</span><span><b>位置</b>首字</span></div>
+      <div class="use">一开口就爆发</div>
+      <div class="tech">首字撑大 = 斩钉截铁</div>
+    </div>
+    <div class="card">
+      <div class="nm">大小字 · 中字重音 <span class="tag">逐字字号</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:6cqw;color:#fff;-webkit-text-stroke:.5cqw #000">又<span class="ch" style="font-size:1.9em">来</span>了？</div>
+      </div>
+      <div class="par"><span><b>字号</b>82 → 156</span><span><b>位置</b>中间</span></div>
+      <div class="use">强调关键词</div>
+      <div class="tech">把重音放在"实词"上（来/又/真）</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">4 · 逐字抖散<small>逐字位移 + 旋转</small></div>
+  <div class="fam-d">每个字随机歪一点、错一点。<b>静态的"抖"</b> —— 不靠动画也能看出在抖。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">抖散 · 轻 <span class="tag">逐字位移</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;-webkit-text-stroke:.6cqw #000"><span class="ch" style="transform:translate(-0.05em,-0.04em) rotate(-3deg)">不</span><span class="ch" style="transform:translate(0.04em,0.06em) rotate(3deg)">妙</span><span class="ch" style="transform:translate(-0.03em,0.02em) rotate(-2deg)">了</span></div>
+      </div>
+      <div class="par"><span><b>位移</b>±.05em</span><span><b>旋转</b>±3°</span></div>
+      <div class="use">心里发毛</div>
+      <div class="tech">幅度小 = 心里的事；幅度大 = 藏不住</div>
+    </div>
+    <div class="card">
+      <div class="nm">抖散 · 重 <span class="tag">逐字位移</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#FFD400;-webkit-text-stroke:.62cqw #14110f"><span class="ch" style="transform:translate(-0.12em,-0.14em) rotate(-8deg)">完</span><span class="ch" style="transform:translate(0.14em,0.1em) rotate(7deg)">蛋</span><span class="ch" style="transform:translate(-0.08em,-0.06em) rotate(-5deg)">了</span></div>
+      </div>
+      <div class="par"><span><b>位移</b>±.14em</span><span><b>旋转</b>±8°</span></div>
+      <div class="use">彻底慌了</div>
+      <div class="tech">字"散架"了 = 情绪控制不住</div>
+    </div>
+    <div class="card">
+      <div class="nm">抖散 + 动画 <span class="tag">逐字位移 + 抖动</span></div>
+      <div class="stage bg2">
+        <div class="t mJitter" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;-webkit-text-stroke:.6cqw #000"><span class="ch" style="transform:translate(-0.05em,-0.04em) rotate(-3deg)">不</span><span class="ch" style="transform:translate(0.04em,0.06em) rotate(3deg)">妙</span><span class="ch" style="transform:translate(-0.03em,0.02em) rotate(-2deg)">了</span></div>
+      </div>
+      <div class="par"><span><b>静态</b>抖散</span><span><b>动态</b>抖动</span></div>
+      <div class="use">最强的害怕</div>
+      <div class="tech">静态抖散 + 动态抖动 = 两层叠加</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">5 · 竖排<small>writing-mode</small></div>
+  <div class="fam-d">字竖着写下来。感觉：<b>日漫、压迫</b> —— 它是唯一改变"阅读方向"的手法。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">竖排 · 细楷 <span class="tag">整块变换</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'KaiTi';font-weight:400;font-size:5.4cqw;color:#E8514A;writing-mode:vertical-rl;letter-spacing:.08em;text-shadow:0 0 .5cqw #000">别回头</div>
+      </div>
+      <div class="par"><span><b>竖排</b>是</span><span><b>字体</b>楷体</span></div>
+      <div class="use">恐怖、诡异台词</div>
+      <div class="tech">竖排 + 细楷体 + 暗红 = 日漫恐怖段落</div>
+    </div>
+    <div class="card">
+      <div class="nm">竖排 · 粗体 <span class="tag">整块变换</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:5cqw;color:#fff;-webkit-text-stroke:.45cqw #14110f;writing-mode:vertical-rl;max-height:88%">危险</div>
+      </div>
+      <div class="par"><span><b>竖排</b>是</span><span><b>字重</b>900</span></div>
+      <div class="use">警告、标语</div>
+      <div class="tech">竖排不只配细体 —— 粗体竖排更像"牌子"</div>
+    </div>
+    <div class="card">
+      <div class="nm">竖排 + 逐字变小 <span class="tag">整块 + 逐字</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'KaiTi';font-weight:400;color:#E8514A;writing-mode:vertical-rl;text-shadow:0 0 .5cqw #000;font-size:5.4cqw"><span class="ch" style="font-size:1.25em">别</span><span class="ch">回</span><span class="ch" style="font-size:.72em;opacity:.75">头</span></div>
+      </div>
+      <div class="par"><span><b>竖排</b>是</span><span><b>逐字</b>86→62→45</span></div>
+      <div class="use">声音越来越小</div>
+      <div class="tech">两个手法叠加 —— 竖排定气质、递减定"消失感"</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">6 · 逐字变小<small>逐字字号递减</small></div>
+  <div class="fam-d">字越写越小。感觉：<b>泄气、说不下去</b> —— 音量在衰减。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">变小 · 递减 <span class="tag">逐字字号</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:400;color:#9AA0A8"><span class="ch" style="font-size:6.4cqw">算</span><span class="ch" style="font-size:4.6cqw">了</span><span class="ch" style="font-size:3.2cqw;opacity:.75">吧</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>88 → 63 → 44</span><span><b>透明</b>末字 .75</span></div>
+      <div class="use">放弃、认命</div>
+      <div class="tech">字号递减 + 末字淡化 = "话没说完"</div>
+    </div>
+    <div class="card">
+      <div class="nm">变小 · 骤降 <span class="tag">逐字字号</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;color:#fff;-webkit-text-stroke:.5cqw #14110f"><span class="ch" style="font-size:9cqw">就</span><span class="ch" style="font-size:4.4cqw;opacity:.8">这</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>124 → 60</span><span><b>落差</b>一半以下</span></div>
+      <div class="use">欲言又止、泄气</div>
+      <div class="tech">落差越大越突然 —— 与"渐小"是两种情绪</div>
+    </div>
+    <div class="card">
+      <div class="nm">变小 · 尾音 <span class="tag">逐字字号</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:700;color:#C9A6FF"><span class="ch" style="font-size:5.4cqw">好</span><span class="ch" style="font-size:5.4cqw">像</span><span class="ch" style="font-size:4.2cqw">不</span><span class="ch" style="font-size:3.4cqw;opacity:.8">对</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>74→74→58→46</span></div>
+      <div class="use">迟疑、不确定</div>
+      <div class="tech">前两字不降 = "尾音拖没"</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">7 · 逐字放大<small>逐字字号递增</small></div>
+  <div class="fam-d">字越写越大。感觉：<b>情绪涨上去</b> —— 与"逐字变小"正好相反。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">放大 · 递增 <span class="tag">逐字字号</span></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;color:#FF5FA8;-webkit-text-stroke:.36cqw #fff"><span class="ch" style="font-size:5cqw">好</span><span class="ch" style="font-size:6.6cqw">棒</span><span class="ch" style="font-size:8.8cqw">啊</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>70 → 92 → 122</span></div>
+      <div class="use">由衷赞叹、越来越激动</div>
+      <div class="tech">与"逐字变小"构成一对反义词</div>
+    </div>
+    <div class="card">
+      <div class="nm">放大 · 爆开 <span class="tag">逐字字号</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;color:#FFD400;-webkit-text-stroke:.7cqw #14110f"><span class="ch" style="font-size:4.6cqw">不</span><span class="ch" style="font-size:7cqw">要</span><span class="ch" style="font-size:11cqw">啊</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>64 → 98 → 154</span><span><b>落差</b>2.4 倍</span></div>
+      <div class="use">抗拒、失控</div>
+      <div class="tech">递增 + 大落差 = 情绪失控</div>
+    </div>
+    <div class="card">
+      <div class="nm">放大 · 首字引爆 <span class="tag">逐字字号</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;color:#fff;-webkit-text-stroke:.6cqw #14110f"><span class="ch" style="font-size:9.4cqw">砰</span><span class="ch" style="font-size:5cqw">！</span></div>
+      </div>
+      <div class="par"><span><b>字号</b>132 → 70</span></div>
+      <div class="use">拟声、突然的巨响</div>
+      <div class="tech">"先大后小"也能用 —— 首字是那声巨响本身</div>
+    </div>
+  </div>
+</div>
+
+<h2 class="sec">二 · 动效<span>动态的「怎么动」。6 种，都是<b>进场一次性</b>播放（稿里循环只为看得见）。</span></h2>
+<p class="sectip">每种动效都配<b>同一句台词</b>，方便横向对比 —— 同字不同动，情绪立刻分得开。</p>
+
+<div class="fam">
+  <div class="fam-h">1 · 抖动<small>横向高频细颤</small></div>
+  <div class="fam-d">幅度<b>很小</b>、频率<b>很高</b>。感觉：<b>冷、怕、绷着</b> —— 是"抖"里最克制的一种。同一个抖动，改频率就换情绪。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">抖动 · 标准 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t mJitter" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;-webkit-text-stroke:.6cqw #000">不妙了</div>
+      </div>
+      <div class="par"><span><b>位移</b>±.055em</span><span><b>周期</b>110ms</span></div>
+      <div class="use">害怕、紧张</div>
+      <div class="tech">横向细颤，<i>shake_px</i> 底座已有</div>
+    </div>
+    <div class="card">
+      <div class="nm">抖动 · 慢频 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;-webkit-text-stroke:.6cqw #000;animation:kJitter .26s linear infinite">不妙了</div>
+      </div>
+      <div class="par"><span><b>周期</b>260ms（慢）</span></div>
+      <div class="use">虚弱、无力</div>
+      <div class="tech">同幅度、降频率 = 从"怕"变"虚"</div>
+    </div>
+    <div class="card">
+      <div class="nm">抖动 · 强 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#fff;-webkit-text-stroke:.6cqw #000;animation:kJitter .07s linear infinite">不妙了</div>
+      </div>
+      <div class="par"><span><b>周期</b>70ms（快）</span></div>
+      <div class="use">极度恐慌</div>
+      <div class="tech">频率越高越失控</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">2 · 摇摆<small>整块左右晃</small></div>
+  <div class="fam-d">整句话像钟摆一样来回转。<b>幅度大于抖动、频率低于抖动</b>。感觉：<b>笑、醉、晃</b>。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">摇摆 · 标准 <span class="tag">整块近似</span></div>
+      <div class="stage bg3">
+        <div class="t mSway" style="font-family:'Microsoft YaHei';font-weight:900;font-size:8cqw;color:#3A2E00;background:#FFE27A;padding:.3em .62em">嘿嘿嘿</div>
+      </div>
+      <div class="par"><span><b>角度</b>±3.5°</span><span><b>周期</b>420ms</span></div>
+      <div class="use">笑、得意</div>
+      <div class="tech">整块 rotate 往复</div>
+    </div>
+    <div class="card">
+      <div class="nm">摇摆 · 大角度 <span class="tag">整块近似</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#FFD400;-webkit-text-stroke:.55cqw #14110f;animation:kSwayBig .5s ease-in-out infinite">哈哈哈哈</div>
+      </div>
+      <div class="par"><span><b>角度</b>±9°</span><span><b>周期</b>500ms</span></div>
+      <div class="use">大笑到前仰后合</div>
+      <div class="tech">角度大 = 笑得厉害</div>
+    </div>
+    <div class="card">
+      <div class="nm">摇摆 · 慢摆 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'KaiTi';font-weight:400;font-size:7cqw;color:#C9A6FF;animation:kSwaySlow 1.5s ease-in-out infinite">晕…</div>
+      </div>
+      <div class="par"><span><b>角度</b>±5°</span><span><b>周期</b>1500ms</span></div>
+      <div class="use">醉、眩晕</div>
+      <div class="tech">慢摆 = 晕；快摆 = 笑</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">3 · 砸入<small>从大 + 模糊收进来</small></div>
+  <div class="fam-d">从 2.4 倍、带模糊的"扑面而来"收住，中途<b>过冲</b>再定住。感觉：<b>冲击、突然</b>。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">砸入 · 标准 <span class="tag">整块近似</span></div>
+      <div class="stage bg3">
+        <div class="t mSlam" style="font-family:'SimHei';font-weight:900;font-size:11cqw;color:#FFD400;-webkit-text-stroke:.75cqw #14110f">砰！</div>
+      </div>
+      <div class="par"><span><b>起点</b>2.4 倍</span><span><b>时长</b>500ms</span></div>
+      <div class="use">意外、巨响、反转</div>
+      <div class="tech">大→收 + 过冲；<i>scale_in_*</i> 底座已有</div>
+    </div>
+    <div class="card">
+      <div class="nm">砸入 · 重 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:10cqw;color:#fff;-webkit-text-stroke:.7cqw #000;animation:kSlamHard .42s cubic-bezier(.2,.9,.3,1.2) both infinite">什么？！</div>
+      </div>
+      <div class="par"><span><b>起点</b>3.4 倍</span><span><b>时长</b>420ms</span></div>
+      <div class="use">震惊</div>
+      <div class="tech">起点越大、时长越短 = 越突然</div>
+    </div>
+    <div class="card">
+      <div class="nm">砸入 · 带压扁 <span class="tag">整块近似</span></div>
+      <div class="stage bg1">
+        <div class="t mThud" style="font-family:'SimHei';font-weight:900;font-size:9.4cqw;color:#fff;background:#14110f;padding:.22em .5em">过分了！</div>
+      </div>
+      <div class="par"><span><b>落地</b>压扁 Y×.82</span><span><b>回弹</b>有</span></div>
+      <div class="use">生气、重击</div>
+      <div class="tech">加压扁回弹 = 有"重量"（顿压）</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">4 · 收缩<small>缩小 + 下沉 + 淡出</small></div>
+  <div class="fam-d">字缩下去、掉一点、淡掉。感觉：<b>泄气、消失</b> —— 唯一的"退场型"动效。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">收缩 · 标准 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t mSink" style="font-family:'Microsoft YaHei';font-weight:300;font-size:6cqw;color:#8A9099">算了吧</div>
+      </div>
+      <div class="par"><span><b>缩放</b>→ .84</span><span><b>透明</b>→ .22</span></div>
+      <div class="use">无奈、放弃</div>
+      <div class="tech">缩小 + 下沉 + 淡出 三件一起</div>
+    </div>
+    <div class="card">
+      <div class="nm">收缩 · 只淡出 <span class="tag">今天可出片</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:400;font-size:6cqw;color:#9AA0A8;animation:kFadeOnly 1.6s ease-in infinite">算了吧</div>
+      </div>
+      <div class="par"><span><b>只改</b>透明度</span><span><b>时长</b>1600ms</span></div>
+      <div class="use">安静的消失</div>
+      <div class="tech">⚠️ 唯一<b>今天就能出片</b>的动效（<i>fade_out_ms</i>）</div>
+    </div>
+    <div class="card">
+      <div class="nm">收缩 · 快速抽走 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:700;font-size:6cqw;color:#C9A6FF;animation:kSinkFast .5s ease-in infinite">走了</div>
+      </div>
+      <div class="par"><span><b>时长</b>500ms（快）</span></div>
+      <div class="use">被打断、急着走</div>
+      <div class="tech">快收缩 = 被抽走；慢收缩 = 自己泄气</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">5 · 弹出<small>从小弹到大</small></div>
+  <div class="fam-d">从很小"啵"地弹出来，带过冲。感觉：<b>可爱、轻快</b> —— 与砸入方向正好相反。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">弹出 · 标准 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t mPop" style="font-family:'Microsoft YaHei';font-weight:900;font-size:7.4cqw;color:#14110f;background:#FFD84D;padding:.36em 1em;border-radius:99px">好耶～</div>
+      </div>
+      <div class="par"><span><b>起点</b>.4 倍</span><span><b>时长</b>460ms</span></div>
+      <div class="use">可爱、被萌到</div>
+      <div class="tech">小→大 + 过冲；<i>scale_in_from</i> 底座已有</div>
+    </div>
+    <div class="card">
+      <div class="nm">弹出 · 逐字 <span class="tag">逐字错峰</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:8.4cqw;color:#fff;-webkit-text-stroke:.55cqw #14110f"><span class="ch mPop" style="animation-delay:0s">啵</span><span class="ch mPop" style="animation-delay:.09s">啵</span><span class="ch mPop" style="animation-delay:.18s">啵</span></div>
+      </div>
+      <div class="par"><span><b>起点</b>.4 倍</span><span><b>错峰</b>90ms/字</span></div>
+      <div class="use">连续冒出来的感觉</div>
+      <div class="tech">⚠️ 逐字错峰 = 必须动排版层</div>
+    </div>
+    <div class="card">
+      <div class="nm">弹出 · 软 <span class="tag">整块近似</span></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:800;font-size:7cqw;color:#fff;background:#FF7FB0;padding:.36em 1em;border-radius:1.2cqw;animation:kPopSoft 1.4s ease-in-out infinite">好耶～</div>
+      </div>
+      <div class="par"><span><b>起点</b>.7 倍</span><span><b>过冲</b>小</span></div>
+      <div class="use">温柔的回应</div>
+      <div class="tech">起点不那么小 = 弹得没那么猛</div>
+    </div>
+  </div>
+</div>
+
+<div class="fam">
+  <div class="fam-h">6 · 逐字跳起<small>逐字错峰上跳</small></div>
+  <div class="fam-d">每个字<b>错开时间</b>往上跳一下。感觉：<b>欢快、有节奏</b> —— 同步跳会立刻变机械。</div>
+  <div class="grid">
+    <div class="card">
+      <div class="nm">跳起 · 标准 <span class="tag">逐字错峰</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:8.6cqw;color:#fff;-webkit-text-stroke:.62cqw #14110f"><span class="ch mHop" style="animation-delay:0s">太</span><span class="ch mHop" style="animation-delay:.11s">好</span><span class="ch mHop" style="animation-delay:.22s">了</span><span class="ch mHop" style="animation-delay:.33s">！</span></div>
+      </div>
+      <div class="par"><span><b>高度</b>-.26em</span><span><b>错峰</b>110ms/字</span></div>
+      <div class="use">开心、欢呼</div>
+      <div class="tech">错峰是关键 —— 同步跳就没有"波浪"</div>
+    </div>
+    <div class="card">
+      <div class="nm">跳起 · 快错峰 <span class="tag">逐字错峰</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-weight:900;font-size:9cqw;color:#FFD400;-webkit-text-stroke:.6cqw #14110f"><span class="ch mHopF" style="animation-delay:0s">好</span><span class="ch mHopF" style="animation-delay:.05s">棒</span><span class="ch mHopF" style="animation-delay:.1s">！</span></div>
+      </div>
+      <div class="par"><span><b>错峰</b>50ms/字</span><span><b>周期</b>420ms</span></div>
+      <div class="use">激动、连珠炮</div>
+      <div class="tech">错峰越密 = 越急</div>
+    </div>
+    <div class="card">
+      <div class="nm">跳起 · 大字慢跳 <span class="tag">逐字错峰</span></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-weight:900;font-size:7cqw;color:#fff;-webkit-text-stroke:.6cqw #14110f"><span class="ch" style="animation:kHopSlow 1.1s ease-in-out infinite;animation-delay:0s">慢</span><span class="ch" style="animation:kHopSlow 1.1s ease-in-out infinite;animation-delay:.18s">悠</span><span class="ch" style="animation:kHopSlow 1.1s ease-in-out infinite;animation-delay:.36s">悠</span></div>
+      </div>
+      <div class="par"><span><b>高度</b>-.34em</span><span><b>周期</b>1100ms</span></div>
+      <div class="use">放松、享受</div>
+      <div class="tech">幅度大但周期长 = 从容（与"急"相反）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 总结 ================= -->
+<div class="sumwrap">
+<h2>总结一 · 文字排版手法</h2>
+<p class="sumlede">把"字"当积木，能动的只有四组东西。<b>前两组是真正区分情绪的，后两组只是修饰。</b></p>
+
+<table class="sum">
+<thead><tr><th>组</th><th>手法</th><th>怎么用</th><th>本稿哪几档在用</th><th>底座</th></tr></thead>
+<tbody>
+<tr class="g1">
+  <td rowspan="4"><b>一 · 逐字</b><br><span>每个字各自不同</span></td>
+  <td><b>字号</b></td><td>末字撑大=重音；逐字递减=泄气</td>
+  <td>大小字（3 种）／逐字变小／逐字放大</td>
+  <td class="no">✗</td></tr>
+<tr class="g1"><td><b>旋转</b></td><td>逐字成弧=笑；逐字歪=抖</td>
+  <td>弧形（3 种）／逐字抖散</td><td class="no">✗</td></tr>
+<tr class="g1"><td><b>位移</b></td><td>逐字上升=开心；错位=颤抖</td>
+  <td>弧形（3 种）／逐字抖散</td><td class="no">✗</td></tr>
+<tr class="g1"><td><b>粗细</b></td><td>同句细↔粗对撞=情绪转折</td>
+  <td>大小字 · 中字重音／逐字放大</td><td class="no">✗</td></tr>
+
+<tr class="g2">
+  <td rowspan="4"><b>二 · 整块</b><br><span>整句话一起变</span></td>
+  <td><b>倾斜</b></td><td>歪着贴=不稳、用力</td>
+  <td>倾斜（3 种）／砸入 · 带压扁</td><td class="no">✗</td></tr>
+<tr class="g2"><td><b>压扁 / 拉伸</b></td><td>拉伸=冲击；压扁=重击</td>
+  <td>倾斜（3 种）／砸入 · 带压扁（下拉）</td><td class="no">✗</td></tr>
+<tr class="g2"><td><b>字距</b></td><td>收紧=咬牙；拉开=迟疑</td>
+  <td>大小字（字距收紧）／逐字变小 · 尾音</td><td class="no">✗</td></tr>
+<tr class="g2"><td><b>竖排</b></td><td>竖写=日漫、压迫</td>
+  <td>竖排（3 种）／竖排 + 逐字变小</td><td class="no">✗</td></tr>
+
+<tr class="g3">
+  <td rowspan="3"><b>三 · 字的皮</b><br><span>不变形状，只换皮</span></td>
+  <td><b>字号 / 字重</b></td><td>整块放大、加粗</td>
+  <td>全部 39 档</td><td class="yes">✓</td></tr>
+<tr class="g3"><td><b>字色 / 描边</b></td><td>白+黑边最通用；黄+黑边抓眼</td>
+  <td>全部 39 档</td><td class="yes">✓</td></tr>
+<tr class="g3"><td><b>字体族</b></td><td>黑体硬（生气）／楷体软（害怕）／雅黑中性</td>
+  <td>竖排（3 种）／竖排 + 逐字变小（楷体）</td><td class="yes">✓</td></tr>
+
+<tr class="g4">
+  <td rowspan="3"><b>四 · 底衬</b><br><span>字背后的色块</span></td>
+  <td><b>颜色 / 直角</b></td><td>色块 = "这段是重点"</td>
+  <td>倾斜（3 种）／砸入 · 带压扁／弹出 · 标准（药丸底衬）</td><td class="yes">✓</td></tr>
+<tr class="g4"><td><b>内边距</b></td><td>撑大 = 从"色块"变"色带"</td>
+  <td>弹出 · 标准（药丸底衬）</td><td class="yes">✓</td></tr>
+<tr class="g4"><td><b>圆角</b></td><td>圆角/药丸 = 柔和、气泡感</td>
+  <td>弹出 · 标准（药丸底衬）</td><td class="no">✗</td></tr>
+</tbody>
+</table>
+
+<p class="sumlede" style="margin-top:18px">
+<b>一句话结论</b>：<b>真正区分情绪的全在第一、二组</b>（逐字 + 整块变换），
+而这两组底座<b>一个字段都没有</b>。第三、四组（字号/颜色/底衬）现在就能出片，
+但它们只决定"好不好看"，决定不了"是什么情绪" —— 这正是前面几版"大差不差"的根本原因。
+</p>
+
+<h2>总结二 · 动效类型</h2>
+<p class="sumlede">按"力的方向"分四类。<b>同方向 = 同情绪家族</b>，这是配动效的原则。</p>
+
+<table class="sum">
+<thead><tr><th>方向</th><th>动效</th><th>感觉</th><th>配给</th><th>底座</th></tr></thead>
+<tbody>
+<tr class="g1">
+  <td rowspan="2"><b>向心</b><br><span class="dim">砸进来</span></td>
+  <td><b>砸入</b></td><td>2.4 倍+模糊 → 收住并过冲</td>
+  <td>砸入（3 种）</td><td class="warn">△</td></tr>
+<tr class="g1"><td><b>顿压</b></td><td>整块往下砸一下 + 压扁回弹</td>
+  <td>倾斜（3 种）／砸入 · 带压扁</td><td class="warn">△</td></tr>
+
+<tr class="g2">
+  <td rowspan="2"><b>上升</b><br><span class="dim">往上跳</span></td>
+  <td><b>逐字弹跳</b></td><td>逐字错峰起跳（同步=机械）</td>
+  <td>逐字跳起（3 种）</td><td class="no">✗</td></tr>
+<tr class="g2"><td><b>逐字辐射</b></td><td>字从中心弹出</td>
+  <td>大小字 · 中字重音／逐字放大／弹出 · 标准（药丸底衬）</td><td class="no">✗</td></tr>
+
+<tr class="g3">
+  <td rowspan="2"><b>高频</b><br><span class="dim">细颤</span></td>
+  <td><b>抖动</b></td><td>横向细颤，幅度很小、频率很高</td>
+  <td>抖动（3 种）／逐字抖散 + 动画</td>
+  <td class="warn">△</td></tr>
+<tr class="g3"><td><b>摇摆</b></td><td>整块左右晃 ±3.5°</td>
+  <td>摇摆（3 种）</td><td class="warn">△</td></tr>
+
+<tr class="g4">
+  <td rowspan="2"><b>收缩</b><br><span class="dim">泄下去</span></td>
+  <td><b>下沉渐隐</b></td><td>缩小 + 下沉 + 淡出</td>
+  <td>收缩（3 种）</td><td class="warn">△</td></tr>
+<tr class="g4"><td><b>慢推近</b></td><td>缓慢放大 + 字距收紧</td>
+  <td>紧张</td><td class="warn">△</td></tr>
+</tbody>
+</table>
+
+<p class="sumlede" style="margin-top:18px">
+<b>三档成本</b>：<span class="yes">✓ 今天就能出片</span>（整块淡入/弹出 + 字号/颜色/底衬）——
+本稿 11 档里<b>只有"弹出 · 标准（药丸底衬）"一档</b>完整落在这档；
+<span class="warn">△ 整块变换能近似</span>（砸入/顿压/抖动/摇摆/下沉/推近 —— 把这几个写成<b>整块</b>而不是逐字，
+底座加 1~2 个字段即可）——覆盖率最高，性价比最好；
+<span class="no">✗ 必须动排版层</span>（逐字字号/旋转/位移/粗细，以及逐字错峰动画）。
+</p>
+
+<p class="note" style="margin-top:8px">
+  <b>两个必读的前提。</b>
+  <br>① 稿子里动效是<b>循环</b>播放，只为在这张静态页里看得见；真实出片必须<b>一次性</b> ——
+  进场播一遍就定住。字幕一直摇会让人看不下去。
+  <br>② <code>prefers-reduced-motion</code> 时全部停掉，不硬演。
+</p>
+</div>
+
+</body>
+</html>

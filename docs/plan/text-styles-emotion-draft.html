@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文字元素样式 · 按情绪（强化版）</title>
+<style>
+/* ============================================================
+   参考稿。画法只用底座**真的有**的那几样，逐条对应：
+     字号 font_ratio / 字重 font_weight / 字色 color / 描边宽 stroke_ratio
+     描边色 stroke_color / 底衬 plate_color + plate_pad_px / 字体 font_family
+     / 出现方式 scale_in_* + shake_px
+   ⚠️ 描边用 `paint-order:stroke fill`（真外侧）。裸 `-webkit-text-stroke`
+      是**居中**描边、会啃掉笔画（上一版就是这么错的）。
+   ⚠️ 这里**没有**用：圆角 / 倾斜 / 多层描边 / 字距 / 渐变 / 发光 ——
+      SubtitleStyle 一个都没有。想看那类效果得先动 Dhampir。
+   ============================================================ */
+:root{ --bg:#131010; --card:#1e1a18; --line:#352e29; --dim:#95857a; --ink:#f0e7df; }
+*{box-sizing:border-box}
+body{margin:0;padding:20px 16px 44px;background:var(--bg);color:var(--ink);
+  font-family:"Microsoft YaHei",sans-serif;font-size:13px;line-height:1.6}
+h1{font-size:17px;margin:0 0 4px}
+.lede{color:var(--dim);font-size:12px;margin:0 0 12px;max-width:790px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--dim);margin:0 0 18px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:1px}
+.d1{background:#8fd0a0}.d2{background:#e8b06a}
+
+.fam{margin-bottom:24px}
+.fam-h{font-size:13.5px;font-weight:700;color:#e8b06a;margin:0 0 2px}
+.fam-d{color:var(--dim);font-size:11.5px;margin:0 0 10px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px}
+.nm{font-size:12.5px;font-weight:700;margin-bottom:1px}
+.nm em{font-style:normal;color:var(--dim);font-weight:400;font-size:11px;margin-left:6px}
+.stage{position:relative;width:100%;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;container-type:inline-size;margin:9px 0}
+.bg1{background:linear-gradient(135deg,#f2efe9,#dbe3ec)}
+.bg2{background:linear-gradient(135deg,#1d2028,#0b0d11)}
+.bg3{background:repeating-linear-gradient(45deg,#7a4b52 0 14px,#5d6f8a 14px 28px,#8a7a5d 28px 42px)}
+.t{white-space:pre-line;text-align:center;line-height:1.12;paint-order:stroke fill}
+.par{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--dim);
+  display:flex;flex-wrap:wrap;gap:2px 9px}
+.par b{color:#a89a8d;font-weight:400}
+.use{color:#a08e7c;font-size:10.5px;margin-top:6px}
+.hint{color:#c9a882;font-size:11.5px;margin:22px 0 0;padding-left:10px;
+  border-left:2px solid #6b5232;max-width:830px}
+</style>
+</head>
+<body>
+
+<h1>文字元素样式 · 按情绪（强化版）</h1>
+<p class="lede">上一版"不够突出"的原因是可量化的：<b>13 档里 11 档同为 700/900 字重、
+5 档同一种白色、8 档没有描边</b> —— 全在换颜色，形状语言一个没变。
+这一版把差异做在<b>形状</b>上：字号跨度拉到 3.3 倍、描边从 0 到 14px、
+底衬从无到"整条色带"、出现方式从"淡入"到"砸入+抖动"。</p>
+<div class="legend">
+  <span><i class="dot d1"></i>今天就能出片</span>
+  <span><i class="dot d2"></i>底座已有字段、接一下就有</span>
+</div>
+
+<!-- ================= 开心 / 兴奋 ================= -->
+<div class="fam">
+  <div class="fam-h">开心 / 兴奋</div>
+  <div class="fam-d">往上跳、饱和度高、字要大。<b>出现方式</b>：弹入（贴纸同款过冲）。</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="nm">欢呼<em>今天可出片</em></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:11.5cqw;font-weight:900;color:#fff;
+          -webkit-text-stroke:.72cqw #14110f">太好了！！</div>
+      </div>
+      <div class="par"><span><b>字号</b>150</span><span><b>字重</b>900</span>
+        <span><b>描边</b>11 #1A1A1A</span><span><b>出现</b>弹入</span></div>
+      <div class="use">高分、连胜、抽到好东西</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">爆笑<em>今天可出片</em></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'SimHei';font-size:9.6cqw;font-weight:900;color:#FFD400;
+          -webkit-text-stroke:.62cqw #000;background:#000000f2;padding:.16em .34em">哈哈哈哈</div>
+      </div>
+      <div class="par"><span><b>字号</b>124</span><span><b>字重</b>900</span>
+        <span><b>描边</b>10 #000000</span><span><b>底衬</b>#000 95%</span></div>
+      <div class="use">笑点、翻车、弹幕炸了</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">喝彩<em>今天可出片</em></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:10cqw;font-weight:900;color:#3DFFA0;
+          -webkit-text-stroke:.58cqw #04180d">漂亮！</div>
+      </div>
+      <div class="par"><span><b>字号</b>132</span><span><b>字重</b>900</span>
+        <span><b>描边</b>9 #04180D</span><span><b>出现</b>弹入</span></div>
+      <div class="use">操作很秀、反杀</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= 可爱 / 卖萌 ================= -->
+<div class="fam">
+  <div class="fam-h">可爱 / 卖萌</div>
+  <div class="fam-d">轻、圆、粉。<b>字号故意做两级分化</b>：小声的极小、卖萌的极大 —— 中间那档最没味道，砍掉。</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="nm">轻声<em>今天可出片</em></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:3.6cqw;font-weight:700;color:#FF5C9D;
+          -webkit-text-stroke:.2cqw #ffffff">悄悄瞄一眼…</div>
+      </div>
+      <div class="par"><span><b>字号</b>40</span><span><b>字重</b>700</span>
+        <span><b>描边</b>3 #FFFFFF</span><span><b>底衬</b>无</span></div>
+      <div class="use">卖萌、心虚、小声吐槽（最小一档）</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">软糖<em>今天可出片</em></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:9.4cqw;font-weight:900;color:#fff;
+          background:#FF5FA8;padding:.26em .4em">好耶～</div>
+      </div>
+      <div class="par"><span><b>字号</b>122</span><span><b>字重</b>900</span>
+        <span><b>底衬</b>#FF5FA8 + pad 大</span><span><b>出现</b>弹入</span></div>
+      <div class="use">软萌反应、被萌到（底衬撑大 = 色块卡）</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">元气<em>今天可出片</em></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'DengXian';font-size:9cqw;font-weight:900;color:#FF7A00;
+          -webkit-text-stroke:.95cqw #ffffff">冲鸭！</div>
+      </div>
+      <div class="par"><span><b>字号</b>116</span><span><b>字重</b>900</span>
+        <span><b>描边</b>15 #FFFFFF</span><span><b>字体</b>等线</span></div>
+      <div class="use">打气、开局（白描边当描边用成"贴纸边"）</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= 恐惧 / 紧张 ================= -->
+<div class="fam">
+  <div class="fam-h">恐惧 / 紧张</div>
+  <div class="fam-d">冷、锐、压低。<b>这一族靠"抖动"立住</b> —— 底座已实现 <code>shake_px</code>，只差界面入口。</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="nm">惊吓<em>可出片 + 开抖动</em></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'SimHei';font-size:12.5cqw;font-weight:900;color:#fff;
+          -webkit-text-stroke:.85cqw #000">啊啊啊</div>
+      </div>
+      <div class="par"><span><b>字号</b>164</span><span><b>字重</b>900</span>
+        <span><b>描边</b>13 #000000</span><span><b>抖动</b>10px / 24Hz</span></div>
+      <div class="use">巨响、跳吓、崩盘（全表最大字）</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">不安<em>今天可出片</em></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:5cqw;font-weight:400;color:#B98CFF;
+          background:#000000cc;padding:.3em .7em">好像不太对劲…</div>
+      </div>
+      <div class="par"><span><b>字号</b>64</span><span><b>字重</b>400</span>
+        <span><b>底衬</b>#000 80% pad 大</span><span><b>出现</b>慢淡入</span></div>
+      <div class="use">气氛变冷、预感要出事（细字 + 大片底衬 = 压）</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">低语<em>底座有投影字段</em></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'KaiTi';font-size:6.4cqw;font-weight:400;color:#FF4A3D;
+          text-shadow:0 0 .7cqw #000,0 0 1.4cqw #000">……别回头</div>
+      </div>
+      <div class="par"><span><b>字号</b>78</span><span><b>字重</b>400</span>
+        <span><b>字体</b>楷体</span><span><b>投影</b>shadow_*</span></div>
+      <div class="use">恐怖段落、诡异台词</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= 无语 / 吐槽 ================= -->
+<div class="fam">
+  <div class="fam-h">无语 / 吐槽</div>
+  <div class="fam-d">灰、平、偏小。出现频率最高 —— 是弹幕情绪的视觉化，<b>故意不抢戏</b>。</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="nm">吐槽<em>= 现在的 comment</em></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:4.6cqw;font-weight:700;color:#FFE27A;
+          background:#000000f2;padding:.12em .3em">这什么操作……</div>
+      </div>
+      <div class="par"><span><b>字号</b>48</span><span><b>字重</b>700</span>
+        <span><b>字色</b>#FFE27A</span><span><b>底衬</b>#000 95%</span></div>
+      <div class="use">看不懂、离大谱</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">沉默<em>今天可出片</em></div>
+      <div class="stage bg2">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:3.4cqw;font-weight:400;color:#6B727B">……</div>
+      </div>
+      <div class="par"><span><b>字号</b>36</span><span><b>字重</b>400</span>
+        <span><b>字色</b>#6B727B</span><span><b>描边</b>无</span></div>
+      <div class="use">冷场、无人应答（全表最小）</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ================= 认真 / 信息 ================= -->
+<div class="fam">
+  <div class="fam-h">认真 / 信息</div>
+  <div class="fam-d">正、稳、中性色。不是情绪而是信息，但现实里确实存在，保留一档。</div>
+  <div class="grid">
+
+    <div class="card">
+      <div class="nm">提示<em>今天可出片</em></div>
+      <div class="stage bg3">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:4.8cqw;font-weight:700;color:#fff;
+          background:#111820f7;padding:.24em .6em">第 3 次</div>
+      </div>
+      <div class="par"><span><b>字号</b>58</span><span><b>字重</b>700</span>
+        <span><b>底衬</b>#111820 97% pad 大</span></div>
+      <div class="use">计数、规则、时间点</div>
+    </div>
+
+    <div class="card">
+      <div class="nm">强调<em>= 现在的 chapter</em></div>
+      <div class="stage bg1">
+        <div class="t" style="font-family:'Microsoft YaHei';font-size:7.6cqw;font-weight:900;color:#fff;
+          background:#111417f7;padding:.22em .5em">第一章</div>
+      </div>
+      <div class="par"><span><b>字号</b>98</span><span><b>字重</b>900</span>
+        <span><b>底衬</b>#111417 97% pad 大</span></div>
+      <div class="use">段落标题、章节卡</div>
+    </div>
+
+  </div>
+</div>
+
+<p class="hint">
+  <b>这一版改了什么。</b>字号跨度 <b>36 → 164（4.6 倍）</b>；描边 <b>0 → 15px</b>；
+  底衬从"刚好包住字"改成<b>整条色带</b>（<code>plate_pad_px</code> 撑大）；
+  字重分出 400 / 700 / 900 三级；字体用到雅黑 / 黑体 / 等线 / 楷体四种。
+  <br>⚠️ 全表<b>只有 1 档</b>（"低语"的辉光）用到底座没有的能力 —— <code>SubtitleStyle</code>
+  没有发光字段。其余 12 档都能今天出片。
+</p>
+
+</body>
+</html>
