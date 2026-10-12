@@ -2193,7 +2193,14 @@ const idx = computed(() => buildIndex({
   // （预览自己不取数 —— 取数一律走 `api/` 层，见 `webui/src/api/AGENTS.md`）。
   // ⚠️ 没传 / 开关关着 ⇒ `buildIndex` 里那个 `cfg.elements.karaoke === true` 与
   //    `Array.isArray` 双闸都会挡住 ⇒ 走整条字幕 ⇒ **存量工程逐像素不变**（R4）。
-  karaokeCues: props.karaokeCues
+  karaokeCues: props.karaokeCues,
+  // §5 T7 摇摆（P1，2026-10-13）：**预览侧按帧求角度需要工程网格帧率**。
+  // ⚠️ 必须与转译器 `swayKeyframes` 用的是**同一个** fps：那边取
+  //    `timebase.num / timebase.den`，这里取 `dhampirFps`（同一个来源，
+  //    见本文件 `dhampirFps.value = tb.num / tb.den`）。
+  // ⚠️ 不传 ⇒ `swayDegAt` 拿不到 fps ⇒ 返回 0（**不摆**）——
+  //    而那正是"配了摇摆、预览里不动"的旧症状，所以由 `check-sway-parity.mjs` 钉住。
+  fps: dhampirFps.value
 }))
 
 // ---- 逐帧状态（rAF 更新 current 触发重算）----
