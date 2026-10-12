@@ -612,7 +612,18 @@ function parseTextSource(src) {
     fill,
     stroke: stroke || [26, 26, 26, 255],
     weight: num(p[5], 700),
-    backdrop: num(p[6], 0) > 0
+    backdrop: num(p[6], 0) > 0,
+    // ---- T3：倾斜 / 纵向压缩 ----
+    //
+    // ⚠️ 这两个字段由 `process/mod.rs` **追加在 source 串末尾**（那边注释写了理由：
+    //    插在中间会让既有字段静默错位）。所以这里**只按位置取、且允许缺** ——
+    //    老工程（`process` 还没重跑过）的 `source` 只有 7 段，`p[7]`/`p[8]` 是
+    //    `undefined` ⇒ 落到下面这两个默认值，与老行为逐像素一致（R4）。
+    //
+    // ⚠️ 缺省必须是 (0, 1) 这一对**恒等值**：给错（比如 tilt 缺省非 0）会让
+    //    **所有存量工程的字突然歪掉**，而那个歪从界面上看不出是从哪来的。
+    tiltDeg: num(p[7], 0),
+    squashY: num(p[8], 1)
   }
 }
 
