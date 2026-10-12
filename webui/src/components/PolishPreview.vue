@@ -308,11 +308,13 @@ const DHAMPIR_ALIGN_HARD = 0.5     // ③ 500ms 以上：才 hard seek
  * 同一个数在底座仓的 `crates/dhampir-timeline/src/host_api.rs::HOST_API_VERSION`；
  * `scripts/check-dhampir-wiring.mjs` 会**跨仓对拍**这两个值 —— **底座升版而我们没跟 ⇒ 门禁红**，
  * 免得"字段少了"表现成"预览里某些效果不生效"（没堆栈、只能猜）。
- * 当前 **6** = 动图原生解码（`dhampir_asset_load_animation` / `dhampir_asset_animation_info`
- * 两条导出 + `AnimInfoView`）那次 —— 与 v3→v4 同类：**形状没变、导出面变了**。
- * 那两条导出让引擎自己解码 GIF/动画 WebP，宿主不再逐帧喂位图（见本文件「动图直通」一节）。
+ * 当前 **7** = 文字纵向锚（`overlay.subtitle_style.anchor_bottom`）那次 ——
+ * 与 v4→v5（`shadow_*` 四键）**完全同类**：返回体加了字段就算 API 变更，
+ * 即使该键能缺省、即使老前端"不会用到它"。
+ * ⚠️ 预览这一侧**不消费** `anchor_bottom`（它按 `process` 写回的 `x`/`y` 摆），
+ * 但版本号仍必须跟 —— 这个常量是"两端形状对得上吗"的哨兵，不是"我用没用它"。
  */
-const DHAMPIR_HOST_API = 6
+const DHAMPIR_HOST_API = 7
 const DHAMPIR_ALIGN_RATE_LO = 0.98 // ② 超前 → 放慢一点
 const DHAMPIR_ALIGN_RATE_HI = 1.02 // ② 落后 → 追一点
 /**

@@ -1,34 +1,38 @@
 #!/usr/bin/env node
-// 门禁：**文字元素的纵向档位（`pos`）"预览生效 / 成片不生效"这个落差必须一直写着**。
+// 门禁：**文字纵向档位（`pos`）必须真的接到成片**，且那条"只在预览生效"的旧警示不许回来。
 //
-// # 为什么需要它
+// # 这个落差是什么（以及它曾经有多难发现）
 //
-// `elements.text` 有一个用户可见的下拉：纵向位置 = 上 / 中 / 下（`pos`）。
-// `process` **真的**按它选落点（`placement.rs::TextAnchor::parse`），
-// **预览**也真的按那对 `x`/`y` 摆 —— 所以三档在预览里**看得出差别**。
+// `elements.text` 有用户可见的下拉：纵向位置 = 上 / 中 / 下（`pos`）。
+// `process` **真的**按它选落点，**预览**也真的按那对 `x`/`y` 摆 —— 三档在预览里看得出差别。
+// **但成片曾经一律贴底**：转译器把 ASS 对齐码硬编码成 `2`（底部居中）。
 //
-// **但成片一律贴底**：转译器把 ASS 对齐码硬编码成 `2`（底部居中），`pos` 既没进对齐码、
-// 也没进底座任何字段。实测根因是**底座没有可用的纵向锚**：
+// 根因不是"忘了接线"，是**底座缺字段**：`text_layout::layout` 拿 `bottom_margin`
+// **同时**当"左右安全宽"的输入：
 //
-//     // dhampir text_layout::layout
 //     let margin = style.bottom_margin.clamp(0.0, 0.5);
 //     let max_width_px = sequence_width * (1.0 - 2.0 * margin);   // ← 左右安全宽
 //     let block_top    = 1.0 - margin - keep * line_height_norm;  // ← 纵向位置
 //
-// **同一个字段身兼两职**：左右安全宽要它 = 0.0625，把 `top` 抬上去要它 ≈ 0.6 ——
-// 抬上去 `max_width` 变负数 ⇒ **一个字都排不出来**（有真实事故：误填 0.5 时
-// "每一条文字元素都静默消失"，报告里一行差异都没有）。
+// 安全宽 0.875 要它 = 0.0625；把 `top` 抬上去要它 ≈ 0.6 —— 抬上去 `max_width` 变负数
+// ⇒ **一个字都排不出来**（真实事故：误填 0.5，"每一条文字元素都静默消失"，
+// 报告里**一行差异都没有**，因为布局只是返回了空）。
 //
-// # 这条判据盯什么
+// # 2026-10-12：修好了（底座 v7）
 //
-// 不盯"算法对不对"（那有单测），盯的是**"这个落差有没有被如实说出来"**：
+// 底座加了与安全宽解耦的 `SubtitleStyle::anchor_bottom`（文字块**底边**的归一化 y），
+// `safe_width_ratio` 同时被 `layout()` 真正读起来。转译器把 `pos` 映射过去。
+// 真机实测三档在成片里的文字纵向重心：**0.394 / 0.663 / 0.903**（严格单调，跨度 549px）。
 //
-//   ① 属性面板上必须有那条 `warn-hint`（用户选「上」的时候看得见）；
-//   ② 规格文档必须记着这件事（后来的人不能靠读 spec 以为它生效）；
-//   ③ 需求文档必须有「T7 纵向锚」这一节（否则这个缺口没人接手）。
+// # 这条判据盯什么（★ 已经从"盯落差被写清"翻成"盯接线别断"）
 //
-// ⚠️ **它不会因为"将来接通了"而变绿** —— 接通那天要么删掉这条判据、
-//    要么把它翻过来（那时应该断言"成片真的按档位摆"）。**删它之前先读这段。**
+//   ① 转译器必须把 `pos` 真的写进 `anchor_bottom`，且**按 (样式 × 档位) 两维分轨**
+//      —— `anchor_bottom` 是轨级常量、`pos` 是逐事件的，只按样式分轨会**互相覆盖**
+//      （实测真实工程里 `hook` 同时有 `top` 与 `center`）；
+//   ② 界面上的**旧警示不许回来**（回来就是谎报：用户会以为选了「上」没用）；
+//   ③ 规格文档必须记着这条已接通（别让后来的人照旧结论重新提一遍需求）；
+//   ④ **判据的前提**：ASS 对齐码仍是 `2` —— 那一列至今不表达纵向，
+//      纵向全靠 `anchor_bottom`。它若变了，本判据要重审。
 //
 //     node scripts/check-text-pos-divergence.mjs
 //     node scripts/check-text-pos-divergence.mjs --self-test
@@ -49,92 +53,132 @@ const check = (name, ok) => {
 const TL = read('webui/src/components/TimelineEditor.vue');
 const SPEC = read('docs/plan/elements-spec.md');
 const REQ = read('docs/plan/dhampir-elements-request.md');
+const TRANS = read('tools/polish-to-dhampir.mjs');
 
-// ① 属性面板上的如实警示（用户看得见的那一处）
-check('属性面板有 warn-hint 样式', /\.warn-hint\s*\{/.test(TL));
-check('面板里挂了 warn-hint 的那条提示', /class="hint warn-hint"/.test(TL));
+// ---------------------------------------------------------------------------
+// ① 转译器：`pos` → `anchor_bottom`，且分轨是两维的
+// ---------------------------------------------------------------------------
 check(
-  '提示文案写明"只在预览生效/成片贴底"',
-  /纵向档位目前只在预览生效，成片会贴底/.test(TL),
+  '转译器把纵向档映射成 anchor_bottom（写出了锚）',
+  /anchor_bottom:\s*anchorBottomFor\(/.test(TRANS),
 );
 check(
-  '提示的 title 说清根因（纵向锚与安全宽解耦）',
-  /纵向锚/.test(TL) && /安全宽/.test(TL),
+  '映射函数存在（档位 → 块底归一化 y）',
+  /function anchorBottomFor\(/.test(TRANS),
 );
-// ⚠️ 光有提示不够：**提示必须挂在文字支里**（挂在贴纸支上等于没挂）
-const textBranch = TL.indexOf('纵向位置');
-check('「纵向位置」下拉还在（文字支没被删）', textBranch > 0);
 check(
-  '警示在下拉之后（同一支里）',
-  textBranch > 0 && TL.indexOf('class="hint warn-hint"') > textBranch,
+  '★ 分轨键是「样式 × 纵向档」两维（否则三档共用一个轨级常量、互相覆盖）',
+  TRANS.includes('`${cue.style.name}|${cue.pos}`'),
+);
+check(
+  '遍历顺序里含三个档位（top/center/bottom 都要分到轨）',
+  /for \(const posName of \['top', 'center', 'bottom'\]\)/.test(TRANS),
+);
+check(
+  '轨 id 带档位后缀（两条不同档的轨不能撞同一个 id）',
+  /const id = `text_\$\{styleName\}_\$\{posName\}`/.test(TRANS),
+);
+// ⚠️ `bottom` 档**故意不写**：它要减 `caption_clearance`（字幕带高度，只有底座知道），
+//    写死会与字幕重叠。所以这里判的是"它被显式地排除"，而不是"它也有值"。
+check(
+  'bottom 档显式排除（留给底座扣字幕带，不许写死）',
+  /if \(posKey === 'bottom'\) return undefined;/.test(TRANS),
+);
+// ⚠️ `safe_width_ratio` 必须**显式**写：不写（默认 0）底座会退回"复用 bottom_margin
+//    当安全宽"的老路，而那个字段现在还要表达纵向 ⇒ 两个用途再次打架。
+check(
+  '文字轨显式写了 safe_width_ratio（否则退回复用老路、与纵向锚打架）',
+  /safe_width_ratio: 0\.875,/.test(TRANS),
 );
 
-// ② 规格文档记着这件事
-check('elements-spec 有 pos 更正小节', /`pos` 的更正/.test(SPEC));
-check('spec 写明"成片一律贴底"', /成片一律贴底/.test(SPEC));
-check('spec 写明硬编码 Alignment 2', /Alignment\s*2/.test(SPEC));
-check('spec 指向需求文档的 T7', /T7 纵向锚/.test(SPEC));
+// ---------------------------------------------------------------------------
+// ② 界面：旧警示**不许回来**
+// ---------------------------------------------------------------------------
+check('「纵向位置」下拉还在（文字支没被删）', TL.includes('纵向位置'));
+check(
+  '★ 那条"只在预览生效、成片贴底"的旧警示已经撤掉（回来就是谎报）',
+  !/纵向档位目前只在预览生效/.test(TL),
+);
+check(
+  '旧警示的样式也没留在样式表里（防"定义了没用"）',
+  !/\.warn-hint\s*\{/.test(TL),
+);
 
-// ③ 需求文档有可接手的一节（不然缺口没人管）
-check('需求文档有 T7 纵向锚一节', /T7.*纵向锚|纵向锚.*T7/.test(REQ));
-check('需求文档给了建议字段名', /anchor_bottom/.test(REQ));
-check('需求文档写了验收口径（纵向重心单调）', /纵向重心/.test(REQ));
+// ---------------------------------------------------------------------------
+// ③ 文档：记着"已接通"（别让后来的人照旧结论重提需求）
+// ---------------------------------------------------------------------------
+check('elements-spec 有 `pos` 纵向档位那一节', /`pos` 的纵向档位/.test(SPEC));
+check('spec 提到了新的纵向锚字段', /anchor_bottom/.test(SPEC));
+check(
+  '★ spec 写的是"已接通"（别让后来的人照旧结论重提一遍需求）',
+  /已接通成片/.test(SPEC) && !/只有预览生效，成片一律贴底/.test(SPEC),
+);
+check('spec 记下了真机实测的三档重心（可复核）', /0\.394/.test(SPEC) && /0\.903/.test(SPEC));
+check('需求文档仍有 T7 纵向锚一节（供底座侧追溯）', /T7.*纵向锚|纵向锚.*T7/.test(REQ));
 
-// ④ 转译器那一头**当前确实是硬编码**（判据的前提还成立）
+// ---------------------------------------------------------------------------
+// ④ 判据的前提：ASS 对齐码那一列**至今不表达纵向**
 //
 // ⚠️ Style 行在源码里是**跨行拼接**的（模板字面量 + `+` 续一行），
 //    所以不能用"匹配整行"的写法（第一版就是那么写、恒不命中）。
-//    这里只钉**后半段那个字面量** —— 它含 `Alignment` 那一列。
-const TRANS = read('tools/polish-to-dhampir.mjs');
+//    这里钉**后半段那个字面量** —— 含 `Alignment` 那一列。
+//
 // 字段序见 `cuesToAss` 的 Format 行：
 //   Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,
 //   **Alignment**,MarginL,MarginR,MarginV,Encoding
-// ⇒ 后半段里 `…,1,2,1,` 的第 3 个 `2` 就是 Alignment… 实际串是
-//   `0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1`
-//    0,0,0,0(Bold..StrikeOut) 100,100(ScaleX,ScaleY) 0(Spacing) 0(Angle)
-//    1(BorderStyle) 2(Outline) 1(Shadow) **2(Alignment)** 10,10,10(Margins) 1(Encoding)
+// 实际串 `0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1`：
+//   0,0,0,0(Bold..StrikeOut) 100,100(ScaleX,ScaleY) 0(Spacing) 0(Angle)
+//   1(BorderStyle) 2(Outline) 1(Shadow) **2(Alignment)** 10,10,10(Margins) 1(Encoding)
+//
+// ⇒ 纵向**一律**由 `anchor_bottom` 表达。哪天真去改对齐码，这条会红、必须重审。
 const ASS_TAIL = "'0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1'";
-check('转译器的 ASS Style 后半段还能找到', TRANS.includes(ASS_TAIL));
 check(
-  '  ↑ 对齐码仍是 2（底部居中）—— 若这里变了，本判据的前提失效，必须重审',
+  'ASS 对齐码仍是 2（底部居中）—— 纵向全靠 anchor_bottom；变了必须重审',
   TRANS.includes(ASS_TAIL),
-);
-check(
-  '转译器没有给 cuesToAss 传过对齐/纵向参数',
-  !/cuesToAss\([\s\S]{0,600}?\balign\b/.test(TRANS),
 );
 
 if (process.argv.includes('--self-test')) {
   const { strict: assert } = await import('node:assert');
   let self = 0;
-  // ① 拿掉那条 warn-hint ⇒ 必须红
-  const noWarn = TL.replace('class="hint warn-hint"', 'class="hint"');
-  assert.notEqual(noWarn, TL, '自证：变异必须命中');
-  assert.equal(/class="hint warn-hint"/.test(noWarn), false, '自证①：拿掉警示后必须红');
+  // ① 退回只按样式分轨 ⇒ 必须红（这是最要命的那个回归）
+  const oneDim = TRANS.replace('`${cue.style.name}|${cue.pos}`', 'cue.style.name');
+  assert.notEqual(oneDim, TRANS, '自证：变异必须命中');
+  assert.equal(oneDim.includes('`${cue.style.name}|${cue.pos}`'), false, '自证①：一维分轨必须红');
   self += 1;
-  // ② 样式还在、但类名没挂 ⇒ 也必须红（防"定义了没用"）
-  assert.equal(/class="hint warn-hint"/.test(TL.replace(/class="hint warn-hint"/g, '')), false,
-    '自证②：只留样式不挂类名必须红');
+  // ② 算出了锚却不写进轨 ⇒ 必须红
+  const notWritten = TRANS.replace(/anchor_bottom:\s*anchorBottomFor\(/, 'anchor_bottom_unused: anchorBottomFor(');
+  assert.notEqual(notWritten, TRANS, '自证②：变异必须命中');
+  assert.equal(/anchor_bottom:\s*anchorBottomFor\(/.test(notWritten), false, '自证②：不写进轨必须红');
   self += 1;
-  // ③ 文案被改成粉饰版（"会按档位显示"）⇒ 必须红
-  const rosy = TL.replace('纵向档位目前只在预览生效，成片会贴底', '纵向位置会按档位显示');
-  assert.equal(/纵向档位目前只在预览生效，成片会贴底/.test(rosy), false, '自证③：粉饰文案必须红');
+  // ③ 旧警示被加回来 ⇒ 必须红（判据是双向的：既防没接线，也防谎报）
+  const warnBack = TL.replace(
+    '<!-- ⚠️ **这条以前是警示，现在撤了**',
+    '<!-- x --><div>纵向档位目前只在预览生效，成片会贴底。</div><!-- ⚠️ **这条以前是警示，现在撤了**',
+  );
+  assert.notEqual(warnBack, TL, '自证③：变异必须命中');
+  assert.equal(/纵向档位目前只在预览生效/.test(warnBack), true, '自证③：警示回来必须被检出');
   self += 1;
-  // ④ spec 里那节被删 ⇒ 必须红
-  const noSpec = SPEC.replace(/`pos` 的更正/, '（删掉了）');
-  assert.equal(/`pos` 的更正/.test(noSpec), false, '自证④：删掉 spec 小节必须红');
+  // ④ `safe_width_ratio` 被拿掉 ⇒ 必须红（那等于退回两用途打架的老路）
+  // ⚠️ 这个字面量在源码里出现**多次**（字幕轨一处、文字轨一处）—— 只 δÌ滻Îļþ 一次
+  //    是**不翻面**的（那是变异没生效，看着像抓不住）。要全替换。
+  const noSafeW = TRANS.replaceAll('safe_width_ratio: 0.875,', '');
+  assert.notEqual(noSafeW, TRANS, '自证④：变异必须命中');
+  assert.equal(/safe_width_ratio: 0\.875,/.test(noSafeW), false, '自证④：拿掉安全宽必须红');
   self += 1;
-  console.log(`✓ 文字纵向档位落差自证：${self} 项（拿警示 / 只留样式 / 粉饰文案 / 删 spec，都必须红）`);
+  console.log(`✓ 文字纵向档位接线自证：${self} 项（一维分轨 / 不写进轨 / 警示回潮 / 拿掉安全宽，都必须红）`);
   process.exit(0);
 }
 
 if (failures.length) {
-  console.error(`✗ 文字纵向档位的"预览成形、成片贴底"落差没写清：${failures.length} 项红（共 ${checks} 项）\n`);
+  console.error(`✗ 文字纵向档位的接线断了：${failures.length} 项红（共 ${checks} 项）\n`);
   for (const f of failures) console.error('  - ' + f);
-  console.error('\n  ⇒ 这条判据不是防"代码坏了"，是防**"落差被静默抹平"**：');
-  console.error('     用户在面板上选「上」，成片却贴底 —— 如果界面与文档都不说，');
-  console.error('     他只会以为是自己没设置对，而这是**底座缺字段**造成的。');
-  console.error('     根因与建议接口见 docs/plan/dhampir-elements-request.md 的「T7 纵向锚」。');
+  console.error('\n  ⇒ 这条判据守的是**用户看得见的那件事**：他在面板上选「上」，');
+  console.error('     成片里就该在上。整条链是 `pos` → 转译器 `anchor_bottom` → 底座 `text_layout`。');
+  console.error('     ⚠️ 分轨必须是**两维**的：`anchor_bottom` 是轨级常量、`pos` 是逐事件的，');
+  console.error('        只按样式分轨时同一样式的两个档位会共用一个常量（后写覆盖先写，');
+  console.error('        而报告里一行差异都没有）。接口见 docs/plan/dhampir-elements-request.md。');
   process.exit(1);
 }
-console.log(`✓ 文字纵向档位落差已如实标注：${checks} 项（界面警示 / 规格更正 / 需求 T7 / 转译器前提）`);
+console.log(
+  `✓ 文字纵向档位已接通成片：${checks} 项（转译器两维分轨 / 界面无旧警示 / 文档已更新 / ASS 前提成立）`,
+);

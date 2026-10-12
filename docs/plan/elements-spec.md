@@ -41,7 +41,7 @@ end   = 5.0
 # --- kind = "text" ---
 text  = "这就是传说中的…"
 style = "hook"           # hook | chapter | comment | count
-pos   = "top"            # top | center | bottom —— ⚠️ 见下方更正
+pos   = "top"            # top | center | bottom —— 已接通成片，见下
 
 # --- kind = "sticker" ---
 keyword     = "ysyk"
@@ -50,16 +50,30 @@ x = "auto"
 y = "auto"
 ```
 
-### ⚠️ `pos` 的更正（2026-10-12 实测）：**只有预览生效，成片一律贴底**
+### `pos` 的纵向档位（2026-10-12）：**已接通成片**
 
 `pos` 在 `process` 里是**真被消费**的（`placement.rs::TextAnchor::parse` 按它选一条纵向带，
 `pick_box_position` 在这条带里挑不重叠的落点，再写回 `x`/`y` 百分比）。
 **预览**读那对 `x`/`y`，所以三档在预览里看得出差别。
 
-**但成片侧没接通**：转译器把文字元素转成 ASS 时对齐码**硬编码 `Alignment 2`**（底部居中），
-`pos` 既没进对齐码、也没进底座任何字段 ⇒ **三条档位在成片里长得一样**。
+**成片侧也已经接通**：转译器把 `pos` 映射成底层工程的 `SubtitleStyle::anchor_bottom`
+（文字块**底边**的归一化 y），并按 **(样式 × 档位) 两维分轨**。
 
-★ **根因不是"忘了接线"，而是底座没有可用的纵向锚**：
+| `pos` | `anchor_bottom` | 块底落点 |
+|---|---|---|
+| `top` | 由盒顶 = `STICKER_MARGIN(32)` 推出，≈ `0.43` | 画面上方 |
+| `center` | 由盒顶 = `(H − 盒高)/2` 推出，≈ `0.70` | 画面中部 |
+| `bottom` | **不写**（= 底座缺省 `1.0`） | 贴底 |
+
+⚠️ **`bottom` 档故意不写**：它要减 `caption_clearance`（字幕带占掉的高度，**只有底座知道**），
+写死一个数会让文字**压住字幕** —— 正是 §5 E3 要消灭的症状。
+
+★ **真机实测**（干净底、hook 三档各出一帧，数纯白像素的纵向重心）：
+**0.394 / 0.663 / 0.903**，严格单调，跨度 ≈ 549px。
+
+#### 曾经的根因（留着当路标，别照旧结论重提需求）
+
+一度**只有预览生效、成片一律贴底**，根因**不是"忘了接线"，而是底座没有可用的纵向锚**：
 
 * `bottom_margin` 身兼两职 —— 底座 `text_layout::layout` 里
   `max_width_px = sequence_width × (1 − 2 × margin)`（左右安全宽）**与**
@@ -69,9 +83,12 @@ y = "auto"
   误填 0.5 时"每一条文字元素都静默消失"，报告里**一行差异都没有**）。
 * ASS 的 `{\an8}` 会被底座 `parse_ass` **当覆盖标签丢掉**；`force_style` 只拼五个键。
 
-⇒ **要修必须底座加一个与 `bottom_margin` 解耦的纵向锚字段**，
-需求与建议接口见 [`dhampir-elements-request.md`](dhampir-elements-request.md) 的「T7 纵向锚」。
-**在那之前**本仓不假装它生效：设置界面与规格都照实标注。
+⇒ 2026-10-12 底座（`dhampir-timeline` v7）加了 `anchor_bottom`，同时让 `safe_width_ratio`
+**真正被 `layout()` 读到**，两个用途就此解耦。需求原文见
+[`dhampir-elements-request.md`](dhampir-elements-request.md) 的「T7 纵向锚」。
+
+⚠️ **ASS 的对齐码至今仍是 `2`**（底部居中）—— 纵向**一律**由 `anchor_bottom` 表达，
+那一列不参与。哪天真去改它，`scripts/check-text-pos-divergence.mjs` 会红、必须重审。
 
 ### `text` 的四个 `style` 预设
 
