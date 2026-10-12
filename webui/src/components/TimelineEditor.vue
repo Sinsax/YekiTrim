@@ -962,6 +962,18 @@ const ANIM_GROUPS = [
       { value: 'grow_burst', label: '放大 · 爆开' },
       { value: 'grow_first', label: '放大 · 首字引爆' }
     ]
+  },
+  // ===== D 组：逐字错峰（4 档）=====
+  // ⚠️ 与上面那些组的观感差别：上面是"所有字同时动、幅度不同"，
+  //    这里是"每个字**依次**动、幅度相同"。
+  {
+    group: '逐字错峰',
+    items: [
+      { value: 'pop_perchar', label: '弹出 · 逐字' },
+      { value: 'hop_std', label: '跳起 · 标准' },
+      { value: 'hop_fast', label: '跳起 · 快错峰' },
+      { value: 'hop_big', label: '跳起 · 大字慢跳' }
+    ]
   }
 ]
 

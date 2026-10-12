@@ -65,8 +65,8 @@ const nonEmpty = values.filter((v) => v !== '')
 //    A+B 组 17 档（7 组）→ 加 C 组逐字 14 档（+5 组）= 32 档 / 12 组。
 //    改这里时**必须同时**改 `check-anim-presets-parity.mjs` 的档数 ——
 //    两边对不上就说明有一处漏改了。
-const WANT_GROUPS = 12
-const WANT_TIERS = 32
+const WANT_GROUPS = 13
+const WANT_TIERS = 36
 ok(groups.length === WANT_GROUPS, `② 分组数应当是 ${WANT_GROUPS}（不动 + 11 个效果族），实得 ${groups.length}`)
 ok(values.includes(''), '② 缺"不动效"那一档（空串）')
 ok(nonEmpty.length === WANT_TIERS, `② 已知档应当 ${WANT_TIERS} 档，实得 ${nonEmpty.length}`)
