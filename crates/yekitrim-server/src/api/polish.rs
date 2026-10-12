@@ -1309,6 +1309,20 @@ pub(super) async fn polish_project_get(State(state): State<Arc<AppState>>, Query
     blocking(move || block_on_here(polish_project_get_impl(State(state), Query(q)))).await
 }
 
+/// 读一份**可选**的 `data/` 侧车 JSON（缺失 / 坏了都回 `null`，绝不报错）。
+///
+/// ⚠️ **坏文件按"没有"处理而不是 500**：这些报告是 `process` 写的**派生数据**，
+/// 不是工程本身。回 500 会让整个精修页读不出配置 —— 用户为了一个统计数字
+/// **连编辑器都打不开**，代价完全不成比例。与 `/polish/video-thumb` "抽不出帧回 404
+/// 不是 500"是同一条纪律。
+fn read_data_json(project_dir: &std::path::Path, name: &str) -> serde_json::Value {
+    let p = project_dir.join("data").join(name);
+    match std::fs::read_to_string(&p) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null),
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
 pub(super) async fn polish_project_get_impl(
     State(_state): State<Arc<AppState>>,
     Query(q): Query<std::collections::HashMap<String,String>>,
@@ -1323,6 +1337,17 @@ pub(super) async fn polish_project_get_impl(
             obj.insert("_assets".into(), serde_json::json!({
                 "sticker_map": yekitrim_polish::render::server::build_sticker_map(&path),
             }));
+            // §23 节奏报告（`data/pacing.json`，2026-10-13）。
+            //
+            // ⚠️ **只读回、绝不落盘 / 不改配置**：规格自己强调过
+            //    「留白是'没有说话'，不是'画面死着'」—— 自动往安静叙述切片上补运镜是
+            //    **改观感**的行为，得用户先看数字再拍板。那份 JSON 里的 `applied: false`
+            //    就是给读它的人一个明确交代，**别在这里把它改成 true**。
+            //
+            // ⚠️ 没有这个文件 = **本来就很密**（`process` 只在扫出空档时才落，
+            //    见 `process::write_pacing_report` 的 R4 说明）⇒ 回 `null`，
+            //    而不是空对象：两者语义不同（"没算过/很密" vs "算过、有 0 段"）。
+            obj.insert("_pacing".into(), read_data_json(&path, "pacing.json"));
             let video_path = path.join(&cfg.source.video);
             // 画布契约与出片读的是**同一份推导**（`ProjectFile::canvas_contract`）。
             // 这里以前自己写了一份「竖屏检测」，与 `render/server.rs` 各一份 —— 改画布方向会不同步。
@@ -4151,6 +4176,61 @@ async fn cover_config_persists_layer_stack_and_effect_ids() {
     assert!(!stack.iter().any(|s| s == "nope"), "未知 id 不该出现在解析结果里：{stack:?}");
     let raw = std::fs::read_to_string(clip.join("polish.toml")).unwrap();
     assert!(raw.contains("layers"), "polish.toml 缺 layers 键：{raw}");
+}
+
+/// §23 节奏报告必须**读得到**，而且必须是**只读**的（2026-10-13）。
+///
+/// # 为什么补这条
+///
+/// `process` 早就把 >6s 静止区间落成 `data/pacing.json`（`write_pacing_report`），
+/// 但**全仓没有第二个消费者** —— 界面读不到、API 不暴露。
+/// 那等于"算了、也落盘了，但用户永远看不见"，正是规格要避免的
+///（「报告必须是可查的，不能只活在控制台里 —— 那等于没算」）。
+///
+/// ⚠️⚠️ **这条的重心是"只读"**：`applied` 必须**原样**是 `false`。
+/// 规格强调过「留白是'没有说话'，不是'画面死着'」——
+/// 自动往安静叙述切片上补运镜是**改观感**的行为，得用户先看数字再拍板。
+/// 哪天有人"顺手"把 `applied` 改成 true，或让这个接口真的去补运镜，这条要红。
+#[tokio::test]
+async fn pacing_report_is_readable_and_stays_unapplied() {
+    let t = test_app().await;
+    let clip = t.root.join("output/clips/clip-23");
+    std::fs::create_dir_all(clip.join("data")).unwrap();
+    std::fs::write(clip.join("polish.toml"), "[source]\nvideo = \"clip.mp4\"\nsubtitles = \"clip.srt\"\n").unwrap();
+
+    // ① 没有报告（= 画面本来就很密）⇒ `null`，**不是**空对象。
+    //    两者语义不同："没算过/很密" vs "算过、有 0 段"。
+    let q = format!("dir={}&preview=1", clip.to_string_lossy().replace('\\', "/"));
+    let res = t.call(t.req("GET", &format!("/polish/project?{q}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v: serde_json::Value = body_json(res).await;
+    assert_eq!(v.get("_pacing"), Some(&serde_json::Value::Null), "没有报告必须是 null");
+
+    // ② 放一份真报告 ⇒ 逐字段读得到，且 `applied` 仍是 false。
+    std::fs::write(
+        clip.join("data/pacing.json"),
+        r#"{"min_gap_secs":6.0,"count":1,"total_secs":38.0,"longest_secs":38.0,"applied":false,
+            "gaps":[{"start":2.0,"end":40.0,"duration":38.0,"suggest_at":21.0,
+                     "suggest_zoom_tier":"mid","suggest_duration_secs":2.5}]}"#,
+    )
+    .unwrap();
+    let res = t.call(t.req("GET", &format!("/polish/project?{q}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let v: serde_json::Value = body_json(res).await;
+    let p = v.get("_pacing").expect("要读得到 _pacing");
+    assert_eq!(p.get("count").and_then(|x| x.as_u64()), Some(1), "{p}");
+    assert_eq!(p.get("applied").and_then(|x| x.as_bool()), Some(false), "applied 必须原样是 false");
+    let gaps = p.get("gaps").and_then(|x| x.as_array()).expect("gaps");
+    assert_eq!(gaps[0].get("start").and_then(|x| x.as_f64()), Some(2.0));
+    assert_eq!(gaps[0].get("suggest_at").and_then(|x| x.as_f64()), Some(21.0));
+
+    // ③ **坏文件按"没有"处理**，不许 500：这些是派生数据，为一个统计数字
+    //    连编辑器都打不开，代价完全不成比例。
+    std::fs::write(clip.join("data/pacing.json"), "{ 这不是 JSON").unwrap();
+    let res = t.call(t.req("GET", &format!("/polish/project?{q}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK, "坏报告不许让整个工程读不出来");
+    let v: serde_json::Value = body_json(res).await;
+    assert_eq!(v.get("_pacing"), Some(&serde_json::Value::Null), "坏文件按没有处理");
 }
 }
 

@@ -344,6 +344,20 @@
       <span class="mono small flex-none">ms</span>
     </div>
 
+    <!-- ── §23 节奏报告（**只读**，2026-10-13）──
+         `process` 早就在扫 >6s 的静止区间并落 `data/pacing.json`，但**全仓没有第二个
+         消费者** —— 界面读不到、API 不暴露，等于"算了、也落盘了，用户永远看不见"。
+         这里只把它**显示出来**。
+
+         ⚠️⚠️ **只显示、不补运镜**：规格（`editing-techniques-catalog.md` §23）强调过
+         「留白是'没有说话'，不是'画面死着'」—— 自动往安静叙述切片上补运镜是**改观感**的
+         行为，得用户先看数字再拍板。那份 JSON 里 `applied: false` 就是给读它的人的交代。
+         **别在这里加"一键补上"按钮**，也别读它去改任何配置。 -->
+    <div v-if="pacing" class="row mt-6" style="gap:6px;align-items:center">
+      <span class="small muted flex-none">节奏</span>
+      <span class="small flex-1" :title="pacingTitle">{{ pacingText }}</span>
+    </div>
+
     <!-- ── BGM（§11）**整段已按用户口径删除**（2026-10：「将项目设置的这一栏删除，暂且用不到
          bgm，背景音乐」）⇒ 界面上不再有「背景音乐」分组（开关 / 文件 / 音量 / 闪避）。
          ⚠️ **能力一个字都没动**：`render/bgm.rs`、`[bgm]` 配置段、`PUT /api/polish/project` 的
@@ -928,6 +942,33 @@ const dmOffsetSaving = ref(false)
 const elementsSaving = ref(false)
 const swayDeg = computed(() => numOrNullValue(cfg.value?.elements?.sway_deg))
 const swayMs = computed(() => numOrNullValue(cfg.value?.elements?.sway_ms))
+
+// ── §23 节奏报告（**只读**）─────────────────────────────────────────
+// ⚠️ 后端只在**扫出空档时**才落 `data/pacing.json` ⇒ 没有这个键 = 画面本来就很密。
+//    **必须把这两种情况分开显示**：把"很密"显示成"0 段空档"是错的
+//    （用户会以为算过、以为没问题），而显示成"没有数据"也是错的（其实正是好结果）。
+const pacing = computed(() => cfg.value?._pacing || null)
+
+/** 一行摘要。⚠️ 行内文案 ≤20 字（右栏内容宽只有 266px）。 */
+const pacingText = computed(() => {
+  const p = pacing.value
+  if (!p) return ''
+  const n = Number(p.count) || 0
+  if (n <= 0) return '画面够密'
+  return `${n} 段静止，最长 ${(Number(p.longest_secs) || 0).toFixed(1)}s`
+})
+
+/** 详细信息进 `title`（行内放不下）。 */
+const pacingTitle = computed(() => {
+  const p = pacing.value
+  if (!p) return ''
+  const n = Number(p.count) || 0
+  const base = `超过 ${Number(p.min_gap_secs) || 6}s 无画面变化算一段静止。`
+  if (n <= 0) return base + '本片没有这样的区间。'
+  const total = (Number(p.total_secs) || 0).toFixed(1)
+  return base + `本片 ${n} 段，共 ${total}s。` +
+    '这只是提示：留白是"没有说话"，不代表画面有问题，所以不会自动补运镜。'
+})
 
 /** 读一份"可能是 undefined / null / 脏值"的配置数 ⇒ 数字或 `null`（= 没配）。 */
 function numOrNullValue(v) {
