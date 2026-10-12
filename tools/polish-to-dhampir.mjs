@@ -2840,6 +2840,13 @@ export function translate(config, clipDir, outPath, options = {}) {
       shake_hz: optNum(raw.shake_hz),
       plate_color: optColor(raw.plate_color),
       plate_pad_px: optNum(raw.plate_pad_px),
+      // ── T7 摇摆（2026-10-13）──
+      // 规格：`docs/plan/text-styles-emotion-base-mapping.md` §1.2「角度 + 周期」。
+      // ⚠️ 与上面那批**不同**：这两个不写到轨级 `subtitle` 上，而是**折成 `rotation`
+      //    关键帧**写到每个图层自己身上（见 `swayKeyframes`）——
+      //    "往复"只有关键帧表达得了，静态值做不出摆动。
+      sway_deg: optNum(raw.sway_deg),
+      sway_ms: optNum(raw.sway_ms),
       // ── T5 真卡拉OK（2026-10-11）──
       // ⚠️ 裸 `bool`：`bool` 的"没写"与"写了 false"行为等价（都是关），
       //    所以它不触发 #155 那个"显式写的默认值被等值 skip 吃掉"的坑
@@ -2925,8 +2932,78 @@ export function translate(config, clipDir, outPath, options = {}) {
     return out;
   };
 
-  /// 抖动相位**按 style 档错开**（§5 E4a T4，2026-10-11）。
+  /// **T7 摇摆**：把「角度 + 周期」折成一组 `rotation` 关键帧（2026-10-13）。
   ///
+  /// # 为什么必须是关键帧
+  ///
+  /// "往复"＝**同一个量在一段时间里来回变**，静态 `rotation` 只有一个值 ⇒
+  /// 表达不出来。规格（`text-styles-emotion-base-mapping.md` §1.2）写的就是
+  /// 「摇摆 | 笑 / 得意；慢摆 = 醉、眩晕 | **角度 + 周期**」。
+  ///
+  /// ⚠️⚠️ **这条路以前是死的**：底座 `evaluate_overlay` **不求值关键帧**
+  /// （实测 `channel_from` 零命中）⇒ 写了会被**静默忽略**，
+  /// 所以规格里摇摆长期标着 ❌「本次做不到，要等求值层打通」。
+  /// 2026-10-13 底座 `bcff0a5` 接通了求值（复用同一条 `channel_from`），
+  /// **这里才第一次能真做**。
+  ///
+  /// # 形状：一条正弦，采样成三角波
+  ///
+  /// 一个完整往复 = `sway_ms` 毫秒。关键帧按**四分之一周期**打：
+  /// `0 → +A → 0 → −A → 0`，`linear` 连接。
+  /// ⚠️ **不是**真的正弦（要真正弦得把每帧都写成键，几千个键）。
+  /// 四段线性是一个**够用的近似** —— 观感上就是"来回摆"，而键数是 `4×周期数 + 1`。
+  /// 若哪天要更圆滑，加键即可（改这里一处）。
+  ///
+  /// ⚠️ **首键必须落在元素自己的第 0 帧**：底座 `channel_from` 在首键**之前**
+  /// 取首键值、末键**之后**取末键值 ⇒ 首键不从 0 开始的话，开头会**卡在某个角度**
+  /// 而不是从摆幅起点出发。
+  ///
+  /// ⚠️ **至少两个键**才成一条曲线：短 cue（比一个周期还短）也要给
+  /// `0 → +A`（`channel_from` 对单键的行为是"恒取它"，那就不摆了）。
+  /// 这里的做法是按 cue 真实时长采完，末尾补一个回到 0 的键。
+  ///
+  /// ⚠️ 返回 `[]` = **不摆**（没配 / 值非法 / 时长为 0）—— 调用点据此**一个键都不写**，
+  /// 于是老工程产物逐字节不变（R4）。
+  const swayKeyframes = (cue, cfg, tb) => {
+    const amp = cfg.sway_deg;
+    const periodMs = cfg.sway_ms;
+    // 两个旋钮缺一不可：只给角度 = 不知道摆多快；只给周期 = 不知道摆多远。
+    if (!Number.isFinite(amp) || amp === 0) return [];
+    if (!Number.isFinite(periodMs) || periodMs <= 0) return [];
+    // ⚠️ 时间基**由调用点传进来**（`tb`），不在这里读闭包的 `timebase` ——
+    //    那个常量住在另一段作用域（`:1580`），这里看不到。
+    const fps = (tb?.num ?? 0) / Math.max(1, tb?.den ?? 1);
+    if (!(fps > 0)) return [];
+    const span = cue.end - cue.start; // 帧数
+    if (!(span > 0)) return [];
+    // 四分之一周期 = 从一个极值到中点的帧数。**至少 1 帧**，否则除零/空循环。
+    const quarter = Math.max(1, Math.round((periodMs / 1000) * fps / 4));
+    const keys = [];
+    // 峰值序列：0, +A, 0, −A, 0, +A, …（i 为四分之一段序号）
+    const PATTERN = [0, 1, 0, -1];
+    for (let i = 0, f = 0; f < span; i++, f = i * quarter) {
+      const value = amp * PATTERN[i % PATTERN.length];
+      keys.push({ frame: f, target: 'rotation', value, easing: 'linear' });
+    }
+    // 末键若正好落在末尾之外，补一个回到 0 的键收尾 ——
+    // 否则 `channel_from` 会在剩余那段**恒取上一个键的值**（字会歪着卡住）。
+    const last = keys[keys.length - 1];
+    if (last.frame < span - 1) {
+      keys.push({ frame: span - 1, target: 'rotation', value: 0, easing: 'linear' });
+    }
+    // ⚠️ 只有 1 个键 = 恒取它 = 不摆（见上）。宁可返回空，也不要一条"看着配了、
+    //    其实字歪着不动"的假曲线。
+    if (keys.length < 2) return [];
+    // 去重（尾部补的键可能与最后一个重合）+ 保证严格递增（契约层要求有序）。
+    const out = [];
+    for (const k of keys) {
+      if (out.length && k.frame <= out[out.length - 1].frame) continue;
+      out.push(k);
+    }
+    return out.length >= 2 ? out : [];
+  };
+
+  /// 抖动相位**按 style 档错开**（§5 E4a T4，2026-10-11）。
   /// # ⚠️⚠️ 这是**轨级**相位，不是逐条 —— 底座的契约边界就是这样
   ///
   /// 底座的 `shake_phase` 住在 `SubtitleStyle` 上（**轨级**），而
@@ -5925,6 +6002,28 @@ export function translate(config, clipDir, outPath, options = {}) {
             // ⚠️ **无条件写**（`rotation` 没有 serde default，省掉 = 工程载入失败）。
             rotation: st.tiltDeg,
           },
+          // ---- T7 摇摆：`rotation` **关键帧**（2026-10-13）----
+          //
+          // ⚠️ 写在**图层自己**的 `keyframes` 上（与 `transform` 同级），不是轨级 ——
+          //    底座 `evaluate_overlay` 求的就是 `layers[i].keyframes`。
+          //
+          // ⚠️ **没配摇摆时一个键都不写**（`swayKeyframes` 返回 `[]`）⇒
+          //    老工程产物**逐字节不变**（R4）。这与 `transform` 那半边
+          //    "`rotation` 无条件写"是**两条相反的规矩**，别互相类推：
+          //    `transform.rotation` 是**必填字段**（省了工程载入失败），
+          //    而 `keyframes` 是**可选数组**（省了 = 不摆，正是老行为）。
+          ...(() => {
+            // ⚠️ **摇摆的参数来自 `elementsCfg`（`[elements]` 段），不是 `st`** ——
+            //    这里第一版写的是 `swayKeyframes(c, st, timebase)`，
+            //    而 `st` 是 `parseTextStyle` 从**四档 source 串**解析出来的
+            //    （只有 font/stroke/color/weight/backdrop/tilt/squash 那几个），
+            //    **压根没有 sway 字段** ⇒ `cfg.sway_deg` 恒 `undefined` ⇒ 恒返回 `[]`
+            //    ⇒ 配了 `[elements] sway_deg` 也**一个键都不写**，
+            //    症状正是本仓最恨的那种："配了、不报错、成片里字不摆"。
+            //    实测抓到的：产物里 `text_hook_bottom` 没有 `keyframes` 键。
+            const keys = swayKeyframes(c, elementsCfg, timebase);
+            return keys.length ? { keyframes: keys } : {};
+          })(),
         })),
       });
     }
