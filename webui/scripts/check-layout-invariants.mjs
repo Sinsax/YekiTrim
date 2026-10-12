@@ -40,6 +40,12 @@
 //     `font-family:inherit`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，会压过
 //     父层的内联字体栈（继承值永远输给本元素的任何声明）—— 不写就是"字体设置一点用没有"，
 //     静默、无报错。
+//     ⚠️ **空值的口径（2026-10 第二轮变更）**：`[style.danmaku] font` 为空 = **出厂默认文字字体**
+//     （`Noto Sans SC`，= Rust `default_font()`），**不是**"跟随字幕那条字体栈"。旧口径有三个真问题：
+//     ① 字幕那栏存的是**族名**、弹幕这栏存的是**库 id**，格式本就不同（拿族名当 id 用）；
+//     ② 于是弹幕看起来和字幕一模一样，而用户预期是"默认那支"；
+//     ③ **真出片通道（底座转译器）从不实现这一档**（填 `'Sans'`）⇒ 预览是字幕那支、
+//        成片是 `Sans`，**不一致且不报错**。所以判据钉"三处都退到同一个常量"。
 //
 //  ⑨ 「打开输出目录」只在本机渲染（服务端模式那里也没有这个端点）。
 //
@@ -106,6 +112,8 @@ const jobsStore = await read('webui/src/composables/useJobs.js')
 const jobsApiJs = await read('webui/src/api/jobs.js')
 const engineJs = await read('webui/src/polish/engine.js')
 const templateHtml = await read('crates/yekitrim-polish/templates/index.html')
+// ⚠️ 出片**真路径**（底座 Dhampir 工程由它转译出来）—— ⑱ 要钉它与预览/模板同口径。
+const translator = await read('tools/polish-to-dhampir.mjs')
 
 /** 每条：label + 判据 + **怎么改坏它**（用于自证判据不是空转的）。 */
 const RULES = [
@@ -617,18 +625,32 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    ⚠️ 同样**剥注释**（删掉的那段在注释里被逐条点名，不剥就一直红）。
   check('⑰ 「背景音乐」分组已整组删除（模板里没有 BGM 控件与处理器）',
     /onBgm|bgm\./.test(tplOnly), false)
-  // ⚠️ 「显示弹幕」与弹幕字体**同一行之后**（2026-10 用户口径：「显示弹幕放在弹幕字体同一行后」）：
-  //    判据只钉"顺序"——勾选框在弹幕字体下拉之后、且本组里不再有第二个弹幕设置面板。
-  //    ⚠️ 之前的写法拿 `@change="onDanmakuFontChange"` 当锚，而那个字符串在 `<script>` 里
-  //    也有定义、且在**模板之后** ⇒ `indexOf` 命中 2013 行 ⇒ "显示弹幕在 277" 永远小于它 ⇒
-  //    **恒红**。锚必须限定在模板里的那个下拉。
-  // ⚠️ 锚点**不能用 `>显示弹幕<`**：那一行现在是纯文本（前后是换行，不是标签边界），
-  //    `indexOf` 返回 -1 ⇒ 判据恒红（红线挂在锚点上，不是挂在顺序上）。
-  //    改用 `toggleLane('danmaku')` —— 它在模板里唯一，且就在那个勾选框上。
-  check('⑰ 「显示弹幕」排在弹幕字体下拉之后',
-    tplOnly.indexOf('显示弹幕') > tplOnly.indexOf('@change="onDanmakuFontChange"')
-    && tplOnly.indexOf('@change="onDanmakuFontChange"') > 0
-    && tplOnly.includes("toggleLane('danmaku')"), true)
+  // ⚠️ 「显示弹幕」与**「弹幕设置」标题同一行**（2026-10 用户口径：「显示弹幕放在 *弹幕设置*
+  //    同一行的后面」）。判据钉三件事：
+  //      ① 标题在勾选框之前、勾选框在**弹幕字体下拉之前**（它跟标题同行，不再跟下拉同行）；
+  //      ② 标题与勾选框之间**不许夹换行容器**（夹了就是掉到下一行、又变回独立一行）；
+  //      ③ 勾选框真的还在（`toggleLane('danmaku')` 是本仓唯一的那枚显示开关）。
+  // ⚠️ 锚点纪律（两次踩过）：`@change="onDanmakuFontChange"` 在 `<script>` 里也有定义 ⇒ 必须用
+  //    剥过注释、且截到 `<script>` 之前的 `tplOnly`；`>显示弹幕<` 那种带尖括号的锚会因为
+  //    "那一行是纯文本、前后是换行"而返回 -1 ⇒ 一律用**裸文案 + 唯一绑定字符串**做锚。
+  const dmToggleBesideHead = (s) => {
+    const head = s.indexOf('弹幕设置')
+    const lbl = s.indexOf('显示弹幕')
+    const bind = s.indexOf("toggleLane('danmaku')")
+    const font = s.indexOf('@change="onDanmakuFontChange"')
+    if (head < 0 || lbl < 0 || bind < 0 || font < 0) return false
+    return head < lbl && lbl < font && bind <= lbl + 20
+      && !/<div class="(row|col)[^"]*">/.test(s.slice(head, lbl))
+  }
+  check('⑰ 「显示弹幕」与「弹幕设置」标题同一行、且字体下拉在它后面',
+    dmToggleBesideHead(tplOnly), true)
+  {
+    // 变异：把标题换成块级容器 ⇒ 勾选框必然掉到下一行（那正是本次修掉的"独立一行"形态）。
+    const bad = tplOnly.replace(
+      '<span class="small muted flex-none">弹幕设置</span>',
+      '<div class="small muted">弹幕设置</div>')
+    check('⑰ [变异] 标题与勾选框之间夹换行容器 → 判据翻面', dmToggleBesideHead(bad), false)
+  }
   check('⑰ 字体行有 `min-width:0`（否则中文标签 + 两颗按钮会横向溢出）',
     /\.ss-font-row \{ display:flex; align-items:center; gap:6px; min-width:0/.test(polishView), true)
   check('⑰ 任务栏默认折叠（jobOpen 初值 false）', /const jobOpen = ref\(false\)/.test(polishView), true)
@@ -690,24 +712,37 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const noDanmakuLane = (s) => !s.includes("lane: 'danmaku'")
   const dmToggleInPanel = (s) => s.includes("@change=\"toggleLane('danmaku')\"")
   const dmFontSaves = (s) => s.includes('saveProjectPatch(pid.value, dir.value, { danmaku_font: next })')
-  // ⚠️ 2026-10-06：量宽那两条判据原先锚在**旧实现**上（`(family ? '"'+family+'",sans-serif' : 'sans-serif')`
-  // 与模板里那句 `var dmFam = …`）。那次改动把"弹幕字体为空"的口径**从裸 `sans-serif` 改成跟随字幕栈**
-  // （契约见 `DanmakuStyle::font`）—— 所以两处都换成了 `dmFontFamily(...)`。
-  // **判据的意图没变**（量宽必须带字体族、缓存键必须含字体族），只换锚点；
-  // 并新增一条直接钉"空值不退回裸 sans-serif"的判据，防止再退回去。
+  // ⚠️ **2026-10 口径再变一次**（用户：「弹幕设置的字体为什么还显示跟字幕？字幕不是乐米波波体，
+  //   而弹幕默认为 noto」）：空值从"跟随字幕那条字体栈"改成**出厂默认文字字体**（`Noto Sans SC`）。
+  //   旧口径的两个真问题：① 字幕那栏存的是**族名**、弹幕这栏存的是**库 id**，格式本就不同；
+  //   ② **真出片通道（底座转译器）从来不实现这一档**（填 `'Sans'`）⇒ 预览是字幕那支、
+  //      成片是 `Sans`，**不一致且不报错**。所以判据现在钉的是"三处都退到同一个常量"。
+  //   判据的意图没变（量宽必须带字体族、缓存键必须含字体族、视频与绘制同族），只换锚点。
+  const DM_DEFAULT = 'Noto Sans SC';
   const measureByFamily = (s) =>
     s.includes('export function measureDanmakuWidths(dms, fontSize, fontFamily)')
     && s.includes('hit.size === size && hit.family === family')
     && s.includes("dmMeasureCtx.font = '600 ' + size + 'px ' + (family || 'sans-serif')")
     && s.includes('function dmFontFamily(cfg)')
-    // 空值必须退到**字幕那条栈**，不是裸 sans-serif：
-    && s.includes("cfg.style.subtitle && cfg.style.subtitle.font")
+    // 空值必须退到**出厂默认那支**（不是裸 sans-serif、也不是字幕那支）：
+    && new RegExp("const fam = own \\|\\| '" + DM_DEFAULT + "'").test(s)
+    // 旧的"跟随字幕"读法必须已经不在这个函数里（回归钉子）：
+    && !s.includes('const sub = (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font)')
   const templateMeasuresByFamily = (s) =>
     s.includes('function dmFontFamily()')
     && s.includes('cx.font = \'600 \' + fs + \'px \' + dmFontFamily();')
     // 绘制那条腿必须与量宽走**同一个**函数（否则量宽字体 ≠ 画的字体）
     && s.includes("ctx.font = '600 ' + fs_dm + ' ' + dmFontFamily();")
-    && s.includes("CFG.style.subtitle && CFG.style.subtitle.font")
+    && new RegExp("var fam = own \\|\\| '" + DM_DEFAULT + "'").test(s)
+    && !s.includes('CFG.style.subtitle && CFG.style.subtitle.font')
+  // ⚠️ **出片那条腿（底座转译器）也必须同口径** —— 它才是真出片路径，而它原先填的是 `'Sans'`
+  //    （与上面两处不一致，正是"预览≠成片"的本体）。判据钉三件：常量在、两处消费都用它、
+  //    那份 `'Sans'` 不再出现。
+  const translatorMatches = (s) =>
+    new RegExp("const DEFAULT_DANMAKU_FONT = '" + DM_DEFAULT + "'").test(s)
+    && s.includes('font: dmStyle.font || DEFAULT_DANMAKU_FONT')
+    && s.includes('font_family: fontFamilyFor(dmStyle.font || DEFAULT_DANMAKU_FONT)')
+    && !s.includes("dmStyle.font ?? 'Sans'")
   const layersInheritFont = (s) =>
     /\.dm \{[\s\S]{0,700}?font-family:inherit;/.test(s) && /\.cap \{[\s\S]{0,400}?font-family:inherit;/.test(s)
   const measOk = (m) => measureByFamily(m) && templateMeasuresByFamily(templateHtml) && layersInheritFont(previewVue)
@@ -716,13 +751,19 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑱ 弹幕字体走 `danmaku_font` 落盘', dmFontSaves(polishView), true)
   check('⑱ 预览量宽带字体族 + 缓存键含字体族', measureByFamily(engineJs), true)
   check('⑱ 模板 canvas 量宽带字体族（与预览同口径）', templateMeasuresByFamily(templateHtml), true)
+  check('⑱ 出片转译器同口径（空值 = 出厂默认，不再是 `Sans`）', translatorMatches(translator), true)
+  check('⑱ 下拉首项不再叫「跟字幕」（用户点名）', /label: '默认 · Noto Sans SC'/.test(polishView), true)
   check('⑱ `.dm` / `.cap` 声明 `font-family:inherit`（否则被全局 `*` 规则盖掉）', layersInheritFont(previewVue), true)
   const MUT18 = [
     ['量宽的缓存键丢掉字体族（换字体拿旧宽度 ⇒ 没滚到边就消失）', engineJs, (s) => s.replace('hit.size === size && hit.family === family', 'hit.size === size'), measOk],
     ['预览量宽退回 sans-serif（丢掉字体族）', engineJs, (s) => s.replace(" + (family || 'sans-serif')", ''), measOk],
     ['`.dm` 的 inherit 摘掉（字体设置静默失效）', previewVue, (s) => s.replace('      font-family:inherit; }', '      }'), layersInheritFont],
     ['模板量宽退回 sans-serif（丢掉字体族）', templateHtml, (s) => s.replace(" + dmFontFamily();\n    for (var i = 0", "\n    for (var i = 0"), templateMeasuresByFamily],
-    ['弹幕字体为空时退回裸 sans-serif（不再跟随字幕栈）', engineJs, (s) => s.replace("const sub = (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font)", "const sub = null"), measOk],
+    ['预览弹幕字体退回裸 sans-serif（丢掉出厂默认）', engineJs, (s) => s.replace(`const fam = own || '${DM_DEFAULT}'`, "const fam = own || 'sans-serif'"), measOk],
+    ['模板弹幕字体退回裸 sans-serif（丢掉出厂默认）', templateHtml, (s) => s.replace(`var fam = own || '${DM_DEFAULT}'`, "var fam = own || 'sans-serif'"), templateMeasuresByFamily],
+    ['预览又改回"跟随字幕"（预览与成片不一致的老病）', engineJs, (s) => s.replace(`const fam = own || '${DM_DEFAULT}'`, 'const fam = own || (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font)'), measOk],
+    ['转译器退回 `Sans`（成片与预览分叉、且不报错）', translator, (s) => s.replace('font: dmStyle.font || DEFAULT_DANMAKU_FONT', "font: dmStyle.font ?? 'Sans'"), translatorMatches],
+    ['转译器改回不填默认（空值一直传到 libass）', translator, (s) => s.replace('fontFamilyFor(dmStyle.font || DEFAULT_DANMAKU_FONT)', 'fontFamilyFor(dmStyle.font)'), translatorMatches],
     ['弹幕面板里那枚显示开关摘掉', polishView, (s) => s.replace("@change=\"toggleLane('danmaku')\"", ''), dmToggleInPanel],
   ]
   for (const [what, src, mutate, still] of MUT18) {

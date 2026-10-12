@@ -753,14 +753,23 @@ fn default_sub_position() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct DanmakuStyle {
-    /// 弹幕字体：字体库里的 id，**空 = 跟随字幕那条字体栈**（`[style.subtitle] font`）。
+    /// 弹幕字体：字体库里的 id，**空 = 用出厂默认文字字体**（`default_font()` 那支）。
     /// 与 [`SubtitleStyle::font`] 同一套取值规则。
     ///
-    /// ⚠️ **「空 = 跟随字幕栈」是契约**（2026-10-06 明确）：三个消费点都必须在空值上退到
-    /// **字幕那条栈**，而不是裸 `sans-serif`。
-    /// ⚠️ 曾经 `engine.js` 与 `templates/index.html` 在空值时写的是裸 `sans-serif`
-    /// —— 那既不是"跟随字幕"，也和量宽用的字体不是同一支（量宽与渲染不一致 =
-    /// 弹幕没滚到边就消失）。**别再退回裸 `sans-serif`。**
+    /// ⚠️ **2026-10 口径变更：空值不再是「跟随字幕那条字体栈」**（用户拍板）。
+    /// 旧口径写着"空 = 跟随字幕"，但那个契约**三条腿里只兑现了两条**，而且在**成立的那两条上
+    /// 也是错的**：
+    /// * `[style.subtitle] font` 里存的是**族名**（`polish init` 写 `Noto Sans SC`、用户在字体库
+    ///   里可以设成任意一支），而弹幕这一栏存的是**字体库 id** —— 两个键的**格式不同**，
+    ///   拿字幕那个值当 id 用本来就不对；
+    /// * 于是"跟随字幕"的工程里，预览（`engine.js::dmFontFamily`）与出片模板
+    ///   （`templates/index.html::dmFontFamily`）会把字幕那串族名塞进弹幕字体栈首 ——
+    ///   **弹幕看起来和字幕一模一样**，而用户对"弹幕默认"的预期是**出厂默认**、不是跟着字幕走；
+    /// * 更糟的是**真出片通道**（底座 Dhampir）从来不实现这一档：转译器把空值填成 `'Sans'`
+    ///   ⇒ 预览是字幕那支、成片是 Sans，**两边不一致且不报错**。
+    ///
+    /// 三处实现现已在空值上统一退到 [`default_font()`]：`engine.js`、`templates/index.html`、
+    /// `tools/polish-to-dhampir.mjs`。**别再退回"跟随字幕"。**
     ///
     /// ⚠️ 它同时决定**文字宽度**（滚动/渐隐时长按宽度算，见 `measureDanmakuWidths`）——
     /// 预览/模板/转译器三处都必须用它量宽，量宽与渲染不一致就是"弹幕没滚到边就消失"。

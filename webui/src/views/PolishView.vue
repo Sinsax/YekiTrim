@@ -269,7 +269,24 @@
               @click="restoreSubtitleSize">重置大小</button>
     </div>
 
-    <div class="small muted mt-6">弹幕设置</div>
+    <!-- ── 弹幕设置 ─────────────────────────────────────────────────────────
+         用户口径（2026-10）：「显示弹幕放在 **弹幕设置** 同一行的后面」。
+         ⚠️ 所以勾选框**跟标题同行**（不是跟字体下拉同行）：标题 `.small` 只有 12px，
+            「弹幕设置」56px + 勾选框 ~74px = 130px，行内容宽 266px 绰绰有余。
+         ⚠️ **别把它挪到任何一个下拉那一行**：`弹幕字体` / `字幕字体` 两个 `select` 都带
+            `fld-input`（`width:100%`），跟它们同处一个 flex 行会被压扁到几乎看不见。
+         ⚠️ `margin-bottom:0`：`.ck-row` 自带 `margin-top:8px`，不去掉的话勾选框会被顶得比
+            标题低一截、看着不像同一行（对齐靠 `align-items:center`）。 -->
+    <div class="row mt-6" style="gap:6px;align-items:center">
+      <span class="small muted flex-none">弹幕设置</span>
+      <label class="ck-row flex-none" style="margin-top:0"
+             :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
+        <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
+               @change="toggleLane('danmaku')">
+        显示弹幕
+      </label>
+      <span class="flex-1"></span>
+    </div>
     <select class="fld-input mt-6" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
       <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
     </select>
@@ -283,18 +300,6 @@
              :value="dmOffset" :disabled="dmOffsetSaving || !ready" aria-label="弹幕时间偏移（秒）"
              title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
       <span class="mono small flex-none">s</span>
-    </div>
-
-    <div class="row mt-6" style="gap:6px;align-items:center">
-      <!-- 用户口径（2026-10）：「显示弹幕放在弹幕字体同一行后」⇒ 它就是本组最后一行；
-           ⚠️ 两个下拉（弹幕字体 / 字幕字体）上都有 `width:100%`，绝不能再跟它们同处一个 flex 行 ——
-              会被压扁到几乎看不见。占位元素 `flex:1` 把勾选框挤到行尾，观感与其它设置行一致。 -->
-      <label class="ck-row flex-none" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
-        <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
-               @change="toggleLane('danmaku')">
-        显示弹幕
-      </label>
-      <span class="flex-1"></span>
     </div>
 
     <!-- ── BGM（§11）**整段已按用户口径删除**（2026-10：「将项目设置的这一栏删除，暂且用不到
@@ -1989,14 +1994,16 @@ async function saveDanmakuOffset(next) {
   }
 }
 
-/** 弹幕字体（`[style.danmaku] font`）：与字幕字体同一套 —— 写 id、空串 = 跟随字幕那条字体栈。
+/** 弹幕字体（`[style.danmaku] font`）：与字幕字体同一套取值 —— 写**字体库 id**。
+ *  ⚠️ **空串 = 出厂默认文字字体**（`Noto Sans SC`），**不是"跟随字幕"**
+ *  （2026-10 用户拍板；旧口径会让弹幕与字幕同字体，而真出片通道从不实现它 ⇒ 预览≠成片）。
  *  ⚠️ 它还决定弹幕的**丈量宽度**（滚动时长按宽度算）：预览 DOM、模板 canvas、转译器 ASS 三处
  *  都必须用同一个族，否则弹幕没滚到边就消失。 */
 const danmakuFont = computed(() => cfg.value?.style?.danmaku?.font || '')
-/** 与字幕字体共用一个库；只多一项「跟字幕」（空串 = 继承字幕那条字体栈）。 */
+/** 与字幕字体共用一个库；首项「默认」= 空串（不写盘 ⇒ 走上面那条出厂默认，老工程零迁移）。 */
 const danmakuFontOptions = computed(() => {
   const known = new Set(fonts.value.map((f) => f.id))
-  const opts = [{ value: '', label: '跟字幕' }]
+  const opts = [{ value: '', label: '默认 · Noto Sans SC' }]
   for (const o of fontOptions.value) {
     if (o.placeholder || o.value === '') continue
     if (!known.has(o.value) && o.value !== danmakuFont.value) continue
@@ -2017,7 +2024,7 @@ async function onDanmakuFontChange(e) {
     // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘）
     persistedCfg.value = cfg.value
     await load({ silent: true })
-    toast(next ? `弹幕字体已改为「${next}」` : '弹幕字体已恢复为跟随字幕')
+    toast(next ? `弹幕字体已改为「${next}」` : '弹幕字体已恢复为默认（Noto Sans SC）')
   } catch (err) {
     toast(err.message, 'err')
     await load({ silent: true })

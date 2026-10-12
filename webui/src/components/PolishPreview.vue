@@ -2372,9 +2372,11 @@ const capLayerStyle = computed(() => {
 const dmLayerStyle = computed(() => {
   const s = dmStyleCfg.value
   return {
-    // `[style.danmaku] font` 是**字体库 id**（与字幕同一套取法）：选了就排在最前，
-    // 没选就跟随字幕那条动态兜底栈（`capFallback`，服务端同源）—— 别写死字体名。
-    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : capFallback.value,
+    // `[style.danmaku] font` 是**库 id**：选了就排在最前；**没选 = 出厂默认文字字体**
+    // （`Noto Sans SC`，与 Rust `default_font()` 同名、也与成片侧兜底栈首项同源）。
+    // ⚠️ 2026-10 口径变更：**不再是"跟随字幕那条栈"**（旧口径把字幕的**族名**当弹幕字体用，
+    //    弹幕看起来和字幕一模一样；而真出片通道从不实现这一档 ⇒ 预览与成片不一致且不报错）。
+    fontFamily: s.font ? `"${s.font}",${capFallback.value}` : `"Noto Sans SC",${capFallback.value}`,
     fontSize: (s.font_size || 42) + 'px',
     color: s.color || '#ffffff',
     WebkitTextStroke: s.stroke || '2px #000000'
