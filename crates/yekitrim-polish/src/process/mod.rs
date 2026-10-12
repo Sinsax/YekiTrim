@@ -1851,13 +1851,18 @@ fn layout_text_elements(
             // 本仓对付这类问题的既定形态就是 `process` 解析、消费方读
             //（`Event::Element.name`/`source` 对贴纸做的同一件事）。
             //
-            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>`
+            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>`
             // —— 用 `|` 分隔而不是 JSON：`source` 是 `Option<String>`，
             // 塞 JSON 会让它看起来像结构化数据，而它只是"这一条解析出来的参数"。
+            //
+            // ⚠️ **T3 的两个字段追加在末尾**（不是插在中间）—— 消费方按位置解析，
+            //    插在中间会让所有既有字段**静默错位**（`backdrop` 会被读成 `tilt_deg`，
+            //    症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
+            //    新增字段一律**往后加**。
             let c = ts.color();
             let sc = ts.stroke_color();
             *source = Some(format!(
-                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}",
+                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}|{}|{}",
                 style_name(ts),
                 ts.base_font_px(),
                 ts.base_stroke_px(),
@@ -1871,6 +1876,9 @@ fn layout_text_elements(
                 sc[3],
                 ts.font_weight(),
                 ts.has_backdrop() as u8,
+                // T3：倾斜（度，正=顺时针）与纵向压缩（1.0 = 不压）。
+                ts.tilt_deg(),
+                ts.squash_y(),
             ));
             done += 1;
         }
@@ -2005,6 +2013,112 @@ pub fn cap_events(
 mod tests {
     use super::*;
     use crate::project::{EdlClip, Event, MuteRange, ProjectFile, Segment};
+
+    /// ★ **文字元素 `source` 串的字段顺序**（T3 的对外接口）。
+    ///
+    /// ⚠️ 这条判据是**给下游看的契约**：转译器（`tools/polish-to-dhampir.mjs`
+    /// 的 `parseTextStyle`）与预览（`webui/src/polish/engine.js` 的 `parseTextSource`）
+    /// **都按位置**解析这个串。新增字段**只能追加在末尾** ——
+    /// 插在中间会让既有字段静默错位（`backdrop` 被读成 `tilt_deg`、
+    /// 症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
+    ///
+    /// ⇒ 这条断言把**顺序本身**钉住：谁想改顺序，必须先看见这条红了。
+    #[test]
+    fn element_source_field_order_is_pinned() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 5.0,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+            events: vec![Event::Element {
+                time: 0.5,
+                end: Some(4.0),
+                kind: "text".into(),
+                text: "第 3 次了".into(),
+                style: Some("count".into()),
+                pos: None,
+                sticker_tag: None,
+                x: None,
+                y: None,
+                manual: false,
+                name: None,
+                source: None,
+            }],
+        }];
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+
+        let Event::Element { source, .. } = &segs[0].events[0] else {
+            panic!("还是那条 element");
+        };
+        let src = source.as_deref().expect("排版必须写回 source");
+        let parts: Vec<&str> = src.split('|').collect();
+        assert_eq!(
+            parts.len(),
+            9,
+            "字段个数变了（下游按位置解析）：{src}"
+        );
+        // 逐位钉住——**名字**比"个数"更能说明意图。
+        assert_eq!(parts[0], "count", "p0 = style 名");
+        assert_eq!(parts[1], "64", "p1 = font_px");
+        assert_eq!(parts[2], "4", "p2 = stroke_px");
+        assert_eq!(parts[3], "255,255,255,255", "p3 = 填充色");
+        assert_eq!(parts[4], "26,26,26,255", "p4 = 描边色");
+        assert_eq!(parts[5], "800", "p5 = 字重");
+        assert_eq!(parts[6], "0", "p6 = backdrop");
+        assert_eq!(parts[7], "-4", "p7 = tilt_deg（T3 追加）");
+        assert_eq!(parts[8], "1", "p8 = squash_y（T3 追加）");
+    }
+
+    /// 追加的两个字段取自 [`TextStyle`]，不是写死的常数。
+    ///
+    /// ⚠️ 没有这条，"四档各自的值"与"串里写的值"可能各说各话 ——
+    /// 上面那条只验了 `count` 一档。这里换一档，确认确实**是从枚举读的**。
+    #[test]
+    fn element_source_reads_tilt_and_squash_from_the_style() {
+        let mut segs = vec![Segment {
+            start: 0.0,
+            end: 5.0,
+            fx: "low".into(),
+            note: String::new(),
+            role: String::new(),
+            extra: Default::default(),
+            events: vec![Event::Element {
+                time: 0.5,
+                end: Some(4.0),
+                kind: "text".into(),
+                text: "章节".into(),
+                style: Some("chapter".into()),
+                pos: None,
+                sticker_tag: None,
+                x: None,
+                y: None,
+                manual: false,
+                name: None,
+                source: None,
+            }],
+        }];
+        assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+        let Event::Element { source, .. } = &segs[0].events[0] else {
+            panic!("还是那条 element");
+        };
+        let src = source.as_deref().unwrap();
+        let parts: Vec<&str> = src.split('|').collect();
+        use crate::process::placement::TextStyle;
+        assert_eq!(
+            parts[7],
+            TextStyle::Chapter.tilt_deg().to_string(),
+            "tilt 必须来自 TextStyle::Chapter"
+        );
+        assert_eq!(
+            parts[8],
+            TextStyle::Chapter.squash_y().to_string(),
+            "squash 必须来自 TextStyle::Chapter"
+        );
+        // `chapter` 是唯一被压扁的那一档 —— 顺带确认这条不是"所有档都一样"。
+        assert_eq!(parts[8], "0.92");
+    }
 
     fn seg_with(events: Vec<Event>) -> Segment {
         Segment { start: 0.0, end: 10.0, fx: "low".into(), note: String::new(), events, role: String::new(), extra: Default::default() }
