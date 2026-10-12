@@ -66,17 +66,29 @@ check(
   '映射函数存在（档位 → 块底归一化 y）',
   /function anchorBottomFor\(/.test(TRANS),
 );
+// ⚠️ 2026-10-13（39 档）：分轨键从**两维**扩到**三维** `样式|纵向档|动效档`。
+//    第三维与第二维是同一个理由的**第二次出现** —— `scale_in_*` / `shake_*`
+//    那些动效字段**也是轨级的**（住在底座 `SubtitleStyle` 上），
+//    所以"同档位一条砸入一条摇摆"必须分两条轨，否则同样互相覆盖。
+//    ⇒ 判据跟着改成三维；**但原来的语义一个字都没丢**：
+//      纵向档必须仍在键里（否则三档共用一个 `anchor_bottom`）。
+// ⚠️ 用**三重引号拆开写**：这段源码里既有反引号又有单引号，
+//    直接写成 `'...${cue.anim || ''}...'` 会让 JS 在 `''` 处提前闭合字符串
+//    （实测把整份判据写成语法错误、**跑都跑不起来**）。
 check(
-  '★ 分轨键是「样式 × 纵向档」两维（否则三档共用一个轨级常量、互相覆盖）',
-  TRANS.includes('`${cue.style.name}|${cue.pos}`'),
+  '★ 分轨键含「样式 × 纵向档」（否则三档共用一个轨级常量、互相覆盖）',
+  TRANS.includes('`${cue.style.name}|${cue.pos}|${cue.anim || ' + "''" + '}`'),
 );
 check(
   '遍历顺序里含三个档位（top/center/bottom 都要分到轨）',
   /for \(const posName of \['top', 'center', 'bottom'\]\)/.test(TRANS),
 );
+// ⚠️ 2026-10-13（39 档）：id 尾部再加**动效档**（为空则不加 ⇒ 老工程 id 不变、R4）。
+//    不带的话「同一样式、同一档位、两个不同动效」会生成**两条同 id 的轨**，
+//    底座按 id 认层 ⇒ 后一条把前一条整个盖掉，而报告里一行差异都没有。
 check(
-  '轨 id 带档位后缀（两条不同档的轨不能撞同一个 id）',
-  /const id = `text_\$\{styleName\}_\$\{posName\}`/.test(TRANS),
+  '轨 id 带档位后缀 + 动效档后缀（两条不同档的轨不能撞同一个 id）',
+  /const id = `text_\$\{styleName\}_\$\{posName\}\$\{animName \? '_' \+ animName : ''\}`/.test(TRANS),
 );
 // ⚠️ `bottom` 档**故意不写**：它要减 `caption_clearance`（字幕带高度，只有底座知道），
 //    写死会与字幕重叠。所以这里判的是"它被显式地排除"，而不是"它也有值"。
@@ -187,9 +199,19 @@ if (process.argv.includes('--self-test')) {
   const { strict: assert } = await import('node:assert');
   let self = 0;
   // ① 退回只按样式分轨 ⇒ 必须红（这是最要命的那个回归）
-  const oneDim = TRANS.replace('`${cue.style.name}|${cue.pos}`', 'cue.style.name');
+  //
+  // ⚠️ 2026-10-13（39 档）：键从两维变成三维 ⇒ 变异体的锚点也要跟着改，
+  //    否则 `.replace` **不命中**、`oneDim === TRANS`，自证①在"变异必须命中"那句就炸
+  //    （实测如此 —— 那说明变异没生效，看着像"抓不住"）。
+  const THREE_DIM_KEY = '`${cue.style.name}|${cue.pos}|${cue.anim || ' + "''" + '}`';
+  const oneDim = TRANS.replace(THREE_DIM_KEY, 'cue.style.name');
   assert.notEqual(oneDim, TRANS, '自证：变异必须命中');
-  assert.equal(oneDim.includes('`${cue.style.name}|${cue.pos}`'), false, '自证①：一维分轨必须红');
+  assert.equal(oneDim.includes(THREE_DIM_KEY), false, '自证①：一维分轨必须红');
+  // ⚠️ 再补一条：**只砍掉第三维**（退到两维）也必须红 —— 那是"同档位两个动效
+  //    互相覆盖"的回归，比①更隐蔽（纵向档还在键里，肉眼看着"没改坏"）。
+  const twoDim = TRANS.replace(THREE_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
+  assert.notEqual(twoDim, TRANS, '自证①b：变异必须命中');
+  assert.equal(twoDim.includes('${cue.anim'), false, '自证①b：退到两维必须红');
   self += 1;
   // ② 算出了锚却不写进轨 ⇒ 必须红
   const notWritten = TRANS.replace(/anchor_bottom:\s*anchorBottomFor\(/, 'anchor_bottom_unused: anchorBottomFor(');

@@ -249,11 +249,21 @@ check(
   /const deg = tiltDeg \+ rot \+ \(Number\.isFinite\(swayDeg\)/.test(engineSrc),
   'swayDeg 没有进 rotate ⇒ 字不会摆',
 )
+// ⚠️ 别写"它必须是 `out.push({...})` 的**最后一个**字段" —— 第一版就是那么写的
+//    （`swayDeg\s*\n\s*\}\)`），而 39 档那次在它后面又加了 `animName` / `textMotion`
+//    ⇒ **判据当场假红**（代码是对的）。要钉的是"这个键在 `out.push` 那个对象里"，
+//    不是"它排第几"。
+const pushAt = engineSrc.indexOf('out.push({', engineSrc.indexOf('export function getElements'))
+const pushObj = pushAt >= 0 ? engineSrc.slice(pushAt, pushAt + 3000) : ''
 check(
   '㉑ getElements 把 swayDeg 带出去了',
-  /out\.push\(\{[\s\S]{0,2400}?swayDeg\s*\n?\s*\}\)/.test(engineSrc) ||
-    /swayDeg\s*\n\s*\}\)/.test(engineSrc),
+  /\bswayDeg\b/.test(pushObj),
   '求值结果里没有 swayDeg ⇒ 组件读不到',
+)
+check(
+  '㉑b getElements 把 animName 带出去了',
+  /\banimName\b/.test(pushObj),
+  '元素上没有 animName ⇒ textTiltTransform 查不到 tilt_* / slam_squash 那两个静态值',
 )
 check(
   '㉒ getElements 真的调了 swayDegAt',

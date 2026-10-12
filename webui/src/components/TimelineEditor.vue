@@ -354,6 +354,23 @@
                 <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
                   <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
+                <!-- 动效（39 档，2026-10-13）。
+                     ⚠️ 空串 = 不动效 ⇒ **不写 `anim` 键**（老工程逐字节不变）。
+                     ⚠️ **认不出的档名必须仍然显示出来**（下面那条 `v-if`）：
+                        它若被 `v-model` 悄悄归成空串，用户改一下别的字段就把那个
+                        错档名**永久抹掉**了（保存时写的是下拉的值）—— 而报告里的
+                        CLAMP 已经告诉过他"这一条不会动"，得让他看得见是哪一条。 -->
+                <label>动效</label>
+                <select :value="selItem.anim || ''" @change="selItem.anim = $event.target.value || null">
+                  <optgroup v-for="g in ANIM_GROUPS" :key="g.group" :label="g.group">
+                    <option v-for="a in g.items" :key="a.value" :value="a.value">{{ a.label }}</option>
+                  </optgroup>
+                  <option v-if="selItem.anim && !ANIM_KNOWN.includes(selItem.anim)"
+                          :value="selItem.anim">未知档（{{ selItem.anim }}）</option>
+                </select>
+                <div v-if="selItem.anim && !ANIM_KNOWN.includes(selItem.anim)" class="hint">
+                  这个动效档名不认识，成片里不会动。
+                </div>
                 <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
               </template>
 
@@ -840,6 +857,70 @@ const TEXT_STYLES = [
   { value: 'comment', label: '注释（默认）' },
   { value: 'count', label: '计数' }
 ]
+
+/** **39 档动效**（`docs/plan/text-styles-39-完成计划.md` §一·五，2026-10-13）。
+ *
+ *  ⚠️ **档名的权威在 `tools/polish-to-dhampir.mjs::ANIM_PRESETS`**（底座字段映射在那）。
+ *  两处**必须同集合** —— 界面能选、转译器不认识 ⇒ 用户选了却**什么都不发生**，
+ *  而报告里只有一行 CLAMP。判据：`scripts/check-anim-presets-parity.mjs`（逐档对拍 + 变异自证）。
+ *
+ *  ⚠️ 空串 = **不动效**（不写 `anim` 键）。必须排第一 —— 「不选」是最常见的状态
+ *  （老工程与后处理生成的事件都没有这个键）。
+ *
+ *  ⚠️ 39 档平铺成一个下拉会没法用 ⇒ 分组成 `<optgroup>`。 */
+const ANIM_GROUPS = [
+  { group: '不动', items: [{ value: '', label: '（不动效）' }] },
+  {
+    group: '倾斜',
+    items: [
+      { value: 'tilt_std', label: '倾斜 · 标准' },
+      { value: 'tilt_sm', label: '倾斜 · 小角度' },
+      { value: 'tilt_rev', label: '倾斜 · 反方向' }
+    ]
+  },
+  {
+    group: '抖动',
+    items: [
+      { value: 'shake_std', label: '抖动 · 标准' },
+      { value: 'shake_slow', label: '抖动 · 慢频' },
+      { value: 'shake_lg', label: '抖动 · 强' }
+    ]
+  },
+  {
+    group: '摇摆',
+    items: [
+      { value: 'sway_std', label: '摇摆 · 标准' },
+      { value: 'sway_lg', label: '摇摆 · 大角度' },
+      { value: 'sway_slow', label: '摇摆 · 慢摆' }
+    ]
+  },
+  {
+    group: '砸入',
+    items: [
+      { value: 'slam_std', label: '砸入 · 标准' },
+      { value: 'slam_lg', label: '砸入 · 重' },
+      { value: 'slam_squash', label: '砸入 · 带压扁' }
+    ]
+  },
+  {
+    group: '收缩',
+    items: [
+      { value: 'shrink_in_std', label: '收缩 · 标准' },
+      { value: 'fade_only', label: '收缩 · 只淡出' },
+      { value: 'shrink_in_fast', label: '收缩 · 快速抽走' }
+    ]
+  },
+  {
+    group: '弹出',
+    items: [
+      { value: 'pop_std', label: '弹出 · 标准' },
+      { value: 'pop_soft', label: '弹出 · 软' }
+    ]
+  }
+]
+
+/** 全部档名（**不含**空串）—— 给"认不出的档名"兜底用。 */
+const ANIM_KNOWN = ANIM_GROUPS.flatMap((g) => g.items.map((i) => i.value)).filter((v) => v !== '')
 
 /** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——
  *  `text` 支读 `text`、`sticker` 支读 `keyword`（老变体）与 `text`（贴纸包名，

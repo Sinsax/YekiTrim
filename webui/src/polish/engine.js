@@ -428,8 +428,20 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           entry.textY = numPct(ev.y)
           entry.textPos = String(ev.pos ?? '').trim().toLowerCase() || 'bottom'
           // §5 E4a：文字元素的**动效**（T1 弹入 / T4 抖动 / T6 底衬 / T2 打字机）。
-          // 参数来自工程级 `[elements]` 段（**不是每条事件自己的字段**）—— 与出片侧同一个来源。
-          entry.textMotion = textMotionCfg(cfg)
+          // ⚠️ 参数来自工程级 `[elements]` 段 —— 与出片侧同一个来源。
+          //
+          // ---- 39 档（2026-10-13）：逐条 `anim` 覆盖全局 ----
+          //
+          // ⚠️⚠️ **这里以前只读全局** ⇒ 用户在时间轴上选了「摇摆 · 大角度」，
+          //    转译器按预设写进关键帧、成片里真的摆，而**预览里纹丝不动**
+          //    （预览压根不知道有这个字段）。这正是"配了、预览看不见"的那一类。
+          // 优先级与转译器**同一条**：逐条 `anim` > 全局 `[elements]` > 内置缺省。
+          entry.textMotion = animMotion(cfg, ev.anim)
+          // ⚠️ 动效档**必须单独带出去**（不只是摊进 `textMotion`）：
+          //    `tilt_*` 三档改的是**静态** `rotation`（不是时间函数），
+          //    而 `textTiltTransform` 才是决定 `rotate()` 的地方。
+          //    ⚠️ `slam_squash` 的压扁同理（`scale_y`）。
+          entry.animName = String(ev.anim ?? '').trim().toLowerCase()
         }
       }
     })
@@ -532,6 +544,76 @@ function safeEmoji(name) {
  *     ⚠️ 两个 T6 字段是**单向**的：没颜色时 `padPx` **读都不会被读到**。
  *   * `typewriter` 缺省 false。
  */
+/** **39 档动效的预设表**（预览侧，2026-10-13，第 3 步 A+B 组）。
+ *
+ *  ⚠️⚠️ **权威在 `tools/polish-to-dhampir.mjs::ANIM_PRESETS`**（它才产出底座字段）。
+ *  这里是**第三份实现**（转译器 / 界面下拉 / 预览），三份必须同值 ——
+ *  漂了的症状是本仓最恨的那类：**预览里不动、成片里动**（或反过来），
+ *  **两边各自看都正常**。判据：`scripts/check-anim-presets-parity.mjs`。
+ *
+ *  # 优先级（与转译器**同一条**）
+ *
+ *  **逐条 `anim` > 全局 `[elements]` > 内置缺省**。
+ *  ⇒ 某条写了 `anim` ⇒ **它没提的字段一律按"关"**（不回落全局 —— 否则"砸入"会顺带
+ *    继承全局的抖动，两种动效叠在一起，而用户以为自己只选了一档）；
+ *    没写 `anim` ⇒ 整条走全局那份（老行为，R4）。
+ *
+ *  ⚠️ `fade_only: {}`（空对象）是**合法且有意义**的：它表示"这一档什么都不加"，
+ *  用来**压掉**全局那份弹入。所以"有没有写 anim"只能看**取没取到这一档**
+ *  （`undefined` 才是没写），不能看 `Object.keys(preset).length > 0`。
+ */
+export const ANIM_PRESETS = {
+  // A 组：整块变换（3 档）
+  tilt_std: { tiltDeg: -6.0 },
+  tilt_sm: { tiltDeg: -2.5 },
+  tilt_rev: { tiltDeg: 5.0 },
+  // B 组：整块动效（14 档）
+  shake_std: { shakePx: 6.0, shakeHz: 18.0 },
+  shake_slow: { shakePx: 6.0, shakeHz: 4.5 },
+  shake_lg: { shakePx: 14.0, shakeHz: 34.0 },
+  sway_std: { swayDeg: 6.0, swayMs: 900 },
+  sway_lg: { swayDeg: 12.0, swayMs: 900 },
+  sway_slow: { swayDeg: 6.0, swayMs: 2000 },
+  slam_std: { scaleInFrom: 2.4, scaleInPeak: 1.0, scaleInMs: 180 },
+  slam_lg: { scaleInFrom: 3.4, scaleInPeak: 1.0, scaleInMs: 180 },
+  slam_squash: { scaleInFrom: 2.4, scaleInPeak: 1.0, scaleInMs: 180, squashY: 0.72 },
+  shrink_in_std: { scaleInFrom: 0.4, scaleInPeak: 1.0, scaleInMs: 500 },
+  fade_only: {},
+  shrink_in_fast: { scaleInFrom: 0.4, scaleInPeak: 1.0, scaleInMs: 160 },
+  pop_std: { scaleInFrom: 0.3, scaleInPeak: 1.0, scaleInMs: 350 },
+  pop_soft: { scaleInFrom: 0.7, scaleInPeak: 1.0, scaleInMs: 350 }
+}
+
+/** 一档动效 → 那组参数。`undefined` = **这一档不存在**（没写 / 认不出）。 */
+export function animPreset(name) {
+  const key = String(name ?? '').trim().toLowerCase()
+  if (!key) return undefined
+  return Object.prototype.hasOwnProperty.call(ANIM_PRESETS, key) ? ANIM_PRESETS[key] : undefined
+}
+
+/** 把一档预设**摊到**全局那份动效配置上（优先级：逐条 > 全局）。
+ *
+ *  ⚠️ **整档 `undefined` 就整份回落全局**（不是"逐字段回落"）。
+ *  ⚠️ 空预设 `{}`（`fade_only`）**照样走"生效"那条路** ⇒ 全局那份被清成"什么都不加"。
+ *  这是它与"没写 `anim`"的**唯一区别**，也是"只淡出"那条语义的落点。 */
+export function animMotion(cfg, animName) {
+  const base = textMotionCfg(cfg)
+  const p = animPreset(animName)
+  if (p === undefined) return base
+  // 逐条那一档生效 ⇒ 弹入/抖动/摇摆**全部重置成"关"**，再叠加预设里写了的。
+  return {
+    ...base,
+    scaleInFrom: 1.0,
+    scaleInPeak: 1.0,
+    scaleInMs: 0,
+    shakePx: 0,
+    shakeHz: 18.0,
+    swayDeg: 0,
+    swayMs: 0,
+    ...p
+  }
+}
+
 function textMotionCfg(cfg) {
   const e = (cfg && cfg.elements) || {}
   const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
@@ -802,9 +884,22 @@ function parseTextSource(src) {
 //
 // 导出是为了让判据（`webui/scripts/check-text-tilt.mjs`）能 import 它，
 // 把"顺序"这件事钉成机器判据 —— 而不是靠下次改的人读到这段注释。
-export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {}, swayDeg = 0 }) {
-  const squashY = Number.isFinite(style.squashY) ? style.squashY : 1
-  const tiltDeg = Number.isFinite(style.tiltDeg) ? style.tiltDeg : 0
+export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {}, swayDeg = 0, animName = '' }) {
+  // ---- 39 档（2026-10-13）：`tilt_*` / `slam_squash` **压过**样式档自带的那两个值 ----
+  //
+  // ⚠️ **优先"逐条 `anim` 预设"，其次才是 `style`**：
+  //    `style.tiltDeg` / `style.squashY` 来自 `[style.*]` 四档解析（老路径），
+  //    而 `anim = "tilt_std"` 是**这一段文字自己要歪** —— 用户明确选了动效档时以它为准。
+  //    反过来的症状是"选了倾斜·标准却没反应"，而**样式档那边有值**（老工程常常有），
+  //    所以两边都有值时谁赢必须写死，不能靠"顺序"。
+  // ⚠️ 与转译器 `transform: { rotation: preset?.tiltDeg ?? st.tiltDeg }` **逐字同形**。
+  const preset = animPreset(animName)
+  const squashY = Number.isFinite(preset?.squashY)
+    ? preset.squashY
+    : (Number.isFinite(style.squashY) ? style.squashY : 1)
+  const tiltDeg = Number.isFinite(preset?.tiltDeg)
+    ? preset.tiltDeg
+    : (Number.isFinite(style.tiltDeg) ? style.tiltDeg : 0)
   // 旋转角 = 样式倾斜 + 进场动画旋转 + 摇摆（P1）—— 三者绕**同一个中心** ⇒ 直接相加。
   //
   // ⚠️ **摇摆必须在这里加、不能在 `getElements` 里先并进 `rot`**：
@@ -1463,7 +1558,16 @@ export function getElements(idx, t) {
         // ⚠️ 相加要发生在 `textTiltTransform` 里（那里才知道 `tiltDeg`）——
         //    在这儿加会漏掉"样式倾斜 + 摇摆"的合成（`chapter`/`comment` 两档
         //    `tiltDeg` 是 0，相加与否看不出差别，**正好试不出来**，见 check-text-tilt 的教训）。
-        swayDeg
+        swayDeg,
+        // ---- 39 档（2026-10-13）：动效档名要**跟着元素走** ----
+        //
+        // ⚠️ `textTiltTransform` 读 `animName` 去查 `tilt_*` / `slam_squash`
+        //    那两个**静态**值（它们不是时间函数，所以不能只摊进 `textMotion`）。
+        //    模板那边是 `textTiltTransform(tx)` 整对象传的 ⇒ 这里带了就通了。
+        animName: e.animName || '',
+        // ⚠️ 一并带出去：判据要用它验证"逐条预设真的覆盖了全局"，
+        //    而 `motionScale` / `swayDeg` 是**已求值的标量**，看不出参数来源。
+        textMotion: mo
       })
       continue
     }
