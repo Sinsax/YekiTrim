@@ -60,7 +60,16 @@ const ALLOWED = [
   { file: 'crates/yekitrim-polish/templates/index.html', why: '出片模板：canvas 出片路径的权威实现，量宽/绘制串必须自带字面量（不读 DOM、不跑 JS）' },
   { file: 'webui/src/components/PolishPreview.vue', why: '预览：旧 server 兼容用的字面量兜底（新 server 永远给非空 fallback_stack）' },
   { file: 'webui/src/components/CoverDesigner.vue', why: '设计器镜像：与 cover.rs 的特效层同源（镜像清单要求两处一起改）' },
-  { file: 'webui/src/components/FontLibrary.vue', why: '字体库卡片预览栈：每支字体现场注册后的展示用（不是出片字体选择）' },
+  // ⚠️ `FontLibrary.vue` **已删除**（`098a610` 素材库改成文件夹管理器），
+  //    它那份"字体卡片预览栈"的职责**整体搬到了 `MediaLibrary.vue`** ——
+  //    所以这里换的是文件，不是新增豁免。2026-10-13 之前这条一直登记着一个
+  //    **不存在的文件**（门禁报"清单腐坏"，而没人看它）。
+  { file: 'webui/src/components/MediaLibrary.vue', why: '素材库字体卡片预览栈：每支字体现场注册后的展示用（承接已删除的 FontLibrary.vue），不是出片字体选择' },
+  // ⚠️ `engine.js` 的 `dmFontFamily` 是 `templates/index.html:1411` 的**必需镜像**：
+  //    前者量宽、后者绘制，**必须逐字同一个栈** —— 否则"量宽的字体 ≠ 画出来的字体"，
+  //    症状是**弹幕没滚到边就消失**（宽度决定滚动/渐隐时长）。这不是"没收敛"，
+  //    是**收敛不了**：出片模板是 canvas 权威路径、不读 DOM、不跑 JS。
+  { file: 'webui/src/polish/engine.js', why: 'dmFontFamily：与 templates/index.html 同源的弹幕字体栈镜像（量宽与绘制必须同一个栈，否则弹幕提前消失）' },
   { file: 'webui/src/styles/tokens.css', why: '全站 UI 字体 token（--font），与出片无关' },
   { file: 'crates/yekitrim-server/src/web.rs', why: '503 构建指引页内联样式，与出片无关' },
 ]
@@ -84,17 +93,42 @@ export function lineHasLiteral(line) {
  * `ensure_emoji_fallback` 写的两条幂等单测里带了 `font-family:'X',serif` 这样的样本，
  * 门禁把自己的夹具当成"第 8 份写死"报了红。
  * 判据取"文件里出现 `mod tests`/`#[cfg(test)]` 之后的行" —— 粗但够用（Rust 惯例是 tests 收尾）。
+ *
+ * ⚠️⚠️ **"第一个 `#[cfg(test)]` 就是测试区起点"是错的**（2026-10-13 修，锚点腐烂）：
+ *    `#[cfg(test)]` 也用来标注**测试专用的辅助函数**，那种函数可以出现在文件**中间**。
+ *    实测 `crates/yekitrim-polish/src/cover.rs:154` 就有一个
+ *    （`#[cfg(test)] fn cover_font_files_in(...)`），而真正的产品字面量在 `:647`
+ *    ⇒ 取第一个 `#[cfg(test)]` 会把扫面截在 154，**那之后的产品代码整个看不见**。
+ *    症状极具迷惑性：门禁报"白名单里的 cover.rs **已无任何**字体栈字面量 —— 该从白名单删掉"，
+ *    看上去像"代码清理干净了、该收窄白名单"，**实际是判据自己瞎了**。
+ *    照它改就会把一条**真实存在的**字体栈从白名单里删掉，下一轮它又变成"未认领"。
+ *
+ *    ⇒ 起点必须是**测试模块**，不是随便一个 `#[cfg(test)]` 属性。两种形态：
+ *      ① `#[cfg(test)]` **紧跟** `mod …`（中间只允许别的属性行/空行）—— 这是测试模块；
+ *      ② 裸 `mod tests` / `pub mod tests`。
  */
+export function testModuleStart(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(pub\s+)?mod tests\b/.test(lines[i])) return i
+    if (/^\s*#\[cfg\(test\)\]\s*$/.test(lines[i])) {
+      // 往下找第一条非属性、非空行的语句：只有 `mod …` 才算测试模块。
+      for (let j = i + 1; j < lines.length; j++) {
+        const s = lines[j].trim()
+        if (s === '' || s.startsWith('#[') || s.startsWith('//')) continue
+        if (/^(pub\s+)?mod\s+\w+/.test(s)) return i
+        break // 是 `fn` / `let` / 别的 ⇒ 测试专用辅助函数，不是模块边界
+      }
+    }
+  }
+  return Number.POSITIVE_INFINITY
+}
+
 export function scanLiterals(absPath) {
   let text
   try { text = fs.readFileSync(absPath, 'utf8') } catch { return [] }
   const out = []
   const lines = text.split(/\r?\n/)
-  // 测试区的起点：第一个 `#[cfg(test)]` 或 `mod tests` 所在行
-  let testFrom = Number.POSITIVE_INFINITY
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s*#\[cfg\(test\)\]|^\s*(pub\s+)?mod tests\b/.test(lines[i])) { testFrom = i; break }
-  }
+  const testFrom = testModuleStart(lines)
   for (let i = 0; i < lines.length; i++) {
     if (i >= testFrom) break
     const trimmed = lines[i].trim()
