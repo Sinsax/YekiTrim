@@ -166,22 +166,17 @@
   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
        :ref="(el) => (laneGroupEls.subtitles = el)">
     <div class="lane-group-h">字幕 / 弹幕</div>
-    <!-- **「字幕字体」标签 + 两颗「→默认」同一行**（用户口径：「位置→默认 / 大小→默认
-         这俩个放在字幕字体旁边」= 就贴在"字幕字体"这四个字旁边）。
-         ⚠️ 这两颗按钮**与字体无关** —— `位置→默认` 管的是下面「字幕位置」那条滑杆、
-            `大小→默认` 管的是「字幕大小」那个数字框，只是位置挪到了这里（名字保持原样，
-            各自的 `title` 写清了管什么：本卡纪律「行内文案 ≤20 字，解释进 title」）。
-         ⚠️ 与下面那个字幕样式块共用 `styleWriteBlocked`：读配置失败时整块只读，
-            这两颗也必须一起禁用，否则会"拿默认值把磁盘上的样式清成默认"。
-         ⚠️ 宽度实测：标签 50px + 两颗各 84px + 间距 12px = 230px ≤ 行宽 266px。 -->
+    <!-- **「字幕字体」那一行**。
+         ⚠️⚠️ 两颗重置按钮**曾经住在这里，已经搬走了**（2026-10-12，用户口径：
+            「位置→默认 / 大小→默认 改成 重置位置，重置大小」）。
+            改名的同时**参照物也反了过来** —— `重置位置` 管的是「字幕位置」滑杆、
+            `重置大小` 管的是「字幕大小」数字框，都是**下面那几行**的控件。
+            ⇒ 按钮必须紧挨着它们复位的东西，所以搬到了 `.ss-grid` 之后（见下面那段）。
+            **别把按钮搬回这里**：搬回来就是"按钮在一个地方、它管的东西在另一个地方"，
+            而且会与下面那份**重复渲染**（判据 ⑰ 钉着"全页各只出现一次"）。
+         ⚠️ 宽度实测：标签 50px + 下拉占满余下 ≈ 204px ≤ 行宽 266px。 -->
     <div class="row ss-font-row">
       <span class="small muted flex-none">字幕字体</span>
-      <button class="mini-btn flex-none" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
-              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
-              @click="restoreSubtitlePos">位置→默认</button>
-      <button class="mini-btn flex-none" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
-              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
-              @click="restoreSubtitleSize">大小→默认</button>
     </div>
     <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
       <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -253,19 +248,32 @@
         <span class="mono small flex-none">%</span>
       </div>
     </div>
-    <!-- ⚠️ 「恢复默认」那两颗按钮**已移到「字幕字体」那一行**（用户口径：「位置→默认 /
-         大小→默认这俩个放在字幕字体旁边」）。别在这里加回来 —— 判据 ⑰ 钉着"它们必须在
-         `.ss-font-row` 里、且全页各只出现一次"。
-         口径不变：取色器/数字框天生只能产出具体值，没有显式恢复动作用户就永远回不到"没设过"
-         （而 `position_pct` 是 `Option`、"不写"与"写 12"在成片侧**语义不同**）。
-         ⚠️ 对 size/color/stroke 这三项，"默认" = **不发键**（保持磁盘原样）——
-            serde 默认值与"用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。 -->
+    <!-- ⚠️ 「位置→默认 / 大小→默认」那两颗按钮**已按用户口径改名**
+         （用户 2026-10：「位置→默认 大小→默认 改成 重置位置，重置大小」）：
+           * 文案 = 「重置位置」/「重置大小」，位置 = **紧跟在上面 `.ss-grid` 之后**
+             （贴住它们复位的两个控件：「字幕位置」滑杆 / 「字幕大小」数字框）。
+           * ⚠️⚠️ **别搬回「字幕字体」那一行**：那次改名**只搬了一半** ——
+             新副本加在了这里、旧副本忘了从字体行删掉 ⇒ 页面上**同时出现两组一模一样的按钮**。
+             判据 ⑰ 的"全页各只出现一次"和"不在字体行里"两条就是为这件事钉的。
+         ⚠️ 文案 ≤20 字（右栏行内容宽只有 266px）。
+         ⚠️ 复位语义不变：位置发 `null`（回到"没设过"），大小**只提示手改** ——
+            serde 默认值与"用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。
+         ⚠️ 与上面那个字幕样式块共用 `styleWriteBlocked`：读配置失败时整块只读，
+            这两颗也必须一起禁用，否则会"拿默认值把磁盘上的样式清成默认"。 -->
+    <div class="ss-row-2">
+      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
+              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
+              @click="restoreSubtitlePos">重置位置</button>
+      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
+              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
+              @click="restoreSubtitleSize">重置大小</button>
+    </div>
 
-    <div class="small muted mt-6">弹幕字体</div>
-    <select class="fld-input" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
+    <div class="small muted mt-6">弹幕设置</div>
+    <select class="fld-input mt-6" :value="danmakuFont" :disabled="fontSaving || !ready" @change="onDanmakuFontChange">
       <option v-for="o in danmakuFontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
     </select>
-  
+
     <div class="row mt-6" style="gap:6px;align-items:center">
       <span class="small muted flex-none">偏移</span>
       <input type="range" class="flex-1" min="-10" max="10" step="0.5" :value="dmOffset"
@@ -276,43 +284,24 @@
              title="可直接填写（-10 ~ 10），手填的值不吸附滑块步进" @change="onDanmakuOffsetType($event)">
       <span class="mono small flex-none">s</span>
     </div>
-  
-    <label class="ck-row mt-6" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
-      <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
-             @change="toggleLane('danmaku')">
-      显示弹幕
-    </label>
 
-    <!-- ── BGM（§11）─────────────────────────────────────────────────────────
-         用户口径：**背景音乐**。这一段存在的唯一理由是"把已经做好的能力接上入口" ——
-         出片侧的混音/闪避/淡入淡出**早就实现了**，此前却**没有任何界面能打开它**。
-         ⚠️ 关着且没选文件时，服务端**不写 `[bgm]` 段**（`BgmConfig::is_empty` + skip_serializing_if），
-            所以"看都没看过这一段"的老工程重存之后逐字节不变。 -->
-    <div class="small muted mt-6" title="背景音乐：出片时混进成片，说话时自动压低（闪避）">背景音乐</div>
-    <label class="ck-row" :title="bgm.enabled ? '当前开启；点一下关闭（不改文件选择）' : '当前关闭；点一下开启'">
-      <input type="checkbox" :checked="bgm.enabled === true" :disabled="bgmSaving || !ready"
-             @change="onBgmToggle">
-      启用背景音乐
-    </label>
-    <input class="fld-input mt-6" type="text" :value="bgmFilePath || bgm.file"
-           :disabled="bgmSaving || !ready" placeholder="工程内相对路径，如 bgm/song.mp3"
-           aria-label="BGM 文件（工程内相对路径）"
-           title="相对工程目录的路径（不许绝对路径 / 不许 ..）"
-           @input="bgmFilePath = $event.target.value" @change="onBgmFileCommit">
-    <div class="ss-row-2 mt-6">
-      <div class="ss-row" title="BGM 自己的基准音量（0 ~ 1）。默认 0.22 —— 要垫在人声下面">
-        <span class="ss-lbl">音量</span>
-        <input type="number" class="rv-input ss-num" inputmode="decimal" min="0" max="1" step="0.01"
-               :value="bgm.volume" :disabled="bgmSaving || !ready"
-               aria-label="BGM 音量" @change="onBgmNum('volume', 0, 1, 'BGM 音量')($event)">
-      </div>
-      <div class="ss-row" title="有人声时把 BGM 压到基准的百分之多少（闪避）。默认 0.35">
-        <span class="ss-lbl">闪避</span>
-        <input type="number" class="rv-input ss-num" inputmode="decimal" min="0" max="1" step="0.05"
-               :value="bgm.duck_ratio" :disabled="bgmSaving || !ready"
-               aria-label="BGM 闪避比例" @change="onBgmNum('duck_ratio', 0, 1, '闪避比例')($event)">
-      </div>
+    <div class="row mt-6" style="gap:6px;align-items:center">
+      <!-- 用户口径（2026-10）：「显示弹幕放在弹幕字体同一行后」⇒ 它就是本组最后一行；
+           ⚠️ 两个下拉（弹幕字体 / 字幕字体）上都有 `width:100%`，绝不能再跟它们同处一个 flex 行 ——
+              会被压扁到几乎看不见。占位元素 `flex:1` 把勾选框挤到行尾，观感与其它设置行一致。 -->
+      <label class="ck-row flex-none" :title="lanesOn.danmaku ? '当前显示；点一下整条不渲染（素材一个字都不动）' : '当前不显示；点一下恢复'">
+        <input type="checkbox" :checked="lanesOn.danmaku === true" :disabled="stageBusy || !ready"
+               @change="toggleLane('danmaku')">
+        显示弹幕
+      </label>
+      <span class="flex-1"></span>
     </div>
+
+    <!-- ── BGM（§11）**整段已按用户口径删除**（2026-10：「将项目设置的这一栏删除，暂且用不到
+         bgm，背景音乐」）⇒ 界面上不再有「背景音乐」分组（开关 / 文件 / 音量 / 闪避）。
+         ⚠️ **能力一个字都没动**：`render/bgm.rs`、`[bgm]` 配置段、`PUT /api/polish/project` 的
+            `bgm` 白名单分支全都还在 —— 要出背景音乐**照样能在 `polish.toml` 里手写 `[bgm]`**。
+            「暂且用不到」≠ 删功能；别顺手把后端那侧一起拆掉。 -->
   </div>
   <!-- ── **区域设置** = 贴纸来源 + 区域框选 + 落点模式（用户 2026-10-06 第八轮：
        「贴纸和区域合并，显示为区域设置」）。原来「贴纸」与「区域」是两组，改的是同一批东西
@@ -1771,7 +1760,7 @@ const subtitlePosSet = computed(() => {
 const subtitlePosPct = computed(() => (subtitlePosSet.value ? cfg.value.style.subtitle.position_pct : 12))
 const positionHint = computed(() =>
   subtitlePosSet.value
-    ? '字幕带底边距画布底边的百分比（0 ~ 50）；点「位置→默认」可回到未设置'
+    ? '字幕带底边距画布底边的百分比（0 ~ 50）；点「重置位置」可回到未设置'
     : '未设置：走历史落点公式（与 12% 略有差别）。拖动即改为按百分比')
 
 const styleSaving = ref(false)
@@ -1944,13 +1933,13 @@ async function onSubtitlePosType(e) {
   await saveSubtitleStyle({ subtitle_position_pct: v }, `字幕位置已保存（距底 ${v}%）`)
 }
 
-/** 「位置→默认」：**发 `null` = 显式删除该键** ⇒ 回到历史落点公式（与"写 12"语义不同）。 */
+/** 「重置位置」：**发 `null` = 显式删除该键** ⇒ 回到历史落点公式（与"写 12"语义不同）。 */
 async function restoreSubtitlePos() {
   if (!subtitlePosSet.value) return
   await saveSubtitleStyle({ subtitle_position_pct: null }, '字幕位置已恢复为未设置（走历史落点）')
 }
 
-/** 「大小→默认」：⚠️ 配置里 **区分不了**"显式写了 72"与"从没写过"（serde 默认值就是 72），
+/** 「重置大小」：⚠️ 配置里 **区分不了**"显式写了 72"与"从没写过"（serde 默认值就是 72），
  *  所以这里**不能发 72** —— 发出去就是把一个用户可能从没设过的值钉死成显式字段。
  *  诚实做法：提示手动改回，**不假装能精确回退**（比假装能回退更诚实）。 */
 function restoreSubtitleSize() {
@@ -2128,52 +2117,14 @@ const stageBgVisible = computed(() => {
 // 推第二遍就必然两边不一致，而且不报错（user 口径：竖屏素材默认关运镜/特效，但要看得见、点得开）。
 const lanesOn = computed(() => cfg.value?._lanes || {})
 
-// ── BGM（§11）────────────────────────────────────────────────────────────────
-// ⚠️ 这一段补的是「**能力全在、入口一个都没有**」：`render/bgm.rs` 的配置与滤波链、
-//    出片链路里对它们的调用**早就写好了**，但 `PUT /api/polish/project` 是逐字段白名单
-//    且**没有 `bgm` 这一支** ⇒ 前端发过去被静默丢掉、接口还回 `{"ok":true}`。
-//    用户此前**只能手改 `polish.toml`** 才能开 BGM。
-// 读的是 `cfg.bgm`（GET 回的就是整份 `ProjectFile`；`skip_serializing_if` 只影响写盘，
-// 读的时候 Rust 侧 `#[serde(default)]` 会把缺的那个键补成默认值 ⇒ 这里永远有对象）。
-const bgm = computed(() => cfg.value?.bgm || { enabled: false, file: '', volume: 0.22, duck_ratio: 0.35, fade_in: 1, fade_out: 2, loop_until_end: true })
-const bgmSaving = ref(false)
-/** BGM 的相对路径输入框的**本地镜像**：用户打字期间不落盘（与 note/keyword 那批同口径）。 */
-const bgmFilePath = ref('')
-
-/** 保存 BGM 的一个子集。只发传进来的键 —— 键缺席 = 服务端不动磁盘（R4 前提）。 */
-async function saveBgm(patch, msg) {
-  bgmSaving.value = true
-  try {
-    await saveProjectPatch(pid.value, dir.value, { bgm: patch })
-    cfg.value = { ...cfg.value, bgm: { ...bgm.value, ...patch } }
-    if (msg) toast(msg)
-  } catch (e) {
-    toast(e?.message || 'BGM 设置保存失败')
-  } finally {
-    bgmSaving.value = false
-  }
-}
-function onBgmToggle(e) {
-  saveBgm({ enabled: e.target.checked }, e.target.checked ? 'BGM 已开启（出片时混入）' : 'BGM 已关闭')
-}
-/** 文件路径：失焦才落盘；⚠️ 空串 = 清空选择（服务端认它，配合 enabled=false 就不写 `[bgm]` 段）。 */
-function onBgmFileCommit() {
-  const v = String(bgmFilePath.value ?? '').trim()
-  if (v === (bgm.value.file || '')) return
-  saveBgm({ file: v }, v ? `BGM 已选：${v}` : 'BGM 文件已清空')
-}
-function onBgmNum(key, min, max, label) {
-  return (e) => {
-    const raw = String(e.target.value ?? '').trim()
-    const n = Number(raw)
-    // ⚠️ 清空 / 非数字一律**还原显示、不写盘**（否则退格清空的一瞬间就把值写成下限）
-    if (raw === '' || !Number.isFinite(n)) { e.target.value = String(bgm.value[key]); return }
-    const next = Math.min(max, Math.max(min, n))
-    e.target.value = String(next)
-    if (next === bgm.value[key]) return
-    saveBgm({ [key]: next }, `${label}已保存（${next}）`)
-  }
-}
+// ── BGM（§11）**整段已删**（用户 2026-10：「将项目设置的这一栏删除，暂且用不到 bgm，背景音乐」）──
+// ⚠️ 删掉的只有**入口**（`bgm` / `bgmSaving` / `bgmFilePath` 三个状态 + `saveBgm` / `onBgmToggle` /
+//    `onBgmFileCommit` / `onBgmNum` 四个处理器 + 模板里那一组控件）。
+// ⚠️ **后端一个字都没动**：`render/bgm.rs` 的配置与滤波链、`polish.toml` 的 `[bgm]` 段、
+//    `PUT /api/polish/project` 的 `bgm` 白名单分支都还在 —— 要出背景音乐照样能手写 `polish.toml`。
+//    「暂且用不到」= 收入口，不是删能力；**别顺手把 Rust 那侧一起拆掉**。
+// ⚠️ 正因为读的是 `cfg.bgm`（GET 回整份 `ProjectFile`），删掉前端这一段**不改变任何落盘字节**：
+//    老工程该有没有 `[bgm]` 段还是照旧（`BgmConfig::is_empty` + `skip_serializing_if` 只影响写盘）。
 /** 点眼睛 = 把这条轨道的显式开关翻面（`[stage]` 整块提交，与其它画面构成项同一条链）。 */
 function toggleLane(lane) {
   const cur = lanesOn.value[lane] === true
@@ -2555,7 +2506,7 @@ onUnmounted(() => {
 .lane-group-h { font-size:11px; font-weight:700; color:var(--ink-dim); letter-spacing:.02em; margin-bottom:3px; }
 .lane-group.on > .lane-group-h { color:var(--pink-text); }
 .lane-group.on > .lane-group-h::before { content:'▸ '; color:var(--main-deep); }
-/* 「字幕字体」标签 + 两颗「→默认」同一行（用户口径：放在"字幕字体"旁边）。
+/* 「字幕字体」标签 + 两颗重置按钮同一行（用户口径：重置位置 / 重置大小 紧挨着它们管的控件）。
    ⚠️ `min-width:0` 每层都要：flex 项默认 `min-width:auto`，中文标签 + 两颗按钮的总宽
    会被当成最小宽度而横向溢出。两颗按钮 `flex:none`（文字别再被压窄到换行）。 */
 .ss-font-row { display:flex; align-items:center; gap:6px; min-width:0; margin-bottom:4px; }
