@@ -970,7 +970,7 @@ const MUTATIONS = [
   // ① `motionFields` 不接出去 ⇒ 配置读了但没用（工程里 `[elements]` 看着还在）。
   {
     name: 'T1/T4/T6 的 `motionFields` 不摊进 subtitle ⇒ 配置读了没接出去',
-    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),',
+    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),',
     to: '',
   },
   // ② `undefined` 也写进去 ⇒ 老工程**多出一堆 null 键**（R4 违规：
@@ -989,8 +989,8 @@ const MUTATIONS = [
   // ④ 抖动相位不按档错开 ⇒ 四轨同拍（这正是选 ① 时**唯一**能拿到的分隔度）。
   {
     name: '抖动相位不按 style 档错开 ⇒ 四个档的轨全部同拍',
-    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),',
-    to: '          ...motionFields(elementsCfg, undefined),',
+    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),',
+    to: '          ...motionFields(elementsCfg, undefined, hasElementsSection(config)),',
   },
   // ⑤ 相位把 0 那一档也写出去 ⇒ R4 违规（0 就是底座默认值）。
   {
@@ -1008,8 +1008,11 @@ const MUTATIONS = [
   // ⑦ 毫秒字段不校验整数 ⇒ `u64` 收到小数，serde 报错、整份工程读不了。
   {
     name: '`scale_in_ms` 不校验整数 ⇒ `u64` 收到小数，整份工程读不了',
-    from: '      scale_in_ms: Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0',
-    to: '      scale_in_ms: typeof raw.scale_in_ms === \'number\' && raw.scale_in_ms >= 0',
+    // ⚠️ 锚点跟着 2026-10-12 的"三态"改造更新：`scale_in_ms` 现在是一个
+    //    `!('scale_in_ms' in raw) ? undefined : (Number.isInteger(…) ? … : undefined)`
+    //    表达式 —— 变异要打的是**里面那个整数判据**，整行已经换了形状。
+    from: '        : (Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0',
+    to: "        : (typeof raw.scale_in_ms === 'number' && raw.scale_in_ms >= 0",
   },
   // ⑧ ★ **`is_empty()` 只判打字机** ⇒ 「配了 `shake_px`、没开 typewriter」的工程
   //    被判成空、`[elements]` 整段不写出去 ⇒ 用户配的那行**静默丢失**。
@@ -1503,6 +1506,29 @@ const MUTATIONS = [
     name: '（T5）淡入无条件设 0（普通字幕轨的淡入被改掉，R4 破）',
     fromRe: /fade_in_ms: karaokeOn \? 0 : Math\.round\(0\.35 \* 1000\),/,
     to: 'fade_in_ms: 0,',
+  },
+  // ===== 文字元素的"贴纸同款弹出"（2026-10-12）=====
+  // 三条各自打一个**不同的**漏法：值错了 / 门开错了 / 脏值被当没配。
+  {
+    // 弹出起点改成不缩（1.0）⇒ "弹出"变成"直接出现" —— 看着还是能出片，
+    // 只是那个观感没了。判据 ㉙ 逐值钉的就是这件事。
+    name: '（弹出）起点从贴纸的 0.3 改成 1.0 ⇒ 弹出退化成"直接出现"',
+    from: "  const POP_IN_DEFAULT = { from: 0.3, peak: 1.0, ms: Math.round(STICKER_POP_IN_SEC * 1000) };",
+    to: "  const POP_IN_DEFAULT = { from: 1.0, peak: 1.0, ms: Math.round(STICKER_POP_IN_SEC * 1000) };",
+  },
+  {
+    // 门开错：无条件给缺省 ⇒ **没配 `[elements]` 的老工程也多出三个键**（R4 破）。
+    // ⚠️ 这正是我第一版写出来的形状，判据 ⑱ 当场红了。
+    name: '（弹出）无条件给缺省 ⇒ 没配 `[elements]` 的工程也写出三个键（R4 破）',
+    from: ': (popInOn && cfg.popInDefault?.from ? POP_IN_DEFAULT.from : undefined));',
+    to: ': POP_IN_DEFAULT.from);',
+  },
+  {
+    // 脏值被当"没配"：`scale_in_ms = 180.5` 会被悄悄补成 350 ——
+    // 用户写了配置、程序当他没写。判据的"脏值那一档"守这件事。
+    name: '（弹出）脏 `scale_in_ms` 被补成缺省（用户写了当没写）',
+    from: "        : (Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0",
+    to: "        : (true",
   },
 ];
 
@@ -2985,7 +3011,13 @@ function checkTextMotion(mod, dir, src) {
   };
 
   /// 用同一份工程、换 `[elements]` 段，跑一次 `translate`，取文字轨的 `subtitle`。
-  const withElements = (extraLines) => {
+  ///
+  /// ⚠️ **`extra === null` 与 `extra === []` 是两种形态，别混**（2026-10-12）：
+  ///   * `null` = **整段都不写** = "这个工程没配元素动效" ⇒ R4 要求一个键都不多；
+  ///   * `[]` = 写出**空的 `[elements]` 段** = "配了、但没填字段" ⇒ 走贴纸同款弹出缺省。
+  ///   旧的 `if (extraLines.length)` 把两者并成了"不写段"，于是"空段"这个形态
+  ///   **没有任何判据覆盖** —— 而那正是新缺省值的触发条件。
+  const textTrackSubtitle = (extra) => {
     const lines = [
       'config_version = 1',
       'duration = 2.0',
@@ -3023,11 +3055,19 @@ function checkTextMotion(mod, dir, src) {
       'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
       '',
     ];
-    if (extraLines.length) lines.push('[elements]', ...extraLines, '');
+    // ⚠️ **`extra === null` ⇒ 整段不写**（R4 那一档）；
+    //    数组（**含空数组**）⇒ 写出 `[elements]` —— 空段正是"配了但没填字段"，
+    //    也就是弹出缺省的触发条件。旧写法 `if (extraLines.length)` 让空数组**不写段**，
+    //    于是那条判据永远测不到它想测的形态。
+    if (extra !== null) lines.push('[elements]', ...extra, '');
     const doc = mod.translate(mod.parseToml(lines.join(String.fromCharCode(10))), dir, join(dir, 'm.doc.json'));
     const track = (doc.timeline?.tracks ?? []).find((t) => t.id === TEXT_TRACK_ID);
     return track ? (track.subtitle ?? {}) : null;
   };
+  /// 配了 `[elements]`（数组，含空数组）；`null` 表示整段不写。
+  const withElements = (extraLines) => textTrackSubtitle(extraLines ?? []);
+  /// **整段都不写** `[elements]` —— R4 那一档。
+  const withoutElements = () => textTrackSubtitle(null);
 
   /// 底座的 T1/T4/T6 键名（**逐字来自接口文档**）。
   const MOTION_KEYS = ['scale_in_from', 'scale_in_peak', 'scale_in_ms',
@@ -3037,7 +3077,11 @@ function checkTextMotion(mod, dir, src) {
   //
   // ⚠️ 这条是 **R4 红线**的执行处：不配 `[elements]` 的工程必须产出与今天
   // **逐字节相同**的底座工程。多一个键 = "升级一次、成片可能就变了"。
-  const off = withElements([]);
+  //
+  // ⚠️ 用 `withoutElements()`（**整段都不写**），不是 `withElements([])` ——
+  //    后者写的是"空 `[elements]` 段"，那是**配了**的形态（弹出缺省该开）。
+  //    两者是 R4 门的两侧，别混。
+  const off = withoutElements();
   ok(off !== null, '夹具不完整：文字轨没出现（`[source]` 段少了会让 `remapFrame` 全返回 null）');
   const leaked = MOTION_KEYS.filter((k) => k in off);
   ok(leaked.length === 0,
@@ -3097,9 +3141,10 @@ function checkTextMotion(mod, dir, src) {
   // 为什么行为判据之外还要这条：行为判据在**变异台里可能看不见变异体**
   // （⑬–⑰ 那段的实测记录）。这两处是"接线"本身，变异体改了源码文本、
   // 而用 `mutatedSource` 加载的模块仍然行为正确时，只有文本判据抓得住。
-  ok(src.includes('...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),'),
-    '字幕轨必须把 `motionFields(elementsCfg)` 摊进 `subtitle` —— ' +
-    '写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在');
+  ok(src.includes('...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),'),
+    '字幕轨必须把 `motionFields(elementsCfg, …, hasElementsSection(config))` 摊进 `subtitle` —— ' +
+    '写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在；' +
+    '⚠️ 第三个实参是**弹出缺省值的门**（没配 `[elements]` 时不许写那三个键，R4），漏传就等于无条件默认开');
   ok(src.includes("if (phase !== 0) put('shake_phase', phase);"),
     '`motionFields` 必须逐键显式 `put`，且 `shake_phase` 要**排除 0** —— ' +
     '0 是底座默认值，写出来就是 R4 违规（"没写"与"写了默认值"必须是同一份字节）');
@@ -3137,10 +3182,47 @@ function checkTextMotion(mod, dir, src) {
       `实测写出了 ${JSON.stringify(st[key])}`);
   }
 
+  // ㉙ **贴纸同款弹出**（2026-10-12，用户口径「效果就为简单的贴纸弹出」）。
+  //
+  // # 三条各自钉一件事
+  //
+  //   * 配了 `[elements]` ⇒ 三个弹出键**必须在**（用户要的观感，不该逼他手写）；
+  //   * 没配 `[elements]` ⇒ **一个键都不许有**（R4，上面 ⑱ 已经守了键集合）；
+  //   * **值等于贴纸那套**（起点 0.3 / 终点 1.0 / 窗口 350ms）——
+  //     ⚠️ 这条要**逐值**钉：光断言"键在"的话，把 0.3 写成 0.9 照样绿，
+  //     而成片里就**不是那个弹出**了（"看着差不多"正是本仓最恨的那类）。
+  const ON = withElements([]);
+  ok(ON !== null, '夹具不完整（弹出缺省那一档）');
+  ok(ON.scale_in_from === 0.3 && ON.scale_in_peak === 1.0 && ON.scale_in_ms === 350,
+    '配了 `[elements]` 时弹出三项必须是**贴纸同款**（0.3 / 1.0 / 350ms），实得 ' +
+    JSON.stringify([ON.scale_in_from, ON.scale_in_peak, ON.scale_in_ms]) +
+    ' —— 起点取贴纸 `popIn` 的 0.3、终点给 1.0（底座 `back_out3` 自己冲到 1.25）、' +
+    '窗口 = `STICKER_POP_IN_SEC`');
+  // ⚠️ **用户显式配了就以他为准**（三个字段各自独立，别互相盖）。
+  const OVR = withElements(['scale_in_from = 0.7', 'scale_in_peak = 1.15', 'scale_in_ms = 180']);
+  ok(OVR !== null, '夹具不完整（显式覆盖那一档）');
+  ok(OVR.scale_in_from === 0.7 && OVR.scale_in_peak === 1.15 && OVR.scale_in_ms === 180,
+    '用户显式配了弹出三项时必须以**他的值**为准，实得 ' +
+    JSON.stringify([OVR.scale_in_from, OVR.scale_in_peak, OVR.scale_in_ms]));
+  // ⚠️ **只配一项时另两项仍走缺省**（"配了 a 就把 b、c 也当配了"是错的口径）。
+  const PART = withElements(['scale_in_ms = 200']);
+  ok(PART !== null, '夹具不完整（只配一项那一档）');
+  ok(PART.scale_in_ms === 200 && PART.scale_in_from === 0.3 && PART.scale_in_peak === 1.0,
+    '只配 `scale_in_ms` 时另两项**仍走贴纸缺省**（0.3 / 1.0），实得 ' +
+    JSON.stringify([PART.scale_in_from, PART.scale_in_peak, PART.scale_in_ms]));
+
+  // ㉚ **淡入淡出按贴纸那两段**（`fade_in_ms` / `fade_out_ms`）。
+  //
+  // ⚠️ 这两个键**一直在**（不是新加的 T1/T4/T6 那批），所以它们在
+  // "没配 `[elements]`"时也必须写 —— 与 `scale_in_*` 的 R4 门**不是同一条**。
+  // 以前这里写的是 0/0（没有进出场），现在按贴纸的 pop-in / fade-out 给值。
+  ok(ON.fade_in_ms === 350,
+    `文字的淡入必须是贴纸弹入那一段（350ms = \`STICKER_POP_IN_SEC\`），实得 ${JSON.stringify(ON.fade_in_ms)}`);
+  ok(ON.fade_out_ms === 300,
+    `文字的淡出必须是贴纸那一段（300ms = \`STICKER_FADE_OUT_SEC\`），实得 ${JSON.stringify(ON.fade_out_ms)}`);
+
   return checks;
 }
-
-/// **T5 真卡拉OK** 的判据（2026-10-11）。
 ///
 /// # 它守的是什么
 ///

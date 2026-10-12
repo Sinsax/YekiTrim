@@ -594,15 +594,26 @@ pub enum TextAnchor {
     Center,
     /// 底部（与字幕带错开）。
     Bottom,
+    /// **自动**：不给纵向带，让求解器在**整块安全区**里挑。
+    ///
+    /// ⚠️ 这是现在的**默认**（2026-10-12 用户定）：面板上去掉了「纵向位置」下拉，
+    /// 文字与贴纸一样"只说什么、不指定摆哪"。原来的三条带语义一律保留
+    /// （老工程里写过的 `pos` 照旧生效），只是**新事件不再会自动落到带上**。
+    Auto,
 }
 
 impl TextAnchor {
-    /// 认不出的一律 `Bottom`（与字幕同带，最不容易压住主播脸）。
+    /// 认不出的一律 `Auto` —— 与贴纸同口径（"没指定" = "让后处理挑"）。
+    ///
+    /// ⚠️ 以前兜底是 `Bottom`（贴底）。改成 `Auto` 是因为 `pos` 已从界面去掉
+    /// （用户口径「和贴纸同逻辑」）⇒ "字段缺失"是**常态**而不是"写坏了"，
+    /// 老兜底会让所有没带 `pos` 的文字统统贴底、与"自动算"背道而驰。
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "top" => Self::Top,
             "center" => Self::Center,
-            _ => Self::Bottom,
+            "bottom" => Self::Bottom,
+            _ => Self::Auto,
         }
     }
 }
@@ -701,12 +712,19 @@ impl TextLayout {
     ///
     /// ⚠️ `top`/`bottom` 都留 `STICKER_MARGIN` 的边距 —— 与贴纸同一套安全边距，
     /// 两套边距会让"文字贴边"看起来像 bug。
+    ///
+    /// ⚠️ [`TextAnchor::Auto`] 返回**安全区中心**，是个"还没决定"的占位值：
+    /// 真正的落点由 Step 1d3 之后的 2b2 走 `pick_box_position` 定
+    /// （那一步在整块安全区里挑，与贴纸同一个求解器）—— 见 `mod.rs` 的
+    /// `layout_text_elements` 注释「落点不在这里定」。
+    /// 这里给中心而不是 `(0,0)`：万一有路径只读这个值，中心也是"没有偏好"的
+    /// 最合理表达，不会把字甩到左上角。
     pub fn anchor_origin(&self, f: Frame) -> (f64, f64) {
         let margin = STICKER_MARGIN;
         let x = (f.w - self.w) / 2.0;
         let y = match self.anchor {
             TextAnchor::Top => margin,
-            TextAnchor::Center => (f.h - self.h) / 2.0,
+            TextAnchor::Center | TextAnchor::Auto => (f.h - self.h) / 2.0,
             // 与字幕带错开：字幕在底，文字压上去两行都读不了。
             TextAnchor::Bottom => (f.h - self.h - margin - self.caption_clearance(f)).max(margin),
         };
@@ -1349,6 +1367,45 @@ mod tests {
             "底部锚点的盒底 {} 侵入了字幕带（带上沿 {}）—— 文字会压住字幕",
             by + bot.h,
             band.y0
+        );
+    }
+
+    /// **`Auto` 是"没偏好"**（2026-10-12，用户口径「和贴纸同逻辑」）。
+    ///
+    /// 面板撤掉「纵向位置」下拉之后，`pos` 字段缺失是**常态**，
+    /// 所以 `parse("")` 必须落到 `Auto` —— 落成 `Bottom` 会让所有没带 `pos`
+    /// 的文字统统贴底，与"让后处理按安全落点算"正好相反，**而且不报错**。
+    ///
+    /// ⚠️ 这条钉**两件事**，它们会各自单独坏：
+    ///   ① `parse` 的兜底档（认不出 = 让后处理挑）；
+    ///   ② `Auto` 的占位落点**不是**任何一条实档 —— 它用中线，且**不**走
+    ///      `Bottom` 那条"减字幕带"的路（那会让自动档偷偷继承贴底语义）。
+    #[test]
+    fn 认不出的纵向档落到自动且占位取中线() {
+        // ① 兜底：空串、脏值、大小写混杂，一律 `Auto`。
+        assert_eq!(TextAnchor::parse(""), TextAnchor::Auto);
+        assert_eq!(TextAnchor::parse("  "), TextAnchor::Auto);
+        assert_eq!(TextAnchor::parse("middle"), TextAnchor::Auto);
+        assert_eq!(TextAnchor::parse("AUTO"), TextAnchor::Auto);
+        // ⚠️ 三条实档**必须仍认** —— 老工程里写过的 `pos` 照旧生效，
+        //    这次改的是"不写时怎么办"，不是"不认它们了"。
+        assert_eq!(TextAnchor::parse("top"), TextAnchor::Top);
+        assert_eq!(TextAnchor::parse("center"), TextAnchor::Center);
+        assert_eq!(TextAnchor::parse("bottom"), TextAnchor::Bottom);
+
+        // ② 占位落点 = 中线，与 `Center` 逐值相同、且**不等于** `Bottom`。
+        let auto = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Auto, F);
+        let mid = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Center, F);
+        let bot = TextLayout::solve("字", TextStyle::Chapter, TextAnchor::Bottom, F);
+        let (ax, ay) = auto.anchor_origin(F);
+        let (mx, my) = mid.anchor_origin(F);
+        let (_, by) = bot.anchor_origin(F);
+        assert!((ay - my).abs() < 1e-9, "自动档的占位应当就是中线：{ay} vs {my}");
+        assert!((ax - mx).abs() < 1e-9, "自动档的横向占位也该是中线：{ax} vs {mx}");
+        assert!(
+            (ay - by).abs() > 1.0,
+            "自动档的占位**不能**等于贴底档（{ay} vs {by}）—— \
+             那等于让『自动』偷偷继承贴底语义"
         );
     }
 

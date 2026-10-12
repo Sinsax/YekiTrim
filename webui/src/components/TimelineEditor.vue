@@ -342,7 +342,10 @@
                 <option value="sticker">贴纸（按关键词取图）</option>
               </select>
 
-              <!-- 文字支：正文 + 样式档 + 纵向档位 -->
+              <!-- 文字支：内容 + 样式。**和贴纸一样只有"是什么"，没有"摆哪"**——
+                   ⚠️ 别再退回"纵向位置"下拉：位置一律由后处理按安全落点算
+                   （与贴纸那句「位置 x/y 由后处理算」同一条口径），
+                   下同的那句 hint 就是给用户看的唯一说明。 -->
               <template v-if="(selItem.kind || 'text') === 'text'">
                 <label>文字内容</label>
                 <input :value="selItem.text || ''" placeholder="要显示的字"
@@ -351,25 +354,7 @@
                 <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
                   <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
-                <label>纵向位置</label>
-                <select :value="selItem.pos || 'bottom'" @change="selItem.pos = $event.target.value">
-                  <option value="top">上</option>
-                  <option value="center">中</option>
-                  <option value="bottom">下</option>
-                </select>
-                <!-- ⚠️ 如实说明"谁说了算"：横向 x/y 与避让由 process 排版写回，
-                     这与贴纸那句「位置 x/y 由后处理算」是同一条口径。 -->
-                <div class="hint" title="后处理会按字幕带 / 人物 / 弹幕框算安全落点，每次重跑覆盖横纵坐标">
-                  横向位置由后处理按安全落点算（每次重跑覆盖）。
-                </div>
-                <!-- ⚠️ **这条以前是警示，现在撤了** —— 落差已经真的修好了（2026-10-12）。
-                     历史：纵向档位曾经**只有预览生效、成片一律贴底**（转译器把 ASS 对齐码硬编码成 2），
-                     根因是底座拿 `bottom_margin` 同时当"左右安全宽"的输入（必须 0.0625），
-                     拿它抬位置会让宽度塌成 0、文字**静默全没**（有真实事故）。
-                     现况：底座加了与安全宽解耦的 `anchor_bottom`（v7），转译器把 `pos` 映射过去。
-                     实测三档在成片里的文字重心 **0.394 / 0.663 / 0.903**（单调）。
-                     ⚠️ 别把这条警示加回来 —— 现在加回去就是**谎报**（用户会以为选了「上」没用）。
-                     接口见 `docs/plan/dhampir-elements-request.md` 的「T7 纵向锚」。 -->
+                <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
               </template>
 
               <!-- 贴纸支：复用已有的贴纸选择器 -->

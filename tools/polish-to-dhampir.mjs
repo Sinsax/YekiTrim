@@ -2782,12 +2782,32 @@ export function translate(config, clipDir, outPath, options = {}) {
       // ── T1 弹入 / T4 抖动 / T6 底衬（2026-10-11）──
       // 口径与字段名见底座 `docs/text-motion-integration.md` 与
       // `docs/plan/t6-plate-interface.md`。**全部 `undefined` = 不写键**。
-      scale_in_from: optNum(raw.scale_in_from),
-      scale_in_peak: optNum(raw.scale_in_peak),
+      //
+      // ⚠️⚠️ **三态的区分是必须的**（2026-10-12 加弹出缺省值时踩到）：
+      //   * 键**没有** ⇒ 用户没表态 ⇒ 走贴纸同款弹出缺省（见 `motionFields` 的 `popInOn`）；
+      //   * 键**有、且合法** ⇒ 用户表态了 ⇒ 用他的值；
+      //   * 键**有、但脏**（`180.5` / `#GGG` / 半截颜色）⇒ **`undefined`，不许替他挑一个**。
+      //     第三态最要命：我以前写成 `?? POP_IN_DEFAULT.ms`，于是 `180.5` 变成 `350`
+      //     —— 用户写了配置、程序当他没写，**而且报告里一行差异都没有**。
+      //     判据 `checkTextMotion` 的脏值那一档当场把它抓了出来。
+      scale_in_from: 'scale_in_from' in raw ? optNum(raw.scale_in_from) : undefined,
+      scale_in_peak: 'scale_in_peak' in raw ? optNum(raw.scale_in_peak) : undefined,
       // ⚠️ 毫秒是整数。`u64` 收到小数会让**整份工程**反序列化失败（serde 不隐式取整）。
-      scale_in_ms: Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0
-        ? raw.scale_in_ms
-        : undefined,
+      scale_in_ms: !('scale_in_ms' in raw)
+        ? undefined
+        : (Number.isInteger(raw.scale_in_ms) && raw.scale_in_ms >= 0
+          ? raw.scale_in_ms
+          : undefined),
+      // ⚠️ **"该不该走贴纸同款弹出缺省"**（只有键**真的不在**时才为 true）。
+      //
+      // 为什么单独给三个布尔、而不是在 `motionFields` 里用 `??` 判：
+      // `scale_in_ms` 的 `undefined` 有**两种**意思（键没有 / 键脏了），`??` 分不开
+      // ⇒ 脏值会被补成缺省（"用户写了配置、程序当他没写"）。见 `motionFields` 的注释。
+      popInDefault: {
+        from: !('scale_in_from' in raw),
+        peak: !('scale_in_peak' in raw),
+        ms: !('scale_in_ms' in raw),
+      },
       shake_px: optNum(raw.shake_px),
       shake_hz: optNum(raw.shake_hz),
       plate_color: optColor(raw.plate_color),
@@ -2813,14 +2833,59 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// "显式不铺"，语义不同 ⇒ 不能靠 `undefined` 悄悄变 `null`。）
   ///
   /// `phase` 是**这一轨**的抖动相位（见 `SHAKE_PHASE_BY_STYLE`）。
-  const motionFields = (cfg, phase) => {
+  /// 文字**弹出**的缺省形状（贴纸同款）。
+  ///
+  /// # 为什么给缺省值（而不是"不配就不缩"）
+  ///
+  /// 2026-10-12 用户口径：文字元素的效果「**就为简单的贴纸弹出**」。
+  /// 贴纸的四段相位里，弹入 = 从 **0.3 倍**经 `back.out(3)` 弹到 1 ——
+  /// 这里照抄那个**起点**（0.3）与**曲线**（`back_out3`，由底座 `scale_in_peak` 表达终点）。
+  ///
+  /// ⚠️ **端点值的来历**（别凭感觉改）：
+  ///   * 起点 `0.3` = 贴纸 `popIn` 的 `scale` 起点（`stickerStateAt` 里那句
+  ///     `0.3 + 0.7 * backOut3(...)`）；
+  ///   * 终点 `1.0` ⇒ 底座那条 `back_out3`（s=3）自己会在中点冲到 **1.25** ——
+  ///     与贴纸**同一套曲线同一个 s**，不需要我们再给一个过冲终点
+  ///     （给 `scale_in_peak = 1.15` 反而让实际峰值变成 1.44，比贴纸猛得多）。
+  ///   * 窗口 `350ms` = `STICKER_POP_IN_SEC`（0.35s），与贴纸**同长**。
+  const POP_IN_DEFAULT = { from: 0.3, peak: 1.0, ms: Math.round(STICKER_POP_IN_SEC * 1000) };
+
+  /// 这一份工程**有没有 `[elements]` 段**。
+  ///
+  /// ⚠️ 判据是"表存不存在"，不是"里面有没有字段" —— 空表 `[elements]` 也算配了
+  /// （用户写下这一段就是在说"我要元素动效"）。
+  const hasElementsSection = (config) =>
+    config?.elements !== undefined && config?.elements !== null;
+
+  const motionFields = (cfg, phase, popInOn) => {
     const out = {};
     const put = (key, v) => {
       if (v !== undefined) out[key] = v;
     };
-    put('scale_in_from', cfg.scale_in_from);
-    put('scale_in_peak', cfg.scale_in_peak);
-    put('scale_in_ms', cfg.scale_in_ms);
+    // ⚠️⚠️ **弹出三项只在"配了 `[elements]`"时才给缺省值**（2026-10-12）。
+    //
+    // 这里是 R4 与用户意图的**交界**，两边的口径都要满足：
+    //   * 用户要"文字就是贴纸那种弹出"⇒ 配了 `[elements]` 就该有这个观感，
+    //     不该逼他手写三个 T1 字段；
+    //   * R4 要"没配的工程逐字节不变"⇒ **没配 `[elements]` 时一个键都不许写**。
+    // 所以门是 `popInOn`（= `hasElementsSection`），不是"永远给"。
+    // ⚠️ 上一版我写成了无条件给缺省值，`checkTextMotion` 的 ⑱ 当场红
+    //   （"没配 `[elements]` 却写出了动效键"）—— 那条判据是对的，别去放宽它。
+    //
+    // ⚠️⚠️ **`??` 在这里是错的，必须用 `in` 判"键在不在"**（同一个坑的第二半）：
+    //   `readElementsCfg` 已经把三态区分好了 —— 键**没有** ⇒ `undefined`（该走缺省）、
+    //   键**有但脏** ⇒ 也是 `undefined`（**不许替他挑值**）。
+    //   两种 `undefined` 语义不同，`??` 分不开 ⇒ 脏值 `scale_in_ms = 180.5` 会被
+    //   悄悄补成 `350`（用户写了配置、程序当他没写，且报告里一行差异都没有）。
+    //   判据 `checkTextMotion` 的脏值那一档连抓了两次，是对的。
+    //   ⇒ 由 `readElementsCfg` 直接给出"该不该走缺省"（`popInDefault` 三个布尔），
+    //      `motionFields` 只管摊平，不再自己判断。
+    put('scale_in_from', cfg.scale_in_from !== undefined ? cfg.scale_in_from
+      : (popInOn && cfg.popInDefault?.from ? POP_IN_DEFAULT.from : undefined));
+    put('scale_in_peak', cfg.scale_in_peak !== undefined ? cfg.scale_in_peak
+      : (popInOn && cfg.popInDefault?.peak ? POP_IN_DEFAULT.peak : undefined));
+    put('scale_in_ms', cfg.scale_in_ms !== undefined ? cfg.scale_in_ms
+      : (popInOn && cfg.popInDefault?.ms ? POP_IN_DEFAULT.ms : undefined));
     put('shake_px', cfg.shake_px);
     put('shake_hz', cfg.shake_hz);
     // ⚠️ **相位按档错开，但 0 那一档不写**（0 就是底座默认值 ⇒ 写了是 R4 违规：
@@ -5735,8 +5800,21 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ 描边口径与字幕**同一条**：CSS 居中 -> 底座外侧宽度要折半。
           stroke_ratio: st.strokePx / 2 / height,
           stroke_color: st.strokeColor,
-          fade_in_ms: 0,
-          fade_out_ms: 0,
+          // ⚠️⚠️ **文字的淡入淡出按贴纸同一套相位**（2026-10-12 用户口径：
+          //   "效果就为简单的贴纸弹出"）。
+          //
+          // 贴纸那四段（见 `stickerStateAt`）：0.35 弹入 → 0.4 上浮 → 保持 → 0.3 渐隐，
+          // 且**淡出贴在窗口末尾**（起点 = `dur - fadeOut`）。
+          // 文字这边**只要"弹出"那一截**，不要上浮（上浮是贴纸的观感语义，字飘上去会乱），
+          // 所以：`fade_in_ms` = 弹入窗口、`fade_out_ms` = 0.3s，与贴纸**同值**。
+          //
+          // ⚠️ 缩放那一段（`scale_in_*`）**不在这里写** —— 它走 `motionFields`
+          //    （用户没配就不写键 ⇒ 老工程逐字节不变，R4）。见下面的注释。
+          fade_in_ms: Math.round(STICKER_POP_IN_SEC * 1000),
+          // ⚠️ 淡出取贴纸那个 0.3s。底座按"窗口末尾往前 0.3s"算，
+          //    与 `stickerStateAt` 的 `fadeOut = min(0.3, dur)` 同口径
+          //    （窗口比 0.3s 还短时两边都退化成"全程淡出"）。
+          fade_out_ms: Math.round(STICKER_FADE_OUT_SEC * 1000),
           rise_in_px: 0,
           rise_out_px: 0,
           font_weight: st.weight,
@@ -5756,7 +5834,7 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    T6    → `docs/plan/t6-plate-interface.md`
           // ⚠️ `shake_phase` 是**轨级**（按 style 档错开，见 `SHAKE_PHASE_BY_STYLE`）——
           //    同轨多条 cue 仍同拍，那是底座契约的能力边界。
-          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName]),
+          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),
         },
         layers: cues.map((c, i) => ({
           id: `${id}_${i}`,
