@@ -34,6 +34,13 @@ debug 读盘、`--webui-dir`/`YEKITRIM_WEBUI_DIR` 可覆盖（规则与判据在
   - `check-layout-invariants.mjs` — **布局不变式**（2026-10）：`.llm-cols` 两栏等宽 · 半宽列里滑块跨满
     整行（否则滑条压到 59px）· `.ov-cols` 单栏态 · `extra_params` `rows ≥ 10` · `ModelList` 下载按
     admin 门控 · 模板标识符必须有定义（Vue 对未定义变量**不报错**）。⚠️ 每条带**变异自证**。
+  - `check-text-tilt.mjs` — **文字倾斜/压缩 预览↔成片**（T4）：`engine.js::textTiltTransform`
+    拼出的 CSS transform 折成矩阵后，必须与 Dhampir `text_transform.rs::blit_affine` 的正向
+    **`R(rot)·S(sx,sy)` 逐值一致**。⚠️ 这条规矩的**唯一**内容就是"乘法顺序"：
+    CSS 从右往左 ⇒ 必须写 `rotate(...) scale(...)`（rotate 在左）。
+    写成 `scale(...) rotate(...)` 得 `S·R`，斜着的字被沿**旋转后的轴**拉伸（实测线性差 1.25e-2）。
+    ⚠️ **别拿退化用例试**：`squashY==1` 或 `tilt==0` 时两种顺序相等 —— 四档里
+    `chapter`/`comment` 恰是 `tilt=0,squash=1`，**默认那两档永远试不出来**。6 处变异自证。
   - `../scripts/check-preview-audio.mjs` — 预览**出声**契约（住 `scripts/`，仓里**没有** `gates.mjs`
     这个聚合脚本 —— 逐个跑即可）。
 - 子目录细则看各自卡：`src/AGENTS.md`、`src/api/AGENTS.md`、`src/styles/AGENTS.md`、`src/polish/AGENTS.md`。

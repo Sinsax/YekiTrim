@@ -53,7 +53,7 @@
         <div class="text-layer">
           <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
                :style="{ left: tx.xPct + '%', top: tx.yPct + '%', opacity: tx.opacity,
-                         transform: 'translateY(' + tx.yOff + 'px) translate(' + tx.shakeX + 'px,' + tx.shakeY + 'px) scale(' + tx.scale + ') rotate(' + tx.rot + 'deg)',
+                         transform: textTiltTransform(tx),
                          fontSize: tx.style.fontPx + 'px',
                          fontWeight: tx.style.weight,
                          color: rgbaCss(tx.style.fill),
@@ -164,7 +164,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -3426,6 +3426,13 @@ function pause() {
    ⚠️ 居中的活儿 Rust 那边算落点时就做了（它按**排版后的真盒子**挑不重叠的点）——
    前端再加一次 = 同一件事做两遍、且第二遍是错的。 */
 .text-el { position:absolute; white-space:pre; line-height:1.15;
+           /* ⚠️ **绕中心**（T4）：倾斜与压缩都绕元素自己的中心，与 Dhampir 的
+              `blit_affine`（`c_src = 位图中心`、`c_out = 落点中心`）同口径。
+              这行**必须显式写**：默认值虽然也是 `50% 50%`，但它是"碰巧对"——
+              哪天 `.text-el` 上多一条 `transform-box`/padding 类改动就会静默漂走，
+              而症状只是"字的位置偏了一点"（本仓 `docs/plan/` 里这类漂移有先例）。
+              同 `.fit-box` / `.overlay-space` 的既有写法。 */
+           transform-origin:center center;
            /* 同 `.cap` / `.dm`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，
               会盖掉父层继承的字体栈（那个栈是"预览与成片同源"的唯一通道）⇒ 必须 inherit。 */
            font-family:inherit;
