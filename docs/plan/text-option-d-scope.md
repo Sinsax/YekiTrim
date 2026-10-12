@@ -121,8 +121,9 @@ worker 出片每帧做**两件独立的事**：
 | **字幕轨也有 `layers`** | `TrackV2 { kind, layers: Vec<Layer>, subtitle: Option<SubtitleStyle>, .. }` | `layer.rs:1100-1107` |
 | 每个 `Layer` 都带 `transform` | `pub transform: TransformV2` | `layer.rs:386` |
 
-⇒ **"摇摆"（rotation 往复）今天就能配出来**，不用等编排层。
-⇒ 「摇摆 3 档」从"做不到"改判为 **✅ 能做**（`text-styles-emotion-base-mapping.md` 那行要修）。
+⇒ 这一节原本据此下结论「摇摆今天就能配出来」——
+**该结论已被推翻**（见本节开头的修正）：关键帧机制虽通，但 `evaluate_overlay` 不求值，
+所以往复摇摆对文字**仍然做不到**。保留本节只为记录"机制确实在"这一半事实。
 
 ### ❌ 不能实现
 
