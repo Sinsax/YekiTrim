@@ -283,6 +283,14 @@ export function fontFamilyFor(raw) {
   return typeof mapped === 'string' && mapped.trim() ? mapped.trim() : id;
 }
 
+/// `[style.danmaku] font` 为空时的出厂默认文字字体。
+///
+/// ⚠️ 三处**必须同名**：本文件、`webui/src/polish/engine.js::dmFontFamily`、
+/// `crates/yekitrim-polish/templates/index.html::dmFontFamily`（三处都在空值上退到它），
+/// 而它的值 = Rust `yekitrim_render_core::types::default_font()`（= `Noto Sans SC`）。
+/// 口径变更（2026-10 用户拍板）：空值**不再是"跟随字幕"** —— 见 Rust `DanmakuStyle::font`。
+const DEFAULT_DANMAKU_FONT = 'Noto Sans SC';
+
 /// 把 `"44.6%"` 或 `44.6` 变成比例。转不了就返回 null。
 function ratio(raw) {
   if (typeof raw === 'number') return raw > 1 ? raw / 100 : raw;
@@ -5519,7 +5527,12 @@ export function translate(config, clipDir, outPath, options = {}) {
         }
 
         const ass = cuesToAss(cues, {
-          font: dmStyle.font ?? 'Sans',
+          // ⚠️ 空 = **出厂默认文字字体**，与三条腿（`engine.js` / `templates/index.html` / 这里）
+          //    统一（2026-10 用户拍板，见 Rust `DanmakuStyle::font`）。
+          //    这里**曾经写 `'Sans'`**，而上面 `font_family` 的注释还写着"空值填成字幕那支"
+          //    —— 两行自相矛盾，实际结果是**预览用字幕字体、成片用 Sans**（不一致且不报错）。
+          //    `'Sans'` 也不是"系统无衬线"的可靠表达：libass 认不出就静默落 ArialMT。
+          font: dmStyle.font || DEFAULT_DANMAKU_FONT,
           fontSize: dmSizePx,
         });
         mkdirSync(dirname(assPath), { recursive: true });
@@ -5582,9 +5595,12 @@ export function translate(config, clipDir, outPath, options = {}) {
             // YekiTrim 的弹幕 CSS：`font-weight:600`。
             font_weight: 600,
             line_height: 1.5,
-            // 同字幕那条：库里那支换成真族名（弹幕空值 = 跟随字幕，转译器已经在
-            // 上面把空值填成字幕那支了，所以这里拿到的多半非空）。
-            font_family: fontFamilyFor(dmStyle.font),
+            // 同字幕那条：库里那支换成真族名。
+            // ⚠️ 空值 = **出厂默认文字字体**（`DEFAULT_DANMAKU_FONT`），与 `cuesToAss` 那一份
+            //    必须是同一个常量 —— 两处各退各的就会出现"ASS 里画的字体 ≠ 声明的字体"。
+            //    这里**曾经**注释说"转译器已经在上面把空值填成字幕那支了"，那是**错的**
+            //    （上面填的是 `'Sans'`），也正是"预览≠成片"的来源。
+            font_family: fontFamilyFor(dmStyle.font || DEFAULT_DANMAKU_FONT),
           },
           layers: [{
             id: 'shots',

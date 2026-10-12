@@ -495,16 +495,17 @@ function sfxVolume(cfg) { return (cfg.sfx && cfg.sfx.volume) || 0.1 }
 function dmFontSize(cfg) { return (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font_size) || 42 }
 /** 弹幕字体族（`[style.danmaku] font`，字体库 id）。
  *
- *  ⚠️ **空 = 跟随字幕那条字体栈**（契约见 Rust `DanmakuStyle::font`），所以空值要退到
- *  `.cap` 那套栈（`style.subtitle.font` + 雅黑 + Noto），**不是裸 `sans-serif`**。
- *  以前这里返回空串、调用方退 `sans-serif` —— 那既不是"跟随字幕"，也和字幕的实际字体不同。
+ *  ⚠️ **空 = 出厂默认文字字体**（`Noto Sans SC`，与 Rust `default_font()` 同名），
+ *  **不是**"跟随字幕那条字体栈"（2026-10 用户拍板改的口径，见 `DanmakuStyle::font`）。
+ *  旧口径"空 = 跟随字幕"有三个问题：① 字幕那栏存的是**族名**、这一栏存的是**库 id**，格式不同；
+ *  ② 于是弹幕看起来和字幕一模一样，而用户预期是"默认那支"；③ **真出片通道（底座）从不实现这一档**
+ *  （转译器填 `'Sans'`）⇒ 预览与成片不一致且不报错。
  *  ⚠️ 量宽与绘制必须都走它：两处各写一份就会"量宽的字体 ≠ 画出来的字体"，
  *  弹幕没滚到边就消失（与 `templates/index.html::dmFontFamily` 同口径）。 */
 function dmFontFamily(cfg) {
   const own = (cfg.style && cfg.style.danmaku && cfg.style.danmaku.font) || ''
-  if (own) return `"${own}","Microsoft YaHei","Noto Sans SC",sans-serif`
-  const sub = (cfg.style && cfg.style.subtitle && cfg.style.subtitle.font) || 'Noto Sans SC'
-  return `"${sub}","Microsoft YaHei","Noto Sans SC",sans-serif`
+  const fam = own || 'Noto Sans SC'
+  return `"${fam}","Microsoft YaHei","Noto Sans SC",sans-serif`
 }
 
 function safeEmoji(name) {

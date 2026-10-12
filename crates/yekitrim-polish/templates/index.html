@@ -1400,16 +1400,18 @@ function init(){
   var DM_WIDTHS = [];
   /** 弹幕的字体族（**量宽与绘制必须用同一份**，否则滚动时长与画出来的宽度对不上）。
    *
-   *  ⚠️ `[style.danmaku] font` 为空 = **跟随字幕那条字体栈**（契约见 `DanmakuStyle::font`），
-   *  所以空值要退到 `.cap` 那套栈（`subStyle.font` + 雅黑 + Noto），**不是裸 `sans-serif`**。
-   *  以前这里写的是裸 `sans-serif` —— 那既不是"跟随字幕"，也和字幕的实际字体不是同一支。
+   *  ⚠️ `[style.danmaku] font` 为空 = **出厂默认文字字体**（`Noto Sans SC`，与 Rust
+   *  `default_font()` 同名），**不是**"跟随字幕那条字体栈"（2026-10 用户拍板，见
+   *  `DanmakuStyle::font`）：字幕那栏存的是**族名**、这一栏存的是**库 id**，格式本来就不同；
+   *  旧口径会让弹幕看起来和字幕一模一样，而真出片通道（底座）从不实现这一档
+   *  ⇒ 预览是字幕那支、成片是 Sans，**不一致且不报错**。
+   *  ⚠️ 别退回裸 `sans-serif`：那样量宽的字体 ≠ 画出来的字体，弹幕没滚到边就消失。
    *  ⚠️ 本函数在**顶层**：canvas 出片那段是独立 IIFE，看不到 `init()` 里的东西（见 AGENTS.md）。
    */
   function dmFontFamily() {
     var own = (CFG.style && CFG.style.danmaku && CFG.style.danmaku.font) || '';
-    if (own) return '"' + own + '","Microsoft YaHei","Noto Sans SC",sans-serif';
-    var sub = (CFG.style && CFG.style.subtitle && CFG.style.subtitle.font) || 'Noto Sans SC';
-    return '"' + sub + '","Microsoft YaHei","Noto Sans SC",sans-serif';
+    var fam = own || 'Noto Sans SC';
+    return '"' + fam + '","Microsoft YaHei","Noto Sans SC",sans-serif';
   }
 
   function measureDanmakuWidths() {
