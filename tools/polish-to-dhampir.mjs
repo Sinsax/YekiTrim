@@ -2950,6 +2950,20 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (phase !== 0) put('shake_phase', phase);
     put('plate_color', cfg.plate_color);
     put('plate_pad_px', cfg.plate_pad_px);
+    // **C 组：逐字**（2026-10-13）。
+    //
+    // ⚠️⚠️ 逐字档走的是**另一条渲染分支**（底座 `paint_per_char`：每个字
+    //    一张位图）。它与上面那些"整块"字段**可以并存**（`scatter_shake`
+    //    就是"逐字散开 + 整块抖动"），所以这里**不是** if/else。
+    //
+    // ⚠️ 只在 `preset` 真的带了 `perChar` 时才写 —— 而它**照原样**写进去：
+    //    档位表里的键名已经是底座的蛇形（`rotation_from` / `spread_x_em` / …）
+    //    ⇒ **不做一次驼峰转换**。多一层转换就多一处会漂的地方，
+    //    而漂了的表现是"`per_char` 在，但字段名底座读不到 ⇒ 用缺省 ⇒ 字不动"
+    //    （底座对认不出的键**不报错**，`serde` 默认忽略）。
+    if (on && preset.perChar !== undefined) {
+      out.per_char = preset.perChar;
+    }
     return out;
   };
 
@@ -3036,6 +3050,88 @@ export function translate(config, clipDir, outPath, options = {}) {
 
     pop_std: { scale_in_from: 0.3, scale_in_peak: 1.0, scale_in_ms: 350 },
     pop_soft: { scale_in_from: 0.7, scale_in_peak: 1.0, scale_in_ms: 350 },
+
+    // ===== C 组：逐字变换（14 档）=====
+    //
+    // ⚠️⚠️ 这一组的档位带的是 **`perChar`（一份 `per_char` spec，蛇形直传底座）**，
+    //    而不是上面那种"整块参数"。形状不同 ⇒ 见下面 `perCharFields`。
+    //
+    // ⚠️ 三个自由度就够（P3 已全部备好）：**逐字旋转 / 逐字位移 / 逐字字号**。
+    //    前两个是 `rotation_*` / `offset_*`+`spread_*`，第三个是 `scale_spread`
+    //    （**按序号的字号乘数** —— 2026-10-13 施工时才发现缺它，
+    //      `scale_from/to` 是每个字同一个值、只能整行缩放）。
+    //
+    // ⚠️ 三条纪律（每条都对应一种"看着生效了"的假绿）：
+    //   ① `per_char_frames` **必须写**：缺省 0 ⇒ `is_active()` 为假 ⇒
+    //      **整个档不生效**，而画面里字照常显示 ⇒ 最像"这档就是这样的"。
+    //   ② 按序号的效果走 `spread_*` / `scale_spread`，**不是** `offset_*` / `scale_to`：
+    //      后两者是"同一个值给每个字" = 整行平移 / 整行缩放，字距与字间差异都没变。
+    //   ③ 只想改一维就别写另外两维（缺省即恒等），写了反而多一份要维护的口径。
+
+    // 弧形（4–6）：逐字**旋转**，两端转得多、中间少。
+    arc_up: {
+      perChar: { rotation_from: 0, rotation_to: -14, per_char_frames: 8, stagger_frames: 3 },
+    },
+    arc_wave: {
+      perChar: { rotation_from: -12, rotation_to: 12, per_char_frames: 24, stagger_frames: 2 },
+    },
+    arc_down: {
+      perChar: { rotation_from: 0, rotation_to: 14, per_char_frames: 8, stagger_frames: 3 },
+    },
+
+    // 大小字（7–9）：逐字**字号**。
+    // ⚠️ 靠 `scale_spread` —— 写 `scale_to` 是**整行**一起放大，字间没有差别。
+    size_last: {
+      perChar: { scale_spread: 0.75, per_char_frames: 14, easing: 'back_out' },
+    },
+    size_first: {
+      perChar: { scale_spread: 0.75, per_char_frames: 14, reverse: true, easing: 'back_out' },
+    },
+    size_mid: {
+      perChar: { scale_spread: -0.4, per_char_frames: 14, easing: 'back_out' },
+    },
+
+    // 抖散（10–12）：逐字**位移**。
+    // ⚠️ 必须用 `spread_*`：用 `offset_*` 会让八个字**一起**挪 = 整行平移。
+    //    这条是 P3 真机实测抓到的：八个字起点差恒为 20,20,20,…（与无效果时一样），
+    //    而包围盒宽了 2px（落点取整）⇒ 判据**假绿**。
+    scatter_sm: {
+      perChar: {
+        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.12,
+        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.06,
+        per_char_frames: 10, stagger_frames: 1, easing: 'back_out',
+      },
+    },
+    scatter_lg: {
+      perChar: {
+        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.45,
+        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.28,
+        per_char_frames: 16, stagger_frames: 3, easing: 'back_out',
+      },
+    },
+    scatter_shake: {
+      perChar: {
+        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.3,
+        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.18,
+        per_char_frames: 12, stagger_frames: 2, easing: 'back_out',
+      },
+      shake_px: 5.0,
+      shake_hz: 20.0,
+    },
+
+    // 变小（16–18）：逐字字号**递减**。
+    shrink_desc: { perChar: { scale_spread: -0.55, per_char_frames: 18, stagger_frames: 2 } },
+    shrink_drop: { perChar: { scale_spread: -0.75, per_char_frames: 6, stagger_frames: 0 } },
+    shrink_tail: { perChar: { scale_spread: -0.5, per_char_frames: 12, stagger_frames: 2 } },
+
+    // 放大（19–21）：逐字字号**递增**。
+    grow_asc: { perChar: { scale_spread: 0.8, per_char_frames: 18, stagger_frames: 2 } },
+    grow_burst: {
+      perChar: { scale_spread: 1.6, per_char_frames: 20, stagger_frames: 3, easing: 'back_out' },
+    },
+    grow_first: {
+      perChar: { scale_spread: 0.9, per_char_frames: 12, stagger_frames: 4, reverse: true },
+    },
   };
 
   /// 一档动效预设 → 那组底座字段。`undefined` = **这一档不存在**（认不出的 `anim`）。

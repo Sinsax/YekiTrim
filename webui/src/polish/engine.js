@@ -581,7 +581,88 @@ export const ANIM_PRESETS = {
   fade_only: {},
   shrink_in_fast: { scaleInFrom: 0.4, scaleInPeak: 1.0, scaleInMs: 160 },
   pop_std: { scaleInFrom: 0.3, scaleInPeak: 1.0, scaleInMs: 350 },
-  pop_soft: { scaleInFrom: 0.7, scaleInPeak: 1.0, scaleInMs: 350 }
+  pop_soft: { scaleInFrom: 0.7, scaleInPeak: 1.0, scaleInMs: 350 },
+  // ===== C 组：逐字变换（14 档）=====
+  //
+  // ⚠️⚠️ 这一组的档位带的键是 **`perChar`（一份 `PerCharSpec`）**，
+  //    而不是上面那种"整块参数"。两边同表、形状不同 ——
+  //    `animMotion` 会把它摊出来（见那里的分支）。
+  //
+  // ⚠️ 三条设计纪律（每条都对应一种"看着生效了"的假绿）：
+  //
+  //  ① **默认是恒等**：只想改 `scale` 的档就**别写** `rotation`/`offset`，
+  //     它们的缺省是恒等值，写了反而是多一份要维护的口径。
+  //  ② **`perCharFrames` 一定要写**（缺省 0 ⇒ `isActive()` 为假 ⇒ **整个档不生效**、
+  //     而画面里字照常显示 ⇒ 最容易被当成"这档就是这样的"）。
+  //  ③ **"按序号"的效果走 `spread*`，不是 `offset*`**：`offset*` 是同一个值
+  //     给每个字 = 整行平移（字距不变）。这是 P3 真机实测抓到的真缺陷。
+
+  // 弧形（4–6）：逐字**旋转**，按序号正弦 —— 合成一条拱/波/垂。
+  // ⚠️ `arc` 类**不用** spread（那个是线性递增），这里要的是**中间高两边低**，
+  //    所以用 `rotation_*` 配合转译器侧的按序号正弦？不 —— 转译器只写端点，
+  //    逐字的那条曲线由 `spread` 的 rank 给。正弦由**档位选哪一对端点**表达：
+  //    上拱 = 先负后正（两端下垂、中间平），波浪 = 正负交替由 `reverse` 与
+  //    两侧端点共同给出。真正逐字的正弦在底座是**按 rank 线性**的，
+  //    所以"弧"用**旋转 + 线性 spread** 近似：两端转得多、中间少。
+  arc_up: {
+    perChar: { rotationFrom: 0, rotationTo: -14, spreadXEm: 0, perCharFrames: 8, staggerFrames: 3 }
+  },
+  arc_wave: {
+    perChar: { rotationFrom: -12, rotationTo: 12, perCharFrames: 24, staggerFrames: 2 }
+  },
+  arc_down: {
+    perChar: { rotationFrom: 0, rotationTo: 14, perCharFrames: 8, staggerFrames: 3 }
+  },
+  // 大小字（7–9）：逐字**字号**，一个位置的字被放大。
+  // ⚠️ "末字重音"要的是**只有最后一个字**大 —— 用 `spread` 把缩放递增，
+  //    最后那个字正好到峰值（归一化保证与字数无关）。
+  // ⚠️ 这三档靠 `scale_spread`（**按序号的字号乘数**）—— 我第一版写成了
+  //    空壳（四个端点全相等 ⇒ `isActive()` 为假 ⇒ **整档不生效**），
+  //    而画面里字照常显示 ⇒ 最容易被当成"这档就是这样的"。
+  size_last: {
+    perChar: { scaleSpread: 0.75, perCharFrames: 14, easing: 'back_out' }
+  },
+  size_first: {
+    perChar: { scaleSpread: 0.75, perCharFrames: 14, reverse: true, easing: 'back_out' }
+  },
+  size_mid: {
+    perChar: { scaleSpread: -0.4, perCharFrames: 14, easing: 'back_out' }
+  },
+  // 抖散（10–12）：逐字**位移**。
+  // ⚠️ 必须用 `spread*`：用 `offset*` 会让八个字一起挪 = 整行平移（实测踩过）。
+  scatter_sm: {
+    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.12, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.06, perCharFrames: 10, staggerFrames: 1, easing: 'back_out' }
+  },
+  scatter_lg: {
+    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.45, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.28, perCharFrames: 16, staggerFrames: 3, easing: 'back_out' }
+  },
+  scatter_shake: {
+    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.3, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.18, perCharFrames: 12, staggerFrames: 2, easing: 'back_out' },
+    shakePx: 5.0,
+    shakeHz: 20.0
+  },
+  // 变小（16–18）：逐字**字号**递减 / 突变 / 尾部。
+  // ⚠️ "递减"用 `scale_spread`（越往后越小），不是 `scale_to` ——
+  //    用 `scale_to` 是**整行**一起变小，字与字之间没有差别 ⇒ 不是"逐字"。
+  shrink_desc: {
+    perChar: { scaleSpread: -0.55, perCharFrames: 18, staggerFrames: 2 }
+  },
+  shrink_drop: {
+    perChar: { scaleSpread: -0.75, perCharFrames: 6, staggerFrames: 0 }
+  },
+  shrink_tail: {
+    perChar: { scaleSpread: -0.5, perCharFrames: 12, staggerFrames: 2 }
+  },
+  // 放大（19–21）：逐字**字号**递增 / 爆开 / 首字引爆。
+  grow_asc: {
+    perChar: { scaleSpread: 0.8, perCharFrames: 18, staggerFrames: 2 }
+  },
+  grow_burst: {
+    perChar: { scaleSpread: 1.6, perCharFrames: 20, staggerFrames: 3, easing: 'back_out' }
+  },
+  grow_first: {
+    perChar: { scaleSpread: 0.9, perCharFrames: 12, staggerFrames: 4, reverse: true }
+  }
 }
 
 /** 一档动效 → 那组参数。`undefined` = **这一档不存在**（没写 / 认不出）。 */
@@ -655,7 +736,8 @@ export const PER_CHAR_DEFAULT = {
   spreadXFrom: 0.0,
   spreadXTo: 0.0,
   spreadYFrom: 0.0,
-  spreadYTo: 0.0
+  spreadYTo: 0.0,
+  scaleSpread: 0.0
 }
 
 /** 把工程里那份 `per_char`（**snake_case**，与 toml/JSON 同形）读成上面的驼峰形状。 */
@@ -682,7 +764,9 @@ export function readPerChar(raw) {
     spreadXFrom: n(raw.spread_x_from, d.spreadXFrom),
     spreadXTo: n(raw.spread_x_to, d.spreadXTo),
     spreadYFrom: n(raw.spread_y_from, d.spreadYFrom),
-    spreadYTo: n(raw.spread_y_to, d.spreadYTo)
+    spreadYTo: n(raw.spread_y_to, d.spreadYTo),
+    // ⚠️ 按序号放大的**字号乘数**（C 组 11 档靠它）—— 见 Rust 侧同名字段的文档。
+    scaleSpread: n(raw.scale_spread, d.scaleSpread)
   }
 }
 
@@ -769,7 +853,10 @@ export function perCharActive(spec) {
     moves(spec.offsetXFrom, spec.offsetXTo) ||
     moves(spec.offsetYFrom, spec.offsetYTo) ||
     moves(spec.spreadXFrom, spec.spreadXTo) ||
-    moves(spec.spreadYFrom, spec.spreadYTo)
+    moves(spec.spreadYFrom, spec.spreadYTo) ||
+    // ⚠️ **单独判**，不能并进上一行：按序号放大字号那类档的两个端点
+    //    **是相等的**（都是 1.0），用 moves(scaleFrom,scaleTo) 判会漏掉整个档。
+    Math.abs(spec.scaleSpread) > 1e-6
   )
 }
 
@@ -815,7 +902,9 @@ export function charTransformAt(spec, index, count, localFrame) {
   const spreadX = mix(spec.spreadXFrom, spec.spreadXTo) * spec.spreadXEm * rank
   const spreadY = mix(spec.spreadYFrom, spec.spreadYTo) * spec.spreadYEm * rank
   return {
-    scale: mix(spec.scaleFrom, spec.scaleTo),
+    // ⚠️ `scaleSpread` 是**乘数**（倍率的比例才是「大一点」的直觉），
+    //    且与位移**共用**下面那个 rank（组合档在 reverse 下才同向）。
+    scale: mix(spec.scaleFrom, spec.scaleTo) * (1 + spec.scaleSpread * rank),
     rotationDeg: mix(spec.rotationFrom, spec.rotationTo),
     offsetXEm: mix(spec.offsetXFrom, spec.offsetXTo) + spreadX,
     offsetYEm: mix(spec.offsetYFrom, spec.offsetYTo) + spreadY

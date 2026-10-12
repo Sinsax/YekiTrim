@@ -916,6 +916,52 @@ const ANIM_GROUPS = [
       { value: 'pop_std', label: '弹出 · 标准' },
       { value: 'pop_soft', label: '弹出 · 软' }
     ]
+  },
+  // ===== C 组：逐字（14 档）=====
+  //
+  // ⚠️ 这一组的档位在**底座**侧走的是逐字路径（每个字一张位图），
+  //    与上面那几组"整块"的走不同分支。用户看到的是同一个下拉。
+  // ⚠️ 档名与 `engine.js::ANIM_PRESETS` / 转译器 `ANIM_PRESETS` **必须逐字相同**
+  //    （三处同集合由 `node scripts/check-anim-presets-parity.mjs` 钉住）。
+  {
+    group: '弧形（逐字）',
+    items: [
+      { value: 'arc_up', label: '弧形 · 上拱' },
+      { value: 'arc_wave', label: '弧形 · 波浪' },
+      { value: 'arc_down', label: '弧形 · 下垂' }
+    ]
+  },
+  {
+    group: '大小字（逐字）',
+    items: [
+      { value: 'size_last', label: '大小字 · 末字重音' },
+      { value: 'size_first', label: '大小字 · 首字重音' },
+      { value: 'size_mid', label: '大小字 · 中字重音' }
+    ]
+  },
+  {
+    group: '抖散（逐字）',
+    items: [
+      { value: 'scatter_sm', label: '抖散 · 轻' },
+      { value: 'scatter_lg', label: '抖散 · 重' },
+      { value: 'scatter_shake', label: '抖散 · 带抖动' }
+    ]
+  },
+  {
+    group: '变小（逐字）',
+    items: [
+      { value: 'shrink_desc', label: '变小 · 递减' },
+      { value: 'shrink_drop', label: '变小 · 骤降' },
+      { value: 'shrink_tail', label: '变小 · 尾音' }
+    ]
+  },
+  {
+    group: '放大（逐字）',
+    items: [
+      { value: 'grow_asc', label: '放大 · 递增' },
+      { value: 'grow_burst', label: '放大 · 爆开' },
+      { value: 'grow_first', label: '放大 · 首字引爆' }
+    ]
   }
 ]
 
