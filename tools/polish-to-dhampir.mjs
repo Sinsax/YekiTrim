@@ -5890,10 +5890,21 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    只写**静态值**。想做"摇摆"得先在求值层打通，**别在这儿写关键帧** ——
           //    那会是一条静默失效的路。
           //
-          // ⚠️ **只写非恒等的键**（`rotation !== 0` / `scale_y !== 1`）：
-          //    恒等时**一个键都不出现** ⇒ 老工程（四档里 `chapter`/`comment` 之外，
-          //    以及所有 `tilt=0, squash=1` 的字）产物**逐字节不变**（R4）。
-          //    与 `TransformV2::scale_y` 的 `skip_serializing_if = "is_one_f32"` 同一条纪律。
+          // ⚠️ **`rotation` 与 `scale_y` 的省略规则不对称** —— 这一条是 2026-10-13
+          //    实测踩出来的真缺陷，别照抄"两个都按需省略"那种对称写法：
+          //
+          //    `TransformV2.rotation` **没有** `serde(default)`
+          //    （`dhampir-timeline/src/layer.rs:154`），`scale_y` 才有（`:151`）
+          //    ⇒ 只要 `omitted rotation` 而写了别的键，底座**整份工程载入失败**：
+          //        「工程文件字段不符：missing field `rotation`」
+          //
+          //    症状极具迷惑性：**`chapter` 档（tilt=0, squash≠1）必然触发**，
+          //    而 `hook`/`count` 档（tilt≠0）恰好带着 rotation ⇒ 看起来"能用"。
+          //    一整份工程因为一个字的样式档而**完全出不了片**。
+          //
+          //    所以：**`rotation` 无条件写**（哪怕是 0），`scale_y` 仍按需省略。
+          //    R4 由 `scale_y` 那半边继续兜着 —— 四档里 `comment`（0 / 1.0）
+          //    两个键都不多写，产物与老工程一致。
           //
           // ⚠️ `scale_y` 是**纵向的额外倍数、乘在 `scale` 之上**（契约见
           //    `dhampir-timeline/src/layer.rs:131`）⇒ 直接写 `squashY` 即可，
@@ -5903,7 +5914,8 @@ export function translate(config, clipDir, outPath, options = {}) {
             y: 0,
             scale: 1.0,
             ...(st.squashY !== 1 ? { scale_y: st.squashY } : {}),
-            ...(st.tiltDeg !== 0 ? { rotation: st.tiltDeg } : {}),
+            // ⚠️ **无条件写**（`rotation` 没有 serde default，省掉 = 工程载入失败）。
+            rotation: st.tiltDeg,
           },
         })),
       });
