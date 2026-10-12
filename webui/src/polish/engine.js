@@ -318,7 +318,7 @@ export const LANE_OF_TYPE = {
   pulse: 'effects',
 }
 
-export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, karaokeCues }) {
+export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, karaokeCues, fps }) {
   const cfg = config || {}
   let dur = duration || cfg.duration || 0
 
@@ -485,6 +485,11 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
   idx.canvas = cfg._canvas || null
   // 画布参数（由 `_canvas` 推导）：百分比 → 像素、运镜不动点、贴纸几何都用它
   idx.cv = canvasOf(idx.canvas)
+  // §5 T7 摇摆（P1，2026-10-13）：工程网格帧率（由调用方从 `timeline.timebase` 传来）。
+  // ⚠️ **缺省不给 30**：`swayDegAt` 靠 `fps > 0` 决定摆不摆，而"猜一个帧率"
+  //    会让预览与成片**用不同的 quarter**（摆的节奏对不上，且两边都不报错）。
+  //    宁可 `0` ⇒ 不摆（＝旧行为，R4），也不猜。判据见 `check-sway-parity.mjs`。
+  idx.fps = Number.isFinite(fps) && fps > 0 ? fps : 0
   idx.soundEvents = soundEvents
   idx.ptEvents = ptEvents
   idx.segs = segs
@@ -538,8 +543,133 @@ function textMotionCfg(cfg) {
     shakePx: num(e.shake_px, 0),
     shakeHz: num(e.shake_hz, 18.0),
     plateColor: Array.isArray(e.plate_color) && e.plate_color.length >= 4 ? e.plate_color : null,
-    platePadPx: num(e.plate_pad_px, 12.0)
+    platePadPx: num(e.plate_pad_px, 12.0),
+    // ⚠️ **摇摆的两个旋钮要一起带走**（P1，2026-10-13）：它们决定预览里
+    //    「字摆不摆」。以前 `textMotionCfg` **根本不读它们** ⇒ 预览无从知道要摆。
+    swayDeg: num(e.sway_deg, 0),
+    swayMs: num(e.sway_ms, 0)
   }
+}
+
+/** **摇摆的三角波**：逐字照抄 `tools/polish-to-dhampir.mjs::swayKeyframes`。
+ *
+ *  ⚠️⚠️ **这是"预览 vs 成片"最容易分叉的一处**，所以两个"关"的分支必须
+ *  **逐条对上转译器**（转译器那边写的是 `return []`）：
+ *   * 角度非有限或为 0 ⇒ 不摆（只给角度 = 不知道摆多快）；
+ *   * 周期非有限或 `<= 0` ⇒ 不摆（只给周期 = 不知道摆多远）；
+ *   * `fps <= 0` 或 `span <= 0` ⇒ 不摆。
+ *
+ *  # 与转译器的**唯一差别**（刻意的）
+ *
+ *  转译器产出的是**离散的关键帧数组**（`[{frame, value}]`，喂给底座）；
+ *  预览要的是**连续时间 t 上的角度**。两者必须同值，所以这里：
+ *  ① 用**同一个** `PATTERN = [0, 1, 0, -1]` 与**同一个** `quarter` 公式；
+ *  ② 求出"第几段 + 段内进度"，再走**同一套** `channelFrom` 的线性插值。
+ *  ⇒ 于是"预览在某一帧的角度"与"底座读那批关键帧得到的角度"**逐值相等**，
+ *     这件事由 `scripts/check-sway-parity.mjs` 钉住（含变异自证）。
+ */
+export function swayDegAt(localSec, swayDeg, swayMs, fps, spanFrames) {
+  const amp = swayDeg
+  const periodMs = swayMs
+  if (!Number.isFinite(amp) || amp === 0) return 0
+  if (!Number.isFinite(periodMs) || periodMs <= 0) return 0
+  if (!(fps > 0) || !Number.isFinite(localSec)) return 0
+  // 四分之一周期 = 从一个极值到中点的**帧数**（至少 1 帧，与转译器同一个 max）。
+  const quarter = Math.max(1, Math.round((periodMs / 1000) * fps / 4))
+  const localFrame = localSec * fps
+  if (!(localFrame >= 0)) return 0
+  const PATTERN = [0, 1, 0, -1]
+  // ⚠️⚠️ **收尾段必须照抄转译器，这一条是"逐值对拍"抓出来的**（2026-10-13）。
+  //
+  //    转译器的循环是 `for (f = 0; f < span; f = i * quarter)` ——
+  //    **停在最后一个严格小于 `span` 的倍数上**，然后：
+  //        if (last.frame < span - 1) keys.push({ frame: span - 1, value: 0 })
+  //    补一个**回到 0** 的收尾键（理由写在那边：否则 `channel_from` 会在
+  //    剩余那段恒取上一个键的值 —— "字会歪着卡住"）。
+  //
+  //    所以真实曲线是**两段**：前面按三角波走到 `quarter * k`，
+  //    最后从那个键**线性收回到 `span - 1` 处的 0**。
+  //    我第一版只写了三角波 ⇒ 尾段预览还在摆、底座已经在收
+  //    （实测差最大 2.79°，而**两边各自看都正常**）。
+  //
+  //    ⇒ 判据 `check-sway-parity.mjs` 就是为了抓这个而写的，第一次跑就抓到了。
+  const span = Number.isFinite(spanFrames) && spanFrames > 0 ? spanFrames : null
+  if (span !== null) {
+    const tail = span - 1
+    // 最后一个"严格小于 span"的倍数键的段号。
+    const lastI = Math.ceil(span / quarter) - 1
+    const lastKeyFrame = lastI * quarter
+    // ⚠️ **顺序要紧**：先判"是否已越过收尾键"。写成
+    //    `if (lastKeyFrame < tail && localFrame >= lastKeyFrame)` 会把
+    //    `localFrame == tail` 那一帧也吃进插值分支 ⇒ 在 `span-1` 之后又插出一段
+    //    （实测 frame 144 / span 144 时预览 0.27° 而底座 0°）。
+    //    `channel_from` 的语义是"`>= 最后一键` 就取最后一键"，所以越界必须先返回。
+    if (localFrame >= tail) return 0
+    // 转译器只在 `lastKeyFrame < span - 1` 时才补收尾键（重合就不补）。
+    if (lastKeyFrame < tail && localFrame >= lastKeyFrame) {
+      const from = amp * PATTERN[lastI % PATTERN.length]
+      const t = (localFrame - lastKeyFrame) / (tail - lastKeyFrame)
+      return from + (0 - from) * t
+    }
+  }
+  // 落在第 i 段：段起点 `i*quarter`，段终点 `(i+1)*quarter`，
+  // 两端值 = `amp * PATTERN[i % 4]` / `amp * PATTERN[(i+1) % 4]`。
+  const i = Math.floor(localFrame / quarter)
+  const a = amp * PATTERN[i % PATTERN.length]
+  const b = amp * PATTERN[(i + 1) % PATTERN.length]
+  const seg = quarter
+  const t = (localFrame - i * seg) / seg
+  return a + (b - a) * t
+}
+
+
+/** **关键帧求值**：逐字照抄 Dhampir 的
+ *  `dhampir-timeline/src/curve.rs::channel_from`（`pub fn channel_from`，2026-10-13 接通）。
+ *
+ *  # ⚠️⚠️ 这条以前**根本不存在**，是本计划 P1 修的那个洞
+ *
+ *  2026-10-13 之前，预览的 `textTiltTransform` **只读静态 `tiltDeg`**
+ *  （`parseTextSource` 解出的 `p[7]`，整段恒定），**完全不认识关键帧** ——
+ *  转译器 `polish-to-dhampir.mjs::swayKeyframes` 已经把「摇摆」写成
+ *  `rotation` 关键帧、底座 `evaluate_overlay` 也按帧求值了，
+ *  但预览这一路**一个字都没读** ⇒ 症状正是最恨的那种：
+ *  **"配了摇摆、成片里在摆、预览里纹丝不动，且不报任何错"**。
+ *
+ *  # 语义（与底座四步**逐步对齐**，改这里要连底座一起看）
+ *
+ *  1. 只挑 `target` 匹配的键（不匹配 ⇒ 返回 `fallback`，即调用方给的静态值）；
+ *  2. 先按 `frame` 排序（契约**不要求有序**）；
+ *  3. `local <= 第一键` 取第一键、`local >= 最后一键` 取最后一键；
+ *  4. 否则在相邻对里插值，用**后一个键**的缓动（`span <= 0` 时 `t = 1` 防除零）。
+ *
+ *  ⚠️ **`easing` 只认 `linear`**：转译器写的摇摆键全部是 `linear`。
+ *  认不出的缓动**当 `linear`**（不是抛错）—— 与底座"坏缓动退化成直插"同一取舍，
+ *  而且这是**预览**，抛错会让整块子树被 Vue 卸载（见本文件顶部的 2026-10-01 事故）。
+ */
+export function channelFrom(fallback, keyframes, target, localFrame) {
+  if (!Array.isArray(keyframes) || keyframes.length === 0) return fallback
+  const keys = keyframes
+    .filter((k) => k && String(k.target) === String(target))
+    .slice()
+    .sort((a, b) => Number(a.frame) - Number(b.frame))
+  if (keys.length === 0) return fallback
+  const first = keys[0]
+  if (localFrame <= first.frame) return Number(first.value)
+  const last = keys[keys.length - 1]
+  if (localFrame >= last.frame) return Number(last.value)
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const a = keys[i]
+    const b = keys[i + 1]
+    if (localFrame >= a.frame && localFrame <= b.frame) {
+      const span = Number(b.frame) - Number(a.frame)
+      // span 为 0 = 两个键在同一帧 ⇒ 取后一个（别除零），与底座同一条。
+      const t = span <= 0 ? 1 : (localFrame - Number(a.frame)) / span
+      // 只认 linear；认不出当 linear（`t` 本身）。
+      const eased = t
+      return Number(a.value) + (Number(b.value) - Number(a.value)) * eased
+    }
+  }
+  return fallback
 }
 
 /** T1 弹入的曲线：`back_out3`，**逐字照抄** Dhampir 的
@@ -672,11 +802,17 @@ function parseTextSource(src) {
 //
 // 导出是为了让判据（`webui/scripts/check-text-tilt.mjs`）能 import 它，
 // 把"顺序"这件事钉成机器判据 —— 而不是靠下次改的人读到这段注释。
-export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {} }) {
+export function textTiltTransform({ yOff = 0, shakeX = 0, shakeY = 0, scale = 1, rot = 0, style = {}, swayDeg = 0 }) {
   const squashY = Number.isFinite(style.squashY) ? style.squashY : 1
   const tiltDeg = Number.isFinite(style.tiltDeg) ? style.tiltDeg : 0
-  // 旋转角 = 样式倾斜 + 进场动画旋转（绕同一个中心 ⇒ 直接相加）。
-  const deg = tiltDeg + rot
+  // 旋转角 = 样式倾斜 + 进场动画旋转 + 摇摆（P1）—— 三者绕**同一个中心** ⇒ 直接相加。
+  //
+  // ⚠️ **摇摆必须在这里加、不能在 `getElements` 里先并进 `rot`**：
+  //    `rot` 是**进场**那一下的临时旋转（`backOut` 回弹，进场结束恒为 0），
+  //    而摇摆是**整段持续**的。并进 `rot` 会让"进场结束"的分支把它一起清掉。
+  //    更要紧的是：那样合成顺序就变成"(进场+摇摆) vs 样式倾斜"两个阶段，
+  //    而底座是**一次性**算 `静态 rotation + 曲线 rotation`。
+  const deg = tiltDeg + rot + (Number.isFinite(swayDeg) ? swayDeg : 0)
   return (
     'translateY(' + yOff + 'px)' +
     ' translate(' + shakeX + 'px,' + shakeY + 'px)' +
@@ -1283,6 +1419,19 @@ export function getElements(idx, t) {
       // T6 底衬：没颜色就**一个像素都不多画**（`padPx` 读都不读 —— 单向关系）。
       // ⚠️ alpha 会**乘上这一帧的不透明度**，所以这里**不在这里再乘一次淡入**（那会淡两次）。
       const plate = mo && mo.plateColor ? mo.plateColor : null
+      // ---- T7 摇摆（P1，2026-10-13）：预览侧**按帧**求角度 ----
+      //
+      // ⚠️⚠️ **这段以前不存在**，是"配了摇摆、成片在摆、预览纹丝不动"的根因。
+      //    预览读的是 `[elements]` 的两个旋钮（与转译器同一个来源），
+      //    用 `swayDegAt` 在 `local` 秒处求角度，与转译器写出的关键帧**同值**。
+      //    `local` 与上面弹入/抖动**共用同一个 `t - et`** ⇒ 三条动效同一时间基
+      //    （与底座 `frame.saturating_sub(element.start)` 同口径）。
+      let swayDeg = 0
+      if (mo && mo.swayDeg) {
+        // ⚠️ 必须把**这条元素自己的帧跨度**传进去（`dur` 秒 × fps）——
+        //    转译器的收尾键落在 `span - 1`，不传就复现不了"最后收回到 0"那一段。
+        swayDeg = swayDegAt(local, mo.swayDeg, mo.swayMs, idx.fps, dur * idx.fps)
+      }
       // T2 打字机：逐字显示。⚠️ 与出片侧同口径 —— 按**总时长**均分，
       //   到点前只显示 `floor(进度 × 字数)` 个字。**不拆 cue**，直接在求值期截断
       //   （出片那边必须拆 cue 是因为底座要按帧画；预览这里一次求值就够了）。
@@ -1309,7 +1458,12 @@ export function getElements(idx, t) {
         yOff,
         shakeX,
         shakeY,
-        plate
+        plate,
+        // T7 摇摆：**与 `rot` 分开带出去**，不在这里相加。
+        // ⚠️ 相加要发生在 `textTiltTransform` 里（那里才知道 `tiltDeg`）——
+        //    在这儿加会漏掉"样式倾斜 + 摇摆"的合成（`chapter`/`comment` 两档
+        //    `tiltDeg` 是 0，相加与否看不出差别，**正好试不出来**，见 check-text-tilt 的教训）。
+        swayDeg
       })
       continue
     }
