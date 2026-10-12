@@ -41,7 +41,15 @@
 //   node scripts/check-perchar-parity.mjs --self-test   # 变异自证
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +84,56 @@ function findDhampir() {
     if (existsSync(c)) return c;
   }
   return null;
+}
+
+/**
+ * 底座二进制**比源码旧吗**？旧了就拒绝跑。
+ *
+ * ⚠️⚠️ **这是本轮实测踩到的一个真坑**：我加了 `scale_spread`（底座 + 预览两边）
+ *    之后跑本判据，它**红了** —— 报"底座 0.5、预览 0.84"。我差点去查算法，
+ *    实际是 `dhampir.exe` **还没重建**：判据拿的是改动前那份。
+ *    重建之后立刻全绿。
+ *
+ * ⇒ 症状是"**判据红着，而代码是对的**"，代价是**去查一个不存在的问题**；
+ *    反向更坏：代码错、二进制旧 ⇒ **判据假绿**。
+ *    所以这里**直接拒绝在旧二进制上跑** —— 不猜、不猜重。
+ */
+function binaryIsStale(bin) {
+  try {
+    const binTime = statSync(bin).mtimeMs;
+    // 只比"会不会影响这个二进制"的源码：逐字那三处的 crate。
+    const roots = [
+      join(DHAMPIR, 'crates', 'dhampir-timeline', 'src'),
+      join(DHAMPIR, 'crates', 'dhampir-core', 'src'),
+      join(DHAMPIR, 'crates', 'dhampir-worker', 'src'),
+    ];
+    let newest = 0;
+    let newestFile = '';
+    const walk = (dir) => {
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (e.name.endsWith('.rs')) {
+          const t = statSync(full).mtimeMs;
+          if (t > newest) {
+            newest = t;
+            newestFile = full;
+          }
+        }
+      }
+    };
+    for (const r of roots) walk(r);
+    if (newest > binTime) return newestFile;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** 底座的主机侧探测：`dhampir probe` 能不能跑起来。 */
@@ -302,6 +360,16 @@ if (!bin) {
   process.exit(0);
 }
 
+// ⚠️ 旧二进制会给出**改了之前的**答案（红或绿的都不可信）⇒ 直接拒绝跑。
+const stale = binaryIsStale(bin);
+if (stale) {
+  console.log('✗ 底座的二进制比源码旧 —— 拒绝在此之上判定。');
+  console.log(`   比二进制新的源文件：${stale}`);
+  console.log('   请先重建：cd F:/para/Code/Dhampir && cargo build -p dhampir-worker --bin dhampir');
+  console.log('   ⚠️ 不跳过、不猜测：旧二进制上的红绿都是**另一个版本**的答案。');
+  process.exit(1);
+}
+
 const work = workRoot();
 const fonts = fontDir(work);
 // 字幕素材：底座按**扩展名**认类型，且要读得到 ⇒ 写进工作目录。
@@ -326,6 +394,11 @@ const SPEC = {
   spread_y_from: 1,
   spread_y_to: 0,
   spread_y_em: 0.3,
+  // ⚠️ **按序号放大的字号**（C 组 11 档靠它）—— 主档位必须覆盖它。
+  //    漏了的话那 11 档的"逐字"部分**完全没被对拍过**：
+  //    预览与底座可以各按各的算法算字号，而判据全绿
+  //    （这正是我在这条守卫上已经栽过一次的形状 —— 缺省值那一项）。
+  scale_spread: 0.8,
   per_char_frames: 24,
   stagger_frames: 5,
   easing: 'linear',
@@ -487,6 +560,18 @@ const MUTATIONS = [
     from: 'if (isFullWidth(ch)) return 1.0',
     to: 'if (false && isFullWidth(ch)) return 1.0',
     why: '字宽表两端必须同一份，否则逐字定位与折行用两个字宽',
+  },
+  {
+    name: '按序号的字号乘数写成加法（倍率语义错）',
+    from: 'scale: mix(spec.scaleFrom, spec.scaleTo) * (1 + spec.scaleSpread * rank),',
+    to: 'scale: mix(spec.scaleFrom, spec.scaleTo) + spec.scaleSpread * rank,',
+    why: '字号是倍率：倍率的"再大 80%"是 ×1.8 不是 +0.8（scale_to=1.4 时差 0.6）',
+  },
+  {
+    name: '字号乘数整个忽略（C 组 11 档全废）',
+    from: 'scale: mix(spec.scaleFrom, spec.scaleTo) * (1 + spec.scaleSpread * rank),',
+    to: 'scale: mix(spec.scaleFrom, spec.scaleTo),',
+    why: '这正是 C 组施工时抓到的能力缺口：没有它时「大小字/变小/放大」做不出来',
   },
   {
     name: '缺省缩放写成 0（Rust 那边专门有 one() 就为这个）',

@@ -61,9 +61,15 @@ const groups = [...block.matchAll(/group:\s*'([^']+)'/g)].map((m) => m[1])
 const values = [...block.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].map((m) => m[1])
 const nonEmpty = values.filter((v) => v !== '')
 
-ok(groups.length === 7, `② 分组数应当是 7（不动 + 6 个效果族），实得 ${groups.length}`)
+// ⚠️ 计数**随施工推进而增长**，不是钉死的历史数字：
+//    A+B 组 17 档（7 组）→ 加 C 组逐字 14 档（+5 组）= 32 档 / 12 组。
+//    改这里时**必须同时**改 `check-anim-presets-parity.mjs` 的档数 ——
+//    两边对不上就说明有一处漏改了。
+const WANT_GROUPS = 12
+const WANT_TIERS = 32
+ok(groups.length === WANT_GROUPS, `② 分组数应当是 ${WANT_GROUPS}（不动 + 11 个效果族），实得 ${groups.length}`)
 ok(values.includes(''), '② 缺"不动效"那一档（空串）')
-ok(nonEmpty.length === 17, `② A+B 组应当 17 档，实得 ${nonEmpty.length}`)
+ok(nonEmpty.length === WANT_TIERS, `② 已知档应当 ${WANT_TIERS} 档，实得 ${nonEmpty.length}`)
 ok(new Set(nonEmpty).size === nonEmpty.length, '② 有重复档名')
 
 // ---- ③ 模板真的用了这两个标识符（而不只是定义了）----
@@ -71,7 +77,7 @@ const tpl = parsed.descriptor.template?.content ?? ''
 ok(/v-for="g in ANIM_GROUPS"/.test(tpl), '③ 模板没有 `v-for="g in ANIM_GROUPS"` —— 下拉是空的')
 ok(/v-for="a in g\.items"/.test(tpl), '③ 模板没有遍历分组内的档')
 ok(/ANIM_KNOWN\.includes\(/.test(tpl), '③ 模板没有用 `ANIM_KNOWN` 判断未知档')
-ok(/<optgroup/.test(tpl), '③ 没有 `<optgroup>` —— 17 档平铺成一个下拉没法用')
+ok(/<optgroup/.test(tpl), '③ 没有 `<optgroup>` —— 三十多档平铺成一个下拉没法用')
 // ⚠️ 未知档必须**有 option**（否则 `<select>` 的值匹配不上任何一项，
 //    浏览器会显示成第一项"不动效"——用户以为自己没选错）。
 ok(/未知档/.test(tpl), '③ 模板里没有"未知档"那条 option')
@@ -79,7 +85,7 @@ ok(/未知档/.test(tpl), '③ 模板里没有"未知档"那条 option')
 // ---- 结果 ----
 if (fails.length === 0) {
   console.log(
-    `✓ 动效下拉真的接上了（${checks} 项：SFCE 编译绑定 + 7 组 / 17 档 + 模板接线）`,
+    `✓ 动效下拉真的接上了（${checks} 项：SFCE 编译绑定 + ${WANT_GROUPS} 组 / ${WANT_TIERS} 档 + 模板接线）`,
   )
   process.exit(0)
 }
