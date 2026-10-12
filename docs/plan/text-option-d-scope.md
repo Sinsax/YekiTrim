@@ -176,3 +176,39 @@ worker 出片每帧做**两件独立的事**：
 2. **非等比压缩（`scaleY`）** 要不要一起加？
    它是「砸入 · 带压扁」缺的那一半，而且**成本很低**（`TransformV2` 加一个字段）。
    加了之后，稿里 4 档样式 + 「砸入·带压扁」全部成立。
+
+---
+
+## 八、⚠️ 施工中修正（2026-10-12，由 data-model 实测抓出）
+
+原 6.1 表把 C 写在 `compose.rs` —— **错**。三处实测：
+
+| 原写法 | 实际 |
+|---|---|
+| 「传进 `compose.rs`」 | `grep -c TextItem compose.rs` = **0**；`TextItem` 只有 `overlay.rs:506` 一个构造点 |
+| 「`rotation` 可走关键帧」 | 那是 **compose 那条路**（图层变换）；`evaluate_overlay` 里 `channel_from/​animated/​local_frame` **零命中**，**不求值关键帧** |
+
+⇒ **C 落在 `overlay.rs::evaluate_overlay`，`compose.rs` 不动。**
+
+### 四个连带决定
+
+| # | 决定 | 理由 |
+|---|---|---|
+| 1 | **静态透传**（不求值） | 让 `evaluate_overlay` 再求一遍 = **第二份关键帧求值** ⇒ 两份实现必然漂移 |
+| 2 | **`TRANSFORM_TARGETS` 不加 `scale_y`** | 按 #1 无人求值 ⇒ 加了是**死字段**，用户关键帧被静默忽略（比不加更坏） |
+| 3 | **`TransformView` / `Layer` 不动** | `host_api.rs:313` 自己写着"改名属破坏性改动，不在此顺手做" |
+| 4 | **不往 `TextStyle` 加同名字段** | `dx_px` 源是轨道级样式，`rotation` 源是**元素 transform**，加进去 = 第二份真相 |
+
+### ★ 必须写进代码注释的限制
+
+> `rotation` 走的是 `element.transform.rotation` 的**静态值**；关键帧求值在 `compose.rs` 那条路上，
+> 与本字段**尚未连接**。要让文字旋转可动画，需要在求值层打通。
+
+**理由**：不留这句，后来的人会以为"字段有了 ⇒ 动画就有了"。
+**这正是本次抓到的那个坑，必须留在代码里。**
+
+### ★ T3 必须知道的 JSON 坐标
+
+倾斜要写在**文字图层自己的 `layers[i].transform.rotation`** ——
+写在 `TrackV2.subtitle` 里**不会生效**（`evaluate_overlay` 读的是 element 的 transform）。
+`scale_y` 同理：`layers[i].transform.scale_y`。
