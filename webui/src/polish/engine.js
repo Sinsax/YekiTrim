@@ -662,6 +662,28 @@ export const ANIM_PRESETS = {
   },
   grow_first: {
     perChar: { scaleSpread: 0.9, perCharFrames: 12, staggerFrames: 4, reverse: true }
+  },
+  // ===== D 组：逐字错峰（4 档）=====
+  //
+  // ⚠️ D 组 = C 组的**逐字能力 + 时间维度**。时间那一维 P3 已经有了
+  //    （`per_char_frames` = 每个字自己那份动画多长、`stagger_frames` = 相邻字错开几帧）
+  //    ⇒ 这一组**不需要底座任何新东西**。
+  //
+  // ⚠️ 与 C 组的观感差别：C 组是"所有字**同时**动、幅度不同"，
+  //    D 组是"每个字**依次**动、幅度相同"。旋钮就是 `stagger_frames`。
+  // ⚠️ `stagger_frames` 的单位是**帧**，而用户想的是毫秒 —— 30fps 下 1 帧 ≈ 33ms。
+  //    档位按帧给（契约单位），下拉标签写"快/慢"而不是写死毫秒（时基不是固定的）。
+  pop_perchar: {
+    perChar: { scaleFrom: 0.3, scaleTo: 1.0, perCharFrames: 10, staggerFrames: 3, easing: 'back_out' }
+  },
+  hop_std: {
+    perChar: { offsetYFrom: 0.55, offsetYTo: 0, perCharFrames: 12, staggerFrames: 4, easing: 'back_out' }
+  },
+  hop_fast: {
+    perChar: { offsetYFrom: 0.55, offsetYTo: 0, perCharFrames: 10, staggerFrames: 2, easing: 'back_out' }
+  },
+  hop_big: {
+    perChar: { offsetYFrom: 0.9, offsetYTo: 0, perCharFrames: 26, staggerFrames: 7, easing: 'back_out' }
   }
 }
 

@@ -3132,6 +3132,22 @@ export function translate(config, clipDir, outPath, options = {}) {
     grow_first: {
       perChar: { scale_spread: 0.9, per_char_frames: 12, stagger_frames: 4, reverse: true },
     },
+    // ===== D 组：逐字错峰（4 档）=====
+    // ⚠️ 时间那一维 P3 已经有了 ⇒ 这一组**不需要底座任何新东西**，只是换一组数。
+    // ⚠️ 与 C 组的观感差别：C 组"所有字同时动、幅度不同"，
+    //    D 组"每个字依次动、幅度相同" —— 旋钮是 `stagger_frames`（单位**帧**）。
+    pop_perchar: {
+      perChar: { scale_from: 0.3, scale_to: 1.0, per_char_frames: 10, stagger_frames: 3, easing: 'back_out' },
+    },
+    hop_std: {
+      perChar: { offset_y_from: 0.55, offset_y_to: 0, per_char_frames: 12, stagger_frames: 4, easing: 'back_out' },
+    },
+    hop_fast: {
+      perChar: { offset_y_from: 0.55, offset_y_to: 0, per_char_frames: 10, stagger_frames: 2, easing: 'back_out' },
+    },
+    hop_big: {
+      perChar: { offset_y_from: 0.9, offset_y_to: 0, per_char_frames: 26, stagger_frames: 7, easing: 'back_out' },
+    },
   };
 
   /// 一档动效预设 → 那组底座字段。`undefined` = **这一档不存在**（认不出的 `anim`）。
