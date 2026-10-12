@@ -2033,6 +2033,7 @@ mod tests {
             role: String::new(),
             extra: Default::default(),
             events: vec![Event::Element {
+                anim: None,
                 time: 0.5,
                 end: Some(4.0),
                 kind: "text".into(),
@@ -2085,6 +2086,7 @@ mod tests {
             role: String::new(),
             extra: Default::default(),
             events: vec![Event::Element {
+                anim: None,
                 time: 0.5,
                 end: Some(4.0),
                 kind: "text".into(),

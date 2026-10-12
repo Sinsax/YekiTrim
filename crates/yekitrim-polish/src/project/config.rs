@@ -3836,6 +3836,7 @@ portrait_camera = true
         let mut cfg = ProjectFile::example();
         cfg.segments[0].events = vec![
             crate::project::Event::Element {
+                anim: None,
                 time: 3.0,
                 end: Some(5.0),
                 kind: "text".into(),
@@ -3850,6 +3851,7 @@ portrait_camera = true
                 source: None,
             },
             crate::project::Event::Element {
+                anim: None,
                 time: 6.0,
                 end: Some(7.5),
                 kind: "sticker".into(),
@@ -3911,6 +3913,7 @@ portrait_camera = true
     fn unset_element_fields_are_not_written() {
         let mut cfg = ProjectFile::example();
         cfg.segments[0].events = vec![crate::project::Event::Element {
+                anim: None,
             time: 1.0,
             end: None,
             kind: "text".into(),

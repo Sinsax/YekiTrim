@@ -352,6 +352,27 @@ pub enum Event {
         /// `kind = "sticker"` 时不用。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         style: Option<String>,
+        /// `text` 的**动效档名**（39 档，2026-10-13，见 `docs/plan/text-styles-39-完成计划.md`）。
+        ///
+        /// 取值是转译器 `ANIM_PRESETS` 里的键（`sway_std` / `slam_squash` / `tilt_sm` …）。
+        ///
+        /// # ⚠️ 为什么动效**不能**挂在 `[elements]` 上
+        ///
+        /// `ElementsConfig` 是**全局单例**（`project/config.rs:82`，整片一份），
+        /// 而 39 档要**逐条不同**（第 1 条砸入、第 2 条摇摆）——
+        /// 全局单例在物理上做不到这件事。所以它必须住**事件**上，与 `style` 并列。
+        ///
+        /// 与 `style` **正交**：`style` 管字号/描边/颜色，`anim` 管怎么动。
+        /// 两者能自由组合（规格 §1.3 的四个情绪族 = 样式 × 动效）。
+        ///
+        /// ⚠️ **是 `Option<String>` 而不是 enum**（与相邻的 `kind` 同一个理由）：
+        /// 认不出的档名要能给一条**说出是哪一条、写了什么**的报错，
+        /// 而 enum 只会说 `unknown variant`。转译器把认不出的档名报成 CLAMP。
+        ///
+        /// ⚠️ **不写 = 没有动效**（不是"用默认档"）⇒ 存量工程逐字节不变（R4）。
+        /// 没写时转译器**回落到全局 `[elements]`**（那份降级成了"整片兜底默认"）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anim: Option<String>,
         /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pos: Option<String>,

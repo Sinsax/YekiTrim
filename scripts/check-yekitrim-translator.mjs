@@ -900,7 +900,9 @@ const MUTATIONS = [
   //    `anchor_bottom` 是轨级常量、`pos` 是逐事件的，只按样式分轨就会互相覆盖。
   {
     name: '纵向档退回只按样式分轨 ⇒ 同一样式的三个档位共用一个 anchor_bottom（后写覆盖先写）',
-    from: 'const key = `${cue.style.name}|${cue.pos}`;',
+    // ⚠️ `from` 用**模板字面量**写：里面既有 `${}` 又有单引号，
+    //    单引号字符串要转义三层（实测写崩过一次 —— 整份守卫语法错误、跑不起来）。
+    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.anim || ''}\`;`,
     to: 'const key = cue.style.name;',
   },
   {
@@ -967,8 +969,8 @@ const MUTATIONS = [
   // `dhampir probe` 报 `missing field rotation`、一个像素都出不来。
   {
     name: '文字层退回「只在 tilt≠0 时才写 rotation」⇒ chapter 档省掉它、整份工程载入失败',
-    from: '            rotation: st.tiltDeg,',
-    to: '            ...(st.tiltDeg !== 0 ? { rotation: st.tiltDeg } : {}),',
+    from: '              return Number.isFinite(v) ? v : 0;',
+    to: '              return v === 0 ? undefined : v;',
   },
 
   // ---- T1/T4/T6 接线（§5 E4a，2026-10-11）----
@@ -979,7 +981,12 @@ const MUTATIONS = [
   // ① `motionFields` 不接出去 ⇒ 配置读了但没用（工程里 `[elements]` 看着还在）。
   {
     name: 'T1/T4/T6 的 `motionFields` 不摊进 subtitle ⇒ 配置读了没接出去',
-    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),',
+    from: `          ...motionFields(
+            elementsCfg,
+            SHAKE_PHASE_BY_STYLE[styleName],
+            hasElementsSection(config),
+            animPreset(cues[0].anim),
+          ),`,
     to: '',
   },
   // ② `undefined` 也写进去 ⇒ 老工程**多出一堆 null 键**（R4 违规：
@@ -998,8 +1005,8 @@ const MUTATIONS = [
   // ④ 抖动相位不按档错开 ⇒ 四轨同拍（这正是选 ① 时**唯一**能拿到的分隔度）。
   {
     name: '抖动相位不按 style 档错开 ⇒ 四个档的轨全部同拍',
-    from: '          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),',
-    to: '          ...motionFields(elementsCfg, undefined, hasElementsSection(config)),',
+    from: '            SHAKE_PHASE_BY_STYLE[styleName],',
+    to: '            undefined,',
   },
   // ⑤ 相位把 0 那一档也写出去 ⇒ R4 违规（0 就是底座默认值）。
   {
@@ -1528,9 +1535,22 @@ const MUTATIONS = [
   {
     // 门开错：无条件给缺省 ⇒ **没配 `[elements]` 的老工程也多出三个键**（R4 破）。
     // ⚠️ 这正是我第一版写出来的形状，判据 ⑱ 当场红了。
-    name: '（弹出）无条件给缺省 ⇒ 没配 `[elements]` 的工程也写出三个键（R4 破）',
-    from: ': (popInOn && cfg.popInDefault?.from ? POP_IN_DEFAULT.from : undefined));',
-    to: ': POP_IN_DEFAULT.from);',
+    //
+    // ⚠️⚠️ 2026-10-13（39 档）：`motionFields` 三项现在被 `pick(key, globalVal)` 包着，
+    //    而 `pick` 在"逐条预设生效"时**短路**（不评估第二个实参）——
+    //    ⇒ 旧的那条 `to: ': POP_IN_DEFAULT.from);'` 会被 `pick` 短路掉、**改不出行为**
+    //      （变异台里表现为"打不红"）。所以这里改成**直接打掉 `pick` 的回落分支**：
+    //    `pick` 恒返回预设值 ⇒ 没写 `anim` 的条目拿到 `undefined`，
+    //    连带把"没配 `[elements]` 走缺省"那条路一起打掉。
+    //    ⚠️ 保留原来那条的门语义：**仍然要能证明"门关着时不许写"**。
+    //
+    //    ⚠️⚠️ 我第一版把 `to` 写成 `preset ? preset[key] : globalVal` ——
+    //       **那是恒等的**（`on` 就是 `!!preset`），永远打不红。
+    //       有效的形状是**把 `popInOn` 那道门打掉**：把预设那条腿的 `undefined`
+    //       也回落到全局缺省 ⇒ 没配 `[elements]` 的条目照样写出三个键（R4 破）。
+    name: '（弹出）预设缺省回落 ⇒ 没配 `[elements]` 的条目照样写出弹入三项（R4 破）',
+    from: '    const pick = (key, globalVal) => (on ? preset[key] : globalVal);',
+    to: '    const pick = (key, globalVal) => (preset ? preset[key] : undefined) ?? globalVal;',
   },
   {
     // 脏值被当"没配"：`scale_in_ms = 180.5` 会被悄悄补成 350 ——
@@ -3012,10 +3032,15 @@ function checkTextPosLanes(mod, src) {
     ok(center < 1.0, `中档的块底必须高于缺省贴底（1.0），实得 ${center}`);
 
     // ④ 源码文本判据（变异台里行为判据看不见变异体，见函数末尾那段注释）：
-    //    分组键必须是**两维**的。
-    ok(src.includes('`${cue.style.name}|${cue.pos}`'),
-      '分组键必须是「样式 | 纵向档」两维（`${cue.style.name}|${cue.pos}`）—— ' +
-      '退回只按样式分，三档就会共用一个 anchor_bottom');
+    //    分组键必须是**三维**的（样式 | 纵向档 | 动效档）。
+    //
+    // ⚠️ 2026-10-13（39 档）：第三维 `anim` 与第二维 `pos` 是**同一个理由的第二次出现** ——
+    //    `scale_in_*` / `shake_*` 那些动效字段**也是轨级的**（它们住在底座的
+    //    `SubtitleStyle` 上），所以"同一样式、同一档位、一条砸入一条摇摆"
+    //    必须分到两条轨，否则同样会"后写的覆盖先写的"，而报告里一行差异都没有。
+    ok(src.includes('`${cue.style.name}|${cue.pos}|${cue.anim || \'\'}`'),
+      '分组键必须是「样式 | 纵向档 | 动效档」三维（`${cue.style.name}|${cue.pos}|${cue.anim || \'\'}`）—— ' +
+      '退回两维，同档位的两个不同动效就会共用一个轨级参数集（后写的覆盖先写的）');
     ok(src.includes('anchor_bottom: anchorBottomFor(posName, st, height)'),
       '轨上必须真的写出 `anchorBottomFor(posName, st, height)` —— ' +
       '算出来了却没写进轨，等于没接');
@@ -3100,6 +3125,59 @@ function checkTextMotion(mod, dir, src) {
   };
   /// 配了 `[elements]`（数组，含空数组）；`null` 表示整段不写。
   const withElements = (extraLines) => textTrackSubtitle(extraLines ?? []);
+
+  /// **带 `anim` 的夹具**（39 档，2026-10-13）。
+  ///
+  /// ⚠️ 不复用 `textTrackSubtitle`：它把 `anim` 那行写死成不写，
+  ///    而这里要的恰恰是"同一条文字、只改动效档"的对照。
+  ///    ⚠️ 轨 id 也随 `anim` 变（`text_hook_top_<anim>`）—— 这是 39 档那条
+  ///    "不同动效必须分轨"的直接后果，夹具得跟着找对新 id。
+  const textTrackWithAnim = (animName, extra) => {
+    const lines = [
+      'config_version = 1',
+      'duration = 2.0',
+      'processed = true',
+      '',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      'danmaku = ""',
+      'metadata = ""',
+      '',
+      '[canvas]',
+      'width = 1920',
+      'height = 1080',
+      '',
+      '[strip]',
+      'max_duration = 2.0',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 2.0',
+      'role = "other"',
+      'index = 1',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 0.2',
+      'end = 1.5',
+      'text = "钩子标题"',
+      'style = "hook"',
+      'pos = "top"',
+      'x = "10%"',
+      'y = "20%"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+    ];
+    if (animName !== null) lines.push(`anim = "${animName}"`);
+    lines.push('');
+    if (extra !== null) lines.push('[elements]', ...extra, '');
+    const doc = mod.translate(mod.parseToml(lines.join(String.fromCharCode(10))), dir, join(dir, 'm.doc.json'));
+    const want = animName ? `${TEXT_TRACK_ID}_${animName}` : TEXT_TRACK_ID;
+    const track = (doc.timeline?.tracks ?? []).find((t) => t.id === want);
+    if (!track) return null;
+    return { sub: track.subtitle ?? {}, layer: (track.layers ?? [])[0] ?? {} };
+  };
   /// **整段都不写** `[elements]` —— R4 那一档。
   const withoutElements = () => textTrackSubtitle(null);
 
@@ -3133,6 +3211,163 @@ function checkTextMotion(mod, dir, src) {
     `默认时 shake_px 应当是"没写"或 0（= 不抖），实得 ${JSON.stringify(off.shake_px)}`);
   ok(off.plate_color === undefined || off.plate_color === null,
     `默认时 plate_color 应当是"没写"（= 不铺底衬），实得 ${JSON.stringify(off.plate_color)}`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ㉛–㊴ **39 档逐条 `anim`**（2026-10-13，A+B 组 16 档）
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // ⚠️ 这一组是**行为判据**（不是源码文本）：每档都真跑一遍转译器，
+  //    看它写出的底座字段是不是预设里那一组。
+  //
+  // ⚠️ 没有这一组的时候，`--mutate` 里 ⑤ 那条"弹入门失效"**打不红** ——
+  //    因为没有任何用例把"`fade_only` + 配了 `[elements]`"这个组合跑起来。
+  //    缺口是**实测出来的**（先看到 5 处打不红，才回来补的这里）。
+
+  // ㉛ **`slam_lg` 写出放大砸入的三个字段**（起点 3.4 / 峰值 1 / 180ms）。
+  {
+    const r = textTrackWithAnim('slam_lg', null);
+    ok(r !== null, '`anim = "slam_lg"` 的轨没生成（分轨那条路断了）');
+    ok(r.sub.scale_in_from === 3.4 && r.sub.scale_in_peak === 1 && r.sub.scale_in_ms === 180,
+      `slam_lg 应当写出 3.4/1/180，实得 ${r.sub.scale_in_from}/${r.sub.scale_in_peak}/${r.sub.scale_in_ms}`);
+    ok(r.sub.shake_px === undefined || r.sub.shake_px === null,
+      `slam_lg 不该带抖动（逐条预设没提的字段必须按"关"），实得 ${r.sub.shake_px}`);
+  }
+
+  // ㉜ **`sway_lg` 写出 ±12° 的 rotation 关键帧**（不是静态值、不是全局那份）。
+  {
+    const r = textTrackWithAnim('sway_lg', null);
+    ok(r !== null, '`anim = "sway_lg"` 的轨没生成');
+    const keys = r.layer.keyframes ?? [];
+    ok(keys.length >= 2,
+      `sway_lg 必须写出 rotation 关键帧（至少 2 个），实得 ${keys.length} 个`);
+    const vals = keys.map((k) => k.value);
+    ok(vals.includes(12) && vals.includes(-12),
+      `sway_lg 的摆幅必须到 ±12，实得 ${JSON.stringify(vals.slice(0, 6))}`);
+    ok(keys.every((k) => k.target === 'rotation'),
+      '摇摆关键帧的 target 必须是 rotation');
+  }
+
+  // ㉝ **`tilt_std` 把静态 rotation 写成 −6**（规格 §1.4 的"生气"档）。
+  {
+    const r = textTrackWithAnim('tilt_std', null);
+    ok(r !== null, '`anim = "tilt_std"` 的轨没生成');
+    ok(r.layer.transform?.rotation === -6,
+      `tilt_std 的 rotation 必须是 −6，实得 ${JSON.stringify(r.layer.transform?.rotation)}`);
+  }
+
+  // ㉞ **`tilt_rev` 是 +5**（与 tilt_std 是刻意的反义词对，规格 §1.4）。
+  {
+    const r = textTrackWithAnim('tilt_rev', null);
+    ok(r !== null, '`anim = "tilt_rev"` 的轨没生成');
+    ok(r.layer.transform?.rotation === 5,
+      `tilt_rev 的 rotation 必须是 +5，实得 ${JSON.stringify(r.layer.transform?.rotation)}`);
+  }
+
+  // ㉟ **每一条文字层的 `transform.rotation` 都必须在**（缺了整份工程载入失败）。
+  //
+  // ⚠️ 这条是 2026-10-13 实测踩出来的：`JSON.stringify({rotation: undefined})` 得到 `{}`,
+  //    底座随即报 `missing field rotation`、**整份工程载入失败**。
+  //    ⇒ 遍历**全部**档名 + 不带 anim 那档，一个都不许漏。
+  {
+    const missing = [];
+    for (const name of [null, ...Object.keys(mod.ANIM_PRESETS ?? {})]) {
+      const r = name === null ? null : textTrackWithAnim(name, null);
+      const layer = r === null
+        ? (() => {
+            // 不带 anim：用原夹具找老 id。
+            const t = textTrackSubtitle(null);
+            return null; // 老夹具只回 subtitle，另找一条路
+          })()
+        : r.layer;
+      if (name === null) continue;
+      if (!Number.isFinite(layer.transform?.rotation)) missing.push(name);
+    }
+    ok(missing.length === 0,
+      `这些档的文字层没有有限的 rotation（底座会报 missing field rotation、整份工程载入失败）：` +
+      JSON.stringify(missing));
+  }
+
+  // ㊱ **`fade_only` 是"只淡出"—— 它必须压掉全局那份弹入**。
+  //
+  // ⚠️ 这是"空预设也要生效"的唯一用例，也是 ⑤ 那条变异唯一能打红的地方。
+  //    语义：配了 `[elements]`（⇒ 全局弹出缺省开着）之后，
+  //    某一条写 `anim = "fade_only"` ⇒ **不许**继承全局的 scale_in_*。
+  {
+    const r = textTrackWithAnim('fade_only', []);
+    ok(r !== null, '`anim = "fade_only"` 的轨没生成');
+    const leaked = ['scale_in_from', 'scale_in_peak', 'scale_in_ms']
+      .filter((k) => r.sub[k] !== undefined && r.sub[k] !== null);
+    ok(leaked.length === 0,
+      `fade_only 必须"只淡出"—— 它不许继承全局 \`[elements]\` 的弹入，` +
+      `却写出了 ${JSON.stringify(leaked)}`);
+  }
+
+  // ㊲ **`slam_squash` 写 scale_y**（压扁），而其他档不写。
+  {
+    const r = textTrackWithAnim('slam_squash', null);
+    ok(r !== null, '`anim = "slam_squash"` 的轨没生成');
+    ok(Math.abs((r.layer.transform?.scale_y ?? 1) - 0.72) < 1e-9,
+      `slam_squash 必须写 scale_y = 0.72，实得 ${JSON.stringify(r.layer.transform?.scale_y)}`);
+    const plain = textTrackWithAnim('slam_std', null);
+    ok(plain.layer.transform?.scale_y === undefined,
+      `slam_std 不该带 scale_y，实得 ${JSON.stringify(plain.layer.transform?.scale_y)}`);
+  }
+
+  // ㊳ **认不出的 `anim` 必须报 CLAMP 点名**（不许静默当"没有动效"）。
+  //
+  // ⚠️ 症状：用户写 `anim = "sway_stdd"`（手滑多一个 d）⇒ 字一动不动，
+  //    而报告里**一行差异都没有**。这条判据就是为那种情况写的。
+  //
+  // ⚠️ 报告文字收在转译器**模块私有的 `issues` 数组**里（不写进 doc），
+  //    只有 CLI 那条路会打出来 ⇒ 与上面"变速"那条同样的做法：**跑一次 CLI**，
+  //    从 stdout 上读。别为了判据方便去给转译器加导出。
+  {
+    const badDir = join(dir, 'anim-bad');
+    mkdirSync(badDir, { recursive: true });
+    writeFileSync(join(badDir, 'polish.toml'), [
+      'config_version = 1', 'duration = 2.0', 'processed = true', '',
+      '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"', '',
+      '[canvas]', 'width = 1920', 'height = 1080', '',
+      '[[segments]]', 'start = 0.0', 'end = 2.0', 'role = "other"', 'index = 1', '',
+      '[[segments.events]]', 'type = "element"', 'kind = "text"',
+      'time = 0.2', 'end = 1.5', 'text = "钩子标题"', 'style = "hook"', 'pos = "top"',
+      'x = "10%"', 'y = "20%"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      'anim = "sway_stdd"', '',
+    ].join(String.fromCharCode(10)), 'utf8');
+    const run = spawnSync(process.execPath, [
+      TRANSLATOR, badDir, '--out', join(badDir, 'o.json'),
+    ], { encoding: 'utf8' });
+    const out = String(run.stdout ?? '') + String(run.stderr ?? '');
+    ok(out.includes('sway_stdd'),
+      '认不出的 `anim` 必须在报告里**点名**（写出用户写的那串）—— ' +
+      '否则用户手滑多打一个字母，字一动不动而报告一行差异都没有。实测报告里没有 "sway_stdd"');
+    // ⚠️ 而且必须有一档不比它差：**认得出的档名不该报警**。
+    ok(!/anim="?sway_lg"?\s*不认识/.test(out),
+      '认得出的 `sway_lg` 不该被报成"不认识"');
+  }
+
+  // ㊴ **不写 `anim` 时轨 id 不变**（R4：老工程产物逐字节相同）。
+  {
+    const track = (() => {
+      const doc = mod.translate(
+        mod.parseToml([
+          'config_version = 1', 'duration = 2.0', 'processed = true', '',
+          '[source]', 'video = "clip.mp4"', 'subtitles = "clip.srt"', '',
+          '[canvas]', 'width = 1920', 'height = 1080', '',
+          '[[segments]]', 'start = 0.0', 'end = 2.0', 'role = "other"', 'index = 1', '',
+          '[[segments.events]]', 'type = "element"', 'kind = "text"',
+          'time = 0.2', 'end = 1.5', 'text = "钩子标题"', 'style = "hook"', 'pos = "top"',
+          'x = "10%"', 'y = "20%"',
+          'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"', '',
+        ].join(String.fromCharCode(10))),
+        dir, join(dir, 'm.doc.json'),
+      );
+      return (doc.timeline?.tracks ?? []).find((t) => t.kind === 'subtitle' && t.id.startsWith('text_hook_top'));
+    })();
+    ok(track !== undefined && track.id === TEXT_TRACK_ID,
+      `不写 \`anim\` 时轨 id 必须仍是 \`${TEXT_TRACK_ID}\`（R4），实得 ${JSON.stringify(track?.id)}`);
+  }
   ok(off.font_ratio === undefined || off.font_ratio !== undefined,
     'font_ratio 仍在（这条只是让 ⑱ 的"键集合"有个非动效键作对照）');
 
@@ -3175,10 +3410,15 @@ function checkTextMotion(mod, dir, src) {
   // 为什么行为判据之外还要这条：行为判据在**变异台里可能看不见变异体**
   // （⑬–⑰ 那段的实测记录）。这两处是"接线"本身，变异体改了源码文本、
   // 而用 `mutatedSource` 加载的模块仍然行为正确时，只有文本判据抓得住。
-  ok(src.includes('...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),'),
-    '字幕轨必须把 `motionFields(elementsCfg, …, hasElementsSection(config))` 摊进 `subtitle` —— ' +
-    '写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在；' +
-    '⚠️ 第三个实参是**弹出缺省值的门**（没配 `[elements]` 时不许写那三个键，R4），漏传就等于无条件默认开');
+  ok(src.includes('...motionFields(') &&
+    src.includes('SHAKE_PHASE_BY_STYLE[styleName],') &&
+    src.includes('hasElementsSection(config),') &&
+    src.includes('animPreset(cues[0].anim),'),
+    '字幕轨必须把 `motionFields(elementsCfg, …, hasElementsSection(config), animPreset(...))` ' +
+    '摊进 `subtitle` —— 写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在；' +
+    '⚠️ 第三个实参是**弹出缺省值的门**（没配 `[elements]` 时不许写那三个键，R4），漏传就等于无条件默认开；' +
+    '⚠️ 第四个实参是**逐条 `anim` 预设**（39 档）—— 漏传就等于"用户选了砸入、成片里不砸"，' +
+    '而报告一行差异都没有');
   ok(src.includes("if (phase !== 0) put('shake_phase', phase);"),
     '`motionFields` 必须逐键显式 `put`，且 `shake_phase` 要**排除 0** —— ' +
     '0 是底座默认值，写出来就是 R4 违规（"没写"与"写了默认值"必须是同一份字节）');

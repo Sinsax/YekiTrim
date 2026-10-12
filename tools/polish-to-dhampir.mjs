@@ -2892,7 +2892,28 @@ export function translate(config, clipDir, outPath, options = {}) {
   const hasElementsSection = (config) =>
     config?.elements !== undefined && config?.elements !== null;
 
-  const motionFields = (cfg, phase, popInOn) => {
+  /// `animPreset`（可选）= **这一档动效的预设字段**（39 档，2026-10-13）。
+  ///
+  /// ⚠️⚠️ **优先级：逐条 `anim` 预设 > 全局 `[elements]` > 内置缺省**。
+  ///
+  /// 为什么是这个序（P2 拍板时定死）：
+  /// `[elements]` 那一批是 2026-10 按"整片一种动效"的假设做的（那时还没有逐条概念）；
+  /// 逐条 `anim` 上线后，全局那份**降级为整片兜底默认** ——
+  /// 某条写了 `anim` ⇒ 用预设；没写 ⇒ 用全局；全局也没配 ⇒ 内置缺省。
+  ///
+  /// ⚠️ **`preset[key] !== undefined` 才算覆盖**，不能用 `key in preset` ——
+  ///    预设表里**没有的键**表示"这一档不管它"（回落到全局），
+  ///    而 `fade_only: {}` 那种"空预设"就是**显式要"什么都不加"**（只淡出）⇒
+  ///    它必须**压掉**全局那份弹入（否则配了 `[elements] scale_in_ms` 的工程里
+  ///    `fade_only` 会静默变成"弹入 + 淡出"，不是"只淡出"）。
+  ///    ⇒ 所以 `fade_only` 走的是"空预设也生效"这条路，见下面 `hasAnim` 的判定。
+  const motionFields = (cfg, phase, popInOn, preset) => {
+    const on = !!preset;
+    // ⚠️ 逐条预设生效时，**它没提的字段一律按"关"**（不是回落到全局）——
+    //    否则"砸入"会顺带继承全局的抖动，变成两种动效叠在一起，
+    //    而用户以为自己只选了一档。只有**完全没写 `anim`**（`preset === undefined`）
+    //    才回落到全局 `[elements]`。
+    const pick = (key, globalVal) => (on ? preset[key] : globalVal);
     const out = {};
     const put = (key, v) => {
       if (v !== undefined) out[key] = v;
@@ -2915,14 +2936,14 @@ export function translate(config, clipDir, outPath, options = {}) {
     //   判据 `checkTextMotion` 的脏值那一档连抓了两次，是对的。
     //   ⇒ 由 `readElementsCfg` 直接给出"该不该走缺省"（`popInDefault` 三个布尔），
     //      `motionFields` 只管摊平，不再自己判断。
-    put('scale_in_from', cfg.scale_in_from !== undefined ? cfg.scale_in_from
-      : (popInOn && cfg.popInDefault?.from ? POP_IN_DEFAULT.from : undefined));
-    put('scale_in_peak', cfg.scale_in_peak !== undefined ? cfg.scale_in_peak
-      : (popInOn && cfg.popInDefault?.peak ? POP_IN_DEFAULT.peak : undefined));
-    put('scale_in_ms', cfg.scale_in_ms !== undefined ? cfg.scale_in_ms
-      : (popInOn && cfg.popInDefault?.ms ? POP_IN_DEFAULT.ms : undefined));
-    put('shake_px', cfg.shake_px);
-    put('shake_hz', cfg.shake_hz);
+    put('scale_in_from', pick('scale_in_from', cfg.scale_in_from !== undefined ? cfg.scale_in_from
+      : (popInOn && cfg.popInDefault?.from ? POP_IN_DEFAULT.from : undefined)));
+    put('scale_in_peak', pick('scale_in_peak', cfg.scale_in_peak !== undefined ? cfg.scale_in_peak
+      : (popInOn && cfg.popInDefault?.peak ? POP_IN_DEFAULT.peak : undefined)));
+    put('scale_in_ms', pick('scale_in_ms', cfg.scale_in_ms !== undefined ? cfg.scale_in_ms
+      : (popInOn && cfg.popInDefault?.ms ? POP_IN_DEFAULT.ms : undefined)));
+    put('shake_px', pick('shake_px', cfg.shake_px));
+    put('shake_hz', pick('shake_hz', cfg.shake_hz));
     // ⚠️ **相位按档错开，但 0 那一档不写**（0 就是底座默认值 ⇒ 写了是 R4 违规：
     //    "没写"与"写了默认值"在老工程上必须是**同一份字节**）。
     //    这一条与上面五个不同：它的值**取决于轨身份**，不是纯配置。
@@ -2964,6 +2985,71 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///
   /// ⚠️ 返回 `[]` = **不摆**（没配 / 值非法 / 时长为 0）—— 调用点据此**一个键都不写**，
   /// 于是老工程产物逐字节不变（R4）。
+  /// ══════════════════════════════════════════════════════════════════════
+  /// **39 档效果的预设表**（`docs/plan/text-styles-39-完成计划.md` §一·五）
+  /// ══════════════════════════════════════════════════════════════════════
+  ///
+  /// 载体（2026-10-13 P2 拍板）：**样式 = 事件自己的 `style`**（字号/描边/颜色），
+  /// **动效 = 事件自己的 `anim`**（本表的键名）。两者**正交**、能自由组合
+  /// （规格 §1.3 的四个情绪族 = 样式 × 动效）。
+  ///
+  /// ⚠️⚠️ **为什么动效不能挂在 `[elements]` 上**：那一段是**全局单例**
+  /// （`config.rs:82` `pub elements: ElementsConfig`，整片一份），
+  /// 而 39 档要**逐条不同**（第 1 条砸入、第 2 条摇摆）—— 全局单例物理上做不到。
+  ///
+  /// # 表里每一项是什么
+  ///
+  /// 每档给出一组**底座字段**。底座能力**已经全有**
+  /// （`dhampir-timeline/src/layer.rs` 的六个 `Option` 字段 + `rotation` 关键帧）
+  /// ⇒ 本步（A+B 组）**不需要动底座**，只是把参数摊平出来。
+  ///
+  /// # 参数来历（别凭感觉改）
+  ///
+  /// * `scale_in` 三项的参照值见 `POP_IN_DEFAULT`（贴纸 `popIn` 同款曲线）；
+  /// * `shake_hz` 三档 **4.5 / 18 / 34** —— 规格 §1.2 说「频率 70/110/260ms」，
+  ///   那是**周期**；`1000/260 ≈ 3.8`、`1000/70 ≈ 14.3`，取整到人眼舒服的三档；
+  /// * `sway` 三档 **±6° × 900ms / ±12° × 900ms / ±6° × 2000ms** —— 规格 §1.2「角度 + 周期」；
+  /// * 倾斜三档 **−6° / −2.5° / +5°** —— 规格 §1.4 明说「倾斜 −6°（生气）/
+  ///   +5°（撒娇）」是**刻意的反义词对**，`tilt_rev` 就是那个正向版本。
+  const ANIM_PRESETS = {
+    // ── A 组：整块变换（3 档）──
+    tilt_std: { tiltDeg: -6.0 },
+    tilt_sm: { tiltDeg: -2.5 },
+    tilt_rev: { tiltDeg: 5.0 },
+
+    // ── B 组：整块动效（13 档）──
+    shake_std: { shake_px: 6.0, shake_hz: 18.0 },
+    shake_slow: { shake_px: 6.0, shake_hz: 4.5 },
+    shake_lg: { shake_px: 14.0, shake_hz: 34.0 },
+
+    sway_std: { sway_deg: 6.0, sway_ms: 900 },
+    sway_lg: { sway_deg: 12.0, sway_ms: 900 },
+    sway_slow: { sway_deg: 6.0, sway_ms: 2000 },
+
+    slam_std: { scale_in_from: 2.4, scale_in_peak: 1.0, scale_in_ms: 180 },
+    slam_lg: { scale_in_from: 3.4, scale_in_peak: 1.0, scale_in_ms: 180 },
+    slam_squash: { scale_in_from: 2.4, scale_in_peak: 1.0, scale_in_ms: 180, squashY: 0.72 },
+
+    shrink_in_std: { scale_in_from: 0.4, scale_in_peak: 1.0, scale_in_ms: 500 },
+    fade_only: {},
+    shrink_in_fast: { scale_in_from: 0.4, scale_in_peak: 1.0, scale_in_ms: 160 },
+
+    pop_std: { scale_in_from: 0.3, scale_in_peak: 1.0, scale_in_ms: 350 },
+    pop_soft: { scale_in_from: 0.7, scale_in_peak: 1.0, scale_in_ms: 350 },
+  };
+
+  /// 一档动效预设 → 那组底座字段。`undefined` = **这一档不存在**（认不出的 `anim`）。
+  const animPreset = (name) => {
+    const key = String(name ?? '').trim().toLowerCase();
+    if (!key) return undefined;
+    return Object.prototype.hasOwnProperty.call(ANIM_PRESETS, key)
+      ? ANIM_PRESETS[key]
+      : undefined;
+  };
+
+  /// 全部已知档名（给报错文案用）。
+  const ANIM_KNOWN = Object.keys(ANIM_PRESETS);
+
   const swayKeyframes = (cue, cfg, tb) => {
     const amp = cfg.sway_deg;
     const periodMs = cfg.sway_ms;
@@ -3817,6 +3903,21 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    `anchor_bottom` 是**轨级**常量 ⇒ 必须**按 (style, pos) 两维分组**，
             //    否则后写的那一档会把先写的覆盖掉（而报告里一行差异都没有）。
             const posKey = (event.pos ?? '').trim().toLowerCase() || 'bottom';
+            // ---- 39 档动效（`anim`，2026-10-13）----
+            //
+            // ⚠️ **认不出的 `anim` 必须点名报错**，不能静默当"没有动效"：
+            //    用户写 `anim = "sway_stdd"`（手滑多一个 d）⇒ 字一动不动，
+            //    而报告里**一行差异都没有** —— 正是本仓反复踩的"配了、不报错、没效果"。
+            //    与 `Event::Element.kind` 那条注释同一个理由（"不用 enum，
+            //    要能说出是哪一条元素、写了什么"）。
+            const animRaw = String(event.anim ?? '').trim().toLowerCase();
+            if (animRaw && !animPreset(animRaw)) {
+              clamp(
+                where,
+                `文字元素「${textBody}」的 anim="${animRaw}" 不认识 —— ` +
+                  `**这一条不会动**。已知档名：${ANIM_KNOWN.join(' / ')}。`,
+              );
+            }
             textCues.push({
               start: startFrame,
               end: endFrame,
@@ -3824,6 +3925,11 @@ export function translate(config, clipDir, outPath, options = {}) {
               style: st,
               // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
               pos: posKey,
+              // ⚠️ **动效档名**（第 3 个分组维度，见下面 `byStyle` 的注释）：
+              //    `motionFields` 那六个字段是**轨级**的，所以不同 `anim` 必须分轨。
+              //    认不出的档名**照样带过去**（空档 = 不动效）——
+              //    上面已经报过 CLAMP，这里再"纠正"成空会让同轨的两条静默合并。
+              anim: animPreset(animRaw) ? animRaw : '',
             });
             note(
               where,
@@ -5813,28 +5919,43 @@ export function translate(config, clipDir, outPath, options = {}) {
     }
 
     for (const cue of textCues) {
-      // ⚠️ **两维分组：样式 × 纵向档**。
+      // ⚠️ **三维分组：样式 × 纵向档 × 动效档**（2026-10-13，39 档）。
       //
       // 为什么不能只按样式分：`anchor_bottom` 是**轨级**常量，而 `pos` 是**逐事件**的。
       // 实测同一份工程里 `hook` 同时出现 `top` 与 `center` —— 只按样式分轨的话，
       // 两组共用一个 `anchor_bottom`，**后写的那档会把先写的覆盖掉**：
       // 一部分字跑到错误的高度，而报告里一行差异都没有。
       // 分开之后每轨只有一个档，轨级常量才表达得了逐事件的意图。
-      const key = `${cue.style.name}|${cue.pos}`;
+      //
+      // ⚠️⚠️ **第三维（`anim`）是同一个理由的第二次出现**：`scale_in_*` / `shake_*`
+      //    这些**动效字段也是轨级的**（它们住在底座的 `SubtitleStyle` 上，见
+      //    `layer.rs` 那一组六个 `Option`）。所以同一档样式里"一条砸入、一条摇摆"
+      //    必须分到**两条轨**，否则同样会"后写的覆盖先写的" ——
+      //    症状是一部分字用了别的条目的动效，**而报告里一行差异都没有**。
+      const key = `${cue.style.name}|${cue.pos}|${cue.anim || ''}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
     // ⚠️ 遍历**固定顺序**（不是 Map 的插入序）：同一份工程跑两次要逐字节相同。
+    //    ⇒ `anim` 那一维也必须是**排序过的固定清单**，不能遍历 `byStyle.keys()`
+    //      （那会随工程内容变而变，同一份工程两次跑可能不同序）。
+    const animNames = [...new Set(textCues.map((c) => c.anim || ''))].sort();
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
       for (const posName of ['top', 'center', 'bottom']) {
-      const cues = byStyle.get(`${styleName}|${posName}`);
+      for (const animName of animNames) {
+      const cues = byStyle.get(`${styleName}|${posName}|${animName}`);
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
       // 轨道 id 带上档位（同一档样式的两个档位是两条轨）。
       // ⚠️ 老工程只有 `bottom` 一档，那时的 id 是 `text_<style>|bottom` ——
       //    与旧版 `text_<style>` 不同名。这是**有意的**：id 是产物内部标识，
       //    不做向后兼容，免得两条语义不同的轨撞同一个 id。
-      const id = `text_${styleName}_${posName}`;
+      // ⚠️⚠️ **`anim` 必须进 id**（2026-10-13，39 档）：不加的话
+      //    「同一样式、同一档位、两个不同动效」会生成**两条同 id 的轨** ——
+      //    底座按 id 认层，后一条会把前一条**整个盖掉**：
+      //    一部分字用了别的条目的动效，而报告里一行差异都没有。
+      //    空 `anim` **不进 id** ⇒ 老工程（没有 `anim` 这个键）产物**逐字节不变**（R4）。
+      const id = `text_${styleName}_${posName}${animName ? '_' + animName : ''}`;
       // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
       //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
       //    时间格式四件事，而它们都已经在那条里被验过了（有单测 + 真出片）。
@@ -5947,7 +6068,15 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    T6    → `docs/plan/t6-plate-interface.md`
           // ⚠️ `shake_phase` 是**轨级**（按 style 档错开，见 `SHAKE_PHASE_BY_STYLE`）——
           //    同轨多条 cue 仍同拍，那是底座契约的能力边界。
-          ...motionFields(elementsCfg, SHAKE_PHASE_BY_STYLE[styleName], hasElementsSection(config)),
+          //
+          // ⚠️ 第四实参 = **本轨的动效预设**（39 档，`animName` 来自轨身份）。
+          //    同轨已按 `anim` 分组 ⇒ 这里的 `cues[0].anim` 就是全轨那一个档名。
+          ...motionFields(
+            elementsCfg,
+            SHAKE_PHASE_BY_STYLE[styleName],
+            hasElementsSection(config),
+            animPreset(cues[0].anim),
+          ),
         },
         layers: cues.map((c, i) => ({
           id: `${id}_${i}`,
@@ -5998,9 +6127,38 @@ export function translate(config, clipDir, outPath, options = {}) {
             x: 0,
             y: 0,
             scale: 1.0,
-            ...(st.squashY !== 1 ? { scale_y: st.squashY } : {}),
+            // ---- 39 档：`tilt_*` / `slam_squash` 会覆盖样式自带的那两个值 ----
+            //
+            // ⚠️ **优先"逐条 `anim` 预设"，其次才是 `st`（样式档自带的）**：
+            //    `st.tiltDeg` / `st.squashY` 来自 `[style.*]` 的四档解析，
+            //    而 `anim = "tilt_std"` 是**这一段文字自己要歪**。
+            //    用户明确选了动效档时以它为准（否则"选了倾斜·标准却没反应"）。
+            // ⚠️ **同一个 `undefined` 陷阱**：`(undefined !== 1)` 是 `true` ⇒
+            //    会写出 `{scale_y: undefined}` ⇒ 键被 `JSON.stringify` 掉。
+            //    `scale_y` 有 `serde(default)`（`layer.rs:151`）所以**不会让工程载入失败**，
+            //    但"用户配了压扁、成片里没压"会是静默的。⇒ 只在**有限数**时才写。
+            ...((() => {
+              const v = animPreset(cues[0].anim)?.squashY ?? st.squashY;
+              return Number.isFinite(v) && v !== 1 ? { scale_y: v } : {};
+            })()),
             // ⚠️ **无条件写**（`rotation` 没有 serde default，省掉 = 工程载入失败）。
-            rotation: st.tiltDeg,
+            //
+            // ⚠️⚠️ **必须挡住 `undefined`**（2026-10-13，本轮实测踩到的真缺陷）：
+            //    `JSON.stringify({rotation: undefined})` 得到 `{}` —— **键会消失**。
+            //    而 `st.tiltDeg` 在"样式串解析失败/兜底"那条路上可能是 `undefined`
+            //    （`parseTextStyle` 的兜底对象里不一定带 tilt），
+            //    `??` 只会挡住 `null`/`undefined` 中的**左**半边 ——
+            //    `preset?.tiltDeg ?? st.tiltDeg` 在两者都 `undefined` 时**结果还是 `undefined`**。
+            //    ⇒ 底座报 `missing field rotation`、**整份工程载入失败**，
+            //    症状是一个字的样式档让**整个切片出不了片**。
+            //    （这就是 `8390d0e` 修过的那个缺陷，本次改动差点把它带回来 ——
+            //      实测：`sway_lg` 轨的 transform 变成 `{"x":0,"y":0,"scale":1}`。）
+            //    ⚠️ 别改成"条件展开"（`...(x !== undefined ? {rotation:x} : {})`）——
+            //      那照样会省掉键。**这里的正确写法是"永远给一个有限数"**。
+            rotation: (() => {
+              const v = animPreset(cues[0].anim)?.tiltDeg ?? st.tiltDeg;
+              return Number.isFinite(v) ? v : 0;
+            })(),
           },
           // ---- T7 摇摆：`rotation` **关键帧**（2026-10-13）----
           //
@@ -6021,12 +6179,21 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    ⇒ 配了 `[elements] sway_deg` 也**一个键都不写**，
             //    症状正是本仓最恨的那种："配了、不报错、成片里字不摆"。
             //    实测抓到的：产物里 `text_hook_bottom` 没有 `keyframes` 键。
-            const keys = swayKeyframes(c, elementsCfg, timebase);
+            // ⚠️⚠️ **优先逐条 `anim` 预设，其次才是全局 `[elements]`**（P2 定的序）。
+            //    这里第一版直接传 `elementsCfg` ⇒ 配了 `anim = "sway_lg"` 的条目
+            //    仍按全局那份摆（角度/周期都不是预设写的），**而报告里一行差异都没有**。
+            const swayCfg = (() => {
+              const p = animPreset(cues[0].anim);
+              if (p === undefined) return elementsCfg; // 没写 anim ⇒ 回落全局
+              return { ...elementsCfg, sway_deg: p.sway_deg, sway_ms: p.sway_ms };
+            })();
+            const keys = swayKeyframes(c, swayCfg, timebase);
             return keys.length ? { keyframes: keys } : {};
           })(),
         })),
       });
     }
+      }
       }
   }
 
