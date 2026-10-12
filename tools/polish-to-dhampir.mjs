@@ -2648,6 +2648,53 @@ export function translate(config, clipDir, outPath, options = {}) {
     count: { fontPx: 64, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
   };
 
+  /// 纵向档位（`top` / `center` / `bottom`）→ **文字块底边的归一化 y**。
+  ///
+  /// 底座（`dhampir-timeline` v7 起）的 `SubtitleStyle::anchor_bottom` 就是这个意思，
+  /// 定义在 `text_layout::layout`：
+  ///
+  ///     let block_top = block_bottom - (keep as f32) * line_height_norm;
+  ///
+  /// 也就是"**块底贴在哪个 y**"，字往**上**长。
+  ///
+  /// # 数值怎么来的（与 `placement.rs::anchor_origin` 同源，别自己编）
+  ///
+  /// 那份 Rust 的锚点是**盒顶**：
+  ///
+  ///     Top    => STICKER_MARGIN                       // 32（文档像素）
+  ///     Center => (f.h - self.h) / 2.0
+  ///
+  /// 而这里要的是**盒底** ⇒ `块底 = 盒顶 + 盒高`，再除以帧高归一化。
+  /// 盒高取**上限**（3 行 × 行高），因为：
+  ///
+  /// * 转译器**不知道**底座重排之后真实折了几行（底座按 `safe_width_ratio` 自己排）；
+  /// * 取上限 ⇒ 块底保守地往下一点，**不会**把字顶出画面上沿。
+  ///
+  /// ⚠️ **`bottom` 档故意返回 `undefined`（键不出现）** —— 那一档要减
+  /// `caption_clearance`（字幕带占掉的高度，**只有底座知道**）。写死一个数会让
+  /// 文字压住字幕 —— 正是 §5 E3 要消灭的症状。留给底座缺省（1.0）最稳，
+  /// 而缺省值恰好等于"贴底"这个语义。
+  ///
+  /// ⚠️ 归一化用**帧高**（实际探到的），不是 1080 这个常数 —— 竖屏工程不一样。
+  function anchorBottomFor(pos, st, frameHeight) {
+    const H = Number(frameHeight);
+    if (!Number.isFinite(H) || H <= 0) return undefined;
+    const posKey = String(pos ?? '').trim().toLowerCase() || 'bottom';
+    if (posKey === 'bottom') return undefined; // 见上：交给底座缺省
+    // 盒高上限：字号（`process` 写回的是**文档像素**）× 行高 1.2 × 最大行数 3。
+    // 1.2 = `text_layout::LINE_HEIGHT_EM`；3 = 本文件写进轨里的 `max_lines`。
+    const fontPx = Number(st?.fontPx) || 0;
+    if (!(fontPx > 0)) return undefined;
+    const boxH = fontPx * 1.2 * 3;
+    // `STICKER_MARGIN = 32`（文档像素，`placement.rs`）—— 与 Top 档的盒顶同一个边距。
+    const MARGIN = 32;
+    const boxTop = posKey === 'top' ? MARGIN : (H - boxH) / 2.0;
+    const v = (boxTop + boxH) / H;
+    // 夹到 [0,1]：底座那边也会夹，但在这里夹掉能让产物里的数值本身就合法
+    //（免得"转译器写 1.3、底座静默夹成 1.0"这种两边不一致）。
+    return Math.min(1, Math.max(0, Number(v.toFixed(4))));
+  }
+
   /// 解析 `process` 写回的样式串：`style|font_px|stroke_px|r,g,b,a|weight|backdrop`。
   ///
   /// ⚠️ **认不出就退回兜底并按 `style` 名取那一档** —— 不抛错：
@@ -3595,13 +3642,18 @@ export function translate(config, clipDir, outPath, options = {}) {
               break;
             }
             const endFrame = Math.max(startFrame + 1, remapFrame(srcEnd) ?? startFrame + 1);
+            // ⚠️ `pos` 是**逐事件**的，而字幕轨是**按样式分**的 ⇒ 同一档样式的
+            //    不同事件可能选不同纵向档（实测 `hook` 同时有 `top` 与 `center`）。
+            //    `anchor_bottom` 是**轨级**常量 ⇒ 必须**按 (style, pos) 两维分组**，
+            //    否则后写的那一档会把先写的覆盖掉（而报告里一行差异都没有）。
+            const posKey = (event.pos ?? '').trim().toLowerCase() || 'bottom';
             textCues.push({
               start: startFrame,
               end: endFrame,
               text: textBody,
               style: st,
               // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
-              pos: (event.pos ?? '').trim().toLowerCase() || 'bottom',
+              pos: posKey,
             });
             note(
               where,
@@ -5583,16 +5635,28 @@ export function translate(config, clipDir, outPath, options = {}) {
     }
 
     for (const cue of textCues) {
-      const key = cue.style.name;
+      // ⚠️ **两维分组：样式 × 纵向档**。
+      //
+      // 为什么不能只按样式分：`anchor_bottom` 是**轨级**常量，而 `pos` 是**逐事件**的。
+      // 实测同一份工程里 `hook` 同时出现 `top` 与 `center` —— 只按样式分轨的话，
+      // 两组共用一个 `anchor_bottom`，**后写的那档会把先写的覆盖掉**：
+      // 一部分字跑到错误的高度，而报告里一行差异都没有。
+      // 分开之后每轨只有一个档，轨级常量才表达得了逐事件的意图。
+      const key = `${cue.style.name}|${cue.pos}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
     // ⚠️ 遍历**固定顺序**（不是 Map 的插入序）：同一份工程跑两次要逐字节相同。
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
-      const cues = byStyle.get(styleName);
+      for (const posName of ['top', 'center', 'bottom']) {
+      const cues = byStyle.get(`${styleName}|${posName}`);
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
-      const id = `text_${styleName}`;
+      // 轨道 id 带上档位（同一档样式的两个档位是两条轨）。
+      // ⚠️ 老工程只有 `bottom` 一档，那时的 id 是 `text_<style>|bottom` ——
+      //    与旧版 `text_<style>` 不同名。这是**有意的**：id 是产物内部标识，
+      //    不做向后兼容，免得两条语义不同的轨撞同一个 id。
+      const id = `text_${styleName}_${posName}`;
       // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
       //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
       //    时间格式四件事，而它们都已经在那条里被验过了（有单测 + 真出片）。
@@ -5648,12 +5712,23 @@ export function translate(config, clipDir, outPath, options = {}) {
           // （字幕自己的 `hl_color` 有 27k 像素，形状还长得像，极易误判成"画出来了"）。
           //
           // ⇒ 用**字幕同一条口径**：底座那个 `safe_width_ratio` 字段的文档自己写着
-          //   "本仓先前拿 `bottom_margin` 当左右边距用…转译器按参照显式写 0.875"，
-          //   但 `layout()` **今天仍然只读 `bottom_margin`**（`safe_width_ratio`
-          //   只在缩字那条路上被读到）。所以这里**必须**给 `bottom_margin` 一个
-          //   能让安全宽成立的值：`margin = (1 - 0.875) / 2 = 0.0625`。
-          //   ⚠️ 纵向位置**不受它影响** —— 那是 `pos` + ASS 对齐码的事（见 `cuesToAss`）。
+          //   "本仓先前拿 `bottom_margin` 当左右边距用…转译器按参照显式写 0.875"。
+          //
+          // ★ **2026-10-12 更新**：底座**已把这两个用途解耦**（`dhampir-timeline` v7 的
+          //   `anchor_bottom`）—— `safe_width_ratio` 现在**真的被 `layout()` 读到**，
+          //   纵向归 `anchor_bottom`。
+          //   ⇒ 这里**必须显式写 `safe_width_ratio`**：不写（默认 0）底座会退回
+          //   "复用 `bottom_margin` 当左右安全宽"的老路，而 `bottom_margin` 还要表达纵向 ⇒
+          //   两个用途再次打架、宽度被压成负数、**一个字都排不出来**。
+          safe_width_ratio: 0.875,
+          // ⚠️ 保留它：**老底座（v6 及以前）只读这个字段**算安全宽，
+          //    写 0.0625 才能在老底座上同样拿到 0.875。
+          //    新底座上它退居"纵向缺省值"，而纵向已被 `anchor_bottom` 接管 ⇒ 不冲突。
           bottom_margin: (1 - 0.875) / 2,
+          // **纵向档位**（v7）：文字块**底边**的归一化 y。
+          // ⚠️ `bottom` 档**故意不写**（`undefined` ⇒ 键不出现）—— 它要减
+          // `caption_clearance`（字幕带占掉的高度，只有底座知道），写死会与字幕重叠。
+          anchor_bottom: anchorBottomFor(posName, st, height),
           max_lines: 3,
           color: st.color,
           outline: true,
@@ -5671,7 +5746,6 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ **也不截断**：排版那一步（Rust `TextLayout::solve`）已经按
           //    `CAPTION_MAX_LINES` 折好并截过，这里再截一次是重复裁剪。
           keep_all_lines: true,
-          safe_width_ratio: 0.875,
           // ── T1 弹入 / T4 抖动 / T6 底衬（2026-10-11，§5 E4a）──
           //
           // ⚠️ **只写配了的键**（`motionFields` 里 `undefined` 一律不写）：
@@ -5693,6 +5767,7 @@ export function translate(config, clipDir, outPath, options = {}) {
         })),
       });
     }
+      }
   }
 
   for (const track of stickerTracks) tracks.push(track);

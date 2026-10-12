@@ -895,6 +895,24 @@ function checkLaneSwitches(curves) {
 }
 
 const MUTATIONS = [
+  // ---- 纵向档位（2026-10-12，底座 v7 的 `anchor_bottom`）----
+  // ⚠️ 这两条打的是**同一个真缺陷的两种写法**：
+  //    `anchor_bottom` 是轨级常量、`pos` 是逐事件的，只按样式分轨就会互相覆盖。
+  {
+    name: '纵向档退回只按样式分轨 ⇒ 同一样式的三个档位共用一个 anchor_bottom（后写覆盖先写）',
+    from: 'const key = `${cue.style.name}|${cue.pos}`;',
+    to: 'const key = cue.style.name;',
+  },
+  {
+    name: '算出了纵向锚却不写进轨（等于没接）',
+    from: 'anchor_bottom: anchorBottomFor(posName, st, height),',
+    to: '',
+  },
+  {
+    name: '纵向锚恒返回不写 ⇒ 三个档位都不生效（回落贴底）',
+    from: 'if (posKey === \'bottom\') return undefined; // 见上：交给底座缺省',
+    to: 'return undefined; // 变异：恒不写',
+  },
   // ---- §5 E4a T2 打字机（2026-10-11）----
   // ⚠️ 这一条打的是**那个真缺陷**：文字元素被弹幕的出点规则抬起。
   {
@@ -2634,8 +2652,12 @@ function checkTextElementLane(mod, src = translatorSource) {
     //    （与 checkMediaProbe 那几组同口径），不是只给一个目录。
     const toml = readFileSync(join(dir, 'polish.toml'), 'utf8');
     const project = mod.translate(mod.parseToml(toml), dir, join(dir, 'elem.json'));
-    const track = (project.timeline?.tracks ?? []).find((t) => t.id === 'text_hook');
-    ok(!!track, '文字元素必须落成一条 text_hook 轨（在 `case element` 里）；实得轨：' +
+    // ⚠️ 轨 id 从 `text_<style>` 变成 **`text_<style>_<pos>`**（2026-10-12）：
+    //    `anchor_bottom` 是**轨级**常量，而 `pos` 是**逐事件**的 ⇒ 必须按
+    //    (样式 × 档位) 两维分轨，否则同一档样式的两个档位会互相覆盖。
+    const TID = TEXT_TRACK_ID;
+    const track = (project.timeline?.tracks ?? []).find((t) => t.id === TID);
+    ok(!!track, `文字元素必须按 (样式 × 纵向档) 分轨，找到 ${TID}；实得轨：` +
       JSON.stringify((project.timeline?.tracks ?? []).map((t) => t.id)));
     if (!track) return checks;
 
@@ -2661,6 +2683,32 @@ function checkTextElementLane(mod, src = translatorSource) {
       `颜色必须来自 event.source 那段（hook 是白），实得 ${JSON.stringify(st.color)}`);
 
     // ------------------------------------------------------------------
+    // ⑤b–⑤d **纵向锚 `anchor_bottom`**（2026-10-12，底座 v7）
+    //
+    // 契约是：`pos` → `anchor_bottom`（轨级常量）。
+    // ⚠️ 判据必须落在**产物里那个键**上，不能落在"我的映射函数返回了什么"——
+    //    本仓反复踩过"测到了函数、没测到调用方"（`parseStroke` 那次就是这么漏的）。
+    // ------------------------------------------------------------------
+    // ⑤b `top` 档必须**真的**给出锚点，且落在画面上半部分。
+    //
+    //     ⚠️ 不能只判 `'anchor_bottom' in st`：该键带 `skip_serializing_if`，
+    //     缺省 1.0 时**键不出现** —— 而"键不出现"正是 `bottom` 档**正确**的表现。
+    //     两档共用一条判据会互相抵消。
+    ok(typeof st.anchor_bottom === 'number',
+      'pos="top" 必须写出 anchor_bottom（缺省 1.0 不写键，所以"有值"才是对的表现），' +
+      `实得 ${JSON.stringify(st.anchor_bottom)}`);
+    ok(st.anchor_bottom > 0 && st.anchor_bottom < 0.5,
+      `pos="top" 的块底应落在画面上半部分，实得 ${st.anchor_bottom}`);
+    // ⑤c **与 `bottom_margin` 已解耦**：那个字段仍写 0.0625（老底座靠它算安全宽），
+    //     而纵向**不受它影响**（0.0625 若被当纵向用会贴到画面最底）。
+    ok(Math.abs(st.bottom_margin - (1 - 0.875) / 2) < 1e-9,
+      `bottom_margin 必须仍是 (1-0.875)/2=0.0625（老底座只读它算安全宽），实得 ${st.bottom_margin}`);
+    // ⑤d `safe_width_ratio` 必须**显式**写 —— 不写（默认 0）新底座会退回
+    //     "复用 bottom_margin 当左右安全宽"的老路，而那个字段现在还要表达纵向。
+    ok(st.safe_width_ratio === 0.875,
+      `safe_width_ratio 必须显式 0.875（不写就退回复用的老路、与纵向锚打架），实得 ${st.safe_width_ratio}`);
+
+    // ------------------------------------------------------------------
     // ⑥–⑫ §5 E4a **T2 打字机**（2026-10-11）
     //
     // ⚠️ 手法：把**同一个工程**加一行 `[elements] typewriter = true` 再跑一遍，
@@ -2677,7 +2725,7 @@ function checkTextElementLane(mod, src = translatorSource) {
       .map((l) => l.split(',').slice(9).join(','));
 
     // 开关**关着**时：一条都不许拆（这是 R4 零回归在转译侧的判据）。
-    const offTexts = textsOf(assOf(dir, 'text_hook'));
+    const offTexts = textsOf(assOf(dir, TID));
     ok(offTexts.length === 1,
       `没开打字机时文字元素必须还是 1 条 cue（存量零回归），实得 ${offTexts.length} 条：` +
       JSON.stringify(offTexts));
@@ -2692,9 +2740,9 @@ function checkTextElementLane(mod, src = translatorSource) {
       if (existsSync(join(dir, 'clip.srt'))) copyFileSync(join(dir, 'clip.srt'), join(dirOn, 'clip.srt'));
       writeFileSync(join(dirOn, 'polish.toml'), tomlOn, 'utf8');
       const pOn = mod.translate(mod.parseToml(tomlOn), dirOn, join(dirOn, 'on.json'));
-      ok((pOn.timeline?.tracks ?? []).some((t) => t.id === 'text_hook'),
-        '开了打字机之后 text_hook 轨不能消失（拆 cue 不该把整条轨弄丢）');
-      const onTexts = textsOf(assOf(dirOn, 'text_hook'));
+      ok((pOn.timeline?.tracks ?? []).some((t) => t.id === TID),
+        '开了打字机之后那条轨不能消失（拆 cue 不该把整条轨弄丢）');
+      const onTexts = textsOf(assOf(dirOn, TID));
 
       // ⑥ / ⑦ 必须真的拆开、且明显多于原句字数关系上是"逐字"。
       ok(onTexts.length > 1,
@@ -2715,7 +2763,7 @@ function checkTextElementLane(mod, src = translatorSource) {
         `最后一条必须是整句「${full}」，实得 ${JSON.stringify(onTexts[onTexts.length - 1])}`);
 
       // ⑩ 区间首尾相接、不重叠、不掉帧（把 ASS 的时间戳解析回毫秒来比）。
-      const spans = assOf(dirOn, 'text_hook').split('\n')
+      const spans = assOf(dirOn, TID).split('\n')
         .filter((l) => l.startsWith('Dialogue:'))
         .map((l) => [l.split(',')[1], l.split(',')[2]]);
       const ms = (t) => {
@@ -2788,11 +2836,141 @@ function checkTextElementLane(mod, src = translatorSource) {
   // **T5 真卡拉OK（2026-10-11）** —— 与 T2 同属"文字动效"这一族，但**切的是另一条轨**。
   // ⚠️ 抽成独立函数是**为了 `--mutate` 也能跑到它**（只写在顶层的话变异台根本不跑）。
   checks += checkKaraoke(mod, src);
+  // **纵向档位的分轨（2026-10-12）** —— 同理抽成独立函数。
+  checks += checkTextPosLanes(mod, src);
     return checks;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+/// 纵向档位（`pos`）的分轨判据（2026-10-12，底座 v7 的 `anchor_bottom`）。
+///
+/// # 这条守的是什么
+///
+/// `anchor_bottom` 是**轨级**常量，而 `pos` 是**逐事件**的。
+/// 所以"按样式分轨"是不够的：同一档样式下两个事件选了不同档位时，
+/// 它们会**共用**一个 `anchor_bottom` ⇒ **后写的那档把先写的覆盖掉**，
+/// 一部分字跑到错误的高度。⚠️ 而报告里**一行差异都没有**（转译成功、轨也在）。
+///
+/// 实测这**不是假想**：真实工程里 `hook` 同时出现过 `top` 与 `center`。
+///
+/// ⚠️ 判据是**行为**的（数产物里真的有几条轨、各自的 `anchor_bottom` 是多少），
+/// 不是"源码里有没有那行 `for`"—— 后者变异台里看不见也测不准。
+function checkTextPosLanes(mod, src) {
+  let checks = 0;
+  const ok = (cond, what) => {
+    checks += 1;
+    if (!cond) throw new Error(what);
+  };
+  const dir = mkdtempSync(join(tmpdir(), 'yekitrim-pos-'));
+  try {
+    writeFileSync(join(dir, 'clip.mp4'), Buffer.from([0, 0, 0, 0]), 'utf8');
+    // **同一个样式（hook）两条事件、两个不同档位** —— 正是会互相覆盖的那种工程。
+    writeFileSync(join(dir, 'polish.toml'), [
+      'config_version = 1',
+      'duration = 8.0',
+      'processed = true',
+      '',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = ""',
+      'danmaku = ""',
+      '',
+      '[canvas]',
+      'width = 1920',
+      'height = 1080',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 8.0',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 0.2',
+      'end = 2.0',
+      'text = "上面的标题"',
+      'style = "hook"',
+      'pos = "top"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 3.0',
+      'end = 5.0',
+      'text = "中间那一句"',
+      'style = "hook"',
+      'pos = "center"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 6.0',
+      'end = 7.8',
+      'text = "底下那句"',
+      'style = "hook"',
+      'pos = "bottom"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+      '',
+    ].join(String.fromCharCode(10)), 'utf8');
+
+    const toml = readFileSync(join(dir, 'polish.toml'), 'utf8');
+    const project = mod.translate(mod.parseToml(toml), dir, join(dir, 'pos.json'));
+    const ids = (project.timeline?.tracks ?? []).map((t) => t.id);
+    const textIds = ids.filter((id) => String(id).startsWith('text_hook'));
+
+    // ① **必须分成三条轨**。只按样式分的话这里只有一条 ⇒ 三档共用一个常量。
+    ok(textIds.length === 3,
+      `同一个样式下的三个档位必须是**三条轨**（各带自己的 anchor_bottom），` +
+      `实得 ${textIds.length} 条：${JSON.stringify(textIds)} —— ` +
+      '分不开就会出现"后写的那档覆盖先写的"（而报告里一行差异都没有）');
+
+    // ② 每档的锚点必须**不同**且**顺序正确**（上 < 中 < 下）。
+    const anchorOf = (suffix) => {
+      const t = (project.timeline?.tracks ?? []).find((x) => x.id === `text_hook_${suffix}`);
+      ok(!!t, `缺 text_hook_${suffix} 轨；实得 ${JSON.stringify(textIds)}`);
+      return t?.subtitle?.anchor_bottom;
+    };
+    const top = anchorOf('top');
+    const center = anchorOf('center');
+    const bottom = anchorOf('bottom');
+    ok(typeof top === 'number' && typeof center === 'number',
+      `top/center 两档必须写出 anchor_bottom（实得 top=${top} center=${center}）`);
+    // ⚠️ `bottom` 档**故意不写键**（`undefined`）—— 它要减 `caption_clearance`，
+    //    只有底座知道那个值；写成常数会让文字压住字幕。
+    //    所以这里判的是"它**没有**写死一个数"，而不是"它等于某个数"。
+    ok(bottom === undefined,
+      `bottom 档不许写死 anchor_bottom（要留给底座扣 caption_clearance，` +
+      `写死会压住字幕），实得 ${JSON.stringify(bottom)}`);
+    ok(top < center,
+      `上档的块底必须高于中档：top=${top} center=${center}`);
+
+    // ③ `bottom` 档走缺省 ⇒ 在软件里等价于 1.0，必须**低于**前两档。
+    ok(center < 1.0, `中档的块底必须高于缺省贴底（1.0），实得 ${center}`);
+
+    // ④ 源码文本判据（变异台里行为判据看不见变异体，见函数末尾那段注释）：
+    //    分组键必须是**两维**的。
+    ok(src.includes('`${cue.style.name}|${cue.pos}`'),
+      '分组键必须是「样式 | 纵向档」两维（`${cue.style.name}|${cue.pos}`）—— ' +
+      '退回只按样式分，三档就会共用一个 anchor_bottom');
+    ok(src.includes('anchor_bottom: anchorBottomFor(posName, st, height)'),
+      '轨上必须真的写出 `anchorBottomFor(posName, st, height)` —— ' +
+      '算出来了却没写进轨，等于没接');
+    return checks;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/// 文字轨的 id 前缀 —— **轨 id 是 `text_<样式>_<纵向档>`**（2026-10-12）。
+///
+/// ⚠️ 提到模块级：`checkTextElementLane` 与 `checkTextMotion` 两处都要用它，
+/// 各自写一份字面量的话，"哪天分轨规则再变"会只改一处、另一处**静默测错轨**
+/// （找不到轨就会报"夹具不完整"，而真因是 id 变了 —— 归因会跑偏）。
+const TEXT_TRACK_ID = 'text_hook_top'; // 夹具工程写的是 style=hook / pos=top
 
 /// T1/T4/T6 的判据（§5 E4a，2026-10-11）。
 ///
@@ -2806,7 +2984,7 @@ function checkTextMotion(mod, dir, src) {
     if (!cond) throw new Error(what);
   };
 
-  /// 用同一份工程、换 `[elements]` 段，跑一次 `translate`，取 `text_hook` 轨的 `subtitle`。
+  /// 用同一份工程、换 `[elements]` 段，跑一次 `translate`，取文字轨的 `subtitle`。
   const withElements = (extraLines) => {
     const lines = [
       'config_version = 1',
@@ -2847,7 +3025,7 @@ function checkTextMotion(mod, dir, src) {
     ];
     if (extraLines.length) lines.push('[elements]', ...extraLines, '');
     const doc = mod.translate(mod.parseToml(lines.join(String.fromCharCode(10))), dir, join(dir, 'm.doc.json'));
-    const track = (doc.timeline?.tracks ?? []).find((t) => t.id === 'text_hook');
+    const track = (doc.timeline?.tracks ?? []).find((t) => t.id === TEXT_TRACK_ID);
     return track ? (track.subtitle ?? {}) : null;
   };
 
@@ -2860,7 +3038,7 @@ function checkTextMotion(mod, dir, src) {
   // ⚠️ 这条是 **R4 红线**的执行处：不配 `[elements]` 的工程必须产出与今天
   // **逐字节相同**的底座工程。多一个键 = "升级一次、成片可能就变了"。
   const off = withElements([]);
-  ok(off !== null, '夹具不完整：`text_hook` 轨没出现（`[source]` 段少了会让 `remapFrame` 全返回 null）');
+  ok(off !== null, '夹具不完整：文字轨没出现（`[source]` 段少了会让 `remapFrame` 全返回 null）');
   const leaked = MOTION_KEYS.filter((k) => k in off);
   ok(leaked.length === 0,
     `没配 \`[elements]\` 却写出了动效键 ${JSON.stringify(leaked)} —— ` +
@@ -2895,7 +3073,7 @@ function checkTextMotion(mod, dir, src) {
   ];
   for (const [label, tomlLine, key, want] of perField) {
     const st = withElements([tomlLine]);
-    ok(st !== null, `夹具不完整（${label} 那一档没拿到 text_hook）`);
+    ok(st !== null, `夹具不完整（${label} 那一档没拿到文字轨）`);
     ok(key in st, `配了 \`${label}\`，底座工程里却没有 \`${key}\` 这个键 —— 用户配了等于没配`);
     ok(JSON.stringify(st[key]) === JSON.stringify(want),
       `\`${key}\` 应当写成 ${JSON.stringify(want)}，实得 ${JSON.stringify(st[key])}`);
