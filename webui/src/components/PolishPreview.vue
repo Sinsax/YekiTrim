@@ -3413,7 +3413,15 @@ function pause() {
       内联 transform 承载动画（scale/rotate），两者写同一个属性会互相覆盖
       （表现就是"字的位置突然跳掉"或"缩放不动"，且不报错）。 */
 .text-layer { position:absolute; top:0; left:0; width:var(--ov-w, 1920px); height:100%; pointer-events:none; }
-.text-el { position:absolute; white-space:pre; translate:-50% -50%; line-height:1.15;
+/* ⚠️⚠️ **`translate:-50% -50%` 已删（2026-10 修）** —— `process` 写回的 `x`/`y` 是**盒子左上角**，
+   不是中心：`Pick` 的字段注释就写着「贴纸盒子左上角（帧像素）」（`placement.rs:904`），
+   写回走同一个 `x_pct()`/`y_pct()`；同层的 `.sticker-el` 也正是 `left/top` **不居中**。
+   带着 `-50% -50%` 的后果：文字**以落点为心**摆，左半边整块跑到画布外 ——
+   实测 `left:2%` + 宽 758px 时，画面上只剩「中的文字元素」，而完整的是「这就是传说中的文字元素」。
+   **既不报错也不裁切**（`.text-layer` 是 `overflow:visible`），只是默默缺半句。
+   ⚠️ 居中的活儿 Rust 那边算落点时就做了（它按**排版后的真盒子**挑不重叠的点）——
+   前端再加一次 = 同一件事做两遍、且第二遍是错的。 */
+.text-el { position:absolute; white-space:pre; line-height:1.15;
            /* 同 `.cap` / `.dm`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，
               会盖掉父层继承的字体栈（那个栈是"预览与成片同源"的唯一通道）⇒ 必须 inherit。 */
            font-family:inherit;
