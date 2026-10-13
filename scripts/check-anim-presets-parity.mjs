@@ -199,41 +199,66 @@ ok(uiNonEmpty.length >= 17,
     '⑤ `fade_only`（只淡出）必须在两侧都在 —— 它是"空预设"那条语义的唯一入口')
 }
 
-// ---- ⑥ 接线：下拉真的接到事件字段上了吗 ----
+// ---- ⑥ 接线：两个下拉真的各自接到**自己那个**事件字段上了吗 ----
 //
 // ⚠️ 光有清单不算接通 —— 本仓踩过多次"函数写好、没人调"。
 //
-// ⚠️ **2026-10-13：两级界面之后，接线形态变了**（一个下拉 → 种类 + 细分两个）。
-//    断言跟着改，但**下面那条"空串必须落成 `null`"一个字都不许放宽**
-//    —— 它守的是 R4（写空串会让老工程的 toml 多一个键、产物变）。
-// ① 两级控件必须**都**接到事件字段上。
-ok(/setAnimKind\(/.test(editorSrc),
-  '⑥ 种类控件没有接线（`setAnimKind` 没人调）—— 用户选了种类写不进事件')
-ok(/setAnimVariant\(/.test(editorSrc),
-  '⑥ 细分控件没有接线（`setAnimVariant` 没人调）—— 用户选了细分写不进事件')
-ok(/<select[^>]*:value="animKind"[^>]*@change="setAnimKind\(\$event\.target\.value\)"/.test(editorSrc),
-  '⑥ 种类下拉没有绑到 `animKind` / `setAnimKind($event.target.value)`')
-ok(/<select[^>]*:value="selItem\.anim \|\| ''"[^>]*@change="setAnimVariant\(\$event\.target\.value\)"/.test(editorSrc),
-  '⑥ 细分下拉没有绑到 `selItem.anim` / `setAnimVariant($event.target.value)`')
-// ② **两个**写回点都必须落 `null`。
+// ⚠️⚠️ **2026-10-13：两级化（样式 × 动效，可叠加）之后接线形态又变了一次**：
+//    从"一个下拉两级"变成**两条独立的轴，各自种类 + 细分**。
+//    断言跟着改，但**"空串必须落成 `null`"一个字都不许放宽** —— 它守的是 R4
+//    （写空串会让老工程的 toml 多一个键、产物变）。
+//
+// ⚠️ 这里**必须验两条轴各写各的字段**：只验"有写回"的话，
+//    "两轴都写同一个字段"（= 三级互斥那一版的错法）会照样通过 ——
+//    而它的症状正是用户报的那个：「选了样式，动效被清掉」。
+// ① 两条轴的两个控件都必须接线。
+ok(/setKindOnAxis\(/.test(editorSrc),
+  '⑥ 种类控件没有接线（`setKindOnAxis` 没人调）—— 用户选了种类写不进事件')
+ok(/setVariantOnAxis\(/.test(editorSrc),
+  '⑥ 细分控件没有接线（`setVariantOnAxis` 没人调）—— 用户选了细分写不进事件')
+// ⚠️ 两条轴**各自**绑到**自己那一个**字段上（'style'→style_anim / 'effect'→effect_anim）。
+ok(/<select[^>]*:value="styleKind"[^>]*@change="setKindOnAxis\('style', \$event\.target\.value\)"/.test(editorSrc),
+  '⑥ 样式的**种类**下拉没有绑到 `styleKind` / `setKindOnAxis(\'style\', …)`')
+ok(/<select[^>]*:value="effectKind"[^>]*@change="setKindOnAxis\('effect', \$event\.target\.value\)"/.test(editorSrc),
+  '⑥ 动效的**种类**下拉没有绑到 `effectKind` / `setKindOnAxis(\'effect\', …)`')
+ok(/<select[^>]*:value="selItem\.style_anim \|\| ''"[^>]*@change="setVariantOnAxis\('style'/.test(editorSrc),
+  '⑥ 样式的**细分**下拉没有绑到 `selItem.style_anim` / `setVariantOnAxis(\'style\', …)`')
+ok(/<select[^>]*:value="selItem\.effect_anim \|\| ''"[^>]*@change="setVariantOnAxis\('effect'/.test(editorSrc),
+  '⑥ 动效的**细分**下拉没有绑到 `selItem.effect_anim` / `setVariantOnAxis(\'effect\', …)`')
+// ② **四个**写回点（两轴 × 种类/细分）都必须落 `null`。
 {
-  const writes = [...editorSrc.matchAll(/selItem\.value\.anim = ([^\n]+)/g)].map((m) => m[1].trim())
-  ok(writes.length === 2,
-    `⑥ 写回 \`selItem.anim\` 的地方应当**恰好 2 处**（种类 / 细分），实得 ${writes.length}：${JSON.stringify(writes)}`)
+  // ⚠️ 写回走的是 `selItem.value[axisField(axis)] = …` —— 按**下标**写，
+  //    所以扒的是"赋值右侧"而不是写死的字段名。
+  const writes = [...editorSrc.matchAll(/selItem\.value\[[^\]]*\] = ([^\n]+)/g)].map((m) => m[1].trim())
+  ok(writes.length >= 2,
+    `⑥ 写回两轴字段的地方太少（应当 ≥2 处：两轴各一），实得 ${writes.length}：${JSON.stringify(writes)}`)
   const bad = writes.filter((w) => !/\|\|\s*null$/.test(w))
   ok(bad.length === 0,
     `⑥ 有写回没有落成 \`null\`（空串会写进 toml，老工程产物变了）：${JSON.stringify(bad)}`)
+  // ⚠️⚠️ **两轴必须写不同的字段** —— 这是"可叠加"与"互斥"的分界。
+  ok(/axis === 'style' \? 'style_anim' : 'effect_anim'/.test(editorSrc),
+    '⑥ 两轴没有分别映射到 `style_anim` / `effect_anim` —— ' +
+    '若两轴写同一个字段，用户选样式会把动效**清掉**（那正是回退掉的那版错法）')
 }
-// ③ 认不出的档名仍要**看得见**（不许被悄悄归成"不动效"）。
-ok(/ANIM_KNOWN\.includes\(selItem\.anim\)/.test(editorSrc),
-  '⑥ 认不出的档名没有被显式显示出来 —— 用户会看到"不动效"而以为自己没选错')
-ok(/animKind === ''/.test(editorSrc),
-  '⑥ 认不出的档名没有让**种类**控件落到"未知"那一支 —— 两级界面下用户看不到它是哪一类')
-// 转译器那侧：`anim` 必须真的被读进来（不是只定义了预设表）。
+// ③ 认不出的档名仍要**看得见**（不许被悄悄归成"不动效"），**两轴各一条**。
+for (const [ax, field] of [['样式', 'style_anim'], ['动效', 'effect_anim']]) {
+  ok(new RegExp(`ANIM_KNOWN\\.includes\\(selItem\\.${field}\\)`).test(editorSrc),
+    `⑥ ${ax}那栏：认不出的档名没有被显式显示出来 —— 用户会看到"不动效"而以为自己没选错`)
+  ok(new RegExp(`v-if="${ax === '样式' ? 'styleKind' : 'effectKind'} === ''"`).test(editorSrc),
+    `⑥ ${ax}那栏：认不出的档名没有让**种类**控件落到"未知"那一支`)
+}
+// ④ `both` 的类（`scatter_shake` / `hop_*` / `pop_perchar` …）必须在**两轴都出现**
+//    —— 它们两边都给参数，只放一边会让用户以为另一半不存在。
+ok(/k\.axis === axis \|\| k\.axis === 'both'/.test(editorSrc),
+  '⑥ 轴筛选没把 `both` 的类算进去 —— `scatter_shake`/`hop_*`/`pop_perchar` 会从某一栏消失，' +
+  '而它们确实两边都给参数')
+// 转译器那侧：老字段 + 两个新字段都必须真的被读进来。
 ok(/String\(event\.anim \?\? ''\)/.test(transSrc),
-  '⑥ 转译器没读 `event.anim` —— 预设表定义了却没人用')
-ok(/animPreset\(cues\[0\]\.anim\)/.test(transSrc),
-  '⑥ 预设没被摊进文字轨（`motionFields` 拿不到它）')
+  '⑥ 转译器没读 `event.anim` —— 存量迁移没了，老工程的效果会整体消失')
+ok(/animPreset\(cues\[0\]\.effectAnim\)/.test(transSrc),
+  '⑥ 转译器没把**动效轴**摊进文字轨（`motionFields` 拿不到它）—— 用户选了抖动、成片里不抖')
+ok(/animPreset\(cues\[0\]\.styleAnim\)/.test(transSrc),
+  '⑥ 转译器没把**样式轴**摊进文字轨 —— 用户选了竖排、成片里横着')
 ok(/ANIM_KNOWN\.join/.test(transSrc),
   '⑥ 认不出的档名没在报告里列出已知档 —— 用户不知道该改成什么')
 

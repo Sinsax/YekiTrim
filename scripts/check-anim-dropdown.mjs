@@ -42,11 +42,13 @@ ok(!!script, 'TimelineEditor.vue 没有 <script setup>（判据的前提没了�
 // ⚠️ 编译 `<script setup>` 会拿到 `bindings`（模板可用的标识符全集）。
 const compiled = sfc.compileScript(parsed.descriptor, { id: 'x' })
 const bindings = new Set(Object.keys(compiled.bindings ?? {}))
-// ⚠️ **2026-10-13：下拉改成两级（种类 → 细分）**，模板引用的标识符跟着变。
-//    这几个**每一个都必须真的在绑定里** —— 模板引用了未绑定的名字时
-//    Vue **不报错、渲染成空白**，而构建照样成功（这正是本脚本存在的理由）。
-for (const id of ['ANIM_KINDS', 'ANIM_KNOWN', 'animKind', 'animVariants',
-                  'animKindHint', 'setAnimKind', 'setAnimVariant']) {
+// ⚠️ **2026-10-13：下拉改成两轴（样式 × 动效），每轴各自两级（种类 → 细分）**。
+//    模板引用的标识符跟着变。这几个**每一个都必须真的在绑定里** ——
+//    模板引用了未绑定的名字时 Vue **不报错、渲染成空白**，构建照样成功
+//    （这正是本脚本存在的理由）。
+for (const id of ['ANIM_KINDS', 'ANIM_KNOWN', 'kindsOnAxis',
+                  'styleKind', 'effectKind', 'styleVariants', 'effectVariants',
+                  'styleHint', 'effectHint', 'setKindOnAxis', 'setVariantOnAxis']) {
   ok(bindings.has(id),
     `① \`${id}\` 不在 \`<script setup>\` 的绑定里 —— 模板引用它会渲染成空白**且不报错**`)
 }
@@ -85,9 +87,10 @@ ok(new Set(nonEmpty).size === nonEmpty.length, '② 有重复档名')
 
 // ---- ③ 模板真的用了这些标识符（而不只是定义了）----
 //
-// ⚠️ **两级**：种类一个 `<select>`、细分另一个。以前那条
-//    `v-for="g in ANIM_GROUPS"` + `<optgroup>` 的断言**已经作废**
-//    （那正是用户说"还是这个"的形态）—— 换成断言两级真的各有一个控件。
+// ⚠️ **两轴 × 两级**：样式那条轴一个"种类"下拉 + 一个"细分"下拉，
+//    动效那条轴同样两个 ⇒ **模板里应当有四个 `<select>`**。
+//    以前那条 `v-for="g in ANIM_GROUPS"` + `<optgroup>` 的断言**已经作废**
+//    （那正是用户说"还是这个"的形态）。
 const tpl = parsed.descriptor.template?.content ?? ''
 // ⚠️⚠️ **先剥 HTML 注释再匹配** —— 本仓踩过这个假阳性（`check_module_boundaries.py`
 //    的上一版手写 grep 判据因此产出 8 条假阳性，等于没用）。
@@ -95,16 +98,30 @@ const tpl = parsed.descriptor.template?.content ?? ''
 //    （否则下一个人会把它加回来），而只匹配文本的判据会**把说明当成违规**。
 //    ⇒ 断言只对**真标记**生效。`(?<!--)` 不做可变长回看，所以直接整体剥掉。
 const tplMarkup = tpl.replace(/<!--[\s\S]*?-->/g, '')
-ok(/v-for="k in ANIM_KINDS"/.test(tplMarkup), '③ 模板没有 `v-for="k in ANIM_KINDS"` —— 种类下拉是空的')
-ok(/v-for="a in animVariants"/.test(tplMarkup), '③ 模板没有 `v-for="a in animVariants"` —— 细分下拉是空的')
+// ⚠️ 两条轴**各自**要有种类下拉（`kindsOnAxis('style')` / `('effect')`）。
+ok(/v-for="k in kindsOnAxis\('style'\)"/.test(tplMarkup),
+  "③ 样式那条轴没有种类下拉（`v-for=\"k in kindsOnAxis('style')\"`）—— 那一栏是空的")
+ok(/v-for="k in kindsOnAxis\('effect'\)"/.test(tplMarkup),
+  "③ 动效那条轴没有种类下拉（`v-for=\"k in kindsOnAxis('effect')\"`）—— 那一栏是空的")
+ok(/v-for="a in styleVariants"/.test(tplMarkup), '③ 样式那条轴的细分下拉是空的')
+ok(/v-for="a in effectVariants"/.test(tplMarkup), '③ 动效那条轴的细分下拉是空的')
 ok(/ANIM_KNOWN\.includes\(/.test(tplMarkup), '③ 模板没有用 `ANIM_KNOWN` 判断未知档')
-ok(/animKind === ''/.test(tplMarkup), '③ 认不出的档名没有让种类控件落到"未知"那一支')
+ok(/styleKind === ''/.test(tplMarkup), '③ 样式栏：认不出的档名没有落到"未知"那一支')
+ok(/effectKind === ''/.test(tplMarkup), '③ 动效栏：认不出的档名没有落到"未知"那一支')
+// ⚠️⚠️ **两轴必须绑到两个不同的字段** —— 绑同一个就是"互斥"（回退掉的那版错法）。
+ok(/selItem\.style_anim/.test(tplMarkup) && /selItem\.effect_anim/.test(tplMarkup),
+  '③ 模板没有分别绑到 `selItem.style_anim` 与 `selItem.effect_anim` —— ' +
+  '两轴共用一个字段 ⇒ 用户选样式会把动效清掉（**可叠加**就不成立了）')
 // ⚠️ **只对真标记断言**（`tplMarkup`）—— 见上面"先剥注释"那段。
 ok(!/<optgroup/.test(tplMarkup),
   '③ 又出现了 `<optgroup>` —— 那是"四十项平铺进一个下拉"的旧形态，用户报过"还是这个"')
 // ⚠️ 未知档必须**有 option**（否则 `<select>` 的值匹配不上任何一项，
-//    浏览器会显示成第一项"不动效"——用户以为自己没选错）。
-ok(/未知档/.test(tplMarkup), '③ 模板里没有"未知档"那条 option')
+//    浏览器会显示成第一项"不动效"——用户以为自己没选错）。**两轴各一条**。
+{
+  const unknownCount = (tplMarkup.match(/未知档/g) ?? []).length
+  ok(unknownCount >= 2,
+    `③ "未知档"那条 option 只有 ${unknownCount} 条 —— 两轴各要一条（否则某栏会静默显示成"无"）`)
+}
 
 // ---- 结果 ----
 if (fails.length === 0) {
