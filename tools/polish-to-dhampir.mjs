@@ -2085,6 +2085,41 @@ export function translate(config, clipDir, outPath, options = {}) {
     const all = remapFrames(sourceFrame);
     return all.length > 0 ? all[0] : null;
   };
+  /// 源**结束**帧 -> 输出帧号（**闭区间口径**，与 `remapFrame` 差一格）。
+  ///
+  /// ⚠️⚠️ **这是 2026-10-13 修的一个真缺陷**，症状是"文字/字幕只闪一帧"：
+  ///
+  /// `keepRanges` 是 `[start, end)` 半开区间（`remapFrames` 里那句
+  /// `sourceFrame >= range.end` ⇒ `continue`），而事件的 `end` 是**闭**的
+  /// （`time = 0` + `end = 3.0` ⇒ 想覆盖到最后一帧）。于是"恰好结束在片段末尾"
+  /// 的事件，它的结束帧正好落在半开区间的**外**侧 ⇒ `remapFrame` 返回 `null`
+  /// ⇒ 五个调用点全都写 `?? startFrame + 1` ⇒ **整条只占 1 帧**。
+  ///
+  /// 实测（60fps、`duration = 3.0`、`time = 0` + `end = 3.0`）：
+  ///   `remapFrame(180)` = **null** ⇒ 报告"占 1 帧"，成片里那行字闪一下就没；
+  ///   把 `end` 改成 2.9 ⇒ **同一份工程**报"占 174 帧"，一切正常。
+  /// ⇒ **"改成 2.9 就好了"这种规避**正是本仓最该修掉的那类坑：
+  ///   用户没有任何理由知道"别把 end 写到段尾"。
+  ///
+  /// 口径：结束帧若落在某段上，取**该段的最后一帧**（`outStart + durFrames - 1`）；
+  /// 恰好落在段尾（`== range.end`）时归给**紧邻的上一段**的末尾。
+  ///
+  /// ⚠️ **别图省事给 `remapFrame` 整体加一格** —— 起点那侧**必须**保持半开口径，
+  ///    否则 `time` 恰好落在剪辑点上的 cue 会同时命中两段、**在成片里画两遍**。
+  ///    起点与终点的口径**天生不对称**，所以这里单开一个函数而不是改那一个。
+  const remapEndFrame = (sourceFrame) => {
+    const hit = remapFrame(sourceFrame);
+    if (hit !== null) return hit;
+    // 落在段尾/段间 ⇒ 取"结束位置 <= sourceFrame"里**最靠后**的那一段的末帧。
+    let best = null;
+    for (const range of keepRanges) {
+      if (range.end > sourceFrame) continue;
+      const length = Math.round(range.durFrames ?? (range.end - range.start));
+      const last = range.outStart + Math.max(0, length - 1);
+      if (best === null || last > best) best = last;
+    }
+    return best;
+  };
   /// 源秒 -> 输出帧号（便捷）。
   const remapSeconds = (seconds) => remapFrame(frameAt(seconds));
 
@@ -2419,7 +2454,7 @@ export function translate(config, clipDir, outPath, options = {}) {
       note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
       return false;
     }
-    const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
+    const endFrame = remapEndFrame(srcEnd) ?? startFrame + 1;
     const id = `adj${adjustmentEffects.length}`;
     adjustmentEffects.push({
       id,
@@ -3799,7 +3834,7 @@ export function translate(config, clipDir, outPath, options = {}) {
             note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
             break;
           }
-          const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
+          const endFrame = remapEndFrame(srcEnd) ?? startFrame + 1;
           const length = Math.max(1, endFrame - startFrame);
           // **`intensity` 是像素。** YekiTrim 的 `shake()` 把它**直接**当 CSS 位移用：
           //
@@ -3980,7 +4015,7 @@ export function translate(config, clipDir, outPath, options = {}) {
             note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
             break;
           }
-          const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
+          const endFrame = remapEndFrame(srcEnd) ?? startFrame + 1;
           // 落点：两种模式，**基准不同、不许"统一"**
           // （与 `templates/index.html::stickerAnchor`、`engine.js::stickerAnchor` 逐字同口径）：
           //
@@ -4201,7 +4236,7 @@ export function translate(config, clipDir, outPath, options = {}) {
               note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
               break;
             }
-            const endFrame = Math.max(startFrame + 1, remapFrame(srcEnd) ?? startFrame + 1);
+            const endFrame = Math.max(startFrame + 1, remapEndFrame(srcEnd) ?? startFrame + 1);
             // ⚠️ `pos` 是**逐事件**的，而字幕轨是**按样式分**的 ⇒ 同一档样式的
             //    不同事件可能选不同纵向档（实测 `hook` 同时有 `top` 与 `center`）。
             //    `anchor_bottom` 是**轨级**常量 ⇒ 必须**按 (style, pos) 两维分组**，
@@ -4315,7 +4350,7 @@ export function translate(config, clipDir, outPath, options = {}) {
             note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
             break;
           }
-          const endFrame = remapFrame(srcEnd) ?? startFrame + 1;
+          const endFrame = remapEndFrame(srcEnd) ?? startFrame + 1;
           sfxClips.push({
             name,
             start: startFrame,

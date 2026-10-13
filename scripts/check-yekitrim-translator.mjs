@@ -3402,6 +3402,70 @@ function checkTextMotion(mod, dir, src) {
       '认得出的 `sway_lg` 不该被报成"不认识"');
   }
 
+  // ㊳-bis ⚠️⚠️ **结束帧恰好落在片段末尾时，整条不许塌成 1 帧**
+  //
+  // ⚠️ 这一条是**用户报出来的**（「前端预览没有实现效果」的更深一层）：
+  //    事件的 `end` 是**闭**区间，而 `keepRanges` 是 `[start, end)` 半开 ——
+  //    `end` 恰好等于片段末尾时，结束帧落在半开区间的**外**侧 ⇒ 重映射返回 null
+  //    ⇒ 调用点兜底成 `startFrame + 1` ⇒ **那行字只占 1 帧**（成片里闪一下就没）。
+  //
+  //    ⚠️ 这个坑**特别阴**：把 `end` 从 3.0 改成 2.9 就一切正常，
+  //       所以它极易被当成"用户写错了"。用户没有任何理由知道"别写到段尾"。
+  //
+  // ⚠️ 判据必须核**帧数**，不能只核"有没有报错" —— 它的表现是**静默**的：
+  //    报告正常、轨 id 正常、JSON 合法，只有时长是 1。
+  {
+    const mk = (endSec) => ({
+      config_version: 1, duration: 3.0, processed: true,
+      source: { video: 'clip.mp4' },
+      canvas: { width: 1920, height: 1080, fps: 60 },
+      segments: [{
+        start: 0.0, end: 3.0, fx: 'low',
+        events: [{
+          type: 'element', kind: 'text', text: '贴边', style: 'comment', pos: 'bottom',
+          x: '28%', y: '58%', time: 0.0, end: endSec,
+          source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1',
+        }],
+      }],
+    })
+    const spanOf = (cfg, name) => {
+      const doc = mod.translate(cfg, dir, join(dir, name))
+      const t = (doc.timeline?.tracks ?? []).find((x) => String(x.id).startsWith('text_'))
+      const l = (t?.layers ?? [])[0]
+      return l ? (l.end - l.start) : -1
+    }
+    // ① 结束在**段尾**（180 帧的工程、end = 3.0）⇒ 必须是整条，不是 1 帧。
+    const atEnd = spanOf(mk(3.0), 'edge-end.json')
+    ok(atEnd > 1,
+      '结束帧恰好落在片段末尾时**整条塌成了 ' + atEnd + ' 帧** —— 成片里那行字只闪一下\n' +
+      '     ⚠️ 根因：事件的 `end` 是闭区间，而 `keepRanges` 是 `[start, end)` 半开；\n' +
+      '        恰好等于段尾时重映射返回 null，调用点兜底成 `startFrame + 1`。\n' +
+      '        ⇒ 用户把 `end` 从 3.0 改成 2.9 就好了 —— 这种"规避"正是最该消灭的坑。')
+    // ② 与"差了 0.1 秒"的那份**必须基本等长**（±2 帧），证明边界那格没被吃掉一整段。
+    const inside = spanOf(mk(2.9), 'edge-in.json')
+    ok(Math.abs(atEnd - inside) <= 2,
+      '贴边那份（' + atEnd + ' 帧）与不贴边那份（' + inside + ' 帧）差得太多 —— ' +
+      '边界那一格要么被吃掉了一整段、要么被多算了')
+    // ③ ⚠️ **起点那侧必须仍是半开口径** —— 否则落在剪辑点上的 cue 会**画两遍**。
+    //    这里用"起点恰好在段尾"去核：它不该被算进那一段（否则同一条会命中两段）。
+    const startAtBoundary = spanOf({
+      config_version: 1, duration: 3.0, processed: true,
+      source: { video: 'clip.mp4' },
+      canvas: { width: 1920, height: 1080, fps: 60 },
+      segments: [{
+        start: 0.0, end: 3.0, fx: 'low',
+        events: [{
+          type: 'element', kind: 'text', text: '段尾起', style: 'comment', pos: 'bottom',
+          x: '28%', y: '58%', time: 3.0, end: 3.0,
+          source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1',
+        }],
+      }],
+    }, 'edge-start.json')
+    ok(startAtBoundary <= 1,
+      '起点恰好落在段尾的事件被算成了 ' + startAtBoundary + ' 帧 —— ' +
+      '起点那侧必须保持半开口径（否则剪辑点上的 cue 会命中两段、在成片里画两遍）')
+  }
+
   // ㊴ **不写 `anim` 时轨 id 不变**（R4：老工程产物逐字节相同）。
   {
     const track = (() => {
