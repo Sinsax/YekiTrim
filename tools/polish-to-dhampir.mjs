@@ -804,6 +804,24 @@ export function danmakuExitMs(startMs, endMs, travelMs) {
 ///
 /// ⚠️ 所以这里加一个**显式开关**而不是改 `danmakuExitMs`：
 ///   那条规则对弹幕是**对的**（有实测支撑，改它会让弹幕提前消失）。
+/// **文档像素描边宽 → ASS `Outline` 单位**。
+///
+/// ⚠⚠ 两边的"宽"定义**不同**：
+///   * `polish.toml` / `ElementStyle::base_stroke_px()` 的值是**外侧**宽度（文档像素）；
+///   * ASS 的 `Outline` 是**单侧**宽度，且单位与字号无关（它自己会随 `Fontsize` 缩放）。
+///
+/// ⇒ **除 2**。这个 `/2` 不是这里自己想的：同一份文件的契约路径早就写着
+///   `stroke_ratio: st.strokePx / 2 / height`（见下面那一行）——
+///   **`/2` 那一步必须两条路一致**，不同就是"同一份编辑器里选的描边，
+///   预览/契约路径粗细不一样"。
+///
+/// ⚠ 不传 / 非有限值 ⇒ 返 `undefined`，调用点落回老值 `2`（弹幕那条路不动，R4）。
+function strokePxToAss(strokePx, fontPx) {
+  const v = Number(strokePx);
+  if (!Number.isFinite(v) || v <= 0) return undefined;
+  return v / 2;
+}
+
 /// ⚠⚠ **`font` 没有默认值、也不许给默认值**（2026-10-14）。
 ///
 ///    它**曾经默认 `'Sans'`**，而两个调用点里有一个（文字元素那条）**没传** ⇒
@@ -813,7 +831,7 @@ export function danmakuExitMs(startMs, endMs, travelMs) {
 ///
 ///    ⇒ 默认值**整个删掉**：新调用点忘了传，这里当场 `throw` ——
 ///      比"悄悄用 Sans"好，因为症状本来就是不可见的。
-function cuesToAss(cues, { font, fontSize = 42, danmaku = true } = {}) {
+function cuesToAss(cues, { font, fontSize = 42, danmaku = true, outlinePx, shadowPx } = {}) {
   if (typeof font !== 'string' || !font.trim()) {
     throw new Error(
       'cuesToAss: 必须显式传 font（不许用默认值）—— ' +
@@ -848,7 +866,7 @@ function cuesToAss(cues, { font, fontSize = 42, danmaku = true } = {}) {
   const primary = Array.isArray(first) ? first : [255, 255, 255, 255];
   out.push(
     `Style: Default,${font},${fontSize},${assColor(primary)},&H000000FF,&H00000000,&H80000000,` +
-      '0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1',
+      `0,0,0,0,100,100,0,0,1,${outlinePx ?? 2},${shadowPx ?? 1},2,10,10,10,1`,
   );
   out.push('');
   out.push('[Events]');
@@ -6825,8 +6843,20 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    **库里那支要换成真族名**（libass 按族名找字体，
         //    而 `polish.toml` 存的是**库 id**；实测传 id 落 ArialMT、传真族名才命中）。
         //    空值落到出厂默认文字字体。
+        // ⚠️⚠️ **描边宽必须走元素自己的四档**（2026-10-14 修，用户报的问题 ③）。
+        //
+        //    `cuesToAss` 的 `Outline` 以前**写死成字幕默认的 `2`** ——
+        //    而 `st.strokePx` 早就算好了（`parseTextStyle` 解析 + `TEXT_STYLE_FALLBACK`
+        //    四档 6/5/2/4，与 Rust `ElementStyle::base_stroke_px()` **逐值一致**）。
+        //    ⇒ 用户看到的四档**描边一样粗**，而 ASS 文件、报告、日志三者全正常。
+        //
+        //    ⚠️ 与问题 ② 是**同一条缝**：都是"值算出来了、没人读"。
+        //    ⚠️ `Shadow` 同理给 1（老值），**不从别处抄** —— 底座那边只有一行
+        //      `Shadow`，字幕与元素本来就用同一个值。
         { font: fontFamilyFor(sharedSubStyle.font) || DEFAULT_DANMAKU_FONT,
-          fontSize: st.fontPx, danmaku: false },
+          fontSize: st.fontPx, danmaku: false,
+          outlinePx: strokePxToAss(st.strokePx, st.fontPx),
+          shadowPx: 1 },
       );
       const assPath = join(clipDir, `dhampir-${id}.ass`);
       writeFileSync(assPath, ass, 'utf8');
