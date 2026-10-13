@@ -118,7 +118,8 @@
 <h1>文字元素样式 · 设计靶子 <span class="tag">4 档 → 重新设计</span></h1>
 <p class="lede">
   <b>元素层</b>（时间轴上那种"贴在画面上的情绪字"）自己的样式。与<b>字幕层</b>的 24 字段、
-  与<b>动效层</b>的 39 档都不是一回事 —— 那两层各有自己的设计稿。
+  与<b>动效层</b>的 39 档都不是一回事 —— <b>但这一层自己也有过三份设计稿</b>（见 ⓪ 节，都在）。
+  本页是在那基础上<b>往"4 档内部拉开差别"这个方向</b>再走一步。
 </p>
 
 <div class="callout warn">
@@ -134,6 +135,36 @@
   <b>静默错位</b>（<code>backdrop</code> 被读成 <code>tilt_deg</code>，症状是"底衬没了、字歪了"，
   而<b>两边单测各自都过</b>）。
 </div>
+
+<h2>⓪ 先读这个：本层**已有三份设计稿** <span class="sub">别从零开始，也别以为被删了</span></h2>
+<div class="callout ok">
+  这一层<b>不是没有设计</b>。早先有三份，是一轮轮迭代下来的（全部健在，无一被删）：
+  <table class="kv" style="margin-top:8px">
+    <tr><td>text-styles-emotion-draft.html</td><td>12 KB</td>
+        <td><b>13 档按情绪</b>（欢呼/爆笑/喝彩/轻声/软糖/元气/惊吓/不安/低语/吐槽/沉默/提示/强调）。
+            头部写明<b>只用底座真有的字段</b>，并区分"今天就能出片"(绿) 与"底座已有、接一下"(黄)。</td></tr>
+    <tr><td>text-styles-comic-draft.html</td><td>45 KB</td>
+        <td>🔴 <b>⚠️ 这一份不是元素样式</b> —— 它定义的是 <b>39 档「动效」</b>
+            （倾斜/弧形/大小字/抖散/竖排/变小/放大 + 抖动/摇摆/砸入/收缩/弹出/跳起）。
+            就是工作台上那个<b>另一个下拉</b>。</td></tr>
+    <tr><td>.workbuddy/style-draft/text-styles-emotion.html</td><td>22 KB</td>
+        <td>中间草稿（<code>.workbuddy/</code> 是 gitignore 的草稿区，只在本机、未入库）。</td></tr>
+  </table>
+  <div class="note warn" style="margin-top:9px">
+    <b>⚠️ 我上一版说错过两件事，在这里更正：</b><br>
+    ① 说"元素层此前没有设计稿" —— <b>错</b>。我搜 <code>text-style*</code> 时
+      漏看了 <code>text-styles-<b>emotion</b>-draft.html</code>（名字里是 emotion 不是 style）。<br>
+    ② 说"底衬没有颜色字段" —— <b>错</b>。底座早有
+      <code>plate_color</code>/<code>plate_pad_px</code>，是 <b>YekiTrim 元素层没接</b>
+      （详见 ③ 节那条更正）。
+  </div>
+</div>
+<p class="lede">
+  ⚠️ 而那三份设计的是<b>"13 档情绪"</b>，落不到这里的 <b>4 档结构</b>上 ——
+  4 档是 <code>TextStyle</code> 枚举钉死的（<code>hook/chapter/comment/count</code>，
+  认不出的一律当 <code>comment</code>）。所以要扩成 13 档，那是<b>改契约</b>，
+  不是改设计稿。<b>本页做的是另一件事：在这 4 档内部把它们拉开</b>。
+</p>
 
 <h2>① 现状：4 档实际上是同一个方块字 <span class="sub">这是要改掉的东西</span></h2>
 <p class="lede">
@@ -187,11 +218,18 @@
   <b>⚠️ 三个"想得到但做不到"的（现在做不到，别写进设计里当既有能力）</b>
   <ol style="margin:6px 0 0;padding-left:20px">
     <li><b>不同字不同色</b>（比如关键词染红）—— <code>source</code> 里 <code>fill</code>
-        是<b>整条一个值</b>。要做只能：<br>
-        &nbsp;&nbsp;· 用<b>底衬色</b>模拟（现在 <code>backdrop</code> 只是个 0/1，<b>没有颜色字段</b>）；
-        &nbsp;&nbsp;· 或者走<b>字幕层</b>的高亮（那边有 <code>highlight_color</code>，元素层没有）。</li>
-    <li><b>圆角底衬 / 自定义底衬色</b> —— <code>backdrop</code> 只有"有没有"，颜色与圆角都是写死的。
-        要改就得往 <code>source</code> <b>末尾追加</b>字段（Rust + JS 两侧一起改）。</li>
+        是<b>整条一个值</b>。要做只能走<b>字幕层</b>的高亮（那边有
+        <code>highlight_color</code>，元素层没有）。</li>
+    <li><b>自定义底衬色 / 圆角底衬</b> —— ⚠️ <b>这一条我上一版写错过，特此更正</b>：
+        <b>底座早就有</b> <code>plate_color: Option&lt;[u8;4]&gt;</code> 与
+        <code>plate_pad_px</code>（<code>Dhampir/…/dhampir-timeline/src/layer.rs:765</code>/<code>809</code>，
+        外扩默认 12px，圆角仍写死）——
+        那份 <code>text-styles-emotion-draft.html</code> 早就按它们设计过了。
+        <b>真正缺的是 YekiTrim 元素层没接</b>：<code>Event::Element</code> 的
+        <code>source</code> 串里只有 <code>backdrop</code> 那个 0/1，
+        <b>没有</b> <code>plate_color</code>/<code>plate_pad_px</code> 两格。
+        ⇒ 这是<b>接线缺口</b>，不是"底座没有"。要做得往 <code>source</code>
+        <b>末尾追加</b>两格（Rust + JS 两侧一起改），并补一条"老工程不多键"的判据。</li>
     <li><b>字间距 / 行距</b> —— 这一层完全没有这两个量（<b>字幕层</b>才 <code>line_height</code>）。</li>
   </ol>
 </div>
@@ -212,7 +250,7 @@
 <script>
 // ===========================================================================
 // ⚠️ 本页**不实现渲染算法** —— 它把"设计意图"画出来给人看。
-//    真正的口径：Rust `placement.rs`（四档的数值）+ 底座（怎么画）。
+//    真正的口径：Rust <code>placement.rs</code>（四档的数值）+ 底座（怎么画）。
 //    这里的 CSS 是**近似**（浏览器字体 ≠ libass 布局），
 //    用途是"看形状、看比例、看对比"，**不是像素判据**。
 // ===========================================================================
@@ -247,7 +285,7 @@ function paint(el, s, text) {
   el.style.fontWeight = s.weight;
   el.style.color = s.fill;
   el.style.fontFamily = '"Microsoft YaHei","Noto Sans SC",sans-serif';
-  // ⚠️ 外侧描边：`paint-order:stroke fill` 才是真外侧（裸 -webkit-text-stroke 会啃笔画）。
+  // ⚠️ 外侧描边：<code>paint-order:stroke fill</code> 才是真外侧（裸 -webkit-text-stroke 会啃笔画）。
   el.style.webkitTextStrokeWidth = (s.strokePx * scale) + 'px';
   el.style.webkitTextStrokeColor = s.stroke;
   el.style.paintOrder = 'stroke fill';
@@ -318,7 +356,7 @@ function card(title, who, s, text, tag) {
     weight:   { lo: 300, hi: 900, ok: v => v >= 300 && v <= 900, why: 'CSS 刻度。⚠️ 底座这条文字**消费**字重（与字幕层不同，那边实测无效）' },
     tilt:     { lo: -7, hi: 7,   ok: v => Math.abs(v) <= 7,    why: '**规格硬约束**：再大长句要"转头"读' },
     squash:   { lo: 0.85, hi: 1, ok: v => v >= 0.85 && v <= 1, why: '**规格硬约束**：再压字就"瘪了"' },
-    backdrop: { lo: 0, hi: 1,    ok: v => v === 0 || v === 1,  why: '当前只有 0/1，**没有颜色与圆角**' },
+    backdrop: { lo: 0, hi: 1,    ok: v => v === 0 || v === 1,  why: '元素层只有 0/1。⚠️ 底座另有 plate_color/plate_pad_px（未接）' },
   };
   const rows = [];
   for (const k of ['hook','chapter','comment','count']) {
@@ -384,7 +422,7 @@ function card(title, who, s, text, tag) {
     ['fill', 'r,g,b,a', '白 / 暖黄', '整条一个值。<b>做不到"不同字不同色"</b>'],
     ['stroke_color', 'r,g,b,a', '#1a1a1a', '整条一个值。⚠️ <b>现四档全相同 —— 这格是浪费的</b>'],
     ['weight', '数值', '700–900', 'CSS 刻度。⚠️ 这一层底座**真的消费**它（字幕层的 font_weight 实测无效）'],
-    ['backdrop', '0 / 1', 'chapter,comment=1', '底衬色块。⚠️ <b>没有颜色/圆角字段</b>，那两个是写死的'],
+    ['backdrop', '0 / 1', 'chapter,comment=1', '底衬色块。⚠️ 元素层只有 0/1；底座另有 <code>plate_color</code>/<code>plate_pad_px</code>（<b>未接</b>）'],
     ['tilt_deg', '数值', '+6 / -4', '<b>值域 [-7,7]</b>（规格钉住）。正 = 顺时针'],
     ['squash_y', '数值', '0.92 / 1.0', '<b>值域 ≥0.85</b>（规格钉住）。纵向倍数，横向不动'],
   ];
