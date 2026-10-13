@@ -252,6 +252,88 @@ for (const b of kindBlocks) {
     `⑤ 这些轴在转译器的档位表里**一个档都没有**（那一栏整个空着）：${JSON.stringify(missingAxes)}`)
 }
 
+// ---- ⑥ ⚠⚠ **`perChar` 的键名**：两份表一个蛇形、一个驼峰 ----
+//
+// ⚠⚠⚠ 这是上面那类漂移的**第二层**，而且更隐蔽：
+//
+//   * 转译器 `ANIM_PRESETS[k].perChar` = **蛇形**（`rotation_from` / `per_char_frames`…）
+//     —— 它直接走底座字段；
+//   * 预览 `engine.js::ANIM_PRESETS[k].perChar` = **驼峰**（`rotationFrom` / `perCharFrames`…）
+//     —— 它直接喂 `charTransformAt`。
+//
+//   ⚠ 两份都叫 `perChar`、都是"同一张表"，**中间没有任何转换**：
+//     转译器那份不经 `readPerChar`（那是读 toml 那条路的），
+//     预览那份也不经（`animPerChar` 直接 `{…默认, …p.perChar}` 展开）。
+//
+//   ⇒ **今天恰好自洽**（两边都是手抄的、值也对得上），但**改一处就静默漂**：
+//     在转译器那边加一个字段（比如 `rotation_from_x`），预览这边拿不到就默默用默认值
+//     —— 成片里转了、预览里没转，两边各自看都正常。
+//
+//   ⚠ 判据只能钉**键名集合**（不钉值：值本来就该各自定义）。
+//     两边的 `perChar` 必须覆盖**同一组语义字段**。
+{
+  // ⚠️⚠️ **必须逐档对**，不能只比"键的并集" —— 实测：
+  //    只比并集时，把 `perchar_small` 的 `stagger_frames` 删掉判据**照样绿**
+  //    （`perchar_big` 里还有，并集不变）⇒ 漏掉的正是"**某一档**漂了"。
+  //    这与 `check-anim-presets-distinct` 那条"两个预设产物相同"是同一类教训：
+  //    **整体对得上 ≠ 逐项对得上**。
+  // ⚠ 预览那份源码（驼峰）。
+  const uiSrc = fs.readFileSync(path.join(ROOT, 'webui/src/polish/engine.js'), 'utf8')
+
+  /** 按**档**切开预设表，再在每档里找 `perChar: { … }`。
+   *
+   *  ⚠⚠ 不能用一条跨档的非贪心匹配去找 `perChar` ——
+   *     它会把“**下一档的名字**”当成这一档的名字
+   *     （实测抽出 `["perchar_small","tags","vtext"]`）。
+   *     ⇒ 先按顶格缩进切档，再在档内找。
+   */
+  const perTierPerChar = (src, indent) => {
+    const out = new Map()
+    const head = new RegExp('^' + indent + '([a-z][a-z0-9_]*):\\s*\\{', 'gm')
+    const marks = []
+    for (const m of src.matchAll(head)) marks.push({ name: m[1], at: m.index })
+    for (let i = 0; i < marks.length; i++) {
+      const body = src.slice(marks[i].at, i + 1 < marks.length ? marks[i + 1].at : src.length)
+      const pc = body.match(/perChar:\s*\{([^}]*)\}/)
+      if (!pc) continue
+      const keys = new Set()
+      for (const k of pc[1].matchAll(/([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g)) keys.add(k[1])
+      out.set(marks[i].name, keys)
+    }
+    return out
+  }
+  const transPerTier = perTierPerChar(transSrc, '    ')
+  const uiPerTier = perTierPerChar(uiSrc, '  ')
+  const snakeToCamel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
+
+  ok(transPerTier.size > 0 && uiPerTier.size > 0,
+    '⑥ 两边至少有一边抽不到 `perChar`（源码形状变了？） —— ' +
+    `转译器 ${transPerTier.size} 档 / 预览 ${uiPerTier.size} 档`)
+
+  // ① 有 `perChar` 的档集合必须一致。
+  const tk = [...transPerTier.keys()].sort()
+  const uk = [...uiPerTier.keys()].sort()
+  ok(JSON.stringify(tk) === JSON.stringify(uk),
+    `⑥ 带 \`perChar\` 的档不一致：转译器 ${JSON.stringify(tk)} / 预览 ${JSON.stringify(uk)}`)
+
+  // ② **逐档**字段集合一致（蛇形→驼峰后比）。
+  for (const tier of tk) {
+    if (!uiPerTier.has(tier)) continue
+    const want = new Set([...transPerTier.get(tier)].map(snakeToCamel))
+    const got = uiPerTier.get(tier)
+    const missing = [...want].filter((k) => !got.has(k))
+    const extra = [...got].filter((k) => !want.has(k))
+    ok(missing.length === 0,
+      `⑥ 档 \`${tier}\` 的 \`perChar\` 在预览里**少了**：${JSON.stringify(missing)}
+` +
+      `     ⚠ 成片里有这个参数、预览里没有（默默用默认值）——两边各自看都正常`)
+    ok(extra.length === 0,
+      `⑥ 档 \`${tier}\` 的 \`perChar\` 在预览里**多了**：${JSON.stringify(extra)}
+` +
+      `     ⚠ 这个参数在成片里**没人读**（预览自己演了一套）`)
+  }
+}
+
 // ---- 结果 ----
 if (fails.length === 0) {
   console.log(
