@@ -764,6 +764,61 @@ try {
     }
   }
 
+  // ---- ⑤-bis ⚠★ **元素的 `pos`（上/中/下）必须在预览里真的被消费**（2026-10-14）----
+  //
+  // ⚠⚠ 用户报的第一个问题是「元素的文字位置不对」，其中 **Ⅰb** 是：
+  //    `engine.js` 早就算出了 `entry.textPos`、也写进了输出，
+  //    而 **组件从头到尾没用过它** ⇒ 「上/中/下」三档在预览里
+  //    **完全同形**：用户在面板上换档位、预览**纹丝不动**。
+  //    这不是"位置略偏"，是**这一维整个没接上**。
+  //
+  // ⚠ 判据跑的是**从 `.vue` 里抽出来的真函数**（不复刻一份
+  //    —— 复刻的那份会与被测的那份一起漂）。
+  {
+    const pvSrc = fs.readFileSync(PREVIEW, 'utf8')
+    const m = pvSrc.match(/const ELEMENT_EDGE_MARGIN_PCT = 6\nfunction textPosTopPct\(e\) \{[\s\S]*?\n\}/)
+    ok(!!m, '⑤-bis 从 `PolishPreview.vue` 抽不到 `textPosTopPct`（源码形状变了？）')
+    if (m) {
+      let fn = null
+      try {
+        fn = new Function(m[0] + '; return textPosTopPct;')()
+      } catch (err) {
+        ok(false, `⑤-bis 抽出来跑不起来：${err.message}`)
+      }
+      if (fn) {
+        const top = fn({ pos: 'top' })
+        const cen = fn({ pos: 'center' })
+        const bot = fn({ pos: 'bottom' })
+        // ① 三档必须**互不相同** —— 不同就等于没接。
+        ok(new Set([top, cen, bot]).size === 3,
+          '⑤-bis 「上/中/下」三档在预览里**算出同一个位置** —— ' +
+          `用户换档位画面纹丝不动：${JSON.stringify([top, cen, bot])}`)
+        // ② 中档必须**真的在中间**（不是"比上档低一点"）。
+        ok(top < cen && cen < bot,
+          '⑤-bis 三档的**顺序不对**（应当 top < center < bottom）：' +
+          `${JSON.stringify({ top, cen, bot })}`)
+        ok(cen === 50, `⑤-bis 中档应当是 50%（垂直居中），实得 ${cen}`)
+        // ③ ⚠ **没有 `pos` 的旧路径必须返 `null`**（R4：旧路径一个字节都不动）。
+        ok(fn({ pos: '' }) === null && fn({}) === null && fn({ pos: undefined }) === null,
+          '⑤-bis 没有 `pos` 的元素**不得**被接管（应该返 `null` → 沿用旧 `yPct`）：' +
+          `${JSON.stringify([fn({ pos: '' }), fn({}), fn({ pos: undefined })])}`)
+        // ④ 认不出的档名也必须返 `null`（别静默归到某一档）。
+        ok(fn({ pos: 'middle' }) === null && fn({ pos: 'TOP' }) === 6,
+          `⑤-bis 档名处理不对：认不出的应返 \`null\`、大小写应当归一化：` +
+          `${JSON.stringify([fn({ pos: 'middle' }), fn({ pos: 'TOP' })])}`)
+      }
+    }
+    // ⑤ 组件必须**真的把它用上**（算出来不用 = 白算）。
+    //    ⚠ 剥注释后再查——上面"这里曾经没接过 pos"那句话
+    //      本身就含 `pos` 字样，不剥会把说明当成实现。
+    const pvCode = pvSrc.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    ok(/topPct/.test(pvCode),
+      '⑤-bis 组件**没有消费** `topPct` —— `pos` 算出来不用 = 白算（用户仍然看不到换档）')
+    ok(/tx\.topPct/.test(pvCode),
+      '⑤-bis 模板上**没用** `tx.topPct` —— 只在 script 里算、模板不绑，画面不会变')
+  }
+
   // ---- ⑦ ⚠️ **老格式 `anim` ↔ 新格式三轴等价**（R4 的预览侧，2026-10-14 三轴版）----
   //
   // ⚠️⚠️ **老格式那条路仍然存在**：`splitAnimTwoAxis` 返回**三路**
