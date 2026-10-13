@@ -396,7 +396,8 @@
                         ⚠️ `Event.style` **这个字段还在**（字幕层仍用它），
                         只是不再由这个面板提供入口。 -->
                 <label>样式</label>
-                <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)">
+                <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)"
+                  title="管字的形态（歪斜、压扁、逐字大小…）。带「· 形态」的档两栏都有 —— 那是同一个档的形态半边，想要完整效果要把动效栏也选上。">
                   <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ kindLabelOn('style', k) }}</option>
                   <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
                 </select>
@@ -411,7 +412,8 @@
                 </div>
 
                 <label>动效</label>
-                <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)">
+                <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)"
+                  title="管字怎么动（抖动、摇摆、弹入…）。带「· 动效」的档两栏都有 —— 那是同一个档的动效半边，想要完整效果要把样式栏也选上。">
                   <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ kindLabelOn('effect', k) }}</option>
                   <option v-if="effectKind === ''" value="">未知档（{{ selItem.effect_anim }}）</option>
                 </select>
@@ -1175,13 +1177,39 @@ const kindsOnAxis = (axis) => ANIM_KINDS
   //    用户会把它当成一个正常的形状档位来读（他就是这么读的）。
   .sort((a, b) => (a.kind === 'none' ? 1 : 0) - (b.kind === 'none' ? 1 : 0))
 
-/** 某一栏里，一个种类**显示**成什么。只有"空"那一项按轴分开叫法。
+/** 某一栏里，一个种类**显示**成什么。
  *
- *  · 动效栏 → 「不设」（不额外加动效，一个有意为之的选择）；
- *  · 样式栏 → 「清除」（把已选的形状去掉 —— 这是**操作**，不是形状）。
- *  ⚠️ 别把两栏都写成「不设」/「不动效」：样式栏那句会让人以为
- *     "有一个形状叫做不作形状"，而且「不动效」三个字里还带个"动效"。 */
-const kindLabelOn = (axis, k) => (k.kind === 'none' && axis === 'style' ? '清除' : k.label)
+ *  · "空"那一项按轴分开叫法：动效栏 → 「不设」（不额外加动效，一个有意为之的选择）；
+ *    样式栏 → 「清除」（把已选的形状去掉 —— 这是**操作**，不是形状）。
+ *    ⚠️ 别把两栏都写成「不设」/「不动效」：样式栏那句会让人以为
+ *       "有一个形状叫做不作形状"，而且「不动效」三个字里还带个"动效"。
+ *
+ *  · ⚠️⚠️ **`axis === 'both'` 的那几档，两栏都出现 ⇒ 必须带轴后缀**（2026-10-14）。
+ *
+ *    # 为什么（用户报「样式和动效内容过于重复，是不是去重后有些没清理」）
+ *
+ *    实测：**39 档，每档唯一归属一个种类，跨种类重复 0 条** —— 面板一个档都没丢
+ *    （`check-anim-presets-parity.mjs` 47 项钉着）。
+ *
+ *    但归属表是 `形态 15 · 动效 12 · **两者 11** · 无 1` —— 那 11 档**真的两条轴
+ *    都给参数**（例：`slam_*` 既给 `squashY`（形态）又给时间曲线（动效））。
+ *    ⇒ 两栏都列它们是**必需的**（否则那 11 档会有一半参数在界面上没有入口），
+ *      可两栏里显示**同一个名字**，用户读到的是"这两栏重复了一半"。
+ *
+ *    ⇒ 两栏都出现的档，标签带上**它在这一栏管什么**：「砸入 · 形态」/「砸入 · 动效」。
+ *      一眼看出是"同一个档的两个半边"，而不是"没清干净的重复项"。
+ *
+ *    ⚠️ **`variants[].value` 与 `ANIM_KINDS[].kind` 一个都不许动** ——
+ *       `check-anim-presets-parity.mjs` / `check-anim-dropdown.mjs` 用正则从这里
+ *       扒档名，改形状会让对拍**静默失效**（扒不到 ⇒ 两侧都空 ⇒ 全绿）。
+ *       这里只改**显示**，不动数据。 */
+const AXIS_SUFFIX = { style: '形态', effect: '动效' }
+const kindLabelOn = (axis, k) => {
+  if (k.kind === 'none') return axis === 'style' ? '清除' : k.label
+  // 只给"两栏都有"的档加后缀。只属一栏的档加后缀是纯噪音（它本来就不会歧义）。
+  if (k.axis !== 'both') return k.label
+  return k.label + ' · ' + (AXIS_SUFFIX[axis] ?? '')
+}
 
 /** 某一轴上"当前选中的种类"。⚠️ 认不出的档名 ⇒ `''`（模板走"未知"那一支：
  *  **不许把它悄悄归成"无"**，否则用户改一下别的字段就把错档名永久抹掉了）。 */

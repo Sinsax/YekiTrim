@@ -961,6 +961,46 @@ const MUTATIONS = [
     from: 'if (posKey === \'bottom\') return undefined; // 见上：交给底座缺省',
     to: 'return undefined; // 变异：恒不写',
   },
+  // ---- 纵向锚「单行行盒」+ 元素继承字幕样式（2026-10-14）----
+  // ⚠️ 前者是用户报的「元素的文字位置不对」**本体**；后者是同一批报的
+  //    「元素出现时字幕的字体/描边变成默认的」。
+  {
+    name: '纵向锚退回"3 行上限"算块底 ⇒ center 落到 0.6333（文字比正中低约 85px）',
+    from: "const blockBottom = posKey === 'top' ? MARGIN + lineH : H / 2 + lineH / 2;",
+    to: "const blockBottom = posKey === 'top' ? MARGIN + lineH * 3 : H / 2 + lineH * 3 / 2;",
+  },
+  {
+    // ⚠️ 2026-10-14 第二轮：第一版拿 `LINE_HEIGHT_EM`(1.2) 算行盒，而轨里写的是 1.5
+    //    ⇒ 底座按 1.5 排行盒 ⇒ 文字中心 528（低 12px）。**两处都不报错。**
+    name: '纵向锚的行盒改用 LINE_HEIGHT_EM(1.2) ⇒ 与轨里那个 line_height 分叉（文字偏半个行盒）',
+    from: 'const lineEm = Number(sharedSubLineHeight) > 0 ? Number(sharedSubLineHeight) : 1.2;',
+    to: 'const lineEm = 1.2;',
+  },
+  {
+    name: '元素轨的 line_height 写死 1.2（本该继承字幕那支 1.5）⇒ 行距 + 纵向锚一起漂',
+    from: '          line_height: sharedSubLineHeight,',
+    to: '          line_height: 1.2,',
+  },
+  {
+    name: '元素轨不写 line_height ⇒ 底座按 1.2（字幕是 1.5，行距不一致）',
+    from: '          line_height: sharedSubLineHeight,\n',
+    to: '',
+  },
+  {
+    name: '元素轨的字体硬编码成默认 ⇒ 与字幕两套字体（用户看到的"字体被换了"）',
+    from: '          font_family: fontFamilyFor(sharedSubStyle.font),',
+    to: '          font_family: "Sans",',
+  },
+  {
+    name: '元素轨不写阴影 ⇒ 同画面里元素没有字幕那层细阴影',
+    from: '          shadow_blur_ratio: 12 / height,\n',
+    to: '',
+  },
+  {
+    name: '元素轨描边被顺手改成字幕那套（元素描边是按档位推导的，不是同一个语义）',
+    from: '          stroke_color: st.strokeColor,',
+    to: '          stroke_color: [64, 60, 59, 255],',
+  },
   // ---- §5 E4a T2 打字机（2026-10-11）----
   // ⚠️ 这一条打的是**那个真缺陷**：文字元素被弹幕的出点规则抬起。
   {
@@ -1350,9 +1390,15 @@ const MUTATIONS = [
   },
   {
     // B5：把半径按**宽**折算（横屏 1920 会小一圈）—— 判据断言的是 12 / 文档高。
+    //
+    // ⚠️ 锚点必须带**上一行**（`shadow_dy_px: 2,`）：2026-10-14 元素轨也补了
+    //    `shadow_blur_ratio`，而它的缩进更深（10 空格）—— 只写 8 空格那行，
+    //    会**同时命中两处**（那行是两个缩进串的公共子串）。
+    //    症状是变异台自己报"命中 2 次"（不是静默通过，harness 那条断言救了我们），
+    //    但那时**第 70 条变异整条失效**了。带上前一行即可唯一定位到字幕轨。
     name: '文字阴影半径按文档宽折算（应为高）',
-    from: '        shadow_blur_ratio: 12 / height,',
-    to: '        shadow_blur_ratio: 12 / width,',
+    from: '        shadow_dy_px: 2,\n        shadow_blur_ratio: 12 / height,',
+    to: '        shadow_dy_px: 2,\n        shadow_blur_ratio: 12 / width,',
   },
   {
     // Phase ③：让落点解析把 `"auto"` **猜成 50%** —— 就是"看着成功、贴纸贴在错的地方"那种回归。
@@ -2827,8 +2873,101 @@ function checkTextElementLane(mod, src = translatorSource) {
       `safe_width_ratio 必须显式 0.875（不写就退回复用的老路、与纵向锚打架），实得 ${st.safe_width_ratio}`);
 
     // ------------------------------------------------------------------
-    // ⑤e **文字层的 `transform.rotation` 必须无条件存在**（2026-10-13 真缺陷）
+    // ⑤d2 **纵向锚按「单行行盒」算**（2026-10-14 真缺陷）
     //
+    // 用户报「元素的文字位置不对」。病因：旧实现把盒高取成**最坏情况**
+    // （3 行 = `fontPx × 1.2 × 3`）再算块底：
+    //
+    //     center: 盒顶 = (1080-288)/2 = 396，块底 = 396+288 = 684 ⇒ 0.6333
+    //
+    // 而锚点语义是「**块底**贴哪个 y」（底座 `block_top = block_bottom -
+    // keep*line_height`），一个字只占**一行** ⇒ 底座把块顶算成
+    // `0.6333 - 1×0.0889 = 0.5444`，文字**中心落在 0.588**（约 635px），
+    // 比画面正中（540）**低了约 95px**。
+    //
+    // ⇒ 判据是**文字中心**（= 块底 − 单行高/2）必须落在该档的语义位置上。
+    //    ⚠️ 不能只判"块底是个数" —— 旧实现也给数，只是数错了（判据会空转）。
+    // ------------------------------------------------------------------
+    {
+      const H = 1080; // `[canvas] height`（夹具里写死 1080）
+      const fontPx = 80; // 四档统一（`ELEMENT_FONT_PX`）
+      // ⚠️⚠️ **行盒必须取"轨里真正写着的那个 `line_height`"** —— 底座
+      //    `text_layout.rs:432` 是 `line_em = if style.line_height > 0
+      //    { style.line_height } else { LINE_HEIGHT_EM }`，转译器写什么它按什么排。
+      //    第一版拿 `LINE_HEIGHT_EM`(1.2) 算，实测文字中心落在 **528**（低 12px）。
+      const lineEm = st.line_height;
+      const lineNorm = (fontPx * lineEm) / H;
+      // 文字块**中心**的归一化 y —— 这才是肉眼能看到的位置。
+      const textCenter = st.anchor_bottom - lineNorm / 2;
+      // `pos="top"` 的语义是"贴在上方"：中心必须**明显在半屏以上**。
+      ok(textCenter < 0.5 - 0.01,
+        `pos="top" 的文字中心落在 ${textCenter.toFixed(4)} —— 没有明显高于半屏；` +
+        `anchor_bottom=${st.anchor_bottom}（行盒 ${lineNorm.toFixed(4)}）。` +
+        '⚠️ 旧实现按 3 行上限算块底，会把文字整体推到 0.588 附近（约 635px）');
+      // 反判据：**不许再用 3 行上限**。用上限时 top 档的块底 ≈ 320/1080 = 0.2963，
+      // 而按单行（MARGIN + 80×1.5 = 152）算是 152/1080 = 0.1407 —— 判据认得出。
+      const singleLineBottom = (32 + fontPx * lineEm) / H;
+      ok(Math.abs(st.anchor_bottom - singleLineBottom) < 1e-3,
+        `pos="top" 的块底应为 (MARGIN + 单行行盒)/H = ${singleLineBottom.toFixed(4)}，` +
+        `实得 ${st.anchor_bottom} —— 差的那些就是"按 3 行上限算"留下的`);
+      // ⚠️ **行盒口径必须与轨里写的 `line_height` 同源**（2026-10-14 第二轮真机抓出来的）：
+      //    拿 `LINE_HEIGHT_EM`(1.2) 算会得到 0.1185，而底座按 1.5 排行盒 ⇒
+      //    文字中心 528（低 12px）。**两个数都不报错，只有量像素才发现。**
+      ok(Math.abs(lineEm - 1.5) < 1e-9,
+        `元素轨的 line_height = ${lineEm} —— 本仓写的是 1.5（继承字幕），` +
+        '锚点那半个行盒就是按它算的；两个数必须同一个（否则文字整体偏半个行盒）');
+    }
+
+    // ------------------------------------------------------------------
+    // ⑤d3 **字体 / 阴影 / 行高必须继承字幕那一份**（2026-10-14 真缺陷）
+    //
+    // 用户报「元素出现时**字幕的描边和字体**变成默认的了」。
+    // 查下来**不是字幕被改了** —— 是元素轨**少写三个键**，底座按缺省画：
+    //   `font_family` 缺 ⇒ 回落宿主 `--font-file`（默认字体）；`shadow_*` 缺 ⇒ 无阴影；
+    //   `line_height` 缺 ⇒ 1.2（字幕是 1.5）。
+    // ⇒ 同一片画面上元素用默认字体、无阴影，看着就像"字幕被换掉了"。
+    //
+    // 判据：**逐值**与字幕轨相等（不是"元素轨有这三个键就行"——
+    // 自己另立一套数同样会分叉，而分叉的症状与缺失**一模一样**）。
+    // ------------------------------------------------------------------
+    {
+      const subTrack = (project.timeline?.tracks ?? []).find((t) => t.id === 'sub');
+      ok(!!subTrack, '夹具必须带字幕轨（本组判据要与它逐值对拍）');
+      const ss = subTrack?.subtitle ?? {};
+      for (const key of ['font_family', 'line_height', 'shadow_color',
+        'shadow_dx_px', 'shadow_dy_px', 'shadow_blur_ratio']) {
+        ok(st[key] !== undefined,
+          `元素轨必须写出 \`${key}\` —— 缺了它底座按缺省画（默认字体/无阴影/行高 1.2），` +
+          '而同画面的字幕用的是另一套 ⇒ 用户看到的是"字幕被换掉了"');
+        ok(JSON.stringify(st[key]) === JSON.stringify(ss[key]),
+          `元素轨的 \`${key}\` = ${JSON.stringify(st[key])}，字幕轨 = ${JSON.stringify(ss[key])} —— ` +
+          '两者必须**逐值相等**（同画面两套字体/阴影正是那个症状的来源）');
+      }
+      // ⚠️⚠️ **不能只判"两边相等"**（2026-10-14 实测踩到）：
+      //    变异台里那条「阴影半径按文档**宽**折算」的锚点是 **8 空格缩进**的
+      //    `'        shadow_blur_ratio: 12 / height,'`，而元素轨那行是 **10 空格** ——
+      //    前者是后者的**子串** ⇒ 那条变异**一次改两处**（字幕 + 元素），
+      //    两边一起变成 `/width` ⇒ 上面那条"逐值相等"**照样通过** ⇒ 变异存活。
+      //
+      //    ⇒ 必须再钉一条**绝对值**：`shadow_blur_ratio` 只能按**文档高**折算
+      //      （底座求值层乘目标高，与 `stroke_ratio` 同一处换算）。
+      //      **谁改了这条口径，不管改几处，都翻面。**
+      ok(Math.abs(st.shadow_blur_ratio - 12 / 1080) < 1e-9,
+        `元素轨 shadow_blur_ratio = ${st.shadow_blur_ratio}，必须按**文档高**折算（12/1080 = ` +
+        `${(12 / 1080).toFixed(6)}）。⚠️ 按**宽**折算（12/1920）会让阴影糊得只有一半 —— ` +
+        '而"两边一起改错"时逐值对拍是看不出来的（实测：那条变异就是这么存活的）');
+      // ⚠️ **反判据**：`stroke_*` **不许**被一起改成字幕那套。
+      //    元素描边是按 `elements-spec.md` §4.2「字号 5–8%」推导的
+      //    （hook 6px/80 = 7.5%），比字幕那条 12px 更细**是刻意的**
+      //    （12px 是给底部小字配的，套到 80px 大字上会糊掉字腔）。
+      //    这条防的是"下一个人顺手把 font_family 那两个字段一起搬过来"。
+      ok(JSON.stringify(st.stroke_color) !== JSON.stringify(ss.stroke_color),
+        '元素轨的 stroke_color 被改成字幕那套了 —— 元素的描边是按档位推导的（近黑 [26,26,26]），' +
+        '字幕那条 [64,60,59] 是给底部小字配的，不是同一个语义');
+    }
+
+    // ------------------------------------------------------------------
+    // ⑤e **文字层的 `transform.rotation` 必须无条件存在**（2026-10-13 真缺陷）    //
     // 底座 `TransformV2.rotation` **没有** `serde(default)`（`layer.rs:154`），
     // 而 `scale_y` 才有（`:151`）⇒ 只省略 `rotation` 会让**整份工程载入失败**：
     //     「工程文件字段不符：missing field `rotation`」
