@@ -410,6 +410,30 @@ pub enum Event {
         /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pos: Option<String>,
+        /// `text` 的**颜色命名预设**（2026-10-13）：
+        /// `white` / `pink` / `red` / `yellow` / `cyan` / `green` / `black`。
+        ///
+        /// # 为什么要有它
+        ///
+        /// 在此之前文字颜色**只有** `style` 档位那四个写死的常量（`hook`/`chapter`/`count` 白、
+        /// `comment` 暖黄）—— **LLM 完全无法表达颜色**，"这句是愤怒的"只能靠换档位近似。
+        /// 这个字段就是给它开的。
+        ///
+        /// # 为什么是命名枚举而不是 hex 字符串
+        ///
+        /// 模型写 `#ff80c0` 的出错率很高（少一位、丢 `#`、写成 `rgb()`），每种错法都只在
+        /// 出片时才看得出来；而且 hex 对 LLM **没有语义** —— 它推不出 `#FF4040` 是"愤怒"。
+        /// 命名两头都解决：名字自带情绪语义、拼错时能报出**具体哪个名字认不出**。
+        ///
+        /// ⚠️ **认不出的值不许静默**（`process` 会打一行 `⚠` 并退回该档默认色）——
+        /// 与 `kind`/`style`/`anim` 同一条纪律。
+        ///
+        /// ⚠️ **是 `Option<String>` 而不是 enum**（与相邻的 `kind`/`style` 同一个理由）：
+        /// 要在报告里说出"**哪一条、写了什么**"，而 enum 只会说 `unknown variant`。
+        ///
+        /// ⚠️ **不写 = 走 `style` 档位的默认色**（不是"用白色"）⇒ 存量工程逐字节不变（R4）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
         /// 贴纸语义 tag（`kind = "sticker"`，语义同 `Event::Sticker.sticker_tag`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sticker_tag: Option<String>,

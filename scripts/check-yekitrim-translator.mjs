@@ -908,8 +908,48 @@ const MUTATIONS = [
     //    ⇒ 变异体与真身一模一样 ⇒ **判据不翻面、这一条静默失效**。
     //    实测就是这么发现的：`--mutate` 报"2 处变异没被打红"。
     //    ⇒ **改任何被变异引用的源码文本，都要搜一遍变异表里的锚点**。
-    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}|\${cue.effectAnim || ''}\`;`,
+    // ⚠️⚠️ **2026-10-13 五维化（颜色）时又同步改了一次这条锚点** —— 同一个教训的第二次出现。
+    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}|\${cue.effectAnim || ''}|\${colorKey}\`;`,
     to: 'const key = cue.style.name;',
+  },
+  // ---- 逐条颜色（2026-10-13）----
+  // ⚠️ 三条打的是**同一个真缺陷的三个面**：颜色是**逐事件**的，而底座的
+  //    `SubtitleStyle.color` 是**轨级**的 ⇒ 不分轨就后写覆盖先写。
+  //    实测症状：7 条不同颜色的文字元素渲染出来**全是白的**，
+  //    而 ASS 文件、转译报告、任务日志**三者都完全正常**。
+  {
+    name: '分组键丢掉颜色那一维 ⇒ 同档位不同色共用一个轨级 color（成片里全变成同一色）',
+    from: `\`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}|\${cue.effectAnim || ''}|\${colorKey}\``,
+    to: `\`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}|\${cue.effectAnim || ''}\``,
+  },
+  {
+    name: '颜色那一维改用预设名（而不是 RGBA 值）⇒ 同色不同名的条目被拆成两条轨',
+    from: "const colorKey = Array.isArray(cue.color) ? cue.color.join(',') : '';",
+    to: "const colorKey = cue.style.colorName || '';",
+  },
+  {
+    name: 'cue 不带颜色 ⇒ 上游取不到值（轨道照样分，但每条都是默认色）',
+    // ⚠️ 锚点必须**唯一**：`color: st.color,` 在文件里出现两次
+    //    （文字轨那条 + 字幕轨那条）⇒ `.replace` 只改第一处，
+    //    而判据在第二处**照样绿**，于是这条变异"看着抓不住"。
+    //    ⇒ 带上下一行的 `pos`（那是文字轨独有的）钉住唯一性。
+    from: '              color: st.color,\n              // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。',
+    to: '              // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。',
+  },
+  {
+    name: 'ASS 的逐条颜色覆盖去掉（侧挂产物里全变成 style 主色）',
+    from: 'withMoveTravel(cueColorOverride(cue.color, primary) + cue.text, cue.travelMs)',
+    to: 'withMoveTravel(cue.text, cue.travelMs)',
+  },
+  {
+    name: 'ASS 颜色按 RGBA 序写（不转 ABGR）⇒ 红蓝对调（pink 变成蓝紫）',
+    from: 'return `&H${hex(255 - a)}${hex(b)}${hex(g)}${hex(r)}`;',
+    to: 'return `&H${hex(255 - a)}${hex(r)}${hex(g)}${hex(b)}`;',
+  },
+  {
+    name: 'ASS alpha 不取反 ⇒ 七档全写成近乎透明（成片里一个字都看不见）',
+    from: 'return `&H${hex(255 - a)}${hex(b)}${hex(g)}${hex(r)}`;',
+    to: 'return `&H${hex(a)}${hex(b)}${hex(g)}${hex(r)}`;',
   },
   {
     name: '算出了纵向锚却不写进轨（等于没接）',
@@ -3067,10 +3107,63 @@ function checkTextPosLanes(mod, src) {
     //    仍然是**同一个理由**（轨级参数必须同轨同参），只是维度从三维变四维。
     //    ⚠️ **别退回按 `cue.anim` 分组**：它对**新工程**恒为空串 ⇒
     //       所有组合挤进同一条轨 ⇒ 后写的静默覆盖先写的。
-    ok(src.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}`'),
-      '分组键必须是「样式 | 纵向档 | **样式轴** | **动效轴**」四维' +
-      '（`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}`）—— ' +
-      '退回三维，同档位下的两个不同组合就会共用一个轨级参数集（后写的覆盖先写的）');
+    // ⚠️ **2026-10-13 五维化（颜色）**：第五维是**同一个理由的第四次出现** ——
+    //    底座的 `SubtitleStyle.color` 是 `[u8;4]` **轨级**字段（`layer.rs:571`），
+    //    而颜色预设是**逐事件**的 ⇒ 同轨两种颜色只能活一种（后写覆盖先写）。
+    //    ⚠️ **别以为"ASS 里写了 `\c` 就够了"**：出片走的是 `doc.json` 这条，
+    //       底座**自己光栅化文字**（`text_overlay.rs`）、**根本不读那个 ASS** ——
+    //       只做 ASS 那半边 = 「文件里颜色对、成片里全白」，实测抓到过（7 条不同色
+    //       的文字元素渲染出来**全是白的**，而 ASS / 报告 / 日志三者都完全正常）。
+    //
+    //    ⚠️ 颜色这一维用**RGBA 值**而不是预设名：没写 color 时各档默认色本来就不同
+    //       （`comment` 暖黄、其余白），按名字分会让"comment 默认黄"与
+    //       "显式写了 yellow"混进同一轨。
+    ok(src.includes(
+      '`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}|${colorKey}`'),
+      '分组键必须是「样式 | 纵向档 | **样式轴** | **动效轴** | **颜色**」五维' +
+      '（第五维 `colorKey` = 逐条 RGBA 拼串）—— ' +
+      '退回四维，同一档位下的不同颜色就会共用一个轨级 `color`（后写的覆盖先写的，' +
+      '成片里所有字变成同一个颜色而报告里一行差异都没有）');
+    // ⚠️ 颜色那一维**必须是值、不是预设名**（理由见上）。
+    ok(src.includes('const colorKey = Array.isArray(cue.color) ? cue.color.join(\',\') : \'\'') &&
+       src.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}|${colorKey}`'),
+      '第五维必须是 **RGBA 值**（`cue.color.join(\',\')`），不是 `colorName` —— ' +
+      '按名字分会让"comment 的默认黄"与"显式写的 yellow"分到两条轨（值相同却拆开），' +
+      '而按值分永远正确');
+    // ⚠️ 轨 id 里带的是**预设名**（R4：没写 color 的老工程 id 逐字符不变）。
+    ok(src.includes("const colorTag = cues[0].style.colorName || ''"),
+      '轨 id 的颜色后缀必须取 `cues[0].style.colorName`（**空串 = 不加后缀**）—— ' +
+      '用 RGBA 的话连没写颜色的老工程也会多出一串 ⇒ 产物整个变样（R4 破）');
+    ok(src.includes('`${colorTag ? \'_\' + colorTag : \'\'}`'),
+      '`colorTag` 为空时**不许加下划线**（否则老工程 id 变成 `text_hook_bottom_`）');
+    // ---- 逐条颜色：**行为**判据（不只是"代码在"）----
+    //
+    // ⚠️ 上面那几条只证明"分组键里有颜色" —— 而本仓栽过太多次
+    //    "字段在、链路没接"（`color` 从 cue 到 ASS 中间任何一环断了，
+    //    上面几条**全绿**：分组键照样带 `colorKey`，只是值恒为空串）。
+    //    ⇒ 必须有一条**从产物上读回来**的判据。
+    //
+    // ⚠️ 用**合成工程**过一遍 `translate`（与映射那 44 项同一手法）：
+    //    同一个 style+pos 放两条**只有颜色不同**的元素，
+    //    断言 ① 分出**两条轨**、② 两条轨的 `color` **不同且各自正确**、
+    //    ③ ASS 里那条异色的带 `\c`、同色的那条**一个字节都不多**
+    //    （这三条各自对应一处真实缺陷，见下面 `MUTATIONS` 里那四条）。
+    // ⚠️ 锚点必须**带上下文**：`color: st.color,` 在文件里出现两次
+    //    （① 文字轨的**逐条** cue ② 轨的 `SubtitleStyle`）——
+    //    裸匹配会被第 ② 处兜住 ⇒ 变异打不红（实测就是这么发现的）。
+    //    ⇒ 这里钉"cue 那一次"，用紧邻的 `text: textBody,` 定位。
+    ok(/text: textBody,\s*\n\s*style: st,\s*\n[\s\S]{0,2000}?color: st\.color,/.test(src),
+      'cue 必须带上 `color: st.color` —— 不带的话分组键里那一维恒为空串，' +
+      '所有颜色挤进同一轨（而上面"五维"那条判据**照样绿**：键里确实有 `${colorKey}`）');
+    ok(src.includes('withMoveTravel(cueColorOverride(cue.color, primary) + cue.text, cue.travelMs)'),
+      'ASS 的逐条颜色必须走 `cueColorOverride(...)` 前缀 —— ' +
+      '漏了它，侧挂 ASS 里所有字都退回 style 那一份主色（`doc.json` 那条腿仍然是对的，' +
+      '所以只有"看 ASS 的人"会发现）');
+    // ASS 的字节序：`&HAABBGGRR`（**B/G/R 与 RGBA 相反 + alpha 取反**）。
+    ok(src.includes('return `&H${hex(255 - a)}${hex(b)}${hex(g)}${hex(r)}`;'),
+      'ASS 颜色必须写成 `&HAABBGGRR`（alpha 取反 + **B/GR 倒序**）—— ' +
+      '照 RGBA 序写会让红蓝对调（pink 变蓝紫），两边都不报错；' +
+      'alpha 不取反则七档全近乎透明（成片里一个字都看不见，而文件看着完全正常）');
     ok(src.includes('anchor_bottom: anchorBottomFor(posName, st, height)'),
       '轨上必须真的写出 `anchorBottomFor(posName, st, height)` —— ' +
       '算出来了却没写进轨，等于没接');

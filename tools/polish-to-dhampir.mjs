@@ -818,8 +818,21 @@ function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) 
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
   );
+  // ⚠️ **`Default` 这一档的填充色 = 第一条 cue 的颜色**（2026-10-13）。
+  //
+  // 为什么要这样：ASS 的 `Style:` 是**整条轨一份**，而文字元素的颜色是**逐条**的
+  // （七档命名预设，见 `ElementColor`）。轨内颜色不一致时没法用一份 style 表达。
+  //
+  // 两条路：① 每种颜色拆成独立 ASS/层；② 用行内覆盖 `\c`。
+  // 选 ② —— ① 会把**同一个 style+pos 的文字**拆成一堆层，层数随用色数膨胀
+  // （而层 id 是产物契约的一部分，拆出来的 id 还得人为稳定）；② 只多几个字节。
+  //
+  // ⚠️ 第一条 cue 的颜色进 `Default` 是**为了尽量少写覆盖**（同色那几条一个字不加），
+  //    不是"默认就该是它"。一条覆盖都没写时（全同色）产物与改动前**逐字节相同**。
+  const first = cues[0]?.color;
+  const primary = Array.isArray(first) ? first : [255, 255, 255, 255];
   out.push(
-    `Style: Default,${font},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,` +
+    `Style: Default,${font},${fontSize},${assColor(primary)},&H000000FF,&H00000000,&H80000000,` +
       '0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1',
   );
   out.push('');
@@ -830,11 +843,38 @@ function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) 
       `Dialogue: 0,${assTime(cue.startMs)},${assTime(
         // ⚠️ 文字元素**原样用 `endMs`**（它不滚，"抬起出点"那条规则不适用）。
         danmaku ? danmakuExitMs(cue.startMs, cue.endMs, cue.travelMs) : cue.endMs,
-      )},Default,,0,0,0,,${withMoveTravel(cue.text, cue.travelMs)}`,
+      )},Default,,0,0,0,,${withMoveTravel(cueColorOverride(cue.color, primary) + cue.text, cue.travelMs)}`,
     );
   }
   out.push('');
   return out.join('\n');
+}
+
+/// RGBA 数组 → ASS 的 `&HAABBGGRR`（**注意是 ABGR 序、不是 RGBA**）。
+///
+/// ⚠️ ASS 的颜色字面量是 `&HAABBGGRR`：**alpha 在最前、且 B/G/R 与直觉相反**。
+///    照着 RGBA 顺序写 = 红蓝对调（`pink` 255,128,192 会变成蓝紫），
+///    而**两边都不报错** —— 症状是"颜色看着不对，但说不上哪不对"。
+///
+/// ⚠️ **alpha 取反**：ASS 是 `00` = 不透明、`FF` = 全透明，与 RGBA 的 255 = 不透明**相反**。
+///    不取反的话七档全都写成近乎透明 —— 成片里**一个字都看不见**（而文件看起来完全正常）。
+function assColor(rgba) {
+  const [r, g, b, a = 255] = rgba;
+  const hex = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0').toUpperCase();
+  return `&H${hex(255 - a)}${hex(b)}${hex(g)}${hex(r)}`;
+}
+
+/// 逐条 cue 的颜色覆盖（行内 `\c`）—— 与 style 主色**相同就一个字都不写**。
+///
+/// ⚠️ 不写空覆盖（`\c` 后无参数）会让**整行文字消失**：libass 把 `\c` 当成
+///    开一个覆盖块、后面跟的是十六进制色值，空参的解析结果未定义。
+///    ⇒ 同色时返回**空串**（连 `\c` 都不出现），而不是 `\c` + 默认值。
+///
+/// ⚠️ **只有颜色不同的 cue 才带覆盖** ⇒ 全同色的轨产物与加这个功能之前逐字节相同（R4）。
+function cueColorOverride(color, primary) {
+  if (!Array.isArray(color)) return '';
+  if (color.every((v, i) => v === primary[i])) return '';
+  return `{\\c${assColor(color)}}`;
 }
 
 /// YekiTrim 的贴纸盒子边长基准，**短边 1080 时为 280px**。
@@ -2768,8 +2808,15 @@ export function translate(config, clipDir, outPath, options = {}) {
       return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
     }
     const parts = source.split('|');
-    // 7 = T3 之前（无 tilt/squash）；9 = T3 之后。别的长度一律当坏了。
-    if (parts.length !== 7 && parts.length !== 9) {
+    // 7 = T3 之前（无 tilt/squash）；9 = T3 之后；10 = **颜色预设**之后（2026-10-13）。
+    // 别的长度一律当坏了。
+    //
+    // ⚠️ **三档并存**（不是"只认最新的"）—— 这条与 T3 那次一字不变：
+    //    只认最新的 ⇒ **没重跑过 `process` 的老工程整条字退回兜底样式**
+    //    （能出片，但字号/颜色/歪压全变，而报告里只有一行 note）。
+    //    ⚠️ 但**第 10 段是空串时也照样是 10 段**（`process` 写恒定段数）——
+    //    见 `mod.rs` 那条 `ec.map(...).unwrap_or("")`，别改成"没颜色就少写一段"。
+    if (parts.length !== 7 && parts.length !== 9 && parts.length !== 10) {
       return { ...fallback, name: styleName || 'comment', backdrop: !!fallback.backdrop, parsed: false };
     }
     const [name, fontPx, strokePx, colorCsv, strokeCsv, weight, backdrop] = parts;
@@ -2792,8 +2839,14 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    给错默认（比如 tilt 非 0）会让**所有存量工程的字突然歪掉**，
     //    而那个歪从报告里看不出来（不报错、不 CLAMP）。
     // ⚠️ 解析不出数（NaN）也走恒等 —— 与上面"认不出退回兜底"同一条纪律。
-    const tiltRaw = parts.length === 9 ? Number.parseFloat(parts[7]) : 0;
-    const squashRaw = parts.length === 9 ? Number.parseFloat(parts[8]) : 1;
+    //
+    // ⚠️⚠️ 判据是 **`>= 9`、不是 `=== 9`**（2026-10-13 加第 10 段时改）：
+    //    写成相等的话，**10 段的串会在这里静默丢掉 tilt/squash** ——
+    //    `parts[7]`/`parts[8]` 明明在，却因为"长度不是正好 9"退回恒等值
+    //    ⇒ 新工程的字**全都不歪不压**，而报告里一行差异都没有。
+    //    （真正的长度合法性已由上面那道 `!== 7 && !== 9 && !== 10` 挡过。）
+    const tiltRaw = parts.length >= 9 ? Number.parseFloat(parts[7]) : 0;
+    const squashRaw = parts.length >= 9 ? Number.parseFloat(parts[8]) : 1;
     return {
       name,
       fontPx: nums[0],
@@ -2806,6 +2859,17 @@ export function translate(config, clipDir, outPath, options = {}) {
       // T3：角度制（正 = 顺时针）/ 纵向倍数（1.0 = 不压）。
       tiltDeg: Number.isFinite(tiltRaw) ? tiltRaw : 0,
       squashY: Number.isFinite(squashRaw) ? squashRaw : 1,
+      // ---- 第 10 段：颜色预设名（2026-10-13）----
+      //
+      // ⚠️⚠️ **这里**只带出来**给人看 / 给报告用**，`color`/`strokeColor` 两个 RGBA
+      //    已经由 `process` 算好写在第 4/5 段里了（含 `black` 的翻白描边）。
+      //    ⇒ **不许**拿这个名去查表覆盖 RGBA —— 那是第二份颜色来源，
+      //       而 `black` 那条"描边成对翻转"的规则就只住在 Rust 里，
+      //       转译器再查一次表必然漏掉它（黑字配近黑描边 = 糊成一团）。
+      //
+      //    这一段存在的意义是**可追溯**：产物里能看出"这条字的颜色是用户选的哪一档"，
+      //    而不是只能从 RGBA 反推。空串 = 没写（走档位默认色）。
+      colorName: parts.length >= 10 ? String(parts[9] || '').trim().toLowerCase() : '',
       parsed: true,
     };
   }
@@ -4327,6 +4391,16 @@ export function translate(config, clipDir, outPath, options = {}) {
               end: endFrame,
               text: textBody,
               style: st,
+              // ---- 逐条颜色（2026-10-13）----
+              //
+              // ⚠️ **直接拿 `st.color`**（= 写回串第 4 段，**`process` 已经把颜色预设
+              //    算进去了**，含 `black` 那条"描边成对翻白"）。
+              //    ⇒ 这里**不许**再拿 `st.colorName` 去查表 —— 那是第二份颜色来源，
+              //       而 `black` 的描边规则只住在 Rust 里，查表必然漏掉它。
+              //
+              // ⚠️ 同名轨里各条颜色可以不同（同一 style+pos 的两条字可以是粉的和红的），
+              //    而 ASS 的 `Style:` 是**轨级一份** ⇒ 由 `cuesToAss` 用行内 `\c` 逐条覆盖。
+              color: st.color,
               // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
               pos: posKey,
               // ⚠️ **两路档名**（第 3、4 个分组维度，见下面 `byStyle` 的注释）：
@@ -6344,7 +6418,23 @@ export function translate(config, clipDir, outPath, options = {}) {
       // ⚠️ **老工程（只有 `anim`）走的是同一套键** —— 上面已经把它拆成了
       //    两路档名，所以这里对老工程算出来的 `styleAnim`/`effectAnim` 与
       //    改造前那个 `anim` **一一对应**，分组结果不变（R4）。
-      const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}|${cue.effectAnim || ''}`;
+      // ⚠️⚠️ **第五维（`color`）是同一个理由的第四次出现**（2026-10-13）：
+      //    底座的 `SubtitleStyle.color` 是 **`[u8;4]` 轨级字段**（`layer.rs:571`），
+      //    而颜色预设是**逐事件**的 ⇒ 同一轨里两种颜色只能活下来一种
+      //    （后写覆盖先写）。
+      //
+      //    ⚠️ 这与 ASS 那条 `\c` 覆盖**不是二选一**：ASS 是**侧挂产物**（给人看的、
+      //       以及别的消费者），而**出片走的是 `doc.json` 这条**——
+      //       底座自己光栅化文字（`text_overlay.rs`），**根本不读那个 ASS**。
+      //       只做 ASS 那半边 = 「文件里颜色对、成片里全是白的」，正是本仓最恨的形状。
+      //
+      //    ⚠️ 颜色进 key 用**RGBA 串**而不是 `colorName`：
+      //       `colorName` 只在写了预设时才有值，而**没写时各档的默认色本来就不同**
+      //       （`comment` 是暖黄、其余是白）—— 按名字分会让 comment 的默认黄
+      //       和"显式写了 yellow"混进同一轨（值恰好相同，但那是巧合，不是不变量）。
+      //       按**值**分则永远正确：值相同才共用一轨。
+      const colorKey = Array.isArray(cue.color) ? cue.color.join(',') : '';
+      const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}|${cue.effectAnim || ''}|${colorKey}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
@@ -6365,7 +6455,9 @@ export function translate(config, clipDir, outPath, options = {}) {
     //      于是"只有动效"的档（`fade_only` / `pop_std`）**整批跑到最前面**，
     //      与旧版的字母序对不上（旧版 `arc_down` 在最前）。
     const comboKeys = [...new Set(textCues.map(
-      (c) => `${c.anim || ''}\u0001${c.styleAnim || ''}\u0001${c.effectAnim || ''}`,
+      (c) =>
+        `${c.anim || ''}\u0001${c.styleAnim || ''}\u0001${c.effectAnim || ''}` +
+        `\u0001${Array.isArray(c.color) ? c.color.join(',') : ''}`,
     ))]
       // ⚠️ 排序键：第一段（`anim`）非空时**就用它**，否则用两路拼 ——
       //    老工程退化成"按那个 `anim` 字母序"（= 旧行为），
@@ -6380,17 +6472,24 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    —— 与 id 的字面顺序对不上（判据 ⑤b 钉的就是这个）。
         const ax = kx[0] || [kx[1], kx[2]].filter(Boolean).join('+');
         const ay = ky[0] || [ky[1], ky[2]].filter(Boolean).join('+');
-        return ax < ay ? -1 : ax > ay ? 1 : 0;
+        if (ax !== ay) return ax < ay ? -1 : 1;
+        // ⚠️ **动效名相同时再按颜色串排**（2026-10-13）—— 不排的话，同动效不同色
+        //    的两个组合会随 `Set` 的插入序（= 工程里事件的出现序）排列，
+        //    同一份工程两次跑仍相同，但**换一下事件顺序产物就变了**
+        //    （作者以为只调了顺序，sha256 却不同）。
+        return kx[3] < ky[3] ? -1 : kx[3] > ky[3] ? 1 : 0;
       })
-      // 分组仍然按**拆出来的两路**（`s`/`e`），只是排序用了第一段。
+      // 分组仍然按**拆出来的两路 + 颜色**，只是排序键用了第一段。
       .map((k) => {
         const p = k.split('\u0001');
-        return [p[1] || '', p[2] || ''];
+        return [p[1] || '', p[2] || '', p[3] || ''];
       });
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
       for (const posName of ['top', 'center', 'bottom']) {
-      for (const [styleAnimName, effectAnimName] of comboKeys) {
-      const cues = byStyle.get(`${styleName}|${posName}|${styleAnimName}|${effectAnimName}`);
+      for (const [styleAnimName, effectAnimName, colorCsv] of comboKeys) {
+      const cues = byStyle.get(
+        `${styleName}|${posName}|${styleAnimName}|${effectAnimName}|${colorCsv}`,
+      );
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
       // 轨道 id 带上档位（同一档样式的两个档位是两条轨）。
@@ -6410,7 +6509,22 @@ export function translate(config, clipDir, outPath, options = {}) {
       //    ⇒ 老工程：`anim` 就是它原来那个值，id 与改造前**逐字符相同**。
       //    ⇒ 新工程：`anim` 是空的，改由两路拼（下面那段），不撞老 id。
       const animTag = cues[0].anim || [styleAnimName, effectAnimName].filter(Boolean).join('+');
-      const id = `text_${styleName}_${posName}${animTag ? '_' + animTag : ''}`;
+      // ⚠️⚠️ **颜色进 id 用的是「预设名」，不是 RGBA**（2026-10-13）——
+      //    这是 R4 的关键那一半：**没写 color 的老工程，`colorName` 是空串 ⇒
+      //    id 逐字符不变**（`text_hook_bottom`，与改造前相同）。
+      //    用 RGBA 的话，**每一轨**的 id 都会多出一串颜色（连没写颜色的老工程也是，
+      //    因为它们都有档位默认色）⇒ 产物**整个变样**。
+      //
+      //    ⚠️ 而分组用的是 RGBA（见上面 `key`）：那个必须按**值**分，
+      //       因为"没写 color"时各档默认色不同。两者口径不同是**有意的**：
+      //       id 要的是"用户表达了什么"，分组要的是"渲染出来一样不一样"。
+      //
+      //    ⚠️ 认不出的颜色名（`process` 已经报过 warn 并退回默认色）在这里
+      //       **不进 id** —— 它没有改变任何渲染结果（RGBA 与默认色相同，
+      //       所以本来就会与默认色那条分到同一组）。
+      const colorTag = cues[0].style.colorName || '';
+      const id = `text_${styleName}_${posName}${animTag ? '_' + animTag : ''}` +
+        `${colorTag ? '_' + colorTag : ''}`;
       // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
       //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
       //    时间格式四件事，而它们都已经在那条里被验过了（有单测 + 真出片）。
@@ -6425,6 +6539,10 @@ export function translate(config, clipDir, outPath, options = {}) {
           //    这里把原始文本原样发出，让底座按同一套常量排 —— 两边口径一致
           //    （`safe_width_ratio` 0.875 就是 `CAPTION_SAFE_WIDTH_RATIO`）。
           text: c.text,
+          // ⚠️ **逐条颜色必须带下去**（2026-10-13）—— 漏掉这一行的症状是
+          //    "七档颜色全渲染成同一色"（它们会都退回 `Default` 那份主色），
+          //    而 **ASS 文件、报告、任务日志三者都完全正常**。
+          color: c.color,
           travelMs: 0,
         })),
         // ⚠️⚠️ **`danmaku: false` 不能省** —— 文字元素不滚，

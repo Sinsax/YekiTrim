@@ -350,6 +350,27 @@
                 <label>文字内容</label>
                 <input :value="selItem.text || ''" placeholder="要显示的字"
                        @input="selItem.text = $event.target.value">
+                <!-- ============ 颜色（命名预设，2026-10-13）============
+                     ⚠️ **这不是样式档位那套已否决的四档**（那个是 `selItem.style`，
+                        见下面那段注释）—— 这是**颜色**这一个维度，与 `style_anim`/
+                        `effect_anim` 正交，所以它有自己的槽位。
+
+                     ⚠️ **空 = 不设**（走 `style` 档位的默认色），必须排第一、且文案与
+                        动效栏的「不设」/样式栏的「清除」都不冲突 —— 这里用「默认色」，
+                        因为它表达的是"不指定颜色"而不是"清掉某种效果"。
+
+                     ⚠️ **选项从 `ELEMENT_COLORS` 来**（唯一一份前端清单），而那份清单
+                        的权威是 Rust `placement.rs::ElementColor`，由
+                        `scripts/check-element-color.mjs` 钉着四处同值。
+                        ⚠️ 写死在这里的话，加一档时要改五处、而漏掉哪一处都不报错。 -->
+                <label>颜色</label>
+                <select :value="selItem.color || ''" @change="selItem.color = $event.target.value || undefined">
+                  <option value="">默认色</option>
+                  <option v-for="c in ELEMENT_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
+                </select>
+                <div v-if="selItem.color && !ELEMENT_COLOR_VALUES.includes(selItem.color)" class="hint">
+                  这个颜色名不认识，成片里会用默认色。
+                </div>
                 <!-- ============ 两个**独立可叠加**的设置 ============
                      用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
                      即「竖排 **+** 抖动」两个都要成立，不是二选一。
@@ -1079,6 +1100,30 @@ const ANIM_KNOWN = ANIM_KINDS.flatMap((k) => k.variants.map((v) => v.value)).fil
 const ANIM_KIND_OF = new Map(
   ANIM_KINDS.flatMap((k) => k.variants.map((v) => [v.value, k.kind]))
 )
+
+/** **文字颜色的命名预设**（`Event::Element.color`，2026-10-13）。
+ *
+ *  ⚠️⚠️ **权威是 Rust `placement.rs::ElementColor`**（名字 ↔ RGBA 都在那边，
+ *  因为出片那条腿走 `process` 算好的 RGBA）。这里只是**下拉的展示清单**，
+ *  两边同值由 `scripts/check-element-color.mjs` 钉着（它从 Rust 源码里读真源再逐个比）。
+ *
+ *  ⚠️ 前端**不参与颜色换算**：预览读的是 `process` 写回串里的 RGBA
+ *  （`engine.js::parseTextSource` 的 `p[3]`/`p[4]`），这个下拉只写**名字**。
+ *  在这里再写一份 RGBA 表 = 第二份颜色来源，`black` 那条"描边成对翻白"必然漏掉。
+ *
+ *  ⚠️ `label` 里的情绪词与 `llm/segment.rs` 的提示词**同源同义** ——
+ *  面板上写的用途要让用户能预期 LLM 会怎么用它（两处措辞漂了不报错，但用户会困惑
+ *  "为什么 LLM 老用红色"）。 */
+const ELEMENT_COLORS = [
+  { value: 'white', label: '白 · 默认' },
+  { value: 'pink', label: '粉 · 可爱调侃' },
+  { value: 'red', label: '红 · 愤怒警报' },
+  { value: 'yellow', label: '黄 · 吐槽旁白' },
+  { value: 'cyan', label: '青 · 冷静疑问' },
+  { value: 'green', label: '绿 · 肯定通过' },
+  { value: 'black', label: '黑 · 仅浅底衬' }
+]
+const ELEMENT_COLOR_VALUES = ELEMENT_COLORS.map((c) => c.value)
 
 // ============================================================================
 // 两个**独立且可叠加**的设置：样式（形态）× 动效（时间）

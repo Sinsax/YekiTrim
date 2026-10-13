@@ -668,6 +668,126 @@ impl TextStyle {
     }
 }
 
+/// **文字颜色的命名预设**（2026-10-13）—— 让 LLM 能表达颜色。
+///
+/// # 为什么是"命名枚举"而不是 hex
+///
+/// LLM 之前**完全无法表达颜色**：颜色只有 [`TextStyle::color`] 那四个写死的常量
+/// （`hook`/`chapter`/`count` 白、`comment` 暖黄）。要让 LLM 能"按情绪上色"，
+/// 就得给它一个字段。
+///
+/// 但**不能让它写 `#ff80c0`**：模型写 hex 的出错率很高（少一位、`#` 丢掉、
+/// 写成 `rgb()`），而每一种错法都只在出片时才看得出来；而且 hex 对 LLM
+/// **没有语义**——它没法从 `#FF4040` 推出"愤怒"。命名预设两头都解决：
+/// 名字本身携带情绪语义（提示词可以写"愤怒用 red"），且拼错时能报出
+/// **具体是哪个名字认不出**（与 [`TextStyle::parse`] 同一条纪律）。
+///
+/// # 与 `style` 的关系
+///
+/// **颜色覆盖档位默认色**：不写 `color` ⇒ 走 [`TextStyle::color`]（存量工程逐字节不变）；
+/// 写了 ⇒ 用预设色。不做"底色 + 强调色"两套。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementColor {
+    /// 白 —— 万能解，正式场合。
+    White,
+    /// 粉 —— 可爱 / 调侃 / 萌。
+    Pink,
+    /// 红 —— 愤怒 / 警报 / 反驳。
+    Red,
+    /// 黄 —— **与现 `comment` 档的默认色逐值相同**（`255,226,122`）⇒ 不写时的观感可以显式复现。
+    Yellow,
+    /// 青 —— 冷静 / 疑问 / 科普。
+    Cyan,
+    /// 绿 —— 肯定 / 涨 / 通过。
+    Green,
+    /// 黑 —— **只配浅色底衬用**，见 [`Self::stroke_for`] 那条硬约束。
+    Black,
+}
+
+impl ElementColor {
+    /// 全部预设（供提示词与下拉生成，**顺序即展示顺序**）。
+    ///
+    /// ⚠️ 提示词、下拉、转译器、预览四处都读这一张表 —— 它们的一致性由
+    /// `scripts/check-element-color.mjs` 钉着（四处各存一份的症状是
+    /// "LLM 写 `pink`、面板里没有它、或者成片里是白的"，而四处各自都不报错）。
+    pub const ALL: [Self; 7] = [
+        Self::White,
+        Self::Pink,
+        Self::Red,
+        Self::Yellow,
+        Self::Cyan,
+        Self::Green,
+        Self::Black,
+    ];
+
+    /// 从工程里的字符串解析。**认不出返回 `None`**（由调用方决定怎么办）。
+    ///
+    /// ⚠️ 与 [`TextStyle::parse`] **不同**：那个认不出退回 `Comment`（最保守的**观感**档），
+    /// 因为它们管的是"字长什么样"，总得有一档。颜色这里**返回 `None`** ——
+    /// "没写"（⇒ 走档位默认色）与"写错了"（⇒ 报一行且走档位默认色）是两件事，
+    /// 合并成一个 `Option` 之外的值就再也分不出来了。调用方据此打警告。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "white" => Some(Self::White),
+            "pink" => Some(Self::Pink),
+            "red" => Some(Self::Red),
+            "yellow" => Some(Self::Yellow),
+            "cyan" => Some(Self::Cyan),
+            "green" => Some(Self::Green),
+            "black" => Some(Self::Black),
+            _ => None,
+        }
+    }
+
+    /// 预设名（写回 `source` 串用；与 [`Self::parse`] **互为逆运算**）。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::White => "white",
+            Self::Pink => "pink",
+            Self::Red => "red",
+            Self::Yellow => "yellow",
+            Self::Cyan => "cyan",
+            Self::Green => "green",
+            Self::Black => "black",
+        }
+    }
+
+    /// 填充色（RGBA）。
+    ///
+    /// 取值都**刻意避开了纯饱和**（纯红 `#FF0000` 在视频压缩后边缘会糊、
+    /// 且与深描边对比过硬），并按"深色描边下仍读得清"校过。
+    pub const fn rgba(self) -> [u8; 4] {
+        match self {
+            Self::White => [255, 255, 255, 255],
+            Self::Pink => [255, 128, 192, 255],
+            Self::Red => [255, 64, 64, 255],
+            Self::Yellow => [255, 226, 122, 255],
+            Self::Cyan => [96, 224, 255, 255],
+            Self::Green => [128, 232, 128, 255],
+            Self::Black => [24, 24, 24, 255],
+        }
+    }
+
+    /// **这一档该配什么描边色** —— 黑字必须翻成白描边，这是硬约束不是口味。
+    ///
+    /// # 为什么必须成对返回
+    ///
+    /// [`TextStyle::stroke_color`] 四档一律近黑（`[26,26,26]`，亮背景上才压得住）。
+    /// 黑色填充 + 近黑描边 = **糊成一团墨**，字还在、但读不出来 ——
+    /// 而报告里一行差异都没有（颜色字段是对的、描边字段也是对的，只是两者不搭）。
+    ///
+    /// ⇒ 与其让调用方"记得"给黑字换描边（四个消费点都得记），
+    /// 不如**由这里成对给出**：调用点只有"取填充 + 取描边"这一条路。
+    /// ⚠️ 其余六档的描边仍归 `TextStyle` —— 只有 `Black` 这一档需要翻转。
+    pub const fn stroke_for(self, style: TextStyle) -> [u8; 4] {
+        match self {
+            // 白描边 + 稍低 alpha：纯白边在黑字周围太"跳"，230 略柔和。
+            Self::Black => [255, 255, 255, 230],
+            _ => style.stroke_color(),
+        }
+    }
+}
+
 /// 文字在画面上的**纵向锚点**（规格里的 `pos`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAnchor {
