@@ -468,6 +468,49 @@ try {
       }
     }
   }
+
+  // ---- ⑥-bis ⚠️ **`sway` 那条路**单独核（它写的是**图层关键帧**，不走 `subtitle`）----
+  //
+  // ⚠️ 为什么必须单独一条：`sway_*` 是**唯一**走 `keyframes` 的动效档族 ——
+  //    `subtitle` 上**一个字段都没有**。⇒ 只核 `subtitle` 的判据（上面 ⑥）
+  //    对它是**空的**：`sway_lg` 全丢也能全绿。
+  //    （复核者的存疑清单第 6 条点名的就是这个覆盖缺口。）
+  //
+  // ⚠️ 核的**不是**"有 keyframes 就算过" —— 要核**角度来自哪一路**：
+  //    逐条预设（`[elements]` 也配了别的值时，**逐条赢**）。见 `swayCfg` 那条注释。
+  {
+    const styleName = ALL.find((n) => n.startsWith('vtext_') && PARTS[n].form.includes('vertical'))
+    const swayName = ALL.find((n) => n.startsWith('sway_'))
+    ok(!!styleName && !!swayName, '⑥-bis 夹具挑不出 sway 档（表变了？）')
+    if (styleName && swayName) {
+      writeProject({ legacy: false, events: [{ style_anim: styleName, effect_anim: swayName, time: 0.5 }] })
+      const doc = run()
+      if (doc) {
+        const id = (doc.timeline?.tracks ?? []).map((t) => t.id)
+          .find((x) => x.startsWith('text_comment_bottom_'))
+        const sub = id ? subOf(doc, id) : null
+        const keys = id ? keysOf(doc, id) : []
+        // ① 形态那半边照样要在（sway 是动效档，不该把竖排挤掉）
+        ok(sub?.vertical === true,
+          `⑥-bis 叠加了 sway 之后**形态丢了**：\`vertical\` 实得 ${JSON.stringify(sub?.vertical)}`)
+        // ② 摇摆**必须真的写出关键帧**（写 0 个 = "配了、成片里字不摆"）
+        ok(keys.length >= 2,
+          `⑥-bis \`${swayName}\` 没有写出旋转关键帧（实得 ${keys.length} 个）—— ` +
+          `摇摆那条路写的是**图层 keyframes**、不是 \`subtitle\`，所以上面 ⑥ 看不见它\n` +
+          `     ⚠️ 只核 \`subtitle\` 的判据对 sway **是空的**：全丢也会绿`)
+        // ③ 关键帧的角度必须来自**逐条预设**，不是全局 `[elements]`
+        //    （夹具的全局 sway_deg = 33.3，预设 = 6/12/900 —— 值不同才分得开）
+        if (keys.length) {
+          const peak = Math.max(...keys.map((k) => Math.abs(k.value ?? 0)))
+          const want = Math.abs(E.animPreset(swayName)?.swayDeg ?? -1)
+          ok(Math.abs(peak - want) < 1e-6,
+            `⑥-bis 摇摆角度取错了来源：关键帧峰值 ${peak}，逐条预设 \`${swayName}\` 应当是 ${want}\n` +
+            `     ⚠️ ${peak === 33.3 ? '取的是**全局 `[elements]`**（逐条预设被忽略）' : '两边都不是'} —— ` +
+            `报告里一行差异都不会有`)
+        }
+      }
+    }
+  }
 }
 
 // ============================================================================
@@ -530,6 +573,15 @@ if (MUTATE) {
       from: `              if (!anyAxis) return elementsCfg; // 两轴都没写 ⇒ 回落全局`,
       to: `              if (p === undefined) return elementsCfg;`,
       expect: '④',
+    },
+    {
+      // ⚠️ 摇摆**读全局而不是逐条预设** —— 症状是"用户选了 `sway_lg`（12°），
+      //    成片按全局那份摆"，**报告里一行差异都没有**。
+      //    抓它的是 ⑥-bis ③（核关键帧峰值的**来源**）。
+      name: '（摇摆）参数取全局而不是逐条预设（选了 sway_lg 却按全局摆）',
+      from: `              return { ...elementsCfg, sway_deg: p?.sway_deg, sway_ms: p?.sway_ms };`,
+      to: `              return { ...elementsCfg };`,
+      expect: '⑥-bis',
     },
     {
       name: '把 pop_perchar/hop 从"形态侧"摘掉（本趟真踩过的 bug）',
