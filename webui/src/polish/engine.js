@@ -758,11 +758,21 @@ export function animHasMotionPart(name) {
   if (a === 'effect') return true
   // ⚠️ 排版轴里也有给时间的（`arc` 逐字转）—— 它**两边都要给**，
   //    否则老工程的"逐字动"会静默变成"静态阶梯"。
-  //    ⚠️ 与转译器 `animHasMotionPart` **逐字同源**，改一边必须改另一边。
-  //    ⚠️⚠️ **过渡轴（`pop`/`fade`）不在这里返回 true** —— 它们走**第三路**
-  //       `transition`（`splitAnimTwoAxis`）。让它们同时进 `effect` 路的话，
-  //       `pick()` 的两轴优先级会把过渡档当动效档摊，语义漂了还不报错。
-  return a === 'style' && name === 'arc'
+  //
+  //    ⚠️ 结构性判据（问预设表），**不是档名前缀** —— 收敛后的档名是 `arc`（无下划线），
+  //    而前缀正则要求下划线 ⇒ 匹配失败 ⇒ 静默丢档（转译器侧同一个坑，两处一起改）。
+  //
+  //    ⚠️⚠️ **必须只认 `perChar`** —— 不能顺手把 `scaleInFrom` / `shakePx` 也收进来。
+  //    实测（权威 = 转译器）：
+  //      · `pop` 的 `scaleInFrom` 是**过渡**语义、`fade` 一个字段都不给
+  //        ⇒ 收进来会让 `pop` **同时**落进 `effect` 与 `transition` 两路
+  //          （`splitLegacyAnim('pop')` 从 `{effect:''}` 变成 `{effect:'pop'}`）
+  //          ⇒ 与转译器**不同源** ⇒ 老格式在预览与成片里走不同的路；
+  //      · `shake`/`heartbeat` 已经在上面那条 `a === 'effect'` 里返回了，写在这里是死代码。
+  //    ⇒ 只保留 `perChar`（这正是"排版轴档位也给时间"的唯一实际情形）。
+  const p = animPreset(name)
+  if (!p) return false
+  return p.perChar !== undefined
 }
 
 /** 把老工程的**单个** `anim` 拆成**三路**档名（认不出 ⇒ 三路都空）。

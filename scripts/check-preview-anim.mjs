@@ -41,6 +41,15 @@ const PREVIEW = path.join(ROOT, 'webui', 'src', 'components', 'PolishPreview.vue
 //    而脚本照旧打印"✓ 全绿" —— 看起来像"判据抓不住字幕那条腿"，
 //    其实是**变异压根没跑**。这种"自证自己失效"的形态最难发现）。
 const MUTATE = process.argv.includes('--mutate') || process.argv.includes('--mutate-sub')
+// ⚠️⚠️ **三轴的两个变异台**（2026-10-14 补）。它们守的是"两条轴**同时**生效"这件事 ——
+//    而**单轴**判据对它们**全绿**（实测：忽略过渡实参之后 ⑤-quater 之外 78 项一个不红）。
+//    这正是本仓最贵的假绿形态：**判据自己没覆盖到，它就替你签了字**。
+//      * `--mutate-trans`：`animMotion` 的**第三实参（过渡）被忽略** ⇒ 用户在「过渡」栏
+//        选「弹出」，预览里不弹（成片里弹）；
+//      * `--mutate-eat`：两轴合并退回 `...(pEff ?? pTrans ?? {})` —— **一张轴吃掉另一张**
+//        ⇒ 界面上两栏都选着、两栏单独看也都对，只有**组合**才露馅。
+const MUTATE_TRANS = process.argv.includes('--mutate-trans')
+const MUTATE_EAT = process.argv.includes('--mutate-eat')
 
 // ---- 变异：把生产的逐字那条路摘掉（判据必须翻红）----
 //
@@ -55,50 +64,78 @@ const MUTATE = process.argv.includes('--mutate') || process.argv.includes('--mut
 //    生产文件**从头到尾一个字节都不会被碰到**（连还原都不需要）。
 let mutated = false
 let importUrl = new URL('../webui/src/polish/engine.js', import.meta.url).href
-if (MUTATE) {
+if (MUTATE || MUTATE_TRANS || MUTATE_EAT) {
   const orig = fs.readFileSync(ENGINE, 'utf8')
-  const marker = 'export function perCharSpans('
-  const i = orig.indexOf(marker)
-  if (i < 0) {
-    console.log('✗ 变异失败：engine.js 里找不到 `perCharSpans`（判据的前提没了）')
-    process.exit(1)
-  }
-  // ⚠️ 锚点必须取**函数签名之后**的那个 `{`，不能取 `indexOf('{', i)` ——
-  //    函数上面那段 JSDoc 里就有一个 `{`（`@returns {null | Array<...>}`），
-  //    取到它会把 `return null` 插进**注释块里**，于是副本整个语法错
-  //    （实测：`Unexpected token 'null'`，而且看起来像"变异体本身写错了"）。
-  const sigStart = orig.indexOf('(', i)
-  const sigEnd = orig.indexOf(')', sigStart)
-  const bodyStart = orig.indexOf('{', sigEnd)
-  // ⚠️ **两处变异**，覆盖**两条腿**（少了任一条就测不到对应那个分支）：
-  //    ① `--mutate`：把 `perCharSpans` 直接返回 null ⇒ 元素与字幕的逐字**一起**断；
-  //    ② `--mutate-sub`：把 `subAnimFields` 直接返回空 ⇒ **只**断字幕那条腿，
-  //       而 ③④ 仍然全绿 —— 这正是"只补了元素、漏了字幕"那个真实事故的形态。
-  //    ⇒ **⑤ 是唯一能抓到 ② 的判据**（它专查 `subsAt` 那条分支）。
-  const WHICH_SUB = process.argv.includes('--mutate-sub')
-  let patched
-  if (WHICH_SUB) {
-    const j = orig.indexOf('function subAnimFields(')
-    if (j < 0) {
-      console.log('✗ 变异失败：engine.js 里找不到 `subAnimFields`')
+  // ⚠️ **"锚点必须命中恰好一次"**（少了这条，没匹配上的变异体会原样跑绿、
+  //    看着像"判据抓不住" —— 本仓栽过）。
+  const once = (src, needle, repl, label) => {
+    const parts = src.split(needle)
+    if (parts.length !== 2) {
+      console.log(`✗ 变异失败：锚点「${label}」在 engine.js 里命中 ${parts.length - 1} 次（应当 1 次）`)
       process.exit(1)
     }
-    const s2 = orig.indexOf('(', j)
-    const e2 = orig.indexOf(')', s2)
-    const b2 = orig.indexOf('{', e2)
-    patched = orig.slice(0, b2 + 1) + '\n  return {} // <-- 变异体（只断字幕那条腿）\n' + orig.slice(b2 + 1)
-  } else {
-    patched = orig.slice(0, bodyStart + 1) + '\n  return null // <-- 变异体\n' + orig.slice(bodyStart + 1)
+    return parts[0] + repl + parts[1]
   }
-  // ⚠️ 副本放在 `webui/src/polish/` 下（**换个文件名**），这样副本里的
-  //    `./canvas.js` 那些相对 import 照样解析得到。
-  const copyPath = path.join(ROOT, 'webui', 'src', 'polish', '__mutant_engine.mjs')
-  fs.writeFileSync(copyPath, patched)
-  mutated = true
-  importUrl = new URL('../webui/src/polish/__mutant_engine.mjs', import.meta.url).href
-  console.log(WHICH_SUB
-    ? '【变异·字幕】已把 `subAnimFields` 改成直接 return {}（只断字幕那条腿，只动物副本）'
-    : '【变异·逐字】已把 `perCharSpans` 改成直接 return null（逐字那条路被摘掉，只动物副本）')
+  if (MUTATE_EAT || MUTATE_TRANS) {
+    // ⚠️ **两个三轴变异台**（理由见文件头）：
+    //    ① `--mutate-eat`：两轴合并写回**互相覆盖**的旧形态（后摊的那档整个盖掉前档）；
+    //    ② `--mutate-trans`：第三实参（过渡轴）**被忽略** ⇒ 过渡档整条看不见、静默回落全局。
+    const patched = MUTATE_EAT
+      ? once(orig, '...(pTrans ?? {}), ...(pEff ?? {})', '...(pEff ?? pTrans ?? {})',
+          'animMotion 两轴合并')
+      : once(orig, 'const pTrans = animPreset(transitionName)', 'const pTrans = undefined',
+          'animMotion 过渡实参')
+    const copyPath = path.join(ROOT, 'webui', 'src', 'polish', '__mutant_engine.mjs')
+    fs.writeFileSync(copyPath, patched)
+    mutated = true
+    importUrl = new URL('../webui/src/polish/__mutant_engine.mjs', import.meta.url).href
+    console.log(MUTATE_EAT
+      ? '【变异·吃掉】`animMotion` 把两条轴合回 `...(pEff ?? pTrans ?? {})`（后摊的那档整个盖掉前档）'
+      : '【变异·过渡】已把 `animMotion` 的第三实参（过渡轴）忽略掉（`pTrans` 恒 `undefined`）')
+  } else {
+    const marker = 'export function perCharSpans('
+    const i = orig.indexOf(marker)
+    if (i < 0) {
+      console.log('✗ 变异失败：engine.js 里找不到 `perCharSpans`（判据的前提没了）')
+      process.exit(1)
+    }
+    // ⚠️ 锚点必须取**函数签名之后**的那个 `{`，不能取 `indexOf('{', i)` ——
+    //    函数上面那段 JSDoc 里就有一个 `{`（`@returns {null | Array<...>}`），
+    //    取到它会把 `return null` 插进**注释块里**，于是副本整个语法错
+    //    （实测：`Unexpected token 'null'`，而且看起来像"变异体本身写错了"）。
+    const sigStart = orig.indexOf('(', i)
+    const sigEnd = orig.indexOf(')', sigStart)
+    const bodyStart = orig.indexOf('{', sigEnd)
+    // ⚠️ **两处变异**，覆盖**两条腿**（少了任一条就测不到对应那个分支）：
+    //    ① `--mutate`：把 `perCharSpans` 直接返回 null ⇒ 元素与字幕的逐字**一起**断；
+    //    ② `--mutate-sub`：把 `subAnimFields` 直接返回空 ⇒ **只**断字幕那条腿，
+    //       而 ③④ 仍然全绿 —— 这正是"只补了元素、漏了字幕"那个真实事故的形态。
+    //    ⇒ **⑤ 是唯一能抓到 ② 的判据**（它专查 `subsAt` 那条分支）。
+    const WHICH_SUB = process.argv.includes('--mutate-sub')
+    let patched
+    if (WHICH_SUB) {
+      const j = orig.indexOf('function subAnimFields(')
+      if (j < 0) {
+        console.log('✗ 变异失败：engine.js 里找不到 `subAnimFields`')
+        process.exit(1)
+      }
+      const s2 = orig.indexOf('(', j)
+      const e2 = orig.indexOf(')', s2)
+      const b2 = orig.indexOf('{', e2)
+      patched = orig.slice(0, b2 + 1) + '\n  return {} // <-- 变异体（只断字幕那条腿）\n' + orig.slice(b2 + 1)
+    } else {
+      patched = orig.slice(0, bodyStart + 1) + '\n  return null // <-- 变异体\n' + orig.slice(bodyStart + 1)
+    }
+    // ⚠️ 副本放在 `webui/src/polish/` 下（**换个文件名**），这样副本里的
+    //    `./canvas.js` 那些相对 import 照样解析得到。
+    const copyPath = path.join(ROOT, 'webui', 'src', 'polish', '__mutant_engine.mjs')
+    fs.writeFileSync(copyPath, patched)
+    mutated = true
+    importUrl = new URL('../webui/src/polish/__mutant_engine.mjs', import.meta.url).href
+    console.log(WHICH_SUB
+      ? '【变异·字幕】已把 `subAnimFields` 改成直接 return {}（只断字幕那条腿，只动物副本）'
+      : '【变异·逐字】已把 `perCharSpans` 改成直接 return null（逐字那条路被摘掉，只动物副本）')
+  }
 }
 
 const fails = []
@@ -138,8 +175,10 @@ try {
   // ⚠️ **档数是契约（三轴收敛后是 9）**，但这里从**转译器**那份权威数出来再比，
   //    不写死数字 —— 写死的话，改了档位表判据自己不知道。
   //    ⚠️ 两侧必须**同集合** —— 预览少一档的症状是“用户选它、预览里不动”。
-  ok(transNames.length === 9,
-    `① 转译器的 \`ANIM_PRESETS\` 应当 9 档（三轴收敛后的契约），实得 ${transNames.length}`)
+  ok(transNames.length === allNames.length,
+    `① 预览与转译器的档数不同：转译器 ${transNames.length} 档、预览 ${allNames.length} 档\n` +
+    `     ⚠️ **档数是契约**（三轴收敛后 9 档），但这里**不写死数字** ——\n` +
+    `        写死之后"加一档"必须同时改判据，而那种改动的形状与"放宽判据求绿"一模一样。`)
   ok(JSON.stringify(allNames) === JSON.stringify(transNames),
     `① 预览与转译器的档集合不同。\n` +
     `      预览多的：${JSON.stringify(allNames.filter((n) => !transNames.includes(n)))}\n` +
@@ -441,8 +480,14 @@ try {
   //    两样都在不在"。这正是本仓最贵的那类假绿：**判据自己没覆盖到，它就替你签了字。**
   //
   // ⚠️ 症状（实测）：`{...base, ...off, ...pTrans, ...pEff}` 这种写法下，
-  //    后摊的那一档把前一档字段整个盖掉 ⇒ 用户选「抖动 + 弹出」时 `shakePx` 变 **0**
-  //    （只拿到弹出），而**界面上两栏都亮着**、报告里也不报错。
+  //    后摊的那一档把前一档字段整个盖掉 ⇒ 用户选「抖动 + 弹出」时**一半参数归零**，
+  //    而**界面上两栏都亮着**、报告里也不报错。
+  //
+  // ⚠️⚠️ **两个变异台各自守哪一半（实测口径，别写反）**：
+  //    * `--mutate-eat`（`...(pEff ?? pTrans ?? {})`）：后摊的 `pEff` 盖掉 `pTrans`
+  //      ⇒ **`scaleInMs` 归零**（`shakePx` 恰好**不掉** —— 它本来就来自后摊那一档）。
+  //    * `--mutate-trans`（`pTrans` 恒 `undefined`）：过渡档整条消失 ⇒ 同样 **`scaleInMs` 归零**。
+  //    ⇒ 两条轴**各自的字段必须都出现在同一份 `textMotion` 里**，判据才守得住。
   //
   // ⚠️ 判据盯**实际参数**（不是档名）：两条轴各自的字段必须都出现在同一份 `textMotion` 里。
   {
@@ -453,7 +498,17 @@ try {
       '     ⚠️ 用户选「抖动 + 弹出」只拿到一半，而两栏在界面上都亮着 —— 不报错。')
     ok(combo && combo.scaleInMs > 0 && combo.scaleInFrom < 1,
       '⑤-quater 过渡轴被动效轴**吃掉了**：`shake` + `pop` 时弹入参数 = ' +
-      `${JSON.stringify([combo?.scaleInFrom, combo?.scaleInMs])}（应当与 pop 单独时一样有弹入）`)
+      `${JSON.stringify([combo?.scaleInFrom, combo?.scaleInMs])}（应当与 pop 单独时一样有弹入）\n` +
+      '     ⚠️ 这一条同时是 `--mutate-trans`（过渡实参被忽略）与 `--mutate-eat`\n' +
+      '        （后摊的那档盖掉前档）两个变异台的翻面点。')
+    // ⚠️ **反向对照**：过渡轴单独给时必须与"两条轴一起给"里的过渡那部分**逐值相同** ——
+    //    防"为了叠加而让某一轴泄漏"（叠加不许改变单轴的语义）。
+    const popOnly = E.animMotion(null, undefined, 'pop')
+    ok(popOnly && popOnly.scaleInMs === combo?.scaleInMs &&
+       popOnly.scaleInFrom === combo?.scaleInFrom,
+      '⑤-quater 叠加动效轴之后**过渡轴的参数变了**（两轴互相污染）：\n' +
+      `     pop 单独：${JSON.stringify([popOnly?.scaleInFrom, popOnly?.scaleInMs])}\n` +
+      `     pop+shake：${JSON.stringify([combo?.scaleInFrom, combo?.scaleInMs])}`)
     // ⚠️ 反向：**单轴**时必须与"另一轴为空"逐值相同 —— 防"为了叠加而让某一轴泄漏"。
     ok(JSON.stringify(E.animMotion(null, 'shake', undefined)) ===
        JSON.stringify(E.animMotion(null, 'shake', '')),
@@ -465,6 +520,104 @@ try {
       '⑤-quater `fade` 没有压掉全局 `[elements]`：实得 ' +
       `${JSON.stringify([faded?.scaleInMs, faded?.shakePx])}（应当都是 0）\n` +
       '     ⚠️ 用户要的是"只淡入淡出"，压不掉的话会变成"弹入 + 抖动 + 淡入淡出"。')
+  }
+
+  // ---- ⑤-quinquies ⚠️★ **三条轴同时生效、互不覆盖**（2026-10-14 三轴）----
+  //
+  // ⚠️⚠️ 上面那条 ⑤-quater 只走了 `animMotion` **一个函数**（两轴）。三轴化之后
+  //    用户能做的是**三条同时**：「竖排（排版）+ 弹出（过渡）+ 抖动（动效）」。
+  //    这一条才是那个能力在**事件 → 索引 → 求值 → 画面**整条链上的判据。
+  //
+  // ⚠️ 为什么非要有它（四条都不会自己报错）：
+  //   · **过渡轴被忽略**（`--mutate-trans`）⇒ 用户在「过渡」栏选「弹出」，
+  //     预览里不弹而**成片里弹** —— ⑤-quater 能抓到，但它只证明"函数里对了"，
+  //     证明不了 `buildIndex` 那个调用点真的把第三路**接上了**；
+  //   · 三条轴里**任意一条读错档名**（例如排版那路读 `effectAnimName`）⇒
+  //     组合里**只有一部分**生效；
+  //   · **两轴互相吃掉**（`--mutate-eat`）⇒ 后摊的那档把前档字段整个盖掉，
+  //     **界面上三栏都选着、三栏单独看也都对**，只有"三条同时"才露馅。
+  {
+    const mkAll = (ev) => E.buildIndex({
+      config: {
+        canvas: { width: 1920, height: 1080, fps: 30 }, elements: {},
+        segments: [{ start: 0, end: 10, fx: 'low', events: [{
+          type: 'element', kind: 'text', text: '竖排且抖', time: 1, end: 4,
+          style: 'comment', pos: 'bottom', x: '40%', y: '70%',
+          source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1', ...ev
+        }] }]
+      },
+      subtitles: [], danmaku: [], duration: 10, fps: 30
+    })
+    const firstEl = (idx) => (idx.element || [])[0]
+
+    const all3 = firstEl(mkAll({ style_anim: 'vtext', transition_anim: 'pop', effect_anim: 'shake' }))
+    ok(!!all3, '⑤-quinquies 三条轴组合的文字元素没进索引')
+    if (all3) {
+      ok(all3.styleAnimName === 'vtext' && all3.transitionAnimName === 'pop'
+        && all3.effectAnimName === 'shake',
+        '⑤-quinquies 组合档没把三条轴**分别**带到预览：' +
+        JSON.stringify([all3.styleAnimName, all3.transitionAnimName, all3.effectAnimName]))
+      // ⚠️ **核实际参数**而不是档名：档名带出来了、参数没接上同样没效果。
+      ok(E.animPreset(all3.styleAnimName)?.vertical === true,
+        '⑤-quinquies **排版**轴参数没接上（`vtext` 应当是竖排）：' +
+        JSON.stringify(E.animPreset(all3.styleAnimName)?.vertical))
+      ok(all3.textMotion?.scaleInMs > 0,
+        '⑤-quinquies **过渡**轴参数没接上（`pop` 应当有 `scaleInMs`）：' +
+        JSON.stringify(all3.textMotion?.scaleInMs))
+      ok(all3.textMotion?.shakePx > 0,
+        '⑤-quinquies **动效**轴参数没接上（`shake` 应当有 `shakePx`）：' +
+        JSON.stringify(all3.textMotion?.shakePx))
+    }
+
+    // ⚠️ **反序**：三条轴**不许互相清掉**（写序不同结果必须一致）。
+    const rev3 = firstEl(mkAll({ effect_anim: 'shake', transition_anim: 'pop', style_anim: 'vtext' }))
+    ok(rev3?.styleAnimName === 'vtext' && rev3?.transitionAnimName === 'pop'
+      && rev3?.effectAnimName === 'shake',
+      '⑤-quinquies 反序写三条轴结果不同（几条轴互相清掉了？）：' +
+      JSON.stringify([rev3?.styleAnimName, rev3?.transitionAnimName, rev3?.effectAnimName]))
+
+    // ⚠️★ **`shake` + `pop` 必须同时生效**（"两轴互相吃掉"的**正面判据**）。
+    //    ⚠️ 只写这两条轴（不带排版），把"过渡 vs 动效"单独拎出来看 ——
+    //    这正是用户能做出的那个最小组合。
+    const combo2 = firstEl(mkAll({ transition_anim: 'pop', effect_anim: 'shake' }))
+    ok(combo2?.textMotion?.shakePx > 0,
+      '⑤-quinquies **`shake` + `pop` 同时选时 `shakePx` 归零了**（动效被过渡吃掉）：' +
+      `${JSON.stringify(combo2?.textMotion?.shakePx)}\n` +
+      '     ⚠️ 界面上两栏都选着、两栏单独看也都对，只有这一条**组合**判据能发现。')
+    ok(combo2?.textMotion?.scaleInMs > 0,
+      '⑤-quinquies **`shake` + `pop` 同时选时 `scaleInMs` 归零了**（过渡被动效吃掉）：' +
+      `${JSON.stringify(combo2?.textMotion?.scaleInMs)}\n` +
+      '     ⚠️ 这正是 `--mutate-eat` / `--mutate-trans` 两个变异台的翻面点。')
+    // ⚠️ 还要真的**走到求值**上：参数在、`getElements` 却没算进画面，一样白搭。
+    //    ⚠️ 取 1.05s（弹入窗口 350ms **之内**）—— 窗口外 `motionScale` 恒 1，
+    //    那时"有没有弹"根本看不出来（假绿）。
+    const comboEl = E.getElements(mkAll({ transition_anim: 'pop', effect_anim: 'shake' }), 1.05)[0]
+    ok(!!comboEl, '⑤-quinquies 组合档的 `getElements` 没求出元素')
+    if (comboEl) {
+      ok(comboEl.shakeX !== 0 || comboEl.shakeY !== 0,
+        '⑤-quinquies 组合档**算出来的画面里没有抖动**（`shakeX`/`shakeY` 恒 0）：' +
+        `shakeX=${JSON.stringify(comboEl.shakeX)} shakeY=${JSON.stringify(comboEl.shakeY)}`)
+      ok(comboEl.scale !== 1,
+        '⑤-quinquies 组合档**算出来的画面里没有弹入**（弹入窗口内 `scale` 应当 ≠ 1）：' +
+        `scale=${JSON.stringify(comboEl.scale)}`)
+    }
+
+    // ⚠️ **只写排版轴** ⇒ 另外两条必须为空（不许串到别的档上去）。
+    const onlyStyle = firstEl(mkAll({ style_anim: 'vtext' }))
+    ok(onlyStyle?.effectAnimName === '' && onlyStyle?.transitionAnimName === '',
+      '⑤-quinquies 只写 `style_anim` 时另外两条轴应当为空：' +
+      JSON.stringify([onlyStyle?.transitionAnimName, onlyStyle?.effectAnimName]))
+    ok(!(onlyStyle?.textMotion?.shakePx > 0) && !(onlyStyle?.textMotion?.scaleInMs > 0),
+      '⑤-quinquies 只写 `style_anim` 却弹/抖起来了（别的轴串到排版档了）：' +
+      JSON.stringify([onlyStyle?.textMotion?.shakePx, onlyStyle?.textMotion?.scaleInMs]))
+
+    // ⚠️ **只写过渡轴** ⇒ `pop` 自己必须真的弹出（不静默回落全局）。
+    //    这是"忽略第三实参"那个变异在**调用点**上的正面判据。
+    const onlyTrans = firstEl(mkAll({ transition_anim: 'pop' }))
+    ok(onlyTrans?.textMotion?.scaleInMs > 0,
+      '⑤-quinquies 只写 `transition_anim="pop"` 时 `scaleInMs` 是 0 ——' +
+      '**过渡轴在预览里不生效**：' + JSON.stringify(onlyTrans?.textMotion?.scaleInMs) +
+      '（`pop` 应当给出 350，成片里也会弹）')
   }
 
   // ---- ⑤-ter ⚠️ **形态那半边的"实际参数"必须真的被消费** ----
@@ -498,16 +651,25 @@ try {
       '⑤-ter 算出来的 `formStyle` 没有在模板上套用 —— 算出来不渲染 = 白算')
   }
 
-  // ---- ⑦ ⚠️ **两轴组合**：`style_anim` + `effect_anim` 同时生效（2026-10-13）----
+  // ---- ⑦ ⚠️ **老格式 `anim` ↔ 新格式三轴等价**（R4 的预览侧，2026-10-14 三轴版）----
   //
-  // 判据 ③④⑤⑥ 都是**单档**的（老 `anim`，或只顾到接线）。两级化之后用户能做的是
-  // **组合**：「竖排 + 抖动」。这一条是那个能力在预览侧的**唯一**判据。
+  // ⚠️⚠️ **老格式那条路仍然存在**：`splitAnimTwoAxis` 返回**三路**
+  //    `{style, effect, transition}`，而 `engine.js` 的**两个调用点**
+  //    （`buildIndex` 的元素分支 + `subAnimFields` 的字幕分支）都接了过渡轴。
+  //
+  // ⚠️ **`pop` / `fade` 在老格式下走的是 `transition` 那一路** ——
+  //    只吐两路时它们**三路全空** ⇒ 轨 id 退化成 `text_<style>_<pos>`
+  //    （`fade` 与 `pop` 撞同一个 id、后面那条被吃掉）且 `on === false`
+  //    ⇒ **静默回落全局**（用户选「弹出」拿到"全局弹入 + 全局抖动 + 全局摇摆"）。
+  //    这组对拍正好把那个修复**锁住**。
   //
   // ⚠️ 为什么必须有它（三条都不会自己报错）：
-  //   · 预览只读老 `anim` ⇒ 新界面写的两个字段它**看不见** ⇒ 预览完全没效果、
+  //   · 预览只读老 `anim` ⇒ 新界面写的字段它**看不见** ⇒ 预览完全没效果、
   //     成片有（这也正是 ③④⑤ 全绿时发现不了的那一类）；
-  //   · 两轴混用（动效那路读 `styleAnim`）⇒ 组合里**只有一半**生效；
-  //   · 形态那路读 `effectAnim` ⇒ 竖排丢失、只剩抖。
+  //   · 轴混用（动效那路读 `styleAnim`）⇒ 组合里**只有一半**生效；
+  //   · 排版那路读 `effectAnim` ⇒ 竖排丢失、只剩抖。
+  //
+  // ⚠️ **用全部档名覆盖**（不只是挑几个）—— 挑着测会漏掉整整一条轴。
   {
     const mk = (ev) => E.buildIndex({
       config: {
@@ -533,9 +695,9 @@ try {
       // ⚠️ 核的是**实际参数**而不是档名：档名带出来了、参数没接上同样没效果。
       const st = E.animPreset(both.styleAnimName)
       ok(st?.vertical === true,
-        `⑦ 组合档的**形态**参数没接上（\`vtext_bold\` 应当是竖排）：实得 ${JSON.stringify(st?.vertical)}`)
+        `⑦ 组合档的**排版**参数没接上（\`vtext\` 应当是竖排）：实得 ${JSON.stringify(st?.vertical)}`)
       ok(both.textMotion?.shakePx > 0,
-        `⑦ 组合档的**动效**参数没接上（\`shake_std\` 应当有 \`shakePx\`）：` +
+        `⑦ 组合档的**动效**参数没接上（\`shake\` 应当有 \`shakePx\`）：` +
         `实得 ${JSON.stringify(both.textMotion?.shakePx)}`)
     }
 
@@ -609,9 +771,10 @@ try {
 
 // ---- 结果 ----
 if (fails.length === 0) {
-  console.log(`✓ 9 档预览会动（${checks} 项：逐档求值 + 逐字不退化成整行 + 字幕那条分支 + 接线）`)
+  console.log(`✓ 三轴 9 档预览会动（${checks} 项：逐档求值 + 逐字不退化成整行 + 字幕那条分支`
+    + ` + 接线 + 三条轴同时生效）`)
   process.exit(0)
 }
-console.log(`✗ 9 档颈览有 ${fails.length} 处问题（共 ${checks} 项判据）：`)
+console.log(`✗ 三轴 9 档预览有 ${fails.length} 处问题（共 ${checks} 项判据）：`)
 for (const f of fails) console.log('    · ' + f)
 process.exit(1)

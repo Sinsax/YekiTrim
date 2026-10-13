@@ -3558,12 +3558,23 @@ export function translate(config, clipDir, outPath, options = {}) {
       || p.squashY !== undefined;
   };
   /// 这一档在**动效**路上给了东西吗。
+  ///
+  /// ⚠️⚠️ 判据必须是**结构性的**（"它的预设里有没有**逐字** spec"），**不能是档名前缀**。
+  ///    2026-10-14 三轴收敛前这里是 `/^(arc|scatter|hop)_/` —— 那个正则**要求下划线**，
+  ///    而收敛后的档名是 **`arc`（无下划线）** ⇒ 匹配失败 ⇒ 返回 `false` ⇒
+  ///    `splitLegacyAnim('arc')` 的动效那一路**是空的** ⇒ 老工程 `anim = "arc"`
+  ///    的逐字动**静默丢失**（预览侧同一个坑，两处一起改）。
+  ///
+  /// ⚠️⚠️ **只认 `perChar`** —— 不能顺手把 `scaleInFrom` / `shakePx` 也收进来。
+  ///    实测：`pop` 的 `scaleInFrom` 是**过渡**语义 ⇒ 收进来会让 `pop` **同时**落进
+  ///    `effect` 与 `transition` 两路（`splitLegacyAnim('pop')` 从 `{effect:''}` 变成
+  ///    `{effect:'pop'}`）⇒ 与预览那份**不同源** ⇒ 老格式在预览与成片里走不同的路。
+  ///    `shake`/`heartbeat` 已在上面 `a === 'effect'` 里返回，写在这里是死代码。
   const animHasMotionPart = (name) => {
     const a = animAxisOf(name);
     if (a === 'effect') return true;
-    // ⚠️ 样式轴里也有给时间的（`arc_*` 逐字转、`scatter_*` 逐字散、`hop_*` 逐字跳）
-    //    —— 它们**两边都要给**，否则老工程的"逐字动"会静默变成"静态阶梯"。
-    return a === 'style' && /^(arc|scatter|hop)_/.test(name);
+    const p = animPreset(name);
+    return !!p && p.perChar !== undefined;
   };
   /// 把老工程的**单个** `anim` 拆成两路档名。
   ///
