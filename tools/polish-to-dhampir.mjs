@@ -3140,6 +3140,21 @@ export function translate(config, clipDir, outPath, options = {}) {
     if (stylePreset && stylePreset.safe_width_ratio !== undefined) {
       out.safe_width_ratio = stylePreset.safe_width_ratio;
     }
+    // **C 组：字重**（2026-10-13）。
+    //
+    // ⚠️ 存在的理由就一条：`vtext_thin`(细楷) 与 `vtext_bold`(粗体) 曾经
+    //    **没有任何区分字段**、产物逐字节相同（实测抓出来的真缺陷，见档位表那段注释）。
+    //
+    // ⚠️ **只在档位真的给了值时才写**（三态纪律）：无条件写会让**每个**工程的
+    //    文字轨都多出 `font_weight`（连没选任何形态档的也是）⇒ R4 判据当场红
+    //    （老工程逐字节不变）。这与 `vertical` 那条是**同一个坑的第二次出现**。
+    //
+    // ⚠️ 与轨自身的 `font_weight: st.weight`（档位默认 900/800/700）的关系：
+    //    这是**同一个键**，所以顺序要紧 —— 形态档若有值，它应该**压过**档位默认，
+    //    因为用户是**显式**选了「细楷」。见下面写 `font_weight` 那一处。
+    if (stylePreset && stylePreset.fontWeight !== undefined) {
+      out.font_weight = stylePreset.fontWeight;
+    }
     return out;
   };
 
@@ -3338,10 +3353,27 @@ export function translate(config, clipDir, outPath, options = {}) {
     vtext_thin: {
       vertical: true,
       safe_width_ratio: 0.86,
+      // ⚠️⚠️ **这一档曾经与 `vtext_bold` 逐字节相同**（2026-10-13 实测抓出来）：
+      //    两档都只写了 `vertical` + `safe_width_ratio`，**没有任何区分字段** ——
+      //    面板上一个是「细楷」一个是「粗体」，而产物里
+      //    `vertical=True, font_weight=900, per_char=None` **两条一模一样**。
+      //    ⇒ 用户选"粗体"得到的东西与"细楷"**完全相同**，而报告里一行差异都没有。
+      //
+      //    ⇒ 补 `fontWeight`（底座 `SubtitleStyle.font_weight`，v7 起是**轨级**字段）。
+      //      400 = 常规、900 = 特粗。`vtext_bold` 的 900 与档位默认相同 ⇒
+      //      **它仍然与"只选竖排、不选档"不同名但同效** —— 这是有意的：
+      //      "粗体"本来就该是竖排的默认观感，真正被修的是"细楷没细"。
+      //
+      //    ⚠️ 键名是**驼峰** `fontWeight`（与 `perChar` / `squashY` 同一个命名空间），
+      //       而写进底座时由下面 `put('font_weight', preset.fontWeight)` 转蛇形 ——
+      //       档位表这一层统一用驼峰，**别在这里混进蛇形键**（两套命名混用 =
+      //       下一处新增字段时必然写错，而写错的表现是"底座忽略未知键、静默用缺省"）。
+      fontWeight: 400,
     },
     vtext_bold: {
       vertical: true,
       safe_width_ratio: 0.86,
+      fontWeight: 900,
     },
     vtext_shrink: {
       vertical: true,
