@@ -328,6 +328,77 @@ try {
     ok(/animName:\s*c\.animName/.test(pvMarkup),
       '⑥ 字幕那条没有把 `animName` 交给 `textTiltTransform` —— 字幕的整块动效不生效')
   }
+
+  // ---- ⑦ ⚠️ **两轴组合**：`style_anim` + `effect_anim` 同时生效（2026-10-13）----
+  //
+  // 判据 ③④⑤⑥ 都是**单档**的（老 `anim`，或只顾到接线）。两级化之后用户能做的是
+  // **组合**：「竖排 + 抖动」。这一条是那个能力在预览侧的**唯一**判据。
+  //
+  // ⚠️ 为什么必须有它（三条都不会自己报错）：
+  //   · 预览只读老 `anim` ⇒ 新界面写的两个字段它**看不见** ⇒ 预览完全没效果、
+  //     成片有（这也正是 ③④⑤ 全绿时发现不了的那一类）；
+  //   · 两轴混用（动效那路读 `styleAnim`）⇒ 组合里**只有一半**生效；
+  //   · 形态那路读 `effectAnim` ⇒ 竖排丢失、只剩抖。
+  {
+    const mk = (ev) => E.buildIndex({
+      config: {
+        canvas: { width: 1920, height: 1080, fps: 30 }, elements: {},
+        segments: [{ start: 0, end: 10, fx: 'low', events: [{
+          type: 'element', kind: 'text', text: '竖排且抖', time: 1, end: 4,
+          style: 'comment', pos: 'bottom',
+          source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1', ...ev
+        }] }]
+      },
+      subtitles: [], danmaku: [], duration: 10, fps: 30
+    })
+    const first = (idx) => (idx.element || [])[0]
+
+    // ① 两栏都写 ⇒ 两样参数都拿到（用户要的那个组合）
+    const both = first(mk({ style_anim: 'vtext_bold', effect_anim: 'shake_std' }))
+    ok(!!both, '⑦ 组合档的文字元素没进索引')
+    if (both) {
+      ok(both.styleAnimName === 'vtext_bold',
+        `⑦ 组合档没把 \`style_anim\` 带到预览：实得 ${JSON.stringify(both.styleAnimName)}`)
+      ok(both.effectAnimName === 'shake_std',
+        `⑦ 组合档没把 \`effect_anim\` 带到预览：实得 ${JSON.stringify(both.effectAnimName)}`)
+      // ⚠️ 核的是**实际参数**而不是档名：档名带出来了、参数没接上同样没效果。
+      const st = E.animPreset(both.styleAnimName)
+      ok(st?.vertical === true,
+        `⑦ 组合档的**形态**参数没接上（\`vtext_bold\` 应当是竖排）：实得 ${JSON.stringify(st?.vertical)}`)
+      ok(both.textMotion?.shakePx > 0,
+        `⑦ 组合档的**动效**参数没接上（\`shake_std\` 应当有 \`shakePx\`）：` +
+        `实得 ${JSON.stringify(both.textMotion?.shakePx)}`)
+    }
+
+    // ② 反序也要成立（两轴不许互相清掉）
+    const rev = first(mk({ effect_anim: 'shake_std', style_anim: 'vtext_bold' }))
+    ok(rev?.styleAnimName === 'vtext_bold' && rev?.effectAnimName === 'shake_std',
+      '⑦ 反序写两个字段结果不同（两轴互相清掉了？）：' +
+      JSON.stringify([rev?.styleAnimName, rev?.effectAnimName]))
+
+    // ③ 只写样式轴 ⇒ 动效那半边**必须为空**（不许串到别的档上去）
+    const onlyStyle = first(mk({ style_anim: 'vtext_bold' }))
+    ok(onlyStyle?.effectAnimName === '',
+      `⑦ 只写 \`style_anim\` 时动效轴应当为空：实得 ${JSON.stringify(onlyStyle?.effectAnimName)}`)
+    ok(!(onlyStyle?.textMotion?.shakePx > 0),
+      `⑦ 只写 \`style_anim\` 却抖起来了（动效轴串到样式档了）：` +
+      `${JSON.stringify(onlyStyle?.textMotion?.shakePx)}`)
+
+    // ④ 老格式 `anim`（单档）在预览里必须**与等价的新格式一致**（R4 的预览侧）
+    for (const n of ['vtext_bold', 'shake_std', 'scatter_shake', 'fade_only']) {
+      const legacy = first(mk({ anim: n }))
+      const sp = E.splitAnimTwoAxis(n)
+      const viaNew = first(mk(sp.style
+        ? { style_anim: n, effect_anim: sp.effect }
+        : { style_anim: '', effect_anim: n }))
+      ok(legacy?.animName === viaNew?.animName &&
+        legacy?.effectAnimName === viaNew?.effectAnimName &&
+        JSON.stringify(legacy?.textMotion) === JSON.stringify(viaNew?.textMotion),
+        `⑦ 老格式 \`anim="${n}"\` 与等价的新格式在预览里**不一致**\n` +
+        `     老：${JSON.stringify([legacy?.animName, legacy?.effectAnimName, legacy?.textMotion])}\n` +
+        `     新：${JSON.stringify([viaNew?.animName, viaNew?.effectAnimName, viaNew?.textMotion])}`)
+    }
+  }
 } finally {
   // ⚠️ 只删**副本**。生产文件从头到尾没被碰过 ⇒ 不需要"还原"
   //    （这正是本脚本第一版那个"变异把未提交的实现冲掉"事故的修法）。
