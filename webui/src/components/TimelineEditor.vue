@@ -354,20 +354,29 @@
                 <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
                   <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
-                <!-- 动效（39 档，2026-10-13）。
+                <!-- 动效（39 档，2026-10-13）。**两级：种类 → 细分**（2026-10-13 改）。
+                     ⚠️ 以前是一个 `<select>` + `<optgroup>` 平铺 40 项，而且种类与细分
+                        挤在同一个 label 串里（`'倾斜 · 标准'`）—— 用户报"还是这个"。
+                     两级之后：先选**种类**（倾斜/抖动/…），再选**这一类里的细分**。
+                     ⚠️ 写回 `selItem.anim` 的**取值与改造前逐字相同**（纯界面重排，R4）。
                      ⚠️ 空串 = 不动效 ⇒ **不写 `anim` 键**（老工程逐字节不变）。
                      ⚠️ **认不出的档名必须仍然显示出来**（下面那条 `v-if`）：
-                        它若被 `v-model` 悄悄归成空串，用户改一下别的字段就把那个
-                        错档名**永久抹掉**了（保存时写的是下拉的值）—— 而报告里的
+                        它若被悄悄归成"不动效"，用户改一下别的字段就把那个
+                        错档名**永久抹掉**了（保存时写的是控件的值）—— 而报告里的
                         CLAMP 已经告诉过他"这一条不会动"，得让他看得见是哪一条。 -->
-                <label>动效</label>
-                <select :value="selItem.anim || ''" @change="selItem.anim = $event.target.value || null">
-                  <optgroup v-for="g in ANIM_GROUPS" :key="g.group" :label="g.group">
-                    <option v-for="a in g.items" :key="a.value" :value="a.value">{{ a.label }}</option>
-                  </optgroup>
-                  <option v-if="selItem.anim && !ANIM_KNOWN.includes(selItem.anim)"
-                          :value="selItem.anim">未知档（{{ selItem.anim }}）</option>
+                <label>动效种类</label>
+                <select :value="animKind" @change="setAnimKind($event.target.value)">
+                  <option v-for="k in ANIM_KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                  <option v-if="animKind === ''" value="">未知档（{{ selItem.anim }}）</option>
                 </select>
+                <!-- 细分：认不出档名时 `animVariants` 是空数组 ⇒ 这个下拉整条不渲染 -->
+                <template v-if="animVariants.length > 1">
+                  <label>细分</label>
+                  <select :value="selItem.anim || ''" @change="setAnimVariant($event.target.value)">
+                    <option v-for="a in animVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
+                  </select>
+                </template>
+                <div v-if="animKindHint" class="hint">{{ animKindHint }}</div>
                 <div v-if="selItem.anim && !ANIM_KNOWN.includes(selItem.anim)" class="hint">
                   这个动效档名不认识，成片里不会动。
                 </div>
@@ -860,136 +869,235 @@ const TEXT_STYLES = [
 
 /** **39 档动效**（`docs/plan/text-styles-39-完成计划.md` §一·五，2026-10-13）。
  *
- *  ⚠️ **档名的权威在 `tools/polish-to-dhampir.mjs::ANIM_PRESETS`**（底座字段映射在那）。
- *  两处**必须同集合** —— 界面能选、转译器不认识 ⇒ 用户选了却**什么都不发生**，
- *  而报告里只有一行 CLAMP。判据：`scripts/check-anim-presets-parity.mjs`（逐档对拍 + 变异自证）。
+ *  # 两级结构：**种类（kind）→ 细分（variant）**（2026-10-13 改）
  *
- *  ⚠️ 空串 = **不动效**（不写 `anim` 键）。必须排第一 —— 「不选」是最常见的状态
- *  （老工程与后处理生成的事件都没有这个键）。
+ *  以前是**一个下拉 + `<optgroup>`**，40 项平铺，而且种类与细分挤在**同一个
+ *  label 字符串**里（`'倾斜 · 标准'`）—— 用户报「还是这个」，说的是这件事。
+ *  改成两级：先选**种类**（倾斜 / 抖动 / …），再选**这一类的细分**（标准 / 小角度 / 反方向）。
  *
- *  ⚠️ 39 档平铺成一个下拉会没法用 ⇒ 分组成 `<optgroup>`。 */
-const ANIM_GROUPS = [
-  { group: '不动', items: [{ value: '', label: '（不动效）' }] },
+ *  ⚠️ ⚠️ **写回 `selItem.anim` 的取值**与改造前**逐字相同**（`tilt_std` 还是 `tilt_std`）。
+ *     这是**纯界面重排**，toml 键集与取值一个都不许变（R4：老工程产物逐字节不变）。
+ *
+ *  ⚠️ **`{ value: '...' }` 的字面形态必须保留** —— `check-anim-presets-parity.mjs`
+ *     用正则从这里扒出全部档名，与转译器 `ANIM_PRESETS`（权威）逐档对拍。
+ *     改成别的形状会让那条对拍**静默失效**（扒不到 ⇒ 两侧都空 ⇒ 全绿）。
+ *
+ *  ⚠️ 空串 = **不动效**（不写 `anim` 键）。必须**排第一** ——「不选」是最常见的状态
+ *  （老工程与后处理生成的事件都没有这个键）。 */
+const ANIM_KINDS = [
+  // ---- 不动效：单一状态，没有细分 ----
   {
-    group: '倾斜',
-    items: [
-      { value: 'tilt_std', label: '倾斜 · 标准' },
-      { value: 'tilt_sm', label: '倾斜 · 小角度' },
-      { value: 'tilt_rev', label: '倾斜 · 反方向' }
+    kind: 'none',
+    label: '不动效',
+    hint: '这一条文字不做任何动效',
+    variants: [{ value: '', label: '不动效' }]
+  },
+  // ===== A 组：整块变换 =====
+  {
+    kind: 'tilt',
+    label: '倾斜',
+    hint: '整块歪一个角度（静止的姿态，不是动效）',
+    variants: [
+      { value: 'tilt_std', label: '标准' },
+      { value: 'tilt_sm', label: '小角度' },
+      { value: 'tilt_rev', label: '反方向' }
+    ]
+  },
+  // ===== B 组：整块动效 =====
+  {
+    kind: 'shake',
+    label: '抖动',
+    hint: '整块左右快速抖',
+    variants: [
+      { value: 'shake_std', label: '标准' },
+      { value: 'shake_slow', label: '慢频' },
+      { value: 'shake_lg', label: '强' }
     ]
   },
   {
-    group: '抖动',
-    items: [
-      { value: 'shake_std', label: '抖动 · 标准' },
-      { value: 'shake_slow', label: '抖动 · 慢频' },
-      { value: 'shake_lg', label: '抖动 · 强' }
+    kind: 'sway',
+    label: '摇摆',
+    hint: '整块像钟摆一样来回摆',
+    variants: [
+      { value: 'sway_std', label: '标准' },
+      { value: 'sway_lg', label: '大角度' },
+      { value: 'sway_slow', label: '慢摆' }
     ]
   },
   {
-    group: '摇摆',
-    items: [
-      { value: 'sway_std', label: '摇摆 · 标准' },
-      { value: 'sway_lg', label: '摇摆 · 大角度' },
-      { value: 'sway_slow', label: '摇摆 · 慢摆' }
+    kind: 'slam',
+    label: '砸入',
+    hint: '整块从上方砸进来',
+    variants: [
+      { value: 'slam_std', label: '标准' },
+      { value: 'slam_lg', label: '重' },
+      { value: 'slam_squash', label: '带压扁' }
     ]
   },
   {
-    group: '砸入',
-    items: [
-      { value: 'slam_std', label: '砸入 · 标准' },
-      { value: 'slam_lg', label: '砸入 · 重' },
-      { value: 'slam_squash', label: '砸入 · 带压扁' }
+    kind: 'shrink_in',
+    label: '收缩',
+    hint: '整块收缩着出现 / 退场',
+    variants: [
+      { value: 'shrink_in_std', label: '标准' },
+      { value: 'fade_only', label: '只淡出' },
+      { value: 'shrink_in_fast', label: '快速抽走' }
     ]
   },
   {
-    group: '收缩',
-    items: [
-      { value: 'shrink_in_std', label: '收缩 · 标准' },
-      { value: 'fade_only', label: '收缩 · 只淡出' },
-      { value: 'shrink_in_fast', label: '收缩 · 快速抽走' }
+    kind: 'pop',
+    label: '弹出',
+    hint: '整块弹一下出现',
+    variants: [
+      { value: 'pop_std', label: '标准' },
+      { value: 'pop_soft', label: '软' }
     ]
   },
-  {
-    group: '弹出',
-    items: [
-      { value: 'pop_std', label: '弹出 · 标准' },
-      { value: 'pop_soft', label: '弹出 · 软' }
-    ]
-  },
-  // ===== C 组：逐字（14 档）=====
+  // ===== C 组：逐字变换（每个字同时动、幅度不同）=====
   //
-  // ⚠️ 这一组的档位在**底座**侧走的是逐字路径（每个字一张位图），
-  //    与上面那几组"整块"的走不同分支。用户看到的是同一个下拉。
-  // ⚠️ 档名与 `engine.js::ANIM_PRESETS` / 转译器 `ANIM_PRESETS` **必须逐字相同**
-  //    （三处同集合由 `node scripts/check-anim-presets-parity.mjs` 钉住）。
+  // ⚠️ 这一组在**底座**侧走逐字路径（每字一张位图），与上面"整块"那几组不同分支。
   {
-    group: '弧形（逐字）',
-    items: [
-      { value: 'arc_up', label: '弧形 · 上拱' },
-      { value: 'arc_wave', label: '弧形 · 波浪' },
-      { value: 'arc_down', label: '弧形 · 下垂' }
+    kind: 'arc',
+    label: '逐字弧形',
+    hint: '每个字绕自己的中心转，合成一条拱 / 波 / 垂',
+    variants: [
+      { value: 'arc_up', label: '上拱' },
+      { value: 'arc_wave', label: '波浪' },
+      { value: 'arc_down', label: '下垂' }
     ]
   },
   {
-    group: '大小字（逐字）',
-    items: [
-      { value: 'size_last', label: '大小字 · 末字重音' },
-      { value: 'size_first', label: '大小字 · 首字重音' },
-      { value: 'size_mid', label: '大小字 · 中字重音' }
+    kind: 'size',
+    label: '逐字大小字',
+    hint: '某一个位置的字被放大（重音）',
+    variants: [
+      { value: 'size_last', label: '末字重音' },
+      { value: 'size_first', label: '首字重音' },
+      { value: 'size_mid', label: '中字重音' }
     ]
   },
   {
-    group: '抖散（逐字）',
-    items: [
-      { value: 'scatter_sm', label: '抖散 · 轻' },
-      { value: 'scatter_lg', label: '抖散 · 重' },
-      { value: 'scatter_shake', label: '抖散 · 带抖动' }
+    kind: 'scatter',
+    label: '逐字抖散',
+    hint: '每个字按序号往不同方向散开',
+    variants: [
+      { value: 'scatter_sm', label: '轻' },
+      { value: 'scatter_lg', label: '重' },
+      { value: 'scatter_shake', label: '带抖动' }
     ]
   },
   {
-    group: '变小（逐字）',
-    items: [
-      { value: 'shrink_desc', label: '变小 · 递减' },
-      { value: 'shrink_drop', label: '变小 · 骤降' },
-      { value: 'shrink_tail', label: '变小 · 尾音' }
+    kind: 'shrink',
+    label: '逐字变小',
+    hint: '每个字依次变小',
+    variants: [
+      { value: 'shrink_desc', label: '递减' },
+      { value: 'shrink_drop', label: '骤降' },
+      { value: 'shrink_tail', label: '尾音' }
     ]
   },
   {
-    group: '放大（逐字）',
-    items: [
-      { value: 'grow_asc', label: '放大 · 递增' },
-      { value: 'grow_burst', label: '放大 · 爆开' },
-      { value: 'grow_first', label: '放大 · 首字引爆' }
+    kind: 'grow',
+    label: '逐字放大',
+    hint: '每个字依次放大',
+    variants: [
+      { value: 'grow_asc', label: '递增' },
+      { value: 'grow_burst', label: '爆开' },
+      { value: 'grow_first', label: '首字引爆' }
     ]
   },
-  // ===== D 组：逐字错峰（4 档）=====
-  // ⚠️ 与上面那些组的观感差别：上面是"所有字同时动、幅度不同"，
-  //    这里是"每个字**依次**动、幅度相同"。
+  // ===== D 组：逐字错峰（每个字**依次**动、幅度相同）=====
+  //
+  // ⚠️ 与 C 组的观感差别：C 组是"所有字同时动、幅度不同"，
+  //    这里是"每个字依次动、幅度相同"。
   {
-    group: '逐字错峰',
-    items: [
+    kind: 'hop',
+    label: '逐字错峰',
+    hint: '每个字依次弹出 / 跳起（错峰，不是同时）',
+    variants: [
       { value: 'pop_perchar', label: '弹出 · 逐字' },
       { value: 'hop_std', label: '跳起 · 标准' },
       { value: 'hop_fast', label: '跳起 · 快错峰' },
       { value: 'hop_big', label: '跳起 · 大字慢跳' }
     ]
   },
-  // ===== E 组：竖排（3 档）=====
+  // ===== E 组：竖排 =====
+  //
   // ⚠️ 竖排改的是**整条轨的排版方向**（底座 `SubtitleStyle::vertical`），
-  //    与上面那些"逐字/整块变换"不是同一层 —— 但用户看到的仍是同一个下拉。
+  //    与上面那些"逐字/整块变换"不是同一层。
   {
-    group: '竖排（逐字）',
-    items: [
-      { value: 'vtext_thin', label: '竖排 · 细楷' },
-      { value: 'vtext_bold', label: '竖排 · 粗体' },
-      { value: 'vtext_shrink', label: '竖排 · 逐字变小' }
+    kind: 'vtext',
+    label: '竖排',
+    hint: '整条轨改成竖排（改的是排版方向，不是单个字的变换）',
+    variants: [
+      { value: 'vtext_thin', label: '细楷' },
+      { value: 'vtext_bold', label: '粗体' },
+      { value: 'vtext_shrink', label: '逐字变小' }
     ]
   }
 ]
 
+/** 拍平回"组"的形状 —— **只为兼容既有判据与旧读数**，界面不再用它渲染。
+ *
+ *  ⚠️ 保留 `{ group, items }` 这个形状有两个理由：
+ *    ① 判据从**源码文本**里扒 `value: '…'` 那种字面量 —— 上面 `ANIM_KINDS`
+ *       里每个 variant 都写成带 `value` 与 `label` 两个键的对象字面量，已满足；
+ *    ② 下面 `ANIM_KNOWN` / 模板里的"认不出的档名"分支要一份**全档名**列表。
+ *
+ *  ⚠️ ⚠️ **这段注释里不许写出那种字面量的样子** —— 判据是**扒文本**的，
+ *     注释里写一个示例会被当成真档名扒进去（实测：被当成 `'x'` 报了一句
+ *     "界面有、转译器不认识"。**示例值要用占位说法，不要写得像真代码**）。
+ *
+ *  ⚠️ **不要**把界面改回"一个下拉 + `<optgroup>`" —— 那正是用户说"还是这个"的东西。
+ *     这个常量现在**只**给判据与兜底用。 */
+const ANIM_GROUPS = ANIM_KINDS.map((k) => ({
+  group: k.label,
+  items: k.variants.map((v) => ({ value: v.value, label: v.label }))
+}))
+
 /** 全部档名（**不含**空串）—— 给"认不出的档名"兜底用。 */
-const ANIM_KNOWN = ANIM_GROUPS.flatMap((g) => g.items.map((i) => i.value)).filter((v) => v !== '')
+const ANIM_KNOWN = ANIM_KINDS.flatMap((k) => k.variants.map((v) => v.value)).filter((v) => v !== '')
+
+/** 档名 → 它属于哪个**种类**（选中一条时反查，让两级控件显示当前值）。 */
+const ANIM_KIND_OF = new Map(
+  ANIM_KINDS.flatMap((k) => k.variants.map((v) => [v.value, k.kind]))
+)
+
+/** 当前选中的**种类**。⚠️ 认不出的档名 ⇒ `''`（模板里走"未知"那一支，
+ *  与原来 `ANIM_KNOWN.includes()` 的兜底同一件事：**不许把它悄悄归成"不动效"**，
+ *  否则用户改一下别的字段就把那个错档名永久抹掉了）。 */
+const animKind = computed(() => {
+  const cur = selItem.value?.anim ?? ''
+  if (cur === '') return 'none'
+  return ANIM_KIND_OF.has(cur) ? ANIM_KIND_OF.get(cur) : ''
+})
+
+/** 当前种类下的细分清单（认不出档名时给空数组）。 */
+const animVariants = computed(() => {
+  const k = ANIM_KINDS.find((x) => x.kind === animKind.value)
+  return k ? k.variants : []
+})
+
+/** 当前种类的提示语（面板上那行小字）。 */
+const animKindHint = computed(() => {
+  const k = ANIM_KINDS.find((x) => x.kind === animKind.value)
+  return k ? k.hint : ''
+})
+
+/** 切**种类**：落到该类的**第一个细分**（"不动效"那类只有空串一项）。
+ *
+ *  ⚠️ 必须落成 `null` 而不是 `''`（同上：空串是一个合法的**坏值**，`null` 才是
+ *     "这个键不存在"）。判据 `check-anim-presets-parity.mjs` ⑥ 钉着这一条。 */
+function setAnimKind(kind) {
+  const k = ANIM_KINDS.find((x) => x.kind === kind)
+  if (!k || !k.variants.length) return
+  selItem.value.anim = k.variants[0].value || null
+}
+
+/** 切**细分**（同一条上那两处 `|| null` 的理由）。 */
+function setAnimVariant(value) {
+  selItem.value.anim = value || null
+}
 
 /** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——
  *  `text` 支读 `text`、`sticker` 支读 `keyword`（老变体）与 `text`（贴纸包名，

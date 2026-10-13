@@ -87,17 +87,31 @@ ok(transKeys.every((k) => /^[a-z][a-z0-9_]*$/.test(k)),
   `① 有档名不像合法标识符：${JSON.stringify(transKeys.filter((k) => !/^[a-z][a-z0-9_]*$/.test(k)))}`)
 
 // ---- ② 界面那份 ----
+//
+// ⚠️ **2026-10-13：界面从"一个下拉 + optgroup"改成两级（种类 → 细分）**，
+//    权威表也从扁平的 `ANIM_GROUPS` 换成了 `ANIM_KINDS`
+//    （`ANIM_GROUPS` 现在只是它 `.map()` 出来的兼容视图，**不再是源**）。
+//    ⇒ 这里改成扒 `ANIM_KINDS`。
+//
+// ⚠️⚠️ 扒的仍然是**字面量里的 `{ value: '...' }`**（每个 variant 都写成那个形状）。
+//    改这一条时想清楚：**扒不到 ⇒ 两侧都是空 ⇒ ③ 全绿**，
+//    而"界面一个档都没有"这种事故会**静默通过**。所以下面 ② 与 ④ 有档数下限。
 const editorSrc = fs.readFileSync(EDITOR, 'utf8')
-const groupsStart = editorSrc.indexOf('const ANIM_GROUPS = [')
-ok(groupsStart > 0, '② 编辑器里找不到 `ANIM_GROUPS` —— 界面那份没了（那就只能手改 toml）')
+const kindsStart = editorSrc.indexOf('const ANIM_KINDS = [')
+ok(kindsStart > 0, '② 编辑器里找不到 `ANIM_KINDS` —— 界面那份没了（那就只能手改 toml）')
 
 let uiKeys = []
-if (groupsStart > 0) {
-  // 取到 `ANIM_GROUPS` 定义结束（下一个顶层 `const ` 之前）。
-  const rest = editorSrc.slice(groupsStart)
+let uiKindCount = 0
+if (kindsStart > 0) {
+  // 取到 `ANIM_KINDS` 定义结束（下一个顶层 `const ` 之前）。
+  const rest = editorSrc.slice(kindsStart)
   const nextTop = rest.indexOf('\nconst ', 1)
   const block = nextTop > 0 ? rest.slice(0, nextTop) : rest
   uiKeys = [...block.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].map((m) => m[1])
+  // 种类数：顶层 `kind: '...'` 出现几次。
+  // ⚠️ 缩进是 **4 个空格**（对象在数组里，数组项又缩了一层）。
+  //    写死 2 会让它一个都取不到 ⇒ ④b 全线假红（而真因是判据自己的正则）。
+  uiKindCount = [...block.matchAll(/^\s+kind:\s*'([a-z_]+)',\s*$/gm)].length
 }
 
 // ⚠️ 界面那份**含空串**（= 不动效）—— 对拍时要去掉，但**空串本身也要存在**。
@@ -134,6 +148,45 @@ ok(transKeys.length >= 17,
 ok(uiNonEmpty.length >= 17,
   `④ 界面的档数少于 A+B 组的 17 档（实得 ${uiNonEmpty.length}）`)
 
+// ---- ④b 两级结构：**拆的过程不许丢档**（2026-10-13）----
+//
+// ⚠️ 界面从"扁平 40 项"改成"种类 → 细分"两级。拆的过程有两种静默丢档的形态，
+//    它们都**不会**被 ③ 抓到（③ 只看转译器 ↔ 界面的集合差）：
+//      ① 某个 variant 被漏写（那一档用户**选不到**了）；
+//      ② 两个 kind 里写了**同一个** variant（重复）。
+//    ③ 能抓到 ① 吗？能 —— 只要 uiKeys 的合计少了一个，③ 就报 onlyTrans。
+//    但 **② 重复**抓不到，而且"两级并集 == 扁平表"这件事**没有任何判据**
+//    （扁平表已经被删了，没有对照物）。⇒ 这里把**结构不变式**钉死：
+//      * 种类数 ≥ 2（不然两级是假的）；
+//      * 每个种类至少 1 个细分（空种类 = 用户选进去什么都没有）；
+//      * 除"不动效"外，每个种类至少 2 个细分（只有一项的"两级"是假两级）；
+//      * 全局档名不重复（跨种类也算）。
+{
+  ok(uiKindCount >= 2,
+    `④b 种类数应当 ≥ 2（实得 ${uiKindCount}）—— 两级结构没生效`)
+  // 逐 kind 数它的 variant（按源码块切）。
+  const kindBlocks = editorSrc.slice(editorSrc.indexOf('const ANIM_KINDS = ['))
+  const cut = kindBlocks.indexOf('\nconst ')
+  const body = cut > 0 ? kindBlocks.slice(0, cut) : kindBlocks
+  // ⚠️ 种类块的 `{` 是 **2 空格**缩进、而里面的 `kind:` 是 **4 空格**
+  //    （数组项一层 + 对象体一层）。两个数不一样，别写成同一个。
+  const parts = body.split(/^ {2}\{\s*$/m).slice(1)
+  ok(parts.length === uiKindCount,
+    `④b 切出来的种类块数（${parts.length}）与读到的 kind 数（${uiKindCount}）对不上 —— 判据自己的切法坏了`)
+  const emptyKinds = []
+  const singleKinds = []
+  for (const p of parts) {
+    const k = (p.match(/kind:\s*'([a-z_]+)'/) || [])[1] || '(取不到)'
+    const n = [...p.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].length
+    if (n === 0) emptyKinds.push(k)
+    else if (n === 1 && k !== 'none') singleKinds.push(k)
+  }
+  ok(emptyKinds.length === 0,
+    `④b 这些种类一个细分都没有（选进去空空如也）：${JSON.stringify(emptyKinds)}`)
+  ok(singleKinds.length === 0,
+    `④b 这些种类只有 1 个细分 —— 那是**假两级**（"种类"与"细分"是同一个选择）：${JSON.stringify(singleKinds)}`)
+}
+
 // ---- ⑤ 档名要"看起来成套"（挡住把一整组写成同一个前缀的笔误）----
 {
   const families = ['tilt', 'shake', 'sway', 'slam', 'shrink_in', 'pop']
@@ -149,16 +202,33 @@ ok(uiNonEmpty.length >= 17,
 // ---- ⑥ 接线：下拉真的接到事件字段上了吗 ----
 //
 // ⚠️ 光有清单不算接通 —— 本仓踩过多次"函数写好、没人调"。
-ok(/<select[^>]*:value="selItem\.anim \|\| ''"/.test(editorSrc),
-  '⑥ 动效下拉没有绑到 `selItem.anim` —— 用户选了也写不进事件')
-ok(/selItem\.anim = \$event\.target\.value \|\| null/.test(editorSrc),
-  '⑥ 下拉的 `@change` 没写回 `selItem.anim`（且空串要落成 `null` = 不写键）')
-// ⚠️ 写回必须是 `null` 而不是 `''`：契约那边空串是"一个合法的坏值"，
-//    而 `null` 才是"这个键不存在"（R4）。`patch_config_file` 也按 null 删键。
-ok(!/selItem\.anim = \$event\.target\.value(?!\s*\|\|\s*null)/.test(editorSrc),
-  "⑥ 空串被直接写进 `selItem.anim` 了 —— 必须落成 `null`（空串会写进 toml，老工程产物变了）")
+//
+// ⚠️ **2026-10-13：两级界面之后，接线形态变了**（一个下拉 → 种类 + 细分两个）。
+//    断言跟着改，但**下面那条"空串必须落成 `null`"一个字都不许放宽**
+//    —— 它守的是 R4（写空串会让老工程的 toml 多一个键、产物变）。
+// ① 两级控件必须**都**接到事件字段上。
+ok(/setAnimKind\(/.test(editorSrc),
+  '⑥ 种类控件没有接线（`setAnimKind` 没人调）—— 用户选了种类写不进事件')
+ok(/setAnimVariant\(/.test(editorSrc),
+  '⑥ 细分控件没有接线（`setAnimVariant` 没人调）—— 用户选了细分写不进事件')
+ok(/<select[^>]*:value="animKind"[^>]*@change="setAnimKind\(\$event\.target\.value\)"/.test(editorSrc),
+  '⑥ 种类下拉没有绑到 `animKind` / `setAnimKind($event.target.value)`')
+ok(/<select[^>]*:value="selItem\.anim \|\| ''"[^>]*@change="setAnimVariant\(\$event\.target\.value\)"/.test(editorSrc),
+  '⑥ 细分下拉没有绑到 `selItem.anim` / `setAnimVariant($event.target.value)`')
+// ② **两个**写回点都必须落 `null`。
+{
+  const writes = [...editorSrc.matchAll(/selItem\.value\.anim = ([^\n]+)/g)].map((m) => m[1].trim())
+  ok(writes.length === 2,
+    `⑥ 写回 \`selItem.anim\` 的地方应当**恰好 2 处**（种类 / 细分），实得 ${writes.length}：${JSON.stringify(writes)}`)
+  const bad = writes.filter((w) => !/\|\|\s*null$/.test(w))
+  ok(bad.length === 0,
+    `⑥ 有写回没有落成 \`null\`（空串会写进 toml，老工程产物变了）：${JSON.stringify(bad)}`)
+}
+// ③ 认不出的档名仍要**看得见**（不许被悄悄归成"不动效"）。
 ok(/ANIM_KNOWN\.includes\(selItem\.anim\)/.test(editorSrc),
   '⑥ 认不出的档名没有被显式显示出来 —— 用户会看到"不动效"而以为自己没选错')
+ok(/animKind === ''/.test(editorSrc),
+  '⑥ 认不出的档名没有让**种类**控件落到"未知"那一支 —— 两级界面下用户看不到它是哪一类')
 // 转译器那侧：`anim` 必须真的被读进来（不是只定义了预设表）。
 ok(/String\(event\.anim \?\? ''\)/.test(transSrc),
   '⑥ 转译器没读 `event.anim` —— 预设表定义了却没人用')
