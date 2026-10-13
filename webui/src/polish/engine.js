@@ -450,8 +450,12 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
             || legacySplit.style
           const effectAnimName = String(ev.effect_anim ?? '').trim().toLowerCase()
             || legacySplit.effect
+          // ⚠️ 第三路（过渡）：老格式的 / 就是过渡档，
+          //    不接的话它们三路全空 ⇒ 静默回落全局（与转译器同一个坑）。
+          const transitionAnimName = String(ev.transition_anim ?? '').trim().toLowerCase()
+            || legacySplit.transition
           // ⚠️ 时间那半边取**动效轴**。
-          entry.textMotion = animMotion(cfg, effectAnimName)
+          entry.textMotion = animMotion(cfg, effectAnimName, transitionAnimName)
           // ⚠️ 档名**必须分两个带出去**（不只是摊进 `textMotion`）：
           //    `tilt_*` 那几档改的是**静态** `rotation`（不是时间函数），
           //    而 `textTiltTransform` 才是决定 `rotate()` 的地方 —— 它读**样式轴**；
@@ -459,6 +463,7 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           //    ⚠️ `slam_squash` 的压扁同理（`scale_y`）。
           entry.styleAnimName = styleAnimName
           entry.effectAnimName = effectAnimName
+          entry.transitionAnimName = transitionAnimName
           // ⚠️ 兼容字段：老代码里 `animName` 意思是"那一档"（形态+时间合一）。
           //    现在两轴都可能给东西 ⇒ 取**样式轴优先**（那是决定静态长相的那个），
           //    没有才用动效轴。与 `textTiltTransform` / `animPerChar` 的取值口径一致。
@@ -720,6 +725,68 @@ export function animPreset(name) {
 // ⚠️ 三轴**字段不重叠**（这就是"可叠加"的根据）：一条档位只属于一条轴，
 //    由 `ANIM_PRESETS` 的档名 + 上面的 `ANIM_AXIS` 共同表达。
 
+/** 这一档在**排版（形态）**那路上给了东西吗。
+ *
+ *  ⚠️⚠️ **判据是"这一档的预设里有没有形态字段"，不是"它归哪条轴"** —— 2026-10-14 改成结构性判据。
+ *
+ *    原来是**按档名逐族硬编码**（`animAxisOf(k)==='style' || k==='slam_squash'
+ *    || k==='pop_perchar' || /^hop_/`）。三轴收敛后那个白名单里的档名**全删了**，
+ *    而 `perchar_big` / `perchar_small` **没被认成形态档** ⇒ 用户选「逐字变大」，
+ *    预览里**字一动不动**（成片那边同一个坑也踩过一次）。
+ *
+ *    ⇒ 现在直接问预设表：有 `perChar` / `tiltDeg` / `vertical` / `squashY` ⇒ 要给形态侧。
+ *      ⚠️ 以后新增任何带 `perChar` 的档都**自动被认到**，不会再出现
+ *         "加了档、忘了改白名单 ⇒ 静默不生效"。
+ *      ⚠️ 与转译器 `animHasFormPart` **同一形状**，别只改一边。 */
+export function animHasFormPart(name) {
+  const p = animPreset(name)
+  if (!p) return false
+  return p.perChar !== undefined
+    || p.tiltDeg !== undefined
+    || p.vertical === true
+    || p.squashY !== undefined
+}
+
+/** 这一档在**动效**那路上给了东西吗。
+ *
+ *  ⚠️ 判据是"它在动效轴上"，或者它的预设给了**时间类字段**。
+ *  ⚠️ 与 `animHasFormPart` 不同：`fade` 一个字段都不给，但它**有动效语义**
+ *     （"这一档不加动效"要能**压掉**全局那份）⇒ 它必须回 `true`。
+ *     所以这里**不能**只看"预设里有没有键"。 */
+export function animHasMotionPart(name) {
+  if (animAxisOf(name) === 'effect') return true
+  const p = animPreset(name)
+  if (!p) return false
+  // ⚠️ `fade`（空预设）在这里被上面那条轴判接住（它的轴就是 effect？不是 —— 它是 transition）。
+  //    所以额外认"过渡轴"：过渡不是形态，但它**必须传下去**（见 `splitAnimTwoAxis` 的注释）。
+  return p.shakePx !== undefined
+    || p.scaleInFrom !== undefined
+    || p.swayDeg !== undefined
+}
+
+/** 把老工程的**单个** `anim` 拆成**三路**档名（认不出 ⇒ 三路都空）。
+ *
+ *  ⚠️⚠️ **第三路（过渡）是 2026-10-14 三轴收敛时补的。**
+ *    收敛把 `pop` / `fade` 的轴改成了 `'transition'`，而 `animHasFormPart('pop')`
+ *    与 `animHasMotionPart('pop')` **都是 false**（它们的字段既不是形态、也不是时间）
+ *    ⇒ 只吐两路的话，`pop` / `fade` 被拆成 `{style:'', effect:''}` ⇒ **三路全空** ⇒
+ *    ① 轨 id 退化成 `text_<style>_<pos>`（`fade` 与 `pop` **撞同一个 id**，后面那条被吃掉）；
+ *    ② `on === false` ⇒ **静默回落全局** `[elements]` ⇒ 用户选「弹出」拿到
+ *       "全局弹入 + 全局抖动 + 全局摇摆"；③ 排序键跟着乱。
+ *
+ *    ⚠️ 与转译器 `splitLegacyAnim` **逐条同源**，改一边必须改另一边
+ *      （漂了的表现是"预览与成片不一致"，两边各自看都正常）。 */
+export function splitAnimTwoAxis(raw) {
+  const key = String(raw ?? '').trim().toLowerCase()
+  if (!key || !animPreset(key)) return { style: '', effect: '', transition: '' }
+  return {
+    style: animHasFormPart(key) ? key : '',
+    // ⚠️ 过渡档**必须传下去**（它们自己虽然"不给形态"，但 `pop` 给 `scale_in_*`）。
+    effect: animHasMotionPart(key) ? key : '',
+    transition: animAxisOf(key) === 'transition' ? key : ''
+  }
+}
+
 /** 把一档预设的**逐字 spec** 取出来（没有就 `undefined`）。
  *
  *  ⚠️ 与 `animMotion` 是**两条腿**，不是一回事：
@@ -797,22 +864,39 @@ export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx }
  *  ⚠️ **整档 `undefined` 就整份回落全局**（不是"逐字段回落"）。
  *  ⚠️ 空预设 `{}`（`fade_only`）**照样走"生效"那条路** ⇒ 全局那份被清成"什么都不加"。
  *  这是它与"没写 `anim`"的**唯一区别**，也是"只淡出"那条语义的落点。 */
-export function animMotion(cfg, animName) {
+export function animMotion(cfg, animName, transitionName) {
   const base = textMotionCfg(cfg)
-  const p = animPreset(animName)
-  if (p === undefined) return base
+  // ⚠️ **两轴都试**（2026-10-14 三轴收敛）：抖动住在**动效**轴、弹出/淡入住在**过渡**轴，
+  //    而它们摊的是**同一组** `scale_in_*` / `shake_*` 字段。
+  //    ⚠️ 只读一轴的症状：用户在**过渡**栏选「弹出」⇒ 预览里不弹（成片里弹）。
+  const pEff = animPreset(animName)
+  const pTrans = animPreset(transitionName)
+  // 两条轴都认不出 ⇒ 回落全局那份。
+  if (pEff === undefined && pTrans === undefined) return base
   // 逐条那一档生效 ⇒ 弹入/抖动/摇摆**全部重置成"关"**，再叠加预设里写了的。
-  return {
-    ...base,
+  // ⚠️⚠️ **两条轴各自摊自己的字段、不许互相覆盖**（这就是"可叠加"）：
+  //    先重置成全关（压掉全局），再**逐个轴**合并。
+  //    直接 `{...base, reset, ...pTrans, ...pEff}` 不行 —— 后摊的那一档会把
+  //    前一档的字段整个盖掉 ⇒ 用户选「抖动 + 弹出」只拿到一半，
+  //    而界面上两栏看着都对（本仓"两轴互相吃掉"的老症状）。
+  const off = {
     scaleInFrom: 1.0,
     scaleInPeak: 1.0,
     scaleInMs: 0,
     shakePx: 0,
     shakeHz: 18.0,
     swayDeg: 0,
-    swayMs: 0,
-    ...p
+    swayMs: 0
   }
+  // ⚠️ 先过渡、后动效 ⇒ 同名字段**动效优先**（与转译器 `pick()` 的优先级一致）。
+  const merged = { ...base, ...off, ...(pTrans ?? {}), ...(pEff ?? {}) }
+  // ⚠️ **逐字那两个键不参与这条腿**（`perChar` 由 `animPerChar` 单独取、
+  //    `tiltDeg`/`arcToDefault` 由 `textTiltTransform` 取）⇒ 从摊出来的结果里摘掉，
+  //    免得消费者以为"摊进 textMotion 就生效了"。
+  delete merged.perChar
+  delete merged.tiltDeg
+  delete merged.arcToDefault
+  return merged
 }
 
 // =====================================================================
@@ -1825,11 +1909,17 @@ function subAnimFields(idx, s, t) {
   const legacySplit = splitAnimTwoAxis(s.anim)
   const styleAnimName = String(s.style_anim ?? '').trim().toLowerCase() || legacySplit.style
   const effectAnimName = String(s.effect_anim ?? '').trim().toLowerCase() || legacySplit.effect
-  // 两轴都空 ⇒ 什么都不加。
-  if (!styleAnimName && !effectAnimName) return {}
+  // ⚠️ 第三路（过渡）：老格式的 `anim = "pop"` / `"fade"` 就是过渡档，
+  //    不接的话它们三路全空 ⇒ 静默回落全局（与转译器同一个坑，逐条同源）。
+  const transitionAnimName = String(s.transition_anim ?? '').trim().toLowerCase()
+    || legacySplit.transition
+  // 三轴都空 ⇒ 什么都不加。
+  if (!styleAnimName && !effectAnimName && !transitionAnimName) return {}
   const local = t - s.start
   return {
-    animName: styleAnimName || effectAnimName,
+    // ⚠️ `animName` 是**兼容字段**（老代码理解成"那一档"）⇒ 取优先级最高的。
+    animName: styleAnimName || transitionAnimName || effectAnimName,
+    transitionAnimName,
     // ⚠️ 档名分两个带出去（不只是摊进 `textMotion`）：`tilt_*` / `slam_squash`
     //    改的是**静态** `rotation` / `scale_y`，由 `textTiltTransform` 读**样式轴**。
     styleAnimName,
@@ -1838,7 +1928,7 @@ function subAnimFields(idx, s, t) {
     //    那份全局配置，而这里传的是**逐条字幕**的档。字幕这条路**没有"全局动效"**
     //    这个概念（转译器那边字幕轨是轨级样式）⇒ 给 `null`（= 全关）比给一份
     //    假配置更诚实。结果是"认不出的档名 ⇒ 字幕不动"，与成片一致。
-    textMotion: animMotion(null, effectAnimName),
+    textMotion: animMotion(null, effectAnimName, transitionAnimName),
     // ⚠️ 与文字元素同一条换算（`local * fps`），别写成秒 —— `charTransformAt`
     //    的第四参是**帧**（底座 `char_transform_at` 同口径）。
     // ⚠️ **逐字取样式轴**（`pop_perchar` / `hop_*` / `scatter_*` 的 `perChar`
