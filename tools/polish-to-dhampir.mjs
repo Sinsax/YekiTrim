@@ -2907,8 +2907,24 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///    它必须**压掉**全局那份弹入（否则配了 `[elements] scale_in_ms` 的工程里
   ///    `fade_only` 会静默变成"弹入 + 淡出"，不是"只淡出"）。
   ///    ⇒ 所以 `fade_only` 走的是"空预设也生效"这条路，见下面 `hasAnim` 的判定。
-  const motionFields = (cfg, phase, popInOn, preset) => {
+  const motionFields = (cfg, phase, popInOn, preset, stylePreset) => {
     const on = !!preset;
+    // ⚠️⚠️ **`stylePreset` 是 2026-10-13 两级化时加的第五实参**（形态轴那一档）。
+    //
+    //    为什么**不能**继续只用一个 `preset`：`motionFields` 摊平的是**两轴合起来**
+    //    的全部字段 —— 时间那半边（`shake_*` / `sway_*` / `scale_in_*`）与
+    //    形态那半边（`per_char` / `vertical`）**住在两个不同的设置里**。
+    //    ⇒ 时间读 `preset`（动效轴），形态读 `stylePreset`（样式轴）。
+    //
+    //    ⚠️ 只读一个的症状是**静默的**：用户设「竖排 + 抖动」，
+    //       竖排$（`vertical`/`per_char`）会**整条丢失** —— 字排成横的、还在抖，
+    //       而报告里一行差异都没有（`preset` 里没有 `vertical` ⇒ 不写那个键）。
+    //
+    //    ⚠️ 老工程（只有 `anim`）：两路拿到的**是同一个档名**（`both` 的档）
+    //       或"一路有、另一路空"，两种情形下取到的字段**合起来恒等于原来那一档**
+    //       ⇒ R4 不变。
+    const onStyle = !!stylePreset;
+    const pickStyle = (key) => (onStyle ? stylePreset[key] : undefined);
     // ⚠️ 逐条预设生效时，**它没提的字段一律按"关"**（不是回落到全局）——
     //    否则"砸入"会顺带继承全局的抖动，变成两种动效叠在一起，
     //    而用户以为自己只选了一档。只有**完全没写 `anim`**（`preset === undefined`）
@@ -2961,8 +2977,9 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    ⇒ **不做一次驼峰转换**。多一层转换就多一处会漂的地方，
     //    而漂了的表现是"`per_char` 在，但字段名底座读不到 ⇒ 用缺省 ⇒ 字不动"
     //    （底座对认不出的键**不报错**，`serde` 默认忽略）。
-    if (on && preset.perChar !== undefined) {
-      out.per_char = preset.perChar;
+    // ⚠️ 逐字那半边取**样式轴**（`stylePreset`）—— 见上面第五实参那段。
+    if (stylePreset && stylePreset.perChar !== undefined) {
+      out.per_char = stylePreset.perChar;
     }
     // **E 组：竖排**（2026-10-13）。
     //
@@ -2972,15 +2989,18 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    写 `Some(false)` 会让**每个老工程**的样式里多出一个 `vertical: false`
     //    ⇒ R4 判据（老工程逐字节不变）当场红。
     //    ⚠️ 这正是"三态"那条老坑的又一例：**"没配"与"配成假"必须分开**。
-    if (on && preset.vertical === true) {
+    //    ⚠️ 竖排取**样式轴**（`stylePreset`）—— 见上面第五实参那段。
+    //       写 `preset.vertical` 的话「竖排 + 抖动」里的竖排会**整条丢失**。
+    if (stylePreset && stylePreset.vertical === true) {
       out.vertical = true;
     }
     // ⚠️ 竖排的**列容量 = 安全比例 ÷ 字号比例**（真机踩过）：
     //    安全宽 0.2 + 字号 0.16 ⇒ 每列 1.25 个字，而 `max_lines` 默认 3
     //    ⇒ 六字标题**只画出头两个字**（症状像渲染 bug，其实是配置的数学）。
     //    档位表里给了够大的 `safe_width_ratio`，这里照传。
-    if (on && preset.safe_width_ratio !== undefined) {
-      out.safe_width_ratio = preset.safe_width_ratio;
+    // ⚠️ 安全宽度比取**样式轴**（`stylePreset`）—— 它跟竖排是同一族（排版形态）。
+    if (stylePreset && stylePreset.safe_width_ratio !== undefined) {
+      out.safe_width_ratio = stylePreset.safe_width_ratio;
     }
     return out;
   };
@@ -3204,6 +3224,106 @@ export function translate(config, clipDir, outPath, options = {}) {
 
   /// 全部已知档名（给报错文案用）。
   const ANIM_KNOWN = Object.keys(ANIM_PRESETS);
+
+  // ---- 两轴拆分（2026-10-13）------------------------------------------------
+  //
+  // 「样式」与「动效」是两个**可叠加**的设置，各住 `style_anim` / `effect_anim`。
+  // 但老工程只有 `anim` **一个**字段 ⇒ 要能把它拆到两路，且**行为不变**（R4）。
+  //
+  // ⚠️⚠️ **拆法的根据是「参数归属」，不是「档名归哪边」** —— 这两件事不一样：
+  //    `slam_squash` 在界面上归**动效**栏，但它同时给了 `squash_y`（形态）
+  //    与 `scale_in_*`（时间）⇒ 拆分时它**两边都要给**。
+  //    只按"档名归哪边"拆会让老工程的压扁**静默消失**。
+  //
+  // ⚠️ 两路取的字段**完全不重叠**（这是"可叠加"成立的根据）：
+  //    形态路取 `form` 里那串、动效路取 `motion` 那串 + `pcTime` 那些端点对。
+  const ANIM_AXIS = {
+    tilt: 'style', arc: 'style', size: 'style', scatter: 'style',
+    shrink: 'style', grow: 'style', vtext: 'style',
+    shake: 'effect', sway: 'effect', slam: 'effect',
+    shrink_in: 'effect', pop: 'effect', hop: 'effect',
+  };
+  // ⚠️ 档名 → 界面上的轴。前缀匹配（`tilt_std` → `tilt`）。
+  //    ⚠️ **长的前缀要排在前面**（`shrink_in_std` 必须先命中 `shrink_in`，
+  //       否则会被 `shrink` 抢走 —— 那正是"收缩"与"逐字变小"两族的区分）。
+  const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS)
+    .sort((a, b) => b.length - a.length);
+  /// 档名属于哪条轴（`''` = 认不出 / 空）。
+  const animAxisOf = (name) => {
+    const key = String(name ?? '').trim().toLowerCase();
+    if (!key) return '';
+    for (const p of ANIM_AXIS_PREFIXES) {
+      if (key.startsWith(p + '_')) return ANIM_AXIS[p];
+    }
+    return '';
+  };
+  /// 这一档在**形态**路上给了东西吗（`kind` 是 `form` 或 `both`）。
+  /// ⚠️ 与 `scripts/anim-attribution.mjs` 同一套判据，但这里是**按档名前缀**判的 ——
+  ///    转译器是零依赖 ESM、不能 import `webui/` 那份（那是给判据用的）。
+  ///    两者一致性由 `check-anim-attribution.mjs` 的"两路字段不重叠"那条钉着。
+  /// 这一档在**形态**路上给了东西吗。
+  ///
+  /// ⚠️⚠️ **判据是「这一档有没有给形态字段」，不是「它在界面哪条轴」** ——
+  ///    这两件事**不一样**，而第一版就是按轴判的，代价是 4 条轨的 `per_char`
+  ///    **整条丢失**：`pop_perchar` / `hop_std` / `hop_fast` / `hop_big`
+  ///    在界面上归**动效**栏（"逐字跳起"确实是动），但它们的 `perChar`
+  ///    （`offset_y_*` / `scale_*`）是**形态字段**、住**样式侧**。
+  ///    ⇒ 按轴判 ⇒ `style: ''` ⇒ `per_char` 不写 ⇒ 字**不跳了**，
+  ///      而报告里一行差异都没有。
+  ///
+  ///    **是 R4 的逐字节对拍抓出来的** —— 而且第一版那条对拍是**空转**的
+  ///    （`docs/wgpu-effect-reference/demo` 一个 `anim` 都没有 ⇒ 两边恒等）。
+  ///    换成覆盖全部 39 档的夹具才暴露。**教训：R4 夹具必须真的用到被改的字段。**
+  ///
+  /// ⚠️ 与 `scripts/anim-attribution.mjs` 的 `ANIM_ATTRIBUTION` **同源**
+  ///    （那边 `kind === 'form' || kind === 'both'`）。这里不能 import 它
+  ///    （转译器是零依赖 ESM），所以一致性由 `check-anim-attribution.mjs` 钉着。
+  ///
+  /// ⚠️ `slam_squash` 是**另一头**的例子：界面归**动效**栏，但给了 `squashY`
+  ///    （形态）⇒ 形态侧也要有它。
+  const animHasFormPart = (name) => {
+    const key = String(name ?? '').trim().toLowerCase();
+    // ⚠️ 按**档名逐族**列，**不是**按轴 —— 与 `ANIM_ATTRIBUTION` 的 form/both 同分类。
+    return (
+      animAxisOf(key) === 'style' ||
+      // 动效栏里**同时给了形态**的那些（归属表里的 `both`）：
+      // ⚠️ `pop_perchar` **没有前缀 `_`**（它就是整个档名）——
+      //    第一版写 `/^(pop_perchar|hop)_/` 时 `pop_perchar` **匹配不上**
+      //    （那个正则要求后面还得跟 `_`）⇒ 它的 `per_char` 照样丢。
+      //    ⇒ 这两族要分开写：`hop_*` 带下划线、`pop_perchar` 是精确名。
+      key === 'slam_squash' ||
+      key === 'pop_perchar' ||
+      /^hop_/.test(key)
+    );
+  };
+  /// 这一档在**动效**路上给了东西吗。
+  const animHasMotionPart = (name) => {
+    const a = animAxisOf(name);
+    if (a === 'effect') return true;
+    // ⚠️ 样式轴里也有给时间的（`arc_*` 逐字转、`scatter_*` 逐字散、`hop_*` 逐字跳）
+    //    —— 它们**两边都要给**，否则老工程的"逐字动"会静默变成"静态阶梯"。
+    return a === 'style' && /^(arc|scatter|hop)_/.test(name);
+  };
+  /// 把老工程的**单个** `anim` 拆成两路档名。
+  ///
+  /// ⚠️ 返回的是**档名**（两路各一个），不是字段 —— 因为调用点本来就是
+  ///    "拿档名 → 各自取字段"。这样老工程的产物恒等于原来（两路取到的字段
+  ///    合起来就是那一档的全部字段）。
+  /// ⚠️ 认不出的档名 ⇒ `{style:'', effect:''}`（上面已经报过 CLAMP）。
+  const splitLegacyAnim = (raw) => {
+    const key = String(raw ?? '').trim().toLowerCase();
+    if (!key || !animPreset(key)) return { style: '', effect: '' };
+    return {
+      style: animHasFormPart(key) ? key : '',
+      // ⚠️⚠️ **`fade_only` 特例**：它**一个动效字段都不给**（动的是 opacity），
+      //    但**必须仍然传下去** —— `motionFields` 第一行是 `const on = !!preset`，
+      //    而 `on` 决定"**没提的字段一律按关**"（不回落到全局 `[elements]`）。
+      //    ⇒ 拆成 `''` 的话，"`fade_only` 压掉全局弹入"这条语义就**丢了**，
+      //      那一档会静默继承全局的 `scale_in_*`（判据 ㊱ 当场红，判得对）。
+      //    ⇒ 判据是"**这一档有没有动效语义**"，不是"它有没有给字段"。
+      effect: (animHasMotionPart(key) || key === 'fade_only') ? key : '',
+    };
+  };
 
   const swayKeyframes = (cue, cfg, tb) => {
     const amp = cfg.sway_deg;
@@ -4058,20 +4178,60 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    `anchor_bottom` 是**轨级**常量 ⇒ 必须**按 (style, pos) 两维分组**，
             //    否则后写的那一档会把先写的覆盖掉（而报告里一行差异都没有）。
             const posKey = (event.pos ?? '').trim().toLowerCase() || 'bottom';
-            // ---- 39 档动效（`anim`，2026-10-13）----
+            // ---- 两级：**样式**（`style_anim`）× **动效**（`effect_anim`），可叠加 ----
             //
-            // ⚠️ **认不出的 `anim` 必须点名报错**，不能静默当"没有动效"：
+            // ⚠️ **认不出的档名必须点名报错**，不能静默当"没有"：
             //    用户写 `anim = "sway_stdd"`（手滑多一个 d）⇒ 字一动不动，
             //    而报告里**一行差异都没有** —— 正是本仓反复踩的"配了、不报错、没效果"。
             //    与 `Event::Element.kind` 那条注释同一个理由（"不用 enum，
             //    要能说出是哪一条元素、写了什么"）。
+            //
+            // ⚠️⚠️ **存量迁移**（R4 的关键）：老工程只有 `anim` 这**一个**字段。
+            //    两个新字段都空时，按 `ANIM_ATTRIBUTION`（逐档**参数归属**）
+            //    把那个档名拆到两路 —— 拆法是"这一档在两路里各给了什么"，
+            //    所以 `both` 的档（`slam_squash` / `scatter_shake` …）**两边都留**。
+            //    ⇒ 老工程两路取到的字段与原来**完全相同**，产物逐字节不变。
             const animRaw = String(event.anim ?? '').trim().toLowerCase();
-            if (animRaw && !animPreset(animRaw)) {
-              clamp(
-                where,
-                `文字元素「${textBody}」的 anim="${animRaw}" 不认识 —— ` +
-                  `**这一条不会动**。已知档名：${ANIM_KNOWN.join(' / ')}。`,
-              );
+            const styleAnimRaw = String(event.style_anim ?? '').trim().toLowerCase();
+            const effectAnimRaw = String(event.effect_anim ?? '').trim().toLowerCase();
+
+            // 两个新字段**任一有值** ⇒ 以它们为准；都空 ⇒ 从老的 `anim` 拆。
+            const usingSplit = !!(styleAnimRaw || effectAnimRaw);
+            const mig = usingSplit ? null : splitLegacyAnim(animRaw);
+
+            const styleName = usingSplit ? styleAnimRaw : (mig ? mig.style : '');
+            const effectName = usingSplit ? effectAnimRaw : (mig ? mig.effect : '');
+
+            for (const [field, name] of [
+              ['anim', animRaw],
+              ['style_anim', styleAnimRaw],
+              ['effect_anim', effectAnimRaw],
+            ]) {
+              if (name && !animPreset(name)) {
+                clamp(
+                  where,
+                  `文字元素「${textBody}」的 ${field}="${name}" 不认识 —— ` +
+                    `**这一条不会动**。已知档名：${ANIM_KNOWN.join(' / ')}。`,
+                );
+              }
+            }
+            // ⚠️ **跨轴误用要点名**（把动效档填进 `style_anim` 是常见手滑）——
+            //    不报的话它**照样有作用**（两路取的是**字段**，不是档名），
+            //    但用户以为自己设错了，下一条又会踩同样的坑。
+            for (const [field, name, want] of [
+              ['style_anim', styleAnimRaw, 'style'],
+              ['effect_anim', effectAnimRaw, 'effect'],
+            ]) {
+              const k = animAxisOf(name);
+              if (k && k !== want) {
+                note(
+                  where,
+                  `文字元素「${textBody}」的 ${field}="${name}" 属于「` +
+                    `${k === 'style' ? '样式' : '动效'}」轴，却填在「` +
+                    `${want === 'style' ? '样式' : '动效'}」这一栏 —— **仍然生效**，` +
+                    `但可能不是你想要的。`,
+                );
+              }
             }
             textCues.push({
               start: startFrame,
@@ -4080,11 +4240,13 @@ export function translate(config, clipDir, outPath, options = {}) {
               style: st,
               // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
               pos: posKey,
-              // ⚠️ **动效档名**（第 3 个分组维度，见下面 `byStyle` 的注释）：
-              //    `motionFields` 那六个字段是**轨级**的，所以不同 `anim` 必须分轨。
-              //    认不出的档名**照样带过去**（空档 = 不动效）——
-              //    上面已经报过 CLAMP，这里再"纠正"成空会让同轨的两条静默合并。
-              anim: animPreset(animRaw) ? animRaw : '',
+              // ⚠️ **两路档名**（第 3、4 个分组维度，见下面 `byStyle` 的注释）：
+              //    两路的参数都是**轨级**的，所以不同组合必须分轨。
+              //    认不出的档名**照样带过去** —— 上面已经报过 CLAMP，
+              //    这里再"纠正"成空会让同轨的两条静默合并。
+              anim: animRaw,
+              styleAnim: animPreset(styleName) ? styleName : '',
+              effectAnim: animPreset(effectName) ? effectName : '',
             });
             note(
               where,
@@ -6082,23 +6244,64 @@ export function translate(config, clipDir, outPath, options = {}) {
       // 一部分字跑到错误的高度，而报告里一行差异都没有。
       // 分开之后每轨只有一个档，轨级常量才表达得了逐事件的意图。
       //
-      // ⚠️⚠️ **第三维（`anim`）是同一个理由的第二次出现**：`scale_in_*` / `shake_*`
-      //    这些**动效字段也是轨级的**（它们住在底座的 `SubtitleStyle` 上，见
-      //    `layer.rs` 那一组六个 `Option`）。所以同一档样式里"一条砸入、一条摇摆"
+      // ⚠️⚠️ **第三、四维（`styleAnim` / `effectAnim`）是同一个理由的第三次出现**：
+      //    `scale_in_*` / `shake_*` 这些**动效字段是轨级的**（它们住在底座的
+      //    `SubtitleStyle` 上，见 `layer.rs` 那一组六个 `Option`），而
+      //    `tilt` / `squash` / `per_char` 那些**形态字段也是轨级的**。
+      //    所以「同一样式、同一档位、不同组合」（一条"竖排+抖动"、一条"竖排+摇摆"）
       //    必须分到**两条轨**，否则同样会"后写的覆盖先写的" ——
-      //    症状是一部分字用了别的条目的动效，**而报告里一行差异都没有**。
-      const key = `${cue.style.name}|${cue.pos}|${cue.anim || ''}`;
+      //    症状是一部分字用了别的条目的效果，**而报告里一行差异都没有**。
+      //
+      // ⚠️ **老工程（只有 `anim`）走的是同一套键** —— 上面已经把它拆成了
+      //    两路档名，所以这里对老工程算出来的 `styleAnim`/`effectAnim` 与
+      //    改造前那个 `anim` **一一对应**，分组结果不变（R4）。
+      const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}|${cue.effectAnim || ''}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
     // ⚠️ 遍历**固定顺序**（不是 Map 的插入序）：同一份工程跑两次要逐字节相同。
-    //    ⇒ `anim` 那一维也必须是**排序过的固定清单**，不能遍历 `byStyle.keys()`
+    //    ⇒ 组合那一维也必须是**排序过的固定清单**，不能遍历 `byStyle.keys()`
     //      （那会随工程内容变而变，同一份工程两次跑可能不同序）。
-    const animNames = [...new Set(textCues.map((c) => c.anim || ''))].sort();
+    //
+    // ⚠️⚠️ **组合清单是「一维排序表」，不是两层嵌套循环** —— 这是 R4 的关键。
+    //    旧版是 `for animName of animNames.sort()` **一层**（`scatter_shake`
+    //    与 `tilt_std` 在同一张表里按**字母序**排）。
+    //    ⇒ 拆成两层（先样式后动效）会让**产物里轨与 assets 的顺序整体变** ——
+    //      轨内容一个字节都没变，但**排列顺序**变了 ⇒ sha256 不同。
+    //      （实测：96 条轨逐条相同、41 个 assets 集合相同，**只有顺序不同**。）
+    //
+    // ⚠️ **排序键优先用 `c.anim`（老工程那个原值）** —— 这样老工程的排序键
+    //    **逐字符等于改造前**。
+    //    ⚠️ 第一版拿两路字符串直接 `.sort()`：空串那段排在所有字母**之前**，
+    //      于是"只有动效"的档（`fade_only` / `pop_std`）**整批跑到最前面**，
+    //      与旧版的字母序对不上（旧版 `arc_down` 在最前）。
+    const comboKeys = [...new Set(textCues.map(
+      (c) => `${c.anim || ''}\u0001${c.styleAnim || ''}\u0001${c.effectAnim || ''}`,
+    ))]
+      // ⚠️ 排序键：第一段（`anim`）非空时**就用它**，否则用两路拼 ——
+      //    老工程退化成"按那个 `anim` 字母序"（= 旧行为），
+      //    新工程退化成一个**稳定**顺序（同一份工程跑两次相同）。
+      .sort((x, y) => {
+        const kx = x.split('\u0001'), ky = y.split('\u0001');
+        // ⚠️⚠️ **拼法必须与下面 `animTag`（算 id 用的）逐字符一致** ——
+        //    否则"排序用的名字"与"轨 id 里的名字"是两个串：
+        //    id 用 `filter(Boolean).join('+')`（空的那路**整个不出现**），
+        //    而 `${kx[1]}+${kx[2]}` 会留下一个**前导 `+`**
+        //    ⇒ `"+fade_only"` 排在所有字母**之前** ⇒ "只有动效"的组合整批跑到最前
+        //    —— 与 id 的字面顺序对不上（判据 ⑤b 钉的就是这个）。
+        const ax = kx[0] || [kx[1], kx[2]].filter(Boolean).join('+');
+        const ay = ky[0] || [ky[1], ky[2]].filter(Boolean).join('+');
+        return ax < ay ? -1 : ax > ay ? 1 : 0;
+      })
+      // 分组仍然按**拆出来的两路**（`s`/`e`），只是排序用了第一段。
+      .map((k) => {
+        const p = k.split('\u0001');
+        return [p[1] || '', p[2] || ''];
+      });
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
       for (const posName of ['top', 'center', 'bottom']) {
-      for (const animName of animNames) {
-      const cues = byStyle.get(`${styleName}|${posName}|${animName}`);
+      for (const [styleAnimName, effectAnimName] of comboKeys) {
+      const cues = byStyle.get(`${styleName}|${posName}|${styleAnimName}|${effectAnimName}`);
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
       // 轨道 id 带上档位（同一档样式的两个档位是两条轨）。
@@ -6110,7 +6313,15 @@ export function translate(config, clipDir, outPath, options = {}) {
       //    底座按 id 认层，后一条会把前一条**整个盖掉**：
       //    一部分字用了别的条目的动效，而报告里一行差异都没有。
       //    空 `anim` **不进 id** ⇒ 老工程（没有 `anim` 这个键）产物**逐字节不变**（R4）。
-      const id = `text_${styleName}_${posName}${animName ? '_' + animName : ''}`;
+      //
+      // ⚠️⚠️ **id 用 `cues[0].anim`（原始那个），不是两路档名拼起来** ——
+      //    这是 R4 的关键：老工程的 `anim` 已经被拆成两路**只用于取字段**，
+      //    但 id 必须仍是改造前那个（`text_hook_bottom_scatter_shake`）——
+      //    否则**层 id 变了**、产物**逐字节就不同**了（底座按 id 认层）。
+      //    ⇒ 老工程：`anim` 就是它原来那个值，id 与改造前**逐字符相同**。
+      //    ⇒ 新工程：`anim` 是空的，改由两路拼（下面那段），不撞老 id。
+      const animTag = cues[0].anim || [styleAnimName, effectAnimName].filter(Boolean).join('+');
+      const id = `text_${styleName}_${posName}${animTag ? '_' + animTag : ''}`;
       // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
       //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
       //    时间格式四件事，而它们都已经在那条里被验过了（有单测 + 真出片）。
@@ -6224,13 +6435,17 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ `shake_phase` 是**轨级**（按 style 档错开，见 `SHAKE_PHASE_BY_STYLE`）——
           //    同轨多条 cue 仍同拍，那是底座契约的能力边界。
           //
-          // ⚠️ 第四实参 = **本轨的动效预设**（39 档，`animName` 来自轨身份）。
-          //    同轨已按 `anim` 分组 ⇒ 这里的 `cues[0].anim` 就是全轨那一个档名。
+          // ⚠️ 第四实参 = **动效轴**那一档（时间：`shake_*` / `sway_*` / `scale_in_*`）；
+          //    第五实参 = **样式轴**那一档（形态：`per_char` / `vertical` /
+          //    `safe_width_ratio`）—— 两轴各读自己的，见 `motionFields` 的注释。
+          //    ⚠️ 老工程（只有 `anim`）在入队时已被拆成两路，两路合起来恒等于原来那一档
+          //       ⇒ 取到的字段与改造前**完全相同**（R4）。
           ...motionFields(
             elementsCfg,
             SHAKE_PHASE_BY_STYLE[styleName],
             hasElementsSection(config),
-            animPreset(cues[0].anim),
+            animPreset(cues[0].effectAnim),
+            animPreset(cues[0].styleAnim),
           ),
         },
         layers: cues.map((c, i) => ({
@@ -6293,7 +6508,8 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    `scale_y` 有 `serde(default)`（`layer.rs:151`）所以**不会让工程载入失败**，
             //    但"用户配了压扁、成片里没压"会是静默的。⇒ 只在**有限数**时才写。
             ...((() => {
-              const v = animPreset(cues[0].anim)?.squashY ?? st.squashY;
+              // ⚠️ 形态字段取**样式轴**那一路（`slam_squash` 的压扁属于它）。
+              const v = animPreset(cues[0].styleAnim)?.squashY ?? st.squashY;
               return Number.isFinite(v) && v !== 1 ? { scale_y: v } : {};
             })()),
             // ⚠️ **无条件写**（`rotation` 没有 serde default，省掉 = 工程载入失败）。
@@ -6311,7 +6527,8 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    ⚠️ 别改成"条件展开"（`...(x !== undefined ? {rotation:x} : {})`）——
             //      那照样会省掉键。**这里的正确写法是"永远给一个有限数"**。
             rotation: (() => {
-              const v = animPreset(cues[0].anim)?.tiltDeg ?? st.tiltDeg;
+              // ⚠️ 形态字段取**样式轴**那一路（`tilt_std` 的倾斜属于它）。
+              const v = animPreset(cues[0].styleAnim)?.tiltDeg ?? st.tiltDeg;
               return Number.isFinite(v) ? v : 0;
             })(),
           },
@@ -6338,7 +6555,7 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    这里第一版直接传 `elementsCfg` ⇒ 配了 `anim = "sway_lg"` 的条目
             //    仍按全局那份摆（角度/周期都不是预设写的），**而报告里一行差异都没有**。
             const swayCfg = (() => {
-              const p = animPreset(cues[0].anim);
+              const p = animPreset(cues[0].effectAnim);
               if (p === undefined) return elementsCfg; // 没写 anim ⇒ 回落全局
               return { ...elementsCfg, sway_deg: p.sway_deg, sway_ms: p.sway_ms };
             })();

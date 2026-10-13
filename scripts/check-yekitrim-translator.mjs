@@ -902,7 +902,13 @@ const MUTATIONS = [
     name: '纵向档退回只按样式分轨 ⇒ 同一样式的三个档位共用一个 anchor_bottom（后写覆盖先写）',
     // ⚠️ `from` 用**模板字面量**写：里面既有 `${}` 又有单引号，
     //    单引号字符串要转义三层（实测写崩过一次 —— 整份守卫语法错误、跑不起来）。
-    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.anim || ''}\`;`,
+    //
+    // ⚠️⚠️ **2026-10-13 两级化时必须同步改这条锚点**：分组键从三维变四维，
+    //    旧锚点（`…|${cue.anim || ''}`）**再也匹配不上** ⇒ `.replace` 不生效
+    //    ⇒ 变异体与真身一模一样 ⇒ **判据不翻面、这一条静默失效**。
+    //    实测就是这么发现的：`--mutate` 报"2 处变异没被打红"。
+    //    ⇒ **改任何被变异引用的源码文本，都要搜一遍变异表里的锚点**。
+    from: `const key = \`\${cue.style.name}|\${cue.pos}|\${cue.styleAnim || ''}|\${cue.effectAnim || ''}\`;`,
     to: 'const key = cue.style.name;',
   },
   {
@@ -981,11 +987,14 @@ const MUTATIONS = [
   // ① `motionFields` 不接出去 ⇒ 配置读了但没用（工程里 `[elements]` 看着还在）。
   {
     name: 'T1/T4/T6 的 `motionFields` 不摊进 subtitle ⇒ 配置读了没接出去',
+    // ⚠️⚠️ 同样**必须跟着四级化同步**（2026-10-13）：第四实参改了名、
+    //    第五实参是新加的 —— 旧锚点匹配不上就**静默失效**（见上一条那段说明）。
     from: `          ...motionFields(
             elementsCfg,
             SHAKE_PHASE_BY_STYLE[styleName],
             hasElementsSection(config),
-            animPreset(cues[0].anim),
+            animPreset(cues[0].effectAnim),
+            animPreset(cues[0].styleAnim),
           ),`,
     to: '',
   },
@@ -3038,9 +3047,16 @@ function checkTextPosLanes(mod, src) {
     //    `scale_in_*` / `shake_*` 那些动效字段**也是轨级的**（它们住在底座的
     //    `SubtitleStyle` 上），所以"同一样式、同一档位、一条砸入一条摇摆"
     //    必须分到两条轨，否则同样会"后写的覆盖先写的"，而报告里一行差异都没有。
-    ok(src.includes('`${cue.style.name}|${cue.pos}|${cue.anim || \'\'}`'),
-      '分组键必须是「样式 | 纵向档 | 动效档」三维（`${cue.style.name}|${cue.pos}|${cue.anim || \'\'}`）—— ' +
-      '退回两维，同档位的两个不同动效就会共用一个轨级参数集（后写的覆盖先写的）');
+    // ⚠️ **2026-10-13 两级化**：第三维从**一个 `anim`** 变成**两轴各一维** ——
+    //    因为「样式」与「动效」现在是**两个独立设置**，同一样式档位下
+    //    "竖排 + 抖动"与"竖排 + 摇摆"是**两条不同的轨**。
+    //    仍然是**同一个理由**（轨级参数必须同轨同参），只是维度从三维变四维。
+    //    ⚠️ **别退回按 `cue.anim` 分组**：它对**新工程**恒为空串 ⇒
+    //       所有组合挤进同一条轨 ⇒ 后写的静默覆盖先写的。
+    ok(src.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}`'),
+      '分组键必须是「样式 | 纵向档 | **样式轴** | **动效轴**」四维' +
+      '（`${cue.style.name}|${cue.pos}|${cue.styleAnim || \'\'}|${cue.effectAnim || \'\'}`）—— ' +
+      '退回三维，同档位下的两个不同组合就会共用一个轨级参数集（后写的覆盖先写的）');
     ok(src.includes('anchor_bottom: anchorBottomFor(posName, st, height)'),
       '轨上必须真的写出 `anchorBottomFor(posName, st, height)` —— ' +
       '算出来了却没写进轨，等于没接');
@@ -3410,15 +3426,24 @@ function checkTextMotion(mod, dir, src) {
   // 为什么行为判据之外还要这条：行为判据在**变异台里可能看不见变异体**
   // （⑬–⑰ 那段的实测记录）。这两处是"接线"本身，变异体改了源码文本、
   // 而用 `mutatedSource` 加载的模块仍然行为正确时，只有文本判据抓得住。
+  // ⚠️ **2026-10-13 两级化**：第四、五实参从"一个 `anim`"变成**两轴各一个**
+  //    （动效轴 / 样式轴）—— 这条文本判据跟着改成钉**两个都在**。
+  //    ⚠️ **别只改名字不改条文**：这条判据的价值在于"漏传就等于用户选了没效果、
+  //       而报告一行差异都没有"。两轴各漏一个，症状就各是一个：
+  //       漏**动效轴** ⇒ 用户选"抖动"不抖；漏**样式轴** ⇒ 用户选"竖排"不竖排。
+  //    ⇒ 两条 `includes` 都要在，少一条就红。
   ok(src.includes('...motionFields(') &&
     src.includes('SHAKE_PHASE_BY_STYLE[styleName],') &&
     src.includes('hasElementsSection(config),') &&
-    src.includes('animPreset(cues[0].anim),'),
-    '字幕轨必须把 `motionFields(elementsCfg, …, hasElementsSection(config), animPreset(...))` ' +
-    '摊进 `subtitle` —— 写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在；' +
+    src.includes('animPreset(cues[0].effectAnim),') &&
+    src.includes('animPreset(cues[0].styleAnim),'),
+    '字幕轨必须把 `motionFields(elementsCfg, …, hasElementsSection(config), ' +
+    'animPreset(动效轴), animPreset(样式轴))` 摊进 `subtitle` —— ' +
+    '写没了就等于"配置读了但没接出去"，而工程里 `[elements]` 看着还在；' +
     '⚠️ 第三个实参是**弹出缺省值的门**（没配 `[elements]` 时不许写那三个键，R4），漏传就等于无条件默认开；' +
-    '⚠️ 第四个实参是**逐条 `anim` 预设**（39 档）—— 漏传就等于"用户选了砸入、成片里不砸"，' +
-    '而报告一行差异都没有');
+    '⚠️ 第四个实参是**动效轴**（时间：`shake_*`/`sway_*`/`scale_in_*`）—— 漏传就等于"用户选了砸入、成片里不砸"；' +
+    '⚠️ 第五个实参是**样式轴**（形态：`per_char`/`vertical`/`safe_width_ratio`）—— 漏传就等于' +
+    '"用户选了竖排、成片里横着"，**两种症状的报告里都是一行差异都没有**');
   ok(src.includes("if (phase !== 0) put('shake_phase', phase);"),
     '`motionFields` 必须逐键显式 `put`，且 `shake_phase` 要**排除 0** —— ' +
     '0 是底座默认值，写出来就是 R4 违规（"没写"与"写了默认值"必须是同一份字节）');

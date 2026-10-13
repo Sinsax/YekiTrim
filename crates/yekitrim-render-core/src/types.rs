@@ -373,6 +373,40 @@ pub enum Event {
         /// 没写时转译器**回落到全局 `[elements]`**（那份降级成了"整片兜底默认"）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         anim: Option<String>,
+        /// `text` 的**样式档名**（2026-10-13：与 `anim` 并列，两者**可叠加**）。
+        ///
+        /// # 为什么要与 `anim` 分开
+        ///
+        /// 上面 `anim` 那一段已经写明「与 `style` **正交** … 两者能自由组合」——
+        /// 但**界面**把 40 个档名挤进了一个下拉，用户没法"先定形态、再定怎么动"。
+        /// 而底座的模型**本来就是分开的**：`Layer` 上 `transform`（静态形态）/
+        /// `keyframes`（时间）/ `per_char`（逐字）是**三个独立字段**。
+        ///
+        /// ⇒ 这一对字段就是把界面提升到与底座同一个维度。
+        ///
+        /// # 与 `anim` 的关系
+        ///
+        /// * 两个新字段**都空**且 `anim` 有值 ⇒ 按转译器 `ANIM_PRESETS` 的
+        ///   **参数归属**把 `anim` 拆成这两个（**只读迁移，不写回**）——
+        ///   存量工程行为不变（R4）。
+        /// * 两个新字段任一有值 ⇒ **以它们为准**，`anim` 被忽略。
+        ///
+        /// ⚠️ 取值是 `webui/src/components/TimelineEditor.vue::ANIM_KINDS` 里
+        /// `axis: 'style'` 那些类的档名（`tilt_std` / `arc_up` / `vtext_bold` …）。
+        ///
+        /// ⚠️ **不写 = 没设样式**（不是"用默认档"）⇒ 存量工程逐字节不变。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style_anim: Option<String>,
+        /// `text` 的**动效档名**（与 `style_anim` 并列，可叠加）。
+        ///
+        /// 取值是 `axis: 'effect'` 那些类的档名（`shake_std` / `sway_lg` /
+        /// `slam_squash` …）。其余语义同 `style_anim`。
+        ///
+        /// ⚠️ `fade_only` 是**合法**的动效档（它动 opacity），别因为它的
+        /// 「参数归属」是 `none` 就在界面上把它藏起来 —— 归属说的是
+        /// "它不走 `transform` 那条路"，**不是"它不是动效"**。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effect_anim: Option<String>,
         /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pos: Option<String>,
@@ -1547,4 +1581,41 @@ mod edl_tests {
         );
         assert!(!Edl { clips: vec![clip(1.0, 2.0, 1.0)] }.is_empty());
     }
+}
+
+#[cfg(test)]
+mod two_axis_tests {
+    use super::*;
+// 契约往返：老工程（只有 anim）反序列化后两个新字段是 None；
+// 新工程两路写进去能读回来；两边都不写时不落盘（R4）。
+#[test]
+fn two_axis_roundtrip() {
+    // 老格式
+    let old = r#"{"type":"element","time":0.5,"kind":"text","text":"x","anim":"tilt_std"}"#;
+    let e: Event = serde_json::from_str(old).unwrap();
+    match &e {
+        Event::Element { anim, style_anim, effect_anim, .. } => {
+            assert_eq!(anim.as_deref(), Some("tilt_std"));
+            assert!(style_anim.is_none(), "老工程不该凭空多出 style_anim");
+            assert!(effect_anim.is_none(), "老工程不该凭空多出 effect_anim");
+        }
+        _ => panic!("不是 Element"),
+    }
+    // 老工程序列化回去**不许**多出键（R4）
+    let back = serde_json::to_string(&e).unwrap();
+    assert!(!back.contains("style_anim"), "老工程序列化多出了 style_anim：{back}");
+    assert!(!back.contains("effect_anim"), "老工程序列化多出了 effect_anim：{back}");
+    // 新格式：两路都在
+    let new = r#"{"type":"element","time":0.5,"kind":"text","text":"x",
+        "style_anim":"vtext_bold","effect_anim":"shake_std"}"#;
+    let e2: Event = serde_json::from_str(new).unwrap();
+    match &e2 {
+        Event::Element { style_anim, effect_anim, .. } => {
+            assert_eq!(style_anim.as_deref(), Some("vtext_bold"));
+            assert_eq!(effect_anim.as_deref(), Some("shake_std"));
+        }
+        _ => panic!("不是 Element"),
+    }
+}
+
 }

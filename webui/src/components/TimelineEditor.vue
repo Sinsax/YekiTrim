@@ -354,32 +354,56 @@
                 <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
                   <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
-                <!-- 动效（39 档，2026-10-13）。**两级：种类 → 细分**（2026-10-13 改）。
-                     ⚠️ 以前是一个 `<select>` + `<optgroup>` 平铺 40 项，而且种类与细分
-                        挤在同一个 label 串里（`'倾斜 · 标准'`）—— 用户报"还是这个"。
-                     两级之后：先选**种类**（倾斜/抖动/…），再选**这一类里的细分**。
-                     ⚠️ 写回 `selItem.anim` 的**取值与改造前逐字相同**（纯界面重排，R4）。
-                     ⚠️ 空串 = 不动效 ⇒ **不写 `anim` 键**（老工程逐字节不变）。
-                     ⚠️ **认不出的档名必须仍然显示出来**（下面那条 `v-if`）：
-                        它若被悄悄归成"不动效"，用户改一下别的字段就把那个
-                        错档名**永久抹掉**了（保存时写的是控件的值）—— 而报告里的
-                        CLAMP 已经告诉过他"这一条不会动"，得让他看得见是哪一条。 -->
-                <label>动效种类</label>
-                <select :value="animKind" @change="setAnimKind($event.target.value)">
-                  <option v-for="k in ANIM_KINDS" :key="k.kind" :value="k.kind">{{ k.label }}</option>
-                  <option v-if="animKind === ''" value="">未知档（{{ selItem.anim }}）</option>
+                <!-- ============ 两个**独立可叠加**的设置 ============
+                     用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
+                     即「竖排 **+** 抖动」两个都要成立，不是二选一。
+
+                     ⚠️⚠️ **不是"三级互斥选择器"** —— 那一版（类型→种类→细分，写同一个
+                        `anim`）**做错过并回退过**：它选样式会把动效清掉。这里两条
+                        下拉**各写各的字段**（`style_anim` / `effect_anim`）。
+
+                     ⚠️ **`both` 的类（`scatter_shake` / `slam_squash` / `hop_*` /
+                        `pop_perchar` / `arc_*`）在两条下拉里都出现** —— 它们确实
+                        两边都给参数；只放一边会让用户以为另一半不存在。
+
+                     ⚠️ **认不出的档名必须仍然显示出来**（下面那两条 `v-if`）：
+                        它若被悄悄归成"不动效"，用户改一下别的字段就把那个错档名
+                        **永久抹掉**了 —— 而报告里的 CLAMP 已经告诉过他这一条不会动，
+                        得让他看得见是哪一条。 -->
+                <label>样式（形态）</label>
+                <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)">
+                  <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                  <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
                 </select>
-                <!-- 细分：认不出档名时 `animVariants` 是空数组 ⇒ 这个下拉整条不渲染 -->
-                <template v-if="animVariants.length > 1">
-                  <label>细分</label>
-                  <select :value="selItem.anim || ''" @change="setAnimVariant($event.target.value)">
-                    <option v-for="a in animVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
+                <!-- 细分：认不出档名时 `styleVariants` 是空数组 ⇒ 这个下拉整条不渲染 -->
+                <template v-if="styleVariants.length > 1">
+                  <select :value="selItem.style_anim || ''" @change="setVariantOnAxis('style', $event.target.value)">
+                    <option v-for="a in styleVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
                   </select>
                 </template>
-                <div v-if="animKindHint" class="hint">{{ animKindHint }}</div>
-                <div v-if="selItem.anim && !ANIM_KNOWN.includes(selItem.anim)" class="hint">
+                <div v-if="styleHint" class="hint">{{ styleHint }}</div>
+                <div v-if="selItem.style_anim && !ANIM_KNOWN.includes(selItem.style_anim)" class="hint">
+                  这个样式档名不认识。
+                </div>
+
+                <label>动效（随时间）</label>
+                <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)">
+                  <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                  <option v-if="effectKind === ''" value="">未知档（{{ selItem.effect_anim }}）</option>
+                </select>
+                <template v-if="effectVariants.length > 1">
+                  <select :value="selItem.effect_anim || ''" @change="setVariantOnAxis('effect', $event.target.value)">
+                    <option v-for="a in effectVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
+                  </select>
+                </template>
+                <div v-if="effectHint" class="hint">{{ effectHint }}</div>
+                <div v-if="selItem.effect_anim && !ANIM_KNOWN.includes(selItem.effect_anim)" class="hint">
                   这个动效档名不认识，成片里不会动。
                 </div>
+                <div v-if="selItem.anim && !selItem.style_anim && !selItem.effect_anim" class="hint">
+                  正在用旧档「{{ selItem.anim }}」—— 上面选任一栏都会改用它。
+                </div>
+                <div class="hint">两栏可同时设（如「竖排 + 抖动」）。位置 x/y 由后处理算（每次重跑覆盖）。</div>
                 <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
               </template>
 
@@ -889,6 +913,7 @@ const ANIM_KINDS = [
   {
     kind: 'none',
     label: '不动效',
+    axis: 'none',
     hint: '这一条文字不做任何动效',
     variants: [{ value: '', label: '不动效' }]
   },
@@ -896,6 +921,7 @@ const ANIM_KINDS = [
   {
     kind: 'tilt',
     label: '倾斜',
+    axis: 'style',
     hint: '整块歪一个角度（静止的姿态，不是动效）',
     variants: [
       { value: 'tilt_std', label: '标准' },
@@ -907,6 +933,7 @@ const ANIM_KINDS = [
   {
     kind: 'shake',
     label: '抖动',
+    axis: 'effect',
     hint: '整块左右快速抖',
     variants: [
       { value: 'shake_std', label: '标准' },
@@ -917,6 +944,7 @@ const ANIM_KINDS = [
   {
     kind: 'sway',
     label: '摇摆',
+    axis: 'effect',
     hint: '整块像钟摆一样来回摆',
     variants: [
       { value: 'sway_std', label: '标准' },
@@ -927,6 +955,7 @@ const ANIM_KINDS = [
   {
     kind: 'slam',
     label: '砸入',
+    axis: 'both',
     hint: '整块从上方砸进来',
     variants: [
       { value: 'slam_std', label: '标准' },
@@ -937,6 +966,7 @@ const ANIM_KINDS = [
   {
     kind: 'shrink_in',
     label: '收缩',
+    axis: 'effect',
     hint: '整块收缩着出现 / 退场',
     variants: [
       { value: 'shrink_in_std', label: '标准' },
@@ -947,6 +977,7 @@ const ANIM_KINDS = [
   {
     kind: 'pop',
     label: '弹出',
+    axis: 'both',
     hint: '整块弹一下出现',
     variants: [
       { value: 'pop_std', label: '标准' },
@@ -959,6 +990,7 @@ const ANIM_KINDS = [
   {
     kind: 'arc',
     label: '逐字弧形',
+    axis: 'both',
     hint: '每个字绕自己的中心转，合成一条拱 / 波 / 垂',
     variants: [
       { value: 'arc_up', label: '上拱' },
@@ -969,6 +1001,7 @@ const ANIM_KINDS = [
   {
     kind: 'size',
     label: '逐字大小字',
+    axis: 'style',
     hint: '某一个位置的字被放大（重音）',
     variants: [
       { value: 'size_last', label: '末字重音' },
@@ -979,6 +1012,7 @@ const ANIM_KINDS = [
   {
     kind: 'scatter',
     label: '逐字抖散',
+    axis: 'both',
     hint: '每个字按序号往不同方向散开',
     variants: [
       { value: 'scatter_sm', label: '轻' },
@@ -989,6 +1023,7 @@ const ANIM_KINDS = [
   {
     kind: 'shrink',
     label: '逐字变小',
+    axis: 'style',
     hint: '每个字依次变小',
     variants: [
       { value: 'shrink_desc', label: '递减' },
@@ -999,6 +1034,7 @@ const ANIM_KINDS = [
   {
     kind: 'grow',
     label: '逐字放大',
+    axis: 'style',
     hint: '每个字依次放大',
     variants: [
       { value: 'grow_asc', label: '递增' },
@@ -1013,6 +1049,7 @@ const ANIM_KINDS = [
   {
     kind: 'hop',
     label: '逐字错峰',
+    axis: 'both',
     hint: '每个字依次弹出 / 跳起（错峰，不是同时）',
     variants: [
       { value: 'pop_perchar', label: '弹出 · 逐字' },
@@ -1028,6 +1065,7 @@ const ANIM_KINDS = [
   {
     kind: 'vtext',
     label: '竖排',
+    axis: 'style',
     hint: '整条轨改成竖排（改的是排版方向，不是单个字的变换）',
     variants: [
       { value: 'vtext_thin', label: '细楷' },
@@ -1063,40 +1101,93 @@ const ANIM_KIND_OF = new Map(
   ANIM_KINDS.flatMap((k) => k.variants.map((v) => [v.value, k.kind]))
 )
 
-/** 当前选中的**种类**。⚠️ 认不出的档名 ⇒ `''`（模板里走"未知"那一支，
- *  与原来 `ANIM_KNOWN.includes()` 的兜底同一件事：**不许把它悄悄归成"不动效"**，
- *  否则用户改一下别的字段就把那个错档名永久抹掉了）。 */
-const animKind = computed(() => {
-  const cur = selItem.value?.anim ?? ''
-  if (cur === '') return 'none'
+// ============================================================================
+// 两个**独立且可叠加**的设置：样式（形态）× 动效（时间）
+// ============================================================================
+//
+// 用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
+//
+// ⚠️⚠️ **这不是"三级互斥选择器"** —— 那一版（类型 → 种类 → 细分，写同一个
+//    `anim`）**已经做错并回退过**：它选样式会把动效**清掉**，而用户要的是
+//    「竖排 **+** 抖动」同时成立。
+//
+// 为什么能叠加：底座 `Layer` 上 `transform`（静态形态）/ `keyframes`（时间）/
+// `per_char`（逐字）是**三个独立字段**，两条路读的字段**完全不重叠** ⇒
+// 两个档名喂进去不会互相打架（`crates/yekitrim-render-core/src/types.rs` 写着
+// 「与 `style` **正交** … 两者能自由组合」）。
+//
+// ⚠️ `axis` 的三档含义：
+//   * `'style'` —— **只**给形态字段（`tilt_std` / `vtext_bold` / `size_mid` …）
+//   * `'effect'` —— **只**给时间字段（`shake_std` / `sway_lg` / `slam_sd` …）
+//   * `'both'`  —— **两边都给**（`scatter_shake` / `slam_squash` / `hop_std` /
+//                  `pop_perchar` / `arc_*`）⇒ **两条下拉里都要出现**
+//   * `'none'`  —— 只有"不动效"那一类
+//
+// ⚠️ 归属是**按参数**判的（不是按"这名字听起来像什么"）——
+//    权威表在 `scripts/anim-attribution.mjs`，判据 `check-anim-attribution.mjs` 钉着它。
+//    ⚠️ 最容易判错的是 `pop_perchar` / `hop_*`：名字像"动"，但它们的 `perChar`
+//       是**形态字段**（`offsetY*` / `scale*`）⇒ `both`，**两边都要有**。
+
+/** 某一轴上的全部**种类**（含"无"那一项）。`both` 的类**两条轴都给**。 */
+const kindsOnAxis = (axis) => ANIM_KINDS.filter((k) => {
+  if (k.kind === 'none') return true          // "不动效"两条轴都作缺省项
+  return k.axis === axis || k.axis === 'both'
+})
+
+/** 某一轴上"当前选中的种类"。⚠️ 认不出的档名 ⇒ `''`（模板走"未知"那一支：
+ *  **不许把它悄悄归成"无"**，否则用户改一下别的字段就把错档名永久抹掉了）。 */
+const kindOnAxis = (cur) => {
+  if (!cur) return 'none'
   return ANIM_KIND_OF.has(cur) ? ANIM_KIND_OF.get(cur) : ''
-})
-
-/** 当前种类下的细分清单（认不出档名时给空数组）。 */
-const animVariants = computed(() => {
-  const k = ANIM_KINDS.find((x) => x.kind === animKind.value)
-  return k ? k.variants : []
-})
-
-/** 当前种类的提示语（面板上那行小字）。 */
-const animKindHint = computed(() => {
-  const k = ANIM_KINDS.find((x) => x.kind === animKind.value)
-  return k ? k.hint : ''
-})
-
-/** 切**种类**：落到该类的**第一个细分**（"不动效"那类只有空串一项）。
- *
- *  ⚠️ 必须落成 `null` 而不是 `''`（同上：空串是一个合法的**坏值**，`null` 才是
- *     "这个键不存在"）。判据 `check-anim-presets-parity.mjs` ⑥ 钉着这一条。 */
-function setAnimKind(kind) {
-  const k = ANIM_KINDS.find((x) => x.kind === kind)
-  if (!k || !k.variants.length) return
-  selItem.value.anim = k.variants[0].value || null
 }
 
-/** 切**细分**（同一条上那两处 `|| null` 的理由）。 */
-function setAnimVariant(value) {
-  selItem.value.anim = value || null
+/** 某轴当前值（`selItem` 上那两个字段之一）。 */
+const axisField = (axis) => (axis === 'style' ? 'style_anim' : 'effect_anim')
+
+const styleKind = computed(() => kindOnAxis(selItem.value?.style_anim ?? ''))
+const effectKind = computed(() => kindOnAxis(selItem.value?.effect_anim ?? ''))
+
+/** 某轴当前种类下的细分清单（认不出档名时给空数组 ⇒ 那个细分下拉整条不渲染）。 */
+const variantsOnAxis = (axis, kind) => {
+  const k = kindsOnAxis(axis).find((x) => x.kind === kind)
+  return k ? k.variants : []
+}
+const styleVariants = computed(() => variantsOnAxis('style', styleKind.value))
+const effectVariants = computed(() => variantsOnAxis('effect', effectKind.value))
+
+/** 某轴当前种类的提示语（面板上那行小字）。 */
+const hintOnAxis = (axis, kind) => {
+  const k = kindsOnAxis(axis).find((x) => x.kind === kind)
+  return k ? k.hint : ''
+}
+const styleHint = computed(() => hintOnAxis('style', styleKind.value))
+const effectHint = computed(() => hintOnAxis('effect', effectKind.value))
+
+/** 切**种类**：落到该类的**第一个细分**（"无"那类只有空串一项）。
+ *
+ *  ⚠️ 必须落成 `null` 而不是 `''`（空串是一个合法的**坏值**，`null` 才是
+ *     "这个键不存在"）。判据 `check-anim-presets-parity.mjs` ⑥ 钉着这一条。
+ *
+ *  ⚠️⚠️ **只动自己那一轴** —— 这就是"可叠加"与"互斥"的分界线。
+ *     第一版在这里顺手写了另一轴 ⇒ 用户选样式就把动效清掉了。
+ *     ⚠️ 判据 `check-anim-dropdown.mjs` 钉着"两轴各写各的"。 */
+function setKindOnAxis(axis, kind) {
+  const k = kindsOnAxis(axis).find((x) => x.kind === kind)
+  if (!k || !k.variants.length) return
+  const v = k.variants[0].value
+  // ⚠️ 一档"两边都给"（`both`）时，用户从**这一轴**选它 ⇒ **同时把两轴都设上**，
+  //    否则他选了「砸入·带压扁」却只拿到半个效果（压扁不生效），而界面看着是选中的。
+  if (k.axis === 'both') {
+    selItem.value[axisField(axis)] = v || null
+    selItem.value[axisField(axis === 'style' ? 'effect' : 'style')] = v || null
+    return
+  }
+  selItem.value[axisField(axis)] = v || null
+}
+
+/** 切**细分**（同一条上那个 `|| null` 的理由）。⚠️ 同样**只动自己那一轴**。 */
+function setVariantOnAxis(axis, value) {
+  selItem.value[axisField(axis)] = value || null
 }
 
 /** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——

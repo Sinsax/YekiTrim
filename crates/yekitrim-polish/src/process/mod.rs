@@ -2034,6 +2034,8 @@ mod tests {
             extra: Default::default(),
             events: vec![Event::Element {
                 anim: None,
+                style_anim: None,
+                effect_anim: None,
                 time: 0.5,
                 end: Some(4.0),
                 kind: "text".into(),
@@ -2087,6 +2089,8 @@ mod tests {
             extra: Default::default(),
             events: vec![Event::Element {
                 anim: None,
+                style_anim: None,
+                effect_anim: None,
                 time: 0.5,
                 end: Some(4.0),
                 kind: "text".into(),

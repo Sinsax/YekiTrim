@@ -430,25 +430,49 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           // §5 E4a：文字元素的**动效**（T1 弹入 / T4 抖动 / T6 底衬 / T2 打字机）。
           // ⚠️ 参数来自工程级 `[elements]` 段 —— 与出片侧同一个来源。
           //
-          // ---- 39 档（2026-10-13）：逐条 `anim` 覆盖全局 ----
+          // ---- 两轴（2026-10-13）：样式（形态）× 动效（时间），**各自读自己的字段** ----
           //
           // ⚠️⚠️ **这里以前只读全局** ⇒ 用户在时间轴上选了「摇摆 · 大角度」，
           //    转译器按预设写进关键帧、成片里真的摆，而**预览里纹丝不动**
           //    （预览压根不知道有这个字段）。这正是"配了、预览看不见"的那一类。
-          // 优先级与转译器**同一条**：逐条 `anim` > 全局 `[elements]` > 内置缺省。
-          entry.textMotion = animMotion(cfg, ev.anim)
-          // ⚠️ 动效档**必须单独带出去**（不只是摊进 `textMotion`）：
-          //    `tilt_*` 三档改的是**静态** `rotation`（不是时间函数），
-          //    而 `textTiltTransform` 才是决定 `rotate()` 的地方。
+          //
+          // ⚠️⚠️ **2026-10-13 两级化之后，这里与转译器一样要拆两路** ——
+          //    否则用户在**新界面**上选「竖排 + 抖动」（写的是两个新字段），
+          //    预览仍然只看老 `anim`（空）⇒ **预览完全没效果，而成片有**。
+          //    这正是上一段那句话的同一个坑，只不过换了个字段。
+          //
+          // 优先级与转译器**逐条同源**：
+          //   ① 新字段任一有值 ⇒ **以它为准**（`anim` 被忽略）；
+          //   ② 两个新字段都空、`anim` 有值 ⇒ 按**参数归属**拆（只读迁移）；
+          //   ③ 都没有 ⇒ 回落全局 `[elements]`。
+          const legacySplit = splitAnimTwoAxis(ev.anim)
+          const styleAnimName = String(ev.style_anim ?? '').trim().toLowerCase()
+            || legacySplit.style
+          const effectAnimName = String(ev.effect_anim ?? '').trim().toLowerCase()
+            || legacySplit.effect
+          // ⚠️ 时间那半边取**动效轴**。
+          entry.textMotion = animMotion(cfg, effectAnimName)
+          // ⚠️ 档名**必须分两个带出去**（不只是摊进 `textMotion`）：
+          //    `tilt_*` 那几档改的是**静态** `rotation`（不是时间函数），
+          //    而 `textTiltTransform` 才是决定 `rotate()` 的地方 —— 它读**样式轴**；
+          //    `per_char`（逐字）也走样式轴。
           //    ⚠️ `slam_squash` 的压扁同理（`scale_y`）。
-          entry.animName = String(ev.anim ?? '').trim().toLowerCase()
+          entry.styleAnimName = styleAnimName
+          entry.effectAnimName = effectAnimName
+          // ⚠️ 兼容字段：老代码里 `animName` 意思是"那一档"（形态+时间合一）。
+          //    现在两轴都可能给东西 ⇒ 取**样式轴优先**（那是决定静态长相的那个），
+          //    没有才用动效轴。与 `textTiltTransform` / `animPerChar` 的取值口径一致。
+          entry.animName = styleAnimName || effectAnimName
           // ---- P4 补：**逐字 spec 也要带出去**（2026-10-13）----
           //
           // ⚠️⚠️ **`charTransformAt` 一直导出了、但全仓没有任何地方 import 它**
           //    ⇒ C 组逐字变换（15 档）+ D 组逐字错峰（4 档）**共 19 档在预览里完全不动**，
           //    而成片是底座真的逐字画的。这正是用户报的"播放没有效果"。
           //    消费方在 `PolishPreview.vue`（逐字拆 `<span>`，经 `perCharSpans`）。
-          entry.perChar = animPerChar(entry.animName)
+          //
+          // ⚠️ 逐字 spec 取**样式轴**（`pop_perchar` / `hop_*` / `scatter_*` 的
+          //    `perChar` 都在那一档里）—— 见 `scripts/anim-attribution.mjs` 的 `form`。
+          entry.perChar = animPerChar(styleAnimName)
         }
       }
     })
@@ -732,6 +756,79 @@ export function animPreset(name) {
   const key = String(name ?? '').trim().toLowerCase()
   if (!key) return undefined
   return Object.prototype.hasOwnProperty.call(ANIM_PRESETS, key) ? ANIM_PRESETS[key] : undefined
+}
+
+// ============================================================================
+// 两轴归属（样式 × 动效）—— 与转译器 `tools/polish-to-dhampir.mjs` **同源**
+// ============================================================================
+//
+// 用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
+// 老工程只有一个 `anim` ⇒ 要能把它拆到两路，且**行为不变**（R4）。
+//
+// ⚠️⚠️ **拆法的根据是「参数归属」，不是「档名归哪边」** —— 这两件事不一样：
+//    `pop_perchar` / `hop_*` 名字像"动"（界面上也确实归**动效**栏），
+//    但它们的 `perChar`（`offsetY*` / `scale*`）是**形态字段** ⇒ 两边都要给。
+//    按"轴"判会让它们的逐字效果**整条丢失**（实测就是这么踩的，见
+//    `scripts/anim-attribution.mjs` 的 `form` 列）。
+//
+// ⚠️ **这是第四份实现**（转译器 / 归属表 / `TimelineEditor` 的 `axis` / 这里）。
+//    `scripts/check-anim-presets-parity.mjs` ⑦ 把这里与上面几份对拍 ——
+//    改任何一份都要跑它，否则"预览与成片不一致"且**两边各自看都正常**。
+const ANIM_AXIS = {
+  tilt: 'style', arc: 'style', size: 'style', scatter: 'style',
+  shrink: 'style', grow: 'style', vtext: 'style',
+  shake: 'effect', sway: 'effect', slam: 'effect',
+  shrink_in: 'effect', pop: 'effect', hop: 'effect'
+}
+// ⚠️ **长的前缀要排在前面**（`shrink_in_std` 必须先命中 `shrink_in`，
+//    否则会被 `shrink` 抢走 —— 那正是"收缩"与"逐字变小"两族的区分）。
+const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS).sort((a, b) => b.length - a.length)
+
+/** 档名属于哪条轴（`''` = 认不出 / 空）。 */
+export function animAxisOf(name) {
+  const key = String(name ?? '').trim().toLowerCase()
+  if (!key) return ''
+  for (const p of ANIM_AXIS_PREFIXES) {
+    if (key.startsWith(p + '_')) return ANIM_AXIS[p]
+  }
+  return ''
+}
+
+/** 这一档在**形态**路上给了东西吗（归属表里的 `form` / `both`）。
+ *
+ *  ⚠️ 判据是"**这一档有没有给形态字段**"，**不是**"它在界面哪条轴" —— 见上面那段。 */
+export function animHasFormPart(name) {
+  const key = String(name ?? '').trim().toLowerCase()
+  return (
+    animAxisOf(key) === 'style' ||
+    // 动效栏里**同时给了形态**的那些（`both`）：
+    key === 'slam_squash' ||
+    key === 'pop_perchar' ||
+    /^hop_/.test(key)
+  )
+}
+
+/** 这一档在**动效**路上给了东西吗（归属表里的 `motion` / `both`）。 */
+export function animHasMotionPart(name) {
+  const key = String(name ?? '').trim().toLowerCase()
+  return (
+    animAxisOf(key) === 'effect' ||
+    // 样式轴里也给了时间的那些（`arc_*` 逐字转 / `scatter_*` 逐字散 / `hop_*` 逐字跳）
+    /^(arc|scatter|hop)_/.test(key) ||
+    // ⚠️ `fade_only` 一个字段都不给（它动 opacity），但它**有动效语义** ——
+    //    `animMotion` 认的是"取没取到这一档"，取到就把全局那份**压掉**。
+    key === 'fade_only'
+  )
+}
+
+/** 把老工程的**单个** `anim` 拆成两路档名（认不出 ⇒ 两路都空）。 */
+export function splitAnimTwoAxis(raw) {
+  const key = String(raw ?? '').trim().toLowerCase()
+  if (!key || !animPreset(key)) return { style: '', effect: '' }
+  return {
+    style: animHasFormPart(key) ? key : '',
+    effect: animHasMotionPart(key) ? key : ''
+  }
 }
 
 /** 把一档预设的**逐字 spec** 取出来（没有就 `undefined`）。
