@@ -407,6 +407,53 @@ pub enum Event {
         /// "它不走 `transform` 那条路"，**不是"它不是动效"**。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effect_anim: Option<String>,
+        /// `text` 的**过渡档名**（2026-10-14：入场 / 出场效果，从 `anim` 里**独立出来**）。
+        ///
+        /// # 为什么要独立成一轴
+        ///
+        /// 用户口径：「弹出，淡入淡出**独立出来作为过渡模式**（入场出场的效果），
+        /// **默认为弹出**」。在此之前 `pop_*` / `shrink_in_*` / `fade_only` 混在
+        /// `anim`/`effect_anim` 里，与"抖动/逐字变化"这类**持续型**动效抢同一个下拉
+        /// —— 但它们是**两个维度**：过渡管"怎么进来、怎么出去"（一次性、有窗口），
+        /// 动效管"在场的时候怎么动"（持续/循环）。两者**本来就可以并存**
+        /// （淡入出场 + 全程抖动）。
+        ///
+        /// # 与 `style_anim` / `effect_anim` 的关系
+        ///
+        /// 三者**字段互不重叠**（与两轴时代同一条纪律）：一个档名只属于一轴。
+        /// 归属由转译器 `ANIM_PRESETS` 与界面 `ANIM_KINDS` 的 `axis` 字段共同表达，
+        /// 由 `scripts/check-anim-two-axis.mjs`（已扩成三轴）机器校验。
+        ///
+        /// ⚠️ **不写 = 不施加过渡**（不是"用弹出档"）⇒ 存量工程逐字节不变（R4）。
+        /// 界面上显示成「弹出」只是**视觉默认**，落盘仍写 `None`
+        /// —— "没配"与"显式配了弹出"在产物里必须是两个状态，否则 R4 保不住。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transition_anim: Option<String>,
+        /// `text` 的**排版角度**（2026-10-14：倾斜 / 弧形的可调角度，**度**）。
+        ///
+        /// # 为什么要有它
+        ///
+        /// 用户口径：「倾斜和弧形**需要有角度参数可调整**」。在此之前角度是
+        /// **写死在档位里**的（`ANIM_PRESETS` 里 `tilt_std: { tiltDeg: -6.0 }`、
+        /// `arc_up: { perChar: { rotation_to: -14 } }`）—— 用户在界面上只能选
+        /// "标准 / 小角度 / 反方向"三选一，**没有任何一处能填一个数**。
+        ///
+        /// # 语义
+        ///
+        /// * **正负**：倾斜用（正 = 顺时针；负 = 逆时针，与 `tiltDeg` 同号约定）。
+        ///   弧形只用**绝对值**（幅度），符号决定朝上/朝下由档位自己定。
+        /// * **缺省**（`None`）= 回落**该档位写死的那个值** ⇒ "没填角度"与改造前
+        ///   **逐字节相同**（R4）。
+        /// * **范围**：由 `yekitrim-polish` 侧**夹取**（后端是权威，不信前端）。
+        ///   ⚠️ 夹取区间必须与前端滑杆**同源**（本仓有 `check-camera-zoom-parity.mjs`
+        ///   的先例：一处定义、多处引用）—— 否则"前端能拉到 45、后端夹到 30"
+        ///   ⇒ 用户看到 45、成片 30，**且不报错**。
+        ///
+        /// ⚠️ 用 `f64` 不是 `f32`：与 `tiltDeg` / `squashY` 那套既有精修数值同精度，
+        /// 免得同一个角度经两次转换后与档内默认值差出 1e-7（那会让
+        /// "没填角度"与"填了等于默认值的角度"产出**不同字节**）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_angle_deg: Option<f64>,
         /// 落点档位：`top` / `center` / `bottom`（`text` 用；`sticker` 走 `x`/`y`）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pos: Option<String>,
@@ -1612,34 +1659,58 @@ mod two_axis_tests {
     use super::*;
 // 契约往返：老工程（只有 anim）反序列化后两个新字段是 None；
 // 新工程两路写进去能读回来；两边都不写时不落盘（R4）。
+//
+// ⚠️ 2026-10-14 扩成**三轴**（+ `transition_anim`）并把 `layout_angle_deg`
+//    一起纳入 —— R4 的判据就是"**没配的字段一个键都不许多写**"，
+//    所以每加一个字段都必须**在这条测试里点名**；加了字段却漏改这条，
+//    存量工程产物会多出键而**没有任何守卫会红**。
 #[test]
-fn two_axis_roundtrip() {
-    // 老格式
+fn element_axes_roundtrip() {
+    // 老格式（只有 `anim`）—— 四个新键都必须缺席。
     let old = r#"{"type":"element","time":0.5,"kind":"text","text":"x","anim":"tilt_std"}"#;
     let e: Event = serde_json::from_str(old).unwrap();
     match &e {
-        Event::Element { anim, style_anim, effect_anim, .. } => {
+        Event::Element { anim, style_anim, effect_anim, transition_anim, layout_angle_deg, .. } => {
             assert_eq!(anim.as_deref(), Some("tilt_std"));
             assert!(style_anim.is_none(), "老工程不该凭空多出 style_anim");
             assert!(effect_anim.is_none(), "老工程不该凭空多出 effect_anim");
+            assert!(transition_anim.is_none(), "老工程不该凭空多出 transition_anim");
+            assert!(layout_angle_deg.is_none(), "老工程不该凭空多出 layout_angle_deg");
         }
         _ => panic!("不是 Element"),
     }
     // 老工程序列化回去**不许**多出键（R4）
     let back = serde_json::to_string(&e).unwrap();
-    assert!(!back.contains("style_anim"), "老工程序列化多出了 style_anim：{back}");
-    assert!(!back.contains("effect_anim"), "老工程序列化多出了 effect_anim：{back}");
-    // 新格式：两路都在
+    for key in ["style_anim", "effect_anim", "transition_anim", "layout_angle_deg"] {
+        assert!(!back.contains(key), "老工程序列化多出了 {key}：{back}");
+    }
+    // 新格式：三轴 + 角度全在
     let new = r#"{"type":"element","time":0.5,"kind":"text","text":"x",
-        "style_anim":"vtext_bold","effect_anim":"shake_std"}"#;
+        "style_anim":"tilt","effect_anim":"shake","transition_anim":"pop",
+        "layout_angle_deg":-12.5}"#;
     let e2: Event = serde_json::from_str(new).unwrap();
     match &e2 {
-        Event::Element { style_anim, effect_anim, .. } => {
-            assert_eq!(style_anim.as_deref(), Some("vtext_bold"));
-            assert_eq!(effect_anim.as_deref(), Some("shake_std"));
+        Event::Element { style_anim, effect_anim, transition_anim, layout_angle_deg, .. } => {
+            assert_eq!(style_anim.as_deref(), Some("tilt"));
+            assert_eq!(effect_anim.as_deref(), Some("shake"));
+            assert_eq!(transition_anim.as_deref(), Some("pop"));
+            assert_eq!(*layout_angle_deg, Some(-12.5));
         }
         _ => panic!("不是 Element"),
     }
+    // ⚠️ **角度 0 必须与"没填"区分开**：`Option` 的 `Some(0.0)` 要真的落盘。
+    //    写成 `if angle != 0` 那种"顺手优化"会让"用户明确设成 0 度"静默丢失，
+    //    而症状只是"我调了 0 度，它却回到了档位默认值"。
+    let zero = r#"{"type":"element","time":0.5,"kind":"text","text":"x","layout_angle_deg":0.0}"#;
+    let e3: Event = serde_json::from_str(zero).unwrap();
+    match &e3 {
+        Event::Element { layout_angle_deg, .. } => {
+            assert_eq!(*layout_angle_deg, Some(0.0), "角度 0 与\"没填\"是两回事");
+        }
+        _ => panic!("不是 Element"),
+    }
+    assert!(serde_json::to_string(&e3).unwrap().contains("layout_angle_deg"),
+        "显式设成 0 度的角度必须落盘（它是用户的选择，不是缺省）");
 }
 
 }
