@@ -52,8 +52,11 @@
                 否则就是"两份实现必然漂移"那个老病（成片有字、预览没有/位置不同）。 -->
         <div class="text-layer">
           <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
-               :style="{ left: tx.xPct + '%', top: tx.yPct + '%', opacity: tx.opacity,
+               :data-pos="tx.topPct === null ? undefined : tx.pos"
+               :style="{ left: tx.xPct + '%',
+                         top: (tx.topPct === null ? tx.yPct : tx.topPct) + '%',
                          transform: textTiltTransform(tx),
+                         opacity: tx.opacity,
                          fontSize: tx.style.fontPx + 'px',
                          fontWeight: tx.style.weight,
                          color: rgbaCss(tx.style.fill),
@@ -2394,6 +2397,24 @@ const texts = computed(() =>
       return {
         ...e,
         formStyle,
+        // ---- ⚠️⚠️ **`pos` 必须在预览里真的消费**（2026-10-14，问题 ①b 的止血版）----
+        //
+        // ⚠️⚠️ `engine.js:429` 早就算出了 `entry.textPos`（`top|center|bottom`），
+        //    `:2178` 也把它写进了输出 —— **而组件从头到尾没用过它**
+        //    （`grep "tx.pos" PolishPreview.vue` 恒 0 命中）。
+        //    ⇒ 「上 / 中 / 下」三档在预览里**完全同形**：用户在面板上换档位，
+        //      预览**纹丝不动**。这不是"位置略偏"，是**这一维整个没接上**。
+        //
+        // ⚠️ 为什么先接它（而不是先修盒原点）：`pos` 是**语义档位**，
+        //    **不需要知道盒子尺寸**就能摆 —— 而 ①a（`x`/`y` 是"盒左上角"、
+        //    预览当成了文字左上角）需要复刻 `TextLayout::solve` 的盒公式，
+        //    那是第 N 份实现（方案 B 要等底座导出 `text_layout`，跨仓单独约）。
+        //    ⇒ 先把 `pos` 接上：**换档位预览当场就动**，①a 的残余偏移等 B 落地。
+        //
+        // ⚠️ 水平**仍然按 `x`**（`left: xPct%`）—— `pos` 只管纵向，
+        //    与 `process/placement.rs` 的字段语义一致（`pos` 是纵向档位）。
+        // ⚠️ 三档的纵向位置取**与字幕同源**的边距口径，别自己编一套数。
+        topPct: textPosTopPct(e),
         spans: perCharSpans(e.text, {
           perChar: e.perChar,
           perCharFrame: e.perCharFrame,
@@ -2403,6 +2424,32 @@ const texts = computed(() =>
       }
     })
 )
+
+/** 元素纵向档位（`pos`）→ `top` 百分比。
+ *
+ *  ⚠️⚠️ **这是止血版，不是 ①a 的完整修**：`pos` 是语义档位，摆它不需要盒尺寸；
+ *     而 `x`/`y`（盒左上角）换算成文字原点需要 `TextLayout::solve` 的盒公式 —— 那要等
+ *     底座导出 `text_layout`（方案 B，跨仓）。⇒ 这里只让"换档位预览就动"，
+ *     残余偏移（盒与文字之间那段留白）**如实留着**，等 B 落地一起消掉。
+ *
+ *  ⚠️ 三档**必须各不相同**（否则等于没接）：
+ *    `top`    → 上边距 `ELEMENT_EDGE_MARGIN_PCT`
+ *    `center` → 垂直居中（`50%`，配合 CSS 的 `translate` 抬半行）
+ *    `bottom` → 下边距（`100% - ELEMENT_EDGE_MARGIN_PCT`）
+ *
+ *  ⚠️ 返回 `null` 表示"这一条没有 `pos`，沿用旧的 `yPct`" —— `engine.js` 里
+ *     `pos` 缺省**回落 `'bottom'`**（那是有值的），真正的"没有"是 `undefined`/空串。
+ *     ⇒ **旧路径一个字节都不动**（R4）。
+ */
+const ELEMENT_EDGE_MARGIN_PCT = 6
+function textPosTopPct(e) {
+  const p = String(e.pos ?? '').trim().toLowerCase()
+  if (!p) return null
+  if (p === 'top') return ELEMENT_EDGE_MARGIN_PCT
+  if (p === 'center') return 50
+  if (p === 'bottom') return 100 - ELEMENT_EDGE_MARGIN_PCT
+  return null
+}
 
 /** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
 function rgbaCss(c) {
@@ -3556,6 +3603,13 @@ function pause() {
    **既不报错也不裁切**（`.text-layer` 是 `overflow:visible`），只是默默缺半句。
    ⚠️ 居中的活儿 Rust 那边算落点时就做了（它按**排版后的真盒子**挑不重叠的点）——
    前端再加一次 = 同一件事做两遍、且第二遍是错的。 */
+/* ⚠️⚠️ **用了 `pos` 档位时要再抬回半个字高**（问题 ①b 的止血版，2026-10-14）。
+   只用 `top:50%` 是"文字**顶部**落在 50% 处"，看着**明显偏下** —— 用户会以为"居中档坏了"。
+   抬半行之后 `center` 才是真的垂直居中；对 `top`/`bottom` 也无害（那里 `top` 只是个边距）。
+   ⚠️ 用 **`translate` 属性**（不是 `transform`）：模板上那串 `textTiltTransform`
+      已经占了 `transform`，两者是**不同属性**、天然正交（不会互相盖掉）。
+   ⚠️ 只对**有 `pos`** 的元素生效（`:not([data-pos])` 的旧路径**一个字节都不动**，R4）。 */
+.text-el[data-pos] { translate: 0 -50%; }
 .text-el { position:absolute; white-space:pre; line-height:1.15;
            /* ⚠️ **绕中心**（T4）：倾斜与压缩都绕元素自己的中心，与 Dhampir 的
               `blit_affine`（`c_src = 位图中心`、`c_out = 落点中心`）同口径。
@@ -3563,6 +3617,7 @@ function pause() {
               哪天 `.text-el` 上多一条 `transform-box`/padding 类改动就会静默漂走，
               而症状只是"字的位置偏了一点"（本仓 `docs/plan/` 里这类漂移有先例）。
               同 `.fit-box` / `.overlay-space` 的既有写法。 */
+           transform-origin:center center;
            transform-origin:center center;
            /* 同 `.cap` / `.dm`：`app.css` 的 `*{font-family:var(--font)}` 是**直接命中**，
               会盖掉父层继承的字体栈（那个栈是"预览与成片同源"的唯一通道）⇒ 必须 inherit。 */
