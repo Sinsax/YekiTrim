@@ -594,162 +594,108 @@ function safeEmoji(name) {
  *  （`undefined` 才是没写），不能看 `Object.keys(preset).length > 0`。
  */
 export const ANIM_PRESETS = {
-  // A 组：整块变换（3 档）
-  tilt_std: { tiltDeg: -6.0 },
-  tilt_sm: { tiltDeg: -2.5 },
-  tilt_rev: { tiltDeg: 5.0 },
-  // B 组：整块动效（14 档）
-  shake_std: { shakePx: 6.0, shakeHz: 18.0 },
-  shake_slow: { shakePx: 6.0, shakeHz: 4.5 },
-  shake_lg: { shakePx: 14.0, shakeHz: 34.0 },
-  sway_std: { swayDeg: 6.0, swayMs: 900 },
-  sway_lg: { swayDeg: 12.0, swayMs: 900 },
-  sway_slow: { swayDeg: 6.0, swayMs: 2000 },
-  slam_std: { scaleInFrom: 2.4, scaleInPeak: 1.0, scaleInMs: 180 },
-  slam_lg: { scaleInFrom: 3.4, scaleInPeak: 1.0, scaleInMs: 180 },
-  slam_squash: { scaleInFrom: 2.4, scaleInPeak: 1.0, scaleInMs: 180, squashY: 0.72 },
-  shrink_in_std: { scaleInFrom: 0.4, scaleInPeak: 1.0, scaleInMs: 500 },
-  fade_only: {},
-  shrink_in_fast: { scaleInFrom: 0.4, scaleInPeak: 1.0, scaleInMs: 160 },
-  pop_std: { scaleInFrom: 0.3, scaleInPeak: 1.0, scaleInMs: 350 },
-  pop_soft: { scaleInFrom: 0.7, scaleInPeak: 1.0, scaleInMs: 350 },
-  // ===== C 组：逐字变换（14 档）=====
-  //
-  // ⚠️⚠️ 这一组的档位带的键是 **`perChar`（一份 `PerCharSpec`）**，
-  //    而不是上面那种"整块参数"。两边同表、形状不同 ——
-  //    `animMotion` 会把它摊出来（见那里的分支）。
-  //
-  // ⚠️ 三条设计纪律（每条都对应一种"看着生效了"的假绿）：
-  //
-  //  ① **默认是恒等**：只想改 `scale` 的档就**别写** `rotation`/`offset`，
-  //     它们的缺省是恒等值，写了反而是多一份要维护的口径。
-  //  ② **`perCharFrames` 一定要写**（缺省 0 ⇒ `isActive()` 为假 ⇒ **整个档不生效**、
-  //     而画面里字照常显示 ⇒ 最容易被当成"这档就是这样的"）。
-  //  ③ **"按序号"的效果走 `spread*`，不是 `offset*`**：`offset*` 是同一个值
-  //     给每个字 = 整行平移（字距不变）。这是 P3 真机实测抓到的真缺陷。
+  // ── 排版轴（4 档，含"默认"= 空档名）──────────────────────────────
+  //  ⚠️ **角度不在这里** —— 它走事件字段 `layout_angle_deg`（见 `layoutAngleOf`）。
+  //     这里的 `tiltDeg` 是**没填角度时**的回落值。
+  tilt: { tiltDeg: -6.0 },
+  //  ⚠️ `arcToDefault` 是"档位自己的方向"（负 = 向上弯）。用户填角度时取绝对值
+  //     当幅度、**保留这个方向** —— 否则"我填 14"会突然变成反向弯。
+  arc: {
+    arcToDefault: -14,
+    perChar: { rotationFrom: 0, rotationTo: -14, perCharFrames: 8, staggerFrames: 3 }
+  },
+  //  竖排是**轨级排版方向**，不是逐字变换。
+  //  ⚠️⚠️ 列容量 = 安全宽 ÷ 字号比例 —— `safeWidthRatio: 0.86` 不能省（见转译器注释）。
+  //  ⚠️ 原来 `vtext_thin` / `vtext_bold` 两档曾被实测抓出"产物逐字节相同"，
+  //     收敛后只剩一档，那一类事故不可能再发生。
+  //  ⚠️ `fontFamily` / `fontWeight` 在预览侧只是**兜底展示**（真值走 source 串）。
+  vtext: {
+    vertical: true,
+    safeWidthRatio: 0.86,
+    fontWeight: 400
+  },
 
-  // 弧形（4–6）：逐字**旋转**，按序号正弦 —— 合成一条拱/波/垂。
-  // ⚠️ `arc` 类**不用** spread（那个是线性递增），这里要的是**中间高两边低**，
-  //    所以用 `rotation_*` 配合转译器侧的按序号正弦？不 —— 转译器只写端点，
-  //    逐字的那条曲线由 `spread` 的 rank 给。正弦由**档位选哪一对端点**表达：
-  //    上拱 = 先负后正（两端下垂、中间平），波浪 = 正负交替由 `reverse` 与
-  //    两侧端点共同给出。真正逐字的正弦在底座是**按 rank 线性**的，
-  //    所以"弧"用**旋转 + 线性 spread** 近似：两端转得多、中间少。
-  arc_up: {
-    perChar: { rotationFrom: 0, rotationTo: -14, spreadXEm: 0, perCharFrames: 8, staggerFrames: 3 }
-  },
-  arc_wave: {
-    perChar: { rotationFrom: -12, rotationTo: 12, perCharFrames: 24, staggerFrames: 2 }
-  },
-  arc_down: {
-    perChar: { rotationFrom: 0, rotationTo: 14, perCharFrames: 8, staggerFrames: 3 }
-  },
-  // 大小字（7–9）：逐字**字号**，一个位置的字被放大。
-  // ⚠️ "末字重音"要的是**只有最后一个字**大 —— 用 `spread` 把缩放递增，
-  //    最后那个字正好到峰值（归一化保证与字数无关）。
-  // ⚠️ 这三档靠 `scale_spread`（**按序号的字号乘数**）—— 我第一版写成了
-  //    空壳（四个端点全相等 ⇒ `isActive()` 为假 ⇒ **整档不生效**），
-  //    而画面里字照常显示 ⇒ 最容易被当成"这档就是这样的"。
-  size_last: {
-    perChar: { scaleSpread: 0.75, perCharFrames: 14, easing: 'back_out' }
-  },
-  size_first: {
-    perChar: { scaleSpread: 0.75, perCharFrames: 14, reverse: true, easing: 'back_out' }
-  },
-  size_mid: {
-    perChar: { scaleSpread: -0.4, perCharFrames: 14, easing: 'back_out' }
-  },
-  // 抖散（10–12）：逐字**位移**。
-  // ⚠️ 必须用 `spread*`：用 `offset*` 会让八个字一起挪 = 整行平移（实测踩过）。
-  scatter_sm: {
-    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.12, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.06, perCharFrames: 10, staggerFrames: 1, easing: 'back_out' }
-  },
-  scatter_lg: {
-    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.45, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.28, perCharFrames: 16, staggerFrames: 3, easing: 'back_out' }
-  },
-  scatter_shake: {
-    perChar: { spreadXFrom: 0, spreadXTo: 1, spreadXEm: 0.3, spreadYFrom: 0, spreadYTo: 1, spreadYEm: 0.18, perCharFrames: 12, staggerFrames: 2, easing: 'back_out' },
-    shakePx: 5.0,
-    shakeHz: 20.0
-  },
-  // 变小（16–18）：逐字**字号**递减 / 突变 / 尾部。
-  // ⚠️ "递减"用 `scale_spread`（越往后越小），不是 `scale_to` ——
-  //    用 `scale_to` 是**整行**一起变小，字与字之间没有差别 ⇒ 不是"逐字"。
-  shrink_desc: {
-    perChar: { scaleSpread: -0.55, perCharFrames: 18, staggerFrames: 2 }
-  },
-  shrink_drop: {
-    perChar: { scaleSpread: -0.75, perCharFrames: 6, staggerFrames: 0 }
-  },
-  shrink_tail: {
-    perChar: { scaleSpread: -0.5, perCharFrames: 12, staggerFrames: 2 }
-  },
-  // 放大（19–21）：逐字**字号**递增 / 爆开 / 首字引爆。
-  grow_asc: {
+  // ── 过渡轴（2 档）入场/出场效果 ─────────────────────────────────
+  //  ⚠️ 与原本的 `pop_std` 同值（用户口径：「默认为弹出」）。
+  pop: { scaleInFrom: 0.3, scaleInPeak: 1.0, scaleInMs: 350 },
+  //  ⚠️⚠️ **空对象是合法且有意义**的：它表示"这一档什么都不加"（淡入淡出走
+  //     底座自己的 opacity 包络）——用来**压掉**全局 `[elements]` 那份弹入。
+  //     ⇒ "有没有写 anim"只能看**取没取到这一档**（`undefined` 才是没写），
+  //       不能看 `Object.keys(preset).length > 0`。判据钉着这一条。
+  fade: {},
+
+  // ── 动效轴（4 档）在场时怎么动 ──────────────────────────────────
+  shake: { shakePx: 6.0, shakeHz: 18.0 },
+  //  ⚠️ 用 `scaleSpread`（**按序号的字号乘数**），**不是** `scaleTo`
+  //     —— 后者是"同一个值给每个字" = **整行**缩放，字间没有差别。
+  perchar_big: {
     perChar: { scaleSpread: 0.8, perCharFrames: 18, staggerFrames: 2 }
   },
-  grow_burst: {
-    perChar: { scaleSpread: 1.6, perCharFrames: 20, staggerFrames: 3, easing: 'back_out' }
+  perchar_small: {
+    perChar: { scaleSpread: -0.55, perCharFrames: 18, staggerFrames: 2 }
   },
-  grow_first: {
-    perChar: { scaleSpread: 0.9, perCharFrames: 12, staggerFrames: 4, reverse: true }
-  },
-  // ===== D 组：逐字错峰（4 档）=====
-  //
-  // ⚠️ D 组 = C 组的**逐字能力 + 时间维度**。时间那一维 P3 已经有了
-  //    （`per_char_frames` = 每个字自己那份动画多长、`stagger_frames` = 相邻字错开几帧）
-  //    ⇒ 这一组**不需要底座任何新东西**。
-  //
-  // ⚠️ 与 C 组的观感差别：C 组是"所有字**同时**动、幅度不同"，
-  //    D 组是"每个字**依次**动、幅度相同"。旋钮就是 `stagger_frames`。
-  // ⚠️ `stagger_frames` 的单位是**帧**，而用户想的是毫秒 —— 30fps 下 1 帧 ≈ 33ms。
-  //    档位按帧给（契约单位），下拉标签写"快/慢"而不是写死毫秒（时基不是固定的）。
-  pop_perchar: {
-    perChar: { scaleFrom: 0.3, scaleTo: 1.0, perCharFrames: 10, staggerFrames: 3, easing: 'back_out' }
-  },
-  hop_std: {
-    perChar: { offsetYFrom: 0.55, offsetYTo: 0, perCharFrames: 12, staggerFrames: 4, easing: 'back_out' }
-  },
-  hop_fast: {
-    perChar: { offsetYFrom: 0.55, offsetYTo: 0, perCharFrames: 10, staggerFrames: 2, easing: 'back_out' }
-  },
-  hop_big: {
-    perChar: { offsetYFrom: 0.9, offsetYTo: 0, perCharFrames: 26, staggerFrames: 7, easing: 'back_out' }
-  },
-  // ===== E 组：竖排（3 档）=====
-  //
-  // ⚠️ 与 A–D 组**形状不同**：竖排不是"逐字变换"，而是**整条轨的排版方向**
-  //    （底座 `SubtitleStyle::vertical`）⇒ 用 `vertical: true` 这个**轨级**键，
-  //    不是 `perChar`。所以这一组的 `perChar` 可以缺省（横排那套全不动）。
-  //
-  // ⚠️⚠️ **列容量 = 安全比例 ÷ 字号比例**（真机踩过）：
-  //    安全宽 0.2 + 字号 0.16 ⇒ 每列只放得下 1.25 个字，而 `maxLines` 默认 3
-  //    ⇒ 六字标题**只画出头两个字**。症状像渲染 bug，其实是这个式子。
-  //    所以竖排档位必须**同时**给一个够大的 `safeWidthRatio`（下面给 0.86）。
-  //
-  // ⚠️ 竖排**忽略 `anchorBottom`**（底座第一版的口径收窄）：横排下它管纵向位置，
-  //    竖排下纵向变成**长度方向**，语义转置了 ⇒ 改为按内容居中。
-  vtext_thin: {
-    vertical: true,
-    fontFamily: 'LXGW WenKai',
-    fontWeight: 400,
-    safeWidthRatio: 0.86
-  },
-  vtext_bold: {
-    vertical: true,
-    fontFamily: 'LXGW WenKai',
-    fontWeight: 700,
-    safeWidthRatio: 0.86
-  },
-  vtext_shrink: {
-    vertical: true,
-    fontFamily: 'LXGW WenKai',
-    fontWeight: 700,
-    safeWidthRatio: 0.86,
-    // 竖排 + 逐字变小（E 组第 3 档 = 竖排 + C 组能力）
-    perChar: { scaleSpread: -0.45, perCharFrames: 16, staggerFrames: 3 }
+  //  ⚠️⚠️ **心跳的双峰脉冲在底座侧还没实现**（现有原语只有单次/正弦）。
+  //     预览这里也只能做到"一次较缓的脉冲" —— 与成片**一致地**不完整，
+  //     好过预览与成片不一致。底座能力到位后两处一起补。
+  heartbeat: {
+    scaleInFrom: 1.0,
+    scaleInPeak: 1.14,
+    scaleInMs: 480
   }
 }
+
+/** 一档动效在**哪条轴**上（2026-10-14 三轴；`''` = 认不出/空）。
+ *
+ *  ⚠️⚠️ **精确名 + 前缀两条都要判** —— 与转译器 `animAxisOf` 同一形状。
+ *     收敛后档名是族的名字本身：`tilt` / `fade` / `shake` / **`heartbeat`**
+ *     这些**不带 `_`**，而 `perchar_big` / `perchar_small` 带。
+ *     只判前缀 ⇒ `heartbeat` 认不出来 ⇒ 用户选了心跳**预览里不动**且无报错。
+ */
+const ANIM_AXIS = {
+  tilt: 'style', arc: 'style', vtext: 'style',
+  pop: 'transition', fade: 'transition',
+  shake: 'effect', perchar: 'effect', heartbeat: 'effect'
+}
+const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS).sort((a, b) => b.length - a.length)
+
+export function animAxisOf(name) {
+  const key = String(name ?? '').trim().toLowerCase()
+  if (!key) return ''
+  // ① 精确名（`heartbeat` / `fade` / `tilt` / `tilt` …）
+  if (Object.prototype.hasOwnProperty.call(ANIM_AXIS, key)) return ANIM_AXIS[key]
+  // ② 前缀（`perchar_big` → `perchar`）。长的排前面，免得短前缀抢走长前缀的档。
+  for (const p of ANIM_AXIS_PREFIXES) {
+    if (key.startsWith(p + '_')) return ANIM_AXIS[p]
+  }
+  return ''
+}
+
+/** **排版角度**：用户填了就用它，没填回落档位自己的缺省（**度**）。
+ *
+ *  ⚠️⚠️ **`0` 是合法值** ⇒ 判"填没填"必须用 `!== undefined` / `!== null`，
+ *     **不是** `||`。写成 `raw || def` 的症状是"我把角度调成 0，它却回到了 -6"。
+ *  ⚠️ 区间夹取**不在这里**（后端是权威，转译器夹）。预览只如实显示用户的值，
+ *     免得"预览显示 45、成片 30"这种两端不一致 —— 预览该跟**成片**走。
+ */
+export function layoutAngleOf(name, rawAngle) {
+  if (rawAngle !== null && rawAngle !== undefined && Number.isFinite(Number(rawAngle))) {
+    return Number(rawAngle)
+  }
+  const p = animPreset(name)
+  if (!p) return 0
+  if (p.tiltDeg !== undefined) return p.tiltDeg
+  if (p.arcToDefault !== undefined) return p.arcToDefault
+  return 0
+}
+
+/** **排版角度的允许区间** —— 与转译器 `LAYOUT_ANGLE_MIN/MAX` 及面板同值。
+ *
+ *  ⚠️ 三处（转译器 / 面板 / 这里）必须逐值一致，由
+ *     `scripts/check-anim-layout-angle.mjs` 钉着。
+ *     预览侧用它做滑杆/越界提示的显示基准，**但夹取权威在后端**。
+ */
+export const LAYOUT_ANGLE_MIN = -30
+export const LAYOUT_ANGLE_MAX = 30
 
 /** 一档动效 → 那组参数。`undefined` = **这一档不存在**（没写 / 认不出）。 */
 export function animPreset(name) {
@@ -759,77 +705,20 @@ export function animPreset(name) {
 }
 
 // ============================================================================
-// 两轴归属（样式 × 动效）—— 与转译器 `tools/polish-to-dhampir.mjs` **同源**
+// 三轴归属（排版 × 过渡 × 动效）—— 与转译器 `tools/polish-to-dhampir.mjs` **同源**
 // ============================================================================
 //
-// 用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
-// 老工程只有一个 `anim` ⇒ 要能把它拆到两路，且**行为不变**（R4）。
+// ⚠️⚠️ 2026-10-14 从**两轴**收敛成**三轴**（用户口径）：
+//    形态改名**排版**、`pop`/`fade` **独立成过渡轴**、动效只留抖动/逐字变化/心跳。
 //
-// ⚠️⚠️ **拆法的根据是「参数归属」，不是「档名归哪边」** —— 这两件事不一样：
-//    `pop_perchar` / `hop_*` 名字像"动"（界面上也确实归**动效**栏），
-//    但它们的 `perChar`（`offsetY*` / `scale*`）是**形态字段** ⇒ 两边都要给。
-//    按"轴"判会让它们的逐字效果**整条丢失**（实测就是这么踩的，见
-//    `scripts/anim-attribution.mjs` 的 `form` 列）。
+// ⚠️⚠️ **"老工程只有一个 `anim`、要拆到两路"那整套已删。**
+//    用户明确「当前没有存量工程还在开发中不要考虑」⇒ 不做别名迁移。
+//    原来那套（`animHasFormPart` / `animHasMotionPart` / `splitAnimTwoAxis`）
+//    连同它的 `slam_squash` / `pop_perchar` / `hop_*` 特例一起**去掉了** ——
+//    那些档名现在**一个都不存在**，留着就是永远为假的死分支。
 //
-// ⚠️ **这是第四份实现**（转译器 / 归属表 / `TimelineEditor` 的 `axis` / 这里）。
-//    `scripts/check-anim-presets-parity.mjs` ⑦ 把这里与上面几份对拍 ——
-//    改任何一份都要跑它，否则"预览与成片不一致"且**两边各自看都正常**。
-const ANIM_AXIS = {
-  tilt: 'style', arc: 'style', size: 'style', scatter: 'style',
-  shrink: 'style', grow: 'style', vtext: 'style',
-  shake: 'effect', sway: 'effect', slam: 'effect',
-  shrink_in: 'effect', pop: 'effect', hop: 'effect'
-}
-// ⚠️ **长的前缀要排在前面**（`shrink_in_std` 必须先命中 `shrink_in`，
-//    否则会被 `shrink` 抢走 —— 那正是"收缩"与"逐字变小"两族的区分）。
-const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS).sort((a, b) => b.length - a.length)
-
-/** 档名属于哪条轴（`''` = 认不出 / 空）。 */
-export function animAxisOf(name) {
-  const key = String(name ?? '').trim().toLowerCase()
-  if (!key) return ''
-  for (const p of ANIM_AXIS_PREFIXES) {
-    if (key.startsWith(p + '_')) return ANIM_AXIS[p]
-  }
-  return ''
-}
-
-/** 这一档在**形态**路上给了东西吗（归属表里的 `form` / `both`）。
- *
- *  ⚠️ 判据是"**这一档有没有给形态字段**"，**不是**"它在界面哪条轴" —— 见上面那段。 */
-export function animHasFormPart(name) {
-  const key = String(name ?? '').trim().toLowerCase()
-  return (
-    animAxisOf(key) === 'style' ||
-    // 动效栏里**同时给了形态**的那些（`both`）：
-    key === 'slam_squash' ||
-    key === 'pop_perchar' ||
-    /^hop_/.test(key)
-  )
-}
-
-/** 这一档在**动效**路上给了东西吗（归属表里的 `motion` / `both`）。 */
-export function animHasMotionPart(name) {
-  const key = String(name ?? '').trim().toLowerCase()
-  return (
-    animAxisOf(key) === 'effect' ||
-    // 样式轴里也给了时间的那些（`arc_*` 逐字转 / `scatter_*` 逐字散 / `hop_*` 逐字跳）
-    /^(arc|scatter|hop)_/.test(key) ||
-    // ⚠️ `fade_only` 一个字段都不给（它动 opacity），但它**有动效语义** ——
-    //    `animMotion` 认的是"取没取到这一档"，取到就把全局那份**压掉**。
-    key === 'fade_only'
-  )
-}
-
-/** 把老工程的**单个** `anim` 拆成两路档名（认不出 ⇒ 两路都空）。 */
-export function splitAnimTwoAxis(raw) {
-  const key = String(raw ?? '').trim().toLowerCase()
-  if (!key || !animPreset(key)) return { style: '', effect: '' }
-  return {
-    style: animHasFormPart(key) ? key : '',
-    effect: animHasMotionPart(key) ? key : ''
-  }
-}
+// ⚠️ 三轴**字段不重叠**（这就是"可叠加"的根据）：一条档位只属于一条轴，
+//    由 `ANIM_PRESETS` 的档名 + 上面的 `ANIM_AXIS` 共同表达。
 
 /** 把一档预设的**逐字 spec** 取出来（没有就 `undefined`）。
  *

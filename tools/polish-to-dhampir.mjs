@@ -6997,8 +6997,27 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    与这条路无关）。判据夹具的全局段两样都要有。
             const swayCfg = (() => {
               const p = animPreset(cues[0].effectAnim);
-              const anyAxis = p !== undefined || animPreset(cues[0].styleAnim) !== undefined;
-              if (!anyAxis) return elementsCfg; // 两轴都没写 ⇒ 回落全局
+              // ⚠️⚠️ **判据是「任一轴指定了档」，三轴都要算**（2026-10-14）。
+              //
+              //     这里**漏改过第三轴**（复核者用差分实验抓到）：只填
+              //     `transition_anim="fade"` 的一条事件，`on` 在 `motionFields` 那边
+              //     是 true（那里已改成三轴），而这里只算两轴 ⇒ `anyAxis` 为 false
+              //     ⇒ **回落全局 `[elements]`** ⇒ 静默继承全局的 `sway_deg`。
+              //     ⇒ `fade` 的语义是"一个字段都不给、只压掉全局"，
+              //        结果它偷偷摇摆了 —— 正是本仓最恨的"配了、不报错、悄悄生效"。
+              //     实测：配了全局 `sway_deg=33.3` 时该轨长出 2 个 rotation 关键帧。
+              //
+              //     ⇒ 这条判据**必须与 `motionFields` 的 `on` 逐字同源**（那边也写着
+              //       "少算一轴的后果与两级化那次完全一样"）。加一条轴就**两处一起改**。
+              //
+              // ⚠️ 另注：`sway` 这一族**已经删了**（三轴收敛：动效只留抖动/逐字变化/心跳）
+              //     ⇒ `p?.sway_deg` 恒 `undefined`。但**这段逻辑不能整块删**：
+              //     全局 `[elements]` 里可能还配着 `sway_deg`（老配置 / 用户手写），
+              //     而"档位要压掉全局"这条语义仍然必须成立。
+              const anyAxis = p !== undefined
+                || animPreset(cues[0].styleAnim) !== undefined
+                || animPreset(cues[0].transitionAnim) !== undefined;
+              if (!anyAxis) return elementsCfg; // 三轴都没写 ⇒ 回落全局
               return { ...elementsCfg, sway_deg: p?.sway_deg, sway_ms: p?.sway_ms };
             })();
             const keys = swayKeyframes(c, swayCfg, timebase);

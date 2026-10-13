@@ -1,27 +1,47 @@
 #!/usr/bin/env node
-// **39 档动效：界面清单 ↔ 转译器清单 逐档对拍**（2026-10-13，第 3 步 A+B 组）。
+// **三轴 9 档动效：界面清单 ↔ 转译器清单 逐档对拍**（2026-10-14，39 档 → 9 档收敛后重写）。
 //
 // # 为什么必须有这条判据
 //
-// 39 档的名字现在住在**两个地方**：
+// 档名现在住在**两个地方**：
 //
-//   ① `tools/polish-to-dhampir.mjs::ANIM_PRESETS` —— **权威**（底座字段的映射表）；
-//   ② `webui/src/components/TimelineEditor.vue::ANIM_GROUPS` —— 界面那份（给用户选）。
+//   ① `tools/polish-to-dhampir.mjs::ANIM_PRESETS` —— **权威**（底座字段的映射表，
+//      每个键带 `sort` 声明它属于哪条轴）；
+//   ② `webui/src/components/TimelineEditor.vue::ANIM_KINDS` —— 界面那份（给用户选，
+//      每个 kind 带 `axis` 声明它属于哪条轴）。
 //
 // 两份**必须同集合**。缺一边的症状是本仓最恨的那一类：
 //
 //   * 界面有、转译器没有 ⇒ 用户选了下拉、**成片里什么都不发生**，
 //     报告里只有一行 CLAMP（中文档名，用户很可能没看）；
-//   * 转译器有、界面没有 ⇒ 这一档**用户根本选不到**（"39 档"实际只有 N 档），
-//     而任何"档数对不对"的人工核对都会数到 39 —— 因为转译器那边确实是 39。
+//   * 转译器有、界面没有 ⇒ 这一档**用户根本选不到**（"9 档"实际只有 N 档），
+//     而任何"档数对不对"的人工核对都会数到 9 —— 因为转译器那边确实是 9。
 //
-// ⇒ 逐档对拍 + 变异自证。
+// ⚠️ 三轴收敛**不改变**上面这条理由：档名换了、轴从两变三，缺口两侧的症状一模一样
+//    （选了没反应 / 根本选不到）。所以判据照旧，只是清单与轴归属跟着换。
+//
+// ⇒ 逐档对拍（③）+ 档数下限（④）+ **轴归属一致（⑤）** + 变异自证。
+//
+// # 三条轴（用户口径，2026-10-14）
+//
+//   | 轴（内部名） | 显示名 | 事件字段 | 档位 |
+//   |---|---|---|---|
+//   | `style` | 排版 | `style_anim` | `tilt` · `vtext` · `arc`（"默认" = 空档名）|
+//   | `transition` | 过渡 | `transition_anim` | `pop` · `fade` |
+//   | `effect` | 动效 | `effect_anim` | `shake` · `perchar_big` · `perchar_small` · `heartbeat` |
+//
+//   9 个档名：tilt arc vtext pop fade shake perchar_big perchar_small heartbeat。
 //
 // # 怎么扒（零依赖，不 import 应用模块）
 //
 // `TimelineEditor.vue` 是 `.vue`、`polish-to-dhampir.mjs` 是 ESM。
 // 前者只能读文本（正则取 `value: '...'`），后者**可以直接 import**。
 // ⚠️ 不从 `.vue` 里 import —— 那要 Vue 编译器，而本目录的判据都是零依赖的。
+//
+// ⚠️ **旧档名一个都不许在本文件里出现**（`tilt_std` / `slam_lg` / `sway_std` /
+//    `fade_only` / `arc_up` / `vtext_bold` / `shrink_in_std` / `pop_perdoc` …
+//    全部不存在了）。用户明确「当前没有存量工程还在开发中不要考虑」⇒ **不做别名迁移**，
+//    判据也不该要求它。本文件只认那 9 个档名与那三条轴。
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,18 +59,26 @@ const ok = (cond, what) => {
   if (!cond) fails.push(what)
 }
 
+// ---- 轴归属契约（两条实现的轴名不同，靠这张表对应）----
+//
+// 转译器 `sort` 用 `layout`，界面 `axis` 用 `style` —— **不是笔误**：
+// 事件字段是 `style_anim`，界面显示名是「排版」。`layout`⟷`style` 是那份对应关系。
+const AXIS_MAP = { layout: 'style', transition: 'transition', effect: 'effect' }
+const AXIS_KEYS = Object.keys(AXIS_MAP)
+
 // ---- ① 转译器那份（权威）----
 //
 // `ANIM_PRESETS` 是 `translate()` 内部的闭包常量 ⇒ **import 不到**。
-// 与 `check-sway-parity.mjs` 同一个做法：正则从源码里取键名。
+// 正则从源码里取键名。
 // ⚠️ 取的是**对象字面量的键**（`  key: {`），不是"出现过 anim_ 的地方" ——
 //    后者会把注释里提到的档名也算进来（本文档自己就提了好几个）。
 const transSrc = fs.readFileSync(TRANS, 'utf8')
 
 const presetsStart = transSrc.indexOf('const ANIM_PRESETS = {')
-ok(presetsStart > 0, '① 转译器里找不到 `ANIM_PRESETS` —— 39 档的权威表没了')
+ok(presetsStart > 0, '① 转译器里找不到 `ANIM_PRESETS` —— 三轴 9 档的权威表没了')
 
 let transKeys = []
+let transBody = ''
 if (presetsStart > 0) {
   // 花括号配对取出整个字面量。
   const open = transSrc.indexOf('{', presetsStart)
@@ -67,16 +95,16 @@ if (presetsStart > 0) {
     }
   }
   ok(close > open, '① `ANIM_PRESETS` 的花括号没配对（源码被改坏了？）')
-  const body = close > open ? transSrc.slice(open + 1, close) : ''
+  transBody = close > open ? transSrc.slice(open + 1, close) : ''
   // 只取**顶层**键。
   //
   // ⚠️ 别写死缩进宽度：`ANIM_PRESETS` 住在 `translate()` 里 ⇒ 键是**4 个空格**
   //    （第一版写了 `^ {2}` ⇒ 一个档名都取不到，于是"两侧不一致"全线报红，
   //     而**真因是判据自己的正则**，不是代码 —— 这种假红最费时间）。
   //    ⇒ 用"本行缩进 + 紧跟 `name:` + 本行以 `{` 开头结尾"三重约束：
-  //      `fade_only: {},` 与 `slam_squash: { … },` 都覆盖，而
-  //      `group: '...'` 那种（值带引号）与注释行都不会被误取。
-  transKeys = [...body.matchAll(/^\s*([a-z][a-z0-9_]*):\s*\{/gm)].map((m) => m[1])
+  //      `fade: { sort: 'transition' },` 与 `arc: { …多行… },` 都覆盖，而
+  //      `sort: 'effect',` 那种（值带引号）与注释行都不会被误取。
+  transKeys = [...transBody.matchAll(/^\s*([a-z][a-z0-9_]*):\s*\{/gm)].map((m) => m[1])
 }
 
 ok(transKeys.length > 0, `① 从 ANIM_PRESETS 里一个档名都没取到（实得 ${transKeys.length}）`)
@@ -86,14 +114,37 @@ ok(new Set(transKeys).size === transKeys.length,
 ok(transKeys.every((k) => /^[a-z][a-z0-9_]*$/.test(k)),
   `① 有档名不像合法标识符：${JSON.stringify(transKeys.filter((k) => !/^[a-z][a-z0-9_]*$/.test(k)))}`)
 
+// ---- ①b 每个键的 `sort`（= 轴归属，**这就是权威**）----
+//
+// ⚠️ 用**档内逐块**取值，不用"从键到下一个键"的贪婪扫描：
+//    `arc` / `perchar_*` / `heartbeat` 的 `sort` 在**下一行**（多行对象），
+//    只匹配 `{ ... }` 同一行会漏掉 4 个（实测 9 取 5）⇒ ⑤ 会拿 `undefined` 去比。
+//    ⇒ 先按顶层键切块，再在块内找**第一处** `sort:`。
+// ⚠️ 块内那处 `sort:` **不一定在行首**：单行档写成 `tilt: { sort: 'layout', … },`
+//    （`sort` 跟在 `{ ` 后面）。正则**不许锚 `^`**，否则单行档全被判"没有 sort"
+//    （实测：tilt / vtext / pop / fade / shake 五档假红，而真因是判据自己的正则）。
+const transSort = new Map()
+if (transBody) {
+  const keyRe = /^\s*([a-z][a-z0-9_]*):\s*\{/gm
+  const marks = [...transBody.matchAll(keyRe)].map((m) => ({ name: m[1], at: m.index }))
+  for (let i = 0; i < marks.length; i++) {
+    const from = marks[i].at
+    const to = i + 1 < marks.length ? marks[i + 1].at : transBody.length
+    const piece = transBody.slice(from, to)
+    const m = piece.match(/\bsort:\s*'([a-z]+)'/)
+    if (m) transSort.set(marks[i].name, m[1])
+  }
+}
+const missingSort = transKeys.filter((k) => !transSort.has(k))
+ok(missingSort.length === 0,
+  `①b 这些档在 ANIM_PRESETS 里没有 \`sort\`（轴归属缺失，⑤ 无从对拍）：${JSON.stringify(missingSort)}`)
+const badSort = [...transSort.entries()].filter(([, v]) => !AXIS_KEYS.includes(v))
+ok(badSort.length === 0,
+  `①b 这些档的 \`sort\` 不是三条轴之一（${AXIS_KEYS.join(' / ')}）：${JSON.stringify(badSort)}`)
+
 // ---- ② 界面那份 ----
 //
-// ⚠️ **2026-10-13：界面从"一个下拉 + optgroup"改成两级（种类 → 细分）**，
-//    权威表也从扁平的 `ANIM_GROUPS` 换成了 `ANIM_KINDS`
-//    （`ANIM_GROUPS` 现在只是它 `.map()` 出来的兼容视图，**不再是源**）。
-//    ⇒ 这里改成扒 `ANIM_KINDS`。
-//
-// ⚠️⚠️ 扒的仍然是**字面量里的 `{ value: '...' }`**（每个 variant 都写成那个形状）。
+// ⚠️ 扒的是**字面量里的 `{ value: '...' }`**（每个 variant 都写成那个形状）。
 //    改这一条时想清楚：**扒不到 ⇒ 两侧都是空 ⇒ ③ 全绿**，
 //    而"界面一个档都没有"这种事故会**静默通过**。所以下面 ② 与 ④ 有档数下限。
 const editorSrc = fs.readFileSync(EDITOR, 'utf8')
@@ -101,23 +152,28 @@ const kindsStart = editorSrc.indexOf('const ANIM_KINDS = [')
 ok(kindsStart > 0, '② 编辑器里找不到 `ANIM_KINDS` —— 界面那份没了（那就只能手改 toml）')
 
 let uiKeys = []
-let uiKindCount = 0
+let kindBlocks = []
 if (kindsStart > 0) {
   // 取到 `ANIM_KINDS` 定义结束（下一个顶层 `const ` 之前）。
   const rest = editorSrc.slice(kindsStart)
   const nextTop = rest.indexOf('\nconst ', 1)
   const block = nextTop > 0 ? rest.slice(0, nextTop) : rest
   uiKeys = [...block.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].map((m) => m[1])
-  // 种类数：顶层 `kind: '...'` 出现几次。
-  // ⚠️ 缩进是 **4 个空格**（对象在数组里，数组项又缩了一层）。
-  //    写死 2 会让它一个都取不到 ⇒ ④b 全线假红（而真因是判据自己的正则）。
-  uiKindCount = [...block.matchAll(/^\s+kind:\s*'([a-z_]+)',\s*$/gm)].length
+  // 按"只有一个 `{` 的行"切出每个 kind 块。
+  // ⚠️ 别写死缩进宽度（本仓踩过：写死 2 个空格 ⇒ 一个块都切不出来 ⇒ 假红）。
+  //    `^\s*\{\s*$` 对 2/4 空格都成立，且不会切到 `variants: [{ value… }]` 那种行内对象。
+  kindBlocks = block.split(/^\s*\{\s*$/m).slice(1).map((p) => ({
+    kind: (p.match(/kind:\s*'([a-z_]+)'/) || [])[1] || '',
+    axis: (p.match(/axis:\s*'([a-z_]+)'/) || [])[1] || '',
+    values: [...p.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].map((m) => m[1]),
+  }))
 }
 
-// ⚠️ 界面那份**含空串**（= 不动效）—— 对拍时要去掉，但**空串本身也要存在**。
-ok(uiKeys.includes(''), '② 界面清单里没有"不动效"那一档（空串）—— 用户就没法取消动效了')
+// ⚠️ 界面那份**含空串**（= 不动效 / 默认）—— 对拍时要去掉，但**空串本身也要存在**
+//    （少了它用户就没法取消动效 / 回不到「默认」）。
+ok(uiKeys.includes(''), '② 界面清单里没有"默认"那一档（空串）—— 用户就没法取消动效了')
 const uiNonEmpty = uiKeys.filter((v) => v !== '')
-ok(uiNonEmpty.length > 0, `② 从 ANIM_GROUPS 里一个非空档名都没取到（实得 ${uiNonEmpty.length}）`)
+ok(uiNonEmpty.length > 0, `② 从 ANIM_KINDS 里一个非空档名都没取到（实得 ${uiNonEmpty.length}）`)
 ok(new Set(uiNonEmpty).size === uiNonEmpty.length,
   `② 界面清单里有重复档名：${JSON.stringify(uiNonEmpty.filter((k, i) => uiNonEmpty.indexOf(k) !== i))}`)
 
@@ -141,181 +197,74 @@ ok(new Set(uiNonEmpty).size === uiNonEmpty.length,
 // ---- ④ 档数下限（挡住"判据自己空转"）----
 //
 // ⚠️ 如果两边都被清空了，③ 的"两个 onlyXxx 都是空数组"会**全绿** ——
-//    这正是"判据空转"的经典形态。A+B 组是 **17 档**（A 3 + B 14）。
-ok(transKeys.length >= 17,
-  `④ 转译器的档数少于 A+B 组的 17 档（实得 ${transKeys.length}）—— ` +
-  '要么档被删了，要么正则取漏了')
-ok(uiNonEmpty.length >= 17,
-  `④ 界面的档数少于 A+B 组的 17 档（实得 ${uiNonEmpty.length}）`)
+//    这正是"判据空转"的经典形态。三轴收敛后的权威档数是 **9**：
+//    排版 3（tilt / vtext / arc）+ 过渡 2（pop / fade）+ 动效 4（shake / perchar_big /
+//    perchar_small / heartbeat）。
+// ⚠️ 用 **=== 9**、不是 `>= 9`：收敛后的档数是**契约**，
+//    多出来的档同样是缺口（用户清单之外的档谁也选不到 / 或界面多出一条没人认）。
+const EXPECTED_TIERS = 9
+ok(transKeys.length === EXPECTED_TIERS,
+  `④ 转译器的档数应为 ${EXPECTED_TIERS} 档（实得 ${transKeys.length}）—— ` +
+  '要么档被删/多加了，要么正则取漏了')
+ok(uiNonEmpty.length === EXPECTED_TIERS,
+  `④ 界面的档数应为 ${EXPECTED_TIERS} 档（实得 ${uiNonEmpty.length}）—— ` +
+  '要么档被删/多加了，要么正则取漏了')
 
-// ---- ④b 两级结构：**拆的过程不许丢档**（2026-10-13）----
+// ---- ⑤ **三轴归属一致**（2026-10-14 新增）----
 //
-// ⚠️ 界面从"扁平 40 项"改成"种类 → 细分"两级。拆的过程有两种静默丢档的形态，
-//    它们都**不会**被 ③ 抓到（③ 只看转译器 ↔ 界面的集合差）：
-//      ① 某个 variant 被漏写（那一档用户**选不到**了）；
-//      ② 两个 kind 里写了**同一个** variant（重复）。
-//    ③ 能抓到 ① 吗？能 —— 只要 uiKeys 的合计少了一个，③ 就报 onlyTrans。
-//    但 **② 重复**抓不到，而且"两级并集 == 扁平表"这件事**没有任何判据**
-//    （扁平表已经被删了，没有对照物）。⇒ 这里把**结构不变式**钉死：
-//      * 种类数 ≥ 2（不然两级是假的）；
-//      * 每个种类至少 1 个细分（空种类 = 用户选进去什么都没有）；
-//      * 除"不动效"外，每个种类至少 2 个细分（只有一项的"两级"是假两级）；
-//      * 全局档名不重复（跨种类也算）。
+// ⚠️ ③ 只保证"档名两边都有"，**不保证"它在两边属于同一条轴"**。
+//    这是**两次不同的事故**，而症状不同：
+//      * 界面上归 `style`（排版栏）、转译器按 `effect` 给字段 ⇒ 用户从「排版」栏
+//        选了它，成片里走的是**动效**那条路 ⇒ 观感与栏目标题对不上；
+//        更糟的是它会被写进 `style_anim`，而转译器的**跨轴误用检查**
+//        （`animAxisOf(name) !== want` 那条）会报"填错栏" ——
+//        **用户是按界面选的，却被告知填错了**。
+//      * 反向（界面 effect / 转译器 layout）同理。
+//    ⇒ 逐档对拍 `sort` 与 `axis` 的对应关系（`layout`⟷`style` / `transition`⟷
+//      `transition` / `effect`⟷`effect`，见 `AXIS_MAP`）。
+const uiAxisOf = new Map()      // 档名 → 界面轴的**内部名**（未映射）
+for (const b of kindBlocks) {
+  for (const v of b.values) if (v !== '') uiAxisOf.set(v, b.axis)
+}
 {
-  ok(uiKindCount >= 2,
-    `④b 种类数应当 ≥ 2（实得 ${uiKindCount}）—— 两级结构没生效`)
-  // 逐 kind 数它的 variant（按源码块切）。
-  const kindBlocks = editorSrc.slice(editorSrc.indexOf('const ANIM_KINDS = ['))
-  const cut = kindBlocks.indexOf('\nconst ')
-  const body = cut > 0 ? kindBlocks.slice(0, cut) : kindBlocks
-  // ⚠️ 种类块的 `{` 是 **2 空格**缩进、而里面的 `kind:` 是 **4 空格**
-  //    （数组项一层 + 对象体一层）。两个数不一样，别写成同一个。
-  const parts = body.split(/^ {2}\{\s*$/m).slice(1)
-  ok(parts.length === uiKindCount,
-    `④b 切出来的种类块数（${parts.length}）与读到的 kind 数（${uiKindCount}）对不上 —— 判据自己的切法坏了`)
-  const emptyKinds = []
-  const singleKinds = []
-  for (const p of parts) {
-    const k = (p.match(/kind:\s*'([a-z_]+)'/) || [])[1] || '(取不到)'
-    const n = [...p.matchAll(/\{\s*value:\s*'([a-z0-9_]*)'/g)].length
-    if (n === 0) emptyKinds.push(k)
-    else if (n === 1 && k !== 'none') singleKinds.push(k)
+  const mismatched = []
+  const unreadable = []
+  for (const name of [...new Set([...transKeys, ...uiNonEmpty])].sort()) {
+    const raw = transSort.get(name)
+    // 转译器侧的 `sort` 直接就是内部轴名（`layout`/`transition`/`effect`）；
+    // 界面侧写的是 `style`/`transition`/`effect` ⇒ 要过 `AXIS_MAP` 反过来对。
+    const want = AXIS_MAP[raw]           // 转译器声称的**界面**内部轴名
+    const got = uiAxisOf.get(name)       // 界面实际归的轴
+    if (!want || !got) { unreadable.push([name, raw ?? '(无 sort)', got ?? '(界面无 axis)']); continue }
+    if (want !== got) mismatched.push(`${name}: 转译器 sort='${raw}'(→${want}) vs 界面 axis='${got}'`)
   }
-  ok(emptyKinds.length === 0,
-    `④b 这些种类一个细分都没有（选进去空空如也）：${JSON.stringify(emptyKinds)}`)
-  ok(singleKinds.length === 0,
-    `④b 这些种类只有 1 个细分 —— 那是**假两级**（"种类"与"细分"是同一个选择）：${JSON.stringify(singleKinds)}`)
-}
+  ok(unreadable.length === 0,
+    `⑤ 这些档有一侧的轴归属读不到（轴对拍会空转）：${JSON.stringify(unreadable)}`)
+  ok(mismatched.length === 0,
+    `⑤ 三轴归属不一致（用户从哪一栏选、成片走哪条轴，两边说的不是一件事）：` +
+    JSON.stringify(mismatched))
 
-// ---- ⑤ 档名要"看起来成套"（挡住把一整组写成同一个前缀的笔误）----
-{
-  const families = ['tilt', 'shake', 'sway', 'slam', 'shrink_in', 'pop']
-  const missing = families.filter((f) => !transKeys.some((k) => k.startsWith(f)))
-  ok(missing.length === 0,
-    `⑤ 这些族在转译器清单里一个档都没有：${JSON.stringify(missing)}`)
-  // ⚠️ `fade_only` 不跟任何前缀 —— 单独钉一下它还在（它是"只淡出"，
-  //    也是"空预设压掉全局弹入"那条语义的唯一入口）。
-  ok(transKeys.includes('fade_only') && uiNonEmpty.includes('fade_only'),
-    '⑤ `fade_only`（只淡出）必须在两侧都在 —— 它是"空预设"那条语义的唯一入口')
-}
-
-// ---- ⑥ 接线：两个下拉真的各自接到**自己那个**事件字段上了吗 ----
-//
-// ⚠️ 光有清单不算接通 —— 本仓踩过多次"函数写好、没人调"。
-//
-// ⚠️⚠️ **2026-10-13：两级化（样式 × 动效，可叠加）之后接线形态又变了一次**：
-//    从"一个下拉两级"变成**两条独立的轴，各自种类 + 细分**。
-//    断言跟着改，但**"空串必须落成 `null`"一个字都不许放宽** —— 它守的是 R4
-//    （写空串会让老工程的 toml 多一个键、产物变）。
-//
-// ⚠️ 这里**必须验两条轴各写各的字段**：只验"有写回"的话，
-//    "两轴都写同一个字段"（= 三级互斥那一版的错法）会照样通过 ——
-//    而它的症状正是用户报的那个：「选了样式，动效被清掉」。
-// ① 两条轴的两个控件都必须接线。
-ok(/setKindOnAxis\(/.test(editorSrc),
-  '⑥ 种类控件没有接线（`setKindOnAxis` 没人调）—— 用户选了种类写不进事件')
-ok(/setVariantOnAxis\(/.test(editorSrc),
-  '⑥ 细分控件没有接线（`setVariantOnAxis` 没人调）—— 用户选了细分写不进事件')
-// ⚠️ 两条轴**各自**绑到**自己那一个**字段上（'style'→style_anim / 'effect'→effect_anim）。
-ok(/<select[^>]*:value="styleKind"[^>]*@change="setKindOnAxis\('style', \$event\.target\.value\)"/.test(editorSrc),
-  '⑥ 样式的**种类**下拉没有绑到 `styleKind` / `setKindOnAxis(\'style\', …)`')
-ok(/<select[^>]*:value="effectKind"[^>]*@change="setKindOnAxis\('effect', \$event\.target\.value\)"/.test(editorSrc),
-  '⑥ 动效的**种类**下拉没有绑到 `effectKind` / `setKindOnAxis(\'effect\', …)`')
-ok(/<select[^>]*:value="selItem\.style_anim \|\| ''"[^>]*@change="setVariantOnAxis\('style'/.test(editorSrc),
-  '⑥ 样式的**细分**下拉没有绑到 `selItem.style_anim` / `setVariantOnAxis(\'style\', …)`')
-ok(/<select[^>]*:value="selItem\.effect_anim \|\| ''"[^>]*@change="setVariantOnAxis\('effect'/.test(editorSrc),
-  '⑥ 动效的**细分**下拉没有绑到 `selItem.effect_anim` / `setVariantOnAxis(\'effect\', …)`')
-// ② **四个**写回点（两轴 × 种类/细分）都必须落 `null`。
-{
-  // ⚠️ 写回走的是 `selItem.value[axisField(axis)] = …` —— 按**下标**写，
-  //    所以扒的是"赋值右侧"而不是写死的字段名。
-  const writes = [...editorSrc.matchAll(/selItem\.value\[[^\]]*\] = ([^\n]+)/g)].map((m) => m[1].trim())
-  ok(writes.length >= 2,
-    `⑥ 写回两轴字段的地方太少（应当 ≥2 处：两轴各一），实得 ${writes.length}：${JSON.stringify(writes)}`)
-  const bad = writes.filter((w) => !/\|\|\s*null$/.test(w))
-  ok(bad.length === 0,
-    `⑥ 有写回没有落成 \`null\`（空串会写进 toml，老工程产物变了）：${JSON.stringify(bad)}`)
-  // ⚠️⚠️ **两轴必须写不同的字段** —— 这是"可叠加"与"互斥"的分界。
-  ok(/axis === 'style' \? 'style_anim' : 'effect_anim'/.test(editorSrc),
-    '⑥ 两轴没有分别映射到 `style_anim` / `effect_anim` —— ' +
-    '若两轴写同一个字段，用户选样式会把动效**清掉**（那正是回退掉的那版错法）')
-}
-// ③ 认不出的档名仍要**看得见**（不许被悄悄归成"不动效"），**两轴各一条**。
-for (const [ax, field] of [['样式', 'style_anim'], ['动效', 'effect_anim']]) {
-  ok(new RegExp(`ANIM_KNOWN\\.includes\\(selItem\\.${field}\\)`).test(editorSrc),
-    `⑥ ${ax}那栏：认不出的档名没有被显式显示出来 —— 用户会看到"不动效"而以为自己没选错`)
-  ok(new RegExp(`v-if="${ax === '样式' ? 'styleKind' : 'effectKind'} === ''"`).test(editorSrc),
-    `⑥ ${ax}那栏：认不出的档名没有让**种类**控件落到"未知"那一支`)
-}
-// ④ `both` 的类（`scatter_shake` / `hop_*` / `pop_perchar` …）必须在**两轴都出现**
-//    —— 它们两边都给参数，只放一边会让用户以为另一半不存在。
-ok(/k\.axis === axis \|\| k\.axis === 'both'/.test(editorSrc),
-  '⑥ 轴筛选没把 `both` 的类算进去 —— `scatter_shake`/`hop_*`/`pop_perchar` 会从某一栏消失，' +
-  '而它们确实两边都给参数')
-// 转译器那侧：老字段 + 两个新字段都必须真的被读进来。
-ok(/String\(event\.anim \?\? ''\)/.test(transSrc),
-  '⑥ 转译器没读 `event.anim` —— 存量迁移没了，老工程的效果会整体消失')
-ok(/animPreset\(cues\[0\]\.effectAnim\)/.test(transSrc),
-  '⑥ 转译器没把**动效轴**摊进文字轨（`motionFields` 拿不到它）—— 用户选了抖动、成片里不抖')
-ok(/animPreset\(cues\[0\]\.styleAnim\)/.test(transSrc),
-  '⑥ 转译器没把**样式轴**摊进文字轨 —— 用户选了竖排、成片里横着')
-ok(/ANIM_KNOWN\.join/.test(transSrc),
-  '⑥ 认不出的档名没在报告里列出已知档 —— 用户不知道该改成什么')
-
-// ---- ⑦ 预览那份（第三份实现）----
-//
-// ⚠️ **39 档现在有三份实现**：转译器（权威）/ 界面下拉 / **预览 `engine.js`**。
-//    前两份由 ①–⑥ 对拍；预览那份**以前根本没有** ——
-//    症状是"用户在时间轴上选了摇摆，成片里摆、**预览里纹丝不动**"。
-//    ⇒ 这里对拍它的档名集合（值是否同值由 `check-sway-parity.mjs` 与
-//      转译器守卫各自钉住；本条只管"档名一个不多一个不少"）。
-{
-  // `engine.js` 是纯 ESM、零依赖 ⇒ **可以直接 import**（比扒文本可靠）。
-  const engine = await import(new URL('../webui/src/polish/engine.js', import.meta.url).href)
-  const presets = engine.ANIM_PRESETS
-  ok(presets && typeof presets === 'object',
-    '⑦ 预览侧没有导出 `ANIM_PRESETS` —— 预览就无从知道每条元素选了哪一档')
-
-  if (presets) {
-    const engKeys = Object.keys(presets).sort()
-    const t = new Set(transKeys)
-    const e = new Set(engKeys)
-    const onlyT = [...t].filter((k) => !e.has(k)).sort()
-    const onlyE = [...e].filter((k) => !t.has(k)).sort()
-    ok(onlyT.length === 0,
-      `⑦ 转译器有、**预览不认识**的档（选了它预览里不会动）：${JSON.stringify(onlyT)}`)
-    ok(onlyE.length === 0,
-      `⑦ 预览有、转译器没有的档：${JSON.stringify(onlyE)}`)
-
-    // ⚠️ 空预设那一档必须**在**预览表里 —— 它是"压掉全局弹入"的唯一入口。
-    ok(Object.prototype.hasOwnProperty.call(presets, 'fade_only'),
-      '⑦ 预览表里缺 `fade_only`（它就是"只淡出"那一档）')
-    // ⚠️ 而且它必须是**真·空**（有几个键就不是"只淡出"了）。
-    ok(Object.keys(presets.fade_only ?? {}).length === 0,
-      `⑦ \`fade_only\` 必须是空预设，实得 ${JSON.stringify(presets.fade_only)}`)
-
-    // ⚠️ `animPreset` 的"认不出"必须返回 `undefined`（不是空对象）——
-    //    返回空对象会让"手滑写错档名"变成**静默的只淡出**（看着像生效了）。
-    ok(typeof engine.animPreset === 'function', '⑦ 预览没导出 `animPreset`')
-    if (typeof engine.animPreset === 'function') {
-      ok(engine.animPreset('sway_stdd') === undefined,
-        '⑦ 认不出的档名必须返回 `undefined`（返回 `{}` 会变成静默的「只淡出」）')
-      ok(engine.animPreset('') === undefined && engine.animPreset(null) === undefined,
-        '⑦ 空档名必须返回 `undefined`（= 没写 anim ⇒ 回落全局）')
-      ok(engine.animPreset('SWAY_LG') !== undefined,
-        '⑦ 档名应当大小写不敏感（用户在 toml 里手写时容易大写）')
-    }
-  }
+  // ⚠️ 三条轴**每条都得有档** —— 少一条的症状是"那一栏整个空着"，
+  //    而 ③④⑤ 在"某轴 0 档"时全绿（它只比对存在的档）。
+  const axesSeen = new Set([...transSort.values()].map((v) => AXIS_MAP[v]).filter(Boolean))
+  const missingAxes = Object.values(AXIS_MAP).filter((a) => !axesSeen.has(a))
+  ok(missingAxes.length === 0,
+    `⑤ 这些轴在转译器的档位表里**一个档都没有**（那一栏整个空着）：${JSON.stringify(missingAxes)}`)
 }
 
 // ---- 结果 ----
 if (fails.length === 0) {
   console.log(
-    `✓ 39 档动效清单两侧一致（${checks} 项判据 / 转译器 ${transKeys.length} 档 · ` +
-    `界面 ${uiNonEmpty.length} 档 + 不动效）`,
+    `✓ 三轴 9 档动效清单两侧一致（${checks} 项判据 / 转译器 ${transKeys.length} 档 · ` +
+    `界面 ${uiNonEmpty.length} 档 + 默认）`,
+  )
+  console.log(
+    `  轴归属：排版(style) ${transKeys.filter((k) => transSort.get(k) === 'layout').length} · ` +
+    `过渡(transition) ${transKeys.filter((k) => transSort.get(k) === 'transition').length} · ` +
+    `动效(effect) ${transKeys.filter((k) => transSort.get(k) === 'effect').length}`,
   )
   process.exit(0)
 }
-console.log(`✗ 39 档动效清单对拍失败（${fails.length} / ${checks}）：`)
+console.log(`✗ 三轴 9 档动效清单对拍失败（${fails.length} / ${checks}）：`)
 for (const f of fails.slice(0, 20)) console.log('    ' + f)
 process.exit(1)
