@@ -72,12 +72,20 @@ check(
 //    所以"同档位一条砸入一条摇摆"必须分两条轨，否则同样互相覆盖。
 //    ⇒ 判据跟着改成三维；**但原来的语义一个字都没丢**：
 //      纵向档必须仍在键里（否则三档共用一个 `anchor_bottom`）。
+//
+//    ⚠️⚠️ **2026-10-13 两级化（`df5bf46`）后又变成四维**：
+//    动效那一维**拆成了两条轴**（`styleAnim` / `effectAnim`）——
+//    「竖排 + 抖动」与「纯竖排」是两种不同的轨级参数组合，必须分轨。
+//    ⇒ 判据跟着改。**第一版漏改了这条**，仓里因此红了一次
+//      （守的是"纵向档不能丢"，而纵向档其实还在 —— **判据过期，不是代码坏**）。
+//    ⚠️ **改转译器的分轨键/轨 id 时，这条判据的锚点必须一起改** ——
+//       它匹配的是**源码字面量**，不是行为。
 // ⚠️ 用**三重引号拆开写**：这段源码里既有反引号又有单引号，
 //    直接写成 `'...${cue.anim || ''}...'` 会让 JS 在 `''` 处提前闭合字符串
 //    （实测把整份判据写成语法错误、**跑都跑不起来**）。
 check(
-  '★ 分轨键含「样式 × 纵向档」（否则三档共用一个轨级常量、互相覆盖）',
-  TRANS.includes('`${cue.style.name}|${cue.pos}|${cue.anim || ' + "''" + '}`'),
+  '★ 分轨键含「样式 × 纵向档 × 样式动效 × 动效动效」（两轴都是轨级参数，少一维就互相覆盖）',
+  TRANS.includes('`${cue.style.name}|${cue.pos}|${cue.styleAnim || ' + "''" + '}|${cue.effectAnim || ' + "''" + '}`'),
 );
 check(
   '遍历顺序里含三个档位（top/center/bottom 都要分到轨）',
@@ -86,9 +94,11 @@ check(
 // ⚠️ 2026-10-13（39 档）：id 尾部再加**动效档**（为空则不加 ⇒ 老工程 id 不变、R4）。
 //    不带的话「同一样式、同一档位、两个不同动效」会生成**两条同 id 的轨**，
 //    底座按 id 认层 ⇒ 后一条把前一条整个盖掉，而报告里一行差异都没有。
+//    ⚠️ 两级化后尾部那个档名是 `animTag`（两轴拼出来的，`fade_only`/`pop_std`
+//    那种单轴档与老 `anim` **逐字符相同** ⇒ R4 不变）。
 check(
   '轨 id 带档位后缀 + 动效档后缀（两条不同档的轨不能撞同一个 id）',
-  /const id = `text_\$\{styleName\}_\$\{posName\}\$\{animName \? '_' \+ animName : ''\}`/.test(TRANS),
+  /const id = `text_\$\{styleName\}_\$\{posName\}\$\{animTag \? '_' \+ animTag : ''\}`/.test(TRANS),
 );
 // ⚠️ `bottom` 档**故意不写**：它要减 `caption_clearance`（字幕带高度，只有底座知道），
 //    写死会与字幕重叠。所以这里判的是"它被显式地排除"，而不是"它也有值"。
@@ -203,15 +213,25 @@ if (process.argv.includes('--self-test')) {
   // ⚠️ 2026-10-13（39 档）：键从两维变成三维 ⇒ 变异体的锚点也要跟着改，
   //    否则 `.replace` **不命中**、`oneDim === TRANS`，自证①在"变异必须命中"那句就炸
   //    （实测如此 —— 那说明变异没生效，看着像"抓不住"）。
-  const THREE_DIM_KEY = '`${cue.style.name}|${cue.pos}|${cue.anim || ' + "''" + '}`';
-  const oneDim = TRANS.replace(THREE_DIM_KEY, 'cue.style.name');
+  // ⚠️⚠️ **两级化（`df5bf46`）后键是四维** ⇒ 锚点再改一次。
+  //    这条的教训值得记：**判据匹配的是源码字面量，改一次源码就要来看它一眼**。
+  const FOUR_DIM_KEY = '`${cue.style.name}|${cue.pos}|${cue.styleAnim || ' + "''" +
+    '}|${cue.effectAnim || ' + "''" + '}`';
+  const oneDim = TRANS.replace(FOUR_DIM_KEY, 'cue.style.name');
   assert.notEqual(oneDim, TRANS, '自证：变异必须命中');
-  assert.equal(oneDim.includes(THREE_DIM_KEY), false, '自证①：一维分轨必须红');
-  // ⚠️ 再补一条：**只砍掉第三维**（退到两维）也必须红 —— 那是"同档位两个动效
+  assert.equal(oneDim.includes(FOUR_DIM_KEY), false, '自证①：一维分轨必须红');
+  // ⚠️ 再补一条：**只砍掉后两维**（退到两维）也必须红 —— 那是"同档位两个动效
   //    互相覆盖"的回归，比①更隐蔽（纵向档还在键里，肉眼看着"没改坏"）。
-  const twoDim = TRANS.replace(THREE_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
+  const twoDim = TRANS.replace(FOUR_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
   assert.notEqual(twoDim, TRANS, '自证①b：变异必须命中');
-  assert.equal(twoDim.includes('${cue.anim'), false, '自证①b：退到两维必须红');
+  assert.equal(twoDim.includes('${cue.styleAnim'), false, '自证①b：退到两维必须红');
+  // ⚠️ 再补一条：**只砍掉动效那两维里的一维**（三维）也必须红 ——
+  //    "两轴可叠加"要求两轴**各自**参与分组（只留一条会让
+  //    「竖排 + 抖动」与「纯抖动」撞成一个组合，后写覆盖先写）。
+  const threeDim = TRANS.replace(FOUR_DIM_KEY,
+    '`${cue.style.name}|${cue.pos}|${cue.effectAnim || ' + "''" + '}`');
+  assert.notEqual(threeDim, TRANS, '自证①c：变异必须命中');
+  assert.equal(threeDim.includes('${cue.styleAnim'), false, '自证①c：砍掉样式轴必须红');
   self += 1;
   // ② 算出了锚却不写进轨 ⇒ 必须红
   const notWritten = TRANS.replace(/anchor_bottom:\s*anchorBottomFor\(/, 'anchor_bottom_unused: anchorBottomFor(');

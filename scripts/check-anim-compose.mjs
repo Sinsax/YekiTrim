@@ -25,10 +25,23 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// ⚠️ **权威归属表**（`scripts/anim-attribution.mjs`，由 `gen-anim-attribution.mjs` 生成）。
+//    第 ⑦ 段拿它跟另外三份实现对拍。
+import { ANIM_ATTRIBUTION } from './anim-attribution.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const VUE = path.join(ROOT, 'webui', 'src', 'components', 'TimelineEditor.vue')
 const src = fs.readFileSync(VUE, 'utf8')
+
+// 预览那份（第四份实现）—— 它自己导出这两条，直接 import，**不重写**。
+const PREVIEW = await import(
+  'file://' + path.join(ROOT, 'webui', 'src', 'polish', 'engine.js').replace(/\\/g, '/')
+)
+const ATTRIBUTION = ANIM_ATTRIBUTION
+/// 13 个效果族的**前缀**（`none` 不算族）。
+/// ⚠️ `shrink_in` 必须排在 `shrink` 前面（长前缀优先，否则"逐字变小"会被"收缩"抢走）。
+const FAMILIES = ['shrink_in', 'tilt', 'size', 'shrink', 'grow', 'vtext', 'arc',
+  'scatter', 'shake', 'sway', 'slam', 'pop', 'hop']
 
 const fails = []
 const ok = (cond, msg) => { if (!cond) fails.push(msg) }
@@ -148,6 +161,61 @@ try {
   check(r.style_anim === null,
     `清空时写成了 ${JSON.stringify(r.style_anim)} —— 应当是 \`null\`\n` +
     `     ⚠️ 空串是一个**合法的坏值**，写进 toml 会让老工程多一个键（R4 破）`)
+}
+
+// ---- ⑦ 三份实现 vs **权威归属表**：逐族/逐档对拍 ----
+//
+// ⚠️ 「样式 × 动效」现在有**四份实现**：转译器 / 预览 `engine.js` /
+//    界面 `ANIM_KINDS.axis` / 归属表 `scripts/anim-attribution.mjs`（权威）。
+//    漂了的表现是"预览能叠加、成片不能"（或反过来）而**两边各自看都正常**。
+//
+// ⚠️⚠️ **族内的归属可以不一样**（`slam` 里只有 `slam_squash` 是 `both`、
+//    `pop` 里只有 `pop_perchar` 是 `both`）⇒ 判定族该在哪一栏，要看
+//    **族内有没有任何一档**给那一侧的参数，**不是**看某一档。
+//    （第一版判据写成"族内必须同归属"，于是 `slam`/`pop`/`shrink_in` 报假红 ——
+//      真因是判据的口径错，不是代码错。）
+{
+  const A = ATTRIBUTION
+  const famOf = (n) => FAMILIES.find((p) => n === p || n.startsWith(p + '_'))
+  const byFam = {}
+  for (const [n, e] of Object.entries(A)) {
+    const f = famOf(n)
+    if (!f) continue
+    byFam[f] ??= new Set()
+    byFam[f].add(e.kind)
+  }
+  const expAxis = {}
+  for (const [f, s] of Object.entries(byFam)) {
+    const hasF = s.has('form') || s.has('both')
+    const hasM = s.has('motion') || s.has('both')
+    expAxis[f] = hasF && hasM ? 'both' : hasF ? 'style' : hasM ? 'effect' : 'none'
+  }
+  // ⑦a 界面 `ANIM_KINDS.axis`
+  for (const k of ANIM_KINDS) {
+    if (k.kind === 'none') continue
+    check(k.axis === expAxis[k.kind],
+      `界面族 \`${k.kind}\` 的 \`axis\` 是 \`${k.axis}\`，按归属表应当是 \`${expAxis[k.kind]}\`\n` +
+      `     ⚠️ 该族里有这些归属：${[...(byFam[k.kind] ?? [])].sort().join(',')} —— ` +
+      `族内有 \`form\`/\`both\` ⇒ 要出现在样式栏；有 \`motion\`/\`both\` ⇒ 要出现在动效栏`)
+  }
+  // ⑦b 预览的两条 has*Part
+  //
+  // ⚠️⚠️ **`fade_only` 是唯一一条"归属表说 none、但动效路要 true"的档**，
+  //    而且**这是有意的**：它一个字段都不给（动的是 opacity），但必须**传下去**
+  //    —— `animMotion` 靠"取没取到这一档"决定要不要**压掉全局 `[elements]` 的弹入**。
+  //    拆成空的话 `fade_only` 会静默变成"弹入 + 淡出"，而用户要的是"只淡出"。
+  //    ⇒ 这里把它写成**具名例外**（不是放宽判据）：其它任何档对不上都照红。
+  const MOTION_SEMANTIC_ONLY = new Set(['fade_only'])
+  for (const [n, e] of Object.entries(A)) {
+    const wf = e.kind === 'form' || e.kind === 'both'
+    const wm = e.kind === 'motion' || e.kind === 'both' || MOTION_SEMANTIC_ONLY.has(n)
+    check(PREVIEW.animHasFormPart(n) === wf,
+      `预览 \`animHasFormPart('${n}')\` = ${PREVIEW.animHasFormPart(n)}，按归属表应当是 ${wf}`)
+    check(PREVIEW.animHasMotionPart(n) === wm,
+      `预览 \`animHasMotionPart('${n}')\` = ${PREVIEW.animHasMotionPart(n)}，按归属表应当是 ${wm}\n` +
+      `     ⚠️ 唯一合法的例外是 \`fade_only\`（归属 \`none\` 但要有动效语义 —— ` +
+      `它靠"取到了没"去压掉全局弹入）`)
+  }
 }
 
 if (fails.length) {

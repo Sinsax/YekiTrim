@@ -1558,9 +1558,19 @@ const MUTATIONS = [
     //       有效的形状是**把 `popInOn` 那道门打掉**：把预设那条腿的 `undefined`
     //       也回落到全局缺省 ⇒ 没配 `[elements]` 的条目照样写出三个键（R4 破）。
     name: '（弹出）预设缺省回落 ⇒ 没配 `[elements]` 的条目照样写出弹入三项（R4 破）',
-    from: '    const pick = (key, globalVal) => (on ? preset[key] : globalVal);',
-    to: '    const pick = (key, globalVal) => (preset ? preset[key] : undefined) ?? globalVal;',
+    // ⚠️ 锚点跟着 2026-10-13 的两级化更新：`pick` 现在**两个门分开**
+    //    （`onTime` 管取不取值、`on` 管要不要回落全局）—— 打的是那条**回落判据**。
+    from: '      return on ? undefined : globalVal;',
+    to: '      return globalVal;',
   },
+  // ⚠️⚠️ **"这一档指定了"只看一条轴**（纯形态档 ⇒ 动效轴为空 ⇒ 回落全局 `[elements]`）
+  //    这一类 R4 破**没有变异登记在这里**，两条都住在
+  //    `check-anim-two-axis.mjs --mutate` —— 理由是**本变异台根本不跑 39 档 R4**：
+  //    `loadVariant` 那份检查清单里没有一个覆盖两轴（那个区间 grep `anim`/`two.axis` 零命中）。
+  //    登记在这里的后果不是"抓不住"，而是**整个变异台变成红的**（两条永远"没被打红"）。
+  //    复核者实测点破：把变异体单独喂给 `check-anim-two-axis.mjs` ⇒ 它红并点名
+  //    「tilt_std: 多出 scale_in_from=9.9…另 63 处」⇒ **判据抓得住，是登记错了文件**。
+  //    ⇒ 加变异前先确认**这个变异台里有检查会跑它**（本文件注释里已经警告过两次，这是第三次）。
   {
     // 脏值被当"没配"：`scale_in_ms = 180.5` 会被悄悄补成 350 ——
     // 用户写了配置、程序当他没写。判据的"脏值那一档"守这件事。
@@ -3277,6 +3287,35 @@ function checkTextMotion(mod, dir, src) {
     ok(r !== null, '`anim = "tilt_rev"` 的轨没生成');
     ok(r.layer.transform?.rotation === 5,
       `tilt_rev 的 rotation 必须是 +5，实得 ${JSON.stringify(r.layer.transform?.rotation)}`);
+  }
+
+  // ㉞-bis ⚠️⚠️ **纯形态档 + 全局 `[elements]` ⇒ 一个动效字段都不许漏进来**（R4 破）。
+  //
+  // ⚠️ 这条是**复核者实测抓到的**：上面那些用例一律传 `extra = null`
+  //    （**压根没有 `[elements]` 段**）⇒ "回落全局"与"不回落"**结果一样**
+  //    ⇒ 一整类静默的 R4 破在这份守卫里**结构上看不见**。
+  //    真实触发条件是"工程配了 `[elements]`"（这是"文字要弹出效果"的正常配法）：
+  //      · `motionFields` 的 `pick()` 把全局 `scale_in_*`/`shake_*` **注入**；
+  //      · `swayCfg` 把全局 `sway_deg`/`sway_ms` 注入 ⇒ 轨上**长出 `rotation` 关键帧**。
+  //    ⇒ 两者都必须把"这一条指定了档"算作**任一轴**取到了档。
+  {
+    // `both` 的档要同时出现在两栏；这里用**纯形态**档（`tilt_*`）当被测对象 ——
+    // 它在动效轴上是空的，正是那条漏判据的触发形态。
+    const GLOBALS = ['scale_in_from = 9.9', 'scale_in_peak = 9.8', 'scale_in_ms = 999',
+      'shake_px = 77', 'shake_hz = 66', 'sway_deg = 33.3', 'sway_ms = 4444'];
+    const r = textTrackWithAnim('tilt_std', GLOBALS);
+    ok(r !== null, '`anim = "tilt_std"` + 全局 `[elements]` 的轨没生成');
+    // ① `subtitle` 上不许有全局那几个动效键
+    for (const k of ['scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz']) {
+      ok(r.subtitle?.[k] === undefined,
+        `纯形态档 \`tilt_std\` 的轨上多出了 \`${k}\`=${JSON.stringify(r.subtitle?.[k])} —— ` +
+        `全局 \`[elements]\` 漏进来了（这一档没提这个字段就不该写）`);
+    }
+    // ② 图层上不许有 `rotation` **关键帧**（静态 rotation 是 tilt 自己的，不算）
+    const kf = r.layer?.keyframes ?? [];
+    ok(kf.length === 0,
+      `纯形态档 \`tilt_std\` 的图层上多出 ${kf.length} 个关键帧 —— ` +
+      `全局 \`[elements] sway_deg\` 漏进 \`swayCfg\` 了，成片里这行字会**自己摆**`);
   }
 
   // ㉟ **每一条文字层的 `transform.rotation` 都必须在**（缺了整份工程载入失败）。

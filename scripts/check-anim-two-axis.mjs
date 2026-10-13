@@ -54,6 +54,44 @@ const ok = (cond, msg) => { if (!cond) fails.push(msg) }
 const E = await import(ENGINE)
 const ALL = Object.keys(E.ANIM_PRESETS)
 
+/// **动效轴**会在 `subtitle` 上留下的键 → **预设表里对应的字段名**（判据 ④ 的"反向"那一半用它）。
+///
+/// ⚠️⚠️ **两个命名空间不许混**：产物是 **snake_case**（`shake_px`），
+///    而 `ANIM_PRESETS` 的键是 **camelCase**（`shakePx`）。
+///    第一版把产物名直接拿去查预设表 ⇒ 每一档都"没给这个字段" ⇒ **29 条假红**
+///    （`shake_std` 明明自己就给了 `shakePx`）。这张表就是那次踩坑的产物。
+///
+/// ⚠️ 这些键**只可能**来自动效轴 —— 形态轴那几个（`per_char`/`vertical`/
+/// `safe_width_ratio`/`tilt_deg`/`squash_y`）**不在**这里。
+/// ⇒ 「这一档没提 `shakePx`，轨上却有 `shake_px`」就一定是**全局 `[elements]` 漏进来了**。
+/// ⚠️ `sway_deg` 也不在这里（它走图层关键帧，由 `keysOf` 单独核）。
+const MOTION_FIELD_KEYS = {
+  scale_in_from: 'scaleInFrom',
+  scale_in_peak: 'scaleInPeak',
+  scale_in_ms: 'scaleInMs',
+  shake_px: 'shakePx',
+  shake_hz: 'shakeHz'
+}
+
+/// 夹具里的**全局 `[elements]` 兜底值**（见 `writeProject` 上面那段）。
+/// ⚠️ 值刻意与任何一档预设**都不同**，这样"漏进来的全局值"一眼能认出来。
+///
+/// ⚠️⚠️ **`sway_deg` / `sway_ms` 一个都不能少** —— 它们走的是**另一条路**
+///    （`swayKeyframes`，写**图层关键帧**，不写 `subtitle`）。
+///    第一版这张表只放了 `scale_in_*`/`shake_*`，于是**复核者实测抓到的第二类泄漏
+///    完全躲过了判据**：纯形态档在动效轴为空 ⇒ `swayCfg` 回落全局
+///    ⇒ 15 档长出 `rotation` 关键帧、**成片里字自己摆起来**，判据却全绿。
+///    ⇒ 这与当初"demo 工程一个 `anim` 都没有"是**同一类空转**，
+///      只不过换到了全局段这一侧：**夹具里没有能触发 bug 的那个字段。**
+const GLOBAL_ELEMENTS = `[elements]
+scale_in_from = 9.9
+scale_in_peak = 9.8
+scale_in_ms = 999
+shake_px = 77
+shake_hz = 66
+sway_deg = 33.3
+sway_ms = 4444`
+
 // ---- 与转译器同源的"归属"判据（转译器是零依赖 ESM，没法 import 这里的表）----
 //
 // ⚠️ 这里**故意重新实现一遍**：如果只 import 转译器自己的函数，那"转译器写错了"
@@ -149,6 +187,14 @@ fs.writeFileSync(path.join(tmp, 'clip.mp4'), Buffer.alloc(0))
 //   ② 文字元素要 **`source`**（九段竖线串，`process` 写回的那个）——
 //      没有它转译器会 CLAMP「样式参数没拿到」并**按兜底值画**。
 //   ③ 事件用 **`time` + `end`**，不是 `time` + `duration`。
+//
+// ⚠️⚠️ **还要写一段非空的 `[elements]`**（`GLOBAL_ELEMENTS`）—— 这是**判据 ④
+//    反向那一半的前提**：
+//    `[elements]` 是"整片兜底默认"，逐条预设生效时**必须被压掉**。
+//    夹具里**没有**这段的话，`pick()` 回落到全局与不回落**结果完全一样**
+//    ⇒ 那条判据**看起来在跑、实际空转**。
+//    实测教训：加了 `[elements]` 之前，把 `on` 退回"只看动效轴"（真 bug）
+//    跑出来是 **绿**的；加上之后同一处变异**立刻红 29 条**。
 function writeProject({ legacy, events }) {
   const head = `duration = 60.0
 processed = true
@@ -168,6 +214,8 @@ metadata = ""
 width = 1920
 height = 1080
 fps = 60
+
+${GLOBAL_ELEMENTS}
 `
   // ⚠️ 用 comment 那一档的真 source 串（照抄 `.workbuddy/closeup-sampling` 的实测值）——
   //    自己编一个会让"样式参数没拿到"那条 CLAMP 又冒出来。
@@ -220,19 +268,27 @@ const keysOf = (doc, id) => {
 try {
 
 // ============================================================================
-// ④ R4：老格式（只有 `anim`）逐档 —— 拆出来的两路必须**无损**
+// ④ R4：老格式（只有 `anim`）逐档 —— 拆出来的两路必须**无损**，且**不多余**
 // ============================================================================
 //
 // 判据怎么立（**不依赖历史二进制**）：
 //   把 39 档**逐个**写成老格式，每档一条事件（各自一条轨），
 //   然后断言：该轨的 `subtitle` 里**这一档该给的字段一个不少**。
 //   ⇒ 这正好抓住"① 那 4 条轨 per_char 丢了"那类回归。
+//
+// ⚠️⚠️ **还必须断言"不该有的一样不多"** —— 第一版只做了单向（"少了就红"），
+//    于是漏掉了一整类**静默的 R4 破**（复核者抓到）：
+//    纯形态的 15 档（`tilt_*`/`vtext_*`/`size_*`/`shrink_*`/`grow_*`）在**动效轴上是空的**，
+//    而 `motionFields` 的 `on = !!preset` 因此变 false ⇒ `pick()` **回落全局 `[elements]`**
+//    ⇒ 那 15 条轨被**注入**了全局的 `scale_in_*`/`shake_*`，工程一个字没改、画面变了。
+//    ⇒ 现在两向都断言：**该有的一个不少、不该有的一样不多**。
 {
   const events = ALL.map((n, i) => ({ anim: n, time: 0.1 * i }))
   writeProject({ legacy: true, events })
   const doc = run()
   if (doc) {
     const missing = []
+    const extra = []
     for (let i = 0; i < ALL.length; i++) {
       const n = ALL[i]
       const sub = subOf(doc, `text_comment_bottom_${n}`)
@@ -259,6 +315,31 @@ try {
         const keys = keysOf(doc, `text_comment_bottom_${n}`)
         if (keys.length === 0) missing.push(`${n}: 少了关键帧（sway 走 keyframes）`)
       }
+
+      // ---- ⚠️ **反向**：这一档**没提**的动效字段，一条都不许出现在轨上 ----
+      //
+      // 为什么能这么断言：每档自成一条轨（各写各的 `anim`）⇒ 轨上的每个
+      // 动效字段都只可能来自**这一档**（全局那份在逐条预设生效时**必须被压掉**）。
+      // ⇒ 这一档没给的键**就不该在**。
+      //
+      // ⚠️ 例外只有 `fade_only`：它是空预设（一个字段都不给），
+      //    存在的意义就是**压掉全局** ⇒ 它反而是这条判据最该看的那个（全 0）。
+      for (const [outKey, presetKey] of Object.entries(MOTION_FIELD_KEYS)) {
+        if (outKey in sub && p[presetKey] === undefined) {
+          extra.push(`${n}: 多出 \`${outKey}\`=${JSON.stringify(sub[outKey])}（这一档没给 \`${presetKey}\`）`)
+        }
+      }
+
+      // ---- ⚠️ **摇摆那条路也要反向核**（它是**另一条**路，见 `GLOBAL_ELEMENTS` 的注释）----
+      //
+      // `sway_*` 不写 `subtitle`，而是折成**图层 `rotation` 关键帧**（`swayKeyframes`）。
+      // ⇒ 「这一档没给 `swayDeg`，轨上却有 `rotation` 关键帧」就说明
+      //    `swayCfg` 回落了全局 `[elements] sway_deg` —— 成片里这行字会**自己摆**。
+      const keys = keysOf(doc, `text_comment_bottom_${n}`)
+      if (p.swayDeg === undefined && keys.length > 0) {
+        extra.push(`${n}: 多出 ${keys.length} 个关键帧（这一档没给 \`swayDeg\`）` +
+          ` —— 全局 \`[elements] sway_deg\` 漏进 swayCfg 了，成片里这行字会自己摆`)
+      }
     }
     ok(missing.length === 0,
       `④ 老格式（只有 \`anim\`）逐档迁移**有损** —— 这些档少了字段：` +
@@ -266,6 +347,15 @@ try {
       (missing.length > 12 ? ` …另 ${missing.length - 12} 处` : '') +
       `\n     ⚠️ 最典型的是 \`per_char\`：\`pop_perchar\`/\`hop_*\` 在界面上归"动效"，` +
       `但它们的 \`perChar\` 是**形态字段** —— 按"轴"判就会漏掉它。`)
+    ok(extra.length === 0,
+      `④ 老格式迁移**多出了字段**（R4 破）—— 全局 \`[elements]\` 漏进了逐条预设的轨：` +
+      JSON.stringify(extra.slice(0, 12)) +
+      (extra.length > 12 ? ` …另 ${extra.length - 12} 处` : '') +
+      `\n     ⚠️ 两条路**都可能漏**，要一起看：\n` +
+      `        · \`motionFields\` 的 \`put/pick\`（写出 \`scale_in_*\`/\`shake_*\`）；\n` +
+      `        · \`swayKeyframes\` 的 \`swayCfg\`（写出图层 \`rotation\` 关键帧）。\n` +
+      `        根因都是「'这一档指定了'只看了一条轴」—— 纯形态档在动效轴上是空的，` +
+      `于是回落全局。判据是**任一轴**取到了档。`)
   }
 }
 
@@ -419,10 +509,28 @@ try {
 // ⚠️ 这是本判据的**自证**：一条判据如果对"真正改坏的代码"照样绿，它就是空转的。
 //    下面每一条都对应**本趟真踩过**的一个坑 —— 用它们证明判据有牙。
 //
+// ⚠️⚠️ **前两条（R4 泄漏）原先登记在 `check-yekitrim-translator.mjs --mutate` 里，
+//    但那个变异台根本不跑 39 档 R4**（它的 `loadVariant` 清单里没有一个检查覆盖两轴）
+//    ⇒ 那两条变异**永远"没被打红"**，让守卫整个变成红的。
+//    复核者实测点破了这件事：**判据抓得住，是变异台登记错了文件**。
+//    ⇒ 挪到这里 —— 锚点与夹具都现成（夹具**必须**带 `[elements]`，否则空转）。
+//
 // ⚠️ **只改副本**：把转译器拷到临时目录再改，**绝不**在真身上改、
 //    也**绝不**用 `git checkout` 还原（那会把未提交的工作一起冲掉）。
 if (MUTATE) {
   const MUTS = [
+    {
+      name: '（R4）"指定了档"只看动效轴 ⇒ 纯形态档回落全局（put/pick 那一路）',
+      from: `    const on = !!preset || !!stylePreset;`,
+      to: `    const on = !!preset;`,
+      expect: '④',
+    },
+    {
+      name: '（R4）"指定了档"只看动效轴 ⇒ 纯形态档长出 keyframes（sway 那一路）',
+      from: `              if (!anyAxis) return elementsCfg; // 两轴都没写 ⇒ 回落全局`,
+      to: `              if (p === undefined) return elementsCfg;`,
+      expect: '④',
+    },
     {
       name: '把 pop_perchar/hop 从"形态侧"摘掉（本趟真踩过的 bug）',
       from: `      key === 'slam_squash' ||\n      key === 'pop_perchar' ||\n      /^hop_/.test(key)`,

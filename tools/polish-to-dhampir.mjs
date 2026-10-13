@@ -2908,7 +2908,21 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///    `fade_only` 会静默变成"弹入 + 淡出"，不是"只淡出"）。
   ///    ⇒ 所以 `fade_only` 走的是"空预设也生效"这条路，见下面 `hasAnim` 的判定。
   const motionFields = (cfg, phase, popInOn, preset, stylePreset) => {
-    const on = !!preset;
+    // ⚠️⚠️ **`on` 的含义是「这条 cue 指定了档」，而"指定了"要算**两条轴**。**
+    //
+    //    这里踩过一次**静默的 R4 破**（复核者抓到，本仓自己的判据当时是单向的、没看见）：
+    //    两级化之后 `preset` 只拿**动效轴**那一档 ⇒ 纯形态的档
+    //    （`tilt_*` / `vtext_*` / `size_*` / `shrink_*` / `grow_*`，共 **15 档**）
+    //    在动效轴上**是空的** ⇒ `on` 变 false ⇒ 下面 `pick()` 全部回落**全局 `[elements]`**
+    //    ⇒ 本来"这一档没提的不写"，现在被**注入**了全局的弹入/抖动。
+    //
+    //    实测（39 档夹具 + 全局 `[elements]` 的 `scale_in_*`）：
+    //    **15 条纯形态轨**各多出 `scale_in_from` / `scale_in_peak` / `scale_in_ms`，
+    //    而工程**一个字都没改**。把 `[elements]` 整段删掉 ⇒ 差异归零（坐实了这条因果）。
+    //
+    //    ⇒ 判据是"**任一轴**取到了档"。这也正是两级化的本意：
+    //      「用户选了样式」就说明"这一条我配过了"，不该再去吃全局兜底。
+    const on = !!preset || !!stylePreset;
     // ⚠️⚠️ **`stylePreset` 是 2026-10-13 两级化时加的第五实参**（形态轴那一档）。
     //
     //    为什么**不能**继续只用一个 `preset`：`motionFields` 摊平的是**两轴合起来**
@@ -2923,13 +2937,28 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    ⚠️ 老工程（只有 `anim`）：两路拿到的**是同一个档名**（`both` 的档）
     //       或"一路有、另一路空"，两种情形下取到的字段**合起来恒等于原来那一档**
     //       ⇒ R4 不变。
+    //
+    //    ⚠️ **时间那半边仍然只认动效轴**（`onTime`）—— 纯形态档**不该**把
+    //       `shake_px` 写成预设里的值；它靠上面的 `on` 把"没提的键"压成 0，
+    //       与改动前的行为一致（改动前 `preset` 就是那一档，档里也没有 `shake_px`）。
+    const onTime = !!preset;
+    /// ⚠️⚠️ **两个门分开**：
+    ///   * **取不取这一档的值** → 看**动效轴**（`onTime`）—— 纯形态档没有 `shake_*` 可给。
+    ///   * **要不要回落全局** → 看**任一轴有没有指定**（`on`）。
+    /// ⚠️ 这两件事在两级化之前是**同一件事**（只有一个档），现在**必须分开**：
+    ///    合起来写(`on ? preset[key] : globalVal`)在纯形态档上会把全局**注入**回来
+    ///    —— 那就是上面注释里那条 15 轨的 R4 破。
+    const pick = (key, globalVal) => {
+      const v = onTime ? preset[key] : undefined;
+      if (v !== undefined) return v;
+      return on ? undefined : globalVal;
+    };
     const onStyle = !!stylePreset;
     const pickStyle = (key) => (onStyle ? stylePreset[key] : undefined);
     // ⚠️ 逐条预设生效时，**它没提的字段一律按"关"**（不是回落到全局）——
     //    否则"砸入"会顺带继承全局的抖动，变成两种动效叠在一起，
-    //    而用户以为自己只选了一档。只有**完全没写 `anim`**（`preset === undefined`）
+    //    而用户以为自己只选了一档。只有**两轴都没写**（`on === false`）
     //    才回落到全局 `[elements]`。
-    const pick = (key, globalVal) => (on ? preset[key] : globalVal);
     const out = {};
     const put = (key, v) => {
       if (v !== undefined) out[key] = v;
@@ -4215,21 +4244,36 @@ export function translate(config, clipDir, outPath, options = {}) {
                 );
               }
             }
-            // ⚠️ **跨轴误用要点名**（把动效档填进 `style_anim` 是常见手滑）——
-            //    不报的话它**照样有作用**（两路取的是**字段**，不是档名），
-            //    但用户以为自己设错了，下一条又会踩同样的坑。
+            // ⚠️⚠️ **跨轴误用要点名，而且要**说实话**（把动效档填进 `style_anim` 是常见手滑）。
+            //
+            //    ⚠️ **这句话第一版说反了**（复核者实测抓到）：它写着"**仍然生效**，
+            //    但可能不是你想要的"，理由是"两路取的是**字段**，不是档名"。
+            //    因果恰恰相反 —— **每一边只读自己那条轴的 `animPreset(...)`**：
+            //      · 动效字段（`shake_*`/`sway_*`/`scale_in_*`）只来自 `animPreset(effectAnim)`；
+            //      · 形态字段（`tilt_deg`/`squash_y`/`per_char`）只来自 `animPreset(styleAnim)`。
+            //    ⇒ 填错栏 = **安静地什么都没发生**（实测：`style_anim="shake_std"`
+            //      的产物里**根本没有 `shake_px`**；`effect_anim="tilt_std"` 的
+            //      `rotation` 恒为 0），而那行报告还在跟用户说"仍然生效"。
+            //      这正是本仓最恨的"配了、不报错、没效果" —— 只不过这次是**报告在骗人**。
+            //    ⇒ 文案必须说"**这一档在这条轴上不起作用**"，并且**给出该填哪一栏**。
             for (const [field, name, want] of [
               ['style_anim', styleAnimRaw, 'style'],
               ['effect_anim', effectAnimRaw, 'effect'],
             ]) {
               const k = animAxisOf(name);
               if (k && k !== want) {
+                // ⚠️ `both` 的档（`slam_*`/`pop_*`/`arc_*`/`scatter_*`/`hop_*`）
+                //    在**两条轴上都有参数**，填哪一栏都只拿到一半 ⇒ 提示要更具体。
+                const half = k === 'both';
                 note(
                   where,
                   `文字元素「${textBody}」的 ${field}="${name}" 属于「` +
                     `${k === 'style' ? '样式' : '动效'}」轴，却填在「` +
-                    `${want === 'style' ? '样式' : '动效'}」这一栏 —— **仍然生效**，` +
-                    `但可能不是你想要的。`,
+                    `${want === 'style' ? '样式' : '动效'}」这一栏 —— ` +
+                    `**这一档在这条轴上不起作用**（只写这一栏的话，` +
+                    `${half ? '它另一半的效果也不会出现' : '它一点效果都不会有'}）。` +
+                    `请把它填到 \`${k === 'style' ? 'style_anim' : 'effect_anim'}\`` +
+                    `${half ? '（`both` 的档两边都要填，缺一边只生效一半）' : ''}。`,
                 );
               }
             }
@@ -6554,10 +6598,24 @@ export function translate(config, clipDir, outPath, options = {}) {
             // ⚠️⚠️ **优先逐条 `anim` 预设，其次才是全局 `[elements]`**（P2 定的序）。
             //    这里第一版直接传 `elementsCfg` ⇒ 配了 `anim = "sway_lg"` 的条目
             //    仍按全局那份摆（角度/周期都不是预设写的），**而报告里一行差异都没有**。
+            // ⚠️⚠️ **这里与 `motionFields` 的 `on` 是同一条判据，必须一起改** ——
+            //    复核者抓到的**第二处**同类泄漏：纯形态档（`tilt_*`/`vtext_*`/…15 档）
+            //    在动效轴上是空的 ⇒ 原先这里 `p === undefined` ⇒ **回落全局
+            //    `elementsCfg`** ⇒ 那 15 档被注入全局的 `sway_deg`/`sway_ms`，
+            //    **真的长出 `rotation` 关键帧、成片里字自己摆起来**，而工程一个字没改。
+            //
+            //    ⇒ 判据是"**任一轴**指定了档"（与 `motionFields` 逐字同一条）：
+            //      指定了 ⇒ 只认这一档给的 `sway_*`（没有就是"不摆"）；
+            //      两轴都没指定 ⇒ 才回落全局。
+            //
+            // ⚠️ 这个坑**只在"配了 `[elements]` 且含 `sway_*`"时才露头** ——
+            //    只配 `scale_in_*`/`shake_*` 的夹具**看不见它**（那两项走 `put/pick`，
+            //    与这条路无关）。判据夹具的全局段两样都要有。
             const swayCfg = (() => {
               const p = animPreset(cues[0].effectAnim);
-              if (p === undefined) return elementsCfg; // 没写 anim ⇒ 回落全局
-              return { ...elementsCfg, sway_deg: p.sway_deg, sway_ms: p.sway_ms };
+              const anyAxis = p !== undefined || animPreset(cues[0].styleAnim) !== undefined;
+              if (!anyAxis) return elementsCfg; // 两轴都没写 ⇒ 回落全局
+              return { ...elementsCfg, sway_deg: p?.sway_deg, sway_ms: p?.sway_ms };
             })();
             const keys = swayKeyframes(c, swayCfg, timebase);
             return keys.length ? { keyframes: keys } : {};
