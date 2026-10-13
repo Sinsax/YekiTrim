@@ -3440,6 +3440,69 @@ function checkTextMotion(mod, dir, src) {
     if (!track) return null;
     return { sub: track.subtitle ?? {}, layer: (track.layers ?? [])[0] ?? {} };
   };
+  /// **三轴版**夹具（2026-10-14）：按**轴**各自写字段，不再用老的单个 `anim`。
+  ///
+  /// ⚠️ 为什么另起一个而不是改上面那个：`textTrackWithAnim` 造的是**老工程**
+  ///    （只有 `anim`），那条路（`splitLegacyAnim`）**仍然在转译器里**、
+  ///    另有判据守着它。把两者混成一个会让"老工程没回归"这条**丢掉**。
+  ///
+  /// ⚠️ 轨 id 现在把**三路档名**都带上（`text_<style>_<pos>_<排版>+<动效>+<过渡>`）。
+  ///    这里按同一规则拼出来找轨 —— **别写死**，否则档位一改这里就成了空转
+  ///    （找不到轨 ⇒ 返回 `null` ⇒ 断言早退 ⇒ 假绿）。
+  const textTrack3 = ({ styleAnim, transitionAnim, effectAnim, angle, extra } = {}) => {
+    const lines = [
+      'config_version = 1',
+      'duration = 2.0',
+      'processed = true',
+      '',
+      '[source]',
+      'video = "clip.mp4"',
+      'subtitles = "clip.srt"',
+      'danmaku = ""',
+      'metadata = ""',
+      '',
+      '[canvas]',
+      'width = 1920',
+      'height = 1080',
+      '',
+      '[strip]',
+      'max_duration = 2.0',
+      '',
+      '[[segments]]',
+      'start = 0.0',
+      'end = 2.0',
+      'role = "other"',
+      'index = 1',
+      '',
+      '[[segments.events]]',
+      'type = "element"',
+      'kind = "text"',
+      'time = 0.2',
+      'end = 1.5',
+      'text = "钩子标题"',
+      'style = "hook"',
+      'pos = "top"',
+      'x = "10%"',
+      'y = "20%"',
+      'source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"',
+    ];
+    if (styleAnim) lines.push(`style_anim = "${styleAnim}"`);
+    if (effectAnim) lines.push(`effect_anim = "${effectAnim}"`);
+    if (transitionAnim) lines.push(`transition_anim = "${transitionAnim}"`);
+    // ⚠️ 角度**只在该填时才写** —— 写成 `layout_angle_deg = 0` 会掩盖
+    //    "没填时回落档位缺省"那条（而那条正是 R4 的一半）。
+    if (angle !== undefined && angle !== null) lines.push(`layout_angle_deg = ${angle}`);
+    lines.push('');
+    if (extra) lines.push('[elements]', ...extra, '');
+    const doc = mod.translate(mod.parseToml(lines.join(String.fromCharCode(10))), dir, join(dir, 'm3.doc.json'));
+    // 轨 id 按转译器**同一规则**拼（三路档名 `filter(Boolean).join('+')`）。
+    const tag = [styleAnim, effectAnim, transitionAnim].filter(Boolean).join('+');
+    const want = tag ? `${TEXT_TRACK_ID}_${tag}` : TEXT_TRACK_ID;
+    const track = (doc.timeline?.tracks ?? []).find((t) => t.id === want);
+    if (!track) return null;
+    return { sub: track.subtitle ?? {}, layer: (track.layers ?? [])[0] ?? {}, doc, id: want };
+  };
+
   /// **整段都不写** `[elements]` —— R4 那一档。
   const withoutElements = () => textTrackSubtitle(null);
 

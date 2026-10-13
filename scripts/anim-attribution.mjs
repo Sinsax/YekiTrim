@@ -28,14 +28,14 @@
 //   style 3 · transition 2 · effect 4
 export const ANIM_ATTRIBUTION = {
   'arc': { axis: 'style', form: ['per_char'], motion: [] },
-  'fade': { axis: 'transition', form: [], motion: ['layers[].keyframes:rotation'] },
-  'heartbeat': { axis: 'effect', form: [], motion: [] },
-  'perchar_big': { axis: 'effect', form: [], motion: [] },
-  'perchar_small': { axis: 'effect', form: [], motion: [] },
-  'pop': { axis: 'transition', form: [], motion: ['layers[].keyframes:rotation'] },
-  'shake': { axis: 'effect', form: [], motion: [] },
+  'fade': { axis: 'transition', form: [], motion: [] },
+  'heartbeat': { axis: 'effect', form: [], motion: ['scale_in_from', 'scale_in_peak', 'scale_in_ms'] },
+  'perchar_big': { axis: 'effect', form: ['per_char'], motion: [] },
+  'perchar_small': { axis: 'effect', form: ['per_char'], motion: [] },
+  'pop': { axis: 'transition', form: [], motion: ['scale_in_from', 'scale_in_peak', 'scale_in_ms'] },
+  'shake': { axis: 'effect', form: [], motion: ['shake_px', 'shake_hz'] },
   'tilt': { axis: 'style', form: [], motion: [] },
-  'vtext': { axis: 'style', form: ['vertical'], motion: [] },
+  'vtext': { axis: 'style', form: ['vertical', 'safe_width_ratio'], motion: [] },
 };
 
 /** 这一档属于哪条轴（`''` = 表里没有这一档）。 */
