@@ -34,7 +34,7 @@ export const ANIM_ATTRIBUTION = {
   'perchar_small': { axis: 'effect', form: ['per_char'], motion: [] },
   'pop': { axis: 'transition', form: [], motion: ['scale_in_from', 'scale_in_peak', 'scale_in_ms'] },
   'shake': { axis: 'effect', form: [], motion: ['shake_px', 'shake_hz'] },
-  'tilt': { axis: 'style', form: [], motion: [] },
+  'tilt': { axis: 'style', form: ['layers[].transform'], motion: [] },
   'vtext': { axis: 'style', form: ['vertical', 'safe_width_ratio'], motion: [] },
 };
 

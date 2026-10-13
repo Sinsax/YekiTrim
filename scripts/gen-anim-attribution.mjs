@@ -77,7 +77,7 @@ export const AXES = ['style', 'transition', 'effect']
 ///    ⇒ 两者要通过这张**显式**的映射对拍。**留一张显式表**而不是"直接相等"，
 ///    是为了让上面那条"两张表必须一致"的断言仍然有牙：
 ///    哪个档的 `sort` 被改成另一条轴，这里当场红。
-const SORT_TO_AXIS = { layout: 'style', transition: 'transition', effect: 'effect' }
+export const SORT_TO_AXIS = { layout: 'style', transition: 'transition', effect: 'effect' }
 
 // ============================================================================
 // ① 从**源码**抽取权威（绝不重写一份）
@@ -222,6 +222,8 @@ function runTranslator(dir, file) {
 
 const trackOf = (doc, id) => (doc.timeline?.tracks ?? []).find((x) => x.id === id)
 const subOf = (doc, id) => trackOf(doc, id)?.subtitle ?? trackOf(doc, id)?.sub ?? null
+/// 某个文字轨**第一个图层**的 `transform`（`tilt` / `squash` 那条腿写这里）。
+const firstTransform = (doc, id) => trackOf(doc, id)?.layers?.[0]?.transform ?? null
 /// 图层关键帧（`rotation` 那条腿 —— 它**不写 `subtitle`**）。
 const keysOf = (doc, id) => {
   for (const l of trackOf(doc, id)?.layers ?? []) {
@@ -304,6 +306,13 @@ export async function measure(file = TRANSLATOR) {
           // 产物里**真的出现**的键（含轨级常量 —— 交叉验证时要按"这一档声明的"过滤）。
           emitted: Object.keys(sub),
           keyframes: keysOf(doc, id).length,
+          // ⚠️ **第三条腿**：`tiltDeg` / `squashY` 既不在 `subtitle` 上、也不是关键帧，
+          //    它们写在**图层自己的 `transform`** 上（`rotation` / `scale_y`）。
+          //    实测：`style_anim="tilt"` ⇒ `layers[0].transform.rotation === -6`、
+          //    配 `layout_angle_deg=15` ⇒ `15`；不带档 ⇒ `0`。
+          //    `rotation` 是**无条件写**的（底座没有 serde default，省掉 = 工程载入失败），
+          //    所以"有没有这个键"分不出来 ⇒ 要记**值**。
+          transform: firstTransform(doc, id),
         }
       }
     } finally {
@@ -333,8 +342,17 @@ export async function measure(file = TRANSLATOR) {
 export const FORM_KEYS = new Set([
   'per_char', 'vertical', 'safe_width_ratio',
 ])
+/// 形态路**第三条腿**的标记：写在**图层 `transform`** 上的静态形态量。
+///
+/// ⚠️ `tiltDeg` / `squashY` 既不写 `subtitle`、也不写关键帧 —— 它们落在
+///    `layers[i].transform.rotation` / `.scale_y` 上（`tilt` 那一档就靠这条路）。
+///    不记这一腿的话 `tilt` 会显示成"什么都不给"（实测过：`form: []`），
+///    而它明明是排版轴上**唯一**真给形态量的一档。
+export const TRANSFORM_MARK = 'layers[].transform'
 /// 形态路：预设里叫 `perChar`（驼峰），写进产物是 `per_char`（蛇形）。
 const FORM_PRESET_ALIAS = { perChar: 'per_char' }
+/// 走**图层 `transform`** 那条腿的预设键（值 → `rotation` / `scale_y`）。
+const TRANSFORM_WANTS = new Set(['tiltDeg', 'squashY'])
 /** 动效路：取值走 **`pick(...)`**（`onTime`/`onTransition`）的键。 */
 export const MOTION_KEYS = new Set([
   'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz',
@@ -368,10 +386,30 @@ export async function buildAttribution(file = TRANSLATOR) {
     const motion = wanted.filter((k) => MOTION_KEYS.has(k))
     if (measured[n].keyframes > 0) motion.push(KEYFRAMES_MARK)
 
+    // ---- 第三条腿：`tiltDeg` / `squashY` 写在图层 `transform` 上 ----
+    //
+    // ⚠️ `rotation` 是**无条件写**的（底座没有 serde default ⇒ 省掉 = 工程载入失败），
+    //    所以用**值**判有没有生效，不是"键在不在"：
+    //    `tilt` ⇒ `rotation = -6`（≠ 无档时的 0）；没给 tilt 的档 ⇒ `0`。
+    const tf = measured[n].transform
+    const wantsTransform = wanted.some((k) => TRANSFORM_WANTS.has(k))
+    if (wantsTransform && tf) {
+      const live = (tf.rotation ?? 0) !== 0 || (tf.scale_y ?? 1) !== 1
+      if (!live) {
+        broken.push(
+          `\`${n}\` 声明了 ${JSON.stringify(wanted.filter((k) => TRANSFORM_WANTS.has(k)))}，` +
+          `但图层 \`transform\` 是恒等（rotation=${tf.rotation}, scale_y=${tf.scale_y}）` +
+          ` —— 这一档的形态量**没有生效**`)
+      }
+      if (live) form.push(TRANSFORM_MARK)
+    }
+
     // ---- 交叉验证：声明了的，产物里到底有没有 ----
     const emitted = new Set(measured[n].emitted)
     // ⚠️ 图层关键帧那条腿**不写 `subtitle`** ⇒ 不能拿 `emitted` 去核它，单独用 keyframes 数核。
-    const missForm = form.filter((k) => !emitted.has(k))
+    // ⚠️ `TRANSFORM_MARK`（图层 `transform` 那条腿）**不在 `subtitle` 里** ⇒
+    //    不能用 `emitted` 核它，它由上面"按值判是否恒等"那一段单独核。
+    const missForm = form.filter((k) => k !== TRANSFORM_MARK && !emitted.has(k))
     if (missForm.length) {
       broken.push(
         `\`${n}\` 声明了 ${JSON.stringify(missForm)}，但产物里**没有** —— ` +
