@@ -48,3 +48,28 @@ node docs/anim/gen-preview.mjs ./docs/anim/text-effects-preview.html
 
 改了 `ANIM_PRESETS`（新增档位 / 调参数）之后要重新生成 ——
 `anim-kinds.json` 是从 `engine.js` 导出的快照。
+
+## 预览字号：只有**一个**来源
+
+字号定义在 `:root` 的一条 CSS 变量上：
+
+```css
+:root{ --txt-fs:23px; --stage-h:132px }
+.txt{ font-size:var(--txt-fs) }
+```
+
+脚本**不写第二份字面量**，而是量这条变量：
+
+```js
+const FONT_PX = parseFloat(getComputedStyle(document.documentElement)
+  .getPropertyValue('--txt-fs')) || 23;
+```
+
+⚠️ 为什么较真这一件事：逐字的 `offset_*_em` 是 **em 单位**，要乘字号才是像素。
+所以字号一旦有**两份**，改了一处忘另一处 ⇒ 逐字位移按错的字号换算，
+**字散得过大或过小，而页面上不报任何错** —— 看着只像"这档参数就这样"。
+（这正是本仓反复栽的那类"配了、不报错、效果不对"。）
+
+页面顶部有「预览字号」滑杆：它改的就是**那一条变量**，
+所以样式与逐字换算**同时**跟着变，不可能不同步。
+舞台高度也走 `--stage-h`，随字号放大，**竖排那三张不会被裁**。

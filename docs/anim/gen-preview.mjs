@@ -93,7 +93,10 @@ const html = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <title>元素文字效果类别 · 39 档</title>
 <style>
-:root{--bg:#14161a;--fg:#e8e6e1;--mut:#9aa0a6;--line:#2a2e35;--acc:#f56b41}
+:root{--bg:#14161a;--fg:#e8e6e1;--mut:#9aa0a6;--line:#2a2e35;--acc:#f56b41;
+  /* ⚠️ 预览字号**只在这里定义一次**：样式表用它、脚本也用 getComputedStyle 读它。
+     两处各写一份字面量的话，改一处漏一处 ⇒ 逐字位移静默按错字号换算。 */
+  --txt-fs:23px;--stage-h:132px}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
   font:14px/1.6 "Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
@@ -124,11 +127,14 @@ h2.grp:first-child{margin-top:6px}
 .ax-style{background:#1f4d3a;color:#7ee2b0}
 .ax-effect{background:#4a3a1c;color:#f0c674}
 .ax-both{background:#4a2338;color:#ff9ec4}
-.stage{height:104px;background:
+/* ⚠️ 舞台高度必须容得下**竖排**：竖排时一行是"一列"，6 个字竖着排 ≈ 6×字号。
+   原来固定 104px ⇒ 竖排那三张的上下被「overflow:hidden」裁掉，
+   看着像"竖排没生效"。这里给足，并让字号可调时一起跟着走。 */
+.stage{height:var(--stage-h);background:
   repeating-conic-gradient(#15171b 0 25%,#101216 0 50%) 0 0/16px 16px;
   border-radius:6px;display:flex;align-items:center;justify-content:center;
   overflow:hidden;position:relative}
-.txt{font-size:23px;font-weight:700;color:#fff;white-space:nowrap;
+.txt{font-size:var(--txt-fs);font-weight:700;color:#fff;white-space:nowrap;
   text-shadow:0 0 5px #000,0 0 2px #000;transform-origin:center}
 .ch{display:inline-block;transform-origin:center}
 .meta{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:11.5px;color:var(--mut)}
@@ -149,6 +155,12 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
     <button id="play" class="on">⏸ 暂停</button>
     <button id="slow">慢速 ×0.35</button>
     <button id="loop">循环</button>
+    <label class="sub" style="display:flex;align-items:center;gap:6px">
+      预览字号
+      <input type="range" id="fs" min="12" max="34" step="1" value="23"
+             style="width:104px;vertical-align:middle">
+      <span id="fsv" class="mono">23px</span>
+    </label>
     <span class="sub" id="clock">t = 0.00s</span>
   </div>
 </header>
@@ -169,6 +181,9 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
 const KINDS = ${JSON.stringify(KINDS)};
 const CHARS = ${JSON.stringify(CHARS)};
 const FPS = ${FPS}, DUR = ${DUR_MS}, LOOP = ${LOOP_MS};
+// ⚠️ 字号的**唯一来源**就是这条 CSS 变量（见 :root）。
+const FONT_PX = parseFloat(getComputedStyle(document.documentElement)
+  .getPropertyValue('--txt-fs')) || 23;
 
 // ---- 与 animcore.mjs 逐式相同的内联副本（页面必须能单文件打开）----
 ${fs.readFileSync('./anim-core.mjs', 'utf8')
@@ -211,7 +226,13 @@ function paint(){
     node.style.writingMode = s.vertical ? 'vertical-rl' : '';
     node.style.textOrientation = s.vertical ? 'upright' : '';
     if (s.perChar){
-      const fs = 23; // px，与 CSS 的 font-size 同值
+      // ⚠️⚠️ **字号从 CSS 读，不在这里再写一个字面量**（2026-10-13 用户：
+      //    「固定一下预览的字体大小」）。原先这里是「const fs = 23」，
+      //    与样式表里的「.txt{font-size:23px}」是**两份独立字面量** ——
+      //    改一处忘另一处 ⇒ 逐字位移按错的字号换算，字散得过大/过小，
+      //    而**页面上不报任何错**，看着只像"这档参数就这样"。
+      //    ⇒ 单一来源：「--txt-fs」一条 CSS 变量同时喂样式与求值。
+      const fs = FONT_PX;
       for (let i = 0; i < chars.length; i++){
         const c = s.perChar[i];
         chars[i].style.transform =
@@ -248,6 +269,16 @@ document.getElementById('loop').onclick = function(){
   this.textContent = looping ? '循环' : '播完停';
 };
 document.getElementById('loop').classList.add('on');
+// ⚠️ 字号滑杆改的是**那一条 CSS 变量**，于是样式与逐字换算**同时**跟着变 ——
+//    这就是"固定字号"的正解：不是把 23 抄成两份，而是让它只有一个来源。
+document.getElementById('fs').oninput = function(){
+  document.documentElement.style.setProperty('--txt-fs', this.value + 'px');
+  // 竖排 6 个字要 6 行字高；舞台跟着放，免得调大之后被裁。
+  document.documentElement.style.setProperty('--stage-h',
+    Math.max(132, this.value * 6 + 18) + 'px');
+  document.getElementById('fsv').textContent = this.value + 'px';
+  paint();
+};
 requestAnimationFrame(tick);
 </script></body></html>`;
 
