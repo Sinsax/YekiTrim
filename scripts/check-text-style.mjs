@@ -125,5 +125,62 @@ check(
   '找不到 `TextLayout::solve(...)` 后面紧跟 `box_size()` —— 算出来的盒子没进求解器',
 )
 
+// ⑦ **字号真源只有一处：Rust 的 `ELEMENT_FONT_PX`**（2026-10-13，字号统一 80）。
+//
+// ⚠️ 这条补的是 ②「四档数值表只有一处」**管不到的那一半**：
+// ② 管的是"转译器里不许出现第二份**表**"，但字号在 JS 侧还有**两个兜底标量**
+// （转译器 `ELEMENT_FONT_PX`、预览 `engine.js::parseTextSource` 的 `num(p[1], 80)`）——
+// 它们**不是表**，② 看不见它们。
+//
+// 症状：工程没跑过 `process`（或样式串坏了）时，那两处才会被读到 ⇒
+// **同一个 `polish.toml`，跑过 process 的与没跑的画出不同字号**，
+// 而两边各自都不报错、单测各自都过。本仓"两份同一个事实必然漂移"的经典形状。
+//
+// ⚠️ 判据必须**在 Rust 侧读出那个值**再逐个比对，**不能三处各写一个 80** ——
+// 那样"三处同时漂到 99"照样绿（= 判据空转）。
+const fontConst = /pub const ELEMENT_FONT_PX: f64 = ([\d.]+);/.exec(
+  fs.readFileSync('crates/yekitrim-polish/src/process/placement.rs', 'utf8'),
+)
+check(
+  'Rust 侧有 ELEMENT_FONT_PX 常量（字号唯一真源）',
+  fontConst !== null,
+  'placement.rs 里找不到 `pub const ELEMENT_FONT_PX: f64 = …` —— 字号又变回散落的字面量了',
+)
+if (fontConst) {
+  // ⚠️ **按数值比、不按字符串比**：Rust 侧写作 `80.0`、JS 侧写作 `80` ——
+  //    字符串比较会把一对**完全同值**的常量报成分叉（判据恒红 = 比没有还坏，
+  //    它会训练人"这条红了正常"）。
+  const want = Number(fontConst[1])
+  // 转译器表里的四档 fontPx 必须**全等于**它。
+  const transFonts = [...s.matchAll(/(?:hook|chapter|comment|count):\s*\{\s*fontPx:\s*([\d.]+)/g)].map(
+    (m) => Number(m[1]),
+  )
+  check(
+    `转译器兜底表的四档字号全等于 Rust 的 ${want}`,
+    transFonts.length === 4 && transFonts.every((v) => v === want),
+    `转译器兜底四档字号 = {${transFonts.join(', ')}}，Rust = ${want} —— ` +
+      '没跑过 process 的工程会画出不同字号（且不报错）',
+  )
+  // 转译器那个独立常量（`const ELEMENT_FONT_PX = N`）也要同值。
+  const transConst = /const ELEMENT_FONT_PX = ([\d.]+)/.exec(s)
+  check(
+    `转译器 ELEMENT_FONT_PX 与 Rust 同值（${want}）`,
+    transConst !== null && Number(transConst[1]) === want,
+    transConst === null
+      ? '转译器里找不到 `const ELEMENT_FONT_PX = …`'
+      : `转译器写 ${transConst[1]}，Rust 写 ${want}`,
+  )
+  // 预览 engine 的解析兜底 `num(p[1], N)` 也要同值。
+  const engine = fs.readFileSync('webui/src/polish/engine.js', 'utf8')
+  const engineFallback = /fontPx:\s*num\(\s*p\[1\]\s*,\s*([\d.]+)\s*\)/.exec(engine)
+  check(
+    `预览 engine 的 fontPx 兜底与 Rust 同值（${want}）`,
+    engineFallback !== null && Number(engineFallback[1]) === want,
+    engineFallback === null
+      ? 'engine.js 的 parseTextSource 里找不到 `fontPx: num(p[1], N)`'
+      : `engine 写 ${engineFallback[1]}，Rust 写 ${want} —— 预览与成片字号分叉`,
+  )
+}
+
 console.log(`\n${fails.length ? `${fails.length} 条不通过` : '全部通过'}`)
 process.exit(fails.length ? 1 : 0)

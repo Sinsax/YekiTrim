@@ -2064,7 +2064,10 @@ mod tests {
         );
         // 逐位钉住——**名字**比"个数"更能说明意图。
         assert_eq!(parts[0], "count", "p0 = style 名");
-        assert_eq!(parts[1], "64", "p1 = font_px");
+        // ⚠️ 2026-10-13：四档字号统一为 80（`ELEMENT_FONT_PX`），这里从 64 跟着改。
+        //    判据**照旧把具体值钉死** —— 它验的是"串里的值来自枚举、不是写死的"，
+        //    改成"等于 base_font_px()"会让它变成同义反复（永远绿）。
+        assert_eq!(parts[1], "80", "p1 = font_px");
         assert_eq!(parts[2], "4", "p2 = stroke_px");
         assert_eq!(parts[3], "255,255,255,255", "p3 = 填充色");
         assert_eq!(parts[4], "26,26,26,255", "p4 = 描边色");

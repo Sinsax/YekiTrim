@@ -2684,12 +2684,22 @@ export function translate(config, clipDir, outPath, options = {}) {
   // ⚠️ 为什么不在这里维护第二份真表：两边各存一份数值，分叉的症状是
   //    "算出来的盒子与画出来的字对不上"（文字溢出自家的底衬），
   //    而**两边单测各自都过** —— 这类"两份同一个事实"的坑本仓踩过多次。
+  //
+  // ⚠️⚠️ **字号/描边 2026-10-13 跟着 Rust 一起改**（用户口径「将元素的文字字体大小固定为 80」）：
+  //    这份兜底只在"工程没过 `process`"时被读到，但**不同值会让那类工程的字号悄悄分叉** ——
+  //    症状是"同一个 polish.toml，跑过 process 的比没跑的少 40px"，而两边各自都不报错。
+  //    ⇒ 与 `crates/yekitrim-polish/src/process/placement.rs` 的 `ELEMENT_FONT_PX`
+  //      与 `base_stroke_px()` **逐值一致**，判据 `scripts/check-text-style.mjs` ⑦。
+  //    ⚠️ 四档 fontPx 现在**全等**（80）；区分度由 strokePx/weight/backdrop 承载。
   const TEXT_STYLE_FALLBACK = {
-    hook: { fontPx: 120, strokePx: 8, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 900, backdrop: false },
-    chapter: { fontPx: 84, strokePx: 5, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
-    comment: { fontPx: 44, strokePx: 2, color: [255, 226, 122, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
-    count: { fontPx: 64, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
+    hook: { fontPx: 80, strokePx: 6, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 900, backdrop: false },
+    chapter: { fontPx: 80, strokePx: 5, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
+    comment: { fontPx: 80, strokePx: 2, color: [255, 226, 122, 255], strokeColor: [26, 26, 26, 255], weight: 700, backdrop: true },
+    count: { fontPx: 80, strokePx: 4, color: [255, 255, 255, 255], strokeColor: [26, 26, 26, 255], weight: 800, backdrop: false },
   };
+  /// **文字元素字号（文档像素，1080p 基准）** —— 与 Rust `ELEMENT_FONT_PX` 同值。
+  /// 解析兜底（`parseTextStyle` 认不出时）用它，不写 44。
+  const ELEMENT_FONT_PX = 80;
 
   /// 纵向档位（`top` / `center` / `bottom`）→ **文字块底边的归一化 y**。
   ///
