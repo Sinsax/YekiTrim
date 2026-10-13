@@ -1362,7 +1362,11 @@ function parseTextSource(src) {
   if (!fill) return null
   return {
     name: p[0] || 'comment',
-    fontPx: num(p[1], 44),
+    // ⚠️ 兜底 80 = Rust `placement.rs::ELEMENT_FONT_PX`（2026-10-13 四档字号统一为 80）。
+    //    旧值 44 是"comment 档的字号"，统一之后**那个档不存在了** ——
+    //    留着会让"串坏掉"的那条字比同类小 45%，而预览里**不报错**（最隐蔽的那种分叉）。
+    //    判据：`scripts/check-text-style.mjs` ⑦（三处兜底必须与 Rust 同值）。
+    fontPx: num(p[1], 80),
     strokePx: num(p[2], 0),
     fill,
     stroke: stroke || [26, 26, 26, 255],

@@ -2718,7 +2718,11 @@ function checkTextElementLane(mod, src = translatorSource) {
       'pos = "top"',
       'x = "10%"',
       'y = "20%"',
-      `source = "hook|120|8|255,255,255,255|26,26,26,255|900|0"`,
+      // ⚠️ 2026-10-13：字号统一为 80（`ELEMENT_FONT_PX`）、`hook` 描边 8→6。
+      //    这个串是 `process` 写回的**仿真**（`style|font_px|stroke|fill|stroke|weight|backdrop`），
+      //    所以它必须跟着 Rust 走 —— 否则下面 ③ 那条 `font_ratio` 判据会拿**旧字号**去对，
+      //    而真机上的 `process` 早就写 80 了（判据与真值分叉、且只有本文件知道）。
+      `source = "hook|80|6|255,255,255,255|26,26,26,255|900|0"`,
       '',
     ].join('\n'), 'utf8');
 
@@ -2746,10 +2750,10 @@ function checkTextElementLane(mod, src = translatorSource) {
     ok(Math.abs((1 - 2 * st.bottom_margin) - st.safe_width_ratio) < 1e-6,
       `bottom_margin(${st.bottom_margin}) 推出的安全宽 ${1 - 2 * st.bottom_margin} ` +
       `与 safe_width_ratio(${st.safe_width_ratio}) 不一致 —— 两个消费点会算出不同的折行`);
-    // ③ 字号按四档走（hook 基准 120px @1080 ⇒ ratio 120/1080）。
-    ok(Math.abs(st.font_ratio - 120 / 1080) < 1e-6,
-      `hook 的字号比例应为 120/1080，实得 ${st.font_ratio}（那是四档预设的语义，不许缩）`);
-    // ④ 文字**不缩字号**（缩了 hook 会变成 comment，四档就没意义了）。
+    // ③ 字号按四档走（2026-10-13 起四档统一 80px @1080 ⇒ ratio 80/1080）。
+    ok(Math.abs(st.font_ratio - 80 / 1080) < 1e-6,
+      `文字元素的字号比例应为 80/1080，实得 ${st.font_ratio}（那是四档预设的语义，不许缩）`);
+    // ④ 文字**不缩字号**（缩了会让用户选的那一档的观感被吃掉）。
     ok(st.shrink_min_scale === 1,
       'shrink_min_scale 必须为 1：文字的字号是四档预设定死的，像字幕那样缩会让 hook 缩成 comment');
     // ⑤ 颜色来自 source 那段 CSV（不是硬编码白）。

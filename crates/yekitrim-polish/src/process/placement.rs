@@ -44,6 +44,19 @@ pub const STICKER_MARGIN: f64 = 32.0;
 /// 贴纸 floatUp 动画的基准上浮量（渲染端 `yOff = -18 × sticker_scale`），测试障碍时算进去。
 pub const FLOAT_UP: f64 = 18.0;
 
+/// **文字元素的字号基准**（文档像素，1080p 基准）—— 四档**统一**用这一个值。
+///
+/// 用户口径（2026-10-13）：「将元素的文字字体大小固定为 80」。
+///
+/// ⚠️ **唯一真源在 Rust**：转译器 `TEXT_STYLE_FALLBACK` 与预览
+/// `engine.js::parseTextSource` 的兜底值都必须与它同值 ——
+/// 那两处只在"工程没跑过 `process`"时才被读到，**不同值会让那类工程的字号悄悄分叉**。
+/// 判据：`scripts/check-text-style.mjs` ⑦。
+///
+/// ⚠️ 它是**文档像素**，消费点一律除以 [`FRAME_H`] 再乘实际帧高
+/// （`TextLayout::solve`）⇒ 竖画布自动按比例放大，不是一个写死的像素数。
+pub const ELEMENT_FONT_PX: f64 = 80.0;
+
 /// 输出画布（`[canvas] orientation` 唯一推导，横 1920×1080 / 竖 1080×1920）。
 ///
 /// 本模块所有几何都以 `Frame` 为坐标系：**贴纸**像素量（盒、边距、上浮）按
@@ -533,21 +546,44 @@ impl TextStyle {
 
     /// 字号的基准值（**文档像素，1080p 基准**）—— 比例由它推出来。
     ///
-    /// 参照点是字幕的 72（`templates/index.html` 的 `.cap`）：
-    /// `hook` 是它的 1.67 倍、`comment` 是 0.61 倍。
+    /// # 2026-10-13：**四档统一 80**（用户口径「将元素的文字字体大小固定为 80」）
+    ///
+    /// 在此之前四档各写死一个值（`120 / 84 / 44 / 64`），依据是"档位的定义就是字号差"。
+    /// 用户改为**固定 80** 之后，档位的区分**整体平移到其余三个维度**
+    /// （字号不再承担区分的职责）：
+    ///
+    /// | 档 | 描边 | 底衬 | 字重 |
+    /// |---|---|---|---|
+    /// | `hook` | 6（最粗） | 无 | 900 |
+    /// | `chapter` | 5 | **有** | 700 |
+    /// | `comment` | 2（最细） | **有** | 700 |
+    /// | `count` | 4 | 无 | 800 |
+    ///
+    /// ⚠️ **"四档互相可区分"这条不变式没有消失，只是换了承载它的字段** ——
+    /// 由 `四档字号统一而其余维度可区分` 钉着（老判据 `四档字号从大到小且互不相等`
+    /// 断言的正是这件事，这里把它的观察点从字号平移到三元组上）。
+    ///
+    /// ⚠️ **参照点仍是字幕的 72**（`templates/index.html` 的 `.cap`）——
+    /// 80 是它的 1.11 倍，所以文字元素比字幕略大、又不像老 `hook` 那样能压满画面。
+    ///
+    /// ⚠️ **保留这个函数**（而不是让调用方直接读常量）：它是"档位 → 字号"的**唯一接口点**，
+    /// 将来若要恢复逐档，只改这一处即可。`TextLayout::solve` 里
+    /// `style.base_font_px() / FRAME_H * f.h` 一行不动 —— 比例语义天然保持。
     pub const fn base_font_px(self) -> f64 {
-        match self {
-            Self::Hook => 120.0,
-            Self::Chapter => 84.0,
-            Self::Comment => 44.0,
-            Self::Count => 64.0,
-        }
+        ELEMENT_FONT_PX
     }
 
     /// 描边宽度的基准值（**文档像素，外侧宽度**）。
+    ///
+    /// ⚠️ **2026-10-13 随字号一起重算**：规格 `elements-spec.md` §4.2 要求
+    /// 「**描边粗度 = 字号的 5–8%**」。老值 `8` 是当年按 `hook = 120` 配的
+    /// （`8/120 = 6.7%`，合规）；字号降到 80 之后 `8/80 = 10%` **超出规格上限**，
+    /// 大粗边会把字腔吃掉 ⇒ `hook` 从 8 降到 **6**（`6/80 = 7.5%`，且仍是四档最粗）。
+    /// 其余三档本来就在区间内（`5/80 = 6.3%`、`4/80 = 5%`、`2/80 = 2.5%` ——
+    /// `comment` 是"吐槽"档，刻意细，维持原值不放大）。
     pub const fn base_stroke_px(self) -> f64 {
         match self {
-            Self::Hook => 8.0,
+            Self::Hook => 6.0,
             Self::Chapter => 5.0,
             Self::Comment => 2.0,
             Self::Count => 4.0,
@@ -1236,32 +1272,86 @@ mod tests {
 
     // ── §5 E3：文字排版 ────────────────────────────────────────────
 
-    /// 四档的**相对关系**必须成立 —— 这是"档位"这个词的全部意义。
+    /// 四档**字号统一**，而"档位"这个词的意义由**其余三个维度**承载。
     ///
-    /// ⚠️ 判据刻意写**不等式**而不是四个具体数值：具体值会随观感调，
-    /// 而"hook 比 chapter 大、chapter 比 comment 大"是**档位的定义**。
-    /// 写成等式的话，调一次字号就要改一次测试 —— 那会让测试变成"改动的障碍"
-    /// 而不是"错误的探测器"。
+    /// # 这条判据是从 `四档字号从大到小且互不相等` 平移来的（2026-10-13）
+    ///
+    /// 老判据断言的**真意图**是"四档在画面上必须分得开" —— 当时承载它的是字号。
+    /// 用户把字号固定成 80 之后，字号不再承担区分职责 ⇒ 判据的**观察点必须跟着平移**
+    /// 到 `(描边, 底衬, 字重)` 这个三元组上。
+    ///
+    /// ⚠️ **不是"删掉挡路的判据"**：如果只把老断言删掉、不留替代，那么
+    /// "四档全部变成一模一样的常量"这种改动会**全绿通过** —— 而那正是
+    /// 「档位失去意义」这个症状的最坏形态（`style` 字段还在、但选哪档画出来都一样）。
+    ///
+    /// ⚠️ 判据仍然写**不等式/两两不等**而不是具体数值：值会随观感调，
+    /// 而"四档两两可区分"是档位的定义。
     #[test]
-    fn 四档字号从大到小且互不相等() {
-        let sizes = [
-            TextStyle::Hook.base_font_px(),
-            TextStyle::Chapter.base_font_px(),
-            TextStyle::Count.base_font_px(),
-            TextStyle::Comment.base_font_px(),
-        ];
-        for w in sizes.windows(2) {
-            assert!(
-                w[0] > w[1],
-                "四档字号必须严格递减，实得 {sizes:?} —— 相等或倒序会让'档位'失去意义"
+    fn 四档字号统一而其余维度可区分() {
+        // ① 字号：四档必须**全等于** `ELEMENT_FONT_PX`（用户口径：固定 80）。
+        let all = [TextStyle::Hook, TextStyle::Chapter, TextStyle::Comment, TextStyle::Count];
+        for ts in all {
+            assert_eq!(
+                ts.base_font_px(),
+                ELEMENT_FONT_PX,
+                "{ts:?} 的字号不是 {ELEMENT_FONT_PX} —— 用户要求四档统一固定为 80"
             );
         }
-        // hook 要是 comment 的**两倍以上**：否则"标题"与"吐槽"看起来是同一档。
+        // ② 区分度：把承载"档位"的三个维度打成一个可比较的键，要求**两两不等**。
+        let keys: Vec<(u64, bool, u32)> = all
+            .iter()
+            .map(|ts| {
+                (
+                    ts.base_stroke_px().to_bits(),
+                    ts.has_backdrop(),
+                    ts.font_weight(),
+                )
+            })
+            .collect();
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert_ne!(
+                    keys[i], keys[j],
+                    "「{:?}」与「{:?}」在 (描边, 底衬, 字重) 上完全相同 —— \
+                     字号已统一，这两档选哪一个画出来都一样，'档位'失去了意义",
+                    all[i], all[j]
+                );
+            }
+        }
+        // ③ 描边必须落在规格区间（`elements-spec.md` §4.2：字号的 5–8%）。
+        //    ⚠️ 只对**非 comment** 那三档要求 —— `comment` 是"吐槽"档，
+        //       刻意用细边（2/80 = 2.5%），写成硬区间会把它误伤。
+        for ts in [TextStyle::Hook, TextStyle::Chapter, TextStyle::Count] {
+            let pct = ts.base_stroke_px() / ts.base_font_px();
+            assert!(
+                (0.05..=0.08).contains(&pct),
+                "{ts:?} 的描边占字号 {:.1}%（{} px / {} px）—— 超出规格区间 5–8%",
+                pct * 100.0,
+                ts.base_stroke_px(),
+                ts.base_font_px()
+            );
+        }
+        // ④ 最粗的那档必须是 hook 且**严格**大于其余档 —— 老判据里
+        //    "hook 是最大的"这条语义在这边对应"hook 的描边最粗"。
+        let max_stroke = all
+            .iter()
+            .map(|t| t.base_stroke_px())
+            .fold(f64::MIN, f64::max);
+        assert_eq!(
+            TextStyle::Hook.base_stroke_px(),
+            max_stroke,
+            "最粗的描边不在 hook 上 —— '钩子标题'这一档失去了它的视觉权重"
+        );
+        let second = all
+            .iter()
+            .filter(|t| **t != TextStyle::Hook)
+            .map(|t| t.base_stroke_px())
+            .fold(f64::MIN, f64::max);
         assert!(
-            sizes[0] >= sizes[3] * 2.0,
-            "hook（{}）不到 comment（{}）的两倍 —— 两档画面上分不开",
-            sizes[0],
-            sizes[3]
+            TextStyle::Hook.base_stroke_px() > second,
+            "hook 的描边（{}）与次粗那档（{}）相等 —— 分不开",
+            TextStyle::Hook.base_stroke_px(),
+            second
         );
     }
 
@@ -1329,21 +1419,40 @@ mod tests {
     ///
     /// ⚠️ 底座字幕那条的语义是"缩到恰好装得下"（`shrink_min_scale`），
     /// 文字这条沿用 —— 直接截断会让用户写的字**凭空少一截**。
+    ///
+    /// ⚠️⚠️ **字数不能写死**（2026-10-13 修）：这里原来写 `"字".repeat(60)`，
+    /// 注释理由是"120px 下约 5 行"。字号改成 80 之后同样 60 个字只有 **3 行**
+    /// （每行 21 个），**根本不超上限** ⇒ 那条 `l.font_size < base_font_px()`
+    /// 会红。而如果当时是"改成 64 个字凑够 4 行"，那**下一次**调字号它还会红 ——
+    /// 判据就变成了"改动的障碍"。
+    /// ⇒ 现在**按字号与安全宽现算**需要多少字才能超上限，字号再调也不会腐烂。
     #[test]
     fn 超行数先缩字号到最后才截断() {
-        // 单行能放 14 个 hook 字（120px、安全宽 1680）；给 60 个字 ⇒ 约 5 行。
-        let text = "字".repeat(60);
+        use crate::project::CAPTION_MAX_LINES;
+        // 每行放得下几个字（与 `wrap_text` 同一条式子：`max_w / (font_size × CHAR_W_RATIO)`）。
+        let max_w = F.w * crate::project::CAPTION_SAFE_WIDTH_RATIO;
+        let font_size = TextStyle::Hook.base_font_px();
+        let per_line = ((max_w / (font_size * CHAR_W_RATIO)).floor() as usize).max(1);
+        // 取「刚好多一行」的字数（上限 +1 行）—— 保证一定超、且超得最少。
+        let over = per_line * (CAPTION_MAX_LINES as usize + 1);
+        assert!(
+            over > per_line * CAPTION_MAX_LINES as usize,
+            "算出来的超限字数（{over}）没超过 {CAPTION_MAX_LINES} 行 —— 判据的前提不成立"
+        );
+        let text = "字".repeat(over);
         let l = TextLayout::solve(&text, TextStyle::Hook, TextAnchor::Top, F);
         assert!(
             l.font_size < TextStyle::Hook.base_font_px(),
-            "5 行超了上限却没缩字号（仍是 {}）—— 会直接丢字",
+            "{} 个字在 {font_size}px 下排了 {} 行，超了上限却没缩字号（仍是 {}）—— 会直接丢字",
+            over,
+            over / per_line,
             l.font_size
         );
         assert!(
-            l.lines.len() <= crate::project::CAPTION_MAX_LINES as usize,
+            l.lines.len() <= CAPTION_MAX_LINES as usize,
             "缩完之后仍有 {} 行（上限 {}）",
             l.lines.len(),
-            crate::project::CAPTION_MAX_LINES
+            CAPTION_MAX_LINES
         );
         // 缩到下限仍超 ⇒ 截断到上限。
         let huge = "字".repeat(400);
