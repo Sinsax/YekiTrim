@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文字元素 · 39 档清单（只列，不设计）</title>
+<!--
+  ============================================================================
+  文字元素 · **39 档清单**（2026-10-13）
+  ============================================================================
+
+  # 这一页**不是设计稿**，是清单
+
+  按你的要求：「先只列清单，不急做设计」。
+  ⇒ 本页只做一件事：把 `docs/plan/text-styles-comic-draft.html` 里那 39 档
+     **逐条抽出来摊平**（族 / 名称 / 参数 / 能演的情绪 / 底座能不能做），
+     方便你先看一遍再决定分类怎么做。
+
+  # ⚠️ 一个必须先说清的更正
+
+  我上一版方案拿 `hook/chapter/comment/count` 那 4 档当分类骨架 —— **那是错的**。
+  那 4 档**已经被这份 39 档设计稿取代**：39 档稿重新定义了「样式」这个词，
+  它的「字体样式」是**倾斜/弧形/大小字/抖散/竖排/变小/放大**（7 族），
+  全篇**一次都没提**那 4 档（grep 验证：0 次命中）。
+
+  # 数据从哪来
+
+  * 39 档的**名称/参数/情绪**：逐张从 `text-styles-comic-draft.html` 的卡片里解析出来的
+    （不是手抄 —— 手抄必然漂移）；
+  * **底座能力**：抄自 `text-styles-emotion-base-mapping.md` §2.1/§2.2
+    （那份是逐字段对过 `SubtitleStyle` 的结论）。
+-->
+<style>
+  :root{
+    --bg:#14110F; --card:#1D1917; --line:#332C27; --ink:#F2E9E1; --dim:#918177;
+    --accent:#F0A93C; --sub:#B3A49A; --ok:#8FD0A0; --warn:#E8B06A; --bad:#E08B8B;
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:26px 30px 90px;background:var(--bg);color:var(--ink);
+       font:13.5px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  h1{font-size:20px;margin:0 0 5px}
+  h2{font-size:16px;margin:32px 0 4px;padding-bottom:8px;
+     border-bottom:2px solid var(--accent);color:var(--accent)}
+  h2 span{display:block;font-size:11.5px;font-weight:400;color:var(--dim);margin-top:4px}
+  .lede{color:var(--sub);font-size:12.5px;margin:0 0 14px;max-width:1000px}
+  code{font-family:var(--mono);font-size:11.5px;background:#28211B;
+       padding:1px 5px;border-radius:3px;color:#E8D6C4}
+  .note{background:#282015;border-left:3px solid var(--accent);padding:11px 15px;
+        border-radius:0 6px 6px 0;margin:0 0 20px;font-size:12.5px;
+        line-height:1.75;color:#E6D6C4;max-width:1050px}
+  .note.bad{border-left-color:var(--bad);background:#2A1616;color:#F0CFCF}
+  .note b{color:#fff}
+
+  table.sum{border-collapse:collapse;width:100%;font-size:11.5px;margin:8px 0 4px}
+  table.sum th,table.sum td{border:1px solid var(--line);padding:6px 9px;
+    vertical-align:top;text-align:left;line-height:1.5}
+  table.sum th{background:#241F1B;color:#E0D2C4;font-weight:600;white-space:nowrap}
+  table.sum td:nth-child(1){color:var(--warn);font-weight:600;white-space:nowrap}
+  table.sum td:nth-child(2){font-weight:600;white-space:nowrap}
+  table.sum td:nth-child(3){font-family:var(--mono);font-size:11px;color:#C8BAAE}
+  table.sum td:nth-child(4){color:var(--ink)}
+  table.sum td:nth-child(5){color:var(--dim);white-space:nowrap}
+  tr.grp td{background:#221C16;color:var(--accent);font-weight:700;font-size:12px}
+  .yes{color:var(--ok);font-weight:600}
+  .no{color:var(--bad);font-weight:600}
+  .half{color:var(--warn);font-weight:600}
+
+  .stat{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+        margin:10px 0 20px}
+  .statc{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .statc .n{font-size:24px;font-weight:700;color:var(--accent);line-height:1.2}
+  .statc .l{font-size:11.5px;color:var(--dim);margin-top:3px}
+</style>
+</head>
+<body>
+
+<h1>文字元素 · 39 档清单 <span style="font-size:11px;color:var(--dim)">只列，不设计</span></h1>
+<p class="lede">
+  把 <code>text-styles-comic-draft.html</code> 里那 39 档逐条摊平：
+  <b>族 / 名称 / 参数 / 能演的情绪 / 底座能不能做</b>。先看一遍，再决定分类怎么做。
+</p>
+
+<div class="note bad">
+  <b>⚠️ 更正：我上一版拿 4 档当骨架是错的</b><br>
+  <code>hook / chapter / comment / count</code> 那 4 档<b>已经被这份 39 档稿取代</b>。
+  39 档稿重新定义了「样式」这个词 —— 它的「字体样式」是
+  <b>倾斜 / 弧形 / 大小字 / 抖散 / 竖排 / 变小 / 放大</b>（7 族），
+  而全篇<b>一次都没提</b>那 4 档（grep 0 次命中）。<br>
+  ⇒ <b>分类的骨架应该是下面这两个轴，不是那 4 个抽屉。</b>
+</div>
+
+<h2>⓪ 规模 <span>两个轴、13 族、39 档</span></h2>
+<div class="stat" id="stats"></div>
+
+<h2>① 字体样式 · 7 族 21 档 <span>静态的「怎么排」——字不变、颜色不变，情绪全变</span></h2>
+<table class="sum" id="tblForm"></table>
+
+<h2>② 动效 · 6 族 18 档 <span>「怎么动」——同一句话，动法不同情绪也不同</span></h2>
+<table class="sum" id="tblAnim"></table>
+
+<h2>③ 底座能不能做 <span>逐族对照（抄自 text-styles-emotion-base-mapping.md）</span></h2>
+<div class="note">
+  <b>一句话结论</b>：<b>字体样式 21 档全部做不到</b>（都依赖逐字变换 / 整块倾斜 / 竖排 / 字距，
+  底座一个字段都没有）；<b>动效 18 档里 16 档能做</b>（底座的
+  <code>shake_px</code> / <code>scale_in_*</code> / <code>fade_*</code> 已覆盖"整块动"的全部需求）。<br>
+  ⇒ 原文给的建议是<b>「动效先上、样式后补」</b>。
+</div>
+<table class="sum" id="tblCap"></table>
+
+<h2>④ 已有的情绪配方 <span>现成的，别重造</span></h2>
+<table class="sum" id="tblRecipe"></table>
+
+<h2>⑤ 刻意做成「反义词」的 7 对 <span>这套体系里最值钱的部分</span></h2>
+<p class="lede">
+  <b>同一手法反向用就是另一个情绪</b> —— 分类时要注意别把一对反义词塞进同一类。
+</p>
+<table class="sum" id="tblPairs"></table>
+
+<script>
+// ===========================================================================
+// 39 档数据：**逐张从 comic-draft 的卡片里解析出来的**（不是手抄）。
+// 列顺序：[轴, 族, 档名, 参数, 能演的情绪, 底座实现方式]
+// ===========================================================================
+const ROWS = [
+    ['字体样式','1 · 倾斜','标准','旋转-6°范围整块','生气、不服、用力喊','整块变换'],
+    ['字体样式','1 · 倾斜','小角度','旋转-3°范围整块','轻度不满','整块变换'],
+    ['字体样式','1 · 倾斜','反方向','旋转+5°范围整块','撒娇、求饶（正角度更软）','整块变换'],
+    ['字体样式','2 · 弧形','上拱','逐字±16° 递减位移两端下沉','大笑、欢呼','逐字旋转'],
+    ['字体样式','2 · 弧形','波浪','逐字正负交替','唱、念白、情绪起伏','逐字旋转'],
+    ['字体样式','2 · 弧形','下垂','逐字正向递增位移逐字下沉','叹气、泄气','逐字旋转'],
+    ['字体样式','3 · 大小字','末字重音','字号88 → 210位置末字','爆发在最后','逐字字号'],
+    ['字体样式','3 · 大小字','首字重音','字号88 → 194位置首字','一开口就爆发','逐字字号'],
+    ['字体样式','3 · 大小字','中字重音','字号82 → 156位置中间','强调关键词','逐字字号'],
+    ['字体样式','4 · 逐字抖散','轻','位移±.05em旋转±3°','心里发毛','逐字位移'],
+    ['字体样式','4 · 逐字抖散','重','位移±.14em旋转±8°','彻底慌了','逐字位移'],
+    ['字体样式','4 · 逐字抖散','抖散 + 动画','静态抖散动态抖动','最强的害怕','逐字位移 + 抖动'],
+    ['字体样式','5 · 竖排','细楷','竖排是字体楷体','恐怖、诡异台词','整块变换'],
+    ['字体样式','5 · 竖排','粗体','竖排是字重900','警告、标语','整块变换'],
+    ['字体样式','5 · 竖排','竖排 + 逐字变小','竖排是逐字86→62→45','声音越来越小','整块 + 逐字'],
+    ['字体样式','6 · 逐字变小','递减','字号88 → 63 → 44透明末字 .75','放弃、认命','逐字字号'],
+    ['字体样式','6 · 逐字变小','骤降','字号124 → 60落差一半以下','欲言又止、泄气','逐字字号'],
+    ['字体样式','6 · 逐字变小','尾音','字号74→74→58→46','迟疑、不确定','逐字字号'],
+    ['字体样式','7 · 逐字放大','递增','字号70 → 92 → 122','由衷赞叹、越来越激动','逐字字号'],
+    ['字体样式','7 · 逐字放大','爆开','字号64 → 98 → 154落差2.4 倍','抗拒、失控','逐字字号'],
+    ['字体样式','7 · 逐字放大','首字引爆','字号132 → 70','拟声、突然的巨响','逐字字号'],
+    ['动效','1 · 抖动','标准','位移±.055em周期110ms','害怕、紧张','整块近似'],
+    ['动效','1 · 抖动','慢频','周期260ms（慢）','虚弱、无力','整块近似'],
+    ['动效','1 · 抖动','强','周期70ms（快）','极度恐慌','整块近似'],
+    ['动效','2 · 摇摆','标准','角度±3.5°周期420ms','笑、得意','整块近似'],
+    ['动效','2 · 摇摆','大角度','角度±9°周期500ms','大笑到前仰后合','整块近似'],
+    ['动效','2 · 摇摆','慢摆','角度±5°周期1500ms','醉、眩晕','整块近似'],
+    ['动效','3 · 砸入','标准','起点2.4 倍时长500ms','意外、巨响、反转','整块近似'],
+    ['动效','3 · 砸入','重','起点3.4 倍时长420ms','震惊','整块近似'],
+    ['动效','3 · 砸入','带压扁','落地压扁 Y×.82回弹有','生气、重击','整块近似'],
+    ['动效','4 · 收缩','标准','缩放→ .84透明→ .22','无奈、放弃','整块近似'],
+    ['动效','4 · 收缩','只淡出','只改透明度时长1600ms','安静的消失','今天可出片'],
+    ['动效','4 · 收缩','快速抽走','时长500ms（快）','被打断、急着走','整块近似'],
+    ['动效','5 · 弹出','标准','起点.4 倍时长460ms','可爱、被萌到','整块近似'],
+    ['动效','5 · 弹出','逐字','起点.4 倍错峰90ms/字','连续冒出来的感觉','逐字错峰'],
+    ['动效','5 · 弹出','软','起点.7 倍过冲小','温柔的回应','整块近似'],
+    ['动效','6 · 逐字跳起','标准','高度-.26em错峰110ms/字','开心、欢呼','逐字错峰'],
+    ['动效','6 · 逐字跳起','快错峰','错峰50ms/字周期420ms','激动、连珠炮','逐字错峰'],
+    ['动效','6 · 逐字跳起','大字慢跳','高度-.34em周期1100ms','放松、享受','逐字错峰'],
+];
+
+const CAP = {
+  '1 · 倾斜':['✗','整块倾斜：<code>TransformV2.rotation</code> <b>已存在</b>，但文字路径不读它 ⇒ 让 <code>text_overlay</code> 读一次即可','很低'],
+  '2 · 弧形':['✗','逐字旋转 + 位移：排版层要支持逐字覆盖','中'],
+  '3 · 大小字':['✗','逐字字号：一行一个字号 ⇒ 要改成逐字可覆盖','中'],
+  '4 · 逐字抖散':['✗','逐字位移 + 旋转','中'],
+  '5 · 竖排':['✗','排版方向，要重写折行','高'],
+  '6 · 逐字变小':['✗','逐字字号','中'],
+  '7 · 逐字放大':['✗','逐字字号','中'],
+  '1 · 抖动':['✓','<code>shake_px</code> / <code>shake_hz</code> / <code>shake_phase</code> <b>已有</b>，只差界面入口','零'],
+  '2 · 摇摆':['✓','整块旋转往复（关键帧），底座已有 ⇒ YekiTrim 已接通','零'],
+  '3 · 砸入':['✓','<code>scale_in_from</code> / <code>scale_in_peak</code> / <code>scale_in_ms</code> <b>已有</b>','零'],
+  '4 · 收缩':['◐','<code>fade_out_ms</code> 已有（<b>只淡出</b>那一档）；另两档要缩放','零 / 低'],
+  '5 · 弹出':['◐','<code>scale_in_*</code> 已有（标准 / 软）；<b>「逐字」那档要逐字错峰</b>','零 / 中'],
+  '6 · 逐字跳起':['✗','逐字错峰动画：每个字独立时间轴','高'],
+};
+
+const RECIPE = [
+  ['爆发','生气 / 惊讶','大小字 · 末字重音 + 倾斜','砸入 · 带压扁','歪着砸进来，末字爆开'],
+  ['失控','害怕 / 紧张','逐字抖散 · 重 + 竖排','抖动 · 强','字散架了，还在颤'],
+  ['欢快','开心 / 笑','弧形 · 上拱 + 逐字放大','逐字跳起 · 标准','排成弧线，逐字蹦起来'],
+  ['泄气','呆 / 无奈','逐字变小 · 递减','收缩 · 标准','字越写越小，缩着淡掉'],
+];
+const PAIRS = [
+  ['倾斜 -6°','倾斜 +5°','生气 → 撒娇','硬 ↔ 软'],
+  ['弧形上拱','弧形下垂','笑 → 叹气','扬 ↔ 沉'],
+  ['逐字变小','逐字放大','泄气 → 涨上去','收 ↔ 放'],
+  ['抖动慢频','抖动强频','虚弱 → 恐慌','没力气 ↔ 失控'],
+  ['摇摆快摆','摇摆慢摆','笑 → 晕','兴奋 ↔ 昏沉'],
+  ['砸入','弹出','冲击 → 可爱','大→小 ↔ 小→大'],
+  ['收缩慢','收缩快','自己泄气 → 被抽走','主动 ↔ 被动'],
+];
+
+let bad = 0;
+function fill(id, html){ document.getElementById(id).innerHTML = html; }
+
+// ---- ⓪ 规模 ----
+{
+  const form = ROWS.filter(function(r){ return r[0]==='字体样式' }).length;
+  const anim = ROWS.filter(function(r){ return r[0]==='动效' }).length;
+  const famF = new Set(ROWS.filter(function(r){ return r[0]==='字体样式' }).map(function(r){ return r[1] })).size;
+  const famA = new Set(ROWS.filter(function(r){ return r[0]==='动效' }).map(function(r){ return r[1] })).size;
+  const caps = Object.keys(CAP).map(function(k){ return CAP[k] });
+  const yes = caps.filter(function(c){ return c[0]==='✓' }).length;
+  const half= caps.filter(function(c){ return c[0]==='◐' }).length;
+  const no  = caps.filter(function(c){ return c[0]==='✗' }).length;
+  fill('stats',
+    '<div class="statc"><div class="n">'+form+'</div><div class="l">字体样式（'+famF+' 族 × 3）</div></div>'+
+    '<div class="statc"><div class="n">'+anim+'</div><div class="l">动效（'+famA+' 族 × 3）</div></div>'+
+    '<div class="statc"><div class="n">'+(form+anim)+'</div><div class="l">合计（'+(famF+famA)+' 族）</div></div>'+
+    '<div class="statc"><div class="n" style="color:var(--ok)">'+yes+'</div><div class="l">族：底座今天就能做</div></div>'+
+    '<div class="statc"><div class="n" style="color:var(--warn)">'+half+'</div><div class="l">族：一半能、一半要改</div></div>'+
+    '<div class="statc"><div class="n" style="color:var(--bad)">'+no+'</div><div class="l">族：底座完全做不到</div></div>');
+  if (form!==21||anim!==18) { bad++; console.error('档数不对',form,anim); }
+  if (yes+half+no !== Object.keys(CAP).length) { bad++; console.error('族数与能力表对不上'); }
+}
+
+// ---- ① ② 两张清单表 ----
+function table(axis, id){
+  const rs = ROWS.filter(function(r){ return r[0]===axis });
+  let cur = '', out = '<tr><th>族</th><th>档</th><th>参数</th><th>能演的情绪</th><th>底座实现方式</th></tr>';
+  for (const r of rs){
+    const cap = CAP[r[1]];
+    if (r[1] !== cur){ cur = r[1];
+      out += '<tr class="grp"><td colspan="5">'+r[1]+
+        (cap? ' &nbsp;<span class="'+(cap[0]==='✓'?'yes':cap[0]==='◐'?'half':'no')+'">'+
+          (cap[0]==='✓'?'底座已能做':cap[0]==='◐'?'部分能做':'底座做不到')+'</span>':'')+'</td></tr>';
+    }
+    out += '<tr><td>'+r[1].replace(/^\d+ · /,'')+'</td><td>'+r[2]+'</td><td>'+r[3]+
+           '</td><td>'+r[4]+'</td><td>'+r[5]+'</td></tr>';
+  }
+  fill(id, out);
+  return rs.length;
+}
+const nf = table('字体样式','tblForm');
+const na = table('动效','tblAnim');
+if (nf!==21){ bad++; console.error('字体样式不是 21 档:', nf); }
+if (na!==18){ bad++; console.error('动效不是 18 档:', na); }
+
+// ---- ③ 能力表 ----
+{
+  let out = '<tr><th>族</th><th>能做吗</th><th>为什么 / 怎么改</th><th>成本</th></tr>';
+  for (const fam of Object.keys(CAP)){
+    const c = CAP[fam];
+    out += '<tr><td>'+fam.replace(/^\d+ · /,'')+'</td><td class="'+
+      (c[0]==='✓'?'yes':c[0]==='◐'?'half':'no')+'">'+c[0]+'</td><td>'+c[1]+'</td><td>'+c[2]+'</td></tr>';
+  }
+  fill('tblCap', out);
+}
+
+// ---- ④ 情绪配方 ----
+fill('tblRecipe','<tr><th>情绪族</th><th>情绪</th><th>字体样式</th><th>动效</th><th>合成效果</th></tr>'+
+  RECIPE.map(function(r){ return '<tr><td>'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+
+    '</td><td>'+r[3]+'</td><td>'+r[4]+'</td></tr>' }).join(''));
+
+// ---- ⑤ 反义词对 ----
+fill('tblPairs','<tr><th>正向</th><th>反向</th><th>情绪差</th><th>这一对差在哪</th></tr>'+
+  PAIRS.map(function(r){ return '<tr><td>'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+
+    '</td><td>'+r[3]+'</td></tr>' }).join(''));
+
+// ---- 自检 ----
+{
+  const problems = [];
+  if (bad) problems.push(bad+' 处');
+  if (ROWS.length !== 39) problems.push('总档数不是 39（'+ROWS.length+'）');
+  const byFam = {};
+  ROWS.forEach(function(r){ byFam[r[1]] = (byFam[r[1]]||0)+1 });
+  const odd = Object.keys(byFam).filter(function(f){ return byFam[f]!==3 });
+  if (odd.length) problems.push('这些族不是 3 档: '+JSON.stringify(odd));
+  if (Object.keys(byFam).length !== 13) problems.push('族数不是 13（'+Object.keys(byFam).length+'）');
+  const missing = Object.keys(byFam).filter(function(f){ return !CAP[f] });
+  if (missing.length) problems.push('这些族没有能力判定: '+JSON.stringify(missing));
+  if (problems.length){
+    document.title='自检失败：'+problems.join('；');
+    console.error('自检失败：'+problems.join('；'));
+  } else {
+    console.log('自检通过：39 档 · 13 族 · 每族恰 3 档 · 每族都有能力判定 · 21+18 分轴正确');
+  }
+}
+</script>
+</body>
+</html>
