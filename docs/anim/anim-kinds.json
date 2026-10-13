@@ -1,0 +1,544 @@
+[
+ {
+  "kind": "none",
+  "kindLabel": "不设",
+  "axis": "none",
+  "value": "",
+  "label": "不设",
+  "preset": {}
+ },
+ {
+  "kind": "tilt",
+  "kindLabel": "倾斜",
+  "axis": "style",
+  "value": "tilt_std",
+  "label": "标准",
+  "preset": {
+   "tiltDeg": -6
+  }
+ },
+ {
+  "kind": "tilt",
+  "kindLabel": "倾斜",
+  "axis": "style",
+  "value": "tilt_sm",
+  "label": "小角度",
+  "preset": {
+   "tiltDeg": -2.5
+  }
+ },
+ {
+  "kind": "tilt",
+  "kindLabel": "倾斜",
+  "axis": "style",
+  "value": "tilt_rev",
+  "label": "反方向",
+  "preset": {
+   "tiltDeg": 5
+  }
+ },
+ {
+  "kind": "shake",
+  "kindLabel": "抖动",
+  "axis": "effect",
+  "value": "shake_std",
+  "label": "标准",
+  "preset": {
+   "shakePx": 6,
+   "shakeHz": 18
+  }
+ },
+ {
+  "kind": "shake",
+  "kindLabel": "抖动",
+  "axis": "effect",
+  "value": "shake_slow",
+  "label": "慢频",
+  "preset": {
+   "shakePx": 6,
+   "shakeHz": 4.5
+  }
+ },
+ {
+  "kind": "shake",
+  "kindLabel": "抖动",
+  "axis": "effect",
+  "value": "shake_lg",
+  "label": "强",
+  "preset": {
+   "shakePx": 14,
+   "shakeHz": 34
+  }
+ },
+ {
+  "kind": "sway",
+  "kindLabel": "摇摆",
+  "axis": "effect",
+  "value": "sway_std",
+  "label": "标准",
+  "preset": {
+   "swayDeg": 6,
+   "swayMs": 900
+  }
+ },
+ {
+  "kind": "sway",
+  "kindLabel": "摇摆",
+  "axis": "effect",
+  "value": "sway_lg",
+  "label": "大角度",
+  "preset": {
+   "swayDeg": 12,
+   "swayMs": 900
+  }
+ },
+ {
+  "kind": "sway",
+  "kindLabel": "摇摆",
+  "axis": "effect",
+  "value": "sway_slow",
+  "label": "慢摆",
+  "preset": {
+   "swayDeg": 6,
+   "swayMs": 2000
+  }
+ },
+ {
+  "kind": "slam",
+  "kindLabel": "砸入",
+  "axis": "both",
+  "value": "slam_std",
+  "label": "标准",
+  "preset": {
+   "scaleInFrom": 2.4,
+   "scaleInPeak": 1,
+   "scaleInMs": 180
+  }
+ },
+ {
+  "kind": "slam",
+  "kindLabel": "砸入",
+  "axis": "both",
+  "value": "slam_lg",
+  "label": "重",
+  "preset": {
+   "scaleInFrom": 3.4,
+   "scaleInPeak": 1,
+   "scaleInMs": 180
+  }
+ },
+ {
+  "kind": "slam",
+  "kindLabel": "砸入",
+  "axis": "both",
+  "value": "slam_squash",
+  "label": "带压扁",
+  "preset": {
+   "scaleInFrom": 2.4,
+   "scaleInPeak": 1,
+   "scaleInMs": 180,
+   "squashY": 0.72
+  }
+ },
+ {
+  "kind": "shrink_in",
+  "kindLabel": "收缩",
+  "axis": "effect",
+  "value": "shrink_in_std",
+  "label": "标准",
+  "preset": {
+   "scaleInFrom": 0.4,
+   "scaleInPeak": 1,
+   "scaleInMs": 500
+  }
+ },
+ {
+  "kind": "shrink_in",
+  "kindLabel": "收缩",
+  "axis": "effect",
+  "value": "fade_only",
+  "label": "只淡出",
+  "preset": {}
+ },
+ {
+  "kind": "shrink_in",
+  "kindLabel": "收缩",
+  "axis": "effect",
+  "value": "shrink_in_fast",
+  "label": "快速抽走",
+  "preset": {
+   "scaleInFrom": 0.4,
+   "scaleInPeak": 1,
+   "scaleInMs": 160
+  }
+ },
+ {
+  "kind": "pop",
+  "kindLabel": "弹出",
+  "axis": "both",
+  "value": "pop_std",
+  "label": "标准",
+  "preset": {
+   "scaleInFrom": 0.3,
+   "scaleInPeak": 1,
+   "scaleInMs": 350
+  }
+ },
+ {
+  "kind": "pop",
+  "kindLabel": "弹出",
+  "axis": "both",
+  "value": "pop_soft",
+  "label": "软",
+  "preset": {
+   "scaleInFrom": 0.7,
+   "scaleInPeak": 1,
+   "scaleInMs": 350
+  }
+ },
+ {
+  "kind": "arc",
+  "kindLabel": "逐字弧形",
+  "axis": "both",
+  "value": "arc_up",
+  "label": "上拱",
+  "preset": {
+   "perChar": {
+    "rotationFrom": 0,
+    "rotationTo": -14,
+    "spreadXEm": 0,
+    "perCharFrames": 8,
+    "staggerFrames": 3
+   }
+  }
+ },
+ {
+  "kind": "arc",
+  "kindLabel": "逐字弧形",
+  "axis": "both",
+  "value": "arc_wave",
+  "label": "波浪",
+  "preset": {
+   "perChar": {
+    "rotationFrom": -12,
+    "rotationTo": 12,
+    "perCharFrames": 24,
+    "staggerFrames": 2
+   }
+  }
+ },
+ {
+  "kind": "arc",
+  "kindLabel": "逐字弧形",
+  "axis": "both",
+  "value": "arc_down",
+  "label": "下垂",
+  "preset": {
+   "perChar": {
+    "rotationFrom": 0,
+    "rotationTo": 14,
+    "perCharFrames": 8,
+    "staggerFrames": 3
+   }
+  }
+ },
+ {
+  "kind": "size",
+  "kindLabel": "逐字大小字",
+  "axis": "style",
+  "value": "size_last",
+  "label": "末字重音",
+  "preset": {
+   "perChar": {
+    "scaleSpread": 0.75,
+    "perCharFrames": 14,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "size",
+  "kindLabel": "逐字大小字",
+  "axis": "style",
+  "value": "size_first",
+  "label": "首字重音",
+  "preset": {
+   "perChar": {
+    "scaleSpread": 0.75,
+    "perCharFrames": 14,
+    "reverse": true,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "size",
+  "kindLabel": "逐字大小字",
+  "axis": "style",
+  "value": "size_mid",
+  "label": "中字重音",
+  "preset": {
+   "perChar": {
+    "scaleSpread": -0.4,
+    "perCharFrames": 14,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "scatter",
+  "kindLabel": "逐字抖散",
+  "axis": "both",
+  "value": "scatter_sm",
+  "label": "轻",
+  "preset": {
+   "perChar": {
+    "spreadXFrom": 0,
+    "spreadXTo": 1,
+    "spreadXEm": 0.12,
+    "spreadYFrom": 0,
+    "spreadYTo": 1,
+    "spreadYEm": 0.06,
+    "perCharFrames": 10,
+    "staggerFrames": 1,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "scatter",
+  "kindLabel": "逐字抖散",
+  "axis": "both",
+  "value": "scatter_lg",
+  "label": "重",
+  "preset": {
+   "perChar": {
+    "spreadXFrom": 0,
+    "spreadXTo": 1,
+    "spreadXEm": 0.45,
+    "spreadYFrom": 0,
+    "spreadYTo": 1,
+    "spreadYEm": 0.28,
+    "perCharFrames": 16,
+    "staggerFrames": 3,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "scatter",
+  "kindLabel": "逐字抖散",
+  "axis": "both",
+  "value": "scatter_shake",
+  "label": "带抖动",
+  "preset": {
+   "perChar": {
+    "spreadXFrom": 0,
+    "spreadXTo": 1,
+    "spreadXEm": 0.3,
+    "spreadYFrom": 0,
+    "spreadYTo": 1,
+    "spreadYEm": 0.18,
+    "perCharFrames": 12,
+    "staggerFrames": 2,
+    "easing": "back_out"
+   },
+   "shakePx": 5,
+   "shakeHz": 20
+  }
+ },
+ {
+  "kind": "shrink",
+  "kindLabel": "逐字变小",
+  "axis": "style",
+  "value": "shrink_desc",
+  "label": "递减",
+  "preset": {
+   "perChar": {
+    "scaleSpread": -0.55,
+    "perCharFrames": 18,
+    "staggerFrames": 2
+   }
+  }
+ },
+ {
+  "kind": "shrink",
+  "kindLabel": "逐字变小",
+  "axis": "style",
+  "value": "shrink_drop",
+  "label": "骤降",
+  "preset": {
+   "perChar": {
+    "scaleSpread": -0.75,
+    "perCharFrames": 6,
+    "staggerFrames": 0
+   }
+  }
+ },
+ {
+  "kind": "shrink",
+  "kindLabel": "逐字变小",
+  "axis": "style",
+  "value": "shrink_tail",
+  "label": "尾音",
+  "preset": {
+   "perChar": {
+    "scaleSpread": -0.5,
+    "perCharFrames": 12,
+    "staggerFrames": 2
+   }
+  }
+ },
+ {
+  "kind": "grow",
+  "kindLabel": "逐字放大",
+  "axis": "style",
+  "value": "grow_asc",
+  "label": "递增",
+  "preset": {
+   "perChar": {
+    "scaleSpread": 0.8,
+    "perCharFrames": 18,
+    "staggerFrames": 2
+   }
+  }
+ },
+ {
+  "kind": "grow",
+  "kindLabel": "逐字放大",
+  "axis": "style",
+  "value": "grow_burst",
+  "label": "爆开",
+  "preset": {
+   "perChar": {
+    "scaleSpread": 1.6,
+    "perCharFrames": 20,
+    "staggerFrames": 3,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "grow",
+  "kindLabel": "逐字放大",
+  "axis": "style",
+  "value": "grow_first",
+  "label": "首字引爆",
+  "preset": {
+   "perChar": {
+    "scaleSpread": 0.9,
+    "perCharFrames": 12,
+    "staggerFrames": 4,
+    "reverse": true
+   }
+  }
+ },
+ {
+  "kind": "hop",
+  "kindLabel": "逐字错峰",
+  "axis": "both",
+  "value": "pop_perchar",
+  "label": "弹出·逐字",
+  "preset": {
+   "perChar": {
+    "scaleFrom": 0.3,
+    "scaleTo": 1,
+    "perCharFrames": 10,
+    "staggerFrames": 3,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "hop",
+  "kindLabel": "逐字错峰",
+  "axis": "both",
+  "value": "hop_std",
+  "label": "跳起·标准",
+  "preset": {
+   "perChar": {
+    "offsetYFrom": 0.55,
+    "offsetYTo": 0,
+    "perCharFrames": 12,
+    "staggerFrames": 4,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "hop",
+  "kindLabel": "逐字错峰",
+  "axis": "both",
+  "value": "hop_fast",
+  "label": "跳起·快错峰",
+  "preset": {
+   "perChar": {
+    "offsetYFrom": 0.55,
+    "offsetYTo": 0,
+    "perCharFrames": 10,
+    "staggerFrames": 2,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "hop",
+  "kindLabel": "逐字错峰",
+  "axis": "both",
+  "value": "hop_big",
+  "label": "跳起·大字慢跳",
+  "preset": {
+   "perChar": {
+    "offsetYFrom": 0.9,
+    "offsetYTo": 0,
+    "perCharFrames": 26,
+    "staggerFrames": 7,
+    "easing": "back_out"
+   }
+  }
+ },
+ {
+  "kind": "vtext",
+  "kindLabel": "竖排",
+  "axis": "style",
+  "value": "vtext_thin",
+  "label": "细楷",
+  "preset": {
+   "vertical": true,
+   "fontFamily": "LXGW WenKai",
+   "fontWeight": 400,
+   "safeWidthRatio": 0.86
+  }
+ },
+ {
+  "kind": "vtext",
+  "kindLabel": "竖排",
+  "axis": "style",
+  "value": "vtext_bold",
+  "label": "粗体",
+  "preset": {
+   "vertical": true,
+   "fontFamily": "LXGW WenKai",
+   "fontWeight": 700,
+   "safeWidthRatio": 0.86
+  }
+ },
+ {
+  "kind": "vtext",
+  "kindLabel": "竖排",
+  "axis": "style",
+  "value": "vtext_shrink",
+  "label": "逐字变小",
+  "preset": {
+   "vertical": true,
+   "fontFamily": "LXGW WenKai",
+   "fontWeight": 700,
+   "safeWidthRatio": 0.86,
+   "perChar": {
+    "scaleSpread": -0.45,
+    "perCharFrames": 16,
+    "staggerFrames": 3
+   }
+  }
+ }
+]
