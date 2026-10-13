@@ -3188,22 +3188,40 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    ⇒ **不做一次驼峰转换**。多一层转换就多一处会漂的地方，
     //    而漂了的表现是"`per_char` 在，但字段名底座读不到 ⇒ 用缺省 ⇒ 字不动"
     //    （底座对认不出的键**不报错**，`serde` 默认忽略）。
-    // ⚠️ 逐字那半边取**样式轴**（`stylePreset`）—— 见上面第五实参那段。
-    if (stylePreset && stylePreset.perChar !== undefined) {
+    // ⚠️⚠️ **逐字那半边现在要试两轴**（2026-10-14 三轴收敛时修）。
+    //
+    //    原判据只认 `stylePreset`（形态/排版轴）。三轴收敛后「逐字变化」
+    //    住在**动效**轴（`perchar_big` / `perchar_small` 的 `sort: 'effect'`）——
+    //    而它的 `perChar` 仍是**形态字段**。
+    //
+    //    ★ 后果（复核者实测抓到）：用户选「逐字变大」⇒ `stylePreset` 是
+    //      `undefined` ⇒ `per_char` **一个字段都不写** ⇒ **成片里字一动不动，
+    //      而报告干干净净**。动效轴收敛后 4 档，其中一半是死的。
+    //
+    //    ⇒ 判据改成"**哪一轴给了 `perChar`**"（与 `pick()` 同一条纪律：
+    //      同名字段只该由一轴给，重叠由"三轴字段不重叠"的判据拦）。
+    //      顺序 = 优先级，与 `pick()` 一致（过渡 > 动效 > 排版）。
+    //      ⚠️ 别写回"只认一轴"：以后再有档把 `perChar` 挪到别的轴，
+    //        同一类静默失效会**原样再来一次**。
+    const perCharFrom = (transitionPreset?.perChar !== undefined) ? transitionPreset
+      : (preset?.perChar !== undefined) ? preset
+        : (stylePreset?.perChar !== undefined) ? stylePreset
+          : undefined;
+    if (perCharFrom !== undefined) {
       // ⚠️ 2026-10-14 **弧形角度覆盖**：`arc` 档的 `rotation_to` 是**幅度**，
       //    用户填了 `layout_angle_deg` 就按它来（取**绝对值**当幅度）。
       //    ⚠️ 符号：档位缺省是负的（向上弯），用户填正数时**保持档位的方向**、
       //       只取幅度 —— 否则"我填 14"会突然变成向下弯，与缺省 -14 反了。
       //    ⚠️ 只对**带 `arcToDefault` 的档**生效（`arc`）；`perchar_*` 的
       //       `perChar` 是字号不是旋转，套上去会把它变成一条旋转动画。
-      if (stylePreset.arcToDefault !== undefined && angleOverride !== undefined) {
-        const dir = stylePreset.arcToDefault < 0 ? -1 : 1;
+      if (perCharFrom.arcToDefault !== undefined && angleOverride !== undefined) {
+        const dir = perCharFrom.arcToDefault < 0 ? -1 : 1;
         out.per_char = {
-          ...stylePreset.perChar,
+          ...perCharFrom.perChar,
           rotation_to: dir * Math.abs(angleOverride),
         };
       } else {
-        out.per_char = stylePreset.perChar;
+        out.per_char = perCharFrom.perChar;
       }
     }
     // **E 组：竖排**（2026-10-13）。
@@ -3515,18 +3533,29 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///    （形态）⇒ 形态侧也要有它。
   const animHasFormPart = (name) => {
     const key = String(name ?? '').trim().toLowerCase();
-    // ⚠️ 按**档名逐族**列，**不是**按轴 —— 与 `ANIM_ATTRIBUTION` 的 form/both 同分类。
-    return (
-      animAxisOf(key) === 'style' ||
-      // 动效栏里**同时给了形态**的那些（归属表里的 `both`）：
-      // ⚠️ `pop_perchar` **没有前缀 `_`**（它就是整个档名）——
-      //    第一版写 `/^(pop_perchar|hop)_/` 时 `pop_perchar` **匹配不上**
-      //    （那个正则要求后面还得跟 `_`）⇒ 它的 `per_char` 照样丢。
-      //    ⇒ 这两族要分开写：`hop_*` 带下划线、`pop_perchar` 是精确名。
-      key === 'slam_squash' ||
-      key === 'pop_perchar' ||
-      /^hop_/.test(key)
-    );
+    // ⚠️⚠️ **判据改成「这一档有没有给形态字段」，并逐档真读预设表**（2026-10-14）。
+    //
+    //    原来是**按档名逐族硬编码**（`animAxisOf(k)==='style' || k==='slam_squash'
+    //    || k==='pop_perchar' || /^hop_/`）。三轴收敛后那个白名单里的档名
+    //    （`slam_squash` / `pop_perchar` / `hop_*`）**一个都不存在了**，
+    //    而 `perchar_big` / `perchar_small` **没被它认成形态档**。
+    //
+    //    ★ 后果（复核者实测抓到）：用户选「逐字变大」/「逐字变小」
+    //      （它们的 `perChar` 是**形态字段**，界面填在**动效**栏）
+    //      ⇒ `animHasFormPart` 返回 false ⇒ `per_char` **一个字段都不写**
+    //      ⇒ **成片里字一动不动，而报告干干净净**（不 DROP、不 CLAMP、不说"不认识"）。
+    //      动效轴收敛后就 4 档，其中**一半是死的**。
+    //
+    //    ⇒ 新判据**不列档名**，直接问"这一档的预设里有没有形态字段"：
+    //      有 `perChar` / `tiltDeg` / `vertical` / `squashY` ⇒ 它要给形态侧。
+    //      ⚠️ 这是**结构性**判据：以后新增任何带 `perChar` 的档都自动被认到，
+    //         不会再出现"加了档、忘了改白名单 ⇒ 静默不生效"这一类。
+    const p = animPreset(key);
+    if (!p) return false;
+    return p.perChar !== undefined
+      || p.tiltDeg !== undefined
+      || p.vertical === true
+      || p.squashY !== undefined;
   };
   /// 这一档在**动效**路上给了东西吗。
   const animHasMotionPart = (name) => {

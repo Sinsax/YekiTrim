@@ -275,37 +275,20 @@ export async function measure(file = TRANSLATOR) {
 
   // ---- 实测：跑一遍转译器 ----
   //
-  // ⚠️⚠️ **必须与"一条档都没填"的基线做差**，不能直接拿 `Object.keys(subtitle)` 当归属。
+  // ⚠️⚠️ **这里刻意**不**用"与空档名基线做键集差分"来决定归属** —— 我试过，
+  //    它给出的是"9 档贡献全空"这种**错误结论**，坑在基线：
+  //    "空档名"那条基线因为 `on === false` 会**回落全局 `[elements]`**，
+  //    所以基线里**已经含有** `shake_px` / `scale_in_*` 这些键；
+  //    而 `shake` 档给的是**同名的键、不同的值**（6 vs 全局 77）
+  //    ⇒ 键集差分把 `shake_px` **差掉了**，"这一档覆盖了全局"这件事看不见。
+  //    ⇒ **差分能证明"有没有覆盖"，证明不了"归属"**，两件事别混。
   //
-  //    轨的 `subtitle` 里有一大票**轨级常量**（`font_weight` / `safe_width_ratio` /
-  //    `fade_in_ms` / `color` / `stroke_*` …），它们是**每一档都一样**的
-  //    （见 `cuesToAss` 那个基对象），与"这一档给了什么"无关。
-  //    直接取键集的话，**9 档会全都长出一模一样的 24 个字段** —— 表就废了。
-  //    （实测过：第一版就是这样，`tilt` 与 `shake` 的 form 列表逐字符相同。）
-  //
-  //    ⇒ 跑**两次**：一次带档（逐档一条），一次**不带任何档名**（基线）；
-  //      归属 = **带档那次多出来的键**。
-  //      这样"轨级常量"自动被差掉，剩下的才是这一档**真的贡献**的字段。
-  //      ⚠️ 这也顺手把"全局 `[elements]` 漏进逐条预设"变成**看得见的一行**
-  //         （它会出现在差值里），而不是被当成归属。
+  // 归属改用**两条互补的口径**（下面 `FORM_KEYS` / `MOTION_KEYS` 两段注释写着），
+  // 再拿**产物**去交叉验证（`declaredButMissing` / `emittedButUnknown`）——
+  // 交叉验证那一步才是"测量"，它抓得住"档里声明了、产物里没有"（真缺陷的形态）。
   const FIELD = { style: 'style_anim', transition: 'transition_anim', effect: 'effect_anim' }
   const measured = {}
   {
-
-    // ---- 基线：**空档名**（"默认"），不写任何一轴 ----
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim-attr-base-'))
-    let base
-    try {
-      writeProject(baseDir, [{ name: '', axisField: 'style_anim', time: 0.1 }])
-      base = subOf(runTranslator(baseDir, file), 'text_comment_bottom')
-      if (base === null) {
-        throw new Error('基线轨（空档名）没生成 —— 测量台的前提取不到，别用猜测的表糊过去')
-      }
-    } finally {
-      try { fs.rmSync(baseDir, { recursive: true, force: true }) } catch { /* 清不掉就算了 */ }
-    }
-    const baseKeys = new Set(Object.keys(base))
-
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim-attr-'))
     try {
       const events = names.map((n, i) => ({ name: n, axisField: FIELD[axisOf[n]], time: 0.1 * i }))
@@ -317,10 +300,11 @@ export async function measure(file = TRANSLATOR) {
         if (sub === null) {
           throw new Error(`\`${n}\` 的轨没生成 —— 测量台的前提取不到，别用猜测的表糊过去`)
         }
-        // 差值 = 这一档**真的贡献**的字段（轨级常量在两次里都有 ⇒ 差掉）。
-        const subKeys = Object.keys(sub).filter((k) => !baseKeys.has(k)).sort()
-        const keys = keysOf(doc, id)
-        measured[n] = { subKeys, keyframes: keys.length }
+        measured[n] = {
+          // 产物里**真的出现**的键（含轨级常量 —— 交叉验证时要按"这一档声明的"过滤）。
+          emitted: Object.keys(sub),
+          keyframes: keysOf(doc, id).length,
+        }
       }
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 清不掉就算了 */ }
@@ -334,27 +318,75 @@ export async function measure(file = TRANSLATOR) {
 // ③ 产出：按**实际写出去的字段**分类
 // ============================================================================
 
-/** 决定"字静态长什么样"的键（与帧无关）。 */
+// ---- 归属：**两路各自的取值来源**（这是 `motionFields` 的真实形状）----
+//
+// ⚠️⚠️ 别"按字段名猜哪边" —— 本仓实测踩过：`pop_perchar` / `hop_*` 在界面上归
+//    **动效**栏，但它们的 `perChar` 是**形态字段** ⇒ 按"轴"判会让逐字效果整条丢失。
+//    ⇒ 判据是"**这一档有没有给形态字段**"，不是"它在界面哪条轴"。
+//    所以下面两张键集**只回答"这个字段属于哪一路"**，与档位在哪条轴无关。
+//
+// ⚠️ 这个空间的键名与产物**同名同形**（都是 snake_case + `per_char`），
+//    不是巧合：`ANIM_PRESETS` 的注释写着"逐字那半边已经是底座的蛇形、不做转换"。
+//    而 `perChar` 这个**外层键名是驼峰**（`v.perChar`）—— 两者都要认。
+
+/** 形态路：`motionFields` 里取值走 **`pickStyle(...)` / `stylePreset.xxx`** 的键。 */
 export const FORM_KEYS = new Set([
-  'vertical', 'safe_width_ratio', 'font_weight', 'per_char',
+  'per_char', 'vertical', 'safe_width_ratio',
 ])
-/** 决定"画面随时间变"的键。 */
+/// 形态路：预设里叫 `perChar`（驼峰），写进产物是 `per_char`（蛇形）。
+const FORM_PRESET_ALIAS = { perChar: 'per_char' }
+/** 动效路：取值走 **`pick(...)`**（`onTime`/`onTransition`）的键。 */
 export const MOTION_KEYS = new Set([
-  'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz', 'shake_phase',
+  'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz',
 ])
 /// 图层 `rotation` 关键帧那条腿的**标记**（不写 `subtitle`，只写 `layers[].keyframes`）。
 export const KEYFRAMES_MARK = 'layers[].keyframes:rotation'
 
-/** 算出 9 档的归属。**测量得来**，不是抄的。 */
+/**
+ * 算出 9 档的归属。
+ *
+ * 两条口径**互补**，缺一条就会漏掉一整类：
+ *   * **声明**（`ANIM_PRESETS[k]` 的键 → 两路）—— 这是"这一档该给什么"；
+ *   * **产物**（转译器真跑出来的键）—— 这是"这一档真给了什么"。
+ *
+ * ⚠️⚠️ **任一档"声明了却没写出去" → 直接抛错**，**不许**生成一张"它没给这个字段"的表。
+ *    那正是本仓最恨的形状（"配了、不报错、没效果"），而如果生成器把它**记成归属**，
+ *    这条真缺陷就会被**写进权威表**、从此被判据当成"正常"。
+ *    生成器是"把事实写下来"的地方，不是"把缺陷合理化"的地方。
+ *    （实测踩到：`perchar_big` / `perchar_small` 整档不生效 —— 见下面 `path` 字段。）
+ */
 export async function buildAttribution(file = TRANSLATOR) {
-  const { axisOf, measured, names } = await measure(file)
+  const { axisOf, measured, names, bundle } = await measure(file)
+  const { animPreset } = bundle
   const out = {}
+  const broken = []
   for (const n of names) {
-    const { subKeys, keyframes } = measured[n]
-    const form = subKeys.filter((k) => FORM_KEYS.has(k))
-    const motion = subKeys.filter((k) => MOTION_KEYS.has(k))
-    if (keyframes > 0) motion.push(KEYFRAMES_MARK)
+    const declared = Object.keys(animPreset(n) ?? {}).filter((k) => k !== 'sort')
+    // 驼峰 → 产物名（`perChar` → `per_char`），其余同名。
+    const wanted = declared.map((k) => FORM_PRESET_ALIAS[k] ?? k)
+    const form = wanted.filter((k) => FORM_KEYS.has(k))
+    const motion = wanted.filter((k) => MOTION_KEYS.has(k))
+    if (measured[n].keyframes > 0) motion.push(KEYFRAMES_MARK)
+
+    // ---- 交叉验证：声明了的，产物里到底有没有 ----
+    const emitted = new Set(measured[n].emitted)
+    // ⚠️ 图层关键帧那条腿**不写 `subtitle`** ⇒ 不能拿 `emitted` 去核它，单独用 keyframes 数核。
+    const missForm = form.filter((k) => !emitted.has(k))
+    if (missForm.length) {
+      broken.push(
+        `\`${n}\` 声明了 ${JSON.stringify(missForm)}，但产物里**没有** —— ` +
+        `这一档在第 ${axisOf[n]} 轴上**整条不生效**，且报告里一行差异都不会有`)
+    }
+    if (motion.some((k) => k === KEYFRAMES_MARK) && measured[n].keyframes === 0) {
+      /* keyframes 数已经决定，不会走到这里；留个位置说明为什么它不是 miss */
+    }
+
     out[n] = { axis: axisOf[n], form, motion }
+  }
+  if (broken.length) {
+    throw new Error(
+      '⚠️ 测量发现**档位声明与实际产物不符**（这是真缺陷，别用表把它合理化）：\n  - ' +
+      broken.join('\n  - '))
   }
   return out
 }
