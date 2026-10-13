@@ -1415,6 +1415,22 @@ export function cameraTransitionFrames({ speed, hardCut, durationSec, fps }) {
   return Math.max(1, Math.round(secs * fps));
 }
 
+/// # 排版角度的允许区间（2026-10-14，**权威定义只有这一处**）
+///
+/// 用户口径：「倾斜和弧形**需要有角度参数可调整**」。角度从事件字段
+/// `layout_angle_deg` 读，这里给出**后端夹取**的边界。
+///
+/// ⚠️⚠️ **前端的滑杆必须引用同一对值。** 两边不一致的症状是
+/// 「前端能拉到 45、后端夹到 30」⇒ 用户看到 45、成片 30，**且不报错** ——
+/// 本仓有过 `check-camera-zoom-parity.mjs` 为之专门立的判据（三档默认倍率
+/// 五处逐值一致），这里同理：由 `scripts/check-anim-layout-angle.mjs` 钉住。
+///
+/// ⚠️ 区间选 ±30 的理由：倾斜超过 ±30° 在 16:9 画面里会明显侵占相邻元素，
+///    而弧形的"扇形"观感在 30° 上下就饱和了。**这是产品口径，不是技术限制**
+///    （底座能接受任意有限角度），要改就改这一处 + 前端 + 判据。
+export const LAYOUT_ANGLE_MIN = -30;
+export const LAYOUT_ANGLE_MAX = 30;
+
 /// 四段相位的**标称**段长（窗口装得下时用的值，见 `stickerStateAt`）。
 export const STICKER_POP_IN_SEC = 0.35;
 export const STICKER_FLOAT_UP_SEC = 0.4;
@@ -3058,7 +3074,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///    它必须**压掉**全局那份弹入（否则配了 `[elements] scale_in_ms` 的工程里
   ///    `fade_only` 会静默变成"弹入 + 淡出"，不是"只淡出"）。
   ///    ⇒ 所以 `fade_only` 走的是"空预设也生效"这条路，见下面 `hasAnim` 的判定。
-  const motionFields = (cfg, phase, popInOn, preset, stylePreset) => {
+  const motionFields = (
+    cfg, phase, popInOn, preset, stylePreset, transitionPreset, angleOverride,
+  ) => {
     // ⚠️⚠️ **`on` 的含义是「这条 cue 指定了档」，而"指定了"要算**两条轴**。**
     //
     //    这里踩过一次**静默的 R4 破**（复核者抓到，本仓自己的判据当时是单向的、没看见）：
@@ -3073,7 +3091,11 @@ export function translate(config, clipDir, outPath, options = {}) {
     //
     //    ⇒ 判据是"**任一轴**取到了档"。这也正是两级化的本意：
     //      「用户选了样式」就说明"这一条我配过了"，不该再去吃全局兜底。
-    const on = !!preset || !!stylePreset;
+    // ⚠️ 2026-10-14 三轴：`on` 是「**任一轴**指定了档」⇒ 三轴都要算。
+    //    少算一轴的后果与两级化那次**完全一样**：纯过渡的档（只填 `transition_anim`）
+    //    会让 `on` 变 false ⇒ `pick()` 全部回落全局 `[elements]` ⇒
+    //    本该"没提的不写"变成**被注入**全局的抖动/弹入，而工程一个字没改。
+    const on = !!preset || !!stylePreset || !!transitionPreset;
     // ⚠️⚠️ **`stylePreset` 是 2026-10-13 两级化时加的第五实参**（形态轴那一档）。
     //
     //    为什么**不能**继续只用一个 `preset`：`motionFields` 摊平的是**两轴合起来**
@@ -3092,7 +3114,11 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    ⚠️ **时间那半边仍然只认动效轴**（`onTime`）—— 纯形态档**不该**把
     //       `shake_px` 写成预设里的值；它靠上面的 `on` 把"没提的键"压成 0，
     //       与改动前的行为一致（改动前 `preset` 就是那一档，档里也没有 `shake_px`）。
+    // ⚠️ **时间那半边现在是两轴**（动效 + 过渡）：`shake_*` 归动效、
+    //    `scale_in_*` 归过渡。它们都住"整块时间参数"这一半边，
+    //    所以取值时两轴都要试（后面的覆盖前面的，同字段只该由一轴给）。
     const onTime = !!preset;
+    const onTransition = !!transitionPreset;
     /// ⚠️⚠️ **两个门分开**：
     ///   * **取不取这一档的值** → 看**动效轴**（`onTime`）—— 纯形态档没有 `shake_*` 可给。
     ///   * **要不要回落全局** → 看**任一轴有没有指定**（`on`）。
@@ -3100,7 +3126,12 @@ export function translate(config, clipDir, outPath, options = {}) {
     ///    合起来写(`on ? preset[key] : globalVal`)在纯形态档上会把全局**注入**回来
     ///    —— 那就是上面注释里那条 15 轨的 R4 破。
     const pick = (key, globalVal) => {
-      const v = onTime ? preset[key] : undefined;
+      // ⚠️ 顺序 = **优先级**：过渡轴 > 动效轴（弹入归过渡，见下表）。
+      //    两轴同时给了同一个键是**配置错误**，守卫"三轴字段不重叠"会拦住；
+      //    这里定一个确定的优先级，免得行为随对象键序漂。
+      const v = onTransition && transitionPreset[key] !== undefined
+        ? transitionPreset[key]
+        : (onTime ? preset[key] : undefined);
       if (v !== undefined) return v;
       return on ? undefined : globalVal;
     };
@@ -3159,7 +3190,21 @@ export function translate(config, clipDir, outPath, options = {}) {
     //    （底座对认不出的键**不报错**，`serde` 默认忽略）。
     // ⚠️ 逐字那半边取**样式轴**（`stylePreset`）—— 见上面第五实参那段。
     if (stylePreset && stylePreset.perChar !== undefined) {
-      out.per_char = stylePreset.perChar;
+      // ⚠️ 2026-10-14 **弧形角度覆盖**：`arc` 档的 `rotation_to` 是**幅度**，
+      //    用户填了 `layout_angle_deg` 就按它来（取**绝对值**当幅度）。
+      //    ⚠️ 符号：档位缺省是负的（向上弯），用户填正数时**保持档位的方向**、
+      //       只取幅度 —— 否则"我填 14"会突然变成向下弯，与缺省 -14 反了。
+      //    ⚠️ 只对**带 `arcToDefault` 的档**生效（`arc`）；`perchar_*` 的
+      //       `perChar` 是字号不是旋转，套上去会把它变成一条旋转动画。
+      if (stylePreset.arcToDefault !== undefined && angleOverride !== undefined) {
+        const dir = stylePreset.arcToDefault < 0 ? -1 : 1;
+        out.per_char = {
+          ...stylePreset.perChar,
+          rotation_to: dir * Math.abs(angleOverride),
+        };
+      } else {
+        out.per_char = stylePreset.perChar;
+      }
     }
     // **E 组：竖排**（2026-10-13）。
     //
@@ -3258,170 +3303,121 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// * `sway` 三档 **±6° × 900ms / ±12° × 900ms / ±6° × 2000ms** —— 规格 §1.2「角度 + 周期」；
   /// * 倾斜三档 **−6° / −2.5° / +5°** —— 规格 §1.4 明说「倾斜 −6°（生气）/
   ///   +5°（撒娇）」是**刻意的反义词对**，`tilt_rev` 就是那个正向版本。
+  /// # ⚠️⚠️ 2026-10-14 **三轴收敛**（用户口径，39 档 → 9 档）
+  ///
+  /// 用户原话：「**形态改为排版**，倾斜和弧形需要有角度参数可调整。
+  /// 弹出，淡入淡出独立出来作为过渡模式（入场出场的效果），**默认为弹出**。
+  /// 动效只保留**抖动**和**逐字变化**（**删除砸入**）。
+  /// 当前没有存量工程还在开发中**不要考虑**。动效需要增加一个**心跳**。」
+  ///
+  /// ## 三条轴（取代原来的两轴）
+  ///
+  /// | 轴 | 档位 | 字段 |
+  /// |---|---|---|
+  /// | **排版**（原「形态/样式」**改名**） | （默认）· tilt · vtext · arc | `style_anim` |
+  /// | **过渡**（入场/出场，**新独立出来**） | pop · fade | `transition_anim` |
+  /// | **动效** | shake · perchar_big / perchar_small · heartbeat | `effect_anim` |
+  ///
+  /// ## ⚠️ 与旧表的三个结构性差别
+  ///
+  /// ① **过渡是新的第三轴**，不再是 `effect_anim` 里的一员 ——
+  ///    它是**一次性、有窗口**的（怎么进来/出去），而"抖动/逐字变化"是
+  ///    **持续型**的（在场时怎么动）。两者本来就**可以并存**（淡入出场 + 全程抖动）。
+  /// ② **档名全部换掉**（`tilt_std` → `tilt` 这样）：用户明确说没有存量工程，
+  ///    所以**不做别名迁移**（那本来是本轮最贵的一块）。
+  /// ③ **角度不再是档位的一部分**：`tilt` / `arc` 的档位里**不给角度**
+  ///    （只给缺省回落值），角度从事件字段 `layout_angle_deg` 读。
+  ///
+  /// ⚠️ **`none`（默认）不在这个表里** —— 它表示"不设"，是**没有档名**
+  ///    （`animPreset('')` 返回 `undefined`），不是一条有字段的档。
   const ANIM_PRESETS = {
-    // ── A 组：整块变换（3 档）──
-    tilt_std: { tiltDeg: -6.0 },
-    tilt_sm: { tiltDeg: -2.5 },
-    tilt_rev: { tiltDeg: 5.0 },
-
-    // ── B 组：整块动效（13 档）──
-    shake_std: { shake_px: 6.0, shake_hz: 18.0 },
-    shake_slow: { shake_px: 6.0, shake_hz: 4.5 },
-    shake_lg: { shake_px: 14.0, shake_hz: 34.0 },
-
-    sway_std: { sway_deg: 6.0, sway_ms: 900 },
-    sway_lg: { sway_deg: 12.0, sway_ms: 900 },
-    sway_slow: { sway_deg: 6.0, sway_ms: 2000 },
-
-    slam_std: { scale_in_from: 2.4, scale_in_peak: 1.0, scale_in_ms: 180 },
-    slam_lg: { scale_in_from: 3.4, scale_in_peak: 1.0, scale_in_ms: 180 },
-    slam_squash: { scale_in_from: 2.4, scale_in_peak: 1.0, scale_in_ms: 180, squashY: 0.72 },
-
-    shrink_in_std: { scale_in_from: 0.4, scale_in_peak: 1.0, scale_in_ms: 500 },
-    fade_only: {},
-    shrink_in_fast: { scale_in_from: 0.4, scale_in_peak: 1.0, scale_in_ms: 160 },
-
-    pop_std: { scale_in_from: 0.3, scale_in_peak: 1.0, scale_in_ms: 350 },
-    pop_soft: { scale_in_from: 0.7, scale_in_peak: 1.0, scale_in_ms: 350 },
-
-    // ===== C 组：逐字变换（14 档）=====
+    // ── 排版轴（4 档，含"默认"= 空档名）────────────────────────────
     //
-    // ⚠️⚠️ 这一组的档位带的是 **`perChar`（一份 `per_char` spec，蛇形直传底座）**，
-    //    而不是上面那种"整块参数"。形状不同 ⇒ 见下面 `perCharFields`。
-    //
-    // ⚠️ 三个自由度就够（P3 已全部备好）：**逐字旋转 / 逐字位移 / 逐字字号**。
-    //    前两个是 `rotation_*` / `offset_*`+`spread_*`，第三个是 `scale_spread`
-    //    （**按序号的字号乘数** —— 2026-10-13 施工时才发现缺它，
-    //      `scale_from/to` 是每个字同一个值、只能整行缩放）。
-    //
-    // ⚠️ 三条纪律（每条都对应一种"看着生效了"的假绿）：
-    //   ① `per_char_frames` **必须写**：缺省 0 ⇒ `is_active()` 为假 ⇒
-    //      **整个档不生效**，而画面里字照常显示 ⇒ 最像"这档就是这样的"。
-    //   ② 按序号的效果走 `spread_*` / `scale_spread`，**不是** `offset_*` / `scale_to`：
-    //      后两者是"同一个值给每个字" = 整行平移 / 整行缩放，字距与字间差异都没变。
-    //   ③ 只想改一维就别写另外两维（缺省即恒等），写了反而多一份要维护的口径。
-
-    // 弧形（4–6）：逐字**旋转**，两端转得多、中间少。
-    arc_up: {
+    // ⚠️ **`tilt` 只给"要不要歪"这个存在性，角度由 `layout_angle_deg` 给。**
+    //    这里这个 -6.0 是**没填角度时**的回落 —— 与改造前用户选
+    //    「倾斜 · 标准」的观感**逐值相同**（那正是要找的锚点）。
+    tilt: { sort: 'layout', tiltDeg: -6.0 },
+    // 弧形：逐字**旋转**。角度同样由 `layout_angle_deg` 覆盖（取绝对值当幅度）。
+    // 缺省 -14 = 改造前 `arc_up` 的 `rotation_to` ⇒ 老观感不变。
+    arc: {
+      sort: 'layout',
+      arcToDefault: -14,
       perChar: { rotation_from: 0, rotation_to: -14, per_char_frames: 8, stagger_frames: 3 },
     },
-    arc_wave: {
-      perChar: { rotation_from: -12, rotation_to: 12, per_char_frames: 24, stagger_frames: 2 },
-    },
-    arc_down: {
-      perChar: { rotation_from: 0, rotation_to: 14, per_char_frames: 8, stagger_frames: 3 },
-    },
-
-    // 大小字（7–9）：逐字**字号**。
-    // ⚠️ 靠 `scale_spread` —— 写 `scale_to` 是**整行**一起放大，字间没有差别。
-    size_last: {
-      perChar: { scale_spread: 0.75, per_char_frames: 14, easing: 'back_out' },
-    },
-    size_first: {
-      perChar: { scale_spread: 0.75, per_char_frames: 14, reverse: true, easing: 'back_out' },
-    },
-    size_mid: {
-      perChar: { scale_spread: -0.4, per_char_frames: 14, easing: 'back_out' },
-    },
-
-    // 抖散（10–12）：逐字**位移**。
-    // ⚠️ 必须用 `spread_*`：用 `offset_*` 会让八个字**一起**挪 = 整行平移。
-    //    这条是 P3 真机实测抓到的：八个字起点差恒为 20,20,20,…（与无效果时一样），
-    //    而包围盒宽了 2px（落点取整）⇒ 判据**假绿**。
-    scatter_sm: {
-      perChar: {
-        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.12,
-        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.06,
-        per_char_frames: 10, stagger_frames: 1, easing: 'back_out',
-      },
-    },
-    scatter_lg: {
-      perChar: {
-        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.45,
-        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.28,
-        per_char_frames: 16, stagger_frames: 3, easing: 'back_out',
-      },
-    },
-    scatter_shake: {
-      perChar: {
-        spread_x_from: 0, spread_x_to: 1, spread_x_em: 0.3,
-        spread_y_from: 0, spread_y_to: 1, spread_y_em: 0.18,
-        per_char_frames: 12, stagger_frames: 2, easing: 'back_out',
-      },
-      shake_px: 5.0,
-      shake_hz: 20.0,
-    },
-
-    // 变小（16–18）：逐字字号**递减**。
-    shrink_desc: { perChar: { scale_spread: -0.55, per_char_frames: 18, stagger_frames: 2 } },
-    shrink_drop: { perChar: { scale_spread: -0.75, per_char_frames: 6, stagger_frames: 0 } },
-    shrink_tail: { perChar: { scale_spread: -0.5, per_char_frames: 12, stagger_frames: 2 } },
-
-    // 放大（19–21）：逐字字号**递增**。
-    grow_asc: { perChar: { scale_spread: 0.8, per_char_frames: 18, stagger_frames: 2 } },
-    grow_burst: {
-      perChar: { scale_spread: 1.6, per_char_frames: 20, stagger_frames: 3, easing: 'back_out' },
-    },
-    grow_first: {
-      perChar: { scale_spread: 0.9, per_char_frames: 12, stagger_frames: 4, reverse: true },
-    },
-    // ===== D 组：逐字错峰（4 档）=====
-    // ⚠️ 时间那一维 P3 已经有了 ⇒ 这一组**不需要底座任何新东西**，只是换一组数。
-    // ⚠️ 与 C 组的观感差别：C 组"所有字同时动、幅度不同"，
-    //    D 组"每个字依次动、幅度相同" —— 旋钮是 `stagger_frames`（单位**帧**）。
-    pop_perchar: {
-      perChar: { scale_from: 0.3, scale_to: 1.0, per_char_frames: 10, stagger_frames: 3, easing: 'back_out' },
-    },
-    hop_std: {
-      perChar: { offset_y_from: 0.55, offset_y_to: 0, per_char_frames: 12, stagger_frames: 4, easing: 'back_out' },
-    },
-    hop_fast: {
-      perChar: { offset_y_from: 0.55, offset_y_to: 0, per_char_frames: 10, stagger_frames: 2, easing: 'back_out' },
-    },
-    hop_big: {
-      perChar: { offset_y_from: 0.9, offset_y_to: 0, per_char_frames: 26, stagger_frames: 7, easing: 'back_out' },
-    },
-
-    // ===== E 组：竖排（3 档）=====
-    //
-    // ⚠️ 与 A–D 组形状不同：竖排是**轨级排版方向**，不是逐字变换。
-    //    值走 `vertical: true`（底座 `SubtitleStyle::vertical`）。
+    // 竖排：**轨级排版方向**（不是逐字变换），值走 `vertical: true`。
     //
     // ⚠️⚠️ **列容量 = 安全比例 ÷ 字号比例**（真机踩过）：安全宽 0.2 + 字号 0.16
     //    ⇒ 每列 1.25 个字，而 `max_lines` 默认 3 ⇒ 六字标题**只画出头两个字**。
     //    ⇒ 竖排必须同时给够大的 `safe_width_ratio`（下面 0.86）。
-    //
     // ⚠️ 竖排**忽略 `anchor_bottom`**（底座第一版的口径收窄，已写在字段文档里）。
-    vtext_thin: {
-      vertical: true,
-      safe_width_ratio: 0.86,
-      // ⚠️⚠️ **这一档曾经与 `vtext_bold` 逐字节相同**（2026-10-13 实测抓出来）：
-      //    两档都只写了 `vertical` + `safe_width_ratio`，**没有任何区分字段** ——
-      //    面板上一个是「细楷」一个是「粗体」，而产物里
-      //    `vertical=True, font_weight=900, per_char=None` **两条一模一样**。
-      //    ⇒ 用户选"粗体"得到的东西与"细楷"**完全相同**，而报告里一行差异都没有。
-      //
-      //    ⇒ 补 `fontWeight`（底座 `SubtitleStyle.font_weight`，v7 起是**轨级**字段）。
-      //      400 = 常规、900 = 特粗。`vtext_bold` 的 900 与档位默认相同 ⇒
-      //      **它仍然与"只选竖排、不选档"不同名但同效** —— 这是有意的：
-      //      "粗体"本来就该是竖排的默认观感，真正被修的是"细楷没细"。
-      //
-      //    ⚠️ 键名是**驼峰** `fontWeight`（与 `perChar` / `squashY` 同一个命名空间），
-      //       而写进底座时由下面 `put('font_weight', preset.fontWeight)` 转蛇形 ——
-      //       档位表这一层统一用驼峰，**别在这里混进蛇形键**（两套命名混用 =
-      //       下一处新增字段时必然写错，而写错的表现是"底座忽略未知键、静默用缺省"）。
-      fontWeight: 400,
+    //
+    // ⚠️ 原来 `vtext_thin` / `vtext_bold` 是**两档**，而其中一档曾被实测抓出
+    //    "两档产物逐字节相同"（2026-10-13）。收敛后**只留一档**、
+    //    `fontWeight` 取 400 —— 用户清单里"竖排"就是一条，没有"细/粗"这个维度。
+    //    **这顺带把那一类 Bug 整个消掉了。**
+    //
+    // ⚠️ 键名是**驼峰**（与 `perChar` / `squashY` 同一个命名空间），写进底座时
+    //    由下面 `put('font_weight', …)` 转蛇形 —— 档位表这一层统一驼峰，
+    //    **别混进蛇形键**（混用的表现是"底座忽略未知键、静默用缺省"）。
+    vtext: { sort: 'layout', vertical: true, safe_width_ratio: 0.86, fontWeight: 400 },
+
+    // ── 过渡轴（2 档）──────────────────────────────────────────────
+    //
+    // ⚠️ 值就是原来 `pop_std` 那一组（0.3 → 1.0 / 350ms）——
+    //    用户说"默认为弹出"，而原 `pop_std` 就是那个默认观感。
+    pop: { sort: 'transition', scale_in_from: 0.3, scale_in_peak: 1.0, scale_in_ms: 350 },
+    // 淡入淡出：**一个字段都不给**（它动的是 opacity，走底座自己的进出场包络）。
+    //
+    // ⚠️⚠️ 与原来的 `fade_only` **同一条纪律**：它**必须仍然作为档名传下去** ——
+    //    `motionFields` 第一行是 `const on = !!preset`，而 `on` 决定
+    //    "**没提的字段一律按关**"（不回落到全局 `[elements]`）。
+    //    拆成 `''` 会让"这一档压掉全局弹入"的语义**丢了**，
+    //    于是它会静默继承全局的 `scale_in_*`（＝变成弹出）。
+    fade: { sort: 'transition' },
+
+    // ── 动效轴（4 档）──────────────────────────────────────────────
+    //
+    // 抖动：值同原 `shake_std`（6px / 18Hz）—— 保观感。
+    shake: { sort: 'effect', shake_px: 6.0, shake_hz: 18.0 },
+    // 逐字变化：**把原来 C 组（逐字变换）+ D 组（逐字错峰）合并成一条**
+    // （用户：「合并逐字的效果作为一个动效」），下辖两支 —— 变大 / 变小。
+    //
+    // ⚠️ 两支**必须产出不同参数**（守卫逐值钉着）—— 本仓有过
+    //    "两个预设产物逐字节相同"的实测教训（`vtext_thin` vs `vtext_bold`）。
+    //
+    // ⚠️ 用 `scale_spread`（**按序号的字号乘数**），**不是** `scale_to`
+    //    —— 后者是"同一个值给每个字" = **整行**缩放，字间没有差别。
+    //    这条是 2026-10-13 施工时实测抓出来的。
+    // ⚠️ `per_char_frames` **必须写**：缺省 0 ⇒ `is_active()` 为假 ⇒
+    //    **整个档不生效**，而画面里字照常显示 ⇒ 最像"这档就是这样的"。
+    perchar_big: {
+      sort: 'effect',
+      perChar: { scale_spread: 0.8, per_char_frames: 18, stagger_frames: 2 },
     },
-    vtext_bold: {
-      vertical: true,
-      safe_width_ratio: 0.86,
-      fontWeight: 900,
+    perchar_small: {
+      sort: 'effect',
+      perChar: { scale_spread: -0.55, per_char_frames: 18, stagger_frames: 2 },
     },
-    vtext_shrink: {
-      vertical: true,
-      safe_width_ratio: 0.86,
-      // E 组第 3 档 = 竖排 + C 组的逐字字号能力。
-      perChar: { scale_spread: -0.45, per_char_frames: 16, stagger_frames: 3 },
+    // 心跳：**新增档**（用户：「动效需要增加一个心跳，扑通扑通的心跳感」）。
+    //
+    // ⚠️⚠️ **底座现有原语全是"单次"或"正弦"，没有"双峰脉冲"**（已读源码确认）：
+    //    `text_shake_px`（正弦）、`scale_in_params`（**单峰** from→peak→1）、
+    //    `PerCharAnim`（单次线性）。⇒ 心跳**需要底座配合**才能真正做出来。
+    //
+    // ⇒ 本档先落**参数占位** + 一组"两峰 + 停顿"的节奏值，**并如实报 NOTE**
+    //    （见下面 `heartbeatNotImplemented` 那条）：
+    //    报告里写清"底座侧尚未实现双峰，本档当前观感 = 单次脉冲"。
+    //    ⚠️ **不许静默当成普通弹入** —— 那正是本仓"报告里一行差异都没有"的老病。
+    heartbeat: {
+      sort: 'effect',
+      // 两峰节奏（秒，相对窗口起点）：锋 1 → 回落 → 锋 2 → 停顿，循环。
+      heartbeatPeaksMs: [0, 180, 300, 480],
+      heartbeatAmp: 1.14,
+      heartbeatCycleMs: 1000,
+      // 底座能力到位前的最低限度观感（用**已有的**单峰）。
+      scale_in_from: 1.0,
+      scale_in_peak: 1.14,
+      scale_in_ms: 480,
     },
   };
 
@@ -3449,11 +3445,21 @@ export function translate(config, clipDir, outPath, options = {}) {
   //
   // ⚠️ 两路取的字段**完全不重叠**（这是"可叠加"成立的根据）：
   //    形态路取 `form` 里那串、动效路取 `motion` 那串 + `pcTime` 那些端点对。
+  // ⚠️⚠️ **2026-10-14 三轴**（原两轴 `style`/`effect`）。
+  //
+  // 轴名 = 事件字段去掉 `_anim` 后缀：`style` / `transition` / `effect`。
+  // ⚠️ **`style` 这个名字保留**（不改成 `layout`）：事件字段是 `style_anim`，
+  //    改轴名就得改字段名 ⇒ 产物契约变更。**面板上显示成「排版」即可**，
+  //    内部名与显示名分开（与 `effect` 显示成「动效」同一条）。
+  //
+  // ⚠️ 现在的档名**就是族的名字本身**（`tilt` / `arc` / `vtext` / `pop` /
+  //    `fade` / `shake` / `perchar_big` / `perchar_small` / `heartbeat`），
+  //    没有 `_std` 那种后缀了 —— 但下面仍走**前缀匹配**（`heartbeat` 无后缀、
+  //    `perchar_*` 有），所以两条路都要能用。
   const ANIM_AXIS = {
-    tilt: 'style', arc: 'style', size: 'style', scatter: 'style',
-    shrink: 'style', grow: 'style', vtext: 'style',
-    shake: 'effect', sway: 'effect', slam: 'effect',
-    shrink_in: 'effect', pop: 'effect', hop: 'effect',
+    tilt: 'style', arc: 'style', vtext: 'style',
+    pop: 'transition', fade: 'transition',
+    shake: 'effect', perchar: 'effect', heartbeat: 'effect',
   };
   // ⚠️ 档名 → 界面上的轴。前缀匹配（`tilt_std` → `tilt`）。
   //    ⚠️ **长的前缀要排在前面**（`shrink_in_std` 必须先命中 `shrink_in`，
@@ -3461,9 +3467,23 @@ export function translate(config, clipDir, outPath, options = {}) {
   const ANIM_AXIS_PREFIXES = Object.keys(ANIM_AXIS)
     .sort((a, b) => b.length - a.length);
   /// 档名属于哪条轴（`''` = 认不出 / 空）。
+  ///
+  /// ⚠️⚠️ **两种匹配都要有：精确名 + 前缀**（2026-10-14 三轴收敛时补）。
+  ///
+  ///    收敛后档名是族的名字本身：`tilt` / `arc` / `fade` / `shake` / **`heartbeat`**
+  ///    这些**不带 `_`**；而 `perchar_big` / `perchar_small` 带。
+  ///    只判前缀（原来的 `startsWith(p + '_')`）⇒ **`heartbeat` 认不出来**
+  ///    ⇒ `animAxisOf('heartbeat') === ''` ⇒ 它会被当成"认不出的档名"走 CLAMP，
+  ///    而**用户明明选了它** ⇒ 症状是"选了心跳没反应"，且报告里说"档名不认识"。
+  ///    反之只判精确 ⇒ `perchar_big` 认不出。
+  ///    ⇒ **两条都判**，精确优先（它更具体）。
   const animAxisOf = (name) => {
     const key = String(name ?? '').trim().toLowerCase();
     if (!key) return '';
+    // ① 精确名（`heartbeat` / `fade` / `tilt` / …）
+    if (Object.prototype.hasOwnProperty.call(ANIM_AXIS, key)) return ANIM_AXIS[key];
+    // ② 前缀（`perchar_big` → `perchar`）。
+    //    ⚠️ 长的前缀要排在前面 —— 免得短前缀抢走长前缀的档。
     for (const p of ANIM_AXIS_PREFIXES) {
       if (key.startsWith(p + '_')) return ANIM_AXIS[p];
     }
@@ -4406,13 +4426,59 @@ export function translate(config, clipDir, outPath, options = {}) {
             const animRaw = String(event.anim ?? '').trim().toLowerCase();
             const styleAnimRaw = String(event.style_anim ?? '').trim().toLowerCase();
             const effectAnimRaw = String(event.effect_anim ?? '').trim().toLowerCase();
+            // ⚠️ 第三轴（2026-10-14）。老工程没有它 ⇒ `''`（见下面 `usingSplit`）。
+            const transitionAnimRaw =
+              String(event.transition_anim ?? '').trim().toLowerCase();
+            // ---- 排版角度（2026-10-14）----------------------------------------
+            //
+            // ⚠️⚠️ **区间在这里是权威**（不信前端）。前端的滑杆必须用**同一对**
+            //    常量 —— 不一致的症状是"前端能拉到 45、这里夹到 30"⇒
+            //    用户看到 45、成片 30，**且不报错**。
+            //    本仓有 `check-camera-zoom-parity.mjs` 的先例（"一处定义、多处引用"），
+            //    这里由 `scripts/check-anim-layout-angle.mjs` 钉住两端一致。
+            //
+            // ⚠️ `0` 是**合法值**（"转了 0 度"），必须与 `undefined`（没填）分开 ——
+            //    `event.layout_angle_deg ?? undefined` 用 `??` 是**对的**
+            //    （只挡 `null`/`undefined`，不会把 0 吃掉）。
+            //    写成 `event.layout_angle_deg || undefined` 的症状是
+            //    "我把角度调成 0，它却回到了档位默认的 -6"。
+            const rawAngle = event.layout_angle_deg;
+            let layoutAngle;
+            if (rawAngle === null || rawAngle === undefined) {
+              layoutAngle = undefined;   // 没填 ⇒ 回落档内缺省
+            } else if (Number.isFinite(Number(rawAngle))) {
+              layoutAngle = Math.min(
+                LAYOUT_ANGLE_MAX, Math.max(LAYOUT_ANGLE_MIN, Number(rawAngle)),
+              );
+              // ⚠️ 夹了要说出来 —— 否则用户看到的滑杆位置与成片不一致。
+              if (layoutAngle !== Number(rawAngle)) {
+                note(
+                  where,
+                  `文字元素「${textBody}」的 layout_angle_deg=${rawAngle} 超出允许区间 ` +
+                    `[${LAYOUT_ANGLE_MIN}, ${LAYOUT_ANGLE_MAX}]，已夹到 **${layoutAngle}**。`,
+                );
+              }
+            } else {
+              // ⚠️ 写了但是脏值（`"abc"` / NaN）⇒ **报错并按"没填"处理**，
+              //    不替他挑一个数（与 `readElementsCfg` 那条三态纪律同源）。
+              layoutAngle = undefined;
+              note(
+                where,
+                `文字元素「${textBody}」的 layout_angle_deg=${JSON.stringify(rawAngle)} ` +
+                  '不是有限数 —— **已按"没填"处理**（回落该档缺省角度）。',
+              );
+            }
 
             // 两个新字段**任一有值** ⇒ 以它们为准；都空 ⇒ 从老的 `anim` 拆。
-            const usingSplit = !!(styleAnimRaw || effectAnimRaw);
+            const usingSplit = !!(styleAnimRaw || effectAnimRaw || transitionAnimRaw);
             const mig = usingSplit ? null : splitLegacyAnim(animRaw);
 
             const styleName = usingSplit ? styleAnimRaw : (mig ? mig.style : '');
             const effectName = usingSplit ? effectAnimRaw : (mig ? mig.effect : '');
+            // ⚠️ 老工程（只有 `anim`）**没有过渡轴** ⇒ 走 `''`（= 不施加过渡）。
+            //    有意的：`splitLegacyAnim` 把老档名拆到排版/动效两轴，而"过渡"
+            //    是这次新加的轴 ⇒ 老工程不该凭空多出一个过渡。
+            const transitionName = usingSplit ? transitionAnimRaw : '';
 
             for (const [field, name] of [
               ['anim', animRaw],
@@ -4439,24 +4505,26 @@ export function translate(config, clipDir, outPath, options = {}) {
             //      `rotation` 恒为 0），而那行报告还在跟用户说"仍然生效"。
             //      这正是本仓最恨的"配了、不报错、没效果" —— 只不过这次是**报告在骗人**。
             //    ⇒ 文案必须说"**这一档在这条轴上不起作用**"，并且**给出该填哪一栏**。
+            // ⚠️ 三轴的显示名与字段名**一一对应**（2026-10-14）。
+            //    ⚠️ 内部轴名 `style` 保留（字段是 `style_anim`），**显示**成「排版」。
+            const AXIS_LABEL = { style: '排版', transition: '过渡', effect: '动效' };
+            const AXIS_FIELD = {
+              style: 'style_anim', transition: 'transition_anim', effect: 'effect_anim',
+            };
             for (const [field, name, want] of [
               ['style_anim', styleAnimRaw, 'style'],
+              ['transition_anim', transitionAnimRaw, 'transition'],
               ['effect_anim', effectAnimRaw, 'effect'],
             ]) {
               const k = animAxisOf(name);
               if (k && k !== want) {
-                // ⚠️ `both` 的档（`slam_*`/`pop_*`/`arc_*`/`scatter_*`/`hop_*`）
-                //    在**两条轴上都有参数**，填哪一栏都只拿到一半 ⇒ 提示要更具体。
-                const half = k === 'both';
                 note(
                   where,
-                  `文字元素「${textBody}」的 ${field}="${name}" 属于「` +
-                    `${k === 'style' ? '样式' : '动效'}」轴，却填在「` +
-                    `${want === 'style' ? '样式' : '动效'}」这一栏 —— ` +
-                    `**这一档在这条轴上不起作用**（只写这一栏的话，` +
-                    `${half ? '它另一半的效果也不会出现' : '它一点效果都不会有'}）。` +
-                    `请把它填到 \`${k === 'style' ? 'style_anim' : 'effect_anim'}\`` +
-                    `${half ? '（`both` 的档两边都要填，缺一边只生效一半）' : ''}。`,
+                  `文字元素「${textBody}」的 ${field}="${name}" 属于「${AXIS_LABEL[k]}」` +
+                    `轴，却填在「${AXIS_LABEL[want]}」这一栏 —— ` +
+                    '**这一档在这条轴上不起作用**（每一边只读自己那条轴的档位，' +
+                    '填错栏 = 安静地什么都没发生）。' +
+                    `请把它填到 \`${AXIS_FIELD[k]}\`。`,
                 );
               }
             }
@@ -4484,6 +4552,14 @@ export function translate(config, clipDir, outPath, options = {}) {
               anim: animRaw,
               styleAnim: animPreset(styleName) ? styleName : '',
               effectAnim: animPreset(effectName) ? effectName : '',
+              // ⚠️ 第三轴（2026-10-14）。与上两路同一条纪律：
+              //    认不出的档名**照样带过去**（上面已报过 NOTE），
+              //    这里"纠正"成空会让同轨的两条静默合并。
+              transitionAnim: animPreset(transitionName) ? transitionName : '',
+              // ---- 排版角度（2026-10-14）—— `undefined` = 没填 ⇒ 用档内缺省值。
+              // ⚠️ 单独一维：它与 axis 档名**正交**（选不选 `tilt` 都能填角度），
+              //    但只有 `tilt` / `arc` 两档会**读**它（别的档读了没有意义）。
+              layoutAngle,
             });
             note(
               where,
@@ -6523,7 +6599,11 @@ export function translate(config, clipDir, outPath, options = {}) {
       //       和"显式写了 yellow"混进同一轨（值恰好相同，但那是巧合，不是不变量）。
       //       按**值**分则永远正确：值相同才共用一轨。
       const colorKey = Array.isArray(cue.color) ? cue.color.join(',') : '';
-      const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}|${cue.effectAnim || ''}|${colorKey}`;
+      // ⚠️ 分组维度 = (样式 × 纵向档 × 排版档 × 动效档 × **过渡档** × 颜色)。
+      //    最后一维（过渡）是 2026-10-14 加的：过渡参数是**轨级**的，
+      //    不分轨的话「同样式，一条要弹出、一条要淡入」会静默共用一个。
+      const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +
+        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
@@ -6546,6 +6626,7 @@ export function translate(config, clipDir, outPath, options = {}) {
     const comboKeys = [...new Set(textCues.map(
       (c) =>
         `${c.anim || ''}\u0001${c.styleAnim || ''}\u0001${c.effectAnim || ''}` +
+        `\u0001${c.transitionAnim || ''}` +
         `\u0001${Array.isArray(c.color) ? c.color.join(',') : ''}`,
     ))]
       // ⚠️ 排序键：第一段（`anim`）非空时**就用它**，否则用两路拼 ——
@@ -6559,8 +6640,9 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    而 `${kx[1]}+${kx[2]}` 会留下一个**前导 `+`**
         //    ⇒ `"+fade_only"` 排在所有字母**之前** ⇒ "只有动效"的组合整批跑到最前
         //    —— 与 id 的字面顺序对不上（判据 ⑤b 钉的就是这个）。
-        const ax = kx[0] || [kx[1], kx[2]].filter(Boolean).join('+');
-        const ay = ky[0] || [ky[1], ky[2]].filter(Boolean).join('+');
+        // ⚠️ 2026-10-14：三段拼（排版+动效+过渡），与 `animTag` 逐字符一致。
+        const ax = kx[0] || [kx[1], kx[2], kx[3]].filter(Boolean).join('+');
+        const ay = ky[0] || [ky[1], ky[2], ky[3]].filter(Boolean).join('+');
         if (ax !== ay) return ax < ay ? -1 : 1;
         // ⚠️ **动效名相同时再按颜色串排**（2026-10-13）—— 不排的话，同动效不同色
         //    的两个组合会随 `Set` 的插入序（= 工程里事件的出现序）排列，
@@ -6571,13 +6653,18 @@ export function translate(config, clipDir, outPath, options = {}) {
       // 分组仍然按**拆出来的两路 + 颜色**，只是排序键用了第一段。
       .map((k) => {
         const p = k.split('\u0001');
-        return [p[1] || '', p[2] || '', p[3] || ''];
+        // ⚠️ 段序：`[0]=anim`（老工程原值）、`[1]=排版`、`[2]=动效`、`[3]=过渡`、
+        //    `[4]=颜色`。**要吐 4 个**（解构那侧也是 4 个）—— 少吐一个的症状是
+        //    `colorCsv` 恒 `undefined` ⇒ `byStyle.get(key)` 永远查不到 ⇒
+        //    **所有文字轨整批消失**，而报告里只说"轨道 3 条"。
+        return [p[1] || '', p[2] || '', p[3] || '', p[4] || ''];
       });
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
       for (const posName of ['top', 'center', 'bottom']) {
-      for (const [styleAnimName, effectAnimName, colorCsv] of comboKeys) {
+      for (const [styleAnimName, effectAnimName, transitionAnimName, colorCsv] of comboKeys) {
       const cues = byStyle.get(
-        `${styleName}|${posName}|${styleAnimName}|${effectAnimName}|${colorCsv}`,
+        `${styleName}|${posName}|${styleAnimName}|${effectAnimName}` +
+          `|${transitionAnimName}|${colorCsv}`,
       );
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
@@ -6597,7 +6684,8 @@ export function translate(config, clipDir, outPath, options = {}) {
       //    否则**层 id 变了**、产物**逐字节就不同**了（底座按 id 认层）。
       //    ⇒ 老工程：`anim` 就是它原来那个值，id 与改造前**逐字符相同**。
       //    ⇒ 新工程：`anim` 是空的，改由两路拼（下面那段），不撞老 id。
-      const animTag = cues[0].anim || [styleAnimName, effectAnimName].filter(Boolean).join('+');
+      const animTag = cues[0].anim
+        || [styleAnimName, effectAnimName, transitionAnimName].filter(Boolean).join('+');
       // ⚠️⚠️ **颜色进 id 用的是「预设名」，不是 RGBA**（2026-10-13）——
       //    这是 R4 的关键那一半：**没写 color 的老工程，`colorName` 是空串 ⇒
       //    id 逐字符不变**（`text_hook_bottom`，与改造前相同）。
@@ -6755,17 +6843,21 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ `shake_phase` 是**轨级**（按 style 档错开，见 `SHAKE_PHASE_BY_STYLE`）——
           //    同轨多条 cue 仍同拍，那是底座契约的能力边界。
           //
-          // ⚠️ 第四实参 = **动效轴**那一档（时间：`shake_*` / `sway_*` / `scale_in_*`）；
-          //    第五实参 = **样式轴**那一档（形态：`per_char` / `vertical` /
-          //    `safe_width_ratio`）—— 两轴各读自己的，见 `motionFields` 的注释。
-          //    ⚠️ 老工程（只有 `anim`）在入队时已被拆成两路，两路合起来恒等于原来那一档
-          //       ⇒ 取到的字段与改造前**完全相同**（R4）。
+          // ⚠️ 实参（2026-10-14 三轴）：
+          //    第 4 = **动效轴**（`shake_*` / `per_char` 的持续型）
+          //    第 5 = **排版轴**（`per_char` / `vertical` / `safe_width_ratio`）
+          //    第 6 = **过渡轴**（`scale_in_*` 那三项）—— 新加的独立一轴。
+          //    ⚠️ 三轴各读自己的，见 `motionFields` 的注释。**同名字段只该由一轴给**，
+          //       重叠了由守卫"三轴字段不重叠"拦（否则优先级变成隐性契约）。
           ...motionFields(
             elementsCfg,
             SHAKE_PHASE_BY_STYLE[styleName],
             hasElementsSection(config),
             animPreset(cues[0].effectAnim),
             animPreset(cues[0].styleAnim),
+            animPreset(cues[0].transitionAnim),
+            // ⚠️ 第 7 实参 = 用户显式调的角度（`undefined` = 没填 ⇒ 用档内缺省）。
+            cues[0].layoutAngle,
           ),
         },
         layers: cues.map((c, i) => ({
@@ -6847,8 +6939,24 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    ⚠️ 别改成"条件展开"（`...(x !== undefined ? {rotation:x} : {})`）——
             //      那照样会省掉键。**这里的正确写法是"永远给一个有限数"**。
             rotation: (() => {
-              // ⚠️ 形态字段取**样式轴**那一路（`tilt_std` 的倾斜属于它）。
-              const v = animPreset(cues[0].styleAnim)?.tiltDeg ?? st.tiltDeg;
+              // ⚠️ 形态字段取**样式轴**那一路。
+              //
+              // ⚠️ 2026-10-14 **角度优先级**（三态，顺序不能换）：
+              //    ① 事件字段 `layout_angle_deg`（用户**显式**调的角度）；
+              //    ② 档位缺省（`tilt` 档的 `-6.0`）；
+              //    ③ `st.tiltDeg`（四档 source 串里的兜底）。
+              //    ⚠️ ①用 `!== undefined` 判、**不是** `??` 链——`0` 是合法角度
+              //       （"我要它正着"），被 `||` 吃掉就会静默回到 -6。
+              //    ⚠️ 只有 `tilt` 档读①：别的排版档（`vtext` / `arc`）里
+              //       `layout_angle_deg` 没有倾斜语义 —— `arc` 走它自己的
+              //       逐字旋转（见下面 `per_char` 那段）。
+              const preset = animPreset(cues[0].styleAnim);
+              const isTilt = animAxisOf(cues[0].styleAnim) === 'style'
+                && preset?.tiltDeg !== undefined;
+              const a = cues[0].layoutAngle;
+              const v = (isTilt && a !== undefined)
+                ? a
+                : (preset?.tiltDeg ?? st.tiltDeg);
               return Number.isFinite(v) ? v : 0;
             })(),
           },
