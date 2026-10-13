@@ -754,14 +754,15 @@ export function animHasFormPart(name) {
  *     （"这一档不加动效"要能**压掉**全局那份）⇒ 它必须回 `true`。
  *     所以这里**不能**只看"预设里有没有键"。 */
 export function animHasMotionPart(name) {
-  if (animAxisOf(name) === 'effect') return true
-  const p = animPreset(name)
-  if (!p) return false
-  // ⚠️ `fade`（空预设）在这里被上面那条轴判接住（它的轴就是 effect？不是 —— 它是 transition）。
-  //    所以额外认"过渡轴"：过渡不是形态，但它**必须传下去**（见 `splitAnimTwoAxis` 的注释）。
-  return p.shakePx !== undefined
-    || p.scaleInFrom !== undefined
-    || p.swayDeg !== undefined
+  const a = animAxisOf(name)
+  if (a === 'effect') return true
+  // ⚠️ 排版轴里也有给时间的（`arc` 逐字转）—— 它**两边都要给**，
+  //    否则老工程的"逐字动"会静默变成"静态阶梯"。
+  //    ⚠️ 与转译器 `animHasMotionPart` **逐字同源**，改一边必须改另一边。
+  //    ⚠️⚠️ **过渡轴（`pop`/`fade`）不在这里返回 true** —— 它们走**第三路**
+  //       `transition`（`splitAnimTwoAxis`）。让它们同时进 `effect` 路的话，
+  //       `pick()` 的两轴优先级会把过渡档当动效档摊，语义漂了还不报错。
+  return a === 'style' && name === 'arc'
 }
 
 /** 把老工程的**单个** `anim` 拆成**三路**档名（认不出 ⇒ 三路都空）。
@@ -1933,7 +1934,14 @@ function subAnimFields(idx, s, t) {
     //    的第四参是**帧**（底座 `char_transform_at` 同口径）。
     // ⚠️ **逐字取样式轴**（`pop_perchar` / `hop_*` / `scatter_*` 的 `perChar`
     //    都归在那一档里）—— 与元素那条路同一个口径。
-    perChar: animPerChar(styleAnimName),
+    // ⚠️⚠️ **逐字那半边现在要试两轴**（2026-10-14，与转译器 `motionFields` 同一个修）。
+    //    原来只认 `styleAnimName` ⇒ 三轴收敛后「逐字变化」住在**动效**轴
+    //    （`perchar_big`/`perchar_small` 的 `sort: 'effect'`），而它们的 `perChar`
+    //    仍是**形态字段** ⇒ 只认排版轴的话，用户选「逐字变大」**字幕上一条都不动**，
+    //    且报告里一行差异都没有（成片侧同一个坑，已修）。
+    //    ⚠️ 顺序 = 优先级：排版轴（`arc` 的逐字）优先，与转译器的 `perCharFrom` 同序。
+    perChar: animPerChar(styleAnimName) ?? animPerChar(effectAnimName)
+      ?? animPerChar(transitionAnimName),
     perCharFrame: local * idx.fps,
     perCharFps: idx.fps
   }
