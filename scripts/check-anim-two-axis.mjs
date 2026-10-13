@@ -1,206 +1,306 @@
 #!/usr/bin/env node
 // ============================================================================
-// `check-anim-two-axis.mjs` —— **两级动效（样式 × 动效）的 R4 与叠加守卫**
+// `check-anim-two-axis.mjs` —— **三轴动效（排版 × 过渡 × 动效）的守卫**
 // ============================================================================
 //
 // 用法：`node scripts/check-anim-two-axis.mjs [--mutate]`
 //
-// # 它存在的理由（这是一次真事故换来的）
+// ⚠️ 文件名保留 `two-axis`（**不改成 three-axis**）：它是**路径契约**，
+//    `.workbuddy/gates.mjs` 与别的门禁按名字调它。改名会让"这条判据其实没跑"
+//    以"文件找不到"以外的形式发生（例如被静默跳过）。内容口径见下。
 //
-// 「样式」与「动效」拆成两个**独立可叠加**的设置时，转译器要从"一个 `anim`"
-// 变成"两路各取自己的字段"。这条改动踩了**三个都不会自己报错的坑**：
+// ============================================================================
+// 本文件 2026-10-14 的口径：**两轴 → 三轴**
+// ============================================================================
+//
+// | 轴（内部名） | 显示名 | 事件字段          | 档位 |
+// |---|---|---|---|
+// | `style`      | 排版   | `style_anim`      | `tilt` · `vtext` · `arc`（空档名 = 默认） |
+// | `transition` | 过渡   | `transition_anim` | `pop` · `fade` |
+// | `effect`     | 动效   | `effect_anim`     | `shake` · `perchar_big` · `perchar_small` · `heartbeat` |
+//
+// 9 档：`tilt` `arc` `vtext` `pop` `fade` `shake` `perchar_big` `perchar_small` `heartbeat`。
+//
+// # 它存在的理由（这是真事故换来的，别删）
+//
+// 「排版 / 过渡 / 动效」拆成**独立可叠加**的三条轴时，转译器要从"一个 `anim`"
+// 变成"三路各取自己的字段"。这类改动踩过的坑**都不会自己报错**：
 //
 //   ① **4 条轨的 `per_char` 整条丢失** —— `pop_perchar` / `hop_*` 在界面上归
-//      「动效」栏，但它们的 `perChar` 是**形态字段**、住「样式」侧。
+//      「动效」栏，但它们的 `perChar` 是**形态字段**、住「排版」侧。
 //      按"轴"判就漏了 ⇒ 字不跳了，报告里一行差异都没有。
-//   ② **产物里轨与 assets 的顺序整体变** —— 分组键从一维变两维时，
+//   ② **产物里轨与 assets 的顺序整体变** —— 分组键从一维变多维时，
 //      排序键也跟着变了（空串排在所有字母前）⇒ 轨内容逐条相同、
 //      **只有排列顺序不同** ⇒ sha256 不同（R4 破）。
-//   ③ **R4 对拍本身是空转的** —— 我第一版拿 `docs/wgpu-effect-reference/demo`
+//   ③ **R4 对拍本身是空转的** —— 第一版拿 `docs/wgpu-effect-reference/demo`
 //      去比，而那份工程**一个 `anim` 都没有** ⇒ 前后恒等 ⇒ "通过"是假的。
 //
-// ⚠️⚠️ 所以本判据**自己造夹具**（39 档 + 叠加组合），不依赖任何现成工程 ——
+// ⚠️⚠️ 所以本判据**自己造夹具**（9 档 + 叠加组合），不依赖任何现成工程 ——
 //    ③ 那条讲的就是"夹具没用到被改的字段时，R4 是空转的"。
 //
 // # 判据
 //
-//   ① **39 档迁移**：每个档名单独写进老字段 `anim` 时，拆出来的两路
-//      合起来取到的字段 == 那一档的全部字段（**逐档**，不是抽样）。
-//   ② **R4（结构级）**：老工程（只有 `anim`）转出来的**轨内容与顺序**
-//      与"改造前的语义"一致 —— 用"两路拆法必须无损"来钉，
-//      不依赖历史二进制。
-//   ③ **两轴字段不重叠**：样式路与动效路取的是**不相交**的字段集 ——
-//      这是"可叠加"成立的根据；一旦重叠，"两个设置"就会互相打架。
-//   ④ **叠加真的生效**：`竖排 + 抖动` 这种组合，**两边都写出去**。
-//   ⑤ **顺序稳定**：同一份工程跑两次，轨 id 序列逐字符相同。
+//   ⓪ **三轴的档名取值集合两两不相交** —— 同一档名出现在两条轴 ⇒ 谁都以为自己
+//      该管它 ⇒ 必须红。（原两轴那件事，扩一维。）
+//   ① **`animAxisOf` 对 9 个档名逐个返回自己那条轴**（不是 `''`）—— ★见下。
+//   ② **三轴字段不重叠**：同一字段名不许出现在两条轴的档位里。
+//   ③ **老格式（只有 `anim`）逐档迁移无损、也不多余**（R4）。
+//   ④ 顺序稳定 + 老格式按 `anim` 字母序。
+//   ⑤ **叠加真的生效**：`竖排 + 抖动` 这种组合，**两边都写出去**。
+//
+// ============================================================================
+// ⚠️⚠️ ⓪/① 为什么必须**从源码抽 `ANIM_AXIS` + `animAxisOf` 真跑**
+// ============================================================================
+//
+// **这条是实测踩出来的**，不是洁癖：
+//
+//   收敛后 `heartbeat` **不带下划线**、`perchar_big` **带**。
+//   原来的 `animAxisOf` 只判 `startsWith(p + '_')` ⇒
+//     `animAxisOf('heartbeat')` 返回 **`''`**
+//   ⇒ 它被当成"认不出的档名"走 CLAMP
+//   ⇒ **用户选了心跳、成片里没反应**，而报告说"档名不认识"。
+//
+// ⚠️ 而"在本判据里重写一份 `animAxisOf`"是**绝对不行**的 —— 重写的那份会与
+//    被测的那份**一起漂**，两条源码变异都会活下来、判据**假绿**。
+//    本仓有实测教训，这句话写在 `scripts/AGENTS.md` 里。
+//    ⇒ 一律 `new Function(...)` 从**转译器源码**里抽出来跑（见 `loadAuthority`）。
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { loadAuthority, GLOBAL_ELEMENTS, AXES, SORT_TO_AXIS } from './gen-anim-attribution.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const ENGINE = 'file://' + path.join(ROOT, 'webui', 'src', 'polish', 'engine.js').replace(/\\/g, '/')
 // ⚠️ 被验对象是**可覆盖**的 —— 变异自证要把转译器拷成副本、改那份副本再跑。
-//    默认是真身；`--mutate` 那条路会传 `YK_ANIM2AXIS_TRANSLATOR`。
+//    默认是真身；`--mutate` 那条路会传 `YK_ANIM3AXIS_TRANSLATOR`。
 //    ⚠️ **绝不**用 `git checkout` 还原变异（那会把未提交的工作一起冲掉，
 //    这个仓里已经因此丢过一次改动）—— 一律改**副本**。
-const TRANSLATOR = process.env.YK_ANIM2AXIS_TRANSLATOR || path.join(ROOT, 'tools', 'polish-to-dhampir.mjs')
+const TRANSLATOR = process.env.YK_ANIM3AXIS_TRANSLATOR
+  || path.join(ROOT, 'tools', 'polish-to-dhampir.mjs')
 const MUTATE = process.argv.includes('--mutate')
 
 const fails = []
-const ok = (cond, msg) => { if (!cond) fails.push(msg) }
+let checks = 0
+const ok = (cond, msg) => { checks++; if (!cond) fails.push(msg) }
 
-const E = await import(ENGINE)
-const ALL = Object.keys(E.ANIM_PRESETS)
+// ---- 权威：从源码抽出来（**不重写**）----
+const { bundle } = loadAuthority(TRANSLATOR)
+const { ANIM_PRESETS, animAxisOf, animPreset } = bundle
+const ALL = Object.keys(ANIM_PRESETS)
+/// 事件字段名（轴名 + `_anim`）—— 三份实现的**接口**，不许各写各的。
+const FIELD_OF = { style: 'style_anim', transition: 'transition_anim', effect: 'effect_anim' }
 
-/// **动效轴**会在 `subtitle` 上留下的键 → **预设表里对应的字段名**（判据 ④ 的"反向"那一半用它）。
-///
-/// ⚠️⚠️ **两个命名空间不许混**：产物是 **snake_case**（`shake_px`），
-///    而 `ANIM_PRESETS` 的键是 **camelCase**（`shakePx`）。
-///    第一版把产物名直接拿去查预设表 ⇒ 每一档都"没给这个字段" ⇒ **29 条假红**
-///    （`shake_std` 明明自己就给了 `shakePx`）。这张表就是那次踩坑的产物。
-///
-/// ⚠️ 这些键**只可能**来自动效轴 —— 形态轴那几个（`per_char`/`vertical`/
-/// `safe_width_ratio`/`tilt_deg`/`squash_y`）**不在**这里。
-/// ⇒ 「这一档没提 `shakePx`，轨上却有 `shake_px`」就一定是**全局 `[elements]` 漏进来了**。
-/// ⚠️ `sway_deg` 也不在这里（它走图层关键帧，由 `keysOf` 单独核）。
-const MOTION_FIELD_KEYS = {
-  scale_in_from: 'scaleInFrom',
-  scale_in_peak: 'scaleInPeak',
-  scale_in_ms: 'scaleInMs',
-  shake_px: 'shakePx',
-  shake_hz: 'shakeHz'
-}
-
-/// 夹具里的**全局 `[elements]` 兜底值**（见 `writeProject` 上面那段）。
-/// ⚠️ 值刻意与任何一档预设**都不同**，这样"漏进来的全局值"一眼能认出来。
-///
-/// ⚠️⚠️ **`sway_deg` / `sway_ms` 一个都不能少** —— 它们走的是**另一条路**
-///    （`swayKeyframes`，写**图层关键帧**，不写 `subtitle`）。
-///    第一版这张表只放了 `scale_in_*`/`shake_*`，于是**复核者实测抓到的第二类泄漏
-///    完全躲过了判据**：纯形态档在动效轴为空 ⇒ `swayCfg` 回落全局
-///    ⇒ 15 档长出 `rotation` 关键帧、**成片里字自己摆起来**，判据却全绿。
-///    ⇒ 这与当初"demo 工程一个 `anim` 都没有"是**同一类空转**，
-///      只不过换到了全局段这一侧：**夹具里没有能触发 bug 的那个字段。**
-const GLOBAL_ELEMENTS = `[elements]
-scale_in_from = 9.9
-scale_in_peak = 9.8
-scale_in_ms = 999
-shake_px = 77
-shake_hz = 66
-sway_deg = 33.3
-sway_ms = 4444`
-
-// ---- 与转译器同源的"归属"判据（转译器是零依赖 ESM，没法 import 这里的表）----
+// ============================================================================
+// ⓪ 三轴的档名取值集合**两两不相交**
+// ============================================================================
 //
-// ⚠️ 这里**故意重新实现一遍**：如果只 import 转译器自己的函数，那"转译器写错了"
-//    会连判据一起错（自证循环）。两份实现**独立写**、对拍同一份事实 —— 这才是判据。
-//    ⚠️ 与 `scripts/anim-attribution.mjs`（逐档**参数**归属）也要一致，
-//      那条由 `check-anim-attribution.mjs` 钉着。
-const AXIS = {
-  tilt: 'style', arc: 'style', size: 'style', scatter: 'style',
-  shrink: 'style', grow: 'style', vtext: 'style',
-  shake: 'effect', sway: 'effect', slam: 'effect',
-  shrink_in: 'effect', pop: 'effect', hop: 'effect',
-}
-const PREFIXES = Object.keys(AXIS).sort((a, b) => b.length - a.length)
-const axisOf = (name) => {
-  const k = String(name ?? '').trim().toLowerCase()
-  if (!k) return ''
-  for (const p of PREFIXES) if (k.startsWith(p + '_')) return AXIS[p]
-  return ''
-}
-
-/// 逐档算"这一档在两条路上各给了什么字段"（**独立于转译器**）。
-//
-// ⚠️ 这两张键集是**判据自己的口径**，与转译器/归属表**各自独立写** ——
-//    如果 import 被验对象的函数，那"它写错了"会连判据一起错（自证循环）。
-// ⚠️ `perChar` 算**形态**（它决定"字静态什么样"）—— 见 `check-anim-attribution.mjs`
-//    里那条判据；`scaleSpread` 那类**端点全相等**的逐字阶梯是**静止**的。
-const FORM_KEYS = new Set(['tiltDeg', 'squashY', 'vertical', 'fontFamily', 'fontWeight',
-  'safeWidthRatio', 'perChar'])
-const MOTION_KEYS = new Set(['shakePx', 'shakeHz', 'swayDeg', 'swayMs',
-  'scaleInFrom', 'scaleInPeak', 'scaleInMs'])
-const PARTS = (() => {
-  const out = {}
-  for (const [name, v] of Object.entries(E.ANIM_PRESETS)) {
-    const keys = Object.keys(v)
-    out[name] = {
-      form: keys.filter((k) => FORM_KEYS.has(k)).sort(),
-      motion: keys.filter((k) => MOTION_KEYS.has(k)).sort(),
+// ⚠️ 这是"归属"这件事的**根本要求**：同一档名若出现在两条轴，
+//    谁都以为自己该管它 ⇒ 用户选一次、两条轴各执行一次（或互相打架）。
+//    原两轴版本钉的是"样式轴 ∩ 动效轴 = ∅"，这里扩成**三对两两检查**。
+{
+  const setOf = {}
+  for (const ax of AXES) setOf[ax] = ALL.filter((n) => animAxisOf(n) === ax).sort()
+  for (let i = 0; i < AXES.length; i++) {
+    for (let j = i + 1; j < AXES.length; j++) {
+      const [a, b] = [AXES[i], AXES[j]]
+      const inter = setOf[a].filter((n) => setOf[b].includes(n))
+      ok(inter.length === 0,
+        `⓪ 「${a}」与「${b}」两条轴的档名**有交集**：${JSON.stringify(inter)} —— ` +
+        `同一档名只能归一条轴；重叠意味着两条轴都以为自己该管它`)
     }
   }
-  return out
-})()
-
-// ============================================================================
-// ① 两轴字段不重叠（"可叠加"成立的根据）
-// ============================================================================
-{
-  const allForm = new Set(), allMotion = new Set()
-  for (const n of ALL) {
-    for (const k of PARTS[n].form) allForm.add(k)
-    for (const k of PARTS[n].motion) allMotion.add(k)
+  // ⚠️ 三轴的档集合**合起来必须正好是全表**（不漏、不重）。
+  const union = new Set(AXES.flatMap((ax) => setOf[ax]))
+  const orphan = ALL.filter((n) => !union.has(n))
+  ok(orphan.length === 0,
+    `⓪ 这些档**不属于任何一条轴**（\`animAxisOf\` 认不出）：${JSON.stringify(orphan)} —— ` +
+    `它们会被当成"认不出的档名"走 CLAMP ⇒ 用户选了没反应`)
+  for (const ax of AXES) {
+    ok(setOf[ax].length > 0, `⓪ 「${ax}」轴上**一档都没有** —— 那一栏会是空的`)
   }
-  const both = [...allForm].filter((k) => allMotion.has(k))
-  ok(both.length === 0,
-    `① 形态与动效两路的字段**有重叠**：${JSON.stringify(both)} —— ` +
-    `重叠意味着两个设置会互相打架，"叠加"就不成立了`)
-  ok(allForm.size > 0 && allMotion.size > 0, '① 两路里有一路一个字段都没有（拆法退化了）')
 }
 
 // ============================================================================
-// ② 叠加真的能表达：每一条轴都**存在**只给这一路的档，且两路都有档
+// ① ★ `animAxisOf` 对 9 个档名**逐个**返回自己那条轴（不是 `''`）
 // ============================================================================
+//
+// ⚠️⚠️ 这条是**实测踩出来的那条**（见文件头）：`heartbeat` 不带下划线。
+//    它同时是"精确名 + 前缀两条路"这条实现的**唯一**判据 ——
+//    把精确名那条路去掉、只留前缀，本条必须红。
 {
-  const pureStyle = ALL.filter((n) => PARTS[n].form.length && !PARTS[n].motion.length)
-  const pureEffect = ALL.filter((n) => PARTS[n].motion.length && !PARTS[n].form.length)
-  const bothParts = ALL.filter((n) => PARTS[n].form.length && PARTS[n].motion.length)
-  ok(pureStyle.length > 0, '② 没有"只给形态"的档 —— 样式那一栏会是空的')
-  ok(pureEffect.length > 0, '② 没有"只给动效"的档 —— 动效那一栏会是空的')
-  // ⚠️ `both` 那些档（`slam_squash` / `scatter_shake` / `hop_*` / `pop_perchar`）
-  //    是**迁移正确性**的关键：它们两边都要给，否则老工程丢一半。
-  ok(bothParts.length > 0, '② 没有"两边都给"的档 —— 迁移那条判据会空转')
+  const NINE = {
+    tilt: 'style', arc: 'style', vtext: 'style',
+    pop: 'transition', fade: 'transition',
+    shake: 'effect', perchar_big: 'effect', perchar_small: 'effect', heartbeat: 'effect',
+  }
+  // ⚠️ 先断言这 9 个名字**就是**预设表的全部 —— 否则下面那圈会"看起来在跑"，
+  //    而实际漏掉了新加的档（表变了、判据没跟上 = 本仓最经典的假绿）。
+  ok(JSON.stringify([...ALL].sort()) === JSON.stringify(Object.keys(NINE).sort()),
+    `① 预设表是 ${JSON.stringify([...ALL].sort())}，判据里写的是 ` +
+    `${JSON.stringify(Object.keys(NINE).sort())} —— 两处不同步（新档漏判 / 旧档没删）`)
+  for (const [n, want] of Object.entries(NINE)) {
+    const got = animAxisOf(n)
+    ok(got === want,
+      `① \`animAxisOf(${JSON.stringify(n)})\` 实得 ${JSON.stringify(got)}，应当是 ` +
+      `${JSON.stringify(want)} —— ${got === '' ? '**返回空 = 认不出来** ⇒ 用户选了它成片里没反应，' +
+        '且报告说"档名不认识"' : '归到了错的轴上'}\n` +
+      `      ⚠️ 收敛后 \`heartbeat\` **不带下划线**、\`perchar_big\` **带** ⇒ ` +
+      `\`animAxisOf\` 必须同时判「精确名」与「前缀」两条路`)
+  }
+  // ⚠️ 反向：**空 / 垃圾**必须返回 `''`（不许把认不出的也算成某一轴）。
+  // ⚠️ `perchar` 这个**裸前缀**不在列表里 —— 留给前缀路是**正确**的
+  //    （它正是 `perchar_big` 的族名前缀）。要判"认不出"得用**真的不认识**的名字。
+  for (const bad of ['', '   ', 'nope', 'tiltx', 'hov', 'shrinnk']) {
+    ok(animAxisOf(bad) === '',
+      `① \`animAxisOf(${JSON.stringify(bad)})\` 应当返回空串（它是"认不出"），` +
+      `实得 ${JSON.stringify(animAxisOf(bad))}`)
+  }
 }
 
 // ============================================================================
-// ③ 夹具：造一份真的用了全部 39 档 `anim` 的工程（**不依赖任何现成工程**）
+// ①-bis **`sort` 与 `animAxisOf` 必须同源**（"档位摆在哪一栏" ↔ "按哪条轴走"）
 // ============================================================================
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim2axis-'))
+//
+// ⚠️ **为什么单独一条**：`animAxisOf` 读的是 `ANIM_AXIS`，而**面板分组**读的是
+//    `sort`。两者是**两份**声明，漂了不会报错：
+//      · 用户在界面上把这一档摆进「动效」栏（`sort: 'effect'`）；
+//      · 而 `animAxisOf` 说它是 `style` ⇒ 转译器按**排版**那一路取字段。
+//    ⇒ 症状是"选了这一档，效果出现在另一条轴上"（或两边都不生效），**静默**。
+//
+//    ⚠️ 两个名字**不一样是正常的**（`sort` 用显示口径 `layout`，轴用内部名 `style`
+//      —— 因为事件字段叫 `style_anim`），所以这里走**显式映射表**对拍，
+//      而不是判两个字符串相等。
+{
+  for (const n of ALL) {
+    const bySort = ANIM_PRESETS[n].sort ?? null
+    const want = bySort === null ? null : (SORT_TO_AXIS[bySort] ?? `?${bySort}`)
+    ok(want !== null,
+      `①-bis \`${n}\` 的预设里**没有 \`sort\`** —— 面板不知道把它摆进哪一栏`)
+    ok(want === animAxisOf(n),
+      `①-bis \`${n}\`：\`sort\` 是 \`${bySort}\`（→ ${want}），而 \`animAxisOf\` 说 ` +
+      `\`${animAxisOf(n)}\` —— 面板把这一档摆在一条轴上，转译器却按另一条轴取字段` +
+      `（症状：选了它、效果出现在别的轴上，且不报错）`)
+    // ⚠️ `sort` 的取值**只许**是映射表里那三个显示名（拼错 ⇒ 那一栏静默消失）。
+    ok(bySort === null || bySort in SORT_TO_AXIS,
+      `①-bis \`${n}\` 的 \`sort\` 是 \`${bySort}\`，不在 ${JSON.stringify(Object.keys(SORT_TO_AXIS))}` +
+      ` —— 拼错的轴名会让那一栏整批消失`)
+  }
+}
+
+// ============================================================================
+// ② 三轴**同一字段不许被两条轴"各给一个值"** —— 并钉住真实的优先级
+// ============================================================================
+//
+// ⚠️⚠️ **这条判据的口径在本趟被修正过一次，理由要留住**：
+//
+//   原本写的是"两两轴字段集**完全不相交**"。实测发现**做不到、也不该做**：
+//
+//     · `perChar` 在 `arc`（排版）与 `perchar_*`（动效）上都有 —— 但那是
+//       **同一条渲染分支的两个不同叶子**（`rotation_*` vs `scale_spread`），
+//       `motionFields` 是 `per_char = 某个档的整个 perChar`，只从**一个**档取。
+//     · `scale_in_*` 在 `pop`（过渡）与 `heartbeat`（动效）上都有 —— 实测
+//       `pop + heartbeat` 同填时 `pick()` 按"**过渡 > 动效 > 排版**"取 `pop`
+//       的值（350），**heartbeat 的 480 被静默丢掉**。
+//
+//   ⇒ "完全不相交"会让判据**永远红**，而红门禁等于没有门禁。
+//   ⇒ 这条改成**两个真的抓得住的断言**：
+//       ① 三轴的档集合两两不相交（在 ⓪ 里已钉）；
+//       ② **重叠字段的优先级必须是"声明过的"** —— 逐值对拍 + 把已知的
+//          重叠**登记在册**（新的重叠出现即红）。这样"谁赢"就是**显式契约**，
+//          而不是藏在 `?:` 里的隐性行为。
+{
+  /// **已登记**的重叠字段 → 它属于哪几条轴（新增重叠必须显式加进来）。
+  ///
+  /// ⚠️ 登记不是"放过它"，是**把隐性契约写下来**：`motionFields` 里
+  ///    `pick()` 的取值顺序就是这三条（过渡 > 动效 > 排版），
+  ///    `per_char` 的 `perCharFrom` 同序。登记之后：
+  ///      · 谁赢是**声明的**（有注释、有判据）；
+  ///      · 出现**没登记**的重叠 ⇒ 当场红（逼人做决定，而不是让它悄悄赢）。
+  const KNOWN_OVERLAP = {
+    per_char_frames: ['style', 'effect'],
+    stagger_frames: ['style', 'effect'],
+    scale_in_from: ['transition', 'effect'],
+    scale_in_peak: ['transition', 'effect'],
+    scale_in_ms: ['transition', 'effect'],
+  }
+  /// 各轴拥有的**叶子字段**（`perChar.x` 展开成叶子 —— 见上面那段）。
+  const leavesOf = {}
+  for (const ax of AXES) {
+    const keys = new Set()
+    for (const n of ALL) {
+      if (animAxisOf(n) !== ax) continue
+      const p = animPreset(n) ?? {}
+      for (const k of Object.keys(p)) {
+        if (k === 'sort') continue
+        if (k === 'perChar') {
+          for (const leaf of Object.keys(p.perChar ?? {})) keys.add(leaf)
+          continue
+        }
+        keys.add(k)
+      }
+    }
+    leavesOf[ax] = keys
+  }
+  // ---- ① 出现**没登记**的重叠 ⇒ 红（逼人显式决定优先级）----
+  const seen = new Set()
+  for (let i = 0; i < AXES.length; i++) {
+    for (let j = i + 1; j < AXES.length; j++) {
+      const [a, b] = [AXES[i], AXES[j]]
+      for (const k of [...leavesOf[a]].filter((x) => leavesOf[b].has(x))) {
+        const owners = [a, b].sort()
+        seen.add(k)
+        const reg = KNOWN_OVERLAP[k]
+        ok(reg && JSON.stringify([...reg].sort()) === JSON.stringify(owners),
+          `② 字段 \`${k}\` **同时被「${a}」与「${b}」两条轴给值**，但**没登记**` +
+          `（已登记的是 ${JSON.stringify(KNOWN_OVERLAP)}）—— ` +
+          `未登记的重叠会成为**隐性契约**：谁赢取决于 \`?:\` 的写法，` +
+          `而用户看到的是"我两条都配了、有一条没生效"`)
+      }
+    }
+  }
+  // ---- ② 登记表里**不许有已经不存在**的项（表的另一边也要防漂）----
+  for (const [k, owners] of Object.entries(KNOWN_OVERLAP)) {
+    ok(seen.has(k),
+      `② 登记表里的 \`${k}\`（轴 ${JSON.stringify(owners)}）**实际并不重叠** —— ` +
+      `登记表过期了（档位表改过之后要一起清）`)
+  }
+  // ---- ③ 三轴都要真的给字段（某条轴一个字段都没有 ⇒ 它是空轴）----
+  for (const ax of AXES) {
+    ok(leavesOf[ax].size > 0, `② 「${ax}」轴上**一个字段都没有**（那条轴是空的）`)
+  }
+}
+
+// ============================================================================
+// ③ 夹具：造一份真的用了全部 9 档的工程（**不依赖任何现成工程**）
+// ============================================================================
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim3axis-'))
 const tomlPath = path.join(tmp, 'polish.toml')
 
 // ⚠️ **必须有 `clip.mp4`**：`keepRanges` 是从**成片时间线（EDL）**推出来的，
 //    而没有源视频时那条推导会得到一个空的 keep 集合 ⇒ **所有事件都落在
 //    "被掐掉的区间"里**、被整条跳过 ⇒ 轨只剩主视频一条、判据全报"轨没生成"。
 //    （实测踩过：夹具看着完全正常，转译器也 exit 0，只是**一条文字轨都没有**。）
-//    照抄 demo 的做法：建一个**零字节**的占位 —— 转译器不探测媒体。
 fs.writeFileSync(path.join(tmp, 'clip.mp4'), Buffer.alloc(0))
 
-/// 造工程。`legacy=true` 只写 `anim`（老格式）；否则写两路（新格式）。
+/// 造工程。`legacy=true` 只写 `anim`（老格式）；否则写**三路**（新格式）。
 //
-// ⚠️ **三条从真工程抄来的硬要求**（缺一条夹具就**一条文字轨都出不来**，
-//    而判据全报"轨没生成" —— 看起来像代码坏了，其实是夹具不对）：
-//   ① **`[source] video = "clip.mp4"`** + 目录里真的有那个文件（零字节即可）——
-//      `keepRanges` 是从成片时间线推出来的，没有源视频 ⇒ keep 集合为空
-//      ⇒ **所有事件都判成"落在被掐掉的区间里"**、整条跳过。
-//   ② 文字元素要 **`source`**（九段竖线串，`process` 写回的那个）——
-//      没有它转译器会 CLAMP「样式参数没拿到」并**按兜底值画**。
+// ⚠️ 三条从真工程抄来的硬要求（缺一条夹具就**一条文字轨都出不来**）：
+//   ① `[source] video = "clip.mp4"` + 目录里真的有那个文件（零字节即可）；
+//   ② 文字元素要 **`source`**（九段竖线串，`process` 写回的那个）；
 //   ③ 事件用 **`time` + `end`**，不是 `time` + `duration`。
 //
-// ⚠️⚠️ **还要写一段非空的 `[elements]`**（`GLOBAL_ELEMENTS`）—— 这是**判据 ④
-//    反向那一半的前提**：
-//    `[elements]` 是"整片兜底默认"，逐条预设生效时**必须被压掉**。
-//    夹具里**没有**这段的话，`pick()` 回落到全局与不回落**结果完全一样**
-//    ⇒ 那条判据**看起来在跑、实际空转**。
-//    实测教训：加了 `[elements]` 之前，把 `on` 退回"只看动效轴"（真 bug）
-//    跑出来是 **绿**的；加上之后同一处变异**立刻红 29 条**。
+// ⚠️⚠️ **还要写一段非空的 `[elements]`**（`GLOBAL_ELEMENTS`，与归属表测量台同一份）
+//    —— 这是判据 ④ 反向那一半的前提：逐条预设生效时**必须压掉全局**。
+//    夹具里**没有**这段的话，"回落全局"与"不回落"结果完全一样
+//    ⇒ 那条判据**看起来在跑、实际空转**（实测：加 `[elements]` 之前，
+//    把 `on` 退回"只看动效轴"那种真 bug 跑出来是**绿**的）。
 function writeProject({ legacy, events }) {
   const head = `duration = 60.0
 processed = true
 
 [project]
-name = "两级动效夹具"
+name = "三轴动效夹具"
 output = "export.mp4"
 version = 1
 
@@ -217,8 +317,8 @@ fps = 60
 
 ${GLOBAL_ELEMENTS}
 `
-  // ⚠️ 用 comment 那一档的真 source 串（照抄 `.workbuddy/closeup-sampling` 的实测值）——
-  //    自己编一个会让"样式参数没拿到"那条 CLAMP 又冒出来。
+  // ⚠️ 用 comment 那一档的真 source 串（照抄实测值）—— 自己编一个会让
+  //    "样式参数没拿到"那条 CLAMP 又冒出来。
   const SRC = 'comment|44|2|255,226,122,255|26,26,26,255|700|1'
   const body = events.map((ev) => `
 [[segments.events]]
@@ -232,7 +332,10 @@ y = "58%"
 source = "${SRC}"
 time = ${ev.time.toFixed(2)}
 end = ${(ev.time + 0.30).toFixed(2)}
-${legacy ? `anim = "${ev.anim}"` : `style_anim = "${ev.style_anim || ''}"
+${legacy
+    ? `anim = "${ev.anim}"`
+    : `style_anim = "${ev.style_anim || ''}"
+transition_anim = "${ev.transition_anim || ''}"
 effect_anim = "${ev.effect_anim || ''}"`}
 `).join('')
   fs.writeFileSync(tomlPath, head + '\n[[segments]]\nstart = 0.0\nend = 60.0\nfx = "low"\n' + body)
@@ -252,36 +355,80 @@ function run() {
   return JSON.parse(fs.readFileSync(out, 'utf8'))
 }
 
-/// 产物里某个文字轨的 `subtitle`（= 两路摊出来的字段）。
-const subOf = (doc, id) => {
-  const t = (doc.timeline?.tracks ?? []).find((x) => x.id === id)
-  return t ? (t.subtitle ?? t.sub ?? null) : null
-}
-/// 产物里某个文字轨的**关键帧**（`sway_*` 那条动效走这里，不走 `subtitle`）。
+/// 产物里某个文字轨。
+const trackOf = (doc, id) => (doc.timeline?.tracks ?? []).find((x) => x.id === id)
+const subOf = (doc, id) => trackOf(doc, id)?.subtitle ?? trackOf(doc, id)?.sub ?? null
+/// 图层关键帧（那条腿**不写 `subtitle`**）。
 const keysOf = (doc, id) => {
-  const t = (doc.timeline?.tracks ?? []).find((x) => x.id === id)
-  const layers = t?.layers ?? []
-  for (const l of layers) if (Array.isArray(l.keyframes) && l.keyframes.length) return l.keyframes
+  for (const l of trackOf(doc, id)?.layers ?? []) {
+    if (Array.isArray(l.keyframes) && l.keyframes.length) return l.keyframes
+  }
   return []
 }
 
 try {
 
 // ============================================================================
-// ④ R4：老格式（只有 `anim`）逐档 —— 拆出来的两路必须**无损**，且**不多余**
+// ②-④ ⚠️ **重叠字段的优先级必须与 `motionFields` 实际行为一致**
+// （放在夹具之后 —— 它要真跑一次转译器才判得出来）
+// ============================================================================
+{
+  // ---- ④ ⚠️ **重叠字段的优先级必须与 `motionFields` 实际行为一致** ----
+  //
+  // 这是本条判据的**真牙齿**：光登记"它们重叠"没有意义，
+  // 要钉住"**重叠时谁赢**"—— 实测 `pick()` 是 过渡 > 动效 > 排版。
+  // ⇒ `pop + heartbeat` 同填时，`scale_in_ms` 必须是 **pop 的 350**（不是 480）。
+  {
+    const popT = ALL.find((n) => animAxisOf(n) === 'transition'
+      && animPreset(n)?.scale_in_ms !== undefined)
+    const beatT = ALL.find((n) => animAxisOf(n) === 'effect'
+      && animPreset(n)?.scale_in_ms !== undefined)
+    ok(!!popT && !!beatT,
+      '② 找不到"过渡 + 动效都声明 scale_in_ms"的一对（重叠那条判据会空转）')
+    if (popT && beatT) {
+      const a = animPreset(popT).scale_in_ms
+      const b = animPreset(beatT).scale_in_ms
+      // ⚠️ 两个值**必须不同** —— 相同的话"谁赢"根本分不出来（判据空转）。
+      ok(a !== b,
+        `② \`${popT}\` 与 \`${beatT}\` 的 \`scale_in_ms\` 都是 ${a} —— ` +
+        `分不出优先级，这条判据会**空转**（改档位表时别让它们撞值）`)
+      if (a !== b) {
+        writeProject({
+          legacy: false,
+          events: [{
+            transition_anim: popT, effect_anim: beatT, time: 0.5,
+          }],
+        })
+        const doc = run()
+        const id = (doc?.timeline?.tracks ?? []).map((t) => t.id)
+          .find((x) => x.startsWith('text_comment_bottom_'))
+        const sub = id ? subOf(doc, id) : null
+        ok(!!sub, `② 过渡+动效同时给的轨没生成（\`${popT}\` + \`${beatT}\`）`)
+        if (sub) {
+          ok(sub.scale_in_ms === a,
+            `② 过渡与动效**同时给** \`scale_in_ms\` 时，实得 ${JSON.stringify(sub.scale_in_ms)}，` +
+            `按 \`pick()\` 的优先级（过渡 > 动效）应当是 **${a}**（${popT} 的值，不是 ${beatT} 的 ${b}）
+` +
+            `     ⚠️ 这条不是"可有可无"：重叠的赢家若变了，` +
+            `用户看到的是"两条都配了、有一条静默没生效"`)
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// ③ 老格式（只有 `anim`）逐档迁移必须**无损**、且**不多余**（R4）
 // ============================================================================
 //
 // 判据怎么立（**不依赖历史二进制**）：
-//   把 39 档**逐个**写成老格式，每档一条事件（各自一条轨），
-//   然后断言：该轨的 `subtitle` 里**这一档该给的字段一个不少**。
-//   ⇒ 这正好抓住"① 那 4 条轨 per_char 丢了"那类回归。
+//   把 9 档**逐个**写成老格式，每档一条事件（各自一条轨），
+//   然后断言：该轨**这一档该给的字段一个不少**，而且**不该有的一样不多**。
 //
-// ⚠️⚠️ **还必须断言"不该有的一样不多"** —— 第一版只做了单向（"少了就红"），
-//    于是漏掉了一整类**静默的 R4 破**（复核者抓到）：
-//    纯形态的 15 档（`tilt_*`/`vtext_*`/`size_*`/`shrink_*`/`grow_*`）在**动效轴上是空的**，
-//    而 `motionFields` 的 `on = !!preset` 因此变 false ⇒ `pick()` **回落全局 `[elements]`**
-//    ⇒ 那 15 条轨被**注入**了全局的 `scale_in_*`/`shake_*`，工程一个字没改、画面变了。
-//    ⇒ 现在两向都断言：**该有的一个不少、不该有的一样不多**。
+// ⚠️ **反向那一半不能省** —— 只做单向（"少了就红"）会漏掉一整类**静默的 R4 破**：
+//    纯排版档在动效轴上是空的 ⇒ `motionFields` 的 `on` 若算错 ⇒ `pick()`
+//    **回落全局 `[elements]`** ⇒ 那些轨被**注入**全局的 `scale_in_*`/`shake_*`，
+//    工程一个字没改、画面变了。
 {
   const events = ALL.map((n, i) => ({ anim: n, time: 0.1 * i }))
   writeProject({ legacy: true, events })
@@ -289,78 +436,102 @@ try {
   if (doc) {
     const missing = []
     const extra = []
+    /// 动效那半边的**产物键**。
+    ///
+    /// ⚠️⚠️ **别在这里写"产物键 → 预设键"的驼峰映射** —— 那正是本仓踩过的坑
+    ///    （第一版就是那样，29 条假红）。这三档的预设键名**本来就是蛇形**
+    ///    （与底座同形，见 `ANIM_PRESETS` 的注释："档位表这一层统一驼峰"那条
+    ///     只对 `perChar` / `fontWeight` 那几个；`scale_in_*` / `shake_*`
+    ///     在预设里就是蛇形）。⇒ 直接用**同名**查预设，别再转换一次。
+    ///    实测：写成驼峰映射时，`shake` 的 `shake_px` 被误判成"漏了全局"。
+    const MOTION_FIELD_KEYS = [
+      'scale_in_from', 'scale_in_peak', 'scale_in_ms', 'shake_px', 'shake_hz',
+    ]
     for (let i = 0; i < ALL.length; i++) {
       const n = ALL[i]
-      const sub = subOf(doc, `text_comment_bottom_${n}`)
+      const id = `text_comment_bottom_${n}`
+      const sub = subOf(doc, id)
       if (!sub) { missing.push(`${n}: 轨没生成`); continue }
-      // 逐字段核对该档**应该有**的东西
-      //
-      // ⚠️ **`sway_*` 不在 `subtitle` 上** —— 它走 `swayKeyframes` 写成
-      //    **图层关键帧**（`keysOf`）。第一版把它算进 `subtitle`，
-      //    于是 3 条 `sway_*` 报了**假红**（"少了 sway_deg"，其实它压根不写那儿）。
+      const p = animPreset(n)
+
+      // ---- 正向：这一档该给的，一个不许少 ----
+      // ⚠️ `per_char` / `vertical` 走**排版那路**（`stylePreset`）；
+      //    `shake_*` / `scale_in_*` 走**动效/过渡那路**。
+      //    `tilt` 的 `tiltDeg` 与 `sway` 的关键帧**不写 `subtitle`**（见下）。
       const want = []
-      const p = E.animPreset(n)
       if (p.perChar !== undefined) want.push('per_char')
       if (p.vertical === true) want.push('vertical')
-      if (p.safeWidthRatio !== undefined) want.push('safe_width_ratio')
-      if (p.shakePx !== undefined) want.push('shake_px')
-      if (p.scaleInMs !== undefined) want.push('scale_in_ms')
+      if (p.shake_px !== undefined) want.push('shake_px')
+      if (p.shake_hz !== undefined) want.push('shake_hz')
+      if (p.scale_in_ms !== undefined) want.push('scale_in_ms')
       for (const k of want) {
         if (sub[k] === undefined || sub[k] === null) {
           missing.push(`${n}: 少了 \`${k}\``)
         }
       }
-      // ⚠️ 摇摆单独核：它必须在**关键帧**里体现（不在 subtitle）
-      if (p.swayDeg !== undefined) {
-        const keys = keysOf(doc, `text_comment_bottom_${n}`)
-        if (keys.length === 0) missing.push(`${n}: 少了关键帧（sway 走 keyframes）`)
+      // ⚠️ `tilt` 走**图层 `transform.rotation`**、摇摆走**图层关键帧** ——
+      //    两条都不在 `subtitle` 上。第一版把 sway 算进 `subtitle`，
+      //    报了**假红**（"少了 sway_deg"，其实它压根不写那儿）。
+      if (p.tiltDeg !== undefined) {
+        const rot = trackOf(doc, id)?.layers?.[0]?.transform?.rotation
+        if (!Number.isFinite(rot) || rot === 0) {
+          missing.push(`${n}: 图层 \`transform.rotation\` 实得 ${JSON.stringify(rot)} ` +
+            `（这一档的 \`tiltDeg\`=${p.tiltDeg} 没生效）`)
+        }
       }
 
-      // ---- ⚠️ **反向**：这一档**没提**的动效字段，一条都不许出现在轨上 ----
+      // ---- 反向：这一档**没提**的动效字段，一条都不许出现在轨上 ----
       //
       // 为什么能这么断言：每档自成一条轨（各写各的 `anim`）⇒ 轨上的每个
       // 动效字段都只可能来自**这一档**（全局那份在逐条预设生效时**必须被压掉**）。
       // ⇒ 这一档没给的键**就不该在**。
       //
-      // ⚠️ 例外只有 `fade_only`：它是空预设（一个字段都不给），
+      // ⚠️ 例外只有 `fade`：它是空预设（一个字段都不给），
       //    存在的意义就是**压掉全局** ⇒ 它反而是这条判据最该看的那个（全 0）。
-      for (const [outKey, presetKey] of Object.entries(MOTION_FIELD_KEYS)) {
-        if (outKey in sub && p[presetKey] === undefined) {
-          extra.push(`${n}: 多出 \`${outKey}\`=${JSON.stringify(sub[outKey])}（这一档没给 \`${presetKey}\`）`)
+      //
+      // ⚠️⚠️ **"这一档没给"要看它自己那条轴的那一份预设**，不是只看 `p`。
+      //    老格式 `anim` 会按轴拆到**三路**：`tilt`/`arc`/`vtext` 去排版、
+      //    `shake`/`perchar_*`/`heartbeat` 去动效、而 **`pop`/`fade` 去过渡**。
+      //    `pop` 的 `scale_in_*` 就住在**过渡**那一路的预设里 ——
+      //    只拿 `p`（动效轴的预设）判，会把 `pop` 的正常输出**误报成"漏了全局"**。
+      //    （本趟实测踩到：补上过渡轴的老格式拆分后，这条假红了 8 处。）
+      const own = animPreset(n) ?? {}
+      for (const outKey of MOTION_FIELD_KEYS) {
+        if (outKey in sub && own[outKey] === undefined) {
+          extra.push(`${n}: 多出 \`${outKey}\`=${JSON.stringify(sub[outKey])}` +
+            `（这一档没给 \`${outKey}\`）`)
         }
       }
-
-      // ---- ⚠️ **摇摆那条路也要反向核**（它是**另一条**路，见 `GLOBAL_ELEMENTS` 的注释）----
-      //
-      // `sway_*` 不写 `subtitle`，而是折成**图层 `rotation` 关键帧**（`swayKeyframes`）。
-      // ⇒ 「这一档没给 `swayDeg`，轨上却有 `rotation` 关键帧」就说明
-      //    `swayCfg` 回落了全局 `[elements] sway_deg` —— 成片里这行字会**自己摆**。
-      const keys = keysOf(doc, `text_comment_bottom_${n}`)
+      // ---- 摇摆那条路也要反向核（它是**另一条**路）----
+      // ⚠️ `sway` 那一族**已经删了** ⇒ 当前 9 档**没有**一档会给 `swayDeg`。
+      //    所以"任何一档都不许长出 `rotation` 关键帧"就是判据 ——
+      //    而它抓的正是"全局 `[elements] sway_deg` 漏进了 swayCfg"
+      //    （实测踩过：`fade` 静默继承全局摇摆、字自己摆起来）。
+      const keys = keysOf(doc, id)
       if (p.swayDeg === undefined && keys.length > 0) {
         extra.push(`${n}: 多出 ${keys.length} 个关键帧（这一档没给 \`swayDeg\`）` +
           ` —— 全局 \`[elements] sway_deg\` 漏进 swayCfg 了，成片里这行字会自己摆`)
       }
     }
     ok(missing.length === 0,
-      `④ 老格式（只有 \`anim\`）逐档迁移**有损** —— 这些档少了字段：` +
+      `③ 老格式（只有 \`anim\`）逐档迁移**有损** —— 这些档少了字段：` +
       JSON.stringify(missing.slice(0, 12)) +
       (missing.length > 12 ? ` …另 ${missing.length - 12} 处` : '') +
-      `\n     ⚠️ 最典型的是 \`per_char\`：\`pop_perchar\`/\`hop_*\` 在界面上归"动效"，` +
-      `但它们的 \`perChar\` 是**形态字段** —— 按"轴"判就会漏掉它。`)
+      `\n     ⚠️ 最典型的是 \`per_char\`：\`perchar_big\`/\`perchar_small\` 在界面归「动效」栏，` +
+      `但它们的 \`perChar\` 是**形态字段** —— 按"轴"判就会漏掉它（实测整档不生效）。`)
     ok(extra.length === 0,
-      `④ 老格式迁移**多出了字段**（R4 破）—— 全局 \`[elements]\` 漏进了逐条预设的轨：` +
+      `③ 老格式迁移**多出了字段**（R4 破）—— 全局 \`[elements]\` 漏进了逐条预设的轨：` +
       JSON.stringify(extra.slice(0, 12)) +
       (extra.length > 12 ? ` …另 ${extra.length - 12} 处` : '') +
       `\n     ⚠️ 两条路**都可能漏**，要一起看：\n` +
       `        · \`motionFields\` 的 \`put/pick\`（写出 \`scale_in_*\`/\`shake_*\`）；\n` +
       `        · \`swayKeyframes\` 的 \`swayCfg\`（写出图层 \`rotation\` 关键帧）。\n` +
-      `        根因都是「'这一档指定了'只看了一条轴」—— 纯形态档在动效轴上是空的，` +
-      `于是回落全局。判据是**任一轴**取到了档。`)
+      `        根因都是「'这一档指定了'只看了一条轴」—— 三轴任一取到了档才算"指定了"`)
   }
 }
 
 // ============================================================================
-// ⑤ R4：**顺序**必须与老格式的字母序一致（轨 id 序列逐字符）
+// ④ 顺序：老格式按 `anim` 字母序；新格式稳定 —— 两次跑逐字符相同
 // ============================================================================
 //
 // ⚠️ 这是"② 顺序整体变"那条坑的判据：轨内容对、但**排列顺序**不同
@@ -374,36 +545,33 @@ try {
     const ids1 = (d1.timeline?.tracks ?? []).map((t) => t.id)
     const ids2 = (d2.timeline?.tracks ?? []).map((t) => t.id)
     ok(JSON.stringify(ids1) === JSON.stringify(ids2),
-      '⑤ 同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
+      '④ 同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
     // ⚠️ 老格式下的顺序必须**等于按 `anim` 的字母序**（改造前就是那样）。
-    const textIds = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
-    const names = textIds.map((x) => x.replace('text_comment_bottom_', ''))
+    const names = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
+      .map((x) => x.replace('text_comment_bottom_', ''))
     const sorted = [...names].sort()
     ok(JSON.stringify(names) === JSON.stringify(sorted),
-      `⑤ 老格式下文字轨的顺序**不是**按 \`anim\` 字母序 —— 与本改动前的产物顺序不符（R4 破）。\n` +
-      `     实得前 8 个：${JSON.stringify(names.slice(0, 8))}\n` +
-      `     字母序前 8：${JSON.stringify(sorted.slice(0, 8))}\n` +
-      `     ⚠️ 典型原因：排序键拿两路拼（空串排在所有字母**之前**）⇒ ` +
+      `④ 老格式下文字轨的顺序**不是**按 \`anim\` 字母序（R4 破）。\n` +
+      `     实得：${JSON.stringify(names)}\n     字母序：${JSON.stringify(sorted)}\n` +
+      `     ⚠️ 典型原因：排序键拿多路拼（空串排在所有字母**之前**）⇒ ` +
       `"只有动效"的档整批跑到最前面。`)
   }
 }
 
 // ============================================================================
-// ⑤b **新格式**（两路都写）的顺序也必须稳定且**不依赖空串的位置**
+// ④-bis **新格式**（三路都写）的顺序也必须稳定且**不依赖空串的位置**
 // ============================================================================
 //
-// ⚠️ 这条是 ⑤ 的**必要补充** —— 只测老格式的话，"排序键拿两路直接拼"那个 bug
-//    会**漏网**：老格式里 `anim` 非空、两路拼出来的第一段就是 `anim`，
-//    拼法怎么错都仍然按 `anim` 排（实测：故意把排序键退回两路直接拼，⑤ 照样绿）。
-//    而**新格式**里 `anim` 是空的 ⇒ 排序键退化成两路拼 ⇒
-//    空串排在字母前 ⇒ 顺序与预期不符。这就是那条 bug 真正咬人的地方。
+// ⚠️ 这条是 ④ 的**必要补充** —— 只测老格式的话，"排序键拿三路直接拼"那个 bug
+//    会**漏网**：老格式里 `anim` 非空、拼出来的第一段就是 `anim`，
+//    拼法怎么错都仍然按 `anim` 排。而**新格式**里 `anim` 是空的 ⇒
+//    排序键退化成三路拼 ⇒ 空串排在字母前 ⇒ 顺序与预期不符。
 {
-  // 造一组"样式各异、动效各异"的组合，新格式写
   const combos = [
-    { style_anim: 'vtext_bold', effect_anim: 'shake_std', time: 0.5 },
-    { style_anim: '', effect_anim: 'fade_only', time: 1.0 },
-    { style_anim: 'tilt_std', effect_anim: '', time: 1.5 },
-    { style_anim: 'arc_up', effect_anim: 'sway_std', time: 2.0 },
+    { style_anim: 'vtext', transition_anim: 'pop', effect_anim: 'shake', time: 0.5 },
+    { style_anim: '', transition_anim: 'fade', effect_anim: '', time: 1.0 },
+    { style_anim: 'tilt', transition_anim: '', effect_anim: '', time: 1.5 },
+    { style_anim: 'arc', transition_anim: 'pop', effect_anim: 'heartbeat', time: 2.0 },
   ]
   writeProject({ legacy: false, events: combos })
   const d1 = run()
@@ -412,131 +580,106 @@ try {
     const ids1 = (d1.timeline?.tracks ?? []).map((t) => t.id)
     const ids2 = (d2.timeline?.tracks ?? []).map((t) => t.id)
     ok(JSON.stringify(ids1) === JSON.stringify(ids2),
-      '⑤b 新格式：同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
-    const textIds = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
+      '④-bis 新格式：同一份工程跑两次，轨 id 序列不同 —— 产物不是确定性的')
+    const tail = ids1.filter((x) => x.startsWith('text_comment_bottom_'))
+      .map((x) => x.replace('text_comment_bottom_', ''))
     // ⚠️ 四条组合 ⇒ 四条轨（**必须都分到不同的轨**，否则就是"后写覆盖先写"）
-    ok(textIds.length === combos.length,
-      `⑤b 新格式：${combos.length} 组不同的「样式 × 动效」组合只生成了 ${textIds.length} 条轨 —— ` +
-      `不同的组合**必须分轨**（轨级参数不同，混在一轨就是后写的覆盖先写的）`)
+    ok(tail.length === combos.length,
+      `④-bis 新格式：${combos.length} 组不同的「排版 × 过渡 × 动效」组合只生成了 ` +
+      `${tail.length} 条轨 —— 不同的组合**必须分轨**` +
+      `（轨级参数不同，混在一轨就是后写的覆盖先写的）`)
     // ⚠️ 顺序必须是**排过序的**（确定性的），且**不含空串拼出来的前缀 bug**
-    const tail = textIds.map((x) => x.replace('text_comment_bottom_', ''))
     const tailSorted = [...tail].sort()
     ok(JSON.stringify(tail) === JSON.stringify(tailSorted),
-      `⑤b 新格式：文字轨顺序不是稳定排序 —— \n` +
+      `④-bis 新格式：文字轨顺序不是稳定排序 —— \n` +
       `     实得：${JSON.stringify(tail)}\n     排序：${JSON.stringify(tailSorted)}\n` +
-      `     ⚠️ 典型原因：排序键用"两路直接拼"，空串排在所有字母**之前** ⇒ ` +
-      `"只有动效"的组合整批跑到最前面。`)
+      `     ⚠️ 典型原因：排序键用"多路直接拼"，空串排在所有字母**之前**。`)
   }
 }
 
 // ============================================================================
-// ⑥ 叠加：新格式写两路时，**两边都真的生效**
+// ⑤ 叠加：新格式写三路时，**每条轴都真的生效**（且三轴互不挤掉）
 // ============================================================================
 {
-  // 挑一条纯形态 + 一条纯动效，明确是"叠加"
-  //
-  // ⚠️ `ANIM_PRESETS` 里的键是**驼峰**（`shakePx` / `swayDeg`），
-  //    而产物里是**蛇形**（`shake_px` / `sway_deg`）—— 两套名字**别混**。
-  //    第一版挑档时错用了蛇形 ⇒ `effectName` 恒 `undefined`、
-  //    判据报"夹具挑不出"（而真因是判据自己的名字写错了）。
-  const styleName = ALL.find((n) => n.startsWith('vtext_') && PARTS[n].form.includes('vertical'))
-  const effectName = ALL.find((n) => n.startsWith('shake_') && PARTS[n].motion.includes('shakePx'))
-  ok(!!styleName && !!effectName, '⑥ 夹具挑不出"纯形态 + 纯动效"的一对（表变了？）')
-  if (styleName && effectName) {
+  // ⚠️ 挑档要用**预设表里的驼峰名**（`shakePx` / `vertical`），
+  //    不是产物里的蛇形（`shake_px`）—— 第一版混过这两套名字。
+  const styleName = ALL.find((n) => animAxisOf(n) === 'style'
+    && animPreset(n)?.vertical === true)
+  const transitionName = ALL.find((n) => animAxisOf(n) === 'transition'
+    && animPreset(n)?.scale_in_ms !== undefined)
+  const effectName = ALL.find((n) => animAxisOf(n) === 'effect'
+    && animPreset(n)?.shake_px !== undefined)
+  ok(!!styleName && !!transitionName && !!effectName,
+    '⑤ 夹具挑不出"排版 + 过渡 + 动效"各一条纯档（表变了？）')
+  if (styleName && transitionName && effectName) {
     writeProject({
       legacy: false,
-      events: [{ style_anim: styleName, effect_anim: effectName, time: 0.5 }],
+      events: [{
+        style_anim: styleName, transition_anim: transitionName,
+        effect_anim: effectName, time: 0.5,
+      }],
     })
     const doc = run()
     if (doc) {
       const ids = (doc.timeline?.tracks ?? []).map((t) => t.id)
       const t = ids.find((x) => x.startsWith('text_comment_bottom_'))
       const sub = t ? subOf(doc, t) : null
-      ok(!!sub, `⑥ 叠加那一轨没生成（轨：${JSON.stringify(ids.slice(0, 5))}）`)
+      ok(!!sub, `⑤ 三轴叠加那一轨没生成（轨：${JSON.stringify(ids.slice(0, 5))}）`)
       if (sub) {
-        // 形态那半边
+        // 排版那半边
         ok(sub.vertical === true,
-          `⑥ 叠加没生效：样式轴 \`${styleName}\` 的 \`vertical\` **没写出去** ` +
+          `⑤ 叠加没生效：排版轴 \`${styleName}\` 的 \`vertical\` **没写出去** ` +
           `⇒ 用户选了竖排、成片里横着（实得 ${JSON.stringify(sub.vertical)}）`)
+        // 过渡那半边
+        ok(sub.scale_in_ms !== undefined && sub.scale_in_ms !== null,
+          `⑤ 叠加没生效：过渡轴 \`${transitionName}\` 的 \`scale_in_ms\` **没写出去** ` +
+          `⇒ 用户选了弹出、成片里不弹（实得 ${JSON.stringify(sub.scale_in_ms)}）`)
         // 动效那半边
         ok(sub.shake_px !== undefined && sub.shake_px !== null,
-          `⑥ 叠加没生效：动效轴 \`${effectName}\` 的 \`shake_px\` **没写出去** ` +
+          `⑤ 叠加没生效：动效轴 \`${effectName}\` 的 \`shake_px\` **没写出去** ` +
           `⇒ 用户选了抖动、成片里不抖（实得 ${JSON.stringify(sub.shake_px)}）`)
-        // ⚠️ **两个都要在**才叫叠加 —— 这条是"三级互斥"那版做错的地方
-        ok(sub.vertical === true && sub.shake_px !== undefined && sub.shake_px !== null,
-          '⑥ 两边没有同时生效 —— 这不是"可叠加"，是"二选一"')
+        // ⚠️ **三条都要在**才叫叠加 —— 这是"三轴互斥"那种错法会挂掉的地方
+        ok(sub.vertical === true && sub.scale_in_ms !== undefined && sub.shake_px !== undefined,
+          '⑤ 三条轴没有**同时**生效 —— 这不是"可叠加"，是"三选一"')
       }
     }
   }
 
-  // ---- ⑥-bis ⚠️ **`sway` 那条路**单独核（它写的是**图层关键帧**，不走 `subtitle`）----
+  // ---- ⑤-bis ⚠️ 过渡轴**压掉全局**那条语义（`fade` 是空预设）----
   //
-  // ⚠️ 为什么必须单独一条：`sway_*` 是**唯一**走 `keyframes` 的动效档族 ——
-  //    `subtitle` 上**一个字段都没有**。⇒ 只核 `subtitle` 的判据（上面 ⑥）
-  //    对它是**空的**：`sway_lg` 全丢也能全绿。
-  //    （复核者的存疑清单第 6 条点名的就是这个覆盖缺口。）
-  //
-  // ⚠️ 核的**不是**"有 keyframes 就算过" —— 要核**角度来自哪一路**：
-  //    逐条预设（`[elements]` 也配了别的值时，**逐条赢**）。见 `swayCfg` 那条注释。
+  // ⚠️ 为什么必须单独一条：`fade` 是**唯一**"一个字段都不给"的档 ——
+  //    它存在的意义就是"把全局 `[elements]` 压掉"。
+  //    夹具里配了全局 `[elements]`（`GLOBAL_ELEMENTS`）⇒ 这一条**不是空转**。
+  //    实测踩过：`swayCfg` 的三轴门漏了过渡轴 ⇒ `fade` 静默继承全局摇摆、
+  //    该轨长出 2 个 `rotation` 关键帧（字自己摆起来），而报告里一行差异都没有。
   {
-    const styleName = ALL.find((n) => n.startsWith('vtext_') && PARTS[n].form.includes('vertical'))
-    const swayName = ALL.find((n) => n.startsWith('sway_'))
-    ok(!!styleName && !!swayName, '⑥-bis 夹具挑不出 sway 档（表变了？）')
-    if (styleName && swayName) {
-      writeProject({ legacy: false, events: [{ style_anim: styleName, effect_anim: swayName, time: 0.5 }] })
+    const fadeName = ALL.find((n) => animAxisOf(n) === 'transition'
+      && Object.keys(animPreset(n) ?? {}).filter((k) => k !== 'sort').length === 0)
+    ok(!!fadeName, '⑤-bis 找不到"空预设的过渡档"（`fade` 没了？）')
+    if (fadeName) {
+      writeProject({ legacy: false, events: [{ transition_anim: fadeName, time: 0.5 }] })
       const doc = run()
       if (doc) {
         const id = (doc.timeline?.tracks ?? []).map((t) => t.id)
           .find((x) => x.startsWith('text_comment_bottom_'))
         const sub = id ? subOf(doc, id) : null
-        const keys = id ? keysOf(doc, id) : []
-        // ① 形态那半边照样要在（sway 是动效档，不该把竖排挤掉）
-        ok(sub?.vertical === true,
-          `⑥-bis 叠加了 sway 之后**形态丢了**：\`vertical\` 实得 ${JSON.stringify(sub?.vertical)}`)
-        // ② 摇摆**必须真的写出关键帧**（写 0 个 = "配了、成片里字不摆"）
-        ok(keys.length >= 2,
-          `⑥-bis \`${swayName}\` 没有写出旋转关键帧（实得 ${keys.length} 个）—— ` +
-          `摇摆那条路写的是**图层 keyframes**、不是 \`subtitle\`，所以上面 ⑥ 看不见它\n` +
-          `     ⚠️ 只核 \`subtitle\` 的判据对 sway **是空的**：全丢也会绿`)
-        // ③ 关键帧的角度必须来自**逐条预设**，不是全局 `[elements]`
-        //    （夹具的全局 sway_deg = 33.3，预设 = 6/12/900 —— 值不同才分得开）
-        if (keys.length) {
-          const peak = Math.max(...keys.map((k) => Math.abs(k.value ?? 0)))
-          const want = Math.abs(E.animPreset(swayName)?.swayDeg ?? -1)
-          ok(Math.abs(peak - want) < 1e-6,
-            `⑥-bis 摇摆角度取错了来源：关键帧峰值 ${peak}，逐条预设 \`${swayName}\` 应当是 ${want}\n` +
-            `     ⚠️ ${peak === 33.3 ? '取的是**全局 `[elements]`**（逐条预设被忽略）' : '两边都不是'} —— ` +
-            `报告里一行差异都不会有`)
+        ok(!!sub, `⑤-bis \`${fadeName}\` 那一轨没生成`)
+        if (sub) {
+          // ⚠️ 全局 `scale_in_*`（9.9/9.8/999）**一个都不许漏进来**
+          for (const k of ['scale_in_from', 'scale_in_peak', 'scale_in_ms']) {
+            ok(!(k in sub),
+              `⑤-bis \`${fadeName}\`（空预设）静默继承了全局 \`[elements]\` 的 ` +
+              `\`${k}\`=${JSON.stringify(sub[k])} —— ` +
+              `空预设的语义是**压掉全局**，不是"没配就算了"`)
+          }
+          // ⚠️ 摇摆那条腿同样不许漏（全局 `sway_deg` = 33.3）
+          const keys = id ? keysOf(doc, id) : []
+          ok(keys.length === 0,
+            `⑤-bis \`${fadeName}\` 静默继承了全局 \`[elements] sway_deg\` —— ` +
+            `该轨长出 ${keys.length} 个 \`rotation\` 关键帧，成片里这行字会自己摆\n` +
+            `     ⚠️ 摇摆写的是**图层关键帧**、不是 \`subtitle\`，所以只核 \`subtitle\` 看不见它`)
         }
       }
-    }
-  }
-}
-
-// ============================================================================
-// ⑦ 新格式与老格式**等价**：同一组效果，两种写法产物应当一致
-// ============================================================================
-{
-  // 老格式写 `scatter_shake`（两边都给的那一档）⇒ 应当等价于
-  // 新格式同时写 `style_anim = scatter_shake` + `effect_anim = scatter_shake`。
-  const n = ALL.find((x) => PARTS[x].form.length && PARTS[x].motion.length)
-  ok(!!n, '⑦ 找不到"两边都给"的档（迁移那条会空转）')
-  if (n) {
-    writeProject({ legacy: true, events: [{ anim: n, time: 0.5 }] })
-    const a = run()
-    writeProject({ legacy: false, events: [{ style_anim: n, effect_anim: n, time: 0.5 }] })
-    const b = run()
-    if (a && b) {
-      const pick = (d) => {
-        const t = (d.timeline?.tracks ?? []).find((x) => x.id.startsWith('text_comment_bottom_'))
-        return t ? JSON.stringify(t.subtitle ?? t.sub ?? null) : null
-      }
-      const sa = pick(a), sb = pick(b)
-      ok(sa !== null && sb !== null, '⑦ 两种写法的轨都没生成')
-      ok(sa === sb,
-        `⑦ 老格式 \`anim = "${n}"\` 与新格式"两路都写 \`${n}\`"**不等价**。\n` +
-        `     老：${String(sa).slice(0, 220)}\n     新：${String(sb).slice(0, 220)}\n` +
-        `     ⚠️ 两者语义相同（那一档两边都给），不等价说明拆法有损。`)
     }
   }
 }
@@ -550,88 +693,170 @@ try {
 // ============================================================================
 //
 // ⚠️ 这是本判据的**自证**：一条判据如果对"真正改坏的代码"照样绿，它就是空转的。
-//    下面每一条都对应**本趟真踩过**的一个坑 —— 用它们证明判据有牙。
-//
-// ⚠️⚠️ **前两条（R4 泄漏）原先登记在 `check-yekitrim-translator.mjs --mutate` 里，
-//    但那个变异台根本不跑 39 档 R4**（它的 `loadVariant` 清单里没有一个检查覆盖两轴）
-//    ⇒ 那两条变异**永远"没被打红"**，让守卫整个变成红的。
-//    复核者实测点破了这件事：**判据抓得住，是变异台登记错了文件**。
-//    ⇒ 挪到这里 —— 锚点与夹具都现成（夹具**必须**带 `[elements]`，否则空转）。
+//    下面每一条都对应**本趟真踩过 / 复核挖出**的一个坑 —— 用它们证明判据有牙。
 //
 // ⚠️ **只改副本**：把转译器拷到临时目录再改，**绝不**在真身上改、
 //    也**绝不**用 `git checkout` 还原（那会把未提交的工作一起冲掉）。
 if (MUTATE) {
   const MUTS = [
     {
-      name: '（R4）"指定了档"只看动效轴 ⇒ 纯形态档回落全局（put/pick 那一路）',
-      from: `    const on = !!preset || !!stylePreset;`,
+      // ★ 本趟要求的第 1 组变异：把「精确名」那条路去掉、只留前缀
+      //   ⇒ `animAxisOf('heartbeat')` 变 `''` ⇒ 判据 ① 必须红。
+      name: '（①）`animAxisOf` 去掉「精确名」那条路，只留前缀 ⇒ `heartbeat` 认不出来',
+      from: `    if (Object.prototype.hasOwnProperty.call(ANIM_AXIS, key)) return ANIM_AXIS[key];`,
+      to: `    if (false) return ANIM_AXIS[key];`,
+      expect: '①',
+    },
+    {
+      // ★ 本趟要求的第 1 组变异（另一半）：把 `heartbeat` 从轴表里删掉。
+      //   ⚠️ 只删这一项不够 —— 精确名那条路会回落到前缀，而前缀也没有 `heartbeat`
+      //      ⇒ 同样返回 `''`。两条路各自单独红，才说明"两条都真的在判"。
+      name: '（①）`ANIM_AXIS` 里删掉 `heartbeat` 那一项 ⇒ 认不出来',
+      from: `    shake: 'effect', perchar: 'effect', heartbeat: 'effect',`,
+      to: `    shake: 'effect', perchar: 'effect',`,
+      expect: '①',
+    },
+    {
+      // ★ 本趟要求的第 2 组变异：把某个档的 `sort` 改成另一条轴。
+      //   ⚠️ 它打在 **①-bis**（`sort` ↔ `animAxisOf` 同源）—— 不是 ⓪/①。
+      //      理由：`animAxisOf` 读的是 `ANIM_AXIS`，而 `sort` 是**另一份**声明
+      //      ⇒ 只改 `sort` 时 `animAxisOf` 照旧返回 `effect`，
+      //      "两两不相交"（⓪）在**集合**上仍然成立（集合是按 `animAxisOf` 分的）。
+      //      真正破掉的是"面板摆在哪一栏 ↔ 转译器按哪条轴取字段"这对关系。
+      //      ⇒ 所以判据要**单独**把 `sort` 与 `animAxisOf` 对拍（①-bis），
+      //        否则这条变异只会以"字段归属漂了"的**间接**形式露头（③），
+      //        报错信息**指不到真正的原因**（实测踩到）。
+      name: '（①-bis）把 `shake` 的 `sort` 从 effect 改成 style ⇒ 面板与轴不同源',
+      from: `    shake: { sort: 'effect', shake_px: 6.0, shake_hz: 18.0 },`,
+      to: `    shake: { sort: 'style', shake_px: 6.0, shake_hz: 18.0 },`,
+      expect: '①-bis',
+    },
+    {
+      // （R4）"指定了档"只看动效轴 ⇒ 纯排版档回落全局（put/pick 那一路）
+      name: '（③）"指定了档"只看动效轴 ⇒ 纯排版档回落全局（put/pick 那一路）',
+      from: `    const on = !!preset || !!stylePreset || !!transitionPreset;`,
       to: `    const on = !!preset;`,
-      expect: '④',
+      expect: '③',
     },
     {
-      name: '（R4）"指定了档"只看动效轴 ⇒ 纯形态档长出 keyframes（sway 那一路）',
-      from: `              if (!anyAxis) return elementsCfg; // 两轴都没写 ⇒ 回落全局`,
-      to: `              if (p === undefined) return elementsCfg;`,
-      expect: '④',
+      // （R4）摇摆那条路的同一条门
+      name: '（③）`swayCfg` 的三轴门退回两轴（漏过渡轴）⇒ `fade` 静默继承全局摇摆',
+      from: `              const anyAxis = p !== undefined
+                || animPreset(cues[0].styleAnim) !== undefined
+                || animPreset(cues[0].transitionAnim) !== undefined;`,
+      to: `              const anyAxis = p !== undefined
+                || animPreset(cues[0].styleAnim) !== undefined;`,
+      expect: '③/⑤-bis',
     },
     {
-      // ⚠️ 摇摆**读全局而不是逐条预设** —— 症状是"用户选了 `sway_lg`（12°），
-      //    成片按全局那份摆"，**报告里一行差异都没有**。
-      //    抓它的是 ⑥-bis ③（核关键帧峰值的**来源**）。
-      name: '（摇摆）参数取全局而不是逐条预设（选了 sway_lg 却按全局摆）',
-      from: `              return { ...elementsCfg, sway_deg: p?.sway_deg, sway_ms: p?.sway_ms };`,
-      to: `              return { ...elementsCfg };`,
-      expect: '⑥-bis',
+      // ⚠️ 逐字那半边改读**动效轴**⇒ `perchar_*` 的 `per_char` 走错路（或丢掉）。
+      // ⚠️⚠️ 这条钉的是**本趟最严重的那条真缺陷**：`perchar_big` / `perchar_small`
+      //     整档不生效（用户要的「逐字变大 / 变小」两支**全是死的**，报告里一行都没有）。
+      //
+      //     ⚠️⚠️ **这条变异要同时摘掉两条路才有牙** —— 实测踩到过：
+      //         `perchar_*` 的 `per_char` 有**两条冗余来源**
+      //           a) `perCharFrom`（过渡 > 动效 > 排版 三选一）—— 动效那路给得到；
+      //           b) `animHasFormPart` 认了 `perchar_*` ⇒ 老格式拆分把它**也**送进
+      //              排版那路 ⇒ `stylePreset` 那路也给得到。
+      //         ⇒ **只摘一条，另一条会兜住**，产物逐字节不变 ⇒ 判据不红。
+      //           第一版就只摘了 `perCharFrom`，`--mutate` 报"没被打红"，
+      //           差点让人以为"判据抓不住"（其实是**变异造得不对**）。
+      //         ⇒ 这条把两处一起改回"只认排版轴 / 按档名硬编码"，
+      //           复现出修复前的真实形态（`per_char` 整条消失）。
+      name: '（③）逐字那两条路一起退回（`perchar_*` 的 `per_char` 整条丢失）',
+      parts: [
+        {
+          from: `    return p.perChar !== undefined
+      || p.tiltDeg !== undefined
+      || p.vertical === true
+      || p.squashY !== undefined;`,
+          to: `    return animAxisOf(key) === 'style'
+      || key === 'slam_squash'
+      || key === 'pop_perchar'
+      || /^hop_/.test(key);`,
+        },
+        {
+          from: `    const perCharFrom = (transitionPreset?.perChar !== undefined) ? transitionPreset
+      : (preset?.perChar !== undefined) ? preset
+        : (stylePreset?.perChar !== undefined) ? stylePreset
+          : undefined;`,
+          to: `    const perCharFrom = (stylePreset?.perChar !== undefined && false) ? stylePreset
+      : undefined;`,
+        },
+      ],
+      expect: '③',
     },
     {
-      name: '把 pop_perchar/hop 从"形态侧"摘掉（本趟真踩过的 bug）',
-      from: `      key === 'slam_squash' ||\n      key === 'pop_perchar' ||\n      /^hop_/.test(key)`,
-      to: `      key === 'slam_squash'`,
-      expect: '④',
+      // ⚠️ 这条是上面那条的**第二半**：单独摘 `perCharFrom`（它自己会被
+      //    另一条路兜住 ⇒ 本变异**故意不要求翻红**，见下面 `masked: true`）。
+      //     留它的意义是**把这个"冗余"写下来** —— 哪天有人删掉其中一条路，
+      //     这条就变成有牙的了；而"两条都在"这件事本身是一种防御。
+      name: '（③·冗余）只摘 `perCharFrom` 的动效那路（另一条路兜得住 ⇒ 允许不红）',
+      from: `    const perCharFrom = (transitionPreset?.perChar !== undefined) ? transitionPreset
+      : (preset?.perChar !== undefined) ? preset
+        : (stylePreset?.perChar !== undefined) ? stylePreset
+          : undefined;`,
+      to: `    const perCharFrom = (stylePreset?.perChar !== undefined) ? stylePreset
+      : undefined;`,
+      expect: '③',
+      masked: true,
     },
     {
-      name: '排序键拼法退回带前导 + （本趟真踩过的 bug）',
-      from: `        const ax = kx[0] || [kx[1], kx[2]].filter(Boolean).join('+');\n` +
-        `        const ay = ky[0] || [ky[1], ky[2]].filter(Boolean).join('+');`,
-      to: `        const ax = kx[0] || \`\${kx[1]}+\${kx[2]}\`;\n` +
-        `        const ay = ky[0] || \`\${ky[1]}+\${ky[2]}\`;`,
-      expect: '⑤b',
+      name: '（④-bis）排序键拼法退回"三路直接拼"（空串排在字母前）',
+      from: `        const ax = kx[0] || [kx[1], kx[2], kx[3]].filter(Boolean).join('+');\n` +
+        `        const ay = ky[0] || [ky[1], ky[2], ky[3]].filter(Boolean).join('+');`,
+      to: `        const ax = kx[0] || \`\${kx[1]}+\${kx[2]}+\${kx[3]}\`;\n` +
+        `        const ay = ky[0] || \`\${ky[1]}+\${ky[2]}+\${ky[3]}\`;`,
+      expect: '④-bis',
     },
     {
-      name: '动效那一路改读样式字段（两轴混用 ⇒ 叠加失效）',
+      name: '（⑤）动效那一路改读排版字段（两轴混用 ⇒ 叠加失效）',
       from: `            animPreset(cues[0].effectAnim),`,
       to: `            animPreset(cues[0].styleAnim),`,
-      expect: '⑥',
-    },
-    {
-      name: '形态那一路改读动效字段（两轴混用，另一个方向）',
-      from: `            animPreset(cues[0].styleAnim),`,
-      to: `            animPreset(cues[0].effectAnim),`,
-      expect: '⑥',
+      expect: '⑤',
     },
   ]
   const src = fs.readFileSync(TRANSLATOR, 'utf8')
   let bad = 0
   for (const m of MUTS) {
-    if (!src.includes(m.from)) {
-      console.log(`  ✗ 变异「${m.name}」的锚点**找不到了** —— 源码文本变了没同步，` +
-        `这条变异**静默失效**（不是判据的错，是变异表过期了）`)
+    // ⚠️ **一条变异可以有多处替换**（`m.parts`）—— 有些缺陷是**两条路一起**才造成的
+    //    （`perchar_*` 就有两条冗余来源：只摘一条，另一条兜住 ⇒ 产物逐字节不变 ⇒ 不红）。
+    //    实测踩到：第一版只支持单处替换，那条变异报"没被打红"，
+    //    差点被误读成"判据抓不住"。
+    const parts = m.parts ?? [{ from: m.from, to: m.to }]
+    const missAnchor = parts.filter((x) => !src.includes(x.from))
+    if (missAnchor.length) {
+      console.log(`  ✗ 变异「${m.name}」有 ${missAnchor.length} 处锚点**找不到了** —— ` +
+        `源码文本变了没同步，这条变异**静默失效**（不是判据的错，是变异表过期了）`)
       bad++
       continue
     }
-    const mutated = src.replace(m.from, m.to)
-    const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim2axis-mut-'))
+    let mutated = src
+    for (const x of parts) mutated = mutated.replace(x.from, x.to)
+    const mutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yk-anim3axis-mut-'))
     const mutFile = path.join(mutDir, 'polish-to-dhampir.mut.mjs')
     fs.writeFileSync(mutFile, mutated)
+    let red = false
     try {
       execFileSync(process.execPath, [fileURLToPath(import.meta.url)],
-        { stdio: 'pipe', env: { ...process.env, YK_ANIM2AXIS_TRANSLATOR: mutFile } })
-      console.log(`  ✗ 变异「${m.name}」**没被打红** —— 判据在 ${m.expect} 那条上有洞`)
-      bad++
+        { stdio: 'pipe', env: { ...process.env, YK_ANIM3AXIS_TRANSLATOR: mutFile } })
     } catch {
-      console.log(`  ✓ 变异「${m.name}」→ 打红在 ${m.expect}`)
+      red = true
     } finally {
       try { fs.rmSync(mutDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+    if (red) {
+      console.log(`  ✓ 变异「${m.name}」→ 打红在 ${m.expect}`)
+    } else if (m.masked) {
+      // ⚠️ **故意允许不红**的变异（`masked: true`）——见那条的注释。
+      //    它不是"判据有洞"，而是**把这个冗余写下来**：
+      //    摘掉这条路时另一条兜得住 ⇒ 产物逐字节不变 ⇒ **本来就不该红**。
+      //    ⚠️ 别把它删掉：哪天另一条路没了，它立刻变成有牙的变异。
+      console.log(`  ○ 变异「${m.name}」**没红（如预期）** —— 这条被另一条路兜住，` +
+        `见该变异的注释（\`masked: true\`）`)
+    } else {
+      console.log(`  ✗ 变异「${m.name}」**没被打红** —— 判据在 ${m.expect} 那条上有洞`)
+      bad++
     }
   }
   if (bad) {
@@ -643,10 +868,12 @@ if (MUTATE) {
 }
 
 if (fails.length) {
-  console.log(`✗ 两级动效守卫 ${fails.length} 处问题：`)
+  console.log(`✗ 三轴动效守卫 ${fails.length} 处问题（共 ${checks} 项判据）：`)
   for (const f of fails.slice(0, 20)) console.log('    · ' + f)
   if (fails.length > 20) console.log(`    …另有 ${fails.length - 20} 处`)
   process.exit(1)
 }
-console.log(`✓ 两级动效（样式 × 动效）守卫：39 档迁移无损 + 顺序与老格式一致 + ` +
-  `叠加真生效 + 两轴字段不重叠（${ALL.length} 档）`)
+console.log(
+  `✓ 三轴动效（排版 × 过渡 × 动效）守卫：${ALL.length} 档迁移无损 + 顺序与老格式一致 + ` +
+  `叠加真生效 + 三轴档名两两不相交 + 三轴字段不重叠 + \`animAxisOf\` 逐档归对轴；` +
+  `共 ${checks} 项判据`)

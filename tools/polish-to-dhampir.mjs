@@ -3573,7 +3573,7 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// ⚠️ 认不出的档名 ⇒ `{style:'', effect:''}`（上面已经报过 CLAMP）。
   const splitLegacyAnim = (raw) => {
     const key = String(raw ?? '').trim().toLowerCase();
-    if (!key || !animPreset(key)) return { style: '', effect: '' };
+    if (!key || !animPreset(key)) return { style: '', effect: '', transition: '' };
     return {
       style: animHasFormPart(key) ? key : '',
       // ⚠️⚠️ **`fade_only` 特例**：它**一个动效字段都不给**（动的是 opacity），
@@ -3583,6 +3583,21 @@ export function translate(config, clipDir, outPath, options = {}) {
       //      那一档会静默继承全局的 `scale_in_*`（判据 ㊱ 当场红，判得对）。
       //    ⇒ 判据是"**这一档有没有动效语义**"，不是"它有没有给字段"。
       effect: (animHasMotionPart(key) || key === 'fade_only') ? key : '',
+      // ⚠️⚠️ **第三路（过渡）是 2026-10-14 三轴收敛时补的。**
+      //
+      //    收敛把 `pop` / `fade` 的轴改成了 `'transition'`，而
+      //    `animHasFormPart('pop')` 与 `animHasMotionPart('pop')` **都是 false**
+      //    （它们的字段既不是形态、也不是动效）⇒ 只吐两路的话，
+      //    `pop` / `fade` 被拆成 `{style:'', effect:''}` ⇒ **三路全空** ⇒
+      //    ① 轨 id 退化成 `text_<style>_<pos>`（`fade` 与 `pop` **撞同一个 id**，
+      //       后面那条被吃掉）；② `on === false` ⇒ **静默回落到全局 `[elements]`**
+      //       ⇒ 用户选「弹出」拿到的是"全局弹入 + 全局抖动 + 全局摇摆"；
+      //       ③ 排序键跟着乱（R4 破）。
+      //
+      //    ⚠️ 只在**老格式**（单个 `anim`）露头 —— 新格式三路都写时是对的。
+      //       所以面板与 `cargo test` 都看不见它，只有 `R4` 类判据和手写
+      //       `anim` 的工程会撞上。
+      transition: animAxisOf(key) === 'transition' ? key : '',
     };
   };
 
@@ -4504,10 +4519,22 @@ export function translate(config, clipDir, outPath, options = {}) {
 
             const styleName = usingSplit ? styleAnimRaw : (mig ? mig.style : '');
             const effectName = usingSplit ? effectAnimRaw : (mig ? mig.effect : '');
-            // ⚠️ 老工程（只有 `anim`）**没有过渡轴** ⇒ 走 `''`（= 不施加过渡）。
-            //    有意的：`splitLegacyAnim` 把老档名拆到排版/动效两轴，而"过渡"
-            //    是这次新加的轴 ⇒ 老工程不该凭空多出一个过渡。
-            const transitionName = usingSplit ? transitionAnimRaw : '';
+            // ⚠️⚠️ **老格式也有过渡轴**（2026-10-14 修）。
+            //
+            //    原注释写的是"老工程没有过渡轴 ⇒ 走 `''`（不施加过渡）"，理由是
+            //    "过渡是这次新加的轴 ⇒ 老工程不该凭空多出一个过渡"。**那个理由在
+            //    三轴收敛之后不成立了**：收敛把 `pop` / `fade` 的轴**改成了**
+            //    `'transition'` —— 也就是说老格式里写的 `anim = "pop"` / `"fade"`
+            //    **正是过渡档**，硬走 `''` 等于把用户明确写的档**丢掉**。
+            //
+            //    症状（实测，全都不报错）：① `fade` 与 `pop` 拆完三路全空 ⇒ 轨 id
+            //    退化成 `text_<style>_<pos>` ⇒ **两条撞同一个 id、后面那条被吃掉**；
+            //    ② `on === false` ⇒ **静默回落全局 `[elements]`** ⇒ 用户选「弹出」
+            //    拿到"全局弹入 + 全局抖动 + 全局摇摆"；③ 排序键跟着乱（R4 破）。
+            //
+            //    ⚠️ 别改回 `''`：`mig.style` / `mig.effect` 都为空时，`transition`
+            //    是这一档**唯一的落点**（`pop` / `fade` 既不给形态也不给动效字段）。
+            const transitionName = usingSplit ? transitionAnimRaw : (mig ? mig.transition : '');
 
             for (const [field, name] of [
               ['anim', animRaw],
