@@ -54,7 +54,7 @@ const MUTATE_EAT = process.argv.includes('--mutate-eat')
 // ---- 变异：把生产的逐字那条路摘掉（判据必须翻红）----
 //
 // ⚠️ 改的是**生产文件**，跑完必须还原（`try/finally`）。
-// ⚠️ 变异体要"看起来合理"：把 `perCharSpans` 直接 `return null`，
+// ⚠️ 变异体要"看起来合理"：把 「perCharSpans」 直接 「return null」，
 //    正是"忘了接线"那种真实事故的形态（不是把函数删掉 —— 那会语法错，
 //    判据红得没有意义）。
 // ⚠️⚠️ **变异写的是"副本"，绝不改生产文件**（2026-10-13 踩过一次）：
@@ -101,13 +101,13 @@ if (MUTATE || MUTATE_TRANS || MUTATE_EAT) {
     }
     // ⚠️ 锚点必须取**函数签名之后**的那个 `{`，不能取 `indexOf('{', i)` ——
     //    函数上面那段 JSDoc 里就有一个 `{`（`@returns {null | Array<...>}`），
-    //    取到它会把 `return null` 插进**注释块里**，于是副本整个语法错
+    //    取到它会把 「return null」 插进**注释块里**，于是副本整个语法错
     //    （实测：`Unexpected token 'null'`，而且看起来像"变异体本身写错了"）。
     const sigStart = orig.indexOf('(', i)
     const sigEnd = orig.indexOf(')', sigStart)
     const bodyStart = orig.indexOf('{', sigEnd)
     // ⚠️ **两处变异**，覆盖**两条腿**（少了任一条就测不到对应那个分支）：
-    //    ① `--mutate`：把 `perCharSpans` 直接返回 null ⇒ 元素与字幕的逐字**一起**断；
+    //    ① `--mutate`：把 「perCharSpans」 直接返回 null ⇒ 元素与字幕的逐字**一起**断；
     //    ② `--mutate-sub`：把 `subAnimFields` 直接返回空 ⇒ **只**断字幕那条腿，
     //       而 ③④ 仍然全绿 —— 这正是"只补了元素、漏了字幕"那个真实事故的形态。
     //    ⇒ **⑤ 是唯一能抓到 ② 的判据**（它专查 `subsAt` 那条分支）。
@@ -412,7 +412,7 @@ try {
       '⑥ 字幕那条没有把**样式轴**（`c.styleAnimName`）交给 `textTiltTransform` ——\n' +
       '     字幕的静态形态（倾斜 / 压扁）不生效。⚠️ 别退回 `c.animName`：\n' +
       '     两轴化之后它只代表"两轴里随便哪一个"，形态那半会丢。')
-    // ⚠️ **字幕逐字那条路必须真的接上**（`spans` + `perCharSpans`）。
+    // ⚠️ **字幕逐字那条路必须真的接上**（`spans` + 「perCharSpans」）。
     ok(/perCharSpans\s*\(\s*c\.fullText/.test(pvMarkup) || /c\.perChar/.test(pvMarkup),
       '⑥ 字幕没有消费 `perChar` —— 19 档逐字在**字幕**上不会动\n' +
       '     ⚠️ `subAnimFields` 带出来了，但组件不读 = 白带（本仓的经典空转）')
@@ -651,11 +651,124 @@ try {
       '⑤-ter 算出来的 `formStyle` 没有在模板上套用 —— 算出来不渲染 = 白算')
   }
 
+  // ---- ⑤-sexies ⚠️★ **元素那条路也要排版轴与逐字**（2026-10-14）----
+  //
+  // ⚠️⚠️ 与 ⑤-ter 是**同一个病、不同的路**：⑤-ter 盯的是**字幕**那条
+  //    （`subAnimFields` + `PolishPreview.vue`），而**元素**那条
+  //    （「buildIndex」 的元素分支 + `getElements`）是**另一份实现**。
+  //    本仓第 ④ 类老病就是"**两条路径，只修了一条**" —— 实测这里又犯了一次：
+  //      · `vtext` 的 `vertical` / `fontWeight`：**只有** `capRowsWrapped`（字幕专用）读，
+  //        元素那条 `texts` computed 里没有任何 `formStyle`
+  //        ⇒ 同一个「竖排」档：**字幕竖着、文字元素横着**，两边都不报错；
+  //      · `arc` 与 `perchar_*`：`getElements` 的 push 里
+  //        `perCharFrame: local * idx.fps` 早就在了，但 **`perCharFps` 没人给**
+  //        ⇒ 「perCharSpans」 第一道门 「perCharFps > 0」 不过 ⇒ **直接 「return null」**
+  //        ⇒ 元素上逐字**一个 span 都不产出**（用户选「弧形 / 逐字变化」字一动不动，成片里动）；
+  //      · 「entry.perChar」 也**只试排版轴** ⇒ 用户选「逐字变大」（动效轴）
+  //        在元素上同样一条不动。
+  //    ⇒ 元素上原本**只有 `tilt` 真的生效**（`tiltDeg` 恰好是 `textTiltTransform` 的消费者）。
+  //
+  // ⚠️ 判据要**走到求值**（`getElements` + 「perCharSpans」），不能只查源码文本 ——
+  //    "字段给了但没人读"和"读了但值是 null"是两种不同的坏法，只有求值能同时盖住。
+  {
+    const mkEl = (ev) => E.buildIndex({
+      config: {
+        canvas: { width: 1920, height: 1080, fps: 30 }, elements: {},
+        segments: [{ start: 0, end: 10, fx: 'low', events: [{
+          type: 'element', kind: 'text', text: '弧形 ABC', time: 1, end: 4,
+          style: 'comment', pos: 'bottom', x: '40%', y: '70%',
+          source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1', ...ev
+        }] }]
+      },
+      subtitles: [], danmaku: [], duration: 10, fps: 30
+    })
+    const elAt = (ev, t) => E.getElements(mkEl(ev), t)[0]
+    const spansAt = (ev, t) => {
+      const e = elAt(ev, t)
+      if (!e) return { e: null, sp: null }
+      return {
+        e,
+        sp: E.perCharSpans(e.text, {
+          perChar: e.perChar, perCharFrame: e.perCharFrame,
+          perCharFps: e.perCharFps, fontPx: e.style?.fontPx
+        })
+      }
+    }
+
+    // ① **排版轴**：`vtext` 的竖排必须**读得到**（元素自己那一档）。
+    const vt = elAt({ style_anim: 'vtext' }, 2.0)
+    ok(!!vt, '⑤-sexies 「竖排」的文字元素没进索引')
+    if (vt) {
+      ok(E.animPreset(vt.styleAnimName)?.vertical === true,
+        '⑤-sexies 元素这条路的 `styleAnimName` 没带出竖排档：' +
+        JSON.stringify(vt.styleAnimName))
+    }
+
+    // ② ★ **逐字必须真的产出 span**（元素这条路）。
+    //    ⚠️ `arc` 是排版轴、`perchar_big` 是动效轴 —— **两条都要试**：
+    //       只试一条的话，另一个"只读排版轴"的写法照样绿。
+    for (const [label, ev] of [
+      ['`arc`（排版轴的逐字）', { style_anim: 'arc' }],
+      ['`perchar_big`（动效轴的逐字）', { effect_anim: 'perchar_big' }],
+      ['`perchar_small`（动效轴的逐字）', { effect_anim: 'perchar_small' }]
+    ]) {
+      const { e, sp } = spansAt(ev, 1.5)
+      ok(!!e, `⑤-sexies ${label} 的文字元素没进索引`)
+      if (!e) continue
+      ok(!!e.perChar,
+        `⑤-sexies ${label} 在**元素**这条路上 「perChar」 是空的 —— ` +
+        `用户选了它、预览里字一动不动（成片里动）
+` +
+        `     ⚠️ 多半是 「entry.perChar」 **只试了排版轴**，而动效轴的档没被认到。`)
+      ok(!!sp && sp.length > 1,
+        `⑤-sexies ${label} 的 「perCharSpans」 是 null／整串 —— **元素上逐字没生效**
+` +
+        "     ⚠️ 第一道门是 perCharFps > 0，拿不到就 return null：" +
+        `perCharFps=${JSON.stringify(e.perCharFps)}`)
+      // ⚠️ 同帧内**各字变换必须不同** —— 全一样 = "整行平移"退化成假逐字。
+      if (sp && sp.length > 1) {
+        // ⚠⚠ 取样时刻必须**在错峰窗口内**：实测 `arc`（`per_char_frames=8`、
+        //    `stagger_frames=3`、6 个字）在 **frame 0 全是起点、frame 30 全是终点**
+        //    —— **两端都是均匀的**，只有中间（frame 15）才看得到错峰。
+        //    ⚠ 拿端点当样本 = **假红**（我第一版就是拿 t=1.0 去量的，它是 frame 0）。
+        const uniq = new Set(sp.map((x) => x.style?.transform || '').filter(Boolean))
+        ok(uniq.size > 1,
+          `⑤-sexies ${label} 在元素上**每个字的变换都一样**（退化成整行平移）：` +
+          `${JSON.stringify([...uniq])}`)
+      }
+    }
+
+    // ③ **不给逐字的档必须还是整串**（别为了绿把所有人都逐字化）。
+    const shakeSp = spansAt({ effect_anim: 'shake' }, 2.0)
+    ok(!shakeSp.sp,
+      '⑤-sexies 「抖动」不该有逐字 span（它是纯动效，没有 `perChar`）：' +
+      `${JSON.stringify(shakeSp.sp && shakeSp.sp.length)}`)
+
+    // ④ ★ **逐字必须随时间走**（不是"生成了 span 就算数"）。
+    //    ⚠️⚠️ 这一条是实测逼出来的：我第一版在 `buildIndex` 里写死
+    //       `perCharFrame = 0`，结果**六个字全是同一个 `rotate(-14deg)`** ——
+    //       span 产出了、看着像生效，其实**从头到尾一模一样**
+    //       （`charTransformAt` 的 `(localFrame - start)/dur` 里 frame 不走 ⇒ 停在终点值）。
+    //       这正是"比不画更坏"的那一类：静默的"配了不动"。
+    const arcA = spansAt({ style_anim: 'arc' }, 1.3)
+    const arcB = spansAt({ style_anim: 'arc' }, 1.9)
+    ok(!!(arcA.sp && arcB.sp),
+      '⑤-sexies arc 在元素上没产出 span（④ 没法判）')
+    if (arcA.sp && arcB.sp) {
+      const a = JSON.stringify(arcA.sp.map((x) => x.style))
+      const b = JSON.stringify(arcB.sp.map((x) => x.style))
+      ok(a !== b,
+        '⑦-sexies arc 在元素上**两个时刻的画面完全一样** —— ' +
+        '逐字**配了不动**（perCharFrame 大概率被写死成常量）' + '\n' +
+        '     ⚠️ span 产出了所以 ② 会绿，只有这条能发现。')
+    }
+  }
+
   // ---- ⑦ ⚠️ **老格式 `anim` ↔ 新格式三轴等价**（R4 的预览侧，2026-10-14 三轴版）----
   //
   // ⚠️⚠️ **老格式那条路仍然存在**：`splitAnimTwoAxis` 返回**三路**
   //    `{style, effect, transition}`，而 `engine.js` 的**两个调用点**
-  //    （`buildIndex` 的元素分支 + `subAnimFields` 的字幕分支）都接了过渡轴。
+  //    （「buildIndex」 的元素分支 + `subAnimFields` 的字幕分支）都接了过渡轴。
   //
   // ⚠️ **`pop` / `fade` 在老格式下走的是 `transition` 那一路** ——
   //    只吐两路时它们**三路全空** ⇒ 轨 id 退化成 `text_<style>_<pos>`

@@ -475,9 +475,21 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           //    而成片是底座真的逐字画的。这正是用户报的"播放没有效果"。
           //    消费方在 `PolishPreview.vue`（逐字拆 `<span>`，经 `perCharSpans`）。
           //
-          // ⚠️ 逐字 spec 取**样式轴**（`pop_perchar` / `hop_*` / `scatter_*` 的
-          //    `perChar` 都在那一档里）—— 见 `scripts/anim-attribution.mjs` 的 `form`。
-          entry.perChar = animPerChar(styleAnimName)
+          // ⚠️⚠️ **逐字 spec 要试两轴**（2026-10-14，与转译器 `perCharFrom` 同一个修）。
+          //    三轴收敛后「逐字变化」住在**动效**轴（`perchar_big`/`perchar_small`），
+          //    而它们的 `perChar` 仍是**形态字段** ⇒ 只认排版轴的话，
+          //    用户选「逐字变大」在**元素上**一条都不动
+          //    （本仓"两条路径只修一条"的第 N 例：字幕那条路修过，元素这条漏了）。
+          //    ⚠️ 顺序 = 优先级：排版轴（`arc` 的逐字）优先，与转译器同序。
+          entry.perChar = animPerChar(styleAnimName) ?? animPerChar(effectAnimName)
+            ?? animPerChar(transitionAnimName)
+          // ⚠ 逐字那两个数（`perCharFrame` / `perCharFps`）**不在这里给**：
+          //   它们在**求值期**算（下面 `getElements` 的 push 里，
+          //   `local * idx.fps` / `idx.fps`）—— `buildIndex` 是**一次性**索引，
+          //   那时**没有"当前时间"这个量**（写 `t` 直接 `ReferenceError`，实测）。
+          //   ⚠ 这里曾经又写了一遍 `entry.perCharFps` —— **死代码**：
+          //     消费方取的是 `idx.fps`（下面 `idx.fps = …` 那一行），从来不读 entry 上这个。
+          //     实测拓它改成 0 判据**一项都不红** —— 就是这个原因。
         }
       }
     })
@@ -2184,6 +2196,18 @@ export function getElements(idx, t) {
         //    那两个**静态**值（它们不是时间函数，所以不能只摊进 `textMotion`）。
         //    模板那边是 `textTiltTransform(tx)` 整对象传的 ⇒ 这里带了就通了。
         animName: e.animName || '',
+        // ⚠️⚠️ **排版/过渡/动效三条档名要分开带出去**（2026-10-14）。
+        //
+        //    上面那个 `animName` 是**兼容字段**（"那一档"，排版轴优先），
+        //    `textTiltTransform` 靠它能拿到 `tiltDeg` —— 但**这不够**：
+        //    `vtext` 的 `vertical` / `fontWeight` 与 `perchar_*` 的 `perChar`
+        //    都要按**各自那条轴**去查表。只给一个合并字段 ⇒ 用户选「竖排」
+        //    在元素上**横着**（成片里竖的），因为组件拿 `animName` 查不到
+        //    "这一条排版轴是 `vtext`"这件事的**轴身份**。
+        //    （`PolishPreview.vue` 的 `texts` computed 就按这三个字段消费。）
+        styleAnimName: e.styleAnimName || '',
+        effectAnimName: e.effectAnimName || '',
+        transitionAnimName: e.transitionAnimName || '',
         // ---- P4 补：逐字（2026-10-13）----
         //
         // 消费方拿这两样去算每个字自己的变换：

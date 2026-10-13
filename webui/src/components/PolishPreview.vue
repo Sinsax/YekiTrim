@@ -60,7 +60,8 @@
                          WebkitTextStrokeWidth: tx.style.strokePx + 'px',
                          WebkitTextStrokeColor: rgbaCss(tx.style.stroke),
                          background: tx.plate ? rgbaCss(tx.plate) : 'transparent',
-                         padding: tx.plate ? '0.06em 0.18em' : '0' }">
+                         padding: tx.plate ? '0.06em 0.18em' : '0',
+                         ...tx.formStyle }">
             <!-- ---- P4 补：**逐字**（2026-10-13）----
                  ⚠️⚠️ 这里以前是 `{{ tx.text }}` 一个整串文字节点 ⇒
                  C 组逐字变换（15 档）+ D 组逐字错峰（4 档）**共 19 档在预览里完全不动**，
@@ -2373,15 +2374,34 @@ const stickers = computed(() => stickersAt(idx.value, current.value))
 const texts = computed(() =>
   getElements(idx.value, current.value)
     .filter((e) => e.isText === true)
-    .map((e) => ({
-      ...e,
-      spans: perCharSpans(e.text, {
-        perChar: e.perChar,
-        perCharFrame: e.perCharFrame,
-        perCharFps: e.perCharFps,
-        fontPx: e.style?.fontPx
-      })
-    }))
+    .map((e) => {
+      // ---- ⚠️⚠️ 排版那半边的**实际参数**（2026-10-14 补，与字幕那条路对齐）----
+      //
+      // ⚠️⚠️ 这是**第二处**"档名带出来了、参数没人读"：字幕那条路
+      //    （`capRowsWrapped`）2026-10-13 修过，**元素这条漏了** ——
+      //    于是同一个「竖排」档：**字幕竖着、文字元素横着**，而两边都不报错。
+      //    （本仓"两条路径只修一条"的第 N 例。）
+      //
+      // ⚠️ 取**这一条自己的档**（`e.styleAnimName`，由 `getElements` 带出），
+      //    不是轨级/全局 —— 与字幕那条同一个口径。
+      const form = animPreset(e.styleAnimName) || {}
+      // ⚠️ **竖排**：`writing-mode: vertical-rl`，与底座 `SubtitleStyle::vertical` 同语义。
+      //    ⚠️ 竖排时字号/描边/颜色一个字都不改（它与那些正交）。
+      const formStyle = form.vertical ? { writingMode: 'vertical-rl', textOrientation: 'upright' } : {}
+      // ⚠️ 字重跟着这一档走（`vtext` 给 400，比元素默认的 900 细）——
+      //    不跟的话「竖排」在预览里比成片**粗得多**，而两边的字号/位置全对。
+      if (form.fontWeight) formStyle.fontWeight = form.fontWeight
+      return {
+        ...e,
+        formStyle,
+        spans: perCharSpans(e.text, {
+          perChar: e.perChar,
+          perCharFrame: e.perCharFrame,
+          perCharFps: e.perCharFps,
+          fontPx: e.style?.fontPx
+        })
+      }
+    })
 )
 
 /** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
