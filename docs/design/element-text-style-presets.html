@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>YekiTrim 文字元素样式 · 设计靶子（4 档 → 重新设计）</title>
+<!--
+  ============================================================================
+  文字**元素**样式 —— **设计靶子**（2026-10-13）
+  ============================================================================
+
+  # 这一层是什么（别与另外两层混）
+
+  这个仓里"文字"有**三个不同的层**，混在一起谈必然乱：
+
+  | 层 | 是什么 | 现状 |
+  |---|---|---|
+  | **元素层（本页）** | 时间轴上那种"贴在画面上的情绪字"（`Event::Element` kind=text） | **只有 4 档**，无设计稿 ← **本页要重新设计的就是它** |
+  | 字幕层 | 整条字幕轨（`SubtitleStyle`，24 字段） | 已有设计稿 `subtitle-style-presets.html` |
+  | 动效层 | 39 档 `anim`（倾斜/弧形/…/跳起） | 已定稿，设计稿 `text-styles-comic-draft.html` |
+
+  ⚠️ **本页只谈元素层自己的"样式"** —— 也就是"这四个档位长什么样"，
+  不涉及它配了哪一档动效（那是正交的另一个下拉）。
+
+  # ⚠️⚠️ 最重要的一条：**这一层现在只能表达 9 个量**
+
+  元素文字的样式**不是**一堆独立字段，而是 `process` 解析后写回 `event.source` 的
+  **一条竖线分隔的串**（权威：`crates/yekitrim-polish/src/process/mod.rs:1864`）：
+
+      <style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>
+
+  ⇒ 所以"能不能设计出来"的判据是**能不能落进这 9 个量**。
+  ⚠️ 而 **`source` 的字段只能往末尾追加**（Rust 那边写着：插在中间会让既有字段
+  **静默错位** —— `backdrop` 会被读成 `tilt_deg`，症状是"底衬没了、字歪了"，
+  而**两边单测各自都过**）。
+
+  # 硬值域（不是口味，是规格钉住的）
+
+  * `tilt_deg ∈ [-7, 7]` —— 再大汉字长句要"转头"读；
+  * `squash_y ≥ 0.85` —— 再压字就"瘪了"（重心与字面高是设计好的）；
+  * 两档兜底：认不出的 style ⇒ 一律当 `comment`（**最保守的那一档**），
+    ⇒ 兜底档**必须是不歪、不压**的。
+
+  # 本页的四件产出
+
+  ① 现状 4 档**是什么样**（并指出它们的问题）；
+  ② 一版**重新设计**（同样 4 档位，但每档拉开真正的视觉差异）；
+  ③ 每条设计**逐字段对照**能不能落进那 9 个量（不能落的一律标出来）；
+  ④ 与**动效**正交组合时的效果（样式 × 动效 是两个下拉，不是一回事）。
+-->
+<style>
+  :root{
+    --bg:#F5F1EC; --card:#FFFFFF; --line:#E3DBD2; --bg-soft:#F0EAE4;
+    --ink:#2A2522; --dim:#7A6E66; --main:#C0554A; --main-soft:#FAECEA;
+    --ok:#4A7C59; --warn:#B4762A; --bad:#A33A2E;
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:26px 30px 80px;background:var(--bg);color:var(--ink);
+       font:14px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  h1{font-size:21px;margin:0 0 4px}
+  h2{font-size:15.5px;margin:32px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+  h2 .sub{font-weight:400;font-size:12px;color:var(--dim);margin-left:8px}
+  .lede{color:var(--dim);margin:0 0 14px;max-width:1000px;font-size:13px}
+  code{font-family:var(--mono);font-size:11.5px;background:var(--bg-soft);
+       padding:1px 5px;border-radius:3px}
+
+  .callout{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--main);
+           border-radius:0 8px 8px 0;padding:13px 17px;margin:0 0 20px;max-width:1050px;font-size:13px}
+  .callout.warn{border-left-color:var(--warn);background:#FDF8EE}
+  .callout.bad{border-left-color:var(--bad);background:#FCF0EE}
+  .callout.ok{border-left-color:var(--ok);background:#F1F7F2}
+  .callout b{color:inherit}
+
+  /* ---- 舞台：三种底片，只为检验可读性 ---- */
+  .stage{position:relative;width:100%;aspect-ratio:16/9;border-radius:8px;overflow:hidden;
+         display:flex;align-items:center;justify-content:center;margin:9px 0}
+  .bg1{background:linear-gradient(135deg,#f4f1eb,#dde4ec)}
+  .bg2{background:linear-gradient(135deg,#1b1e26,#0a0c10)}
+  .bg3{background:repeating-linear-gradient(45deg,#7a4b52 0 14px,#5d6f8a 14px 28px,#8a7a5d 28px 42px)}
+
+  /* ⚠️ 元素文字：与出片同口径 —— 描边要 paint-order:stroke fill（真外侧）。 */
+  .tx{white-space:pre-line;text-align:center;line-height:1.25;padding:0 6%;
+      -webkit-text-stroke-color:#1a1a1a;letter-spacing:0}
+  .plate{display:inline-block;padding:.1em .3em;border-radius:.12em}
+
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(430px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:13px 15px 15px}
+  .card h3{margin:0 0 1px;font-size:14px}
+  .card .who{color:var(--dim);font-size:11.5px;margin:0 0 2px}
+  .tag{display:inline-block;font-size:10px;font-family:var(--mono);background:var(--main-soft);
+       color:#B4574F;border-radius:3px;padding:1px 6px;margin-left:6px}
+
+  table.kv{width:100%;border-collapse:collapse;margin-top:9px;font-family:var(--mono);font-size:11px}
+  table.kv td{padding:2.5px 6px;border-bottom:1px dotted var(--line);vertical-align:top}
+  table.kv td:first-child{color:var(--dim);width:31%}
+  table.kv td:nth-child(2){width:26%}
+  table.kv td:last-child{color:var(--dim);font-family:inherit;font-size:11.5px}
+  .v-ok{color:var(--ok);font-weight:600}
+  .v-no{color:var(--bad);font-weight:600}
+
+  .note{font-size:12px;color:var(--dim);margin-top:9px;padding-left:10px;border-left:3px solid var(--line)}
+  .note.warn{border-left-color:var(--warn);color:#7a5a1e}
+  .note.bad{border-left-color:var(--bad);color:#8a3126}
+  .note.ok{border-left-color:var(--ok);color:#3c6647}
+
+  .ab{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  .ab .lbl{font-size:11px;color:var(--dim);text-align:center;margin-bottom:3px}
+
+  .recipe{background:var(--card);border:1px solid var(--line);border-radius:9px;
+          padding:12px 15px;margin-bottom:12px}
+  .recipe h4{margin:0 0 3px;font-size:13.5px}
+  .recipe .formula{font-family:var(--mono);font-size:11.5px;color:#B4574F;
+                   background:var(--main-soft);border-radius:4px;padding:5px 9px;margin:7px 0 4px}
+</style>
+</head>
+<body>
+
+<h1>文字元素样式 · 设计靶子 <span class="tag">4 档 → 重新设计</span></h1>
+<p class="lede">
+  <b>元素层</b>（时间轴上那种"贴在画面上的情绪字"）自己的样式。与<b>字幕层</b>的 24 字段、
+  与<b>动效层</b>的 39 档都不是一回事 —— 那两层各有自己的设计稿。
+</p>
+
+<div class="callout warn">
+  <b>⚠️ 先立规矩：这一层能表达的只有 9 个量。</b><br>
+  元素样式不是一堆独立字段，而是 <code>process</code> 解析后写回 <code>event.source</code> 的
+  <b>一条竖线分隔的串</b>（权威：<code>crates/yekitrim-polish/src/process/mod.rs:1864</code>）：
+  <div class="formula" style="font-family:var(--mono);font-size:11.5px;background:#F6F0E4;
+       border-radius:4px;padding:6px 9px;margin:8px 0 4px">
+    &lt;style&gt;|&lt;font_px&gt;|&lt;stroke_px&gt;|&lt;r,g,b,a&gt;|&lt;sr,sg,sb,sa&gt;|&lt;weight&gt;|&lt;backdrop&gt;|&lt;tilt_deg&gt;|&lt;squash_y&gt;
+  </div>
+  ⇒ 任何设计只要<b>落不进这 9 个量</b>，就<b>表达不出来</b>（下面每条都逐字段核过）。
+  <br>⚠️ 而且 <b>字段只能往末尾追加</b> —— Rust 那边写着：插在中间会让既有字段
+  <b>静默错位</b>（<code>backdrop</code> 被读成 <code>tilt_deg</code>，症状是"底衬没了、字歪了"，
+  而<b>两边单测各自都过</b>）。
+</div>
+
+<h2>① 现状：4 档实际上是同一个方块字 <span class="sub">这是要改掉的东西</span></h2>
+<p class="lede">
+  下面四张图是**照着现值 1:1 画的**（值来自 <code>placement.rs::base_font_px</code> 那一组）。
+  看一遍就会发现：四档之间只有<b>字号</b>与<b>有没有底衬</b>的差别，其余三个量
+  （描边色、字重档位、倾斜）几乎没拉开。
+</p>
+
+<div class="grid" id="current"></div>
+
+<div class="callout bad">
+  <b>现状的三个问题</b>
+  <ol style="margin:6px 0 0;padding-left:20px">
+    <li><b>拉不开</b>：<code>chapter</code>(84px/700) 与 <code>count</code>(64px/800) 在手机上几乎分不出；
+        <code>hook</code> 与 <code>count</code> 都靠"大"来表达，语义是重叠的。</li>
+    <li><b>描边色四档完全相同</b>（<code>[26,26,26]</code>）—— 这一格现在是<b>浪费的</b>，
+        而它恰恰是最能拉开"气质"的一格（近黑 = 硬；暖褐 = 复古；描边=填色 = 空心字）。</li>
+    <li><b>倾斜只有两档非零</b>（hook <code>+6°</code> / count <code>-4°</code>），
+        而 <code>chapter</code> 那格压扁 <code>0.92</code> 的差别<b>肉眼基本看不出</b>
+        —— 值域本来就窄（±7° / ≥0.85），与其"每个都动一点"，不如<b>让该动的动满、不该动的彻底不动</b>。</li>
+  </ol>
+</div>
+
+<h2>② 重新设计：四档各自的"语气" <span class="sub">同样 4 个档位，不动契约</span></h2>
+<p class="lede">
+  设计原则：<b>四档要能"一眼认出是哪一档"</b>，而且差别要落在**不同的量**上
+  （不能全靠字号大小 —— 那是最容易撞车的维度）。
+</p>
+
+<div class="callout ok">
+  <b>分工：四档各占一个"说话的姿势"</b>
+  <table class="kv" style="margin-top:8px">
+    <tr><td>hook</td><td>喊出来</td><td>最大 + 最重 + 歪到上限（"停下来听我说"）</td></tr>
+    <tr><td>chapter</td><td>标出来</td><td>中等 + <b>压扁</b> + 底衬（卡片感，像章节标题条）</td></tr>
+    <tr><td>comment</td><td>嘀咕</td><td>最小 + 暖黄 + 底衬（旁白，与正文分得开）</td></tr>
+    <tr><td>count</td><td>数出来</td><td>中等 + 极重 + 反向倾斜（"第 3 次"的节奏感）</td></tr>
+  </table>
+</div>
+
+<h3 style="font-size:13.5px;margin:20px 0 8px">2.1 建议值（逐格对照现状）</h3>
+<div id="redesign"></div>
+
+<h2>③ 每档逐字段核一遍 <span class="sub">能不能落进那 9 个量</span></h2>
+<p class="lede">
+  下面这张表是本页最要紧的部分：<b>每一格都要能写进 <code>source</code> 串</b>。
+  落不进去的，我把替代方案写出来（而不是假装它能做）。
+</p>
+<div id="fieldcheck"></div>
+
+<div class="callout warn">
+  <b>⚠️ 三个"想得到但做不到"的（现在做不到，别写进设计里当既有能力）</b>
+  <ol style="margin:6px 0 0;padding-left:20px">
+    <li><b>不同字不同色</b>（比如关键词染红）—— <code>source</code> 里 <code>fill</code>
+        是<b>整条一个值</b>。要做只能：<br>
+        &nbsp;&nbsp;· 用<b>底衬色</b>模拟（现在 <code>backdrop</code> 只是个 0/1，<b>没有颜色字段</b>）；
+        &nbsp;&nbsp;· 或者走<b>字幕层</b>的高亮（那边有 <code>highlight_color</code>，元素层没有）。</li>
+    <li><b>圆角底衬 / 自定义底衬色</b> —— <code>backdrop</code> 只有"有没有"，颜色与圆角都是写死的。
+        要改就得往 <code>source</code> <b>末尾追加</b>字段（Rust + JS 两侧一起改）。</li>
+    <li><b>字间距 / 行距</b> —— 这一层完全没有这两个量（<b>字幕层</b>才 <code>line_height</code>）。</li>
+  </ol>
+</div>
+
+<h2>④ 样式 × 动效：两个下拉，正交组合</h2>
+<p class="lede">
+  样式决定"长什么样"，动效决定"怎么动"。它们是<b>两个独立的下拉</b>
+  —— 所以下面每组都是"样式 + 动效"的合成，不是一回事。
+  动效那边的完整设计见 <code>docs/plan/text-styles-comic-draft.html</code>（39 档）。
+</p>
+<div id="combos"></div>
+
+<h2>⑤ 一张表：9 个量全清单</h2>
+<div class="callout" style="border-left-color:var(--line)">
+<table class="kv" id="allfields"></table>
+</div>
+
+<script>
+// ===========================================================================
+// ⚠️ 本页**不实现渲染算法** —— 它把"设计意图"画出来给人看。
+//    真正的口径：Rust `placement.rs`（四档的数值）+ 底座（怎么画）。
+//    这里的 CSS 是**近似**（浏览器字体 ≠ libass 布局），
+//    用途是"看形状、看比例、看对比"，**不是像素判据**。
+// ===========================================================================
+
+// ---- 现状现值（逐字抄自 placement.rs，别改用）----
+const CURRENT = {
+  hook:    { fontPx:120, strokePx:8, fill:'#ffffff', stroke:'#1a1a1a', weight:900, plate:false, tilt: 6,  squash:1.00 },
+  chapter: { fontPx: 84, strokePx:5, fill:'#ffffff', stroke:'#1a1a1a', weight:700, plate:true,  tilt: 0,  squash:0.92 },
+  comment: { fontPx: 44, strokePx:2, fill:'#ffe27a', stroke:'#1a1a1a', weight:700, plate:true,  tilt: 0,  squash:1.00 },
+  count:   { fontPx: 64, strokePx:4, fill:'#ffffff', stroke:'#1a1a1a', weight:800, plate:false, tilt:-4,  squash:1.00 },
+};
+
+// ---- 建议值：同样 4 档位，但差别落在**不同的量**上 ----
+const PROPOSED = {
+  hook:    { fontPx:124, strokePx:10, fill:'#ffffff', stroke:'#1a1a1a', weight:900, plate:false, tilt: 7,  squash:1.00,
+             why:'歪到值域上限、描边加粗到 10px —— "喊"的那一档就该是四档里最重的' },
+  chapter: { fontPx: 80, strokePx: 4, fill:'#ffffff', stroke:'#141210', weight:700, plate:true,  tilt: 0,  squash:0.88,
+             why:'压扁到 0.88（下限 0.85 内）＋ 底衬 —— 卡片感靠"扁"，不靠"大"，与 hook 拉开' },
+  comment: { fontPx: 44, strokePx: 3, fill:'#ffdd66', stroke:'#3a2f1e', weight:600, plate:true,  tilt: 0,  squash:1.00,
+             why:'字重**降到 600**（其余三档都 ≥700）＋ 暖褐描边而非近黑 —— 这是唯一"软"的一档' },
+  count:   { fontPx: 68, strokePx: 6, fill:'#ffe27a', stroke:'#1a1a1a', weight:900, plate:false, tilt:-6,  squash:1.00,
+             why:'填色改用 comment 那个暖黄 ＋ 字重拉满 → "第 3 次"这种累积计数该有节奏感' },
+};
+
+let bad = 0;
+
+/** 画一条元素文字。⚠️ 舞台是 16:9 的 430px 宽卡片 ⇒ 按 1920 基准缩。 */
+function paint(el, s, text) {
+  const scale = 0.155;   // ≈ 卡片宽 / 1920
+  el.textContent = text;
+  el.style.fontSize = (s.fontPx * scale) + 'px';
+  el.style.fontWeight = s.weight;
+  el.style.color = s.fill;
+  el.style.fontFamily = '"Microsoft YaHei","Noto Sans SC",sans-serif';
+  // ⚠️ 外侧描边：`paint-order:stroke fill` 才是真外侧（裸 -webkit-text-stroke 会啃笔画）。
+  el.style.webkitTextStrokeWidth = (s.strokePx * scale) + 'px';
+  el.style.webkitTextStrokeColor = s.stroke;
+  el.style.paintOrder = 'stroke fill';
+  // 倾斜 + 纵向压缩（⚠️ 顺序：rotate 在外、scale 在内 —— 与 check-text-tilt 同口径）。
+  el.style.transform = 'rotate(' + s.tilt + 'deg) scale(1,' + s.squash + ')';
+  return el;
+}
+
+function card(title, who, s, text, tag) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML =
+    '<h3>' + title + (tag ? '<span class="tag">' + tag + '</span>' : '') + '</h3>' +
+    '<p class="who">' + who + '</p>' +
+    '<div class="stage ' + (s._bg || 'bg3') + '"><div class="tx' + (s.plate ? ' plate' : '') + '"></div></div>' +
+    (s.why ? '<div class="note">' + s.why + '</div>' : '');
+  const tx = d.querySelector('.tx');
+  paint(tx, s, text);
+  if (s.plate) {
+    tx.style.background = 'rgba(18,16,15,.62)';
+    tx.style.webkitTextStrokeWidth = (s.strokePx * 0.155) + 'px';
+  }
+  return d;
+}
+
+// ---- ① 现状 ----
+{
+  const host = document.getElementById('current');
+  const TXT = { hook:'这就是钩子', chapter:'第二章', comment:'这也太真实了', count:'第 3 次了' };
+  const WHO = { hook:'hook · 钩子标题', chapter:'chapter · 章节卡', comment:'comment · 吐槽', count:'count · 计数' };
+  for (const k of ['hook','chapter','comment','count']) {
+    host.appendChild(card(WHO[k], 'font ' + CURRENT[k].fontPx + 'px · stroke ' + CURRENT[k].strokePx +
+      'px · weight ' + CURRENT[k].weight + ' · ' + (CURRENT[k].plate ? '有底衬' : '无底衬') +
+      ' · tilt ' + CURRENT[k].tilt + '° · squash ' + CURRENT[k].squash,
+      CURRENT[k], TXT[k]));
+  }
+}
+
+// ---- ② 重新设计：现状 vs 建议 并排 ----
+{
+  const host = document.getElementById('redesign');
+  const TXT = { hook:'这就是钩子', chapter:'第二章', comment:'这也太真实了', count:'第 3 次了' };
+  const WHO = { hook:'hook · 钩子标题', chapter:'chapter · 章节卡', comment:'comment · 吐槽', count:'count · 计数' };
+  for (const k of ['hook','chapter','comment','count']) {
+    const d = document.createElement('div');
+    d.className = 'card';
+    d.innerHTML = '<h3>' + WHO[k] + '<span class="tag">建议</span></h3>' +
+      '<div class="ab">' +
+        '<div><div class="lbl">现状</div><div class="stage bg3"><div class="tx"></div></div></div>' +
+        '<div><div class="lbl">建议</div><div class="stage bg3"><div class="tx p2"></div></div></div>' +
+      '</div><div class="note">' + PROPOSED[k].why + '</div>';
+    const [a, b] = d.querySelectorAll('.tx');
+    paint(a, CURRENT[k], TXT[k]);
+    paint(b, PROPOSED[k], TXT[k]);
+    if (CURRENT[k].plate) a.style.background = 'rgba(18,16,15,.62)';
+    if (PROPOSED[k].plate) b.style.background = 'rgba(18,16,15,.62)';
+    if (CURRENT[k].plate) a.classList.add('plate');
+    if (PROPOSED[k].plate) b.classList.add('plate');
+    host.appendChild(d);
+  }
+}
+
+// ---- ③ 逐字段核对 ----
+{
+  const LIMITS = {
+    fontPx:   { lo: 24, hi: 160, ok: v => v >= 24 && v <= 160, why: '太小读不出、太大出画；现值 44–120' },
+    strokePx: { lo: 0,  hi: 20,  ok: v => v >= 0 && v <= 20,  why: '外侧宽度；>20 在汉字上会吃掉笔画间隙' },
+    weight:   { lo: 300, hi: 900, ok: v => v >= 300 && v <= 900, why: 'CSS 刻度。⚠️ 底座这条文字**消费**字重（与字幕层不同，那边实测无效）' },
+    tilt:     { lo: -7, hi: 7,   ok: v => Math.abs(v) <= 7,    why: '**规格硬约束**：再大长句要"转头"读' },
+    squash:   { lo: 0.85, hi: 1, ok: v => v >= 0.85 && v <= 1, why: '**规格硬约束**：再压字就"瘪了"' },
+    backdrop: { lo: 0, hi: 1,    ok: v => v === 0 || v === 1,  why: '当前只有 0/1，**没有颜色与圆角**' },
+  };
+  const rows = [];
+  for (const k of ['hook','chapter','comment','count']) {
+    rows.push('<tr><td colspan="3" style="background:var(--bg-soft);font-weight:700;' +
+      'font-family:inherit;font-size:12px">' + k + '</td></tr>');
+    const p = PROPOSED[k], c = CURRENT[k];
+    const chk = (name, val, lim, cur) => {
+      const good = lim.ok(val);
+      if (!good) bad++;
+      rows.push('<tr><td>' + name + '</td><td>' + val + '   <span style="color:var(--dim)">(现 ' + cur + ')</span></td>' +
+        '<td><span class="' + (good ? 'v-ok' : 'v-no') + '">' + (good ? '✓ 落得进' : '✗ 超值域') + '</span> · ' + lim.why + '</td></tr>');
+    };
+    chk('fontPx', p.fontPx, LIMITS.fontPx, c.fontPx);
+    chk('strokePx', p.strokePx, LIMITS.strokePx, c.strokePx);
+    chk('weight', p.weight, LIMITS.weight, c.weight);
+    chk('backdrop', p.plate ? 1 : 0, LIMITS.backdrop, c.plate ? 1 : 0);
+    chk('tilt_deg', p.tilt, LIMITS.tilt, c.tilt);
+    chk('squash_y', p.squash, LIMITS.squash, c.squash);
+    rows.push('<tr><td>fill</td><td>' + p.fill + '</td><td><span class="v-ok">✓ 整条一个值</span> · 任意 RGBA</td></tr>');
+    rows.push('<tr><td>stroke_color</td><td>' + p.stroke + '</td><td><span class="v-ok">✓ 整条一个值</span> · ⚠️ 现四档都是 <code>#1a1a1a</code>，这格一直浪费着</td></tr>');
+  }
+  document.getElementById('fieldcheck').innerHTML =
+    '<table class="kv">' + rows.join('') + '</table>';
+}
+
+// ---- ④ 样式 × 动效 组合 ----
+{
+  const host = document.getElementById('combos');
+  const RECIPES = [
+    { name:'爆发（生气 / 惊讶）', style:'count 建议值', anim:'砸入 · 带压扁',
+      formula:'count(68px/900/暖黄/-6°) ＋ 砸入带压扁 → 歪着砸进来，末字爆开' },
+    { name:'失控（害怕 / 紧张）', style:'hook 建议值', anim:'抖动 · 强',
+      formula:'hook(124px/900/+7°/10px 描边) ＋ 抖动强 → 字幅最大、还在颤' },
+    { name:'欢快（开心 / 笑）', style:'chapter 建议值', anim:'逐字跳起 · 标准',
+      formula:'chapter(80px/压扁.88/底衬) ＋ 逐字跳起 → 卡片逐字蹦起来' },
+    { name:'泄气（呆 / 无奈）', style:'comment 建议值', anim:'收缩 · 标准',
+      formula:'comment(44px/600/暖黄软描边) ＋ 收缩 → 越缩越小、软软地淡掉' },
+  ];
+  const TXT = { hook:'太可怕了', chapter:'第三章', comment:'我人傻了', count:'第 5 次' };
+  for (const r of RECIPES) {
+    const key = r.style.startsWith('count') ? 'count' : r.style.startsWith('hook') ? 'hook'
+              : r.style.startsWith('chapter') ? 'chapter' : 'comment';
+    const d = document.createElement('div');
+    d.className = 'recipe';
+    d.innerHTML = '<h4>' + r.name + '</h4>' +
+      '<div class="formula">' + r.formula + '</div>' +
+      '<div class="stage bg3"><div class="tx' + (PROPOSED[key].plate ? ' plate' : '') + '"></div></div>' +
+      '<div class="note">⚠️ 这一格<b>只画了样式</b>，没有画动效 —— 动效在预览里是随时间变的，' +
+      '静态图表达不了。判"会动吗"请看 <code>scripts/check-preview-anim.mjs</code>。</div>';
+    const tx = d.querySelector('.tx');
+    paint(tx, PROPOSED[key], TXT[key]);
+    if (PROPOSED[key].plate) tx.style.background = 'rgba(18,16,15,.62)';
+    host.appendChild(d);
+  }
+}
+
+// ---- ⑤ 9 个量全清单 ----
+{
+  const F = [
+    ['style', '枚举', 'comment', '档位名。<b>认不出的一律当 comment</b>（最保守档 ⇒ 兜底必须不歪不压）'],
+    ['font_px', '数值', '44–120', '文档像素。⚠️ 这是**基准值**，实际字号还会被版面求解调整'],
+    ['stroke_px', '数值', '2–8', '<b>外侧</b>宽度（与字幕层同口径：CSS 要画两倍才是"看着一样细"）'],
+    ['fill', 'r,g,b,a', '白 / 暖黄', '整条一个值。<b>做不到"不同字不同色"</b>'],
+    ['stroke_color', 'r,g,b,a', '#1a1a1a', '整条一个值。⚠️ <b>现四档全相同 —— 这格是浪费的</b>'],
+    ['weight', '数值', '700–900', 'CSS 刻度。⚠️ 这一层底座**真的消费**它（字幕层的 font_weight 实测无效）'],
+    ['backdrop', '0 / 1', 'chapter,comment=1', '底衬色块。⚠️ <b>没有颜色/圆角字段</b>，那两个是写死的'],
+    ['tilt_deg', '数值', '+6 / -4', '<b>值域 [-7,7]</b>（规格钉住）。正 = 顺时针'],
+    ['squash_y', '数值', '0.92 / 1.0', '<b>值域 ≥0.85</b>（规格钉住）。纵向倍数，横向不动'],
+  ];
+  document.getElementById('allfields').innerHTML = F.map(function (r) {
+    return '<tr><td>' + r[0] + '</td><td>' + r[1] + ' · 现 ' + r[2] + '</td><td>' + r[3] + '</td></tr>';
+  }).join('');
+}
+
+// ---- 自检 ----
+{
+  const problems = [];
+  if (bad > 0) problems.push(bad + ' 处建议值超出值域');
+  // 四档必须**真的不一样**（否则这一页等于没设计）
+  const sig = k => JSON.stringify([PROPOSED[k].fontPx, PROPOSED[k].strokePx, PROPOSED[k].weight,
+    PROPOSED[k].plate, PROPOSED[k].tilt, PROPOSED[k].squash]);
+  const sigs = ['hook','chapter','comment','count'].map(sig);
+  if (new Set(sigs).size !== 4) problems.push('四档里有重复的取值组合');
+  // 兜底档（comment）必须不歪不压
+  if (PROPOSED.comment.tilt !== 0 || PROPOSED.comment.squash !== 1)
+    problems.push('兜底档 comment 歪了或压了（认不出的 style 会落到它）');
+  if (problems.length) {
+    document.title = '⚠️ 自检失败：' + problems.join('；');
+    console.error('❌ 自检失败：' + problems.join('；'));
+  } else {
+    console.log('✅ 自检通过：4 档取值互不相同、全部落在值域内、兜底档不歪不压');
+  }
+}
+</script>
+</body>
+</html>
