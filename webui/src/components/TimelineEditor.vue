@@ -395,9 +395,9 @@
                         等于"把否定的方案留在上面"。底下 `TEXT_STYLES` 已一并删除；
                         ⚠️ `Event.style` **这个字段还在**（字幕层仍用它），
                         只是不再由这个面板提供入口。 -->
-                <label>样式</label>
+                <label>排版</label>
                 <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)"
-                  title="管字的形态（歪斜、压扁、逐字大小…）。带「· 形态」的档两栏都有 —— 那是同一个档的形态半边，想要完整效果要把动效栏也选上。">
+                  title="管字**排成什么形状**（歪斜、竖排、弧形）。不随时间变。">
                   <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ kindLabelOn('style', k) }}</option>
                   <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
                 </select>
@@ -407,13 +407,48 @@
                     <option v-for="a in styleVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
                   </select>
                 </template>
+                <!-- ---- 排版角度（2026-10-14，用户口径：倾斜与弧形要能调角度）----
+                     ⚠️ **只在 `tilt` / `arc` 两档出现**（`showAngle`）—— 别的排版档
+                        没有旋转语义，显示了用户会以为它能调（调了不生效）。
+                     ⚠️ 区间**必须与转译器的 `LAYOUT_ANGLE_MIN/MAX` 同值**，
+                        由 `scripts/check-anim-layout-angle.mjs` 逐值钉着。 -->
+                <template v-if="showAngle">
+                  <label>角度</label>
+                  <div class="angle-row">
+                    <input type="range" :min="LAYOUT_ANGLE_MIN" :max="LAYOUT_ANGLE_MAX" step="0.5"
+                      :value="layoutAngle" @input="setLayoutAngle($event.target.value)"
+                      title="倾斜/弧形的角度（度）。负号 = 反方向。">
+                    <span class="angle-val">{{ layoutAngle }}°</span>
+                    <!-- ⚠️ 「默认」只在**显式设过**时才可点：没设过时它本来就是默认值，
+                         按钮看着能动却什么都不改变，用户会以为坏了。
+                         ⚠️ 它写的是 `null`（键不存在），**不是 0** —— 0 是一个合法的
+                         用户选择（"我要它正着"），与"没填"是两回事。 -->
+                    <button v-if="layoutAngleSet" type="button" class="angle-reset"
+                      @click="resetLayoutAngle()" title="去掉角度设置，回到该档的默认角度">默认</button>
+                  </div>
+                </template>
                 <div v-if="selItem.style_anim && !ANIM_KNOWN.includes(selItem.style_anim)" class="hint">
+                  这个档名不认识。
+                </div>
+
+                <label>过渡</label>
+                <select :value="transitionKind" @change="setKindOnAxis('transition', $event.target.value)"
+                  title="管字**怎么进来、怎么出去**（入场/出场效果）。与动效可以同时设。">
+                  <option v-for="k in kindsOnAxis('transition')" :key="k.kind" :value="k.kind">{{ kindLabelOn('transition', k) }}</option>
+                  <option v-if="transitionKind === ''" value="">未知档（{{ selItem.transition_anim }}）</option>
+                </select>
+                <template v-if="transitionVariants.length > 1">
+                  <select :value="selItem.transition_anim || ''" @change="setVariantOnAxis('transition', $event.target.value)">
+                    <option v-for="a in transitionVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
+                  </select>
+                </template>
+                <div v-if="selItem.transition_anim && !ANIM_KNOWN.includes(selItem.transition_anim)" class="hint">
                   这个档名不认识。
                 </div>
 
                 <label>动效</label>
                 <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)"
-                  title="管字怎么动（抖动、摇摆、弹入…）。带「· 动效」的档两栏都有 —— 那是同一个档的动效半边，想要完整效果要把样式栏也选上。">
+                  title="管字**在场的时候怎么动**（持续型）。与过渡可以同时设。">
                   <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ kindLabelOn('effect', k) }}</option>
                   <option v-if="effectKind === ''" value="">未知档（{{ selItem.effect_anim }}）</option>
                 </select>
@@ -425,9 +460,9 @@
                 <div v-if="selItem.effect_anim && !ANIM_KNOWN.includes(selItem.effect_anim)" class="hint">
                   这个档名不认识，成片里不会动。
                 </div>
-                <div v-if="selItem.anim && !selItem.style_anim && !selItem.effect_anim" class="hint">
-                  正在用旧档「{{ selItem.anim }}」—— 上面选任一栏都会改用它。
-                </div>
+                <!-- ⚠️ 三轴里只剩「排版 / 过渡 / 动效」，**没有"两栏都有"这回事了** ——
+                     `kindLabelOn` 的后缀与 `setKindOnAxis` 的同步都随之删除。
+                     用户报的「样式和动效内容过于重复」就是那 11 档 `both` 造成的。 -->
               </template>
 
               <!-- 贴纸支：复用已有的贴纸选择器 -->
@@ -924,172 +959,116 @@ const TYPE_LABELS = Object.fromEntries(EFFECTS.map((e) => [e.id, e.label]))
  *     不是"选一个叫'不动效'的形状"。 */
 const ANIM_KINDS = [
   // ---- 不设 / 清除：单一状态，没有细分 ----
-  //  ⚠️ `label` 是**动效栏**的叫法（「不设」= 不额外加动效）；样式栏显示
-  //     「清除」（见 `KIND_LABEL_ON`）—— 两栏的"空"不是同一件事。
+  //  ⚠️ 每一栏的"空"语义**不一样**，所以显示名也不一样（见 `kindLabelOn`）：
+  //     排版栏 = 「默认」（回到没有任何排版变换）；过渡栏 = 「默认弹出」；
+  //     动效栏 = 「不设」（不额外加动效）。
+  //  ⚠️ 三栏的"空"落盘时**都写空串** —— 差别只在显示。
   {
     kind: 'none',
     label: '不设',
     axis: 'none',
     variants: [{ value: '', label: '不设' }]
   },
-  // ===== A 组：整块变换 =====
+
+  // ===== 排版轴（用户口径：「形态改为排版」）=====
+  //
+  // ⚠️⚠️ **倾斜与弧形的角度是可调的**（2026-10-14，用户明确要求）——
+  //    档位本身**不带角度**，角度走**事件字段** `layout_angle_deg`。
+  //    面板上给一个**角度滑杆**，只在选中 `tilt` / `arc` 时显示。
+  //    改档位**不会**重置角度（两者正交）。
+  //    ⚠️ 滑杆区间必须与转译器那对常量**同值**（`LAYOUT_ANGLE_MIN/MAX` 就在下面，
+  //       那边是权威；`scripts/check-anim-layout-angle.mjs` 逐值钉着两端一致）。
+  //       ⚠️ 不一致的症状：「前端能拉到 45、后端夹到 30」⇒ 用户看到 45、成片 30、**不报错**。
   {
     kind: 'tilt',
     label: '倾斜',
     axis: 'style',
-    variants: [
-      { value: 'tilt_std', label: '标准' },
-      { value: 'tilt_sm', label: '小角度' },
-      { value: 'tilt_rev', label: '反方向' }
-    ]
+    // ⚠️ 只有这一档与 `arc` 显示角度滑杆（见 `showAngle`）。
+    angle: true,
+    variants: [{ value: 'tilt', label: '标准' }]
   },
-  // ===== B 组：整块动效 =====
-  {
-    kind: 'shake',
-    label: '抖动',
-    axis: 'effect',
-    variants: [
-      { value: 'shake_std', label: '标准' },
-      { value: 'shake_slow', label: '慢频' },
-      { value: 'shake_lg', label: '强' }
-    ]
-  },
-  {
-    kind: 'sway',
-    label: '摇摆',
-    axis: 'effect',
-    variants: [
-      { value: 'sway_std', label: '标准' },
-      { value: 'sway_lg', label: '大角度' },
-      { value: 'sway_slow', label: '慢摆' }
-    ]
-  },
-  {
-    kind: 'slam',
-    label: '砸入',
-    axis: 'both',
-    variants: [
-      { value: 'slam_std', label: '标准' },
-      { value: 'slam_lg', label: '重' },
-      { value: 'slam_squash', label: '带压扁' }
-    ]
-  },
-  {
-    kind: 'shrink_in',
-    label: '收缩',
-    axis: 'effect',
-    variants: [
-      { value: 'shrink_in_std', label: '标准' },
-      { value: 'fade_only', label: '只淡出' },
-      { value: 'shrink_in_fast', label: '快速抽走' }
-    ]
-  },
-  {
-    kind: 'pop',
-    label: '弹出',
-    axis: 'both',
-    variants: [
-      { value: 'pop_std', label: '标准' },
-      { value: 'pop_soft', label: '软' }
-    ]
-  },
-  // ===== C 组：逐字变换（每个字同时动、幅度不同）=====
-  //
-  // ⚠️ 这一组在**底座**侧走逐字路径（每字一张位图），与上面"整块"那几组不同分支。
   {
     kind: 'arc',
-    label: '逐字弧形',
-    axis: 'both',
-    variants: [
-      { value: 'arc_up', label: '上拱' },
-      { value: 'arc_wave', label: '波浪' },
-      { value: 'arc_down', label: '下垂' }
-    ]
-  },
-  {
-    kind: 'size',
-    label: '逐字大小字',
+    label: '弧形（扇形）',
     axis: 'style',
-    variants: [
-      { value: 'size_last', label: '末字重音' },
-      { value: 'size_first', label: '首字重音' },
-      { value: 'size_mid', label: '中字重音' }
-    ]
+    angle: true,
+    // ⚠️ 弧形只用角度的**绝对值**当幅度，**方向由档位定**（缺省向上弯）。
+    //    所以这里没有"上拱/下垂"两支了 —— 想换方向就把角度填成负的。
+    variants: [{ value: 'arc', label: '标准' }]
   },
-  {
-    kind: 'scatter',
-    label: '逐字抖散',
-    axis: 'both',
-    variants: [
-      { value: 'scatter_sm', label: '轻' },
-      { value: 'scatter_lg', label: '重' },
-      { value: 'scatter_shake', label: '带抖动' }
-    ]
-  },
-  {
-    kind: 'shrink',
-    label: '逐字变小',
-    axis: 'style',
-    variants: [
-      { value: 'shrink_desc', label: '递减' },
-      { value: 'shrink_drop', label: '骤降' },
-      { value: 'shrink_tail', label: '尾音' }
-    ]
-  },
-  {
-    kind: 'grow',
-    label: '逐字放大',
-    axis: 'style',
-    variants: [
-      { value: 'grow_asc', label: '递增' },
-      { value: 'grow_burst', label: '爆开' },
-      { value: 'grow_first', label: '首字引爆' }
-    ]
-  },
-  // ===== D 组：逐字错峰（每个字**依次**动、幅度相同）=====
-  //
-  // ⚠️ 与 C 组的观感差别：C 组是"所有字同时动、幅度不同"，
-  //    这里是"每个字依次动、幅度相同"。
-  {
-    kind: 'hop',
-    label: '逐字错峰',
-    axis: 'both',
-    variants: [
-      { value: 'pop_perchar', label: '弹出 · 逐字' },
-      { value: 'hop_std', label: '跳起 · 标准' },
-      { value: 'hop_fast', label: '跳起 · 快错峰' },
-      { value: 'hop_big', label: '跳起 · 大字慢跳' }
-    ]
-  },
-  // ===== E 组：竖排 =====
-  //
-  // ⚠️ 竖排改的是**整条轨的排版方向**（底座 `SubtitleStyle::vertical`），
-  //    与上面那些"逐字/整块变换"不是同一层。
   {
     kind: 'vtext',
     label: '竖排',
     axis: 'style',
+    // ⚠️ 竖排是**轨级排版方向**（底座 `SubtitleStyle::vertical`），不是逐字变换。
+    // ⚠️ 原来「细楷 / 粗体 / 逐字变小」是**三档**，其中两档曾被实测抓出
+    //    "产物逐字节相同"。收敛成一条：用户清单里"竖排"就是一条，没有细/粗这一维。
+    variants: [{ value: 'vtext', label: '标准' }]
+  },
+
+  // ===== 过渡轴（新独立出来的一轴，用户口径：「入场出场的效果」）=====
+  //
+  // ⚠️ 过渡与动效是**两个维度**，可以并存：
+  //    过渡管"怎么进来、怎么出去"（一次性、有窗口），动效管"在场时怎么动"（持续型）。
+  //    「淡入出场 + 全程抖动」是合法组合。
+  {
+    kind: 'transition',
+    label: '过渡',
+    axis: 'transition',
     variants: [
-      { value: 'vtext_thin', label: '细楷' },
-      { value: 'vtext_bold', label: '粗体' },
-      { value: 'vtext_shrink', label: '逐字变小' }
+      // ⚠️ 「弹出」是**视觉默认**（用户口径：「默认为弹出」）—— 但落盘仍写**空串**，
+      //    因为"没配"与"显式配了弹出"在产物里必须是两个状态（R4）。
+      { value: 'pop', label: '弹出' },
+      { value: 'fade', label: '淡入淡出' }
     ]
+  },
+
+  // ===== 动效轴（用户口径：「只保留抖动和逐字变化」，另加心跳）=====
+  {
+    kind: 'shake',
+    label: '抖动',
+    axis: 'effect',
+    variants: [{ value: 'shake', label: '标准' }]
+  },
+  {
+    // ⚠️ **把原来 C 组（逐字变换）+ D 组（逐字错峰）合并成一条**（用户口径：
+    //    「合并逐字的效果作为一个动效，名为逐字变化」），下辖两支。
+    // ⚠️ 两支**必须产出不同参数** —— 本仓有过"两个预设产物逐字节相同"的实测事故。
+    //    由 `scripts/check-anim-presets-distinct.mjs` 钉着。
+    kind: 'perchar',
+    label: '逐字变化',
+    axis: 'effect',
+    variants: [
+      { value: 'perchar_big', label: '逐字变大' },
+      { value: 'perchar_small', label: '逐字变小' }
+    ]
+  },
+  {
+    // ⚠️ **新增档**（用户口径：「动效需要增加一个心跳，扑通扑通的心跳感」）。
+    // ⚠️⚠️ **底座侧的双峰脉冲还没实现**（现有原语只有单次/正弦，见转译器里
+    //    `heartbeat` 那段的注释）。当前观感 = 一次较缓的脉冲，不是真正的"扑通扑通"。
+    //    这一档先落参数与入口，**底座能力到位后再补**。
+    kind: 'heartbeat',
+    label: '心跳',
+    axis: 'effect',
+    variants: [{ value: 'heartbeat', label: '标准' }]
   }
 ]
 
-/** 拍平回"组"的形状 —— **只为兼容既有判据与旧读数**，界面不再用它渲染。
+/** **排版角度的允许区间**（2026-10-14）。
  *
- *  ⚠️ 保留 `{ group, items }` 这个形状有两个理由：
- *    ① 判据从**源码文本**里扒 `value: '…'` 那种字面量 —— 上面 `ANIM_KINDS`
- *       里每个 variant 都写成带 `value` 与 `label` 两个键的对象字面量，已满足；
- *    ② 下面 `ANIM_KNOWN` / 模板里的"认不出的档名"分支要一份**全档名**列表。
+ *  ⚠️⚠️ **权威在 `tools/polish-to-dhampir.mjs` 的 `LAYOUT_ANGLE_MIN/MAX`** ——
+ *     这里是为了让前端滑杆有个 `min`/`max` 而**逐值抄了一份**（前端不能 import
+ *     `tools/` 下的 ESM）。**两端同值由 `scripts/check-anim-layout-angle.mjs` 钉着**，
+ *     照本仓 `check-camera-zoom-parity.mjs` 的先例（"三档默认倍率五处逐值一致"）。
  *
- *  ⚠️ ⚠️ **这段注释里不许写出那种字面量的样子** —— 判据是**扒文本**的，
- *     注释里写一个示例会被当成真档名扒进去（实测：被当成 `'x'` 报了一句
- *     "界面有、转译器不认识"。**示例值要用占位说法，不要写得像真代码**）。
- *
- *  ⚠️ **不要**把界面改回"一个下拉 + `<optgroup>`" —— 那正是用户说"还是这个"的东西。
- *     这个常量现在**只**给判据与兜底用。 */
+ *  ⚠️ 不一致的症状是**双向**的，且都不报错：
+ *    * 前端区间比后端宽 ⇒ 用户能拉到 45、成片被夹到 30（他看到的和自己设的不一样）；
+ *    * 前端比后端窄 ⇒ 用户根本调不到后端允许的值。
+ */
+const LAYOUT_ANGLE_MIN = -30
+const LAYOUT_ANGLE_MAX = 30
+
 const ANIM_GROUPS = ANIM_KINDS.map((k) => ({
   group: k.label,
   items: k.variants.map((v) => ({ value: v.value, label: v.label }))
@@ -1171,8 +1150,12 @@ const ELEMENT_COLOR_VALUES = ELEMENT_COLORS.map((c) => c.value)
  *     ⚠️ 两栏都要留这一项：样式栏若没有它，用户**选错了就再也清不掉**
  *        （只能靠手改 toml）—— 这是"删掉「不动效」"最容易掉进去的坑。 */
 const kindsOnAxis = (axis) => ANIM_KINDS
-  // ⚠️ `axis === 'none'` 那一项（「不设」/「清除」）**两栏都进**。
-  .filter((k) => k.kind === 'none' || k.axis === axis || k.axis === 'both')
+  // ⚠️ `axis === 'none'` 那一项（「不设」/「默认」）**三栏都进**。
+  // ⚠️⚠️ **2026-10-14 三轴收敛后没有 `both` 了** —— 每条档位**只属于一条轴**
+  //    （原来 `both` 的那 11 档要么被删、要么被并进唯一一条轴）。
+  //    ⇒ 这里不再有 `|| k.axis === 'both'`，`setKindOnAxis` 里那套"同族才同步
+  //      另一轴"的逻辑也一并删掉（它的存在理由就是 `both`）。
+  .filter((k) => k.kind === 'none' || k.axis === axis)
   // ⚠️ **"空"那一项永远排最后** —— 「清除」出现在选项列表第一项时，
   //    用户会把它当成一个正常的形状档位来读（他就是这么读的）。
   .sort((a, b) => (a.kind === 'none' ? 1 : 0) - (b.kind === 'none' ? 1 : 0))
@@ -1203,12 +1186,26 @@ const kindsOnAxis = (axis) => ANIM_KINDS
  *       `check-anim-presets-parity.mjs` / `check-anim-dropdown.mjs` 用正则从这里
  *       扒档名，改形状会让对拍**静默失效**（扒不到 ⇒ 两侧都空 ⇒ 全绿）。
  *       这里只改**显示**，不动数据。 */
-const AXIS_SUFFIX = { style: '形态', effect: '动效' }
+// ⚠️⚠️ **`AXIS_SUFFIX` 已删**（2026-10-14 三轴收敛）。
+//
+// 它是**上一版**为"`both` 的档在两栏都出现"打的补丁：同一个档名在两栏里
+// 显示成「砸入 · 形态」/「砸入 · 动效」，让用户看出是"同一个档的两个半边"。
+//
+// 收敛后**没有任何档属于两条轴** ⇒ 两栏不可能出现同一个名字 ⇒ 后缀失去意义。
+// ⚠️ 别把它当"有用的保险"留着：一旦留着，下一个人会以为"档可以属于两轴"，
+//    而那正是用户报的「样式和动效内容过于重复」的根源。
 const kindLabelOn = (axis, k) => {
-  if (k.kind === 'none') return axis === 'style' ? '清除' : k.label
-  // 只给"两栏都有"的档加后缀。只属一栏的档加后缀是纯噪音（它本来就不会歧义）。
-  if (k.axis !== 'both') return k.label
-  return k.label + ' · ' + (AXIS_SUFFIX[axis] ?? '')
+  // ⚠️ "空"那一项三栏的**语义不同、叫法也不同**：
+  //    · 排版栏 = 「默认」（回到没有任何排版变换 —— 它是一个**状态**）
+  //    · 过渡栏 = 「默认弹出」（用户口径：「默认为弹出」—— 这也是一个状态）
+  //    · 动效栏 = 「不设」（不额外加动效 —— 一个有意为之的选择）
+  //    ⚠️ 别把三栏写成同一个词：排版栏写「不设」会让人以为"有一个排版叫不作排版"。
+  if (k.kind === 'none') {
+    if (axis === 'style') return '默认'
+    if (axis === 'transition') return '默认弹出'
+    return '不设'
+  }
+  return k.label
 }
 
 /** 某一轴上"当前选中的种类"。⚠️ 认不出的档名 ⇒ `''`（模板走"未知"那一支：
@@ -1219,10 +1216,12 @@ const kindOnAxis = (cur) => {
 }
 
 /** 某轴当前值（`selItem` 上那两个字段之一）。 */
-const axisField = (axis) => (axis === 'style' ? 'style_anim' : 'effect_anim')
+const AXIS_FIELDS = { style: 'style_anim', transition: 'transition_anim', effect: 'effect_anim' }
+const axisField = (axis) => AXIS_FIELDS[axis]
 
 const styleKind = computed(() => kindOnAxis(selItem.value?.style_anim ?? ''))
 const effectKind = computed(() => kindOnAxis(selItem.value?.effect_anim ?? ''))
+const transitionKind = computed(() => kindOnAxis(selItem.value?.transition_anim ?? ''))
 
 /** 某轴当前种类下的细分清单（认不出档名时给空数组 ⇒ 那个细分下拉整条不渲染）。 */
 const variantsOnAxis = (axis, kind) => {
@@ -1231,6 +1230,50 @@ const variantsOnAxis = (axis, kind) => {
 }
 const styleVariants = computed(() => variantsOnAxis('style', styleKind.value))
 const effectVariants = computed(() => variantsOnAxis('effect', effectKind.value))
+const transitionVariants = computed(() => variantsOnAxis('transition', transitionKind.value))
+
+// ---- 排版角度滑杆（2026-10-14）------------------------------------------
+//
+// 用户口径：「**倾斜和弧形需要有角度参数可调整**」。角度走**事件字段**
+// `layout_angle_deg`（`Option<f64>`，度），与档名**正交**：改档位不重置角度。
+//
+// ⚠️ **只有 `tilt` / `arc` 两档显示这个滑杆** —— 别的排版档（`vtext`）没有旋转语义，
+//    显示了用户会以为它能调（调了不生效，而界面看着是生效的）。
+const showAngle = computed(() => {
+  const k = ANIM_KINDS.find((x) => x.kind === styleKind.value)
+  return !!(k && k.angle)
+})
+
+/** 滑杆当前值：**没填过时显示档位的缺省角度**（那是它现在的实际表现）。
+ *
+ *  ⚠️ 这里**只读不写** —— 显示缺省值 ≠ 把缺省值落盘。用户没动滑杆时
+ *     `layout_angle_deg` 必须**仍然是 `null`**（R4：没配的字段一个键都不多写）。
+ */
+const ANGLE_DEFAULT_BY_KIND = { tilt: -6, arc: -14 }
+const layoutAngle = computed(() => {
+  const v = selItem.value?.layout_angle_deg
+  if (v === null || v === undefined) return ANGLE_DEFAULT_BY_KIND[styleKind.value] ?? 0
+  return Number(v)
+})
+/** 用户是否**显式设过**角度（决定面板上要不要给一个"回到默认"的入口）。 */
+const layoutAngleSet = computed(
+  () => selItem.value?.layout_angle_deg !== null && selItem.value?.layout_angle_deg !== undefined,
+)
+
+/** 拖滑杆 ⇒ 写事件字段。
+ *  ⚠️⚠️ **写 `null` 而不是 `0`** 才能表达"回到默认"：`0` 是一个合法的
+ *     用户选择（"我要它正着"），而 `null` 是"这个键不存在"。
+ *     —— 这两者混起来正是本仓"三态"那条老坑。 */
+function setLayoutAngle(v) {
+  if (!selItem.value) return
+  const n = Number(v)
+  selItem.value.layout_angle_deg = Number.isFinite(n) ? n : null
+}
+/** 「回到默认」= 把键删掉（走档位的缺省角度）。 */
+function resetLayoutAngle() {
+  if (!selItem.value) return
+  selItem.value.layout_angle_deg = null
+}
 
 // ⚠️ **`hintOnAxis` / `styleHint` / `effectHint` 已删**（用户口径 2026-10-13）：
 //    每个种类下面那行小字（如「这一条文字不做任何动效」）是**多余的** ——
@@ -1250,44 +1293,29 @@ function setKindOnAxis(axis, kind) {
   const k = kindsOnAxis(axis).find((x) => x.kind === kind)
   if (!k || !k.variants.length) return
   const v = k.variants[0].value
-  // ⚠️ 一档"两边都给"（`both`）时，用户从**这一轴**选它 ⇒ 理想情况下两轴都设上，
-  //    否则他选了「砸入·带压扁」却只拿到半个效果（压扁不生效），而界面看着是选中的。
+  // ⚠️⚠️ **"同步另一轴"那整套已删**（2026-10-14 三轴收敛）。
   //
-  // ⚠️⚠️ **但"另一轴已经有别的档"时绝对不许冲掉它** —— 那正是"可叠加"被破坏
-  //    的样子：用户辛苦设好的「竖排」，去动效栏点一下「砸入」就没了。
-  //    判据 = **另一轴是否已指向这一族**（同族才同步；异族保持不动）。
-  //    实测抓到过：`竖排 + 砸入` 之后 `style_anim` 变成 `slam_*`，竖排被偷走。
-  const otherField = axisField(axis === 'style' ? 'effect' : 'style')
-  const otherVal = selItem.value[otherField]
-  // ⚠️ 另一轴要么是空的、要么本来就属于**同一族** ⇒ 才同步。
-  const otherKind = otherVal ? ANIM_KIND_OF.get(otherVal) : ''
-  const sync = k.axis === 'both' && (!otherVal || otherKind === k.kind)
+  //    它是为 `axis === 'both'` 的档写的补丁：一个档在两轴都给参数 ⇒ 用户从这一栏
+  //    选它时，另一栏也得设上，否则"带压扁"只生效半个。
+  //    （历史：那一版在这里顺手写另一轴，结果**选样式把动效清掉了**；
+  //      修法是"另一轴同族才同步" —— 即原来那段 `sync` 判据。）
+  //
+  //    收敛后**每条档位只属于一条轴** ⇒ 没有"半个效果"这回事 ⇒ 整套逻辑失去前提。
+  //    ⚠️ 别把它当"保险"留着：留着会让"三轴可独立叠加"这条不变量看起来还依赖
+  //       "同族"这种隐式耦合，下一个人改档位表时必然要重新推一遍。
+  //    ⚠️ 三轴可叠加现在由**字段不重叠**保证（转译器 `ANIM_PRESETS` 的 `sort`
+  //       + `scripts/check-anim-two-axis.mjs`），不靠这里的同步。
   selItem.value[axisField(axis)] = v || null
-  if (sync) selItem.value[otherField] = v || null
 }
 
 /** 切**细分**（同一条上那个 `|| null` 的理由）。⚠️ 同样**只动自己那一轴**。 */
 function setVariantOnAxis(axis, value) {
-  // ⚠️⚠️ **`both` 的类在"切细分"时也要同步两轴** —— 只在 `setKindOnAxis` 里同步
-  //    是不够的：用户先选「砸入·标准」（两轴都成 `slam_std`），再在同一栏改成
-  //    「砸入·带压扁」，那时走的**只有这条**路径 ⇒ `style_anim` 仍停在 `slam_std`
-  //    ⇒ **压扁不生效**，而界面上两栏看着都对（用户以为选了"带压扁"）。
-  //    实测抓到过：`{effect_anim:'slam_squash', style_anim:'slam_std'}`。
+  // ⚠️ 同 `setKindOnAxis`：**"同族才同步另一轴"那套已随 `both` 一起删**
+  //    （2026-10-14 三轴收敛）。理由见那边。
   //
-  // ⚠️ 同步的**前提是两轴当前指向同一族** —— 若用户已经设了
-  //    「竖排 + 砸入」（两轴不同族），改砸入的细分**不许**把竖排冲成 `slam_*`。
-  //    判据与 `setKindOnAxis` **同一条**（同族才同步）。
-  const field = axisField(axis)
-  const otherField = axisField(axis === 'style' ? 'effect' : 'style')
-  const before = selItem.value[field]
-  selItem.value[field] = value || null
-  const k = ANIM_KINDS.find((x) => x.variants.some((v) => v.value === value))
-  const otherVal = selItem.value[otherField]
-  const otherKind = otherVal ? ANIM_KIND_OF.get(otherVal) : ''
-  if (k && k.axis === 'both' && before && selItem.value[otherField] === before
-      && (!otherKind || otherKind === k.kind)) {
-    selItem.value[otherField] = value || null
-  }
+  // ⚠️ 唯一保留的是那个 **`|| null`** —— 空串是一个合法的**坏值**，
+  //    `null` 才是"这个键不存在"。判据 `check-anim-presets-parity.mjs` 钉着它。
+  selItem.value[axisField(axis)] = value || null
 }
 
 /** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——
@@ -3035,6 +3063,19 @@ async function loadData() {
 
 <style scoped>
 .timeline { width:100%; }
+/* ---- 排版角度滑杆（2026-10-14）------------------------------------------
+   ⚠️ 与设置页的 `.slf-range`（宽度 = 格子 1/3）**不是一个场景**：这里属性面板窄，
+   `33.333%` 会让滑条短到拖不准 ⇒ 让它 `flex:1` 占满剩余宽度，数值与「默认」
+   按钮各自 `flex:none`（否则数值变成两位数/三位数时，滑条宽度会跳一下）。
+   ⚠️ 数字用**等宽**（`tabular-nums`）：`-30` 与 `-6` 位数不同，不等宽会让
+   滑条宽度随值抖动。 */
+.angle-row { display:flex; align-items:center; gap:6px; }
+.angle-row input[type=range] { flex:1 1 auto; min-width:0; }
+.angle-val { flex:none; min-width:38px; text-align:right; font-size:12px;
+  font-variant-numeric:tabular-nums; color:var(--ink-dim); }
+.angle-reset { flex:none; font-size:11px; padding:2px 6px; cursor:pointer;
+  background:var(--bg-soft); border:1px solid var(--line-soft); border-radius:5px; color:var(--ink-dim); }
+.angle-reset:hover { background:var(--main-soft); color:var(--main-deep); }
 /* §8 叙事角色的**只读**展示（不是输入框）：样式做成"一行文字"而不是控件，
    免得用户以为它能点/能改（它确实不能 —— 见模板注释里的理由）。 */
 .role-readonly { font-size:12px; color:var(--ink-dim); background:var(--bg-soft);
