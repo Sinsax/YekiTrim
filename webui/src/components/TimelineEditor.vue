@@ -1175,19 +1175,44 @@ function setKindOnAxis(axis, kind) {
   const k = kindsOnAxis(axis).find((x) => x.kind === kind)
   if (!k || !k.variants.length) return
   const v = k.variants[0].value
-  // ⚠️ 一档"两边都给"（`both`）时，用户从**这一轴**选它 ⇒ **同时把两轴都设上**，
+  // ⚠️ 一档"两边都给"（`both`）时，用户从**这一轴**选它 ⇒ 理想情况下两轴都设上，
   //    否则他选了「砸入·带压扁」却只拿到半个效果（压扁不生效），而界面看着是选中的。
-  if (k.axis === 'both') {
-    selItem.value[axisField(axis)] = v || null
-    selItem.value[axisField(axis === 'style' ? 'effect' : 'style')] = v || null
-    return
-  }
+  //
+  // ⚠️⚠️ **但"另一轴已经有别的档"时绝对不许冲掉它** —— 那正是"可叠加"被破坏
+  //    的样子：用户辛苦设好的「竖排」，去动效栏点一下「砸入」就没了。
+  //    判据 = **另一轴是否已指向这一族**（同族才同步；异族保持不动）。
+  //    实测抓到过：`竖排 + 砸入` 之后 `style_anim` 变成 `slam_*`，竖排被偷走。
+  const otherField = axisField(axis === 'style' ? 'effect' : 'style')
+  const otherVal = selItem.value[otherField]
+  // ⚠️ 另一轴要么是空的、要么本来就属于**同一族** ⇒ 才同步。
+  const otherKind = otherVal ? ANIM_KIND_OF.get(otherVal) : ''
+  const sync = k.axis === 'both' && (!otherVal || otherKind === k.kind)
   selItem.value[axisField(axis)] = v || null
+  if (sync) selItem.value[otherField] = v || null
 }
 
 /** 切**细分**（同一条上那个 `|| null` 的理由）。⚠️ 同样**只动自己那一轴**。 */
 function setVariantOnAxis(axis, value) {
-  selItem.value[axisField(axis)] = value || null
+  // ⚠️⚠️ **`both` 的类在"切细分"时也要同步两轴** —— 只在 `setKindOnAxis` 里同步
+  //    是不够的：用户先选「砸入·标准」（两轴都成 `slam_std`），再在同一栏改成
+  //    「砸入·带压扁」，那时走的**只有这条**路径 ⇒ `style_anim` 仍停在 `slam_std`
+  //    ⇒ **压扁不生效**，而界面上两栏看着都对（用户以为选了"带压扁"）。
+  //    实测抓到过：`{effect_anim:'slam_squash', style_anim:'slam_std'}`。
+  //
+  // ⚠️ 同步的**前提是两轴当前指向同一族** —— 若用户已经设了
+  //    「竖排 + 砸入」（两轴不同族），改砸入的细分**不许**把竖排冲成 `slam_*`。
+  //    判据与 `setKindOnAxis` **同一条**（同族才同步）。
+  const field = axisField(axis)
+  const otherField = axisField(axis === 'style' ? 'effect' : 'style')
+  const before = selItem.value[field]
+  selItem.value[field] = value || null
+  const k = ANIM_KINDS.find((x) => x.variants.some((v) => v.value === value))
+  const otherVal = selItem.value[otherField]
+  const otherKind = otherVal ? ANIM_KIND_OF.get(otherVal) : ''
+  if (k && k.axis === 'both' && before && selItem.value[otherField] === before
+      && (!otherKind || otherKind === k.kind)) {
+    selItem.value[otherField] = value || null
+  }
 }
 
 /** §5 E4a：切换 element 的 `kind`。**必须同时换掉载荷字段** ——
