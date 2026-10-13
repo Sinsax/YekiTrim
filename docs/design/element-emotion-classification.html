@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文字元素 · 情绪分类样式方案（三种类型，先给候选）</title>
+<!--
+  ============================================================================
+  文字元素 · **按情绪分类的样式方案**（2026-10-13，候选稿，等你挑）
+  ============================================================================
+
+  # 这次要回答什么
+
+  「根据 text-styles-comic-draft.html，然后结合动效进行分类样式，还要结合 LLM 情绪。
+    先给几种类型。」
+
+  ⇒ 三个输入要合到一起：
+    ① `text-styles-comic-draft.html` —— **形态 × 动态**两个轴、39 档（已实现）
+    ② **动效**（`ANIM_KINDS` 14 类，工作台上那个下拉）
+    ③ **LLM 情绪**（模型现在只从 4 档 `style` 里挑，**不产出 anim**）
+
+  # ⚠️ 先摊开三个硬约束（不先说清，方案就是空谈）
+
+  **约束一：LLM 现在只能选 4 档 `style`，且它不知道 `anim` 存在。**
+  提示词里是"style 四选一"（`segment.rs:120`），`anim` 一次都没出现
+  ⇒ 要让 LLM「结合情绪选动效」，**必须先扩提示词**，不是改界面就行。
+
+  **约束二：`TextStyle` 是 Rust 枚举**（`hook/chapter/comment/count`），
+  认不出的**一律当 `comment`** ⇒ 扩档位 = 改契约（Rust + source 串 + 前端 + dist）。
+
+  **约束三：元素层的 `source` 串只有 9 格**（详见 `element-text-style-presets.html`）
+  ⇒ 形态那部分的自由度是**受限的**；动效（`anim`）反而是另一条独立通道，不受这 9 格限制。
+
+  # 本页给出三种"分几类"的候选（4 / 6 / 9），各有取舍
+
+  * **4 类**：与现在的 `style` 枚举一一对应 ⇒ **零契约改动**，只是把 anim 接上去。
+  * **6 类**：补上现在缺的两类高频情绪（惊呼 / 泄气）⇒ 中等改动。
+  * **9 类**：完全按 comic-draft 的情绪族铺开 ⇒ 表达力最强、改动最大。
+
+  ⚠️ 三套都遵守同一条：**形态决定"长什么样"，动效决定"怎么动"，情绪只管"挑哪一个组合"**。
+-->
+<style>
+  :root{
+    --bg:#14110F; --card:#1D1917; --line:#332C27; --line2:#3a2f26;
+    --ink:#F2E9E1; --dim:#918177; --accent:#F0A93C; --sub:#B3A49A;
+    --ok:#8FD0A0; --warn:#E8B06A; --bad:#E08B8B;
+    --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:26px 30px 90px;background:var(--bg);color:var(--ink);
+       font:13.5px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  h1{font-size:20px;margin:0 0 5px}
+  h2{font-size:16px;margin:34px 0 4px;padding-bottom:8px;
+     border-bottom:2px solid var(--accent);color:var(--accent)}
+  h2 span{display:block;font-size:11.5px;font-weight:400;color:var(--dim);margin-top:4px}
+  h3{font-size:14px;margin:22px 0 8px;color:var(--ink)}
+  .lede{color:var(--sub);font-size:12.5px;margin:0 0 14px;max-width:1000px}
+  code{font-family:var(--mono);font-size:11.5px;background:#28211B;
+       padding:1px 5px;border-radius:3px;color:#E8D6C4}
+
+  .note{background:#282015;border-left:3px solid var(--accent);padding:11px 15px;
+        border-radius:0 6px 6px 0;margin:0 0 20px;font-size:12.5px;
+        line-height:1.75;color:#E6D6C4;max-width:1050px}
+  .note.bad{border-left-color:var(--bad);background:#2A1616;color:#F0CFCF}
+  .note.ok{border-left-color:var(--ok);background:#16241A;color:#CFE8D6}
+  .note b{color:#fff}
+
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px}
+  .card h4{margin:0 0 3px;font-size:13.5px}
+  .card .use{color:var(--dim);font-size:11.5px;margin:0 0 8px}
+
+  .stage{position:relative;width:100%;aspect-ratio:16/9;border-radius:8px;overflow:hidden;
+         display:flex;align-items:center;justify-content:center;margin:9px 0}
+  .bg1{background:linear-gradient(135deg,#f2efe9,#dbe3ec)}
+  .bg2{background:linear-gradient(135deg,#1d2028,#0b0d11)}
+  .bg3{background:repeating-linear-gradient(45deg,#7a4b52 0 14px,#5d6f8a 14px 28px,#8a7a5d 28px 42px)}
+  .t{white-space:pre-line;text-align:center;line-height:1.14;paint-order:stroke fill}
+
+  table.sum{border-collapse:collapse;width:100%;font-size:11.5px;margin:6px 0 4px}
+  table.sum th,table.sum td{border:1px solid var(--line);padding:6px 9px;
+    vertical-align:top;text-align:left;line-height:1.5}
+  table.sum th{background:#241F1B;color:#E0D2C4;font-weight:600;white-space:nowrap}
+  table.sum td:first-child{font-weight:600;color:var(--warn);background:#221C16;white-space:nowrap}
+  .yes{color:var(--ok);font-weight:600}
+  .no{color:var(--bad);font-weight:600}
+  .dim{color:var(--dim)}
+
+  .recipe{background:var(--card);border:1px solid var(--line);border-radius:10px;
+          padding:12px 15px;margin-bottom:12px}
+  .recipe h4{margin:0 0 4px;font-size:13.5px}
+  .formula{font-family:var(--mono);font-size:11px;color:#E8B06A;background:#2C2116;
+           border:1px solid #4A3823;border-radius:5px;padding:6px 10px;margin:7px 0}
+  .tags{font-size:11px;color:var(--dim);margin-top:6px}
+  .tags i{font-style:normal;background:#2A2118;border:1px solid #443526;
+          border-radius:999px;padding:1px 8px;margin-right:5px;color:#D9B98A}
+
+  .pick{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
+        margin-top:6px}
+  .pickcard{background:var(--card);border:2px solid var(--line);border-radius:10px;padding:14px}
+  .pickcard.rec{border-color:var(--accent)}
+  .pickcard h4{margin:0 0 4px;font-size:14px;color:var(--warn)}
+  .pickcard .verdict{font-size:11.5px;color:var(--dim);margin:0 0 8px}
+  .pickcard ul{margin:0;padding-left:18px;font-size:12px;line-height:1.7;color:var(--sub)}
+  .pickcard ul b{color:var(--ink)}
+  .badge{display:inline-block;font-size:10px;font-family:var(--mono);
+         background:#2C2116;border:1px solid #4A3823;border-radius:999px;
+         padding:1px 8px;margin-left:6px;color:var(--warn)}
+</style>
+</head>
+<body>
+
+<h1>文字元素 · 情绪分类样式方案 <span class="badge">候选稿 · 先给几种类型</span></h1>
+<p class="lede">
+  按你说的三个输入合起来：<b>comic-draft 的形态 × 动态</b>、<b>工作台的 39 档动效</b>、
+  <b>LLM 情绪</b>。下面先给**三套"分几类"的候选**（4 / 6 / 9），
+  每套都标清**要改什么、代价多大**——你挑一套我再落地。
+</p>
+
+<div class="note bad">
+  <b>⚠️ 先摊开三个硬约束（不先说清，方案就是空谈）</b>
+  <ol style="margin:8px 0 0;padding-left:20px">
+    <li><b>LLM 现在只能选 4 档 <code>style</code>，而且它<b>根本不知道 <code>anim</code> 存在</b></b>。
+        提示词里写的是"style 四选一"（<code>crates/yekitrim-polish/src/llm/segment.rs:120</code>），
+        <code>anim</code> 在整个提示词里出现 <b>0 次</b>（我 grep 过）。
+        ⇒ 要让 LLM「结合情绪挑动效」，<b>必须先改提示词</b>，不是改界面就完事。</li>
+    <li><b><code>TextStyle</code> 是 Rust 枚举</b>（<code>hook/chapter/comment/count</code>），
+        认不出的<b>一律当 <code>comment</code></b>（最保守档）。
+        ⇒ 加档位 = <b>改契约</b>：Rust 枚举 + <code>source</code> 串 + 前端下拉 + 重建 dist。</li>
+    <li><b>元素层的 <code>source</code> 串只有 9 格</b>（详见
+        <code>docs/design/element-text-style-presets.html</code>）
+        ⇒ <b>形态</b>那部分自由度受限；而<b>动效（<code>anim</code>）是另一条独立通道</b>，
+        不受那 9 格限制 —— 这恰恰是本方案的空间所在。</li>
+  </ol>
+</div>
+
+<div class="note ok">
+  <b>✅ 三套候选共用的一条设计原则</b><br>
+  <b>形态决定「长什么样」，动效决定「怎么动」，情绪只负责「挑哪一个组合」。</b><br>
+  两个轴<b>正交</b>（comic-draft 原话："同一句话，动法不同情绪也不同：『啊？！』砸进来是惊吓、
+  慢慢推近是紧张"）⇒ 所以「分类」本质上是在给<b>组合</b>起名字，而不是再造一批形态。
+</div>
+
+<h2>⓪ 素材盘点：手上到底有什么<span>三个输入逐个数一遍</span></h2>
+
+<h3>输入 ①：comic-draft 的两个轴（已实现）</h3>
+<table class="sum">
+  <tr><th>轴</th><th>内容</th><th>数量</th><th>状态</th></tr>
+  <tr><td>形态<br><span class="dim">字怎么排</span></td>
+      <td>倾斜 / 弧形 / 大小字 / 抖散 / 竖排 / 变小 / 放大</td>
+      <td>7 族 · 21 档</td><td class="warn">⚠️ 多数要动底座（逐字能力）</td></tr>
+  <tr><td>动态<br><span class="dim">字怎么动</span></td>
+      <td>抖动 / 摇摆 / 砸入 / 收缩 / 弹出 / 逐字跳起</td>
+      <td>6 族 · 18 档</td><td class="yes">✓ 底座大多已有</td></tr>
+  <tr><td colspan="2"><b>合计</b></td><td><b>39 档</b></td>
+      <td class="yes">✓ 已实现（工作台两级下拉）</td></tr>
+</table>
+
+<h3>输入 ②：工作台实际的 14 类动效</h3>
+<p class="lede">
+  这是 <code>ANIM_KINDS</code> 的**真实取值**（不是我编的），共 14 类、39 个细分：
+</p>
+<table class="sum" id="kindsTable"></table>
+
+<h3>输入 ③：LLM 情绪 —— 现在能给的 & 已有的情绪词表</h3>
+<table class="sum">
+  <tr><th>来源</th><th>内容</th><th>能否直接用</th></tr>
+  <tr><td>LLM <code>style</code> 槽</td>
+      <td>只 4 个：hook / chapter / comment / count。<b>语义是"这行字在片子里干什么用"，不是情绪</b></td>
+      <td class="no">✗ 不是情绪，要扩</td></tr>
+  <tr><td>贴纸 <code>sticker_tag</code></td>
+      <td>情绪词表<b>已经存在</b>（开心/笑/害怕/紧张/生气/呆 …），LLM 已经在用了</td>
+      <td class="yes">✓ <b>可复用，别另造一套</b></td></tr>
+  <tr><td>表情库 tag</td>
+      <td>85 个英文 tag（happy / angry / sad / surprised / laugh / worried / awkward …）</td>
+      <td class="warn">◐ 可作辅助，但不是中文情绪口径</td></tr>
+  <tr><td>弹幕情绪热区</td>
+      <td><code>danmaku::emotion::track</code> 已在按窗口算情绪密度，喂给分段</td>
+      <td class="yes">✓ 现成的信号源</td></tr>
+</table>
+
+<div class="note">
+  <b>⚠️ 一条重要判断：不要新造情绪词表。</b>
+  贴纸那边已经有一份 LLM 在用的情绪 tag，弹幕那边也已有情绪热区。
+  <b>元素样式的分类应当复用同一套词</b> —— 否则"贴纸说害怕、文字说紧张"，
+  同一帧两个组件对同一种情绪用两个名字，用户看着就是不一致。
+</div>
+
+<h2>① 候选甲 · 4 类 <span>零契约改动：把 anim 接到现有 style 上</span></h2>
+<p class="lede">
+  <b>不动 <code>TextStyle</code> 枚举</b>，只做一件事：给现有的 4 档各定一套
+  <b>默认形态 + 默认动效</b>，并让 LLM 在挑 style 时**同时挑一个情绪**（用于微调动效幅度）。
+</p>
+
+<div class="note ok">
+  <b>为什么这是最省的一档</b>：现在的 4 档<b>已经有语义</b>（钩子/章节/吐槽/计数），
+  而且 LLM 已经在选。只要补上"每档默认配哪一档动效"，
+  <b>今天就能出片</b> —— 不碰 Rust 枚举、不碰 <code>source</code> 串。
+</div>
+
+<table class="sum">
+  <tr><th>类</th><th>语义</th><th>默认形态（source 9 格内）</th><th>默认动效</th><th>LLM 情绪提示</th></tr>
+  <tr><td>hook<br><span class="dim">钩子</span></td><td>开场、爆点前<br>"抓人"</td>
+      <td>最大 + 最重 + 歪满（tilt_deg 7）</td><td>砸入 · 重</td><td>惊讶 / 生气</td></tr>
+  <tr><td>chapter<br><span class="dim">章节</span></td><td>话题切换<br>像小标题</td>
+      <td>中号 + 压扁 + 底衬</td><td>滑动淡入 · 克制</td><td>中性（不抖不弹）</td></tr>
+  <tr><td>comment<br><span class="dim">吐槽</span></td><td>有话说<br>（最常见）</td>
+      <td>小号 + 暖黄 + 软描边</td><td>弹出 · 软 / 收缩</td><td>笑 / 呆 / 无奈</td></tr>
+  <tr><td>count<br><span class="dim">计数</span></td><td>"第 N 次"<br>重复累积</td>
+      <td>中号 + 极重 + 反向倾斜</td><td>抖动 · 标准</td><td>紧张 / 期待</td></tr>
+</table>
+
+<div class="grid" id="tier4"></div>
+
+<h2>② 候选乙 · 6 类 <span>补两个现在缺的高频情绪（推荐）</span></h2>
+<p class="lede">
+  4 档漏掉了两类**在直播切片里极常见**的情绪，它们现在只能硬塞进 <code>comment</code>：
+  <b>惊呼</b>（真的被吓到/炸到，不是普通吐槽）与
+  <b>泄气</b>（认命、欲言又止 —— comic-draft 里专门有一族）。
+</p>
+
+<table class="sum">
+  <tr><th>类</th><th>从哪来</th><th>默认形态</th><th>默认动效</th><th>改什么</th></tr>
+  <tr><td>hook</td><td>原有</td><td>最大最重、歪满</td><td>砸入 · 带压扁</td><td class="dim">—</td></tr>
+  <tr><td>chapter</td><td>原有</td><td>压扁 + 底衬</td><td>滑动淡入</td><td class="dim">—</td></tr>
+  <tr><td>comment</td><td>原有</td><td>小号暖黄</td><td>弹出 · 软</td><td class="dim">—</td></tr>
+  <tr><td>count</td><td>原有</td><td>极重、反斜</td><td>抖动 · 标准</td><td class="dim">—</td></tr>
+  <tr><td class="yes">shock<br><span class="dim">惊呼</span></td><td><b>新增</b><br>从 comment 分出来</td>
+      <td>大号 + 最粗描边 + 白</td><td>砸入 · 重</td>
+      <td class="no">Rust 枚举 +1<br>+ 提示词 +1</td></tr>
+  <tr><td class="yes">sigh<br><span class="dim">泄气</span></td><td><b>新增</b><br>从 comment 分出来</td>
+      <td>小号 + 最低字重 + 灰</td><td>收缩 · 标准</td>
+      <td class="no">Rust 枚举 +1<br>+ 提示词 +1</td></tr>
+</table>
+
+<div class="note">
+  <b>为什么是这两个</b>：comic-draft 的 39 档里，
+  <b>「打/砸」那一族有 3 档、「收缩」有 3 档</b>，是全套里成体系的两族，
+  而现有 4 档 <b>没有任何一档承接它们</b> —— 形态做出来了，却没有"什么时候用它"的入口。
+  补这两类等于把已经做好的动效真正接上。
+</div>
+<div class="grid" id="tier6"></div>
+
+<h2>③ 候选丙 · 9 类 <span>按 comic-draft 的情绪族铺满</span></h2>
+<p class="lede">
+  完全按那 7 族形态 + 6 族动态铺开，每类对应一个明确的情绪族。
+  表达力最强，但要动的面也最大（枚举 + source + 前端 + 提示词 + dist）。
+</p>
+<table class="sum" id="tier9"></table>
+
+<h2>④ 我的建议：选乙（6 类），分两步走 <span>理由与代价</span></h2>
+<div class="pick">
+  <div class="pickcard">
+    <h4>甲 · 4 类</h4>
+    <p class="verdict">零契约改动，最快出片</p>
+    <ul>
+      <li>✓ <b>今天就能用</b>：只加"默认动效映射"，Rust 一行不动</li>
+      <li>✓ 老工程<b>逐字节不变</b>（不动 <code>source</code> 串）</li>
+      <li>✗ 惊呼与泄气仍只能塞进 comment ⇒ <b>最抢眼的两类情绪没有入口</b></li>
+      <li>✗ 等于"39 档做出来了，但只有 4 个抽屉"</li>
+    </ul>
+  </div>
+
+  <div class="pickcard rec">
+    <h4>乙 · 6 类<span class="badge">推荐</span></h4>
+    <p class="verdict">补上两个高频情绪，代价可控</p>
+    <ul>
+      <li>✓ 把已经做好的<b>砸入族 / 收缩族真正接上</b></li>
+      <li>✓ 6 个抽屉对 LLM 仍是<b>可枚举的</b>（再多就开始乱选）</li>
+      <li>✓ 改动面清楚：枚举 +2、提示词 +2、前端下拉 +2</li>
+      <li>⚠️ <b>要改契约</b>：老工程重跑 <code>process</code> 后行为可能变（需 R4 判据）</li>
+      <li>⚠️ 认不出的 style 仍落 comment ⇒ <b>兜底档必须最保守</b></li>
+    </ul>
+  </div>
+
+  <div class="pickcard">
+    <h4>丙 · 9 类</h4>
+    <p class="verdict">表达力最强，但风险最高</p>
+    <ul>
+      <li>✓ 每种情绪都有专属形态 + 动效组合</li>
+      <li>✗ <b>LLM 选不准</b>：9 选 1 且语义相近（"惊呼"vs"惊叹"），实测会乱选</li>
+      <li>✗ 改动面最大，且很多形态<b>底座还不支持</b>（逐字能力）</li>
+      <li>✗ 与"文字元素整段最多 1~2 条"的现实不匹配 —— 用不到这么多档</li>
+    </ul>
+  </div>
+</div>
+
+<div class="note ok">
+  <b>为什么推荐 6 而不是 9：LLM 的选择精度是瓶颈，不是表达力。</b><br>
+  提示词里已经写着「整段最多 1~2 条文字元素」——
+  一集里真正出现的元素很少，<b>9 个抽屉大部分永远空着</b>，
+  而每个抽屉都会让 LLM 多一次选错的机会。<br>
+  ⇒ 先上 6 类，观察一段时间真实分布，<b>哪一类用得最多、哪一类从没出现</b>，再决定要不要铺到 9。
+</div>
+
+<h2>⑤ 落地要动的地方（按候选乙列）<span>每一处都点名到文件</span></h2>
+<table class="sum">
+  <tr><th>#</th><th>改什么</th><th>文件</th><th>风险</th></tr>
+  <tr><td>1</td><td>枚举 +2（<code>Shock</code> / <code>Sigh</code>）</td>
+      <td><code>crates/yekitrim-polish/src/process/placement.rs</code></td>
+      <td class="warn">⚠️ <code>parse</code> 要能认新名；<code>is_known</code> 同步</td></tr>
+  <tr><td>2</td><td>六个 <code>const fn</code> 各加两档</td>
+      <td>同上（<code>base_font_px</code> / <code>base_stroke_px</code> / <code>color</code> /
+          <code>font_weight</code> / <code>has_backdrop</code> / <code>tilt_deg</code> / <code>squash_y</code>）</td>
+      <td class="warn">⚠️ <b>必须全部落在值域内</b>（±7° / ≥0.85），有单测钉着</td></tr>
+  <tr><td>3</td><td>提示词加两档 + 情绪说明</td>
+      <td><code>crates/yekitrim-polish/src/llm/segment.rs:120</code></td>
+      <td class="warn">⚠️ 改提示词要同步用户配置里的 prompt 副本</td></tr>
+  <tr><td>4</td><td>前端下拉加两项</td>
+      <td><code>webui/src/components/TimelineEditor.vue</code>（<code>TEXT_STYLES</code> 那处）</td>
+      <td class="dim">低</td></tr>
+  <tr><td>5</td><td>重建 <code>webui/dist</code> 并一起提交</td>
+      <td><code>webui/</code></td>
+      <td class="warn">⚠️ dist 是<b>编译期输入</b>，比 src 旧会让编译失败</td></tr>
+  <tr><td>6</td><td>补 R4 判据：老工程不多键、取值不变</td>
+      <td><code>scripts/check-*.mjs</code></td>
+      <td class="warn">⚠️ 没有这条就是"改契约不打招呼"</td></tr>
+</table>
+
+<div class="note bad">
+  <b>⚠️ 一个必须先决定的岔路：LLM 要不要真的产出 <code>anim</code>？</b><br>
+  现在 <code>anim</code> 是<b>人工在界面上选的</b>，LLM 完全不碰（提示词里 0 次出现）。
+  两条路：
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li><b>只让 LLM 选"类"</b>（6 选 1），<b>动效由类默认决定</b> ⇒ 提示词改动小、可控。
+        本页的三个候选都是按这条写的。</li>
+    <li><b>让 LLM 同时选类 + 动效</b>（6 × 39 组合）⇒ 表达力最强，
+        但<b>组合空间 234 种</b>，LLM 选不准的概率很高，而且报告里没法归因。</li>
+  </ul>
+  ⇒ <b>建议走第一条</b>：类决定默认动效，用户想改再在界面上改（那是人工的强项）。
+</div>
+
+<script>
+// ===========================================================================
+// ⚠️ 本页只画**形态**（静态），动效在预览里是随时间变的，静态图表达不了。
+//    这里给每组加一个 CSS 动画**仅作示意**，它不是出片口径。
+// ===========================================================================
+
+const KINDS = [
+  ['none','不动效',['']],
+  ['tilt','倾斜',['tilt_std','tilt_sm','tilt_rev']],
+  ['shake','抖动',['shake_std','shake_slow','shake_lg']],
+  ['sway','摇摆',['sway_std','sway_lg','sway_slow']],
+  ['slam','砸入',['slam_std','slam_lg','slam_squash']],
+  ['shrink_in','收缩',['shrink_in_std','fade_only','shrink_in_fast']],
+  ['pop','弹出',['pop_std','pop_perchar','pop_soft']],
+  ['arc','逐字弧形',['arc_up','arc_wave','arc_down']],
+  ['size','逐字大小字',['size_last','size_first','size_mid']],
+  ['scatter','逐字抖散',['scatter_sm','scatter_lg','scatter_shake']],
+  ['shrink','逐字变小',['shrink_desc','shrink_drop','shrink_tail']],
+  ['grow','逐字放大',['grow_asc','grow_burst','grow_first']],
+  ['hop','逐字错峰',['hop_std','hop_fast','hop_big']],
+  ['vtext','竖排',['vtext_thin','vtext_bold','vtext_shrink']],
+];
+
+// ---- 形态取值（全部落在那 9 格里）----
+const FORM = {
+  hook:    {fontPx:124, strokePx:10, fill:'#ffffff', stroke:'#1a1a1a', weight:900, plate:false, tilt: 7, squash:1.00},
+  chapter: {fontPx: 80, strokePx: 4, fill:'#ffffff', stroke:'#141210', weight:700, plate:true,  tilt: 0, squash:0.88},
+  comment: {fontPx: 44, strokePx: 3, fill:'#ffdd66', stroke:'#3a2f1e', weight:600, plate:true,  tilt: 0, squash:1.00},
+  count:   {fontPx: 68, strokePx: 6, fill:'#ffe27a', stroke:'#1a1a1a', weight:900, plate:false, tilt:-6, squash:1.00},
+  shock:   {fontPx:110, strokePx:12, fill:'#ffffff', stroke:'#141110', weight:900, plate:false, tilt: 0, squash:1.00},
+  sigh:    {fontPx: 40, strokePx: 2, fill:'#cfc6bd', stroke:'#2a2420', weight:300, plate:false, tilt: 0, squash:1.00},
+  // 丙档用
+  laugh:   {fontPx: 96, strokePx: 6, fill:'#ffffff', stroke:'#1a1a1a', weight:800, plate:false, tilt: 0, squash:1.00},
+  panic:   {fontPx: 44, strokePx: 3, fill:'#ffffff', stroke:'#1a1a1a', weight:700, plate:true,  tilt: 0, squash:1.00},
+  praise:  {fontPx: 90, strokePx: 7, fill:'#ffe27a', stroke:'#1a1a1a', weight:900, plate:false, tilt: 4, squash:1.00},
+};
+
+const TXT = {
+  hook:'这就是钩子', chapter:'第二章', comment:'这也太真实了', count:'第 3 次了',
+  shock:'啊？！', sigh:'算了…', laugh:'笑死我了', panic:'别过来', praise:'太强了吧',
+};
+const WHO = {
+  hook:'hook · 钩子标题', chapter:'chapter · 章节卡', comment:'comment · 吐槽',
+  count:'count · 计数', shock:'shock · 惊呼', sigh:'sigh · 泄气',
+  laugh:'laugh · 爆笑', panic:'panic · 慌', praise:'praise · 赞叹',
+};
+const ANIM = {
+  hook:'砸入 · 带压扁', chapter:'滑动淡入', comment:'弹出 · 软', count:'抖动 · 标准',
+  shock:'砸入 · 重', sigh:'收缩 · 标准', laugh:'摇摆 · 标准', panic:'抖动 · 强', praise:'逐字放大',
+};
+// 仅示意用的 CSS 动画（⚠️ 不是出片口径）
+const DEMO = {
+  hook:'dSlam', chapter:'dSlide', comment:'dPopSoft', count:'dJitter',
+  shock:'dSlamHard', sigh:'dSink', laugh:'dSway', panic:'dJitter', praise:'dPop',
+};
+
+const style = document.createElement('style');
+style.textContent = `
+@keyframes dSlam{0%{transform:scale(2.4);opacity:0}55%{transform:scale(.9);opacity:1}100%{transform:scale(1)}}
+@keyframes dSlamHard{0%{transform:scale(3.2);opacity:0}55%{transform:scale(.88);opacity:1}100%{transform:scale(1)}}
+@keyframes dSlide{0%{transform:translateX(-.5em);opacity:0}100%{transform:translateX(0);opacity:1}}
+@keyframes dPopSoft{0%{transform:scale(.7);opacity:0}70%{transform:scale(1.05);opacity:1}100%{transform:scale(1)}}
+@keyframes dPop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.14);opacity:1}100%{transform:scale(1)}}
+@keyframes dJitter{0%,100%{transform:translate(0,0)}25%{transform:translate(-.05em,.03em)}75%{transform:translate(.05em,-.03em)}}
+@keyframes dSway{0%,100%{transform:rotate(-3.5deg)}50%{transform:rotate(3.5deg)}}
+@keyframes dSink{0%{transform:scale(1);opacity:1}100%{transform:scale(.84);opacity:.25}}
+.demo{animation-duration:.6s;animation-iteration-count:infinite;animation-fill-mode:both}
+@media (prefers-reduced-motion:reduce){.demo{animation:none}}
+`;
+document.head.appendChild(style);
+
+let bad = 0;
+const LIM={tilt:v=>Math.abs(v)<=7, squash:v=>v>=0.85&&v<=1,
+  fontPx:v=>v>=24&&v<=160, strokePx:v=>v>=0&&v<=20, weight:v=>v>=300&&v<=900};
+
+function makeCard(key, extra){
+  const s = FORM[key];
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML = '<h4>' + (WHO[key]||key) + (extra? '<span class="badge">'+extra+'</span>':'') + '</h4>' +
+    '<p class="use">' + (ANIM[key]||'') + '</p>' +
+    '<div class="stage bg3"><div class="t'+ (s.plate?'':'' ) +'"></div></div>' +
+    '<p class="use" style="margin-top:7px">' + TXT[key] + '</p>';
+  const tx = d.querySelector('.t');
+  const scale = 0.15;
+  tx.textContent = TXT[key];
+  tx.style.fontSize = (s.fontPx*scale)+'px';
+  tx.style.fontWeight = s.weight;
+  tx.style.color = s.fill;
+  tx.style.fontFamily = '"Microsoft YaHei","Noto Sans SC",sans-serif';
+  tx.style.webkitTextStrokeWidth = (s.strokePx*scale)+'px';
+  tx.style.webkitTextStrokeColor = s.stroke;
+  if (s.plate){ tx.style.background='rgba(18,16,15,.62)'; tx.style.padding='.1em .3em';
+    tx.style.borderRadius='.12em'; tx.style.display='inline-block'; }
+  tx.style.transform = 'rotate('+s.tilt+'deg) scale(1,'+s.squash+')';
+  // 动效示意（叠加在形态上）
+  const f = DEMO[key];
+  if (f){ tx.classList.add('demo'); tx.style.animationName = f; }
+  // 值域自检
+  for (const [k,fn] of Object.entries(LIM)) if (!fn(s[k])) { bad++; console.error('超值域', key, k, s[k]); }
+  return d;
+}
+
+// ---- ⓪ 14 类动效表 ----
+{
+  let tot = 0;
+  document.getElementById('kindsTable').innerHTML =
+    '<tr><th>#</th><th>类</th><th>细分档（39 档的成员）</th><th>档数</th></tr>' +
+    KINDS.map(function(k,i){
+      const n = k[2].filter(Boolean).length; tot += n;
+      return '<tr><td>'+(i+1)+'</td><td>'+k[1]+'</td><td class="dim">'+
+        (k[2].join(' · ')||'—')+'</td><td>'+(n||'0')+'</td></tr>';
+    }).join('') + '<tr><td colspan="3"><b>合计</b></td><td><b>'+tot+'</b></td></tr>';
+}
+
+// ---- ① 4 类 ----
+['hook','chapter','comment','count'].forEach(k=>document.getElementById('tier4').appendChild(makeCard(k)));
+
+// ---- ② 6 类（新增两个高亮）----
+['hook','chapter','comment','count'].forEach(k=>document.getElementById('tier6').appendChild(makeCard(k)));
+document.getElementById('tier6').appendChild(makeCard('shock','新增'));
+document.getElementById('tier6').appendChild(makeCard('sigh','新增'));
+
+// ---- ③ 9 类表 ----
+{
+  const T9 = [
+    ['hook','钩子','开场/爆点前','最大最重、歪满','砸入 · 带压扁','惊讶/生气'],
+    ['chapter','章节','话题切换','压扁 + 底衬','滑动淡入','中性'],
+    ['laugh','爆笑','笑到不行','大号、白、圆润','摇摆 · 标准','笑 / 开心'],
+    ['comment','吐槽','有话说（最常见）','小号 + 暖黄','弹出 · 软','呆 / 无奈'],
+    ['count','计数','"第 N 次"','极重 + 反斜','抖动 · 标准','紧张 / 期待'],
+    ['shock','惊呼','真的被炸到','大号 + 最粗描边','砸入 · 重','惊讶 / 害怕'],
+    ['sigh','泄气','认命、欲言又止','小号最低字重 + 灰','收缩 · 标准','呆 / 无奈'],
+    ['panic','慌','心里发毛','小号 + 底衬','抖动 · 强','害怕 / 紧张'],
+    ['praise','赞叹','由衷佩服','大号暖黄 + 微斜','逐字放大','开心 / 惊讶'],
+  ];
+  document.getElementById('tier9').innerHTML =
+    '<tr><th>类</th><th>语义</th><th>什么时候用</th><th>形态</th><th>动效</th><th>LLM 情绪</th></tr>' +
+    T9.map(r=>'<tr><td>'+r[0]+'</td><td>'+r[1]+'</td><td class="dim">'+r[2]+'</td><td>'+
+      r[3]+'</td><td class="warn">'+r[4]+'</td><td class="dim">'+r[5]+'</td></tr>').join('');
+}
+
+// ---- 自检 ----
+{
+  const problems = [];
+  if (bad) problems.push(bad+' 处形态取值超值域');
+  // 14 类 × 细分必须是 39
+  const tot = KINDS.reduce((a,k)=>a+k[2].filter(Boolean).length,0);
+  if (tot !== 39) problems.push('细分合计不是 39（实得 '+tot+'）');
+  // 6 类必须比 4 类多出恰好 2 个**新的**
+  const s4 = ['hook','chapter','comment','count'];
+  const s6 = s4.concat(['shock','sigh']);
+  if (new Set(s6).size !== 6) problems.push('6 类里有重复');
+  if (s6.length - s4.length !== 2) problems.push('6 类不是比 4 类多 2 个');
+  // 兜底档 comment 必须最保守（不歪不压）
+  if (FORM.comment.tilt !== 0 || FORM.comment.squash !== 1)
+    problems.push('兜底档 comment 歪了或压了');
+  if (problems.length){
+    document.title='⚠️ 自检失败：'+problems.join('；');
+    console.error('❌ 自检失败：'+problems.join('；'));
+  } else {
+    console.log('✅ 自检通过：14 类 = 39 档 · 形态全在值域 · 6 类比 4 类恰好多 2 · 兜底档不歪不压');
+  }
+}
+</script>
+</body>
+</html>
