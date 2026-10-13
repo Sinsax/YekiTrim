@@ -1470,6 +1470,36 @@ const MUTATIONS = [
     to: '  return typeof mapped === \'string\' && mapped.trim() ? mapped.trim() : `F:${id}`;',
   },
   {
+    // 2026-10-14 (用户问题 ②)：文字元素的 ASS 字体又写死成 `'Sans'`
+    // —— libass 认不出时**不报错**（`lines_failed: 0`、`issues: []`），
+    // 只是换个字体画 ⇒ 用户看到「元素出现时字体变成默认的了」。
+    name: '元素 ASS 的字体又写死成字面量（与字幕不同源）',
+    from: '        { font: fontFamilyFor(sharedSubStyle.font) || DEFAULT_DANMAKU_FONT,',
+    to: "        { font: 'Sans',",
+  },
+  {
+    // ⚠ 反面：换成**另一个假族名** —— 只钉"≠ `'Sans'`"的写法
+    //   对这一条**照样绿**（`Arial` 也不是库内真族名，一样静默落默认）。
+    //   所以要钉的是"取值**来源**"，不是"值长什么样"。
+    name: '元素 ASS 字体换成另一个假族名（≠Sans 那种写法拓不到）',
+    from: '        { font: fontFamilyFor(sharedSubStyle.font) || DEFAULT_DANMAKU_FONT,',
+    to: "        { font: 'Arial',",
+  },
+  {
+    // ⚠ 反面：不过 `fontFamilyFor` —— 库 id 直接喂底座，
+    //   底座按**真族名**找字体，传 id 静默落 `ArialMT`。
+    name: '元素 ASS 字体不过 fontFamilyFor（库 id 直接喂底座）',
+    from: 'fontFamilyFor(sharedSubStyle.font) || DEFAULT_DANMAKU_FONT',
+    to: 'sharedSubStyle.font || DEFAULT_DANMAKU_FONT',
+  },
+  {
+    // ⚠ 反面：`cuesToAss` 又给 `font` 加默认值 ——
+    //   有默认值就能再次"忘传也能跑"（当年就是这么来的）。
+    name: '`cuesToAss` 又给 `font` 加上了默认值',
+    from: 'function cuesToAss(cues, { font, fontSize = 42, danmaku = true } = {}) {',
+    to: "function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) {",
+  },
+  {
     // 反面：把描边色的 hex 匹配**收窄回 6 位**（2026-10 修的那条真缺陷）。
     // `hexColor` 本来就能展开 3/4 位，但外层这个正则曾经只认 6 位 ⇒ `stroke = "8px #fff"`
     // 匹配不上、`hexColor` 根本走不到，**静默回落到兜底深灰**（实测 `[64,60,59]` 而不是白）。
@@ -1781,6 +1811,9 @@ async function mutate() {
         checkDenseRanges(curves);
         // 字体族名那条同理（2026-10-08）—— 不跑它，"库里那支没被换成真族名"永远绿。
         checkFontFamily(curves);
+        // 元素 ASS 字体源头（2026-10-14）—— **必须喂 `mutatedSource`**：
+        // 它钉的是源码文本，而变异只改盘上文件（`mod` 看不见）。
+        checkElementAssFont(mutatedSource);
         // 片头/片尾（2026-10-09）—— 不跑它，"不拼进时间线"与"素材没登记"两条变异永远绿。
         checkIntroOutro(curves);
         // ⚠️⚠️ 文字元素轨道的安全宽（2026-10-11）—— **这一条我第一版漏了**：
@@ -2498,6 +2531,7 @@ function checkFontFamily(mod) {
   mod.setFontFamilies({ X: '   ' });
   eq(mod.fontFamilyFor('X'), 'X', '映射值是空白 ⇒ 退回 id，不许返回空串');
 
+
   // 复位成空表，免得影响后续用例。
   mod.setFontFamilies({});
   eq(mod.fontFamilyFor('GenJyuuGothic-Bold'), 'GenJyuuGothic-Bold', '没有映射时按 id 原样（老行为）');
@@ -2754,6 +2788,42 @@ function checkAssetClipPredicate(mod) {
 ///
 /// 所以 `1 - 2*bottom_margin` 必须等于 `safe_width_ratio`（参照口径 0.875）。
 /// 只给对一个 ⇒ 要么不排字（0.5），要么安全宽与缩字口径打架。
+/** ★ 元素 ASS 的字体必须**与字幕同源**（2026-10-14，用户报的问题 ②）。
+ *
+ *  ⚠⚠ **必须收 `src`、并在变异台里喂 `mutatedSource`** ——
+ *     它钉的是**源码文本**；而变异只改盘上的文件，
+ *     模块导出（`mod`）取的是**加载期**那份 ⇒ 看不见变异体。
+ *     ⚠ 本仓已经因此裁过一次（见 `checkTextElementLane` 那段注释）。
+ */
+function checkElementAssFont(src) {
+  let checks = 0;
+  const eq = (actual, expected, what) => {
+    assert.equal(actual, expected, what);
+    checks += 1;
+  };
+  if (!src) {
+    eq(true, false, '拿不到转译器源码（无法钉字体来源）');
+    return checks;
+  }
+    // ① 元素那条调用点必须把字体从**字幕样式**取。
+    eq(/font:\s*fontFamilyFor\(sharedSubStyle\.font\)/.test(src), true,
+      '② 元素 ASS 的 `font` 必须来自 `fontFamilyFor(sharedSubStyle.font)`' +
+      '（与字幕同源）—— 不是写死字符串');
+    // ② 且不允许再出现写死的字体字面量（`'Sans'` 是当年那个）。
+    eq(/font:\s*'[^']*'/.test(src), false,
+      "② 不允许再有写死的 `font: '…'` 字面量（例如当年的 `'Sans'`）");
+    // ③ `cuesToAss` 的 `font` 不许再有默认值 —— 有默认值就能再次"忘传也能跑"。
+    eq(/function cuesToAss\(cues, \{ font\s*=/.test(src), false,
+      '③ `cuesToAss` 的 `font` 不许有默认值' +
+      '（有默认值就能再次“忘传也能跑”）');
+    eq(/cuesToAss: 必须显式传 font/.test(src), true,
+      '③ `cuesToAss` 必须在缺 `font` 时**当场报错**（而不是静默回退）');
+    // ④ 字幕那条路也必须仍然是同源的取法（防"为了对齐字串把两边都写死"）。
+    eq(/font_family:\s*fontFamilyFor\(subStyle\.font\)/.test(src), true,
+      '④ 字幕那条路的 `font_family` 也必须仍然是 `fontFamilyFor(subStyle.font)`');
+  return checks;
+}
+
 function checkTextElementLane(mod, src = translatorSource) {
   let checks = 0;
   const ok = (cond, what) => {
@@ -4845,6 +4915,7 @@ console.log('  钉住的是 2026-10-11：`bottom_margin: 0.5` ⇒ 底座 `max_wi
 console.log('  ⇒ `text_layout::layout` **提前返回空布局** ⇒ 文字元素一个字都不排，而成片「看着像画了」');
 console.log('  （字幕照画、转译报告零差异、`probe` 零 error）—— 只有真去数像素才发现少了那几个字');
 const fontFamilyChecks = checkFontFamily(translatorModule);
+const elementAssFontChecks = checkElementAssFont(translatorSource);
 console.log(`✓ 字体族名（库 id → 真族名，底座 0.2.0 起）：${fontFamilyChecks} 项全绿`);
 console.log('  钉住的是：libass **按族名**找字体，而 polish.toml 存的是**库 id**；库内那支必须换成');
 console.log('  真族名（传 id 会静默落 ArialMT、lines_failed 仍是 0），库外的值必须**原样返回**');
