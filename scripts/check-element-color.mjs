@@ -154,5 +154,58 @@ const editorHasRgba = /\b(24,\s*24,\s*24|255,\s*128,\s*192)\b/.test(editor)
 check('面板不自己存 RGBA（只写颜色名）', !editorHasRgba,
   'TimelineEditor.vue 里出现了颜色 RGBA 字面量 —— 前端不该参与颜色换算（第二份真源）')
 
+// ⑩ **文字轨的文件名是三处同源的一份契约**（2026-10-13）。
+//
+// ⚠️ 这条来自一个**真缺陷**：服务端原先只读两个**写死的名字**在 `--out` 旁边找，
+//    而文字元素的 ASS 写在**片段根目录**（`dhampir-<轨 id>.ass`）——
+//    一条都没读过 ⇒ **Dhampir 预览里文字元素一个字都不显示**，
+//    而成片正常（`dhampir.exe` 按绝对 `asset.uri` 自己找文件）、报告全绿。
+//
+// 三方必须对得上同一个串：
+//   ① 转译器**写**文件用的 `dhampir-${id}.ass`
+//   ② doc 里 `assets[].uri` 的 basename（服务端按它建表）
+//   ③ 前端按 `uri` basename 查表
+const TRANS_ASS = /const assPath = join\(clipDir, `dhampir-\$\{id\}\.ass`\)/.exec(trans)
+check('转译器把文字轨写成 `dhampir-<轨 id>.ass`（前缀契约）', TRANS_ASS !== null,
+  '转译器里找不到 `join(clipDir, \\`dhampir-${id}.ass\\`)` —— 改了这个形状，' +
+  '服务端/前端按 basename 建表与查表就会对不上（预览里那类文字静默消失）')
+
+const PREVIEW = 'webui/src/components/PolishPreview.vue'
+const preview = fs.readFileSync(PREVIEW, 'utf8')
+check('前端按 `uri` 的 basename 查表（与服务端建表口径一致）',
+  /String\(a\.uri \|\| ''\)\.split\(\/\[\\\\\/\]\/\)\.pop\(\)/.test(preview),
+  'PolishPreview.vue 不再按 basename 查表 —— 服务端那份 map 的键也必须跟着改，' +
+  '否则两处口径分叉（症状：字幕/文字全都喂不进去，而两边各自看都"对"）')
+
+const POLISH_RS = 'crates/yekitrim-server/src/api/polish.rs'
+const polishRs = fs.readFileSync(POLISH_RS, 'utf8')
+// ⚠️⚠️ **必须只看 `read_side_subtitles` 的函数体**。
+//
+//    `.rsplit(['/', '\\'])` 在文件里出现多次（**`mod tests` 里也有** ——
+//    新加的用例为了造夹具会写同样的表达式）。裸查全文的话，
+//    "把实现里的 basename 取值改掉"这条变异**打不红**：测试那几处替它兜住了。
+//    **实测踩到过**：MC3 变异打不改三次都不红，原因就是这个。
+//    （与上面 `trans`/`engine` 那几处"正则误命中无关处"是同一类坑。）
+const sideSubsBody = (() => {
+  const start = polishRs.indexOf('fn read_side_subtitles(')
+  if (start < 0) return ''
+  const rest = polishRs.slice(start)
+  const end = rest.indexOf('\n}\n')
+  return end < 0 ? rest : rest.slice(0, end)
+})()
+// ⚠️ 锚点**逐字节**对齐：源码里是 `.rsplit(['/', '\\'])`。
+//    反斜杠层数写错**不报错**、只让判据永远绿，所以下面拆成两半：
+//    **先断言函数体真的取到了**，再拿它判断 —— 不让"锚点写错"伪装成"实现是对的"。
+const BASENAME_ANCHOR = `.rsplit(['/', '${'\\'.repeat(2)}'])`
+check('取到了 `read_side_subtitles` 的函数体（判据的作用域没落空）',
+  sideSubsBody.length > 0,
+  '找不到 `fn read_side_subtitles(` 或它的函数体 —— 判据会在空串上恒真/恒假，' +
+  '那比没有判据更糟（它会让人以为这里被守着）')
+check('服务端在 `read_side_subtitles` 里按 `uri` 的 basename 建表（与前端同口径）',
+  sideSubsBody.includes(BASENAME_ANCHOR),
+  `函数体里找不到 \`${BASENAME_ANCHOR}\` —— 与前端 \`split(/[\\\\/]/).pop()\` 分叉，` +
+  '查表全部落空（预览里没有字幕，且不报错）。' +
+  '⚠️ 只查全文是不够的：`mod tests` 里也有同样的表达式，会替实现兜住')
+
 console.log(`\n${fails.length ? `${fails.length} 条不通过` : '全部通过'}`)
 process.exit(fails.length ? 1 : 0)

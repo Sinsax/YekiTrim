@@ -34,6 +34,8 @@ const HOST_API_DOC = join(DHAMPIR, 'docs/host-api.md');
 const PREVIEW_VUE = join(WEBUI_SRC, 'components/PolishPreview.vue');
 const TIMELINE_EDITOR = join(WEBUI_SRC, 'components/TimelineEditor.vue');
 const POLISH_VIEW = join(WEBUI_SRC, 'views/PolishView.vue');
+/// 精修编辑器的服务端 handler —— **读旁写字幕**那条链住在这里（见 4e-bis）。
+const POLISH_RS = join(repo, 'crates/yekitrim-server/src/api/polish.rs');
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -580,6 +582,52 @@ function fnBodyOf(src, name) {
     'PolishPreview.vue 消费 /dhampir-project 响应的 res.subtitles 字段',
     '服务端返回的键是 subtitles（旁写文件名 → 内容）；改错键名 = 字幕静默消失',
   )
+
+  // ---- 4e-bis：**服务端必须按 `doc.assets` 找旁写字幕，不许按写死的名字**（2026-10-13）----
+  //
+  // 这条是本仓最贵的一次"隔着边界的名字对不上"：
+  //
+  //   服务端原先只读两个**写死的**名字（`dhampir-subtitle.srt` / `dhampir-danmaku.ass`），
+  //   在 `--out` 旁边找。而**文字元素轨的 ASS 写在片段根目录**
+  //   （`dhampir-text_<样式>_<档>[_<动效>][_<颜色>].ass`）——
+  //   一条都没读过 ⇒ `dhampir_project_set_subtitles` 从没被调用
+  //   ⇒ **wasm 预览里文字元素一个字都不显示**。
+  //
+  //   ⚠️ 而成片那条腿（`dhampir.exe`）**完全正常** —— 它按 `asset.uri`（绝对路径）
+  //      自己找文件。所以症状是"成片里好好的、预览里没有，而报告/日志/`doc.json` 全绿"，
+  //      上面那条"消费了 res.subtitles 字段"**照样通过**（键确实在，只是少了一类）。
+  //
+  // ⇒ 判据压在**形状**上：读旁写字幕要**遍历 doc 的 assets**，不是"在固定名字上循环"。
+  const polishRs = readFileSync(POLISH_RS, 'utf8');
+  check(
+    /fn read_side_subtitles/.test(polishRs),
+    '服务端有一个专门的「读旁写字幕」函数（read_side_subtitles）',
+    '散在 handler 里的内联循环没法被这条判据压住 —— 抽成函数是为了可检',
+  );
+  // ⚠️ **必须把这条判据限定在 `read_side_subtitles` 的函数体里**：
+  //    `Some("subtitle")` 在文件里出现 4 次（**单测里也有**），
+  //    裸匹配的话「把过滤条件改成别的东西」这条变异**打不红** ——
+  //    实测就是这么发现的（第一版判据绿着，而生产代码已经被改坏）。
+  //    这与 `check-element-color.mjs` 那条"正则误命中无关处"是同一类坑。
+  const sideSubsBody = (() => {
+    const start = polishRs.indexOf('fn read_side_subtitles(');
+    if (start < 0) return '';
+    // 函数体到下一个顶层 `}` 为止（本仓这条函数后面紧跟另一个 `fn`）。
+    const rest = polishRs.slice(start);
+    const end = rest.indexOf('\n}\n');
+    return end < 0 ? rest : rest.slice(0, end);
+  })();
+  check(
+    /get\("assets"\)/.test(sideSubsBody) && /== Some\("subtitle"\)/.test(sideSubsBody),
+    '读旁写字幕要**遍历 doc 的 assets 并只认 kind == "subtitle"**（而不是一个写死的名字列表）',
+    '按写死的名字读 = 文字元素轨（写在片段根目录、名字带档位与颜色）永远读不到：' +
+      '预览里那一类文字不显示，而成片正常、报告全绿',
+  );
+  check(
+    /const LEGACY_NAMES: \[&str; 2\] = \["dhampir-subtitle\.srt", "dhampir-danmaku\.ass"\]/.test(polishRs),
+    '那两个老名字只能作为**兜底常量**存在（`LEGACY_NAMES`），不许再散在读取逻辑里',
+    '散着写 = 下一个人加一类文字时会照抄这个形状，而它正是本次缺陷的形状',
+  );
 
   // ---- 4f：**提取残留不许有**（2026-10-02 实际踩过）----
   //
