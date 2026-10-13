@@ -325,8 +325,103 @@ try {
       '⑥ 模板没有**逐字**拆 `<span>` —— 整块套在父元素上等于没做逐字')
     ok(/textTiltTransform\(/.test(pvMarkup), '⑥ 字幕/元素没有走 `textTiltTransform` —— 整块动效接不上')
     // ⚠️ 字幕的整块变换必须**与元素同一条式子**（不许另写一份）。
-    ok(/animName:\s*c\.animName/.test(pvMarkup),
-      '⑥ 字幕那条没有把 `animName` 交给 `textTiltTransform` —— 字幕的整块动效不生效')
+    // ⚠️⚠️ 2026-10-13 两级化：这里必须取**样式轴**（`styleAnimName`）——
+    //    `tilt_*` / `slam_squash` 的静态倾斜是**形态**那半边，取 `animName`
+    //    （或动效轴）会让"只写了 `effect_anim`"的字幕拿不到倾斜。
+    ok(/animName:\s*c\.styleAnimName/.test(pvMarkup),
+      '⑥ 字幕那条没有把**样式轴**（`c.styleAnimName`）交给 `textTiltTransform` ——\n' +
+      '     字幕的静态形态（倾斜 / 压扁）不生效。⚠️ 别退回 `c.animName`：\n' +
+      '     两轴化之后它只代表"两轴里随便哪一个"，形态那半会丢。')
+    // ⚠️ **字幕逐字那条路必须真的接上**（`spans` + `perCharSpans`）。
+    ok(/perCharSpans\s*\(\s*c\.fullText/.test(pvMarkup) || /c\.perChar/.test(pvMarkup),
+      '⑥ 字幕没有消费 `perChar` —— 19 档逐字在**字幕**上不会动\n' +
+      '     ⚠️ `subAnimFields` 带出来了，但组件不读 = 白带（本仓的经典空转）')
+  }
+
+  // ---- ⑤-bis ⚠️ **字幕那条路也要两轴**（2026-10-13，用户报「前端预览没有实现效果」）----
+  //
+  // ⚠️⚠️ 这一条是**补出来的**，因为真出过事：两级化当天，
+  //    **元素那条路改了、字幕这条路漏了** —— `subAnimFields` 仍然只读老 `anim`。
+  //    后果：用户给**字幕**选「竖排 + 抖动」（写两个新字段）⇒ 预览**完全没效果**、
+  //    而成片有。用户的反馈就是「前端预览没有实现效果」。
+  //
+  // ⚠️ 为什么上面的 ③④⑤ 全都发现不了：
+  //    · ③④ 走的是**元素**那条路（`buildIndex` 的 element 分支）；
+  //    · ⑤ 只喂了老 `anim`，**从没喂过 `style_anim` / `effect_anim`**。
+  //    ⇒ 同一个"两个消费者只改了一个"的空转，本仓犯过多次（判据绿 != 功能对）。
+  {
+    const mkSub = (extra) => {
+      const idx = E.buildIndex({
+        config: { canvas: { width: 1920, height: 1080, fps: 30 }, elements: {}, segments: [] },
+        subtitles: [{ start: 1, end: 9, text: '竖排且抖', style: { name: 'comment' },
+                      pos: 'bottom', ...extra }],
+        danmaku: [], duration: 10, fps: 30
+      })
+      return E.subsAt(idx, 1.5)[0]
+    }
+
+    // ① 两栏都写 ⇒ 字幕也要拿到**两样**（形态 + 动效）
+    const both = mkSub({ style_anim: 'vtext_bold', effect_anim: 'shake_std' })
+    ok(!!both, '⑤-bis 字幕行没取到')
+    if (both) {
+      ok(both.styleAnimName === 'vtext_bold',
+        '⑤-bis 字幕**没拿到** `style_anim` —— 形态那半边丢了：' +
+        `实得 ${JSON.stringify(both.styleAnimName)}\n` +
+        '     ⚠️ 成片里字幕会竖排、预览里横着（两边不一致）')
+      ok(both.effectAnimName === 'shake_std',
+        '⑤-bis 字幕**没拿到** `effect_anim` —— 动效那半边丢了：' +
+        `实得 ${JSON.stringify(both.effectAnimName)}\n` +
+        '     ⚠️ 用户选了抖动、成片里抖、预览里不抖 —— 就是用户报的「预览没有实现效果」')
+      // ⚠️ 核**实际参数**而不只是档名（档名带出来了、参数没接上一样没效果）。
+      ok(both.textMotion?.shakePx > 0,
+        '⑤-bis 字幕的 `textMotion.shakePx` 是 0 ⇒ 预览里不会抖：' +
+        `${JSON.stringify(both.textMotion?.shakePx)}`)
+    }
+
+    // ② 字幕的**逐字**走样式轴（`hop_*` / `pop_perchar` / `scatter_*`）
+    const perchar = mkSub({ anim: 'hop_std' })
+    ok(!!perchar?.perChar,
+      '⑤-bis 字幕的逐字 spec 没带出来 —— 19 档逐字在字幕上不会动')
+    ok(typeof perchar?.perCharFrame === 'number',
+      '⑤-bis 字幕的 `perCharFrame` 不是数：' + JSON.stringify(perchar?.perCharFrame))
+
+    // ③ **R4：没有任何档时，一个键都不加**（老工程形状逐字节不变）
+    const blank = mkSub({})
+    const leaked = Object.keys(blank).filter(
+      (k) => !['parts', 'fullText', 'opacity', 'yOff', 'scale'].includes(k))
+    ok(leaked.length === 0,
+      '⑤-bis 没有动效档的字幕**多出了键**（老工程产物形状变了）：' + JSON.stringify(leaked))
+  }
+
+  // ---- ⑤-ter ⚠️ **形态那半边的"实际参数"必须真的被消费** ----
+  //
+  // ⚠️⚠️ 这一条也是**补出来的**，理由与 ⑤-bis 同源、但位置更深一层：
+  //    ⑤-bis 只保证 `subAnimFields` 把 `styleAnimName` **带出来**了；
+  //    而组件第一版**只拿它做 `textTiltTransform`（倾斜/压扁）** ——
+  //    `tilt_*` 只是 39 档里的**一族**。`vtext_*` 三档给的是
+  //    `vertical` / `fontFamily` / `fontWeight` / `safeWidthRatio`，
+  //    **一个都没被读过** ⇒ 用户选「竖排」，预览里**横着**、成片里竖排。
+  //    （这正是"档名带出来了 ≠ 参数接上了"，本仓 ⑤-bis 那一类空转的第二层。）
+  //
+  // ⚠️ 判据必须盯**组件真读没读**，不能只盯 engine 有没有给 —— 给了没人读 = 白给。
+  {
+    const pv = fs.readFileSync(PREVIEW, 'utf8')
+    // 只对**真标记/真代码**断言（剥注释）：上面"这里曾漏读 vertical"那句话
+    // 本身就会含 `vertical` 字样，不剥会把说明当成实现。
+    const pvCode = pv.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    ok(/animPreset\s*\(/.test(pvCode),
+      '⑤-ter 预览组件没有调用 `animPreset` —— 形态档的**实际参数**（vertical/字体/安全宽）读不到\n' +
+      '     ⚠️ 只把档名交给 `textTiltTransform` 只能覆盖 `tilt_*` 一族')
+    ok(/\.vertical\b/.test(pvCode),
+      '⑤-ter 预览**没有读 `vertical`** —— 选「竖排」时预览里会横着（成片里是竖的）')
+    ok(/writingMode/.test(pvCode),
+      '⑤-ter 没有把 `vertical` 落成 `writing-mode` —— 读出来不用 = 白读')
+    ok(/safeWidthRatio/.test(pvCode),
+      '⑤-ter 折行**没有跟这一档的安全宽**（`vtext_*` 是 0.86）——\n' +
+      '     断行位置会与成片不一致（`check-caption-wrap.mjs` 钉的那类漂移）')
+    ok(/formStyle/.test(pvCode),
+      '⑤-ter 算出来的 `formStyle` 没有在模板上套用 —— 算出来不渲染 = 白算')
   }
 
   // ---- ⑦ ⚠️ **两轴组合**：`style_anim` + `effect_anim` 同时生效（2026-10-13）----

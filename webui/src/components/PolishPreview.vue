@@ -92,9 +92,10 @@
                  逐字那 19 档整块套上去会退化成"整行一个变换"（看不出差别）。 -->
           <div v-for="(c, i) in capRowsWrapped" :key="'c' + i" class="cap"
                :style="{ opacity: c.opacity,
+                         ...(c.formStyle || {}),
                          transform: c.animName
                            ? textTiltTransform({ yOff: c.yOff, scale: c.scale,
-                                                 style: subStyle, animName: c.animName })
+                                                 style: subStyle, animName: c.styleAnimName || c.animName })
                            : 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')',
                          fontSize: (subStyle.size || 72) * c.fontScale + 'px',
                          WebkitTextStrokeWidth: capStrokeW * c.fontScale + 'px' }">
@@ -198,7 +199,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -2303,7 +2304,27 @@ const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
   + (subStyle.value.font ? '"' + subStyle.value.font + '",' : '') + capFallback.value)
 const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
 const capRowsWrapped = computed(() => capRows.value.map((c) => {
-  const w = wrapCaptionParts(c.parts, cv.value.W * 0.875, (tx) => capMeasure(tx, capFontSpec.value))
+  // ---- ⚠️⚠️ 形态那半边的**实际参数**（2026-10-13 补，用户报「预览没有实现效果」）----
+  //
+  // ⚠️ 这一条是**第二个**漏掉的消费者：`subAnimFields` 把 `styleAnimName` 带出来之后，
+  //    组件仍然**只拿它做 `textTiltTransform`（倾斜/压扁）**——
+  //    而 `tilt_*` 只是 39 档里的一族。`vtext_*` 那三档给的是
+  //    `vertical` / `fontFamily` / `fontWeight` / `safeWidthRatio`，
+  //    **一个都没被读过** ⇒ 用户选「竖排」，预览里**横着**、成片里竖排。
+  //
+  // ⚠️ 取的是**这一条自己的档**（`c.styleAnimName`），不是轨级/全局 ——
+  //    转译器把 `anim` 当**轨级**属性分组，但预览是对**单条 cue** 求值，
+  //    分轨在转译期已经做完（与 `subAnimFields` 的注释同一条口径）。
+  const form = animPreset(c.styleAnimName) || {}
+  // ⚠️ 安全宽跟着这一档走（`vtext_*` 是 0.86，比默认的 0.875 略窄）——
+  //    不跟就会**断行位置与成片不一致**（`check-caption-wrap.mjs` 那类漂移）。
+  const safeRatio = typeof form.safeWidthRatio === 'number' && form.safeWidthRatio > 0
+    ? form.safeWidthRatio : 0.875
+  const w = wrapCaptionParts(c.parts, cv.value.W * safeRatio, (tx) => capMeasure(tx, capFontSpec.value))
+  // ⚠️ **竖排**：`writing-mode: vertical-rl`（与底座 `SubtitleStyle::vertical` 同语义）。
+  //    ⚠️ 竖排时**字号/描边/颜色一个字都不改** —— 它与那些是正交的。
+  const formStyle = form.vertical ? { writingMode: 'vertical-rl', textOrientation: 'upright' } : {}
+  if (form.fontWeight) formStyle.fontWeight = form.fontWeight
   // ---- 39 档动效（2026-10-13 补）----
   //
   // ⚠️ 逐字**必须在折行之后**按行拆：`wrapCaptionParts` 决定断行（与出片同源），
@@ -2331,7 +2352,9 @@ const capRowsWrapped = computed(() => capRows.value.map((c) => {
     })
     return per
   })
-  return { ...c, lines, fontScale: w.scale, spans }
+  // ⚠️ `formStyle` 必须**带出去**（模板读它）—— 算出来不返回 = 白算，
+  //    这正是"预览没效果"那一类空转的常见形状。
+  return { ...c, lines, fontScale: w.scale, spans, formStyle }
 }))
 const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
