@@ -215,6 +215,12 @@ try {
     })
   }
 
+  // ⚠⚠ **整块那条腿的谓词只许写一份**（2026-10-14）。
+  //    它曾经在 ② 与 ③ 两处各写一遍 —— 我给心跳加上 `heartbeatAmp` 后，
+  //    **上面那处好了、下面那处立刻不同步**（报“③ 两条腿都无变化”）。
+  //    本仓“两份实现必然漂移”的老病 —— 直接抽成函数。
+  const blockLegMoves = (mo) => !!(mo && ((mo.scaleInMs > 0) || (mo.shakePx > 0) ||
+    (mo.swayDeg > 0) || (mo.heartbeatAmp > 1)))
   const moving = []
   const staticOnes = []
   const shapesByTier = {}
@@ -224,7 +230,7 @@ try {
     // ⚠️ "逐字会动" = 逐字那条路**真的产出**、且**帧之间形状确实不同**。
     const perCharMoves = !!shapes && new Set(shapes.filter(Boolean)).size > 1
     const mo = E.animMotion(null, name)
-    const movesBlock = !!(mo && ((mo.scaleInMs > 0) || (mo.shakePx > 0) || (mo.swayDeg > 0)))
+    const movesBlock = blockLegMoves(mo)
     if (movesBlock || perCharMoves) moving.push(name)
     else staticOnes.push(name)
   }
@@ -244,8 +250,10 @@ try {
   //    · `fade`  —— **一个字段都不给**（它靠“取到了没”压掉全局弹入）。
   //                 ⚠️ 它有**动效语义**但没有形状变化 ⇒ 这里算“静态”是对的。
   //    · `tilt`  —— 改的是**静态 `rotation`**（不随时间走）。
-  //  ⚠️ `heartbeat` / `pop` / `shake` / `perchar_*` / `arc` 都必须**会动** ——
+  //  ⚠️ `heartbeat` / `pop` / `shake` / `arc` 都必须**会动** ——
   //     它们不在这张表里，少一档就是退化。
+  //     ⚠ `heartbeat` 2026-10-14 起是**真双峰**（`heartbeatScaleAt`）——
+  //       它之前是单峰占位，又因为不走 `scaleInMs` 而**被误判成静态**。
   //  ⚠️ 三轴收敛后**又多了一类“本来就不动”**：
   //    · `perchar_big` / `perchar_small` —— 它们是**静态的字号阶梯**
   //      （`scaleSpread` 是“按字号的乘数”，**不随时间走**）。
@@ -275,7 +283,7 @@ try {
     const shapes = shapesByTier[name]
     if (moving.includes(name)) {
       const mo = E.animMotion(null, name)
-      const blockMoves = !!(mo && ((mo.scaleInMs > 0) || (mo.shakePx > 0) || (mo.swayDeg > 0)))
+      const blockMoves = blockLegMoves(mo)
       const perCharMoves = !!shapes && new Set(shapes.filter(Boolean)).size > 1
       ok(perCharMoves || blockMoves,
         `③ \`${name}\` 被归成"会动"，但逐字与整块**两条腿都无变化** ` +
@@ -300,6 +308,124 @@ try {
           `③ \`${name}\` 是时间型逐字档，但**每一帧形状都一样**（应当随时间变）`)
       }
     }
+  }
+
+  // ---- ③-bis ★ **心跳必须是真双峰**（2026-10-14，用户：
+  //      「动效需要增加一个心跳，扑通扑通的心跳感」）----
+  //
+  // ⚠⚠ **为什么要单独钉**：上面 ②/③ 只问"它动不动"——
+  //    而**一次普通弹入也是"动"**。用户要的是"扑通**扑通**"，
+  //    形状上就是**两个峰** —— 只钉"会动"的话，拿单峰占位照样绿
+  //    （而那正是本档之前的样子）。
+  //
+  // ⚠ 判据跑的是**导出的真函数**（不在判据里重写一份曲线）。
+  {
+    const PEAKS = [0, 180, 300, 480]
+    const AMP = 1.14
+    const CYC = 1000
+    const at = (ms) => E.heartbeatScaleAt(ms, PEAKS, AMP, CYC)
+    // ① 周期内**局部极大值恰好两个** —— 这就是"扑通扑通"的定义。
+    const maxima = []
+    for (let ms = 1; ms < CYC - 1; ms += 1) {
+      if (at(ms) > at(ms - 1) + 1e-9 && at(ms) >= at(ms + 1)) maxima.push(ms)
+    }
+    ok(maxima.length === 2,
+      `③-bis 心跳在一个周期内应当有**恰好两个**峰（扑通·扑通），实得 ${maxima.length} 个` +
+      `（位置 ${JSON.stringify(maxima)}）—— 单峰 = 退化成普通弹入；>2 = 像抖动`)
+    // ② 第二峰**必须比第一峰弱**（两个等高看着像抖动）。
+    if (maxima.length === 2) {
+      const p1 = at(maxima[0])
+      const p2 = at(maxima[1])
+      ok(p2 < p1 - 1e-6,
+        `③-bis 心跳的**第二峰应当比第一峰弱**，实得 ${p1.toFixed(4)} / ${p2.toFixed(4)}` +
+        `（等高看着像"抖动"不像心跳）`)
+    }
+    // ③ 两峰之外**必须回到线基 1.0**（那 520ms 就是"扑通……扑通"的留白）。
+    ok(at(700) === 1 && at(900) === 1,
+      `③-bis 两峰之外应回到线基 1.0（停顿），实得 ${at(700)} / ${at(900)}`)
+    // ④ 纯函数：同一 `ms` **永远同一个值**（无累积状态 ⇒ seek 安全）。
+    const once = at(270)
+    ok(at(270) === once && at(270) === once,
+      '③-bis 心跳曲线必须是**纯函数**（同一 ms 永远同一值）—— 带状态的曲线一 seek 就与成片分叉')
+    // ⑤ 周期性：`cycleMs` 之后**重现**（"循环"是需求里的一半）。
+    ok(Math.abs(at(30) - at(CYC + 30)) < 1e-9,
+      `③-bis 心跳应当**按 ${CYC}ms 循环**，实得 ${at(30)} vs ${at(CYC + 30)}`)
+    // ⑥ 垃圾输入回基线（不报错、不跳）。
+    ok(E.heartbeatScaleAt(-5, PEAKS, AMP, CYC) === 1 &&
+       E.heartbeatScaleAt(0, null, AMP, CYC) === 1 &&
+       E.heartbeatScaleAt(0, [0, 180], 1, CYC) === 1 &&
+       E.heartbeatScaleAt(0, PEAKS, AMP, 0) === 1,
+      '③-bis 心跳对垃圾输入（负数 / peaks 缺失 / amp<=1 / cycle<=0）应返**基线 1**')
+
+    // ⑦ ⚠ **不能拿单峰曲线冒充**：`backOut3` 数学上只有**一个**极值点。
+    //    这条是"为什么必须新写一个函数"的**可执行证据**，
+    //    而不是注释里一句话。
+    const backOut3 = (p) => { const u = p - 1; return u * u * (4 * u + 3) + 1 }
+    let boMaxima = 0
+    for (let i = 1; i < 999; i += 1) {
+      const a = backOut3((i - 1) / 1000)
+      const b = backOut3(i / 1000)
+      const c = backOut3((i + 1) / 1000)
+      if (b > a + 1e-12 && b >= c) boMaxima += 1
+    }
+    ok(boMaxima === 1,
+      `③-bis 前提动了：\`backOut3\` 应当只有**一个**极值点（实得 ${boMaxima}）` +
+      `—— 如果它真的变成双峰了，心跳就不需要自己的函数了`)
+
+    // ⑧ ⚠⚠ 最关键的一条：**真跑 `getElements`**，看它确实走了心跳那一支。
+    //    上面那些都只证明"函数对"，这条证明"调用点接上了"。
+    const idx = E.buildIndex({
+      config: {
+        canvas: { width: 1920, height: 1080, fps: 30 },
+        elements: {},
+        segments: [{
+          start: 0, end: 30, fx: 'low',
+          events: [{
+            type: 'element', kind: 'text', text: '扑通', time: 1, end: 20,
+            style: 'comment', pos: 'bottom', x: '40%', y: '70%',
+            source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1',
+            effect_anim: 'heartbeat',
+          }],
+        }],
+      },
+      subtitles: [], danmaku: [], duration: 30, fps: 30,
+    })
+    const scales = []
+    for (let t = 2.0; t < 3.0; t += 0.03) {
+      const e = E.getElements(idx, t)[0]
+      scales.push(e ? e.scale : null)
+    }
+    const vals = scales.filter((v) => v != null)
+    let realMax = 0
+    for (let i = 1; i < vals.length - 1; i += 1) {
+      if (vals[i] > vals[i - 1] + 1e-6 && vals[i] >= vals[i + 1]) realMax += 1
+    }
+    ok(vals.length > 20 && realMax >= 2,
+      `③-bis **真跑 \`getElements\`** 时心跳应当真的跳两下（实得 ${realMax} 个峰，` +
+      `采到 ${vals.length} 个样本）—— 函数对了但没接上也是白算：${JSON.stringify(vals.map((v) => Number(v.toFixed(3))))}`)
+    // ⑨ ⚠ 反面：**没选心跳的档不许跳**（平平的 1.0）。
+    const idx2 = E.buildIndex({
+      config: {
+        canvas: { width: 1920, height: 1080, fps: 30 },
+        elements: {},
+        segments: [{
+          start: 0, end: 30, fx: 'low',
+          events: [{
+            type: 'element', kind: 'text', text: '扑通', time: 1, end: 20,
+            style: 'comment', pos: 'bottom', x: '40%', y: '70%',
+            source: 'comment|44|2|255,226,122,255|26,26,26,255|700|1',
+          }],
+        }],
+      },
+      subtitles: [], danmaku: [], duration: 30, fps: 30,
+    }) 
+    const flat = []
+    for (let t = 2.0; t < 3.0; t += 0.03) {
+      const e = E.getElements(idx2, t)[0]
+      if (e) flat.push(e.scale)
+    }
+    ok(flat.length > 20 && flat.every((v) => Math.abs(v - 1) < 1e-9),
+      `③-bis 没选动效档的元素**不许跳**（应恒为 1.0）：${JSON.stringify(flat.slice(0, 8))}`)
   }
 
   // ---- ④ 逐字**确实逐字**：同一帧里各个字**形状不同** ----

@@ -82,7 +82,11 @@ console.log('='.repeat(72));
 console.log(`  档位来源：引擎 ${engineKeys.length} · 转译器 ${translatorKeys.length} · 下拉 ${dropdownKeys.length}`);
 console.log('');
 
-ok(engineKeys.length === 39, `引擎档数应当是 39，实得 ${engineKeys.length}`);
+// ⚠⚠ 2026-10-14（三轴收敛）：档位从 **39 收到 9**（两边各 9 档）。
+//   硬编码 39 在收敛后**永远红** —— 而它又正好在**每次都要跑**的路上，
+//   结果就是整张验收表被当成“本来就红”而被无视——它真正报的那 9 条反而没人看。
+//   ⇒ 改成**下限**：九档是收敛后的定义，每改一档都要有意图（而不是增到 40 就绿）。
+ok(engineKeys.length >= 9, `引擎档数不应少于 9（三轴收敛后的定义），实得 ${engineKeys.length}`);
 ok(new Set(engineKeys).size === engineKeys.length, '引擎档位名有重复');
 
 // ===========================================================================
@@ -212,14 +216,19 @@ for (const tier of engineKeys) {
     row.note = '竖排：排版方向，非逐字变换';
   } else {
     // 整块：`scale_in_*` / `shake_*` / `squashY` 任一非零即"看得见"。
-    // ⚠️ `fade_only` 是**有意为之的空档**（「只淡出」= 不缩放不抖），
-    //    它的"看得见"由淡入淡出承担，不在这一档的几个数上 ⇒ 单独放行。
+    // ⚠ ⚠ 2026-10-14：三轴收敛后档名从 `fade_only` 改成了 **`fade`**。
+    //   旧名字留在这里 ⇒ 豁免**永远不生效**，`fade` 被当成“预览不动”报红
+    //   （而它本来就是**有意为之的空档**：淡入淡出不在这几个数上）。
+    // ⚠ 心跳也要算进去：它**不走** `scaleInFrom/Peak`（双峰周期函数，
+    //   见 `heartbeatScaleAt`），只看旧字段会把它误判成恒等。
     const numeric = ['scaleInFrom', 'scaleInPeak', 'shakePx', 'shakeHz', 'squashY',
       'tiltDeg', 'swayDeg']
       .map((k) => spec[k])
       .filter((v) => v !== undefined);
-    previewActive = numeric.some((v) => Math.abs(v) > 1e-6) || tier === 'fade_only';
-    if (tier === 'fade_only') row.note = '只淡出：无缩放/抖动（设计如此）';
+    const hbActive = typeof spec.heartbeatAmp === 'number' && spec.heartbeatAmp > 1;
+    const flatByDesign = tier === 'fade';
+    previewActive = numeric.some((v) => Math.abs(v) > 1e-6) || hbActive || flatByDesign;
+    if (flatByDesign) row.note = '只淡入淡出：无缩放/抖动（设计如此）';
   }
   row.c3 = !!previewActive;
   ok(row.c3, `③ ${tier}：预览算出的是**恒等**结果 ⇒ 用户看到的画面不动`
@@ -256,7 +265,10 @@ for (const tier of engineKeys) {
     // 只取缩进 **6** 的键（档位自己的字段）；更深的属于 perChar 子对象。
     for (const m of block.matchAll(/^ {6}([a-z_0-9]+):/gm)) emitted.add(m[1]);
   }
-  const badKeys = [...emitted].filter((k) => !TRANSLATOR_KEYS.has(k) && k !== 'perChar');
+  // ⚠ ⚠ 2026-10-14：排除 `sort` —— 它是**表内部的三轴归属标签**，从不被写出去；发射路径是
+  //   `motionFields` 里逐个 `put('…')` 的**白名单**，不是把预设对象整个展开。
+  const TABLE_ONLY = new Set(['sort']);
+  const badKeys = [...emitted].filter((k) => !TRANSLATOR_KEYS.has(k) && k !== 'perChar' && !TABLE_ONLY.has(k));
   // perChar 的子键也要逐个核（缩进 8 及以上）
   const badPerChar = block === null
     ? []

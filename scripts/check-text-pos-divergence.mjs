@@ -91,11 +91,16 @@ check(
 //    直接写成 `'...${cue.anim || ''}...'` 会让 JS 在 `''` 处提前闭合字符串
 //    （实测把整份判据写成语法错误、**跑都跑不起来**）。
 check(
-  '★ 分轨键含「样式 × 纵向档 × 样式动效 × 动效动效 × 颜色」（都是轨级参数，少一维就互相覆盖）',
-  TRANS.includes(
-    '`${cue.style.name}|${cue.pos}|${cue.styleAnim || ' + "''" + '}|${cue.effectAnim || ' +
-      "''" + '}|${colorKey}`',
-  ),
+  '★ 分轨键含「样式 × 纵向档 × 样式动效 × 动效动效 × **过渡动效** × 颜色」' +
+    '（都是轨级参数，少一维就互相覆盖）',
+  // ⚠ 2026-10-14（三轴）：键里又多了 `transitionAnim` 一维 ——
+  //   不带它的话，「同样式/同档位/同动效、**两个不同过渡**」
+  //   会共用一条轨。（这条判据的锚点是**源码字面量**，
+  //   改分轨键就必须一起改 —— 它已经绊过两次了，这是第三次。）
+  // ⚠ 用**正则**而不是字面量：这段源码里同时有反引号与单引号，
+  //   写成字面量会在 `''` 处提前闭合（已踩三次）。正则只要求
+  //   「**同一个分轨键里**同时出现 style/pos/styleAnim/effectAnim/transitionAnim/colorKey」。
+  /`\$\{cue\.style\.name\}\|\$\{cue\.pos\}\|\$\{cue\.styleAnim[\s\S]{0,200}?\$\{cue\.transitionAnim[\s\S]{0,80}?\$\{colorKey\}`/.test(TRANS),
 );
 check(
   '遍历顺序里含三个档位（top/center/bottom 都要分到轨）',
@@ -236,7 +241,10 @@ check('需求文档仍有 T7 纵向锚一节（供底座侧追溯）', /T7.*纵�
 //   1(BorderStyle) 2(Outline) 1(Shadow) **2(Alignment)** 10,10,10(Margins) 1(Encoding)
 //
 // ⇒ 纵向**一律**由 `anchor_bottom` 表达。哪天真去改对齐码，这条会红、必须重审。
-const ASS_TAIL = "'0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1'";
+// ⚠ 2026-10-14：`Outline` / `Shadow` 从字面量改成了**模板插值**
+//   （元素描边走自己的四档，问题 ③）。对齐码那一列位置不变，
+//   判据改成钉"对齐码仍为 2 且不受描边插值影响"。
+const ASS_TAIL = '${outlinePx ?? 2},${shadowPx ?? 1},2,10,10,10,1';
 check(
   'ASS 对齐码仍是 2（底部居中）—— 纵向全靠 anchor_bottom；变了必须重审',
   TRANS.includes(ASS_TAIL),
@@ -252,20 +260,35 @@ if (process.argv.includes('--self-test')) {
   //    （实测如此 —— 那说明变异没生效，看着像"抓不住"）。
   // ⚠️⚠️ **两级化（`df5bf46`）后键是四维** ⇒ 锚点再改一次。
   //    这条的教训值得记：**判据匹配的是源码字面量，改一次源码就要来看它一眼**。
-  const FOUR_DIM_KEY = '`${cue.style.name}|${cue.pos}|${cue.styleAnim || ' + "''" +
-    '}|${cue.effectAnim || ' + "''" + '}`';
-  const oneDim = TRANS.replace(FOUR_DIM_KEY, 'cue.style.name');
-  assert.notEqual(oneDim, TRANS, '自证：变异必须命中');
-  assert.equal(oneDim.includes(FOUR_DIM_KEY), false, '自证①：一维分轨必须红');
+  // ⚠ 2026-10-14（三轴）：键变成**五维**（加了 `transitionAnim`）——
+  //   变异的锚点也要跟着变，否则 `.replace` 不命中、变异体原样跑绿。
+  // ⚠ **从真源码里抽**（不手抄 —— 手抄必漂，这条已经绊过三次）。
+  // ⚠ **从真源码里抽**（不手抄）；两段之间的换行与缩进也在里面。
+  // ⚠ **从真源码里现场抽**（不手抄、也不写字面量）——
+  //   这条自证已经因为锚点过时绊过三次（分轨键每改一次就断一次）。
+  //   现在把那两行**原文**拼回来当锚点 ⇒ 改了分轨键它自动跟着变。
+  // ⚠ **从真源码里现场抽**（不手抄、也不写死字面量）——
+  //   这条自证已经因为**锚点过时**绊过三次（分轨键每改一次就断一次）；
+  //   现在把那两行**原文**拼回来当锚点 ⇒ 改了分轨键它自动跟着变。
+  // ⚠ 只认**分轨键那一对**：仓里另有一个 `const key = `…`‘‘`
+  //   （`buildKeepRanges` 里的区间键），只看前缀会抽到 3 行。
+  const KEY_LINES = TRANS.split('\n').filter((l) =>
+    l.includes('${cue.style.name}|${cue.pos}') ||
+    (l.includes('${cue.effectAnim') && l.includes('${colorKey}`')));
+  assert.equal(KEY_LINES.length, 2, '自证：抽不到分轨键那两行');
+  // ⚠ **逐字拼**：行0 去掉 `      const key = ` 前缀（不能 `trim()` ——
+  //   那会把缩进也吃掉，而源码里它是真的）；行1 去掉行首缩进与末尾 `;`。
+  const FIVE_DIM_KEY = KEY_LINES[0].slice(KEY_LINES[0].indexOf('`')) +
+    '\n' + KEY_LINES[1].slice(0, -1);
   // ⚠️ 再补一条：**只砍掉后两维**（退到两维）也必须红 —— 那是"同档位两个动效
   //    互相覆盖"的回归，比①更隐蔽（纵向档还在键里，肉眼看着"没改坏"）。
-  const twoDim = TRANS.replace(FOUR_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
+  const twoDim = TRANS.replace(FIVE_DIM_KEY, '`${cue.style.name}|${cue.pos}`');
   assert.notEqual(twoDim, TRANS, '自证①b：变异必须命中');
   assert.equal(twoDim.includes('${cue.styleAnim'), false, '自证①b：退到两维必须红');
   // ⚠️ 再补一条：**只砍掉动效那两维里的一维**（三维）也必须红 ——
   //    "两轴可叠加"要求两轴**各自**参与分组（只留一条会让
   //    「竖排 + 抖动」与「纯抖动」撞成一个组合，后写覆盖先写）。
-  const threeDim = TRANS.replace(FOUR_DIM_KEY,
+  const threeDim = TRANS.replace(FIVE_DIM_KEY,
     '`${cue.style.name}|${cue.pos}|${cue.effectAnim || ' + "''" + '}`');
   assert.notEqual(threeDim, TRANS, '自证①c：变异必须命中');
   assert.equal(threeDim.includes('${cue.styleAnim'), false, '自证①c：砍掉样式轴必须红');
@@ -276,9 +299,12 @@ if (process.argv.includes('--self-test')) {
   assert.equal(/anchor_bottom:\s*anchorBottomFor\(/.test(notWritten), false, '自证②：不写进轨必须红');
   self += 1;
   // ③ 旧警示被加回来 ⇒ 必须红（判据是双向的：既防没接线，也防谎报）
+  // ⚠ 2026-10-14：那一栏的显示名从「样式」改成了「**排版**」（三轴收敛）。
+  //   注入锚点必须跟着改 —— 否则 `.replace` 不命中，变异体与原文
+  //   **逐字符相同**，“变异必须命中”那句直接炸。
   const warnBack = TL.replace(
-    '<label>样式</label>',
-    '<div class="hint warn-hint">纵向档位目前只在预览生效，成片会贴底。</div><label>样式</label>',
+    '<label>排版</label>',
+    '<div class="hint warn-hint">纵向档位目前只在预览生效，成片会贴底。</div><label>排版</label>',
   );
   assert.notEqual(warnBack, TL, '自证③：变异必须命中');
   assert.equal(/纵向档位目前只在预览生效/.test(warnBack), true, '自证③：警示回来必须被检出');
@@ -293,7 +319,7 @@ if (process.argv.includes('--self-test')) {
   // ⑤ **「纵向位置」下拉被加回来** ⇒ 必须红（用户要的是贴纸同逻辑：不给选位置）。
   //    ⚠️ 连 `selItem.pos =` 那半也要覆盖 —— 只藏 label 而逻辑还在写 `pos`
   //    是"看着撤了、实际还写"，比不撤更坏（界面与落点对不上）。
-  const posBack = TL.replace('<label>样式</label>', '<label>纵向位置</label><select :value="selItem.pos"></select><label>样式</label>');
+  const posBack = TL.replace('<label>排版</label>', '<label>纵向位置</label><select :value="selItem.pos"></select><label>排版</label>');
   assert.notEqual(posBack, TL, '自证⑤：变异必须命中');
   assert.equal(/<label>纵向位置<\/label>/.test(posBack), true, '自证⑤：下拉回来必须被检出');
   self += 1;

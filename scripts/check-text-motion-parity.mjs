@@ -185,9 +185,21 @@ const check = (what, got, want) => {
     true,
   );
   // ⚠️ 窗口外必须显式回 1.0，不是停在 peak
+  //
+  // ⚠ 2026-10-14：上限从 300 放到 1400 —— 中间插了**心跳**那一支
+  //   （它是独立的双峰函数，不走 `local < win` 那个窗口）。
+  //   ⚠ 这条判据钉的是"**T1 那一支**窗口外回 1.0"，
+  //     放宽上限不会让它失效（它仍然要求那个 `if` 真的存在）。
   check(
     'JS: 窗口外 scale 回 1.0（不是停在 peak）',
-    /let motionScale = 1[\s\S]{0,300}?if\s*\(local\s*<\s*win\)/.test(js),
+    /let motionScale = 1[\s\S]{0,1400}?if\s*\(local\s*<\s*win\)/.test(js),
+    true,
+  );
+  // ★ 心跳那一支（双峰）也必须在——否则上面那条只要求 T1 在，
+  //   "心跳被删了但 T1 还在"会**照样绿**。
+  check(
+    'JS: 心跳走独立的双峰函数（不是拿 T1 单峰冒充）',
+    /heartbeatScaleAt\s*\(/.test(js) && /export function heartbeatScaleAt\s*\(/.test(js),
     true,
   );
 }
