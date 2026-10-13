@@ -166,17 +166,35 @@
   <div class="lane-group" :class="{ on: openLane === 'subtitles' }"
        :ref="(el) => (laneGroupEls.subtitles = el)">
     <div class="lane-group-h">字幕 / 弹幕</div>
-    <!-- **「字幕字体」那一行**。
-         ⚠️⚠️ 两颗重置按钮**曾经住在这里，已经搬走了**（2026-10-12，用户口径：
-            「位置→默认 / 大小→默认 改成 重置位置，重置大小」）。
-            改名的同时**参照物也反了过来** —— `重置位置` 管的是「字幕位置」滑杆、
-            `重置大小` 管的是「字幕大小」数字框，都是**下面那几行**的控件。
-            ⇒ 按钮必须紧挨着它们复位的东西，所以搬到了 `.ss-grid` 之后（见下面那段）。
-            **别把按钮搬回这里**：搬回来就是"按钮在一个地方、它管的东西在另一个地方"，
-            而且会与下面那份**重复渲染**（判据 ⑰ 钉着"全页各只出现一次"）。
-         ⚠️ 宽度实测：标签 50px + 下拉占满余下 ≈ 204px ≤ 行宽 266px。 -->
+    <!-- **「字幕字体」那一行 + 两颗重置按钮**。
+         ⚠️⚠️ 用户口径（2026-10-13）：「重置大小这两个按钮…放在 **字幕字体**
+            的后方也就是**同一行**，将重置改为**符号**，精简一点」。
+         ⇒ 两颗按钮与「字幕字体」**同一行**（不再单独占一行），文案改成符号。
+
+         ⚠️ **这两颗按钮的历史**（别照着旧注释再改回去）：它们曾经叫
+            「位置→默认 / 大小→默认」，2026-10-12 改名成「重置位置 / 重置大小」
+            并**搬到 `.ss-grid` 之后**（当时口径："按钮要紧挨着它复位的东西"）。
+            2026-10-13 用户改口径：**回到字体那一行**、**只留符号 + 一个字**。
+            ⇒ 两次口径都是用户定的，以**当前**这条为准。
+
+         ⚠️ `select` 必须**仍然独占一行**：它带 `fld-input`（`width:100%`），
+            塞进 flex 行会被压到几乎看不见（同下面「弹幕设置」那段注释的理由）。
+            ⇒ 拆成两行：第 1 行 = 标签 + 两颗符号按钮；第 2 行 = 字体 `select`。
+
+         ⚠️ 符号（用户 2026-10-13 选定）：`↺ 位置` / `⟳ 大小` —— **图标 + 一个字**。
+            ⚠️ 两枚必须**看得出区别**：只用两个一模一样的 `↺` 等于让用户靠猜
+            （触屏上连悬停都没有）。`title` 里写全语义。 -->
     <div class="row ss-font-row">
       <span class="small muted flex-none">字幕字体</span>
+      <span class="flex-1"></span>
+      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
+              :title="subtitlePosSet ? '重置位置：清除位置设置，回到历史落点公式' : '位置当前就是未设置'"
+              aria-label="重置位置"
+              @click="restoreSubtitlePos">↺ 位置</button>
+      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
+              :title="subtitleSizeSet ? '重置大小：清除字号设置，回到默认 72' : '字号当前就是未设置'"
+              aria-label="重置大小"
+              @click="restoreSubtitleSize">⟳ 大小</button>
     </div>
     <select class="fld-input" :value="subtitleFont" :disabled="fontSaving || !ready" @change="onSubtitleFontChange">
       <option v-for="o in fontOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -248,26 +266,11 @@
         <span class="mono small flex-none">%</span>
       </div>
     </div>
-    <!-- ⚠️ 「位置→默认 / 大小→默认」那两颗按钮**已按用户口径改名**
-         （用户 2026-10：「位置→默认 大小→默认 改成 重置位置，重置大小」）：
-           * 文案 = 「重置位置」/「重置大小」，位置 = **紧跟在上面 `.ss-grid` 之后**
-             （贴住它们复位的两个控件：「字幕位置」滑杆 / 「字幕大小」数字框）。
-           * ⚠️⚠️ **别搬回「字幕字体」那一行**：那次改名**只搬了一半** ——
-             新副本加在了这里、旧副本忘了从字体行删掉 ⇒ 页面上**同时出现两组一模一样的按钮**。
-             判据 ⑰ 的"全页各只出现一次"和"不在字体行里"两条就是为这件事钉的。
-         ⚠️ 文案 ≤20 字（右栏行内容宽只有 266px）。
-         ⚠️ 复位语义不变：位置发 `null`（回到"没设过"），大小**只提示手改** ——
-            serde 默认值与"用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。
-         ⚠️ 与上面那个字幕样式块共用 `styleWriteBlocked`：读配置失败时整块只读，
-            这两颗也必须一起禁用，否则会"拿默认值把磁盘上的样式清成默认"。 -->
-    <div class="ss-row-2">
-      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitlePosSet"
-              :title="subtitlePosSet ? '清除位置设置，回到历史落点公式' : '当前就是未设置'"
-              @click="restoreSubtitlePos">重置位置</button>
-      <button class="mini-btn jc-center" :disabled="styleWriteBlocked || !ready || !subtitleSizeSet"
-              :title="subtitleSizeSet ? '清除字号设置，回到默认 72' : '当前就是未设置'"
-              @click="restoreSubtitleSize">重置大小</button>
-    </div>
+    <!-- ⚠️ 两颗重置按钮**已按 2026-10-13 的用户口径**并进上面「字幕字体」那一行，
+         并且**只留符号 + 一个字**。**不要在这里再加一份** —— 两处同时渲染
+         就是四颗按钮（判据 ⑰ 钉着"全页各只出现一次"）。
+         ⚠️ 复位语义一字未改：位置发 `null`（回到"没设过"），大小**只提示手改** ——
+            serde 默认值与"用户显式写了 72"在前端**区分不了**，发回 72 就是撒谎。 -->
 
     <!-- ── 弹幕设置 ─────────────────────────────────────────────────────────
          用户口径（2026-10）：「显示弹幕放在 **弹幕设置** 同一行的后面」。
@@ -302,61 +305,31 @@
       <span class="mono small flex-none">s</span>
     </div>
 
-    <!-- ── 文字动效（`[elements]`，2026-10-13）──
-         打字机 / 弹入 / 抖动 / 底衬 / 摇摆这五个能力**早就在后端与转译器里**，
-         但**一直没有界面**（`ElementsConfig` 那十来个字段前端只被 `engine.js` 读、
-         没人写）⇒ 用户只能手改 `polish.toml`，而 PUT 的逐字段白名单里**也没有
-         `elements` 这一支**，改完点保存会被**静默丢掉**（"已保存"、文件没变）。
-         本次一并补上：白名单分支 + 这里这组控件。
+    <!-- ── 文字动效（`[elements]`）**整块已按用户口径删除**（2026-10-13）
+         用户口径：「文字动效 / 摇摆 / ° / 周期 / ms 这些内容删除」。
+         ⇒ 界面上不再有「文字动效」分组（摇摆幅度/周期两条滑杆一并没了）。
 
-         ⚠️ **每一个控件都必须"关得掉、且关掉即不写键"**：底座那批字段全是
-         `Option<T>`，`None` = 老行为。发 `0` / `false` 会**写出一个键** ⇒ 老工程
-         重存多出内容（R4）。所以下面一律发 `null`（服务端 `patch_config_file`
-         删键），与「LLM 按链路覆盖」那块用勾选框表达"跟随全局"是同一条纪律。
+         ⚠⚠ **能力一个字都没动**（与之前删 BGM 那栏同一条口径）：
+            · 后端 `ElementsConfig`（打字机 / 弹入 / 抖动 / 底衬 / 摇摆）全在；
+            · 转译器的 `swayCfg` / `motionFields` 全在；
+            · `PUT /api/polish/project` 的 `elements` 白名单分支也还在。
+            ⇒ 要出摇摆照样能在 `polish.toml` 里手写 `[elements] sway_deg = ...`。
+            「暂且用不到」≠ 删功能；**别顺手把后端那侧一起拆掉**。
 
-         ⚠️ 长度预算：右栏内容宽只有 266px，行内文案 ≤20 字。 -->
-    <div class="row mt-6" style="gap:6px;align-items:center">
-      <span class="small muted flex-none">文字动效</span>
-      <span class="flex-1"></span>
-    </div>
+         ⚠️ 前端接线代码（`patchElements` / `swayDeg` / `swayMs` 等 computed）**按用户意思保留**：
+            以后若要加回控件，接线还在。判据不要因为"没人调用"而报未使用。
 
-    <div class="row mt-6" style="gap:6px;align-items:center">
-      <span class="small muted flex-none" style="width:52px">摇摆</span>
-      <input type="range" class="flex-1" min="0" max="20" step="0.5" :value="swayDeg"
-             :disabled="elementsSaving || !ready"
-             title="摆动幅度（度，单边）：写 8 ⇒ 在 −8°…+8° 之间往复。0 = 关。⚠️ 幅度与周期都给才摆动，任一为 0 即关"
-             @change="patchElements({ sway_deg: rangeOrNull($event, 0) })">
-      <input class="rv-input" type="number" inputmode="decimal" min="0" max="20" step="0.5"
-             :value="swayDeg" :disabled="elementsSaving || !ready" aria-label="摇摆幅度（度）"
-             title="0 = 关（不写这个键）" @change="patchElements({ sway_deg: numOrNull($event, 0, 20) })">
-      <span class="mono small flex-none">°</span>
-    </div>
+         ⚠️ 删除后上下残留的空行一并清掉（否则右栏会多一段无名空白）。 -->
+    <!-- ── §23 节奏报告（**显示已按用户口径删除**，2026-10-13）──
+         用户口径：「节奏 / 6 段静止，最长 37.2s …这些内容删除」。
 
-    <div class="row mt-6" style="gap:6px;align-items:center">
-      <span class="small muted flex-none" style="width:52px">周期</span>
-      <input type="range" class="flex-1" min="0" max="2000" step="50" :value="swayMs"
-             :disabled="elementsSaving || !ready"
-             title="一次往复用多久（毫秒）：快摆 600 显活泼，慢摆 1600 显醉/晕。0 = 关"
-             @change="patchElements({ sway_ms: rangeOrNull($event, 0) })">
-      <input class="rv-input" type="number" inputmode="numeric" min="0" max="2000" step="50"
-             :value="swayMs" :disabled="elementsSaving || !ready" aria-label="摇摆周期（毫秒）"
-             title="0 = 关（不写这个键）" @change="patchElements({ sway_ms: numOrNull($event, 0, 2000) })">
-      <span class="mono small flex-none">ms</span>
-    </div>
+         ⚠️ **只删了这一行显示** —— `process` 还在扫 >6s 的静止区间、
+            还在落 `data/pacing.json`，接口也还在。下次想看就把这一行加回来。
 
-    <!-- ── §23 节奏报告（**只读**，2026-10-13）──
-         `process` 早就在扫 >6s 的静止区间并落 `data/pacing.json`，但**全仓没有第二个
-         消费者** —— 界面读不到、API 不暴露，等于"算了、也落盘了，用户永远看不见"。
-         这里只把它**显示出来**。
-
-         ⚠️⚠️ **只显示、不补运镜**：规格（`editing-techniques-catalog.md` §23）强调过
-         「留白是'没有说话'，不是'画面死着'」—— 自动往安静叙述切片上补运镜是**改观感**的
-         行为，得用户先看数字再拍板。那份 JSON 里 `applied: false` 就是给读它的人的交代。
-         **别在这里加"一键补上"按钮**，也别读它去改任何配置。 -->
-    <div v-if="pacing" class="row mt-6" style="gap:6px;align-items:center">
-      <span class="small muted flex-none">节奏</span>
-      <span class="small flex-1" :title="pacingTitle">{{ pacingText }}</span>
-    </div>
+         ⚠⚠ **别在这里加"一键补上运镜"按钮**（原注释就写着）：
+            规格（`editing-techniques-catalog.md` §23）强调「留白是'没有说话'，不是'画面死着'」——
+            自动往安静叙述切片上补运镜是**改观感**的行为。那份 JSON 里 `applied: false`
+            就是给读它的人的交代。 -->
 
     <!-- ── BGM（§11）**整段已按用户口径删除**（2026-10：「将项目设置的这一栏删除，暂且用不到
          bgm，背景音乐」）⇒ 界面上不再有「背景音乐」分组（开关 / 文件 / 音量 / 闪避）。

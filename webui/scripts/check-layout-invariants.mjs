@@ -215,11 +215,23 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   const script = src.slice(src.indexOf('<script'))
   const tpl = src.slice(0, src.indexOf('<script'))
   for (const n of names) {
+    // ⚠️ **这里判的是"必须定义"，不是"必须被模板用到"**（2026-10-13 改）。
+    //
+    // 旧写法是 `usedInTpl && defined` —— 它把**两件事捆在一起**：
+    //   ① 用了未定义的 ⇒ 真漏洞（白屏、无报错）；
+    //   ② 定义了但没用 ⇒ 它也报红。
+    // 而用户 2026-10-13 明确要求**保留前端接线**（只删界面），
+    // 所以「定义了没用」是**预期之中**，不是缺陷。
+    // ⇒ 拆开：**只钉①**（定义必须存在），并且**只在模板真用到时**才把"用了就得有定义"当成硬条件 ——
+    //    那一条原本就是防白屏的，保留；只是不再把"没用到"当成失败。
     const usedInTpl = tpl.includes(n)
     const defined =
       new RegExp(`(const|let|function)\\s+${n}\\b`).test(script) ||
       new RegExp(`\\b${n}\\s*[:=]`).test(script)
-    check(`${file.split('/').pop()} · ${n}（模板用到就必须定义）`, usedInTpl && defined, true)
+    // ① 定义必须存在（无论用没用到）；
+    check(`${file.split('/').pop()} · ${n}（必须定义过）`, defined, true)
+    // ② 模板真用到了 ⇒ 就更不能定义丢了（这条与上一条同真值，但它在报错文案里点名症状）。
+    check(`${file.split('/').pop()} · ${n}（模板用到就必须定义）`, !usedInTpl || defined, true)
   }
   // 变异自证：把定义改名，判据必须翻面
   const n = names[0]
@@ -545,8 +557,11 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    `indexOf` 返回 **-1** ⇒ `slice(i, -1)` 把整段**切到最后**（不是空！），
   //    于是这里数到的 `.ss-row` 是**整个文件**的、永远凑不出 4 条 —— 判据翻红，
   //    而红的原因是锚点烂了，不是排版坏了。**锚点必须指一个真的存在的字面量**。
-  //    现在用音乐那段注释（它紧跟在 `.ss-grid` 块之后、且属于别的小节）。
-  const ssEnd = polishView.indexOf('「位置→默认 / 大小→默认」那两颗按钮')
+  //    ⚠️ **锚点又烂了一次**（2026-10-13）：上一任锚点是
+  //    「位置→默认 / 大小→默认」那两颗按钮」那句注释 —— 而这次把那段注释整块重写了，
+  //    又是 `indexOf` → -1 → `slice(i, -1)` 把整段切到最后。
+  //    ⇒ **锚点不该选“可能被重写的说明文字”**，选**紧跟在 `.ss-grid` 后面的另一个小节标题**（它本身就是隔断符）。
+  const ssEnd = polishView.indexOf('<span class="small muted flex-none">弹幕设置</span>')
   const ssTpl = polishView.slice(polishView.indexOf('<div class="ss-grid"'), ssEnd)
   check('⑰ 字幕样式块的右端锚点仍然存在（锚点烂了会让下面那条判空转/恒红）',
     ssEnd > polishView.indexOf('<div class="ss-grid"'), true)
@@ -584,28 +599,45 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   //    ⇒ 按钮搬到了 `.ss-grid` **之后**。旧判据留着的结果是：
   //    代码按用户口径搬好了，判据却要求它搬回去 —— 那正是"判据在测另一个东西"。
   //    现在钉"按钮紧跟在 `.ss-grid` 之后、且在 `.ss-font-row` **之前**（字体行不再有按钮）"。
-  const fontRowOk = (src) => {
-    const fontRow = src.indexOf('<div class="row ss-font-row">');
+  // ⚠⚠ **口径已经反过来了**（2026-10-13，用户：「重置大小这两个按钮…放在 **字幕字体**的后方
+  // 也就是**同一行**，将重置改为**符号**，精简一点」）。
+  //
+  // 历史：曾经叫「位置→默认 / 大小→默认」→ 2026-10-12 改名「重置位置/重置大小」并搬到 `.ss-grid` 之后
+  // → 2026-10-13 又搬回字体行、只留符号。⇒ 以**当前**口径为准。
+  //
+  // ⚠️ 判据盯三件事（都是这次真改的）：
+  //   ① 两颗按钮**在 `.ss-font-row` 里**（与「字幕字体」同一行）；
+  //   ② **不再**单独占一个 `.ss-row-2`（否则就是两行、又回到旧样子）；
+  //   ③ 文案是符号（↺/⟳）而非「重置位置/重置大小」。
+  const resetPlacementOk = (src) => {
     const grid = src.indexOf('<div class="ss-grid"');
-    if (fontRow < 0 || grid < 0) return false;
-    // 两颗按钮所在的位置：取第一个绑定处，从它往前找最近的那个 `<div …>`。
     const btn = src.indexOf('@click="restoreSubtitlePos"');
-    if (btn < 0) return false;
+    if (grid < 0 || btn < 0) return false;
     const holder = src.lastIndexOf('<div', btn);
-    // ① 按钮在 `.ss-grid` **之后**（贴住它复位的两个控件）；
-    // ② 按钮**不在** `.ss-font-row` 里（字体行只管字体下拉）。
-    return holder > grid && holder !== fontRow;
-  };
-  check('⑰ 两颗重置按钮紧跟 `.ss-grid`（贴住它们复位的两个控件），不在字体行里',
-    fontRowOk(polishView), true);
+    const fontRow = src.indexOf('<div class="row ss-font-row">');
+    if (fontRow < 0 || holder !== fontRow) return false;
+    // ② 按钮卡在 `.ss-grid` 与 `.ss-font-row` **之间的独立块**里 ⇒ 旧样子，算错。
+    if (btn > grid && btn < fontRow) return false
+    return true
+  }
+  check('⑰ 两颗重置按钮在「字幕字体」那一行里（同一行）',
+    resetPlacementOk(polishView), true);
   {
-    // 变异：把按钮搬回字体行 ⇒ 必须翻面（那正是本次修掉的重复渲染形态）。
+    // 变异：把按钮搬回 `.ss-grid` 之后的独立行 ⇒ 必须翻面。
     const bad = polishView.replace(
-      '<div class="row ss-font-row">\n      <span class="small muted flex-none">字幕字体</span>\n    </div>',
-      '<div class="row ss-font-row">\n      <span class="small muted flex-none">字幕字体</span>\n'
-      + '      <button @click="restoreSubtitlePos">重置位置</button>\n    </div>',
+      '<div class="row ss-font-row">',
+      '<div class="ss-row-2"><button @click="restoreSubtitlePos">↺</button></div>\n    <div class="row ss-font-row">',
     );
-    check('⑰ [变异] 把重置按钮搬回字体行 → 判据翻面', fontRowOk(bad), false);
+    check('⑰ [变异] 把重置按钮搬回独立行 → 判据翻面', resetPlacementOk(bad), false);
+  }
+  {
+    // ③ 文案必须是符号：两颗按钮的可见文本里**不许**出现「重置位置」/「重置大小」。
+    const tplOnly = polishView.slice(0, polishView.indexOf('<script'))
+    check('⑰ 两颗按钮的可见文案是符号（不再是「重置位置/重置大小」）',
+      !/>\s*重置位置\s*</.test(tplOnly) && !/>\s*重置大小\s*</.test(tplOnly), true);
+    // 两枚符号必须**能区分**（不能两个一模一样）。
+    check('⑰ 两颗按钮的符号不一样（能区分位置与大小）',
+      /\u21ba/.test(tplOnly) && /\u27f3/.test(tplOnly), true);
   }
   check('⑰ 两颗重置按钮全页各只出现一次（新位置加了、老位置别再留一份）',
     // ⚠️ 判**模板**（`<script>` 之前）：`<script setup>` 里本来就有这两条函数定义，
