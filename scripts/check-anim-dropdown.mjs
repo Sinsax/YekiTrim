@@ -175,6 +175,90 @@ ok(!/<optgroup/.test(tplMarkup),
     '④ 又出现了「不动效」—— 它现在叫「不设」，而且只在动效栏')
 }
 
+// ---- ⑤ ⚠️ **两栏里都出现的档，标签必须带轴后缀**（2026-10-14）----
+//
+// # 由来
+//
+// 用户报「当前前端预览的设置内，**样式和动效内容过于重复**？是不是之前去重后
+// 有些内容没有清理」。
+//
+// 实测查清了两件事，必须一起看：
+//  ① **39 档零重复归属、面板一个档都没丢**（`check-anim-presets-parity.mjs` 钉着）
+//     ⇒ 用户的猜测（去重残留）**不成立**；
+//  ② 但归属表是 `形态 15 · 动效 12 · **两者 11** · 无 1` —— 那 11 档**真的两条轴
+//     都给参数** ⇒ 两栏都列是**必需的**，而两栏显示**同一个名字**，读起来像"重复"。
+//
+// ⇒ 判据：**出现在两栏的种类，两栏的显示标签必须不同**；只属一栏的必须原样。
+//    ⚠️ 这条压的是"呈现"，`variants[].value` 与 `kind` 一个都不许动。
+{
+  // 从源码扒 ANIM_KINDS（与其它段同一口径：不 import 应用模块）。
+  // ⚠️ 用文件顶部的 `src`（= `TimelineEditor.vue` 全文），别在这里再 readFileSync 一份。
+  const block = /const ANIM_KINDS = \[([\s\S]*?)\n\]/.exec(src)?.[1] ?? ''
+  ok(block.length > 0, '⑤ 扒不到 `ANIM_KINDS` —— 下面几条会全部空转（比没有判据更糟）')
+  const kinds = [...block.matchAll(/kind: '([a-z_]+)',\s*\n\s*label: '([^']+)',\s*\n\s*axis: '([a-z]+)'/g)]
+    .map((m) => ({ kind: m[1], label: m[2], axis: m[3] }))
+  ok(kinds.length === WANT_KINDS,
+    `⑤ 扒到 ${kinds.length} 个种类，应是 ${WANT_KINDS} —— 扒取正则与源码形状分叉了`)
+  const axesOf = (axis) => kinds.filter((k) => k.kind === 'none' || k.axis === axis || k.axis === 'both')
+  const styleKinds = axesOf('style')
+  const effectKinds = axesOf('effect')
+  const bothKinds = kinds.filter((k) => k.axis === 'both')
+  ok(bothKinds.length > 0,
+    '⑤ 一个 `axis: "both"` 的档都没有 —— 那两栏就不该有重复项，这条判据的前提不成立')
+  // ⚠️⚠️ **必须跑源码里那个真的 `kindLabelOn`，不许在判据里复刻一份**。
+  //
+  //    第一版就是复刻的（`const shown = (axis,k) => ...`）—— 实测**两处变异都存活**：
+  //    改源码的 `kindLabelOn`（去掉轴后缀 / 给只属一栏的也加后缀），判据照样全绿，
+  //    因为它跑的是**自己那份副本**。这正是本仓反复踩的"判据测到了函数、
+  //    没测到实现"那一类 —— 判据绿得毫无意义。
+  //
+  //    ⇒ 把 `AXIS_SUFFIX` 与 `kindLabelOn` **逐字从源码里抠出来、用 `new Function`
+  //      真跑**。这样改源码就一定被观测到。
+  const suffixSrc = /const AXIS_SUFFIX = \{[^}]*\}/.exec(src)?.[0] ?? ''
+  const labelFnSrc = /const kindLabelOn = \(axis, k\) => \{[\s\S]*?\n\}/.exec(src)?.[0] ?? ''
+  ok(suffixSrc.length > 0, '⑤ 源码里抠不到 `AXIS_SUFFIX` —— 下面的判据会空转')
+  ok(labelFnSrc.length > 0, '⑤ 源码里抠不到 `kindLabelOn` 的函数体 —— 下面的判据会空转')
+  let shown = () => {
+    throw new Error('kindLabelOn 没抠出来')
+  }
+  if (suffixSrc && labelFnSrc) {
+    // 只喂常量与那个函数，不引入任何应用模块（与其它段同口径的零依赖）。
+    shown = new Function(`${suffixSrc}\n${labelFnSrc}\nreturn kindLabelOn`)()
+  }
+  ok(typeof shown === 'function', '⑤ 抠出来的 `kindLabelOn` 不是函数 —— 判据会空转')
+  // ① 两栏都有的档：两栏显示必须**不同**（否则用户读到的就是"重复"）。
+  for (const k of bothKinds) {
+    const a = shown('style', k)
+    const b = shown('effect', k)
+    ok(a !== b,
+      `⑤ 档「${k.label}」(axis=both) 在两栏显示成同一个「${a}」—— ` +
+      '用户会把两栏读成"重复了一半"。必须带轴后缀（形态 / 动效）')
+  }
+  // ② 只属一栏的档：**不许**加后缀（那是纯噪音，它本来就不会歧义）。
+  for (const k of kinds.filter((x) => x.axis === 'style' || x.axis === 'effect')) {
+    const ax = k.axis
+    ok(shown(ax, k) === k.label,
+      `⑤ 只属「${ax}」栏的档「${k.label}」被加了后缀（显示成「${shown(ax, k)}」）—— ` +
+      '只属一栏的档不会歧义，加后缀是噪音')
+  }
+  // ③ 两栏各自的**显示标签集合**不许有交集（这就是"看起来重复"的可检形式）。
+  const styleLabels = new Set(styleKinds.map((k) => shown('style', k)))
+  const effectLabels = new Set(effectKinds.map((k) => shown('effect', k)))
+  const overlap = [...styleLabels].filter((l) => effectLabels.has(l))
+  ok(overlap.length === 0,
+    `⑤ 两栏仍有同名条目：${overlap.join('、')} —— 用户报的就是这件事`)
+
+  // ⚠️ ④ **源码侧的接线判据**：模板必须真的把 axis 传进去。
+  //    只判"算出来的标签不同"是不够的 —— 模板里万一调的是不带 axis 的旧签名，
+  //    算得再对也不生效（本仓反复踩过"测到函数、没测到调用方"）。
+  //    ⚠️ `AXIS_SUFFIX` / `kindLabelOn` **是否存在**已由上面的"抠出来跑"覆盖
+  //      （抠不到就直接断了），这里只管**模板调用点**。
+  for (const ax of ['style', 'effect']) {
+    ok(new RegExp(`kindLabelOn\\('${ax}', k\\)`).test(tplMarkup),
+      `⑤ 模板里「${ax}」那一栏没有把 axis 传给 kindLabelOn（显示会退回不带后缀的名字）`)
+  }
+}
+
 // ---- 结果 ----
 if (fails.length === 0) {
   console.log(

@@ -2757,11 +2757,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   ///     Top    => STICKER_MARGIN                       // 32（文档像素）
   ///     Center => (f.h - self.h) / 2.0
   ///
-  /// 而这里要的是**盒底** ⇒ `块底 = 盒顶 + 盒高`，再除以帧高归一化。
-  /// 盒高取**上限**（3 行 × 行高），因为：
-  ///
-  /// * 转译器**不知道**底座重排之后真实折了几行（底座按 `safe_width_ratio` 自己排）；
-  /// * 取上限 ⇒ 块底保守地往下一点，**不会**把字顶出画面上沿。
+  /// 而这里要的是**盒底** ⇒ `块底 = 盒顶 + 盒高`。⚠️ 盒高取**单行**行盒 ——
+  /// 详见下面 `anchorBottomFor` 里那段"2026-10-14 修"的正文（曾经取 3 行上限，
+  /// 导致 `center` 实际落在 0.6333 而不是 0.5）。
   ///
   /// ⚠️ **`bottom` 档故意返回 `undefined`（键不出现）** —— 那一档要减
   /// `caption_clearance`（字幕带占掉的高度，**只有底座知道**）。写死一个数会让
@@ -2769,20 +2767,64 @@ export function translate(config, clipDir, outPath, options = {}) {
   /// 而缺省值恰好等于"贴底"这个语义。
   ///
   /// ⚠️ 归一化用**帧高**（实际探到的），不是 1080 这个常数 —— 竖屏工程不一样。
+  /// ⚠️⚠️ **2026-10-14 修：块底按「单行行高」算，不再按 3 行上限**。
+  ///
+  /// # 之前错在哪（用户报「元素的文字位置不对」）
+  ///
+  /// 旧实现把盒高取成**最坏情况**（3 行 = `fontPx × 1.2 × 3`），再拿它算盒顶与块底：
+  ///
+  ///     center: 盒顶 = (1080 - 288)/2 = 396
+  ///             块底 = 396 + 288      = 684   ⇒ 归一化 0.6333
+  ///
+  /// 而锚点的语义是「**块底贴哪个 y**」，一个字只占**一行** ⇒ 文字块被整体推到
+  /// 684 附近，**比画面正中低了 144px**（实测产物里就是 `0.6333`，应当 ≈ 0.5）。
+  /// `top` 档同病（块底 320，单行时应 ≈ 128）。
+  ///
+  /// 旧注释里那条"取上限 ⇒ 不会把字顶出画面上沿"的顾虑，只在 `top` 档成立，
+  /// 而且**上沿保护本来就由 `MARGIN` 承担**；拿最坏情况去算**必然**让绝大多数
+  /// （1–2 行）偏 —— 这不是保守，是系统性偏差（实测复现）。
+  ///
+  /// # 现在的口径
+  ///
+  /// 按各档**语义**给块底，行高用**单行**（`fontPx × LINE_HEIGHT_EM`）：
+  ///
+  ///     center: 块底 = 帧高/2 + 单行行高/2   ⇒ 单行时**块心恰好落在 0.5**
+  ///     top   : 块底 = MARGIN + 单行行高
+  ///
+  /// ⚠️ 真实折了多行时**块底不变、字往上长** —— 这正是 `anchor_bottom` 的语义
+  ///    （底座 `block_top = block_bottom - keep * line_height_norm`），
+  ///    所以不会盖住下方字幕。
+  ///
+  /// ⚠️ `bottom` 档**仍然返回 `undefined`**（键不出现）—— 理由见下面那段旧注释，
+  ///    一个字都没变。**没配 `pos` 的老工程走的就是这一档 ⇒ 产物逐字节不变（R4）。**
   function anchorBottomFor(pos, st, frameHeight) {
     const H = Number(frameHeight);
     if (!Number.isFinite(H) || H <= 0) return undefined;
     const posKey = String(pos ?? '').trim().toLowerCase() || 'bottom';
     if (posKey === 'bottom') return undefined; // 见上：交给底座缺省
-    // 盒高上限：字号（`process` 写回的是**文档像素**）× 行高 1.2 × 最大行数 3。
-    // 1.2 = `text_layout::LINE_HEIGHT_EM`；3 = 本文件写进轨里的 `max_lines`。
     const fontPx = Number(st?.fontPx) || 0;
     if (!(fontPx > 0)) return undefined;
-    const boxH = fontPx * 1.2 * 3;
-    // `STICKER_MARGIN = 32`（文档像素，`placement.rs`）—— 与 Top 档的盒顶同一个边距。
+    // ⚠️⚠️ **行盒必须用"这一档真正写进轨里的那个 `line_height`"** —— 不是
+    //    `LINE_HEIGHT_EM`（1.2）！这是修完第一版后**真机量出来的第二个错**：
+    //
+    //    元素轨写的是 `line_height: 1.5`（继承字幕那条），而底座按
+    //    `line_em = style.line_height`（1.5）排行盒 ⇒ 行盒 = 80 × 1.5 = 120。
+    //    第一版拿 1.2 算（行盒 96）⇒ 块底 588 ⇒ 底座把行盒顶算成 588-120 = 468
+    //    ⇒ 文字中心 528，**比正中低 12px**（实测：`layout()` 出的行盒 y=0.4333）。
+    //
+    //    ⇒ 按 1.5 算：块底 = 540 + 60 = 600 ⇒ 归一化 0.5556 ⇒ 行盒顶 480、中心 540。
+    //
+    //    ★ 底座 `text_layout.rs:432-437` 就是 `line_em = if style.line_height > 0
+    //      { style.line_height } else { LINE_HEIGHT_EM }` —— 转译器写什么它按什么排，
+    //      所以这里必须按**写进去的那个值**算。**写进去的 / 这里算的 / 底座读的
+    //      必须是同一个数**，否则差的就是这半个行盒。
+    const lineEm = Number(sharedSubLineHeight) > 0 ? Number(sharedSubLineHeight) : 1.2;
+    // **单行**行盒高（不是 3 行上限 —— 那是本次修的缺陷本体）。
+    const lineH = fontPx * lineEm;
+    // `STICKER_MARGIN = 32`（文档像素，`placement.rs`）—— `top` 档的上边距。
     const MARGIN = 32;
-    const boxTop = posKey === 'top' ? MARGIN : (H - boxH) / 2.0;
-    const v = (boxTop + boxH) / H;
+    const blockBottom = posKey === 'top' ? MARGIN + lineH : H / 2 + lineH / 2;
+    const v = blockBottom / H;
     // 夹到 [0,1]：底座那边也会夹，但在这里夹掉能让产物里的数值本身就合法
     //（免得"转译器写 1.3、底座静默夹成 1.0"这种两边不一致）。
     return Math.min(1, Math.max(0, Number(v.toFixed(4))));
@@ -5822,6 +5864,21 @@ export function translate(config, clipDir, outPath, options = {}) {
 
   // 字幕与弹幕轨 —— 用底座自己的子系统，把 YekiTrim 的素材接进来。
   const subtitleTracks = [];
+  // ── 字幕样式里**要共享给元素轨**的那几样（2026-10-14）──
+  //
+  // ⚠️ **必须在 `if (laneOn('subtitles') …)` 外面算**：元素轨在下面另一个块里，
+  //    而它是**独立于字幕轨开关**的（用户可以把字幕那条轨的眼睛关掉、元素照留）。
+  //    写进那个 `if` 里 ⇒ 字幕轨一关，元素这边就 `ReferenceError`（不是"少个值"）。
+  //
+  // 用户报「元素出现时**字幕的描边和字体**变成默认的了」—— 查下来是**元素轨少写了
+  // `font_family` / `shadow_*` / `line_height`**，底座按缺省画，于是同一片画面上
+  // 元素用默认字体、无阴影，看上去就像"字幕被换掉了"。这三样与字幕**同源**取。
+  //
+  // ⚠️ `[style.subtitle]` 缺席时给的是**与字幕轨完全相同的兜底**
+  //    （字号 72 / 描边 `12px #403c3b` / 行高 1.5）—— 两处兜底分叉的话，
+  //    "字幕轨没转、只有元素轨"的工程会拿到另一套字体/行高，而报告里看不出来。
+  const sharedSubStyle = config.style?.subtitle ?? {};
+  const sharedSubLineHeight = 1.5;
   // 字幕轨的眼睛关着 ⇒ **整条不转**（素材与 `data/subtitles.json` 一个字都没动）。
   if (laneOn('subtitles') && config.source?.subtitles && existsSync(join(clipDir, config.source.subtitles))) {
     const id = config.source.subtitles;
@@ -6663,6 +6720,30 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ **也不截断**：排版那一步（Rust `TextLayout::solve`）已经按
           //    `CAPTION_MAX_LINES` 折好并截过，这里再截一次是重复裁剪。
           keep_all_lines: true,
+          // ── 字体 / 阴影 / 行高：**继承字幕那一份**（2026-10-14）──
+          //
+          // ⚠️⚠️ 用户报「元素出现时**字幕的描边和字体**变成默认的了」。
+          //
+          // 查下来**不是字幕被改了** —— 是元素轨这里**少写了三个键**，底座按缺省画：
+          //
+          //   * `font_family` 缺 ⇒ 回落到宿主的 `--font-file`（默认字体）；
+          //   * `shadow_*`    缺 ⇒ 无阴影；
+          //   * `line_height` 缺 ⇒ 1.2（而字幕是 1.5）。
+          //
+          // 于是同一片画面上，元素那几个字用的是**默认字体 + 无阴影 + 更窄行距**，
+          // 肉眼看上去就是"字幕的字体和描边被换掉了"（其实是元素没跟上）。
+          //
+          // ⇒ 这三样**直接复用字幕那份值**（用户口径「元素的文字的描边可以参考
+          //    字幕的默认值」）。**不另立一套数**：同画面两套字体/两套阴影，
+          //    正是这个症状的来源。
+          //
+          // ⚠️ **`stroke_ratio` / `stroke_color` 刻意不跟着改** —— 见下面那两行的注释。
+          font_family: fontFamilyFor(sharedSubStyle.font),
+          line_height: sharedSubLineHeight,
+          shadow_color: [0, 0, 0, Math.round(0.4 * 255)],
+          shadow_dx_px: 0,
+          shadow_dy_px: 2,
+          shadow_blur_ratio: 12 / height,
           // ── T1 弹入 / T4 抖动 / T6 底衬（2026-10-11，§5 E4a）──
           //
           // ⚠️ **只写配了的键**（`motionFields` 里 `undefined` 一律不写）：
