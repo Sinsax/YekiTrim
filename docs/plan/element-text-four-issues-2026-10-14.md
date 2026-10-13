@@ -462,3 +462,61 @@ arc_up:   { perChar: { rotation_from: 0, rotation_to: -14, ... } },  // 写死
 - ③ 元素描边取字幕值
 - **心跳**（需要底座配合，见 2.4）
 - 全部"存量工程兼容"（用户：没有存量工程）
+
+## 六 · 验收记录（`f70652c` 为止）
+
+档位收敛这一件**已完成**。12 条判据全绿：
+
+| 判据 | 项数 |
+|---|---|
+| `check-preview-anim` | 79 |
+| `check-anim-dropdown` | 165 |
+| `check-anim-two-axis` | 86 |
+| `check-anim-attribution` | 115 |
+| `check-anim-presets-parity` | 19 |
+| `check-anim-compose` | 68 |
+| `check-anim-presets-distinct` | — |
+| `check-yekitrim-translator` | 265 + `--mutate` **102/102 打红** |
+| `check-preview-engine` / `check-dhampir-wiring`(97) / `check-element-color` / `check-dhampir-drop-list` | — |
+
+`cargo check --workspace --all-targets` 0 warning；模块门禁 17 规则 / 415 文件 / 0 违规；CRLF 0。
+
+### 本轮修掉的**真缺陷**（都是"配了、不报错、没生效"这一类）
+
+1. **`perchar_big`/`perchar_small` 整档不生效**（`fa1226a`）—— 用户要的「逐字变化」两支全死，
+   报告里一行差异都没有。两个叠在一起的原因：`motionFields` 只从 `stylePreset` 读 `perChar`；
+   `animHasFormPart` 的白名单全是**已删除的档名**。
+2. **`fade` 静默继承全局 `sway_deg`**（`ab4fad6`）—— `swayCfg` 的三轴门漏了过渡轴。
+   差分实测：全局配 `sway_deg=33.3` ⇒ `fade` 轨长出 2 个 rotation 关键帧。
+3. **老格式 `anim="pop"/"fade"` 整档 no-op**（`5702ae5`）—— `splitLegacyAnim` 只吐两路。
+   症状：`fade` 与 `pop` **撞同一轨 id**（`fade` 被吃掉）、`pop` 静默回落全局
+   （多出 `shake_px=77` + 2 个关键帧）、轨顺序不再按 `anim` 字母序（R4 破）。
+4. **预览侧三处**（`ee35d39`）：`splitAnimTwoAxis` 被删后两个调用点仍引用它（预览直接抛错）；
+   `animHasFormPart` 白名单是**同一个 bug 的第二份实现**；`animMotion` 只读动效轴
+   ⇒ 用户选「弹出」在预览里不弹；★ **两轴互相吃掉**（`shake+pop` 的 `shakePx` 变 0，
+   而界面上两栏都亮着）。
+5. **`arc` 的老格式拆分被静默丢掉**（`f70652c`）—— `animHasMotionPart` 的前缀正则
+   `/^(arc|scatter|hop)_/` **要求下划线**，而收敛后的档名是 `arc` ⇒ 对全部 9 档返回 false。
+
+### ⚠️ 一条口径更正（实测推翻了我自己的假设）
+
+「`shake` + `pop` 互相吃掉」的症状，**变 0 的是 `scaleInMs`，不是 `shakePx`** ——
+`off` 重置表里 `shakePx: 0`，而后摊的动效档（`shake`）会把它**写回 6**。
+⇒ 判据必须盯 `scaleInMs`。（第一版按"`shakePx` 变 0"写，红是红了，但**红的理由和事实相反**。）
+
+### 下一批（本轮按用户口径搁置，但已定位到行号）
+
+1. **元素那条路上排版 3 档里 2 档在预览里不生效**（与字幕那条路**不对称**）：
+   - `vtext` 的 `vertical` / `safeWidthRatio` **只有字幕那条路读**
+     （`PolishPreview.vue::capRowsWrapped`）；`texts` computed 里没有任何 `formStyle`。
+   - `arc`：`getElements` 的 push **没带 `perCharFrame`/`perCharFps`**
+     ⇒ `perCharSpans` 因 `perCharFps > 0` 不成立**直接返回 `null`**。
+   - ⇒ 元素上只有 `tilt` 真的生效（因为 `tiltDeg` 恰好是 `textTiltTransform` 的消费者）。
+2. **三份预设表的 `perChar` 键名对不上**：转译器**蛇形**（`rotation_from`…）、
+   预览**驼峰**（`rotationFrom`…）却不经 `readPerChar` 转换（注释说"与转译器逐条同源"，
+   实际是手抄的第二份）。今天**恰好自洽**，改一处就会**静默漂** —— 需要一条对拍判据。
+3. **`check-anim-layout-angle.mjs` 是悬空引用**：`TimelineEditor.vue` 两处注释称角度区间
+   "由它逐值钉着"，但**该文件不存在**。实测两端当前同值（`-30/30`）但**无任何机器判据** ——
+   正是"前端能拉到 45、后端夹到 30、用户看到 45、成片 30、**不报错**"的场景。
+   （`LAYOUT_ANGLE_MIN/MAX` 必须在**三处**同值：转译器 / 面板 / `engine.js`。）
+4. **元素文字位置的四个问题**（①②③）+ 真实双脉冲心跳 —— 方案在第一节，按用户口径搁置。
