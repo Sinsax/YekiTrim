@@ -1904,26 +1904,43 @@ export function subsAt(idx, t) {
  *  一条轨上的所有 cue 共用一档 ⇒ 这里对**单条 cue** 取它自己的 `anim` 即可
  *  （分轨已经在转译期做完了，预览不必再分）。
  *
- *  ⚠️ 返回**展开用的对象**（`...spread`）⇒ 没有 `anim` 时**一个键都不加**，
+ *  ⚠️ 返回**展开用的对象**（`...spread`）⇒ 没有动效档时**一个键都不加**，
  *  消费方拿到的形状与改造前**逐字节相同**（R4）。
  *  ⚠️ `tilt_*` / `slam_squash` 是**静态**值（不是时间函数），必须**单独带出去**
- *  交给 `textTiltTransform` —— 与文字元素那条路同一个理由，别只摊进 `textMotion`。 */
+ *  交给 `textTiltTransform` —— 与文字元素那条路同一个理由，别只摊进 `textMotion`。
+ *
+ *  ⚠️⚠️ **2026-10-13 两级化：这里也必须拆两轴** —— 否则用户在**新界面**上给
+ *     字幕选「竖排 + 抖动」（写的是两个新字段），预览仍然只读老 `anim`（空）
+ *     ⇒ **预览完全没效果、而成片有**。这正是用户报的「前端预览没有实现效果」。
+ *     元素那条路（`buildIndex` 里）当天就改了，**字幕这条路漏了** ——
+ *     同一个"两个消费者只改了一个"的错误，本仓犯过很多次。 */
 function subAnimFields(idx, s, t) {
-  const anim = String(s.anim ?? '').trim().toLowerCase()
-  // 没有动效档 ⇒ 什么都不加（老工程形状不变）。
-  if (!anim) return {}
+  // ⚠️ 优先级与转译器 / 元素那条路**逐条同源**：
+  //   ① 新字段任一有值 ⇒ **以它为准**（`anim` 被忽略）；
+  //   ② 两个新字段都空、`anim` 有值 ⇒ 按**参数归属**拆（只读迁移）；
+  //   ③ 都没有 ⇒ 一个键都不加（老工程形状不变）。
+  const legacySplit = splitAnimTwoAxis(s.anim)
+  const styleAnimName = String(s.style_anim ?? '').trim().toLowerCase() || legacySplit.style
+  const effectAnimName = String(s.effect_anim ?? '').trim().toLowerCase() || legacySplit.effect
+  // 两轴都空 ⇒ 什么都不加。
+  if (!styleAnimName && !effectAnimName) return {}
   const local = t - s.start
   return {
-    animName: anim,
+    animName: styleAnimName || effectAnimName,
+    // ⚠️ 档名分两个带出去（不只是摊进 `textMotion`）：`tilt_*` / `slam_squash`
+    //    改的是**静态** `rotation` / `scale_y`，由 `textTiltTransform` 读**样式轴**。
+    styleAnimName,
+    effectAnimName,
     // ⚠️ **第一个参传 `null` 是有意的**：`animMotion` 只在"认不出这一档"时才用
-    //    那份全局配置，而上面已经把 `!anim` 挡掉了。档名认不出时 `animPreset`
-    //    返回 `undefined` ⇒ 落到"整份回落全局"；而字幕这条路**没有"全局动效"**
+    //    那份全局配置，而这里传的是**逐条字幕**的档。字幕这条路**没有"全局动效"**
     //    这个概念（转译器那边字幕轨是轨级样式）⇒ 给 `null`（= 全关）比给一份
     //    假配置更诚实。结果是"认不出的档名 ⇒ 字幕不动"，与成片一致。
-    textMotion: animMotion(null, anim),
+    textMotion: animMotion(null, effectAnimName),
     // ⚠️ 与文字元素同一条换算（`local * fps`），别写成秒 —— `charTransformAt`
     //    的第四参是**帧**（底座 `char_transform_at` 同口径）。
-    perChar: animPerChar(anim),
+    // ⚠️ **逐字取样式轴**（`pop_perchar` / `hop_*` / `scatter_*` 的 `perChar`
+    //    都归在那一档里）—— 与元素那条路同一个口径。
+    perChar: animPerChar(styleAnimName),
     perCharFrame: local * idx.fps,
     perCharFps: idx.fps
   }
