@@ -463,60 +463,82 @@ arc_up:   { perChar: { rotation_from: 0, rotation_to: -14, ... } },  // 写死
 - **心跳**（需要底座配合，见 2.4）
 - 全部"存量工程兼容"（用户：没有存量工程）
 
-## 六 · 验收记录（`f70652c` 为止）
+## 六 · 验收记录
 
-档位收敛这一件**已完成**。12 条判据全绿：
+### 6.1 档位收敛（至 `f70652c`）—— 已完成
 
 | 判据 | 项数 |
 |---|---|
-| `check-preview-anim` | 79 |
+| `check-preview-anim` | 79 → 本轮 **128** |
 | `check-anim-dropdown` | 165 |
 | `check-anim-two-axis` | 86 |
 | `check-anim-attribution` | 115 |
-| `check-anim-presets-parity` | 19 |
+| `check-anim-presets-parity` | 19 → 本轮 **27** |
 | `check-anim-compose` | 68 |
 | `check-anim-presets-distinct` | — |
-| `check-yekitrim-translator` | 265 + `--mutate` **102/102 打红** |
-| `check-preview-engine` / `check-dhampir-wiring`(97) / `check-element-color` / `check-dhampir-drop-list` | — |
+| `check-yekitrim-translator` | 265 + `--mutate` **106/106 打红** |
+| 其余 | `check-preview-engine` / `check-dhampir-wiring` / `check-element-color` / `check-dhampir-drop-list` |
 
 `cargo check --workspace --all-targets` 0 warning；模块门禁 17 规则 / 415 文件 / 0 违规；CRLF 0。
 
-### 本轮修掉的**真缺陷**（都是"配了、不报错、没生效"这一类）
+本轮修掉的**真缺陷**（都是“配了、不报错、没生效”这一类）：
 
-1. **`perchar_big`/`perchar_small` 整档不生效**（`fa1226a`）—— 用户要的「逐字变化」两支全死，
-   报告里一行差异都没有。两个叠在一起的原因：`motionFields` 只从 `stylePreset` 读 `perChar`；
-   `animHasFormPart` 的白名单全是**已删除的档名**。
+1. **`perchar_big`/`perchar_small` 整档不生效**（`fa1226a`）—— 两个叠在一起的原因：
+   `motionFields` 只从 `stylePreset` 读 `perChar`；`animHasFormPart` 的白名单全是**已删除的档名**。
 2. **`fade` 静默继承全局 `sway_deg`**（`ab4fad6`）—— `swayCfg` 的三轴门漏了过渡轴。
-   差分实测：全局配 `sway_deg=33.3` ⇒ `fade` 轨长出 2 个 rotation 关键帧。
 3. **老格式 `anim="pop"/"fade"` 整档 no-op**（`5702ae5`）—— `splitLegacyAnim` 只吐两路。
-   症状：`fade` 与 `pop` **撞同一轨 id**（`fade` 被吃掉）、`pop` 静默回落全局
-   （多出 `shake_px=77` + 2 个关键帧）、轨顺序不再按 `anim` 字母序（R4 破）。
-4. **预览侧三处**（`ee35d39`）：`splitAnimTwoAxis` 被删后两个调用点仍引用它（预览直接抛错）；
-   `animHasFormPart` 白名单是**同一个 bug 的第二份实现**；`animMotion` 只读动效轴
-   ⇒ 用户选「弹出」在预览里不弹；★ **两轴互相吃掉**（`shake+pop` 的 `shakePx` 变 0，
-   而界面上两栏都亮着）。
-5. **`arc` 的老格式拆分被静默丢掉**（`f70652c`）—— `animHasMotionPart` 的前缀正则
-   `/^(arc|scatter|hop)_/` **要求下划线**，而收敛后的档名是 `arc` ⇒ 对全部 9 档返回 false。
+4. **预览侧三处**（`ee35d39`）：删了函数两个调用点仍引用；白名单是**同一个 bug 的第二份实现**；
+   `animMotion` 只读动效轴；★ **两轴互相吃掉**。
+5. **`arc` 的老格式拆分被静默丢掉**（`f70652c`）—— 前缀正则**要求下划线**，
+   而收敛后的档名是 `arc`。
 
-### ⚠️ 一条口径更正（实测推翻了我自己的假设）
+⚠️ 一条口径更正（实测推翻了我自己的假设）：「`shake` + `pop` 互相吃掉」症状里，
+**变 0 的是 `scaleInMs`，不是 `shakePx`**。判据必须盯 `scaleInMs`。
 
-「`shake` + `pop` 互相吃掉」的症状，**变 0 的是 `scaleInMs`，不是 `shakePx`** ——
-`off` 重置表里 `shakePx: 0`，而后摊的动效档（`shake`）会把它**写回 6**。
-⇒ 判据必须盯 `scaleInMs`。（第一版按"`shakePx` 变 0"写，红是红了，但**红的理由和事实相反**。）
+### 6.2 四个问题（用户口径：“一个都没解决”）—— 本轮全部落地
 
-### 下一批（本轮按用户口径搁置，但已定位到行号）
+| # | 问题 | 状态 | 真机可见的证据 |
+|---|---|---|---|
+| ①b | 元素纵向档在**预览**里丢了 `pos` | ✅ `21fed71` | 预览接上 `pos`；`textPosTopPct` 实测四值 `6/50/94/null`，三档两两不同 |
+| ② | 元素 ASS 字体被写死成 `Sans` | ✅ `f2a650f` | 真跑转译器读产物：`Sans` → `Noto Sans SC`；缺 `font` 直接抛错 |
+| ③ | 元素描边宽没进 ASS（四档一样粗）| ✅ `8f3f223` | A/B 读 `dhampir-text_*.ass` 的 `Outline`：全 `2` → `3/2.5/1/2` |
+| ④ | 「心跳」新档（扑通扑通）| ✅ `6d7d987` | 预览**真双峰**，实测两个极大值 90/270ms、**1.1750/1.1225**；成片侧**如实报 NOTE** |
 
-1. **元素那条路上排版 3 档里 2 档在预览里不生效**（与字幕那条路**不对称**）：
-   - `vtext` 的 `vertical` / `safeWidthRatio` **只有字幕那条路读**
-     （`PolishPreview.vue::capRowsWrapped`）；`texts` computed 里没有任何 `formStyle`。
-   - `arc`：`getElements` 的 push **没带 `perCharFrame`/`perCharFps`**
-     ⇒ `perCharSpans` 因 `perCharFps > 0` 不成立**直接返回 `null`**。
-   - ⇒ 元素上只有 `tilt` 真的生效（因为 `tiltDeg` 恰好是 `textTiltTransform` 的消费者）。
-2. **三份预设表的 `perChar` 键名对不上**：转译器**蛇形**（`rotation_from`…）、
-   预览**驼峰**（`rotationFrom`…）却不经 `readPerChar` 转换（注释说"与转译器逐条同源"，
-   实际是手抄的第二份）。今天**恰好自洽**，改一处就会**静默漂** —— 需要一条对拍判据。
-3. **`check-anim-layout-angle.mjs` 是悬空引用**：`TimelineEditor.vue` 两处注释称角度区间
-   "由它逐值钉着"，但**该文件不存在**。实测两端当前同值（`-30/30`）但**无任何机器判据** ——
-   正是"前端能拉到 45、后端夹到 30、用户看到 45、成片 30、**不报错**"的场景。
-   （`LAYOUT_ANGLE_MIN/MAX` 必须在**三处**同值：转译器 / 面板 / `engine.js`。）
-4. **元素文字位置的四个问题**（①②③）+ 真实双脉冲心跳 —— 方案在第一节，按用户口径搁置。
+⚠️ ①a（盒原点的**彻底修法**）**仍未做** —— 它需要底座 wasm 导出 `text_layout`，
+属跨仓那一类。本轮只落了 ①b 那个停行方案（预览**不再丢 `pos`**）。
+
+### 6.3 本轮新增 / 修好的判据
+
+| 判据 | 变化 | 变异自证 |
+|---|---|---|
+| `check-preview-anim` | 119 → **128**（★ 真跑 `getElements`） | **5/5 打红** |
+| `check-text-style` | + **4**（⑧ 描边必须真的进 ASS） | **4/4 打红** |
+| `check-anim-presets-parity` | 19 → **27**（⑥ 逐档 `perChar` 键名对拍） | 靠 `--mutate` 注册表 |
+| `check-anim-layout-angle` | **新建** 21 项（三处同值） | **5/5 打红** |
+| `check-text-pos-divergence` | `--self-test` **整条跑不起来** → 6 项全绿 | 锚点改为**从真源码抽** |
+
+### 6.4 ⚠⚠ 本轮最大收获：三处**早就烂掉、没人跑**的门禁
+
+`check-39-tiers.mjs` 报 **四标准全过 = 0 / 9 档**。
+跑 `git stash` 确认**改动前也是 0 / 9** —— 全仓没人跑过它。
+
+| 病 | 根因 | 修完 |
+|---|---|---|
+| ④ 九档全红「写了底座不认的键 `["sort"]`」| `sort` 是**表内部分组标签**，发射走 `motionFields` 的 `put()` 白名单，**从不写出去** | ④ 全绿 |
+| ③ `fade` 红「预览恒等」| 豁免名单仍写着**已删的旧名** `fade_only` ⇒ 豁免一档没命中 | ③ 绿 |
+| ③ `heartbeat` 红「预览恒等」| 它不走 `scaleInFrom/Peak`，只查旧字段必然误判 | ③ 绿 |
+| 表头「引擎档数应当是 39」| 三轴收敛后是 9 档 ⇒ **每次必红**，整张表被当成“本来就红”而无视 | 改成下限 9 |
+
+**0 / 9 → 9 / 9。** 同一类病在 `check-39-tiers-pixels.mjs`：`STATIC_BY_DESIGN` 里
+也全是**已删的旧档名** ⇒ 真静态的四档反被当成“该动没动”报红；
+改成收敛后的名字后 **28 项全过、9/9 有墨且可见地动**（心跳帧间差 0.0485）。
+
+> 教训：**一条不断红的判据等于没有判据**。它会把真正报警的那几条一起埋掉。
+
+### 6.5 仍未做（下一批）
+
+1. **①a 盒原点** —— 需 Dhampir wasm 导出 `text_layout`（方案 B）；
+2. **心跳的成片侧双峰** —— 需底座新原语（现在已**如实报 NOTE**，不骗人）；
+3. 重生 `docs/anim/*`；更新 `docs/elements-spec.md`；
+4. 几处**过时注释**（`TimelineEditor.vue` 的 `kindsOnAxis` 文档块仍讲 `both`；
+   模板 386-397 仍列 5 个已删档名；`engine.js` 注释说样式栏叫「清除」而现在叫「默认」）。
