@@ -98,82 +98,110 @@ try {
   process.exit(1)
 }
 
-// ---- ① 两栏都非空，且**同一条轴上的种类数**是设计值 ----
+// ---- ① 三栏都非空，且各自的档集合 = 该轴的档 + 末尾的“空” ----
 {
   const s = api.kindsOnAxis('style')
+  const t = api.kindsOnAxis('transition')
   const e = api.kindsOnAxis('effect')
-  // ⚠️⚠️ **样式栏 10 类 / 动效栏 9 类 —— 差的就是「不设」那一项**（用户口径 2026-10-13）。
-  //    第一版把 `kind: 'none'`（当时叫「不动效」）塞进了**两栏**、**都排第一** ⇒
-  //    样式栏第一项就是「不动效」，说明还写着"这一条文字不做任何动效" ——
-  //    用户当场指出：一个**形状**的下拉里出现"什么都不做"，而且它**像被否决的
-  //    那套方案又回来了**。
-  //    ⇒ 两栏的"空"语义不同：动效栏的"空"= **不额外加动效**（有意义的一档）；
-  //      样式栏的"空"= **不选形状**（缺省，不是一档效果）。
-  check(s.length === 11,
-    `样式栏种类数应为 11（倾斜/砸入/弹出/逐字×4/竖排… + 末尾的「清除」），实得 ${s.length}：${s.join(',')}`)
-  check(e.length === 9,
-    `动效栏种类数应为 9（抖动/摇摆/砸入/收缩/弹出/逐字抖散·弧形·错峰 + 末尾的「不设」），实得 ${e.length}：${e.join(',')}`)
-  // ⚠️⚠️ **两栏的"空"不是同一件事：两栏都要有，但叫法必须不同**。
-  //
-  //    用户口径（2026-10-13）：面板上只许有「样式 × 动效」这一对槽位。
-  //    第一版把 `none` 两栏都叫「不动效」⇒ 样式栏第一项是「不动效」：
-  //    一个**形状**的下拉里出现"什么都不做"，而且「不动效」三个字里带个"动效"。
-  //    用户当场指出它**像被否决的那套方案又回来了**。
-  //    ⇒ 样式栏叫「清除」（**操作**），动效栏叫「不设」（**选择**）。
-  //
-  //    ⚠️ **但两栏都必须留着它**：样式栏若没有「清除」，用户**选错了就再也
-  //       清不掉**（只能手改 toml）—— 这是"删掉不动效"最容易掉进去的坑。
-  check(s.includes('none') && e.includes('none'),
-    `两栏都必须有"空"那一项（样式=${s.includes('none')} / 动效=${e.includes('none')}）\n` +
-    '     ⚠️ 样式栏少了它 ⇒ 用户选错形状后**清不掉**，只能手改 toml')
-  check(api.labelOn('style', 'none') === '清除',
-    `样式栏"空"那一项应当叫「清除」（**操作**），实得 ${JSON.stringify(api.labelOn('style', 'none'))}`)
-  check(api.labelOn('effect', 'none') === '不设',
-    `动效栏"空"那一项应当叫「不设」（**选择**），实得 ${JSON.stringify(api.labelOn('effect', 'none'))}`)
-  // ⚠️ **"空"那一项不许排第一** —— 排第一会被当成一个正常的档位读（用户就是这么读的）。
-  check(s[s.length - 1] === 'none',
-    `样式栏的"空"必须排在**最后**，实得第 ${s.indexOf('none') + 1}/${s.length} 位：${s.join(',')}`)
-  check(e[e.length - 1] === 'none',
-    `动效栏的"空"必须排在**最后**，实得第 ${e.indexOf('none') + 1}/${e.length} 位：${e.join(',')}`)
-  // ⚠️ `both` 的类（slam/pop/arc/scatter/hop）**两栏都必须在** —— 它们确实两边都给参数。
-  for (const k of ['slam', 'pop', 'arc', 'scatter', 'hop']) {
-    check(s.includes(k), `样式栏缺了 \`both\` 的类 \`${k}\``)
-    check(e.includes(k), `动效栏缺了 \`both\` 的类 \`${k}\``)
+  // ⚠⚠ **2026-10-14 三轴收敛后的契约**（用户口径）：
+  //    排版 3 档（`tilt`/`arc`/`vtext`）、过渡 2 档（`pop`/`fade`）、动效 4 档
+  //    （`shake`/`perchar_big`/`perchar_small`/`heartbeat`）。
+  //    ⚠️ 不写死数字：从**归属表**数出每条轴几档再比。
+  const tiersOn = (ax) => Object.entries(ATTRIBUTION)
+    .filter(([, v]) => v.axis === ax).map(([k]) => k).sort()
+  // ⚠️ `kindsOnAxis` 返回的是 **kind 字符串数组**；要展开成档名得回
+  //    `ANIM_KINDS` 里取那一项的 `variants`（`perchar` 收着两档）。
+  const kindObj = (k) => ANIM_KINDS.find((x) => x.kind === k) ?? { kind: k }
+  // ⚠️ `none` 表示“不设”，**不是一档**（`animPreset('')` 返回 `undefined`）⇒ 排除。
+  const expand = (kinds) => kinds.flatMap((k) => {
+    if (k === 'none') return []
+    const o = kindObj(k)
+    return o.variants?.length ? o.variants.map((v) => v.value) : [o.kind]
+  }).sort()
+  for (const [ax, label, list] of [
+    ['style', '排版', s], ['transition', '过渡', t], ['effect', '动效', e]
+  ]) {
+    const onPanel = expand(list)
+    const want = tiersOn(ax)
+    check(onPanel.join(',') === want.join(','),
+      `${label}栏的档集合不对\n     实得 ${JSON.stringify(onPanel)}\n` +
+      `     应当 ${JSON.stringify(want)}\n` +
+      `     ⚠️ 多了 = 收敛没删干净；少了 = 用户选它、预览里不动`)
   }
-  // ⚠️ 纯动效的类**不该**出现在样式栏（那会让用户以为它有形态效果）。
-  check(!s.includes('shake'), '样式栏不该有 `shake`（纯动效，没有形态参数）')
-  check(!e.includes('tilt'), '动效栏不该有 `tilt`（纯形态，没有时间参数）')
+  // ⚠⚠ **三栏的“空”都必须有，但叫法必须两两不同**。
+  //    排版栏 = 「默认」 / 过渡栏 = 「默认弹出」 / 动效栏 = 「不设」。
+  //    ⚠️ 同词会让用户把某栏读成“没有这回事”（两栏同名时，
+  //       那两栏在眼里就合成了一栏）。
+  {
+    const words = ['style', 'transition', 'effect'].map((ax) => api.labelOn(ax, 'none'))
+    check(words.every((w) => typeof w === 'string' && w.length > 0),
+      `有栏缺了“空”那一项：${JSON.stringify(words)}\n` +
+      `     ⚠️ 用户选错了就**清不掉**（只能手改 toml）`)
+    check(new Set(words).size === 3,
+      `三栏的“空”显示名**有重复**：${JSON.stringify(words)}\n` +
+      `     ⚠️ 三栏的“空”语义本来就不同（不选排版 / 用全局弹入 / 不额外加动效）`)
+  }
+  // ⚠️ **“空”那一项不许排第一** —— 排第一会被当成一个正常的档位读。
+  for (const [label, names] of [['排版', s], ['过渡', t], ['动效', e]]) {
+    check(names[names.length - 1] === 'none',
+      `${label}栏的“空”必须排在**最后**，实得第 ${names.indexOf('none') + 1}/${names.length} 位：${names.join(',')}`)
+  }
+  // ⚠ 一条档位**只出现在一栏**（这就是用户要的“不重复”）。
+  {
+    const all = [...expand(s), ...expand(t), ...expand(e)]
+    check(new Set(all).size === all.length,
+      `有档位同时出现在两栏：${JSON.stringify(all)}\n` +
+      `     ⚠️ 用户报的「样式和动效内容过于重复」就是这个`)
+  }
 }
 
-// ---- ② 核心：`竖排 + 抖动` 两栏**共存** ----
+// ---- ② 核心：`竖排 + 弹出 + 抖动` **三轴同时共存** ----
 {
   api.reset()
-  api.kind('style', 'vtext'); api.variant('style', 'vtext_bold')
+  api.kind('style', 'vtext')
   const afterStyle = api.kind('effect', 'shake')
-  check(afterStyle.style_anim === 'vtext_bold',
-    `选了动效之后样式**被清掉**了：${JSON.stringify(afterStyle)} —— 这就是"互斥"那一版的错法`)
-  const r = api.variant('effect', 'shake_std')
-  check(r.style_anim === 'vtext_bold' && r.effect_anim === 'shake_std',
-    `「竖排 + 抖动」没有共存：${JSON.stringify(r)}\n     ⚠️ 两轴共用一个字段、或互相清空，都会长这样`)
+  check(afterStyle.style_anim === 'vtext',
+    `选了动效之后排版**被清掉**了：${JSON.stringify(afterStyle)} ` +
+    `—— 这就是“互斥”那一版的错法`)
+  const r = api.variant('transition', 'pop')
+  check(r.style_anim === 'vtext' && r.effect_anim === 'shake' && r.transition_anim === 'pop',
+    `「竖排 + 弹出 + 抖动」没有三轴共存：${JSON.stringify(r)}\n` +
+    `     ⚠️ 三轴共用一个字段、或互相清空，都会长成这样`)
 }
 
-// ---- ③ 反序也一样（先动效后样式）----
+// ---- ③ 反序也一样（先动效后排版）----
 {
   api.reset()
-  api.kind('effect', 'shake'); api.variant('effect', 'shake_lg')
-  api.kind('style', 'vtext'); const r = api.variant('style', 'vtext_thin')
-  check(r.effect_anim === 'shake_lg' && r.style_anim === 'vtext_thin',
+  api.kind('effect', 'shake')
+  api.variant('transition', 'fade')
+  api.kind('style', 'vtext')
+  const r = api.variant('style', 'vtext')
+  check(r.effect_anim === 'shake' && r.transition_anim === 'fade' && r.style_anim === 'vtext',
     `反序设置丢了东西：${JSON.stringify(r)}`)
 }
 
-// ---- ④ `both` 的类：从任一栏选，两轴都要拿到（否则"带压扁"只生效一半）----
+// ---- ④ ⚠️ **两条连f的双向性**（与转译器同源）----
+//
+// ⚠⚠ `perchar_big` / `perchar_small` 归**动效**轴，但它们给的是**形态**字段 `per_char`
+//    —— “给不给形态字段”与“归哪条轴”**不是一回事**的唯一实例。
+//    它们必须同时进**两条路**（否则用户选「逐字变大」在成片里
+//    **字一动不动** —— 实测过：报告里一行差异都没有）。
 {
-  api.reset()
-  api.kind('effect', 'slam')
-  const a = api.variant('effect', 'slam_squash')
-  check(a.effect_anim === 'slam_squash' && a.style_anim === 'slam_squash',
-    `\`slam_squash\` 的压扁没同步到样式轴：${JSON.stringify(a)}\n` +
-    `     ⚠️ 压扁来自 \`scale_y\`（形态侧）—— 只写动效轴 ⇒ **压扁不生效**，而界面看着是选中的`)
+  for (const n of ['perchar_big', 'perchar_small']) {
+    check(PREVIEW.animHasFormPart(n) === true,
+      `预览说 \`${n}\` **不给形态** —— 它的 \`per_char\` 会丢，成片里字一动不动`)
+    check(PREVIEW.animHasMotionPart(n) === true,
+      `预览说 \`${n}\` **不走动效路** —— 它归动效轴，不走的话档位丢失`)
+  }
+  // ⚠ 反向：`pop` / `fade` **只走过渡那一路**。
+  //    ⚠⚠ 它们的 `scale_in_*` 是**过渡**语义 —— 不能因为“预设里有 `scale_in_*`”
+  //       就把它们当成动效档。实测：收起来会让 `splitAnimTwoAxis('pop')`
+  //       从 `{effect:''}` 变成 `{effect:'pop'}` ⇒ 与转译器**不同源**。
+  for (const n of ['pop', 'fade']) {
+    check(PREVIEW.animHasMotionPart(n) === false,
+      `预览把 \`${n}\` 也算进了**动效路** —— 它只该走过渡那一路\n` +
+      `     ⚠️ 同时进两路 ⇒ 与转译器不同源 ⇒ 老格式在预览与成片里走不同的路`)
+  }
 }
 
 // ---- ⑤ 最阴的一条：另一轴已有别的档时，**不许**被偷走 ----
@@ -200,7 +228,7 @@ try {
 
 // ---- ⑦ 三份实现 vs **权威归属表**：逐族/逐档对拍 ----
 //
-// ⚠️ 「样式 × 动效」现在有**四份实现**：转译器 / 预览 `engine.js` /
+// ⚠️ 「排版 × 过渡 × 动效」现在有**四份实现**：转译器 / 预览 `engine.js` /
 //    界面 `ANIM_KINDS.axis` / 归属表 `scripts/anim-attribution.mjs`（权威）。
 //    漂了的表现是"预览能叠加、成片不能"（或反过来）而**两边各自看都正常**。
 //
@@ -212,44 +240,176 @@ try {
 {
   const A = ATTRIBUTION
   const famOf = (n) => FAMILIES.find((p) => n === p || n.startsWith(p + '_'))
+  // ⚠⚠ **2026-10-14、归属表现在直接带 `axis`**（不再从 `kind` 推导）。
+  //
+  //    原因：收敛后**每条档位只属一条轴**，而“给不给形态字段”
+  //    与“归哪条轴”**是两件事**（`perchar_big` 归**动效**轴却给 `per_char`）
+  //    ⇒ 旧的 `kind`（`'form'|'motion'|'both'|'none'`）**表达不了事实**了。
+  //
+  //    ⚠️⚠️ **面板的 `kind` 与档名不是一个东西**：
+  //      面板把 `perchar_big` / `perchar_small` 收在**一个** kind（`perchar`）下的
+  //      `variants` 里（用户口径「合并逐字的效果作为一个动效」）
+  //      —— 所以不能拿档名直接去查 `k.kind`。
+  //      这里按“每个 kind 展开成它真正负责的档名”对账。
+  const kindTiers = (k) => (k.variants?.length
+    ? k.variants.map((v) => v.value)
+    : [k.kind])
   const byFam = {}
   for (const [n, e] of Object.entries(A)) {
     const f = famOf(n)
     if (!f) continue
     byFam[f] ??= new Set()
-    byFam[f].add(e.kind)
+    byFam[f].add(e.axis)
   }
-  const expAxis = {}
-  for (const [f, s] of Object.entries(byFam)) {
-    const hasF = s.has('form') || s.has('both')
-    const hasM = s.has('motion') || s.has('both')
-    expAxis[f] = hasF && hasM ? 'both' : hasF ? 'style' : hasM ? 'effect' : 'none'
+  // ⚠ 族内归属必须**唯一** —— 收敛后每条档只属一条轴。
+  for (const [f, st] of Object.entries(byFam)) {
+    check(st.size === 1,
+      `归属表里档名\`${f}\`组内出现了**多条轴**：${[...st].sort().join(', ')}` +
+      `\n     ⚠️ 收敛后每条档位只属一条轴（用户报的` +
+      `「样式和动效内容过于重复」就是这个）`)
   }
   // ⑦a 界面 `ANIM_KINDS.axis`
   for (const k of ANIM_KINDS) {
     if (k.kind === 'none') continue
-    check(k.axis === expAxis[k.kind],
-      `界面族 \`${k.kind}\` 的 \`axis\` 是 \`${k.axis}\`，按归属表应当是 \`${expAxis[k.kind]}\`\n` +
-      `     ⚠️ 该族里有这些归属：${[...(byFam[k.kind] ?? [])].sort().join(',')} —— ` +
-      `族内有 \`form\`/\`both\` ⇒ 要出现在样式栏；有 \`motion\`/\`both\` ⇒ 要出现在动效栏`)
+    const mine = kindTiers(k)
+    // 每个 kind 负责的档必须都在归属表里，且**同一条轴**。
+    const axes = new Set(mine.map((n) => A[n]?.axis))
+    const exp = [...axes][0]
+    check(axes.size === 1 && !!exp,
+      `界面 kind \`${k.kind}\` 负责的档 ${JSON.stringify(mine)} ` +
+      `在归属表里对不上一条轴：${JSON.stringify([...axes])}` +
+      `\n     ⚠️ 症状：预览/成片按一条轴取字段，面板按另一条摆 —— ` +
+      `选了它、效果出现在别的轴上，且**不报错**`)
+    if (exp) {
+      check(k.axis === exp,
+        `界面 kind \`${k.kind}\` 的 \`axis\` 是 \`${k.axis}\`，` +
+        `按归属表应当是 \`${exp}\`（它负责 ${JSON.stringify(mine)}）`)
+    }
+  }
+  // ⚠ 反向：归属表里每一档都必须在面板上选得到。
+  {
+    const onPanel = new Set(ANIM_KINDS.flatMap((k) => kindTiers(k)))
+    for (const n of Object.keys(A)) {
+      check(onPanel.has(n),
+        `归属表里的 \`${n}\` 在面板\`ANIM_KINDS\` 里选不到` +
+        `\n     ⚠️ 症状：成片认得这一档、用户在面板里根本选不到它`)
+    }
   }
   // ⑦b 预览的两条 has*Part
   //
-  // ⚠️⚠️ **`fade_only` 是唯一一条"归属表说 none、但动效路要 true"的档**，
-  //    而且**这是有意的**：它一个字段都不给（动的是 opacity），但必须**传下去**
-  //    —— `animMotion` 靠"取没取到这一档"决定要不要**压掉全局 `[elements]` 的弹入**。
-  //    拆成空的话 `fade_only` 会静默变成"弹入 + 淡出"，而用户要的是"只淡出"。
-  //    ⇒ 这里把它写成**具名例外**（不是放宽判据）：其它任何档对不上都照红。
-  const MOTION_SEMANTIC_ONLY = new Set(['fade_only'])
-  for (const [n, e] of Object.entries(A)) {
-    const wf = e.kind === 'form' || e.kind === 'both'
-    const wm = e.kind === 'motion' || e.kind === 'both' || MOTION_SEMANTIC_ONLY.has(n)
-    check(PREVIEW.animHasFormPart(n) === wf,
-      `预览 \`animHasFormPart('${n}')\` = ${PREVIEW.animHasFormPart(n)}，按归属表应当是 ${wf}`)
-    check(PREVIEW.animHasMotionPart(n) === wm,
-      `预览 \`animHasMotionPart('${n}')\` = ${PREVIEW.animHasMotionPart(n)}，按归属表应当是 ${wm}\n` +
-      `     ⚠️ 唯一合法的例外是 \`fade_only\`（归属 \`none\` 但要有动效语义 —— ` +
-      `它靠"取到了没"去压掉全局弹入）`)
+  // ⚠️⚠️ **2026-10-14 三轴收敛后，这一节问的问题变了，判据必须跟着变。**
+  //
+  //    归属表的 `form[]` / `motion[]` 回答的是"**这一档往产物里写了哪几个字段**"。
+  //    而 `animHasFormPart` / `animHasMotionPart` 回答的是**另一个问题**：
+  //    "**老格式的单个 `anim` 该拆到哪几路去**"（它们是 `splitLegacyAnim` 的分路器）。
+  //
+  //    ⚠️ 这两个问题的答案**故意不完全重合**，别拿一个去校验另一个：
+  //      · `arc` 归**排版**轴，但它的逐字 **随时间转** ⇒ **两路都要给**
+  //        （只给排版的话，老工程 `anim="arc"` 的"逐字动"会静默变成"静态阶梯"）；
+  //      · `perchar_big`/`perchar_small` 归**动效**轴，但它们给的是**形态**字段
+  //        （`per_char`）⇒ **两路都要给**；
+  //      · `pop`/`fade` 归**过渡**轴，走**第三路** ⇒ 两路**都不给**。
+  //
+  //    ⇒ 判据 = "**与转译器那份定义同源**"，而不是"与轴一一对应"。
+  //      权威是转译器的 `animHasFormPart` / `animHasMotionPart`（它才是写进底座的那个），
+  //      预览那份必须**逐档一致** —— 漂了的表现就是"老格式在预览与成片里不一样"。
+  //
+  //    ⚠️ 转译器那两个谓词是**函数内局部常量**，所以从源码里抽出来**真跑**
+  //      （与 `check-anim-two-axis.mjs` 抽 `animAxisOf` 同一个手法），
+  //      **不在本判据里复刻一份语义** —— 复刻的那份会与被测的那份一起漂。
+  const transSrc2 = fs.readFileSync(path.join(ROOT, 'tools', 'polish-to-dhampir.mjs'), 'utf8')
+  /** 抽出 `const NAME = (...) => { ... };` 的**整个声明**（花括号匹配）。
+   *  ⚠️ 必须**花括号匹配**，不能用“找到下一个 `\n  };`” ——
+   *     谓词体里的 `if (...) { ... }` 会提前碰上那个字面量。 */
+  const grabFn = (name) => {
+    const i = transSrc2.indexOf(`const ${name} = `)
+    if (i < 0) return null
+    const open = transSrc2.indexOf('{', i)
+    if (open < 0) return null
+    let depth = 0
+    for (let k = open; k < transSrc2.length; k++) {
+      const c = transSrc2[k]
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        if (depth === 0) {
+          const tail = transSrc2[k + 1] === ';' ? k + 2 : k + 1
+          return transSrc2.slice(i, tail)
+        }
+      }
+    }
+    return null
+  }
+  /** 抽 `const NAME = ...;`（一行到分号；多行用花括号匹配）。 */
+  const grabConst = (name) => {
+    const i = transSrc2.indexOf(`const ${name} = `)
+    if (i < 0) return null
+    const semi = transSrc2.indexOf(';', i)
+    const open = transSrc2.indexOf('{', i)
+    if (open >= 0 && (semi < 0 || open < semi)) {
+      let depth = 0
+      for (let k = open; k < transSrc2.length; k++) {
+        if (transSrc2[k] === '{') depth++
+        else if (transSrc2[k] === '}') {
+          depth--
+          if (depth === 0) {
+            const tail = transSrc2[k + 1] === ';' ? k + 2 : k + 1
+            return transSrc2.slice(i, tail)
+          }
+        }
+      }
+      return null
+    }
+    return semi < 0 ? null : transSrc2.slice(i, semi + 1)
+  }
+  let transHasForm = null
+  let transHasMotion = null
+  try {
+    const axSrc = grabFn('animAxisOf')
+    const preSrc = grabFn('animPreset')
+    const formSrc = grabFn('animHasFormPart')
+    const moSrc = grabFn('animHasMotionPart')
+    // ⚠️ `animAxisOf` 依赖 `ANIM_AXIS` 与 `ANIM_AXIS_PREFIXES`，
+    //    而这两个**同样是函数内局部常量**（engine 那份也没 export）
+    //    ⇒ 一并抽出来，**不在本判据里手抄一份轴表**。
+    const axisSrc = grabConst('ANIM_AXIS')
+    // ⚠️ 预设表也一并抽（权威是转译器那份）。
+    const presetSrc = grabConst('ANIM_PRESETS')
+    const pre2Src = grabConst('ANIM_AXIS_PREFIXES')
+    if (!axSrc || !preSrc || !formSrc || !moSrc || !axisSrc || !pre2Src || !presetSrc) {
+      check(false, '⑦b 抽不全六个声明：' +
+        `${JSON.stringify({ axSrc: !!axSrc, preSrc: !!preSrc, formSrc: !!formSrc, moSrc: !!moSrc, axisSrc: !!axisSrc, pre2Src: !!pre2Src, presetSrc: !!presetSrc })}`)
+    } else {
+      const mk = new Function(`
+        ${presetSrc}
+        ${axisSrc}
+        ${pre2Src}
+        ${axSrc}
+        ${preSrc}
+        ${formSrc}
+        ${moSrc}
+        return { animHasFormPart, animHasMotionPart };
+      `)
+      const got = mk()
+      transHasForm = got.animHasFormPart
+      transHasMotion = got.animHasMotionPart
+    }
+  } catch (err) {
+    check(false, `⑦b 抽出来跑不起来：${err.message}`)
+  }
+  check(!!transHasForm && !!transHasMotion,
+    '⑦b 没能从转译器源码里抽出 `animHasFormPart` / `animHasMotionPart` 来真跑')
+  if (transHasForm && transHasMotion) {
+    for (const n of Object.keys(A)) {
+      check(PREVIEW.animHasFormPart(n) === transHasForm(n),
+        `预览 \`animHasFormPart('${n}')\` = ${PREVIEW.animHasFormPart(n)}，` +
+        `转译器那份 = ${transHasForm(n)} —— **两侧不同源**\n` +
+        `     ⚠️ 症状：老格式 \`anim="${n}"\` 在预览与成片里走不同的路（两边各自看都正常）`)
+      check(PREVIEW.animHasMotionPart(n) === transHasMotion(n),
+        `预览 \`animHasMotionPart('${n}')\` = ${PREVIEW.animHasMotionPart(n)}，` +
+        `转译器那份 = ${transHasMotion(n)} —— **两侧不同源**\n` +
+        `     ⚠️ 症状：老格式 \`anim="${n}"\` 的逐字动在一边有、另一边没有`)
+    }
   }
 }
 
@@ -258,5 +418,6 @@ if (fails.length) {
   for (const f of fails) console.log('    · ' + f)
   process.exit(1)
 }
-console.log(`✓ 「样式 × 动效」真的可叠加（${checks} 项：` +
-  `两栏共存 · 反序不丢 · both 同步两轴 · 不偷另一轴 · 清空落 null）`)
+console.log(`✓ 「排版 × 过渡 × 动效」真的可叠加（${checks} 项：` +
+  `三栏共存 · 反序不丢 · 各自只写自己那条轴 · 清空落 null · ` +
+  `预览与转译器同源）`)

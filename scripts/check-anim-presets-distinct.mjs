@@ -83,7 +83,7 @@ function normalize(body) {
     .join(' ')
     .replace(/\s+/g, ' ')
 }
-check('解析出 ≥ 30 个档位', Object.keys(presets).length >= 30,
+check('解析出 ≥ 9 个档位', Object.keys(presets).length >= 9,
   `只解析出 ${Object.keys(presets).length} 个：${Object.keys(presets).join(', ')}`)
 
 // ---- ① 同一 kind 内不许有两档参数完全相同 ----
@@ -109,21 +109,27 @@ check('同一类别内没有两档参数逐字节相同（有 = 选 A 得到 B�
   dupes.map(([kind, a, b]) =>
     `[${kind}] \`${a}\` 与 \`${b}\` 的参数完全相同 —— 面板上是两个功能、产物一模一样`).join('\n         '))
 
-// ---- ② 具体钉住 `vtext_thin` / `vtext_bold`（实测抓到的那一对）----
+// ---- ② 具体钉住那对"曾经逐字节相同"的档 ----
 //
-// ⚠️ 上面 ① 是通用判据，这条是**回归钉子**：它明确说出"这两档必须靠
-//    `fontWeight` 区分"，否则将来有人"化简"掉那个字段时，
-//    ① 仍会红但报的是"两档相同"，读的人未必知道该补什么。
-check('`vtext_thin` 与 `vtext_bold` 靠 `fontWeight` 区分',
-  /fontWeight/.test(presets.vtext_thin || '') && /fontWeight/.test(presets.vtext_bold || ''),
-  '`vtext_thin`（面板「细楷」）与 `vtext_bold`（「粗体」）必须各带一个 `fontWeight` —— ' +
-  '没有它两档产物逐字节相同（实测抓到的真缺陷：选「粗体」与「细楷」一模一样）')
-check('`vtext_thin` 的字重**小于** `vtext_bold`',
-  Number(/fontWeight:\s*(\d+)/.exec(presets.vtext_thin || '')?.[1]) <
-  Number(/fontWeight:\s*(\d+)/.exec(presets.vtext_bold || '')?.[1]),
-  `thin=${/fontWeight:\s*(\d+)/.exec(presets.vtext_thin || '')?.[1]} ` +
-  `bold=${/fontWeight:\s*(\d+)/.exec(presets.vtext_bold || '')?.[1]} —— ` +
-  '写反了的话「细楷」比「粗体」还粗（而两档仍然"不同"，通用判据抓不到）')
+// ⚠⚠ **2026-10-14 三轴收教后改写**。
+//
+//    旧版钉的是 `vtext_thin`（面板「细楷」）与 `vtext_bold`（「粗体」）
+//    —— 那是**收敛前**的两档，收敛后并成了一条 `vtext`（用户口径）。
+//    ⚠️ 但这条钉子**不能直接删** —— 它钉的那个**真缺陷**
+//       （“两档产物逐字节相同、而面板上是两个功能”）在收敛后仍然可能发生，
+//       只不过候选对象换成了现在这 9 档。
+//
+//    ⇒ 改成**结构性判据**：  只要某个档带了 `fontWeight`，
+//      它就必须落在合法区间内（防“写反了”）。
+//      ⚠️ 不再钉“哪两档必须相差”—— 收敛后只剩一条 `vtext`，
+//        “两档相比”那件事变成了无意义的自比。
+const weightTiers = Object.entries(presets)
+  .filter(([, body]) => /fontWeight/.test(body))
+  .map(([name, body]) => [name, Number(/fontWeight:\s*(\d+)/.exec(body)?.[1])])
+check('带 `fontWeight` 的档都写的是合法字重',
+  weightTiers.every(([, w]) => Number.isFinite(w) && w >= 100 && w <= 900 && w % 100 === 0),
+  `实得 ${JSON.stringify(weightTiers)} —— 字重只能是 100..900 的整百` +
+  '（写反了或写成了小数，底座那边会静默回退到默认字体）')
 
 // ---- ③ `fontWeight` 必须真的被写进产物 ----
 //
@@ -133,7 +139,7 @@ check('`fontWeight` 真的被写进产物（`out.font_weight`）',
   /if \(stylePreset && stylePreset\.fontWeight !== undefined\) \{\s*\n\s*out\.font_weight = stylePreset\.fontWeight;/.test(src),
   '档位表里有 `fontWeight` 但 `motionFields` 没读它 —— 写了等于没写（实测同形缺陷已犯过多次）')
 
-// ---- ④ 面板上这两档必须在**同一个下拉**里（否则"选 A 得到 B"不成立）----
+// ---- ④ 面板上那几档必须在**同一个下拉**里（否则"选 A 得到 B"不成立）----
 const editor = fs.readFileSync(EDITOR, 'utf8')
 const menu = /variants: \[([\s\S]*?)\]/.exec(
   editor.slice(editor.indexOf("kind: 'vtext'")) || '')
