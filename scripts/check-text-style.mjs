@@ -182,5 +182,42 @@ if (fontConst) {
   )
 }
 
+// ⑧ ⚠⚠ **描边宽必须真的进 ASS**（2026-10-14，用户报的问题 ③）。
+//
+// ①~⑦ 全部绿、而用户仍然看到「四档描边一样粗」—— 因为那些判据只钉了
+// **`strokePx` 这个值对不对**（`TEXT_STYLE_FALLBACK` 与 Rust 同值），
+// **没有任何一条钉”它有没有被用上”**。
+// 实测：`cuesToAss` 的 ASS `Outline` 写死成字幕默认的 `2`，四个档位全出 `Outline=2`
+// —— 而本文件的 ①~⑦ **一条都不红**。
+//
+// ⇒ 判据必须落到**产物那一侧**：元素调用点要把 `st.strokePx` 换算后传进去。
+{
+  // ① 元素调用点必须传 `outlinePx`（且来自 `st.strokePx`）。
+  check(
+    '元素 ASS 必须把 `st.strokePx` 传进 `cuesToAss`（否则四档描边一样粗）',
+    /outlinePx: strokePxToAss\(\s*st\.strokePx\b/.test(s),
+    '找不到 `outlinePx: strokePxToAss(st.strokePx, …)` —— ' +
+    '`strokePx` 算出来了却没人读，ASS 会用写死的默认值',
+  )
+  // ② `cuesToAss` 必须真的把它写进 `Outline` 那一列。
+  check(
+    '`cuesToAss` 必须把 `outlinePx` 写进 ASS 的 Outline 列',
+    /\$\{outlinePx/.test(s),
+    'ASS 的 `Style:` 行里看不到 `${outlinePx` —— 传进来了但没写出去',
+  )
+  // ③ 换算必须是 `/2`（外侧宽 → ASS 单侧宽），与契约路径 `stroke_ratio` **同一口径**。
+  check(
+    '`strokePxToAss` 的换算与 `stroke_ratio` 同口径（都是 `/2`）',
+    /return v \/ 2\b/.test(s) && /stroke_ratio:\s*st\.strokePx \/ 2 \/ /.test(s),
+    '两处换算不一致 —— 同一次编辑里选的描边，预览与成片粗细会不一样',
+  )
+  // ④ ⚠ 反面：不许再出现写死的 `Outline` 数字（`1,2,1,` 那一段）。
+  check(
+    'ASS 的 Outline/Shadow 不许写死成字面量',
+    !/'0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1'/.test(s),
+    '还是写死的 `…,1,2,1,2,10,10,10,1` —— 那是“文字元素描边取字幕默认值”的原样',
+  )
+}
+
 console.log(`\n${fails.length ? `${fails.length} 条不通过` : '全部通过'}`)
 process.exit(fails.length ? 1 : 0)
