@@ -804,7 +804,22 @@ export function danmakuExitMs(startMs, endMs, travelMs) {
 ///
 /// ⚠️ 所以这里加一个**显式开关**而不是改 `danmakuExitMs`：
 ///   那条规则对弹幕是**对的**（有实测支撑，改它会让弹幕提前消失）。
-function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) {
+/// ⚠⚠ **`font` 没有默认值、也不许给默认值**（2026-10-14）。
+///
+///    它**曾经默认 `'Sans'`**，而两个调用点里有一个（文字元素那条）**没传** ⇒
+///    静默用 `Sans` 出片。libass 认不出 `Sans` 时**不报错**（`lines_failed: 0`、
+///    `issues: []`），只是换了个字体画 ⇒ 用户看到的是「**元素出现时字体变成默认的**」，
+///    而 ASS 文件、报告、日志三者全正常（用户报的问题 ② 就是这么来的）。
+///
+///    ⇒ 默认值**整个删掉**：新调用点忘了传，这里当场 `throw` ——
+///      比"悄悄用 Sans"好，因为症状本来就是不可见的。
+function cuesToAss(cues, { font, fontSize = 42, danmaku = true } = {}) {
+  if (typeof font !== 'string' || !font.trim()) {
+    throw new Error(
+      'cuesToAss: 必须显式传 font（不许用默认值）—— ' +
+      '曾经默认 Sans，libass 认不出它时静默落 ArialMT，而日志全绿',
+    );
+  }
   const out = [];
   out.push('[Script Info]');
   out.push('ScriptType: v4.00+');
@@ -6792,7 +6807,26 @@ export function translate(config, clipDir, outPath, options = {}) {
         // ⚠️⚠️ **`danmaku: false` 不能省** —— 文字元素不滚，
         //    弹幕那条"至少滚到出画"的出点规则会把每条 cue 抬到 300ms，
         //    打字机拆出来的短 cue 于是**全部重叠**（详见 `cuesToAss` 的文档）。
-        { font: 'Sans', fontSize: st.fontPx, danmaku: false },
+        // ⚠⚠ **`font` 绝不能写字面量 `'Sans'`**（2026-10-14 修，用户报的问题 ②）——
+        //    症状是「元素出现时字幕的**描边和字体变成默认的**了」。
+        //
+        //    这里**曾经写 `'Sans'`**，而本文件弹幕那条路早就因为
+        //    **同一个坑**被修过（见 `dmStyle.font || DEFAULT_DANMAKU_FONT` 那行的注释），
+        //    而那段注释自己就写着：
+        //      "两行自相矛盾，实际结果是**预览用字幕字体、成片用 Sans**（不一致且不报错）。
+        //       `'Sans'` 也不是'系统无衬线'的可靠表达：libass 认不出就静默落 ArialMT。"（实测）
+        //    **弹幕改了、元素没改** —— 本仓第 ② 类老病「两个消费方，只迁了一个」。
+        //
+        //    ⚠ 而元素的症状**更具迷惑性**：libass 认不出 `Sans` **不报错**
+        //      （`lines_failed: 0`、`issues: []`），只是换个字体画 ⇒
+        //      用户看到"字体变成默认的了"，而 **ASS 文件、报告、日志三者全正常**。
+        //
+        //    取值与字幕那条路**同源**：`fontFamilyFor(sharedSubStyle.font)` ——
+        //    **库里那支要换成真族名**（libass 按族名找字体，
+        //    而 `polish.toml` 存的是**库 id**；实测传 id 落 ArialMT、传真族名才命中）。
+        //    空值落到出厂默认文字字体。
+        { font: fontFamilyFor(sharedSubStyle.font) || DEFAULT_DANMAKU_FONT,
+          fontSize: st.fontPx, danmaku: false },
       );
       const assPath = join(clipDir, `dhampir-${id}.ass`);
       writeFileSync(assPath, ass, 'utf8');
