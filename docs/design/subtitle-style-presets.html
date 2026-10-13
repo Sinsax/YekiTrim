@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>YekiTrim 字幕样式预设 · 设计靶子</title>
+<!--
+  ============================================================================
+  YekiTrim 字幕样式预设 —— **设计用的靶子**（2026-10-13）
+  ============================================================================
+
+  # 这是什么
+
+  一个**零依赖、双击即开**的静态页：把底座 `SubtitleStyle` 的**全部 24 个字段**
+  逐档摊出来，并把每一档对应的 **toml 键**写在卡片上。
+
+  用途：给"文字样式怎么设计"一个**能看见的靶子**，而且**每个值都能在 toml 里表达**。
+  ⚠️ 它**不是**新契约、不新增字段、不改 `spec/effects.json`。
+  权威永远是 `F:\para\Code\Dhampir\crates\dhampir-timeline\src\layer.rs::SubtitleStyle`
+  （字段名、缺省值、单位口径都在那）。
+
+  # ⚠️ 四条口径（本仓反复踩的坑，卡片上逐条标了出来）
+
+  ① **描边是"外侧宽度"**（`stroke_ratio`）：ffmpeg `borderw` 的原生语义 ——
+     判据在字的轮廓**外**、整条宽 `r`。而 CSS 的 `-webkit-text-stroke: r`
+     是**居中**的（里外各 r/2）⇒ **CSS 要画两倍**，否则预览看着比成片细一半。
+  ② **两种单位不许混**：
+     * `font_ratio` / `bottom_margin` / `stroke_ratio` / `shadow_blur_ratio` 是
+       **比例**（× 目标高度）；
+     * `anchor_bottom` 是**归一化坐标**（1.0 = 整个画面高）。
+     两者同量纲、能相减，但**不是一个东西**。
+  ③ **`anchor_bottom` 的接管条件**：`< 1.0` 时**它**说了算（纵向位置）；
+     否则仍走老式子 `1.0 - bottom_margin`。⇒ 不写这两个字段的老工程逐字节不变。
+  ④ **`vertical = true` 时忽略 `anchor_bottom`**（竖排自己定纵向），
+     且列容量 = 安全比例 ÷ 字号比例 ⇒ 字号一大就只排得下很少几列。
+  ⑤ **`outline` 现在是"填白 + 描边单独一层"**（2026-10-13 修完糊团之后）：
+     描边颜色**真的会被用上**（不再是"与填充连成一块"）。
+
+  # ⚠️ 三态陷阱（`Option<bool>`）
+
+  `vertical` 是 `Option<bool>`：**缺省**与 `false` 语义相同，
+  但**只有缺省不写键**。转译器**永远不写** `vertical: false` ——
+  写了会让每个老工程的样式键集变大（R4 当场红）。
+-->
+<style>
+  :root {
+    /* 哥特浅色（与工作台同一套 tokens 的近似值；这只是设计稿，不要求逐值一致） */
+    --bg: #F5F1EC;
+    --bg-soft: #F0EAE4;
+    --card: #FFFFFF;
+    --line: #E3DBD2;
+    --text: #2A2522;
+    --muted: #7A6E66;
+    --main: #C0554A;
+    --main-soft: #FAECEA;
+    --pink: #B4574F;
+    --ok: #4A7C59;
+    --warn: #B4762A;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 32px 80px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 34px 0 12px; padding-bottom: 6px;
+       border-bottom: 2px solid var(--line); }
+  .lede { color: var(--muted); margin: 0 0 6px; max-width: 1080px; }
+  .lede code { font-family: var(--mono); font-size: 12px;
+               background: var(--bg-soft); padding: 1px 5px; border-radius: 3px; }
+
+  /* ---- 舞台：所有预览都在这块黑底上，字幕本来就压在画面下方 ---- */
+  .stage {
+    position: relative; width: 480px; height: 270px; margin: 0 auto;
+    background: linear-gradient(135deg, #3a4348 0%, #6d5f52 55%, #2f3336 100%);
+    border-radius: 6px; overflow: hidden;
+    box-shadow: 0 6px 22px rgba(0,0,0,.22);
+  }
+  /* ⚠️ 舞台里加一条"干扰纹理"：字幕要压得住背景才叫能用。
+     纯黑底上什么描边都好看 —— 那种预览是**假绿**。 */
+  .stage::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(circle at 22% 30%, rgba(255,255,255,.16), transparent 42%),
+      radial-gradient(circle at 78% 68%, rgba(255,255,255,.13), transparent 38%);
+  }
+  .sub { position: absolute; left: 50%; transform: translateX(-50%);
+         width: 87.5%; text-align: center; white-space: pre-wrap;
+         text-shadow: none; }
+
+  /* ---- 参数表 ---- */
+  .kv { width: 100%; border-collapse: collapse; margin-top: 10px;
+        font-family: var(--mono); font-size: 11.5px; }
+  .kv td { padding: 2px 6px; border-bottom: 1px dotted var(--line); vertical-align: top; }
+  .kv td:first-child { color: var(--muted); width: 42%; }
+  .kv td:last-child { color: var(--text); }
+
+  /* ---- 卡片网格 ---- */
+  .grid { display: grid; gap: 18px;
+          grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 8px; padding: 14px 16px 16px; }
+  .card h3 { margin: 0 0 2px; font-size: 14px; }
+  .card .use { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .card .stage { width: 100%; height: 200px; }
+  .tag { display: inline-block; font-size: 10.5px; font-family: var(--mono);
+         background: var(--main-soft); color: var(--pink);
+         border-radius: 3px; padding: 1px 6px; margin-left: 6px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px;
+          padding-left: 10px; border-left: 3px solid var(--line); }
+  .note.warn { border-left-color: var(--warn); color: #7a5a1e; }
+  .note.ok { border-left-color: var(--ok); color: #3c6647; }
+
+  /* ---- 对照组：把"坑"直接画出来 ---- */
+  .ab { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ab .cell { text-align: center; }
+  .ab .cell .lbl { font-size: 11.5px; color: var(--muted); margin-bottom: 5px; }
+  .ab .cell .stage { width: 100%; height: 150px; }
+  .bad { color: #A33A2E; font-weight: 600; }
+  .good { color: var(--ok); font-weight: 600; }
+  code { font-family: var(--mono); font-size: 12px;
+         background: var(--bg-soft); padding: 1px 5px; border-radius: 3px; }
+
+  .legend { background: var(--card); border: 1px solid var(--line);
+            border-radius: 8px; padding: 14px 18px; }
+  .legend li { margin: 5px 0; }
+</style>
+</head>
+<body>
+
+<h1>YekiTrim 字幕样式预设 <span class="tag">设计靶子 · 不是新契约</span></h1>
+<p class="lede">
+  底座 <code>SubtitleStyle</code> 的**全部 24 个字段**逐档摊开，每张卡片都标出它对应的
+  <code>[style.subtitle]</code> toml 键 —— 用来确认"**设计得出来，也表达得出来**"。
+  权威实现：<code>Dhampir/crates/dhampir-timeline/src/layer.rs::SubtitleStyle</code>。
+</p>
+
+<h2>① 先看清五条口径（逐条都是踩过的坑）</h2>
+<div class="legend">
+<ol>
+  <li><b>描边是「外侧宽度」</b>：<code>stroke_ratio</code> 是 ffmpeg <code>borderw</code> 的语义
+      —— 判据在字的轮廓<b>外</b>、整条宽 <code>r</code>。
+      而 CSS 的 <code>-webkit-text-stroke: r</code> 是<b>居中</b>的（里外各 r/2）
+      ⇒ <b>CSS 要画两倍</b>，否则预览看着比成片细一半。</li>
+  <li><b>两种单位不许混</b>：<code>font_ratio</code> / <code>bottom_margin</code> /
+      <code>stroke_ratio</code> / <code>shadow_blur_ratio</code> 是<b>比例</b>（× 目标高度）；
+      <code>anchor_bottom</code> 是<b>归一化坐标</b>（1.0 = 整个画面高）。
+      两者同量纲、能相减，但<b>不是一个东西</b>。</li>
+  <li><b><code>anchor_bottom</code> 的接管条件</b>：<code>&lt; 1.0</code> 时<b>它</b>说了算；
+      否则走老式子 <code>1.0 - bottom_margin</code> ⇒ 不写这两个字段的老工程逐字节不变。</li>
+  <li><b><code>vertical = true</code> 时忽略 <code>anchor_bottom</code></b>，且列容量 =
+      安全比例 ÷ 字号比例 ⇒ 字号一大就只排得下很少几列。</li>
+  <li><b>三态陷阱</b>：<code>vertical</code> 是 <code>Option&lt;bool&gt;</code> ——
+      <b>缺省</b>与 <code>false</code> 语义相同，但<b>只有缺省不写键</b>。
+      转译器<b>永远不写</b> <code>vertical: false</code>（写了会让老工程键集变大）。</li>
+</ol>
+</div>
+
+<h2>② 现实基线：工程里那份 <code>[style.subtitle]</code></h2>
+<p class="lede">
+  下面这组是 <b>演示工程里真实存在的值</b>（`.workbuddy/anim-verify/…/polish.toml`），
+  作为所有预设的对照起点。注意 <code>stroke = "12px #403c3b"</code> 是**一个字符串里两个值**。
+</p>
+<div class="grid">
+  <div class="card">
+    <h3>演示工程当前值 <span class="tag">基线</span></h3>
+    <p class="use">所有卡片都从这组出发，只改标注出来的那几项。</p>
+    <div class="stage">
+      <div class="sub" id="baseline"></div>
+    </div>
+    <table class="kv">
+      <tr><td>font</td><td>"LXGW WenKai"</td></tr>
+      <tr><td>size</td><td>72 &nbsp;(→ <code>font_ratio = 72/1080 = 0.0667</code>)</td></tr>
+      <tr><td>color</td><td>"#dcbda0"</td></tr>
+      <tr><td>stroke</td><td>"12px #403c3b" &nbsp;(→ <code>stroke_ratio = 12/1080</code>)</td></tr>
+      <tr><td>highlight_color</td><td>"#f56b41"</td></tr>
+      <tr><td>position</td><td>"bottom"</td></tr>
+    </table>
+    <div class="note">⚠️ 这一幕的背景是<b>刻意做的花背景</b>：纯黑底上任何描边都好看，
+      那种预览是<b>假绿</b>。真正的判据是"压在亮/杂背景上还认得出字"。</div>
+  </div>
+
+  <div class="card">
+    <h3>这四个旋钮决定"能不能看清"</h3>
+    <p class="use">其余字段都是修饰；先定这四个。</p>
+    <table class="kv">
+      <tr><td>font_ratio</td><td>字号 = 目标高 × 它。缺省 <code>0.055</code></td></tr>
+      <tr><td>stroke_ratio</td><td><b>外侧</b>描边宽 = 目标高 × 它。缺省 <code>0.0</code>（= 从字号推）</td></tr>
+      <tr><td>stroke_color</td><td>描边色。缺省 <code>[0x40,0x3c,0x3b]</code>（深灰，不是纯黑）</td></tr>
+      <tr><td>outline</td><td>总开关。缺省 <code>true</code></td></tr>
+    </table>
+    <div class="note ok">✅ 2026-10-13 修完"描边糊团"之后，<b>描边颜色真的会被用上</b>
+      —— 以前填充与描边都是白墨，深色描边被静默丢弃（两个字面值相同）。</div>
+  </div>
+</div>
+
+<h2>③ 描边：外侧 vs 居中（<b>预览与成片差一倍</b>）</h2>
+<p class="lede">
+  这是本仓最容易出"预览看着对、成片偏粗/偏细"的地方。
+  下面两侧是**同一个 <code>stroke_ratio</code>** 的两种画法。
+</p>
+<div class="grid">
+  <div class="card">
+    <h3>同一个数值，两种画法</h3>
+    <p class="use">左 = 成片口径（外侧 12px）· 右 = CSS 原生口径（居中 12px，看着细一半）</p>
+    <div class="ab">
+      <div class="cell">
+        <div class="lbl good">成片 / ffmpeg：外侧 12px</div>
+        <div class="stage"><div class="sub" id="stroke-outer"></div></div>
+      </div>
+      <div class="cell">
+        <div class="lbl bad">CSS 直接写 12px：居中（错）</div>
+        <div class="stage"><div class="sub" id="stroke-center"></div></div>
+      </div>
+    </div>
+    <div class="note warn">⚠️ 想让 CSS 看起来与成片一样，必须写
+      <code>-webkit-text-stroke: 24px</code>（两倍）—— 因为居中描边里外各占一半。
+      <b>预览要画 2×，成片画 1×</b>，两边才对得上。</div>
+  </div>
+
+  <div class="card">
+    <h3>描边宽度扫一遍</h3>
+    <p class="use">压在亮背景上，太细压不住、太粗糊成一块。</p>
+    <table class="kv" id="stroke-sweep"></table>
+    <div class="note">可用区间大致是 <code>stroke_ratio ∈ [0.004, 0.014]</code>
+      （1080p 下 4–15px）。⚠️ 再往上会开始<b>吃掉笔画间隙</b>（汉字间隙只有 4–8px）。</div>
+  </div>
+</div>
+
+<h2>④ 纵向位置：<code>anchor_bottom</code> vs <code>bottom_margin</code></h2>
+<div class="grid">
+  <div class="card">
+    <h3>两条路，别混着用</h3>
+    <p class="use">上 = 老式子（<code>bottom_margin = 0.06</code>）· 下 = 新字段（<code>anchor_bottom = 0.72</code>）</p>
+    <div class="ab">
+      <div class="cell">
+        <div class="lbl">bottom_margin = 0.06（贴底）</div>
+        <div class="stage"><div class="sub" id="pos-margin"></div></div>
+      </div>
+      <div class="cell">
+        <div class="lbl">anchor_bottom = 0.72（抬到上方）</div>
+        <div class="stage"><div class="sub" id="pos-anchor"></div></div>
+      </div>
+    </div>
+    <div class="note warn">⚠️ 为什么必须有 <code>anchor_bottom</code>：<code>bottom_margin</code>
+      原本兼两职（"距底边" + 左右安全宽），于是要把字抬上去就得给它 ≈0.6，
+      而安全宽被锁死成 0.875 ⇒ <code>max_width</code> 变<b>负数</b> ⇒
+      <b>一个字都排不出来</b>，而报告里一行差异都没有。</div>
+  </div>
+
+  <div class="card">
+    <h3>三档纵向位置（宿主就是这么表达的）</h3>
+    <p class="use">YekiTrim 的"上 / 中 / 下"三档 = 三个 <code>anchor_bottom</code> 值。</p>
+    <table class="kv">
+      <tr><td>上 &nbsp;<code>anchor_bottom = 0.30</code></td><td>标题位，避开下方弹幕</td></tr>
+      <tr><td>中 &nbsp;<code>anchor_bottom = 0.58</code></td><td>画面中部</td></tr>
+      <tr><td>下 &nbsp;<code>anchor_bottom = 1.00</code></td><td>= 不写（走老式子）</td></tr>
+    </table>
+    <div class="note">⚠️ <code>anchor_bottom = 1.0</code> 与"不写"是<b>等价的</b>，
+      所以转译器在"下"这一档**不写这个键** —— 保证老工程逐字节不变。</div>
+  </div>
+</div>
+
+<h2>⑤ 竖排：<code>vertical = true</code> 的四条边界</h2>
+<div class="grid">
+  <div class="card">
+    <h3>竖排的实际容量</h3>
+    <p class="use">列容量 = 安全比例 ÷ 字号比例。字号一大，列数立刻塌。</p>
+    <div class="ab">
+      <div class="cell">
+        <div class="lbl">font_ratio 0.055（缺省）</div>
+        <div class="stage"><div class="sub" id="vt-thin"></div></div>
+      </div>
+      <div class="cell">
+        <div class="lbl">font_ratio 0.12（大字，装不下）</div>
+        <div class="stage"><div class="sub" id="vt-big"></div></div>
+      </div>
+    </div>
+    <div class="note warn">⚠️ 竖排会<b>忽略 <code>anchor_bottom</code></b>（自己定纵向）。
+      ⚠️ 且列容量算得不对时的症状是<b>只画出头两个字</b>，而<b>不报错</b>
+      —— 转译器那边专门有一条注释记着这事。</div>
+  </div>
+
+  <div class="card">
+    <h3>竖排相关字段</h3>
+    <table class="kv">
+      <tr><td>vertical</td><td><code>Option&lt;bool&gt;</code>。⚠️ <b>缺省 ≠ 写 false</b>（见口径 ⑤）</td></tr>
+      <tr><td>safe_width_ratio</td><td>显式配了就<b>只认它</b>管左右（不再从 bottom_margin 推）</td></tr>
+      <tr><td>max_lines</td><td>缺省 3。竖排下 = 最多几<b>列</b></td></tr>
+      <tr><td>keep_all_lines</td><td>true = 装不下就缩字号，<b>不丢行</b></td></tr>
+      <tr><td>shrink_min_scale</td><td>缩字号的下限（0.0 = 用内置下限）</td></tr>
+    </table>
+    <div class="note">⚠️ <code>keep_all_lines = false</code>（缺省）时超出 <code>max_lines</code>
+      的行<b>直接丢掉</b> —— 字幕不该盖住半屏，但要知道它会丢。</div>
+  </div>
+</div>
+
+<h2>⑥ 阴影：四个字段，与描边可以叠加</h2>
+<div class="grid">
+  <div class="card">
+    <h3>阴影 vs 描边，两种"压背景"的办法</h3>
+    <p class="use">描边更硬、阴影更软。叠起来最稳，但别两个都拉满。</p>
+    <div class="ab">
+      <div class="cell">
+        <div class="lbl">只描边</div>
+        <div class="stage"><div class="sub" id="mix-stroke"></div></div>
+      </div>
+      <div class="cell">
+        <div class="lbl">描边 + 阴影</div>
+        <div class="stage"><div class="sub" id="mix-both"></div></div>
+      </div>
+    </div>
+    <table class="kv">
+      <tr><td>shadow_color</td><td><code>Option&lt;[u8;4]&gt;</code>，缺省 <code>None</code>（不画）</td></tr>
+      <tr><td>shadow_dx_px / dy_px</td><td>偏移，<b>像素</b>（不是比例）</td></tr>
+      <tr><td>shadow_blur_ratio</td><td>模糊半径 = 目标高 × 它</td></tr>
+    </table>
+    <div class="note warn">⚠️ <b>有 <code>shadow_color</code> 时走单遍路径</b>（描边那条两遍路径
+      只给"有描边、没阴影"用）—— 这是 2026-10-13 修糊团时<b>有意保留</b>的取舍，
+      记在 <code>Dhampir/docs/plan/defect-outline-blob.md</code>。</div>
+  </div>
+
+  <div class="card">
+    <h3>其余修饰字段（一次看全）</h3>
+    <table class="kv">
+      <tr><td>color</td><td>填充色 RGBA，缺省白</td></tr>
+      <tr><td>highlight_color</td><td><code>Option</code>，缺省 <code>None</code>。高亮词用它</td></tr>
+      <tr><td>font_family</td><td><code>Option&lt;String&gt;</code>。⚠️ 要写<b>真族名</b>不是库内 id —— libass 传 id 会静默落 ArialMT</td></tr>
+      <tr><td>font_weight</td><td>⚠️ <b>实测 400/700 逐字节相同</b>（底座不消费；本仓已把它从"能救糊团"的假设里划掉）</td></tr>
+      <tr><td>line_height</td><td>0.0 = 用内置（1.2 em）</td></tr>
+      <tr><td>fade_in_ms / fade_out_ms</td><td>0 = 硬出现/硬消失</td></tr>
+      <tr><td>rise_in_px / rise_out_px</td><td>进场/退场的纵向位移（像素）</td></tr>
+    </table>
+    <div class="note warn">⚠️ <code>font_weight</code> 那一行不是"没做完"，是<b>实测结论</b>：
+      它与 <code>outline</code> 一起试过，400 与 700 的渲染结果<b>字节相同</b>
+      —— <code>outline</code> 才是唯一那个开关。</div>
+  </div>
+</div>
+
+<h2>⑦ 一张表：24 个字段全清单</h2>
+<div class="legend">
+<table class="kv" id="allfields"></table>
+</div>
+
+<script>
+// ===========================================================================
+// ⚠️ 本页**不实现渲染算法** —— 它只把"设计意图"画出来给人看。
+//    真正的渲染口径在底座（Dhampir），预览侧在 engine.js。
+//    这里画的 CSS 是**近似**（浏览器字体 ≠ libass 布局），
+//    用途是"看形状、看比例、看对比"，**不是像素判据**。
+// ===========================================================================
+
+const STAGE_H = 1080;            // 设计一律按 1080p 算（底座的比例都乘目标高）
+const BASE = {
+  font: '"LXGW WenKai", "Microsoft YaHei", sans-serif',
+  size: 72,
+  color: '#dcbda0',
+  stroke: '12px #403c3b',
+  hl: '#f56b41',
+};
+const TEXT = '这一行字幕压在花背景上';
+
+/** 把 `"12px #403c3b"` 拆开（工程里描边就是**一个字符串两个值**）。
+ *  ⚠️ 拆不出来时**不能静默当成 0** —— 那会画成"没描边"，看着像"描边没生效"。 */
+function parseStroke(s) {
+  const m = /^\s*(\d+(?:\.\d+)?)px\s+(#?[0-9a-fA-F]{3,8})\s*$/.exec(String(s || ''));
+  if (!m) return { px: 0, color: 'transparent', ok: false };
+  return { px: parseFloat(m[1]), color: m[2], ok: true };
+}
+
+/** 画一条字幕。
+ *  ⚠️ `strokeScale = 2` 是**成片口径**（外侧宽 → CSS 居中要两倍），见页面口径①。 */
+function paint(el, o) {
+  const o2 = Object.assign({}, o);
+  el.textContent = o2.text || TEXT;
+  const size = o2.size || BASE.size;
+  // 舞台是 480×270（1080p 的 1/4）⇒ 字号也按 1/4 缩，比例才对得上。
+  const scale = 0.25;
+  el.style.fontFamily = o2.font || BASE.font;
+  el.style.fontSize = (size * scale) + 'px';
+  el.style.fontWeight = o2.weight || 400;
+  el.style.color = o2.color || BASE.color;
+  el.style.lineHeight = o2.lineHeight || 1.2;
+  el.style.letterSpacing = (o2.letterSpacing || 0) + 'px';
+
+  if (o2.strokePx > 0) {
+    // ⚠️ 外侧 → 居中的换算：CSS 要画 **两倍**（口径①）。
+    const cssPx = o2.strokePx * o2.strokeScale * scale;
+    el.style.webkitTextStroke = cssPx + 'px ' + o2.strokeColor;
+    el.style.paintOrder = 'stroke fill';   // 与出片 ASS 同口径：先描边后填充
+  } else {
+    el.style.webkitTextStroke = '';
+  }
+
+  if (o2.shadow) {
+    const dx = (o2.shadow.dx || 0) * scale;
+    const dy = (o2.shadow.dy || 0) * scale;
+    const bl = (o2.shadow.blur || 0) * scale;
+    el.style.textShadow = dx + 'px ' + dy + 'px ' + bl + 'px ' + o2.shadow.color;
+  } else {
+    el.style.textShadow = '';
+  }
+
+  // 纵向落点：anchor_bottom 优先（< 1.0 才接管，口径③）。
+  if (typeof o2.anchorBottom === 'number' && o2.anchorBottom < 1.0) {
+    el.style.top = ''; el.style.bottom = 'auto';
+    el.style.top = (o2.anchorBottom * 100) + '%';
+  } else {
+    const bm = typeof o2.bottomMargin === 'number' ? o2.bottomMargin : 0.06;
+    el.style.top = 'auto'; el.style.bottom = (bm * 100) + '%';
+  }
+
+  // 竖排（口径④：忽略 anchor_bottom）。
+  if (o2.vertical) {
+    el.style.writingMode = 'vertical-rl';
+    el.style.width = 'auto';
+    el.style.whiteSpace = 'nowrap';
+    el.style.top = '6%'; el.style.bottom = 'auto';
+    el.style.maxHeight = '88%';
+  } else {
+    el.style.writingMode = '';
+    el.style.width = '87.5%';
+    el.style.whiteSpace = 'pre-wrap';
+    el.style.maxHeight = '';
+  }
+}
+
+const st = parseStroke(BASE.stroke);
+
+// ---- 基线 ----
+paint(document.getElementById('baseline'), {});
+paint(document.getElementById('stroke-outer'), { strokePx: st.px, strokeColor: st.color, strokeScale: 2 });
+paint(document.getElementById('stroke-center'), { strokePx: st.px, strokeColor: st.color, strokeScale: 1 });
+paint(document.getElementById('pos-margin'), { bottomMargin: 0.06 });
+paint(document.getElementById('pos-anchor'), { anchorBottom: 0.72 });
+paint(document.getElementById('mix-stroke'), { strokePx: st.px, strokeColor: st.color, strokeScale: 2 });
+paint(document.getElementById('mix-both'), {
+  strokePx: st.px, strokeColor: st.color, strokeScale: 2,
+  shadow: { dx: 0, dy: 5, blur: 22, color: 'rgba(0,0,0,.78)' }
+});
+paint(document.getElementById('vt-thin'), { vertical: true, size: 59, text: '竖排字幕样例' });
+paint(document.getElementById('vt-big'), { vertical: true, size: 130, text: '竖排字幕样例' });
+
+// ---- 描边扫一遍 ----
+{
+  const rows = [];
+  for (const px of [0, 6, 12, 18, 26]) {
+    const ratio = (px / STAGE_H).toFixed(4);
+    const ok = px === 0 ? '（= 不画）' : (px <= 15 ? '✅ 可用区间' : '⚠️ 可能吃笔画间隙');
+    rows.push('<tr><td>' + px + 'px @1080p</td><td>stroke_ratio = ' + ratio + ' &nbsp; ' + ok + '</td></tr>');
+  }
+  document.getElementById('stroke-sweep').innerHTML = rows.join('');
+}
+
+// ---- 24 字段全清单 ----
+{
+  const F = [
+    ['font_ratio', 'f32', '0.055', '字号 = 目标高 × 它', '比例'],
+    ['bottom_margin', 'f32', '0.06', '底边距 = 目标高 × 它', '比例'],
+    ['anchor_bottom', 'f32', '1.0', '文字块底边归一化 y；<1.0 才接管', '归一化'],
+    ['max_lines', 'u32', '3', '最多几行（超出的丢掉）', ''],
+    ['color', '[u8;4]', '白', '填充色', ''],
+    ['outline', 'bool', 'true', '描边总开关', ''],
+    ['stroke_ratio', 'f32', '0.0', '**外侧**描边宽 = 目标高 × 它', '比例'],
+    ['stroke_color', '[u8;4]', '0x403c3b', '描边色（outline 为假时忽略）', ''],
+    ['fade_in_ms', 'u64', '0', '淡入时长（0 = 硬出现）', ''],
+    ['fade_out_ms', 'u64', '0', '淡出时长', ''],
+    ['rise_in_px', 'f32', '0.0', '进场纵向位移（像素）', ''],
+    ['rise_out_px', 'f32', '0.0', '退场纵向位移（像素）', ''],
+    ['font_family', 'Option<String>', 'None', '⚠️ 真族名，不是库内 id', ''],
+    ['font_weight', 'u32', '400', '⚠️ 实测无效（400/700 字节相同）', ''],
+    ['line_height', 'f32', '0.0', '0 = 内置 1.2em', ''],
+    ['safe_width_ratio', 'f32', '0.0', '显式配了就只认它管左右', '比例'],
+    ['shrink_min_scale', 'f32', '0.0', '缩字号下限（0 = 内置）', ''],
+    ['keep_all_lines', 'bool', 'false', 'true = 缩字号不丢行', ''],
+    ['highlight_color', 'Option<[u8;4]>', 'None', '高亮词颜色', ''],
+    ['shadow_color', 'Option<[u8;4]>', 'None', 'None = 不画阴影', ''],
+    ['shadow_dx_px', 'f32', '0.0', '阴影横向偏移（像素）', ''],
+    ['shadow_dy_px', 'f32', '0.0', '阴影纵向偏移（像素）', ''],
+    ['shadow_blur_ratio', 'f32', '0.0', '模糊半径 = 目标高 × 它', '比例'],
+    ['vertical', 'Option<bool>', 'None', '⚠️ 缺省 ≠ 写 false（转译器不写 false）', ''],
+  ];
+  document.getElementById('allfields').innerHTML = F.map(function (r) {
+    return '<tr><td>' + r[0] + '</td><td>' + r[1] + ' &nbsp;·&nbsp; 缺省 ' + r[2] +
+           '<br>' + r[3] + (r[4] ? ' <b>[' + r[4] + ']</b>' : '') + '</td></tr>';
+  }).join('');
+}
+
+// ---- 自检：口径①的两个画法必须真的不同（防"整页画成一个样"）----
+{
+  const a = document.getElementById('stroke-outer').style.webkitTextStroke;
+  const b = document.getElementById('stroke-center').style.webkitTextStroke;
+  if (a === b) {
+    document.title = '⚠️ 自检失败：两种描边口径画成了同一个';
+    console.error('❌ 自检失败：外侧与居中两种口径的 CSS 值相同 —— 这一页没起到对比作用');
+  } else {
+    console.log('✅ 自检通过：外侧 ' + a + '  ≠ 居中 ' + b);
+  }
+}
+</script>
+</body>
+</html>
