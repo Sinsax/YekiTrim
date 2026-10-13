@@ -60,18 +60,52 @@
                          WebkitTextStrokeWidth: tx.style.strokePx + 'px',
                          WebkitTextStrokeColor: rgbaCss(tx.style.stroke),
                          background: tx.plate ? rgbaCss(tx.plate) : 'transparent',
-                         padding: tx.plate ? '0.06em 0.18em' : '0' }">{{ tx.text }}</div>
+                         padding: tx.plate ? '0.06em 0.18em' : '0' }">
+            <!-- ---- P4 补：**逐字**（2026-10-13）----
+                 ⚠️⚠️ 这里以前是 `{{ tx.text }}` 一个整串文字节点 ⇒
+                 C 组逐字变换（15 档）+ D 组逐字错峰（4 档）**共 19 档在预览里完全不动**，
+                 而成片是底座真的一字一字画的（`paint_per_char`）。用户报的
+                 「播放没有效果」就是这件事。
+                 ⚠️ 每个字一个 `<span>`：`charTransformAt` 给的是**逐字**变换，
+                 整块套在父 div 上就退化成"整行一个变换"（19 档全部看不出差别）。
+                 ⚠️ 没逐字档时 `perCharSpans` 返回 `null` ⇒ 走下面那条整串分支，
+                 DOM 结构与改造前**逐字节相同**（R4：不动效的老工程预览不变）。 -->
+            <template v-if="tx.spans">
+              <span v-for="(c, ci) in tx.spans" :key="ci" :style="c.style">{{ c.text }}</span>
+            </template>
+            <template v-else>{{ tx.text }}</template>
+          </div>
         </div>
         <div class="danmaku-layer" :style="dmLayerStyle">
           <div v-for="(d, i) in dmRows" :key="'d' + i" class="dm" :style="{ left: d.x + 'px', top: d.y + 'px', opacity: d.opacity }">{{ d.text }}</div>
         </div>
         <div class="captions" :style="capLayerStyle">
+          <!-- ---- 39 档动效（2026-10-13 补）----
+               ⚠️⚠️ 这里以前只做 `translateY + scale`，**一个动效字段都不读**
+               ⇒ **字幕轨的 39 档在预览里一个都不动**（文字元素那条路能动、
+               字幕这条不能），而成片是底座按轨级样式真画的。用户报的
+               「播放没有效果」里，字幕那一半就是它。
+               ⚠️ 变换**必须与文字元素同一条式子**（`textTiltTransform`）——
+                 那边管 `tilt_*` / `slam_squash` / 摇摆的合成顺序，这里重写一份
+                 就是"两份实现必然漂移"（②.4 那张卡记的就是这个病）。
+               ⚠️ 整块变换套在 `.cap` 上、**逐字变换套在每个字上**，两层别混：
+                 逐字那 19 档整块套上去会退化成"整行一个变换"（看不出差别）。 -->
           <div v-for="(c, i) in capRowsWrapped" :key="'c' + i" class="cap"
-               :style="{ opacity: c.opacity, transform: 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')',
+               :style="{ opacity: c.opacity,
+                         transform: c.animName
+                           ? textTiltTransform({ yOff: c.yOff, scale: c.scale,
+                                                 style: subStyle, animName: c.animName })
+                           : 'translateY(' + c.yOff + 'px) scale(' + c.scale + ')',
                          fontSize: (subStyle.size || 72) * c.fontScale + 'px',
                          WebkitTextStrokeWidth: capStrokeW * c.fontScale + 'px' }">
             <span v-for="(line, li) in c.lines" :key="li" class="cap-line">
-              <span v-for="(p, j) in line" :key="j" :class="{ hl: p.hl }">{{ p.text }}</span>
+              <template v-if="c.spans">
+                <span v-for="(sp, j) in line" :key="j" :class="{ hl: sp.hl }"><template
+                  v-for="(ch, ci) in sp.chars" :key="ci"><span :style="ch.style">{{ ch.text }}</span></template></span>
+              </template>
+              <template v-else>
+                <span v-for="(p, j) in line" :key="j" :class="{ hl: p.hl }">{{ p.text }}</span>
+              </template>
             </span>
           </div>
         </div>
@@ -164,7 +198,7 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform } from '../polish/engine'
+import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
 import { ensureFontFace } from '../polish/fonts'
@@ -2270,15 +2304,62 @@ const capFontSpec = computed(() => '700 ' + (subStyle.value.size || 72) + 'px '
 const capStrokeW = computed(() => parseFloat(subStyle.value.stroke) || 12)
 const capRowsWrapped = computed(() => capRows.value.map((c) => {
   const w = wrapCaptionParts(c.parts, cv.value.W * 0.875, (tx) => capMeasure(tx, capFontSpec.value))
-  return { ...c, lines: w.lines, fontScale: w.scale }
+  // ---- 39 档动效（2026-10-13 补）----
+  //
+  // ⚠️ 逐字**必须在折行之后**按行拆：`wrapCaptionParts` 决定断行（与出片同源），
+  //    先拆字再折行会把"断行"变成"逐字断"，两边断行位置立刻不一致
+  //    （`check-caption-wrap.mjs` 钉的就是这件事）。
+  // ⚠️ `fontPx` 传**这一条的字号**（`subStyle.size × fontScale`）——
+  //    `offset_*_em` 乘它才是像素。折行缩过字号（`fontScale`）必须带上，
+  //    否则缩过字号的长字幕位移会偏大。
+  // ⚠️ 没有逐字档时 `spans` 是 `null` ⇒ 模板走原来那条整串分支，DOM 逐字节不变。
+  const spans = perCharSpans(c.fullText, {
+    perChar: c.perChar,
+    perCharFrame: c.perCharFrame,
+    perCharFps: c.perCharFps,
+    fontPx: (subStyle.value.size || 72) * w.scale
+  })
+  // 逐字序列**按行切回**：`spans` 是按整条文本算的（序号与字数都必须按整条），
+  // 而渲染是按行 —— 用每行已消耗的字数把下标接上。
+  let cursor = 0
+  const lines = w.lines.map((line) => {
+    const per = line.map((p) => {
+      const chars = Array.from(String(p.text || ''))
+      const mine = spans ? spans.slice(cursor, cursor + chars.length) : null
+      cursor += chars.length
+      return mine ? { ...p, chars: mine } : p
+    })
+    return per
+  })
+  return { ...c, lines, fontScale: w.scale, spans }
 }))
 const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
 
 /** §5 E3：文字元素在 `t` 时刻的可见集合（读 `process` 写回的落点与样式）。
  *  ⚠️ `getElements` 返回里**混着贴纸与文字两种形状**（都来自 `idx.element`）——
- *  这里只取 `isText` 的那些。贴纸走 `stickersAt`（另一条已经验过的路径），别混用。 */
-const texts = computed(() => getElements(idx.value, current.value).filter((e) => e.isText === true))
+ *  这里只取 `isText` 的那些。贴纸走 `stickersAt`（另一条已经验过的路径），别混用。
+ *
+ *  ⚠️⚠️ **P4 补：逐字（2026-10-13）** —— 给每条文字挂上 `spans`。
+ *  没有这一层时，模板只画 `tx.text` 一个整串 ⇒ C 组逐字变换（15 档）+
+ *  D 组逐字错峰（4 档）**共 19 档在预览里完全不动**（而成片是底座真逐字画的）。
+ *  ⚠️ `perCharSpans` 返回 `null` ⇒ `spans` 是 `null` ⇒ 模板走整串那条分支，
+ *  DOM 与改造前**逐字节相同**（不动效的老工程预览不变）。
+ *  ⚠️ `fontPx` 必须**传这一条自己的字号**：`offset_*_em` 要乘它才是像素，
+ *  与底座 `text_perchar.rs` 同口径。写成画布字号会让位移随字号漂。 */
+const texts = computed(() =>
+  getElements(idx.value, current.value)
+    .filter((e) => e.isText === true)
+    .map((e) => ({
+      ...e,
+      spans: perCharSpans(e.text, {
+        perChar: e.perChar,
+        perCharFrame: e.perCharFrame,
+        perCharFps: e.perCharFps,
+        fontPx: e.style?.fontPx
+      })
+    }))
+)
 
 /** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
 function rgbaCss(c) {

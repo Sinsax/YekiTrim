@@ -442,6 +442,13 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
           //    而 `textTiltTransform` 才是决定 `rotate()` 的地方。
           //    ⚠️ `slam_squash` 的压扁同理（`scale_y`）。
           entry.animName = String(ev.anim ?? '').trim().toLowerCase()
+          // ---- P4 补：**逐字 spec 也要带出去**（2026-10-13）----
+          //
+          // ⚠️⚠️ **`charTransformAt` 一直导出了、但全仓没有任何地方 import 它**
+          //    ⇒ C 组逐字变换（15 档）+ D 组逐字错峰（4 档）**共 19 档在预览里完全不动**，
+          //    而成片是底座真的逐字画的。这正是用户报的"播放没有效果"。
+          //    消费方在 `PolishPreview.vue`（逐字拆 `<span>`，经 `perCharSpans`）。
+          entry.perChar = animPerChar(entry.animName)
         }
       }
     })
@@ -725,6 +732,78 @@ export function animPreset(name) {
   const key = String(name ?? '').trim().toLowerCase()
   if (!key) return undefined
   return Object.prototype.hasOwnProperty.call(ANIM_PRESETS, key) ? ANIM_PRESETS[key] : undefined
+}
+
+/** 把一档预设的**逐字 spec** 取出来（没有就 `undefined`）。
+ *
+ *  ⚠️ 与 `animMotion` 是**两条腿**，不是一回事：
+ *    * `animMotion` 摊的是**整块**那条时间函数（弹入/抖动/摇摆/底衬/打字机）；
+ *    * 本条摊的是**逐字**那条（`charTransformAt` 用的 `PerCharSpec`）。
+ *    档位可以**只**有其中一条（`tilt_*` 只有整块、`arc_*` 只有逐字），
+ *    也可以两条都有（`hop_*`：整块弹入 + 逐字错峰）。
+ *
+ *  ⚠️⚠️ **必须补齐缺省值**（2026-10-13 实测抓到的 bug）：
+ *    `ANIM_PRESETS` 里那些 spec 是**只写它用到的几个键**的（例如 `arc_up` 只有
+ *    `rotationFrom/rotationTo/spreadXEm/perCharFrames/staggerFrames`，**没有** `scaleFrom`）。
+ *    而 `charTransformAt` 按"字段一定在"写的（`mix(spec.scaleFrom, spec.scaleTo)`）
+ *    ⇒ 缺键时算出 **`NaN`** ⇒ CSS 得到 `scale(NaN)`，**整条 transform 被浏览器丢弃**
+ *    ⇒ 症状是"这一档的字**完全不动**"，而且**不报任何错**。
+ *    `readPerChar`（读 toml 那条路）本来就补缺省，所以走 toml 时看不出问题 ——
+ *    只有"直接用预设表"这条路会踩。⇒ 这里统一用 `PER_CHAR_DEFAULT` 补齐，
+ *    两条路的形状从此**同一份**。 */
+export function animPerChar(animName) {
+  const p = animPreset(animName)
+  if (!p || !p.perChar) return undefined
+  // ⚠️ 与 `readPerChar` 的缺省同源（那份常量就是"缺键时该是什么"的唯一声明）。
+  return { ...PER_CHAR_DEFAULT, ...p.perChar }
+}
+
+/** **逐字渲染装配**：把一条文字按字拆开、每个字给出它自己的 CSS `transform`。
+ *
+ *  这是 `charTransformAt` 的**唯一消费点**（预览与判据都走这里，不各写一份 ——
+ *  本仓"两份实现必然漂移"的老病）。
+ *
+ *  # 为什么会需要它（2026-10-13）
+ *
+ *  ⚠️⚠️ `charTransformAt` 之前**导出了、但全仓没有一处 import** ⇒
+ *  C 组逐字变换（15 档）+ D 组逐字错峰（4 档）**共 19 档在预览里完全不动**，
+ *  而成片是底座真的一字一字画的。用户报的「播放没有效果」就是这件事。
+ *
+ *  # 口径（三处必须一致）
+ *
+ *  * `em` → `px`：**用这一条自己的字号**（`fontPx`），与底座
+ *    `text_perchar.rs` 把 `offset_*_em` 乘上字号同口径。
+ *  * 旋转绕**字自己的中心**（调用方给 `transform-origin:center center`），
+ *    与底座 `blit_affine` 的 `c_src = 位图中心` 同口径。
+ *  * ⚠️ 没逐字档 / fps 为 0 / 只有一个字 ⇒ 返回 `null`（调用方照原样整块渲染）——
+ *    **不是**返回一堆恒等 transform：那会白白把整行拆成几十个 `<span>`
+ *    而画面一点变化都没有（还多一份排版风险）。
+ *
+ *  @returns {null | Array<{text, style}>} `null` = 不用逐字；否则每字一项，
+ *    `style` 是可直接绑到 `<span>` 上的 CSS 键值对象（**空对象 = 这一字不动**）。 */
+export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx } = {}) {
+  const s = String(text ?? '')
+  // 没档、没帧率、或只有一个字 —— 三种情况都没有"逐字"可言。
+  if (!perCharActive(perChar)) return null
+  if (!(perCharFps > 0)) return null
+  if (s.length <= 1) return null
+  const chars = Array.from(s)
+  const n = chars.length
+  const em = Number.isFinite(fontPx) && fontPx > 0 ? fontPx : 0
+  return chars.map((ch, i) => {
+    const t = charTransformAt(perChar, i, n, perCharFrame)
+    const parts = []
+    // ⚠️ 顺序与 `.text-el` 上那串**必须同形**：translate → rotate → scale。
+    //    反过来（scale 在前）会沿**旋转后的轴**缩放 ——
+    //    正是 `check-text-tilt.mjs` 记下的那个"斜着的字被拉长"的坑。
+    const tx = t.offsetXEm * em
+    const ty = t.offsetYEm * em
+    if (tx || ty) parts.push('translate(' + tx + 'px,' + ty + 'px)')
+    if (t.rotationDeg) parts.push('rotate(' + t.rotationDeg + 'deg)')
+    if (t.scale !== 1) parts.push('scale(' + t.scale + ')')
+    // ⚠️ 空 `style` 也要给（调用方统一 `:style="c.style"`），不要给 `undefined`。
+    return { text: ch, style: parts.length ? { transform: parts.join(' '), display: 'inline-block' } : {} }
+  })
 }
 
 /** 把一档预设**摊到**全局那份动效配置上（优先级：逐条 > 全局）。
@@ -1692,17 +1771,65 @@ export function subsAt(idx, t) {
         }
       }
     }
+    // ⚠️ `fullText` = **整条字幕的全文**（未折行、未截断）——
+    //    逐字的**序号与总字数必须按整条算**（与底座同口径：底座是按整行
+    //    `line.chars` 算的，而不是按折行后的某一行）。折行只影响**画在哪**，
+    //    不影响"第几个字、一共几个字"。
+    const fullText = parts.map((p) => p.text).join('')
     if (shown !== null) {
       // ⚠️ 截断后**丢掉 `hl` 分段**：逐字推进的每一帧都是"前缀"，而 `hl` 是按整条原文
       //    标的 —— 前缀落在 `hl` 段中间时该不该高亮没有定义。宁可退成整段同色
       //    （卡拉OK本来就该是"一个字一个字亮"，与 `hl` 是两套语义），也不要画出一个
       //    没人预期的半截高亮。
-      out.push({ parts: [{ text: shown, hl: false }], opacity, yOff: yOff + pulse.yOff, scale: pulse.scale })
+      out.push({ parts: [{ text: shown, hl: false }], fullText,
+                 opacity, yOff: yOff + pulse.yOff, scale: pulse.scale,
+                 ...subAnimFields(idx, s, t) })
       continue
     }
-    out.push({ parts, opacity, yOff: yOff + pulse.yOff, scale: pulse.scale })
+    out.push({ parts, fullText, opacity, yOff: yOff + pulse.yOff, scale: pulse.scale,
+               ...subAnimFields(idx, s, t) })
   }
   return out
+}
+
+/** **字幕的动效字段**（39 档，2026-10-13 补）。
+ *
+ *  # 为什么会有这个函数
+ *
+ *  ⚠️⚠️ `subsAt` 以前只返回 `parts / opacity / yOff / scale` —— **一个动效字段都没有**。
+ *  而 `PolishPreview.vue` 的字幕层也只做 `translateY + scale`。后果是：
+ *  **字幕轨的 39 档在预览里一个都不动**（文字元素那条路能动，字幕这条不能），
+ *  而成片是底座按轨级样式真的画的。用户报的「播放没有效果」里，字幕那一半就是它。
+ *
+ *  # 口径（与转译器逐字对齐）
+ *
+ *  转译器把 `anim` 当**轨级**属性（`${style}|${pos}|${anim}` 分组），
+ *  一条轨上的所有 cue 共用一档 ⇒ 这里对**单条 cue** 取它自己的 `anim` 即可
+ *  （分轨已经在转译期做完了，预览不必再分）。
+ *
+ *  ⚠️ 返回**展开用的对象**（`...spread`）⇒ 没有 `anim` 时**一个键都不加**，
+ *  消费方拿到的形状与改造前**逐字节相同**（R4）。
+ *  ⚠️ `tilt_*` / `slam_squash` 是**静态**值（不是时间函数），必须**单独带出去**
+ *  交给 `textTiltTransform` —— 与文字元素那条路同一个理由，别只摊进 `textMotion`。 */
+function subAnimFields(idx, s, t) {
+  const anim = String(s.anim ?? '').trim().toLowerCase()
+  // 没有动效档 ⇒ 什么都不加（老工程形状不变）。
+  if (!anim) return {}
+  const local = t - s.start
+  return {
+    animName: anim,
+    // ⚠️ **第一个参传 `null` 是有意的**：`animMotion` 只在"认不出这一档"时才用
+    //    那份全局配置，而上面已经把 `!anim` 挡掉了。档名认不出时 `animPreset`
+    //    返回 `undefined` ⇒ 落到"整份回落全局"；而字幕这条路**没有"全局动效"**
+    //    这个概念（转译器那边字幕轨是轨级样式）⇒ 给 `null`（= 全关）比给一份
+    //    假配置更诚实。结果是"认不出的档名 ⇒ 字幕不动"，与成片一致。
+    textMotion: animMotion(null, anim),
+    // ⚠️ 与文字元素同一条换算（`local * fps`），别写成秒 —— `charTransformAt`
+    //    的第四参是**帧**（底座 `char_transform_at` 同口径）。
+    perChar: animPerChar(anim),
+    perCharFrame: local * idx.fps,
+    perCharFps: idx.fps
+  }
 }
 
 // ---- 字幕折行（A5）—— 与 templates/index.html 的 wrapCaptionParts 同一算法 ----
@@ -1932,6 +2059,22 @@ export function getElements(idx, t) {
         //    那两个**静态**值（它们不是时间函数，所以不能只摊进 `textMotion`）。
         //    模板那边是 `textTiltTransform(tx)` 整对象传的 ⇒ 这里带了就通了。
         animName: e.animName || '',
+        // ---- P4 补：逐字（2026-10-13）----
+        //
+        // 消费方拿这两样去算每个字自己的变换：
+        //   * `perChar` —— 这一档的 `PerCharSpec`（没逐字档时是 `undefined`）；
+        //   * `perCharFrame` —— **这一条元素已经播了多少帧**（本地帧）。
+        //
+        // ⚠️⚠️ **必须换算成"帧"，不是秒**：`charTransformAt` 的第四参是
+        //    `localFrame`，与底座 `text_perchar_anim.rs::char_transform_at` 同口径
+        //    （底座那边本来就是帧）。喂秒会让 `per_char_frames=8` 的档
+        //    **几百帧才走完**（8 秒）—— 看着像"慢动作/几乎不动"。
+        // ⚠️ 与上面 `swayDegAt` 同一个换算（`local * fps`），两处别写成不同的式子。
+        // ⚠️ `idx.fps` 可能是 0（工程没给 fps）⇒ 那时恒 0，逐字停在**起始值**
+        //    （`perCharSpans` 会因 `perCharFps > 0` 不成立而直接返回 `null`）。
+        perChar: e.perChar,
+        perCharFrame: local * idx.fps,
+        perCharFps: idx.fps,
         // ⚠️ 一并带出去：判据要用它验证"逐条预设真的覆盖了全局"，
         //    而 `motionScale` / `swayDeg` 是**已求值的标量**，看不出参数来源。
         textMotion: mo
