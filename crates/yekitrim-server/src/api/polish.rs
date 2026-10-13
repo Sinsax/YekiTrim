@@ -2944,6 +2944,30 @@ mod tests {
                     "{name} 的内容是空的"
                 );
             }
+            // ⚠️⚠️ **逐条覆盖**（2026-10-13）：上面那条"非空"曾经**漏掉整类资产**。
+            //
+            // 症状（实测）：文字元素轨的 ASS 写在**片段根目录**，而这里原先按
+            // 两个写死的名字去 `--out` 旁边找 ⇒ **一条文字轨都没读过** ⇒
+            // 预览里一个文字元素都不显示，而报告/日志/`doc.json` 三者全正常。
+            // 上面那条"`subs` 非空就算过"在**只要还有字幕或弹幕**时照样绿。
+            //
+            // ⇒ 判据必须**按资产逐条要**：doc 里每一个 `kind == "subtitle"` 的资产，
+            //    都必须能在回包里按它的 **basename** 查到内容。
+            //    这才是"浏览器取不到旁写文件、内容只能由服务端带回"那条不变量的
+            //    可检形式 —— "非空"只挡住了"一条都没有"，挡不住"少了一类"。
+            for a in v["project"]["assets"].as_array().unwrap() {
+                if a["kind"].as_str() != Some("subtitle") {
+                    continue;
+                }
+                let uri = a["uri"].as_str().unwrap_or("");
+                let base = uri.rsplit(['/', '\\']).next().unwrap_or("");
+                assert!(
+                    subs.get(base).is_some(),
+                    "资产 `{}`（uri = {uri}）的内容没带回来 —— 预览里这一类文字不会显示，\
+                     而成片里是好的（底片腿按绝对 uri 自己找文件）",
+                    a["id"].as_str().unwrap_or("<无 id>")
+                );
+            }
         }
 
         // **预览代理优先**（`polish init` 生成、只给预览那条腿用 —— 出片永远用源）。
@@ -2976,6 +3000,124 @@ mod tests {
             "_proxy_720.mp4",
             "片段目录里有新鲜代理时，预览必须读代理（否则它白生成了）"
         );
+    }
+
+    /// **文字元素轨的文本必须经真 HTTP 带回来**（2026-10-13）。
+    ///
+    /// # 为什么单独一条
+    ///
+    /// 上面那条 `dhampir_project_走真_http_出转译后的工程` 用的是
+    /// `ProjectFile::example()` —— **里面一个文字元素都没有**。于是
+    /// "旁写字幕按两个写死的名字读"这个缺陷在它那里**无从暴露**
+    /// （它只有字幕/弹幕，而那两个恰好就在 `--out` 旁边）。
+    ///
+    /// 实测症状：文字元素在**成片里好好的**、`doc.json` 里轨道与资产都在、
+    /// 转译报告全绿，而 **wasm 预览里一个字都不显示** ——
+    /// 因为文字轨的 ASS 写在**片段根目录**，服务端从没读过它，
+    /// 于是 `dhampir_project_set_subtitles` 一次都没被调用（有轨、零 cue）。
+    ///
+    /// 本用例让工程**真的有**一条文字元素，从而把这条链整段压住。
+    #[tokio::test]
+    async fn dhampir_project_带文字元素的文本() {
+        let t = test_app().await;
+        let clip = t.root.join("output/clips/textprev");
+        std::fs::create_dir_all(&clip).unwrap();
+        let mut cfg = yekitrim_polish::project::ProjectFile::example();
+        // ⚠️⚠️ **必须有 `duration`**：转译器拿它算 `totalFrames`
+        //     （`frameAt(config.duration ?? 0)`），再据此推 `keepRanges`（时间线映射）。
+        //     `ProjectFile::example()` 里它是 **`None`** ⇒ `totalFrames = 0`
+        //     ⇒ 每个事件都被判成"落在被掐掉的区间里"而**整条跳过**
+        //     （那个跳过本身是对的，但会让这条用例的前提不成立）。
+        //     第一版就是这么红的：报告零 DROP、资产里一个文字轨都没有。
+        cfg.duration = Some(10.0);
+        std::fs::write(clip.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+        // ⚠️ 源媒体也要在：转译器按它探测时基/分辨率（探不到会走 NOTE 兜底，
+        //    但"文件不存在"是另一档）。这里给个假文件就够，判据不依赖真解码。
+        std::fs::write(clip.join("clip.mp4"), b"not-a-real-video").unwrap();
+        // 造一条文字元素（**必须经 PUT**：`clips[].events` 是整份反序列化的，
+        // 直接改文件反而绕过了"编辑器存下来的形状"这条现实约束）。
+        let body = serde_json::json!({
+            "dir": clip.to_string_lossy(),
+            "segments": [{
+                "start": 0.0,
+                "end": 5.0,
+                "events": [{
+                    "type": "element",
+                    "kind": "text",
+                    "time": 0.5,
+                    "end": 3.0,
+                    "text": "预览可见",
+                    "style": "hook",
+                    "pos": "center",
+                    "color": "pink"
+                }]
+            }]
+        })
+        .to_string();
+        let res = t
+            .call(
+                t.req("PUT", "/polish/project")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        // 不同版本的这个接口形状可能不同 —— 不认就**显式报错**，别写成"失败也通过"。
+        let put_status = res.status();
+        if put_status != StatusCode::OK {
+            let detail = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            panic!("保存文字元素应当成功，实际 {put_status}：{}", String::from_utf8_lossy(&detail));
+        }
+
+        let res = t
+            .call(
+                t.req("POST", "/polish/dhampir-project")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::json!({ "dir": clip.to_string_lossy() }).to_string()))
+                    .unwrap(),
+            )
+            .await;
+        let status = res.status();
+        let v = body_json(res).await;
+        assert_eq!(status, StatusCode::OK, "转译应当成功：{v}");
+
+        // ① 产物里**确实有一条文字轨资产**（前提：转译器把文字元素转出来了）。
+        let text_assets: Vec<&serde_json::Value> = v["project"]["assets"]
+            .as_array()
+            .expect("assets 是数组")
+            .iter()
+            .filter(|a| {
+                a["kind"].as_str() == Some("subtitle")
+                    && a["uri"].as_str().unwrap_or("").contains("dhampir-text_")
+            })
+            .collect();
+        assert!(
+            !text_assets.is_empty(),
+            "工程里没有文字轨资产 —— 转译侧就没接上，这条用例的前提不成立：{v}"
+        );
+
+        // ② **每一条的文本都必须带回来** —— 这就是本次修的缺陷本身。
+        let subs = v["subtitles"].as_object().expect("回包要带 subtitles");
+        for a in &text_assets {
+            let uri = a["uri"].as_str().unwrap_or("");
+            let base = uri.rsplit(['/', '\\']).next().unwrap_or("");
+            let text = subs
+                .get(base)
+                .unwrap_or_else(|| panic!(
+                    "文字轨 `{base}` 的文本没带回来 —— 预览里这条文字不会显示（成片里是好的）：{subs:?}"
+                ))
+                .as_str()
+                .unwrap_or("");
+            assert!(!text.is_empty(), "文字轨 `{base}` 的内容是空的");
+        }
+
+        // ③ 内容真的是那条文字（不是读到了别的文件）。
+        let any_has_text = subs.values().any(|t| {
+            t.as_str().map(|s| s.contains("预览可见")).unwrap_or(false)
+        });
+        assert!(any_has_text, "带回来的字幕里找不到那条文字元素的内容：{subs:?}");
+
+        let _ = std::fs::remove_dir_all(&clip);
     }
 
     /// **wasm 资源转发**：`engine.js` 取得到、`.wasm` 的 MIME 正确、路径穿越被挡。
@@ -3319,8 +3461,93 @@ fn element_color_round_trips_through_put() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **旁写字幕要按 doc 声明的资产读全**（2026-10-13，修"预览里没有文字元素"）。
 ///
-/// 为什么单独钉：`render/bgm.rs` 的 `BgmConfig` / `bgm_filter_chain` / `duck_gain_expr`
+/// # 这条钉的是什么
+///
+/// 原先只按**两个写死的名字**在 `--out` 旁边找，而**文字元素轨的 ASS 在片段根目录**
+/// ⇒ 一条都没读过 ⇒ wasm 预览里文字元素**一个字都不显示**（成片正常、报告全绿）。
+///
+/// 这里直接打 `read_side_subtitles` 本体（它的输入就是"doc 文本 + 产物路径"），
+/// 所以不需要真的跑 node 转译器 —— 判据要压的正是"**按谁的说法去找文件**"这件事。
+#[test]
+fn side_subtitles_follow_the_doc_not_a_hardcoded_name_list() {
+    let root = std::env::temp_dir().join(format!("yekitrim-side-subs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // 两个**不同**的目录：字幕/弹幕在 `--out` 旁边，文字轨在片段根 —— 复刻真实现状。
+    let scratch = root.join("scratch");
+    let clip = root.join("clip");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&clip).unwrap();
+
+    std::fs::write(scratch.join("dhampir-subtitle.srt"), "1\n00:00:01,000 --> 00:00:02,000\n字幕\n").unwrap();
+    std::fs::write(scratch.join("dhampir-danmaku.ass"), "[Script Info]\n").unwrap();
+    // ⚠️ 名字里带档位与颜色 —— 与转译器实际写出来的形状一致。
+    let text_base = "dhampir-text_hook_center_pink.ass";
+    std::fs::write(clip.join(text_base), "[Script Info]\nStyle: Default\n").unwrap();
+    let translated = scratch.join("_dhampir_project_test.json");
+    std::fs::write(&translated, "{}").unwrap();
+
+    // doc 里三条 `kind == "subtitle"` 资产，**uri 是绝对路径**（与真产物同款）。
+    let doc = serde_json::json!({
+        "assets": [
+            { "id": "dhampir-subtitle.srt", "kind": "subtitle",
+              "uri": scratch.join("dhampir-subtitle.srt").to_string_lossy() },
+            { "id": "dm", "kind": "subtitle",
+              "uri": scratch.join("dhampir-danmaku.ass").to_string_lossy() },
+            { "id": "text_hook_center_pink", "kind": "subtitle",
+              "uri": clip.join(text_base).to_string_lossy() },
+            // 非字幕资产**不许**被读进来（视频/贴纸那些读了就是白花 IO）。
+            { "id": "clip.mp4", "kind": "video", "uri": clip.join("clip.mp4").to_string_lossy() }
+        ]
+    })
+    .to_string();
+
+    let subs = read_side_subtitles(&doc, &translated);
+    let names: Vec<&str> = subs.iter().map(|(n, _)| n.as_str()).collect();
+
+    // ① **文字轨必须在**（这一条就是本次修的缺陷；改动前它是红的）。
+    assert!(
+        names.contains(&text_base),
+        "文字元素的 ASS 没被读进来（正是\"预览里没有文字元素\"那条缺陷）：{names:?}"
+    );
+    // ② 字幕与弹幕照旧（零回归）。
+    assert!(names.contains(&"dhampir-subtitle.srt"), "字幕没读进来：{names:?}");
+    assert!(names.contains(&"dhampir-danmaku.ass"), "弹幕没读进来：{names:?}");
+    // ③ 只认 `kind == "subtitle"` —— 视频资产不该出现在这张表里。
+    assert!(!names.contains(&"clip.mp4"), "非字幕资产被当成字幕读了：{names:?}");
+    // ④ 键是 **basename**（前端按 uri 的 basename 查表，两处必须同口径）。
+    assert!(
+        names.iter().all(|n| !n.contains('/') && !n.contains('\\')),
+        "键必须是纯文件名（前端按 basename 查表）：{names:?}"
+    );
+    // ⑤ 真去读了内容（不是只报了个名字）。
+    let text_ass = subs.iter().find(|(n, _)| n == text_base).unwrap();
+    assert!(text_ass.1.contains("Style: Default"), "内容没真的读出来");
+
+    // ⑥ **doc 没有资产清单时回落到老路**（行为与改造前逐字节相同）。
+    //
+    //    ⚠️ 这条不是装饰：老产物 / 结构异常时若什么都不读，就是"预览里突然
+    //    连字幕都没了"，而那种退化正是最容易被当成"另一个 bug"的形状。
+    let legacy = read_side_subtitles("{\"timeline\":{}}", &translated);
+    let legacy_names: Vec<&str> = legacy.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        legacy_names.contains(&"dhampir-subtitle.srt") && legacy_names.contains(&"dhampir-danmaku.ass"),
+        "doc 里没有 assets 时，必须回落到那两个固定名字：{legacy_names:?}"
+    );
+
+    // ⑦ 读不出来的文件**不中断**别的（这条片段没有弹幕是常态）。
+    std::fs::remove_file(scratch.join("dhampir-danmaku.ass")).unwrap();
+    let partial = read_side_subtitles(&doc, &translated);
+    let partial_names: Vec<&str> = partial.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        partial_names.contains(&text_base) && partial_names.contains(&"dhampir-subtitle.srt"),
+        "一个旁写文件读不出来，不许拖垮其余那些：{partial_names:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// 早就写好了，出片链路也真的在调它们 —— **缺的只是"写配置的入口"**。
 /// 而本函数是**逐字段白名单**，`bgm` 不在名单里时：前端（乃至手写 API）发过来被**静默丢掉**，
 /// PUT 照旧回 `{"ok":true}`，用户**没有任何办法**打开 BGM。
@@ -4543,16 +4770,7 @@ pub(super) async fn polish_dhampir_project(
             )?;
             let text = std::fs::read_to_string(&translated)
                 .map_err(|e| anyhow::anyhow!("读不出转译产物 {}：{e}", translated.display()))?;
-            let mut subs: Vec<(String, String)> = Vec::new();
-            for name in ["dhampir-subtitle.srt", "dhampir-danmaku.ass"] {
-                let side = translated.with_file_name(name);
-                match std::fs::read_to_string(&side) {
-                    Ok(content) => subs.push((name.to_string(), content)),
-                    // 缺一个不是错误（这份片段可能就没有弹幕）—— 但要**记下来**，
-                    // 免得"预览里没字幕"又变成一次静默。
-                    Err(e) => tracing::warn!("读不出旁写字幕 {}：{e}", side.display()),
-                }
-            }
+            let subs = read_side_subtitles(&text, &translated);
             // 草稿用完就清（与出片那条同一个纪律：只删自己造的）。
             // ⚠️ 传**本次产物路径**（`translated`），不是目录 —— 草稿名带独占后缀
             // （见 `dhampir::scratch_tag`），按目录重算会一个都删不掉；
@@ -4585,6 +4803,111 @@ pub(super) async fn polish_dhampir_project(
         "subtitles": subtitles,
         "translate_report": translate_report,
     }))
+}
+
+/// 读回**全部旁写字幕**（内容, 文件名）—— 预览那条腿靠它把文本喂给 wasm。
+///
+/// # 为什么不能按文件名猜（2026-10-13 修的真缺陷）
+///
+/// 这里原先是写死的两个名字：
+///
+/// ```ignore
+/// for name in ["dhampir-subtitle.srt", "dhampir-danmaku.ass"] {
+///     let side = translated.with_file_name(name);   // ← 只在 --out 旁边找
+/// ```
+///
+/// 而**文字元素那条轨的 ASS 不在那个目录**：转译器把它写在**片段根目录**
+/// （`tools/polish-to-dhampir.mjs` 里那句 `join(clipDir, \`dhampir-${id}.ass\`)`，
+/// 而字幕/弹幕走 `dirname(outPath)`）。于是：
+///
+/// * **出片腿（`dhampir.exe`）是对的** —— 它按 `asset.uri`（**绝对路径**）自己找文件；
+/// * **wasm 预览腿整条文字不显示** —— 浏览器没有文件系统，文本只能由这里读出来喂。
+///   名字没读过 ⇒ `dhampir_project_set_subtitles` 从没被调用 ⇒ 引擎手里
+///   **有轨、零 cue** ⇒ 一个字都不画。
+///
+/// 症状是"预览里没有文字元素，而**报告、日志、`doc.json` 三者全都正常**" ——
+/// 极难归因（成片里那些字好好的）。
+///
+/// # 为什么改成「读 doc 自己声明的资产」而不是"多列几个名字"
+///
+/// 文字轨的文件名里**带着档位、动效、颜色**（`dhampir-text_<样式>_<档>[_<动效>][_<颜色>].ass`），
+/// 规则注定会继续长。再写一份名字清单就是第二份会漂的实现 ——
+/// 而漂了的表现又是静默（少一条轨 = 那类文字在预览里不出现）。
+/// **`assets[].uri` 是转译器自己写的绝对路径**，照它读永远与写入侧同源。
+///
+/// # 键用**文件名**、不是 `asset.id`
+///
+/// 前端 `PolishPreview.vue` 按 `uri` 的 basename 查表
+/// （`String(a.uri).split(/[\\\\/]/).pop()`）。两处口径必须一致 ——
+/// 用 `id` 会要求把前端也改一遍，换不来任何东西（两者在本仓产物里恰好同串）。
+///
+/// # 三态都要照顾到
+///
+/// * 读不出来 ⇒ `warn!` **点名文件**、不中断（与"缺一个不是错误"同口径：
+///   这份片段可能就没有弹幕/没有文字元素）；
+/// * doc 里**没有** `assets`（老产物 / 结构异常）⇒ 回落到那两个固定名字，
+///   行为与改造前**逐字节相同**；
+/// * 同一 basename 出现两次 ⇒ 后写覆盖（map 语义），本仓产物不会发生。
+fn read_side_subtitles(doc_json: &str, translated: &std::path::Path) -> Vec<(String, String)> {
+    /// 老的固定两个名字 —— **只在 doc 读不出资产时**当兜底。
+    const LEGACY_NAMES: [&str; 2] = ["dhampir-subtitle.srt", "dhampir-danmaku.ass"];
+
+    let read_one = |path: &std::path::Path| -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => Some(content),
+            Err(e) => {
+                tracing::warn!("读不出旁写字幕 {}：{e}", path.display());
+                None
+            }
+        }
+    };
+
+    let declared: Vec<String> = serde_json::from_str::<serde_json::Value>(doc_json)
+        .ok()
+        .and_then(|doc| {
+            doc.get("assets").and_then(|a| a.as_array()).map(|assets| {
+                assets
+                    .iter()
+                    // ⚠️ 只认 `kind == "subtitle"`：字幕、弹幕、文字元素**三者都是这一档**
+                    //    （文字元素不是新 kind，它复用的就是字幕轨）。
+                    .filter(|a| a.get("kind").and_then(|k| k.as_str()) == Some("subtitle"))
+                    .filter_map(|a| a.get("uri").and_then(|u| u.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+
+    if declared.is_empty() {
+        // doc 里没有资产清单（老产物 / 结构异常）：照老路走，**行为不变**。
+        return LEGACY_NAMES
+            .iter()
+            .filter_map(|name| {
+                let side = translated.with_file_name(name);
+                read_one(&side).map(|content| ((*name).to_string(), content))
+            })
+            .collect();
+    }
+
+    let mut subs: Vec<(String, String)> = Vec::new();
+    for uri in declared {
+        // 键 = `uri` 的 basename（与前端同口径，见上面那段注释）。
+        // ⚠️ Windows 的 `uri` 是 `F:\a\b.ass`、POSIX 是 `/a/b.ass`
+        //    —— 两种分隔符都要切（`split(['/', '\\'])`）。
+        let Some(name) = uri
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+        else {
+            tracing::warn!("旁写字幕的 uri 取不出文件名（{uri}）—— 这条喂不进预览");
+            continue;
+        };
+        if let Some(content) = read_one(std::path::Path::new(&uri)) {
+            subs.push((name, content));
+        }
+    }
+    subs
 }
 
 /// 贴纸逐帧 PNG 的**进程内缓存**。
