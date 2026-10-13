@@ -655,9 +655,13 @@ export const ANIM_PRESETS = {
   //     预览这里也只能做到"一次较缓的脉冲" —— 与成片**一致地**不完整，
   //     好过预览与成片不一致。底座能力到位后两处一起补。
   heartbeat: {
-    scaleInFrom: 1.0,
-    scaleInPeak: 1.14,
-    scaleInMs: 480
+    // ⚠⚠ 曾经这里是单峰占位（`scaleInFrom/Peak/Ms`），现在换成真的双峰参数。
+    //    两档**不同名**：旧三个是 T1 弹入的字段，混用会让"心跳"退化成一次弹入
+    //    —— 而那正是本档之前的占位行为（用户要的是"扑通扑通"）。
+    // ⚠ 与转译器 `ANIM_PRESETS.heartbeat` 同名同值（驼峰 vs 蛇形那层）。
+    heartbeatPeaksMs: [0, 180, 300, 480],
+    heartbeatAmp: 1.14,
+    heartbeatCycleMs: 1000
   }
 }
 
@@ -906,6 +910,11 @@ export function animMotion(cfg, animName, transitionName) {
     scaleInFrom: 1.0,
     scaleInPeak: 1.0,
     scaleInMs: 0,
+    // ⚠ 心跳也要重置：不然"选了别的档"会**继承全局那份心跳**，
+    //   两种动效叠在一起而用户以为只选了一档。
+    heartbeatPeaksMs: null,
+    heartbeatAmp: 1.0,
+    heartbeatCycleMs: 0,
     shakePx: 0,
     shakeHz: 18.0,
     swayDeg: 0,
@@ -1303,6 +1312,60 @@ function backOut3(p) {
   const t = Math.min(1, Math.max(0, p))
   const u = t - 1
   return u * u * (4 * u + 3) + 1
+}
+
+/** **心跳的双峰脉冲曲线**（2026-10-14，用户：
+ *  「**动效**需要增加一个心跳，扑通扑通的心跳感」）。
+ *
+ *  形状 = **两次快速脉冲 + 停顿**，循环（`咚·咚……咚·咚`）。
+ *  返回值是**缩放倍率**（1.0 = 基线）。
+ *
+ *  ⚠⚠ **为什么必须单独写一个函数，不能复用 `backOut3`**：
+ *     `backOut3`（s=3）是**单次过冲**曲线 —— 数学上**只有一个**极值点
+ *     （导数在 `[0,1]` 内只穿零一次）。「扑通扑通」要的是**两个**峰
+ *     ⇒ 单峰曲线**表达不了**，这**不是参数没调好，是函数形状不对**。
+ *
+ *  ⚠ 曲线**必须逐帧可复现**（纯 `ms` 的函数、无累积状态）—— 与 T4 抖动同纪律：
+ *    预览要能任意 seek，带状态的曲线一 seek 就与成片分叉。
+ *
+ *  # 节奏（与转译器 `ANIM_PRESETS.heartbeat` 的 `heartbeatPeaksMs` **同源**）
+ *
+ *  一个周期 `cycleMs` 内两个峰：
+ *    `0ms`     第 1 峰（收缩最紧）
+ *    `180ms`   回落到基线
+ *    `300ms`   第 2 峰（比第 1 峰**弱一点**）
+ *    `480ms`   回到基线，**剩下 520ms 停顿**（这就是“扑通……扑通”的留白）
+ *
+ *  ⚠ 第二峰**必须比第一峰弱**：两个等高的峰看着像"抖动"而不是心跳。
+ *
+ *  @param {number} ms 相对**事件起点**的毫秒数（< 0 返回基线）
+ *  @param {Array<number>} peaksMs 两个峰的起点（相对周期起点）
+ *  @param {number} amp 第一峰的倍率（如 1.14）
+ *  @param {number} cycleMs 一个周期的毫秒数
+ */
+export function heartbeatScaleAt(ms, peaksMs, amp, cycleMs) {
+  const p = Array.isArray(peaksMs) ? peaksMs : []
+  const p1 = Number(p[0])
+  const p2 = Number(p[1])
+  const a = Number(amp)
+  const cyc = Number(cycleMs)
+  if (!Number.isFinite(p1) || !Number.isFinite(p2) || !Number.isFinite(a) ||
+      !Number.isFinite(cyc) || cyc <= 0 || a <= 1 || p2 <= p1) {
+    return 1
+  }
+  const t = Number(ms)
+  if (!Number.isFinite(t) || t < 0) return 1
+  const fallMs = p2 - p1          // 两峰**同宽**（用同一个回落时长）
+  const inCycle = t % cyc
+  if (inCycle >= p1 && inCycle < p1 + fallMs) {
+    return 1 + (a - 1) * backOut3((inCycle - p1) / fallMs)
+  }
+  // ⚠ 第 2 峰弱 30%（见上面"为什么必须更弱"）。
+  const weak = 1 + (a - 1) * 0.7
+  if (inCycle >= p2 && inCycle < p2 + fallMs) {
+    return 1 + (weak - 1) * backOut3((inCycle - p2) / fallMs)
+  }
+  return 1
 }
 
 /** T4 抖动的**逐帧偏移**（文档像素）。**逐字照抄** `text_motion.rs::text_shake_px`。
@@ -2131,7 +2194,16 @@ export function getElements(idx, t) {
       //   写成"窗口外给 peak"会让字**一直大 15%**，看着像"字号配错了"。
       // ⚠️ 只有 `scaleInMs > 0` 才开（另两个端点只是端点）。
       let motionScale = 1
-      if (mo && mo.scaleInMs > 0 && local >= 0) {
+      // ---- 心跳（双峰）：**独立于 T1 单峰那条路**（2026-10-14）----
+      //
+      // ⚠ 单峰曲线（`backOut3`）**数学上表达不了双峰**（见 `heartbeatScaleAt` 的文档），
+      //   所以这档**不走** `scaleInMs` 那个窗口，而是走自己的周期函数。
+      // ⚠ 边界：`local >= 0`（事件起点之前不跳）—— 与 T1 同一条。
+      if (mo && mo.heartbeatAmp > 1 && local >= 0) {
+        motionScale = heartbeatScaleAt(
+          local * 1000, mo.heartbeatPeaksMs, mo.heartbeatAmp, mo.heartbeatCycleMs,
+        )
+      } else if (mo && mo.scaleInMs > 0 && local >= 0) {
         const win = mo.scaleInMs / 1000
         if (local < win) {
           motionScale = mo.scaleInFrom + (mo.scaleInPeak - mo.scaleInFrom) * backOut3(local / win)

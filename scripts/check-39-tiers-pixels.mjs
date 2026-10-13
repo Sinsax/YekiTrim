@@ -444,10 +444,15 @@ for (const tier of TIERS) {
   // ⚠️ **这 7 档仍然要过 ①（有墨）与 ③（各档不同）** —— 只是不要求 ②。
   //    把它们写成"豁免"而不是"把阈值调低到 0.005"，是因为后者会让
   //    **真正的空壳档**（比如参数被清零的 `hop_std`）也混过去。
+  // ⚠⚠ 2026-10-14（三轴收敛）：名单里原来是**已经被删掉的 39 档旧名**
+  //   （`tilt_std/sm/rev` / `fade_only` / `vtext_thin/bold/shrink`）⇒ 豁免**一档也没命中**，
+  //   而新名的四档（`tilt` / `vtext` / `fade` / `perchar_small`）反而被当成“该动而没动”报红。
+  //   ⇒ 改成**收敛后的名字**（它们就是同一批设计）。
   const STATIC_BY_DESIGN = new Set([
-    'tilt_std', 'tilt_sm', 'tilt_rev',
-    'fade_only',
-    'vtext_thin', 'vtext_bold', 'vtext_shrink',
+    'tilt',            // 静态倾角（一个常数）—— 是**样式**不是动效
+    'fade',            // 「只淡入淡出」，**设计上就没有位移/缩放**
+    'vtext',           // 纯排版方向（竖排）
+    'perchar_small',   // `scaleSpread` 是**稳态**（各字大小不同但不变）
   ]);
   if (STATIC_BY_DESIGN.has(tier)) {
     // 「设计上静态」的档：只要求它在窗口里**别乱变**（否则说明有意外动作）。
