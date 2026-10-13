@@ -350,10 +350,6 @@
                 <label>文字内容</label>
                 <input :value="selItem.text || ''" placeholder="要显示的字"
                        @input="selItem.text = $event.target.value">
-                <label>样式</label>
-                <select :value="selItem.style || 'comment'" @change="selItem.style = $event.target.value">
-                  <option v-for="s in TEXT_STYLES" :key="s.value" :value="s.value">{{ s.label }}</option>
-                </select>
                 <!-- ============ 两个**独立可叠加**的设置 ============
                      用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
                      即「竖排 **+** 抖动」两个都要成立，不是二选一。
@@ -369,10 +365,18 @@
                      ⚠️ **认不出的档名必须仍然显示出来**（下面那两条 `v-if`）：
                         它若被悄悄归成"不动效"，用户改一下别的字段就把那个错档名
                         **永久抹掉**了 —— 而报告里的 CLAMP 已经告诉过他这一条不会动，
-                        得让他看得见是哪一条。 -->
-                <label>样式（形态）</label>
+                        得让他看得见是哪一条。
+
+                     ⚠️⚠️ **`selItem.style`（字幕样式，hook/chapter/comment/count）
+                        那个下拉已经删掉**，不是漏了。用户口径：那套四档**早已被否决**
+                        （2026-10-13），现在只有「样式（形态）× 动效」这一对槽位。
+                        **别把它加回来** —— 它被否决过一次，又被人看见挂在面板上，
+                        等于"把否定的方案留在上面"。底下 `TEXT_STYLES` 已一并删除；
+                        ⚠️ `Event.style` **这个字段还在**（字幕层仍用它），
+                        只是不再由这个面板提供入口。 -->
+                <label>样式</label>
                 <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)">
-                  <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                  <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ kindLabelOn('style', k) }}</option>
                   <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
                 </select>
                 <!-- 细分：认不出档名时 `styleVariants` 是空数组 ⇒ 这个下拉整条不渲染 -->
@@ -381,14 +385,13 @@
                     <option v-for="a in styleVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
                   </select>
                 </template>
-                <div v-if="styleHint" class="hint">{{ styleHint }}</div>
                 <div v-if="selItem.style_anim && !ANIM_KNOWN.includes(selItem.style_anim)" class="hint">
-                  这个样式档名不认识。
+                  这个档名不认识。
                 </div>
 
-                <label>动效（随时间）</label>
+                <label>动效</label>
                 <select :value="effectKind" @change="setKindOnAxis('effect', $event.target.value)">
-                  <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ k.label }}</option>
+                  <option v-for="k in kindsOnAxis('effect')" :key="k.kind" :value="k.kind">{{ kindLabelOn('effect', k) }}</option>
                   <option v-if="effectKind === ''" value="">未知档（{{ selItem.effect_anim }}）</option>
                 </select>
                 <template v-if="effectVariants.length > 1">
@@ -396,15 +399,12 @@
                     <option v-for="a in effectVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
                   </select>
                 </template>
-                <div v-if="effectHint" class="hint">{{ effectHint }}</div>
                 <div v-if="selItem.effect_anim && !ANIM_KNOWN.includes(selItem.effect_anim)" class="hint">
-                  这个动效档名不认识，成片里不会动。
+                  这个档名不认识，成片里不会动。
                 </div>
                 <div v-if="selItem.anim && !selItem.style_anim && !selItem.effect_anim" class="hint">
                   正在用旧档「{{ selItem.anim }}」—— 上面选任一栏都会改用它。
                 </div>
-                <div class="hint">两栏可同时设（如「竖排 + 抖动」）。位置 x/y 由后处理算（每次重跑覆盖）。</div>
-                <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
               </template>
 
               <!-- 贴纸支：复用已有的贴纸选择器 -->
@@ -413,7 +413,6 @@
                                :pack="selItem.text || ''" :tag="selItem.sticker_tag || ''"
                                :name="selItem.name || ''" :source="selItem.source || ''"
                                @pick="onStickerPick" />
-                <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
               </template>
             </template>
 
@@ -422,7 +421,6 @@
                              :pack="selItem.keyword || ''" :tag="selItem.sticker_tag || ''"
                              :name="selItem.name || ''" :source="selItem.source || ''"
                              @pick="onStickerPick" />
-              <div class="hint">位置 x/y 由后处理算（每次重跑覆盖）。</div>
             </template>
 
             <!-- 覆盖层 -->
@@ -880,17 +878,6 @@ const FX_TYPES = EFFECTS.filter((e) => (e.lane ?? 'fx') === 'fx').map((e) => e.i
 /** 类型中文名（只用于展示；可选性由轨道决定，见 `isFxType`）。 */
 const TYPE_LABELS = Object.fromEntries(EFFECTS.map((e) => [e.id, e.label]))
 
-/** §5 E4a 文字元素的四档样式。**必须与出片侧 `TEXT_STYLE_FALLBACK` 同集合**
- *  （`tools/polish-to-dhampir.mjs`：hook / chapter / comment / count）——
- *  这里是**选项**，那里是**权威**；漏一档的症状是"界面里选不到那个样式"。
- *  ⚠️ 数值（字号/描边/颜色）**不在这里抄一份**：那是出片侧的活，界面上抄了就会漂。 */
-const TEXT_STYLES = [
-  { value: 'hook', label: '钩子（最大字）' },
-  { value: 'chapter', label: '章节' },
-  { value: 'comment', label: '注释（默认）' },
-  { value: 'count', label: '计数' }
-]
-
 /** **39 档动效**（`docs/plan/text-styles-39-完成计划.md` §一·五，2026-10-13）。
  *
  *  # 两级结构：**种类（kind）→ 细分（variant）**（2026-10-13 改）
@@ -906,23 +893,27 @@ const TEXT_STYLES = [
  *     用正则从这里扒出全部档名，与转译器 `ANIM_PRESETS`（权威）逐档对拍。
  *     改成别的形状会让那条对拍**静默失效**（扒不到 ⇒ 两侧都空 ⇒ 全绿）。
  *
- *  ⚠️ 空串 = **不动效**（不写 `anim` 键）。必须**排第一** ——「不选」是最常见的状态
- *  （老工程与后处理生成的事件都没有这个键）。 */
+ *  ⚠️ 空串 = **不设**（不写那个键）。必须**排第一** ——「不选」是最常见的状态
+ *  （老工程与后处理生成的事件都没有这个键）。
+ *
+ *  ⚠️ **这一项只在「动效」那一栏有意义**（"不额外加动效"）。**样式栏不列它** ——
+ *     见 `kindsOnAxis` 的注释：形态那一栏的缺省是"不清空"（保留原档），
+ *     不是"选一个叫'不动效'的形状"。 */
 const ANIM_KINDS = [
-  // ---- 不动效：单一状态，没有细分 ----
+  // ---- 不设 / 清除：单一状态，没有细分 ----
+  //  ⚠️ `label` 是**动效栏**的叫法（「不设」= 不额外加动效）；样式栏显示
+  //     「清除」（见 `KIND_LABEL_ON`）—— 两栏的"空"不是同一件事。
   {
     kind: 'none',
-    label: '不动效',
+    label: '不设',
     axis: 'none',
-    hint: '这一条文字不做任何动效',
-    variants: [{ value: '', label: '不动效' }]
+    variants: [{ value: '', label: '不设' }]
   },
   // ===== A 组：整块变换 =====
   {
     kind: 'tilt',
     label: '倾斜',
     axis: 'style',
-    hint: '整块歪一个角度（静止的姿态，不是动效）',
     variants: [
       { value: 'tilt_std', label: '标准' },
       { value: 'tilt_sm', label: '小角度' },
@@ -934,7 +925,6 @@ const ANIM_KINDS = [
     kind: 'shake',
     label: '抖动',
     axis: 'effect',
-    hint: '整块左右快速抖',
     variants: [
       { value: 'shake_std', label: '标准' },
       { value: 'shake_slow', label: '慢频' },
@@ -945,7 +935,6 @@ const ANIM_KINDS = [
     kind: 'sway',
     label: '摇摆',
     axis: 'effect',
-    hint: '整块像钟摆一样来回摆',
     variants: [
       { value: 'sway_std', label: '标准' },
       { value: 'sway_lg', label: '大角度' },
@@ -956,7 +945,6 @@ const ANIM_KINDS = [
     kind: 'slam',
     label: '砸入',
     axis: 'both',
-    hint: '整块从上方砸进来',
     variants: [
       { value: 'slam_std', label: '标准' },
       { value: 'slam_lg', label: '重' },
@@ -967,7 +955,6 @@ const ANIM_KINDS = [
     kind: 'shrink_in',
     label: '收缩',
     axis: 'effect',
-    hint: '整块收缩着出现 / 退场',
     variants: [
       { value: 'shrink_in_std', label: '标准' },
       { value: 'fade_only', label: '只淡出' },
@@ -978,7 +965,6 @@ const ANIM_KINDS = [
     kind: 'pop',
     label: '弹出',
     axis: 'both',
-    hint: '整块弹一下出现',
     variants: [
       { value: 'pop_std', label: '标准' },
       { value: 'pop_soft', label: '软' }
@@ -991,7 +977,6 @@ const ANIM_KINDS = [
     kind: 'arc',
     label: '逐字弧形',
     axis: 'both',
-    hint: '每个字绕自己的中心转，合成一条拱 / 波 / 垂',
     variants: [
       { value: 'arc_up', label: '上拱' },
       { value: 'arc_wave', label: '波浪' },
@@ -1002,7 +987,6 @@ const ANIM_KINDS = [
     kind: 'size',
     label: '逐字大小字',
     axis: 'style',
-    hint: '某一个位置的字被放大（重音）',
     variants: [
       { value: 'size_last', label: '末字重音' },
       { value: 'size_first', label: '首字重音' },
@@ -1013,7 +997,6 @@ const ANIM_KINDS = [
     kind: 'scatter',
     label: '逐字抖散',
     axis: 'both',
-    hint: '每个字按序号往不同方向散开',
     variants: [
       { value: 'scatter_sm', label: '轻' },
       { value: 'scatter_lg', label: '重' },
@@ -1024,7 +1007,6 @@ const ANIM_KINDS = [
     kind: 'shrink',
     label: '逐字变小',
     axis: 'style',
-    hint: '每个字依次变小',
     variants: [
       { value: 'shrink_desc', label: '递减' },
       { value: 'shrink_drop', label: '骤降' },
@@ -1035,7 +1017,6 @@ const ANIM_KINDS = [
     kind: 'grow',
     label: '逐字放大',
     axis: 'style',
-    hint: '每个字依次放大',
     variants: [
       { value: 'grow_asc', label: '递增' },
       { value: 'grow_burst', label: '爆开' },
@@ -1050,7 +1031,6 @@ const ANIM_KINDS = [
     kind: 'hop',
     label: '逐字错峰',
     axis: 'both',
-    hint: '每个字依次弹出 / 跳起（错峰，不是同时）',
     variants: [
       { value: 'pop_perchar', label: '弹出 · 逐字' },
       { value: 'hop_std', label: '跳起 · 标准' },
@@ -1066,7 +1046,6 @@ const ANIM_KINDS = [
     kind: 'vtext',
     label: '竖排',
     axis: 'style',
-    hint: '整条轨改成竖排（改的是排版方向，不是单个字的变换）',
     variants: [
       { value: 'vtext_thin', label: '细楷' },
       { value: 'vtext_bold', label: '粗体' },
@@ -1128,11 +1107,36 @@ const ANIM_KIND_OF = new Map(
 //    ⚠️ 最容易判错的是 `pop_perchar` / `hop_*`：名字像"动"，但它们的 `perChar`
 //       是**形态字段**（`offsetY*` / `scale*`）⇒ `both`，**两边都要有**。
 
-/** 某一轴上的全部**种类**（含"无"那一项）。`both` 的类**两条轴都给**。 */
-const kindsOnAxis = (axis) => ANIM_KINDS.filter((k) => {
-  if (k.kind === 'none') return true          // "不动效"两条轴都作缺省项
-  return k.axis === axis || k.axis === 'both'
-})
+/** 某一轴上的全部**种类**。`both` 的类**两条轴都给**。
+ *
+ *  ⚠️ **"不设"（`kind === 'none'`）在样式栏渲染成「清除」，在动效栏渲染成「不设」**
+ *     —— 见模板与 `noneLabelOn`。
+ *
+ *     第一版把它当"两条轴都作缺省项"、两栏都叫「不动效」，说明还写着
+ *     "这一条文字不做任何动效" ⇒ 用户看到的「样式」栏第一项是「不动效」 ——
+ *     一个**形状**的下拉里出现了"什么都不做"，文案还自己在说"动效"，
+ *     而且**像被否决的那套方案又回来了**。用户当场指出这件事。
+ *
+ *     ⇒ 两栏的"空"语义**本来就不一样**：
+ *       · 动效栏的"空" = **不额外加动效** —— 这就该叫「不设」，是一个效果档位；
+ *       · 样式栏的"空" = **清掉已选的形状** —— 那是一个**操作**，不是一档效果，
+ *         所以它叫「清除」，且**排在最后**（"清除"不该是列表的第一项）。
+ *     ⚠️ 两栏都要留这一项：样式栏若没有它，用户**选错了就再也清不掉**
+ *        （只能靠手改 toml）—— 这是"删掉「不动效」"最容易掉进去的坑。 */
+const kindsOnAxis = (axis) => ANIM_KINDS
+  // ⚠️ `axis === 'none'` 那一项（「不设」/「清除」）**两栏都进**。
+  .filter((k) => k.kind === 'none' || k.axis === axis || k.axis === 'both')
+  // ⚠️ **"空"那一项永远排最后** —— 「清除」出现在选项列表第一项时，
+  //    用户会把它当成一个正常的形状档位来读（他就是这么读的）。
+  .sort((a, b) => (a.kind === 'none' ? 1 : 0) - (b.kind === 'none' ? 1 : 0))
+
+/** 某一栏里，一个种类**显示**成什么。只有"空"那一项按轴分开叫法。
+ *
+ *  · 动效栏 → 「不设」（不额外加动效，一个有意为之的选择）；
+ *  · 样式栏 → 「清除」（把已选的形状去掉 —— 这是**操作**，不是形状）。
+ *  ⚠️ 别把两栏都写成「不设」/「不动效」：样式栏那句会让人以为
+ *     "有一个形状叫做不作形状"，而且「不动效」三个字里还带个"动效"。 */
+const kindLabelOn = (axis, k) => (k.kind === 'none' && axis === 'style' ? '清除' : k.label)
 
 /** 某一轴上"当前选中的种类"。⚠️ 认不出的档名 ⇒ `''`（模板走"未知"那一支：
  *  **不许把它悄悄归成"无"**，否则用户改一下别的字段就把错档名永久抹掉了）。 */
@@ -1155,13 +1159,11 @@ const variantsOnAxis = (axis, kind) => {
 const styleVariants = computed(() => variantsOnAxis('style', styleKind.value))
 const effectVariants = computed(() => variantsOnAxis('effect', effectKind.value))
 
-/** 某轴当前种类的提示语（面板上那行小字）。 */
-const hintOnAxis = (axis, kind) => {
-  const k = kindsOnAxis(axis).find((x) => x.kind === kind)
-  return k ? k.hint : ''
-}
-const styleHint = computed(() => hintOnAxis('style', styleKind.value))
-const effectHint = computed(() => hintOnAxis('effect', effectKind.value))
+// ⚠️ **`hintOnAxis` / `styleHint` / `effectHint` 已删**（用户口径 2026-10-13）：
+//    每个种类下面那行小字（如「这一条文字不做任何动效」）是**多余的** ——
+//    选项标签本身已经说清了是什么，"点了会发生什么"不需要再写一遍。
+//    ⚠️ 别加回来：`ANIM_KINDS` 里的 `hint` 字段也一并去掉了，
+//       留着字段却没人读，下一个人会以为它还在生效。
 
 /** 切**种类**：落到该类的**第一个细分**（"无"那类只有空串一项）。
  *

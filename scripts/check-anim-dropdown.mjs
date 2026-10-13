@@ -46,11 +46,22 @@ const bindings = new Set(Object.keys(compiled.bindings ?? {}))
 //    模板引用的标识符跟着变。这几个**每一个都必须真的在绑定里** ——
 //    模板引用了未绑定的名字时 Vue **不报错、渲染成空白**，构建照样成功
 //    （这正是本脚本存在的理由）。
+//
+// ⚠️ **`styleHint` / `effectHint` 已从这张表里去掉**（用户口径 2026-10-13）：
+//    每个种类下面那行小字是**多余的**（选项标签已经说清了是什么），
+//    连 `hintOnAxis` 与 `ANIM_KINDS` 里的 `hint` 字段一起删了。
+//    ⇒ 判据不能只"删名字就算完"：下面 ④ 有一条**反向**断言
+//      （模板里不许再出现 `styleHint`/`effectHint`）—— 否则把字段加回来、判据照绿。
 for (const id of ['ANIM_KINDS', 'ANIM_KNOWN', 'kindsOnAxis',
                   'styleKind', 'effectKind', 'styleVariants', 'effectVariants',
-                  'styleHint', 'effectHint', 'setKindOnAxis', 'setVariantOnAxis']) {
+                  'setKindOnAxis', 'setVariantOnAxis']) {
   ok(bindings.has(id),
     `① \`${id}\` 不在 \`<script setup>\` 的绑定里 —— 模板引用它会渲染成空白**且不报错**`)
+}
+// ⚠️ **反向**：这两个名字**不许**再被绑定（加回来就是把那行小字加回来）。
+for (const id of ['styleHint', 'effectHint', 'hintOnAxis']) {
+  ok(!bindings.has(id),
+    `① \`${id}\` **又回到绑定里了** —— 那行"每个种类下面的小字"已被用户明确要求删掉`)
 }
 
 // ---- ② 档数与种类（直接读源码里的字面量）----
@@ -116,11 +127,52 @@ ok(/selItem\.style_anim/.test(tplMarkup) && /selItem\.effect_anim/.test(tplMarku
 ok(!/<optgroup/.test(tplMarkup),
   '③ 又出现了 `<optgroup>` —— 那是"四十项平铺进一个下拉"的旧形态，用户报过"还是这个"')
 // ⚠️ 未知档必须**有 option**（否则 `<select>` 的值匹配不上任何一项，
-//    浏览器会显示成第一项"不动效"——用户以为自己没选错）。**两轴各一条**。
+//    浏览器会显示成第一项——用户以为自己没选错）。**两轴各一条**。
 {
   const unknownCount = (tplMarkup.match(/未知档/g) ?? []).length
   ok(unknownCount >= 2,
     `③ "未知档"那条 option 只有 ${unknownCount} 条 —— 两轴各要一条（否则某栏会静默显示成"无"）`)
+}
+
+// ---- ④ ⚠️ **面板上只许有"样式 × 动效"这一对槽位**（用户口径 2026-10-13）----
+//
+// ⚠️⚠️ 这一段的由来：用户**两次**指出面板上还挂着**早已被否决的那套四档样式**
+//    （hook/chapter/comment/count，`selItem.style`）。
+//    第一次我没看懂；第二次他说得更直白：「都说过几次这个样式是被抛弃的，
+//    用的是当前这个样式(形态)+动效的双槽位，你还要留个之前否定的方案在上面。」
+//    ⇒ 删掉它，并且**把"不许加回来"变成机器判据** —— 光删一次挡不住下一个人。
+//
+// ⚠️ 为什么必须断言"**没有**"而不只是"有那两个新下拉"：
+//    第一版就是**只断言了有**，所以旧的 `样式` 下拉一直躺在上面、判据全绿。
+{
+  // ⚠️ **标签必须正好是这两个词** —— 用户明确要求：样式就叫「样式」，
+  //    动效就叫「动效」（不要「样式（形态）」「动效（随时间）」那种括号注解）。
+  const labels = [...tplMarkup.matchAll(/<label>([^<]*)<\/label>/g)].map((m) => m[1])
+  ok(labels.includes('样式'), '④ 面板上没有「样式」这个标签')
+  ok(labels.includes('动效'), '④ 面板上没有「动效」这个标签')
+  // ⚠️ 带括号注解的旧写法不许回来。
+  for (const bad of ['样式（形态）', '动效（随时间）']) {
+    ok(!tplMarkup.includes(bad),
+      `④ 又出现了「${bad}」—— 用户要求标签就是「样式」和「动效」，不带括号注解`)
+  }
+  // ⚠️⚠️ **被否决的四档样式下拉不许回来**：它绑的是 `selItem.style`。
+  //    判据盯**绑定**（`selItem.style` 的赋值/读取），不是盯文案 ——
+  //    改个标签就绕过去了。
+  ok(!/selItem\.style\s*=/.test(tplMarkup) && !/TEXT_STYLES/.test(tplMarkup),
+    '④ 被否决的四档样式下拉**又回到面板上了**（`selItem.style` / `TEXT_STYLES`）\n' +
+    '     ⚠️ 用户口径：那套四档早已被否决，现在只有「样式 × 动效」这一对槽位。')
+  // ⚠️ **每个种类下面那行小字已删**（用户说"这些文案，没有必要"）。
+  ok(!/styleHint|effectHint|hintOnAxis/.test(tplMarkup),
+    '④ 模板又引用了 `styleHint`/`effectHint` —— 那行小字已被用户要求删掉')
+  // ⚠️ 用户同时点名的两句废话：重复的落点说明 + "两栏可同时设"。
+  const dupPos = (tplMarkup.match(/位置 x\/y 由后处理算/g) ?? []).length
+  ok(dupPos === 0,
+    `④ 又出现了「位置 x/y 由后处理算」${dupPos} 处 —— 用户明确说这些文案没有必要`)
+  ok(!tplMarkup.includes('两栏可同时设'),
+    '④ 又出现了「两栏可同时设（如「竖排 + 抖动」）」—— 用户说这句没有必要')
+  // ⚠️ 「不动效」这个说法只许留在**动效**那一栏，且标签已改成「不设」。
+  ok(!tplMarkup.includes('不动效'),
+    '④ 又出现了「不动效」—— 它现在叫「不设」，而且只在动效栏')
 }
 
 // ---- 结果 ----

@@ -82,6 +82,10 @@ const body = [
   '  kind: (a, k) => { setKindOnAxis(a, k); return { ...selItem.value }; },',
   '  variant: (a, v) => { setVariantOnAxis(a, v); return { ...selItem.value }; },',
   '  kindsOnAxis: (a) => kindsOnAxis(a).map((k) => k.kind),',
+  // ⚠️ `labelOn` 必须把**真的那一项**（含 `label`）交给 `kindLabelOn` ——
+  //    第一版图省事传了 `{ kind: k }`，缺 `label` ⇒ 动效栏恒 `undefined`，
+  //    而样式栏照样返回「清除」（那条走的是常量分支）⇒ **只红一半**。
+  '  labelOn: (a, k) => kindLabelOn(a, kindsOnAxis(a).find((x) => x.kind === k) ?? {}),',
   '};'
 ].join('\n')
 
@@ -98,8 +102,39 @@ try {
 {
   const s = api.kindsOnAxis('style')
   const e = api.kindsOnAxis('effect')
-  check(s.length === 11, `样式栏种类数应为 11（不动效 + 倾斜/砸入/弹出/逐字×4/竖排…），实得 ${s.length}：${s.join(',')}`)
-  check(e.length === 9, `动效栏种类数应为 9（不动效 + 抖动/摇摆/砸入/收缩/弹出/逐字抖散·弧形·错峰），实得 ${e.length}：${e.join(',')}`)
+  // ⚠️⚠️ **样式栏 10 类 / 动效栏 9 类 —— 差的就是「不设」那一项**（用户口径 2026-10-13）。
+  //    第一版把 `kind: 'none'`（当时叫「不动效」）塞进了**两栏**、**都排第一** ⇒
+  //    样式栏第一项就是「不动效」，说明还写着"这一条文字不做任何动效" ——
+  //    用户当场指出：一个**形状**的下拉里出现"什么都不做"，而且它**像被否决的
+  //    那套方案又回来了**。
+  //    ⇒ 两栏的"空"语义不同：动效栏的"空"= **不额外加动效**（有意义的一档）；
+  //      样式栏的"空"= **不选形状**（缺省，不是一档效果）。
+  check(s.length === 11,
+    `样式栏种类数应为 11（倾斜/砸入/弹出/逐字×4/竖排… + 末尾的「清除」），实得 ${s.length}：${s.join(',')}`)
+  check(e.length === 9,
+    `动效栏种类数应为 9（抖动/摇摆/砸入/收缩/弹出/逐字抖散·弧形·错峰 + 末尾的「不设」），实得 ${e.length}：${e.join(',')}`)
+  // ⚠️⚠️ **两栏的"空"不是同一件事：两栏都要有，但叫法必须不同**。
+  //
+  //    用户口径（2026-10-13）：面板上只许有「样式 × 动效」这一对槽位。
+  //    第一版把 `none` 两栏都叫「不动效」⇒ 样式栏第一项是「不动效」：
+  //    一个**形状**的下拉里出现"什么都不做"，而且「不动效」三个字里带个"动效"。
+  //    用户当场指出它**像被否决的那套方案又回来了**。
+  //    ⇒ 样式栏叫「清除」（**操作**），动效栏叫「不设」（**选择**）。
+  //
+  //    ⚠️ **但两栏都必须留着它**：样式栏若没有「清除」，用户**选错了就再也
+  //       清不掉**（只能手改 toml）—— 这是"删掉不动效"最容易掉进去的坑。
+  check(s.includes('none') && e.includes('none'),
+    `两栏都必须有"空"那一项（样式=${s.includes('none')} / 动效=${e.includes('none')}）\n` +
+    '     ⚠️ 样式栏少了它 ⇒ 用户选错形状后**清不掉**，只能手改 toml')
+  check(api.labelOn('style', 'none') === '清除',
+    `样式栏"空"那一项应当叫「清除」（**操作**），实得 ${JSON.stringify(api.labelOn('style', 'none'))}`)
+  check(api.labelOn('effect', 'none') === '不设',
+    `动效栏"空"那一项应当叫「不设」（**选择**），实得 ${JSON.stringify(api.labelOn('effect', 'none'))}`)
+  // ⚠️ **"空"那一项不许排第一** —— 排第一会被当成一个正常的档位读（用户就是这么读的）。
+  check(s[s.length - 1] === 'none',
+    `样式栏的"空"必须排在**最后**，实得第 ${s.indexOf('none') + 1}/${s.length} 位：${s.join(',')}`)
+  check(e[e.length - 1] === 'none',
+    `动效栏的"空"必须排在**最后**，实得第 ${e.indexOf('none') + 1}/${e.length} 位：${e.join(',')}`)
   // ⚠️ `both` 的类（slam/pop/arc/scatter/hop）**两栏都必须在** —— 它们确实两边都给参数。
   for (const k of ['slam', 'pop', 'arc', 'scatter', 'hop']) {
     check(s.includes(k), `样式栏缺了 \`both\` 的类 \`${k}\``)
