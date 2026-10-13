@@ -3220,7 +3220,105 @@ fn elements_put_落盘且清空不留空段头() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **§11 BGM：PUT 必须真的能把它写进 `polish.toml`**（"实现了但没人能打开"的回归判据）。
+/// **文字元素的 `color` 必须能经 PUT 存-读往返**（2026-10-13）。
+///
+/// # 为什么补这条
+///
+/// `Event::Element.color` 住在 `segments[].events[]` 里，而 `polish_project_put_locked`
+/// 对 `segments` 这一支是**整份反序列化**（不是逐字段白名单）——
+/// 所以它**理论上**自动往返。但"理论上自动"正是本仓最不该信的那句话：
+/// 上游 `Event` 是 `deny_unknown_fields` 的 tagged enum，
+/// **少一个 `#[serde(default)]`、或者字段加在 enum 的哪个变体上搞错了**，
+/// 症状就是"面板上选了粉色、PUT 回 `{"ok":true}`、磁盘上一个字节没变"
+/// （与 `edl` / `[elements]` / `[style.camera]` 那三次是**同一种事故形状**）。
+///
+/// ⚠️ 判据必须**读回磁盘上的 `polish.toml`**（不只是内存里的 `ProjectFile`）——
+/// 只验内存的话，`skip_serializing_if` 写错（比如漏了 `color`）照样绿，
+/// 而症状是"这次会话里是对的、重启之后颜色没了"。
+#[test]
+fn element_color_round_trips_through_put() {
+    let dir = std::env::temp_dir().join(format!("yekitrim-elem-color-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = yekitrim_polish::project::ProjectFile::example();
+    std::fs::write(dir.join("polish.toml"), cfg.to_toml_commented().unwrap()).unwrap();
+
+    // 造一条带 `color` 的文字元素（字段名逐字照 `Event::Element`）。
+    let body = serde_json::json!({ "segments": [{
+        "start": 0.0,
+        "end": 5.0,
+        "events": [{
+            "type": "element",
+            "kind": "text",
+            "time": 0.5,
+            "end": 3.0,
+            "text": "愤怒",
+            "style": "hook",
+            "color": "pink"
+        }]
+    }] });
+    let _ = polish_project_put_locked(&dir, &body).expect("保存带 color 的元素");
+
+    // ① 内存里读得回来。
+    let after = yekitrim_polish::project::load_project(&dir).unwrap();
+    let found = after
+        .segments
+        .iter()
+        .flat_map(|s| s.events.iter())
+        .find_map(|e| match e {
+            yekitrim_polish::project::Event::Element { color, text, .. } if text == "愤怒" => {
+                Some(color.clone())
+            }
+            _ => None,
+        });
+    assert_eq!(
+        found,
+        Some(Some("pink".to_string())),
+        "color 没经 PUT 存下来 —— 面板上选了颜色、磁盘没变（白名单 / serde 漏了这一支）"
+    );
+
+    // ② 磁盘上也读得回来（不是只在内存里对）。
+    let raw = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    assert!(
+        raw.contains("color = \"pink\""),
+        "`color` 没写进 polish.toml —— 重启之后颜色会消失。文件内容:\n{raw}"
+    );
+
+    // ③ **不写 `color` 的事件不许凭空多出这个键**（R4：存量工程逐字节不变）。
+    //
+    //    ⚠️ 这条**做过变异自证，结果是"抓不到"** —— 去掉 `color` 上的
+    //    `skip_serializing_if` 之后它照样绿。真因记在 `types.rs:176`（2026-10-10 已实测过）：
+    //    **`toml` 序列化本来就跳过 `Option::None`**，所以那个属性在这个字段上是冗余的。
+    //    ⇒ 留着这条断言是**照实说明"这一档由类型本身保证"**，不是"有判据在拦"；
+    //      它仍会抓到"把 `color` 改成 `String` / 给出默认空串"那类改动
+    //      （那时 `None` 会变成 `Some("")` ⇒ 真写出 `color = ""`）。
+    //    ⚠️ **别为它再写一次"变异自证"** —— 那个变异永远不会红（同 `speed` 字段那条记录）。
+    let plain = serde_json::json!({ "segments": [{
+        "start": 0.0,
+        "end": 5.0,
+        "events": [{
+            "type": "element",
+            "kind": "text",
+            "time": 0.5,
+            "end": 3.0,
+            "text": "普通",
+            "style": "hook"
+        }]
+    }] });
+    let _ = polish_project_put_locked(&dir, &plain).expect("保存不带 color 的元素");
+    let raw2 = std::fs::read_to_string(dir.join("polish.toml")).unwrap();
+    let block = raw2
+        .split("[[segments.events]]")
+        .nth(1)
+        .expect("应当有 events 段");
+    assert!(
+        !block.contains("color"),
+        "没写 color 的事件被写出了 `color` 键 —— 存量工程重存一次就变样（R4 破）:\n{block}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 ///
 /// 为什么单独钉：`render/bgm.rs` 的 `BgmConfig` / `bgm_filter_chain` / `duck_gain_expr`
 /// 早就写好了，出片链路也真的在调它们 —— **缺的只是"写配置的入口"**。

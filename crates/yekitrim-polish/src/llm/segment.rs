@@ -115,14 +115,24 @@ pub(crate) fn build_events_system_prompt(
 - sticker: 贴图表情. {{"type":"sticker","time":10.0,"end":12.0,"keyword":"ysyk","sticker_tag":"害怕","x":"auto","y":"auto"}}
   keyword 语言: {}
 - element: **文字元素**（钩子标题 / 章节卡 / 吐槽 / 计数）。比贴纸更适合"要写一句话"的场合
-  {{"type":"element","kind":"text","time":30.0,"end":32.4,"text":"这就是传说中的…","style":"hook","pos":"top"}}
+  {{"type":"element","kind":"text","time":30.0,"end":32.4,"text":"这就是传说中的…","style":"hook","pos":"top","color":"pink"}}
   {{"type":"element","kind":"text","time":75.0,"end":77.5,"text":"第 3 次了","style":"count","pos":"center"}}
   style 四选一:
-  * `hook` 钩子标题 —— 大号高对比强描边, 用在**开场或一个爆点之前**, 要"抓人"
-  * `chapter` 章节卡 —— 中号带底居中, 用在**话题切换**处, 像小标题
-  * `comment` 吐槽 —— 小号带底色块, 用在**你对画面里的事有话说**的时候(最常见的一种)
-  * `count` 计数/积累 —— 中号, 用在"第 N 次""又来了"这种**重复累积**的场合
+  * `hook` 钩子标题 —— 高对比强描边, 用在**开场或一个爆点之前**, 要"抓人"
+  * `chapter` 章节卡 —— 带底居中, 用在**话题切换**处, 像小标题
+  * `comment` 吐槽 —— 细边带底色块, 用在**你对画面里的事有话说**的时候(最常见的一种)
+  * `count` 计数/积累 —— 用在"第 N 次""又来了"这种**重复累积**的场合
+  (四档**字号一样**, 区别在描边粗细/底衬/字重 —— 所以选哪档看"这是什么性质的话", 不看大小)
   pos 三选一: `top` / `center` / `bottom`(不写默认 center)。文字**不要**用 `x`/`y`(那是贴纸的)
+  color **颜色(可选)**, 七选一 —— **按这句话的情绪选, 别每句都写**:
+  * `white` 白 —— 默认/正式, 不确定就用它或干脆不写
+  * `pink` 粉 —— 可爱 / 调侃 / 萌
+  * `red` 红 —— 愤怒 / 警报 / 反驳 / 危险
+  * `yellow` 黄 —— 吐槽旁白(系统默认就是它)
+  * `cyan` 青 —— 冷静 / 疑问 / 科普
+  * `green` 绿 —— 肯定 / 涨 / 通过
+  * `black` 黑 —— 只在**浅色底衬**上用(chapter/comment 自带底衬); **别在没底衬的档上用**
+  不写 color = 用该 style 的默认色(推荐多数情况不写, 全片五颜六色反而没重点)
   ⚠️ **文字很短**: 一条最多 12 个字(超了会被系统按两行折, 再长就压画面了)
   ⚠️ **别和字幕重复**: 字幕已经在说这句话了, 就不要再写一条一样的文字元素 ——
      文字的用途是**字幕没说的那句**(标题 / 你的吐槽 / 计数), 不是复读机
@@ -821,6 +831,80 @@ mod tests {
         assert!(
             prompt.contains("像素"),
             "提示词里必须写明 intensity 的单位是像素"
+        );
+    }
+
+    /// 提示词必须把**七档颜色预设**全教给 LLM，且**四个消费侧真源**都认这些名字。
+    ///
+    /// # 为什么这条判据要跨四处验（2026-10-13）
+    ///
+    /// 颜色这条链是"一个事实、四处实现"：
+    /// ① 提示词（LLM 照它写）② `placement.rs::ElementColor::parse`（process 解析）
+    /// ③ 转译器 / 预览（读 `process` 写回的第 10 段）。
+    ///
+    /// ⚠️ 漏任何一处的症状都是**"配了、不报错、没效果"**：
+    /// * 提示词少一档 ⇒ LLM 永远不写它 ⇒ **产出恒为 0**（正是 §18-A 那个形状：
+    ///   `zoom="特写"` 连着三次真实 LLM 命中 0/0/0，而模型明明在写 zoom）；
+    /// * `parse` 少一档 ⇒ LLM 照着提示词写、`process` 说"认不出"并**静默退回默认色**。
+    ///
+    /// ⚠️ 判据**从提示词里抠出颜色名**再去问 `ElementColor::parse`，**不写第二份字面量清单** ——
+    /// 两边各写一份字面量的判据拦不住漂移（这与上面 `zoom="特写"` 那条同一手法）。
+    #[test]
+    fn prompt_teaches_every_color_preset_the_parser_accepts() {
+        use crate::process::ElementColor;
+        let prompt = build_events_system_prompt(&[], &[], "");
+
+        // ⚠️⚠️ **必须只扫「color 那一段」的档名，而且不许用 `parse` 过滤** ——
+        //    第一版写的是"扫描全部 `* \`xxx\` …` 行、再用 `parse().is_some()` 过滤"，
+        //    结果**变异自证当场抓住它**：往提示词里加一档 `magenta`（parse 不认）时，
+        //    那一行被 `filter` 直接丢掉 ⇒ 计数仍是 7 ⇒ **判据照样绿**。
+        //    而"提示词教了一档 process 不认的颜色"正是本判据要拦的两个方向之一。
+        //    ⇒ 现在按**区块**取（`color` 那行之后、到 `⚠️` 那批注解之前），
+        //      取到的每个名字都拿 `parse` 验，**认不出就红**。
+        //
+        //    ⚠️ 终止条件用 `⚠`（color 块后面紧跟的就是那批注解），**不是 `pos `** ——
+        //       第一版写 `pos ` 是因为我以为 color 排在 pos 前面；实际顺序是 **pos 在前、
+        //       color 在后** ⇒ `take_while` 一路吃到 shake 那一段里的
+        //       `"anchor":"cold_open"` 才停，把 JSON 的字段名当成了颜色档名
+        //       （**变异自证当场抓出来**：那次"复原后仍红"就是这么来的）。
+        //       ⇒ **区块边界必须照提示词的真实结构写，不能凭记忆。**
+        let block: Vec<&str> = prompt
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("color "))
+            .take_while(|l| !l.trim_start().starts_with('⚠'))
+            .collect();
+        assert!(
+            !block.is_empty(),
+            "提示词里找不到 `color` 那一段（提示词改结构了？这条判据会空转）"
+        );
+        let names: Vec<&str> = block
+            .iter()
+            .filter(|l| l.trim_start().starts_with("* `"))
+            .filter_map(|l| l.split('`').nth(1))
+            .collect();
+
+        for c in ElementColor::ALL {
+            assert!(
+                names.contains(&c.name()),
+                "提示词里没有教颜色档 `{}` —— LLM 永远写不出它，产出恒为 0（且全链路零报错）",
+                c.name()
+            );
+        }
+        // 反向：提示词里出现的**每一个**名字，`parse` 都必须认。
+        for n in &names {
+            assert!(
+                ElementColor::parse(n).is_some(),
+                "提示词教了颜色档 `{n}`，而 `parse` 不认它 —— \
+                 LLM 照着提示词写，process 会判「认不出」并**静默退回默认色**"
+            );
+        }
+        // 档数也要对上（两个方向都堵住）。
+        assert_eq!(
+            names.len(),
+            ElementColor::ALL.len(),
+            "提示词里教了 {} 档颜色，而真源有 {} 档 —— 多出来的那些 LLM 会照写、process 会报认不出：{names:?}",
+            names.len(),
+            ElementColor::ALL.len()
         );
     }
 

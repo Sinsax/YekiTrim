@@ -14,6 +14,13 @@ mod fx;
 /// 纯函数（扫区间 + 给补位点），**不落盘**；判据在 `process`。
 pub mod pacing;
 mod placement;
+/// 文字颜色的**命名预设**（2026-10-13）。
+///
+/// ⚠️ `placement` 是私有模块（外部一律走 `cmd_process`），但 `ElementColor`
+/// 是**一份要被多处读到的真源**：`llm/segment.rs` 的提示词判据要拿它验
+/// "提示词教的档 = process 认的档"。所以**单独 re-export 这一个类型**，
+/// 不开放整个模块（那会让 `pick_sticker_position` 之类的内部几何外泄）。
+pub use placement::ElementColor;
 /// 爆点判据（总方案 §6）：一个纯函数、一份判据、一处阈值，供 §6/§7/§8 共用。
 pub mod punch;
 /// 剪辑质量分（总方案 §3）：纯函数、无 IO。**不做成 `pub use`** —— 它不是后处理步骤，
@@ -1813,13 +1820,13 @@ fn layout_text_elements(
     frame_w: f64,
     frame_h: f64,
 ) -> usize {
-    use crate::process::placement::{Frame, TextAnchor, TextLayout, TextStyle};
+    use crate::process::placement::{ElementColor, Frame, TextAnchor, TextLayout, TextStyle};
 
     let f = Frame { w: frame_w, h: frame_h };
     let mut done = 0usize;
     for seg in segments.iter_mut() {
         for ev in seg.events.iter_mut() {
-            let crate::project::Event::Element { kind, text, style, pos, x, y, source, .. } = ev else {
+            let crate::project::Event::Element { kind, text, style, pos, x, y, source, color, .. } = ev else {
                 continue;
             };
             if kind.trim().to_lowercase() != "text" {
@@ -1837,6 +1844,30 @@ fn layout_text_elements(
                 );
             }
             let ts = TextStyle::parse(&raw_style);
+            // ---- 颜色预设（2026-10-13）----
+            //
+            // ⚠️⚠️ **"没写"与"写错了"必须分开**（两者都走档位默认色，但只有后者要报）：
+            //    `None` / 空串 ⇒ 用户没表达颜色 ⇒ **静默**走 `ts.color()`（存量工程 R4）；
+            //    非空但认不出 ⇒ **打一行点名**再退回默认色。
+            //    合并成一条 `unwrap_or_default()` 的话，"LLM 写了 `#ff0000`"这种
+            //    （模型很自然会这么写）会**静默降级成白色** —— 用户以为上色了、成片是白的，
+            //    而报告里一行差异都没有。这正是本仓最恨的形状。
+            let raw_color = color.clone().unwrap_or_default();
+            let ec = if raw_color.trim().is_empty() {
+                None
+            } else {
+                let parsed = ElementColor::parse(&raw_color);
+                if parsed.is_none() {
+                    tracing::warn!(
+                        "  ⚠ 文字元素「{}」的 color = \"{}\" 认不出，按 style 默认色处理。\
+                         可选值：{}",
+                        text,
+                        raw_color,
+                        ElementColor::ALL.map(|c| c.name()).join(" / ")
+                    );
+                }
+                parsed
+            };
             let anchor = TextAnchor::parse(pos.as_deref().unwrap_or(""));
             let layout = TextLayout::solve(text, ts, anchor, f);
             let (px, py) = layout.anchor_origin(f);
@@ -1851,7 +1882,7 @@ fn layout_text_elements(
             // 本仓对付这类问题的既定形态就是 `process` 解析、消费方读
             //（`Event::Element.name`/`source` 对贴纸做的同一件事）。
             //
-            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>`
+            // 格式：`<style>|<font_px>|<stroke_px>|<r,g,b,a>|<sr,sg,sb,sa>|<weight>|<backdrop>|<tilt_deg>|<squash_y>|<color_name>`
             // —— 用 `|` 分隔而不是 JSON：`source` 是 `Option<String>`，
             // 塞 JSON 会让它看起来像结构化数据，而它只是"这一条解析出来的参数"。
             //
@@ -1859,10 +1890,23 @@ fn layout_text_elements(
             //    插在中间会让所有既有字段**静默错位**（`backdrop` 会被读成 `tilt_deg`，
             //    症状是"底衬没了、字歪了"，而**两边单测各自都过**）。
             //    新增字段一律**往后加**。
-            let c = ts.color();
-            let sc = ts.stroke_color();
+            //
+            // ⚠️⚠️ **第 10 段（颜色预设名）同样追加在末尾**（2026-10-13）——
+            //    这条纪律在这一段上被第二次使用，理由一字不变。
+            //
+            //    为什么写**预设名**而不是它解出来的 RGBA：第 4 段已经是 RGBA 了，
+            //    再写一份 RGBA 等于同一个事实存两处（本仓的老病）。写名字让
+            //    **转译器与预览各自去查同一张表** —— 而"四处的表必须同值"
+            //    是可以用一条判据钉住的（`check-element-color.mjs`），
+            //    "两处 RGBA 恰好相等"则只能靠人看。
+            //
+            //    ⚠️ **认不出 / 没写 ⇒ 写空串**（不是省略这一段）：段数必须**恒定**，
+            //       否则消费方的 `split('|').length` 会在"有颜色"与"没颜色"之间跳 ——
+            //       而长度判据正是老工程兼容的支点（`{7, 9}` 那两档）。
+            let c = ec.map(|e| e.rgba()).unwrap_or_else(|| ts.color());
+            let sc = ec.map(|e| e.stroke_for(ts)).unwrap_or_else(|| ts.stroke_color());
             *source = Some(format!(
-                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}|{}|{}",
+                "{}|{}|{}|{},{},{},{}|{},{},{},{}|{}|{}|{}|{}|{}",
                 style_name(ts),
                 ts.base_font_px(),
                 ts.base_stroke_px(),
@@ -1879,6 +1923,8 @@ fn layout_text_elements(
                 // T3：倾斜（度，正=顺时针）与纵向压缩（1.0 = 不压）。
                 ts.tilt_deg(),
                 ts.squash_y(),
+                // 第 10 段：颜色预设名（没写 = 空串）。
+                ec.map(|e| e.name()).unwrap_or(""),
             ));
             done += 1;
         }
@@ -2042,6 +2088,7 @@ mod tests {
                 text: "第 3 次了".into(),
                 style: Some("count".into()),
                 pos: None,
+                color: None,
                 sticker_tag: None,
                 x: None,
                 y: None,
@@ -2059,7 +2106,7 @@ mod tests {
         let parts: Vec<&str> = src.split('|').collect();
         assert_eq!(
             parts.len(),
-            9,
+            10,
             "字段个数变了（下游按位置解析）：{src}"
         );
         // 逐位钉住——**名字**比"个数"更能说明意图。
@@ -2075,6 +2122,133 @@ mod tests {
         assert_eq!(parts[6], "0", "p6 = backdrop");
         assert_eq!(parts[7], "-4", "p7 = tilt_deg（T3 追加）");
         assert_eq!(parts[8], "1", "p8 = squash_y（T3 追加）");
+        // ⚠️ 2026-10-13：第 10 段 = 颜色预设名。**这条 entry 没写 color**
+        //    ⇒ 必须是**空串**（不是省略这一段）——段数恒定是下游兼容的支点。
+        assert_eq!(parts[9], "", "p9 = color 预设名（没写 ⇒ 空串，段数不许变）");
+    }
+
+    /// 第 10 段是**颜色预设名**，且它真的**改变了填充/描边**（不是只写个名字）。
+    ///
+    /// ⚠️ 两条一起验：只验 `p9 == "pink"` 的话，"把名字写进去但颜色仍用档位默认"
+    /// 这种改动会**全绿** —— 而症状正是"面板上选了粉色、成片是白的"，报告一行差异都没有。
+    /// ⇒ 必须同时验 **p3/p4 真的变了**。
+    #[test]
+    fn element_source_color_preset_changes_fill_and_stroke() {
+        use crate::project::Event;
+        fn seg_with(color: Option<&str>) -> Vec<Segment> {
+            vec![Segment {
+                start: 0.0,
+                end: 5.0,
+                fx: "low".into(),
+                note: String::new(),
+                role: String::new(),
+                extra: Default::default(),
+                events: vec![Event::Element {
+                    anim: None,
+                    style_anim: None,
+                    effect_anim: None,
+                    time: 0.5,
+                    end: Some(4.0),
+                    kind: "text".into(),
+                    text: "愤怒".into(),
+                    style: Some("hook".into()),
+                    color: color.map(str::to_string),
+                    pos: None,
+                    sticker_tag: None,
+                    x: None,
+                    y: None,
+                    manual: false,
+                    name: None,
+                    source: None,
+                }],
+            }]
+        }
+        let run = |color: Option<&str>| {
+            let mut segs = seg_with(color);
+            assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
+            let Event::Element { source, .. } = &segs[0].events[0] else {
+                panic!("还是那条 element");
+            };
+            source
+                .as_deref()
+                .expect("排版必须写回 source")
+                .split('|')
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        // ① 没写 color ⇒ 走档位默认色（hook 是白），第 10 段空串。
+        let none = run(None);
+        assert_eq!(none[9], "", "没写 color ⇒ 第 10 段必须是空串");
+        assert_eq!(none[3], "255,255,255,255", "没写 color ⇒ 用 hook 的默认白");
+
+        // ② 写了 pink ⇒ 第 10 段是名字，**且 p3 真的变成粉色**。
+        let pink = run(Some("pink"));
+        assert_eq!(pink[9], "pink", "第 10 段必须是预设名");
+        assert_eq!(
+            pink[3], "255,128,192,255",
+            "写了 pink 但填充色没变 —— 面板上选了粉色、成片却是白的（且不报错）"
+        );
+        assert_ne!(pink[3], none[3], "pink 必须与默认白不同");
+
+        // ③ 认不出的值 ⇒ 退回档位默认色 + 第 10 段空串（**不静默**，见 warn）。
+        let bogus = run(Some("#ff0000"));
+        assert_eq!(bogus[9], "", "认不出的 color ⇒ 第 10 段空串（不把垃圾写进产物）");
+        assert_eq!(bogus[3], none[3], "认不出的 color 必须退回档位默认色");
+
+        // ④ **黑字必须翻白描边**（`ElementColor::stroke_for`）——
+        //    否则黑填充 + 近黑描边 = 糊成一团墨，而两个字段各自看都是对的。
+        let black = run(Some("black"));
+        assert_eq!(black[9], "black");
+        assert_eq!(black[3], "24,24,24,255", "black 的填充");
+        assert_eq!(
+            black[4], "255,255,255,230",
+            "black 的描边必须翻成白 —— 近黑描边 + 黑字 = 读不出来"
+        );
+        assert_ne!(black[4], none[4], "黑字的描边必须与白字的描边不同");
+    }
+
+    /// 七档颜色预设的**名字与 RGBA**都必须是可往返的（`parse` ↔ `name` 互逆）。
+    ///
+    /// ⚠️ `ALL` 与 `parse` 的一致性必须机器验：手工维护两张清单，
+    /// 加一档时只改一处 ⇒ 那一档**能被写进提示词、却永远解析不出来**
+    /// （LLM 照着提示词写、process 说"认不出"）—— 两边各自看都正常。
+    #[test]
+    fn color_presets_round_trip_and_are_all_parseable() {
+        use crate::process::placement::{ElementColor as C, TextStyle};
+        assert_eq!(C::ALL.len(), 7, "预设档数变了（提示词/面板/转译器的表都要跟着改）");
+        for c in C::ALL {
+            assert_eq!(
+                C::parse(c.name()),
+                Some(c),
+                "`{}` 认不出来 —— `name()` 与 `parse()` 走岔了",
+                c.name(),
+            );
+            // 两两不同的 RGBA：否则两档名字不同、画出来一样（"档位失去意义"）。
+            for other in C::ALL {
+                if other != c {
+                    assert_ne!(
+                        c.rgba(),
+                        other.rgba(),
+                        "「{}」与「{}」的 RGBA 相同 —— 选哪个都一样",
+                        c.name(),
+                        other.name()
+                    );
+                }
+            }
+        }
+        // 认不出的必须返回 `None`（**不是**某个默认档）—— 调用方据它打警告。
+        for bad in ["", "  ", "#ff0000", "PINKY", "白色", "rgb(1,2,3)"] {
+            assert_eq!(C::parse(bad), None, "`{bad}` 不该被认出来");
+        }
+        // 大小写不敏感（与 `TextStyle::parse` 同口径）。
+        assert_eq!(C::parse(" PINK "), Some(C::Pink));
+        // `yellow` 必须与 `comment` 档的默认色**逐值相同**（不写时的观感可显式复现）。
+        assert_eq!(
+            C::Yellow.rgba(),
+            TextStyle::Comment.color(),
+            "yellow 与 comment 的默认色分叉了 —— 同一句话写不写 color 会得到两种黄"
+        );
     }
 
     /// 追加的两个字段取自 [`TextStyle`]，不是写死的常数。
@@ -2100,6 +2274,7 @@ mod tests {
                 text: "章节".into(),
                 style: Some("chapter".into()),
                 pos: None,
+                color: None,
                 sticker_tag: None,
                 x: None,
                 y: None,
