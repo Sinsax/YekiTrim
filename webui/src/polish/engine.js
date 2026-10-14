@@ -2410,9 +2410,57 @@ export function getElements(idx, t) {
   return out
 }
 
+/// 贴纸求值器 —— **两个事件来源合流**（2026-10-14 修的真缺陷）。
+///
+/// # 为什么要合流
+///
+/// 贴纸有两个写法，**取决于 `process` 是不是跑过**：
+///
+/// | 写法 | 谁产出 | 落在哪个桶 |
+/// |---|---|---|
+/// | `type = "sticker"` | 老的 / 手写的 | `idx.sticker` |
+/// | `type = "element"` + `kind = "sticker"` | **`process` 现在产的** | `idx.element` |
+///
+/// ⚠️⚠️ 而本函数原来**只读 `idx.sticker`** ⇒ 第二种写法（也就是用户 28 个旧片段之外、
+/// `process` 跑过的那些）**一条贴纸都求不出来**。症状是「**贴纸设置了、预览里不显示**」，
+/// 而且**不报错**：桶是空的，`for` 循环转一圈就出来了。
+///
+/// ⚠️ 与此同时 `getElements()` **确实**认 `kind === 'sticker'`（它读 `idx.element`）——
+/// 但它产出的是 `{ src, opacity, scale, rot, yOff }`，**没有 `x`/`y`**，
+/// 而模板 `.sticker-el` 读的正是 `st.x`/`st.y`；且 `PolishPreview.vue` 的 `stickers`
+/// 走的是**本函数**、`texts` 才走 `getElements` 并**只收 `isText === true`**。
+/// ⇒ 两半各拿一半：**一个桶没被读、一个桶产不出坐标**，中间那条缝就是"贴纸不显示"。
+///
+/// # 合流方式
+///
+/// 不新写一份求值（那会变成第五份实现、必然漂移）—— **把第二种来源归一成第一种的形状**
+/// 再走同一段下面的求值：`keyword` ← `text`、`src` 在索引期就解析好了（`entry.src`）、
+/// 落点交给同一个 [`stickerAnchor`]（它本来就会按 `position_mode` 分流 manual/auto）。
+///
+/// ⚠️ 归一的是**形状**，不是语义：`ev.x`/`ev.y` 在两种写法里都是"盒子左上角百分比"
+/// （manual 那档不看它们），所以 `stickerAnchor` 不需要改。
+/// 贴纸事件的**两个来源归一**（见 [`stickersAt`] 的文档注释）。
+///
+/// ⚠️ 归一成 `type === 'sticker'` 那一支的形状：`ev.keyword` 有值、`ev.x/ev.y` 照原样。
+///   `kind === 'sticker'` 的正文在 `ev.text` 里（`process` 把关键词放那儿），
+///   而 `name` 才是真正的素材名 —— 与索引期 `const name = ev.name || ev.keyword || ev.text`
+///   同一个优先级，两处必须一致（否则"求得出事件、却求不出图"）。
+///
+/// ⚠️ **不复制对象**：判据要对拍"同一个事件两路求值逐值相等"，复制会让 `key`/`name`
+///   的来源变得说不清。这里只读原对象，缺的字段在下面读的时候用同一条优先级链兜。
+///
+/// ⚠️ 顺序：先 `idx.sticker`（老写法）再 `idx.element` 里的贴纸 —— 与图层绘制顺序一致，
+///   两者同时存在时**后面的压在上面**（模板那个 v-for 同序）。
+function* stickerSources(idx) {
+  yield* idx.sticker || []
+  for (const e of idx.element || []) {
+    if (String(e.ev?.kind ?? '').trim().toLowerCase() === 'sticker') yield e
+  }
+}
+
 export function stickersAt(idx, t) {
   const out = []
-  for (const e of idx.sticker) {
+  for (const e of stickerSources(idx)) {
     const et = e.time, dur = e.duration || 2.5
     if (t < et || t > et + dur) continue
     const fadeOut = Math.min(0.3, dur)
@@ -2453,8 +2501,11 @@ export function stickersAt(idx, t) {
     if (anc.center) { left -= g.s / 2; top -= g.s / 2 }
     const pos = clampSticker(g, left, top)
     out.push({
-      key: e.ev.name || e.ev.keyword || '',
-      name: e.ev.name || e.ev.keyword || '',
+      // ⚠️ 名字优先级链**必须与索引期那条完全一致**
+      //    （`buildIndex`：`name || keyword`；`kind === 'sticker'` 那条多一个 `text`）。
+      //    少一项的症状是"事件求出来了、`src` 却是空"（贴纸有位置、没图）。
+      key: e.ev.name || e.ev.keyword || e.ev.text || '',
+      name: e.ev.name || e.ev.keyword || e.ev.text || '',
       src: e.src, isEmoji: e.isEmoji, emoji: e.emoji,
       opacity, scale, rot,
       x: pos.x, y: pos.y + yOff, w: g.s, h: g.s,
