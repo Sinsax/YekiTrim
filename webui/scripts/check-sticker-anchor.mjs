@@ -71,7 +71,11 @@ function braceEnd(src, i) {
 }
 
 function extractFunction(src, name) {
-  const start = src.indexOf(`function ${name}(`)
+  // ⚠️ 同时认 `function name(` 与 `function* name(`（生成器）。
+  //    只认前者时，往 `engine.js` 加一个生成器辅助函数就会让本判据**抛错**而不是"判红"——
+  //    2026-10-14 加 `stickerSources` 时真踩到了。
+  let start = src.indexOf(`function ${name}(`)
+  if (start < 0) start = src.indexOf(`function* ${name}(`)
   if (start < 0) throw new Error(`找不到 function ${name}(`)
   return src.slice(start, braceEnd(src, src.indexOf('{', start)) + 1)
 }
@@ -173,6 +177,7 @@ function engineStickerOf(src) {
     ${extractFunction(src, 'stickerGeom')}
     ${extractFunction(src, 'stickerAnchor')}
     ${extractFunction(src, 'clampSticker')}
+    ${extractFunction(src, 'stickerSources')}
     ${extractFunction(src, 'stickersAt')}
     return { stickerGeom, stickerAnchor, clampSticker, stickersAt }`
   )(
