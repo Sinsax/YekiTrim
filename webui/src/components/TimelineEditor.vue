@@ -51,18 +51,10 @@
         {{ TYPE_LABELS[t] }}<span class="muted">{{ t }}</span>
       </button>
     </div>
-    <!-- 元素轨道的 ＋：先选「文字 / 贴纸」再加（明细见 `addElementAt` 的注释） -->
-    <div v-if="elementMenu" class="fx-menu" :style="{ left: elementMenu.x + 'px', top: elementMenu.y + 'px' }">
-      <div class="fx-menu-t muted small">在播放头处添加</div>
-      <button class="fx-menu-item" title="大字标题 / 章节 / 注释，由后处理排版落点"
-              @click="addElementAt('text')">
-        文字<span class="muted">kind=text</span>
-      </button>
-      <button class="fx-menu-item" title="按关键词从贴纸库取图"
-              @click="addElementAt('sticker')">
-        贴纸<span class="muted">kind=sticker</span>
-      </button>
-    </div>
+    <!-- ⚠️ **「文字 / 贴纸」二选一菜单已删除**（2026-10-14，用户口径「前端编辑器也要分离」）。
+         它存在的唯一理由是"元素轨同时装两种东西"；现在轨道已经分开了
+         （「文字」轨 / 「贴纸」轨），各自的 ＋ 直接建对应 kind 的元素 —— 见 `onLaneAdd`。
+         ⚠️ 别再加回来：那会把"在文字轨上点＋，却被问要不要贴纸"这个多余的选择带回来。 -->
     <!-- 「加入成片」菜单（§6.3 第 ② 条的三个落位）。fixed 定位：不受时间轴横向滚动与卡片裁切影响。
          入口只有一个（成片轨标签上的 ＋）—— 用户在源轴上框选/选中之后，决定这段插到成片的哪里。 -->
     <div v-if="edlMenu" class="fx-menu edl-menu" :style="{ left: edlMenu.x + 'px', top: edlMenu.y + 'px' }">
@@ -336,17 +328,28 @@
             <!-- 贴纸：keyword 一级 → 贴纸二级 -->
             <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
-              <label>元素种类</label>
-              <select :value="selItem.kind || 'text'" @change="setElementKind(selItem, $event.target.value)">
-                <option value="text">文字（大字标题 / 章节 / 注释）</option>
-                <option value="sticker">贴纸（按关键词取图）</option>
-              </select>
+              <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
+                   用户口径：「**前端编辑器也要分离**」。
+
+                   那个下拉存在的唯一理由是"元素轨同时装两种东西"——
+                   用户加完还得在这儿**再声明一次**它是什么。现在**轨道已经分开了**
+                   （「文字」轨 / 「贴纸」轨），而泳道归属**就是**那个声明
+                   ⇒ 再问一遍是多余，而且**允许把一条贴纸改成文字**会让它
+                   悄悄换到另一条轨上（用户没有要求过这种能力）。
+
+                   ⚠️ `setElementKind` **保留**（下面还有 `addElementAt` 在用，
+                      而且判据 `check-*` 也钉着它的载荷切换口径）—— 只是**面板里不再暴露**。
+                   ⚠️ kind 认不出时（`⚠` 那一支）**照实显示**，别默认成文字。 -->
+              <template v-if="elementKindOf(selItem) === 'unknown'">
+                <label>元素种类</label>
+                <div class="muted small">⚠ 认不出的 kind：{{ selItem.kind || '(空)' }}（按原样保留）</div>
+              </template>
 
               <!-- 文字支：内容 + 样式。**和贴纸一样只有"是什么"，没有"摆哪"**——
                    ⚠️ 别再退回"纵向位置"下拉：位置一律由后处理按安全落点算
                    （与贴纸那句「位置 x/y 由后处理算」同一条口径），
                    下同的那句 hint 就是给用户看的唯一说明。 -->
-              <template v-if="(selItem.kind || 'text') === 'text'">
+              <template v-if="elementKindOf(selItem) === 'text'">
                 <label>文字内容</label>
                 <input :value="selItem.text || ''" placeholder="要显示的字"
                        @input="selItem.text = $event.target.value">
@@ -468,8 +471,11 @@
                      用户报的「样式和动效内容过于重复」就是那 11 档 `both` 造成的。 -->
               </template>
 
-              <!-- 贴纸支：复用已有的贴纸选择器 -->
-              <template v-else>
+              <!-- 贴纸支：复用已有的贴纸选择器。
+                   ⚠️ 判据从"`kind === 'text'` 的 else"改成**显式认 `sticker`**
+                   —— 上面那个 `unknown` 支已经先把认不出的拦走了，
+                   这里再写 `v-else` 会把它当成贴纸（把坏数据伪装成正常元素）。 -->
+              <template v-else-if="elementKindOf(selItem) === 'sticker'">
                 <StickerPicker :lib="stickerLib" :pid="pid" :dir="dir"
                                :pack="selItem.text || ''" :tag="selItem.sticker_tag || ''"
                                :name="selItem.name || ''" :source="selItem.source || ''"
@@ -568,25 +574,34 @@
     </div>
     <div ref="bodyRef" class="timeline-body" @wheel.passive="markUserScroll" @pointerdown="markUserScroll">
       <div class="timeline-labels">
-        <div v-for="lane in lanes" :key="'label-' + lane.type" class="lane-label">
+        <div v-for="lane in lanes" :key="'label-' + laneKey(lane)" class="lane-label">
           <!-- 眼睛 = 这一类渲不渲染（**事件一个字都不动**，点亮即恢复）。判据由 Rust 注入
                （`_lanes`，见 PolishView 的 laneEnabled）：竖屏素材/画布下运镜与视觉特效默认灭。
                ⚠️ 「分段 / 屏蔽」是结构轨（分段是容器、屏蔽是剪切标记），没有"整类不渲染"这种语义，
                所以它没有眼睛 —— 别给它补一个假装有作用的按钮。 -->
-          <button v-if="lane.lane" class="lane-eye" :class="{ off: !laneEnabled(lane.lane) }"
+          <!-- ⚠️⚠️ **眼睛只给"贴纸"那一条**（2026-10-14 分家之后）。
+               `文字` 与 `贴纸` 在**磁盘上是同一条轨**（`lane: 'sticker'`）⇒
+               两条都画眼睛就是**两枚眼睛管同一个开关**：点哪一枚另一枚都跟着变，
+               而用户看到的是"我只关了文字，贴纸怎么也没了"。
+               ⇒ 眼睛留在贴纸轨（开关的名字本来就是 `sticker`），
+                 文字轨放一枚**说明性占位**（不可点），点它去贴纸轨那颗眼睛。
+               ⚠️ 别把占位改成按钮：那就又变成两枚眼睛了。 -->
+          <button v-if="lane.lane && !lane.sharedEye" class="lane-eye" :class="{ off: !laneEnabled(lane.lane) }"
                   :title="laneEyeTitle(lane)" @click.stop="emit('toggle-lane', lane.lane)">
             <Icon :name="laneEnabled(lane.lane) ? 'eye' : 'eye-off'" :size="12" />
           </button>
+          <span v-else-if="lane.sharedEye" class="lane-eye lane-eye-none"
+                :title="`「文字」与「贴纸」在磁盘上是同一条轨道（${lane.lane}）—— 开/关去旁边的「贴纸」轨，那枚眼睛对两条同时生效`">⇄</span>
           <span v-else class="lane-eye lane-eye-none"
                 title="分段 / 屏蔽是结构轨：分段是容器、屏蔽是剪切标记，没有「整类不渲染」这种语义">·</span>
           <!-- 轨道名可点 = **这一条轨道的设置**（与时间轴上的块共用同一个属性面板） -->
-          <button class="lane-name" :class="{ on: laneOpen === lane.type }"
+          <button class="lane-name" :class="{ on: laneOpen === laneTypeOf(lane) }"
                   :title="lane.label + '：点这里改这条轨道的设置'"
-                  @click.stop="emit('lane-open', lane.type)">{{ lane.label }}</button>
+                  @click.stop="emit('lane-open', laneTypeOf(lane))">{{ lane.label }}</button>
           <div class="lane-adds">
             <button v-if="lane.type !== 'segments'" class="add-lane"
                     :title="lane.type === 'fx' ? '在播放头处添加视觉特效（先选细分类型）' : '在播放头处添加'"
-                    @click.stop="onLaneAdd(lane.type, $event)"><Icon name="plus" :size="11" /></button>
+                    @click.stop="onLaneAdd(laneKey(lane), $event)"><Icon name="plus" :size="11" /></button>
             <button v-else class="add-lane mute-add" title="在播放头处添加屏蔽区间" @click="addMuteAtCurrent"><Icon name="scissors" :size="11" /></button>
           </div>
         </div>
@@ -605,7 +620,7 @@
         <div class="lane-label ruler-label">时间</div>
     </div>
     <div ref="tracksRef" class="timeline-tracks">
-      <div v-for="lane in lanes" :key="'track-' + lane.type" class="lane">
+      <div v-for="lane in lanes" :key="'track-' + laneKey(lane)" class="lane">
         <div class="lane-track" :style="{ width: trackWidth + 'px' }">
           <svg v-if="lane.type === 'subtitles' && wavePath" class="wave-layer" :width="trackWidth" :height="WAVE_H">
             <!-- 双层描边：这条线要同时压在不透明的字幕块（`#3b82f6`）**和**近白背景
@@ -617,7 +632,7 @@
           <div class="playhead" :style="{ left: (currentTime || 0) * scale + 'px' }"></div>
           <div
             v-for="(block, i) in laneBlocks(lane)"
-            :key="lane.type + '-' + i"
+            :key="laneKey(lane) + '-' + i"
             class="block"
             :class="[block.cls, { selected: isBlockSelected(lane, block) }]"
             :style="{ left: block.left + 'px', width: block.width + 'px', background: block.color }"
@@ -1354,6 +1369,25 @@ function setElementKind(ev, kind) {
 }
 /** 能挂音效的类型（`SFX_CAPABLE`）。 */
 const SFX_CAPABLE = EFFECTS.filter((e) => e.sfx_capable === true).map((e) => e.id)
+
+/** `element` 的**种类** —— `'text'` / `'sticker'` / **`'unknown'`**。
+ *
+ *  ⚠️⚠️ **认不出时必须是 `'unknown'`，不许默认成 `'text'`**。
+ *  `kind` 可能是 LLM 漏写/写错的值（Rust 侧 `#[serde(default)]` 兜空串），
+ *  默认成文字会把**坏数据伪装成正常元素** —— 用户看到的是一个能编辑的文字框，
+ *  出片侧却按"认不出的 kind"处理。照实报出来，用户才有机会自己发现。
+ *
+ *  ⚠️ 与 `labelFor` 里那条判据**同口径**（那边返回 `'⚠' + k` 显示在泳道上）——
+ *  两处必须一致，否则会出现"泳道上写着认不出、面板里却当成文字"。
+ *
+ *  ⚠️ 空串算 `'text'`：那是**没写过的默认值**（面板新建的就是它），
+ *  与"写了个认不出的值"是两回事。 */
+function elementKindOf(ev) {
+  const k = String(ev?.kind ?? '').trim().toLowerCase()
+  if (k === 'text' || k === '') return 'text'
+  if (k === 'sticker') return 'sticker'
+  return 'unknown'
+}
 /** 属性面板的两组（`ui` 分组；原先两组数组也在这里手写）。
  *  ⚠️ `ui` **必须是数组**（词汇表门禁会校验；2026-10-01 出过一次事故：`overlay.ui` 写成对象 `{}`
  *  ⇒ 这里 `.includes` 抛 `(intermediate value).includes is not a function` ⇒ 编辑器 setup 直接抛错）。
@@ -1370,17 +1404,59 @@ const LANE_DEFS = [
   { type: 'segments', label: '分段 / 屏蔽', color: TIMELINE_COLORS.segments, resizable: true },
   { type: 'subtitles', label: '字幕', lane: 'subtitles', color: 'rgba(59,130,246,0.35)', resizable: true },
   { type: 'camera', label: '运镜', lane: 'camera', color: TIMELINE_COLORS.camera, types: LANE_TYPES('camera'), resizable: true },
-  // ⚠️ 轨头标签是「元素」不是「贴纸」（§5 E1）。这条轨**同时装 `sticker` 与 `element`**
-  //    （`LANE_TYPES('sticker')` → `['sticker','element']`，与 `spec/effects.json` 的座位表一致），
-  //    所以叫「贴纸」会让"往这条轨加一个元素"变成一件靠猜的事 ——
-  //    用户看到的标签必须涵盖它能装的东西。
-  //    ⚠️ `lane` 这个键**仍然是 `sticker`**（磁盘上的键名、Rust `Lane::key` 与
-  //    `LANE_OF_TYPE` 都按它走）—— 只改**显示标签**，不做数据迁移。
-  { type: 'sticker', label: '元素', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  // ⚠️⚠️ **「元素」轨在界面上拆成两条：文字 / 贴纸**（2026-10-14，用户口径
+  //    「前端编辑器也要分离」）。
+  //
+  //    历史：这条轨原先叫「元素」，**同时装 `sticker` 与 `element`** 两种事件
+  //    （`LANE_TYPES('sticker')` → `['sticker','element']`，与 `spec/effects.json`
+  //    的座位表一致）。混装的代价是"＋"必须弹一个「文字 / 贴纸」二选一菜单 ——
+  //    而用户本来就是在**某一条轨**上点的加号，那个选择是多余的。
+  //
+  //    ⇒ 现在拆成两条泳道（靠上面 `kinds` 过滤）。
+  //    ⚠️ 磁盘上它们**仍然是同一条 `sticker` 轨道** —— `lane` 照旧写 `sticker`
+  //       （Rust `Lane::key` 与四处 `LANE_OF_TYPE` 都按它走），**不做数据迁移**。
+  //       拆的只是**界面上的两条泳道**。
+  //
+  // ⚠️ 两条的 `type` / `types` **完全一样**（都是 `['sticker','element']`）——
+  //    分开它们的只有 `kinds`。所以**别的按 `lane.type` 找轨道的代码会同时命中两条**
+  //    （`lane.type` 不再唯一）。凡是"按 type 索引泳道"的地方都要用 `lane.id`：
+  //    `id` 是**界面专用**的唯一键，与磁盘无关（见下面 `laneOpen` / `:key` 的用法）。
+  { id: 'text', type: 'sticker', kinds: ['text', ''], sharedEye: true,
+    label: '文字', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
+  { id: 'sticker', type: 'sticker', kinds: ['sticker'],
+    label: '贴纸', lane: 'sticker', color: TIMELINE_COLORS.sticker, types: LANE_TYPES('sticker'), resizable: true },
   { type: 'fx', label: '视觉特效', lane: 'effects', color: TIMELINE_COLORS.flash, types: LANE_TYPES('fx'), resizable: true },
   { type: 'sfx', label: '音效', lane: 'sfx', color: TIMELINE_COLORS.sfx, types: LANE_TYPES('sfx'), resizable: true }
 ]
 const lanes = LANE_DEFS
+
+/** 泳道的**界面唯一键**（`id` 优先，没有就用 `type`）。
+ *
+ *  ⚠️⚠️ **元素轨拆成「文字 / 贴纸」两条之后，`lane.type` 不再唯一** ——
+ *  两条的 `type` 都是 `'sticker'`（它们磁盘上确实是同一条轨）。
+ *  于是凡是**当唯一键用**的地方（`v-for` 的 `:key`、`laneOpen`、选中态判等、
+ *  `emit('lane-open')`）都**必须走 `laneKey`**，否则两条泳道会：
+ *    * 共用同一个 `:key` ⇒ Vue 复用错节点（折叠/高亮串台）；
+ *    * 共用同一个 `laneOpen` ⇒ 张开一条、另一条跟着张；
+ *    * 选中态判等时**两条都亮**。
+ *
+ *  ⚠️ **别把 `laneKey` 用在数据面**：`laneBlocks` 的 `types` 过滤 / `LANE_OF_TYPE` /
+ *  Rust `Lane::key` 那些地方要的是**真实的轨道名**（`'sticker'`），不是界面 id。 */
+const laneKey = (lane) => lane.id || lane.type
+
+/** 泳道的**轨道名**（发给外面的那个值）。
+ *
+ *  ⚠️ 与 [`laneKey`] **不是一回事**，别混：
+ *    * `laneKey` = 纯界面 id（`v-for` 的 `:key`、选中态判等）—— 文字轨与贴纸轨**必须不同**；
+ *    * `laneTypeOf` = **磁盘上的轨道名**（两条都是 `'sticker'`）—— `emit('lane-open')`
+ *      发的是它，因为 `PolishView` 拿它去查"该滚到哪一组控件"
+ *      （`laneGroupEls[lane]`，那张表按**轨道名**索引）。
+ *
+ *  ⚠️ **`emit('lane-open')` 必须发 `laneTypeOf`**：发 `laneKey` 的话，
+ *    点「文字」轨（id 是 `text`）会去查 `laneGroupEls.text` —— **不存在**
+ *    ⇒ 退回面板顶部，用户看到的是"点轨道名没反应"。而两条轨共用同一组「区域设置」，
+ *    发的本来就该是同一个轨道名。 */
+const laneTypeOf = (lane) => lane.type
 
 // ── 成片时间线（EDL）：双轨视图的第二条轴 ────────────────────────
 // **默认隐藏**：`edl.clips` 为空时不渲染任何东西（老工程界面零变化，§6.2 第 4 条）。
@@ -1773,6 +1849,25 @@ function laneBlocks(lane) {
       const type = ev.type || ''
       const types = lane.types || [lane.type]
       if (!types.includes(type)) return
+      // ---- ⚠️⚠️ **文字 / 贴纸在同一盘的「两条泳道」上分开**（2026-10-14）----
+      //
+      // 用户口径：「**前端编辑器也要分离**」。
+      //
+      // `element` 与 `sticker` 在**磁盘上是同一条轨**（`Lane::Sticker` ⇒ `"sticker"`，
+      // 四处 `LANE_OF_TYPE` 镜像都这么映射）—— 那个**不能改**（改了就要求数据迁移，
+      // 而老工程里全是 `type:"sticker"`）。
+      //
+      // 但**界面上**它们该是两条轨：它们的载荷、属性面板、能选的东西**完全不同**
+      // （文字有排版/描边/逐字，贴纸只有图和落点）。混在一条轨上的代价是
+      // "＋" 必须弹一个「文字 / 贴纸」二选一菜单 —— 那是**替用户做了一次多余的选择**，
+      // 而用户本来就是在某一条轨上点的加号。
+      //
+      // ⇒ `lane.kinds` = **在 UI 上再分一次**（`types` 管事件类型，`kinds` 管元素种类）。
+      //   不写 `kinds` 的泳道 = 不过滤（行为与从前逐字节相同，R4）。
+      if (lane.kinds) {
+        const k = type === 'element' ? (ev.kind || 'text') : (type === 'sticker' ? 'sticker' : null)
+        if (k !== null && !lane.kinds.includes(k)) return
+      }
       const dur = evDur(ev)
       const t = Number(ev.time) || 0
       out.push({
@@ -1799,7 +1894,8 @@ function laneBlocks(lane) {
 
 function isBlockSelected(lane, block) {
   const s = selected.value
-  if (!s || s.lane !== lane.type) return false
+  // ⚠️ 用 `laneKey`（不是 `lane.type`）—— 元素轨拆成两条之后 `type` 不再唯一
+  if (!s || s.lane !== laneKey(lane)) return false
   if (block.kind !== s.kind) return false
   if (block.kind === 'sub') return s.subIndex === block.subIndex
   if (block.kind === 'mute') return s.muteIndex === block.muteIndex
@@ -1819,9 +1915,9 @@ function selectBlock(lane, block) {
   if (props.laneOpen) emit('lane-open', '')
   // 成片段与源块的面板**互斥**共存（同一列）：选源块就把成片段让出去。
   edlSelected.value = -1
-  if (block.kind === 'sub') selected.value = { kind: 'sub', lane: lane.type, subIndex: block.subIndex }
-  else if (block.kind === 'mute') selected.value = { kind: 'mute', lane: lane.type, muteIndex: block.muteIndex }
-  else selected.value = { kind: block.kind, lane: lane.type, si: block.si, ei: block.ei }
+  if (block.kind === 'sub') selected.value = { kind: 'sub', lane: laneKey(lane), subIndex: block.subIndex }
+  else if (block.kind === 'mute') selected.value = { kind: 'mute', lane: laneKey(lane), muteIndex: block.muteIndex }
+  else selected.value = { kind: block.kind, lane: laneKey(lane), si: block.si, ei: block.ei }
 }
 /** 块/选中 → 落盘分组（决定 PUT 到哪个接口、以及要不要跑后处理）。 */
 const dirtyKindOf = (kind) => (kind === 'sub' ? 'subtitles' : kind === 'mute' ? 'mute' : kind === 'edl' ? 'edl' : 'segments')
@@ -2414,34 +2510,29 @@ function onStickerPick(patch) {
  * 字幕/屏蔽轨直接加对应块；运镜/贴纸/覆盖层/音效轨直接加该类型事件；
  * 视觉特效轨有 11 个细分类型 → 先弹菜单选一个再加（选完就定了，面板里只换同轨道的细分类型）。
  */
-function onLaneAdd(laneType, evt) {
+function onLaneAdd(laneKeyOrType, evt) {
+  const laneType = laneKeyOrType
   if (laneType === 'subtitles') { addSubtitleAtCurrent(); return }
   if (laneType === 'segments') { addMuteAtCurrent(); return }
   if (laneType === 'fx') { openFxMenu(evt); return }
-  // ⚠️ **元素轨必须给菜单、不能直接加**：这条轨道装 `sticker` 与 `element` 两种事件类型，
-  //    直接 `addEventAt('sticker')` 会让 `element`（即"文字"那一支）**永远造不出来**。
-  //    与视觉特效同规格（类型由轨道分配，面板里只允许在同轨道的细分类型之间换）。
-  if (laneType === 'sticker') { openElementMenu(evt); return }
+  // ---- ⚠️ **文字轨 / 贴纸轨：直接加，不再弹二选一菜单**（2026-10-14）----
+  //
+  // 以前只有一条「元素」轨，它同时装 `sticker` 与 `element` 两种事件
+  // ⇒ 点＋必须先问"你要文字还是贴纸"（`openElementMenu`）。
+  // 现在**轨道本身已经分开了** —— 用户在"文字"轨上点＋，意思就是文字；
+  // 再弹一次菜单是**把已经知道的事再问一遍**。
+  //
+  // ⚠️ 两种都建 `type: 'element'`（差别只在 `kind`）—— 与旧口径一致，
+  //    别退回 `type:'sticker'` 那条老载体（见 `addElementAt` 的注释）。
+  if (laneType === 'text') { addElementAt('text'); return }
+  if (laneType === 'sticker') { addElementAt('sticker'); return }
   addEventAt(laneType)
 }
 
 const fxMenu = ref(null) // { x, y } | null —— 视觉特效的细分类型菜单（fixed 定位，不受时间轴滚动影响）
-const elementMenu = ref(null) // 同上，元素轨的「文字 / 贴纸」二选一
 
-function openElementMenu(evt) {
-  const r = evt.currentTarget.getBoundingClientRect()
-  elementMenu.value = { x: Math.round(r.left), y: Math.round(r.bottom + 4) }
-  document.addEventListener('pointerdown', closeElementMenu, true)
-}
-function closeElementMenu(e) {
-  if (e && e.target && e.target.closest && e.target.closest('.fx-menu')) return
-  if (!elementMenu.value) return
-  elementMenu.value = null
-  document.removeEventListener('pointerdown', closeElementMenu, true)
-}
 /** 在播放头处加一个**指定 kind** 的元素（`text` 走排版、`sticker` 走贴纸图）。 */
 function addElementAt(kind) {
-  closeElementMenu()
   // ⚠️⚠️ **两种 kind 都建 `element`**（差别只在 `kind` 字段）。
   //
   // 旧代码写的是 `kind === 'text' ? 'element' : 'sticker'` —— 选「贴纸」会建出一条

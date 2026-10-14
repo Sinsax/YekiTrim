@@ -376,7 +376,14 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
 
 // ── ⑰ 轨道名可点 = 轨道设置；与块的属性面板互斥；右栏合并成一块（2026-10-06）──
 {
-  const nameOpens = (s) => /@click\.stop="emit\('lane-open', lane\.type\)"/.test(s)
+  // ⚠️ 2026-10-14：元素轨拆成「文字 / 贴纸」两条之后，发出去的**不再是裸 `lane.type`**，
+  //    而是 `laneTypeOf(lane)`（它**也**返回 `lane.type` —— 两条都发 `'sticker'`）。
+  //    ⚠️ 为什么不能改成用界面 id（`laneKey`）：`PolishView` 的 `laneGroupEls`
+  //       按**轨道名**索引，用 `laneKey` 会让点「文字」轨去查不存在的
+  //       `laneGroupEls.text` ⇒ **点轨道名没反应**（静默）。
+  //    本判据钉的仍是"点轨道名会发 lane-open"，放宽到接受这两种写法。
+  const nameOpens = (s) =>
+    /@click\.stop="emit\('lane-open', lane(TypeOf\(lane\)|\.type)\)"/.test(s)
   const itemYields = (s) => s.includes('<div v-if="!laneOpen" class="props-panel card"')
   const lanePanel = (s) => s.includes('<div class="right-col">') && /lane-group-h/.test(s)
   const hostEmpty = (s) => s.includes('<div id="tl-props-host"></div>')
@@ -715,7 +722,13 @@ for (const [file, src, names] of CRITICAL_BINDINGS) {
   check('⑰ 点轨道名 = 焦点高亮 + 滚到那一段', focusScrolls(polishView), true)
   const MUT17 = [
     ['摘掉"轨道设置打开时让位"（两份面板并存）', timelineEditor, (s) => s.replace('<div v-if="!laneOpen" class="props-panel card"', '<div class="props-panel card"'), (m) => nameOpens(m) && itemYields(m)],
-    ['轨道名不可点（没有入口）', timelineEditor, (s) => s.replace("@click.stop=\"emit('lane-open', lane.type)\"", ''), (m) => nameOpens(m)],
+    // ⚠️ 变异要跟着**当前源码的形状**走（2026-10-14：`lane.type` → `laneTypeOf(lane)`）。
+    //    锚点过时的症状是**变异静默失效**（replace 找不到东西 ⇒ 源码没变 ⇒
+    //    "判据翻面"那条判据失败），而不是报"锚点找不到" —— 这里刻意两条都换了，
+    //    只要今天源码里是哪种写法，变异都能真的改到东西。
+    ['轨道名不可点（没有入口）', timelineEditor, (s) => s
+      .replace("@click.stop=\"emit('lane-open', laneTypeOf(lane))\"", '')
+      .replace("@click.stop=\"emit('lane-open', lane.type)\"", ''), (m) => nameOpens(m)],
     ['往 Teleport 目标里塞子节点', polishView, (s) => s.replace('<div id="tl-props-host"></div>', '<div id="tl-props-host"><span></span></div>'), (m) => panelOk(m)],
     ['把「画面尺寸」页签删掉（回不去调画布）', polishView, (s) => s.replace("sideTab === 'canvas'", "sideTab === 'canvasX'"), (m) => hasSideTabs(m)],
     ['画面尺寸那块搬出页签（不再同一位置切换）', polishView, (s) => {
