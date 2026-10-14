@@ -1496,8 +1496,16 @@ const MUTATIONS = [
     // ⚠ 反面：`cuesToAss` 又给 `font` 加默认值 ——
     //   有默认值就能再次"忘传也能跑"（当年就是这么来的）。
     name: '`cuesToAss` 又给 `font` 加上了默认值',
-    from: 'function cuesToAss(cues, { font, fontSize = 42, danmaku = true } = {}) {',
-    to: "function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true } = {}) {",
+    // ⚠⚠ **变异锚点必须与真签名逐字一致**（2026-10-14 修）。
+    //
+    //    这里原先写的是**没有** `outlinePx, shadowPx` 的旧签名 —— 2026-10-14
+    //    加描边/阴影那两个参数时**没同步这条**。`.replace` 匹配不上 ⇒
+    //    变异体与原文逐字节相同 ⇒ 它当然"没被打红" ⇒
+    //    `--mutate` 报「1 处变异没被打红」，看着像判据有洞，
+    //    其实是**这把改刀自己钝了**。
+    //    ⚠ "改签名 = 必须同步所有锚点"这条纪律的又一实例（本仓栽过多次）。
+    from: 'function cuesToAss(cues, { font, fontSize = 42, danmaku = true, outlinePx, shadowPx } = {}) {',
+    to: "function cuesToAss(cues, { font = 'Sans', fontSize = 42, danmaku = true, outlinePx, shadowPx } = {}) {",
   },
   {
     // 反面：把描边色的 hex 匹配**收窄回 6 位**（2026-10 修的那条真缺陷）。
@@ -3827,9 +3835,45 @@ function checkTextMotion(mod, dir, src) {
   {
     const r = textTrack3({ effectAnim: 'heartbeat' });
     ok(r !== null, '`effect_anim = "heartbeat"` 的轨没生成');
-    ok(r.sub.scale_in_from === 1 && r.sub.scale_in_peak === 1.14 && r.sub.scale_in_ms === 480,
-      'heartbeat 该写 1/1.14/480，实得 '
-      + r.sub.scale_in_from + '/' + r.sub.scale_in_peak + '/' + r.sub.scale_in_ms);
+    // ⚠️⚠️ **不许把这三个数写死在判据里**（2026-10-14 改）：
+    //    原来写死 `1/1.14/480`，于是调参（占空比 / 与 `pop` 去重）时
+    //    这条就报「实得 1/1.22/620」—— 它**判的是"数值没变"，不是"语义对"**。
+    //    那种判据在调参时只会碍事，而真正该钉的是：
+    //      ① 与**权威表** `ANIM_PRESETS.heartbeat` 逐值一致（三处同源）；
+    //      ② 与 `pop` **明显不同**（曾经峰值逐位相同 ⇒ 像素判据量到同图）。
+    //    ⇒ 改成**从权威表取值**再比，并对 `pop` 做一次"必须分得开"的断言。
+    // ⚠ `ANIM_PRESETS` 住在 `translate` 的闭包里、import 不到 ⇒ 从**源码文本**里抽
+    //   （本文件既有形态：`translatorSource` 就是为这类检查读的）。
+    // ⚠⚠ **必须先在“去注释”的源码上匹配**：`heartbeat` 那一块的注释里
+    //    **自己就写着** `scale_in_ms: 530` 这种样字（讲“为什么调参”）⇒
+    //    不去注释就会**抽到注释里的值**（实测就是这么失败的）。
+    const srcNoComment = translatorSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    const presetNum = (tier, key) => {
+      const blk = srcNoComment.match(new RegExp('\\b' + tier + ':\\s*\\{['
+        + '\\s\\S]{0,3000}?\\b' + key + ':\\s*(-?[0-9.]+)'))
+      return blk ? Number(blk[1]) : NaN
+    }
+    const hbFrom = presetNum('heartbeat', 'scale_in_from');
+    const hbPeak = presetNum('heartbeat', 'scale_in_peak');
+    const hbMs = presetNum('heartbeat', 'scale_in_ms');
+    ok(Number.isFinite(hbFrom) && Number.isFinite(hbPeak) && Number.isFinite(hbMs),
+      '自证：抽不到 `ANIM_PRESETS.heartbeat` 的三个数（源码结构变了，抽取方式要跟着改）');
+    ok(r.sub.scale_in_from === hbFrom && r.sub.scale_in_peak === hbPeak && r.sub.scale_in_ms === hbMs,
+      'heartbeat 该写权威表的 ' + hbFrom + '/' + hbPeak + '/' + hbMs
+      + '，实得 ' + r.sub.scale_in_from + '/' + r.sub.scale_in_peak + '/' + r.sub.scale_in_ms);
+    // ⚠⚠ **`heartbeat` 与 `pop` 必须分得开**（2026-10-14 实测抓出来的）：
+    //    两者峰值都是 `from + (peak-from)×1.25`。`pop` = 0.3/1.0 ⇒ **1.1750**；
+    //    心跳曾写 1.0/1.14 ⇒ 也**恰好 1.1750** ⇒ 像素判据量到 **0.000000（逐像素同图）**。
+    //    ⇒ 这条把"不许撞车"写成数值判据，免得下次调参又撞上。
+    const peakOf = (f, pk) => f + (pk - f) * 1.25;
+    const popF = presetNum('pop', 'scale_in_from'), popP = presetNum('pop', 'scale_in_peak');
+    ok(popF === 0.3 && popP === 1.0,
+      '自证：抽到的 pop 参数不是 0.3/1.0（实得 ' + popF + '/' + popP + '）——锚点可能抽错了');
+    ok(Math.abs(peakOf(hbFrom, hbPeak) - peakOf(popF, popP)) > 0.05,
+      'heartbeat 与 pop 的过冲峰值差得太近（' + peakOf(hbFrom, hbPeak).toFixed(4)
+      + ' vs ' + peakOf(popF, popP).toFixed(4) + '）⇒ 像素判据会量成同一档');
   }
 
   // ㊳-quater **三轴可以同时设，且各给各的字段**（可叠加，不互相吃掉）。
