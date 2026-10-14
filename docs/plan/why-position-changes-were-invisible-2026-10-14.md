@@ -107,12 +107,25 @@ byDom = !dhampirMode.value || DHAMPIR_NO_DRAW.has(effectAnimName)
 
 | 那条 | 底座是否也画 | 依据（**已核实**，不是推测） |
 |---|---|---|
-| 位置 | **是** | `layout_text_elements` 写 `x`/`y`，转译器落成 ASS 的 `\pos` |
-| 描边 | **是** | ASS `Outline` 四档 `3/2.5/1/2`（真产物实测） |
-| 竖排（`vtext`） | **是** | 转译器 `case 'element'` 已把样式落成 `SubtitleStyle` |
-| 逐字（`perchar_*`） | **是** | 底座有 `dhampir-timeline/src/text_perchar_anim.rs`（**6 个 `pub fn`**，实测） |
-| 心跳（`heartbeat`） | **否** | 全底座搜 `heartbeat` ⇒ **0 命中**（实测）⇒ 底座**不画**，需求书写在 `docs/plan/dhampir-heartbeat-request.md` |
+| 位置 | **是** | 转译器把 `x`/`y` 落进 `doc.json`；底座 `text_layout.rs` + `text_overlay.rs::paint()` |
+| 描边 | **是** | 同上（`TextOverlay` 有描边参数；ASS 的 `Outline` 只是**侧挂产物**） |
+| 竖排（`vtext`） | **是** | 转译器 `case 'element'` 已落成轨级样式 |
+| 逐字（`perchar_*`） | **是** | 底座有 `text_perchar.rs` **与** `text_perchar_anim.rs`（实测） |
+| 动效（`text_motion`） | **是** | 底座有 `text_motion.rs`（实测） |
+| 心跳（`heartbeat`） | **否** | 全底座搜 `heartbeat` ⇒ **0 命中**（实测）⇒ 需求书写在 `docs/plan/dhampir-heartbeat-request.md` |
 | `arc` | 两边都做不出真弧 | 见 `docs/anim/README.md` |
+
+### ⚠️ 一处**我自己写错又改正**的依据
+
+第一版这篇写的是「底座读 ASS 的 `\pos` / `Outline`」—— **不对**。
+转译器 `tools/polish-to-dhampir.mjs:6746` 写得很清楚：
+
+> 出片走的是 `doc.json` 这条 —— 底座自己光栅化文字（`text_overlay.rs`），
+> **根本不读那个 ASS**。只做 ASS 那半边 = 「文件里颜色对、成片里全是白的」。
+
+⇒ ASS 是**侧挂产物**（给人看/别的消费者），**出片那半是 `doc.json` + `text_overlay`**。
+结论方向不变（底座**确实**画文字元素），但**依据必须换成对的那条** ——
+按错的依据去底座侧改，会改到没人读的那份文件上。
 
 ⚠️ **`heartbeat` 这一格很关键**：底座**不画**它 ⇒ **DOM 那份是唯一可见的**
 ⇒ **不能一律把 DOM 文字层关掉**（方案 A 要按档位来，不是整个 `.text-layer` 一刀切）。
