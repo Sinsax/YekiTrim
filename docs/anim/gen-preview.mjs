@@ -5,27 +5,41 @@
  *    页面自身**不许**再写第二份数学。
  */
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as A from './anim-core.mjs';
 
-const KINDS = JSON.parse(fs.readFileSync('./anim-kinds.json', 'utf8'));
+// ⚠ 路径**相对脚本自己**，不是相对 CWD ——
+//   原来是 `'./anim-kinds.json'`，从仓库根跑就 ENOENT，
+//   而从 `docs/anim/` 跑才行 ⇒ 没人跑得动的脚本自然也没人重生成。
+const KINDS = JSON.parse(fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), 'anim-kinds.json'), 'utf8'));
 
-const KIND_ORDER = ['none', 'tilt', 'shake', 'sway', 'slam', 'shrink_in', 'pop',
-  'arc', 'size', 'scatter', 'shrink', 'grow', 'hop', 'vtext'];
+// ⚠⚠ 2026-10-14（三轴收敛）：档位从 **39 收到 9**，而且多了
+//    **过渡**这第三条轴。原来的 A/B/C/D/E 五组分类是**按实现技巧**分的，
+//    现在有了正式的轴（而且判据钉着它）⇒ 分组直接跟**轴**走。
+//    ⚠ 这也是一个漂移点：旧分组里有 `both` 那一类，而收敛后已经**没有 `both`**。
+const KIND_ORDER = ['none', 'tilt', 'arc', 'vtext', 'transition', 'shake', 'perchar', 'heartbeat'];
 const GROUP_OF = {
-  none: '不设', tilt: 'A 组 · 整块变换', shake: 'B 组 · 整块动效', sway: 'B 组 · 整块动效',
-  slam: 'B 组 · 整块动效', shrink_in: 'B 组 · 整块动效', pop: 'B 组 · 整块动效',
-  arc: 'C 组 · 逐字（同时动、幅度不同）', size: 'C 组 · 逐字（同时动、幅度不同）',
-  scatter: 'C 组 · 逐字（同时动、幅度不同）', shrink: 'C 组 · 逐字（同时动、幅度不同）',
-  grow: 'C 组 · 逐字（同时动、幅度不同）',
-  hop: 'D 组 · 逐字错峰（依次动、幅度相同）', vtext: 'E 组 · 竖排（改排版方向）',
+  none: '不指定（三栏都有）',
+  tilt: '排版轴　· 形态字段（不随时间变）',
+  arc: '排版轴　· 形态字段（不随时间变）',
+  vtext: '排版轴　· 形态字段（不随时间变）',
+  transition: '过渡轴　· 进出场时间字段',
+  shake: '动效轴　· 动效字段',
+  perchar: '动效轴　· 动效字段',
+  heartbeat: '动效轴　· 动效字段',
 };
 
-// 两轴归属：与 ANIM_KINDS 的 `axis` 一致（`both` = 两栏都要填）。
+// ⚠⚠ 三轴归属：与 ANIM_KINDS 的 `axis` 一致。
+//    ⚠ **没有 `both` 了** —— 收敛后每一档**只属一条轴**，
+//      三条轴的档名集合**两两不相交**（判据 `check-anim-attribution.mjs`）。
+//    ⚠ “不指定”（`axis: 'none'`）不是一条轴，而是**三栏都有的空项**。
 const AXIS_NOTE = {
-  none: { zh: '两栏都能选', cls: 'ax-none' },
-  style: { zh: '只填「样式」栏', cls: 'ax-style' },
+  none: { zh: '三栏都有的空项', cls: 'ax-none' },
+  style: { zh: '只填「排版」栏', cls: 'ax-style' },
+  transition: { zh: '只填「过渡」栏', cls: 'ax-transition' },
   effect: { zh: '只填「动效」栏', cls: 'ax-effect' },
-  both: { zh: '两栏都要填', cls: 'ax-both' },
 };
 
 const FPS = 30;                 // 面板按 30fps 播（与工程默认一致）
@@ -91,7 +105,7 @@ for (const g of KIND_ORDER) {
 
 const html = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>元素文字效果类别 · 39 档</title>
+<title>元素文字效果类别 · 9 档 × 三轴</title>
 <style>
 :root{--bg:#14161a;--fg:#e8e6e1;--mut:#9aa0a6;--line:#2a2e35;--acc:#f56b41;
   /* ⚠️ 预览字号**只在这里定义一次**：样式表用它、脚本也用 getComputedStyle 读它。
@@ -126,7 +140,8 @@ h2.grp:first-child{margin-top:6px}
 .ax-none{background:#3a3f47;color:#c9ced6}
 .ax-style{background:#1f4d3a;color:#7ee2b0}
 .ax-effect{background:#4a3a1c;color:#f0c674}
-.ax-both{background:#4a2338;color:#ff9ec4}
+/* ⚠ 过渡是第三条轴（2026-10-14 新增）。旧的 .ax-both 已删 —— 现在没有 both 了。 */
+.ax-transition{background:#1c3a4a;color:#7ec8f0}
 /* ⚠️ 舞台高度必须容得下**竖排**：竖排时一行是"一列"，6 个字竖着排 ≈ 6×字号。
    原来固定 104px ⇒ 竖排那三张的上下被「overflow:hidden」裁掉，
    看着像"竖排没生效"。这里给足，并让字号可调时一起跟着走。 */
@@ -168,11 +183,11 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
   <div class="note">
     <b>每条演示的都是「这一档单独作用」</b>：同一句
     <code>${DEMO_TEXT}</code>（${CHARS.length} 字），30fps，弹入从条首起算。
-    ⚠️ 实际是<b>两轴叠加</b>的 —— 每张卡的角标写清它该填哪一栏：
-    <span class="axbadge ax-style">只填样式栏</span>
+    ⚠️ 实际是<b>三轴叠加</b>的（排版 × 过渡 × 动效）—— 每张卡的角标写清它该填哪一栏：
+    <span class="axbadge ax-style">只填排版栏</span>
+    <span class="axbadge ax-transition">只填过渡栏</span>
     <span class="axbadge ax-effect">只填动效栏</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-    （<code>both</code> 的档两边各给一半，<b>只填一栏只生效一半</b>）。
+    （一档**只属一条轴**，三条轴的档名集合两两不相交。）
   </div>
   ${grid.join('\n')}
 </main>
@@ -186,7 +201,7 @@ const FONT_PX = parseFloat(getComputedStyle(document.documentElement)
   .getPropertyValue('--txt-fs')) || 23;
 
 // ---- 与 animcore.mjs 逐式相同的内联副本（页面必须能单文件打开）----
-${fs.readFileSync('./anim-core.mjs', 'utf8')
+${fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'anim-core.mjs'), 'utf8')
     .replace(/^export /gm, '')}
 
 function stateAt(k, localMs){
