@@ -1,5 +1,25 @@
 # 39 档 → 拆成「样式 / 动效」两个类型
 
+> ⚠⚠ **历史文档（2026-10-13）—— 已被后续设计取代，不要照它实现。**
+>
+> 本文描述的是**两轴**方案（样式 / 动效），而**当前实现是三轴**：
+>
+> | | 本文（2026-10-13） | 当前（2026-10-14 起） |
+> |---|---|---|
+> | 轴 | 样式 × 动效 | **排版 × 过渡 × 动效** |
+> | 字段 | `style_anim` + `effect_anim` | `style_anim` + **`transition_anim`** + `effect_anim` |
+> | 档位 | 39 档（14 类） | **9 档**（每档**只属一条轴**） |
+> | `both` 类 | 有（11 档两边都给） | **已整类删除** |
+> | 面板显示名 | 「样式」 | 「**排版**」 |
+>
+> 权威：`webui/src/polish/engine.js::ANIM_PRESETS`（ 9 档）+
+> `tools/polish-to-dhampir.mjs::ANIM_PRESETS` + `webui/src/components/TimelineEditor.vue::ANIM_KINDS`。
+> 归属判据：`scripts/check-anim-attribution.mjs`（表 ↔ `animAxisOf` ↔ **实测产物**）。
+>
+> → 当前状态见 `docs/plan/element-text-four-issues-2026-10-14.md` 的第六节。
+>
+> （保留本文的理由：它记录了拆分**为什么**要这么拆 —— 那个推理过程到今天仍然成立。）
+
 > 2026-10-13。起因：「所以之前是已经全做完了但是都放在动效里了？那就根据已经完成的
 > 动效内的分类的进行拆分成样式和动效，这两个类型都有二级细分的吗？」
 >

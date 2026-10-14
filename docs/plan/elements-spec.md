@@ -57,9 +57,17 @@ y = "auto"
 
 ⇒ 最终形态（面板上只剩两样东西）：
 
+> ⚠⚠ **2026-10-14 更正**：表格里原来写的「样式（`hook/chapter/comment/count`）」
+> **那套四档早已被用户否决并删除**，面板上也再没有那个下拉（`TEXT_STYLES` 已一并删）。
+> 现在只有**排版 × 过渡 × 动效**三条可叠加的轴。⚠ 但 `Event.style` **字段还在**
+> （字幕层仍用它），只是不再由这个面板提供入口。
+> 权威见 `webui/src/polish/engine.js::ANIM_PRESETS` 与
+> `docs/plan/element-text-four-issues-2026-10-14.md` 第六节。
+
 | | 贴纸 | 文字 |
 |---|---|---|
-| 用户能选的 | 贴纸图（`StickerPicker`） | **文字内容 + 样式**（`hook/chapter/comment/count`） |
+| 用户能选的 | 贴纸图（`StickerPicker`） | **文字内容 + 三条轴**（排版 / 过渡 / 动效） |
+| 档位来源 | — | `ANIM_PRESETS`（**9 档**，每档只属一条轴）|
 | 位置 | **不给选**，一句 `位置 x/y 由后处理算（每次重跑覆盖）。` | **同一句话，逐字相同** |
 | 效果 | 四段相位：`弹入 0.35s` → 上浮 `0.4s` → 保持 → `淡出 0.3s` | **弹入 0.35s + 淡出 0.3s**（不上浮） |
 | 位置怎么来 | `process` 的 `pick_sticker_position`（躲障碍） | `process` 的 `pick_box_position`（**同一族求解器**） |
