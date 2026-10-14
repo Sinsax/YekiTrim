@@ -2296,6 +2296,24 @@ export function getElements(idx, t) {
         xPct: e.textX,
         yPct: e.textY,
         pos: e.textPos,
+        // ⚠️⚠️ **落点权威：`x`/`y` 优先，`pos` 只是兜底**（2026-10-14 修的真缺陷）。
+        //
+        //    `x`/`y` 是 `process` 按 `TextLayout::anchor_origin(f)` **算好的盒左上角**，
+        //    它带进了 `caption_clearance`（底部避让字幕带）、盒尺寸（随行数变）、
+        //    竖屏 `kh` 缩放 —— 而预览原先用的 `pos` 三值近似（6/50/94）
+        //    **一样都没有** ⇒ 底部锚点实测差 **231~391px**。
+        //
+        //    ⚠ 这正是用户反复报的「文字层位置还是不正常」：前四轮都在调**近似**，
+        //      而权威值一直在 `x`/`y` 里、**没被用**。
+        //
+        //    ⚠ `usesBoxXY` 在**这一段里恒为 true**：上面那道门已经把
+        //      "没有 x/y"的条目 `continue` 掉了（第 2210 行附近）——
+        //      没跑过后处理的元素**根本不画**，而不是"画在近似位置上"。
+        //      ⇒ 界面上那条 `pos` 近似（6/50/94）**只对没跑过 process 的工程有意义**，
+        //        而那种工程在这一层已经被挡掉。留着它是给"x/y 存在但 `pos` 认不出"
+        //        之外的历史路径兜底，**不表示它现在可达**。
+        usesBoxXY: e.textX !== null && e.textX !== undefined
+          && e.textY !== null && e.textY !== undefined,
         opacity,
         // ⚠️ 动效缩放**乘在**进出场缩放上（不是一个替代另一个）—— 与底座
         //    `line.scale × enter_scale × cue.scale` 的乘法合成同口径。

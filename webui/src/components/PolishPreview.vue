@@ -54,7 +54,7 @@
           <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
                :data-pos="tx.topPct === null ? undefined : tx.pos"
                :style="{ left: tx.xPct + '%',
-                         top: (tx.topPct === null ? tx.yPct : tx.topPct) + '%',
+                         top: (tx.usesBoxXY || tx.topPct === null ? tx.yPct : tx.topPct) + '%',
                          transform: textTiltTransform(tx),
                          opacity: tx.opacity,
                          fontSize: tx.style.fontPx + 'px',
@@ -2397,23 +2397,27 @@ const texts = computed(() =>
       return {
         ...e,
         formStyle,
-        // ---- ⚠️⚠️ **`pos` 必须在预览里真的消费**（2026-10-14，问题 ①b 的止血版）----
+        // ---- ⚠️⚠️ **落点：`x`/`y` 是权威，`pos` 只是历史兜底**（2026-10-14 更正）----
         //
-        // ⚠️⚠️ `engine.js:429` 早就算出了 `entry.textPos`（`top|center|bottom`），
-        //    `:2178` 也把它写进了输出 —— **而组件从头到尾没用过它**
-        //    （`grep "tx.pos" PolishPreview.vue` 恒 0 命中）。
-        //    ⇒ 「上 / 中 / 下」三档在预览里**完全同形**：用户在面板上换档位，
-        //      预览**纹丝不动**。这不是"位置略偏"，是**这一维整个没接上**。
+        // 历史（**四轮都没修对**的根因）：
+        //   ① `engine.js` 早就算出了 `entry.textPos`，却**没有任何消费方**
+        //      ⇒「上/中/下」三档在预览里完全同形、纹丝不动；
+        //   ② 补上 `pos` 之后，用的是**三值近似**（`6 / 50 / 94`）——
+        //      而它**不带** `caption_clearance`（底部避让字幕带）、**不带**盒尺寸。
         //
-        // ⚠️ 为什么先接它（而不是先修盒原点）：`pos` 是**语义档位**，
-        //    **不需要知道盒子尺寸**就能摆 —— 而 ①a（`x`/`y` 是"盒左上角"、
-        //    预览当成了文字左上角）需要复刻 `TextLayout::solve` 的盒公式，
-        //    那是第 N 份实现（方案 B 要等底座导出 `text_layout`，跨仓单独约）。
-        //    ⇒ 先把 `pos` 接上：**换档位预览当场就动**，①a 的残余偏移等 B 落地。
+        // ⚠️ 真权威一直在 `x`/`y` 里：那是 `process` 按
+        //    `TextLayout::anchor_origin(f)` 算好的**盒左上角**，
+        //    实测底部锚点与三值近似的差是 **231~391px**（随行数变）。
+        //    ⇒ 前四轮都在调**近似的那三个数**，而权威值没人用。
+        //
+        // 现在：`top` 走 `yPct`（= `x`/`y` 里那个 y）；`pos` 仅在 `topPct` 有值
+        // 且**没有** `x`/`y` 时参与 —— 而那种条目在这一层**根本不会被画**
+        // （`getElements` 对缺 `x`/`y` 的条目直接 `continue`）。
+        // ⇒ 下面的 `topPct` 实际作用是"给不经 `getElements` 的历史调用方兜底"。
         //
         // ⚠️ 水平**仍然按 `x`**（`left: xPct%`）—— `pos` 只管纵向，
         //    与 `process/placement.rs` 的字段语义一致（`pos` 是纵向档位）。
-        // ⚠️ 三档的纵向位置取**与字幕同源**的边距口径，别自己编一套数。
+
         topPct: textPosTopPct(e),
         spans: perCharSpans(e.text, {
           perChar: e.perChar,
@@ -2427,19 +2431,47 @@ const texts = computed(() =>
 
 /** 元素纵向档位（`pos`）→ `top` 百分比。
  *
- *  ⚠️⚠️ **这是止血版，不是 ①a 的完整修**：`pos` 是语义档位，摆它不需要盒尺寸；
- *     而 `x`/`y`（盒左上角）换算成文字原点需要 `TextLayout::solve` 的盒公式 —— 那要等
- *     底座导出 `text_layout`（方案 B，跨仓）。⇒ 这里只让"换档位预览就动"，
- *     残余偏移（盒与文字之间那段留白）**如实留着**，等 B 落地一起消掉。
+ *  ⚠️⚠️⚠️ **2026-10-14 重要更正：这条现在是"只在 `x`/`y` 缺失时用的兜底"，
+ *     不再是首选。** 完整由来见下面的「位置权威」一段。
+ *
+ *  # 位置权威：`x`/`y` 是**盒子左上角**，而它就是 `anchor_origin` 的输出
+ *
+ *  `process` 写回的 `x`/`y`（`process/mod.rs::layout_text_elements`）来源是
+ *  `TextLayout::anchor_origin(f)`（`process/placement.rs:925`）：
+ *
+ *  ```
+ *  x = (f.w - self.w) / 2                          // 恒水平居中
+ *  y = Top    → margin
+ *      Center → (f.h - self.h) / 2
+ *      Bottom → (f.h - self.h - margin - caption_clearance(f)).max(margin)
+ *  ```
+ *
+ *  ⚠️ 也就是说：**`pos` 档位与 `x`/`y` 描述的是同一个东西**（盒原点），
+ *     而 `x`/`y` 是**已经算好的那一个** —— 它带进了 `caption_clearance`
+ *     （底部要避开字幕带）、`self.w`/`self.h`（盒尺寸随行数变）、竖屏 `kh` 缩放。
+ *
+ *  ⚠️⚠️ 而下面的 3 值近似（`6 / 50 / 94`）**一样都没有**：
+ *     它假设"盒高 ≈ 0、字幕带不存在"。实测底部锚点的差：
+ *
+ *  | 行数 | 真 `y`（含避让） | 3 值近似 `94%` | 差 |
+ *  |---|---|---|---|
+ *  | 单行 | 784 | 1015 | **231px** |
+ *  | 两行 | 704 | 1015 | **311px** |
+ *  | 三行 | 624 | 1015 | **391px** |
+ *
+ *  ⇒ 这正是用户从第一轮就在报的「**文字层的位置问题，修了几轮还是不正常**」：
+ *    每一轮都在改**近似**（`6/50/94` 这三个数），而**权威值一直在 `x`/`y` 里没被用**。
+ *
+ *  # 现在的口径
+ *
+ *  * `x`/`y` 有值（跑过 `process` 的工程）⇒ **直接用它们**，`pos` 不参与；
+ *  * `x`/`y` 缺（没跑过后处理的工程）⇒ 落回下面这个 3 值近似 **并如实报 NOTE**
+ *    （`textPosApprox`），因为那时确实没有更准的信息。
  *
  *  ⚠️ 三档**必须各不相同**（否则等于没接）：
- *    `top`    → 上边距 `ELEMENT_EDGE_MARGIN_PCT`
- *    `center` → 垂直居中（`50%`，配合 CSS 的 `translate` 抬半行）
- *    `bottom` → 下边距（`100% - ELEMENT_EDGE_MARGIN_PCT`）
+ *    `top` → `ELEMENT_EDGE_MARGIN_PCT` · `center` → `50` · `bottom` → `100 - margin`
  *
- *  ⚠️ 返回 `null` 表示"这一条没有 `pos`，沿用旧的 `yPct`" —— `engine.js` 里
- *     `pos` 缺省**回落 `'bottom'`**（那是有值的），真正的"没有"是 `undefined`/空串。
- *     ⇒ **旧路径一个字节都不动**（R4）。
+ *  ⚠️ 返回 `null` 表示"这一条没有 `pos`" ⇒ 调用方沿用 `y`。
  */
 const ELEMENT_EDGE_MARGIN_PCT = 6
 function textPosTopPct(e) {
@@ -2449,6 +2481,16 @@ function textPosTopPct(e) {
   if (p === 'center') return 50
   if (p === 'bottom') return 100 - ELEMENT_EDGE_MARGIN_PCT
   return null
+}
+
+/** 这一条元素是不是在**用近似落点**（= `x`/`y` 缺、只能靠 `pos` 档位兜）。
+ *
+ *  ⚠️ 存在的理由是**如实报 NOTE**：近似的误差不是"看不出来"（实测 231–391px），
+ *    所以不能静默。判据 `check-element-pos-parity.mjs` 钉住这条分流。
+ *  ⚠️ `x`/`y` 是**盒左上角百分比**；没跑过后处理的工程里那两个键**可能不存在**。 */
+function textPosApprox(e) {
+  const has = (v) => v !== null && v !== undefined && Number.isFinite(Number(v))
+  return !(has(e.xPct) && has(e.yPct)) && textPosTopPct(e) !== null
 }
 
 /** `[r,g,b,a]`（0–255）→ CSS `rgba()`。`process` 写回的就是这个形状。 */
