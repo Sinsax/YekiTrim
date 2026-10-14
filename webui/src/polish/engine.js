@@ -890,9 +890,27 @@ export function perCharSpans(text, { perChar, perCharFrame, perCharFps, fontPx }
     //    正是 `check-text-tilt.mjs` 记下的那个"斜着的字被拉长"的坑。
     const tx = t.offsetXEm * em
     const ty = t.offsetYEm * em
-    if (tx || ty) parts.push('translate(' + tx + 'px,' + ty + 'px)')
-    if (t.rotationDeg) parts.push('rotate(' + t.rotationDeg + 'deg)')
-    if (t.scale !== 1) parts.push('scale(' + t.scale + ')')
+    // ⚠️⚠️ **三个分量各自过一道 `Number.isFinite`**（2026-10-14 加）。
+    //
+    //    `charTransformAt` 的数学里有一项是
+    //      `scale: mix(spec.scaleFrom, spec.scaleTo) * (1 + spec.scaleSpread * rank)`
+    //    —— 只要 `spec` 少了那几个键，`mix(undefined, undefined)` 就是 **`NaN`**。
+    //    ⇒ 整条 `transform` 变成 `rotate(-14deg) scale(NaN)`。
+    //
+    //    ⚠️ **浏览器对非法 `transform` 是整条丢弃**（不是忽略那一项）：
+    //      症状是"逐字档配了，预览里字**完全不动**"，而成片那边 Rust 有
+    //      `#[serde(default = "one")]` 兜底、**正常在动** ⇒ 两边分叉且不报错。
+    //
+    //    ⚠️ 生产路径**当前**不会踩到（`animPerChar` 会先铺 `PER_CHAR_DEFAULT`）——
+    //      但那是**调用约定**，不是这道函数的契约：
+    //      `perCharSpans` 是 `export` 的，任何新消费者直接喂预设里的那个
+    //      `perChar` 就会中招（我自己的探针就是这么踩到的）。
+    //      ⇒ 把"不许产出 NaN"写成函数自己的不变式，而不是靠调用方记得。
+    //      ⚠️ 判据 `check-perchar-spans-finite.mjs` 钉住它（含变异自证）。
+    const okNum = (v) => Number.isFinite(v)
+    if (okNum(tx) && okNum(ty) && (tx || ty)) parts.push('translate(' + tx + 'px,' + ty + 'px)')
+    if (okNum(t.rotationDeg) && t.rotationDeg) parts.push('rotate(' + t.rotationDeg + 'deg)')
+    if (okNum(t.scale) && t.scale !== 1) parts.push('scale(' + t.scale + ')')
     // ⚠️ 空 `style` 也要给（调用方统一 `:style="c.style"`），不要给 `undefined`。
     return { text: ch, style: parts.length ? { transform: parts.join(' '), display: 'inline-block' } : {} }
   })
