@@ -169,7 +169,10 @@ const check = (what, got, want) => {
 {
   const rust = readDhampir('crates/dhampir-timeline/src/text_motion.rs');
   const js = read('webui/src/polish/engine.js');
-  const cfg = js.match(/function textMotionCfg[\s\S]{0,1200}?\n\}/);
+  // ⚠ 窗口宽度跟着**注释长度**走 —— 它 2026-10-14 又一次撞上下限：
+  //    往 textMotionCfg 里加了心跳三个键（带一段说明）后，这条拿不到函数体了
+  //    ⇒ 报的是「找不到 textMotionCfg」，而真因只是“注释变长了”。同类坑已踩两次。
+  const cfg = js.match(/function textMotionCfg[\s\S]{0,4000}?\n\}/);
   const body = cfg ? cfg[0] : '';
   check('JS 找得到 textMotionCfg', !!cfg, true);
   // ⚠️ scaleInMs 缺省 0（= 关）；shakePx 缺省 0；shakeHz 缺省 18；platePadPx 缺省 12

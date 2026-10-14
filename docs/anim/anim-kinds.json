@@ -113,12 +113,12 @@
   "preset": {
    "heartbeatPeaksMs": [
     0,
-    180,
-    300,
-    480
+    210,
+    320,
+    530
    ],
-   "heartbeatAmp": 1.14,
-   "heartbeatCycleMs": 1000
+   "heartbeatAmp": 1.22,
+   "heartbeatCycleMs": 900
   }
  }
 ]
