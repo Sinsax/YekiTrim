@@ -902,7 +902,7 @@ try {
   //    —— 复刻的那份会与被测的那份一起漂）。
   {
     const pvSrc = fs.readFileSync(PREVIEW, 'utf8')
-    const m = pvSrc.match(/const ELEMENT_EDGE_MARGIN_PCT = 6\nfunction textPosTopPct\(e\) \{[\s\S]*?\n\}/)
+    const m = pvSrc.match(/const ELEMENT_EDGE_MARGIN_PCT = 6[\s\S]*?function textPosTopPct\(e\) \{[\s\S]*?\n\}/)
     ok(!!m, '⑤-bis 从 `PolishPreview.vue` 抽不到 `textPosTopPct`（源码形状变了？）')
     if (m) {
       let fn = null

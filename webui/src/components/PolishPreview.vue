@@ -50,8 +50,13 @@
         <!-- §5 E3 预览侧：文字元素。落点/样式**全部读 `process` 写回的值**（不重算）。
              ⚠️ 与出片侧同一条口径：`process` 解析、消费方读 —— 预览不自己推一份，
                 否则就是"两份实现必然漂移"那个老病（成片有字、预览没有/位置不同）。 -->
+        <!-- ⚠️⚠️ **文本只在"底座不画它的那一档"才由本层画**（2026-10-14，见下）。
+             `tx.byDom` 由 `texts` 逐条算出；底座画的那几档在这里不渲染 —— 否则
+             **同一个元素被画两遍**，而 `.dhampir-canvas`(z-index 40) 盖住本层(10)
+             ⇒ 用户永远看不到本层，改动"没有一次有变化"（实测四轮）。 -->
         <div class="text-layer">
-          <div v-for="(tx, i) in texts" :key="'t' + i" class="text-el"
+          <template v-for="(tx, i) in texts" :key="'t' + i">
+          <div v-if="tx.byDom" class="text-el"
                :data-pos="tx.topPct === null ? undefined : tx.pos"
                :style="{ left: tx.xPct + '%',
                          top: (tx.usesBoxXY || tx.topPct === null ? tx.yPct : tx.topPct) + '%',
@@ -79,6 +84,7 @@
             </template>
             <template v-else>{{ tx.text }}</template>
           </div>
+          </template>
         </div>
         <div class="danmaku-layer" :style="dmLayerStyle">
           <div v-for="(d, i) in dmRows" :key="'d' + i" class="dm" :style="{ left: d.x + 'px', top: d.y + 'px', opacity: d.opacity }">{{ d.text }}</div>
@@ -2419,6 +2425,31 @@ const texts = computed(() =>
         //    与 `process/placement.rs` 的字段语义一致（`pos` 是纵向档位）。
 
         topPct: textPosTopPct(e),
+        // ---- ⚠️⚠️ **这一条该不该由本层画**（2026-10-14）----
+        //
+        // 背景：文字元素**被画两遍** ——
+        //   * 底座（`.dhampir-canvas`，z-index **40**）：转译器把 `kind === "text"`
+        //     落成独立 ASS 资产 + 单层字幕轨，**底座自己会画**（`layout_text_elements`
+        //     写 `x`/`y` → `\pos` + `SubtitleStyle`）；
+        //   * 本层（`.overlay-space`，z-index **10**）：`getElements` 也画一份。
+        //
+        // ⇒ **40 > 10** ⇒ 用户看到的**永远是底座那份**，本层那份**被盖住**。
+        //   这正是用户「**位置没有一次有变化**」的原因：前四轮改的全是被盖住的那份。
+        //
+        // 现在的口径：**两边都画的档，本层不画**（让底座那份说话，一个时刻只有一份）；
+        //   而**底座不画的档（心跳）本层必须留着** —— 它是那种档唯一的可见实现。
+        //
+        // ⚠️ 逐档依据**是实测的**，不是推测（`docs/plan/why-position-changes-were-invisible-2026-10-14.md`）：
+        //   | 档 | 底座画不画 | 依据 |
+        //   |---|---|---|
+        //   | 位置 / 描边 / 竖排（`tilt`/`arc`/`vtext`）| **画** | ASS `\pos` / `Outline` / 样式 |
+        //   | 逐字（`perchar_*`）| **画** | 底座 `text_perchar_anim.rs`（6 个 `pub fn`）|
+        //   | `pop` / `fade`（过渡）| **画** | ASS 有该轨 |
+        //   | **`heartbeat`** | **不画** | 全底座搜 `heartbeat` ⇒ **0 命中** |
+        //
+        // ⚠️ DOM 模式下 `dhampirMode` 为假 ⇒ **一律由本层画**（那时底座根本没画面）。
+        // ⚠️ `shake` 那条**底座不画**（它是本层的动效档）⇒ 一并留着。
+        byDom: !dhampirMode.value || DHAMPIR_NO_DRAW.has(e.effectAnimName || ''),
         spans: perCharSpans(e.text, {
           perChar: e.perChar,
           perCharFrame: e.perCharFrame,
@@ -2474,6 +2505,18 @@ const texts = computed(() =>
  *  ⚠️ 返回 `null` 表示"这一条没有 `pos`" ⇒ 调用方沿用 `y`。
  */
 const ELEMENT_EDGE_MARGIN_PCT = 6
+
+/** **底座不画**的动效档 —— 这些只能由本层画（见 `texts` 里 `byDom` 那段注释）。
+ *
+ *  ⚠️ 判据是**实测**：`grep -rn heartbeat` 遍底座 `crates/` ⇒ **0 命中**
+ *     （`docs/plan/why-position-changes-were-invisible-2026-10-14.md` 有全表）。
+ *
+ *  ⚠️⚠️ **加档位之前先去底座搜一遍**：一个档要是"两边都画"却留在本集合里，
+ *     症状是**两层错位字**（本层那份在 `z-index:10`、底座那份在 40 ⇒ 露出来的
+ *     是错位的那一半），比"看不见"更难查。
+ *  ⚠️ `shake` 住这里的理由不同：它是**本层的动效档**（底座那条腿没有它的位置），
+ *     不是"底座忘了实现"。 */
+const DHAMPIR_NO_DRAW = new Set(['heartbeat', 'shake'])
 function textPosTopPct(e) {
   const p = String(e.pos ?? '').trim().toLowerCase()
   if (!p) return null
