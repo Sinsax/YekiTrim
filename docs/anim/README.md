@@ -1,6 +1,10 @@
 # 元素文字效果类别 · HTML 预览
 
-`text-effects-preview.html` —— 39 档文字动效的**可视化对照**，单文件、双击即开。
+`text-effects-preview.html` —— **9 档 × 三轴**的可视化对照，单文件、双击即开。
+
+> ⚠⚠ **2026-10-14（三轴收敛）：原来是 39 档。**
+> 收敛后档位只剩 9 档，且多了**过渡**这第三条轴（原来只有样式/动效两轴）。
+> 本文件、`anim-kinds.json`、页面分组已全部跟到新形状。
 
 ## 它凭什么说"和实际一致"
 
@@ -8,15 +12,16 @@
 
 | 能力 | 权威来源 |
 |---|---|
-| 逐字（C/D 组 20 档） | `crates/dhampir-timeline/src/text_perchar_anim.rs` · `char_transform_at` |
+| 逐字（当前 3 档） | `crates/dhampir-timeline/src/text_perchar_anim.rs` · `char_transform_at` |
 | 抖动 | `crates/dhampir-timeline/src/text_motion.rs` · `text_shake_px` |
 | 弹入 | 同上 · `back_out3`（S=3.0） |
 | 缓动 `back_out` | `crates/dhampir-timeline/src/easing.rs` · `EasingForm::apply`（S=1.70158） |
 | 摇摆 | `tools/polish-to-dhampir.mjs` · `swayKeyframes`（展开成 `rotation` 关键帧） |
-| 39 档参数 | `webui/src/polish/engine.js` · `ANIM_PRESETS` |
+| 9 档 × 三轴的参数 | `webui/src/polish/engine.js` · `ANIM_PRESETS`（**权威**）|
 
-⚠️ **对拍过**：`hop_std` 逐字位移、`slam_squash` 弹入曲线、`shake_std` 的
-`(dx,dy)` 三点与 Rust 输出**逐值相同**（`cargo run --example` 实测，见提交说明）。
+⚠️ **对拍过**（当时的旧档名；收敛后对应 `perchar_*` / `pop` / `shake`）：
+逐字位移、弹入曲线、抖动的 `(dx,dy)` 三点与 Rust 输出**逐值相同**
+（`cargo run --example` 实测，见当时的提交说明）。**数学本身没变**，只是档名收敛了。
 
 ## 页面的三个开关
 
@@ -28,14 +33,18 @@
 另外支持 `?t=毫秒` 强制定格（截图与逐值核对用）：
 `text-effects-preview.html?t=300`
 
-## 两轴归属
+## 三轴归属
 
 每张卡的右上角标写着它该填哪一栏：
 
-- <span>只填「样式」栏</span> —— `style_anim`
-- <span>只填「动效」栏</span> —— `effect_anim`
-- <span>两栏都要填</span> —— `both` 的 5 个种类（`slam` / `pop` / `arc` /
-  `scatter` / `hop`），**只填一栏只生效一半**。
+- <span>只填「排版」栏</span> —— `style_anim`（`tilt` / `arc` / `vtext`）
+- <span>只填「过渡」栏</span> —— `transition_anim`（`pop` / `fade`）
+- <span>只填「动效」栏</span> —— `effect_anim`（`shake` / `perchar_big` /
+  `perchar_small` / `heartbeat`）
+
+⚠⚠ **一档只属一条轴** —— 收敛后**已经没有 `both`**，
+三条轴的档名集合**两两不相交**（判据 `scripts/check-anim-attribution.mjs`）。
+⇒ 下拉里只会看到**本轴自己**的档，不会出现同一个名字在两栏里。
 
 ⚠️ 页面上每条演示的是**这一档单独作用**。实际是两轴叠加的
 （如「竖排 + 抖动」），叠加规则见 `webui/src/polish/AGENTS.md`。
@@ -43,11 +52,24 @@
 ## 重新生成
 
 ```bash
-node docs/anim/gen-preview.mjs ./docs/anim/text-effects-preview.html
+node docs/anim/gen-kinds.mjs                                    # 先：从真源码抽快照
+node docs/anim/gen-preview.mjs docs/anim/text-effects-preview.html  # 后：生成页面
 ```
 
-改了 `ANIM_PRESETS`（新增档位 / 调参数）之后要重新生成 ——
-`anim-kinds.json` 是从 `engine.js` 导出的快照。
+改了 `ANIM_KINDS`（**新增/删除档位、改轴归属**）或 `ANIM_PRESETS`（调参数）
+之后要重跑**两个**。
+
+> ⚠⚠ **为什么现在有 `gen-kinds.mjs`：这份快照原来是手抄的。**
+> 三轴收敛把 39 档收到 9 档、把 `both` 整类消灭，
+> **而快照没人改** ⇒ 页面一直画着已经不存在的 39 档，
+> 而且**没有任何判据会红**（它只是个文档）。
+> 同一次检查还发现：页面上“逐字那一路”**一直是空跑的**
+> （快照里的 `preset` 从来就没有 `perChar`）—— 现在从 `ANIM_PRESETS` 读，
+> 生成时会打印 `逐字路径: 3 | 整块路径: 6`，**一眼能看出它没空跑**。
+
+⚠ 两个脚本的路径都**相对脚本自己**（不是 CWD）——
+原来是 `'./anim-kinds.json'`，从仓库根跑就 `ENOENT` ⇒ **没人跑得动的脚本**
+自然也没人用它重生成。
 
 ## 预览字号：只有**一个**来源
 

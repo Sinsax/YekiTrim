@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>元素文字效果类别 · 39 档</title>
+<title>元素文字效果类别 · 9 档 × 三轴</title>
 <style>
 :root{--bg:#14161a;--fg:#e8e6e1;--mut:#9aa0a6;--line:#2a2e35;--acc:#f56b41;
   /* ⚠️ 预览字号**只在这里定义一次**：样式表用它、脚本也用 getComputedStyle 读它。
@@ -35,7 +35,8 @@ h2.grp:first-child{margin-top:6px}
 .ax-none{background:#3a3f47;color:#c9ced6}
 .ax-style{background:#1f4d3a;color:#7ee2b0}
 .ax-effect{background:#4a3a1c;color:#f0c674}
-.ax-both{background:#4a2338;color:#ff9ec4}
+/* ⚠ 过渡是第三条轴（2026-10-14 新增）。旧的 .ax-both 已删 —— 现在没有 both 了。 */
+.ax-transition{background:#1c3a4a;color:#7ec8f0}
 /* ⚠️ 舞台高度必须容得下**竖排**：竖排时一行是"一列"，6 个字竖着排 ≈ 6×字号。
    原来固定 104px ⇒ 竖排那三张的上下被「overflow:hidden」裁掉，
    看着像"竖排没生效"。这里给足，并让字号可调时一起跟着走。 */
@@ -57,7 +58,7 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
 .note code{font-size:11px}
 </style></head><body>
 <header>
-  <h1>元素文字效果类别 —— 39 档全览</h1>
+  <h1>元素文字效果类别 —— 9 档全览</h1>
   <div class="sub">求值内核与 Dhampir 权威 Rust 逐值对拍（<code>text_perchar_anim.rs</code> ·
     <code>text_motion.rs</code> · <code>easing.rs</code>）；摇摆来自转译器的关键帧展开。</div>
   <div class="ctrl">
@@ -77,19 +78,19 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
   <div class="note">
     <b>每条演示的都是「这一档单独作用」</b>：同一句
     <code>今晚八点开播</code>（6 字），30fps，弹入从条首起算。
-    ⚠️ 实际是<b>两轴叠加</b>的 —— 每张卡的角标写清它该填哪一栏：
-    <span class="axbadge ax-style">只填样式栏</span>
+    ⚠️ 实际是<b>三轴叠加</b>的（排版 × 过渡 × 动效）—— 每张卡的角标写清它该填哪一栏：
+    <span class="axbadge ax-style">只填排版栏</span>
+    <span class="axbadge ax-transition">只填过渡栏</span>
     <span class="axbadge ax-effect">只填动效栏</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-    （<code>both</code> 的档两边各给一半，<b>只填一栏只生效一半</b>）。
+    （一档**只属一条轴**，三条轴的档名集合两两不相交。）
   </div>
-  <h2 class="grp">不设<span class="gcount">1 档</span></h2>
+  <h2 class="grp">不指定（三栏都有）<span class="gcount">1 档</span></h2>
 <div class="cards">
 <div class="card" data-ax="none">
   <div class="chd">
     <span class="kname">不设</span>
     <span class="vname">不设</span>
-    <span class="axbadge ax-none">两栏都能选</span>
+    <span class="axbadge ax-none">三栏都有的空项</span>
   </div>
   <div class="stage"><div class="txt" id="t_none"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
   <div class="meta"><code>(空)</code>
@@ -97,478 +98,130 @@ code{background:#22262d;padding:1.5px 6px;border-radius:4px;font-size:11px;color
   <pre class="preset">{}</pre>
 </div>
 </div>
-<h2 class="grp">A 组 · 整块变换<span class="gcount">3 档</span></h2>
+<h2 class="grp">排版轴　· 形态字段（不随时间变）<span class="gcount">1 档</span></h2>
 <div class="cards">
 <div class="card" data-ax="style">
   <div class="chd">
     <span class="kname">倾斜</span>
     <span class="vname">标准</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
+    <span class="axbadge ax-style">只填「排版」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_tilt_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>tilt_std</code>
+  <div class="stage"><div class="txt" id="t_tilt"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>tilt</code>
     <span class="badge">整块路径</span></div>
   <pre class="preset">{"tiltDeg":-6}</pre>
 </div>
+</div>
+<h2 class="grp">排版轴　· 形态字段（不随时间变）<span class="gcount">1 档</span></h2>
+<div class="cards">
 <div class="card" data-ax="style">
   <div class="chd">
-    <span class="kname">倾斜</span>
-    <span class="vname">小角度</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
+    <span class="kname">弧形（扇形）</span>
+    <span class="vname">标准</span>
+    <span class="axbadge ax-style">只填「排版」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_tilt_sm"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>tilt_sm</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"tiltDeg":-2.5}</pre>
+  <div class="stage"><div class="txt" id="t_arc"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>arc</code>
+    <span class="badge">逐字路径</span></div>
+  <pre class="preset">{"arcToDefault":-14,"perChar":{"rotationFrom":0,"rotationTo":-14,"perCharFrames":8,"staggerFrames":3}}</pre>
 </div>
+</div>
+<h2 class="grp">排版轴　· 形态字段（不随时间变）<span class="gcount">1 档</span></h2>
+<div class="cards">
 <div class="card" data-ax="style">
   <div class="chd">
-    <span class="kname">倾斜</span>
-    <span class="vname">反方向</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_tilt_rev"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>tilt_rev</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"tiltDeg":5}</pre>
-</div>
-</div>
-<h2 class="grp">B 组 · 整块动效<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">抖动</span>
+    <span class="kname">竖排</span>
     <span class="vname">标准</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
+    <span class="axbadge ax-style">只填「排版」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_shake_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shake_std</code>
+  <div class="stage"><div class="txt" id="t_vtext"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>vtext</code>
     <span class="badge">整块路径</span></div>
-  <pre class="preset">{"shakePx":6,"shakeHz":18}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">抖动</span>
-    <span class="vname">慢频</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shake_slow"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shake_slow</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"shakePx":6,"shakeHz":4.5}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">抖动</span>
-    <span class="vname">强</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shake_lg"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shake_lg</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"shakePx":14,"shakeHz":34}</pre>
+  <pre class="preset">{"vertical":true,"safeWidthRatio":0.86,"fontWeight":400}</pre>
 </div>
 </div>
-<h2 class="grp">B 组 · 整块动效<span class="gcount">3 档</span></h2>
+<h2 class="grp">过渡轴　· 进出场时间字段<span class="gcount">2 档</span></h2>
 <div class="cards">
-<div class="card" data-ax="effect">
+<div class="card" data-ax="transition">
   <div class="chd">
-    <span class="kname">摇摆</span>
-    <span class="vname">标准</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
+    <span class="kname">过渡</span>
+    <span class="vname">弹出</span>
+    <span class="axbadge ax-transition">只填「过渡」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_sway_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>sway_std</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"swayDeg":6,"swayMs":900}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">摇摆</span>
-    <span class="vname">大角度</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_sway_lg"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>sway_lg</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"swayDeg":12,"swayMs":900}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">摇摆</span>
-    <span class="vname">慢摆</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_sway_slow"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>sway_slow</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"swayDeg":6,"swayMs":2000}</pre>
-</div>
-</div>
-<h2 class="grp">B 组 · 整块动效<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">砸入</span>
-    <span class="vname">标准</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_slam_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>slam_std</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":2.4,"scaleInPeak":1,"scaleInMs":180}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">砸入</span>
-    <span class="vname">重</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_slam_lg"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>slam_lg</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":3.4,"scaleInPeak":1,"scaleInMs":180}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">砸入</span>
-    <span class="vname">带压扁</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_slam_squash"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>slam_squash</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":2.4,"scaleInPeak":1,"scaleInMs":180,"squashY":0.72}</pre>
-</div>
-</div>
-<h2 class="grp">B 组 · 整块动效<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">收缩</span>
-    <span class="vname">标准</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shrink_in_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shrink_in_std</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":0.4,"scaleInPeak":1,"scaleInMs":500}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">收缩</span>
-    <span class="vname">只淡出</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_fade_only"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>fade_only</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{}</pre>
-</div>
-<div class="card" data-ax="effect">
-  <div class="chd">
-    <span class="kname">收缩</span>
-    <span class="vname">快速抽走</span>
-    <span class="axbadge ax-effect">只填「动效」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shrink_in_fast"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shrink_in_fast</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":0.4,"scaleInPeak":1,"scaleInMs":160}</pre>
-</div>
-</div>
-<h2 class="grp">B 组 · 整块动效<span class="gcount">2 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">弹出</span>
-    <span class="vname">标准</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_pop_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>pop_std</code>
+  <div class="stage"><div class="txt" id="t_pop"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>pop</code>
     <span class="badge">整块路径</span></div>
   <pre class="preset">{"scaleInFrom":0.3,"scaleInPeak":1,"scaleInMs":350}</pre>
 </div>
-<div class="card" data-ax="both">
+<div class="card" data-ax="transition">
   <div class="chd">
-    <span class="kname">弹出</span>
-    <span class="vname">软</span>
-    <span class="axbadge ax-both">两栏都要填</span>
+    <span class="kname">过渡</span>
+    <span class="vname">淡入淡出</span>
+    <span class="axbadge ax-transition">只填「过渡」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_pop_soft"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>pop_soft</code>
+  <div class="stage"><div class="txt" id="t_fade"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>fade</code>
     <span class="badge">整块路径</span></div>
-  <pre class="preset">{"scaleInFrom":0.7,"scaleInPeak":1,"scaleInMs":350}</pre>
+  <pre class="preset">{}</pre>
 </div>
 </div>
-<h2 class="grp">C 组 · 逐字（同时动、幅度不同）<span class="gcount">3 档</span></h2>
+<h2 class="grp">动效轴　· 动效字段<span class="gcount">1 档</span></h2>
 <div class="cards">
-<div class="card" data-ax="both">
+<div class="card" data-ax="effect">
   <div class="chd">
-    <span class="kname">逐字弧形</span>
-    <span class="vname">上拱</span>
-    <span class="axbadge ax-both">两栏都要填</span>
+    <span class="kname">抖动</span>
+    <span class="vname">标准</span>
+    <span class="axbadge ax-effect">只填「动效」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_arc_up"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>arc_up</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"rotationFrom":0,"rotationTo":-14,"spreadXEm":0,"perCharFrames":8,"staggerFrames":3}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字弧形</span>
-    <span class="vname">波浪</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_arc_wave"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>arc_wave</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"rotationFrom":-12,"rotationTo":12,"perCharFrames":24,"staggerFrames":2}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字弧形</span>
-    <span class="vname">下垂</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_arc_down"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>arc_down</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"rotationFrom":0,"rotationTo":14,"perCharFrames":8,"staggerFrames":3}}</pre>
+  <div class="stage"><div class="txt" id="t_shake"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>shake</code>
+    <span class="badge">整块路径</span></div>
+  <pre class="preset">{"shakePx":6,"shakeHz":18}</pre>
 </div>
 </div>
-<h2 class="grp">C 组 · 逐字（同时动、幅度不同）<span class="gcount">3 档</span></h2>
+<h2 class="grp">动效轴　· 动效字段<span class="gcount">2 档</span></h2>
 <div class="cards">
-<div class="card" data-ax="style">
+<div class="card" data-ax="effect">
   <div class="chd">
-    <span class="kname">逐字大小字</span>
-    <span class="vname">末字重音</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
+    <span class="kname">逐字变化</span>
+    <span class="vname">逐字变大</span>
+    <span class="axbadge ax-effect">只填「动效」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_size_last"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>size_last</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":0.75,"perCharFrames":14,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字大小字</span>
-    <span class="vname">首字重音</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_size_first"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>size_first</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":0.75,"perCharFrames":14,"reverse":true,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字大小字</span>
-    <span class="vname">中字重音</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_size_mid"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>size_mid</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":-0.4,"perCharFrames":14,"easing":"back_out"}}</pre>
-</div>
-</div>
-<h2 class="grp">C 组 · 逐字（同时动、幅度不同）<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字抖散</span>
-    <span class="vname">轻</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_scatter_sm"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>scatter_sm</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.12,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.06,"perCharFrames":10,"staggerFrames":1,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字抖散</span>
-    <span class="vname">重</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_scatter_lg"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>scatter_lg</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.45,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.28,"perCharFrames":16,"staggerFrames":3,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字抖散</span>
-    <span class="vname">带抖动</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_scatter_shake"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>scatter_shake</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.3,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.18,"perCharFrames":12,"staggerFrames":2,"easing":"back_out"},"shakePx":5,"shakeHz":20}</pre>
-</div>
-</div>
-<h2 class="grp">C 组 · 逐字（同时动、幅度不同）<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字变小</span>
-    <span class="vname">递减</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shrink_desc"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shrink_desc</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":-0.55,"perCharFrames":18,"staggerFrames":2}}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字变小</span>
-    <span class="vname">骤降</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shrink_drop"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shrink_drop</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":-0.75,"perCharFrames":6,"staggerFrames":0}}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字变小</span>
-    <span class="vname">尾音</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_shrink_tail"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>shrink_tail</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":-0.5,"perCharFrames":12,"staggerFrames":2}}</pre>
-</div>
-</div>
-<h2 class="grp">C 组 · 逐字（同时动、幅度不同）<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字放大</span>
-    <span class="vname">递增</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_grow_asc"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>grow_asc</code>
+  <div class="stage"><div class="txt" id="t_perchar_big"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>perchar_big</code>
     <span class="badge">逐字路径</span></div>
   <pre class="preset">{"perChar":{"scaleSpread":0.8,"perCharFrames":18,"staggerFrames":2}}</pre>
 </div>
-<div class="card" data-ax="style">
+<div class="card" data-ax="effect">
   <div class="chd">
-    <span class="kname">逐字放大</span>
-    <span class="vname">爆开</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_grow_burst"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>grow_burst</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":1.6,"perCharFrames":20,"staggerFrames":3,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">逐字放大</span>
-    <span class="vname">首字引爆</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_grow_first"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>grow_first</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleSpread":0.9,"perCharFrames":12,"staggerFrames":4,"reverse":true}}</pre>
-</div>
-</div>
-<h2 class="grp">D 组 · 逐字错峰（依次动、幅度相同）<span class="gcount">4 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字错峰</span>
-    <span class="vname">弹出·逐字</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_pop_perchar"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>pop_perchar</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"scaleFrom":0.3,"scaleTo":1,"perCharFrames":10,"staggerFrames":3,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字错峰</span>
-    <span class="vname">跳起·标准</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_hop_std"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>hop_std</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"offsetYFrom":0.55,"offsetYTo":0,"perCharFrames":12,"staggerFrames":4,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字错峰</span>
-    <span class="vname">跳起·快错峰</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_hop_fast"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>hop_fast</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"offsetYFrom":0.55,"offsetYTo":0,"perCharFrames":10,"staggerFrames":2,"easing":"back_out"}}</pre>
-</div>
-<div class="card" data-ax="both">
-  <div class="chd">
-    <span class="kname">逐字错峰</span>
-    <span class="vname">跳起·大字慢跳</span>
-    <span class="axbadge ax-both">两栏都要填</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_hop_big"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>hop_big</code>
-    <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"perChar":{"offsetYFrom":0.9,"offsetYTo":0,"perCharFrames":26,"staggerFrames":7,"easing":"back_out"}}</pre>
-</div>
-</div>
-<h2 class="grp">E 组 · 竖排（改排版方向）<span class="gcount">3 档</span></h2>
-<div class="cards">
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">竖排</span>
-    <span class="vname">细楷</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_vtext_thin"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>vtext_thin</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":400,"safeWidthRatio":0.86}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">竖排</span>
-    <span class="vname">粗体</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
-  </div>
-  <div class="stage"><div class="txt" id="t_vtext_bold"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>vtext_bold</code>
-    <span class="badge">整块路径</span></div>
-  <pre class="preset">{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":700,"safeWidthRatio":0.86}</pre>
-</div>
-<div class="card" data-ax="style">
-  <div class="chd">
-    <span class="kname">竖排</span>
+    <span class="kname">逐字变化</span>
     <span class="vname">逐字变小</span>
-    <span class="axbadge ax-style">只填「样式」栏</span>
+    <span class="axbadge ax-effect">只填「动效」栏</span>
   </div>
-  <div class="stage"><div class="txt" id="t_vtext_shrink"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
-  <div class="meta"><code>vtext_shrink</code>
+  <div class="stage"><div class="txt" id="t_perchar_small"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>perchar_small</code>
     <span class="badge">逐字路径</span></div>
-  <pre class="preset">{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":700,"safeWidthRatio":0.86,"perChar":{"scaleSpread":-0.45,"perCharFrames":16,"staggerFrames":3}}</pre>
+  <pre class="preset">{"perChar":{"scaleSpread":-0.55,"perCharFrames":18,"staggerFrames":2}}</pre>
+</div>
+</div>
+<h2 class="grp">动效轴　· 动效字段<span class="gcount">1 档</span></h2>
+<div class="cards">
+<div class="card" data-ax="effect">
+  <div class="chd">
+    <span class="kname">心跳</span>
+    <span class="vname">标准</span>
+    <span class="axbadge ax-effect">只填「动效」栏</span>
+  </div>
+  <div class="stage"><div class="txt" id="t_heartbeat"><span class="ch" data-i="0">今</span><span class="ch" data-i="1">晚</span><span class="ch" data-i="2">八</span><span class="ch" data-i="3">点</span><span class="ch" data-i="4">开</span><span class="ch" data-i="5">播</span></div></div>
+  <div class="meta"><code>heartbeat</code>
+    <span class="badge">整块路径</span></div>
+  <pre class="preset">{"heartbeatPeaksMs":[0,180,300,480],"heartbeatAmp":1.14,"heartbeatCycleMs":1000}</pre>
 </div>
 </div>
 </main>
 <script>
 // ⚠️ 求值全部走随附的 animcore（已与 Rust 对拍），这里只做 DOM 落地。
-const KINDS = [{"kind":"none","kindLabel":"不设","axis":"none","value":"","label":"不设","preset":{}},{"kind":"tilt","kindLabel":"倾斜","axis":"style","value":"tilt_std","label":"标准","preset":{"tiltDeg":-6}},{"kind":"tilt","kindLabel":"倾斜","axis":"style","value":"tilt_sm","label":"小角度","preset":{"tiltDeg":-2.5}},{"kind":"tilt","kindLabel":"倾斜","axis":"style","value":"tilt_rev","label":"反方向","preset":{"tiltDeg":5}},{"kind":"shake","kindLabel":"抖动","axis":"effect","value":"shake_std","label":"标准","preset":{"shakePx":6,"shakeHz":18}},{"kind":"shake","kindLabel":"抖动","axis":"effect","value":"shake_slow","label":"慢频","preset":{"shakePx":6,"shakeHz":4.5}},{"kind":"shake","kindLabel":"抖动","axis":"effect","value":"shake_lg","label":"强","preset":{"shakePx":14,"shakeHz":34}},{"kind":"sway","kindLabel":"摇摆","axis":"effect","value":"sway_std","label":"标准","preset":{"swayDeg":6,"swayMs":900}},{"kind":"sway","kindLabel":"摇摆","axis":"effect","value":"sway_lg","label":"大角度","preset":{"swayDeg":12,"swayMs":900}},{"kind":"sway","kindLabel":"摇摆","axis":"effect","value":"sway_slow","label":"慢摆","preset":{"swayDeg":6,"swayMs":2000}},{"kind":"slam","kindLabel":"砸入","axis":"both","value":"slam_std","label":"标准","preset":{"scaleInFrom":2.4,"scaleInPeak":1,"scaleInMs":180}},{"kind":"slam","kindLabel":"砸入","axis":"both","value":"slam_lg","label":"重","preset":{"scaleInFrom":3.4,"scaleInPeak":1,"scaleInMs":180}},{"kind":"slam","kindLabel":"砸入","axis":"both","value":"slam_squash","label":"带压扁","preset":{"scaleInFrom":2.4,"scaleInPeak":1,"scaleInMs":180,"squashY":0.72}},{"kind":"shrink_in","kindLabel":"收缩","axis":"effect","value":"shrink_in_std","label":"标准","preset":{"scaleInFrom":0.4,"scaleInPeak":1,"scaleInMs":500}},{"kind":"shrink_in","kindLabel":"收缩","axis":"effect","value":"fade_only","label":"只淡出","preset":{}},{"kind":"shrink_in","kindLabel":"收缩","axis":"effect","value":"shrink_in_fast","label":"快速抽走","preset":{"scaleInFrom":0.4,"scaleInPeak":1,"scaleInMs":160}},{"kind":"pop","kindLabel":"弹出","axis":"both","value":"pop_std","label":"标准","preset":{"scaleInFrom":0.3,"scaleInPeak":1,"scaleInMs":350}},{"kind":"pop","kindLabel":"弹出","axis":"both","value":"pop_soft","label":"软","preset":{"scaleInFrom":0.7,"scaleInPeak":1,"scaleInMs":350}},{"kind":"arc","kindLabel":"逐字弧形","axis":"both","value":"arc_up","label":"上拱","preset":{"perChar":{"rotationFrom":0,"rotationTo":-14,"spreadXEm":0,"perCharFrames":8,"staggerFrames":3}}},{"kind":"arc","kindLabel":"逐字弧形","axis":"both","value":"arc_wave","label":"波浪","preset":{"perChar":{"rotationFrom":-12,"rotationTo":12,"perCharFrames":24,"staggerFrames":2}}},{"kind":"arc","kindLabel":"逐字弧形","axis":"both","value":"arc_down","label":"下垂","preset":{"perChar":{"rotationFrom":0,"rotationTo":14,"perCharFrames":8,"staggerFrames":3}}},{"kind":"size","kindLabel":"逐字大小字","axis":"style","value":"size_last","label":"末字重音","preset":{"perChar":{"scaleSpread":0.75,"perCharFrames":14,"easing":"back_out"}}},{"kind":"size","kindLabel":"逐字大小字","axis":"style","value":"size_first","label":"首字重音","preset":{"perChar":{"scaleSpread":0.75,"perCharFrames":14,"reverse":true,"easing":"back_out"}}},{"kind":"size","kindLabel":"逐字大小字","axis":"style","value":"size_mid","label":"中字重音","preset":{"perChar":{"scaleSpread":-0.4,"perCharFrames":14,"easing":"back_out"}}},{"kind":"scatter","kindLabel":"逐字抖散","axis":"both","value":"scatter_sm","label":"轻","preset":{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.12,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.06,"perCharFrames":10,"staggerFrames":1,"easing":"back_out"}}},{"kind":"scatter","kindLabel":"逐字抖散","axis":"both","value":"scatter_lg","label":"重","preset":{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.45,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.28,"perCharFrames":16,"staggerFrames":3,"easing":"back_out"}}},{"kind":"scatter","kindLabel":"逐字抖散","axis":"both","value":"scatter_shake","label":"带抖动","preset":{"perChar":{"spreadXFrom":0,"spreadXTo":1,"spreadXEm":0.3,"spreadYFrom":0,"spreadYTo":1,"spreadYEm":0.18,"perCharFrames":12,"staggerFrames":2,"easing":"back_out"},"shakePx":5,"shakeHz":20}},{"kind":"shrink","kindLabel":"逐字变小","axis":"style","value":"shrink_desc","label":"递减","preset":{"perChar":{"scaleSpread":-0.55,"perCharFrames":18,"staggerFrames":2}}},{"kind":"shrink","kindLabel":"逐字变小","axis":"style","value":"shrink_drop","label":"骤降","preset":{"perChar":{"scaleSpread":-0.75,"perCharFrames":6,"staggerFrames":0}}},{"kind":"shrink","kindLabel":"逐字变小","axis":"style","value":"shrink_tail","label":"尾音","preset":{"perChar":{"scaleSpread":-0.5,"perCharFrames":12,"staggerFrames":2}}},{"kind":"grow","kindLabel":"逐字放大","axis":"style","value":"grow_asc","label":"递增","preset":{"perChar":{"scaleSpread":0.8,"perCharFrames":18,"staggerFrames":2}}},{"kind":"grow","kindLabel":"逐字放大","axis":"style","value":"grow_burst","label":"爆开","preset":{"perChar":{"scaleSpread":1.6,"perCharFrames":20,"staggerFrames":3,"easing":"back_out"}}},{"kind":"grow","kindLabel":"逐字放大","axis":"style","value":"grow_first","label":"首字引爆","preset":{"perChar":{"scaleSpread":0.9,"perCharFrames":12,"staggerFrames":4,"reverse":true}}},{"kind":"hop","kindLabel":"逐字错峰","axis":"both","value":"pop_perchar","label":"弹出·逐字","preset":{"perChar":{"scaleFrom":0.3,"scaleTo":1,"perCharFrames":10,"staggerFrames":3,"easing":"back_out"}}},{"kind":"hop","kindLabel":"逐字错峰","axis":"both","value":"hop_std","label":"跳起·标准","preset":{"perChar":{"offsetYFrom":0.55,"offsetYTo":0,"perCharFrames":12,"staggerFrames":4,"easing":"back_out"}}},{"kind":"hop","kindLabel":"逐字错峰","axis":"both","value":"hop_fast","label":"跳起·快错峰","preset":{"perChar":{"offsetYFrom":0.55,"offsetYTo":0,"perCharFrames":10,"staggerFrames":2,"easing":"back_out"}}},{"kind":"hop","kindLabel":"逐字错峰","axis":"both","value":"hop_big","label":"跳起·大字慢跳","preset":{"perChar":{"offsetYFrom":0.9,"offsetYTo":0,"perCharFrames":26,"staggerFrames":7,"easing":"back_out"}}},{"kind":"vtext","kindLabel":"竖排","axis":"style","value":"vtext_thin","label":"细楷","preset":{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":400,"safeWidthRatio":0.86}},{"kind":"vtext","kindLabel":"竖排","axis":"style","value":"vtext_bold","label":"粗体","preset":{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":700,"safeWidthRatio":0.86}},{"kind":"vtext","kindLabel":"竖排","axis":"style","value":"vtext_shrink","label":"逐字变小","preset":{"vertical":true,"fontFamily":"LXGW WenKai","fontWeight":700,"safeWidthRatio":0.86,"perChar":{"scaleSpread":-0.45,"perCharFrames":16,"staggerFrames":3}}}];
+const KINDS = [{"kind":"none","kindLabel":"不设","axis":"none","value":"","label":"不设","preset":{}},{"kind":"tilt","kindLabel":"倾斜","axis":"style","value":"tilt","label":"标准","preset":{"tiltDeg":-6}},{"kind":"arc","kindLabel":"弧形（扇形）","axis":"style","value":"arc","label":"标准","preset":{"arcToDefault":-14,"perChar":{"rotationFrom":0,"rotationTo":-14,"perCharFrames":8,"staggerFrames":3}}},{"kind":"vtext","kindLabel":"竖排","axis":"style","value":"vtext","label":"标准","preset":{"vertical":true,"safeWidthRatio":0.86,"fontWeight":400}},{"kind":"transition","kindLabel":"过渡","axis":"transition","value":"pop","label":"弹出","preset":{"scaleInFrom":0.3,"scaleInPeak":1,"scaleInMs":350}},{"kind":"transition","kindLabel":"过渡","axis":"transition","value":"fade","label":"淡入淡出","preset":{}},{"kind":"shake","kindLabel":"抖动","axis":"effect","value":"shake","label":"标准","preset":{"shakePx":6,"shakeHz":18}},{"kind":"perchar","kindLabel":"逐字变化","axis":"effect","value":"perchar_big","label":"逐字变大","preset":{"perChar":{"scaleSpread":0.8,"perCharFrames":18,"staggerFrames":2}}},{"kind":"perchar","kindLabel":"逐字变化","axis":"effect","value":"perchar_small","label":"逐字变小","preset":{"perChar":{"scaleSpread":-0.55,"perCharFrames":18,"staggerFrames":2}}},{"kind":"heartbeat","kindLabel":"心跳","axis":"effect","value":"heartbeat","label":"标准","preset":{"heartbeatPeaksMs":[0,180,300,480],"heartbeatAmp":1.14,"heartbeatCycleMs":1000}}];
 const CHARS = ["今","晚","八","点","开","播"];
 const FPS = 30, DUR = 2200, LOOP = 2600;
 // ⚠️ 字号的**唯一来源**就是这条 CSS 变量（见 :root）。
@@ -577,7 +230,9 @@ const FONT_PX = parseFloat(getComputedStyle(document.documentElement)
 
 // ---- 与 animcore.mjs 逐式相同的内联副本（页面必须能单文件打开）----
 /**
- * 39 档文字动效 —— **逐字/整块的求值内核**。
+ * 9 档文字动效（三轴）—— **逐字/整块的求值内核**。
+ *
+ * ⚠ 2026-10-14：原来是 39 档；三轴收敛后是 9 档。数学本身没变（仍与 Rust 逐值对拍）。
  *
  * ⚠️⚠️ **这份不是"再设计一遍"**，是 Dhampir 权威实现的**逐值移植**：
  *
