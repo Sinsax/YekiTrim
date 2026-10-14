@@ -19,7 +19,7 @@
  },
  {
   "kind": "arc",
-  "kindLabel": "弧形（扇形）",
+  "kindLabel": "斜扫（非真弧）",
   "axis": "style",
   "value": "arc",
   "label": "标准",

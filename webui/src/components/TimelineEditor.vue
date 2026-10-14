@@ -400,7 +400,7 @@
                         只是不再由这个面板提供入口。 -->
                 <label>排版</label>
                 <select :value="styleKind" @change="setKindOnAxis('style', $event.target.value)"
-                  title="管字**排成什么形状**（歪斜、竖排、弧形）。不随时间变。">
+                  title="管字**排成什么形状**（歪斜、竖排、逐字斜扫）。不随时间变。">
                   <option v-for="k in kindsOnAxis('style')" :key="k.kind" :value="k.kind">{{ kindLabelOn('style', k) }}</option>
                   <option v-if="styleKind === ''" value="">未知档（{{ selItem.style_anim }}）</option>
                 </select>
@@ -410,7 +410,7 @@
                     <option v-for="a in styleVariants" :key="a.value" :value="a.value">{{ a.label }}</option>
                   </select>
                 </template>
-                <!-- ---- 排版角度（2026-10-14，用户口径：倾斜与弧形要能调角度）----
+                <!-- ---- 排版角度（2026-10-14，用户口径：倾斜与斜扫要能调角度）----
                      ⚠️ **只在 `tilt` / `arc` 两档出现**（`showAngle`）—— 别的排版档
                         没有旋转语义，显示了用户会以为它能调（调了不生效）。
                      ⚠️ 区间**必须与转译器的 `LAYOUT_ANGLE_MIN/MAX` 同值**，
@@ -420,7 +420,7 @@
                   <div class="angle-row">
                     <input type="range" :min="LAYOUT_ANGLE_MIN" :max="LAYOUT_ANGLE_MAX" step="0.5"
                       :value="layoutAngle" @input="setLayoutAngle($event.target.value)"
-                      title="倾斜/弧形的角度（度）。负号 = 反方向。">
+                      title="倾斜/斜扫的角度（度）。负号 = 反方向。">
                     <span class="angle-val">{{ layoutAngle }}°</span>
                     <!-- ⚠️ 「默认」只在**显式设过**时才可点：没设过时它本来就是默认值，
                          按钮看着能动却什么都不改变，用户会以为坏了。
@@ -975,7 +975,7 @@ const ANIM_KINDS = [
 
   // ===== 排版轴（用户口径：「形态改为排版」）=====
   //
-  // ⚠️⚠️ **倾斜与弧形的角度是可调的**（2026-10-14，用户明确要求）——
+  // ⚠️⚠️ **倾斜与斜扫的角度是可调的**（2026-10-14，用户明确要求）——
   //    档位本身**不带角度**，角度走**事件字段** `layout_angle_deg`。
   //    面板上给一个**角度滑杆**，只在选中 `tilt` / `arc` 时显示。
   //    改档位**不会**重置角度（两者正交）。
@@ -992,7 +992,22 @@ const ANIM_KINDS = [
   },
   {
     kind: 'arc',
-    label: '弧形（扇形）',
+    // ⚠️⚠️ **标签曾经写「弧形（扇形）」—— 那是个做不到的承诺**（2026-10-14 改）。
+    //
+    //    实测稳态（t=3.0，入场早已结束）各字角度：**-14° -14° -14° … -14°**
+    //    —— 每个字**同一个角度**，也就是"整行统一倾斜"，**与 `tilt` 档观感分不出来**。
+    //    而真弧该是 -14 / -10 / -6 / -2 / +2 / +6 / +10 / +14（各字不同）。
+    //
+    //    真因是**原语缺口**：`text_perchar_anim.rs:345` 的
+    //      `rotation_deg: mix(rotation_from, rotation_to)`  —— **没有 `rank` 项**，
+    //    所以"第 i 个字转 i 度"表达不出来（位移那两项 `spread_*` 才乘 `rank`，
+    //    而它是线性混合 ⇒ 只能做单调的斜排，做不了抛物线的弧）。
+    //    ⚠️ 预览与成片**两边一致地做不出**，所以这不是漂移，是能力缺口。
+    //    需求与验收判据见 `docs/plan/dhampir-rotation-spread-request.md`。
+    //
+    //    ⇒ 在底座补上 `rotation_spread` 之前，标签只能说**它真做到的**：
+    //      入场时逐字扫过、稳态是一行统一倾斜。**别写回"弧形"。**
+    label: '斜扫（非真弧）',
     axis: 'style',
     angle: true,
     // ⚠️ 弧形只用角度的**绝对值**当幅度，**方向由档位定**（缺省向上弯）。
