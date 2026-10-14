@@ -145,9 +145,20 @@ const DRAW_PROBES = {
     read: (m, idx) => idx.soundEvents.length,
   },
   element: {
-    // ⚠️ **`kind: 'sticker'` 的元素**：这是 §5 E2 明说"复用贴纸路径、零复制"的那条。
-    //    `getElements` 里 `if (kind !== 'sticker') continue` 一旦写错，这里就恒为 0。
-    ev: { type: 'element', time: 0.5, duration: 3, kind: 'sticker', text: '生气' },
+    // ⚠️⚠️ **2026-10-14 分离之后，这个探针必须用 `kind: 'text'`**。
+    //
+    //    原先它用的是 `kind: 'sticker'`（那时贴纸条目确实住在 `idx.element` 里）。
+    //    分家之后那些条目在**索引期**就归一到 `idx.sticker` 了，
+    //    `idx.element` **只剩文字** ⇒ 再拿贴纸去探这个桶，恒为 0。
+    //
+    //    ⚠️ 探针失败时**会被当成"桶是死的"**（判据报"登记了但画不出来"）——
+    //      那是**误报**：桶没死，是**探针的输入形状过时了**。
+    //      所以探测事件要跟着**桶里装什么**走，不能只跟着桶名走。
+    ev: {
+      type: 'element', kind: 'text', text: '生气',
+      time: 0.5, end: 3.5, x: '50%', y: '47%', pos: 'bottom',
+      source: 'hook|80|6|255,255,255,255|26,26,26,255|700|0',
+    },
     at: 0.55,
     read: (m, idx) => m.getElements(idx, 0.55).length,
   },

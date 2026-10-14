@@ -402,10 +402,31 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
         //   给它解析图源会误导下一个人以为 text 支也通了。
         const kind = String(ev.kind ?? '').trim().toLowerCase()
         if (kind === 'sticker') {
+          // ⚠️⚠️ **贴纸在索引期就归一进 `idx.sticker`，不再留在 `idx.element`**
+          //    （2026-10-14，用户口径：「**分离贴纸和文字层**」）。
+          //
+          //    归一在**索引期**（建索引跑一次）而不是求值期（每帧都要判），
+          //    于是**两个求值器各读一个桶、互不知道对方**：
+          //      * `stickersAt` 只读 `idx.sticker`；
+          //      * `getElements` 只读 `idx.element`，而那里**只剩文字**。
+          //
+          //    ⚠️ 这条以前是"两边都留一份"：贴纸**同时**是 `idx.element` 的条目
+          //      （`getElements` 认它）和 `stickersAt` 的（它后来又去读 `idx.element`）
+          //      ⇒ **两个函数互相知道对方的桶**，动一个就碰另一个。
+          //      实测代价：`kind === 'sticker'` 那段在 `getElements` 里**从没被需要过**
+          //      （它的产物没有 `x`/`y`、被 `texts` 全部丢掉），却让"文字层"这条链
+          //      必须一直防着贴纸形状 —— 用户报的"贴纸不显示"就是这么来的。
           const name = ev.name || ev.keyword || ev.text || ''
           entry.src = stickerSrc ? stickerSrc(name) : ''
           entry.isEmoji = /^[0-9a-f]+$/i.test(name) && !entry.src
           entry.emoji = entry.isEmoji ? safeEmoji(name) : ''
+          // 落到 `idx.sticker`（**同一个 entry 对象**，不复制）——
+          // ⚠️ 不复制：`entry` 已在 `idx.element` 里挂了号，复制品会让
+          //    "同一个事件两个身份"重新出现（那正是这次要消掉的东西）。
+          //    下面 `idx.element` 那条会在归一后**把它摘掉**。
+          if (!idx.sticker) idx.sticker = []
+          idx.sticker.push(entry)
+          entry.__normalizedSticker = true
         } else if (kind === 'text') {
           // §5 E3 预览侧：文字元素**直接读 `process` 已经算好的东西**，不重算。
           //
@@ -495,6 +516,29 @@ export function buildIndex({ config, subtitles, danmaku, duration, stickerSrc, k
     })
   })
   ;INDEXED_TYPES.forEach((k) => idx[k].sort((a, b) => a.time - b.time))
+
+  // ---- **贴纸与文字彻底分家**（2026-10-14，用户口径：「分离贴纸和文字层」）----
+  //
+  // 上面把 `element + kind="sticker"` 的条目**归一进了 `idx.sticker`**，
+  // 这里把它们的**第二份身份**从 `idx.element` 摘掉。摘完之后：
+  //
+  //   * `idx.sticker` = 老写法 + 归一过来的新写法  ⇒ **`stickersAt` 唯一的来源**；
+  //   * `idx.element` = **只剩文字**                 ⇒ **`getElements` 唯一的来源**。
+  //
+  // ⇒ 两个求值器**各读一个桶、互不知道对方**。这是本次分离的**全部意义**：
+  //   动文字层（位置/描边/竖排/逐字/心跳）**碰不到贴纸**，反之亦然。
+  //
+  // ⚠️ **必须排在 `sort` 之后**：`idx.sticker` 是**新 push 进去的**，
+  //    上面那次 sort 扫的是"归一之前"的数组，新条目还没排 —— 在这里补一次。
+  //    （漏了它 ⇒ 贴纸**画出来的顺序**与事件时间不一致，多层叠放时观感是"错层"。）
+  // ⚠️ 摘的是**元素桶里那一份引用**，不是"删事件"：`idx.sticker` 那条仍指着同一个
+  //    `entry` 对象，`ptEvents` / 音频 / 其他消费者一个都不受影响。
+  if (Array.isArray(idx.element)) {
+    idx.element = idx.element.filter((e) => !e.__normalizedSticker)
+  }
+  if (Array.isArray(idx.sticker)) {
+    idx.sticker.sort((a, b) => a.time - b.time)
+  }
 
   // 字幕轨的眼睛：只清**索引里的那份**（素材与 `data/subtitles.json` 一个字都没动）
   idx.subs = laneOn('subtitles') ? (subtitles || []) : []
@@ -2368,99 +2412,54 @@ export function getElements(idx, t) {
       })
       continue
     }
-    if (kind !== 'sticker') continue
-    const et = e.time, dur = e.duration || 2.5
-    if (t < et || t > et + dur) continue
-    const fadeOut = Math.min(0.3, dur)
-    if (!(fadeOut > 0)) continue
-    const k = Math.min(1, Math.max(0, dur - fadeOut) / (0.35 + 0.4))
-    const popIn = 0.35 * k, floatUp = 0.4 * k, fadeStart = dur - fadeOut
-    let opacity = 0, scale = 1, rot = 0, yOff = 0
-    if (t - et < popIn) {
-      const p = (t - et) / popIn
-      const bp = E.backOut(p, 3)
-      scale = 0.3 + 0.7 * bp
-      rot = -15 + 15 * bp
-      opacity = E.pow2Out(p)
-    } else if (t < et + popIn + floatUp) {
-      const p = (t - et - popIn) / floatUp
-      opacity = 1; scale = 1; rot = 0
-      yOff = -stickerFloatUp(idx.cv) * p
-    } else if (t < et + fadeStart) {
-      opacity = 1; scale = 1; rot = 0
-      yOff = -stickerFloatUp(idx.cv)
-    } else {
-      const p = (t - fadeStart) / fadeOut
-      opacity = Math.max(0, 1 - p)
-      scale = 1; rot = 0
-      yOff = -stickerFloatUp(idx.cv)
-    }
-    // ⚠️ 同上：`text` 也在 **`e.ev`** 上。这里曾经读 `e.text` ⇒ 恒 `undefined` ⇒
-    // `src` 恒空串 ⇒ **画出来了但是空白的**（比"画不出来"更隐蔽：它有 opacity、有 scale，
-    // 只是没图）。只修上面那个 `continue` 而不修这里，症状就从"看不见"变成"看不见但占位"。
+    // ⚠️⚠️ **这里原来还有一整段 `kind === 'sticker'` 的求值**（2026-10-14 删除）。
     //
-    // ⚠️⚠️ **第三处缺陷**：曾经写的是 `(idx.stickerSrc || (() => ''))(...)` ——
-    //    但 **`idx` 上从来没有 `stickerSrc`**：`buildIndex` 只把解析结果落到 **`entry.src`**
-    //    （见上面 `type === 'sticker'` 分支）。⇒ 那个 `||` 兜底**恒生效**、`src` **恒为空串**，
-    //    于是**即使 (a)(b) 都修好，贴纸照样是空的**。
-    //    这里改成与 `type === 'sticker'` 同口径：**读 `e.src`**（索引期已经解析好的 URL）。
-    //    ⇒ 这就是"两处错误"背后的**第三处**：一个**恒真的兜底**，它让前两处的修复看起来无效。
-    out.push({ src: e.src || '', opacity, scale, rot, yOff })
+    //    删它的理由不是"没人用"，而是**它从来就没被需要过、却一直在制造耦合**：
+    //      * 它的产物是 `{ src, opacity, scale, rot, yOff }` —— **没有 `x`/`y`**，
+    //        而模板 `.sticker-el` 读的正是 `st.x`/`st.y`；
+    //      * 唯一的消费者 `texts` 又 `filter(isText === true)`，把这些条目**全部丢掉**
+    //        （贴纸那条 `kind` 分支不设 `isText`）。
+    //      ⇒ 它**一条都到不了画面**，代价是"文字层这条链必须一直防着贴纸形状"。
+    //
+    //    现在贴纸在**索引期**就归一进 `idx.sticker`（见 `buildIndex`），
+    //    `idx.element` 里**只剩文字** ⇒ 本函数不必再判 `kind`。
+    //
+    //    ⚠️ 别再把它加回来：那会让"动文字层碰到贴纸"这个病复发，
+    //      而症状正是用户报的那个 —— **贴纸不显示，且不报错**。
   }
   return out
 }
 
-/// 贴纸求值器 —— **两个事件来源合流**（2026-10-14 修的真缺陷）。
+/// 贴纸求值器 —— **唯一的贴纸来源**（2026-10-14 分离之后）。
 ///
-/// # 为什么要合流
+/// # 输入
 ///
-/// 贴纸有两个写法，**取决于 `process` 是不是跑过**：
+/// 只读 **`idx.sticker`**。那个桶里现在有**两种写法的贴纸**，但**形状已经统一**：
 ///
-/// | 写法 | 谁产出 | 落在哪个桶 |
+/// | 写法 | 谁在产 | 归一在哪 |
 /// |---|---|---|
-/// | `type = "sticker"` | 老的 / 手写的 | `idx.sticker` |
-/// | `type = "element"` + `kind = "sticker"` | **`process` 现在产的** | `idx.element` |
+/// | `type = "sticker"` | 老工程 / 手写 | 本来就在这个桶里 |
+/// | `type = "element"` + `kind = "sticker"` | **`process` 现在产的** | `buildIndex` **索引期**归一进来 |
 ///
-/// ⚠️⚠️ 而本函数原来**只读 `idx.sticker`** ⇒ 第二种写法（也就是用户 28 个旧片段之外、
-/// `process` 跑过的那些）**一条贴纸都求不出来**。症状是「**贴纸设置了、预览里不显示**」，
-/// 而且**不报错**：桶是空的，`for` 循环转一圈就出来了。
+/// # 为什么必须统一到这一个桶（用户口径：「分离贴纸和文字层」）
 ///
-/// ⚠️ 与此同时 `getElements()` **确实**认 `kind === 'sticker'`（它读 `idx.element`）——
-/// 但它产出的是 `{ src, opacity, scale, rot, yOff }`，**没有 `x`/`y`**，
-/// 而模板 `.sticker-el` 读的正是 `st.x`/`st.y`；且 `PolishPreview.vue` 的 `stickers`
-/// 走的是**本函数**、`texts` 才走 `getElements` 并**只收 `isText === true`**。
-/// ⇒ 两半各拿一半：**一个桶没被读、一个桶产不出坐标**，中间那条缝就是"贴纸不显示"。
+/// 归一之前，贴纸**同时**挂在两个桶里（`idx.element` 一份、`idx.sticker` 一份），
+/// 于是两个求值器**互相知道对方**：
 ///
-/// # 合流方式
+/// * `stickersAt` 只读 `idx.sticker` ⇒ 新写法**一条都求不出来**；
+/// * `getElements` 收 `idx.element` 里的贴纸，却产出**没有 `x`/`y`** 的形状
+///   （模板读 `st.x`/`st.y`）⇒ 也到不了画面。
 ///
-/// 不新写一份求值（那会变成第五份实现、必然漂移）—— **把第二种来源归一成第一种的形状**
-/// 再走同一段下面的求值：`keyword` ← `text`、`src` 在索引期就解析好了（`entry.src`）、
-/// 落点交给同一个 [`stickerAnchor`]（它本来就会按 `position_mode` 分流 manual/auto）。
+/// ⇒ **两半各拿一半，缝里就是用户报的「贴纸设置了、预览里不显示」**（且不报错）。
 ///
-/// ⚠️ 归一的是**形状**，不是语义：`ev.x`/`ev.y` 在两种写法里都是"盒子左上角百分比"
-/// （manual 那档不看它们），所以 `stickerAnchor` 不需要改。
-/// 贴纸事件的**两个来源归一**（见 [`stickersAt`] 的文档注释）。
+/// 现在：`idx.sticker` = 贴纸全部、`idx.element` = **只剩文字**
+/// ⇒ **动文字层（位置/描边/竖排/逐字/心跳）碰不到贴纸**，反之亦然。
+/// 这就是"分离"的全部意义 —— 不是为了整齐，是为了让**后续改文字层不再动到贴纸**。
 ///
-/// ⚠️ 归一成 `type === 'sticker'` 那一支的形状：`ev.keyword` 有值、`ev.x/ev.y` 照原样。
-///   `kind === 'sticker'` 的正文在 `ev.text` 里（`process` 把关键词放那儿），
-///   而 `name` 才是真正的素材名 —— 与索引期 `const name = ev.name || ev.keyword || ev.text`
-///   同一个优先级，两处必须一致（否则"求得出事件、却求不出图"）。
-///
-/// ⚠️ **不复制对象**：判据要对拍"同一个事件两路求值逐值相等"，复制会让 `key`/`name`
-///   的来源变得说不清。这里只读原对象，缺的字段在下面读的时候用同一条优先级链兜。
-///
-/// ⚠️ 顺序：先 `idx.sticker`（老写法）再 `idx.element` 里的贴纸 —— 与图层绘制顺序一致，
-///   两者同时存在时**后面的压在上面**（模板那个 v-for 同序）。
-function* stickerSources(idx) {
-  yield* idx.sticker || []
-  for (const e of idx.element || []) {
-    if (String(e.ev?.kind ?? '').trim().toLowerCase() === 'sticker') yield e
-  }
-}
-
+/// ⚠️ 别再让本函数去读 `idx.element`：那等于把这条缝重新打开。
 export function stickersAt(idx, t) {
   const out = []
-  for (const e of stickerSources(idx)) {
+  for (const e of idx.sticker || []) {
     const et = e.time, dur = e.duration || 2.5
     if (t < et || t > et + dur) continue
     const fadeOut = Math.min(0.3, dur)

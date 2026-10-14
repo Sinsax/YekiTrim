@@ -29,6 +29,7 @@
 //
 // 用法：node scripts/check-sticker-sources.mjs   （退出码非 0 即失败）
 
+import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -43,7 +44,7 @@ function ok(cond, what) {
   if (cond) { pass += 1 } else { fail += 1; failures.push(what) }
 }
 
-const { buildIndex, stickersAt } = await import(pathToFileURL(ENGINE).href)
+const { buildIndex, stickersAt, getElements } = await import(pathToFileURL(ENGINE).href)
 
 const SRC = (n) => `stickers/${n}.gif`
 const T = 2   // 稳态：避开 0.35s 弹出 / 0.4s 上浮那两段
@@ -151,8 +152,124 @@ if (ro.one) {
 }
 
 // ---------------------------------------------------------------------------
+// ⑧ **贴纸与文字必须分家**（2026-10-14，用户口径：「分离贴纸和文字层」）
+//
+//    ⚠️ 这一组是本次改动**存在的理由**，不是附带的整洁度检查：
+//      分家之前，贴纸同时挂在 `idx.element` 与 `idx.sticker` 两个桶里，
+//      **两个求值器互相知道对方** —— 动文字层就会碰到贴纸
+//      （用户报的"贴纸不显示"正是这条缝的产物）。
+// ---------------------------------------------------------------------------
+{
+  // 一个工程里**两种写法各来一条贴纸 + 一条文字**
+  const MIX = [
+    { type: 'element', kind: 'sticker', text: 'ysyk', name: 'PNG', time: 1, end: 5 },
+    { type: 'element', kind: 'text', text: '你好', x: '38%', y: '47%', pos: 'bottom',
+      source: 'comment|80|2|255,128,192,255|26,26,26,255|700|1|0|1|pink', time: 6, end: 10 },
+    { type: 'sticker', name: '思考', keyword: '思考', time: 1, end: 5, x: 49, y: 51 },
+  ]
+  const cfg = {
+    _canvas: { width: 1920, height: 1080, fps: 30, sticker: { position_mode: 'manual', position: '49% 51%' } },
+    segments: [{ start: 0, end: 30, fx: 'low', events: MIX }],
+  }
+  const idx = buildIndex({ config: cfg, subtitles: [], danmaku: [], duration: 30, fps: 30, stickerSrc: SRC })
 
-console.log(`贴纸事件来源合流：${pass} 项通过，${fail} 项失败`)
+  // ⑧-1 `idx.element` 里**一条贴纸都不许有**（分家的正面判据）
+  const strayStickers = (idx.element || []).filter(
+    (e) => String(e.ev?.kind ?? '').trim().toLowerCase() === 'sticker')
+  ok(strayStickers.length === 0,
+    `⑧ \`idx.element\` 里不许再有贴纸（实得 ${strayStickers.length} 条）——`
+    + ' 贴纸必须在**索引期**就归一进 `idx.sticker`，那是"分离"的定义')
+  ok((idx.element || []).length === 1,
+    `⑧ \`idx.element\` 该只剩那 1 条文字（实得 ${(idx.element || []).length} 条）`)
+
+  // ⑧-2 `idx.sticker` 要**两种写法都在**（别为了分家把新写法弄丢）
+  ok((idx.sticker || []).length === 2,
+    `⑧ \`idx.sticker\` 该有 2 条（老写法 + 归一来的新写法），实得 ${(idx.sticker || []).length} 条`)
+
+  // ⑧-3 **两个求值器各读各的**（互不越界）
+  const st = stickersAt(idx, 3)
+  const tx = getElements(idx, 8)
+  ok(st.length === 2 && tx.length === 1,
+    `⑧ 两个求值器各读各的桶（贴纸 ${st.length} 条该=2、文字 ${tx.length} 条该=1）`)
+  ok(tx.every((e) => e.isText === true),
+    '⑧ 文字求值器的产物**必须全是文字**（贴纸形状一条都不许混进来）')
+  ok(st.every((s) => typeof s.x === 'number' && typeof s.y === 'number'),
+    '⑧ 贴纸求值器的产物**必须都带 x/y**（模板 `.sticker-el` 读的就是这两个）')
+
+  // ⑧-4 ⚠️⚠️ **源码级判据：`stickersAt` 只许读 `idx.sticker`**
+  //
+  //    ⚠️ 上面三条是**行为**判据。它们**抓不住"重新耦合"** —— 实测过：
+  //      把 `stickersAt` 改回 `[...idx.sticker, ...idx.element]`（即恢复读两个桶），
+  //      **23 项一条都不红**。原因很实在：分家已经把 `idx.element` 洗干净了，
+  //      多读那个桶**贡献 0 条**，结果逐值相同 ⇒ 行为判据看不出差别。
+  //
+  //    ⇒ 要抓住"耦合回来"，只能**直接查源码读了哪个桶**。
+  //      （这是"行为判据抓不住结构倒退"的典型一例，写在这里免得下一个人删掉它。）
+  {
+    const engSrc = readFileSync(ENGINE, 'utf8')
+    // ⚠️ 用 `indexOf` + 花括号配平，**不用正则**：正则里的 `\n` / `\s`
+    //    经 shell heredoc 会被吃掉（这个坑我自己踩过好几次，症状是
+    //    `SyntaxError: Invalid regular expression` 或"锚点悄悄不命中"）。
+    const start = engSrc.indexOf('export function stickersAt(idx, t) {')
+    let body = null
+    if (start >= 0) {
+      let depth = 0
+      for (let i = engSrc.indexOf('{', start); i < engSrc.length; i++) {
+        if (engSrc[i] === '{') depth++
+        else if (engSrc[i] === '}') { depth--; if (depth === 0) { body = engSrc.slice(start, i + 1); break } }
+      }
+    }
+    ok(!!body, '⑧ 抽不到 `stickersAt` 的函数体（结构变了就要改本判据）')
+    if (body) {
+      ok(body.includes('idx.sticker'),
+        '⑧ `stickersAt` 必须读 `idx.sticker`')
+      ok(!body.includes('idx.element'),
+        '⑧⚠️ `stickersAt` **不许读 `idx.element`** —— 那会把"贴纸/文字"重新耦合起来。'
+        + '行为判据抓不到这一条（分家后那个桶贡献 0 条），所以这里查源码。')
+    }
+
+    // ⑧-5 镜像：**`getElements` 不许读 `idx.sticker`**（反方向也要钉住）
+    const gStart = engSrc.indexOf('export function getElements(idx, t) {')
+    let gBody = null
+    if (gStart >= 0) {
+      let d = 0
+      for (let i = engSrc.indexOf('{', gStart); i < engSrc.length; i++) {
+        if (engSrc[i] === '{') d++
+        else if (engSrc[i] === '}') { d--; if (d === 0) { gBody = engSrc.slice(gStart, i + 1); break } }
+      }
+    }
+    ok(!!gBody, '⑧ 抽不到 `getElements` 的函数体（结构变了就要改本判据）')
+    if (gBody) {
+      // ⚠️⚠️ **先剥注释再判**：`getElements` 里那段解释"为什么把贴纸求值删掉"的注释
+      //     本身就会写出 `kind === 'sticker'` 与 `idx.sticker` 这些字样 ——
+      //     不剥注释的话，判据会被**它自己让人写下的说明**顶翻
+      //     （本仓 `check_module_boundaries.py` 头一条处理就是这个：它上一版手写 grep
+      //     产出过 8 条假阳性，等于没用）。
+      //     ⚠️ `(?<!:)` 是为了不把 `https://…` 里的 `//` 当注释起点。
+      const code = gBody
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+      ok(!code.includes('idx.sticker'),
+        '⑧⚠️ `getElements` **不许读 `idx.sticker`** —— 反方向的耦合同样要挡')
+      // ⚠️ 精确到 **`sticker` 这个字面量**，不是"出现过 `kind`"：
+      //    `getElements` **合法地**读 `kind`（判 `kind === 'text'` 是它唯一的入口），
+      //    要挡的是**贴纸那条**（`kind === 'sticker'` 的求值已删）。
+      //    写成"不许出现 kind"会把合法代码一起判红 —— 那是假阳性，比不判还坏。
+      const mentionsStickerAsKind = /kind\s*===\s*['"]sticker['"]/.test(code)
+        || /kind\s*!==\s*['"]sticker['"]/.test(code)
+      ok(!mentionsStickerAsKind,
+        '⑧⚠️ `getElements` 里**不许再判 `kind === "sticker"`** —— '
+        + '那段求值已删（它产出没有 x/y 的形状、被消费者整批丢掉），'
+        + '加回来 = 把"动文字层碰到贴纸"这个病复发。'
+        + '（⚠️ 判的是"有没有拿 sticker 当 kind 比"，不是"有没有出现 kind" ——'
+        + ' 后者会把 `kind === "text"` 这个合法入口一起判红）')
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+console.log(`贴纸来源与「贴纸/文字分离」：${pass} 项通过，${fail} 项失败`)
 if (fail) {
   console.log()
   for (const f of failures) console.log('  ✗ ' + f)
