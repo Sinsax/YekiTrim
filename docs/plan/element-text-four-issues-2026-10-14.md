@@ -537,8 +537,26 @@ arc_up:   { perChar: { rotation_from: 0, rotation_to: -14, ... } },  // 写死
 
 ### 6.5 仍未做（下一批）
 
-1. **①a 盒原点** —— 需 Dhampir wasm 导出 `text_layout`（方案 B）；
-2. **心跳的成片侧双峰** —— 需底座新原语（现在已**如实报 NOTE**，不骗人）；
-3. 重生 `docs/anim/*`；更新 `docs/elements-spec.md`；
-4. 几处**过时注释**（`TimelineEditor.vue` 的 `kindsOnAxis` 文档块仍讲 `both`；
-   模板 386-397 仍列 5 个已删档名；`engine.js` 注释说样式栏叫「清除」而现在叫「默认」）。
+**本轮已全部落地**（字段：`840538e` / `523952b` / `99f6cf2`）：
+
+- ✅ `docs/anim/*` 重生 —— 功夫不在"重新跑一遍"，而在**原来根本没有生成器**：
+  `anim-kinds.json` 是手抄的，所以三轴收敛后它一直画着**已经不存在的 39 档**。
+  新增 `docs/anim/gen-kinds.mjs`（从真源码抽）+ 判据 `scripts/check-anim-docs-snapshot.mjs`（7 项 / 4 组变异全红）。
+  ⚠ 同时发现页面上"逐字那一路"**一直是空跑的**（`逐字路径: 0` → `3`）。
+- ✅ 更新 `docs/elements-spec.md` —— 实际路径是 **`docs/plan/elements-spec.md`**（`docs/` 根下没有这个文件）。
+  它里面仍推荐**已被否决的四档** `hook/chapter/comment/count` ——
+  而它是**底座需求书**，照着做会把否定方案重新实现一遍。已更正并留说明。
+  另外两份：`docs/design/39-tiers-split-*.md` 标为**历史**（附两轴→三轴对照表）；
+  两份设计阶段 HTML 加横幅指向代建页。
+- ✅ 几处**过时注释** —— `kindsOnAxis` 文档块仍讲 `both` / 指向不存在的 `noneLabelOn`；
+  模板里仍说"两栏都要填"；「清除」已改叫「默认」。已全部清掉。
+  ⚠ 小插曲：我一度把 `kind === 'none'` 也当成旧名去改——**判据当场红了**，
+  回查发现它就是现行值。说明：**注释可以随手改，标识符必须让判据说话**。
+
+**仍未做（都是跨仓，需底座配合）：**
+
+1. **①a 盒原点** —— 需 Dhampir wasm 导出 `text_layout`（方案 B）。
+2. **心跳的成片侧双峰** —— 需底座新原语。✅ **需求书已写好：
+   `docs/plan/dhampir-heartbeat-request.md`** —— 里面每一个数字（`back_out3` 只有 1 个极值点、
+   实测峰 1.1750 / 1.1225）都是**真算出来的**，不是估算；并且写了两侧各自该做什么
+   （本仓**不先删** `scale_in_*`、**不先改** `DHAMPIR_HOST_API`）。
