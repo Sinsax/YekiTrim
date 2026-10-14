@@ -2370,8 +2370,10 @@ const dmRows = computed(() => danmakuAt(idx.value, current.value))
 const stickers = computed(() => stickersAt(idx.value, current.value))
 
 /** §5 E3：文字元素在 `t` 时刻的可见集合（读 `process` 写回的落点与样式）。
- *  ⚠️ `getElements` 返回里**混着贴纸与文字两种形状**（都来自 `idx.element`）——
- *  这里只取 `isText` 的那些。贴纸走 `stickersAt`（另一条已经验过的路径），别混用。
+ *  ⚠️ **2026-10-14 分离之后这里不再需要过滤**：`getElements` 读的 `idx.element`
+ *  里**只剩文字**（贴纸在**索引期**就归一进 `idx.sticker` 了，见 `buildIndex`）。
+ *  以前那句 `filter((e) => e.isText === true)` 是**防贴纸形状**用的 ——
+ *  而那道防线正是"贴纸不显示"的来源（贴纸条目没有 `x`/`y`，被它整批丢掉）。
  *
  *  ⚠️⚠️ **P4 补：逐字（2026-10-13）** —— 给每条文字挂上 `spans`。
  *  没有这一层时，模板只画 `tx.text` 一个整串 ⇒ C 组逐字变换（15 档）+
@@ -2382,7 +2384,6 @@ const stickers = computed(() => stickersAt(idx.value, current.value))
  *  与底座 `text_perchar.rs` 同口径。写成画布字号会让位移随字号漂。 */
 const texts = computed(() =>
   getElements(idx.value, current.value)
-    .filter((e) => e.isText === true)
     .map((e) => {
       // ---- ⚠️⚠️ 排版那半边的**实际参数**（2026-10-14 补，与字幕那条路对齐）----
       //

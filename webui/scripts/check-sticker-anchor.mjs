@@ -177,7 +177,6 @@ function engineStickerOf(src) {
     ${extractFunction(src, 'stickerGeom')}
     ${extractFunction(src, 'stickerAnchor')}
     ${extractFunction(src, 'clampSticker')}
-    ${extractFunction(src, 'stickerSources')}
     ${extractFunction(src, 'stickersAt')}
     return { stickerGeom, stickerAnchor, clampSticker, stickersAt }`
   )(
