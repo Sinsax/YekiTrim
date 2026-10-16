@@ -926,6 +926,71 @@ const STICKER_BOX_BASE = 280.0;
 /// ⚠️ **export 出来是为了守卫**（`scripts/check-yekitrim-translator.mjs` 逐值钉它）：
 /// 它有一条**静默**的失败模式 —— 颜色正则收窄成只认 6 位时 `#fff` 会**悄悄**回落到兜底深灰：
 /// 用户选白色描边、成片是深灰，而**报告里一行差异都没有**。`isEntryPoint` 那道门保证直接跑仍是 CLI。
+/// **外圈描边**（2026-10-16，用户口径「给字幕和文字层描边再增加一层白色描边」）：
+/// 把 `[style.subtitle].outer_stroke`（格式与 `stroke` 一样：`"4px #ffffff"`）解析成
+/// `{ widthPx, color }`；**空串 = 不画**（返回 null ⇒ 消费方**一个键都不写**）。
+///
+/// ⚠️ **缺键按默认值走**（`4px #ffffff`，与 Rust 的 `default_sub_outer_stroke()` 同值）：
+/// 用户要的是「加一层白边」这个观感本身，不是「提供一个开关」。两处默认值分叉的症状是
+/// 「预览有白边、成片没有」（或反过来），而报告里一行差异都没有。
+///
+/// ⚠️ 口径与内圈**同一条**：CSS 居中的宽度换算到底座的**外侧宽**要折半（`widthPx / 2`）。
+///
+/// ⚠️ **`outer_stroke` 里那个数字不再是宽度**（2026-10-16）：任何非空值都是一圈**跟随第一层**
+/// 的白边（厚度 = 第一层宽度 × [`OUTER_RING_FOLLOW`]），空串才是"关"。老配置里的 `"4px #ffffff"`
+/// 因此不再画成 4px（那正是用户报「二层宽度还是不对」的原因：4px 全宽 ⇒ 径向 2px，而第一层 12px）。
+export function parseOuterStroke(style, innerWidthPx) {
+  const raw = String((style && style.outer_stroke) ?? DEFAULT_OUTER_STROKE).trim();
+  // **空串 = 显式关**（面板的开关写的就是它）。
+  if (!raw) return null;
+  // ⚠️ **`auto` = 粗细跟随第一层描边**（2026-10-16 用户口径：「第二层的白描边…粗细跟随第一层的
+  //    宽度」）。`innerWidthPx` 是第一层那条 `stroke` 的 CSS 宽度（居中的 px）——
+  //    外圈同口径 ⇒ 外侧厚 = `innerWidthPx / 2`。
+  //    ⚠️ 以前只有固定宽度（默认 `4px`）⇒ 用户把第一层从 12px 调到 24px 时白边**纹丝不动**，
+  //    看上去就是「白边太细/不成比例」。
+  //    ⚠️ 写了具体数字（`8px #ffffff`）的**仍然按固定值走** —— 老工程与手写的值不被改写。
+  // ⚠️⚠️ **任何非空值都"跟随第一层"**（2026-10-16 第二次更正，用户口径：「第二层白描边…粗细跟随
+  //    第一层的宽度」）。**数字本身不再当宽度用** —— 它只剩"这一段是配置"的历史形状。
+  //
+  //    为什么必须这么改：老工程里写的是 `outer_stroke = "4px #ffffff"`（当年的默认值），
+  //    而按"固定宽度"解释时它是 **4px 全宽 ⇒ 径向 2px**，第一层却是 12px（径向 6px）
+  //    ⇒ **两层必然不等**（用户第二次报的「二层白描边宽度还是不对」就是它）。
+  //    配置里那个数字改不动用户的观感需求：他们要的是"白边按第一层的比例走"。
+  //
+  //    颜色照旧从同一串里取（`auto #ffffff` / `4px #ffffff` / 只写颜色都认；缺 = 白）。
+  const rest = raw.replace(/^auto\b/i, '').trim();
+  // ⚠️ 颜色**复用 `parseStroke`**（它给的是产物要的 `[r,g,b,255]` 数组）。
+  //    第一版这里直接用了 `hexColor` 的 `{r,g,b}`（0–1 浮点）对象 ⇒ 产物里写出
+  //    `{"r":1,"g":1,"b":1,"a":1}`，被守卫当场抓住 —— **形状不同比颜色不同更难发现**
+  //    （底座那边读 `[u8;4]`，多半会回落到默认白，看起来"颜色是对的"）。
+  //    ⚠️ 只写颜色的写法（`"#ffffff"`）也要认：`parseStroke` 会给出 `widthPx = 4` —— **忽略它**，
+  //       只用 `.color`（否则那句颜色会被当成隐藏的宽度旋钮）。
+  const color = parseStroke(rest || '#ffffff', 0, '#ffffff').color;
+  const widthPx = Math.round((Number.isFinite(innerWidthPx) ? innerWidthPx : 12) * OUTER_RING_FOLLOW);
+  return widthPx > 0 ? { widthPx, color } : null;
+}
+/**
+ * **T6 底衬（灰底块）暂时禁用** —— 2026-10-16 用户口径：「只去除或者暂时禁用灰底块，短期想不到有什么用途」。
+ *
+ * ⚠️ **为什么留开关而不是删代码**：底衬是四档预设的**区分度之一**（`chapter`/`comment` 带、`hook`/`count` 不带），
+ *    口径（黑 55% = `[0,0,0,140]` + 外扩交给底座默认 12px）只此一份；删了以后想回来得重新翻参照。
+ * ⚠️ 关它**只影响新转译**（预览与成片都会重新转译）⇒ 不用改用户的 `polish.toml`、也不用重跑 `process`
+ *    （`backdrop` 还留在事件的 `source` 串里，只是这里不消费它了）。
+ * ⚠️ **DOM 预览那条腿读的是事件**（`web/engine.js::plateColor`）而不是产物 ⇒ 那边有一处**同名开关**，
+ *    两处必须同时开/关，否则"成片没了、DOM 预览还在"。
+ */
+const PLATE_ENABLED = false;
+
+/// **白环厚度 = 第一层描边宽度 × 这个系数**（`auto` 那一档用）。
+///
+/// ⚠️ 改它同时改**成片**与**底座预览**（两条腿都从 `outer_stroke.ratio` 出）——
+/// DOM 预览那一侧有一份镜像（`PolishPreview.vue` 的 `OUTER_RING_FOLLOW`），
+/// 由 `scripts/check-text-style.mjs` 钉住两处同值。
+export const OUTER_RING_FOLLOW = 1;
+/// 缺键时的外圈默认值：**`auto #ffffff` = 开着且跟随第一层**（2026-10-16 起）。
+/// ⚠️ 它同时决定「用户没关过白边」时的行为 —— 用户口径是「可以开关」而不是「默认关」。
+const DEFAULT_OUTER_STROKE = 'auto #ffffff';
+
 export function parseStroke(raw, fallbackWidthPx, fallbackColor) {
   const color = hexColor(fallbackColor) ?? { r: 0, g: 0, b: 0 };
   const result = {
@@ -4328,7 +4393,28 @@ export function translate(config, clipDir, outPath, options = {}) {
           // 素材是 500×500 的原图，要塞进这个盒子，所以 `scale = 盒子/素材`。
           const stickerMode = config.sticker?.position_mode === 'manual' ? 'manual' : 'auto';
           let anchor; // { x, y, center } —— center = 这个点是盒子中心（manual）还是左上角（auto）
-          if (stickerMode === 'manual') {
+          // ⚠️ **只有"逐块手动真的解析成功"才置真** —— 别拿 `anchor !== undefined` 当判据：
+          //    auto 分支**总会**给 `anchor` 赋值（NaN 时回落 50）⇒ 那样写会把下面那道 DROP 静默废掉
+          //    （判据原文：「落点 auto 时**不许**转出贴纸图层」—— 猜位置 = 静默贴错地方）。
+          let manualPerEvent = false;
+          // ⚠️ **逐块手动落点优先**（用户口径 2026-10-16：「贴纸和文字层都需要一个可以给每个单独块
+          //    手动选择位置的功能，自动是全局的，手动过后自动无法影响」）。
+          //    「event.manual_pos」= **这一条**的中心百分比（与「[sticker] position」同基准）。
+          //    有它 ⇒ 它说了算，**不需要**先把项目级切成 manual（逐块手动与全局模式正交）。
+          //    独立读它（而不是读 x/y）是为了**点完立刻对**：x/y 要等 process 跑过才有。
+          //    认不出 ⇒ 落回原来那两条路（不静默取 50/50）。
+          {
+            const parts = String(event.manual_pos ?? '').trim().split(/\s+/);
+            const mx = parseFloat(parts[0]);
+            const my = parseFloat(parts.length > 1 ? parts[1] : parts[0]);
+            if (Number.isFinite(mx) && Number.isFinite(my)) {
+              anchor = { x: mx, y: my, center: true };
+              manualPerEvent = true;
+            }
+          }
+          if (anchor) {
+            // 逐块手动：什么都不用再做（下面的 hasPos 会认它）
+          } else if (stickerMode === 'manual') {
             // `[sticker] position` 形如 `"35% 50%"`（也接受单值 = 两轴同值），缺省 `"50% 50%"`。
             // 解析口径照抄那两份参照：按空白拆、`parseFloat`、非有限数回落 50。
             const parts = String(config.sticker?.position || '50% 50%').trim().split(/\s+/);
@@ -4353,7 +4439,8 @@ export function translate(config, clipDir, outPath, options = {}) {
           // **不能写 `event.x !== undefined`**：没跑过后处理的工程里那个键是**存在**的，
           // 值恰好是字符串 `"auto"` ⇒ 旧判据会当"有落点"，然后拿 `NaN` 去算位置
           // （贴纸安静地贴到错的地方，报告里一行差异都没有）。
-          const hasPos = stickerMode === 'manual' || (ratio(event.x) !== null && ratio(event.y) !== null);
+          // ⚠️ 逐块手动（anchor 已定）也算有落点 —— 否则它会被下面那条 DROP 吃掉。
+          const hasPos = manualPerEvent || stickerMode === 'manual' || (ratio(event.x) !== null && ratio(event.y) !== null);
           if (!hasPos) {
             // ⚠️ 这句要给**下一步怎么做**（2026-09-30 M2 改）：落点是 `process` 的产物
             // （`yekitrim-polish/src/process/mod.rs:276` 按 人物/字幕/弹幕 推导安全区后写死百分比），
@@ -7043,6 +7130,18 @@ export function translate(config, clipDir, outPath, options = {}) {
             // ⚠️ 第 7 实参 = 用户显式调的角度（`undefined` = 没填 ⇒ 用档内缺省）。
             cues[0].layoutAngle,
           ),
+          // ── 底衬（T6，2026-10-16 修）──
+          //
+          // ⚠️⚠️ `process` 写回的 `source` **第 7 段就是「这档要不要卡片底衬」**
+          //     （`chapter` / `comment` = 1，见 `TextStyle::has_backdrop`），
+          //     而这里以前**从没人消费过它** ⇒ 四档里「带底衬」的两档与不带的长得**一模一样**，
+          //     而档位区分度正是靠它（描边 / 底衬 / 字重）。解析出来了却没人读 ——
+          //     正是本仓最恨的那种「没有任何症状」的丢失。
+          //
+          // 参照给的是**黑 55%**（`[0,0,0,140]`，见底座 `SubtitleStyle::plate_color` 的文档），
+          // 外扩量交给底座的默认 12px（`plate_pad_px` 不写 ⇒ 用它的默认值）。
+          // ⚠️ 写在 `motionFields` **之后**：逐条预设 > 全局 `[elements]`（与动效那条优先级同序）。
+          ...(PLATE_ENABLED && st.backdrop ? { plate_color: [0, 0, 0, 140] } : {}),
         },
         layers: cues.map((c, i) => ({
           id: `${id}_${i}`,

@@ -157,6 +157,24 @@ const GRID_CENTERS = Object.fromEntries(
   Object.entries(GRID_RECTS).map(([k, r]) => [k, [(r[0] + r[2]) / 2, (r[1] + r[3]) / 2]])
 )
 
+/** **九宫格吸附**：把点吸到**最近那一格的中心**（入参/出参同单位 = 画布百分比）。
+ *
+ *  用户口径（2026-10-16）：「我想要更简单的交互，参考区域设置的那种直接选择位置的」——
+ *  手点很难点到整齐的位置，而九宫格正是本仓已有的落点语言（运镜锚点 / 区域中心都按它写）。
+ *
+ *  ⚠️ 只在**选点**那条路上吸附；选框（自由框）**不吸** —— 那是精确表达，吸了就没法框小区域。
+ *  ⚠️ `GRID_CENTERS` 与 `GRID_RECTS` 同源（本文件一处）⇒ 吸附点与"格心"永远不会分叉。
+ */
+export function nearestGridCenter(p) {
+  let best = { x: p.x, y: p.y, grid: '' }
+  let bestD = Infinity
+  for (const [name, [cx, cy]] of Object.entries(GRID_CENTERS)) {
+    const d = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy)
+    if (d < bestD) { bestD = d; best = { x: cx, y: cy, grid: name } }
+  }
+  return best
+}
+
 export function gridOrigin(name) {
   const p = GRID_CENTERS[name] || [50, 50]
   // ⚠️ **两位小数，与 Rust `types.rs::region_origin` 的 `{:.2}` 同口径**（2026-10-05 修）：
@@ -1236,17 +1254,45 @@ function easePerChar(name, t) {
   return t
 }
 
+/**
+
+ * **卡片档（`chapter` / `comment`）的底衬色**：参照给的是**黑 55%**。
+
+ *
+
+ * ⚠️ 与转译器里那条 `plate_color: [0, 0, 0, 140]`（`process` 写回 `source` 第 7 段 = backdrop
+
+ * 时补的）**必须同值**：底座那条腿读它、DOM 预览读它，两处不一致就是「预览有底衬、成片没有」
+
+ * （或反过来）。判据在 `scripts/check-text-style.mjs` 里钉着这两个字面量。
+
+ */
+
+export const PLATE_CARD_COLOR = [0, 0, 0, 140]
+
+
+/** **T6 底衬（灰底块）暂时禁用** —— 与 `tools/polish-to-dhampir.mjs` 的 `PLATE_ENABLED` **同值同义**（2026-10-16）。
+ *  ⚠️ 两处必须一起改：那边管成片/底座预览（写不写 `plate_color`），这边管 DOM 预览（读不读事件里的它）。
+ *  ⚠️ 留开关不删字段：`plate_color` / `plate_pad_px` 仍是契约的一部分（底座 `SubtitleStyle` 有这两个字段），
+ *    想恢复只需把两处都改 `true`，不用重新翻口径。 */
+const PLATE_ENABLED = false;
+
 function textMotionCfg(cfg) {
   const e = (cfg && cfg.elements) || {}
   const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
   return {
     typewriter: e.typewriter === true,
+    // eslint-disable-next-line no-unused-vars -- 见上面 `plateColor` 的注释（开关本体在函数外）
     scaleInFrom: num(e.scale_in_from, 1.0),
     scaleInPeak: num(e.scale_in_peak, 1.0),
     scaleInMs: num(e.scale_in_ms, 0),
     shakePx: num(e.shake_px, 0),
     shakeHz: num(e.shake_hz, 18.0),
-    plateColor: Array.isArray(e.plate_color) && e.plate_color.length >= 4 ? e.plate_color : null,
+    // ⚠️ **T6 底衬（灰底块）暂时禁用** —— 2026-10-16 用户口径：「只去除或者暂时禁用灰底块，短期想不到有什么用途」。
+    //    开关与**转译器**那份同名（`tools/polish-to-dhampir.mjs` 的 `PLATE_ENABLED`）：
+    //    成片/底座预览走产物（那边不写 `plate_color` 就没有），DOM 预览走**事件**（就是这一行）——
+    //    **两处必须同时开/关**，否则"成片没了、DOM 预览还在"。
+    plateColor: PLATE_ENABLED && Array.isArray(e.plate_color) && e.plate_color.length >= 4 ? e.plate_color : null,
     platePadPx: num(e.plate_pad_px, 12.0),
     // ⚠️ **摇摆的两个旋钮要一起带走**（P1，2026-10-13）：它们决定预览里
     //    「字摆不摆」。以前 `textMotionCfg` **根本不读它们** ⇒ 预览无从知道要摆。
@@ -1656,6 +1702,24 @@ export function handheldSway(t, amp) {
 }
 
 // ---- 运镜 ----
+/** **运镜反解**：把"屏幕上的那一点"换回**未运镜**的画面坐标（同一单位即可，百分比/像素都行）。
+ *
+ *  运镜在三条腿上是同一条变换：绕不动点 `(ox, oy)` 缩放 `scale`（DOM 是 CSS `transform-origin`，
+ *  底座是在画布坐标系里等价地缩放）。而**选框与落点的百分比一律定义在未运镜的画面上** ——
+ *  不反解的话，"有运镜时点哪都偏"（用户报的原话：「区域设置在底座预览有 bug，有运镜时选择位置，
+ *  镜头没有重置」）。
+ *
+ *  ⚠️ 只在 `scale != 1` 时有区别（画中画 `scale<1` 同样要反解 —— 判据是"不等于 1"，不是"大于 1"）。
+ *  ⚠️ 传进来的 `scale` 要**含手持摇摆的呼吸缩放**（调用方先乘好）：那条缩放也绕同一个不动点。
+ */
+export function invertCameraPoint(p, cam) {
+  const s = Number(cam && cam.scale)
+  if (!(s > 0) || Math.abs(s - 1) < 1e-6) return { x: p.x, y: p.y }
+  const ox = Number(cam.ox) || 0
+  const oy = Number(cam.oy) || 0
+  return { x: ox + (p.x - ox) / s, y: oy + (p.y - oy) / s }
+}
+
 export function cameraAt(idx, t) {
   let zoom = 1.0
   let ox = 65

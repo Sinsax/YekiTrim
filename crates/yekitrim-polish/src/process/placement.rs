@@ -1131,14 +1131,44 @@ pub struct Pick {
 
 impl Pick {
     pub fn x_pct(&self, f: Frame) -> String {
-        format!("{:.0}%", self.x / f.w * 100.0)
+        pct_of(self.x, f.w)
     }
 
     pub fn y_pct(&self, f: Frame) -> String {
-        format!("{:.0}%", self.y / f.h * 100.0)
+        pct_of(self.y, f.h)
     }
 }
 
+/// **`manual_pos`（`"x% y%"`，盒子**中心**）→ 盒子左上角的输出帧像素**（落盘时用 [`pct_of`] 转串）。
+///
+/// ⚠️ 锚点口径**不统一是有意的**：`manual_pos` 与 `[sticker] position` 都是**盒子中心**，
+/// 而落盘后的 `x`/`y`（以及求解器的产物）都是**盒子左上角** —— 转换只在**这一处**做，
+/// 消费端不许再各转一遍（`webui/scripts/check-sticker-anchor.mjs` 钉的就是这两套基准）。
+///
+/// 返回 `None` = 串里不是两个像样的百分比 ⇒ 调用方**退回自动**（不许静默取 `(0,0)`）。
+pub fn manual_pos_to_box_px(s: &str, box_w: f64, box_h: f64, f: Frame) -> Option<(f64, f64)> {
+    let mut it = s.split_whitespace();
+    let (a, b) = (it.next()?, it.next()?);
+    if !a.trim_end_matches('%').trim().parse::<f64>().is_ok() {
+        return None;
+    }
+    if !b.trim_end_matches('%').trim().parse::<f64>().is_ok() {
+        return None;
+    }
+    let cx = yekitrim_render_core::types::parse_pct(a).clamp(0.0, 100.0) / 100.0 * f.w;
+    let cy = yekitrim_render_core::types::parse_pct(b).clamp(0.0, 100.0) / 100.0 * f.h;
+    let x = (cx - box_w / 2.0).clamp(0.0, (f.w - box_w).max(0.0));
+    let y = (cy - box_h / 2.0).clamp(0.0, (f.h - box_h).max(0.0));
+    Some((x, y))
+}
+
+/// 像素 → 百分比串（**落盘 `x`/`y` 与求解器产物共用的唯一格式**）。
+///
+/// ⚠️ 别在别处再写一份 `format!`：`{:.0}%` 这个精度是**契约的一部分** ——
+/// 求解器、手动落点、模板三处对不上就会出现"手填 43% 与算出来的 42.7% 看起来不一样"。
+pub fn pct_of(v: f64, total: f64) -> String {
+    format!("{:.0}%", v / total * 100.0)
+}
 /// 贴纸盒子占位（含 floatUp 上浮；碰撞测试与「同刻贴纸互斥」共用）。
 pub fn sticker_box(x: f64, y: f64, f: Frame) -> Rect {
     box_at(x, y, &BoxSize::sticker(f))
@@ -1331,13 +1361,171 @@ impl Rect {
 
 #[cfg(test)]
 mod tests {
+    /// **手动落点：中心 → 左上角**（2026-10-16 用户口径「每个单独块手动选位置」）。
+    ///
+    /// 用户点的是**盒子中心**（与 `[sticker] position` 同一基准），而落盘的 `x`/`y` 是**左上角**
+    /// （求解器与两个消费端都按左上角读）⇒ 这一层换算必须**只有一处**。
+    #[test]
+    fn manual_pos_is_center_and_converts_to_box_corner() {
+        let f = Frame::new(1920, 1080);
+        // 280 盒子放正中：(960-140)/1920 = 42.7% ⇒ "43%"；(540-140)/1080 = 37.0% ⇒ "37%"
+        let (x, y) = manual_pos_to_box_px("50% 50%", 280.0, 280.0, f).expect("50% 50% 必须解析得出来");
+        assert_eq!(pct_of(x, f.w), "43%", "x 必须是盒子左上角（42.7% 取整）");
+        assert_eq!(pct_of(y, f.h), "37%", "y 必须是盒子左上角（37.0%）");
+        // 贴边要**夹住**（不许把盒子推出去一半）
+        let (x0, y0) = manual_pos_to_box_px("0% 0%", 280.0, 280.0, f).unwrap();
+        assert_eq!((x0, y0), (0.0, 0.0), "0% 0% = 左上角贴边");
+        let (x1, y1) = manual_pos_to_box_px("100% 100%", 280.0, 280.0, f).unwrap();
+        assert_eq!((x1, y1), (1920.0 - 280.0, 1080.0 - 280.0), "100% 100% = 右下角贴边（盒子整体还在帧内）");
+        // 脏值**必须退回**（不许静默取 (0,0) —— 那会把字甩到左上角，是"看起来正常"的坏）
+        for bad in ["", "50%", "abc", "50% xyz", "50"] {
+            assert!(manual_pos_to_box_px(bad, 280.0, 280.0, f).is_none(), "{bad:?} 应当认不出");
+        }
+        // 百分比格式**只有一处**（求解器与手动落点共用）
+        assert_eq!(pct_of(960.0, 1920.0), "50%");
+    }
     use super::*;
 
     /// 横画布基准（与改造前硬编码逐像素一致）。
     const F: Frame = Frame { w: 1920.0, h: 1080.0 };
 
     fn band_caption() -> Rect {
-        caption_band(F, 72.0, 12.0)
+        caption_band(F, 72.0, 12.0, None)
+    }
+
+    /// **`position_pct` 真的会挪动字幕带**（2026-10-15 修的真缺陷）。
+    ///
+    /// 本项存在的理由是用户报的「文字层的位置问题，修了几轮还是不正常」：
+    /// 字幕位置滑杆改了字幕、却**没有**改文字元素的避让障碍 ⇒ 两者重叠。
+    ///
+    /// ⚠️ 判据必须是**行为**（带的位置真的变了），不是"函数收了这个参数"——
+    /// 收下不用也照样编译、照样绿。
+    #[test]
+    fn 字幕位置百分比真的会挪动字幕带() {
+        let hist = caption_band(F, 72.0, 12.0, None);
+        // `None` = 老工程 ⇒ 与历史公式逐值相同（存量零回归 R4）
+        assert_eq!(hist, band_caption(), "None 必须与历史公式逐像素一致");
+
+        // 12%（UI 默认显示值）与历史值接近；40% 必须**明显更靠上**
+        let pct12 = caption_band(F, 72.0, 12.0, Some(12.0));
+        let pct40 = caption_band(F, 72.0, 12.0, Some(40.0));
+        assert!(
+            pct40.y0 < pct12.y0 - 100.0,
+            "字幕放到 40% 时带子上沿必须显著上移（12%:{}, 40%:{}）",
+            pct12.y0,
+            pct40.y0
+        );
+        // 40% ⇒ 带底边在 `1080 × 0.6 = 648`；上沿必定在它之上
+        assert!(pct40.y0 < 648.0, "带底 648，上沿必须更靠上：{}", pct40.y0);
+
+        // ⚠️ 越界值夹到 [0,50]（与服务端白名单同区间）：-10 与 0 同果、99 与 50 同果
+        assert_eq!(
+            caption_band(F, 72.0, 12.0, Some(-10.0)),
+            caption_band(F, 72.0, 12.0, Some(0.0)),
+            "负数必须夹到 0"
+        );
+        assert_eq!(
+            caption_band(F, 72.0, 12.0, Some(99.0)),
+            caption_band(F, 72.0, 12.0, Some(50.0)),
+            "超上限必须夹到 50"
+        );
+    }
+
+    /// **`pos` 真的会挪动落点**（2026-10-15 修的真缺陷）。
+    ///
+    /// 本项存在的理由是用户报的「文字层的位置问题，修了几轮还是不正常」：
+    /// `pos` 只喂给 Step 1d3 的 `anchor_origin`，而那份 `x`/`y` 被 Step 2b2 的
+    /// 求解器**无条件覆写** ⇒ LLM 按提示词写 `pos:"top"`、面板上也看得见这个字段，
+    /// 而它对成片**零影响**（实测四个取值落盘完全相同），**全程不报错**。
+    ///
+    /// ⚠️ 判据必须是**行为**（落点真的不同），不是"求解器收了这个参数"——
+    /// 收下不用照样编译、照样绿。
+    #[test]
+    fn pos_really_moves_the_text_box() {
+        let ts = TextStyle::Hook;
+        let text = "测试文字";
+        let band = caption_band(F, 72.0, 12.0, None);
+        let blocked = vec![Blocked::new(band, ObstacleKind::Captions)];
+
+        let mut ys = Vec::new();
+        for name in ["top", "center", "bottom"] {
+            let anchor = TextAnchor::parse(name);
+            let l = TextLayout::solve(text, ts, anchor, F);
+            let b = l.box_size();
+            let pick = pick_box_position_pref(
+                &blocked,
+                &[],
+                0.5,
+                F,
+                &b,
+                l.anchor_prefer_band(F),
+            );
+            assert!(!pick.relaxed, "{name}: 不该退化成兜底解");
+            ys.push((name, pick.y));
+        }
+        // 三档必须**真的分开**，且顺序正确（top < center < bottom）
+        let (nt, yt) = ys[0];
+        let (nc, yc) = ys[1];
+        let (nb, yb) = ys[2];
+        assert!(
+            yt < yc - 50.0,
+            "{nt} 必须明显高于 {nc}（top:{yt}, center:{yc}）—— pos 不起作用了？"
+        );
+        assert!(
+            yc < yb - 50.0,
+            "{nc} 必须明显高于 {nb}（center:{yc}, bottom:{yb}）—— pos 不起作用了？"
+        );
+        // `bottom` 还要**避让字幕带**（底边不得压进去）
+        assert!(
+            yb < band.y0,
+            "bottom 档压进了字幕带（y:{yb} vs band.y0:{}）",
+            band.y0
+        );
+    }
+
+    /// **偏好不许压过安全**：偏好区里没有安全位时，必须回落全域解。
+    ///
+    /// ⚠️ 这条钉的是"安全优先"这条前提 —— 没有它，`pos:"top"` 会把文字直接放在
+    /// 一个正压着障碍的位置上（"为了满足 pos 去压主播脸"）。
+    #[test]
+    fn prefer_never_beats_safety() {
+        // 顶部整条横带挡住：top 偏好区里没有任何安全位
+        let top_band = Rect::new(0.0, 0.0, F.w, 300.0);
+        let blocked = vec![Blocked::new(top_band, ObstacleKind::Liver)];
+        let b = BoxSize::text(400.0, 100.0);
+
+        let auto = pick_box_position_pref(&blocked, &[], 0.5, F, &b, None);
+        let pref = pick_box_position_pref(&blocked, &[], 0.5, F, &b, Some((0.0, 200.0)));
+
+        assert!(!auto.relaxed, "全域解应当是安全的");
+        assert!(
+            !pref.relaxed,
+            "偏好解不许因为 'top' 被满足就压住障碍 —— 必须回落安全解"
+        );
+        // 且真的没压住障碍
+        assert!(
+            pref.y >= top_band.y1 - 1e-6,
+            "偏好解压住了障碍：y={} < band.y1={}",
+            pref.y,
+            top_band.y1
+        );
+    }
+
+    /// `Auto`（没写 pos）= **无偏好** ⇒ 与改造前逐像素一致（存量零回归 R4）。
+    #[test]
+    fn auto_anchor_has_no_preference() {
+        let l = TextLayout::solve("测试文字", TextStyle::Comment, TextAnchor::Auto, F);
+        assert!(
+            l.anchor_prefer_band(F).is_none(),
+            "Auto 必须返回 None：老工程（没写 pos）落点逐像素不变"
+        );
+        // 与不传偏好完全相同
+        let b = l.box_size();
+        let blocked: Vec<Blocked> = Vec::new();
+        assert_eq!(
+            pick_box_position_pref(&blocked, &[], 0.3, F, &b, None).y,
+            pick_box_position(&blocked, &[], 0.3, F, &b).y,
+        );
     }
 
     /// **动态盒真的被求解器用了** —— 大盒子必须比小盒子让得更远。

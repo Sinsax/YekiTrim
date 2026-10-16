@@ -116,6 +116,14 @@ pub enum Event {
         /// **手工定过时间**（编辑器里拖过 / 改过开始·结束）：后处理不再把它吸附到字幕边界、
         /// 也不再往后延长尾帧（`align_stickers_to_subtitles` / Step 2c 都跳过）。
         /// 面板上「跟随字幕」清掉它，下一次后处理就恢复自动吸附。缺省 false = 自动。
+        /// **手工定过的落点**（`"x% y%"`，**盒子中心** —— 与 `[sticker] position` 同一口径）。
+        ///
+        /// ⚠️ 它是**逐事件**的（用户口径 2026-10-16：「贴纸和文字层都需要一个可以给每个单独块手动选择位置的功能，
+        /// 自动是全局的，手动过后自动无法影响」）。有它 ⇒ 后处理的**自动落点不参与**：
+        /// `process` 只把它换算成 `x`/`y`（盒子**左上角**，那才是底座/模板认的那个口径），
+        /// 面板上「改落点」写它、「恢复自动」清它。缺省 `None` = 自动 ⇒ 存量工程一个键都不多（R4）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manual_pos: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         manual: bool,
     },
@@ -493,6 +501,14 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         manual: bool,
         /// 解析后的贴纸文件名 / 来源（由 `process` 填，与 `Event::Sticker` 同语义）
+        /// **手工定过的落点**（`"x% y%"`，**盒子中心** —— 与 `[sticker] position` 同一口径）。
+        ///
+        /// ⚠️ 它是**逐事件**的（用户口径 2026-10-16：「贴纸和文字层都需要一个可以给每个单独块手动选择位置的功能，
+        /// 自动是全局的，手动过后自动无法影响」）。有它 ⇒ 后处理的**自动落点不参与**：
+        /// `process` 只把它换算成 `x`/`y`（盒子**左上角**，那才是底座/模板认的那个口径），
+        /// 面板上「改落点」写它、「恢复自动」清它。缺省 `None` = 自动 ⇒ 存量工程一个键都不多（R4）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manual_pos: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -606,19 +622,156 @@ impl Event {
         }
     }
 
-    /// 时间是不是**手工定的**（只有贴纸与运镜有这个概念，其余类型恒 false）。
+    /// 时间是不是**手工定的**（只有贴纸/文字元素与运镜有这个概念，其余类型恒 false）。
+    ///
+    /// ⚠️⚠️ **`Element` 必须一起认**（2026-10-15 用户报「贴纸无法加入」）：编辑器「贴纸轨」
+    /// 新建的贴纸走 `Element{kind:"sticker"}`，它**有** `manual` 字段、编辑器也**打了**标记，
+    /// 但这里不认 ⇒ 标记形同不存在 ⇒ `cap_events` 抽稀会把它删掉（"我加的贴纸过两秒自己没了"），
+    /// `align_stickers_to_subtitles` 也会把时间吸走。
     pub fn is_time_manual(&self) -> bool {
         match self {
             Event::Sticker { manual, .. } | Event::Camera { manual, .. } => *manual,
+            Event::Element { manual, .. } => *manual,
             _ => false,
         }
     }
 
+    /// **手工定过的落点**（`"x% y%"`，**盒子中心**）—— 只有贴纸与文字元素有这个概念，其余类型恒 `None`。
+    ///
+    /// ⚠️ 消费侧**必须**用它（而不是各自 `match` 变体）：载体有两个（`Event::Sticker` 与
+    /// `Event::Element{kind:"sticker"}`），漏一个就是"手动落点在那一半上不生效"（本仓踩过同形状的坑）。
+    pub fn manual_pos(&self) -> Option<&str> {
+        match self {
+            Event::Sticker { manual_pos, .. } => manual_pos.as_deref(),
+            Event::Element { manual_pos, .. } => manual_pos.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 清掉「手工落点」（面板上的「恢复自动」）。返回"原本有没有"。
+    pub fn clear_manual_pos(&mut self) -> bool {
+        match self {
+            Event::Sticker { manual_pos, .. } => manual_pos.take().is_some(),
+            Event::Element { manual_pos, .. } => manual_pos.take().is_some(),
+            _ => false,
+        }
+    }
     /// 标记/清除「手工时间」。**只有贴纸与运镜有该字段**，其余类型是 no-op。
     pub fn set_time_manual(&mut self, value: bool) {
         match self {
             Event::Sticker { manual, .. } | Event::Camera { manual, .. } => *manual = value,
+            Event::Element { manual, .. } => *manual = value,
             _ => {}
+        }
+    }
+    /// **这个事件是不是"贴纸"**（不管它是哪一代写法）。
+    ///
+    /// 贴纸有**两个载体**，长期共存：
+    /// * `Event::Sticker` —— 老写法（LLM 生成的、老工程里的）；
+    /// * `Event::Element { kind: "sticker" }` —— §5 E2 迁进来的，也是**编辑器「贴纸轨」
+    ///   新建时产的那一支**（`TimelineEditor::addElementAt('sticker')` 一律产 `element`）。
+    ///
+    /// ⚠️ **凡是"按贴纸处理"的后处理，都必须同时认这两种** —— 只认 `Event::Sticker`
+    /// 的写法会**静默跳过**编辑器新建的贴纸，症状是"手动加的贴纸不显示、LLM 放的正常"。
+    /// 这个不对称极难归因（两边各自都正常）。
+    pub fn is_sticker(&self) -> bool {
+        match self {
+            Event::Sticker { .. } => true,
+            Event::Element { kind, .. } => kind == "sticker",
+            _ => false,
+        }
+    }
+
+    /// 贴纸的**关键词**（= 贴纸包名 / 来源关键字），非贴纸返回 `None`。
+    ///
+    /// ⚠️ 字段名按载体不同：`Event::Sticker` 在 `keyword`，`Event::Element` 在 `text`
+    /// （见 `Element::text` 的文档注释：`kind = "sticker"` 时它就是关键词）。
+    /// 这与前端 `TimelineEditor::onStickerPick` 的"关键词落在哪个字段由载体决定"是同一条口径。
+    pub fn sticker_keyword(&self) -> Option<&str> {
+        match self {
+            Event::Sticker { keyword, .. } => Some(keyword.as_str()),
+            Event::Element { kind, text, .. } if kind == "sticker" => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// 贴纸**解析后的文件名 stem**（`process` Step 2 写回的那个值）。
+    /// 贴纸的 tag（「包内哪个语义组」）。两个载体同名，直接复用。
+    pub fn sticker_tag(&self) -> Option<&str> {
+        match self {
+            Event::Sticker { sticker_tag, .. } => sticker_tag.as_deref(),
+            Event::Element { sticker_tag, .. } => sticker_tag.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 写入贴纸的 `name` + `source`（Step 2 / Step 2b 解析结果）。
+    /// ⚠️ 读写在**同一处**，两个载体字段不同名，散着写必漏。
+    pub fn set_sticker_resolved(&mut self, source: &str, name: &str) {
+        match self {
+            Event::Sticker { name: n, source: s, .. } => {
+                *n = Some(name.to_string());
+                *s = Some(source.to_string());
+            }
+            Event::Element { name: n, source: s, kind, .. } if kind == "sticker" => {
+                *n = Some(name.to_string());
+                *s = Some(source.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    pub fn sticker_name(&self) -> Option<&str> {
+        match self {
+            Event::Sticker { name, .. } => name.as_deref(),
+            Event::Element { kind, name, .. } if kind == "sticker" => name.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 贴纸**实际使用的来源**（`emoji` / `irasu` / 包名），由 `process` Step 2 解析写回。
+    pub fn sticker_source(&self) -> Option<&str> {
+        match self {
+            Event::Sticker { source, .. } => source.as_deref(),
+            Event::Element { kind, source, .. } if kind == "sticker" => source.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 贴纸的**时间**（`try_resolve_sticker` 按时间做分布均衡时要读）。
+    pub fn sticker_time(&self) -> Option<f64> {
+        match self {
+            Event::Sticker { time, .. } => Some(*time),
+            Event::Element { kind, time, .. } if kind == "sticker" => Some(*time),
+            _ => None,
+        }
+    }
+    /// 贴纸的**落点 + 时间窗口**：`(x, y, time, end)`。
+    ///
+    /// 四个值一起取是因为落点求解器（Step 2b）与障碍表都按这一组用，分开取会写出
+    /// 四段几乎相同的 `match`。`end` 缺省回落到 `time`（瞬时）。
+    /// ⚠️ 返回 `Option<(&str, &str)>` 里的两个坐标**都是 `Option`**：
+    /// `Event::Sticker.x/y` 是必填 `String`，而 `Event::Element.x/y` 是**可选** `Option<String>`
+    /// （元素轨的落点由 `process` 算，新建时可以不写）。调用方按 `None` 走自己的缺省，
+    /// 这里**不替它编一个值** —— 编了就是把"用户没写"和"用户写了 50%"混成一件事。
+    pub fn sticker_span(&self) -> Option<(Option<&str>, Option<&str>, f64, f64)> {
+        match self {
+            Event::Sticker { x, y, time, end, .. } => {
+                Some((Some(x.as_str()), Some(y.as_str()), *time, end.unwrap_or(*time)))
+            }
+            Event::Element { kind, x, y, time, end, .. } if kind == "sticker" => {
+                Some((x.as_deref(), y.as_deref(), *time, end.unwrap_or(*time)))
+            }
+            _ => None,
+        }
+    }
+
+    /// 贴纸的**结束时间**（`Option`，Step 2c 尾帧延长要改它）。
+    pub fn sticker_end_mut(&mut self) -> Option<&mut Option<f64>> {
+        match self {
+            Event::Sticker { end, .. } => Some(end),
+            Event::Element { kind, end, .. } if kind == "sticker" => Some(end),
+            _ => None,
         }
     }
 
