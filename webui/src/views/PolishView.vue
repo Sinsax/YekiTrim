@@ -115,7 +115,7 @@
               </div>
 
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :karaoke-cues="karaokeCues" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :fonts="fonts" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect"  :point-result="pointResult" @point-pick="onPointPickMode" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :karaoke-cues="karaokeCues" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :fonts="fonts" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect"  @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
                 <div v-else-if="pointEdit" class="hint mt-8">点预览上的位置即可</div>
               </div>
@@ -254,6 +254,18 @@
                  aria-label="字幕大小（像素）" @change="onSubtitleSizeChange">
           <span class="mono small flex-none">px</span>
         </div>
+      </div>
+      <!-- **第二层白描边（白环）**（2026-10-16 用户口径：「可以开关是否开启，粗细跟随第一层的宽度」）。
+           ⚠️ 行内只留 6 个字，条件与推导全在 `outerRingHint` 里（仓里的文案预算：行内 ≤20 字）。
+           ⚠️ 三种落盘值：缺键 = 默认开且跟随（`auto #ffffff`）· 勾 = 写 `auto #ffffff` ·
+              取消 = 写**空串**（显式关）—— 服务端那一支**允许空串**，与 `subtitle_stroke` 正好相反。 -->
+      <div class="ss-row full" :title="outerRingHint">
+        <span class="ss-lbl">白边</span>
+        <label class="ck-row" style="margin-top:0">
+          <input type="checkbox" :checked="outerRingOn" :disabled="styleWriteBlocked || !ready"
+                 @change="onOuterRingToggle($event.target.checked)">
+          <span>第二层白描边</span>
+        </label>
       </div>
       <div class="ss-row full" :title="positionHint">
         <span class="ss-lbl">字幕位置</span>
@@ -436,7 +448,7 @@
                  失败的分段会在时间轴上标色、可单独重做那一段。 -->
             <div class="row" style="gap:6px">
               <button class="btn flex-1 jc-center" :disabled="scopeBusy"
-                      :title="scopeBusy ? '该片段正在' + scopeBusyText : '全部重做：重新分段 + 重新生成全部事件（失败的分段会在时间轴上标色，可单独重做那一段）'"
+                      :title="scopeBusy ? '该片段正在' + scopeBusyText : '重新分段 + 重做全部事件；失败的段会在时间轴上标色，可单独重做'"
                       @click="runLlmJob"><Icon name="sparkles" :size="12" /> LLM 剪辑</button>
             </div>
 
@@ -468,6 +480,13 @@
                 <span v-if="!jobRunning" class="muted small">空闲</span>
               </div>
               <div v-if="jobOpen && (job.error || (jobRunning && job.log))" class="muted small mt-6 mono job-log">{{ job.error || job.log }}</div>
+              <!-- ⚠️ **失败原因常驻**（2026-10-15）：它不许被折叠态藏起来。
+                   `webui/src/AGENTS.md` 写着"状态栏常驻…**唯一例外：失败原因必须显示**" ——
+                   而这里原先 condition 是 `jobOpen && …`，`jobOpen` 默认 false ⇒
+                   用户**只看到一枚红 chip「失败」**，必须手动展开才知道为什么失败。
+                   失败是"我要不要重试/改参数"的决策点，藏在一次点击之后等于没有。
+                   ⚠️ 只在**失败**时渲染这一条：成功/进行中不额外占高度（与"状态常驻"不冲突）。 -->
+              <div v-if="job.status === 'failed' && job.error" class="muted small mt-6 mono job-log job-err">{{ job.error }}</div>
             </div>
 
               </template>
@@ -571,7 +590,7 @@
              标题/提示由 slot 交给组件，省掉独立卡片头；去静音只在这块，右侧不再重复。
              改动走「本地即时镜像 → 预览实时刷新 → 防抖落盘 → 防抖后处理」这条链。 -->
         <div class="card tl-card mt-16">
-          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" :src-fps="srcFps" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane">
+          <TimelineEditor ref="timelineRef" :key="'tl' + segKey" :dir="dir" :pid="pid" :current-time="currentTime" :playing="previewPlaying" :reprocess-busy="scopeBusy" :lane-open="openLane" :lanes-on="lanesOn" :src-fps="srcFps" @seek="seekTo" @toggle="togglePreviewPlay" @preview="onTimelinePreview" @saved="onEditSaved" @done="onEditDone" @reprocess="runProcessJob" @retried="onTimelineRetried" @redo-segment="redoSegment" @lane-open="onLaneOpen" @toggle-lane="toggleLane" :point-result="pointResult" @point-pick="onPointPickMode">
             <template #head>
               <b>时间轴编辑器</b>
               <span class="muted small" title="特效轨先选细分类型；改动立即保存，后处理在结束编辑时跑">拖动移动 / 边缘缩放 / 双击删除 / ＋ 在播放头添加</span>
@@ -674,9 +693,9 @@ import {
   openPath, REGION_LABELS,
 } from '../api/polish'
 import { localNoAuthKnown } from '../stores/health'
-import { ensureFontFace } from '../polish/fonts'
+import { ensureFontFace, fontFamilyFor, fontInLibrary, fontLabelFor } from '../polish/fonts'
 import { freeRect, regionRect } from '../polish/engine'
-import { jobsApi, watchJob, busyOn, clipKey, kindText, QUEUED_HINT } from '../api/jobs'
+import { jobsApi, watchJob, busyOn, clipKey, kindText, KIND_ZH, QUEUED_HINT } from '../api/jobs'
 import { useJobs } from '../composables/useJobs'
 
 const route = useRoute()
@@ -1031,7 +1050,14 @@ const fontOptions = computed(() => {
   // 显示成「未指定 · 用默认文字字体」而非列表里的一档 —— 用户选任何具体字体后它自然消失。
   // 这样列表内容 = **库里已有的字体**，与用户口径一致。
   if (!cur) opts.unshift({ value: '', label: '未指定 · 用默认文字字体', placeholder: true })
-  else if (!fonts.value.some((f) => f.id === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  // ⚠️ 认**三种名字**（2026-10-16）：配置里那串值可能是**库 id**（界面选的），
+  //    也可能是**族名/显示名**（`default_font()` 写下的 `Noto Sans SC` 就是族名）。
+  //    只认 id 的症状是「明明装了的字体被标成不在字体库」，而它其实一直能用。
+  else if (!fontInLibrary(fonts.value, cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  // ⚠️ 别名命中（值是族名）：**必须补一条 `value === 当前值` 的选项**，否则 `<select>`
+  //    里没有任何选项匹配当前值 ⇒ 浏览器显示第一项（用户看到「选中的字体跳了」）。
+  //    保留原值不改配置，只给它库里那支的标签 —— 见 `fontLabelFor`。
+  else opts.push({ value: cur, label: fontLabelFor(fonts.value, cur) })
   return opts
 })
 
@@ -1165,8 +1191,25 @@ const renderedFailed = ref(false)
 const coverFile = computed(() => clipEntry.value?.cover_file || 'cover.jpg')
 const coverUrl = computed(() => clipMediaUrl(pid.value, dir.value, coverFile.value))
 
+/** 本地 kind → 人话名字。
+ *
+ *  ⚠️⚠️ **不许在这里再手写一份映射表**（2026-10-15 修的真实上屏缺陷）。
+ *
+ *  本函数收的是 `startJob(kind, …)` 传进来的**本地简名**（`llm` / `llm_segment` /
+ *  `process` / `init` / `render`），而服务端存的是**带前缀的全名**
+ *  （`polish_spawn` 里 `format!("polish_{kind}")`，见 `api/polish.rs`）。
+ *  原先这里是一张手写表 `{llm, render, process, init}` —— **`llm_segment` 漏了**，
+ *  `|| kind` 就把它**原样吐给用户**：任务栏标题、toast、以及"该片段正在…"全都显示
+ *  裸的 `llm_segment`。这正是"一份映射两份实现"的典型漂移（`KIND_ZH` 里那条是对的，
+ *  所以任务抽屉正常、只有精修页这一处漏）。
+ *
+ *  ⇒ 现在**统一去查 `KIND_ZH`**（先查带前缀的全名，再查本地简名），
+ *    加一个 kind 只改 `jobs.js` 一处。
+ *  ⚠️ 认不出时**不要**退回裸 kind：`kindText` 会给「精修 · xxx」这类兜底，
+ *    至少是中文。真认不出才落到 `'任务'`。 */
 function jobLabel(kind) {
-  return { llm: 'LLM 生成', render: '渲染导出', process: '后处理', init: '初始化' }[kind] || kind
+  if (!kind) return '任务'
+  return KIND_ZH[kind] || KIND_ZH['polish_' + kind] || kindText(kind)
 }
 
 function onPreviewTime(t) {
@@ -1715,9 +1758,21 @@ async function runLlmJob() {
   startJob('llm', () => runLlm(pid.value, dir.value, true), { after: () => { segKey.value++; load({ silent: true }) } })
 }
 
-/** 只重做某一段的事件（时间轴 → 选中分段 → 属性面板里的按钮）。 */
-function redoSegment(index) {
+/** 只重做某一段的事件（时间轴 → 选中分段 → 属性面板里的按钮）。
+ *
+ *  ⚠️ **要二次确认**（2026-10-15 补）：它虽比"全部重做"轻，但**照样会覆盖这一段现有的
+ *  全部事件**（含用户手工加的贴纸/运镜），而它原先**没有**任何确认 ——
+ *  属性面板那颗按钮紧挨着"只重做本段事件"的说明，误点一次就没了。
+ *  与 `runLlmJob` 同一条口径：破坏性操作先问。
+ *  ⚠️ 文案不要重复按钮的 title（那里已说清"其余分段不动"），这里只讲**会被替换什么**。 */
+async function redoSegment(index) {
   if (index === undefined || index === null) return
+  const ok = await confirmDialog(
+    `将只重做第 ${Number(index) + 1} 段的事件：这一段现有的事件（含手工添加的贴纸/运镜）会被替换。\n`
+    + '其余分段、筛选词与高亮词都不动。',
+    { title: '只重做本段事件？', danger: true }
+  )
+  if (!ok) return
   startJob('llm_segment', () => runLlmSegment(pid.value, dir.value, index), {
     after: () => { segKey.value++; load({ silent: true }) }
   })
@@ -1765,6 +1820,7 @@ async function loadStickerSources() {
   }
 }
 
+
 // ---- 字体库（字幕字体下拉）----
 async function loadFonts() {
   try {
@@ -1790,7 +1846,10 @@ async function onSubtitleFontChange(e) {
   try {
     await saveProjectPatch(pid.value, dir.value, { subtitle_font: next })
     // 先让浏览器认得这个字体（DOM 预览靠它），再刷新配置
-    if (next) await ensureFontFace(pid.value, dir.value, next, { onDebug: (m) => addClient('debug', m, 'polish') })
+    // ⚠️ **注册名必须与 `.cap`/`.dm` 的 `font-family` 同源**（都是 `fontFamilyFor` 换出来的**族名**）：
+    //    以前这里注册的是**库 id**，而 CSS 用族名 ⇒ 面名对不上 ⇒ 浏览器静默回退（"换字幕字体没反应"）。
+    const faceName = fontFamilyFor(fonts.value, next)
+    if (faceName) await ensureFontFace(pid.value, dir.value, faceName, { onDebug: (m) => addClient('debug', m, 'polish') })
     cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), subtitle: { ...(cfg.value?.style?.subtitle || {}), font: next } } }
     await load({ silent: true })
     toast(next ? `字幕字体已改为「${next}」` : '字幕字体已恢复为未指定（用默认文字字体）')
@@ -1894,6 +1953,27 @@ const styleSaving = ref(false)
 /** 提交样式 patch：成功后把镜像与 Dhampir 那条腿一起刷新，失败则回读磁盘（界面不许撒谎）。
  *  ⚠️ 写盘走 `PUT /api/polish/project`（服务端 `update_polish_toml` 的逐字段白名单），
  *     不做"开头 load、结尾整份写回"。 */
+/** **第二层白描边（白环）开没开**：⚠️ **键缺席 = 开着**（默认 `auto #ffffff`，跟随第一层）。
+ *  所以判据是"值非空"，不是"键存在" —— 写成后者会让没写过这个键的工程（绝大多数）
+ *  在界面上显示成"关着"，而成片里白边明明在（预览与成片对不上的那种假象）。 */
+const outerRingOn = computed(() => String(cfg.value?.style?.subtitle?.outer_stroke ?? 'auto #ffffff').trim() !== '')
+/** 白环那一行的悬停说明（行内放不下的都在这儿）：口径 + 当前推导出来的厚度。 */
+const outerRingHint = computed(() => {
+  const w = subtitleStrokeParsed.value ? subtitleStrokeParsed.value.w : 12
+  return outerRingOn.value
+    ? `白边（第二层描边）：粗细**跟随第一层** —— 当前第一层 ${w}px ⇒ 白边在外侧再向外 ${(w / 2).toFixed(1)}px。取消勾选即关闭。`
+    : '白边已关（outer_stroke = ""）。勾上写 `auto #ffffff`：粗细跟随第一层描边。'
+})
+/** 开关：勾 = `auto #ffffff`（跟随第一层）· 取消 = **空串**（显式关）。
+ *  ⚠️ 空串是**合法值**（服务端那一支不做非空判断），与 `subtitle_stroke` 的"空串拒收"相反。 */
+async function onOuterRingToggle(on) {
+  const w = subtitleStrokeParsed.value ? subtitleStrokeParsed.value.w : 12
+  await saveSubtitleStyle(
+    { subtitle_outer_stroke: on ? 'auto #ffffff' : '' },
+    on ? `白边已开（跟随第一层 ${w}px 描边）` : '白边已关',
+  )
+}
+
 async function saveSubtitleStyle(patch, okMsg) {
   if (styleWriteBlocked.value) { toast('配置未读到，已暂停保存', 'err'); return }
   styleSaving.value = true
@@ -2131,16 +2211,56 @@ const danmakuFontOptions = computed(() => {
     opts.push(o)
   }
   const cur = danmakuFont.value
-  if (cur && !known.has(cur) && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur}（不在字体库）` })
+  // ⚠️ **库里没有**要看三种名字（id / 族名 / 显示名），见 `fontInLibrary`；
+  //    别名命中时补的那条要**按库里那支显示**（否则 select 会显示第一项）。
+  if (cur && !opts.some((o) => o.value === cur)) {
+    opts.push(
+      fontInLibrary(fonts.value, cur)
+        ? { value: cur, label: fontLabelFor(fonts.value, cur) }
+        : { value: cur, label: `${cur}（不在字体库）` },
+    )
+  }
   return opts
 })
+/**
+ * **预览（DOM 那条腿）要用的字体必须注册进页面** —— 注册名走 `fontFamilyFor`（库 id → 内部族名），
+ * 与 `.cap` / `.dm` 的 `font-family` **同源**。
+ *
+ * ⚠️ 2026-10-16 补的两处（都属于"注册名与 CSS 用的名字对不上"这一类，症状都是**静默回退系统字体**）：
+ *  ① 两个换字体回调里注册的是**库 id**，而 CSS 用的是**族名** ⇒ 手工切字体这条路上照样不生效；
+ *  ② **首屏没人注册**：`PolishPreview::ensureProjectFonts` 只在**底座模式**下跑（它读转译产物），
+ *     不开底座时库内字体在 DOM 预览里**从来就没装上过**。
+ * ⚠️ 幂等：`ensureFontFace` 自己按「名字|dir」缓存，watch 触发多次不会重复取字节。
+ */
+// ⚠️⚠️ **这两块必须住在这里，不许往文件上面挪**（2026-10-16 一次真事故）：
+//    上面那个 `watch(..., { immediate: true })` 会在 **setup 期同步求值**，
+//    而 `danmakuFont` 声明在本文件**更靠后**的位置 ⇒ 提前就位就是 **TDZ**：
+//    `ReferenceError: Cannot access 'X' before initialization` —— 组件 setup 直接抛，
+//    **整个精修页只剩外壳、内容一片空白**（用户报「精修页面还是无法打开」）。
+//    ⚠️ computed 里引用后面声明的东西是**安全**的（getter 是懒的），会炸的只有
+//    **立即求值**的那些：watch 的依赖数组、顶层 const、`immediate` 回调。
+async function registerPreviewFonts() {
+  // ⚠️ **emoji 族也要注册**（2026-10-16）：`PolishPreview::capFallback` 会把库里的 emoji 族名
+  //    追加在字体栈**末尾**，而此前**没有任何地方为它注册 FontFace** ⇒ 库里那支 emoji 字体
+  //    在精修预览里从来用不上（一直靠系统 emoji 兜底）。封面那条链注册了（`CoverDesigner`），
+  //    所以这个洞只在精修预览这一侧 —— 与"注册名 ≠ 用的名字"是同一类。
+  for (const v of [subtitleFont.value, danmakuFont.value, fontEmoji.value]) {
+    const fam = fontFamilyFor(fonts.value, v)
+    if (!fam) continue
+    await ensureFontFace(pid.value, dir.value, fam, { onDebug: (m) => addClient('debug', m, 'polish') })
+  }
+}
+watch([fonts, subtitleFont, danmakuFont, fontEmoji], () => { registerPreviewFonts() }, { immediate: true })
 async function onDanmakuFontChange(e) {
   const next = e.target.value
   if (next === danmakuFont.value) return
   fontSaving.value = true
   try {
     await saveProjectPatch(pid.value, dir.value, { danmaku_font: next })
-    if (next) await ensureFontFace(pid.value, dir.value, next, { onDebug: (m) => addClient('debug', m, 'polish') })
+    // ⚠️ **注册名必须与 `.cap`/`.dm` 的 `font-family` 同源**（都是 `fontFamilyFor` 换出来的**族名**）：
+    //    以前这里注册的是**库 id**，而 CSS 用族名 ⇒ 面名对不上 ⇒ 浏览器静默回退（"换弹幕字体没反应"）。
+    const faceName = fontFamilyFor(fonts.value, next)
+    if (faceName) await ensureFontFace(pid.value, dir.value, faceName, { onDebug: (m) => addClient('debug', m, 'polish') })
     cfg.value = { ...cfg.value, style: { ...(cfg.value?.style || {}), danmaku: { ...(cfg.value?.style?.danmaku || {}), font: next } } }
     // 已落盘 ⇒ 同步给 Dhampir 那条腿（它只认磁盘）
     persistedCfg.value = cfg.value
@@ -2766,6 +2886,11 @@ onUnmounted(() => {
   background:var(--card); padding:7px 9px; margin:0;
   box-shadow:0 6px 16px rgba(0,0,0,.16); }
 .job-wrap > .job-log { max-height:120px; overflow:auto; }
+/* ⚠️ 失败原因常驻条（折叠态也显示，见模板那段的理由）：与详情浮层同一套定位，
+   但染成错误色 —— 它和"运行日志"是两种东西（后者只是回显，前者要用户做决定）。
+   ⚠️ 只用 tokens 里**存在**的变量（`--red-deep` / `--red-soft`）；本仓**没有**
+   `--danger` / `--warn` —— 写不存在的变量会静默拿到 fallback（踩过）。 */
+.job-wrap > .job-err { color:var(--red-deep); border-color:var(--red); background:var(--red-soft); }
 
 /* 成片与封面统一为同尺寸 16:9 盒子（源都是 1920×1080，比例异常时裁切对齐） */
 .artifact-bar .cover-thumb,
