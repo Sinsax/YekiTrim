@@ -262,8 +262,39 @@
             </template>
             <div v-else class="type-ro">
               <span class="muted small">类型</span>
-              <b>{{ TYPE_LABELS[selItem.type] || selItem.type }}</b>
-              <span class="muted small mono">{{ selItem.type }}</span>
+              <!-- ⚠️⚠️ **`element` 不显示词汇表那句「元素（文字 / 贴纸）」**（2026-10-15 用户口径：
+                   「因为元素(原文字+贴纸)已分离，请查找元素相关文案进行修改」）。
+                   轨道分家之后，"元素"这个**类别**在界面上已经不存在了 —— 用户看到的
+                   只有「文字」和「贴纸」两类。再显示"元素（文字 / 贴纸）"，等于把
+                   **已经合并掉的两个东西又并成一个名字**摆在他面前。
+                   ⇒ element 事件按它**真实的 `kind`** 显示「文字」或「贴纸」（认不出就照实说）。
+                   ⚠️ 别改 `spec/effects.json` 的 `label` —— 那是**词汇表/文档**用的
+                      （`docs/polish-events-reference.md` 等按它生成），这里只改**界面**口径。 -->
+              <template v-if="selItem.type === 'element'">
+                <!-- **逐块手动落点**：点了它就在预览上点一下，这一块的**中心**落到那儿；手动之后自动落点不再影响它。 -->
+                <div class="row mt-4 gap-6">
+                  <button class="mini-btn" title="在预览上点一下，把这一块的中心放到那儿"
+                          @click="startManualPick">改落点</button>
+                  <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                          @click="clearManualPos">恢复自动</button>
+                  <span v-if="manualPick" class="muted small">在预览上点一下…</span>
+                </div>
+                <b>{{ elementKindOf(selItem) === 'text' ? '文字'
+                     : elementKindOf(selItem) === 'sticker' ? '贴纸'
+                     : '认不出的类型' }}</b>
+                <!-- ⚠️⚠️ **这里只回显 `kind`，不再写 `element · <kind>`**（2026-10-15）。
+                     ① `element` 是**磁盘上的载体名**（两条泳道共用 `type:"element"`），不是界面类别名 ——
+                        把它摆在「文字 / 贴纸」后面，等于又用一个合并名把刚分开的两样捆回去
+                        （与上面那条「不显示词汇表那句」同一条口径）。
+                     ② mono 位**保留**：与其它类型「中文名 + 原始值」的形状一致（如「运镜 camera」），
+                        只是元素这里的原始值是 `kind` —— `element` 对两种都成立、没有信息量。
+                     ⚠️ 判据 `scripts/check-editor-lane-split.mjs` ⑥ 钉着这一行。 -->
+                <span class="muted small mono">{{ selItem.kind || '(空)' }}</span>
+              </template>
+              <template v-else>
+                <b>{{ TYPE_LABELS[selItem.type] || selItem.type }}</b>
+                <span class="muted small mono">{{ selItem.type }}</span>
+              </template>
             </div>
 
             <!-- 运镜 -->
@@ -323,11 +354,39 @@
                   </select>
                 </div>
               </div>
+              <!-- 荷兰角（地平线倾斜）：`tilt` 一直是**活的**字段（出片模板 `cam.tilt` 与转译器
+                   `dutchFrames` 都在消费它），但此前是靠"自动派生"冒出来的**裸控件** ——
+                   没有标签、没有区间提示，用户不知道那几个数字框是干什么的。
+                   ⚠️ 旧注释一度说"转译器不读它"，**已过期**；别再据此把它藏掉。
+                   ⚠️ 单位是**度**，正=顺时针倾斜；0 = 水平。 -->
+              <label>地平线倾斜（{{ Number(selItem.tilt ?? 0) }}°）</label>
+              <div class="pos-row">
+                <input class="pos-range" type="range" min="-15" max="15" step="0.5"
+                       :value="Number(selItem.tilt ?? 0)"
+                       title="荷兰角：负=逆时针，正=顺时针；0 = 水平"
+                       @input="selItem.tilt = Number($event.target.value)">
+                <input class="pos-num" type="number" min="-15" max="15" step="0.5"
+                       :value="Number(selItem.tilt ?? 0)"
+                       @change="selItem.tilt = Number($event.target.value)">
+              </div>
+              <!-- 其余专用块没覆盖的字段（新增字段时它们自动出现，不用改这里 —— 见 `autoFields` 的口径）。
+                   ⚠️ skip 表要与上面手写的控件逐一对应，否则那个字段**出两遍**（判据 ㉜）。 -->
+              <template v-for="f in autoFields('camera', ['cut', 'speed', 'zoom', 'handheld', 'anchor', 'anchor_to', 'tilt'])" :key="f.name">
+                <FieldControl :ev="selItem" :f="f" />
+              </template>
             </template>
 
-            <!-- 贴纸：keyword 一级 → 贴纸二级 -->
+            <!-- 贴纸：行递进三段（包 → 分类 → 贴纸），见 polish/StickerPicker.vue -->
             <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
+              <!-- **逐块手动落点**：点了它就在预览上点一下，这一块的**中心**落到那儿；手动之后自动落点不再影响它。 -->
+              <div class="row mt-4 gap-6">
+                <button class="mini-btn" title="在预览上点一下，把这一块的中心放到那儿"
+                        @click="startManualPick">改落点</button>
+                <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                        @click="clearManualPos">恢复自动</button>
+                <span v-if="manualPick" class="muted small">在预览上点一下…</span>
+              </div>
               <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
                    用户口径：「**前端编辑器也要分离**」。
 
@@ -476,18 +535,75 @@
                    —— 上面那个 `unknown` 支已经先把认不出的拦走了，
                    这里再写 `v-else` 会把它当成贴纸（把坏数据伪装成正常元素）。 -->
               <template v-else-if="elementKindOf(selItem) === 'sticker'">
-                <StickerPicker :lib="stickerLib" :pid="pid" :dir="dir"
+                <StickerPicker :lib="stickerLib" :lib-error="stickerLibError" :pid="pid" :dir="dir"
                                :pack="selItem.text || ''" :tag="selItem.sticker_tag || ''"
                                :name="selItem.name || ''" :source="selItem.source || ''"
-                               @pick="onStickerPick" />
+                               @pick="onStickerPick" @retry-lib="loadPickers" />
+              </template>
+              <!-- ============ 位置（X / Y **滑杆**）============
+                   ⚠️⚠️ **只有手动改过才写盘**（2026-10-15）：留空 = 不设 = 由后处理按安全落点算
+                   （贴纸 Step 2b / 文字 Step 1d3）。这是**唯一**能手动钉住单个元素位置的地方，
+                   而"不设"必须保持默认 —— 一写值就把该元素从自动落点里摘出来。
+                   ⚠️ 文案用「自动 / 手动」，别用「清除」：它表达的是"不指定"而不是"清掉某种效果"。
+                   ⚠️ 两个载体的 `x`/`y` 类型不同（`Element` 是 `Option<String>`、`Sticker` 是
+                      `String`）—— 这里只在 element 支出现，写值一律走 `setElementPos`。 -->
+              <div class="row spread">
+                <label class="pos-lbl">位置</label>
+                <button v-if="hasElementPos(selItem)" class="mini-btn"
+                        title="改回自动落点（后处理按人物/字幕/弹幕避让算）"
+                        @click="clearElementPos()">自动</button>
+                <span v-else class="muted small">自动落点</span>
+              </div>
+              <div class="pos-row">
+                <span class="pos-tag">X</span>
+                <input class="pos-range" type="range" min="0" max="100" step="0.5"
+                       :value="posSlider(selItem.x)"
+                       title="横向 0~100%（0 贴左 / 100 贴右）"
+                       @input="setElementPos('x', $event.target.value)">
+                <input class="pos-num" type="number" min="0" max="100" step="1"
+                       :value="pctOf(selItem.x)" placeholder="—"
+                       title="也可以直接填数字（0~100）"
+                       @change="setElementPos('x', $event.target.value)">
+              </div>
+              <div class="pos-row">
+                <span class="pos-tag">Y</span>
+                <input class="pos-range" type="range" min="0" max="100" step="0.5"
+                       :value="posSlider(selItem.y)"
+                       title="纵向 0~100%（0 贴上 / 100 贴下）"
+                       @input="setElementPos('y', $event.target.value)">
+                <input class="pos-num" type="number" min="0" max="100" step="1"
+                       :value="pctOf(selItem.y)" placeholder="—"
+                       title="也可以直接填数字（0~100）"
+                       @change="setElementPos('y', $event.target.value)">
+              </div>
+              <div class="hint">拖动即钉住这一条，不再自动避让。点「自动」交回给后处理。</div>
+
+              <!-- 词汇表里专用块没覆盖的字段（文字/贴纸各自还有几个）。
+                   ⚠️⚠️ **skip 表必须与上面专用块真正渲染的字段逐一对应**（2026-10-15 用户报
+                   「一堆冗余参数」）：文字支在上面已经渲染了 `style_anim` / `transition_anim` /
+                   `effect_anim` / `layout_angle_deg`（排版/过渡/动效三轴 + 角度），
+                   而这张表**漏了这四个** ⇒ `autoFields` 把它们**又渲染一遍**，
+                   面板上是「排版/过渡/动效」各出两遍。
+                   ⚠️ 判据：`check-layout-invariants.mjs` ㉜ 会**算**这张表与专用块的差集，
+                      漏一个就红（别再靠人眼对）。 -->
+              <template v-for="f in autoFields(selItem.type, ELEMENT_DEDICATED)" :key="f.name">
+                <FieldControl :ev="selItem" :f="f" />
               </template>
             </template>
 
             <template v-else-if="selItem.type === 'sticker'">
-              <StickerPicker :lib="stickerLib" :pid="pid" :dir="dir"
+              <!-- **逐块手动落点**：点了它就在预览上点一下，这一块的**中心**落到那儿；手动之后自动落点不再影响它。 -->
+              <div class="row mt-4 gap-6">
+                <button class="mini-btn" title="在预览上点一下，把这一块的中心放到那儿"
+                        @click="startManualPick">改落点</button>
+                <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                        @click="clearManualPos">恢复自动</button>
+                <span v-if="manualPick" class="muted small">在预览上点一下…</span>
+              </div>
+              <StickerPicker :lib="stickerLib" :lib-error="stickerLibError" :pid="pid" :dir="dir"
                              :pack="selItem.keyword || ''" :tag="selItem.sticker_tag || ''"
                              :name="selItem.name || ''" :source="selItem.source || ''"
-                             @pick="onStickerPick" />
+                             @pick="onStickerPick" @retry-lib="loadPickers" />
             </template>
 
             <!-- 覆盖层 -->
@@ -729,8 +845,14 @@ import {
   setClipSpan, setClipSpeed, setClipLabel,
   clipIndexAtOut, clipIndexAtSource, edlOutSecsAtSource,
 } from '../polish/edl'
+// 热度曲线：**算法只有一份**（`webui/src/polish/heat.js`：按字 / 按条 / 自基准归一 / 权重都在那里），
+// 本组件只负责「取数 → 冻成快照 → 画在标尺带里 → 给个读数」。别再在这里算第二遍。
+import { heatSeries, heatBucketAt, heatDisplay } from '../polish/heat'
 
 const props = defineProps({
+  /** 预览里**刚点的那一下**（`{x, y, seq}`；`seq` 每次 +1 ⇒ 用来触发"写入选中事件"）。
+   *  归页面管（它拿得到预览的 `update:point`），本组件只**消费**它。 */
+  pointResult: { type: Object, default: null },
   dir: { type: String, required: true },
   /** 项目 id（贴纸缩略图接口需要作用域参数） */
   pid: { type: [String, Number], default: '' },
@@ -1942,6 +2064,39 @@ function onBlockDblClick(block) {
 // **落盘不等于完成**：后处理要等 `emit('done')`（见下面的 commitEdit），
 // 否则你加完贴纸还在面板里填 keyword 时它就会插进来处理这个半成品。
 const dirty = { segments: false, subtitles: false, mute: false, edl: false }
+
+/** **逐块手动落点**（2026-10-16 用户口径：「贴纸和文字层都需要一个可以给每个单独块手动选择位置的功能，
+ *  自动是全局的，手动过后自动无法影响」）。
+ *
+ *  `manual_pos` = 这一块的**中心**百分比（与 `[sticker] position` 同基准；落盘的 `x`/`y` 是左上角，
+ *  换算在 Rust `placement::manual_pos_to_box_px` 一处做）。点一下预览 ⇒ 写进**选中那条**事件；
+ *  「恢复自动」＝删键 ⇒ 下次 `process` 的自动落点重新接管（`process` 见到 `manual_pos` 时求解器不参与）。
+ *
+ *  ⚠️ 事件数据归**本组件**（它是落盘方）⇒ 点选态住在这里；预览那边只负责"要不要接收点击"，
+ *  由页面经 `point-pick` 转达 —— 别把落盘散到页面上去（那是"两份写同一份文件"的老坑）。 */
+const manualPick = ref(false)
+const evManualPos = computed(() => String(selectedEv.value?.manual_pos || ''))
+
+function startManualPick() { manualPick.value = true; emit('point-pick', true) }
+function stopManualPick() { manualPick.value = false; emit('point-pick', false) }
+
+/** 「恢复自动」：把键**删掉**（不是写空串 —— 空串是"有值但认不出"，会被当成脏值告警）。 */
+function clearManualPos() {
+  const ev = selectedEv.value
+  if (!ev || !('manual_pos' in ev)) return
+  delete ev.manual_pos
+  touch(dirtyKindOf(selected.value?.kind))
+}
+
+watch(() => props.pointResult?.seq, () => {
+  if (!manualPick.value) return
+  const ev = selectedEv.value
+  if (!ev || !props.pointResult) { stopManualPick(); return }
+  const p = props.pointResult
+  ev.manual_pos = `${Math.round(p.x)}% ${Math.round(p.y)}%`
+  touch(dirtyKindOf(selected.value?.kind))
+  stopManualPick()
+})
 const saveState = ref('')   // '' | 'saving' | 'ok' | 'err'
 const saveErr = ref('')
 const savedAt = ref('')

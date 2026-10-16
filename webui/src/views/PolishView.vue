@@ -115,9 +115,9 @@
               </div>
 
               <div class="stage-col">
-                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :karaoke-cues="karaokeCues" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect" @update:point="onPointPick" />
+                <PolishPreview ref="previewRef" :key="previewKey" :pid="pid" :dir="dir" :config="cfg" :persisted-config="persistedCfg" :subtitles="subs" :persisted-subtitles="persistedSubs" :danmaku="dm" :karaoke-cues="karaokeCues" :meta-duration="cfg?.duration || 0" :font-fallback="fontFallback" :emoji-family="fontEmoji" :fonts="fonts" :select-mode="!!selectRegion" :select-rect="selRect" :select-label="selLabel" :point-mode="pointMode" :point="pointEdit ? draftPos : stickerPos" :point-label="'贴纸落点 · ' + (pointEdit ? draftPosPct : stickerPosPct)" @time="onPreviewTime" @playing="onPreviewPlaying" @update:select-rect="onSelectRect"  :point-result="pointResult" @point-pick="onPointPickMode" @update:point="onPointPick" />
                 <div v-if="selectRegion" class="hint mt-8">拖框体平移 / 拖角缩放 / 空白重画</div>
-                <div v-else-if="pointEdit" class="hint mt-8">点预览选新落点，右侧「保存落点」生效</div>
+                <div v-else-if="pointEdit" class="hint mt-8">点预览上的位置即可</div>
               </div>
             </div>
           </div>
@@ -407,11 +407,13 @@
         <button class="mini-btn" :disabled="!hasFreeRect" @click="clearSelect">清除</button>
       </div>
     </template>
-    <template v-if="stickerCfg.position_mode === 'manual' && !selectRegion">
+    <!-- ⚠️ **不再要求"已经是固定模式"**（2026-10-16 用户口径「更简单的交互」）：
+         按钮常显，点它就切模式 + 进点选 ⇒ 一步，而不是"先切固定、再点改落点"两步。 -->
+    <template v-if="!selectRegion">
       <div class="row mt-4 gap-6">
         <button v-if="!pointEdit" class="mini-btn flex-1 jc-center"
                 :disabled="stickerBusy || !ready" title="在预览上点选贴纸的新落点（草稿态，保存后才写 polish.toml）"
-                @click="startPointEdit">
+                @click="startManualPickOneStep">
           <Icon name="pin" :size="11" /> 改落点
         </button>
         <div class="mono small">{{ pointEdit ? draftPosPct : stickerPosPct }}</div>
@@ -2501,6 +2503,15 @@ const draftPosPct = computed(() => fmtPos(draftPos.value))
 const pointMode = computed(() => pointEdit.value && !selectRegion.value)
 
 /** 进入点选编辑态：草稿以已保存值为初值（取消即等于没动过）。 */
+/** **一步进入点选**：贴纸还是「自动」时先切成「固定」，再进点选态（省掉"先切固定"那一步）。
+ *  事件类（文字元素/贴纸块）走的是另一条腿（点完即生效，不需要保存按钮），见 TimelineEditor。 */
+async function startManualPickOneStep() {
+  if (stickerCfg.value.position_mode !== 'manual') {
+    if (!(await patchSticker({ position_mode: 'manual' }))) return
+  }
+  startPointEdit()
+}
+
 function startPointEdit() {
   if (stickerBusy.value || !ready.value) return
   if (selectRegion.value) selectRegion.value = ''   // 与框选互斥
@@ -2540,10 +2551,18 @@ async function toggleStickerMode() {
 }
 
 /** 预览点选落点 → 只改草稿（保存/取消在右侧「区域与落点」里）。 */
+/** **逐块手动落点**（TimelineEditor 用）：预览点一下 ⇒ `seq`+1 捎给它，由它写进**选中那条**事件。
+ *  与贴纸的"全局固定落点"**共用同一条点选层**，区别只是目的地（那里进草稿等「保存落点」，这里点完即生效）。 */
+const pointResult = ref({ x: 50, y: 50, seq: 0 })
+/** TimelineEditor 请求进出"点选落点"态：本页只管预览收不收点击，事件数据在它那边。 */
+function onPointPickMode(on) { pointEdit.value = !!on }
+
 function onPointPick(p) {
   const x = Math.round(Math.min(100, Math.max(0, Number(p?.x) || 0)))
   const y = Math.round(Math.min(100, Math.max(0, Number(p?.y) || 0)))
   draftPos.value = { x, y }
+  // 逐块那条腿：把同一个点也捎给编辑器（`seq` 变化 = 有一次新的点击）。
+  pointResult.value = { x, y, seq: pointResult.value.seq + 1 }
 }
 
 /** @returns {Promise<boolean>} 是否保存成功（失败时不丢草稿，见 `savePointEdit`） */

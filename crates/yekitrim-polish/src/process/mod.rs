@@ -568,17 +568,35 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let mut placed: Vec<(f64, f64, placement::Rect)> = Vec::new();
         let mut relaxed = 0usize;
         let mut count = 0usize;
+        // **逐块手动落点**的条数（求解器没参与 ⇒ 不计入 `relaxed` 与余量统计）。
+        let mut manual_n = 0usize;
         let mut min_clearance = f64::MAX;
         let (mut min_x, mut max_x, mut min_y, mut max_y) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
 
         for seg in &mut config.segments {
             for (idx, event) in seg.events.iter_mut().enumerate() {
+                // ⚠️ **必须在解构之前取**：解构会把 `event` 可变借出去（E0502）。
+                let manual = event.manual_pos().map(str::to_owned);
                 let (x, y, time, end) = match event {
                     crate::project::Event::Sticker { x, y, time, end, .. } => {
                         (x, y, *time, end.unwrap_or(*time))
                     }
                     _ => continue,
                 };
+                // ⚠️⚠️ **逐块手动落点优先**（2026-10-16）：「自动是全局的，手动过后自动无法影响」。
+                //    有它 ⇒ 求解器**完全不参与**（不是"算完再盖"—— 那会在障碍表里留下一个空气盒子）。
+                if let Some(mp) = manual.as_deref() {
+                    let bs = placement::BoxSize::sticker(obstacles.frame);
+                    if let Some((mx, my)) = placement::manual_pos_to_box_px(mp, bs.w, bs.h, obstacles.frame) {
+                        *x = placement::pct_of(mx, obstacles.frame.w);
+                        *y = placement::pct_of(my, obstacles.frame.h);
+                        placed.push((time, end + 0.65, placement::box_at(mx, my, &bs)));
+                        count += 1;
+                        manual_n += 1;
+                        continue;
+                    }
+                    tracing::info!("  ⚠ sticker @{time:.1}s: manual_pos 认不出，退回自动落点");
+                }
                 let blocked = obstacles.blocked_at(time, end, &placed);
                 let seed = (idx as f64 * 3.7 + seg.start * 1.3).fract();
                 let pick = placement::pick_sticker_position(&blocked, &obstacles.allow, seed, obstacles.frame);
@@ -598,6 +616,9 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             }
         }
 
+        if manual_n > 0 {
+            tracing::info!("  ✓ sticker 落点 {manual_n} 个由**手动**指定（求解器完全不参与）");
+        }
         if count > 0 {
             // 障碍摘要拼成一个串，别塞进 format! —— 可选的那一项（主画面）会让占位符数量
             // 和参数对不上，而这类错误只在编译期暴露一次、改格式串时极易再犯。
@@ -651,6 +672,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
         let mut placed: Vec<(f64, f64, placement::Rect)> = Vec::new();
         let mut count = 0usize;
         let mut relaxed = 0usize;
+        // **逐块手动落点**的条数（求解器没参与）。
+        let mut manual_n = 0usize;
         let mut min_clearance = f64::MAX;
 
         for seg in &mut config.segments {
@@ -659,6 +682,8 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 //    之后再调 `event.get_time()` 是"可变借还活着时又要不可变借"（E0502）。
                 let time = event.get_time();
                 let end = event.end_or_default().unwrap_or(time);
+                // ⚠️ **手动落点也必须在解构之前取**（同一条 E0502 理由）。
+                let manual = event.manual_pos().map(str::to_owned);
                 let crate::project::Event::Element { kind, text, style, pos, x, y, .. } = event
                 else {
                     continue;
@@ -670,10 +695,28 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
                 let anchor = placement::TextAnchor::parse(pos.as_deref().unwrap_or(""));
                 let layout = placement::TextLayout::solve(text, ts, anchor, f);
                 let b = layout.box_size();
+                // ⚠️⚠️ **逐块手动落点优先**（与贴纸同一条口径）：有它 ⇒ 求解器完全不参与。
+                //    `manual_pos` 是**盒子中心**，落盘的 `x`/`y` 是**左上角**。
+                if let Some(mp) = manual.as_deref() {
+                    if let Some((mx, my)) = placement::manual_pos_to_box_px(mp, b.w, b.h, f) {
+                        *x = Some(placement::pct_of(mx, f.w));
+                        *y = Some(placement::pct_of(my, f.h));
+                        placed.push((time, end + 0.65, placement::box_at(mx, my, &b)));
+                        count += 1;
+                        manual_n += 1;
+                        continue;
+                    }
+                    tracing::info!("  ⚠ 文字元素 @{time:.1}s: manual_pos 认不出，退回自动落点");
+                }
 
                 let blocked = obstacles.blocked_at(time, end, &placed);
                 let seed = (idx as f64 * 5.1 + seg.start * 1.7).fract();
-                let pick = placement::pick_box_position(&blocked, &obstacles.allow, seed, f, &b);
+                // ⚠️ **`pos` 要真的挪动落点**（`placement.rs::tests::pos_really_moves_the_text_box` 钉着）：
+                //    只用无偏好版本时 `pos` 会被求解器**无条件覆写**。
+                let pick = placement::pick_box_position_pref(
+                    &blocked, &obstacles.allow, seed, f, &b,
+                    layout.anchor_prefer_band(f),
+                );
                 *x = Some(pick.x_pct(f));
                 *y = Some(pick.y_pct(f));
                 if pick.relaxed {
@@ -690,6 +733,9 @@ pub async fn cmd_process(project_path: &Path) -> anyhow::Result<()> {
             }
         }
 
+        if manual_n > 0 {
+            tracing::info!("  ✓ text 落点 {manual_n} 个由**手动**指定（求解器完全不参与）");
+        }
         if count > 0 {
             tracing::info!(
                 "  ✓ text 落点 {count} 个 (按**排版后的真盒子**避让{}, 最小余量 {:.0}px)（§5 E3）",
@@ -2060,6 +2106,29 @@ mod tests {
     use super::*;
     use crate::project::{EdlClip, Event, MuteRange, ProjectFile, Segment};
 
+    /// **逐块手动落点的落盘契约**（2026-10-16，UI 的「改落点」写的就是这个键）。
+    /// ① 写了能原样读回（UI → `segments` → PUT → 读回 → `process` 认得它）；
+    /// ② **没写**的老工程照旧能读，且序列化里**不许出现**这个键（R4）。
+    #[test]
+    fn manual_pos_survives_toml_roundtrip_and_stays_absent_when_unused() {
+        let legacy = r#"
+type = "element"
+time = 1.0
+end = 2.0
+kind = "text"
+text = "手动落点"
+x = "10%"
+y = "10%"
+"#;
+        let old: Event = toml::from_str(legacy).expect("老工程反序列化");
+        assert_eq!(old.manual_pos(), None);
+        let plain = toml::to_string(&old).expect("序列化");
+        assert!(!plain.contains("manual_pos"), "没写过就不该落这个键：\n{plain}");
+        let with = format!("{legacy}manual_pos = \"70% 30%\"\n");
+        let ev: Event = toml::from_str(&with).expect("带 manual_pos 反序列化");
+        assert_eq!(ev.manual_pos(), Some("70% 30%"), "读回必须原样");
+        assert!(toml::to_string(&ev).expect("序列化").contains("manual_pos"));
+    }
     /// ★ **文字元素 `source` 串的字段顺序**（T3 的对外接口）。
     ///
     /// ⚠️ 这条判据是**给下游看的契约**：转译器（`tools/polish-to-dhampir.mjs`
@@ -2097,6 +2166,7 @@ mod tests {
                 manual: false,
                 name: None,
                 source: None,
+                manual_pos: None,
             }],
         }];
         assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
@@ -2164,6 +2234,7 @@ mod tests {
                     manual: false,
                     name: None,
                     source: None,
+                    manual_pos: None,
                 }],
             }]
         }
@@ -2287,6 +2358,7 @@ mod tests {
                 manual: false,
                 name: None,
                 source: None,
+                manual_pos: None,
             }],
         }];
         assert_eq!(layout_text_elements(&mut segs, 1920.0, 1080.0), 1);
@@ -2445,6 +2517,7 @@ mod tests {
                 sfx: None,
                 sfx_volume: None,
                 manual: true,
+                manual_pos: None,
             }],
             extra: Default::default(),
         }];
@@ -2810,6 +2883,7 @@ mod tests {
             time: 1.0, end: Some(3.0), keyword: "laugh".into(),
             sticker_tag: None, name: None, source: None, x: "auto".into(), y: "auto".into(),
             sfx: None, sfx_volume: None, manual: false,
+            manual_pos: None,
         }
     }
 

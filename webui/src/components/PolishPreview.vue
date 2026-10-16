@@ -209,10 +209,10 @@ import { clipMediaUrl, mediaUrl } from '../utils'
 import { api } from '../api/client'
 // §4「转译报告可见」：DROP/CLAMP 的播报只有 `api/polish.js` 那一份实现，三处调用点共用。
 import { logTranslateReport } from '../api/polish'
-import { buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
+import { invertCameraPoint, nearestGridCenter, buildIndex, videoFxAt, handheldSway, getFlash, getHueShiftFlash, getNoiseOpacity, getVignette, getOverlayState, gradientCss, subsAt, danmakuAt, stickersAt, getElements, wrapCaptionParts, capMeasure, noiseTile, textTiltTransform, perCharSpans, animPreset } from '../polish/engine'
 import { canvasOf, stickerScale } from '../polish/canvas.js'
 import { createSfxPlayer } from '../polish/audio'
-import { ensureFontFace } from '../polish/fonts'
+import { ensureFontFace, fontFamilyFor } from '../polish/fonts'
 
 const props = defineProps({
   pid: { type: [String, Number], required: true },
@@ -2552,7 +2552,29 @@ const fmt = (s) => {
 }
 
 const subStyle = computed(() => idx.value.subStyle || {})
+/** 字幕真正要用的族名：`[style.subtitle].font`（可能是**库 id**）→ 内部族名。
+ *  ⚠️ 与预览注册 FontFace 用的名字**必须同源**（那边走转译产物的 `font_family`）——
+ *    两边不一致 = 浏览器静默回退系统字体 =「换字体没反应」。 */
+const subFontFamily = computed(() => fontFamilyFor(props.fonts, subStyle.value.font))
 const dmStyleCfg = computed(() => idx.value.dmStyle || {})
+/** 弹幕同理（`[style.danmaku].font` 也是库 id）。
+ *  ⚠️ 必须排在 `dmStyleCfg` **之后**：computed 是惰性的，但首次求值就在渲染里 ——
+ *    放到前面会 `ReferenceError`（TDZ），而 Vue 遇到渲染抛错会**卸载整块子树**
+ *    （症状是「预览整块消失、日志全是 200」，本仓栽过一次）。 */
+const dmFontFamily = computed(() => fontFamilyFor(props.fonts, dmStyleCfg.value.font))
+
+/** **这一帧的运镜态**（反解与画面变换**共用一份**）。`scale` 底座值优先（与 `videoStyle` 同序），
+ *  `oxPct/oyPct` = 不动点（画布百分比，即 `videoStyle` 的 `transformOrigin`）。
+ *  ⚠️ 选框态只复位 **DOM** 那条腿的变换，底座画布里的运镜照旧 ⇒ 有底座值时仍然反解。 */
+const pickCamera = computed(() => {
+  const f = vfx.value
+  const sway = handheldSway(current.value, f.camera.handheld)
+  const base = dhampirBaseCamera.value
+  const domReset = props.selectMode && !base
+  const scale = (base ? base.scale : props.selectMode ? 1 : f.zoom) * (domReset ? 1 : sway.scale)
+  const c = cv.value
+  return { scale, oxPct: (f.camera.ox / c.W) * 100, oyPct: (f.camera.oy / c.H) * 100 }
+})
 
 const videoStyle = computed(() => {
   // 内容层的 object-fit 与出片一致（axis=fill → cover；留边 → contain），由 `_canvas.stage` 决定
@@ -3350,10 +3372,16 @@ function pctAt(e) {
   if (!el) return null
   const b = el.getBoundingClientRect()
   if (!b.width || !b.height) return null
-  return {
+  const raw = {
     x: Math.min(100, Math.max(0, ((e.clientX - b.left) / b.width) * 100)),
     y: Math.min(100, Math.max(0, ((e.clientY - b.top) / b.height) * 100))
   }
+  // ⚠️ **必须反解运镜**：选点与选框都从这里取坐标，而画面是**绕不动点缩放过的** ⇒
+  //    不反解就是"有运镜时点哪都偏"（用户报的「区域设置在底座预览里点歪」）。
+  //    只在这一处做 ⇒ 落点、选框、贴纸固定落点三条路一起正确。
+  const cam = pickCamera.value
+  const q = invertCameraPoint(raw, { scale: cam.scale, ox: cam.oxPct, oy: cam.oyPct })
+  return { x: Math.min(100, Math.max(0, q.x)), y: Math.min(100, Math.max(0, q.y)) }
 }
 
 function startSel(handle, e) {
@@ -3439,7 +3467,11 @@ const pointBoxStyle = computed(() => {
 function pickPoint(e) {
   const p = pctAt(e)
   if (!p) return
-  emit('update:point', { x: r2(p.x), y: r2(p.y) })
+  // ⚠️ **默认吸到最近九宫格中心**（用户口径：「更简单的交互，参考区域设置那种直接选择」）；
+  //    **按住 Shift = 自由落点**（不吸）。吸附在反解**之后**做（`pctAt` 已经反解过运镜）——
+  //    顺序反过来会把"格心"也一起缩放，落点就不是格心了。
+  const q = e.shiftKey ? p : nearestGridCenter(p)
+  emit('update:point', { x: r2(q.x), y: r2(q.y) })
 }
 
 // ---- 真渲染预览：**整条已删除** ----
