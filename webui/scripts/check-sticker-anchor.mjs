@@ -388,4 +388,65 @@ if (brokenClamp) {
     CLAMP_RE.test(brokenClamp), false)
 }
 
+
+// ---- ㊷ 运镜反解（2026-10-16）------------------------------------------------
+//
+// 用户报的原文：「区域设置在底座预览有 bug，有运镜时选择位置，镜头没有重置」。
+// 机理：选点/选框的百分比定义在**未运镜**的画面上，而预览（尤其底座那条腿）画的是
+// 绕不动点缩放过的画面 ⇒ 点击必须**反解**，否则"有运镜时点哪都偏"。
+//
+// ⚠️ 判据要**两边都钉**：① 数值往返（含 scale<1 的画中画档 —— 判据是"不等于 1"，不是"大于 1"）；
+//    ② 抽取出来的那份**真的会随错误实现翻脸**（下面用变异自证）。
+const engineSrcForCam = engineSrc;
+const camBody = /export function invertCameraPoint\(p, cam\) \{([\s\S]*?)\n\}/.exec(engineSrcForCam);
+check("engine.js 导出了 invertCameraPoint（运镜反解）", camBody !== null, true);
+if (camBody) {
+  const invert = new Function("p", "cam", camBody[1]);
+  const camCases = [
+    { name: "无运镜 scale=1", scale: 1, ox: 40, oy: 60, p: { x: 12.5, y: 77.5 } },
+    { name: "近景 1.5 不动点(65,50)", scale: 1.5, ox: 65, oy: 50, p: { x: 80, y: 90 } },
+    { name: "画中画 0.55 不动点(30,70)", scale: 0.55, ox: 30, oy: 70, p: { x: 10, y: 20 } },
+  ];
+  let maxErr = 0;
+  for (const c of camCases) {
+    // 正变换 = 画面被绕不动点缩放（屏幕上看到的就是它）
+    const seen = { x: c.ox + (c.p.x - c.ox) * c.scale, y: c.oy + (c.p.y - c.oy) * c.scale };
+    const back = invert(seen, { scale: c.scale, ox: c.ox, oy: c.oy });
+    maxErr = Math.max(maxErr, Math.abs(back.x - c.p.x), Math.abs(back.y - c.p.y));
+  }
+  check("反解往返精确（三档运镜，误差 < 1e-9）", maxErr < 1e-9, true);
+  // 变异自证：把"除以 scale"改成"乘 scale" ⇒ 上面那条必须翻脸
+  const brokenInvert = new Function("p", "cam", camBody[1].replace("/ s", "* s"));
+  const c0 = camCases[1];
+  const seen0 = { x: c0.ox + (c0.p.x - c0.ox) * c0.scale, y: c0.oy + (c0.p.y - c0.oy) * c0.scale };
+  const bad0 = brokenInvert(seen0, { scale: c0.scale, ox: c0.ox, oy: c0.oy });
+  check("变异（÷scale 改 ×scale）会让上面那条翻脸", Math.abs(bad0.x - c0.p.x) > 1, true);
+  // 调用点：不动点必须与 transformOrigin 同源、底座值优先
+  check("反解用的是 f.camera.ox/oy（与 transformOrigin 同源）",
+    /oxPct: \(f\.camera\.ox \/ c\.W\) \* 100/.test(previewSrc), true);
+  check("有底座值时用 baseCam.scale（出片同源）",
+    /base \? base\.scale : props\.selectMode \? 1 : f\.zoom/.test(previewSrc), true);
+  check("吸附在反解之后（否则格心会被一起缩放）",
+    /const q = e\.shiftKey \? p : nearestGridCenter\(p\)/.test(previewSrc), true);
+}
+
+
+// ---- ㊸ 逐块手动落点（2026-10-16）------------------------------------------------
+//
+// 用户口径：「贴纸和文字层都需要一个可以给每个单独块手动选择位置的功能，自动是全局的，
+// 手动过后自动无法影响」。转译器这一侧的两个要点：
+//   ① **逐块**的 `event.manual_pos` 优先于**项目级**的 `[sticker] position`（后者是全局一个点）；
+//      ⚠️ 独立读它（而不是读 `x`/`y`）是为了"点完立刻对" —— `x`/`y` 要等 `process` 跑过才有。
+//   ② `hasPos` 必须认它，否则会被下面那条 DROP 吃掉（症状：点完落点、贴纸直接不见了）。
+check("[trans ] 逐块 manual_pos 优先于项目级固定落点",
+  /String\(event\.manual_pos \?\? ''\)[\s\S]{0,240}?anchor = \{ x: mx, y: my, center: true \}/.test(translatorSrc), true)
+check("[trans ] hasPos 认逐块手动（否则被 DROP 吃掉）",
+  /const hasPos = anchor !== undefined \|\| stickerMode === 'manual'/.test(translatorSrc), true)
+// 变异自证：把"优先"那条改成不认识 ⇒ 第一条判据必须翻脸（本脚本能抓到自己失效）
+{
+  const broken = translatorSrc.replace("anchor = { x: mx, y: my, center: true }", "anchor = { x: 50, y: 50, center: true }")
+  check("[trans·变异] 改掉逐块落点后上面那条会翻脸",
+    /String\(event\.manual_pos \?\? ''\)[\s\S]{0,240}?anchor = \{ x: mx, y: my, center: true \}/.test(broken), false)
+}
+
 process.exit(failed ? 1 : 0)
