@@ -83,6 +83,18 @@ pub(crate) fn build_events_system_prompt(
     } else {
         format!("\n{}", local_sticker_text)
     };
+    // ⚠️ **内建 emoji 词表必须进提示词**（2026-10-17）：在这之前 LLM 只被告知"写英文，
+    //    如 laugh/cry/shock/game"——它**不知道有哪些词可用**，于是我们只能拿子串去接
+    //    （命中谁由目录顺序决定）。词表来自 `emoji_taxonomy::prompt_vocab_text()`，
+    //    **一份真源**，别在这里另抄。
+    let emoji_line = if sticker_source.iter().any(|s| s == "emoji") {
+        format!(
+            "\n## 内建 emoji 词表（选了 emoji 来源时，keyword 只能从这些取值里拼）\n{}\n",
+            crate::assets::emoji_taxonomy::prompt_vocab_text()
+        )
+    } else {
+        String::new()
+    };
     // 两份类型清单**从效果词汇表算**（见下面的 `fx_type_list` / `durable_type_list`）。
     let fx_list = fx_type_list();
     let durable_list = durable_type_list();
@@ -153,6 +165,10 @@ pub(crate) fn build_events_system_prompt(
 - 音效只放在情绪爆发/转折/名场面时刻, 普通叙述不要加
 - 贴纸在情绪点使用; 起止时间会被系统对齐到**最近的一条字幕**（头尾都落在字幕边界上），
   你只要挑对是"哪句话"的情绪点即可; **如果提供了"可用本地贴纸包", keyword 必须从这些包名中选择**, 且必须从该包列的 tags 里选一个写进 sticker_tag; 候选外的 keyword/tag 无效
+- ⚠️ **选了内建 emoji 来源时**（下面的"内建 emoji 词表"）：keyword **不要写自由英文词**，
+  要写成**维度查询串**，形如 `emotion:joy,usage:punchline`（逗号分隔；同一维多个取值用 `|`，如 `usage:meme|reaction`）。
+  **只能从下面那张词表里选**（词表外的词系统认不出、会退化成模糊匹配 → 选到不相干的表情）。
+  最有用的是 `emotion`（情绪）与 `usage`（剪辑用途）两维，`intensity` 用来看这一下有多重（1 轻 / 2 明显 / 3 爆点）。
 - 特效分两类:
   * 瞬时特效 {}:
     它们的 end-time 由系统接管, 你写不写都会被 clamp 到 0.1~0.6s; 只表现"爆发瞬间", 不要长时间驻留
@@ -201,7 +217,8 @@ pub(crate) fn build_events_system_prompt(
   仅当候选清单确实没有合适音效时才留空
 {}
 {}
-"##, sticker_desc, fx_list, durable_list, local_line, blacklist_line)
+{}
+"##, sticker_desc, fx_list, durable_list, local_line, emoji_line, blacklist_line)
 }
 
 /// **视觉特效的类型清单** —— 从效果词汇表（`spec/effects.json`）算出来，**不许在这里手写第二份**。
