@@ -96,10 +96,24 @@ for (const k of Object.keys(presets)) {
   const kind = k.replace(/_[^_]+$/, '')
   ;(groups[kind] ||= []).push(k)
 }
+/** ⚠️⚠️ **故意同参数的档名（别名）** —— 2026-10-18 用户口径：「将逐字变化归类为过渡，
+ *  并固定为**入场逐字变大、出场逐字变小**，不用手动设置」。
+ *
+ *  ⇒ 逐字只剩**一个形状**，`perchar` 是界面唯一入口，`perchar_big` / `perchar_small` 是
+ *  **读兼容别名**（老工程的 `effect_anim` 里写着它们）。三个名字**逐字节相同是契约**。
+ *  ⚠️ 它们与上面那条判据要防的"选 A 得到 B"**不是一回事**：那两个老名字**进不了下拉**
+ *  （`TimelineEditor.vue` 里标了 `legacy: true`），面板上用户只看得到一个「逐字」。
+ *  ⚠️ 往这里加名字要同步两处：`check-anim-presets-parity.mjs` 的 `EXPECTED_TIERS`（档数是契约）。
+ */
+const ALIASES = new Set(['perchar', 'perchar_big', 'perchar_small'])
+const isAlias = (n) => ALIASES.has(n)
 const dupes = []
 for (const [kind, ks] of Object.entries(groups)) {
   for (let i = 0; i < ks.length; i++) {
     for (let j = i + 1; j < ks.length; j++) {
+      // 两个都是别名 ⇒ 它们**必须**相同（下面 ①b 单独钉），这里不算冲突。
+      // 一个是别名、一个不是 ⇒ 仍然算冲突（那才是"选 A 得到 B"）。
+      if (isAlias(ks[i]) && isAlias(ks[j])) continue
       if (presets[ks[i]] === presets[ks[j]]) dupes.push([kind, ks[i], ks[j]])
     }
   }
@@ -108,6 +122,22 @@ check('同一类别内没有两档参数逐字节相同（有 = 选 A 得到 B�
   dupes.length === 0,
   dupes.map(([kind, a, b]) =>
     `[${kind}] \`${a}\` 与 \`${b}\` 的参数完全相同 —— 面板上是两个功能、产物一模一样`).join('\n         '))
+
+// ---- ①b **别名必须真的相同**（反向判据）----
+//
+//  ⚠️ 没有这一条的话，把三个名字里的某一个改歪（比如只改 `perchar`）会让
+//     ① 那条**看起来更干净**（冲突更少），而老片段与新片段的观感已经不一样了。
+{
+  const present = [...ALIASES].filter((n) => presets[n] !== undefined)
+  const ref = presets[present[0]]
+  const drift = present.filter((n) => presets[n] !== ref)
+  check('逐字的三个档名是**别名**（参数必须逐字节相同）',
+    present.length >= 2 && drift.length === 0,
+    drift.length
+      ? '这些别名的参数与 `' + present[0] + '` 不一致：' + JSON.stringify(drift) + ' —— ' +
+        '老片段与新片段会同档不同观感'
+      : '别名档在表里少于 2 个（可能被删了）：' + JSON.stringify(present))
+}
 
 // ---- ② 具体钉住那对"曾经逐字节相同"的档 ----
 //

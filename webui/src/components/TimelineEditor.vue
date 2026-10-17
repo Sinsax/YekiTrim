@@ -1400,6 +1400,26 @@ const ANIM_KINDS = [
       { value: 'fade', label: '淡入淡出' }
     ]
   },
+  {
+    // ⚠️ **「逐字变化」现在归过渡轴**（2026-10-18 用户口径：「逐字变化…是固定时间的入场出场效果。
+    //    将逐字变化归类为过渡，并固定为**入场逐字变大、出场逐字变小**，不用手动设置」）。
+    //
+    //    ⚠️ 它以前住在动效轴、下辖「变大/变小」两支（那是**静态字号乘数**，不是入场动画）。
+    //    现在**只有一支**：形状固定在预设里（`PERCHAR_FIXED`），用户没有可选项 ——
+    //    这正是"不用手动设置"的意思，**别再给它加子选项**。
+    kind: 'perchar',
+    label: '逐字',
+    axis: 'transition',
+    variants: [
+      { value: 'perchar', label: '逐字' },
+      // ⚠️ **老名字留着只为"认得出来"**（`ANIM_KNOWN` 靠这张表判断"这一档认不认识"）：
+      //    它们**不进下拉**（`legacy: true` 在 `items` 里被过滤），但必须留着 ——
+      //    删了的话老工程的 `effect_anim = "perchar_big"` 会变成"认不出的档"，
+      //    界面显示"不设"、**一保存就把用户配的档丢掉**（静默丢档）。
+      { value: 'perchar_big', label: '逐字（旧）', legacy: true },
+      { value: 'perchar_small', label: '逐字（旧）', legacy: true }
+    ]
+  },
 
   // ===== 动效轴（用户口径：「只保留抖动和逐字变化」，另加心跳）=====
   {
@@ -1409,23 +1429,10 @@ const ANIM_KINDS = [
     variants: [{ value: 'shake', label: '标准' }]
   },
   {
-    // ⚠️ **把原来 C 组（逐字变换）+ D 组（逐字错峰）合并成一条**（用户口径：
-    //    「合并逐字的效果作为一个动效，名为逐字变化」），下辖两支。
-    // ⚠️ 两支**必须产出不同参数** —— 本仓有过"两个预设产物逐字节相同"的实测事故。
-    //    由 `scripts/check-anim-presets-distinct.mjs` 钉着。
-    kind: 'perchar',
-    label: '逐字变化',
-    axis: 'effect',
-    variants: [
-      { value: 'perchar_big', label: '逐字变大' },
-      { value: 'perchar_small', label: '逐字变小' }
-    ]
-  },
-  {
     // ⚠️ **新增档**（用户口径：「动效需要增加一个心跳，扑通扑通的心跳感」）。
-    // ⚠️⚠️ **底座侧的双峰脉冲还没实现**（现有原语只有单次/正弦，见转译器里
-    //    `heartbeat` 那段的注释）。当前观感 = 一次较缓的脉冲，不是真正的"扑通扑通"。
-    //    这一档先落参数与入口，**底座能力到位后再补**。
+    // ⚠️ **2026-10-18 起底座真画了**：给它加了周期缩放原语（`scale_curve` + `scale_cycle_ms`）
+    //    ⇒ 预览与成片**同一条曲线**（基线 → 主峰 +5% → 回基线 → 小峰 +2% → 停顿，1s 一拍）。
+    //    在此之前底座只有单次过冲，成片里只能算"弹一下"（转译器当时如实报 NOTE）。
     kind: 'heartbeat',
     label: '心跳',
     axis: 'effect',
@@ -1475,7 +1482,9 @@ const LAYOUT_ANGLE_MAX = 30
 
 const ANIM_GROUPS = ANIM_KINDS.map((k) => ({
   group: k.label,
-  items: k.variants.map((v) => ({ value: v.value, label: v.label }))
+    // ⚠️ 过滤 `legacy`：那些值只为"认得出来"而留着（见 `perchar` 那组的注释），
+    //    **不给选** —— 摆进下拉就是"两个一模一样的选项"。
+    items: k.variants.filter((v) => !v.legacy).map((v) => ({ value: v.value, label: v.label }))
 }))
 
 /** 全部档名（**不含**空串）—— 给"认不出的档名"兜底用。 */

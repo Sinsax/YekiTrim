@@ -2415,6 +2415,9 @@ const capRowsWrapped = computed(() => capRows.value.map((c) => {
     perChar: c.perChar,
     perCharFrame: c.perCharFrame,
     perCharFps: c.perCharFps,
+    // **逐字出场**（2026-10-18）：窗口（帧）+ 本条字幕的时长（帧）——缺后者只做入场。
+    perCharOutFrames: c.perCharOutFrames,
+    spanFrames: c.perCharSpanFrames,
     fontPx: (subStyle.value.size || 72) * w.scale
   })
   // 逐字序列**按行切回**：`spans` 是按整条文本算的（序号与字数都必须按整条），
@@ -2537,6 +2540,9 @@ const texts = computed(() =>
           perChar: e.perChar,
           perCharFrame: e.perCharFrame,
           perCharFps: e.perCharFps,
+          // **逐字出场**（同上）：元素那条也把窗口与时长带上。
+          perCharOutFrames: e.perCharOutFrames,
+          spanFrames: e.perCharSpanFrames,
           fontPx: e.style?.fontPx
         })
       }
