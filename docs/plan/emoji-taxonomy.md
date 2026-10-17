@@ -136,3 +136,26 @@
   需要给 LLM **看得懂**的候选形态（`1f602 😂` 这种），返回值再取出码点。
 - `process/download.rs` 的 `search_best` 接线**未提交**（与作者的存量 WIP 同一文件，hunk 拆分被 git 判 corrupt）。
 - 真实工程 `keyword` 回放对比（方案 §4.5 的第 4 条判据）。
+
+### 真实工程回放（2026-10-17，目标 §6.4）
+
+数据源：dev 实例的账本 `target/debug/.yekitrim/cloud/yekitrim.db`（**不是** `target/debug/yekitrim.db`，后者是空的）
+→ 13 个工程 → 58 份 `polish.toml` → **133 条** sticker keyword，只有 **3 个不同取值**：
+
+| 取值 | 条数角色 | 新链路怎么接 |
+|---|---|---|
+| `laugh` | 词表内自由词（action.laugh） | `search_best` → `guess_dims` → 分维打分 |
+| `shock` | **词表外**的旧词 | `search_best` 落到**旧匹配兜底**；而旧 tag 被并进派生 `tag` ⇒ 仍然命中 ✓ |
+| `ysyk` | 包名（不是 emoji） | 包名分支，未动 |
+
+⇒ **零维度查询**（这些工程都是改提示词之前跑的，符合预期：新的查询串只会在重跑 LLM 之后出现）。
+⇒ 回放的实际价值是证明**存量 keyword 不会因为改分类而解析不出来**（那条兜底与"旧 tag 并进派生 tag"两件事一起兜住的）。
+
+### 已知偏差（照实记）
+
+- **主维度的分布没有达到"每组 10–60 条"**：`emotion.neutral = 374/881`（42%），其余 4–105。
+  模型的默认倾向就是"说不清就 neutral"。对**选取**影响有限（LLM 按情绪查时给的是具体情绪，
+  不会主动写 neutral），对**浏览**（面板）影响是"neutral 那一组偏大"。
+  要收紧就改 `emotion` 维的 desc（要求"只有真的中性才用 neutral"）再重跑一次分类（23 次调用）。
+- **零覆盖取值 1 个**：`action.salute`（🫡 `1fae1` 在目录里，模型没给）。判据允许 ≤5%。
+- `process/download.rs` 的 `search_best` 接线**未提交**（与作者的存量 WIP 同文件，hunk 拆分被 git 判 corrupt）。
