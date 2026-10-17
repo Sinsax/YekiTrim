@@ -366,10 +366,15 @@
             <!-- 贴纸：行递进三段（包 → 分类 → 贴纸），见 polish/StickerPicker.vue -->
             <!-- 统一视觉元素：kind 分派 text / sticker -->
             <template v-else-if="selItem.type === 'element'">
-              <!-- **逐块手动落点**：点「改落点」→ 在预览上**拖动** → 按「保存落点」才生效（草稿态）。 -->
+              <!-- **逐块手动落点**：点「改落点」→ 在预览上**拖动** → 按「保存落点」才生效。
+                   ⚠️ 「改落点」与「恢复自动」**同一行**（用户口径 2026-10-17：这两个不该是上下结构）。 -->
               <div class="row mt-4 gap-6">
-                <button v-if="!manualPick" class="mini-btn flex-1 jc-center"
-                        title="在预览上拖动这一块的位置（草稿态，保存后才落盘）" @click="startManualPick">改落点</button>
+                <template v-if="!manualPick">
+                  <button class="mini-btn flex-1 jc-center"
+                          title="在预览上拖动这一块的位置（草稿态，保存后才落盘）" @click="startManualPick">改落点</button>
+                  <button v-if="evManualPos" class="mini-btn" title="清掉手动落点，交回自动（安全区算法）"
+                          @click="clearManualPos">恢复自动</button>
+                </template>
                 <div v-else class="mono small">{{ manualDraftPct }}</div>
               </div>
               <div v-if="manualPick" class="row mt-4 gap-6">
@@ -377,59 +382,6 @@
                         @click="saveManualPos">保存落点</button>
                 <button class="mini-btn" @click="cancelManualPick">取消</button>
               </div>
-              <div v-else-if="evManualPos" class="row mt-4 gap-6">
-                <button class="mini-btn" title="清掉手动落点，交回自动（安全区算法）" @click="clearManualPos">恢复自动</button>
-              </div>
-              <!-- ---- ⚠️⚠️ **「元素种类」下拉已删除**（2026-10-14）----
-                   用户口径：「**前端编辑器也要分离**」。
-
-                   那个下拉存在的唯一理由是"元素轨同时装两种东西"——
-                   用户加完还得在这儿**再声明一次**它是什么。现在**轨道已经分开了**
-                   （「文字」轨 / 「贴纸」轨），而泳道归属**就是**那个声明
-                   ⇒ 再问一遍是多余，而且**允许把一条贴纸改成文字**会让它
-                   悄悄换到另一条轨上（用户没有要求过这种能力）。
-
-                   ⚠️ `setElementKind` **保留**（下面还有 `addElementAt` 在用，
-                      而且判据 `check-*` 也钉着它的载荷切换口径）—— 只是**面板里不再暴露**。
-                   ⚠️ kind 认不出时（`⚠` 那一支）**照实显示**，别默认成文字。 -->
-              <template v-if="elementKindOf(selItem) === 'unknown'">
-                <!-- ⚠️ 标签**不再叫「元素种类」**（2026-10-15）：轨道已经分家
-                     （文字轨 / 贴纸轨），"种类"由**轨道**决定、面板里根本没有这个选择器了。
-                     这一支是**数据完好性提示**（kind 认不出 ⇒ 不知道该按文字还是贴纸渲染），
-                     叫回「元素种类」会让用户去找一个不存在的下拉。 -->
-                <label>识别不了的类型</label>
-                <div class="muted small">⚠ 认不出的 kind：{{ selItem.kind || '(空)' }}（按原样保留）</div>
-              </template>
-
-              <!-- 文字支：内容 + 样式。**和贴纸一样只有"是什么"，没有"摆哪"**——
-                   ⚠️ 别再退回"纵向位置"下拉：位置一律由后处理按安全落点算
-                   （与贴纸那句「位置 x/y 由后处理算」同一条口径），
-                   下同的那句 hint 就是给用户看的唯一说明。 -->
-              <template v-if="elementKindOf(selItem) === 'text'">
-                <label>文字内容</label>
-                <input :value="selItem.text || ''" placeholder="要显示的字"
-                       @input="selItem.text = $event.target.value">
-                <!-- ============ 颜色（命名预设，2026-10-13）============
-                     ⚠️ **这不是样式档位那套已否决的四档**（那个是 `selItem.style`，
-                        见下面那段注释）—— 这是**颜色**这一个维度，与 `style_anim`/
-                        `effect_anim` 正交，所以它有自己的槽位。
-
-                     ⚠️ **空 = 不设**（走 `style` 档位的默认色），必须排第一、且文案与
-                        动效栏的「不设」/样式栏的「清除」都不冲突 —— 这里用「默认色」，
-                        因为它表达的是"不指定颜色"而不是"清掉某种效果"。
-
-                     ⚠️ **选项从 `ELEMENT_COLORS` 来**（唯一一份前端清单），而那份清单
-                        的权威是 Rust `placement.rs::ElementColor`，由
-                        `scripts/check-element-color.mjs` 钉着四处同值。
-                        ⚠️ 写死在这里的话，加一档时要改五处、而漏掉哪一处都不报错。 -->
-                <label>颜色</label>
-                <select :value="selItem.color || ''" @change="selItem.color = $event.target.value || undefined">
-                  <option value="">默认色</option>
-                  <option v-for="c in ELEMENT_COLORS" :key="c.value" :value="c.value">{{ c.label }}</option>
-                </select>
-                <div v-if="selItem.color && !ELEMENT_COLOR_VALUES.includes(selItem.color)" class="hint">
-                  这个颜色名不认识，成片里会用默认色。
-                </div>
                 <!-- ============ 两个**独立可叠加**的设置 ============
                      用户口径（2026-10-13）：「两个设置，有各自的细分，是可叠加的」。
                      即「竖排 **+** 抖动」两个都要成立，不是二选一。
