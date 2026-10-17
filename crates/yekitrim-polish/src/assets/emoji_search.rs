@@ -438,6 +438,27 @@ impl EmojiCatalog {
     }
 }
 
+/// 码点串 → 可读字符（`1f602` → 😂、`203c_fe0f` → ‼️）。
+///
+/// 给 **LLM 看的注解**用（Step2b 精挑的候选标签：`"1f602.gif 😂"`）—— 光给文件名
+/// `1f602.gif`，模型认不出那是哪个表情，精挑就退化成随机。
+///
+/// ⚠️ 与 `engine.js::safeEmoji` / 出片模板的 `enIsHex` 分支**同口径**：多码点用 `_` 分隔、
+/// 越界或非法一律回**空串**（这里绝不许 panic —— 它只是注解，渲染路径另有其人）。
+pub fn codepoint_to_chars(cp: &str) -> String {
+    let mut out = String::new();
+    for part in cp.split('_') {
+        let Ok(n) = u32::from_str_radix(part, 16) else { return String::new() };
+        // 0 与 >0x10FFFF 都挡（前者是 NUL、画不出来，后者 `from_u32` 给 None）
+        if n == 0 {
+            return String::new();
+        }
+        let Some(c) = char::from_u32(n) else { return String::new() };
+        out.push(c);
+    }
+    out
+}
+
 /// 下载匹配关键词的 emoji GIF
 /// 返回 (新下载文件列表, 已存在文件数)
 pub async fn download_images(
@@ -847,6 +868,28 @@ mod tests {
             })
             .count();
         assert!(groups >= 10, "{} 只有 {groups} 组有成员 —— 分类退化了", primary.key);
+    }
+
+/// 码点 → 字符（给 LLM 的注解），并钉住**候选标签取回 stem 就是码点**这条约定。
+    ///
+    /// ⚠️ 后者是 Step2b 能用的前提：候选标签是 `1f602.gif 😂`，而
+    /// `choose_sticker_files_batch` 拿 `Path::file_stem()` 取回的文件名**直接当 name 写盘**，
+    /// process 与转译器再按码点去找文件。路子对不上 = 精挑选了个"名字"、成片里一张都没有。
+    #[test]
+    fn codepoint_labels_are_readable_and_stem_back_to_the_codepoint() {
+        assert_eq!(codepoint_to_chars("1f602"), "😂");
+        assert_eq!(codepoint_to_chars("203c_fe0f"), "‼️");
+        assert_eq!(codepoint_to_chars("zz"), "", "非法码点回空串（不 panic）");
+        assert_eq!(codepoint_to_chars("deadbeef"), "", "越界回空串");
+        assert_eq!(codepoint_to_chars("0"), "");
+        for cp in ["1f602", "203c_fe0f"] {
+            let label = format!("{cp}.gif {}", codepoint_to_chars(cp));
+            assert_eq!(
+                std::path::Path::new(&label).file_stem().and_then(|s| s.to_str()),
+                Some(cp),
+                "候选标签 {label:?} 取回的不是码点"
+            );
+        }
     }
 
     /// 面板上点一个码点 → `name` 就是这个字符串 ⇒ 它必须能被 `search()` 反查回来。
