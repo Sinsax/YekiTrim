@@ -23,7 +23,17 @@
   `is_blacklisted(id, blacklist)`、`search_by_tags` / `candidates_for_tags(target_tags, used, limit, blacklist)` /
   `candidates_text(...)`、`fuzzy_search(_excluding)`、`categories_text()` / `CATEGORY_ORDER` / `all_tags()`、
   `variant_url(entry, variant)`、`SfxEntry`。
-- `emoji_search`：`EmojiCatalog`（`search`）、`download_images` / `download_images_by_codepoints`、`collect_keywords(segments)`。
+- `emoji_taxonomy`：**emoji 六维分类的唯一词表真源**（`assets/emoji_taxonomy.json`，`include_str!`）：
+  `taxonomy()` / `find_dim` / `is_valid_value` / `primary_dim` / `prompt_vocab_text()` / `parse_query` / `guess_dims`。
+  ⚠️ prompt 文本、构建工具校验、查询打分**都读它** —— 别在别处再抄一份（抄了就必然漂，
+  症状是「LLM 写了个查不到的词」、静默选错表情）。
+- `emoji_search`：`EmojiCatalog`（`search` / **`search_best` 三级选取入口** / `search_dims` 分维打分 /
+  `dim_of` / `has_dims` / `grouped` **两级分区**）、`codepoint_to_chars`、`download_images` /
+  `download_images_by_codepoints`、`collect_keywords(segments)`。
+  ⚠️ `grouped()` 是**两级**的：情绪只有 `neutral`（或没有情绪）的按 `object` 的第一个取值分组 ——
+  只按情绪会得到 430/881（49%）的 `neutral` 巨组，旗子/房子/工具全挤在里面。判据钉「最大组 ≤ 1/4」。
+  ⚠️ 它也是**内建 emoji 包**的数据源：`sticker_index::{BUILTIN_EMOJI_PACK, is_known_pack_source, builtin_meta}`
+  把它按贴纸包协议接出来（tag = `维度:取值`、文件 = `<码点>.gif`），**磁盘有同名目录时磁盘赢**。
 - `irasu_search`：`download_images` / `resolve_image_urls` / `collect_keywords(segments)`、`PLACEHOLDER_PNG`。
 - `downloader`：`AssetDownloader::{new, download_stickers, …}`、`DownloadReport { sticker_downloaded, sticker_existing, sfx_downloaded, sfx_existing, errors }`、`collect_sfx_ids(segments)`。
 

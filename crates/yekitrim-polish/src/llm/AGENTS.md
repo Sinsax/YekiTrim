@@ -17,6 +17,10 @@
   `build_events_user_prompt(segment, subtitles, candidate_text)`。
 - `events`：`EventGenTask::{new, with_project, build_windows, apply_outputs}`、`run_event_agent(...)`、
   `StickerChoiceContext` / `choose_sticker_files_batch(...)`。
+  ⚠️ Step2b 有**两档**（`mod.rs::run_sticker_choice_step`）：本地包按 `(包名, tag)` 分组；
+  **emoji 那一档**按 keyword 是**维度查询**（`emotion:joy,usage:punchline`）识别、候选 = `search_best`，
+  候选标签形如 `1f602.gif 😂`（模型认得出，而 `Path::file_stem()` 取回的正好是码点 ⇒ 写进 `name`）。
+  只认维度查询 ⇒ 老工程的自由词走原路，不打乱存量行为。
 - `keywords`：`extract_keywords(client, subtitle_texts, danmaku_texts) -> (danmaku_filter, highlight_words)`、`build_prompt`。
 - `status`：`STATUS_FILE = "polish_events.status.json"`、`SegmentGenStatus` / `LlmRunStatus`、
   `remap_to_segments(...)`、`status_path` / `save` / `load` / `upsert_segment` / `clear`。

@@ -23,6 +23,10 @@
 - `cmd_doctor(_)` / `cmd_test(_)`。
 - 贴纸库：`cmd_stickers_list()` / `cmd_stickers_test(keywords)` / `cmd_stickers_build(package)` /
   `build_package_tags(...)`（WebUI「LLM 压缩构建」的同一份实现）/ `cmd_stickers_scan(llm)`。
+  ⚠️ **`cmd_emoji_build(...)`（`polish emoji build`）= 开发期工具**：用 LLM 把内嵌的 881 条 emoji
+  重做六维分类（三轮补漏 40→20→10 + 三层键兜底），**写回仓库里的 `assets/emoji_catalog.json`**。
+  它是**编译期输入**（`include_str!`）⇒ 跑完要 `cargo build`；写盘前留 `.bak`；默认**增量**
+  （已有 `dim` 的跳过，`--all` / `VT_EMOJI_ALL=1` 才全量重做）。手跑入口：`emoji_build_dev_tool`（`#[ignore]`）。
 
 `crates/yekitrim-polish/src/cover.rs`：`cmd_cover_template` / `cmd_preview_cover` / `cmd_cover(project_path, existing_video)` /
 `build_cover_page`（**HTML 替换链只此一份**，预览与出片都走它）/ `build_cover_html`（预览用的薄包装）/
