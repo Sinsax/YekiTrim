@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "note": "emoji 多维分类的**唯一词表真源**：prompt（给 LLM 选）与查询（search_dims）都读它。value 一律小写 ASCII（连字符代替空格），因为它同时是 JSON 字段、prompt 词和日志里的键。",
+  "dims": [
+    {
+      "key": "emotion",
+      "label": "情绪",
+      "desc": "这条表情最主要在表达什么情绪（单选，选最贴近的一个）。⚠️「赞同 / 否定」这类**态度**写进 usage 维的 agreement / denial，别写进 emotion。",
+      "multi": false,
+      "weight": 3,
+      "values": [
+        "joy",
+        "love",
+        "desire",
+        "pride",
+        "relief",
+        "gratitude",
+        "calm",
+        "surprise",
+        "confusion",
+        "boredom",
+        "awkward",
+        "embarrassed",
+        "sadness",
+        "anger",
+        "annoyance",
+        "disgust",
+        "fear",
+        "anxiety",
+        "pain",
+        "sympathy",
+        "neutral"
+      ]
+    },
+    {
+      "key": "intensity",
+      "label": "强度",
+      "desc": "情绪强度：1 轻（微笑/小尴尬）· 2 明显（大笑/惊讶）· 3 爆点（崩溃/暴怒/狂喜）",
+      "multi": false,
+      "weight": 1.5,
+      "values": [
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    {
+      "key": "action",
+      "label": "动作",
+      "desc": "画面上这个表情在做/表示什么动作或手势（可多选，没有就留空）",
+      "multi": true,
+      "weight": 2,
+      "values": [
+        "laugh",
+        "cry",
+        "smile",
+        "kiss",
+        "hug",
+        "clap",
+        "cheer",
+        "wave",
+        "point",
+        "bow",
+        "salute",
+        "shrug",
+        "thumbs-up",
+        "thumbs-down",
+        "ok",
+        "pray",
+        "think",
+        "write",
+        "call",
+        "dance",
+        "sleep",
+        "eat",
+        "drink",
+        "celebrate"
+      ]
+    },
+    {
+      "key": "object",
+      "label": "题材",
+      "desc": "与什么题材/事物有关（可多选，纯情绪表情留空）",
+      "multi": true,
+      "weight": 1.5,
+      "values": [
+        "person",
+        "body",
+        "hand",
+        "heart",
+        "animal",
+        "plant",
+        "food",
+        "drink",
+        "vehicle",
+        "tech",
+        "money",
+        "time",
+        "weather",
+        "music",
+        "sport",
+        "game",
+        "tool",
+        "weapon",
+        "clothing",
+        "building",
+        "symbol",
+        "flag"
+      ]
+    },
+    {
+      "key": "usage",
+      "label": "剪辑用途",
+      "desc": "做切片时这个表情该出现在哪（可多选）。reaction **只给**「看到某个画面时的即时反应」这一类 —— 不是所有表情都算 reaction；punchline 爆点落点 / emphasis 强调 / transition 转场 / cutaway 插科打诨 / agreement 赞同 / denial 否定 / question 疑问 / hype 带节奏 / comfort 安慰 / meme 梗 / decoration 纯装饰。",
+      "multi": true,
+      "weight": 2.5,
+      "values": [
+        "reaction",
+        "punchline",
+        "emphasis",
+        "transition",
+        "cutaway",
+        "agreement",
+        "denial",
+        "question",
+        "hype",
+        "comfort",
+        "meme",
+        "decoration"
+      ]
+    },
+    {
+      "key": "tone",
+      "label": "极性",
+      "desc": "给你的观感是正面/负面/中性（单选，反讽的用 negative）",
+      "multi": false,
+      "weight": 1,
+      "values": [
+        "positive",
+        "negative",
+        "neutral"
+      ]
+    }
+  ]
+}
