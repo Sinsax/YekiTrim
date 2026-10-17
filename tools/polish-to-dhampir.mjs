@@ -54,15 +54,47 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // 顺序无所谓（两者不会同时存在），但两个都得试：只试新的 ⇒ 开发树里守卫全空转；
 // 只试老的 ⇒ 发布包里退化成"不知道词汇表"（而它**不报错**，只是报告文案变粗）。
 const EFFECT_VOCAB = (() => {
-  const empty = { known: new Set(), labels: new Map(), loaded: false };
+  const empty = { known: new Set(), labels: new Map(), rules: new Map(), loaded: false };
   const here = dirname(fileURLToPath(import.meta.url));
-  for (const rel of [['effects.json'], ['..', 'spec', 'effects.json']]) {
+  const places = [
+    // ① 同目录：新发布包（转译器与词汇表都在 `runtime/`）
+    [join(here, 'effects.json')],
+    // ② `../spec`：开发树 + 老包（仓库根下 `tools/` 与 `spec/` 并列）
+    [join(here, '..', 'spec', 'effects.json')],
+    // ③ **变异台/守卫的临时副本**（`check-yekitrim-translator.mjs::loadVariant` 把源码
+    //    复制进 `tmpdir` 再 import）。⚠️ 前两档在那时**全都落空** ⇒ 词汇表退化成空、
+    //    `rules` 也跟着空 ⇒ **声明式派发整条失效**（P2 之后这不是"报告文案变粗"，
+    //    而是"特效一个都不转"）。实测：副本里一条 flash 事件连层都不生成，
+    //    而变异台照旧跑完、只说"某处变异没被打红" —— 真正的病根在**注入路径**、
+    //    不在被变异的那行代码。
+    //    ⇒ 用 `YEKITRIM_SPEC_DIR` 让调用方**显式指路**（守卫在 loadVariant 里传它）。
+    //    ⚠️ 刻意**不写"从 CWD 找"**：那会让"跑在哪个目录"改变出片结果，
+    //       而这类隐式依赖正是本模块"宁可报错也不猜"要避免的。
+    process.env.YEKITRIM_SPEC_DIR
+      ? [join(process.env.YEKITRIM_SPEC_DIR, 'effects.json')]
+      : null,
+  ].filter(Boolean);
+  for (const parts of places) {
     try {
-      const raw = readFileSync(join(here, ...rel), 'utf8');
+      const raw = readFileSync(join(...parts), 'utf8');
       const spec = JSON.parse(raw);
       return {
         known: new Set(spec.effects.map((e) => e.id)),
         labels: new Map(spec.effects.map((e) => [e.id, e.label])),
+        // P2：**声明式转译规则**（`dhampir_rule`）。有它的效果不再走手写 case ——
+        // 窗口/包络/参数常量全部来自词汇表，加同类特效不用再抄一遍 case。
+        rules: new Map(
+          spec.effects.filter((e) => e.dhampir_rule).map((e) => [e.id, e.dhampir_rule]),
+        ),
+        // **字段类型表**（效果 id → 字段名 → Rust 类型）。
+        // P4 的通用搬运靠它决定归一化规则：**按类型的形状**判，不按名字特判 ——
+        // 否则"加一个同类型的新字段"又要回来改转译器，泛化就白做了。
+        fieldTypes: new Map(
+          spec.effects.map((e) => [
+            e.id,
+            new Map((e.fields ?? []).map((f) => [f.name, f.type])),
+          ]),
+        ),
         loaded: true,
       };
     } catch {
@@ -3267,6 +3299,12 @@ export function translate(config, clipDir, outPath, options = {}) {
       : (popInOn && cfg.popInDefault?.peak ? POP_IN_DEFAULT.peak : undefined)));
     put('scale_in_ms', pick('scale_in_ms', cfg.scale_in_ms !== undefined ? cfg.scale_in_ms
       : (popInOn && cfg.popInDefault?.ms ? POP_IN_DEFAULT.ms : undefined)));
+    // **心跳的周期曲线**（2026-10-18，底座新原语）。
+    // ⚠️ 只在档位真的带了它时才写（R4：没配的工程**一个键都不许多**）。
+    // ⚠️ 它**接管**缩放：底座 `scale_curve_params` 一旦返回 Some 就不再读 `scale_in_*` ——
+    //    那三个仍照旧写（老底座要用），但在新底座上不参与求值。
+    put('scale_curve', pick('scale_curve', undefined));
+    put('scale_cycle_ms', pick('scale_cycle_ms', undefined));
     put('shake_px', pick('shake_px', cfg.shake_px));
     put('shake_hz', pick('shake_hz', cfg.shake_hz));
     // ⚠️ **相位按档错开，但 0 那一档不写**（0 就是底座默认值 ⇒ 写了是 R4 违规：
@@ -3545,6 +3583,26 @@ export function translate(config, clipDir, outPath, options = {}) {
       //
       //    ⚠ 别把停顿压到 0：两下连成一片会读成"抖动/抽搐"，那是 `shake` 不是心跳。
       //      「停顿」正是区分心跳与抖动的那一维（见 `check-preview-anim.mjs` ⑤-bis 的停顿断言）。
+      // ⚠️ **2026-10-18：底座加了周期缩放原语**（`SubtitleStyle::scale_curve` +
+      // `scale_cycle_ms`）⇒ 这一档现在**成片里也是真·双峰**，不再退化成"单次过冲"。
+      // 用户口径：「心跳就是文字放大一次缩小后然后跟随一个小的放大，类似心跳的脉动」+
+      // 「幅度要小，1s 脉动一下，参考心电图的逻辑」。
+      //   基线 → 主峰 **+5%** → 回基线 → 小峰 **+2%** → 回基线，然后**停顿**到周期末尾。
+      // ⚠️ 首点必须是基线（1.0）：曲线语义是"从上一个点过渡到下一个点"，
+      //    写 1.05 起手就成了"一开始最大然后缩小"（那是收尾，不是心跳）。
+      // ⚠️ 与预览 `engine.js::ANIM_PRESETS.heartbeat.scaleCurve` **同一组点**
+      //    （判据 `check-anim-presets-parity.mjs` 对拍）。
+      scale_curve: [
+        { ms: 0, scale: 1.0 },
+        { ms: 60, scale: 1.05 },
+        { ms: 140, scale: 1.0 },
+        { ms: 220, scale: 1.02 },
+        { ms: 320, scale: 1.0 },
+      ],
+      scale_cycle_ms: 1000,
+      // ---- 下面三个是**老底座**（没有 `scale_curve` 那版）的观感兜底 ----
+      // ⚠️ **必须留着**：新底座一旦看到 `scale_curve` 就完全接管缩放、不看它们；
+      //    而老底座只认它们 ⇒ 拿掉就成"老底座里一点都不动"。
       heartbeatPeaksMs: [0, 210, 320, 530],
       heartbeatAmp: 1.14,
       heartbeatCycleMs: 900,
@@ -4012,6 +4070,9 @@ export function translate(config, clipDir, outPath, options = {}) {
   const stickerSizes = new Map();
   const stickerPkg = loadStickerPackage(clipDir);
   let stickerCount = 0;
+  /// 每个 tag 已经挑过几次 —— 用来把同一 tag 的多次出现**分散**到不同文件上。
+  /// ⚠️ 不用随机：同一份工程每次转译必须给出**逐字节相同**的结果。
+  const stickerPickCounts = new Map();
   let stickerAnimCount = 0;
   let cameraCount = 0;
   let shakeCount = 0;
@@ -4078,6 +4139,133 @@ export function translate(config, clipDir, outPath, options = {}) {
         event.type = 'sticker';
         event.keyword = event.text ?? '';
         delete event.sfx;
+      }
+
+      // ---------------------------------------------------------------------
+      // P2/P4：**声明式转译**（`spec/effects.json` 的 `dhampir_rule`）
+      // ---------------------------------------------------------------------
+      //
+      // 有 `dhampir_rule` 的效果在这里就被处理掉、`continue` —— 下面那个 `switch` 只剩
+      // **声明式表达不了**的那些（发关键帧/图层、按帧循环、多档分支）。
+      //
+      // 这段的价值是里程碑判据：**加同类效果只需改 `spec/effects.json`**，
+      // 转译器一个字都不用动。判据 = `node scripts/check-effect-registry.mjs`。
+      //
+      // ⚠️ 它与手写 case **必须二选一**（门禁会查）：两处都算会让"改了词汇表没生效"，
+      //    而症状是成片节奏与声明不符、**报告里一行差异都没有**。
+      //
+      // ⚠️⚠️ **`keyframe_camera` 是"半声明"**：它的 `collect` 段在这里被**通用搬运**，
+      //    但后续那 ~170 行插值算法**仍在下面那份手写代码里**（它读 `cameraEvents`）。
+      //    ⇒ 它**不能** `continue`！声明式那段只负责"把字段搬进记录"，落关键帧照旧走老路。
+      //    判据就是"演示工程产物逐字节不变"（`:4236` 那段重构的实测依据）。
+      {
+        const rule = EFFECT_VOCAB.rules.get(event.type);
+        if (rule && rule.shape === 'keyframe_camera') {
+          // 收集段由下面的 `case 'camera'` 消费 `rule.collect.fields` 来做；这里只要**放行**。
+          // （`continue` 会让运镜整条丢失 —— 那正是"声明式收编了一半"的典型错法。）
+        } else if (rule) {
+          if (rule.shape !== 'envelope') {
+            throw new Error(
+              `词汇表里 \`${event.type}.dhampir_rule.shape\` = "${rule.shape}"，` +
+              `但转译器只实现了 "envelope"。加形状要同时改这里与 spec/effects.json。`,
+            );
+          }
+          const params = { ...rule.params };
+
+          // 参数里可能引用事件字段（`color_field`）：值解析不到就用声明里的缺省色。
+          // ⚠️ 解析不到**不报 DROP** —— 缺省色是有意设计（参照自己也有缺省），
+          //    与"用户设了但认不出"是两件事。
+          if (rule.params.color_field) {
+            const rgb = hexColor(event[rule.params.color_field]);
+            const d = rule.params.color_default ?? [1, 1, 1];
+            params.r = rgb ? rgb.r : d[0];
+            params.g = rgb ? rgb.g : d[1];
+            params.b = rgb ? rgb.b : d[2];
+            delete params.color_field;
+          }
+          delete params.color_default;
+
+          // **窗口长度**：`window` 三条规则 ——
+          //   · `fixed`（min === max）⇒ 只用那个值；
+          //   · 否则 `end - time` 夹进 [min, max]（没写 `end` 就用 `default`）。
+          // ⚠️ 缺省走 `default`、**不是事件跨度** —— 参照的 `evDuration(ev, def)` 就是这个语义。
+          //    （vignette 那处第一版写成了跨度，没写 end 的工程里暗角只剩 0.1s、几乎看不见。）
+          //
+          // ⚠️⚠️ **`duration` 也要认**：本文件那个精简 TOML 解析器**不做** `duration → end`
+          //   的 legacy 升级（那是 Rust `legacy.rs` 与 `templates/index.html` 那条路的事）。
+          //   老工程（演示工程就是）里事件只有 `duration`、没有 `end` ⇒ 只看 `end` 会**静默**
+          //   掉进 `default` 分支。实测：flash 应有的 0.34s 窗口变成 0.35s、键数 21→23、
+          //   包络逐值漂 —— 症状只有"成片节奏不太对"，报告里全是正常的 NOTE。
+          //
+          // ⚠️ **但 `vignette` 偏偏只认 `end`**（`span_source:"end"`）：它的参照语义是
+          //   `transientDur(ev, 0.4)` —— 没写 `end` 就用默认 0.4，**不看 `duration`**。
+          //   演示工程那条 vignette 写的是 `duration = 0.6` ⇒ 参照算 0.4（cap 后 0.4），
+          //   而"认 duration"会算 0.6 ⇒ 键数 25→37、整条暗角长了一半。
+          //   两条规则都是**既有行为**，所以这里是开关、不是"统一"。
+          const w = rule.window ?? { min: 0.1, max: null, default: 0.3 };
+          const endSpan = typeof event.end === 'number' && event.end > at ? event.end - at : null;
+          const spanSec = w.span_source === 'end'
+            ? endSpan
+            : (endSpan ?? (typeof event.duration === 'number' ? event.duration : null));
+          let seconds;
+          if (w.min != null && w.max != null && w.min === w.max) {
+            seconds = w.min;
+          } else {
+            const raw = spanSec != null ? Math.max(0.05, spanSec) : (w.default ?? 0.3);
+            seconds = Math.max(w.min ?? 0.05, w.max == null ? raw : Math.min(raw, w.max));
+          }
+          // ⚠️ `plus_rise`：上升段**加在窗口之外**（`flash` 就是这条 ——
+          //    参照 `getFlash` 的 `dur` 只计下降段，总长 = rise + dur）。
+          //    少了这个开关总窗口会短掉一个 rise、包络逐值漂、键数也变 ——
+          //    实测演示工程那条 flash 0.34s→0.30s、21→22 键。
+          if (w.plus_rise && rule.envelope?.rise) seconds += rule.envelope.rise;
+
+          // **包络曲线**：`(dt) => 不透明度`。
+          // ⚠️ 三种写法都来自参照，别在这里"统一" —— 它们的差异是**创作意图**：
+          //   `hold`  —— 先恒 1 一段（暗角"前 40% 不衰减"）
+          //   `rise`  —— 先线性升到 1（闪光"0.04s 冲上去"）
+          //   `fall`  —— 下降段长度；`"window"` = 用掉剩下的全部窗口，`"span"` = 用 `raw`（事件跨度）
+          //
+          // ⚠️⚠️ **`fall:"span"` 不是 `"window"`**：`flash` 的总窗口是 `rise + dur`，
+          //    而**下降段的分母是 `dur`**（事件跨度），不是窗口总长。
+          //    把这两者混起来不会报错，只是包络**略微**变慢 —— 实测第 3 个键
+          //    0.966667 → 0.970588（差 0.004）。只有"重构前后逐字节相同"那条校验抓得住。
+          const env = rule.envelope ?? {};
+          const shape = (dt) => {
+            if (env.hold != null) {
+              const hold = seconds * env.hold;
+              if (dt < hold) return 1;
+              const ramp = Math.min(env.ramp_max ?? 0.3, seconds * (env.ramp_frac ?? 0.6));
+              return ramp <= 0 ? 0 : Math.max(0, 1 - (dt - hold) / ramp);
+            }
+            const rise = env.rise ?? 0.04;
+            if (dt < rise) return dt / rise;
+            const fall = env.fall === 'window'
+              ? Math.max(1e-6, seconds)
+              : env.fall === 'span'
+                ? Math.max(1e-6, spanSec ?? seconds)
+                : (env.fall ?? 0.3);
+            return Math.max(0, 1 - (dt - rise) / fall);
+          };
+
+          const startFrame = remapFrame(srcStart);
+          if (startFrame === null) {
+            note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
+            continue;
+          }
+          const eff = { kind: rule.kind, params };
+          const ok = placeEnvelope(startFrame, seconds, eff, shape, where);
+          const vitals = Object.entries(params)
+            .map(([k, v]) => `${k} ${typeof v === 'number' ? Number(v.toFixed(3)) : v}`)
+            .join(' / ');
+          note(
+            where,
+            `${event.type} → 底座 \`${rule.kind}\`（${vitals}），窗口 ${seconds.toFixed(2)}s` +
+              (rule._why ? `｜依据：${rule._why}` : ''),
+          );
+          if (!ok) continue;
+          continue;
+        }
       }
 
       switch (event.type) {
@@ -4156,25 +4344,71 @@ export function translate(config, clipDir, outPath, options = {}) {
           // `wide_zoom_shrinks_around_origin`，z=0.55 时四下各 432px 黑边）。
           // **只收集，不落关键帧**：过渡要按 YekiTrim 的状态机算
           // （`td = min(duration*0.5, 0.6)`、远景硬切），见循环之后那一段。
+          //
+          // -----------------------------------------------------------------
+          // P4：**收集段由 `spec/effects.json` 的 `camera_rule` 驱动**。
+          // -----------------------------------------------------------------
+          //
+          // 这里以前是一长串硬编码的字段搬运。现在分两层：
+          //   ① **通用搬运**：`collect.fields` 里列了名的字段，按"标量开关 / 数值 / 字符串"
+          //      三种归一化规则自动搬进记录、并各自带上缺省；
+          //   ② **本效果专有的语义**：`origin`/`to_origin` 的解析（`liver`/`center`/百分比/
+          //      `danmaku`）与锚点兜底顺序 —— 那是**运镜自己的规则**，不属于"通用搬运"。
+          //
+          // ⇒ 加一个**复用现成字段**的新运镜（例：`zoom=近 + speed=fast` 的"快推" preset）
+          //    只需改 L0（词汇表）；加**带新字段**的运镜仍要写 ① 的字段 + 消费段的新算法
+          //    （算法抄不了，别假装能抄 —— 见词汇表里 `_scope` 那段）。
+          const camRule = EFFECT_VOCAB.rules.get('camera');
+          const camFields = camRule?.collect?.fields ?? [];
+          if (!camFields.length) {
+            throw new Error(
+              '词汇表里 `camera` 没有 `dhampir_rule.collect.fields` —— 运镜收集段无字段可搬。',
+            );
+          }
+          // ⚠️⚠️ **派生字段不许被原字段覆盖**。
+          //
+          // `collect.fields` 里的 `origin` / `zoom` 是**原始输入**，而记录里那两个键放的是
+          // **派生结果**（`origin` = 解析后的点 `{x,y}`、`z` = 档位名查表得来的倍率）。
+          // 直接 `...carried` 展开会让 `origin` 被原始字符串 `"liver"` 顶掉 ——
+          // 后面 `e.origin.x` 就成了 `undefined` ⇒ `NaN` ⇒ 关键帧写成 `null`。
+          //
+          // 实测症状：**同一层 806 个关键帧变成 `null`**（x/y 各 403 个），
+          // 而转译器**不报任何错**、报告里 DROP/NOTE 一条都没变 —— 只有"产物逐字节相同"
+          // 那条校验抓得住。这正是"原始字段与派生字段同名"的经典坑。
+          //
+          // 所以这里显式让派生值**后写**（放在 `...carried` 之后），并把 `origin` 从
+          // 通用搬运里摘掉（它由运镜自己解析）。`zoom` 反过来**必须**保留原始值：
+          // 消费段的 `shot.zoom` 读的是**档位名**（`'近'`/`'远'`），不是倍率。
+          const DERIVED_BY_CAMERA = new Set(['origin']);
+          const camTypes = new Map(
+            (EFFECT_VOCAB.fieldTypes.get('camera') ?? new Map()).entries(),
+          );
+          const carried = {};
+          for (const name of camFields) {
+            if (DERIVED_BY_CAMERA.has(name)) continue;
+            const ty = camTypes.get(name) ?? '';
+            if (ty === 'bool') carried[name] = event[name] === true;
+            else if (ty.startsWith('Option<')) {
+              carried[name] = event[name] === undefined ? null : event[name];
+            } else if (ty === 'f64' || ty === 'i64' || ty === 'u32') {
+              carried[name] = typeof event[name] === 'number' ? event[name] : null;
+            } else {
+              carried[name] = event[name] === undefined ? null : event[name];
+            }
+          }
+          // `tilt` 缺省 **0**（不是 null）：它是**持续状态**，与 `zoom` 同一套状态机，
+          // 消费端拿它做插值起点；给 null 会让 `tilt ?? 0` 之外多一层兜底。
+          if (typeof carried.tilt !== 'number') carried.tilt = 0;
           cameraEvents.push({
             srcStart,
             srcEnd,
+            where,
+            // —— 词汇表声明、通用搬运的字段 ——
+            ...carried,
+            // —— 运镜专有语义（派生值，**必须后写**）——
             z: factor,
             origin: anchorPoint,
             originTo: point(event.to_origin ?? '') ?? anchorPoint,
-            cut: event.cut === true,
-            zoom: event.zoom,
-            handheld: event.handheld === true,
-            where,
-            // 运镜速度（规格 `camera-and-noise-spec.md` §1）：`snap|fast|med|slow`。
-            // 缺省（没写）= 老式子，见 `cameraTransitionFrames`。
-            speed: event.speed,
-            // 荷兰角（规格 §4）：整帧绕**聚焦中心**旋转的度数，正 = 顺时针。
-            // ⚠️ 这里是**持续状态**，与 `zoom` 同一套状态机（跟着到下一条运镜）——
-            //    做成"瞬时特效"的话"到点就回正"会变成**闪一下**（规格 §4.5 原话）。
-            // ⚠️ `process::cap_dutch_angle` 已经夹过 ±6°、限过配额、并把**与画中画同段**的
-            //    剔除掉了（几何原因：`远` 档最大安全角是 0.00°）。这里不再重复判。
-            tilt: typeof event.tilt === 'number' ? event.tilt : 0,
           });
           cameraCount += 1;
           break;
@@ -4283,8 +4517,26 @@ export function translate(config, clipDir, outPath, options = {}) {
           } else if (tag) {
             const picked = pickSticker(stickerPkg, tag);
             if (picked) {
-              fileName = picked.files[0];
-              how = picked.how;
+              // ⚠️⚠️ **不能恒取 `files[0]`**（2026-10-14 修）。
+              //
+              // 真事故：某工程 5 个贴纸事件的 `sticker_tag` 是
+              // 「搞笑 / 震惊 / 爆笑 / 看热闹 / 笑」，而 `STICKER_SYNONYMS`
+              // 把其中 4 个都映射到**同一个**库 tag（`搞笑→笑`、`爆笑→笑`、`笑→笑`），
+              // 于是 `files[0]` 反复取到同一张图 ⇒ **5 张贴纸里有 4 张画的是同一张**。
+              // 用户看到的就是「贴纸没出现」—— 因为那张图与他要的情绪毫无关系。
+              //
+              // ⚠️ **计数必须按「解析后的库 tag」**（`picked.tag`），不能按原始 `sticker_tag`：
+              // 原始 tag 各不相同（搞笑/爆笑/笑 是三个不同的 key），各自从 0 开始
+              // ⇒ 每个都取 `files[0]` ⇒ **等价于没改**。这一点我第一版写错过，实测仍塌成 1 张。
+              //
+              // 仍要**确定性**（同一份工程每次转译必须逐字节一致），所以用出现序号取模、不用随机。
+              const pickKey = picked.tag;
+              const nth = stickerPickCounts.get(pickKey) ?? 0;
+              stickerPickCounts.set(pickKey, nth + 1);
+              fileName = picked.files[nth % picked.files.length];
+              how =
+                picked.how +
+                (picked.files.length > 1 ? `（「${pickKey}」第 ${nth + 1} 次取，候选 ${picked.files.length} 张）` : '');
             }
           }
           if (!fileName) {
@@ -4704,9 +4956,18 @@ export function translate(config, clipDir, outPath, options = {}) {
             //    是这一档**唯一的落点**（`pop` / `fade` 既不给形态也不给动效字段）。
             const transitionName = usingSplit ? transitionAnimRaw : (mig ? mig.transition : '');
 
+            // ⚠️⚠️ **三条轴都要在这张表里**（2026-10-16 补 `transition_anim`）：这张表
+            //    原先只列 `anim` / `style_anim` / `effect_anim` —— 而第三轴是 2026-10-14
+            //    才收敛出来的，于是**从没进过这张表**。后果与「填错栏」同一类，但更隐蔽：
+            //    写了过时/认不出的过渡档（**手写工程**与**旧版本界面**留下的值；
+            //    ⚠️ 已核实：内建提示词**根本不教这三条轴**（示例只有 `style`/`pos`/`color`），
+            //    所以这一支防的不是 LLM，而是老工程与人手改的 toml）时，
+            //    这一条**安静地什么过渡都没有**，而报告里**一行差异都没有**。
+            //    （实测：`transition_anim` 写 `pop_std` 以前既不进 CLAMP 也不进 NOTE。）
             for (const [field, name] of [
               ['anim', animRaw],
               ['style_anim', styleAnimRaw],
+              ['transition_anim', transitionAnimRaw],
               ['effect_anim', effectAnimRaw],
             ]) {
               if (name && !animPreset(name)) {
@@ -4785,6 +5046,15 @@ export function translate(config, clipDir, outPath, options = {}) {
               color: st.color,
               // 纵向档位由排版那一步算进了 `y` —— 这里只带过来给报告用。
               pos: posKey,
+              // ---- 绝对盒原点（2026-10-15，宿主那条逐事件位置通道）----
+              // ⚠️ `x`/`y` 是 `process` 写回的**盒左上角百分比**；`ratio()` 挡掉 `"auto"`
+              //    与垃圾值（返回 null ⇒ 不带 origin ⇒ 回落老行为，R4）。
+              // ⚠️ **两个都解析得出才带** —— 只解析出一个的话，"半截位置"比不带更糟。
+              origin: (() => {
+                const ox = ratio(event.x);
+                const oy = ratio(event.y);
+                return ox === null || oy === null ? null : [ox, oy];
+              })(),
               // ⚠️ **两路档名**（第 3、4 个分组维度，见下面 `byStyle` 的注释）：
               //    两路的参数都是**轨级**的，所以不同组合必须分轨。
               //    认不出的档名**照样带过去** —— 上面已经报过 CLAMP，
@@ -4985,116 +5255,11 @@ export function translate(config, clipDir, outPath, options = {}) {
         }
 
 
-        case 'vignette': {
-          // **D4（2026-10-01）：从 DROP 改成映射。**
-          //
-          // 以前这里是"参照出片路径里没有 vignette（只有 DOM 的 `handlers.vignette`，
-          // `renderFrame` 里没有 `getXxx`）⇒ 不替参照补画"。那一刀切在**参照侧**：
-          // 本仓 canvas 现在补上了暗角（`templates/index.html::getVignette` + 出片里那段
-          // 归一化空间的径向渐变），两端一致了 ⇒ 转译器映射底座的 `vignette` 特效。
-          //
-          // 参照的形（DOM 预览）：
-          //     radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.5) 100%)
-          //     × getVignette(t) 包络（前 dur×0.4 恒 1，之后在 min(0.3, dur×0.6) 秒内线性归零）
-          // 底座那张牌：`kind:"vignette"`，`amount` = **边缘压暗量**（0.5 ⇔ rgba(…,0.5)），
-          // `radius`/`softness` 取它的默认（0.7 / 0.35，与 55% 档一致）。
-          // 逐帧曲线照旧走 `placeEnvelope`（图层不透明度关键帧 × amount）—— 与 flash/hue 同一套。
-          const startFrame = remapFrame(srcStart);
-          if (startFrame === null) {
-            note(where, '这一条整段落在被掐掉的区间里，跳过（成片里没有那一段）');
-            break;
-          }
-          // `transientDur(ev, 0.4)`：cap 0.6（同参照的 `TRANSIENT_CAP.vignette`）。
-          // ⚠️ **没写 `end` 时用默认 0.4**，不是"事件跨度"（跨度此时是 0）—— 参照的
-          // `evDuration(ev, def)` 就是这个语义：有 end 用 `end - time`，否则用 def。
-          // （第一版写成了跨度 ⇒ 没写 end 的工程里暗角只有 0.1s，几乎看不见。）
-          const hasEnd = typeof event.end === 'number' && event.end > at;
-          const rawSpan = hasEnd ? Math.max(0.05, event.end - at) : 0.4;
-          const vigDur = Math.max(0.1, Math.min(rawSpan, 0.6));
-          placeEnvelope(
-            startFrame,
-            vigDur,
-            { kind: 'vignette', params: { amount: 0.5, radius: 0.7, softness: 0.35 } },
-            (dt) => {
-              if (dt < vigDur * 0.4) return 1;
-              return Math.max(0, 1 - (dt - vigDur * 0.4) / Math.min(0.3, vigDur * 0.6));
-            },
-            where,
-          );
-          note(
-            where,
-            `暗角：边缘压暗 0.5（参照 = radial-gradient transparent 55% → rgba(0,0,0,.5) 100%），` +
-              `包络 ${vigDur.toFixed(2)}s（前 40% 恒 1，之后 ${Math.min(0.3, vigDur * 0.6).toFixed(2)}s 线性归零）`,
-          );
-          break;
-        }
 
-
-
-        case 'flash': {
-          const startFrame = remapFrame(srcStart);
-          const rgb = hexColor(event.color) ?? { r: 1, g: 1, b: 1 };
-          const dur = typeof event.duration === 'number' ? event.duration : 0.35;
-          // `getFlash`：0.04s 升到 **0.20**，然后 `dur` 秒线性落回 0。
-          placeEnvelope(
-            startFrame,
-            0.04 + dur,
-            { kind: 'flash', params: { amount: 0.20, r: rgb.r, g: rgb.g, b: rgb.b } },
-            (dt) => (dt < 0.04 ? dt / 0.04 : Math.max(0, 1 - (dt - 0.04) / dur)),
-            where,
-          );
-          note(where, `flash 色 ${event.color || '#ffffff'}，峰值 0.20、上升 0.04s、下降 ${dur}s`);
-          break;
-        }
-
-        case 'hue_shift': {
-          const startFrame = remapFrame(srcStart);
-          const rgb = hexColor(event.color) ?? { r: 1, g: 0.0, b: 0.25 };
-          // `getHueShiftFlash`：0.15s 升到 **0.25**，然后 0.80s 线性落回 0（窗口 0.95s）。
-          placeEnvelope(
-            startFrame,
-            0.95,
-            { kind: 'flash', params: { amount: 0.25, r: rgb.r, g: rgb.g, b: rgb.b } },
-            (dt) => (dt < 0.15 ? dt / 0.15 : Math.max(0, 1 - (dt - 0.15) / 0.80)),
-            where,
-          );
-          note(where, `hue_shift 色 ${event.color || '#ff0040'}，峰值 0.25、上升 0.15s、下降 0.80s`);
-          break;
-        }
-
-        case 'noise': {
-          const startFrame = remapFrame(srcStart);
-          // §20：`noise` 发**底座的 `noise` 原语**（真黑白噪点），不再发白色 `flash`。
-          //
-          // ⚠️ **这条以前映射成白色 `flash`**，注释自陈"参照出片里的 noise 是一层纯白薄纱"。
-          // 用户拍板「noise 需要改成真黑白噪点」⇒ 坐标系换了：**以真噪声为准**，
-          // 本仓出片模板的 `handlers.noise` 同步改成真噪声（那边改完要重建二进制）。
-          //
-          // ⚠️ 强度**从 0.08 降下来到 0.15 是错的、0.08 保持不变也是错的** ——
-          //    这两个数不可直接比较：白纱 0.08 是"整屏盖一层 8% 的白"（低频、糊），
-          //    真噪点 0.08 是"逐像素 ±10/255 的颗粒"（高频、刺）。
-          //    底座侧的量纲 bug 修掉之后（`NOISE_FULL_SCALE`），**0.08 就是 ±10 的颗粒** ——
-          //    那是一个明显可见但不糊的强度，正合"爆点闪一下"的用法。
-          //    ⚠️ 以前那个 bug 让 0.08 变成 ±0.04（看不见），所以本节的两个数**不可比**。
-          //
-          // 参数名与底座登记表对齐：`amount` + `seed`（见 `dhampir-core/src/effects.rs` 的 `NOISE`）。
-          // `seed` 取一个固定值：噪声必须是**帧号的函数**，同一帧两次渲染要逐字节相同
-          //（用随机会让预览与成片对不上）。
-          placeEnvelope(
-            startFrame,
-            0.80,
-            { kind: 'noise', params: { amount: 0.08, seed: 7 } },
-            (dt) => (dt < 0.08 ? dt / 0.08 : Math.max(0, 1 - (dt - 0.08) / 0.72)),
-            where,
-          );
-          note(
-            where,
-            '`noise` 发底座的**真黑白噪点**（§20）：amount 0.08 + 固定 seed，' +
-              '包络沿用 0.08s 升 / 0.72s 落。⚠️ 以前这里发的是白色 `flash`（参照出片的"白纱"），' +
-              '现在以真噪声为准 —— 出片模板的 `handlers.noise` 已同步改成真噪声。',
-          );
-          break;
-        }
+        // **P2：`vignette` / `flash` / `hue_shift` / `noise` 四条 case 已删** ——
+        // 它们的窗口/包络/参数常量现在声明在 `spec/effects.json` 的 `dhampir_rule` 里，
+        // 由上面的声明式派发器处理。**别加回来**：两处都算会让"改了词汇表没生效"，
+        // 而症状是成片节奏与声明不符、报告里一行差异都没有。
 
         case 'blur': {
           const startFrame = remapFrame(srcStart);
@@ -6194,6 +6359,13 @@ export function translate(config, clipDir, outPath, options = {}) {
   //    （字号 72 / 描边 `12px #403c3b` / 行高 1.5）—— 两处兜底分叉的话，
   //    "字幕轨没转、只有元素轨"的工程会拿到另一套字体/行高，而报告里看不出来。
   const sharedSubStyle = config.style?.subtitle ?? {};
+  // **外圈描边**（2026-10-16）：文字元素与字幕**同源**（同一条口径：内圈跟字幕走、外圈也跟它走）。
+  // ⚠️ **内圈宽度也要传**（`auto` 那一档靠它算厚度）：元素那条内圈与字幕**同源** ——
+  //    同一份 `[style.subtitle].stroke`（见下面 `stroke_ratio` 的注释）。
+  const elemOuterStroke = parseOuterStroke(
+    sharedSubStyle,
+    parseStroke(sharedSubStyle.stroke, 12, '#403c3b').widthPx,
+  );
   const sharedSubLineHeight = 1.5;
   // 字幕轨的眼睛关着 ⇒ **整条不转**（素材与 `data/subtitles.json` 一个字都没动）。
   if (laneOn('subtitles') && config.source?.subtitles && existsSync(join(clipDir, config.source.subtitles))) {
@@ -6327,6 +6499,9 @@ export function translate(config, clipDir, outPath, options = {}) {
     const subColor = hexColor(subStyle.color) ?? { r: 1, g: 1, b: 1 };
     // 描边 YekiTrim 写的是 `"12px #403c3b"` —— 一个字符串里两个值。
     const subStroke = parseStroke(subStyle.stroke, 12, '#403c3b');
+    // **外圈**（2026-10-16）：字幕这一侧也加一层白边（见 `parseOuterStroke` 的说明）。
+    // `auto` 时厚度 = 第一层那条 `stroke` 的宽度（`subStroke` 就在上面一行）。
+    const subOuterStroke = parseOuterStroke(subStyle, subStroke.widthPx);
     // 行高：YekiTrim 的字幕 CSS 是 `line-height:1.5`。
     const subLineHeight = 1.5;
     // **落点要换算，不能直接搬 120。**
@@ -6378,6 +6553,16 @@ export function translate(config, clipDir, outPath, options = {}) {
         // 而 4px 跟 6px 几乎一样好，说明 6px 附近就是对的）。
         stroke_ratio: subStroke.widthPx / 2 / height,
         stroke_color: subStroke.color,
+        // **外圈描边**（2026-10-16）：底座 `SubtitleStyle.outer_stroke`。
+        // 没给（空串）⇒ **一个键都不写**（老工程逐字节不变，R4）。
+        ...(subOuterStroke
+          ? {
+              outer_stroke: {
+                ratio: subOuterStroke.widthPx / 2 / height,
+                color: subOuterStroke.color,
+              },
+            }
+          : {}),
         // **淡入淡出**（YekiTrim `getActiveSubs`：fadeIn 0.35 / fadeOut 0.18、
         // 入场从下方 +20px 浮上来、退场向上 -8px）。
         //
@@ -6409,8 +6594,11 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    卡拉OK的语义本来就是"字逐个**亮起来**"，淡入反而是干扰。
         //
         // ⚠️⚠️ **预览侧（`webui/src/polish/`）为什么不跟着改** —— 免得下一个人重新纠结：
-        //   * 预览**本来就没有** T2/T5 的逐字切分（`grep -rn "typewriter" webui/src/` = **0 命中**）；
-        //     它遍历的是 `idx.subs`（**原始字幕**，`engine.js:758`），不是切分后的 cue。
+        //   * 预览**遍历的是原始 cue**（`idx.subs`），不做 T2/T5 的逐字切分。
+        //     ⚠️ **但文字元素那条路的打字机预览是有的**（2026-10-16 更正）：`engine.js:2379`
+        //     的 `mo.typewriter` 分支在求值期截断文本，且**按总时长均分** ——
+        //     与这里 `splitTypewriter` 的阶梯同口径（差别只在取整）。所以这条注释原来那句
+        //     「`grep typewriter webui/src` = 0 命中」**已过期**，别再照它推「预览没接」。
         //   * 而预览的淡入（`engine.js:761` `t - s.start`）**本来就是逐条重放、与底座语义一致**
         //     ⇒ **本轮不存在"淡入分叉"**。
         //   * ⇒ 真正的分叉是"**预览没接切分**"，而且它**先于 T5 存在**（T2 就没接）。
@@ -6842,8 +7030,12 @@ export function translate(config, clipDir, outPath, options = {}) {
       // ⚠️ 分组维度 = (样式 × 纵向档 × 排版档 × 动效档 × **过渡档** × 颜色)。
       //    最后一维（过渡）是 2026-10-14 加的：过渡参数是**轨级**的，
       //    不分轨的话「同样式，一条要弹出、一条要淡入」会静默共用一个。
+      // ⚠️ 第六维：**绝对盒原点**（2026-10-15）。第 N 次同一个理由 —— `origin` 住在底座
+      //    **轨级** `SubtitleStyle` 上，而它在宿主里是**逐事件**的（面板给每条字算一个落点）。
+      //    老工程没有 `x`/`y` ⇒ 这一段是空串 ⇒ 组合 / 排序 / id **逐字符不变**（R4）。
+      const originKey = cue.origin ? cue.origin.map((v) => v.toFixed(4)).join(',') : '';
       const key = `${cue.style.name}|${cue.pos}|${cue.styleAnim || ''}` +
-        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}`;
+        `|${cue.effectAnim || ''}|${cue.transitionAnim || ''}|${colorKey}|${originKey}`;
       if (!byStyle.has(key)) byStyle.set(key, []);
       byStyle.get(key).push(cue);
     }
@@ -6867,7 +7059,8 @@ export function translate(config, clipDir, outPath, options = {}) {
       (c) =>
         `${c.anim || ''}\u0001${c.styleAnim || ''}\u0001${c.effectAnim || ''}` +
         `\u0001${c.transitionAnim || ''}` +
-        `\u0001${Array.isArray(c.color) ? c.color.join(',') : ''}`,
+        `\u0001${Array.isArray(c.color) ? c.color.join(',') : ''}` +
+        `\u0001${c.origin ? c.origin.map((v) => v.toFixed(4)).join(',') : ''}`,
     ))]
       // ⚠️ 排序键：第一段（`anim`）非空时**就用它**，否则用两路拼 ——
       //    老工程退化成"按那个 `anim` 字母序"（= 旧行为），
@@ -6888,7 +7081,10 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    的两个组合会随 `Set` 的插入序（= 工程里事件的出现序）排列，
         //    同一份工程两次跑仍相同，但**换一下事件顺序产物就变了**
         //    （作者以为只调了顺序，sha256 却不同）。
-        return kx[3] < ky[3] ? -1 : kx[3] > ky[3] ? 1 : 0;
+        if (kx[3] !== ky[3]) return kx[3] < ky[3] ? -1 : 1;
+        // ⚠️ 再按**原点串**兜底（2026-10-15）：同动效同色、不同落点的两个组合若不排，
+        //    会随 Set 的插入序（= 工程里事件的出现序）排列 ⇒ 换一下顺序产物就变。
+        return kx[5] < ky[5] ? -1 : kx[5] > ky[5] ? 1 : 0;
       })
       // 分组仍然按**拆出来的两路 + 颜色**，只是排序键用了第一段。
       .map((k) => {
@@ -6897,14 +7093,16 @@ export function translate(config, clipDir, outPath, options = {}) {
         //    `[4]=颜色`。**要吐 4 个**（解构那侧也是 4 个）—— 少吐一个的症状是
         //    `colorCsv` 恒 `undefined` ⇒ `byStyle.get(key)` 永远查不到 ⇒
         //    **所有文字轨整批消失**，而报告里只说"轨道 3 条"。
-        return [p[1] || '', p[2] || '', p[3] || '', p[4] || ''];
+        // ⚠️ **要吐 5 个**（解构那侧也是 5 个）—— 少吐一个的症状与下面那段说明同一个形状：
+        //    `originCsv` 恒 `undefined` ⇒ `byStyle.get(key)` 查不到 ⇒ 文字轨整批消失。
+        return [p[1] || '', p[2] || '', p[3] || '', p[4] || '', p[5] || ''];
       });
     for (const styleName of ['hook', 'chapter', 'comment', 'count']) {
       for (const posName of ['top', 'center', 'bottom']) {
-      for (const [styleAnimName, effectAnimName, transitionAnimName, colorCsv] of comboKeys) {
+      for (const [styleAnimName, effectAnimName, transitionAnimName, colorCsv, originCsv] of comboKeys) {
       const cues = byStyle.get(
         `${styleName}|${posName}|${styleAnimName}|${effectAnimName}` +
-          `|${transitionAnimName}|${colorCsv}`,
+          `|${transitionAnimName}|${colorCsv}|${originCsv}`,
       );
       if (!cues || cues.length === 0) continue;
       const st = cues[0].style;
@@ -6940,7 +7138,13 @@ export function translate(config, clipDir, outPath, options = {}) {
       //       **不进 id** —— 它没有改变任何渲染结果（RGBA 与默认色相同，
       //       所以本来就会与默认色那条分到同一组）。
       const colorTag = cues[0].style.colorName || '';
-      const id = `text_${styleName}_${posName}${animTag ? '_' + animTag : ''}` +
+      // ⚠️ **位置进 id**（2026-10-15）：`origin` 是**轨级**字段 ⇒ 两个不同落点必须是两条轨，
+      //    否则后写的会覆盖先写的（与本文件里 `anchor_bottom` / 颜色那几处**同一个理由**）。
+      //    没有 origin 时这一段是空串 ⇒ 老工程 id 逐字符不变（R4）。
+      const posTag = cues[0].origin
+        ? `_x${(cues[0].origin[0] * 100).toFixed(1)}y${(cues[0].origin[1] * 100).toFixed(1)}`
+        : '';
+      const id = `text_${styleName}_${posName}${posTag}${animTag ? '_' + animTag : ''}` +
         `${colorTag ? '_' + colorTag : ''}`;
       // ⚠️ **复用弹幕那条 `cuesToAss`**，不自己造一个 ASS 生成器：
       //    自带生成器要重新处理 `[Script Info]` / `Dialogue` 格式 / 转义 /
@@ -7049,12 +7253,25 @@ export function translate(config, clipDir, outPath, options = {}) {
           // ⚠️ `bottom` 档**故意不写**（`undefined` ⇒ 键不出现）—— 它要减
           // `caption_clearance`（字幕带占掉的高度，只有底座知道），写死会与字幕重叠。
           anchor_bottom: anchorBottomFor(posName, st, height),
+          // **绝对盒原点**（2026-10-15）：给了它，底座**横向不再居中、纵向也不走**
+          // `anchor_bottom`（见底座 `SubtitleStyle::origin`）。没给 ⇒ **一个键都不写**（R4）。
+          ...(cues[0].origin ? { origin: cues[0].origin } : {}),
           max_lines: 3,
           color: st.color,
           outline: true,
           // ⚠️ 描边口径与字幕**同一条**：CSS 居中 -> 底座外侧宽度要折半。
           stroke_ratio: st.strokePx / 2 / height,
           stroke_color: st.strokeColor,
+          // **外圈**（2026-10-16）：与字幕那份同值（`parseOuterStroke(sharedSubStyle)`）。
+          // 空串 ⇒ 不写键（R4）。
+          ...(elemOuterStroke
+            ? {
+                outer_stroke: {
+                  ratio: elemOuterStroke.widthPx / 2 / height,
+                  color: elemOuterStroke.color,
+                },
+              }
+            : {}),
           // ⚠️⚠️ **文字的淡入淡出按贴纸同一套相位**（2026-10-12 用户口径：
           //   "效果就为简单的贴纸弹出"）。
           //
